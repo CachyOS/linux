@@ -6,23 +6,21 @@
  * Author: Oder Chiou <oder_chiou@realtek.com>
  */
 
-#include <linux/acpi.h>
-#include <linux/fs.h>
-#include <linux/module.h>
-#include <linux/moduleparam.h>
-#include <linux/init.h>
 #include <linux/delay.h>
-#include <linux/pm.h>
-#include <linux/regmap.h>
-#include <linux/i2c.h>
-#include <linux/platform_device.h>
-#include <linux/spi/spi.h>
 #include <linux/firmware.h>
-#include <linux/of_device.h>
-#include <linux/property.h>
-#include <linux/irq.h>
+#include <linux/fs.h>
+#include <linux/i2c.h>
+#include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/irqdomain.h>
+#include <linux/irq.h>
+#include <linux/module.h>
+#include <linux/moduleparam.h>
+#include <linux/platform_device.h>
+#include <linux/pm.h>
+#include <linux/property.h>
+#include <linux/regmap.h>
+#include <linux/spi/spi.h>
 #include <linux/workqueue.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -708,8 +706,7 @@ static void rt5677_set_dsp_mode(struct rt5677_priv *rt5677, bool on)
 
 static unsigned int rt5677_set_vad_source(struct rt5677_priv *rt5677)
 {
-	struct snd_soc_dapm_context *dapm =
-			snd_soc_component_get_dapm(rt5677->component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(rt5677->component);
 	/* Force dapm to sync before we enable the
 	 * DSP to prevent write corruption
 	 */
@@ -829,7 +826,7 @@ static int rt5677_parse_and_load_dsp(struct rt5677_priv *rt5677, const u8 *buf,
 	if (strncmp(elf_hdr->e_ident, ELFMAG, sizeof(ELFMAG) - 1))
 		dev_err(component->dev, "Wrong ELF header prefix\n");
 	if (elf_hdr->e_ehsize != sizeof(Elf32_Ehdr))
-		dev_err(component->dev, "Wrong Elf header size\n");
+		dev_err(component->dev, "Wrong ELF header size\n");
 	if (elf_hdr->e_machine != EM_XTENSA)
 		dev_err(component->dev, "Wrong DSP code file\n");
 
@@ -2735,11 +2732,12 @@ static int rt5677_vref_event(struct snd_soc_dapm_widget *w,
 	struct snd_kcontrol *kcontrol, int event)
 {
 	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct rt5677_priv *rt5677 = snd_soc_component_get_drvdata(component);
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		if (snd_soc_component_get_bias_level(component) != SND_SOC_BIAS_ON &&
+		if (snd_soc_dapm_get_bias_level(dapm) != SND_SOC_BIAS_ON &&
 			!rt5677->is_vref_slow) {
 			mdelay(20);
 			regmap_update_bits(rt5677->regmap, RT5677_PWR_ANLG1,
@@ -4379,10 +4377,10 @@ static int rt5677_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	unsigned int reg_val = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		rt5677->master[dai->id] = 1;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		reg_val |= RT5677_I2S_MS_S;
 		rt5677->master[dai->id] = 0;
 		break;
@@ -4645,8 +4643,8 @@ static int rt5677_set_bias_level(struct snd_soc_component *component,
 			enum snd_soc_bias_level level)
 {
 	struct rt5677_priv *rt5677 = snd_soc_component_get_drvdata(component);
-	enum snd_soc_bias_level prev_bias =
-		snd_soc_component_get_bias_level(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	enum snd_soc_bias_level prev_bias = snd_soc_dapm_get_bias_level(dapm);
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
@@ -4717,50 +4715,35 @@ static int rt5677_set_bias_level(struct snd_soc_component *component,
 	return 0;
 }
 
+static int rt5677_update_gpio_bits(struct rt5677_priv *rt5677, unsigned offset, int m, int v)
+{
+	unsigned int bank = offset / 5;
+	unsigned int shift = (offset % 5) * 3;
+	unsigned int reg = bank ? RT5677_GPIO_CTRL3 : RT5677_GPIO_CTRL2;
+
+	return regmap_update_bits(rt5677->regmap, reg, m << shift, v << shift);
+}
+
 #ifdef CONFIG_GPIOLIB
-static void rt5677_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
+static int rt5677_gpio_set(struct gpio_chip *chip, unsigned int offset,
+			   int value)
 {
 	struct rt5677_priv *rt5677 = gpiochip_get_data(chip);
+	int level = value ? RT5677_GPIOx_OUT_HI : RT5677_GPIOx_OUT_LO;
+	int m = RT5677_GPIOx_OUT_MASK;
 
-	switch (offset) {
-	case RT5677_GPIO1 ... RT5677_GPIO5:
-		regmap_update_bits(rt5677->regmap, RT5677_GPIO_CTRL2,
-			0x1 << (offset * 3 + 1), !!value << (offset * 3 + 1));
-		break;
-
-	case RT5677_GPIO6:
-		regmap_update_bits(rt5677->regmap, RT5677_GPIO_CTRL3,
-			RT5677_GPIO6_OUT_MASK, !!value << RT5677_GPIO6_OUT_SFT);
-		break;
-
-	default:
-		break;
-	}
+	return rt5677_update_gpio_bits(rt5677, offset, m, level);
 }
 
 static int rt5677_gpio_direction_out(struct gpio_chip *chip,
 				     unsigned offset, int value)
 {
 	struct rt5677_priv *rt5677 = gpiochip_get_data(chip);
+	int level = value ? RT5677_GPIOx_OUT_HI : RT5677_GPIOx_OUT_LO;
+	int m = RT5677_GPIOx_DIR_MASK | RT5677_GPIOx_OUT_MASK;
+	int v = RT5677_GPIOx_DIR_OUT | level;
 
-	switch (offset) {
-	case RT5677_GPIO1 ... RT5677_GPIO5:
-		regmap_update_bits(rt5677->regmap, RT5677_GPIO_CTRL2,
-			0x3 << (offset * 3 + 1),
-			(0x2 | !!value) << (offset * 3 + 1));
-		break;
-
-	case RT5677_GPIO6:
-		regmap_update_bits(rt5677->regmap, RT5677_GPIO_CTRL3,
-			RT5677_GPIO6_DIR_MASK | RT5677_GPIO6_OUT_MASK,
-			RT5677_GPIO6_DIR_OUT | !!value << RT5677_GPIO6_OUT_SFT);
-		break;
-
-	default:
-		break;
-	}
-
-	return 0;
+	return rt5677_update_gpio_bits(rt5677, offset, m, v);
 }
 
 static int rt5677_gpio_get(struct gpio_chip *chip, unsigned offset)
@@ -4778,26 +4761,14 @@ static int rt5677_gpio_get(struct gpio_chip *chip, unsigned offset)
 static int rt5677_gpio_direction_in(struct gpio_chip *chip, unsigned offset)
 {
 	struct rt5677_priv *rt5677 = gpiochip_get_data(chip);
+	int m = RT5677_GPIOx_DIR_MASK;
+	int v = RT5677_GPIOx_DIR_IN;
 
-	switch (offset) {
-	case RT5677_GPIO1 ... RT5677_GPIO5:
-		regmap_update_bits(rt5677->regmap, RT5677_GPIO_CTRL2,
-			0x1 << (offset * 3 + 2), 0x0);
-		break;
-
-	case RT5677_GPIO6:
-		regmap_update_bits(rt5677->regmap, RT5677_GPIO_CTRL3,
-			RT5677_GPIO6_DIR_MASK, RT5677_GPIO6_DIR_IN);
-		break;
-
-	default:
-		break;
-	}
-
-	return 0;
+	return rt5677_update_gpio_bits(rt5677, offset, m, v);
 }
 
-/** Configures the gpio as
+/*
+ * Configures the GPIO as
  *   0 - floating
  *   1 - pull down
  *   2 - pull up
@@ -4909,7 +4880,7 @@ static void rt5677_free_gpio(struct i2c_client *i2c)
 
 static int rt5677_probe(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct rt5677_priv *rt5677 = snd_soc_component_get_drvdata(component);
 	int i;
 
@@ -4925,7 +4896,7 @@ static int rt5677_probe(struct snd_soc_component *component)
 			ARRAY_SIZE(rt5677_dmic2_clk_1));
 	}
 
-	snd_soc_component_force_bias_level(component, SND_SOC_BIAS_OFF);
+	snd_soc_dapm_force_bias_level(dapm, SND_SOC_BIAS_OFF);
 
 	regmap_update_bits(rt5677->regmap, RT5677_DIG_MISC,
 			~RT5677_IRQ_DEBOUNCE_SEL_MASK, 0x0020);
@@ -5189,7 +5160,6 @@ static const struct snd_soc_component_driver soc_component_dev_rt5677 = {
 	.num_dapm_routes	= ARRAY_SIZE(rt5677_dapm_routes),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config rt5677_regmap_physical = {
@@ -5232,6 +5202,7 @@ static const struct of_device_id rt5677_of_match[] = {
 MODULE_DEVICE_TABLE(of, rt5677_of_match);
 
 static const struct acpi_device_id rt5677_acpi_match[] = {
+	{ "10EC5677", RT5677 },
 	{ "RT5677CE", RT5677 },
 	{ }
 };
@@ -5540,7 +5511,7 @@ static int rt5677_init_irq(struct i2c_client *i2c)
 			RT5677_GPIO1_PIN_MASK, RT5677_GPIO1_PIN_IRQ);
 
 	/* Ready to listen for interrupts */
-	rt5677->domain = irq_domain_add_linear(i2c->dev.of_node,
+	rt5677->domain = irq_domain_create_linear(dev_fwnode(&i2c->dev),
 			RT5677_IRQ_NUM, &rt5677_domain_ops, rt5677);
 	if (!rt5677->domain) {
 		dev_err(&i2c->dev, "Failed to create IRQ domain\n");
@@ -5560,6 +5531,7 @@ static int rt5677_init_irq(struct i2c_client *i2c)
 
 static int rt5677_i2c_probe(struct i2c_client *i2c)
 {
+	struct device *dev = &i2c->dev;
 	struct rt5677_priv *rt5677;
 	int ret;
 	unsigned int val;
@@ -5574,21 +5546,9 @@ static int rt5677_i2c_probe(struct i2c_client *i2c)
 	INIT_DELAYED_WORK(&rt5677->dsp_work, rt5677_dsp_work);
 	i2c_set_clientdata(i2c, rt5677);
 
-	if (i2c->dev.of_node) {
-		const struct of_device_id *match_id;
-
-		match_id = of_match_device(rt5677_of_match, &i2c->dev);
-		if (match_id)
-			rt5677->type = (enum rt5677_type)match_id->data;
-	} else if (ACPI_HANDLE(&i2c->dev)) {
-		const struct acpi_device_id *acpi_id;
-
-		acpi_id = acpi_match_device(rt5677_acpi_match, &i2c->dev);
-		if (acpi_id)
-			rt5677->type = (enum rt5677_type)acpi_id->driver_data;
-	} else {
+	rt5677->type = (enum rt5677_type)(uintptr_t)device_get_match_data(dev);
+	if (rt5677->type == 0)
 		return -EINVAL;
-	}
 
 	rt5677_read_device_properties(rt5677, &i2c->dev);
 
@@ -5674,9 +5634,9 @@ static int rt5677_i2c_probe(struct i2c_client *i2c)
 		regmap_update_bits(rt5677->regmap, RT5677_GEN_CTRL2,
 					RT5677_GPIO5_FUNC_MASK,
 					RT5677_GPIO5_FUNC_DMIC);
-		regmap_update_bits(rt5677->regmap, RT5677_GPIO_CTRL2,
-					RT5677_GPIO5_DIR_MASK,
-					RT5677_GPIO5_DIR_OUT);
+		rt5677_update_gpio_bits(rt5677, RT5677_GPIO5,
+					RT5677_GPIOx_DIR_MASK,
+					RT5677_GPIOx_DIR_OUT);
 	}
 
 	if (rt5677->pdata.micbias1_vdd_3v3)
@@ -5694,20 +5654,18 @@ static int rt5677_i2c_probe(struct i2c_client *i2c)
 				      rt5677_dai, ARRAY_SIZE(rt5677_dai));
 }
 
-static int rt5677_i2c_remove(struct i2c_client *i2c)
+static void rt5677_i2c_remove(struct i2c_client *i2c)
 {
 	rt5677_free_gpio(i2c);
-
-	return 0;
 }
 
 static struct i2c_driver rt5677_i2c_driver = {
 	.driver = {
 		.name = RT5677_DRV_NAME,
 		.of_match_table = rt5677_of_match,
-		.acpi_match_table = ACPI_PTR(rt5677_acpi_match),
+		.acpi_match_table = rt5677_acpi_match,
 	},
-	.probe_new = rt5677_i2c_probe,
+	.probe    = rt5677_i2c_probe,
 	.remove   = rt5677_i2c_remove,
 };
 module_i2c_driver(rt5677_i2c_driver);
@@ -5715,3 +5673,5 @@ module_i2c_driver(rt5677_i2c_driver);
 MODULE_DESCRIPTION("ASoC RT5677 driver");
 MODULE_AUTHOR("Oder Chiou <oder_chiou@realtek.com>");
 MODULE_LICENSE("GPL v2");
+
+MODULE_FIRMWARE("rt5677_elf_vad");

@@ -90,7 +90,6 @@ static void ttusbir_bulk_complete(struct urb *urb)
 	case -ECONNRESET:
 	case -ENOENT:
 	case -ESHUTDOWN:
-		usb_unlink_urb(urb);
 		return;
 	case -EPIPE:
 	default:
@@ -166,7 +165,6 @@ static void ttusbir_urb_complete(struct urb *urb)
 	case -ECONNRESET:
 	case -ENOENT:
 	case -ESHUTDOWN:
-		usb_unlink_urb(urb);
 		return;
 	case -EPIPE:
 	default:
@@ -189,7 +187,7 @@ static int ttusbir_probe(struct usb_interface *intf,
 	int i, j, ret;
 	int altsetting = -1;
 
-	tt = kzalloc(sizeof(*tt), GFP_KERNEL);
+	tt = kzalloc_obj(*tt);
 	rc = rc_allocate_device(RC_DRIVER_IR_RAW);
 	if (!tt || !rc) {
 		ret = -ENOMEM;
@@ -402,7 +400,7 @@ static int ttusbir_resume(struct usb_interface *intf)
 	led_classdev_resume(&tt->led);
 
 	for (i = 0; i < NUM_URBS; i++) {
-		rc = usb_submit_urb(tt->urb[i], GFP_KERNEL);
+		rc = usb_submit_urb(tt->urb[i], GFP_NOIO);
 		if (rc) {
 			dev_warn(tt->dev, "failed to submit urb: %d\n", rc);
 			break;

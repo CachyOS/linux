@@ -17,8 +17,13 @@ properties:
     enum:
       - leadtek,ltk050h3146w
       - leadtek,ltk050h3146w-a2
-  reg: true
+      - leadtek,ltk050h3148w
+
+  reg:
+    maxItems: 1
+
   backlight: true
+  port: true
   reset-gpios: true
   iovcc-supply:
     description: regulator that supplies the iovcc voltage

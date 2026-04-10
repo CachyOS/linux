@@ -223,17 +223,14 @@ static int create_qp(struct c4iw_rdev *rdev, struct t4_wq *wq,
 	}
 
 	if (!user) {
-		wq->sq.sw_sq = kcalloc(wq->sq.size, sizeof(*wq->sq.sw_sq),
-				       GFP_KERNEL);
+		wq->sq.sw_sq = kzalloc_objs(*wq->sq.sw_sq, wq->sq.size);
 		if (!wq->sq.sw_sq) {
 			ret = -ENOMEM;
 			goto free_rq_qid;//FIXME
 		}
 
 		if (need_rq) {
-			wq->rq.sw_rq = kcalloc(wq->rq.size,
-					       sizeof(*wq->rq.sw_rq),
-					       GFP_KERNEL);
+			wq->rq.sw_rq = kzalloc_objs(*wq->rq.sw_rq, wq->rq.size);
 			if (!wq->rq.sw_rq) {
 				ret = -ENOMEM;
 				goto free_sw_sq;
@@ -1599,6 +1596,7 @@ static void __flush_qp(struct c4iw_qp *qhp, struct c4iw_cq *rchp,
 	int count;
 	int rq_flushed = 0, sq_flushed;
 	unsigned long flag;
+	struct ib_event ev;
 
 	pr_debug("qhp %p rchp %p schp %p\n", qhp, rchp, schp);
 
@@ -1607,6 +1605,13 @@ static void __flush_qp(struct c4iw_qp *qhp, struct c4iw_cq *rchp,
 	if (schp != rchp)
 		spin_lock(&schp->lock);
 	spin_lock(&qhp->lock);
+	if (qhp->srq && qhp->attr.state == C4IW_QP_STATE_ERROR &&
+	    qhp->ibqp.event_handler) {
+		ev.device = qhp->ibqp.device;
+		ev.element.qp = &qhp->ibqp;
+		ev.event = IB_EVENT_QP_LAST_WQE_REACHED;
+		qhp->ibqp.event_handler(&ev, qhp->ibqp.qp_context);
+	}
 
 	if (qhp->wq.flushed) {
 		spin_unlock(&qhp->lock);
@@ -2213,26 +2218,25 @@ int c4iw_create_qp(struct ib_qp *qp, struct ib_qp_init_attr *attrs,
 		goto err_destroy_qp;
 
 	if (udata && ucontext) {
-		sq_key_mm = kmalloc(sizeof(*sq_key_mm), GFP_KERNEL);
+		sq_key_mm = kmalloc_obj(*sq_key_mm);
 		if (!sq_key_mm) {
 			ret = -ENOMEM;
 			goto err_remove_handle;
 		}
 		if (!attrs->srq) {
-			rq_key_mm = kmalloc(sizeof(*rq_key_mm), GFP_KERNEL);
+			rq_key_mm = kmalloc_obj(*rq_key_mm);
 			if (!rq_key_mm) {
 				ret = -ENOMEM;
 				goto err_free_sq_key;
 			}
 		}
-		sq_db_key_mm = kmalloc(sizeof(*sq_db_key_mm), GFP_KERNEL);
+		sq_db_key_mm = kmalloc_obj(*sq_db_key_mm);
 		if (!sq_db_key_mm) {
 			ret = -ENOMEM;
 			goto err_free_rq_key;
 		}
 		if (!attrs->srq) {
-			rq_db_key_mm =
-				kmalloc(sizeof(*rq_db_key_mm), GFP_KERNEL);
+			rq_db_key_mm = kmalloc_obj(*rq_db_key_mm);
 			if (!rq_db_key_mm) {
 				ret = -ENOMEM;
 				goto err_free_sq_db_key;
@@ -2240,8 +2244,7 @@ int c4iw_create_qp(struct ib_qp *qp, struct ib_qp_init_attr *attrs,
 		}
 		memset(&uresp, 0, sizeof(uresp));
 		if (t4_sq_onchip(&qhp->wq.sq)) {
-			ma_sync_key_mm = kmalloc(sizeof(*ma_sync_key_mm),
-						 GFP_KERNEL);
+			ma_sync_key_mm = kmalloc_obj(*ma_sync_key_mm);
 			if (!ma_sync_key_mm) {
 				ret = -ENOMEM;
 				goto err_free_rq_db_key;
@@ -2281,24 +2284,39 @@ int c4iw_create_qp(struct ib_qp *qp, struct ib_qp_init_attr *attrs,
 		if (ret)
 			goto err_free_ma_sync_key;
 		sq_key_mm->key = uresp.sq_key;
-		sq_key_mm->addr = qhp->wq.sq.phys_addr;
+		sq_key_mm->addr = 0;
+		sq_key_mm->vaddr = qhp->wq.sq.queue;
+		sq_key_mm->dma_addr = qhp->wq.sq.dma_addr;
 		sq_key_mm->len = PAGE_ALIGN(qhp->wq.sq.memsize);
+		insert_flag_to_mmap(&rhp->rdev, sq_key_mm, sq_key_mm->addr);
 		insert_mmap(ucontext, sq_key_mm);
 		if (!attrs->srq) {
 			rq_key_mm->key = uresp.rq_key;
-			rq_key_mm->addr = virt_to_phys(qhp->wq.rq.queue);
+			rq_key_mm->addr = 0;
+			rq_key_mm->vaddr = qhp->wq.rq.queue;
+			rq_key_mm->dma_addr = qhp->wq.rq.dma_addr;
 			rq_key_mm->len = PAGE_ALIGN(qhp->wq.rq.memsize);
+			insert_flag_to_mmap(&rhp->rdev, rq_key_mm,
+					    rq_key_mm->addr);
 			insert_mmap(ucontext, rq_key_mm);
 		}
 		sq_db_key_mm->key = uresp.sq_db_gts_key;
 		sq_db_key_mm->addr = (u64)(unsigned long)qhp->wq.sq.bar2_pa;
+		sq_db_key_mm->vaddr = NULL;
+		sq_db_key_mm->dma_addr = 0;
 		sq_db_key_mm->len = PAGE_SIZE;
+		insert_flag_to_mmap(&rhp->rdev, sq_db_key_mm,
+				    sq_db_key_mm->addr);
 		insert_mmap(ucontext, sq_db_key_mm);
 		if (!attrs->srq) {
 			rq_db_key_mm->key = uresp.rq_db_gts_key;
 			rq_db_key_mm->addr =
 				(u64)(unsigned long)qhp->wq.rq.bar2_pa;
 			rq_db_key_mm->len = PAGE_SIZE;
+			rq_db_key_mm->vaddr = NULL;
+			rq_db_key_mm->dma_addr = 0;
+			insert_flag_to_mmap(&rhp->rdev, rq_db_key_mm,
+					    rq_db_key_mm->addr);
 			insert_mmap(ucontext, rq_db_key_mm);
 		}
 		if (ma_sync_key_mm) {
@@ -2307,6 +2325,10 @@ int c4iw_create_qp(struct ib_qp *qp, struct ib_qp_init_attr *attrs,
 				(pci_resource_start(rhp->rdev.lldi.pdev, 0) +
 				PCIE_MA_SYNC_A) & PAGE_MASK;
 			ma_sync_key_mm->len = PAGE_SIZE;
+			ma_sync_key_mm->vaddr = NULL;
+			ma_sync_key_mm->dma_addr = 0;
+			insert_flag_to_mmap(&rhp->rdev, ma_sync_key_mm,
+					    ma_sync_key_mm->addr);
 			insert_mmap(ucontext, ma_sync_key_mm);
 		}
 
@@ -2466,7 +2488,7 @@ int c4iw_ib_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 	init_attr->cap.max_send_sge = qhp->attr.sq_max_sges;
 	init_attr->cap.max_recv_sge = qhp->attr.rq_max_sges;
 	init_attr->cap.max_inline_data = T4_MAX_SEND_INLINE;
-	init_attr->sq_sig_type = qhp->sq_sig_all ? IB_SIGNAL_ALL_WR : 0;
+	init_attr->sq_sig_type = qhp->sq_sig_all ? IB_SIGNAL_ALL_WR : IB_SIGNAL_REQ_WR;
 	return 0;
 }
 
@@ -2525,13 +2547,11 @@ static int alloc_srq_queue(struct c4iw_srq *srq, struct c4iw_dev_ucontext *uctx,
 		goto err;
 
 	if (!user) {
-		wq->sw_rq = kcalloc(wq->size, sizeof(*wq->sw_rq),
-				    GFP_KERNEL);
+		wq->sw_rq = kzalloc_objs(*wq->sw_rq, wq->size);
 		if (!wq->sw_rq)
 			goto err_put_qpid;
-		wq->pending_wrs = kcalloc(srq->wq.size,
-					  sizeof(*srq->wq.pending_wrs),
-					  GFP_KERNEL);
+		wq->pending_wrs = kzalloc_objs(*srq->wq.pending_wrs,
+					       srq->wq.size);
 		if (!wq->pending_wrs)
 			goto err_free_sw_rq;
 	}
@@ -2734,12 +2754,12 @@ int c4iw_create_srq(struct ib_srq *ib_srq, struct ib_srq_init_attr *attrs,
 		srq->flags = T4_SRQ_LIMIT_SUPPORT;
 
 	if (udata) {
-		srq_key_mm = kmalloc(sizeof(*srq_key_mm), GFP_KERNEL);
+		srq_key_mm = kmalloc_obj(*srq_key_mm);
 		if (!srq_key_mm) {
 			ret = -ENOMEM;
 			goto err_free_queue;
 		}
-		srq_db_key_mm = kmalloc(sizeof(*srq_db_key_mm), GFP_KERNEL);
+		srq_db_key_mm = kmalloc_obj(*srq_db_key_mm);
 		if (!srq_db_key_mm) {
 			ret = -ENOMEM;
 			goto err_free_srq_key_mm;
@@ -2761,12 +2781,19 @@ int c4iw_create_srq(struct ib_srq *ib_srq, struct ib_srq_init_attr *attrs,
 		if (ret)
 			goto err_free_srq_db_key_mm;
 		srq_key_mm->key = uresp.srq_key;
-		srq_key_mm->addr = virt_to_phys(srq->wq.queue);
+		srq_key_mm->addr = 0;
 		srq_key_mm->len = PAGE_ALIGN(srq->wq.memsize);
+		srq_key_mm->vaddr = srq->wq.queue;
+		srq_key_mm->dma_addr = srq->wq.dma_addr;
+		insert_flag_to_mmap(&rhp->rdev, srq_key_mm, srq_key_mm->addr);
 		insert_mmap(ucontext, srq_key_mm);
 		srq_db_key_mm->key = uresp.srq_db_gts_key;
 		srq_db_key_mm->addr = (u64)(unsigned long)srq->wq.bar2_pa;
 		srq_db_key_mm->len = PAGE_SIZE;
+		srq_db_key_mm->vaddr = NULL;
+		srq_db_key_mm->dma_addr = 0;
+		insert_flag_to_mmap(&rhp->rdev, srq_db_key_mm,
+				    srq_db_key_mm->addr);
 		insert_mmap(ucontext, srq_db_key_mm);
 	}
 

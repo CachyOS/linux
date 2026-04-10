@@ -9,16 +9,19 @@
 #define CREATE_TRACE_POINTS
 #include "diag/vhca_tracepoint.h"
 
-struct mlx5_vhca_state_notifier {
-	struct mlx5_core_dev *dev;
-	struct mlx5_nb nb;
-	struct blocking_notifier_head n_head;
-};
-
 struct mlx5_vhca_event_work {
 	struct work_struct work;
-	struct mlx5_vhca_state_notifier *notifier;
+	struct mlx5_core_dev *dev;
 	struct mlx5_vhca_state_event event;
+};
+
+struct mlx5_vhca_event_handler {
+	struct workqueue_struct *wq;
+};
+
+struct mlx5_vhca_events {
+	struct mlx5_core_dev *dev;
+	struct mlx5_vhca_event_handler handler[MLX5_DEV_MAX_WQS];
 };
 
 int mlx5_cmd_query_vhca_state(struct mlx5_core_dev *dev, u16 function_id, u32 *out, u32 outlen)
@@ -86,34 +89,39 @@ mlx5_vhca_event_notify(struct mlx5_core_dev *dev, struct mlx5_vhca_state_event *
 	mlx5_vhca_event_arm(dev, event->function_id);
 	trace_mlx5_sf_vhca_event(dev, event);
 
-	blocking_notifier_call_chain(&dev->priv.vhca_state_notifier->n_head, 0, event);
+	blocking_notifier_call_chain(&dev->priv.vhca_state_n_head, 0, event);
 }
 
 static void mlx5_vhca_state_work_handler(struct work_struct *_work)
 {
 	struct mlx5_vhca_event_work *work = container_of(_work, struct mlx5_vhca_event_work, work);
-	struct mlx5_vhca_state_notifier *notifier = work->notifier;
-	struct mlx5_core_dev *dev = notifier->dev;
 
-	mlx5_vhca_event_notify(dev, &work->event);
+	mlx5_vhca_event_notify(work->dev, &work->event);
 	kfree(work);
+}
+
+void mlx5_vhca_events_work_enqueue(struct mlx5_core_dev *dev, int idx, struct work_struct *work)
+{
+	queue_work(dev->priv.vhca_events->handler[idx].wq, work);
 }
 
 static int
 mlx5_vhca_state_change_notifier(struct notifier_block *nb, unsigned long type, void *data)
 {
-	struct mlx5_vhca_state_notifier *notifier =
-				mlx5_nb_cof(nb, struct mlx5_vhca_state_notifier, nb);
+	struct mlx5_core_dev *dev = mlx5_nb_cof(nb, struct mlx5_core_dev,
+						priv.vhca_state_nb);
 	struct mlx5_vhca_event_work *work;
 	struct mlx5_eqe *eqe = data;
+	int wq_idx;
 
-	work = kzalloc(sizeof(*work), GFP_ATOMIC);
+	work = kzalloc_obj(*work, GFP_ATOMIC);
 	if (!work)
 		return NOTIFY_DONE;
 	INIT_WORK(&work->work, &mlx5_vhca_state_work_handler);
-	work->notifier = notifier;
+	work->dev = dev;
 	work->event.function_id = be16_to_cpu(eqe->data.vhca_state.function_id);
-	mlx5_events_work_enqueue(notifier->dev, &work->work);
+	wq_idx = work->event.function_id % MLX5_DEV_MAX_WQS;
+	mlx5_vhca_events_work_enqueue(dev, wq_idx, &work->work);
 	return NOTIFY_OK;
 }
 
@@ -129,63 +137,99 @@ void mlx5_vhca_state_cap_handle(struct mlx5_core_dev *dev, void *set_hca_cap)
 	MLX5_SET(cmd_hca_cap, set_hca_cap, event_on_vhca_state_teardown_request, 1);
 }
 
+void mlx5_vhca_state_notifier_init(struct mlx5_core_dev *dev)
+{
+	BLOCKING_INIT_NOTIFIER_HEAD(&dev->priv.vhca_state_n_head);
+	MLX5_NB_INIT(&dev->priv.vhca_state_nb, mlx5_vhca_state_change_notifier,
+		     VHCA_STATE_CHANGE);
+}
+
 int mlx5_vhca_event_init(struct mlx5_core_dev *dev)
 {
-	struct mlx5_vhca_state_notifier *notifier;
+	char wq_name[MLX5_CMD_WQ_MAX_NAME];
+	struct mlx5_vhca_events *events;
+	int err, i;
 
 	if (!mlx5_vhca_event_supported(dev))
 		return 0;
 
-	notifier = kzalloc(sizeof(*notifier), GFP_KERNEL);
-	if (!notifier)
+	events = kzalloc_obj(*events);
+	if (!events)
 		return -ENOMEM;
 
-	dev->priv.vhca_state_notifier = notifier;
-	notifier->dev = dev;
-	BLOCKING_INIT_NOTIFIER_HEAD(&notifier->n_head);
-	MLX5_NB_INIT(&notifier->nb, mlx5_vhca_state_change_notifier, VHCA_STATE_CHANGE);
+	events->dev = dev;
+	for (i = 0; i < MLX5_DEV_MAX_WQS; i++) {
+		snprintf(wq_name, MLX5_CMD_WQ_MAX_NAME, "mlx5_vhca_event%d", i);
+		events->handler[i].wq = create_singlethread_workqueue(wq_name);
+		if (!events->handler[i].wq) {
+			err = -ENOMEM;
+			goto err_create_wq;
+		}
+	}
+	dev->priv.vhca_events = events;
+
 	return 0;
+
+err_create_wq:
+	for (--i; i >= 0; i--)
+		destroy_workqueue(events->handler[i].wq);
+	kfree(events);
+	return err;
+}
+
+void mlx5_vhca_event_work_queues_flush(struct mlx5_core_dev *dev)
+{
+	struct mlx5_vhca_events *vhca_events;
+	int i;
+
+	if (!mlx5_vhca_event_supported(dev))
+		return;
+
+	vhca_events = dev->priv.vhca_events;
+	for (i = 0; i < MLX5_DEV_MAX_WQS; i++)
+		flush_workqueue(vhca_events->handler[i].wq);
 }
 
 void mlx5_vhca_event_cleanup(struct mlx5_core_dev *dev)
 {
+	struct mlx5_vhca_events *vhca_events;
+	int i;
+
 	if (!mlx5_vhca_event_supported(dev))
 		return;
 
-	kfree(dev->priv.vhca_state_notifier);
-	dev->priv.vhca_state_notifier = NULL;
+	vhca_events = dev->priv.vhca_events;
+	for (i = 0; i < MLX5_DEV_MAX_WQS; i++)
+		destroy_workqueue(vhca_events->handler[i].wq);
+	kvfree(vhca_events);
 }
 
 void mlx5_vhca_event_start(struct mlx5_core_dev *dev)
 {
-	struct mlx5_vhca_state_notifier *notifier;
-
-	if (!dev->priv.vhca_state_notifier)
+	if (!mlx5_vhca_event_supported(dev))
 		return;
 
-	notifier = dev->priv.vhca_state_notifier;
-	mlx5_eq_notifier_register(dev, &notifier->nb);
+	mlx5_eq_notifier_register(dev, &dev->priv.vhca_state_nb);
 }
 
 void mlx5_vhca_event_stop(struct mlx5_core_dev *dev)
 {
-	struct mlx5_vhca_state_notifier *notifier;
-
-	if (!dev->priv.vhca_state_notifier)
+	if (!mlx5_vhca_event_supported(dev))
 		return;
 
-	notifier = dev->priv.vhca_state_notifier;
-	mlx5_eq_notifier_unregister(dev, &notifier->nb);
+	mlx5_eq_notifier_unregister(dev, &dev->priv.vhca_state_nb);
+
+	/* Flush workqueues of all pending events. */
+	mlx5_vhca_event_work_queues_flush(dev);
 }
 
 int mlx5_vhca_event_notifier_register(struct mlx5_core_dev *dev, struct notifier_block *nb)
 {
-	if (!dev->priv.vhca_state_notifier)
-		return -EOPNOTSUPP;
-	return blocking_notifier_chain_register(&dev->priv.vhca_state_notifier->n_head, nb);
+	return blocking_notifier_chain_register(&dev->priv.vhca_state_n_head,
+						nb);
 }
 
 void mlx5_vhca_event_notifier_unregister(struct mlx5_core_dev *dev, struct notifier_block *nb)
 {
-	blocking_notifier_chain_unregister(&dev->priv.vhca_state_notifier->n_head, nb);
+	blocking_notifier_chain_unregister(&dev->priv.vhca_state_n_head, nb);
 }

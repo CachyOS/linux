@@ -3,7 +3,7 @@
  * Copyright (c) 2010 Red Hat, Inc. All Rights Reserved.
  */
 
-#include "xfs.h"
+#include "xfs_platform.h"
 #include "xfs_fs.h"
 #include "xfs_format.h"
 #include "xfs_log_format.h"
@@ -16,8 +16,7 @@
 #include "xfs_log.h"
 #include "xfs_log_priv.h"
 #include "xfs_trace.h"
-
-struct workqueue_struct *xfs_discard_wq;
+#include "xfs_discard.h"
 
 /*
  * Allocate a new ticket. Failing to get a new ticket makes it really hard to
@@ -44,7 +43,18 @@ xlog_cil_ticket_alloc(
 	 * transaction overhead reservation from the first transaction commit.
 	 */
 	tic->t_curr_res = 0;
+	tic->t_iclog_hdrs = 0;
 	return tic;
+}
+
+static inline void
+xlog_cil_set_iclog_hdr_count(struct xfs_cil *cil)
+{
+	struct xlog	*log = cil->xc_log;
+
+	atomic_set(&cil->xc_iclog_hdrs,
+		   (XLOG_CIL_BLOCKING_SPACE_LIMIT(log) /
+			(log->l_iclog_size - log->l_iclog_hsize)));
 }
 
 /*
@@ -61,7 +71,7 @@ xlog_item_in_current_chkpt(
 	struct xfs_cil		*cil,
 	struct xfs_log_item	*lip)
 {
-	if (list_empty(&lip->li_cil))
+	if (test_bit(XLOG_CIL_EMPTY, &cil->xc_flags))
 		return false;
 
 	/*
@@ -90,11 +100,81 @@ xlog_cil_ctx_alloc(void)
 {
 	struct xfs_cil_ctx	*ctx;
 
-	ctx = kmem_zalloc(sizeof(*ctx), KM_NOFS);
+	ctx = kzalloc_obj(*ctx, GFP_KERNEL | __GFP_NOFAIL);
 	INIT_LIST_HEAD(&ctx->committing);
-	INIT_LIST_HEAD(&ctx->busy_extents);
+	INIT_LIST_HEAD(&ctx->busy_extents.extent_list);
+	INIT_LIST_HEAD(&ctx->log_items);
+	INIT_LIST_HEAD(&ctx->lv_chain);
 	INIT_WORK(&ctx->push_work, xlog_cil_push_work);
 	return ctx;
+}
+
+/*
+ * Aggregate the CIL per cpu structures into global counts, lists, etc and
+ * clear the percpu state ready for the next context to use. This is called
+ * from the push code with the context lock held exclusively, hence nothing else
+ * will be accessing or modifying the per-cpu counters.
+ */
+static void
+xlog_cil_push_pcp_aggregate(
+	struct xfs_cil		*cil,
+	struct xfs_cil_ctx	*ctx)
+{
+	struct xlog_cil_pcp	*cilpcp;
+	int			cpu;
+
+	for_each_cpu(cpu, &ctx->cil_pcpmask) {
+		cilpcp = per_cpu_ptr(cil->xc_pcp, cpu);
+
+		ctx->ticket->t_curr_res += cilpcp->space_reserved;
+		cilpcp->space_reserved = 0;
+
+		if (!list_empty(&cilpcp->busy_extents)) {
+			list_splice_init(&cilpcp->busy_extents,
+					&ctx->busy_extents.extent_list);
+		}
+		if (!list_empty(&cilpcp->log_items))
+			list_splice_init(&cilpcp->log_items, &ctx->log_items);
+
+		/*
+		 * We're in the middle of switching cil contexts.  Reset the
+		 * counter we use to detect when the current context is nearing
+		 * full.
+		 */
+		cilpcp->space_used = 0;
+	}
+}
+
+/*
+ * Aggregate the CIL per-cpu space used counters into the global atomic value.
+ * This is called when the per-cpu counter aggregation will first pass the soft
+ * limit threshold so we can switch to atomic counter aggregation for accurate
+ * detection of hard limit traversal.
+ */
+static void
+xlog_cil_insert_pcp_aggregate(
+	struct xfs_cil		*cil,
+	struct xfs_cil_ctx	*ctx)
+{
+	int			cpu;
+	int			count = 0;
+
+	/* Trigger atomic updates then aggregate only for the first caller */
+	if (!test_and_clear_bit(XLOG_CIL_PCP_SPACE, &cil->xc_flags))
+		return;
+
+	/*
+	 * We can race with other cpus setting cil_pcpmask.  However, we've
+	 * atomically cleared PCP_SPACE which forces other threads to add to
+	 * the global space used count.  cil_pcpmask is a superset of cilpcp
+	 * structures that could have a nonzero space_used.
+	 */
+	for_each_cpu(cpu, &ctx->cil_pcpmask) {
+		struct xlog_cil_pcp	*cilpcp = per_cpu_ptr(cil->xc_pcp, cpu);
+
+		count += xchg(&cilpcp->space_used, 0);
+	}
+	atomic_add(count, &ctx->space_used);
 }
 
 static void
@@ -102,6 +182,9 @@ xlog_cil_ctx_switch(
 	struct xfs_cil		*cil,
 	struct xfs_cil_ctx	*ctx)
 {
+	xlog_cil_set_iclog_hdr_count(cil);
+	set_bit(XLOG_CIL_EMPTY, &cil->xc_flags);
+	set_bit(XLOG_CIL_PCP_SPACE, &cil->xc_flags);
 	ctx->sequence = ++cil->xc_current_sequence;
 	ctx->cil = cil;
 	cil->xc_ctx = ctx;
@@ -123,6 +206,7 @@ xlog_cil_init_post_recovery(
 {
 	log->l_cilp->xc_ctx->ticket = xlog_cil_ticket_alloc(log);
 	log->l_cilp->xc_ctx->sequence = 1;
+	xlog_cil_set_iclog_hdr_count(log->l_cilp);
 }
 
 static inline int
@@ -191,7 +275,7 @@ xlog_cil_alloc_shadow_bufs(
 		struct xfs_log_vec *lv;
 		int	niovecs = 0;
 		int	nbytes = 0;
-		int	buf_size;
+		int	alloc_size;
 		bool	ordered = false;
 
 		/* Skip items which aren't dirty in this transaction. */
@@ -225,23 +309,21 @@ xlog_cil_alloc_shadow_bufs(
 		 * Then round nbytes up to 64-bit alignment so that the initial
 		 * buffer alignment is easy to calculate and verify.
 		 */
-		nbytes += niovecs *
-			(sizeof(uint64_t) + sizeof(struct xlog_op_header));
-		nbytes = round_up(nbytes, sizeof(uint64_t));
+		nbytes = xlog_item_space(niovecs, nbytes);
 
 		/*
 		 * The data buffer needs to start 64-bit aligned, so round up
 		 * that space to ensure we can align it appropriately and not
 		 * overrun the buffer.
 		 */
-		buf_size = nbytes + xlog_cil_iovec_space(niovecs);
+		alloc_size = nbytes + xlog_cil_iovec_space(niovecs);
 
 		/*
 		 * if we have no shadow buffer, or it is too small, we need to
 		 * reallocate it.
 		 */
 		if (!lip->li_lv_shadow ||
-		    buf_size > lip->li_lv_shadow->lv_size) {
+		    alloc_size > lip->li_lv_shadow->lv_alloc_size) {
 			/*
 			 * We free and allocate here as a realloc would copy
 			 * unnecessary data. We don't use kvzalloc() for the
@@ -249,15 +331,16 @@ xlog_cil_alloc_shadow_bufs(
 			 * the buffer, only the log vector header and the iovec
 			 * storage.
 			 */
-			kmem_free(lip->li_lv_shadow);
-			lv = xlog_kvmalloc(buf_size);
+			kvfree(lip->li_lv_shadow);
+			lv = xlog_kvmalloc(alloc_size);
 
 			memset(lv, 0, xlog_cil_iovec_space(niovecs));
 
+			INIT_LIST_HEAD(&lv->lv_list);
 			lv->lv_item = lip;
-			lv->lv_size = buf_size;
+			lv->lv_alloc_size = alloc_size;
 			if (ordered)
-				lv->lv_buf_len = XFS_LOG_VEC_ORDERED;
+				lv->lv_buf_used = XFS_LOG_VEC_ORDERED;
 			else
 				lv->lv_iovecp = (struct xfs_log_iovec *)&lv[1];
 			lip->li_lv_shadow = lv;
@@ -265,11 +348,10 @@ xlog_cil_alloc_shadow_bufs(
 			/* same or smaller, optimise common overwrite case */
 			lv = lip->li_lv_shadow;
 			if (ordered)
-				lv->lv_buf_len = XFS_LOG_VEC_ORDERED;
+				lv->lv_buf_used = XFS_LOG_VEC_ORDERED;
 			else
-				lv->lv_buf_len = 0;
+				lv->lv_buf_used = 0;
 			lv->lv_bytes = 0;
-			lv->lv_next = NULL;
 		}
 
 		/* Ensure the lv is set up according to ->iop_size */
@@ -288,30 +370,30 @@ xlog_cil_alloc_shadow_bufs(
 STATIC void
 xfs_cil_prepare_item(
 	struct xlog		*log,
+	struct xfs_log_item	*lip,
 	struct xfs_log_vec	*lv,
-	struct xfs_log_vec	*old_lv,
 	int			*diff_len)
 {
 	/* Account for the new LV being passed in */
-	if (lv->lv_buf_len != XFS_LOG_VEC_ORDERED)
+	if (lv->lv_buf_used != XFS_LOG_VEC_ORDERED)
 		*diff_len += lv->lv_bytes;
 
 	/*
 	 * If there is no old LV, this is the first time we've seen the item in
 	 * this CIL context and so we need to pin it. If we are replacing the
-	 * old_lv, then remove the space it accounts for and make it the shadow
+	 * old lv, then remove the space it accounts for and make it the shadow
 	 * buffer for later freeing. In both cases we are now switching to the
 	 * shadow buffer, so update the pointer to it appropriately.
 	 */
-	if (!old_lv) {
+	if (!lip->li_lv) {
 		if (lv->lv_item->li_ops->iop_pin)
 			lv->lv_item->li_ops->iop_pin(lv->lv_item);
 		lv->lv_item->li_lv_shadow = NULL;
-	} else if (old_lv != lv) {
-		ASSERT(lv->lv_buf_len != XFS_LOG_VEC_ORDERED);
+	} else if (lip->li_lv != lv) {
+		ASSERT(lv->lv_buf_used != XFS_LOG_VEC_ORDERED);
 
-		*diff_len -= old_lv->lv_bytes;
-		lv->lv_item->li_lv_shadow = old_lv;
+		*diff_len -= lip->li_lv->lv_bytes;
+		lv->lv_item->li_lv_shadow = lip->li_lv;
 	}
 
 	/* attach new log vector to log item */
@@ -325,6 +407,102 @@ xfs_cil_prepare_item(
 	 */
 	if (!lv->lv_item->li_seq)
 		lv->lv_item->li_seq = log->l_cilp->xc_ctx->sequence;
+}
+
+struct xlog_format_buf {
+	struct xfs_log_vec	*lv;
+	unsigned int		idx;
+};
+
+/*
+ * We need to make sure the buffer pointer returned is naturally aligned for the
+ * biggest basic data type we put into it. We have already accounted for this
+ * padding when sizing the buffer.
+ *
+ * However, this padding does not get written into the log, and hence we have to
+ * track the space used by the log vectors separately to prevent log space hangs
+ * due to inaccurate accounting (i.e. a leak) of the used log space through the
+ * CIL context ticket.
+ *
+ * We also add space for the xlog_op_header that describes this region in the
+ * log. This prepends the data region we return to the caller to copy their data
+ * into, so do all the static initialisation of the ophdr now. Because the ophdr
+ * is not 8 byte aligned, we have to be careful to ensure that we align the
+ * start of the buffer such that the region we return to the call is 8 byte
+ * aligned and packed against the tail of the ophdr.
+ */
+void *
+xlog_format_start(
+	struct xlog_format_buf	*lfb,
+	uint16_t		type)
+{
+	struct xfs_log_vec	*lv = lfb->lv;
+	struct xfs_log_iovec	*vec = &lv->lv_iovecp[lfb->idx];
+	struct xlog_op_header	*oph;
+	uint32_t		len;
+	void			*buf;
+
+	ASSERT(lfb->idx < lv->lv_niovecs);
+
+	len = lv->lv_buf_used + sizeof(struct xlog_op_header);
+	if (!IS_ALIGNED(len, sizeof(uint64_t))) {
+		lv->lv_buf_used = round_up(len, sizeof(uint64_t)) -
+					sizeof(struct xlog_op_header);
+	}
+
+	vec->i_type = type;
+	vec->i_addr = lv->lv_buf + lv->lv_buf_used;
+
+	oph = vec->i_addr;
+	oph->oh_clientid = XFS_TRANSACTION;
+	oph->oh_res2 = 0;
+	oph->oh_flags = 0;
+
+	buf = vec->i_addr + sizeof(struct xlog_op_header);
+	ASSERT(IS_ALIGNED((unsigned long)buf, sizeof(uint64_t)));
+	return buf;
+}
+
+void
+xlog_format_commit(
+	struct xlog_format_buf	*lfb,
+	unsigned int		data_len)
+{
+	struct xfs_log_vec	*lv = lfb->lv;
+	struct xfs_log_iovec	*vec = &lv->lv_iovecp[lfb->idx];
+	struct xlog_op_header	*oph = vec->i_addr;
+	int			len;
+
+	/*
+	 * Always round up the length to the correct alignment so callers don't
+	 * need to know anything about this log vec layout requirement. This
+	 * means we have to zero the area the data to be written does not cover.
+	 * This is complicated by fact the payload region is offset into the
+	 * logvec region by the opheader that tracks the payload.
+	 */
+	len = xlog_calc_iovec_len(data_len);
+	if (len - data_len != 0) {
+		char	*buf = vec->i_addr + sizeof(struct xlog_op_header);
+
+		memset(buf + data_len, 0, len - data_len);
+	}
+
+	/*
+	 * The opheader tracks aligned payload length, whilst the logvec tracks
+	 * the overall region length.
+	 */
+	oph->oh_len = cpu_to_be32(len);
+
+	len += sizeof(struct xlog_op_header);
+	lv->lv_buf_used += len;
+	lv->lv_bytes += len;
+	vec->i_len = len;
+
+	/* Catch buffer overruns */
+	ASSERT((void *)lv->lv_buf + lv->lv_bytes <=
+		(void *)lv + lv->lv_alloc_size);
+
+	lfb->idx++;
 }
 
 /*
@@ -370,10 +548,9 @@ xlog_cil_insert_format_items(
 	}
 
 	list_for_each_entry(lip, &tp->t_items, li_trans) {
-		struct xfs_log_vec *lv;
-		struct xfs_log_vec *old_lv = NULL;
-		struct xfs_log_vec *shadow;
-		bool	ordered = false;
+		struct xfs_log_vec *lv = lip->li_lv;
+		struct xfs_log_vec *shadow = lip->li_lv_shadow;
+		struct xlog_format_buf lfb = { };
 
 		/* Skip items which aren't dirty in this transaction. */
 		if (!test_bit(XFS_LI_DIRTY, &lip->li_flags))
@@ -383,23 +560,23 @@ xlog_cil_insert_format_items(
 		 * The formatting size information is already attached to
 		 * the shadow lv on the log item.
 		 */
-		shadow = lip->li_lv_shadow;
-		if (shadow->lv_buf_len == XFS_LOG_VEC_ORDERED)
-			ordered = true;
+		if (shadow->lv_buf_used == XFS_LOG_VEC_ORDERED) {
+			if (!lv) {
+				lv = shadow;
+				lv->lv_item = lip;
+			}
+			ASSERT(shadow->lv_alloc_size == lv->lv_alloc_size);
+			xfs_cil_prepare_item(log, lip, lv, diff_len);
+			continue;
+		}
 
 		/* Skip items that do not have any vectors for writing */
-		if (!shadow->lv_niovecs && !ordered)
+		if (!shadow->lv_niovecs)
 			continue;
 
 		/* compare to existing item size */
-		old_lv = lip->li_lv;
-		if (lip->li_lv && shadow->lv_size <= lip->li_lv->lv_size) {
+		if (lv && shadow->lv_alloc_size <= lv->lv_alloc_size) {
 			/* same or smaller, optimise common overwrite case */
-			lv = lip->li_lv;
-			lv->lv_next = NULL;
-
-			if (ordered)
-				goto insert;
 
 			/*
 			 * set the item up as though it is a new insertion so
@@ -411,7 +588,7 @@ xlog_cil_insert_format_items(
 			lv->lv_niovecs = shadow->lv_niovecs;
 
 			/* reset the lv buffer information for new formatting */
-			lv->lv_buf_len = 0;
+			lv->lv_buf_used = 0;
 			lv->lv_bytes = 0;
 			lv->lv_buf = (char *)lv +
 					xlog_cil_iovec_space(lv->lv_niovecs);
@@ -419,18 +596,30 @@ xlog_cil_insert_format_items(
 			/* switch to shadow buffer! */
 			lv = shadow;
 			lv->lv_item = lip;
-			if (ordered) {
-				/* track as an ordered logvec */
-				ASSERT(lip->li_lv == NULL);
-				goto insert;
-			}
 		}
 
+		lfb.lv = lv;
 		ASSERT(IS_ALIGNED((unsigned long)lv->lv_buf, sizeof(uint64_t)));
-		lip->li_ops->iop_format(lip, lv);
-insert:
-		xfs_cil_prepare_item(log, lv, old_lv, diff_len);
+		lip->li_ops->iop_format(lip, &lfb);
+		xfs_cil_prepare_item(log, lip, lv, diff_len);
 	}
+}
+
+/*
+ * The use of lockless waitqueue_active() requires that the caller has
+ * serialised itself against the wakeup call in xlog_cil_push_work(). That
+ * can be done by either holding the push lock or the context lock.
+ */
+static inline bool
+xlog_cil_over_hard_limit(
+	struct xlog	*log,
+	int32_t		space_used)
+{
+	if (waitqueue_active(&log->l_cilp->xc_push_wait))
+		return true;
+	if (space_used >= XLOG_CIL_BLOCKING_SPACE_LIMIT(log))
+		return true;
+	return false;
 }
 
 /*
@@ -450,8 +639,11 @@ xlog_cil_insert_items(
 	struct xfs_cil_ctx	*ctx = cil->xc_ctx;
 	struct xfs_log_item	*lip;
 	int			len = 0;
-	int			iclog_space;
 	int			iovhdr_res = 0, split_res = 0, ctx_res = 0;
+	int			space_used;
+	int			order;
+	unsigned int		cpu_nr;
+	struct xlog_cil_pcp	*cilpcp;
 
 	ASSERT(tp);
 
@@ -461,46 +653,117 @@ xlog_cil_insert_items(
 	 */
 	xlog_cil_insert_format_items(log, tp, &len);
 
-	spin_lock(&cil->xc_cil_lock);
-
-	/* attach the transaction to the CIL if it has any busy extents */
-	if (!list_empty(&tp->t_busy))
-		list_splice_init(&tp->t_busy, &ctx->busy_extents);
+	/*
+	 * Subtract the space released by intent cancelation from the space we
+	 * consumed so that we remove it from the CIL space and add it back to
+	 * the current transaction reservation context.
+	 */
+	len -= released_space;
 
 	/*
-	 * Now transfer enough transaction reservation to the context ticket
-	 * for the checkpoint. The context ticket is special - the unit
-	 * reservation has to grow as well as the current reservation as we
-	 * steal from tickets so we can correctly determine the space used
-	 * during the transaction commit.
+	 * Grab the per-cpu pointer for the CIL before we start any accounting.
+	 * That ensures that we are running with pre-emption disabled and so we
+	 * can't be scheduled away between split sample/update operations that
+	 * are done without outside locking to serialise them.
 	 */
-	if (ctx->ticket->t_curr_res == 0) {
-		ctx_res = ctx->ticket->t_unit_res;
-		ctx->ticket->t_curr_res = ctx_res;
-		tp->t_ticket->t_curr_res -= ctx_res;
-	}
+	cpu_nr = get_cpu();
+	cilpcp = this_cpu_ptr(cil->xc_pcp);
 
-	/* do we need space for more log record headers? */
-	iclog_space = log->l_iclog_size - log->l_iclog_hsize;
-	if (len > 0 && (ctx->space_used / iclog_space !=
-				(ctx->space_used + len) / iclog_space)) {
-		split_res = (len + iclog_space - 1) / iclog_space;
-		/* need to take into account split region headers, too */
-		split_res *= log->l_iclog_hsize + sizeof(struct xlog_op_header);
-		ctx->ticket->t_unit_res += split_res;
-		ctx->ticket->t_curr_res += split_res;
-		tp->t_ticket->t_curr_res -= split_res;
-		ASSERT(tp->t_ticket->t_curr_res >= len);
+	/* Tell the future push that there was work added by this CPU. */
+	if (!cpumask_test_cpu(cpu_nr, &ctx->cil_pcpmask))
+		cpumask_test_and_set_cpu(cpu_nr, &ctx->cil_pcpmask);
+
+	/*
+	 * We need to take the CIL checkpoint unit reservation on the first
+	 * commit into the CIL. Test the XLOG_CIL_EMPTY bit first so we don't
+	 * unnecessarily do an atomic op in the fast path here. We can clear the
+	 * XLOG_CIL_EMPTY bit as we are under the xc_ctx_lock here and that
+	 * needs to be held exclusively to reset the XLOG_CIL_EMPTY bit.
+	 */
+	if (test_bit(XLOG_CIL_EMPTY, &cil->xc_flags) &&
+	    test_and_clear_bit(XLOG_CIL_EMPTY, &cil->xc_flags))
+		ctx_res = ctx->ticket->t_unit_res;
+
+	/*
+	 * Check if we need to steal iclog headers. atomic_read() is not a
+	 * locked atomic operation, so we can check the value before we do any
+	 * real atomic ops in the fast path. If we've already taken the CIL unit
+	 * reservation from this commit, we've already got one iclog header
+	 * space reserved so we have to account for that otherwise we risk
+	 * overrunning the reservation on this ticket.
+	 *
+	 * If the CIL is already at the hard limit, we might need more header
+	 * space that originally reserved. So steal more header space from every
+	 * commit that occurs once we are over the hard limit to ensure the CIL
+	 * push won't run out of reservation space.
+	 *
+	 * This can steal more than we need, but that's OK.
+	 *
+	 * The cil->xc_ctx_lock provides the serialisation necessary for safely
+	 * calling xlog_cil_over_hard_limit() in this context.
+	 */
+	space_used = atomic_read(&ctx->space_used) + cilpcp->space_used + len;
+	if (atomic_read(&cil->xc_iclog_hdrs) > 0 ||
+	    xlog_cil_over_hard_limit(log, space_used)) {
+		split_res = log->l_iclog_hsize +
+					sizeof(struct xlog_op_header);
+		if (ctx_res)
+			ctx_res += split_res * (tp->t_ticket->t_iclog_hdrs - 1);
+		else
+			ctx_res = split_res * tp->t_ticket->t_iclog_hdrs;
+		atomic_sub(tp->t_ticket->t_iclog_hdrs, &cil->xc_iclog_hdrs);
 	}
-	tp->t_ticket->t_curr_res -= len;
-	tp->t_ticket->t_curr_res += released_space;
-	ctx->space_used += len;
-	ctx->space_used -= released_space;
+	cilpcp->space_reserved += ctx_res;
+
+	/*
+	 * Accurately account when over the soft limit, otherwise fold the
+	 * percpu count into the global count if over the per-cpu threshold.
+	 */
+	if (!test_bit(XLOG_CIL_PCP_SPACE, &cil->xc_flags)) {
+		atomic_add(len, &ctx->space_used);
+	} else if (cilpcp->space_used + len >
+			(XLOG_CIL_SPACE_LIMIT(log) / num_online_cpus())) {
+		space_used = atomic_add_return(cilpcp->space_used + len,
+						&ctx->space_used);
+		cilpcp->space_used = 0;
+
+		/*
+		 * If we just transitioned over the soft limit, we need to
+		 * transition to the global atomic counter.
+		 */
+		if (space_used >= XLOG_CIL_SPACE_LIMIT(log))
+			xlog_cil_insert_pcp_aggregate(cil, ctx);
+	} else {
+		cilpcp->space_used += len;
+	}
+	/* attach the transaction to the CIL if it has any busy extents */
+	if (!list_empty(&tp->t_busy))
+		list_splice_init(&tp->t_busy, &cilpcp->busy_extents);
+
+	/*
+	 * Now update the order of everything modified in the transaction
+	 * and insert items into the CIL if they aren't already there.
+	 * We do this here so we only need to take the CIL lock once during
+	 * the transaction commit.
+	 */
+	order = atomic_inc_return(&ctx->order_id);
+	list_for_each_entry(lip, &tp->t_items, li_trans) {
+		/* Skip items which aren't dirty in this transaction. */
+		if (!test_bit(XFS_LI_DIRTY, &lip->li_flags))
+			continue;
+
+		lip->li_order_id = order;
+		if (!list_empty(&lip->li_cil))
+			continue;
+		list_add_tail(&lip->li_cil, &cilpcp->log_items);
+	}
+	put_cpu();
 
 	/*
 	 * If we've overrun the reservation, dump the tx details before we move
 	 * the log items. Shutdown is imminent...
 	 */
+	tp->t_ticket->t_curr_res -= ctx_res + len;
 	if (WARN_ON(tp->t_ticket->t_curr_res < 0)) {
 		xfs_warn(log->l_mp, "Transaction log reservation overrun:");
 		xfs_warn(log->l_mp,
@@ -510,115 +773,197 @@ xlog_cil_insert_items(
 			 split_res);
 		xfs_warn(log->l_mp, "  ctx ticket: %d bytes", ctx_res);
 		xlog_print_trans(tp);
+		xlog_force_shutdown(log, SHUTDOWN_LOG_IO_ERROR);
 	}
+}
+
+static inline void
+xlog_cil_ail_insert_batch(
+	struct xfs_ail		*ailp,
+	struct xfs_ail_cursor	*cur,
+	struct xfs_log_item	**log_items,
+	int			nr_items,
+	xfs_lsn_t		commit_lsn)
+{
+	int	i;
+
+	spin_lock(&ailp->ail_lock);
+	/* xfs_trans_ail_update_bulk drops ailp->ail_lock */
+	xfs_trans_ail_update_bulk(ailp, cur, log_items, nr_items, commit_lsn);
+
+	for (i = 0; i < nr_items; i++) {
+		struct xfs_log_item *lip = log_items[i];
+
+		if (lip->li_ops->iop_unpin)
+			lip->li_ops->iop_unpin(lip, 0);
+	}
+}
+
+/*
+ * Take the checkpoint's log vector chain of items and insert the attached log
+ * items into the AIL. This uses bulk insertion techniques to minimise AIL lock
+ * traffic.
+ *
+ * The AIL tracks log items via the start record LSN of the checkpoint,
+ * not the commit record LSN. This is because we can pipeline multiple
+ * checkpoints, and so the start record of checkpoint N+1 can be
+ * written before the commit record of checkpoint N. i.e:
+ *
+ *   start N			commit N
+ *	+-------------+------------+----------------+
+ *		  start N+1			commit N+1
+ *
+ * The tail of the log cannot be moved to the LSN of commit N when all
+ * the items of that checkpoint are written back, because then the
+ * start record for N+1 is no longer in the active portion of the log
+ * and recovery will fail/corrupt the filesystem.
+ *
+ * Hence when all the log items in checkpoint N are written back, the
+ * tail of the log most now only move as far forwards as the start LSN
+ * of checkpoint N+1.
+ *
+ * If we are called with the aborted flag set, it is because a log write during
+ * a CIL checkpoint commit has failed. In this case, all the items in the
+ * checkpoint have already gone through iop_committed and iop_committing, which
+ * means that checkpoint commit abort handling is treated exactly the same as an
+ * iclog write error even though we haven't started any IO yet. Hence in this
+ * case all we need to do is iop_committed processing, followed by an
+ * iop_unpin(aborted) call.
+ *
+ * The AIL cursor is used to optimise the insert process. If commit_lsn is not
+ * at the end of the AIL, the insert cursor avoids the need to walk the AIL to
+ * find the insertion point on every xfs_log_item_batch_insert() call. This
+ * saves a lot of needless list walking and is a net win, even though it
+ * slightly increases that amount of AIL lock traffic to set it up and tear it
+ * down.
+ */
+static void
+xlog_cil_ail_insert(
+	struct xfs_cil_ctx	*ctx,
+	bool			aborted)
+{
+#define LOG_ITEM_BATCH_SIZE	32
+	struct xfs_ail		*ailp = ctx->cil->xc_log->l_ailp;
+	struct xfs_log_item	*log_items[LOG_ITEM_BATCH_SIZE];
+	struct xfs_log_vec	*lv;
+	struct xfs_ail_cursor	cur;
+	xfs_lsn_t		old_head;
+	int			i = 0;
 
 	/*
-	 * Now (re-)position everything modified at the tail of the CIL.
-	 * We do this here so we only need to take the CIL lock once during
-	 * the transaction commit.
+	 * Update the AIL head LSN with the commit record LSN of this
+	 * checkpoint. As iclogs are always completed in order, this should
+	 * always be the same (as iclogs can contain multiple commit records) or
+	 * higher LSN than the current head. We do this before insertion of the
+	 * items so that log space checks during insertion will reflect the
+	 * space that this checkpoint has already consumed.  We call
+	 * xfs_ail_update_finish() so that tail space and space-based wakeups
+	 * will be recalculated appropriately.
 	 */
-	list_for_each_entry(lip, &tp->t_items, li_trans) {
+	ASSERT(XFS_LSN_CMP(ctx->commit_lsn, ailp->ail_head_lsn) >= 0 ||
+			aborted);
+	spin_lock(&ailp->ail_lock);
+	xfs_trans_ail_cursor_last(ailp, &cur, ctx->start_lsn);
+	old_head = ailp->ail_head_lsn;
+	ailp->ail_head_lsn = ctx->commit_lsn;
+	/* xfs_ail_update_finish() drops the ail_lock */
+	xfs_ail_update_finish(ailp, NULLCOMMITLSN);
 
-		/* Skip items which aren't dirty in this transaction. */
-		if (!test_bit(XFS_LI_DIRTY, &lip->li_flags))
+	/*
+	 * We move the AIL head forwards to account for the space used in the
+	 * log before we remove that space from the grant heads. This prevents a
+	 * transient condition where reservation space appears to become
+	 * available on return, only for it to disappear again immediately as
+	 * the AIL head update accounts in the log tail space.
+	 */
+	smp_wmb();	/* paired with smp_rmb in xlog_grant_space_left */
+	xlog_grant_return_space(ailp->ail_log, old_head, ailp->ail_head_lsn);
+
+	/* unpin all the log items */
+	list_for_each_entry(lv, &ctx->lv_chain, lv_list) {
+		struct xfs_log_item	*lip = lv->lv_item;
+		xfs_lsn_t		item_lsn;
+
+		if (aborted) {
+			trace_xlog_ail_insert_abort(lip);
+			set_bit(XFS_LI_ABORTED, &lip->li_flags);
+		}
+
+		if (lip->li_ops->flags & XFS_ITEM_RELEASE_WHEN_COMMITTED) {
+			lip->li_ops->iop_release(lip);
+			continue;
+		}
+
+		if (lip->li_ops->iop_committed)
+			item_lsn = lip->li_ops->iop_committed(lip,
+					ctx->start_lsn);
+		else
+			item_lsn = ctx->start_lsn;
+
+		/* item_lsn of -1 means the item needs no further processing */
+		if (XFS_LSN_CMP(item_lsn, (xfs_lsn_t)-1) == 0)
 			continue;
 
 		/*
-		 * Only move the item if it isn't already at the tail. This is
-		 * to prevent a transient list_empty() state when reinserting
-		 * an item that is already the only item in the CIL.
+		 * if we are aborting the operation, no point in inserting the
+		 * object into the AIL as we are in a shutdown situation.
 		 */
-		if (!list_is_last(&lip->li_cil, &cil->xc_cil))
-			list_move_tail(&lip->li_cil, &cil->xc_cil);
+		if (aborted) {
+			ASSERT(xlog_is_shutdown(ailp->ail_log));
+			if (lip->li_ops->iop_unpin)
+				lip->li_ops->iop_unpin(lip, 1);
+			continue;
+		}
+
+		if (item_lsn != ctx->start_lsn) {
+
+			/*
+			 * Not a bulk update option due to unusual item_lsn.
+			 * Push into AIL immediately, rechecking the lsn once
+			 * we have the ail lock. Then unpin the item. This does
+			 * not affect the AIL cursor the bulk insert path is
+			 * using.
+			 */
+			spin_lock(&ailp->ail_lock);
+			if (XFS_LSN_CMP(item_lsn, lip->li_lsn) > 0)
+				xfs_trans_ail_update(ailp, lip, item_lsn);
+			else
+				spin_unlock(&ailp->ail_lock);
+			if (lip->li_ops->iop_unpin)
+				lip->li_ops->iop_unpin(lip, 0);
+			continue;
+		}
+
+		/* Item is a candidate for bulk AIL insert.  */
+		log_items[i++] = lv->lv_item;
+		if (i >= LOG_ITEM_BATCH_SIZE) {
+			xlog_cil_ail_insert_batch(ailp, &cur, log_items,
+					LOG_ITEM_BATCH_SIZE, ctx->start_lsn);
+			i = 0;
+		}
 	}
 
-	spin_unlock(&cil->xc_cil_lock);
+	/* make sure we insert the remainder! */
+	if (i)
+		xlog_cil_ail_insert_batch(ailp, &cur, log_items, i,
+				ctx->start_lsn);
 
-	if (tp->t_ticket->t_curr_res < 0)
-		xlog_force_shutdown(log, SHUTDOWN_LOG_IO_ERROR);
+	spin_lock(&ailp->ail_lock);
+	xfs_trans_ail_cursor_done(&cur);
+	spin_unlock(&ailp->ail_lock);
 }
 
 static void
 xlog_cil_free_logvec(
-	struct xfs_log_vec	*log_vector)
+	struct list_head	*lv_chain)
 {
 	struct xfs_log_vec	*lv;
 
-	for (lv = log_vector; lv; ) {
-		struct xfs_log_vec *next = lv->lv_next;
-		kmem_free(lv);
-		lv = next;
+	while (!list_empty(lv_chain)) {
+		lv = list_first_entry(lv_chain, struct xfs_log_vec, lv_list);
+		list_del_init(&lv->lv_list);
+		kvfree(lv);
 	}
-}
-
-static void
-xlog_discard_endio_work(
-	struct work_struct	*work)
-{
-	struct xfs_cil_ctx	*ctx =
-		container_of(work, struct xfs_cil_ctx, discard_endio_work);
-	struct xfs_mount	*mp = ctx->cil->xc_log->l_mp;
-
-	xfs_extent_busy_clear(mp, &ctx->busy_extents, false);
-	kmem_free(ctx);
-}
-
-/*
- * Queue up the actual completion to a thread to avoid IRQ-safe locking for
- * pagb_lock.  Note that we need a unbounded workqueue, otherwise we might
- * get the execution delayed up to 30 seconds for weird reasons.
- */
-static void
-xlog_discard_endio(
-	struct bio		*bio)
-{
-	struct xfs_cil_ctx	*ctx = bio->bi_private;
-
-	INIT_WORK(&ctx->discard_endio_work, xlog_discard_endio_work);
-	queue_work(xfs_discard_wq, &ctx->discard_endio_work);
-	bio_put(bio);
-}
-
-static void
-xlog_discard_busy_extents(
-	struct xfs_mount	*mp,
-	struct xfs_cil_ctx	*ctx)
-{
-	struct list_head	*list = &ctx->busy_extents;
-	struct xfs_extent_busy	*busyp;
-	struct bio		*bio = NULL;
-	struct blk_plug		plug;
-	int			error = 0;
-
-	ASSERT(xfs_has_discard(mp));
-
-	blk_start_plug(&plug);
-	list_for_each_entry(busyp, list, list) {
-		trace_xfs_discard_extent(mp, busyp->agno, busyp->bno,
-					 busyp->length);
-
-		error = __blkdev_issue_discard(mp->m_ddev_targp->bt_bdev,
-				XFS_AGB_TO_DADDR(mp, busyp->agno, busyp->bno),
-				XFS_FSB_TO_BB(mp, busyp->length),
-				GFP_NOFS, &bio);
-		if (error && error != -EOPNOTSUPP) {
-			xfs_info(mp,
-	 "discard failed for extent [0x%llx,%u], error %d",
-				 (unsigned long long)busyp->bno,
-				 busyp->length,
-				 error);
-			break;
-		}
-	}
-
-	if (bio) {
-		bio->bi_private = ctx;
-		bio->bi_end_io = xlog_discard_endio;
-		submit_bio(bio);
-	} else {
-		xlog_discard_endio_work(&ctx->discard_endio_work);
-	}
-	blk_finish_plug(&plug);
 }
 
 /*
@@ -647,23 +992,25 @@ xlog_cil_committed(
 		spin_unlock(&ctx->cil->xc_push_lock);
 	}
 
-	xfs_trans_committed_bulk(ctx->cil->xc_log->l_ailp, ctx->lv_chain,
-					ctx->start_lsn, abort);
+	xlog_cil_ail_insert(ctx, abort);
 
-	xfs_extent_busy_sort(&ctx->busy_extents);
-	xfs_extent_busy_clear(mp, &ctx->busy_extents,
+	xfs_extent_busy_sort(&ctx->busy_extents.extent_list);
+	xfs_extent_busy_clear(&ctx->busy_extents.extent_list,
 			      xfs_has_discard(mp) && !abort);
 
 	spin_lock(&ctx->cil->xc_push_lock);
 	list_del(&ctx->committing);
 	spin_unlock(&ctx->cil->xc_push_lock);
 
-	xlog_cil_free_logvec(ctx->lv_chain);
+	xlog_cil_free_logvec(&ctx->lv_chain);
 
-	if (!list_empty(&ctx->busy_extents))
-		xlog_discard_busy_extents(mp, ctx);
-	else
-		kmem_free(ctx);
+	if (!list_empty(&ctx->busy_extents.extent_list)) {
+		ctx->busy_extents.owner = ctx;
+		xfs_discard_extents(mp, &ctx->busy_extents);
+		return;
+	}
+
+	kfree(ctx);
 }
 
 void
@@ -691,7 +1038,7 @@ xlog_cil_set_ctx_write_state(
 	struct xlog_in_core	*iclog)
 {
 	struct xfs_cil		*cil = ctx->cil;
-	xfs_lsn_t		lsn = be64_to_cpu(iclog->ic_header.h_lsn);
+	xfs_lsn_t		lsn = be64_to_cpu(iclog->ic_header->h_lsn);
 
 	ASSERT(!ctx->commit_lsn);
 	if (!ctx->start_lsn) {
@@ -817,7 +1164,6 @@ restart:
 static int
 xlog_cil_write_chain(
 	struct xfs_cil_ctx	*ctx,
-	struct xfs_log_vec	*chain,
 	uint32_t		chain_len)
 {
 	struct xlog		*log = ctx->cil->xc_log;
@@ -826,7 +1172,7 @@ xlog_cil_write_chain(
 	error = xlog_cil_order_write(ctx->cil, ctx->sequence, _START_RECORD);
 	if (error)
 		return error;
-	return xlog_write(log, ctx, chain, ctx->ticket, chain_len);
+	return xlog_write(log, ctx, &ctx->lv_chain, ctx->ticket, chain_len);
 }
 
 /*
@@ -850,10 +1196,6 @@ xlog_cil_write_commit_record(
 		.i_len = sizeof(struct xlog_op_header),
 		.i_type = XLOG_REG_TYPE_COMMIT,
 	};
-	struct xfs_log_vec	vec = {
-		.lv_niovecs = 1,
-		.lv_iovecp = &reg,
-	};
 	int			error;
 
 	if (xlog_is_shutdown(log))
@@ -862,10 +1204,7 @@ xlog_cil_write_commit_record(
 	error = xlog_cil_order_write(ctx->cil, ctx->sequence, _COMMIT_RECORD);
 	if (error)
 		return error;
-
-	/* account for space used by record data */
-	ctx->ticket->t_curr_res -= reg.i_len;
-	error = xlog_write(log, ctx, &vec, ctx->ticket, reg.i_len);
+	error = xlog_write_one_vec(log, ctx, &reg, ctx->ticket);
 	if (error)
 		xlog_force_shutdown(log, SHUTDOWN_LOG_IO_ERROR);
 	return error;
@@ -931,9 +1270,28 @@ xlog_cil_build_trans_hdr(
 	lvhdr->lv_niovecs = 2;
 	lvhdr->lv_iovecp = &hdr->lhdr[0];
 	lvhdr->lv_bytes = hdr->lhdr[0].i_len + hdr->lhdr[1].i_len;
-	lvhdr->lv_next = ctx->lv_chain;
 
 	tic->t_curr_res -= lvhdr->lv_bytes;
+}
+
+/*
+ * CIL item reordering compare function. We want to order in ascending ID order,
+ * but we want to leave items with the same ID in the order they were added to
+ * the list. This is important for operations like reflink where we log 4 order
+ * dependent intents in a single transaction when we overwrite an existing
+ * shared extent with a new shared extent. i.e. BUI(unmap), CUI(drop),
+ * CUI (inc), BUI(remap)...
+ */
+static int
+xlog_cil_order_cmp(
+	void			*priv,
+	const struct list_head	*a,
+	const struct list_head	*b)
+{
+	struct xfs_log_vec	*l1 = container_of(a, struct xfs_log_vec, lv_list);
+	struct xfs_log_vec	*l2 = container_of(b, struct xfs_log_vec, lv_list);
+
+	return l1->lv_order_id > l2->lv_order_id;
 }
 
 /*
@@ -947,18 +1305,16 @@ xlog_cil_build_trans_hdr(
  */
 static void
 xlog_cil_build_lv_chain(
-	struct xfs_cil		*cil,
 	struct xfs_cil_ctx	*ctx,
 	struct list_head	*whiteouts,
 	uint32_t		*num_iovecs,
 	uint32_t		*num_bytes)
 {
-	struct xfs_log_vec	*lv = NULL;
-
-	while (!list_empty(&cil->xc_cil)) {
+	while (!list_empty(&ctx->log_items)) {
 		struct xfs_log_item	*item;
+		struct xfs_log_vec	*lv;
 
-		item = list_first_entry(&cil->xc_cil,
+		item = list_first_entry(&ctx->log_items,
 					struct xfs_log_item, li_cil);
 
 		if (test_bit(XFS_LI_WHITEOUT, &item->li_flags)) {
@@ -967,18 +1323,18 @@ xlog_cil_build_lv_chain(
 			continue;
 		}
 
-		list_del_init(&item->li_cil);
-		if (!ctx->lv_chain)
-			ctx->lv_chain = item->li_lv;
-		else
-			lv->lv_next = item->li_lv;
 		lv = item->li_lv;
-		item->li_lv = NULL;
-		*num_iovecs += lv->lv_niovecs;
+		lv->lv_order_id = item->li_order_id;
 
 		/* we don't write ordered log vectors */
-		if (lv->lv_buf_len != XFS_LOG_VEC_ORDERED)
+		if (lv->lv_buf_used != XFS_LOG_VEC_ORDERED)
 			*num_bytes += lv->lv_bytes;
+		*num_iovecs += lv->lv_niovecs;
+		list_add_tail(&lv->lv_list, &ctx->lv_chain);
+
+		list_del_init(&item->li_cil);
+		item->li_order_id = 0;
+		item->li_lv = NULL;
 	}
 }
 
@@ -1008,11 +1364,18 @@ xlog_cil_cleanup_whiteouts(
  * same sequence twice.  If we get a race between multiple pushes for the same
  * sequence they will block on the first one and then abort, hence avoiding
  * needless pushes.
+ *
+ * This runs from a workqueue so it does not inherent any specific memory
+ * allocation context. However, we do not want to block on memory reclaim
+ * recursing back into the filesystem because this push may have been triggered
+ * by memory reclaim itself. Hence we really need to run under full GFP_NOFS
+ * contraints here.
  */
 static void
 xlog_cil_push_work(
 	struct work_struct	*work)
 {
+	unsigned int		nofs_flags = memalloc_nofs_save();
 	struct xfs_cil_ctx	*ctx =
 		container_of(work, struct xfs_cil_ctx, push_work);
 	struct xfs_cil		*cil = ctx->cil;
@@ -1022,10 +1385,11 @@ xlog_cil_push_work(
 	int			num_bytes = 0;
 	int			error = 0;
 	struct xlog_cil_trans_hdr thdr;
-	struct xfs_log_vec	lvhdr = { NULL };
+	struct xfs_log_vec	lvhdr = {};
 	xfs_csn_t		push_seq;
 	bool			push_commit_stable;
 	LIST_HEAD		(whiteouts);
+	struct xlog_ticket	*ticket;
 
 	new_ctx = xlog_cil_ctx_alloc();
 	new_ctx->ticket = xlog_cil_ticket_alloc(log);
@@ -1049,12 +1413,14 @@ xlog_cil_push_work(
 	if (waitqueue_active(&cil->xc_push_wait))
 		wake_up_all(&cil->xc_push_wait);
 
+	xlog_cil_push_pcp_aggregate(cil, ctx);
+
 	/*
 	 * Check if we've anything to push. If there is nothing, then we don't
 	 * move on to a new sequence number and so we have to be able to push
 	 * this sequence again later.
 	 */
-	if (list_empty(&cil->xc_cil)) {
+	if (test_bit(XLOG_CIL_EMPTY, &cil->xc_flags)) {
 		cil->xc_push_seq = 0;
 		spin_unlock(&cil->xc_push_lock);
 		goto out_skip;
@@ -1094,7 +1460,7 @@ xlog_cil_push_work(
 	list_add(&ctx->committing, &cil->xc_committing);
 	spin_unlock(&cil->xc_push_lock);
 
-	xlog_cil_build_lv_chain(cil, ctx, &whiteouts, &num_iovecs, &num_bytes);
+	xlog_cil_build_lv_chain(ctx, &whiteouts, &num_iovecs, &num_bytes);
 
 	/*
 	 * Switch the contexts so we can drop the context lock and move out
@@ -1127,14 +1493,30 @@ xlog_cil_push_work(
 	up_write(&cil->xc_ctx_lock);
 
 	/*
+	 * Sort the log vector chain before we add the transaction headers.
+	 * This ensures we always have the transaction headers at the start
+	 * of the chain.
+	 */
+	list_sort(NULL, &ctx->lv_chain, xlog_cil_order_cmp);
+
+	/*
 	 * Build a checkpoint transaction header and write it to the log to
 	 * begin the transaction. We need to account for the space used by the
 	 * transaction header here as it is not accounted for in xlog_write().
+	 * Add the lvhdr to the head of the lv chain we pass to xlog_write() so
+	 * it gets written into the iclog first.
 	 */
 	xlog_cil_build_trans_hdr(ctx, &thdr, &lvhdr, num_iovecs);
 	num_bytes += lvhdr.lv_bytes;
+	list_add(&lvhdr.lv_list, &ctx->lv_chain);
 
-	error = xlog_cil_write_chain(ctx, &lvhdr, num_bytes);
+	/*
+	 * Take the lvhdr back off the lv_chain immediately after calling
+	 * xlog_cil_write_chain() as it should not be passed to log IO
+	 * completion.
+	 */
+	error = xlog_cil_write_chain(ctx, num_bytes);
+	list_del(&lvhdr.lv_list);
 	if (error)
 		goto out_abort_free_ticket;
 
@@ -1142,7 +1524,14 @@ xlog_cil_push_work(
 	if (error)
 		goto out_abort_free_ticket;
 
-	xfs_log_ticket_ungrant(log, ctx->ticket);
+	/*
+	 * Grab the ticket from the ctx so we can ungrant it after releasing the
+	 * commit_iclog. The ctx may be freed by the time we return from
+	 * releasing the commit_iclog (i.e. checkpoint has been completed and
+	 * callback run) so we can't reference the ctx after the call to
+	 * xlog_state_release_iclog().
+	 */
+	ticket = ctx->ticket;
 
 	/*
 	 * If the checkpoint spans multiple iclogs, wait for all previous iclogs
@@ -1158,9 +1547,9 @@ xlog_cil_push_work(
 	 */
 	spin_lock(&log->l_icloglock);
 	if (ctx->start_lsn != ctx->commit_lsn) {
-		xfs_lsn_t	plsn;
+		xfs_lsn_t	plsn = be64_to_cpu(
+			ctx->commit_iclog->ic_prev->ic_header->h_lsn);
 
-		plsn = be64_to_cpu(ctx->commit_iclog->ic_prev->ic_header.h_lsn);
 		if (plsn && XFS_LSN_CMP(plsn, ctx->commit_lsn) < 0) {
 			/*
 			 * Waiting on ic_force_wait orders the completion of
@@ -1192,32 +1581,40 @@ xlog_cil_push_work(
 	if (push_commit_stable &&
 	    ctx->commit_iclog->ic_state == XLOG_STATE_ACTIVE)
 		xlog_state_switch_iclogs(log, ctx->commit_iclog, 0);
-	xlog_state_release_iclog(log, ctx->commit_iclog);
+	ticket = ctx->ticket;
+	xlog_state_release_iclog(log, ctx->commit_iclog, ticket);
 
 	/* Not safe to reference ctx now! */
 
 	spin_unlock(&log->l_icloglock);
 	xlog_cil_cleanup_whiteouts(&whiteouts);
+	xfs_log_ticket_ungrant(log, ticket);
+	memalloc_nofs_restore(nofs_flags);
 	return;
 
 out_skip:
 	up_write(&cil->xc_ctx_lock);
 	xfs_log_ticket_put(new_ctx->ticket);
-	kmem_free(new_ctx);
+	kfree(new_ctx);
+	memalloc_nofs_restore(nofs_flags);
 	return;
 
 out_abort_free_ticket:
-	xfs_log_ticket_ungrant(log, ctx->ticket);
 	ASSERT(xlog_is_shutdown(log));
 	xlog_cil_cleanup_whiteouts(&whiteouts);
 	if (!ctx->commit_iclog) {
+		xfs_log_ticket_ungrant(log, ctx->ticket);
 		xlog_cil_committed(ctx);
+		memalloc_nofs_restore(nofs_flags);
 		return;
 	}
 	spin_lock(&log->l_icloglock);
-	xlog_state_release_iclog(log, ctx->commit_iclog);
+	ticket = ctx->ticket;
+	xlog_state_release_iclog(log, ctx->commit_iclog, ticket);
 	/* Not safe to reference ctx now! */
 	spin_unlock(&log->l_icloglock);
+	xfs_log_ticket_ungrant(log, ticket);
+	memalloc_nofs_restore(nofs_flags);
 }
 
 /*
@@ -1229,21 +1626,30 @@ out_abort_free_ticket:
  */
 static void
 xlog_cil_push_background(
-	struct xlog	*log) __releases(cil->xc_ctx_lock)
+	struct xlog	*log)
 {
 	struct xfs_cil	*cil = log->l_cilp;
+	int		space_used = atomic_read(&cil->xc_ctx->space_used);
 
 	/*
 	 * The cil won't be empty because we are called while holding the
-	 * context lock so whatever we added to the CIL will still be there
+	 * context lock so whatever we added to the CIL will still be there.
 	 */
-	ASSERT(!list_empty(&cil->xc_cil));
+	ASSERT(!test_bit(XLOG_CIL_EMPTY, &cil->xc_flags));
 
 	/*
-	 * Don't do a background push if we haven't used up all the
-	 * space available yet.
+	 * We are done if:
+	 * - we haven't used up all the space available yet; or
+	 * - we've already queued up a push; and
+	 * - we're not over the hard limit; and
+	 * - nothing has been over the hard limit.
+	 *
+	 * If so, we don't need to take the push lock as there's nothing to do.
 	 */
-	if (cil->xc_ctx->space_used < XLOG_CIL_SPACE_LIMIT(log)) {
+	if (space_used < XLOG_CIL_SPACE_LIMIT(log) ||
+	    (cil->xc_push_seq == cil->xc_current_sequence &&
+	     space_used < XLOG_CIL_BLOCKING_SPACE_LIMIT(log) &&
+	     !waitqueue_active(&cil->xc_push_wait))) {
 		up_read(&cil->xc_ctx_lock);
 		return;
 	}
@@ -1270,12 +1676,11 @@ xlog_cil_push_background(
 	 * dipping back down under the hard limit.
 	 *
 	 * The ctx->xc_push_lock provides the serialisation necessary for safely
-	 * using the lockless waitqueue_active() check in this context.
+	 * calling xlog_cil_over_hard_limit() in this context.
 	 */
-	if (cil->xc_ctx->space_used >= XLOG_CIL_BLOCKING_SPACE_LIMIT(log) ||
-	    waitqueue_active(&cil->xc_push_wait)) {
+	if (xlog_cil_over_hard_limit(log, space_used)) {
 		trace_xfs_log_cil_wait(log, cil->xc_ctx->ticket);
-		ASSERT(cil->xc_ctx->space_used < log->l_logsize);
+		ASSERT(space_used < log->l_logsize);
 		xlog_wait(&cil->xc_push_wait, &cil->xc_push_lock);
 		return;
 	}
@@ -1334,7 +1739,8 @@ xlog_cil_push_now(
 	 * If the CIL is empty or we've already pushed the sequence then
 	 * there's no more work that we need to do.
 	 */
-	if (list_empty(&cil->xc_cil) || push_seq <= cil->xc_push_seq) {
+	if (test_bit(XLOG_CIL_EMPTY, &cil->xc_flags) ||
+	    push_seq <= cil->xc_push_seq) {
 		spin_unlock(&cil->xc_push_lock);
 		return;
 	}
@@ -1352,7 +1758,7 @@ xlog_cil_empty(
 	bool		empty = false;
 
 	spin_lock(&cil->xc_push_lock);
-	if (list_empty(&cil->xc_cil))
+	if (test_bit(XLOG_CIL_EMPTY, &cil->xc_flags))
 		empty = true;
 	spin_unlock(&cil->xc_push_lock);
 	return empty;
@@ -1386,7 +1792,7 @@ xlog_cil_process_intents(
 		set_bit(XFS_LI_WHITEOUT, &ilip->li_flags);
 		trace_xfs_cil_whiteout_mark(ilip);
 		len += ilip->li_lv->lv_bytes;
-		kmem_free(ilip->li_lv);
+		kvfree(ilip->li_lv);
 		ilip->li_lv = NULL;
 
 		xfs_trans_del_item(lip);
@@ -1483,7 +1889,7 @@ xlog_cil_flush(
 	 * If the CIL is empty, make sure that any previous checkpoint that may
 	 * still be in an active iclog is pushed to stable storage.
 	 */
-	if (list_empty(&log->l_cilp->xc_cil))
+	if (test_bit(XLOG_CIL_EMPTY, &log->l_cilp->xc_flags))
 		xfs_log_force(log->l_mp, 0);
 }
 
@@ -1568,7 +1974,7 @@ restart:
 	 * we would have found the context on the committing list.
 	 */
 	if (sequence == cil->xc_current_sequence &&
-	    !list_empty(&cil->xc_cil)) {
+	    !test_bit(XLOG_CIL_EMPTY, &cil->xc_flags)) {
 		spin_unlock(&cil->xc_push_lock);
 		goto restart;
 	}
@@ -1593,12 +1999,14 @@ out_shutdown:
  */
 int
 xlog_cil_init(
-	struct xlog	*log)
+	struct xlog		*log)
 {
-	struct xfs_cil	*cil;
-	struct xfs_cil_ctx *ctx;
+	struct xfs_cil		*cil;
+	struct xfs_cil_ctx	*ctx;
+	struct xlog_cil_pcp	*cilpcp;
+	int			cpu;
 
-	cil = kmem_zalloc(sizeof(*cil), KM_MAYFAIL);
+	cil = kzalloc_obj(*cil, GFP_KERNEL | __GFP_RETRY_MAYFAIL);
 	if (!cil)
 		return -ENOMEM;
 	/*
@@ -1611,24 +2019,33 @@ xlog_cil_init(
 	if (!cil->xc_push_wq)
 		goto out_destroy_cil;
 
-	INIT_LIST_HEAD(&cil->xc_cil);
+	cil->xc_log = log;
+	cil->xc_pcp = alloc_percpu(struct xlog_cil_pcp);
+	if (!cil->xc_pcp)
+		goto out_destroy_wq;
+
+	for_each_possible_cpu(cpu) {
+		cilpcp = per_cpu_ptr(cil->xc_pcp, cpu);
+		INIT_LIST_HEAD(&cilpcp->busy_extents);
+		INIT_LIST_HEAD(&cilpcp->log_items);
+	}
+
 	INIT_LIST_HEAD(&cil->xc_committing);
-	spin_lock_init(&cil->xc_cil_lock);
 	spin_lock_init(&cil->xc_push_lock);
 	init_waitqueue_head(&cil->xc_push_wait);
 	init_rwsem(&cil->xc_ctx_lock);
 	init_waitqueue_head(&cil->xc_start_wait);
 	init_waitqueue_head(&cil->xc_commit_wait);
-	cil->xc_log = log;
 	log->l_cilp = cil;
 
 	ctx = xlog_cil_ctx_alloc();
 	xlog_cil_ctx_switch(cil, ctx);
-
 	return 0;
 
+out_destroy_wq:
+	destroy_workqueue(cil->xc_push_wq);
 out_destroy_cil:
-	kmem_free(cil);
+	kfree(cil);
 	return -ENOMEM;
 }
 
@@ -1636,14 +2053,17 @@ void
 xlog_cil_destroy(
 	struct xlog	*log)
 {
-	if (log->l_cilp->xc_ctx) {
-		if (log->l_cilp->xc_ctx->ticket)
-			xfs_log_ticket_put(log->l_cilp->xc_ctx->ticket);
-		kmem_free(log->l_cilp->xc_ctx);
+	struct xfs_cil	*cil = log->l_cilp;
+
+	if (cil->xc_ctx) {
+		if (cil->xc_ctx->ticket)
+			xfs_log_ticket_put(cil->xc_ctx->ticket);
+		kfree(cil->xc_ctx);
 	}
 
-	ASSERT(list_empty(&log->l_cilp->xc_cil));
-	destroy_workqueue(log->l_cilp->xc_push_wq);
-	kmem_free(log->l_cilp);
+	ASSERT(test_bit(XLOG_CIL_EMPTY, &cil->xc_flags));
+	free_percpu(cil->xc_pcp);
+	destroy_workqueue(cil->xc_push_wq);
+	kfree(cil);
 }
 

@@ -59,7 +59,7 @@ struct l2t_data {
 	rwlock_t lock;
 	atomic_t nfree;             /* number of free entries */
 	struct l2t_entry *rover;    /* starting point for next allocation */
-	struct l2t_entry l2tab[];  /* MUST BE LAST */
+	struct l2t_entry l2tab[] __counted_by(l2t_size);  /* MUST BE LAST */
 };
 
 static inline unsigned int vlan_prio(const struct l2t_entry *e)
@@ -608,25 +608,6 @@ struct l2t_entry *t4_l2t_alloc_switching(struct adapter *adap, u16 vlan,
 	return e;
 }
 
-/**
- * cxgb4_l2t_alloc_switching - Allocates an L2T entry for switch filters
- * @dev: net_device pointer
- * @vlan: VLAN Id
- * @port: Associated port
- * @dmac: Destination MAC address to add to L2T
- * Returns pointer to the allocated l2t entry
- *
- * Allocates an L2T entry for use by switching rule of a filter
- */
-struct l2t_entry *cxgb4_l2t_alloc_switching(struct net_device *dev, u16 vlan,
-					    u8 port, u8 *dmac)
-{
-	struct adapter *adap = netdev2adap(dev);
-
-	return t4_l2t_alloc_switching(adap, vlan, port, dmac);
-}
-EXPORT_SYMBOL(cxgb4_l2t_alloc_switching);
-
 struct l2t_data *t4_init_l2t(unsigned int l2t_start, unsigned int l2t_end)
 {
 	unsigned int l2t_size;
@@ -639,7 +620,7 @@ struct l2t_data *t4_init_l2t(unsigned int l2t_start, unsigned int l2t_end)
 	if (l2t_size < L2T_MIN_HASH_BUCKETS)
 		return NULL;
 
-	d = kvzalloc(struct_size(d, l2tab, l2t_size), GFP_KERNEL);
+	d = kvzalloc_flex(*d, l2tab, l2t_size);
 	if (!d)
 		return NULL;
 

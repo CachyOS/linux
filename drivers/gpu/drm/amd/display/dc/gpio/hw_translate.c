@@ -51,8 +51,8 @@
 #include "dcn21/hw_translate_dcn21.h"
 #include "dcn30/hw_translate_dcn30.h"
 #include "dcn315/hw_translate_dcn315.h"
-
-#include "diagnostics/hw_translate_diag.h"
+#include "dcn32/hw_translate_dcn32.h"
+#include "dcn401/hw_translate_dcn401.h"
 
 /*
  * This unit
@@ -63,11 +63,6 @@ bool dal_hw_translate_init(
 	enum dce_version dce_version,
 	enum dce_environment dce_environment)
 {
-	if (IS_FPGA_MAXIMUS_DC(dce_environment)) {
-		dal_hw_translate_diag_fpga_init(translate);
-		return true;
-	}
-
 	switch (dce_version) {
 #if defined(CONFIG_DRM_AMD_DC_SI)
 	case DCE_VERSION_6_0:
@@ -107,13 +102,23 @@ bool dal_hw_translate_init(
 	case DCN_VERSION_3_02:
 	case DCN_VERSION_3_03:
 	case DCN_VERSION_3_1:
+	case DCN_VERSION_3_14:
 	case DCN_VERSION_3_16:
 		dal_hw_translate_dcn30_init(translate);
 		return true;
 	case DCN_VERSION_3_15:
 		dal_hw_translate_dcn315_init(translate);
 		return true;
-
+	case DCN_VERSION_3_2:
+	case DCN_VERSION_3_21:
+	case DCN_VERSION_3_5:
+	case DCN_VERSION_3_51:
+	case DCN_VERSION_3_6:
+		dal_hw_translate_dcn32_init(translate);
+		return true;
+	case DCN_VERSION_4_01:
+		dal_hw_translate_dcn401_init(translate);
+		return true;
 	default:
 		BREAK_TO_DEBUGGER();
 		return false;

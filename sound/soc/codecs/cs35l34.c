@@ -19,15 +19,13 @@
 #include <linux/regulator/consumer.h>
 #include <linux/regulator/machine.h>
 #include <linux/pm_runtime.h>
-#include <linux/of_device.h>
-#include <linux/of_gpio.h>
+#include <linux/of.h>
 #include <linux/of_irq.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
-#include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <sound/initval.h>
 #include <sound/tlv.h>
@@ -525,11 +523,11 @@ static int cs35l34_set_dai_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
 	struct cs35l34_private *priv = snd_soc_component_get_drvdata(component);
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		regmap_update_bits(priv->regmap, CS35L34_ADSP_CLK_CTL,
 				    0x80, 0x80);
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		regmap_update_bits(priv->regmap, CS35L34_ADSP_CLK_CTL,
 				    0x80, 0x00);
 		break;
@@ -563,26 +561,6 @@ static int cs35l34_pcm_hw_params(struct snd_pcm_substream *substream,
 
 	return ret;
 }
-
-static const unsigned int cs35l34_src_rates[] = {
-	8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000
-};
-
-
-static const struct snd_pcm_hw_constraint_list cs35l34_constraints = {
-	.count  = ARRAY_SIZE(cs35l34_src_rates),
-	.list   = cs35l34_src_rates,
-};
-
-static int cs35l34_pcm_startup(struct snd_pcm_substream *substream,
-			       struct snd_soc_dai *dai)
-{
-
-	snd_pcm_hw_constraint_list(substream->runtime, 0,
-				SNDRV_PCM_HW_PARAM_RATE, &cs35l34_constraints);
-	return 0;
-}
-
 
 static int cs35l34_set_tristate(struct snd_soc_dai *dai, int tristate)
 {
@@ -641,7 +619,6 @@ static int cs35l34_dai_set_sysclk(struct snd_soc_dai *dai,
 }
 
 static const struct snd_soc_dai_ops cs35l34_ops = {
-	.startup = cs35l34_pcm_startup,
 	.set_tristate = cs35l34_set_tristate,
 	.set_fmt = cs35l34_set_dai_fmt,
 	.hw_params = cs35l34_pcm_hw_params,
@@ -787,10 +764,9 @@ static const struct snd_soc_component_driver soc_component_dev_cs35l34 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
-static struct regmap_config cs35l34_regmap = {
+static const struct regmap_config cs35l34_regmap = {
 	.reg_bits = 8,
 	.val_bits = 8,
 
@@ -800,7 +776,7 @@ static struct regmap_config cs35l34_regmap = {
 	.volatile_reg = cs35l34_volatile_register,
 	.readable_reg = cs35l34_readable_register,
 	.precious_reg = cs35l34_precious_register,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 
 	.use_single_read = true,
 	.use_single_write = true,
@@ -1062,7 +1038,7 @@ static int cs35l34_i2c_probe(struct i2c_client *i2c_client)
 		dev_err(&i2c_client->dev, "Failed to request IRQ: %d\n", ret);
 
 	cs35l34->reset_gpio = devm_gpiod_get_optional(&i2c_client->dev,
-				"reset-gpios", GPIOD_OUT_LOW);
+				"reset", GPIOD_OUT_LOW);
 	if (IS_ERR(cs35l34->reset_gpio)) {
 		ret = PTR_ERR(cs35l34->reset_gpio);
 		goto err_regulator;
@@ -1129,7 +1105,7 @@ err_regulator:
 	return ret;
 }
 
-static int cs35l34_i2c_remove(struct i2c_client *client)
+static void cs35l34_i2c_remove(struct i2c_client *client)
 {
 	struct cs35l34_private *cs35l34 = i2c_get_clientdata(client);
 
@@ -1138,11 +1114,9 @@ static int cs35l34_i2c_remove(struct i2c_client *client)
 	pm_runtime_disable(&client->dev);
 	regulator_bulk_disable(cs35l34->num_core_supplies,
 		cs35l34->core_supplies);
-
-	return 0;
 }
 
-static int __maybe_unused cs35l34_runtime_resume(struct device *dev)
+static int cs35l34_runtime_resume(struct device *dev)
 {
 	struct cs35l34_private *cs35l34 = dev_get_drvdata(dev);
 	int ret;
@@ -1175,7 +1149,7 @@ err:
 	return ret;
 }
 
-static int __maybe_unused cs35l34_runtime_suspend(struct device *dev)
+static int cs35l34_runtime_suspend(struct device *dev)
 {
 	struct cs35l34_private *cs35l34 = dev_get_drvdata(dev);
 
@@ -1191,9 +1165,7 @@ static int __maybe_unused cs35l34_runtime_suspend(struct device *dev)
 }
 
 static const struct dev_pm_ops cs35l34_pm_ops = {
-	SET_RUNTIME_PM_OPS(cs35l34_runtime_suspend,
-			   cs35l34_runtime_resume,
-			   NULL)
+	RUNTIME_PM_OPS(cs35l34_runtime_suspend, cs35l34_runtime_resume, NULL)
 };
 
 static const struct of_device_id cs35l34_of_match[] = {
@@ -1203,7 +1175,7 @@ static const struct of_device_id cs35l34_of_match[] = {
 MODULE_DEVICE_TABLE(of, cs35l34_of_match);
 
 static const struct i2c_device_id cs35l34_id[] = {
-	{"cs35l34", 0},
+	{"cs35l34"},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, cs35l34_id);
@@ -1211,12 +1183,12 @@ MODULE_DEVICE_TABLE(i2c, cs35l34_id);
 static struct i2c_driver cs35l34_i2c_driver = {
 	.driver = {
 		.name = "cs35l34",
-		.pm = &cs35l34_pm_ops,
+		.pm = pm_ptr(&cs35l34_pm_ops),
 		.of_match_table = cs35l34_of_match,
 
 		},
 	.id_table = cs35l34_id,
-	.probe_new = cs35l34_i2c_probe,
+	.probe = cs35l34_i2c_probe,
 	.remove = cs35l34_i2c_remove,
 
 };

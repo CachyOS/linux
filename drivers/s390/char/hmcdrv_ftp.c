@@ -6,8 +6,7 @@
  *    Author(s): Ralf Hoppe (rhoppe@de.ibm.com)
  */
 
-#define KMSG_COMPONENT "hmcdrv"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "hmcdrv: " fmt
 
 #include <linux/kernel.h>
 #include <linux/slab.h>
@@ -16,6 +15,8 @@
 
 #include <linux/ctype.h>
 #include <linux/crc16.h>
+
+#include <asm/machine.h>
 
 #include "hmcdrv_ftp.h"
 #include "hmcdrv_cache.h"
@@ -308,9 +309,9 @@ int hmcdrv_ftp_startup(void)
 	mutex_lock(&hmcdrv_ftp_mutex); /* block transfers while start-up */
 
 	if (hmcdrv_ftp_refcnt == 0) {
-		if (MACHINE_IS_VM)
+		if (machine_is_vm())
 			hmcdrv_ftp_funcs = &hmcdrv_ftp_zvm;
-		else if (MACHINE_IS_LPAR || MACHINE_IS_KVM)
+		else if (machine_is_lpar() || machine_is_kvm())
 			hmcdrv_ftp_funcs = &hmcdrv_ftp_lpar;
 		else
 			rc = -EOPNOTSUPP;

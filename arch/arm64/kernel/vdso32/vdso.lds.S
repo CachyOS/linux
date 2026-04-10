@@ -11,17 +11,17 @@
 #include <linux/const.h>
 #include <asm/page.h>
 #include <asm/vdso.h>
+#include <asm-generic/vmlinux.lds.h>
+#include <vdso/datapage.h>
 
 OUTPUT_FORMAT("elf32-littlearm", "elf32-bigarm", "elf32-littlearm")
 OUTPUT_ARCH(arm)
 
 SECTIONS
 {
-	PROVIDE_HIDDEN(_vdso_data = . - __VVAR_PAGES * PAGE_SIZE);
-#ifdef CONFIG_TIME_NS
-	PROVIDE_HIDDEN(_timens_data = _vdso_data + PAGE_SIZE);
-#endif
-	. = VDSO_LBASE + SIZEOF_HEADERS;
+	VDSO_VVAR_SYMS
+
+	. = SIZEOF_HEADERS;
 
 	.hash		: { *(.hash) }			:text
 	.gnu.hash	: { *(.gnu.hash) }
@@ -35,12 +35,30 @@ SECTIONS
 
 	.dynamic	: { *(.dynamic) }		:text	:dynamic
 
-	.rodata		: { *(.rodata*) }		:text
+	.rodata		: {
+		*(.rodata*)
+		*(.got)
+		*(.got.plt)
+		*(.plt)
+		*(.rel.iplt)
+		*(.iplt)
+		*(.igot.plt)
+	}						:text
 
-	.text		: { *(.text*) }			:text	=0xe7f001f2
+	.text		: {
+		*(.text*)
+		*(.glue_7)
+		*(.glue_7t)
+		*(.vfp11_veneer)
+		*(.v4_bx)
+	}						:text	=0xe7f001f2
 
-	.got		: { *(.got) }
-	.rel.plt	: { *(.rel.plt) }
+	.rel.dyn	: { *(.rel*) }
+
+	.ARM.exidx : { *(.ARM.exidx*) }
+	DWARF_DEBUG
+	ELF_DETAILS
+	.ARM.attributes 0 : { *(.ARM.attributes) }
 
 	/DISCARD/	: {
 		*(.note.GNU-stack)
@@ -68,6 +86,7 @@ VERSION
 		__vdso_gettimeofday;
 		__vdso_clock_getres;
 		__vdso_clock_gettime64;
+		__vdso_clock_getres_time64;
 	local: *;
 	};
 }

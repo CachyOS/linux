@@ -22,11 +22,15 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/module.h>
+#include <linux/gpio/consumer.h>
 
 #define BH1750_POWER_DOWN		0x00
 #define BH1750_ONE_TIME_H_RES_MODE	0x20 /* auto-mode for BH1721 */
 #define BH1750_CHANGE_INT_TIME_H_BIT	0x40
 #define BH1750_CHANGE_INT_TIME_L_BIT	0x60
+
+/* Define the reset delay time in microseconds */
+#define BH1750_RESET_DELAY_US 10000 /* 10ms */
 
 enum {
 	BH1710,
@@ -40,6 +44,7 @@ struct bh1750_data {
 	struct mutex lock;
 	const struct bh1750_chip_info *chip_info;
 	u16 mtreg;
+	struct gpio_desc *reset_gpio;
 };
 
 struct bh1750_chip_info {
@@ -228,9 +233,9 @@ static const struct iio_chan_spec bh1750_channels[] = {
 	}
 };
 
-static int bh1750_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int bh1750_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	int ret, usec;
 	struct bh1750_data *data;
 	struct iio_dev *indio_dev;
@@ -248,6 +253,25 @@ static int bh1750_probe(struct i2c_client *client,
 	data->client = client;
 	data->chip_info = &bh1750_chip_info_tbl[id->driver_data];
 
+	/* Get reset GPIO from device tree */
+	data->reset_gpio = devm_gpiod_get_optional(&client->dev,
+						   "reset", GPIOD_OUT_HIGH);
+
+	if (IS_ERR(data->reset_gpio))
+		return dev_err_probe(&client->dev, PTR_ERR(data->reset_gpio),
+				     "Failed to get reset GPIO\n");
+
+	/* Perform hardware reset if GPIO is provided */
+	if (data->reset_gpio) {
+		/* Perform reset sequence: low-high */
+		gpiod_set_value_cansleep(data->reset_gpio, 1);
+		fsleep(BH1750_RESET_DELAY_US);
+		gpiod_set_value_cansleep(data->reset_gpio, 0);
+		fsleep(BH1750_RESET_DELAY_US);
+
+		dev_dbg(&client->dev, "BH1750 reset completed via GPIO\n");
+	}
+
 	usec = data->chip_info->mtreg_to_usec * data->chip_info->mtreg_default;
 	ret = bh1750_change_int_time(data, usec);
 	if (ret < 0)
@@ -263,7 +287,7 @@ static int bh1750_probe(struct i2c_client *client,
 	return iio_device_register(indio_dev);
 }
 
-static int bh1750_remove(struct i2c_client *client)
+static void bh1750_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct bh1750_data *data = iio_priv(indio_dev);
@@ -273,11 +297,9 @@ static int bh1750_remove(struct i2c_client *client)
 	mutex_lock(&data->lock);
 	i2c_smbus_write_byte(client, BH1750_POWER_DOWN);
 	mutex_unlock(&data->lock);
-
-	return 0;
 }
 
-static int __maybe_unused bh1750_suspend(struct device *dev)
+static int bh1750_suspend(struct device *dev)
 {
 	int ret;
 	struct bh1750_data *data =
@@ -294,7 +316,7 @@ static int __maybe_unused bh1750_suspend(struct device *dev)
 	return ret;
 }
 
-static SIMPLE_DEV_PM_OPS(bh1750_pm_ops, bh1750_suspend, NULL);
+static DEFINE_SIMPLE_DEV_PM_OPS(bh1750_pm_ops, bh1750_suspend, NULL);
 
 static const struct i2c_device_id bh1750_id[] = {
 	{ "bh1710", BH1710 },
@@ -320,7 +342,7 @@ static struct i2c_driver bh1750_driver = {
 	.driver = {
 		.name = "bh1750",
 		.of_match_table = bh1750_of_match,
-		.pm = &bh1750_pm_ops,
+		.pm = pm_sleep_ptr(&bh1750_pm_ops),
 	},
 	.probe = bh1750_probe,
 	.remove = bh1750_remove,

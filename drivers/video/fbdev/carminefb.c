@@ -7,6 +7,7 @@
  * - FB1 is display 1 with unique memory area
  * - both display use 32 bit colors
  */
+#include <linux/aperture.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/fb.h>
@@ -529,10 +530,7 @@ static int init_hardware(struct carmine_hw *hw)
 
 static const struct fb_ops carminefb_ops = {
 	.owner		= THIS_MODULE,
-	.fb_fillrect	= cfb_fillrect,
-	.fb_copyarea	= cfb_copyarea,
-	.fb_imageblit	= cfb_imageblit,
-
+	FB_DEFAULT_IOMEM_OPS,
 	.fb_check_var	= carmine_check_var,
 	.fb_set_par	= carmine_set_par,
 	.fb_setcolreg	= carmine_setcolreg,
@@ -560,7 +558,6 @@ static int alloc_carmine_fb(void __iomem *regs, void __iomem *smem_base,
 
 	info->fix = carminefb_fix;
 	info->pseudo_palette = par->pseudo_palette;
-	info->flags = FBINFO_DEFAULT;
 
 	ret = fb_alloc_cmap(&info->cmap, 256, 1);
 	if (ret < 0)
@@ -614,12 +611,16 @@ static int carminefb_probe(struct pci_dev *dev, const struct pci_device_id *ent)
 	struct fb_info *info;
 	int ret;
 
+	ret = aperture_remove_conflicting_pci_devices(dev, "carminefb");
+	if (ret)
+		return ret;
+
 	ret = pci_enable_device(dev);
 	if (ret)
 		return ret;
 
 	ret = -ENOMEM;
-	hw = kzalloc(sizeof *hw, GFP_KERNEL);
+	hw = kzalloc_obj(*hw);
 	if (!hw)
 		goto err_enable_pci;
 
@@ -648,13 +649,13 @@ static int carminefb_probe(struct pci_dev *dev, const struct pci_device_id *ent)
 	 * is required for that largest resolution to avoid remaps at run
 	 * time
 	 */
-	if (carminefb_fix.smem_len > CARMINE_TOTAL_DIPLAY_MEM)
-		carminefb_fix.smem_len = CARMINE_TOTAL_DIPLAY_MEM;
+	if (carminefb_fix.smem_len > CARMINE_TOTAL_DISPLAY_MEM)
+		carminefb_fix.smem_len = CARMINE_TOTAL_DISPLAY_MEM;
 
-	else if (carminefb_fix.smem_len < CARMINE_TOTAL_DIPLAY_MEM) {
+	else if (carminefb_fix.smem_len < CARMINE_TOTAL_DISPLAY_MEM) {
 		printk(KERN_ERR "carminefb: Memory bar is only %d bytes, %d "
 				"are required.", carminefb_fix.smem_len,
-				CARMINE_TOTAL_DIPLAY_MEM);
+				CARMINE_TOTAL_DISPLAY_MEM);
 		goto err_unmap_vregs;
 	}
 
@@ -768,6 +769,9 @@ static struct pci_driver carmine_pci_driver = {
 
 static int __init carminefb_init(void)
 {
+	if (fb_modesetting_disabled("carminefb"))
+		return -ENODEV;
+
 	if (!(fb_displays &
 		(CARMINE_USE_DISPLAY0 | CARMINE_USE_DISPLAY1))) {
 		printk(KERN_ERR "If you disable both displays than you don't "

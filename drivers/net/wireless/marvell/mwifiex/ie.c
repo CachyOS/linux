@@ -1,21 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * NXP Wireless LAN device driver: management IE handling- setting and
  * deleting IE.
  *
  * Copyright 2011-2020 NXP
- *
- * This software file (the "File") is distributed by NXP
- * under the terms of the GNU General Public License Version 2, June 1991
- * (the "License").  You may use, redistribute and/or modify this File in
- * accordance with the terms and conditions of the License, a copy of which
- * is available by writing to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA or on the
- * worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
- *
- * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
- * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
- * this warranty disclaimer.
  */
 
 #include "main.h"
@@ -161,7 +149,7 @@ mwifiex_update_uap_custom_ie(struct mwifiex_private *priv,
 	u16 len;
 	int ret;
 
-	ap_custom_ie = kzalloc(sizeof(*ap_custom_ie), GFP_KERNEL);
+	ap_custom_ie = kzalloc_obj(*ap_custom_ie);
 	if (!ap_custom_ie)
 		return -ENOMEM;
 
@@ -233,8 +221,7 @@ static int mwifiex_update_vs_ie(const u8 *ies, int ies_len,
 	vendor_ie = cfg80211_find_vendor_ie(oui, oui_type, ies, ies_len);
 	if (vendor_ie) {
 		if (!*ie_ptr) {
-			*ie_ptr = kzalloc(sizeof(struct mwifiex_ie),
-					  GFP_KERNEL);
+			*ie_ptr = kzalloc_obj(struct mwifiex_ie);
 			if (!*ie_ptr)
 				return -ENOMEM;
 			ie = *ie_ptr;
@@ -338,7 +325,7 @@ static int mwifiex_uap_parse_tail_ies(struct mwifiex_private *priv,
 	if (!info->tail || !info->tail_len)
 		return 0;
 
-	gen_ie = kzalloc(sizeof(*gen_ie), GFP_KERNEL);
+	gen_ie = kzalloc_obj(*gen_ie);
 	if (!gen_ie)
 		return -ENOMEM;
 
@@ -451,7 +438,7 @@ int mwifiex_del_mgmt_ies(struct mwifiex_private *priv)
 	int ret = 0;
 
 	if (priv->gen_idx != MWIFIEX_AUTO_IDX_MASK) {
-		gen_ie = kmalloc(sizeof(*gen_ie), GFP_KERNEL);
+		gen_ie = kmalloc_obj(*gen_ie);
 		if (!gen_ie)
 			return -ENOMEM;
 
@@ -469,7 +456,7 @@ int mwifiex_del_mgmt_ies(struct mwifiex_private *priv)
 	}
 
 	if (priv->beacon_idx != MWIFIEX_AUTO_IDX_MASK) {
-		beacon_ie = kmalloc(sizeof(struct mwifiex_ie), GFP_KERNEL);
+		beacon_ie = kmalloc_obj(struct mwifiex_ie);
 		if (!beacon_ie) {
 			ret = -ENOMEM;
 			goto done;
@@ -479,7 +466,7 @@ int mwifiex_del_mgmt_ies(struct mwifiex_private *priv)
 		beacon_ie->ie_length = 0;
 	}
 	if (priv->proberesp_idx != MWIFIEX_AUTO_IDX_MASK) {
-		pr_ie = kmalloc(sizeof(struct mwifiex_ie), GFP_KERNEL);
+		pr_ie = kmalloc_obj(struct mwifiex_ie);
 		if (!pr_ie) {
 			ret = -ENOMEM;
 			goto done;
@@ -489,7 +476,7 @@ int mwifiex_del_mgmt_ies(struct mwifiex_private *priv)
 		pr_ie->ie_length = 0;
 	}
 	if (priv->assocresp_idx != MWIFIEX_AUTO_IDX_MASK) {
-		ar_ie = kmalloc(sizeof(struct mwifiex_ie), GFP_KERNEL);
+		ar_ie = kmalloc_obj(struct mwifiex_ie);
 		if (!ar_ie) {
 			ret = -ENOMEM;
 			goto done;

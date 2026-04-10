@@ -78,6 +78,22 @@
 #define DSI_SEL_IN_RDMA				0x1
 #define DSI_SEL_IN_MASK				0x1
 
+#define MMSYS_RST_NR(bank, bit) (((bank) * 32) + (bit))
+
+/*
+ * This macro adds a compile time check to make sure that the in/out
+ * selection bit(s) fit in the register mask, similar to bitfield
+ * macros, but this does not transform the value.
+ */
+#define MMSYS_ROUTE(from, to, reg_addr, reg_mask, selection)		\
+	{ DDP_COMPONENT_##from, DDP_COMPONENT_##to, reg_addr, reg_mask,	\
+	  (__BUILD_BUG_ON_ZERO_MSG((reg_mask) == 0, "Invalid mask") +	\
+	   __BUILD_BUG_ON_ZERO_MSG(~(reg_mask) & (selection),		\
+				   #selection " does not fit in "	\
+				   #reg_mask) +				\
+	   (selection))							\
+	}
+
 struct mtk_mmsys_routes {
 	u32 from_comp;
 	u32 to_comp;
@@ -86,21 +102,47 @@ struct mtk_mmsys_routes {
 	u32 val;
 };
 
+/**
+ * struct mtk_mmsys_driver_data - Settings of the mmsys
+ * @clk_driver: Clock driver name that the mmsys is using
+ *              (defined in drivers/clk/mediatek/clk-*.c).
+ * @routes: Routing table of the mmsys.
+ *          It provides mux settings from one module to another.
+ * @num_routes: Array size of the routes.
+ * @sw0_rst_offset: Register offset for the reset control.
+ * @num_resets: Number of reset bits that are defined
+ * @is_vppsys: Whether the mmsys is VPPSYS (Video Processing Pipe)
+ *             or VDOSYS (Video). Only VDOSYS needs to be added to drm driver.
+ * @vsync_len: VSYNC length of the MIXER.
+ *             VSYNC is usually triggered by the connector, so its length is a
+ *             fixed value when the frame rate is decided, but ETHDR and
+ *             MIXER generate their own VSYNC due to hardware design, therefore
+ *             MIXER has to sync with ETHDR by adjusting VSYNC length.
+ *             On MT8195, there is no such setting so we use the gap between
+ *             falling edge and rising edge of SOF (Start of Frame) signal to
+ *             do the job, but since MT8188, VSYNC_LEN setting is introduced to
+ *             solve the problem and is given 0x40 (ticks) as the default value.
+ *             Please notice that this value has to be set to 1 (minimum) if
+ *             ETHDR is bypassed, otherwise MIXER could wait too long and causing
+ *             underflow.
+ *
+ * Each MMSYS (multi-media system) may have different settings, they may use
+ * different clock sources, mux settings, reset control ...etc., and these
+ * differences are all stored here.
+ */
 struct mtk_mmsys_driver_data {
-	const resource_size_t io_start;
 	const char *clk_driver;
 	const struct mtk_mmsys_routes *routes;
 	const unsigned int num_routes;
 	const u16 sw0_rst_offset;
-};
-
-struct mtk_mmsys_match_data {
-	unsigned short num_drv_data;
-	const struct mtk_mmsys_driver_data *drv_data[];
+	const u8 *rst_tb;
+	const u32 num_resets;
+	const bool is_vppsys;
+	const u8 vsync_len;
 };
 
 /*
- * Routes in mt8173, mt2701, mt2712 are different. That means
+ * Routes in mt2701 and mt2712 are different. That means
  * in the same register address, it controls different input/output
  * selection for each SoC. But, right now, they use the same table as
  * default routes meet their requirements. But we don't have the complete

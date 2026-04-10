@@ -122,20 +122,18 @@ static int rpi_ts_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct device_node *np = dev->of_node;
 	struct input_dev *input;
-	struct device_node *fw_node;
 	struct rpi_firmware *fw;
 	struct rpi_ts *ts;
 	u32 touchbuf;
 	int error;
 
-	fw_node = of_get_parent(np);
+	struct device_node *fw_node __free(device_node) = of_get_parent(np);
 	if (!fw_node) {
 		dev_err(dev, "Missing firmware node\n");
 		return -ENOENT;
 	}
 
-	fw = rpi_firmware_get(fw_node);
-	of_node_put(fw_node);
+	fw = devm_rpi_firmware_get(&pdev->dev, fw_node);
 	if (!fw)
 		return -EPROBE_DEFER;
 
@@ -160,7 +158,6 @@ static int rpi_ts_probe(struct platform_device *pdev)
 	touchbuf = (u32)ts->fw_regs_phys;
 	error = rpi_firmware_property(fw, RPI_FIRMWARE_FRAMEBUFFER_SET_TOUCHBUF,
 				      &touchbuf, sizeof(touchbuf));
-	rpi_firmware_put(fw);
 	if (error || touchbuf != 0) {
 		dev_warn(dev, "Failed to set touchbuf, %d\n", error);
 		return error;

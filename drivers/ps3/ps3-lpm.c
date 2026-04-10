@@ -91,7 +91,7 @@ struct ps3_lpm_shadow_regs {
  * struct ps3_lpm_priv - Private lpm device data.
  *
  * @open: An atomic variable indicating the lpm driver has been opened.
- * @rights: The lpm rigths granted by the system policy module.  A logical
+ * @rights: The lpm rights granted by the system policy module.  A logical
  *  OR of enum ps3_lpm_rights.
  * @node_id: The node id of a BE processor whose performance monitor this
  *  lpar has the right to use.
@@ -1066,7 +1066,7 @@ EXPORT_SYMBOL_GPL(ps3_disable_pm_interrupts);
  *  instance, specified by one of enum ps3_lpm_tb_type.
  * @tb_cache: Optional user supplied buffer to use as the trace buffer cache.
  *  If NULL, the driver will allocate and manage an internal buffer.
- *  Unused when when @tb_type is PS3_LPM_TB_TYPE_NONE.
+ *  Unused when @tb_type is PS3_LPM_TB_TYPE_NONE.
  * @tb_cache_size: The size in bytes of the user supplied @tb_cache buffer.
  *  Unused when @tb_cache is NULL or @tb_type is PS3_LPM_TB_TYPE_NONE.
  */
@@ -1181,7 +1181,7 @@ static int ps3_lpm_probe(struct ps3_system_bus_device *dev)
 		return -EBUSY;
 	}
 
-	lpm_priv = kzalloc(sizeof(*lpm_priv), GFP_KERNEL);
+	lpm_priv = kzalloc_obj(*lpm_priv);
 
 	if (!lpm_priv)
 		return -ENOMEM;

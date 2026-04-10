@@ -12,7 +12,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/timex.h>
 #include <linux/slab.h>
 #include <linux/clk.h>
@@ -48,6 +48,29 @@ static void tmr_cnt_write(struct ptp_qoriq *ptp_qoriq, u64 ns)
 	ptp_qoriq->write(&regs->ctrl_regs->tmr_cnt_h, hi);
 }
 
+static u64 tmr_offset_read(struct ptp_qoriq *ptp_qoriq)
+{
+	struct ptp_qoriq_registers *regs = &ptp_qoriq->regs;
+	u32 lo, hi;
+	u64 ns;
+
+	lo = ptp_qoriq->read(&regs->ctrl_regs->tmroff_l);
+	hi = ptp_qoriq->read(&regs->ctrl_regs->tmroff_h);
+	ns = ((u64) hi) << 32;
+	ns |= lo;
+	return ns;
+}
+
+static void tmr_offset_write(struct ptp_qoriq *ptp_qoriq, u64 delta_ns)
+{
+	struct ptp_qoriq_registers *regs = &ptp_qoriq->regs;
+	u32 lo = delta_ns & 0xffffffff;
+	u32 hi = delta_ns >> 32;
+
+	ptp_qoriq->write(&regs->ctrl_regs->tmroff_l, lo);
+	ptp_qoriq->write(&regs->ctrl_regs->tmroff_h, hi);
+}
+
 /* Caller must hold ptp_qoriq->lock. */
 static void set_alarm(struct ptp_qoriq *ptp_qoriq)
 {
@@ -55,7 +78,9 @@ static void set_alarm(struct ptp_qoriq *ptp_qoriq)
 	u64 ns;
 	u32 lo, hi;
 
-	ns = tmr_cnt_read(ptp_qoriq) + 1500000000ULL;
+	ns = tmr_cnt_read(ptp_qoriq) + tmr_offset_read(ptp_qoriq)
+				     + 1500000000ULL;
+
 	ns = div_u64(ns, 1000000000UL) * 1000000000ULL;
 	ns -= ptp_qoriq->tclk_period;
 	hi = ns >> 32;
@@ -207,15 +232,24 @@ EXPORT_SYMBOL_GPL(ptp_qoriq_adjfine);
 
 int ptp_qoriq_adjtime(struct ptp_clock_info *ptp, s64 delta)
 {
-	s64 now;
-	unsigned long flags;
 	struct ptp_qoriq *ptp_qoriq = container_of(ptp, struct ptp_qoriq, caps);
+	s64 now, curr_delta;
+	unsigned long flags;
 
 	spin_lock_irqsave(&ptp_qoriq->lock, flags);
 
-	now = tmr_cnt_read(ptp_qoriq);
-	now += delta;
-	tmr_cnt_write(ptp_qoriq, now);
+	/* On LS1021A, eTSEC2 and eTSEC3 do not take into account the TMR_OFF
+	 * adjustment
+	 */
+	if (ptp_qoriq->etsec) {
+		now = tmr_cnt_read(ptp_qoriq);
+		now += delta;
+		tmr_cnt_write(ptp_qoriq, now);
+	} else {
+		curr_delta = tmr_offset_read(ptp_qoriq);
+		curr_delta += delta;
+		tmr_offset_write(ptp_qoriq, curr_delta);
+	}
 	set_fipers(ptp_qoriq);
 
 	spin_unlock_irqrestore(&ptp_qoriq->lock, flags);
@@ -232,7 +266,7 @@ int ptp_qoriq_gettime(struct ptp_clock_info *ptp, struct timespec64 *ts)
 
 	spin_lock_irqsave(&ptp_qoriq->lock, flags);
 
-	ns = tmr_cnt_read(ptp_qoriq);
+	ns = tmr_cnt_read(ptp_qoriq) + tmr_offset_read(ptp_qoriq);
 
 	spin_unlock_irqrestore(&ptp_qoriq->lock, flags);
 
@@ -253,6 +287,7 @@ int ptp_qoriq_settime(struct ptp_clock_info *ptp,
 
 	spin_lock_irqsave(&ptp_qoriq->lock, flags);
 
+	tmr_offset_write(ptp_qoriq, 0);
 	tmr_cnt_write(ptp_qoriq, ns);
 	set_fipers(ptp_qoriq);
 
@@ -430,6 +465,25 @@ static int ptp_qoriq_auto_config(struct ptp_qoriq *ptp_qoriq,
 	return 0;
 }
 
+static int ptp_qoriq_perout_loopback(struct ptp_clock_info *ptp,
+				     unsigned int index, int on)
+{
+	struct ptp_qoriq *ptp_qoriq = container_of(ptp, struct ptp_qoriq, caps);
+	struct ptp_qoriq_registers *regs = &ptp_qoriq->regs;
+	u32 loopback_bit = index ? PP2L : PP1L;
+	u32 tmr_ctrl;
+
+	tmr_ctrl = ptp_qoriq->read(&regs->ctrl_regs->tmr_ctrl);
+	if (on)
+		tmr_ctrl |= loopback_bit;
+	else
+		tmr_ctrl &= ~loopback_bit;
+
+	ptp_qoriq->write(&regs->ctrl_regs->tmr_ctrl, tmr_ctrl);
+
+	return 0;
+}
+
 int ptp_qoriq_init(struct ptp_qoriq *ptp_qoriq, void __iomem *base,
 		   const struct ptp_clock_info *caps)
 {
@@ -444,6 +498,8 @@ int ptp_qoriq_init(struct ptp_qoriq *ptp_qoriq, void __iomem *base,
 
 	ptp_qoriq->base = base;
 	ptp_qoriq->caps = *caps;
+	ptp_qoriq->caps.n_per_lp = 2;
+	ptp_qoriq->caps.perout_loopback = ptp_qoriq_perout_loopback;
 
 	if (of_property_read_u32(node, "fsl,cksel", &ptp_qoriq->cksel))
 		ptp_qoriq->cksel = DEFAULT_CKSEL;
@@ -488,6 +544,7 @@ int ptp_qoriq_init(struct ptp_qoriq *ptp_qoriq, void __iomem *base,
 
 	/* The eTSEC uses differnt memory map with DPAA/ENETC */
 	if (of_device_is_compatible(node, "fsl,etsec-ptp")) {
+		ptp_qoriq->etsec = true;
 		ptp_qoriq->regs.ctrl_regs = base + ETSEC_CTRL_REGS_OFFSET;
 		ptp_qoriq->regs.alarm_regs = base + ETSEC_ALARM_REGS_OFFSET;
 		ptp_qoriq->regs.fiper_regs = base + ETSEC_FIPER_REGS_OFFSET;
@@ -532,7 +589,7 @@ int ptp_qoriq_init(struct ptp_qoriq *ptp_qoriq, void __iomem *base,
 		return PTR_ERR(ptp_qoriq->clock);
 
 	ptp_qoriq->phc_index = ptp_clock_index(ptp_qoriq->clock);
-	ptp_qoriq_create_debugfs(ptp_qoriq);
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(ptp_qoriq_init);
@@ -544,7 +601,6 @@ void ptp_qoriq_free(struct ptp_qoriq *ptp_qoriq)
 	ptp_qoriq->write(&regs->ctrl_regs->tmr_temask, 0);
 	ptp_qoriq->write(&regs->ctrl_regs->tmr_ctrl,   0);
 
-	ptp_qoriq_remove_debugfs(ptp_qoriq);
 	ptp_clock_unregister(ptp_qoriq->clock);
 	iounmap(ptp_qoriq->base);
 	free_irq(ptp_qoriq->irq, ptp_qoriq);
@@ -557,7 +613,7 @@ static int ptp_qoriq_probe(struct platform_device *dev)
 	int err = -ENOMEM;
 	void __iomem *base;
 
-	ptp_qoriq = kzalloc(sizeof(*ptp_qoriq), GFP_KERNEL);
+	ptp_qoriq = kzalloc_obj(*ptp_qoriq);
 	if (!ptp_qoriq)
 		goto no_memory;
 
@@ -601,7 +657,7 @@ static int ptp_qoriq_probe(struct platform_device *dev)
 	return 0;
 
 no_clock:
-	iounmap(ptp_qoriq->base);
+	iounmap(base);
 no_ioremap:
 	release_resource(ptp_qoriq->rsrc);
 no_resource:
@@ -612,14 +668,13 @@ no_memory:
 	return err;
 }
 
-static int ptp_qoriq_remove(struct platform_device *dev)
+static void ptp_qoriq_remove(struct platform_device *dev)
 {
 	struct ptp_qoriq *ptp_qoriq = platform_get_drvdata(dev);
 
 	ptp_qoriq_free(ptp_qoriq);
 	release_resource(ptp_qoriq->rsrc);
 	kfree(ptp_qoriq);
-	return 0;
 }
 
 static const struct of_device_id match_table[] = {

@@ -162,6 +162,14 @@ static int __nf_conntrack_eventmask_report(struct nf_conntrack_ecache *e,
 	return ret;
 }
 
+static void nf_ct_ecache_tstamp_refresh(struct nf_conntrack_ecache *e)
+{
+#ifdef CONFIG_NF_CONNTRACK_TIMESTAMP
+	if (local64_read(&e->timestamp))
+		local64_set(&e->timestamp, ktime_get_real_ns());
+#endif
+}
+
 int nf_conntrack_eventmask_report(unsigned int events, struct nf_conn *ct,
 				  u32 portid, int report)
 {
@@ -185,6 +193,8 @@ int nf_conntrack_eventmask_report(unsigned int events, struct nf_conn *ct,
 
 	/* This is a resent of a destroy event? If so, skip missed */
 	missed = e->portid ? 0 : e->missed;
+
+	nf_ct_ecache_tstamp_refresh(e);
 
 	ret = __nf_conntrack_eventmask_report(e, events, missed, &item);
 	if (unlikely(ret < 0 && (events & (1 << IPCT_DESTROY)))) {
@@ -236,6 +246,8 @@ void nf_ct_expect_event_report(enum ip_conntrack_expect_events event,
 	struct net *net = nf_ct_exp_net(exp);
 	struct nf_ct_event_notifier *notify;
 	struct nf_conntrack_ecache *e;
+
+	lockdep_nfct_expect_lock_held();
 
 	rcu_read_lock();
 	notify = rcu_dereference(net->ct.nf_conntrack_event_cb);
@@ -291,10 +303,22 @@ void nf_conntrack_ecache_work(struct net *net, enum nf_ct_ecache_state state)
 		net->ct.ecache_dwork_pending = true;
 	} else if (state == NFCT_ECACHE_DESTROY_SENT) {
 		if (!hlist_nulls_empty(&cnet->ecache.dying_list))
-			mod_delayed_work(system_wq, &cnet->ecache.dwork, 0);
+			mod_delayed_work(system_percpu_wq, &cnet->ecache.dwork, 0);
 		else
 			net->ct.ecache_dwork_pending = false;
 	}
+}
+
+static void nf_ct_ecache_tstamp_new(const struct nf_conn *ct, struct nf_conntrack_ecache *e)
+{
+#ifdef CONFIG_NF_CONNTRACK_TIMESTAMP
+	u64 ts = 0;
+
+	if (nf_ct_ext_exist(ct, NF_CT_EXT_TSTAMP))
+		ts = ktime_get_real_ns();
+
+	local64_set(&e->timestamp, ts);
+#endif
 }
 
 bool nf_ct_ecache_ext_add(struct nf_conn *ct, u16 ctmask, u16 expmask, gfp_t gfp)
@@ -309,7 +333,7 @@ bool nf_ct_ecache_ext_add(struct nf_conn *ct, u16 ctmask, u16 expmask, gfp_t gfp
 			break;
 		return true;
 	case 2: /* autodetect: no event listener, don't allocate extension. */
-		if (!READ_ONCE(net->ct.ctnetlink_has_listener))
+		if (!READ_ONCE(nf_ctnetlink_has_listener))
 			return true;
 		fallthrough;
 	case 1:
@@ -326,6 +350,7 @@ bool nf_ct_ecache_ext_add(struct nf_conn *ct, u16 ctmask, u16 expmask, gfp_t gfp
 
 	e = nf_ct_ext_add(ct, NF_CT_EXT_ECACHE, gfp);
 	if (e) {
+		nf_ct_ecache_tstamp_new(ct, e);
 		e->ctmask  = ctmask;
 		e->expmask = expmask;
 	}

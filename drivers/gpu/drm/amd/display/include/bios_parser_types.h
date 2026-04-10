@@ -135,12 +135,8 @@ struct bp_external_encoder_control {
 struct bp_crtc_source_select {
 	enum engine_id engine_id;
 	enum controller_id controller_id;
-	/* from GPU Tx aka asic_signal */
-	enum signal_type signal;
-	/* sink_signal may differ from asicSignal if Translator encoder */
 	enum signal_type sink_signal;
-	enum display_output_bit_depth display_output_bit_depth;
-	bool enable_dp_audio;
+	enum dc_color_depth color_depth;
 };
 
 struct bp_transmitter_control {
@@ -164,6 +160,11 @@ struct bp_transmitter_control {
 	bool coherent;
 	bool multi_path;
 	bool single_pll_mode;
+};
+
+struct bp_load_detection_parameters {
+	enum engine_id engine_id;
+	uint16_t device_id;
 };
 
 struct bp_hw_crtc_timing_parameters {
@@ -333,6 +334,17 @@ struct bp_soc_bb_info {
 	uint32_t dram_clock_change_latency_100ns;
 	uint32_t dram_sr_exit_latency_100ns;
 	uint32_t dram_sr_enter_exit_latency_100ns;
+};
+
+struct bp_connector_speed_cap_info {
+	uint32_t DP_HBR2_EN:1;
+	uint32_t DP_HBR3_EN:1;
+	uint32_t HDMI_6GB_EN:1;
+	uint32_t DP_UHBR10_EN:1;
+	uint32_t DP_UHBR13_5_EN:1;
+	uint32_t DP_UHBR20_EN:1;
+	uint32_t DP_IS_USB_C:1;
+	uint32_t RESERVED:28;
 };
 
 #endif /*__DAL_BIOS_PARSER_TYPES_H__ */

@@ -6,15 +6,19 @@
 #ifndef __INTEL_DISPLAY_POWER_H__
 #define __INTEL_DISPLAY_POWER_H__
 
-#include "intel_runtime_pm.h"
+#include <linux/mutex.h>
+#include <linux/workqueue.h>
 
 enum aux_ch;
-enum dpio_channel;
-enum dpio_phy;
 enum port;
-struct drm_i915_private;
 struct i915_power_well;
+struct intel_display;
 struct intel_encoder;
+struct ref_tracker;
+struct seq_file;
+
+/* -ENOENT means we got the ref, but there's no tracking */
+#define INTEL_WAKEREF_DEF ERR_PTR(-ENOENT)
 
 /*
  * Keep the pipe, transcoder, port (DDI_LANES,DDI_IO,AUX) domain instances
@@ -76,6 +80,14 @@ enum intel_display_power_domain {
 	POWER_DOMAIN_VGA,
 	POWER_DOMAIN_AUDIO_MMIO,
 	POWER_DOMAIN_AUDIO_PLAYBACK,
+
+	POWER_DOMAIN_AUX_IO_A,
+	POWER_DOMAIN_AUX_IO_B,
+	POWER_DOMAIN_AUX_IO_C,
+	POWER_DOMAIN_AUX_IO_D,
+	POWER_DOMAIN_AUX_IO_E,
+	POWER_DOMAIN_AUX_IO_F,
+
 	POWER_DOMAIN_AUX_A,
 	POWER_DOMAIN_AUX_B,
 	POWER_DOMAIN_AUX_C,
@@ -90,8 +102,6 @@ enum intel_display_power_domain {
 	POWER_DOMAIN_AUX_USBC5,
 	POWER_DOMAIN_AUX_USBC6,
 
-	POWER_DOMAIN_AUX_IO_A,
-
 	POWER_DOMAIN_AUX_TBT1,
 	POWER_DOMAIN_AUX_TBT2,
 	POWER_DOMAIN_AUX_TBT3,
@@ -100,7 +110,6 @@ enum intel_display_power_domain {
 	POWER_DOMAIN_AUX_TBT6,
 
 	POWER_DOMAIN_GMBUS,
-	POWER_DOMAIN_MODESET,
 	POWER_DOMAIN_GT_IRQ,
 	POWER_DOMAIN_DC_OFF,
 	POWER_DOMAIN_TC_COLD_OFF,
@@ -110,12 +119,13 @@ enum intel_display_power_domain {
 	POWER_DOMAIN_INVALID = POWER_DOMAIN_NUM,
 };
 
-#define POWER_DOMAIN_PIPE(pipe) ((pipe) + POWER_DOMAIN_PIPE_A)
+#define POWER_DOMAIN_PIPE(pipe) \
+	((enum intel_display_power_domain)((pipe) - PIPE_A + POWER_DOMAIN_PIPE_A))
 #define POWER_DOMAIN_PIPE_PANEL_FITTER(pipe) \
-		((pipe) + POWER_DOMAIN_PIPE_PANEL_FITTER_A)
+	((enum intel_display_power_domain)((pipe) - PIPE_A + POWER_DOMAIN_PIPE_PANEL_FITTER_A))
 #define POWER_DOMAIN_TRANSCODER(tran) \
 	((tran) == TRANSCODER_EDP ? POWER_DOMAIN_TRANSCODER_EDP : \
-	 (tran) + POWER_DOMAIN_TRANSCODER_A)
+	 (enum intel_display_power_domain)((tran) - TRANSCODER_A + POWER_DOMAIN_TRANSCODER_A))
 
 struct intel_power_domain_mask {
 	DECLARE_BITMAP(bits, POWER_DOMAIN_NUM);
@@ -130,15 +140,20 @@ struct i915_power_domains {
 	bool display_core_suspended;
 	int power_well_count;
 
-	intel_wakeref_t init_wakeref;
-	intel_wakeref_t disable_wakeref;
+	u32 dc_state;
+	u32 target_dc_state;
+	u32 allowed_dc_mask;
+
+	struct ref_tracker *init_wakeref;
+	struct ref_tracker *disable_wakeref;
 
 	struct mutex lock;
 	int domain_use_count[POWER_DOMAIN_NUM];
 
 	struct delayed_work async_put_work;
-	intel_wakeref_t async_put_wakeref;
+	struct ref_tracker *async_put_wakeref;
 	struct intel_power_domain_mask async_put_domains[2];
+	int async_put_next_delay;
 
 	struct i915_power_well *power_wells;
 };
@@ -146,7 +161,7 @@ struct i915_power_domains {
 struct intel_display_power_domain_set {
 	struct intel_power_domain_mask mask;
 #ifdef CONFIG_DRM_I915_DEBUG_RUNTIME_PM
-	intel_wakeref_t wakerefs[POWER_DOMAIN_NUM];
+	struct ref_tracker *wakerefs[POWER_DOMAIN_NUM];
 #endif
 };
 
@@ -154,104 +169,120 @@ struct intel_display_power_domain_set {
 	for ((__domain) = 0; (__domain) < POWER_DOMAIN_NUM; (__domain)++)	\
 		for_each_if(test_bit((__domain), (__mask)->bits))
 
-int intel_power_domains_init(struct drm_i915_private *dev_priv);
-void intel_power_domains_cleanup(struct drm_i915_private *dev_priv);
-void intel_power_domains_init_hw(struct drm_i915_private *dev_priv, bool resume);
-void intel_power_domains_driver_remove(struct drm_i915_private *dev_priv);
-void intel_power_domains_enable(struct drm_i915_private *dev_priv);
-void intel_power_domains_disable(struct drm_i915_private *dev_priv);
-void intel_power_domains_suspend(struct drm_i915_private *dev_priv,
-				 enum i915_drm_suspend_mode);
-void intel_power_domains_resume(struct drm_i915_private *dev_priv);
-void intel_power_domains_sanitize_state(struct drm_i915_private *dev_priv);
+int intel_power_domains_init(struct intel_display *display);
+void intel_power_domains_cleanup(struct intel_display *display);
+void intel_power_domains_init_hw(struct intel_display *display, bool resume);
+void intel_power_domains_driver_remove(struct intel_display *display);
+void intel_power_domains_enable(struct intel_display *display);
+void intel_power_domains_disable(struct intel_display *display);
+void intel_power_domains_suspend(struct intel_display *display, bool s2idle);
+void intel_power_domains_resume(struct intel_display *display);
+void intel_power_domains_sanitize_state(struct intel_display *display);
 
-void intel_display_power_suspend_late(struct drm_i915_private *i915);
-void intel_display_power_resume_early(struct drm_i915_private *i915);
-void intel_display_power_suspend(struct drm_i915_private *i915);
-void intel_display_power_resume(struct drm_i915_private *i915);
-void intel_display_power_set_target_dc_state(struct drm_i915_private *dev_priv,
+void intel_display_power_suspend_late(struct intel_display *display, bool s2idle);
+void intel_display_power_resume_early(struct intel_display *display);
+void intel_display_power_suspend(struct intel_display *display);
+void intel_display_power_resume(struct intel_display *display);
+void intel_display_power_set_target_dc_state(struct intel_display *display,
 					     u32 state);
+u32 intel_display_power_get_current_dc_state(struct intel_display *display);
 
-const char *
-intel_display_power_domain_str(enum intel_display_power_domain domain);
-
-bool intel_display_power_is_enabled(struct drm_i915_private *dev_priv,
+bool intel_display_power_is_enabled(struct intel_display *display,
 				    enum intel_display_power_domain domain);
-bool __intel_display_power_is_enabled(struct drm_i915_private *dev_priv,
-				      enum intel_display_power_domain domain);
-intel_wakeref_t intel_display_power_get(struct drm_i915_private *dev_priv,
-					enum intel_display_power_domain domain);
-intel_wakeref_t
-intel_display_power_get_if_enabled(struct drm_i915_private *dev_priv,
+struct ref_tracker *intel_display_power_get(struct intel_display *display,
+					    enum intel_display_power_domain domain);
+struct ref_tracker *
+intel_display_power_get_if_enabled(struct intel_display *display,
 				   enum intel_display_power_domain domain);
-void __intel_display_power_put_async(struct drm_i915_private *i915,
+void __intel_display_power_put_async(struct intel_display *display,
 				     enum intel_display_power_domain domain,
-				     intel_wakeref_t wakeref);
-void intel_display_power_flush_work(struct drm_i915_private *i915);
+				     struct ref_tracker *wakeref,
+				     int delay_ms);
+void intel_display_power_flush_work(struct intel_display *display);
 #if IS_ENABLED(CONFIG_DRM_I915_DEBUG_RUNTIME_PM)
-void intel_display_power_put(struct drm_i915_private *dev_priv,
+void intel_display_power_put(struct intel_display *display,
 			     enum intel_display_power_domain domain,
-			     intel_wakeref_t wakeref);
+			     struct ref_tracker *wakeref);
 static inline void
-intel_display_power_put_async(struct drm_i915_private *i915,
+intel_display_power_put_async(struct intel_display *display,
 			      enum intel_display_power_domain domain,
-			      intel_wakeref_t wakeref)
+			      struct ref_tracker *wakeref)
 {
-	__intel_display_power_put_async(i915, domain, wakeref);
+	__intel_display_power_put_async(display, domain, wakeref, -1);
+}
+
+static inline void
+intel_display_power_put_async_delay(struct intel_display *display,
+				    enum intel_display_power_domain domain,
+				    struct ref_tracker *wakeref,
+				    int delay_ms)
+{
+	__intel_display_power_put_async(display, domain, wakeref, delay_ms);
 }
 #else
-void intel_display_power_put_unchecked(struct drm_i915_private *dev_priv,
+void intel_display_power_put_unchecked(struct intel_display *display,
 				       enum intel_display_power_domain domain);
 
 static inline void
-intel_display_power_put(struct drm_i915_private *i915,
+intel_display_power_put(struct intel_display *display,
 			enum intel_display_power_domain domain,
-			intel_wakeref_t wakeref)
+			struct ref_tracker *wakeref)
 {
-	intel_display_power_put_unchecked(i915, domain);
+	intel_display_power_put_unchecked(display, domain);
 }
 
 static inline void
-intel_display_power_put_async(struct drm_i915_private *i915,
+intel_display_power_put_async(struct intel_display *display,
 			      enum intel_display_power_domain domain,
-			      intel_wakeref_t wakeref)
+			      struct ref_tracker *wakeref)
 {
-	__intel_display_power_put_async(i915, domain, -1);
+	__intel_display_power_put_async(display, domain, INTEL_WAKEREF_DEF, -1);
+}
+
+static inline void
+intel_display_power_put_async_delay(struct intel_display *display,
+				    enum intel_display_power_domain domain,
+				    struct ref_tracker *wakeref,
+				    int delay_ms)
+{
+	__intel_display_power_put_async(display, domain, INTEL_WAKEREF_DEF, delay_ms);
 }
 #endif
 
 void
-intel_display_power_get_in_set(struct drm_i915_private *i915,
+intel_display_power_get_in_set(struct intel_display *display,
 			       struct intel_display_power_domain_set *power_domain_set,
 			       enum intel_display_power_domain domain);
 
 bool
-intel_display_power_get_in_set_if_enabled(struct drm_i915_private *i915,
+intel_display_power_get_in_set_if_enabled(struct intel_display *display,
 					  struct intel_display_power_domain_set *power_domain_set,
 					  enum intel_display_power_domain domain);
 
 void
-intel_display_power_put_mask_in_set(struct drm_i915_private *i915,
+intel_display_power_put_mask_in_set(struct intel_display *display,
 				    struct intel_display_power_domain_set *power_domain_set,
 				    struct intel_power_domain_mask *mask);
 
 static inline void
-intel_display_power_put_all_in_set(struct drm_i915_private *i915,
+intel_display_power_put_all_in_set(struct intel_display *display,
 				   struct intel_display_power_domain_set *power_domain_set)
 {
-	intel_display_power_put_mask_in_set(i915, power_domain_set, &power_domain_set->mask);
+	intel_display_power_put_mask_in_set(display, power_domain_set, &power_domain_set->mask);
 }
 
-void intel_display_power_debug(struct drm_i915_private *i915, struct seq_file *m);
+void intel_display_power_debug(struct intel_display *display, struct seq_file *m);
 
 enum intel_display_power_domain
-intel_display_power_ddi_lanes_domain(struct drm_i915_private *i915, enum port port);
+intel_display_power_ddi_lanes_domain(struct intel_display *display, enum port port);
 enum intel_display_power_domain
-intel_display_power_ddi_io_domain(struct drm_i915_private *i915, enum port port);
+intel_display_power_ddi_io_domain(struct intel_display *display, enum port port);
 enum intel_display_power_domain
-intel_display_power_legacy_aux_domain(struct drm_i915_private *i915, enum aux_ch aux_ch);
+intel_display_power_aux_io_domain(struct intel_display *display, enum aux_ch aux_ch);
 enum intel_display_power_domain
-intel_display_power_tbt_aux_domain(struct drm_i915_private *i915, enum aux_ch aux_ch);
+intel_display_power_legacy_aux_domain(struct intel_display *display, enum aux_ch aux_ch);
+enum intel_display_power_domain
+intel_display_power_tbt_aux_domain(struct intel_display *display, enum aux_ch aux_ch);
 
 /*
  * FIXME: We should probably switch this to a 0-based scheme to be consistent
@@ -265,15 +296,21 @@ enum dbuf_slice {
 	I915_MAX_DBUF_SLICES
 };
 
-void gen9_dbuf_slices_update(struct drm_i915_private *dev_priv,
+void gen9_dbuf_slices_update(struct intel_display *display,
 			     u8 req_slices);
 
-#define with_intel_display_power(i915, domain, wf) \
-	for ((wf) = intel_display_power_get((i915), (domain)); (wf); \
-	     intel_display_power_put_async((i915), (domain), (wf)), (wf) = 0)
+#define __with_intel_display_power(display, domain, wf) \
+	for (struct ref_tracker *(wf) = intel_display_power_get((display), (domain)); (wf); \
+	     intel_display_power_put_async((display), (domain), (wf)), (wf) = NULL)
 
-#define with_intel_display_power_if_enabled(i915, domain, wf) \
-	for ((wf) = intel_display_power_get_if_enabled((i915), (domain)); (wf); \
-	     intel_display_power_put_async((i915), (domain), (wf)), (wf) = 0)
+#define with_intel_display_power(display, domain) \
+	__with_intel_display_power(display, domain, __UNIQUE_ID(wakeref))
+
+#define __with_intel_display_power_if_enabled(display, domain, wf) \
+	for (struct ref_tracker *(wf) = intel_display_power_get_if_enabled((display), (domain)); (wf); \
+	     intel_display_power_put_async((display), (domain), (wf)), (wf) = NULL)
+
+#define with_intel_display_power_if_enabled(display, domain) \
+	__with_intel_display_power_if_enabled(display, domain, __UNIQUE_ID(wakeref))
 
 #endif /* __INTEL_DISPLAY_POWER_H__ */

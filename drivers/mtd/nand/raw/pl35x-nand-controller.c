@@ -23,9 +23,7 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/clk.h>
@@ -130,7 +128,7 @@ struct pl35x_nand {
  * @conf_regs: SMC configuration registers for command phase
  * @io_regs: NAND data registers for data phase
  * @controller: Core NAND controller structure
- * @chip: NAND chip information structure
+ * @chips: List of connected NAND chips
  * @selected_chip: NAND chip currently selected by the controller
  * @assigned_cs: List of assigned CS
  * @ecc_buf: Temporary buffer to extract ECC bytes
@@ -189,7 +187,7 @@ static const struct mtd_ooblayout_ops pl35x_ecc_ooblayout16_ops = {
 	.free = pl35x_ecc_ooblayout16_free,
 };
 
-/* Generic flash bbt decriptors */
+/* Generic flash bbt descriptors */
 static u8 bbt_pattern[] = { 'B', 'b', 't', '0' };
 static u8 mirror_pattern[] = { '1', 't', 'b', 'B' };
 
@@ -513,6 +511,7 @@ static int pl35x_nand_write_page_hwecc(struct nand_chip *chip,
 	u32 addr1 = 0, addr2 = 0, row;
 	u32 cmd_addr;
 	int i, ret;
+	u8 status;
 
 	ret = pl35x_smc_set_ecc_mode(nfc, chip, PL35X_SMC_ECC_CFG_MODE_APB);
 	if (ret)
@@ -564,6 +563,14 @@ static int pl35x_nand_write_page_hwecc(struct nand_chip *chip,
 	ret = pl35x_smc_wait_for_irq(nfc);
 	if (ret)
 		goto disable_ecc_engine;
+
+	/* Check write status on the chip side */
+	ret = nand_status_op(chip, &status);
+	if (ret)
+		goto disable_ecc_engine;
+
+	if (status & NAND_STATUS_FAIL)
+		ret = -EIO;
 
 disable_ecc_engine:
 	pl35x_smc_set_ecc_mode(nfc, chip, PL35X_SMC_ECC_CFG_MODE_BYPASS);
@@ -855,6 +862,9 @@ static int pl35x_nfc_setup_interface(struct nand_chip *chip, int cs,
 			  PL35X_SMC_NAND_TAR_CYCLES(tmgs.t_ar) |
 			  PL35X_SMC_NAND_TRR_CYCLES(tmgs.t_rr);
 
+	writel(plnand->timings, nfc->conf_regs + PL35X_SMC_CYCLES);
+	pl35x_smc_update_regs(nfc);
+
 	return 0;
 }
 
@@ -963,14 +973,18 @@ static int pl35x_nand_attach_chip(struct nand_chip *chip)
 
 	switch (chip->ecc.engine_type) {
 	case NAND_ECC_ENGINE_TYPE_ON_DIE:
+		dev_dbg(nfc->dev, "Using on-die ECC\n");
 		/* Keep these legacy BBT descriptors for ON_DIE situations */
 		chip->bbt_td = &bbt_main_descr;
 		chip->bbt_md = &bbt_mirror_descr;
 		fallthrough;
 	case NAND_ECC_ENGINE_TYPE_NONE:
 	case NAND_ECC_ENGINE_TYPE_SOFT:
+		dev_dbg(nfc->dev, "Using software ECC (Hamming 1-bit/512B)\n");
+		chip->ecc.write_page_raw = nand_monolithic_write_page_raw;
 		break;
 	case NAND_ECC_ENGINE_TYPE_ON_HOST:
+		dev_dbg(nfc->dev, "Using hardware ECC\n");
 		ret = pl35x_nand_init_hw_ecc_controller(nfc, chip);
 		if (ret)
 			return ret;
@@ -1104,7 +1118,7 @@ static void pl35x_nand_chips_cleanup(struct pl35x_nandc *nfc)
 
 static int pl35x_nand_chips_init(struct pl35x_nandc *nfc)
 {
-	struct device_node *np = nfc->dev->of_node, *nand_np;
+	struct device_node *np = nfc->dev->of_node;
 	int nchips = of_get_child_count(np);
 	int ret;
 
@@ -1114,10 +1128,9 @@ static int pl35x_nand_chips_init(struct pl35x_nandc *nfc)
 		return -EINVAL;
 	}
 
-	for_each_child_of_node(np, nand_np) {
+	for_each_child_of_node_scoped(np, nand_np) {
 		ret = pl35x_nand_chip_init(nfc, nand_np);
 		if (ret) {
-			of_node_put(nand_np);
 			pl35x_nand_chips_cleanup(nfc);
 			break;
 		}
@@ -1131,7 +1144,7 @@ static int pl35x_nand_probe(struct platform_device *pdev)
 	struct device *smc_dev = pdev->dev.parent;
 	struct amba_device *smc_amba = to_amba_device(smc_dev);
 	struct pl35x_nandc *nfc;
-	u32 ret;
+	int ret;
 
 	nfc = devm_kzalloc(&pdev->dev, sizeof(*nfc), GFP_KERNEL);
 	if (!nfc)
@@ -1163,13 +1176,11 @@ static int pl35x_nand_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int pl35x_nand_remove(struct platform_device *pdev)
+static void pl35x_nand_remove(struct platform_device *pdev)
 {
 	struct pl35x_nandc *nfc = platform_get_drvdata(pdev);
 
 	pl35x_nand_chips_cleanup(nfc);
-
-	return 0;
 }
 
 static const struct of_device_id pl35x_nand_of_match[] = {
@@ -1180,7 +1191,7 @@ MODULE_DEVICE_TABLE(of, pl35x_nand_of_match);
 
 static struct platform_driver pl35x_nandc_driver = {
 	.probe = pl35x_nand_probe,
-	.remove	= pl35x_nand_remove,
+	.remove = pl35x_nand_remove,
 	.driver = {
 		.name = PL35X_NANDC_DRIVER_NAME,
 		.of_match_table = pl35x_nand_of_match,
@@ -1189,6 +1200,5 @@ static struct platform_driver pl35x_nandc_driver = {
 module_platform_driver(pl35x_nandc_driver);
 
 MODULE_AUTHOR("Xilinx, Inc.");
-MODULE_ALIAS("platform:" PL35X_NANDC_DRIVER_NAME);
 MODULE_DESCRIPTION("ARM PL35X NAND controller driver");
 MODULE_LICENSE("GPL");

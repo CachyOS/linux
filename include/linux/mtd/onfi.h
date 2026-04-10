@@ -2,7 +2,7 @@
 /*
  * Copyright © 2000-2010 David Woodhouse <dwmw2@infradead.org>
  *			 Steven J. Hill <sjhill@realitydiluted.com>
- *			 Thomas Gleixner <tglx@linutronix.de>
+ *			 Thomas Gleixner <tglx@kernel.org>
  *
  * Contains all ONFI related definitions
  */
@@ -55,6 +55,7 @@
 #define ONFI_SUBFEATURE_PARAM_LEN	4
 
 /* ONFI optional commands SET/GET FEATURES supported? */
+#define ONFI_OPT_CMD_READ_CACHE		BIT(1)
 #define ONFI_OPT_CMD_SET_GET_FEATURES	BIT(2)
 
 struct nand_onfi_params {

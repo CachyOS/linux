@@ -230,7 +230,7 @@ static struct hh_flow_state *alloc_new_hh(struct list_head *head,
 		return NULL;
 	}
 	/* Create new entry. */
-	flow = kzalloc(sizeof(struct hh_flow_state), GFP_ATOMIC);
+	flow = kzalloc_obj(struct hh_flow_state, GFP_ATOMIC);
 	if (!flow)
 		return NULL;
 
@@ -508,16 +508,13 @@ static const struct nla_policy hhf_policy[TCA_HHF_MAX + 1] = {
 static int hhf_change(struct Qdisc *sch, struct nlattr *opt,
 		      struct netlink_ext_ack *extack)
 {
+	unsigned int dropped_pkts = 0, dropped_bytes = 0;
 	struct hhf_sched_data *q = qdisc_priv(sch);
 	struct nlattr *tb[TCA_HHF_MAX + 1];
-	unsigned int qlen, prev_backlog;
 	int err;
 	u64 non_hh_quantum;
 	u32 new_quantum = q->quantum;
 	u32 new_hhf_non_hh_weight = q->hhf_non_hh_weight;
-
-	if (!opt)
-		return -EINVAL;
 
 	err = nla_parse_nested_deprecated(tb, TCA_HHF_MAX, opt, hhf_policy,
 					  NULL);
@@ -537,38 +534,44 @@ static int hhf_change(struct Qdisc *sch, struct nlattr *opt,
 	sch_tree_lock(sch);
 
 	if (tb[TCA_HHF_BACKLOG_LIMIT])
-		sch->limit = nla_get_u32(tb[TCA_HHF_BACKLOG_LIMIT]);
+		WRITE_ONCE(sch->limit, nla_get_u32(tb[TCA_HHF_BACKLOG_LIMIT]));
 
-	q->quantum = new_quantum;
-	q->hhf_non_hh_weight = new_hhf_non_hh_weight;
+	WRITE_ONCE(q->quantum, new_quantum);
+	WRITE_ONCE(q->hhf_non_hh_weight, new_hhf_non_hh_weight);
 
 	if (tb[TCA_HHF_HH_FLOWS_LIMIT])
-		q->hh_flows_limit = nla_get_u32(tb[TCA_HHF_HH_FLOWS_LIMIT]);
+		WRITE_ONCE(q->hh_flows_limit,
+			   nla_get_u32(tb[TCA_HHF_HH_FLOWS_LIMIT]));
 
 	if (tb[TCA_HHF_RESET_TIMEOUT]) {
 		u32 us = nla_get_u32(tb[TCA_HHF_RESET_TIMEOUT]);
 
-		q->hhf_reset_timeout = usecs_to_jiffies(us);
+		WRITE_ONCE(q->hhf_reset_timeout,
+			   usecs_to_jiffies(us));
 	}
 
 	if (tb[TCA_HHF_ADMIT_BYTES])
-		q->hhf_admit_bytes = nla_get_u32(tb[TCA_HHF_ADMIT_BYTES]);
+		WRITE_ONCE(q->hhf_admit_bytes,
+			   nla_get_u32(tb[TCA_HHF_ADMIT_BYTES]));
 
 	if (tb[TCA_HHF_EVICT_TIMEOUT]) {
 		u32 us = nla_get_u32(tb[TCA_HHF_EVICT_TIMEOUT]);
 
-		q->hhf_evict_timeout = usecs_to_jiffies(us);
+		WRITE_ONCE(q->hhf_evict_timeout,
+			   usecs_to_jiffies(us));
 	}
 
-	qlen = sch->q.qlen;
-	prev_backlog = sch->qstats.backlog;
 	while (sch->q.qlen > sch->limit) {
-		struct sk_buff *skb = hhf_dequeue(sch);
+		struct sk_buff *skb = qdisc_dequeue_internal(sch, false);
 
+		if (!skb)
+			break;
+
+		dropped_pkts++;
+		dropped_bytes += qdisc_pkt_len(skb);
 		rtnl_kfree_skbs(skb, skb);
 	}
-	qdisc_tree_reduce_backlog(sch, qlen - sch->q.qlen,
-				  prev_backlog - sch->qstats.backlog);
+	qdisc_tree_reduce_backlog(sch, dropped_pkts, dropped_bytes);
 
 	sch_tree_unlock(sch);
 	return 0;
@@ -601,8 +604,7 @@ static int hhf_init(struct Qdisc *sch, struct nlattr *opt,
 
 	if (!q->hh_flows) {
 		/* Initialize heavy-hitter flow table. */
-		q->hh_flows = kvcalloc(HH_FLOWS_CNT, sizeof(struct list_head),
-				       GFP_KERNEL);
+		q->hh_flows = kvzalloc_objs(struct list_head, HH_FLOWS_CNT);
 		if (!q->hh_flows)
 			return -ENOMEM;
 		for (i = 0; i < HH_FLOWS_CNT; i++)
@@ -660,15 +662,18 @@ static int hhf_dump(struct Qdisc *sch, struct sk_buff *skb)
 	if (opts == NULL)
 		goto nla_put_failure;
 
-	if (nla_put_u32(skb, TCA_HHF_BACKLOG_LIMIT, sch->limit) ||
-	    nla_put_u32(skb, TCA_HHF_QUANTUM, q->quantum) ||
-	    nla_put_u32(skb, TCA_HHF_HH_FLOWS_LIMIT, q->hh_flows_limit) ||
+	if (nla_put_u32(skb, TCA_HHF_BACKLOG_LIMIT, READ_ONCE(sch->limit)) ||
+	    nla_put_u32(skb, TCA_HHF_QUANTUM, READ_ONCE(q->quantum)) ||
+	    nla_put_u32(skb, TCA_HHF_HH_FLOWS_LIMIT,
+			READ_ONCE(q->hh_flows_limit)) ||
 	    nla_put_u32(skb, TCA_HHF_RESET_TIMEOUT,
-			jiffies_to_usecs(q->hhf_reset_timeout)) ||
-	    nla_put_u32(skb, TCA_HHF_ADMIT_BYTES, q->hhf_admit_bytes) ||
+			jiffies_to_usecs(READ_ONCE(q->hhf_reset_timeout))) ||
+	    nla_put_u32(skb, TCA_HHF_ADMIT_BYTES,
+			READ_ONCE(q->hhf_admit_bytes)) ||
 	    nla_put_u32(skb, TCA_HHF_EVICT_TIMEOUT,
-			jiffies_to_usecs(q->hhf_evict_timeout)) ||
-	    nla_put_u32(skb, TCA_HHF_NON_HH_WEIGHT, q->hhf_non_hh_weight))
+			jiffies_to_usecs(READ_ONCE(q->hhf_evict_timeout))) ||
+	    nla_put_u32(skb, TCA_HHF_NON_HH_WEIGHT,
+			READ_ONCE(q->hhf_non_hh_weight)))
 		goto nla_put_failure;
 
 	return nla_nest_end(skb, opts);
@@ -705,6 +710,7 @@ static struct Qdisc_ops hhf_qdisc_ops __read_mostly = {
 	.dump_stats	=	hhf_dump_stats,
 	.owner		=	THIS_MODULE,
 };
+MODULE_ALIAS_NET_SCH("hhf");
 
 static int __init hhf_module_init(void)
 {

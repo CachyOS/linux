@@ -10,7 +10,7 @@
 
 
 /* driver definitions */
-#define DRIVER_AUTHOR "Joonyoung Shim <jy0922.shim@samsung.com>";
+#define DRIVER_AUTHOR "Joonyoung Shim <jy0922.shim@samsung.com>"
 #define DRIVER_CARD "Silicon Labs Si470x FM Radio"
 #define DRIVER_DESC "I2C radio driver for Si470x FM Radio Receivers"
 #define DRIVER_VERSION "1.0.2"
@@ -28,7 +28,7 @@
 /* I2C Device ID List */
 static const struct i2c_device_id si470x_i2c_id[] = {
 	/* Generic Entry */
-	{ "si470x", 0 },
+	{ "si470x" },
 	/* Terminating entry */
 	{ }
 };
@@ -461,7 +461,7 @@ err_initial:
 /*
  * si470x_i2c_remove - remove the device
  */
-static int si470x_i2c_remove(struct i2c_client *client)
+static void si470x_i2c_remove(struct i2c_client *client)
 {
 	struct si470x_device *radio = i2c_get_clientdata(client);
 
@@ -472,7 +472,6 @@ static int si470x_i2c_remove(struct i2c_client *client)
 
 	v4l2_ctrl_handler_free(&radio->hdl);
 	v4l2_device_unregister(&radio->v4l2_dev);
-	return 0;
 }
 
 
@@ -533,7 +532,7 @@ static struct i2c_driver si470x_i2c_driver = {
 		.pm		= &si470x_i2c_pm,
 #endif
 	},
-	.probe_new		= si470x_i2c_probe,
+	.probe			= si470x_i2c_probe,
 	.remove			= si470x_i2c_remove,
 	.id_table		= si470x_i2c_id,
 };

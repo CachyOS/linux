@@ -18,7 +18,7 @@ install_qdisc()
 {
 	local -a args=("$@")
 
-	tc qdisc add dev $swp3 root handle 108: red \
+	tc qdisc add dev $swp3 parent 1: handle 108: red \
 	   limit 1000000 min $BACKLOG max $((BACKLOG + 1)) \
 	   probability 1.0 avpkt 8000 burst 38 "${args[@]}"
 	sleep 1
@@ -26,54 +26,60 @@ install_qdisc()
 
 uninstall_qdisc()
 {
-	tc qdisc del dev $swp3 root
+	tc qdisc del dev $swp3 parent 1:
 }
 
 ecn_test()
 {
 	install_qdisc ecn
+	defer uninstall_qdisc
+
 	do_ecn_test 10 $BACKLOG
-	uninstall_qdisc
 }
 
 ecn_test_perband()
 {
 	install_qdisc ecn
+	defer uninstall_qdisc
+
 	do_ecn_test_perband 10 $BACKLOG
-	uninstall_qdisc
 }
 
 ecn_nodrop_test()
 {
 	install_qdisc ecn nodrop
+	defer uninstall_qdisc
+
 	do_ecn_nodrop_test 10 $BACKLOG
-	uninstall_qdisc
 }
 
 red_test()
 {
 	install_qdisc
+	defer uninstall_qdisc
+
 	do_red_test 10 $BACKLOG
-	uninstall_qdisc
 }
 
 mc_backlog_test()
 {
 	install_qdisc
+	defer uninstall_qdisc
+
 	# Note that the backlog value here does not correspond to RED
 	# configuration, but is arbitrary.
 	do_mc_backlog_test 10 $BACKLOG
-	uninstall_qdisc
 }
 
 red_mirror_test()
 {
 	install_qdisc qevent early_drop block 10
+	defer uninstall_qdisc
+
 	do_drop_mirror_test 10 $BACKLOG
-	uninstall_qdisc
 }
 
-bail_on_lldpad
+bail_on_lldpad "configure DCB" "configure Qdiscs"
 
 trap cleanup EXIT
 setup_prepare

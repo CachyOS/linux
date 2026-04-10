@@ -4,7 +4,7 @@
 #include <linux/err.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
@@ -559,7 +559,6 @@ static struct platform_driver qcom_ipq806x_usb_phy_driver = {
 
 module_platform_driver(qcom_ipq806x_usb_phy_driver);
 
-MODULE_ALIAS("platform:phy-qcom-ipq806x-usb");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Andy Gross <agross@codeaurora.org>");
 MODULE_AUTHOR("Ivan T. Ivanov <iivanov@mm-sol.com>");

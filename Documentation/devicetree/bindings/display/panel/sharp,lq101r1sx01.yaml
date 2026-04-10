@@ -30,9 +30,16 @@ allOf:
 
 properties:
   compatible:
-    const: sharp,lq101r1sx01
+    oneOf:
+      - items:
+          - const: sharp,lq101r1sx03
+          - const: sharp,lq101r1sx01
+      - enum:
+          - sharp,lq101r1sx01
 
-  reg: true
+  reg:
+    maxItems: 1
+
   power-supply: true
   backlight: true
 

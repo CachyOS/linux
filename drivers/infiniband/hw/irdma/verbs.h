@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB */
+/* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
 /* Copyright (c) 2015 - 2021 Intel Corporation */
 #ifndef IRDMA_VERBS_H
 #define IRDMA_VERBS_H
@@ -8,6 +8,7 @@
 
 #define IRDMA_PKEY_TBL_SZ		1
 #define IRDMA_DEFAULT_PKEY		0xFFFF
+#define IRDMA_SHADOW_PGCNT		1
 
 struct irdma_ucontext {
 	struct ib_ucontext ibucontext;
@@ -17,8 +18,11 @@ struct irdma_ucontext {
 	spinlock_t cq_reg_mem_list_lock; /* protect CQ memory list */
 	struct list_head qp_reg_mem_list;
 	spinlock_t qp_reg_mem_list_lock; /* protect QP memory list */
+	struct list_head srq_reg_mem_list;
+	spinlock_t srq_reg_mem_list_lock; /* protect SRQ memory list */
 	int abi_ver;
-	bool legacy_mode;
+	u8 legacy_mode : 1;
+	u8 use_raw_attrs : 1;
 };
 
 struct irdma_pd {
@@ -64,10 +68,16 @@ struct irdma_cq_mr {
 	bool split;
 };
 
+struct irdma_srq_mr {
+	struct irdma_hmc_pble srq_pbl;
+	dma_addr_t shadow;
+};
+
 struct irdma_qp_mr {
 	struct irdma_hmc_pble sq_pbl;
 	struct irdma_hmc_pble rq_pbl;
 	dma_addr_t shadow;
+	dma_addr_t rq_pa;
 	struct page *sq_page;
 };
 
@@ -84,6 +94,7 @@ struct irdma_pbl {
 	union {
 		struct irdma_qp_mr qp_mr;
 		struct irdma_cq_mr cq_mr;
+		struct irdma_srq_mr srq_mr;
 	};
 
 	bool pbl_allocated:1;
@@ -99,6 +110,9 @@ struct irdma_mr {
 		struct ib_mw ibmw;
 	};
 	struct ib_umem *region;
+	int access;
+	bool is_hwreg:1;
+	bool dma_mr:1;
 	u16 type;
 	u32 page_cnt;
 	u64 page_size;
@@ -109,22 +123,33 @@ struct irdma_mr {
 	struct irdma_pbl iwpbl;
 };
 
+struct irdma_srq {
+	struct ib_srq ibsrq;
+	struct irdma_sc_srq sc_srq __aligned(64);
+	struct irdma_dma_mem kmem;
+	u64 *srq_wrid_mem;
+	refcount_t refcnt;
+	spinlock_t lock; /* for poll srq */
+	struct irdma_pbl *iwpbl;
+	struct irdma_sge *sg_list;
+	u16 srq_head;
+	u32 srq_num;
+	u32 max_wr;
+	bool user_mode:1;
+};
+
 struct irdma_cq {
 	struct ib_cq ibcq;
 	struct irdma_sc_cq sc_cq;
-	u16 cq_head;
-	u16 cq_size;
-	u16 cq_num;
+	u32 cq_num;
 	bool user_mode;
 	atomic_t armed;
 	enum irdma_cmpl_notify last_notify;
-	u32 polled_cmpls;
-	u32 cq_mem_size;
 	struct irdma_dma_mem kmem;
 	struct irdma_dma_mem kmem_shadow;
+	struct completion free_cq;
+	refcount_t refcnt;
 	spinlock_t lock; /* for poll cq */
-	struct irdma_pbl *iwpbl;
-	struct irdma_pbl *iwpbl_shadow;
 	struct list_head resize_list;
 	struct irdma_cq_poll_info cur_cqe;
 	struct list_head cmpl_generated;
@@ -193,6 +218,7 @@ struct irdma_qp {
 	u8 flush_issued : 1;
 	u8 sig_all : 1;
 	u8 pau_mode : 1;
+	u8 suspend_pending : 1;
 	u8 rsvd : 1;
 	u8 iwarp_state;
 	u16 term_sq_flush_code;
@@ -230,6 +256,78 @@ static inline u16 irdma_fw_major_ver(struct irdma_sc_dev *dev)
 static inline u16 irdma_fw_minor_ver(struct irdma_sc_dev *dev)
 {
 	return (u16)FIELD_GET(IRDMA_FW_VER_MINOR, dev->feature_info[IRDMA_FEATURE_FW_INFO]);
+}
+
+static inline void set_ib_wc_op_sq(struct irdma_cq_poll_info *cq_poll_info,
+				   struct ib_wc *entry)
+{
+	switch (cq_poll_info->op_type) {
+	case IRDMA_OP_TYPE_RDMA_WRITE:
+	case IRDMA_OP_TYPE_RDMA_WRITE_SOL:
+		entry->opcode = IB_WC_RDMA_WRITE;
+		break;
+	case IRDMA_OP_TYPE_RDMA_READ_INV_STAG:
+	case IRDMA_OP_TYPE_RDMA_READ:
+		entry->opcode = IB_WC_RDMA_READ;
+		break;
+	case IRDMA_OP_TYPE_SEND_SOL:
+	case IRDMA_OP_TYPE_SEND_SOL_INV:
+	case IRDMA_OP_TYPE_SEND_INV:
+	case IRDMA_OP_TYPE_SEND:
+		entry->opcode = IB_WC_SEND;
+		break;
+	case IRDMA_OP_TYPE_FAST_REG_NSMR:
+		entry->opcode = IB_WC_REG_MR;
+		break;
+	case IRDMA_OP_TYPE_ATOMIC_COMPARE_AND_SWAP:
+		entry->opcode = IB_WC_COMP_SWAP;
+		break;
+	case IRDMA_OP_TYPE_ATOMIC_FETCH_AND_ADD:
+		entry->opcode = IB_WC_FETCH_ADD;
+		break;
+	case IRDMA_OP_TYPE_INV_STAG:
+		entry->opcode = IB_WC_LOCAL_INV;
+		break;
+	default:
+		entry->status = IB_WC_GENERAL_ERR;
+	}
+}
+
+static inline void set_ib_wc_op_rq_gen_3(struct irdma_cq_poll_info *info,
+					 struct ib_wc *entry)
+{
+	switch (info->op_type) {
+	case IRDMA_OP_TYPE_RDMA_WRITE:
+	case IRDMA_OP_TYPE_RDMA_WRITE_SOL:
+		entry->opcode = IB_WC_RECV_RDMA_WITH_IMM;
+		break;
+	default:
+		entry->opcode = IB_WC_RECV;
+	}
+}
+
+static inline void set_ib_wc_op_rq(struct irdma_cq_poll_info *cq_poll_info,
+				   struct ib_wc *entry, bool send_imm_support)
+{
+	/**
+	 * iWARP does not support sendImm, so the presence of Imm data
+	 * must be WriteImm.
+	 */
+	if (!send_imm_support) {
+		entry->opcode = cq_poll_info->imm_valid ?
+					IB_WC_RECV_RDMA_WITH_IMM :
+					IB_WC_RECV;
+		return;
+	}
+
+	switch (cq_poll_info->op_type) {
+	case IB_OPCODE_RDMA_WRITE_ONLY_WITH_IMMEDIATE:
+	case IB_OPCODE_RDMA_WRITE_LAST_WITH_IMMEDIATE:
+		entry->opcode = IB_WC_RECV_RDMA_WITH_IMM;
+		break;
+	default:
+		entry->opcode = IB_WC_RECV;
+	}
 }
 
 void irdma_mcast_mac(u32 *ip_addr, u8 *mac, bool ipv4);

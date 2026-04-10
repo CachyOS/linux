@@ -250,7 +250,7 @@ static int ad1836_resume(struct snd_soc_component *component)
 static int ad1836_probe(struct snd_soc_component *component)
 {
 	struct ad1836_priv *ad1836 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	int num_dacs, num_adcs;
 	int ret = 0;
 	int i;
@@ -332,7 +332,6 @@ static const struct snd_soc_component_driver soc_component_dev_ad1836 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct reg_default ad1836_reg_defaults[] = {
@@ -359,7 +358,7 @@ static const struct regmap_config ad1836_regmap_config = {
 	.max_register = AD1836_ADC_CTRL3,
 	.reg_defaults = ad1836_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(ad1836_reg_defaults),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 };
 
 static int ad1836_spi_probe(struct spi_device *spi)

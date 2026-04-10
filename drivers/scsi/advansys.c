@@ -2401,8 +2401,7 @@ static void asc_prt_scsi_host(struct Scsi_Host *s)
 	struct asc_board *boardp = shost_priv(s);
 
 	printk("Scsi_Host at addr 0x%p, device %s\n", s, dev_name(boardp->dev));
-	printk(" host_busy %d, host_no %d,\n",
-	       scsi_host_busy(s), s->host_no);
+	printk(" host_no %d,\n", s->host_no);
 
 	printk(" base 0x%lx, io_port 0x%lx, irq %d,\n",
 	       (ulong)s->base, (ulong)s->io_port, boardp->irq);
@@ -4496,7 +4495,7 @@ static int AdvInitAsc3550Driver(ADV_DVC_VAR *asc_dvc)
 
 	/*
 	 * Microcode operating variables for WDTR, SDTR, and command tag
-	 * queuing will be set in slave_configure() based on what a
+	 * queuing will be set in sdev_configure() based on what a
 	 * device reports it is capable of in Inquiry byte 7.
 	 *
 	 * If SCSI Bus Resets have been disabled, then directly set
@@ -5013,7 +5012,7 @@ static int AdvInitAsc38C0800Driver(ADV_DVC_VAR *asc_dvc)
 
 	/*
 	 * Microcode operating variables for WDTR, SDTR, and command tag
-	 * queuing will be set in slave_configure() based on what a
+	 * queuing will be set in sdev_configure() based on what a
 	 * device reports it is capable of in Inquiry byte 7.
 	 *
 	 * If SCSI Bus Resets have been disabled, then directly set
@@ -5508,7 +5507,7 @@ static int AdvInitAsc38C1600Driver(ADV_DVC_VAR *asc_dvc)
 
 	/*
 	 * Microcode operating variables for WDTR, SDTR, and command tag
-	 * queuing will be set in slave_configure() based on what a
+	 * queuing will be set in sdev_configure() based on what a
 	 * device reports it is capable of in Inquiry byte 7.
 	 *
 	 * If SCSI Bus Resets have been disabled, then directly set
@@ -7096,7 +7095,7 @@ static int advansys_reset(struct scsi_cmnd *scp)
  * ip[2]: cylinders
  */
 static int
-advansys_biosparam(struct scsi_device *sdev, struct block_device *bdev,
+advansys_biosparam(struct scsi_device *sdev, struct gendisk *unused,
 		   sector_t capacity, int ip[])
 {
 	struct asc_board *boardp = shost_priv(sdev->host);
@@ -7219,7 +7218,7 @@ static void AscAsyncFix(ASC_DVC_VAR *asc_dvc, struct scsi_device *sdev)
 }
 
 static void
-advansys_narrow_slave_configure(struct scsi_device *sdev, ASC_DVC_VAR *asc_dvc)
+advansys_narrow_sdev_configure(struct scsi_device *sdev, ASC_DVC_VAR *asc_dvc)
 {
 	ASC_SCSI_BIT_ID_TYPE tid_bit = 1 << sdev->id;
 	ASC_SCSI_BIT_ID_TYPE orig_use_tagged_qng = asc_dvc->use_tagged_qng;
@@ -7345,7 +7344,7 @@ static void advansys_wide_enable_ppr(ADV_DVC_VAR *adv_dvc,
 }
 
 static void
-advansys_wide_slave_configure(struct scsi_device *sdev, ADV_DVC_VAR *adv_dvc)
+advansys_wide_sdev_configure(struct scsi_device *sdev, ADV_DVC_VAR *adv_dvc)
 {
 	AdvPortAddr iop_base = adv_dvc->iop_base;
 	unsigned short tidmask = 1 << sdev->id;
@@ -7391,16 +7390,17 @@ advansys_wide_slave_configure(struct scsi_device *sdev, ADV_DVC_VAR *adv_dvc)
  * Set the number of commands to queue per device for the
  * specified host adapter.
  */
-static int advansys_slave_configure(struct scsi_device *sdev)
+static int advansys_sdev_configure(struct scsi_device *sdev,
+				   struct queue_limits *lim)
 {
 	struct asc_board *boardp = shost_priv(sdev->host);
 
 	if (ASC_NARROW_BOARD(boardp))
-		advansys_narrow_slave_configure(sdev,
-						&boardp->dvc_var.asc_dvc_var);
+		advansys_narrow_sdev_configure(sdev,
+					       &boardp->dvc_var.asc_dvc_var);
 	else
-		advansys_wide_slave_configure(sdev,
-						&boardp->dvc_var.adv_dvc_var);
+		advansys_wide_sdev_configure(sdev,
+					     &boardp->dvc_var.adv_dvc_var);
 
 	return 0;
 }
@@ -7486,8 +7486,8 @@ static int asc_build_req(struct asc_board *boardp, struct scsi_cmnd *scp,
 			return ASC_ERROR;
 		}
 
-		asc_sg_head = kzalloc(struct_size(asc_sg_head, sg_list, use_sg),
-				      GFP_ATOMIC);
+		asc_sg_head = kzalloc_flex(*asc_sg_head, sg_list, use_sg,
+					   GFP_ATOMIC);
 		if (!asc_sg_head) {
 			scsi_dma_unmap(scp);
 			set_host_byte(scp, DID_SOFT_ERROR);
@@ -8462,10 +8462,11 @@ static int asc_execute_scsi_cmnd(struct scsi_cmnd *scp)
  * This function always returns 0. Command return status is saved
  * in the 'scp' result field.
  */
-static int advansys_queuecommand_lck(struct scsi_cmnd *scp)
+static enum scsi_qc_status advansys_queuecommand_lck(struct scsi_cmnd *scp)
 {
 	struct Scsi_Host *shost = scp->device->host;
-	int asc_res, result = 0;
+	enum scsi_qc_status result = 0;
+	int asc_res;
 
 	ASC_STATS(shost, queuecommand);
 
@@ -10602,7 +10603,7 @@ static int AdvInitGetConfig(struct pci_dev *pdev, struct Scsi_Host *shost)
 }
 #endif
 
-static struct scsi_host_template advansys_template = {
+static const struct scsi_host_template advansys_template = {
 	.proc_name = DRV_NAME,
 #ifdef CONFIG_PROC_FS
 	.show_info = advansys_show_info,
@@ -10612,7 +10613,7 @@ static struct scsi_host_template advansys_template = {
 	.queuecommand = advansys_queuecommand,
 	.eh_host_reset_handler = advansys_reset,
 	.bios_param = advansys_biosparam,
-	.slave_configure = advansys_slave_configure,
+	.sdev_configure = advansys_sdev_configure,
 	.cmd_size = sizeof(struct advansys_cmd),
 };
 
@@ -11313,7 +11314,7 @@ static int advansys_eisa_probe(struct device *dev)
 	struct eisa_scsi_data *data;
 
 	err = -ENOMEM;
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = kzalloc_obj(*data);
 	if (!data)
 		goto fail;
 	ioport = edev->base_addr + 0xc30;
@@ -11408,7 +11409,7 @@ static struct eisa_driver advansys_eisa_driver = {
 };
 
 /* PCI Devices supported by this driver */
-static struct pci_device_id advansys_pci_tbl[] = {
+static const struct pci_device_id advansys_pci_tbl[] = {
 	{PCI_VENDOR_ID_ASP, PCI_DEVICE_ID_ASP_1200A,
 	 PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{PCI_VENDOR_ID_ASP, PCI_DEVICE_ID_ASP_ABP940,
@@ -11545,6 +11546,7 @@ static void __exit advansys_exit(void)
 module_init(advansys_init);
 module_exit(advansys_exit);
 
+MODULE_DESCRIPTION("AdvanSys SCSI Adapter driver");
 MODULE_LICENSE("GPL");
 MODULE_FIRMWARE("advansys/mcode.bin");
 MODULE_FIRMWARE("advansys/3550.bin");

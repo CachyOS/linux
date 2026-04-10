@@ -69,7 +69,7 @@ static struct {
 	struct irq_domain_ops	ops;
 } *clps711x_intc;
 
-static asmlinkage void __exception_irq_entry clps711x_irqh(struct pt_regs *regs)
+static void __exception_irq_entry clps711x_irqh(struct pt_regs *regs)
 {
 	u32 irqstat;
 
@@ -155,7 +155,7 @@ static int __init _clps711x_intc_init(struct device_node *np,
 {
 	int err;
 
-	clps711x_intc = kzalloc(sizeof(*clps711x_intc), GFP_KERNEL);
+	clps711x_intc = kzalloc_obj(*clps711x_intc);
 	if (!clps711x_intc)
 		return -ENOMEM;
 
@@ -184,14 +184,14 @@ static int __init _clps711x_intc_init(struct device_node *np,
 	clps711x_intc->ops.map = clps711x_intc_irq_map;
 	clps711x_intc->ops.xlate = irq_domain_xlate_onecell;
 	clps711x_intc->domain =
-		irq_domain_add_legacy(np, ARRAY_SIZE(clps711x_irqs),
-				      0, 0, &clps711x_intc->ops, NULL);
+		irq_domain_create_legacy(of_fwnode_handle(np), ARRAY_SIZE(clps711x_irqs), 0, 0,
+					 &clps711x_intc->ops, NULL);
 	if (!clps711x_intc->domain) {
 		err = -ENOMEM;
 		goto out_irqfree;
 	}
 
-	irq_set_default_host(clps711x_intc->domain);
+	irq_set_default_domain(clps711x_intc->domain);
 	set_handle_irq(clps711x_irqh);
 
 #ifdef CONFIG_FIQ
@@ -212,12 +212,6 @@ out_kfree:
 	return err;
 }
 
-void __init clps711x_intc_init(phys_addr_t base, resource_size_t size)
-{
-	BUG_ON(_clps711x_intc_init(NULL, base, size));
-}
-
-#ifdef CONFIG_IRQCHIP
 static int __init clps711x_intc_init_dt(struct device_node *np,
 					struct device_node *parent)
 {
@@ -231,4 +225,3 @@ static int __init clps711x_intc_init_dt(struct device_node *np,
 	return _clps711x_intc_init(np, res.start, resource_size(&res));
 }
 IRQCHIP_DECLARE(clps711x, "cirrus,ep7209-intc", clps711x_intc_init_dt);
-#endif

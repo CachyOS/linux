@@ -45,9 +45,14 @@ struct xvip_pipeline {
 	struct xvip_dma *output;
 };
 
-static inline struct xvip_pipeline *to_xvip_pipeline(struct media_entity *e)
+static inline struct xvip_pipeline *to_xvip_pipeline(struct video_device *vdev)
 {
-	return container_of(e->pipe, struct xvip_pipeline, pipe);
+	struct media_pipeline *pipe = video_device_pipeline(vdev);
+
+	if (!pipe)
+		return NULL;
+
+	return container_of(pipe, struct xvip_pipeline, pipe);
 }
 
 /**
@@ -92,7 +97,7 @@ struct xvip_dma {
 	struct dma_chan *dma;
 	unsigned int align;
 	struct dma_interleaved_template xt;
-	struct data_chunk sgl[1];
+	struct data_chunk sgl;
 };
 
 #define to_xvip_dma(vdev)	container_of(vdev, struct xvip_dma, video)

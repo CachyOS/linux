@@ -8,11 +8,12 @@
  * Author: Padmavathi Venna <padma.v@samsung.com>
  *
  * Driver for Audio Subsystem Clock Controller of S5PV210-compatible SoCs.
-*/
+ */
 
 #include <linux/io.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
+#include <linux/mod_devicetable.h>
 #include <linux/of_address.h>
 #include <linux/syscore_ops.h>
 #include <linux/init.h>
@@ -35,7 +36,7 @@ static unsigned long reg_save[][2] = {
 	{ASS_CLK_GATE, 0},
 };
 
-static int s5pv210_audss_clk_suspend(void)
+static int s5pv210_audss_clk_suspend(void *data)
 {
 	int i;
 
@@ -45,7 +46,7 @@ static int s5pv210_audss_clk_suspend(void)
 	return 0;
 }
 
-static void s5pv210_audss_clk_resume(void)
+static void s5pv210_audss_clk_resume(void *data)
 {
 	int i;
 
@@ -53,9 +54,13 @@ static void s5pv210_audss_clk_resume(void)
 		writel(reg_save[i][1], reg_base + reg_save[i][0]);
 }
 
-static struct syscore_ops s5pv210_audss_clk_syscore_ops = {
+static const struct syscore_ops s5pv210_audss_clk_syscore_ops = {
 	.suspend	= s5pv210_audss_clk_suspend,
 	.resume		= s5pv210_audss_clk_resume,
+};
+
+static struct syscore s5pv210_audss_clk_syscore = {
+	.ops = &s5pv210_audss_clk_syscore_ops,
 };
 #endif /* CONFIG_PM_SLEEP */
 
@@ -174,7 +179,7 @@ static int s5pv210_audss_clk_probe(struct platform_device *pdev)
 	}
 
 #ifdef CONFIG_PM_SLEEP
-	register_syscore_ops(&s5pv210_audss_clk_syscore_ops);
+	register_syscore(&s5pv210_audss_clk_syscore);
 #endif
 
 	return 0;

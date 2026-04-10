@@ -6,6 +6,7 @@
 #define _ASM_PTRACE_H
 
 #include <asm/page.h>
+#include <asm/irqflags.h>
 #include <asm/thread_info.h>
 #include <uapi/asm/ptrace.h>
 
@@ -29,12 +30,12 @@ struct pt_regs {
 	unsigned long csr_euen;
 	unsigned long csr_ecfg;
 	unsigned long csr_estat;
-	unsigned long __last[0];
+	unsigned long __last[];
 } __aligned(8);
 
-static inline int regs_irqs_disabled(struct pt_regs *regs)
+static __always_inline bool regs_irqs_disabled(struct pt_regs *regs)
 {
-	return arch_irqs_disabled_flags(regs->csr_prmd);
+	return !(regs->csr_prmd & CSR_PRMD_PIE);
 }
 
 static inline unsigned long kernel_stack_pointer(struct pt_regs *regs)
@@ -54,7 +55,7 @@ static inline void instruction_pointer_set(struct pt_regs *regs, unsigned long v
 
 /* Query offset/name of register from its name/offset */
 extern int regs_query_register_offset(const char *name);
-#define MAX_REG_OFFSET (offsetof(struct pt_regs, __last))
+#define MAX_REG_OFFSET (offsetof(struct pt_regs, __last) - sizeof(unsigned long))
 
 /**
  * regs_get_register() - get register value from its offset
@@ -109,6 +110,40 @@ static inline unsigned long regs_get_kernel_stack_nth(struct pt_regs *regs, unsi
 
 struct task_struct;
 
+/**
+ * regs_get_kernel_argument() - get Nth function argument in kernel
+ * @regs:       pt_regs of that context
+ * @n:          function argument number (start from 0)
+ *
+ * regs_get_argument() returns @n th argument of the function call.
+ * Note that this chooses most probably assignment, in some case
+ * it can be incorrect.
+ * This is expected to be called from kprobes or ftrace with regs
+ * where the top of stack is the return address.
+ */
+static inline unsigned long regs_get_kernel_argument(struct pt_regs *regs,
+						     unsigned int n)
+{
+#define NR_REG_ARGUMENTS 8
+	static const unsigned int args[] = {
+		offsetof(struct pt_regs, regs[4]),
+		offsetof(struct pt_regs, regs[5]),
+		offsetof(struct pt_regs, regs[6]),
+		offsetof(struct pt_regs, regs[7]),
+		offsetof(struct pt_regs, regs[8]),
+		offsetof(struct pt_regs, regs[9]),
+		offsetof(struct pt_regs, regs[10]),
+		offsetof(struct pt_regs, regs[11]),
+	};
+
+	if (n < NR_REG_ARGUMENTS)
+		return regs_get_register(regs, args[n]);
+	else {
+		n -= NR_REG_ARGUMENTS;
+		return regs_get_kernel_stack_nth(regs, n);
+	}
+}
+
 /*
  * Does the process account for user or for system time?
  */
@@ -119,10 +154,15 @@ static inline long regs_return_value(struct pt_regs *regs)
 	return regs->regs[4];
 }
 
+static inline void regs_set_return_value(struct pt_regs *regs, unsigned long val)
+{
+	regs->regs[4] = val;
+}
+
 #define instruction_pointer(regs) ((regs)->csr_era)
 #define profile_pc(regs) instruction_pointer(regs)
 
-extern void die(const char *, struct pt_regs *) __noreturn;
+extern void die(const char *str, struct pt_regs *regs);
 
 static inline void die_if_kernel(const char *str, struct pt_regs *regs)
 {
@@ -133,7 +173,7 @@ static inline void die_if_kernel(const char *str, struct pt_regs *regs)
 #define current_pt_regs()						\
 ({									\
 	unsigned long sp = (unsigned long)__builtin_frame_address(0);	\
-	(struct pt_regs *)((sp | (THREAD_SIZE - 1)) + 1 - 32) - 1;	\
+	(struct pt_regs *)((sp | (THREAD_SIZE - 1)) + 1) - 1;		\
 })
 
 /* Helpers for working with the user stack pointer */
@@ -148,5 +188,9 @@ static inline void user_stack_pointer_set(struct pt_regs *regs,
 {
 	regs->regs[3] = val;
 }
+
+#ifdef CONFIG_HAVE_HW_BREAKPOINT
+#define arch_has_single_step()		(1)
+#endif
 
 #endif /* _ASM_PTRACE_H */

@@ -32,13 +32,13 @@ Temperature sensors and fans can be queried and set via the standard
 =============================== ======= =======================================
 Name				Perm	Description
 =============================== ======= =======================================
-fan[1-3]_input                  RO      Fan speed in RPM.
-fan[1-3]_label                  RO      Fan label.
-fan[1-3]_min                    RO      Minimal Fan speed in RPM
-fan[1-3]_max                    RO      Maximal Fan speed in RPM
-fan[1-3]_target                 RO      Expected Fan speed in RPM
-pwm[1-3]                        RW      Control the fan PWM duty-cycle.
-pwm1_enable                     WO      Enable or disable automatic BIOS fan
+fan[1-4]_input                  RO      Fan speed in RPM.
+fan[1-4]_label                  RO      Fan label.
+fan[1-4]_min                    RO      Minimal Fan speed in RPM
+fan[1-4]_max                    RO      Maximal Fan speed in RPM
+fan[1-4]_target                 RO      Expected Fan speed in RPM
+pwm[1-4]                        RW      Control the fan PWM duty-cycle.
+pwm[1-4]_enable                 RW/WO   Enable or disable automatic BIOS fan
                                         control (not supported on all laptops,
                                         see below for details).
 temp[1-10]_input                RO      Temperature reading in milli-degrees
@@ -46,26 +46,43 @@ temp[1-10]_input                RO      Temperature reading in milli-degrees
 temp[1-10]_label                RO      Temperature sensor label.
 =============================== ======= =======================================
 
-Disabling automatic BIOS fan control
-------------------------------------
+Due to the nature of the SMM interface, each pwmX attribute controls
+fan number X.
 
-On some laptops the BIOS automatically sets fan speed every few
-seconds. Therefore the fan speed set by mean of this driver is quickly
-overwritten.
+Enabling/Disabling automatic BIOS fan control
+---------------------------------------------
 
-There is experimental support for disabling automatic BIOS fan
-control, at least on laptops where the corresponding SMM command is
-known, by writing the value ``1`` in the attribute ``pwm1_enable``
-(writing ``2`` enables automatic BIOS control again). Even if you have
-more than one fan, all of them are set to either enabled or disabled
-automatic fan control at the same time and, notwithstanding the name,
-``pwm1_enable`` sets automatic control for all fans.
+There exist two methods for enabling/disabling automatic BIOS fan control:
 
-If ``pwm1_enable`` is not available, then it means that SMM codes for
-enabling and disabling automatic BIOS fan control are not whitelisted
-for your hardware. It is possible that codes that work for other
-laptops actually work for yours as well, or that you have to discover
-new codes.
+1. Separate SMM commands to enable/disable automatic BIOS fan control for all fans.
+
+2. A special fan state that enables automatic BIOS fan control for a individual fan.
+
+The driver cannot reliably detect what method should be used on a given
+device, so instead the following heuristic is used:
+
+- use fan state 3 for enabling BIOS fan control if the maximum fan state
+  setable by the user is smaller than 3 (default setting).
+
+- use separate SMM commands if device is whitelisted to support them.
+
+When using the first method, each fan will have a standard ``pwmX_enable``
+sysfs attribute. Writing ``1`` into this attribute will disable automatic
+BIOS fan control for the associated fan and set it to maximum speed. Enabling
+BIOS fan control again can be achieved by writing ``2`` into this attribute.
+Reading this sysfs attributes returns the current setting as reported by
+the underlying hardware.
+
+When using the second method however, only the ``pwm1_enable`` sysfs attribute
+will be available to enable/disable automatic BIOS fan control globaly for all
+fans available on a given device. Additionally, this sysfs attribute is write-only
+as there exists no SMM command for reading the current fan control setting.
+
+If no ``pwmX_enable`` attributes are available, then it means that the driver
+cannot use the first method and the SMM codes for enabling and disabling automatic
+BIOS fan control are not whitelisted for your device. It is possible that codes
+that work for other laptops actually work for yours as well, or that you have to
+discover new codes.
 
 Check the list ``i8k_whitelist_fan_control`` in file
 ``drivers/hwmon/dell-smm-hwmon.c`` in the kernel tree: as a first
@@ -90,7 +107,7 @@ Again, when you find new codes, we'd be happy to have your patches!
 ---------------------------
 
 The driver also exports the fans as thermal cooling devices with
-``type`` set to ``dell-smm-fan[1-3]``. This allows for easy fan control
+``type`` set to ``dell-smm-fan[1-4]``. This allows for easy fan control
 using one of the thermal governors.
 
 Module parameters
@@ -183,8 +200,7 @@ SMM Interface
 The driver uses the SMM interface to send commands to the system BIOS.
 This interface is normally used by Dell's 32-bit diagnostic program or
 on newer notebook models by the buildin BIOS diagnostics.
-The SMM is triggered by writing to the special ioports ``0xb2`` and ``0x84``,
-and may cause short hangs when the BIOS code is taking too long to
+The SMM may cause short hangs when the BIOS code is taking too long to
 execute.
 
 The SMM handler inside the system BIOS looks at the contents of the
@@ -207,7 +223,40 @@ The SMM handler can signal a failure by either:
 
 - setting the lower sixteen bits of ``eax`` to ``0xffff``
 - not modifying ``eax`` at all
-- setting the carry flag
+- setting the carry flag (legacy SMM interface only)
+
+Legacy SMM Interface
+--------------------
+
+When using the legacy SMM interface, a SMM is triggered by writing the least significant byte
+of the command code to the special ioports ``0xb2`` and ``0x84``. This interface is not
+described inside the ACPI tables and can thus only be detected by issuing a test SMM call.
+
+WMI SMM Interface
+-----------------
+
+On modern Dell machines, the SMM calls are done over ACPI WMI:
+
+::
+
+ #pragma namespace("\\\\.\\root\\dcim\\sysman\\diagnostics")
+ [WMI, Provider("Provider_DiagnosticsServices"), Dynamic, Locale("MS\\0x409"),
+  Description("RunDellDiag"), guid("{F1DDEE52-063C-4784-A11E-8A06684B9B01}")]
+ class LegacyDiags {
+  [key, read] string InstanceName;
+  [read] boolean Active;
+
+  [WmiMethodId(1), Implemented, read, write, Description("Legacy Method ")]
+  void Execute([in, out] uint32 EaxLen, [in, out, WmiSizeIs("EaxLen") : ToInstance] uint8 EaxVal[],
+               [in, out] uint32 EbxLen, [in, out, WmiSizeIs("EbxLen") : ToInstance] uint8 EbxVal[],
+               [in, out] uint32 EcxLen, [in, out, WmiSizeIs("EcxLen") : ToInstance] uint8 EcxVal[],
+               [in, out] uint32 EdxLen, [in, out, WmiSizeIs("EdxLen") : ToInstance] uint8 EdxVal[]);
+ };
+
+Some machines support only the WMI SMM interface, while some machines support both interfaces.
+The driver automatically detects which interfaces are present and will use the WMI SMM interface
+if the legacy SMM interface is not present. The WMI SMM interface is usually slower than the
+legacy SMM interface since ACPI methods need to be called in order to trigger a SMM.
 
 SMM command codes
 -----------------
@@ -324,6 +373,8 @@ The SMM calls can behave erratic on some machines:
 Firmware Bug                                            Affected Machines
 ======================================================= =================
 Reading of fan states return spurious errors.           Precision 490
+
+                                                        OptiPlex 7060
 
 Reading of fan types causes erratic fan behaviour.      Studio XPS 8000
 

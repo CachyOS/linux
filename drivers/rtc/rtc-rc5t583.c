@@ -245,7 +245,7 @@ static int rc5t583_rtc_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "IRQ is not free.\n");
 		return ret;
 	}
-	device_init_wakeup(&pdev->dev, 1);
+	device_init_wakeup(&pdev->dev, true);
 
 	ricoh_rtc->rtc = devm_rtc_device_register(&pdev->dev, pdev->name,
 		&rc5t583_rtc_ops, THIS_MODULE);
@@ -262,12 +262,11 @@ static int rc5t583_rtc_probe(struct platform_device *pdev)
  * Disable rc5t583 RTC interrupts.
  * Sets status flag to free.
  */
-static int rc5t583_rtc_remove(struct platform_device *pdev)
+static void rc5t583_rtc_remove(struct platform_device *pdev)
 {
 	struct rc5t583_rtc *rc5t583_rtc = platform_get_drvdata(pdev);
 
 	rc5t583_rtc_alarm_irq_enable(&rc5t583_rtc->rtc->dev, 0);
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -309,4 +308,5 @@ static struct platform_driver rc5t583_rtc_driver = {
 module_platform_driver(rc5t583_rtc_driver);
 MODULE_ALIAS("platform:rtc-rc5t583");
 MODULE_AUTHOR("Venu Byravarasu <vbyravarasu@nvidia.com>");
+MODULE_DESCRIPTION("RICOH 5T583 RTC driver");
 MODULE_LICENSE("GPL v2");

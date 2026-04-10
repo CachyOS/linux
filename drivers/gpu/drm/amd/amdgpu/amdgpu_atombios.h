@@ -89,8 +89,7 @@ struct atom_memory_info {
 
 #define MAX_AC_TIMING_ENTRIES 16
 
-struct atom_memory_clock_range_table
-{
+struct atom_memory_clock_range_table {
 	u8 num_entries;
 	u8 rsv[3];
 	u32 mclk[MAX_AC_TIMING_ENTRIES];
@@ -118,14 +117,12 @@ struct atom_mc_reg_table {
 
 #define MAX_VOLTAGE_ENTRIES 32
 
-struct atom_voltage_table_entry
-{
+struct atom_voltage_table_entry {
 	u16 value;
 	u32 smio_low;
 };
 
-struct atom_voltage_table
-{
+struct atom_voltage_table {
 	u32 count;
 	u32 mask_low;
 	u32 phase_delay;
@@ -139,6 +136,7 @@ amdgpu_atombios_lookup_gpio(struct amdgpu_device *adev,
 struct amdgpu_i2c_bus_rec amdgpu_atombios_lookup_i2c_gpio(struct amdgpu_device *adev,
 							  uint8_t id);
 void amdgpu_atombios_i2c_init(struct amdgpu_device *adev);
+void amdgpu_atombios_oem_i2c_init(struct amdgpu_device *adev, u8 i2c_id);
 
 bool amdgpu_atombios_has_dce_engine_info(struct amdgpu_device *adev);
 
@@ -166,8 +164,8 @@ int amdgpu_atombios_get_memory_pll_dividers(struct amdgpu_device *adev,
 					    bool strobe_mode,
 					    struct atom_mpll_param *mpll_param);
 
-void amdgpu_atombios_set_engine_dram_timings(struct amdgpu_device *adev,
-					     u32 eng_clock, u32 mem_clock);
+int amdgpu_atombios_set_engine_dram_timings(struct amdgpu_device *adev,
+					    u32 eng_clock, u32 mem_clock);
 
 bool
 amdgpu_atombios_is_voltage_gpio(struct amdgpu_device *adev,
@@ -217,5 +215,6 @@ int amdgpu_atombios_get_data_table(struct amdgpu_device *adev,
 
 void amdgpu_atombios_fini(struct amdgpu_device *adev);
 int amdgpu_atombios_init(struct amdgpu_device *adev);
+int amdgpu_atombios_sysfs_init(struct amdgpu_device *adev);
 
 #endif

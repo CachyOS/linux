@@ -92,7 +92,6 @@ struct rtrs_permit {
  * rtrs_clt_io_req - describes one inflight IO request
  */
 struct rtrs_clt_io_req {
-	struct list_head        list;
 	struct rtrs_iu		*iu;
 	struct scatterlist	*sglist; /* list holding user data */
 	unsigned int		sg_cnt;
@@ -103,19 +102,16 @@ struct rtrs_clt_io_req {
 	bool			in_use;
 	enum rtrs_mp_policy     mp_policy;
 	struct rtrs_clt_con	*con;
-	struct rtrs_sg_desc	*desc;
 	struct ib_sge		*sge;
 	struct rtrs_permit	*permit;
 	enum dma_data_direction dir;
 	void			(*conf)(void *priv, int errno);
-	unsigned long		start_jiffies;
 
 	struct ib_mr		*mr;
 	struct ib_cqe		inv_cqe;
 	struct completion	inv_comp;
 	int			inv_errno;
 	bool			need_inv_comp;
-	bool			need_inv;
 	refcount_t		ref;
 };
 
@@ -213,6 +209,8 @@ int rtrs_clt_remove_path_from_sysfs(struct rtrs_clt_path *path,
 void rtrs_clt_set_max_reconnect_attempts(struct rtrs_clt_sess *clt, int value);
 int rtrs_clt_get_max_reconnect_attempts(const struct rtrs_clt_sess *clt);
 void free_path(struct rtrs_clt_path *clt_path);
+void rtrs_clt_ib_event_handler(struct ib_event_handler *handler,
+			       struct ib_event *ibevent);
 
 /* rtrs-clt-stats.c */
 

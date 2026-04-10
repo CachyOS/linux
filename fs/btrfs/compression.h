@@ -7,8 +7,19 @@
 #define BTRFS_COMPRESSION_H
 
 #include <linux/sizes.h>
+#include <linux/mm.h>
+#include <linux/list.h>
+#include <linux/workqueue.h>
+#include <linux/wait.h>
+#include <linux/pagemap.h>
+#include "bio.h"
+#include "fs.h"
+#include "btrfs_inode.h"
 
+struct address_space;
+struct inode;
 struct btrfs_inode;
+struct btrfs_ordered_extent;
 
 /*
  * We want to make sure that amount of RAM required to uncompress an extent is
@@ -22,6 +33,7 @@ struct btrfs_inode;
 
 /* Maximum length of compressed data stored on disk */
 #define BTRFS_MAX_COMPRESSED		(SZ_128K)
+#define BTRFS_MAX_COMPRESSED_PAGES	(BTRFS_MAX_COMPRESSED / PAGE_SIZE)
 static_assert((BTRFS_MAX_COMPRESSED % PAGE_SIZE) == 0);
 
 /* Maximum size of data before compression */
@@ -30,18 +42,6 @@ static_assert((BTRFS_MAX_COMPRESSED % PAGE_SIZE) == 0);
 #define	BTRFS_ZLIB_DEFAULT_LEVEL		3
 
 struct compressed_bio {
-	/* Number of sectors with unfinished IO (unsubmitted or unfinished) */
-	refcount_t pending_sectors;
-
-	/* Number of compressed pages in the array */
-	unsigned int nr_pages;
-
-	/* the pages with the compressed data on them */
-	struct page **compressed_pages;
-
-	/* inode that owns this data */
-	struct inode *inode;
-
 	/* starting offset in the inode for our pages */
 	u64 start;
 
@@ -57,63 +57,49 @@ struct compressed_bio {
 	/* Whether this is a write for writeback. */
 	bool writeback;
 
-	/* IO errors */
-	blk_status_t status;
-	int mirror_num;
+	/* For reads, this is the bio we are copying the data into. */
+	struct btrfs_bio *orig_bbio;
 
-	/* for reads, this is the bio we are copying the data into */
-	struct bio *orig_bio;
-
-	/*
-	 * the start of a variable length array of checksums only
-	 * used by reads
-	 */
-	u8 sums[];
+	/* Must be last. */
+	struct btrfs_bio bbio;
 };
 
-static inline unsigned int btrfs_compress_type(unsigned int type_level)
+static inline struct btrfs_fs_info *cb_to_fs_info(const struct compressed_bio *cb)
 {
-	return (type_level & 0xF);
+	return cb->bbio.inode->root->fs_info;
 }
 
-static inline unsigned int btrfs_compress_level(unsigned int type_level)
+/* @range_end must be exclusive. */
+static inline u32 btrfs_calc_input_length(struct folio *folio, u64 range_end, u64 cur)
 {
-	return ((type_level & 0xF0) >> 4);
+	/* @cur must be inside the folio. */
+	ASSERT(folio_pos(folio) <= cur);
+	ASSERT(cur < folio_next_pos(folio));
+	return umin(range_end, folio_next_pos(folio)) - cur;
 }
 
-void __init btrfs_init_compress(void);
+int btrfs_alloc_compress_wsm(struct btrfs_fs_info *fs_info);
+void btrfs_free_compress_wsm(struct btrfs_fs_info *fs_info);
+
+int __init btrfs_init_compress(void);
 void __cold btrfs_exit_compress(void);
 
-int btrfs_compress_pages(unsigned int type_level, struct address_space *mapping,
-			 u64 start, struct page **pages,
-			 unsigned long *out_pages,
-			 unsigned long *total_in,
-			 unsigned long *total_out);
-int btrfs_decompress(int type, unsigned char *data_in, struct page *dest_page,
-		     unsigned long start_byte, size_t srclen, size_t destlen);
+bool btrfs_compress_level_valid(unsigned int type, int level);
+int btrfs_decompress(int type, const u8 *data_in, struct folio *dest_folio,
+		     unsigned long dest_pgoff, size_t srclen, size_t destlen);
 int btrfs_decompress_buf2page(const char *buf, u32 buf_len,
 			      struct compressed_bio *cb, u32 decompressed);
 
-blk_status_t btrfs_submit_compressed_write(struct btrfs_inode *inode, u64 start,
-				  unsigned int len, u64 disk_start,
-				  unsigned int compressed_len,
-				  struct page **compressed_pages,
-				  unsigned int nr_pages,
-				  unsigned int write_flags,
-				  struct cgroup_subsys_state *blkcg_css,
-				  bool writeback);
-void btrfs_submit_compressed_read(struct inode *inode, struct bio *bio,
-				  int mirror_num);
+struct compressed_bio *btrfs_alloc_compressed_write(struct btrfs_inode *inode,
+						    u64 start, u64 len);
+void btrfs_submit_compressed_write(struct btrfs_ordered_extent *ordered,
+				   struct compressed_bio *cb);
+void btrfs_submit_compressed_read(struct btrfs_bio *bbio);
 
-unsigned int btrfs_compress_str2level(unsigned int type, const char *str);
+int btrfs_compress_str2level(unsigned int type, const char *str, int *level_ret);
 
-enum btrfs_compression_type {
-	BTRFS_COMPRESS_NONE  = 0,
-	BTRFS_COMPRESS_ZLIB  = 1,
-	BTRFS_COMPRESS_LZO   = 2,
-	BTRFS_COMPRESS_ZSTD  = 3,
-	BTRFS_NR_COMPRESS_TYPES = 4,
-};
+struct folio *btrfs_alloc_compr_folio(struct btrfs_fs_info *fs_info);
+void btrfs_free_compr_folio(struct folio *folio);
 
 struct workspace_manager {
 	struct list_head idle_ws;
@@ -126,62 +112,72 @@ struct workspace_manager {
 	wait_queue_head_t ws_wait;
 };
 
-struct list_head *btrfs_get_workspace(int type, unsigned int level);
-void btrfs_put_workspace(int type, struct list_head *ws);
+struct list_head *btrfs_get_workspace(struct btrfs_fs_info *fs_info, int type, int level);
+void btrfs_put_workspace(struct btrfs_fs_info *fs_info, int type, struct list_head *ws);
 
-struct btrfs_compress_op {
-	struct workspace_manager *workspace_manager;
+struct btrfs_compress_levels {
 	/* Maximum level supported by the compression algorithm */
-	unsigned int max_level;
-	unsigned int default_level;
+	int min_level;
+	int max_level;
+	int default_level;
 };
 
 /* The heuristic workspaces are managed via the 0th workspace manager */
 #define BTRFS_NR_WORKSPACE_MANAGERS	BTRFS_NR_COMPRESS_TYPES
 
-extern const struct btrfs_compress_op btrfs_heuristic_compress;
-extern const struct btrfs_compress_op btrfs_zlib_compress;
-extern const struct btrfs_compress_op btrfs_lzo_compress;
-extern const struct btrfs_compress_op btrfs_zstd_compress;
+extern const struct btrfs_compress_levels btrfs_heuristic_compress;
+extern const struct btrfs_compress_levels btrfs_zlib_compress;
+extern const struct btrfs_compress_levels btrfs_lzo_compress;
+extern const struct btrfs_compress_levels btrfs_zstd_compress;
 
 const char* btrfs_compress_type2str(enum btrfs_compression_type type);
 bool btrfs_compress_is_valid_type(const char *str, size_t len);
 
-int btrfs_compress_heuristic(struct inode *inode, u64 start, u64 end);
+int btrfs_compress_heuristic(struct btrfs_inode *inode, u64 start, u64 end);
 
-int zlib_compress_pages(struct list_head *ws, struct address_space *mapping,
-		u64 start, struct page **pages, unsigned long *out_pages,
-		unsigned long *total_in, unsigned long *total_out);
+int btrfs_compress_filemap_get_folio(struct address_space *mapping, u64 start,
+				     struct folio **in_folio_ret);
+struct compressed_bio *btrfs_compress_bio(struct btrfs_inode *inode,
+					  u64 start, u32 len, unsigned int type,
+					  int level, blk_opf_t write_flags);
+
+static inline void cleanup_compressed_bio(struct compressed_bio *cb)
+{
+	struct bio *bio = &cb->bbio.bio;
+	struct folio_iter fi;
+
+	bio_for_each_folio_all(fi, bio)
+		btrfs_free_compr_folio(fi.folio);
+	bio_put(bio);
+}
+
+int zlib_compress_bio(struct list_head *ws, struct compressed_bio *cb);
 int zlib_decompress_bio(struct list_head *ws, struct compressed_bio *cb);
-int zlib_decompress(struct list_head *ws, unsigned char *data_in,
-		struct page *dest_page, unsigned long start_byte, size_t srclen,
+int zlib_decompress(struct list_head *ws, const u8 *data_in,
+		struct folio *dest_folio, unsigned long dest_pgoff, size_t srclen,
 		size_t destlen);
-struct list_head *zlib_alloc_workspace(unsigned int level);
+struct list_head *zlib_alloc_workspace(struct btrfs_fs_info *fs_info, unsigned int level);
 void zlib_free_workspace(struct list_head *ws);
-struct list_head *zlib_get_workspace(unsigned int level);
+struct list_head *zlib_get_workspace(struct btrfs_fs_info *fs_info, unsigned int level);
 
-int lzo_compress_pages(struct list_head *ws, struct address_space *mapping,
-		u64 start, struct page **pages, unsigned long *out_pages,
-		unsigned long *total_in, unsigned long *total_out);
+int lzo_compress_bio(struct list_head *ws, struct compressed_bio *cb);
 int lzo_decompress_bio(struct list_head *ws, struct compressed_bio *cb);
-int lzo_decompress(struct list_head *ws, unsigned char *data_in,
-		struct page *dest_page, unsigned long start_byte, size_t srclen,
+int lzo_decompress(struct list_head *ws, const u8 *data_in,
+		struct folio *dest_folio, unsigned long dest_pgoff, size_t srclen,
 		size_t destlen);
-struct list_head *lzo_alloc_workspace(unsigned int level);
+struct list_head *lzo_alloc_workspace(struct btrfs_fs_info *fs_info);
 void lzo_free_workspace(struct list_head *ws);
 
-int zstd_compress_pages(struct list_head *ws, struct address_space *mapping,
-		u64 start, struct page **pages, unsigned long *out_pages,
-		unsigned long *total_in, unsigned long *total_out);
+int zstd_compress_bio(struct list_head *ws, struct compressed_bio *cb);
 int zstd_decompress_bio(struct list_head *ws, struct compressed_bio *cb);
-int zstd_decompress(struct list_head *ws, unsigned char *data_in,
-		struct page *dest_page, unsigned long start_byte, size_t srclen,
+int zstd_decompress(struct list_head *ws, const u8 *data_in,
+		struct folio *dest_folio, unsigned long dest_pgoff, size_t srclen,
 		size_t destlen);
-void zstd_init_workspace_manager(void);
-void zstd_cleanup_workspace_manager(void);
-struct list_head *zstd_alloc_workspace(unsigned int level);
+int zstd_alloc_workspace_manager(struct btrfs_fs_info *fs_info);
+void zstd_free_workspace_manager(struct btrfs_fs_info *fs_info);
+struct list_head *zstd_alloc_workspace(struct btrfs_fs_info *fs_info, int level);
 void zstd_free_workspace(struct list_head *ws);
-struct list_head *zstd_get_workspace(unsigned int level);
-void zstd_put_workspace(struct list_head *ws);
+struct list_head *zstd_get_workspace(struct btrfs_fs_info *fs_info, int level);
+void zstd_put_workspace(struct btrfs_fs_info *fs_info, struct list_head *ws);
 
 #endif

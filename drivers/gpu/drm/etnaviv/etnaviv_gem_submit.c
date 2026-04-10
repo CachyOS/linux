@@ -4,9 +4,9 @@
  */
 
 #include <drm/drm_file.h>
+#include <drm/drm_print.h>
 #include <linux/dma-fence-array.h>
 #include <linux/file.h>
-#include <linux/pm_runtime.h>
 #include <linux/dma-resv.h>
 #include <linux/sync_file.h>
 #include <linux/uaccess.h>
@@ -38,8 +38,7 @@ static struct etnaviv_gem_submit *submit_create(struct drm_device *dev,
 	if (!submit)
 		return NULL;
 
-	submit->pmrs = kcalloc(nr_pmrs, sizeof(struct etnaviv_perfmon_request),
-			       GFP_KERNEL);
+	submit->pmrs = kzalloc_objs(struct etnaviv_perfmon_request, nr_pmrs);
 	if (!submit->pmrs) {
 		kfree(submit);
 		return NULL;
@@ -362,9 +361,6 @@ static void submit_cleanup(struct kref *kref)
 			container_of(kref, struct etnaviv_gem_submit, refcount);
 	unsigned i;
 
-	if (submit->runtime_resumed)
-		pm_runtime_put_autosuspend(submit->gpu->dev);
-
 	if (submit->cmdbuf.suballoc)
 		etnaviv_cmdbuf_free(&submit->cmdbuf);
 
@@ -393,12 +389,16 @@ static void submit_cleanup(struct kref *kref)
 	wake_up_all(&submit->gpu->fence_event);
 
 	if (submit->out_fence) {
-		/* first remove from IDR, so fence can not be found anymore */
-		mutex_lock(&submit->gpu->fence_lock);
-		idr_remove(&submit->gpu->fence_idr, submit->out_fence_id);
-		mutex_unlock(&submit->gpu->fence_lock);
+		/*
+		 * Remove from user fence array before dropping the reference,
+		 * so fence can not be found in lookup anymore.
+		 */
+		xa_erase(&submit->gpu->user_fences, submit->out_fence_id);
 		dma_fence_put(submit->out_fence);
 	}
+
+	put_pid(submit->pid);
+
 	kfree(submit->pmrs);
 	kfree(submit);
 }
@@ -422,6 +422,7 @@ int etnaviv_ioctl_gem_submit(struct drm_device *dev, void *data,
 	struct sync_file *sync_file = NULL;
 	struct ww_acquire_ctx ticket;
 	int out_fence_fd = -1;
+	struct pid *pid = get_pid(task_pid(current));
 	void *stream;
 	int ret;
 
@@ -466,9 +467,9 @@ int etnaviv_ioctl_gem_submit(struct drm_device *dev, void *data,
 	 * Copy the command submission and bo array to kernel space in
 	 * one go, and do this outside of any locks.
 	 */
-	bos = kvmalloc_array(args->nr_bos, sizeof(*bos), GFP_KERNEL);
-	relocs = kvmalloc_array(args->nr_relocs, sizeof(*relocs), GFP_KERNEL);
-	pmrs = kvmalloc_array(args->nr_pmrs, sizeof(*pmrs), GFP_KERNEL);
+	bos = kvmalloc_objs(*bos, args->nr_bos);
+	relocs = kvmalloc_objs(*relocs, args->nr_relocs);
+	pmrs = kvmalloc_objs(*pmrs, args->nr_pmrs);
 	stream = kvmalloc_array(1, args->stream_size, GFP_KERNEL);
 	if (!bos || !relocs || !pmrs || !stream) {
 		ret = -ENOMEM;
@@ -519,6 +520,8 @@ int etnaviv_ioctl_gem_submit(struct drm_device *dev, void *data,
 		goto err_submit_ww_acquire;
 	}
 
+	submit->pid = pid;
+
 	ret = etnaviv_cmdbuf_init(priv->cmdbuf_suballoc, &submit->cmdbuf,
 				  ALIGN(args->stream_size, 8) + 8);
 	if (ret)
@@ -531,7 +534,7 @@ int etnaviv_ioctl_gem_submit(struct drm_device *dev, void *data,
 
 	ret = drm_sched_job_init(&submit->sched_job,
 				 &ctx->sched_entity[args->pipe],
-				 submit->ctx);
+				 1, submit->ctx, file->client_id);
 	if (ret)
 		goto err_submit_put;
 

@@ -272,7 +272,7 @@ static void aac_queue_init(struct aac_dev * dev, struct aac_queue * q, u32 *mem,
 	q->entries = qsize;
 }
 
-static bool wait_for_io_iter(struct scsi_cmnd *cmd, void *data, bool rsvd)
+static bool wait_for_io_iter(struct scsi_cmnd *cmd, void *data)
 {
 	int *active = data;
 
@@ -481,8 +481,7 @@ void aac_define_int_mode(struct aac_dev *dev)
 	    pci_find_capability(dev->pdev, PCI_CAP_ID_MSIX)) {
 		min_msix = 2;
 		i = pci_alloc_irq_vectors(dev->pdev,
-					  min_msix, msi_count,
-					  PCI_IRQ_MSIX | PCI_IRQ_AFFINITY);
+					  min_msix, msi_count, PCI_IRQ_MSIX);
 		if (i > 0) {
 			dev->msi_enabled = 1;
 			msi_count = i;
@@ -522,8 +521,7 @@ struct aac_dev *aac_init_adapter(struct aac_dev *dev)
 	spin_lock_init(&dev->iq_lock);
 	dev->max_fib_size = sizeof(struct hw_fib);
 	dev->sg_tablesize = host->sg_tablesize = (dev->max_fib_size
-		- sizeof(struct aac_fibhdr)
-		- sizeof(struct aac_write) + sizeof(struct sgentry))
+		- sizeof(struct aac_fibhdr) - sizeof(struct aac_write))
 			/ sizeof(struct sgentry);
 	dev->comm_interface = AAC_COMM_PRODUCER;
 	dev->raw_io_interface = dev->raw_io_64 = 0;
@@ -634,7 +632,7 @@ struct aac_dev *aac_init_adapter(struct aac_dev *dev)
 	 *	Ok now init the communication subsystem
 	 */
 
-	dev->queues = kzalloc(sizeof(struct aac_queue_block), GFP_KERNEL);
+	dev->queues = kzalloc_obj(struct aac_queue_block);
 	if (dev->queues == NULL) {
 		printk(KERN_ERR "Error could not allocate comm region.\n");
 		return NULL;
@@ -642,6 +640,7 @@ struct aac_dev *aac_init_adapter(struct aac_dev *dev)
 
 	if (aac_comm_init(dev)<0){
 		kfree(dev->queues);
+		dev->queues = NULL;
 		return NULL;
 	}
 	/*
@@ -649,6 +648,7 @@ struct aac_dev *aac_init_adapter(struct aac_dev *dev)
 	 */
 	if (aac_fib_setup(dev) < 0) {
 		kfree(dev->queues);
+		dev->queues = NULL;
 		return NULL;
 	}
 		

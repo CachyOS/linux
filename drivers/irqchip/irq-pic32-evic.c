@@ -13,10 +13,10 @@
 #include <linux/io.h>
 #include <linux/irqchip.h>
 #include <linux/irq.h>
+#include <linux/platform_data/pic32.h>
 
 #include <asm/irq.h>
 #include <asm/traps.h>
-#include <asm/mach-pic32/pic32.h>
 
 #define REG_INTCON	0x0000
 #define REG_INTSTAT	0x0020
@@ -161,9 +161,9 @@ static int pic32_irq_domain_map(struct irq_domain *d, unsigned int virq,
 	return ret;
 }
 
-int pic32_irq_domain_xlate(struct irq_domain *d, struct device_node *ctrlr,
-			   const u32 *intspec, unsigned int intsize,
-			   irq_hw_number_t *out_hwirq, unsigned int *out_type)
+static int pic32_irq_domain_xlate(struct irq_domain *d, struct device_node *ctrlr,
+				  const u32 *intspec, unsigned int intsize,
+				  irq_hw_number_t *out_hwirq, unsigned int *out_type)
 {
 	struct evic_chip_data *priv = d->host_data;
 
@@ -190,13 +190,11 @@ static void __init pic32_ext_irq_of_init(struct irq_domain *domain)
 {
 	struct device_node *node = irq_domain_get_of_node(domain);
 	struct evic_chip_data *priv = domain->host_data;
-	struct property *prop;
-	const __le32 *p;
 	u32 hwirq;
 	int i = 0;
 	const char *pname = "microchip,external-irqs";
 
-	of_property_for_each_u32(node, pname, prop, p, hwirq) {
+	of_property_for_each_u32(node, pname, hwirq) {
 		if (i >= ARRAY_SIZE(priv->ext_irqs)) {
 			pr_warn("More than %d external irq, skip rest\n",
 				ARRAY_SIZE(priv->ext_irqs));
@@ -223,15 +221,15 @@ static int __init pic32_of_init(struct device_node *node,
 	if (!evic_base)
 		return -ENOMEM;
 
-	priv = kcalloc(nchips, sizeof(*priv), GFP_KERNEL);
+	priv = kzalloc_objs(*priv, nchips);
 	if (!priv) {
 		ret = -ENOMEM;
 		goto err_iounmap;
 	}
 
-	evic_irq_domain = irq_domain_add_linear(node, nchips * 32,
-						&pic32_irq_domain_ops,
-						priv);
+	evic_irq_domain = irq_domain_create_linear(of_fwnode_handle(node), nchips * 32,
+						   &pic32_irq_domain_ops,
+						   priv);
 	if (!evic_irq_domain) {
 		ret = -ENOMEM;
 		goto err_free_priv;
@@ -293,7 +291,7 @@ static int __init pic32_of_init(struct device_node *node,
 		gc->private = &priv[i];
 	}
 
-	irq_set_default_host(evic_irq_domain);
+	irq_set_default_domain(evic_irq_domain);
 
 	/*
 	 * External interrupts have software configurable edge polarity. These

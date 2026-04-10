@@ -217,8 +217,7 @@ static int cm32181_reg_init(struct cm32181_chip *cm32181)
 	cm32181->lux_per_bit = CM32181_LUX_PER_BIT;
 	cm32181->lux_per_bit_base_it = CM32181_LUX_PER_BIT_BASE_IT;
 
-	if (ACPI_HANDLE(cm32181->dev))
-		cm32181_acpi_parse_cpm_tables(cm32181);
+	cm32181_acpi_parse_cpm_tables(cm32181);
 
 	/* Initialize registers*/
 	for_each_set_bit(i, &cm32181->init_regs_bitmap, CM32181_CONF_REG_NUM) {
@@ -429,6 +428,14 @@ static const struct iio_info cm32181_info = {
 	.attrs			= &cm32181_attribute_group,
 };
 
+static void cm32181_unregister_dummy_client(void *data)
+{
+	struct i2c_client *client = data;
+
+	/* Unregister the dummy client */
+	i2c_unregister_device(client);
+}
+
 static int cm32181_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
@@ -439,6 +446,8 @@ static int cm32181_probe(struct i2c_client *client)
 	indio_dev = devm_iio_device_alloc(dev, sizeof(*cm32181));
 	if (!indio_dev)
 		return -ENOMEM;
+
+	i2c_set_clientdata(client, indio_dev);
 
 	/*
 	 * Some ACPI systems list 2 I2C resources for the CM3218 sensor, the
@@ -458,6 +467,10 @@ static int cm32181_probe(struct i2c_client *client)
 		client = i2c_acpi_new_device(dev, 1, &board_info);
 		if (IS_ERR(client))
 			return PTR_ERR(client);
+
+		ret = devm_add_action_or_reset(dev, cm32181_unregister_dummy_client, client);
+		if (ret)
+			return ret;
 	}
 
 	cm32181 = iio_priv(indio_dev);
@@ -479,12 +492,32 @@ static int cm32181_probe(struct i2c_client *client)
 
 	ret = devm_iio_device_register(dev, indio_dev);
 	if (ret) {
-		dev_err(dev, "%s: regist device failed\n", __func__);
+		dev_err(dev, "%s: register device failed\n", __func__);
 		return ret;
 	}
 
 	return 0;
 }
+
+static int cm32181_suspend(struct device *dev)
+{
+	struct cm32181_chip *cm32181 = iio_priv(dev_get_drvdata(dev));
+	struct i2c_client *client = cm32181->client;
+
+	return i2c_smbus_write_word_data(client, CM32181_REG_ADDR_CMD,
+					 CM32181_CMD_ALS_DISABLE);
+}
+
+static int cm32181_resume(struct device *dev)
+{
+	struct cm32181_chip *cm32181 = iio_priv(dev_get_drvdata(dev));
+	struct i2c_client *client = cm32181->client;
+
+	return i2c_smbus_write_word_data(client, CM32181_REG_ADDR_CMD,
+					 cm32181->conf_regs[CM32181_REG_ADDR_CMD]);
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(cm32181_pm_ops, cm32181_suspend, cm32181_resume);
 
 static const struct of_device_id cm32181_of_match[] = {
 	{ .compatible = "capella,cm3218" },
@@ -506,8 +539,9 @@ static struct i2c_driver cm32181_driver = {
 		.name	= "cm32181",
 		.acpi_match_table = ACPI_PTR(cm32181_acpi_match),
 		.of_match_table = cm32181_of_match,
+		.pm = pm_sleep_ptr(&cm32181_pm_ops),
 	},
-	.probe_new	= cm32181_probe,
+	.probe		= cm32181_probe,
 };
 
 module_i2c_driver(cm32181_driver);

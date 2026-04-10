@@ -42,6 +42,7 @@ unsigned int pm_build_pm4_header(unsigned int opcode, size_t packet_size)
 static int pm_map_process_vi(struct packet_manager *pm, uint32_t *buffer,
 				struct qcm_process_device *qpd)
 {
+	struct kfd_process_device *pdd = qpd_to_pdd(qpd);
 	struct pm4_mes_map_process *packet;
 
 	packet = (struct pm4_mes_map_process *)buffer;
@@ -52,7 +53,7 @@ static int pm_map_process_vi(struct packet_manager *pm, uint32_t *buffer,
 					sizeof(struct pm4_mes_map_process));
 	packet->bitfields2.diq_enable = (qpd->is_debug) ? 1 : 0;
 	packet->bitfields2.process_quantum = 10;
-	packet->bitfields2.pasid = qpd->pqm->process->pasid;
+	packet->bitfields2.pasid = pdd->pasid;
 	packet->bitfields3.page_table_base = qpd->page_table_base;
 	packet->bitfields10.gds_size = qpd->gds_size;
 	packet->bitfields10.num_gws = qpd->num_gws;
@@ -77,7 +78,7 @@ static int pm_runlist_vi(struct packet_manager *pm, uint32_t *buffer,
 {
 	struct pm4_mes_runlist *packet;
 	int concurrent_proc_cnt = 0;
-	struct kfd_dev *kfd = pm->dqm->dev;
+	struct kfd_node *kfd = pm->dqm->dev;
 
 	if (WARN_ON(!ib))
 		return -EFAULT;
@@ -165,15 +166,10 @@ static int pm_map_queues_vi(struct packet_manager *pm, uint32_t *buffer,
 			packet->bitfields2.queue_type =
 		queue_type__mes_map_queues__normal_latency_static_queue_vi;
 		break;
-	case KFD_QUEUE_TYPE_DIQ:
-		packet->bitfields2.queue_type =
-			queue_type__mes_map_queues__debug_interface_queue_vi;
-		break;
 	case KFD_QUEUE_TYPE_SDMA:
 	case KFD_QUEUE_TYPE_SDMA_XGMI:
 		packet->bitfields2.engine_sel = q->properties.sdma_engine_id +
 				engine_sel__mes_map_queues__sdma0_vi;
-		use_static = false; /* no static queues under SDMA */
 		break;
 	default:
 		WARN(1, "queue type %d", q->properties.type);
@@ -303,6 +299,7 @@ const struct packet_manager_funcs kfd_vi_pm_funcs = {
 	.set_resources		= pm_set_resources_vi,
 	.map_queues		= pm_map_queues_vi,
 	.unmap_queues		= pm_unmap_queues_vi,
+	.config_dequeue_wait_counts	= NULL,
 	.query_status		= pm_query_status_vi,
 	.release_mem		= pm_release_mem_vi,
 	.map_process_size	= sizeof(struct pm4_mes_map_process),
@@ -310,6 +307,7 @@ const struct packet_manager_funcs kfd_vi_pm_funcs = {
 	.set_resources_size	= sizeof(struct pm4_mes_set_resources),
 	.map_queues_size	= sizeof(struct pm4_mes_map_queues),
 	.unmap_queues_size	= sizeof(struct pm4_mes_unmap_queues),
+	.config_dequeue_wait_counts_size	= 0,
 	.query_status_size	= sizeof(struct pm4_mes_query_status),
 	.release_mem_size	= sizeof(struct pm4_mec_release_mem)
 };

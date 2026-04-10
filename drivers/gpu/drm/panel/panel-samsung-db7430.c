@@ -56,10 +56,6 @@ struct db7430 {
 	struct mipi_dbi dbi;
 	/** @panel: the DRM panel instance for this device */
 	struct drm_panel panel;
-	/** @width: the width of this panel in mm */
-	u32 width;
-	/** @height: the height of this panel in mm */
-	u32 height;
 	/** @reset: reset GPIO line */
 	struct gpio_desc *reset;
 	/** @regulators: VCCIO and VIO supply regulators */
@@ -271,9 +267,11 @@ static int db7430_probe(struct spi_device *spi)
 	struct db7430 *db;
 	int ret;
 
-	db = devm_kzalloc(dev, sizeof(*db), GFP_KERNEL);
-	if (!db)
-		return -ENOMEM;
+	db = devm_drm_panel_alloc(dev, struct db7430, panel, &db7430_drm_funcs,
+				  DRM_MODE_CONNECTOR_DPI);
+	if (IS_ERR(db))
+		return PTR_ERR(db);
+
 	db->dev = dev;
 
 	/*
@@ -297,9 +295,6 @@ static int db7430_probe(struct spi_device *spi)
 	ret = mipi_dbi_spi_init(spi, &db->dbi, NULL);
 	if (ret)
 		return dev_err_probe(dev, ret, "MIPI DBI init failed\n");
-
-	drm_panel_init(&db->panel, dev, &db7430_drm_funcs,
-		       DRM_MODE_CONNECTOR_DPI);
 
 	/* FIXME: if no external backlight, use internal backlight */
 	ret = drm_panel_of_backlight(&db->panel);
@@ -331,9 +326,16 @@ static const struct of_device_id db7430_match[] = {
 };
 MODULE_DEVICE_TABLE(of, db7430_match);
 
+static const struct spi_device_id db7430_ids[] = {
+	{ "lms397kf04" },
+	{ },
+};
+MODULE_DEVICE_TABLE(spi, db7430_ids);
+
 static struct spi_driver db7430_driver = {
 	.probe		= db7430_probe,
 	.remove		= db7430_remove,
+	.id_table	= db7430_ids,
 	.driver		= {
 		.name	= "db7430-panel",
 		.of_match_table = db7430_match,

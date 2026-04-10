@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*****************************************************************************
  *                                                                           *
  * File: sge.c                                                               *
@@ -7,16 +8,6 @@
  *  DMA engine.                                                              *
  *  part of the Chelsio 10Gb Ethernet Driver.                                *
  *                                                                           *
- * This program is free software; you can redistribute it and/or modify      *
- * it under the terms of the GNU General Public License, version 2, as       *
- * published by the Free Software Foundation.                                *
- *                                                                           *
- * You should have received a copy of the GNU General Public License along   *
- * with this program; if not, see <http://www.gnu.org/licenses/>.            *
- *                                                                           *
- * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR IMPLIED    *
- * WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF      *
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.                     *
  *                                                                           *
  * http://www.chelsio.com                                                    *
  *                                                                           *
@@ -375,7 +366,7 @@ static int tx_sched_init(struct sge *sge)
 	struct sched *s;
 	int i;
 
-	s = kzalloc(sizeof (struct sched), GFP_KERNEL);
+	s = kzalloc_obj(struct sched);
 	if (!s)
 		return -ENOMEM;
 
@@ -1931,7 +1922,7 @@ send:
 static void sge_tx_reclaim_cb(struct timer_list *t)
 {
 	int i;
-	struct sge *sge = from_timer(sge, t, tx_reclaim_timer);
+	struct sge *sge = timer_container_of(sge, t, tx_reclaim_timer);
 
 	for (i = 0; i < SGE_CMDQ_N; ++i) {
 		struct cmdQ *q = &sge->cmdQ[i];
@@ -1993,9 +1984,9 @@ void t1_sge_stop(struct sge *sge)
 	readl(sge->adapter->regs + A_SG_CONTROL); /* flush */
 
 	if (is_T2(sge->adapter))
-		del_timer_sync(&sge->espibug_timer);
+		timer_delete_sync(&sge->espibug_timer);
 
-	del_timer_sync(&sge->tx_reclaim_timer);
+	timer_delete_sync(&sge->tx_reclaim_timer);
 	if (sge->tx_sched)
 		tx_sched_stop(sge);
 
@@ -2026,7 +2017,7 @@ void t1_sge_start(struct sge *sge)
  */
 static void espibug_workaround_t204(struct timer_list *t)
 {
-	struct sge *sge = from_timer(sge, t, espibug_timer);
+	struct sge *sge = timer_container_of(sge, t, espibug_timer);
 	struct adapter *adapter = sge->adapter;
 	unsigned int nports = adapter->params.nports;
 	u32 seop[MAX_NPORTS];
@@ -2069,7 +2060,7 @@ static void espibug_workaround_t204(struct timer_list *t)
 
 static void espibug_workaround(struct timer_list *t)
 {
-	struct sge *sge = from_timer(sge, t, espibug_timer);
+	struct sge *sge = timer_container_of(sge, t, espibug_timer);
 	struct adapter *adapter = sge->adapter;
 
 	if (netif_running(adapter->port[0].dev)) {
@@ -2104,7 +2095,7 @@ static void espibug_workaround(struct timer_list *t)
  */
 struct sge *t1_sge_create(struct adapter *adapter, struct sge_params *p)
 {
-	struct sge *sge = kzalloc(sizeof(*sge), GFP_KERNEL);
+	struct sge *sge = kzalloc_obj(*sge);
 	int i;
 
 	if (!sge)

@@ -52,6 +52,7 @@
 #include <linux/nfs.h>
 #include <linux/nfs4.h>
 #include <linux/nfs_fs.h>
+#include <linux/nfs_common.h>
 
 #include "nfs4_fs.h"
 #include "nfs4trace.h"
@@ -63,11 +64,7 @@
 
 #define NFSDBG_FACILITY		NFSDBG_XDR
 
-/* Mapping from NFS error code to "errno" error code. */
-#define errno_NFSERR_IO		EIO
-
 struct compound_hdr;
-static int nfs4_stat_to_errno(int);
 static void encode_layoutget(struct xdr_stream *xdr,
 			     const struct nfs4_layoutget_args *args,
 			     struct compound_hdr *hdr);
@@ -85,9 +82,8 @@ static int decode_layoutget(struct xdr_stream *xdr, struct rpc_rqst *req,
  * we currently use size 2 (u64) out of (NFS4_OPAQUE_LIMIT  >> 2)
  */
 #define pagepad_maxsz		(1)
-#define open_owner_id_maxsz	(1 + 2 + 1 + 1 + 2)
-#define lock_owner_id_maxsz	(1 + 1 + 4)
-#define decode_lockowner_maxsz	(1 + XDR_QUADLEN(IDMAP_NAMESZ))
+#define open_owner_id_maxsz	(2 + 1 + 2 + 2)
+#define lock_owner_id_maxsz	(2 + 1 + 2)
 #define compound_encode_hdr_maxsz	(3 + (NFS4_MAXTAGLEN >> 2))
 #define compound_decode_hdr_maxsz	(3 + (NFS4_MAXTAGLEN >> 2))
 #define op_encode_hdr_maxsz	(1)
@@ -188,7 +184,7 @@ static int decode_layoutget(struct xdr_stream *xdr, struct rpc_rqst *req,
 #define encode_claim_null_maxsz	(1 + nfs4_name_maxsz)
 #define encode_open_maxsz	(op_encode_hdr_maxsz + \
 				2 + encode_share_access_maxsz + 2 + \
-				open_owner_id_maxsz + \
+				1 + open_owner_id_maxsz + \
 				encode_opentype_maxsz + \
 				encode_claim_null_maxsz)
 #define decode_space_limit_maxsz	(3)
@@ -224,6 +220,11 @@ static int decode_layoutget(struct xdr_stream *xdr, struct rpc_rqst *req,
 				 encode_attrs_maxsz)
 #define decode_setattr_maxsz	(op_decode_hdr_maxsz + \
 				 nfs4_fattr_bitmap_maxsz)
+#define encode_delegattr_maxsz	(op_encode_hdr_maxsz + \
+				 encode_stateid_maxsz + \
+				nfs4_fattr_bitmap_maxsz + \
+				2*nfstime4_maxsz)
+#define decode_delegattr_maxsz	(decode_setattr_maxsz)
 #define encode_read_maxsz	(op_encode_hdr_maxsz + \
 				 encode_stateid_maxsz + 3)
 #define decode_read_maxsz	(op_decode_hdr_maxsz + 2 + pagepad_maxsz)
@@ -253,13 +254,14 @@ static int decode_layoutget(struct xdr_stream *xdr, struct rpc_rqst *req,
 #define encode_link_maxsz	(op_encode_hdr_maxsz + \
 				nfs4_name_maxsz)
 #define decode_link_maxsz	(op_decode_hdr_maxsz + decode_change_info_maxsz)
-#define encode_lockowner_maxsz	(7)
+#define encode_lockowner_maxsz	(2 + 1 + lock_owner_id_maxsz)
+
 #define encode_lock_maxsz	(op_encode_hdr_maxsz + \
 				 7 + \
 				 1 + encode_stateid_maxsz + 1 + \
 				 encode_lockowner_maxsz)
 #define decode_lock_denied_maxsz \
-				(8 + decode_lockowner_maxsz)
+				(2 + 2 + 1 + 2 + 1 + lock_owner_id_maxsz)
 #define decode_lock_maxsz	(op_decode_hdr_maxsz + \
 				 decode_lock_denied_maxsz)
 #define encode_lockt_maxsz	(op_encode_hdr_maxsz + 5 + \
@@ -306,7 +308,6 @@ static int decode_layoutget(struct xdr_stream *xdr, struct rpc_rqst *req,
 #define encode_secinfo_maxsz	(op_encode_hdr_maxsz + nfs4_name_maxsz)
 #define decode_secinfo_maxsz	(op_decode_hdr_maxsz + 1 + ((NFS_MAX_SECFLAVORS * (16 + GSS_OID_MAX_LEN)) / 4))
 
-#if defined(CONFIG_NFS_V4_1)
 #define NFS4_MAX_MACHINE_NAME_LEN (64)
 #define IMPL_NAME_LIMIT (sizeof(utsname()->sysname) + sizeof(utsname()->release) + \
 			 sizeof(utsname()->version) + sizeof(utsname()->machine) + 8)
@@ -391,6 +392,20 @@ static int decode_layoutget(struct xdr_stream *xdr, struct rpc_rqst *req,
 				XDR_QUADLEN(NFS4_MAX_SESSIONID_LEN) + 5)
 #define encode_reclaim_complete_maxsz	(op_encode_hdr_maxsz + 4)
 #define decode_reclaim_complete_maxsz	(op_decode_hdr_maxsz + 4)
+#define encode_get_dir_deleg_maxsz (op_encode_hdr_maxsz + \
+				    4 /* gdda_signal_deleg_avail */ + \
+				    8 /* gdda_notification_types */ + \
+				    nfstime4_maxsz /* gdda_child_attr_delay */ + \
+				    nfstime4_maxsz /* gdda_dir_attr_delay */ + \
+				    nfs4_fattr_bitmap_maxsz /* gdda_child_attributes */ + \
+				    nfs4_fattr_bitmap_maxsz /* gdda_dir_attributes */)
+#define decode_get_dir_deleg_maxsz (op_decode_hdr_maxsz + \
+				    4 /* gddrnf_status */ + \
+				    encode_verifier_maxsz /* gddr_cookieverf */ + \
+				    encode_stateid_maxsz /* gddr_stateid */ + \
+				    8 /* gddr_notification */ + \
+				    nfs4_fattr_maxsz /* gddr_child_attributes */ + \
+				    nfs4_fattr_maxsz /* gddr_dir_attributes */)
 #define encode_getdeviceinfo_maxsz (op_encode_hdr_maxsz + \
 				XDR_QUADLEN(NFS4_DEVICEID4_SIZE) + \
 				1 /* layout type */ + \
@@ -439,14 +454,6 @@ static int decode_layoutget(struct xdr_stream *xdr, struct rpc_rqst *req,
 #define encode_free_stateid_maxsz	(op_encode_hdr_maxsz + 1 + \
 					 XDR_QUADLEN(NFS4_STATEID_SIZE))
 #define decode_free_stateid_maxsz	(op_decode_hdr_maxsz)
-#else /* CONFIG_NFS_V4_1 */
-#define encode_sequence_maxsz	0
-#define decode_sequence_maxsz	0
-#define encode_layoutreturn_maxsz 0
-#define decode_layoutreturn_maxsz 0
-#define encode_layoutget_maxsz	0
-#define decode_layoutget_maxsz	0
-#endif /* CONFIG_NFS_V4_1 */
 
 #define NFS4_enc_compound_sz	(1024)  /* XXX: large enough? */
 #define NFS4_dec_compound_sz	(1024)  /* XXX: large enough? */
@@ -615,7 +622,7 @@ static int decode_layoutget(struct xdr_stream *xdr, struct rpc_rqst *req,
 				 encode_lockowner_maxsz)
 #define NFS4_dec_release_lockowner_sz \
 				(compound_decode_hdr_maxsz + \
-				 decode_lockowner_maxsz)
+				 decode_release_lockowner_maxsz)
 #define NFS4_enc_access_sz	(compound_encode_hdr_maxsz + \
 				encode_sequence_maxsz + \
 				encode_putfh_maxsz + \
@@ -629,11 +636,13 @@ static int decode_layoutget(struct xdr_stream *xdr, struct rpc_rqst *req,
 #define NFS4_enc_getattr_sz	(compound_encode_hdr_maxsz + \
 				encode_sequence_maxsz + \
 				encode_putfh_maxsz + \
+				encode_get_dir_deleg_maxsz + \
 				encode_getattr_maxsz + \
 				encode_renew_maxsz)
 #define NFS4_dec_getattr_sz	(compound_decode_hdr_maxsz + \
 				decode_sequence_maxsz + \
 				decode_putfh_maxsz + \
+				decode_get_dir_deleg_maxsz + \
 				decode_getattr_maxsz + \
 				decode_renew_maxsz)
 #define NFS4_enc_lookup_sz	(compound_encode_hdr_maxsz + \
@@ -758,12 +767,14 @@ static int decode_layoutget(struct xdr_stream *xdr, struct rpc_rqst *req,
 				encode_sequence_maxsz + \
 				encode_putfh_maxsz + \
 				encode_layoutreturn_maxsz + \
+				encode_delegattr_maxsz + \
 				encode_delegreturn_maxsz + \
 				encode_getattr_maxsz)
 #define NFS4_dec_delegreturn_sz (compound_decode_hdr_maxsz + \
 				decode_sequence_maxsz + \
 				decode_putfh_maxsz + \
 				decode_layoutreturn_maxsz + \
+				decode_delegattr_maxsz + \
 				decode_delegreturn_maxsz + \
 				decode_getattr_maxsz)
 #define NFS4_enc_getacl_sz	(compound_encode_hdr_maxsz + \
@@ -816,7 +827,6 @@ static int decode_layoutget(struct xdr_stream *xdr, struct rpc_rqst *req,
 				 decode_putfh_maxsz + \
 				 decode_getfh_maxsz + \
 				 decode_renew_maxsz)
-#if defined(CONFIG_NFS_V4_1)
 #define NFS4_enc_bind_conn_to_session_sz \
 				(compound_encode_hdr_maxsz + \
 				 encode_bind_conn_to_session_maxsz)
@@ -849,7 +859,6 @@ static int decode_layoutget(struct xdr_stream *xdr, struct rpc_rqst *req,
 #define NFS4_dec_sequence_sz \
 				(compound_decode_hdr_maxsz + \
 				 decode_sequence_maxsz)
-#endif
 #define NFS4_enc_get_lease_time_sz	(compound_encode_hdr_maxsz + \
 					 encode_sequence_maxsz + \
 					 encode_putrootfh_maxsz + \
@@ -858,7 +867,6 @@ static int decode_layoutget(struct xdr_stream *xdr, struct rpc_rqst *req,
 					 decode_sequence_maxsz + \
 					 decode_putrootfh_maxsz + \
 					 decode_fsinfo_maxsz)
-#if defined(CONFIG_NFS_V4_1)
 #define NFS4_enc_reclaim_complete_sz	(compound_encode_hdr_maxsz + \
 					 encode_sequence_maxsz + \
 					 encode_reclaim_complete_maxsz)
@@ -936,7 +944,6 @@ const u32 nfs41_maxgetdevinfo_overhead = ((RPC_MAX_REPHEADER_WITH_AUTH +
 					   decode_sequence_maxsz) *
 					  XDR_UNIT);
 EXPORT_SYMBOL_GPL(nfs41_maxgetdevinfo_overhead);
-#endif /* CONFIG_NFS_V4_1 */
 
 static const umode_t nfs_type2fmt[] = {
 	[NF4BAD] = 0,
@@ -966,11 +973,6 @@ static __be32 *reserve_space(struct xdr_stream *xdr, size_t nbytes)
 	__be32 *p = xdr_reserve_space(xdr, nbytes);
 	BUG_ON(!p);
 	return p;
-}
-
-static void encode_opaque_fixed(struct xdr_stream *xdr, const void *buf, size_t len)
-{
-	WARN_ON_ONCE(xdr_stream_encode_opaque_fixed(xdr, buf, len) < 0);
 }
 
 static void encode_string(struct xdr_stream *xdr, unsigned int len, const char *str)
@@ -1060,9 +1062,10 @@ static void encode_nops(struct compound_hdr *hdr)
 	*hdr->nops_p = htonl(hdr->nops);
 }
 
-static void encode_nfs4_stateid(struct xdr_stream *xdr, const nfs4_stateid *stateid)
+static void encode_nfs4_stateid(struct xdr_stream *xdr,
+				const nfs4_stateid *stateid)
 {
-	encode_opaque_fixed(xdr, stateid, NFS4_STATEID_SIZE);
+	encode_opaque_fixed(xdr, stateid->data, NFS4_STATEID_SIZE);
 }
 
 static void encode_nfs4_verifier(struct xdr_stream *xdr, const nfs4_verifier *verf)
@@ -1305,7 +1308,7 @@ static void encode_link(struct xdr_stream *xdr, const struct qstr *name, struct 
 
 static inline int nfs4_lock_type(struct file_lock *fl, int block)
 {
-	if (fl->fl_type == F_RDLCK)
+	if (lock_is_read(fl))
 		return block ? NFS4_READW_LT : NFS4_READ_LT;
 	return block ? NFS4_WRITEW_LT : NFS4_WRITE_LT;
 }
@@ -1381,11 +1384,13 @@ static void encode_locku(struct xdr_stream *xdr, const struct nfs_locku_args *ar
 	xdr_encode_hyper(p, nfs4_lock_length(args->fl));
 }
 
+#if defined(CONFIG_NFS_V4_0)
 static void encode_release_lockowner(struct xdr_stream *xdr, const struct nfs_lowner *lowner, struct compound_hdr *hdr)
 {
 	encode_op_hdr(xdr, OP_RELEASE_LOCKOWNER, decode_release_lockowner_maxsz, hdr);
 	encode_lockowner(xdr, lowner);
 }
+#endif /* CONFIG_NFS_V4_0 */
 
 static void encode_lookup(struct xdr_stream *xdr, const struct qstr *name, struct compound_hdr *hdr)
 {
@@ -1412,16 +1417,16 @@ static inline void encode_openhdr(struct xdr_stream *xdr, const struct nfs_opena
 	__be32 *p;
  /*
  * opcode 4, seqid 4, share_access 4, share_deny 4, clientid 8, ownerlen 4,
- * owner 4 = 32
+ * owner 28
  */
 	encode_nfs4_seqid(xdr, arg->seqid);
 	encode_share_access(xdr, arg->share_access);
-	p = reserve_space(xdr, 36);
+	p = reserve_space(xdr, 40);
 	p = xdr_encode_hyper(p, arg->clientid);
-	*p++ = cpu_to_be32(24);
+	*p++ = cpu_to_be32(28);
 	p = xdr_encode_opaque_fixed(p, "open id:", 8);
 	*p++ = cpu_to_be32(arg->server->s_dev);
-	*p++ = cpu_to_be32(arg->id.uniquifier);
+	p = xdr_encode_hyper(p, arg->id.uniquifier);
 	xdr_encode_hyper(p, arg->id.create_time);
 }
 
@@ -1468,20 +1473,18 @@ static void encode_opentype(struct xdr_stream *xdr, const struct nfs_openargs *a
 	}
 }
 
-static inline void encode_delegation_type(struct xdr_stream *xdr, fmode_t delegation_type)
+static inline void encode_delegation_type(struct xdr_stream *xdr, u32 delegation_type)
 {
 	__be32 *p;
 
 	p = reserve_space(xdr, 4);
 	switch (delegation_type) {
-	case 0:
-		*p = cpu_to_be32(NFS4_OPEN_DELEGATE_NONE);
-		break;
-	case FMODE_READ:
-		*p = cpu_to_be32(NFS4_OPEN_DELEGATE_READ);
-		break;
-	case FMODE_WRITE|FMODE_READ:
-		*p = cpu_to_be32(NFS4_OPEN_DELEGATE_WRITE);
+	case NFS4_OPEN_DELEGATE_NONE:
+	case NFS4_OPEN_DELEGATE_READ:
+	case NFS4_OPEN_DELEGATE_WRITE:
+	case NFS4_OPEN_DELEGATE_READ_ATTRS_DELEG:
+	case NFS4_OPEN_DELEGATE_WRITE_ATTRS_DELEG:
+		*p = cpu_to_be32(delegation_type);
 		break;
 	default:
 		BUG();
@@ -1497,7 +1500,7 @@ static inline void encode_claim_null(struct xdr_stream *xdr, const struct qstr *
 	encode_string(xdr, name->len, name->name);
 }
 
-static inline void encode_claim_previous(struct xdr_stream *xdr, fmode_t type)
+static inline void encode_claim_previous(struct xdr_stream *xdr, u32 type)
 {
 	__be32 *p;
 
@@ -1602,7 +1605,8 @@ static void encode_read(struct xdr_stream *xdr, const struct nfs_pgio_args *args
 static void encode_readdir(struct xdr_stream *xdr, const struct nfs4_readdir_arg *readdir, struct rpc_rqst *req, struct compound_hdr *hdr)
 {
 	uint32_t attrs[3] = {
-		FATTR4_WORD0_RDATTR_ERROR,
+		FATTR4_WORD0_TYPE
+		| FATTR4_WORD0_RDATTR_ERROR,
 		FATTR4_WORD1_MOUNTED_ON_FILEID,
 	};
 	uint32_t dircount = readdir->count;
@@ -1612,12 +1616,21 @@ static void encode_readdir(struct xdr_stream *xdr, const struct nfs4_readdir_arg
 	unsigned int i;
 
 	if (readdir->plus) {
-		attrs[0] |= FATTR4_WORD0_TYPE|FATTR4_WORD0_CHANGE|FATTR4_WORD0_SIZE|
-			FATTR4_WORD0_FSID|FATTR4_WORD0_FILEHANDLE|FATTR4_WORD0_FILEID;
-		attrs[1] |= FATTR4_WORD1_MODE|FATTR4_WORD1_NUMLINKS|FATTR4_WORD1_OWNER|
-			FATTR4_WORD1_OWNER_GROUP|FATTR4_WORD1_RAWDEV|
-			FATTR4_WORD1_SPACE_USED|FATTR4_WORD1_TIME_ACCESS|
-			FATTR4_WORD1_TIME_METADATA|FATTR4_WORD1_TIME_MODIFY;
+		attrs[0] |= FATTR4_WORD0_CHANGE
+			| FATTR4_WORD0_SIZE
+			| FATTR4_WORD0_FSID
+			| FATTR4_WORD0_FILEHANDLE
+			| FATTR4_WORD0_FILEID;
+		attrs[1] |= FATTR4_WORD1_MODE
+			| FATTR4_WORD1_NUMLINKS
+			| FATTR4_WORD1_OWNER
+			| FATTR4_WORD1_OWNER_GROUP
+			| FATTR4_WORD1_RAWDEV
+			| FATTR4_WORD1_SPACE_USED
+			| FATTR4_WORD1_TIME_ACCESS
+			| FATTR4_WORD1_TIME_CREATE
+			| FATTR4_WORD1_TIME_METADATA
+			| FATTR4_WORD1_TIME_MODIFY;
 		attrs[2] |= FATTR4_WORD2_SECURITY_LABEL;
 	}
 	/* Use mounted_on_fileid only if the server supports it */
@@ -1726,6 +1739,33 @@ static void encode_setattr(struct xdr_stream *xdr, const struct nfs_setattrargs 
 			server->attr_bitmask);
 }
 
+static void encode_delegattr(struct xdr_stream *xdr,
+		const nfs4_stateid *stateid,
+		const struct nfs4_delegattr *attr,
+		struct compound_hdr *hdr)
+{
+	uint32_t bitmap[3] = { 0 };
+	uint32_t len = 0;
+	__be32 *p;
+
+	encode_op_hdr(xdr, OP_SETATTR, encode_delegattr_maxsz, hdr);
+	encode_nfs4_stateid(xdr, stateid);
+	if (attr->atime_set) {
+		bitmap[2] |= FATTR4_WORD2_TIME_DELEG_ACCESS;
+		len += (nfstime4_maxsz << 2);
+	}
+	if (attr->mtime_set) {
+		bitmap[2] |= FATTR4_WORD2_TIME_DELEG_MODIFY;
+		len += (nfstime4_maxsz << 2);
+	}
+	xdr_encode_bitmap4(xdr, bitmap, ARRAY_SIZE(bitmap));
+	xdr_stream_encode_opaque_inline(xdr, (void **)&p, len);
+	if (bitmap[2] & FATTR4_WORD2_TIME_DELEG_ACCESS)
+		p = xdr_encode_nfstime4(p, &attr->atime);
+	if (bitmap[2] & FATTR4_WORD2_TIME_DELEG_MODIFY)
+		p = xdr_encode_nfstime4(p, &attr->mtime);
+}
+
 static void encode_setclientid(struct xdr_stream *xdr, const struct nfs4_setclientid *setclientid, struct compound_hdr *hdr)
 {
 	__be32 *p;
@@ -1779,7 +1819,6 @@ static void encode_secinfo(struct xdr_stream *xdr, const struct qstr *name, stru
 	encode_string(xdr, name->len, name->name);
 }
 
-#if defined(CONFIG_NFS_V4_1)
 /* NFSv4.1 operations */
 static void encode_bind_conn_to_session(struct xdr_stream *xdr,
 				   const struct nfs41_bind_conn_to_session_args *args,
@@ -1931,13 +1970,11 @@ static void encode_reclaim_complete(struct xdr_stream *xdr,
 	encode_op_hdr(xdr, OP_RECLAIM_COMPLETE, decode_reclaim_complete_maxsz, hdr);
 	encode_uint32(xdr, args->one_fs);
 }
-#endif /* CONFIG_NFS_V4_1 */
 
 static void encode_sequence(struct xdr_stream *xdr,
 			    const struct nfs4_sequence_args *args,
 			    struct compound_hdr *hdr)
 {
-#if defined(CONFIG_NFS_V4_1)
 	struct nfs4_session *session;
 	struct nfs4_slot_table *tp;
 	struct nfs4_slot *slot = args->sa_slot;
@@ -1968,10 +2005,35 @@ static void encode_sequence(struct xdr_stream *xdr,
 	*p++ = cpu_to_be32(slot->slot_nr);
 	*p++ = cpu_to_be32(tp->highest_used_slotid);
 	*p = cpu_to_be32(args->sa_cache_this);
-#endif /* CONFIG_NFS_V4_1 */
 }
 
-#ifdef CONFIG_NFS_V4_1
+static void
+encode_get_dir_delegation(struct xdr_stream *xdr, struct compound_hdr *hdr)
+{
+	struct timespec64 ts = { 0, 0 };
+	u32 notifications[1] = { 0 };
+	u32 attributes[1] = { 0 };
+	__be32 *p;
+
+	encode_op_hdr(xdr, OP_GET_DIR_DELEGATION, decode_get_dir_deleg_maxsz, hdr);
+
+	/* We don't handle CB_RECALLABLE_OBJ_AVAIL yet. */
+	xdr_stream_encode_bool(xdr, false);
+
+	xdr_encode_bitmap4(xdr, notifications, ARRAY_SIZE(notifications));
+
+	/* Request no delay on attribute updates */
+	p = reserve_space(xdr, 12 + 12);
+	p = xdr_encode_nfstime4(p, &ts);
+	xdr_encode_nfstime4(p, &ts);
+
+	/* Requested child attributes */
+	xdr_encode_bitmap4(xdr, attributes, ARRAY_SIZE(attributes));
+
+	/* Requested dir attributes */
+	xdr_encode_bitmap4(xdr, attributes, ARRAY_SIZE(attributes));
+}
+
 static void
 encode_getdeviceinfo(struct xdr_stream *xdr,
 		     const struct nfs4_getdeviceinfo_args *args,
@@ -2096,7 +2158,7 @@ static void encode_test_stateid(struct xdr_stream *xdr,
 {
 	encode_op_hdr(xdr, OP_TEST_STATEID, decode_test_stateid_maxsz, hdr);
 	encode_uint32(xdr, 1);
-	encode_nfs4_stateid(xdr, args->stateid);
+	encode_nfs4_stateid(xdr, &args->stateid);
 }
 
 static void encode_free_stateid(struct xdr_stream *xdr,
@@ -2106,21 +2168,6 @@ static void encode_free_stateid(struct xdr_stream *xdr,
 	encode_op_hdr(xdr, OP_FREE_STATEID, decode_free_stateid_maxsz, hdr);
 	encode_nfs4_stateid(xdr, &args->stateid);
 }
-#else
-static inline void
-encode_layoutreturn(struct xdr_stream *xdr,
-		    const struct nfs4_layoutreturn_args *args,
-		    struct compound_hdr *hdr)
-{
-}
-
-static void
-encode_layoutget(struct xdr_stream *xdr,
-		      const struct nfs4_layoutget_args *args,
-		      struct compound_hdr *hdr)
-{
-}
-#endif /* CONFIG_NFS_V4_1 */
 
 /*
  * END OF "GENERIC" ENCODE ROUTINES.
@@ -2128,11 +2175,9 @@ encode_layoutget(struct xdr_stream *xdr,
 
 static u32 nfs4_xdr_minorversion(const struct nfs4_sequence_args *args)
 {
-#if defined(CONFIG_NFS_V4_1)
 	struct nfs4_session *session = args->sa_slot->table->session;
 	if (session)
 		return session->clp->cl_mvops->minor_version;
-#endif /* CONFIG_NFS_V4_1 */
 	return 0;
 }
 
@@ -2321,6 +2366,8 @@ static void nfs4_xdr_enc_getattr(struct rpc_rqst *req, struct xdr_stream *xdr,
 	encode_compound_hdr(xdr, req, &hdr);
 	encode_sequence(xdr, &args->seq_args, &hdr);
 	encode_putfh(xdr, args->fh, &hdr);
+	if (args->get_dir_deleg)
+		encode_get_dir_delegation(xdr, &hdr);
 	encode_getfattr(xdr, args->bitmask, &hdr);
 	encode_nops(&hdr);
 }
@@ -2496,6 +2543,7 @@ static void nfs4_xdr_enc_locku(struct rpc_rqst *req, struct xdr_stream *xdr,
 	encode_nops(&hdr);
 }
 
+#if defined(CONFIG_NFS_V4_0)
 static void nfs4_xdr_enc_release_lockowner(struct rpc_rqst *req,
 					   struct xdr_stream *xdr,
 					   const void *data)
@@ -2509,6 +2557,7 @@ static void nfs4_xdr_enc_release_lockowner(struct rpc_rqst *req,
 	encode_release_lockowner(xdr, &args->lock_owner, &hdr);
 	encode_nops(&hdr);
 }
+#endif /* CONFIG_NFS_V4_0 */
 
 /*
  * Encode a READLINK request
@@ -2738,6 +2787,7 @@ static void nfs4_xdr_enc_server_caps(struct rpc_rqst *req,
 /*
  * a RENEW request
  */
+#if defined(CONFIG_NFS_V4_0)
 static void nfs4_xdr_enc_renew(struct rpc_rqst *req, struct xdr_stream *xdr,
 			       const void *data)
 
@@ -2751,6 +2801,7 @@ static void nfs4_xdr_enc_renew(struct rpc_rqst *req, struct xdr_stream *xdr,
 	encode_renew(xdr, clp->cl_clientid, &hdr);
 	encode_nops(&hdr);
 }
+#endif /* CONFIG_NFS_V4_0 */
 
 /*
  * a SETCLIENTID request
@@ -2803,6 +2854,8 @@ static void nfs4_xdr_enc_delegreturn(struct rpc_rqst *req,
 	encode_putfh(xdr, args->fhandle, &hdr);
 	if (args->lr_args)
 		encode_layoutreturn(xdr, args->lr_args, &hdr);
+	if (args->sattr_args)
+		encode_delegattr(xdr, args->stateid, args->sattr_args, &hdr);
 	if (args->bitmask)
 		encode_getfattr(xdr, args->bitmask, &hdr);
 	encode_delegreturn(xdr, args->stateid, &hdr);
@@ -2882,7 +2935,6 @@ static void nfs4_xdr_enc_fsid_present(struct rpc_rqst *req,
 	encode_nops(&hdr);
 }
 
-#if defined(CONFIG_NFS_V4_1)
 /*
  * BIND_CONN_TO_SESSION request
  */
@@ -2984,8 +3036,6 @@ static void nfs4_xdr_enc_sequence(struct rpc_rqst *req, struct xdr_stream *xdr,
 	encode_nops(&hdr);
 }
 
-#endif
-
 /*
  * a GET_LEASE_TIME request
  */
@@ -3005,8 +3055,6 @@ static void nfs4_xdr_enc_get_lease_time(struct rpc_rqst *req,
 	encode_fsinfo(xdr, lease_bitmap, &hdr);
 	encode_nops(&hdr);
 }
-
-#ifdef CONFIG_NFS_V4_1
 
 /*
  * a RECLAIM_COMPLETE request
@@ -3170,7 +3218,6 @@ static void nfs4_xdr_enc_free_stateid(struct rpc_rqst *req,
 	encode_free_stateid(xdr, args, &hdr);
 	encode_nops(&hdr);
 }
-#endif /* CONFIG_NFS_V4_1 */
 
 static int decode_opaque_inline(struct xdr_stream *xdr, unsigned int *len, char **string)
 {
@@ -3403,7 +3450,7 @@ static int decode_attr_link_support(struct xdr_stream *xdr, uint32_t *bitmap, ui
 		*res = be32_to_cpup(p);
 		bitmap[0] &= ~FATTR4_WORD0_LINK_SUPPORT;
 	}
-	dprintk("%s: link support=%s\n", __func__, *res == 0 ? "false" : "true");
+	dprintk("%s: link support=%s\n", __func__, str_false_true(*res == 0));
 	return 0;
 }
 
@@ -3421,7 +3468,7 @@ static int decode_attr_symlink_support(struct xdr_stream *xdr, uint32_t *bitmap,
 		*res = be32_to_cpup(p);
 		bitmap[0] &= ~FATTR4_WORD0_SYMLINK_SUPPORT;
 	}
-	dprintk("%s: symlink support=%s\n", __func__, *res == 0 ? "false" : "true");
+	dprintk("%s: symlink support=%s\n", __func__, str_false_true(*res == 0));
 	return 0;
 }
 
@@ -3563,7 +3610,7 @@ static int decode_attr_case_insensitive(struct xdr_stream *xdr, uint32_t *bitmap
 		*res = be32_to_cpup(p);
 		bitmap[0] &= ~FATTR4_WORD0_CASE_INSENSITIVE;
 	}
-	dprintk("%s: case_insensitive=%s\n", __func__, *res == 0 ? "false" : "true");
+	dprintk("%s: case_insensitive=%s\n", __func__, str_false_true(*res == 0));
 	return 0;
 }
 
@@ -3581,7 +3628,7 @@ static int decode_attr_case_preserving(struct xdr_stream *xdr, uint32_t *bitmap,
 		*res = be32_to_cpup(p);
 		bitmap[0] &= ~FATTR4_WORD0_CASE_PRESERVING;
 	}
-	dprintk("%s: case_preserving=%s\n", __func__, *res == 0 ? "false" : "true");
+	dprintk("%s: case_preserving=%s\n", __func__, str_false_true(*res == 0));
 	return 0;
 }
 
@@ -4171,6 +4218,24 @@ static int decode_attr_time_access(struct xdr_stream *xdr, uint32_t *bitmap, str
 	return status;
 }
 
+static int decode_attr_time_create(struct xdr_stream *xdr, uint32_t *bitmap, struct timespec64 *time)
+{
+	int status = 0;
+
+	time->tv_sec = 0;
+	time->tv_nsec = 0;
+	if (unlikely(bitmap[1] & (FATTR4_WORD1_TIME_CREATE - 1U)))
+		return -EIO;
+	if (likely(bitmap[1] & FATTR4_WORD1_TIME_CREATE)) {
+		status = decode_attr_time(xdr, time);
+		if (status == 0)
+			status = NFS_ATTR_FATTR_BTIME;
+		bitmap[1] &= ~FATTR4_WORD1_TIME_CREATE;
+	}
+	dprintk("%s: btime=%lld\n", __func__, time->tv_sec);
+	return status;
+}
+
 static int decode_attr_time_metadata(struct xdr_stream *xdr, uint32_t *bitmap, struct timespec64 *time)
 {
 	int status = 0;
@@ -4234,19 +4299,17 @@ static int decode_attr_security_label(struct xdr_stream *xdr, uint32_t *bitmap,
 		p = xdr_inline_decode(xdr, len);
 		if (unlikely(!p))
 			return -EIO;
+		bitmap[2] &= ~FATTR4_WORD2_SECURITY_LABEL;
 		if (len < NFS4_MAXLABELLEN) {
-			if (label) {
-				if (label->len) {
-					if (label->len < len)
-						return -ERANGE;
-					memcpy(label->label, p, len);
-				}
+			if (label && label->len) {
+				if (label->len < len)
+					return -ERANGE;
+				memcpy(label->label, p, len);
 				label->len = len;
 				label->pi = pi;
 				label->lfs = lfs;
 				status = NFS_ATTR_FATTR_V4_SECURITY_LABEL;
 			}
-			bitmap[2] &= ~FATTR4_WORD2_SECURITY_LABEL;
 		} else
 			printk(KERN_WARNING "%s: label too long (%u)!\n",
 					__func__, len);
@@ -4291,8 +4354,29 @@ static int decode_attr_xattrsupport(struct xdr_stream *xdr, uint32_t *bitmap,
 		*res = be32_to_cpup(p);
 		bitmap[2] &= ~FATTR4_WORD2_XATTR_SUPPORT;
 	}
-	dprintk("%s: XATTR support=%s\n", __func__,
-		*res == 0 ? "false" : "true");
+	dprintk("%s: XATTR support=%s\n", __func__, str_false_true(*res == 0));
+	return 0;
+}
+
+static int decode_attr_open_arguments(struct xdr_stream *xdr, uint32_t *bitmap,
+		struct nfs4_open_caps *res)
+{
+	memset(res, 0, sizeof(*res));
+	if (unlikely(bitmap[2] & (FATTR4_WORD2_OPEN_ARGUMENTS - 1U)))
+		return -EIO;
+	if (likely(bitmap[2] & FATTR4_WORD2_OPEN_ARGUMENTS)) {
+		if (decode_bitmap4(xdr, res->oa_share_access, ARRAY_SIZE(res->oa_share_access)) < 0)
+			return -EIO;
+		if (decode_bitmap4(xdr, res->oa_share_deny, ARRAY_SIZE(res->oa_share_deny)) < 0)
+			return -EIO;
+		if (decode_bitmap4(xdr, res->oa_share_access_want, ARRAY_SIZE(res->oa_share_access_want)) < 0)
+			return -EIO;
+		if (decode_bitmap4(xdr, res->oa_open_claim, ARRAY_SIZE(res->oa_open_claim)) < 0)
+			return -EIO;
+		if (decode_bitmap4(xdr, res->oa_createmode, ARRAY_SIZE(res->oa_createmode)) < 0)
+			return -EIO;
+		bitmap[2] &= ~FATTR4_WORD2_OPEN_ARGUMENTS;
+	}
 	return 0;
 }
 
@@ -4342,14 +4426,6 @@ static int decode_access(struct xdr_stream *xdr, u32 *supported, u32 *access)
 	acc = be32_to_cpup(p);
 	*supported = supp;
 	*access = acc;
-	return 0;
-}
-
-static int decode_opaque_fixed(struct xdr_stream *xdr, void *buf, size_t len)
-{
-	ssize_t ret = xdr_stream_decode_opaque_fixed(xdr, buf, len);
-	if (unlikely(ret < 0))
-		return -EIO;
 	return 0;
 }
 
@@ -4469,6 +4545,8 @@ static int decode_server_caps(struct xdr_stream *xdr, struct nfs4_server_caps_re
 		goto xdr_error;
 	if ((status = decode_attr_exclcreat_supported(xdr, bitmap,
 				res->exclcreat_bitmask)) != 0)
+		goto xdr_error;
+	if ((status = decode_attr_open_arguments(xdr, bitmap, &res->open_caps)) != 0)
 		goto xdr_error;
 	status = verify_attr_len(xdr, savep, attrlen);
 xdr_error:
@@ -4732,6 +4810,11 @@ static int decode_getfattr_attrs(struct xdr_stream *xdr, uint32_t *bitmap,
 		goto xdr_error;
 	fattr->valid |= status;
 
+	status = decode_attr_time_create(xdr, bitmap, &fattr->btime);
+	if (status < 0)
+		goto xdr_error;
+	fattr->valid |= status;
+
 	status = decode_attr_time_metadata(xdr, bitmap, &fattr->ctime);
 	if (status < 0)
 		goto xdr_error;
@@ -4755,12 +4838,10 @@ static int decode_getfattr_attrs(struct xdr_stream *xdr, uint32_t *bitmap,
 	if (status < 0)
 		goto xdr_error;
 
-	if (fattr->label) {
-		status = decode_attr_security_label(xdr, bitmap, fattr->label);
-		if (status < 0)
-			goto xdr_error;
-		fattr->valid |= status;
-	}
+	status = decode_attr_security_label(xdr, bitmap, fattr->label);
+	if (status < 0)
+		goto xdr_error;
+	fattr->valid |= status;
 
 xdr_error:
 	dprintk("%s: xdr returned %d\n", __func__, -status);
@@ -4859,7 +4940,7 @@ static int decode_attr_pnfstype(struct xdr_stream *xdr, uint32_t *bitmap,
 }
 
 /*
- * The prefered block size for layout directed io
+ * The preferred block size for layout directed io
  */
 static int decode_attr_layout_blksize(struct xdr_stream *xdr, uint32_t *bitmap,
 				      uint32_t *res)
@@ -5030,7 +5111,7 @@ static int decode_link(struct xdr_stream *xdr, struct nfs4_change_info *cinfo)
 /*
  * We create the owner, so we know a proper owner.id length is 4.
  */
-static int decode_lock_denied (struct xdr_stream *xdr, struct file_lock *fl)
+static int decode_lock_denied(struct xdr_stream *xdr, struct file_lock *fl)
 {
 	uint64_t offset, length, clientid;
 	__be32 *p;
@@ -5047,10 +5128,10 @@ static int decode_lock_denied (struct xdr_stream *xdr, struct file_lock *fl)
 		fl->fl_end = fl->fl_start + (loff_t)length - 1;
 		if (length == ~(uint64_t)0)
 			fl->fl_end = OFFSET_MAX;
-		fl->fl_type = F_WRLCK;
+		fl->c.flc_type = F_WRLCK;
 		if (type & 1)
-			fl->fl_type = F_RDLCK;
-		fl->fl_pid = 0;
+			fl->c.flc_type = F_RDLCK;
+		fl->c.flc_pid = 0;
 	}
 	p = xdr_decode_hyper(p, &clientid); /* read 8 bytes */
 	namelen = be32_to_cpup(p); /* read 4 bytes */  /* have read all 32 bytes now */
@@ -5101,10 +5182,12 @@ static int decode_locku(struct xdr_stream *xdr, struct nfs_locku_res *res)
 	return status;
 }
 
+#if defined(CONFIG_NFS_V4_0)
 static int decode_release_lockowner(struct xdr_stream *xdr)
 {
 	return decode_op_hdr(xdr, OP_RELEASE_LOCKOWNER);
 }
+#endif /* CONFIG_NFS_V4_0 */
 
 static int decode_lookup(struct xdr_stream *xdr)
 {
@@ -5143,13 +5226,12 @@ static int decode_space_limit(struct xdr_stream *xdr,
 }
 
 static int decode_rw_delegation(struct xdr_stream *xdr,
-		uint32_t delegation_type,
-		struct nfs_openres *res)
+		struct nfs4_open_delegation *res)
 {
 	__be32 *p;
 	int status;
 
-	status = decode_delegation_stateid(xdr, &res->delegation);
+	status = decode_delegation_stateid(xdr, &res->stateid);
 	if (unlikely(status))
 		return status;
 	p = xdr_inline_decode(xdr, 4);
@@ -5157,52 +5239,57 @@ static int decode_rw_delegation(struct xdr_stream *xdr,
 		return -EIO;
 	res->do_recall = be32_to_cpup(p);
 
-	switch (delegation_type) {
+	switch (res->open_delegation_type) {
 	case NFS4_OPEN_DELEGATE_READ:
-		res->delegation_type = FMODE_READ;
+	case NFS4_OPEN_DELEGATE_READ_ATTRS_DELEG:
+		res->type = FMODE_READ;
 		break;
 	case NFS4_OPEN_DELEGATE_WRITE:
-		res->delegation_type = FMODE_WRITE|FMODE_READ;
+	case NFS4_OPEN_DELEGATE_WRITE_ATTRS_DELEG:
+		res->type = FMODE_WRITE|FMODE_READ;
 		if (decode_space_limit(xdr, &res->pagemod_limit) < 0)
 				return -EIO;
 	}
 	return decode_ace(xdr, NULL);
 }
 
-static int decode_no_delegation(struct xdr_stream *xdr, struct nfs_openres *res)
+static int decode_no_delegation(struct xdr_stream *xdr,
+		struct nfs4_open_delegation *res)
 {
 	__be32 *p;
-	uint32_t why_no_delegation;
 
 	p = xdr_inline_decode(xdr, 4);
 	if (unlikely(!p))
 		return -EIO;
-	why_no_delegation = be32_to_cpup(p);
-	switch (why_no_delegation) {
+	res->why_no_delegation = be32_to_cpup(p);
+	switch (res->why_no_delegation) {
 		case WND4_CONTENTION:
 		case WND4_RESOURCE:
-			xdr_inline_decode(xdr, 4);
-			/* Ignore for now */
+			p = xdr_inline_decode(xdr, 4);
+			if (unlikely(!p))
+				return -EIO;
+			res->will_notify = be32_to_cpup(p);
 	}
 	return 0;
 }
 
-static int decode_delegation(struct xdr_stream *xdr, struct nfs_openres *res)
+static int decode_delegation(struct xdr_stream *xdr,
+		struct nfs4_open_delegation *res)
 {
 	__be32 *p;
-	uint32_t delegation_type;
 
 	p = xdr_inline_decode(xdr, 4);
 	if (unlikely(!p))
 		return -EIO;
-	delegation_type = be32_to_cpup(p);
-	res->delegation_type = 0;
-	switch (delegation_type) {
+	res->open_delegation_type = be32_to_cpup(p);
+	switch (res->open_delegation_type) {
 	case NFS4_OPEN_DELEGATE_NONE:
 		return 0;
 	case NFS4_OPEN_DELEGATE_READ:
 	case NFS4_OPEN_DELEGATE_WRITE:
-		return decode_rw_delegation(xdr, delegation_type, res);
+	case NFS4_OPEN_DELEGATE_READ_ATTRS_DELEG:
+	case NFS4_OPEN_DELEGATE_WRITE_ATTRS_DELEG:
+		return decode_rw_delegation(xdr, res);
 	case NFS4_OPEN_DELEGATE_NONE_EXT:
 		return decode_no_delegation(xdr, res);
 	}
@@ -5243,7 +5330,7 @@ static int decode_open(struct xdr_stream *xdr, struct nfs_openres *res)
 	for (; i < NFS4_BITMAP_SIZE; i++)
 		res->attrset[i] = 0;
 
-	return decode_delegation(xdr, res);
+	return decode_delegation(xdr, &res->delegation);
 xdr_error:
 	dprintk("%s: Bitmap too large! Length = %u\n", __func__, bmlen);
 	return -EIO;
@@ -5475,6 +5562,11 @@ static int decode_setattr(struct xdr_stream *xdr)
 	return -EIO;
 }
 
+static int decode_delegattr(struct xdr_stream *xdr)
+{
+	return decode_setattr(xdr);
+}
+
 static int decode_setclientid(struct xdr_stream *xdr, struct nfs4_setclientid_res *res)
 {
 	__be32 *p;
@@ -5624,7 +5716,6 @@ static int decode_secinfo(struct xdr_stream *xdr, struct nfs4_secinfo_res *res)
 	return decode_secinfo_common(xdr, res);
 }
 
-#if defined(CONFIG_NFS_V4_1)
 static int decode_secinfo_no_name(struct xdr_stream *xdr, struct nfs4_secinfo_res *res)
 {
 	int status = decode_op_hdr(xdr, OP_SECINFO_NO_NAME);
@@ -5836,13 +5927,11 @@ static int decode_reclaim_complete(struct xdr_stream *xdr, void *dummy)
 {
 	return decode_op_hdr(xdr, OP_RECLAIM_COMPLETE);
 }
-#endif /* CONFIG_NFS_V4_1 */
 
 static int decode_sequence(struct xdr_stream *xdr,
 			   struct nfs4_sequence_res *res,
 			   struct rpc_rqst *rqstp)
 {
-#if defined(CONFIG_NFS_V4_1)
 	struct nfs4_session *session;
 	struct nfs4_sessionid id;
 	u32 dummy;
@@ -5902,16 +5991,55 @@ out_err:
 out_overflow:
 	status = -EIO;
 	goto out_err;
-#else  /* CONFIG_NFS_V4_1 */
-	return 0;
-#endif /* CONFIG_NFS_V4_1 */
 }
 
-#if defined(CONFIG_NFS_V4_1)
 static int decode_layout_stateid(struct xdr_stream *xdr, nfs4_stateid *stateid)
 {
 	stateid->type = NFS4_LAYOUT_STATEID_TYPE;
 	return decode_stateid(xdr, stateid);
+}
+
+static int decode_get_dir_delegation(struct xdr_stream *xdr,
+				     struct nfs4_getattr_res *res)
+{
+	struct nfs4_gdd_res *gdd_res = res->gdd_res;
+	nfs4_verifier cookieverf;
+	u32 bitmap[1];
+	int status;
+
+	status = decode_op_hdr(xdr, OP_GET_DIR_DELEGATION);
+	if (status)
+		return status;
+
+	if (xdr_stream_decode_u32(xdr, &gdd_res->status))
+		return -EIO;
+
+	if (gdd_res->status == GDD4_UNAVAIL)
+		return xdr_inline_decode(xdr, 4) ? 0 : -EIO;
+
+	status = decode_verifier(xdr, &cookieverf);
+	if (status)
+		return status;
+
+	status = decode_delegation_stateid(xdr, &gdd_res->deleg);
+	if (status)
+		return status;
+
+	/* Decode supported notification types. */
+	status = decode_bitmap4(xdr, bitmap, ARRAY_SIZE(bitmap));
+	if (status < 0)
+		return status;
+
+	/* Decode supported child attributes. */
+	status = decode_bitmap4(xdr, bitmap, ARRAY_SIZE(bitmap));
+	if (status < 0)
+		return status;
+
+	/* Decode supported attributes. */
+	status = decode_bitmap4(xdr, bitmap, ARRAY_SIZE(bitmap));
+	if (status < 0)
+		return status;
+	return 0;
 }
 
 static int decode_getdeviceinfo(struct xdr_stream *xdr,
@@ -6127,21 +6255,6 @@ static int decode_free_stateid(struct xdr_stream *xdr,
 	res->status = decode_op_hdr(xdr, OP_FREE_STATEID);
 	return res->status;
 }
-#else
-static inline
-int decode_layoutreturn(struct xdr_stream *xdr,
-			       struct nfs4_layoutreturn_res *res)
-{
-	return 0;
-}
-
-static int decode_layoutget(struct xdr_stream *xdr, struct rpc_rqst *req,
-			    struct nfs4_layoutget_res *res)
-{
-	return 0;
-}
-
-#endif /* CONFIG_NFS_V4_1 */
 
 /*
  * END OF "GENERIC" DECODE ROUTINES.
@@ -6445,6 +6558,11 @@ static int nfs4_xdr_dec_getattr(struct rpc_rqst *rqstp, struct xdr_stream *xdr,
 	status = decode_putfh(xdr);
 	if (status)
 		goto out;
+	if (res->gdd_res) {
+		status = decode_get_dir_delegation(xdr, res);
+		if (status)
+			goto out;
+	}
 	status = decode_getfattr(xdr, res->fattr, res->server);
 out:
 	return status;
@@ -6505,7 +6623,7 @@ nfs4_xdr_dec_getacl(struct rpc_rqst *rqstp, struct xdr_stream *xdr,
 	int status;
 
 	if (res->acl_scratch != NULL)
-		xdr_set_scratch_page(xdr, res->acl_scratch);
+		xdr_set_scratch_folio(xdr, res->acl_scratch);
 	status = decode_compound_hdr(xdr, &hdr);
 	if (status)
 		goto out;
@@ -6744,6 +6862,7 @@ out:
 	return status;
 }
 
+#if defined(CONFIG_NFS_V4_0)
 static int nfs4_xdr_dec_release_lockowner(struct rpc_rqst *rqstp,
 					  struct xdr_stream *xdr, void *dummy)
 {
@@ -6755,6 +6874,7 @@ static int nfs4_xdr_dec_release_lockowner(struct rpc_rqst *rqstp,
 		status = decode_release_lockowner(xdr);
 	return status;
 }
+#endif /* CONFIG_NFS_V4_0 */
 
 /*
  * Decode READLINK response
@@ -6976,6 +7096,7 @@ out:
 /*
  * Decode RENEW response
  */
+#if defined(CONFIG_NFS_V4_0)
 static int nfs4_xdr_dec_renew(struct rpc_rqst *rqstp, struct xdr_stream *xdr,
 			      void *__unused)
 {
@@ -6987,6 +7108,7 @@ static int nfs4_xdr_dec_renew(struct rpc_rqst *rqstp, struct xdr_stream *xdr,
 		status = decode_renew(xdr);
 	return status;
 }
+#endif /* CONFIG_NFS_V4_0 */
 
 /*
  * Decode SETCLIENTID response
@@ -7044,6 +7166,12 @@ static int nfs4_xdr_dec_delegreturn(struct rpc_rqst *rqstp,
 	if (res->lr_res) {
 		status = decode_layoutreturn(xdr, res->lr_res);
 		res->lr_ret = status;
+		if (status)
+			goto out;
+	}
+	if (res->sattr_res) {
+		status = decode_delegattr(xdr);
+		res->sattr_ret = status;
 		if (status)
 			goto out;
 	}
@@ -7155,7 +7283,6 @@ out:
 	return status;
 }
 
-#if defined(CONFIG_NFS_V4_1)
 /*
  * Decode BIND_CONN_TO_SESSION response
  */
@@ -7252,8 +7379,6 @@ static int nfs4_xdr_dec_sequence(struct rpc_rqst *rqstp,
 	return status;
 }
 
-#endif
-
 /*
  * Decode GET_LEASE_TIME response
  */
@@ -7274,8 +7399,6 @@ static int nfs4_xdr_dec_get_lease_time(struct rpc_rqst *rqstp,
 		status = decode_fsinfo(xdr, res->lr_fsinfo);
 	return status;
 }
-
-#ifdef CONFIG_NFS_V4_1
 
 /*
  * Decode RECLAIM_COMPLETE response
@@ -7464,7 +7587,6 @@ static int nfs4_xdr_dec_free_stateid(struct rpc_rqst *rqstp,
 out:
 	return status;
 }
-#endif /* CONFIG_NFS_V4_1 */
 
 /**
  * nfs4_decode_dirent - Decode a single NFSv4 directory entry stored in
@@ -7542,72 +7664,6 @@ int nfs4_decode_dirent(struct xdr_stream *xdr, struct nfs_entry *entry,
 	return 0;
 }
 
-/*
- * We need to translate between nfs status return values and
- * the local errno values which may not be the same.
- */
-static struct {
-	int stat;
-	int errno;
-} nfs_errtbl[] = {
-	{ NFS4_OK,		0		},
-	{ NFS4ERR_PERM,		-EPERM		},
-	{ NFS4ERR_NOENT,	-ENOENT		},
-	{ NFS4ERR_IO,		-errno_NFSERR_IO},
-	{ NFS4ERR_NXIO,		-ENXIO		},
-	{ NFS4ERR_ACCESS,	-EACCES		},
-	{ NFS4ERR_EXIST,	-EEXIST		},
-	{ NFS4ERR_XDEV,		-EXDEV		},
-	{ NFS4ERR_NOTDIR,	-ENOTDIR	},
-	{ NFS4ERR_ISDIR,	-EISDIR		},
-	{ NFS4ERR_INVAL,	-EINVAL		},
-	{ NFS4ERR_FBIG,		-EFBIG		},
-	{ NFS4ERR_NOSPC,	-ENOSPC		},
-	{ NFS4ERR_ROFS,		-EROFS		},
-	{ NFS4ERR_MLINK,	-EMLINK		},
-	{ NFS4ERR_NAMETOOLONG,	-ENAMETOOLONG	},
-	{ NFS4ERR_NOTEMPTY,	-ENOTEMPTY	},
-	{ NFS4ERR_DQUOT,	-EDQUOT		},
-	{ NFS4ERR_STALE,	-ESTALE		},
-	{ NFS4ERR_BADHANDLE,	-EBADHANDLE	},
-	{ NFS4ERR_BAD_COOKIE,	-EBADCOOKIE	},
-	{ NFS4ERR_NOTSUPP,	-ENOTSUPP	},
-	{ NFS4ERR_TOOSMALL,	-ETOOSMALL	},
-	{ NFS4ERR_SERVERFAULT,	-EREMOTEIO	},
-	{ NFS4ERR_BADTYPE,	-EBADTYPE	},
-	{ NFS4ERR_LOCKED,	-EAGAIN		},
-	{ NFS4ERR_SYMLINK,	-ELOOP		},
-	{ NFS4ERR_OP_ILLEGAL,	-EOPNOTSUPP	},
-	{ NFS4ERR_DEADLOCK,	-EDEADLK	},
-	{ NFS4ERR_NOXATTR,	-ENODATA	},
-	{ NFS4ERR_XATTR2BIG,	-E2BIG		},
-	{ -1,			-EIO		}
-};
-
-/*
- * Convert an NFS error code to a local one.
- * This one is used jointly by NFSv2 and NFSv3.
- */
-static int
-nfs4_stat_to_errno(int stat)
-{
-	int i;
-	for (i = 0; nfs_errtbl[i].stat != -1; i++) {
-		if (nfs_errtbl[i].stat == stat)
-			return nfs_errtbl[i].errno;
-	}
-	if (stat <= 10000 || stat > 10100) {
-		/* The server is looney tunes. */
-		return -EREMOTEIO;
-	}
-	/* If we cannot translate the error, the recovery routines should
-	 * handle it.
-	 * Note: remaining NFSv4 error codes have values > 10000, so should
-	 * not conflict with native Linux error codes.
-	 */
-	return -stat;
-}
-
 #ifdef CONFIG_NFS_V4_2
 #include "nfs42xdr.c"
 #endif /* CONFIG_NFS_V4_2 */
@@ -7628,13 +7684,16 @@ nfs4_stat_to_errno(int stat)
 	.p_name = #proc,	\
 }
 
-#if defined(CONFIG_NFS_V4_1)
-#define PROC41(proc, argtype, restype)				\
+#if defined(CONFIG_NFS_V4_0)
+#define PROC40(proc, argtype, restype)				\
 	PROC(proc, argtype, restype)
 #else
-#define PROC41(proc, argtype, restype)				\
+#define PROC40(proc, argtype, restype)				\
 	STUB(proc)
-#endif
+#endif /* CONFIG_NFS_V4_0 */
+
+#define PROC41(proc, argtype, restype)				\
+	PROC(proc, argtype, restype)
 
 #if defined(CONFIG_NFS_V4_2)
 #define PROC42(proc, argtype, restype)				\
@@ -7655,7 +7714,7 @@ const struct rpc_procinfo nfs4_procedures[] = {
 	PROC(CLOSE,		enc_close,		dec_close),
 	PROC(SETATTR,		enc_setattr,		dec_setattr),
 	PROC(FSINFO,		enc_fsinfo,		dec_fsinfo),
-	PROC(RENEW,		enc_renew,		dec_renew),
+	PROC40(RENEW,		enc_renew,		dec_renew),
 	PROC(SETCLIENTID,	enc_setclientid,	dec_setclientid),
 	PROC(SETCLIENTID_CONFIRM, enc_setclientid_confirm, dec_setclientid_confirm),
 	PROC(LOCK,		enc_lock,		dec_lock),
@@ -7679,7 +7738,7 @@ const struct rpc_procinfo nfs4_procedures[] = {
 	PROC(GETACL,		enc_getacl,		dec_getacl),
 	PROC(SETACL,		enc_setacl,		dec_setacl),
 	PROC(FS_LOCATIONS,	enc_fs_locations,	dec_fs_locations),
-	PROC(RELEASE_LOCKOWNER,	enc_release_lockowner,	dec_release_lockowner),
+	PROC40(RELEASE_LOCKOWNER,	enc_release_lockowner,	dec_release_lockowner),
 	PROC(SECINFO,		enc_secinfo,		dec_secinfo),
 	PROC(FSID_PRESENT,	enc_fsid_present,	dec_fsid_present),
 	PROC41(EXCHANGE_ID,	enc_exchange_id,	dec_exchange_id),
@@ -7706,6 +7765,7 @@ const struct rpc_procinfo nfs4_procedures[] = {
 	PROC42(CLONE,		enc_clone,		dec_clone),
 	PROC42(COPY,		enc_copy,		dec_copy),
 	PROC42(OFFLOAD_CANCEL,	enc_offload_cancel,	dec_offload_cancel),
+	PROC42(OFFLOAD_STATUS,	enc_offload_status,	dec_offload_status),
 	PROC42(COPY_NOTIFY,	enc_copy_notify,	dec_copy_notify),
 	PROC(LOOKUPP,		enc_lookupp,		dec_lookupp),
 	PROC42(LAYOUTERROR,	enc_layouterror,	dec_layouterror),
@@ -7714,6 +7774,7 @@ const struct rpc_procinfo nfs4_procedures[] = {
 	PROC42(LISTXATTRS,	enc_listxattrs,		dec_listxattrs),
 	PROC42(REMOVEXATTR,	enc_removexattr,	dec_removexattr),
 	PROC42(READ_PLUS,	enc_read_plus,		dec_read_plus),
+	PROC42(ZERO_RANGE,	enc_zero_range,		dec_zero_range),
 };
 
 static unsigned int nfs_version4_counts[ARRAY_SIZE(nfs4_procedures)];

@@ -29,6 +29,7 @@
 #include <net/ip.h>
 #include <net/ipv6.h>
 
+#include "initcalls.h"
 #include "netport.h"
 #include "objsec.h"
 
@@ -46,12 +47,6 @@ struct sel_netport {
 	struct list_head list;
 	struct rcu_head rcu;
 };
-
-/* NOTE: we are using a combined hash table for both IPv4 and IPv6, the reason
- * for this is that I suspect most users will not make heavy use of both
- * address families at the same time so one table will usually end up wasted,
- * if this becomes a problem we can always add a hash table for each address
- * family later */
 
 static DEFINE_SPINLOCK(sel_netport_lock);
 static struct sel_netport_bkt sel_netport_hash[SEL_NETPORT_HASH_SIZE];
@@ -148,10 +143,14 @@ static int sel_netport_sid_slow(u8 protocol, u16 pnum, u32 *sid)
 		return 0;
 	}
 
-	ret = security_port_sid(&selinux_state, protocol, pnum, sid);
+	ret = security_port_sid(protocol, pnum, sid);
 	if (ret != 0)
 		goto out;
-	new = kzalloc(sizeof(*new), GFP_ATOMIC);
+
+	/* If this memory allocation fails still return 0. The SID
+	 * is valid, it just won't be added to the cache.
+	 */
+	new = kmalloc_obj(*new, GFP_ATOMIC);
 	if (new) {
 		new->psec.port = pnum;
 		new->psec.protocol = protocol;
@@ -186,7 +185,7 @@ int sel_netport_sid(u8 protocol, u16 pnum, u32 *sid)
 
 	rcu_read_lock();
 	port = sel_netport_find(protocol, pnum);
-	if (port != NULL) {
+	if (likely(port != NULL)) {
 		*sid = port->psec.sid;
 		rcu_read_unlock();
 		return 0;
@@ -220,7 +219,7 @@ void sel_netport_flush(void)
 	spin_unlock_bh(&sel_netport_lock);
 }
 
-static __init int sel_netport_init(void)
+int __init sel_netport_init(void)
 {
 	int iter;
 
@@ -234,5 +233,3 @@ static __init int sel_netport_init(void)
 
 	return 0;
 }
-
-__initcall(sel_netport_init);

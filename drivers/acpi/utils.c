@@ -277,36 +277,80 @@ acpi_evaluate_integer(acpi_handle handle,
 
 EXPORT_SYMBOL(acpi_evaluate_integer);
 
-int acpi_get_local_address(acpi_handle handle, u32 *addr)
+int acpi_get_local_u64_address(acpi_handle handle, u64 *addr)
 {
-	unsigned long long adr;
 	acpi_status status;
 
-	status = acpi_evaluate_integer(handle, METHOD_NAME__ADR, NULL, &adr);
+	status = acpi_evaluate_integer(handle, METHOD_NAME__ADR, NULL, addr);
 	if (ACPI_FAILURE(status))
 		return -ENODATA;
+	return 0;
+}
+EXPORT_SYMBOL(acpi_get_local_u64_address);
 
+int acpi_get_local_address(acpi_handle handle, u32 *addr)
+{
+	u64 adr;
+	int ret;
+
+	ret = acpi_get_local_u64_address(handle, &adr);
+	if (ret < 0)
+		return ret;
 	*addr = (u32)adr;
 	return 0;
 }
 EXPORT_SYMBOL(acpi_get_local_address);
 
-acpi_status
-acpi_evaluate_reference(acpi_handle handle,
-			acpi_string pathname,
-			struct acpi_object_list *arguments,
-			struct acpi_handle_list *list)
+#define ACPI_MAX_SUB_BUF_SIZE	9
+
+const char *acpi_get_subsystem_id(acpi_handle handle)
 {
-	acpi_status status = AE_OK;
-	union acpi_object *package = NULL;
-	union acpi_object *element = NULL;
 	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
-	u32 i = 0;
+	union acpi_object *obj;
+	acpi_status status;
+	const char *sub;
+	size_t len;
 
-
-	if (!list) {
-		return AE_BAD_PARAMETER;
+	status = acpi_evaluate_object(handle, METHOD_NAME__SUB, NULL, &buffer);
+	if (ACPI_FAILURE(status)) {
+		acpi_handle_debug(handle, "Reading ACPI _SUB failed: %#x\n", status);
+		return ERR_PTR(-ENODATA);
 	}
+
+	obj = buffer.pointer;
+	if (obj->type == ACPI_TYPE_STRING) {
+		len = strlen(obj->string.pointer);
+		if (len < ACPI_MAX_SUB_BUF_SIZE && len > 0) {
+			sub = kstrdup(obj->string.pointer, GFP_KERNEL);
+			if (!sub)
+				sub = ERR_PTR(-ENOMEM);
+		} else {
+			acpi_handle_err(handle, "ACPI _SUB Length %zu is Invalid\n", len);
+			sub = ERR_PTR(-ENODATA);
+		}
+	} else {
+		acpi_handle_warn(handle, "Warning ACPI _SUB did not return a string\n");
+		sub = ERR_PTR(-ENODATA);
+	}
+
+	acpi_os_free(buffer.pointer);
+
+	return sub;
+}
+EXPORT_SYMBOL_GPL(acpi_get_subsystem_id);
+
+bool acpi_evaluate_reference(acpi_handle handle, acpi_string pathname,
+			     struct acpi_object_list *arguments,
+			     struct acpi_handle_list *list)
+{
+	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
+	union acpi_object *package;
+	acpi_status status;
+	bool ret = false;
+	u32 i;
+
+	if (!list)
+		return false;
 
 	/* Evaluate object. */
 
@@ -316,65 +360,141 @@ acpi_evaluate_reference(acpi_handle handle,
 
 	package = buffer.pointer;
 
-	if ((buffer.length == 0) || !package) {
-		status = AE_BAD_DATA;
-		acpi_util_eval_error(handle, pathname, status);
-		goto end;
-	}
-	if (package->type != ACPI_TYPE_PACKAGE) {
-		status = AE_BAD_DATA;
-		acpi_util_eval_error(handle, pathname, status);
-		goto end;
-	}
-	if (!package->package.count) {
-		status = AE_BAD_DATA;
-		acpi_util_eval_error(handle, pathname, status);
-		goto end;
-	}
+	if (buffer.length == 0 || !package ||
+	    package->type != ACPI_TYPE_PACKAGE || !package->package.count)
+		goto err;
 
-	if (package->package.count > ACPI_MAX_HANDLES) {
-		kfree(package);
-		return AE_NO_MEMORY;
-	}
 	list->count = package->package.count;
+	list->handles = kzalloc_objs(*list->handles, list->count);
+	if (!list->handles)
+		goto err_clear;
 
 	/* Extract package data. */
 
 	for (i = 0; i < list->count; i++) {
+		union acpi_object *element = &(package->package.elements[i]);
 
-		element = &(package->package.elements[i]);
+		if (element->type != ACPI_TYPE_LOCAL_REFERENCE ||
+		    !element->reference.handle)
+			goto err_free;
 
-		if (element->type != ACPI_TYPE_LOCAL_REFERENCE) {
-			status = AE_BAD_DATA;
-			acpi_util_eval_error(handle, pathname, status);
-			break;
-		}
-
-		if (!element->reference.handle) {
-			status = AE_NULL_ENTRY;
-			acpi_util_eval_error(handle, pathname, status);
-			break;
-		}
 		/* Get the  acpi_handle. */
 
 		list->handles[i] = element->reference.handle;
 		acpi_handle_debug(list->handles[i], "Found in reference list\n");
 	}
 
-      end:
-	if (ACPI_FAILURE(status)) {
-		list->count = 0;
-		//kfree(list->handles);
-	}
+	ret = true;
 
+end:
 	kfree(buffer.pointer);
 
-	return status;
+	return ret;
+
+err_free:
+	kfree(list->handles);
+	list->handles = NULL;
+
+err_clear:
+	list->count = 0;
+
+err:
+	acpi_util_eval_error(handle, pathname, status);
+	goto end;
 }
 
 EXPORT_SYMBOL(acpi_evaluate_reference);
 
-acpi_status
+/**
+ * acpi_handle_list_equal - Check if two ACPI handle lists are the same
+ * @list1: First list to compare.
+ * @list2: Second list to compare.
+ *
+ * Return true if the given ACPI handle lists are of the same size and
+ * contain the same ACPI handles in the same order.  Otherwise, return false.
+ */
+bool acpi_handle_list_equal(struct acpi_handle_list *list1,
+			    struct acpi_handle_list *list2)
+{
+	return list1->count == list2->count &&
+		!memcmp(list1->handles, list2->handles,
+		        list1->count * sizeof(*list1->handles));
+}
+EXPORT_SYMBOL_GPL(acpi_handle_list_equal);
+
+/**
+ * acpi_handle_list_replace - Replace one ACPI handle list with another
+ * @dst: ACPI handle list to replace.
+ * @src: Source ACPI handle list.
+ *
+ * Free the handles table in @dst, move the handles table from @src to @dst,
+ * copy count from @src to @dst and clear @src.
+ */
+void acpi_handle_list_replace(struct acpi_handle_list *dst,
+			      struct acpi_handle_list *src)
+{
+	if (dst->count)
+		kfree(dst->handles);
+
+	dst->count = src->count;
+	dst->handles = src->handles;
+
+	src->handles = NULL;
+	src->count = 0;
+}
+EXPORT_SYMBOL_GPL(acpi_handle_list_replace);
+
+/**
+ * acpi_handle_list_free - Free the handles table in an ACPI handle list
+ * @list: ACPI handle list to free.
+ *
+ * Free the handles table in @list and clear its count field.
+ */
+void acpi_handle_list_free(struct acpi_handle_list *list)
+{
+	if (!list->count)
+		return;
+
+	kfree(list->handles);
+	list->count = 0;
+}
+EXPORT_SYMBOL_GPL(acpi_handle_list_free);
+
+/**
+ * acpi_device_dep - Check ACPI device dependency
+ * @target: ACPI handle of the target ACPI device.
+ * @match: ACPI handle to look up in the target's _DEP list.
+ *
+ * Return true if @match is present in the list returned by _DEP for
+ * @target or false otherwise.
+ */
+bool acpi_device_dep(acpi_handle target, acpi_handle match)
+{
+	struct acpi_handle_list dep_devices;
+	bool ret = false;
+	int i;
+
+	if (!acpi_has_method(target, "_DEP"))
+		return false;
+
+	if (!acpi_evaluate_reference(target, "_DEP", NULL, &dep_devices)) {
+		acpi_handle_debug(target, "Failed to evaluate _DEP.\n");
+		return false;
+	}
+
+	for (i = 0; i < dep_devices.count; i++) {
+		if (dep_devices.handles[i] == match) {
+			ret = true;
+			break;
+		}
+	}
+
+	acpi_handle_list_free(&dep_devices);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(acpi_device_dep);
+
+bool
 acpi_get_physical_device_location(acpi_handle handle, struct acpi_pld_info **pld)
 {
 	acpi_status status;
@@ -382,9 +502,8 @@ acpi_get_physical_device_location(acpi_handle handle, struct acpi_pld_info **pld
 	union acpi_object *output;
 
 	status = acpi_evaluate_object(handle, "_PLD", NULL, &buffer);
-
 	if (ACPI_FAILURE(status))
-		return status;
+		return false;
 
 	output = buffer.pointer;
 
@@ -403,7 +522,7 @@ acpi_get_physical_device_location(acpi_handle handle, struct acpi_pld_info **pld
 
 out:
 	kfree(buffer.pointer);
-	return status;
+	return ACPI_SUCCESS(status);
 }
 EXPORT_SYMBOL(acpi_get_physical_device_location);
 
@@ -449,7 +568,7 @@ EXPORT_SYMBOL(acpi_evaluate_ost);
  *
  * Caller must free the returned buffer
  */
-static char *acpi_handle_path(acpi_handle handle)
+char *acpi_handle_path(acpi_handle handle)
 {
 	struct acpi_buffer buffer = {
 		.length = ACPI_ALLOCATE_BUFFER,
@@ -485,7 +604,7 @@ acpi_handle_printk(const char *level, acpi_handle handle, const char *fmt, ...)
 	vaf.va = &args;
 
 	path = acpi_handle_path(handle);
-	printk("%sACPI: %s: %pV", level, path ? path : "<n/a>" , &vaf);
+	printk("%sACPI: %s: %pV", level, path ? path : "<n/a>", &vaf);
 
 	va_end(args);
 	kfree(path);
@@ -681,7 +800,8 @@ acpi_evaluate_dsm(acpi_handle handle, const guid_t *guid, u64 rev, u64 func,
 
 	if (ret != AE_NOT_FOUND)
 		acpi_handle_warn(handle,
-				 "failed to evaluate _DSM %pUb (0x%x)\n", guid, ret);
+				 "failed to evaluate _DSM %pUb rev:%lld func:%lld (0x%x)\n",
+				 guid, rev, func, ret);
 
 	return NULL;
 }
@@ -731,29 +851,28 @@ bool acpi_check_dsm(acpi_handle handle, const guid_t *guid, u64 rev, u64 funcs)
 EXPORT_SYMBOL(acpi_check_dsm);
 
 /**
- * acpi_dev_hid_uid_match - Match device by supplied HID and UID
- * @adev: ACPI device to match.
- * @hid2: Hardware ID of the device.
- * @uid2: Unique ID of the device, pass NULL to not check _UID.
+ * acpi_dev_uid_to_integer - treat ACPI device _UID as integer
+ * @adev: ACPI device to get _UID from
+ * @integer: output buffer for integer
  *
- * Matches HID and UID in @adev with given @hid2 and @uid2.
- * Returns true if matches.
+ * Considers _UID as integer and converts it to @integer.
+ *
+ * Returns 0 on success, or negative error code otherwise.
  */
-bool acpi_dev_hid_uid_match(struct acpi_device *adev,
-			    const char *hid2, const char *uid2)
+int acpi_dev_uid_to_integer(struct acpi_device *adev, u64 *integer)
 {
-	const char *hid1 = acpi_device_hid(adev);
-	const char *uid1 = acpi_device_uid(adev);
+	const char *uid;
 
-	if (strcmp(hid1, hid2))
-		return false;
+	if (!adev)
+		return -ENODEV;
 
-	if (!uid2)
-		return true;
+	uid = acpi_device_uid(adev);
+	if (!uid)
+		return -ENODATA;
 
-	return uid1 && !strcmp(uid1, uid2);
+	return kstrtou64(uid, 0, integer);
 }
-EXPORT_SYMBOL(acpi_dev_hid_uid_match);
+EXPORT_SYMBOL(acpi_dev_uid_to_integer);
 
 /**
  * acpi_dev_found - Detect presence of a given ACPI device in the namespace.
@@ -801,8 +920,7 @@ static int acpi_dev_match_cb(struct device *dev, const void *data)
 	if (acpi_match_device_ids(adev, match->hid))
 		return 0;
 
-	if (match->uid && (!adev->pnp.unique_id ||
-	    strcmp(adev->pnp.unique_id, match->uid)))
+	if (match->uid && !acpi_dev_uid_match(adev, match->uid))
 		return 0;
 
 	if (match->hrv == -1)
@@ -840,7 +958,7 @@ bool acpi_dev_present(const char *hid, const char *uid, s64 hrv)
 	struct acpi_dev_match_info match = {};
 	struct device *dev;
 
-	strlcpy(match.hid[0].id, hid, sizeof(match.hid[0].id));
+	strscpy(match.hid[0].id, hid, sizeof(match.hid[0].id));
 	match.uid = uid;
 	match.hrv = hrv;
 
@@ -873,7 +991,7 @@ acpi_dev_get_next_match_dev(struct acpi_device *adev, const char *hid, const cha
 	struct acpi_dev_match_info match = {};
 	struct device *dev;
 
-	strlcpy(match.hid[0].id, hid, sizeof(match.hid[0].id));
+	strscpy(match.hid[0].id, hid, sizeof(match.hid[0].id));
 	match.uid = uid;
 	match.hrv = hrv;
 
@@ -923,7 +1041,7 @@ EXPORT_SYMBOL(acpi_video_backlight_string);
 
 static int __init acpi_backlight(char *str)
 {
-	strlcpy(acpi_video_backlight_string, str,
+	strscpy(acpi_video_backlight_string, str,
 		sizeof(acpi_video_backlight_string));
 	return 1;
 }

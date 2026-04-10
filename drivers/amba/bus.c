@@ -18,6 +18,7 @@
 #include <linux/limits.h>
 #include <linux/clk/clk-conf.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/reset.h>
 #include <linux/of_irq.h>
 #include <linux/of_device.h>
@@ -25,7 +26,7 @@
 #include <linux/iommu.h>
 #include <linux/dma-map-ops.h>
 
-#define to_amba_driver(d)	container_of(d, struct amba_driver, drv)
+#define to_amba_driver(d)	container_of_const(d, struct amba_driver, drv)
 
 /* called on periphid match and class 0x9 coresight device. */
 static int
@@ -130,10 +131,103 @@ static struct attribute *amba_dev_attrs[] = {
 };
 ATTRIBUTE_GROUPS(amba_dev);
 
-static int amba_match(struct device *dev, struct device_driver *drv)
+static int amba_read_periphid(struct amba_device *dev)
+{
+	struct reset_control *rstc;
+	u32 size, pid, cid;
+	void __iomem *tmp;
+	int i, ret;
+
+	ret = dev_pm_domain_attach(&dev->dev, PD_FLAG_ATTACH_POWER_ON);
+	if (ret) {
+		dev_dbg(&dev->dev, "can't get PM domain: %d\n", ret);
+		goto err_out;
+	}
+
+	ret = amba_get_enable_pclk(dev);
+	if (ret) {
+		dev_dbg(&dev->dev, "can't get pclk: %d\n", ret);
+		goto err_pm;
+	}
+
+	/*
+	 * Find reset control(s) of the amba bus and de-assert them.
+	 */
+	rstc = of_reset_control_array_get_optional_shared(dev->dev.of_node);
+	if (IS_ERR(rstc)) {
+		ret = PTR_ERR(rstc);
+		if (ret != -EPROBE_DEFER)
+			dev_err(&dev->dev, "can't get reset: %d\n", ret);
+		goto err_clk;
+	}
+	reset_control_deassert(rstc);
+	reset_control_put(rstc);
+
+	size = resource_size(&dev->res);
+	tmp = ioremap(dev->res.start, size);
+	if (!tmp) {
+		ret = -ENOMEM;
+		goto err_clk;
+	}
+
+	/*
+	 * Read pid and cid based on size of resource
+	 * they are located at end of region
+	 */
+	for (pid = 0, i = 0; i < 4; i++)
+		pid |= (readl(tmp + size - 0x20 + 4 * i) & 255) << (i * 8);
+	for (cid = 0, i = 0; i < 4; i++)
+		cid |= (readl(tmp + size - 0x10 + 4 * i) & 255) << (i * 8);
+
+	if (cid == CORESIGHT_CID) {
+		/* set the base to the start of the last 4k block */
+		void __iomem *csbase = tmp + size - 4096;
+
+		dev->uci.devarch = readl(csbase + UCI_REG_DEVARCH_OFFSET);
+		dev->uci.devtype = readl(csbase + UCI_REG_DEVTYPE_OFFSET) & 0xff;
+	}
+
+	if (cid == AMBA_CID || cid == CORESIGHT_CID) {
+		dev->periphid = pid;
+		dev->cid = cid;
+	}
+
+	if (!dev->periphid)
+		ret = -ENODEV;
+
+	iounmap(tmp);
+
+err_clk:
+	amba_put_disable_pclk(dev);
+err_pm:
+	dev_pm_domain_detach(&dev->dev, true);
+err_out:
+	return ret;
+}
+
+static int amba_match(struct device *dev, const struct device_driver *drv)
 {
 	struct amba_device *pcdev = to_amba_device(dev);
-	struct amba_driver *pcdrv = to_amba_driver(drv);
+	const struct amba_driver *pcdrv = to_amba_driver(drv);
+
+	mutex_lock(&pcdev->periphid_lock);
+	if (!pcdev->periphid) {
+		int ret = amba_read_periphid(pcdev);
+
+		/*
+		 * Returning any error other than -EPROBE_DEFER from bus match
+		 * can cause driver registration failure. So, if there's a
+		 * permanent failure in reading pid and cid, simply map it to
+		 * -EPROBE_DEFER.
+		 */
+		if (ret) {
+			mutex_unlock(&pcdev->periphid_lock);
+			return -EPROBE_DEFER;
+		}
+		dev_set_uevent_suppress(dev, false);
+		kobject_uevent(&dev->kobj, KOBJ_ADD);
+	}
+	mutex_unlock(&pcdev->periphid_lock);
 
 	/* When driver_override is set, only bind to the matching driver */
 	if (pcdev->driver_override)
@@ -142,9 +236,9 @@ static int amba_match(struct device *dev, struct device_driver *drv)
 	return amba_lookup(pcdrv->id_table, pcdev) != NULL;
 }
 
-static int amba_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int amba_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct amba_device *pcdev = to_amba_device(dev);
+	const struct amba_device *pcdev = to_amba_device(dev);
 	int retval = 0;
 
 	retval = add_uevent_var(env, "AMBA_ID=%08x", pcdev->periphid);
@@ -197,15 +291,14 @@ static int amba_probe(struct device *dev)
 		if (ret < 0)
 			break;
 
-		ret = dev_pm_domain_attach(dev, true);
+		ret = dev_pm_domain_attach(dev, PD_FLAG_ATTACH_POWER_ON |
+						PD_FLAG_DETACH_POWER_OFF);
 		if (ret)
 			break;
 
 		ret = amba_get_enable_pclk(pcdev);
-		if (ret) {
-			dev_pm_domain_detach(dev, true);
+		if (ret)
 			break;
-		}
 
 		pm_runtime_get_noresume(dev);
 		pm_runtime_set_active(dev);
@@ -220,7 +313,6 @@ static int amba_probe(struct device *dev)
 		pm_runtime_put_noidle(dev);
 
 		amba_put_disable_pclk(pcdev);
-		dev_pm_domain_detach(dev, true);
 	} while (0);
 
 	return ret;
@@ -242,7 +334,6 @@ static void amba_remove(struct device *dev)
 	pm_runtime_put_noidle(dev);
 
 	amba_put_disable_pclk(pcdev);
-	dev_pm_domain_detach(dev, true);
 }
 
 static void amba_shutdown(struct device *dev)
@@ -270,7 +361,8 @@ static int amba_dma_configure(struct device *dev)
 		ret = acpi_dma_configure(dev, attr);
 	}
 
-	if (!ret && !drv->driver_managed_dma) {
+	/* @drv may not be valid when we're called from the IOMMU layer */
+	if (!ret && dev->driver && !drv->driver_managed_dma) {
 		ret = iommu_device_use_default_domain(dev);
 		if (ret)
 			arch_teardown_dma_ops(dev);
@@ -328,12 +420,6 @@ static int amba_pm_runtime_resume(struct device *dev)
 #endif /* CONFIG_PM */
 
 static const struct dev_pm_ops amba_pm = {
-	.suspend	= pm_generic_suspend,
-	.resume		= pm_generic_resume,
-	.freeze		= pm_generic_freeze,
-	.thaw		= pm_generic_thaw,
-	.poweroff	= pm_generic_poweroff,
-	.restore	= pm_generic_restore,
 	SET_RUNTIME_PM_OPS(
 		amba_pm_runtime_suspend,
 		amba_pm_runtime_resume,
@@ -347,7 +433,7 @@ static const struct dev_pm_ops amba_pm = {
  * DMA configuration for platform and AMBA bus is same. So here we reuse
  * platform's DMA config routine.
  */
-struct bus_type amba_bustype = {
+const struct bus_type amba_bustype = {
 	.name		= "amba",
 	.dev_groups	= amba_dev_groups,
 	.match		= amba_match,
@@ -361,6 +447,12 @@ struct bus_type amba_bustype = {
 };
 EXPORT_SYMBOL_GPL(amba_bustype);
 
+bool dev_is_amba(const struct device *dev)
+{
+	return dev->bus == &amba_bustype;
+}
+EXPORT_SYMBOL_GPL(dev_is_amba);
+
 static int __init amba_init(void)
 {
 	return bus_register(&amba_bustype);
@@ -368,24 +460,63 @@ static int __init amba_init(void)
 
 postcore_initcall(amba_init);
 
+static int amba_proxy_probe(struct amba_device *adev,
+			    const struct amba_id *id)
+{
+	WARN(1, "Stub driver should never match any device.\n");
+	return -ENODEV;
+}
+
+static const struct amba_id amba_stub_drv_ids[] = {
+	{ 0, 0 },
+};
+
+static struct amba_driver amba_proxy_drv = {
+	.drv = {
+		.name = "amba-proxy",
+	},
+	.probe = amba_proxy_probe,
+	.id_table = amba_stub_drv_ids,
+};
+
+static int __init amba_stub_drv_init(void)
+{
+	if (!IS_ENABLED(CONFIG_MODULES))
+		return 0;
+
+	/*
+	 * The amba_match() function will get called only if there is at least
+	 * one amba driver registered. If all amba drivers are modules and are
+	 * only loaded based on uevents, then we'll hit a chicken-and-egg
+	 * situation where amba_match() is waiting on drivers and drivers are
+	 * waiting on amba_match(). So, register a stub driver to make sure
+	 * amba_match() is called even if no amba driver has been registered.
+	 */
+	return __amba_driver_register(&amba_proxy_drv, NULL);
+}
+late_initcall_sync(amba_stub_drv_init);
+
 /**
- *	amba_driver_register - register an AMBA device driver
+ *	__amba_driver_register - register an AMBA device driver
  *	@drv: amba device driver structure
+ *	@owner: owning module/driver
  *
  *	Register an AMBA device driver with the Linux device model
  *	core.  If devices pre-exist, the drivers probe function will
  *	be called.
  */
-int amba_driver_register(struct amba_driver *drv)
+int __amba_driver_register(struct amba_driver *drv,
+			   struct module *owner)
 {
 	if (!drv->probe)
 		return -EINVAL;
 
+	drv->drv.owner = owner;
 	drv->drv.bus = &amba_bustype;
 
 	return driver_register(&drv->drv);
 }
-EXPORT_SYMBOL(amba_driver_register);
+EXPORT_SYMBOL(__amba_driver_register);
 
 /**
  *	amba_driver_unregister - remove an AMBA device driver
@@ -405,163 +536,11 @@ static void amba_device_release(struct device *dev)
 {
 	struct amba_device *d = to_amba_device(dev);
 
+	fwnode_handle_put(dev_fwnode(&d->dev));
 	if (d->res.parent)
 		release_resource(&d->res);
+	mutex_destroy(&d->periphid_lock);
 	kfree(d);
-}
-
-static int amba_read_periphid(struct amba_device *dev)
-{
-	struct reset_control *rstc;
-	u32 size, pid, cid;
-	void __iomem *tmp;
-	int i, ret;
-
-	ret = dev_pm_domain_attach(&dev->dev, true);
-	if (ret)
-		goto err_out;
-
-	ret = amba_get_enable_pclk(dev);
-	if (ret)
-		goto err_pm;
-
-	/*
-	 * Find reset control(s) of the amba bus and de-assert them.
-	 */
-	rstc = of_reset_control_array_get_optional_shared(dev->dev.of_node);
-	if (IS_ERR(rstc)) {
-		ret = PTR_ERR(rstc);
-		if (ret != -EPROBE_DEFER)
-			dev_err(&dev->dev, "can't get reset: %d\n", ret);
-		goto err_clk;
-	}
-	reset_control_deassert(rstc);
-	reset_control_put(rstc);
-
-	size = resource_size(&dev->res);
-	tmp = ioremap(dev->res.start, size);
-	if (!tmp) {
-		ret = -ENOMEM;
-		goto err_clk;
-	}
-
-	/*
-	 * Read pid and cid based on size of resource
-	 * they are located at end of region
-	 */
-	for (pid = 0, i = 0; i < 4; i++)
-		pid |= (readl(tmp + size - 0x20 + 4 * i) & 255) << (i * 8);
-	for (cid = 0, i = 0; i < 4; i++)
-		cid |= (readl(tmp + size - 0x10 + 4 * i) & 255) << (i * 8);
-
-	if (cid == CORESIGHT_CID) {
-		/* set the base to the start of the last 4k block */
-		void __iomem *csbase = tmp + size - 4096;
-
-		dev->uci.devarch = readl(csbase + UCI_REG_DEVARCH_OFFSET);
-		dev->uci.devtype = readl(csbase + UCI_REG_DEVTYPE_OFFSET) & 0xff;
-	}
-
-	if (cid == AMBA_CID || cid == CORESIGHT_CID) {
-		dev->periphid = pid;
-		dev->cid = cid;
-	}
-
-	if (!dev->periphid)
-		ret = -ENODEV;
-
-	iounmap(tmp);
-
-err_clk:
-	amba_put_disable_pclk(dev);
-err_pm:
-	dev_pm_domain_detach(&dev->dev, true);
-err_out:
-	return ret;
-}
-
-static int amba_device_try_add(struct amba_device *dev, struct resource *parent)
-{
-	int ret;
-
-	ret = request_resource(parent, &dev->res);
-	if (ret)
-		goto err_out;
-
-	/* Hard-coded primecell ID instead of plug-n-play */
-	if (dev->periphid != 0)
-		goto skip_probe;
-
-	ret = amba_read_periphid(dev);
-	if (ret) {
-		if (ret != -EPROBE_DEFER) {
-			amba_device_put(dev);
-			goto err_out;
-		}
-		goto err_release;
-	}
-
-skip_probe:
-	ret = device_add(&dev->dev);
-err_release:
-	if (ret)
-		release_resource(&dev->res);
-err_out:
-	return ret;
-}
-
-/*
- * Registration of AMBA device require reading its pid and cid registers.
- * To do this, the device must be turned on (if it is a part of power domain)
- * and have clocks enabled. However in some cases those resources might not be
- * yet available. Returning EPROBE_DEFER is not a solution in such case,
- * because callers don't handle this special error code. Instead such devices
- * are added to the special list and their registration is retried from
- * periodic worker, until all resources are available and registration succeeds.
- */
-struct deferred_device {
-	struct amba_device *dev;
-	struct resource *parent;
-	struct list_head node;
-};
-
-static LIST_HEAD(deferred_devices);
-static DEFINE_MUTEX(deferred_devices_lock);
-
-static void amba_deferred_retry_func(struct work_struct *dummy);
-static DECLARE_DELAYED_WORK(deferred_retry_work, amba_deferred_retry_func);
-
-#define DEFERRED_DEVICE_TIMEOUT (msecs_to_jiffies(5 * 1000))
-
-static int amba_deferred_retry(void)
-{
-	struct deferred_device *ddev, *tmp;
-
-	mutex_lock(&deferred_devices_lock);
-
-	list_for_each_entry_safe(ddev, tmp, &deferred_devices, node) {
-		int ret = amba_device_try_add(ddev->dev, ddev->parent);
-
-		if (ret == -EPROBE_DEFER)
-			continue;
-
-		list_del_init(&ddev->node);
-		kfree(ddev);
-	}
-
-	mutex_unlock(&deferred_devices_lock);
-
-	return 0;
-}
-late_initcall(amba_deferred_retry);
-
-static void amba_deferred_retry_func(struct work_struct *dummy)
-{
-	amba_deferred_retry();
-
-	if (!list_empty(&deferred_devices))
-		schedule_delayed_work(&deferred_retry_work,
-				      DEFERRED_DEVICE_TIMEOUT);
 }
 
 /**
@@ -575,28 +554,32 @@ static void amba_deferred_retry_func(struct work_struct *dummy)
  */
 int amba_device_add(struct amba_device *dev, struct resource *parent)
 {
-	int ret = amba_device_try_add(dev, parent);
+	int ret;
 
-	if (ret == -EPROBE_DEFER) {
-		struct deferred_device *ddev;
+	fwnode_handle_get(dev_fwnode(&dev->dev));
 
-		ddev = kmalloc(sizeof(*ddev), GFP_KERNEL);
-		if (!ddev)
-			return -ENOMEM;
+	ret = request_resource(parent, &dev->res);
+	if (ret)
+		return ret;
 
-		ddev->dev = dev;
-		ddev->parent = parent;
-		ret = 0;
-
-		mutex_lock(&deferred_devices_lock);
-
-		if (list_empty(&deferred_devices))
-			schedule_delayed_work(&deferred_retry_work,
-					      DEFERRED_DEVICE_TIMEOUT);
-		list_add_tail(&ddev->node, &deferred_devices);
-
-		mutex_unlock(&deferred_devices_lock);
+	/* If primecell ID isn't hard-coded, figure it out */
+	if (!dev->periphid) {
+		/*
+		 * AMBA device uevents require reading its pid and cid
+		 * registers.  To do this, the device must be on, clocked and
+		 * out of reset.  However in some cases those resources might
+		 * not yet be available.  If that's the case, we suppress the
+		 * generation of uevents until we can read the pid and cid
+		 * registers.  See also amba_match().
+		 */
+		if (amba_read_periphid(dev))
+			dev_set_uevent_suppress(&dev->dev, true);
 	}
+
+	ret = device_add(&dev->dev);
+	if (ret)
+		release_resource(&dev->res);
+
 	return ret;
 }
 EXPORT_SYMBOL_GPL(amba_device_add);
@@ -611,6 +594,7 @@ static void amba_device_initialize(struct amba_device *dev, const char *name)
 	dev->dev.dma_mask = &dev->dev.coherent_dma_mask;
 	dev->dev.dma_parms = &dev->dma_parms;
 	dev->res.name = dev_name(&dev->dev);
+	mutex_init(&dev->periphid_lock);
 }
 
 /**
@@ -627,7 +611,7 @@ struct amba_device *amba_device_alloc(const char *name, resource_size_t base,
 {
 	struct amba_device *dev;
 
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	dev = kzalloc_obj(*dev);
 	if (dev) {
 		amba_device_initialize(dev, name);
 		dev->res.start = base;

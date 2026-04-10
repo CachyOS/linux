@@ -271,7 +271,7 @@ struct ib_cm_event {
 #define CM_APR_ATTR_ID		cpu_to_be16(0x001A)
 
 /**
- * ib_cm_handler - User-defined callback to process communication events.
+ * typedef ib_cm_handler - User-defined callback to process communication events.
  * @cm_id: Communication identifier associated with the reported event.
  * @event: Information about the communication event.
  *
@@ -294,7 +294,6 @@ struct ib_cm_id {
 	void			*context;
 	struct ib_device	*device;
 	__be64			service_id;
-	__be64			service_mask;
 	enum ib_cm_state	state;		/* internal CM/debug use */
 	enum ib_cm_lap_state	lap_state;	/* internal CM/debug use */
 	__be32			local_id;
@@ -340,13 +339,8 @@ void ib_destroy_cm_id(struct ib_cm_id *cm_id);
  *   and service ID resolution requests.  The service ID should be specified
  *   network-byte order.  If set to IB_CM_ASSIGN_SERVICE_ID, the CM will
  *   assign a service ID to the caller.
- * @service_mask: Mask applied to service ID used to listen across a
- *   range of service IDs.  If set to 0, the service ID is matched
- *   exactly.  This parameter is ignored if %service_id is set to
- *   IB_CM_ASSIGN_SERVICE_ID.
  */
-int ib_cm_listen(struct ib_cm_id *cm_id, __be64 service_id,
-		 __be64 service_mask);
+int ib_cm_listen(struct ib_cm_id *cm_id, __be64 service_id);
 
 struct ib_cm_id *ib_cm_insert_listen(struct ib_device *device,
 				     ib_cm_handler cm_handler,
@@ -354,6 +348,8 @@ struct ib_cm_id *ib_cm_insert_listen(struct ib_device *device,
 
 struct ib_cm_req_param {
 	struct sa_path_rec	*primary_path;
+	struct sa_path_rec	*primary_path_inbound;
+	struct sa_path_rec	*primary_path_outbound;
 	struct sa_path_rec	*alternate_path;
 	const struct ib_gid_attr *ppath_sgid_attr;
 	__be64			service_id;
@@ -484,23 +480,12 @@ int ib_send_cm_rej(struct ib_cm_id *cm_id,
 		   const void *private_data,
 		   u8 private_data_len);
 
-#define IB_CM_MRA_FLAG_DELAY 0x80  /* Send MRA only after a duplicate msg */
-
 /**
- * ib_send_cm_mra - Sends a message receipt acknowledgement to a connection
- *   message.
+ * ib_prepare_cm_mra - Prepares to send a message receipt acknowledgment to a
+ *   connection message in case duplicates are received.
  * @cm_id: Connection identifier associated with the connection message.
- * @service_timeout: The lower 5-bits specify the maximum time required for
- *   the sender to reply to the connection message.  The upper 3-bits
- *   specify additional control flags.
- * @private_data: Optional user-defined private data sent with the
- *   message receipt acknowledgement.
- * @private_data_len: Size of the private data buffer, in bytes.
  */
-int ib_send_cm_mra(struct ib_cm_id *cm_id,
-		   u8 service_timeout,
-		   const void *private_data,
-		   u8 private_data_len);
+int ib_prepare_cm_mra(struct ib_cm_id *cm_id);
 
 /**
  * ib_cm_init_qp_attr - Initializes the QP attributes for use in transitioning

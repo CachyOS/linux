@@ -36,12 +36,12 @@ nv10_sw_chan = {
 };
 
 static int
-nv10_sw_chan_new(struct nvkm_sw *sw, struct nvkm_fifo_chan *fifo,
+nv10_sw_chan_new(struct nvkm_sw *sw, struct nvkm_chan *fifo,
 		 const struct nvkm_oclass *oclass, struct nvkm_object **pobject)
 {
 	struct nvkm_sw_chan *chan;
 
-	if (!(chan = kzalloc(sizeof(*chan), GFP_KERNEL)))
+	if (!(chan = kzalloc_obj(*chan)))
 		return -ENOMEM;
 	*pobject = &chan->object;
 

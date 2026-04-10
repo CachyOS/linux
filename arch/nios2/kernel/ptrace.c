@@ -54,7 +54,7 @@ static int genregs_set(struct task_struct *target,
 
 #define REG_IGNORE_RANGE(START, END)		\
 	if (!ret)					\
-		ret = user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf, \
+		user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf, \
 			START * 4, (END * 4) + 4);
 
 #define REG_IN_ONE(PTR, LOC)	\
@@ -80,8 +80,8 @@ static int genregs_set(struct task_struct *target,
 	REG_IN_ONE(&regs->ra, PTR_RA);
 	REG_IN_ONE(&regs->ea, PTR_PC); /* use ea for PC */
 	if (!ret)
-		ret = user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
-					 PTR_STATUS * 4, -1);
+		user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
+					  PTR_STATUS * 4, -1);
 
 	return ret;
 }
@@ -95,7 +95,7 @@ enum nios2_regset {
 
 static const struct user_regset nios2_regsets[] = {
 	[REGSET_GENERAL] = {
-		.core_note_type = NT_PRSTATUS,
+		USER_REGSET_NOTE_TYPE(PRSTATUS),
 		.n = NUM_PTRACE_REG,
 		.size = sizeof(unsigned long),
 		.align = sizeof(unsigned long),

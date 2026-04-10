@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/tboot.h>
 
+#include <asm/cpu.h>
 #include <asm/cpufeature.h>
 #include <asm/msr-index.h>
+#include <asm/msr.h>
 #include <asm/processor.h>
 #include <asm/vmx.h>
-#include "cpu.h"
 
 #undef pr_fmt
 #define pr_fmt(fmt)	"x86/cpu: " fmt
@@ -15,6 +16,8 @@ enum vmx_feature_leafs {
 	MISC_FEATURES = 0,
 	PRIMARY_CTLS,
 	SECONDARY_CTLS,
+	TERTIARY_CTLS_LOW,
+	TERTIARY_CTLS_HIGH,
 	NR_VMX_FEATURE_WORDS,
 };
 
@@ -22,7 +25,7 @@ enum vmx_feature_leafs {
 
 static void init_vmx_capabilities(struct cpuinfo_x86 *c)
 {
-	u32 supported, funcs, ept, vpid, ign;
+	u32 supported, funcs, ept, vpid, ign, low, high;
 
 	BUILD_BUG_ON(NVMXINTS != NR_VMX_FEATURE_WORDS);
 
@@ -41,6 +44,11 @@ static void init_vmx_capabilities(struct cpuinfo_x86 *c)
 
 	rdmsr_safe(MSR_IA32_VMX_PROCBASED_CTLS2, &ign, &supported);
 	c->vmx_capability[SECONDARY_CTLS] = supported;
+
+	/* All 64 bits of tertiary controls MSR are allowed-1 settings. */
+	rdmsr_safe(MSR_IA32_VMX_PROCBASED_CTLS3, &low, &high);
+	c->vmx_capability[TERTIARY_CTLS_LOW] = low;
+	c->vmx_capability[TERTIARY_CTLS_HIGH] = high;
 
 	rdmsr(MSR_IA32_VMX_PINBASED_CTLS, ign, supported);
 	rdmsr_safe(MSR_IA32_VMX_VMFUNC, &ign, &funcs);
@@ -65,6 +73,8 @@ static void init_vmx_capabilities(struct cpuinfo_x86 *c)
 		c->vmx_capability[MISC_FEATURES] |= VMX_F(EPT_AD);
 	if (ept & VMX_EPT_1GB_PAGE_BIT)
 		c->vmx_capability[MISC_FEATURES] |= VMX_F(EPT_1GB);
+	if (ept & VMX_EPT_PAGE_WALK_5_BIT)
+		c->vmx_capability[MISC_FEATURES] |= VMX_F(EPT_5LEVEL);
 
 	/* Synthetic APIC features that are aggregates of multiple features. */
 	if ((c->vmx_capability[PRIMARY_CTLS] & VMX_F(VIRTUAL_TPR)) &&
@@ -109,7 +119,7 @@ void init_ia32_feat_ctl(struct cpuinfo_x86 *c)
 	bool enable_vmx;
 	u64 msr;
 
-	if (rdmsrl_safe(MSR_IA32_FEAT_CTL, &msr)) {
+	if (rdmsrq_safe(MSR_IA32_FEAT_CTL, &msr)) {
 		clear_cpu_cap(c, X86_FEATURE_VMX);
 		clear_cpu_cap(c, X86_FEATURE_SGX);
 		return;
@@ -156,7 +166,7 @@ void init_ia32_feat_ctl(struct cpuinfo_x86 *c)
 			msr |= FEAT_CTL_SGX_LC_ENABLED;
 	}
 
-	wrmsrl(MSR_IA32_FEAT_CTL, msr);
+	wrmsrq(MSR_IA32_FEAT_CTL, msr);
 
 update_caps:
 	set_cpu_cap(c, X86_FEATURE_MSR_IA32_FEAT_CTL);
@@ -179,7 +189,7 @@ update_caps:
 update_sgx:
 	if (!(msr & FEAT_CTL_SGX_ENABLED)) {
 		if (enable_sgx_kvm || enable_sgx_driver)
-			pr_err_once("SGX disabled by BIOS.\n");
+			pr_err_once("SGX disabled or unsupported by BIOS.\n");
 		clear_cpu_cap(c, X86_FEATURE_SGX);
 		return;
 	}

@@ -101,7 +101,7 @@ static irqreturn_t sun4i_ps2_interrupt(int irq, void *dev_id)
 	unsigned int rxflags = 0;
 	u32 rval;
 
-	spin_lock(&drvdata->lock);
+	guard(spinlock)(&drvdata->lock);
 
 	/* Get the PS/2 interrupts and clear them */
 	intr_status  = readl(drvdata->reg_base + PS2_REG_LSTS);
@@ -134,8 +134,6 @@ static irqreturn_t sun4i_ps2_interrupt(int irq, void *dev_id)
 	writel(intr_status, drvdata->reg_base + PS2_REG_LSTS);
 	writel(fifo_status, drvdata->reg_base + PS2_REG_FSTS);
 
-	spin_unlock(&drvdata->lock);
-
 	return IRQ_HANDLED;
 }
 
@@ -146,7 +144,6 @@ static int sun4i_ps2_open(struct serio *serio)
 	u32 clk_scdf;
 	u32 clk_pcdf;
 	u32 rval;
-	unsigned long flags;
 
 	/* Set line control and enable interrupt */
 	rval = PS2_LCTL_STOPERREN | PS2_LCTL_ACKERREN
@@ -171,9 +168,8 @@ static int sun4i_ps2_open(struct serio *serio)
 	rval = PS2_GCTL_RESET | PS2_GCTL_INTEN | PS2_GCTL_MASTER
 		| PS2_GCTL_BUSEN;
 
-	spin_lock_irqsave(&drvdata->lock, flags);
+	guard(spinlock_irqsave)(&drvdata->lock);
 	writel(rval, drvdata->reg_base + PS2_REG_GCTL);
-	spin_unlock_irqrestore(&drvdata->lock, flags);
 
 	return 0;
 }
@@ -213,8 +209,8 @@ static int sun4i_ps2_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int error;
 
-	drvdata = kzalloc(sizeof(struct sun4i_ps2data), GFP_KERNEL);
-	serio = kzalloc(sizeof(struct serio), GFP_KERNEL);
+	drvdata = kzalloc_obj(*drvdata);
+	serio = kzalloc_obj(*serio);
 	if (!drvdata || !serio) {
 		error = -ENOMEM;
 		goto err_free_mem;
@@ -256,8 +252,8 @@ static int sun4i_ps2_probe(struct platform_device *pdev)
 	serio->close = sun4i_ps2_close;
 	serio->port_data = drvdata;
 	serio->dev.parent = dev;
-	strlcpy(serio->name, dev_name(dev), sizeof(serio->name));
-	strlcpy(serio->phys, dev_name(dev), sizeof(serio->phys));
+	strscpy(serio->name, dev_name(dev), sizeof(serio->name));
+	strscpy(serio->phys, dev_name(dev), sizeof(serio->phys));
 
 	/* shutoff interrupt */
 	writel(0, drvdata->reg_base + PS2_REG_GCTL);
@@ -297,7 +293,7 @@ err_free_mem:
 	return error;
 }
 
-static int sun4i_ps2_remove(struct platform_device *pdev)
+static void sun4i_ps2_remove(struct platform_device *pdev)
 {
 	struct sun4i_ps2data *drvdata = platform_get_drvdata(pdev);
 
@@ -311,8 +307,6 @@ static int sun4i_ps2_remove(struct platform_device *pdev)
 	iounmap(drvdata->reg_base);
 
 	kfree(drvdata);
-
-	return 0;
 }
 
 static const struct of_device_id sun4i_ps2_match[] = {

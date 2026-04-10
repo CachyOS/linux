@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/net/can/bosch,c_can.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Bosch C_CAN/D_CAN controller Device Tree Bindings
+title: Bosch C_CAN/D_CAN controller
 
 description: Bosch C_CAN/D_CAN controller for CAN bus
 
@@ -99,11 +99,11 @@ examples:
     #include <dt-bindings/reset/altr,rst-mgr.h>
 
     can@ffc00000 {
-       compatible = "bosch,d_can";
-       reg = <0xffc00000 0x1000>;
-       interrupts = <0 131 4>, <0 132 4>, <0 133 4>, <0 134 4>;
-       clocks = <&can0_clk>;
-       resets = <&rst CAN0_RESET>;
+        compatible = "bosch,d_can";
+        reg = <0xffc00000 0x1000>;
+        interrupts = <0 131 4>, <0 132 4>, <0 133 4>, <0 134 4>;
+        clocks = <&can0_clk>;
+        resets = <&rst CAN0_RESET>;
     };
   - |
     can@0 {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
 /*
- * Copyright 2018-2021 Amazon.com, Inc. or its affiliates. All rights reserved.
+ * Copyright 2018-2025 Amazon.com, Inc. or its affiliates. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -9,15 +9,20 @@
 #include <linux/version.h>
 
 #include <rdma/ib_user_verbs.h>
+#include <rdma/uverbs_ioctl.h>
 
 #include "efa.h"
 
 #define PCI_DEV_ID_EFA0_VF 0xefa0
 #define PCI_DEV_ID_EFA1_VF 0xefa1
+#define PCI_DEV_ID_EFA2_VF 0xefa2
+#define PCI_DEV_ID_EFA3_VF 0xefa3
 
 static const struct pci_device_id efa_pci_tbl[] = {
 	{ PCI_VDEVICE(AMAZON, PCI_DEV_ID_EFA0_VF) },
 	{ PCI_VDEVICE(AMAZON, PCI_DEV_ID_EFA1_VF) },
+	{ PCI_VDEVICE(AMAZON, PCI_DEV_ID_EFA2_VF) },
+	{ PCI_VDEVICE(AMAZON, PCI_DEV_ID_EFA3_VF) },
 	{ }
 };
 
@@ -33,6 +38,8 @@ MODULE_DEVICE_TABLE(pci, efa_pci_tbl);
 #define EFA_AENQ_ENABLED_GROUPS \
 	(BIT(EFA_ADMIN_FATAL_ERROR) | BIT(EFA_ADMIN_WARNING) | \
 	 BIT(EFA_ADMIN_NOTIFICATION) | BIT(EFA_ADMIN_KEEP_ALIVE))
+
+extern const struct uapi_definition efa_uapi_defs[];
 
 /* This handler will called for unknown event group or unimplemented handlers */
 static void unimplemented_aenq_handler(void *data,
@@ -134,8 +141,7 @@ static int efa_request_irq(struct efa_dev *dev, struct efa_irq *irq)
 	return 0;
 }
 
-static void efa_setup_comp_irq(struct efa_dev *dev, struct efa_eq *eq,
-			       int vector)
+static void efa_setup_comp_irq(struct efa_dev *dev, struct efa_eq *eq, u32 vector)
 {
 	u32 cpu;
 
@@ -185,15 +191,23 @@ static int efa_request_doorbell_bar(struct efa_dev *dev)
 {
 	u8 db_bar_idx = dev->dev_attr.db_bar;
 	struct pci_dev *pdev = dev->pdev;
-	int bars;
+	int pci_mem_bars;
+	int db_bar;
 	int err;
 
-	if (!(BIT(db_bar_idx) & EFA_BASE_BAR_MASK)) {
-		bars = pci_select_bars(pdev, IORESOURCE_MEM) & BIT(db_bar_idx);
+	db_bar = BIT(db_bar_idx);
+	if (!(db_bar & EFA_BASE_BAR_MASK)) {
+		pci_mem_bars = pci_select_bars(pdev, IORESOURCE_MEM);
+		if (db_bar & ~pci_mem_bars) {
+			dev_err(&pdev->dev,
+				"Doorbells BAR unavailable. Requested %#x, available %#x\n",
+				db_bar, pci_mem_bars);
+			return -ENODEV;
+		}
 
-		err = pci_request_selected_regions(pdev, bars, DRV_MODULE_NAME);
+		err = pci_request_selected_regions(pdev, db_bar, DRV_MODULE_NAME);
 		if (err) {
-			dev_err(&dev->pdev->dev,
+			dev_err(&pdev->dev,
 				"pci_request_selected_regions for bar %d failed %d\n",
 				db_bar_idx, err);
 			return err;
@@ -290,7 +304,7 @@ static void efa_destroy_eq(struct efa_dev *dev, struct efa_eq *eq)
 	efa_free_irq(dev, &eq->irq);
 }
 
-static int efa_create_eq(struct efa_dev *dev, struct efa_eq *eq, u8 msix_vec)
+static int efa_create_eq(struct efa_dev *dev, struct efa_eq *eq, u32 msix_vec)
 {
 	int err;
 
@@ -313,19 +327,17 @@ err_free_comp_irq:
 
 static int efa_create_eqs(struct efa_dev *dev)
 {
-	unsigned int neqs = dev->dev_attr.max_eq;
-	int err;
-	int i;
+	u32 neqs = dev->dev_attr.max_eq;
+	int err, i;
 
-	neqs = min_t(unsigned int, neqs, num_online_cpus());
+	neqs = min_t(u32, neqs, dev->num_irq_vectors - EFA_COMP_EQS_VEC_BASE);
 	dev->neqs = neqs;
-	dev->eqs = kcalloc(neqs, sizeof(*dev->eqs), GFP_KERNEL);
+	dev->eqs = kzalloc_objs(*dev->eqs, neqs);
 	if (!dev->eqs)
 		return -ENOMEM;
 
 	for (i = 0; i < neqs; i++) {
-		err = efa_create_eq(dev, &dev->eqs[i],
-				    i + EFA_COMP_EQS_VEC_BASE);
+		err = efa_create_eq(dev, &dev->eqs[i], i + EFA_COMP_EQS_VEC_BASE);
 		if (err)
 			goto err_destroy_eqs;
 	}
@@ -360,6 +372,7 @@ static const struct ib_device_ops efa_dev_ops = {
 	.alloc_pd = efa_alloc_pd,
 	.alloc_ucontext = efa_alloc_ucontext,
 	.create_cq = efa_create_cq,
+	.create_cq_umem = efa_create_cq_umem,
 	.create_qp = efa_create_qp,
 	.create_user_ah = efa_create_ah,
 	.dealloc_pd = efa_dealloc_pd,
@@ -424,11 +437,14 @@ static int efa_ib_device_add(struct efa_dev *dev)
 	efa_set_host_info(dev);
 
 	dev->ibdev.node_type = RDMA_NODE_UNSPECIFIED;
+	dev->ibdev.node_guid = dev->dev_attr.guid;
 	dev->ibdev.phys_port_cnt = 1;
 	dev->ibdev.num_comp_vectors = dev->neqs ?: 1;
 	dev->ibdev.dev.parent = &pdev->dev;
 
 	ib_set_device_ops(&dev->ibdev, &efa_dev_ops);
+
+	dev->ibdev.driver_def = efa_uapi_defs;
 
 	err = ib_register_device(&dev->ibdev, "efa_%d", &pdev->dev);
 	if (err)
@@ -450,7 +466,6 @@ static void efa_ib_device_remove(struct efa_dev *dev)
 	ibdev_info(&dev->ibdev, "Unregister ib device\n");
 	ib_unregister_device(&dev->ibdev);
 	efa_destroy_eqs(dev);
-	efa_com_dev_reset(&dev->edev, EFA_REGS_RESET_NORMAL);
 	efa_release_doorbell_bar(dev);
 }
 
@@ -461,34 +476,30 @@ static void efa_disable_msix(struct efa_dev *dev)
 
 static int efa_enable_msix(struct efa_dev *dev)
 {
-	int msix_vecs, irq_num;
+	int max_vecs, num_vecs;
 
 	/*
 	 * Reserve the max msix vectors we might need, one vector is reserved
 	 * for admin.
 	 */
-	msix_vecs = min_t(int, pci_msix_vec_count(dev->pdev),
-			  num_online_cpus() + 1);
+	max_vecs = min_t(int, pci_msix_vec_count(dev->pdev),
+			 num_online_cpus() + 1);
 	dev_dbg(&dev->pdev->dev, "Trying to enable MSI-X, vectors %d\n",
-		msix_vecs);
+		max_vecs);
 
 	dev->admin_msix_vector_idx = EFA_MGMNT_MSIX_VEC_IDX;
-	irq_num = pci_alloc_irq_vectors(dev->pdev, msix_vecs,
-					msix_vecs, PCI_IRQ_MSIX);
+	num_vecs = pci_alloc_irq_vectors(dev->pdev, 1,
+					 max_vecs, PCI_IRQ_MSIX);
 
-	if (irq_num < 0) {
-		dev_err(&dev->pdev->dev, "Failed to enable MSI-X. irq_num %d\n",
-			irq_num);
+	if (num_vecs < 0) {
+		dev_err(&dev->pdev->dev, "Failed to enable MSI-X. error %d\n",
+			num_vecs);
 		return -ENOSPC;
 	}
 
-	if (irq_num != msix_vecs) {
-		efa_disable_msix(dev);
-		dev_err(&dev->pdev->dev,
-			"Allocated %d MSI-X (out of %d requested)\n",
-			irq_num, msix_vecs);
-		return -ENOSPC;
-	}
+	dev_dbg(&dev->pdev->dev, "Allocated %d MSI-X vectors\n", num_vecs);
+
+	dev->num_irq_vectors = num_vecs;
 
 	return 0;
 }
@@ -526,7 +537,7 @@ static struct efa_dev *efa_probe_device(struct pci_dev *pdev)
 {
 	struct efa_com_dev *edev;
 	struct efa_dev *dev;
-	int bars;
+	int pci_mem_bars;
 	int err;
 
 	err = pci_enable_device_mem(pdev);
@@ -551,8 +562,14 @@ static struct efa_dev *efa_probe_device(struct pci_dev *pdev)
 	dev->pdev = pdev;
 	xa_init(&dev->cqs_xa);
 
-	bars = pci_select_bars(pdev, IORESOURCE_MEM) & EFA_BASE_BAR_MASK;
-	err = pci_request_selected_regions(pdev, bars, DRV_MODULE_NAME);
+	pci_mem_bars = pci_select_bars(pdev, IORESOURCE_MEM);
+	if (EFA_BASE_BAR_MASK & ~pci_mem_bars) {
+		dev_err(&pdev->dev, "BARs unavailable. Requested %#x, available %#x\n",
+			(int)EFA_BASE_BAR_MASK, pci_mem_bars);
+		err = -ENODEV;
+		goto err_ibdev_destroy;
+	}
+	err = pci_request_selected_regions(pdev, EFA_BASE_BAR_MASK, DRV_MODULE_NAME);
 	if (err) {
 		dev_err(&pdev->dev, "pci_request_selected_regions failed %d\n",
 			err);
@@ -621,12 +638,14 @@ err_disable_device:
 	return ERR_PTR(err);
 }
 
-static void efa_remove_device(struct pci_dev *pdev)
+static void efa_remove_device(struct pci_dev *pdev,
+			      enum efa_regs_reset_reason_types reset_reason)
 {
 	struct efa_dev *dev = pci_get_drvdata(pdev);
 	struct efa_com_dev *edev;
 
 	edev = &dev->edev;
+	efa_com_dev_reset(edev, reset_reason);
 	efa_com_admin_destroy(edev);
 	efa_free_irq(dev, &dev->admin_irq);
 	efa_disable_msix(dev);
@@ -654,7 +673,7 @@ static int efa_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	return 0;
 
 err_remove_device:
-	efa_remove_device(pdev);
+	efa_remove_device(pdev, EFA_REGS_RESET_INIT_ERR);
 	return err;
 }
 
@@ -663,7 +682,17 @@ static void efa_remove(struct pci_dev *pdev)
 	struct efa_dev *dev = pci_get_drvdata(pdev);
 
 	efa_ib_device_remove(dev);
-	efa_remove_device(pdev);
+	efa_remove_device(pdev, EFA_REGS_RESET_NORMAL);
+}
+
+static void efa_shutdown(struct pci_dev *pdev)
+{
+	struct efa_dev *dev = pci_get_drvdata(pdev);
+
+	efa_destroy_eqs(dev);
+	efa_com_dev_reset(&dev->edev, EFA_REGS_RESET_SHUTDOWN);
+	efa_free_irq(dev, &dev->admin_irq);
+	efa_disable_msix(dev);
 }
 
 static struct pci_driver efa_pci_driver = {
@@ -671,6 +700,7 @@ static struct pci_driver efa_pci_driver = {
 	.id_table       = efa_pci_tbl,
 	.probe          = efa_probe,
 	.remove         = efa_remove,
+	.shutdown       = efa_shutdown,
 };
 
 module_pci_driver(efa_pci_driver);

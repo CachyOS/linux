@@ -2,13 +2,14 @@
 /*
  * Intel Cedar Fork PCH pinctrl/GPIO driver
  *
- * Copyright (C) 2017, Intel Corporation
+ * Copyright (C) 2017 Intel Corporation
  * Author: Mika Westerberg <mika.westerberg@linux.intel.com>
  */
 
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/pm.h>
 
 #include <linux/pinctrl/pinctrl.h>
 
@@ -20,26 +21,8 @@
 #define CDF_GPI_IS	0x200
 #define CDF_GPI_IE	0x230
 
-#define CDF_GPP(r, s, e)				\
-	{						\
-		.reg_num = (r),				\
-		.base = (s),				\
-		.size = ((e) - (s) + 1),		\
-	}
-
 #define CDF_COMMUNITY(b, s, e, g)			\
-	{						\
-		.barno = (b),				\
-		.padown_offset = CDF_PAD_OWN,		\
-		.padcfglock_offset = CDF_PADCFGLOCK,	\
-		.hostown_offset = CDF_HOSTSW_OWN,	\
-		.is_offset = CDF_GPI_IS,		\
-		.ie_offset = CDF_GPI_IE,		\
-		.pin_base = (s),			\
-		.npins = ((e) - (s) + 1),		\
-		.gpps = (g),				\
-		.ngpps = ARRAY_SIZE(g),			\
-	}
+	INTEL_COMMUNITY_GPPS(b, s, e, g, CDF)
 
 /* Cedar Fork PCH */
 static const struct pinctrl_pin_desc cdf_pins[] = {
@@ -298,24 +281,24 @@ static const struct pinctrl_pin_desc cdf_pins[] = {
 };
 
 static const struct intel_padgroup cdf_community0_gpps[] = {
-	CDF_GPP(0, 0, 23),	/* WEST2 */
-	CDF_GPP(1, 24, 47),	/* WEST3 */
-	CDF_GPP(2, 48, 70),	/* WEST01 */
-	CDF_GPP(3, 71, 90),	/* WEST5 */
-	CDF_GPP(4, 91, 96),	/* WESTC */
-	CDF_GPP(5, 97, 101),	/* WESTC_DFX */
-	CDF_GPP(6, 102, 111),	/* WESTA */
-	CDF_GPP(7, 112, 123),	/* WESTB */
-	CDF_GPP(8, 124, 143),	/* WESTD */
-	CDF_GPP(9, 144, 144),	/* WESTD_PECI */
-	CDF_GPP(10, 145, 167),	/* WESTF */
+	INTEL_GPP(0, 0, 23, 0),		/* WEST2 */
+	INTEL_GPP(1, 24, 47, 24),	/* WEST3 */
+	INTEL_GPP(2, 48, 70, 48),	/* WEST01 */
+	INTEL_GPP(3, 71, 90, 71),	/* WEST5 */
+	INTEL_GPP(4, 91, 96, 91),	/* WESTC */
+	INTEL_GPP(5, 97, 101, 97),	/* WESTC_DFX */
+	INTEL_GPP(6, 102, 111, 102),	/* WESTA */
+	INTEL_GPP(7, 112, 123, 112),	/* WESTB */
+	INTEL_GPP(8, 124, 143, 124),	/* WESTD */
+	INTEL_GPP(9, 144, 144, 144),	/* WESTD_PECI */
+	INTEL_GPP(10, 145, 167, 145),	/* WESTF */
 };
 
 static const struct intel_padgroup cdf_community1_gpps[] = {
-	CDF_GPP(0, 168, 191),	/* EAST2 */
-	CDF_GPP(1, 192, 202),	/* EAST3 */
-	CDF_GPP(2, 203, 225),	/* EAST0 */
-	CDF_GPP(3, 226, 236),	/* EMMC */
+	INTEL_GPP(0, 168, 191, 168),	/* EAST2 */
+	INTEL_GPP(1, 192, 202, 192),	/* EAST3 */
+	INTEL_GPP(2, 203, 225, 203),	/* EAST0 */
+	INTEL_GPP(3, 226, 236, 226),	/* EMMC */
 };
 
 static const struct intel_community cdf_communities[] = {
@@ -330,8 +313,6 @@ static const struct intel_pinctrl_soc_data cdf_soc_data = {
 	.ncommunities = ARRAY_SIZE(cdf_communities),
 };
 
-static INTEL_PINCTRL_PM_OPS(cdf_pinctrl_pm_ops);
-
 static const struct acpi_device_id cdf_pinctrl_acpi_match[] = {
 	{ "INTC3001", (kernel_ulong_t)&cdf_soc_data },
 	{ }
@@ -343,7 +324,7 @@ static struct platform_driver cdf_pinctrl_driver = {
 	.driver = {
 		.name = "cedarfork-pinctrl",
 		.acpi_match_table = cdf_pinctrl_acpi_match,
-		.pm = &cdf_pinctrl_pm_ops,
+		.pm = pm_sleep_ptr(&intel_pinctrl_pm_ops),
 	},
 };
 
@@ -362,3 +343,4 @@ module_exit(cdf_pinctrl_exit);
 MODULE_AUTHOR("Mika Westerberg <mika.westerberg@linux.intel.com>");
 MODULE_DESCRIPTION("Intel Cedar Fork PCH pinctrl/GPIO driver");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS("PINCTRL_INTEL");

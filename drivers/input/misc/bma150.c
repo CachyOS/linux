@@ -414,8 +414,7 @@ static int bma150_initialize(struct bma150_data *bma150,
 	return bma150_set_mode(bma150, BMA150_MODE_SLEEP);
 }
 
-static int bma150_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int bma150_probe(struct i2c_client *client)
 {
 	const struct bma150_platform_data *pdata =
 			dev_get_platdata(&client->dev);
@@ -513,11 +512,9 @@ static int bma150_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int bma150_remove(struct i2c_client *client)
+static void bma150_remove(struct i2c_client *client)
 {
 	pm_runtime_disable(&client->dev);
-
-	return 0;
 }
 
 static int __maybe_unused bma150_suspend(struct device *dev)
@@ -539,9 +536,9 @@ static int __maybe_unused bma150_resume(struct device *dev)
 static UNIVERSAL_DEV_PM_OPS(bma150_pm, bma150_suspend, bma150_resume, NULL);
 
 static const struct i2c_device_id bma150_id[] = {
-	{ "bma150", 0 },
-	{ "smb380", 0 },
-	{ "bma023", 0 },
+	{ "bma150" },
+	{ "smb380" },
+	{ "bma023" },
 	{ }
 };
 

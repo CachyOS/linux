@@ -17,6 +17,7 @@
 #include <linux/moduleparam.h>
 #include <generated/utsrelease.h>
 #include <linux/utsname.h>
+#include <linux/hex.h>
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/kthread.h>
@@ -25,7 +26,7 @@
 #include <linux/configfs.h>
 #include <linux/kernel.h>
 #include <linux/ctype.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <scsi/libfc.h>
 
 #include <target/target_core_base.h>
@@ -243,14 +244,14 @@ static struct se_portal_group *ft_add_tpg(struct se_wwn *wwn, const char *name)
 	}
 
 	ft_wwn = container_of(wwn, struct ft_lport_wwn, se_wwn);
-	tpg = kzalloc(sizeof(*tpg), GFP_KERNEL);
+	tpg = kzalloc_obj(*tpg);
 	if (!tpg)
 		return NULL;
 	tpg->index = index;
 	tpg->lport_wwn = ft_wwn;
 	INIT_LIST_HEAD(&tpg->lun_list);
 
-	wq = alloc_workqueue("tcm_fc", 0, 1);
+	wq = alloc_workqueue("tcm_fc", WQ_PERCPU, 1);
 	if (!wq) {
 		kfree(tpg);
 		return NULL;
@@ -333,7 +334,7 @@ static struct se_wwn *ft_add_wwn(
 	pr_debug("add wwn %s\n", name);
 	if (ft_parse_wwn(name, &wwpn, 1) < 0)
 		return NULL;
-	ft_wwn = kzalloc(sizeof(*ft_wwn), GFP_KERNEL);
+	ft_wwn = kzalloc_obj(*ft_wwn);
 	if (!ft_wwn)
 		return NULL;
 	ft_wwn->wwpn = wwpn;
@@ -398,15 +399,6 @@ static u16 ft_get_tag(struct se_portal_group *se_tpg)
 	return ft_tpg(se_tpg)->index;
 }
 
-static int ft_check_false(struct se_portal_group *se_tpg)
-{
-	return 0;
-}
-
-static void ft_set_default_node_attr(struct se_node_acl *se_nacl)
-{
-}
-
 static u32 ft_tpg_get_inst_index(struct se_portal_group *se_tpg)
 {
 	return ft_tpg(se_tpg)->index;
@@ -418,10 +410,6 @@ static const struct target_core_fabric_ops ft_fabric_ops = {
 	.node_acl_size =		sizeof(struct ft_node_acl),
 	.tpg_get_wwn =			ft_get_fabric_wwn,
 	.tpg_get_tag =			ft_get_tag,
-	.tpg_check_demo_mode =		ft_check_false,
-	.tpg_check_demo_mode_cache =	ft_check_false,
-	.tpg_check_demo_mode_write_protect = ft_check_false,
-	.tpg_check_prod_mode_write_protect = ft_check_false,
 	.tpg_get_inst_index =		ft_tpg_get_inst_index,
 	.check_stop_free =		ft_check_stop_free,
 	.release_cmd =			ft_release_cmd,
@@ -429,8 +417,6 @@ static const struct target_core_fabric_ops ft_fabric_ops = {
 	.sess_get_index =		ft_sess_get_index,
 	.sess_get_initiator_sid =	NULL,
 	.write_pending =		ft_write_pending,
-	.set_default_node_attributes =	ft_set_default_node_attr,
-	.get_cmd_state =		ft_get_cmd_state,
 	.queue_data_in =		ft_queue_data_in,
 	.queue_status =			ft_queue_status,
 	.queue_tm_rsp =			ft_queue_tm_resp,
@@ -447,6 +433,9 @@ static const struct target_core_fabric_ops ft_fabric_ops = {
 
 	.tfc_wwn_attrs			= ft_wwn_attrs,
 	.tfc_tpg_nacl_base_attrs	= ft_nacl_base_attrs,
+
+	.default_submit_type		= TARGET_DIRECT_SUBMIT,
+	.direct_submit_supp		= 1,
 };
 
 static struct notifier_block ft_notifier = {

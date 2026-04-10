@@ -36,7 +36,7 @@ msm_disp_snapshot_state_sync(struct msm_kms *kms)
 
 	WARN_ON(!mutex_is_locked(&kms->dump_mutex));
 
-	disp_state = kzalloc(sizeof(struct msm_disp_state), GFP_KERNEL);
+	disp_state = kzalloc_obj(struct msm_disp_state);
 	if (!disp_state)
 		return ERR_PTR(-ENOMEM);
 
@@ -109,7 +109,7 @@ int msm_disp_snapshot_init(struct drm_device *drm_dev)
 
 	mutex_init(&kms->dump_mutex);
 
-	kms->dump_worker = kthread_create_worker(0, "%s", "disp_snapshot");
+	kms->dump_worker = kthread_run_worker(0, "%s", "disp_snapshot");
 	if (IS_ERR(kms->dump_worker))
 		DRM_ERROR("failed to create disp state task\n");
 

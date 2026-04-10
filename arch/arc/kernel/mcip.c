@@ -165,8 +165,6 @@ static void mcip_probe_n_setup(void)
 		IS_AVAIL1(mp.idu, "IDU "),
 		IS_AVAIL1(mp.dbg, "DEBUG "),
 		IS_AVAIL1(mp.gfrc, "GFRC"));
-
-	cpuinfo_arc700[0].extn.gfrc = mp.gfrc;
 }
 
 struct plat_smp_ops plat_smp_ops = {
@@ -359,8 +357,6 @@ static void idu_cascade_isr(struct irq_desc *desc)
 static int idu_irq_map(struct irq_domain *d, unsigned int virq, irq_hw_number_t hwirq)
 {
 	irq_set_chip_and_handler(virq, &idu_irq_chip, handle_level_irq);
-	irq_set_status_flags(virq, IRQ_MOVE_PCNTXT);
-
 	return 0;
 }
 
@@ -395,7 +391,8 @@ idu_of_init(struct device_node *intc, struct device_node *parent)
 
 	pr_info("MCIP: IDU supports %u common irqs\n", nr_irqs);
 
-	domain = irq_domain_add_linear(intc, nr_irqs, &idu_irq_ops, NULL);
+	domain = irq_domain_create_linear(of_fwnode_handle(intc), nr_irqs,
+					  &idu_irq_ops, NULL);
 
 	/* Parent interrupts (core-intc) are already mapped */
 

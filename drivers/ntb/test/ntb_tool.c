@@ -367,17 +367,12 @@ static ssize_t tool_fn_write(struct tool_ctx *tc,
 	u64 bits;
 	int n;
 
-	buf = kmalloc(size + 1, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
+	if (*offp)
+		return 0;
 
-	ret = simple_write_to_buffer(buf, size, offp, ubuf, size);
-	if (ret < 0) {
-		kfree(buf);
-		return ret;
-	}
-
-	buf[size] = 0;
+	buf = memdup_user_nul(ubuf, size);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
 
 	n = sscanf(buf, "%c %lli", &cmd, &bits);
 
@@ -941,7 +936,7 @@ static ssize_t tool_peer_mw_trans_write(struct file *filep,
 
 	buf[buf_size] = '\0';
 
-	n = sscanf(buf, "%lli:%zi", &addr, &wsize);
+	n = sscanf(buf, "%llu:%zu", &addr, &wsize);
 	if (n != 2)
 		return -EINVAL;
 
@@ -996,6 +991,8 @@ static int tool_init_mws(struct tool_ctx *tc)
 		tc->peers[pidx].outmws =
 			devm_kcalloc(&tc->ntb->dev, tc->peers[pidx].outmw_cnt,
 				   sizeof(*tc->peers[pidx].outmws), GFP_KERNEL);
+		if (tc->peers[pidx].outmws == NULL)
+			return -ENOMEM;
 
 		for (widx = 0; widx < tc->peers[pidx].outmw_cnt; widx++) {
 			tc->peers[pidx].outmws[widx].pidx = pidx;
@@ -1491,8 +1488,6 @@ static void tool_setup_dbgfs(struct tool_ctx *tc)
 
 	tc->dbgfs_dir = debugfs_create_dir(dev_name(&tc->ntb->dev),
 					   tool_dbgfs_topdir);
-	if (!tc->dbgfs_dir)
-		return;
 
 	debugfs_create_file("port", 0600, tc->dbgfs_dir,
 			    tc, &tool_port_fops);

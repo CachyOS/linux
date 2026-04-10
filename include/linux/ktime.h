@@ -3,7 +3,7 @@
  *
  *  ktime_t - nanosecond-resolution time format.
  *
- *   Copyright(C) 2005, Thomas Gleixner <tglx@linutronix.de>
+ *   Copyright(C) 2005, Linutronix GmbH, Thomas Gleixner <tglx@kernel.org>
  *   Copyright(C) 2005, Red Hat, Inc., Ingo Molnar
  *
  *  data type definitions, declarations, prototypes and macros.
@@ -21,12 +21,10 @@
 #ifndef _LINUX_KTIME_H
 #define _LINUX_KTIME_H
 
-#include <linux/time.h>
-#include <linux/jiffies.h>
 #include <asm/bug.h>
-
-/* Nanosecond scalar representation for kernel time values */
-typedef s64	ktime_t;
+#include <linux/jiffies.h>
+#include <linux/time.h>
+#include <linux/types.h>
 
 /**
  * ktime_set - Set a ktime_t variable from a seconds/nanoseconds value
@@ -222,6 +220,11 @@ static inline __must_check bool ktime_to_timespec64_cond(const ktime_t kt,
 static inline ktime_t ns_to_ktime(u64 ns)
 {
 	return ns;
+}
+
+static inline ktime_t us_to_ktime(u64 us)
+{
+	return us * NSEC_PER_USEC;
 }
 
 static inline ktime_t ms_to_ktime(u64 ms)

@@ -6,19 +6,11 @@
  * Author(s): Stefan Weinhuber <wein@de.ibm.com>
  */
 
-#define KMSG_COMPONENT "dasd-eckd"
-
 #include <linux/list.h>
 #include <linux/slab.h>
 #include <asm/ebcdic.h>
 #include "dasd_int.h"
 #include "dasd_eckd.h"
-
-#ifdef PRINTK_HEADER
-#undef PRINTK_HEADER
-#endif				/* PRINTK_HEADER */
-#define PRINTK_HEADER "dasd(eckd):"
-
 
 /*
  * General concept of alias management:
@@ -106,7 +98,7 @@ static struct alias_server *_allocate_server(struct dasd_uid *uid)
 {
 	struct alias_server *server;
 
-	server = kzalloc(sizeof(*server), GFP_KERNEL);
+	server = kzalloc_obj(*server);
 	if (!server)
 		return ERR_PTR(-ENOMEM);
 	memcpy(server->uid.vendor, uid->vendor, sizeof(uid->vendor));
@@ -125,17 +117,16 @@ static struct alias_lcu *_allocate_lcu(struct dasd_uid *uid)
 {
 	struct alias_lcu *lcu;
 
-	lcu = kzalloc(sizeof(*lcu), GFP_KERNEL);
+	lcu = kzalloc_obj(*lcu);
 	if (!lcu)
 		return ERR_PTR(-ENOMEM);
-	lcu->uac = kzalloc(sizeof(*(lcu->uac)), GFP_KERNEL | GFP_DMA);
+	lcu->uac = kzalloc_obj(*(lcu->uac), GFP_KERNEL | GFP_DMA);
 	if (!lcu->uac)
 		goto out_err1;
-	lcu->rsu_cqr = kzalloc(sizeof(*lcu->rsu_cqr), GFP_KERNEL | GFP_DMA);
+	lcu->rsu_cqr = kzalloc_obj(*lcu->rsu_cqr, GFP_KERNEL | GFP_DMA);
 	if (!lcu->rsu_cqr)
 		goto out_err2;
-	lcu->rsu_cqr->cpaddr = kzalloc(sizeof(struct ccw1),
-				       GFP_KERNEL | GFP_DMA);
+	lcu->rsu_cqr->cpaddr = kzalloc_obj(struct ccw1, GFP_KERNEL | GFP_DMA);
 	if (!lcu->rsu_cqr->cpaddr)
 		goto out_err3;
 	lcu->rsu_cqr->data = kzalloc(16, GFP_KERNEL | GFP_DMA);
@@ -331,7 +322,7 @@ static int _add_device_to_lcu(struct alias_lcu *lcu,
 	}
 	group = _find_group(lcu, &uid);
 	if (!group) {
-		group = kzalloc(sizeof(*group), GFP_ATOMIC);
+		group = kzalloc_obj(*group, GFP_ATOMIC);
 		if (!group)
 			return -ENOMEM;
 		memcpy(group->uid.vendor, uid.vendor, sizeof(uid.vendor));
@@ -443,7 +434,7 @@ static int read_unit_address_configuration(struct dasd_device *device,
 	ccw->cmd_code = DASD_ECKD_CCW_PSF;
 	ccw->count = sizeof(struct dasd_psf_prssd_data);
 	ccw->flags |= CCW_FLAG_CC;
-	ccw->cda = (__u32)(addr_t) prssdp;
+	ccw->cda = virt_to_dma32(prssdp);
 
 	/* Read Subsystem Data - feature codes */
 	memset(lcu->uac, 0, sizeof(*(lcu->uac)));
@@ -451,7 +442,7 @@ static int read_unit_address_configuration(struct dasd_device *device,
 	ccw++;
 	ccw->cmd_code = DASD_ECKD_CCW_RSSD;
 	ccw->count = sizeof(*(lcu->uac));
-	ccw->cda = (__u32)(addr_t) lcu->uac;
+	ccw->cda = virt_to_dma32(lcu->uac);
 
 	cqr->buildclk = get_tod_clock();
 	cqr->status = DASD_CQR_FILLED;
@@ -675,12 +666,12 @@ int dasd_alias_remove_device(struct dasd_device *device)
 struct dasd_device *dasd_alias_get_start_dev(struct dasd_device *base_device)
 {
 	struct dasd_eckd_private *alias_priv, *private = base_device->private;
-	struct alias_pav_group *group = private->pavgroup;
 	struct alias_lcu *lcu = private->lcu;
 	struct dasd_device *alias_device;
+	struct alias_pav_group *group;
 	unsigned long flags;
 
-	if (!group || !lcu)
+	if (!lcu)
 		return NULL;
 	if (lcu->pav == NO_PAV ||
 	    lcu->flags & (NEED_UAC_UPDATE | UPDATE_PENDING))
@@ -697,6 +688,11 @@ struct dasd_device *dasd_alias_get_start_dev(struct dasd_device *base_device)
 	}
 
 	spin_lock_irqsave(&lcu->lock, flags);
+	group = private->pavgroup;
+	if (!group) {
+		spin_unlock_irqrestore(&lcu->lock, flags);
+		return NULL;
+	}
 	alias_device = group->next;
 	if (!alias_device) {
 		if (list_empty(&group->aliaslist)) {
@@ -742,7 +738,7 @@ static int reset_summary_unit_check(struct alias_lcu *lcu,
 	ccw->cmd_code = DASD_ECKD_CCW_RSCK;
 	ccw->flags = CCW_FLAG_SLI;
 	ccw->count = 16;
-	ccw->cda = (__u32)(addr_t) cqr->data;
+	ccw->cda = virt_to_dma32(cqr->data);
 	((char *)cqr->data)[0] = reason;
 
 	clear_bit(DASD_CQR_FLAGS_USE_ERP, &cqr->flags);

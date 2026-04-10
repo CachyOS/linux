@@ -158,7 +158,7 @@ static void pdc_error_handler(struct ata_port *ap);
 static void pdc_post_internal_cmd(struct ata_queued_cmd *qc);
 static int pdc_pata_cable_detect(struct ata_port *ap);
 
-static struct scsi_host_template pdc_ata_sht = {
+static const struct scsi_host_template pdc_ata_sht = {
 	ATA_BASE_SHT(DRV_NAME),
 	.sg_tablesize		= PDC_MAX_PRD,
 	.dma_boundary		= ATA_DMA_BOUNDARY,
@@ -188,7 +188,7 @@ static struct ata_port_operations pdc_sata_ops = {
 	.scr_read		= pdc_sata_scr_read,
 	.scr_write		= pdc_sata_scr_write,
 	.port_start		= pdc_sata_port_start,
-	.hardreset		= pdc_sata_hardreset,
+	.reset.hardreset	= pdc_sata_hardreset,
 };
 
 /* First-generation chips need a more restrictive ->check_atapi_dma op,
@@ -206,7 +206,7 @@ static struct ata_port_operations pdc_pata_ops = {
 	.freeze			= pdc_freeze,
 	.thaw			= pdc_thaw,
 	.port_start		= pdc_common_port_start,
-	.softreset		= pdc_pata_softreset,
+	.reset.softreset	= pdc_pata_softreset,
 };
 
 static const struct ata_port_info pdc_port_info[] = {
@@ -817,7 +817,7 @@ static int pdc_sata_hardreset(struct ata_link *link, unsigned int *class,
 
 static void pdc_error_handler(struct ata_port *ap)
 {
-	if (!(ap->pflags & ATA_PFLAG_FROZEN))
+	if (!ata_port_is_frozen(ap))
 		pdc_reset_port(ap);
 
 	ata_sff_error_handler(ap);
@@ -828,7 +828,7 @@ static void pdc_post_internal_cmd(struct ata_queued_cmd *qc)
 	struct ata_port *ap = qc->ap;
 
 	/* make DMA engine forget about the failed command */
-	if (qc->flags & ATA_QCFLAG_FAILED)
+	if (qc->flags & ATA_QCFLAG_EH)
 		pdc_reset_port(ap);
 }
 

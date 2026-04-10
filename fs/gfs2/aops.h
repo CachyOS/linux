@@ -8,8 +8,7 @@
 
 #include "incore.h"
 
-extern void adjust_fs_space(struct inode *inode);
-extern void gfs2_page_add_databufs(struct gfs2_inode *ip, struct page *page,
-				   unsigned int from, unsigned int len);
+void adjust_fs_space(struct inode *inode);
+int gfs2_jdata_writeback(struct address_space *mapping, struct writeback_control *wbc);
 
 #endif /* __AOPS_DOT_H__ */

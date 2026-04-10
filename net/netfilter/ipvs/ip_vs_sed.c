@@ -30,8 +30,7 @@
  *
  */
 
-#define KMSG_COMPONENT "IPVS"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "IPVS: " fmt
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -137,3 +136,4 @@ static void __exit ip_vs_sed_cleanup(void)
 module_init(ip_vs_sed_init);
 module_exit(ip_vs_sed_cleanup);
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("ipvs shortest expected delay scheduler");

@@ -21,7 +21,6 @@
 #include "rtc-core.h"
 
 static DEFINE_IDA(rtc_ida);
-struct class *rtc_class;
 
 static void rtc_device_release(struct device *dev)
 {
@@ -36,7 +35,7 @@ static void rtc_device_release(struct device *dev)
 
 	cancel_work_sync(&rtc->irqwork);
 
-	ida_simple_remove(&rtc_ida, rtc->id);
+	ida_free(&rtc_ida, rtc->id);
 	mutex_destroy(&rtc->ops_lock);
 	kfree(rtc);
 }
@@ -199,12 +198,17 @@ static SIMPLE_DEV_PM_OPS(rtc_class_dev_pm_ops, rtc_suspend, rtc_resume);
 #define RTC_CLASS_DEV_PM_OPS	NULL
 #endif
 
+const struct class rtc_class = {
+	.name = "rtc",
+	.pm = RTC_CLASS_DEV_PM_OPS,
+};
+
 /* Ensure the caller will set the id before releasing the device */
 static struct rtc_device *rtc_allocate_device(void)
 {
 	struct rtc_device *rtc;
 
-	rtc = kzalloc(sizeof(*rtc), GFP_KERNEL);
+	rtc = kzalloc_obj(*rtc);
 	if (!rtc)
 		return NULL;
 
@@ -220,7 +224,7 @@ static struct rtc_device *rtc_allocate_device(void)
 
 	rtc->irq_freq = 1;
 	rtc->max_user_freq = 64;
-	rtc->dev.class = rtc_class;
+	rtc->dev.class = &rtc_class;
 	rtc->dev.groups = rtc_get_dev_attribute_groups();
 	rtc->dev.release = rtc_device_release;
 
@@ -236,8 +240,7 @@ static struct rtc_device *rtc_allocate_device(void)
 	/* Init uie timer */
 	rtc_timer_init(&rtc->uie_rtctimer, rtc_uie_update_irq, rtc);
 	/* Init pie timer */
-	hrtimer_init(&rtc->pie_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	rtc->pie_timer.function = rtc_pie_update_irq;
+	hrtimer_setup(&rtc->pie_timer, rtc_pie_update_irq, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	rtc->pie_enabled = 0;
 
 	set_bit(RTC_FEATURE_ALARM, rtc->features);
@@ -256,13 +259,13 @@ static int rtc_device_get_id(struct device *dev)
 		of_id = of_alias_get_id(dev->parent->of_node, "rtc");
 
 	if (of_id >= 0) {
-		id = ida_simple_get(&rtc_ida, of_id, of_id + 1, GFP_KERNEL);
+		id = ida_alloc_range(&rtc_ida, of_id, of_id, GFP_KERNEL);
 		if (id < 0)
 			dev_warn(dev, "/aliases ID %d not available\n", of_id);
 	}
 
 	if (id < 0)
-		id = ida_simple_get(&rtc_ida, 0, 0, GFP_KERNEL);
+		id = ida_alloc(&rtc_ida, GFP_KERNEL);
 
 	return id;
 }
@@ -323,7 +326,7 @@ static void rtc_device_get_offset(struct rtc_device *rtc)
 	 *
 	 * Otherwise the offset seconds should be 0.
 	 */
-	if (rtc->start_secs > rtc->range_max ||
+	if ((rtc->start_secs >= 0 && rtc->start_secs > rtc->range_max) ||
 	    rtc->start_secs + range_secs - 1 < rtc->range_min)
 		rtc->offset_secs = rtc->start_secs - rtc->range_min;
 	else if (rtc->start_secs > rtc->range_min)
@@ -368,17 +371,17 @@ struct rtc_device *devm_rtc_allocate_device(struct device *dev)
 
 	rtc = rtc_allocate_device();
 	if (!rtc) {
-		ida_simple_remove(&rtc_ida, id);
+		ida_free(&rtc_ida, id);
 		return ERR_PTR(-ENOMEM);
 	}
 
 	rtc->id = id;
 	rtc->dev.parent = dev;
-	err = dev_set_name(&rtc->dev, "rtc%d", id);
+	err = devm_add_action_or_reset(dev, devm_rtc_release_device, rtc);
 	if (err)
 		return ERR_PTR(err);
 
-	err = devm_add_action_or_reset(dev, devm_rtc_release_device, rtc);
+	err = dev_set_name(&rtc->dev, "rtc%d", id);
 	if (err)
 		return ERR_PTR(err);
 
@@ -407,7 +410,7 @@ int __devm_rtc_register_device(struct module *owner, struct rtc_device *rtc)
 
 	/* Check to see if there is an ALARM already set in hw */
 	err = __rtc_read_alarm(rtc, &alrm);
-	if (!err && !rtc_valid_tm(&alrm.time))
+	if (!err)
 		rtc_initialize_alarm(rtc, &alrm);
 
 	rtc_dev_prepare(rtc);
@@ -475,13 +478,14 @@ EXPORT_SYMBOL_GPL(devm_rtc_device_register);
 
 static int __init rtc_init(void)
 {
-	rtc_class = class_create(THIS_MODULE, "rtc");
-	if (IS_ERR(rtc_class)) {
-		pr_err("couldn't create class\n");
-		return PTR_ERR(rtc_class);
-	}
-	rtc_class->pm = RTC_CLASS_DEV_PM_OPS;
+	int err;
+
+	err = class_register(&rtc_class);
+	if (err)
+		return err;
+
 	rtc_dev_init();
+
 	return 0;
 }
 subsys_initcall(rtc_init);

@@ -368,7 +368,7 @@
 
 
 
-extern struct bus_type sa1111_bus_type;
+extern const struct bus_type sa1111_bus_type;
 
 #define SA1111_DEVID_SBI	(1 << 0)
 #define SA1111_DEVID_SK		(1 << 1)
@@ -404,7 +404,7 @@ struct sa1111_driver {
 	void (*remove)(struct sa1111_dev *);
 };
 
-#define SA1111_DRV(_d)	container_of((_d), struct sa1111_driver, drv)
+#define SA1111_DRV(_d)	container_of_const((_d), struct sa1111_driver, drv)
 
 #define SA1111_DRIVER_NAME(_sadev) ((_sadev)->dev.driver->name)
 

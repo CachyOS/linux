@@ -83,7 +83,7 @@ DECLARE_EVENT_CLASS(
 		__entry->ring = ring;
 		__entry->desc = desc;
 		__entry->buf = buf;
-		__assign_str(devname, ring->netdev->name);
+		__assign_str(devname);
 	),
 
 	TP_printk(
@@ -112,7 +112,7 @@ DECLARE_EVENT_CLASS(
 	iavf_rx_template,
 
 	TP_PROTO(struct iavf_ring *ring,
-		 union iavf_32byte_rx_desc *desc,
+		 struct iavf_rx_desc *desc,
 		 struct sk_buff *skb),
 
 	TP_ARGS(ring, desc, skb),
@@ -128,7 +128,7 @@ DECLARE_EVENT_CLASS(
 		__entry->ring = ring;
 		__entry->desc = desc;
 		__entry->skb = skb;
-		__assign_str(devname, ring->netdev->name);
+		__assign_str(devname);
 	),
 
 	TP_printk(
@@ -140,7 +140,7 @@ DECLARE_EVENT_CLASS(
 DEFINE_EVENT(
 	iavf_rx_template, iavf_clean_rx_irq,
 	TP_PROTO(struct iavf_ring *ring,
-		 union iavf_32byte_rx_desc *desc,
+		 struct iavf_rx_desc *desc,
 		 struct sk_buff *skb),
 
 	TP_ARGS(ring, desc, skb));
@@ -148,7 +148,7 @@ DEFINE_EVENT(
 DEFINE_EVENT(
 	iavf_rx_template, iavf_clean_rx_irq_rx,
 	TP_PROTO(struct iavf_ring *ring,
-		 union iavf_32byte_rx_desc *desc,
+		 struct iavf_rx_desc *desc,
 		 struct sk_buff *skb),
 
 	TP_ARGS(ring, desc, skb));
@@ -170,7 +170,7 @@ DECLARE_EVENT_CLASS(
 	TP_fast_assign(
 		__entry->skb = skb;
 		__entry->ring = ring;
-		__assign_str(devname, ring->netdev->name);
+		__assign_str(devname);
 	),
 
 	TP_printk(

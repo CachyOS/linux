@@ -117,7 +117,6 @@ static struct nlm_host *nlm_alloc_host(struct nlm_lookup_host_info *ni,
 	if (nsm != NULL)
 		refcount_inc(&nsm->sm_count);
 	else {
-		host = NULL;
 		nsm = nsm_get_handle(ni->net, ni->sap, ni->salen,
 					ni->hostname, ni->hostname_len);
 		if (unlikely(nsm == NULL)) {
@@ -127,7 +126,7 @@ static struct nlm_host *nlm_alloc_host(struct nlm_lookup_host_info *ni,
 		}
 	}
 
-	host = kmalloc(sizeof(*host), GFP_KERNEL);
+	host = kmalloc_obj(*host);
 	if (unlikely(host == NULL)) {
 		dprintk("lockd: %s failed; no memory\n", __func__);
 		nsm_release(nsm);
@@ -164,7 +163,7 @@ static struct nlm_host *nlm_alloc_host(struct nlm_lookup_host_info *ni,
 	host->h_addrbuf    = nsm->sm_addrbuf;
 	host->net	   = ni->net;
 	host->h_cred	   = get_cred(ni->cred);
-	strlcpy(host->nodename, utsname()->nodename, sizeof(host->nodename));
+	strscpy(host->nodename, utsname()->nodename, sizeof(host->nodename));
 
 out:
 	return host;
@@ -441,7 +440,7 @@ nlm_bind_host(struct nlm_host *host)
 	if ((clnt = host->h_rpcclnt) != NULL) {
 		nlm_rebind_host(host);
 	} else {
-		unsigned long increment = nlmsvc_timeout;
+		unsigned long increment = nlm_timeout * HZ;
 		struct rpc_timeout timeparms = {
 			.to_initval	= increment,
 			.to_increment	= increment,
@@ -629,6 +628,7 @@ nlm_shutdown_hosts_net(struct net *net)
 			rpc_shutdown_client(host->h_rpcclnt);
 			host->h_rpcclnt = NULL;
 		}
+		nlmsvc_free_host_resources(host);
 	}
 
 	/* Then, perform a garbage collection pass */

@@ -155,7 +155,7 @@ static int arc_ps2_create_port(struct platform_device *pdev,
 	struct arc_ps2_port *port = &arc_ps2->port[index];
 	struct serio *io;
 
-	io = kzalloc(sizeof(struct serio), GFP_KERNEL);
+	io = kzalloc_obj(*io);
 	if (!io)
 		return -ENOMEM;
 
@@ -182,7 +182,6 @@ static int arc_ps2_create_port(struct platform_device *pdev,
 static int arc_ps2_probe(struct platform_device *pdev)
 {
 	struct arc_ps2_data *arc_ps2;
-	struct resource *res;
 	int irq;
 	int error, id, i;
 
@@ -190,15 +189,13 @@ static int arc_ps2_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return -EINVAL;
 
-	arc_ps2 = devm_kzalloc(&pdev->dev, sizeof(struct arc_ps2_data),
-				GFP_KERNEL);
+	arc_ps2 = devm_kzalloc(&pdev->dev, sizeof(*arc_ps2), GFP_KERNEL);
 	if (!arc_ps2) {
 		dev_err(&pdev->dev, "out of memory\n");
 		return -ENOMEM;
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	arc_ps2->addr = devm_ioremap_resource(&pdev->dev, res);
+	arc_ps2->addr = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
 	if (IS_ERR(arc_ps2->addr))
 		return PTR_ERR(arc_ps2->addr);
 
@@ -234,7 +231,7 @@ static int arc_ps2_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int arc_ps2_remove(struct platform_device *pdev)
+static void arc_ps2_remove(struct platform_device *pdev)
 {
 	struct arc_ps2_data *arc_ps2 = platform_get_drvdata(pdev);
 	int i;
@@ -246,8 +243,6 @@ static int arc_ps2_remove(struct platform_device *pdev)
 	dev_dbg(&pdev->dev, "frame error count = %i\n", arc_ps2->frame_error);
 	dev_dbg(&pdev->dev, "buffer overflow count = %i\n",
 		arc_ps2->buf_overflow);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF

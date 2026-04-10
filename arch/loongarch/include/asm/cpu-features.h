@@ -19,22 +19,14 @@
 #define cpu_has_loongarch32		(cpu_data[0].isa_level & LOONGARCH_CPU_ISA_32BIT)
 #define cpu_has_loongarch64		(cpu_data[0].isa_level & LOONGARCH_CPU_ISA_64BIT)
 
-#define cpu_icache_line_size()		cpu_data[0].icache.linesz
-#define cpu_dcache_line_size()		cpu_data[0].dcache.linesz
-#define cpu_vcache_line_size()		cpu_data[0].vcache.linesz
-#define cpu_scache_line_size()		cpu_data[0].scache.linesz
-
 #ifdef CONFIG_32BIT
-# define cpu_has_64bits			(cpu_data[0].isa_level & LOONGARCH_CPU_ISA_64BIT)
 # define cpu_vabits			31
 # define cpu_pabits			31
 #endif
 
 #ifdef CONFIG_64BIT
-# define cpu_has_64bits			1
 # define cpu_vabits			cpu_data[0].vabits
 # define cpu_pabits			cpu_data[0].pabits
-# define __NEED_ADDRBITS_PROBE
 #endif
 
 /*
@@ -43,10 +35,12 @@
  */
 #define cpu_has_cpucfg		cpu_opt(LOONGARCH_CPU_CPUCFG)
 #define cpu_has_lam		cpu_opt(LOONGARCH_CPU_LAM)
+#define cpu_has_scq		cpu_opt(LOONGARCH_CPU_SCQ)
 #define cpu_has_ual		cpu_opt(LOONGARCH_CPU_UAL)
 #define cpu_has_fpu		cpu_opt(LOONGARCH_CPU_FPU)
 #define cpu_has_lsx		cpu_opt(LOONGARCH_CPU_LSX)
 #define cpu_has_lasx		cpu_opt(LOONGARCH_CPU_LASX)
+#define cpu_has_crc32		cpu_opt(LOONGARCH_CPU_CRC32)
 #define cpu_has_complex		cpu_opt(LOONGARCH_CPU_COMPLEX)
 #define cpu_has_crypto		cpu_opt(LOONGARCH_CPU_CRYPTO)
 #define cpu_has_lvz		cpu_opt(LOONGARCH_CPU_LVZ)
@@ -55,6 +49,7 @@
 #define cpu_has_lbt_mips	cpu_opt(LOONGARCH_CPU_LBT_MIPS)
 #define cpu_has_lbt		(cpu_has_lbt_x86|cpu_has_lbt_arm|cpu_has_lbt_mips)
 #define cpu_has_csr		cpu_opt(LOONGARCH_CPU_CSR)
+#define cpu_has_iocsr		cpu_opt(LOONGARCH_CPU_IOCSR)
 #define cpu_has_tlb		cpu_opt(LOONGARCH_CPU_TLB)
 #define cpu_has_watch		cpu_opt(LOONGARCH_CPU_WATCH)
 #define cpu_has_vint		cpu_opt(LOONGARCH_CPU_VINT)
@@ -68,6 +63,10 @@
 #define cpu_has_eiodecode	cpu_opt(LOONGARCH_CPU_EIODECODE)
 #define cpu_has_guestid		cpu_opt(LOONGARCH_CPU_GUESTID)
 #define cpu_has_hypervisor	cpu_opt(LOONGARCH_CPU_HYPERVISOR)
-
+#define cpu_has_ptw		cpu_opt(LOONGARCH_CPU_PTW)
+#define cpu_has_lspw		cpu_opt(LOONGARCH_CPU_LSPW)
+#define cpu_has_msgint		cpu_opt(LOONGARCH_CPU_MSGINT)
+#define cpu_has_avecint		cpu_opt(LOONGARCH_CPU_AVECINT)
+#define cpu_has_redirectint	cpu_opt(LOONGARCH_CPU_REDIRECTINT)
 
 #endif /* __ASM_CPU_FEATURES_H */

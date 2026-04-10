@@ -79,7 +79,7 @@ static int ath9k_get_max_index_ht40(struct ath9k_dfs_fft_40 *fft,
 	const int DFS_UPPER_BIN_OFFSET = 64;
 	/* if detected radar on both channels, select the significant one */
 	if (is_ctl && is_ext) {
-		/* first check wether channels have 'strong' bins */
+		/* first check whether channels have 'strong' bins */
 		is_ctl = fft_bitmap_weight(fft->lower_bins) != 0;
 		is_ext = fft_bitmap_weight(fft->upper_bins) != 0;
 
@@ -246,7 +246,7 @@ ath9k_postprocess_radar_event(struct ath_softc *sc,
 		DFS_STAT_INC(sc, dc_phy_errors);
 
 		/* when both are present use stronger one */
-		rssi = (ard->rssi < ard->ext_rssi) ? ard->ext_rssi : ard->rssi;
+		rssi = max(ard->rssi, ard->ext_rssi);
 		break;
 	default:
 		/*
@@ -280,7 +280,7 @@ ath9k_dfs_process_radar_pulse(struct ath_softc *sc, struct pulse_event *pe)
 	if (!pd->add_pulse(pd, pe, NULL))
 		return;
 	DFS_STAT_INC(sc, radar_detected);
-	ieee80211_radar_detected(sc->hw);
+	ieee80211_radar_detected(sc->hw, NULL);
 }
 
 /*

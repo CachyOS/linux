@@ -10,7 +10,9 @@
 #include <linux/skbuff.h>
 #include <net/dsa.h>
 
-#include "dsa_priv.h"
+#include "tag.h"
+
+#define GSWIP_NAME			"gswip"
 
 #define GSWIP_TX_HEADER_LEN		4
 
@@ -46,8 +48,7 @@
 
 /* Byte 3 */
 #define GSWIP_TX_DPID_EN		BIT(0)
-#define GSWIP_TX_PORT_MAP_SHIFT		1
-#define GSWIP_TX_PORT_MAP_MASK		GENMASK(6, 1)
+#define GSWIP_TX_PORT_MAP		GENMASK(6, 1)
 
 #define GSWIP_RX_HEADER_LEN	8
 
@@ -59,7 +60,6 @@
 static struct sk_buff *gswip_tag_xmit(struct sk_buff *skb,
 				      struct net_device *dev)
 {
-	struct dsa_port *dp = dsa_slave_to_port(dev);
 	u8 *gswip_tag;
 
 	skb_push(skb, GSWIP_TX_HEADER_LEN);
@@ -68,7 +68,7 @@ static struct sk_buff *gswip_tag_xmit(struct sk_buff *skb,
 	gswip_tag[0] = GSWIP_TX_SLPID_CPU;
 	gswip_tag[1] = GSWIP_TX_DPID_ELAN;
 	gswip_tag[2] = GSWIP_TX_PORT_MAP_EN | GSWIP_TX_PORT_MAP_SEL;
-	gswip_tag[3] = BIT(dp->index + GSWIP_TX_PORT_MAP_SHIFT) & GSWIP_TX_PORT_MAP_MASK;
+	gswip_tag[3] = FIELD_PREP(GSWIP_TX_PORT_MAP, dsa_xmit_port_mask(skb, dev));
 	gswip_tag[3] |= GSWIP_TX_DPID_EN;
 
 	return skb;
@@ -87,7 +87,7 @@ static struct sk_buff *gswip_tag_rcv(struct sk_buff *skb,
 
 	/* Get source port information */
 	port = (gswip_tag[7] & GSWIP_RX_SPPID_MASK) >> GSWIP_RX_SPPID_SHIFT;
-	skb->dev = dsa_master_find_slave(dev, 0, port);
+	skb->dev = dsa_conduit_find_user(dev, 0, port);
 	if (!skb->dev)
 		return NULL;
 
@@ -98,14 +98,15 @@ static struct sk_buff *gswip_tag_rcv(struct sk_buff *skb,
 }
 
 static const struct dsa_device_ops gswip_netdev_ops = {
-	.name = "gswip",
+	.name = GSWIP_NAME,
 	.proto	= DSA_TAG_PROTO_GSWIP,
 	.xmit = gswip_tag_xmit,
 	.rcv = gswip_tag_rcv,
 	.needed_headroom = GSWIP_RX_HEADER_LEN,
 };
 
+MODULE_DESCRIPTION("DSA tag driver for Lantiq / Intel GSWIP switches");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_GSWIP);
+MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_GSWIP, GSWIP_NAME);
 
 module_dsa_tag_driver(gswip_netdev_ops);

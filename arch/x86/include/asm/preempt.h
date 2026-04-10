@@ -4,10 +4,10 @@
 
 #include <asm/rmwcc.h>
 #include <asm/percpu.h>
-#include <linux/thread_info.h>
+
 #include <linux/static_call_types.h>
 
-DECLARE_PER_CPU(int, __preempt_count);
+DECLARE_PER_CPU_CACHE_HOT(int, __preempt_count);
 
 /* We use the MSB mostly because its available */
 #define PREEMPT_NEED_RESCHED	0x80000000
@@ -31,11 +31,11 @@ static __always_inline void preempt_count_set(int pc)
 {
 	int old, new;
 
+	old = raw_cpu_read_4(__preempt_count);
 	do {
-		old = raw_cpu_read_4(__preempt_count);
 		new = (old & PREEMPT_NEED_RESCHED) |
 			(pc & ~PREEMPT_NEED_RESCHED);
-	} while (raw_cpu_cmpxchg_4(__preempt_count, old, new) != old);
+	} while (!raw_cpu_try_cmpxchg_4(__preempt_count, &old, new));
 }
 
 /*
@@ -92,7 +92,8 @@ static __always_inline void __preempt_count_sub(int val)
  */
 static __always_inline bool __preempt_count_dec_and_test(void)
 {
-	return GEN_UNARY_RMWcc("decl", __preempt_count, e, __percpu_arg([var]));
+	return GEN_UNARY_RMWcc("decl", __my_cpu_var(__preempt_count), e,
+			       __percpu_arg([var]));
 }
 
 /*

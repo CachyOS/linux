@@ -4,17 +4,16 @@
  * This code generates raw asm output which is post-processed to extract
  * and format the required data.
  */
-
-#define ASM_OFFSETS_C
+#define COMPILE_OFFSETS
 
 #include <linux/kbuild.h>
-#include <linux/kvm_host.h>
 #include <linux/sched.h>
 #include <linux/purgatory.h>
 #include <linux/pgtable.h>
-#include <asm/idle.h>
-#include <asm/gmap.h>
+#include <linux/ftrace_regs.h>
+#include <asm/kvm_host_types.h>
 #include <asm/stacktrace.h>
+#include <asm/ptrace.h>
 
 int main(void)
 {
@@ -22,12 +21,16 @@ int main(void)
 	OFFSET(__TASK_stack, task_struct, stack);
 	OFFSET(__TASK_thread, task_struct, thread);
 	OFFSET(__TASK_pid, task_struct, pid);
+#ifdef CONFIG_STACKPROTECTOR
+	OFFSET(__TASK_stack_canary, task_struct, stack_canary);
+#endif
 	BLANK();
 	/* thread struct offsets */
 	OFFSET(__THREAD_ksp, thread_struct, ksp);
 	BLANK();
 	/* thread info offsets */
 	OFFSET(__TI_flags, task_struct, thread_info.flags);
+	OFFSET(__TI_sie, task_struct, thread_info.sie);
 	BLANK();
 	/* pt_regs offsets */
 	OFFSET(__PT_PSW, pt_regs, psw);
@@ -49,8 +52,8 @@ int main(void)
 	OFFSET(__PT_R14, pt_regs, gprs[14]);
 	OFFSET(__PT_R15, pt_regs, gprs[15]);
 	OFFSET(__PT_ORIG_GPR2, pt_regs, orig_gpr2);
+	OFFSET(__PT_INT_CODE, pt_regs, int_code);
 	OFFSET(__PT_FLAGS, pt_regs, flags);
-	OFFSET(__PT_CR1, pt_regs, cr1);
 	OFFSET(__PT_LAST_BREAK, pt_regs, last_break);
 	DEFINE(__PT_SIZE, sizeof(struct pt_regs));
 	BLANK();
@@ -60,21 +63,25 @@ int main(void)
 	OFFSET(__SF_EMPTY, stack_frame, empty[0]);
 	OFFSET(__SF_SIE_CONTROL, stack_frame, sie_control_block);
 	OFFSET(__SF_SIE_SAVEAREA, stack_frame, sie_savearea);
-	OFFSET(__SF_SIE_REASON, stack_frame, sie_reason);
+	OFFSET(__SF_SIE_RETURN, stack_frame, sie_return);
 	OFFSET(__SF_SIE_FLAGS, stack_frame, sie_flags);
+	OFFSET(__SF_SIE_CONTROL_PHYS, stack_frame, sie_control_block_phys);
+	OFFSET(__SF_SIE_GUEST_ASCE, stack_frame, sie_guest_asce);
+	OFFSET(__SF_SIE_IRQ, stack_frame, sie_irq);
 	DEFINE(STACK_FRAME_OVERHEAD, sizeof(struct stack_frame));
 	BLANK();
-	/* idle data offsets */
-	OFFSET(__CLOCK_IDLE_ENTER, s390_idle_data, clock_idle_enter);
-	OFFSET(__TIMER_IDLE_ENTER, s390_idle_data, timer_idle_enter);
-	OFFSET(__MT_CYCLES_ENTER, s390_idle_data, mt_cycles_enter);
+	OFFSET(__SFUSER_BACKCHAIN, stack_frame_user, back_chain);
+	DEFINE(STACK_FRAME_USER_OVERHEAD, sizeof(struct stack_frame_user));
+	OFFSET(__SFVDSO_RETURN_ADDRESS, stack_frame_vdso_wrapper, return_address);
+	DEFINE(STACK_FRAME_VDSO_OVERHEAD, sizeof(struct stack_frame_vdso_wrapper));
 	BLANK();
 	/* hardware defined lowcore locations 0x000 - 0x1ff */
 	OFFSET(__LC_EXT_PARAMS, lowcore, ext_params);
 	OFFSET(__LC_EXT_CPU_ADDR, lowcore, ext_cpu_addr);
 	OFFSET(__LC_EXT_INT_CODE, lowcore, ext_int_code);
 	OFFSET(__LC_PGM_ILC, lowcore, pgm_ilc);
-	OFFSET(__LC_PGM_INT_CODE, lowcore, pgm_code);
+	OFFSET(__LC_PGM_CODE, lowcore, pgm_code);
+	OFFSET(__LC_PGM_INT_CODE, lowcore, pgm_int_code);
 	OFFSET(__LC_DATA_EXC_CODE, lowcore, data_exc_code);
 	OFFSET(__LC_MON_CLASS_NR, lowcore, mon_class_num);
 	OFFSET(__LC_PER_CODE, lowcore, per_code);
@@ -109,10 +116,9 @@ int main(void)
 	OFFSET(__LC_MCK_NEW_PSW, lowcore, mcck_new_psw);
 	OFFSET(__LC_IO_NEW_PSW, lowcore, io_new_psw);
 	/* software defined lowcore locations 0x200 - 0xdff*/
-	OFFSET(__LC_SAVE_AREA_SYNC, lowcore, save_area_sync);
-	OFFSET(__LC_SAVE_AREA_ASYNC, lowcore, save_area_async);
+	OFFSET(__LC_SAVE_AREA, lowcore, save_area);
 	OFFSET(__LC_SAVE_AREA_RESTART, lowcore, save_area_restart);
-	OFFSET(__LC_CPU_FLAGS, lowcore, cpu_flags);
+	OFFSET(__LC_PCPU, lowcore, pcpu);
 	OFFSET(__LC_RETURN_PSW, lowcore, return_psw);
 	OFFSET(__LC_RETURN_MCCK_PSW, lowcore, return_mcck_psw);
 	OFFSET(__LC_SYS_ENTER_TIMER, lowcore, sys_enter_timer);
@@ -121,8 +127,6 @@ int main(void)
 	OFFSET(__LC_LAST_UPDATE_TIMER, lowcore, last_update_timer);
 	OFFSET(__LC_LAST_UPDATE_CLOCK, lowcore, last_update_clock);
 	OFFSET(__LC_INT_CLOCK, lowcore, int_clock);
-	OFFSET(__LC_MCCK_CLOCK, lowcore, mcck_clock);
-	OFFSET(__LC_BOOT_CLOCK, lowcore, boot_clock);
 	OFFSET(__LC_CURRENT, lowcore, current_task);
 	OFFSET(__LC_KERNEL_STACK, lowcore, kernel_stack);
 	OFFSET(__LC_ASYNC_STACK, lowcore, async_stack);
@@ -137,9 +141,9 @@ int main(void)
 	OFFSET(__LC_USER_ASCE, lowcore, user_asce);
 	OFFSET(__LC_LPP, lowcore, lpp);
 	OFFSET(__LC_CURRENT_PID, lowcore, current_pid);
-	OFFSET(__LC_GMAP, lowcore, gmap);
 	OFFSET(__LC_LAST_BREAK, lowcore, last_break);
 	/* software defined ABI-relevant lowcore locations 0xe00 - 0xe20 */
+	OFFSET(__LC_STACK_CANARY, lowcore, stack_canary);
 	OFFSET(__LC_DUMP_REIPL, lowcore, ipib);
 	OFFSET(__LC_VMCORE_INFO, lowcore, vmcore_info);
 	OFFSET(__LC_OS_INFO, lowcore, os_info);
@@ -160,7 +164,6 @@ int main(void)
 	OFFSET(__LC_PGM_TDB, lowcore, pgm_tdb);
 	BLANK();
 	/* gmap/sie offsets */
-	OFFSET(__GMAP_ASCE, gmap, asce);
 	OFFSET(__SIE_PROG0C, kvm_s390_sie_block, prog0c);
 	OFFSET(__SIE_PROG20, kvm_s390_sie_block, prog20);
 	/* kexec_sha_region */
@@ -177,5 +180,9 @@ int main(void)
 	DEFINE(OLDMEM_SIZE, PARMAREA + offsetof(struct parmarea, oldmem_size));
 	DEFINE(COMMAND_LINE, PARMAREA + offsetof(struct parmarea, command_line));
 	DEFINE(MAX_COMMAND_LINE_SIZE, PARMAREA + offsetof(struct parmarea, max_command_line_size));
+	OFFSET(__FTRACE_REGS_PT_REGS, __arch_ftrace_regs, regs);
+	DEFINE(__FTRACE_REGS_SIZE, sizeof(struct __arch_ftrace_regs));
+
+	OFFSET(__PCPU_FLAGS, pcpu, flags);
 	return 0;
 }

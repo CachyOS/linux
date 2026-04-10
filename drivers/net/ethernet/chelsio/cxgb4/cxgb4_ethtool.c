@@ -199,8 +199,8 @@ static void get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
 	struct adapter *adapter = netdev2adap(dev);
 	u32 exprom_vers;
 
-	strlcpy(info->driver, cxgb4_driver_name, sizeof(info->driver));
-	strlcpy(info->bus_info, pci_name(adapter->pdev),
+	strscpy(info->driver, cxgb4_driver_name, sizeof(info->driver));
+	strscpy(info->bus_info, pci_name(adapter->pdev),
 		sizeof(info->bus_info));
 	info->regdump_len = get_regs_len(dev);
 
@@ -1550,18 +1550,15 @@ out_free_fw:
 	return ret;
 }
 
-static int get_ts_info(struct net_device *dev, struct ethtool_ts_info *ts_info)
+static int get_ts_info(struct net_device *dev, struct kernel_ethtool_ts_info *ts_info)
 {
 	struct port_info *pi = netdev_priv(dev);
 	struct  adapter *adapter = pi->adapter;
 
 	ts_info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE |
-				   SOF_TIMESTAMPING_RX_SOFTWARE |
-				   SOF_TIMESTAMPING_SOFTWARE;
-
-	ts_info->so_timestamping |= SOF_TIMESTAMPING_RX_HARDWARE |
-				    SOF_TIMESTAMPING_TX_HARDWARE |
-				    SOF_TIMESTAMPING_RAW_HARDWARE;
+				   SOF_TIMESTAMPING_RX_HARDWARE |
+				   SOF_TIMESTAMPING_TX_HARDWARE |
+				   SOF_TIMESTAMPING_RAW_HARDWARE;
 
 	ts_info->tx_types = (1 << HWTSTAMP_TX_OFF) |
 			    (1 << HWTSTAMP_TX_ON);
@@ -1575,8 +1572,6 @@ static int get_ts_info(struct net_device *dev, struct ethtool_ts_info *ts_info)
 
 	if (adapter->ptp_clock)
 		ts_info->phc_index = ptp_clock_index(adapter->ptp_clock);
-	else
-		ts_info->phc_index = -1;
 
 	return 0;
 }
@@ -1588,22 +1583,23 @@ static u32 get_rss_table_size(struct net_device *dev)
 	return pi->rss_size;
 }
 
-static int get_rss_table(struct net_device *dev, u32 *p, u8 *key, u8 *hfunc)
+static int get_rss_table(struct net_device *dev,
+			 struct ethtool_rxfh_param *rxfh)
 {
 	const struct port_info *pi = netdev_priv(dev);
 	unsigned int n = pi->rss_size;
 
-	if (hfunc)
-		*hfunc = ETH_RSS_HASH_TOP;
-	if (!p)
+	rxfh->hfunc = ETH_RSS_HASH_TOP;
+	if (!rxfh->indir)
 		return 0;
 	while (n--)
-		p[n] = pi->rss[n];
+		rxfh->indir[n] = pi->rss[n];
 	return 0;
 }
 
-static int set_rss_table(struct net_device *dev, const u32 *p, const u8 *key,
-			 const u8 hfunc)
+static int set_rss_table(struct net_device *dev,
+			 struct ethtool_rxfh_param *rxfh,
+			 struct netlink_ext_ack *extack)
 {
 	unsigned int i;
 	struct port_info *pi = netdev_priv(dev);
@@ -1611,16 +1607,17 @@ static int set_rss_table(struct net_device *dev, const u32 *p, const u8 *key,
 	/* We require at least one supported parameter to be changed and no
 	 * change in any of the unsupported parameters
 	 */
-	if (key ||
-	    (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP))
+	if (rxfh->key ||
+	    (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
+	     rxfh->hfunc != ETH_RSS_HASH_TOP))
 		return -EOPNOTSUPP;
-	if (!p)
+	if (!rxfh->indir)
 		return 0;
 
 	/* Interface must be brought up atleast once */
 	if (pi->adapter->flags & CXGB4_FULL_INIT_DONE) {
 		for (i = 0; i < pi->rss_size; i++)
-			pi->rss[i] = p[i];
+			pi->rss[i] = rxfh->indir[i];
 
 		return cxgb4_write_rss(pi, pi->rss);
 	}
@@ -1733,6 +1730,67 @@ static int cxgb4_ntuple_get_filter(struct net_device *dev,
 	return 0;
 }
 
+static int cxgb4_get_rxfh_fields(struct net_device *dev,
+				 struct ethtool_rxfh_fields *info)
+{
+	const struct port_info *pi = netdev_priv(dev);
+	unsigned int v = pi->rss_mode;
+
+	info->data = 0;
+	switch (info->flow_type) {
+	case TCP_V4_FLOW:
+		if (v & FW_RSS_VI_CONFIG_CMD_IP4FOURTUPEN_F)
+			info->data = RXH_IP_SRC | RXH_IP_DST |
+				RXH_L4_B_0_1 | RXH_L4_B_2_3;
+		else if (v & FW_RSS_VI_CONFIG_CMD_IP4TWOTUPEN_F)
+			info->data = RXH_IP_SRC | RXH_IP_DST;
+		break;
+	case UDP_V4_FLOW:
+		if ((v & FW_RSS_VI_CONFIG_CMD_IP4FOURTUPEN_F) &&
+		    (v & FW_RSS_VI_CONFIG_CMD_UDPEN_F))
+			info->data = RXH_IP_SRC | RXH_IP_DST |
+				RXH_L4_B_0_1 | RXH_L4_B_2_3;
+		else if (v & FW_RSS_VI_CONFIG_CMD_IP4TWOTUPEN_F)
+			info->data = RXH_IP_SRC | RXH_IP_DST;
+		break;
+	case SCTP_V4_FLOW:
+	case AH_ESP_V4_FLOW:
+	case IPV4_FLOW:
+		if (v & FW_RSS_VI_CONFIG_CMD_IP4TWOTUPEN_F)
+			info->data = RXH_IP_SRC | RXH_IP_DST;
+		break;
+	case TCP_V6_FLOW:
+		if (v & FW_RSS_VI_CONFIG_CMD_IP6FOURTUPEN_F)
+			info->data = RXH_IP_SRC | RXH_IP_DST |
+				RXH_L4_B_0_1 | RXH_L4_B_2_3;
+		else if (v & FW_RSS_VI_CONFIG_CMD_IP6TWOTUPEN_F)
+			info->data = RXH_IP_SRC | RXH_IP_DST;
+		break;
+	case UDP_V6_FLOW:
+		if ((v & FW_RSS_VI_CONFIG_CMD_IP6FOURTUPEN_F) &&
+		    (v & FW_RSS_VI_CONFIG_CMD_UDPEN_F))
+			info->data = RXH_IP_SRC | RXH_IP_DST |
+				RXH_L4_B_0_1 | RXH_L4_B_2_3;
+		else if (v & FW_RSS_VI_CONFIG_CMD_IP6TWOTUPEN_F)
+			info->data = RXH_IP_SRC | RXH_IP_DST;
+		break;
+	case SCTP_V6_FLOW:
+	case AH_ESP_V6_FLOW:
+	case IPV6_FLOW:
+		if (v & FW_RSS_VI_CONFIG_CMD_IP6TWOTUPEN_F)
+			info->data = RXH_IP_SRC | RXH_IP_DST;
+		break;
+	}
+	return 0;
+}
+
+static u32 get_rx_ring_count(struct net_device *dev)
+{
+	const struct port_info *pi = netdev_priv(dev);
+
+	return pi->nqsets;
+}
+
 static int get_rxnfc(struct net_device *dev, struct ethtool_rxnfc *info,
 		     u32 *rules)
 {
@@ -1742,59 +1800,6 @@ static int get_rxnfc(struct net_device *dev, struct ethtool_rxnfc *info,
 	int ret = 0;
 
 	switch (info->cmd) {
-	case ETHTOOL_GRXFH: {
-		unsigned int v = pi->rss_mode;
-
-		info->data = 0;
-		switch (info->flow_type) {
-		case TCP_V4_FLOW:
-			if (v & FW_RSS_VI_CONFIG_CMD_IP4FOURTUPEN_F)
-				info->data = RXH_IP_SRC | RXH_IP_DST |
-					     RXH_L4_B_0_1 | RXH_L4_B_2_3;
-			else if (v & FW_RSS_VI_CONFIG_CMD_IP4TWOTUPEN_F)
-				info->data = RXH_IP_SRC | RXH_IP_DST;
-			break;
-		case UDP_V4_FLOW:
-			if ((v & FW_RSS_VI_CONFIG_CMD_IP4FOURTUPEN_F) &&
-			    (v & FW_RSS_VI_CONFIG_CMD_UDPEN_F))
-				info->data = RXH_IP_SRC | RXH_IP_DST |
-					     RXH_L4_B_0_1 | RXH_L4_B_2_3;
-			else if (v & FW_RSS_VI_CONFIG_CMD_IP4TWOTUPEN_F)
-				info->data = RXH_IP_SRC | RXH_IP_DST;
-			break;
-		case SCTP_V4_FLOW:
-		case AH_ESP_V4_FLOW:
-		case IPV4_FLOW:
-			if (v & FW_RSS_VI_CONFIG_CMD_IP4TWOTUPEN_F)
-				info->data = RXH_IP_SRC | RXH_IP_DST;
-			break;
-		case TCP_V6_FLOW:
-			if (v & FW_RSS_VI_CONFIG_CMD_IP6FOURTUPEN_F)
-				info->data = RXH_IP_SRC | RXH_IP_DST |
-					     RXH_L4_B_0_1 | RXH_L4_B_2_3;
-			else if (v & FW_RSS_VI_CONFIG_CMD_IP6TWOTUPEN_F)
-				info->data = RXH_IP_SRC | RXH_IP_DST;
-			break;
-		case UDP_V6_FLOW:
-			if ((v & FW_RSS_VI_CONFIG_CMD_IP6FOURTUPEN_F) &&
-			    (v & FW_RSS_VI_CONFIG_CMD_UDPEN_F))
-				info->data = RXH_IP_SRC | RXH_IP_DST |
-					     RXH_L4_B_0_1 | RXH_L4_B_2_3;
-			else if (v & FW_RSS_VI_CONFIG_CMD_IP6TWOTUPEN_F)
-				info->data = RXH_IP_SRC | RXH_IP_DST;
-			break;
-		case SCTP_V6_FLOW:
-		case AH_ESP_V6_FLOW:
-		case IPV6_FLOW:
-			if (v & FW_RSS_VI_CONFIG_CMD_IP6TWOTUPEN_F)
-				info->data = RXH_IP_SRC | RXH_IP_DST;
-			break;
-		}
-		return 0;
-	}
-	case ETHTOOL_GRXRINGS:
-		info->data = pi->nqsets;
-		return 0;
 	case ETHTOOL_GRXCLSRLCNT:
 		info->rule_cnt =
 		       adap->ethtool_filters->port[pi->port_id].in_use;
@@ -2199,9 +2204,11 @@ static const struct ethtool_ops cxgb_ethtool_ops = {
 	.get_regs          = get_regs,
 	.get_rxnfc         = get_rxnfc,
 	.set_rxnfc         = set_rxnfc,
+	.get_rx_ring_count = get_rx_ring_count,
 	.get_rxfh_indir_size = get_rss_table_size,
 	.get_rxfh	   = get_rss_table,
 	.set_rxfh	   = set_rss_table,
+	.get_rxfh_fields   = cxgb4_get_rxfh_fields,
 	.self_test	   = cxgb4_self_test,
 	.flash_device      = set_flash,
 	.get_ts_info       = get_ts_info,
@@ -2227,7 +2234,7 @@ void cxgb4_cleanup_ethtool_filters(struct adapter *adap)
 	if (eth_filter_info) {
 		for (i = 0; i < adap->params.nports; i++) {
 			kvfree(eth_filter_info[i].loc_array);
-			kfree(eth_filter_info[i].bmap);
+			bitmap_free(eth_filter_info[i].bmap);
 		}
 		kfree(eth_filter_info);
 	}
@@ -2243,13 +2250,11 @@ int cxgb4_init_ethtool_filters(struct adapter *adap)
 	u32 nentries, i;
 	int ret;
 
-	eth_filter = kzalloc(sizeof(*eth_filter), GFP_KERNEL);
+	eth_filter = kzalloc_obj(*eth_filter);
 	if (!eth_filter)
 		return -ENOMEM;
 
-	eth_filter_info = kcalloc(adap->params.nports,
-				  sizeof(*eth_filter_info),
-				  GFP_KERNEL);
+	eth_filter_info = kzalloc_objs(*eth_filter_info, adap->params.nports);
 	if (!eth_filter_info) {
 		ret = -ENOMEM;
 		goto free_eth_filter;
@@ -2270,11 +2275,10 @@ int cxgb4_init_ethtool_filters(struct adapter *adap)
 			goto free_eth_finfo;
 		}
 
-		eth_filter->port[i].bmap = kcalloc(BITS_TO_LONGS(nentries),
-						   sizeof(unsigned long),
-						   GFP_KERNEL);
+		eth_filter->port[i].bmap = bitmap_zalloc(nentries, GFP_KERNEL);
 		if (!eth_filter->port[i].bmap) {
 			ret = -ENOMEM;
+			kvfree(eth_filter->port[i].loc_array);
 			goto free_eth_finfo;
 		}
 	}
@@ -2284,7 +2288,7 @@ int cxgb4_init_ethtool_filters(struct adapter *adap)
 
 free_eth_finfo:
 	while (i-- > 0) {
-		kfree(eth_filter->port[i].bmap);
+		bitmap_free(eth_filter->port[i].bmap);
 		kvfree(eth_filter->port[i].loc_array);
 	}
 	kfree(eth_filter_info);

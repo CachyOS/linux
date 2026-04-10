@@ -16,6 +16,7 @@
 
 #include <linux/module.h>
 #include <linux/types.h>
+#include <linux/idr.h>
 #include <linux/init.h>
 #include <linux/device.h>
 #include <linux/fs.h>
@@ -167,6 +168,16 @@ static const struct __extcon_info {
 		.id = EXTCON_DISP_HMD,
 		.name = "HMD",
 	},
+	[EXTCON_DISP_CVBS] = {
+		.type = EXTCON_TYPE_DISP,
+		.id = EXTCON_DISP_CVBS,
+		.name = "CVBS",
+	},
+	[EXTCON_DISP_EDP] = {
+		.type = EXTCON_TYPE_DISP,
+		.id = EXTCON_DISP_EDP,
+		.name = "EDP",
+	},
 
 	/* Miscellaneous external connector */
 	[EXTCON_DOCK] = {
@@ -196,6 +207,14 @@ static const struct __extcon_info {
  * @attr_name:		"name" sysfs entry
  * @attr_state:		"state" sysfs entry
  * @attrs:		the array pointing to attr_name and attr_state for attr_g
+ * @usb_propval:	the array of USB connector properties
+ * @chg_propval:	the array of charger connector properties
+ * @jack_propval:	the array of jack connector properties
+ * @disp_propval:	the array of display connector properties
+ * @usb_bits:		the bit array of the USB connector property capabilities
+ * @chg_bits:		the bit array of the charger connector property capabilities
+ * @jack_bits:		the bit array of the jack connector property capabilities
+ * @disp_bits:		the bit array of the display connector property capabilities
  */
 struct extcon_cable {
 	struct extcon_dev *edev;
@@ -212,20 +231,21 @@ struct extcon_cable {
 	union extcon_property_value jack_propval[EXTCON_PROP_JACK_CNT];
 	union extcon_property_value disp_propval[EXTCON_PROP_DISP_CNT];
 
-	unsigned long usb_bits[BITS_TO_LONGS(EXTCON_PROP_USB_CNT)];
-	unsigned long chg_bits[BITS_TO_LONGS(EXTCON_PROP_CHG_CNT)];
-	unsigned long jack_bits[BITS_TO_LONGS(EXTCON_PROP_JACK_CNT)];
-	unsigned long disp_bits[BITS_TO_LONGS(EXTCON_PROP_DISP_CNT)];
+	DECLARE_BITMAP(usb_bits, EXTCON_PROP_USB_CNT);
+	DECLARE_BITMAP(chg_bits, EXTCON_PROP_CHG_CNT);
+	DECLARE_BITMAP(jack_bits, EXTCON_PROP_JACK_CNT);
+	DECLARE_BITMAP(disp_bits, EXTCON_PROP_DISP_CNT);
 };
 
 static struct class *extcon_class;
 
+static DEFINE_IDA(extcon_dev_ids);
 static LIST_HEAD(extcon_dev_list);
 static DEFINE_MUTEX(extcon_dev_list_lock);
 
 static int check_mutually_exclusive(struct extcon_dev *edev, u32 new_state)
 {
-	int i = 0;
+	int i;
 
 	if (!edev->mutually_exclusive)
 		return 0;
@@ -247,7 +267,7 @@ static int find_cable_index_by_id(struct extcon_dev *edev, const unsigned int id
 {
 	int i;
 
-	/* Find the the index of extcon cable in edev->supported_cable */
+	/* Find the index of extcon cable in edev->supported_cable */
 	for (i = 0; i < edev->max_supported; i++) {
 		if (edev->supported_cable[i] == id)
 			return i;
@@ -352,12 +372,12 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr,
 	struct extcon_dev *edev = dev_get_drvdata(dev);
 
 	if (edev->max_supported == 0)
-		return sprintf(buf, "%u\n", edev->state);
+		return sysfs_emit(buf, "%u\n", edev->state);
 
 	for (i = 0; i < edev->max_supported; i++) {
-		count += sprintf(buf + count, "%s=%d\n",
-				extcon_info[edev->supported_cable[i]].name,
-				 !!(edev->state & BIT(i)));
+		count += sysfs_emit_at(buf, count, "%s=%d\n",
+				       extcon_info[edev->supported_cable[i]].name,
+				       !!(edev->state & BIT(i)));
 	}
 
 	return count;
@@ -369,7 +389,7 @@ static ssize_t name_show(struct device *dev, struct device_attribute *attr,
 {
 	struct extcon_dev *edev = dev_get_drvdata(dev);
 
-	return sprintf(buf, "%s\n", edev->name);
+	return sysfs_emit(buf, "%s\n", edev->name);
 }
 static DEVICE_ATTR_RO(name);
 
@@ -380,8 +400,8 @@ static ssize_t cable_name_show(struct device *dev,
 						  attr_name);
 	int i = cable->cable_index;
 
-	return sprintf(buf, "%s\n",
-			extcon_info[cable->edev->supported_cable[i]].name);
+	return sysfs_emit(buf, "%s\n",
+			  extcon_info[cable->edev->supported_cable[i]].name);
 }
 
 static ssize_t cable_state_show(struct device *dev,
@@ -392,8 +412,8 @@ static ssize_t cable_state_show(struct device *dev,
 
 	int i = cable->cable_index;
 
-	return sprintf(buf, "%d\n",
-		extcon_get_state(cable->edev, cable->edev->supported_cable[i]));
+	return sysfs_emit(buf, "%d\n",
+			  extcon_get_state(cable->edev, cable->edev->supported_cable[i]));
 }
 
 /**
@@ -1002,12 +1022,13 @@ ATTRIBUTE_GROUPS(extcon);
 
 static int create_extcon_class(void)
 {
-	if (!extcon_class) {
-		extcon_class = class_create(THIS_MODULE, "extcon");
-		if (IS_ERR(extcon_class))
-			return PTR_ERR(extcon_class);
-		extcon_class->dev_groups = extcon_groups;
-	}
+	if (extcon_class)
+		return 0;
+
+	extcon_class = class_create("extcon");
+	if (IS_ERR(extcon_class))
+		return PTR_ERR(extcon_class);
+	extcon_class->dev_groups = extcon_groups;
 
 	return 0;
 }
@@ -1039,7 +1060,7 @@ struct extcon_dev *extcon_dev_allocate(const unsigned int *supported_cable)
 	if (!supported_cable)
 		return ERR_PTR(-EINVAL);
 
-	edev = kzalloc(sizeof(*edev), GFP_KERNEL);
+	edev = kzalloc_obj(*edev);
 	if (!edev)
 		return ERR_PTR(-ENOMEM);
 
@@ -1060,6 +1081,152 @@ void extcon_dev_free(struct extcon_dev *edev)
 EXPORT_SYMBOL_GPL(extcon_dev_free);
 
 /**
+ * extcon_alloc_cables() - alloc the cables for extcon device
+ * @edev:	extcon device which has cables
+ *
+ * Returns 0 if success or error number if fail.
+ */
+static int extcon_alloc_cables(struct extcon_dev *edev)
+{
+	int index;
+	char *str;
+	struct extcon_cable *cable;
+
+	if (!edev)
+		return -EINVAL;
+
+	if (!edev->max_supported)
+		return 0;
+
+	edev->cables = kzalloc_objs(*edev->cables, edev->max_supported);
+	if (!edev->cables)
+		return -ENOMEM;
+
+	for (index = 0; index < edev->max_supported; index++) {
+		cable = &edev->cables[index];
+
+		str = kasprintf(GFP_KERNEL, "cable.%d", index);
+		if (!str) {
+			for (index--; index >= 0; index--) {
+				cable = &edev->cables[index];
+				kfree(cable->attr_g.name);
+			}
+
+			kfree(edev->cables);
+			return -ENOMEM;
+		}
+
+		cable->edev = edev;
+		cable->cable_index = index;
+		cable->attrs[0] = &cable->attr_name.attr;
+		cable->attrs[1] = &cable->attr_state.attr;
+		cable->attrs[2] = NULL;
+		cable->attr_g.name = str;
+		cable->attr_g.attrs = cable->attrs;
+
+		sysfs_attr_init(&cable->attr_name.attr);
+		cable->attr_name.attr.name = "name";
+		cable->attr_name.attr.mode = 0444;
+		cable->attr_name.show = cable_name_show;
+
+		sysfs_attr_init(&cable->attr_state.attr);
+		cable->attr_state.attr.name = "state";
+		cable->attr_state.attr.mode = 0444;
+		cable->attr_state.show = cable_state_show;
+	}
+
+	return 0;
+}
+
+/**
+ * extcon_alloc_muex() - alloc the mutual exclusive for extcon device
+ * @edev:	extcon device
+ *
+ * Returns 0 if success or error number if fail.
+ */
+static int extcon_alloc_muex(struct extcon_dev *edev)
+{
+	char *name;
+	int index;
+
+	if (!edev)
+		return -EINVAL;
+
+	if (!(edev->max_supported && edev->mutually_exclusive))
+		return 0;
+
+	/* Count the size of mutually_exclusive array */
+	for (index = 0; edev->mutually_exclusive[index]; index++)
+		;
+
+	edev->attrs_muex = kzalloc_objs(*edev->attrs_muex, index + 1);
+	if (!edev->attrs_muex)
+		return -ENOMEM;
+
+	edev->d_attrs_muex = kzalloc_objs(*edev->d_attrs_muex, index);
+	if (!edev->d_attrs_muex) {
+		kfree(edev->attrs_muex);
+		return -ENOMEM;
+	}
+
+	for (index = 0; edev->mutually_exclusive[index]; index++) {
+		name = kasprintf(GFP_KERNEL, "0x%x",
+				 edev->mutually_exclusive[index]);
+		if (!name) {
+			for (index--; index >= 0; index--)
+				kfree(edev->d_attrs_muex[index].attr.name);
+
+			kfree(edev->d_attrs_muex);
+			kfree(edev->attrs_muex);
+			return -ENOMEM;
+		}
+		sysfs_attr_init(&edev->d_attrs_muex[index].attr);
+		edev->d_attrs_muex[index].attr.name = name;
+		edev->d_attrs_muex[index].attr.mode = 0000;
+		edev->attrs_muex[index] = &edev->d_attrs_muex[index].attr;
+	}
+	edev->attr_g_muex.name = muex_name;
+	edev->attr_g_muex.attrs = edev->attrs_muex;
+
+	return 0;
+}
+
+/**
+ * extcon_alloc_groups() - alloc the groups for extcon device
+ * @edev:	extcon device
+ *
+ * Returns 0 if success or error number if fail.
+ */
+static int extcon_alloc_groups(struct extcon_dev *edev)
+{
+	int index;
+
+	if (!edev)
+		return -EINVAL;
+
+	if (!edev->max_supported)
+		return 0;
+
+	edev->extcon_dev_type.groups = kzalloc_objs(*edev->extcon_dev_type.groups,
+						    edev->max_supported + 2);
+	if (!edev->extcon_dev_type.groups)
+		return -ENOMEM;
+
+	edev->extcon_dev_type.name = dev_name(&edev->dev);
+	edev->extcon_dev_type.release = dummy_sysfs_dev_release;
+
+	for (index = 0; index < edev->max_supported; index++)
+		edev->extcon_dev_type.groups[index] = &edev->cables[index].attr_g;
+
+	if (edev->mutually_exclusive)
+		edev->extcon_dev_type.groups[index] = &edev->attr_g_muex;
+
+	edev->dev.type = &edev->extcon_dev_type;
+
+	return 0;
+}
+
+/**
  * extcon_dev_register() - Register an new extcon device
  * @edev:	the extcon device to be registered
  *
@@ -1075,19 +1242,16 @@ EXPORT_SYMBOL_GPL(extcon_dev_free);
  */
 int extcon_dev_register(struct extcon_dev *edev)
 {
-	int ret, index = 0;
-	static atomic_t edev_no = ATOMIC_INIT(-1);
+	int ret, index;
 
-	if (!extcon_class) {
-		ret = create_extcon_class();
-		if (ret < 0)
-			return ret;
-	}
+	ret = create_extcon_class();
+	if (ret < 0)
+		return ret;
 
 	if (!edev || !edev->supported_cable)
 		return -EINVAL;
 
-	for (; edev->supported_cable[index] != EXTCON_NONE; index++);
+	for (index = 0; edev->supported_cable[index] != EXTCON_NONE; index++);
 
 	edev->max_supported = index;
 	if (index > SUPPORTED_CABLE_MAX) {
@@ -1105,129 +1269,28 @@ int extcon_dev_register(struct extcon_dev *edev)
 			"extcon device name is null\n");
 		return -EINVAL;
 	}
-	dev_set_name(&edev->dev, "extcon%lu",
-			(unsigned long)atomic_inc_return(&edev_no));
 
-	if (edev->max_supported) {
-		char *str;
-		struct extcon_cable *cable;
+	ret = ida_alloc(&extcon_dev_ids, GFP_KERNEL);
+	if (ret < 0)
+		return ret;
 
-		edev->cables = kcalloc(edev->max_supported,
-				       sizeof(struct extcon_cable),
-				       GFP_KERNEL);
-		if (!edev->cables) {
-			ret = -ENOMEM;
-			goto err_sysfs_alloc;
-		}
-		for (index = 0; index < edev->max_supported; index++) {
-			cable = &edev->cables[index];
+	edev->id = ret;
 
-			str = kasprintf(GFP_KERNEL, "cable.%d", index);
-			if (!str) {
-				for (index--; index >= 0; index--) {
-					cable = &edev->cables[index];
-					kfree(cable->attr_g.name);
-				}
-				ret = -ENOMEM;
+	ret = extcon_alloc_cables(edev);
+	if (ret < 0)
+		goto err_alloc_cables;
 
-				goto err_alloc_cables;
-			}
+	ret = extcon_alloc_muex(edev);
+	if (ret < 0)
+		goto err_alloc_muex;
 
-			cable->edev = edev;
-			cable->cable_index = index;
-			cable->attrs[0] = &cable->attr_name.attr;
-			cable->attrs[1] = &cable->attr_state.attr;
-			cable->attrs[2] = NULL;
-			cable->attr_g.name = str;
-			cable->attr_g.attrs = cable->attrs;
-
-			sysfs_attr_init(&cable->attr_name.attr);
-			cable->attr_name.attr.name = "name";
-			cable->attr_name.attr.mode = 0444;
-			cable->attr_name.show = cable_name_show;
-
-			sysfs_attr_init(&cable->attr_state.attr);
-			cable->attr_state.attr.name = "state";
-			cable->attr_state.attr.mode = 0444;
-			cable->attr_state.show = cable_state_show;
-		}
-	}
-
-	if (edev->max_supported && edev->mutually_exclusive) {
-		char *name;
-
-		/* Count the size of mutually_exclusive array */
-		for (index = 0; edev->mutually_exclusive[index]; index++)
-			;
-
-		edev->attrs_muex = kcalloc(index + 1,
-					   sizeof(struct attribute *),
-					   GFP_KERNEL);
-		if (!edev->attrs_muex) {
-			ret = -ENOMEM;
-			goto err_muex;
-		}
-
-		edev->d_attrs_muex = kcalloc(index,
-					     sizeof(struct device_attribute),
-					     GFP_KERNEL);
-		if (!edev->d_attrs_muex) {
-			ret = -ENOMEM;
-			kfree(edev->attrs_muex);
-			goto err_muex;
-		}
-
-		for (index = 0; edev->mutually_exclusive[index]; index++) {
-			name = kasprintf(GFP_KERNEL, "0x%x",
-					 edev->mutually_exclusive[index]);
-			if (!name) {
-				for (index--; index >= 0; index--) {
-					kfree(edev->d_attrs_muex[index].attr.
-					      name);
-				}
-				kfree(edev->d_attrs_muex);
-				kfree(edev->attrs_muex);
-				ret = -ENOMEM;
-				goto err_muex;
-			}
-			sysfs_attr_init(&edev->d_attrs_muex[index].attr);
-			edev->d_attrs_muex[index].attr.name = name;
-			edev->d_attrs_muex[index].attr.mode = 0000;
-			edev->attrs_muex[index] = &edev->d_attrs_muex[index]
-							.attr;
-		}
-		edev->attr_g_muex.name = muex_name;
-		edev->attr_g_muex.attrs = edev->attrs_muex;
-
-	}
-
-	if (edev->max_supported) {
-		edev->extcon_dev_type.groups =
-			kcalloc(edev->max_supported + 2,
-				sizeof(struct attribute_group *),
-				GFP_KERNEL);
-		if (!edev->extcon_dev_type.groups) {
-			ret = -ENOMEM;
-			goto err_alloc_groups;
-		}
-
-		edev->extcon_dev_type.name = dev_name(&edev->dev);
-		edev->extcon_dev_type.release = dummy_sysfs_dev_release;
-
-		for (index = 0; index < edev->max_supported; index++)
-			edev->extcon_dev_type.groups[index] =
-				&edev->cables[index].attr_g;
-		if (edev->mutually_exclusive)
-			edev->extcon_dev_type.groups[index] =
-				&edev->attr_g_muex;
-
-		edev->dev.type = &edev->extcon_dev_type;
-	}
+	ret = extcon_alloc_groups(edev);
+	if (ret < 0)
+		goto err_alloc_groups;
 
 	spin_lock_init(&edev->lock);
 	if (edev->max_supported) {
-		edev->nh = kcalloc(edev->max_supported, sizeof(*edev->nh),
-				GFP_KERNEL);
+		edev->nh = kzalloc_objs(*edev->nh, edev->max_supported);
 		if (!edev->nh) {
 			ret = -ENOMEM;
 			goto err_alloc_nh;
@@ -1240,6 +1303,7 @@ int extcon_dev_register(struct extcon_dev *edev)
 	RAW_INIT_NOTIFIER_HEAD(&edev->nh_all);
 
 	dev_set_drvdata(&edev->dev, edev);
+	dev_set_name(&edev->dev, "extcon%d", edev->id);
 	edev->state = 0;
 
 	ret = device_register(&edev->dev);
@@ -1267,13 +1331,14 @@ err_alloc_groups:
 		kfree(edev->d_attrs_muex);
 		kfree(edev->attrs_muex);
 	}
-err_muex:
+err_alloc_muex:
 	for (index = 0; index < edev->max_supported; index++)
 		kfree(edev->cables[index].attr_g.name);
-err_alloc_cables:
 	if (edev->max_supported)
 		kfree(edev->cables);
-err_sysfs_alloc:
+err_alloc_cables:
+	ida_free(&extcon_dev_ids, edev->id);
+
 	return ret;
 }
 EXPORT_SYMBOL_GPL(extcon_dev_register);
@@ -1296,11 +1361,12 @@ void extcon_dev_unregister(struct extcon_dev *edev)
 	list_del(&edev->entry);
 	mutex_unlock(&extcon_dev_list_lock);
 
-	if (IS_ERR_OR_NULL(get_device(&edev->dev))) {
-		dev_err(&edev->dev, "Failed to unregister extcon_dev (%s)\n",
-				dev_name(&edev->dev));
+	if (!get_device(&edev->dev)) {
+		dev_err(&edev->dev, "Failed to unregister extcon_dev\n");
 		return;
 	}
+
+	ida_free(&extcon_dev_ids, edev->id);
 
 	device_unregister(&edev->dev);
 
@@ -1339,7 +1405,7 @@ struct extcon_dev *extcon_find_edev_by_node(struct device_node *node)
 
 	mutex_lock(&extcon_dev_list_lock);
 	list_for_each_entry(edev, &extcon_dev_list, entry)
-		if (edev->dev.parent && edev->dev.parent->of_node == node)
+		if (edev->dev.parent && device_match_of_node(edev->dev.parent, node))
 			goto out;
 	edev = ERR_PTR(-EPROBE_DEFER);
 out:
@@ -1357,21 +1423,17 @@ out:
  */
 struct extcon_dev *extcon_get_edev_by_phandle(struct device *dev, int index)
 {
-	struct device_node *node;
+	struct device_node *node, *np = dev_of_node(dev);
 	struct extcon_dev *edev;
 
-	if (!dev)
-		return ERR_PTR(-EINVAL);
-
-	if (!dev->of_node) {
+	if (!np) {
 		dev_dbg(dev, "device does not have a device node entry\n");
 		return ERR_PTR(-EINVAL);
 	}
 
-	node = of_parse_phandle(dev->of_node, "extcon", index);
+	node = of_parse_phandle(np, "extcon", index);
 	if (!node) {
-		dev_dbg(dev, "failed to get phandle in %pOF node\n",
-			dev->of_node);
+		dev_dbg(dev, "failed to get phandle in %pOF node\n", np);
 		return ERR_PTR(-ENODEV);
 	}
 

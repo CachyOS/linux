@@ -239,12 +239,10 @@ static int
 ltq_dma_init(struct platform_device *pdev)
 {
 	struct clk *clk;
-	struct resource *res;
 	unsigned int id, nchannels;
 	int i;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	ltq_dma_membase = devm_ioremap_resource(&pdev->dev, res);
+	ltq_dma_membase = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
 	if (IS_ERR(ltq_dma_membase))
 		panic("Failed to remap dma resource");
 
@@ -291,7 +289,7 @@ static struct platform_driver dma_driver = {
 	},
 };
 
-int __init
+static int __init
 dma_init(void)
 {
 	return platform_driver_register(&dma_driver);

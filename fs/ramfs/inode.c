@@ -61,11 +61,11 @@ struct inode *ramfs_get_inode(struct super_block *sb,
 
 	if (inode) {
 		inode->i_ino = get_next_ino();
-		inode_init_owner(&init_user_ns, inode, dir, mode);
+		inode_init_owner(&nop_mnt_idmap, inode, dir, mode);
 		inode->i_mapping->a_ops = &ram_aops;
 		mapping_set_gfp_mask(inode->i_mapping, GFP_HIGHUSER);
 		mapping_set_unevictable(inode->i_mapping);
-		inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
+		simple_inode_init_ts(inode);
 		switch (mode & S_IFMT) {
 		default:
 			init_special_inode(inode, mode, dev);
@@ -95,37 +95,45 @@ struct inode *ramfs_get_inode(struct super_block *sb,
  */
 /* SMP-safe */
 static int
-ramfs_mknod(struct user_namespace *mnt_userns, struct inode *dir,
+ramfs_mknod(struct mnt_idmap *idmap, struct inode *dir,
 	    struct dentry *dentry, umode_t mode, dev_t dev)
 {
 	struct inode * inode = ramfs_get_inode(dir->i_sb, dir, mode, dev);
 	int error = -ENOSPC;
 
 	if (inode) {
-		d_instantiate(dentry, inode);
-		dget(dentry);	/* Extra count - pin the dentry in core */
+		error = security_inode_init_security(inode, dir,
+						     &dentry->d_name, NULL,
+						     NULL);
+		if (error) {
+			iput(inode);
+			goto out;
+		}
+
+		d_make_persistent(dentry, inode);
 		error = 0;
-		dir->i_mtime = dir->i_ctime = current_time(dir);
+		inode_set_mtime_to_ts(dir, inode_set_ctime_current(dir));
 	}
+out:
 	return error;
 }
 
-static int ramfs_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
-		       struct dentry *dentry, umode_t mode)
+static struct dentry *ramfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
+				 struct dentry *dentry, umode_t mode)
 {
-	int retval = ramfs_mknod(&init_user_ns, dir, dentry, mode | S_IFDIR, 0);
+	int retval = ramfs_mknod(&nop_mnt_idmap, dir, dentry, mode | S_IFDIR, 0);
 	if (!retval)
 		inc_nlink(dir);
-	return retval;
+	return ERR_PTR(retval);
 }
 
-static int ramfs_create(struct user_namespace *mnt_userns, struct inode *dir,
+static int ramfs_create(struct mnt_idmap *idmap, struct inode *dir,
 			struct dentry *dentry, umode_t mode, bool excl)
 {
-	return ramfs_mknod(&init_user_ns, dir, dentry, mode | S_IFREG, 0);
+	return ramfs_mknod(&nop_mnt_idmap, dir, dentry, mode | S_IFREG, 0);
 }
 
-static int ramfs_symlink(struct user_namespace *mnt_userns, struct inode *dir,
+static int ramfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 			 struct dentry *dentry, const char *symname)
 {
 	struct inode *inode;
@@ -134,27 +142,48 @@ static int ramfs_symlink(struct user_namespace *mnt_userns, struct inode *dir,
 	inode = ramfs_get_inode(dir->i_sb, dir, S_IFLNK|S_IRWXUGO, 0);
 	if (inode) {
 		int l = strlen(symname)+1;
+
+		error = security_inode_init_security(inode, dir,
+						     &dentry->d_name, NULL,
+						     NULL);
+		if (error) {
+			iput(inode);
+			goto out;
+		}
+
 		error = page_symlink(inode, symname, l);
 		if (!error) {
-			d_instantiate(dentry, inode);
-			dget(dentry);
-			dir->i_mtime = dir->i_ctime = current_time(dir);
+			d_make_persistent(dentry, inode);
+			inode_set_mtime_to_ts(dir,
+					      inode_set_ctime_current(dir));
 		} else
 			iput(inode);
 	}
+out:
 	return error;
 }
 
-static int ramfs_tmpfile(struct user_namespace *mnt_userns,
-			 struct inode *dir, struct dentry *dentry, umode_t mode)
+static int ramfs_tmpfile(struct mnt_idmap *idmap,
+			 struct inode *dir, struct file *file, umode_t mode)
 {
 	struct inode *inode;
+	int error;
 
 	inode = ramfs_get_inode(dir->i_sb, dir, mode, 0);
 	if (!inode)
 		return -ENOSPC;
-	d_tmpfile(dentry, inode);
-	return 0;
+
+	error = security_inode_init_security(inode, dir,
+					     &file_dentry(file)->d_name, NULL,
+					     NULL);
+	if (error) {
+		iput(inode);
+		goto out;
+	}
+
+	d_tmpfile(file, inode);
+out:
+	return finish_open_simple(file, error);
 }
 
 static const struct inode_operations ramfs_dir_inode_operations = {
@@ -184,7 +213,7 @@ static int ramfs_show_options(struct seq_file *m, struct dentry *root)
 
 static const struct super_operations ramfs_ops = {
 	.statfs		= simple_statfs,
-	.drop_inode	= generic_delete_inode,
+	.drop_inode	= inode_just_drop,
 	.show_options	= ramfs_show_options,
 };
 
@@ -238,6 +267,7 @@ static int ramfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_blocksize_bits	= PAGE_SHIFT;
 	sb->s_magic		= RAMFS_MAGIC;
 	sb->s_op		= &ramfs_ops;
+	sb->s_d_flags		= DCACHE_DONTCACHE;
 	sb->s_time_gran		= 1;
 
 	inode = ramfs_get_inode(sb, NULL, S_IFDIR | fsi->mount_opts.mode, 0);
@@ -268,7 +298,7 @@ int ramfs_init_fs_context(struct fs_context *fc)
 {
 	struct ramfs_fs_info *fsi;
 
-	fsi = kzalloc(sizeof(*fsi), GFP_KERNEL);
+	fsi = kzalloc_obj(*fsi);
 	if (!fsi)
 		return -ENOMEM;
 
@@ -278,10 +308,10 @@ int ramfs_init_fs_context(struct fs_context *fc)
 	return 0;
 }
 
-static void ramfs_kill_sb(struct super_block *sb)
+void ramfs_kill_sb(struct super_block *sb)
 {
 	kfree(sb->s_fs_info);
-	kill_litter_super(sb);
+	kill_anon_super(sb);
 }
 
 static struct file_system_type ramfs_fs_type = {

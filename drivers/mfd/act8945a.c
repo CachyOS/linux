@@ -10,7 +10,7 @@
 #include <linux/i2c.h>
 #include <linux/mfd/core.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/regmap.h>
 
 static const struct mfd_cell act8945a_devs[] = {
@@ -28,8 +28,7 @@ static const struct regmap_config act8945a_regmap_config = {
 	.val_bits = 8,
 };
 
-static int act8945a_i2c_probe(struct i2c_client *i2c,
-			      const struct i2c_device_id *id)
+static int act8945a_i2c_probe(struct i2c_client *i2c)
 {
 	int ret;
 	struct regmap *regmap;
@@ -55,7 +54,7 @@ static int act8945a_i2c_probe(struct i2c_client *i2c,
 }
 
 static const struct i2c_device_id act8945a_i2c_id[] = {
-	{ "act8945a", 0 },
+	{ "act8945a" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, act8945a_i2c_id);
@@ -69,7 +68,7 @@ MODULE_DEVICE_TABLE(of, act8945a_of_match);
 static struct i2c_driver act8945a_i2c_driver = {
 	.driver = {
 		   .name = "act8945a",
-		   .of_match_table = of_match_ptr(act8945a_of_match),
+		   .of_match_table = act8945a_of_match,
 	},
 	.probe = act8945a_i2c_probe,
 	.id_table = act8945a_i2c_id,

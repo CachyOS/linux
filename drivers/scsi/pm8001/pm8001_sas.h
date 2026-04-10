@@ -55,6 +55,7 @@
 #include <scsi/scsi_tcq.h>
 #include <scsi/sas_ata.h>
 #include <linux/atomic.h>
+#include <linux/blk-mq.h>
 #include "pm8001_defs.h"
 
 #define DRV_NAME		"pm80xx"
@@ -69,6 +70,7 @@
 #define PM8001_DEV_LOGGING	0x80 /* development message logging */
 #define PM8001_DEVIO_LOGGING	0x100 /* development io message logging */
 #define PM8001_IOERR_LOGGING	0x200 /* development io err message logging */
+#define PM8001_EVENT_LOGGING	0x400 /* HW event logging */
 
 #define pm8001_info(HBA, fmt, ...)					\
 	pr_info("%s:: %s %d: " fmt,					\
@@ -80,10 +82,7 @@ do {									\
 		pm8001_info(HBA, fmt, ##__VA_ARGS__);			\
 } while (0)
 
-#define PM8001_USE_TASKLET
-#define PM8001_USE_MSIX
-#define PM8001_READ_VPD
-
+extern bool pm8001_use_msix;
 
 #define IS_SPCV_12G(dev)	((dev->device == 0X8074)		\
 				|| (dev->device == 0X8076)		\
@@ -95,6 +94,8 @@ do {									\
 extern struct list_head hba_list;
 extern const struct pm8001_dispatch pm8001_8001_dispatch;
 extern const struct pm8001_dispatch pm8001_80xx_dispatch;
+
+extern uint pcs_event_log_severity;
 
 struct pm8001_hba_info;
 struct pm8001_ccb_info;
@@ -169,9 +170,18 @@ struct forensic_data {
 #define SPCV_MSGU_CFG_TABLE_TRANSFER_DEBUG_INFO  0x80
 #define MAIN_MERRDCTO_MERRDCES		         0xA0/* DWORD 0x28) */
 
+/**
+ * enum fatal_error_reporter: Indicates the originator of the fatal error
+ */
+enum fatal_error_reporter {
+	REPORTER_DRIVER,
+	REPORTER_FIRMWARE,
+};
+
 struct pm8001_dispatch {
 	char *name;
 	int (*chip_init)(struct pm8001_hba_info *pm8001_ha);
+	void (*chip_post_init)(struct pm8001_hba_info *pm8001_ha);
 	int (*chip_soft_rst)(struct pm8001_hba_info *pm8001_ha);
 	void (*chip_rst)(struct pm8001_hba_info *pm8001_ha);
 	int (*chip_ioremap)(struct pm8001_hba_info *pm8001_ha);
@@ -507,8 +517,7 @@ struct pm8001_hba_info {
 	u32			chip_id;
 	const struct pm8001_chip_info	*chip;
 	struct completion	*nvmd_completion;
-	int			tags_num;
-	unsigned long		*tags;
+	unsigned long		*rsvd_tags;
 	struct pm8001_phy	phy[PM8001_MAX_PHYS];
 	struct pm8001_port	port[PM8001_MAX_PHYS];
 	u32			id;
@@ -517,14 +526,12 @@ struct pm8001_hba_info {
 	struct pm8001_device	*devices;
 	struct pm8001_ccb_info	*ccb_info;
 	u32			ccb_count;
-#ifdef PM8001_USE_MSIX
+
+	bool			use_msix;
 	int			number_of_intr;/*will be used in remove()*/
 	char			intr_drvname[PM8001_MAX_MSIX_VEC]
 				[PM8001_NAME_LENGTH+1+3+1];
-#endif
-#ifdef PM8001_USE_TASKLET
 	struct tasklet_struct	tasklet[PM8001_MAX_MSIX_VEC];
-#endif
 	u32			logging_level;
 	u32			link_rate;
 	u32			fw_status;
@@ -532,7 +539,6 @@ struct pm8001_hba_info {
 	bool			controller_fatal_error;
 	const struct firmware 	*fw_image;
 	struct isr_param irq_vector[PM8001_MAX_MSIX_VEC];
-	u32			reset_in_progress;
 	u32			non_fatal_count;
 	u32			non_fatal_read_length;
 	u32 max_q_num;
@@ -541,6 +547,10 @@ struct pm8001_hba_info {
 	u32 ci_offset;
 	u32 pi_offset;
 	u32 max_memcnt;
+	u32 iop_log_start;
+	u32 iop_log_end;
+	u32 iop_log_count;
+	struct mutex iop_log_lock;
 };
 
 struct pm8001_work {
@@ -576,10 +586,6 @@ struct pm8001_fw_image_header {
 #define FLASH_UPDATE_DNLD_NOT_SUPPORTED		0x10
 #define FLASH_UPDATE_DISABLED			0x11
 
-#define	NCQ_READ_LOG_FLAG			0x80000000
-#define	NCQ_ABORT_ALL_FLAG			0x40000000
-#define	NCQ_2ND_RLE_FLAG			0x20000000
-
 /* Device states */
 #define DS_OPERATIONAL				0x01
 #define DS_PORT_IN_RESET			0x02
@@ -609,7 +615,7 @@ struct fw_control_info {
 	operations.*/
 	u32			reserved;/* padding required for 64 bit
 	alignment */
-	u8			buffer[1];/* Start of buffer */
+	u8			buffer[];/* Start of buffer */
 };
 struct fw_control_ex {
 	struct fw_control_info *fw_control;
@@ -633,7 +639,6 @@ extern struct workqueue_struct *pm8001_wq;
 
 /******************** function prototype *********************/
 int pm8001_tag_alloc(struct pm8001_hba_info *pm8001_ha, u32 *tag_out);
-void pm8001_tag_init(struct pm8001_hba_info *pm8001_ha);
 u32 pm8001_get_ncq_tag(struct sas_task *task, u32 *tag);
 void pm8001_ccb_task_free(struct pm8001_hba_info *pm8001_ha,
 			  struct pm8001_ccb_info *ccb);
@@ -705,9 +710,6 @@ int pm8001_mpi_fw_flash_update_resp(struct pm8001_hba_info *pm8001_ha,
 							void *piomb);
 int pm8001_mpi_general_event(struct pm8001_hba_info *pm8001_ha, void *piomb);
 int pm8001_mpi_task_abort_resp(struct pm8001_hba_info *pm8001_ha, void *piomb);
-struct sas_task *pm8001_alloc_task(void);
-void pm8001_task_done(struct sas_task *task);
-void pm8001_free_task(struct sas_task *task);
 void pm8001_tag_free(struct pm8001_hba_info *pm8001_ha, u32 tag);
 struct pm8001_device *pm8001_find_dev(struct pm8001_hba_info *pm8001_ha,
 					u32 device_id);
@@ -725,9 +727,12 @@ ssize_t pm80xx_get_non_fatal_dump(struct device *cdev,
 		struct device_attribute *attr, char *buf);
 ssize_t pm8001_get_gsm_dump(struct device *cdev, u32, char *buf);
 int pm80xx_fatal_errors(struct pm8001_hba_info *pm8001_ha);
+void pm80xx_fatal_error_uevent_emit(struct pm8001_hba_info *pm8001_ha,
+	enum fatal_error_reporter error_reporter);
 void pm8001_free_dev(struct pm8001_device *pm8001_dev);
 /* ctl shared API */
 extern const struct attribute_group *pm8001_host_groups[];
+extern const struct attribute_group *pm8001_sdev_groups[];
 
 #define PM8001_INVALID_TAG	((u32)-1)
 
@@ -739,9 +744,15 @@ pm8001_ccb_alloc(struct pm8001_hba_info *pm8001_ha,
 		 struct pm8001_device *dev, struct sas_task *task)
 {
 	struct pm8001_ccb_info *ccb;
+	struct request *rq = NULL;
 	u32 tag;
 
-	if (pm8001_tag_alloc(pm8001_ha, &tag)) {
+	if (task)
+		rq = sas_task_find_rq(task);
+
+	if (rq) {
+		tag = rq->tag + PM8001_RESERVE_SLOT;
+	} else if (pm8001_tag_alloc(pm8001_ha, &tag)) {
 		pm8001_dbg(pm8001_ha, FAIL, "Failed to allocate a tag\n");
 		return NULL;
 	}
@@ -789,6 +800,9 @@ static inline void pm8001_ccb_task_free_done(struct pm8001_hba_info *pm8001_ha,
 }
 void pm8001_setds_completion(struct domain_device *dev);
 void pm8001_tmf_aborted(struct sas_task *task);
+void pm80xx_show_pending_commands(struct pm8001_hba_info *pm8001_ha,
+				  struct pm8001_device *dev);
+u32 pm80xx_get_local_phy_id(struct domain_device *dev);
 
 #endif
 

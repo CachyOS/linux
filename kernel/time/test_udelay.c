@@ -149,11 +149,12 @@ module_init(udelay_test_init);
 static void __exit udelay_test_exit(void)
 {
 	mutex_lock(&udelay_test_lock);
-	debugfs_remove(debugfs_lookup(DEBUGFS_FILENAME, NULL));
+	debugfs_lookup_and_remove(DEBUGFS_FILENAME, NULL);
 	mutex_unlock(&udelay_test_lock);
 }
 
 module_exit(udelay_test_exit);
 
+MODULE_DESCRIPTION("udelay test module");
 MODULE_AUTHOR("David Riley <davidriley@chromium.org>");
 MODULE_LICENSE("GPL");

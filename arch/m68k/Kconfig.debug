@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: GPL-2.0
 
 config BOOTPARAM
-	bool 'Compiled-in Kernel Boot Parameter'
+	bool "Compiled-in Kernel Boot Parameter"
 
 config BOOTPARAM_STRING
-	string 'Kernel Boot Parameter'
-	default 'console=ttyS0,19200'
+	string "Kernel Boot Parameter"
+	default "console=ttyS0,19200"
 	depends on BOOTPARAM
 
 config EARLY_PRINTK
 	bool "Early printk"
-	depends on !(SUN3 || M68000 || COLDFIRE)
+	depends on MMU_MOTOROLA
 	help
 	  Write kernel log output directly to a serial port.
 	  Where implemented, output goes to the framebuffer as well.
@@ -35,11 +35,6 @@ config HIGHPROFILE
 	depends on COLDFIRE
 	help
 	  Use a fast secondary clock to produce profiling information.
-
-config NO_KERNEL_MSG
-	bool "Suppress Kernel BUG Messages"
-	help
-	  Do not output any debug BUG messages within the kernel.
 
 config BDM_DISABLE
 	bool "Disable BDM signals"

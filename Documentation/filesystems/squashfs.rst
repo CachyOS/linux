@@ -6,7 +6,7 @@ Squashfs 4.0 Filesystem
 
 Squashfs is a compressed read-only filesystem for Linux.
 
-It uses zlib, lz4, lzo, or xz compression to compress files, inodes and
+It uses zlib, lz4, lzo, xz or zstd compression to compress files, inodes and
 directories.  Inodes in the system are very small and all blocks are packed to
 minimise data overhead. Block sizes greater than 4K are supported up to a
 maximum of 1Mbytes (default block size 128K).
@@ -16,8 +16,8 @@ use (i.e. in cases where a .tar.gz file may be used), and in constrained
 block device/memory systems (e.g. embedded systems) where low overhead is
 needed.
 
-Mailing list: squashfs-devel@lists.sourceforge.net
-Web site: www.squashfs.org
+Mailing list (kernel code): linux-fsdevel@vger.kernel.org
+Web site: github.com/plougher/squashfs-tools
 
 1. Filesystem Features
 ----------------------
@@ -58,11 +58,69 @@ inodes have different sizes).
 
 As squashfs is a read-only filesystem, the mksquashfs program must be used to
 create populated squashfs filesystems.  This and other squashfs utilities
-can be obtained from http://www.squashfs.org.  Usage instructions can be
-obtained from this site also.
+are very likely packaged by your linux distribution (called squashfs-tools).
+The source code can be obtained from github.com/plougher/squashfs-tools.
+Usage instructions can also be obtained from this site.
 
-The squashfs-tools development tree is now located on kernel.org
-	git://git.kernel.org/pub/scm/fs/squashfs/squashfs-tools.git
+2.1 Mount options
+-----------------
+===================    =========================================================
+errors=%s              Specify whether squashfs errors trigger a kernel panic
+                       or not
+
+		       ==========  =============================================
+                         continue  errors don't trigger a panic (default)
+                            panic  trigger a panic when errors are encountered,
+                                   similar to several other filesystems (e.g.
+                                   btrfs, ext4, f2fs, GFS2, jfs, ntfs, ubifs)
+
+                                   This allows a kernel dump to be saved,
+                                   useful for analyzing and debugging the
+                                   corruption.
+                       ==========  =============================================
+threads=%s             Select the decompression mode or the number of threads
+
+                       If SQUASHFS_CHOICE_DECOMP_BY_MOUNT is set:
+
+		       ==========  =============================================
+                           single  use single-threaded decompression (default)
+
+                                   Only one block (data or metadata) can be
+                                   decompressed at any one time. This limits
+                                   CPU and memory usage to a minimum, but it
+                                   also gives poor performance on parallel I/O
+                                   workloads when using multiple CPU machines
+                                   due to waiting on decompressor availability.
+                            multi  use up to two parallel decompressors per core
+
+                                   If you have a parallel I/O workload and your
+                                   system has enough memory, using this option
+                                   may improve overall I/O performance. It
+                                   dynamically allocates decompressors on a
+                                   demand basis.
+                           percpu  use a maximum of one decompressor per core
+
+                                   It uses percpu variables to ensure
+                                   decompression is load-balanced across the
+                                   cores.
+                        1|2|3|...  configure the number of threads used for
+                                   decompression
+
+                                   The upper limit is num_online_cpus() * 2.
+                       ==========  =============================================
+
+                       If SQUASHFS_CHOICE_DECOMP_BY_MOUNT is **not** set and
+                       SQUASHFS_DECOMP_MULTI, SQUASHFS_MOUNT_DECOMP_THREADS are
+                       both set:
+
+		       ==========  =============================================
+                          2|3|...  configure the number of threads used for
+                                   decompression
+
+                                   The upper limit is num_online_cpus() * 2.
+                       ==========  =============================================
+
+===================    =========================================================
 
 3. Squashfs Filesystem Design
 -----------------------------

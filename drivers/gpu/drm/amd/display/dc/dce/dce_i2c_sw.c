@@ -23,8 +23,6 @@
  *
  */
 
-#include <linux/delay.h>
-
 #include "dce_i2c.h"
 #include "dce_i2c_sw.h"
 #include "include/gpio_service_interface.h"
@@ -369,6 +367,7 @@ static bool dce_i2c_sw_engine_acquire_engine(
 
 	return true;
 }
+
 bool dce_i2c_engine_acquire_sw(
 	struct dce_i2c_sw *dce_i2c_sw,
 	struct ddc *ddc_handle)
@@ -394,12 +393,8 @@ bool dce_i2c_engine_acquire_sw(
 	return result;
 }
 
-
-
-
-static void dce_i2c_sw_engine_submit_channel_request(
-	struct dce_i2c_sw *engine,
-	struct i2c_request_transaction_data *req)
+static void dce_i2c_sw_engine_submit_channel_request(struct dce_i2c_sw *engine,
+						     struct i2c_request_transaction_data *req)
 {
 	struct ddc *ddc = engine->ddc;
 	uint16_t clock_delay_div_4 = engine->clock_delay >> 2;
@@ -441,10 +436,9 @@ static void dce_i2c_sw_engine_submit_channel_request(
 		I2C_CHANNEL_OPERATION_FAILED;
 }
 
-static bool dce_i2c_sw_engine_submit_payload(
-	struct dce_i2c_sw *engine,
-	struct i2c_payload *payload,
-	bool middle_of_transaction)
+static bool dce_i2c_sw_engine_submit_payload(struct dce_i2c_sw *engine,
+					     struct i2c_payload *payload,
+					     bool middle_of_transaction)
 {
 	struct i2c_request_transaction_data request;
 
@@ -457,7 +451,7 @@ static bool dce_i2c_sw_engine_submit_payload(
 			DCE_I2C_TRANSACTION_ACTION_I2C_WRITE_MOT :
 			DCE_I2C_TRANSACTION_ACTION_I2C_WRITE;
 
-	request.address = (uint8_t) ((payload->address << 1) | !payload->write);
+	request.address = (uint8_t) ((payload->address << 1) | (payload->write ? 0 : 1));
 	request.length = payload->length;
 	request.data = payload->data;
 

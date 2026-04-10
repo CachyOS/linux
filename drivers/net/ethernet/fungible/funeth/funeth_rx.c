@@ -142,6 +142,7 @@ static void *fun_run_xdp(struct funeth_rxq *q, skb_frag_t *frags, void *buf_va,
 			 int ref_ok, struct funeth_txq *xdp_q)
 {
 	struct bpf_prog *xdp_prog;
+	struct xdp_frame *xdpf;
 	struct xdp_buff xdp;
 	u32 act;
 
@@ -163,7 +164,9 @@ static void *fun_run_xdp(struct funeth_rxq *q, skb_frag_t *frags, void *buf_va,
 	case XDP_TX:
 		if (unlikely(!ref_ok))
 			goto pass;
-		if (!fun_xdp_tx(xdp_q, xdp.data, xdp.data_end - xdp.data))
+
+		xdpf = xdp_convert_buff_to_frame(&xdp);
+		if (!xdpf || !fun_xdp_tx(xdp_q, xdpf))
 			goto xdp_error;
 		FUN_QSTAT_INC(q, xdp_tx);
 		q->xdp_flush |= FUN_XDP_FLUSH_TX;
@@ -320,9 +323,8 @@ static int fun_gather_pkt(struct funeth_rxq *q, unsigned int tot_len,
 		if (ref_ok)
 			ref_ok |= buf->node;
 
-		__skb_frag_set_page(frags, buf->page);
-		skb_frag_off_set(frags, q->buf_offset);
-		skb_frag_size_set(frags++, frag_len);
+		skb_frag_fill_page_desc(frags++, buf->page, q->buf_offset,
+					frag_len);
 
 		tot_len -= frag_len;
 		if (!tot_len)

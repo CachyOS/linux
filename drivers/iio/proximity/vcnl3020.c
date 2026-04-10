@@ -71,14 +71,14 @@ static const int vcnl3020_prox_sampling_frequency[][2] = {
  * @dev:	vcnl3020 device.
  * @rev:	revision id.
  * @lock:	lock for protecting access to device hardware registers.
- * @buf:	DMA safe __be16 buffer.
+ * @buf:	__be16 buffer.
  */
 struct vcnl3020_data {
 	struct regmap *regmap;
 	struct device *dev;
 	u8 rev;
 	struct mutex lock;
-	__be16 buf ____cacheline_aligned;
+	__be16 buf;
 };
 
 /**
@@ -102,29 +102,29 @@ static u32 microamp_to_reg(u32 *val)
 	return *val /= 10000;
 };
 
-static struct vcnl3020_property vcnl3020_led_current_property = {
+static const struct vcnl3020_property vcnl3020_led_current_property = {
 	.name = "vishay,led-current-microamp",
 	.reg = VCNL_LED_CURRENT,
 	.conversion_func = microamp_to_reg,
 };
 
 static int vcnl3020_get_and_apply_property(struct vcnl3020_data *data,
-					   struct vcnl3020_property prop)
+					   const struct vcnl3020_property *prop)
 {
 	int rc;
 	u32 val;
 
-	rc = device_property_read_u32(data->dev, prop.name, &val);
+	rc = device_property_read_u32(data->dev, prop->name, &val);
 	if (rc)
 		return 0;
 
-	if (prop.conversion_func)
-		prop.conversion_func(&val);
+	if (prop->conversion_func)
+		prop->conversion_func(&val);
 
-	rc = regmap_write(data->regmap, prop.reg, val);
+	rc = regmap_write(data->regmap, prop->reg, val);
 	if (rc) {
 		dev_err(data->dev, "Error (%d) setting property (%s)\n",
-			rc, prop.name);
+			rc, prop->name);
 	}
 
 	return rc;
@@ -153,7 +153,7 @@ static int vcnl3020_init(struct vcnl3020_data *data)
 	mutex_init(&data->lock);
 
 	return vcnl3020_get_and_apply_property(data,
-					       vcnl3020_led_current_property);
+					       &vcnl3020_led_current_property);
 };
 
 static bool vcnl3020_is_in_periodic_mode(struct vcnl3020_data *data)
@@ -449,7 +449,7 @@ static int vcnl3020_write_event_config(struct iio_dev *indio_dev,
 				       const struct iio_chan_spec *chan,
 				       enum iio_event_type type,
 				       enum iio_event_direction dir,
-				       int state)
+				       bool state)
 {
 	switch (chan->type) {
 	case IIO_PROXIMITY:
@@ -653,7 +653,7 @@ static const struct of_device_id vcnl3020_of_match[] = {
 	{
 		.compatible = "vishay,vcnl3020",
 	},
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, vcnl3020_of_match);
 
@@ -662,7 +662,7 @@ static struct i2c_driver vcnl3020_driver = {
 		.name   = "vcnl3020",
 		.of_match_table = vcnl3020_of_match,
 	},
-	.probe_new  = vcnl3020_probe,
+	.probe      = vcnl3020_probe,
 };
 module_i2c_driver(vcnl3020_driver);
 

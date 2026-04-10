@@ -182,7 +182,7 @@ exit_remove:
 	return err;
 }
 
-static int via_cputemp_remove(struct platform_device *pdev)
+static void via_cputemp_remove(struct platform_device *pdev)
 {
 	struct via_cputemp_data *data = platform_get_drvdata(pdev);
 
@@ -190,7 +190,6 @@ static int via_cputemp_remove(struct platform_device *pdev)
 	if (data->vrm)
 		device_remove_file(&pdev->dev, &dev_attr_cpu0_vid);
 	sysfs_remove_group(&pdev->dev.kobj, &via_cputemp_group);
-	return 0;
 }
 
 static struct platform_driver via_cputemp_driver = {
@@ -223,7 +222,7 @@ static int via_cputemp_online(unsigned int cpu)
 		goto exit;
 	}
 
-	pdev_entry = kzalloc(sizeof(struct pdev_entry), GFP_KERNEL);
+	pdev_entry = kzalloc_obj(struct pdev_entry);
 	if (!pdev_entry) {
 		err = -ENOMEM;
 		goto exit_device_put;

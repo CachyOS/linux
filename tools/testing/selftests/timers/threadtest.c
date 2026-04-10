@@ -21,7 +21,7 @@
 #include <stdlib.h>
 #include <sys/time.h>
 #include <pthread.h>
-#include "../kselftest.h"
+#include "kselftest.h"
 
 /* serializes shared list access */
 pthread_mutex_t list_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -38,10 +38,10 @@ struct timespec global_list[LISTSIZE];
 int listcount = 0;
 
 
-void checklist(struct timespec *list, int size)
+void checklist(const struct timespec *list, int size)
 {
 	int i, j;
-	struct timespec *a, *b;
+	const struct timespec *a, *b;
 
 	/* scan the list */
 	for (i = 0; i < size-1; i++) {
@@ -189,5 +189,5 @@ out:
 	/* die */
 	if (ret)
 		ksft_exit_fail();
-	return ksft_exit_pass();
+	ksft_exit_pass();
 }

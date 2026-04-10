@@ -243,7 +243,7 @@ static bool tcp_cdg_backoff(struct sock *sk, u32 grad)
 	struct cdg *ca = inet_csk_ca(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	if (prandom_u32() <= nexp_u32(grad * backoff_factor))
+	if (get_random_u32() <= nexp_u32(grad * backoff_factor))
 		return false;
 
 	if (use_ineff) {
@@ -375,10 +375,11 @@ static void tcp_cdg_init(struct sock *sk)
 	struct cdg *ca = inet_csk_ca(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
 
+	ca->gradients = NULL;
 	/* We silently fall back to window = 1 if allocation fails. */
 	if (window > 1)
-		ca->gradients = kcalloc(window, sizeof(ca->gradients[0]),
-					GFP_NOWAIT | __GFP_NOWARN);
+		ca->gradients = kzalloc_objs(ca->gradients[0], window,
+					     GFP_NOWAIT);
 	ca->rtt_seq = tp->snd_nxt;
 	ca->shadow_wnd = tcp_snd_cwnd(tp);
 }
@@ -388,6 +389,7 @@ static void tcp_cdg_release(struct sock *sk)
 	struct cdg *ca = inet_csk_ca(sk);
 
 	kfree(ca->gradients);
+	ca->gradients = NULL;
 }
 
 static struct tcp_congestion_ops tcp_cdg __read_mostly = {

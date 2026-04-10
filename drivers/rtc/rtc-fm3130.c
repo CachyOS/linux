@@ -53,7 +53,7 @@ struct fm3130 {
 	int			data_valid;
 };
 static const struct i2c_device_id fm3130_id[] = {
-	{ "fm3130", 0 },
+	{ "fm3130" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, fm3130_id);
@@ -340,8 +340,7 @@ static const struct rtc_class_ops fm3130_rtc_ops = {
 
 static struct i2c_driver fm3130_driver;
 
-static int fm3130_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int fm3130_probe(struct i2c_client *client)
 {
 	struct fm3130		*fm3130;
 	int			err = -ENODEV;

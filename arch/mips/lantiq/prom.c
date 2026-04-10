@@ -23,16 +23,18 @@ DEFINE_SPINLOCK(ebu_lock);
 EXPORT_SYMBOL_GPL(ebu_lock);
 
 /*
- * This is needed by the VPE loader code, just set it to 0 and assume
- * that the firmware hardcodes this value to something useful.
- */
-unsigned long physical_memsize = 0L;
-
-/*
  * this struct is filled by the soc specific detection code and holds
  * information about the specific soc type, revision and name
  */
 static struct ltq_soc_info soc_info;
+
+/*
+ * These structs are used to override vsmp_init_secondary()
+ */
+#if defined(CONFIG_MIPS_MT_SMP)
+extern const struct plat_smp_ops vsmp_smp_ops;
+static struct plat_smp_ops lantiq_smp_ops;
+#endif
 
 const char *get_system_type(void)
 {
@@ -84,6 +86,17 @@ void __init plat_mem_setup(void)
 	__dt_setup_arch(dtb);
 }
 
+#if defined(CONFIG_MIPS_MT_SMP)
+static void lantiq_init_secondary(void)
+{
+	/*
+	 * MIPS CPU startup function vsmp_init_secondary() will only
+	 * enable some of the interrupts for the second CPU/VPE.
+	 */
+	set_c0_status(ST0_IM);
+}
+#endif
+
 void __init prom_init(void)
 {
 	/* call the soc specific detetcion code and get it to fill soc_info */
@@ -95,7 +108,9 @@ void __init prom_init(void)
 	prom_init_cmdline();
 
 #if defined(CONFIG_MIPS_MT_SMP)
-	if (register_vsmp_smp_ops())
-		panic("failed to register_vsmp_smp_ops()");
+	lantiq_smp_ops = vsmp_smp_ops;
+	if (cpu_has_mipsmt)
+		lantiq_smp_ops.init_secondary = lantiq_init_secondary;
+	register_smp_ops(&lantiq_smp_ops);
 #endif
 }

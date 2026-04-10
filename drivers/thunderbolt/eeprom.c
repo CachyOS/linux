@@ -21,7 +21,7 @@ static int tb_eeprom_ctl_write(struct tb_switch *sw, struct tb_eeprom_ctl *ctl)
 }
 
 /*
- * tb_eeprom_ctl_write() - read control word
+ * tb_eeprom_ctl_read() - read control word
  */
 static int tb_eeprom_ctl_read(struct tb_switch *sw, struct tb_eeprom_ctl *ctl)
 {
@@ -211,7 +211,7 @@ static u8 tb_crc8(u8 *data, int len)
 
 static u32 tb_crc32(void *data, size_t len)
 {
-	return ~__crc32c_le(~0, data, len);
+	return ~crc32c(~0, data, len);
 }
 
 #define TB_DROM_DATA_START		13
@@ -298,6 +298,8 @@ struct tb_drom_entry_desc {
  *
  * Does not use the cached copy in sw->drom. Used during resume to check switch
  * identity.
+ *
+ * Return: %0 on success, negative errno otherwise.
  */
 int tb_drom_read_uid_only(struct tb_switch *sw, u64 *uid)
 {
@@ -416,7 +418,7 @@ static int tb_drom_parse_entries(struct tb_switch *sw, size_t header_size)
 		if (pos + 1 == drom_size || pos + entry->len > drom_size
 				|| !entry->len) {
 			tb_sw_warn(sw, "DROM buffer overrun\n");
-			return -EILSEQ;
+			return -EIO;
 		}
 
 		switch (entry->type) {
@@ -435,6 +437,29 @@ static int tb_drom_parse_entries(struct tb_switch *sw, size_t header_size)
 	return 0;
 }
 
+static int tb_switch_drom_alloc(struct tb_switch *sw, size_t size)
+{
+	sw->drom = kzalloc(size, GFP_KERNEL);
+	if (!sw->drom)
+		return -ENOMEM;
+
+#ifdef CONFIG_DEBUG_FS
+	sw->drom_blob.data = sw->drom;
+	sw->drom_blob.size = size;
+#endif
+	return 0;
+}
+
+static void tb_switch_drom_free(struct tb_switch *sw)
+{
+#ifdef CONFIG_DEBUG_FS
+	sw->drom_blob.data = NULL;
+	sw->drom_blob.size = 0;
+#endif
+	kfree(sw->drom);
+	sw->drom = NULL;
+}
+
 /*
  * tb_drom_copy_efi - copy drom supplied by EFI to sw->drom if present
  */
@@ -447,9 +472,9 @@ static int tb_drom_copy_efi(struct tb_switch *sw, u16 *size)
 	if (len < 0 || len < sizeof(struct tb_drom_header))
 		return -EINVAL;
 
-	sw->drom = kmalloc(len, GFP_KERNEL);
-	if (!sw->drom)
-		return -ENOMEM;
+	res = tb_switch_drom_alloc(sw, len);
+	if (res)
+		return res;
 
 	res = device_property_read_u8_array(dev, "ThunderboltDROM", sw->drom,
 									len);
@@ -464,21 +489,19 @@ static int tb_drom_copy_efi(struct tb_switch *sw, u16 *size)
 	return 0;
 
 err:
-	kfree(sw->drom);
-	sw->drom = NULL;
+	tb_switch_drom_free(sw);
 	return -EINVAL;
 }
 
 static int tb_drom_copy_nvm(struct tb_switch *sw, u16 *size)
 {
-	u32 drom_offset;
+	u16 drom_offset;
 	int ret;
 
 	if (!sw->dma_port)
 		return -ENODEV;
 
-	ret = tb_sw_read(sw, &drom_offset, TB_CFG_SWITCH,
-			 sw->cap_plug_events + 12, 1);
+	ret = tb_eeprom_get_drom_offset(sw, &drom_offset);
 	if (ret)
 		return ret;
 
@@ -492,13 +515,15 @@ static int tb_drom_copy_nvm(struct tb_switch *sw, u16 *size)
 
 	/* Size includes CRC8 + UID + CRC32 */
 	*size += 1 + 8 + 4;
-	sw->drom = kzalloc(*size, GFP_KERNEL);
-	if (!sw->drom)
-		return -ENOMEM;
+	ret = tb_switch_drom_alloc(sw, *size);
+	if (ret)
+		return ret;
 
 	ret = dma_port_flash_read(sw->dma_port, drom_offset, sw->drom, *size);
-	if (ret)
-		goto err_free;
+	if (ret) {
+		tb_switch_drom_free(sw);
+		return ret;
+	}
 
 	/*
 	 * Read UID from the minimal DROM because the one in NVM is just
@@ -506,14 +531,9 @@ static int tb_drom_copy_nvm(struct tb_switch *sw, u16 *size)
 	 */
 	tb_drom_read_uid_only(sw, &sw->uid);
 	return 0;
-
-err_free:
-	kfree(sw->drom);
-	sw->drom = NULL;
-	return ret;
 }
 
-static int usb4_copy_host_drom(struct tb_switch *sw, u16 *size)
+static int usb4_copy_drom(struct tb_switch *sw, u16 *size)
 {
 	int ret;
 
@@ -523,28 +543,46 @@ static int usb4_copy_host_drom(struct tb_switch *sw, u16 *size)
 
 	/* Size includes CRC8 + UID + CRC32 */
 	*size += 1 + 8 + 4;
-	sw->drom = kzalloc(*size, GFP_KERNEL);
-	if (!sw->drom)
-		return -ENOMEM;
+	ret = tb_switch_drom_alloc(sw, *size);
+	if (ret)
+		return ret;
 
 	ret = usb4_switch_drom_read(sw, 0, sw->drom, *size);
-	if (ret) {
-		kfree(sw->drom);
-		sw->drom = NULL;
-	}
+	if (ret)
+		tb_switch_drom_free(sw);
 
 	return ret;
 }
 
-static int tb_drom_read_n(struct tb_switch *sw, u16 offset, u8 *val,
-			  size_t count)
+static int tb_drom_bit_bang(struct tb_switch *sw, u16 *size)
 {
-	if (tb_switch_is_usb4(sw))
-		return usb4_switch_drom_read(sw, offset, val, count);
-	return tb_eeprom_read_n(sw, offset, val, count);
+	int ret;
+
+	ret = tb_eeprom_read_n(sw, 14, (u8 *)size, 2);
+	if (ret)
+		return ret;
+
+	*size &= 0x3ff;
+	*size += TB_DROM_DATA_START;
+
+	tb_sw_dbg(sw, "reading DROM (length: %#x)\n", *size);
+	if (*size < sizeof(struct tb_drom_header)) {
+		tb_sw_warn(sw, "DROM too small, aborting\n");
+		return -EIO;
+	}
+
+	ret = tb_switch_drom_alloc(sw, *size);
+	if (ret)
+		return ret;
+
+	ret = tb_eeprom_read_n(sw, 0, sw->drom, *size);
+	if (ret)
+		tb_switch_drom_free(sw);
+
+	return ret;
 }
 
-static int tb_drom_parse(struct tb_switch *sw)
+static int tb_drom_parse_v1(struct tb_switch *sw)
 {
 	const struct tb_drom_header *header =
 		(const struct tb_drom_header *)sw->drom;
@@ -555,7 +593,7 @@ static int tb_drom_parse(struct tb_switch *sw)
 		tb_sw_warn(sw,
 			"DROM UID CRC8 mismatch (expected: %#x, got: %#x)\n",
 			header->uid_crc8, crc);
-		return -EILSEQ;
+		return -EIO;
 	}
 	if (!sw->uid)
 		sw->uid = header->uid;
@@ -581,12 +619,88 @@ static int usb4_drom_parse(struct tb_switch *sw)
 	crc = tb_crc32(sw->drom + TB_DROM_DATA_START, header->data_len);
 	if (crc != header->data_crc32) {
 		tb_sw_warn(sw,
-			   "DROM data CRC32 mismatch (expected: %#x, got: %#x), aborting\n",
+			   "DROM data CRC32 mismatch (expected: %#x, got: %#x), continuing\n",
 			   header->data_crc32, crc);
-		return -EINVAL;
 	}
 
 	return tb_drom_parse_entries(sw, USB4_DROM_HEADER_SIZE);
+}
+
+static int tb_drom_parse(struct tb_switch *sw, u16 size)
+{
+	const struct tb_drom_header *header = (const void *)sw->drom;
+	int ret;
+
+	if (header->data_len + TB_DROM_DATA_START != size) {
+		tb_sw_warn(sw, "DROM size mismatch\n");
+		ret = -EIO;
+		goto err;
+	}
+
+	tb_sw_dbg(sw, "DROM version: %d\n", header->device_rom_revision);
+
+	switch (header->device_rom_revision) {
+	case 3:
+		ret = usb4_drom_parse(sw);
+		break;
+	default:
+		tb_sw_warn(sw, "DROM device_rom_revision %#x unknown\n",
+			   header->device_rom_revision);
+		fallthrough;
+	case 1:
+		ret = tb_drom_parse_v1(sw);
+		break;
+	}
+
+	if (ret) {
+		tb_sw_warn(sw, "parsing DROM failed\n");
+		goto err;
+	}
+
+	return 0;
+
+err:
+	tb_switch_drom_free(sw);
+	return ret;
+}
+
+static int tb_drom_host_read(struct tb_switch *sw)
+{
+	u16 size;
+
+	if (tb_switch_is_usb4(sw)) {
+		usb4_switch_read_uid(sw, &sw->uid);
+		if (!usb4_copy_drom(sw, &size))
+			return tb_drom_parse(sw, size);
+	} else {
+		if (!tb_drom_copy_efi(sw, &size))
+			return tb_drom_parse(sw, size);
+
+		if (!tb_drom_copy_nvm(sw, &size))
+			return tb_drom_parse(sw, size);
+
+		tb_drom_read_uid_only(sw, &sw->uid);
+	}
+
+	return 0;
+}
+
+static int tb_drom_device_read(struct tb_switch *sw)
+{
+	u16 size;
+	int ret;
+
+	if (tb_switch_is_usb4(sw)) {
+		usb4_switch_read_uid(sw, &sw->uid);
+		ret = usb4_copy_drom(sw, &size);
+	} else {
+		ret = tb_drom_bit_bang(sw, &size);
+	}
+
+	if (ret)
+		return ret;
+
+	return tb_drom_parse(sw, size);
 }
 
 /**
@@ -597,107 +711,14 @@ static int usb4_drom_parse(struct tb_switch *sw)
  * populates the fields in @sw accordingly. Can be called for any router
  * generation.
  *
- * Returns %0 in case of success and negative errno otherwise.
+ * Return: %0 on success, negative errno otherwise.
  */
 int tb_drom_read(struct tb_switch *sw)
 {
-	u16 size;
-	struct tb_drom_header *header;
-	int res, retries = 1;
-
 	if (sw->drom)
 		return 0;
 
-	if (tb_route(sw) == 0) {
-		/*
-		 * Apple's NHI EFI driver supplies a DROM for the root switch
-		 * in a device property. Use it if available.
-		 */
-		if (tb_drom_copy_efi(sw, &size) == 0)
-			goto parse;
-
-		/* Non-Apple hardware has the DROM as part of NVM */
-		if (tb_drom_copy_nvm(sw, &size) == 0)
-			goto parse;
-
-		/*
-		 * USB4 hosts may support reading DROM through router
-		 * operations.
-		 */
-		if (tb_switch_is_usb4(sw)) {
-			usb4_switch_read_uid(sw, &sw->uid);
-			if (!usb4_copy_host_drom(sw, &size))
-				goto parse;
-		} else {
-			/*
-			 * The root switch contains only a dummy drom
-			 * (header only, no entries). Hardcode the
-			 * configuration here.
-			 */
-			tb_drom_read_uid_only(sw, &sw->uid);
-		}
-
-		return 0;
-	}
-
-	res = tb_drom_read_n(sw, 14, (u8 *) &size, 2);
-	if (res)
-		return res;
-	size &= 0x3ff;
-	size += TB_DROM_DATA_START;
-	tb_sw_dbg(sw, "reading drom (length: %#x)\n", size);
-	if (size < sizeof(*header)) {
-		tb_sw_warn(sw, "drom too small, aborting\n");
-		return -EIO;
-	}
-
-	sw->drom = kzalloc(size, GFP_KERNEL);
-	if (!sw->drom)
-		return -ENOMEM;
-read:
-	res = tb_drom_read_n(sw, 0, sw->drom, size);
-	if (res)
-		goto err;
-
-parse:
-	header = (void *) sw->drom;
-
-	if (header->data_len + TB_DROM_DATA_START != size) {
-		tb_sw_warn(sw, "drom size mismatch\n");
-		if (retries--) {
-			msleep(100);
-			goto read;
-		}
-		goto err;
-	}
-
-	tb_sw_dbg(sw, "DROM version: %d\n", header->device_rom_revision);
-
-	switch (header->device_rom_revision) {
-	case 3:
-		res = usb4_drom_parse(sw);
-		break;
-	default:
-		tb_sw_warn(sw, "DROM device_rom_revision %#x unknown\n",
-			   header->device_rom_revision);
-		fallthrough;
-	case 1:
-		res = tb_drom_parse(sw);
-		break;
-	}
-
-	/* If the DROM parsing fails, wait a moment and retry once */
-	if (res == -EILSEQ && retries--) {
-		tb_sw_warn(sw, "parsing DROM failed\n");
-		msleep(100);
-		goto read;
-	}
-
-	if (!res)
-		return 0;
-
-err:
-	kfree(sw->drom);
-	sw->drom = NULL;
-	return -EIO;
+	if (!tb_route(sw))
+		return tb_drom_host_read(sw);
+	return tb_drom_device_read(sw);
 }

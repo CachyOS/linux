@@ -6,12 +6,12 @@
  */
 #ifndef __LIBNVDIMM_H__
 #define __LIBNVDIMM_H__
-#include <linux/kernel.h>
+
+#include <linux/io.h>
 #include <linux/sizes.h>
+#include <linux/spinlock.h>
 #include <linux/types.h>
 #include <linux/uuid.h>
-#include <linux/spinlock.h>
-#include <linux/bio.h>
 
 struct badrange_entry {
 	u64 start;
@@ -35,6 +35,14 @@ enum {
 	NDD_WORK_PENDING = 4,
 	/* dimm supports namespace labels */
 	NDD_LABELING = 6,
+	/*
+	 * dimm contents have changed requiring invalidation of CPU caches prior
+	 * to activation of a region that includes this device
+	 */
+	NDD_INCOHERENT = 7,
+
+	/* dimm provider wants synchronous registration by __nvdimm_create() */
+	NDD_REGISTER_SYNC = 8,
 
 	/* need to set a limit somewhere, but yes, this is likely overkill */
 	ND_IOCTL_MAX_BUFLEN = SZ_4M,
@@ -59,6 +67,9 @@ enum {
 	/* Platform provides asynchronous flush mechanism */
 	ND_REGION_ASYNC = 3,
 
+	/* Region was created by CXL subsystem */
+	ND_REGION_CXL = 4,
+
 	/* mark newly adjusted resources as requiring a label update */
 	DPA_RESOURCE_ADJUSTED = 1 << 0,
 };
@@ -69,7 +80,9 @@ typedef int (*ndctl_fn)(struct nvdimm_bus_descriptor *nd_desc,
 		struct nvdimm *nvdimm, unsigned int cmd, void *buf,
 		unsigned int buf_len, int *cmd_rc);
 
+struct attribute_group;
 struct device_node;
+struct module;
 struct nvdimm_bus_descriptor {
 	const struct attribute_group **attr_groups;
 	unsigned long cmd_mask;
@@ -110,6 +123,8 @@ struct nd_mapping_desc {
 	int position;
 };
 
+struct bio;
+struct resource;
 struct nd_region;
 struct nd_region_desc {
 	struct resource *res;
@@ -122,6 +137,7 @@ struct nd_region_desc {
 	int numa_node;
 	int target_node;
 	unsigned long flags;
+	int memregion;
 	struct device_node *of_node;
 	int (*flush)(struct nd_region *nd_region, struct bio *bio);
 };
@@ -134,8 +150,6 @@ static inline void __iomem *devm_nvdimm_ioremap(struct device *dev,
 {
 	return (void __iomem *) devm_nvdimm_memremap(dev, offset, size, 0);
 }
-
-struct nvdimm_bus;
 
 /*
  * Note that separate bits for locked + unlocked are defined so that
@@ -179,6 +193,8 @@ struct nvdimm_security_ops {
 	int (*overwrite)(struct nvdimm *nvdimm,
 			const struct nvdimm_key_data *key_data);
 	int (*query_overwrite)(struct nvdimm *nvdimm);
+	int (*disable_master)(struct nvdimm *nvdimm,
+			      const struct nvdimm_key_data *key_data);
 };
 
 enum nvdimm_fwa_state {
@@ -224,6 +240,9 @@ struct nvdimm_fw_ops {
 	int (*arm)(struct nvdimm *nvdimm, enum nvdimm_fwa_trigger arg);
 };
 
+struct kobject;
+struct nvdimm_bus;
+
 void badrange_init(struct badrange *badrange);
 int badrange_add(struct badrange *badrange, u64 addr, u64 length);
 void badrange_forget(struct badrange *badrange, phys_addr_t start,
@@ -259,6 +278,7 @@ static inline struct nvdimm *nvdimm_create(struct nvdimm_bus *nvdimm_bus,
 			cmd_mask, num_flush, flush_wpq, NULL, NULL, NULL);
 }
 void nvdimm_delete(struct nvdimm *nvdimm);
+void nvdimm_region_delete(struct nd_region *nd_region);
 
 const struct nd_cmd_desc *nd_cmd_dimm_desc(int cmd);
 const struct nd_cmd_desc *nd_cmd_bus_desc(int cmd);

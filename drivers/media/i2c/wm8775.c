@@ -6,7 +6,7 @@
  *
  * Based on saa7115 driver
  *
- * Copyright (C) 2005 Hans Verkuil <hverkuil@xs4all.nl>
+ * Copyright (C) 2005 Hans Verkuil <hverkuil@kernel.org>
  * - Cleanup
  * - V4L2 API update
  * - sound fixes
@@ -190,8 +190,7 @@ static const struct v4l2_subdev_ops wm8775_ops = {
  * concerning the addresses: i2c wants 7 bit (without the r/w bit), so '>>1'
  */
 
-static int wm8775_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int wm8775_probe(struct i2c_client *client)
 {
 	struct wm8775_state *state;
 	struct v4l2_subdev *sd;
@@ -280,18 +279,17 @@ static int wm8775_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int wm8775_remove(struct i2c_client *client)
+static void wm8775_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct wm8775_state *state = to_state(sd);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&state->hdl);
-	return 0;
 }
 
 static const struct i2c_device_id wm8775_id[] = {
-	{ "wm8775", 0 },
+	{ "wm8775" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wm8775_id);

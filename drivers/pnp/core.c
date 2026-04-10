@@ -78,16 +78,6 @@ int pnp_register_protocol(struct pnp_protocol *protocol)
 	return ret;
 }
 
-/**
- * pnp_unregister_protocol - removes a pnp protocol from the pnp layer
- * @protocol: pointer to the corresponding pnp_protocol structure
- */
-void pnp_unregister_protocol(struct pnp_protocol *protocol)
-{
-	pnp_remove_protocol(protocol);
-	device_unregister(&protocol->dev);
-}
-
 static void pnp_free_ids(struct pnp_dev *dev)
 {
 	struct pnp_id *id;
@@ -132,7 +122,7 @@ struct pnp_dev *pnp_alloc_dev(struct pnp_protocol *protocol, int id,
 	struct pnp_dev *dev;
 	struct pnp_id *dev_id;
 
-	dev = kzalloc(sizeof(struct pnp_dev), GFP_KERNEL);
+	dev = kzalloc_obj(struct pnp_dev);
 	if (!dev)
 		return NULL;
 
@@ -148,13 +138,13 @@ struct pnp_dev *pnp_alloc_dev(struct pnp_protocol *protocol, int id,
 	dev->dev.coherent_dma_mask = dev->dma_mask;
 	dev->dev.release = &pnp_release_device;
 
-	dev_set_name(&dev->dev, "%02x:%02x", dev->protocol->number, dev->number);
-
 	dev_id = pnp_add_id(dev, pnpid);
 	if (!dev_id) {
 		kfree(dev);
 		return NULL;
 	}
+
+	dev_set_name(&dev->dev, "%02x:%02x", dev->protocol->number, dev->number);
 
 	return dev;
 }
@@ -218,12 +208,6 @@ int pnp_add_device(struct pnp_dev *dev)
 	dev_dbg(&dev->dev, "%s device, IDs%s (%s)\n", dev->protocol->name, buf,
 		dev->active ? "active" : "disabled");
 	return 0;
-}
-
-void __pnp_remove_device(struct pnp_dev *dev)
-{
-	pnp_delist_device(dev);
-	device_unregister(&dev->dev);
 }
 
 static int __init pnp_init(void)

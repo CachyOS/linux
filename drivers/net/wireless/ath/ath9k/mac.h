@@ -115,8 +115,10 @@ struct ath_tx_status {
 	u8 qid;
 	u16 desc_id;
 	u8 tid;
-	u32 ba_low;
-	u32 ba_high;
+	struct_group(ba,
+		u32 ba_low;
+		u32 ba_high;
+	);
 	u32 evm0;
 	u32 evm1;
 	u32 evm2;
@@ -249,7 +251,7 @@ struct ath_desc {
  * when the descriptor is specifically marked to generate
  * an interrupt with this flag. Descriptors should be
  * marked periodically to insure timely replenishing of the
- * supply needed for sending frames. Defering interrupts
+ * supply needed for sending frames. Deferring interrupts
  * reduces system load and potentially allows more concurrent
  * work to be done but if done to aggressively can cause
  * senders to backup. When the hardware queue is left too

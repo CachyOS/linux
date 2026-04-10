@@ -28,9 +28,10 @@
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/dmapool.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/fsldma.h>
 #include "dmaengine.h"
 #include "fsldma.h"
@@ -1110,7 +1111,7 @@ static int fsl_dma_chan_probe(struct fsldma_device *fdev,
 	int err;
 
 	/* alloc channel */
-	chan = kzalloc(sizeof(*chan), GFP_KERNEL);
+	chan = kzalloc_obj(*chan);
 	if (!chan) {
 		err = -ENOMEM;
 		goto out_return;
@@ -1217,7 +1218,7 @@ static int fsldma_of_probe(struct platform_device *op)
 	unsigned int i;
 	int err;
 
-	fdev = kzalloc(sizeof(*fdev), GFP_KERNEL);
+	fdev = kzalloc_obj(*fdev);
 	if (!fdev) {
 		err = -ENOMEM;
 		goto out_return;
@@ -1225,6 +1226,8 @@ static int fsldma_of_probe(struct platform_device *op)
 
 	fdev->dev = &op->dev;
 	INIT_LIST_HEAD(&fdev->common.channels);
+	/* The DMA address bits supported for this device. */
+	fdev->addr_bits = (long)device_get_match_data(fdev->dev);
 
 	/* ioremap the registers for use */
 	fdev->regs = of_iomap(op->dev.of_node, 0);
@@ -1253,7 +1256,7 @@ static int fsldma_of_probe(struct platform_device *op)
 	fdev->common.directions = BIT(DMA_DEV_TO_MEM) | BIT(DMA_MEM_TO_DEV);
 	fdev->common.residue_granularity = DMA_RESIDUE_GRANULARITY_DESCRIPTOR;
 
-	dma_set_mask(&(op->dev), DMA_BIT_MASK(36));
+	dma_set_mask(&(op->dev), DMA_BIT_MASK(fdev->addr_bits));
 
 	platform_set_drvdata(op, fdev);
 
@@ -1305,7 +1308,7 @@ out_return:
 	return err;
 }
 
-static int fsldma_of_remove(struct platform_device *op)
+static void fsldma_of_remove(struct platform_device *op)
 {
 	struct fsldma_device *fdev;
 	unsigned int i;
@@ -1323,8 +1326,6 @@ static int fsldma_of_remove(struct platform_device *op)
 
 	iounmap(fdev->regs);
 	kfree(fdev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -1388,10 +1389,20 @@ static const struct dev_pm_ops fsldma_pm_ops = {
 };
 #endif
 
+/* The .data field is used for dma-bit-mask. */
 static const struct of_device_id fsldma_of_ids[] = {
-	{ .compatible = "fsl,elo3-dma", },
-	{ .compatible = "fsl,eloplus-dma", },
-	{ .compatible = "fsl,elo-dma", },
+	{
+		.compatible = "fsl,elo3-dma",
+		.data = (void *)40,
+	},
+	{
+		.compatible = "fsl,eloplus-dma",
+		.data = (void *)36,
+	},
+	{
+		.compatible = "fsl,elo-dma",
+		.data = (void *)32,
+	},
 	{}
 };
 MODULE_DEVICE_TABLE(of, fsldma_of_ids);

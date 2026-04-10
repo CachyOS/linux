@@ -359,8 +359,7 @@ static int ml86v7667_init(struct ml86v7667_priv *priv)
 	return ret;
 }
 
-static int ml86v7667_probe(struct i2c_client *client,
-			   const struct i2c_device_id *did)
+static int ml86v7667_probe(struct i2c_client *client)
 {
 	struct ml86v7667_priv *priv;
 	int ret;
@@ -415,20 +414,18 @@ cleanup:
 	return ret;
 }
 
-static int ml86v7667_remove(struct i2c_client *client)
+static void ml86v7667_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ml86v7667_priv *priv = to_ml86v7667(sd);
 
 	v4l2_ctrl_handler_free(&priv->hdl);
 	v4l2_device_unregister_subdev(&priv->sd);
-
-	return 0;
 }
 
 static const struct i2c_device_id ml86v7667_id[] = {
-	{DRV_NAME, 0},
-	{},
+	{ DRV_NAME },
+	{}
 };
 MODULE_DEVICE_TABLE(i2c, ml86v7667_id);
 

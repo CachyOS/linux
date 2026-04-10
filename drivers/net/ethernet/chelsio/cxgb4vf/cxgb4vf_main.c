@@ -288,7 +288,7 @@ static int cxgb4vf_change_mac(struct port_info *pi, unsigned int viid,
 				goto set_hash;
 			}
 		}
-		new_entry = kzalloc(sizeof(*new_entry), GFP_KERNEL);
+		new_entry = kzalloc_obj(*new_entry);
 		if (!new_entry)
 			return -ENOMEM;
 		ether_addr_copy(new_entry->addr, addr);
@@ -858,7 +858,7 @@ static int cxgb4vf_open(struct net_device *dev)
 	 */
 	err = t4vf_update_port_info(pi);
 	if (err < 0)
-		return err;
+		goto err_unwind;
 
 	/*
 	 * Note that this interface is up and start everything up ...
@@ -953,7 +953,7 @@ static int cxgb4vf_mac_sync(struct net_device *netdev, const u8 *mac_addr)
 	 * list and program it
 	 */
 	if (uhash || mhash) {
-		new_entry = kzalloc(sizeof(*new_entry), GFP_ATOMIC);
+		new_entry = kzalloc_obj(*new_entry, GFP_ATOMIC);
 		if (!new_entry)
 			return -ENOMEM;
 		ether_addr_copy(new_entry->addr, mac_addr);
@@ -1169,7 +1169,7 @@ static int cxgb4vf_change_mtu(struct net_device *dev, int new_mtu)
 	ret = t4vf_set_rxmode(pi->adapter, pi->viid, new_mtu,
 			      -1, -1, -1, -1, true);
 	if (!ret)
-		dev->mtu = new_mtu;
+		WRITE_ONCE(dev->mtu, new_mtu);
 	return ret;
 }
 
@@ -1553,8 +1553,8 @@ static void cxgb4vf_get_drvinfo(struct net_device *dev,
 {
 	struct adapter *adapter = netdev2adap(dev);
 
-	strlcpy(drvinfo->driver, KBUILD_MODNAME, sizeof(drvinfo->driver));
-	strlcpy(drvinfo->bus_info, pci_name(to_pci_dev(dev->dev.parent)),
+	strscpy(drvinfo->driver, KBUILD_MODNAME, sizeof(drvinfo->driver));
+	strscpy(drvinfo->bus_info, pci_name(to_pci_dev(dev->dev.parent)),
 		sizeof(drvinfo->bus_info));
 	snprintf(drvinfo->fw_version, sizeof(drvinfo->fw_version),
 		 "%u.%u.%u.%u, TP %u.%u.%u.%u",
@@ -2859,7 +2859,7 @@ static const struct net_device_ops cxgb4vf_netdev_ops	= {
  *				address stored on the adapter
  *	@adapter: The adapter
  *
- *	Find the the port mask for the VF based on the index of mac
+ *	Find the port mask for the VF based on the index of mac
  *	address stored in the adapter. If no mac address is stored on
  *	the adapter for the VF, use the port mask received from the
  *	firmware.
@@ -2935,7 +2935,7 @@ static int cxgb4vf_pci_probe(struct pci_dev *pdev,
 	/*
 	 * Allocate our adapter data structure and attach it to the device.
 	 */
-	adapter = kzalloc(sizeof(*adapter), GFP_KERNEL);
+	adapter = kzalloc_obj(*adapter);
 	if (!adapter) {
 		err = -ENOMEM;
 		goto err_release_regions;
@@ -3258,7 +3258,6 @@ err_free_adapter:
 
 err_release_regions:
 	pci_release_regions(pdev);
-	pci_clear_master(pdev);
 
 err_disable_device:
 	pci_disable_device(pdev);
@@ -3338,7 +3337,6 @@ static void cxgb4vf_pci_remove(struct pci_dev *pdev)
 	 * Disable the device and release its PCI resources.
 	 */
 	pci_disable_device(pdev);
-	pci_clear_master(pdev);
 	pci_release_regions(pdev);
 }
 

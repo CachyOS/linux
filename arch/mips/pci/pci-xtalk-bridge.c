@@ -114,7 +114,7 @@ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_SGI, PCI_DEVICE_ID_SGI_IOC3,
  *
  * The function is complicated by the ultimate brokenness of the IOC3 chip
  * which is used in SGI systems.  The IOC3 can only handle 32-bit PCI
- * accesses and does only decode parts of it's address space.
+ * accesses and does only decode parts of its address space.
  */
 static int pci_conf0_read_config(struct pci_bus *bus, unsigned int devfn,
 				 int where, int size, u32 *value)
@@ -341,7 +341,7 @@ static int bridge_domain_alloc(struct irq_domain *domain, unsigned int virq,
 	if (nr_irqs > 1 || !info)
 		return -EINVAL;
 
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = kzalloc_obj(*data);
 	if (!data)
 		return -ENOMEM;
 
@@ -620,7 +620,7 @@ static int bridge_probe(struct platform_device *pdev)
 	if (bridge_get_partnum(virt_to_phys((void *)bd->bridge_addr), partnum))
 		return -EPROBE_DEFER; /* not available yet */
 
-	parent = irq_get_default_host();
+	parent = irq_get_default_domain();
 	if (!parent)
 		return -ENODEV;
 	fn = irq_domain_alloc_named_fwnode("BRIDGE");
@@ -733,7 +733,7 @@ err_remove_domain:
 	return err;
 }
 
-static int bridge_remove(struct platform_device *pdev)
+static void bridge_remove(struct platform_device *pdev)
 {
 	struct pci_bus *bus = platform_get_drvdata(pdev);
 	struct bridge_controller *bc = BRIDGE_CONTROLLER(bus);
@@ -745,12 +745,10 @@ static int bridge_remove(struct platform_device *pdev)
 	pci_stop_root_bus(bus);
 	pci_remove_root_bus(bus);
 	pci_unlock_rescan_remove();
-
-	return 0;
 }
 
 static struct platform_driver bridge_driver = {
-	.probe  = bridge_probe,
+	.probe = bridge_probe,
 	.remove = bridge_remove,
 	.driver = {
 		.name = "xtalk-bridge",

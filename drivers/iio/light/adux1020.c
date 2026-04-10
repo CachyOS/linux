@@ -23,7 +23,6 @@
 #include <linux/iio/sysfs.h>
 #include <linux/iio/events.h>
 
-#define ADUX1020_REGMAP_NAME		"adux1020_regmap"
 #define ADUX1020_DRV_NAME		"adux1020"
 
 /* System registers */
@@ -114,11 +113,10 @@ static const struct adux1020_mode_data adux1020_modes[] = {
 };
 
 static const struct regmap_config adux1020_regmap_config = {
-	.name = ADUX1020_REGMAP_NAME,
+	.name = "adux1020_regmap",
 	.reg_bits = 8,
 	.val_bits = 16,
 	.max_register = 0x6F,
-	.cache_type = REGCACHE_NONE,
 };
 
 static const struct reg_sequence adux1020_def_conf[] = {
@@ -502,7 +500,8 @@ fail:
 static int adux1020_write_event_config(struct iio_dev *indio_dev,
 				       const struct iio_chan_spec *chan,
 				       enum iio_event_type type,
-				       enum iio_event_direction dir, int state)
+				       enum iio_event_direction dir,
+				       bool state)
 {
 	struct adux1020_data *data = iio_priv(indio_dev);
 	int ret, mask;
@@ -526,12 +525,11 @@ static int adux1020_write_event_config(struct iio_dev *indio_dev,
 			mask = ADUX1020_PROX_OFF1_INT;
 
 		if (state)
-			state = 0;
+			ret = regmap_clear_bits(data->regmap,
+						ADUX1020_REG_INT_MASK, mask);
 		else
-			state = mask;
-
-		ret = regmap_update_bits(data->regmap, ADUX1020_REG_INT_MASK,
-					 mask, state);
+			ret = regmap_set_bits(data->regmap,
+					      ADUX1020_REG_INT_MASK, mask);
 		if (ret < 0)
 			goto fail;
 
@@ -539,9 +537,8 @@ static int adux1020_write_event_config(struct iio_dev *indio_dev,
 		 * Trigger proximity interrupt when the intensity is above
 		 * or below threshold
 		 */
-		ret = regmap_update_bits(data->regmap, ADUX1020_REG_PROX_TYPE,
-					 ADUX1020_PROX_TYPE,
-					 ADUX1020_PROX_TYPE);
+		ret = regmap_set_bits(data->regmap, ADUX1020_REG_PROX_TYPE,
+				      ADUX1020_PROX_TYPE);
 		if (ret < 0)
 			goto fail;
 
@@ -748,8 +745,8 @@ static int adux1020_chip_init(struct adux1020_data *data)
 
 	dev_dbg(&client->dev, "Detected ADUX1020 with chip id: 0x%04x\n", val);
 
-	ret = regmap_update_bits(data->regmap, ADUX1020_REG_SW_RESET,
-				 ADUX1020_SW_RESET, ADUX1020_SW_RESET);
+	ret = regmap_set_bits(data->regmap, ADUX1020_REG_SW_RESET,
+			      ADUX1020_SW_RESET);
 	if (ret < 0)
 		return ret;
 
@@ -764,8 +761,8 @@ static int adux1020_chip_init(struct adux1020_data *data)
 		return ret;
 
 	/* Use LED_IREF for proximity mode */
-	ret = regmap_update_bits(data->regmap, ADUX1020_REG_LED_CURRENT,
-				 ADUX1020_LED_PIREF_EN, 0);
+	ret = regmap_clear_bits(data->regmap, ADUX1020_REG_LED_CURRENT,
+				ADUX1020_LED_PIREF_EN);
 	if (ret < 0)
 		return ret;
 
@@ -774,8 +771,7 @@ static int adux1020_chip_init(struct adux1020_data *data)
 			   ADUX1020_MODE_INT_MASK, ADUX1020_MODE_INT_DISABLE);
 }
 
-static int adux1020_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int adux1020_probe(struct i2c_client *client)
 {
 	struct adux1020_data *data;
 	struct iio_dev *indio_dev;
@@ -822,8 +818,8 @@ static int adux1020_probe(struct i2c_client *client,
 }
 
 static const struct i2c_device_id adux1020_id[] = {
-	{ "adux1020", 0 },
-	{}
+	{ "adux1020" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adux1020_id);
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Maxim MAX9286 Quad GMSL2 Deserializer Driver
+ * Maxim MAX96712 Quad GMSL2 Deserializer Driver
  *
  * Copyright (C) 2021 Renesas Electronics Corporation
  * Copyright (C) 2021 Niklas Söderlund
@@ -16,13 +16,18 @@
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-subdev.h>
 
-#define MAX96712_ID 0x20
-
-#define MAX96712_DPLL_FREQ 1000
+#define DEBUG_EXTRA_REG			0x09
+#define DEBUG_EXTRA_PCLK_25MHZ		0x00
+#define DEBUG_EXTRA_PCLK_75MHZ		0x01
 
 enum max96712_pattern {
 	MAX96712_PATTERN_CHECKERBOARD = 0,
 	MAX96712_PATTERN_GRADIENT,
+};
+
+struct max96712_info {
+	unsigned int dpllfreq;
+	bool have_debug_extra;
 };
 
 struct max96712_priv {
@@ -30,6 +35,9 @@ struct max96712_priv {
 	struct regmap *regmap;
 	struct gpio_desc *gpiod_pwdn;
 
+	const struct max96712_info *info;
+
+	bool cphy;
 	struct v4l2_mbus_config_mipi_csi2 mipi;
 
 	struct v4l2_subdev sd;
@@ -38,19 +46,6 @@ struct max96712_priv {
 
 	enum max96712_pattern pattern;
 };
-
-static int max96712_read(struct max96712_priv *priv, int reg)
-{
-	int ret, val;
-
-	ret = regmap_read(priv->regmap, reg, &val);
-	if (ret) {
-		dev_err(&priv->client->dev, "read 0x%04x failed\n", reg);
-		return ret;
-	}
-
-	return val;
-}
 
 static int max96712_write(struct max96712_priv *priv, unsigned int reg, u8 val)
 {
@@ -127,10 +122,18 @@ static void max96712_mipi_configure(struct max96712_priv *priv)
 	/* Select 2x4 mode. */
 	max96712_write(priv, 0x8a0, 0x04);
 
-	/* Configure a 4-lane DPHY using PHY0 and PHY1. */
 	/* TODO: Add support for 2-lane and 1-lane configurations. */
-	/* TODO: Add support CPHY mode. */
-	max96712_write(priv, 0x94a, 0xc0);
+	if (priv->cphy) {
+		/* Configure a 3-lane C-PHY using PHY0 and PHY1. */
+		max96712_write(priv, 0x94a, 0xa0);
+
+		/* Configure C-PHY timings. */
+		max96712_write(priv, 0x8ad, 0x3f);
+		max96712_write(priv, 0x8ae, 0x7d);
+	} else {
+		/* Configure a 4-lane D-PHY using PHY0 and PHY1. */
+		max96712_write(priv, 0x94a, 0xc0);
+	}
 
 	/* Configure lane mapping for PHY0 and PHY1. */
 	/* TODO: Add support for lane swapping. */
@@ -144,9 +147,9 @@ static void max96712_mipi_configure(struct max96712_priv *priv)
 
 	/* Set link frequency for PHY0 and PHY1. */
 	max96712_update_bits(priv, 0x415, 0x3f,
-			     ((MAX96712_DPLL_FREQ / 100) & 0x1f) | BIT(5));
+			     ((priv->info->dpllfreq / 100) & 0x1f) | BIT(5));
 	max96712_update_bits(priv, 0x418, 0x3f,
-			     ((MAX96712_DPLL_FREQ / 100) & 0x1f) | BIT(5));
+			     ((priv->info->dpllfreq / 100) & 0x1f) | BIT(5));
 
 	/* Enable PHY0 and PHY1 */
 	max96712_update_bits(priv, 0x8a2, 0xf0, 0x30);
@@ -171,8 +174,9 @@ static void max96712_pattern_enable(struct max96712_priv *priv, bool enable)
 		return;
 	}
 
-	/* PCLK 75MHz. */
-	max96712_write(priv, 0x0009, 0x01);
+	/* Set PCLK to 75MHz if device have DEBUG_EXTRA register. */
+	if (priv->info->have_debug_extra)
+		max96712_write(priv, DEBUG_EXTRA_REG, DEBUG_EXTRA_PCLK_75MHZ);
 
 	/* Configure Video Timing Generator for 1920x1080 @ 30 fps. */
 	max96712_write_bulk_value(priv, 0x1052, 0, 3);
@@ -233,21 +237,34 @@ static const struct v4l2_subdev_video_ops max96712_video_ops = {
 	.s_stream = max96712_s_stream,
 };
 
-static int max96712_get_pad_format(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_state *sd_state,
-				   struct v4l2_subdev_format *format)
+static int max96712_init_state(struct v4l2_subdev *sd,
+			       struct v4l2_subdev_state *state)
 {
-	format->format.width = 1920;
-	format->format.height = 1080;
-	format->format.code = MEDIA_BUS_FMT_RGB888_1X24;
-	format->format.field = V4L2_FIELD_NONE;
+	static const struct v4l2_mbus_framefmt default_fmt = {
+		.width          = 1920,
+		.height         = 1080,
+		.code           = MEDIA_BUS_FMT_RGB888_1X24,
+		.colorspace     = V4L2_COLORSPACE_SRGB,
+		.field          = V4L2_FIELD_NONE,
+		.ycbcr_enc      = V4L2_YCBCR_ENC_DEFAULT,
+		.quantization   = V4L2_QUANTIZATION_DEFAULT,
+		.xfer_func      = V4L2_XFER_FUNC_DEFAULT,
+	};
+	struct v4l2_mbus_framefmt *fmt;
+
+	fmt = v4l2_subdev_state_get_format(state, 0);
+	*fmt = default_fmt;
 
 	return 0;
 }
 
+static const struct v4l2_subdev_internal_ops max96712_internal_ops = {
+	.init_state = max96712_init_state,
+};
+
 static const struct v4l2_subdev_pad_ops max96712_pad_ops = {
-	.get_fmt = max96712_get_pad_format,
-	.set_fmt = max96712_get_pad_format,
+	.get_fmt = v4l2_subdev_get_fmt,
+	.set_fmt = v4l2_subdev_get_fmt,
 };
 
 static const struct v4l2_subdev_ops max96712_subdev_ops = {
@@ -284,6 +301,7 @@ static int max96712_v4l2_register(struct max96712_priv *priv)
 	long pixel_rate;
 	int ret;
 
+	priv->sd.internal_ops = &max96712_internal_ops;
 	v4l2_i2c_subdev_init(&priv->sd, priv->client, &max96712_subdev_ops);
 	priv->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	priv->sd.entity.function = MEDIA_ENT_F_VID_IF_BRIDGE;
@@ -294,7 +312,7 @@ static int max96712_v4l2_register(struct max96712_priv *priv)
 	 * TODO: Once V4L2_CID_LINK_FREQ is changed from a menu control to an
 	 * INT64 control it should be used here instead of V4L2_CID_PIXEL_RATE.
 	 */
-	pixel_rate = MAX96712_DPLL_FREQ / priv->mipi.num_data_lanes * 1000000;
+	pixel_rate = priv->info->dpllfreq / priv->mipi.num_data_lanes * 1000000;
 	v4l2_ctrl_new_std(&priv->ctrl_handler, NULL, V4L2_CID_PIXEL_RATE,
 			  pixel_rate, pixel_rate, 1, pixel_rate);
 
@@ -315,6 +333,11 @@ static int max96712_v4l2_register(struct max96712_priv *priv)
 
 	v4l2_set_subdevdata(&priv->sd, priv);
 
+	priv->sd.state_lock = priv->ctrl_handler.lock;
+	ret = v4l2_subdev_init_finalize(&priv->sd);
+	if (ret)
+		goto error;
+
 	ret = v4l2_async_register_subdev(&priv->sd);
 	if (ret < 0) {
 		dev_err(&priv->client->dev, "Unable to register subdevice\n");
@@ -332,8 +355,9 @@ static int max96712_parse_dt(struct max96712_priv *priv)
 {
 	struct fwnode_handle *ep;
 	struct v4l2_fwnode_endpoint v4l2_ep = {
-		.bus_type = V4L2_MBUS_CSI2_DPHY
+		.bus_type = V4L2_MBUS_UNKNOWN,
 	};
+	unsigned int supported_lanes;
 	int ret;
 
 	ep = fwnode_graph_get_endpoint_by_id(dev_fwnode(&priv->client->dev), 4,
@@ -350,8 +374,24 @@ static int max96712_parse_dt(struct max96712_priv *priv)
 		return -EINVAL;
 	}
 
-	if (v4l2_ep.bus.mipi_csi2.num_data_lanes != 4) {
-		dev_err(&priv->client->dev, "Only 4 data lanes supported\n");
+	switch (v4l2_ep.bus_type) {
+	case V4L2_MBUS_CSI2_DPHY:
+		supported_lanes = 4;
+		priv->cphy = false;
+		break;
+	case V4L2_MBUS_CSI2_CPHY:
+		supported_lanes = 3;
+		priv->cphy = true;
+		break;
+	default:
+		dev_err(&priv->client->dev, "Unsupported bus-type %u\n",
+			v4l2_ep.bus_type);
+		return -EINVAL;
+	}
+
+	if (v4l2_ep.bus.mipi_csi2.num_data_lanes != supported_lanes) {
+		dev_err(&priv->client->dev, "Only %u data lanes supported\n",
+			supported_lanes);
 		return -EINVAL;
 	}
 
@@ -375,8 +415,9 @@ static int max96712_probe(struct i2c_client *client)
 	if (!priv)
 		return -ENOMEM;
 
+	priv->info = of_device_get_match_data(&client->dev);
+
 	priv->client = client;
-	i2c_set_clientdata(client, priv);
 
 	priv->regmap = devm_regmap_init_i2c(client, &max96712_i2c_regmap);
 	if (IS_ERR(priv->regmap))
@@ -393,9 +434,6 @@ static int max96712_probe(struct i2c_client *client)
 	if (priv->gpiod_pwdn)
 		usleep_range(4000, 5000);
 
-	if (max96712_read(priv, 0x4a) != MAX96712_ID)
-		return -ENODEV;
-
 	max96712_reset(priv);
 
 	ret = max96712_parse_dt(priv);
@@ -407,20 +445,29 @@ static int max96712_probe(struct i2c_client *client)
 	return max96712_v4l2_register(priv);
 }
 
-static int max96712_remove(struct i2c_client *client)
+static void max96712_remove(struct i2c_client *client)
 {
-	struct max96712_priv *priv = i2c_get_clientdata(client);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct max96712_priv *priv = container_of(sd, struct max96712_priv, sd);
 
 	v4l2_async_unregister_subdev(&priv->sd);
 
 	gpiod_set_value_cansleep(priv->gpiod_pwdn, 0);
-
-	return 0;
 }
 
+static const struct max96712_info max96712_info_max96712 = {
+	.dpllfreq = 1000,
+	.have_debug_extra = true,
+};
+
+static const struct max96712_info max96712_info_max96724 = {
+	.dpllfreq = 1200,
+};
+
 static const struct of_device_id max96712_of_table[] = {
-	{ .compatible = "maxim,max96712" },
-	{ /* sentinel */ },
+	{ .compatible = "maxim,max96712", .data = &max96712_info_max96712 },
+	{ .compatible = "maxim,max96724", .data = &max96712_info_max96724 },
+	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, max96712_of_table);
 
@@ -429,7 +476,7 @@ static struct i2c_driver max96712_i2c_driver = {
 		.name = "max96712",
 		.of_match_table	= of_match_ptr(max96712_of_table),
 	},
-	.probe_new = max96712_probe,
+	.probe = max96712_probe,
 	.remove = max96712_remove,
 };
 

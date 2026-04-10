@@ -166,7 +166,7 @@ static void cec_mod_work(unsigned long interval)
 	unsigned long iv;
 
 	iv = interval * HZ;
-	mod_delayed_work(system_wq, &cec_work, round_jiffies(iv));
+	mod_delayed_work(system_percpu_wq, &cec_work, round_jiffies(iv));
 }
 
 static void cec_work_fn(struct work_struct *work)
@@ -480,9 +480,15 @@ DEFINE_SHOW_ATTRIBUTE(array);
 
 static int __init create_debugfs_nodes(void)
 {
-	struct dentry *d, *pfn, *decay, *count, *array;
+	struct dentry *d, *pfn, *decay, *count, *array, *dfs;
 
-	d = debugfs_create_dir("cec", ras_debugfs_dir);
+	dfs = ras_get_debugfs_root();
+	if (!dfs) {
+		pr_warn("Error getting RAS debugfs root!\n");
+		return -1;
+	}
+
+	d = debugfs_create_dir("cec", dfs);
 	if (!d) {
 		pr_warn("Error creating cec debugfs node!\n");
 		return -1;
@@ -555,6 +561,14 @@ static int __init cec_init(void)
 {
 	if (ce_arr.disabled)
 		return -ENODEV;
+
+	/*
+	 * Intel systems may avoid uncorrectable errors
+	 * if pages with corrected errors are aggressively
+	 * taken offline.
+	 */
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL)
+		action_threshold = 2;
 
 	ce_arr.array = (void *)get_zeroed_page(GFP_KERNEL);
 	if (!ce_arr.array) {

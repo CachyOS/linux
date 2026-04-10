@@ -1,7 +1,7 @@
 # coding=utf-8
 # SPDX-License-Identifier: GPL-2.0
 #
-u"""
+"""
     kernel-feat
     ~~~~~~~~~~~
 
@@ -13,7 +13,7 @@ u"""
     :license:    GPL Version 2, June 1991 see Linux/COPYING for details.
 
     The ``kernel-feat`` (:py:class:`KernelFeat`) directive calls the
-    scripts/get_feat.pl script to parse the Kernel ABI files.
+    tools/docs/get_feat.pl script to parse the Kernel ABI files.
 
     Overview of directive's argument and options.
 
@@ -34,16 +34,20 @@ u"""
 import codecs
 import os
 import re
-import subprocess
 import sys
-
-from os import path
 
 from docutils import nodes, statemachine
 from docutils.statemachine import ViewList
 from docutils.parsers.rst import directives, Directive
-from docutils.utils.error_reporting import ErrorString
 from sphinx.util.docutils import switch_source_input
+
+srctree = os.path.abspath(os.environ["srctree"])
+sys.path.insert(0, os.path.join(srctree, "tools/lib/python"))
+
+from feat.parse_features import ParseFeature                # pylint: disable=C0413
+
+def ErrorString(exc):  # Shamelessly stolen from docutils
+    return f'{exc.__class__.__name}: {exc}'
 
 __version__  = '1.0'
 
@@ -58,7 +62,7 @@ def setup(app):
 
 class KernelFeat(Directive):
 
-    u"""KernelFeat (``kernel-feat``) directive"""
+    """KernelFeat (``kernel-feat``) directive"""
 
     required_arguments = 1
     optional_arguments = 2
@@ -76,35 +80,26 @@ class KernelFeat(Directive):
         self.state.document.settings.env.app.warn(message, prefix="")
 
     def run(self):
-
         doc = self.state.document
         if not doc.settings.file_insertion_enabled:
             raise self.warning("docutils: file insertion disabled")
 
         env = doc.settings.env
-        cwd = path.dirname(doc.current_source)
-        cmd = "get_feat.pl rest --enable-fname --dir "
-        cmd += self.arguments[0]
+
+        srctree = os.path.abspath(os.environ["srctree"])
+
+        feature_dir = os.path.join(srctree, 'Documentation', self.arguments[0])
+
+        feat = ParseFeature(feature_dir, False, True)
+        feat.parse()
 
         if len(self.arguments) > 1:
-            cmd += " --arch " + self.arguments[1]
+            arch = self.arguments[1]
+            lines = feat.output_arch_table(arch)
+        else:
+            lines = feat.output_matrix()
 
-        srctree = path.abspath(os.environ["srctree"])
-
-        fname = cmd
-
-        # extend PATH with $(srctree)/scripts
-        path_env = os.pathsep.join([
-            srctree + os.sep + "scripts",
-            os.environ["PATH"]
-        ])
-        shell_env = os.environ.copy()
-        shell_env["PATH"]    = path_env
-        shell_env["srctree"] = srctree
-
-        lines = self.runCmd(cmd, shell=True, cwd=cwd, env=shell_env)
-
-        line_regex = re.compile("^\.\. FILE (\S+)$")
+        line_regex = re.compile(r"^\.\. FILE (\S+)$")
 
         out_lines = ""
 
@@ -118,32 +113,8 @@ class KernelFeat(Directive):
             else:
                 out_lines += line + "\n"
 
-        nodeList = self.nestedParse(out_lines, fname)
+        nodeList = self.nestedParse(out_lines, self.arguments[0])
         return nodeList
-
-    def runCmd(self, cmd, **kwargs):
-        u"""Run command ``cmd`` and return its stdout as unicode."""
-
-        try:
-            proc = subprocess.Popen(
-                cmd
-                , stdout = subprocess.PIPE
-                , stderr = subprocess.PIPE
-                , **kwargs
-            )
-            out, err = proc.communicate()
-
-            out, err = codecs.decode(out, 'utf-8'), codecs.decode(err, 'utf-8')
-
-            if proc.returncode != 0:
-                raise self.severe(
-                    u"command '%s' failed with return code %d"
-                    % (cmd, proc.returncode)
-                )
-        except OSError as exc:
-            raise self.severe(u"problems with '%s' directive: %s."
-                              % (self.name, ErrorString(exc)))
-        return out
 
     def nestedParse(self, lines, fname):
         content = ViewList()

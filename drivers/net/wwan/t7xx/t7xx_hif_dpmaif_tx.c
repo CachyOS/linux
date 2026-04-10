@@ -185,7 +185,6 @@ static void t7xx_dpmaif_tx_done(struct work_struct *work)
 	}
 
 	t7xx_pci_enable_sleep(dpmaif_ctrl->t7xx_dev);
-	pm_runtime_mark_last_busy(dpmaif_ctrl->dev);
 	pm_runtime_put_autosuspend(dpmaif_ctrl->dev);
 }
 
@@ -468,7 +467,6 @@ static int t7xx_dpmaif_tx_hw_push_thread(void *arg)
 		t7xx_pci_disable_sleep(dpmaif_ctrl->t7xx_dev);
 		t7xx_do_tx_hw_push(dpmaif_ctrl);
 		t7xx_pci_enable_sleep(dpmaif_ctrl->t7xx_dev);
-		pm_runtime_mark_last_busy(dpmaif_ctrl->dev);
 		pm_runtime_put_autosuspend(dpmaif_ctrl->dev);
 	}
 
@@ -618,8 +616,9 @@ int t7xx_dpmaif_txq_init(struct dpmaif_tx_queue *txq)
 		return ret;
 	}
 
-	txq->worker = alloc_workqueue("md_dpmaif_tx%d_worker", WQ_UNBOUND | WQ_MEM_RECLAIM |
-				      (txq->index ? 0 : WQ_HIGHPRI), 1, txq->index);
+	txq->worker = alloc_ordered_workqueue("md_dpmaif_tx%d_worker",
+				WQ_MEM_RECLAIM | (txq->index ? 0 : WQ_HIGHPRI),
+				txq->index);
 	if (!txq->worker)
 		return -ENOMEM;
 

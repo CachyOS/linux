@@ -3,18 +3,94 @@
  * Copyright © 2020 Intel Corporation
  */
 
+#include <linux/pci.h>
 #include <linux/string.h>
 
-#include "i915_drv.h"
+#include <drm/drm_print.h>
+
 #include "intel_atomic.h"
+#include "intel_display_core.h"
 #include "intel_display_types.h"
 #include "intel_global_state.h"
+
+#define for_each_new_global_obj_in_state(__state, obj, new_obj_state, __i) \
+	for ((__i) = 0; \
+	     (__i) < (__state)->num_global_objs && \
+		     ((obj) = (__state)->global_objs[__i].ptr, \
+		      (new_obj_state) = (__state)->global_objs[__i].new_state, 1); \
+	     (__i)++) \
+		for_each_if(obj)
+
+#define for_each_old_global_obj_in_state(__state, obj, old_obj_state, __i) \
+	for ((__i) = 0; \
+	     (__i) < (__state)->num_global_objs && \
+		     ((obj) = (__state)->global_objs[__i].ptr, \
+		      (old_obj_state) = (__state)->global_objs[__i].old_state, 1); \
+	     (__i)++) \
+		for_each_if(obj)
+
+#define for_each_oldnew_global_obj_in_state(__state, obj, old_obj_state, new_obj_state, __i) \
+	for ((__i) = 0; \
+	     (__i) < (__state)->num_global_objs && \
+		     ((obj) = (__state)->global_objs[__i].ptr, \
+		      (old_obj_state) = (__state)->global_objs[__i].old_state, \
+		      (new_obj_state) = (__state)->global_objs[__i].new_state, 1); \
+	     (__i)++) \
+		for_each_if(obj)
+
+struct intel_global_objs_state {
+	struct intel_global_obj *ptr;
+	struct intel_global_state *state, *old_state, *new_state;
+};
+
+struct intel_global_commit {
+	struct kref ref;
+	struct completion done;
+};
+
+static struct intel_global_commit *commit_new(void)
+{
+	struct intel_global_commit *commit;
+
+	commit = kzalloc_obj(*commit);
+	if (!commit)
+		return NULL;
+
+	init_completion(&commit->done);
+	kref_init(&commit->ref);
+
+	return commit;
+}
+
+static void __commit_free(struct kref *kref)
+{
+	struct intel_global_commit *commit =
+		container_of(kref, typeof(*commit), ref);
+
+	kfree(commit);
+}
+
+static struct intel_global_commit *commit_get(struct intel_global_commit *commit)
+{
+	if (commit)
+		kref_get(&commit->ref);
+
+	return commit;
+}
+
+static void commit_put(struct intel_global_commit *commit)
+{
+	if (commit)
+		kref_put(&commit->ref, __commit_free);
+}
 
 static void __intel_atomic_global_state_free(struct kref *kref)
 {
 	struct intel_global_state *obj_state =
 		container_of(kref, struct intel_global_state, ref);
 	struct intel_global_obj *obj = obj_state->obj;
+
+	commit_put(obj_state->commit);
 
 	obj->funcs->atomic_destroy_state(obj, obj_state);
 }
@@ -32,7 +108,7 @@ intel_atomic_global_state_get(struct intel_global_state *obj_state)
 	return obj_state;
 }
 
-void intel_atomic_global_obj_init(struct drm_i915_private *dev_priv,
+void intel_atomic_global_obj_init(struct intel_display *display,
 				  struct intel_global_obj *obj,
 				  struct intel_global_state *state,
 				  const struct intel_global_state_funcs *funcs)
@@ -45,26 +121,26 @@ void intel_atomic_global_obj_init(struct drm_i915_private *dev_priv,
 
 	obj->state = state;
 	obj->funcs = funcs;
-	list_add_tail(&obj->head, &dev_priv->global_obj_list);
+	list_add_tail(&obj->head, &display->global.obj_list);
 }
 
-void intel_atomic_global_obj_cleanup(struct drm_i915_private *dev_priv)
+void intel_atomic_global_obj_cleanup(struct intel_display *display)
 {
 	struct intel_global_obj *obj, *next;
 
-	list_for_each_entry_safe(obj, next, &dev_priv->global_obj_list, head) {
+	list_for_each_entry_safe(obj, next, &display->global.obj_list, head) {
 		list_del(&obj->head);
 
-		drm_WARN_ON(&dev_priv->drm, kref_read(&obj->state->ref) != 1);
+		drm_WARN_ON(display->drm, kref_read(&obj->state->ref) != 1);
 		intel_atomic_global_state_put(obj->state);
 	}
 }
 
-static void assert_global_state_write_locked(struct drm_i915_private *dev_priv)
+static void assert_global_state_write_locked(struct intel_display *display)
 {
 	struct intel_crtc *crtc;
 
-	for_each_intel_crtc(&dev_priv->drm, crtc)
+	for_each_intel_crtc(display->drm, crtc)
 		drm_modeset_lock_assert_held(&crtc->base.mutex);
 }
 
@@ -83,26 +159,26 @@ static bool modeset_lock_is_held(struct drm_modeset_acquire_ctx *ctx,
 
 static void assert_global_state_read_locked(struct intel_atomic_state *state)
 {
+	struct intel_display *display = to_intel_display(state);
 	struct drm_modeset_acquire_ctx *ctx = state->base.acquire_ctx;
-	struct drm_i915_private *dev_priv = to_i915(state->base.dev);
 	struct intel_crtc *crtc;
 
-	for_each_intel_crtc(&dev_priv->drm, crtc) {
+	for_each_intel_crtc(display->drm, crtc) {
 		if (modeset_lock_is_held(ctx, &crtc->base.mutex))
 			return;
 	}
 
-	drm_WARN(&dev_priv->drm, 1, "Global state not read locked\n");
+	drm_WARN(display->drm, 1, "Global state not read locked\n");
 }
 
 struct intel_global_state *
 intel_atomic_get_global_obj_state(struct intel_atomic_state *state,
 				  struct intel_global_obj *obj)
 {
-	struct drm_i915_private *i915 = to_i915(state->base.dev);
+	struct intel_display *display = to_intel_display(state);
 	int index, num_objs, i;
 	size_t size;
-	struct __intel_global_objs_state *arr;
+	struct intel_global_objs_state *arr;
 	struct intel_global_state *obj_state;
 
 	for (i = 0; i < state->num_global_objs; i++)
@@ -127,6 +203,8 @@ intel_atomic_get_global_obj_state(struct intel_atomic_state *state,
 
 	obj_state->obj = obj;
 	obj_state->changed = false;
+	obj_state->serialized = false;
+	obj_state->commit = NULL;
 
 	kref_init(&obj_state->ref);
 
@@ -139,7 +217,7 @@ intel_atomic_get_global_obj_state(struct intel_atomic_state *state,
 
 	state->num_global_objs = num_objs;
 
-	drm_dbg_atomic(&i915->drm, "Added new global object %p state %p to %p\n",
+	drm_dbg_atomic(display->drm, "Added new global object %p state %p to %p\n",
 		       obj, obj_state, state);
 
 	return obj_state;
@@ -173,14 +251,14 @@ intel_atomic_get_new_global_obj_state(struct intel_atomic_state *state,
 
 void intel_atomic_swap_global_state(struct intel_atomic_state *state)
 {
-	struct drm_i915_private *dev_priv = to_i915(state->base.dev);
+	struct intel_display *display = to_intel_display(state);
 	struct intel_global_state *old_obj_state, *new_obj_state;
 	struct intel_global_obj *obj;
 	int i;
 
 	for_each_oldnew_global_obj_in_state(state, obj, old_obj_state,
 					    new_obj_state, i) {
-		drm_WARN_ON(&dev_priv->drm, obj->state != old_obj_state);
+		drm_WARN_ON(display->drm, obj->state != old_obj_state);
 
 		/*
 		 * If the new state wasn't modified (and properly
@@ -189,7 +267,7 @@ void intel_atomic_swap_global_state(struct intel_atomic_state *state)
 		if (!new_obj_state->changed)
 			continue;
 
-		assert_global_state_write_locked(dev_priv);
+		assert_global_state_write_locked(display);
 
 		old_obj_state->state = state;
 		new_obj_state->state = NULL;
@@ -220,10 +298,10 @@ void intel_atomic_clear_global_state(struct intel_atomic_state *state)
 int intel_atomic_lock_global_state(struct intel_global_state *obj_state)
 {
 	struct intel_atomic_state *state = obj_state->state;
-	struct drm_i915_private *dev_priv = to_i915(state->base.dev);
+	struct intel_display *display = to_intel_display(state);
 	struct intel_crtc *crtc;
 
-	for_each_intel_crtc(&dev_priv->drm, crtc) {
+	for_each_intel_crtc(display->drm, crtc) {
 		int ret;
 
 		ret = drm_modeset_lock(&crtc->base.mutex,
@@ -239,19 +317,101 @@ int intel_atomic_lock_global_state(struct intel_global_state *obj_state)
 
 int intel_atomic_serialize_global_state(struct intel_global_state *obj_state)
 {
-	struct intel_atomic_state *state = obj_state->state;
-	struct drm_i915_private *dev_priv = to_i915(state->base.dev);
-	struct intel_crtc *crtc;
+	int ret;
 
-	for_each_intel_crtc(&dev_priv->drm, crtc) {
-		struct intel_crtc_state *crtc_state;
+	ret = intel_atomic_lock_global_state(obj_state);
+	if (ret)
+		return ret;
 
-		crtc_state = intel_atomic_get_crtc_state(&state->base, crtc);
-		if (IS_ERR(crtc_state))
-			return PTR_ERR(crtc_state);
-	}
-
-	obj_state->changed = true;
+	obj_state->serialized = true;
 
 	return 0;
+}
+
+bool
+intel_atomic_global_state_is_serialized(struct intel_atomic_state *state)
+{
+	struct intel_display *display = to_intel_display(state);
+	struct intel_crtc *crtc;
+
+	for_each_intel_crtc(display->drm, crtc)
+		if (!intel_atomic_get_new_crtc_state(state, crtc))
+			return false;
+	return true;
+}
+
+int
+intel_atomic_global_state_setup_commit(struct intel_atomic_state *state)
+{
+	const struct intel_global_state *old_obj_state;
+	struct intel_global_state *new_obj_state;
+	struct intel_global_obj *obj;
+	int i;
+
+	for_each_oldnew_global_obj_in_state(state, obj, old_obj_state,
+					    new_obj_state, i) {
+		struct intel_global_commit *commit = NULL;
+
+		if (new_obj_state->serialized) {
+			/*
+			 * New commit which is going to be completed
+			 * after the hardware reprogramming is done.
+			 */
+			commit = commit_new();
+			if (!commit)
+				return -ENOMEM;
+		} else if (new_obj_state->changed) {
+			/*
+			 * We're going to swap to this state, so carry the
+			 * previous commit along, in case it's not yet done.
+			 */
+			commit = commit_get(old_obj_state->commit);
+		}
+
+		new_obj_state->commit = commit;
+	}
+
+	return 0;
+}
+
+int
+intel_atomic_global_state_wait_for_dependencies(struct intel_atomic_state *state)
+{
+	struct intel_display *display = to_intel_display(state);
+	const struct intel_global_state *old_obj_state;
+	struct intel_global_obj *obj;
+	int i;
+
+	for_each_old_global_obj_in_state(state, obj, old_obj_state, i) {
+		struct intel_global_commit *commit = old_obj_state->commit;
+		long ret;
+
+		if (!commit)
+			continue;
+
+		ret = wait_for_completion_timeout(&commit->done, 10 * HZ);
+		if (ret == 0) {
+			drm_err(display->drm, "global state timed out\n");
+			return -ETIMEDOUT;
+		}
+	}
+
+	return 0;
+}
+
+void
+intel_atomic_global_state_commit_done(struct intel_atomic_state *state)
+{
+	const struct intel_global_state *new_obj_state;
+	struct intel_global_obj *obj;
+	int i;
+
+	for_each_new_global_obj_in_state(state, obj, new_obj_state, i) {
+		struct intel_global_commit *commit = new_obj_state->commit;
+
+		if (!new_obj_state->serialized)
+			continue;
+
+		complete_all(&commit->done);
+	}
 }

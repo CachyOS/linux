@@ -27,7 +27,7 @@
 #include <linux/uaccess.h>
 #include <linux/module.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
@@ -492,8 +492,8 @@ int aac_get_containers(struct aac_dev *dev)
 
 		fsa_dev_ptr = dev->fsa_dev;
 
-		dev->fsa_dev = kcalloc(maximum_num_containers,
-					sizeof(*fsa_dev_ptr), GFP_KERNEL);
+		dev->fsa_dev = kzalloc_objs(*fsa_dev_ptr,
+					    maximum_num_containers);
 
 		kfree(fsa_dev_ptr);
 		fsa_dev_ptr = NULL;
@@ -818,9 +818,9 @@ static void aac_probe_container_scsi_done(struct scsi_cmnd *scsi_cmnd)
 
 int aac_probe_container(struct aac_dev *dev, int cid)
 {
-	struct scsi_cmnd *scsicmd = kzalloc(sizeof(*scsicmd), GFP_KERNEL);
-	struct aac_cmd_priv *cmd_priv = aac_priv(scsicmd);
-	struct scsi_device *scsidev = kzalloc(sizeof(*scsidev), GFP_KERNEL);
+	struct aac_cmd_priv *cmd_priv;
+	struct scsi_cmnd *scsicmd = kzalloc(sizeof(*scsicmd) + sizeof(*cmd_priv), GFP_KERNEL);
+	struct scsi_device *scsidev = kzalloc_obj(*scsidev);
 	int status;
 
 	if (!scsicmd || !scsidev) {
@@ -838,6 +838,7 @@ int aac_probe_container(struct aac_dev *dev, int cid)
 		while (scsicmd->device == scsidev)
 			schedule();
 	kfree(scsidev);
+	cmd_priv = aac_priv(scsicmd);
 	status = cmd_priv->status;
 	kfree(scsicmd);
 	return status;
@@ -1050,7 +1051,7 @@ static void get_container_serial_callback(void *context, struct fib * fibptr)
 				vpdpage83data.type1.productid));
 
 			/* Convert to ascii based serial number.
-			 * The LSB is the the end.
+			 * The LSB is the end.
 			 */
 			for (i = 0; i < 8; i++) {
 				u8 temp =
@@ -1098,7 +1099,7 @@ static void get_container_serial_callback(void *context, struct fib * fibptr)
 			sp[0] = INQD_PDT_DA;
 			sp[1] = scsicmd->cmnd[2];
 			sp[2] = 0;
-			sp[3] = snprintf(sp+4, sizeof(sp)-4, "%08X",
+			sp[3] = scnprintf(sp+4, sizeof(sp)-4, "%08X",
 				le32_to_cpu(get_serial_reply->uid));
 			scsi_sg_copy_from_buffer(scsicmd, sp,
 						 sizeof(sp));
@@ -1168,8 +1169,8 @@ static int setinqserial(struct aac_dev *dev, void *data, int cid)
 	/*
 	 *	This breaks array migration.
 	 */
-	return snprintf((char *)(data), sizeof(struct scsi_inq) - 4, "%08X%02X",
-			le32_to_cpu(dev->adapter_info.serial[0]), cid);
+	return scnprintf((char *)(data), sizeof(struct scsi_inq) - 4, "%08X%02X",
+			 le32_to_cpu(dev->adapter_info.serial[0]), cid);
 }
 
 static inline void set_sense(struct sense_data *sense_data, u8 sense_key,
@@ -1266,7 +1267,7 @@ static int aac_read_raw_io(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, u3
 			return ret;
 		command = ContainerRawIo;
 		fibsize = sizeof(struct aac_raw_io) +
-			((le32_to_cpu(readcmd->sg.count)-1) * sizeof(struct sgentryraw));
+			(le32_to_cpu(readcmd->sg.count) * sizeof(struct sgentryraw));
 	}
 
 	BUG_ON(fibsize > (fib->dev->max_fib_size - sizeof(struct aac_fibhdr)));
@@ -1301,7 +1302,7 @@ static int aac_read_block64(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, u
 	if (ret < 0)
 		return ret;
 	fibsize = sizeof(struct aac_read64) +
-		((le32_to_cpu(readcmd->sg.count) - 1) *
+		(le32_to_cpu(readcmd->sg.count) *
 		 sizeof (struct sgentry64));
 	BUG_ON (fibsize > (fib->dev->max_fib_size -
 				sizeof(struct aac_fibhdr)));
@@ -1336,7 +1337,7 @@ static int aac_read_block(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, u32
 	if (ret < 0)
 		return ret;
 	fibsize = sizeof(struct aac_read) +
-			((le32_to_cpu(readcmd->sg.count) - 1) *
+			(le32_to_cpu(readcmd->sg.count) *
 			 sizeof (struct sgentry));
 	BUG_ON (fibsize > (fib->dev->max_fib_size -
 				sizeof(struct aac_fibhdr)));
@@ -1400,7 +1401,7 @@ static int aac_write_raw_io(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, u
 			return ret;
 		command = ContainerRawIo;
 		fibsize = sizeof(struct aac_raw_io) +
-			((le32_to_cpu(writecmd->sg.count)-1) * sizeof (struct sgentryraw));
+			(le32_to_cpu(writecmd->sg.count) * sizeof(struct sgentryraw));
 	}
 
 	BUG_ON(fibsize > (fib->dev->max_fib_size - sizeof(struct aac_fibhdr)));
@@ -1435,7 +1436,7 @@ static int aac_write_block64(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, 
 	if (ret < 0)
 		return ret;
 	fibsize = sizeof(struct aac_write64) +
-		((le32_to_cpu(writecmd->sg.count) - 1) *
+		(le32_to_cpu(writecmd->sg.count) *
 		 sizeof (struct sgentry64));
 	BUG_ON (fibsize > (fib->dev->max_fib_size -
 				sizeof(struct aac_fibhdr)));
@@ -1472,7 +1473,7 @@ static int aac_write_block(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, u3
 	if (ret < 0)
 		return ret;
 	fibsize = sizeof(struct aac_write) +
-		((le32_to_cpu(writecmd->sg.count) - 1) *
+		(le32_to_cpu(writecmd->sg.count) *
 		 sizeof (struct sgentry));
 	BUG_ON (fibsize > (fib->dev->max_fib_size -
 				sizeof(struct aac_fibhdr)));
@@ -1591,9 +1592,9 @@ static int aac_scsi_64(struct fib * fib, struct scsi_cmnd * cmd)
 	/*
 	 *	Build Scatter/Gather list
 	 */
-	fibsize = sizeof (struct aac_srb) - sizeof (struct sgentry) +
+	fibsize = sizeof(struct aac_srb) +
 		((le32_to_cpu(srbcmd->sg.count) & 0xff) *
-		 sizeof (struct sgentry64));
+		 sizeof(struct sgentry64));
 	BUG_ON (fibsize > (fib->dev->max_fib_size -
 				sizeof(struct aac_fibhdr)));
 
@@ -1623,7 +1624,7 @@ static int aac_scsi_32(struct fib * fib, struct scsi_cmnd * cmd)
 	 *	Build Scatter/Gather list
 	 */
 	fibsize = sizeof (struct aac_srb) +
-		(((le32_to_cpu(srbcmd->sg.count) & 0xff) - 1) *
+		((le32_to_cpu(srbcmd->sg.count) & 0xff) *
 		 sizeof (struct sgentry));
 	BUG_ON (fibsize > (fib->dev->max_fib_size -
 				sizeof(struct aac_fibhdr)));
@@ -1692,8 +1693,7 @@ static int aac_send_safw_bmic_cmd(struct aac_dev *dev,
 	fibptr->hw_fib_va->header.XferState &=
 		~cpu_to_le32(FastResponseCapable);
 
-	fibsize  = sizeof(struct aac_srb) - sizeof(struct sgentry) +
-						sizeof(struct sgentry64);
+	fibsize = sizeof(struct aac_srb) + sizeof(struct sgentry64);
 
 	/* allocate DMA buffer for response */
 	addr = dma_map_single(&dev->pdev->dev, xfer_buf, xfer_len,
@@ -1832,7 +1832,7 @@ static int aac_get_safw_ciss_luns(struct aac_dev *dev)
 	struct aac_ciss_phys_luns_resp *phys_luns;
 
 	datasize = sizeof(struct aac_ciss_phys_luns_resp) +
-		(AAC_MAX_TARGETS - 1) * sizeof(struct _ciss_lun);
+		AAC_MAX_TARGETS * sizeof(struct _ciss_lun);
 	phys_luns = kmalloc(datasize, GFP_KERNEL);
 	if (phys_luns == NULL)
 		goto out;
@@ -2266,7 +2266,7 @@ int aac_get_adapter_info(struct aac_dev* dev)
 		dev->a_ops.adapter_bounds = aac_bounds_32;
 		dev->scsi_host_ptr->sg_tablesize = (dev->max_fib_size -
 			sizeof(struct aac_fibhdr) -
-			sizeof(struct aac_write) + sizeof(struct sgentry)) /
+			sizeof(struct aac_write)) /
 				sizeof(struct sgentry);
 		if (dev->dac_support) {
 			dev->a_ops.adapter_read = aac_read_block64;
@@ -2277,8 +2277,7 @@ int aac_get_adapter_info(struct aac_dev* dev)
 			dev->scsi_host_ptr->sg_tablesize =
 				(dev->max_fib_size -
 				sizeof(struct aac_fibhdr) -
-				sizeof(struct aac_write64) +
-				sizeof(struct sgentry64)) /
+				sizeof(struct aac_write64)) /
 					sizeof(struct sgentry64);
 		} else {
 			dev->a_ops.adapter_read = aac_read_block;
@@ -3222,8 +3221,8 @@ int aac_scsi_cmd(struct scsi_cmnd * scsicmd)
 			break;
 		}
 		fallthrough;
-	case RESERVE:
-	case RELEASE:
+	case RESERVE_6:
+	case RELEASE_6:
 	case REZERO_UNIT:
 	case REASSIGN_BLOCKS:
 	case SEEK_10:
@@ -3288,7 +3287,7 @@ static int query_disk(struct aac_dev *dev, void __user *arg)
 	else
 		qd.unmapped = 0;
 
-	strlcpy(qd.name, fsa_dev_ptr[qd.cnum].devname,
+	strscpy(qd.name, fsa_dev_ptr[qd.cnum].devname,
 	  min(sizeof(qd.name), sizeof(fsa_dev_ptr[qd.cnum].devname) + 1));
 
 	if (copy_to_user(arg, &qd, sizeof (struct aac_query_disk)))
@@ -4011,7 +4010,7 @@ static int aac_convert_sgraw2(struct aac_raw_io2 *rio2, int pages, int nseg, int
 	if (aac_convert_sgl == 0)
 		return 0;
 
-	sge = kmalloc_array(nseg_new, sizeof(*sge), GFP_ATOMIC);
+	sge = kmalloc_objs(*sge, nseg_new, GFP_ATOMIC);
 	if (sge == NULL)
 		return -ENOMEM;
 

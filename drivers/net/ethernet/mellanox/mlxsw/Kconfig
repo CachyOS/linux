@@ -7,6 +7,7 @@ config MLXSW_CORE
 	tristate "Mellanox Technologies Switch ASICs support"
 	select NET_DEVLINK
 	select MLXFW
+	select AUXILIARY_BUS
 	help
 	  This driver supports Mellanox Technologies Switch ASICs family.
 
@@ -32,6 +33,7 @@ config MLXSW_CORE_THERMAL
 config MLXSW_PCI
 	tristate "PCI bus implementation for Mellanox Technologies Switch ASICs"
 	depends on PCI && HAS_IOMEM && MLXSW_CORE
+	select PAGE_POOL
 	default m
 	help
 	  This is PCI bus implementation for Mellanox Technologies Switch ASICs.

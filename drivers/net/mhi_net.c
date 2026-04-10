@@ -104,19 +104,19 @@ static void mhi_ndo_get_stats64(struct net_device *ndev,
 	unsigned int start;
 
 	do {
-		start = u64_stats_fetch_begin_irq(&mhi_netdev->stats.rx_syncp);
+		start = u64_stats_fetch_begin(&mhi_netdev->stats.rx_syncp);
 		stats->rx_packets = u64_stats_read(&mhi_netdev->stats.rx_packets);
 		stats->rx_bytes = u64_stats_read(&mhi_netdev->stats.rx_bytes);
 		stats->rx_errors = u64_stats_read(&mhi_netdev->stats.rx_errors);
-	} while (u64_stats_fetch_retry_irq(&mhi_netdev->stats.rx_syncp, start));
+	} while (u64_stats_fetch_retry(&mhi_netdev->stats.rx_syncp, start));
 
 	do {
-		start = u64_stats_fetch_begin_irq(&mhi_netdev->stats.tx_syncp);
+		start = u64_stats_fetch_begin(&mhi_netdev->stats.tx_syncp);
 		stats->tx_packets = u64_stats_read(&mhi_netdev->stats.tx_packets);
 		stats->tx_bytes = u64_stats_read(&mhi_netdev->stats.tx_bytes);
 		stats->tx_errors = u64_stats_read(&mhi_netdev->stats.tx_errors);
 		stats->tx_dropped = u64_stats_read(&mhi_netdev->stats.tx_dropped);
-	} while (u64_stats_fetch_retry_irq(&mhi_netdev->stats.tx_syncp, start));
+	} while (u64_stats_fetch_retry(&mhi_netdev->stats.tx_syncp, start));
 }
 
 static const struct net_device_ops mhi_netdev_ops = {
@@ -343,6 +343,8 @@ static void mhi_net_dellink(struct mhi_device *mhi_dev, struct net_device *ndev)
 
 	kfree_skb(mhi_netdev->skbagg_head);
 
+	free_netdev(ndev);
+
 	dev_set_drvdata(&mhi_dev->dev, NULL);
 }
 
@@ -401,7 +403,6 @@ static struct mhi_driver mhi_net_driver = {
 	.id_table = mhi_net_id_table,
 	.driver = {
 		.name = "mhi_net",
-		.owner = THIS_MODULE,
 	},
 };
 

@@ -14,7 +14,13 @@ properties:
     oneOf:
       - const: fsl,imx-irqsteer
       - items:
-          - const: fsl,imx8m-irqsteer
+          - enum:
+              - fsl,imx8m-irqsteer
+              - fsl,imx8mp-irqsteer
+              - fsl,imx8qm-irqsteer
+              - fsl,imx8qxp-irqsteer
+              - fsl,imx94-irqsteer
+              - fsl,imx95-irqsteer
           - const: fsl,imx-irqsteer
 
   reg:
@@ -42,19 +48,22 @@ properties:
   clock-names:
     const: ipg
 
+  power-domains:
+    maxItems: 1
+
   interrupt-controller: true
 
   "#interrupt-cells":
     const: 1
 
   fsl,channel:
-    $ref: '/schemas/types.yaml#/definitions/uint32'
+    $ref: /schemas/types.yaml#/definitions/uint32
     description: |
       u32 value representing the output channel that all input IRQs should be
       steered into.
 
   fsl,num-irqs:
-    $ref: '/schemas/types.yaml#/definitions/uint32'
+    $ref: /schemas/types.yaml#/definitions/uint32
     description: |
       u32 value representing the number of input interrupts of this channel,
       should be multiple of 32 input interrupts and up to 512 interrupts.
@@ -69,6 +78,23 @@ required:
   - "#interrupt-cells"
   - fsl,channel
   - fsl,num-irqs
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - fsl,imx8mp-irqsteer
+              - fsl,imx8qm-irqsteer
+              - fsl,imx8qxp-irqsteer
+              - fsl,imx95-irqsteer
+    then:
+      required:
+        - power-domains
+    else:
+      properties:
+        power-domains: false
 
 additionalProperties: false
 

@@ -708,7 +708,7 @@ void ath6kl_tx_complete(struct htc_target *target,
 				 packet->endpoint >= ENDPOINT_MAX))
 			continue;
 
-		ath6kl_cookie = (struct ath6kl_cookie *)packet->pkt_cntxt;
+		ath6kl_cookie = packet->pkt_cntxt;
 		if (WARN_ON_ONCE(!ath6kl_cookie))
 			continue;
 
@@ -1623,7 +1623,8 @@ void ath6kl_rx(struct htc_target *target, struct htc_packet *packet)
 static void aggr_timeout(struct timer_list *t)
 {
 	u8 i, j;
-	struct aggr_info_conn *aggr_conn = from_timer(aggr_conn, t, timer);
+	struct aggr_info_conn *aggr_conn = timer_container_of(aggr_conn, t,
+						              timer);
 	struct rxtid *rxtid;
 	struct rxtid_stats *stats;
 
@@ -1769,13 +1770,13 @@ struct aggr_info *aggr_init(struct ath6kl_vif *vif)
 {
 	struct aggr_info *p_aggr = NULL;
 
-	p_aggr = kzalloc(sizeof(struct aggr_info), GFP_KERNEL);
+	p_aggr = kzalloc_obj(struct aggr_info);
 	if (!p_aggr) {
 		ath6kl_err("failed to alloc memory for aggr_node\n");
 		return NULL;
 	}
 
-	p_aggr->aggr_conn = kzalloc(sizeof(struct aggr_info_conn), GFP_KERNEL);
+	p_aggr->aggr_conn = kzalloc_obj(struct aggr_info_conn);
 	if (!p_aggr->aggr_conn) {
 		ath6kl_err("failed to alloc memory for connection specific aggr info\n");
 		kfree(p_aggr);
@@ -1827,7 +1828,7 @@ void aggr_reset_state(struct aggr_info_conn *aggr_conn)
 		return;
 
 	if (aggr_conn->timer_scheduled) {
-		del_timer(&aggr_conn->timer);
+		timer_delete(&aggr_conn->timer);
 		aggr_conn->timer_scheduled = false;
 	}
 

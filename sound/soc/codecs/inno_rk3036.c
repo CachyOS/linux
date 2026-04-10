@@ -387,7 +387,6 @@ static const struct snd_soc_component_driver rk3036_codec_driver = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config rk3036_codec_regmap_config = {
@@ -458,13 +457,11 @@ static int rk3036_codec_platform_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int rk3036_codec_platform_remove(struct platform_device *pdev)
+static void rk3036_codec_platform_remove(struct platform_device *pdev)
 {
 	struct rk3036_codec_priv *priv = dev_get_drvdata(&pdev->dev);
 
 	clk_disable_unprepare(priv->pclk);
-
-	return 0;
 }
 
 static const struct of_device_id rk3036_codec_of_match[] __maybe_unused = {

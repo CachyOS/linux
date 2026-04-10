@@ -5,13 +5,16 @@
  * Author: Fabian Vogt <fabian@ritter-vogt.de>
  */
 
-#include <linux/spinlock.h>
+#include <linux/bitops.h>
 #include <linux/errno.h>
 #include <linux/init.h>
-#include <linux/bitops.h>
 #include <linux/io.h>
-#include <linux/of_device.h>
+#include <linux/mod_devicetable.h>
+#include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
+
 #include <linux/gpio/driver.h>
 
 /*
@@ -88,7 +91,7 @@ static int zevio_gpio_get(struct gpio_chip *chip, unsigned pin)
 	return (val >> ZEVIO_GPIO_BIT(pin)) & 0x1;
 }
 
-static void zevio_gpio_set(struct gpio_chip *chip, unsigned pin, int value)
+static int zevio_gpio_set(struct gpio_chip *chip, unsigned int pin, int value)
 {
 	struct zevio_gpio *controller = gpiochip_get_data(chip);
 	u32 val;
@@ -102,6 +105,8 @@ static void zevio_gpio_set(struct gpio_chip *chip, unsigned pin, int value)
 
 	zevio_gpio_port_set(controller, pin, ZEVIO_GPIO_OUTPUT, val);
 	spin_unlock(&controller->lock);
+
+	return 0;
 }
 
 static int zevio_gpio_direction_input(struct gpio_chip *chip, unsigned pin)
@@ -162,12 +167,12 @@ static const struct gpio_chip zevio_gpio_chip = {
 	.base			= 0,
 	.owner			= THIS_MODULE,
 	.ngpio			= 32,
-	.of_gpio_n_cells	= 2,
 };
 
 /* Initialization */
 static int zevio_gpio_probe(struct platform_device *pdev)
 {
+	struct device *dev = &pdev->dev;
 	struct zevio_gpio *controller;
 	int status, i;
 
@@ -175,11 +180,13 @@ static int zevio_gpio_probe(struct platform_device *pdev)
 	if (!controller)
 		return -ENOMEM;
 
-	platform_set_drvdata(pdev, controller);
-
 	/* Copy our reference */
 	controller->chip = zevio_gpio_chip;
 	controller->chip.parent = &pdev->dev;
+
+	controller->chip.label = devm_kasprintf(dev, GFP_KERNEL, "%pfw", dev_fwnode(dev));
+	if (!controller->chip.label)
+		return -ENOMEM;
 
 	controller->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(controller->regs))

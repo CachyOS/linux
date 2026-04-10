@@ -9,9 +9,9 @@
  * Author: Gerald Schaefer <gerald.schaefer@de.ibm.com>
  */
 
-#define KMSG_COMPONENT	"appldata"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "appldata: " fmt
 
+#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/sched/stat.h>
 #include <linux/init.h>
@@ -26,12 +26,10 @@
 #include <linux/notifier.h>
 #include <linux/cpu.h>
 #include <linux/workqueue.h>
-#include <linux/suspend.h>
-#include <linux/platform_device.h>
+#include <linux/uaccess.h>
+#include <linux/io.h>
 #include <asm/appldata.h>
 #include <asm/vtimer.h>
-#include <linux/uaccess.h>
-#include <asm/io.h>
 #include <asm/smp.h>
 
 #include "appldata.h"
@@ -44,19 +42,17 @@
 #define TOD_MICRO	0x01000			/* nr. of TOD clock units
 						   for 1 microsecond */
 
-static struct platform_device *appldata_pdev;
-
 /*
  * /proc entries (sysctl)
  */
 static const char appldata_proc_name[APPLDATA_PROC_NAME_LENGTH] = "appldata";
-static int appldata_timer_handler(struct ctl_table *ctl, int write,
+static int appldata_timer_handler(const struct ctl_table *ctl, int write,
 				  void *buffer, size_t *lenp, loff_t *ppos);
-static int appldata_interval_handler(struct ctl_table *ctl, int write,
+static int appldata_interval_handler(const struct ctl_table *ctl, int write,
 				     void *buffer, size_t *lenp, loff_t *ppos);
 
 static struct ctl_table_header *appldata_sysctl_header;
-static struct ctl_table appldata_table[] = {
+static const struct ctl_table appldata_table[] = {
 	{
 		.procname	= "timer",
 		.mode		= S_IRUGO | S_IWUSR,
@@ -67,17 +63,6 @@ static struct ctl_table appldata_table[] = {
 		.mode		= S_IRUGO | S_IWUSR,
 		.proc_handler	= appldata_interval_handler,
 	},
-	{ },
-};
-
-static struct ctl_table appldata_dir_table[] = {
-	{
-		.procname	= appldata_proc_name,
-		.maxlen		= 0,
-		.mode		= S_IRUGO | S_IXUGO,
-		.child		= appldata_table,
-	},
-	{ },
 };
 
 /*
@@ -88,7 +73,6 @@ static struct vtimer_list appldata_timer;
 static DEFINE_SPINLOCK(appldata_timer_lock);
 static int appldata_interval = APPLDATA_CPU_INTERVAL;
 static int appldata_timer_active;
-static int appldata_timer_suspended = 0;
 
 /*
  * Work queue
@@ -156,7 +140,7 @@ int appldata_diag(char record_nr, u16 function, unsigned long buffer,
 	struct appldata_product_id *id;
 	int rc;
 
-	parm_list = kmalloc(sizeof(*parm_list), GFP_KERNEL);
+	parm_list = kmalloc_obj(*parm_list);
 	id = kmemdup(&appldata_id, sizeof(appldata_id), GFP_KERNEL);
 	rc = -ENOMEM;
 	if (parm_list && id) {
@@ -215,7 +199,7 @@ static void __appldata_vtimer_setup(int cmd)
  * Start/Stop timer, show status of timer (0 = not active, 1 = active)
  */
 static int
-appldata_timer_handler(struct ctl_table *ctl, int write,
+appldata_timer_handler(const struct ctl_table *ctl, int write,
 			   void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int timer_active = appldata_timer_active;
@@ -248,7 +232,7 @@ appldata_timer_handler(struct ctl_table *ctl, int write,
  * current timer interval.
  */
 static int
-appldata_interval_handler(struct ctl_table *ctl, int write,
+appldata_interval_handler(const struct ctl_table *ctl, int write,
 			   void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int interval = appldata_interval;
@@ -278,7 +262,7 @@ appldata_interval_handler(struct ctl_table *ctl, int write,
  * monitoring (0 = not in process, 1 = in process)
  */
 static int
-appldata_generic_handler(struct ctl_table *ctl, int write,
+appldata_generic_handler(const struct ctl_table *ctl, int write,
 			   void *buffer, size_t *lenp, loff_t *ppos)
 {
 	struct appldata_ops *ops = NULL, *tmp_ops;
@@ -296,7 +280,7 @@ appldata_generic_handler(struct ctl_table *ctl, int write,
 	mutex_lock(&appldata_ops_mutex);
 	list_for_each(lh, &appldata_ops_list) {
 		tmp_ops = list_entry(lh, struct appldata_ops, list);
-		if (&tmp_ops->ctl_table[2] == ctl) {
+		if (&tmp_ops->ctl_table[0] == ctl) {
 			found = 1;
 		}
 	}
@@ -366,7 +350,7 @@ int appldata_register_ops(struct appldata_ops *ops)
 	if (ops->size > APPLDATA_MAX_REC_SIZE)
 		return -EINVAL;
 
-	ops->ctl_table = kcalloc(4, sizeof(struct ctl_table), GFP_KERNEL);
+	ops->ctl_table = kzalloc_objs(struct ctl_table, 1);
 	if (!ops->ctl_table)
 		return -ENOMEM;
 
@@ -374,17 +358,12 @@ int appldata_register_ops(struct appldata_ops *ops)
 	list_add(&ops->list, &appldata_ops_list);
 	mutex_unlock(&appldata_ops_mutex);
 
-	ops->ctl_table[0].procname = appldata_proc_name;
-	ops->ctl_table[0].maxlen   = 0;
-	ops->ctl_table[0].mode     = S_IRUGO | S_IXUGO;
-	ops->ctl_table[0].child    = &ops->ctl_table[2];
+	ops->ctl_table[0].procname = ops->name;
+	ops->ctl_table[0].mode = S_IRUGO | S_IWUSR;
+	ops->ctl_table[0].proc_handler = appldata_generic_handler;
+	ops->ctl_table[0].data = ops;
 
-	ops->ctl_table[2].procname = ops->name;
-	ops->ctl_table[2].mode     = S_IRUGO | S_IWUSR;
-	ops->ctl_table[2].proc_handler = appldata_generic_handler;
-	ops->ctl_table[2].data = ops;
-
-	ops->sysctl_header = register_sysctl_table(ops->ctl_table);
+	ops->sysctl_header = register_sysctl_sz(appldata_proc_name, ops->ctl_table, 1);
 	if (!ops->sysctl_header)
 		goto out;
 	return 0;
@@ -412,88 +391,6 @@ void appldata_unregister_ops(struct appldata_ops *ops)
 /********************** module-ops management <END> **************************/
 
 
-/**************************** suspend / resume *******************************/
-static int appldata_freeze(struct device *dev)
-{
-	struct appldata_ops *ops;
-	int rc;
-	struct list_head *lh;
-
-	spin_lock(&appldata_timer_lock);
-	if (appldata_timer_active) {
-		__appldata_vtimer_setup(APPLDATA_DEL_TIMER);
-		appldata_timer_suspended = 1;
-	}
-	spin_unlock(&appldata_timer_lock);
-
-	mutex_lock(&appldata_ops_mutex);
-	list_for_each(lh, &appldata_ops_list) {
-		ops = list_entry(lh, struct appldata_ops, list);
-		if (ops->active == 1) {
-			rc = appldata_diag(ops->record_nr, APPLDATA_STOP_REC,
-					(unsigned long) ops->data, ops->size,
-					ops->mod_lvl);
-			if (rc != 0)
-				pr_err("Stopping the data collection for %s "
-				       "failed with rc=%d\n", ops->name, rc);
-		}
-	}
-	mutex_unlock(&appldata_ops_mutex);
-	return 0;
-}
-
-static int appldata_restore(struct device *dev)
-{
-	struct appldata_ops *ops;
-	int rc;
-	struct list_head *lh;
-
-	spin_lock(&appldata_timer_lock);
-	if (appldata_timer_suspended) {
-		__appldata_vtimer_setup(APPLDATA_ADD_TIMER);
-		appldata_timer_suspended = 0;
-	}
-	spin_unlock(&appldata_timer_lock);
-
-	mutex_lock(&appldata_ops_mutex);
-	list_for_each(lh, &appldata_ops_list) {
-		ops = list_entry(lh, struct appldata_ops, list);
-		if (ops->active == 1) {
-			ops->callback(ops->data);	// init record
-			rc = appldata_diag(ops->record_nr,
-					APPLDATA_START_INTERVAL_REC,
-					(unsigned long) ops->data, ops->size,
-					ops->mod_lvl);
-			if (rc != 0) {
-				pr_err("Starting the data collection for %s "
-				       "failed with rc=%d\n", ops->name, rc);
-			}
-		}
-	}
-	mutex_unlock(&appldata_ops_mutex);
-	return 0;
-}
-
-static int appldata_thaw(struct device *dev)
-{
-	return appldata_restore(dev);
-}
-
-static const struct dev_pm_ops appldata_pm_ops = {
-	.freeze		= appldata_freeze,
-	.thaw		= appldata_thaw,
-	.restore	= appldata_restore,
-};
-
-static struct platform_driver appldata_pdrv = {
-	.driver = {
-		.name	= "appldata",
-		.pm	= &appldata_pm_ops,
-	},
-};
-/************************* suspend / resume <END> ****************************/
-
-
 /******************************* init / exit *********************************/
 
 /*
@@ -503,36 +400,14 @@ static struct platform_driver appldata_pdrv = {
  */
 static int __init appldata_init(void)
 {
-	int rc;
-
 	init_virt_timer(&appldata_timer);
 	appldata_timer.function = appldata_timer_function;
 	appldata_timer.data = (unsigned long) &appldata_work;
-
-	rc = platform_driver_register(&appldata_pdrv);
-	if (rc)
-		return rc;
-
-	appldata_pdev = platform_device_register_simple("appldata", -1, NULL,
-							0);
-	if (IS_ERR(appldata_pdev)) {
-		rc = PTR_ERR(appldata_pdev);
-		goto out_driver;
-	}
 	appldata_wq = alloc_ordered_workqueue("appldata", 0);
-	if (!appldata_wq) {
-		rc = -ENOMEM;
-		goto out_device;
-	}
-
-	appldata_sysctl_header = register_sysctl_table(appldata_dir_table);
+	if (!appldata_wq)
+		return -ENOMEM;
+	appldata_sysctl_header = register_sysctl(appldata_proc_name, appldata_table);
 	return 0;
-
-out_device:
-	platform_device_unregister(appldata_pdev);
-out_driver:
-	platform_driver_unregister(&appldata_pdrv);
-	return rc;
 }
 
 __initcall(appldata_init);

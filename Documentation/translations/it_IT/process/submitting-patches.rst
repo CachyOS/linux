@@ -18,15 +18,17 @@ Questo documento contiene un vasto numero di suggerimenti concisi. Per maggiori
 dettagli su come funziona il processo di sviluppo del kernel leggete
 Documentation/translations/it_IT/process/development-process.rst. Leggete anche
 Documentation/translations/it_IT/process/submit-checklist.rst per una lista di
-punti da verificare prima di inviare del codice. Se state inviando un driver,
-allora leggete anche
-Documentation/translations/it_IT/process/submitting-drivers.rst; per delle patch
-relative alle associazioni per Device Tree leggete
+punti da verificare prima di inviare del codice.
+Per delle patch relative alle associazioni per Device Tree leggete
 Documentation/translations/it_IT/process/submitting-patches.rst.
 
 Questa documentazione assume che sappiate usare ``git`` per preparare le patch.
 Se non siete pratici di ``git``, allora è bene che lo impariate;
 renderà la vostra vita di sviluppatore del kernel molto più semplice.
+
+I sorgenti di alcuni sottosistemi e manutentori contengono più informazioni
+riguardo al loro modo di lavorare ed aspettative. Consultate
+:ref:`Documentation/translations/it_IT/process/maintainer-handbooks.rst <it_maintainer_handbooks_main>`
 
 Ottenere i sorgenti attuali
 ---------------------------
@@ -84,11 +86,11 @@ comporti come descritto.
 
 I manutentori vi saranno grati se scrivete la descrizione della patch in un
 formato che sia compatibile con il gestore dei sorgenti usato dal kernel,
-``git``, come un "commit log".  Leggete :ref:`it_explicit_in_reply_to`.
+``git``, come un "commit log". Leggete :ref:`it_the_canonical_patch_format`.
 
 Risolvete solo un problema per patch.  Se la vostra descrizione inizia ad
 essere lunga, potrebbe essere un segno che la vostra patch necessita d'essere
-divisa. Leggete :ref:`split_changes`.
+divisa. Leggete :ref:`it_split_changes`.
 
 Quando inviate o rinviate una patch o una serie, includete la descrizione
 completa delle modifiche e la loro giustificazione.  Non limitatevi a dire che
@@ -103,18 +105,6 @@ Descrivete le vostro modifiche usando l'imperativo, per esempio "make xyzzy
 do frotz" piuttosto che "[This patch] makes xyzzy do frotz" or "[I] changed
 xyzzy to do frotz", come se steste dando ordini al codice di cambiare il suo
 comportamento.
-
-Se la patch corregge un baco conosciuto, fare riferimento a quel baco inserendo
-il suo numero o il suo URL.  Se la patch è la conseguenza di una discussione
-su una lista di discussione, allora fornite l'URL all'archivio di quella
-discussione;  usate i collegamenti a https://lore.kernel.org/ con il
-``Message-Id``, in questo modo vi assicurerete che il collegamento non diventi
-invalido nel tempo.
-
-Tuttavia, cercate di rendere la vostra spiegazione comprensibile anche senza
-far riferimento a fonti esterne.  In aggiunta ai collegamenti a bachi e liste
-di discussione, riassumente i punti più importanti della discussione che hanno
-portato alla creazione della patch.
 
 Se volete far riferimento a uno specifico commit, non usate solo
 l'identificativo SHA-1.  Per cortesia, aggiungete anche la breve riga
@@ -131,6 +121,44 @@ dell'identificativo SHA-1.  Il repositorio del kernel ha *molti* oggetti e
 questo rende possibile la collisione fra due identificativi con pochi
 caratteri.  Tenete ben presente che anche se oggi non ci sono collisioni con il
 vostro identificativo a 6 caratteri, potrebbero essercene fra 5 anni da oggi.
+
+Se ci sono delle discussioni, o altre informazioni d'interesse, che fanno
+riferimento alla patch, allora aggiungete l'etichetta 'Link:' per farvi
+riferimento. Se la patch è il risultato di una discussione avvenuta
+precedentemente o di un documento sul presente sul web, allora fatevi
+riferimento.
+
+Per esempio, se la vostra patch corregge un baco potete aggiungere
+quest'etichetta per fare riferimento ad un rapporto su una lista di discussione
+o un *bug tracker*. Un altro esempio; potete usare quest'etichetta per far
+riferimento ad una discussione precedentemente avvenuta su una lista di
+discussione, o qualcosa di documentato sul web, da cui poi è nata la patch in
+questione.
+
+Quando volete fare riferimento ad una lista di discussione, preferite il
+servizio d'archiviazione lore.kernel.org. Per create un collegamento URL è
+sufficiente usare il campo ``Message-ID``, presente nell'intestazione del
+messaggio, senza parentesi angolari. Per esempio::
+
+     Link: https://lore.kernel.org/30th.anniversary.repost@klaava.Helsinki.FI
+
+Prima d'inviare il messaggio ricordatevi di verificare che il collegamento così
+creato funzioni e che indirizzi verso il messaggio desiderato.
+
+Tuttavia, provate comunque a dare una spiegazione comprensibile anche senza
+accedere alle fonti esterne. Inoltre, riassumente i punti più salienti che hanno
+condotto all'invio della patch.
+
+Se il collegamento indirizza verso un rapporto su un baco risolto dalla patch,
+allora usate l'etichetta "Closes:"::
+
+       Closes: https://example.com/issues/1234  optional-other-stuff
+
+Alcune piattaforme di tracciamento di bachi hanno la capacità di chiudere
+automaticamente il problema se l'etichetta è presente nel messaggio. Alcuni
+automatismi che monitorano la liste di discussione possono anche tracciare
+queste etichette e intraprendere azioni. Piattaforme private e URL invalidi sono
+proibiti.
 
 Se la vostra patch corregge un baco in un commit specifico, per esempio avete
 trovato un problema usando ``git bisect``, per favore usate l'etichetta
@@ -224,12 +252,19 @@ nella vostra patch.
 5) Selezionate i destinatari della vostra patch
 -----------------------------------------------
 
-Dovreste sempre inviare una copia della patch ai manutentori dei sottosistemi
-interessati dalle modifiche; date un'occhiata al file MAINTAINERS e alla storia
-delle revisioni per scoprire chi si occupa del codice.  Lo script
-scripts/get_maintainer.pl può esservi d'aiuto.  Se non riuscite a trovare un
-manutentore per il sottosistema su cui state lavorando, allora Andrew Morton
+Dovreste sempre inviare una copia della patch ai manutentori e alle liste di
+discussione dei sottosistemi interessati dalle modifiche; date un'occhiata al
+file MAINTAINERS e alla storia delle revisioni per scoprire chi si occupa del
+codice. Lo script scripts/get_maintainer.pl può esservi d'aiuto (passategli il
+percorso alle vostre patch). Se non riuscite a trovare un manutentore per il
+sottosistema su cui state lavorando, allora Andrew Morton
 (akpm@linux-foundation.org) sarà la vostra ultima possibilità.
+
+La lista linux-kernel@vger.kernel.org dovrebbe essere usata per l'invio di tutte
+le patch, ma il volume ha raggiunto un livello tale d'aver spinto alcuni
+sviluppatori a non seguirla più. Dunque, per favore, evitate di inviare messaggi
+scorrelati al tema della lista o a persone che non dovrebbero essere
+interessate all'argomento.
 
 Normalmente, dovreste anche scegliere una lista di discussione a cui inviare la
 vostra serie di patch. La lista di discussione linux-kernel@vger.kernel.org
@@ -240,11 +275,9 @@ patch riceverà molta più attenzione. Tuttavia, per favore, non spammate le lis
 di discussione che non sono interessate al vostro lavoro.
 
 Molte delle liste di discussione relative al kernel vengono ospitate su
-vger.kernel.org; potete trovare un loro elenco alla pagina
-http://vger.kernel.org/vger-lists.html.  Tuttavia, ci sono altre liste di
-discussione ospitate altrove.
-
-Non inviate più di 15 patch alla volta sulle liste di discussione vger!!!
+kernel.org; potete trovare un loro elenco alla pagina
+https://subspace.kernel.org. Tuttavia, ci sono altre liste di discussione
+ospitate altrove.
 
 L'ultimo giudizio sull'integrazione delle modifiche accettate spetta a
 Linux Torvalds.  Il suo indirizzo e-mail è <torvalds@linux-foundation.org>.
@@ -258,7 +291,7 @@ embargo potrebbe essere preso in considerazione per dare il tempo alle
 distribuzioni di prendere la patch e renderla disponibile ai loro utenti;
 in questo caso, ovviamente, la patch non dovrebbe essere inviata su alcuna
 lista di discussione pubblica. Leggete anche
-Documentation/admin-guide/security-bugs.rst.
+Documentation/process/security-bugs.rst.
 
 Patch che correggono bachi importanti su un kernel già rilasciato, dovrebbero
 essere inviate ai manutentori dei kernel stabili aggiungendo la seguente riga::
@@ -324,13 +357,46 @@ cosa stia accadendo.
 
 Assicuratevi di dire ai revisori quali cambiamenti state facendo e di
 ringraziarli per il loro tempo.  Revisionare codice è un lavoro faticoso e che
-richiede molto tempo, e a volte i revisori diventano burberi.  Tuttavia, anche
-in questo caso, rispondete con educazione e concentratevi sul problema che
-hanno evidenziato.
+richiede molto tempo, e a volte i revisori diventano burberi. Tuttavia, anche in
+questo caso, rispondete con educazione e concentratevi sul problema che hanno
+evidenziato. Quando inviate una versione successiva ricordatevi di aggiungere un
+``patch changelog`` alla email di intestazione o ad ogni singola patch spiegando
+le differenze rispetto a sottomissioni precedenti (vedere
+:ref:`it_the_canonical_patch_format`). Aggiungete a CC tutte le persone che
+vi hanno fornito dei commenti per notificarle di eventuali nuove versioni.
 
 Leggete Documentation/translations/it_IT/process/email-clients.rst per
 le raccomandazioni sui programmi di posta elettronica e l'etichetta da usare
 sulle liste di discussione.
+
+.. _it_interleaved_replies:
+
+Rispondere alle email in riga e riducendo la citazioni
+------------------------------------------------------
+
+Nelle discussioni riguardo allo sviluppo del kernel viene fortemente scoraggiato
+l'uso di risposte in cima ai messaggi di posta elettronica. Rispondere in riga
+rende le conversazioni molto più scorrevoli. Maggiori dettagli possono essere
+trovati qui: https://en.wikipedia.org/wiki/Posting_style#Interleaved_style
+
+Come spesso citato nelle liste di discussione::
+
+  R: http://en.wikipedia.org/wiki/Top_post
+  D: Dove posso trovare informazioni riguardo alle "risposte in cima"?
+  R: Perché incasina il normale ordine con cui si legge un testo.
+  D: Perché è così terribile rispondere in cima?
+  R: Risposte in cima.
+  Q: Qual è la cosa più fastidiosa nei messaggi di posta elettronica?
+
+Allo stesso modo, per favore eliminate tutte le citazioni non necessarie per la
+vostra risposta. Questo permette di trovare più facilmente le risposte, e
+permette di risparmiare tempo e spazio. Per maggiori dettagli:
+http://daringfireball.net/2007/07/on_top ::
+
+  R: No.
+  D: Dovrei includere un blocco di citazione dopo la mia risposta?
+
+.. _it_resend_reminders:
 
 Non scoraggiatevi - o impazientitevi
 ------------------------------------
@@ -339,10 +405,10 @@ Dopo che avete inviato le vostre modifiche, siate pazienti e aspettate.
 I revisori sono persone occupate e potrebbero non ricevere la vostra patch
 immediatamente.
 
-Un tempo, le patch erano solite scomparire nel vuoto senza alcun commento,
-ma ora il processo di sviluppo funziona meglio.  Dovreste ricevere commenti
-in una settimana o poco più; se questo non dovesse accadere, assicuratevi di
-aver inviato le patch correttamente.  Aspettate almeno una settimana prima di
+Un tempo, le patch erano solite scomparire nel vuoto senza alcun commento, ma
+ora il processo di sviluppo funziona meglio. Dovreste ricevere commenti in poche
+settimane (tipicamente 2 o 3); se questo non dovesse accadere, assicuratevi di
+aver inviato le patch correttamente. Aspettate almeno una settimana prima di
 rinviare le modifiche o sollecitare i revisori - probabilmente anche di più
 durante la finestra d'integrazione.
 
@@ -410,7 +476,7 @@ poi dovete solo aggiungere una riga che dice::
 
 	Signed-off-by: Random J Developer <random@developer.example.org>
 
-usando il vostro vero nome (spiacenti, non si accettano pseudonimi o
+usando il vostro vero nome (spiacenti, non si accettano
 contributi anonimi). Questo verrà fatto automaticamente se usate
 ``git commit -s``. Anche il ripristino di uno stato precedente dovrebbe
 includere "Signed-off-by", se usate ``git revert -s`` questo verrà
@@ -504,7 +570,12 @@ Utilizzare Reported-by:, Tested-by:, Reviewed-by:, Suggested-by: e Fixes:
 L'etichetta Reported-by da credito alle persone che trovano e riportano i bachi
 e si spera che questo possa ispirarli ad aiutarci nuovamente in futuro.
 Rammentate che se il baco è stato riportato in privato, dovrete chiedere il
-permesso prima di poter utilizzare l'etichetta Reported-by.
+permesso prima di poter utilizzare l'etichetta Reported-by. Questa etichetta va
+usata per i bachi, dunque non usatela per richieste di nuove funzionalità.
+Questa etichetta dovrebbe essere seguita da quella Closes: con un indirizzo al
+rapporto, a meno che questo non sia disponibile sul web. L'etichetta Link: può
+essere usata in alternativa a Closes: se la patch corregge solo in parte il
+problema riportato nel rapporto.
 
 L'etichetta Tested-by: indica che la patch è stata verificata con successo
 (su un qualche sistema) dalla persona citata.  Questa etichetta informa i
@@ -512,7 +583,7 @@ manutentori che qualche verifica è stata fatta, fornisce un mezzo per trovare
 persone che possano verificare il codice in futuro, e garantisce che queste
 stesse persone ricevano credito per il loro lavoro.
 
-Reviewd-by:, invece, indica che la patch è stata revisionata ed è stata
+Reviewed-by:, invece, indica che la patch è stata revisionata ed è stata
 considerata accettabile in accordo con la dichiarazione dei revisori:
 
 Dichiarazione di svista dei revisori
@@ -543,13 +614,13 @@ una modifica che si ritiene appropriata e senza alcun problema tecnico
 importante.  Qualsiasi revisore interessato (quelli che lo hanno fatto)
 possono offrire il proprio Reviewed-by per la patch.  Questa etichetta serve
 a dare credito ai revisori e a informare i manutentori sul livello di revisione
-che è stato fatto sulla patch.  L'etichetta Reviewd-by, quando fornita da
+che è stato fatto sulla patch.  L'etichetta Reviewed-by, quando fornita da
 revisori conosciuti per la loro conoscenza sulla materia in oggetto e per la
 loro serietà nella revisione, accrescerà le probabilità che la vostra patch
 venga integrate nel kernel.
 
 Quando si riceve una email sulla lista di discussione da un tester o
-un revisore, le etichette Tested-by o Reviewd-by devono essere
+un revisore, le etichette Tested-by o Reviewed-by devono essere
 aggiunte dall'autore quando invierà nuovamente la patch. Tuttavia, se
 la patch è cambiata in modo significativo, queste etichette potrebbero
 non avere più senso e quindi andrebbero rimosse. Solitamente si tiene traccia
@@ -573,6 +644,8 @@ Da notare che aggiungere un tag "Fixes:" non esime dalle regole
 previste per i kernel stabili, e nemmeno dalla necessità di aggiungere
 in copia conoscenza stable@vger.kernel.org su tutte le patch per
 suddetti kernel.
+
+.. _it_the_canonical_patch_format:
 
 Il formato canonico delle patch
 -------------------------------
@@ -719,6 +792,8 @@ messe correttamente oltre la riga.::
 
 Maggiori dettagli sul formato delle patch nei riferimenti qui di seguito.
 
+.. _it_backtraces:
+
 Aggiungere i *backtrace* nei messaggi di commit
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -757,11 +832,76 @@ giungla di riferimenti all'interno dei programmi di posta.  Se un collegamento
 ad una versione precedente di una serie di patch (per esempio, potete usarlo
 per l'email introduttiva alla serie).
 
+Fornire informazioni circa i sorgenti
+-------------------------------------
+
+Quando gli altri sviluppatori ricevono le vostre patch e iniziano il processo di
+revisione, è assolutamente necessario che sappiano qual è il commit/ramo di base
+su cui si base il vostro lavoro: considerate l'enorme quantità di sorgenti dei
+manutentori presenti al giorno d'oggi. Si noti ancora una volta la voce **T:**
+nel file MAINTAINERS spiegato sopra.
+
+Questo è ancora più importante per i processi automatizzati di CI che tentano di
+eseguire una serie di test per stabilire la qualità del codice prima che il
+manutentore inizi la revisione.
+
+Se si usa ``git format-patch`` per generare le patch, si possono includere
+automaticamente le informazioni sull'albero di base nell'invio usando il flag
+``--base``. Il modo più semplice e comodo di usare questa opzione è con i rami
+topici::
+
+    $ git checkout -t -b my-topical-branch master
+    Branch 'my-topical-branch' set up to track local branch 'master'.
+    Switched to a new branch 'my-topical-branch'
+
+    [perform your edits and commits]
+
+    $ git format-patch --base=auto --cover-letter -o outgoing/ master
+    outgoing/0000-cover-letter.patch
+    outgoing/0001-First-Commit.patch
+    outgoing/...
+
+Aprendo ``outgoing/0000-cover-letter.patch`` per la modifica, si noterà
+che ha ``base-commit:`` in fondo, questo fornisce al revisore e agli
+strumenti CI informazioni sufficienti per eseguire correttamente ``git am``
+senza preoccuparsi dei conflitti::
+
+    $ git checkout -b patch-review [base-commit-id]
+    Switched to a new branch 'patch-review'
+    $ git am patches.mbox
+    Applying: First Commit
+    Applying: ...
+
+Consultate ``man git-format-patch`` per maggiori informazioni circa questa
+opzione.
+
+.. note::
+
+   L'opzione ``--base`` fu introdotta con git versione 2.9.0
+
+Se non si usa git per produrre le patch, si può comunque includere
+``base-commit`` per indicare l'hash del commit dei sorgenti su cui si basa il
+lavoro. Dovreste aggiungerlo nella lettera di accompagnamento o nella prima
+patch della serie e dovrebbe essere collocato sotto la riga ``---`` o in fondo a
+tutti gli altri contenuti, subito prima della vostra firma e-mail.
+
+Assicuratevi che il commit si basi su sorgenti ufficiali del
+manutentore/mainline e non su sorgenti interni, accessibile solo a voi,
+altrimenti sarebbe inutile.
+
+Strumenti
+---------
+
+Molti degli aspetti più tecnici di questo processo possono essere automatizzati
+usando b4, la cui documentazione è disponibile all'indirizzo
+<https://b4.docs.kernel.org/en/latest/>. Può aiutare a tracciare la dipendenze,
+eseguire checkpatch e con la formattazione e l'invio di messaggi di posta.
+
 Riferimenti
 -----------
 
 Andrew Morton, "La patch perfetta" (tpp).
-  <http://www.ozlabs.org/~akpm/stuff/tpp.txt>
+  <https://www.ozlabs.org/~akpm/stuff/tpp.txt>
 
 Jeff Garzik, "Formato per la sottomissione di patch per il kernel Linux"
   <https://web.archive.org/web/20180829112450/http://linux.yyz.us/patch-format.html>
@@ -778,9 +918,6 @@ Greg Kroah-Hartman, "Come scocciare un manutentore di un sottosistema"
   <http://www.kroah.com/log/linux/maintainer-05.html>
 
   <http://www.kroah.com/log/linux/maintainer-06.html>
-
-No!!!! Basta gigantesche bombe patch alle persone sulla lista linux-kernel@vger.kernel.org!
-  <https://lore.kernel.org/r/20050711.125305.08322243.davem@davemloft.net>
 
 Kernel Documentation/translations/it_IT/process/coding-style.rst.
 

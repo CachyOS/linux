@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/mfd/st,stm32-timers.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: STMicroelectronics STM32 Timers bindings
+title: STMicroelectronics STM32 Timers
 
 description: |
   This hardware block provides 3 types of timer along with PWM functionality:
@@ -21,7 +21,9 @@ maintainers:
 
 properties:
   compatible:
-    const: st,stm32-timers
+    enum:
+      - st,stm32-timers
+      - st,stm32mp25-timers
 
   reg:
     maxItems: 1
@@ -33,7 +35,10 @@ properties:
     items:
       - const: int
 
-  reset:
+  resets:
+    maxItems: 1
+
+  power-domains:
     maxItems: 1
 
   dmas:
@@ -46,18 +51,40 @@ properties:
     minItems: 1
     maxItems: 7
 
+  interrupts:
+    oneOf:
+      - maxItems: 1
+      - maxItems: 4
+
+  interrupt-names:
+    oneOf:
+      - items:
+          - const: global
+      - items:
+          - const: brk
+          - const: up
+          - const: trg-com
+          - const: cc
+
   "#address-cells":
     const: 1
 
   "#size-cells":
     const: 0
 
+  access-controllers:
+    minItems: 1
+    maxItems: 2
+
   pwm:
     type: object
+    additionalProperties: false
 
     properties:
       compatible:
-        const: st,stm32-pwm
+        enum:
+          - st,stm32-pwm
+          - st,stm32mp25-pwm
 
       "#pwm-cells":
         const: 3
@@ -87,35 +114,40 @@ properties:
       - "#pwm-cells"
       - compatible
 
+  counter:
+    type: object
+    additionalProperties: false
+
+    properties:
+      compatible:
+        enum:
+          - st,stm32-timer-counter
+          - st,stm32mp25-timer-counter
+
+    required:
+      - compatible
+
 patternProperties:
   "^timer@[0-9]+$":
     type: object
+    additionalProperties: false
 
     properties:
       compatible:
         enum:
           - st,stm32-timer-trigger
           - st,stm32h7-timer-trigger
+          - st,stm32mp25-timer-trigger
 
       reg:
         description: Identify trigger hardware block.
         items:
           minimum: 0
-          maximum: 16
+          maximum: 19
 
     required:
       - compatible
       - reg
-
-  counter:
-    type: object
-
-    properties:
-      compatible:
-        const: st,stm32-timer-counter
-
-    required:
-      - compatible
 
 required:
   - compatible

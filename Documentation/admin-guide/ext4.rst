@@ -212,16 +212,6 @@ When mounting an ext4 filesystem, the following option are accepted:
         that ext4's inode table readahead algorithm will pre-read into the
         buffer cache.  The default value is 32 blocks.
 
-  nouser_xattr
-        Disables Extended User Attributes.  See the attr(5) manual page for
-        more information about extended attributes.
-
-  noacl
-        This option disables POSIX Access Control List support. If ACL support
-        is enabled in the kernel configuration (CONFIG_EXT4_FS_POSIX_ACL), ACL
-        is enabled by default on mount. See the acl(5) manual page for more
-        information about acl.
-
   bsddf	(*)
         Make 'df' act like BSD.
 
@@ -248,11 +238,10 @@ When mounting an ext4 filesystem, the following option are accepted:
         configured using tune2fs)
 
   data_err=ignore(*)
-        Just print an error message if an error occurs in a file data buffer in
-        ordered mode.
+        Just print an error message if an error occurs in a file data buffer.
+
   data_err=abort
-        Abort the journal if an error occurs in a file data buffer in ordered
-        mode.
+        Abort the journal if an error occurs in a file data buffer.
 
   grpid | bsdgroups
         New objects have the group ID of their parent.
@@ -409,7 +398,7 @@ There are 3 different data modes:
 * writeback mode
 
   In data=writeback mode, ext4 does not journal data at all.  This mode provides
-  a similar level of journaling as that of XFS, JFS, and ReiserFS in its default
+  a similar level of journaling as that of XFS and JFS in its default
   mode - metadata journaling.  A crash+recovery can cause incorrect data to
   appear in files which were written shortly before the crash.  This mode will
   typically provide the best ext4 performance.
@@ -488,9 +477,6 @@ Files in /sys/fs/ext4/<devname>:
         The multiblock allocator will round up allocation requests to a
         multiple of this tuning parameter if the stripe size is not set in the
         ext4 superblock
-
-  mb_max_inode_prealloc
-        The maximum length of per-inode ext4_prealloc_space list.
 
   mb_max_to_scan
         The maximum number of extents the multiblock allocator will search to

@@ -8,6 +8,8 @@
  *
  */
 
+#include "linux/virtio_net.h"
+#include <linux/cleanup.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/cdev.h>
@@ -21,11 +23,15 @@
 #include <linux/uio.h>
 #include <linux/vdpa.h>
 #include <linux/nospec.h>
+#include <linux/virtio.h>
+#include <linux/vmalloc.h>
+#include <linux/sched/mm.h>
 #include <uapi/linux/vduse.h>
 #include <uapi/linux/vdpa.h>
 #include <uapi/linux/virtio_config.h>
 #include <uapi/linux/virtio_ids.h>
 #include <uapi/linux/virtio_blk.h>
+#include <uapi/linux/virtio_ring.h>
 #include <linux/mod_devicetable.h>
 
 #include "iova_domain.h"
@@ -35,9 +41,25 @@
 #define DRV_LICENSE  "GPL v2"
 
 #define VDUSE_DEV_MAX (1U << MINORBITS)
+#define VDUSE_DEV_MAX_GROUPS 0xffff
+#define VDUSE_DEV_MAX_AS 0xffff
+#define VDUSE_MAX_BOUNCE_SIZE (1024 * 1024 * 1024)
+#define VDUSE_MIN_BOUNCE_SIZE (1024 * 1024)
 #define VDUSE_BOUNCE_SIZE (64 * 1024 * 1024)
-#define VDUSE_IOVA_SIZE (128 * 1024 * 1024)
+/* 128 MB reserved for virtqueue creation */
+#define VDUSE_IOVA_SIZE (VDUSE_MAX_BOUNCE_SIZE + 128 * 1024 * 1024)
 #define VDUSE_MSG_DEFAULT_TIMEOUT 30
+
+#define IRQ_UNBOUND -1
+
+/*
+ * VDUSE instance have not asked the vduse API version, so assume 0.
+ *
+ * Old devices may not ask for the device version and assume it is 0.  Keep
+ * this value for these.  From the moment the VDUSE instance ask for the
+ * version, convert to the latests supported one and continue regular flow
+ */
+#define VDUSE_API_VERSION_NOT_ASKED U64_MAX
 
 struct vduse_virtqueue {
 	u16 index;
@@ -49,12 +71,16 @@ struct vduse_virtqueue {
 	struct vdpa_vq_state state;
 	bool ready;
 	bool kicked;
+	u32 group;
 	spinlock_t kick_lock;
 	spinlock_t irq_lock;
 	struct eventfd_ctx *kickfd;
 	struct vdpa_callback cb;
 	struct work_struct inject;
 	struct work_struct kick;
+	int irq_effective_cpu;
+	struct cpumask irq_affinity;
+	struct kobject kobj;
 };
 
 struct vduse_dev;
@@ -64,11 +90,30 @@ struct vduse_vdpa {
 	struct vduse_dev *dev;
 };
 
+struct vduse_umem {
+	unsigned long iova;
+	unsigned long npages;
+	struct page **pages;
+	struct mm_struct *mm;
+};
+
+struct vduse_as {
+	struct vduse_iova_domain *domain;
+	struct vduse_umem *umem;
+	struct mutex mem_lock;
+};
+
+struct vduse_vq_group {
+	rwlock_t as_lock;
+	struct vduse_as *as; /* Protected by as_lock */
+	struct vduse_dev *dev;
+};
+
 struct vduse_dev {
 	struct vduse_vdpa *vdev;
 	struct device *dev;
-	struct vduse_virtqueue *vqs;
-	struct vduse_iova_domain *domain;
+	struct vduse_virtqueue **vqs;
+	struct vduse_as *as;
 	char *name;
 	struct mutex lock;
 	spinlock_t msg_lock;
@@ -95,6 +140,11 @@ struct vduse_dev {
 	u8 status;
 	u32 vq_num;
 	u32 vq_align;
+	u32 ngroups;
+	u32 nas;
+	struct vduse_vq_group *groups;
+	unsigned int bounce_size;
+	struct mutex domain_lock;
 };
 
 struct vduse_dev_msg {
@@ -113,13 +163,15 @@ static DEFINE_MUTEX(vduse_lock);
 static DEFINE_IDR(vduse_idr);
 
 static dev_t vduse_major;
-static struct class *vduse_class;
 static struct cdev vduse_ctrl_cdev;
 static struct cdev vduse_cdev;
 static struct workqueue_struct *vduse_irq_wq;
+static struct workqueue_struct *vduse_irq_bound_wq;
 
 static u32 allowed_device_id[] = {
 	VIRTIO_ID_BLOCK,
+	VIRTIO_ID_NET,
+	VIRTIO_ID_FS,
 };
 
 static inline struct vduse_dev *vdpa_to_vduse(struct vdpa_device *vdpa)
@@ -280,7 +332,7 @@ static int vduse_dev_set_status(struct vduse_dev *dev, u8 status)
 	return vduse_dev_msg_sync(dev, &msg);
 }
 
-static int vduse_dev_update_iotlb(struct vduse_dev *dev,
+static int vduse_dev_update_iotlb(struct vduse_dev *dev, u32 asid,
 				  u64 start, u64 last)
 {
 	struct vduse_dev_msg msg = { 0 };
@@ -289,8 +341,14 @@ static int vduse_dev_update_iotlb(struct vduse_dev *dev,
 		return -EINVAL;
 
 	msg.req.type = VDUSE_UPDATE_IOTLB;
-	msg.req.iova.start = start;
-	msg.req.iova.last = last;
+	if (dev->api_version < VDUSE_API_VERSION_1) {
+		msg.req.iova.start = start;
+		msg.req.iova.last = last;
+	} else {
+		msg.req.iova_v2.start = start;
+		msg.req.iova_v2.last = last;
+		msg.req.iova_v2.asid = asid;
+	}
 
 	return vduse_dev_msg_sync(dev, &msg);
 }
@@ -405,11 +463,14 @@ static __poll_t vduse_dev_poll(struct file *file, poll_table *wait)
 static void vduse_dev_reset(struct vduse_dev *dev)
 {
 	int i;
-	struct vduse_iova_domain *domain = dev->domain;
 
 	/* The coherent mappings are handled in vduse_dev_free_coherent() */
-	if (domain->bounce_map)
-		vduse_domain_reset_bounce_map(domain);
+	for (i = 0; i < dev->nas; i++) {
+		struct vduse_iova_domain *domain = dev->as[i].domain;
+
+		if (domain && domain->bounce_map)
+			vduse_domain_reset_bounce_map(domain);
+	}
 
 	down_write(&dev->rwsem);
 
@@ -423,7 +484,7 @@ static void vduse_dev_reset(struct vduse_dev *dev)
 	flush_work(&dev->inject);
 
 	for (i = 0; i < dev->vq_num; i++) {
-		struct vduse_virtqueue *vq = &dev->vqs[i];
+		struct vduse_virtqueue *vq = dev->vqs[i];
 
 		vq->ready = false;
 		vq->desc_addr = 0;
@@ -442,6 +503,7 @@ static void vduse_dev_reset(struct vduse_dev *dev)
 		spin_lock(&vq->irq_lock);
 		vq->cb.callback = NULL;
 		vq->cb.private = NULL;
+		vq->cb.trigger = NULL;
 		spin_unlock(&vq->irq_lock);
 		flush_work(&vq->inject);
 		flush_work(&vq->kick);
@@ -455,7 +517,7 @@ static int vduse_vdpa_set_vq_address(struct vdpa_device *vdpa, u16 idx,
 				u64 device_area)
 {
 	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
-	struct vduse_virtqueue *vq = &dev->vqs[idx];
+	struct vduse_virtqueue *vq = dev->vqs[idx];
 
 	vq->desc_addr = desc_area;
 	vq->driver_addr = driver_area;
@@ -471,7 +533,7 @@ static void vduse_vq_kick(struct vduse_virtqueue *vq)
 		goto unlock;
 
 	if (vq->kickfd)
-		eventfd_signal(vq->kickfd, 1);
+		eventfd_signal(vq->kickfd);
 	else
 		vq->kicked = true;
 unlock:
@@ -489,7 +551,7 @@ static void vduse_vq_kick_work(struct work_struct *work)
 static void vduse_vdpa_kick_vq(struct vdpa_device *vdpa, u16 idx)
 {
 	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
-	struct vduse_virtqueue *vq = &dev->vqs[idx];
+	struct vduse_virtqueue *vq = dev->vqs[idx];
 
 	if (!eventfd_signal_allowed()) {
 		schedule_work(&vq->kick);
@@ -502,27 +564,39 @@ static void vduse_vdpa_set_vq_cb(struct vdpa_device *vdpa, u16 idx,
 			      struct vdpa_callback *cb)
 {
 	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
-	struct vduse_virtqueue *vq = &dev->vqs[idx];
+	struct vduse_virtqueue *vq = dev->vqs[idx];
 
 	spin_lock(&vq->irq_lock);
 	vq->cb.callback = cb->callback;
 	vq->cb.private = cb->private;
+	vq->cb.trigger = cb->trigger;
 	spin_unlock(&vq->irq_lock);
 }
 
 static void vduse_vdpa_set_vq_num(struct vdpa_device *vdpa, u16 idx, u32 num)
 {
 	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
-	struct vduse_virtqueue *vq = &dev->vqs[idx];
+	struct vduse_virtqueue *vq = dev->vqs[idx];
 
 	vq->num = num;
+}
+
+static u16 vduse_vdpa_get_vq_size(struct vdpa_device *vdpa, u16 idx)
+{
+	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
+	struct vduse_virtqueue *vq = dev->vqs[idx];
+
+	if (vq->num)
+		return vq->num;
+	else
+		return vq->num_max;
 }
 
 static void vduse_vdpa_set_vq_ready(struct vdpa_device *vdpa,
 					u16 idx, bool ready)
 {
 	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
-	struct vduse_virtqueue *vq = &dev->vqs[idx];
+	struct vduse_virtqueue *vq = dev->vqs[idx];
 
 	vq->ready = ready;
 }
@@ -530,7 +604,7 @@ static void vduse_vdpa_set_vq_ready(struct vdpa_device *vdpa,
 static bool vduse_vdpa_get_vq_ready(struct vdpa_device *vdpa, u16 idx)
 {
 	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
-	struct vduse_virtqueue *vq = &dev->vqs[idx];
+	struct vduse_virtqueue *vq = dev->vqs[idx];
 
 	return vq->ready;
 }
@@ -539,7 +613,7 @@ static int vduse_vdpa_set_vq_state(struct vdpa_device *vdpa, u16 idx,
 				const struct vdpa_vq_state *state)
 {
 	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
-	struct vduse_virtqueue *vq = &dev->vqs[idx];
+	struct vduse_virtqueue *vq = dev->vqs[idx];
 
 	if (dev->driver_features & BIT_ULL(VIRTIO_F_RING_PACKED)) {
 		vq->state.packed.last_avail_counter =
@@ -554,11 +628,68 @@ static int vduse_vdpa_set_vq_state(struct vdpa_device *vdpa, u16 idx,
 	return 0;
 }
 
+static u32 vduse_get_vq_group(struct vdpa_device *vdpa, u16 idx)
+{
+	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
+
+	if (dev->api_version < VDUSE_API_VERSION_1)
+		return 0;
+
+	return dev->vqs[idx]->group;
+}
+
+static union virtio_map vduse_get_vq_map(struct vdpa_device *vdpa, u16 idx)
+{
+	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
+	u32 vq_group = vduse_get_vq_group(vdpa, idx);
+	union virtio_map ret = {
+		.group = &dev->groups[vq_group],
+	};
+
+	return ret;
+}
+
+DEFINE_GUARD(vq_group_as_read_lock, struct vduse_vq_group *,
+	if (_T->dev->nas > 1)
+		read_lock(&_T->as_lock),
+	if (_T->dev->nas > 1)
+		read_unlock(&_T->as_lock))
+
+DEFINE_GUARD(vq_group_as_write_lock, struct vduse_vq_group *,
+	if (_T->dev->nas > 1)
+		write_lock(&_T->as_lock),
+	if (_T->dev->nas > 1)
+		write_unlock(&_T->as_lock))
+
+static int vduse_set_group_asid(struct vdpa_device *vdpa, unsigned int group,
+				unsigned int asid)
+{
+	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
+	struct vduse_dev_msg msg = { 0 };
+	int r;
+
+	if (dev->api_version < VDUSE_API_VERSION_1)
+		return -EINVAL;
+
+	msg.req.type = VDUSE_SET_VQ_GROUP_ASID;
+	msg.req.vq_group_asid.group = group;
+	msg.req.vq_group_asid.asid = asid;
+
+	r = vduse_dev_msg_sync(dev, &msg);
+	if (r < 0)
+		return r;
+
+	guard(vq_group_as_write_lock)(&dev->groups[group]);
+	dev->groups[group].as = &dev->as[asid];
+
+	return 0;
+}
+
 static int vduse_vdpa_get_vq_state(struct vdpa_device *vdpa, u16 idx,
 				struct vdpa_vq_state *state)
 {
 	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
-	struct vduse_virtqueue *vq = &dev->vqs[idx];
+	struct vduse_virtqueue *vq = dev->vqs[idx];
 
 	if (dev->driver_features & BIT_ULL(VIRTIO_F_RING_PACKED))
 		return vduse_dev_get_vq_state_packed(dev, vq, &state->packed);
@@ -613,8 +744,8 @@ static u16 vduse_vdpa_get_vq_num_max(struct vdpa_device *vdpa)
 	int i;
 
 	for (i = 0; i < dev->vq_num; i++)
-		if (num_max < dev->vqs[i].num_max)
-			num_max = dev->vqs[i].num_max;
+		if (num_max < dev->vqs[i]->num_max)
+			num_max = dev->vqs[i]->num_max;
 
 	return num_max;
 }
@@ -662,9 +793,14 @@ static void vduse_vdpa_get_config(struct vdpa_device *vdpa, unsigned int offset,
 {
 	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
 
-	if (offset > dev->config_size ||
-	    len > dev->config_size - offset)
+	/* Initialize the buffer in case of partial copy. */
+	memset(buf, 0, len);
+
+	if (offset > dev->config_size)
 		return;
+
+	if (len > dev->config_size - offset)
+		len = dev->config_size - offset;
 
 	memcpy(buf, dev->config + offset, len);
 }
@@ -692,6 +828,27 @@ static u32 vduse_vdpa_get_generation(struct vdpa_device *vdpa)
 	return dev->generation;
 }
 
+static int vduse_vdpa_set_vq_affinity(struct vdpa_device *vdpa, u16 idx,
+				      const struct cpumask *cpu_mask)
+{
+	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
+
+	if (cpu_mask)
+		cpumask_copy(&dev->vqs[idx]->irq_affinity, cpu_mask);
+	else
+		cpumask_setall(&dev->vqs[idx]->irq_affinity);
+
+	return 0;
+}
+
+static const struct cpumask *
+vduse_vdpa_get_vq_affinity(struct vdpa_device *vdpa, u16 idx)
+{
+	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
+
+	return &dev->vqs[idx]->irq_affinity;
+}
+
 static int vduse_vdpa_set_map(struct vdpa_device *vdpa,
 				unsigned int asid,
 				struct vhost_iotlb *iotlb)
@@ -699,13 +856,13 @@ static int vduse_vdpa_set_map(struct vdpa_device *vdpa,
 	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
 	int ret;
 
-	ret = vduse_domain_set_map(dev->domain, iotlb);
+	ret = vduse_domain_set_map(dev->as[asid].domain, iotlb);
 	if (ret)
 		return ret;
 
-	ret = vduse_dev_update_iotlb(dev, 0ULL, ULLONG_MAX);
+	ret = vduse_dev_update_iotlb(dev, asid, 0ULL, ULLONG_MAX);
 	if (ret) {
-		vduse_domain_clear_map(dev->domain, iotlb);
+		vduse_domain_clear_map(dev->as[asid].domain, iotlb);
 		return ret;
 	}
 
@@ -724,6 +881,8 @@ static const struct vdpa_config_ops vduse_vdpa_config_ops = {
 	.kick_vq		= vduse_vdpa_kick_vq,
 	.set_vq_cb		= vduse_vdpa_set_vq_cb,
 	.set_vq_num             = vduse_vdpa_set_vq_num,
+	.get_vq_size		= vduse_vdpa_get_vq_size,
+	.get_vq_group		= vduse_get_vq_group,
 	.set_vq_ready		= vduse_vdpa_set_vq_ready,
 	.get_vq_ready		= vduse_vdpa_get_vq_ready,
 	.set_vq_state		= vduse_vdpa_set_vq_state,
@@ -742,75 +901,154 @@ static const struct vdpa_config_ops vduse_vdpa_config_ops = {
 	.get_config		= vduse_vdpa_get_config,
 	.set_config		= vduse_vdpa_set_config,
 	.get_generation		= vduse_vdpa_get_generation,
+	.set_vq_affinity	= vduse_vdpa_set_vq_affinity,
+	.get_vq_affinity	= vduse_vdpa_get_vq_affinity,
 	.reset			= vduse_vdpa_reset,
 	.set_map		= vduse_vdpa_set_map,
+	.set_group_asid		= vduse_set_group_asid,
+	.get_vq_map		= vduse_get_vq_map,
 	.free			= vduse_vdpa_free,
 };
 
-static dma_addr_t vduse_dev_map_page(struct device *dev, struct page *page,
+static void vduse_dev_sync_single_for_device(union virtio_map token,
+					     dma_addr_t dma_addr, size_t size,
+					     enum dma_data_direction dir)
+{
+	struct vduse_iova_domain *domain;
+
+	if (!token.group)
+		return;
+
+	guard(vq_group_as_read_lock)(token.group);
+	domain = token.group->as->domain;
+	vduse_domain_sync_single_for_device(domain, dma_addr, size, dir);
+}
+
+static void vduse_dev_sync_single_for_cpu(union virtio_map token,
+					     dma_addr_t dma_addr, size_t size,
+					     enum dma_data_direction dir)
+{
+	struct vduse_iova_domain *domain;
+
+	if (!token.group)
+		return;
+
+	guard(vq_group_as_read_lock)(token.group);
+	domain = token.group->as->domain;
+	vduse_domain_sync_single_for_cpu(domain, dma_addr, size, dir);
+}
+
+static dma_addr_t vduse_dev_map_page(union virtio_map token, struct page *page,
 				     unsigned long offset, size_t size,
 				     enum dma_data_direction dir,
 				     unsigned long attrs)
 {
-	struct vduse_dev *vdev = dev_to_vduse(dev);
-	struct vduse_iova_domain *domain = vdev->domain;
+	struct vduse_iova_domain *domain;
 
+	if (!token.group)
+		return DMA_MAPPING_ERROR;
+
+	guard(vq_group_as_read_lock)(token.group);
+	domain = token.group->as->domain;
 	return vduse_domain_map_page(domain, page, offset, size, dir, attrs);
 }
 
-static void vduse_dev_unmap_page(struct device *dev, dma_addr_t dma_addr,
-				size_t size, enum dma_data_direction dir,
-				unsigned long attrs)
+static void vduse_dev_unmap_page(union virtio_map token, dma_addr_t dma_addr,
+				 size_t size, enum dma_data_direction dir,
+				 unsigned long attrs)
 {
-	struct vduse_dev *vdev = dev_to_vduse(dev);
-	struct vduse_iova_domain *domain = vdev->domain;
+	struct vduse_iova_domain *domain;
 
-	return vduse_domain_unmap_page(domain, dma_addr, size, dir, attrs);
+	if (!token.group)
+		return;
+
+	guard(vq_group_as_read_lock)(token.group);
+	domain = token.group->as->domain;
+	vduse_domain_unmap_page(domain, dma_addr, size, dir, attrs);
 }
 
-static void *vduse_dev_alloc_coherent(struct device *dev, size_t size,
-					dma_addr_t *dma_addr, gfp_t flag,
-					unsigned long attrs)
+static void *vduse_dev_alloc_coherent(union virtio_map token, size_t size,
+				      dma_addr_t *dma_addr, gfp_t flag)
 {
-	struct vduse_dev *vdev = dev_to_vduse(dev);
-	struct vduse_iova_domain *domain = vdev->domain;
-	unsigned long iova;
 	void *addr;
 
 	*dma_addr = DMA_MAPPING_ERROR;
-	addr = vduse_domain_alloc_coherent(domain, size,
-				(dma_addr_t *)&iova, flag, attrs);
+	if (!token.group)
+		return NULL;
+
+	addr = alloc_pages_exact(size, flag);
 	if (!addr)
 		return NULL;
 
-	*dma_addr = (dma_addr_t)iova;
+	{
+		struct vduse_iova_domain *domain;
+
+		guard(vq_group_as_read_lock)(token.group);
+		domain = token.group->as->domain;
+		*dma_addr = vduse_domain_alloc_coherent(domain, size, addr);
+		if (*dma_addr == DMA_MAPPING_ERROR)
+			goto err;
+	}
 
 	return addr;
+
+err:
+	free_pages_exact(addr, size);
+	return NULL;
 }
 
-static void vduse_dev_free_coherent(struct device *dev, size_t size,
-					void *vaddr, dma_addr_t dma_addr,
-					unsigned long attrs)
+static void vduse_dev_free_coherent(union virtio_map token, size_t size,
+				    void *vaddr, dma_addr_t dma_addr,
+				    unsigned long attrs)
 {
-	struct vduse_dev *vdev = dev_to_vduse(dev);
-	struct vduse_iova_domain *domain = vdev->domain;
+	if (!token.group)
+		return;
 
-	vduse_domain_free_coherent(domain, size, vaddr, dma_addr, attrs);
+	{
+		struct vduse_iova_domain *domain;
+
+		guard(vq_group_as_read_lock)(token.group);
+		domain = token.group->as->domain;
+		vduse_domain_free_coherent(domain, size, dma_addr, attrs);
+	}
+
+	free_pages_exact(vaddr, size);
 }
 
-static size_t vduse_dev_max_mapping_size(struct device *dev)
+static bool vduse_dev_need_sync(union virtio_map token, dma_addr_t dma_addr)
 {
-	struct vduse_dev *vdev = dev_to_vduse(dev);
-	struct vduse_iova_domain *domain = vdev->domain;
+	if (!token.group)
+		return false;
 
-	return domain->bounce_size;
+	guard(vq_group_as_read_lock)(token.group);
+	return dma_addr < token.group->as->domain->bounce_size;
 }
 
-static const struct dma_map_ops vduse_dev_dma_ops = {
+static int vduse_dev_mapping_error(union virtio_map token, dma_addr_t dma_addr)
+{
+	if (unlikely(dma_addr == DMA_MAPPING_ERROR))
+		return -ENOMEM;
+	return 0;
+}
+
+static size_t vduse_dev_max_mapping_size(union virtio_map token)
+{
+	if (!token.group)
+		return 0;
+
+	guard(vq_group_as_read_lock)(token.group);
+	return token.group->as->domain->bounce_size;
+}
+
+static const struct virtio_map_ops vduse_map_ops = {
+	.sync_single_for_device = vduse_dev_sync_single_for_device,
+	.sync_single_for_cpu = vduse_dev_sync_single_for_cpu,
 	.map_page = vduse_dev_map_page,
 	.unmap_page = vduse_dev_unmap_page,
 	.alloc = vduse_dev_alloc_coherent,
 	.free = vduse_dev_free_coherent,
+	.need_sync = vduse_dev_need_sync,
+	.mapping_error = vduse_dev_mapping_error,
 	.max_mapping_size = vduse_dev_max_mapping_size,
 };
 
@@ -847,7 +1085,7 @@ static int vduse_kickfd_setup(struct vduse_dev *dev,
 		return -EINVAL;
 
 	index = array_index_nospec(eventfd->index, dev->vq_num);
-	vq = &dev->vqs[index];
+	vq = dev->vqs[index];
 	if (eventfd->fd >= 0) {
 		ctx = eventfd_ctx_fdget(eventfd->fd);
 		if (IS_ERR(ctx))
@@ -860,7 +1098,7 @@ static int vduse_kickfd_setup(struct vduse_dev *dev,
 		eventfd_ctx_put(vq->kickfd);
 	vq->kickfd = ctx;
 	if (vq->ready && vq->kicked && vq->kickfd) {
-		eventfd_signal(vq->kickfd, 1);
+		eventfd_signal(vq->kickfd);
 		vq->kicked = false;
 	}
 	spin_unlock(&vq->kick_lock);
@@ -873,7 +1111,7 @@ static bool vduse_dev_is_ready(struct vduse_dev *dev)
 	int i;
 
 	for (i = 0; i < dev->vq_num; i++)
-		if (!dev->vqs[i].num_max)
+		if (!dev->vqs[i]->num_max)
 			return false;
 
 	return true;
@@ -883,10 +1121,10 @@ static void vduse_dev_irq_inject(struct work_struct *work)
 {
 	struct vduse_dev *dev = container_of(work, struct vduse_dev, inject);
 
-	spin_lock_irq(&dev->irq_lock);
+	spin_lock_bh(&dev->irq_lock);
 	if (dev->config_cb.callback)
 		dev->config_cb.callback(dev->config_cb.private);
-	spin_unlock_irq(&dev->irq_lock);
+	spin_unlock_bh(&dev->irq_lock);
 }
 
 static void vduse_vq_irq_inject(struct work_struct *work)
@@ -894,14 +1132,32 @@ static void vduse_vq_irq_inject(struct work_struct *work)
 	struct vduse_virtqueue *vq = container_of(work,
 					struct vduse_virtqueue, inject);
 
-	spin_lock_irq(&vq->irq_lock);
+	spin_lock_bh(&vq->irq_lock);
 	if (vq->ready && vq->cb.callback)
 		vq->cb.callback(vq->cb.private);
+	spin_unlock_bh(&vq->irq_lock);
+}
+
+static bool vduse_vq_signal_irqfd(struct vduse_virtqueue *vq)
+{
+	bool signal = false;
+
+	if (!vq->cb.trigger)
+		return false;
+
+	spin_lock_irq(&vq->irq_lock);
+	if (vq->ready && vq->cb.trigger) {
+		eventfd_signal(vq->cb.trigger);
+		signal = true;
+	}
 	spin_unlock_irq(&vq->irq_lock);
+
+	return signal;
 }
 
 static int vduse_dev_queue_irq_work(struct vduse_dev *dev,
-				    struct work_struct *irq_work)
+				    struct work_struct *irq_work,
+				    int irq_effective_cpu)
 {
 	int ret = -EINVAL;
 
@@ -910,11 +1166,179 @@ static int vduse_dev_queue_irq_work(struct vduse_dev *dev,
 		goto unlock;
 
 	ret = 0;
-	queue_work(vduse_irq_wq, irq_work);
+	if (irq_effective_cpu == IRQ_UNBOUND)
+		queue_work(vduse_irq_wq, irq_work);
+	else
+		queue_work_on(irq_effective_cpu,
+			      vduse_irq_bound_wq, irq_work);
 unlock:
 	up_read(&dev->rwsem);
 
 	return ret;
+}
+
+static int vduse_dev_dereg_umem(struct vduse_dev *dev, u32 asid,
+				u64 iova, u64 size)
+{
+	int ret;
+
+	mutex_lock(&dev->as[asid].mem_lock);
+	ret = -ENOENT;
+	if (!dev->as[asid].umem)
+		goto unlock;
+
+	ret = -EINVAL;
+	if (!dev->as[asid].domain)
+		goto unlock;
+
+	if (dev->as[asid].umem->iova != iova ||
+	    size != dev->as[asid].domain->bounce_size)
+		goto unlock;
+
+	vduse_domain_remove_user_bounce_pages(dev->as[asid].domain);
+	unpin_user_pages_dirty_lock(dev->as[asid].umem->pages,
+				    dev->as[asid].umem->npages, true);
+	atomic64_sub(dev->as[asid].umem->npages, &dev->as[asid].umem->mm->pinned_vm);
+	mmdrop(dev->as[asid].umem->mm);
+	vfree(dev->as[asid].umem->pages);
+	kfree(dev->as[asid].umem);
+	dev->as[asid].umem = NULL;
+	ret = 0;
+unlock:
+	mutex_unlock(&dev->as[asid].mem_lock);
+	return ret;
+}
+
+static int vduse_dev_reg_umem(struct vduse_dev *dev,
+			      u32 asid, u64 iova, u64 uaddr, u64 size)
+{
+	struct page **page_list = NULL;
+	struct vduse_umem *umem = NULL;
+	long pinned = 0;
+	unsigned long npages, lock_limit;
+	int ret;
+
+	if (!dev->as[asid].domain || !dev->as[asid].domain->bounce_map ||
+	    size != dev->as[asid].domain->bounce_size ||
+	    iova != 0 || uaddr & ~PAGE_MASK)
+		return -EINVAL;
+
+	mutex_lock(&dev->as[asid].mem_lock);
+	ret = -EEXIST;
+	if (dev->as[asid].umem)
+		goto unlock;
+
+	ret = -ENOMEM;
+	npages = size >> PAGE_SHIFT;
+	page_list = __vmalloc(array_size(npages, sizeof(struct page *)),
+			      GFP_KERNEL_ACCOUNT);
+	umem = kzalloc_obj(*umem);
+	if (!page_list || !umem)
+		goto unlock;
+
+	mmap_read_lock(current->mm);
+
+	lock_limit = PFN_DOWN(rlimit(RLIMIT_MEMLOCK));
+	if (npages + atomic64_read(&current->mm->pinned_vm) > lock_limit)
+		goto out;
+
+	pinned = pin_user_pages(uaddr, npages, FOLL_LONGTERM | FOLL_WRITE,
+				page_list);
+	if (pinned != npages) {
+		ret = pinned < 0 ? pinned : -ENOMEM;
+		goto out;
+	}
+
+	ret = vduse_domain_add_user_bounce_pages(dev->as[asid].domain,
+						 page_list, pinned);
+	if (ret)
+		goto out;
+
+	atomic64_add(npages, &current->mm->pinned_vm);
+
+	umem->pages = page_list;
+	umem->npages = pinned;
+	umem->iova = iova;
+	umem->mm = current->mm;
+	mmgrab(current->mm);
+
+	dev->as[asid].umem = umem;
+out:
+	if (ret && pinned > 0)
+		unpin_user_pages(page_list, pinned);
+
+	mmap_read_unlock(current->mm);
+unlock:
+	if (ret) {
+		vfree(page_list);
+		kfree(umem);
+	}
+	mutex_unlock(&dev->as[asid].mem_lock);
+	return ret;
+}
+
+static void vduse_vq_update_effective_cpu(struct vduse_virtqueue *vq)
+{
+	int curr_cpu = vq->irq_effective_cpu;
+
+	while (true) {
+		curr_cpu = cpumask_next(curr_cpu, &vq->irq_affinity);
+		if (cpu_online(curr_cpu))
+			break;
+
+		if (curr_cpu >= nr_cpu_ids)
+			curr_cpu = IRQ_UNBOUND;
+	}
+
+	vq->irq_effective_cpu = curr_cpu;
+}
+
+static int vduse_dev_iotlb_entry(struct vduse_dev *dev,
+				 struct vduse_iotlb_entry_v2 *entry,
+				 struct file **f, uint64_t *capability)
+{
+	u32 asid;
+	int r = -EINVAL;
+	struct vhost_iotlb_map *map;
+
+	if (entry->start > entry->last || entry->asid >= dev->nas)
+		return -EINVAL;
+
+	asid = array_index_nospec(entry->asid, dev->nas);
+	mutex_lock(&dev->domain_lock);
+
+	if (!dev->as[asid].domain)
+		goto out;
+
+	spin_lock(&dev->as[asid].domain->iotlb_lock);
+	map = vhost_iotlb_itree_first(dev->as[asid].domain->iotlb,
+				      entry->start, entry->last);
+	if (map) {
+		if (f) {
+			const struct vdpa_map_file *map_file;
+
+			map_file = (struct vdpa_map_file *)map->opaque;
+			entry->offset = map_file->offset;
+			*f = get_file(map_file->file);
+		}
+		entry->start = map->start;
+		entry->last = map->last;
+		entry->perm = map->perm;
+		if (capability) {
+			*capability = 0;
+
+			if (dev->as[asid].domain->bounce_map && map->start == 0 &&
+			    map->last == dev->as[asid].domain->bounce_size - 1)
+				*capability |= VDUSE_IOVA_CAP_UMEM;
+		}
+
+		r = 0;
+	}
+	spin_unlock(&dev->as[asid].domain->iotlb_lock);
+
+out:
+	mutex_unlock(&dev->domain_lock);
+	return r;
 }
 
 static long vduse_dev_ioctl(struct file *file, unsigned int cmd,
@@ -928,43 +1352,40 @@ static long vduse_dev_ioctl(struct file *file, unsigned int cmd,
 		return -EPERM;
 
 	switch (cmd) {
-	case VDUSE_IOTLB_GET_FD: {
-		struct vduse_iotlb_entry entry;
-		struct vhost_iotlb_map *map;
-		struct vdpa_map_file *map_file;
-		struct vduse_iova_domain *domain = dev->domain;
+	case VDUSE_IOTLB_GET_FD:
+	case VDUSE_IOTLB_GET_FD2: {
+		struct vduse_iotlb_entry_v2 entry = {0};
 		struct file *f = NULL;
 
+		ret = -ENOIOCTLCMD;
+		if (dev->api_version < VDUSE_API_VERSION_1 &&
+		    cmd == VDUSE_IOTLB_GET_FD2)
+			break;
+
 		ret = -EFAULT;
-		if (copy_from_user(&entry, argp, sizeof(entry)))
+		if (copy_from_user(&entry, argp, _IOC_SIZE(cmd)))
 			break;
 
 		ret = -EINVAL;
-		if (entry.start > entry.last)
+		if (!is_mem_zero((const char *)entry.reserved,
+				 sizeof(entry.reserved)))
 			break;
 
-		spin_lock(&domain->iotlb_lock);
-		map = vhost_iotlb_itree_first(domain->iotlb,
-					      entry.start, entry.last);
-		if (map) {
-			map_file = (struct vdpa_map_file *)map->opaque;
-			f = get_file(map_file->file);
-			entry.offset = map_file->offset;
-			entry.start = map->start;
-			entry.last = map->last;
-			entry.perm = map->perm;
-		}
-		spin_unlock(&domain->iotlb_lock);
+		ret = vduse_dev_iotlb_entry(dev, &entry, &f, NULL);
+		if (ret)
+			break;
+
 		ret = -EINVAL;
 		if (!f)
 			break;
 
-		ret = -EFAULT;
-		if (copy_to_user(argp, &entry, sizeof(entry))) {
+		ret = copy_to_user(argp, &entry, _IOC_SIZE(cmd));
+		if (ret) {
+			ret = -EFAULT;
 			fput(f);
 			break;
 		}
-		ret = receive_fd(f, perm_to_file_flags(entry.perm));
+		ret = receive_fd(f, NULL, perm_to_file_flags(entry.perm));
 		fput(f);
 		break;
 	}
@@ -999,7 +1420,7 @@ static long vduse_dev_ioctl(struct file *file, unsigned int cmd,
 		break;
 	}
 	case VDUSE_DEV_INJECT_CONFIG_IRQ:
-		ret = vduse_dev_queue_irq_work(dev, &dev->inject);
+		ret = vduse_dev_queue_irq_work(dev, &dev->inject, IRQ_UNBOUND);
 		break;
 	case VDUSE_VQ_SETUP: {
 		struct vduse_vq_config config;
@@ -1013,12 +1434,24 @@ static long vduse_dev_ioctl(struct file *file, unsigned int cmd,
 		if (config.index >= dev->vq_num)
 			break;
 
-		if (!is_mem_zero((const char *)config.reserved,
-				 sizeof(config.reserved)))
+		if (dev->api_version < VDUSE_API_VERSION_1) {
+			if (config.group)
+				break;
+		} else {
+			if (config.group >= dev->ngroups)
+				break;
+			if (dev->status & VIRTIO_CONFIG_S_DRIVER_OK)
+				break;
+		}
+
+		if (config.reserved1 ||
+		    !is_mem_zero((const char *)config.reserved2,
+				 sizeof(config.reserved2)))
 			break;
 
 		index = array_index_nospec(config.index, dev->vq_num);
-		dev->vqs[index].num_max = config.max_size;
+		dev->vqs[index]->num_max = config.max_size;
+		dev->vqs[index]->group = config.group;
 		ret = 0;
 		break;
 	}
@@ -1036,7 +1469,7 @@ static long vduse_dev_ioctl(struct file *file, unsigned int cmd,
 			break;
 
 		index = array_index_nospec(vq_info.index, dev->vq_num);
-		vq = &dev->vqs[index];
+		vq = dev->vqs[index];
 		vq_info.desc_addr = vq->desc_addr;
 		vq_info.driver_addr = vq->driver_addr;
 		vq_info.device_addr = vq->device_addr;
@@ -1085,8 +1518,96 @@ static long vduse_dev_ioctl(struct file *file, unsigned int cmd,
 		if (index >= dev->vq_num)
 			break;
 
+		ret = 0;
 		index = array_index_nospec(index, dev->vq_num);
-		ret = vduse_dev_queue_irq_work(dev, &dev->vqs[index].inject);
+		if (!vduse_vq_signal_irqfd(dev->vqs[index])) {
+			vduse_vq_update_effective_cpu(dev->vqs[index]);
+			ret = vduse_dev_queue_irq_work(dev,
+						&dev->vqs[index]->inject,
+						dev->vqs[index]->irq_effective_cpu);
+		}
+		break;
+	}
+	case VDUSE_IOTLB_REG_UMEM: {
+		struct vduse_iova_umem umem;
+		u32 asid;
+
+		ret = -EFAULT;
+		if (copy_from_user(&umem, argp, sizeof(umem)))
+			break;
+
+		ret = -EINVAL;
+		if (!is_mem_zero((const char *)umem.reserved,
+				 sizeof(umem.reserved)) ||
+		    (dev->api_version < VDUSE_API_VERSION_1 &&
+		     umem.asid != 0) || umem.asid >= dev->nas)
+			break;
+
+		mutex_lock(&dev->domain_lock);
+		asid = array_index_nospec(umem.asid, dev->nas);
+		ret = vduse_dev_reg_umem(dev, asid, umem.iova,
+					 umem.uaddr, umem.size);
+		mutex_unlock(&dev->domain_lock);
+		break;
+	}
+	case VDUSE_IOTLB_DEREG_UMEM: {
+		struct vduse_iova_umem umem;
+		u32 asid;
+
+		ret = -EFAULT;
+		if (copy_from_user(&umem, argp, sizeof(umem)))
+			break;
+
+		ret = -EINVAL;
+		if (!is_mem_zero((const char *)umem.reserved,
+				 sizeof(umem.reserved)) ||
+		    (dev->api_version < VDUSE_API_VERSION_1 &&
+		     umem.asid != 0) ||
+		     umem.asid >= dev->nas)
+			break;
+
+		mutex_lock(&dev->domain_lock);
+		asid = array_index_nospec(umem.asid, dev->nas);
+		ret = vduse_dev_dereg_umem(dev, asid, umem.iova,
+					   umem.size);
+		mutex_unlock(&dev->domain_lock);
+		break;
+	}
+	case VDUSE_IOTLB_GET_INFO: {
+		struct vduse_iova_info info;
+		struct vduse_iotlb_entry_v2 entry;
+
+		ret = -EFAULT;
+		if (copy_from_user(&info, argp, sizeof(info)))
+			break;
+
+		if (!is_mem_zero((const char *)info.reserved,
+				 sizeof(info.reserved)))
+			break;
+
+		if (dev->api_version < VDUSE_API_VERSION_1) {
+			if (info.asid)
+				break;
+		} else if (info.asid >= dev->nas)
+			break;
+
+		entry.start = info.start;
+		entry.last = info.last;
+		entry.asid = info.asid;
+		ret = vduse_dev_iotlb_entry(dev, &entry, NULL,
+					    &info.capability);
+		if (ret < 0)
+			break;
+
+		info.start = entry.start;
+		info.last = entry.last;
+		info.asid = entry.asid;
+
+		ret = -EFAULT;
+		if (copy_to_user(argp, &info, sizeof(info)))
+			break;
+
+		ret = 0;
 		break;
 	}
 	default:
@@ -1101,6 +1622,12 @@ static int vduse_dev_release(struct inode *inode, struct file *file)
 {
 	struct vduse_dev *dev = file->private_data;
 
+	mutex_lock(&dev->domain_lock);
+	for (int i = 0; i < dev->nas; i++)
+		if (dev->as[i].domain)
+			vduse_dev_dereg_umem(dev, i, 0,
+					     dev->as[i].domain->bounce_size);
+	mutex_unlock(&dev->domain_lock);
 	spin_lock(&dev->msg_lock);
 	/* Make sure the inflight messages can processed after reconncection */
 	list_splice_init(&dev->recv_list, &dev->send_list);
@@ -1155,14 +1682,170 @@ static const struct file_operations vduse_dev_fops = {
 	.llseek		= noop_llseek,
 };
 
+static ssize_t irq_cb_affinity_show(struct vduse_virtqueue *vq, char *buf)
+{
+	return sprintf(buf, "%*pb\n", cpumask_pr_args(&vq->irq_affinity));
+}
+
+static ssize_t irq_cb_affinity_store(struct vduse_virtqueue *vq,
+				     const char *buf, size_t count)
+{
+	cpumask_var_t new_value;
+	int ret;
+
+	if (!zalloc_cpumask_var(&new_value, GFP_KERNEL))
+		return -ENOMEM;
+
+	ret = cpumask_parse(buf, new_value);
+	if (ret)
+		goto free_mask;
+
+	ret = -EINVAL;
+	if (!cpumask_intersects(new_value, cpu_online_mask))
+		goto free_mask;
+
+	cpumask_copy(&vq->irq_affinity, new_value);
+	ret = count;
+free_mask:
+	free_cpumask_var(new_value);
+	return ret;
+}
+
+struct vq_sysfs_entry {
+	struct attribute attr;
+	ssize_t (*show)(struct vduse_virtqueue *vq, char *buf);
+	ssize_t (*store)(struct vduse_virtqueue *vq, const char *buf,
+			 size_t count);
+};
+
+static struct vq_sysfs_entry irq_cb_affinity_attr = __ATTR_RW(irq_cb_affinity);
+
+static struct attribute *vq_attrs[] = {
+	&irq_cb_affinity_attr.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(vq);
+
+static ssize_t vq_attr_show(struct kobject *kobj, struct attribute *attr,
+			    char *buf)
+{
+	struct vduse_virtqueue *vq = container_of(kobj,
+					struct vduse_virtqueue, kobj);
+	struct vq_sysfs_entry *entry = container_of(attr,
+					struct vq_sysfs_entry, attr);
+
+	if (!entry->show)
+		return -EIO;
+
+	return entry->show(vq, buf);
+}
+
+static ssize_t vq_attr_store(struct kobject *kobj, struct attribute *attr,
+			     const char *buf, size_t count)
+{
+	struct vduse_virtqueue *vq = container_of(kobj,
+					struct vduse_virtqueue, kobj);
+	struct vq_sysfs_entry *entry = container_of(attr,
+					struct vq_sysfs_entry, attr);
+
+	if (!entry->store)
+		return -EIO;
+
+	return entry->store(vq, buf, count);
+}
+
+static const struct sysfs_ops vq_sysfs_ops = {
+	.show = vq_attr_show,
+	.store = vq_attr_store,
+};
+
+static void vq_release(struct kobject *kobj)
+{
+	struct vduse_virtqueue *vq = container_of(kobj,
+					struct vduse_virtqueue, kobj);
+	kfree(vq);
+}
+
+static const struct kobj_type vq_type = {
+	.release	= vq_release,
+	.sysfs_ops	= &vq_sysfs_ops,
+	.default_groups	= vq_groups,
+};
+
+static char *vduse_devnode(const struct device *dev, umode_t *mode)
+{
+	return kasprintf(GFP_KERNEL, "vduse/%s", dev_name(dev));
+}
+
+static const struct class vduse_class = {
+	.name = "vduse",
+	.devnode = vduse_devnode,
+};
+
+static void vduse_dev_deinit_vqs(struct vduse_dev *dev)
+{
+	int i;
+
+	if (!dev->vqs)
+		return;
+
+	for (i = 0; i < dev->vq_num; i++)
+		kobject_put(&dev->vqs[i]->kobj);
+	kfree(dev->vqs);
+}
+
+static int vduse_dev_init_vqs(struct vduse_dev *dev, u32 vq_align, u32 vq_num)
+{
+	int ret, i;
+
+	dev->vq_align = vq_align;
+	dev->vq_num = vq_num;
+	dev->vqs = kzalloc_objs(*dev->vqs, dev->vq_num);
+	if (!dev->vqs)
+		return -ENOMEM;
+
+	for (i = 0; i < vq_num; i++) {
+		dev->vqs[i] = kzalloc_obj(*dev->vqs[i]);
+		if (!dev->vqs[i]) {
+			ret = -ENOMEM;
+			goto err;
+		}
+
+		dev->vqs[i]->index = i;
+		dev->vqs[i]->irq_effective_cpu = IRQ_UNBOUND;
+		INIT_WORK(&dev->vqs[i]->inject, vduse_vq_irq_inject);
+		INIT_WORK(&dev->vqs[i]->kick, vduse_vq_kick_work);
+		spin_lock_init(&dev->vqs[i]->kick_lock);
+		spin_lock_init(&dev->vqs[i]->irq_lock);
+		cpumask_setall(&dev->vqs[i]->irq_affinity);
+
+		kobject_init(&dev->vqs[i]->kobj, &vq_type);
+		ret = kobject_add(&dev->vqs[i]->kobj,
+				  &dev->dev->kobj, "vq%d", i);
+		if (ret) {
+			kfree(dev->vqs[i]);
+			goto err;
+		}
+	}
+
+	return 0;
+err:
+	while (i--)
+		kobject_put(&dev->vqs[i]->kobj);
+	kfree(dev->vqs);
+	dev->vqs = NULL;
+	return ret;
+}
+
 static struct vduse_dev *vduse_dev_create(void)
 {
-	struct vduse_dev *dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	struct vduse_dev *dev = kzalloc_obj(*dev);
 
 	if (!dev)
 		return NULL;
 
 	mutex_init(&dev->lock);
+	mutex_init(&dev->domain_lock);
 	spin_lock_init(&dev->msg_lock);
 	INIT_LIST_HEAD(&dev->send_list);
 	INIT_LIST_HEAD(&dev->recv_list);
@@ -1208,12 +1891,17 @@ static int vduse_destroy_dev(char *name)
 	mutex_unlock(&dev->lock);
 
 	vduse_dev_reset(dev);
-	device_destroy(vduse_class, MKDEV(MAJOR(vduse_major), dev->minor));
+	device_destroy(&vduse_class, MKDEV(MAJOR(vduse_major), dev->minor));
 	idr_remove(&vduse_idr, dev->minor);
 	kvfree(dev->config);
-	kfree(dev->vqs);
-	vduse_domain_destroy(dev->domain);
+	vduse_dev_deinit_vqs(dev);
+	for (int i = 0; i < dev->nas; i++) {
+		if (dev->as[i].domain)
+			vduse_domain_destroy(dev->as[i].domain);
+	}
+	kfree(dev->as);
 	kfree(dev->name);
+	kfree(dev->groups);
 	vduse_dev_destroy(dev);
 	module_put(THIS_MODULE);
 
@@ -1231,23 +1919,44 @@ static bool device_is_allowed(u32 device_id)
 	return false;
 }
 
-static bool features_is_valid(u64 features)
+static bool features_is_valid(struct vduse_dev_config *config)
 {
-	if (!(features & (1ULL << VIRTIO_F_ACCESS_PLATFORM)))
+	if (!(config->features & BIT_ULL(VIRTIO_F_ACCESS_PLATFORM)))
 		return false;
 
 	/* Now we only support read-only configuration space */
-	if (features & (1ULL << VIRTIO_BLK_F_CONFIG_WCE))
+	if ((config->device_id == VIRTIO_ID_BLOCK) &&
+			(config->features & BIT_ULL(VIRTIO_BLK_F_CONFIG_WCE)))
+		return false;
+	else if ((config->device_id == VIRTIO_ID_NET) &&
+			(config->features & BIT_ULL(VIRTIO_NET_F_CTRL_VQ)))
+		return false;
+
+	if ((config->device_id == VIRTIO_ID_NET) &&
+			!(config->features & BIT_ULL(VIRTIO_F_VERSION_1)))
 		return false;
 
 	return true;
 }
 
-static bool vduse_validate_config(struct vduse_dev_config *config)
+static bool vduse_validate_config(struct vduse_dev_config *config,
+				  u64 api_version)
 {
 	if (!is_mem_zero((const char *)config->reserved,
 			 sizeof(config->reserved)))
 		return false;
+
+	if (api_version < VDUSE_API_VERSION_1 &&
+	    (config->ngroups || config->nas))
+		return false;
+
+	if (api_version >= VDUSE_API_VERSION_1) {
+		if (!config->ngroups || config->ngroups > VDUSE_DEV_MAX_GROUPS)
+			return false;
+
+		if (!config->nas || config->nas > VDUSE_DEV_MAX_AS)
+			return false;
+	}
 
 	if (config->vq_align > PAGE_SIZE)
 		return false;
@@ -1255,10 +1964,16 @@ static bool vduse_validate_config(struct vduse_dev_config *config)
 	if (config->config_size > PAGE_SIZE)
 		return false;
 
+	if (config->vq_num > 0xffff)
+		return false;
+
+	if (!config->name[0])
+		return false;
+
 	if (!device_is_allowed(config->device_id))
 		return false;
 
-	if (!features_is_valid(config->features))
+	if (!features_is_valid(config))
 		return false;
 
 	return true;
@@ -1288,8 +2003,49 @@ static ssize_t msg_timeout_store(struct device *device,
 
 static DEVICE_ATTR_RW(msg_timeout);
 
+static ssize_t bounce_size_show(struct device *device,
+				struct device_attribute *attr, char *buf)
+{
+	struct vduse_dev *dev = dev_get_drvdata(device);
+
+	return sysfs_emit(buf, "%u\n", dev->bounce_size);
+}
+
+static ssize_t bounce_size_store(struct device *device,
+				 struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	struct vduse_dev *dev = dev_get_drvdata(device);
+	unsigned int bounce_size;
+	int ret;
+
+	ret = -EPERM;
+	mutex_lock(&dev->domain_lock);
+	/* Assuming that if the first domain is allocated, all are allocated */
+	if (dev->as[0].domain)
+		goto unlock;
+
+	ret = kstrtouint(buf, 10, &bounce_size);
+	if (ret < 0)
+		goto unlock;
+
+	ret = -EINVAL;
+	if (bounce_size > VDUSE_MAX_BOUNCE_SIZE ||
+	    bounce_size < VDUSE_MIN_BOUNCE_SIZE)
+		goto unlock;
+
+	dev->bounce_size = bounce_size & PAGE_MASK;
+	ret = count;
+unlock:
+	mutex_unlock(&dev->domain_lock);
+	return ret;
+}
+
+static DEVICE_ATTR_RW(bounce_size);
+
 static struct attribute *vduse_dev_attrs[] = {
 	&dev_attr_msg_timeout.attr,
+	&dev_attr_bounce_size.attr,
 	NULL
 };
 
@@ -1298,8 +2054,12 @@ ATTRIBUTE_GROUPS(vduse_dev);
 static int vduse_create_dev(struct vduse_dev_config *config,
 			    void *config_buf, u64 api_version)
 {
-	int i, ret;
+	int ret;
 	struct vduse_dev *dev;
+
+	ret = -EPERM;
+	if ((config->device_id == VIRTIO_ID_NET) && !capable(CAP_NET_ADMIN))
+		goto err;
 
 	ret = -EEXIST;
 	if (vduse_find_dev(config->name))
@@ -1314,30 +2074,33 @@ static int vduse_create_dev(struct vduse_dev_config *config,
 	dev->device_features = config->features;
 	dev->device_id = config->device_id;
 	dev->vendor_id = config->vendor_id;
+
+	dev->nas = (dev->api_version < VDUSE_API_VERSION_1) ? 1 : config->nas;
+	dev->as = kzalloc_objs(dev->as[0], dev->nas);
+	if (!dev->as)
+		goto err_as;
+	for (int i = 0; i < dev->nas; i++)
+		mutex_init(&dev->as[i].mem_lock);
+
+	dev->ngroups = (dev->api_version < VDUSE_API_VERSION_1)
+		       ? 1
+		       : config->ngroups;
+	dev->groups = kzalloc_objs(dev->groups[0], dev->ngroups);
+	if (!dev->groups)
+		goto err_vq_groups;
+	for (u32 i = 0; i < dev->ngroups; ++i) {
+		dev->groups[i].dev = dev;
+		rwlock_init(&dev->groups[i].as_lock);
+		dev->groups[i].as = &dev->as[0];
+	}
+
 	dev->name = kstrdup(config->name, GFP_KERNEL);
 	if (!dev->name)
 		goto err_str;
 
-	dev->domain = vduse_domain_create(VDUSE_IOVA_SIZE - 1,
-					  VDUSE_BOUNCE_SIZE);
-	if (!dev->domain)
-		goto err_domain;
-
+	dev->bounce_size = VDUSE_BOUNCE_SIZE;
 	dev->config = config_buf;
 	dev->config_size = config->config_size;
-	dev->vq_align = config->vq_align;
-	dev->vq_num = config->vq_num;
-	dev->vqs = kcalloc(dev->vq_num, sizeof(*dev->vqs), GFP_KERNEL);
-	if (!dev->vqs)
-		goto err_vqs;
-
-	for (i = 0; i < dev->vq_num; i++) {
-		dev->vqs[i].index = i;
-		INIT_WORK(&dev->vqs[i].inject, vduse_vq_irq_inject);
-		INIT_WORK(&dev->vqs[i].kick, vduse_vq_kick_work);
-		spin_lock_init(&dev->vqs[i].kick_lock);
-		spin_lock_init(&dev->vqs[i].irq_lock);
-	}
 
 	ret = idr_alloc(&vduse_idr, dev, 1, VDUSE_DEV_MAX, GFP_KERNEL);
 	if (ret < 0)
@@ -1345,25 +2108,32 @@ static int vduse_create_dev(struct vduse_dev_config *config,
 
 	dev->minor = ret;
 	dev->msg_timeout = VDUSE_MSG_DEFAULT_TIMEOUT;
-	dev->dev = device_create_with_groups(vduse_class, NULL,
+	dev->dev = device_create_with_groups(&vduse_class, NULL,
 				MKDEV(MAJOR(vduse_major), dev->minor),
 				dev, vduse_dev_groups, "%s", config->name);
 	if (IS_ERR(dev->dev)) {
 		ret = PTR_ERR(dev->dev);
 		goto err_dev;
 	}
+
+	ret = vduse_dev_init_vqs(dev, config->vq_align, config->vq_num);
+	if (ret)
+		goto err_vqs;
+
 	__module_get(THIS_MODULE);
 
 	return 0;
+err_vqs:
+	device_destroy(&vduse_class, MKDEV(MAJOR(vduse_major), dev->minor));
 err_dev:
 	idr_remove(&vduse_idr, dev->minor);
 err_idr:
-	kfree(dev->vqs);
-err_vqs:
-	vduse_domain_destroy(dev->domain);
-err_domain:
 	kfree(dev->name);
 err_str:
+	kfree(dev->groups);
+err_vq_groups:
+	kfree(dev->as);
+err_as:
 	vduse_dev_destroy(dev);
 err:
 	return ret;
@@ -1379,6 +2149,8 @@ static long vduse_ioctl(struct file *file, unsigned int cmd,
 	mutex_lock(&vduse_lock);
 	switch (cmd) {
 	case VDUSE_GET_API_VERSION:
+		if (control->api_version == VDUSE_API_VERSION_NOT_ASKED)
+			control->api_version = VDUSE_API_VERSION_1;
 		ret = put_user(control->api_version, (u64 __user *)argp);
 		break;
 	case VDUSE_SET_API_VERSION: {
@@ -1389,7 +2161,7 @@ static long vduse_ioctl(struct file *file, unsigned int cmd,
 			break;
 
 		ret = -EINVAL;
-		if (api_version > VDUSE_API_VERSION)
+		if (api_version > VDUSE_API_VERSION_1)
 			break;
 
 		ret = 0;
@@ -1406,7 +2178,9 @@ static long vduse_ioctl(struct file *file, unsigned int cmd,
 			break;
 
 		ret = -EINVAL;
-		if (vduse_validate_config(&config) == false)
+		if (control->api_version == VDUSE_API_VERSION_NOT_ASKED)
+			control->api_version = VDUSE_API_VERSION;
+		if (!vduse_validate_config(&config, control->api_version))
 			break;
 
 		buf = vmemdup_user(argp + size, config.config_size);
@@ -1452,11 +2226,11 @@ static int vduse_open(struct inode *inode, struct file *file)
 {
 	struct vduse_control *control;
 
-	control = kmalloc(sizeof(struct vduse_control), GFP_KERNEL);
+	control = kmalloc_obj(struct vduse_control);
 	if (!control)
 		return -ENOMEM;
 
-	control->api_version = VDUSE_API_VERSION;
+	control->api_version = VDUSE_API_VERSION_NOT_ASKED;
 	file->private_data = control;
 
 	return 0;
@@ -1471,46 +2245,29 @@ static const struct file_operations vduse_ctrl_fops = {
 	.llseek		= noop_llseek,
 };
 
-static char *vduse_devnode(struct device *dev, umode_t *mode)
-{
-	return kasprintf(GFP_KERNEL, "vduse/%s", dev_name(dev));
-}
-
-static void vduse_mgmtdev_release(struct device *dev)
-{
-}
-
-static struct device vduse_mgmtdev = {
-	.init_name = "vduse",
-	.release = vduse_mgmtdev_release,
+struct vduse_mgmt_dev {
+	struct vdpa_mgmt_dev mgmt_dev;
+	struct device dev;
 };
 
-static struct vdpa_mgmt_dev mgmt_dev;
+static struct vduse_mgmt_dev *vduse_mgmt;
 
 static int vduse_dev_init_vdpa(struct vduse_dev *dev, const char *name)
 {
 	struct vduse_vdpa *vdev;
-	int ret;
 
 	if (dev->vdev)
 		return -EEXIST;
 
 	vdev = vdpa_alloc_device(struct vduse_vdpa, vdpa, dev->dev,
-				 &vduse_vdpa_config_ops, 1, 1, name, true);
+				 &vduse_vdpa_config_ops, &vduse_map_ops,
+				 dev->ngroups, dev->nas, name, true);
 	if (IS_ERR(vdev))
 		return PTR_ERR(vdev);
 
 	dev->vdev = vdev;
 	vdev->dev = dev;
-	vdev->vdpa.dev.dma_mask = &vdev->vdpa.dev.coherent_dma_mask;
-	ret = dma_set_mask_and_coherent(&vdev->vdpa.dev, DMA_BIT_MASK(64));
-	if (ret) {
-		put_device(&vdev->vdpa.dev);
-		return ret;
-	}
-	set_dma_ops(&vdev->vdpa.dev, &vduse_dev_dma_ops);
-	vdev->vdpa.dma_dev = &vdev->vdpa.dev;
-	vdev->vdpa.mdev = &mgmt_dev;
+	vdev->vdpa.mdev = &vduse_mgmt->mgmt_dev;
 
 	return 0;
 }
@@ -1519,7 +2276,8 @@ static int vdpa_dev_add(struct vdpa_mgmt_dev *mdev, const char *name,
 			const struct vdpa_dev_set_config *config)
 {
 	struct vduse_dev *dev;
-	int ret;
+	size_t domain_bounce_size;
+	int ret, i;
 
 	mutex_lock(&vduse_lock);
 	dev = vduse_find_dev(name);
@@ -1532,13 +2290,42 @@ static int vdpa_dev_add(struct vdpa_mgmt_dev *mdev, const char *name,
 	if (ret)
 		return ret;
 
-	ret = _vdpa_register_device(&dev->vdev->vdpa, dev->vq_num);
-	if (ret) {
-		put_device(&dev->vdev->vdpa.dev);
-		return ret;
+	mutex_lock(&dev->domain_lock);
+	ret = 0;
+
+	domain_bounce_size = dev->bounce_size / dev->nas;
+	for (i = 0; i < dev->nas; ++i) {
+		dev->as[i].domain = vduse_domain_create(VDUSE_IOVA_SIZE - 1,
+							domain_bounce_size);
+		if (!dev->as[i].domain) {
+			ret = -ENOMEM;
+			goto err;
+		}
 	}
 
+	mutex_unlock(&dev->domain_lock);
+
+	ret = _vdpa_register_device(&dev->vdev->vdpa, dev->vq_num);
+	if (ret)
+		goto err_register;
+
 	return 0;
+
+err_register:
+	mutex_lock(&dev->domain_lock);
+
+err:
+	for (int j = 0; j < i; j++) {
+		if (dev->as[j].domain) {
+			vduse_domain_destroy(dev->as[j].domain);
+			dev->as[j].domain = NULL;
+		}
+	}
+	mutex_unlock(&dev->domain_lock);
+
+	put_device(&dev->vdev->vdpa.dev);
+
+	return ret;
 }
 
 static void vdpa_dev_del(struct vdpa_mgmt_dev *mdev, struct vdpa_device *dev)
@@ -1553,37 +2340,56 @@ static const struct vdpa_mgmtdev_ops vdpa_dev_mgmtdev_ops = {
 
 static struct virtio_device_id id_table[] = {
 	{ VIRTIO_ID_BLOCK, VIRTIO_DEV_ANY_ID },
+	{ VIRTIO_ID_NET, VIRTIO_DEV_ANY_ID },
 	{ 0 },
 };
 
-static struct vdpa_mgmt_dev mgmt_dev = {
-	.device = &vduse_mgmtdev,
-	.id_table = id_table,
-	.ops = &vdpa_dev_mgmtdev_ops,
-};
+static void vduse_mgmtdev_release(struct device *dev)
+{
+	struct vduse_mgmt_dev *mgmt_dev;
+
+	mgmt_dev = container_of(dev, struct vduse_mgmt_dev, dev);
+	kfree(mgmt_dev);
+}
 
 static int vduse_mgmtdev_init(void)
 {
 	int ret;
 
-	ret = device_register(&vduse_mgmtdev);
-	if (ret)
+	vduse_mgmt = kzalloc_obj(*vduse_mgmt);
+	if (!vduse_mgmt)
+		return -ENOMEM;
+
+	ret = dev_set_name(&vduse_mgmt->dev, "vduse");
+	if (ret) {
+		kfree(vduse_mgmt);
 		return ret;
+	}
 
-	ret = vdpa_mgmtdev_register(&mgmt_dev);
+	vduse_mgmt->dev.release = vduse_mgmtdev_release;
+
+	ret = device_register(&vduse_mgmt->dev);
 	if (ret)
-		goto err;
+		goto dev_reg_err;
 
-	return 0;
-err:
-	device_unregister(&vduse_mgmtdev);
+	vduse_mgmt->mgmt_dev.id_table = id_table;
+	vduse_mgmt->mgmt_dev.ops = &vdpa_dev_mgmtdev_ops;
+	vduse_mgmt->mgmt_dev.device = &vduse_mgmt->dev;
+	ret = vdpa_mgmtdev_register(&vduse_mgmt->mgmt_dev);
+	if (ret)
+		device_unregister(&vduse_mgmt->dev);
+
+	return ret;
+
+dev_reg_err:
+	put_device(&vduse_mgmt->dev);
 	return ret;
 }
 
 static void vduse_mgmtdev_exit(void)
 {
-	vdpa_mgmtdev_unregister(&mgmt_dev);
-	device_unregister(&vduse_mgmtdev);
+	vdpa_mgmtdev_unregister(&vduse_mgmt->mgmt_dev);
+	device_unregister(&vduse_mgmt->dev);
 }
 
 static int vduse_init(void)
@@ -1591,11 +2397,9 @@ static int vduse_init(void)
 	int ret;
 	struct device *dev;
 
-	vduse_class = class_create(THIS_MODULE, "vduse");
-	if (IS_ERR(vduse_class))
-		return PTR_ERR(vduse_class);
-
-	vduse_class->devnode = vduse_devnode;
+	ret = class_register(&vduse_class);
+	if (ret)
+		return ret;
 
 	ret = alloc_chrdev_region(&vduse_major, 0, VDUSE_DEV_MAX, "vduse");
 	if (ret)
@@ -1608,7 +2412,7 @@ static int vduse_init(void)
 	if (ret)
 		goto err_ctrl_cdev;
 
-	dev = device_create(vduse_class, NULL, vduse_major, NULL, "control");
+	dev = device_create(&vduse_class, NULL, vduse_major, NULL, "control");
 	if (IS_ERR(dev)) {
 		ret = PTR_ERR(dev);
 		goto err_device;
@@ -1622,12 +2426,16 @@ static int vduse_init(void)
 	if (ret)
 		goto err_cdev;
 
+	ret = -ENOMEM;
 	vduse_irq_wq = alloc_workqueue("vduse-irq",
 				WQ_HIGHPRI | WQ_SYSFS | WQ_UNBOUND, 0);
-	if (!vduse_irq_wq) {
-		ret = -ENOMEM;
+	if (!vduse_irq_wq)
 		goto err_wq;
-	}
+
+	vduse_irq_bound_wq = alloc_workqueue("vduse-irq-bound",
+					     WQ_HIGHPRI | WQ_PERCPU, 0);
+	if (!vduse_irq_bound_wq)
+		goto err_bound_wq;
 
 	ret = vduse_domain_init();
 	if (ret)
@@ -1641,17 +2449,19 @@ static int vduse_init(void)
 err_mgmtdev:
 	vduse_domain_exit();
 err_domain:
+	destroy_workqueue(vduse_irq_bound_wq);
+err_bound_wq:
 	destroy_workqueue(vduse_irq_wq);
 err_wq:
 	cdev_del(&vduse_cdev);
 err_cdev:
-	device_destroy(vduse_class, vduse_major);
+	device_destroy(&vduse_class, vduse_major);
 err_device:
 	cdev_del(&vduse_ctrl_cdev);
 err_ctrl_cdev:
 	unregister_chrdev_region(vduse_major, VDUSE_DEV_MAX);
 err_chardev_region:
-	class_destroy(vduse_class);
+	class_unregister(&vduse_class);
 	return ret;
 }
 module_init(vduse_init);
@@ -1660,12 +2470,14 @@ static void vduse_exit(void)
 {
 	vduse_mgmtdev_exit();
 	vduse_domain_exit();
+	destroy_workqueue(vduse_irq_bound_wq);
 	destroy_workqueue(vduse_irq_wq);
 	cdev_del(&vduse_cdev);
-	device_destroy(vduse_class, vduse_major);
+	device_destroy(&vduse_class, vduse_major);
 	cdev_del(&vduse_ctrl_cdev);
 	unregister_chrdev_region(vduse_major, VDUSE_DEV_MAX);
-	class_destroy(vduse_class);
+	class_unregister(&vduse_class);
+	idr_destroy(&vduse_idr);
 }
 module_exit(vduse_exit);
 

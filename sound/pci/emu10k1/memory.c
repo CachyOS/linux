@@ -261,14 +261,12 @@ int snd_emu10k1_memblk_map(struct snd_emu10k1 *emu, struct snd_emu10k1_memblk *b
 	int size;
 	struct list_head *p, *nextp;
 	struct snd_emu10k1_memblk *deleted;
-	unsigned long flags;
 
-	spin_lock_irqsave(&emu->memblk_lock, flags);
+	guard(spinlock_irqsave)(&emu->memblk_lock);
 	if (blk->mapped_page >= 0) {
 		/* update order link */
 		list_move_tail(&blk->mapped_order_link,
 			       &emu->mapped_order_link_head);
-		spin_unlock_irqrestore(&emu->memblk_lock, flags);
 		return 0;
 	}
 	err = map_memblk(emu, blk);
@@ -289,7 +287,6 @@ int snd_emu10k1_memblk_map(struct snd_emu10k1 *emu, struct snd_emu10k1_memblk *b
 			}
 		}
 	}
-	spin_unlock_irqrestore(&emu->memblk_lock, flags);
 	return err;
 }
 
@@ -315,16 +312,12 @@ snd_emu10k1_alloc_pages(struct snd_emu10k1 *emu, struct snd_pcm_substream *subst
 	if (snd_BUG_ON(!hdr))
 		return NULL;
 
-	idx = runtime->period_size >= runtime->buffer_size ?
-					(emu->delay_pcm_irq * 2) : 0;
-	mutex_lock(&hdr->block_mutex);
-	blk = search_empty(emu, runtime->dma_bytes + idx);
-	if (blk == NULL) {
-		mutex_unlock(&hdr->block_mutex);
+	guard(mutex)(&hdr->block_mutex);
+	blk = search_empty(emu, runtime->dma_bytes);
+	if (blk == NULL)
 		return NULL;
-	}
 	/* fill buffer addresses but pointers are not stored so that
-	 * snd_free_pci_page() is not called in in synth_free()
+	 * snd_free_pci_page() is not called in synth_free()
 	 */
 	idx = 0;
 	for (page = blk->first_page; page <= blk->last_page; page++, idx++) {
@@ -337,7 +330,6 @@ snd_emu10k1_alloc_pages(struct snd_emu10k1 *emu, struct snd_pcm_substream *subst
 		if (! is_valid_page(emu, addr)) {
 			dev_err_ratelimited(emu->card->dev,
 				"emu: failure page = %d\n", idx);
-			mutex_unlock(&hdr->block_mutex);
 			return NULL;
 		}
 		emu->page_addr_table[page] = addr;
@@ -349,10 +341,8 @@ snd_emu10k1_alloc_pages(struct snd_emu10k1 *emu, struct snd_pcm_substream *subst
 	err = snd_emu10k1_memblk_map(emu, blk);
 	if (err < 0) {
 		__snd_util_mem_free(hdr, (struct snd_util_memblk *)blk);
-		mutex_unlock(&hdr->block_mutex);
 		return NULL;
 	}
-	mutex_unlock(&hdr->block_mutex);
 	return (struct snd_util_memblk *)blk;
 }
 
@@ -409,19 +399,15 @@ snd_emu10k1_synth_alloc(struct snd_emu10k1 *hw, unsigned int size)
 	struct snd_emu10k1_memblk *blk;
 	struct snd_util_memhdr *hdr = hw->memhdr; 
 
-	mutex_lock(&hdr->block_mutex);
+	guard(mutex)(&hdr->block_mutex);
 	blk = (struct snd_emu10k1_memblk *)__snd_util_mem_alloc(hdr, size);
-	if (blk == NULL) {
-		mutex_unlock(&hdr->block_mutex);
+	if (blk == NULL)
 		return NULL;
-	}
 	if (synth_alloc_pages(hw, blk)) {
 		__snd_util_mem_free(hdr, (struct snd_util_memblk *)blk);
-		mutex_unlock(&hdr->block_mutex);
 		return NULL;
 	}
 	snd_emu10k1_memblk_map(hw, blk);
-	mutex_unlock(&hdr->block_mutex);
 	return (struct snd_util_memblk *)blk;
 }
 
@@ -435,16 +421,14 @@ snd_emu10k1_synth_free(struct snd_emu10k1 *emu, struct snd_util_memblk *memblk)
 {
 	struct snd_util_memhdr *hdr = emu->memhdr; 
 	struct snd_emu10k1_memblk *blk = (struct snd_emu10k1_memblk *)memblk;
-	unsigned long flags;
 
-	mutex_lock(&hdr->block_mutex);
-	spin_lock_irqsave(&emu->memblk_lock, flags);
-	if (blk->mapped_page >= 0)
-		unmap_memblk(emu, blk);
-	spin_unlock_irqrestore(&emu->memblk_lock, flags);
+	guard(mutex)(&hdr->block_mutex);
+	scoped_guard(spinlock_irqsave, &emu->memblk_lock) {
+		if (blk->mapped_page >= 0)
+			unmap_memblk(emu, blk);
+	}
 	synth_free_pages(emu, blk);
-	 __snd_util_mem_free(hdr, memblk);
-	mutex_unlock(&hdr->block_mutex);
+	__snd_util_mem_free(hdr, memblk);
 	return 0;
 }
 
@@ -567,14 +551,17 @@ static inline void *offset_ptr(struct snd_emu10k1 *emu, int page, int offset)
 }
 
 /*
- * bzero(blk + offset, size)
+ * memset(blk + offset, value, size)
  */
-int snd_emu10k1_synth_bzero(struct snd_emu10k1 *emu, struct snd_util_memblk *blk,
-			    int offset, int size)
+int snd_emu10k1_synth_memset(struct snd_emu10k1 *emu, struct snd_util_memblk *blk,
+			     int offset, int size, u8 value)
 {
 	int page, nextofs, end_offset, temp, temp1;
 	void *ptr;
 	struct snd_emu10k1_memblk *p = (struct snd_emu10k1_memblk *)blk;
+
+	if (snd_BUG_ON(offset + size > p->mem.size))
+		return -EFAULT;
 
 	offset += blk->offset & (PAGE_SIZE - 1);
 	end_offset = offset + size;
@@ -587,24 +574,54 @@ int snd_emu10k1_synth_bzero(struct snd_emu10k1 *emu, struct snd_util_memblk *blk
 			temp = temp1;
 		ptr = offset_ptr(emu, page + p->first_page, offset);
 		if (ptr)
-			memset(ptr, 0, temp);
+			memset(ptr, value, temp);
 		offset = nextofs;
 		page++;
 	} while (offset < end_offset);
 	return 0;
 }
 
-EXPORT_SYMBOL(snd_emu10k1_synth_bzero);
+EXPORT_SYMBOL(snd_emu10k1_synth_memset);
+
+// Note that the value is assumed to be suitably repetitive.
+static void xor_range(void *ptr, int size, u32 value)
+{
+	if ((long)ptr & 1) {
+		*(u8 *)ptr ^= (u8)value;
+		ptr++;
+		size--;
+	}
+	if (size > 1 && ((long)ptr & 2)) {
+		*(u16 *)ptr ^= (u16)value;
+		ptr += 2;
+		size -= 2;
+	}
+	while (size > 3) {
+		*(u32 *)ptr ^= value;
+		ptr += 4;
+		size -= 4;
+	}
+	if (size > 1) {
+		*(u16 *)ptr ^= (u16)value;
+		ptr += 2;
+		size -= 2;
+	}
+	if (size > 0)
+		*(u8 *)ptr ^= (u8)value;
+}
 
 /*
- * copy_from_user(blk + offset, data, size)
+ * copy_from_user(blk + offset, data, size) ^ xor
  */
 int snd_emu10k1_synth_copy_from_user(struct snd_emu10k1 *emu, struct snd_util_memblk *blk,
-				     int offset, const char __user *data, int size)
+				     int offset, const char __user *data, int size, u32 xor)
 {
 	int page, nextofs, end_offset, temp, temp1;
 	void *ptr;
 	struct snd_emu10k1_memblk *p = (struct snd_emu10k1_memblk *)blk;
+
+	if (snd_BUG_ON(offset + size > p->mem.size))
+		return -EFAULT;
 
 	offset += blk->offset & (PAGE_SIZE - 1);
 	end_offset = offset + size;
@@ -616,8 +633,12 @@ int snd_emu10k1_synth_copy_from_user(struct snd_emu10k1 *emu, struct snd_util_me
 		if (temp1 < temp)
 			temp = temp1;
 		ptr = offset_ptr(emu, page + p->first_page, offset);
-		if (ptr && copy_from_user(ptr, data, temp))
-			return -EFAULT;
+		if (ptr) {
+			if (copy_from_user(ptr, data, temp))
+				return -EFAULT;
+			if (xor)
+				xor_range(ptr, temp, xor);
+		}
 		offset = nextofs;
 		data += temp;
 		page++;

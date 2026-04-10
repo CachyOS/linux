@@ -52,11 +52,11 @@ static void nft_tproxy_eval_v4(const struct nft_expr *expr,
 				   skb->dev, NF_TPROXY_LOOKUP_ESTABLISHED);
 
 	if (priv->sreg_addr)
-		taddr = regs->data[priv->sreg_addr];
+		taddr = nft_reg_load_be32(&regs->data[priv->sreg_addr]);
 	taddr = nf_tproxy_laddr4(skb, taddr, iph->daddr);
 
 	if (priv->sreg_port)
-		tport = nft_reg_load16(&regs->data[priv->sreg_port]);
+		tport = nft_reg_load_be16(&regs->data[priv->sreg_port]);
 	if (!tport)
 		tport = hp->dest;
 
@@ -124,7 +124,7 @@ static void nft_tproxy_eval_v6(const struct nft_expr *expr,
 	taddr = *nf_tproxy_laddr6(skb, &taddr, &iph->daddr);
 
 	if (priv->sreg_port)
-		tport = nft_reg_load16(&regs->data[priv->sreg_port]);
+		tport = nft_reg_load_be16(&regs->data[priv->sreg_port]);
 	if (!tport)
 		tport = hp->dest;
 
@@ -183,7 +183,7 @@ static void nft_tproxy_eval(const struct nft_expr *expr,
 }
 
 static const struct nla_policy nft_tproxy_policy[NFTA_TPROXY_MAX + 1] = {
-	[NFTA_TPROXY_FAMILY]   = { .type = NLA_U32 },
+	[NFTA_TPROXY_FAMILY]   = NLA_POLICY_MAX(NLA_BE32, 255),
 	[NFTA_TPROXY_REG_ADDR] = { .type = NLA_U32 },
 	[NFTA_TPROXY_REG_PORT] = { .type = NLA_U32 },
 };
@@ -254,14 +254,14 @@ static int nft_tproxy_init(const struct nft_ctx *ctx,
 	}
 
 	if (tb[NFTA_TPROXY_REG_ADDR]) {
-		err = nft_parse_register_load(tb[NFTA_TPROXY_REG_ADDR],
+		err = nft_parse_register_load(ctx, tb[NFTA_TPROXY_REG_ADDR],
 					      &priv->sreg_addr, alen);
 		if (err < 0)
 			return err;
 	}
 
 	if (tb[NFTA_TPROXY_REG_PORT]) {
-		err = nft_parse_register_load(tb[NFTA_TPROXY_REG_PORT],
+		err = nft_parse_register_load(ctx, tb[NFTA_TPROXY_REG_PORT],
 					      &priv->sreg_port, sizeof(u16));
 		if (err < 0)
 			return err;
@@ -294,7 +294,7 @@ static void nft_tproxy_destroy(const struct nft_ctx *ctx,
 }
 
 static int nft_tproxy_dump(struct sk_buff *skb,
-			   const struct nft_expr *expr)
+			   const struct nft_expr *expr, bool reset)
 {
 	const struct nft_tproxy *priv = nft_expr_priv(expr);
 
@@ -312,6 +312,17 @@ static int nft_tproxy_dump(struct sk_buff *skb,
 	return 0;
 }
 
+static int nft_tproxy_validate(const struct nft_ctx *ctx,
+			       const struct nft_expr *expr)
+{
+	if (ctx->family != NFPROTO_IPV4 &&
+	    ctx->family != NFPROTO_IPV6 &&
+	    ctx->family != NFPROTO_INET)
+		return -EOPNOTSUPP;
+
+	return nft_chain_validate_hooks(ctx->chain, 1 << NF_INET_PRE_ROUTING);
+}
+
 static struct nft_expr_type nft_tproxy_type;
 static const struct nft_expr_ops nft_tproxy_ops = {
 	.type		= &nft_tproxy_type,
@@ -321,6 +332,7 @@ static const struct nft_expr_ops nft_tproxy_ops = {
 	.destroy	= nft_tproxy_destroy,
 	.dump		= nft_tproxy_dump,
 	.reduce		= NFT_REDUCE_READONLY,
+	.validate	= nft_tproxy_validate,
 };
 
 static struct nft_expr_type nft_tproxy_type __read_mostly = {

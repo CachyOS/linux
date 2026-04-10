@@ -16,20 +16,26 @@
 
 static char *fw_path;
 module_param(fw_path, charp, 0444);
-MODULE_PARM_DESC(fw_path, "alternate path for SOF firmware.");
+MODULE_PARM_DESC(fw_path, "deprecated - moved to snd-sof module.");
+
+static char *fw_filename;
+module_param(fw_filename, charp, 0444);
+MODULE_PARM_DESC(fw_filename, "deprecated - moved to snd-sof module.");
 
 static char *tplg_path;
 module_param(tplg_path, charp, 0444);
-MODULE_PARM_DESC(tplg_path, "alternate path for SOF topology.");
+MODULE_PARM_DESC(tplg_path, "deprecated - moved to snd-sof module.");
 
-const struct dev_pm_ops sof_of_pm = {
+static char *tplg_filename;
+module_param(tplg_filename, charp, 0444);
+MODULE_PARM_DESC(tplg_filename, "deprecated - moved to snd-sof module.");
+
+EXPORT_DEV_PM_OPS(sof_of_pm) = {
 	.prepare = snd_sof_prepare,
 	.complete = snd_sof_complete,
-	SET_SYSTEM_SLEEP_PM_OPS(snd_sof_suspend, snd_sof_resume)
-	SET_RUNTIME_PM_OPS(snd_sof_runtime_suspend, snd_sof_runtime_resume,
-			   NULL)
+	SYSTEM_SLEEP_PM_OPS(snd_sof_suspend, snd_sof_resume)
+	RUNTIME_PM_OPS(snd_sof_runtime_suspend, snd_sof_runtime_resume, NULL)
 };
-EXPORT_SYMBOL(sof_of_pm);
 
 static void sof_of_probe_complete(struct device *dev)
 {
@@ -64,17 +70,12 @@ int sof_of_probe(struct platform_device *pdev)
 
 	sof_pdata->desc = desc;
 	sof_pdata->dev = &pdev->dev;
-	sof_pdata->fw_filename = desc->default_fw_filename[SOF_IPC];
 
-	if (fw_path)
-		sof_pdata->fw_filename_prefix = fw_path;
-	else
-		sof_pdata->fw_filename_prefix = sof_pdata->desc->default_fw_path[SOF_IPC];
-
-	if (tplg_path)
-		sof_pdata->tplg_filename_prefix = tplg_path;
-	else
-		sof_pdata->tplg_filename_prefix = sof_pdata->desc->default_tplg_path[SOF_IPC];
+	sof_pdata->ipc_file_profile_base.ipc_type = desc->ipc_default;
+	sof_pdata->ipc_file_profile_base.fw_path = fw_path;
+	sof_pdata->ipc_file_profile_base.tplg_path = tplg_path;
+	sof_pdata->ipc_file_profile_base.fw_name = fw_filename;
+	sof_pdata->ipc_file_profile_base.tplg_name = tplg_filename;
 
 	/* set callback to be called on successful device probe to enable runtime_pm */
 	sof_pdata->sof_probe_complete = sof_of_probe_complete;
@@ -84,14 +85,12 @@ int sof_of_probe(struct platform_device *pdev)
 }
 EXPORT_SYMBOL(sof_of_probe);
 
-int sof_of_remove(struct platform_device *pdev)
+void sof_of_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
 
 	/* call sof helper for DSP hardware remove */
 	snd_sof_device_remove(&pdev->dev);
-
-	return 0;
 }
 EXPORT_SYMBOL(sof_of_remove);
 
@@ -102,3 +101,4 @@ void sof_of_shutdown(struct platform_device *pdev)
 EXPORT_SYMBOL(sof_of_shutdown);
 
 MODULE_LICENSE("Dual BSD/GPL");
+MODULE_DESCRIPTION("SOF support for OF/DT platforms");

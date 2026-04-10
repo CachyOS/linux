@@ -3,7 +3,7 @@
  * Copyright (c) 2006-2007 Silicon Graphics, Inc.
  * All Rights Reserved.
  */
-#include "xfs.h"
+#include "xfs_platform.h"
 #include "xfs_mru_cache.h"
 
 /*
@@ -230,9 +230,8 @@ _xfs_mru_cache_clear_reap_list(
 		__releases(mru->lock) __acquires(mru->lock)
 {
 	struct xfs_mru_cache_elem *elem, *next;
-	struct list_head	tmp;
+	LIST_HEAD(tmp);
 
-	INIT_LIST_HEAD(&tmp);
 	list_for_each_entry_safe(elem, next, &mru->reap_list, list_node) {
 
 		/* Remove the element from the data store. */
@@ -294,7 +293,8 @@ int
 xfs_mru_cache_init(void)
 {
 	xfs_mru_reap_wq = alloc_workqueue("xfs_mru_cache",
-			XFS_WQFLAGS(WQ_MEM_RECLAIM | WQ_FREEZABLE), 1);
+			XFS_WQFLAGS(WQ_MEM_RECLAIM | WQ_FREEZABLE | WQ_PERCPU),
+			1);
 	if (!xfs_mru_reap_wq)
 		return -ENOMEM;
 	return 0;
@@ -321,7 +321,7 @@ xfs_mru_cache_create(
 	xfs_mru_cache_free_func_t free_func)
 {
 	struct xfs_mru_cache	*mru = NULL;
-	int			err = 0, grp;
+	int			grp;
 	unsigned int		grp_time;
 
 	if (mrup)
@@ -333,16 +333,17 @@ xfs_mru_cache_create(
 	if (!(grp_time = msecs_to_jiffies(lifetime_ms) / grp_count))
 		return -EINVAL;
 
-	if (!(mru = kmem_zalloc(sizeof(*mru), 0)))
+	mru = kzalloc_obj(*mru, GFP_KERNEL | __GFP_NOFAIL);
+	if (!mru)
 		return -ENOMEM;
 
 	/* An extra list is needed to avoid reaping up to a grp_time early. */
 	mru->grp_count = grp_count + 1;
-	mru->lists = kmem_zalloc(mru->grp_count * sizeof(*mru->lists), 0);
-
+	mru->lists = kzalloc(mru->grp_count * sizeof(*mru->lists),
+				GFP_KERNEL | __GFP_NOFAIL);
 	if (!mru->lists) {
-		err = -ENOMEM;
-		goto exit;
+		kfree(mru);
+		return -ENOMEM;
 	}
 
 	for (grp = 0; grp < mru->grp_count; grp++)
@@ -361,14 +362,7 @@ xfs_mru_cache_create(
 	mru->free_func = free_func;
 	mru->data = data;
 	*mrup = mru;
-
-exit:
-	if (err && mru && mru->lists)
-		kmem_free(mru->lists);
-	if (err && mru)
-		kmem_free(mru);
-
-	return err;
+	return 0;
 }
 
 /*
@@ -406,14 +400,16 @@ xfs_mru_cache_destroy(
 
 	xfs_mru_cache_flush(mru);
 
-	kmem_free(mru->lists);
-	kmem_free(mru);
+	kfree(mru->lists);
+	kfree(mru);
 }
 
 /*
  * To insert an element, call xfs_mru_cache_insert() with the data store, the
  * element's key and the client data pointer.  This function returns 0 on
  * success or ENOMEM if memory for the data element couldn't be allocated.
+ *
+ * The passed in elem is freed through the per-cache free_func on failure.
  */
 int
 xfs_mru_cache_insert(
@@ -421,14 +417,11 @@ xfs_mru_cache_insert(
 	unsigned long		key,
 	struct xfs_mru_cache_elem *elem)
 {
-	int			error;
+	int			error = -EINVAL;
 
-	ASSERT(mru && mru->lists);
-	if (!mru || !mru->lists)
-		return -EINVAL;
-
-	if (radix_tree_preload(GFP_NOFS))
-		return -ENOMEM;
+	error = -ENOMEM;
+	if (radix_tree_preload(GFP_KERNEL))
+		goto out_free;
 
 	INIT_LIST_HEAD(&elem->list_node);
 	elem->key = key;
@@ -440,6 +433,12 @@ xfs_mru_cache_insert(
 		_xfs_mru_cache_list_insert(mru, elem);
 	spin_unlock(&mru->lock);
 
+	if (error)
+		goto out_free;
+	return 0;
+
+out_free:
+	mru->free_func(mru->data, elem);
 	return error;
 }
 

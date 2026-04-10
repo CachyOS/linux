@@ -82,6 +82,13 @@ struct vport *ovs_netdev_link(struct vport *vport, const char *name)
 		err = -ENODEV;
 		goto error_free_vport;
 	}
+	/* Ensure that the device exists and that the provided
+	 * name is not one of its aliases.
+	 */
+	if (strcmp(name, ovs_vport_name(vport))) {
+		err = -ENODEV;
+		goto error_put;
+	}
 	netdev_tracker_alloc(vport->dev, &vport->dev_tracker, GFP_KERNEL);
 	if (vport->dev->flags & IFF_LOOPBACK ||
 	    (vport->dev->type != ARPHRD_ETHER &&
@@ -115,7 +122,7 @@ error_master_upper_dev_unlink:
 error_unlock:
 	rtnl_unlock();
 error_put:
-	dev_put_track(vport->dev, &vport->dev_tracker);
+	netdev_put(vport->dev, &vport->dev_tracker);
 error_free_vport:
 	ovs_vport_free(vport);
 	return ERR_PTR(err);
@@ -137,26 +144,42 @@ static void vport_netdev_free(struct rcu_head *rcu)
 {
 	struct vport *vport = container_of(rcu, struct vport, rcu);
 
-	dev_put_track(vport->dev, &vport->dev_tracker);
+	netdev_put(vport->dev, &vport->dev_tracker);
 	ovs_vport_free(vport);
 }
 
 void ovs_netdev_detach_dev(struct vport *vport)
 {
 	ASSERT_RTNL();
-	vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;
 	netdev_rx_handler_unregister(vport->dev);
 	netdev_upper_dev_unlink(vport->dev,
 				netdev_master_upper_dev_get(vport->dev));
 	dev_set_promiscuity(vport->dev, -1);
+
+	/* paired with smp_mb() in netdev_destroy() */
+	smp_wmb();
+
+	vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;
 }
 
 static void netdev_destroy(struct vport *vport)
 {
-	rtnl_lock();
-	if (netif_is_ovs_port(vport->dev))
-		ovs_netdev_detach_dev(vport);
-	rtnl_unlock();
+	/* When called from ovs_db_notify_wq() after a dp_device_event(), the
+	 * port has already been detached, so we can avoid taking the RTNL by
+	 * checking this first.
+	 */
+	if (netif_is_ovs_port(vport->dev)) {
+		rtnl_lock();
+		/* Check again while holding the lock to ensure we don't race
+		 * with the netdev notifier and detach twice.
+		 */
+		if (netif_is_ovs_port(vport->dev))
+			ovs_netdev_detach_dev(vport);
+		rtnl_unlock();
+	}
+
+	/* paired with smp_wmb() in ovs_netdev_detach_dev() */
+	smp_mb();
 
 	call_rcu(&vport->rcu, vport_netdev_free);
 }
@@ -172,9 +195,7 @@ void ovs_netdev_tunnel_destroy(struct vport *vport)
 	 * if it's not already shutting down.
 	 */
 	if (vport->dev->reg_state == NETREG_REGISTERED)
-		rtnl_delete_link(vport->dev);
-	dev_put_track(vport->dev, &vport->dev_tracker);
-	vport->dev = NULL;
+		rtnl_delete_link(vport->dev, 0, NULL);
 	rtnl_unlock();
 
 	call_rcu(&vport->rcu, vport_netdev_free);

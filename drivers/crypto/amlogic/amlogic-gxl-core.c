@@ -6,17 +6,19 @@
  *
  * Core file which registers crypto algorithms supported by the hardware.
  */
+
+#include <crypto/engine.h>
+#include <crypto/internal/skcipher.h>
 #include <linux/clk.h>
-#include <linux/crypto.h>
-#include <linux/io.h>
+#include <linux/dma-mapping.h>
+#include <linux/err.h>
 #include <linux/interrupt.h>
+#include <linux/io.h>
 #include <linux/irq.h>
+#include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
-#include <crypto/internal/skcipher.h>
-#include <linux/dma-mapping.h>
 
 #include "amlogic-gxl.h"
 
@@ -47,7 +49,7 @@ static struct meson_alg_template mc_algs[] = {
 {
 	.type = CRYPTO_ALG_TYPE_SKCIPHER,
 	.blockmode = MESON_OPMODE_CBC,
-	.alg.skcipher = {
+	.alg.skcipher.base = {
 		.base = {
 			.cra_name = "cbc(aes)",
 			.cra_driver_name = "cbc-aes-gxl",
@@ -68,12 +70,15 @@ static struct meson_alg_template mc_algs[] = {
 		.setkey		= meson_aes_setkey,
 		.encrypt	= meson_skencrypt,
 		.decrypt	= meson_skdecrypt,
-	}
+	},
+	.alg.skcipher.op = {
+		.do_one_request = meson_handle_cipher_request,
+	},
 },
 {
 	.type = CRYPTO_ALG_TYPE_SKCIPHER,
 	.blockmode = MESON_OPMODE_ECB,
-	.alg.skcipher = {
+	.alg.skcipher.base = {
 		.base = {
 			.cra_name = "ecb(aes)",
 			.cra_driver_name = "ecb-aes-gxl",
@@ -93,33 +98,43 @@ static struct meson_alg_template mc_algs[] = {
 		.setkey		= meson_aes_setkey,
 		.encrypt	= meson_skencrypt,
 		.decrypt	= meson_skdecrypt,
-	}
+	},
+	.alg.skcipher.op = {
+		.do_one_request = meson_handle_cipher_request,
+	},
 },
 };
 
-#ifdef CONFIG_CRYPTO_DEV_AMLOGIC_GXL_DEBUG
 static int meson_debugfs_show(struct seq_file *seq, void *v)
 {
-	struct meson_dev *mc = seq->private;
+	struct meson_dev *mc __maybe_unused = seq->private;
 	int i;
 
 	for (i = 0; i < MAXFLOW; i++)
-		seq_printf(seq, "Channel %d: nreq %lu\n", i, mc->chanlist[i].stat_req);
+		seq_printf(seq, "Channel %d: nreq %lu\n", i,
+#ifdef CONFIG_CRYPTO_DEV_AMLOGIC_GXL_DEBUG
+			   mc->chanlist[i].stat_req);
+#else
+			   0ul);
+#endif
 
 	for (i = 0; i < ARRAY_SIZE(mc_algs); i++) {
 		switch (mc_algs[i].type) {
 		case CRYPTO_ALG_TYPE_SKCIPHER:
 			seq_printf(seq, "%s %s %lu %lu\n",
-				   mc_algs[i].alg.skcipher.base.cra_driver_name,
-				   mc_algs[i].alg.skcipher.base.cra_name,
+				   mc_algs[i].alg.skcipher.base.base.cra_driver_name,
+				   mc_algs[i].alg.skcipher.base.base.cra_name,
+#ifdef CONFIG_CRYPTO_DEV_AMLOGIC_GXL_DEBUG
 				   mc_algs[i].stat_req, mc_algs[i].stat_fb);
+#else
+				   0ul, 0ul);
+#endif
 			break;
 		}
 	}
 	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(meson_debugfs);
-#endif
 
 static void meson_free_chanlist(struct meson_dev *mc, int i)
 {
@@ -183,10 +198,10 @@ static int meson_register_algs(struct meson_dev *mc)
 		mc_algs[i].mc = mc;
 		switch (mc_algs[i].type) {
 		case CRYPTO_ALG_TYPE_SKCIPHER:
-			err = crypto_register_skcipher(&mc_algs[i].alg.skcipher);
+			err = crypto_engine_register_skcipher(&mc_algs[i].alg.skcipher);
 			if (err) {
 				dev_err(mc->dev, "Fail to register %s\n",
-					mc_algs[i].alg.skcipher.base.cra_name);
+					mc_algs[i].alg.skcipher.base.base.cra_name);
 				mc_algs[i].mc = NULL;
 				return err;
 			}
@@ -206,7 +221,7 @@ static void meson_unregister_algs(struct meson_dev *mc)
 			continue;
 		switch (mc_algs[i].type) {
 		case CRYPTO_ALG_TYPE_SKCIPHER:
-			crypto_unregister_skcipher(&mc_algs[i].alg.skcipher);
+			crypto_engine_unregister_skcipher(&mc_algs[i].alg.skcipher);
 			break;
 		}
 	}
@@ -225,11 +240,9 @@ static int meson_crypto_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, mc);
 
 	mc->base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(mc->base)) {
-		err = PTR_ERR(mc->base);
-		dev_err(&pdev->dev, "Cannot request MMIO err=%d\n", err);
-		return err;
-	}
+	if (IS_ERR(mc->base))
+		return PTR_ERR(mc->base);
+
 	mc->busclk = devm_clk_get(&pdev->dev, "blkmv");
 	if (IS_ERR(mc->busclk)) {
 		err = PTR_ERR(mc->busclk);
@@ -237,7 +250,6 @@ static int meson_crypto_probe(struct platform_device *pdev)
 		return err;
 	}
 
-	mc->irqs = devm_kcalloc(mc->dev, MAXFLOW, sizeof(int), GFP_KERNEL);
 	for (i = 0; i < MAXFLOW; i++) {
 		mc->irqs[i] = platform_get_irq(pdev, i);
 		if (mc->irqs[i] < 0)
@@ -265,10 +277,16 @@ static int meson_crypto_probe(struct platform_device *pdev)
 	if (err)
 		goto error_alg;
 
+	if (IS_ENABLED(CONFIG_CRYPTO_DEV_AMLOGIC_GXL_DEBUG)) {
+		struct dentry *dbgfs_dir;
+
+		dbgfs_dir = debugfs_create_dir("gxl-crypto", NULL);
+		debugfs_create_file("stats", 0444, dbgfs_dir, mc, &meson_debugfs_fops);
+
 #ifdef CONFIG_CRYPTO_DEV_AMLOGIC_GXL_DEBUG
-	mc->dbgfs_dir = debugfs_create_dir("gxl-crypto", NULL);
-	debugfs_create_file("stats", 0444, mc->dbgfs_dir, mc, &meson_debugfs_fops);
+		mc->dbgfs_dir = dbgfs_dir;
 #endif
+	}
 
 	return 0;
 error_alg:
@@ -279,7 +297,7 @@ error_flow:
 	return err;
 }
 
-static int meson_crypto_remove(struct platform_device *pdev)
+static void meson_crypto_remove(struct platform_device *pdev)
 {
 	struct meson_dev *mc = platform_get_drvdata(pdev);
 
@@ -292,7 +310,6 @@ static int meson_crypto_remove(struct platform_device *pdev)
 	meson_free_chanlist(mc, MAXFLOW - 1);
 
 	clk_disable_unprepare(mc->busclk);
-	return 0;
 }
 
 static const struct of_device_id meson_crypto_of_match_table[] = {

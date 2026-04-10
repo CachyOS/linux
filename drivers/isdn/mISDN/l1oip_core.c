@@ -245,6 +245,7 @@ static int debug;
 static int ulaw;
 
 MODULE_AUTHOR("Andreas Eversberg");
+MODULE_DESCRIPTION("mISDN driver for tunneling layer 1 over IP");
 MODULE_LICENSE("GPL");
 module_param_array(type, uint, NULL, S_IRUGO | S_IWUSR);
 module_param_array(codec, uint, NULL, S_IRUGO | S_IWUSR);
@@ -275,7 +276,7 @@ l1oip_socket_send(struct l1oip *hc, u8 localcodec, u8 channel, u32 chanmask,
 	p = frame;
 
 	/* restart timer */
-	if (time_before(hc->keep_tl.expires, jiffies + 5 * HZ))
+	if (time_before(hc->keep_tl.expires, jiffies + 5 * HZ) && !hc->shutdown)
 		mod_timer(&hc->keep_tl, jiffies + L1OIP_KEEPALIVE * HZ);
 	else
 		hc->keep_tl.expires = jiffies + L1OIP_KEEPALIVE * HZ;
@@ -601,7 +602,9 @@ multiframe:
 		goto multiframe;
 
 	/* restart timer */
-	if (time_before(hc->timeout_tl.expires, jiffies + 5 * HZ) || !hc->timeout_on) {
+	if ((time_before(hc->timeout_tl.expires, jiffies + 5 * HZ) ||
+	     !hc->timeout_on) &&
+	    !hc->shutdown) {
 		hc->timeout_on = 1;
 		mod_timer(&hc->timeout_tl, jiffies + L1OIP_TIMEOUT * HZ);
 	} else /* only adjust timer */
@@ -673,7 +676,7 @@ l1oip_socket_thread(void *data)
 	hc->sin_remote.sin_port = htons((unsigned short)hc->remoteport);
 
 	/* bind to incoming port */
-	if (socket->ops->bind(socket, (struct sockaddr *)&hc->sin_local,
+	if (socket->ops->bind(socket, (struct sockaddr_unsized *)&hc->sin_local,
 			      sizeof(hc->sin_local))) {
 		printk(KERN_ERR "%s: Failed to bind socket to port %d.\n",
 		       __func__, hc->localport);
@@ -704,7 +707,7 @@ l1oip_socket_thread(void *data)
 		printk(KERN_DEBUG "%s: socket created and open\n",
 		       __func__);
 	while (!signal_pending(current)) {
-		iov_iter_kvec(&msg.msg_iter, READ, &iov, 1, recvbuf_size);
+		iov_iter_kvec(&msg.msg_iter, ITER_DEST, &iov, 1, recvbuf_size);
 		recvlen = sock_recvmsg(socket, &msg, 0);
 		if (recvlen > 0) {
 			l1oip_socket_parse(hc, &sin_rx, recvbuf, recvlen);
@@ -819,7 +822,7 @@ l1oip_send_bh(struct work_struct *work)
 static void
 l1oip_keepalive(struct timer_list *t)
 {
-	struct l1oip *hc = from_timer(hc, t, keep_tl);
+	struct l1oip *hc = timer_container_of(hc, t, keep_tl);
 
 	schedule_work(&hc->workq);
 }
@@ -827,8 +830,8 @@ l1oip_keepalive(struct timer_list *t)
 static void
 l1oip_timeout(struct timer_list *t)
 {
-	struct l1oip			*hc = from_timer(hc, t,
-								  timeout_tl);
+	struct l1oip			*hc = timer_container_of(hc, t,
+								     timeout_tl);
 	struct dchannel		*dch = hc->chan[hc->d_idx].dch;
 
 	if (debug & DEBUG_L1OIP_MSG)
@@ -1232,11 +1235,10 @@ release_card(struct l1oip *hc)
 {
 	int	ch;
 
-	if (timer_pending(&hc->keep_tl))
-		del_timer(&hc->keep_tl);
+	hc->shutdown = true;
 
-	if (timer_pending(&hc->timeout_tl))
-		del_timer(&hc->timeout_tl);
+	timer_shutdown_sync(&hc->keep_tl);
+	timer_shutdown_sync(&hc->timeout_tl);
 
 	cancel_work_sync(&hc->workq);
 
@@ -1368,7 +1370,7 @@ init_card(struct l1oip *hc, int pri, int bundle)
 		       (hc->remoteip >> 8) & 0xff, hc->remoteip & 0xff,
 		       hc->remoteport, hc->ondemand);
 
-	dch = kzalloc(sizeof(struct dchannel), GFP_KERNEL);
+	dch = kzalloc_obj(struct dchannel);
 	if (!dch)
 		return -ENOMEM;
 	dch->debug = debug;
@@ -1389,7 +1391,7 @@ init_card(struct l1oip *hc, int pri, int bundle)
 	for (ch = 0; ch < dch->dev.nrbchan; ch++) {
 		if (ch == 15)
 			i++;
-		bch = kzalloc(sizeof(struct bchannel), GFP_KERNEL);
+		bch = kzalloc_obj(struct bchannel);
 		if (!bch) {
 			printk(KERN_ERR "%s: no memory for bchannel\n",
 			       __func__);
@@ -1475,7 +1477,7 @@ l1oip_init(void)
 			       bundle ? "bundled IP packet for all B-channels" :
 			       "separate IP packets for every B-channel");
 
-		hc = kzalloc(sizeof(struct l1oip), GFP_ATOMIC);
+		hc = kzalloc_obj(struct l1oip, GFP_ATOMIC);
 		if (!hc) {
 			printk(KERN_ERR "No kmem for L1-over-IP driver.\n");
 			l1oip_cleanup();

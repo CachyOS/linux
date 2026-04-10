@@ -28,7 +28,7 @@ out:
 	return ret;
 }
 
-static void mt7601u_stop(struct ieee80211_hw *hw)
+static void mt7601u_stop(struct ieee80211_hw *hw, bool suspend)
 {
 	struct mt7601u_dev *dev = hw->priv;
 
@@ -78,7 +78,7 @@ static void mt7601u_remove_interface(struct ieee80211_hw *hw,
 	dev->wcid_mask[wcid / BITS_PER_LONG] &= ~BIT(wcid % BITS_PER_LONG);
 }
 
-static int mt7601u_config(struct ieee80211_hw *hw, u32 changed)
+static int mt7601u_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
 {
 	struct mt7601u_dev *dev = hw->priv;
 	int ret = 0;
@@ -132,7 +132,7 @@ mt76_configure_filter(struct ieee80211_hw *hw, unsigned int changed_flags,
 
 static void
 mt7601u_bss_info_changed(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
-			 struct ieee80211_bss_conf *info, u32 changed)
+			 struct ieee80211_bss_conf *info, u64 changed)
 {
 	struct mt7601u_dev *dev = hw->priv;
 
@@ -334,7 +334,8 @@ mt7601u_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
 	return mt76_mac_wcid_set_key(dev, msta->wcid.idx, key);
 }
 
-static int mt7601u_set_rts_threshold(struct ieee80211_hw *hw, u32 value)
+static int mt7601u_set_rts_threshold(struct ieee80211_hw *hw, int radio_idx,
+				     u32 value)
 {
 	struct mt7601u_dev *dev = hw->priv;
 
@@ -405,7 +406,12 @@ out:
 }
 
 const struct ieee80211_ops mt7601u_ops = {
+	.add_chanctx = ieee80211_emulate_add_chanctx,
+	.remove_chanctx = ieee80211_emulate_remove_chanctx,
+	.change_chanctx = ieee80211_emulate_change_chanctx,
+	.switch_vif_chanctx = ieee80211_emulate_switch_vif_chanctx,
 	.tx = mt7601u_tx,
+	.wake_tx_queue = ieee80211_handle_wake_tx_queue,
 	.start = mt7601u_start,
 	.stop = mt7601u_stop,
 	.add_interface = mt7601u_add_interface,

@@ -18,7 +18,6 @@
 #include <linux/mfd/palmas.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
-#include <linux/of_gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/workqueue.h>
 
@@ -107,7 +106,7 @@ static irqreturn_t palmas_id_irq_handler(int irq, void *_palmas_usb)
 				(id_src & PALMAS_USB_ID_INT_SRC_ID_GND)) {
 		palmas_usb->linkstat = PALMAS_USB_STATE_ID;
 		extcon_set_state_sync(edev, EXTCON_USB_HOST, true);
-		dev_dbg(palmas_usb->dev, " USB-HOST cable is attached\n");
+		dev_dbg(palmas_usb->dev, "USB-HOST cable is attached\n");
 	}
 
 	return IRQ_HANDLED;

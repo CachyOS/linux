@@ -11,7 +11,7 @@
 #include <linux/spi/spi.h>
 #include <linux/mod_devicetable.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "ms5611.h"
 
@@ -91,8 +91,7 @@ static int ms5611_spi_probe(struct spi_device *spi)
 	spi_set_drvdata(spi, indio_dev);
 
 	spi->mode = SPI_MODE_0;
-	spi->max_speed_hz = 20000000;
-	spi->bits_per_word = 8;
+	spi->max_speed_hz = min(spi->max_speed_hz, 20000000U);
 	ret = spi_setup(spi);
 	if (ret < 0)
 		return ret;
@@ -105,11 +104,6 @@ static int ms5611_spi_probe(struct spi_device *spi)
 
 	return ms5611_probe(indio_dev, &spi->dev, spi_get_device_id(spi)->name,
 			    spi_get_device_id(spi)->driver_data);
-}
-
-static void ms5611_spi_remove(struct spi_device *spi)
-{
-	ms5611_remove(spi_get_drvdata(spi));
 }
 
 static const struct of_device_id ms5611_spi_matches[] = {
@@ -133,11 +127,10 @@ static struct spi_driver ms5611_driver = {
 	},
 	.id_table = ms5611_id,
 	.probe = ms5611_spi_probe,
-	.remove = ms5611_spi_remove,
 };
 module_spi_driver(ms5611_driver);
 
 MODULE_AUTHOR("Tomasz Duszynski <tduszyns@gmail.com>");
 MODULE_DESCRIPTION("MS5611 spi driver");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS(IIO_MS5611);
+MODULE_IMPORT_NS("IIO_MS5611");

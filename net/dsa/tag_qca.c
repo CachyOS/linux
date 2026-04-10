@@ -8,11 +8,12 @@
 #include <net/dsa.h>
 #include <linux/dsa/tag_qca.h>
 
-#include "dsa_priv.h"
+#include "tag.h"
+
+#define QCA_NAME "qca"
 
 static struct sk_buff *qca_tag_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	struct dsa_port *dp = dsa_slave_to_port(dev);
 	__be16 *phdr;
 	u16 hdr;
 
@@ -24,7 +25,7 @@ static struct sk_buff *qca_tag_xmit(struct sk_buff *skb, struct net_device *dev)
 	/* Set the version field, and set destination port information */
 	hdr = FIELD_PREP(QCA_HDR_XMIT_VERSION, QCA_HDR_VERSION);
 	hdr |= QCA_HDR_XMIT_FROM_CPU;
-	hdr |= FIELD_PREP(QCA_HDR_XMIT_DP_BIT, BIT(dp->index));
+	hdr |= FIELD_PREP(QCA_HDR_XMIT_DP_BIT, dsa_xmit_port_mask(skb, dev));
 
 	*phdr = htons(hdr);
 
@@ -73,16 +74,16 @@ static struct sk_buff *qca_tag_rcv(struct sk_buff *skb, struct net_device *dev)
 		return NULL;
 	}
 
-	/* Remove QCA tag and recalculate checksum */
-	skb_pull_rcsum(skb, QCA_HDR_LEN);
-	dsa_strip_etype_header(skb, QCA_HDR_LEN);
-
 	/* Get source port information */
 	port = FIELD_GET(QCA_HDR_RECV_SOURCE_PORT, hdr);
 
-	skb->dev = dsa_master_find_slave(dev, 0, port);
+	skb->dev = dsa_conduit_find_user(dev, 0, port);
 	if (!skb->dev)
 		return NULL;
+
+	/* Remove QCA tag and recalculate checksum */
+	skb_pull_rcsum(skb, QCA_HDR_LEN);
+	dsa_strip_etype_header(skb, QCA_HDR_LEN);
 
 	return skb;
 }
@@ -91,7 +92,7 @@ static int qca_tag_connect(struct dsa_switch *ds)
 {
 	struct qca_tagger_data *tagger_data;
 
-	tagger_data = kzalloc(sizeof(*tagger_data), GFP_KERNEL);
+	tagger_data = kzalloc_obj(*tagger_data);
 	if (!tagger_data)
 		return -ENOMEM;
 
@@ -107,17 +108,18 @@ static void qca_tag_disconnect(struct dsa_switch *ds)
 }
 
 static const struct dsa_device_ops qca_netdev_ops = {
-	.name	= "qca",
+	.name	= QCA_NAME,
 	.proto	= DSA_TAG_PROTO_QCA,
 	.connect = qca_tag_connect,
 	.disconnect = qca_tag_disconnect,
 	.xmit	= qca_tag_xmit,
 	.rcv	= qca_tag_rcv,
 	.needed_headroom = QCA_HDR_LEN,
-	.promisc_on_master = true,
+	.promisc_on_conduit = true,
 };
 
+MODULE_DESCRIPTION("DSA tag driver for Qualcomm Atheros QCA8K switches");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_QCA);
+MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_QCA, QCA_NAME);
 
 module_dsa_tag_driver(qca_netdev_ops);

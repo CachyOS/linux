@@ -831,7 +831,7 @@ int clkdm_clear_all_sleepdeps(struct clockdomain *clkdm)
  * -EINVAL if @clkdm is NULL or if clockdomain does not support
  * software-initiated sleep; 0 upon success.
  */
-int clkdm_sleep_nolock(struct clockdomain *clkdm)
+static int clkdm_sleep_nolock(struct clockdomain *clkdm)
 {
 	int ret;
 
@@ -885,7 +885,7 @@ int clkdm_sleep(struct clockdomain *clkdm)
  * -EINVAL if @clkdm is NULL or if the clockdomain does not support
  * software-controlled wakeup; 0 upon success.
  */
-int clkdm_wakeup_nolock(struct clockdomain *clkdm)
+static int clkdm_wakeup_nolock(struct clockdomain *clkdm)
 {
 	int ret;
 
@@ -990,7 +990,7 @@ void clkdm_allow_idle(struct clockdomain *clkdm)
 }
 
 /**
- * clkdm_deny_idle - disable hwsup idle transitions for clkdm
+ * clkdm_deny_idle_nolock - disable hwsup idle transitions for clkdm
  * @clkdm: struct clockdomain *
  *
  * Prevent the hardware from automatically switching the clockdomain
@@ -1041,46 +1041,6 @@ void clkdm_deny_idle(struct clockdomain *clkdm)
 	pwrdm_lock(clkdm->pwrdm.ptr);
 	clkdm_deny_idle_nolock(clkdm);
 	pwrdm_unlock(clkdm->pwrdm.ptr);
-}
-
-/**
- * clkdm_in_hwsup - is clockdomain @clkdm have hardware-supervised idle enabled?
- * @clkdm: struct clockdomain *
- *
- * Returns true if clockdomain @clkdm currently has
- * hardware-supervised idle enabled, or false if it does not or if
- * @clkdm is NULL.  It is only valid to call this function after
- * clkdm_init() has been called.  This function does not actually read
- * bits from the hardware; it instead tests an in-memory flag that is
- * changed whenever the clockdomain code changes the auto-idle mode.
- */
-bool clkdm_in_hwsup(struct clockdomain *clkdm)
-{
-	bool ret;
-
-	if (!clkdm)
-		return false;
-
-	ret = (clkdm->_flags & _CLKDM_FLAG_HWSUP_ENABLED) ? true : false;
-
-	return ret;
-}
-
-/**
- * clkdm_missing_idle_reporting - can @clkdm enter autoidle even if in use?
- * @clkdm: struct clockdomain *
- *
- * Returns true if clockdomain @clkdm has the
- * CLKDM_MISSING_IDLE_REPORTING flag set, or false if not or @clkdm is
- * null.  More information is available in the documentation for the
- * CLKDM_MISSING_IDLE_REPORTING macro.
- */
-bool clkdm_missing_idle_reporting(struct clockdomain *clkdm)
-{
-	if (!clkdm)
-		return false;
-
-	return (clkdm->flags & CLKDM_MISSING_IDLE_REPORTING) ? true : false;
 }
 
 /* Public autodep handling functions (deprecated) */
@@ -1150,7 +1110,7 @@ void clkdm_del_autodeps(struct clockdomain *clkdm)
 /**
  * clkdm_clk_enable - add an enabled downstream clock to this clkdm
  * @clkdm: struct clockdomain *
- * @clk: struct clk * of the enabled downstream clock
+ * @unused: struct clk * of the enabled downstream clock
  *
  * Increment the usecount of the clockdomain @clkdm and ensure that it
  * is awake before @clk is enabled.  Intended to be called by

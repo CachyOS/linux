@@ -429,7 +429,6 @@ static int bnx2fc_rcv(struct sk_buff *skb, struct net_device *dev,
 	struct fcoe_ctlr *ctlr;
 	struct fcoe_rcv_info *fr;
 	struct fcoe_percpu_s *bg;
-	struct sk_buff *tmp_skb;
 
 	interface = container_of(ptype, struct bnx2fc_interface,
 				 fcoe_packet_type);
@@ -441,11 +440,9 @@ static int bnx2fc_rcv(struct sk_buff *skb, struct net_device *dev,
 		goto err;
 	}
 
-	tmp_skb = skb_share_check(skb, GFP_ATOMIC);
-	if (!tmp_skb)
-		goto err;
-
-	skb = tmp_skb;
+	skb = skb_share_check(skb, GFP_ATOMIC);
+	if (!skb)
+		return -1;
 
 	if (unlikely(eth_hdr(skb)->h_proto != htons(ETH_P_FCOE))) {
 		printk(KERN_ERR PFX "bnx2fc_rcv: Wrong FC type frame\n");
@@ -840,7 +837,7 @@ static int bnx2fc_net_config(struct fc_lport *lport, struct net_device *netdev)
 
 static void bnx2fc_destroy_timer(struct timer_list *t)
 {
-	struct bnx2fc_hba *hba = from_timer(hba, t, destroy_timer);
+	struct bnx2fc_hba *hba = timer_container_of(hba, t, destroy_timer);
 
 	printk(KERN_ERR PFX "ERROR:bnx2fc_destroy_timer - "
 	       "Destroy compl not received!!\n");
@@ -1359,7 +1356,7 @@ static struct bnx2fc_hba *bnx2fc_hba_create(struct cnic_dev *cnic)
 	struct fcoe_capabilities *fcoe_cap;
 	int rc;
 
-	hba = kzalloc(sizeof(*hba), GFP_KERNEL);
+	hba = kzalloc_obj(*hba);
 	if (!hba) {
 		printk(KERN_ERR PFX "Unable to allocate hba structure\n");
 		return NULL;
@@ -1384,8 +1381,7 @@ static struct bnx2fc_hba *bnx2fc_hba_create(struct cnic_dev *cnic)
 	hba->next_conn_id = 0;
 
 	hba->tgt_ofld_list =
-		kcalloc(BNX2FC_NUM_MAX_SESS, sizeof(struct bnx2fc_rport *),
-			GFP_KERNEL);
+		kzalloc_objs(struct bnx2fc_rport *, BNX2FC_NUM_MAX_SESS);
 	if (!hba->tgt_ofld_list) {
 		printk(KERN_ERR PFX "Unable to allocate tgt offload list\n");
 		goto tgtofld_err;
@@ -1495,7 +1491,7 @@ static struct fc_lport *bnx2fc_if_create(struct bnx2fc_interface *interface,
 	struct bnx2fc_hba	*hba = interface->hba;
 	int			rc = 0;
 
-	blport = kzalloc(sizeof(struct bnx2fc_lport), GFP_KERNEL);
+	blport = kzalloc_obj(struct bnx2fc_lport);
 	if (!blport) {
 		BNX2FC_HBA_DBG(ctlr->lp, "Unable to alloc blport\n");
 		return NULL;
@@ -1602,7 +1598,7 @@ static void bnx2fc_interface_cleanup(struct bnx2fc_interface *interface)
 	struct bnx2fc_hba *hba = interface->hba;
 
 	/* Stop the transmit retry timer */
-	del_timer_sync(&port->timer);
+	timer_delete_sync(&port->timer);
 
 	/* Free existing transmit skbs */
 	fcoe_clean_pending_queue(lport);
@@ -1737,32 +1733,32 @@ static int bnx2fc_bind_pcidev(struct bnx2fc_hba *hba)
 
 	switch (pdev->device) {
 	case PCI_DEVICE_ID_NX2_57710:
-		strncpy(hba->chip_num, "BCM57710", BCM_CHIP_LEN);
+		strscpy(hba->chip_num, "BCM57710", sizeof(hba->chip_num));
 		break;
 	case PCI_DEVICE_ID_NX2_57711:
-		strncpy(hba->chip_num, "BCM57711", BCM_CHIP_LEN);
+		strscpy(hba->chip_num, "BCM57711", sizeof(hba->chip_num));
 		break;
 	case PCI_DEVICE_ID_NX2_57712:
 	case PCI_DEVICE_ID_NX2_57712_MF:
 	case PCI_DEVICE_ID_NX2_57712_VF:
-		strncpy(hba->chip_num, "BCM57712", BCM_CHIP_LEN);
+		strscpy(hba->chip_num, "BCM57712", sizeof(hba->chip_num));
 		break;
 	case PCI_DEVICE_ID_NX2_57800:
 	case PCI_DEVICE_ID_NX2_57800_MF:
 	case PCI_DEVICE_ID_NX2_57800_VF:
-		strncpy(hba->chip_num, "BCM57800", BCM_CHIP_LEN);
+		strscpy(hba->chip_num, "BCM57800", sizeof(hba->chip_num));
 		break;
 	case PCI_DEVICE_ID_NX2_57810:
 	case PCI_DEVICE_ID_NX2_57810_MF:
 	case PCI_DEVICE_ID_NX2_57810_VF:
-		strncpy(hba->chip_num, "BCM57810", BCM_CHIP_LEN);
+		strscpy(hba->chip_num, "BCM57810", sizeof(hba->chip_num));
 		break;
 	case PCI_DEVICE_ID_NX2_57840:
 	case PCI_DEVICE_ID_NX2_57840_MF:
 	case PCI_DEVICE_ID_NX2_57840_VF:
 	case PCI_DEVICE_ID_NX2_57840_2_20:
 	case PCI_DEVICE_ID_NX2_57840_4_10:
-		strncpy(hba->chip_num, "BCM57840", BCM_CHIP_LEN);
+		strscpy(hba->chip_num, "BCM57840", sizeof(hba->chip_num));
 		break;
 	default:
 		pr_err(PFX "Unknown device id 0x%x\n", pdev->device);
@@ -1800,7 +1796,7 @@ static int bnx2fc_ulp_get_stats(void *handle)
 	if (!stats_addr)
 		return -EINVAL;
 
-	strncpy(stats_addr->version, BNX2FC_VERSION,
+	strscpy(stats_addr->version, BNX2FC_VERSION,
 		sizeof(stats_addr->version));
 	stats_addr->txq_size = BNX2FC_SQ_WQES_MAX;
 	stats_addr->rxq_size = BNX2FC_CQ_WQES_MAX;
@@ -1941,7 +1937,7 @@ static void bnx2fc_fw_destroy(struct bnx2fc_hba *hba)
 			if (signal_pending(current))
 				flush_signals(current);
 
-			del_timer_sync(&hba->destroy_timer);
+			timer_delete_sync(&hba->destroy_timer);
 		}
 		bnx2fc_unbind_adapter_devices(hba);
 	}
@@ -2203,7 +2199,7 @@ static int __bnx2fc_enable(struct fcoe_ctlr *ctlr)
 	if (!hba->cnic->get_fc_npiv_tbl)
 		goto done;
 
-	npiv_tbl = kzalloc(sizeof(struct cnic_fc_npiv_tbl), GFP_KERNEL);
+	npiv_tbl = kzalloc_obj(struct cnic_fc_npiv_tbl);
 	if (!npiv_tbl)
 		goto done;
 
@@ -2366,8 +2362,8 @@ static int _bnx2fc_create(struct net_device *netdev,
 	interface->vlan_id = vlan_id;
 	interface->tm_timeout = BNX2FC_TM_TIMEOUT;
 
-	interface->timer_work_queue =
-			create_singlethread_workqueue("bnx2fc_timer_wq");
+	interface->timer_work_queue = alloc_ordered_workqueue(
+		"%s", WQ_MEM_RECLAIM, "bnx2fc_timer_wq");
 	if (!interface->timer_work_queue) {
 		printk(KERN_ERR PFX "ulp_init could not create timer_wq\n");
 		rc = -EINVAL;
@@ -2613,14 +2609,11 @@ static int bnx2fc_cpu_online(unsigned int cpu)
 
 	p = &per_cpu(bnx2fc_percpu, cpu);
 
-	thread = kthread_create_on_node(bnx2fc_percpu_io_thread,
-					(void *)p, cpu_to_node(cpu),
-					"bnx2fc_thread/%d", cpu);
+	thread = kthread_create_on_cpu(bnx2fc_percpu_io_thread,
+				       (void *)p, cpu, "bnx2fc_thread/%d");
 	if (IS_ERR(thread))
 		return PTR_ERR(thread);
 
-	/* bind thread to the cpu */
-	kthread_bind(thread, cpu);
 	p->iothread = thread;
 	wake_up_process(thread);
 	return 0;
@@ -2655,7 +2648,8 @@ static int bnx2fc_cpu_offline(unsigned int cpu)
 	return 0;
 }
 
-static int bnx2fc_slave_configure(struct scsi_device *sdev)
+static int bnx2fc_sdev_configure(struct scsi_device *sdev,
+				 struct queue_limits *lim)
 {
 	if (!bnx2fc_queue_depth)
 		return 0;
@@ -2700,7 +2694,7 @@ static int __init bnx2fc_mod_init(void)
 	if (rc)
 		goto detach_ft;
 
-	bnx2fc_wq = alloc_workqueue("bnx2fc", 0, 0);
+	bnx2fc_wq = alloc_workqueue("bnx2fc", WQ_PERCPU, 0);
 	if (!bnx2fc_wq) {
 		rc = -ENOMEM;
 		goto release_bt;
@@ -2954,7 +2948,7 @@ static struct scsi_host_template bnx2fc_shost_template = {
 	.eh_device_reset_handler = bnx2fc_eh_device_reset, /* lun reset */
 	.eh_target_reset_handler = bnx2fc_eh_target_reset, /* tgt reset */
 	.eh_host_reset_handler	= fc_eh_host_reset,
-	.slave_alloc		= fc_slave_alloc,
+	.sdev_init		= fc_sdev_init,
 	.change_queue_depth	= scsi_change_queue_depth,
 	.this_id		= -1,
 	.cmd_per_lun		= 3,
@@ -2962,7 +2956,7 @@ static struct scsi_host_template bnx2fc_shost_template = {
 	.dma_boundary           = 0x7fff,
 	.max_sectors		= 0x3fbf,
 	.track_queue_depth	= 1,
-	.slave_configure	= bnx2fc_slave_configure,
+	.sdev_configure		= bnx2fc_sdev_configure,
 	.shost_groups		= bnx2fc_host_groups,
 	.cmd_size		= sizeof(struct bnx2fc_priv),
 };

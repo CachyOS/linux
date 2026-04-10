@@ -333,8 +333,8 @@ static int img_i2s_in_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 		return -EINVAL;
 	}
 
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_BC_FC:
 		break;
 	default:
 		return -EINVAL;
@@ -370,12 +370,6 @@ static int img_i2s_in_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	return 0;
 }
 
-static const struct snd_soc_dai_ops img_i2s_in_dai_ops = {
-	.trigger = img_i2s_in_trigger,
-	.hw_params = img_i2s_in_hw_params,
-	.set_fmt = img_i2s_in_set_fmt
-};
-
 static int img_i2s_in_dai_probe(struct snd_soc_dai *dai)
 {
 	struct img_i2s_in *i2s = snd_soc_dai_get_drvdata(dai);
@@ -385,19 +379,27 @@ static int img_i2s_in_dai_probe(struct snd_soc_dai *dai)
 	return 0;
 }
 
+static const struct snd_soc_dai_ops img_i2s_in_dai_ops = {
+	.probe		= img_i2s_in_dai_probe,
+	.trigger	= img_i2s_in_trigger,
+	.hw_params	= img_i2s_in_hw_params,
+	.set_fmt	= img_i2s_in_set_fmt
+};
+
 static const struct snd_soc_component_driver img_i2s_in_component = {
-	.name = "img-i2s-in"
+	.name = "img-i2s-in",
+	.legacy_dai_naming = 1,
 };
 
 static int img_i2s_in_dma_prepare_slave_config(struct snd_pcm_substream *st,
 	struct snd_pcm_hw_params *params, struct dma_slave_config *sc)
 {
 	unsigned int i2s_channels = params_channels(params) / 2;
-	struct snd_soc_pcm_runtime *rtd = st->private_data;
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(st);
 	struct snd_dmaengine_dai_dma_data *dma_data;
 	int ret;
 
-	dma_data = snd_soc_dai_get_dma_data(asoc_rtd_to_cpu(rtd, 0), st);
+	dma_data = snd_soc_dai_get_dma_data(snd_soc_rtd_to_cpu(rtd, 0), st);
 
 	ret = snd_hwparams_to_dma_slave_config(st, params, sc);
 	if (ret)
@@ -467,7 +469,6 @@ static int img_i2s_in_probe(struct platform_device *pdev)
 	i2s->dma_data.addr = res->start + IMG_I2S_IN_RX_FIFO;
 	i2s->dma_data.addr_width = 4;
 
-	i2s->dai_driver.probe = img_i2s_in_dai_probe;
 	i2s->dai_driver.capture.channels_min = 2;
 	i2s->dai_driver.capture.channels_max = i2s->max_i2s_chan * 2;
 	i2s->dai_driver.capture.rates = SNDRV_PCM_RATE_8000_192000;
@@ -531,16 +532,13 @@ err_pm_disable:
 	return ret;
 }
 
-static int img_i2s_in_dev_remove(struct platform_device *pdev)
+static void img_i2s_in_dev_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
 	if (!pm_runtime_status_suspended(&pdev->dev))
 		img_i2s_in_runtime_suspend(&pdev->dev);
-
-	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int img_i2s_in_suspend(struct device *dev)
 {
 	struct img_i2s_in *i2s = dev_get_drvdata(dev);
@@ -587,7 +585,6 @@ static int img_i2s_in_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
 static const struct of_device_id img_i2s_in_of_match[] = {
 	{ .compatible = "img,i2s-in" },
@@ -596,16 +593,15 @@ static const struct of_device_id img_i2s_in_of_match[] = {
 MODULE_DEVICE_TABLE(of, img_i2s_in_of_match);
 
 static const struct dev_pm_ops img_i2s_in_pm_ops = {
-	SET_RUNTIME_PM_OPS(img_i2s_in_runtime_suspend,
-			   img_i2s_in_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(img_i2s_in_suspend, img_i2s_in_resume)
+	RUNTIME_PM_OPS(img_i2s_in_runtime_suspend, img_i2s_in_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(img_i2s_in_suspend, img_i2s_in_resume)
 };
 
 static struct platform_driver img_i2s_in_driver = {
 	.driver = {
 		.name = "img-i2s-in",
 		.of_match_table = img_i2s_in_of_match,
-		.pm = &img_i2s_in_pm_ops
+		.pm = pm_ptr(&img_i2s_in_pm_ops)
 	},
 	.probe = img_i2s_in_probe,
 	.remove = img_i2s_in_dev_remove

@@ -6,6 +6,7 @@
 
 #include "rxe.h"
 
+#define RXE_POOL_TIMEOUT	(200)
 #define RXE_POOL_ALIGN		(16)
 
 static const struct rxe_type_info {
@@ -22,16 +23,16 @@ static const struct rxe_type_info {
 		.size		= sizeof(struct rxe_ucontext),
 		.elem_offset	= offsetof(struct rxe_ucontext, elem),
 		.min_index	= 1,
-		.max_index	= UINT_MAX,
-		.max_elem	= UINT_MAX,
+		.max_index	= RXE_MAX_UCONTEXT,
+		.max_elem	= RXE_MAX_UCONTEXT,
 	},
 	[RXE_TYPE_PD] = {
 		.name		= "pd",
 		.size		= sizeof(struct rxe_pd),
 		.elem_offset	= offsetof(struct rxe_pd, elem),
 		.min_index	= 1,
-		.max_index	= UINT_MAX,
-		.max_elem	= UINT_MAX,
+		.max_index	= RXE_MAX_PD,
+		.max_elem	= RXE_MAX_PD,
 	},
 	[RXE_TYPE_AH] = {
 		.name		= "ah",
@@ -39,7 +40,7 @@ static const struct rxe_type_info {
 		.elem_offset	= offsetof(struct rxe_ah, elem),
 		.min_index	= RXE_MIN_AH_INDEX,
 		.max_index	= RXE_MAX_AH_INDEX,
-		.max_elem	= RXE_MAX_AH_INDEX - RXE_MIN_AH_INDEX + 1,
+		.max_elem	= RXE_MAX_AH,
 	},
 	[RXE_TYPE_SRQ] = {
 		.name		= "srq",
@@ -48,7 +49,7 @@ static const struct rxe_type_info {
 		.cleanup	= rxe_srq_cleanup,
 		.min_index	= RXE_MIN_SRQ_INDEX,
 		.max_index	= RXE_MAX_SRQ_INDEX,
-		.max_elem	= RXE_MAX_SRQ_INDEX - RXE_MIN_SRQ_INDEX + 1,
+		.max_elem	= RXE_MAX_SRQ,
 	},
 	[RXE_TYPE_QP] = {
 		.name		= "qp",
@@ -57,7 +58,7 @@ static const struct rxe_type_info {
 		.cleanup	= rxe_qp_cleanup,
 		.min_index	= RXE_MIN_QP_INDEX,
 		.max_index	= RXE_MAX_QP_INDEX,
-		.max_elem	= RXE_MAX_QP_INDEX - RXE_MIN_QP_INDEX + 1,
+		.max_elem	= RXE_MAX_QP,
 	},
 	[RXE_TYPE_CQ] = {
 		.name		= "cq",
@@ -65,8 +66,8 @@ static const struct rxe_type_info {
 		.elem_offset	= offsetof(struct rxe_cq, elem),
 		.cleanup	= rxe_cq_cleanup,
 		.min_index	= 1,
-		.max_index	= UINT_MAX,
-		.max_elem	= UINT_MAX,
+		.max_index	= RXE_MAX_CQ,
+		.max_elem	= RXE_MAX_CQ,
 	},
 	[RXE_TYPE_MR] = {
 		.name		= "mr",
@@ -75,7 +76,7 @@ static const struct rxe_type_info {
 		.cleanup	= rxe_mr_cleanup,
 		.min_index	= RXE_MIN_MR_INDEX,
 		.max_index	= RXE_MAX_MR_INDEX,
-		.max_elem	= RXE_MAX_MR_INDEX - RXE_MIN_MR_INDEX + 1,
+		.max_elem	= RXE_MAX_MR,
 	},
 	[RXE_TYPE_MW] = {
 		.name		= "mw",
@@ -84,7 +85,7 @@ static const struct rxe_type_info {
 		.cleanup	= rxe_mw_cleanup,
 		.min_index	= RXE_MIN_MW_INDEX,
 		.max_index	= RXE_MAX_MW_INDEX,
-		.max_elem	= RXE_MAX_MW_INDEX - RXE_MIN_MW_INDEX + 1,
+		.max_elem	= RXE_MAX_MW,
 	},
 };
 
@@ -115,48 +116,11 @@ void rxe_pool_cleanup(struct rxe_pool *pool)
 	WARN_ON(!xa_empty(&pool->xa));
 }
 
-void *rxe_alloc(struct rxe_pool *pool)
+int __rxe_add_to_pool(struct rxe_pool *pool, struct rxe_pool_elem *elem,
+				bool sleepable)
 {
-	struct rxe_pool_elem *elem;
-	void *obj;
-	int err;
-
-	if (WARN_ON(!(pool->type == RXE_TYPE_MR)))
-		return NULL;
-
-	if (atomic_inc_return(&pool->num_elem) > pool->max_elem)
-		goto err_cnt;
-
-	obj = kzalloc(pool->elem_size, GFP_KERNEL);
-	if (!obj)
-		goto err_cnt;
-
-	elem = (struct rxe_pool_elem *)((u8 *)obj + pool->elem_offset);
-
-	elem->pool = pool;
-	elem->obj = obj;
-	kref_init(&elem->ref_cnt);
-
-	err = xa_alloc_cyclic(&pool->xa, &elem->index, elem, pool->limit,
-			      &pool->next, GFP_KERNEL);
-	if (err)
-		goto err_free;
-
-	return obj;
-
-err_free:
-	kfree(obj);
-err_cnt:
-	atomic_dec(&pool->num_elem);
-	return NULL;
-}
-
-int __rxe_add_to_pool(struct rxe_pool *pool, struct rxe_pool_elem *elem)
-{
-	int err;
-
-	if (WARN_ON(pool->type == RXE_TYPE_MR))
-		return -EINVAL;
+	int err = -EINVAL;
+	gfp_t gfp_flags;
 
 	if (atomic_inc_return(&pool->num_elem) > pool->max_elem)
 		goto err_cnt;
@@ -164,33 +128,41 @@ int __rxe_add_to_pool(struct rxe_pool *pool, struct rxe_pool_elem *elem)
 	elem->pool = pool;
 	elem->obj = (u8 *)elem - pool->elem_offset;
 	kref_init(&elem->ref_cnt);
+	init_completion(&elem->complete);
 
-	err = xa_alloc_cyclic(&pool->xa, &elem->index, elem, pool->limit,
-			      &pool->next, GFP_KERNEL);
-	if (err)
+	/* AH objects are unique in that the create_ah verb
+	 * can be called in atomic context. If the create_ah
+	 * call is not sleepable use GFP_ATOMIC.
+	 */
+	gfp_flags = sleepable ? GFP_KERNEL : GFP_ATOMIC;
+
+	if (sleepable)
+		might_sleep();
+	err = xa_alloc_cyclic(&pool->xa, &elem->index, NULL, pool->limit,
+			      &pool->next, gfp_flags);
+	if (err < 0)
 		goto err_cnt;
 
 	return 0;
 
 err_cnt:
 	atomic_dec(&pool->num_elem);
-	return -EINVAL;
+	return err;
 }
 
 void *rxe_pool_get_index(struct rxe_pool *pool, u32 index)
 {
 	struct rxe_pool_elem *elem;
 	struct xarray *xa = &pool->xa;
-	unsigned long flags;
 	void *obj;
 
-	xa_lock_irqsave(xa, flags);
+	rcu_read_lock();
 	elem = xa_load(xa, index);
 	if (elem && kref_get_unless_zero(&elem->ref_cnt))
 		obj = elem->obj;
 	else
 		obj = NULL;
-	xa_unlock_irqrestore(xa, flags);
+	rcu_read_unlock();
 
 	return obj;
 }
@@ -198,17 +170,70 @@ void *rxe_pool_get_index(struct rxe_pool *pool, u32 index)
 static void rxe_elem_release(struct kref *kref)
 {
 	struct rxe_pool_elem *elem = container_of(kref, typeof(*elem), ref_cnt);
-	struct rxe_pool *pool = elem->pool;
 
-	xa_erase(&pool->xa, elem->index);
+	complete(&elem->complete);
+}
+
+int __rxe_cleanup(struct rxe_pool_elem *elem, bool sleepable)
+{
+	struct rxe_pool *pool = elem->pool;
+	struct xarray *xa = &pool->xa;
+	int ret, err = 0;
+	void *xa_ret;
+
+	if (sleepable)
+		might_sleep();
+
+	/* erase xarray entry to prevent looking up
+	 * the pool elem from its index
+	 */
+	xa_ret = xa_erase(xa, elem->index);
+	WARN_ON(xa_err(xa_ret));
+
+	/* if this is the last call to rxe_put complete the
+	 * object. It is safe to touch obj->elem after this since
+	 * it is freed below
+	 */
+	__rxe_put(elem);
+
+	/* wait until all references to the object have been
+	 * dropped before final object specific cleanup and
+	 * return to rdma-core
+	 */
+	if (sleepable) {
+		if (!completion_done(&elem->complete)) {
+			ret = wait_for_completion_timeout(&elem->complete,
+					msecs_to_jiffies(50000));
+
+			/* Shouldn't happen. There are still references to
+			 * the object but, rather than deadlock, free the
+			 * object or pass back to rdma-core.
+			 */
+			if (WARN_ON(!ret))
+				err = -ETIMEDOUT;
+		}
+	} else {
+		unsigned long until = jiffies + RXE_POOL_TIMEOUT;
+
+		/* AH objects are unique in that the destroy_ah verb
+		 * can be called in atomic context. This delay
+		 * replaces the wait_for_completion call above
+		 * when the destroy_ah call is not sleepable
+		 */
+		while (!completion_done(&elem->complete) &&
+				time_before(jiffies, until))
+			mdelay(1);
+
+		if (WARN_ON(!completion_done(&elem->complete)))
+			err = -ETIMEDOUT;
+	}
 
 	if (pool->cleanup)
 		pool->cleanup(elem);
 
-	if (pool->type == RXE_TYPE_MR)
-		kfree(elem->obj);
-
 	atomic_dec(&pool->num_elem);
+
+	return err;
 }
 
 int __rxe_get(struct rxe_pool_elem *elem)
@@ -219,4 +244,12 @@ int __rxe_get(struct rxe_pool_elem *elem)
 int __rxe_put(struct rxe_pool_elem *elem)
 {
 	return kref_put(&elem->ref_cnt, rxe_elem_release);
+}
+
+void __rxe_finalize(struct rxe_pool_elem *elem)
+{
+	void *xa_ret;
+
+	xa_ret = xa_store(&elem->pool->xa, elem->index, elem, GFP_KERNEL);
+	WARN_ON(xa_err(xa_ret));
 }

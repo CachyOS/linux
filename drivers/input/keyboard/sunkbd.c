@@ -7,9 +7,6 @@
  * Sun keyboard driver for Linux
  */
 
-/*
- */
-
 #include <linux/delay.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -244,9 +241,8 @@ static void sunkbd_reinit(struct work_struct *work)
 
 static void sunkbd_enable(struct sunkbd *sunkbd, bool enable)
 {
-	serio_pause_rx(sunkbd->serio);
-	sunkbd->enabled = enable;
-	serio_continue_rx(sunkbd->serio);
+	scoped_guard(serio_pause_rx, sunkbd->serio)
+		sunkbd->enabled = enable;
 
 	if (!enable) {
 		wake_up_interruptible(&sunkbd->wait);
@@ -266,7 +262,7 @@ static int sunkbd_connect(struct serio *serio, struct serio_driver *drv)
 	int err = -ENOMEM;
 	int i;
 
-	sunkbd = kzalloc(sizeof(struct sunkbd), GFP_KERNEL);
+	sunkbd = kzalloc_obj(*sunkbd);
 	input_dev = input_allocate_device();
 	if (!sunkbd || !input_dev)
 		goto fail1;

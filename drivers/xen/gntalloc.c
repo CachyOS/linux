@@ -128,7 +128,7 @@ static int add_grefs(struct ioctl_gntalloc_alloc_gref *op,
 
 	readonly = !(op->flags & GNTALLOC_FLAG_WRITABLE);
 	for (i = 0; i < op->count; i++) {
-		gref = kzalloc(sizeof(*gref), GFP_KERNEL);
+		gref = kzalloc_obj(*gref);
 		if (!gref) {
 			rc = -ENOMEM;
 			goto undo;
@@ -229,7 +229,7 @@ static int gntalloc_open(struct inode *inode, struct file *filp)
 {
 	struct gntalloc_file_private_data *priv;
 
-	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+	priv = kzalloc_obj(*priv);
 	if (!priv)
 		goto out_nomem;
 	INIT_LIST_HEAD(&priv->list);
@@ -317,7 +317,7 @@ static long gntalloc_ioctl_alloc(struct gntalloc_file_private_data *priv,
 		rc = -EFAULT;
 		goto out_free;
 	}
-	if (copy_to_user(arg->gref_ids, gref_ids,
+	if (copy_to_user(arg->gref_ids_flex, gref_ids,
 			sizeof(gref_ids[0]) * op.count)) {
 		rc = -EFAULT;
 		goto out_free;
@@ -501,7 +501,7 @@ static int gntalloc_mmap(struct file *filp, struct vm_area_struct *vma)
 		return -EINVAL;
 	}
 
-	vm_priv = kmalloc(sizeof(*vm_priv), GFP_KERNEL);
+	vm_priv = kmalloc_obj(*vm_priv);
 	if (!vm_priv)
 		return -ENOMEM;
 
@@ -525,7 +525,7 @@ static int gntalloc_mmap(struct file *filp, struct vm_area_struct *vma)
 
 	vma->vm_private_data = vm_priv;
 
-	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
 
 	vma->vm_ops = &gntalloc_vmops;
 

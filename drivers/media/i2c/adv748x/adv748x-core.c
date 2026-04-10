@@ -815,7 +815,7 @@ err_free_mutex:
 	return ret;
 }
 
-static int adv748x_remove(struct i2c_client *client)
+static void adv748x_remove(struct i2c_client *client)
 {
 	struct adv748x_state *state = i2c_get_clientdata(client);
 
@@ -828,8 +828,6 @@ static int adv748x_remove(struct i2c_client *client)
 	adv748x_unregister_clients(state);
 	adv748x_dt_cleanup(state);
 	mutex_destroy(&state->mutex);
-
-	return 0;
 }
 
 static const struct of_device_id adv748x_of_table[] = {
@@ -849,7 +847,7 @@ static struct i2c_driver adv748x_driver = {
 		.of_match_table = adv748x_of_table,
 		.pm = &adv748x_pm_ops,
 	},
-	.probe_new = adv748x_probe,
+	.probe = adv748x_probe,
 	.remove = adv748x_remove,
 };
 

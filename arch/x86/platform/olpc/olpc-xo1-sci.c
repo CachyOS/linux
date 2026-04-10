@@ -14,7 +14,6 @@
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
-#include <linux/pm_wakeup.h>
 #include <linux/power_supply.h>
 #include <linux/suspend.h>
 #include <linux/workqueue.h>
@@ -80,7 +79,7 @@ static void send_ebook_state(void)
 		return;
 	}
 
-	if (!!test_bit(SW_TABLET_MODE, ebook_switch_idev->sw) == state)
+	if (test_bit(SW_TABLET_MODE, ebook_switch_idev->sw) == !!state)
 		return; /* Nothing new to report. */
 
 	input_report_switch(ebook_switch_idev, SW_TABLET_MODE, state);
@@ -326,7 +325,7 @@ static int setup_sci_interrupt(struct platform_device *pdev)
 		dev_info(&pdev->dev, "SCI unmapped. Mapping to IRQ 3\n");
 		sci_irq = 3;
 		lo |= 0x00300000;
-		wrmsrl(0x51400020, lo);
+		wrmsrq(0x51400020, lo);
 	}
 
 	/* Select level triggered in PIC */
@@ -598,7 +597,7 @@ err_ebook:
 	return r;
 }
 
-static int xo1_sci_remove(struct platform_device *pdev)
+static void xo1_sci_remove(struct platform_device *pdev)
 {
 	free_irq(sci_irq, pdev);
 	cancel_work_sync(&sci_work);
@@ -608,7 +607,6 @@ static int xo1_sci_remove(struct platform_device *pdev)
 	free_ebook_switch();
 	free_power_button();
 	acpi_base = 0;
-	return 0;
 }
 
 static struct platform_driver xo1_sci_driver = {

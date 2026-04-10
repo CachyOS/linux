@@ -1,43 +1,31 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 
 /* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
- * Copyright (C) 2018-2021 Linaro Ltd.
+ * Copyright (C) 2018-2024 Linaro Ltd.
  */
 #ifndef _GSI_H_
 #define _GSI_H_
 
-#include <linux/types.h>
-#include <linux/spinlock.h>
-#include <linux/mutex.h>
 #include <linux/completion.h>
-#include <linux/platform_device.h>
+#include <linux/mutex.h>
 #include <linux/netdevice.h>
+#include <linux/types.h>
 
 #include "ipa_version.h"
 
 /* Maximum number of channels and event rings supported by the driver */
-#define GSI_CHANNEL_COUNT_MAX	23
-#define GSI_EVT_RING_COUNT_MAX	24
+#define GSI_CHANNEL_COUNT_MAX	28
+#define GSI_EVT_RING_COUNT_MAX	28
 
 /* Maximum TLV FIFO size for a channel; 64 here is arbitrary (and high) */
 #define GSI_TLV_MAX		64
 
 struct device;
-struct scatterlist;
 struct platform_device;
 
 struct gsi;
 struct gsi_trans;
-struct gsi_channel_data;
 struct ipa_gsi_endpoint_data;
-
-/* Execution environment IDs */
-enum gsi_ee_id {
-	GSI_EE_AP				= 0x0,
-	GSI_EE_MODEM				= 0x1,
-	GSI_EE_UC				= 0x2,
-	GSI_EE_TZ				= 0x3,
-};
 
 struct gsi_ring {
 	void *virt;			/* ring array base address */
@@ -48,12 +36,13 @@ struct gsi_ring {
 	 *
 	 * A channel ring consists of TRE entries filled by the AP and passed
 	 * to the hardware for processing.  For a channel ring, the ring index
-	 * identifies the next unused entry to be filled by the AP.
+	 * identifies the next unused entry to be filled by the AP.  In this
+	 * case the initial value is assumed by hardware to be 0.
 	 *
 	 * An event ring consists of event structures filled by the hardware
 	 * and passed to the AP.  For event rings, the ring index identifies
 	 * the next ring entry that is not known to have been filled by the
-	 * hardware.
+	 * hardware.  The initial value used is arbitrary (so we use 0).
 	 */
 	u32 index;
 };
@@ -81,16 +70,18 @@ struct gsi_trans_pool {
 
 struct gsi_trans_info {
 	atomic_t tre_avail;		/* TREs available for allocation */
-	struct gsi_trans_pool pool;	/* transaction pool */
-	struct gsi_trans_pool sg_pool;	/* scatterlist pool */
-	struct gsi_trans_pool cmd_pool;	/* command payload DMA pool */
+
+	u16 free_id;			/* first free trans in array */
+	u16 allocated_id;		/* first allocated transaction */
+	u16 committed_id;		/* first committed transaction */
+	u16 pending_id;			/* first pending transaction */
+	u16 completed_id;		/* first completed transaction */
+	u16 polled_id;			/* first polled transaction */
+	struct gsi_trans *trans;	/* transaction array */
 	struct gsi_trans **map;		/* TRE -> transaction map */
 
-	spinlock_t spinlock;		/* protects updates to the lists */
-	struct list_head alloc;		/* allocated, not committed */
-	struct list_head pending;	/* committed, awaiting completion */
-	struct list_head complete;	/* completed, awaiting poll */
-	struct list_head polled;	/* returned by gsi_channel_poll_one() */
+	struct gsi_trans_pool sg_pool;	/* scatterlist pool */
+	struct gsi_trans_pool cmd_pool;	/* command payload DMA pool */
 };
 
 /* Hardware values signifying the state of a channel */
@@ -110,16 +101,16 @@ struct gsi_channel {
 	bool toward_ipa;
 	bool command;			/* AP command TX channel or not */
 
-	u8 tlv_count;			/* # entries in TLV FIFO */
+	u8 trans_tre_max;		/* max TREs in a transaction */
 	u16 tre_count;
 	u16 event_count;
 
 	struct gsi_ring tre_ring;
 	u32 evt_ring_id;
 
+	/* The following counts are used only for TX endpoints */
 	u64 byte_count;			/* total # bytes transferred */
 	u64 trans_count;		/* total # transactions */
-	/* The following counts are used only for TX endpoints */
 	u64 queued_byte_count;		/* last reported queued byte count */
 	u64 queued_trans_count;		/* ...and queued trans count */
 	u64 compl_byte_count;		/* last reported completed byte count */
@@ -145,8 +136,9 @@ struct gsi_evt_ring {
 struct gsi {
 	struct device *dev;		/* Same as IPA device */
 	enum ipa_version version;
-	void __iomem *virt_raw;		/* I/O mapped address range */
-	void __iomem *virt;		/* Adjusted for most registers */
+	void __iomem *virt;		/* I/O mapped registers */
+	const struct regs *regs;
+
 	u32 irq;
 	u32 channel_count;
 	u32 evt_ring_count;
@@ -159,7 +151,7 @@ struct gsi {
 	struct mutex mutex;		/* protects commands, programming */
 	struct gsi_channel channel[GSI_CHANNEL_COUNT_MAX];
 	struct gsi_evt_ring evt_ring[GSI_EVT_RING_COUNT_MAX];
-	struct net_device dummy_dev;	/* needed for NAPI */
+	struct net_device *dummy_dev;	/* needed for NAPI */
 };
 
 /**
@@ -184,18 +176,9 @@ void gsi_teardown(struct gsi *gsi);
  * @gsi:	GSI pointer
  * @channel_id:	Channel whose limit is to be returned
  *
- * Return:	 The maximum number of TREs oustanding on the channel
+ * Return:	 The maximum number of TREs outstanding on the channel
  */
 u32 gsi_channel_tre_max(struct gsi *gsi, u32 channel_id);
-
-/**
- * gsi_channel_trans_tre_max() - Maximum TREs in a single transaction
- * @gsi:	GSI pointer
- * @channel_id:	Channel whose limit is to be returned
- *
- * Return:	 The maximum TRE count per transaction on the channel
- */
-u32 gsi_channel_trans_tre_max(struct gsi *gsi, u32 channel_id);
 
 /**
  * gsi_channel_start() - Start an allocated GSI channel

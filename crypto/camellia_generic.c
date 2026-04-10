@@ -9,13 +9,13 @@
  *  https://info.isl.ntt.co.jp/crypt/eng/camellia/specifications.html
  */
 
-#include <linux/crypto.h>
+#include <crypto/algapi.h>
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/bitops.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 static const u32 camellia_sp1110[256] = {
 	0x70707000, 0x82828200, 0x2c2c2c00, 0xececec00,
@@ -1064,7 +1064,7 @@ static void __exit camellia_fini(void)
 	crypto_unregister_alg(&camellia_alg);
 }
 
-subsys_initcall(camellia_init);
+module_init(camellia_init);
 module_exit(camellia_fini);
 
 MODULE_DESCRIPTION("Camellia Cipher Algorithm");

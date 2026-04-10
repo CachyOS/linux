@@ -16,7 +16,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <asm/byteorder.h>
 
 #include <linux/hid.h>
@@ -38,6 +38,9 @@ static bool hid_generic_match(struct hid_device *hdev,
 			      bool ignore_special_driver)
 {
 	if (ignore_special_driver)
+		return true;
+
+	if (hdev->quirks & HID_QUIRK_IGNORE_SPECIAL_DRIVER)
 		return true;
 
 	if (hdev->quirks & HID_QUIRK_HAVE_SPECIAL_DRIVER)
@@ -67,6 +70,14 @@ static int hid_generic_probe(struct hid_device *hdev,
 	return hid_hw_start(hdev, HID_CONNECT_DEFAULT);
 }
 
+static int hid_generic_reset_resume(struct hid_device *hdev)
+{
+	if (hdev->claimed & HID_CLAIMED_INPUT)
+		hidinput_reset_resume(hdev);
+
+	return 0;
+}
+
 static const struct hid_device_id hid_table[] = {
 	{ HID_DEVICE(HID_BUS_ANY, HID_GROUP_ANY, HID_ANY_ID, HID_ANY_ID) },
 	{ }
@@ -78,6 +89,7 @@ static struct hid_driver hid_generic = {
 	.id_table = hid_table,
 	.match = hid_generic_match,
 	.probe = hid_generic_probe,
+	.reset_resume = hid_generic_reset_resume,
 };
 module_hid_driver(hid_generic);
 

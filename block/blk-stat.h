@@ -17,7 +17,7 @@
  * timer fires, @cpu_stat is flushed to @stat and @timer_fn is invoked.
  */
 struct blk_stat_callback {
-	/*
+	/**
 	 * @list: RCU list of callbacks for a &struct request_queue.
 	 */
 	struct list_head list;
@@ -50,7 +50,7 @@ struct blk_stat_callback {
 	struct blk_rq_stat *stat;
 
 	/**
-	 * @fn: Callback function.
+	 * @timer_fn: Callback function.
 	 */
 	void (*timer_fn)(struct blk_stat_callback *);
 
@@ -59,12 +59,14 @@ struct blk_stat_callback {
 	 */
 	void *data;
 
+	/**
+	 * @rcu: rcu list head
+	 */
 	struct rcu_head rcu;
 };
 
 struct blk_queue_stats *blk_alloc_queue_stats(void);
 void blk_free_queue_stats(struct blk_queue_stats *);
-bool blk_stats_alloc_enable(struct request_queue *q);
 
 void blk_stat_add(struct request *rq, u64 now);
 
@@ -127,6 +129,8 @@ void blk_stat_free_callback(struct blk_stat_callback *cb);
  * blk_stat_is_active() - Check if a block statistics callback is currently
  * gathering statistics.
  * @cb: The callback.
+ *
+ * Returns: %true iff the callback is active.
  */
 static inline bool blk_stat_is_active(struct blk_stat_callback *cb)
 {
@@ -149,7 +153,7 @@ static inline void blk_stat_activate_nsecs(struct blk_stat_callback *cb,
 
 static inline void blk_stat_deactivate(struct blk_stat_callback *cb)
 {
-	del_timer_sync(&cb->timer);
+	timer_delete_sync(&cb->timer);
 }
 
 /**

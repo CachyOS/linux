@@ -3,12 +3,12 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2018-2022 Intel Corporation. All rights reserved.
+// Copyright(c) 2018-2022 Intel Corporation
 //
 // Author: Keyon Jie <yang.jie@linux.intel.com>
 //
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/io-64-nonatomic-lo-hi.h>
 #include <linux/device.h>
 #include <sound/memalloc.h>
@@ -45,8 +45,6 @@ int snd_sof_create_page_table(struct device *dev,
 		u32 pfn = snd_sgbuf_get_addr(dmab, i * PAGE_SIZE) >> PAGE_SHIFT;
 		u8 *pg_table;
 
-		dev_vdbg(dev, "pfn i %i idx %d pfn %x\n", i, idx, pfn);
-
 		pg_table = (u8 *)(page_table + idx);
 
 		/*
@@ -75,3 +73,4 @@ int snd_sof_create_page_table(struct device *dev,
 EXPORT_SYMBOL(snd_sof_create_page_table);
 
 MODULE_LICENSE("Dual BSD/GPL");
+MODULE_DESCRIPTION("SOF utils");

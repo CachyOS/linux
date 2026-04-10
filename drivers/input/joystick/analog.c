@@ -7,9 +7,6 @@
  * Analog joystick and gamepad driver for Linux
  */
 
-/*
- */
-
 #include <linux/delay.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -585,7 +582,8 @@ static int analog_connect(struct gameport *gameport, struct gameport_driver *drv
 	int i;
 	int err;
 
-	if (!(port = kzalloc(sizeof(struct analog_port), GFP_KERNEL)))
+	port = kzalloc_obj(*port);
+	if (!port)
 		return -ENOMEM;
 
 	err = analog_init_port(gameport, drv, port);

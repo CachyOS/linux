@@ -34,7 +34,7 @@ struct mp2888_data {
 	int curr_sense_gain;
 };
 
-#define to_mp2888_data(x)  container_of(x, struct mp2888_data, info)
+#define to_mp2888_data(x)	container_of(x, struct mp2888_data, info)
 
 static int mp2888_read_byte_data(struct i2c_client *client, int page, int reg)
 {
@@ -109,7 +109,7 @@ mp2888_read_phase(struct i2c_client *client, struct mp2888_data *data, int page,
 	 * - Kcs is the DrMOS current sense gain of power stage, which is obtained from the
 	 *   register MP2888_MFR_VR_CONFIG1, bits 13-12 with the following selection of DrMOS
 	 *   (data->curr_sense_gain):
-	 *   00b - 5µA/A, 01b - 8.5µA/A, 10b - 9.7µA/A, 11b - 10µA/A.
+	 *   00b - 8.5µA/A, 01b - 9.7µA/A, 1b - 10µA/A, 11b - 5µA/A.
 	 * - Rcs is the internal phase current sense resistor. This parameter depends on hardware
 	 *   assembly. By default it is set to 1kΩ. In case of different assembly, user should
 	 *   scale this parameter by dividing it by Rcs.
@@ -118,10 +118,9 @@ mp2888_read_phase(struct i2c_client *client, struct mp2888_data *data, int page,
 	 * because sampling of current occurrence of bit weight has a big deviation, especially for
 	 * light load.
 	 */
-	ret = DIV_ROUND_CLOSEST(ret * 100 - 9800, data->curr_sense_gain);
-	ret = (data->phase_curr_resolution) ? ret * 2 : ret;
+	ret = DIV_ROUND_CLOSEST(ret * 200 - 19600, data->curr_sense_gain);
 	/* Scale according to total current resolution. */
-	ret = (data->total_curr_resolution) ? ret * 8 : ret * 4;
+	ret = (data->total_curr_resolution) ? ret * 2 : ret;
 	return ret;
 }
 
@@ -212,7 +211,7 @@ static int mp2888_read_word_data(struct i2c_client *client, int page, int phase,
 		ret = pmbus_read_word_data(client, page, phase, reg);
 		if (ret < 0)
 			return ret;
-		ret = data->total_curr_resolution ? ret * 2 : ret;
+		ret = data->total_curr_resolution ? ret : DIV_ROUND_CLOSEST(ret, 2);
 		break;
 	case PMBUS_POUT_OP_WARN_LIMIT:
 		ret = pmbus_read_word_data(client, page, phase, reg);
@@ -223,7 +222,7 @@ static int mp2888_read_word_data(struct i2c_client *client, int page, int phase,
 		 * set 1. Actual power is reported with 0.5W or 1W respectively resolution. Scaling
 		 * is needed to match both.
 		 */
-		ret = data->total_curr_resolution ? ret * 4 : ret * 2;
+		ret = data->total_curr_resolution ? ret * 2 : ret;
 		break;
 	/*
 	 * The below registers are not implemented by device or implemented not according to the
@@ -379,7 +378,7 @@ static int mp2888_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id mp2888_id[] = {
-	{"mp2888", 0},
+	{"mp2888"},
 	{}
 };
 
@@ -396,7 +395,7 @@ static struct i2c_driver mp2888_driver = {
 		.name = "mp2888",
 		.of_match_table = of_match_ptr(mp2888_of_match),
 	},
-	.probe_new = mp2888_probe,
+	.probe = mp2888_probe,
 	.id_table = mp2888_id,
 };
 
@@ -405,4 +404,4 @@ module_i2c_driver(mp2888_driver);
 MODULE_AUTHOR("Vadim Pasternak <vadimp@nvidia.com>");
 MODULE_DESCRIPTION("PMBus driver for MPS MP2888 device");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(PMBUS);
+MODULE_IMPORT_NS("PMBUS");

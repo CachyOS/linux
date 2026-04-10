@@ -9,6 +9,8 @@
 
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
+#include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
@@ -19,13 +21,24 @@
 
 #include <media/rcar-fcp.h>
 
+#define RCAR_FCP_REG_RST		0x0010
+#define RCAR_FCP_REG_RST_SOFTRST	BIT(0)
+#define RCAR_FCP_REG_STA		0x0018
+#define RCAR_FCP_REG_STA_ACT		BIT(0)
+
 struct rcar_fcp_device {
 	struct list_head list;
 	struct device *dev;
+	void __iomem *base;
 };
 
 static LIST_HEAD(fcp_devices);
 static DEFINE_MUTEX(fcp_lock);
+
+static inline void rcar_fcp_write(struct rcar_fcp_device *fcp, u32 reg, u32 val)
+{
+	iowrite32(val, fcp->base + reg);
+}
 
 /* -----------------------------------------------------------------------------
  * Public API
@@ -117,6 +130,25 @@ void rcar_fcp_disable(struct rcar_fcp_device *fcp)
 }
 EXPORT_SYMBOL_GPL(rcar_fcp_disable);
 
+int rcar_fcp_soft_reset(struct rcar_fcp_device *fcp)
+{
+	u32 value;
+	int ret;
+
+	if (!fcp)
+		return 0;
+
+	rcar_fcp_write(fcp, RCAR_FCP_REG_RST, RCAR_FCP_REG_RST_SOFTRST);
+	ret = readl_poll_timeout(fcp->base + RCAR_FCP_REG_STA,
+				 value, !(value & RCAR_FCP_REG_STA_ACT),
+				 1, 100);
+	if (ret)
+		dev_err(fcp->dev, "Failed to soft-reset\n");
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rcar_fcp_soft_reset);
+
 /* -----------------------------------------------------------------------------
  * Platform Driver
  */
@@ -131,6 +163,10 @@ static int rcar_fcp_probe(struct platform_device *pdev)
 
 	fcp->dev = &pdev->dev;
 
+	fcp->base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(fcp->base))
+		return PTR_ERR(fcp->base);
+
 	dma_set_max_seg_size(fcp->dev, UINT_MAX);
 
 	pm_runtime_enable(&pdev->dev);
@@ -144,7 +180,7 @@ static int rcar_fcp_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int rcar_fcp_remove(struct platform_device *pdev)
+static void rcar_fcp_remove(struct platform_device *pdev)
 {
 	struct rcar_fcp_device *fcp = platform_get_drvdata(pdev);
 
@@ -153,8 +189,6 @@ static int rcar_fcp_remove(struct platform_device *pdev)
 	mutex_unlock(&fcp_lock);
 
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static const struct of_device_id rcar_fcp_of_match[] = {

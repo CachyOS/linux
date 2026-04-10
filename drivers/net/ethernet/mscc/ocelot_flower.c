@@ -228,6 +228,32 @@ ocelot_flower_parse_egress_vlan_modify(struct ocelot_vcap_filter *filter,
 	return 0;
 }
 
+static int
+ocelot_flower_parse_egress_port(struct ocelot *ocelot, struct flow_cls_offload *f,
+				const struct flow_action_entry *a, bool mirror,
+				struct netlink_ext_ack *extack)
+{
+	const char *act_string = mirror ? "mirror" : "redirect";
+	int egress_port = ocelot->ops->netdev_to_port(a->dev);
+	enum flow_action_id offloadable_act_id;
+
+	offloadable_act_id = mirror ? FLOW_ACTION_MIRRED : FLOW_ACTION_REDIRECT;
+
+	/* Mirroring towards foreign interfaces is handled in software */
+	if (egress_port < 0 || a->id != offloadable_act_id) {
+		if (f->common.skip_sw) {
+			NL_SET_ERR_MSG_FMT(extack,
+					   "Can only %s to %s if filter also runs in software",
+					   act_string, egress_port < 0 ?
+					   "CPU" : "ingress of ocelot port");
+			return -EOPNOTSUPP;
+		}
+		egress_port = ocelot->num_phys_ports;
+	}
+
+	return egress_port;
+}
+
 static int ocelot_flower_parse_action(struct ocelot *ocelot, int port,
 				      bool ingress, struct flow_cls_offload *f,
 				      struct ocelot_vcap_filter *filter)
@@ -356,6 +382,7 @@ static int ocelot_flower_parse_action(struct ocelot *ocelot, int port,
 			filter->type = OCELOT_VCAP_FILTER_OFFLOAD;
 			break;
 		case FLOW_ACTION_REDIRECT:
+		case FLOW_ACTION_REDIRECT_INGRESS:
 			if (filter->block_id != VCAP_IS2) {
 				NL_SET_ERR_MSG_MOD(extack,
 						   "Redirect action can only be offloaded to VCAP IS2");
@@ -366,17 +393,19 @@ static int ocelot_flower_parse_action(struct ocelot *ocelot, int port,
 						   "Last action must be GOTO");
 				return -EOPNOTSUPP;
 			}
-			egress_port = ocelot->ops->netdev_to_port(a->dev);
-			if (egress_port < 0) {
-				NL_SET_ERR_MSG_MOD(extack,
-						   "Destination not an ocelot port");
-				return -EOPNOTSUPP;
-			}
+
+			egress_port = ocelot_flower_parse_egress_port(ocelot, f,
+								      a, false,
+								      extack);
+			if (egress_port < 0)
+				return egress_port;
+
 			filter->action.mask_mode = OCELOT_MASK_MODE_REDIRECT;
 			filter->action.port_mask = BIT(egress_port);
 			filter->type = OCELOT_VCAP_FILTER_OFFLOAD;
 			break;
 		case FLOW_ACTION_MIRRED:
+		case FLOW_ACTION_MIRRED_INGRESS:
 			if (filter->block_id != VCAP_IS2) {
 				NL_SET_ERR_MSG_MOD(extack,
 						   "Mirror action can only be offloaded to VCAP IS2");
@@ -387,12 +416,13 @@ static int ocelot_flower_parse_action(struct ocelot *ocelot, int port,
 						   "Last action must be GOTO");
 				return -EOPNOTSUPP;
 			}
-			egress_port = ocelot->ops->netdev_to_port(a->dev);
-			if (egress_port < 0) {
-				NL_SET_ERR_MSG_MOD(extack,
-						   "Destination not an ocelot port");
-				return -EOPNOTSUPP;
-			}
+
+			egress_port = ocelot_flower_parse_egress_port(ocelot, f,
+								      a, true,
+								      extack);
+			if (egress_port < 0)
+				return egress_port;
+
 			filter->egress_port.value = egress_port;
 			filter->action.mirror_ena = true;
 			filter->type = OCELOT_VCAP_FILTER_OFFLOAD;
@@ -581,15 +611,25 @@ ocelot_flower_parse_key(struct ocelot *ocelot, int port, bool ingress,
 	int ret;
 
 	if (dissector->used_keys &
-	    ~(BIT(FLOW_DISSECTOR_KEY_CONTROL) |
-	      BIT(FLOW_DISSECTOR_KEY_BASIC) |
-	      BIT(FLOW_DISSECTOR_KEY_META) |
-	      BIT(FLOW_DISSECTOR_KEY_PORTS) |
-	      BIT(FLOW_DISSECTOR_KEY_VLAN) |
-	      BIT(FLOW_DISSECTOR_KEY_IPV4_ADDRS) |
-	      BIT(FLOW_DISSECTOR_KEY_IPV6_ADDRS) |
-	      BIT(FLOW_DISSECTOR_KEY_ETH_ADDRS))) {
+	    ~(BIT_ULL(FLOW_DISSECTOR_KEY_CONTROL) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_BASIC) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_META) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_PORTS) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_VLAN) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_IPV4_ADDRS) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_IPV6_ADDRS) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_ETH_ADDRS))) {
 		return -EOPNOTSUPP;
+	}
+
+	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_META)) {
+		struct flow_match_meta match;
+
+		flow_rule_match_meta(rule, &match);
+		if (match.mask->l2_miss) {
+			NL_SET_ERR_MSG_MOD(extack, "Can't match on \"l2_miss\"");
+			return -EOPNOTSUPP;
+		}
 	}
 
 	/* For VCAP ES0 (egress rewriter) we can match on the ingress port */
@@ -599,10 +639,19 @@ ocelot_flower_parse_key(struct ocelot *ocelot, int port, bool ingress,
 			return ret;
 	}
 
-	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_CONTROL)) {
-		struct flow_match_control match;
+	if (flow_rule_match_has_control_flags(rule, extack))
+		return -EOPNOTSUPP;
 
-		flow_rule_match_control(rule, &match);
+	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_VLAN)) {
+		struct flow_match_vlan match;
+
+		flow_rule_match_vlan(rule, &match);
+		filter->key_type = OCELOT_VCAP_KEY_ANY;
+		filter->vlan.vid.value = match.key->vlan_id;
+		filter->vlan.vid.mask = match.mask->vlan_id;
+		filter->vlan.pcp.value[0] = match.key->vlan_priority;
+		filter->vlan.pcp.mask[0] = match.mask->vlan_priority;
+		match_protocol = false;
 	}
 
 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_ETH_ADDRS)) {
@@ -619,12 +668,12 @@ ocelot_flower_parse_key(struct ocelot *ocelot, int port, bool ingress,
 		 * then just bail out
 		 */
 		if ((dissector->used_keys &
-		    (BIT(FLOW_DISSECTOR_KEY_ETH_ADDRS) |
-		     BIT(FLOW_DISSECTOR_KEY_BASIC) |
-		     BIT(FLOW_DISSECTOR_KEY_CONTROL))) !=
-		    (BIT(FLOW_DISSECTOR_KEY_ETH_ADDRS) |
-		     BIT(FLOW_DISSECTOR_KEY_BASIC) |
-		     BIT(FLOW_DISSECTOR_KEY_CONTROL)))
+		    (BIT_ULL(FLOW_DISSECTOR_KEY_ETH_ADDRS) |
+		     BIT_ULL(FLOW_DISSECTOR_KEY_BASIC) |
+		     BIT_ULL(FLOW_DISSECTOR_KEY_CONTROL))) !=
+		    (BIT_ULL(FLOW_DISSECTOR_KEY_ETH_ADDRS) |
+		     BIT_ULL(FLOW_DISSECTOR_KEY_BASIC) |
+		     BIT_ULL(FLOW_DISSECTOR_KEY_CONTROL)))
 			return -EOPNOTSUPP;
 
 		flow_rule_match_eth_addrs(rule, &match);
@@ -737,18 +786,6 @@ ocelot_flower_parse_key(struct ocelot *ocelot, int port, bool ingress,
 		match_protocol = false;
 	}
 
-	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_VLAN)) {
-		struct flow_match_vlan match;
-
-		flow_rule_match_vlan(rule, &match);
-		filter->key_type = OCELOT_VCAP_KEY_ANY;
-		filter->vlan.vid.value = match.key->vlan_id;
-		filter->vlan.vid.mask = match.mask->vlan_id;
-		filter->vlan.pcp.value[0] = match.key->vlan_priority;
-		filter->vlan.pcp.mask[0] = match.mask->vlan_priority;
-		match_protocol = false;
-	}
-
 finished_key_parsing:
 	if (match_protocol && proto != ETH_P_ALL) {
 		if (filter->block_id == VCAP_ES0) {
@@ -796,7 +833,7 @@ static struct ocelot_vcap_filter
 {
 	struct ocelot_vcap_filter *filter;
 
-	filter = kzalloc(sizeof(*filter), GFP_KERNEL);
+	filter = kzalloc_obj(*filter);
 	if (!filter)
 		return NULL;
 

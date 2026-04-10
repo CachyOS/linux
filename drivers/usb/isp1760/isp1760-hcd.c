@@ -27,7 +27,7 @@
 #include <linux/iopoll.h>
 #include <linux/mm.h>
 #include <linux/timer.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <asm/cacheflush.h>
 
 #include "isp1760-core.h"
@@ -2458,7 +2458,7 @@ static void isp1760_stop(struct usb_hcd *hcd)
 {
 	struct isp1760_hcd *priv = hcd_to_priv(hcd);
 
-	del_timer(&errata2_timer);
+	timer_delete(&errata2_timer);
 
 	isp1760_hub_control(hcd, ClearPortFeature, USB_PORT_FEAT_POWER,	1,
 			NULL, 0);
@@ -2521,21 +2521,19 @@ static const struct hc_driver isp1760_hc_driver = {
 int __init isp1760_init_kmem_once(void)
 {
 	urb_listitem_cachep = kmem_cache_create("isp1760_urb_listitem",
-			sizeof(struct urb_listitem), 0, SLAB_TEMPORARY |
-			SLAB_MEM_SPREAD, NULL);
+			sizeof(struct urb_listitem), 0, SLAB_TEMPORARY, NULL);
 
 	if (!urb_listitem_cachep)
 		return -ENOMEM;
 
 	qtd_cachep = kmem_cache_create("isp1760_qtd",
-			sizeof(struct isp1760_qtd), 0, SLAB_TEMPORARY |
-			SLAB_MEM_SPREAD, NULL);
+			sizeof(struct isp1760_qtd), 0, SLAB_TEMPORARY, NULL);
 
 	if (!qtd_cachep)
 		goto destroy_urb_listitem;
 
 	qh_cachep = kmem_cache_create("isp1760_qh", sizeof(struct isp1760_qh),
-			0, SLAB_TEMPORARY | SLAB_MEM_SPREAD, NULL);
+			0, SLAB_TEMPORARY, NULL);
 
 	if (!qh_cachep)
 		goto destroy_qtd;
@@ -2574,15 +2572,15 @@ int isp1760_hcd_register(struct isp1760_hcd *priv, struct resource *mem,
 
 	priv->hcd = hcd;
 
-	priv->atl_slots = kcalloc(mem_layout->slot_num,
-				  sizeof(struct isp1760_slotinfo), GFP_KERNEL);
+	priv->atl_slots = kzalloc_objs(struct isp1760_slotinfo,
+				       mem_layout->slot_num);
 	if (!priv->atl_slots) {
 		ret = -ENOMEM;
 		goto put_hcd;
 	}
 
-	priv->int_slots = kcalloc(mem_layout->slot_num,
-				  sizeof(struct isp1760_slotinfo), GFP_KERNEL);
+	priv->int_slots = kzalloc_objs(struct isp1760_slotinfo,
+				       mem_layout->slot_num);
 	if (!priv->int_slots) {
 		ret = -ENOMEM;
 		goto free_atl_slots;

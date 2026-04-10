@@ -24,6 +24,7 @@
 #include <linux/percpu.h>
 #include <linux/kdebug.h>
 #include <linux/kernel.h>
+#include <linux/kvm_types.h>
 #include <linux/export.h>
 #include <linux/sched.h>
 #include <linux/smp.h>
@@ -127,7 +128,7 @@ int arch_install_hw_breakpoint(struct perf_event *bp)
 
 	set_debugreg(*dr7, 7);
 	if (info->mask)
-		set_dr_addr_mask(info->mask, i);
+		amd_set_dr_addr_mask(info->mask, i);
 
 	return 0;
 }
@@ -166,7 +167,7 @@ void arch_uninstall_hw_breakpoint(struct perf_event *bp)
 
 	set_debugreg(dr7, 7);
 	if (info->mask)
-		set_dr_addr_mask(0, i);
+		amd_set_dr_addr_mask(0, i);
 
 	/*
 	 * Ensure the write to cpu_dr7 is after we've set the DR7 register.
@@ -266,7 +267,7 @@ static inline bool within_cpu_entry(unsigned long addr, unsigned long end)
 
 	/* CPU entry erea is always used for CPU entry */
 	if (within_area(addr, end, CPU_ENTRY_AREA_BASE,
-			CPU_ENTRY_AREA_TOTAL_SIZE))
+			CPU_ENTRY_AREA_MAP_SIZE))
 		return true;
 
 	/*
@@ -489,7 +490,7 @@ void hw_breakpoint_restore(void)
 	set_debugreg(DR6_RESERVED, 6);
 	set_debugreg(__this_cpu_read(cpu_dr7), 7);
 }
-EXPORT_SYMBOL_GPL(hw_breakpoint_restore);
+EXPORT_SYMBOL_FOR_KVM(hw_breakpoint_restore);
 
 /*
  * Handle debug exception notifications.

@@ -656,8 +656,7 @@ static void bd2802_unregister_led_classdev(struct bd2802_led *led)
 	led_classdev_unregister(&led->cdev_led1r);
 }
 
-static int bd2802_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int bd2802_probe(struct i2c_client *client)
 {
 	struct bd2802_led *led;
 	int ret, i;
@@ -722,7 +721,7 @@ failed_unregister_dev_file:
 	return ret;
 }
 
-static int bd2802_remove(struct i2c_client *client)
+static void bd2802_remove(struct i2c_client *client)
 {
 	struct bd2802_led *led = i2c_get_clientdata(client);
 	int i;
@@ -733,8 +732,6 @@ static int bd2802_remove(struct i2c_client *client)
 		bd2802_disable_adv_conf(led);
 	for (i = 0; i < ARRAY_SIZE(bd2802_attributes); i++)
 		device_remove_file(&led->client->dev, bd2802_attributes[i]);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -779,7 +776,7 @@ static int bd2802_resume(struct device *dev)
 static SIMPLE_DEV_PM_OPS(bd2802_pm, bd2802_suspend, bd2802_resume);
 
 static const struct i2c_device_id bd2802_id[] = {
-	{ "BD2802", 0 },
+	{ "BD2802" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, bd2802_id);

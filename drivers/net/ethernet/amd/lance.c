@@ -59,6 +59,7 @@ static const char version[] = "lance.c:v1.16 2006/11/09 dplatt@3do.com, becker@c
 #include <linux/skbuff.h>
 #include <linux/mm.h>
 #include <linux/bitops.h>
+#include <net/Space.h>
 
 #include <asm/io.h>
 #include <asm/dma.h>
@@ -384,6 +385,7 @@ static void __exit lance_cleanup_module(void)
 }
 module_exit(lance_cleanup_module);
 #endif /* MODULE */
+MODULE_DESCRIPTION("AMD LANCE/PCnet Ethernet driver");
 MODULE_LICENSE("GPL");
 
 
@@ -549,7 +551,7 @@ static int __init lance_probe1(struct net_device *dev, int ioaddr, int irq, int 
 	dev->base_addr = ioaddr;
 	/* Make certain the data structures used by the LANCE are aligned and DMAble. */
 
-	lp = kzalloc(sizeof(*lp), GFP_DMA | GFP_KERNEL);
+	lp = kzalloc_obj(*lp, GFP_DMA | GFP_KERNEL);
 	if (!lp)
 		return -ENOMEM;
 	if (lance_debug > 6) printk(" (#0x%05lx)", (unsigned long)lp);
@@ -880,7 +882,7 @@ lance_init_ring(struct net_device *dev, gfp_t gfp)
 			rx_buff = skb->data;
 		else
 			rx_buff = kmalloc(PKT_BUF_SZ, GFP_DMA | gfp);
-		if (rx_buff == NULL)
+		if (!rx_buff)
 			lp->rx_ring[i].base = 0;
 		else
 			lp->rx_ring[i].base = (u32)isa_virt_to_bus(rx_buff) | 0x80000000;
@@ -1001,7 +1003,7 @@ static netdev_tx_t lance_start_xmit(struct sk_buff *skb,
 		skb_copy_from_linear_data(skb, &lp->tx_bounce_buffs[entry], skb->len);
 		lp->tx_ring[entry].base =
 			((u32)isa_virt_to_bus((lp->tx_bounce_buffs + entry)) & 0xffffff) | 0x83000000;
-		dev_kfree_skb(skb);
+		dev_consume_skb_irq(skb);
 	} else {
 		lp->tx_skbuff[entry] = skb;
 		lp->tx_ring[entry].base = ((u32)isa_virt_to_bus(skb->data) & 0xffffff) | 0x83000000;
@@ -1186,7 +1188,7 @@ lance_rx(struct net_device *dev)
 			else
 			{
 				skb = dev_alloc_skb(pkt_len+2);
-				if (skb == NULL)
+				if (!skb)
 				{
 					printk("%s: Memory squeeze, deferring packet.\n", dev->name);
 					for (i=0; i < RX_RING_SIZE; i++)

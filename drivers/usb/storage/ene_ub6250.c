@@ -26,7 +26,7 @@
 
 MODULE_DESCRIPTION("Driver for ENE UB6250 reader");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(USB_STORAGE);
+MODULE_IMPORT_NS("USB_STORAGE");
 MODULE_FIRMWARE(SD_INIT1_FIRMWARE);
 MODULE_FIRMWARE(SD_INIT2_FIRMWARE);
 MODULE_FIRMWARE(SD_RW_FIRMWARE);
@@ -43,7 +43,7 @@ MODULE_FIRMWARE(MS_RW_FIRMWARE);
 { USB_DEVICE_VER(id_vendor, id_product, bcdDeviceMin, bcdDeviceMax), \
 	.driver_info = (flags)}
 
-static struct usb_device_id ene_ub6250_usb_ids[] = {
+static const struct usb_device_id ene_ub6250_usb_ids[] = {
 #	include "unusual_ene_ub6250.h"
 	{ }		/* Terminating entry */
 };
@@ -65,7 +65,7 @@ MODULE_DEVICE_TABLE(usb, ene_ub6250_usb_ids);
 	.initFunction = init_function,	\
 }
 
-static struct us_unusual_dev ene_ub6250_unusual_dev_list[] = {
+static const struct us_unusual_dev ene_ub6250_unusual_dev_list[] = {
 #	include "unusual_ene_ub6250.h"
 	{ }		/* Terminating entry */
 };
@@ -737,7 +737,7 @@ static int sd_scsi_write(struct us_data *us, struct scsi_cmnd *srb)
 	memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 	bcb->DataTransferLength = blenByte;
-	bcb->Flags  = 0x00;
+	bcb->Flags  = US_BULK_FLAG_OUT;
 	bcb->CDB[0] = 0xF0;
 	bcb->CDB[5] = (unsigned char)(bnByte);
 	bcb->CDB[4] = (unsigned char)(bnByte>>8);
@@ -939,7 +939,7 @@ static int ms_lib_process_bootblock(struct us_data *us, u16 PhyBlock, u8 *PageDa
 	struct ms_lib_type_extdat ExtraData;
 	struct ene_ub6250_info *info = (struct ene_ub6250_info *) us->extra;
 
-	PageBuffer = kmalloc(MS_BYTES_PER_PAGE, GFP_KERNEL);
+	PageBuffer = kzalloc(MS_BYTES_PER_PAGE * 2, GFP_KERNEL);
 	if (PageBuffer == NULL)
 		return (u32)-1;
 
@@ -1119,9 +1119,8 @@ static int ms_lib_alloc_writebuf(struct us_data *us)
 	info->MS_Lib.blkpag = kmalloc_array(info->MS_Lib.PagesPerBlock,
 					    info->MS_Lib.BytesPerSector,
 					    GFP_KERNEL);
-	info->MS_Lib.blkext = kmalloc_array(info->MS_Lib.PagesPerBlock,
-					    sizeof(struct ms_lib_type_extdat),
-					    GFP_KERNEL);
+	info->MS_Lib.blkext = kmalloc_objs(struct ms_lib_type_extdat,
+					   info->MS_Lib.PagesPerBlock);
 
 	if ((info->MS_Lib.blkpag == NULL) || (info->MS_Lib.blkext == NULL)) {
 		ms_lib_free_writebuf(us);
@@ -1163,7 +1162,7 @@ static int ms_read_copyblock(struct us_data *us, u16 oldphy, u16 newphy,
 	memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 	bcb->DataTransferLength = 0x200*len;
-	bcb->Flags = 0x00;
+	bcb->Flags = US_BULK_FLAG_OUT;
 	bcb->CDB[0] = 0xF0;
 	bcb->CDB[1] = 0x08;
 	bcb->CDB[4] = (unsigned char)(oldphy);
@@ -1484,7 +1483,7 @@ static int ms_scsi_mode_sense(struct us_data *us, struct scsi_cmnd *srb)
 static int ms_scsi_read_capacity(struct us_data *us, struct scsi_cmnd *srb)
 {
 	u32   bl_num;
-	u16    bl_len;
+	u32    bl_len;
 	unsigned int offset = 0;
 	unsigned char    buf[8];
 	struct scatterlist *sg = NULL;
@@ -1759,7 +1758,7 @@ static int ms_scsi_write(struct us_data *us, struct scsi_cmnd *srb)
 		memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 		bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 		bcb->DataTransferLength = blenByte;
-		bcb->Flags  = 0x00;
+		bcb->Flags  = US_BULK_FLAG_OUT;
 		bcb->CDB[0] = 0xF0;
 		bcb->CDB[1] = 0x04;
 		bcb->CDB[5] = (unsigned char)(bn);
@@ -1931,7 +1930,7 @@ static int ene_load_bincode(struct us_data *us, unsigned char flag)
 	memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 	bcb->DataTransferLength = sd_fw->size;
-	bcb->Flags = 0x00;
+	bcb->Flags = US_BULK_FLAG_OUT;
 	bcb->CDB[0] = 0xEF;
 
 	result = ene_send_scsi_cmd(us, FDIR_WRITE, buf, 0);
@@ -2336,7 +2335,7 @@ static int ene_ub6250_probe(struct usb_interface *intf,
 		return result;
 
 	/* FIXME: where should the code alloc extra buf ? */
-	us->extra = kzalloc(sizeof(struct ene_ub6250_info), GFP_KERNEL);
+	us->extra = kzalloc_obj(struct ene_ub6250_info);
 	if (!us->extra)
 		return -ENOMEM;
 	us->extra_destructor = ene_ub6250_info_destructor;

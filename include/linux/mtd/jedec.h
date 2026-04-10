@@ -2,7 +2,7 @@
 /*
  * Copyright © 2000-2010 David Woodhouse <dwmw2@infradead.org>
  *			 Steven J. Hill <sjhill@realitydiluted.com>
- *			 Thomas Gleixner <tglx@linutronix.de>
+ *			 Thomas Gleixner <tglx@kernel.org>
  *
  * Contains all JEDEC related definitions
  */
@@ -20,6 +20,9 @@ struct jedec_ecc_info {
 
 /* JEDEC features */
 #define JEDEC_FEATURE_16_BIT_BUS	(1 << 0)
+
+/* JEDEC Optional Commands */
+#define JEDEC_OPT_CMD_READ_CACHE	BIT(1)
 
 struct nand_jedec_params {
 	/* rev info and features block */

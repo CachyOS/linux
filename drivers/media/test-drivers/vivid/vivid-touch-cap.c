@@ -17,16 +17,13 @@ static int touch_cap_queue_setup(struct vb2_queue *vq, unsigned int *nbuffers,
 	unsigned int size = f->sizeimage;
 
 	if (*nplanes) {
-		if (sizes[0] < size)
+		if (*nplanes != 1)
 			return -EINVAL;
-	} else {
-		sizes[0] = size;
+		return sizes[0] < size ? -EINVAL : 0;
 	}
 
-	if (vq->num_buffers + *nbuffers < 2)
-		*nbuffers = 2 - vq->num_buffers;
-
 	*nplanes = 1;
+	sizes[0] = size;
 	return 0;
 }
 
@@ -113,8 +110,6 @@ const struct vb2_ops vivid_touch_cap_qops = {
 	.start_streaming	= touch_cap_start_streaming,
 	.stop_streaming		= touch_cap_stop_streaming,
 	.buf_request_complete	= touch_cap_buf_request_complete,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 int vivid_enum_fmt_tch(struct file *file, void  *priv, struct v4l2_fmtdesc *f)
@@ -210,7 +205,7 @@ static void vivid_fill_buff_noise(__s16 *tch_buf, int size)
 
 	/* Fill 10% of the values within range -3 and 3, zero the others */
 	for (i = 0; i < size; i++) {
-		unsigned int rand = get_random_int();
+		unsigned int rand = get_random_u32();
 
 		if (rand % 10)
 			tch_buf[i] = 0;
@@ -221,7 +216,7 @@ static void vivid_fill_buff_noise(__s16 *tch_buf, int size)
 
 static inline int get_random_pressure(void)
 {
-	return get_random_int() % VIVID_PRESSURE_LIMIT;
+	return get_random_u32_below(VIVID_PRESSURE_LIMIT);
 }
 
 static void vivid_tch_buf_set(struct v4l2_pix_format *f,
@@ -272,7 +267,7 @@ void vivid_fillbuff_tch(struct vivid_dev *dev, struct vivid_buffer *buf)
 		return;
 
 	if (test_pat_idx == 0)
-		dev->tch_pat_random = get_random_int();
+		dev->tch_pat_random = get_random_u32();
 	rand = dev->tch_pat_random;
 
 	switch (test_pattern) {

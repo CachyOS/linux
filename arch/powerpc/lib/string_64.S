@@ -6,15 +6,10 @@
  * Author: Anton Blanchard <anton@au.ibm.com>
  */
 
+#include <linux/export.h>
 #include <asm/ppc_asm.h>
 #include <asm/linkage.h>
 #include <asm/asm-offsets.h>
-#include <asm/export.h>
-
-	.section	".toc","aw"
-PPC64_CACHES:
-	.tc		ppc64_caches[TC],ppc64_caches
-	.section	".text"
 
 /**
  * __arch_clear_user: - Zero a block of memory in user space, with less checking.
@@ -133,7 +128,7 @@ err1;	stb	r0,0(r3)
 	blr
 
 .Llong_clear:
-	ld	r5,PPC64_CACHES@toc(r2)
+	LOAD_REG_ADDR(r5, ppc64_caches)
 
 	bf	cr7*4+0,11f
 err2;	std	r0,0(r3)

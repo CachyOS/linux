@@ -9,12 +9,12 @@
 #include <linux/errno.h>
 #include <linux/module.h>
 #include <linux/devfreq.h>
+#include <linux/devfreq-governor.h>
 #include <linux/math64.h>
-#include "governor.h"
 
 /* Default constants for DevFreq-Simple-Ondemand (DFSO) */
 #define DFSO_UPTHRESHOLD	(90)
-#define DFSO_DOWNDIFFERENCTIAL	(5)
+#define DFSO_DOWNDIFFERENTIAL	(5)
 static int devfreq_simple_ondemand_func(struct devfreq *df,
 					unsigned long *freq)
 {
@@ -22,7 +22,7 @@ static int devfreq_simple_ondemand_func(struct devfreq *df,
 	struct devfreq_dev_status *stat;
 	unsigned long long a, b;
 	unsigned int dfso_upthreshold = DFSO_UPTHRESHOLD;
-	unsigned int dfso_downdifferential = DFSO_DOWNDIFFERENCTIAL;
+	unsigned int dfso_downdifferential = DFSO_DOWNDIFFERENTIAL;
 	struct devfreq_simple_ondemand_data *data = df->data;
 
 	err = devfreq_update_stats(df);
@@ -140,4 +140,5 @@ static void __exit devfreq_simple_ondemand_exit(void)
 	return;
 }
 module_exit(devfreq_simple_ondemand_exit);
+MODULE_DESCRIPTION("DEVFREQ Simple On-demand governor");
 MODULE_LICENSE("GPL");

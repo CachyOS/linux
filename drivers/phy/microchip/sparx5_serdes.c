@@ -21,17 +21,32 @@
 
 #include "sparx5_serdes.h"
 
-#define SPX5_CMU_MAX          14
-
 #define SPX5_SERDES_10G_START 13
 #define SPX5_SERDES_25G_START 25
+#define SPX5_SERDES_6G10G_CNT SPX5_SERDES_25G_START
 
-enum sparx5_10g28cmu_mode {
-	SPX5_SD10G28_CMU_MAIN = 0,
-	SPX5_SD10G28_CMU_AUX1 = 1,
-	SPX5_SD10G28_CMU_AUX2 = 3,
-	SPX5_SD10G28_CMU_NONE = 4,
+#define LAN969X_SERDES_10G_CNT 10
+
+/* Optimal power settings from GUC */
+#define SPX5_SERDES_QUIET_MODE_VAL 0x01ef4e0c
+
+/* Register target sizes */
+const unsigned int sparx5_serdes_tsize[TSIZE_LAST] = {
+	[TC_SD10G_LANE] = 12,
+	[TC_SD_CMU] = 14,
+	[TC_SD_CMU_CFG] = 14,
+	[TC_SD_LANE] = 25,
 };
+
+const unsigned int lan969x_serdes_tsize[TSIZE_LAST] = {
+	[TC_SD10G_LANE] = 10,
+	[TC_SD_CMU] = 6,
+	[TC_SD_CMU_CFG] = 6,
+	[TC_SD_LANE] = 10,
+};
+
+/* Pointer to the register target size table */
+const unsigned int *tsize;
 
 enum sparx5_sd25g28_mode_preset_type {
 	SPX5_SD25G28_MODE_PRESET_25000,
@@ -922,6 +937,240 @@ static void sparx5_sd10g28_get_params(struct sparx5_serdes_macro *macro,
 	*params = init;
 }
 
+static int sparx5_cmu_apply_cfg(struct sparx5_serdes_private *priv,
+				u32 cmu_idx,
+				void __iomem *cmu_tgt,
+				void __iomem *cmu_cfg_tgt,
+				u32 spd10g)
+{
+	void __iomem **regs = priv->regs;
+	struct device *dev = priv->dev;
+	int value;
+
+	cmu_tgt = sdx5_inst_get(priv, TARGET_SD_CMU, cmu_idx);
+	cmu_cfg_tgt = sdx5_inst_get(priv, TARGET_SD_CMU_CFG, cmu_idx);
+
+	if (cmu_idx == 1 || cmu_idx == 4 || cmu_idx == 7 ||
+	    cmu_idx == 10 || cmu_idx == 13) {
+		spd10g = 0;
+	}
+
+	sdx5_inst_rmw(SD_CMU_CFG_SD_CMU_CFG_EXT_CFG_RST_SET(1),
+		      SD_CMU_CFG_SD_CMU_CFG_EXT_CFG_RST,
+		      cmu_cfg_tgt,
+		      SD_CMU_CFG_SD_CMU_CFG(cmu_idx));
+
+	sdx5_inst_rmw(SD_CMU_CFG_SD_CMU_CFG_EXT_CFG_RST_SET(0),
+		      SD_CMU_CFG_SD_CMU_CFG_EXT_CFG_RST,
+		      cmu_cfg_tgt,
+		      SD_CMU_CFG_SD_CMU_CFG(cmu_idx));
+
+	sdx5_inst_rmw(SD_CMU_CFG_SD_CMU_CFG_CMU_RST_SET(1),
+		      SD_CMU_CFG_SD_CMU_CFG_CMU_RST,
+		      cmu_cfg_tgt,
+		      SD_CMU_CFG_SD_CMU_CFG(cmu_idx));
+
+	sdx5_inst_rmw(SD_CMU_CMU_45_R_DWIDTHCTRL_FROM_HWT_SET(0x1) |
+		      SD_CMU_CMU_45_R_REFCK_SSC_EN_FROM_HWT_SET(0x1) |
+		      SD_CMU_CMU_45_R_LINK_BUF_EN_FROM_HWT_SET(0x1) |
+		      SD_CMU_CMU_45_R_BIAS_EN_FROM_HWT_SET(0x1) |
+		      SD_CMU_CMU_45_R_EN_RATECHG_CTRL_SET(0x0),
+		      SD_CMU_CMU_45_R_DWIDTHCTRL_FROM_HWT |
+		      SD_CMU_CMU_45_R_REFCK_SSC_EN_FROM_HWT |
+		      SD_CMU_CMU_45_R_LINK_BUF_EN_FROM_HWT |
+		      SD_CMU_CMU_45_R_BIAS_EN_FROM_HWT |
+		      SD_CMU_CMU_45_R_EN_RATECHG_CTRL,
+		      cmu_tgt,
+		      SD_CMU_CMU_45(cmu_idx));
+
+	sdx5_inst_rmw(SD_CMU_CMU_47_R_PCS2PMA_PHYMODE_4_0_SET(0),
+		      SD_CMU_CMU_47_R_PCS2PMA_PHYMODE_4_0,
+		      cmu_tgt,
+		      SD_CMU_CMU_47(cmu_idx));
+
+	sdx5_inst_rmw(SD_CMU_CMU_1B_CFG_RESERVE_7_0_SET(0),
+		      SD_CMU_CMU_1B_CFG_RESERVE_7_0,
+		      cmu_tgt,
+		      SD_CMU_CMU_1B(cmu_idx));
+
+	sdx5_inst_rmw(SD_CMU_CMU_0D_CFG_JC_BYP_SET(0x1),
+		      SD_CMU_CMU_0D_CFG_JC_BYP,
+		      cmu_tgt,
+		      SD_CMU_CMU_0D(cmu_idx));
+
+	sdx5_inst_rmw(SD_CMU_CMU_1F_CFG_VTUNE_SEL_SET(1),
+		      SD_CMU_CMU_1F_CFG_VTUNE_SEL,
+		      cmu_tgt,
+		      SD_CMU_CMU_1F(cmu_idx));
+
+	sdx5_inst_rmw(SD_CMU_CMU_00_CFG_PLL_TP_SEL_1_0_SET(3),
+		      SD_CMU_CMU_00_CFG_PLL_TP_SEL_1_0,
+		      cmu_tgt,
+		      SD_CMU_CMU_00(cmu_idx));
+
+	sdx5_inst_rmw(SD_CMU_CMU_05_CFG_BIAS_TP_SEL_1_0_SET(3),
+		      SD_CMU_CMU_05_CFG_BIAS_TP_SEL_1_0,
+		      cmu_tgt,
+		      SD_CMU_CMU_05(cmu_idx));
+
+	sdx5_inst_rmw(SD_CMU_CMU_30_R_PLL_DLOL_EN_SET(1),
+		      SD_CMU_CMU_30_R_PLL_DLOL_EN,
+		      cmu_tgt,
+		      SD_CMU_CMU_30(cmu_idx));
+
+	sdx5_inst_rmw(SD_CMU_CMU_09_CFG_SW_10G_SET(spd10g),
+		      SD_CMU_CMU_09_CFG_SW_10G,
+		      cmu_tgt,
+		      SD_CMU_CMU_09(cmu_idx));
+
+	sdx5_inst_rmw(SD_CMU_CFG_SD_CMU_CFG_CMU_RST_SET(0),
+		      SD_CMU_CFG_SD_CMU_CFG_CMU_RST,
+		      cmu_cfg_tgt,
+		      SD_CMU_CFG_SD_CMU_CFG(cmu_idx));
+
+	msleep(20);
+
+	sdx5_inst_rmw(SD_CMU_CMU_44_R_PLL_RSTN_SET(0),
+		      SD_CMU_CMU_44_R_PLL_RSTN,
+		      cmu_tgt,
+		      SD_CMU_CMU_44(cmu_idx));
+
+	sdx5_inst_rmw(SD_CMU_CMU_44_R_PLL_RSTN_SET(1),
+		      SD_CMU_CMU_44_R_PLL_RSTN,
+		      cmu_tgt,
+		      SD_CMU_CMU_44(cmu_idx));
+
+	msleep(20);
+
+	value = readl(sdx5_addr(regs, SD_CMU_CMU_E0(cmu_idx)));
+	value = SD_CMU_CMU_E0_PLL_LOL_UDL_GET(value);
+
+	if (value) {
+		dev_err(dev, "CMU PLL Loss of Lock: 0x%x\n", value);
+		return -EINVAL;
+	}
+	sdx5_inst_rmw(SD_CMU_CMU_0D_CFG_PMA_TX_CK_PD_SET(0),
+		      SD_CMU_CMU_0D_CFG_PMA_TX_CK_PD,
+		      cmu_tgt,
+		      SD_CMU_CMU_0D(cmu_idx));
+	return 0;
+}
+
+static int sparx5_cmu_cfg(struct sparx5_serdes_private *priv, u32 cmu_idx)
+{
+	void __iomem *cmu_tgt, *cmu_cfg_tgt;
+	u32 spd10g = 1;
+
+	if (cmu_idx == 1 || cmu_idx == 4 || cmu_idx == 7 ||
+	    cmu_idx == 10 || cmu_idx == 13) {
+		spd10g = 0;
+	}
+
+	cmu_tgt = sdx5_inst_get(priv, TARGET_SD_CMU, cmu_idx);
+	cmu_cfg_tgt = sdx5_inst_get(priv, TARGET_SD_CMU_CFG, cmu_idx);
+
+	return sparx5_cmu_apply_cfg(priv, cmu_idx, cmu_tgt, cmu_cfg_tgt, spd10g);
+}
+
+/* Map of 6G/10G serdes mode and index to CMU index. */
+static const int
+sparx5_serdes_cmu_map[SPX5_SD10G28_CMU_MAX][SPX5_SERDES_6G10G_CNT] = {
+	[SPX5_SD10G28_CMU_MAIN] = {  2,  2,  2,  2,  2,
+				     2,  2,  2,  5,  5,
+				     5,  5,  5,  5,  5,
+				     5,  8, 11, 11, 11,
+				    11, 11, 11, 11, 11 },
+	[SPX5_SD10G28_CMU_AUX1] = {  0,  0,  3,  3,  3,
+				     3,  3,  3,  3,  3,
+				     6,  6,  6,  6,  6,
+				     6,  6,  9,  9, 12,
+				    12, 12, 12, 12, 12 },
+	[SPX5_SD10G28_CMU_AUX2] = {  1,  1,  1,  1,  4,
+				     4,  4,  4,  4,  4,
+				     4,  4,  7,  7,  7,
+				     7,  7, 10, 10, 10,
+				    10, 13, 13, 13, 13 },
+	[SPX5_SD10G28_CMU_NONE] = {  1,  1,  1,  1,  4,
+				     4,  4,  4,  4,  4,
+				     4,  4,  7,  7,  7,
+				     7,  7, 10, 10, 10,
+				    10, 13, 13, 13, 13 },
+};
+
+/* Get the index of the CMU which provides the clock for the specified serdes
+ * mode and index.
+ */
+static int sparx5_serdes_cmu_get(enum sparx5_10g28cmu_mode mode, int sd_index)
+{
+	return sparx5_serdes_cmu_map[mode][sd_index];
+}
+
+/* Map of 6G/10G serdes mode and index to CMU index. */
+static const int
+lan969x_serdes_cmu_map[SPX5_SD10G28_CMU_MAX][LAN969X_SERDES_10G_CNT] = {
+	[SPX5_SD10G28_CMU_MAIN] = { 2, 2, 2, 2, 2,
+				    2, 2, 2, 5, 5 },
+	[SPX5_SD10G28_CMU_AUX1] = { 0, 0, 3, 3, 3,
+				    3, 3, 3, 3, 3 },
+	[SPX5_SD10G28_CMU_AUX2] = { 1, 1, 1, 1, 4,
+				    4, 4, 4, 4, 4 },
+	[SPX5_SD10G28_CMU_NONE] = { 1, 1, 1, 1, 4,
+				    4, 4, 4, 4, 4 },
+};
+
+static int lan969x_serdes_cmu_get(enum sparx5_10g28cmu_mode mode, int sd_index)
+{
+	return lan969x_serdes_cmu_map[mode][sd_index];
+}
+
+static void sparx5_serdes_cmu_power_off(struct sparx5_serdes_private *priv)
+{
+	void __iomem *cmu_inst, *cmu_cfg_inst;
+	int i;
+
+	/* Power down each CMU */
+	for (i = 0; i < priv->data->consts.cmu_max; i++) {
+		cmu_inst = sdx5_inst_get(priv, TARGET_SD_CMU, i);
+		cmu_cfg_inst = sdx5_inst_get(priv, TARGET_SD_CMU_CFG, i);
+
+		sdx5_inst_rmw(SD_CMU_CFG_SD_CMU_CFG_EXT_CFG_RST_SET(0),
+			      SD_CMU_CFG_SD_CMU_CFG_EXT_CFG_RST, cmu_cfg_inst,
+			      SD_CMU_CFG_SD_CMU_CFG(0));
+
+		sdx5_inst_rmw(SD_CMU_CMU_05_CFG_REFCK_TERM_EN_SET(0),
+			      SD_CMU_CMU_05_CFG_REFCK_TERM_EN, cmu_inst,
+			      SD_CMU_CMU_05(0));
+
+		sdx5_inst_rmw(SD_CMU_CMU_09_CFG_EN_TX_CK_DN_SET(0),
+			      SD_CMU_CMU_09_CFG_EN_TX_CK_DN, cmu_inst,
+			      SD_CMU_CMU_09(0));
+
+		sdx5_inst_rmw(SD_CMU_CMU_06_CFG_VCO_PD_SET(1),
+			      SD_CMU_CMU_06_CFG_VCO_PD, cmu_inst,
+			      SD_CMU_CMU_06(0));
+
+		sdx5_inst_rmw(SD_CMU_CMU_09_CFG_EN_TX_CK_UP_SET(0),
+			      SD_CMU_CMU_09_CFG_EN_TX_CK_UP, cmu_inst,
+			      SD_CMU_CMU_09(0));
+
+		sdx5_inst_rmw(SD_CMU_CMU_08_CFG_CK_TREE_PD_SET(1),
+			      SD_CMU_CMU_08_CFG_CK_TREE_PD, cmu_inst,
+			      SD_CMU_CMU_08(0));
+
+		sdx5_inst_rmw(SD_CMU_CMU_0D_CFG_REFCK_PD_SET(1) |
+			      SD_CMU_CMU_0D_CFG_PD_DIV64_SET(1) |
+			      SD_CMU_CMU_0D_CFG_PD_DIV66_SET(1),
+			      SD_CMU_CMU_0D_CFG_REFCK_PD |
+			      SD_CMU_CMU_0D_CFG_PD_DIV64 |
+			      SD_CMU_CMU_0D_CFG_PD_DIV66, cmu_inst,
+			      SD_CMU_CMU_0D(0));
+
+		sdx5_inst_rmw(SD_CMU_CMU_06_CFG_CTRL_LOGIC_PD_SET(1),
+			      SD_CMU_CMU_06_CFG_CTRL_LOGIC_PD, cmu_inst,
+			      SD_CMU_CMU_06(0));
+	}
+}
+
 static void sparx5_sd25g28_reset(void __iomem *regs[],
 				 struct sparx5_sd25g28_params *params,
 				 u32 sd_index)
@@ -1422,7 +1671,17 @@ static int sparx5_sd10g28_apply_params(struct sparx5_serdes_macro *macro,
 	u32 lane_index = macro->sidx;
 	u32 sd_index = macro->stpidx;
 	void __iomem *sd_inst;
-	u32 value;
+	u32 value, cmu_idx;
+	int err;
+
+	/* Do not configure serdes if CMU is not to be configured too */
+	if (params->skip_cmu_cfg)
+		return 0;
+
+	cmu_idx = priv->data->ops.serdes_cmu_get(params->cmu_sel, macro->sidx);
+	err = sparx5_cmu_cfg(priv, cmu_idx);
+	if (err)
+		return err;
 
 	if (params->is_6g)
 		sd_inst = sdx5_inst_get(priv, TARGET_SD6G_LANE, sd_index);
@@ -1884,6 +2143,7 @@ static int sparx5_sd10g28_config(struct sparx5_serdes_macro *macro, bool reset)
 		.rxinvert = 1,
 		.txswing = 240,
 		.reg_rst = reset,
+		.skip_cmu_cfg = reset,
 	};
 	int err;
 
@@ -1899,7 +2159,7 @@ static int sparx5_sd10g28_config(struct sparx5_serdes_macro *macro, bool reset)
 static int sparx5_serdes_power_save(struct sparx5_serdes_macro *macro, u32 pwdn)
 {
 	struct sparx5_serdes_private *priv = macro->priv;
-	void __iomem *sd_inst;
+	void __iomem *sd_inst, *sd_lane_inst;
 
 	if (macro->serdestype == SPX5_SDT_6G)
 		sd_inst = sdx5_inst_get(priv, TARGET_SD6G_LANE, macro->stpidx);
@@ -1909,12 +2169,36 @@ static int sparx5_serdes_power_save(struct sparx5_serdes_macro *macro, u32 pwdn)
 		sd_inst = sdx5_inst_get(priv, TARGET_SD25G_LANE, macro->stpidx);
 
 	if (macro->serdestype == SPX5_SDT_25G) {
+		sd_lane_inst = sdx5_inst_get(priv, TARGET_SD_LANE_25G,
+					     macro->stpidx);
+		/* Take serdes out of reset */
+		sdx5_inst_rmw(SD_LANE_25G_SD_LANE_CFG_EXT_CFG_RST_SET(0),
+			      SD_LANE_25G_SD_LANE_CFG_EXT_CFG_RST, sd_lane_inst,
+			      SD_LANE_25G_SD_LANE_CFG(0));
+
+		/* Configure optimal settings for quiet mode */
+		sdx5_inst_rmw(SD_LANE_25G_QUIET_MODE_6G_QUIET_MODE_SET(SPX5_SERDES_QUIET_MODE_VAL),
+			      SD_LANE_25G_QUIET_MODE_6G_QUIET_MODE,
+			      sd_lane_inst, SD_LANE_25G_QUIET_MODE_6G(0));
+
 		sdx5_inst_rmw(SD25G_LANE_LANE_04_LN_CFG_PD_DRIVER_SET(pwdn),
 			      SD25G_LANE_LANE_04_LN_CFG_PD_DRIVER,
 			      sd_inst,
 			      SD25G_LANE_LANE_04(0));
 	} else {
 		/* 6G and 10G */
+		sd_lane_inst = sdx5_inst_get(priv, TARGET_SD_LANE, macro->sidx);
+
+		/* Take serdes out of reset */
+		sdx5_inst_rmw(SD_LANE_SD_LANE_CFG_EXT_CFG_RST_SET(0),
+			      SD_LANE_SD_LANE_CFG_EXT_CFG_RST, sd_lane_inst,
+			      SD_LANE_SD_LANE_CFG(0));
+
+		/* Configure optimal settings for quiet mode */
+		sdx5_inst_rmw(SD_LANE_QUIET_MODE_6G_QUIET_MODE_SET(SPX5_SERDES_QUIET_MODE_VAL),
+			      SD_LANE_QUIET_MODE_6G_QUIET_MODE, sd_lane_inst,
+			      SD_LANE_QUIET_MODE_6G(0));
+
 		sdx5_inst_rmw(SD10G_LANE_LANE_06_CFG_PD_DRIVER_SET(pwdn),
 			      SD10G_LANE_LANE_06_CFG_PD_DRIVER,
 			      sd_inst,
@@ -1927,6 +2211,10 @@ static int sparx5_serdes_clock_config(struct sparx5_serdes_macro *macro)
 {
 	struct sparx5_serdes_private *priv = macro->priv;
 
+	/* Clock is auto-detected in 100Base-FX mode on lan969x */
+	if (priv->data->type == SPX5_TARGET_LAN969X)
+		return 0;
+
 	if (macro->serdesmode == SPX5_SD_MODE_100FX) {
 		u32 freq = priv->coreclock == 250000000 ? 2 :
 			priv->coreclock == 500000000 ? 1 : 0;
@@ -1937,159 +2225,6 @@ static int sparx5_serdes_clock_config(struct sparx5_serdes_macro *macro)
 			 SD_LANE_MISC(macro->sidx));
 	}
 	return 0;
-}
-
-static int sparx5_cmu_apply_cfg(struct sparx5_serdes_private *priv,
-				u32 cmu_idx,
-				void __iomem *cmu_tgt,
-				void __iomem *cmu_cfg_tgt,
-				u32 spd10g)
-{
-	void __iomem **regs = priv->regs;
-	struct device *dev = priv->dev;
-	int value;
-
-	cmu_tgt = sdx5_inst_get(priv, TARGET_SD_CMU, cmu_idx);
-	cmu_cfg_tgt = sdx5_inst_get(priv, TARGET_SD_CMU_CFG, cmu_idx);
-
-	if (cmu_idx == 1 || cmu_idx == 4 || cmu_idx == 7 ||
-	    cmu_idx == 10 || cmu_idx == 13) {
-		spd10g = 0;
-	}
-
-	sdx5_inst_rmw(SD_CMU_CFG_SD_CMU_CFG_EXT_CFG_RST_SET(1),
-		      SD_CMU_CFG_SD_CMU_CFG_EXT_CFG_RST,
-		      cmu_cfg_tgt,
-		      SD_CMU_CFG_SD_CMU_CFG(cmu_idx));
-
-	sdx5_inst_rmw(SD_CMU_CFG_SD_CMU_CFG_EXT_CFG_RST_SET(0),
-		      SD_CMU_CFG_SD_CMU_CFG_EXT_CFG_RST,
-		      cmu_cfg_tgt,
-		      SD_CMU_CFG_SD_CMU_CFG(cmu_idx));
-
-	sdx5_inst_rmw(SD_CMU_CFG_SD_CMU_CFG_CMU_RST_SET(1),
-		      SD_CMU_CFG_SD_CMU_CFG_CMU_RST,
-		      cmu_cfg_tgt,
-		      SD_CMU_CFG_SD_CMU_CFG(cmu_idx));
-
-	sdx5_inst_rmw(SD_CMU_CMU_45_R_DWIDTHCTRL_FROM_HWT_SET(0x1) |
-		      SD_CMU_CMU_45_R_REFCK_SSC_EN_FROM_HWT_SET(0x1) |
-		      SD_CMU_CMU_45_R_LINK_BUF_EN_FROM_HWT_SET(0x1) |
-		      SD_CMU_CMU_45_R_BIAS_EN_FROM_HWT_SET(0x1) |
-		      SD_CMU_CMU_45_R_EN_RATECHG_CTRL_SET(0x0),
-		      SD_CMU_CMU_45_R_DWIDTHCTRL_FROM_HWT |
-		      SD_CMU_CMU_45_R_REFCK_SSC_EN_FROM_HWT |
-		      SD_CMU_CMU_45_R_LINK_BUF_EN_FROM_HWT |
-		      SD_CMU_CMU_45_R_BIAS_EN_FROM_HWT |
-		      SD_CMU_CMU_45_R_EN_RATECHG_CTRL,
-		      cmu_tgt,
-		      SD_CMU_CMU_45(cmu_idx));
-
-	sdx5_inst_rmw(SD_CMU_CMU_47_R_PCS2PMA_PHYMODE_4_0_SET(0),
-		      SD_CMU_CMU_47_R_PCS2PMA_PHYMODE_4_0,
-		      cmu_tgt,
-		      SD_CMU_CMU_47(cmu_idx));
-
-	sdx5_inst_rmw(SD_CMU_CMU_1B_CFG_RESERVE_7_0_SET(0),
-		      SD_CMU_CMU_1B_CFG_RESERVE_7_0,
-		      cmu_tgt,
-		      SD_CMU_CMU_1B(cmu_idx));
-
-	sdx5_inst_rmw(SD_CMU_CMU_0D_CFG_JC_BYP_SET(0x1),
-		      SD_CMU_CMU_0D_CFG_JC_BYP,
-		      cmu_tgt,
-		      SD_CMU_CMU_0D(cmu_idx));
-
-	sdx5_inst_rmw(SD_CMU_CMU_1F_CFG_VTUNE_SEL_SET(1),
-		      SD_CMU_CMU_1F_CFG_VTUNE_SEL,
-		      cmu_tgt,
-		      SD_CMU_CMU_1F(cmu_idx));
-
-	sdx5_inst_rmw(SD_CMU_CMU_00_CFG_PLL_TP_SEL_1_0_SET(3),
-		      SD_CMU_CMU_00_CFG_PLL_TP_SEL_1_0,
-		      cmu_tgt,
-		      SD_CMU_CMU_00(cmu_idx));
-
-	sdx5_inst_rmw(SD_CMU_CMU_05_CFG_BIAS_TP_SEL_1_0_SET(3),
-		      SD_CMU_CMU_05_CFG_BIAS_TP_SEL_1_0,
-		      cmu_tgt,
-		      SD_CMU_CMU_05(cmu_idx));
-
-	sdx5_inst_rmw(SD_CMU_CMU_30_R_PLL_DLOL_EN_SET(1),
-		      SD_CMU_CMU_30_R_PLL_DLOL_EN,
-		      cmu_tgt,
-		      SD_CMU_CMU_30(cmu_idx));
-
-	sdx5_inst_rmw(SD_CMU_CMU_09_CFG_SW_10G_SET(spd10g),
-		      SD_CMU_CMU_09_CFG_SW_10G,
-		      cmu_tgt,
-		      SD_CMU_CMU_09(cmu_idx));
-
-	sdx5_inst_rmw(SD_CMU_CFG_SD_CMU_CFG_CMU_RST_SET(0),
-		      SD_CMU_CFG_SD_CMU_CFG_CMU_RST,
-		      cmu_cfg_tgt,
-		      SD_CMU_CFG_SD_CMU_CFG(cmu_idx));
-
-	msleep(20);
-
-	sdx5_inst_rmw(SD_CMU_CMU_44_R_PLL_RSTN_SET(0),
-		      SD_CMU_CMU_44_R_PLL_RSTN,
-		      cmu_tgt,
-		      SD_CMU_CMU_44(cmu_idx));
-
-	sdx5_inst_rmw(SD_CMU_CMU_44_R_PLL_RSTN_SET(1),
-		      SD_CMU_CMU_44_R_PLL_RSTN,
-		      cmu_tgt,
-		      SD_CMU_CMU_44(cmu_idx));
-
-	msleep(20);
-
-	value = readl(sdx5_addr(regs, SD_CMU_CMU_E0(cmu_idx)));
-	value = SD_CMU_CMU_E0_PLL_LOL_UDL_GET(value);
-
-	if (value) {
-		dev_err(dev, "CMU PLL Loss of Lock: 0x%x\n", value);
-		return -EINVAL;
-	}
-	sdx5_inst_rmw(SD_CMU_CMU_0D_CFG_PMA_TX_CK_PD_SET(0),
-		      SD_CMU_CMU_0D_CFG_PMA_TX_CK_PD,
-		      cmu_tgt,
-		      SD_CMU_CMU_0D(cmu_idx));
-	return 0;
-}
-
-static int sparx5_cmu_cfg(struct sparx5_serdes_private *priv, u32 cmu_idx)
-{
-	void __iomem *cmu_tgt, *cmu_cfg_tgt;
-	u32 spd10g = 1;
-
-	if (cmu_idx == 1 || cmu_idx == 4 || cmu_idx == 7 ||
-	    cmu_idx == 10 || cmu_idx == 13) {
-		spd10g = 0;
-	}
-
-	cmu_tgt = sdx5_inst_get(priv, TARGET_SD_CMU, cmu_idx);
-	cmu_cfg_tgt = sdx5_inst_get(priv, TARGET_SD_CMU_CFG, cmu_idx);
-
-	return sparx5_cmu_apply_cfg(priv, cmu_idx, cmu_tgt, cmu_cfg_tgt, spd10g);
-}
-
-static int sparx5_serdes_cmu_enable(struct sparx5_serdes_private *priv)
-{
-	int idx, err = 0;
-
-	if (!priv->cmu_enabled) {
-		for (idx = 0; idx < SPX5_CMU_MAX; idx++) {
-			err  = sparx5_cmu_cfg(priv, idx);
-			if (err) {
-				dev_err(priv->dev, "CMU %u, error: %d\n", idx, err);
-				goto leave;
-			}
-		}
-		priv->cmu_enabled = true;
-	}
-leave:
-	return err;
 }
 
 static int sparx5_serdes_get_serdesmode(phy_interface_t portmode, int speed)
@@ -2119,10 +2254,6 @@ static int sparx5_serdes_config(struct sparx5_serdes_macro *macro)
 	struct device *dev = macro->priv->dev;
 	int serdesmode;
 	int err;
-
-	err = sparx5_serdes_cmu_enable(macro->priv);
-	if (err)
-		return err;
 
 	serdesmode = sparx5_serdes_get_serdesmode(macro->portmode, macro->speed);
 	if (serdesmode < 0) {
@@ -2198,10 +2329,12 @@ static int sparx5_serdes_set_speed(struct phy *phy, int speed)
 {
 	struct sparx5_serdes_macro *macro = phy_get_drvdata(phy);
 
-	if (macro->sidx < SPX5_SERDES_10G_START && speed > SPEED_5000)
-		return -EINVAL;
-	if (macro->sidx < SPX5_SERDES_25G_START && speed > SPEED_10000)
-		return -EINVAL;
+	if (macro->priv->data->type == SPX5_TARGET_SPARX5) {
+		if (macro->sidx < SPX5_SERDES_10G_START && speed > SPEED_5000)
+			return -EINVAL;
+		if (macro->sidx < SPX5_SERDES_25G_START && speed > SPEED_10000)
+			return -EINVAL;
+	}
 	if (speed != macro->speed) {
 		macro->speed = speed;
 		if (macro->serdesmode != SPX5_SD_MODE_NONE)
@@ -2215,9 +2348,6 @@ static int sparx5_serdes_reset(struct phy *phy)
 	struct sparx5_serdes_macro *macro = phy_get_drvdata(phy);
 	int err;
 
-	err = sparx5_serdes_cmu_enable(macro->priv);
-	if (err)
-		return err;
 	if (macro->serdestype == SPX5_SDT_25G)
 		err = sparx5_sd25g28_config(macro, true);
 	else
@@ -2241,11 +2371,14 @@ static int sparx5_serdes_validate(struct phy *phy, enum phy_mode mode,
 	if (macro->speed == 0)
 		return -EINVAL;
 
-	if (macro->sidx < SPX5_SERDES_10G_START && macro->speed > SPEED_5000)
-		return -EINVAL;
-	if (macro->sidx < SPX5_SERDES_25G_START && macro->speed > SPEED_10000)
-		return -EINVAL;
-
+	if (macro->priv->data->type == SPX5_TARGET_SPARX5) {
+		if (macro->sidx < SPX5_SERDES_10G_START &&
+		    macro->speed > SPEED_5000)
+			return -EINVAL;
+		if (macro->sidx < SPX5_SERDES_25G_START &&
+		    macro->speed > SPEED_10000)
+			return -EINVAL;
+	}
 	switch (submode) {
 	case PHY_INTERFACE_MODE_1000BASEX:
 		if (macro->speed != SPEED_100 && /* This is for 100BASE-FX */
@@ -2279,6 +2412,26 @@ static const struct phy_ops sparx5_serdes_ops = {
 	.owner		= THIS_MODULE,
 };
 
+static void sparx5_serdes_type_set(struct sparx5_serdes_macro *macro, int sidx)
+{
+	if (sidx < SPX5_SERDES_10G_START) {
+		macro->serdestype = SPX5_SDT_6G;
+		macro->stpidx = macro->sidx;
+	} else if (sidx < SPX5_SERDES_25G_START) {
+		macro->serdestype = SPX5_SDT_10G;
+		macro->stpidx = macro->sidx - SPX5_SERDES_10G_START;
+	} else {
+		macro->serdestype = SPX5_SDT_25G;
+		macro->stpidx = macro->sidx - SPX5_SERDES_25G_START;
+	}
+}
+
+static void lan969x_serdes_type_set(struct sparx5_serdes_macro *macro, int sidx)
+{
+	macro->serdestype = SPX5_SDT_10G;
+	macro->stpidx = macro->sidx;
+}
+
 static int sparx5_phy_create(struct sparx5_serdes_private *priv,
 			   int idx, struct phy **phy)
 {
@@ -2295,18 +2448,13 @@ static int sparx5_phy_create(struct sparx5_serdes_private *priv,
 	macro->sidx = idx;
 	macro->priv = priv;
 	macro->speed = SPEED_UNKNOWN;
-	if (idx < SPX5_SERDES_10G_START) {
-		macro->serdestype = SPX5_SDT_6G;
-		macro->stpidx = macro->sidx;
-	} else if (idx < SPX5_SERDES_25G_START) {
-		macro->serdestype = SPX5_SDT_10G;
-		macro->stpidx = macro->sidx - SPX5_SERDES_10G_START;
-	} else {
-		macro->serdestype = SPX5_SDT_25G;
-		macro->stpidx = macro->sidx - SPX5_SERDES_25G_START;
-	}
+
+	priv->data->ops.serdes_type_set(macro, idx);
 
 	phy_set_drvdata(*phy, macro);
+
+	/* Power off serdes by default */
+	sparx5_serdes_power_off(*phy);
 
 	return 0;
 }
@@ -2408,9 +2556,74 @@ static struct sparx5_serdes_io_resource sparx5_serdes_iomap[] =  {
 	{ TARGET_SD_LANE_25G + 7, 0x5c8000 }, /* 0x610dd0000: sd_lane_25g_32 */
 };
 
+static const struct sparx5_serdes_io_resource lan969x_serdes_iomap[] =  {
+	{ TARGET_SD_CMU,               0x0     }, /* 0xe3410000 */
+	{ TARGET_SD_CMU +  1,          0x8000  }, /* 0xe3418000 */
+	{ TARGET_SD_CMU +  2,          0x10000 }, /* 0xe3420000 */
+	{ TARGET_SD_CMU +  3,          0x18000 }, /* 0xe3428000 */
+	{ TARGET_SD_CMU +  4,          0x20000 }, /* 0xe3430000 */
+	{ TARGET_SD_CMU +  5,          0x28000 }, /* 0xe3438000 */
+	{ TARGET_SD_CMU_CFG,           0x30000 }, /* 0xe3440000 */
+	{ TARGET_SD_CMU_CFG +  1,      0x38000 }, /* 0xe3448000 */
+	{ TARGET_SD_CMU_CFG +  2,      0x40000 }, /* 0xe3450000 */
+	{ TARGET_SD_CMU_CFG +  3,      0x48000 }, /* 0xe3458000 */
+	{ TARGET_SD_CMU_CFG +  4,      0x50000 }, /* 0xe3460000 */
+	{ TARGET_SD_CMU_CFG +  5,      0x58000 }, /* 0xe3468000 */
+	{ TARGET_SD10G_LANE,           0x60000 }, /* 0xe3470000 */
+	{ TARGET_SD10G_LANE +  1,      0x68000 }, /* 0xe3478000 */
+	{ TARGET_SD10G_LANE +  2,      0x70000 }, /* 0xe3480000 */
+	{ TARGET_SD10G_LANE +  3,      0x78000 }, /* 0xe3488000 */
+	{ TARGET_SD10G_LANE +  4,      0x80000 }, /* 0xe3490000 */
+	{ TARGET_SD10G_LANE +  5,      0x88000 }, /* 0xe3498000 */
+	{ TARGET_SD10G_LANE +  6,      0x90000 }, /* 0xe34a0000 */
+	{ TARGET_SD10G_LANE +  7,      0x98000 }, /* 0xe34a8000 */
+	{ TARGET_SD10G_LANE +  8,      0xa0000 }, /* 0xe34b0000 */
+	{ TARGET_SD10G_LANE +  9,      0xa8000 }, /* 0xe34b8000 */
+	{ TARGET_SD_LANE,             0x100000 }, /* 0xe3510000 */
+	{ TARGET_SD_LANE +  1,        0x108000 }, /* 0xe3518000 */
+	{ TARGET_SD_LANE +  2,        0x110000 }, /* 0xe3520000 */
+	{ TARGET_SD_LANE +  3,        0x118000 }, /* 0xe3528000 */
+	{ TARGET_SD_LANE +  4,        0x120000 }, /* 0xe3530000 */
+	{ TARGET_SD_LANE +  5,        0x128000 }, /* 0xe3538000 */
+	{ TARGET_SD_LANE +  6,        0x130000 }, /* 0xe3540000 */
+	{ TARGET_SD_LANE +  7,        0x138000 }, /* 0xe3548000 */
+	{ TARGET_SD_LANE +  8,        0x140000 }, /* 0xe3550000 */
+	{ TARGET_SD_LANE +  9,        0x148000 }, /* 0xe3558000 */
+};
+
+static const struct sparx5_serdes_match_data sparx5_desc = {
+	.type = SPX5_TARGET_SPARX5,
+	.iomap = sparx5_serdes_iomap,
+	.iomap_size = ARRAY_SIZE(sparx5_serdes_iomap),
+	.tsize = sparx5_serdes_tsize,
+	.consts = {
+		.sd_max       = 33,
+		.cmu_max      = 14,
+	},
+	.ops = {
+		.serdes_type_set      = &sparx5_serdes_type_set,
+		.serdes_cmu_get       = &sparx5_serdes_cmu_get,
+	},
+};
+
+static const struct sparx5_serdes_match_data lan969x_desc = {
+	.type = SPX5_TARGET_LAN969X,
+	.iomap = lan969x_serdes_iomap,
+	.iomap_size = ARRAY_SIZE(lan969x_serdes_iomap),
+	.tsize = lan969x_serdes_tsize,
+	.consts = {
+		.sd_max       = 10,
+		.cmu_max      = 6,
+	},
+	.ops = {
+		.serdes_type_set      = &lan969x_serdes_type_set,
+		.serdes_cmu_get       = &lan969x_serdes_cmu_get,
+	}
+};
+
 /* Client lookup function, uses serdes index */
 static struct phy *sparx5_serdes_xlate(struct device *dev,
-				     struct of_phandle_args *args)
+				     const struct of_phandle_args *args)
 {
 	struct sparx5_serdes_private *priv = dev_get_drvdata(dev);
 	int idx;
@@ -2422,7 +2635,7 @@ static struct phy *sparx5_serdes_xlate(struct device *dev,
 	sidx = args->args[0];
 
 	/* Check validity: ERR_PTR(-ENODEV) if not valid */
-	for (idx = 0; idx < SPX5_SERDES_MAX; idx++) {
+	for (idx = 0; idx < priv->data->consts.sd_max; idx++) {
 		struct sparx5_serdes_macro *macro =
 			phy_get_drvdata(priv->phys[idx]);
 
@@ -2456,6 +2669,12 @@ static int sparx5_serdes_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, priv);
 	priv->dev = &pdev->dev;
 
+	priv->data = device_get_match_data(priv->dev);
+	if (!priv->data)
+		return -EINVAL;
+
+	tsize = priv->data->tsize;
+
 	/* Get coreclock */
 	clk = devm_clk_get(priv->dev, NULL);
 	if (IS_ERR(clk)) {
@@ -2480,16 +2699,21 @@ static int sparx5_serdes_probe(struct platform_device *pdev)
 			iores->name);
 		return -ENOMEM;
 	}
-	for (idx = 0; idx < ARRAY_SIZE(sparx5_serdes_iomap); idx++) {
-		struct sparx5_serdes_io_resource *iomap = &sparx5_serdes_iomap[idx];
+	for (idx = 0; idx < priv->data->iomap_size; idx++) {
+		const struct sparx5_serdes_io_resource *iomap =
+			&priv->data->iomap[idx];
 
 		priv->regs[iomap->id] = iomem + iomap->offset;
 	}
-	for (idx = 0; idx < SPX5_SERDES_MAX; idx++) {
+	for (idx = 0; idx < priv->data->consts.sd_max; idx++) {
 		err = sparx5_phy_create(priv, idx, &priv->phys[idx]);
 		if (err)
 			return err;
 	}
+
+	/* Power down all CMU's by default */
+	if (priv->data->type == SPX5_TARGET_SPARX5)
+		sparx5_serdes_cmu_power_off(priv);
 
 	provider = devm_of_phy_provider_register(priv->dev, sparx5_serdes_xlate);
 
@@ -2497,7 +2721,8 @@ static int sparx5_serdes_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id sparx5_serdes_match[] = {
-	{ .compatible = "microchip,sparx5-serdes" },
+	{ .compatible = "microchip,sparx5-serdes", .data = &sparx5_desc },
+	{ .compatible = "microchip,lan9691-serdes", .data = &lan969x_desc },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, sparx5_serdes_match);

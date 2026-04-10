@@ -55,6 +55,8 @@
 #define SSPA_AUD_PLL_CTRL1_DIV_OCLK_PATTERN_MASK (0x7ff << 0)
 #define SSPA_AUD_PLL_CTRL1_DIV_OCLK_PATTERN(x)	((x) << 0)
 
+#define CLK_AUDIO_NR_CLKS			3
+
 struct mmp2_audio_clk {
 	void __iomem *mmio_base;
 
@@ -162,23 +164,23 @@ static unsigned long audio_pll_recalc_rate(struct clk_hw *hw,
 	return 0;
 }
 
-static long audio_pll_round_rate(struct clk_hw *hw, unsigned long rate,
-				 unsigned long *parent_rate)
+static int audio_pll_determine_rate(struct clk_hw *hw,
+				    struct clk_rate_request *req)
 {
 	unsigned int prediv;
 	unsigned int postdiv;
 	long rounded = 0;
 
 	for (prediv = 0; prediv < ARRAY_SIZE(predivs); prediv++) {
-		if (predivs[prediv].parent_rate != *parent_rate)
+		if (predivs[prediv].parent_rate != req->best_parent_rate)
 			continue;
 		for (postdiv = 0; postdiv < ARRAY_SIZE(postdivs); postdiv++) {
 			long freq = predivs[prediv].freq_vco;
 
 			freq /= postdivs[postdiv].divisor;
-			if (freq == rate)
-				return rate;
-			if (freq < rate)
+			if (freq == req->rate)
+				return 0;
+			if (freq < req->rate)
 				continue;
 			if (rounded && freq > rounded)
 				continue;
@@ -186,7 +188,9 @@ static long audio_pll_round_rate(struct clk_hw *hw, unsigned long rate,
 		}
 	}
 
-	return rounded;
+	req->rate = rounded;
+
+	return 0;
 }
 
 static int audio_pll_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -226,7 +230,7 @@ static int audio_pll_set_rate(struct clk_hw *hw, unsigned long rate,
 
 static const struct clk_ops audio_pll_ops = {
 	.recalc_rate = audio_pll_recalc_rate,
-	.round_rate = audio_pll_round_rate,
+	.determine_rate = audio_pll_determine_rate,
 	.set_rate = audio_pll_set_rate,
 };
 
@@ -336,7 +340,7 @@ static int register_clocks(struct mmp2_audio_clk *priv, struct device *dev)
 	priv->clk_data.hws[MMP2_CLK_AUDIO_SYSCLK] = &priv->sysclk_gate.hw;
 	priv->clk_data.hws[MMP2_CLK_AUDIO_SSPA0] = &priv->sspa0_gate.hw;
 	priv->clk_data.hws[MMP2_CLK_AUDIO_SSPA1] = &priv->sspa1_gate.hw;
-	priv->clk_data.num = MMP2_CLK_AUDIO_NR_CLKS;
+	priv->clk_data.num = CLK_AUDIO_NR_CLKS;
 
 	return of_clk_add_hw_provider(dev->of_node, of_clk_hw_onecell_get,
 				      &priv->clk_data);
@@ -349,7 +353,7 @@ static int mmp2_audio_clk_probe(struct platform_device *pdev)
 
 	priv = devm_kzalloc(&pdev->dev,
 			    struct_size(priv, clk_data.hws,
-					MMP2_CLK_AUDIO_NR_CLKS),
+					CLK_AUDIO_NR_CLKS),
 			    GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
@@ -384,12 +388,10 @@ disable_pm_runtime:
 	return ret;
 }
 
-static int mmp2_audio_clk_remove(struct platform_device *pdev)
+static void mmp2_audio_clk_remove(struct platform_device *pdev)
 {
 	pm_clk_destroy(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM

@@ -90,6 +90,7 @@ struct publication {
 
 /**
  * struct name_table - table containing all existing port name publications
+ * @rcu: RCU callback head used for deferred freeing
  * @services: name sequence hash lists
  * @node_scope: all local publications with node scope
  *               - used by name_distr during re-init of name table
@@ -102,6 +103,7 @@ struct publication {
  * @snd_nxt: next sequence number to be used
  */
 struct name_table {
+	struct rcu_head rcu;
 	struct hlist_head services[TIPC_NAMETBL_SIZE];
 	struct list_head node_scope;
 	struct list_head cluster_scope;
@@ -151,6 +153,5 @@ bool tipc_dest_push(struct list_head *l, u32 node, u32 port);
 bool tipc_dest_pop(struct list_head *l, u32 *node, u32 *port);
 bool tipc_dest_del(struct list_head *l, u32 node, u32 port);
 void tipc_dest_list_purge(struct list_head *l);
-int tipc_dest_list_len(struct list_head *l);
 
 #endif

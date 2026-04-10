@@ -32,7 +32,7 @@
  */
 #define H_KERN_VIRT_START	ASM_CONST(0xc0003d0000000000)
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #define H_PTE_TABLE_SIZE	(sizeof(pte_t) << H_PTE_INDEX_SIZE)
 #define H_PMD_TABLE_SIZE	(sizeof(pmd_t) << H_PMD_INDEX_SIZE)
 #define H_PUD_TABLE_SIZE	(sizeof(pud_t) << H_PUD_INDEX_SIZE)
@@ -74,20 +74,33 @@
 #define remap_4k_pfn(vma, addr, pfn, prot)	\
 	remap_pfn_range((vma), (addr), (pfn), PAGE_SIZE, (prot))
 
-#ifdef CONFIG_HUGETLB_PAGE
-static inline int hash__hugepd_ok(hugepd_t hpd)
+/*
+ * With 4K page size the real_pte machinery is all nops.
+ */
+static inline real_pte_t __real_pte(pte_t pte, pte_t *ptep, int offset)
 {
-	unsigned long hpdval = hpd_val(hpd);
-	/*
-	 * if it is not a pte and have hugepd shift mask
-	 * set, then it is a hugepd directory pointer
-	 */
-	if (!(hpdval & _PAGE_PTE) && (hpdval & _PAGE_PRESENT) &&
-	    ((hpdval & HUGEPD_SHIFT_MASK) != 0))
-		return true;
-	return false;
+	return (real_pte_t){pte};
 }
-#endif
+
+#define __rpte_to_pte(r)	((r).pte)
+
+static inline unsigned long __rpte_to_hidx(real_pte_t rpte, unsigned long index)
+{
+	return pte_val(__rpte_to_pte(rpte)) >> H_PAGE_F_GIX_SHIFT;
+}
+
+#define pte_iterate_hashed_subpages(rpte, psize, va, index, shift)       \
+	do {							         \
+		index = 0;					         \
+		shift = mmu_psize_defs[psize].shift;		         \
+
+#define pte_iterate_hashed_end() } while(0)
+
+/*
+ * We expect this to be called only for user addresses or kernel virtual
+ * addresses other than the linear mapping.
+ */
+#define pte_pagesize_index(mm, addr, pte)	MMU_PAGE_4K
 
 /*
  * 4K PTE format is different from 64K PTE format. Saving the hash_slot is just
@@ -136,12 +149,6 @@ static inline int hash__pmd_trans_huge(pmd_t pmd)
 	return 0;
 }
 
-static inline int hash__pmd_same(pmd_t pmd_a, pmd_t pmd_b)
-{
-	BUG();
-	return 0;
-}
-
 static inline pmd_t hash__pmd_mkhuge(pmd_t pmd)
 {
 	BUG();
@@ -161,12 +168,6 @@ extern pmd_t hash__pmdp_huge_get_and_clear(struct mm_struct *mm,
 extern int hash__has_transparent_hugepage(void);
 #endif
 
-static inline pmd_t hash__pmd_mkdevmap(pmd_t pmd)
-{
-	BUG();
-	return pmd;
-}
-
-#endif /* !__ASSEMBLY__ */
+#endif /* !__ASSEMBLER__ */
 
 #endif /* _ASM_POWERPC_BOOK3S_64_HASH_4K_H */

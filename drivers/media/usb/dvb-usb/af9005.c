@@ -422,6 +422,10 @@ static int af9005_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[],
 		if (ret == 0)
 			ret = 2;
 	} else {
+		if (msg[0].len < 2) {
+			ret = -EOPNOTSUPP;
+			goto unlock;
+		}
 		/* write one or more registers */
 		reg = msg[0].buf[0];
 		addr = msg[0].addr;
@@ -431,6 +435,7 @@ static int af9005_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[],
 			ret = 1;
 	}
 
+unlock:
 	mutex_unlock(&d->i2c_mutex);
 	return ret;
 }
@@ -440,7 +445,7 @@ static u32 af9005_i2c_func(struct i2c_adapter *adapter)
 	return I2C_FUNC_I2C;
 }
 
-static struct i2c_algorithm af9005_i2c_algo = {
+static const struct i2c_algorithm af9005_i2c_algo = {
 	.master_xfer = af9005_i2c_xfer,
 	.functionality = af9005_i2c_func,
 };
@@ -1000,7 +1005,7 @@ enum {
 	ANSONIC_DVBT_USB,
 };
 
-static struct usb_device_id af9005_usb_table[] = {
+static const struct usb_device_id af9005_usb_table[] = {
 	DVB_USB_DEV(AFATECH, AFATECH_AF9005),
 	DVB_USB_DEV(TERRATEC, TERRATEC_CINERGY_T_USB_XE),
 	DVB_USB_DEV(ANSONIC, ANSONIC_DVBT_USB),

@@ -12,7 +12,7 @@
 #include <linux/debugfs.h>
 #include <linux/list.h>
 #include <linux/greybus.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "arpc.h"
 #include "greybus_trace.h"
@@ -513,16 +513,16 @@ static int es2_cport_allocate(struct gb_host_device *hd, int cport_id,
 
 	if (cport_id < 0) {
 		ida_start = 0;
-		ida_end = hd->num_cports;
+		ida_end = hd->num_cports - 1;
 	} else if (cport_id < hd->num_cports) {
 		ida_start = cport_id;
-		ida_end = cport_id + 1;
+		ida_end = cport_id;
 	} else {
 		dev_err(&hd->dev, "cport %d not available\n", cport_id);
 		return -EINVAL;
 	}
 
-	return ida_simple_get(id_map, ida_start, ida_end, GFP_KERNEL);
+	return ida_alloc_range(id_map, ida_start, ida_end, GFP_KERNEL);
 }
 
 static void es2_cport_release(struct gb_host_device *hd, u16 cport_id)
@@ -535,7 +535,7 @@ static void es2_cport_release(struct gb_host_device *hd, u16 cport_id)
 		return;
 	}
 
-	ida_simple_remove(&hd->cport_id_map, cport_id);
+	ida_free(&hd->cport_id_map, cport_id);
 }
 
 static int cport_enable(struct gb_host_device *hd, u16 cport_id,
@@ -547,7 +547,7 @@ static int cport_enable(struct gb_host_device *hd, u16 cport_id,
 	u32 connection_flags;
 	int ret;
 
-	req = kzalloc(sizeof(*req), GFP_KERNEL);
+	req = kzalloc_obj(*req);
 	if (!req)
 		return -ENOMEM;
 
@@ -883,7 +883,7 @@ static struct arpc *arpc_alloc(void *payload, u16 size, u8 type)
 	if (size + sizeof(*rpc->req) > ARPC_OUT_SIZE_MAX)
 		return NULL;
 
-	rpc = kzalloc(sizeof(*rpc), GFP_KERNEL);
+	rpc = kzalloc_obj(*rpc);
 	if (!rpc)
 		return NULL;
 
@@ -892,7 +892,7 @@ static struct arpc *arpc_alloc(void *payload, u16 size, u8 type)
 	if (!rpc->req)
 		goto err_free_rpc;
 
-	rpc->resp = kzalloc(sizeof(*rpc->resp), GFP_KERNEL);
+	rpc->resp = kzalloc_obj(*rpc->resp);
 	if (!rpc->resp)
 		goto err_free_req;
 
@@ -1203,7 +1203,7 @@ static int apb_get_cport_count(struct usb_device *udev)
 	int retval;
 	__le16 *cport_count;
 
-	cport_count = kzalloc(sizeof(*cport_count), GFP_KERNEL);
+	cport_count = kzalloc_obj(*cport_count);
 	if (!cport_count)
 		return -ENOMEM;
 
@@ -1456,5 +1456,6 @@ static struct usb_driver es2_ap_driver = {
 
 module_usb_driver(es2_ap_driver);
 
+MODULE_DESCRIPTION("Greybus AP USB driver for ES2 controller chips");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Greg Kroah-Hartman <gregkh@linuxfoundation.org>");

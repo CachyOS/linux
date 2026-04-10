@@ -279,7 +279,7 @@ static void
 nv10_overlay_init(struct drm_device *device)
 {
 	struct nouveau_drm *drm = nouveau_drm(device);
-	struct nouveau_plane *plane = kzalloc(sizeof(struct nouveau_plane), GFP_KERNEL);
+	struct nouveau_plane *plane = kzalloc_obj(struct nouveau_plane);
 	unsigned int num_formats = ARRAY_SIZE(formats);
 	int ret;
 
@@ -296,9 +296,10 @@ nv10_overlay_init(struct drm_device *device)
 		break;
 	}
 
-	ret = drm_plane_init(device, &plane->base, 3 /* both crtc's */,
-			     &nv10_plane_funcs,
-			     formats, num_formats, false);
+	ret = drm_universal_plane_init(device, &plane->base, 3 /* both crtc's */,
+				       &nv10_plane_funcs,
+				       formats, num_formats, NULL,
+				       DRM_PLANE_TYPE_OVERLAY, NULL);
 	if (ret)
 		goto err;
 
@@ -469,15 +470,15 @@ static void
 nv04_overlay_init(struct drm_device *device)
 {
 	struct nouveau_drm *drm = nouveau_drm(device);
-	struct nouveau_plane *plane = kzalloc(sizeof(struct nouveau_plane), GFP_KERNEL);
+	struct nouveau_plane *plane = kzalloc_obj(struct nouveau_plane);
 	int ret;
 
 	if (!plane)
 		return;
 
-	ret = drm_plane_init(device, &plane->base, 1 /* single crtc */,
-			     &nv04_plane_funcs,
-			     formats, 2, false);
+	ret = drm_universal_plane_init(device, &plane->base, 1 /* single crtc */,
+				       &nv04_plane_funcs, formats, 2, NULL,
+				       DRM_PLANE_TYPE_OVERLAY, NULL);
 	if (ret)
 		goto err;
 

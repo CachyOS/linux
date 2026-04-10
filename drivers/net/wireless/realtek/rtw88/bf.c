@@ -30,11 +30,11 @@ void rtw_bf_disassoc(struct rtw_dev *rtwdev, struct ieee80211_vif *vif,
 void rtw_bf_assoc(struct rtw_dev *rtwdev, struct ieee80211_vif *vif,
 		  struct ieee80211_bss_conf *bss_conf)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct ieee80211_hw *hw = rtwdev->hw;
 	struct rtw_vif *rtwvif = (struct rtw_vif *)vif->drv_priv;
 	struct rtw_bfee *bfee = &rtwvif->bfee;
 	struct rtw_bf_info *bfinfo = &rtwdev->bf_info;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	struct ieee80211_sta *sta;
 	struct ieee80211_sta_vht_cap *vht_cap;
 	struct ieee80211_sta_vht_cap *ic_vht_cap;
@@ -49,25 +49,29 @@ void rtw_bf_assoc(struct rtw_dev *rtwdev, struct ieee80211_vif *vif,
 
 	sta = ieee80211_find_sta(vif, bssid);
 	if (!sta) {
+		rcu_read_unlock();
+
 		rtw_warn(rtwdev, "failed to find station entry for bss %pM\n",
 			 bssid);
-		goto out_unlock;
+		return;
 	}
 
 	ic_vht_cap = &hw->wiphy->bands[NL80211_BAND_5GHZ]->vht_cap;
 	vht_cap = &sta->deflink.vht_cap;
 
+	rcu_read_unlock();
+
 	if ((ic_vht_cap->cap & IEEE80211_VHT_CAP_MU_BEAMFORMEE_CAPABLE) &&
 	    (vht_cap->cap & IEEE80211_VHT_CAP_MU_BEAMFORMER_CAPABLE)) {
 		if (bfinfo->bfer_mu_cnt >= chip->bfer_mu_max_num) {
 			rtw_dbg(rtwdev, RTW_DBG_BF, "mu bfer number over limit\n");
-			goto out_unlock;
+			return;
 		}
 
 		ether_addr_copy(bfee->mac_addr, bssid);
 		bfee->role = RTW_BFEE_MU;
 		bfee->p_aid = (bssid[5] << 1) | (bssid[4] >> 7);
-		bfee->aid = bss_conf->aid;
+		bfee->aid = vif->cfg.aid;
 		bfinfo->bfer_mu_cnt++;
 
 		rtw_chip_config_bfee(rtwdev, rtwvif, bfee, true);
@@ -75,7 +79,7 @@ void rtw_bf_assoc(struct rtw_dev *rtwdev, struct ieee80211_vif *vif,
 		   (vht_cap->cap & IEEE80211_VHT_CAP_SU_BEAMFORMER_CAPABLE)) {
 		if (bfinfo->bfer_su_cnt >= chip->bfer_su_max_num) {
 			rtw_dbg(rtwdev, RTW_DBG_BF, "su bfer number over limit\n");
-			goto out_unlock;
+			return;
 		}
 
 		sound_dim = vht_cap->cap &
@@ -98,9 +102,6 @@ void rtw_bf_assoc(struct rtw_dev *rtwdev, struct ieee80211_vif *vif,
 
 		rtw_chip_config_bfee(rtwdev, rtwvif, bfee, true);
 	}
-
-out_unlock:
-	rcu_read_unlock();
 }
 
 void rtw_bf_init_bfer_entry_mu(struct rtw_dev *rtwdev,
@@ -123,8 +124,11 @@ void rtw_bf_init_bfer_entry_mu(struct rtw_dev *rtwdev,
 void rtw_bf_cfg_sounding(struct rtw_dev *rtwdev, struct rtw_vif *vif,
 			 enum rtw_trx_desc_rate rate)
 {
+	u8 csi_rsc = CSI_RSC_FOLLOW_RX_PACKET_BW;
 	u32 psf_ctl = 0;
-	u8 csi_rsc = 0x1;
+
+	if (rtwdev->chip->id == RTW_CHIP_TYPE_8822C)
+		csi_rsc = CSI_RSC_PRIMARY_20M_BW;
 
 	psf_ctl = rtw_read32(rtwdev, REG_BBPSF_CTRL) |
 		  BIT_WMAC_USE_NDPARATE |
@@ -385,6 +389,9 @@ void rtw_bf_cfg_csi_rate(struct rtw_dev *rtwdev, u8 rssi, u8 cur_rate,
 
 	csi_cfg = rtw_read32(rtwdev, REG_BBPSF_CTRL) & ~BIT_MASK_CSI_RATE;
 	cur_rrsr = rtw_read16(rtwdev, REG_RRSR);
+
+	if (rtwdev->chip->id == RTW_CHIP_TYPE_8822C)
+		csi_cfg |= BIT_CSI_FORCE_RATE;
 
 	if (rssi >= 40) {
 		if (cur_rate != DESC_RATE54M) {

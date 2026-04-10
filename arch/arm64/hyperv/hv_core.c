@@ -11,11 +11,10 @@
 #include <linux/types.h>
 #include <linux/export.h>
 #include <linux/mm.h>
-#include <linux/hyperv.h>
 #include <linux/arm-smccc.h>
 #include <linux/module.h>
 #include <asm-generic/bug.h>
-#include <asm/hyperv-tlfs.h>
+#include <hyperv/hvhdk.h>
 #include <asm/mshyperv.h>
 
 /*
@@ -53,6 +52,23 @@ u64 hv_do_fast_hypercall8(u16 code, u64 input)
 	return res.a0;
 }
 EXPORT_SYMBOL_GPL(hv_do_fast_hypercall8);
+
+/*
+ * hv_do_fast_hypercall16 -- Invoke the specified hypercall
+ * with arguments in registers instead of physical memory.
+ * Avoids the overhead of virt_to_phys for simple hypercalls.
+ */
+u64 hv_do_fast_hypercall16(u16 code, u64 input1, u64 input2)
+{
+	struct arm_smccc_res	res;
+	u64			control;
+
+	control = (u64)code | HV_HYPERCALL_FAST_BIT;
+
+	arm_smccc_1_1_hvc(HV_FUNC_ID, control, input1, input2, &res);
+	return res.a0;
+}
+EXPORT_SYMBOL_GPL(hv_do_fast_hypercall16);
 
 /*
  * Set a single VP register to a 64-bit value.
@@ -160,22 +176,22 @@ void hyperv_report_panic(struct pt_regs *regs, long err, bool in_die)
 		return;
 	panic_reported = true;
 
-	guest_id = hv_get_vpreg(HV_REGISTER_GUEST_OSID);
+	guest_id = hv_get_vpreg(HV_REGISTER_GUEST_OS_ID);
 
 	/*
 	 * Hyper-V provides the ability to store only 5 values.
 	 * Pick the passed in error value, the guest_id, the PC,
 	 * and the SP.
 	 */
-	hv_set_vpreg(HV_REGISTER_CRASH_P0, err);
-	hv_set_vpreg(HV_REGISTER_CRASH_P1, guest_id);
-	hv_set_vpreg(HV_REGISTER_CRASH_P2, regs->pc);
-	hv_set_vpreg(HV_REGISTER_CRASH_P3, regs->sp);
-	hv_set_vpreg(HV_REGISTER_CRASH_P4, 0);
+	hv_set_vpreg(HV_REGISTER_GUEST_CRASH_P0, err);
+	hv_set_vpreg(HV_REGISTER_GUEST_CRASH_P1, guest_id);
+	hv_set_vpreg(HV_REGISTER_GUEST_CRASH_P2, regs->pc);
+	hv_set_vpreg(HV_REGISTER_GUEST_CRASH_P3, regs->sp);
+	hv_set_vpreg(HV_REGISTER_GUEST_CRASH_P4, 0);
 
 	/*
 	 * Let Hyper-V know there is crash data available
 	 */
-	hv_set_vpreg(HV_REGISTER_CRASH_CTL, HV_CRASH_CTL_CRASH_NOTIFY);
+	hv_set_vpreg(HV_REGISTER_GUEST_CRASH_CTL, HV_CRASH_CTL_CRASH_NOTIFY);
 }
 EXPORT_SYMBOL_GPL(hyperv_report_panic);

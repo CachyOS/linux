@@ -78,7 +78,7 @@
 #define RIO_CTAG_RESRVD	0xfffe0000 /* Reserved */
 #define RIO_CTAG_UDEVID	0x0001ffff /* Unique device identifier */
 
-extern struct bus_type rio_bus_type;
+extern const struct bus_type rio_bus_type;
 extern struct class rio_mport_class;
 
 struct rio_mport;
@@ -465,7 +465,7 @@ struct rio_driver {
 	struct device_driver driver;
 };
 
-#define	to_rio_driver(drv) container_of(drv,struct rio_driver, driver)
+#define	to_rio_driver(drv) container_of_const(drv,struct rio_driver, driver)
 
 union rio_pw_msg {
 	struct {

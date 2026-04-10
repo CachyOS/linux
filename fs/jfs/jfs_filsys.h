@@ -24,6 +24,7 @@
 #define JFS_ERR_REMOUNT_RO 0x00000002	/* remount read-only */
 #define JFS_ERR_CONTINUE   0x00000004	/* continue */
 #define JFS_ERR_PANIC      0x00000008	/* panic */
+#define JFS_ERR_MASK	   (JFS_ERR_REMOUNT_RO|JFS_ERR_CONTINUE|JFS_ERR_PANIC)
 
 /* Quota support */
 #define	JFS_USRQUOTA	0x00000010
@@ -122,7 +123,9 @@
 #define NUM_INODE_PER_IAG	INOSPERIAG
 
 #define MINBLOCKSIZE		512
+#define L2MINBLOCKSIZE		9
 #define MAXBLOCKSIZE		4096
+#define L2MAXBLOCKSIZE		12
 #define	MAXFILESIZE		((s64)1 << 52)
 
 #define JFS_LINK_MAX		0xffffffff

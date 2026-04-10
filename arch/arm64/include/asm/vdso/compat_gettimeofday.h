@@ -2,13 +2,13 @@
 /*
  * Copyright (C) 2018 ARM Limited
  */
-#ifndef __ASM_VDSO_GETTIMEOFDAY_H
-#define __ASM_VDSO_GETTIMEOFDAY_H
+#ifndef __ASM_VDSO_COMPAT_GETTIMEOFDAY_H
+#define __ASM_VDSO_COMPAT_GETTIMEOFDAY_H
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #include <asm/barrier.h>
-#include <asm/unistd.h>
+#include <asm/unistd_compat_32.h>
 #include <asm/errno.h>
 
 #include <asm/vdso/compat_barrier.h>
@@ -24,7 +24,7 @@ int gettimeofday_fallback(struct __kernel_old_timeval *_tv,
 	register struct timezone *tz asm("r1") = _tz;
 	register struct __kernel_old_timeval *tv asm("r0") = _tv;
 	register long ret asm ("r0");
-	register long nr asm("r7") = __NR_compat_gettimeofday;
+	register long nr asm("r7") = __NR_compat32_gettimeofday;
 
 	asm volatile(
 	"	swi #0\n"
@@ -41,7 +41,7 @@ long clock_gettime_fallback(clockid_t _clkid, struct __kernel_timespec *_ts)
 	register struct __kernel_timespec *ts asm("r1") = _ts;
 	register clockid_t clkid asm("r0") = _clkid;
 	register long ret asm ("r0");
-	register long nr asm("r7") = __NR_compat_clock_gettime64;
+	register long nr asm("r7") = __NR_compat32_clock_gettime64;
 
 	asm volatile(
 	"	swi #0\n"
@@ -58,7 +58,7 @@ long clock_gettime32_fallback(clockid_t _clkid, struct old_timespec32 *_ts)
 	register struct old_timespec32 *ts asm("r1") = _ts;
 	register clockid_t clkid asm("r0") = _clkid;
 	register long ret asm ("r0");
-	register long nr asm("r7") = __NR_compat_clock_gettime;
+	register long nr asm("r7") = __NR_compat32_clock_gettime;
 
 	asm volatile(
 	"	swi #0\n"
@@ -75,7 +75,7 @@ int clock_getres_fallback(clockid_t _clkid, struct __kernel_timespec *_ts)
 	register struct __kernel_timespec *ts asm("r1") = _ts;
 	register clockid_t clkid asm("r0") = _clkid;
 	register long ret asm ("r0");
-	register long nr asm("r7") = __NR_compat_clock_getres_time64;
+	register long nr asm("r7") = __NR_compat32_clock_getres_time64;
 
 	asm volatile(
 	"       swi #0\n"
@@ -92,7 +92,7 @@ int clock_getres32_fallback(clockid_t _clkid, struct old_timespec32 *_ts)
 	register struct old_timespec32 *ts asm("r1") = _ts;
 	register clockid_t clkid asm("r0") = _clkid;
 	register long ret asm ("r0");
-	register long nr asm("r7") = __NR_compat_clock_getres;
+	register long nr asm("r7") = __NR_compat32_clock_getres;
 
 	asm volatile(
 	"       swi #0\n"
@@ -104,7 +104,7 @@ int clock_getres32_fallback(clockid_t _clkid, struct old_timespec32 *_ts)
 }
 
 static __always_inline u64 __arch_get_hw_counter(s32 clock_mode,
-						 const struct vdso_data *vd)
+						 const struct vdso_time_data *vd)
 {
 	u64 res;
 
@@ -131,48 +131,36 @@ static __always_inline u64 __arch_get_hw_counter(s32 clock_mode,
 	return res;
 }
 
-static __always_inline const struct vdso_data *__arch_get_vdso_data(void)
+static __always_inline const struct vdso_time_data *__arch_get_vdso_u_time_data(void)
 {
-	const struct vdso_data *ret;
+	const struct vdso_time_data *ret;
 
 	/*
-	 * This simply puts &_vdso_data into ret. The reason why we don't use
-	 * `ret = _vdso_data` is that the compiler tends to optimise this in a
-	 * very suboptimal way: instead of keeping &_vdso_data in a register,
-	 * it goes through a relocation almost every time _vdso_data must be
+	 * This simply puts &_vdso_time_data into ret. The reason why we don't use
+	 * `ret = _vdso_time_data` is that the compiler tends to optimise this in a
+	 * very suboptimal way: instead of keeping &_vdso_time_data in a register,
+	 * it goes through a relocation almost every time _vdso_time_data must be
 	 * accessed (even in subfunctions). This is both time and space
 	 * consuming: each relocation uses a word in the code section, and it
 	 * has to be loaded at runtime.
 	 *
 	 * This trick hides the assignment from the compiler. Since it cannot
 	 * track where the pointer comes from, it will only use one relocation
-	 * where __arch_get_vdso_data() is called, and then keep the result in
-	 * a register.
+	 * where __aarch64_get_vdso_u_time_data() is called, and then keep the
+	 * result in a register.
 	 */
-	asm volatile("mov %0, %1" : "=r"(ret) : "r"(_vdso_data));
+	asm volatile("mov %0, %1" : "=r"(ret) : "r"(&vdso_u_time_data));
 
 	return ret;
 }
+#define __arch_get_vdso_u_time_data __arch_get_vdso_u_time_data
 
-#ifdef CONFIG_TIME_NS
-static __always_inline
-const struct vdso_data *__arch_get_timens_vdso_data(const struct vdso_data *vd)
+static inline bool vdso_clocksource_ok(const struct vdso_clock *vc)
 {
-	const struct vdso_data *ret;
-
-	/* See __arch_get_vdso_data(). */
-	asm volatile("mov %0, %1" : "=r"(ret) : "r"(_timens_data));
-
-	return ret;
-}
-#endif
-
-static inline bool vdso_clocksource_ok(const struct vdso_data *vd)
-{
-	return vd->clock_mode == VDSO_CLOCKMODE_ARCHTIMER;
+	return vc->clock_mode == VDSO_CLOCKMODE_ARCHTIMER;
 }
 #define vdso_clocksource_ok	vdso_clocksource_ok
 
-#endif /* !__ASSEMBLY__ */
+#endif /* !__ASSEMBLER__ */
 
-#endif /* __ASM_VDSO_GETTIMEOFDAY_H */
+#endif /* __ASM_VDSO_COMPAT_GETTIMEOFDAY_H */

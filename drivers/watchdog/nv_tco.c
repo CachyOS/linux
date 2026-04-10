@@ -264,7 +264,6 @@ static long nv_tco_ioctl(struct file *file, unsigned int cmd,
 
 static const struct file_operations nv_tco_fops = {
 	.owner =		THIS_MODULE,
-	.llseek =		no_llseek,
 	.write =		nv_tco_write,
 	.unlocked_ioctl =	nv_tco_ioctl,
 	.compat_ioctl =		compat_ptr_ioctl,
@@ -446,12 +445,10 @@ static void nv_tco_cleanup(void)
 	release_region(tcobase, 0x10);
 }
 
-static int nv_tco_remove(struct platform_device *dev)
+static void nv_tco_remove(struct platform_device *dev)
 {
 	if (tcobase)
 		nv_tco_cleanup();
-
-	return 0;
 }
 
 static void nv_tco_shutdown(struct platform_device *dev)

@@ -1010,7 +1010,7 @@ int rv770_populate_initial_mvdd_value(struct radeon_device *rdev,
 	struct rv7xx_power_info *pi = rv770_get_pi(rdev);
 
 	if ((pi->s0_vid_lower_smio_cntl & pi->mvdd_mask_low) ==
-	     (pi->mvdd_low_smio[MVDD_LOW_INDEX] & pi->mvdd_mask_low) ) {
+	     (pi->mvdd_low_smio[MVDD_LOW_INDEX] & pi->mvdd_mask_low)) {
 		voltage->index = MVDD_LOW_INDEX;
 		voltage->value = cpu_to_be16(MVDD_LOW_VALUE);
 	} else {
@@ -1260,7 +1260,7 @@ static int rv770_construct_vddc_table(struct radeon_device *rdev)
 		pi->vddc_mask_low = gpio_mask;
 		if (i > 0) {
 			if ((pi->vddc_table[i].low_smio !=
-			     pi->vddc_table[i - 1].low_smio ) ||
+			     pi->vddc_table[i - 1].low_smio) ||
 			     (pi->vddc_table[i].high_smio !=
 			      pi->vddc_table[i - 1].high_smio))
 				vddc_index++;
@@ -2283,9 +2283,8 @@ int rv7xx_parse_power_table(struct radeon_device *rdev)
 		return -EINVAL;
 	power_info = (union power_info *)(mode_info->atom_context->bios + data_offset);
 
-	rdev->pm.dpm.ps = kcalloc(power_info->pplib.ucNumStates,
-				  sizeof(struct radeon_ps),
-				  GFP_KERNEL);
+	rdev->pm.dpm.ps = kzalloc_objs(struct radeon_ps,
+				       power_info->pplib.ucNumStates);
 	if (!rdev->pm.dpm.ps)
 		return -ENOMEM;
 
@@ -2301,7 +2300,7 @@ int rv7xx_parse_power_table(struct radeon_device *rdev)
 			  power_info->pplib.ucNonClockSize));
 		if (power_info->pplib.ucStateEntrySize - 1) {
 			u8 *idx;
-			ps = kzalloc(sizeof(struct rv7xx_ps), GFP_KERNEL);
+			ps = kzalloc_obj(struct rv7xx_ps);
 			if (ps == NULL) {
 				kfree(rdev->pm.dpm.ps);
 				return -ENOMEM;
@@ -2348,7 +2347,7 @@ int rv770_dpm_init(struct radeon_device *rdev)
 	struct atom_clock_dividers dividers;
 	int ret;
 
-	pi = kzalloc(sizeof(struct rv7xx_power_info), GFP_KERNEL);
+	pi = kzalloc_obj(struct rv7xx_power_info);
 	if (pi == NULL)
 		return -ENOMEM;
 	rdev->pm.dpm.priv = pi;

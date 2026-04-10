@@ -31641,6 +31641,11 @@
 #define GDC0_BIF_RLC_DOORBELL_RANGE__SIZE__SHIFT                                                              0x10
 #define GDC0_BIF_RLC_DOORBELL_RANGE__OFFSET_MASK                                                              0x00000FFCL
 #define GDC0_BIF_RLC_DOORBELL_RANGE__SIZE_MASK                                                                0x001F0000L
+//GDC0_BIF_CSDMA_DOORBELL_RANGE
+#define GDC0_BIF_CSDMA_DOORBELL_RANGE__OFFSET__SHIFT                                                          0x2
+#define GDC0_BIF_CSDMA_DOORBELL_RANGE__SIZE__SHIFT                                                            0x10
+#define GDC0_BIF_CSDMA_DOORBELL_RANGE__OFFSET_MASK                                                            0x00000FFCL
+#define GDC0_BIF_CSDMA_DOORBELL_RANGE__SIZE_MASK                                                              0x00FF0000L
 //GDC0_ATDMA_MISC_CNTL
 #define GDC0_ATDMA_MISC_CNTL__WRR_ARB_MODE__SHIFT                                                             0x0
 #define GDC0_ATDMA_MISC_CNTL__ATDMA_MISC_CNTL_INSERT_RD_ON_2ND_WDAT_EN__SHIFT                                 0x1
@@ -85622,6 +85627,19 @@
 #define BIF0_PCIE_TX_TRACKING_CTRL_STATUS__TX_TRACKING_PORT_MASK                                              0x0000000EL
 #define BIF0_PCIE_TX_TRACKING_CTRL_STATUS__TX_TRACKING_UNIT_ID_MASK                                           0x00007F00L
 #define BIF0_PCIE_TX_TRACKING_CTRL_STATUS__TX_TRACKING_STATUS_VALID_MASK                                      0x00008000L
+//BIF0_PCIE_TX_POWER_CTRL_1
+#define BIF0_PCIE_TX_POWER_CTRL_1__MST_MEM_LS_EN__SHIFT                                                       0x0
+#define BIF0_PCIE_TX_POWER_CTRL_1__MST_MEM_DS_EN__SHIFT                                                       0x1
+#define BIF0_PCIE_TX_POWER_CTRL_1__MST_MEM_SD_EN__SHIFT                                                       0x2
+#define BIF0_PCIE_TX_POWER_CTRL_1__REPLAY_MEM_LS_EN__SHIFT                                                    0x3
+#define BIF0_PCIE_TX_POWER_CTRL_1__REPLAY_MEM_DS_EN__SHIFT                                                    0x4
+#define BIF0_PCIE_TX_POWER_CTRL_1__REPLAY_MEM_SD_EN__SHIFT                                                    0x5
+#define BIF0_PCIE_TX_POWER_CTRL_1__MST_MEM_LS_EN_MASK                                                         0x00000001L
+#define BIF0_PCIE_TX_POWER_CTRL_1__MST_MEM_DS_EN_MASK                                                         0x00000002L
+#define BIF0_PCIE_TX_POWER_CTRL_1__MST_MEM_SD_EN_MASK                                                         0x00000004L
+#define BIF0_PCIE_TX_POWER_CTRL_1__REPLAY_MEM_LS_EN_MASK                                                      0x00000008L
+#define BIF0_PCIE_TX_POWER_CTRL_1__REPLAY_MEM_DS_EN_MASK                                                      0x00000010L
+#define BIF0_PCIE_TX_POWER_CTRL_1__REPLAY_MEM_SD_EN_MASK                                                      0x00000020L
 //BIF0_PCIE_TX_CTRL_4
 #define BIF0_PCIE_TX_CTRL_4__TX_PORT_ACCESS_TIMER_SKEW__SHIFT                                                 0x0
 #define BIF0_PCIE_TX_CTRL_4__TX_PORT_ACCESS_TIMER_SKEW_MASK                                                   0x0000000FL
@@ -119765,6 +119783,11 @@
 #define GDC1_BIF_SDMA5_DOORBELL_RANGE__SIZE__SHIFT                                                            0x10
 #define GDC1_BIF_SDMA5_DOORBELL_RANGE__OFFSET_MASK                                                            0x00000FFCL
 #define GDC1_BIF_SDMA5_DOORBELL_RANGE__SIZE_MASK                                                              0x001F0000L
+//GDC1_BIF_CSDMA_DOORBELL_RANGE
+#define GDC1_BIF_CSDMA_DOORBELL_RANGE__OFFSET__SHIFT                                                          0x2
+#define GDC1_BIF_CSDMA_DOORBELL_RANGE__SIZE__SHIFT                                                            0x10
+#define GDC1_BIF_CSDMA_DOORBELL_RANGE__OFFSET_MASK                                                            0x00000FFCL
+#define GDC1_BIF_CSDMA_DOORBELL_RANGE__SIZE_MASK                                                              0x00FF0000L
 //GDC1_ATDMA_MISC_CNTL
 #define GDC1_ATDMA_MISC_CNTL__WRR_ARB_MODE__SHIFT                                                             0x0
 #define GDC1_ATDMA_MISC_CNTL__ATDMA_MISC_CNTL_INSERT_RD_ON_2ND_WDAT_EN__SHIFT                                 0x1

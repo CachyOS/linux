@@ -7,7 +7,6 @@
 #include <linux/device.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/acpi.h>
 #include <linux/regmap.h>
 #include <linux/spi/spi.h>
 
@@ -49,7 +48,7 @@ static const struct acpi_device_id bmc150_accel_acpi_match[] = {
 	{"BMC150A"},
 	{"BMI055A"},
 	{"BSBA0150"},
-	{ },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, bmc150_accel_acpi_match);
 
@@ -63,14 +62,14 @@ static const struct spi_device_id bmc150_accel_id[] = {
 	{"bmc150_accel"},
 	{"bmc156_accel", BOSCH_BMC156},
 	{"bmi055_accel"},
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, bmc150_accel_id);
 
 static struct spi_driver bmc150_accel_driver = {
 	.driver = {
 		.name	= "bmc150_accel_spi",
-		.acpi_match_table = ACPI_PTR(bmc150_accel_acpi_match),
+		.acpi_match_table = bmc150_accel_acpi_match,
 		.pm	= &bmc150_accel_pm_ops,
 	},
 	.probe		= bmc150_accel_probe,
@@ -82,4 +81,4 @@ module_spi_driver(bmc150_accel_driver);
 MODULE_AUTHOR("Markus Pargmann <mpa@pengutronix.de>");
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("BMC150 SPI accelerometer driver");
-MODULE_IMPORT_NS(IIO_BMC150);
+MODULE_IMPORT_NS("IIO_BMC150");

@@ -8,28 +8,56 @@
 #define _S390_PTRACE_H
 
 #include <linux/bits.h>
+#include <linux/typecheck.h>
 #include <uapi/asm/ptrace.h>
+#include <asm/thread_info.h>
 #include <asm/tpi.h>
 
 #define PIF_SYSCALL			0	/* inside a system call */
-#define PIF_EXECVE_PGSTE_RESTART	1	/* restart execve for PGSTE binaries */
+#define PIF_PSW_ADDR_ADJUSTED		1	/* psw address has been adjusted */
 #define PIF_SYSCALL_RET_SET		2	/* return value was set via ptrace */
 #define PIF_GUEST_FAULT			3	/* indicates program check in sie64a */
 #define PIF_FTRACE_FULL_REGS		4	/* all register contents valid (ftrace) */
 
 #define _PIF_SYSCALL			BIT(PIF_SYSCALL)
-#define _PIF_EXECVE_PGSTE_RESTART	BIT(PIF_EXECVE_PGSTE_RESTART)
+#define _PIF_ADDR_PSW_ADJUSTED		BIT(PIF_PSW_ADDR_ADJUSTED)
 #define _PIF_SYSCALL_RET_SET		BIT(PIF_SYSCALL_RET_SET)
 #define _PIF_GUEST_FAULT		BIT(PIF_GUEST_FAULT)
 #define _PIF_FTRACE_FULL_REGS		BIT(PIF_FTRACE_FULL_REGS)
 
-#ifndef __ASSEMBLY__
+#define PSW32_MASK_PER		_AC(0x40000000, UL)
+#define PSW32_MASK_DAT		_AC(0x04000000, UL)
+#define PSW32_MASK_IO		_AC(0x02000000, UL)
+#define PSW32_MASK_EXT		_AC(0x01000000, UL)
+#define PSW32_MASK_KEY		_AC(0x00F00000, UL)
+#define PSW32_MASK_BASE		_AC(0x00080000, UL)	/* Always one */
+#define PSW32_MASK_MCHECK	_AC(0x00040000, UL)
+#define PSW32_MASK_WAIT		_AC(0x00020000, UL)
+#define PSW32_MASK_PSTATE	_AC(0x00010000, UL)
+#define PSW32_MASK_ASC		_AC(0x0000C000, UL)
+#define PSW32_MASK_CC		_AC(0x00003000, UL)
+#define PSW32_MASK_PM		_AC(0x00000f00, UL)
+#define PSW32_MASK_RI		_AC(0x00000080, UL)
+
+#define PSW32_ADDR_AMODE	_AC(0x80000000, UL)
+#define PSW32_ADDR_INSN		_AC(0x7FFFFFFF, UL)
+
+#define PSW32_DEFAULT_KEY	((PAGE_DEFAULT_ACC) << 20)
+
+#define PSW32_ASC_PRIMARY	_AC(0x00000000, UL)
+#define PSW32_ASC_ACCREG	_AC(0x00004000, UL)
+#define PSW32_ASC_SECONDARY	_AC(0x00008000, UL)
+#define PSW32_ASC_HOME		_AC(0x0000C000, UL)
+
+#define PSW_DEFAULT_KEY			((PAGE_DEFAULT_ACC) << 52)
 
 #define PSW_KERNEL_BITS	(PSW_DEFAULT_KEY | PSW_MASK_BASE | PSW_ASC_HOME | \
-			 PSW_MASK_EA | PSW_MASK_BA)
+			 PSW_MASK_EA | PSW_MASK_BA | PSW_MASK_DAT)
 #define PSW_USER_BITS	(PSW_MASK_DAT | PSW_MASK_IO | PSW_MASK_EXT | \
 			 PSW_DEFAULT_KEY | PSW_MASK_BASE | PSW_MASK_MCHECK | \
 			 PSW_MASK_PSTATE | PSW_ASC_PRIMARY)
+
+#ifndef __ASSEMBLER__
 
 struct psw_bits {
 	unsigned long	     :	1;
@@ -71,34 +99,10 @@ enum {
 	&(*(struct psw_bits *)(&(__psw)));	\
 }))
 
-#define PSW32_MASK_PER		0x40000000UL
-#define PSW32_MASK_DAT		0x04000000UL
-#define PSW32_MASK_IO		0x02000000UL
-#define PSW32_MASK_EXT		0x01000000UL
-#define PSW32_MASK_KEY		0x00F00000UL
-#define PSW32_MASK_BASE		0x00080000UL	/* Always one */
-#define PSW32_MASK_MCHECK	0x00040000UL
-#define PSW32_MASK_WAIT		0x00020000UL
-#define PSW32_MASK_PSTATE	0x00010000UL
-#define PSW32_MASK_ASC		0x0000C000UL
-#define PSW32_MASK_CC		0x00003000UL
-#define PSW32_MASK_PM		0x00000f00UL
-#define PSW32_MASK_RI		0x00000080UL
-
-#define PSW32_ADDR_AMODE	0x80000000UL
-#define PSW32_ADDR_INSN		0x7FFFFFFFUL
-
-#define PSW32_DEFAULT_KEY	(((u32)PAGE_DEFAULT_ACC) << 20)
-
-#define PSW32_ASC_PRIMARY	0x00000000UL
-#define PSW32_ASC_ACCREG	0x00004000UL
-#define PSW32_ASC_SECONDARY	0x00008000UL
-#define PSW32_ASC_HOME		0x0000C000UL
-
 typedef struct {
 	unsigned int mask;
 	unsigned int addr;
-} psw_t32 __aligned(8);
+} psw32_t __aligned(8);
 
 #define PGM_INT_CODE_MASK	0x7f
 #define PGM_INT_CODE_PER	0x80
@@ -116,7 +120,10 @@ struct pt_regs {
 			unsigned long gprs[NUM_GPRS];
 		};
 	};
-	unsigned long orig_gpr2;
+	union {
+		unsigned long orig_gpr2;
+		unsigned long monitor_code;
+	};
 	union {
 		struct {
 			unsigned int int_code;
@@ -126,7 +133,6 @@ struct pt_regs {
 		struct tpi_info tpi_info;
 	};
 	unsigned long flags;
-	unsigned long cr1;
 	unsigned long last_break;
 };
 
@@ -201,20 +207,31 @@ static inline int test_and_clear_pt_regs_flag(struct pt_regs *regs, int flag)
 	return ret;
 }
 
+struct task_struct;
+
+void update_cr_regs(struct task_struct *task);
+
 /*
  * These are defined as per linux/ptrace.h, which see.
  */
 #define arch_has_single_step()	(1)
 #define arch_has_block_step()	(1)
 
-#define user_mode(regs) (((regs)->psw.mask & PSW_MASK_PSTATE) != 0)
-#define instruction_pointer(regs) ((regs)->psw.addr)
-#define user_stack_pointer(regs)((regs)->gprs[15])
 #define profile_pc(regs) instruction_pointer(regs)
 
-static inline long regs_return_value(struct pt_regs *regs)
+static __always_inline bool user_mode(const struct pt_regs *regs)
+{
+	return psw_bits(regs->psw).pstate;
+}
+
+static inline long regs_return_value(const struct pt_regs *regs)
 {
 	return regs->gprs[2];
+}
+
+static __always_inline unsigned long instruction_pointer(const struct pt_regs *regs)
+{
+	return regs->psw.addr;
 }
 
 static inline void instruction_pointer_set(struct pt_regs *regs,
@@ -225,8 +242,52 @@ static inline void instruction_pointer_set(struct pt_regs *regs,
 
 int regs_query_register_offset(const char *name);
 const char *regs_query_register_name(unsigned int offset);
-unsigned long regs_get_register(struct pt_regs *regs, unsigned int offset);
-unsigned long regs_get_kernel_stack_nth(struct pt_regs *regs, unsigned int n);
+
+static __always_inline unsigned long kernel_stack_pointer(const struct pt_regs *regs)
+{
+	return regs->gprs[15];
+}
+
+static __always_inline unsigned long user_stack_pointer(const struct pt_regs *regs)
+{
+	return regs->gprs[15];
+}
+
+static __always_inline unsigned long regs_get_register(const struct pt_regs *regs,
+						       unsigned int offset)
+{
+	if (offset >= NUM_GPRS)
+		return 0;
+	return regs->gprs[offset];
+}
+
+static __always_inline int regs_within_kernel_stack(const struct pt_regs *regs,
+						    unsigned long addr)
+{
+	unsigned long ksp = kernel_stack_pointer(regs);
+
+	return (addr & ~(THREAD_SIZE - 1)) == (ksp & ~(THREAD_SIZE - 1));
+}
+
+/**
+ * regs_get_kernel_stack_nth() - get Nth entry of the stack
+ * @regs:pt_regs which contains kernel stack pointer.
+ * @n:stack entry number.
+ *
+ * regs_get_kernel_stack_nth() returns @n th entry of the kernel stack which
+ * is specifined by @regs. If the @n th entry is NOT in the kernel stack,
+ * this returns 0.
+ */
+static __always_inline unsigned long regs_get_kernel_stack_nth(const struct pt_regs *regs,
+							       unsigned int n)
+{
+	unsigned long addr;
+
+	addr = kernel_stack_pointer(regs) + n * sizeof(long);
+	if (!regs_within_kernel_stack(regs, addr))
+		return 0;
+	return READ_ONCE_NOCHECK(*(unsigned long *)addr);
+}
 
 /**
  * regs_get_kernel_argument() - get Nth function argument in kernel
@@ -235,8 +296,8 @@ unsigned long regs_get_kernel_stack_nth(struct pt_regs *regs, unsigned int n);
  *
  * regs_get_kernel_argument() returns @n th argument of the function call.
  */
-static inline unsigned long regs_get_kernel_argument(struct pt_regs *regs,
-						     unsigned int n)
+static __always_inline unsigned long regs_get_kernel_argument(const struct pt_regs *regs,
+							      unsigned int n)
 {
 	unsigned int argoffset = STACK_FRAME_OVERHEAD / sizeof(long);
 
@@ -247,15 +308,10 @@ static inline unsigned long regs_get_kernel_argument(struct pt_regs *regs,
 	return regs_get_kernel_stack_nth(regs, argoffset + n);
 }
 
-static inline unsigned long kernel_stack_pointer(struct pt_regs *regs)
-{
-	return regs->gprs[15];
-}
-
-static inline void regs_set_return_value(struct pt_regs *regs, unsigned long rc)
+static __always_inline void regs_set_return_value(struct pt_regs *regs, unsigned long rc)
 {
 	regs->gprs[2] = rc;
 }
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 #endif /* _S390_PTRACE_H */

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: ISC
+// SPDX-License-Identifier: BSD-3-Clause-Clear
 /* Copyright (C) 2021 MediaTek Inc. */
 
 #include <linux/kernel.h>
@@ -8,7 +8,7 @@
 
 #include "mt7921.h"
 #include "../sdio.h"
-#include "mac.h"
+#include "../mt76_connac2_mac.h"
 #include "mcu.h"
 #include "regs.h"
 
@@ -16,27 +16,29 @@ static int
 mt7921s_mcu_send_message(struct mt76_dev *mdev, struct sk_buff *skb,
 			 int cmd, int *seq)
 {
-	struct mt7921_dev *dev = container_of(mdev, struct mt7921_dev, mt76);
+	struct mt792x_dev *dev = container_of(mdev, struct mt792x_dev, mt76);
 	enum mt7921_sdio_pkt_type type = MT7921_SDIO_CMD;
 	enum mt76_mcuq_id txq = MT_MCUQ_WM;
 	int ret, pad;
 
 	/* We just return in case firmware assertion to avoid blocking the
 	 * common workqueue to run, for example, the coredump work might be
-	 * blocked by mt7921_mac_work that is excuting register access via sdio
+	 * blocked by mt792x_mac_work that is excuting register access via sdio
 	 * bus.
 	 */
 	if (dev->fw_assert)
 		return -EBUSY;
 
-	ret = mt7921_mcu_fill_message(mdev, skb, cmd, seq);
+	ret = mt76_connac2_mcu_fill_message(mdev, skb, cmd, seq);
 	if (ret)
 		return ret;
+
+	mdev->mcu.timeout = 3 * HZ;
 
 	if (cmd == MCU_CMD(FW_SCATTER))
 		type = MT7921_SDIO_FWDL;
 
-	mt7921_skb_add_usb_sdio_hdr(dev, skb, type);
+	mt792x_skb_add_usb_sdio_hdr(dev, skb, type);
 	pad = round_up(skb->len, 4) - skb->len;
 	__skb_put_zero(skb, pad);
 
@@ -49,14 +51,14 @@ mt7921s_mcu_send_message(struct mt76_dev *mdev, struct sk_buff *skb,
 	return ret;
 }
 
-static u32 mt7921s_read_rm3r(struct mt7921_dev *dev)
+static u32 mt7921s_read_rm3r(struct mt792x_dev *dev)
 {
 	struct mt76_sdio *sdio = &dev->mt76.sdio;
 
 	return sdio_readl(sdio->func, MCR_D2HRM3R, NULL);
 }
 
-static u32 mt7921s_clear_rm3r_drv_own(struct mt7921_dev *dev)
+static u32 mt7921s_clear_rm3r_drv_own(struct mt792x_dev *dev)
 {
 	struct mt76_sdio *sdio = &dev->mt76.sdio;
 	u32 val;
@@ -69,10 +71,11 @@ static u32 mt7921s_clear_rm3r_drv_own(struct mt7921_dev *dev)
 	return val;
 }
 
-int mt7921s_mcu_init(struct mt7921_dev *dev)
+int mt7921s_mcu_init(struct mt792x_dev *dev)
 {
 	static const struct mt76_mcu_ops mt7921s_mcu_ops = {
-		.headroom = MT_SDIO_HDR_SIZE + sizeof(struct mt7921_mcu_txd),
+		.headroom = MT_SDIO_HDR_SIZE +
+			    sizeof(struct mt76_connac2_mcu_txd),
 		.tailroom = MT_SDIO_TAIL_SIZE,
 		.mcu_skb_send_msg = mt7921s_mcu_send_message,
 		.mcu_parse_response = mt7921_mcu_parse_response,
@@ -94,13 +97,13 @@ int mt7921s_mcu_init(struct mt7921_dev *dev)
 	return 0;
 }
 
-int mt7921s_mcu_drv_pmctrl(struct mt7921_dev *dev)
+int mt7921s_mcu_drv_pmctrl(struct mt792x_dev *dev)
 {
 	struct sdio_func *func = dev->mt76.sdio.func;
 	struct mt76_phy *mphy = &dev->mt76.phy;
 	struct mt76_connac_pm *pm = &dev->pm;
-	int err = 0;
 	u32 status;
+	int err;
 
 	sdio_claim_host(func);
 
@@ -118,8 +121,7 @@ int mt7921s_mcu_drv_pmctrl(struct mt7921_dev *dev)
 
 	if (err < 0) {
 		dev_err(dev->mt76.dev, "driver own failed\n");
-		err = -EIO;
-		goto out;
+		return -EIO;
 	}
 
 	clear_bit(MT76_STATE_PM, &mphy->state);
@@ -127,17 +129,17 @@ int mt7921s_mcu_drv_pmctrl(struct mt7921_dev *dev)
 	pm->stats.last_wake_event = jiffies;
 	pm->stats.doze_time += pm->stats.last_wake_event -
 			       pm->stats.last_doze_event;
-out:
-	return err;
+
+	return 0;
 }
 
-int mt7921s_mcu_fw_pmctrl(struct mt7921_dev *dev)
+int mt7921s_mcu_fw_pmctrl(struct mt792x_dev *dev)
 {
 	struct sdio_func *func = dev->mt76.sdio.func;
 	struct mt76_phy *mphy = &dev->mt76.phy;
 	struct mt76_connac_pm *pm = &dev->pm;
-	int err = 0;
 	u32 status;
+	int err;
 
 	sdio_claim_host(func);
 
@@ -148,7 +150,7 @@ int mt7921s_mcu_fw_pmctrl(struct mt7921_dev *dev)
 					 2000, 1000000);
 		if (err < 0) {
 			dev_err(dev->mt76.dev, "mailbox ACK not cleared\n");
-			goto err;
+			goto out;
 		}
 	}
 
@@ -156,18 +158,18 @@ int mt7921s_mcu_fw_pmctrl(struct mt7921_dev *dev)
 
 	err = readx_poll_timeout(mt76s_read_pcr, &dev->mt76, status,
 				 !(status & WHLPCR_IS_DRIVER_OWN), 2000, 1000000);
+out:
 	sdio_release_host(func);
 
-err:
 	if (err < 0) {
 		dev_err(dev->mt76.dev, "firmware own failed\n");
 		clear_bit(MT76_STATE_PM, &mphy->state);
-		err = -EIO;
+		return -EIO;
 	}
 
 	pm->stats.last_doze_event = jiffies;
 	pm->stats.awake_time += pm->stats.last_doze_event -
 				pm->stats.last_wake_event;
 
-	return err;
+	return 0;
 }

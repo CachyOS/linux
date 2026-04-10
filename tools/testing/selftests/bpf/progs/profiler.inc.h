@@ -6,6 +6,10 @@
 #include <bpf/bpf_tracing.h>
 
 #include "profiler.h"
+#include "err.h"
+#include "bpf_experimental.h"
+#include "bpf_compiler.h"
+#include "bpf_misc.h"
 
 #ifndef NULL
 #define NULL 0
@@ -16,7 +20,6 @@
 #define O_DIRECTORY 00200000
 #define __O_TMPFILE 020000000
 #define O_TMPFILE (__O_TMPFILE | O_DIRECTORY)
-#define MAX_ERRNO 4095
 #define S_IFMT 00170000
 #define S_IFSOCK 0140000
 #define S_IFLNK 0120000
@@ -34,7 +37,6 @@
 #define S_ISBLK(m) (((m)&S_IFMT) == S_IFBLK)
 #define S_ISFIFO(m) (((m)&S_IFMT) == S_IFIFO)
 #define S_ISSOCK(m) (((m)&S_IFMT) == S_IFSOCK)
-#define IS_ERR_VALUE(x) (unsigned long)(void*)(x) >= (unsigned long)-MAX_ERRNO
 
 #define KILL_DATA_ARRAY_SIZE 8
 
@@ -132,10 +134,6 @@ struct {
 	__uint(max_entries, 16);
 } disallowed_exec_inodes SEC(".maps");
 
-#ifndef ARRAY_SIZE
-#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
-#endif
-
 static INLINE bool IS_ERR(const void* ptr)
 {
 	return IS_ERR_VALUE((unsigned long)ptr);
@@ -156,10 +154,10 @@ probe_read_lim(void* dst, void* src, unsigned long len, unsigned long max)
 {
 	len = len < max ? len : max;
 	if (len > 1) {
-		if (bpf_probe_read(dst, len, src))
+		if (bpf_probe_read_kernel(dst, len, src))
 			return 0;
 	} else if (len == 1) {
-		if (bpf_probe_read(dst, 1, src))
+		if (bpf_probe_read_kernel(dst, 1, src))
 			return 0;
 	}
 	return len;
@@ -169,7 +167,7 @@ static INLINE int get_var_spid_index(struct var_kill_data_arr_t* arr_struct,
 				     int spid)
 {
 #ifdef UNROLL
-#pragma unroll
+	__pragma_loop_unroll
 #endif
 	for (int i = 0; i < ARRAY_SIZE(arr_struct->array); i++)
 		if (arr_struct->array[i].meta.pid == spid)
@@ -185,7 +183,7 @@ static INLINE void populate_ancestors(struct task_struct* task,
 
 	ancestors_data->num_ancestors = 0;
 #ifdef UNROLL
-#pragma unroll
+	__pragma_loop_unroll
 #endif
 	for (num_ancestors = 0; num_ancestors < MAX_ANCESTORS; num_ancestors++) {
 		parent = BPF_CORE_READ(parent, real_parent);
@@ -212,20 +210,20 @@ static INLINE void* read_full_cgroup_path(struct kernfs_node* cgroup_node,
 	size_t filepart_length;
 
 #ifdef UNROLL
-#pragma unroll
+	__pragma_loop_unroll
 #endif
 	for (int i = 0; i < MAX_CGROUPS_PATH_DEPTH; i++) {
 		filepart_length =
-			bpf_probe_read_str(payload, MAX_PATH, BPF_CORE_READ(cgroup_node, name));
+			bpf_probe_read_kernel_str(payload, MAX_PATH,
+						  BPF_CORE_READ(cgroup_node, name));
 		if (!cgroup_node)
 			return payload;
 		if (cgroup_node == cgroup_root_node)
 			*root_pos = payload - payload_start;
-		if (filepart_length <= MAX_PATH) {
-			barrier_var(filepart_length);
+		if (bpf_cmp_likely(filepart_length, <=, MAX_PATH)) {
 			payload += filepart_length;
 		}
-		cgroup_node = BPF_CORE_READ(cgroup_node, parent);
+		cgroup_node = BPF_CORE_READ(cgroup_node, __parent);
 	}
 	return payload;
 }
@@ -261,7 +259,7 @@ static INLINE void* populate_cgroup_info(struct cgroup_data_t* cgroup_data,
 		int cgrp_id = bpf_core_enum_value(enum cgroup_subsys_id___local,
 						  pids_cgrp_id___local);
 #ifdef UNROLL
-#pragma unroll
+		__pragma_loop_unroll
 #endif
 		for (int i = 0; i < CGROUP_SUBSYS_COUNT; i++) {
 			struct cgroup_subsys_state* subsys =
@@ -303,19 +301,17 @@ static INLINE void* populate_cgroup_info(struct cgroup_data_t* cgroup_data,
 	cgroup_data->cgroup_full_length = 0;
 
 	size_t cgroup_root_length =
-		bpf_probe_read_str(payload, MAX_PATH, BPF_CORE_READ(root_kernfs, name));
-	barrier_var(cgroup_root_length);
-	if (cgroup_root_length <= MAX_PATH) {
-		barrier_var(cgroup_root_length);
+		bpf_probe_read_kernel_str(payload, MAX_PATH,
+					  BPF_CORE_READ(root_kernfs, name));
+	if (bpf_cmp_likely(cgroup_root_length, <=, MAX_PATH)) {
 		cgroup_data->cgroup_root_length = cgroup_root_length;
 		payload += cgroup_root_length;
 	}
 
 	size_t cgroup_proc_length =
-		bpf_probe_read_str(payload, MAX_PATH, BPF_CORE_READ(proc_kernfs, name));
-	barrier_var(cgroup_proc_length);
-	if (cgroup_proc_length <= MAX_PATH) {
-		barrier_var(cgroup_proc_length);
+		bpf_probe_read_kernel_str(payload, MAX_PATH,
+					  BPF_CORE_READ(proc_kernfs, name));
+	if (bpf_cmp_likely(cgroup_proc_length, <=, MAX_PATH)) {
 		cgroup_data->cgroup_proc_length = cgroup_proc_length;
 		payload += cgroup_proc_length;
 	}
@@ -345,9 +341,7 @@ static INLINE void* populate_var_metadata(struct var_metadata_t* metadata,
 	metadata->comm_length = 0;
 
 	size_t comm_length = bpf_core_read_str(payload, TASK_COMM_LEN, &task->comm);
-	barrier_var(comm_length);
-	if (comm_length <= TASK_COMM_LEN) {
-		barrier_var(comm_length);
+	if (bpf_cmp_likely(comm_length, <=, TASK_COMM_LEN)) {
 		metadata->comm_length = comm_length;
 		payload += comm_length;
 	}
@@ -395,7 +389,8 @@ static INLINE int trace_var_sys_kill(void* ctx, int tpid, int sig)
 		arr_struct = bpf_map_lookup_elem(&data_heap, &zero);
 		if (arr_struct == NULL)
 			return 0;
-		bpf_probe_read(&arr_struct->array[0], sizeof(arr_struct->array[0]), kill_data);
+		bpf_probe_read_kernel(&arr_struct->array[0],
+				      sizeof(arr_struct->array[0]), kill_data);
 	} else {
 		int index = get_var_spid_index(arr_struct, spid);
 
@@ -405,12 +400,13 @@ static INLINE int trace_var_sys_kill(void* ctx, int tpid, int sig)
 			if (kill_data == NULL)
 				return 0;
 #ifdef UNROLL
-#pragma unroll
+			__pragma_loop_unroll
 #endif
 			for (int i = 0; i < ARRAY_SIZE(arr_struct->array); i++)
 				if (arr_struct->array[i].meta.pid == 0) {
-					bpf_probe_read(&arr_struct->array[i],
-						       sizeof(arr_struct->array[i]), kill_data);
+					bpf_probe_read_kernel(&arr_struct->array[i],
+							      sizeof(arr_struct->array[i]),
+							      kill_data);
 					bpf_map_update_elem(&var_tpid_to_data, &tpid,
 							    arr_struct, 0);
 
@@ -427,17 +423,17 @@ static INLINE int trace_var_sys_kill(void* ctx, int tpid, int sig)
 		if (delta_sec < STALE_INFO) {
 			kill_data->kill_count++;
 			kill_data->last_kill_time = bpf_ktime_get_ns();
-			bpf_probe_read(&arr_struct->array[index],
-				       sizeof(arr_struct->array[index]),
-				       kill_data);
+			bpf_probe_read_kernel(&arr_struct->array[index],
+					      sizeof(arr_struct->array[index]),
+					      kill_data);
 		} else {
 			struct var_kill_data_t* kill_data =
 				get_var_kill_data(ctx, spid, tpid, sig);
 			if (kill_data == NULL)
 				return 0;
-			bpf_probe_read(&arr_struct->array[index],
-				       sizeof(arr_struct->array[index]),
-				       kill_data);
+			bpf_probe_read_kernel(&arr_struct->array[index],
+					      sizeof(arr_struct->array[index]),
+					      kill_data);
 		}
 	}
 	bpf_map_update_elem(&var_tpid_to_data, &tpid, arr_struct, 0);
@@ -484,15 +480,15 @@ read_absolute_file_path_from_dentry(struct dentry* filp_dentry, void* payload)
 	struct dentry* parent_dentry;
 
 #ifdef UNROLL
-#pragma unroll
+	__pragma_loop_unroll
 #endif
 	for (int i = 0; i < MAX_PATH_DEPTH; i++) {
-		filepart_length = bpf_probe_read_str(payload, MAX_PATH,
-						     BPF_CORE_READ(filp_dentry, d_name.name));
-		barrier_var(filepart_length);
-		if (filepart_length > MAX_PATH)
+		filepart_length =
+			bpf_probe_read_kernel_str(payload, MAX_PATH,
+						  BPF_CORE_READ(filp_dentry, d_name.name));
+		bpf_nop_mov(filepart_length);
+		if (bpf_cmp_unlikely(filepart_length, >, MAX_PATH))
 			break;
-		barrier_var(filepart_length);
 		payload += filepart_length;
 		length += filepart_length;
 
@@ -510,7 +506,7 @@ is_ancestor_in_allowed_inodes(struct dentry* filp_dentry)
 {
 	struct dentry* parent_dentry;
 #ifdef UNROLL
-#pragma unroll
+	__pragma_loop_unroll
 #endif
 	for (int i = 0; i < MAX_PATH_DEPTH; i++) {
 		u64 dir_ino = BPF_CORE_READ(filp_dentry, d_inode, i_ino);
@@ -572,19 +568,18 @@ ssize_t BPF_KPROBE(kprobe__proc_sys_write,
 	sysctl_data->sysctl_val_length = 0;
 	sysctl_data->sysctl_path_length = 0;
 
-	size_t sysctl_val_length = bpf_probe_read_str(payload, CTL_MAXNAME, buf);
-	barrier_var(sysctl_val_length);
-	if (sysctl_val_length <= CTL_MAXNAME) {
-		barrier_var(sysctl_val_length);
+	size_t sysctl_val_length = bpf_probe_read_kernel_str(payload,
+							     CTL_MAXNAME, buf);
+	if (bpf_cmp_likely(sysctl_val_length, <=, CTL_MAXNAME)) {
 		sysctl_data->sysctl_val_length = sysctl_val_length;
 		payload += sysctl_val_length;
 	}
 
-	size_t sysctl_path_length = bpf_probe_read_str(payload, MAX_PATH,
-						       BPF_CORE_READ(filp, f_path.dentry, d_name.name));
-	barrier_var(sysctl_path_length);
-	if (sysctl_path_length <= MAX_PATH) {
-		barrier_var(sysctl_path_length);
+	size_t sysctl_path_length =
+		bpf_probe_read_kernel_str(payload, MAX_PATH,
+					  BPF_CORE_READ(filp, f_path.dentry,
+							d_name.name));
+	if (bpf_cmp_likely(sysctl_path_length, <=, MAX_PATH)) {
 		sysctl_data->sysctl_path_length = sysctl_path_length;
 		payload += sysctl_path_length;
 	}
@@ -601,7 +596,7 @@ out:
 }
 
 SEC("tracepoint/syscalls/sys_enter_kill")
-int tracepoint__syscalls__sys_enter_kill(struct trace_event_raw_sys_enter* ctx)
+int tracepoint__syscalls__sys_enter_kill(struct syscall_trace_enter* ctx)
 {
 	struct bpf_func_stats_ctx stats_ctx;
 
@@ -632,13 +627,14 @@ int raw_tracepoint__sched_process_exit(void* ctx)
 	struct kernfs_node* proc_kernfs = BPF_CORE_READ(task, cgroups, dfl_cgrp, kn);
 
 #ifdef UNROLL
-#pragma unroll
+	__pragma_loop_unroll
 #endif
 	for (int i = 0; i < ARRAY_SIZE(arr_struct->array); i++) {
 		struct var_kill_data_t* past_kill_data = &arr_struct->array[i];
 
-		if (past_kill_data != NULL && past_kill_data->kill_target_pid == tpid) {
-			bpf_probe_read(kill_data, sizeof(*past_kill_data), past_kill_data);
+		if (past_kill_data != NULL && past_kill_data->kill_target_pid == (pid_t)tpid) {
+			bpf_probe_read_kernel(kill_data, sizeof(*past_kill_data),
+					      past_kill_data);
 			void* payload = kill_data->payload;
 			size_t offset = kill_data->payload_length;
 			if (offset >= MAX_METADATA_PAYLOAD_LEN + MAX_CGROUP_PAYLOAD_LEN)
@@ -649,18 +645,16 @@ int raw_tracepoint__sched_process_exit(void* ctx)
 			kill_data->kill_target_cgroup_proc_length = 0;
 
 			size_t comm_length = bpf_core_read_str(payload, TASK_COMM_LEN, &task->comm);
-			barrier_var(comm_length);
-			if (comm_length <= TASK_COMM_LEN) {
-				barrier_var(comm_length);
+			if (bpf_cmp_likely(comm_length, <=, TASK_COMM_LEN)) {
 				kill_data->kill_target_name_length = comm_length;
 				payload += comm_length;
 			}
 
-			size_t cgroup_proc_length = bpf_probe_read_str(payload, KILL_TARGET_LEN,
-								       BPF_CORE_READ(proc_kernfs, name));
-			barrier_var(cgroup_proc_length);
-			if (cgroup_proc_length <= KILL_TARGET_LEN) {
-				barrier_var(cgroup_proc_length);
+			size_t cgroup_proc_length =
+				bpf_probe_read_kernel_str(payload,
+							  KILL_TARGET_LEN,
+							  BPF_CORE_READ(proc_kernfs, name));
+			if (bpf_cmp_likely(cgroup_proc_length, <=, KILL_TARGET_LEN)) {
 				kill_data->kill_target_cgroup_proc_length = cgroup_proc_length;
 				payload += cgroup_proc_length;
 			}
@@ -718,10 +712,9 @@ int raw_tracepoint__sched_process_exec(struct bpf_raw_tracepoint_args* ctx)
 	proc_exec_data->parent_start_time = BPF_CORE_READ(parent_task, start_time);
 
 	const char* filename = BPF_CORE_READ(bprm, filename);
-	size_t bin_path_length = bpf_probe_read_str(payload, MAX_FILENAME_LEN, filename);
-	barrier_var(bin_path_length);
-	if (bin_path_length <= MAX_FILENAME_LEN) {
-		barrier_var(bin_path_length);
+	size_t bin_path_length =
+		bpf_probe_read_kernel_str(payload, MAX_FILENAME_LEN, filename);
+	if (bpf_cmp_likely(bin_path_length, <=, MAX_FILENAME_LEN)) {
 		proc_exec_data->bin_path_length = bin_path_length;
 		payload += bin_path_length;
 	}
@@ -731,8 +724,7 @@ int raw_tracepoint__sched_process_exec(struct bpf_raw_tracepoint_args* ctx)
 	unsigned int cmdline_length = probe_read_lim(payload, arg_start,
 						     arg_end - arg_start, MAX_ARGS_LEN);
 
-	if (cmdline_length <= MAX_ARGS_LEN) {
-		barrier_var(cmdline_length);
+	if (bpf_cmp_likely(cmdline_length, <=, MAX_ARGS_LEN)) {
 		proc_exec_data->cmdline_length = cmdline_length;
 		payload += cmdline_length;
 	}
@@ -759,11 +751,11 @@ out:
 	return 0;
 }
 
-SEC("kretprobe/do_filp_open")
-int kprobe_ret__do_filp_open(struct pt_regs* ctx)
+SEC("kretprobe/do_file_open")
+int kprobe_ret__do_file_open(struct pt_regs *ctx)
 {
 	struct bpf_func_stats_ctx stats_ctx;
-	bpf_stats_enter(&stats_ctx, profiler_bpf_do_filp_open_ret);
+	bpf_stats_enter(&stats_ctx, profiler_bpf_do_file_open_ret);
 
 	struct file* filp = (struct file*)PT_REGS_RC_CORE(ctx);
 
@@ -809,9 +801,7 @@ int kprobe_ret__do_filp_open(struct pt_regs* ctx)
 	payload = populate_cgroup_info(&filemod_data->cgroup_data, task, payload);
 
 	size_t len = read_absolute_file_path_from_dentry(filp_dentry, payload);
-	barrier_var(len);
-	if (len <= MAX_FILEPATH_LENGTH) {
-		barrier_var(len);
+	if (bpf_cmp_likely(len, <=, MAX_FILEPATH_LENGTH)) {
 		payload += len;
 		filemod_data->dst_filepath_length = len;
 	}
@@ -826,7 +816,7 @@ out:
 
 SEC("kprobe/vfs_link")
 int BPF_KPROBE(kprobe__vfs_link,
-	       struct dentry* old_dentry, struct user_namespace *mnt_userns,
+	       struct dentry* old_dentry, struct mnt_idmap *idmap,
 	       struct inode* dir, struct dentry* new_dentry,
 	       struct inode** delegated_inode)
 {
@@ -864,17 +854,13 @@ int BPF_KPROBE(kprobe__vfs_link,
 	payload = populate_cgroup_info(&filemod_data->cgroup_data, task, payload);
 
 	size_t len = read_absolute_file_path_from_dentry(old_dentry, payload);
-	barrier_var(len);
-	if (len <= MAX_FILEPATH_LENGTH) {
-		barrier_var(len);
+	if (bpf_cmp_likely(len, <=, MAX_FILEPATH_LENGTH)) {
 		payload += len;
 		filemod_data->src_filepath_length = len;
 	}
 
 	len = read_absolute_file_path_from_dentry(new_dentry, payload);
-	barrier_var(len);
-	if (len <= MAX_FILEPATH_LENGTH) {
-		barrier_var(len);
+	if (bpf_cmp_likely(len, <=, MAX_FILEPATH_LENGTH)) {
 		payload += len;
 		filemod_data->dst_filepath_length = len;
 	}
@@ -922,17 +908,14 @@ int BPF_KPROBE(kprobe__vfs_symlink, struct inode* dir, struct dentry* dentry,
 					      filemod_data->payload);
 	payload = populate_cgroup_info(&filemod_data->cgroup_data, task, payload);
 
-	size_t len = bpf_probe_read_str(payload, MAX_FILEPATH_LENGTH, oldname);
-	barrier_var(len);
-	if (len <= MAX_FILEPATH_LENGTH) {
-		barrier_var(len);
+	size_t len = bpf_probe_read_kernel_str(payload, MAX_FILEPATH_LENGTH,
+					       oldname);
+	if (bpf_cmp_likely(len, <=, MAX_FILEPATH_LENGTH)) {
 		payload += len;
 		filemod_data->src_filepath_length = len;
 	}
 	len = read_absolute_file_path_from_dentry(dentry, payload);
-	barrier_var(len);
-	if (len <= MAX_FILEPATH_LENGTH) {
-		barrier_var(len);
+	if (bpf_cmp_likely(len, <=, MAX_FILEPATH_LENGTH)) {
 		payload += len;
 		filemod_data->dst_filepath_length = len;
 	}

@@ -24,6 +24,7 @@
 #include <linux/acpi.h>
 #include <linux/pci.h>
 #include <acpi/acpi.h>
+#include "internal.h"
 
 struct acpi_pci_ioapic {
 	acpi_handle	root_handle;
@@ -119,7 +120,7 @@ static acpi_status handle_ioapic_add(acpi_handle handle, u32 lvl,
 		goto exit;
 	}
 
-	ioapic = kzalloc(sizeof(*ioapic), GFP_KERNEL);
+	ioapic = kzalloc_obj(*ioapic);
 	if (!ioapic) {
 		pr_err("cannot allocate memory for new IOAPIC\n");
 		goto exit;

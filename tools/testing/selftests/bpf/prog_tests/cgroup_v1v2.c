@@ -9,15 +9,18 @@
 
 static int run_test(int cgroup_fd, int server_fd, bool classid)
 {
-	struct network_helper_opts opts = {
-		.must_fail = true,
-	};
 	struct connect4_dropper *skel;
-	int fd, err = 0;
+	int fd, err = 0, port;
 
 	skel = connect4_dropper__open_and_load();
 	if (!ASSERT_OK_PTR(skel, "skel_open"))
 		return -1;
+
+	port = get_socket_local_port(server_fd);
+	if (!ASSERT_GE(port, 0, "get_socket_local_port"))
+		return -1;
+
+	skel->bss->port = ntohs(port);
 
 	skel->links.connect_v4_dropper =
 		bpf_program__attach_cgroup(skel->progs.connect_v4_dropper,
@@ -32,11 +35,16 @@ static int run_test(int cgroup_fd, int server_fd, bool classid)
 		goto out;
 	}
 
-	fd = connect_to_fd_opts(server_fd, &opts);
-	if (fd < 0)
+	errno = 0;
+	fd = connect_to_fd_opts(server_fd, NULL);
+	if (fd >= 0) {
+		log_err("Unexpected success to connect to server");
 		err = -1;
-	else
 		close(fd);
+	} else if (errno != EPERM) {
+		log_err("Unexpected errno from connect to server");
+		err = -1;
+	}
 out:
 	connect4_dropper__destroy(skel);
 	return err;
@@ -46,10 +54,9 @@ void test_cgroup_v1v2(void)
 {
 	struct network_helper_opts opts = {};
 	int server_fd, client_fd, cgroup_fd;
-	static const int port = 60120;
 
 	/* Step 1: Check base connectivity works without any BPF. */
-	server_fd = start_server(AF_INET, SOCK_STREAM, NULL, port, 0);
+	server_fd = start_server(AF_INET, SOCK_STREAM, NULL, 0, 0);
 	if (!ASSERT_GE(server_fd, 0, "server_fd"))
 		return;
 	client_fd = connect_to_fd_opts(server_fd, &opts);
@@ -64,14 +71,14 @@ void test_cgroup_v1v2(void)
 	cgroup_fd = test__join_cgroup("/connect_dropper");
 	if (!ASSERT_GE(cgroup_fd, 0, "cgroup_fd"))
 		return;
-	server_fd = start_server(AF_INET, SOCK_STREAM, NULL, port, 0);
+	server_fd = start_server(AF_INET, SOCK_STREAM, NULL, 0, 0);
 	if (!ASSERT_GE(server_fd, 0, "server_fd")) {
 		close(cgroup_fd);
 		return;
 	}
 	ASSERT_OK(run_test(cgroup_fd, server_fd, false), "cgroup-v2-only");
 	setup_classid_environment();
-	set_classid(42);
+	set_classid();
 	ASSERT_OK(run_test(cgroup_fd, server_fd, true), "cgroup-v1v2");
 	cleanup_classid_environment();
 	close(server_fd);

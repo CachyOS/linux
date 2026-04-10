@@ -15,19 +15,20 @@
  */
 
 #define __NO_FORTIFY
-#include <linux/types.h>
-#include <linux/string.h>
-#include <linux/ctype.h>
-#include <linux/kernel.h>
-#include <linux/export.h>
+#include <linux/bits.h>
 #include <linux/bug.h>
+#include <linux/ctype.h>
 #include <linux/errno.h>
-#include <linux/slab.h>
+#include <linux/limits.h>
+#include <linux/linkage.h>
+#include <linux/stddef.h>
+#include <linux/string.h>
+#include <linux/types.h>
 
-#include <asm/unaligned.h>
-#include <asm/byteorder.h>
-#include <asm/word-at-a-time.h>
 #include <asm/page.h>
+#include <asm/rwonce.h>
+#include <linux/unaligned.h>
+#include <asm/word-at-a-time.h>
 
 #ifndef __HAVE_ARCH_STRNCASECMP
 /**
@@ -76,11 +77,6 @@ EXPORT_SYMBOL(strcasecmp);
 #endif
 
 #ifndef __HAVE_ARCH_STRCPY
-/**
- * strcpy - Copy a %NUL terminated string
- * @dest: Where to copy the string to
- * @src: Where to copy the string from
- */
 char *strcpy(char *dest, const char *src)
 {
 	char *tmp = dest;
@@ -93,19 +89,6 @@ EXPORT_SYMBOL(strcpy);
 #endif
 
 #ifndef __HAVE_ARCH_STRNCPY
-/**
- * strncpy - Copy a length-limited, C-string
- * @dest: Where to copy the string to
- * @src: Where to copy the string from
- * @count: The maximum number of bytes to copy
- *
- * The result is not %NUL-terminated if the source exceeds
- * @count bytes.
- *
- * In the case where the length of @src is less than  that  of
- * count, the remainder of @dest will be padded with %NUL.
- *
- */
 char *strncpy(char *dest, const char *src, size_t count)
 {
 	char *tmp = dest;
@@ -121,58 +104,13 @@ char *strncpy(char *dest, const char *src, size_t count)
 EXPORT_SYMBOL(strncpy);
 #endif
 
-#ifndef __HAVE_ARCH_STRLCPY
-/**
- * strlcpy - Copy a C-string into a sized buffer
- * @dest: Where to copy the string to
- * @src: Where to copy the string from
- * @size: size of destination buffer
- *
- * Compatible with ``*BSD``: the result is always a valid
- * NUL-terminated string that fits in the buffer (unless,
- * of course, the buffer size is zero). It does not pad
- * out the result like strncpy() does.
- */
-size_t strlcpy(char *dest, const char *src, size_t size)
-{
-	size_t ret = strlen(src);
-
-	if (size) {
-		size_t len = (ret >= size) ? size - 1 : ret;
-		memcpy(dest, src, len);
-		dest[len] = '\0';
-	}
-	return ret;
-}
-EXPORT_SYMBOL(strlcpy);
+#ifdef __BIG_ENDIAN
+# define ALLBUTLAST_BYTE_MASK (~255ul)
+#else
+# define ALLBUTLAST_BYTE_MASK (~0ul >> 8)
 #endif
 
-#ifndef __HAVE_ARCH_STRSCPY
-/**
- * strscpy - Copy a C-string into a sized buffer
- * @dest: Where to copy the string to
- * @src: Where to copy the string from
- * @count: Size of destination buffer
- *
- * Copy the string, or as much of it as fits, into the dest buffer.  The
- * behavior is undefined if the string buffers overlap.  The destination
- * buffer is always NUL terminated, unless it's zero-sized.
- *
- * Preferred to strlcpy() since the API doesn't require reading memory
- * from the src string beyond the specified "count" bytes, and since
- * the return value is easier to error-check than strlcpy()'s.
- * In addition, the implementation is robust to the string changing out
- * from underneath it, unlike the current strlcpy() implementation.
- *
- * Preferred to strncpy() since it always returns a valid string, and
- * doesn't unnecessarily force the tail of the destination buffer to be
- * zeroed.  If zeroing is desired please use strscpy_pad().
- *
- * Returns:
- * * The number of characters copied (not including the trailing %NUL)
- * * -E2BIG if count is 0 or @src was truncated.
- */
-ssize_t strscpy(char *dest, const char *src, size_t count)
+ssize_t sized_strscpy(char *dest, const char *src, size_t count)
 {
 	const struct word_at_a_time constants = WORD_AT_A_TIME_CONSTANTS;
 	size_t max = count;
@@ -181,6 +119,7 @@ ssize_t strscpy(char *dest, const char *src, size_t count)
 	if (count == 0 || WARN_ON_ONCE(count > INT_MAX))
 		return -E2BIG;
 
+#ifndef CONFIG_DCACHE_WORD_ACCESS
 #ifdef CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
 	/*
 	 * If src is unaligned, don't cross a page boundary,
@@ -196,24 +135,43 @@ ssize_t strscpy(char *dest, const char *src, size_t count)
 	if (((long) dest | (long) src) & (sizeof(long) - 1))
 		max = 0;
 #endif
+#endif
+
+	/*
+	 * load_unaligned_zeropad() or read_word_at_a_time() below may read
+	 * uninitialized bytes after the trailing zero and use them in
+	 * comparisons. Disable this optimization under KMSAN to prevent
+	 * false positive reports.
+	 */
+	if (IS_ENABLED(CONFIG_KMSAN))
+		max = 0;
 
 	while (max >= sizeof(unsigned long)) {
 		unsigned long c, data;
 
+#ifdef CONFIG_DCACHE_WORD_ACCESS
+		c = load_unaligned_zeropad(src+res);
+#else
 		c = read_word_at_a_time(src+res);
+#endif
 		if (has_zero(c, &data, &constants)) {
 			data = prep_zero_mask(c, data, &constants);
 			data = create_zero_mask(data);
 			*(unsigned long *)(dest+res) = c & zero_bytemask(data);
 			return res + find_zero(data);
 		}
+		count -= sizeof(unsigned long);
+		if (unlikely(!count)) {
+			c &= ALLBUTLAST_BYTE_MASK;
+			*(unsigned long *)(dest+res) = c;
+			return -E2BIG;
+		}
 		*(unsigned long *)(dest+res) = c;
 		res += sizeof(unsigned long);
-		count -= sizeof(unsigned long);
 		max -= sizeof(unsigned long);
 	}
 
-	while (count) {
+	while (count > 1) {
 		char c;
 
 		c = src[res];
@@ -224,14 +182,13 @@ ssize_t strscpy(char *dest, const char *src, size_t count)
 		count--;
 	}
 
-	/* Hit buffer length without finding a NUL; force NUL-termination. */
-	if (res)
-		dest[res-1] = '\0';
+	/* Force NUL-termination. */
+	dest[res] = '\0';
 
-	return -E2BIG;
+	/* Return E2BIG if the source didn't stop */
+	return src[res] ? -E2BIG : res;
 }
-EXPORT_SYMBOL(strscpy);
-#endif
+EXPORT_SYMBOL(sized_strscpy);
 
 /**
  * stpcpy - copy a string from src to dest returning a pointer to the new end
@@ -258,11 +215,6 @@ char *stpcpy(char *__restrict__ dest, const char *__restrict__ src)
 EXPORT_SYMBOL(stpcpy);
 
 #ifndef __HAVE_ARCH_STRCAT
-/**
- * strcat - Append one %NUL-terminated string to another
- * @dest: The string to be appended to
- * @src: The string to append to it
- */
 char *strcat(char *dest, const char *src)
 {
 	char *tmp = dest;
@@ -277,15 +229,6 @@ EXPORT_SYMBOL(strcat);
 #endif
 
 #ifndef __HAVE_ARCH_STRNCAT
-/**
- * strncat - Append a length-limited, C-string to another
- * @dest: The string to be appended to
- * @src: The string to append to it
- * @count: The maximum numbers of bytes to copy
- *
- * Note that in contrast to strncpy(), strncat() ensures the result is
- * terminated.
- */
 char *strncat(char *dest, const char *src, size_t count)
 {
 	char *tmp = dest;
@@ -306,12 +249,6 @@ EXPORT_SYMBOL(strncat);
 #endif
 
 #ifndef __HAVE_ARCH_STRLCAT
-/**
- * strlcat - Append a length-limited, C-string to another
- * @dest: The string to be appended to
- * @src: The string to append to it
- * @count: The size of the destination buffer.
- */
 size_t strlcat(char *dest, const char *src, size_t count)
 {
 	size_t dsize = strlen(dest);
@@ -325,7 +262,7 @@ size_t strlcat(char *dest, const char *src, size_t count)
 	count -= dsize;
 	if (len >= count)
 		len = count-1;
-	memcpy(dest, src, len);
+	__builtin_memcpy(dest, src, len);
 	dest[len] = 0;
 	return res;
 }
@@ -476,10 +413,6 @@ EXPORT_SYMBOL(strnchr);
 #endif
 
 #ifndef __HAVE_ARCH_STRLEN
-/**
- * strlen - Find the length of a string
- * @s: The string to be sized
- */
 size_t strlen(const char *s)
 {
 	const char *sc;
@@ -492,11 +425,6 @@ EXPORT_SYMBOL(strlen);
 #endif
 
 #ifndef __HAVE_ARCH_STRNLEN
-/**
- * strnlen - Find the length of a length-limited string
- * @s: The string to be sized
- * @count: The maximum number of bytes to search
- */
 size_t strnlen(const char *s, size_t count)
 {
 	const char *sc;
@@ -554,13 +482,11 @@ EXPORT_SYMBOL(strcspn);
  */
 char *strpbrk(const char *cs, const char *ct)
 {
-	const char *sc1, *sc2;
+	const char *sc;
 
-	for (sc1 = cs; *sc1 != '\0'; ++sc1) {
-		for (sc2 = ct; *sc2 != '\0'; ++sc2) {
-			if (*sc1 == *sc2)
-				return (char *)sc1;
-		}
+	for (sc = cs; *sc != '\0'; ++sc) {
+		if (strchr(ct, *sc))
+			return (char *)sc;
 	}
 	return NULL;
 }

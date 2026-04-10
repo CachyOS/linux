@@ -120,9 +120,9 @@ static const struct iio_info tpl0102_info = {
 	.write_raw = tpl0102_write_raw,
 };
 
-static int tpl0102_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int tpl0102_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct device *dev = &client->dev;
 	struct tpl0102_data *data;
 	struct iio_dev *indio_dev;
@@ -153,7 +153,7 @@ static const struct i2c_device_id tpl0102_id[] = {
 	{ "cat5140-104", CAT5140_104 },
 	{ "tpl0102-104", TPL0102_104 },
 	{ "tpl0401-103", TPL0401_103 },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tpl0102_id);
 

@@ -16,7 +16,7 @@
 #include <linux/udp.h>
 #include <sys/socket.h>
 
-#include "../kselftest.h"
+#include "kselftest.h"
 
 enum {
 	ERN_SUCCESS = 0,
@@ -33,6 +33,7 @@ enum {
 	ERN_RECVERR,
 	ERN_CMSG_RD,
 	ERN_CMSG_RCV,
+	ERN_SEND_MORE,
 };
 
 struct option_cmsg_u32 {
@@ -45,11 +46,14 @@ struct options {
 	const char *host;
 	const char *service;
 	unsigned int size;
+	unsigned int num_pkt;
+	bool msg_more;
 	struct {
 		unsigned int mark;
 		unsigned int dontfrag;
 		unsigned int tclass;
 		unsigned int hlimit;
+		unsigned int priority;
 	} sockopt;
 	struct {
 		unsigned int family;
@@ -57,6 +61,7 @@ struct options {
 		unsigned int proto;
 	} sock;
 	struct option_cmsg_u32 mark;
+	struct option_cmsg_u32 priority;
 	struct {
 		bool ena;
 		unsigned int delay;
@@ -69,9 +74,10 @@ struct options {
 		struct option_cmsg_u32 tclass;
 		struct option_cmsg_u32 hlimit;
 		struct option_cmsg_u32 exthdr;
-	} v6;
+	} cmsg;
 } opt = {
 	.size = 13,
+	.num_pkt = 1,
 	.sock = {
 		.family	= AF_UNSPEC,
 		.type	= SOCK_DGRAM,
@@ -90,29 +96,32 @@ static void __attribute__((noreturn)) cs_usage(const char *bin)
 	       "\t\t-S      send() size\n"
 	       "\t\t-4/-6   Force IPv4 / IPv6 only\n"
 	       "\t\t-p prot Socket protocol\n"
-	       "\t\t        (u = UDP (default); i = ICMP; r = RAW)\n"
+	       "\t\t        (u = UDP (default); i = ICMP; r = RAW;\n"
+	       "\t\t         U = UDP with MSG_MORE)\n"
 	       "\n"
 	       "\t\t-m val  Set SO_MARK with given value\n"
 	       "\t\t-M val  Set SO_MARK via setsockopt\n"
+	       "\t\t-P val  Set SO_PRIORITY via setsockopt\n"
+	       "\t\t-Q val  Set SO_PRIORITY via cmsg\n"
 	       "\t\t-d val  Set SO_TXTIME with given delay (usec)\n"
 	       "\t\t-t      Enable time stamp reporting\n"
 	       "\t\t-f val  Set don't fragment via cmsg\n"
 	       "\t\t-F val  Set don't fragment via setsockopt\n"
-	       "\t\t-c val  Set TCLASS via cmsg\n"
-	       "\t\t-C val  Set TCLASS via setsockopt\n"
-	       "\t\t-l val  Set HOPLIMIT via cmsg\n"
-	       "\t\t-L val  Set HOPLIMIT via setsockopt\n"
+	       "\t\t-c val  Set TOS/TCLASS via cmsg\n"
+	       "\t\t-C val  Set TOS/TCLASS via setsockopt\n"
+	       "\t\t-l val  Set TTL/HOPLIMIT via cmsg\n"
+	       "\t\t-L val  Set TTL/HOPLIMIT via setsockopt\n"
 	       "\t\t-H type Add an IPv6 header option\n"
-	       "\t\t        (h = HOP; d = DST; r = RTDST)"
-	       "");
+	       "\t\t        (h = HOP; d = DST; r = RTDST)\n"
+	       "\n");
 	exit(ERN_HELP);
 }
 
 static void cs_parse_args(int argc, char *argv[])
 {
-	char o;
+	int o;
 
-	while ((o = getopt(argc, argv, "46sS:p:m:M:d:tf:F:c:C:l:L:H:")) != -1) {
+	while ((o = getopt(argc, argv, "46sS:p:P:m:M:n:d:tf:F:c:C:l:L:H:Q:")) != -1) {
 		switch (o) {
 		case 's':
 			opt.silent_send = true;
@@ -127,8 +136,11 @@ static void cs_parse_args(int argc, char *argv[])
 			opt.sock.family = AF_INET6;
 			break;
 		case 'p':
-			if (*optarg == 'u' || *optarg == 'U') {
+			if (*optarg == 'u') {
 				opt.sock.proto = IPPROTO_UDP;
+			} else if (*optarg == 'U') {
+				opt.sock.proto = IPPROTO_UDP;
+				opt.msg_more = true;
 			} else if (*optarg == 'i' || *optarg == 'I') {
 				opt.sock.proto = IPPROTO_ICMP;
 			} else if (*optarg == 'r') {
@@ -138,13 +150,22 @@ static void cs_parse_args(int argc, char *argv[])
 				cs_usage(argv[0]);
 			}
 			break;
-
+		case 'P':
+			opt.sockopt.priority = atoi(optarg);
+			break;
 		case 'm':
 			opt.mark.ena = true;
 			opt.mark.val = atoi(optarg);
 			break;
+		case 'Q':
+			opt.priority.ena = true;
+			opt.priority.val = atoi(optarg);
+			break;
 		case 'M':
 			opt.sockopt.mark = atoi(optarg);
+			break;
+		case 'n':
+			opt.num_pkt = atoi(optarg);
 			break;
 		case 'd':
 			opt.txtime.ena = true;
@@ -154,37 +175,37 @@ static void cs_parse_args(int argc, char *argv[])
 			opt.ts.ena = true;
 			break;
 		case 'f':
-			opt.v6.dontfrag.ena = true;
-			opt.v6.dontfrag.val = atoi(optarg);
+			opt.cmsg.dontfrag.ena = true;
+			opt.cmsg.dontfrag.val = atoi(optarg);
 			break;
 		case 'F':
 			opt.sockopt.dontfrag = atoi(optarg);
 			break;
 		case 'c':
-			opt.v6.tclass.ena = true;
-			opt.v6.tclass.val = atoi(optarg);
+			opt.cmsg.tclass.ena = true;
+			opt.cmsg.tclass.val = atoi(optarg);
 			break;
 		case 'C':
 			opt.sockopt.tclass = atoi(optarg);
 			break;
 		case 'l':
-			opt.v6.hlimit.ena = true;
-			opt.v6.hlimit.val = atoi(optarg);
+			opt.cmsg.hlimit.ena = true;
+			opt.cmsg.hlimit.val = atoi(optarg);
 			break;
 		case 'L':
 			opt.sockopt.hlimit = atoi(optarg);
 			break;
 		case 'H':
-			opt.v6.exthdr.ena = true;
+			opt.cmsg.exthdr.ena = true;
 			switch (optarg[0]) {
 			case 'h':
-				opt.v6.exthdr.val = IPV6_HOPOPTS;
+				opt.cmsg.exthdr.val = IPV6_HOPOPTS;
 				break;
 			case 'd':
-				opt.v6.exthdr.val = IPV6_DSTOPTS;
+				opt.cmsg.exthdr.val = IPV6_DSTOPTS;
 				break;
 			case 'r':
-				opt.v6.exthdr.val = IPV6_RTHDRDSTOPTS;
+				opt.cmsg.exthdr.val = IPV6_RTHDRDSTOPTS;
 				break;
 			default:
 				printf("Error: hdr type: %s\n", optarg);
@@ -245,21 +266,24 @@ cs_write_cmsg(int fd, struct msghdr *msg, char *cbuf, size_t cbuf_sz)
 	ca_write_cmsg_u32(cbuf, cbuf_sz, &cmsg_len,
 			  SOL_SOCKET, SO_MARK, &opt.mark);
 	ca_write_cmsg_u32(cbuf, cbuf_sz, &cmsg_len,
-			  SOL_IPV6, IPV6_DONTFRAG, &opt.v6.dontfrag);
-	ca_write_cmsg_u32(cbuf, cbuf_sz, &cmsg_len,
-			  SOL_IPV6, IPV6_TCLASS, &opt.v6.tclass);
-	ca_write_cmsg_u32(cbuf, cbuf_sz, &cmsg_len,
-			  SOL_IPV6, IPV6_HOPLIMIT, &opt.v6.hlimit);
+			  SOL_SOCKET, SO_PRIORITY, &opt.priority);
+
+	if (opt.sock.family == AF_INET) {
+		ca_write_cmsg_u32(cbuf, cbuf_sz, &cmsg_len,
+				  SOL_IP, IP_TOS, &opt.cmsg.tclass);
+		ca_write_cmsg_u32(cbuf, cbuf_sz, &cmsg_len,
+				  SOL_IP, IP_TTL, &opt.cmsg.hlimit);
+	} else {
+		ca_write_cmsg_u32(cbuf, cbuf_sz, &cmsg_len,
+				  SOL_IPV6, IPV6_DONTFRAG, &opt.cmsg.dontfrag);
+		ca_write_cmsg_u32(cbuf, cbuf_sz, &cmsg_len,
+				  SOL_IPV6, IPV6_TCLASS, &opt.cmsg.tclass);
+		ca_write_cmsg_u32(cbuf, cbuf_sz, &cmsg_len,
+				  SOL_IPV6, IPV6_HOPLIMIT, &opt.cmsg.hlimit);
+	}
 
 	if (opt.txtime.ena) {
-		struct sock_txtime so_txtime = {
-			.clockid = CLOCK_MONOTONIC,
-		};
 		__u64 txtime;
-
-		if (setsockopt(fd, SOL_SOCKET, SO_TXTIME,
-			       &so_txtime, sizeof(so_txtime)))
-			error(ERN_SOCKOPT, errno, "setsockopt TXTIME");
 
 		txtime = time_start_mono.tv_sec * (1000ULL * 1000 * 1000) +
 			 time_start_mono.tv_nsec +
@@ -276,13 +300,6 @@ cs_write_cmsg(int fd, struct msghdr *msg, char *cbuf, size_t cbuf_sz)
 		memcpy(CMSG_DATA(cmsg), &txtime, sizeof(txtime));
 	}
 	if (opt.ts.ena) {
-		__u32 val = SOF_TIMESTAMPING_SOFTWARE |
-			    SOF_TIMESTAMPING_OPT_TSONLY;
-
-		if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPING,
-			       &val, sizeof(val)))
-			error(ERN_SOCKOPT, errno, "setsockopt TIMESTAMPING");
-
 		cmsg = (struct cmsghdr *)(cbuf + cmsg_len);
 		cmsg_len += CMSG_SPACE(sizeof(__u32));
 		if (cbuf_sz < cmsg_len)
@@ -294,14 +311,14 @@ cs_write_cmsg(int fd, struct msghdr *msg, char *cbuf, size_t cbuf_sz)
 		*(__u32 *)CMSG_DATA(cmsg) = SOF_TIMESTAMPING_TX_SCHED |
 					    SOF_TIMESTAMPING_TX_SOFTWARE;
 	}
-	if (opt.v6.exthdr.ena) {
+	if (opt.cmsg.exthdr.ena) {
 		cmsg = (struct cmsghdr *)(cbuf + cmsg_len);
 		cmsg_len += CMSG_SPACE(8);
 		if (cbuf_sz < cmsg_len)
 			error(ERN_CMSG_WR, EFAULT, "cmsg buffer too small");
 
 		cmsg->cmsg_level = SOL_IPV6;
-		cmsg->cmsg_type = opt.v6.exthdr.val;
+		cmsg->cmsg_type = opt.cmsg.exthdr.val;
 		cmsg->cmsg_len = CMSG_LEN(8);
 		*(__u64 *)CMSG_DATA(cmsg) = 0;
 	}
@@ -325,16 +342,17 @@ static const char *cs_ts_info2str(unsigned int info)
 	return "unknown";
 }
 
-static void
+static unsigned long
 cs_read_cmsg(int fd, struct msghdr *msg, char *cbuf, size_t cbuf_sz)
 {
 	struct sock_extended_err *see;
 	struct scm_timestamping *ts;
+	unsigned long ts_seen = 0;
 	struct cmsghdr *cmsg;
 	int i, err;
 
 	if (!opt.ts.ena)
-		return;
+		return 0;
 	msg->msg_control = cbuf;
 	msg->msg_controllen = cbuf_sz;
 
@@ -388,8 +406,11 @@ cs_read_cmsg(int fd, struct msghdr *msg, char *cbuf, size_t cbuf_sz)
 			printf(" %5s ts%d %lluus\n",
 			       cs_ts_info2str(see->ee_info),
 			       i, rel_time);
+			ts_seen |= 1 << see->ee_info;
 		}
 	}
+
+	return ts_seen;
 }
 
 static void ca_set_sockopts(int fd)
@@ -398,29 +419,64 @@ static void ca_set_sockopts(int fd)
 	    setsockopt(fd, SOL_SOCKET, SO_MARK,
 		       &opt.sockopt.mark, sizeof(opt.sockopt.mark)))
 		error(ERN_SOCKOPT, errno, "setsockopt SO_MARK");
-	if (opt.sockopt.dontfrag &&
-	    setsockopt(fd, SOL_IPV6, IPV6_DONTFRAG,
-		       &opt.sockopt.dontfrag, sizeof(opt.sockopt.dontfrag)))
-		error(ERN_SOCKOPT, errno, "setsockopt IPV6_DONTFRAG");
-	if (opt.sockopt.tclass &&
-	    setsockopt(fd, SOL_IPV6, IPV6_TCLASS,
-		       &opt.sockopt.tclass, sizeof(opt.sockopt.tclass)))
-		error(ERN_SOCKOPT, errno, "setsockopt IPV6_TCLASS");
-	if (opt.sockopt.hlimit &&
-	    setsockopt(fd, SOL_IPV6, IPV6_UNICAST_HOPS,
-		       &opt.sockopt.hlimit, sizeof(opt.sockopt.hlimit)))
-		error(ERN_SOCKOPT, errno, "setsockopt IPV6_HOPLIMIT");
+	if (opt.sockopt.priority &&
+	    setsockopt(fd, SOL_SOCKET, SO_PRIORITY,
+		       &opt.sockopt.priority, sizeof(opt.sockopt.priority)))
+		error(ERN_SOCKOPT, errno, "setsockopt SO_PRIORITY");
+
+	if (opt.sock.family == AF_INET) {
+		if (opt.sockopt.tclass &&
+		    setsockopt(fd, SOL_IP, IP_TOS,
+			       &opt.sockopt.tclass, sizeof(opt.sockopt.tclass)))
+			error(ERN_SOCKOPT, errno, "setsockopt IP_TOS");
+		if (opt.sockopt.hlimit &&
+		    setsockopt(fd, SOL_IP, IP_TTL,
+			       &opt.sockopt.hlimit, sizeof(opt.sockopt.hlimit)))
+			error(ERN_SOCKOPT, errno, "setsockopt IP_TTL");
+	} else {
+		if (opt.sockopt.dontfrag &&
+		    setsockopt(fd, SOL_IPV6, IPV6_DONTFRAG,
+			       &opt.sockopt.dontfrag, sizeof(opt.sockopt.dontfrag)))
+			error(ERN_SOCKOPT, errno, "setsockopt IPV6_DONTFRAG");
+		if (opt.sockopt.tclass &&
+		    setsockopt(fd, SOL_IPV6, IPV6_TCLASS,
+			       &opt.sockopt.tclass, sizeof(opt.sockopt.tclass)))
+			error(ERN_SOCKOPT, errno, "setsockopt IPV6_TCLASS");
+		if (opt.sockopt.hlimit &&
+		    setsockopt(fd, SOL_IPV6, IPV6_UNICAST_HOPS,
+			       &opt.sockopt.hlimit, sizeof(opt.sockopt.hlimit)))
+			error(ERN_SOCKOPT, errno, "setsockopt IPV6_HOPLIMIT");
+	}
+
+	if (opt.txtime.ena) {
+		struct sock_txtime so_txtime = {
+			.clockid = CLOCK_MONOTONIC,
+		};
+
+		if (setsockopt(fd, SOL_SOCKET, SO_TXTIME,
+			       &so_txtime, sizeof(so_txtime)))
+			error(ERN_SOCKOPT, errno, "setsockopt TXTIME");
+	}
+	if (opt.ts.ena) {
+		__u32 val = SOF_TIMESTAMPING_SOFTWARE |
+			SOF_TIMESTAMPING_OPT_TSONLY;
+
+		if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPING,
+			       &val, sizeof(val)))
+			error(ERN_SOCKOPT, errno, "setsockopt TIMESTAMPING");
+	}
 }
 
 int main(int argc, char *argv[])
 {
 	struct addrinfo hints, *ai;
 	struct iovec iov[1];
+	unsigned char *buf;
 	struct msghdr msg;
 	char cbuf[1024];
-	char *buf;
 	int err;
 	int fd;
+	int i;
 
 	cs_parse_args(argc, argv);
 
@@ -435,7 +491,8 @@ int main(int argc, char *argv[])
 	if (err) {
 		fprintf(stderr, "Can't resolve address [%s]:%s\n",
 			opt.host, opt.service);
-		return ERN_SOCK_CREATE;
+		err = ERN_SOCK_CREATE;
+		goto err_free_buff;
 	}
 
 	if (ai->ai_family == AF_INET6 && opt.sock.proto == IPPROTO_ICMP)
@@ -444,8 +501,8 @@ int main(int argc, char *argv[])
 	fd = socket(ai->ai_family, opt.sock.type, opt.sock.proto);
 	if (fd < 0) {
 		fprintf(stderr, "Can't open socket: %s\n", strerror(errno));
-		freeaddrinfo(ai);
-		return ERN_RESOLVE;
+		err = ERN_RESOLVE;
+		goto err_free_info;
 	}
 
 	if (opt.sock.proto == IPPROTO_ICMP) {
@@ -456,7 +513,7 @@ int main(int argc, char *argv[])
 		buf[1] = 0;
 	} else if (opt.sock.type == SOCK_RAW) {
 		struct udphdr hdr = { 1, 2, htons(opt.size), 0 };
-		struct sockaddr_in6 *sin6 = (void *)ai->ai_addr;;
+		struct sockaddr_in6 *sin6 = (void *)ai->ai_addr;
 
 		memcpy(buf, &hdr, sizeof(hdr));
 		sin6->sin6_port = htons(opt.sock.proto);
@@ -480,27 +537,47 @@ int main(int argc, char *argv[])
 
 	cs_write_cmsg(fd, &msg, cbuf, sizeof(cbuf));
 
-	err = sendmsg(fd, &msg, 0);
-	if (err < 0) {
-		if (!opt.silent_send)
-			fprintf(stderr, "send failed: %s\n", strerror(errno));
-		err = ERN_SEND;
-		goto err_out;
-	} else if (err != (int)opt.size) {
-		fprintf(stderr, "short send\n");
-		err = ERN_SEND_SHORT;
-		goto err_out;
-	} else {
-		err = ERN_SUCCESS;
+	for (i = 0; i < opt.num_pkt; i++) {
+		err = sendmsg(fd, &msg, opt.msg_more ? MSG_MORE : 0);
+		if (err < 0) {
+			if (!opt.silent_send)
+				fprintf(stderr, "send failed: %s\n", strerror(errno));
+			err = ERN_SEND;
+			goto err_out;
+		} else if (err != (int)opt.size) {
+			fprintf(stderr, "short send\n");
+			err = ERN_SEND_SHORT;
+			goto err_out;
+		}
+		if (opt.msg_more) {
+			err = write(fd, NULL, 0);
+			if (err < 0) {
+				fprintf(stderr, "send more: %s\n", strerror(errno));
+				err = ERN_SEND_MORE;
+				goto err_out;
+			}
+		}
 	}
+	err = ERN_SUCCESS;
 
-	/* Make sure all timestamps have time to loop back */
-	usleep(opt.txtime.delay);
+	if (opt.ts.ena) {
+		unsigned long seen;
+		int i;
 
-	cs_read_cmsg(fd, &msg, cbuf, sizeof(cbuf));
+		/* Make sure all timestamps have time to loop back */
+		for (i = 0; i < 40; i++) {
+			seen = cs_read_cmsg(fd, &msg, cbuf, sizeof(cbuf));
+			if (seen & (1 << SCM_TSTAMP_SND))
+				break;
+			usleep(opt.txtime.delay / 20);
+		}
+	}
 
 err_out:
 	close(fd);
+err_free_info:
 	freeaddrinfo(ai);
+err_free_buff:
+	free(buf);
 	return err;
 }

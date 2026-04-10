@@ -37,6 +37,7 @@ static int virtio_gpu_vram_mmap(struct drm_gem_object *obj,
 	struct virtio_gpu_object *bo = gem_to_virtio_gpu_obj(obj);
 	struct virtio_gpu_object_vram *vram = to_virtio_gpu_vram(bo);
 	unsigned long vm_size = vma->vm_end - vma->vm_start;
+	unsigned long vm_end;
 
 	if (!(bo->blob_flags & VIRTGPU_BLOB_FLAG_USE_MAPPABLE))
 		return -EINVAL;
@@ -46,7 +47,7 @@ static int virtio_gpu_vram_mmap(struct drm_gem_object *obj,
 		return -EINVAL;
 
 	vma->vm_pgoff -= drm_vma_node_start(&obj->vma_node);
-	vma->vm_flags |= VM_MIXEDMAP | VM_DONTEXPAND;
+	vm_flags_set(vma, VM_MIXEDMAP | VM_DONTEXPAND);
 	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
 	vma->vm_page_prot = pgprot_decrypted(vma->vm_page_prot);
 	vma->vm_ops = &virtio_gpu_vram_vm_ops;
@@ -56,12 +57,14 @@ static int virtio_gpu_vram_mmap(struct drm_gem_object *obj,
 	else if (vram->map_info == VIRTIO_GPU_MAP_CACHE_UNCACHED)
 		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
-	/* Partial mappings of GEM buffers don't happen much in practice. */
-	if (vm_size != vram->vram_node.size)
+	if (check_add_overflow(vma->vm_pgoff << PAGE_SHIFT, vm_size, &vm_end))
+		return -EINVAL;
+
+	if (vm_end > vram->vram_node.size)
 		return -EINVAL;
 
 	ret = io_remap_pfn_range(vma, vma->vm_start,
-				 vram->vram_node.start >> PAGE_SHIFT,
+				 (vram->vram_node.start >> PAGE_SHIFT) + vma->vm_pgoff,
 				 vm_size, vma->vm_page_prot);
 	return ret;
 }
@@ -76,7 +79,7 @@ struct sg_table *virtio_gpu_vram_map_dma_buf(struct virtio_gpu_object *bo,
 	dma_addr_t addr;
 	int ret;
 
-	sgt = kzalloc(sizeof(*sgt), GFP_KERNEL);
+	sgt = kzalloc_obj(*sgt);
 	if (!sgt)
 		return ERR_PTR(-ENOMEM);
 
@@ -190,7 +193,7 @@ int virtio_gpu_vram_create(struct virtio_gpu_device *vgdev,
 	struct virtio_gpu_object_vram *vram;
 	int ret;
 
-	vram = kzalloc(sizeof(*vram), GFP_KERNEL);
+	vram = kzalloc_obj(*vram);
 	if (!vram)
 		return -ENOMEM;
 

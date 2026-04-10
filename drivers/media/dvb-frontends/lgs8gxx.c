@@ -1012,7 +1012,7 @@ struct dvb_frontend *lgs8gxx_attach(const struct lgs8gxx_config *config,
 	if (config == NULL || i2c == NULL)
 		return NULL;
 
-	priv = kzalloc(sizeof(struct lgs8gxx_state), GFP_KERNEL);
+	priv = kzalloc_obj(struct lgs8gxx_state);
 	if (priv == NULL)
 		goto error_out;
 
@@ -1043,7 +1043,7 @@ error_out:
 	return NULL;
 
 }
-EXPORT_SYMBOL(lgs8gxx_attach);
+EXPORT_SYMBOL_GPL(lgs8gxx_attach);
 
 MODULE_DESCRIPTION("Legend Silicon LGS8913/LGS8GXX DMB-TH demodulator driver");
 MODULE_AUTHOR("David T. L. Wong <davidtlwong@gmail.com>");

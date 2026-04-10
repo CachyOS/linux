@@ -38,8 +38,7 @@ struct mx25_tcq_priv {
 	struct device *dev;
 };
 
-static struct regmap_config mx25_tcq_regconfig = {
-	.fast_io = true,
+static const struct regmap_config mx25_tcq_regconfig = {
 	.max_register = 0x5c,
 	.reg_bits = 32,
 	.val_bits = 32,

@@ -19,7 +19,7 @@
 #include <asm/interrupt.h>
 #include <asm/kvm_ppc.h>
 #include <asm/kvm_book3s.h>
-#include <asm/archrandom.h>
+#include <asm/machdep.h>
 #include <asm/xics.h>
 #include <asm/xive.h>
 #include <asm/dbell.h>
@@ -32,6 +32,7 @@
 
 #include "book3s_xics.h"
 #include "book3s_xive.h"
+#include "book3s_hv.h"
 
 /*
  * Hash page table alignment on newer cpus(CPU_FTR_ARCH_206)
@@ -176,14 +177,19 @@ EXPORT_SYMBOL_GPL(kvmppc_hcall_impl_hv_realmode);
 
 int kvmppc_hwrng_present(void)
 {
-	return powernv_hwrng_present();
+	return ppc_md.get_random_seed != NULL;
 }
 EXPORT_SYMBOL_GPL(kvmppc_hwrng_present);
 
 long kvmppc_rm_h_random(struct kvm_vcpu *vcpu)
 {
-	if (powernv_get_random_real_mode(&vcpu->arch.regs.gpr[4]))
+	unsigned long rand;
+
+	if (ppc_md.get_random_seed &&
+	    ppc_md.get_random_seed(&rand)) {
+		kvmppc_set_gpr(vcpu, 4, rand);
 		return H_SUCCESS;
+	}
 
 	return H_HARDWARE;
 }
@@ -405,7 +411,7 @@ static long kvmppc_read_one_intr(bool *again)
 		return 1;
 
 	/* see if a host IPI is pending */
-	host_ipi = local_paca->kvm_hstate.host_ipi;
+	host_ipi = READ_ONCE(local_paca->kvm_hstate.host_ipi);
 	if (host_ipi)
 		return 1;
 
@@ -465,7 +471,7 @@ static long kvmppc_read_one_intr(bool *again)
 		 * meantime. If it's clear, we bounce the interrupt to the
 		 * guest
 		 */
-		host_ipi = local_paca->kvm_hstate.host_ipi;
+		host_ipi = READ_ONCE(local_paca->kvm_hstate.host_ipi);
 		if (unlikely(host_ipi != 0)) {
 			/* We raced with the host,
 			 * we need to resend that IPI, bummer
@@ -489,24 +495,6 @@ static long kvmppc_read_one_intr(bool *again)
 	return kvmppc_check_passthru(xisr, xirr, again);
 }
 
-void kvmppc_bad_interrupt(struct pt_regs *regs)
-{
-	/*
-	 * 100 could happen at any time, 200 can happen due to invalid real
-	 * address access for example (or any time due to a hardware problem).
-	 */
-	if (TRAP(regs) == 0x100) {
-		get_paca()->in_nmi++;
-		system_reset_exception(regs);
-		get_paca()->in_nmi--;
-	} else if (TRAP(regs) == 0x200) {
-		machine_check_exception(regs);
-	} else {
-		die("Bad interrupt in KVM entry/exit code", regs, SIGABRT);
-	}
-	panic("Bad KVM trap");
-}
-
 static void kvmppc_end_cede(struct kvm_vcpu *vcpu)
 {
 	vcpu->arch.ceded = 0;
@@ -527,7 +515,7 @@ void kvmppc_set_msr_hv(struct kvm_vcpu *vcpu, u64 msr)
 	 */
 	if ((msr & MSR_TS_MASK) == MSR_TS_MASK)
 		msr &= ~MSR_TS_MASK;
-	vcpu->arch.shregs.msr = msr;
+	__kvmppc_set_msr_hv(vcpu, msr);
 	kvmppc_end_cede(vcpu);
 }
 EXPORT_SYMBOL_GPL(kvmppc_set_msr_hv);
@@ -565,7 +553,7 @@ static void inject_interrupt(struct kvm_vcpu *vcpu, int vec, u64 srr1_flags)
 	kvmppc_set_srr0(vcpu, pc);
 	kvmppc_set_srr1(vcpu, (msr & SRR1_MSR_BITS) | srr1_flags);
 	kvmppc_set_pc(vcpu, new_pc);
-	vcpu->arch.shregs.msr = new_msr;
+	__kvmppc_set_msr_hv(vcpu, new_msr);
 }
 
 void kvmppc_inject_interrupt_hv(struct kvm_vcpu *vcpu, int vec, u64 srr1_flags)

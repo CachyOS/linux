@@ -6,7 +6,9 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/string.h>
+#include <linux/of.h>
 #include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/net_tstamp.h>
 #include <linux/fsl/ptp_qoriq.h>
 
@@ -54,35 +56,27 @@ static char dpaa_stats_global[][ETH_GSTRING_LEN] = {
 static int dpaa_get_link_ksettings(struct net_device *net_dev,
 				   struct ethtool_link_ksettings *cmd)
 {
-	if (!net_dev->phydev)
-		return 0;
+	struct dpaa_priv *priv = netdev_priv(net_dev);
+	struct mac_device *mac_dev = priv->mac_dev;
 
-	phy_ethtool_ksettings_get(net_dev->phydev, cmd);
-
-	return 0;
+	return phylink_ethtool_ksettings_get(mac_dev->phylink, cmd);
 }
 
 static int dpaa_set_link_ksettings(struct net_device *net_dev,
 				   const struct ethtool_link_ksettings *cmd)
 {
-	int err;
+	struct dpaa_priv *priv = netdev_priv(net_dev);
+	struct mac_device *mac_dev = priv->mac_dev;
 
-	if (!net_dev->phydev)
-		return -ENODEV;
-
-	err = phy_ethtool_ksettings_set(net_dev->phydev, cmd);
-	if (err < 0)
-		netdev_err(net_dev, "phy_ethtool_ksettings_set() = %d\n", err);
-
-	return err;
+	return phylink_ethtool_ksettings_set(mac_dev->phylink, cmd);
 }
 
 static void dpaa_get_drvinfo(struct net_device *net_dev,
 			     struct ethtool_drvinfo *drvinfo)
 {
-	strlcpy(drvinfo->driver, KBUILD_MODNAME,
+	strscpy(drvinfo->driver, KBUILD_MODNAME,
 		sizeof(drvinfo->driver));
-	strlcpy(drvinfo->bus_info, dev_name(net_dev->dev.parent->parent),
+	strscpy(drvinfo->bus_info, dev_name(net_dev->dev.parent->parent),
 		sizeof(drvinfo->bus_info));
 }
 
@@ -99,80 +93,28 @@ static void dpaa_set_msglevel(struct net_device *net_dev,
 
 static int dpaa_nway_reset(struct net_device *net_dev)
 {
-	int err;
+	struct dpaa_priv *priv = netdev_priv(net_dev);
+	struct mac_device *mac_dev = priv->mac_dev;
 
-	if (!net_dev->phydev)
-		return -ENODEV;
-
-	err = 0;
-	if (net_dev->phydev->autoneg) {
-		err = phy_start_aneg(net_dev->phydev);
-		if (err < 0)
-			netdev_err(net_dev, "phy_start_aneg() = %d\n",
-				   err);
-	}
-
-	return err;
+	return phylink_ethtool_nway_reset(mac_dev->phylink);
 }
 
 static void dpaa_get_pauseparam(struct net_device *net_dev,
 				struct ethtool_pauseparam *epause)
 {
-	struct mac_device *mac_dev;
-	struct dpaa_priv *priv;
+	struct dpaa_priv *priv = netdev_priv(net_dev);
+	struct mac_device *mac_dev = priv->mac_dev;
 
-	priv = netdev_priv(net_dev);
-	mac_dev = priv->mac_dev;
-
-	if (!net_dev->phydev)
-		return;
-
-	epause->autoneg = mac_dev->autoneg_pause;
-	epause->rx_pause = mac_dev->rx_pause_active;
-	epause->tx_pause = mac_dev->tx_pause_active;
+	phylink_ethtool_get_pauseparam(mac_dev->phylink, epause);
 }
 
 static int dpaa_set_pauseparam(struct net_device *net_dev,
 			       struct ethtool_pauseparam *epause)
 {
-	struct mac_device *mac_dev;
-	struct phy_device *phydev;
-	bool rx_pause, tx_pause;
-	struct dpaa_priv *priv;
-	int err;
+	struct dpaa_priv *priv = netdev_priv(net_dev);
+	struct mac_device *mac_dev = priv->mac_dev;
 
-	priv = netdev_priv(net_dev);
-	mac_dev = priv->mac_dev;
-
-	phydev = net_dev->phydev;
-	if (!phydev) {
-		netdev_err(net_dev, "phy device not initialized\n");
-		return -ENODEV;
-	}
-
-	if (!phy_validate_pause(phydev, epause))
-		return -EINVAL;
-
-	/* The MAC should know how to handle PAUSE frame autonegotiation before
-	 * adjust_link is triggered by a forced renegotiation of sym/asym PAUSE
-	 * settings.
-	 */
-	mac_dev->autoneg_pause = !!epause->autoneg;
-	mac_dev->rx_pause_req = !!epause->rx_pause;
-	mac_dev->tx_pause_req = !!epause->tx_pause;
-
-	/* Determine the sym/asym advertised PAUSE capabilities from the desired
-	 * rx/tx pause settings.
-	 */
-
-	phy_set_asym_pause(phydev, epause->rx_pause, epause->tx_pause);
-
-	fman_get_pause_cfg(mac_dev, &rx_pause, &tx_pause);
-	err = fman_set_mac_active_pause(mac_dev, rx_pause, tx_pause);
-	if (err < 0)
-		netdev_err(net_dev, "set_mac_active_pause() = %d\n", err);
-
-	return err;
+	return phylink_ethtool_set_pauseparam(mac_dev->phylink, epause);
 }
 
 static int dpaa_get_sset_count(struct net_device *net_dev, int type)
@@ -301,42 +243,28 @@ static void dpaa_get_ethtool_stats(struct net_device *net_dev,
 static void dpaa_get_strings(struct net_device *net_dev, u32 stringset,
 			     u8 *data)
 {
-	unsigned int i, j, num_cpus, size;
-	char string_cpu[ETH_GSTRING_LEN];
-	u8 *strings;
+	unsigned int i, j, num_cpus;
 
-	memset(string_cpu, 0, sizeof(string_cpu));
-	strings   = data;
-	num_cpus  = num_online_cpus();
-	size      = DPAA_STATS_GLOBAL_LEN * ETH_GSTRING_LEN;
+	num_cpus = num_online_cpus();
 
 	for (i = 0; i < DPAA_STATS_PERCPU_LEN; i++) {
-		for (j = 0; j < num_cpus; j++) {
-			snprintf(string_cpu, ETH_GSTRING_LEN, "%s [CPU %d]",
-				 dpaa_stats_percpu[i], j);
-			memcpy(strings, string_cpu, ETH_GSTRING_LEN);
-			strings += ETH_GSTRING_LEN;
-		}
-		snprintf(string_cpu, ETH_GSTRING_LEN, "%s [TOTAL]",
-			 dpaa_stats_percpu[i]);
-		memcpy(strings, string_cpu, ETH_GSTRING_LEN);
-		strings += ETH_GSTRING_LEN;
-	}
-	for (j = 0; j < num_cpus; j++) {
-		snprintf(string_cpu, ETH_GSTRING_LEN,
-			 "bpool [CPU %d]", j);
-		memcpy(strings, string_cpu, ETH_GSTRING_LEN);
-		strings += ETH_GSTRING_LEN;
-	}
-	snprintf(string_cpu, ETH_GSTRING_LEN, "bpool [TOTAL]");
-	memcpy(strings, string_cpu, ETH_GSTRING_LEN);
-	strings += ETH_GSTRING_LEN;
+		for (j = 0; j < num_cpus; j++)
+			ethtool_sprintf(&data, "%s [CPU %d]",
+					dpaa_stats_percpu[i], j);
 
-	memcpy(strings, dpaa_stats_global, size);
+		ethtool_sprintf(&data, "%s [TOTAL]", dpaa_stats_percpu[i]);
+	}
+	for (i = 0; i < num_cpus; i++)
+		ethtool_sprintf(&data, "bpool [CPU %d]", i);
+
+	ethtool_puts(&data, "bpool [TOTAL]");
+
+	for (i = 0; i < DPAA_STATS_GLOBAL_LEN; i++)
+		ethtool_puts(&data, dpaa_stats_global[i]);
 }
 
-static int dpaa_get_hash_opts(struct net_device *dev,
-			      struct ethtool_rxnfc *cmd)
+static int dpaa_get_rxfh_fields(struct net_device *dev,
+				struct ethtool_rxfh_fields *cmd)
 {
 	struct dpaa_priv *priv = netdev_priv(dev);
 
@@ -371,22 +299,6 @@ static int dpaa_get_hash_opts(struct net_device *dev,
 	return 0;
 }
 
-static int dpaa_get_rxnfc(struct net_device *dev, struct ethtool_rxnfc *cmd,
-			  u32 *unused)
-{
-	int ret = -EOPNOTSUPP;
-
-	switch (cmd->cmd) {
-	case ETHTOOL_GRXFH:
-		ret = dpaa_get_hash_opts(dev, cmd);
-		break;
-	default:
-		break;
-	}
-
-	return ret;
-}
-
 static void dpaa_set_hash(struct net_device *net_dev, bool enable)
 {
 	struct mac_device *mac_dev;
@@ -401,8 +313,9 @@ static void dpaa_set_hash(struct net_device *net_dev, bool enable)
 	priv->keygen_in_use = enable;
 }
 
-static int dpaa_set_hash_opts(struct net_device *dev,
-			      struct ethtool_rxnfc *nfc)
+static int dpaa_set_rxfh_fields(struct net_device *dev,
+				const struct ethtool_rxfh_fields *nfc,
+				struct netlink_ext_ack *extack)
 {
 	int ret = -EINVAL;
 
@@ -436,23 +349,8 @@ static int dpaa_set_hash_opts(struct net_device *dev,
 	return ret;
 }
 
-static int dpaa_set_rxnfc(struct net_device *dev, struct ethtool_rxnfc *cmd)
-{
-	int ret = -EOPNOTSUPP;
-
-	switch (cmd->cmd) {
-	case ETHTOOL_SRXFH:
-		ret = dpaa_set_hash_opts(dev, cmd);
-		break;
-	default:
-		break;
-	}
-
-	return ret;
-}
-
 static int dpaa_get_ts_info(struct net_device *net_dev,
-			    struct ethtool_ts_info *info)
+			    struct kernel_ethtool_ts_info *info)
 {
 	struct device *dev = net_dev->dev.parent;
 	struct device_node *mac_node = dev->of_node;
@@ -473,8 +371,10 @@ static int dpaa_get_ts_info(struct net_device *net_dev,
 		of_node_put(ptp_node);
 	}
 
-	if (ptp_dev)
+	if (ptp_dev) {
 		ptp = platform_get_drvdata(ptp_dev);
+		put_device(&ptp_dev->dev);
+	}
 
 	if (ptp)
 		info->phc_index = ptp->phc_index;
@@ -515,11 +415,15 @@ static int dpaa_set_coalesce(struct net_device *dev,
 			     struct netlink_ext_ack *extack)
 {
 	const cpumask_t *cpus = qman_affine_cpus();
-	bool needs_revert[NR_CPUS] = {false};
 	struct qman_portal *portal;
 	u32 period, prev_period;
 	u8 thresh, prev_thresh;
+	bool *needs_revert;
 	int cpu, res;
+
+	needs_revert = kzalloc_objs(bool, num_possible_cpus());
+	if (!needs_revert)
+		return -ENOMEM;
 
 	period = c->rx_coalesce_usecs;
 	thresh = c->rx_max_coalesced_frames;
@@ -543,6 +447,8 @@ static int dpaa_set_coalesce(struct net_device *dev,
 		needs_revert[cpu] = true;
 	}
 
+	kfree(needs_revert);
+
 	return 0;
 
 revert_values:
@@ -556,7 +462,50 @@ revert_values:
 		qman_dqrr_set_ithresh(portal, prev_thresh);
 	}
 
+	kfree(needs_revert);
+
 	return res;
+}
+
+static void dpaa_get_pause_stats(struct net_device *net_dev,
+				 struct ethtool_pause_stats *s)
+{
+	struct dpaa_priv *priv = netdev_priv(net_dev);
+	struct mac_device *mac_dev = priv->mac_dev;
+
+	if (mac_dev->get_pause_stats)
+		mac_dev->get_pause_stats(mac_dev->fman_mac, s);
+}
+
+static void dpaa_get_rmon_stats(struct net_device *net_dev,
+				struct ethtool_rmon_stats *s,
+				const struct ethtool_rmon_hist_range **ranges)
+{
+	struct dpaa_priv *priv = netdev_priv(net_dev);
+	struct mac_device *mac_dev = priv->mac_dev;
+
+	if (mac_dev->get_rmon_stats)
+		mac_dev->get_rmon_stats(mac_dev->fman_mac, s, ranges);
+}
+
+static void dpaa_get_eth_ctrl_stats(struct net_device *net_dev,
+				    struct ethtool_eth_ctrl_stats *s)
+{
+	struct dpaa_priv *priv = netdev_priv(net_dev);
+	struct mac_device *mac_dev = priv->mac_dev;
+
+	if (mac_dev->get_eth_ctrl_stats)
+		mac_dev->get_eth_ctrl_stats(mac_dev->fman_mac, s);
+}
+
+static void dpaa_get_eth_mac_stats(struct net_device *net_dev,
+				   struct ethtool_eth_mac_stats *s)
+{
+	struct dpaa_priv *priv = netdev_priv(net_dev);
+	struct mac_device *mac_dev = priv->mac_dev;
+
+	if (mac_dev->get_eth_mac_stats)
+		mac_dev->get_eth_mac_stats(mac_dev->fman_mac, s);
 }
 
 const struct ethtool_ops dpaa_ethtool_ops = {
@@ -574,9 +523,13 @@ const struct ethtool_ops dpaa_ethtool_ops = {
 	.get_strings = dpaa_get_strings,
 	.get_link_ksettings = dpaa_get_link_ksettings,
 	.set_link_ksettings = dpaa_set_link_ksettings,
-	.get_rxnfc = dpaa_get_rxnfc,
-	.set_rxnfc = dpaa_set_rxnfc,
+	.get_rxfh_fields = dpaa_get_rxfh_fields,
+	.set_rxfh_fields = dpaa_set_rxfh_fields,
 	.get_ts_info = dpaa_get_ts_info,
 	.get_coalesce = dpaa_get_coalesce,
 	.set_coalesce = dpaa_set_coalesce,
+	.get_pause_stats = dpaa_get_pause_stats,
+	.get_rmon_stats = dpaa_get_rmon_stats,
+	.get_eth_ctrl_stats = dpaa_get_eth_ctrl_stats,
+	.get_eth_mac_stats = dpaa_get_eth_mac_stats,
 };

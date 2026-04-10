@@ -78,6 +78,7 @@
 #define CPLL_333M		9
 #define ARMCLK			10
 #define USB480M			11
+#define USB480M_PHY		12
 #define ACLK_CORE_NIU2BUS	18
 #define CLK_CORE_PVTM		19
 #define CLK_CORE_PVTM_CORE	20
@@ -482,7 +483,11 @@
 
 #define PCLK_CORE_PVTM		450
 
-#define CLK_NR_CLKS		(PCLK_CORE_PVTM + 1)
+/* scmi-clocks indices */
+
+#define SCMI_CLK_CPU		0
+#define SCMI_CLK_GPU		1
+#define SCMI_CLK_NPU		2
 
 /* pmu soft-reset indices */
 /* pmucru_softrst_con0 */

@@ -7,12 +7,10 @@
  * detected in at least musl libc, used in Alpine Linux. -acme
  */
 #include <stdio.h>
-#include <stdint.h>
-#include <linux/compiler.h>
-#include <linux/stddef.h>
 #include <linux/perf_event.h>
 #include <linux/types.h>
-#include "event.h"
+#include "util/map_symbol.h"
+#include "util/sample.h"
 
 struct branch_flags {
 	union {
@@ -24,7 +22,11 @@ struct branch_flags {
 			u64 abort:1;
 			u64 cycles:16;
 			u64 type:4;
-			u64 reserved:40;
+			u64 spec:2;
+			u64 new_type:4;
+			u64 priv:3;
+			u64 not_taken:1;
+			u64 reserved:30;
 		};
 	};
 };
@@ -33,6 +35,7 @@ struct branch_info {
 	struct addr_map_symbol from;
 	struct addr_map_symbol to;
 	struct branch_flags    flags;
+	u64		       branch_stack_cntr;
 	char		       *srcline_from;
 	char		       *srcline_to;
 };
@@ -72,6 +75,7 @@ static inline struct branch_entry *perf_sample__branch_entries(struct perf_sampl
 struct branch_type_stat {
 	bool	branch_to;
 	u64	counts[PERF_BR_MAX];
+	u64	new_counts[PERF_BR_NEW_MAX];
 	u64	cond_fwd;
 	u64	cond_bwd;
 	u64	cross_4k;
@@ -82,7 +86,11 @@ void branch_type_count(struct branch_type_stat *st, struct branch_flags *flags,
 		       u64 from, u64 to);
 
 const char *branch_type_name(int type);
-void branch_type_stat_display(FILE *fp, struct branch_type_stat *st);
-int branch_type_str(struct branch_type_stat *st, char *bf, int bfsize);
+const char *branch_new_type_name(int new_type);
+const char *get_branch_type(struct branch_entry *e);
+void branch_type_stat_display(FILE *fp, const struct branch_type_stat *st);
+int branch_type_str(const struct branch_type_stat *st, char *bf, int bfsize);
+
+const char *branch_spec_desc(int spec);
 
 #endif /* _PERF_BRANCH_H */

@@ -8,6 +8,7 @@
 
 #include <linux/bitops.h>
 #include <linux/gpio/driver.h>
+#include <linux/gpio/generic.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -35,10 +36,9 @@
 #define RDA_GPIO_BANK_NR	32
 
 struct rda_gpio {
-	struct gpio_chip chip;
+	struct gpio_generic_chip chip;
 	void __iomem *base;
 	spinlock_t lock;
-	struct irq_chip irq_chip;
 	int irq;
 };
 
@@ -74,6 +74,7 @@ static void rda_gpio_irq_mask(struct irq_data *data)
 	value |= BIT(offset) << RDA_GPIO_IRQ_FALL_SHIFT;
 
 	writel_relaxed(value, base + RDA_GPIO_INT_CTRL_CLR);
+	gpiochip_disable_irq(chip, offset);
 }
 
 static void rda_gpio_irq_ack(struct irq_data *data)
@@ -154,6 +155,7 @@ static void rda_gpio_irq_unmask(struct irq_data *data)
 	u32 offset = irqd_to_hwirq(data);
 	u32 trigger = irqd_get_trigger_type(data);
 
+	gpiochip_enable_irq(chip, offset);
 	rda_gpio_set_irq(chip, offset, trigger);
 }
 
@@ -195,8 +197,19 @@ static void rda_gpio_irq_handler(struct irq_desc *desc)
 	chained_irq_exit(ic, desc);
 }
 
+static const struct irq_chip rda_gpio_irq_chip = {
+	.name = "rda-gpio",
+	.irq_ack = rda_gpio_irq_ack,
+	.irq_mask = rda_gpio_irq_mask,
+	.irq_unmask = rda_gpio_irq_unmask,
+	.irq_set_type = rda_gpio_irq_set_type,
+	.flags = IRQCHIP_SKIP_SET_WAKE | IRQCHIP_IMMUTABLE,
+	GPIOCHIP_IRQ_RESOURCE_HELPERS,
+};
+
 static int rda_gpio_probe(struct platform_device *pdev)
 {
+	struct gpio_generic_chip_config config;
 	struct device *dev = &pdev->dev;
 	struct gpio_irq_chip *girq;
 	struct rda_gpio *rda_gpio;
@@ -224,32 +237,30 @@ static int rda_gpio_probe(struct platform_device *pdev)
 
 	spin_lock_init(&rda_gpio->lock);
 
-	ret = bgpio_init(&rda_gpio->chip, dev, 4,
-			 rda_gpio->base + RDA_GPIO_VAL,
-			 rda_gpio->base + RDA_GPIO_SET,
-			 rda_gpio->base + RDA_GPIO_CLR,
-			 rda_gpio->base + RDA_GPIO_OEN_SET_OUT,
-			 rda_gpio->base + RDA_GPIO_OEN_SET_IN,
-			 BGPIOF_READ_OUTPUT_REG_SET);
+	config = (struct gpio_generic_chip_config) {
+		.dev = dev,
+		.sz = 4,
+		.dat = rda_gpio->base + RDA_GPIO_VAL,
+		.set = rda_gpio->base + RDA_GPIO_SET,
+		.clr = rda_gpio->base + RDA_GPIO_CLR,
+		.dirout = rda_gpio->base + RDA_GPIO_OEN_SET_OUT,
+		.dirin = rda_gpio->base + RDA_GPIO_OEN_SET_IN,
+		.flags = GPIO_GENERIC_READ_OUTPUT_REG_SET,
+	};
+
+	ret = gpio_generic_chip_init(&rda_gpio->chip, &config);
 	if (ret) {
-		dev_err(dev, "bgpio_init failed\n");
+		dev_err(dev, "failed to initialize the generic GPIO chip\n");
 		return ret;
 	}
 
-	rda_gpio->chip.label = dev_name(dev);
-	rda_gpio->chip.ngpio = ngpios;
-	rda_gpio->chip.base = -1;
+	rda_gpio->chip.gc.label = dev_name(dev);
+	rda_gpio->chip.gc.ngpio = ngpios;
+	rda_gpio->chip.gc.base = -1;
 
 	if (rda_gpio->irq >= 0) {
-		rda_gpio->irq_chip.name = "rda-gpio",
-		rda_gpio->irq_chip.irq_ack = rda_gpio_irq_ack,
-		rda_gpio->irq_chip.irq_mask = rda_gpio_irq_mask,
-		rda_gpio->irq_chip.irq_unmask = rda_gpio_irq_unmask,
-		rda_gpio->irq_chip.irq_set_type = rda_gpio_irq_set_type,
-		rda_gpio->irq_chip.flags = IRQCHIP_SKIP_SET_WAKE,
-
-		girq = &rda_gpio->chip.irq;
-		girq->chip = &rda_gpio->irq_chip;
+		girq = &rda_gpio->chip.gc.irq;
+		gpio_irq_chip_set_chip(girq, &rda_gpio_irq_chip);
 		girq->handler = handle_bad_irq;
 		girq->default_type = IRQ_TYPE_NONE;
 		girq->parent_handler = rda_gpio_irq_handler;
@@ -265,7 +276,7 @@ static int rda_gpio_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, rda_gpio);
 
-	return devm_gpiochip_add_data(dev, &rda_gpio->chip, rda_gpio);
+	return devm_gpiochip_add_data(dev, &rda_gpio->chip.gc, rda_gpio);
 }
 
 static const struct of_device_id rda_gpio_of_match[] = {
@@ -286,4 +297,3 @@ module_platform_driver_probe(rda_gpio_driver, rda_gpio_probe);
 
 MODULE_DESCRIPTION("RDA Micro GPIO driver");
 MODULE_AUTHOR("Manivannan Sadhasivam <manivannan.sadhasivam@linaro.org>");
-MODULE_LICENSE("GPL v2");

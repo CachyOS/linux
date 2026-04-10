@@ -446,27 +446,25 @@ snd_nm256_set_format(struct nm256 *chip, struct nm256_stream *s,
 /* acquire interrupt */
 static int snd_nm256_acquire_irq(struct nm256 *chip)
 {
-	mutex_lock(&chip->irq_mutex);
+	guard(mutex)(&chip->irq_mutex);
 	if (chip->irq < 0) {
 		if (request_irq(chip->pci->irq, chip->interrupt, IRQF_SHARED,
 				KBUILD_MODNAME, chip)) {
 			dev_err(chip->card->dev,
 				"unable to grab IRQ %d\n", chip->pci->irq);
-			mutex_unlock(&chip->irq_mutex);
 			return -EBUSY;
 		}
 		chip->irq = chip->pci->irq;
 		chip->card->sync_irq = chip->irq;
 	}
 	chip->irq_acks++;
-	mutex_unlock(&chip->irq_mutex);
 	return 0;
 }
 
 /* release interrupt */
 static void snd_nm256_release_irq(struct nm256 *chip)
 {
-	mutex_lock(&chip->irq_mutex);
+	guard(mutex)(&chip->irq_mutex);
 	if (chip->irq_acks > 0)
 		chip->irq_acks--;
 	if (chip->irq_acks == 0 && chip->irq >= 0) {
@@ -474,7 +472,6 @@ static void snd_nm256_release_irq(struct nm256 *chip)
 		chip->irq = -1;
 		chip->card->sync_irq = -1;
 	}
-	mutex_unlock(&chip->irq_mutex);
 }
 
 /*
@@ -547,12 +544,11 @@ snd_nm256_playback_trigger(struct snd_pcm_substream *substream, int cmd)
 {
 	struct nm256 *chip = snd_pcm_substream_chip(substream);
 	struct nm256_stream *s = substream->runtime->private_data;
-	int err = 0;
 
 	if (snd_BUG_ON(!s))
 		return -ENXIO;
 
-	spin_lock(&chip->reg_lock);
+	guard(spinlock)(&chip->reg_lock);
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_RESUME:
 		s->suspended = 0;
@@ -573,11 +569,9 @@ snd_nm256_playback_trigger(struct snd_pcm_substream *substream, int cmd)
 		}
 		break;
 	default:
-		err = -EINVAL;
-		break;
+		return -EINVAL;
 	}
-	spin_unlock(&chip->reg_lock);
-	return err;
+	return 0;
 }
 
 static int
@@ -585,12 +579,11 @@ snd_nm256_capture_trigger(struct snd_pcm_substream *substream, int cmd)
 {
 	struct nm256 *chip = snd_pcm_substream_chip(substream);
 	struct nm256_stream *s = substream->runtime->private_data;
-	int err = 0;
 
 	if (snd_BUG_ON(!s))
 		return -ENXIO;
 
-	spin_lock(&chip->reg_lock);
+	guard(spinlock)(&chip->reg_lock);
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
@@ -607,11 +600,9 @@ snd_nm256_capture_trigger(struct snd_pcm_substream *substream, int cmd)
 		}
 		break;
 	default:
-		err = -EINVAL;
-		break;
+		return -EINVAL;
 	}
-	spin_unlock(&chip->reg_lock);
-	return err;
+	return 0;
 }
 
 
@@ -631,10 +622,9 @@ static int snd_nm256_pcm_prepare(struct snd_pcm_substream *substream)
 	s->periods = substream->runtime->periods;
 	s->cur_period = 0;
 
-	spin_lock_irq(&chip->reg_lock);
+	guard(spinlock_irq)(&chip->reg_lock);
 	s->running = 0;
 	snd_nm256_set_format(chip, s, substream);
-	spin_unlock_irq(&chip->reg_lock);
 
 	return 0;
 }
@@ -691,25 +681,13 @@ snd_nm256_playback_silence(struct snd_pcm_substream *substream,
 static int
 snd_nm256_playback_copy(struct snd_pcm_substream *substream,
 			int channel, unsigned long pos,
-			void __user *src, unsigned long count)
+			struct iov_iter *src, unsigned long count)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct nm256_stream *s = runtime->private_data;
 
-	if (copy_from_user_toio(s->bufptr + pos, src, count))
+	if (copy_from_iter_toio(s->bufptr + pos, count, src) != count)
 		return -EFAULT;
-	return 0;
-}
-
-static int
-snd_nm256_playback_copy_kernel(struct snd_pcm_substream *substream,
-			       int channel, unsigned long pos,
-			       void *src, unsigned long count)
-{
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct nm256_stream *s = runtime->private_data;
-
-	memcpy_toio(s->bufptr + pos, src, count);
 	return 0;
 }
 
@@ -719,25 +697,13 @@ snd_nm256_playback_copy_kernel(struct snd_pcm_substream *substream,
 static int
 snd_nm256_capture_copy(struct snd_pcm_substream *substream,
 		       int channel, unsigned long pos,
-		       void __user *dst, unsigned long count)
+		       struct iov_iter *dst, unsigned long count)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct nm256_stream *s = runtime->private_data;
 
-	if (copy_to_user_fromio(dst, s->bufptr + pos, count))
+	if (copy_to_iter_fromio(s->bufptr + pos, count, dst) != count)
 		return -EFAULT;
-	return 0;
-}
-
-static int
-snd_nm256_capture_copy_kernel(struct snd_pcm_substream *substream,
-			      int channel, unsigned long pos,
-			      void *dst, unsigned long count)
-{
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct nm256_stream *s = runtime->private_data;
-
-	memcpy_fromio(dst, s->bufptr + pos, count);
 	return 0;
 }
 
@@ -909,8 +875,7 @@ static const struct snd_pcm_ops snd_nm256_playback_ops = {
 	.trigger =	snd_nm256_playback_trigger,
 	.pointer =	snd_nm256_playback_pointer,
 #ifndef __i386__
-	.copy_user =	snd_nm256_playback_copy,
-	.copy_kernel =	snd_nm256_playback_copy_kernel,
+	.copy =		snd_nm256_playback_copy,
 	.fill_silence =	snd_nm256_playback_silence,
 #endif
 	.mmap =		snd_pcm_lib_mmap_iomem,
@@ -924,8 +889,7 @@ static const struct snd_pcm_ops snd_nm256_capture_ops = {
 	.trigger =	snd_nm256_capture_trigger,
 	.pointer =	snd_nm256_capture_pointer,
 #ifndef __i386__
-	.copy_user =	snd_nm256_capture_copy,
-	.copy_kernel =	snd_nm256_capture_copy_kernel,
+	.copy =		snd_nm256_capture_copy,
 #endif
 	.mmap =		snd_pcm_lib_mmap_iomem,
 };
@@ -1025,7 +989,7 @@ snd_nm256_interrupt(int irq, void *dev_id)
 
 	/* Rather boring; check for individual interrupts and process them. */
 
-	spin_lock(&chip->reg_lock);
+	guard(spinlock)(&chip->reg_lock);
 	if (status & NM_PLAYBACK_INT) {
 		status &= ~NM_PLAYBACK_INT;
 		NM_ACK_INT(chip, NM_PLAYBACK_INT);
@@ -1064,7 +1028,6 @@ snd_nm256_interrupt(int irq, void *dev_id)
 		NM_ACK_INT(chip, status);
 	}
 
-	spin_unlock(&chip->reg_lock);
 	return IRQ_HANDLED;
 }
 
@@ -1091,7 +1054,7 @@ snd_nm256_interrupt_zx(int irq, void *dev_id)
 
 	/* Rather boring; check for individual interrupts and process them. */
 
-	spin_lock(&chip->reg_lock);
+	guard(spinlock)(&chip->reg_lock);
 	if (status & NM2_PLAYBACK_INT) {
 		status &= ~NM2_PLAYBACK_INT;
 		NM2_ACK_INT(chip, NM2_PLAYBACK_INT);
@@ -1129,7 +1092,6 @@ snd_nm256_interrupt_zx(int irq, void *dev_id)
 		NM2_ACK_INT(chip, status);
 	}
 
-	spin_unlock(&chip->reg_lock);
 	return IRQ_HANDLED;
 }
 
@@ -1386,7 +1348,6 @@ snd_nm256_peek_for_sig(struct nm256 *chip)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 /*
  * APM event handler, so the card is properly reinitialized after a power
  * event.
@@ -1419,9 +1380,8 @@ static int nm256_resume(struct device *dev)
 	for (i = 0; i < 2; i++) {
 		struct nm256_stream *s = &chip->streams[i];
 		if (s->substream && s->suspended) {
-			spin_lock_irq(&chip->reg_lock);
+			guard(spinlock_irq)(&chip->reg_lock);
 			snd_nm256_set_format(chip, s, s->substream);
-			spin_unlock_irq(&chip->reg_lock);
 		}
 	}
 
@@ -1430,11 +1390,7 @@ static int nm256_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(nm256_pm, nm256_suspend, nm256_resume);
-#define NM256_PM_OPS	&nm256_pm
-#else
-#define NM256_PM_OPS	NULL
-#endif /* CONFIG_PM_SLEEP */
+static DEFINE_SIMPLE_DEV_PM_OPS(nm256_pm, nm256_suspend, nm256_resume);
 
 static void snd_nm256_free(struct snd_card *card)
 {
@@ -1478,7 +1434,7 @@ snd_nm256_create(struct snd_card *card, struct pci_dev *pci)
 	chip->buffer_addr = pci_resource_start(pci, 0);
 	chip->cport_addr = pci_resource_start(pci, 1);
 
-	err = pci_request_regions(pci, card->driver);
+	err = pcim_request_all_regions(pci, card->driver);
 	if (err < 0)
 		return err;
 
@@ -1626,13 +1582,13 @@ static int snd_nm256_probe(struct pci_dev *pci,
 
 	switch (pci->device) {
 	case PCI_DEVICE_ID_NEOMAGIC_NM256AV_AUDIO:
-		strcpy(card->driver, "NM256AV");
+		strscpy(card->driver, "NM256AV");
 		break;
 	case PCI_DEVICE_ID_NEOMAGIC_NM256ZX_AUDIO:
-		strcpy(card->driver, "NM256ZX");
+		strscpy(card->driver, "NM256ZX");
 		break;
 	case PCI_DEVICE_ID_NEOMAGIC_NM256XL_PLUS_AUDIO:
-		strcpy(card->driver, "NM256XL+");
+		strscpy(card->driver, "NM256XL+");
 		break;
 	default:
 		dev_err(&pci->dev, "invalid device id 0x%x\n", pci->device);
@@ -1690,7 +1646,7 @@ static struct pci_driver nm256_driver = {
 	.id_table = snd_nm256_ids,
 	.probe = snd_nm256_probe,
 	.driver = {
-		.pm = NM256_PM_OPS,
+		.pm = &nm256_pm,
 	},
 };
 

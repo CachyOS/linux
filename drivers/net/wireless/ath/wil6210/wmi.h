@@ -474,7 +474,7 @@ struct wmi_start_scan_cmd {
 	struct {
 		u8 channel;
 		u8 reserved;
-	} channel_list[];
+	} channel_list[] __counted_by(num_channels);
 } __packed;
 
 #define WMI_MAX_PNO_SSID_NUM	(16)
@@ -2763,7 +2763,7 @@ struct wmi_rf_xpm_write_result_event {
 
 /* WMI_TX_MGMT_PACKET_EVENTID */
 struct wmi_tx_mgmt_packet_event {
-	u8 payload[0];
+	DECLARE_FLEX_ARRAY(u8, payload);
 } __packed;
 
 /* WMI_RX_MGMT_PACKET_EVENTID */
@@ -3320,7 +3320,7 @@ struct wmi_set_link_monitor_cmd {
 	u8 rssi_hyst;
 	u8 reserved[12];
 	u8 rssi_thresholds_list_size;
-	s8 rssi_thresholds_list[];
+	s8 rssi_thresholds_list[] __counted_by(rssi_thresholds_list_size);
 } __packed;
 
 /* wmi_link_monitor_event_type */
@@ -3495,7 +3495,7 @@ struct wmi_aoa_meas_event {
 	u8 channel;
 	/* enum wmi_aoa_meas_type */
 	u8 aoa_meas_type;
-	/* Measurments are from RFs, defined by the mask */
+	/* Measurements are from RFs, defined by the mask */
 	__le32 meas_rf_mask;
 	/* enum wmi_aoa_meas_status */
 	u8 meas_status;
@@ -3634,7 +3634,7 @@ struct wmi_tof_ftm_per_dest_res_event {
 	__le32 tsf_sync;
 	/* actual received ftm per burst */
 	u8 actual_ftm_per_burst;
-	/* Measurments are from RFs, defined by the mask */
+	/* Measurements are from RFs, defined by the mask */
 	__le32 meas_rf_mask;
 	u8 reserved0[3];
 	struct wmi_responder_ftm_res responder_ftm_res[];

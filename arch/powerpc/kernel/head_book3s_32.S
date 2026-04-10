@@ -18,6 +18,8 @@
 
 #include <linux/init.h>
 #include <linux/pgtable.h>
+#include <linux/linkage.h>
+
 #include <asm/reg.h>
 #include <asm/page.h>
 #include <asm/mmu.h>
@@ -29,7 +31,6 @@
 #include <asm/ptrace.h>
 #include <asm/bug.h>
 #include <asm/kvm_book3s_asm.h>
-#include <asm/export.h>
 #include <asm/feature-fixups.h>
 #include <asm/interrupt.h>
 
@@ -410,44 +411,34 @@ END_FTR_SECTION_IFSET(CPU_FTR_FPU_UNAVAILABLE)
  */
 	. = INTERRUPT_INST_TLB_MISS_603
 InstructionTLBMiss:
-/*
- * r0:	scratch
- * r1:	linux style pte ( later becomes ppc hardware pte )
- * r2:	ptr to linux-style pte
- * r3:	scratch
- */
 	/* Get PTE (linux-style) and check access */
-	mfspr	r3,SPRN_IMISS
-#if defined(CONFIG_MODULES) || defined(CONFIG_DEBUG_PAGEALLOC) || defined(CONFIG_KFENCE)
-	lis	r1, TASK_SIZE@h		/* check if kernel address */
-	cmplw	0,r1,r3
-#endif
+	mfspr	r0,SPRN_IMISS
 	mfspr	r2, SPRN_SDR1
-	li	r1,_PAGE_PRESENT | _PAGE_ACCESSED | _PAGE_EXEC | _PAGE_USER
-	rlwinm	r2, r2, 28, 0xfffff000
-#if defined(CONFIG_MODULES) || defined(CONFIG_DEBUG_PAGEALLOC) || defined(CONFIG_KFENCE)
-	bgt-	112f
-	lis	r2, (swapper_pg_dir - PAGE_OFFSET)@ha	/* if kernel address, use */
 	li	r1,_PAGE_PRESENT | _PAGE_ACCESSED | _PAGE_EXEC
-	addi	r2, r2, (swapper_pg_dir - PAGE_OFFSET)@l	/* kernel page table */
-#endif
-112:	rlwimi	r2,r3,12,20,29		/* insert top 10 bits of address */
+	rlwinm	r2, r2, 28, 0xfffff000
+	rlwimi	r2,r0,12,20,29		/* insert top 10 bits of address */
 	lwz	r2,0(r2)		/* get pmd entry */
+#ifdef CONFIG_EXECMEM
+	rlwinm	r3, r0, 4, 0xf
+	subi	r3, r3, NUM_USER_SEGMENTS
+#endif
 	rlwinm.	r2,r2,0,0,19		/* extract address of pte page */
 	beq-	InstructionAddressInvalid	/* return if no mapping */
-	rlwimi	r2,r3,22,20,29		/* insert next 10 bits of address */
-	lwz	r0,0(r2)		/* get linux-style pte */
-	andc.	r1,r1,r0		/* check access & ~permission */
+	rlwimi	r2,r0,22,20,29		/* insert next 10 bits of address */
+	lwz	r2,0(r2)		/* get linux-style pte */
+	andc.	r1,r1,r2		/* check access & ~permission */
 	bne-	InstructionAddressInvalid /* return if access not permitted */
 	/* Convert linux-style PTE to low word of PPC-style PTE */
-	rlwimi	r0,r0,32-2,31,31	/* _PAGE_USER -> PP lsb */
+#ifdef CONFIG_EXECMEM
+	rlwimi	r2, r3, 1, 31, 31	/* userspace ? -> PP lsb */
+#endif
 	ori	r1, r1, 0xe06		/* clear out reserved bits */
-	andc	r1, r0, r1		/* PP = user? 1 : 0 */
+	andc	r1, r2, r1		/* PP = user? 1 : 0 */
 BEGIN_FTR_SECTION
 	rlwinm	r1,r1,0,~_PAGE_COHERENT	/* clear M (coherence not required) */
 END_FTR_SECTION_IFCLR(CPU_FTR_NEED_COHERENT)
 	mtspr	SPRN_RPA,r1
-	tlbli	r3
+	tlbli	r0
 	mfspr	r3,SPRN_SRR1		/* Need to restore CR0 */
 	mtcrf	0x80,r3
 	rfi
@@ -476,63 +467,62 @@ InstructionAddressInvalid:
  */
 	. = INTERRUPT_DATA_LOAD_TLB_MISS_603
 DataLoadTLBMiss:
-/*
- * r0:	scratch
- * r1:	linux style pte ( later becomes ppc hardware pte )
- * r2:	ptr to linux-style pte
- * r3:	scratch
- */
 	/* Get PTE (linux-style) and check access */
-	mfspr	r3,SPRN_DMISS
-	lis	r1, TASK_SIZE@h		/* check if kernel address */
-	cmplw	0,r1,r3
+	mfspr	r0,SPRN_DMISS
 	mfspr	r2, SPRN_SDR1
-	li	r1, _PAGE_PRESENT | _PAGE_ACCESSED | _PAGE_USER
-	rlwinm	r2, r2, 28, 0xfffff000
-	bgt-	112f
-	lis	r2, (swapper_pg_dir - PAGE_OFFSET)@ha	/* if kernel address, use */
-	li	r1, _PAGE_PRESENT | _PAGE_ACCESSED
-	addi	r2, r2, (swapper_pg_dir - PAGE_OFFSET)@l	/* kernel page table */
-112:	rlwimi	r2,r3,12,20,29		/* insert top 10 bits of address */
-	lwz	r2,0(r2)		/* get pmd entry */
+	rlwinm	r1, r2, 28, 0xfffff000
+	rlwimi	r1,r0,12,20,29		/* insert top 10 bits of address */
+	lwz	r2,0(r1)		/* get pmd entry */
+	rlwinm	r3, r0, 4, 0xf
 	rlwinm.	r2,r2,0,0,19		/* extract address of pte page */
-	beq-	DataAddressInvalid	/* return if no mapping */
-	rlwimi	r2,r3,22,20,29		/* insert next 10 bits of address */
-	lwz	r0,0(r2)		/* get linux-style pte */
-	andc.	r1,r1,r0		/* check access & ~permission */
+	subi	r3, r3, NUM_USER_SEGMENTS
+	beq-	2f			/* bail if no mapping */
+1:	rlwimi	r2,r0,22,20,29		/* insert next 10 bits of address */
+	lwz	r2,0(r2)		/* get linux-style pte */
+	li	r1, _PAGE_PRESENT | _PAGE_ACCESSED | _PAGE_READ
+	andc.	r1,r1,r2		/* check access & ~permission */
 	bne-	DataAddressInvalid	/* return if access not permitted */
 	/* Convert linux-style PTE to low word of PPC-style PTE */
-	rlwinm	r1,r0,32-9,30,30	/* _PAGE_RW -> PP msb */
-	rlwimi	r0,r0,32-1,30,30	/* _PAGE_USER -> PP msb */
-	rlwimi	r1,r0,32-3,24,24	/* _PAGE_RW -> _PAGE_DIRTY */
-	rlwimi	r0,r0,32-1,31,31	/* _PAGE_USER -> PP lsb */
+	rlwinm	r1,r2,32-9,30,30	/* _PAGE_WRITE -> PP msb */
+	rlwimi	r2,r3,2,30,31		/* userspace ? -> PP */
+	rlwimi	r1,r2,32-3,24,24	/* _PAGE_WRITE -> _PAGE_DIRTY */
 	xori	r1,r1,_PAGE_DIRTY	/* clear dirty when not rw */
 	ori	r1,r1,0xe04		/* clear out reserved bits */
-	andc	r1,r0,r1		/* PP = user? rw? 1: 3: 0 */
+	andc	r1,r2,r1		/* PP = user? rw? 1: 3: 0 */
 BEGIN_FTR_SECTION
 	rlwinm	r1,r1,0,~_PAGE_COHERENT	/* clear M (coherence not required) */
 END_FTR_SECTION_IFCLR(CPU_FTR_NEED_COHERENT)
 	mtspr	SPRN_RPA,r1
 BEGIN_MMU_FTR_SECTION
-	li	r0,1
+	li	r3,1
 	mfspr	r1,SPRN_SPRG_603_LRU
-	rlwinm	r2,r3,20,27,31		/* Get Address bits 15:19 */
-	slw	r0,r0,r2
-	xor	r1,r0,r1
-	srw	r0,r1,r2
+	rlwinm	r2,r0,20,27,31		/* Get Address bits 15:19 */
+	slw	r3,r3,r2
+	xor	r1,r3,r1
+	srw	r3,r1,r2
 	mtspr   SPRN_SPRG_603_LRU,r1
 	mfspr	r2,SPRN_SRR1
-	rlwimi	r2,r0,31-14,14,14
+	rlwimi	r2,r3,31-14,14,14
 	mtspr   SPRN_SRR1,r2
 	mtcrf	0x80,r2
-	tlbld	r3
+	tlbld	r0
 	rfi
 MMU_FTR_SECTION_ELSE
 	mfspr	r2,SPRN_SRR1		/* Need to restore CR0 */
 	mtcrf	0x80,r2
-	tlbld	r3
+	tlbld	r0
 	rfi
 ALT_MMU_FTR_SECTION_END_IFSET(MMU_FTR_NEED_DTLB_SW_LRU)
+
+2:	lis     r2, (swapper_pg_dir - PAGE_OFFSET)@ha
+	addi    r2, r2, (swapper_pg_dir - PAGE_OFFSET)@l        /* kernel page table */
+	rlwimi	r2,r0,12,20,29		/* insert top 10 bits of address */
+	lwz	r2,0(r2)		/* get pmd entry */
+	cmpwi	cr0,r2,0
+	beq-	DataAddressInvalid	/* return if no mapping */
+	stw	r2,0(r1)
+	rlwinm.	r2,r2,0,0,19		/* extract address of pte page */
+	b	1b
 DataAddressInvalid:
 	mfspr	r3,SPRN_SRR1
 	rlwinm	r1,r3,9,6,6	/* Get load/store bit */
@@ -556,35 +546,26 @@ DataAddressInvalid:
  */
 	. = INTERRUPT_DATA_STORE_TLB_MISS_603
 DataStoreTLBMiss:
-/*
- * r0:	scratch
- * r1:	linux style pte ( later becomes ppc hardware pte )
- * r2:	ptr to linux-style pte
- * r3:	scratch
- */
 	/* Get PTE (linux-style) and check access */
-	mfspr	r3,SPRN_DMISS
-	lis	r1, TASK_SIZE@h		/* check if kernel address */
-	cmplw	0,r1,r3
+	mfspr	r0,SPRN_DMISS
 	mfspr	r2, SPRN_SDR1
-	li	r1, _PAGE_RW | _PAGE_DIRTY | _PAGE_PRESENT | _PAGE_ACCESSED | _PAGE_USER
-	rlwinm	r2, r2, 28, 0xfffff000
-	bgt-	112f
-	lis	r2, (swapper_pg_dir - PAGE_OFFSET)@ha	/* if kernel address, use */
-	li	r1, _PAGE_RW | _PAGE_DIRTY | _PAGE_PRESENT | _PAGE_ACCESSED
-	addi	r2, r2, (swapper_pg_dir - PAGE_OFFSET)@l	/* kernel page table */
-112:	rlwimi	r2,r3,12,20,29		/* insert top 10 bits of address */
-	lwz	r2,0(r2)		/* get pmd entry */
+	rlwinm	r1, r2, 28, 0xfffff000
+	rlwimi	r1,r0,12,20,29		/* insert top 10 bits of address */
+	lwz	r2,0(r1)		/* get pmd entry */
+	rlwinm	r3, r0, 4, 0xf
 	rlwinm.	r2,r2,0,0,19		/* extract address of pte page */
-	beq-	DataAddressInvalid	/* return if no mapping */
-	rlwimi	r2,r3,22,20,29		/* insert next 10 bits of address */
-	lwz	r0,0(r2)		/* get linux-style pte */
-	andc.	r1,r1,r0		/* check access & ~permission */
+	subi	r3, r3, NUM_USER_SEGMENTS
+	beq-	2f			/* bail if no mapping */
+1:
+	rlwimi	r2,r0,22,20,29		/* insert next 10 bits of address */
+	lwz	r2,0(r2)		/* get linux-style pte */
+	li	r1, _PAGE_RW | _PAGE_DIRTY | _PAGE_PRESENT | _PAGE_ACCESSED
+	andc.	r1,r1,r2		/* check access & ~permission */
 	bne-	DataAddressInvalid	/* return if access not permitted */
 	/* Convert linux-style PTE to low word of PPC-style PTE */
-	rlwimi	r0,r0,32-2,31,31	/* _PAGE_USER -> PP lsb */
+	rlwimi	r2,r3,1,31,31		/* userspace ? -> PP lsb */
 	li	r1,0xe06		/* clear out reserved bits & PP msb */
-	andc	r1,r0,r1		/* PP = user? 1: 0 */
+	andc	r1,r2,r1		/* PP = user? 1: 0 */
 BEGIN_FTR_SECTION
 	rlwinm	r1,r1,0,~_PAGE_COHERENT	/* clear M (coherence not required) */
 END_FTR_SECTION_IFCLR(CPU_FTR_NEED_COHERENT)
@@ -592,25 +573,35 @@ END_FTR_SECTION_IFCLR(CPU_FTR_NEED_COHERENT)
 	mfspr	r2,SPRN_SRR1		/* Need to restore CR0 */
 	mtcrf	0x80,r2
 BEGIN_MMU_FTR_SECTION
-	li	r0,1
+	li	r3,1
 	mfspr	r1,SPRN_SPRG_603_LRU
-	rlwinm	r2,r3,20,27,31		/* Get Address bits 15:19 */
-	slw	r0,r0,r2
-	xor	r1,r0,r1
-	srw	r0,r1,r2
+	rlwinm	r2,r0,20,27,31		/* Get Address bits 15:19 */
+	slw	r3,r3,r2
+	xor	r1,r3,r1
+	srw	r3,r1,r2
 	mtspr   SPRN_SPRG_603_LRU,r1
 	mfspr	r2,SPRN_SRR1
-	rlwimi	r2,r0,31-14,14,14
+	rlwimi	r2,r3,31-14,14,14
 	mtspr   SPRN_SRR1,r2
 	mtcrf	0x80,r2
-	tlbld	r3
+	tlbld	r0
 	rfi
 MMU_FTR_SECTION_ELSE
 	mfspr	r2,SPRN_SRR1		/* Need to restore CR0 */
 	mtcrf	0x80,r2
-	tlbld	r3
+	tlbld	r0
 	rfi
 ALT_MMU_FTR_SECTION_END_IFSET(MMU_FTR_NEED_DTLB_SW_LRU)
+
+2:	lis     r2, (swapper_pg_dir - PAGE_OFFSET)@ha
+	addi    r2, r2, (swapper_pg_dir - PAGE_OFFSET)@l        /* kernel page table */
+	rlwimi	r2,r0,12,20,29		/* insert top 10 bits of address */
+	lwz	r2,0(r2)		/* get pmd entry */
+	cmpwi	cr0,r2,0
+	beq-	DataAddressInvalid	/* return if no mapping */
+	stw	r2,0(r1)
+	rlwinm	r2,r2,0,0,19		/* extract address of pte page */
+	b	1b
 
 #ifndef CONFIG_ALTIVEC
 #define altivec_assist_exception	unknown_exception
@@ -688,7 +679,8 @@ hash_page_dsi:
 	mfdar	r4
 	mfsrr0	r5
 	mfsrr1	r9
-	rlwinm	r3, r3, 32 - 15, _PAGE_RW	/* DSISR_STORE -> _PAGE_RW */
+	rlwinm	r3, r3, 32 - 15, _PAGE_WRITE	/* DSISR_STORE -> _PAGE_WRITE */
+	ori	r3, r3, _PAGE_PRESENT | _PAGE_READ
 	bl	hash_page
 	mfspr	r10, SPRN_SPRG_THREAD
 	restore_regs_thread r10
@@ -698,7 +690,7 @@ hash_page_isi:
 	mr	r11, r10
 	mfspr	r10, SPRN_SPRG_THREAD
 	save_regs_thread	r10
-	li	r3, 0
+	li	r3, _PAGE_PRESENT | _PAGE_EXEC
 	lwz	r4, SRR0(r10)
 	lwz	r9, SRR1(r10)
 	bl	hash_page
@@ -840,7 +832,7 @@ __secondary_start:
 	lwz	r1,TASK_STACK(r1)
 
 	/* stack */
-	addi	r1,r1,THREAD_SIZE-STACK_FRAME_OVERHEAD
+	addi	r1,r1,THREAD_SIZE-STACK_FRAME_MIN_SIZE
 	li	r0,0
 	tophys(r3,r1)
 	stw	r0,0(r3)
@@ -877,7 +869,7 @@ END_MMU_FTR_SECTION_IFCLR(MMU_FTR_HPTE_TABLE)
  * Load stuff into the MMU.  Intended to be called with
  * IR=0 and DR=0.
  */
-early_hash_table:
+SYM_FUNC_START_LOCAL(early_hash_table)
 	sync			/* Force all PTE updates to finish */
 	isync
 	tlbia			/* Clear all TLB entries */
@@ -888,8 +880,9 @@ early_hash_table:
 	ori	r6, r6, 3	/* 256kB table */
 	mtspr	SPRN_SDR1, r6
 	blr
+SYM_FUNC_END(early_hash_table)
 
-load_up_mmu:
+SYM_FUNC_START_LOCAL(load_up_mmu)
 	sync			/* Force all PTE updates to finish */
 	isync
 	tlbia			/* Clear all TLB entries */
@@ -918,6 +911,7 @@ BEGIN_MMU_FTR_SECTION
 	LOAD_BAT(7,r3,r4,r5)
 END_MMU_FTR_SECTION_IFSET(MMU_FTR_USE_HIGH_BATS)
 	blr
+SYM_FUNC_END(load_up_mmu)
 
 _GLOBAL(load_segment_registers)
 	li	r0, NUM_USER_SEGMENTS /* load up user segment register values */
@@ -966,7 +960,7 @@ END_MMU_FTR_SECTION_IFCLR(MMU_FTR_HPTE_TABLE)
 	lis	r1,init_thread_union@ha
 	addi	r1,r1,init_thread_union@l
 	li	r0,0
-	stwu	r0,THREAD_SIZE-STACK_FRAME_OVERHEAD(r1)
+	stwu	r0,THREAD_SIZE-STACK_FRAME_MIN_SIZE(r1)
 /*
  * Do early platform-specific initialization,
  * and set up the MMU.
@@ -1028,7 +1022,7 @@ END_MMU_FTR_SECTION_IFCLR(MMU_FTR_HPTE_TABLE)
  * this makes sure it's done.
  *  -- Cort
  */
-clear_bats:
+SYM_FUNC_START_LOCAL(clear_bats)
 	li	r10,0
 
 	mtspr	SPRN_DBAT0U,r10
@@ -1072,6 +1066,7 @@ BEGIN_MMU_FTR_SECTION
 	mtspr	SPRN_IBAT7L,r10
 END_MMU_FTR_SECTION_IFSET(MMU_FTR_USE_HIGH_BATS)
 	blr
+SYM_FUNC_END(clear_bats)
 
 _GLOBAL(update_bats)
 	lis	r4, 1f@h
@@ -1108,15 +1103,16 @@ END_MMU_FTR_SECTION_IFSET(MMU_FTR_USE_HIGH_BATS)
 	mtspr	SPRN_SRR1, r6
 	rfi
 
-flush_tlbs:
+SYM_FUNC_START_LOCAL(flush_tlbs)
 	lis	r10, 0x40
 1:	addic.	r10, r10, -0x1000
 	tlbie	r10
 	bgt	1b
 	sync
 	blr
+SYM_FUNC_END(flush_tlbs)
 
-mmu_off:
+SYM_FUNC_START_LOCAL(mmu_off)
  	addi	r4, r3, __after_mmu_off - _start
 	mfmsr	r3
 	andi.	r0,r3,MSR_DR|MSR_IR		/* MMU enabled? */
@@ -1128,9 +1124,10 @@ mmu_off:
 	mtspr	SPRN_SRR1,r3
 	sync
 	rfi
+SYM_FUNC_END(mmu_off)
 
 /* We use one BAT to map up to 256M of RAM at _PAGE_OFFSET */
-initial_bats:
+SYM_FUNC_START_LOCAL(initial_bats)
 	lis	r11,PAGE_OFFSET@h
 	tophys(r8,r11)
 #ifdef CONFIG_SMP
@@ -1146,9 +1143,10 @@ initial_bats:
 	mtspr	SPRN_IBAT0U,r11
 	isync
 	blr
+SYM_FUNC_END(initial_bats)
 
 #ifdef CONFIG_BOOTX_TEXT
-setup_disp_bat:
+SYM_FUNC_START_LOCAL(setup_disp_bat)
 	/*
 	 * setup the display bat prepared for us in prom.c
 	 */
@@ -1164,10 +1162,11 @@ setup_disp_bat:
 	mtspr	SPRN_DBAT3L,r8
 	mtspr	SPRN_DBAT3U,r11
 	blr
+SYM_FUNC_END(setup_disp_bat)
 #endif /* CONFIG_BOOTX_TEXT */
 
 #ifdef CONFIG_PPC_EARLY_DEBUG_CPM
-setup_cpm_bat:
+SYM_FUNC_START_LOCAL(setup_cpm_bat)
 	lis	r8, 0xf000
 	ori	r8, r8,	0x002a
 	mtspr	SPRN_DBAT1L, r8
@@ -1177,10 +1176,11 @@ setup_cpm_bat:
 	mtspr	SPRN_DBAT1U, r11
 
 	blr
+SYM_FUNC_END(setup_cpm_bat)
 #endif
 
 #ifdef CONFIG_PPC_EARLY_DEBUG_USBGECKO
-setup_usbgecko_bat:
+SYM_FUNC_START_LOCAL(setup_usbgecko_bat)
 	/* prepare a BAT for early io */
 #if defined(CONFIG_GAMECUBE)
 	lis	r8, 0x0c00
@@ -1199,6 +1199,7 @@ setup_usbgecko_bat:
 	mtspr	SPRN_DBAT1L, r8
 	mtspr	SPRN_DBAT1U, r11
 	blr
+SYM_FUNC_END(setup_usbgecko_bat)
 #endif
 
 	.data

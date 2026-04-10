@@ -24,7 +24,7 @@
 
 /*
  * We calculate the baseband frequencies of the carrier and the pilot tones
- * based on the the sampling rate of the audio rds fifo.
+ * based on the sampling rate of the audio rds fifo.
  */
 
 #define FREQ_A2_CARRIER         baseband_freq(54687.5, 2689.36, 0.0)
@@ -252,7 +252,7 @@ static s16 *read_rds_samples(struct cx88_core *core, u32 *N)
 		current_address,
 		current_address - srch->fifo_start, sample_count,
 		cx_read(MO_AUD_INTSTAT));
-	samples = kmalloc_array(sample_count, sizeof(*samples), GFP_KERNEL);
+	samples = kmalloc_objs(*samples, sample_count);
 	if (!samples)
 		return NULL;
 

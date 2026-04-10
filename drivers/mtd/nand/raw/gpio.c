@@ -265,7 +265,7 @@ gpio_nand_get_io_sync(struct platform_device *pdev)
 	return platform_get_resource(pdev, IORESOURCE_MEM, 1);
 }
 
-static int gpio_nand_remove(struct platform_device *pdev)
+static void gpio_nand_remove(struct platform_device *pdev)
 {
 	struct gpiomtd *gpiomtd = platform_get_drvdata(pdev);
 	struct nand_chip *chip = &gpiomtd->nand_chip;
@@ -280,8 +280,6 @@ static int gpio_nand_remove(struct platform_device *pdev)
 		gpiod_set_value(gpiomtd->nwp, 0);
 	if (gpiomtd->nce && !IS_ERR(gpiomtd->nce))
 		gpiod_set_value(gpiomtd->nce, 0);
-
-	return 0;
 }
 
 static int gpio_nand_probe(struct platform_device *pdev)

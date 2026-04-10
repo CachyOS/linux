@@ -16,7 +16,7 @@
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 
-#include "sc7280.dtsi"
+#include "kodiak.dtsi"
 
 /* PMICs depend on spmi_bus label and so must come after SoC */
 #include "pm7325.dtsi"
@@ -28,6 +28,38 @@
 		bluetooth0 = &bluetooth;
 		serial0 = &uart5;
 		serial1 = &uart7;
+		wifi0 = &wifi;
+	};
+
+	wcd9385: audio-codec-1 {
+		compatible = "qcom,wcd9385-codec";
+		pinctrl-names = "default", "sleep";
+		pinctrl-0 = <&wcd_reset_n>, <&us_euro_hs_sel>;
+		pinctrl-1 = <&wcd_reset_n_sleep>, <&us_euro_hs_sel>;
+
+		reset-gpios = <&tlmm 83 GPIO_ACTIVE_LOW>;
+		us-euro-gpios = <&tlmm 81 GPIO_ACTIVE_HIGH>;
+
+		qcom,rx-device = <&wcd_rx>;
+		qcom,tx-device = <&wcd_tx>;
+
+		vdd-rxtx-supply = <&vreg_l18b_1p8>;
+		vdd-io-supply = <&vreg_l18b_1p8>;
+		vdd-buck-supply = <&vreg_l17b_1p8>;
+		vdd-mic-bias-supply = <&vreg_bob>;
+
+		qcom,micbias1-microvolt = <1800000>;
+		qcom,micbias2-microvolt = <1800000>;
+		qcom,micbias3-microvolt = <1800000>;
+		qcom,micbias4-microvolt = <1800000>;
+
+		qcom,mbhc-buttons-vthreshold-microvolt = <75000 150000 237000 500000 500000
+							  500000 500000 500000>;
+		qcom,mbhc-headset-vthreshold-microvolt = <1700000>;
+		qcom,mbhc-headphone-vthreshold-microvolt = <50000>;
+		#sound-dai-cells = <1>;
+
+		status = "disabled";
 	};
 
 	pm8350c_pwm_backlight: backlight {
@@ -55,7 +87,7 @@
 	 * are left out of here since they are managed elsewhere.
 	 */
 
-	pm7325-regulators {
+	regulators-0 {
 		compatible = "qcom,pm7325-rpmh-regulators";
 		qcom,pmic-id = "b";
 
@@ -123,6 +155,12 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
+		vreg_l17b_1p8: ldo17 {
+			regulator-min-microvolt = <1700000>;
+			regulator-max-microvolt = <1900000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
 		vdd_px_wcd9385:
 		vdd_txrx:
 		vddpx_0:
@@ -150,7 +188,7 @@
 		};
 	};
 
-	pm8350c-regulators {
+	regulators-1 {
 		compatible = "qcom,pm8350c-rpmh-regulators";
 		qcom,pmic-id = "c";
 
@@ -192,9 +230,15 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
+		/*
+		 * The initial design of this regulator was to use it as 3.3V,
+		 * but due to later changes in design it was changed to 1.8V.
+		 * The original name is kept due to same schematic.
+		 */
+		ts_avccio:
 		vreg_l3c_3p0: ldo3 {
-			regulator-min-microvolt = <2800000>;
-			regulator-max-microvolt = <3540000>;
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
@@ -298,30 +342,21 @@
 
 /* ADDITIONS TO NODES DEFINED IN PARENT DEVICE TREE FILES */
 
-&ipa {
-	status = "okay";
-	modem-init;
+&lpass_va_macro {
+	vdd-micb-supply = <&vreg_bob>;
 };
 
 /* NOTE: Not all Qcards have eDP connector stuffed */
 &mdss_edp {
-	vdda-0p9-supply = <&vdd_a_edp_0_0p9>;
-	vdda-1p2-supply = <&vdd_a_edp_0_1p2>;
-
 	aux-bus {
 		edp_panel: panel {
 			compatible = "edp-panel";
 
 			backlight = <&pm8350c_pwm_backlight>;
 
-			ports {
-				#address-cells = <1>;
-				#size-cells = <0>;
-				port@0 {
-					reg = <0>;
-					edp_panel_in: endpoint {
-						remote-endpoint = <&mdss_edp_out>;
-					};
+			port {
+				edp_panel_in: endpoint {
+					remote-endpoint = <&mdss_edp_out>;
 				};
 			};
 		};
@@ -348,13 +383,13 @@
 };
 
 &pmk8350_vadc {
-	pmk8350-die-temp@3 {
+	channel@3 {
 		reg = <PMK8350_ADC7_DIE_TEMP>;
 		label = "pmk8350_die_temp";
 		qcom,pre-scaling = <1 1>;
 	};
 
-	pmr735a-die-temp@403 {
+	channel@403 {
 		reg = <PMR735A_ADC7_DIE_TEMP>;
 		label = "pmr735a_die_temp";
 		qcom,pre-scaling = <1 1>;
@@ -375,8 +410,23 @@
 	no-sdio;
 };
 
+&swr0 {
+	wcd_rx: codec@0,4 {
+		compatible = "sdw20217010d00";
+		reg = <0 4>;
+		qcom,rx-port-mapping = <1 2 3 4 5>;
+	};
+};
+
+&swr1 {
+	wcd_tx: codec@0,3 {
+		compatible = "sdw20217010d00";
+		reg = <0 3>;
+		qcom,tx-port-mapping = <1 2 3 4>;
+	};
+};
+
 uart_dbg: &uart5 {
-	compatible = "qcom,geni-debug-uart";
 	status = "okay";
 };
 
@@ -517,7 +567,7 @@ mos_bt_uart: &uart7 {
  */
 
 &pm8350c_gpios {
-	pmic_edp_bl_en: pmic-edp-bl-en {
+	pmic_edp_bl_en: pmic-edp-bl-en-state {
 		pins = "gpio7";
 		function = "normal";
 		bias-disable;
@@ -527,7 +577,7 @@ mos_bt_uart: &uart7 {
 		output-low;
 	};
 
-	pmic_edp_bl_pwm: pmic-edp-bl-pwm {
+	pmic_edp_bl_pwm: pmic-edp-bl-pwm-state {
 		pins = "gpio8";
 		function = "func1";
 		bias-disable;
@@ -538,7 +588,7 @@ mos_bt_uart: &uart7 {
 };
 
 &tlmm {
-	mos_bt_en: mos-bt-en {
+	mos_bt_en: mos-bt-en-state {
 		pins = "gpio85";
 		function = "gpio";
 		drive-strength = <2>;
@@ -546,7 +596,7 @@ mos_bt_uart: &uart7 {
 	};
 
 	/* For mos_bt_uart */
-	qup_uart7_sleep_cts: qup-uart7-sleep-cts {
+	qup_uart7_sleep_cts: qup-uart7-sleep-cts-state {
 		pins = "gpio28";
 		function = "gpio";
 		/*
@@ -560,7 +610,7 @@ mos_bt_uart: &uart7 {
 	};
 
 	/* For mos_bt_uart */
-	qup_uart7_sleep_rts: qup-uart7-sleep-rts {
+	qup_uart7_sleep_rts: qup-uart7-sleep-rts-state {
 		pins = "gpio29";
 		function = "gpio";
 		/*
@@ -573,7 +623,7 @@ mos_bt_uart: &uart7 {
 	};
 
 	/* For mos_bt_uart */
-	qup_uart7_sleep_rx: qup-uart7-sleep-rx {
+	qup_uart7_sleep_rx: qup-uart7-sleep-rx-state {
 		pins = "gpio31";
 		function = "gpio";
 		/*
@@ -585,7 +635,7 @@ mos_bt_uart: &uart7 {
 	};
 
 	/* For mos_bt_uart */
-	qup_uart7_sleep_tx: qup-uart7-sleep-tx {
+	qup_uart7_sleep_tx: qup-uart7-sleep-tx-state {
 		pins = "gpio30";
 		function = "gpio";
 		/*
@@ -595,16 +645,35 @@ mos_bt_uart: &uart7 {
 		bias-pull-up;
 	};
 
-	ts_int_conn: ts-int-conn {
+	ts_int_conn: ts-int-conn-state {
 		pins = "gpio55";
 		function = "gpio";
 		bias-pull-up;
 	};
 
-	ts_rst_conn: ts-rst-conn {
+	ts_rst_conn: ts-rst-conn-state {
 		pins = "gpio54";
 		function = "gpio";
-		bias-pull-up;
 		drive-strength = <2>;
+	};
+
+	us_euro_hs_sel: us-euro-hs-sel-state {
+		pins = "gpio81";
+		function = "gpio";
+		bias-pull-down;
+		drive-strength = <2>;
+	};
+
+	wcd_reset_n: wcd-reset-n-state {
+		pins = "gpio83";
+		function = "gpio";
+		drive-strength = <8>;
+	};
+
+	wcd_reset_n_sleep: wcd-reset-n-sleep-state {
+		pins = "gpio83";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-disable;
 	};
 };

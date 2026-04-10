@@ -71,7 +71,10 @@ struct insn {
 					 * prefixes.bytes[3]: last prefix
 					 */
 	struct insn_field rex_prefix;	/* REX prefix */
-	struct insn_field vex_prefix;	/* VEX prefix */
+	union {
+		struct insn_field vex_prefix;	/* VEX prefix */
+		struct insn_field xop_prefix;	/* XOP prefix */
+	};
 	struct insn_field opcode;	/*
 					 * opcode.bytes[0]: opcode1
 					 * opcode.bytes[1]: opcode2
@@ -112,10 +115,15 @@ struct insn {
 #define X86_SIB_INDEX(sib) (((sib) & 0x38) >> 3)
 #define X86_SIB_BASE(sib) ((sib) & 0x07)
 
-#define X86_REX_W(rex) ((rex) & 8)
-#define X86_REX_R(rex) ((rex) & 4)
-#define X86_REX_X(rex) ((rex) & 2)
-#define X86_REX_B(rex) ((rex) & 1)
+#define X86_REX2_M(rex) ((rex) & 0x80)	/* REX2 M0 */
+#define X86_REX2_R(rex) ((rex) & 0x40)	/* REX2 R4 */
+#define X86_REX2_X(rex) ((rex) & 0x20)	/* REX2 X4 */
+#define X86_REX2_B(rex) ((rex) & 0x10)	/* REX2 B4 */
+
+#define X86_REX_W(rex) ((rex) & 8)	/* REX or REX2 W */
+#define X86_REX_R(rex) ((rex) & 4)	/* REX or REX2 R3 */
+#define X86_REX_X(rex) ((rex) & 2)	/* REX or REX2 X3 */
+#define X86_REX_B(rex) ((rex) & 1)	/* REX or REX2 B3 */
 
 /* VEX bit flags  */
 #define X86_VEX_W(vex)	((vex) & 0x80)	/* VEX3 Byte2 */
@@ -130,6 +138,17 @@ struct insn {
 #define X86_VEX_V(vex)	(((vex) & 0x78) >> 3)	/* VEX3 Byte2, VEX2 Byte1 */
 #define X86_VEX_P(vex)	((vex) & 0x03)		/* VEX3 Byte2, VEX2 Byte1 */
 #define X86_VEX_M_MAX	0x1f			/* VEX3.M Maximum value */
+/* XOP bit fields */
+#define X86_XOP_R(xop)	((xop) & 0x80)	/* XOP Byte2 */
+#define X86_XOP_X(xop)	((xop) & 0x40)	/* XOP Byte2 */
+#define X86_XOP_B(xop)	((xop) & 0x20)	/* XOP Byte2 */
+#define X86_XOP_M(xop)	((xop) & 0x1f)	/* XOP Byte2 */
+#define X86_XOP_W(xop)	((xop) & 0x80)	/* XOP Byte3 */
+#define X86_XOP_V(xop)	((xop) & 0x78)	/* XOP Byte3 */
+#define X86_XOP_L(xop)	((xop) & 0x04)	/* XOP Byte3 */
+#define X86_XOP_P(xop)	((xop) & 0x03)	/* XOP Byte3 */
+#define X86_XOP_M_MIN	0x08	/* Min of XOP.M */
+#define X86_XOP_M_MAX	0x1f	/* Max of XOP.M */
 
 extern void insn_init(struct insn *insn, const void *kaddr, int buf_len, int x86_64);
 extern int insn_get_prefixes(struct insn *insn);
@@ -161,7 +180,19 @@ static inline void insn_get_attribute(struct insn *insn)
 /* Instruction uses RIP-relative addressing */
 extern int insn_rip_relative(struct insn *insn);
 
-static inline int insn_is_avx(struct insn *insn)
+static inline int insn_is_rex2(struct insn *insn)
+{
+	if (!insn->prefixes.got)
+		insn_get_prefixes(insn);
+	return insn->rex_prefix.nbytes == 2;
+}
+
+static inline insn_byte_t insn_rex2_m_bit(struct insn *insn)
+{
+	return X86_REX2_M(insn->rex_prefix.bytes[1]);
+}
+
+static inline int insn_is_avx_or_xop(struct insn *insn)
 {
 	if (!insn->prefixes.got)
 		insn_get_prefixes(insn);
@@ -173,6 +204,22 @@ static inline int insn_is_evex(struct insn *insn)
 	if (!insn->prefixes.got)
 		insn_get_prefixes(insn);
 	return (insn->vex_prefix.nbytes == 4);
+}
+
+/* If we already know this is AVX/XOP encoded */
+static inline int avx_insn_is_xop(struct insn *insn)
+{
+	insn_attr_t attr = inat_get_opcode_attribute(insn->vex_prefix.bytes[0]);
+
+	return inat_is_xop_prefix(attr);
+}
+
+static inline int insn_is_xop(struct insn *insn)
+{
+	if (!insn_is_avx_or_xop(insn))
+		return 0;
+
+	return avx_insn_is_xop(insn);
 }
 
 static inline int insn_has_emulate_prefix(struct insn *insn)
@@ -198,11 +245,33 @@ static inline insn_byte_t insn_vex_p_bits(struct insn *insn)
 		return X86_VEX_P(insn->vex_prefix.bytes[2]);
 }
 
+static inline insn_byte_t insn_vex_w_bit(struct insn *insn)
+{
+	if (insn->vex_prefix.nbytes < 3)
+		return 0;
+	return X86_VEX_W(insn->vex_prefix.bytes[2]);
+}
+
+static inline insn_byte_t insn_xop_map_bits(struct insn *insn)
+{
+	if (insn->xop_prefix.nbytes < 3)	/* XOP is 3 bytes */
+		return 0;
+	return X86_XOP_M(insn->xop_prefix.bytes[1]);
+}
+
+static inline insn_byte_t insn_xop_p_bits(struct insn *insn)
+{
+	return X86_XOP_P(insn->vex_prefix.bytes[2]);
+}
+
 /* Get the last prefix id from last prefix or VEX prefix */
 static inline int insn_last_prefix_id(struct insn *insn)
 {
-	if (insn_is_avx(insn))
+	if (insn_is_avx_or_xop(insn)) {
+		if (avx_insn_is_xop(insn))
+			return insn_xop_p_bits(insn);
 		return insn_vex_p_bits(insn);	/* VEX_p is a SIMD prefix id */
+	}
 
 	if (insn->prefixes.bytes[3])
 		return inat_get_last_prefix_id(insn->prefixes.bytes[3]);
@@ -243,7 +312,6 @@ static inline int insn_offset_immediate(struct insn *insn)
 /**
  * for_each_insn_prefix() -- Iterate prefixes in the instruction
  * @insn: Pointer to struct insn.
- * @idx:  Index storage.
  * @prefix: Prefix byte.
  *
  * Iterate prefix bytes of given @insn. Each prefix byte is stored in @prefix
@@ -252,8 +320,8 @@ static inline int insn_offset_immediate(struct insn *insn)
  * Since prefixes.nbytes can be bigger than 4 if some prefixes
  * are repeated, it cannot be used for looping over the prefixes.
  */
-#define for_each_insn_prefix(insn, idx, prefix)	\
-	for (idx = 0; idx < ARRAY_SIZE(insn->prefixes.bytes) && (prefix = insn->prefixes.bytes[idx]) != 0; idx++)
+#define for_each_insn_prefix(insn, prefix)	\
+	for (int idx = 0; idx < ARRAY_SIZE(insn->prefixes.bytes) && (prefix = insn->prefixes.bytes[idx]) != 0; idx++)
 
 #define POP_SS_OPCODE 0x1f
 #define MOV_SREG_OPCODE 0x8e

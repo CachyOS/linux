@@ -35,16 +35,16 @@ static bool moving_pred(struct keybuf *buf, struct bkey *k)
 
 /* Moving GC - IO loop */
 
-static void moving_io_destructor(struct closure *cl)
+static CLOSURE_CALLBACK(moving_io_destructor)
 {
-	struct moving_io *io = container_of(cl, struct moving_io, cl);
+	closure_type(io, struct moving_io, cl);
 
 	kfree(io);
 }
 
-static void write_moving_finish(struct closure *cl)
+static CLOSURE_CALLBACK(write_moving_finish)
 {
-	struct moving_io *io = container_of(cl, struct moving_io, cl);
+	closure_type(io, struct moving_io, cl);
 	struct bio *bio = &io->bio.bio;
 
 	bio_free_pages(bio);
@@ -79,19 +79,19 @@ static void moving_init(struct moving_io *io)
 {
 	struct bio *bio = &io->bio.bio;
 
-	bio_init(bio, NULL, bio->bi_inline_vecs,
+	bio_init_inline(bio, NULL,
 		 DIV_ROUND_UP(KEY_SIZE(&io->w->key), PAGE_SECTORS), 0);
 	bio_get(bio);
-	bio_set_prio(bio, IOPRIO_PRIO_VALUE(IOPRIO_CLASS_IDLE, 0));
+	bio->bi_ioprio = IOPRIO_PRIO_VALUE(IOPRIO_CLASS_IDLE, 0);
 
 	bio->bi_iter.bi_size	= KEY_SIZE(&io->w->key) << 9;
 	bio->bi_private		= &io->cl;
 	bch_bio_map(bio, NULL);
 }
 
-static void write_moving(struct closure *cl)
+static CLOSURE_CALLBACK(write_moving)
 {
-	struct moving_io *io = container_of(cl, struct moving_io, cl);
+	closure_type(io, struct moving_io, cl);
 	struct data_insert_op *op = &io->op;
 
 	if (!op->status) {
@@ -113,9 +113,9 @@ static void write_moving(struct closure *cl)
 	continue_at(cl, write_moving_finish, op->wq);
 }
 
-static void read_moving_submit(struct closure *cl)
+static CLOSURE_CALLBACK(read_moving_submit)
 {
-	struct moving_io *io = container_of(cl, struct moving_io, cl);
+	closure_type(io, struct moving_io, cl);
 	struct bio *bio = &io->bio.bio;
 
 	bch_submit_bbio(bio, io->op.c, &io->w->key, 0);
@@ -145,9 +145,9 @@ static void read_moving(struct cache_set *c)
 			continue;
 		}
 
-		io = kzalloc(struct_size(io, bio.bio.bi_inline_vecs,
-					 DIV_ROUND_UP(KEY_SIZE(&w->key), PAGE_SECTORS)),
-			     GFP_KERNEL);
+		io = kzalloc(sizeof(*io) + sizeof(struct bio_vec) *
+				DIV_ROUND_UP(KEY_SIZE(&w->key), PAGE_SECTORS),
+				GFP_KERNEL);
 		if (!io)
 			goto err;
 
@@ -160,7 +160,7 @@ static void read_moving(struct cache_set *c)
 		moving_init(io);
 		bio = &io->bio.bio;
 
-		bio_set_op_attrs(bio, REQ_OP_READ, 0);
+		bio->bi_opf = REQ_OP_READ;
 		bio->bi_end_io	= read_moving_endio;
 
 		if (bch_bio_alloc_pages(bio, GFP_KERNEL))

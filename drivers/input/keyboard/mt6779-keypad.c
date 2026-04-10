@@ -5,6 +5,7 @@
  */
 #include <linux/bitops.h>
 #include <linux/clk.h>
+#include <linux/input.h>
 #include <linux/input/matrix_keypad.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
@@ -17,6 +18,12 @@
 #define MTK_KPD_DEBOUNCE	0x0018
 #define MTK_KPD_DEBOUNCE_MASK	GENMASK(13, 0)
 #define MTK_KPD_DEBOUNCE_MAX_MS	256
+#define MTK_KPD_SEL		0x0020
+#define MTK_KPD_SEL_DOUBLE_KP_MODE	BIT(0)
+#define MTK_KPD_SEL_COL	GENMASK(15, 10)
+#define MTK_KPD_SEL_ROW	GENMASK(9, 4)
+#define MTK_KPD_SEL_COLMASK(c)	GENMASK((c) + 9, 10)
+#define MTK_KPD_SEL_ROWMASK(r)	GENMASK((r) + 3, 4)
 #define MTK_KPD_NUM_MEMS	5
 #define MTK_KPD_NUM_BITS	136	/* 4*32+8 MEM5 only use 8 BITS */
 
@@ -26,6 +33,8 @@ struct mt6779_keypad {
 	struct clk *clk;
 	u32 n_rows;
 	u32 n_cols;
+	void (*calc_row_col)(unsigned int key,
+			     unsigned int *row, unsigned int *col);
 	DECLARE_BITMAP(keymap_state, MTK_KPD_NUM_BITS);
 };
 
@@ -42,7 +51,7 @@ static irqreturn_t mt6779_keypad_irq_handler(int irq, void *dev_id)
 	const unsigned short *keycode = keypad->input_dev->keycode;
 	DECLARE_BITMAP(new_state, MTK_KPD_NUM_BITS);
 	DECLARE_BITMAP(change, MTK_KPD_NUM_BITS);
-	unsigned int bit_nr;
+	unsigned int bit_nr, key;
 	unsigned int row, col;
 	unsigned int scancode;
 	unsigned int row_shift = get_count_order(keypad->n_cols);
@@ -61,8 +70,9 @@ static irqreturn_t mt6779_keypad_irq_handler(int irq, void *dev_id)
 		if (bit_nr % 32 >= 16)
 			continue;
 
-		row = bit_nr / 32;
-		col = bit_nr % 32;
+		key = bit_nr / 32 * 16 + bit_nr % 32;
+		keypad->calc_row_col(key, &row, &col);
+
 		scancode = MATRIX_SCAN_CODE(row, col, row_shift);
 		/* 1: not pressed, 0: pressed */
 		pressed = !test_bit(bit_nr, new_state);
@@ -82,9 +92,20 @@ static irqreturn_t mt6779_keypad_irq_handler(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static void mt6779_keypad_clk_disable(void *data)
+static void mt6779_keypad_calc_row_col_single(unsigned int key,
+					      unsigned int *row,
+					      unsigned int *col)
 {
-	clk_disable_unprepare(data);
+	*row = key / 9;
+	*col = key % 9;
+}
+
+static void mt6779_keypad_calc_row_col_double(unsigned int key,
+					      unsigned int *row,
+					      unsigned int *col)
+{
+	*row = key / 13;
+	*col = (key % 13) / 2;
 }
 
 static int mt6779_keypad_pdrv_probe(struct platform_device *pdev)
@@ -93,6 +114,7 @@ static int mt6779_keypad_pdrv_probe(struct platform_device *pdev)
 	void __iomem *base;
 	int irq;
 	u32 debounce;
+	u32 keys_per_group;
 	bool wakeup;
 	int error;
 
@@ -141,6 +163,23 @@ static int mt6779_keypad_pdrv_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	if (device_property_read_u32(&pdev->dev, "mediatek,keys-per-group",
+				     &keys_per_group))
+		keys_per_group = 1;
+
+	switch (keys_per_group) {
+	case 1:
+		keypad->calc_row_col = mt6779_keypad_calc_row_col_single;
+		break;
+	case 2:
+		keypad->calc_row_col = mt6779_keypad_calc_row_col_double;
+		break;
+	default:
+		dev_err(&pdev->dev,
+			"Invalid keys-per-group: %d\n", keys_per_group);
+		return -EINVAL;
+	}
+
 	wakeup = device_property_read_bool(&pdev->dev, "wakeup-source");
 
 	dev_dbg(&pdev->dev, "n_row=%d n_col=%d debounce=%d\n",
@@ -159,20 +198,19 @@ static int mt6779_keypad_pdrv_probe(struct platform_device *pdev)
 	regmap_write(keypad->regmap, MTK_KPD_DEBOUNCE,
 		     (debounce * (1 << 5)) & MTK_KPD_DEBOUNCE_MASK);
 
-	keypad->clk = devm_clk_get(&pdev->dev, "kpd");
+	if (keys_per_group == 2)
+		regmap_update_bits(keypad->regmap, MTK_KPD_SEL,
+				   MTK_KPD_SEL_DOUBLE_KP_MODE,
+				   MTK_KPD_SEL_DOUBLE_KP_MODE);
+
+	regmap_update_bits(keypad->regmap, MTK_KPD_SEL, MTK_KPD_SEL_ROW,
+			   MTK_KPD_SEL_ROWMASK(keypad->n_rows));
+	regmap_update_bits(keypad->regmap, MTK_KPD_SEL, MTK_KPD_SEL_COL,
+			   MTK_KPD_SEL_COLMASK(keypad->n_cols));
+
+	keypad->clk = devm_clk_get_enabled(&pdev->dev, "kpd");
 	if (IS_ERR(keypad->clk))
 		return PTR_ERR(keypad->clk);
-
-	error = clk_prepare_enable(keypad->clk);
-	if (error) {
-		dev_err(&pdev->dev, "cannot prepare/enable keypad clock\n");
-		return error;
-	}
-
-	error = devm_add_action_or_reset(&pdev->dev, mt6779_keypad_clk_disable,
-					 keypad->clk);
-	if (error)
-		return error;
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
@@ -206,6 +244,7 @@ static const struct of_device_id mt6779_keypad_of_match[] = {
 	{ .compatible = "mediatek,mt6873-keypad" },
 	{ /* sentinel */ }
 };
+MODULE_DEVICE_TABLE(of, mt6779_keypad_of_match);
 
 static struct platform_driver mt6779_keypad_pdrv = {
 	.probe = mt6779_keypad_pdrv_probe,

@@ -31,9 +31,11 @@ bool block_mount;
 bool verifier_logs;
 bool relaxed_maps;
 bool use_loader;
-bool legacy_libbpf;
 struct btf *base_btf;
 struct hashmap *refs_table;
+bool sign_progs;
+const char *private_key_path;
+const char *cert_path;
 
 static void __noreturn clean_and_exit(int i)
 {
@@ -62,7 +64,7 @@ static int do_help(int argc, char **argv)
 		"       %s batch file FILE\n"
 		"       %s version\n"
 		"\n"
-		"       OBJECT := { prog | map | link | cgroup | perf | net | feature | btf | gen | struct_ops | iter }\n"
+		"       OBJECT := { prog | map | link | cgroup | perf | net | feature | btf | gen | struct_ops | iter | token }\n"
 		"       " HELP_SPEC_OPTIONS " |\n"
 		"                    {-V|--version} }\n"
 		"",
@@ -70,6 +72,28 @@ static int do_help(int argc, char **argv)
 
 	return 0;
 }
+
+static int do_batch(int argc, char **argv);
+static int do_version(int argc, char **argv);
+
+static const struct cmd commands[] = {
+	{ "help",	do_help },
+	{ "batch",	do_batch },
+	{ "prog",	do_prog },
+	{ "map",	do_map },
+	{ "link",	do_link },
+	{ "cgroup",	do_cgroup },
+	{ "perf",	do_perf },
+	{ "net",	do_net },
+	{ "feature",	do_feature },
+	{ "btf",	do_btf },
+	{ "gen",	do_gen },
+	{ "struct_ops",	do_struct_ops },
+	{ "iter",	do_iter },
+	{ "token",	do_token },
+	{ "version",	do_version },
+	{ 0 }
+};
 
 #ifndef BPFTOOL_VERSION
 /* bpftool's major and minor version numbers are aligned on libbpf's. There is
@@ -82,6 +106,15 @@ static int do_help(int argc, char **argv)
 #define BPFTOOL_PATCH_VERSION 0
 #endif
 
+static void
+print_feature(const char *feature, bool state, unsigned int *nb_features)
+{
+	if (state) {
+		printf("%s %s", *nb_features ? "," : "", feature);
+		*nb_features = *nb_features + 1;
+	}
+}
+
 static int do_version(int argc, char **argv)
 {
 #ifdef HAVE_LIBBFD_SUPPORT
@@ -89,11 +122,28 @@ static int do_version(int argc, char **argv)
 #else
 	const bool has_libbfd = false;
 #endif
+#ifdef HAVE_LLVM_SUPPORT
+	const bool has_llvm = true;
+#else
+	const bool has_llvm = false;
+#endif
 #ifdef BPFTOOL_WITHOUT_SKELETONS
 	const bool has_skeletons = false;
 #else
 	const bool has_skeletons = true;
 #endif
+	bool bootstrap = false;
+	int i;
+
+	for (i = 0; commands[i].cmd; i++) {
+		if (!strcmp(commands[i].cmd, "prog")) {
+			/* Assume we run a bootstrap version if "bpftool prog"
+			 * is not available.
+			 */
+			bootstrap = !commands[i].func;
+			break;
+		}
+	}
 
 	if (json_output) {
 		jsonw_start_object(json_wtr);	/* root object */
@@ -106,14 +156,15 @@ static int do_version(int argc, char **argv)
 			     BPFTOOL_MINOR_VERSION, BPFTOOL_PATCH_VERSION);
 #endif
 		jsonw_name(json_wtr, "libbpf_version");
-		jsonw_printf(json_wtr, "\"%d.%d\"",
+		jsonw_printf(json_wtr, "\"%u.%u\"",
 			     libbpf_major_version(), libbpf_minor_version());
 
 		jsonw_name(json_wtr, "features");
 		jsonw_start_object(json_wtr);	/* features */
 		jsonw_bool_field(json_wtr, "libbfd", has_libbfd);
-		jsonw_bool_field(json_wtr, "libbpf_strict", !legacy_libbpf);
+		jsonw_bool_field(json_wtr, "llvm", has_llvm);
 		jsonw_bool_field(json_wtr, "skeletons", has_skeletons);
+		jsonw_bool_field(json_wtr, "bootstrap", bootstrap);
 		jsonw_end_object(json_wtr);	/* features */
 
 		jsonw_end_object(json_wtr);	/* root object */
@@ -128,16 +179,10 @@ static int do_version(int argc, char **argv)
 #endif
 		printf("using libbpf %s\n", libbpf_version_string());
 		printf("features:");
-		if (has_libbfd) {
-			printf(" libbfd");
-			nb_features++;
-		}
-		if (!legacy_libbpf) {
-			printf("%s libbpf_strict", nb_features++ ? "," : "");
-			nb_features++;
-		}
-		if (has_skeletons)
-			printf("%s skeletons", nb_features++ ? "," : "");
+		print_feature("libbfd", has_libbfd, &nb_features);
+		print_feature("llvm", has_llvm, &nb_features);
+		print_feature("skeletons", has_skeletons, &nb_features);
+		print_feature("bootstrap", bootstrap, &nb_features);
 		printf("\n");
 	}
 	return 0;
@@ -279,26 +324,6 @@ static int make_args(char *line, char *n_argv[], int maxargs, int cmd_nb)
 	return n_argc;
 }
 
-static int do_batch(int argc, char **argv);
-
-static const struct cmd cmds[] = {
-	{ "help",	do_help },
-	{ "batch",	do_batch },
-	{ "prog",	do_prog },
-	{ "map",	do_map },
-	{ "link",	do_link },
-	{ "cgroup",	do_cgroup },
-	{ "perf",	do_perf },
-	{ "net",	do_net },
-	{ "feature",	do_feature },
-	{ "btf",	do_btf },
-	{ "gen",	do_gen },
-	{ "struct_ops",	do_struct_ops },
-	{ "iter",	do_iter },
-	{ "version",	do_version },
-	{ 0 }
-};
-
 static int do_batch(int argc, char **argv)
 {
 	char buf[BATCH_LINE_LEN_MAX], contline[BATCH_LINE_LEN_MAX];
@@ -313,11 +338,11 @@ static int do_batch(int argc, char **argv)
 	if (argc < 2) {
 		p_err("too few parameters for batch");
 		return -1;
-	} else if (!is_prefix(*argv, "file")) {
-		p_err("expected 'file', got: %s", *argv);
-		return -1;
 	} else if (argc > 2) {
 		p_err("too many parameters for batch");
+		return -1;
+	} else if (!is_prefix(*argv, "file")) {
+		p_err("expected 'file', got: %s", *argv);
 		return -1;
 	}
 	NEXT_ARG();
@@ -349,7 +374,7 @@ static int do_batch(int argc, char **argv)
 		while ((cp = strstr(buf, "\\\n")) != NULL) {
 			if (!fgets(contline, sizeof(contline), fp) ||
 			    strlen(contline) == 0) {
-				p_err("missing continuation line on command %d",
+				p_err("missing continuation line on command %u",
 				      lines);
 				err = -1;
 				goto err_close;
@@ -360,7 +385,7 @@ static int do_batch(int argc, char **argv)
 				*cp = '\0';
 
 			if (strlen(buf) + strlen(contline) + 1 > sizeof(buf)) {
-				p_err("command %d is too long", lines);
+				p_err("command %u is too long", lines);
 				err = -1;
 				goto err_close;
 			}
@@ -386,7 +411,7 @@ static int do_batch(int argc, char **argv)
 			jsonw_name(json_wtr, "output");
 		}
 
-		err = cmd_select(cmds, n_argc, n_argv, do_help);
+		err = cmd_select(commands, n_argc, n_argv, do_help);
 
 		if (json_output)
 			jsonw_end_object(json_wtr);
@@ -402,7 +427,7 @@ static int do_batch(int argc, char **argv)
 		err = -1;
 	} else {
 		if (!json_output)
-			printf("processed %d commands\n", lines);
+			printf("processed %u commands\n", lines);
 	}
 err_close:
 	if (fp != stdin)
@@ -426,8 +451,8 @@ int main(int argc, char **argv)
 		{ "nomount",	no_argument,	NULL,	'n' },
 		{ "debug",	no_argument,	NULL,	'd' },
 		{ "use-loader",	no_argument,	NULL,	'L' },
+		{ "sign",	no_argument,	NULL,	'S' },
 		{ "base-btf",	required_argument, NULL, 'B' },
-		{ "legacy",	no_argument,	NULL,	'l' },
 		{ 0 }
 	};
 	bool version_requested = false;
@@ -435,15 +460,25 @@ int main(int argc, char **argv)
 
 	setlinebuf(stdout);
 
+#ifdef USE_LIBCAP
+	/* Libcap < 2.63 hooks before main() to compute the number of
+	 * capabilities of the running kernel, and doing so it calls prctl()
+	 * which may fail and set errno to non-zero.
+	 * Let's reset errno to make sure this does not interfere with the
+	 * batch mode.
+	 */
+	errno = 0;
+#endif
+
 	last_do_help = do_help;
 	pretty_output = false;
 	json_output = false;
 	show_pinned = false;
 	block_mount = false;
-	bin_name = argv[0];
+	bin_name = "bpftool";
 
 	opterr = 0;
-	while ((opt = getopt_long(argc, argv, "VhpjfLmndB:l",
+	while ((opt = getopt_long(argc, argv, "VhpjfLmndSi:k:B:l",
 				  options, NULL)) >= 0) {
 		switch (opt) {
 		case 'V':
@@ -480,18 +515,24 @@ int main(int argc, char **argv)
 			break;
 		case 'B':
 			base_btf = btf__parse(optarg, NULL);
-			if (libbpf_get_error(base_btf)) {
-				p_err("failed to parse base BTF at '%s': %ld\n",
-				      optarg, libbpf_get_error(base_btf));
-				base_btf = NULL;
+			if (!base_btf) {
+				p_err("failed to parse base BTF at '%s': %d\n",
+				      optarg, -errno);
 				return -1;
 			}
 			break;
 		case 'L':
 			use_loader = true;
 			break;
-		case 'l':
-			legacy_libbpf = true;
+		case 'S':
+			sign_progs = true;
+			use_loader = true;
+			break;
+		case 'k':
+			private_key_path = optarg;
+			break;
+		case 'i':
+			cert_path = optarg;
 			break;
 		default:
 			p_err("unrecognized option '%s'", argv[optind - 1]);
@@ -502,25 +543,25 @@ int main(int argc, char **argv)
 		}
 	}
 
-	if (!legacy_libbpf) {
-		/* Allow legacy map definitions for skeleton generation.
-		 * It will still be rejected if users use LIBBPF_STRICT_ALL
-		 * mode for loading generated skeleton.
-		 */
-		libbpf_set_strict_mode(LIBBPF_STRICT_ALL & ~LIBBPF_STRICT_MAP_DEFINITIONS);
-	} else {
-		libbpf_set_strict_mode(LIBBPF_STRICT_AUTO_RLIMIT_MEMLOCK);
-	}
-
 	argc -= optind;
 	argv += optind;
 	if (argc < 0)
 		usage();
 
-	if (version_requested)
-		return do_version(argc, argv);
+	if (sign_progs && (private_key_path == NULL || cert_path == NULL)) {
+		p_err("-i <identity_x509_cert> and -k <private_key> must be supplied with -S for signing");
+		return -EINVAL;
+	}
 
-	ret = cmd_select(cmds, argc, argv, do_help);
+	if (!sign_progs && (private_key_path != NULL || cert_path != NULL)) {
+		p_err("--sign (or -S) must be explicitly passed with -i <identity_x509_cert> and -k <private_key> to sign the programs");
+		return -EINVAL;
+	}
+
+	if (version_requested)
+		ret = do_version(argc, argv);
+	else
+		ret = cmd_select(commands, argc, argv, do_help);
 
 	if (json_output)
 		jsonw_destroy(&json_wtr);

@@ -10,6 +10,7 @@
 #include <linux/cdev.h>
 #include <linux/delay.h>
 #include <linux/fs.h>
+#include <linux/mod_devicetable.h>
 #include <linux/uaccess.h>
 #include <linux/slab.h>
 #include <linux/list.h>
@@ -526,16 +527,16 @@ static void scom_free(struct device *dev)
 	kfree(scom);
 }
 
-static int scom_probe(struct device *dev)
+static int scom_probe(struct fsi_device *fsi_dev)
 {
-	struct fsi_device *fsi_dev = to_fsi_dev(dev);
+	struct device *dev = &fsi_dev->dev;
 	struct scom_device *scom;
 	int rc, didx;
 
-	scom = kzalloc(sizeof(*scom), GFP_KERNEL);
+	scom = kzalloc_obj(*scom);
 	if (!scom)
 		return -ENOMEM;
-	dev_set_drvdata(dev, scom);
+	fsi_set_drvdata(fsi_dev, scom);
 	mutex_init(&scom->lock);
 
 	/* Grab a reference to the device (parent of our cdev), we'll drop it later */
@@ -573,9 +574,9 @@ static int scom_probe(struct device *dev)
 	return rc;
 }
 
-static int scom_remove(struct device *dev)
+static void scom_remove(struct fsi_device *fsi_dev)
 {
-	struct scom_device *scom = dev_get_drvdata(dev);
+	struct scom_device *scom = fsi_get_drvdata(fsi_dev);
 
 	mutex_lock(&scom->lock);
 	scom->dead = true;
@@ -583,9 +584,13 @@ static int scom_remove(struct device *dev)
 	cdev_device_del(&scom->cdev, &scom->dev);
 	fsi_free_minor(scom->dev.devt);
 	put_device(&scom->dev);
-
-	return 0;
 }
+
+static const struct of_device_id scom_of_ids[] = {
+	{ .compatible = "ibm,fsi2pib" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, scom_of_ids);
 
 static const struct fsi_device_id scom_ids[] = {
 	{
@@ -597,24 +602,14 @@ static const struct fsi_device_id scom_ids[] = {
 
 static struct fsi_driver scom_drv = {
 	.id_table = scom_ids,
+	.probe = scom_probe,
+	.remove = scom_remove,
 	.drv = {
 		.name = "scom",
-		.bus = &fsi_bus_type,
-		.probe = scom_probe,
-		.remove = scom_remove,
+		.of_match_table = scom_of_ids,
 	}
 };
 
-static int scom_init(void)
-{
-	return fsi_driver_register(&scom_drv);
-}
-
-static void scom_exit(void)
-{
-	fsi_driver_unregister(&scom_drv);
-}
-
-module_init(scom_init);
-module_exit(scom_exit);
+module_fsi_driver(scom_drv);
+MODULE_DESCRIPTION("SCOM FSI Client device driver");
 MODULE_LICENSE("GPL");

@@ -7,7 +7,8 @@
  * Code is partially derived from pcic.c
  */
 
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 #include <linux/kernel.h>
 #include <linux/pci.h>
 #include <linux/export.h>
@@ -58,32 +59,4 @@ void leon_pci_init(struct platform_device *ofdev, struct leon_pci_info *info)
 	/* Assign devices with resources */
 	pci_assign_unassigned_resources();
 	pci_bus_add_devices(root_bus);
-}
-
-int pcibios_enable_device(struct pci_dev *dev, int mask)
-{
-	u16 cmd, oldcmd;
-	int i;
-
-	pci_read_config_word(dev, PCI_COMMAND, &cmd);
-	oldcmd = cmd;
-
-	for (i = 0; i < PCI_NUM_RESOURCES; i++) {
-		struct resource *res = &dev->resource[i];
-
-		/* Only set up the requested stuff */
-		if (!(mask & (1<<i)))
-			continue;
-
-		if (res->flags & IORESOURCE_IO)
-			cmd |= PCI_COMMAND_IO;
-		if (res->flags & IORESOURCE_MEM)
-			cmd |= PCI_COMMAND_MEMORY;
-	}
-
-	if (cmd != oldcmd) {
-		pci_info(dev, "enabling device (%04x -> %04x)\n", oldcmd, cmd);
-		pci_write_config_word(dev, PCI_COMMAND, cmd);
-	}
-	return 0;
 }

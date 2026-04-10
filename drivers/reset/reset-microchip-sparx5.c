@@ -7,9 +7,11 @@
  * https://github.com/microchip-ung/sparx-5_reginfo
  */
 #include <linux/mfd/syscon.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/reset-controller.h>
 
@@ -33,11 +35,8 @@ static struct regmap_config sparx5_reset_regmap_config = {
 	.reg_stride	= 4,
 };
 
-static int sparx5_switch_reset(struct reset_controller_dev *rcdev,
-			       unsigned long id)
+static int sparx5_switch_reset(struct mchp_reset_context *ctx)
 {
-	struct mchp_reset_context *ctx =
-		container_of(rcdev, struct mchp_reset_context, rcdev);
 	u32 val;
 
 	/* Make sure the core is PROTECTED from reset */
@@ -54,9 +53,45 @@ static int sparx5_switch_reset(struct reset_controller_dev *rcdev,
 					1, 100);
 }
 
+static int sparx5_reset_noop(struct reset_controller_dev *rcdev,
+			     unsigned long id)
+{
+	return 0;
+}
+
 static const struct reset_control_ops sparx5_reset_ops = {
-	.reset = sparx5_switch_reset,
+	.reset = sparx5_reset_noop,
 };
+
+static const struct regmap_config mchp_lan966x_syscon_regmap_config = {
+	.reg_bits = 32,
+	.val_bits = 32,
+	.reg_stride = 4,
+};
+
+static struct regmap *mchp_lan966x_syscon_to_regmap(struct device *dev,
+						    struct device_node *syscon_np)
+{
+	struct regmap_config regmap_config = mchp_lan966x_syscon_regmap_config;
+	struct resource res;
+	void __iomem *base;
+	int err;
+
+	err = of_address_to_resource(syscon_np, 0, &res);
+	if (err)
+		return ERR_PTR(err);
+
+	/* It is not possible to use devm_of_iomap because this resource is
+	 * shared with other drivers.
+	 */
+	base = devm_ioremap(dev, res.start, resource_size(&res));
+	if (!base)
+		return ERR_PTR(-ENOMEM);
+
+	regmap_config.max_register =  resource_size(&res) - 4;
+
+	return devm_regmap_init_mmio(dev, base, &regmap_config);
+}
 
 static int mchp_sparx5_map_syscon(struct platform_device *pdev, char *name,
 				  struct regmap **target)
@@ -68,7 +103,18 @@ static int mchp_sparx5_map_syscon(struct platform_device *pdev, char *name,
 	syscon_np = of_parse_phandle(pdev->dev.of_node, name, 0);
 	if (!syscon_np)
 		return -ENODEV;
-	regmap = syscon_node_to_regmap(syscon_np);
+
+	/*
+	 * The syscon API doesn't support syscon device removal.
+	 * When used in LAN966x PCI device, the cpu-syscon device needs to be
+	 * removed when the PCI device is removed.
+	 * In case of LAN966x, map the syscon device locally to support the
+	 * device removal.
+	 */
+	if (of_device_is_compatible(pdev->dev.of_node, "microchip,lan966x-switch-reset"))
+		regmap = mchp_lan966x_syscon_to_regmap(&pdev->dev, syscon_np);
+	else
+		regmap = syscon_node_to_regmap(syscon_np);
 	of_node_put(syscon_np);
 	if (IS_ERR(regmap)) {
 		err = PTR_ERR(regmap);
@@ -117,10 +163,16 @@ static int mchp_sparx5_reset_probe(struct platform_device *pdev)
 		return err;
 
 	ctx->rcdev.owner = THIS_MODULE;
+	ctx->rcdev.dev = &pdev->dev;
 	ctx->rcdev.nr_resets = 1;
 	ctx->rcdev.ops = &sparx5_reset_ops;
 	ctx->rcdev.of_node = dn;
 	ctx->props = device_get_match_data(&pdev->dev);
+
+	/* Issue the reset very early, our actual reset callback is a noop. */
+	err = sparx5_switch_reset(ctx);
+	if (err)
+		return err;
 
 	return devm_reset_controller_register(&pdev->dev, &ctx->rcdev);
 }
@@ -149,6 +201,7 @@ static const struct of_device_id mchp_sparx5_reset_of_match[] = {
 	},
 	{ }
 };
+MODULE_DEVICE_TABLE(of, mchp_sparx5_reset_of_match);
 
 static struct platform_driver mchp_sparx5_reset_driver = {
 	.probe = mchp_sparx5_reset_probe,
@@ -163,8 +216,12 @@ static int __init mchp_sparx5_reset_init(void)
 	return platform_driver_register(&mchp_sparx5_reset_driver);
 }
 
+/*
+ * Because this is a global reset, keep this postcore_initcall() to issue the
+ * reset as early as possible during the kernel startup.
+ */
 postcore_initcall(mchp_sparx5_reset_init);
 
 MODULE_DESCRIPTION("Microchip Sparx5 switch reset driver");
 MODULE_AUTHOR("Steen Hegelund <steen.hegelund@microchip.com>");
-MODULE_LICENSE("Dual MIT/GPL");
+MODULE_LICENSE("GPL");

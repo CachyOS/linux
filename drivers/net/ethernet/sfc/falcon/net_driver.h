@@ -679,7 +679,7 @@ union ef4_multicast_hash {
  * @n_rx_channels: Number of channels used for RX (= number of RX queues)
  * @n_tx_channels: Number of channels used for TX
  * @rx_ip_align: RX DMA address offset to have IP header aligned in
- *	in accordance with NET_IP_ALIGN
+ *	accordance with NET_IP_ALIGN
  * @rx_dma_len: Current maximum RX DMA length
  * @rx_buffer_order: Order (log2) of number of pages for each RX buffer
  * @rx_buffer_truesize: Amortised allocation size of an RX buffer,
@@ -1057,7 +1057,7 @@ struct ef4_nic_type {
 	void (*finish_flush)(struct ef4_nic *efx);
 	void (*prepare_flr)(struct ef4_nic *efx);
 	void (*finish_flr)(struct ef4_nic *efx);
-	size_t (*describe_stats)(struct ef4_nic *efx, u8 *names);
+	size_t (*describe_stats)(struct ef4_nic *efx, u8 **names);
 	size_t (*update_stats)(struct ef4_nic *efx, u64 *full_stats,
 			       struct rtnl_link_stats64 *core_stats);
 	void (*start_stats)(struct ef4_nic *efx);

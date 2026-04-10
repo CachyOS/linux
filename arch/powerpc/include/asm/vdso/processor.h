@@ -2,7 +2,7 @@
 #ifndef _ASM_POWERPC_VDSO_PROCESSOR_H
 #define _ASM_POWERPC_VDSO_PROCESSOR_H
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 /* Macros for adjusting thread priority (hardware multi-threading) */
 #ifdef CONFIG_PPC64
@@ -22,11 +22,17 @@
 #endif
 
 #ifdef CONFIG_PPC64
-#define cpu_relax()	do { HMT_low(); HMT_medium(); barrier(); } while (0)
+#define cpu_relax()							\
+	asm volatile(ASM_FTR_IFCLR(					\
+		/* Pre-POWER10 uses low ; medium priority nops */	\
+		"or 1,1,1 ; or 2,2,2",					\
+		/* POWER10 onward uses pause_short (wait 2,0) */	\
+		PPC_WAIT(2, 0),						\
+		%0) :: "i" (CPU_FTR_ARCH_31) : "memory")
 #else
 #define cpu_relax()	barrier()
 #endif
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 #endif /* _ASM_POWERPC_VDSO_PROCESSOR_H */

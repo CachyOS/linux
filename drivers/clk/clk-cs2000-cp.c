@@ -9,7 +9,7 @@
 #include <linux/delay.h>
 #include <linux/clk.h>
 #include <linux/i2c.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/module.h>
 #include <linux/regmap.h>
 
@@ -305,15 +305,19 @@ static unsigned long cs2000_recalc_rate(struct clk_hw *hw,
 	return cs2000_ratio_to_rate(ratio, parent_rate, priv->lf_ratio);
 }
 
-static long cs2000_round_rate(struct clk_hw *hw, unsigned long rate,
-			      unsigned long *parent_rate)
+static int cs2000_determine_rate(struct clk_hw *hw,
+				 struct clk_rate_request *req)
 {
 	struct cs2000_priv *priv = hw_to_priv(hw);
 	u32 ratio;
 
-	ratio = cs2000_rate_to_ratio(*parent_rate, rate, priv->lf_ratio);
+	ratio = cs2000_rate_to_ratio(req->best_parent_rate, req->rate,
+				     priv->lf_ratio);
 
-	return cs2000_ratio_to_rate(ratio, *parent_rate, priv->lf_ratio);
+	req->rate = cs2000_ratio_to_rate(ratio, req->best_parent_rate,
+					 priv->lf_ratio);
+
+	return 0;
 }
 
 static int cs2000_select_ratio_mode(struct cs2000_priv *priv,
@@ -430,7 +434,7 @@ static u8 cs2000_get_parent(struct clk_hw *hw)
 static const struct clk_ops cs2000_ops = {
 	.get_parent	= cs2000_get_parent,
 	.recalc_rate	= cs2000_recalc_rate,
-	.round_rate	= cs2000_round_rate,
+	.determine_rate = cs2000_determine_rate,
 	.set_rate	= cs2000_set_rate,
 	.prepare	= cs2000_enable,
 	.unprepare	= cs2000_disable,
@@ -557,7 +561,7 @@ static int cs2000_version_print(struct cs2000_priv *priv)
 	return 0;
 }
 
-static int cs2000_remove(struct i2c_client *client)
+static void cs2000_remove(struct i2c_client *client)
 {
 	struct cs2000_priv *priv = i2c_get_clientdata(client);
 	struct device *dev = priv_to_dev(priv);
@@ -566,8 +570,6 @@ static int cs2000_remove(struct i2c_client *client)
 	of_clk_del_provider(np);
 
 	clk_hw_unregister(&priv->hw);
-
-	return 0;
 }
 
 static int cs2000_probe(struct i2c_client *client)
@@ -624,7 +626,7 @@ static struct i2c_driver cs2000_driver = {
 		.pm	= &cs2000_pm_ops,
 		.of_match_table = cs2000_of_match,
 	},
-	.probe_new	= cs2000_probe,
+	.probe		= cs2000_probe,
 	.remove		= cs2000_remove,
 	.id_table	= cs2000_id,
 };

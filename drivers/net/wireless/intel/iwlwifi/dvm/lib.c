@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /******************************************************************************
  *
- * Copyright(c) 2008 - 2014 Intel Corporation. All rights reserved.
+ * Copyright(c) 2008 - 2014, 2022 Intel Corporation. All rights reserved.
  *****************************************************************************/
 #include <linux/etherdevice.h>
 #include <linux/kernel.h>
@@ -441,7 +441,7 @@ static void iwlagn_bt_traffic_change_work(struct work_struct *work)
 		priv->current_ht_config.smps = smps_request;
 		for_each_context(priv, ctx) {
 			if (ctx->vif && ctx->vif->type == NL80211_IFTYPE_STATION)
-				ieee80211_request_smps(ctx->vif, smps_request);
+				ieee80211_request_smps(ctx->vif, 0, smps_request);
 		}
 	}
 
@@ -586,7 +586,7 @@ static bool iwlagn_fill_txpower_mode(struct iwl_priv *priv,
 		return false;
 	}
 
-	ave_rssi = ieee80211_ave_rssi(ctx->vif);
+	ave_rssi = ieee80211_ave_rssi(ctx->vif, -1);
 	if (!ave_rssi) {
 		/* no rssi data, no changes to reduce tx power */
 		IWL_DEBUG_COEX(priv, "no rssi data available\n");
@@ -1056,7 +1056,7 @@ int iwlagn_suspend(struct iwl_priv *priv, struct cfg80211_wowlan *wowlan)
 	int ret, i;
 	u16 seq;
 
-	key_data.rsc_tsc = kzalloc(sizeof(*key_data.rsc_tsc), GFP_KERNEL);
+	key_data.rsc_tsc = kzalloc_obj(*key_data.rsc_tsc);
 	if (!key_data.rsc_tsc)
 		return -ENOMEM;
 

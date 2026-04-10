@@ -23,13 +23,13 @@
 #include "ubifs.h"
 #include <linux/list_sort.h>
 #include <crypto/hash.h>
-#include <crypto/algapi.h>
 
 /**
  * struct replay_entry - replay list entry.
  * @lnum: logical eraseblock number of the node
  * @offs: node offset
  * @len: node length
+ * @hash: node hash
  * @deletion: non-zero if this entry corresponds to a node deletion
  * @sqnum: node sequence number
  * @list: links the replay list
@@ -366,6 +366,7 @@ static void destroy_replay_list(struct ubifs_info *c)
  * @lnum: node logical eraseblock number
  * @offs: node offset
  * @len: node length
+ * @hash: node hash
  * @key: node key
  * @sqnum: sequence number
  * @deletion: non-zero if this is a deletion
@@ -392,7 +393,7 @@ static int insert_node(struct ubifs_info *c, int lnum, int offs, int len,
 	if (key_inum(c, key) >= c->highest_inum)
 		c->highest_inum = key_inum(c, key);
 
-	r = kzalloc(sizeof(struct replay_entry), GFP_KERNEL);
+	r = kzalloc_obj(struct replay_entry);
 	if (!r)
 		return -ENOMEM;
 
@@ -418,6 +419,7 @@ static int insert_node(struct ubifs_info *c, int lnum, int offs, int len,
  * @lnum: node logical eraseblock number
  * @offs: node offset
  * @len: node length
+ * @hash: node hash
  * @key: node key
  * @name: directory entry name
  * @nlen: directory entry name length
@@ -441,7 +443,7 @@ static int insert_dent(struct ubifs_info *c, int lnum, int offs, int len,
 	if (key_inum(c, key) >= c->highest_inum)
 		c->highest_inum = key_inum(c, key);
 
-	r = kzalloc(sizeof(struct replay_entry), GFP_KERNEL);
+	r = kzalloc_obj(struct replay_entry);
 	if (!r)
 		return -ENOMEM;
 
@@ -895,11 +897,11 @@ static int add_replay_bud(struct ubifs_info *c, int lnum, int offs, int jhead,
 
 	dbg_mnt("add replay bud LEB %d:%d, head %d", lnum, offs, jhead);
 
-	bud = kmalloc(sizeof(struct ubifs_bud), GFP_KERNEL);
+	bud = kmalloc_obj(struct ubifs_bud);
 	if (!bud)
 		return -ENOMEM;
 
-	b = kmalloc(sizeof(struct bud_entry), GFP_KERNEL);
+	b = kmalloc_obj(struct bud_entry);
 	if (!b) {
 		err = -ENOMEM;
 		goto out;

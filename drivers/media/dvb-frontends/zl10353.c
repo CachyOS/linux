@@ -598,7 +598,7 @@ struct dvb_frontend *zl10353_attach(const struct zl10353_config *config,
 	int id;
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(struct zl10353_state), GFP_KERNEL);
+	state = kzalloc_obj(struct zl10353_state);
 	if (state == NULL)
 		goto error;
 
@@ -665,4 +665,4 @@ MODULE_DESCRIPTION("Zarlink ZL10353 DVB-T demodulator driver");
 MODULE_AUTHOR("Chris Pascoe");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(zl10353_attach);
+EXPORT_SYMBOL_GPL(zl10353_attach);

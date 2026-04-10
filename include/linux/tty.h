@@ -6,7 +6,6 @@
 #include <linux/major.h>
 #include <linux/termios.h>
 #include <linux/workqueue.h>
-#include <linux/tty_buffer.h>
 #include <linux/tty_driver.h>
 #include <linux/tty_ldisc.h>
 #include <linux/tty_port.h>
@@ -122,8 +121,6 @@ struct tty_operations;
 /**
  * struct tty_struct - state associated with a tty while open
  *
- * @magic: magic value set early in @alloc_tty_struct to %TTY_MAGIC, for
- *	   debugging purposes
  * @kref: reference counting by tty_kref_get() and tty_kref_put(), reaching zero
  *	  frees the structure
  * @dev: class device or %NULL (e.g. ptys, serdev)
@@ -148,15 +145,12 @@ struct tty_operations;
  * @count: count of open processes, reaching zero cancels all the work for
  *	   this tty and drops a @kref too (but does not free this tty)
  * @winsize: size of the terminal "window" (cf. @winsize_mutex)
- * @flow: flow settings grouped together, see also @flow.unused
+ * @flow: flow settings grouped together
  * @flow.lock: lock for @flow members
  * @flow.stopped: tty stopped/started by stop_tty()/start_tty()
  * @flow.tco_stopped: tty stopped/started by %TCOOFF/%TCOON ioctls (it has
  *		      precedence over @flow.stopped)
- * @flow.unused: alignment for Alpha, so that no members other than @flow.* are
- *		 modified by the same 64b word store. The @flow's __aligned is
- *		 there for the very same reason.
- * @ctrl: control settings grouped together, see also @ctrl.unused
+ * @ctrl: control settings grouped together
  * @ctrl.lock: lock for @ctrl members
  * @ctrl.pgrp: process group of this tty (setpgrp(2))
  * @ctrl.session: session of this tty (setsid(2)). Writes are protected by both
@@ -164,7 +158,6 @@ struct tty_operations;
  *		  them.
  * @ctrl.pktstatus: packet mode status (bitwise OR of %TIOCPKT_ constants)
  * @ctrl.packet: packet mode enabled
- * @ctrl.unused: alignment for Alpha, see @flow.unused for explanation
  * @hw_stopped: not controlled by the tty layer, under @driver's control for CTS
  *		handling
  * @receive_room: bytes permitted to feed to @ldisc without any being lost
@@ -193,15 +186,15 @@ struct tty_operations;
  * &struct tty_port.
  */
 struct tty_struct {
-	int	magic;
 	struct kref kref;
+	int index;
 	struct device *dev;
 	struct tty_driver *driver;
+	struct tty_port *port;
 	const struct tty_operations *ops;
-	int index;
 
-	struct ld_semaphore ldisc_sem;
 	struct tty_ldisc *ldisc;
+	struct ld_semaphore ldisc_sem;
 
 	struct mutex atomic_write_lock;
 	struct mutex legacy_mutex;
@@ -212,26 +205,25 @@ struct tty_struct {
 	char name[64];
 	unsigned long flags;
 	int count;
+	unsigned int receive_room;
 	struct winsize winsize;
 
 	struct {
 		spinlock_t lock;
 		bool stopped;
 		bool tco_stopped;
-		unsigned long unused[0];
-	} __aligned(sizeof(unsigned long)) flow;
+	} flow;
 
 	struct {
-		spinlock_t lock;
 		struct pid *pgrp;
 		struct pid *session;
+		spinlock_t lock;
 		unsigned char pktstatus;
 		bool packet;
-		unsigned long unused[0];
-	} __aligned(sizeof(unsigned long)) ctrl;
+	} ctrl;
 
-	int hw_stopped;
-	unsigned int receive_room;
+	bool hw_stopped;
+	bool closing;
 	int flow_change;
 
 	struct tty_struct *link;
@@ -242,15 +234,12 @@ struct tty_struct {
 	void *disc_data;
 	void *driver_data;
 	spinlock_t files_lock;
+	int write_cnt;
+	u8 *write_buf;
+
 	struct list_head tty_files;
 
-#define N_TTY_BUF_SIZE 4096
-
-	int closing;
-	unsigned char *write_buf;
-	int write_cnt;
 	struct work_struct SAK_work;
-	struct tty_port *port;
 } __randomize_layout;
 
 /* Each of a tty's open files has private_data pointing to tty_file_private */
@@ -260,11 +249,8 @@ struct tty_file_private {
 	struct list_head list;
 };
 
-/* tty magic number */
-#define TTY_MAGIC		0x5401
-
 /**
- * DOC: TTY Struct Flags
+ * enum tty_struct_flags - TTY Struct Flags
  *
  * These bits are used in the :c:member:`tty_struct.flags` field.
  *
@@ -273,62 +259,64 @@ struct tty_file_private {
  * tty->write.  Thus, you must use the inline functions set_bit() and
  * clear_bit() to make things atomic.
  *
- * TTY_THROTTLED
+ * @TTY_THROTTLED:
  *	Driver input is throttled. The ldisc should call
  *	:c:member:`tty_driver.unthrottle()` in order to resume reception when
  *	it is ready to process more data (at threshold min).
  *
- * TTY_IO_ERROR
+ * @TTY_IO_ERROR:
  *	If set, causes all subsequent userspace read/write calls on the tty to
  *	fail, returning -%EIO. (May be no ldisc too.)
  *
- * TTY_OTHER_CLOSED
+ * @TTY_OTHER_CLOSED:
  *	Device is a pty and the other side has closed.
  *
- * TTY_EXCLUSIVE
+ * @TTY_EXCLUSIVE:
  *	Exclusive open mode (a single opener).
  *
- * TTY_DO_WRITE_WAKEUP
+ * @TTY_DO_WRITE_WAKEUP:
  *	If set, causes the driver to call the
  *	:c:member:`tty_ldisc_ops.write_wakeup()` method in order to resume
  *	transmission when it can accept more data to transmit.
  *
- * TTY_LDISC_OPEN
+ * @TTY_LDISC_OPEN:
  *	Indicates that a line discipline is open. For debugging purposes only.
  *
- * TTY_PTY_LOCK
+ * @TTY_PTY_LOCK:
  *	A flag private to pty code to implement %TIOCSPTLCK/%TIOCGPTLCK logic.
  *
- * TTY_NO_WRITE_SPLIT
+ * @TTY_NO_WRITE_SPLIT:
  *	Prevent driver from splitting up writes into smaller chunks (preserve
  *	write boundaries to driver).
  *
- * TTY_HUPPED
+ * @TTY_HUPPED:
  *	The TTY was hung up. This is set post :c:member:`tty_driver.hangup()`.
  *
- * TTY_HUPPING
+ * @TTY_HUPPING:
  *	The TTY is in the process of hanging up to abort potential readers.
  *
- * TTY_LDISC_CHANGING
+ * @TTY_LDISC_CHANGING:
  *	Line discipline for this TTY is being changed. I/O should not block
  *	when this is set. Use tty_io_nonblock() to check.
  *
- * TTY_LDISC_HALTED
+ * @TTY_LDISC_HALTED:
  *	Line discipline for this TTY was stopped. No work should be queued to
  *	this ldisc.
  */
-#define TTY_THROTTLED		0
-#define TTY_IO_ERROR		1
-#define TTY_OTHER_CLOSED	2
-#define TTY_EXCLUSIVE		3
-#define TTY_DO_WRITE_WAKEUP	5
-#define TTY_LDISC_OPEN		11
-#define TTY_PTY_LOCK		16
-#define TTY_NO_WRITE_SPLIT	17
-#define TTY_HUPPED		18
-#define TTY_HUPPING		19
-#define TTY_LDISC_CHANGING	20
-#define TTY_LDISC_HALTED	22
+enum tty_struct_flags {
+	TTY_THROTTLED,
+	TTY_IO_ERROR,
+	TTY_OTHER_CLOSED,
+	TTY_EXCLUSIVE,
+	TTY_DO_WRITE_WAKEUP,
+	TTY_LDISC_OPEN,
+	TTY_PTY_LOCK,
+	TTY_NO_WRITE_SPLIT,
+	TTY_HUPPED,
+	TTY_HUPPING,
+	TTY_LDISC_CHANGING,
+	TTY_LDISC_HALTED,
+};
 
 static inline bool tty_io_nonblock(struct tty_struct *tty, struct file *file)
 {
@@ -393,17 +381,17 @@ extern struct ktermios tty_std_termios;
 
 int vcs_init(void);
 
-extern struct class *tty_class;
+extern const struct class tty_class;
 
 /**
- *	tty_kref_get		-	get a tty reference
- *	@tty: tty device
+ * tty_kref_get - get a tty reference
+ * @tty: tty device
  *
- *	Return a new reference to a tty object. The caller must hold
- *	sufficient locks/counts to ensure that their existing reference cannot
- *	go away
+ * Returns: a new reference to a tty object
+ *
+ * Locking: The caller must hold sufficient locks/counts to ensure that their
+ * existing reference cannot go away.
  */
-
 static inline struct tty_struct *tty_kref_get(struct tty_struct *tty)
 {
 	if (tty)
@@ -416,17 +404,18 @@ void tty_wait_until_sent(struct tty_struct *tty, long timeout);
 void stop_tty(struct tty_struct *tty);
 void start_tty(struct tty_struct *tty);
 void tty_write_message(struct tty_struct *tty, char *msg);
-int tty_send_xchar(struct tty_struct *tty, char ch);
-int tty_put_char(struct tty_struct *tty, unsigned char c);
+int tty_send_xchar(struct tty_struct *tty, u8 ch);
+int tty_put_char(struct tty_struct *tty, u8 c);
 unsigned int tty_chars_in_buffer(struct tty_struct *tty);
 unsigned int tty_write_room(struct tty_struct *tty);
 void tty_driver_flush_buffer(struct tty_struct *tty);
 void tty_unthrottle(struct tty_struct *tty);
-int tty_throttle_safe(struct tty_struct *tty);
-int tty_unthrottle_safe(struct tty_struct *tty);
+bool tty_throttle_safe(struct tty_struct *tty);
+bool tty_unthrottle_safe(struct tty_struct *tty);
 int tty_do_resize(struct tty_struct *tty, struct winsize *ws);
 int tty_get_icount(struct tty_struct *tty,
 		struct serial_icounter_struct *icount);
+int tty_get_tiocm(struct tty_struct *tty);
 int is_current_pgrp_orphaned(void);
 void tty_hangup(struct tty_struct *tty);
 void tty_vhangup(struct tty_struct *tty);
@@ -434,23 +423,21 @@ int tty_hung_up_p(struct file *filp);
 void do_SAK(struct tty_struct *tty);
 void __do_SAK(struct tty_struct *tty);
 void no_tty(void);
-speed_t tty_termios_baud_rate(struct ktermios *termios);
+speed_t tty_termios_baud_rate(const struct ktermios *termios);
 void tty_termios_encode_baud_rate(struct ktermios *termios, speed_t ibaud,
 		speed_t obaud);
 void tty_encode_baud_rate(struct tty_struct *tty, speed_t ibaud,
 		speed_t obaud);
 
 /**
- *	tty_get_baud_rate	-	get tty bit rates
- *	@tty: tty to query
+ * tty_get_baud_rate - get tty bit rates
+ * @tty: tty to query
  *
- *	Returns the baud rate as an integer for this terminal. The
- *	termios lock must be held by the caller and the terminal bit
- *	flags may be updated.
+ * Returns: the baud rate as an integer for this terminal
  *
- *	Locking: none
+ * Locking: The termios lock must be held by the caller.
  */
-static inline speed_t tty_get_baud_rate(struct tty_struct *tty)
+static inline speed_t tty_get_baud_rate(const struct tty_struct *tty)
 {
 	return tty_termios_baud_rate(&tty->termios);
 }
@@ -458,8 +445,8 @@ static inline speed_t tty_get_baud_rate(struct tty_struct *tty)
 unsigned char tty_get_char_size(unsigned int cflag);
 unsigned char tty_get_frame_size(unsigned int cflag);
 
-void tty_termios_copy_hw(struct ktermios *new, struct ktermios *old);
-int tty_termios_hw_change(const struct ktermios *a, const struct ktermios *b);
+void tty_termios_copy_hw(struct ktermios *new, const struct ktermios *old);
+bool tty_termios_hw_change(const struct ktermios *a, const struct ktermios *b);
 int tty_set_termios(struct tty_struct *tty, struct ktermios *kt);
 
 void tty_wakeup(struct tty_struct *tty);

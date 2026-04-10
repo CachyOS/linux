@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2010-2013 Felix Fietkau <nbd@openwrt.org>
- * Copyright (C) 2019-2021 Intel Corporation
+ * Copyright (C) 2019-2022 Intel Corporation
  */
 #include <linux/netdevice.h>
 #include <linux/types.h>
@@ -10,6 +10,7 @@
 #include <linux/random.h>
 #include <linux/moduleparam.h>
 #include <linux/ieee80211.h>
+#include <linux/minmax.h>
 #include <net/mac80211.h>
 #include "rate.h"
 #include "sta_info.h"
@@ -1052,7 +1053,7 @@ minstrel_ht_refill_sample_rates(struct minstrel_ht_sta *mi)
  *  - max_prob_rate must use only one stream, as a tradeoff between delivery
  *    probability and throughput during strong fluctuations
  *  - as long as the max prob rate has a probability of more than 75%, pick
- *    higher throughput rates, even if the probablity is a bit lower
+ *    higher throughput rates, even if the probability is a bit lower
  */
 static void
 minstrel_ht_update_stats(struct minstrel_priv *mp, struct minstrel_ht_sta *mi)
@@ -1478,7 +1479,7 @@ minstrel_ht_set_rate(struct minstrel_priv *mp, struct minstrel_ht_sta *mi,
 	 *  - for fallback rates, to increase chances of getting through
 	 */
 	if (offset > 0 ||
-	    (mi->sta->smps_mode == IEEE80211_SMPS_DYNAMIC &&
+	    (mi->sta->deflink.smps_mode == IEEE80211_SMPS_DYNAMIC &&
 	     group->streams > 1)) {
 		ratetbl->rate[offset].count = ratetbl->rate[offset].count_rts;
 		flags |= IEEE80211_TX_RC_USE_RTS_CTS;
@@ -1550,8 +1551,9 @@ minstrel_ht_update_rates(struct minstrel_priv *mp, struct minstrel_ht_sta *mi)
 {
 	struct ieee80211_sta_rates *rates;
 	int i = 0;
+	int max_rates = min_t(int, mp->hw->max_rates, IEEE80211_TX_RATE_TABLE_SIZE);
 
-	rates = kzalloc(sizeof(*rates), GFP_ATOMIC);
+	rates = kzalloc_obj(*rates, GFP_ATOMIC);
 	if (!rates)
 		return;
 
@@ -1559,16 +1561,17 @@ minstrel_ht_update_rates(struct minstrel_priv *mp, struct minstrel_ht_sta *mi)
 	minstrel_ht_set_rate(mp, mi, rates, i++, mi->max_tp_rate[0]);
 
 	/* Fill up remaining, keep one entry for max_probe_rate */
-	for (; i < (mp->hw->max_rates - 1); i++)
+	for (; i < (max_rates - 1); i++)
 		minstrel_ht_set_rate(mp, mi, rates, i, mi->max_tp_rate[i]);
 
-	if (i < mp->hw->max_rates)
+	if (i < max_rates)
 		minstrel_ht_set_rate(mp, mi, rates, i++, mi->max_prob_rate);
 
 	if (i < IEEE80211_TX_RATE_TABLE_SIZE)
 		rates->rate[i].idx = -1;
 
-	mi->sta->max_rc_amsdu_len = minstrel_ht_get_max_amsdu_len(mi);
+	mi->sta->deflink.agg.max_rc_amsdu_len = minstrel_ht_get_max_amsdu_len(mi);
+	ieee80211_sta_recalc_aggregates(mi->sta);
 	rate_control_set_rates(mp->hw, mi->sta, rates);
 }
 
@@ -1705,7 +1708,6 @@ minstrel_ht_update_caps(void *priv, struct ieee80211_supported_band *sband,
 	struct sta_info *sta_info;
 	bool ldpc, erp;
 	int use_vht;
-	int n_supported = 0;
 	int ack_dur;
 	int stbc;
 	int i;
@@ -1723,16 +1725,15 @@ minstrel_ht_update_caps(void *priv, struct ieee80211_supported_band *sband,
 	mi->band = sband->band;
 	mi->last_stats_update = jiffies;
 
-	ack_dur = ieee80211_frame_duration(sband->band, 10, 60, 1, 1, 0);
-	mi->overhead = ieee80211_frame_duration(sband->band, 0, 60, 1, 1, 0);
+	ack_dur = ieee80211_frame_duration(sband->band, 10, 60, 1, 1);
+	mi->overhead = ieee80211_frame_duration(sband->band, 0, 60, 1, 1);
 	mi->overhead += ack_dur;
 	mi->overhead_rtscts = mi->overhead + 2 * ack_dur;
 
 	ctl_rate = &sband->bitrates[rate_lowest_index(sband, sta)];
 	erp = ctl_rate->flags & IEEE80211_RATE_ERP_G;
 	ack_dur = ieee80211_frame_duration(sband->band, 10,
-					   ctl_rate->bitrate, erp, 1,
-					   ieee80211_chandef_get_shift(chandef));
+					   ctl_rate->bitrate, erp, 1);
 	mi->overhead_legacy = ack_dur;
 	mi->overhead_legacy_rtscts = mi->overhead_legacy + 2 * ack_dur;
 
@@ -1779,7 +1780,7 @@ minstrel_ht_update_caps(void *priv, struct ieee80211_supported_band *sband,
 		nss = minstrel_mcs_groups[i].streams;
 
 		/* Mark MCS > 7 as unsupported if STA is in static SMPS mode */
-		if (sta->smps_mode == IEEE80211_SMPS_STATIC && nss > 1)
+		if (sta->deflink.smps_mode == IEEE80211_SMPS_STATIC && nss > 1)
 			continue;
 
 		/* HT rate */
@@ -1788,8 +1789,6 @@ minstrel_ht_update_caps(void *priv, struct ieee80211_supported_band *sband,
 				continue;
 
 			mi->supported[i] = mcs->rx_mask[nss - 1];
-			if (mi->supported[i])
-				n_supported++;
 			continue;
 		}
 
@@ -1816,9 +1815,6 @@ minstrel_ht_update_caps(void *priv, struct ieee80211_supported_band *sband,
 
 		mi->supported[i] = minstrel_get_valid_vht_rates(bw, nss,
 				vht_cap->vht_mcs.tx_mcs_map);
-
-		if (mi->supported[i])
-			n_supported++;
 	}
 
 	sta_info = container_of(sta, struct sta_info, sta);
@@ -1866,7 +1862,7 @@ minstrel_ht_alloc_sta(void *priv, struct ieee80211_sta *sta, gfp_t gfp)
 			max_rates = sband->n_bitrates;
 	}
 
-	return kzalloc(sizeof(*mi), gfp);
+	return kzalloc_obj(*mi, gfp);
 }
 
 static void
@@ -1877,15 +1873,12 @@ minstrel_ht_free_sta(void *priv, struct ieee80211_sta *sta, void *priv_sta)
 
 static void
 minstrel_ht_fill_rate_array(u8 *dest, struct ieee80211_supported_band *sband,
-			    const s16 *bitrates, int n_rates, u32 rate_flags)
+			    const s16 *bitrates, int n_rates)
 {
 	int i, j;
 
 	for (i = 0; i < sband->n_bitrates; i++) {
 		struct ieee80211_rate *rate = &sband->bitrates[i];
-
-		if ((rate_flags & sband->bitrates[i].flags) != rate_flags)
-			continue;
 
 		for (j = 0; j < n_rates; j++) {
 			if (rate->bitrate != bitrates[j])
@@ -1902,7 +1895,6 @@ minstrel_ht_init_cck_rates(struct minstrel_priv *mp)
 {
 	static const s16 bitrates[4] = { 10, 20, 55, 110 };
 	struct ieee80211_supported_band *sband;
-	u32 rate_flags = ieee80211_chandef_rate_flags(&mp->hw->conf.chandef);
 
 	memset(mp->cck_rates, 0xff, sizeof(mp->cck_rates));
 	sband = mp->hw->wiphy->bands[NL80211_BAND_2GHZ];
@@ -1912,8 +1904,7 @@ minstrel_ht_init_cck_rates(struct minstrel_priv *mp)
 	BUILD_BUG_ON(ARRAY_SIZE(mp->cck_rates) != ARRAY_SIZE(bitrates));
 	minstrel_ht_fill_rate_array(mp->cck_rates, sband,
 				    minstrel_cck_bitrates,
-				    ARRAY_SIZE(minstrel_cck_bitrates),
-				    rate_flags);
+				    ARRAY_SIZE(minstrel_cck_bitrates));
 }
 
 static void
@@ -1921,7 +1912,6 @@ minstrel_ht_init_ofdm_rates(struct minstrel_priv *mp, enum nl80211_band band)
 {
 	static const s16 bitrates[8] = { 60, 90, 120, 180, 240, 360, 480, 540 };
 	struct ieee80211_supported_band *sband;
-	u32 rate_flags = ieee80211_chandef_rate_flags(&mp->hw->conf.chandef);
 
 	memset(mp->ofdm_rates[band], 0xff, sizeof(mp->ofdm_rates[band]));
 	sband = mp->hw->wiphy->bands[band];
@@ -1931,8 +1921,7 @@ minstrel_ht_init_ofdm_rates(struct minstrel_priv *mp, enum nl80211_band band)
 	BUILD_BUG_ON(ARRAY_SIZE(mp->ofdm_rates[band]) != ARRAY_SIZE(bitrates));
 	minstrel_ht_fill_rate_array(mp->ofdm_rates[band], sband,
 				    minstrel_ofdm_bitrates,
-				    ARRAY_SIZE(minstrel_ofdm_bitrates),
-				    rate_flags);
+				    ARRAY_SIZE(minstrel_ofdm_bitrates));
 }
 
 static void *
@@ -1941,7 +1930,7 @@ minstrel_ht_alloc(struct ieee80211_hw *hw)
 	struct minstrel_priv *mp;
 	int i;
 
-	mp = kzalloc(sizeof(struct minstrel_priv), GFP_ATOMIC);
+	mp = kzalloc_obj(struct minstrel_priv, GFP_ATOMIC);
 	if (!mp)
 		return NULL;
 
@@ -1959,9 +1948,6 @@ minstrel_ht_alloc(struct ieee80211_hw *hw)
 	else
 		/* safe default, does not necessarily have to match hw properties */
 		mp->max_retry = 7;
-
-	if (hw->max_rates >= 4)
-		mp->has_mrr = true;
 
 	mp->hw = hw;
 	mp->update_interval = HZ / 20;
@@ -2033,7 +2019,7 @@ static void __init init_sample_table(void)
 
 	memset(sample_table, 0xff, sizeof(sample_table));
 	for (col = 0; col < SAMPLE_COLUMNS; col++) {
-		prandom_bytes(rnd, sizeof(rnd));
+		get_random_bytes(rnd, sizeof(rnd));
 		for (i = 0; i < MCS_GROUP_RATES; i++) {
 			new_idx = (i + rnd[i]) % MCS_GROUP_RATES;
 			while (sample_table[col][new_idx] != 0xff)

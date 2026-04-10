@@ -5,6 +5,7 @@
 #include <linux/scatterlist.h>
 #include <linux/memregion.h>
 #include <linux/highmem.h>
+#include <linux/kstrtox.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/hash.h>
@@ -59,31 +60,90 @@ static int nvdimm_map_flush(struct device *dev, struct nvdimm *nvdimm, int dimm,
 	return 0;
 }
 
-int nd_region_activate(struct nd_region *nd_region)
+static int nd_region_invalidate_memregion(struct nd_region *nd_region)
 {
-	int i, j, num_flush = 0;
-	struct nd_region_data *ndrd;
-	struct device *dev = &nd_region->dev;
-	size_t flush_data_size = sizeof(void *);
+	int i, incoherent = 0;
 
-	nvdimm_bus_lock(&nd_region->dev);
 	for (i = 0; i < nd_region->ndr_mappings; i++) {
 		struct nd_mapping *nd_mapping = &nd_region->mapping[i];
 		struct nvdimm *nvdimm = nd_mapping->nvdimm;
 
-		if (test_bit(NDD_SECURITY_OVERWRITE, &nvdimm->flags)) {
-			nvdimm_bus_unlock(&nd_region->dev);
-			return -EBUSY;
+		if (test_bit(NDD_INCOHERENT, &nvdimm->flags)) {
+			incoherent++;
+			break;
 		}
+	}
+
+	if (!incoherent)
+		return 0;
+
+	if (!cpu_cache_has_invalidate_memregion()) {
+		if (IS_ENABLED(CONFIG_NVDIMM_SECURITY_TEST)) {
+			dev_warn(
+				&nd_region->dev,
+				"Bypassing cpu_cache_invalidate_memergion() for testing!\n");
+			goto out;
+		} else {
+			dev_err(&nd_region->dev,
+				"Failed to synchronize CPU cache state\n");
+			return -ENXIO;
+		}
+	}
+
+	cpu_cache_invalidate_all();
+out:
+	for (i = 0; i < nd_region->ndr_mappings; i++) {
+		struct nd_mapping *nd_mapping = &nd_region->mapping[i];
+		struct nvdimm *nvdimm = nd_mapping->nvdimm;
+
+		clear_bit(NDD_INCOHERENT, &nvdimm->flags);
+	}
+
+	return 0;
+}
+
+static int get_flush_data(struct nd_region *nd_region, size_t *size, int *num_flush)
+{
+	size_t flush_data_size = sizeof(void *);
+	int _num_flush = 0;
+	int i;
+
+	guard(nvdimm_bus)(&nd_region->dev);
+	for (i = 0; i < nd_region->ndr_mappings; i++) {
+		struct nd_mapping *nd_mapping = &nd_region->mapping[i];
+		struct nvdimm *nvdimm = nd_mapping->nvdimm;
+
+		if (test_bit(NDD_SECURITY_OVERWRITE, &nvdimm->flags))
+			return -EBUSY;
 
 		/* at least one null hint slot per-dimm for the "no-hint" case */
 		flush_data_size += sizeof(void *);
-		num_flush = min_not_zero(num_flush, nvdimm->num_flush);
+		_num_flush = min_not_zero(_num_flush, nvdimm->num_flush);
 		if (!nvdimm->num_flush)
 			continue;
 		flush_data_size += nvdimm->num_flush * sizeof(void *);
 	}
-	nvdimm_bus_unlock(&nd_region->dev);
+
+	*size = flush_data_size;
+	*num_flush = _num_flush;
+
+	return 0;
+}
+
+int nd_region_activate(struct nd_region *nd_region)
+{
+	int i, j, rc, num_flush;
+	struct nd_region_data *ndrd;
+	struct device *dev = &nd_region->dev;
+	size_t flush_data_size;
+
+	rc = get_flush_data(nd_region, &flush_data_size, &num_flush);
+	if (rc)
+		return rc;
+
+	rc = nd_region_invalidate_memregion(nd_region);
+	if (rc)
+		return rc;
 
 	ndrd = devm_kzalloc(dev, sizeof(*ndrd) + flush_data_size, GFP_KERNEL);
 	if (!ndrd)
@@ -133,7 +193,8 @@ static void nd_region_release(struct device *dev)
 		put_device(&nvdimm->dev);
 	}
 	free_percpu(nd_region->lane);
-	memregion_free(nd_region->id);
+	if (!test_bit(ND_REGION_CXL, &nd_region->flags))
+		memregion_free(nd_region->id);
 	kfree(nd_region);
 }
 
@@ -228,7 +289,7 @@ static ssize_t deep_flush_store(struct device *dev, struct device_attribute *att
 		const char *buf, size_t len)
 {
 	bool flush;
-	int rc = strtobool(buf, &flush);
+	int rc = kstrtobool(buf, &flush);
 	struct nd_region *nd_region = to_nd_region(dev);
 
 	if (rc)
@@ -279,8 +340,8 @@ static ssize_t set_cookie_show(struct device *dev,
 	 * the v1.1 namespace label cookie definition. To read all this
 	 * data we need to wait for probing to settle.
 	 */
-	device_lock(dev);
-	nvdimm_bus_lock(dev);
+	guard(device)(dev);
+	guard(nvdimm_bus)(dev);
 	wait_nvdimm_bus_probe_idle(dev);
 	if (nd_region->ndr_mappings) {
 		struct nd_mapping *nd_mapping = &nd_region->mapping[0];
@@ -295,8 +356,6 @@ static ssize_t set_cookie_show(struct device *dev,
 						nsindex));
 		}
 	}
-	nvdimm_bus_unlock(dev);
-	device_unlock(dev);
 
 	if (rc)
 		return rc;
@@ -345,7 +404,6 @@ static ssize_t available_size_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct nd_region *nd_region = to_nd_region(dev);
-	unsigned long long available = 0;
 
 	/*
 	 * Flush in-flight updates and grab a snapshot of the available
@@ -353,14 +411,11 @@ static ssize_t available_size_show(struct device *dev,
 	 * memory nvdimm_bus_lock() is dropped, but that's userspace's
 	 * problem to not race itself.
 	 */
-	device_lock(dev);
-	nvdimm_bus_lock(dev);
+	guard(device)(dev);
+	guard(nvdimm_bus)(dev);
 	wait_nvdimm_bus_probe_idle(dev);
-	available = nd_region_available_dpa(nd_region);
-	nvdimm_bus_unlock(dev);
-	device_unlock(dev);
 
-	return sprintf(buf, "%llu\n", available);
+	return sprintf(buf, "%llu\n", nd_region_available_dpa(nd_region));
 }
 static DEVICE_ATTR_RO(available_size);
 
@@ -368,16 +423,12 @@ static ssize_t max_available_extent_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct nd_region *nd_region = to_nd_region(dev);
-	unsigned long long available = 0;
 
-	device_lock(dev);
-	nvdimm_bus_lock(dev);
+	guard(device)(dev);
+	guard(nvdimm_bus)(dev);
 	wait_nvdimm_bus_probe_idle(dev);
-	available = nd_region_allocatable_dpa(nd_region);
-	nvdimm_bus_unlock(dev);
-	device_unlock(dev);
 
-	return sprintf(buf, "%llu\n", available);
+	return sprintf(buf, "%llu\n", nd_region_allocatable_dpa(nd_region));
 }
 static DEVICE_ATTR_RO(max_available_extent);
 
@@ -385,16 +436,12 @@ static ssize_t init_namespaces_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct nd_region_data *ndrd = dev_get_drvdata(dev);
-	ssize_t rc;
 
-	nvdimm_bus_lock(dev);
-	if (ndrd)
-		rc = sprintf(buf, "%d/%d\n", ndrd->ns_active, ndrd->ns_count);
-	else
-		rc = -ENXIO;
-	nvdimm_bus_unlock(dev);
+	guard(nvdimm_bus)(dev);
+	if (!ndrd)
+		return -ENXIO;
 
-	return rc;
+	return sprintf(buf, "%d/%d\n", ndrd->ns_active, ndrd->ns_count);
 }
 static DEVICE_ATTR_RO(init_namespaces);
 
@@ -402,15 +449,12 @@ static ssize_t namespace_seed_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct nd_region *nd_region = to_nd_region(dev);
-	ssize_t rc;
 
-	nvdimm_bus_lock(dev);
+	guard(nvdimm_bus)(dev);
 	if (nd_region->ns_seed)
-		rc = sprintf(buf, "%s\n", dev_name(nd_region->ns_seed));
-	else
-		rc = sprintf(buf, "\n");
-	nvdimm_bus_unlock(dev);
-	return rc;
+		return sprintf(buf, "%s\n", dev_name(nd_region->ns_seed));
+
+	return sprintf(buf, "\n");
 }
 static DEVICE_ATTR_RO(namespace_seed);
 
@@ -418,16 +462,12 @@ static ssize_t btt_seed_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct nd_region *nd_region = to_nd_region(dev);
-	ssize_t rc;
 
-	nvdimm_bus_lock(dev);
+	guard(nvdimm_bus)(dev);
 	if (nd_region->btt_seed)
-		rc = sprintf(buf, "%s\n", dev_name(nd_region->btt_seed));
-	else
-		rc = sprintf(buf, "\n");
-	nvdimm_bus_unlock(dev);
+		return sprintf(buf, "%s\n", dev_name(nd_region->btt_seed));
 
-	return rc;
+	return sprintf(buf, "\n");
 }
 static DEVICE_ATTR_RO(btt_seed);
 
@@ -435,16 +475,12 @@ static ssize_t pfn_seed_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct nd_region *nd_region = to_nd_region(dev);
-	ssize_t rc;
 
-	nvdimm_bus_lock(dev);
+	guard(nvdimm_bus)(dev);
 	if (nd_region->pfn_seed)
-		rc = sprintf(buf, "%s\n", dev_name(nd_region->pfn_seed));
-	else
-		rc = sprintf(buf, "\n");
-	nvdimm_bus_unlock(dev);
+		return sprintf(buf, "%s\n", dev_name(nd_region->pfn_seed));
 
-	return rc;
+	return sprintf(buf, "\n");
 }
 static DEVICE_ATTR_RO(pfn_seed);
 
@@ -452,16 +488,12 @@ static ssize_t dax_seed_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct nd_region *nd_region = to_nd_region(dev);
-	ssize_t rc;
 
-	nvdimm_bus_lock(dev);
+	guard(nvdimm_bus)(dev);
 	if (nd_region->dax_seed)
-		rc = sprintf(buf, "%s\n", dev_name(nd_region->dax_seed));
-	else
-		rc = sprintf(buf, "\n");
-	nvdimm_bus_unlock(dev);
+		return sprintf(buf, "%s\n", dev_name(nd_region->dax_seed));
 
-	return rc;
+	return sprintf(buf, "\n");
 }
 static DEVICE_ATTR_RO(dax_seed);
 
@@ -483,7 +515,7 @@ static ssize_t read_only_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t len)
 {
 	bool ro;
-	int rc = strtobool(buf, &ro);
+	int rc = kstrtobool(buf, &ro);
 	struct nd_region *nd_region = to_nd_region(dev);
 
 	if (rc)
@@ -508,15 +540,12 @@ static ssize_t align_store(struct device *dev,
 {
 	struct nd_region *nd_region = to_nd_region(dev);
 	unsigned long val, dpa;
-	u32 remainder;
+	u32 mappings, remainder;
 	int rc;
 
 	rc = kstrtoul(buf, 0, &val);
 	if (rc)
 		return rc;
-
-	if (!nd_region->ndr_mappings)
-		return -ENXIO;
 
 	/*
 	 * Ensure space-align is evenly divisible by the region
@@ -525,7 +554,8 @@ static ssize_t align_store(struct device *dev,
 	 * contribute to the tail capacity in system-physical-address
 	 * space for the namespace.
 	 */
-	dpa = div_u64_rem(val, nd_region->ndr_mappings, &remainder);
+	mappings = max_t(u32, 1, nd_region->ndr_mappings);
+	dpa = div_u64_rem(val, mappings, &remainder);
 	if (!is_power_of_2(dpa) || dpa < PAGE_SIZE
 			|| val > region_size(nd_region) || remainder)
 		return -EINVAL;
@@ -535,9 +565,8 @@ static ssize_t align_store(struct device *dev,
 	 * times ensure it does not change for the duration of the
 	 * allocation.
 	 */
-	nvdimm_bus_lock(dev);
+	guard(nvdimm_bus)(dev);
 	nd_region->align = val;
-	nvdimm_bus_unlock(dev);
 
 	return len;
 }
@@ -794,12 +823,12 @@ static const struct device_type nd_volatile_device_type = {
 	.groups = nd_region_attribute_groups,
 };
 
-bool is_nd_pmem(struct device *dev)
+bool is_nd_pmem(const struct device *dev)
 {
 	return dev ? dev->type == &nd_pmem_device_type : false;
 }
 
-bool is_nd_volatile(struct device *dev)
+bool is_nd_volatile(const struct device *dev)
 {
 	return dev ? dev->type == &nd_volatile_device_type : false;
 }
@@ -844,7 +873,7 @@ void nd_mapping_free_labels(struct nd_mapping *nd_mapping)
  */
 void nd_region_advance_seeds(struct nd_region *nd_region, struct device *dev)
 {
-	nvdimm_bus_lock(dev);
+	guard(nvdimm_bus)(dev);
 	if (nd_region->ns_seed == dev) {
 		nd_region_create_ns_seed(nd_region);
 	} else if (is_nd_btt(dev)) {
@@ -869,7 +898,6 @@ void nd_region_advance_seeds(struct nd_region *nd_region, struct device *dev)
 		if (nd_region->ns_seed == &nd_dax->nd_pfn.ndns->dev)
 			nd_region_create_ns_seed(nd_region);
 	}
-	nvdimm_bus_unlock(dev);
 }
 
 /**
@@ -893,7 +921,8 @@ unsigned int nd_region_acquire_lane(struct nd_region *nd_region)
 {
 	unsigned int cpu, lane;
 
-	cpu = get_cpu();
+	migrate_disable();
+	cpu = smp_processor_id();
 	if (nd_region->num_lanes < nr_cpu_ids) {
 		struct nd_percpu_lane *ndl_lock, *ndl_count;
 
@@ -912,16 +941,15 @@ EXPORT_SYMBOL(nd_region_acquire_lane);
 void nd_region_release_lane(struct nd_region *nd_region, unsigned int lane)
 {
 	if (nd_region->num_lanes < nr_cpu_ids) {
-		unsigned int cpu = get_cpu();
+		unsigned int cpu = smp_processor_id();
 		struct nd_percpu_lane *ndl_lock, *ndl_count;
 
 		ndl_count = per_cpu_ptr(nd_region->lane, cpu);
 		ndl_lock = per_cpu_ptr(nd_region->lane, lane);
 		if (--ndl_count->count == 0)
 			spin_unlock(&ndl_lock->lock);
-		put_cpu();
 	}
-	put_cpu();
+	migrate_enable();
 }
 EXPORT_SYMBOL(nd_region_release_lane);
 
@@ -977,14 +1005,19 @@ static struct nd_region *nd_region_create(struct nvdimm_bus *nvdimm_bus,
 	}
 
 	nd_region =
-		kzalloc(struct_size(nd_region, mapping, ndr_desc->num_mappings),
-			GFP_KERNEL);
+		kzalloc_flex(*nd_region, mapping, ndr_desc->num_mappings);
 
 	if (!nd_region)
 		return NULL;
-	nd_region->id = memregion_alloc(GFP_KERNEL);
-	if (nd_region->id < 0)
-		goto err_id;
+	nd_region->ndr_mappings = ndr_desc->num_mappings;
+	/* CXL pre-assigns memregion ids before creating nvdimm regions */
+	if (test_bit(ND_REGION_CXL, &ndr_desc->flags)) {
+		nd_region->id = ndr_desc->memregion;
+	} else {
+		nd_region->id = memregion_alloc(GFP_KERNEL);
+		if (nd_region->id < 0)
+			goto err_id;
+	}
 
 	nd_region->lane = alloc_percpu(struct nd_percpu_lane);
 	if (!nd_region->lane)
@@ -1011,7 +1044,6 @@ static struct nd_region *nd_region_create(struct nvdimm_bus *nvdimm_bus,
 
 		get_device(&nvdimm->dev);
 	}
-	nd_region->ndr_mappings = ndr_desc->num_mappings;
 	nd_region->provider_data = ndr_desc->provider_data;
 	nd_region->nd_set = ndr_desc->nd_set;
 	nd_region->num_lanes = ndr_desc->num_lanes;
@@ -1043,9 +1075,10 @@ static struct nd_region *nd_region_create(struct nvdimm_bus *nvdimm_bus,
 
 	return nd_region;
 
- err_percpu:
-	memregion_free(nd_region->id);
- err_id:
+err_percpu:
+	if (!test_bit(ND_REGION_CXL, &ndr_desc->flags))
+		memregion_free(nd_region->id);
+err_id:
 	kfree(nd_region);
 	return NULL;
 }
@@ -1068,6 +1101,13 @@ struct nd_region *nvdimm_volatile_region_create(struct nvdimm_bus *nvdimm_bus,
 }
 EXPORT_SYMBOL_GPL(nvdimm_volatile_region_create);
 
+void nvdimm_region_delete(struct nd_region *nd_region)
+{
+	if (nd_region)
+		nd_device_unregister(&nd_region->dev, ND_SYNC);
+}
+EXPORT_SYMBOL_GPL(nvdimm_region_delete);
+
 int nvdimm_flush(struct nd_region *nd_region, struct bio *bio)
 {
 	int rc = 0;
@@ -1082,7 +1122,7 @@ int nvdimm_flush(struct nd_region *nd_region, struct bio *bio)
 	return rc;
 }
 /**
- * nvdimm_flush - flush any posted write queues between the cpu and pmem media
+ * generic_nvdimm_flush() - flush any posted write queues between the cpu and pmem media
  * @nd_region: interleaved pmem region
  */
 int generic_nvdimm_flush(struct nd_region *nd_region)
@@ -1170,43 +1210,4 @@ bool is_nvdimm_sync(struct nd_region *nd_region)
 }
 EXPORT_SYMBOL_GPL(is_nvdimm_sync);
 
-struct conflict_context {
-	struct nd_region *nd_region;
-	resource_size_t start, size;
-};
-
-static int region_conflict(struct device *dev, void *data)
-{
-	struct nd_region *nd_region;
-	struct conflict_context *ctx = data;
-	resource_size_t res_end, region_end, region_start;
-
-	if (!is_memory(dev))
-		return 0;
-
-	nd_region = to_nd_region(dev);
-	if (nd_region == ctx->nd_region)
-		return 0;
-
-	res_end = ctx->start + ctx->size;
-	region_start = nd_region->ndr_start;
-	region_end = region_start + nd_region->ndr_size;
-	if (ctx->start >= region_start && ctx->start < region_end)
-		return -EBUSY;
-	if (res_end > region_start && res_end <= region_end)
-		return -EBUSY;
-	return 0;
-}
-
-int nd_region_conflict(struct nd_region *nd_region, resource_size_t start,
-		resource_size_t size)
-{
-	struct nvdimm_bus *nvdimm_bus = walk_to_nvdimm_bus(&nd_region->dev);
-	struct conflict_context ctx = {
-		.nd_region = nd_region,
-		.start = start,
-		.size = size,
-	};
-
-	return device_for_each_child(&nvdimm_bus->dev, &ctx, region_conflict);
-}
+MODULE_IMPORT_NS("DEVMEM");

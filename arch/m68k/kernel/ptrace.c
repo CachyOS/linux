@@ -21,10 +21,12 @@
 #include <linux/signal.h>
 #include <linux/regset.h>
 #include <linux/elf.h>
-
+#include <linux/seccomp.h>
 #include <linux/uaccess.h>
 #include <asm/page.h>
 #include <asm/processor.h>
+
+#include "ptrace.h"
 
 /*
  * does not yet catch signals sent when the child dies.
@@ -278,6 +280,10 @@ asmlinkage int syscall_trace_enter(void)
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE))
 		ret = ptrace_report_syscall_entry(task_pt_regs(current));
+
+	if (secure_computing() == -1)
+		return -1;
+
 	return ret;
 }
 
@@ -313,7 +319,7 @@ enum m68k_regset {
 
 static const struct user_regset m68k_user_regsets[] = {
 	[REGSET_GPR] = {
-		.core_note_type = NT_PRSTATUS,
+		USER_REGSET_NOTE_TYPE(PRSTATUS),
 		.n = ELF_NGREG,
 		.size = sizeof(u32),
 		.align = sizeof(u16),
@@ -321,7 +327,7 @@ static const struct user_regset m68k_user_regsets[] = {
 	},
 #ifdef CONFIG_FPU
 	[REGSET_FPU] = {
-		.core_note_type = NT_PRFPREG,
+		USER_REGSET_NOTE_TYPE(PRFPREG),
 		.n = sizeof(struct user_m68kfp_struct) / sizeof(u32),
 		.size = sizeof(u32),
 		.align = sizeof(u32),

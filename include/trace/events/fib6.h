@@ -22,6 +22,7 @@ TRACE_EVENT(fib6_table_lookup,
 		__field(	int,	err		)
 		__field(	int,	oif		)
 		__field(	int,	iif		)
+		__field(	u32,	flowlabel	)
 		__field(	__u8,	tos		)
 		__field(	__u8,	scope		)
 		__field(	__u8,	flags		)
@@ -31,7 +32,7 @@ TRACE_EVENT(fib6_table_lookup,
 		__field(        u16,	dport		)
 		__field(        u8,	proto		)
 		__field(        u8,	rt_type		)
-		__dynamic_array(	char,	name,	IFNAMSIZ )
+		__array(		char,	name,	IFNAMSIZ )
 		__array(		__u8,	gw,	16	 )
 	),
 
@@ -42,6 +43,7 @@ TRACE_EVENT(fib6_table_lookup,
 		__entry->err = ip6_rt_type_to_error(res->fib6_type);
 		__entry->oif = flp->flowi6_oif;
 		__entry->iif = flp->flowi6_iif;
+		__entry->flowlabel = ntohl(flowi6_get_flowlabel(flp));
 		__entry->tos = ip6_tclass(flp->flowlabel);
 		__entry->scope = flp->flowi6_scope;
 		__entry->flags = flp->flowi6_flags;
@@ -63,27 +65,24 @@ TRACE_EVENT(fib6_table_lookup,
 		}
 
 		if (res->nh && res->nh->fib_nh_dev) {
-			__assign_str(name, res->nh->fib_nh_dev);
+			strscpy(__entry->name, res->nh->fib_nh_dev->name, IFNAMSIZ);
 		} else {
-			__assign_str(name, "-");
+			strcpy(__entry->name, "-");
 		}
 		if (res->f6i == net->ipv6.fib6_null_entry) {
-			struct in6_addr in6_zero = {};
-
 			in6 = (struct in6_addr *)__entry->gw;
-			*in6 = in6_zero;
-
+			*in6 = in6addr_any;
 		} else if (res->nh) {
 			in6 = (struct in6_addr *)__entry->gw;
 			*in6 = res->nh->fib_nh_gw6;
 		}
 	),
 
-	TP_printk("table %3u oif %d iif %d proto %u %pI6c/%u -> %pI6c/%u tos %d scope %d flags %x ==> dev %s gw %pI6c err %d",
+	TP_printk("table %3u oif %d iif %d proto %u %pI6c/%u -> %pI6c/%u flowlabel %#x tos %d scope %d flags %x ==> dev %s gw %pI6c err %d",
 		  __entry->tb_id, __entry->oif, __entry->iif, __entry->proto,
 		  __entry->src, __entry->sport, __entry->dst, __entry->dport,
-		  __entry->tos, __entry->scope, __entry->flags,
-		  __get_str(name), __entry->gw, __entry->err)
+		  __entry->flowlabel, __entry->tos, __entry->scope,
+		  __entry->flags, __entry->name, __entry->gw, __entry->err)
 );
 
 #endif /* _TRACE_FIB6_H */

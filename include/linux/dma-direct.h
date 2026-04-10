@@ -12,7 +12,7 @@
 #include <linux/mem_encrypt.h>
 #include <linux/swiotlb.h>
 
-extern unsigned int zone_dma_bits;
+extern u64 zone_dma_limit;
 
 /*
  * Record the mapping of CPU physical to DMA addresses for a given region.
@@ -21,7 +21,6 @@ struct bus_dma_region {
 	phys_addr_t	cpu_start;
 	dma_addr_t	dma_start;
 	u64		size;
-	u64		offset;
 };
 
 static inline dma_addr_t translate_phys_to_dma(struct device *dev,
@@ -29,9 +28,12 @@ static inline dma_addr_t translate_phys_to_dma(struct device *dev,
 {
 	const struct bus_dma_region *m;
 
-	for (m = dev->dma_range_map; m->size; m++)
-		if (paddr >= m->cpu_start && paddr - m->cpu_start < m->size)
-			return (dma_addr_t)paddr - m->offset;
+	for (m = dev->dma_range_map; m->size; m++) {
+		u64 offset = paddr - m->cpu_start;
+
+		if (paddr >= m->cpu_start && offset < m->size)
+			return m->dma_start + offset;
+	}
 
 	/* make sure dma_capable fails when no translation is available */
 	return DMA_MAPPING_ERROR;
@@ -42,11 +44,32 @@ static inline phys_addr_t translate_dma_to_phys(struct device *dev,
 {
 	const struct bus_dma_region *m;
 
-	for (m = dev->dma_range_map; m->size; m++)
-		if (dma_addr >= m->dma_start && dma_addr - m->dma_start < m->size)
-			return (phys_addr_t)dma_addr + m->offset;
+	for (m = dev->dma_range_map; m->size; m++) {
+		u64 offset = dma_addr - m->dma_start;
+
+		if (dma_addr >= m->dma_start && offset < m->size)
+			return m->cpu_start + offset;
+	}
 
 	return (phys_addr_t)-1;
+}
+
+static inline dma_addr_t dma_range_map_min(const struct bus_dma_region *map)
+{
+	dma_addr_t ret = (dma_addr_t)U64_MAX;
+
+	for (; map->size; map++)
+		ret = min(ret, map->dma_start);
+	return ret;
+}
+
+static inline dma_addr_t dma_range_map_max(const struct bus_dma_region *map)
+{
+	dma_addr_t ret = 0;
+
+	for (; map->size; map++)
+		ret = max(ret, map->dma_start + map->size - 1);
+	return ret;
 }
 
 #ifdef CONFIG_ARCH_HAS_PHYS_TO_DMA
@@ -55,14 +78,18 @@ static inline phys_addr_t translate_dma_to_phys(struct device *dev,
 #define phys_to_dma_unencrypted		phys_to_dma
 #endif
 #else
-static inline dma_addr_t phys_to_dma_unencrypted(struct device *dev,
-		phys_addr_t paddr)
+static inline dma_addr_t __phys_to_dma(struct device *dev, phys_addr_t paddr)
 {
 	if (dev->dma_range_map)
 		return translate_phys_to_dma(dev, paddr);
 	return paddr;
 }
 
+static inline dma_addr_t phys_to_dma_unencrypted(struct device *dev,
+						phys_addr_t paddr)
+{
+	return dma_addr_unencrypted(__phys_to_dma(dev, paddr));
+}
 /*
  * If memory encryption is supported, phys_to_dma will set the memory encryption
  * bit in the DMA address, and dma_to_phys will clear it.
@@ -71,19 +98,20 @@ static inline dma_addr_t phys_to_dma_unencrypted(struct device *dev,
  */
 static inline dma_addr_t phys_to_dma(struct device *dev, phys_addr_t paddr)
 {
-	return __sme_set(phys_to_dma_unencrypted(dev, paddr));
+	return dma_addr_encrypted(__phys_to_dma(dev, paddr));
 }
 
 static inline phys_addr_t dma_to_phys(struct device *dev, dma_addr_t dma_addr)
 {
 	phys_addr_t paddr;
 
+	dma_addr = dma_addr_canonical(dma_addr);
 	if (dev->dma_range_map)
 		paddr = translate_dma_to_phys(dev, dma_addr);
 	else
 		paddr = dma_addr;
 
-	return __sme_clr(paddr);
+	return paddr;
 }
 #endif /* !CONFIG_ARCH_HAS_PHYS_TO_DMA */
 
@@ -121,7 +149,5 @@ void dma_direct_free_pages(struct device *dev, size_t size,
 		struct page *page, dma_addr_t dma_addr,
 		enum dma_data_direction dir);
 int dma_direct_supported(struct device *dev, u64 mask);
-dma_addr_t dma_direct_map_resource(struct device *dev, phys_addr_t paddr,
-		size_t size, enum dma_data_direction dir, unsigned long attrs);
 
 #endif /* _LINUX_DMA_DIRECT_H */

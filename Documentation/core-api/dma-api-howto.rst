@@ -8,7 +8,7 @@ Dynamic DMA mapping Guide
 
 This is a guide to device driver writers on how to use the DMA API
 with example pseudo-code.  For a concise description of the API, see
-DMA-API.txt.
+Documentation/core-api/dma-api.rst.
 
 CPU and DMA addresses
 =====================
@@ -146,6 +146,58 @@ What about block I/O and networking buffers?  The block I/O and
 networking subsystems make sure that the buffers they use are valid
 for you to DMA from/to.
 
+__dma_from_device_group_begin/end annotations
+=============================================
+
+As explained previously, when a structure contains a DMA_FROM_DEVICE /
+DMA_BIDIRECTIONAL buffer (device writes to memory) alongside fields that the
+CPU writes to, cache line sharing between the DMA buffer and CPU-written fields
+can cause data corruption on CPUs with DMA-incoherent caches.
+
+The ``__dma_from_device_group_begin(GROUP)/__dma_from_device_group_end(GROUP)``
+macros ensure proper alignment to prevent this::
+
+	struct my_device {
+		spinlock_t lock1;
+		__dma_from_device_group_begin();
+		char dma_buffer1[16];
+		char dma_buffer2[16];
+		__dma_from_device_group_end();
+		spinlock_t lock2;
+	};
+
+To isolate a DMA buffer from adjacent fields, use
+``__dma_from_device_group_begin(GROUP)`` before the first DMA buffer
+field and ``__dma_from_device_group_end(GROUP)`` after the last DMA
+buffer field (with the same GROUP name). This protects both the head
+and tail of the buffer from cache line sharing.
+
+The GROUP parameter is an optional identifier that names the DMA buffer group
+(in case you have several in the same structure)::
+
+	struct my_device {
+		spinlock_t lock1;
+		__dma_from_device_group_begin(buffer1);
+		char dma_buffer1[16];
+		__dma_from_device_group_end(buffer1);
+		spinlock_t lock2;
+		__dma_from_device_group_begin(buffer2);
+		char dma_buffer2[16];
+		__dma_from_device_group_end(buffer2);
+	};
+
+On cache-coherent platforms these macros expand to zero-length array markers.
+On non-coherent platforms, they also ensure the minimal DMA alignment, which
+can be as large as 128 bytes.
+
+.. note::
+
+        It is allowed (though somewhat fragile) to include extra fields, not
+        intended for DMA from the device, within the group (in order to pack the
+        structure tightly) - but only as long as the CPU does not write these
+        fields while any fields in the group are mapped for DMA_FROM_DEVICE or
+        DMA_BIDIRECTIONAL.
+
 DMA addressing capabilities
 ===========================
 
@@ -155,7 +207,7 @@ a device with limitations, it needs to be decreased.
 
 Special note about PCI: PCI-X specification requires PCI-X devices to support
 64-bit addressing (DAC) for all transactions.  And at least one platform (SGI
-SN2) requires 64-bit consistent allocations to operate correctly when the IO
+SN2) requires 64-bit coherent allocations to operate correctly when the IO
 bus is in PCI-X mode.
 
 For correct operation, you must set the DMA mask to inform the kernel about
@@ -174,7 +226,7 @@ used instead:
 
 		int dma_set_mask(struct device *dev, u64 mask);
 
-	The setup for consistent allocations is performed via a call
+	The setup for coherent allocations is performed via a call
 	to dma_set_coherent_mask()::
 
 		int dma_set_coherent_mask(struct device *dev, u64 mask);
@@ -185,7 +237,7 @@ device struct of your device is embedded in the bus-specific device struct of
 your device.  For example, &pdev->dev is a pointer to the device struct of a
 PCI device (pdev is a pointer to the PCI device struct of your device).
 
-These calls usually return zero to indicated your device can perform DMA
+These calls usually return zero to indicate your device can perform DMA
 properly on the machine given the address mask you provided, but they might
 return an error if the mask is too small to be supportable on the given
 system.  If it returns non-zero, your device cannot perform DMA properly on
@@ -203,12 +255,32 @@ setting the DMA mask fails.  In this manner, if a user of your driver reports
 that performance is bad or that the device is not even detected, you can ask
 them for the kernel messages to find out exactly why.
 
-The standard 64-bit addressing device would do something like this::
+The 24-bit addressing device would do something like this::
 
-	if (dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64))) {
+	if (dma_set_mask_and_coherent(dev, DMA_BIT_MASK(24))) {
 		dev_warn(dev, "mydev: No suitable DMA available\n");
 		goto ignore_this_device;
 	}
+
+The standard 64-bit addressing device would do something like this::
+
+	dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64))
+
+dma_set_mask_and_coherent() never return fail when DMA_BIT_MASK(64). Typical
+error code like::
+
+	/* Wrong code */
+	if (dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64)))
+		dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32))
+
+dma_set_mask_and_coherent() will never return failure when bigger than 32.
+So typical code like::
+
+	/* Recommended code */
+	if (support_64bit)
+		dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64));
+	else
+		dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
 
 If the device only supports 32-bit addressing for descriptors in the
 coherent allocations, but supports full 64-bits for streaming mappings
@@ -221,7 +293,7 @@ it would look like this::
 
 The coherent mask will always be able to set the same or a smaller mask as
 the streaming mask. However for the rare case that a device driver only
-uses consistent allocations, one would have to check the return value from
+uses coherent allocations, one would have to check the return value from
 dma_set_coherent_mask().
 
 Finally, if your device can only drive the low 24-bits of
@@ -278,20 +350,20 @@ Types of DMA mappings
 
 There are two types of DMA mappings:
 
-- Consistent DMA mappings which are usually mapped at driver
+- Coherent DMA mappings which are usually mapped at driver
   initialization, unmapped at the end and for which the hardware should
   guarantee that the device and the CPU can access the data
   in parallel and will see updates made by each other without any
   explicit software flushing.
 
-  Think of "consistent" as "synchronous" or "coherent".
+  Think of "coherent" as "synchronous".
 
-  The current default is to return consistent memory in the low 32
+  The current default is to return coherent memory in the low 32
   bits of the DMA space.  However, for future compatibility you should
-  set the consistent mask even if this default is fine for your
+  set the coherent mask even if this default is fine for your
   driver.
 
-  Good examples of what to use consistent mappings for are:
+  Good examples of what to use coherent mappings for are:
 
 	- Network card DMA ring descriptors.
 	- SCSI adapter mailbox command data structures.
@@ -300,13 +372,13 @@ There are two types of DMA mappings:
 
   The invariant these examples all require is that any CPU store
   to memory is immediately visible to the device, and vice
-  versa.  Consistent mappings guarantee this.
+  versa.  Coherent mappings guarantee this.
 
   .. important::
 
-	     Consistent DMA memory does not preclude the usage of
+	     Coherent DMA memory does not preclude the usage of
 	     proper memory barriers.  The CPU may reorder stores to
-	     consistent memory just as it may normal memory.  Example:
+	     coherent memory just as it may normal memory.  Example:
 	     if it is important for the device to see the first word
 	     of a descriptor updated before the second, you must do
 	     something like::
@@ -345,10 +417,10 @@ Also, systems with caches that aren't DMA-coherent will work better
 when the underlying buffers don't share cache lines with other data.
 
 
-Using Consistent DMA mappings
-=============================
+Using Coherent DMA mappings
+===========================
 
-To allocate and map large (PAGE_SIZE or so) consistent DMA regions,
+To allocate and map large (PAGE_SIZE or so) coherent DMA regions,
 you should do::
 
 	dma_addr_t dma_handle;
@@ -365,10 +437,10 @@ __get_free_pages() (but takes size instead of a page order).  If your
 driver needs regions sized smaller than a page, you may prefer using
 the dma_pool interface, described below.
 
-The consistent DMA mapping interfaces, will by default return a DMA address
+The coherent DMA mapping interfaces, will by default return a DMA address
 which is 32-bit addressable.  Even if the device indicates (via the DMA mask)
-that it may address the upper 32-bits, consistent allocation will only
-return > 32-bit addresses for DMA if the consistent DMA mask has been
+that it may address the upper 32-bits, coherent allocation will only
+return > 32-bit addresses for DMA if the coherent DMA mask has been
 explicitly changed via dma_set_coherent_mask().  This is true of the
 dma_pool interface as well.
 
@@ -477,7 +549,7 @@ program address space.  Such platforms can and do report errors in the
 kernel logs when the DMA controller hardware detects violation of the
 permission setting.
 
-Only streaming mappings specify a direction, consistent mappings
+Only streaming mappings specify a direction, coherent mappings
 implicitly have a direction attribute setting of
 DMA_BIDIRECTIONAL.
 
@@ -706,20 +778,6 @@ to use the dma_sync_*() interfaces::
 			}
 		}
 	}
-
-Drivers converted fully to this interface should not use virt_to_bus() any
-longer, nor should they use bus_to_virt(). Some drivers have to be changed a
-little bit, because there is no longer an equivalent to bus_to_virt() in the
-dynamic DMA mapping scheme - you have to always store the DMA addresses
-returned by the dma_alloc_coherent(), dma_pool_alloc(), and dma_map_single()
-calls (dma_map_sg() stores them in the scatterlist itself if the platform
-supports dynamic DMA mapping in hardware) in your driver structures and/or
-in the card registers.
-
-All drivers should be using these interfaces with no exceptions.  It
-is planned to completely remove virt_to_bus() and bus_to_virt() as
-they are entirely deprecated.  Some ports already do not provide these
-as it is impossible to correctly support them.
 
 Handling Errors
 ===============

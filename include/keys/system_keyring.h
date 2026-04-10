@@ -23,10 +23,15 @@ extern int restrict_link_by_builtin_trusted(struct key *keyring,
 					    const struct key_type *type,
 					    const union key_payload *payload,
 					    struct key *restriction_key);
+int restrict_link_by_digsig_builtin(struct key *dest_keyring,
+				    const struct key_type *type,
+				    const union key_payload *payload,
+				    struct key *restriction_key);
 extern __init int load_module_cert(struct key *keyring);
 
 #else
 #define restrict_link_by_builtin_trusted restrict_link_reject
+#define restrict_link_by_digsig_builtin restrict_link_reject
 
 static inline __init int load_module_cert(struct key *keyring)
 {
@@ -41,8 +46,17 @@ extern int restrict_link_by_builtin_and_secondary_trusted(
 	const struct key_type *type,
 	const union key_payload *payload,
 	struct key *restriction_key);
+int restrict_link_by_digsig_builtin_and_secondary(struct key *keyring,
+						  const struct key_type *type,
+						  const union key_payload *payload,
+						  struct key *restriction_key);
+void __init add_to_secondary_keyring(const char *source, const void *data, size_t len);
 #else
 #define restrict_link_by_builtin_and_secondary_trusted restrict_link_by_builtin_trusted
+#define restrict_link_by_digsig_builtin_and_secondary restrict_link_by_digsig_builtin
+static inline void __init add_to_secondary_keyring(const char *source, const void *data, size_t len)
+{
+}
 #endif
 
 #ifdef CONFIG_INTEGRITY_MACHINE_KEYRING
@@ -59,7 +73,6 @@ static inline void __init set_machine_trusted_keys(struct key *keyring)
 }
 #endif
 
-extern struct pkcs7_message *pkcs7;
 #ifdef CONFIG_SYSTEM_BLACKLIST_KEYRING
 extern int mark_hash_blacklisted(const u8 *hash, size_t hash_len,
 			       enum blacklist_hash_type hash_type);
@@ -79,6 +92,7 @@ static inline int is_binary_blacklisted(const u8 *hash, size_t hash_len)
 }
 #endif
 
+struct pkcs7_message;
 #ifdef CONFIG_SYSTEM_REVOCATION_LIST
 extern int add_key_to_revocation_list(const char *data, size_t size);
 extern int is_key_on_revocation_list(struct pkcs7_message *pkcs7);

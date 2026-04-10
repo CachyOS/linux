@@ -51,8 +51,8 @@
  * for the cache windows.
  *
  * The call to dmub_srv_hw_init() programs the DMCUB registers to prepare
- * for command submission. Commands can be queued via dmub_srv_cmd_queue()
- * and executed via dmub_srv_cmd_execute().
+ * for command submission. Commands can be queued via dmub_srv_fb_cmd_queue()
+ * and executed via dmub_srv_fb_cmd_execute().
  *
  * If the queue is full the dmub_srv_wait_for_idle() call can be used to
  * wait until the queue has been cleared.
@@ -65,10 +65,15 @@
  */
 
 #include "inc/dmub_cmd.h"
+#include "dc/dc_types.h"
 
-#if defined(__cplusplus)
-extern "C" {
-#endif
+#define DMUB_PC_SNAPSHOT_COUNT 10
+
+/* Default tracebuffer size if meta is absent. */
+#define DMUB_TRACE_BUFFER_SIZE (64 * 1024)
+
+#define PSP_HEADER_BYTES_256 0x100 // 256 bytes
+#define PSP_FOOTER_BYTES_256 0x100 // 256 bytes
 
 /* Forward declarations */
 struct dmub_srv;
@@ -76,6 +81,12 @@ struct dmub_srv_common_regs;
 struct dmub_srv_dcn31_regs;
 
 struct dmcub_trace_buf_entry;
+
+/* enum dmub_window_memory_type - memory location type specification for windows */
+enum dmub_window_memory_type {
+	DMUB_WINDOW_MEMORY_TYPE_FB = 0,
+	DMUB_WINDOW_MEMORY_TYPE_GART
+};
 
 /* enum dmub_status - return code for dmcub functions */
 enum dmub_status {
@@ -85,6 +96,7 @@ enum dmub_status {
 	DMUB_STATUS_TIMEOUT,
 	DMUB_STATUS_INVALID,
 	DMUB_STATUS_HW_FAILURE,
+	DMUB_STATUS_POWER_STATE_D3
 };
 
 /* enum dmub_asic - dmub asic identifier */
@@ -98,8 +110,15 @@ enum dmub_asic {
 	DMUB_ASIC_DCN303,
 	DMUB_ASIC_DCN31,
 	DMUB_ASIC_DCN31B,
+	DMUB_ASIC_DCN314,
 	DMUB_ASIC_DCN315,
 	DMUB_ASIC_DCN316,
+	DMUB_ASIC_DCN32,
+	DMUB_ASIC_DCN321,
+	DMUB_ASIC_DCN35,
+	DMUB_ASIC_DCN351,
+	DMUB_ASIC_DCN36,
+	DMUB_ASIC_DCN401,
 	DMUB_ASIC_MAX,
 };
 
@@ -113,6 +132,10 @@ enum dmub_window_id {
 	DMUB_WINDOW_5_TRACEBUFF,
 	DMUB_WINDOW_6_FW_STATE,
 	DMUB_WINDOW_7_SCRATCH_MEM,
+	DMUB_WINDOW_IB_MEM,
+	DMUB_WINDOW_SHARED_STATE,
+	DMUB_WINDOW_LSDMA_BUFFER,
+	DMUB_WINDOW_CURSOR_OFFLOAD,
 	DMUB_WINDOW_TOTAL,
 };
 
@@ -123,7 +146,42 @@ enum dmub_notification_type {
 	DMUB_NOTIFICATION_HPD,
 	DMUB_NOTIFICATION_HPD_IRQ,
 	DMUB_NOTIFICATION_SET_CONFIG_REPLY,
+	DMUB_NOTIFICATION_DPIA_NOTIFICATION,
+	DMUB_NOTIFICATION_HPD_SENSE_NOTIFY,
+	DMUB_NOTIFICATION_FUSED_IO,
 	DMUB_NOTIFICATION_MAX
+};
+
+/**
+ * DPIA NOTIFICATION Response Type
+ */
+enum dpia_notify_bw_alloc_status {
+
+	DPIA_BW_REQ_FAILED = 0,
+	DPIA_BW_REQ_SUCCESS,
+	DPIA_EST_BW_CHANGED,
+	DPIA_BW_ALLOC_CAPS_CHANGED
+};
+
+/* enum dmub_memory_access_type - memory access method */
+enum dmub_memory_access_type {
+	DMUB_MEMORY_ACCESS_DEFAULT,
+	DMUB_MEMORY_ACCESS_CPU = DMUB_MEMORY_ACCESS_DEFAULT,
+	DMUB_MEMORY_ACCESS_DMA
+};
+
+/* enum dmub_power_state type - to track DC power state in dmub_srv */
+enum dmub_srv_power_state_type {
+	DMUB_POWER_STATE_UNDEFINED = 0,
+	DMUB_POWER_STATE_D0 = 1,
+	DMUB_POWER_STATE_D3 = 8
+};
+
+/* enum dmub_inbox_cmd_interface type - defines default interface for host->dmub commands */
+enum dmub_inbox_cmd_interface_type {
+	DMUB_CMD_INTERFACE_DEFAULT = 0,
+	DMUB_CMD_INTERFACE_FB = 1,
+	DMUB_CMD_INTERFACE_REG = 2,
 };
 
 /**
@@ -171,6 +229,24 @@ struct dmub_srv_region_params {
 	uint32_t vbios_size;
 	const uint8_t *fw_inst_const;
 	const uint8_t *fw_bss_data;
+	const enum dmub_window_memory_type *window_memory_type;
+	const struct dmub_fw_meta_info *fw_info;
+};
+
+/**
+ * struct dmub_srv_fw_meta_info_params - params used for fetching fw meta info from fw_image
+ * @inst_const_size: size of the fw inst const section
+ * @bss_data_size: size of the fw bss data section
+ * @fw_inst_const: raw firmware inst const section
+ * @fw_bss_data: raw firmware bss data section
+ * @custom_psp_footer_size: custom psp footer size to use when indexing for fw meta info
+ */
+struct dmub_srv_fw_meta_info_params {
+	uint32_t inst_const_size;
+	uint32_t bss_data_size;
+	const uint8_t *fw_inst_const;
+	const uint8_t *fw_bss_data;
+	uint32_t custom_psp_footer_size;
 };
 
 /**
@@ -190,20 +266,27 @@ struct dmub_srv_region_params {
  */
 struct dmub_srv_region_info {
 	uint32_t fb_size;
+	uint32_t gart_size;
 	uint8_t num_regions;
 	struct dmub_region regions[DMUB_WINDOW_TOTAL];
+	uint32_t verified_psp_footer_size;
 };
 
 /**
- * struct dmub_srv_fb_params - parameters used for driver fb setup
+ * struct dmub_srv_memory_params - parameters used for driver fb setup
  * @region_info: region info calculated by dmub service
- * @cpu_addr: base cpu address for the framebuffer
- * @gpu_addr: base gpu virtual address for the framebuffer
+ * @cpu_fb_addr: base cpu address for the framebuffer
+ * @cpu_inbox_addr: base cpu address for the gart
+ * @gpu_fb_addr: base gpu virtual address for the framebuffer
+ * @gpu_inbox_addr: base gpu virtual address for the gart
  */
-struct dmub_srv_fb_params {
+struct dmub_srv_memory_params {
 	const struct dmub_srv_region_info *region_info;
-	void *cpu_addr;
-	uint64_t gpu_addr;
+	void *cpu_fb_addr;
+	void *cpu_gart_addr;
+	uint64_t gpu_fb_addr;
+	uint64_t gpu_gart_addr;
+	const enum dmub_window_memory_type *window_memory_type;
 };
 
 /**
@@ -224,6 +307,16 @@ struct dmub_srv_fb_info {
 	struct dmub_fb fb[DMUB_WINDOW_TOTAL];
 };
 
+/**
+ * struct dmub_soc_fb_info - relevant addresses from the frame buffer
+ * @fb_base: base of the framebuffer aperture
+ * @fb_offset: offset of the framebuffer aperture
+ */
+struct dmub_soc_fb_info {
+	uint64_t fb_base;
+	uint64_t fb_offset;
+};
+
 /*
  * struct dmub_srv_hw_params - params for dmub hardware initialization
  * @fb: framebuffer info for each region
@@ -234,8 +327,7 @@ struct dmub_srv_fb_info {
  */
 struct dmub_srv_hw_params {
 	struct dmub_fb *fb[DMUB_WINDOW_TOTAL];
-	uint64_t fb_base;
-	uint64_t fb_offset;
+	struct dmub_soc_fb_info soc_fb_info;
 	uint32_t psp_version;
 	bool load_inst_const;
 	bool skip_panel_power_sequence;
@@ -244,6 +336,30 @@ struct dmub_srv_hw_params {
 	bool dpia_supported;
 	bool disable_dpia;
 	bool usb4_cm_version;
+	bool fw_in_system_memory;
+	bool dpia_hpd_int_enable_supported;
+	bool disable_clock_gate;
+	bool disallow_dispclk_dppclk_ds;
+	bool ips_sequential_ono;
+	enum dmub_memory_access_type mem_access_type;
+	enum dmub_ips_disable_type disable_ips;
+	bool disallow_phy_access;
+	bool disable_sldo_opt;
+	bool enable_non_transparent_setconfig;
+	bool lower_hbr3_phy_ssc;
+	bool override_hbr3_pll_vco;
+	bool disable_dpia_bw_allocation;
+};
+
+/**
+ * struct dmub_srv_debug - Debug info for dmub_srv
+ * @timeout_occured: Indicates a timeout occured on any message from driver to dmub
+ * @timeout_cmd: first cmd sent from driver that timed out - subsequent timeouts are not stored
+ */
+struct dmub_timeout_info {
+	bool timeout_occured;
+	union dmub_rb_cmd timeout_cmd;
+	unsigned long long timestamp;
 };
 
 /**
@@ -252,8 +368,8 @@ struct dmub_srv_hw_params {
  */
 struct dmub_diagnostic_data {
 	uint32_t dmcub_version;
-	uint32_t scratch[16];
-	uint32_t pc;
+	uint32_t scratch[17];
+	uint32_t pc[DMUB_PC_SNAPSHOT_COUNT];
 	uint32_t undefined_address_fault_addr;
 	uint32_t inst_fetch_fault_addr;
 	uint32_t data_write_fault_addr;
@@ -263,12 +379,46 @@ struct dmub_diagnostic_data {
 	uint32_t inbox0_rptr;
 	uint32_t inbox0_wptr;
 	uint32_t inbox0_size;
+	uint32_t outbox1_rptr;
+	uint32_t outbox1_wptr;
+	uint32_t outbox1_size;
+	uint32_t gpint_datain0;
+	struct dmub_timeout_info timeout_info;
 	uint8_t is_dmcub_enabled : 1;
 	uint8_t is_dmcub_soft_reset : 1;
 	uint8_t is_dmcub_secure_reset : 1;
 	uint8_t is_traceport_en : 1;
 	uint8_t is_cw0_enabled : 1;
 	uint8_t is_cw6_enabled : 1;
+	uint8_t is_pwait : 1;
+};
+
+/**
+ * struct dmub_preos_info - preos fw info before loading post os fw.
+ */
+struct dmub_preos_info {
+	uint64_t fb_base;
+	uint64_t fb_offset;
+	uint64_t trace_buffer_phy_addr;
+	uint32_t trace_buffer_size;
+	uint32_t fw_version;
+	uint32_t boot_status;
+	uint32_t boot_options;
+};
+
+struct dmub_srv_inbox {
+	/* generic status */
+	uint64_t num_submitted;
+	uint64_t num_reported;
+	union {
+		/* frame buffer mailbox status */
+		struct dmub_rb rb;
+		/* register mailbox status */
+		struct {
+			bool is_pending;
+			bool is_multi_pending;
+		};
+	};
 };
 
 /**
@@ -308,15 +458,21 @@ struct dmub_srv_hw_funcs {
 			      const struct dmub_window *cw0,
 			      const struct dmub_window *cw1);
 
+	void (*backdoor_load_zfb_mode)(struct dmub_srv *dmub,
+			      const struct dmub_window *cw0,
+			      const struct dmub_window *cw1);
 	void (*setup_windows)(struct dmub_srv *dmub,
 			      const struct dmub_window *cw2,
 			      const struct dmub_window *cw3,
 			      const struct dmub_window *cw4,
 			      const struct dmub_window *cw5,
-			      const struct dmub_window *cw6);
+			      const struct dmub_window *cw6,
+			      const struct dmub_window *region6);
 
 	void (*setup_mailbox)(struct dmub_srv *dmub,
 			      const struct dmub_region *inbox1);
+
+	uint32_t (*get_inbox1_wptr)(struct dmub_srv *dmub);
 
 	uint32_t (*get_inbox1_rptr)(struct dmub_srv *dmub);
 
@@ -338,13 +494,17 @@ struct dmub_srv_hw_funcs {
 
 	uint32_t (*emul_get_inbox1_rptr)(struct dmub_srv *dmub);
 
+	uint32_t (*emul_get_inbox1_wptr)(struct dmub_srv *dmub);
+
 	void (*emul_set_inbox1_wptr)(struct dmub_srv *dmub, uint32_t wptr_offset);
 
 	bool (*is_supported)(struct dmub_srv *dmub);
 
-	bool (*is_hw_init)(struct dmub_srv *dmub);
+	bool (*is_psrsu_supported)(struct dmub_srv *dmub);
 
-	bool (*is_phy_init)(struct dmub_srv *dmub);
+	bool (*is_hw_init)(struct dmub_srv *dmub);
+	bool (*is_hw_powered_up)(struct dmub_srv *dmub);
+
 	void (*enable_dmub_boot_options)(struct dmub_srv *dmub,
 				const struct dmub_srv_hw_params *params);
 
@@ -352,6 +512,7 @@ struct dmub_srv_hw_funcs {
 
 	union dmub_fw_boot_status (*get_fw_status)(struct dmub_srv *dmub);
 
+	union dmub_fw_boot_options (*get_fw_boot_option)(struct dmub_srv *dmub);
 
 	void (*set_gpint)(struct dmub_srv *dmub,
 			  union dmub_gpint_data_register reg);
@@ -363,14 +524,35 @@ struct dmub_srv_hw_funcs {
 
 	uint32_t (*get_gpint_dataout)(struct dmub_srv *dmub);
 
+	void (*configure_dmub_in_system_memory)(struct dmub_srv *dmub);
 	void (*clear_inbox0_ack_register)(struct dmub_srv *dmub);
 	uint32_t (*read_inbox0_ack_register)(struct dmub_srv *dmub);
 	void (*send_inbox0_cmd)(struct dmub_srv *dmub, union dmub_inbox0_data_register data);
 	uint32_t (*get_current_time)(struct dmub_srv *dmub);
 
-	void (*get_diagnostic_data)(struct dmub_srv *dmub, struct dmub_diagnostic_data *dmub_oca);
+	void (*get_diagnostic_data)(struct dmub_srv *dmub);
+	bool (*get_preos_fw_info)(struct dmub_srv *dmub);
 
 	bool (*should_detect)(struct dmub_srv *dmub);
+	void (*init_reg_offsets)(struct dmub_srv *dmub, struct dc_context *ctx);
+
+	void (*subvp_save_surf_addr)(struct dmub_srv *dmub, const struct dc_plane_address *addr, uint8_t subvp_index);
+
+	void (*send_reg_inbox0_cmd_msg)(struct dmub_srv *dmub,
+			union dmub_rb_cmd *cmd);
+	uint32_t (*read_reg_inbox0_rsp_int_status)(struct dmub_srv *dmub);
+	void (*read_reg_inbox0_cmd_rsp)(struct dmub_srv *dmub,
+			union dmub_rb_cmd *cmd);
+	void (*write_reg_inbox0_rsp_int_ack)(struct dmub_srv *dmub);
+	void (*clear_reg_inbox0_rsp_int_ack)(struct dmub_srv *dmub);
+	void (*enable_reg_inbox0_rsp_int)(struct dmub_srv *dmub, bool enable);
+
+	uint32_t (*read_reg_outbox0_rdy_int_status)(struct dmub_srv *dmub);
+	void (*write_reg_outbox0_rdy_int_ack)(struct dmub_srv *dmub);
+	void (*read_reg_outbox0_msg)(struct dmub_srv *dmub, uint32_t *msg);
+	void (*write_reg_outbox0_rsp)(struct dmub_srv *dmub, uint32_t *rsp);
+	uint32_t (*read_reg_outbox0_rsp_int_status)(struct dmub_srv *dmub);
+	void (*enable_reg_outbox0_rdy_int)(struct dmub_srv *dmub, bool enable);
 };
 
 /**
@@ -389,6 +571,7 @@ struct dmub_srv_create_params {
 	enum dmub_asic asic;
 	uint32_t fw_version;
 	bool is_virtual;
+	enum dmub_inbox_cmd_interface_type inbox_type;
 };
 
 /**
@@ -397,7 +580,9 @@ struct dmub_srv_create_params {
  * @user_ctx: user provided context for the dmub_srv
  * @fw_version: the current firmware version, if any
  * @is_virtual: false if hardware support only
- * @fw_state: dmub firmware state pointer
+ * @shared_state: dmub shared state between firmware and driver
+ * @cursor_offload_v1: Cursor offload state
+ * @fw_state: dmub firmware state pointer (debug purpose only)
  */
 struct dmub_srv {
 	enum dmub_asic asic;
@@ -405,16 +590,23 @@ struct dmub_srv {
 	uint32_t fw_version;
 	bool is_virtual;
 	struct dmub_fb scratch_mem_fb;
+	struct dmub_fb ib_mem_gart;
+	struct dmub_fb cursor_offload_fb;
+	volatile struct dmub_shared_state_feature_block *shared_state;
+	volatile struct dmub_cursor_offload_v1 *cursor_offload_v1;
 	volatile const struct dmub_fw_state *fw_state;
 
 	/* private: internal use only */
 	const struct dmub_srv_common_regs *regs;
 	const struct dmub_srv_dcn31_regs *regs_dcn31;
-
+	struct dmub_srv_dcn32_regs *regs_dcn32;
+	struct dmub_srv_dcn35_regs *regs_dcn35;
+	const struct dmub_srv_dcn401_regs *regs_dcn401;
 	struct dmub_srv_base_funcs funcs;
 	struct dmub_srv_hw_funcs hw_funcs;
-	struct dmub_rb inbox1_rb;
+	struct dmub_srv_inbox inbox1;
 	uint32_t inbox1_last_wptr;
+	struct dmub_srv_inbox reg_inbox0;
 	/**
 	 * outbox1_rb is accessed without locks (dal & dc)
 	 * and to be used only in dmub_srv_stat_get_notification()
@@ -425,13 +617,21 @@ struct dmub_srv {
 
 	bool sw_init;
 	bool hw_init;
+	bool dpia_supported;
 
-	uint64_t fb_base;
-	uint64_t fb_offset;
+	struct dmub_soc_fb_info soc_fb_info;
 	uint32_t psp_version;
 
 	/* Feature capabilities reported by fw */
+	struct dmub_fw_meta_info meta_info;
 	struct dmub_feature_caps feature_caps;
+	struct dmub_visual_confirm_color visual_confirm_color;
+	enum dmub_inbox_cmd_interface_type inbox_type;
+
+	enum dmub_srv_power_state_type power_state;
+	struct dmub_diagnostic_data debug;
+	struct dmub_fb lsdma_rb_fb;
+	struct dmub_preos_info preos_info;
 };
 
 /**
@@ -442,16 +642,21 @@ struct dmub_srv {
  * @pending_notification: Indicates there are other pending notifications
  * @aux_reply: aux reply
  * @hpd_status: hpd status
+ * @bw_alloc_reply: BW Allocation reply from CM/DPIA
  */
 struct dmub_notification {
 	enum dmub_notification_type type;
 	uint8_t link_index;
 	uint8_t result;
+	/* notify instance from DMUB */
+	uint8_t instance;
 	bool pending_notification;
 	union {
 		struct aux_reply_data aux_reply;
 		enum dp_hpd_status hpd_status;
 		enum set_config_status sc_status;
+		struct dmub_rb_cmd_hpd_sense_notify_data hpd_sense_notify;
+		struct dmub_cmd_fused_request fused_request;
 	};
 };
 
@@ -460,7 +665,7 @@ struct dmub_notification {
  * of a firmware to know if feature or functionality is supported or present.
  */
 #define DMUB_FW_VERSION(major, minor, revision) \
-	((((major) & 0xFF) << 24) | (((minor) & 0xFF) << 16) | ((revision) & 0xFFFF))
+	((((major) & 0xFF) << 24) | (((minor) & 0xFF) << 16) | (((revision) & 0xFF) << 8))
 
 /**
  * dmub_srv_create() - creates the DMUB service.
@@ -511,8 +716,8 @@ dmub_srv_calc_region_info(struct dmub_srv *dmub,
  *   DMUB_STATUS_OK - success
  *   DMUB_STATUS_INVALID - unspecified error
  */
-enum dmub_status dmub_srv_calc_fb_info(struct dmub_srv *dmub,
-				       const struct dmub_srv_fb_params *params,
+enum dmub_status dmub_srv_calc_mem_info(struct dmub_srv *dmub,
+				       const struct dmub_srv_memory_params *params,
 				       struct dmub_srv_fb_info *out);
 
 /**
@@ -572,7 +777,7 @@ enum dmub_status dmub_srv_hw_init(struct dmub_srv *dmub,
 enum dmub_status dmub_srv_hw_reset(struct dmub_srv *dmub);
 
 /**
- * dmub_srv_cmd_queue() - queues a command to the DMUB
+ * dmub_srv_fb_cmd_queue() - queues a command to the DMUB
  * @dmub: the dmub service
  * @cmd: the command to queue
  *
@@ -584,11 +789,11 @@ enum dmub_status dmub_srv_hw_reset(struct dmub_srv *dmub);
  *   DMUB_STATUS_QUEUE_FULL - no remaining room in queue
  *   DMUB_STATUS_INVALID - unspecified error
  */
-enum dmub_status dmub_srv_cmd_queue(struct dmub_srv *dmub,
+enum dmub_status dmub_srv_fb_cmd_queue(struct dmub_srv *dmub,
 				    const union dmub_rb_cmd *cmd);
 
 /**
- * dmub_srv_cmd_execute() - Executes a queued sequence to the dmub
+ * dmub_srv_fb_cmd_execute() - Executes a queued sequence to the dmub
  * @dmub: the dmub service
  *
  * Begins execution of queued commands on the dmub.
@@ -597,7 +802,25 @@ enum dmub_status dmub_srv_cmd_queue(struct dmub_srv *dmub,
  *   DMUB_STATUS_OK - success
  *   DMUB_STATUS_INVALID - unspecified error
  */
-enum dmub_status dmub_srv_cmd_execute(struct dmub_srv *dmub);
+enum dmub_status dmub_srv_fb_cmd_execute(struct dmub_srv *dmub);
+
+/**
+ * dmub_srv_wait_for_hw_pwr_up() - Waits for firmware hardware power up is completed
+ * @dmub: the dmub service
+ * @timeout_us: the maximum number of microseconds to wait
+ *
+ * Waits until firmware hardware is powered up. The maximum
+ * wait time is given in microseconds to prevent spinning forever.
+ *
+ * Return:
+ *   DMUB_STATUS_OK - success
+ *   DMUB_STATUS_TIMEOUT - timed out
+ *   DMUB_STATUS_INVALID - unspecified error
+ */
+enum dmub_status dmub_srv_wait_for_hw_pwr_up(struct dmub_srv *dmub,
+					     uint32_t timeout_us);
+
+bool dmub_srv_is_hw_pwr_up(struct dmub_srv *dmub);
 
 /**
  * dmub_srv_wait_for_auto_load() - Waits for firmware auto load to complete
@@ -636,6 +859,23 @@ enum dmub_status dmub_srv_wait_for_auto_load(struct dmub_srv *dmub,
  */
 enum dmub_status dmub_srv_wait_for_phy_init(struct dmub_srv *dmub,
 					    uint32_t timeout_us);
+
+/**
+ * dmub_srv_wait_for_pending() - Re-entrant wait for messages currently pending
+ * @dmub: the dmub service
+ * @timeout_us: the maximum number of microseconds to wait
+ *
+ * Waits until the commands queued prior to this call are complete.
+ * If interfaces remain busy due to additional work being submitted
+ * concurrently, this function will not continue to wait.
+ *
+ * Return:
+ *   DMUB_STATUS_OK - success
+ *   DMUB_STATUS_TIMEOUT - wait for buffer to flush timed out
+ *   DMUB_STATUS_INVALID - unspecified error
+ */
+enum dmub_status dmub_srv_wait_for_pending(struct dmub_srv *dmub,
+					uint32_t timeout_us);
 
 /**
  * dmub_srv_wait_for_idle() - Waits for the DMUB to be idle
@@ -732,12 +972,15 @@ void dmub_flush_buffer_mem(const struct dmub_fb *fb);
 enum dmub_status dmub_srv_get_fw_boot_status(struct dmub_srv *dmub,
 					     union dmub_fw_boot_status *status);
 
-enum dmub_status dmub_srv_cmd_with_reply_data(struct dmub_srv *dmub,
-					      union dmub_rb_cmd *cmd);
+enum dmub_status dmub_srv_get_fw_boot_option(struct dmub_srv *dmub,
+					     union dmub_fw_boot_options *option);
+
+enum dmub_status dmub_srv_set_skip_panel_power_sequence(struct dmub_srv *dmub,
+					     bool skip);
 
 bool dmub_srv_get_outbox0_msg(struct dmub_srv *dmub, struct dmcub_trace_buf_entry *entry);
 
-bool dmub_srv_get_diagnostic_data(struct dmub_srv *dmub, struct dmub_diagnostic_data *diag_data);
+bool dmub_srv_get_diagnostic_data(struct dmub_srv *dmub);
 
 bool dmub_srv_should_detect(struct dmub_srv *dmub);
 
@@ -780,8 +1023,120 @@ enum dmub_status dmub_srv_wait_for_inbox0_ack(struct dmub_srv *dmub, uint32_t ti
  */
 enum dmub_status dmub_srv_clear_inbox0_ack(struct dmub_srv *dmub);
 
-#if defined(__cplusplus)
-}
-#endif
+/**
+ * dmub_srv_subvp_save_surf_addr() - Save primary and meta address for subvp on each flip
+ * @dmub: The dmub service
+ * @addr: The surface address to be programmed on the current flip
+ * @subvp_index: Index of subvp pipe, indicates which subvp pipe the address should be saved for
+ *
+ * Function to save the surface flip addr into scratch registers. This is to fix a race condition
+ * between FW and driver reading / writing to the surface address at the same time. This is
+ * required because there is no EARLIEST_IN_USE_META.
+ *
+ * Return:
+ *   void
+ */
+void dmub_srv_subvp_save_surf_addr(struct dmub_srv *dmub, const struct dc_plane_address *addr, uint8_t subvp_index);
+
+/**
+ * dmub_srv_set_power_state() - Track DC power state in dmub_srv
+ * @dmub: The dmub service
+ * @power_state: DC power state setting
+ *
+ * Store DC power state in dmub_srv.  If dmub_srv is in D3, then don't send messages to DMUB
+ *
+ * Return:
+ *   void
+ */
+void dmub_srv_set_power_state(struct dmub_srv *dmub, enum dmub_srv_power_state_type dmub_srv_power_state);
+
+/**
+ * dmub_srv_reg_cmd_execute() - Executes provided command to the dmub
+ * @dmub: the dmub service
+ * @cmd: the command packet to be executed
+ *
+ * Executes a single command for the dmub.
+ *
+ * Return:
+ *   DMUB_STATUS_OK - success
+ *   DMUB_STATUS_INVALID - unspecified error
+ */
+enum dmub_status dmub_srv_reg_cmd_execute(struct dmub_srv *dmub, union dmub_rb_cmd *cmd);
+
+
+/**
+ * dmub_srv_cmd_get_response() - Copies return data for command into buffer
+ * @dmub: the dmub service
+ * @cmd_rsp: response buffer
+ *
+ * Copies return data for command into buffer
+ */
+void dmub_srv_cmd_get_response(struct dmub_srv *dmub,
+		union dmub_rb_cmd *cmd_rsp);
+
+/**
+ * dmub_srv_sync_inboxes() - Sync inbox state
+ * @dmub: the dmub service
+ *
+ * Sync inbox state
+ *
+ * Return:
+ *   DMUB_STATUS_OK - success
+ *   DMUB_STATUS_INVALID - unspecified error
+ */
+enum dmub_status dmub_srv_sync_inboxes(struct dmub_srv *dmub);
+
+/**
+ * dmub_srv_wait_for_inbox_free() - Waits for space in the DMUB inbox to free up
+ * @dmub: the dmub service
+ * @timeout_us: the maximum number of microseconds to wait
+ * @num_free_required: number of free entries required
+ *
+ * Waits until the DMUB buffer is freed to the specified number.
+ *  The maximum wait time is given in microseconds to prevent spinning
+ * forever.
+ *
+ * Return:
+ *   DMUB_STATUS_OK - success
+ *   DMUB_STATUS_TIMEOUT - wait for buffer to flush timed out
+ *   DMUB_STATUS_INVALID - unspecified error
+ */
+enum dmub_status dmub_srv_wait_for_inbox_free(struct dmub_srv *dmub,
+		uint32_t timeout_us,
+		uint32_t num_free_required);
+
+/**
+ * dmub_srv_update_inbox_status() - Updates pending status for inbox & reg inbox0
+ * @dmub: the dmub service
+ *
+ * Return:
+ *   DMUB_STATUS_OK - success
+ *   DMUB_STATUS_TIMEOUT - wait for buffer to flush timed out
+ *   DMUB_STATUS_HW_FAILURE - issue with HW programming
+ *   DMUB_STATUS_INVALID - unspecified error
+ */
+enum dmub_status dmub_srv_update_inbox_status(struct dmub_srv *dmub);
+
+/**
+ * dmub_srv_get_preos_info() - retrieves preos fw info
+ * @dmub: the dmub service
+ *
+ * Return:
+ *   true - preos fw info retrieved successfully
+ *   false - preos fw info not retrieved successfully
+ */
+bool dmub_srv_get_preos_info(struct dmub_srv *dmub);
+
+/**
+ * dmub_srv_get_fw_meta_info_from_raw_fw() - Fetch firmware metadata info from raw firmware image
+ * @params: parameters for fetching firmware metadata info
+ * @fw_info_out: output buffer for firmware metadata info
+ *
+ * Return:
+ *   DMUB_STATUS_OK - success
+ *   DMUB_STATUS_INVALID - no FW meta info found
+ */
+enum dmub_status dmub_srv_get_fw_meta_info_from_raw_fw(struct dmub_srv_fw_meta_info_params *params,
+						       struct dmub_fw_meta_info *fw_info_out);
 
 #endif /* _DMUB_SRV_H_ */

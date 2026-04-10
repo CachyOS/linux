@@ -188,7 +188,7 @@ static int __init vf610_mscm_ir_of_init(struct device_node *node,
 		return -EINVAL;
 	}
 
-	mscm_ir_data = kzalloc(sizeof(*mscm_ir_data), GFP_KERNEL);
+	mscm_ir_data = kzalloc_obj(*mscm_ir_data);
 	if (!mscm_ir_data)
 		return -ENOMEM;
 
@@ -209,9 +209,9 @@ static int __init vf610_mscm_ir_of_init(struct device_node *node,
 	regmap_read(mscm_cp_regmap, MSCM_CPxNUM, &cpuid);
 	mscm_ir_data->cpu_mask = 0x1 << cpuid;
 
-	domain = irq_domain_add_hierarchy(domain_parent, 0,
-					  MSCM_IRSPRC_NUM, node,
-					  &mscm_irq_domain_ops, mscm_ir_data);
+	domain = irq_domain_create_hierarchy(domain_parent, 0, MSCM_IRSPRC_NUM,
+					     of_fwnode_handle(node), &mscm_irq_domain_ops,
+					     mscm_ir_data);
 	if (!domain) {
 		ret = -ENOMEM;
 		goto out_unmap;

@@ -16,6 +16,7 @@
 #include <linux/wait.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
+#include <uapi/linux/mount.h>
 #include <linux/mount.h>
 #include <linux/namei.h>
 #include <linux/uaccess.h>
@@ -25,6 +26,11 @@
 #include <linux/completion.h>
 #include <linux/file.h>
 #include <linux/magic.h>
+#include <linux/fs_context.h>
+#include <linux/fs_parser.h>
+#include "../mount.h"
+#include <linux/ns_common.h>
+
 
 /* This is the range of ioctl() numbers we claim as ours */
 #define AUTOFS_IOC_FIRST     AUTOFS_IOC_READY
@@ -51,8 +57,6 @@ extern struct file_system_type autofs_fs_type;
  */
 struct autofs_info {
 	struct dentry	*dentry;
-	struct inode	*inode;
-
 	int		flags;
 
 	struct completion expire_complete;
@@ -62,6 +66,7 @@ struct autofs_info {
 	struct list_head expiring;
 
 	struct autofs_sb_info *sbi;
+	unsigned long exp_timeout;
 	unsigned long last_used;
 	int count;
 
@@ -81,6 +86,9 @@ struct autofs_info {
 					*/
 #define AUTOFS_INF_PENDING	(1<<2) /* dentry pending mount */
 
+#define AUTOFS_INF_EXPIRE_SET	(1<<3) /* per-dentry expire timeout set for
+					  this mount point.
+					*/
 struct autofs_wait_queue {
 	wait_queue_head_t queue;
 	struct autofs_wait_queue *next;
@@ -110,6 +118,7 @@ struct autofs_sb_info {
 	int pipefd;
 	struct file *pipe;
 	struct pid *oz_pgrp;
+	u64 mnt_ns_id;
 	int version;
 	int sub_version;
 	int min_proto;
@@ -146,6 +155,11 @@ static inline int autofs_oz_mode(struct autofs_sb_info *sbi)
 {
 	return ((sbi->flags & AUTOFS_SBI_CATATONIC) ||
 		 task_pgrp(current) == sbi->oz_pgrp);
+}
+
+static inline bool autofs_empty(struct autofs_info *ino)
+{
+	return ino->count < 2;
 }
 
 struct inode *autofs_get_inode(struct super_block *, umode_t);
@@ -202,20 +216,36 @@ static inline void managed_dentry_clear_managed(struct dentry *dentry)
 
 /* Initializing function */
 
-int autofs_fill_super(struct super_block *, void *, int);
+extern const struct fs_parameter_spec autofs_param_specs[];
+int autofs_init_fs_context(struct fs_context *fc);
 struct autofs_info *autofs_new_ino(struct autofs_sb_info *);
 void autofs_clean_ino(struct autofs_info *);
 
-static inline int autofs_prepare_pipe(struct file *pipe)
+static inline int autofs_check_pipe(struct file *pipe)
 {
+	if (pipe->f_mode & FMODE_PATH)
+		return -EINVAL;
 	if (!(pipe->f_mode & FMODE_CAN_WRITE))
 		return -EINVAL;
 	if (!S_ISFIFO(file_inode(pipe)->i_mode))
 		return -EINVAL;
+	return 0;
+}
+
+static inline void autofs_set_packet_pipe_flags(struct file *pipe)
+{
 	/* We want a packet pipe */
 	pipe->f_flags |= O_DIRECT;
 	/* We don't expect -EAGAIN */
 	pipe->f_flags &= ~O_NONBLOCK;
+}
+
+static inline int autofs_prepare_pipe(struct file *pipe)
+{
+	int ret = autofs_check_pipe(pipe);
+	if (ret < 0)
+		return ret;
+	autofs_set_packet_pipe_flags(pipe);
 	return 0;
 }
 

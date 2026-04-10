@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2018 Red Hat, Inc.
  *
@@ -108,7 +108,7 @@ static int dust_add_block(struct dust_device *dd, unsigned long long block,
 	struct badblock *bblock;
 	unsigned long flags;
 
-	bblock = kmalloc(sizeof(*bblock), GFP_KERNEL);
+	bblock = kmalloc_obj(*bblock);
 	if (bblock == NULL) {
 		if (!dd->quiet_mode)
 			DMERR("%s: badblock allocation failed", __func__);
@@ -360,7 +360,7 @@ static int dust_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		return -EINVAL;
 	}
 
-	dd = kzalloc(sizeof(struct dust_device), GFP_KERNEL);
+	dd = kzalloc_obj(struct dust_device);
 	if (dd == NULL) {
 		ti->error = "Cannot allocate context";
 		return -ENOMEM;
@@ -534,7 +534,9 @@ static void dust_status(struct dm_target *ti, status_type_t type,
 	}
 }
 
-static int dust_prepare_ioctl(struct dm_target *ti, struct block_device **bdev)
+static int dust_prepare_ioctl(struct dm_target *ti, struct block_device **bdev,
+			      unsigned int cmd, unsigned long arg,
+			      bool *forward)
 {
 	struct dust_device *dd = ti->private;
 	struct dm_dev *dev = dd->dev;
@@ -570,25 +572,8 @@ static struct target_type dust_target = {
 	.status = dust_status,
 	.prepare_ioctl = dust_prepare_ioctl,
 };
-
-static int __init dm_dust_init(void)
-{
-	int r = dm_register_target(&dust_target);
-
-	if (r < 0)
-		DMERR("dm_register_target failed %d", r);
-
-	return r;
-}
-
-static void __exit dm_dust_exit(void)
-{
-	dm_unregister_target(&dust_target);
-}
-
-module_init(dm_dust_init);
-module_exit(dm_dust_exit);
+module_dm(dust);
 
 MODULE_DESCRIPTION(DM_NAME " dust test target");
-MODULE_AUTHOR("Bryan Gurney <dm-devel@redhat.com>");
+MODULE_AUTHOR("Bryan Gurney <dm-devel@lists.linux.dev>");
 MODULE_LICENSE("GPL");

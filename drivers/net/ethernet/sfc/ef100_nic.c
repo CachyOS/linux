@@ -24,6 +24,8 @@
 #include "ef100_tx.h"
 #include "ef100_sriov.h"
 #include "ef100_netdev.h"
+#include "tc.h"
+#include "mae.h"
 #include "rx_common.h"
 
 #define EF100_MAX_VIS 4096
@@ -128,27 +130,38 @@ static void ef100_mcdi_reboot_detected(struct efx_nic *efx)
 
 /*	MCDI calls
  */
-static int ef100_get_mac_address(struct efx_nic *efx, u8 *mac_address)
+int ef100_get_mac_address(struct efx_nic *efx, u8 *mac_address,
+			  int client_handle, bool empty_ok)
 {
-	MCDI_DECLARE_BUF(outbuf, MC_CMD_GET_MAC_ADDRESSES_OUT_LEN);
+	MCDI_DECLARE_BUF(outbuf, MC_CMD_GET_CLIENT_MAC_ADDRESSES_OUT_LEN(1));
+	MCDI_DECLARE_BUF(inbuf, MC_CMD_GET_CLIENT_MAC_ADDRESSES_IN_LEN);
 	size_t outlen;
 	int rc;
 
 	BUILD_BUG_ON(MC_CMD_GET_MAC_ADDRESSES_IN_LEN != 0);
+	MCDI_SET_DWORD(inbuf, GET_CLIENT_MAC_ADDRESSES_IN_CLIENT_HANDLE,
+		       client_handle);
 
-	rc = efx_mcdi_rpc(efx, MC_CMD_GET_MAC_ADDRESSES, NULL, 0,
-			  outbuf, sizeof(outbuf), &outlen);
+	rc = efx_mcdi_rpc(efx, MC_CMD_GET_CLIENT_MAC_ADDRESSES, inbuf,
+			  sizeof(inbuf), outbuf, sizeof(outbuf), &outlen);
 	if (rc)
 		return rc;
-	if (outlen < MC_CMD_GET_MAC_ADDRESSES_OUT_LEN)
-		return -EIO;
 
-	ether_addr_copy(mac_address,
-			MCDI_PTR(outbuf, GET_MAC_ADDRESSES_OUT_MAC_ADDR_BASE));
+	if (outlen >= MC_CMD_GET_CLIENT_MAC_ADDRESSES_OUT_LEN(1)) {
+		ether_addr_copy(mac_address,
+				MCDI_PTR(outbuf, GET_CLIENT_MAC_ADDRESSES_OUT_MAC_ADDRS));
+	} else if (empty_ok) {
+		pci_warn(efx->pci_dev,
+			 "No MAC address provisioned for client ID %#x.\n",
+			 client_handle);
+		eth_zero_addr(mac_address);
+	} else {
+		return -ENOENT;
+	}
 	return 0;
 }
 
-static int efx_ef100_init_datapath_caps(struct efx_nic *efx)
+int efx_ef100_init_datapath_caps(struct efx_nic *efx)
 {
 	MCDI_DECLARE_BUF(outbuf, MC_CMD_GET_CAPABILITIES_V7_OUT_LEN);
 	struct ef100_nic_data *nic_data = efx->nic_data;
@@ -211,7 +224,7 @@ static int efx_ef100_init_datapath_caps(struct efx_nic *efx)
 static int ef100_ev_probe(struct efx_channel *channel)
 {
 	/* Allocate an extra descriptor for the QMDA status completion entry */
-	return efx_nic_alloc_buffer(channel->efx, &channel->eventq.buf,
+	return efx_nic_alloc_buffer(channel->efx, &channel->eventq,
 				    (channel->eventq_mask + 2) *
 				    sizeof(efx_qword_t),
 				    GFP_KERNEL);
@@ -240,6 +253,8 @@ static void ef100_ev_read_ack(struct efx_channel *channel)
 		   efx_reg(channel->efx, ER_GZ_EVQ_INT_PRIME));
 }
 
+#define EFX_NAPI_MAX_TX 512
+
 static int ef100_ev_process(struct efx_channel *channel, int quota)
 {
 	struct efx_nic *efx = channel->efx;
@@ -247,6 +262,7 @@ static int ef100_ev_process(struct efx_channel *channel, int quota)
 	bool evq_phase, old_evq_phase;
 	unsigned int read_ptr;
 	efx_qword_t *p_event;
+	int spent_tx = 0;
 	int spent = 0;
 	bool ev_phase;
 	int ev_type;
@@ -282,7 +298,9 @@ static int ef100_ev_process(struct efx_channel *channel, int quota)
 			efx_mcdi_process_event(channel, p_event);
 			break;
 		case ESE_GZ_EF100_EV_TX_COMPLETION:
-			ef100_ev_tx(channel, p_event);
+			spent_tx += ef100_ev_tx(channel, p_event);
+			if (spent_tx >= EFX_NAPI_MAX_TX)
+				spent = quota;
 			break;
 		case ESE_GZ_EF100_EV_DRIVER:
 			netif_info(efx, drv, efx->net_dev,
@@ -327,13 +345,13 @@ static irqreturn_t ef100_msi_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static int ef100_phy_probe(struct efx_nic *efx)
+int ef100_phy_probe(struct efx_nic *efx)
 {
 	struct efx_mcdi_phy_data *phy_data;
 	int rc;
 
 	/* Probe for the PHY */
-	efx->phy_data = kzalloc(sizeof(struct efx_mcdi_phy_data), GFP_KERNEL);
+	efx->phy_data = kzalloc_obj(struct efx_mcdi_phy_data);
 	if (!efx->phy_data)
 		return -ENOMEM;
 
@@ -365,7 +383,7 @@ static int ef100_phy_probe(struct efx_nic *efx)
 	return 0;
 }
 
-static int ef100_filter_table_probe(struct efx_nic *efx)
+int ef100_filter_table_probe(struct efx_nic *efx)
 {
 	return efx_mcdi_filter_table_probe(efx, true);
 }
@@ -374,26 +392,45 @@ static int ef100_filter_table_up(struct efx_nic *efx)
 {
 	int rc;
 
+	down_write(&efx->filter_sem);
 	rc = efx_mcdi_filter_add_vlan(efx, EFX_FILTER_VID_UNSPEC);
-	if (rc) {
-		efx_mcdi_filter_table_down(efx);
-		return rc;
-	}
+	if (rc)
+		goto fail_unspec;
 
 	rc = efx_mcdi_filter_add_vlan(efx, 0);
-	if (rc) {
-		efx_mcdi_filter_del_vlan(efx, EFX_FILTER_VID_UNSPEC);
-		efx_mcdi_filter_table_down(efx);
-	}
+	if (rc)
+		goto fail_vlan0;
+	/* Drop the lock: we've finished altering table existence, and
+	 * filter insertion will need to take the lock for read.
+	 */
+	up_write(&efx->filter_sem);
+	if (IS_ENABLED(CONFIG_SFC_SRIOV))
+		rc = efx_tc_insert_rep_filters(efx);
 
+	/* Rep filter failure is nonfatal */
+	if (rc)
+		netif_warn(efx, drv, efx->net_dev,
+			   "Failed to insert representor filters, rc %d\n",
+			   rc);
+	return 0;
+
+fail_vlan0:
+	efx_mcdi_filter_del_vlan(efx, EFX_FILTER_VID_UNSPEC);
+fail_unspec:
+	efx_mcdi_filter_table_down(efx);
+	up_write(&efx->filter_sem);
 	return rc;
 }
 
 static void ef100_filter_table_down(struct efx_nic *efx)
 {
+	if (IS_ENABLED(CONFIG_SFC_SRIOV))
+		efx_tc_remove_rep_filters(efx);
+	down_write(&efx->filter_sem);
 	efx_mcdi_filter_del_vlan(efx, 0);
 	efx_mcdi_filter_del_vlan(efx, EFX_FILTER_VID_UNSPEC);
 	efx_mcdi_filter_table_down(efx);
+	up_write(&efx->filter_sem);
 }
 
 /*	Other
@@ -546,7 +583,7 @@ static const struct efx_hw_stat_desc ef100_stat_desc[EF100_STAT_COUNT] = {
 	EFX_GENERIC_SW_STAT(rx_noskb_drops),
 };
 
-static size_t ef100_describe_stats(struct efx_nic *efx, u8 *names)
+static size_t ef100_describe_stats(struct efx_nic *efx, u8 **names)
 {
 	DECLARE_BITMAP(mask, EF100_STAT_COUNT) = {};
 
@@ -704,177 +741,41 @@ static unsigned int efx_ef100_recycle_ring_size(const struct efx_nic *efx)
 	return 10 * EFX_RECYCLE_RING_SIZE_10G;
 }
 
-/*	NIC level access functions
- */
-#define EF100_OFFLOAD_FEATURES	(NETIF_F_HW_CSUM | NETIF_F_RXCSUM |	\
-	NETIF_F_HIGHDMA | NETIF_F_SG | NETIF_F_FRAGLIST | NETIF_F_NTUPLE | \
-	NETIF_F_RXHASH | NETIF_F_RXFCS | NETIF_F_TSO_ECN | NETIF_F_RXALL | \
-	NETIF_F_HW_VLAN_CTAG_TX)
+static int efx_ef100_get_base_mport(struct efx_nic *efx)
+{
+	struct ef100_nic_data *nic_data = efx->nic_data;
+	u32 selector, id;
+	int rc;
 
-const struct efx_nic_type ef100_pf_nic_type = {
-	.revision = EFX_REV_EF100,
-	.is_vf = false,
-	.probe = ef100_probe_pf,
-	.offload_features = EF100_OFFLOAD_FEATURES,
-	.mcdi_max_ver = 2,
-	.mcdi_request = ef100_mcdi_request,
-	.mcdi_poll_response = ef100_mcdi_poll_response,
-	.mcdi_read_response = ef100_mcdi_read_response,
-	.mcdi_poll_reboot = ef100_mcdi_poll_reboot,
-	.mcdi_reboot_detected = ef100_mcdi_reboot_detected,
-	.irq_enable_master = efx_port_dummy_op_void,
-	.irq_test_generate = efx_ef100_irq_test_generate,
-	.irq_disable_non_ev = efx_port_dummy_op_void,
-	.push_irq_moderation = efx_channel_dummy_op_void,
-	.min_interrupt_mode = EFX_INT_MODE_MSIX,
-	.map_reset_reason = ef100_map_reset_reason,
-	.map_reset_flags = ef100_map_reset_flags,
-	.reset = ef100_reset,
-
-	.check_caps = ef100_check_caps,
-
-	.ev_probe = ef100_ev_probe,
-	.ev_init = ef100_ev_init,
-	.ev_fini = efx_mcdi_ev_fini,
-	.ev_remove = efx_mcdi_ev_remove,
-	.irq_handle_msi = ef100_msi_interrupt,
-	.ev_process = ef100_ev_process,
-	.ev_read_ack = ef100_ev_read_ack,
-	.ev_test_generate = efx_ef100_ev_test_generate,
-	.tx_probe = ef100_tx_probe,
-	.tx_init = ef100_tx_init,
-	.tx_write = ef100_tx_write,
-	.tx_enqueue = ef100_enqueue_skb,
-	.rx_probe = efx_mcdi_rx_probe,
-	.rx_init = efx_mcdi_rx_init,
-	.rx_remove = efx_mcdi_rx_remove,
-	.rx_write = ef100_rx_write,
-	.rx_packet = __ef100_rx_packet,
-	.rx_buf_hash_valid = ef100_rx_buf_hash_valid,
-	.fini_dmaq = efx_fini_dmaq,
-	.max_rx_ip_filters = EFX_MCDI_FILTER_TBL_ROWS,
-	.filter_table_probe = ef100_filter_table_up,
-	.filter_table_restore = efx_mcdi_filter_table_restore,
-	.filter_table_remove = ef100_filter_table_down,
-	.filter_insert = efx_mcdi_filter_insert,
-	.filter_remove_safe = efx_mcdi_filter_remove_safe,
-	.filter_get_safe = efx_mcdi_filter_get_safe,
-	.filter_clear_rx = efx_mcdi_filter_clear_rx,
-	.filter_count_rx_used = efx_mcdi_filter_count_rx_used,
-	.filter_get_rx_id_limit = efx_mcdi_filter_get_rx_id_limit,
-	.filter_get_rx_ids = efx_mcdi_filter_get_rx_ids,
-#ifdef CONFIG_RFS_ACCEL
-	.filter_rfs_expire_one = efx_mcdi_filter_rfs_expire_one,
-#endif
-
-	.get_phys_port_id = efx_ef100_get_phys_port_id,
-
-	.rx_prefix_size = ESE_GZ_RX_PKT_PREFIX_LEN,
-	.rx_hash_offset = ESF_GZ_RX_PREFIX_RSS_HASH_LBN / 8,
-	.rx_ts_offset = ESF_GZ_RX_PREFIX_PARTIAL_TSTAMP_LBN / 8,
-	.rx_hash_key_size = 40,
-	.rx_pull_rss_config = efx_mcdi_rx_pull_rss_config,
-	.rx_push_rss_config = efx_mcdi_pf_rx_push_rss_config,
-	.rx_push_rss_context_config = efx_mcdi_rx_push_rss_context_config,
-	.rx_pull_rss_context_config = efx_mcdi_rx_pull_rss_context_config,
-	.rx_restore_rss_contexts = efx_mcdi_rx_restore_rss_contexts,
-	.rx_recycle_ring_size = efx_ef100_recycle_ring_size,
-
-	.reconfigure_mac = ef100_reconfigure_mac,
-	.reconfigure_port = efx_mcdi_port_reconfigure,
-	.test_nvram = efx_new_mcdi_nvram_test_all,
-	.describe_stats = ef100_describe_stats,
-	.start_stats = efx_mcdi_mac_start_stats,
-	.update_stats = ef100_update_stats,
-	.pull_stats = efx_mcdi_mac_pull_stats,
-	.stop_stats = efx_mcdi_mac_stop_stats,
-#ifdef CONFIG_SFC_SRIOV
-	.sriov_configure = efx_ef100_sriov_configure,
-#endif
-
-	/* Per-type bar/size configuration not used on ef100. Location of
-	 * registers is defined by extended capabilities.
+	/* Construct mport selector for "physical network port" */
+	efx_mae_mport_wire(efx, &selector);
+	/* Look up actual mport ID */
+	rc = efx_mae_fw_lookup_mport(efx, selector, &id);
+	if (rc)
+		return rc;
+	/* The ID should always fit in 16 bits, because that's how wide the
+	 * corresponding fields in the RX prefix & TX override descriptor are
 	 */
-	.mem_bar = NULL,
-	.mem_map_size = NULL,
+	if (id >> 16)
+		netif_warn(efx, probe, efx->net_dev, "Bad base m-port id %#x\n",
+			   id);
+	nic_data->base_mport = id;
+	nic_data->have_mport = true;
 
-};
+	/* Construct mport selector for "calling PF" */
+	efx_mae_mport_uplink(efx, &selector);
+	/* Look up actual mport ID */
+	rc = efx_mae_fw_lookup_mport(efx, selector, &id);
+	if (rc)
+		return rc;
+	if (id >> 16)
+		netif_warn(efx, probe, efx->net_dev, "Bad own m-port id %#x\n",
+			   id);
+	nic_data->own_mport = id;
+	nic_data->have_own_mport = true;
 
-const struct efx_nic_type ef100_vf_nic_type = {
-	.revision = EFX_REV_EF100,
-	.is_vf = true,
-	.probe = ef100_probe_vf,
-	.offload_features = EF100_OFFLOAD_FEATURES,
-	.mcdi_max_ver = 2,
-	.mcdi_request = ef100_mcdi_request,
-	.mcdi_poll_response = ef100_mcdi_poll_response,
-	.mcdi_read_response = ef100_mcdi_read_response,
-	.mcdi_poll_reboot = ef100_mcdi_poll_reboot,
-	.mcdi_reboot_detected = ef100_mcdi_reboot_detected,
-	.irq_enable_master = efx_port_dummy_op_void,
-	.irq_test_generate = efx_ef100_irq_test_generate,
-	.irq_disable_non_ev = efx_port_dummy_op_void,
-	.push_irq_moderation = efx_channel_dummy_op_void,
-	.min_interrupt_mode = EFX_INT_MODE_MSIX,
-	.map_reset_reason = ef100_map_reset_reason,
-	.map_reset_flags = ef100_map_reset_flags,
-	.reset = ef100_reset,
-	.check_caps = ef100_check_caps,
-	.ev_probe = ef100_ev_probe,
-	.ev_init = ef100_ev_init,
-	.ev_fini = efx_mcdi_ev_fini,
-	.ev_remove = efx_mcdi_ev_remove,
-	.irq_handle_msi = ef100_msi_interrupt,
-	.ev_process = ef100_ev_process,
-	.ev_read_ack = ef100_ev_read_ack,
-	.ev_test_generate = efx_ef100_ev_test_generate,
-	.tx_probe = ef100_tx_probe,
-	.tx_init = ef100_tx_init,
-	.tx_write = ef100_tx_write,
-	.tx_enqueue = ef100_enqueue_skb,
-	.rx_probe = efx_mcdi_rx_probe,
-	.rx_init = efx_mcdi_rx_init,
-	.rx_remove = efx_mcdi_rx_remove,
-	.rx_write = ef100_rx_write,
-	.rx_packet = __ef100_rx_packet,
-	.rx_buf_hash_valid = ef100_rx_buf_hash_valid,
-	.fini_dmaq = efx_fini_dmaq,
-	.max_rx_ip_filters = EFX_MCDI_FILTER_TBL_ROWS,
-	.filter_table_probe = ef100_filter_table_up,
-	.filter_table_restore = efx_mcdi_filter_table_restore,
-	.filter_table_remove = ef100_filter_table_down,
-	.filter_insert = efx_mcdi_filter_insert,
-	.filter_remove_safe = efx_mcdi_filter_remove_safe,
-	.filter_get_safe = efx_mcdi_filter_get_safe,
-	.filter_clear_rx = efx_mcdi_filter_clear_rx,
-	.filter_count_rx_used = efx_mcdi_filter_count_rx_used,
-	.filter_get_rx_id_limit = efx_mcdi_filter_get_rx_id_limit,
-	.filter_get_rx_ids = efx_mcdi_filter_get_rx_ids,
-#ifdef CONFIG_RFS_ACCEL
-	.filter_rfs_expire_one = efx_mcdi_filter_rfs_expire_one,
-#endif
-
-	.rx_prefix_size = ESE_GZ_RX_PKT_PREFIX_LEN,
-	.rx_hash_offset = ESF_GZ_RX_PREFIX_RSS_HASH_LBN / 8,
-	.rx_ts_offset = ESF_GZ_RX_PREFIX_PARTIAL_TSTAMP_LBN / 8,
-	.rx_hash_key_size = 40,
-	.rx_pull_rss_config = efx_mcdi_rx_pull_rss_config,
-	.rx_push_rss_config = efx_mcdi_pf_rx_push_rss_config,
-	.rx_restore_rss_contexts = efx_mcdi_rx_restore_rss_contexts,
-	.rx_recycle_ring_size = efx_ef100_recycle_ring_size,
-
-	.reconfigure_mac = ef100_reconfigure_mac,
-	.test_nvram = efx_new_mcdi_nvram_test_all,
-	.describe_stats = ef100_describe_stats,
-	.start_stats = efx_mcdi_mac_start_stats,
-	.update_stats = ef100_update_stats,
-	.pull_stats = efx_mcdi_mac_pull_stats,
-	.stop_stats = efx_mcdi_mac_stop_stats,
-
-	.mem_bar = NULL,
-	.mem_map_size = NULL,
-
-};
+	return 0;
+}
 
 static int compare_versions(const char *a, const char *b)
 {
@@ -986,8 +887,7 @@ static int ef100_process_design_param(struct efx_nic *efx,
 	case ESE_EF100_DP_GZ_TSO_MAX_HDR_NUM_SEGS:
 		/* We always put HDR_NUM_SEGS=1 in our TSO descriptors */
 		if (!reader->value) {
-			netif_err(efx, probe, efx->net_dev,
-				  "TSO_MAX_HDR_NUM_SEGS < 1\n");
+			pci_err(efx->pci_dev, "TSO_MAX_HDR_NUM_SEGS < 1\n");
 			return -EOPNOTSUPP;
 		}
 		return 0;
@@ -1000,32 +900,28 @@ static int ef100_process_design_param(struct efx_nic *efx,
 		 */
 		if (!reader->value || reader->value > EFX_MIN_DMAQ_SIZE ||
 		    EFX_MIN_DMAQ_SIZE % (u32)reader->value) {
-			netif_err(efx, probe, efx->net_dev,
-				  "%s size granularity is %llu, can't guarantee safety\n",
-				  reader->type == ESE_EF100_DP_GZ_RXQ_SIZE_GRANULARITY ? "RXQ" : "TXQ",
-				  reader->value);
+			pci_err(efx->pci_dev,
+				"%s size granularity is %llu, can't guarantee safety\n",
+				reader->type == ESE_EF100_DP_GZ_RXQ_SIZE_GRANULARITY ? "RXQ" : "TXQ",
+				reader->value);
 			return -EOPNOTSUPP;
 		}
 		return 0;
 	case ESE_EF100_DP_GZ_TSO_MAX_PAYLOAD_LEN:
 		nic_data->tso_max_payload_len = min_t(u64, reader->value,
 						      GSO_LEGACY_MAX_SIZE);
-		netif_set_tso_max_size(efx->net_dev,
-				       nic_data->tso_max_payload_len);
 		return 0;
 	case ESE_EF100_DP_GZ_TSO_MAX_PAYLOAD_NUM_SEGS:
 		nic_data->tso_max_payload_num_segs = min_t(u64, reader->value, 0xffff);
-		netif_set_tso_max_segs(efx->net_dev,
-				       nic_data->tso_max_payload_num_segs);
 		return 0;
 	case ESE_EF100_DP_GZ_TSO_MAX_NUM_FRAMES:
 		nic_data->tso_max_frames = min_t(u64, reader->value, 0xffff);
 		return 0;
 	case ESE_EF100_DP_GZ_COMPAT:
 		if (reader->value) {
-			netif_err(efx, probe, efx->net_dev,
-				  "DP_COMPAT has unknown bits %#llx, driver not compatible with this hw\n",
-				  reader->value);
+			pci_err(efx->pci_dev,
+				"DP_COMPAT has unknown bits %#llx, driver not compatible with this hw\n",
+				reader->value);
 			return -EOPNOTSUPP;
 		}
 		return 0;
@@ -1045,10 +941,10 @@ static int ef100_process_design_param(struct efx_nic *efx,
 		 * So the value of this shouldn't matter.
 		 */
 		if (reader->value != ESE_EF100_DP_GZ_VI_STRIDES_DEFAULT)
-			netif_dbg(efx, probe, efx->net_dev,
-				  "NIC has other than default VI_STRIDES (mask "
-				  "%#llx), early probing might use wrong one\n",
-				  reader->value);
+			pci_dbg(efx->pci_dev,
+				"NIC has other than default VI_STRIDES (mask "
+				"%#llx), early probing might use wrong one\n",
+				reader->value);
 		return 0;
 	case ESE_EF100_DP_GZ_RX_MAX_RUNT:
 		/* Driver doesn't look at L2_STATUS:LEN_ERR bit, so we don't
@@ -1060,9 +956,9 @@ static int ef100_process_design_param(struct efx_nic *efx,
 		/* Host interface says "Drivers should ignore design parameters
 		 * that they do not recognise."
 		 */
-		netif_dbg(efx, probe, efx->net_dev,
-			  "Ignoring unrecognised design parameter %u\n",
-			  reader->type);
+		pci_dbg(efx->pci_dev,
+			"Ignoring unrecognised design parameter %u\n",
+			reader->type);
 		return 0;
 	}
 }
@@ -1077,8 +973,7 @@ static int ef100_check_design_params(struct efx_nic *efx)
 
 	efx_readd(efx, &reg, ER_GZ_PARAMS_TLV_LEN);
 	total_len = EFX_DWORD_FIELD(reg, EFX_DWORD_0);
-	netif_dbg(efx, probe, efx->net_dev, "%u bytes of design parameters\n",
-		  total_len);
+	pci_dbg(efx->pci_dev, "%u bytes of design parameters\n", total_len);
 	while (offset < total_len) {
 		efx_readd(efx, &reg, ER_GZ_PARAMS_TLV + offset);
 		data = EFX_DWORD_FIELD(reg, EFX_DWORD_0);
@@ -1099,13 +994,13 @@ static int ef100_check_design_params(struct efx_nic *efx)
 	 */
 	if (reader.state != EF100_TLV_TYPE) {
 		if (reader.state == EF100_TLV_TYPE_CONT)
-			netif_err(efx, probe, efx->net_dev,
-				  "truncated design parameter (incomplete type %u)\n",
-				  reader.type);
+			pci_err(efx->pci_dev,
+				"truncated design parameter (incomplete type %u)\n",
+				reader.type);
 		else
-			netif_err(efx, probe, efx->net_dev,
-				  "truncated design parameter %u\n",
-				  reader.type);
+			pci_err(efx->pci_dev,
+				"truncated design parameter %u\n",
+				reader.type);
 		rc = -EIO;
 	}
 out:
@@ -1117,37 +1012,31 @@ out:
 static int ef100_probe_main(struct efx_nic *efx)
 {
 	unsigned int bar_size = resource_size(&efx->pci_dev->resource[efx->mem_bar]);
-	struct net_device *net_dev = efx->net_dev;
 	struct ef100_nic_data *nic_data;
 	char fw_version[32];
+	u32 priv_mask = 0;
 	int i, rc;
 
 	if (WARN_ON(bar_size == 0))
 		return -EIO;
 
-	nic_data = kzalloc(sizeof(*nic_data), GFP_KERNEL);
+	nic_data = kzalloc_obj(*nic_data);
 	if (!nic_data)
 		return -ENOMEM;
 	efx->nic_data = nic_data;
 	nic_data->efx = efx;
-	net_dev->features |= efx->type->offload_features;
-	net_dev->hw_features |= efx->type->offload_features;
-	net_dev->hw_enc_features |= efx->type->offload_features;
-	net_dev->vlan_features |= NETIF_F_HW_CSUM | NETIF_F_SG |
-				  NETIF_F_HIGHDMA | NETIF_F_ALL_TSO;
+	efx->max_vis = EF100_MAX_VIS;
 
 	/* Populate design-parameter defaults */
 	nic_data->tso_max_hdr_len = ESE_EF100_DP_GZ_TSO_MAX_HDR_LEN_DEFAULT;
 	nic_data->tso_max_frames = ESE_EF100_DP_GZ_TSO_MAX_NUM_FRAMES_DEFAULT;
 	nic_data->tso_max_payload_num_segs = ESE_EF100_DP_GZ_TSO_MAX_PAYLOAD_NUM_SEGS_DEFAULT;
 	nic_data->tso_max_payload_len = ESE_EF100_DP_GZ_TSO_MAX_PAYLOAD_LEN_DEFAULT;
-	netif_set_tso_max_segs(net_dev,
-			       ESE_EF100_DP_GZ_TSO_MAX_HDR_NUM_SEGS_DEFAULT);
+
 	/* Read design parameters */
 	rc = ef100_check_design_params(efx);
 	if (rc) {
-		netif_err(efx, probe, efx->net_dev,
-			  "Unsupported design parameters\n");
+		pci_err(efx->pci_dev, "Unsupported design parameters\n");
 		goto fail;
 	}
 
@@ -1184,12 +1073,6 @@ static int ef100_probe_main(struct efx_nic *efx)
 	/* Post-IO section. */
 
 	rc = efx_mcdi_init(efx);
-	if (!rc && efx->mcdi->fn_flags &
-		   (1 << MC_CMD_DRV_ATTACH_EXT_OUT_FLAG_NO_ACTIVE_PORT)) {
-		netif_info(efx, probe, efx->net_dev,
-			   "No network port on this PCI function");
-		rc = -ENODEV;
-	}
 	if (rc)
 		goto fail;
 	/* Reset (most) configuration for this function */
@@ -1205,78 +1088,108 @@ static int ef100_probe_main(struct efx_nic *efx)
 	if (rc)
 		goto fail;
 
-	rc = efx_ef100_init_datapath_caps(efx);
-	if (rc < 0)
-		goto fail;
-
-	efx->max_vis = EF100_MAX_VIS;
-
 	rc = efx_mcdi_port_get_number(efx);
 	if (rc < 0)
 		goto fail;
 	efx->port_num = rc;
 
 	efx_mcdi_print_fwver(efx, fw_version, sizeof(fw_version));
-	netif_dbg(efx, drv, efx->net_dev, "Firmware version %s\n", fw_version);
+	pci_dbg(efx->pci_dev, "Firmware version %s\n", fw_version);
+
+	rc = efx_mcdi_get_privilege_mask(efx, &priv_mask);
+	if (rc) /* non-fatal, and priv_mask will still be 0 */
+		pci_info(efx->pci_dev,
+			 "Failed to get privilege mask from FW, rc %d\n", rc);
+	nic_data->grp_mae = !!(priv_mask & MC_CMD_PRIVILEGE_MASK_IN_GRP_MAE);
 
 	if (compare_versions(fw_version, "1.1.0.1000") < 0) {
-		netif_info(efx, drv, efx->net_dev, "Firmware uses old event descriptors\n");
+		pci_info(efx->pci_dev, "Firmware uses old event descriptors\n");
 		rc = -EINVAL;
 		goto fail;
 	}
 
 	if (efx_has_cap(efx, UNSOL_EV_CREDIT_SUPPORTED)) {
-		netif_info(efx, drv, efx->net_dev, "Firmware uses unsolicited-event credits\n");
+		pci_info(efx->pci_dev, "Firmware uses unsolicited-event credits\n");
 		rc = -EINVAL;
 		goto fail;
 	}
-
-	rc = ef100_phy_probe(efx);
-	if (rc)
-		goto fail;
-
-	down_write(&efx->filter_sem);
-	rc = ef100_filter_table_probe(efx);
-	up_write(&efx->filter_sem);
-	if (rc)
-		goto fail;
-
-	netdev_rss_key_fill(efx->rss_context.rx_hash_key,
-			    sizeof(efx->rss_context.rx_hash_key));
-
-	/* Don't fail init if RSS setup doesn't work. */
-	efx_mcdi_push_default_indir_table(efx, efx->n_rx_channels);
-
-	rc = ef100_register_netdev(efx);
-	if (rc)
-		goto fail;
 
 	return 0;
 fail:
 	return rc;
 }
 
-int ef100_probe_pf(struct efx_nic *efx)
+/* MCDI commands are related to the same device issuing them. This function
+ * allows to do an MCDI command on behalf of another device, mainly PFs setting
+ * things for VFs.
+ */
+int efx_ef100_lookup_client_id(struct efx_nic *efx, efx_qword_t pciefn, u32 *id)
 {
-	struct net_device *net_dev = efx->net_dev;
-	struct ef100_nic_data *nic_data;
-	int rc = ef100_probe_main(efx);
+	MCDI_DECLARE_BUF(outbuf, MC_CMD_GET_CLIENT_HANDLE_OUT_LEN);
+	MCDI_DECLARE_BUF(inbuf, MC_CMD_GET_CLIENT_HANDLE_IN_LEN);
+	u64 pciefn_flat = le64_to_cpu(pciefn.u64[0]);
+	size_t outlen;
+	int rc;
 
+	MCDI_SET_DWORD(inbuf, GET_CLIENT_HANDLE_IN_TYPE,
+		       MC_CMD_GET_CLIENT_HANDLE_IN_TYPE_FUNC);
+	MCDI_SET_QWORD(inbuf, GET_CLIENT_HANDLE_IN_FUNC,
+		       pciefn_flat);
+
+	rc = efx_mcdi_rpc(efx, MC_CMD_GET_CLIENT_HANDLE, inbuf, sizeof(inbuf),
+			  outbuf, sizeof(outbuf), &outlen);
 	if (rc)
-		goto fail;
-
-	nic_data = efx->nic_data;
-	rc = ef100_get_mac_address(efx, net_dev->perm_addr);
-	if (rc)
-		goto fail;
-	/* Assign MAC address */
-	eth_hw_addr_set(net_dev, net_dev->perm_addr);
-	memcpy(nic_data->port_id, net_dev->perm_addr, ETH_ALEN);
-
+		return rc;
+	if (outlen < sizeof(outbuf))
+		return -EIO;
+	*id = MCDI_DWORD(outbuf, GET_CLIENT_HANDLE_OUT_HANDLE);
 	return 0;
+}
 
-fail:
-	return rc;
+int ef100_probe_netdev_pf(struct efx_nic *efx)
+{
+	struct ef100_nic_data *nic_data = efx->nic_data;
+	struct net_device *net_dev = efx->net_dev;
+	int rc;
+
+	if (!IS_ENABLED(CONFIG_SFC_SRIOV) || !nic_data->grp_mae)
+		return 0;
+
+	rc = efx_init_struct_tc(efx);
+	if (rc)
+		return rc;
+
+	rc = efx_ef100_get_base_mport(efx);
+	if (rc) {
+		netif_warn(efx, probe, net_dev,
+			   "Failed to probe base mport rc %d; representors will not function\n",
+			   rc);
+	}
+
+	rc = efx_init_mae(efx);
+	if (rc)
+		netif_warn(efx, probe, net_dev,
+			   "Failed to init MAE rc %d; representors will not function\n",
+			   rc);
+	else
+		efx_ef100_init_reps(efx);
+
+	rc = efx_init_tc(efx);
+	if (rc) {
+		/* Either we don't have an MAE at all (i.e. legacy v-switching),
+		 * or we do but we failed to probe it.  In the latter case, we
+		 * may not have set up default rules, in which case we won't be
+		 * able to pass any traffic.  However, we don't fail the probe,
+		 * because the user might need to use the netdevice to apply
+		 * configuration changes to fix whatever's wrong with the MAE.
+		 */
+		netif_warn(efx, probe, net_dev, "Failed to probe MAE rc %d\n",
+			   rc);
+	} else {
+		net_dev->features |= NETIF_F_HW_TC;
+		efx->fixed_features |= NETIF_F_HW_TC;
+	}
+	return 0;
 }
 
 int ef100_probe_vf(struct efx_nic *efx)
@@ -1288,14 +1201,11 @@ void ef100_remove(struct efx_nic *efx)
 {
 	struct ef100_nic_data *nic_data = efx->nic_data;
 
-	ef100_unregister_netdev(efx);
+	if (IS_ENABLED(CONFIG_SFC_SRIOV) && efx->mae) {
+		efx_ef100_fini_reps(efx);
+		efx_fini_mae(efx);
+	}
 
-	down_write(&efx->filter_sem);
-	efx_mcdi_filter_table_remove(efx);
-	up_write(&efx->filter_sem);
-	efx_fini_channels(efx);
-	kfree(efx->phy_data);
-	efx->phy_data = NULL;
 	efx_mcdi_detach(efx);
 	efx_mcdi_fini(efx);
 	if (nic_data)
@@ -1303,3 +1213,174 @@ void ef100_remove(struct efx_nic *efx)
 	kfree(nic_data);
 	efx->nic_data = NULL;
 }
+
+/*	NIC level access functions
+ */
+#define EF100_OFFLOAD_FEATURES	(NETIF_F_HW_CSUM | NETIF_F_RXCSUM |	\
+	NETIF_F_HIGHDMA | NETIF_F_SG | NETIF_F_FRAGLIST | NETIF_F_NTUPLE | \
+	NETIF_F_RXHASH | NETIF_F_RXFCS | NETIF_F_TSO_ECN | NETIF_F_RXALL | \
+	NETIF_F_HW_VLAN_CTAG_TX)
+
+const struct efx_nic_type ef100_pf_nic_type = {
+	.revision = EFX_REV_EF100,
+	.is_vf = false,
+	.probe = ef100_probe_main,
+	.offload_features = EF100_OFFLOAD_FEATURES,
+	.mcdi_max_ver = 2,
+	.mcdi_request = ef100_mcdi_request,
+	.mcdi_poll_response = ef100_mcdi_poll_response,
+	.mcdi_read_response = ef100_mcdi_read_response,
+	.mcdi_poll_reboot = ef100_mcdi_poll_reboot,
+	.mcdi_reboot_detected = ef100_mcdi_reboot_detected,
+	.irq_enable_master = efx_port_dummy_op_void,
+	.irq_test_generate = efx_ef100_irq_test_generate,
+	.irq_disable_non_ev = efx_port_dummy_op_void,
+	.push_irq_moderation = efx_channel_dummy_op_void,
+	.min_interrupt_mode = EFX_INT_MODE_MSIX,
+	.map_reset_reason = ef100_map_reset_reason,
+	.map_reset_flags = ef100_map_reset_flags,
+	.reset = ef100_reset,
+
+	.check_caps = ef100_check_caps,
+
+	.ev_probe = ef100_ev_probe,
+	.ev_init = ef100_ev_init,
+	.ev_fini = efx_mcdi_ev_fini,
+	.ev_remove = efx_mcdi_ev_remove,
+	.irq_handle_msi = ef100_msi_interrupt,
+	.ev_process = ef100_ev_process,
+	.ev_read_ack = ef100_ev_read_ack,
+	.ev_test_generate = efx_ef100_ev_test_generate,
+	.tx_probe = ef100_tx_probe,
+	.tx_init = ef100_tx_init,
+	.tx_write = ef100_tx_write,
+	.tx_enqueue = ef100_enqueue_skb,
+	.rx_probe = efx_mcdi_rx_probe,
+	.rx_init = efx_mcdi_rx_init,
+	.rx_remove = efx_mcdi_rx_remove,
+	.rx_write = ef100_rx_write,
+	.rx_packet = __ef100_rx_packet,
+	.rx_buf_hash_valid = ef100_rx_buf_hash_valid,
+	.fini_dmaq = efx_fini_dmaq,
+	.max_rx_ip_filters = EFX_MCDI_FILTER_TBL_ROWS,
+	.filter_table_probe = ef100_filter_table_up,
+	.filter_table_restore = efx_mcdi_filter_table_restore,
+	.filter_table_remove = ef100_filter_table_down,
+	.filter_insert = efx_mcdi_filter_insert,
+	.filter_remove_safe = efx_mcdi_filter_remove_safe,
+	.filter_get_safe = efx_mcdi_filter_get_safe,
+	.filter_clear_rx = efx_mcdi_filter_clear_rx,
+	.filter_count_rx_used = efx_mcdi_filter_count_rx_used,
+	.filter_get_rx_id_limit = efx_mcdi_filter_get_rx_id_limit,
+	.filter_get_rx_ids = efx_mcdi_filter_get_rx_ids,
+#ifdef CONFIG_RFS_ACCEL
+	.filter_rfs_expire_one = efx_mcdi_filter_rfs_expire_one,
+#endif
+
+	.get_phys_port_id = efx_ef100_get_phys_port_id,
+
+	.rx_prefix_size = ESE_GZ_RX_PKT_PREFIX_LEN,
+	.rx_hash_offset = ESF_GZ_RX_PREFIX_RSS_HASH_LBN / 8,
+	.rx_ts_offset = ESF_GZ_RX_PREFIX_PARTIAL_TSTAMP_LBN / 8,
+	.rx_hash_key_size = 40,
+	.rx_pull_rss_config = efx_mcdi_rx_pull_rss_config,
+	.rx_push_rss_config = efx_mcdi_pf_rx_push_rss_config,
+	.rx_push_rss_context_config = efx_mcdi_rx_push_rss_context_config,
+	.rx_pull_rss_context_config = efx_mcdi_rx_pull_rss_context_config,
+	.rx_restore_rss_contexts = efx_mcdi_rx_restore_rss_contexts,
+	.rx_recycle_ring_size = efx_ef100_recycle_ring_size,
+
+	.reconfigure_mac = ef100_reconfigure_mac,
+	.reconfigure_port = efx_mcdi_port_reconfigure,
+	.test_nvram = efx_new_mcdi_nvram_test_all,
+	.describe_stats = ef100_describe_stats,
+	.start_stats = efx_mcdi_mac_start_stats,
+	.update_stats = ef100_update_stats,
+	.pull_stats = efx_mcdi_mac_pull_stats,
+	.stop_stats = efx_mcdi_mac_stop_stats,
+	.sriov_configure = IS_ENABLED(CONFIG_SFC_SRIOV) ?
+		efx_ef100_sriov_configure : NULL,
+
+	/* Per-type bar/size configuration not used on ef100. Location of
+	 * registers is defined by extended capabilities.
+	 */
+	.mem_bar = NULL,
+	.mem_map_size = NULL,
+
+};
+
+const struct efx_nic_type ef100_vf_nic_type = {
+	.revision = EFX_REV_EF100,
+	.is_vf = true,
+	.probe = ef100_probe_vf,
+	.offload_features = EF100_OFFLOAD_FEATURES,
+	.mcdi_max_ver = 2,
+	.mcdi_request = ef100_mcdi_request,
+	.mcdi_poll_response = ef100_mcdi_poll_response,
+	.mcdi_read_response = ef100_mcdi_read_response,
+	.mcdi_poll_reboot = ef100_mcdi_poll_reboot,
+	.mcdi_reboot_detected = ef100_mcdi_reboot_detected,
+	.irq_enable_master = efx_port_dummy_op_void,
+	.irq_test_generate = efx_ef100_irq_test_generate,
+	.irq_disable_non_ev = efx_port_dummy_op_void,
+	.push_irq_moderation = efx_channel_dummy_op_void,
+	.min_interrupt_mode = EFX_INT_MODE_MSIX,
+	.map_reset_reason = ef100_map_reset_reason,
+	.map_reset_flags = ef100_map_reset_flags,
+	.reset = ef100_reset,
+	.check_caps = ef100_check_caps,
+	.ev_probe = ef100_ev_probe,
+	.ev_init = ef100_ev_init,
+	.ev_fini = efx_mcdi_ev_fini,
+	.ev_remove = efx_mcdi_ev_remove,
+	.irq_handle_msi = ef100_msi_interrupt,
+	.ev_process = ef100_ev_process,
+	.ev_read_ack = ef100_ev_read_ack,
+	.ev_test_generate = efx_ef100_ev_test_generate,
+	.tx_probe = ef100_tx_probe,
+	.tx_init = ef100_tx_init,
+	.tx_write = ef100_tx_write,
+	.tx_enqueue = ef100_enqueue_skb,
+	.rx_probe = efx_mcdi_rx_probe,
+	.rx_init = efx_mcdi_rx_init,
+	.rx_remove = efx_mcdi_rx_remove,
+	.rx_write = ef100_rx_write,
+	.rx_packet = __ef100_rx_packet,
+	.rx_buf_hash_valid = ef100_rx_buf_hash_valid,
+	.fini_dmaq = efx_fini_dmaq,
+	.max_rx_ip_filters = EFX_MCDI_FILTER_TBL_ROWS,
+	.filter_table_probe = ef100_filter_table_up,
+	.filter_table_restore = efx_mcdi_filter_table_restore,
+	.filter_table_remove = ef100_filter_table_down,
+	.filter_insert = efx_mcdi_filter_insert,
+	.filter_remove_safe = efx_mcdi_filter_remove_safe,
+	.filter_get_safe = efx_mcdi_filter_get_safe,
+	.filter_clear_rx = efx_mcdi_filter_clear_rx,
+	.filter_count_rx_used = efx_mcdi_filter_count_rx_used,
+	.filter_get_rx_id_limit = efx_mcdi_filter_get_rx_id_limit,
+	.filter_get_rx_ids = efx_mcdi_filter_get_rx_ids,
+#ifdef CONFIG_RFS_ACCEL
+	.filter_rfs_expire_one = efx_mcdi_filter_rfs_expire_one,
+#endif
+
+	.rx_prefix_size = ESE_GZ_RX_PKT_PREFIX_LEN,
+	.rx_hash_offset = ESF_GZ_RX_PREFIX_RSS_HASH_LBN / 8,
+	.rx_ts_offset = ESF_GZ_RX_PREFIX_PARTIAL_TSTAMP_LBN / 8,
+	.rx_hash_key_size = 40,
+	.rx_pull_rss_config = efx_mcdi_rx_pull_rss_config,
+	.rx_push_rss_config = efx_mcdi_pf_rx_push_rss_config,
+	.rx_restore_rss_contexts = efx_mcdi_rx_restore_rss_contexts,
+	.rx_recycle_ring_size = efx_ef100_recycle_ring_size,
+
+	.reconfigure_mac = ef100_reconfigure_mac,
+	.test_nvram = efx_new_mcdi_nvram_test_all,
+	.describe_stats = ef100_describe_stats,
+	.start_stats = efx_mcdi_mac_start_stats,
+	.update_stats = ef100_update_stats,
+	.pull_stats = efx_mcdi_mac_pull_stats,
+	.stop_stats = efx_mcdi_mac_stop_stats,
+
+	.mem_bar = NULL,
+	.mem_map_size = NULL,
+
+};

@@ -10,7 +10,7 @@
 #define _LINUX_PM_WAKEUP_H
 
 #ifndef _DEVICE_H_
-# error "please don't include this file directly"
+# error "Please do not include this file directly."
 #endif
 
 #include <linux/types.h>
@@ -94,11 +94,17 @@ static inline void device_set_wakeup_path(struct device *dev)
 	dev->power.wakeup_path = true;
 }
 
+static inline void device_set_out_band_wakeup(struct device *dev)
+{
+	dev->power.out_band_wakeup = true;
+}
+
+static inline bool device_out_band_wakeup(struct device *dev)
+{
+	return dev->power.out_band_wakeup;
+}
+
 /* drivers/base/power/wakeup.c */
-extern struct wakeup_source *wakeup_source_create(const char *name);
-extern void wakeup_source_destroy(struct wakeup_source *ws);
-extern void wakeup_source_add(struct wakeup_source *ws);
-extern void wakeup_source_remove(struct wakeup_source *ws);
 extern struct wakeup_source *wakeup_source_register(struct device *dev,
 						    const char *name);
 extern void wakeup_source_unregister(struct wakeup_source *ws);
@@ -107,9 +113,8 @@ extern void wakeup_sources_read_unlock(int idx);
 extern struct wakeup_source *wakeup_sources_walk_start(void);
 extern struct wakeup_source *wakeup_sources_walk_next(struct wakeup_source *ws);
 extern int device_wakeup_enable(struct device *dev);
-extern int device_wakeup_disable(struct device *dev);
+extern void device_wakeup_disable(struct device *dev);
 extern void device_set_wakeup_capable(struct device *dev, bool capable);
-extern int device_init_wakeup(struct device *dev, bool val);
 extern int device_set_wakeup_enable(struct device *dev, bool enable);
 extern void __pm_stay_awake(struct wakeup_source *ws);
 extern void pm_stay_awake(struct device *dev);
@@ -130,17 +135,6 @@ static inline bool device_can_wakeup(struct device *dev)
 	return dev->power.can_wakeup;
 }
 
-static inline struct wakeup_source *wakeup_source_create(const char *name)
-{
-	return NULL;
-}
-
-static inline void wakeup_source_destroy(struct wakeup_source *ws) {}
-
-static inline void wakeup_source_add(struct wakeup_source *ws) {}
-
-static inline void wakeup_source_remove(struct wakeup_source *ws) {}
-
 static inline struct wakeup_source *wakeup_source_register(struct device *dev,
 							   const char *name)
 {
@@ -155,22 +149,14 @@ static inline int device_wakeup_enable(struct device *dev)
 	return 0;
 }
 
-static inline int device_wakeup_disable(struct device *dev)
+static inline void device_wakeup_disable(struct device *dev)
 {
 	dev->power.should_wakeup = false;
-	return 0;
 }
 
 static inline int device_set_wakeup_enable(struct device *dev, bool enable)
 {
 	dev->power.should_wakeup = enable;
-	return 0;
-}
-
-static inline int device_init_wakeup(struct device *dev, bool val)
-{
-	device_set_wakeup_capable(dev, val);
-	device_set_wakeup_enable(dev, val);
 	return 0;
 }
 
@@ -185,6 +171,13 @@ static inline bool device_wakeup_path(struct device *dev)
 }
 
 static inline void device_set_wakeup_path(struct device *dev) {}
+
+static inline void device_set_out_band_wakeup(struct device *dev) {}
+
+static inline bool device_out_band_wakeup(struct device *dev)
+{
+	return false;
+}
 
 static inline void __pm_stay_awake(struct wakeup_source *ws) {}
 
@@ -202,19 +195,68 @@ static inline void pm_wakeup_dev_event(struct device *dev, unsigned int msec,
 
 #endif /* !CONFIG_PM_SLEEP */
 
+static inline bool device_awake_path(struct device *dev)
+{
+	return device_wakeup_path(dev);
+}
+
+static inline void device_set_awake_path(struct device *dev)
+{
+	device_set_wakeup_path(dev);
+}
+
 static inline void __pm_wakeup_event(struct wakeup_source *ws, unsigned int msec)
 {
-	return pm_wakeup_ws_event(ws, msec, false);
+	pm_wakeup_ws_event(ws, msec, false);
 }
 
 static inline void pm_wakeup_event(struct device *dev, unsigned int msec)
 {
-	return pm_wakeup_dev_event(dev, msec, false);
+	pm_wakeup_dev_event(dev, msec, false);
 }
 
 static inline void pm_wakeup_hard_event(struct device *dev)
 {
-	return pm_wakeup_dev_event(dev, 0, true);
+	pm_wakeup_dev_event(dev, 0, true);
+}
+
+/**
+ * device_init_wakeup - Device wakeup initialization.
+ * @dev: Device to handle.
+ * @enable: Whether or not to enable @dev as a wakeup device.
+ *
+ * By default, most devices should leave wakeup disabled.  The exceptions are
+ * devices that everyone expects to be wakeup sources: keyboards, power buttons,
+ * possibly network interfaces, etc.  Also, devices that don't generate their
+ * own wakeup requests but merely forward requests from one bus to another
+ * (like PCI bridges) should have wakeup enabled by default.
+ */
+static inline int device_init_wakeup(struct device *dev, bool enable)
+{
+	if (enable) {
+		device_set_wakeup_capable(dev, true);
+		return device_wakeup_enable(dev);
+	}
+	device_wakeup_disable(dev);
+	device_set_wakeup_capable(dev, false);
+	return 0;
+}
+
+static void device_disable_wakeup(void *dev)
+{
+	device_init_wakeup(dev, false);
+}
+
+/**
+ * devm_device_init_wakeup - Resource managed device wakeup initialization.
+ * @dev: Device to handle.
+ *
+ * This function is the devm managed version of device_init_wakeup(dev, true).
+ */
+static inline int devm_device_init_wakeup(struct device *dev)
+{
+	device_init_wakeup(dev, true);
+	return devm_add_action_or_reset(dev, device_disable_wakeup, dev);
 }
 
 #endif /* _LINUX_PM_WAKEUP_H */

@@ -296,19 +296,22 @@ nv50_vmm_valid(struct nvkm_vmm *vmm, void *argv, u32 argc,
 			return -EINVAL;
 		}
 
-		ret = nvkm_memory_tags_get(memory, device, tags, NULL,
-					   &map->tags);
-		if (ret) {
-			VMM_DEBUG(vmm, "comp %d", ret);
-			return ret;
-		}
+		if (!map->no_comp) {
+			ret = nvkm_memory_tags_get(memory, device, tags, NULL,
+						   &map->tags);
+			if (ret) {
+				VMM_DEBUG(vmm, "comp %d", ret);
+				return ret;
+			}
 
-		if (map->tags->mn) {
-			u32 tags = map->tags->mn->offset + (map->offset >> 16);
-			map->ctag |= (u64)comp << 49;
-			map->type |= (u64)comp << 47;
-			map->type |= (u64)tags << 49;
-			map->next |= map->ctag;
+			if (map->tags->mn) {
+				u32 tags = map->tags->mn->offset +
+					   (map->offset >> 16);
+				map->ctag |= (u64)comp << 49;
+				map->type |= (u64)comp << 47;
+				map->type |= (u64)tags << 49;
+				map->next |= map->ctag;
+			}
 		}
 	}
 
@@ -343,7 +346,7 @@ nv50_vmm_join(struct nvkm_vmm *vmm, struct nvkm_memory *inst)
 	u64 data;
 	u32 pdei;
 
-	if (!(join = kmalloc(sizeof(*join), GFP_KERNEL)))
+	if (!(join = kmalloc_obj(*join)))
 		return -ENOMEM;
 	join->inst = inst;
 	list_add_tail(&join->head, &vmm->join);

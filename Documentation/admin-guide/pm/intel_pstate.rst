@@ -48,8 +48,9 @@ only way to pass early-configuration-time parameters to it is via the kernel
 command line.  However, its configuration can be adjusted via ``sysfs`` to a
 great extent.  In some configurations it even is possible to unregister it via
 ``sysfs`` which allows another ``CPUFreq`` scaling driver to be loaded and
-registered (see `below <status_attr_>`_).
+registered (see :ref:`below <status_attr>`).
 
+.. _operation_modes:
 
 Operation Modes
 ===============
@@ -61,6 +62,8 @@ mode it responds to requests made by a generic ``CPUFreq`` governor implementing
 a certain performance scaling algorithm.  Which of them will be in effect
 depends on what kernel command line options are used and on the capabilities of
 the processor.
+
+.. _active_mode:
 
 Active Mode
 -----------
@@ -94,6 +97,8 @@ Which of the P-state selection algorithms is used by default depends on the
 Namely, if that option is set, the ``performance`` algorithm will be used by
 default, and the other one will be used by default if it is not set.
 
+.. _active_mode_hwp:
+
 Active Mode With HWP
 ~~~~~~~~~~~~~~~~~~~~
 
@@ -123,7 +128,7 @@ Energy-Performance Bias (EPB) knob (otherwise), which means that the processor's
 internal P-state selection logic is expected to focus entirely on performance.
 
 This will override the EPP/EPB setting coming from the ``sysfs`` interface
-(see `Energy vs Performance Hints`_ below).  Moreover, any attempts to change
+(see :ref:`energy_performance_hints` below).  Moreover, any attempts to change
 the EPP/EPB to a value different from 0 ("performance") via ``sysfs`` in this
 configuration will be rejected.
 
@@ -191,6 +196,8 @@ one.
 This is the default P-state selection algorithm if the
 :c:macro:`CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE` kernel configuration option
 is not set.
+
+.. _passive_mode:
 
 Passive Mode
 ------------
@@ -289,12 +296,12 @@ Unlike ``_PSS`` objects in the ACPI tables, ``intel_pstate`` always exposes
 the entire range of available P-states, including the whole turbo range, to the
 ``CPUFreq`` core and (in the passive mode) to generic scaling governors.  This
 generally causes turbo P-states to be set more often when ``intel_pstate`` is
-used relative to ACPI-based CPU performance scaling (see `below <acpi-cpufreq_>`_
-for more information).
+used relative to ACPI-based CPU performance scaling (see
+:ref:`below <acpi-cpufreq>` for more information).
 
 Moreover, since ``intel_pstate`` always knows what the real turbo threshold is
 (even if the Configurable TDP feature is enabled in the processor), its
-``no_turbo`` attribute in ``sysfs`` (described `below <no_turbo_attr_>`_) should
+``no_turbo`` attribute in ``sysfs`` (described :ref:`below <no_turbo_attr>`) should
 work as expected in all cases (that is, if set to disable turbo P-states, it
 always should prevent ``intel_pstate`` from using them).
 
@@ -307,12 +314,12 @@ pieces of information on it to be known, including:
 
  * The minimum supported P-state.
 
- * The maximum supported `non-turbo P-state <turbo_>`_.
+ * The maximum supported :ref:`non-turbo P-state <turbo>`.
 
  * Whether or not turbo P-states are supported at all.
 
- * The maximum supported `one-core turbo P-state <turbo_>`_ (if turbo P-states
-   are supported).
+ * The maximum supported :ref:`one-core turbo P-state <turbo>` (if turbo
+   P-states are supported).
 
  * The scaling formula to translate the driver's internal representation
    of P-states into frequencies and the other way around.
@@ -329,8 +336,110 @@ information listed above is the same for all of the processors supporting the
 HWP feature, which is why ``intel_pstate`` works with all of them.]
 
 
+Support for Hybrid Processors
+=============================
+
+Some processors supported by ``intel_pstate`` contain two or more types of CPU
+cores differing by the maximum turbo P-state, performance vs power characteristics,
+cache sizes, and possibly other properties.  They are commonly referred to as
+hybrid processors.  To support them, ``intel_pstate`` requires HWP to be enabled
+and it assumes the HWP performance units to be the same for all CPUs in the
+system, so a given HWP performance level always represents approximately the
+same physical performance regardless of the core (CPU) type.
+
+Hybrid Processors with SMT
+--------------------------
+
+On systems where SMT (Simultaneous Multithreading), also referred to as
+HyperThreading (HT) in the context of Intel processors, is enabled on at least
+one core, ``intel_pstate`` assigns performance-based priorities to CPUs.  Namely,
+the priority of a given CPU reflects its highest HWP performance level which
+causes the CPU scheduler to generally prefer more performant CPUs, so the less
+performant CPUs are used when the other ones are fully loaded.  However, SMT
+siblings (that is, logical CPUs sharing one physical core) are treated in a
+special way such that if one of them is in use, the effective priority of the
+other ones is lowered below the priorities of the CPUs located in the other
+physical cores.
+
+This approach maximizes performance in the majority of cases, but unfortunately
+it also leads to excessive energy usage in some important scenarios, like video
+playback, which is not generally desirable.  While there is no other viable
+choice with SMT enabled because the effective capacity and utilization of SMT
+siblings are hard to determine, hybrid processors without SMT can be handled in
+more energy-efficient ways.
+
+.. _CAS:
+
+Capacity-Aware Scheduling Support
+---------------------------------
+
+The capacity-aware scheduling (CAS) support in the CPU scheduler is enabled by
+``intel_pstate`` by default on hybrid processors without SMT.  CAS generally
+causes the scheduler to put tasks on a CPU so long as there is a sufficient
+amount of spare capacity on it, and if the utilization of a given task is too
+high for it, the task will need to go somewhere else.
+
+Since CAS takes CPU capacities into account, it does not require CPU
+prioritization and it allows tasks to be distributed more symmetrically among
+the more performant and less performant CPUs.  Once placed on a CPU with enough
+capacity to accommodate it, a task may just continue to run there regardless of
+whether or not the other CPUs are fully loaded, so on average CAS reduces the
+utilization of the more performant CPUs which causes the energy usage to be more
+balanced because the more performant CPUs are generally less energy-efficient
+than the less performant ones.
+
+In order to use CAS, the scheduler needs to know the capacity of each CPU in
+the system and it needs to be able to compute scale-invariant utilization of
+CPUs, so ``intel_pstate`` provides it with the requisite information.
+
+First of all, the capacity of each CPU is represented by the ratio of its highest
+HWP performance level, multiplied by 1024, to the highest HWP performance level
+of the most performant CPU in the system, which works because the HWP performance
+units are the same for all CPUs.  Second, the frequency-invariance computations,
+carried out by the scheduler to always express CPU utilization in the same units
+regardless of the frequency it is currently running at, are adjusted to take the
+CPU capacity into account.  All of this happens when ``intel_pstate`` has
+registered itself with the ``CPUFreq`` core and it has figured out that it is
+running on a hybrid processor without SMT.
+
+Energy-Aware Scheduling Support
+-------------------------------
+
+If ``CONFIG_ENERGY_MODEL`` has been set during kernel configuration and
+``intel_pstate`` runs on a hybrid processor without SMT, in addition to enabling
+:ref:`CAS` it registers an Energy Model for the processor.  This allows the
+Energy-Aware Scheduling (EAS) support to be enabled in the CPU scheduler if
+``schedutil`` is used as the  ``CPUFreq`` governor which requires ``intel_pstate``
+to operate in the :ref:`passive mode <passive_mode>`.
+
+The Energy Model registered by ``intel_pstate`` is artificial (that is, it is
+based on abstract cost values and it does not include any real power numbers)
+and it is relatively simple to avoid unnecessary computations in the scheduler.
+There is a performance domain in it for every CPU in the system and the cost
+values for these performance domains have been chosen so that running a task on
+a less performant (small) CPU appears to be always cheaper than running that
+task on a more performant (big) CPU.  However, for two CPUs of the same type,
+the cost difference depends on their current utilization, and the CPU whose
+current utilization is higher generally appears to be a more expensive
+destination for a given task.  This helps to balance the load among CPUs of the
+same type.
+
+Since EAS works on top of CAS, high-utilization tasks are always migrated to
+CPUs with enough capacity to accommodate them, but thanks to EAS, low-utilization
+tasks tend to be placed on the CPUs that look less expensive to the scheduler.
+Effectively, this causes the less performant and less loaded CPUs to be
+preferred as long as they have enough spare capacity to run the given task
+which generally leads to reduced energy usage.
+
+The Energy Model created by ``intel_pstate`` can be inspected by looking at
+the ``energy_model`` directory in ``debugfs`` (typlically mounted on
+``/sys/kernel/debug/``).
+
+
 User Space Interface in ``sysfs``
 =================================
+
+.. _global_attributes:
 
 Global Attributes
 -----------------
@@ -344,8 +453,8 @@ argument is passed to the kernel in the command line.
 
 ``max_perf_pct``
 	Maximum P-state the driver is allowed to set in percent of the
-	maximum supported performance level (the highest supported `turbo
-	P-state <turbo_>`_).
+	maximum supported performance level (the highest supported :ref:`turbo
+	P-state <turbo>`).
 
 	This attribute will not be exposed if the
 	``intel_pstate=per_cpu_perf_limits`` argument is present in the kernel
@@ -353,8 +462,8 @@ argument is passed to the kernel in the command line.
 
 ``min_perf_pct``
 	Minimum P-state the driver is allowed to set in percent of the
-	maximum supported performance level (the highest supported `turbo
-	P-state <turbo_>`_).
+	maximum supported performance level (the highest supported :ref:`turbo
+	P-state <turbo>`).
 
 	This attribute will not be exposed if the
 	``intel_pstate=per_cpu_perf_limits`` argument is present in the kernel
@@ -363,18 +472,18 @@ argument is passed to the kernel in the command line.
 ``num_pstates``
 	Number of P-states supported by the processor (between 0 and 255
 	inclusive) including both turbo and non-turbo P-states (see
-	`Turbo P-states Support`_).
+	:ref:`turbo`).
 
 	This attribute is present only if the value exposed by it is the same
 	for all of the CPUs in the system.
 
 	The value of this attribute is not affected by the ``no_turbo``
-	setting described `below <no_turbo_attr_>`_.
+	setting described :ref:`below <no_turbo_attr>`.
 
 	This attribute is read-only.
 
 ``turbo_pct``
-	Ratio of the `turbo range <turbo_>`_ size to the size of the entire
+	Ratio of the :ref:`turbo range <turbo>` size to the size of the entire
 	range of supported P-states, in percent.
 
 	This attribute is present only if the value exposed by it is the same
@@ -386,7 +495,7 @@ argument is passed to the kernel in the command line.
 
 ``no_turbo``
 	If set (equal to 1), the driver is not allowed to set any turbo P-states
-	(see `Turbo P-states Support`_).  If unset (equal to 0, which is the
+	(see :ref:`turbo`).  If unset (equal to 0, which is the
 	default), turbo P-states can be set by the driver.
 	[Note that ``intel_pstate`` does not support the general ``boost``
 	attribute (supported by some other scaling drivers) which is replaced
@@ -395,11 +504,11 @@ argument is passed to the kernel in the command line.
 	This attribute does not affect the maximum supported frequency value
 	supplied to the ``CPUFreq`` core and exposed via the policy interface,
 	but it affects the maximum possible value of per-policy P-state	limits
-	(see `Interpretation of Policy Attributes`_ below for details).
+	(see :ref:`policy_attributes_interpretation` below for details).
 
 ``hwp_dynamic_boost``
 	This attribute is only present if ``intel_pstate`` works in the
-	`active mode with the HWP feature enabled <Active Mode With HWP_>`_ in
+	:ref:`active mode with the HWP feature enabled <active_mode_hwp>` in
 	the processor.  If set (equal to 1), it causes the minimum P-state limit
 	to be increased dynamically for a short time whenever a task previously
 	waiting on I/O is selected to run on a given logical CPU (the purpose
@@ -414,12 +523,12 @@ argument is passed to the kernel in the command line.
 	Operation mode of the driver: "active", "passive" or "off".
 
 	"active"
-		The driver is functional and in the `active mode
-		<Active Mode_>`_.
+		The driver is functional and in the :ref:`active mode
+		<active_mode>`.
 
 	"passive"
-		The driver is functional and in the `passive mode
-		<Passive Mode_>`_.
+		The driver is functional and in the :ref:`passive mode
+		<passive_mode>`.
 
 	"off"
 		The driver is not functional (it is not registered as a scaling
@@ -447,13 +556,15 @@ argument is passed to the kernel in the command line.
 	attribute to "1" enables the energy-efficiency optimizations and setting
 	to "0" disables them.
 
+.. _policy_attributes_interpretation:
+
 Interpretation of Policy Attributes
 -----------------------------------
 
 The interpretation of some ``CPUFreq`` policy attributes described in
 Documentation/admin-guide/pm/cpufreq.rst is special with ``intel_pstate``
 as the current scaling driver and it generally depends on the driver's
-`operation mode <Operation Modes_>`_.
+:ref:`operation mode <operation_modes>`.
 
 First of all, the values of the ``cpuinfo_max_freq``, ``cpuinfo_min_freq`` and
 ``scaling_cur_freq`` attributes are produced by applying a processor-specific
@@ -462,9 +573,10 @@ Also, the values of the ``scaling_max_freq`` and ``scaling_min_freq``
 attributes are capped by the frequency corresponding to the maximum P-state that
 the driver is allowed to set.
 
-If the ``no_turbo`` `global attribute <no_turbo_attr_>`_ is set, the driver is
-not allowed to use turbo P-states, so the maximum value of ``scaling_max_freq``
-and ``scaling_min_freq`` is limited to the maximum non-turbo P-state frequency.
+If the ``no_turbo`` :ref:`global attribute <no_turbo_attr>` is set, the driver
+is not allowed to use turbo P-states, so the maximum value of
+``scaling_max_freq`` and ``scaling_min_freq`` is limited to the maximum
+non-turbo P-state frequency.
 Accordingly, setting ``no_turbo`` causes ``scaling_max_freq`` and
 ``scaling_min_freq`` to go down to that value if they were above it before.
 However, the old values of ``scaling_max_freq`` and ``scaling_min_freq`` will be
@@ -476,7 +588,7 @@ and ``scaling_min_freq`` corresponds to the maximum supported turbo P-state,
 which also is the value of ``cpuinfo_max_freq`` in either case.
 
 Next, the following policy attributes have special meaning if
-``intel_pstate`` works in the `active mode <Active Mode_>`_:
+``intel_pstate`` works in the :ref:`active mode <active_mode>`:
 
 ``scaling_available_governors``
 	List of P-state selection algorithms provided by ``intel_pstate``.
@@ -497,20 +609,22 @@ processor:
 	Shows the base frequency of the CPU. Any frequency above this will be
 	in the turbo frequency range.
 
-The meaning of these attributes in the `passive mode <Passive Mode_>`_ is the
+The meaning of these attributes in the :ref:`passive mode <passive_mode>` is the
 same as for other scaling drivers.
 
 Additionally, the value of the ``scaling_driver`` attribute for ``intel_pstate``
 depends on the operation mode of the driver.  Namely, it is either
-"intel_pstate" (in the `active mode <Active Mode_>`_) or "intel_cpufreq" (in the
-`passive mode <Passive Mode_>`_).
+"intel_pstate" (in the :ref:`active mode <active_mode>`) or "intel_cpufreq"
+(in the :ref:`passive mode <passive_mode>`).
+
+.. _pstate_limits_coordination:
 
 Coordination of P-State Limits
 ------------------------------
 
 ``intel_pstate`` allows P-state limits to be set in two ways: with the help of
-the ``max_perf_pct`` and ``min_perf_pct`` `global attributes
-<Global Attributes_>`_ or via the ``scaling_max_freq`` and ``scaling_min_freq``
+the ``max_perf_pct`` and ``min_perf_pct`` :ref:`global attributes
+<global_attributes>` or via the ``scaling_max_freq`` and ``scaling_min_freq``
 ``CPUFreq`` policy attributes.  The coordination between those limits is based
 on the following rules, regardless of the current operation mode of the driver:
 
@@ -532,17 +646,18 @@ on the following rules, regardless of the current operation mode of the driver:
 
  3. The global and per-policy limits can be set independently.
 
-In the `active mode with the HWP feature enabled <Active Mode With HWP_>`_, the
+In the :ref:`active mode with the HWP feature enabled <active_mode_hwp>`, the
 resulting effective values are written into hardware registers whenever the
 limits change in order to request its internal P-state selection logic to always
 set P-states within these limits.  Otherwise, the limits are taken into account
-by scaling governors (in the `passive mode <Passive Mode_>`_) and by the driver
-every time before setting a new P-state for a CPU.
+by scaling governors (in the :ref:`passive mode <passive_mode>`) and by the
+driver every time before setting a new P-state for a CPU.
 
 Additionally, if the ``intel_pstate=per_cpu_perf_limits`` command line argument
 is passed to the kernel, ``max_perf_pct`` and ``min_perf_pct`` are not exposed
 at all and the only way to set the limits is by using the policy attributes.
 
+.. _energy_performance_hints:
 
 Energy vs Performance Hints
 ---------------------------
@@ -602,9 +717,9 @@ output.
 On those systems each ``_PSS`` object returns a list of P-states supported by
 the corresponding CPU which basically is a subset of the P-states range that can
 be used by ``intel_pstate`` on the same system, with one exception: the whole
-`turbo range <turbo_>`_ is represented by one item in it (the topmost one).  By
-convention, the frequency returned by ``_PSS`` for that item is greater by 1 MHz
-than the frequency of the highest non-turbo P-state listed by it, but the
+:ref:`turbo range <turbo>` is represented by one item in it (the topmost one).
+By convention, the frequency returned by ``_PSS`` for that item is greater by
+1 MHz than the frequency of the highest non-turbo P-state listed by it, but the
 corresponding P-state representation (following the hardware specification)
 returned for it matches the maximum supported turbo P-state (or is the
 special value 255 meaning essentially "go as high as you can get").
@@ -630,18 +745,18 @@ benefit from running at turbo frequencies will be given non-turbo P-states
 instead.
 
 One more issue related to that may appear on systems supporting the
-`Configurable TDP feature <turbo_>`_ allowing the platform firmware to set the
-turbo threshold.  Namely, if that is not coordinated with the lists of P-states
-returned by ``_PSS`` properly, there may be more than one item corresponding to
-a turbo P-state in those lists and there may be a problem with avoiding the
-turbo range (if desirable or necessary).  Usually, to avoid using turbo
-P-states overall, ``acpi-cpufreq`` simply avoids using the topmost state listed
-by ``_PSS``, but that is not sufficient when there are other turbo P-states in
-the list returned by it.
+:ref:`Configurable TDP feature <turbo>` allowing the platform firmware to set
+the turbo threshold.  Namely, if that is not coordinated with the lists of
+P-states returned by ``_PSS`` properly, there may be more than one item
+corresponding to a turbo P-state in those lists and there may be a problem with
+avoiding the turbo range (if desirable or necessary).  Usually, to avoid using
+turbo P-states overall, ``acpi-cpufreq`` simply avoids using the topmost state
+listed by ``_PSS``, but that is not sufficient when there are other turbo
+P-states in the list returned by it.
 
 Apart from the above, ``acpi-cpufreq`` works like ``intel_pstate`` in the
-`passive mode <Passive Mode_>`_, except that the number of P-states it can set
-is limited to the ones listed by the ACPI ``_PSS`` objects.
+:ref:`passive mode <passive_mode>`, except that the number of P-states it can
+set is limited to the ones listed by the ACPI ``_PSS`` objects.
 
 
 Kernel Command Line Options for ``intel_pstate``
@@ -656,11 +771,11 @@ of them have to be prepended with the ``intel_pstate=`` prefix.
 	processor is supported by it.
 
 ``active``
-	Register ``intel_pstate`` in the `active mode <Active Mode_>`_ to start
-	with.
+	Register ``intel_pstate`` in the :ref:`active mode <active_mode>` to
+        start with.
 
 ``passive``
-	Register ``intel_pstate`` in the `passive mode <Passive Mode_>`_ to
+	Register ``intel_pstate`` in the :ref:`passive mode <passive_mode>` to
 	start with.
 
 ``force``
@@ -693,9 +808,12 @@ of them have to be prepended with the ``intel_pstate=`` prefix.
 	and this option has no effect.
 
 ``per_cpu_perf_limits``
-	Use per-logical-CPU P-State limits (see `Coordination of P-state
-	Limits`_ for details).
+	Use per-logical-CPU P-State limits (see
+        :ref:`pstate_limits_coordination` for details).
 
+``no_cas``
+	Do not enable :ref:`capacity-aware scheduling <CAS>` which is enabled
+        by default on hybrid systems without SMT.
 
 Diagnostics and Tuning
 ======================
@@ -707,19 +825,19 @@ There are two static trace events that can be used for ``intel_pstate``
 diagnostics.  One of them is the ``cpu_frequency`` trace event generally used
 by ``CPUFreq``, and the other one is the ``pstate_sample`` trace event specific
 to ``intel_pstate``.  Both of them are triggered by ``intel_pstate`` only if
-it works in the `active mode <Active Mode_>`_.
+it works in the :ref:`active mode <active_mode>`.
 
 The following sequence of shell commands can be used to enable them and see
 their output (if the kernel is generally configured to support event tracing)::
 
- # cd /sys/kernel/debug/tracing/
+ # cd /sys/kernel/tracing/
  # echo 1 > events/power/pstate_sample/enable
  # echo 1 > events/power/cpu_frequency/enable
  # cat trace
  gnome-terminal--4510  [001] ..s.  1177.680733: pstate_sample: core_busy=107 scaled=94 from=26 to=26 mperf=1143818 aperf=1230607 tsc=29838618 freq=2474476
  cat-5235  [002] ..s.  1177.681723: cpu_frequency: state=2900000 cpu_id=2
 
-If ``intel_pstate`` works in the `passive mode <Passive Mode_>`_, the
+If ``intel_pstate`` works in the :ref:`passive mode <passive_mode>`, the
 ``cpu_frequency`` trace event will be triggered either by the ``schedutil``
 scaling governor (for the policies it is attached to), or by the ``CPUFreq``
 core (for the policies with other scaling governors).
@@ -732,7 +850,7 @@ The ``ftrace`` interface can be used for low-level diagnostics of
 P-state is called, the ``ftrace`` filter can be set to
 :c:func:`intel_pstate_set_pstate`::
 
- # cd /sys/kernel/debug/tracing/
+ # cd /sys/kernel/tracing/
  # cat available_filter_functions | grep -i pstate
  intel_pstate_set_pstate
  intel_pstate_cpu_init

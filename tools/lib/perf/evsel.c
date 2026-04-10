@@ -5,6 +5,7 @@
 #include <perf/evsel.h>
 #include <perf/cpumap.h>
 #include <perf/threadmap.h>
+#include <linux/hash.h>
 #include <linux/list.h>
 #include <internal/evsel.h>
 #include <linux/zalloc.h>
@@ -23,6 +24,7 @@ void perf_evsel__init(struct perf_evsel *evsel, struct perf_event_attr *attr,
 		      int idx)
 {
 	INIT_LIST_HEAD(&evsel->node);
+	INIT_LIST_HEAD(&evsel->per_stream_periods);
 	evsel->attr = *attr;
 	evsel->idx  = idx;
 	evsel->leader = evsel;
@@ -38,8 +40,19 @@ struct perf_evsel *perf_evsel__new(struct perf_event_attr *attr)
 	return evsel;
 }
 
+void perf_evsel__exit(struct perf_evsel *evsel)
+{
+	assert(evsel->fd == NULL);  /* If not fds were not closed. */
+	assert(evsel->mmap == NULL); /* If not munmap wasn't called. */
+	assert(evsel->sample_id == NULL); /* If not free_id wasn't called. */
+	perf_cpu_map__put(evsel->cpus);
+	perf_cpu_map__put(evsel->pmu_cpus);
+	perf_thread_map__put(evsel->threads);
+}
+
 void perf_evsel__delete(struct perf_evsel *evsel)
 {
+	perf_evsel__exit(evsel);
 	free(evsel);
 }
 
@@ -120,7 +133,7 @@ int perf_evsel__open(struct perf_evsel *evsel, struct perf_cpu_map *cpus,
 		static struct perf_cpu_map *empty_cpu_map;
 
 		if (empty_cpu_map == NULL) {
-			empty_cpu_map = perf_cpu_map__dummy_new();
+			empty_cpu_map = perf_cpu_map__new_any_cpu();
 			if (empty_cpu_map == NULL)
 				return -ENOMEM;
 		}
@@ -305,6 +318,9 @@ int perf_evsel__read_size(struct perf_evsel *evsel)
 	if (read_format & PERF_FORMAT_ID)
 		entry += sizeof(u64);
 
+	if (read_format & PERF_FORMAT_LOST)
+		entry += sizeof(u64);
+
 	if (read_format & PERF_FORMAT_GROUP) {
 		nr = evsel->nr_members;
 		size += sizeof(u64);
@@ -314,24 +330,98 @@ int perf_evsel__read_size(struct perf_evsel *evsel)
 	return size;
 }
 
+/* This only reads values for the leader */
+static int perf_evsel__read_group(struct perf_evsel *evsel, int cpu_map_idx,
+				  int thread, struct perf_counts_values *count)
+{
+	size_t size = perf_evsel__read_size(evsel);
+	int *fd = FD(evsel, cpu_map_idx, thread);
+	u64 read_format = evsel->attr.read_format;
+	u64 *data;
+	int idx = 1;
+
+	if (fd == NULL || *fd < 0)
+		return -EINVAL;
+
+	data = calloc(1, size);
+	if (data == NULL)
+		return -ENOMEM;
+
+	if (readn(*fd, data, size) <= 0) {
+		free(data);
+		return -errno;
+	}
+
+	/*
+	 * This reads only the leader event intentionally since we don't have
+	 * perf counts values for sibling events.
+	 */
+	if (read_format & PERF_FORMAT_TOTAL_TIME_ENABLED)
+		count->ena = data[idx++];
+	if (read_format & PERF_FORMAT_TOTAL_TIME_RUNNING)
+		count->run = data[idx++];
+
+	/* value is always available */
+	count->val = data[idx++];
+	if (read_format & PERF_FORMAT_ID)
+		count->id = data[idx++];
+	if (read_format & PERF_FORMAT_LOST)
+		count->lost = data[idx++];
+
+	free(data);
+	return 0;
+}
+
+/*
+ * The perf read format is very flexible.  It needs to set the proper
+ * values according to the read format.
+ */
+static void perf_evsel__adjust_values(struct perf_evsel *evsel, u64 *buf,
+				      struct perf_counts_values *count)
+{
+	u64 read_format = evsel->attr.read_format;
+	int n = 0;
+
+	count->val = buf[n++];
+
+	if (read_format & PERF_FORMAT_TOTAL_TIME_ENABLED)
+		count->ena = buf[n++];
+
+	if (read_format & PERF_FORMAT_TOTAL_TIME_RUNNING)
+		count->run = buf[n++];
+
+	if (read_format & PERF_FORMAT_ID)
+		count->id = buf[n++];
+
+	if (read_format & PERF_FORMAT_LOST)
+		count->lost = buf[n++];
+}
+
 int perf_evsel__read(struct perf_evsel *evsel, int cpu_map_idx, int thread,
 		     struct perf_counts_values *count)
 {
 	size_t size = perf_evsel__read_size(evsel);
 	int *fd = FD(evsel, cpu_map_idx, thread);
+	u64 read_format = evsel->attr.read_format;
+	struct perf_counts_values buf;
 
 	memset(count, 0, sizeof(*count));
 
 	if (fd == NULL || *fd < 0)
 		return -EINVAL;
 
+	if (read_format & PERF_FORMAT_GROUP)
+		return perf_evsel__read_group(evsel, cpu_map_idx, thread, count);
+
 	if (MMAP(evsel, cpu_map_idx, thread) &&
+	    !(read_format & (PERF_FORMAT_ID | PERF_FORMAT_LOST)) &&
 	    !perf_mmap__read_self(MMAP(evsel, cpu_map_idx, thread), count))
 		return 0;
 
-	if (readn(*fd, count->values, size) <= 0)
+	if (readn(*fd, buf.values, size) <= 0)
 		return -errno;
 
+	perf_evsel__adjust_values(evsel, buf.values, count);
 	return 0;
 }
 
@@ -438,9 +528,6 @@ int perf_evsel__alloc_id(struct perf_evsel *evsel, int ncpus, int nthreads)
 	if (ncpus == 0 || nthreads == 0)
 		return 0;
 
-	if (evsel->system_wide)
-		nthreads = 1;
-
 	evsel->sample_id = xyarray__new(ncpus, nthreads, sizeof(struct perf_sample_id));
 	if (evsel->sample_id == NULL)
 		return -ENOMEM;
@@ -457,10 +544,56 @@ int perf_evsel__alloc_id(struct perf_evsel *evsel, int ncpus, int nthreads)
 
 void perf_evsel__free_id(struct perf_evsel *evsel)
 {
+	struct perf_sample_id_period *pos, *n;
+
 	xyarray__delete(evsel->sample_id);
 	evsel->sample_id = NULL;
 	zfree(&evsel->id);
 	evsel->ids = 0;
+
+	perf_evsel_for_each_per_thread_period_safe(evsel, n, pos) {
+		list_del_init(&pos->node);
+		free(pos);
+	}
+}
+
+bool perf_evsel__attr_has_per_thread_sample_period(struct perf_evsel *evsel)
+{
+	return (evsel->attr.sample_type & PERF_SAMPLE_READ) &&
+		(evsel->attr.sample_type & PERF_SAMPLE_TID) &&
+		evsel->attr.inherit;
+}
+
+u64 *perf_sample_id__get_period_storage(struct perf_sample_id *sid, u32 tid, bool per_thread)
+{
+	struct hlist_head *head;
+	struct perf_sample_id_period *res;
+	int hash;
+
+	if (!per_thread)
+		return &sid->period;
+
+	hash = hash_32(tid, PERF_SAMPLE_ID__HLIST_BITS);
+	head = &sid->periods[hash];
+
+	hlist_for_each_entry(res, head, hnode)
+		if (res->tid == tid)
+			return &res->period;
+
+	if (sid->evsel == NULL)
+		return NULL;
+
+	res = zalloc(sizeof(struct perf_sample_id_period));
+	if (res == NULL)
+		return NULL;
+
+	INIT_LIST_HEAD(&res->node);
+	res->tid = tid;
+
+	list_add_tail(&res->node, &sid->evsel->per_stream_periods);
+	hlist_add_head(&res->hnode, &sid->periods[hash]);
+
+	return &res->period;
 }
 
 void perf_counts_values__scale(struct perf_counts_values *count,

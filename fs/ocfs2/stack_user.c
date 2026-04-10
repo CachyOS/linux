@@ -9,6 +9,7 @@
 
 #include <linux/module.h>
 #include <linux/fs.h>
+#include <linux/filelock.h>
 #include <linux/miscdevice.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
@@ -359,7 +360,6 @@ static int ocfs2_control_do_setnode_msg(struct file *file,
 					struct ocfs2_control_message_setn *msg)
 {
 	long nodenum;
-	char *ptr = NULL;
 	struct ocfs2_control_private *p = file->private_data;
 
 	if (ocfs2_control_get_handshake_state(file) !=
@@ -374,8 +374,7 @@ static int ocfs2_control_do_setnode_msg(struct file *file,
 		return -EINVAL;
 	msg->space = msg->newline = '\0';
 
-	nodenum = simple_strtol(msg->nodestr, &ptr, 16);
-	if (!ptr || *ptr)
+	if (kstrtol(msg->nodestr, 16, &nodenum))
 		return -EINVAL;
 
 	if ((nodenum == LONG_MIN) || (nodenum == LONG_MAX) ||
@@ -390,7 +389,6 @@ static int ocfs2_control_do_setversion_msg(struct file *file,
 					   struct ocfs2_control_message_setv *msg)
 {
 	long major, minor;
-	char *ptr = NULL;
 	struct ocfs2_control_private *p = file->private_data;
 	struct ocfs2_protocol_version *max =
 		&ocfs2_user_plugin.sp_max_proto;
@@ -408,11 +406,9 @@ static int ocfs2_control_do_setversion_msg(struct file *file,
 		return -EINVAL;
 	msg->space1 = msg->space2 = msg->newline = '\0';
 
-	major = simple_strtol(msg->major, &ptr, 16);
-	if (!ptr || *ptr)
+	if (kstrtol(msg->major, 16, &major))
 		return -EINVAL;
-	minor = simple_strtol(msg->minor, &ptr, 16);
-	if (!ptr || *ptr)
+	if (kstrtol(msg->minor, 16, &minor))
 		return -EINVAL;
 
 	/*
@@ -440,7 +436,6 @@ static int ocfs2_control_do_down_msg(struct file *file,
 				     struct ocfs2_control_message_down *msg)
 {
 	long nodenum;
-	char *p = NULL;
 
 	if (ocfs2_control_get_handshake_state(file) !=
 	    OCFS2_CONTROL_HANDSHAKE_VALID)
@@ -455,8 +450,7 @@ static int ocfs2_control_do_down_msg(struct file *file,
 		return -EINVAL;
 	msg->space1 = msg->space2 = msg->newline = '\0';
 
-	nodenum = simple_strtol(msg->nodestr, &p, 16);
-	if (!p || *p)
+	if (kstrtol(msg->nodestr, 16, &nodenum))
 		return -EINVAL;
 
 	if ((nodenum == LONG_MIN) || (nodenum == LONG_MAX) ||
@@ -599,7 +593,7 @@ static int ocfs2_control_open(struct inode *inode, struct file *file)
 {
 	struct ocfs2_control_private *p;
 
-	p = kzalloc(sizeof(struct ocfs2_control_private), GFP_KERNEL);
+	p = kzalloc_obj(struct ocfs2_control_private);
 	if (!p)
 		return -ENOMEM;
 	p->op_this_node = -1;
@@ -737,20 +731,13 @@ static int user_plock(struct ocfs2_cluster_connection *conn,
 	 *
 	 * Internally, fs/dlm will pass these to a misc device, which
 	 * a userspace daemon will read and write to.
-	 *
-	 * For now, cancel requests (which happen internally only),
-	 * are turned into unlocks. Most of this function taken from
-	 * gfs2_lock.
 	 */
 
-	if (cmd == F_CANCELLK) {
-		cmd = F_SETLK;
-		fl->fl_type = F_UNLCK;
-	}
-
-	if (IS_GETLK(cmd))
+	if (cmd == F_CANCELLK)
+		return dlm_posix_cancel(conn->cc_lockspace, ino, file, fl);
+	else if (IS_GETLK(cmd))
 		return dlm_posix_get(conn->cc_lockspace, ino, file, fl);
-	else if (fl->fl_type == F_UNLCK)
+	else if (lock_is_unlock(fl))
 		return dlm_posix_unlock(conn->cc_lockspace, ino, file, fl);
 	else
 		return dlm_posix_lock(conn->cc_lockspace, ino, file, cmd, fl);
@@ -965,7 +952,7 @@ static const struct dlm_lockspace_ops ocfs2_ls_ops = {
 static int user_cluster_disconnect(struct ocfs2_cluster_connection *conn)
 {
 	version_unlock(conn);
-	dlm_release_lockspace(conn->cc_lockspace, 2);
+	dlm_release_lockspace(conn->cc_lockspace, DLM_RELEASE_NORMAL);
 	conn->cc_lockspace = NULL;
 	ocfs2_live_connection_drop(conn->cc_private);
 	conn->cc_private = NULL;
@@ -980,7 +967,7 @@ static int user_cluster_connect(struct ocfs2_cluster_connection *conn)
 
 	BUG_ON(conn == NULL);
 
-	lc = kzalloc(sizeof(struct ocfs2_live_connection), GFP_KERNEL);
+	lc = kzalloc_obj(struct ocfs2_live_connection);
 	if (!lc)
 		return -ENOMEM;
 
@@ -991,7 +978,7 @@ static int user_cluster_connect(struct ocfs2_cluster_connection *conn)
 	lc->oc_type = NO_CONTROLD;
 
 	rc = dlm_new_lockspace(conn->cc_name, conn->cc_cluster_name,
-			       DLM_LSFL_FS | DLM_LSFL_NEWEXCL, DLM_LVB_LEN,
+			       DLM_LSFL_NEWEXCL, DLM_LVB_LEN,
 			       &ocfs2_ls_ops, conn, &ops_rv, &fsdlm);
 	if (rc) {
 		if (rc == -EEXIST || rc == -EPROTO)
@@ -1024,6 +1011,7 @@ static int user_cluster_connect(struct ocfs2_cluster_connection *conn)
 			printk(KERN_ERR "ocfs2: Could not determine"
 					" locking version\n");
 			user_cluster_disconnect(conn);
+			lc = NULL;
 			goto out;
 		}
 		wait_event(lc->oc_wait, (atomic_read(&lc->oc_this_node) > 0));
@@ -1071,7 +1059,7 @@ static int user_cluster_this_node(struct ocfs2_cluster_connection *conn,
 	return 0;
 }
 
-static struct ocfs2_stack_operations ocfs2_user_plugin_ops = {
+static const struct ocfs2_stack_operations ocfs2_user_plugin_ops = {
 	.connect	= user_cluster_connect,
 	.disconnect	= user_cluster_disconnect,
 	.this_node	= user_cluster_this_node,

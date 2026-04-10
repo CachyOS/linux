@@ -24,6 +24,7 @@ enum hwmon_sensor_types {
 	hwmon_curr,
 	hwmon_power,
 	hwmon_energy,
+	hwmon_energy64,
 	hwmon_humidity,
 	hwmon_fan,
 	hwmon_pwm,
@@ -44,6 +45,8 @@ enum hwmon_chip_attributes {
 	hwmon_chip_in_samples,
 	hwmon_chip_power_samples,
 	hwmon_chip_temp_samples,
+	hwmon_chip_beep_enable,
+	hwmon_chip_pec,
 };
 
 #define HWMON_C_TEMP_RESET_HISTORY	BIT(hwmon_chip_temp_reset_history)
@@ -58,6 +61,8 @@ enum hwmon_chip_attributes {
 #define HWMON_C_IN_SAMPLES		BIT(hwmon_chip_in_samples)
 #define HWMON_C_POWER_SAMPLES		BIT(hwmon_chip_power_samples)
 #define HWMON_C_TEMP_SAMPLES		BIT(hwmon_chip_temp_samples)
+#define HWMON_C_BEEP_ENABLE		BIT(hwmon_chip_beep_enable)
+#define HWMON_C_PEC			BIT(hwmon_chip_pec)
 
 enum hwmon_temp_attributes {
 	hwmon_temp_enable,
@@ -87,6 +92,7 @@ enum hwmon_temp_attributes {
 	hwmon_temp_reset_history,
 	hwmon_temp_rated_min,
 	hwmon_temp_rated_max,
+	hwmon_temp_beep,
 };
 
 #define HWMON_T_ENABLE		BIT(hwmon_temp_enable)
@@ -116,6 +122,7 @@ enum hwmon_temp_attributes {
 #define HWMON_T_RESET_HISTORY	BIT(hwmon_temp_reset_history)
 #define HWMON_T_RATED_MIN	BIT(hwmon_temp_rated_min)
 #define HWMON_T_RATED_MAX	BIT(hwmon_temp_rated_max)
+#define HWMON_T_BEEP		BIT(hwmon_temp_beep)
 
 enum hwmon_in_attributes {
 	hwmon_in_enable,
@@ -136,6 +143,8 @@ enum hwmon_in_attributes {
 	hwmon_in_crit_alarm,
 	hwmon_in_rated_min,
 	hwmon_in_rated_max,
+	hwmon_in_beep,
+	hwmon_in_fault,
 };
 
 #define HWMON_I_ENABLE		BIT(hwmon_in_enable)
@@ -156,6 +165,8 @@ enum hwmon_in_attributes {
 #define HWMON_I_CRIT_ALARM	BIT(hwmon_in_crit_alarm)
 #define HWMON_I_RATED_MIN	BIT(hwmon_in_rated_min)
 #define HWMON_I_RATED_MAX	BIT(hwmon_in_rated_max)
+#define HWMON_I_BEEP		BIT(hwmon_in_beep)
+#define HWMON_I_FAULT		BIT(hwmon_in_fault)
 
 enum hwmon_curr_attributes {
 	hwmon_curr_enable,
@@ -176,6 +187,7 @@ enum hwmon_curr_attributes {
 	hwmon_curr_crit_alarm,
 	hwmon_curr_rated_min,
 	hwmon_curr_rated_max,
+	hwmon_curr_beep,
 };
 
 #define HWMON_C_ENABLE		BIT(hwmon_curr_enable)
@@ -196,6 +208,7 @@ enum hwmon_curr_attributes {
 #define HWMON_C_CRIT_ALARM	BIT(hwmon_curr_crit_alarm)
 #define HWMON_C_RATED_MIN	BIT(hwmon_curr_rated_min)
 #define HWMON_C_RATED_MAX	BIT(hwmon_curr_rated_max)
+#define HWMON_C_BEEP		BIT(hwmon_curr_beep)
 
 enum hwmon_power_attributes {
 	hwmon_power_enable,
@@ -285,6 +298,8 @@ enum hwmon_humidity_attributes {
 	hwmon_humidity_fault,
 	hwmon_humidity_rated_min,
 	hwmon_humidity_rated_max,
+	hwmon_humidity_min_alarm,
+	hwmon_humidity_max_alarm,
 };
 
 #define HWMON_H_ENABLE			BIT(hwmon_humidity_enable)
@@ -298,6 +313,8 @@ enum hwmon_humidity_attributes {
 #define HWMON_H_FAULT			BIT(hwmon_humidity_fault)
 #define HWMON_H_RATED_MIN		BIT(hwmon_humidity_rated_min)
 #define HWMON_H_RATED_MAX		BIT(hwmon_humidity_rated_max)
+#define HWMON_H_MIN_ALARM		BIT(hwmon_humidity_min_alarm)
+#define HWMON_H_MAX_ALARM		BIT(hwmon_humidity_max_alarm)
 
 enum hwmon_fan_attributes {
 	hwmon_fan_enable,
@@ -312,6 +329,7 @@ enum hwmon_fan_attributes {
 	hwmon_fan_min_alarm,
 	hwmon_fan_max_alarm,
 	hwmon_fan_fault,
+	hwmon_fan_beep,
 };
 
 #define HWMON_F_ENABLE			BIT(hwmon_fan_enable)
@@ -326,6 +344,7 @@ enum hwmon_fan_attributes {
 #define HWMON_F_MIN_ALARM		BIT(hwmon_fan_min_alarm)
 #define HWMON_F_MAX_ALARM		BIT(hwmon_fan_max_alarm)
 #define HWMON_F_FAULT			BIT(hwmon_fan_fault)
+#define HWMON_F_BEEP			BIT(hwmon_fan_beep)
 
 enum hwmon_pwm_attributes {
 	hwmon_pwm_input,
@@ -350,7 +369,9 @@ enum hwmon_intrusion_attributes {
 
 /**
  * struct hwmon_ops - hwmon device operations
- * @is_visible: Callback to return attribute visibility. Mandatory.
+ * @visible:	Static visibility. If non-zero, 'is_visible' is ignored.
+ * @is_visible: Callback to return attribute visibility. Mandatory unless
+ *		'visible' is non-zero.
  *		Parameters are:
  *		@const void *drvdata:
  *			Pointer to driver-private data structure passed
@@ -394,6 +415,7 @@ enum hwmon_intrusion_attributes {
  *		The function returns 0 on success or a negative error number.
  */
 struct hwmon_ops {
+	umode_t visible;
 	umode_t (*is_visible)(const void *drvdata, enum hwmon_sensor_types type,
 			      u32 attr, int channel);
 	int (*read)(struct device *dev, enum hwmon_sensor_types type,
@@ -415,12 +437,12 @@ struct hwmon_channel_info {
 	const u32 *config;
 };
 
-#define HWMON_CHANNEL_INFO(stype, ...)	\
-	(&(struct hwmon_channel_info) {	\
-		.type = hwmon_##stype,	\
-		.config = (u32 []) {	\
-			__VA_ARGS__, 0	\
-		}			\
+#define HWMON_CHANNEL_INFO(stype, ...)		\
+	(&(const struct hwmon_channel_info) {	\
+		.type = hwmon_##stype,		\
+		.config = (const u32 []) {	\
+			__VA_ARGS__, 0		\
+		}				\
 	})
 
 /**
@@ -430,12 +452,16 @@ struct hwmon_channel_info {
  */
 struct hwmon_chip_info {
 	const struct hwmon_ops *ops;
-	const struct hwmon_channel_info **info;
+	const struct hwmon_channel_info * const *info;
 };
 
 /* hwmon_device_register() is deprecated */
 struct device *hwmon_device_register(struct device *dev);
 
+/*
+ * hwmon_device_register_with_groups() and
+ * devm_hwmon_device_register_with_groups() are deprecated.
+ */
 struct device *
 hwmon_device_register_with_groups(struct device *dev, const char *name,
 				  void *drvdata,
@@ -459,13 +485,15 @@ devm_hwmon_device_register_with_info(struct device *dev,
 				const struct attribute_group **extra_groups);
 
 void hwmon_device_unregister(struct device *dev);
-void devm_hwmon_device_unregister(struct device *dev);
 
 int hwmon_notify_event(struct device *dev, enum hwmon_sensor_types type,
 		       u32 attr, int channel);
 
 char *hwmon_sanitize_name(const char *name);
 char *devm_hwmon_sanitize_name(struct device *dev, const char *name);
+
+void hwmon_lock(struct device *dev);
+void hwmon_unlock(struct device *dev);
 
 /**
  * hwmon_is_bad_char - Is the char invalid in a hwmon name

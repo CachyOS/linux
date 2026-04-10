@@ -58,7 +58,7 @@ struct ext4_fc_dentry_info {
 	__u8 fc_dname[];
 };
 
-/* Value structure for EXT4_FC_TAG_INODE and EXT4_FC_TAG_INODE_PARTIAL. */
+/* Value structure for EXT4_FC_TAG_INODE. */
 struct ext4_fc_inode {
 	__le32 fc_ino;
 	__u8 fc_raw_inode[];
@@ -69,6 +69,9 @@ struct ext4_fc_tail {
 	__le32 fc_tid;
 	__le32 fc_crc;
 };
+
+/* Tag base length */
+#define EXT4_FC_TAG_BASE_LEN (sizeof(struct ext4_fc_tl))
 
 /*
  * Fast commit status codes
@@ -93,6 +96,10 @@ enum {
 	EXT4_FC_REASON_RENAME_DIR,
 	EXT4_FC_REASON_FALLOC_RANGE,
 	EXT4_FC_REASON_INODE_JOURNAL_DATA,
+	EXT4_FC_REASON_ENCRYPTED_FILENAME,
+	EXT4_FC_REASON_MIGRATE,
+	EXT4_FC_REASON_VERITY,
+	EXT4_FC_REASON_MOVE_EXT,
 	EXT4_FC_REASON_MAX
 };
 
@@ -105,8 +112,7 @@ struct ext4_fc_dentry_update {
 	int fcd_op;		/* Type of update create / unlink / link */
 	int fcd_parent;		/* Parent inode number */
 	int fcd_ino;		/* Inode number */
-	struct qstr fcd_name;	/* Dirent name */
-	unsigned char fcd_iname[DNAME_INLINE_LEN];	/* Dirent name string */
+	struct name_snapshot fcd_name;	/* Dirent name */
 	struct list_head fcd_list;
 	struct list_head fcd_dilist;
 };

@@ -2,18 +2,24 @@
 /* Copyright (c) 2021 Facebook */
 #include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
+#include "../test_kmods/bpf_testmod_kfunc.h"
 
-extern int bpf_kfunc_call_test2(struct sock *sk, __u32 a, __u32 b) __ksym;
-extern __u64 bpf_kfunc_call_test1(struct sock *sk, __u32 a, __u64 b,
-				  __u32 c, __u64 d) __ksym;
+SEC("tc")
+int kfunc_call_test4(struct __sk_buff *skb)
+{
+	struct bpf_sock *sk = skb->sk;
+	long tmp;
 
-extern struct prog_test_ref_kfunc *bpf_kfunc_call_test_acquire(unsigned long *sp) __ksym;
-extern void bpf_kfunc_call_test_release(struct prog_test_ref_kfunc *p) __ksym;
-extern void bpf_kfunc_call_test_pass_ctx(struct __sk_buff *skb) __ksym;
-extern void bpf_kfunc_call_test_pass1(struct prog_test_pass1 *p) __ksym;
-extern void bpf_kfunc_call_test_pass2(struct prog_test_pass2 *p) __ksym;
-extern void bpf_kfunc_call_test_mem_len_pass1(void *mem, int len) __ksym;
-extern void bpf_kfunc_call_test_mem_len_fail2(__u64 *mem, int len) __ksym;
+	if (!sk)
+		return -1;
+
+	sk = bpf_sk_fullsock(sk);
+	if (!sk)
+		return -1;
+
+	tmp = bpf_kfunc_call_test4(-3, -30, -200, -1000);
+	return (tmp >> 32) + tmp;
+}
 
 SEC("tc")
 int kfunc_call_test2(struct __sk_buff *skb)
@@ -90,6 +96,122 @@ int kfunc_call_test_pass(struct __sk_buff *skb)
 	bpf_kfunc_call_test_mem_len_fail2(&b, -1);
 
 	return 0;
+}
+
+struct syscall_test_args {
+	__u8 data[16];
+	size_t size;
+};
+
+SEC("syscall")
+int kfunc_syscall_test(struct syscall_test_args *args)
+{
+	const long size = args->size;
+
+	if (size > sizeof(args->data))
+		return -7; /* -E2BIG */
+
+	bpf_kfunc_call_test_mem_len_pass1(&args->data, sizeof(args->data));
+	bpf_kfunc_call_test_mem_len_pass1(&args->data, sizeof(*args));
+	bpf_kfunc_call_test_mem_len_pass1(&args->data, size);
+
+	return 0;
+}
+
+SEC("syscall")
+int kfunc_syscall_test_null(struct syscall_test_args *args)
+{
+	/* Must be called with args as a NULL pointer
+	 * we do not check for it to have the verifier consider that
+	 * the pointer might not be null, and so we can load it.
+	 *
+	 * So the following can not be added:
+	 *
+	 * if (args)
+	 *      return -22;
+	 */
+
+	bpf_kfunc_call_test_mem_len_pass1(args, 0);
+
+	return 0;
+}
+
+SEC("tc")
+int kfunc_call_test_get_mem(struct __sk_buff *skb)
+{
+	struct prog_test_ref_kfunc *pt;
+	unsigned long s = 0;
+	int *p = NULL;
+	int ret = 0;
+
+	pt = bpf_kfunc_call_test_acquire(&s);
+	if (pt) {
+		p = bpf_kfunc_call_test_get_rdwr_mem(pt, 2 * sizeof(int));
+		if (p) {
+			p[0] = 42;
+			ret = p[1]; /* 108 */
+		} else {
+			ret = -1;
+		}
+
+		if (ret >= 0) {
+			p = bpf_kfunc_call_test_get_rdonly_mem(pt, 2 * sizeof(int));
+			if (p)
+				ret = p[0]; /* 42 */
+			else
+				ret = -1;
+		}
+
+		bpf_kfunc_call_test_release(pt);
+	}
+	return ret;
+}
+
+SEC("tc")
+int kfunc_call_test_static_unused_arg(struct __sk_buff *skb)
+{
+
+	u32 expected = 5, actual;
+
+	actual = bpf_kfunc_call_test_static_unused_arg(expected, 0xdeadbeef);
+	return actual != expected ? -1 : 0;
+}
+
+struct ctx_val {
+	struct bpf_testmod_ctx __kptr *ctx;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, int);
+	__type(value, struct ctx_val);
+} ctx_map SEC(".maps");
+
+SEC("tc")
+int kfunc_call_ctx(struct __sk_buff *skb)
+{
+	struct bpf_testmod_ctx *ctx;
+	int err = 0;
+
+	ctx = bpf_testmod_ctx_create(&err);
+	if (!ctx && !err)
+		err = -1;
+	if (ctx) {
+		int key = 0;
+		struct ctx_val *ctx_val = bpf_map_lookup_elem(&ctx_map, &key);
+
+		/* Transfer ctx to map to be freed via implicit dtor call
+		 * on cleanup.
+		 */
+		if (ctx_val)
+			ctx = bpf_kptr_xchg(&ctx_val->ctx, ctx);
+		if (ctx) {
+			bpf_testmod_ctx_release(ctx);
+			err = -1;
+		}
+	}
+	return err;
 }
 
 char _license[] SEC("license") = "GPL";

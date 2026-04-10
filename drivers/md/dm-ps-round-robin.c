@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2003 Sistina Software.
  * Copyright (C) 2004-2005 Red Hat, Inc. All rights reserved.
@@ -20,13 +21,15 @@
 #define RR_MIN_IO     1
 #define RR_VERSION    "1.2.0"
 
-/*-----------------------------------------------------------------
+/*
+ *---------------------------------------------------------------
  * Path-handling code, paths are held in lists
- *---------------------------------------------------------------*/
+ *---------------------------------------------------------------
+ */
 struct path_info {
 	struct list_head list;
 	struct dm_path *path;
-	unsigned repeat_count;
+	unsigned int repeat_count;
 };
 
 static void free_paths(struct list_head *paths)
@@ -39,10 +42,11 @@ static void free_paths(struct list_head *paths)
 	}
 }
 
-/*-----------------------------------------------------------------
+/*
+ *---------------------------------------------------------------
  * Round-robin selector
- *---------------------------------------------------------------*/
-
+ *---------------------------------------------------------------
+ */
 struct selector {
 	struct list_head valid_paths;
 	struct list_head invalid_paths;
@@ -51,7 +55,7 @@ struct selector {
 
 static struct selector *alloc_selector(void)
 {
-	struct selector *s = kmalloc(sizeof(*s), GFP_KERNEL);
+	struct selector *s = kmalloc_obj(*s);
 
 	if (s) {
 		INIT_LIST_HEAD(&s->valid_paths);
@@ -62,7 +66,7 @@ static struct selector *alloc_selector(void)
 	return s;
 }
 
-static int rr_create(struct path_selector *ps, unsigned argc, char **argv)
+static int rr_create(struct path_selector *ps, unsigned int argc, char **argv)
 {
 	struct selector *s;
 
@@ -93,7 +97,7 @@ static int rr_status(struct path_selector *ps, struct dm_path *path,
 	if (!path)
 		DMEMIT("0 ");
 	else {
-		switch(type) {
+		switch (type) {
 		case STATUSTYPE_INFO:
 			break;
 		case STATUSTYPE_TABLE:
@@ -119,7 +123,7 @@ static int rr_add_path(struct path_selector *ps, struct dm_path *path,
 {
 	struct selector *s = ps->context;
 	struct path_info *pi;
-	unsigned repeat_count = RR_MIN_IO;
+	unsigned int repeat_count = RR_MIN_IO;
 	char dummy;
 	unsigned long flags;
 
@@ -140,7 +144,7 @@ static int rr_add_path(struct path_selector *ps, struct dm_path *path,
 	}
 
 	/* allocate the path */
-	pi = kmalloc(sizeof(*pi), GFP_KERNEL);
+	pi = kmalloc_obj(*pi);
 	if (!pi) {
 		*error = "round-robin ps: Error allocating path context";
 		return -ENOMEM;
@@ -216,8 +220,10 @@ static int __init dm_rr_init(void)
 {
 	int r = dm_register_path_selector(&rr_ps);
 
-	if (r < 0)
+	if (r < 0) {
 		DMERR("register failed %d", r);
+		return r;
+	}
 
 	DMINFO("version " RR_VERSION " loaded");
 
@@ -226,15 +232,12 @@ static int __init dm_rr_init(void)
 
 static void __exit dm_rr_exit(void)
 {
-	int r = dm_unregister_path_selector(&rr_ps);
-
-	if (r < 0)
-		DMERR("unregister failed %d", r);
+	dm_unregister_path_selector(&rr_ps);
 }
 
 module_init(dm_rr_init);
 module_exit(dm_rr_exit);
 
 MODULE_DESCRIPTION(DM_NAME " round-robin multipath path selector");
-MODULE_AUTHOR("Sistina Software <dm-devel@redhat.com>");
+MODULE_AUTHOR("Sistina Software <dm-devel@lists.linux.dev>");
 MODULE_LICENSE("GPL");

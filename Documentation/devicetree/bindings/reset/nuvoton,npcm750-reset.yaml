@@ -11,13 +11,26 @@ maintainers:
 
 properties:
   compatible:
-    const: nuvoton,npcm750-reset
+    enum:
+      - nuvoton,npcm750-reset        # Poleg NPCM7XX SoC
+      - nuvoton,npcm845-reset        # Arbel NPCM8XX SoC
 
   reg:
     maxItems: 1
 
   '#reset-cells':
     const: 2
+
+  '#clock-cells':
+    const: 1
+
+  clocks:
+    items:
+      - description: specify external 25MHz reference clock.
+
+  nuvoton,sysgcr:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: a phandle to access GCR registers.
 
   nuvoton,sw-reset-number:
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -31,6 +44,18 @@ required:
   - compatible
   - reg
   - '#reset-cells'
+  - nuvoton,sysgcr
+
+if:
+  properties:
+    compatible:
+      contains:
+        enum:
+          - nuvoton,npcm845-reset
+then:
+  required:
+    - '#clock-cells'
+    - clocks
 
 additionalProperties: false
 
@@ -41,6 +66,7 @@ examples:
         compatible = "nuvoton,npcm750-reset";
         reg = <0xf0801000 0x70>;
         #reset-cells = <2>;
+        nuvoton,sysgcr = <&gcr>;
         nuvoton,sw-reset-number = <2>;
     };
 

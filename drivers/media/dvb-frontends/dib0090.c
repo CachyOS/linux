@@ -78,7 +78,7 @@ MODULE_PARM_DESC(debug, "turn on debugging (default: 0)");
 #define SOC_8090_P1G_11R1 0x86
 #define SOC_8090_P1G_21R1 0x8e
 
-/* else use thos ones to check */
+/* else use those ones to check */
 #define P1A_B      0x0
 #define P1C	   0x1
 #define P1D_E_F    0x3
@@ -1574,7 +1574,7 @@ static int dib0090_reset(struct dvb_frontend *fe)
 	if (((state->identity.version & 0x1f) >= P1D_E_F) || (state->identity.in_soc))
 		dib0090_set_EFUSE(state);
 
-	/* Congigure in function of the crystal */
+	/* Configure in function of the crystal */
 	if (state->config->force_crystal_mode != 0)
 		dib0090_write_reg(state, 0x14,
 				state->config->force_crystal_mode & 3);
@@ -2606,7 +2606,7 @@ static const struct dib0090_wbd_slope dib0090_wbd_table_default[] = {
 
 struct dvb_frontend *dib0090_register(struct dvb_frontend *fe, struct i2c_adapter *i2c, const struct dib0090_config *config)
 {
-	struct dib0090_state *st = kzalloc(sizeof(struct dib0090_state), GFP_KERNEL);
+	struct dib0090_state *st = kzalloc_obj(struct dib0090_state);
 	if (st == NULL)
 		return NULL;
 
@@ -2634,11 +2634,11 @@ struct dvb_frontend *dib0090_register(struct dvb_frontend *fe, struct i2c_adapte
 	return NULL;
 }
 
-EXPORT_SYMBOL(dib0090_register);
+EXPORT_SYMBOL_GPL(dib0090_register);
 
 struct dvb_frontend *dib0090_fw_register(struct dvb_frontend *fe, struct i2c_adapter *i2c, const struct dib0090_config *config)
 {
-	struct dib0090_fw_state *st = kzalloc(sizeof(struct dib0090_fw_state), GFP_KERNEL);
+	struct dib0090_fw_state *st = kzalloc_obj(struct dib0090_fw_state);
 	if (st == NULL)
 		return NULL;
 
@@ -2660,7 +2660,7 @@ free_mem:
 	fe->tuner_priv = NULL;
 	return NULL;
 }
-EXPORT_SYMBOL(dib0090_fw_register);
+EXPORT_SYMBOL_GPL(dib0090_fw_register);
 
 MODULE_AUTHOR("Patrick Boettcher <patrick.boettcher@posteo.de>");
 MODULE_AUTHOR("Olivier Grenie <olivier.grenie@parrot.com>");

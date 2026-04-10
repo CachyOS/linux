@@ -16,9 +16,13 @@ properties:
   compatible:
     const: samsung,s6e8aa0
 
-  reg: true
+  reg:
+    maxItems: 1
+
   reset-gpios: true
   display-timings: true
+  flip-horizontal: true
+  flip-vertical: true
 
   vdd3-supply:
     description: core voltage supply
@@ -44,14 +48,6 @@ properties:
   panel-height-mm:
     description: physical panel height [mm]
 
-  flip-horizontal:
-    description: boolean to flip image horizontally
-    type: boolean
-
-  flip-vertical:
-    description: boolean to flip image vertically
-    type: boolean
-
 required:
   - compatible
   - reg
@@ -74,7 +70,7 @@ examples:
             vdd3-supply = <&vcclcd_reg>;
             vci-supply = <&vlcd_reg>;
             reset-gpios = <&gpy4 5 0>;
-            power-on-delay= <50>;
+            power-on-delay = <50>;
             reset-delay = <100>;
             init-delay = <100>;
             panel-width-mm = <58>;

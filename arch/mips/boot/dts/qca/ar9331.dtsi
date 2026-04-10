@@ -176,7 +176,6 @@
 
 						switch_port0: port@0 {
 							reg = <0x0>;
-							label = "cpu";
 							ethernet = <&eth1>;
 
 							phy-mode = "gmii";
@@ -283,6 +282,15 @@
 
 			#address-cells = <1>;
 			#size-cells = <0>;
+
+			status = "disabled";
+		};
+
+		wifi: wifi@18100000 {
+			compatible = "qca,ar9330-wifi";
+			reg = <0x18100000 0x20000>;
+
+			interrupts = <2>;
 
 			status = "disabled";
 		};

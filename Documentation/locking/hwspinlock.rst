@@ -40,17 +40,6 @@ User API
 
 ::
 
-  struct hwspinlock *hwspin_lock_request(void);
-
-Dynamically assign an hwspinlock and return its address, or NULL
-in case an unused hwspinlock isn't available. Users of this
-API will usually want to communicate the lock's id to the remote core
-before it can be used to achieve synchronization.
-
-Should be called from a process context (might sleep).
-
-::
-
   struct hwspinlock *hwspin_lock_request_specific(unsigned int id);
 
 Assign a specific hwspinlock id and return its address, or NULL
@@ -82,6 +71,17 @@ Should be called from a process context (might sleep).
 Free a previously-assigned hwspinlock; returns 0 on success, or an
 appropriate error code on failure (e.g. -EINVAL if the hwspinlock
 is already free).
+
+Should be called from a process context (might sleep).
+
+::
+
+  int hwspin_lock_bust(struct hwspinlock *hwlock, unsigned int id);
+
+After verifying the owner of the hwspinlock, release a previously acquired
+hwspinlock; returns 0 on success, or an appropriate error code on failure
+(e.g. -EOPNOTSUPP if the bust operation is not defined for the specific
+hwspinlock).
 
 Should be called from a process context (might sleep).
 
@@ -301,17 +301,6 @@ The caller should **never** unlock an hwspinlock which is already unlocked.
 Doing so is considered a bug (there is no protection against this).
 This function will never sleep.
 
-::
-
-  int hwspin_lock_get_id(struct hwspinlock *hwlock);
-
-Retrieve id number of a given hwspinlock. This is needed when an
-hwspinlock is dynamically assigned: before it can be used to achieve
-mutual exclusion with a remote cpu, the id number should be communicated
-to the remote task with which we want to synchronize.
-
-Returns the hwspinlock id number, or -EINVAL if hwlock is null.
-
 Typical usage
 =============
 
@@ -320,40 +309,7 @@ Typical usage
 	#include <linux/hwspinlock.h>
 	#include <linux/err.h>
 
-	int hwspinlock_example1(void)
-	{
-		struct hwspinlock *hwlock;
-		int ret;
-
-		/* dynamically assign a hwspinlock */
-		hwlock = hwspin_lock_request();
-		if (!hwlock)
-			...
-
-		id = hwspin_lock_get_id(hwlock);
-		/* probably need to communicate id to a remote processor now */
-
-		/* take the lock, spin for 1 sec if it's already taken */
-		ret = hwspin_lock_timeout(hwlock, 1000);
-		if (ret)
-			...
-
-		/*
-		* we took the lock, do our thing now, but do NOT sleep
-		*/
-
-		/* release the lock */
-		hwspin_unlock(hwlock);
-
-		/* free the lock */
-		ret = hwspin_lock_free(hwlock);
-		if (ret)
-			...
-
-		return ret;
-	}
-
-	int hwspinlock_example2(void)
+	int hwspinlock_example(void)
 	{
 		struct hwspinlock *hwlock;
 		int ret;

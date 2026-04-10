@@ -277,17 +277,18 @@ void aio_port_reset(struct uniphier_aio_sub *sub)
 static int aio_port_set_ch(struct uniphier_aio_sub *sub)
 {
 	struct regmap *r = sub->aio->chip->regmap;
-	u32 slotsel_2ch[] = {
+	static const u32 slotsel_2ch[] = {
 		0, 0, 0, 0, 0,
 	};
-	u32 slotsel_multi[] = {
+	static const u32 slotsel_multi[] = {
 		OPORTMXTYSLOTCTR_SLOTSEL_SLOT0,
 		OPORTMXTYSLOTCTR_SLOTSEL_SLOT1,
 		OPORTMXTYSLOTCTR_SLOTSEL_SLOT2,
 		OPORTMXTYSLOTCTR_SLOTSEL_SLOT3,
 		OPORTMXTYSLOTCTR_SLOTSEL_SLOT4,
 	};
-	u32 mode, *slotsel;
+	u32 mode;
+	const u32 *slotsel;
 	int i;
 
 	switch (params_channels(&sub->params)) {
@@ -515,13 +516,13 @@ static int aio_port_set_clk(struct uniphier_aio_sub *sub)
 	struct uniphier_aio_chip *chip = sub->aio->chip;
 	struct device *dev = &sub->aio->chip->pdev->dev;
 	struct regmap *r = sub->aio->chip->regmap;
-	u32 v_pll[] = {
+	static const u32 v_pll[] = {
 		OPORTMXCTR2_ACLKSEL_A1, OPORTMXCTR2_ACLKSEL_F1,
 		OPORTMXCTR2_ACLKSEL_A2, OPORTMXCTR2_ACLKSEL_F2,
 		OPORTMXCTR2_ACLKSEL_A2PLL,
 		OPORTMXCTR2_ACLKSEL_RX1,
 	};
-	u32 v_div[] = {
+	static const u32 v_div[] = {
 		OPORTMXCTR2_DACCKSEL_1_2, OPORTMXCTR2_DACCKSEL_1_3,
 		OPORTMXCTR2_DACCKSEL_1_1, OPORTMXCTR2_DACCKSEL_2_3,
 	};
@@ -837,6 +838,7 @@ int aio_oport_set_stream_type(struct uniphier_aio_sub *sub,
 {
 	struct regmap *r = sub->aio->chip->regmap;
 	u32 repet = 0, pause = OPORTMXPAUDAT_PAUSEPC_CMN;
+	int ret;
 
 	switch (pc) {
 	case IEC61937_PC_AC3:
@@ -879,8 +881,13 @@ int aio_oport_set_stream_type(struct uniphier_aio_sub *sub,
 		break;
 	}
 
-	regmap_write(r, OPORTMXREPET(sub->swm->oport.map), repet);
-	regmap_write(r, OPORTMXPAUDAT(sub->swm->oport.map), pause);
+	ret = regmap_write(r, OPORTMXREPET(sub->swm->oport.map), repet);
+	if (ret)
+		return ret;
+	
+	ret = regmap_write(r, OPORTMXPAUDAT(sub->swm->oport.map), pause);
+	if (ret)
+		return ret;
 
 	return 0;
 }
@@ -920,16 +927,19 @@ int aio_src_set_param(struct uniphier_aio_sub *sub,
 {
 	struct regmap *r = sub->aio->chip->regmap;
 	u32 v;
+	int ret;
 
 	if (sub->swm->dir != PORT_DIR_OUTPUT)
 		return 0;
 
-	regmap_write(r, OPORTMXSRC1CTR(sub->swm->oport.map),
+	ret = regmap_write(r, OPORTMXSRC1CTR(sub->swm->oport.map),
 		     OPORTMXSRC1CTR_THMODE_SRC |
 		     OPORTMXSRC1CTR_SRCPATH_CALC |
 		     OPORTMXSRC1CTR_SYNC_ASYNC |
 		     OPORTMXSRC1CTR_FSIIPSEL_INNER |
 		     OPORTMXSRC1CTR_FSISEL_ACLK);
+	if (ret)
+		return ret;
 
 	switch (params_rate(params)) {
 	default:
@@ -950,12 +960,18 @@ int aio_src_set_param(struct uniphier_aio_sub *sub,
 		break;
 	}
 
-	regmap_write(r, OPORTMXRATE_I(sub->swm->oport.map),
+
+	ret = regmap_write(r, OPORTMXRATE_I(sub->swm->oport.map),
 		     v | OPORTMXRATE_I_ACLKSRC_APLL |
 		     OPORTMXRATE_I_LRCKSTP_STOP);
-	regmap_update_bits(r, OPORTMXRATE_I(sub->swm->oport.map),
+	if (ret)
+		return ret;
+
+	ret = regmap_update_bits(r, OPORTMXRATE_I(sub->swm->oport.map),
 			   OPORTMXRATE_I_LRCKSTP_MASK,
 			   OPORTMXRATE_I_LRCKSTP_START);
+	if (ret)
+		return ret;
 
 	return 0;
 }

@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/net/intel,dwmac-plat.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Intel DWMAC glue layer Device Tree Bindings
+title: Intel DWMAC glue layer
 
 maintainers:
   - Vineetha G. Jaya Kumaran <vineetha.g.jaya.kumaran@intel.com>
@@ -19,7 +19,7 @@ select:
     - compatible
 
 allOf:
-  - $ref: "snps,dwmac.yaml#"
+  - $ref: snps,dwmac.yaml#
 
 properties:
   compatible:
@@ -40,6 +40,12 @@ properties:
       - const: stmmaceth
       - const: ptp_ref
       - const: tx_clk
+
+  interrupts:
+    maxItems: 1
+
+  interrupt-names:
+    const: macirq
 
 required:
   - compatible

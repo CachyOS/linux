@@ -3,7 +3,7 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2019 Intel Corporation. All rights reserved.
+// Copyright(c) 2019 Intel Corporation
 //
 // Authors: Guennadi Liakhovetski <guennadi.liakhovetski@linux.intel.com>
 
@@ -19,6 +19,7 @@
 
 #include "ops.h"
 #include "sof-priv.h"
+#include "sof-audio.h"
 
 struct sof_stream {
 	size_t posn_offset;
@@ -26,19 +27,37 @@ struct sof_stream {
 
 /* Mailbox-based Generic IPC implementation */
 int sof_ipc_msg_data(struct snd_sof_dev *sdev,
-		     struct snd_pcm_substream *substream,
+		     struct snd_sof_pcm_stream *sps,
 		     void *p, size_t sz)
 {
-	if (!substream || !sdev->stream_box.size) {
+	if (!sps || !sdev->stream_box.size) {
 		snd_sof_dsp_mailbox_read(sdev, sdev->dsp_box.offset, p, sz);
 	} else {
-		struct sof_stream *stream = substream->runtime->private_data;
+		size_t posn_offset;
 
-		/* The stream might already be closed */
-		if (!stream)
-			return -ESTRPIPE;
+		if (sps->substream) {
+			struct sof_stream *stream = sps->substream->runtime->private_data;
 
-		snd_sof_dsp_mailbox_read(sdev, stream->posn_offset, p, sz);
+			/* The stream might already be closed */
+			if (!stream)
+				return -ESTRPIPE;
+
+			posn_offset = stream->posn_offset;
+		} else if (sps->cstream) {
+
+			struct sof_compr_stream *sstream = sps->cstream->runtime->private_data;
+
+			if (!sstream)
+				return -ESTRPIPE;
+
+			posn_offset = sstream->posn_offset;
+
+		} else {
+			dev_err(sdev->dev, "%s: No stream opened\n", __func__);
+			return -EINVAL;
+		}
+
+		snd_sof_dsp_mailbox_read(sdev, posn_offset, p, sz);
 	}
 
 	return 0;
@@ -46,20 +65,32 @@ int sof_ipc_msg_data(struct snd_sof_dev *sdev,
 EXPORT_SYMBOL(sof_ipc_msg_data);
 
 int sof_set_stream_data_offset(struct snd_sof_dev *sdev,
-			       struct snd_pcm_substream *substream,
+			       struct snd_sof_pcm_stream *sps,
 			       size_t posn_offset)
 {
-	struct sof_stream *stream = substream->runtime->private_data;
-
 	/* check if offset is overflow or it is not aligned */
 	if (posn_offset > sdev->stream_box.size ||
 	    posn_offset % sizeof(struct sof_ipc_stream_posn) != 0)
 		return -EINVAL;
 
-	stream->posn_offset = sdev->stream_box.offset + posn_offset;
+	posn_offset += sdev->stream_box.offset;
 
-	dev_dbg(sdev->dev, "pcm: stream dir %d, posn mailbox offset is %zu",
-		substream->stream, stream->posn_offset);
+	if (sps->substream) {
+		struct sof_stream *stream = sps->substream->runtime->private_data;
+
+		stream->posn_offset = posn_offset;
+		dev_dbg(sdev->dev, "pcm: stream dir %d, posn mailbox offset is %zu",
+			sps->substream->stream, posn_offset);
+	} else if (sps->cstream) {
+		struct sof_compr_stream *sstream = sps->cstream->runtime->private_data;
+
+		sstream->posn_offset = posn_offset;
+		dev_dbg(sdev->dev, "compr: stream dir %d, posn mailbox offset is %zu",
+			sps->cstream->direction, posn_offset);
+	} else {
+		dev_err(sdev->dev, "No stream opened");
+		return -EINVAL;
+	}
 
 	return 0;
 }
@@ -68,7 +99,7 @@ EXPORT_SYMBOL(sof_set_stream_data_offset);
 int sof_stream_pcm_open(struct snd_sof_dev *sdev,
 			struct snd_pcm_substream *substream)
 {
-	struct sof_stream *stream = kmalloc(sizeof(*stream), GFP_KERNEL);
+	struct sof_stream *stream = kmalloc_obj(*stream);
 
 	if (!stream)
 		return -ENOMEM;
@@ -98,5 +129,3 @@ int sof_stream_pcm_close(struct snd_sof_dev *sdev,
 	return 0;
 }
 EXPORT_SYMBOL(sof_stream_pcm_close);
-
-MODULE_LICENSE("Dual BSD/GPL");

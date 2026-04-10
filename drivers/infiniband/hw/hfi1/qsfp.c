@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
  * Copyright(c) 2015, 2016 Intel Corporation.
  */
@@ -107,7 +107,7 @@ static struct hfi1_i2c_bus *init_i2c_bus(struct hfi1_devdata *dd,
 	struct hfi1_i2c_bus *bus;
 	int ret;
 
-	bus = kzalloc(sizeof(*bus), GFP_KERNEL);
+	bus = kzalloc_obj(*bus);
 	if (!bus)
 		return NULL;
 
@@ -402,26 +402,6 @@ int qsfp_write(struct hfi1_pportdata *ppd, u32 target, int addr, void *bp,
 	if (ret < 0)
 		return ret;
 	return count;
-}
-
-/*
- * Perform a stand-alone single QSFP write.  Acquire the resource, do the
- * write, then release the resource.
- */
-int one_qsfp_write(struct hfi1_pportdata *ppd, u32 target, int addr, void *bp,
-		   int len)
-{
-	struct hfi1_devdata *dd = ppd->dd;
-	u32 resource = qsfp_resource(dd);
-	int ret;
-
-	ret = acquire_chip_resource(dd, resource, QSFP_WAIT);
-	if (ret)
-		return ret;
-	ret = qsfp_write(ppd, target, addr, bp, len);
-	release_chip_resource(dd, resource);
-
-	return ret;
 }
 
 /*

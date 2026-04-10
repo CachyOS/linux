@@ -102,6 +102,14 @@ enum mlx4_ib_source_type {
 	MLX4_IB_RWQ_SRC	= 1,
 };
 
+struct mlx4_ib_qp_event_work {
+	struct work_struct work;
+	struct mlx4_qp *qp;
+	enum mlx4_event type;
+};
+
+static struct workqueue_struct *mlx4_ib_qp_event_wq;
+
 static int is_tunnel_qp(struct mlx4_ib_dev *dev, struct mlx4_ib_qp *qp)
 {
 	if (!mlx4_is_master(dev->dev))
@@ -200,50 +208,77 @@ static void stamp_send_wqe(struct mlx4_ib_qp *qp, int n)
 	}
 }
 
+static void mlx4_ib_handle_qp_event(struct work_struct *_work)
+{
+	struct mlx4_ib_qp_event_work *qpe_work =
+		container_of(_work, struct mlx4_ib_qp_event_work, work);
+	struct ib_qp *ibqp = &to_mibqp(qpe_work->qp)->ibqp;
+	struct ib_event event = {};
+
+	event.device = ibqp->device;
+	event.element.qp = ibqp;
+
+	switch (qpe_work->type) {
+	case MLX4_EVENT_TYPE_PATH_MIG:
+		event.event = IB_EVENT_PATH_MIG;
+		break;
+	case MLX4_EVENT_TYPE_COMM_EST:
+		event.event = IB_EVENT_COMM_EST;
+		break;
+	case MLX4_EVENT_TYPE_SQ_DRAINED:
+		event.event = IB_EVENT_SQ_DRAINED;
+		break;
+	case MLX4_EVENT_TYPE_SRQ_QP_LAST_WQE:
+		event.event = IB_EVENT_QP_LAST_WQE_REACHED;
+		break;
+	case MLX4_EVENT_TYPE_WQ_CATAS_ERROR:
+		event.event = IB_EVENT_QP_FATAL;
+		break;
+	case MLX4_EVENT_TYPE_PATH_MIG_FAILED:
+		event.event = IB_EVENT_PATH_MIG_ERR;
+		break;
+	case MLX4_EVENT_TYPE_WQ_INVAL_REQ_ERROR:
+		event.event = IB_EVENT_QP_REQ_ERR;
+		break;
+	case MLX4_EVENT_TYPE_WQ_ACCESS_ERROR:
+		event.event = IB_EVENT_QP_ACCESS_ERR;
+		break;
+	default:
+		pr_warn("Unexpected event type %d on QP %06x\n",
+			qpe_work->type, qpe_work->qp->qpn);
+		goto out;
+	}
+
+	ibqp->event_handler(&event, ibqp->qp_context);
+
+out:
+	mlx4_put_qp(qpe_work->qp);
+	kfree(qpe_work);
+}
+
 static void mlx4_ib_qp_event(struct mlx4_qp *qp, enum mlx4_event type)
 {
-	struct ib_event event;
 	struct ib_qp *ibqp = &to_mibqp(qp)->ibqp;
+	struct mlx4_ib_qp_event_work *qpe_work;
 
 	if (type == MLX4_EVENT_TYPE_PATH_MIG)
 		to_mibqp(qp)->port = to_mibqp(qp)->alt_port;
 
-	if (ibqp->event_handler) {
-		event.device     = ibqp->device;
-		event.element.qp = ibqp;
-		switch (type) {
-		case MLX4_EVENT_TYPE_PATH_MIG:
-			event.event = IB_EVENT_PATH_MIG;
-			break;
-		case MLX4_EVENT_TYPE_COMM_EST:
-			event.event = IB_EVENT_COMM_EST;
-			break;
-		case MLX4_EVENT_TYPE_SQ_DRAINED:
-			event.event = IB_EVENT_SQ_DRAINED;
-			break;
-		case MLX4_EVENT_TYPE_SRQ_QP_LAST_WQE:
-			event.event = IB_EVENT_QP_LAST_WQE_REACHED;
-			break;
-		case MLX4_EVENT_TYPE_WQ_CATAS_ERROR:
-			event.event = IB_EVENT_QP_FATAL;
-			break;
-		case MLX4_EVENT_TYPE_PATH_MIG_FAILED:
-			event.event = IB_EVENT_PATH_MIG_ERR;
-			break;
-		case MLX4_EVENT_TYPE_WQ_INVAL_REQ_ERROR:
-			event.event = IB_EVENT_QP_REQ_ERR;
-			break;
-		case MLX4_EVENT_TYPE_WQ_ACCESS_ERROR:
-			event.event = IB_EVENT_QP_ACCESS_ERR;
-			break;
-		default:
-			pr_warn("Unexpected event type %d "
-			       "on QP %06x\n", type, qp->qpn);
-			return;
-		}
+	if (!ibqp->event_handler)
+		goto out_no_handler;
 
-		ibqp->event_handler(&event, ibqp->qp_context);
-	}
+	qpe_work = kzalloc_obj(*qpe_work, GFP_ATOMIC);
+	if (!qpe_work)
+		goto out_no_handler;
+
+	qpe_work->qp = qp;
+	qpe_work->type = type;
+	INIT_WORK(&qpe_work->work, mlx4_ib_handle_qp_event);
+	queue_work(mlx4_ib_qp_event_wq, &qpe_work->work);
+	return;
+
+out_no_handler:
+	mlx4_put_qp(qp);
 }
 
 static void mlx4_ib_wq_event(struct mlx4_qp *qp, enum mlx4_event type)
@@ -412,9 +447,13 @@ static int set_user_sq_size(struct mlx4_ib_dev *dev,
 			    struct mlx4_ib_qp *qp,
 			    struct mlx4_ib_create_qp *ucmd)
 {
+	u32 cnt;
+
 	/* Sanity check SQ size before proceeding */
-	if ((1 << ucmd->log_sq_bb_count) > dev->dev->caps.max_wqes	 ||
-	    ucmd->log_sq_stride >
+	if (check_shl_overflow(1, ucmd->log_sq_bb_count, &cnt) ||
+	    cnt > dev->dev->caps.max_wqes)
+		return -EINVAL;
+	if (ucmd->log_sq_stride >
 		ilog2(roundup_pow_of_two(dev->dev->caps.max_sq_desc_sz)) ||
 	    ucmd->log_sq_stride < MLX4_IB_MIN_SQ_STRIDE)
 		return -EINVAL;
@@ -433,14 +472,12 @@ static int alloc_proxy_bufs(struct ib_device *dev, struct mlx4_ib_qp *qp)
 	int i;
 
 	qp->sqp_proxy_rcv =
-		kmalloc_array(qp->rq.wqe_cnt, sizeof(struct mlx4_ib_buf),
-			      GFP_KERNEL);
+		kmalloc_objs(struct mlx4_ib_buf, qp->rq.wqe_cnt);
 	if (!qp->sqp_proxy_rcv)
 		return -ENOMEM;
 	for (i = 0; i < qp->rq.wqe_cnt; i++) {
 		qp->sqp_proxy_rcv[i].addr =
-			kmalloc(sizeof (struct mlx4_ib_proxy_sqp_hdr),
-				GFP_KERNEL);
+			kmalloc_obj(struct mlx4_ib_proxy_sqp_hdr);
 		if (!qp->sqp_proxy_rcv[i].addr)
 			goto err;
 		qp->sqp_proxy_rcv[i].map =
@@ -526,15 +563,15 @@ static int set_qp_rss(struct mlx4_ib_dev *dev, struct mlx4_ib_rss *rss_ctx,
 		return (-EOPNOTSUPP);
 	}
 
-	if (ucmd->rx_hash_fields_mask & ~(MLX4_IB_RX_HASH_SRC_IPV4	|
-					  MLX4_IB_RX_HASH_DST_IPV4	|
-					  MLX4_IB_RX_HASH_SRC_IPV6	|
-					  MLX4_IB_RX_HASH_DST_IPV6	|
-					  MLX4_IB_RX_HASH_SRC_PORT_TCP	|
-					  MLX4_IB_RX_HASH_DST_PORT_TCP	|
-					  MLX4_IB_RX_HASH_SRC_PORT_UDP	|
-					  MLX4_IB_RX_HASH_DST_PORT_UDP  |
-					  MLX4_IB_RX_HASH_INNER)) {
+	if (ucmd->rx_hash_fields_mask & ~(u64)(MLX4_IB_RX_HASH_SRC_IPV4	|
+					       MLX4_IB_RX_HASH_DST_IPV4	|
+					       MLX4_IB_RX_HASH_SRC_IPV6	|
+					       MLX4_IB_RX_HASH_DST_IPV6	|
+					       MLX4_IB_RX_HASH_SRC_PORT_TCP |
+					       MLX4_IB_RX_HASH_DST_PORT_TCP |
+					       MLX4_IB_RX_HASH_SRC_PORT_UDP |
+					       MLX4_IB_RX_HASH_DST_PORT_UDP |
+					       MLX4_IB_RX_HASH_INNER)) {
 		pr_debug("RX Hash fields_mask has unsupported mask (0x%llx)\n",
 			 ucmd->rx_hash_fields_mask);
 		return (-EOPNOTSUPP);
@@ -644,7 +681,7 @@ static int create_qp_rss(struct mlx4_ib_dev *dev,
 	qp->mtt = (to_mqp(
 		   (struct ib_qp *)init_attr->rwq_ind_tbl->ind_tbl[0]))->mtt;
 
-	qp->rss_ctx = kzalloc(sizeof(*qp->rss_ctx), GFP_KERNEL);
+	qp->rss_ctx = kzalloc_obj(*qp->rss_ctx);
 	if (!qp->rss_ctx) {
 		err = -ENOMEM;
 		goto err_qp_alloc;
@@ -754,7 +791,7 @@ static int mlx4_ib_alloc_wqn(struct mlx4_ib_ucontext *context,
 					 struct mlx4_wqn_range, list);
 
 	if (!range || (range->refcount == range->size) || range->dirty) {
-		range = kzalloc(sizeof(*range), GFP_KERNEL);
+		range = kzalloc_obj(*range);
 		if (!range) {
 			err = -ENOMEM;
 			goto out;
@@ -886,8 +923,12 @@ static int create_rq(struct ib_pd *pd, struct ib_qp_init_attr *init_attr,
 	}
 
 	shift = mlx4_ib_umem_calc_optimal_mtt_size(qp->umem, 0, &n);
-	err = mlx4_mtt_init(dev->dev, n, shift, &qp->mtt);
+	if (shift < 0) {
+		err = shift;
+		goto err_buf;
+	}
 
+	err = mlx4_mtt_init(dev->dev, n, shift, &qp->mtt);
 	if (err)
 		goto err_buf;
 
@@ -1008,7 +1049,7 @@ static int create_qp_common(struct ib_pd *pd, struct ib_qp_init_attr *init_attr,
 	    qp_type == MLX4_IB_QPT_GSI ||
 	    (qp_type & (MLX4_IB_QPT_PROXY_SMI | MLX4_IB_QPT_PROXY_SMI_OWNER |
 			MLX4_IB_QPT_PROXY_GSI | MLX4_IB_QPT_TUN_SMI_OWNER))) {
-		qp->sqp = kzalloc(sizeof(struct mlx4_ib_sqp), GFP_KERNEL);
+		qp->sqp = kzalloc_obj(struct mlx4_ib_sqp);
 		if (!qp->sqp)
 			return -ENOMEM;
 	}
@@ -1069,8 +1110,12 @@ static int create_qp_common(struct ib_pd *pd, struct ib_qp_init_attr *init_attr,
 		}
 
 		shift = mlx4_ib_umem_calc_optimal_mtt_size(qp->umem, 0, &n);
-		err = mlx4_mtt_init(dev->dev, n, shift, &qp->mtt);
+		if (shift < 0) {
+			err = shift;
+			goto err_buf;
+		}
 
+		err = mlx4_mtt_init(dev->dev, n, shift, &qp->mtt);
 		if (err)
 			goto err_buf;
 
@@ -1605,7 +1650,8 @@ int mlx4_ib_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
 			sqp->roce_v2_gsi = ib_create_qp(pd, init_attr);
 
 			if (IS_ERR(sqp->roce_v2_gsi)) {
-				pr_err("Failed to create GSI QP for RoCEv2 (%ld)\n", PTR_ERR(sqp->roce_v2_gsi));
+				pr_err("Failed to create GSI QP for RoCEv2 (%pe)\n",
+				       sqp->roce_v2_gsi);
 				sqp->roce_v2_gsi = NULL;
 			} else {
 				to_mqp(sqp->roce_v2_gsi)->flags |=
@@ -1924,7 +1970,7 @@ static int create_qp_lb_counter(struct mlx4_ib_dev *dev, struct mlx4_ib_qp *qp)
 	if (err)
 		return err;
 
-	new_counter_index = kmalloc(sizeof(*new_counter_index), GFP_KERNEL);
+	new_counter_index = kmalloc_obj(*new_counter_index);
 	if (!new_counter_index) {
 		mlx4_counter_free(dev->dev, tmp_idx);
 		return -ENOMEM;
@@ -2117,7 +2163,7 @@ static int __mlx4_ib_modify_qp(void *src, enum mlx4_ib_source_type src_type,
 	    IB_LINK_LAYER_ETHERNET)
 		return -ENOTSUPP;
 
-	context = kzalloc(sizeof *context, GFP_KERNEL);
+	context = kzalloc_obj(*context);
 	if (!context)
 		return -ENOMEM;
 
@@ -4119,7 +4165,7 @@ struct ib_wq *mlx4_ib_create_wq(struct ib_pd *pd,
 		return ERR_PTR(-EOPNOTSUPP);
 	}
 
-	qp = kzalloc(sizeof(*qp), GFP_KERNEL);
+	qp = kzalloc_obj(*qp);
 	if (!qp)
 		return ERR_PTR(-ENOMEM);
 
@@ -4467,4 +4513,18 @@ void mlx4_ib_drain_rq(struct ib_qp *qp)
 	}
 
 	handle_drain_completion(cq, &rdrain, dev);
+}
+
+int mlx4_ib_qp_event_init(void)
+{
+	mlx4_ib_qp_event_wq = alloc_ordered_workqueue("mlx4_ib_qp_event_wq", 0);
+	if (!mlx4_ib_qp_event_wq)
+		return -ENOMEM;
+
+	return 0;
+}
+
+void mlx4_ib_qp_event_cleanup(void)
+{
+	destroy_workqueue(mlx4_ib_qp_event_wq);
 }

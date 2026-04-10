@@ -666,7 +666,6 @@ static const u16 pinmux_data[] = {
 	PINMUX_IPSR_NOFN(UART_1_0_PORT158, UART2_TX, SEL_UART_1_0_01),
 };
 
-
 #define EMEV_MUX_PIN(name, pin, mark) \
 	static const unsigned int name##_pins[] = { pin }; \
 	static const unsigned int name##_mux[] = { mark##_MARK }
@@ -1644,7 +1643,7 @@ static const struct pinmux_cfg_reg pinmux_config_regs[] = {
 		FN_SEL_HSI_1_0_00, FN_SEL_HSI_1_0_01, 0, 0,
 		))
 	},
-	{ },
+	{ /* sentinel */ }
 };
 
 const struct sh_pfc_soc_info emev2_pinmux_info = {

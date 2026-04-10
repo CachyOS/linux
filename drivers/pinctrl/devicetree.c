@@ -24,11 +24,11 @@ struct pinctrl_dt_map {
 	struct list_head node;
 	struct pinctrl_dev *pctldev;
 	struct pinctrl_map *map;
-	unsigned num_maps;
+	unsigned int num_maps;
 };
 
 static void dt_free_map(struct pinctrl_dev *pctldev,
-		     struct pinctrl_map *map, unsigned num_maps)
+			struct pinctrl_map *map, unsigned int num_maps)
 {
 	int i;
 
@@ -64,7 +64,7 @@ void pinctrl_dt_free_maps(struct pinctrl *p)
 
 static int dt_remember_or_free_map(struct pinctrl *p, const char *statename,
 				   struct pinctrl_dev *pctldev,
-				   struct pinctrl_map *map, unsigned num_maps)
+				   struct pinctrl_map *map, unsigned int num_maps)
 {
 	int i;
 	struct pinctrl_dt_map *dt_map;
@@ -84,7 +84,7 @@ static int dt_remember_or_free_map(struct pinctrl *p, const char *statename,
 	}
 
 	/* Remember the converted mapping table entries */
-	dt_map = kzalloc(sizeof(*dt_map), GFP_KERNEL);
+	dt_map = kzalloc_obj(*dt_map);
 	if (!dt_map)
 		goto err_free_map;
 
@@ -116,7 +116,7 @@ static int dt_to_map_one_config(struct pinctrl *p,
 	const struct pinctrl_ops *ops;
 	int ret;
 	struct pinctrl_map *map;
-	unsigned num_maps;
+	unsigned int num_maps;
 	bool allow_default = false;
 
 	/* Find the pin controller containing np_config */
@@ -129,7 +129,7 @@ static int dt_to_map_one_config(struct pinctrl *p,
 		np_pctldev = of_get_next_parent(np_pctldev);
 		if (!np_pctldev || of_node_is_root(np_pctldev)) {
 			of_node_put(np_pctldev);
-			ret = driver_deferred_probe_check_state(p->dev);
+			ret = -ENODEV;
 			/* keep deferring if modules are enabled */
 			if (IS_ENABLED(CONFIG_MODULES) && !allow_default && ret < 0)
 				ret = -EPROBE_DEFER;
@@ -143,10 +143,14 @@ static int dt_to_map_one_config(struct pinctrl *p,
 		pctldev = get_pinctrl_dev_from_of_node(np_pctldev);
 		if (pctldev)
 			break;
-		/* Do not defer probing of hogs (circular loop) */
+		/*
+		 * Do not defer probing of hogs (circular loop)
+		 *
+		 * Return 1 to let the caller catch the case.
+		 */
 		if (np_pctldev == p->dev->of_node) {
 			of_node_put(np_pctldev);
-			return -ENODEV;
+			return 1;
 		}
 	}
 	of_node_put(np_pctldev);
@@ -183,7 +187,7 @@ static int dt_remember_dummy_state(struct pinctrl *p, const char *statename)
 {
 	struct pinctrl_map *map;
 
-	map = kzalloc(sizeof(*map), GFP_KERNEL);
+	map = kzalloc_obj(*map);
 	if (!map)
 		return -ENOMEM;
 
@@ -220,12 +224,16 @@ int pinctrl_dt_to_map(struct pinctrl *p, struct pinctrl_dev *pctldev)
 	for (state = 0; ; state++) {
 		/* Retrieve the pinctrl-* property */
 		propname = kasprintf(GFP_KERNEL, "pinctrl-%d", state);
+		if (!propname) {
+			ret = -ENOMEM;
+			goto err;
+		}
 		prop = of_find_property(np, propname, &size);
 		kfree(propname);
 		if (!prop) {
 			if (state == 0) {
-				of_node_put(np);
-				return -ENODEV;
+				ret = -ENODEV;
+				goto err;
 			}
 			break;
 		}
@@ -261,6 +269,8 @@ int pinctrl_dt_to_map(struct pinctrl *p, struct pinctrl_dev *pctldev)
 			ret = dt_to_map_one_config(p, pctldev, statename,
 						   np_config);
 			of_node_put(np_config);
+			if (ret == 1)
+				continue;
 			if (ret < 0)
 				goto err;
 		}

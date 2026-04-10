@@ -2,6 +2,8 @@
 
 #include <uapi/linux/sched/types.h>
 
+#include <linux/export.h>
+
 #include <drm/drm_print.h>
 #include <drm/drm_vblank.h>
 #include <drm/drm_vblank_work.h>
@@ -72,6 +74,9 @@ void drm_vblank_cancel_pending_works(struct drm_vblank_crtc *vblank)
 	struct drm_vblank_work *work, *next;
 
 	assert_spin_locked(&vblank->dev->event_lock);
+
+	drm_WARN_ONCE(vblank->dev, !list_empty(&vblank->pending_work),
+		      "Cancelling pending vblank works!\n");
 
 	list_for_each_entry_safe(work, next, &vblank->pending_work, node) {
 		list_del_init(&work->node);
@@ -230,6 +235,28 @@ void drm_vblank_work_flush(struct drm_vblank_work *work)
 EXPORT_SYMBOL(drm_vblank_work_flush);
 
 /**
+ * drm_vblank_work_flush_all - flush all currently pending vblank work on crtc.
+ * @crtc: crtc for which vblank work to flush
+ *
+ * Wait until all currently queued vblank work on @crtc
+ * has finished executing once.
+ */
+void drm_vblank_work_flush_all(struct drm_crtc *crtc)
+{
+	struct drm_device *dev = crtc->dev;
+	struct drm_vblank_crtc *vblank = drm_crtc_vblank_crtc(crtc);
+
+	spin_lock_irq(&dev->event_lock);
+	wait_event_lock_irq(vblank->work_wait_queue,
+			    list_empty(&vblank->pending_work),
+			    dev->event_lock);
+	spin_unlock_irq(&dev->event_lock);
+
+	kthread_flush_worker(vblank->worker);
+}
+EXPORT_SYMBOL(drm_vblank_work_flush_all);
+
+/**
  * drm_vblank_work_init - initialize a vblank work item
  * @work: vblank work item
  * @crtc: CRTC whose vblank will trigger the work execution
@@ -242,7 +269,7 @@ void drm_vblank_work_init(struct drm_vblank_work *work, struct drm_crtc *crtc,
 {
 	kthread_init_work(&work->base, func);
 	INIT_LIST_HEAD(&work->node);
-	work->vblank = &crtc->dev->vblank[drm_crtc_index(crtc)];
+	work->vblank = drm_crtc_vblank_crtc(crtc);
 }
 EXPORT_SYMBOL(drm_vblank_work_init);
 
@@ -252,7 +279,7 @@ int drm_vblank_worker_init(struct drm_vblank_crtc *vblank)
 
 	INIT_LIST_HEAD(&vblank->pending_work);
 	init_waitqueue_head(&vblank->work_wait_queue);
-	worker = kthread_create_worker(0, "card%d-crtc%d",
+	worker = kthread_run_worker(0, "card%d-crtc%d",
 				       vblank->dev->primary->index,
 				       vblank->pipe);
 	if (IS_ERR(worker))

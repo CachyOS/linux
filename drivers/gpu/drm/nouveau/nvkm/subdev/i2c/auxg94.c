@@ -22,7 +22,7 @@
  * Authors: Ben Skeggs <bskeggs@redhat.com>
  */
 #define g94_i2c_aux(p) container_of((p), struct g94_i2c_aux, base)
-#include "aux.h"
+#include "auxch.h"
 
 struct g94_i2c_aux {
 	struct nvkm_i2c_aux base;
@@ -171,7 +171,7 @@ g94_i2c_aux_new_(const struct nvkm_i2c_aux_func *func,
 {
 	struct g94_i2c_aux *aux;
 
-	if (!(aux = kzalloc(sizeof(*aux), GFP_KERNEL)))
+	if (!(aux = kzalloc_obj(*aux)))
 		return -ENOMEM;
 	*paux = &aux->base;
 

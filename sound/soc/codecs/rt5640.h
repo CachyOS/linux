@@ -139,8 +139,8 @@
 #define RT5640_SV_ZCD1				0xd9
 #define RT5640_SV_ZCD2				0xda
 /* Dummy Register */
-#define RT5640_DUMMY1				0xfa
-#define RT5640_DUMMY2				0xfb
+#define RT5640_GCTL1				0xfa
+#define RT5640_GCTL2				0xfb
 #define RT5640_DUMMY3				0xfc
 
 
@@ -1978,11 +1978,27 @@
 #define RT5640_ZCD_HP_EN			(0x1 << 15)
 
 /* General Control 1 (0xfa) */
+#define RT5640_EN_LOUT_DF			(0x1 << 14)
+#define RT5640_EN_LOUT_DF_SFT			14
 #define RT5640_M_MONO_ADC_L			(0x1 << 13)
 #define RT5640_M_MONO_ADC_L_SFT			13
 #define RT5640_M_MONO_ADC_R			(0x1 << 12)
 #define RT5640_M_MONO_ADC_R_SFT			12
 #define RT5640_MCLK_DET				(0x1 << 11)
+
+/* General Control 2 (0xfb) */
+#define RT5640_IRQ_JD2_MASK			(0x1 << 12)
+#define RT5640_IRQ_JD2_SFT			12
+#define RT5640_IRQ_JD2_BP			(0x0 << 12)
+#define RT5640_IRQ_JD2_NOR			(0x1 << 12)
+#define RT5640_JD2_P_MASK			(0x1 << 10)
+#define RT5640_JD2_P_SFT			10
+#define RT5640_JD2_P_NOR			(0x0 << 10)
+#define RT5640_JD2_P_INV			(0x1 << 10)
+#define RT5640_JD2_MASK				(0x1 << 8)
+#define RT5640_JD2_SFT				8
+#define RT5640_JD2_DIS				(0x0 << 8)
+#define RT5640_JD2_EN				(0x1 << 8)
 
 /* Codec Private Register definition */
 
@@ -2122,7 +2138,7 @@ struct rt5640_priv {
 	struct regmap *regmap;
 	struct clk *mclk;
 
-	int ldo1_en; /* GPIO for LDO1_EN */
+	struct gpio_desc *ldo1_en; /* GPIO for LDO1_EN */
 	int irq;
 	int jd_gpio_irq;
 	int sysclk;

@@ -336,7 +336,7 @@ static int polaris10_smu_init(struct pp_hwmgr *hwmgr)
 {
 	struct polaris10_smumgr *smu_data;
 
-	smu_data = kzalloc(sizeof(struct polaris10_smumgr), GFP_KERNEL);
+	smu_data = kzalloc_obj(struct polaris10_smumgr);
 	if (smu_data == NULL)
 		return -ENOMEM;
 
@@ -1888,7 +1888,7 @@ static int polaris10_populate_avfs_parameters(struct pp_hwmgr *hwmgr)
 						(avfs_params.ucEnableGB_VDROOP_TABLE_CKSOFF << BTCGB1_Vdroop_Enable_SHIFT) |
 						(avfs_params.ucEnableGB_FUSE_TABLE_CKSON << AVFSGB0_Vdroop_Enable_SHIFT) |
 						(avfs_params.ucEnableGB_FUSE_TABLE_CKSOFF << AVFSGB1_Vdroop_Enable_SHIFT);
-		data->apply_avfs_cks_off_voltage = (avfs_params.ucEnableApplyAVFS_CKS_OFF_Voltage == 1) ? true : false;
+		data->apply_avfs_cks_off_voltage = avfs_params.ucEnableApplyAVFS_CKS_OFF_Voltage == 1;
 	}
 	return result;
 }
@@ -2567,22 +2567,19 @@ static uint8_t polaris10_get_memory_modile_index(struct pp_hwmgr *hwmgr)
 
 static int polaris10_initialize_mc_reg_table(struct pp_hwmgr *hwmgr)
 {
-	int result;
 	struct polaris10_smumgr *smu_data = (struct polaris10_smumgr *)(hwmgr->smu_backend);
 	pp_atomctrl_mc_reg_table *mc_reg_table = &smu_data->mc_reg_table;
 	uint8_t module_index = polaris10_get_memory_modile_index(hwmgr);
 
 	memset(mc_reg_table, 0, sizeof(pp_atomctrl_mc_reg_table));
-	result = atomctrl_initialize_mc_reg_table_v2_2(hwmgr, module_index, mc_reg_table);
 
-	return result;
+	return atomctrl_initialize_mc_reg_table_v2_2(hwmgr, module_index, mc_reg_table);
 }
 
 static bool polaris10_is_dpm_running(struct pp_hwmgr *hwmgr)
 {
-	return (1 == PHM_READ_INDIRECT_FIELD(hwmgr->device,
-			CGS_IND_REG__SMC, FEATURE_STATUS, VOLTAGE_CONTROLLER_ON))
-			? true : false;
+	return PHM_READ_INDIRECT_FIELD(hwmgr->device,
+			CGS_IND_REG__SMC, FEATURE_STATUS, VOLTAGE_CONTROLLER_ON) == 1;
 }
 
 static int polaris10_update_dpm_settings(struct pp_hwmgr *hwmgr,

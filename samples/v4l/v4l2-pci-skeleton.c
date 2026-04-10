@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This is a V4L2 PCI Skeleton Driver. It gives an initial skeleton source
  * for use with other PCI drivers.
@@ -6,19 +7,6 @@
  * input 0 and an HDMI connector as input 1.
  *
  * Copyright 2014 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
- *
- * This program is free software; you may redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
  */
 
 #include <linux/types.h>
@@ -167,6 +155,7 @@ static int queue_setup(struct vb2_queue *vq,
 		       unsigned int sizes[], struct device *alloc_devs[])
 {
 	struct skeleton *skel = vb2_get_drv_priv(vq);
+	unsigned int q_num_bufs = vb2_get_num_buffers(vq);
 
 	skel->field = skel->format.field;
 	if (skel->field == V4L2_FIELD_ALTERNATE) {
@@ -179,8 +168,8 @@ static int queue_setup(struct vb2_queue *vq,
 		skel->field = V4L2_FIELD_TOP;
 	}
 
-	if (vq->num_buffers + *nbuffers < 3)
-		*nbuffers = 3 - vq->num_buffers;
+	if (q_num_bufs + *nbuffers < 3)
+		*nbuffers = 3 - q_num_bufs;
 
 	if (*nplanes)
 		return sizes[0] < skel->format.sizeimage ? -EINVAL : 0;
@@ -280,9 +269,7 @@ static void stop_streaming(struct vb2_queue *vq)
 }
 
 /*
- * The vb2 queue ops. Note that since q->lock is set we can use the standard
- * vb2_ops_wait_prepare/finish helper functions. If q->lock would be NULL,
- * then this driver would have to provide these ops.
+ * The vb2 queue ops.
  */
 static const struct vb2_ops skel_qops = {
 	.queue_setup		= queue_setup,
@@ -290,8 +277,6 @@ static const struct vb2_ops skel_qops = {
 	.buf_queue		= buffer_queue,
 	.start_streaming	= start_streaming,
 	.stop_streaming		= stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 /*
@@ -303,8 +288,8 @@ static int skeleton_querycap(struct file *file, void *priv,
 {
 	struct skeleton *skel = video_drvdata(file);
 
-	strlcpy(cap->driver, KBUILD_MODNAME, sizeof(cap->driver));
-	strlcpy(cap->card, "V4L2 PCI Skeleton", sizeof(cap->card));
+	strscpy(cap->driver, KBUILD_MODNAME, sizeof(cap->driver));
+	strscpy(cap->card, "V4L2 PCI Skeleton", sizeof(cap->card));
 	snprintf(cap->bus_info, sizeof(cap->bus_info), "PCI:%s",
 		 pci_name(skel->pdev));
 	return 0;
@@ -485,7 +470,7 @@ static int skeleton_querystd(struct file *file, void *priv, v4l2_std_id *std)
 	return 0;
 }
 
-static int skeleton_s_dv_timings(struct file *file, void *_fh,
+static int skeleton_s_dv_timings(struct file *file, void *priv,
 				 struct v4l2_dv_timings *timings)
 {
 	struct skeleton *skel = video_drvdata(file);
@@ -524,7 +509,7 @@ static int skeleton_s_dv_timings(struct file *file, void *_fh,
 	return 0;
 }
 
-static int skeleton_g_dv_timings(struct file *file, void *_fh,
+static int skeleton_g_dv_timings(struct file *file, void *priv,
 				 struct v4l2_dv_timings *timings)
 {
 	struct skeleton *skel = video_drvdata(file);
@@ -537,7 +522,7 @@ static int skeleton_g_dv_timings(struct file *file, void *_fh,
 	return 0;
 }
 
-static int skeleton_enum_dv_timings(struct file *file, void *_fh,
+static int skeleton_enum_dv_timings(struct file *file, void *priv,
 				    struct v4l2_enum_dv_timings *timings)
 {
 	struct skeleton *skel = video_drvdata(file);
@@ -559,7 +544,7 @@ static int skeleton_enum_dv_timings(struct file *file, void *_fh,
  * can lock but that the DMA engine it is connected to cannot handle
  * pixelclocks above a certain frequency), then -ERANGE is returned.
  */
-static int skeleton_query_dv_timings(struct file *file, void *_fh,
+static int skeleton_query_dv_timings(struct file *file, void *priv,
 				     struct v4l2_dv_timings *timings)
 {
 	struct skeleton *skel = video_drvdata(file);
@@ -588,7 +573,7 @@ static int skeleton_query_dv_timings(struct file *file, void *_fh,
 	return 0;
 }
 
-static int skeleton_dv_timings_cap(struct file *file, void *fh,
+static int skeleton_dv_timings_cap(struct file *file, void *priv,
 				   struct v4l2_dv_timings_cap *cap)
 {
 	struct skeleton *skel = video_drvdata(file);
@@ -609,11 +594,11 @@ static int skeleton_enum_input(struct file *file, void *priv,
 	i->type = V4L2_INPUT_TYPE_CAMERA;
 	if (i->index == 0) {
 		i->std = SKEL_TVNORMS;
-		strlcpy(i->name, "S-Video", sizeof(i->name));
+		strscpy(i->name, "S-Video", sizeof(i->name));
 		i->capabilities = V4L2_IN_CAP_STD;
 	} else {
 		i->std = 0;
-		strlcpy(i->name, "HDMI", sizeof(i->name));
+		strscpy(i->name, "HDMI", sizeof(i->name));
 		i->capabilities = V4L2_IN_CAP_DV_TIMINGS;
 	}
 	return 0;
@@ -832,7 +817,7 @@ static int skeleton_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	 * available before it can be started. The start_streaming() op
 	 * won't be called until at least this many buffers are queued up.
 	 */
-	q->min_buffers_needed = 2;
+	q->min_queued_buffers = 2;
 	/*
 	 * The serialization lock for the streaming ioctls. This is the same
 	 * as the main serialization lock, but if some of the non-streaming
@@ -857,7 +842,7 @@ static int skeleton_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	/* Initialize the video_device structure */
 	vdev = &skel->vdev;
-	strlcpy(vdev->name, KBUILD_MODNAME, sizeof(vdev->name));
+	strscpy(vdev->name, KBUILD_MODNAME, sizeof(vdev->name));
 	/*
 	 * There is nothing to clean up, so release is set to an empty release
 	 * function. The release callback must be non-NULL.

@@ -19,9 +19,9 @@
 #include <linux/module.h>
 #include <linux/ctype.h>
 #include <linux/kthread.h>
-#include <linux/parser.h>
+#include <linux/fs_context.h>
+#include <linux/fs_parser.h>
 #include <linux/seq_file.h>
-#include <linux/mount.h>
 #include <linux/math64.h>
 #include <linux/writeback.h>
 #include "ubifs.h"
@@ -54,11 +54,7 @@ module_param_cb(default_version, &ubifs_default_version_ops, &ubifs_default_vers
 static struct kmem_cache *ubifs_inode_slab;
 
 /* UBIFS TNC shrinker description */
-static struct shrinker ubifs_shrinker_info = {
-	.scan_objects = ubifs_shrink_scan,
-	.count_objects = ubifs_shrink_count,
-	.seeks = DEFAULT_SEEKS,
-};
+static struct shrinker *ubifs_shrinker_info;
 
 /**
  * validate_inode - validate inode.
@@ -118,7 +114,7 @@ struct inode *ubifs_iget(struct super_block *sb, unsigned long inum)
 	inode = iget_locked(sb, inum);
 	if (!inode)
 		return ERR_PTR(-ENOMEM);
-	if (!(inode->i_state & I_NEW))
+	if (!(inode_state_read_once(inode) & I_NEW))
 		return inode;
 	ui = ubifs_inode(inode);
 
@@ -142,12 +138,12 @@ struct inode *ubifs_iget(struct super_block *sb, unsigned long inum)
 	set_nlink(inode, le32_to_cpu(ino->nlink));
 	i_uid_write(inode, le32_to_cpu(ino->uid));
 	i_gid_write(inode, le32_to_cpu(ino->gid));
-	inode->i_atime.tv_sec  = (int64_t)le64_to_cpu(ino->atime_sec);
-	inode->i_atime.tv_nsec = le32_to_cpu(ino->atime_nsec);
-	inode->i_mtime.tv_sec  = (int64_t)le64_to_cpu(ino->mtime_sec);
-	inode->i_mtime.tv_nsec = le32_to_cpu(ino->mtime_nsec);
-	inode->i_ctime.tv_sec  = (int64_t)le64_to_cpu(ino->ctime_sec);
-	inode->i_ctime.tv_nsec = le32_to_cpu(ino->ctime_nsec);
+	inode_set_atime(inode, (int64_t)le64_to_cpu(ino->atime_sec),
+			le32_to_cpu(ino->atime_nsec));
+	inode_set_mtime(inode, (int64_t)le64_to_cpu(ino->mtime_sec),
+			le32_to_cpu(ino->mtime_nsec));
+	inode_set_ctime(inode, (int64_t)le64_to_cpu(ino->ctime_sec),
+			le32_to_cpu(ino->ctime_nsec));
 	inode->i_mode = le32_to_cpu(ino->mode);
 	inode->i_size = le64_to_cpu(ino->size);
 
@@ -212,7 +208,7 @@ struct inode *ubifs_iget(struct super_block *sb, unsigned long inum)
 		dev_t rdev;
 		union ubifs_dev_desc *dev;
 
-		ui->data = kmalloc(sizeof(union ubifs_dev_desc), GFP_NOFS);
+		ui->data = kmalloc_obj(union ubifs_dev_desc, GFP_NOFS);
 		if (!ui->data) {
 			err = -ENOMEM;
 			goto out_ino;
@@ -339,7 +335,7 @@ static int ubifs_write_inode(struct inode *inode, struct writeback_control *wbc)
 
 static int ubifs_drop_inode(struct inode *inode)
 {
-	int drop = generic_drop_inode(inode);
+	int drop = inode_generic_drop(inode);
 
 	if (!drop)
 		drop = fscrypt_drop_inode(inode);
@@ -362,7 +358,7 @@ static void ubifs_evict_inode(struct inode *inode)
 		goto out;
 
 	dbg_gen("inode %lu, mode %#x", inode->i_ino, (int)inode->i_mode);
-	ubifs_assert(c, !atomic_read(&inode->i_count));
+	ubifs_assert(c, !icount_read(inode));
 
 	truncate_inode_pages_final(&inode->i_data);
 
@@ -777,10 +773,10 @@ static void init_constants_master(struct ubifs_info *c)
 	 * necessary to report something for the 'statfs()' call.
 	 *
 	 * Subtract the LEB reserved for GC, the LEB which is reserved for
-	 * deletions, minimum LEBs for the index, and assume only one journal
-	 * head is available.
+	 * deletions, minimum LEBs for the index, the LEBs which are reserved
+	 * for each journal head.
 	 */
-	tmp64 = c->main_lebs - 1 - 1 - MIN_INDEX_LEBS - c->jhead_cnt + 1;
+	tmp64 = c->main_lebs - 1 - 1 - MIN_INDEX_LEBS - c->jhead_cnt;
 	tmp64 *= (long long)c->leb_size - c->leb_overhead;
 	tmp64 = ubifs_reported_space(c, tmp64);
 	c->block_cnt = tmp64 >> UBIFS_BLOCK_SHIFT;
@@ -823,8 +819,7 @@ static int alloc_wbufs(struct ubifs_info *c)
 {
 	int i, err;
 
-	c->jheads = kcalloc(c->jhead_cnt, sizeof(struct ubifs_jhead),
-			    GFP_KERNEL);
+	c->jheads = kzalloc_objs(struct ubifs_jhead, c->jhead_cnt);
 	if (!c->jheads)
 		return -ENOMEM;
 
@@ -833,7 +828,7 @@ static int alloc_wbufs(struct ubifs_info *c)
 		INIT_LIST_HEAD(&c->jheads[i].buds_list);
 		err = ubifs_wbuf_init(c, &c->jheads[i].wbuf);
 		if (err)
-			return err;
+			goto out_wbuf;
 
 		c->jheads[i].wbuf.sync_callback = &bud_wbuf_callback;
 		c->jheads[i].wbuf.jhead = i;
@@ -841,7 +836,7 @@ static int alloc_wbufs(struct ubifs_info *c)
 		c->jheads[i].log_hash = ubifs_hash_get_desc(c);
 		if (IS_ERR(c->jheads[i].log_hash)) {
 			err = PTR_ERR(c->jheads[i].log_hash);
-			goto out;
+			goto out_log_hash;
 		}
 	}
 
@@ -854,9 +849,18 @@ static int alloc_wbufs(struct ubifs_info *c)
 
 	return 0;
 
-out:
-	while (i--)
+out_log_hash:
+	kfree(c->jheads[i].wbuf.buf);
+	kfree(c->jheads[i].wbuf.inodes);
+
+out_wbuf:
+	while (i--) {
+		kfree(c->jheads[i].wbuf.buf);
+		kfree(c->jheads[i].wbuf.inodes);
 		kfree(c->jheads[i].log_hash);
+	}
+	kfree(c->jheads);
+	c->jheads = NULL;
 
 	return err;
 }
@@ -914,8 +918,10 @@ static void free_buds(struct ubifs_info *c)
 {
 	struct ubifs_bud *bud, *n;
 
-	rbtree_postorder_for_each_entry_safe(bud, n, &c->buds, rb)
+	rbtree_postorder_for_each_entry_safe(bud, n, &c->buds, rb) {
+		kfree(bud->log_hash);
 		kfree(bud);
+	}
 }
 
 /**
@@ -974,177 +980,120 @@ enum {
 	Opt_auth_key,
 	Opt_auth_hash_name,
 	Opt_ignore,
-	Opt_err,
 };
 
-static const match_table_t tokens = {
-	{Opt_fast_unmount, "fast_unmount"},
-	{Opt_norm_unmount, "norm_unmount"},
-	{Opt_bulk_read, "bulk_read"},
-	{Opt_no_bulk_read, "no_bulk_read"},
-	{Opt_chk_data_crc, "chk_data_crc"},
-	{Opt_no_chk_data_crc, "no_chk_data_crc"},
-	{Opt_override_compr, "compr=%s"},
-	{Opt_auth_key, "auth_key=%s"},
-	{Opt_auth_hash_name, "auth_hash_name=%s"},
-	{Opt_ignore, "ubi=%s"},
-	{Opt_ignore, "vol=%s"},
-	{Opt_assert, "assert=%s"},
-	{Opt_err, NULL},
+static const struct constant_table ubifs_param_compr[] = {
+	{ "none",	UBIFS_COMPR_NONE },
+	{ "lzo",	UBIFS_COMPR_LZO },
+	{ "zlib",	UBIFS_COMPR_ZLIB },
+	{ "zstd",	UBIFS_COMPR_ZSTD },
+	{}
+};
+
+static const struct constant_table ubifs_param_assert[] = {
+	{ "report",	ASSACT_REPORT },
+	{ "read-only",	ASSACT_RO },
+	{ "panic",	ASSACT_PANIC },
+	{}
+};
+
+static const struct fs_parameter_spec ubifs_fs_param_spec[] = {
+	fsparam_flag	("fast_unmount",	Opt_fast_unmount),
+	fsparam_flag	("norm_unmount",	Opt_norm_unmount),
+	fsparam_flag	("bulk_read",		Opt_bulk_read),
+	fsparam_flag	("no_bulk_read",	Opt_no_bulk_read),
+	fsparam_flag	("chk_data_crc",	Opt_chk_data_crc),
+	fsparam_flag	("no_chk_data_crc",	Opt_no_chk_data_crc),
+	fsparam_enum	("compr",		Opt_override_compr, ubifs_param_compr),
+	fsparam_enum	("assert",		Opt_assert, ubifs_param_assert),
+	fsparam_string	("auth_key",		Opt_auth_key),
+	fsparam_string	("auth_hash_name",	Opt_auth_hash_name),
+	fsparam_string	("ubi",			Opt_ignore),
+	fsparam_string	("vol",			Opt_ignore),
+	{}
+};
+
+struct ubifs_fs_context {
+	struct ubifs_mount_opts mount_opts;
+	char *auth_key_name;
+	char *auth_hash_name;
+	unsigned int no_chk_data_crc:1;
+	unsigned int bulk_read:1;
+	unsigned int default_compr:2;
+	unsigned int assert_action:2;
 };
 
 /**
- * parse_standard_option - parse a standard mount option.
- * @option: the option to parse
- *
- * Normally, standard mount options like "sync" are passed to file-systems as
- * flags. However, when a "rootflags=" kernel boot parameter is used, they may
- * be present in the options string. This function tries to deal with this
- * situation and parse standard options. Returns 0 if the option was not
- * recognized, and the corresponding integer flag if it was.
- *
- * UBIFS is only interested in the "sync" option, so do not check for anything
- * else.
- */
-static int parse_standard_option(const char *option)
-{
-
-	pr_notice("UBIFS: parse %s\n", option);
-	if (!strcmp(option, "sync"))
-		return SB_SYNCHRONOUS;
-	return 0;
-}
-
-/**
- * ubifs_parse_options - parse mount parameters.
- * @c: UBIFS file-system description object
- * @options: parameters to parse
- * @is_remount: non-zero if this is FS re-mount
+ * ubifs_parse_param - parse a parameter.
+ * @fc: the filesystem context
+ * @param: the parameter to parse
  *
  * This function parses UBIFS mount options and returns zero in case success
  * and a negative error code in case of failure.
  */
-static int ubifs_parse_options(struct ubifs_info *c, char *options,
-			       int is_remount)
+static int ubifs_parse_param(struct fs_context *fc, struct fs_parameter *param)
 {
-	char *p;
-	substring_t args[MAX_OPT_ARGS];
+	struct ubifs_fs_context *ctx = fc->fs_private;
+	struct fs_parse_result result;
+	bool is_remount = (fc->purpose & FS_CONTEXT_FOR_RECONFIGURE);
+	int opt;
 
-	if (!options)
-		return 0;
+	opt = fs_parse(fc, ubifs_fs_param_spec, param, &result);
+	if (opt < 0)
+		return opt;
 
-	while ((p = strsep(&options, ","))) {
-		int token;
-
-		if (!*p)
-			continue;
-
-		token = match_token(p, tokens, args);
-		switch (token) {
+	switch (opt) {
 		/*
 		 * %Opt_fast_unmount and %Opt_norm_unmount options are ignored.
 		 * We accept them in order to be backward-compatible. But this
 		 * should be removed at some point.
 		 */
-		case Opt_fast_unmount:
-			c->mount_opts.unmount_mode = 2;
-			break;
-		case Opt_norm_unmount:
-			c->mount_opts.unmount_mode = 1;
-			break;
-		case Opt_bulk_read:
-			c->mount_opts.bulk_read = 2;
-			c->bulk_read = 1;
-			break;
-		case Opt_no_bulk_read:
-			c->mount_opts.bulk_read = 1;
-			c->bulk_read = 0;
-			break;
-		case Opt_chk_data_crc:
-			c->mount_opts.chk_data_crc = 2;
-			c->no_chk_data_crc = 0;
-			break;
-		case Opt_no_chk_data_crc:
-			c->mount_opts.chk_data_crc = 1;
-			c->no_chk_data_crc = 1;
-			break;
-		case Opt_override_compr:
-		{
-			char *name = match_strdup(&args[0]);
-
-			if (!name)
-				return -ENOMEM;
-			if (!strcmp(name, "none"))
-				c->mount_opts.compr_type = UBIFS_COMPR_NONE;
-			else if (!strcmp(name, "lzo"))
-				c->mount_opts.compr_type = UBIFS_COMPR_LZO;
-			else if (!strcmp(name, "zlib"))
-				c->mount_opts.compr_type = UBIFS_COMPR_ZLIB;
-			else if (!strcmp(name, "zstd"))
-				c->mount_opts.compr_type = UBIFS_COMPR_ZSTD;
-			else {
-				ubifs_err(c, "unknown compressor \"%s\"", name); //FIXME: is c ready?
-				kfree(name);
-				return -EINVAL;
-			}
-			kfree(name);
-			c->mount_opts.override_compr = 1;
-			c->default_compr = c->mount_opts.compr_type;
-			break;
+	case Opt_fast_unmount:
+		ctx->mount_opts.unmount_mode = 2;
+		break;
+	case Opt_norm_unmount:
+		ctx->mount_opts.unmount_mode = 1;
+		break;
+	case Opt_bulk_read:
+		ctx->mount_opts.bulk_read = 2;
+		ctx->bulk_read = 1;
+		break;
+	case Opt_no_bulk_read:
+		ctx->mount_opts.bulk_read = 1;
+		ctx->bulk_read = 0;
+		break;
+	case Opt_chk_data_crc:
+		ctx->mount_opts.chk_data_crc = 2;
+		ctx->no_chk_data_crc = 0;
+		break;
+	case Opt_no_chk_data_crc:
+		ctx->mount_opts.chk_data_crc = 1;
+		ctx->no_chk_data_crc = 1;
+		break;
+	case Opt_override_compr:
+		ctx->mount_opts.compr_type = result.uint_32;
+		ctx->mount_opts.override_compr = 1;
+		ctx->default_compr = ctx->mount_opts.compr_type;
+		break;
+	case Opt_assert:
+		ctx->assert_action = result.uint_32;
+		break;
+	case Opt_auth_key:
+		if (!is_remount) {
+			kfree(ctx->auth_key_name);
+			ctx->auth_key_name = param->string;
+			param->string = NULL;
 		}
-		case Opt_assert:
-		{
-			char *act = match_strdup(&args[0]);
-
-			if (!act)
-				return -ENOMEM;
-			if (!strcmp(act, "report"))
-				c->assert_action = ASSACT_REPORT;
-			else if (!strcmp(act, "read-only"))
-				c->assert_action = ASSACT_RO;
-			else if (!strcmp(act, "panic"))
-				c->assert_action = ASSACT_PANIC;
-			else {
-				ubifs_err(c, "unknown assert action \"%s\"", act);
-				kfree(act);
-				return -EINVAL;
-			}
-			kfree(act);
-			break;
+		break;
+	case Opt_auth_hash_name:
+		if (!is_remount) {
+			kfree(ctx->auth_hash_name);
+			ctx->auth_hash_name = param->string;
+			param->string = NULL;
 		}
-		case Opt_auth_key:
-			if (!is_remount) {
-				c->auth_key_name = kstrdup(args[0].from,
-								GFP_KERNEL);
-				if (!c->auth_key_name)
-					return -ENOMEM;
-			}
-			break;
-		case Opt_auth_hash_name:
-			if (!is_remount) {
-				c->auth_hash_name = kstrdup(args[0].from,
-								GFP_KERNEL);
-				if (!c->auth_hash_name)
-					return -ENOMEM;
-			}
-			break;
-		case Opt_ignore:
-			break;
-		default:
-		{
-			unsigned long flag;
-			struct super_block *sb = c->vfs_sb;
-
-			flag = parse_standard_option(p);
-			if (!flag) {
-				ubifs_err(c, "unrecognized mount option \"%s\" or missing value",
-					  p);
-				return -EINVAL;
-			}
-			sb->s_flags |= flag;
-			break;
-		}
-		}
+		break;
+	case Opt_ignore:
+		break;
 	}
 
 	return 0;
@@ -1184,6 +1133,7 @@ static void destroy_journal(struct ubifs_info *c)
 
 		bud = list_entry(c->old_buds.next, struct ubifs_bud, list);
 		list_del(&bud->list);
+		kfree(bud->log_hash);
 		kfree(bud);
 	}
 	ubifs_destroy_idx_gc(c);
@@ -1295,8 +1245,7 @@ static int mount_ubifs(struct ubifs_info *c)
 	 * never exceed 64.
 	 */
 	err = -ENOMEM;
-	c->bottom_up_buf = kmalloc_array(BOTTOM_UP_HEIGHT, sizeof(int),
-					 GFP_KERNEL);
+	c->bottom_up_buf = kmalloc_objs(int, BOTTOM_UP_HEIGHT);
 	if (!c->bottom_up_buf)
 		goto out_free;
 
@@ -1995,21 +1944,27 @@ static void ubifs_put_super(struct super_block *sb)
 	mutex_unlock(&c->umount_mutex);
 }
 
-static int ubifs_remount_fs(struct super_block *sb, int *flags, char *data)
+static int ubifs_reconfigure(struct fs_context *fc)
 {
+	struct ubifs_fs_context *ctx = fc->fs_private;
+	struct super_block *sb = fc->root->d_sb;
 	int err;
 	struct ubifs_info *c = sb->s_fs_info;
 
 	sync_filesystem(sb);
-	dbg_gen("old flags %#lx, new flags %#x", sb->s_flags, *flags);
+	dbg_gen("old flags %#lx, new flags %#x", sb->s_flags, fc->sb_flags);
 
-	err = ubifs_parse_options(c, data, 1);
-	if (err) {
-		ubifs_err(c, "invalid or unknown remount parameter");
-		return err;
-	}
+	/*
+	 * Apply the mount option changes.
+	 * auth_key_name and auth_hash_name are ignored on remount.
+	 */
+	c->mount_opts		= ctx->mount_opts;
+	c->bulk_read		= ctx->bulk_read;
+	c->no_chk_data_crc	= ctx->no_chk_data_crc;
+	c->default_compr	= ctx->default_compr;
+	c->assert_action	= ctx->assert_action;
 
-	if (c->ro_mount && !(*flags & SB_RDONLY)) {
+	if (c->ro_mount && !(fc->sb_flags & SB_RDONLY)) {
 		if (c->ro_error) {
 			ubifs_msg(c, "cannot re-mount R/W due to prior errors");
 			return -EROFS;
@@ -2021,7 +1976,7 @@ static int ubifs_remount_fs(struct super_block *sb, int *flags, char *data)
 		err = ubifs_remount_rw(c);
 		if (err)
 			return err;
-	} else if (!c->ro_mount && (*flags & SB_RDONLY)) {
+	} else if (!c->ro_mount && (fc->sb_flags & SB_RDONLY)) {
 		if (c->ro_error) {
 			ubifs_msg(c, "cannot re-mount R/O due to prior errors");
 			return -EROFS;
@@ -2054,14 +2009,13 @@ const struct super_operations ubifs_super_operations = {
 	.evict_inode   = ubifs_evict_inode,
 	.statfs        = ubifs_statfs,
 	.dirty_inode   = ubifs_dirty_inode,
-	.remount_fs    = ubifs_remount_fs,
 	.show_options  = ubifs_show_options,
 	.sync_fs       = ubifs_sync_fs,
 };
 
 /**
  * open_ubi - parse UBI device name string and open the UBI device.
- * @name: UBI volume name
+ * @fc: The filesystem context
  * @mode: UBI volume open mode
  *
  * The primary method of mounting UBIFS is by specifying the UBI volume
@@ -2078,14 +2032,12 @@ const struct super_operations ubifs_super_operations = {
  * returns UBI volume description object in case of success and a negative
  * error code in case of failure.
  */
-static struct ubi_volume_desc *open_ubi(const char *name, int mode)
+static struct ubi_volume_desc *open_ubi(struct fs_context *fc, int mode)
 {
 	struct ubi_volume_desc *ubi;
+	const char *name = fc->source;
 	int dev, vol;
 	char *endptr;
-
-	if (!name || !*name)
-		return ERR_PTR(-EINVAL);
 
 	/* First, try to open using the device node path method */
 	ubi = ubi_open_volume_path(name, mode);
@@ -2094,14 +2046,14 @@ static struct ubi_volume_desc *open_ubi(const char *name, int mode)
 
 	/* Try the "nodev" method */
 	if (name[0] != 'u' || name[1] != 'b' || name[2] != 'i')
-		return ERR_PTR(-EINVAL);
+		goto invalid_source;
 
 	/* ubi:NAME method */
 	if ((name[3] == ':' || name[3] == '!') && name[4] != '\0')
 		return ubi_open_volume_nm(0, name + 4, mode);
 
 	if (!isdigit(name[3]))
-		return ERR_PTR(-EINVAL);
+		goto invalid_source;
 
 	dev = simple_strtoul(name + 3, &endptr, 0);
 
@@ -2113,7 +2065,7 @@ static struct ubi_volume_desc *open_ubi(const char *name, int mode)
 	if (*endptr == '_' && isdigit(endptr[1])) {
 		vol = simple_strtoul(endptr + 1, &endptr, 0);
 		if (*endptr != '\0')
-			return ERR_PTR(-EINVAL);
+			goto invalid_source;
 		return ubi_open_volume(dev, vol, mode);
 	}
 
@@ -2121,14 +2073,15 @@ static struct ubi_volume_desc *open_ubi(const char *name, int mode)
 	if ((*endptr == ':' || *endptr == '!') && endptr[1] != '\0')
 		return ubi_open_volume_nm(dev, ++endptr, mode);
 
-	return ERR_PTR(-EINVAL);
+invalid_source:
+	return ERR_PTR(invalf(fc, "Invalid source name"));
 }
 
 static struct ubifs_info *alloc_ubifs_info(struct ubi_volume_desc *ubi)
 {
 	struct ubifs_info *c;
 
-	c = kzalloc(sizeof(struct ubifs_info), GFP_KERNEL);
+	c = kzalloc_obj(struct ubifs_info);
 	if (c) {
 		spin_lock_init(&c->cnt_lock);
 		spin_lock_init(&c->cs_lock);
@@ -2143,6 +2096,8 @@ static struct ubifs_info *alloc_ubifs_info(struct ubi_volume_desc *ubi)
 		mutex_init(&c->bu_mutex);
 		mutex_init(&c->write_reserve_mutex);
 		init_waitqueue_head(&c->cmt_wq);
+		init_waitqueue_head(&c->reserve_space_wq);
+		atomic_set(&c->need_wait_space, 0);
 		c->buds = RB_ROOT;
 		c->old_idx = RB_ROOT;
 		c->size_tree = RB_ROOT;
@@ -2171,9 +2126,10 @@ static struct ubifs_info *alloc_ubifs_info(struct ubi_volume_desc *ubi)
 	return c;
 }
 
-static int ubifs_fill_super(struct super_block *sb, void *data, int silent)
+static int ubifs_fill_super(struct super_block *sb, struct fs_context *fc)
 {
 	struct ubifs_info *c = sb->s_fs_info;
+	struct ubifs_fs_context *ctx = fc->fs_private;
 	struct inode *root;
 	int err;
 
@@ -2185,9 +2141,18 @@ static int ubifs_fill_super(struct super_block *sb, void *data, int silent)
 		goto out;
 	}
 
-	err = ubifs_parse_options(c, data, 0);
-	if (err)
-		goto out_close;
+	/* Copy in parsed mount options */
+	c->mount_opts		= ctx->mount_opts;
+	c->auth_key_name	= ctx->auth_key_name;
+	c->auth_hash_name	= ctx->auth_hash_name;
+	c->no_chk_data_crc	= ctx->no_chk_data_crc;
+	c->bulk_read		= ctx->bulk_read;
+	c->default_compr	= ctx->default_compr;
+	c->assert_action	= ctx->assert_action;
+
+	/* ubifs_info owns auth strings now */
+	ctx->auth_key_name = NULL;
+	ctx->auth_hash_name = NULL;
 
 	/*
 	 * UBIFS provides 'backing_dev_info' in order to disable read-ahead. For
@@ -2231,13 +2196,16 @@ static int ubifs_fill_super(struct super_block *sb, void *data, int silent)
 		goto out_umount;
 	}
 
+	generic_set_sb_d_ops(sb);
 	sb->s_root = d_make_root(root);
 	if (!sb->s_root) {
 		err = -ENOMEM;
 		goto out_umount;
 	}
 
-	import_uuid(&sb->s_uuid, c->uuid);
+	super_set_uuid(sb, c->uuid, sizeof(c->uuid));
+	super_set_sysfs_name_generic(sb, UBIFS_DFS_DIR_NAME,
+				     c->vi.ubi_num, c->vi.vol_id);
 
 	mutex_unlock(&c->umount_mutex);
 	return 0;
@@ -2253,41 +2221,38 @@ out:
 	return err;
 }
 
-static int sb_test(struct super_block *sb, void *data)
+static int sb_test(struct super_block *sb, struct fs_context *fc)
 {
-	struct ubifs_info *c1 = data;
+	struct ubifs_info *c1 = fc->s_fs_info;
 	struct ubifs_info *c = sb->s_fs_info;
 
 	return c->vi.cdev == c1->vi.cdev;
 }
 
-static int sb_set(struct super_block *sb, void *data)
-{
-	sb->s_fs_info = data;
-	return set_anon_super(sb, NULL);
-}
-
-static struct dentry *ubifs_mount(struct file_system_type *fs_type, int flags,
-			const char *name, void *data)
+static int ubifs_get_tree(struct fs_context *fc)
 {
 	struct ubi_volume_desc *ubi;
 	struct ubifs_info *c;
 	struct super_block *sb;
 	int err;
 
-	dbg_gen("name %s, flags %#x", name, flags);
+	if (!fc->source || !*fc->source)
+		return invalf(fc, "No source specified");
+
+	dbg_gen("name %s, flags %#x", fc->source, fc->sb_flags);
 
 	/*
 	 * Get UBI device number and volume ID. Mount it read-only so far
 	 * because this might be a new mount point, and UBI allows only one
 	 * read-write user at a time.
 	 */
-	ubi = open_ubi(name, UBI_READONLY);
+	ubi = open_ubi(fc, UBI_READONLY);
 	if (IS_ERR(ubi)) {
-		if (!(flags & SB_SILENT))
+		err = PTR_ERR(ubi);
+		if (!(fc->sb_flags & SB_SILENT))
 			pr_err("UBIFS error (pid: %d): cannot open \"%s\", error %d",
-			       current->pid, name, (int)PTR_ERR(ubi));
-		return ERR_CAST(ubi);
+			       current->pid, fc->source, err);
+		return err;
 	}
 
 	c = alloc_ubifs_info(ubi);
@@ -2295,10 +2260,11 @@ static struct dentry *ubifs_mount(struct file_system_type *fs_type, int flags,
 		err = -ENOMEM;
 		goto out_close;
 	}
+	fc->s_fs_info = c;
 
 	dbg_gen("opened ubi%d_%d", c->vi.ubi_num, c->vi.vol_id);
 
-	sb = sget(fs_type, sb_test, sb_set, flags, c);
+	sb = sget_fc(fc, sb_test, set_anon_super_fc);
 	if (IS_ERR(sb)) {
 		err = PTR_ERR(sb);
 		kfree(c);
@@ -2310,12 +2276,12 @@ static struct dentry *ubifs_mount(struct file_system_type *fs_type, int flags,
 		kfree(c);
 		/* A new mount point for already mounted UBIFS */
 		dbg_gen("this ubi volume is already mounted");
-		if (!!(flags & SB_RDONLY) != c1->ro_mount) {
+		if (!!(fc->sb_flags & SB_RDONLY) != c1->ro_mount) {
 			err = -EBUSY;
 			goto out_deact;
 		}
 	} else {
-		err = ubifs_fill_super(sb, data, flags & SB_SILENT ? 1 : 0);
+		err = ubifs_fill_super(sb, fc);
 		if (err)
 			goto out_deact;
 		/* We do not support atime */
@@ -2329,13 +2295,14 @@ static struct dentry *ubifs_mount(struct file_system_type *fs_type, int flags,
 	/* 'fill_super()' opens ubi again so we must close it here */
 	ubi_close_volume(ubi);
 
-	return dget(sb->s_root);
+	fc->root = dget(sb->s_root);
+	return 0;
 
 out_deact:
 	deactivate_locked_super(sb);
 out_close:
 	ubi_close_volume(ubi);
-	return ERR_PTR(err);
+	return err;
 }
 
 static void kill_ubifs_super(struct super_block *s)
@@ -2345,10 +2312,61 @@ static void kill_ubifs_super(struct super_block *s)
 	kfree(c);
 }
 
+static void ubifs_free_fc(struct fs_context *fc)
+{
+	struct ubifs_fs_context *ctx = fc->fs_private;
+
+	if (ctx) {
+		kfree(ctx->auth_key_name);
+		kfree(ctx->auth_hash_name);
+		kfree(ctx);
+	}
+}
+
+static const struct fs_context_operations ubifs_context_ops = {
+	.free		= ubifs_free_fc,
+	.parse_param	= ubifs_parse_param,
+	.get_tree	= ubifs_get_tree,
+	.reconfigure	= ubifs_reconfigure,
+};
+
+static int ubifs_init_fs_context(struct fs_context *fc)
+{
+	struct ubifs_fs_context *ctx;
+
+	ctx = kzalloc_obj(struct ubifs_fs_context);
+	if (!ctx)
+		return -ENOMEM;
+
+	if (fc->purpose != FS_CONTEXT_FOR_RECONFIGURE) {
+		/* Iniitialize for first mount */
+		ctx->no_chk_data_crc = 1;
+		ctx->assert_action = ASSACT_RO;
+	} else {
+		struct ubifs_info *c = fc->root->d_sb->s_fs_info;
+
+		/*
+		 * Preserve existing options across remounts.
+		 * auth_key_name and auth_hash_name are not remountable.
+		 */
+		ctx->mount_opts		= c->mount_opts;
+		ctx->bulk_read		= c->bulk_read;
+		ctx->no_chk_data_crc	= c->no_chk_data_crc;
+		ctx->default_compr	= c->default_compr;
+		ctx->assert_action	= c->assert_action;
+	}
+
+	fc->ops = &ubifs_context_ops;
+	fc->fs_private = ctx;
+
+	return 0;
+}
+
 static struct file_system_type ubifs_fs_type = {
 	.name    = "ubifs",
 	.owner   = THIS_MODULE,
-	.mount   = ubifs_mount,
+	.init_fs_context = ubifs_init_fs_context,
+	.parameters	= ubifs_fs_param_spec,
 	.kill_sb = kill_ubifs_super,
 };
 MODULE_ALIAS_FS("ubifs");
@@ -2364,7 +2382,7 @@ static void inode_slab_ctor(void *obj)
 
 static int __init ubifs_init(void)
 {
-	int err;
+	int err = -ENOMEM;
 
 	BUILD_BUG_ON(sizeof(struct ubifs_ch) != 24);
 
@@ -2425,14 +2443,19 @@ static int __init ubifs_init(void)
 
 	ubifs_inode_slab = kmem_cache_create("ubifs_inode_slab",
 				sizeof(struct ubifs_inode), 0,
-				SLAB_MEM_SPREAD | SLAB_RECLAIM_ACCOUNT |
-				SLAB_ACCOUNT, &inode_slab_ctor);
+				SLAB_RECLAIM_ACCOUNT | SLAB_ACCOUNT,
+				&inode_slab_ctor);
 	if (!ubifs_inode_slab)
 		return -ENOMEM;
 
-	err = register_shrinker(&ubifs_shrinker_info);
-	if (err)
+	ubifs_shrinker_info = shrinker_alloc(0, "ubifs-slab");
+	if (!ubifs_shrinker_info)
 		goto out_slab;
+
+	ubifs_shrinker_info->count_objects = ubifs_shrink_count;
+	ubifs_shrinker_info->scan_objects = ubifs_shrink_scan;
+
+	shrinker_register(ubifs_shrinker_info);
 
 	err = ubifs_compressors_init();
 	if (err)
@@ -2458,7 +2481,7 @@ out_dbg:
 	dbg_debugfs_exit();
 	ubifs_compressors_exit();
 out_shrinker:
-	unregister_shrinker(&ubifs_shrinker_info);
+	shrinker_free(ubifs_shrinker_info);
 out_slab:
 	kmem_cache_destroy(ubifs_inode_slab);
 	return err;
@@ -2474,7 +2497,7 @@ static void __exit ubifs_exit(void)
 	dbg_debugfs_exit();
 	ubifs_sysfs_exit();
 	ubifs_compressors_exit();
-	unregister_shrinker(&ubifs_shrinker_info);
+	shrinker_free(ubifs_shrinker_info);
 
 	/*
 	 * Make sure all delayed rcu free inodes are flushed before we

@@ -2,19 +2,37 @@
 #ifndef __ASM_COMPAT_H
 #define __ASM_COMPAT_H
 
-#define COMPAT_UTS_MACHINE	"riscv\0\0"
+#define COMPAT_UTS_MACHINE	"riscv32\0\0"
 
 /*
  * Architecture specific compatibility types
  */
 #include <linux/types.h>
 #include <linux/sched.h>
-#include <linux/sched/task_stack.h>
 #include <asm-generic/compat.h>
 
 static inline int is_compat_task(void)
 {
+	if (!IS_ENABLED(CONFIG_COMPAT))
+		return 0;
+
 	return test_thread_flag(TIF_32BIT);
+}
+
+static inline int is_compat_thread(struct thread_info *thread)
+{
+	if (!IS_ENABLED(CONFIG_COMPAT))
+		return 0;
+
+	return test_ti_thread_flag(thread, TIF_32BIT);
+}
+
+static inline void set_compat_task(bool is_compat)
+{
+	if (is_compat)
+		set_thread_flag(TIF_32BIT);
+	else
+		clear_thread_flag(TIF_32BIT);
 }
 
 struct compat_user_regs_struct {

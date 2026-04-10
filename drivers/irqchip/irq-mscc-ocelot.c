@@ -37,7 +37,7 @@ static struct chip_props ocelot_props = {
 	.reg_off_ena_clr	= 0x1c,
 	.reg_off_ena_set	= 0x20,
 	.reg_off_ident		= 0x38,
-	.reg_off_trigger	= 0x5c,
+	.reg_off_trigger	= 0x4,
 	.n_irq			= 24,
 };
 
@@ -70,7 +70,7 @@ static struct chip_props jaguar2_props = {
 	.reg_off_ena_clr	= 0x1c,
 	.reg_off_ena_set	= 0x20,
 	.reg_off_ident		= 0x38,
-	.reg_off_trigger	= 0x5c,
+	.reg_off_trigger	= 0x4,
 	.n_irq			= 29,
 };
 
@@ -83,7 +83,13 @@ static void ocelot_irq_unmask(struct irq_data *data)
 	unsigned int mask = data->mask;
 	u32 val;
 
-	irq_gc_lock(gc);
+	guard(raw_spinlock)(&gc->lock);
+	/*
+	 * Clear sticky bits for edge mode interrupts.
+	 * Serval has only one trigger register replication, but the adjacent
+	 * register is always read as zero, so there's no need to handle this
+	 * case separately.
+	 */
 	val = irq_reg_readl(gc, ICPU_CFG_INTR_INTR_TRIGGER(p, 0)) |
 		irq_reg_readl(gc, ICPU_CFG_INTR_INTR_TRIGGER(p, 1));
 	if (!(val & mask))
@@ -91,7 +97,6 @@ static void ocelot_irq_unmask(struct irq_data *data)
 
 	*ct->mask_cache &= ~mask;
 	irq_reg_writel(gc, mask, p->reg_off_ena_set);
-	irq_gc_unlock(gc);
 }
 
 static void ocelot_irq_handler(struct irq_desc *desc)
@@ -126,8 +131,8 @@ static int __init vcoreiii_irq_init(struct device_node *node,
 	if (!parent_irq)
 		return -EINVAL;
 
-	domain = irq_domain_add_linear(node, p->n_irq,
-				       &irq_generic_chip_ops, NULL);
+	domain = irq_domain_create_linear(of_fwnode_handle(node), p->n_irq,
+					  &irq_generic_chip_ops, NULL);
 	if (!domain) {
 		pr_err("%pOFn: unable to add irq domain\n", node);
 		return -ENOMEM;

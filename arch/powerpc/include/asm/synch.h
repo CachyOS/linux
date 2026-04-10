@@ -7,14 +7,17 @@
 #include <asm/feature-fixups.h>
 #include <asm/ppc-opcode.h>
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 extern unsigned int __start___lwsync_fixup, __stop___lwsync_fixup;
 extern void do_lwsync_fixups(unsigned long value, void *fixup_start,
 			     void *fixup_end);
 
 static inline void eieio(void)
 {
-	__asm__ __volatile__ ("eieio" : : : "memory");
+	if (IS_ENABLED(CONFIG_BOOKE))
+		__asm__ __volatile__ ("mbar" : : : "memory");
+	else
+		__asm__ __volatile__ ("eieio" : : : "memory");
 }
 
 static inline void isync(void)
@@ -37,11 +40,11 @@ static inline void ppc_after_tlbiel_barrier(void)
 	 */
 	asm volatile(ASM_FTR_IFSET(PPC_CP_ABORT, "", %0) : : "i" (CPU_FTR_ARCH_31) : "memory");
 }
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 #if defined(__powerpc64__)
 #    define LWSYNC	lwsync
-#elif defined(CONFIG_E500)
+#elif defined(CONFIG_PPC_E500)
 #    define LWSYNC					\
 	START_LWSYNC_SECTION(96);			\
 	sync;						\

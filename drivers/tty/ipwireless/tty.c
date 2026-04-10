@@ -186,8 +186,8 @@ static void ipw_write_packet_sent_callback(void *callback_data,
 	tty->tx_bytes_queued -= packet_length;
 }
 
-static int ipw_write(struct tty_struct *linux_tty,
-		     const unsigned char *buf, int count)
+static ssize_t ipw_write(struct tty_struct *linux_tty, const u8 *buf,
+			 size_t count)
 {
 	struct ipw_tty *tty = linux_tty->driver_data;
 	int room, ret;
@@ -437,7 +437,7 @@ static int add_tty(int j,
 		    struct ipw_network *network, int channel_idx,
 		    int secondary_channel_idx, int tty_type)
 {
-	ttys[j] = kzalloc(sizeof(struct ipw_tty), GFP_KERNEL);
+	ttys[j] = kzalloc_obj(struct ipw_tty);
 	if (!ttys[j])
 		return -ENOMEM;
 	ttys[j]->index = j;

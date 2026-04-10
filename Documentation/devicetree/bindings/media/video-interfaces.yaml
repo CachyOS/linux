@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/media/video-interfaces.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Common bindings for video receiver and transmitter interface endpoints
+title: Common Properties for Video Receiver and Transmitter Interface Endpoints
 
 maintainers:
   - Sakari Ailus <sakari.ailus@linux.intel.com>
@@ -95,7 +95,7 @@ properties:
       - 6 # BT.656
       - 7 # DPI
     description:
-      Data bus type.
+      Data bus type. See include/dt-bindings/media/video-interfaces.h.
 
   bus-width:
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -145,9 +145,10 @@ properties:
 
   pclk-sample:
     $ref: /schemas/types.yaml#/definitions/uint32
-    enum: [ 0, 1 ]
+    enum: [ 0, 1, 2 ]
     description:
-      Sample data on rising (1) or falling (0) edge of the pixel clock signal.
+      Sample data on falling (0), rising (1) or both (2) edges of the pixel
+      clock signal.
 
   sync-on-green-active:
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -159,6 +160,7 @@ properties:
     $ref: /schemas/types.yaml#/definitions/uint32-array
     minItems: 1
     maxItems: 8
+    uniqueItems: true
     items:
       # Assume up to 9 physical lane indices
       maximum: 8
@@ -207,6 +209,27 @@ properties:
       the combined length of data-lanes and clock-lanes properties. If the
       lane-polarities property is omitted, the value must be interpreted as 0
       (normal). This property is valid for serial busses only.
+
+  line-orders:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 1
+    maxItems: 8
+    items:
+      enum:
+        - 0 # ABC
+        - 1 # ACB
+        - 2 # BAC
+        - 3 # BCA
+        - 4 # CAB
+        - 5 # CBA
+    description:
+      An array of line orders of the CSI-2 C-PHY data lanes. The order of the
+      lanes are the same as in data-lanes property. Valid values are 0-5 as
+      defined in the MIPI Discovery and Configuration (DisCo) Specification for
+      Imaging. The length of the array must be the same length as the
+      data-lanes property. If the line-orders property is omitted, the value
+      shall be interpreted as 0 (ABC). This property is valid for CSI-2 C-PHY
+      busses only. See include/dt-bindings/media/video-interfaces.h.
 
   strobe:
     $ref: /schemas/types.yaml#/definitions/uint32

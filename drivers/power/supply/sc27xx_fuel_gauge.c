@@ -733,13 +733,6 @@ static int sc27xx_fgu_set_property(struct power_supply *psy,
 	return ret;
 }
 
-static void sc27xx_fgu_external_power_changed(struct power_supply *psy)
-{
-	struct sc27xx_fgu_data *data = power_supply_get_drvdata(psy);
-
-	power_supply_changed(data->battery);
-}
-
 static int sc27xx_fgu_property_is_writeable(struct power_supply *psy,
 					    enum power_supply_property psp)
 {
@@ -774,7 +767,7 @@ static const struct power_supply_desc sc27xx_fgu_desc = {
 	.num_properties		= ARRAY_SIZE(sc27xx_fgu_props),
 	.get_property		= sc27xx_fgu_get_property,
 	.set_property		= sc27xx_fgu_set_property,
-	.external_power_changed	= sc27xx_fgu_external_power_changed,
+	.external_power_changed	= power_supply_changed,
 	.property_is_writeable	= sc27xx_fgu_property_is_writeable,
 	.no_thermal		= true,
 };
@@ -999,7 +992,7 @@ static int sc27xx_fgu_calibration(struct sc27xx_fgu_data *data)
 static int sc27xx_fgu_hw_init(struct sc27xx_fgu_data *data)
 {
 	struct power_supply_battery_info *info;
-	struct power_supply_battery_ocv_table *table;
+	const struct power_supply_battery_ocv_table *table;
 	int ret, delta_clbcnt, alarm_adc;
 
 	ret = power_supply_get_battery_info(data->battery, &info);
@@ -1021,9 +1014,8 @@ static int sc27xx_fgu_hw_init(struct sc27xx_fgu_data *data)
 	if (!table)
 		return -EINVAL;
 
-	data->cap_table = devm_kmemdup(data->dev, table,
-				       data->table_len * sizeof(*table),
-				       GFP_KERNEL);
+	data->cap_table = devm_kmemdup_array(data->dev, table, data->table_len,
+					     sizeof(*table), GFP_KERNEL);
 	if (!data->cap_table) {
 		power_supply_put_battery_info(data->battery, info);
 		return -ENOMEM;
@@ -1148,7 +1140,6 @@ disable_fgu:
 static int sc27xx_fgu_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct device_node *np = dev->of_node;
 	struct power_supply_config fgu_cfg = { };
 	struct sc27xx_fgu_data *data;
 	int ret, irq;
@@ -1190,10 +1181,14 @@ static int sc27xx_fgu_probe(struct platform_device *pdev)
 		return PTR_ERR(data->charge_chan);
 	}
 
-	data->gpiod = devm_gpiod_get(dev, "bat-detect", GPIOD_IN);
+	data->gpiod = devm_gpiod_get(dev, "battery-detect", GPIOD_IN);
 	if (IS_ERR(data->gpiod)) {
-		dev_err(dev, "failed to get battery detection GPIO\n");
-		return PTR_ERR(data->gpiod);
+		data->gpiod = devm_gpiod_get(dev, "bat-detect", GPIOD_IN);
+		if (IS_ERR(data->gpiod)) {
+			dev_err(dev, "failed to get battery detection GPIO\n");
+			return PTR_ERR(data->gpiod);
+		}
+		dev_warn(dev, "bat-detect is deprecated, please use battery-detect\n");
 	}
 
 	ret = gpiod_get_value_cansleep(data->gpiod);
@@ -1208,7 +1203,7 @@ static int sc27xx_fgu_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, data);
 
 	fgu_cfg.drv_data = data;
-	fgu_cfg.of_node = np;
+	fgu_cfg.fwnode = dev_fwnode(dev);
 	data->battery = devm_power_supply_register(dev, &sc27xx_fgu_desc,
 						   &fgu_cfg);
 	if (IS_ERR(data->battery)) {

@@ -94,17 +94,12 @@
 /* Device instance number, incremented each time a device is probed. */
 static int instance;
 
-static LIST_HEAD(online_list);
-static LIST_HEAD(removing_list);
-static DEFINE_SPINLOCK(dev_lock);
-
 /*
  * Global variable used to hold the major block device number
  * allocated in mtip_init().
  */
 static int mtip_major;
 static struct dentry *dfs_parent;
-static struct dentry *dfs_device_status;
 
 static u32 cpu_use[NR_CPUS];
 
@@ -146,11 +141,8 @@ static bool mtip_check_surprise_removal(struct driver_data *dd)
 	pci_read_config_word(dd->pdev, 0x00, &vendor_id);
 	if (vendor_id == 0xFFFF) {
 		dd->sr = true;
-		if (dd->queue)
-			blk_queue_flag_set(QUEUE_FLAG_DEAD, dd->queue);
-		else
-			dev_warn(&dd->pdev->dev,
-				"%s: dd->queue is NULL\n", __func__);
+		if (dd->disk)
+			blk_mark_disk_dead(dd->disk);
 		return true; /* device removed */
 	}
 
@@ -1405,15 +1397,15 @@ static void mtip_dump_identify(struct mtip_port *port)
 	if (!port->identify_valid)
 		return;
 
-	strlcpy(cbuf, (char *)(port->identify+10), 21);
+	strscpy(cbuf, (char *)(port->identify + 10), 21);
 	dev_info(&port->dd->pdev->dev,
 		"Serial No.: %s\n", cbuf);
 
-	strlcpy(cbuf, (char *)(port->identify+23), 9);
+	strscpy(cbuf, (char *)(port->identify + 23), 9);
 	dev_info(&port->dd->pdev->dev,
 		"Firmware Ver.: %s\n", cbuf);
 
-	strlcpy(cbuf, (char *)(port->identify+27), 41);
+	strscpy(cbuf, (char *)(port->identify + 27), 41);
 	dev_info(&port->dd->pdev->dev, "Model: %s\n", cbuf);
 
 	dev_info(&port->dd->pdev->dev, "Security: %04x %s\n",
@@ -1429,13 +1421,13 @@ static void mtip_dump_identify(struct mtip_port *port)
 	pci_read_config_word(port->dd->pdev, PCI_REVISION_ID, &revid);
 	switch (revid & 0xFF) {
 	case 0x1:
-		strlcpy(cbuf, "A0", 3);
+		strscpy(cbuf, "A0", 3);
 		break;
 	case 0x3:
-		strlcpy(cbuf, "A2", 3);
+		strscpy(cbuf, "A2", 3);
 		break;
 	default:
-		strlcpy(cbuf, "?", 2);
+		strscpy(cbuf, "?", 2);
 		break;
 	}
 	dev_info(&port->dd->pdev->dev,
@@ -2048,11 +2040,12 @@ static int mtip_hw_ioctl(struct driver_data *dd, unsigned int cmd,
  * @dir      Direction (read or write)
  *
  * return value
- *	None
+ *	0	The IO completed successfully.
+ *	-ENOMEM	The DMA mapping failed.
  */
-static void mtip_hw_submit_io(struct driver_data *dd, struct request *rq,
-			      struct mtip_cmd *command,
-			      struct blk_mq_hw_ctx *hctx)
+static int mtip_hw_submit_io(struct driver_data *dd, struct request *rq,
+			     struct mtip_cmd *command,
+			     struct blk_mq_hw_ctx *hctx)
 {
 	struct mtip_cmd_hdr *hdr =
 		dd->port->command_list + sizeof(struct mtip_cmd_hdr) * rq->tag;
@@ -2064,12 +2057,14 @@ static void mtip_hw_submit_io(struct driver_data *dd, struct request *rq,
 	unsigned int nents;
 
 	/* Map the scatter list for DMA access */
-	nents = blk_rq_map_sg(hctx->queue, rq, command->sg);
-	nents = dma_map_sg(&dd->pdev->dev, command->sg, nents, dma_dir);
+	command->scatter_ents = blk_rq_map_sg(rq, command->sg);
+	nents = dma_map_sg(&dd->pdev->dev, command->sg,
+			   command->scatter_ents, dma_dir);
+	if (!nents)
+		return -ENOMEM;
+
 
 	prefetch(&port->flags);
-
-	command->scatter_ents = nents;
 
 	/*
 	 * The number of retries for this command before it is
@@ -2120,11 +2115,13 @@ static void mtip_hw_submit_io(struct driver_data *dd, struct request *rq,
 	if (unlikely(port->flags & MTIP_PF_PAUSE_IO)) {
 		set_bit(rq->tag, port->cmds_to_issue);
 		set_bit(MTIP_PF_ISSUE_CMDS_BIT, &port->flags);
-		return;
+		return 0;
 	}
 
 	/* Issue the command to the hardware */
 	mtip_issue_ncq_command(port, rq->tag);
+
+	return 0;
 }
 
 /*
@@ -2169,106 +2166,6 @@ static const struct attribute_group *mtip_disk_attr_groups[] = {
 	&mtip_disk_attr_group,
 	NULL,
 };
-
-/* debugsfs entries */
-
-static ssize_t show_device_status(struct device_driver *drv, char *buf)
-{
-	int size = 0;
-	struct driver_data *dd, *tmp;
-	unsigned long flags;
-	char id_buf[42];
-	u16 status = 0;
-
-	spin_lock_irqsave(&dev_lock, flags);
-	size += sprintf(&buf[size], "Devices Present:\n");
-	list_for_each_entry_safe(dd, tmp, &online_list, online_list) {
-		if (dd->pdev) {
-			if (dd->port &&
-			    dd->port->identify &&
-			    dd->port->identify_valid) {
-				strlcpy(id_buf,
-					(char *) (dd->port->identify + 10), 21);
-				status = *(dd->port->identify + 141);
-			} else {
-				memset(id_buf, 0, 42);
-				status = 0;
-			}
-
-			if (dd->port &&
-			    test_bit(MTIP_PF_REBUILD_BIT, &dd->port->flags)) {
-				size += sprintf(&buf[size],
-					" device %s %s (ftl rebuild %d %%)\n",
-					dev_name(&dd->pdev->dev),
-					id_buf,
-					status);
-			} else {
-				size += sprintf(&buf[size],
-					" device %s %s\n",
-					dev_name(&dd->pdev->dev),
-					id_buf);
-			}
-		}
-	}
-
-	size += sprintf(&buf[size], "Devices Being Removed:\n");
-	list_for_each_entry_safe(dd, tmp, &removing_list, remove_list) {
-		if (dd->pdev) {
-			if (dd->port &&
-			    dd->port->identify &&
-			    dd->port->identify_valid) {
-				strlcpy(id_buf,
-					(char *) (dd->port->identify+10), 21);
-				status = *(dd->port->identify + 141);
-			} else {
-				memset(id_buf, 0, 42);
-				status = 0;
-			}
-
-			if (dd->port &&
-			    test_bit(MTIP_PF_REBUILD_BIT, &dd->port->flags)) {
-				size += sprintf(&buf[size],
-					" device %s %s (ftl rebuild %d %%)\n",
-					dev_name(&dd->pdev->dev),
-					id_buf,
-					status);
-			} else {
-				size += sprintf(&buf[size],
-					" device %s %s\n",
-					dev_name(&dd->pdev->dev),
-					id_buf);
-			}
-		}
-	}
-	spin_unlock_irqrestore(&dev_lock, flags);
-
-	return size;
-}
-
-static ssize_t mtip_hw_read_device_status(struct file *f, char __user *ubuf,
-						size_t len, loff_t *offset)
-{
-	int size = *offset;
-	char *buf;
-	int rv = 0;
-
-	if (!len || *offset)
-		return 0;
-
-	buf = kzalloc(MTIP_DFS_MAX_BUF_SIZE, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-
-	size += show_device_status(NULL, buf);
-
-	*offset = size <= len ? size : len;
-	size = copy_to_user(ubuf, buf, *offset);
-	if (size)
-		rv = -EFAULT;
-
-	kfree(buf);
-	return rv ? rv : *offset;
-}
 
 static ssize_t mtip_hw_read_registers(struct file *f, char __user *ubuf,
 				  size_t len, loff_t *offset)
@@ -2363,46 +2260,24 @@ static ssize_t mtip_hw_read_flags(struct file *f, char __user *ubuf,
 	return rv ? rv : *offset;
 }
 
-static const struct file_operations mtip_device_status_fops = {
-	.owner  = THIS_MODULE,
-	.open   = simple_open,
-	.read   = mtip_hw_read_device_status,
-	.llseek = no_llseek,
-};
-
 static const struct file_operations mtip_regs_fops = {
 	.owner  = THIS_MODULE,
 	.open   = simple_open,
 	.read   = mtip_hw_read_registers,
-	.llseek = no_llseek,
 };
 
 static const struct file_operations mtip_flags_fops = {
 	.owner  = THIS_MODULE,
 	.open   = simple_open,
 	.read   = mtip_hw_read_flags,
-	.llseek = no_llseek,
 };
 
-static int mtip_hw_debugfs_init(struct driver_data *dd)
+static void mtip_hw_debugfs_init(struct driver_data *dd)
 {
-	if (!dfs_parent)
-		return -1;
-
 	dd->dfs_node = debugfs_create_dir(dd->disk->disk_name, dfs_parent);
-	if (IS_ERR_OR_NULL(dd->dfs_node)) {
-		dev_warn(&dd->pdev->dev,
-			"Error creating node %s under debugfs\n",
-						dd->disk->disk_name);
-		dd->dfs_node = NULL;
-		return -1;
-	}
-
 	debugfs_create_file("flags", 0444, dd->dfs_node, dd, &mtip_flags_fops);
 	debugfs_create_file("registers", 0444, dd->dfs_node, dd,
 			    &mtip_regs_fops);
-
-	return 0;
 }
 
 static void mtip_hw_debugfs_exit(struct driver_data *dd)
@@ -2556,7 +2431,7 @@ static void mtip_softirq_done_fn(struct request *rq)
 	blk_mq_end_request(rq, cmd->status);
 }
 
-static bool mtip_abort_cmd(struct request *req, void *data, bool reserved)
+static bool mtip_abort_cmd(struct request *req, void *data)
 {
 	struct mtip_cmd *cmd = blk_mq_rq_to_pdu(req);
 	struct driver_data *dd = data;
@@ -2569,7 +2444,7 @@ static bool mtip_abort_cmd(struct request *req, void *data, bool reserved)
 	return true;
 }
 
-static bool mtip_queue_cmd(struct request *req, void *data, bool reserved)
+static bool mtip_queue_cmd(struct request *req, void *data)
 {
 	struct driver_data *dd = data;
 
@@ -2831,7 +2706,12 @@ static int mtip_hw_init(struct driver_data *dd)
 	int rv;
 	unsigned long timeout, timetaken;
 
-	dd->mmio = pcim_iomap_table(dd->pdev)[MTIP_ABAR];
+	dd->mmio = pcim_iomap_region(dd->pdev, MTIP_ABAR, MTIP_DRV_NAME);
+	if (IS_ERR(dd->mmio)) {
+		dev_err(&dd->pdev->dev, "Unable to request / ioremap PCI region\n");
+		return PTR_ERR(dd->mmio);
+	}
+
 
 	mtip_detect_product(dd);
 	if (dd->product_type == MTIP_PRODUCT_UNKNOWN) {
@@ -3156,7 +3036,7 @@ static int rssd_disk_name_format(char *prefix,
  *                 structure pointer.
  */
 static int mtip_block_ioctl(struct block_device *dev,
-			    fmode_t mode,
+			    blk_mode_t mode,
 			    unsigned cmd,
 			    unsigned long arg)
 {
@@ -3194,7 +3074,7 @@ static int mtip_block_ioctl(struct block_device *dev,
  *                 structure pointer.
  */
 static int mtip_block_compat_ioctl(struct block_device *dev,
-			    fmode_t mode,
+			    blk_mode_t mode,
 			    unsigned cmd,
 			    unsigned long arg)
 {
@@ -3268,17 +3148,17 @@ static int mtip_block_compat_ioctl(struct block_device *dev,
  * that each partition is also 4KB aligned. Non-aligned partitions adversely
  * affects performance.
  *
- * @dev Pointer to the block_device strucutre.
+ * @disk Pointer to the gendisk strucutre.
  * @geo Pointer to a hd_geometry structure.
  *
  * return value
  *	0       Operation completed successfully.
  *	-ENOTTY An error occurred while reading the drive capacity.
  */
-static int mtip_block_getgeo(struct block_device *dev,
+static int mtip_block_getgeo(struct gendisk *disk,
 				struct hd_geometry *geo)
 {
-	struct driver_data *dd = dev->bd_disk->private_data;
+	struct driver_data *dd = disk->private_data;
 	sector_t capacity;
 
 	if (!dd)
@@ -3297,26 +3177,12 @@ static int mtip_block_getgeo(struct block_device *dev,
 	return 0;
 }
 
-static int mtip_block_open(struct block_device *dev, fmode_t mode)
+static void mtip_block_free_disk(struct gendisk *disk)
 {
-	struct driver_data *dd;
+	struct driver_data *dd = disk->private_data;
 
-	if (dev && dev->bd_disk) {
-		dd = (struct driver_data *) dev->bd_disk->private_data;
-
-		if (dd) {
-			if (test_bit(MTIP_DDF_REMOVAL_BIT,
-							&dd->dd_flag)) {
-				return -ENODEV;
-			}
-			return 0;
-		}
-	}
-	return -ENODEV;
-}
-
-static void mtip_block_release(struct gendisk *disk, fmode_t mode)
-{
+	ida_free(&rssd_index_ida, dd->index);
+	kfree(dd);
 }
 
 /*
@@ -3326,13 +3192,12 @@ static void mtip_block_release(struct gendisk *disk, fmode_t mode)
  * layer.
  */
 static const struct block_device_operations mtip_block_ops = {
-	.open		= mtip_block_open,
-	.release	= mtip_block_release,
 	.ioctl		= mtip_block_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	= mtip_block_compat_ioctl,
 #endif
 	.getgeo		= mtip_block_getgeo,
+	.free_disk	= mtip_block_free_disk,
 	.owner		= THIS_MODULE
 };
 
@@ -3455,7 +3320,9 @@ static blk_status_t mtip_queue_rq(struct blk_mq_hw_ctx *hctx,
 
 	blk_mq_start_request(rq);
 
-	mtip_hw_submit_io(dd, rq, cmd, hctx);
+	if (mtip_hw_submit_io(dd, rq, cmd, hctx))
+		return BLK_STS_IOERR;
+
 	return BLK_STS_OK;
 }
 
@@ -3487,12 +3354,11 @@ static int mtip_init_cmd(struct blk_mq_tag_set *set, struct request *rq,
 	return 0;
 }
 
-static enum blk_eh_timer_return mtip_cmd_timeout(struct request *req,
-								bool reserved)
+static enum blk_eh_timer_return mtip_cmd_timeout(struct request *req)
 {
 	struct driver_data *dd = req->q->queuedata;
 
-	if (reserved) {
+	if (blk_mq_is_reserved_rq(req)) {
 		struct mtip_cmd *cmd = blk_mq_rq_to_pdu(req);
 
 		cmd->status = BLK_STS_TIMEOUT;
@@ -3532,6 +3398,12 @@ static const struct blk_mq_ops mtip_mq_ops = {
  */
 static int mtip_block_initialize(struct driver_data *dd)
 {
+	struct queue_limits lim = {
+		.physical_block_size	= 4096,
+		.max_hw_sectors		= 0xffff,
+		.max_segments		= MTIP_MAX_SG,
+		.max_segment_size	= 0x400000,
+	};
 	int rv = 0, wait_for_rebuild = 0;
 	sector_t capacity;
 	unsigned int index = 0;
@@ -3551,7 +3423,6 @@ static int mtip_block_initialize(struct driver_data *dd)
 	dd->tags.reserved_tags = 1;
 	dd->tags.cmd_size = sizeof(struct mtip_cmd);
 	dd->tags.numa_node = dd->numa_node;
-	dd->tags.flags = BLK_MQ_F_SHOULD_MERGE;
 	dd->tags.driver_data = dd;
 	dd->tags.timeout = MTIP_NCQ_CMD_TIMEOUT_MS;
 
@@ -3562,7 +3433,7 @@ static int mtip_block_initialize(struct driver_data *dd)
 		goto block_queue_alloc_tag_error;
 	}
 
-	dd->disk = blk_mq_alloc_disk(&dd->tags, dd);
+	dd->disk = blk_mq_alloc_disk(&dd->tags, &lim, dd);
 	if (IS_ERR(dd->disk)) {
 		dev_err(&dd->pdev->dev,
 			"Unable to allocate request queue\n");
@@ -3610,14 +3481,7 @@ skip_create_disk:
 		goto start_service_thread;
 
 	/* Set device limits. */
-	blk_queue_flag_set(QUEUE_FLAG_NONROT, dd->queue);
-	blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, dd->queue);
-	blk_queue_max_segments(dd->queue, MTIP_MAX_SG);
-	blk_queue_physical_block_size(dd->queue, 4096);
-	blk_queue_max_hw_sectors(dd->queue, 0xffff);
-	blk_queue_max_segment_size(dd->queue, 0x400000);
 	dma_set_max_seg_size(&dd->pdev->dev, 0x400000);
-	blk_queue_io_min(dd->queue, 4096);
 
 	/* Set the capacity of the device in 512 byte sectors. */
 	if (!(mtip_hw_get_capacity(dd, &capacity))) {
@@ -3664,79 +3528,13 @@ init_hw_cmds_error:
 disk_index_error:
 	ida_free(&rssd_index_ida, index);
 ida_get_error:
-	blk_cleanup_disk(dd->disk);
+	put_disk(dd->disk);
 block_queue_alloc_init_error:
 	blk_mq_free_tag_set(&dd->tags);
 block_queue_alloc_tag_error:
 	mtip_hw_exit(dd); /* De-initialize the protocol layer. */
 protocol_init_error:
 	return rv;
-}
-
-static bool mtip_no_dev_cleanup(struct request *rq, void *data, bool reserv)
-{
-	struct mtip_cmd *cmd = blk_mq_rq_to_pdu(rq);
-
-	cmd->status = BLK_STS_IOERR;
-	blk_mq_complete_request(rq);
-	return true;
-}
-
-/*
- * Block layer deinitialization function.
- *
- * Called by the PCI layer as each P320 device is removed.
- *
- * @dd Pointer to the driver data structure.
- *
- * return value
- *	0
- */
-static int mtip_block_remove(struct driver_data *dd)
-{
-	mtip_hw_debugfs_exit(dd);
-
-	if (dd->mtip_svc_handler) {
-		set_bit(MTIP_PF_SVC_THD_STOP_BIT, &dd->port->flags);
-		wake_up_interruptible(&dd->port->svc_wait);
-		kthread_stop(dd->mtip_svc_handler);
-	}
-
-	if (!dd->sr) {
-		/*
-		 * Explicitly wait here for IOs to quiesce,
-		 * as mtip_standby_drive usually won't wait for IOs.
-		 */
-		if (!mtip_quiesce_io(dd->port, MTIP_QUIESCE_IO_TIMEOUT_MS))
-			mtip_standby_drive(dd);
-	}
-	else
-		dev_info(&dd->pdev->dev, "device %s surprise removal\n",
-						dd->disk->disk_name);
-
-	blk_freeze_queue_start(dd->queue);
-	blk_mq_quiesce_queue(dd->queue);
-	blk_mq_tagset_busy_iter(&dd->tags, mtip_no_dev_cleanup, dd);
-	blk_mq_unquiesce_queue(dd->queue);
-
-	if (dd->disk) {
-		if (test_bit(MTIP_DDF_INIT_DONE_BIT, &dd->dd_flag))
-			del_gendisk(dd->disk);
-		if (dd->disk->queue) {
-			blk_cleanup_queue(dd->queue);
-			blk_mq_free_tag_set(&dd->tags);
-			dd->queue = NULL;
-		}
-		put_disk(dd->disk);
-	}
-	dd->disk  = NULL;
-
-	ida_free(&rssd_index_ida, dd->index);
-
-	/* De-initialize the protocol layer. */
-	mtip_hw_exit(dd);
-
-	return 0;
 }
 
 /*
@@ -3755,23 +3553,14 @@ static int mtip_block_shutdown(struct driver_data *dd)
 {
 	mtip_hw_shutdown(dd);
 
-	/* Delete our gendisk structure, and cleanup the blk queue. */
-	if (dd->disk) {
-		dev_info(&dd->pdev->dev,
-			"Shutting down %s ...\n", dd->disk->disk_name);
+	dev_info(&dd->pdev->dev,
+		"Shutting down %s ...\n", dd->disk->disk_name);
 
-		if (test_bit(MTIP_DDF_INIT_DONE_BIT, &dd->dd_flag))
-			del_gendisk(dd->disk);
-		if (dd->disk->queue) {
-			blk_cleanup_queue(dd->queue);
-			blk_mq_free_tag_set(&dd->tags);
-		}
-		put_disk(dd->disk);
-		dd->disk  = NULL;
-		dd->queue = NULL;
-	}
+	if (test_bit(MTIP_DDF_INIT_DONE_BIT, &dd->dd_flag))
+		del_gendisk(dd->disk);
 
-	ida_free(&rssd_index_ida, dd->index);
+	blk_mq_free_tag_set(&dd->tags);
+	put_disk(dd->disk);
 	return 0;
 }
 
@@ -3905,7 +3694,6 @@ static int mtip_pci_probe(struct pci_dev *pdev,
 	const struct cpumask *node_mask;
 	int cpu, i = 0, j = 0;
 	int my_node = NUMA_NO_NODE;
-	unsigned long flags;
 
 	/* Allocate memory for this devices private data. */
 	my_node = pcibus_to_node(pdev->bus);
@@ -3933,17 +3721,10 @@ static int mtip_pci_probe(struct pci_dev *pdev,
 		goto iomap_err;
 	}
 
-	/* Map BAR5 to memory. */
-	rv = pcim_iomap_regions(pdev, 1 << MTIP_ABAR, MTIP_DRV_NAME);
-	if (rv < 0) {
-		dev_err(&pdev->dev, "Unable to map regions\n");
-		goto iomap_err;
-	}
-
 	rv = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
 	if (rv) {
 		dev_warn(&pdev->dev, "64-bit DMA enable failed\n");
-		goto setmask_err;
+		goto iomap_err;
 	}
 
 	/* Copy the info we may need later into the private data structure. */
@@ -3952,9 +3733,6 @@ static int mtip_pci_probe(struct pci_dev *pdev,
 	dd->pdev	= pdev;
 	dd->numa_node	= my_node;
 
-	INIT_LIST_HEAD(&dd->online_list);
-	INIT_LIST_HEAD(&dd->remove_list);
-
 	memset(dd->workq_name, 0, 32);
 	snprintf(dd->workq_name, 31, "mtipq%d", dd->instance);
 
@@ -3962,7 +3740,7 @@ static int mtip_pci_probe(struct pci_dev *pdev,
 	if (!dd->isr_workq) {
 		dev_warn(&pdev->dev, "Can't create wq %d\n", dd->instance);
 		rv = -ENOMEM;
-		goto setmask_err;
+		goto iomap_err;
 	}
 
 	memset(cpu_list, 0, sizeof(cpu_list));
@@ -4047,11 +3825,6 @@ static int mtip_pci_probe(struct pci_dev *pdev,
 	else
 		rv = 0; /* device in rebuild state, return 0 from probe */
 
-	/* Add to online list even if in ftl rebuild */
-	spin_lock_irqsave(&dev_lock, flags);
-	list_add(&dd->online_list, &online_list);
-	spin_unlock_irqrestore(&dev_lock, flags);
-
 	goto done;
 
 block_initialize_err:
@@ -4064,8 +3837,6 @@ msi_initialize_err:
 		drop_cpu(dd->work[1].cpu_binding);
 		drop_cpu(dd->work[2].cpu_binding);
 	}
-setmask_err:
-	pcim_iounmap_regions(pdev, 1 << MTIP_ABAR);
 
 iomap_err:
 	kfree(dd);
@@ -4085,14 +3856,7 @@ done:
 static void mtip_pci_remove(struct pci_dev *pdev)
 {
 	struct driver_data *dd = pci_get_drvdata(pdev);
-	unsigned long flags, to;
-
-	set_bit(MTIP_DDF_REMOVAL_BIT, &dd->dd_flag);
-
-	spin_lock_irqsave(&dev_lock, flags);
-	list_del_init(&dd->online_list);
-	list_add(&dd->remove_list, &removing_list);
-	spin_unlock_irqrestore(&dev_lock, flags);
+	unsigned long to;
 
 	mtip_check_surprise_removal(dd);
 	synchronize_irq(dd->pdev->irq);
@@ -4109,11 +3873,35 @@ static void mtip_pci_remove(struct pci_dev *pdev)
 			"Completion workers still active!\n");
 	}
 
-	blk_mark_disk_dead(dd->disk);
 	set_bit(MTIP_DDF_REMOVE_PENDING_BIT, &dd->dd_flag);
 
-	/* Clean up the block layer. */
-	mtip_block_remove(dd);
+	if (test_bit(MTIP_DDF_INIT_DONE_BIT, &dd->dd_flag))
+		del_gendisk(dd->disk);
+
+	mtip_hw_debugfs_exit(dd);
+
+	if (dd->mtip_svc_handler) {
+		set_bit(MTIP_PF_SVC_THD_STOP_BIT, &dd->port->flags);
+		wake_up_interruptible(&dd->port->svc_wait);
+		kthread_stop(dd->mtip_svc_handler);
+	}
+
+	if (!dd->sr) {
+		/*
+		 * Explicitly wait here for IOs to quiesce,
+		 * as mtip_standby_drive usually won't wait for IOs.
+		 */
+		if (!mtip_quiesce_io(dd->port, MTIP_QUIESCE_IO_TIMEOUT_MS))
+			mtip_standby_drive(dd);
+	}
+	else
+		dev_info(&dd->pdev->dev, "device %s surprise removal\n",
+						dd->disk->disk_name);
+
+	blk_mq_free_tag_set(&dd->tags);
+
+	/* De-initialize the protocol layer. */
+	mtip_hw_exit(dd);
 
 	if (dd->isr_workq) {
 		destroy_workqueue(dd->isr_workq);
@@ -4124,14 +3912,9 @@ static void mtip_pci_remove(struct pci_dev *pdev)
 
 	pci_disable_msi(pdev);
 
-	spin_lock_irqsave(&dev_lock, flags);
-	list_del_init(&dd->remove_list);
-	spin_unlock_irqrestore(&dev_lock, flags);
-
-	kfree(dd);
-
-	pcim_iounmap_regions(pdev, 1 << MTIP_ABAR);
 	pci_set_drvdata(pdev, NULL);
+
+	put_disk(dd->disk);
 }
 
 /*
@@ -4246,19 +4029,6 @@ static int __init mtip_init(void)
 	mtip_major = error;
 
 	dfs_parent = debugfs_create_dir("rssd", NULL);
-	if (IS_ERR_OR_NULL(dfs_parent)) {
-		pr_warn("Error creating debugfs parent\n");
-		dfs_parent = NULL;
-	}
-	if (dfs_parent) {
-		dfs_device_status = debugfs_create_file("device_status",
-					0444, dfs_parent, NULL,
-					&mtip_device_status_fops);
-		if (IS_ERR_OR_NULL(dfs_device_status)) {
-			pr_err("Error creating device_status node\n");
-			dfs_device_status = NULL;
-		}
-	}
 
 	/* Register our PCI operations. */
 	error = pci_register_driver(&mtip_pci_driver);

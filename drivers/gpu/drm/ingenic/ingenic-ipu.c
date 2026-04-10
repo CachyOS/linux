@@ -14,7 +14,7 @@
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/time.h>
 
@@ -22,13 +22,13 @@
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fb_cma_helper.h>
+#include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
-#include <drm/drm_gem_cma_helper.h>
+#include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_plane.h>
-#include <drm/drm_plane_helper.h>
 #include <drm/drm_property.h>
 #include <drm/drm_vblank.h>
 
@@ -362,15 +362,15 @@ static void ingenic_ipu_plane_atomic_update(struct drm_plane *plane,
 	}
 
 	if (ingenic_drm_map_noncoherent(ipu->master))
-		drm_fb_cma_sync_non_coherent(ipu->drm, oldstate, newstate);
+		drm_fb_dma_sync_non_coherent(ipu->drm, oldstate, newstate);
 
 	/* New addresses will be committed in vblank handler... */
-	ipu->addr_y = drm_fb_cma_get_gem_addr(newstate->fb, newstate, 0);
+	ipu->addr_y = drm_fb_dma_get_gem_addr(newstate->fb, newstate, 0);
 	if (finfo->num_planes > 1)
-		ipu->addr_u = drm_fb_cma_get_gem_addr(newstate->fb, newstate,
+		ipu->addr_u = drm_fb_dma_get_gem_addr(newstate->fb, newstate,
 						      1);
 	if (finfo->num_planes > 2)
-		ipu->addr_v = drm_fb_cma_get_gem_addr(newstate->fb, newstate,
+		ipu->addr_v = drm_fb_dma_get_gem_addr(newstate->fb, newstate,
 						      2);
 
 	if (!needs_modeset)
@@ -580,7 +580,7 @@ static int ingenic_ipu_plane_atomic_check(struct drm_plane *plane,
 	if (!crtc)
 		return 0;
 
-	crtc_state = drm_atomic_get_existing_crtc_state(state, crtc);
+	crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
 	if (WARN_ON(!crtc_state))
 		return -EINVAL;
 
@@ -696,18 +696,20 @@ ingenic_ipu_plane_atomic_set_property(struct drm_plane *plane,
 {
 	struct ingenic_ipu *ipu = plane_to_ingenic_ipu(plane);
 	struct drm_crtc_state *crtc_state;
+	bool mode_changed;
 
 	if (property != ipu->sharpness_prop)
 		return -EINVAL;
 
+	mode_changed = val != ipu->sharpness;
 	ipu->sharpness = val;
 
 	if (state->crtc) {
-		crtc_state = drm_atomic_get_existing_crtc_state(state->state, state->crtc);
+		crtc_state = drm_atomic_get_new_crtc_state(state->state, state->crtc);
 		if (WARN_ON(!crtc_state))
 			return -EINVAL;
 
-		crtc_state->mode_changed = true;
+		crtc_state->mode_changed |= mode_changed;
 	}
 
 	return 0;
@@ -885,7 +887,7 @@ static int ingenic_ipu_bind(struct device *dev, struct device *master, void *d)
 		return err;
 	}
 
-	private_state = kzalloc(sizeof(*private_state), GFP_KERNEL);
+	private_state = kzalloc_obj(*private_state);
 	if (!private_state) {
 		err = -ENOMEM;
 		goto err_clk_unprepare;
@@ -920,10 +922,9 @@ static int ingenic_ipu_probe(struct platform_device *pdev)
 	return component_add(&pdev->dev, &ingenic_ipu_ops);
 }
 
-static int ingenic_ipu_remove(struct platform_device *pdev)
+static void ingenic_ipu_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &ingenic_ipu_ops);
-	return 0;
 }
 
 static const u32 jz4725b_ipu_formats[] = {

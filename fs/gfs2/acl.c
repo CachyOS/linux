@@ -83,21 +83,14 @@ struct posix_acl *gfs2_get_acl(struct inode *inode, int type, bool rcu)
 int __gfs2_set_acl(struct inode *inode, struct posix_acl *acl, int type)
 {
 	int error;
-	size_t len;
-	char *data;
+	size_t len = 0;
+	char *data = NULL;
 	const char *name = gfs2_acl_name(type);
 
 	if (acl) {
-		len = posix_acl_xattr_size(acl->a_count);
-		data = kmalloc(len, GFP_NOFS);
+		data = posix_acl_to_xattr(&init_user_ns, acl, &len, GFP_NOFS);
 		if (data == NULL)
 			return -ENOMEM;
-		error = posix_acl_to_xattr(&init_user_ns, acl, data, len);
-		if (error < 0)
-			goto out;
-	} else {
-		data = NULL;
-		len = 0;
 	}
 
 	error = __gfs2_xattr_set(inode, name, data, len, 0, GFS2_EATYPE_SYS);
@@ -109,9 +102,10 @@ out:
 	return error;
 }
 
-int gfs2_set_acl(struct user_namespace *mnt_userns, struct inode *inode,
+int gfs2_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 		 struct posix_acl *acl, int type)
 {
+	struct inode *inode = d_inode(dentry);
 	struct gfs2_inode *ip = GFS2_I(inode);
 	struct gfs2_holder gh;
 	bool need_unlock = false;
@@ -134,14 +128,14 @@ int gfs2_set_acl(struct user_namespace *mnt_userns, struct inode *inode,
 
 	mode = inode->i_mode;
 	if (type == ACL_TYPE_ACCESS && acl) {
-		ret = posix_acl_update_mode(&init_user_ns, inode, &mode, &acl);
+		ret = posix_acl_update_mode(&nop_mnt_idmap, inode, &mode, &acl);
 		if (ret)
 			goto unlock;
 	}
 
 	ret = __gfs2_set_acl(inode, acl, type);
 	if (!ret && mode != inode->i_mode) {
-		inode->i_ctime = current_time(inode);
+		inode_set_ctime_current(inode);
 		inode->i_mode = mode;
 		mark_inode_dirty(inode);
 	}

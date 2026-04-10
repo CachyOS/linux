@@ -15,7 +15,6 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
@@ -125,15 +124,13 @@ static int rcar_usb2_clock_sel_resume(struct device *dev)
 	return 0;
 }
 
-static int rcar_usb2_clock_sel_remove(struct platform_device *pdev)
+static void rcar_usb2_clock_sel_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 
 	of_clk_del_provider(dev->of_node);
 	pm_runtime_put(dev);
 	pm_runtime_disable(dev);
-
-	return 0;
 }
 
 static int rcar_usb2_clock_sel_probe(struct platform_device *pdev)

@@ -21,7 +21,6 @@
 #include <linux/platform_device.h>
 #include <linux/resource.h>
 #include <linux/of_pci.h>
-#include <linux/of_irq.h>
 
 #include "pcie-designware.h"
 
@@ -140,7 +139,7 @@ static int armada8k_pcie_setup_phys(struct armada8k_pcie *pcie)
 	return ret;
 }
 
-static int armada8k_pcie_link_up(struct dw_pcie *pci)
+static bool armada8k_pcie_link_up(struct dw_pcie *pci)
 {
 	u32 reg;
 	u32 mask = PCIE_GLB_STS_RDLH_LINK_UP | PCIE_GLB_STS_PHY_LINK_UP;
@@ -148,10 +147,10 @@ static int armada8k_pcie_link_up(struct dw_pcie *pci)
 	reg = dw_pcie_readl_dbi(pci, PCIE_GLOBAL_STATUS_REG);
 
 	if ((reg & mask) == mask)
-		return 1;
+		return true;
 
 	dev_dbg(pci->dev, "No link detected (Global-Status: 0x%08x).\n", reg);
-	return 0;
+	return false;
 }
 
 static int armada8k_pcie_start_link(struct dw_pcie *pci)
@@ -166,7 +165,7 @@ static int armada8k_pcie_start_link(struct dw_pcie *pci)
 	return 0;
 }
 
-static int armada8k_pcie_host_init(struct pcie_port *pp)
+static int armada8k_pcie_host_init(struct dw_pcie_rp *pp)
 {
 	u32 reg;
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
@@ -226,14 +225,14 @@ static irqreturn_t armada8k_pcie_irq_handler(int irq, void *arg)
 }
 
 static const struct dw_pcie_host_ops armada8k_pcie_host_ops = {
-	.host_init = armada8k_pcie_host_init,
+	.init = armada8k_pcie_host_init,
 };
 
 static int armada8k_add_pcie_port(struct armada8k_pcie *pcie,
 				  struct platform_device *pdev)
 {
 	struct dw_pcie *pci = pcie->pci;
-	struct pcie_port *pp = &pci->pp;
+	struct dw_pcie_rp *pp = &pci->pp;
 	struct device *dev = &pdev->dev;
 	int ret;
 
@@ -343,7 +342,7 @@ static struct platform_driver armada8k_pcie_driver = {
 	.probe		= armada8k_pcie_probe,
 	.driver = {
 		.name	= "armada8k-pcie",
-		.of_match_table = of_match_ptr(armada8k_pcie_of_match),
+		.of_match_table = armada8k_pcie_of_match,
 		.suppress_bind_attrs = true,
 	},
 };

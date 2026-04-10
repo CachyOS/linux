@@ -81,13 +81,11 @@ perf_callchain_user(struct perf_callchain_entry_ctx *entry, struct pt_regs *regs
  * whist unwinding the stackframe and is like a subroutine return so we use
  * the PC.
  */
-static int
-callchain_trace(struct stackframe *fr,
-		void *data)
+static bool
+callchain_trace(void *data, unsigned long pc)
 {
 	struct perf_callchain_entry_ctx *entry = data;
-	perf_callchain_store(entry, fr->pc);
-	return 0;
+	return perf_callchain_store(entry, pc) == 0;
 }
 
 void
@@ -97,21 +95,4 @@ perf_callchain_kernel(struct perf_callchain_entry_ctx *entry, struct pt_regs *re
 
 	arm_get_current_stackframe(regs, &fr);
 	walk_stackframe(&fr, callchain_trace, entry);
-}
-
-unsigned long perf_instruction_pointer(struct pt_regs *regs)
-{
-	return instruction_pointer(regs);
-}
-
-unsigned long perf_misc_flags(struct pt_regs *regs)
-{
-	int misc = 0;
-
-	if (user_mode(regs))
-		misc |= PERF_RECORD_MISC_USER;
-	else
-		misc |= PERF_RECORD_MISC_KERNEL;
-
-	return misc;
 }

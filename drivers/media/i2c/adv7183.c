@@ -442,8 +442,6 @@ static int adv7183_set_fmt(struct v4l2_subdev *sd,
 	}
 	if (format->which == V4L2_SUBDEV_FORMAT_ACTIVE)
 		decoder->fmt = *fmt;
-	else
-		sd_state->pads->try_fmt = *fmt;
 	return 0;
 }
 
@@ -521,8 +519,7 @@ static const struct v4l2_subdev_ops adv7183_ops = {
 	.pad = &adv7183_pad_ops,
 };
 
-static int adv7183_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int adv7183_probe(struct i2c_client *client)
 {
 	struct adv7183 *decoder;
 	struct v4l2_subdev *sd;
@@ -613,18 +610,17 @@ static int adv7183_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int adv7183_remove(struct i2c_client *client)
+static void adv7183_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(sd->ctrl_handler);
-	return 0;
 }
 
 static const struct i2c_device_id adv7183_id[] = {
-	{"adv7183", 0},
-	{},
+	{ "adv7183" },
+	{}
 };
 
 MODULE_DEVICE_TABLE(i2c, adv7183_id);

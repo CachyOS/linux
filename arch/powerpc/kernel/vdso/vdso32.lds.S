@@ -6,6 +6,7 @@
 #include <asm/vdso.h>
 #include <asm/page.h>
 #include <asm-generic/vmlinux.lds.h>
+#include <vdso/datapage.h>
 
 #ifdef __LITTLE_ENDIAN__
 OUTPUT_FORMAT("elf32-powerpcle", "elf32-powerpcle", "elf32-powerpcle")
@@ -16,7 +17,8 @@ OUTPUT_ARCH(powerpc:common)
 
 SECTIONS
 {
-	PROVIDE(_vdso_datapage = . - 2 * PAGE_SIZE);
+	VDSO_VVAR_SYMS
+
 	. = SIZEOF_HEADERS;
 
 	.hash          	: { *(.hash) }			:text
@@ -74,19 +76,22 @@ SECTIONS
 	.got		: { *(.got) }			:text
 	.plt		: { *(.plt) }
 
+	.rela.dyn	: { *(.rela .rela*) }
+
 	_end = .;
 	__end = .;
 	PROVIDE(end = .);
 
-	STABS_DEBUG
 	DWARF_DEBUG
 	ELF_DETAILS
 
 	/DISCARD/	: {
 		*(.note.GNU-stack)
+		*(*.EMB.apuinfo)
+		*(.branch_lt)
 		*(.data .data.* .gnu.linkonce.d.* .sdata*)
 		*(.bss .sbss .dynbss .dynsbss)
-		*(.got1)
+		*(.got1 .glink .iplt)
 	}
 }
 
@@ -119,6 +124,7 @@ VERSION
 		__kernel_clock_gettime;
 		__kernel_clock_gettime64;
 		__kernel_clock_getres;
+		__kernel_clock_getres_time64;
 		__kernel_time;
 		__kernel_get_tbfreq;
 		__kernel_sync_dicache;
@@ -127,6 +133,7 @@ VERSION
 #if defined(CONFIG_PPC64) || !defined(CONFIG_SMP)
 		__kernel_getcpu;
 #endif
+		__kernel_getrandom;
 
 	local: *;
 	};

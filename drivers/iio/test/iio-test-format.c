@@ -257,7 +257,7 @@ static struct kunit_case iio_format_test_cases[] = {
 		KUNIT_CASE(iio_test_iio_format_value_fractional_log2),
 		KUNIT_CASE(iio_test_iio_format_value_multiple),
 		KUNIT_CASE(iio_test_iio_format_value_integer_64),
-		{}
+		{ }
 };
 
 static struct kunit_suite iio_format_test_suite = {
@@ -265,3 +265,7 @@ static struct kunit_suite iio_format_test_suite = {
 	.test_cases = iio_format_test_cases,
 };
 kunit_test_suite(iio_format_test_suite);
+
+MODULE_AUTHOR("Lars-Peter Clausen <lars@metafoo.de>");
+MODULE_DESCRIPTION("Test IIO formatting functions");
+MODULE_LICENSE("GPL v2");

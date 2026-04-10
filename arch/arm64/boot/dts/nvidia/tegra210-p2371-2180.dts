@@ -58,21 +58,19 @@
 			dev-ctrl = /bits/ 8 <0x80>;
 			init-brt = /bits/ 8 <0xff>;
 
-			pwm-period = <29334>;
-
 			pwms = <&pwm 0 29334>;
 			pwm-names = "lp8557";
 
-			/* 3 LED string */
-			rom_14h {
-				rom-addr = /bits/ 8 <0x14>;
-				rom-val = /bits/ 8 <0x87>;
-			};
-
 			/* boost frequency 1 MHz */
-			rom_13h {
+			rom-13h {
 				rom-addr = /bits/ 8 <0x13>;
 				rom-val = /bits/ 8 <0x01>;
+			};
+
+			/* 3 LED string */
+			rom-14h {
+				rom-addr = /bits/ 8 <0x14>;
+				rom-val = /bits/ 8 <0x87>;
 			};
 		};
 	};
@@ -90,6 +88,12 @@
 			size = <256>;
 			read-only;
 		};
+	};
+
+	cec@70015000 {
+		status = "okay";
+
+		hdmi-phandle = <&sor1>;
 	};
 
 	clock@70110000 {
@@ -115,14 +119,6 @@
 
 	aconnect@702c0000 {
 		status = "okay";
-
-		dma-controller@702e2000 {
-			status = "okay";
-		};
-
-		interrupt-controller@702f9000 {
-			status = "okay";
-		};
 
 		ahub@702d0800 {
 			status = "okay";
@@ -261,81 +257,6 @@
 				};
 			};
 
-			dmic@702d4000 {
-				status = "okay";
-
-				ports {
-					#address-cells = <1>;
-					#size-cells = <0>;
-
-					port@0 {
-						reg = <0>;
-
-						dmic1_cif_ep: endpoint {
-							remote-endpoint = <&xbar_dmic1_ep>;
-						};
-					};
-
-					dmic1_port: port@1 {
-						reg = <1>;
-
-						dmic1_dap_ep: endpoint {
-							/* Placeholder for external Codec */
-						};
-					};
-				};
-			};
-
-			dmic@702d4100 {
-				status = "okay";
-
-				ports {
-					#address-cells = <1>;
-					#size-cells = <0>;
-
-					port@0 {
-						reg = <0>;
-
-						dmic2_cif_ep: endpoint {
-							remote-endpoint = <&xbar_dmic2_ep>;
-						};
-					};
-
-					dmic2_port: port@1 {
-						reg = <1>;
-
-						dmic2_dap_ep: endpoint {
-							/* Placeholder for external Codec */
-						};
-					};
-				};
-			};
-
-			dmic@702d4200 {
-				status = "okay";
-
-				ports {
-					#address-cells = <1>;
-					#size-cells = <0>;
-
-					port@0 {
-						reg = <0>;
-
-						dmic3_cif_ep: endpoint {
-							remote-endpoint = <&xbar_dmic3_ep>;
-						};
-					};
-
-					dmic3_port: port@1 {
-						reg = <1>;
-
-						dmic3_dap_ep: endpoint {
-							/* Placeholder for external Codec */
-						};
-					};
-				};
-			};
-
 			sfc@702d2000 {
 				status = "okay";
 
@@ -431,56 +352,6 @@
 
 						sfc4_cif_out_ep: endpoint {
 							remote-endpoint = <&xbar_sfc4_out_ep>;
-						};
-					};
-				};
-			};
-
-			mvc@702da000 {
-				status = "okay";
-
-				ports {
-					#address-cells = <1>;
-					#size-cells = <0>;
-
-					port@0 {
-						reg = <0>;
-
-						mvc1_cif_in_ep: endpoint {
-							remote-endpoint = <&xbar_mvc1_in_ep>;
-						};
-					};
-
-					mvc1_out_port: port@1 {
-						reg = <1>;
-
-						mvc1_cif_out_ep: endpoint {
-							remote-endpoint = <&xbar_mvc1_out_ep>;
-						};
-					};
-				};
-			};
-
-			mvc@702da200 {
-				status = "okay";
-
-				ports {
-					#address-cells = <1>;
-					#size-cells = <0>;
-
-					port@0 {
-						reg = <0>;
-
-						mvc2_cif_in_ep: endpoint {
-							remote-endpoint = <&xbar_mvc2_in_ep>;
-						};
-					};
-
-					mvc2_out_port: port@1 {
-						reg = <1>;
-
-						mvc2_cif_out_ep: endpoint {
-							remote-endpoint = <&xbar_mvc2_out_ep>;
 						};
 					};
 				};
@@ -677,6 +548,181 @@
 
 						adx2_out4_ep: endpoint {
 							remote-endpoint = <&xbar_adx2_out4_ep>;
+						};
+					};
+				};
+			};
+
+			dmic@702d4000 {
+				status = "okay";
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+
+						dmic1_cif_ep: endpoint {
+							remote-endpoint = <&xbar_dmic1_ep>;
+						};
+					};
+
+					dmic1_port: port@1 {
+						reg = <1>;
+
+						dmic1_dap_ep: endpoint {
+							/* Placeholder for external Codec */
+						};
+					};
+				};
+			};
+
+			dmic@702d4100 {
+				status = "okay";
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+
+						dmic2_cif_ep: endpoint {
+							remote-endpoint = <&xbar_dmic2_ep>;
+						};
+					};
+
+					dmic2_port: port@1 {
+						reg = <1>;
+
+						dmic2_dap_ep: endpoint {
+							/* Placeholder for external Codec */
+						};
+					};
+				};
+			};
+
+			dmic@702d4200 {
+				status = "okay";
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+
+						dmic3_cif_ep: endpoint {
+							remote-endpoint = <&xbar_dmic3_ep>;
+						};
+					};
+
+					dmic3_port: port@1 {
+						reg = <1>;
+
+						dmic3_dap_ep: endpoint {
+							/* Placeholder for external Codec */
+						};
+					};
+				};
+			};
+
+			processing-engine@702d8000 {
+				status = "okay";
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0x0>;
+
+						ope1_cif_in_ep: endpoint {
+							remote-endpoint = <&xbar_ope1_in_ep>;
+						};
+					};
+
+					ope1_out_port: port@1 {
+						reg = <0x1>;
+
+						ope1_cif_out_ep: endpoint {
+							remote-endpoint = <&xbar_ope1_out_ep>;
+						};
+					};
+				};
+			};
+
+			processing-engine@702d8400 {
+				status = "okay";
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0x0>;
+
+						ope2_cif_in_ep: endpoint {
+							remote-endpoint = <&xbar_ope2_in_ep>;
+						};
+					};
+
+					ope2_out_port: port@1 {
+						reg = <0x1>;
+
+						ope2_cif_out_ep: endpoint {
+							remote-endpoint = <&xbar_ope2_out_ep>;
+						};
+					};
+				};
+			};
+
+			mvc@702da000 {
+				status = "okay";
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+
+						mvc1_cif_in_ep: endpoint {
+							remote-endpoint = <&xbar_mvc1_in_ep>;
+						};
+					};
+
+					mvc1_out_port: port@1 {
+						reg = <1>;
+
+						mvc1_cif_out_ep: endpoint {
+							remote-endpoint = <&xbar_mvc1_out_ep>;
+						};
+					};
+				};
+			};
+
+			mvc@702da200 {
+				status = "okay";
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+
+						mvc2_cif_in_ep: endpoint {
+							remote-endpoint = <&xbar_mvc2_in_ep>;
+						};
+					};
+
+					mvc2_out_port: port@1 {
+						reg = <1>;
+
+						mvc2_cif_out_ep: endpoint {
+							remote-endpoint = <&xbar_mvc2_out_ep>;
 						};
 					};
 				};
@@ -1251,7 +1297,47 @@
 						remote-endpoint = <&mixer_out5_ep>;
 					};
 				};
+
+				xbar_ope1_in_port: port@41 {
+					reg = <0x41>;
+
+					xbar_ope1_in_ep: endpoint {
+						remote-endpoint = <&ope1_cif_in_ep>;
+					};
+				};
+
+				port@42 {
+					reg = <0x42>;
+
+					xbar_ope1_out_ep: endpoint {
+						remote-endpoint = <&ope1_cif_out_ep>;
+					};
+				};
+
+				xbar_ope2_in_port: port@43 {
+					reg = <0x43>;
+
+					xbar_ope2_in_ep: endpoint {
+						remote-endpoint = <&ope2_cif_in_ep>;
+					};
+				};
+
+				port@44 {
+					reg = <0x44>;
+
+					xbar_ope2_out_ep: endpoint {
+						remote-endpoint = <&ope2_cif_out_ep>;
+					};
+				};
 			};
+		};
+
+		dma-controller@702e2000 {
+			status = "okay";
+		};
+
+		interrupt-controller@702f9000 {
+			status = "okay";
 		};
 	};
 
@@ -1281,6 +1367,7 @@
 		       <&xbar_mixer_in5_port>, <&xbar_mixer_in6_port>,
 		       <&xbar_mixer_in7_port>, <&xbar_mixer_in8_port>,
 		       <&xbar_mixer_in9_port>, <&xbar_mixer_in10_port>,
+		       <&xbar_ope1_in_port>, <&xbar_ope2_in_port>,
 		       /* HW accelerators */
 		       <&sfc1_out_port>, <&sfc2_out_port>,
 		       <&sfc3_out_port>, <&sfc4_out_port>,
@@ -1293,6 +1380,7 @@
 		       <&mixer_out1_port>, <&mixer_out2_port>,
 		       <&mixer_out3_port>, <&mixer_out4_port>,
 		       <&mixer_out5_port>,
+		       <&ope1_out_port>, <&ope2_out_port>,
 		       /* I/O DAP Ports */
 		       <&i2s1_port>, <&i2s2_port>, <&i2s3_port>, <&i2s4_port>,
 		       <&i2s5_port>, <&dmic1_port>, <&dmic2_port>, <&dmic3_port>;

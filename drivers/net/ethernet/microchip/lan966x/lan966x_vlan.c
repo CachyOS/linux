@@ -149,6 +149,27 @@ void lan966x_vlan_port_set_vlan_aware(struct lan966x_port *port,
 	port->vlan_aware = vlan_aware;
 }
 
+/* When the interface is in host mode, the interface should not be vlan aware
+ * but it should insert all the tags that it gets from the network stack.
+ * The tags are not in the data of the frame but actually in the skb and the ifh
+ * is configured already to get this tag. So what we need to do is to update the
+ * rewriter to insert the vlan tag for all frames which have a vlan tag
+ * different than 0.
+ */
+void lan966x_vlan_port_rew_host(struct lan966x_port *port)
+{
+	struct lan966x *lan966x = port->lan966x;
+	u32 val;
+
+	/* Tag all frames except when VID=0*/
+	val = REW_TAG_CFG_TAG_CFG_SET(2);
+
+	/* Update only some bits in the register */
+	lan_rmw(val,
+		REW_TAG_CFG_TAG_CFG,
+		lan966x, REW_TAG_CFG(port->chip_port));
+}
+
 void lan966x_vlan_port_apply(struct lan966x_port *port)
 {
 	struct lan966x *lan966x = port->lan966x;
@@ -157,7 +178,7 @@ void lan966x_vlan_port_apply(struct lan966x_port *port)
 
 	pvid = lan966x_vlan_port_get_pvid(port);
 
-	/* Ingress clasification (ANA_PORT_VLAN_CFG) */
+	/* Ingress classification (ANA_PORT_VLAN_CFG) */
 	/* Default vlan to classify for untagged frames (may be zero) */
 	val = ANA_VLAN_CFG_VLAN_VID_SET(pvid);
 	if (port->vlan_aware)
@@ -168,6 +189,12 @@ void lan966x_vlan_port_apply(struct lan966x_port *port)
 		ANA_VLAN_CFG_VLAN_VID | ANA_VLAN_CFG_VLAN_AWARE_ENA |
 		ANA_VLAN_CFG_VLAN_POP_CNT,
 		lan966x, ANA_VLAN_CFG(port->chip_port));
+
+	lan_rmw(DEV_MAC_TAGS_CFG_VLAN_AWR_ENA_SET(port->vlan_aware) |
+		DEV_MAC_TAGS_CFG_VLAN_DBL_AWR_ENA_SET(port->vlan_aware),
+		DEV_MAC_TAGS_CFG_VLAN_AWR_ENA |
+		DEV_MAC_TAGS_CFG_VLAN_DBL_AWR_ENA,
+		lan966x, DEV_MAC_TAGS_CFG(port->chip_port));
 
 	/* Drop frames with multicast source address */
 	val = ANA_DROP_CFG_DROP_MC_SMAC_ENA_SET(1);

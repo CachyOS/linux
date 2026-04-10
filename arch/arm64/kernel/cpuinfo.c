@@ -33,12 +33,17 @@
 DEFINE_PER_CPU(struct cpuinfo_arm64, cpu_data);
 static struct cpuinfo_arm64 boot_cpu_data;
 
-static const char *icache_policy_str[] = {
-	[ICACHE_POLICY_VPIPT]		= "VPIPT",
-	[ICACHE_POLICY_RESERVED]	= "RESERVED/UNKNOWN",
-	[ICACHE_POLICY_VIPT]		= "VIPT",
-	[ICACHE_POLICY_PIPT]		= "PIPT",
-};
+static inline const char *icache_policy_str(int l1ip)
+{
+	switch (l1ip) {
+	case CTR_EL0_L1Ip_VIPT:
+		return "VIPT";
+	case CTR_EL0_L1Ip_PIPT:
+		return "PIPT";
+	default:
+		return "RESERVED/UNKNOWN";
+	}
+}
 
 unsigned long __icache_flags;
 
@@ -75,6 +80,8 @@ static const char *const hwcap_str[] = {
 	[KERNEL_HWCAP_SB]		= "sb",
 	[KERNEL_HWCAP_PACA]		= "paca",
 	[KERNEL_HWCAP_PACG]		= "pacg",
+	[KERNEL_HWCAP_GCS]		= "gcs",
+	[KERNEL_HWCAP_LS64]		= "ls64",
 	[KERNEL_HWCAP_DCPODP]		= "dcpodp",
 	[KERNEL_HWCAP_SVE2]		= "sve2",
 	[KERNEL_HWCAP_SVEAES]		= "sveaes",
@@ -107,6 +114,56 @@ static const char *const hwcap_str[] = {
 	[KERNEL_HWCAP_SME_F32F32]	= "smef32f32",
 	[KERNEL_HWCAP_SME_FA64]		= "smefa64",
 	[KERNEL_HWCAP_WFXT]		= "wfxt",
+	[KERNEL_HWCAP_EBF16]		= "ebf16",
+	[KERNEL_HWCAP_SVE_EBF16]	= "sveebf16",
+	[KERNEL_HWCAP_CSSC]		= "cssc",
+	[KERNEL_HWCAP_RPRFM]		= "rprfm",
+	[KERNEL_HWCAP_SVE2P1]		= "sve2p1",
+	[KERNEL_HWCAP_SME2]		= "sme2",
+	[KERNEL_HWCAP_SME2P1]		= "sme2p1",
+	[KERNEL_HWCAP_SME_I16I32]	= "smei16i32",
+	[KERNEL_HWCAP_SME_BI32I32]	= "smebi32i32",
+	[KERNEL_HWCAP_SME_B16B16]	= "smeb16b16",
+	[KERNEL_HWCAP_SME_F16F16]	= "smef16f16",
+	[KERNEL_HWCAP_MOPS]		= "mops",
+	[KERNEL_HWCAP_HBC]		= "hbc",
+	[KERNEL_HWCAP_SVE_B16B16]	= "sveb16b16",
+	[KERNEL_HWCAP_LRCPC3]		= "lrcpc3",
+	[KERNEL_HWCAP_LSE128]		= "lse128",
+	[KERNEL_HWCAP_FPMR]		= "fpmr",
+	[KERNEL_HWCAP_LUT]		= "lut",
+	[KERNEL_HWCAP_FAMINMAX]		= "faminmax",
+	[KERNEL_HWCAP_F8CVT]		= "f8cvt",
+	[KERNEL_HWCAP_F8FMA]		= "f8fma",
+	[KERNEL_HWCAP_F8DP4]		= "f8dp4",
+	[KERNEL_HWCAP_F8DP2]		= "f8dp2",
+	[KERNEL_HWCAP_F8E4M3]		= "f8e4m3",
+	[KERNEL_HWCAP_F8E5M2]		= "f8e5m2",
+	[KERNEL_HWCAP_SME_LUTV2]	= "smelutv2",
+	[KERNEL_HWCAP_SME_F8F16]	= "smef8f16",
+	[KERNEL_HWCAP_SME_F8F32]	= "smef8f32",
+	[KERNEL_HWCAP_SME_SF8FMA]	= "smesf8fma",
+	[KERNEL_HWCAP_SME_SF8DP4]	= "smesf8dp4",
+	[KERNEL_HWCAP_SME_SF8DP2]	= "smesf8dp2",
+	[KERNEL_HWCAP_POE]		= "poe",
+	[KERNEL_HWCAP_CMPBR]		= "cmpbr",
+	[KERNEL_HWCAP_FPRCVT]		= "fprcvt",
+	[KERNEL_HWCAP_F8MM8]		= "f8mm8",
+	[KERNEL_HWCAP_F8MM4]		= "f8mm4",
+	[KERNEL_HWCAP_SVE_F16MM]	= "svef16mm",
+	[KERNEL_HWCAP_SVE_ELTPERM]	= "sveeltperm",
+	[KERNEL_HWCAP_SVE_AES2]		= "sveaes2",
+	[KERNEL_HWCAP_SVE_BFSCALE]	= "svebfscale",
+	[KERNEL_HWCAP_SVE2P2]		= "sve2p2",
+	[KERNEL_HWCAP_SME2P2]		= "sme2p2",
+	[KERNEL_HWCAP_SME_SBITPERM]	= "smesbitperm",
+	[KERNEL_HWCAP_SME_AES]		= "smeaes",
+	[KERNEL_HWCAP_SME_SFEXPA]	= "smesfexpa",
+	[KERNEL_HWCAP_SME_STMOP]	= "smestmop",
+	[KERNEL_HWCAP_SME_SMOP4]	= "smesmop4",
+	[KERNEL_HWCAP_MTE_FAR]		= "mtefar",
+	[KERNEL_HWCAP_MTE_STORE_ONLY]	= "mtestoreonly",
+	[KERNEL_HWCAP_LSFE]		= "lsfe",
 };
 
 #ifdef CONFIG_COMPAT
@@ -134,6 +191,12 @@ static const char *const compat_hwcap_str[] = {
 	[COMPAT_KERNEL_HWCAP(VFPD32)]	= NULL,	/* Not possible on arm64 */
 	[COMPAT_KERNEL_HWCAP(LPAE)]	= "lpae",
 	[COMPAT_KERNEL_HWCAP(EVTSTRM)]	= "evtstrm",
+	[COMPAT_KERNEL_HWCAP(FPHP)]	= "fphp",
+	[COMPAT_KERNEL_HWCAP(ASIMDHP)]	= "asimdhp",
+	[COMPAT_KERNEL_HWCAP(ASIMDDP)]	= "asimddp",
+	[COMPAT_KERNEL_HWCAP(ASIMDFHM)]	= "asimdfhm",
+	[COMPAT_KERNEL_HWCAP(ASIMDBF16)] = "asimdbf16",
+	[COMPAT_KERNEL_HWCAP(I8MM)]	= "i8mm",
 };
 
 #define COMPAT_KERNEL_HWCAP2(x)	const_ilog2(COMPAT_HWCAP2_ ## x)
@@ -143,85 +206,86 @@ static const char *const compat_hwcap2_str[] = {
 	[COMPAT_KERNEL_HWCAP2(SHA1)]	= "sha1",
 	[COMPAT_KERNEL_HWCAP2(SHA2)]	= "sha2",
 	[COMPAT_KERNEL_HWCAP2(CRC32)]	= "crc32",
+	[COMPAT_KERNEL_HWCAP2(SB)]	= "sb",
+	[COMPAT_KERNEL_HWCAP2(SSBS)]	= "ssbs",
 };
 #endif /* CONFIG_COMPAT */
 
 static int c_show(struct seq_file *m, void *v)
 {
-	int i, j;
+	int j;
+	int cpu = m->index;
 	bool compat = personality(current->personality) == PER_LINUX32;
+	struct cpuinfo_arm64 *cpuinfo = v;
+	u32 midr = cpuinfo->reg_midr;
 
-	for_each_online_cpu(i) {
-		struct cpuinfo_arm64 *cpuinfo = &per_cpu(cpu_data, i);
-		u32 midr = cpuinfo->reg_midr;
+	/*
+	 * glibc reads /proc/cpuinfo to determine the number of
+	 * online processors, looking for lines beginning with
+	 * "processor".  Give glibc what it expects.
+	 */
+	seq_printf(m, "processor\t: %d\n", cpu);
+	if (compat)
+		seq_printf(m, "model name\t: ARMv8 Processor rev %d (%s)\n",
+			   MIDR_REVISION(midr), COMPAT_ELF_PLATFORM);
 
-		/*
-		 * glibc reads /proc/cpuinfo to determine the number of
-		 * online processors, looking for lines beginning with
-		 * "processor".  Give glibc what it expects.
-		 */
-		seq_printf(m, "processor\t: %d\n", i);
-		if (compat)
-			seq_printf(m, "model name\t: ARMv8 Processor rev %d (%s)\n",
-				   MIDR_REVISION(midr), COMPAT_ELF_PLATFORM);
+	seq_printf(m, "BogoMIPS\t: %lu.%02lu\n",
+		   loops_per_jiffy / (500000UL/HZ),
+		   loops_per_jiffy / (5000UL/HZ) % 100);
 
-		seq_printf(m, "BogoMIPS\t: %lu.%02lu\n",
-			   loops_per_jiffy / (500000UL/HZ),
-			   loops_per_jiffy / (5000UL/HZ) % 100);
-
-		/*
-		 * Dump out the common processor features in a single line.
-		 * Userspace should read the hwcaps with getauxval(AT_HWCAP)
-		 * rather than attempting to parse this, but there's a body of
-		 * software which does already (at least for 32-bit).
-		 */
-		seq_puts(m, "Features\t:");
-		if (compat) {
+	/*
+	 * Dump out the common processor features in a single line.
+	 * Userspace should read the hwcaps with getauxval(AT_HWCAP)
+	 * rather than attempting to parse this, but there's a body of
+	 * software which does already (at least for 32-bit).
+	 */
+	seq_puts(m, "Features\t:");
+	if (compat) {
 #ifdef CONFIG_COMPAT
-			for (j = 0; j < ARRAY_SIZE(compat_hwcap_str); j++) {
-				if (compat_elf_hwcap & (1 << j)) {
-					/*
-					 * Warn once if any feature should not
-					 * have been present on arm64 platform.
-					 */
-					if (WARN_ON_ONCE(!compat_hwcap_str[j]))
-						continue;
+		for (j = 0; j < ARRAY_SIZE(compat_hwcap_str); j++) {
+			if (compat_elf_hwcap & (1 << j)) {
+				/*
+				 * Warn once if any feature should not
+				 * have been present on arm64 platform.
+				 */
+				if (WARN_ON_ONCE(!compat_hwcap_str[j]))
+					continue;
 
-					seq_printf(m, " %s", compat_hwcap_str[j]);
-				}
+				seq_printf(m, " %s", compat_hwcap_str[j]);
 			}
-
-			for (j = 0; j < ARRAY_SIZE(compat_hwcap2_str); j++)
-				if (compat_elf_hwcap2 & (1 << j))
-					seq_printf(m, " %s", compat_hwcap2_str[j]);
-#endif /* CONFIG_COMPAT */
-		} else {
-			for (j = 0; j < ARRAY_SIZE(hwcap_str); j++)
-				if (cpu_have_feature(j))
-					seq_printf(m, " %s", hwcap_str[j]);
 		}
-		seq_puts(m, "\n");
 
-		seq_printf(m, "CPU implementer\t: 0x%02x\n",
-			   MIDR_IMPLEMENTOR(midr));
-		seq_printf(m, "CPU architecture: 8\n");
-		seq_printf(m, "CPU variant\t: 0x%x\n", MIDR_VARIANT(midr));
-		seq_printf(m, "CPU part\t: 0x%03x\n", MIDR_PARTNUM(midr));
-		seq_printf(m, "CPU revision\t: %d\n\n", MIDR_REVISION(midr));
+		for (j = 0; j < ARRAY_SIZE(compat_hwcap2_str); j++)
+			if (compat_elf_hwcap2 & (1 << j))
+				seq_printf(m, " %s", compat_hwcap2_str[j]);
+#endif /* CONFIG_COMPAT */
+	} else {
+		for (j = 0; j < ARRAY_SIZE(hwcap_str); j++)
+			if (cpu_have_feature(j))
+				seq_printf(m, " %s", hwcap_str[j]);
 	}
+	seq_puts(m, "\n");
+
+	seq_printf(m, "CPU implementer\t: 0x%02x\n",
+		   MIDR_IMPLEMENTOR(midr));
+	seq_puts(m, "CPU architecture: 8\n");
+	seq_printf(m, "CPU variant\t: 0x%x\n", MIDR_VARIANT(midr));
+	seq_printf(m, "CPU part\t: 0x%03x\n", MIDR_PARTNUM(midr));
+	seq_printf(m, "CPU revision\t: %d\n\n", MIDR_REVISION(midr));
 
 	return 0;
 }
 
 static void *c_start(struct seq_file *m, loff_t *pos)
 {
-	return *pos < 1 ? (void *)1 : NULL;
+	*pos = cpumask_next(*pos - 1, cpu_online_mask);
+	return *pos < nr_cpu_ids ? &per_cpu(cpu_data, *pos) : NULL;
 }
 
 static void *c_next(struct seq_file *m, void *v, loff_t *pos)
 {
 	++*pos;
-	return NULL;
+	return c_start(m, pos);
 }
 
 static void c_stop(struct seq_file *m, void *v)
@@ -236,7 +300,7 @@ const struct seq_operations cpuinfo_op = {
 };
 
 
-static struct kobj_type cpuregs_kobj_type = {
+static const struct kobj_type cpuregs_kobj_type = {
 	.sysfs_ops = &kobj_sysfs_ops,
 };
 
@@ -267,15 +331,28 @@ static struct kobj_type cpuregs_kobj_type = {
 
 CPUREGS_ATTR_RO(midr_el1, midr);
 CPUREGS_ATTR_RO(revidr_el1, revidr);
+CPUREGS_ATTR_RO(aidr_el1, aidr);
+CPUREGS_ATTR_RO(smidr_el1, smidr);
 
 static struct attribute *cpuregs_id_attrs[] = {
 	&cpuregs_attr_midr_el1.attr,
 	&cpuregs_attr_revidr_el1.attr,
+	&cpuregs_attr_aidr_el1.attr,
 	NULL
 };
 
 static const struct attribute_group cpuregs_attr_group = {
 	.attrs = cpuregs_id_attrs,
+	.name = "identification"
+};
+
+static struct attribute *sme_cpuregs_id_attrs[] = {
+	&cpuregs_attr_smidr_el1.attr,
+	NULL
+};
+
+static const struct attribute_group sme_cpuregs_attr_group = {
+	.attrs = sme_cpuregs_id_attrs,
 	.name = "identification"
 };
 
@@ -296,6 +373,8 @@ static int cpuid_cpu_online(unsigned int cpu)
 	rc = sysfs_create_group(&info->kobj, &cpuregs_attr_group);
 	if (rc)
 		kobject_del(&info->kobj);
+	if (system_supports_sme())
+		rc = sysfs_merge_group(&info->kobj, &sme_cpuregs_attr_group);
 out:
 	return rc;
 }
@@ -342,19 +421,16 @@ static void cpuinfo_detect_icache_policy(struct cpuinfo_arm64 *info)
 	u32 l1ip = CTR_L1IP(info->reg_ctr);
 
 	switch (l1ip) {
-	case ICACHE_POLICY_PIPT:
+	case CTR_EL0_L1Ip_PIPT:
 		break;
-	case ICACHE_POLICY_VPIPT:
-		set_bit(ICACHEF_VPIPT, &__icache_flags);
-		break;
-	case ICACHE_POLICY_RESERVED:
-	case ICACHE_POLICY_VIPT:
+	case CTR_EL0_L1Ip_VIPT:
+	default:
 		/* Assume aliasing */
 		set_bit(ICACHEF_ALIASING, &__icache_flags);
 		break;
 	}
 
-	pr_info("Detected %s I-cache on CPU%d\n", icache_policy_str[l1ip], cpu);
+	pr_info("Detected %s I-cache on CPU%d\n", icache_policy_str(l1ip), cpu);
 }
 
 static void __cpuinfo_store_cpu_32bit(struct cpuinfo_32bit *info)
@@ -398,19 +474,25 @@ static void __cpuinfo_store_cpu(struct cpuinfo_arm64 *info)
 	info->reg_dczid = read_cpuid(DCZID_EL0);
 	info->reg_midr = read_cpuid_id();
 	info->reg_revidr = read_cpuid(REVIDR_EL1);
+	info->reg_aidr = read_cpuid(AIDR_EL1);
 
 	info->reg_id_aa64dfr0 = read_cpuid(ID_AA64DFR0_EL1);
 	info->reg_id_aa64dfr1 = read_cpuid(ID_AA64DFR1_EL1);
 	info->reg_id_aa64isar0 = read_cpuid(ID_AA64ISAR0_EL1);
 	info->reg_id_aa64isar1 = read_cpuid(ID_AA64ISAR1_EL1);
 	info->reg_id_aa64isar2 = read_cpuid(ID_AA64ISAR2_EL1);
+	info->reg_id_aa64isar3 = read_cpuid(ID_AA64ISAR3_EL1);
 	info->reg_id_aa64mmfr0 = read_cpuid(ID_AA64MMFR0_EL1);
 	info->reg_id_aa64mmfr1 = read_cpuid(ID_AA64MMFR1_EL1);
 	info->reg_id_aa64mmfr2 = read_cpuid(ID_AA64MMFR2_EL1);
+	info->reg_id_aa64mmfr3 = read_cpuid(ID_AA64MMFR3_EL1);
+	info->reg_id_aa64mmfr4 = read_cpuid(ID_AA64MMFR4_EL1);
 	info->reg_id_aa64pfr0 = read_cpuid(ID_AA64PFR0_EL1);
 	info->reg_id_aa64pfr1 = read_cpuid(ID_AA64PFR1_EL1);
+	info->reg_id_aa64pfr2 = read_cpuid(ID_AA64PFR2_EL1);
 	info->reg_id_aa64zfr0 = read_cpuid(ID_AA64ZFR0_EL1);
 	info->reg_id_aa64smfr0 = read_cpuid(ID_AA64SMFR0_EL1);
+	info->reg_id_aa64fpfr0 = read_cpuid(ID_AA64FPFR0_EL1);
 
 	if (id_aa64pfr1_mte(info->reg_id_aa64pfr1))
 		info->reg_gmid = read_cpuid(GMID_EL1);
@@ -418,13 +500,21 @@ static void __cpuinfo_store_cpu(struct cpuinfo_arm64 *info)
 	if (id_aa64pfr0_32bit_el0(info->reg_id_aa64pfr0))
 		__cpuinfo_store_cpu_32bit(&info->aarch32);
 
-	if (IS_ENABLED(CONFIG_ARM64_SVE) &&
-	    id_aa64pfr0_sve(info->reg_id_aa64pfr0))
-		info->reg_zcr = read_zcr_features();
+	/*
+	 * info->reg_mpamidr deferred to {init,update}_cpu_features because we
+	 * don't want to read it (and trigger a trap on buggy firmware) if
+	 * using an aa64pfr0_el1 override to unconditionally disable MPAM.
+	 */
 
 	if (IS_ENABLED(CONFIG_ARM64_SME) &&
-	    id_aa64pfr1_sme(info->reg_id_aa64pfr1))
-		info->reg_smcr = read_smcr_features();
+	    id_aa64pfr1_sme(info->reg_id_aa64pfr1)) {
+		/*
+		 * We mask out SMPS since even if the hardware
+		 * supports priorities the kernel does not at present
+		 * and we block access to them.
+		 */
+		info->reg_smidr = read_cpuid(SMIDR_EL1) & ~SMIDR_EL1_SMPS;
+	}
 
 	cpuinfo_detect_icache_policy(info);
 }

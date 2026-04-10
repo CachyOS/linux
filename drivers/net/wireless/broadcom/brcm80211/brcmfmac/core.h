@@ -13,6 +13,12 @@
 #include <net/cfg80211.h>
 #include "fweh.h"
 
+#if IS_MODULE(CONFIG_BRCMFMAC)
+#define BRCMF_EXPORT_SYMBOL_GPL(__sym)	EXPORT_SYMBOL_NS_GPL(__sym, "BRCMFMAC")
+#else
+#define BRCMF_EXPORT_SYMBOL_GPL(__sym)
+#endif
+
 #define TOE_TX_CSUM_OL		0x00000001
 #define TOE_RX_CSUM_OL		0x00000002
 
@@ -42,26 +48,26 @@
 /**
  * struct brcmf_ampdu_rx_reorder - AMPDU receive reorder info
  *
- * @pktslots: dynamic allocated array for ordering AMPDU packets.
  * @flow_id: AMPDU flow identifier.
  * @cur_idx: last AMPDU index from firmware.
  * @exp_idx: expected next AMPDU index.
  * @max_idx: maximum amount of packets per AMPDU.
  * @pend_pkts: number of packets currently in @pktslots.
+ * @pktslots: array for ordering AMPDU packets.
  */
 struct brcmf_ampdu_rx_reorder {
-	struct sk_buff **pktslots;
 	u8 flow_id;
 	u8 cur_idx;
 	u8 exp_idx;
 	u8 max_idx;
 	u8 pend_pkts;
+	struct sk_buff *pktslots[];
 };
 
 /* Forward decls for struct brcmf_pub (see below) */
 struct brcmf_proto;	/* device communication protocol info */
 struct brcmf_fws_info;	/* firmware signalling info */
-struct brcmf_mp_device;	/* module paramateres, device specific */
+struct brcmf_mp_device;	/* module parameters, device specific */
 
 /*
  * struct brcmf_rev_info
@@ -116,7 +122,7 @@ struct brcmf_pub {
 	struct mutex proto_block;
 	unsigned char proto_buf[BRCMF_DCMD_MAXLEN];
 
-	struct brcmf_fweh_info fweh;
+	struct brcmf_fweh_info *fweh;
 
 	struct brcmf_ampdu_rx_reorder
 		*reorder_flows[BRCMF_AMPDU_RX_REORDER_MAXFLOWS];
@@ -136,6 +142,9 @@ struct brcmf_pub {
 	struct work_struct bus_reset;
 
 	u8 clmver[BRCMF_DCMD_SMLEN];
+	u8 sta_mac_idx;
+	const struct brcmf_fwvid_ops *vops;
+	void *vdata;
 };
 
 /* forward declarations */

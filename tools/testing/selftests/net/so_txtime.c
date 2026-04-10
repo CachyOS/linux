@@ -134,8 +134,11 @@ static void do_recv_one(int fdr, struct timed_send *ts)
 	if (rbuf[0] != ts->data)
 		error(1, 0, "payload mismatch. expected %c", ts->data);
 
-	if (llabs(tstop - texpect) > cfg_variance_us)
-		error(1, 0, "exceeds variance (%d us)", cfg_variance_us);
+	if (llabs(tstop - texpect) > cfg_variance_us) {
+		fprintf(stderr, "exceeds variance (%d us)\n", cfg_variance_us);
+		if (!getenv("KSFT_MACHINE_SLOW"))
+			exit(1);
+	}
 }
 
 static void do_recv_verify_empty(int fdr)
@@ -171,7 +174,7 @@ static int do_recv_errqueue_timeout(int fdt)
 	msg.msg_controllen = sizeof(control);
 
 	while (1) {
-		const char *reason;
+		const char *reason = NULL;
 
 		ret = recvmsg(fdt, &msg, MSG_ERRQUEUE);
 		if (ret == -1 && errno == EAGAIN)

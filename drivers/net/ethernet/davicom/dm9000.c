@@ -28,8 +28,7 @@
 #include <linux/irq.h>
 #include <linux/slab.h>
 #include <linux/regulator/consumer.h>
-#include <linux/gpio.h>
-#include <linux/of_gpio.h>
+#include <linux/gpio/consumer.h>
 
 #include <asm/delay.h>
 #include <asm/irq.h>
@@ -540,8 +539,8 @@ static void dm9000_get_drvinfo(struct net_device *dev,
 {
 	struct board_info *dm = to_dm9000_board(dev);
 
-	strlcpy(info->driver, CARDNAME, sizeof(info->driver));
-	strlcpy(info->bus_info, to_platform_device(dm->dev)->name,
+	strscpy(info->driver, CARDNAME, sizeof(info->driver));
+	strscpy(info->bus_info, to_platform_device(dm->dev)->name,
 		sizeof(info->bus_info));
 }
 
@@ -1012,7 +1011,7 @@ static void dm9000_send_packet(struct net_device *dev,
  *  Hardware start transmission.
  *  Send a packet to media from the upper layer.
  */
-static int
+static netdev_tx_t
 dm9000_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	unsigned long flags;
@@ -1394,9 +1393,9 @@ static struct dm9000_plat_data *dm9000_parse_dt(struct device *dev)
 	if (!pdata)
 		return ERR_PTR(-ENOMEM);
 
-	if (of_find_property(np, "davicom,ext-phy", NULL))
+	if (of_property_read_bool(np, "davicom,ext-phy"))
 		pdata->flags |= DM9000_PLATF_EXT_PHY;
-	if (of_find_property(np, "davicom,no-eeprom", NULL))
+	if (of_property_read_bool(np, "davicom,no-eeprom"))
 		pdata->flags |= DM9000_PLATF_NO_EEPROM;
 
 	ret = of_get_mac_address(np, pdata->dev_addr);
@@ -1421,8 +1420,7 @@ dm9000_probe(struct platform_device *pdev)
 	int iosize;
 	int i;
 	u32 id_val;
-	int reset_gpios;
-	enum of_gpio_flags flags;
+	struct gpio_desc *reset_gpio;
 	struct regulator *power;
 	bool inv_mac_addr = false;
 	u8 addr[ETH_ALEN];
@@ -1442,20 +1440,24 @@ dm9000_probe(struct platform_device *pdev)
 		dev_dbg(dev, "regulator enabled\n");
 	}
 
-	reset_gpios = of_get_named_gpio_flags(dev->of_node, "reset-gpios", 0,
-					      &flags);
-	if (gpio_is_valid(reset_gpios)) {
-		ret = devm_gpio_request_one(dev, reset_gpios, flags,
-					    "dm9000_reset");
+	reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
+	ret = PTR_ERR_OR_ZERO(reset_gpio);
+	if (ret) {
+		dev_err(dev, "failed to request reset gpio: %d\n", ret);
+		goto out_regulator_disable;
+	}
+
+	if (reset_gpio) {
+		ret = gpiod_set_consumer_name(reset_gpio, "dm9000_reset");
 		if (ret) {
-			dev_err(dev, "failed to request reset gpio %d: %d\n",
-				reset_gpios, ret);
+			dev_err(dev, "failed to set reset gpio name: %d\n",
+				ret);
 			goto out_regulator_disable;
 		}
 
 		/* According to manual PWRST# Low Period Min 1ms */
 		msleep(2);
-		gpio_set_value(reset_gpios, 1);
+		gpiod_set_value_cansleep(reset_gpio, 0);
 		/* Needs 3ms to read eeprom when PWRST is deasserted */
 		msleep(4);
 	}
@@ -1768,20 +1770,19 @@ static const struct dev_pm_ops dm9000_drv_pm_ops = {
 	.resume		= dm9000_drv_resume,
 };
 
-static int
-dm9000_drv_remove(struct platform_device *pdev)
+static void dm9000_drv_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct board_info *dm = to_dm9000_board(ndev);
 
 	unregister_netdev(ndev);
 	dm9000_release_board(pdev, dm);
-	free_netdev(ndev);		/* free device structure */
 	if (dm->power_supply)
 		regulator_disable(dm->power_supply);
 
+	free_netdev(ndev);		/* free device structure */
+
 	dev_dbg(&pdev->dev, "released and freed device\n");
-	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -1799,7 +1800,7 @@ static struct platform_driver dm9000_driver = {
 		.of_match_table = of_match_ptr(dm9000_of_matches),
 	},
 	.probe   = dm9000_probe,
-	.remove  = dm9000_drv_remove,
+	.remove = dm9000_drv_remove,
 };
 
 module_platform_driver(dm9000_driver);

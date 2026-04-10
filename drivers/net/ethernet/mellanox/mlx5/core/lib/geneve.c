@@ -105,6 +105,7 @@ int mlx5_geneve_tlv_option_add(struct mlx5_geneve *geneve, struct geneve_opt *op
 		geneve->opt_type = opt->type;
 		geneve->obj_id = res;
 		geneve->refcount++;
+		res = 0;
 	}
 
 unlock:
@@ -133,8 +134,7 @@ void mlx5_geneve_tlv_option_del(struct mlx5_geneve *geneve)
 
 struct mlx5_geneve *mlx5_geneve_create(struct mlx5_core_dev *mdev)
 {
-	struct mlx5_geneve *geneve =
-		kzalloc(sizeof(*geneve), GFP_KERNEL);
+	struct mlx5_geneve *geneve = kzalloc_obj(*geneve);
 
 	if (!geneve)
 		return ERR_PTR(-ENOMEM);

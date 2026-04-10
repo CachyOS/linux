@@ -37,6 +37,7 @@
 #define CFI_SECTIONS
 #endif
 
+#ifdef __ASSEMBLER__
 /*
  * LEAF - declare leaf routine
  */
@@ -121,6 +122,8 @@ symbol		=	value
 #else
 #define ASM_PRINT(string)
 #endif
+
+#endif /* __ASSEMBLER__ */
 
 /*
  * Stack alignment
@@ -225,7 +228,7 @@ symbol		=	value
 #define LONG_INS	ins
 #define LONG_EXT	ext
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 #define LONG		.word
 #endif
 #define LONGSIZE	4
@@ -254,7 +257,7 @@ symbol		=	value
 #define LONG_INS	dins
 #define LONG_EXT	dext
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 #define LONG		.dword
 #endif
 #define LONGSIZE	8
@@ -336,7 +339,7 @@ symbol		=	value
  */
 #ifdef CONFIG_WAR_R10000_LLSC
 # define SC_BEQZ	beqzl
-#elif MIPS_ISA_REV >= 6
+#elif !defined(CONFIG_CC_HAS_BROKEN_INLINE_COMPAT_BRANCH) && MIPS_ISA_REV >= 6
 # define SC_BEQZ	beqzc
 #else
 # define SC_BEQZ	beqz

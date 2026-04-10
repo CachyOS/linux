@@ -23,15 +23,15 @@
 #define UCLOGIC_RDESC_WPXXXXU_ORIG_SIZE		212
 
 /* Fixed WP4030U report descriptor */
-extern __u8 uclogic_rdesc_wp4030u_fixed_arr[];
+extern const __u8 uclogic_rdesc_wp4030u_fixed_arr[];
 extern const size_t uclogic_rdesc_wp4030u_fixed_size;
 
 /* Fixed WP5540U report descriptor */
-extern __u8 uclogic_rdesc_wp5540u_fixed_arr[];
+extern const __u8 uclogic_rdesc_wp5540u_fixed_arr[];
 extern const size_t uclogic_rdesc_wp5540u_fixed_size;
 
 /* Fixed WP8060U report descriptor */
-extern __u8 uclogic_rdesc_wp8060u_fixed_arr[];
+extern const __u8 uclogic_rdesc_wp8060u_fixed_arr[];
 extern const size_t uclogic_rdesc_wp8060u_fixed_size;
 
 /* Size of the original descriptor of the new WP5540U tablet */
@@ -41,14 +41,14 @@ extern const size_t uclogic_rdesc_wp8060u_fixed_size;
 #define UCLOGIC_RDESC_WP1062_ORIG_SIZE		254
 
 /* Fixed WP1062 report descriptor */
-extern __u8 uclogic_rdesc_wp1062_fixed_arr[];
+extern const __u8 uclogic_rdesc_wp1062_fixed_arr[];
 extern const size_t uclogic_rdesc_wp1062_fixed_size;
 
 /* Size of the original descriptor of PF1209 tablet */
 #define UCLOGIC_RDESC_PF1209_ORIG_SIZE		234
 
 /* Fixed PF1209 report descriptor */
-extern __u8 uclogic_rdesc_pf1209_fixed_arr[];
+extern const __u8 uclogic_rdesc_pf1209_fixed_arr[];
 extern const size_t uclogic_rdesc_pf1209_fixed_size;
 
 /* Size of the original descriptors of TWHL850 tablet */
@@ -57,15 +57,15 @@ extern const size_t uclogic_rdesc_pf1209_fixed_size;
 #define UCLOGIC_RDESC_TWHL850_ORIG2_SIZE	92
 
 /* Fixed PID 0522 tablet report descriptor, interface 0 (stylus) */
-extern __u8 uclogic_rdesc_twhl850_fixed0_arr[];
+extern const __u8 uclogic_rdesc_twhl850_fixed0_arr[];
 extern const size_t uclogic_rdesc_twhl850_fixed0_size;
 
 /* Fixed PID 0522 tablet report descriptor, interface 1 (mouse) */
-extern __u8 uclogic_rdesc_twhl850_fixed1_arr[];
+extern const __u8 uclogic_rdesc_twhl850_fixed1_arr[];
 extern const size_t uclogic_rdesc_twhl850_fixed1_size;
 
 /* Fixed PID 0522 tablet report descriptor, interface 2 (frame buttons) */
-extern __u8 uclogic_rdesc_twhl850_fixed2_arr[];
+extern const __u8 uclogic_rdesc_twhl850_fixed2_arr[];
 extern const size_t uclogic_rdesc_twhl850_fixed2_size;
 
 /* Size of the original descriptors of TWHA60 tablet */
@@ -73,15 +73,16 @@ extern const size_t uclogic_rdesc_twhl850_fixed2_size;
 #define UCLOGIC_RDESC_TWHA60_ORIG1_SIZE		139
 
 /* Fixed TWHA60 report descriptor, interface 0 (stylus) */
-extern __u8 uclogic_rdesc_twha60_fixed0_arr[];
+extern const __u8 uclogic_rdesc_twha60_fixed0_arr[];
 extern const size_t uclogic_rdesc_twha60_fixed0_size;
 
 /* Fixed TWHA60 report descriptor, interface 1 (frame buttons) */
-extern __u8 uclogic_rdesc_twha60_fixed1_arr[];
+extern const __u8 uclogic_rdesc_twha60_fixed1_arr[];
 extern const size_t uclogic_rdesc_twha60_fixed1_size;
 
 /* Report descriptor template placeholder head */
-#define UCLOGIC_RDESC_PH_HEAD	0xFE, 0xED, 0x1D
+#define UCLOGIC_RDESC_PEN_PH_HEAD	0xFE, 0xED, 0x1D
+#define UCLOGIC_RDESC_FRAME_PH_BTN_HEAD	0xFE, 0xED
 
 /* Apply report descriptor parameters to a report descriptor template */
 extern __u8 *uclogic_rdesc_template_apply(const __u8 *template_ptr,
@@ -89,19 +90,24 @@ extern __u8 *uclogic_rdesc_template_apply(const __u8 *template_ptr,
 					  const s32 *param_list,
 					  size_t param_num);
 
-/* Pen report descriptor template placeholder IDs */
-enum uclogic_rdesc_pen_ph_id {
+/* Report descriptor template placeholder IDs */
+enum uclogic_rdesc_ph_id {
 	UCLOGIC_RDESC_PEN_PH_ID_X_LM,
 	UCLOGIC_RDESC_PEN_PH_ID_X_PM,
 	UCLOGIC_RDESC_PEN_PH_ID_Y_LM,
 	UCLOGIC_RDESC_PEN_PH_ID_Y_PM,
 	UCLOGIC_RDESC_PEN_PH_ID_PRESSURE_LM,
-	UCLOGIC_RDESC_PEN_PH_ID_NUM
+	UCLOGIC_RDESC_FRAME_PH_ID_UM,
+	UCLOGIC_RDESC_PH_ID_NUM
 };
 
 /* Report descriptor pen template placeholder */
 #define UCLOGIC_RDESC_PEN_PH(_ID) \
-	UCLOGIC_RDESC_PH_HEAD, UCLOGIC_RDESC_PEN_PH_ID_##_ID
+	UCLOGIC_RDESC_PEN_PH_HEAD, UCLOGIC_RDESC_PEN_PH_ID_##_ID
+
+/* Report descriptor frame buttons template placeholder */
+#define UCLOGIC_RDESC_FRAME_PH_BTN \
+	UCLOGIC_RDESC_FRAME_PH_BTN_HEAD, UCLOGIC_RDESC_FRAME_PH_ID_UM
 
 /* Report ID for v1 pen reports */
 #define UCLOGIC_RDESC_V1_PEN_ID	0x07
@@ -155,6 +161,34 @@ extern const size_t uclogic_rdesc_v2_frame_dial_size;
 /* Device ID byte offset in v2 frame dial reports */
 #define UCLOGIC_RDESC_V2_FRAME_DIAL_DEV_ID_BYTE	0x4
 
+/* Report ID for tweaked UGEE v2 battery reports */
+#define UCLOGIC_RDESC_UGEE_V2_BATTERY_ID 0xba
+
+/* Magic data expected by UGEEv2 devices on probe */
+extern const __u8 uclogic_ugee_v2_probe_arr[];
+extern const size_t uclogic_ugee_v2_probe_size;
+extern const int uclogic_ugee_v2_probe_endpoint;
+
+/* Fixed report descriptor template for UGEE v2 pen reports */
+extern const __u8 uclogic_rdesc_ugee_v2_pen_template_arr[];
+extern const size_t uclogic_rdesc_ugee_v2_pen_template_size;
+
+/* Fixed report descriptor template for UGEE v2 frame reports (buttons only) */
+extern const __u8 uclogic_rdesc_ugee_v2_frame_btn_template_arr[];
+extern const size_t uclogic_rdesc_ugee_v2_frame_btn_template_size;
+
+/* Fixed report descriptor template for UGEE v2 frame reports (dial) */
+extern const __u8 uclogic_rdesc_ugee_v2_frame_dial_template_arr[];
+extern const size_t uclogic_rdesc_ugee_v2_frame_dial_template_size;
+
+/* Fixed report descriptor template for UGEE v2 frame reports (mouse) */
+extern const __u8 uclogic_rdesc_ugee_v2_frame_mouse_template_arr[];
+extern const size_t uclogic_rdesc_ugee_v2_frame_mouse_template_size;
+
+/* Fixed report descriptor template for UGEE v2 battery reports */
+extern const __u8 uclogic_rdesc_ugee_v2_battery_template_arr[];
+extern const size_t uclogic_rdesc_ugee_v2_battery_template_size;
+
 /* Fixed report descriptor for Ugee EX07 frame */
 extern const __u8 uclogic_rdesc_ugee_ex07_frame_arr[];
 extern const size_t uclogic_rdesc_ugee_ex07_frame_size;
@@ -175,5 +209,17 @@ extern const size_t uclogic_rdesc_ugee_g5_frame_size;
 
 /* Least-significant bit of Ugee G5 frame rotary encoder state */
 #define UCLOGIC_RDESC_UGEE_G5_FRAME_RE_LSB 38
+
+/* Fixed report descriptor for XP-Pen Arist 22R Pro frame */
+extern const __u8 uclogic_rdesc_xppen_artist_22r_pro_frame_arr[];
+extern const size_t uclogic_rdesc_xppen_artist_22r_pro_frame_size;
+
+/* Fixed report descriptor for XP-Pen Arist 24 Pro frame */
+extern const __u8 uclogic_rdesc_xppen_artist_24_pro_pen_template_arr[];
+extern const size_t uclogic_rdesc_xppen_artist_24_pro_pen_template_size;
+
+/* Fixed report descriptor for XP-Pen Arist 24 Pro frame */
+extern const __u8 uclogic_rdesc_xppen_artist_24_pro_frame_arr[];
+extern const size_t uclogic_rdesc_xppen_artist_24_pro_frame_size;
 
 #endif /* _HID_UCLOGIC_RDESC_H */

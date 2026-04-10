@@ -1,7 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0
 
-NS=ns
+source lib.sh
+
 IP4=172.16.0.1/24
 TGT4=172.16.0.2
 IP6=2001:db8:1::1/64
@@ -9,13 +10,13 @@ TGT6=2001:db8:1::2
 
 cleanup()
 {
-    ip netns del $NS
+    cleanup_ns $NS
 }
 
 trap cleanup EXIT
 
 # Namespaces
-ip netns add $NS
+setup_ns NS
 
 ip netns exec $NS sysctl -w net.ipv4.ping_group_range='0 2147483647' > /dev/null
 
@@ -33,13 +34,28 @@ BAD=0
 TOTAL=0
 
 check_result() {
+    local ret=$1
+    local got=$2
+    local exp=$3
+    local case=$4
+    local xfail=$5
+    local xf=
+    local inc=
+
+    if [ "$xfail" == "xfail" ]; then
+	xf="(XFAIL)"
+	inc=0
+    else
+	inc=1
+    fi
+
     ((TOTAL++))
-    if [ $1 -ne 0 ]; then
-	echo "  Case $4 returned $1, expected 0"
-	((BAD++))
+    if [ $ret -ne 0 ]; then
+	echo "  Case $case returned $ret, expected 0 $xf"
+	((BAD+=inc))
     elif [ "$2" != "$3" ]; then
-	echo "  Case $4 returned '$2', expected '$3'"
-	((BAD++))
+	echo "  Case $case returned '$got', expected '$exp' $xf"
+	((BAD+=inc))
     fi
 }
 
@@ -65,11 +81,14 @@ for i in "-4 $TGT4" "-6 $TGT6"; do
 		 awk '/SND/ { if ($3 > 1000) print "OK"; }')
 	check_result $? "$ts" "OK" "$prot - TXTIME abs"
 
+	[ "$KSFT_MACHINE_SLOW" = yes ] && xfail=xfail
+
 	ts=$(ip netns exec $NS ./cmsg_sender -p $p $i 1234 -t -d 1000 |
 		 awk '/SND/ {snd=$3}
 		      /SCHED/ {sch=$3}
-		      END { if (snd - sch > 500) print "OK"; }')
-	check_result $? "$ts" "OK" "$prot - TXTIME rel"
+		      END { if (snd - sch > 500) print "OK";
+			    else print snd, "-", sch, "<", 500; }')
+	check_result $? "$ts" "OK" "$prot - TXTIME rel" $xfail
     done
 done
 

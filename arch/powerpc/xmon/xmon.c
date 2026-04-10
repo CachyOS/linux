@@ -41,8 +41,6 @@
 #include <asm/rtas.h>
 #include <asm/sstep.h>
 #include <asm/irq_regs.h>
-#include <asm/spu.h>
-#include <asm/spu_priv1.h>
 #include <asm/setjmp.h>
 #include <asm/reg.h>
 #include <asm/debug.h>
@@ -50,7 +48,7 @@
 #include <asm/xive.h>
 #include <asm/opal.h>
 #include <asm/firmware.h>
-#include <asm/code-patching.h>
+#include <asm/text-patching.h>
 #include <asm/sections.h>
 #include <asm/inst.h>
 #include <asm/interrupt.h>
@@ -58,6 +56,7 @@
 #ifdef CONFIG_PPC64
 #include <asm/hvcall.h>
 #include <asm/paca.h>
+#include <asm/lppaca.h>
 #endif
 
 #include "nonstdio.h"
@@ -76,9 +75,6 @@ static cpumask_t xmon_batch_cpus = CPU_MASK_NONE;
 #define xmon_owner 0
 #endif /* CONFIG_SMP */
 
-#ifdef CONFIG_PPC_PSERIES
-static int set_indicator_token = RTAS_UNKNOWN_SERVICE;
-#endif
 static unsigned long in_xmon __read_mostly = 0;
 static int xmon_on = IS_ENABLED(CONFIG_XMON_DEFAULT);
 static bool xmon_is_ro = IS_ENABLED(CONFIG_XMON_DEFAULT_RO_MODE);
@@ -91,7 +87,7 @@ static unsigned long ndump = 64;
 static unsigned long nidump = 16;
 static unsigned long ncsum = 4096;
 static int termch;
-static char tmpstr[128];
+static char tmpstr[KSYM_NAME_LEN];
 static int tracing_enabled;
 
 static long bus_error_jmp[JMP_BUF_LEN];
@@ -116,7 +112,7 @@ struct bpt {
 static struct bpt bpts[NBPTS];
 static struct bpt dabr[HBP_NUM_MAX];
 static struct bpt *iabr;
-static unsigned bpinstr = 0x7fe00008;	/* trap */
+static unsigned int bpinstr = PPC_RAW_TRAP();
 
 #define BP_NUM(bp)	((bp) - bpts + 1)
 
@@ -190,12 +186,10 @@ static void xmon_print_symbol(unsigned long address, const char *mid,
 			      const char *after);
 static const char *getvecname(unsigned long vec);
 
-static int do_spu_cmd(void);
-
 #ifdef CONFIG_44x
 static void dump_tlb_44x(void);
 #endif
-#ifdef CONFIG_PPC_BOOK3E
+#ifdef CONFIG_PPC_BOOK3E_64
 static void dump_tlb_book3e(void);
 #endif
 
@@ -274,13 +268,6 @@ Commands:\n\
   P 	list processes/tasks\n\
   r	print registers\n\
   s	single step\n"
-#ifdef CONFIG_SPU_BASE
-"  ss	stop execution on all spus\n\
-  sr	restore execution on stopped spus\n\
-  sf  #	dump spu fields for spu # (in hex)\n\
-  sd  #	dump spu local store for spu # (in hex)\n\
-  sdi #	disassemble spu local store for spu # (in hex)\n"
-#endif
 "  S	print special registers\n\
   Sa    print all SPRs\n\
   Sr #	read SPR #\n\
@@ -288,11 +275,11 @@ Commands:\n\
   t	print backtrace\n\
   x	exit monitor and recover\n\
   X	exit monitor and don't recover\n"
-#if defined(CONFIG_PPC64) && !defined(CONFIG_PPC_BOOK3E)
+#if defined(CONFIG_PPC_BOOK3S_64)
 "  u	dump segment table or SLB\n"
 #elif defined(CONFIG_PPC_BOOK3S_32)
 "  u	dump segment registers\n"
-#elif defined(CONFIG_44x) || defined(CONFIG_PPC_BOOK3E)
+#elif defined(CONFIG_44x) || defined(CONFIG_PPC_BOOK3E_64)
 "  u	dump TLB\n"
 #endif
 "  U	show uptime information\n"
@@ -398,6 +385,7 @@ static inline void disable_surveillance(void)
 #ifdef CONFIG_PPC_PSERIES
 	/* Since this can't be a module, args should end up below 4GB. */
 	static struct rtas_args args;
+	const s32 token = rtas_function_token(RTAS_FN_SET_INDICATOR);
 
 	/*
 	 * At this point we have got all the cpus we can into
@@ -406,10 +394,10 @@ static inline void disable_surveillance(void)
 	 * If we did try to take rtas.lock there would be a
 	 * real possibility of deadlock.
 	 */
-	if (set_indicator_token == RTAS_UNKNOWN_SERVICE)
+	if (token == RTAS_UNKNOWN_SERVICE)
 		return;
 
-	rtas_call_unlocked(&args, set_indicator_token, 3, 1, NULL,
+	rtas_call_unlocked(&args, token, 3, 1, NULL,
 			   SURVEILLANCE_TOKEN, 0, 0);
 
 #endif /* CONFIG_PPC_PSERIES */
@@ -644,10 +632,8 @@ static int xmon_core(struct pt_regs *regs, volatile int fromipi)
 			touch_nmi_watchdog();
 		} else {
 			cmd = 1;
-#ifdef CONFIG_SMP
 			if (xmon_batch)
 				cmd = batch_cmds(regs);
-#endif
 			if (!locked_down && cmd)
 				cmd = cmds(regs);
 			if (locked_down || cmd != 0) {
@@ -1086,7 +1072,7 @@ cmds(struct pt_regs *excp)
 				memzcan();
 				break;
 			case 'i':
-				show_mem(0, NULL);
+				show_mem();
 				break;
 			default:
 				termch = cmd;
@@ -1115,8 +1101,6 @@ cmds(struct pt_regs *excp)
 			cacheflush();
 			break;
 		case 's':
-			if (do_spu_cmd() == 0)
-				break;
 			if (do_step(excp))
 				return cmd;
 			break;
@@ -1166,7 +1150,7 @@ cmds(struct pt_regs *excp)
 		case 'u':
 			dump_tlb_44x();
 			break;
-#elif defined(CONFIG_PPC_BOOK3E)
+#elif defined(CONFIG_PPC_BOOK3E_64)
 		case 'u':
 			dump_tlb_book3e();
 			break;
@@ -1274,11 +1258,7 @@ static int xmon_batch_next_cpu(void)
 {
 	unsigned long cpu;
 
-	while (!cpumask_empty(&xmon_batch_cpus)) {
-		cpu = cpumask_next_wrap(smp_processor_id(), &xmon_batch_cpus,
-					xmon_batch_start_cpu, true);
-		if (cpu == nr_cpumask_bits)
-			break;
+	for_each_cpu_wrap(cpu, &xmon_batch_cpus, xmon_batch_start_cpu) {
 		if (xmon_batch_start_cpu == -1)
 			xmon_batch_start_cpu = cpu;
 		if (xmon_switch_cpu(cpu))
@@ -1353,7 +1333,7 @@ static int cpu_cmd(void)
 	}
 	termch = cpu;
 
-	if (!scanhex(&cpu)) {
+	if (!scanhex(&cpu) || cpu >= num_possible_cpus()) {
 		/* print cpus waiting or in xmon */
 		printf("cpus stopped:");
 		last_cpu = first_cpu = NR_CPUS;
@@ -1525,9 +1505,9 @@ bpt_cmds(void)
 	cmd = inchar();
 
 	switch (cmd) {
-	static const char badaddr[] = "Only kernel addresses are permitted for breakpoints\n";
-	int mode;
-	case 'd':	/* bd - hardware data breakpoint */
+	case 'd': {	/* bd - hardware data breakpoint */
+		static const char badaddr[] = "Only kernel addresses are permitted for breakpoints\n";
+		int mode;
 		if (xmon_is_ro) {
 			printf(xmon_ro_msg);
 			break;
@@ -1560,6 +1540,7 @@ bpt_cmds(void)
 
 		force_enable_xmon();
 		break;
+	}
 
 	case 'i':	/* bi - hardware instr breakpoint */
 		if (xmon_is_ro) {
@@ -1720,7 +1701,6 @@ static void get_function_bounds(unsigned long pc, unsigned long *startp,
 }
 
 #define LRSAVE_OFFSET		(STACK_FRAME_LR_SAVE * sizeof(unsigned long))
-#define MARKER_OFFSET		(STACK_FRAME_MARKER * sizeof(unsigned long))
 
 static void xmon_show_stack(unsigned long sp, unsigned long lr,
 			    unsigned long pc)
@@ -1781,17 +1761,16 @@ static void xmon_show_stack(unsigned long sp, unsigned long lr,
 			xmon_print_symbol(ip, " ", "\n");
 		}
 
-		/* Look for "regshere" marker to see if this is
+		/* Look for "regs" marker to see if this is
 		   an exception frame. */
-		if (mread(sp + MARKER_OFFSET, &marker, sizeof(unsigned long))
+		if (mread(sp + STACK_INT_FRAME_MARKER, &marker, sizeof(unsigned long))
 		    && marker == STACK_FRAME_REGS_MARKER) {
-			if (mread(sp + STACK_FRAME_OVERHEAD, &regs, sizeof(regs))
-			    != sizeof(regs)) {
+			if (mread(sp + STACK_INT_FRAME_REGS, &regs, sizeof(regs)) != sizeof(regs)) {
 				printf("Couldn't read registers at %lx\n",
-				       sp + STACK_FRAME_OVERHEAD);
+				       sp + STACK_INT_FRAME_REGS);
 				break;
 			}
-			printf("--- Exception: %lx %s at ", regs.trap,
+			printf("---- Exception: %lx %s at ", regs.trap,
 			       getvecname(TRAP(&regs)));
 			pc = regs.nip;
 			lr = regs.link;
@@ -1822,8 +1801,8 @@ static void print_bug_trap(struct pt_regs *regs)
 	const struct bug_entry *bug;
 	unsigned long addr;
 
-	if (regs->msr & MSR_PR)
-		return;		/* not in kernel */
+	if (user_mode(regs))
+		return;
 	addr = regs->nip;	/* address of trap instruction */
 	if (!is_kernel_addr(addr))
 		return;
@@ -2627,9 +2606,9 @@ static void dump_one_paca(int cpu)
 
 	printf("paca for cpu 0x%x @ %px:\n", cpu, p);
 
-	printf(" %-*s = %s\n", 25, "possible", cpu_possible(cpu) ? "yes" : "no");
-	printf(" %-*s = %s\n", 25, "present", cpu_present(cpu) ? "yes" : "no");
-	printf(" %-*s = %s\n", 25, "online", cpu_online(cpu) ? "yes" : "no");
+	printf(" %-*s = %s\n", 25, "possible", str_yes_no(cpu_possible(cpu)));
+	printf(" %-*s = %s\n", 25, "present", str_yes_no(cpu_present(cpu)));
+	printf(" %-*s = %s\n", 25, "online", str_yes_no(cpu_online(cpu)));
 
 #define DUMP(paca, name, format)				\
 	printf(" %-*s = "format"\t(0x%lx)\n", 25, #name, 18, paca->name, \
@@ -2637,7 +2616,9 @@ static void dump_one_paca(int cpu)
 
 	DUMP(p, lock_token, "%#-*x");
 	DUMP(p, paca_index, "%#-*x");
+#ifndef CONFIG_PPC_KERNEL_PCREL
 	DUMP(p, kernel_toc, "%#-*llx");
+#endif
 	DUMP(p, kernelbase, "%#-*llx");
 	DUMP(p, kernel_msr, "%#-*llx");
 	DUMP(p, emergency_sp, "%-*px");
@@ -2686,7 +2667,7 @@ static void dump_one_paca(int cpu)
 	DUMP(p, rfi_flush_fallback_area, "%-*px");
 #endif
 	DUMP(p, dscr_default, "%#-*llx");
-#ifdef CONFIG_PPC_BOOK3E
+#ifdef CONFIG_PPC_BOOK3E_64
 	DUMP(p, pgd, "%-*px");
 	DUMP(p, kernel_pgd, "%-*px");
 	DUMP(p, tcd_ptr, "%-*px");
@@ -2701,7 +2682,7 @@ static void dump_one_paca(int cpu)
 	DUMP(p, canary, "%#-*lx");
 #endif
 	DUMP(p, saved_r1, "%#-*llx");
-#ifdef CONFIG_PPC_BOOK3E
+#ifdef CONFIG_PPC_BOOK3E_64
 	DUMP(p, trap_save, "%#-*x");
 #endif
 	DUMP(p, irq_soft_mask, "%#-*x");
@@ -2774,7 +2755,7 @@ static void dump_pacas(void)
 
 	termch = c;	/* Put c back, it wasn't 'a' */
 
-	if (scanhex(&num))
+	if (scanhex(&num) && num < num_possible_cpus())
 		dump_one_paca(num);
 	else
 		dump_one_paca(xmon_owner);
@@ -2847,7 +2828,7 @@ static void dump_xives(void)
 
 	termch = c;	/* Put c back, it wasn't 'a' */
 
-	if (scanhex(&num))
+	if (scanhex(&num) && num < num_possible_cpus())
 		dump_one_xive(num);
 	else
 		dump_one_xive(xmon_owner);
@@ -3047,7 +3028,7 @@ generic_inst_dump(unsigned long adr, long count, int praddr,
 		dotted = 0;
 		last_inst = inst;
 		if (praddr)
-			printf(REG"  %s", adr, ppc_inst_as_str(inst));
+			printf(REG"  %08lx", adr, ppc_inst_as_ulong(inst));
 		printf("\t");
 		if (!ppc_inst_prefixed(inst))
 			dump_func(ppc_inst_val(inst), adr);
@@ -3304,7 +3285,7 @@ static void show_pte(unsigned long addr)
 {
 	unsigned long tskv = 0;
 	struct task_struct *volatile tsk = NULL;
-	struct mm_struct *mm;
+	struct mm_struct *volatile mm;
 	pgd_t *pgdp;
 	p4d_t *p4dp;
 	pud_t *pudp;
@@ -3342,7 +3323,7 @@ static void show_pte(unsigned long addr)
 		return;
 	}
 
-	if (p4d_is_leaf(*p4dp)) {
+	if (p4d_leaf(*p4dp)) {
 		format_pte(p4dp, p4d_val(*p4dp));
 		return;
 	}
@@ -3356,7 +3337,7 @@ static void show_pte(unsigned long addr)
 		return;
 	}
 
-	if (pud_is_leaf(*pudp)) {
+	if (pud_leaf(*pudp)) {
 		format_pte(pudp, pud_val(*pudp));
 		return;
 	}
@@ -3370,19 +3351,22 @@ static void show_pte(unsigned long addr)
 		return;
 	}
 
-	if (pmd_is_leaf(*pmdp)) {
+	if (pmd_leaf(*pmdp)) {
 		format_pte(pmdp, pmd_val(*pmdp));
 		return;
 	}
 	printf("pmdp @ 0x%px = 0x%016lx\n", pmdp, pmd_val(*pmdp));
 
 	ptep = pte_offset_map(pmdp, addr);
-	if (pte_none(*ptep)) {
+	if (!ptep || pte_none(*ptep)) {
+		if (ptep)
+			pte_unmap(ptep);
 		printf("no valid PTE\n");
 		return;
 	}
 
 	format_pte(ptep, pte_val(*ptep));
+	pte_unmap(ptep);
 
 	sync();
 	__delay(200);
@@ -3542,7 +3526,7 @@ scanhex(unsigned long *vp)
 		}
 	} else if (c == '$') {
 		int i;
-		for (i=0; i<63; i++) {
+		for (i = 0; i < (KSYM_NAME_LEN - 1); i++) {
 			c = inchar();
 			if (isspace(c) || c == '\0') {
 				termch = c;
@@ -3661,7 +3645,7 @@ symbol_lookup(void)
 	int type = inchar();
 	unsigned long addr, cpu;
 	void __percpu *ptr = NULL;
-	static char tmp[64];
+	static char tmp[KSYM_NAME_LEN];
 
 	switch (type) {
 	case 'a':
@@ -3670,7 +3654,7 @@ symbol_lookup(void)
 		termch = 0;
 		break;
 	case 's':
-		getstring(tmp, 64);
+		getstring(tmp, KSYM_NAME_LEN);
 		if (setjmp(bus_error_jmp) == 0) {
 			catch_memory_errors = 1;
 			sync();
@@ -3685,7 +3669,7 @@ symbol_lookup(void)
 		termch = 0;
 		break;
 	case 'p':
-		getstring(tmp, 64);
+		getstring(tmp, KSYM_NAME_LEN);
 		if (setjmp(bus_error_jmp) == 0) {
 			catch_memory_errors = 1;
 			sync();
@@ -3823,12 +3807,12 @@ static void dump_tlb_44x(void)
 }
 #endif /* CONFIG_44x */
 
-#ifdef CONFIG_PPC_BOOK3E
+#ifdef CONFIG_PPC_BOOK3E_64
 static void dump_tlb_book3e(void)
 {
-	u32 mmucfg, pidmask, lpidmask;
+	u32 mmucfg;
 	u64 ramask;
-	int i, tlb, ntlbs, pidsz, lpidsz, rasz, lrat = 0;
+	int i, tlb, ntlbs, pidsz, lpidsz, rasz;
 	int mmu_version;
 	static const char *pgsz_names[] = {
 		"  1K",
@@ -3872,12 +3856,8 @@ static void dump_tlb_book3e(void)
 	pidsz = ((mmucfg >> 6) & 0x1f) + 1;
 	lpidsz = (mmucfg >> 24) & 0xf;
 	rasz = (mmucfg >> 16) & 0x7f;
-	if ((mmu_version > 1) && (mmucfg & 0x10000))
-		lrat = 1;
 	printf("Book3E MMU MAV=%d.0,%d TLBs,%d-bit PID,%d-bit LPID,%d-bit RA\n",
 	       mmu_version, ntlbs, pidsz, lpidsz, rasz);
-	pidmask = (1ul << pidsz) - 1;
-	lpidmask = (1ul << lpidsz) - 1;
 	ramask = (1ull << rasz) - 1;
 
 	for (tlb = 0; tlb < ntlbs; tlb++) {
@@ -3965,7 +3945,7 @@ static void dump_tlb_book3e(void)
 		}
 	}
 }
-#endif /* CONFIG_PPC_BOOK3E */
+#endif /* CONFIG_PPC_BOOK3E_64 */
 
 static void xmon_init(int enable)
 {
@@ -3977,14 +3957,6 @@ static void xmon_init(int enable)
 		__debugger_iabr_match = xmon_iabr_match;
 		__debugger_break_match = xmon_break_match;
 		__debugger_fault_handler = xmon_fault_handler;
-
-#ifdef CONFIG_PPC_PSERIES
-		/*
-		 * Get the token here to avoid trying to get a lock
-		 * during the crash, causing a deadlock.
-		 */
-		set_indicator_token = rtas_token("set-indicator");
-#endif
 	} else {
 		__debugger = NULL;
 		__debugger_ipi = NULL;
@@ -3997,7 +3969,7 @@ static void xmon_init(int enable)
 }
 
 #ifdef CONFIG_MAGIC_SYSRQ
-static void sysrq_handle_xmon(int key)
+static void sysrq_handle_xmon(u8 key)
 {
 	if (xmon_is_locked_down()) {
 		clear_all_bpt();
@@ -4118,263 +4090,3 @@ void __init xmon_setup(void)
 	if (xmon_early)
 		debugger(NULL);
 }
-
-#ifdef CONFIG_SPU_BASE
-
-struct spu_info {
-	struct spu *spu;
-	u64 saved_mfc_sr1_RW;
-	u32 saved_spu_runcntl_RW;
-	unsigned long dump_addr;
-	u8 stopped_ok;
-};
-
-#define XMON_NUM_SPUS	16	/* Enough for current hardware */
-
-static struct spu_info spu_info[XMON_NUM_SPUS];
-
-void __init xmon_register_spus(struct list_head *list)
-{
-	struct spu *spu;
-
-	list_for_each_entry(spu, list, full_list) {
-		if (spu->number >= XMON_NUM_SPUS) {
-			WARN_ON(1);
-			continue;
-		}
-
-		spu_info[spu->number].spu = spu;
-		spu_info[spu->number].stopped_ok = 0;
-		spu_info[spu->number].dump_addr = (unsigned long)
-				spu_info[spu->number].spu->local_store;
-	}
-}
-
-static void stop_spus(void)
-{
-	struct spu *spu;
-	volatile int i;
-	u64 tmp;
-
-	for (i = 0; i < XMON_NUM_SPUS; i++) {
-		if (!spu_info[i].spu)
-			continue;
-
-		if (setjmp(bus_error_jmp) == 0) {
-			catch_memory_errors = 1;
-			sync();
-
-			spu = spu_info[i].spu;
-
-			spu_info[i].saved_spu_runcntl_RW =
-				in_be32(&spu->problem->spu_runcntl_RW);
-
-			tmp = spu_mfc_sr1_get(spu);
-			spu_info[i].saved_mfc_sr1_RW = tmp;
-
-			tmp &= ~MFC_STATE1_MASTER_RUN_CONTROL_MASK;
-			spu_mfc_sr1_set(spu, tmp);
-
-			sync();
-			__delay(200);
-
-			spu_info[i].stopped_ok = 1;
-
-			printf("Stopped spu %.2d (was %s)\n", i,
-					spu_info[i].saved_spu_runcntl_RW ?
-					"running" : "stopped");
-		} else {
-			catch_memory_errors = 0;
-			printf("*** Error stopping spu %.2d\n", i);
-		}
-		catch_memory_errors = 0;
-	}
-}
-
-static void restart_spus(void)
-{
-	struct spu *spu;
-	volatile int i;
-
-	for (i = 0; i < XMON_NUM_SPUS; i++) {
-		if (!spu_info[i].spu)
-			continue;
-
-		if (!spu_info[i].stopped_ok) {
-			printf("*** Error, spu %d was not successfully stopped"
-					", not restarting\n", i);
-			continue;
-		}
-
-		if (setjmp(bus_error_jmp) == 0) {
-			catch_memory_errors = 1;
-			sync();
-
-			spu = spu_info[i].spu;
-			spu_mfc_sr1_set(spu, spu_info[i].saved_mfc_sr1_RW);
-			out_be32(&spu->problem->spu_runcntl_RW,
-					spu_info[i].saved_spu_runcntl_RW);
-
-			sync();
-			__delay(200);
-
-			printf("Restarted spu %.2d\n", i);
-		} else {
-			catch_memory_errors = 0;
-			printf("*** Error restarting spu %.2d\n", i);
-		}
-		catch_memory_errors = 0;
-	}
-}
-
-#define DUMP_WIDTH	23
-#define DUMP_VALUE(format, field, value)				\
-do {									\
-	if (setjmp(bus_error_jmp) == 0) {				\
-		catch_memory_errors = 1;				\
-		sync();							\
-		printf("  %-*s = "format"\n", DUMP_WIDTH,		\
-				#field, value);				\
-		sync();							\
-		__delay(200);						\
-	} else {							\
-		catch_memory_errors = 0;				\
-		printf("  %-*s = *** Error reading field.\n",		\
-					DUMP_WIDTH, #field);		\
-	}								\
-	catch_memory_errors = 0;					\
-} while (0)
-
-#define DUMP_FIELD(obj, format, field)	\
-	DUMP_VALUE(format, field, obj->field)
-
-static void dump_spu_fields(struct spu *spu)
-{
-	printf("Dumping spu fields at address %p:\n", spu);
-
-	DUMP_FIELD(spu, "0x%x", number);
-	DUMP_FIELD(spu, "%s", name);
-	DUMP_FIELD(spu, "0x%lx", local_store_phys);
-	DUMP_FIELD(spu, "0x%p", local_store);
-	DUMP_FIELD(spu, "0x%lx", ls_size);
-	DUMP_FIELD(spu, "0x%x", node);
-	DUMP_FIELD(spu, "0x%lx", flags);
-	DUMP_FIELD(spu, "%llu", class_0_pending);
-	DUMP_FIELD(spu, "0x%llx", class_0_dar);
-	DUMP_FIELD(spu, "0x%llx", class_1_dar);
-	DUMP_FIELD(spu, "0x%llx", class_1_dsisr);
-	DUMP_FIELD(spu, "0x%x", irqs[0]);
-	DUMP_FIELD(spu, "0x%x", irqs[1]);
-	DUMP_FIELD(spu, "0x%x", irqs[2]);
-	DUMP_FIELD(spu, "0x%x", slb_replace);
-	DUMP_FIELD(spu, "%d", pid);
-	DUMP_FIELD(spu, "0x%p", mm);
-	DUMP_FIELD(spu, "0x%p", ctx);
-	DUMP_FIELD(spu, "0x%p", rq);
-	DUMP_FIELD(spu, "0x%llx", timestamp);
-	DUMP_FIELD(spu, "0x%lx", problem_phys);
-	DUMP_FIELD(spu, "0x%p", problem);
-	DUMP_VALUE("0x%x", problem->spu_runcntl_RW,
-			in_be32(&spu->problem->spu_runcntl_RW));
-	DUMP_VALUE("0x%x", problem->spu_status_R,
-			in_be32(&spu->problem->spu_status_R));
-	DUMP_VALUE("0x%x", problem->spu_npc_RW,
-			in_be32(&spu->problem->spu_npc_RW));
-	DUMP_FIELD(spu, "0x%p", priv2);
-	DUMP_FIELD(spu, "0x%p", pdata);
-}
-
-static int spu_inst_dump(unsigned long adr, long count, int praddr)
-{
-	return generic_inst_dump(adr, count, praddr, print_insn_spu);
-}
-
-static void dump_spu_ls(unsigned long num, int subcmd)
-{
-	unsigned long offset, addr, ls_addr;
-
-	if (setjmp(bus_error_jmp) == 0) {
-		catch_memory_errors = 1;
-		sync();
-		ls_addr = (unsigned long)spu_info[num].spu->local_store;
-		sync();
-		__delay(200);
-	} else {
-		catch_memory_errors = 0;
-		printf("*** Error: accessing spu info for spu %ld\n", num);
-		return;
-	}
-	catch_memory_errors = 0;
-
-	if (scanhex(&offset))
-		addr = ls_addr + offset;
-	else
-		addr = spu_info[num].dump_addr;
-
-	if (addr >= ls_addr + LS_SIZE) {
-		printf("*** Error: address outside of local store\n");
-		return;
-	}
-
-	switch (subcmd) {
-	case 'i':
-		addr += spu_inst_dump(addr, 16, 1);
-		last_cmd = "sdi\n";
-		break;
-	default:
-		prdump(addr, 64);
-		addr += 64;
-		last_cmd = "sd\n";
-		break;
-	}
-
-	spu_info[num].dump_addr = addr;
-}
-
-static int do_spu_cmd(void)
-{
-	static unsigned long num = 0;
-	int cmd, subcmd = 0;
-
-	cmd = inchar();
-	switch (cmd) {
-	case 's':
-		stop_spus();
-		break;
-	case 'r':
-		restart_spus();
-		break;
-	case 'd':
-		subcmd = inchar();
-		if (isxdigit(subcmd) || subcmd == '\n')
-			termch = subcmd;
-		fallthrough;
-	case 'f':
-		scanhex(&num);
-		if (num >= XMON_NUM_SPUS || !spu_info[num].spu) {
-			printf("*** Error: invalid spu number\n");
-			return 0;
-		}
-
-		switch (cmd) {
-		case 'f':
-			dump_spu_fields(spu_info[num].spu);
-			break;
-		default:
-			dump_spu_ls(num, subcmd);
-			break;
-		}
-
-		break;
-	default:
-		return -1;
-	}
-
-	return 0;
-}
-#else /* ! CONFIG_SPU_BASE */
-static int do_spu_cmd(void)
-{
-	return -1;
-}
-#endif

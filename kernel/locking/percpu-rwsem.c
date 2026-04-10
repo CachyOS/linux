@@ -138,7 +138,8 @@ static int percpu_rwsem_wake_function(struct wait_queue_entry *wq_entry,
 	return !reader; /* wake (readers until) 1 writer */
 }
 
-static void percpu_rwsem_wait(struct percpu_rw_semaphore *sem, bool reader)
+static void percpu_rwsem_wait(struct percpu_rw_semaphore *sem, bool reader,
+			      bool freeze)
 {
 	DEFINE_WAIT_FUNC(wq_entry, percpu_rwsem_wake_function);
 	bool wait;
@@ -156,7 +157,8 @@ static void percpu_rwsem_wait(struct percpu_rw_semaphore *sem, bool reader)
 	spin_unlock_irq(&sem->waiters.lock);
 
 	while (wait) {
-		set_current_state(TASK_UNINTERRUPTIBLE);
+		set_current_state(TASK_UNINTERRUPTIBLE |
+				  (freeze ? TASK_FREEZABLE : 0));
 		if (!smp_load_acquire(&wq_entry.private))
 			break;
 		schedule();
@@ -164,7 +166,8 @@ static void percpu_rwsem_wait(struct percpu_rw_semaphore *sem, bool reader)
 	__set_current_state(TASK_RUNNING);
 }
 
-bool __sched __percpu_down_read(struct percpu_rw_semaphore *sem, bool try)
+bool __sched __percpu_down_read(struct percpu_rw_semaphore *sem, bool try,
+				bool freeze)
 {
 	if (__percpu_down_read_trylock(sem))
 		return true;
@@ -174,7 +177,7 @@ bool __sched __percpu_down_read(struct percpu_rw_semaphore *sem, bool try)
 
 	trace_contention_begin(sem, LCB_F_PERCPU | LCB_F_READ);
 	preempt_enable();
-	percpu_rwsem_wait(sem, /* .reader = */ true);
+	percpu_rwsem_wait(sem, /* .reader = */ true, freeze);
 	preempt_disable();
 	trace_contention_end(sem, 0);
 
@@ -184,13 +187,19 @@ EXPORT_SYMBOL_GPL(__percpu_down_read);
 
 #define per_cpu_sum(var)						\
 ({									\
-	typeof(var) __sum = 0;						\
+	TYPEOF_UNQUAL(var) __sum = 0;					\
 	int cpu;							\
 	compiletime_assert_atomic_type(__sum);				\
 	for_each_possible_cpu(cpu)					\
 		__sum += per_cpu(var, cpu);				\
 	__sum;								\
 })
+
+bool percpu_is_read_locked(struct percpu_rw_semaphore *sem)
+{
+	return per_cpu_sum(*sem->read_count) != 0 && !atomic_read(&sem->block);
+}
+EXPORT_SYMBOL_GPL(percpu_is_read_locked);
 
 /*
  * Return true if the modular sum of the sem->read_count per-CPU variable is
@@ -217,9 +226,10 @@ static bool readers_active_check(struct percpu_rw_semaphore *sem)
 
 void __sched percpu_down_write(struct percpu_rw_semaphore *sem)
 {
+	bool contended = false;
+
 	might_sleep();
 	rwsem_acquire(&sem->dep_map, 0, 0, _RET_IP_);
-	trace_contention_begin(sem, LCB_F_PERCPU | LCB_F_WRITE);
 
 	/* Notify readers to take the slow path. */
 	rcu_sync_enter(&sem->rss);
@@ -228,8 +238,11 @@ void __sched percpu_down_write(struct percpu_rw_semaphore *sem)
 	 * Try set sem->block; this provides writer-writer exclusion.
 	 * Having sem->block set makes new readers block.
 	 */
-	if (!__percpu_down_write_trylock(sem))
-		percpu_rwsem_wait(sem, /* .reader = */ false);
+	if (!__percpu_down_write_trylock(sem)) {
+		trace_contention_begin(sem, LCB_F_PERCPU | LCB_F_WRITE);
+		percpu_rwsem_wait(sem, /* .reader = */ false, false);
+		contended = true;
+	}
 
 	/* smp_mb() implied by __percpu_down_write_trylock() on success -- D matches A */
 
@@ -241,7 +254,8 @@ void __sched percpu_down_write(struct percpu_rw_semaphore *sem)
 
 	/* Wait for all active readers to complete. */
 	rcuwait_wait_event(&sem->writer, readers_active_check(sem), TASK_UNINTERRUPTIBLE);
-	trace_contention_end(sem, 0);
+	if (contended)
+		trace_contention_end(sem, 0);
 }
 EXPORT_SYMBOL_GPL(percpu_down_write);
 

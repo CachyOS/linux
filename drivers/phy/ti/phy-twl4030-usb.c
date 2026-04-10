@@ -14,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/workqueue.h>
 #include <linux/io.h>
@@ -783,11 +784,10 @@ static int twl4030_usb_probe(struct platform_device *pdev)
 	pm_runtime_mark_last_busy(&pdev->dev);
 	pm_runtime_put_autosuspend(twl->dev);
 
-	dev_info(&pdev->dev, "Initialized TWL4030 USB module\n");
 	return 0;
 }
 
-static int twl4030_usb_remove(struct platform_device *pdev)
+static void twl4030_usb_remove(struct platform_device *pdev)
 {
 	struct twl4030_usb *twl = platform_get_drvdata(pdev);
 	int val;
@@ -821,8 +821,6 @@ static int twl4030_usb_remove(struct platform_device *pdev)
 
 	/* disable complete OTG block */
 	twl4030_usb_clear_bits(twl, POWER_CTRL, POWER_CTRL_OTG_ENAB);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF

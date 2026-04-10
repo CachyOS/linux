@@ -11,7 +11,10 @@
 .. toctree::
    :maxdepth: 1
 
-   howto
+   disclaimer-ja_JP
+   process/howto
+   process/submitting-patches
+   process/submit-checklist
 
 .. raw:: latex
 

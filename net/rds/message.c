@@ -44,8 +44,10 @@ static unsigned int	rds_exthdr_size[__RDS_EXTHDR_MAX] = {
 [RDS_EXTHDR_VERSION]	= sizeof(struct rds_ext_header_version),
 [RDS_EXTHDR_RDMA]	= sizeof(struct rds_ext_header_rdma),
 [RDS_EXTHDR_RDMA_DEST]	= sizeof(struct rds_ext_header_rdma_dest),
-[RDS_EXTHDR_NPATHS]	= sizeof(u16),
-[RDS_EXTHDR_GEN_NUM]	= sizeof(u32),
+[RDS_EXTHDR_RDMA_BYTES] = sizeof(struct rds_ext_header_rdma_bytes),
+[RDS_EXTHDR_NPATHS]	= sizeof(__be16),
+[RDS_EXTHDR_GEN_NUM]	= sizeof(__be32),
+[RDS_EXTHDR_SPORT_IDX]	= 1,
 };
 
 void rds_message_addref(struct rds_message *rm)
@@ -104,9 +106,9 @@ static void rds_rm_zerocopy_callback(struct rds_sock *rs,
 	spin_lock_irqsave(&q->lock, flags);
 	head = &q->zcookie_head;
 	if (!list_empty(head)) {
-		info = list_entry(head, struct rds_msg_zcopy_info,
-				  rs_zcookie_next);
-		if (info && rds_zcookie_add(info, cookie)) {
+		info = list_first_entry(head, struct rds_msg_zcopy_info,
+					rs_zcookie_next);
+		if (rds_zcookie_add(info, cookie)) {
 			spin_unlock_irqrestore(&q->lock, flags);
 			kfree(rds_info_from_znotifier(znotif));
 			/* caller invokes rds_wake_sk_sleep() */
@@ -118,7 +120,7 @@ static void rds_rm_zerocopy_callback(struct rds_sock *rs,
 	ck = &info->zcookies;
 	memset(ck, 0, sizeof(*ck));
 	WARN_ON(!rds_zcookie_add(info, cookie));
-	list_add_tail(&q->zcookie_head, &info->rs_zcookie_next);
+	list_add_tail(&info->rs_zcookie_next, &q->zcookie_head);
 
 	spin_unlock_irqrestore(&q->lock, flags);
 	/* caller invokes rds_wake_sk_sleep() */
@@ -191,31 +193,69 @@ void rds_message_populate_header(struct rds_header *hdr, __be16 sport,
 	hdr->h_sport = sport;
 	hdr->h_dport = dport;
 	hdr->h_sequence = cpu_to_be64(seq);
-	hdr->h_exthdr[0] = RDS_EXTHDR_NONE;
+	/* see rds_find_next_ext_space for reason why we memset the
+	 * ext header
+	 */
+	memset(hdr->h_exthdr, RDS_EXTHDR_NONE, RDS_HEADER_EXT_SPACE);
 }
 EXPORT_SYMBOL_GPL(rds_message_populate_header);
 
-int rds_message_add_extension(struct rds_header *hdr, unsigned int type,
-			      const void *data, unsigned int len)
+/*
+ * Find the next place we can add an RDS header extension with
+ * specific length. Extension headers are pushed one after the
+ * other. In the following, the number after the colon is the number
+ * of bytes:
+ *
+ * [ type1:1 dta1:len1 [ type2:1 dta2:len2 ] ... ] RDS_EXTHDR_NONE
+ *
+ * If the extension headers fill the complete extension header space
+ * (16 bytes), the trailing RDS_EXTHDR_NONE is omitted.
+ */
+static int rds_find_next_ext_space(struct rds_header *hdr, unsigned int len,
+				   u8 **ext_start)
 {
-	unsigned int ext_len = sizeof(u8) + len;
+	unsigned int ext_len;
+	unsigned int type;
+	int ind = 0;
+
+	while ((ind + 1 + len) <= RDS_HEADER_EXT_SPACE) {
+		if (hdr->h_exthdr[ind] == RDS_EXTHDR_NONE) {
+			*ext_start = hdr->h_exthdr + ind;
+			return 0;
+		}
+
+		type = hdr->h_exthdr[ind];
+
+		ext_len = (type < __RDS_EXTHDR_MAX) ? rds_exthdr_size[type] : 0;
+		WARN_ONCE(!ext_len, "Unknown ext hdr type %d\n", type);
+		if (!ext_len)
+			return -EINVAL;
+
+		/* ind points to a valid ext hdr with known length */
+		ind += 1 + ext_len;
+	}
+
+	/* no room for extension */
+	return -ENOSPC;
+}
+
+/* The ext hdr space is prefilled with zero from the kzalloc() */
+int rds_message_add_extension(struct rds_header *hdr,
+			      unsigned int type, const void *data)
+{
 	unsigned char *dst;
+	unsigned int len;
 
-	/* For now, refuse to add more than one extension header */
-	if (hdr->h_exthdr[0] != RDS_EXTHDR_NONE)
+	len = (type < __RDS_EXTHDR_MAX) ? rds_exthdr_size[type] : 0;
+	if (!len)
 		return 0;
 
-	if (type >= __RDS_EXTHDR_MAX || len != rds_exthdr_size[type])
+	if (rds_find_next_ext_space(hdr, len, &dst))
 		return 0;
-
-	if (ext_len >= RDS_HEADER_EXT_SPACE)
-		return 0;
-	dst = hdr->h_exthdr;
 
 	*dst++ = type;
 	memcpy(dst, data, len);
 
-	dst[len] = RDS_EXTHDR_NONE;
 	return 1;
 }
 EXPORT_SYMBOL_GPL(rds_message_add_extension);
@@ -272,7 +312,7 @@ int rds_message_add_rdma_dest_extension(struct rds_header *hdr, u32 r_key, u32 o
 
 	ext_hdr.h_rdma_rkey = cpu_to_be32(r_key);
 	ext_hdr.h_rdma_offset = cpu_to_be32(offset);
-	return rds_message_add_extension(hdr, RDS_EXTHDR_RDMA_DEST, &ext_hdr, sizeof(ext_hdr));
+	return rds_message_add_extension(hdr, RDS_EXTHDR_RDMA_DEST, &ext_hdr);
 }
 EXPORT_SYMBOL_GPL(rds_message_add_rdma_dest_extension);
 
@@ -354,7 +394,7 @@ struct rds_message *rds_message_map_pages(unsigned long *page_addrs, unsigned in
 
 	for (i = 0; i < rm->data.op_nents; ++i) {
 		sg_set_page(&rm->data.op_sg[i],
-				virt_to_page(page_addrs[i]),
+				virt_to_page((void *)page_addrs[i]),
 				PAGE_SIZE, 0);
 	}
 
@@ -366,7 +406,6 @@ static int rds_message_zcopy_from_user(struct rds_message *rm, struct iov_iter *
 	struct scatterlist *sg;
 	int ret = 0;
 	int length = iov_iter_count(from);
-	int total_copied = 0;
 	struct rds_msg_zcopy_info *info;
 
 	rm->m_inc.i_hdr.h_len = cpu_to_be32(iov_iter_count(from));
@@ -376,7 +415,7 @@ static int rds_message_zcopy_from_user(struct rds_message *rm, struct iov_iter *
 	 */
 	sg = rm->data.op_sg;
 
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	info = kzalloc_obj(*info);
 	if (!info)
 		return -ENOMEM;
 	INIT_LIST_HEAD(&info->rs_zcookie_next);
@@ -391,7 +430,7 @@ static int rds_message_zcopy_from_user(struct rds_message *rm, struct iov_iter *
 		size_t start;
 		ssize_t copied;
 
-		copied = iov_iter_get_pages(from, &pages, PAGE_SIZE,
+		copied = iov_iter_get_pages2(from, &pages, PAGE_SIZE,
 					    1, &start);
 		if (copied < 0) {
 			struct mmpin *mmp;
@@ -404,8 +443,6 @@ static int rds_message_zcopy_from_user(struct rds_message *rm, struct iov_iter *
 			ret = -EFAULT;
 			goto err;
 		}
-		total_copied += copied;
-		iov_iter_advance(from, copied);
 		length -= copied;
 		sg_set_page(sg, pages, copied, start);
 		rm->data.op_nents++;

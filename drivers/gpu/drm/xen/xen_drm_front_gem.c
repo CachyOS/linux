@@ -11,10 +11,11 @@
 #include <linux/dma-buf.h>
 #include <linux/scatterlist.h>
 #include <linux/shmem_fs.h>
+#include <linux/vmalloc.h>
 
-#include <drm/drm_fb_helper.h>
 #include <drm/drm_gem.h>
 #include <drm/drm_prime.h>
+#include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 
 #include <xen/balloon.h>
@@ -46,8 +47,7 @@ static int gem_alloc_pages_array(struct xen_gem_object *xen_obj,
 				 size_t buf_size)
 {
 	xen_obj->num_pages = DIV_ROUND_UP(buf_size, PAGE_SIZE);
-	xen_obj->pages = kvmalloc_array(xen_obj->num_pages,
-					sizeof(struct page *), GFP_KERNEL);
+	xen_obj->pages = kvmalloc_objs(struct page *, xen_obj->num_pages);
 	return !xen_obj->pages ? -ENOMEM : 0;
 }
 
@@ -70,8 +70,7 @@ static int xen_drm_front_gem_object_mmap(struct drm_gem_object *gem_obj,
 	 * vm_pgoff (used as a fake buffer offset by DRM) to 0 as we want to map
 	 * the whole buffer.
 	 */
-	vma->vm_flags &= ~VM_PFNMAP;
-	vma->vm_flags |= VM_MIXEDMAP;
+	vm_flags_mod(vma, VM_MIXEDMAP | VM_DONTEXPAND, VM_PFNMAP);
 	vma->vm_pgoff = 0;
 
 	/*
@@ -118,7 +117,7 @@ static struct xen_gem_object *gem_create_obj(struct drm_device *dev,
 	struct xen_gem_object *xen_obj;
 	int ret;
 
-	xen_obj = kzalloc(sizeof(*xen_obj), GFP_KERNEL);
+	xen_obj = kzalloc_obj(*xen_obj);
 	if (!xen_obj)
 		return ERR_PTR(-ENOMEM);
 

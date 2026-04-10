@@ -10,12 +10,12 @@
 #include <drm/drm_atomic_state_helper.h>
 #include <drm/drm_connector.h>
 #include <drm/drm_drv.h>
+#include <drm/drm_edid.h>
 #include <drm/drm_encoder.h>
 #include <drm/drm_file.h>
 #include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
-#include <drm/drm_simple_kms_helper.h>
 #include <drm/gud.h>
 
 #include "gud_internal.h"
@@ -220,7 +220,7 @@ static int gud_connector_get_modes(struct drm_connector *connector)
 	struct gud_display_mode_req *reqmodes = NULL;
 	struct gud_connector_get_edid_ctx edid_ctx;
 	unsigned int i, num_modes = 0;
-	struct edid *edid = NULL;
+	const struct drm_edid *drm_edid = NULL;
 	int idx, ret;
 
 	if (!drm_dev_enter(connector->dev, &idx))
@@ -237,16 +237,16 @@ static int gud_connector_get_modes(struct drm_connector *connector)
 		gud_conn_err(connector, "Invalid EDID size", ret);
 	} else if (ret > 0) {
 		edid_ctx.len = ret;
-		edid = drm_do_get_edid(connector, gud_connector_get_edid_block, &edid_ctx);
+		drm_edid = drm_edid_read_custom(connector, gud_connector_get_edid_block, &edid_ctx);
 	}
 
 	kfree(edid_ctx.buf);
-	drm_connector_update_edid_property(connector, edid);
+	drm_edid_connector_update(connector, drm_edid);
 
-	if (edid && edid_ctx.edid_override)
+	if (drm_edid && edid_ctx.edid_override)
 		goto out;
 
-	reqmodes = kmalloc_array(GUD_CONNECTOR_MAX_NUM_MODES, sizeof(*reqmodes), GFP_KERNEL);
+	reqmodes = kmalloc_objs(*reqmodes, GUD_CONNECTOR_MAX_NUM_MODES);
 	if (!reqmodes)
 		goto out;
 
@@ -275,10 +275,10 @@ static int gud_connector_get_modes(struct drm_connector *connector)
 	}
 out:
 	if (!num_modes)
-		num_modes = drm_add_edid_modes(connector, edid);
+		num_modes = drm_edid_connector_add_modes(connector);
 
 	kfree(reqmodes);
-	kfree(edid);
+	drm_edid_free(drm_edid);
 	drm_dev_exit(idx);
 
 	return num_modes;
@@ -302,7 +302,7 @@ static int gud_connector_atomic_check(struct drm_connector *connector,
 	    old_state->tv.margins.right != new_state->tv.margins.right ||
 	    old_state->tv.margins.top != new_state->tv.margins.top ||
 	    old_state->tv.margins.bottom != new_state->tv.margins.bottom ||
-	    old_state->tv.mode != new_state->tv.mode ||
+	    old_state->tv.legacy_mode != new_state->tv.legacy_mode ||
 	    old_state->tv.brightness != new_state->tv.brightness ||
 	    old_state->tv.contrast != new_state->tv.contrast ||
 	    old_state->tv.flicker_reduction != new_state->tv.flicker_reduction ||
@@ -354,7 +354,7 @@ static void gud_connector_reset(struct drm_connector *connector)
 	drm_atomic_helper_connector_reset(connector);
 	connector->state->tv = gconn->initial_tv_state;
 	/* Set margins from command line */
-	drm_atomic_helper_connector_tv_reset(connector);
+	drm_atomic_helper_connector_tv_margins_reset(connector);
 	if (gconn->initial_brightness >= 0)
 		connector->state->tv.brightness = gconn->initial_brightness;
 }
@@ -399,7 +399,7 @@ static int gud_connector_add_tv_mode(struct gud_device *gdrm, struct drm_connect
 	for (i = 0; i < num_modes; i++)
 		modes[i] = &buf[i * GUD_CONNECTOR_TV_MODE_NAME_LEN];
 
-	ret = drm_mode_create_tv_properties(connector->dev, num_modes, modes);
+	ret = drm_mode_create_tv_properties_legacy(connector->dev, num_modes, modes);
 free:
 	kfree(buf);
 	if (ret < 0)
@@ -423,7 +423,7 @@ gud_connector_property_lookup(struct drm_connector *connector, u16 prop)
 	case GUD_PROPERTY_TV_BOTTOM_MARGIN:
 		return config->tv_bottom_margin_property;
 	case GUD_PROPERTY_TV_MODE:
-		return config->tv_mode_property;
+		return config->legacy_tv_mode_property;
 	case GUD_PROPERTY_TV_BRIGHTNESS:
 		return config->tv_brightness_property;
 	case GUD_PROPERTY_TV_CONTRAST:
@@ -453,7 +453,7 @@ static unsigned int *gud_connector_tv_state_val(u16 prop, struct drm_tv_connecto
 	case GUD_PROPERTY_TV_BOTTOM_MARGIN:
 		return &state->margins.bottom;
 	case GUD_PROPERTY_TV_MODE:
-		return &state->mode;
+		return &state->legacy_mode;
 	case GUD_PROPERTY_TV_BRIGHTNESS:
 		return &state->brightness;
 	case GUD_PROPERTY_TV_CONTRAST:
@@ -479,7 +479,7 @@ static int gud_connector_add_properties(struct gud_device *gdrm, struct gud_conn
 	unsigned int i, num_properties;
 	int ret;
 
-	properties = kcalloc(GUD_CONNECTOR_PROPERTIES_MAX_NUM, sizeof(*properties), GFP_KERNEL);
+	properties = kzalloc_objs(*properties, GUD_CONNECTOR_PROPERTIES_MAX_NUM);
 	if (!properties)
 		return -ENOMEM;
 
@@ -538,7 +538,7 @@ static int gud_connector_add_properties(struct gud_device *gdrm, struct gud_conn
 			fallthrough;
 		case GUD_PROPERTY_TV_HUE:
 			/* This is a no-op if already added. */
-			ret = drm_mode_create_tv_properties(drm, 0, NULL);
+			ret = drm_mode_create_tv_properties_legacy(drm, 0, NULL);
 			if (ret)
 				goto out;
 			break;
@@ -561,11 +561,11 @@ static int gud_connector_add_properties(struct gud_device *gdrm, struct gud_conn
 			continue; /* not a DRM property */
 
 		property = gud_connector_property_lookup(connector, prop);
-		if (WARN_ON(IS_ERR(property)))
+		if (drm_WARN_ON(drm, IS_ERR(property)))
 			continue;
 
 		state_val = gud_connector_tv_state_val(prop, &gconn->initial_tv_state);
-		if (WARN_ON(IS_ERR(state_val)))
+		if (drm_WARN_ON(drm, IS_ERR(state_val)))
 			continue;
 
 		*state_val = val;
@@ -593,7 +593,7 @@ int gud_connector_fill_properties(struct drm_connector_state *connector_state,
 			unsigned int *state_val;
 
 			state_val = gud_connector_tv_state_val(prop, &connector_state->tv);
-			if (WARN_ON_ONCE(IS_ERR(state_val)))
+			if (drm_WARN_ON_ONCE(connector_state->connector->dev, IS_ERR(state_val)))
 				return PTR_ERR(state_val);
 
 			val = *state_val;
@@ -606,17 +606,20 @@ int gud_connector_fill_properties(struct drm_connector_state *connector_state,
 	return gconn->num_properties;
 }
 
+static const struct drm_encoder_funcs gud_drm_simple_encoder_funcs_cleanup = {
+	.destroy = drm_encoder_cleanup,
+};
+
 static int gud_connector_create(struct gud_device *gdrm, unsigned int index,
 				struct gud_connector_descriptor_req *desc)
 {
 	struct drm_device *drm = &gdrm->drm;
 	struct gud_connector *gconn;
 	struct drm_connector *connector;
-	struct drm_encoder *encoder;
 	int ret, connector_type;
 	u32 flags;
 
-	gconn = kzalloc(sizeof(*gconn), GFP_KERNEL);
+	gconn = kzalloc_obj(*gconn);
 	if (!gconn)
 		return -ENOMEM;
 
@@ -664,7 +667,7 @@ static int gud_connector_create(struct gud_device *gdrm, unsigned int index,
 		return ret;
 	}
 
-	if (WARN_ON(connector->index != index))
+	if (drm_WARN_ON(drm, connector->index != index))
 		return -EINVAL;
 
 	if (flags & GUD_CONNECTOR_FLAGS_POLL_STATUS)
@@ -680,20 +683,13 @@ static int gud_connector_create(struct gud_device *gdrm, unsigned int index,
 		return ret;
 	}
 
-	/* The first connector is attached to the existing simple pipe encoder */
-	if (!connector->index) {
-		encoder = &gdrm->pipe.encoder;
-	} else {
-		encoder = &gconn->encoder;
+	gconn->encoder.possible_crtcs = drm_crtc_mask(&gdrm->crtc);
+	ret = drm_encoder_init(drm, &gconn->encoder, &gud_drm_simple_encoder_funcs_cleanup,
+			       DRM_MODE_ENCODER_NONE, NULL);
+	if (ret)
+		return ret;
 
-		ret = drm_simple_encoder_init(drm, encoder, DRM_MODE_ENCODER_NONE);
-		if (ret)
-			return ret;
-
-		encoder->possible_crtcs = 1;
-	}
-
-	return drm_connector_attach_encoder(connector, encoder);
+	return drm_connector_attach_encoder(connector, &gconn->encoder);
 }
 
 int gud_get_connectors(struct gud_device *gdrm)
@@ -702,7 +698,7 @@ int gud_get_connectors(struct gud_device *gdrm)
 	unsigned int i, num_connectors;
 	int ret;
 
-	descs = kmalloc_array(GUD_CONNECTORS_MAX_NUM, sizeof(*descs), GFP_KERNEL);
+	descs = kmalloc_objs(*descs, GUD_CONNECTORS_MAX_NUM);
 	if (!descs)
 		return -ENOMEM;
 

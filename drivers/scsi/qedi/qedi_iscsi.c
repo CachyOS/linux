@@ -40,7 +40,7 @@ static int qedi_eh_host_reset(struct scsi_cmnd *cmd)
 	return qedi_recover_all_conns(qedi);
 }
 
-struct scsi_host_template qedi_host_template = {
+const struct scsi_host_template qedi_host_template = {
 	.module = THIS_MODULE,
 	.name = "QLogic QEDI 25/40/100Gb iSCSI Initiator Driver",
 	.proc_name = QEDI_MODULE_NAME,
@@ -440,7 +440,7 @@ static int qedi_iscsi_update_conn(struct qedi_ctx *qedi,
 
 	qedi_ep = qedi_conn->ep;
 
-	conn_info = kzalloc(sizeof(*conn_info), GFP_KERNEL);
+	conn_info = kzalloc_obj(*conn_info);
 	if (!conn_info) {
 		QEDI_ERR(&qedi->dbg_ctx, "memory alloc failed\n");
 		return -ENOMEM;
@@ -505,7 +505,7 @@ static int qedi_iscsi_offload_conn(struct qedi_endpoint *qedi_ep)
 	int rval;
 	int i;
 
-	conn_info = kzalloc(sizeof(*conn_info), GFP_KERNEL);
+	conn_info = kzalloc_obj(*conn_info);
 	if (!conn_info) {
 		QEDI_ERR(&qedi->dbg_ctx,
 			 "Failed to allocate memory ep=%p\n", qedi_ep);

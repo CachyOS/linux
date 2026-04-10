@@ -388,7 +388,7 @@ void HPI_6000(struct hpi_message *phm, struct hpi_response *phr)
 /* SUBSYSTEM */
 
 /* create an adapter object and initialise it based on resource information
- * passed in in the message
+ * passed in the message
  * NOTE - you cannot use this function AND the FindAdapters function at the
  * same time, the application must use only one of them to get the adapters
  */
@@ -406,7 +406,7 @@ static void subsys_create_adapter(struct hpi_message *phm,
 
 	memset(&ao, 0, sizeof(ao));
 
-	ao.priv = kzalloc(sizeof(struct hpi_hw_obj), GFP_KERNEL);
+	ao.priv = kzalloc_obj(struct hpi_hw_obj);
 	if (!ao.priv) {
 		HPI_DEBUG_LOG(ERROR, "can't get mem for adapter object\n");
 		phr->error = HPI_ERROR_MEMORY_ALLOC;
@@ -608,7 +608,7 @@ static void adapter_get_asserts(struct hpi_adapter_obj *pao,
 		phr->u.ax.assert.p2 = 0;
 		phr->u.ax.assert.count = 1;	/* assert count */
 		phr->u.ax.assert.dsp_index = -1;	/* "dsp index" */
-		strcpy(phr->u.ax.assert.sz_message, "PCI2040 error");
+		strscpy(phr->u.ax.assert.sz_message, "PCI2040 error");
 		phr->u.ax.assert.dsp_msg_addr = 0;
 		gw_pci_read_asserts = 0;
 		gw_pci_write_asserts = 0;
@@ -1253,7 +1253,6 @@ static u16 hpi6000_dsp_block_read32(struct hpi_adapter_obj *pao,
 	int local_count = count;
 	int xfer_size;
 	u32 *pdata = dest;
-	u32 loop_count = 0;
 
 	while (local_count) {
 		if (local_count > c6711_burst_size)
@@ -1273,7 +1272,6 @@ static u16 hpi6000_dsp_block_read32(struct hpi_adapter_obj *pao,
 		pdata += xfer_size;
 		local_hpi_address += sizeof(u32) * xfer_size;
 		local_count -= xfer_size;
-		loop_count++;
 	}
 
 	if (time_out)

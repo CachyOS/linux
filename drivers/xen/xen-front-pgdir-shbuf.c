@@ -21,7 +21,7 @@
 
 #include <xen/xen-front-pgdir-shbuf.h>
 
-/**
+/*
  * This structure represents the structure of a shared page
  * that contains grant references to the pages of the shared
  * buffer. This structure is common to many Xen para-virtualized
@@ -30,10 +30,10 @@
 struct xen_page_directory {
 	grant_ref_t gref_dir_next_page;
 #define XEN_GREF_LIST_END	0
-	grant_ref_t gref[1]; /* Variable length */
+	grant_ref_t gref[]; /* Variable length */
 };
 
-/**
+/*
  * Shared buffer ops which are differently implemented
  * depending on the allocation mode, e.g. if the buffer
  * is allocated by the corresponding backend or frontend.
@@ -61,7 +61,7 @@ struct xen_front_pgdir_shbuf_ops {
 	int (*unmap)(struct xen_front_pgdir_shbuf *buf);
 };
 
-/**
+/*
  * Get granted reference to the very first page of the
  * page directory. Usually this is passed to the backend,
  * so it can find/fill the grant references to the buffer's
@@ -81,7 +81,7 @@ xen_front_pgdir_shbuf_get_dir_start(struct xen_front_pgdir_shbuf *buf)
 }
 EXPORT_SYMBOL_GPL(xen_front_pgdir_shbuf_get_dir_start);
 
-/**
+/*
  * Map granted references of the shared buffer.
  *
  * Depending on the shared buffer mode of allocation
@@ -89,7 +89,7 @@ EXPORT_SYMBOL_GPL(xen_front_pgdir_shbuf_get_dir_start);
  * shared by the frontend itself) or map the provided granted
  * references onto the backing storage (buf->pages).
  *
- * \param buf shared buffer which grants to be maped.
+ * \param buf shared buffer which grants to be mapped.
  * \return zero on success or a negative number on failure.
  */
 int xen_front_pgdir_shbuf_map(struct xen_front_pgdir_shbuf *buf)
@@ -102,7 +102,7 @@ int xen_front_pgdir_shbuf_map(struct xen_front_pgdir_shbuf *buf)
 }
 EXPORT_SYMBOL_GPL(xen_front_pgdir_shbuf_map);
 
-/**
+/*
  * Unmap granted references of the shared buffer.
  *
  * Depending on the shared buffer mode of allocation
@@ -110,7 +110,7 @@ EXPORT_SYMBOL_GPL(xen_front_pgdir_shbuf_map);
  * shared by the frontend itself) or unmap the provided granted
  * references.
  *
- * \param buf shared buffer which grants to be unmaped.
+ * \param buf shared buffer which grants to be unmapped.
  * \return zero on success or a negative number on failure.
  */
 int xen_front_pgdir_shbuf_unmap(struct xen_front_pgdir_shbuf *buf)
@@ -123,7 +123,7 @@ int xen_front_pgdir_shbuf_unmap(struct xen_front_pgdir_shbuf *buf)
 }
 EXPORT_SYMBOL_GPL(xen_front_pgdir_shbuf_unmap);
 
-/**
+/*
  * Free all the resources of the shared buffer.
  *
  * \param buf shared buffer which resources to be freed.
@@ -150,7 +150,7 @@ EXPORT_SYMBOL_GPL(xen_front_pgdir_shbuf_free);
 				 offsetof(struct xen_page_directory, \
 					  gref)) / sizeof(grant_ref_t))
 
-/**
+/*
  * Get the number of pages the page directory consumes itself.
  *
  * \param buf shared buffer.
@@ -160,7 +160,7 @@ static int get_num_pages_dir(struct xen_front_pgdir_shbuf *buf)
 	return DIV_ROUND_UP(buf->num_pages, XEN_NUM_GREFS_PER_PAGE);
 }
 
-/**
+/*
  * Calculate the number of grant references needed to share the buffer
  * and its pages when backend allocates the buffer.
  *
@@ -172,7 +172,7 @@ static void backend_calc_num_grefs(struct xen_front_pgdir_shbuf *buf)
 	buf->num_grefs = get_num_pages_dir(buf);
 }
 
-/**
+/*
  * Calculate the number of grant references needed to share the buffer
  * and its pages when frontend allocates the buffer.
  *
@@ -190,7 +190,7 @@ static void guest_calc_num_grefs(struct xen_front_pgdir_shbuf *buf)
 #define xen_page_to_vaddr(page) \
 	((uintptr_t)pfn_to_kaddr(page_to_xen_pfn(page)))
 
-/**
+/*
  * Unmap the buffer previously mapped with grant references
  * provided by the backend.
  *
@@ -205,8 +205,7 @@ static int backend_unmap(struct xen_front_pgdir_shbuf *buf)
 	if (!buf->pages || !buf->backend_map_handles || !buf->grefs)
 		return 0;
 
-	unmap_ops = kcalloc(buf->num_pages, sizeof(*unmap_ops),
-			    GFP_KERNEL);
+	unmap_ops = kzalloc_objs(*unmap_ops, buf->num_pages);
 	if (!unmap_ops)
 		return -ENOMEM;
 
@@ -238,7 +237,7 @@ static int backend_unmap(struct xen_front_pgdir_shbuf *buf)
 	return ret;
 }
 
-/**
+/*
  * Map the buffer with grant references provided by the backend.
  *
  * \param buf shared buffer.
@@ -250,13 +249,12 @@ static int backend_map(struct xen_front_pgdir_shbuf *buf)
 	unsigned char *ptr;
 	int ret, cur_gref, cur_dir_page, cur_page, grefs_left;
 
-	map_ops = kcalloc(buf->num_pages, sizeof(*map_ops), GFP_KERNEL);
+	map_ops = kzalloc_objs(*map_ops, buf->num_pages);
 	if (!map_ops)
 		return -ENOMEM;
 
-	buf->backend_map_handles = kcalloc(buf->num_pages,
-					   sizeof(*buf->backend_map_handles),
-					   GFP_KERNEL);
+	buf->backend_map_handles = kzalloc_objs(*buf->backend_map_handles,
+						buf->num_pages);
 	if (!buf->backend_map_handles) {
 		kfree(map_ops);
 		return -ENOMEM;
@@ -320,7 +318,7 @@ static int backend_map(struct xen_front_pgdir_shbuf *buf)
 	return ret;
 }
 
-/**
+/*
  * Fill page directory with grant references to the pages of the
  * page directory itself.
  *
@@ -350,7 +348,7 @@ static void backend_fill_page_dir(struct xen_front_pgdir_shbuf *buf)
 	page_dir->gref_dir_next_page = XEN_GREF_LIST_END;
 }
 
-/**
+/*
  * Fill page directory with grant references to the pages of the
  * page directory and the buffer we share with the backend.
  *
@@ -389,7 +387,7 @@ static void guest_fill_page_dir(struct xen_front_pgdir_shbuf *buf)
 	}
 }
 
-/**
+/*
  * Grant references to the frontend's buffer pages.
  *
  * These will be shared with the backend, so it can
@@ -418,7 +416,7 @@ static int guest_grant_refs_for_buffer(struct xen_front_pgdir_shbuf *buf,
 	return 0;
 }
 
-/**
+/*
  * Grant all the references needed to share the buffer.
  *
  * Grant references to the page directory pages and, if
@@ -466,7 +464,7 @@ static int grant_references(struct xen_front_pgdir_shbuf *buf)
 	return 0;
 }
 
-/**
+/*
  * Allocate all required structures to mange shared buffer.
  *
  * \param buf shared buffer.
@@ -474,7 +472,7 @@ static int grant_references(struct xen_front_pgdir_shbuf *buf)
  */
 static int alloc_storage(struct xen_front_pgdir_shbuf *buf)
 {
-	buf->grefs = kcalloc(buf->num_grefs, sizeof(*buf->grefs), GFP_KERNEL);
+	buf->grefs = kzalloc_objs(*buf->grefs, buf->num_grefs);
 	if (!buf->grefs)
 		return -ENOMEM;
 
@@ -506,7 +504,7 @@ static const struct xen_front_pgdir_shbuf_ops local_ops = {
 	.grant_refs_for_buffer = guest_grant_refs_for_buffer,
 };
 
-/**
+/*
  * Allocate a new instance of a shared buffer.
  *
  * \param cfg configuration to be used while allocating a new shared buffer.

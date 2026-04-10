@@ -71,7 +71,7 @@ static int zpff_init(struct hid_device *hid)
 			return -ENODEV;
 	}
 
-	zpff = kzalloc(sizeof(struct zpff_device), GFP_KERNEL);
+	zpff = kzalloc_obj(struct zpff_device);
 	if (!zpff)
 		return -ENOMEM;
 
@@ -138,4 +138,5 @@ static struct hid_driver zp_driver = {
 };
 module_hid_driver(zp_driver);
 
+MODULE_DESCRIPTION("Force feedback support for Zeroplus based devices");
 MODULE_LICENSE("GPL");

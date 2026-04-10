@@ -51,7 +51,7 @@ Such userspace applications includes, but are not limited to:
  - mbimcli (included with the libmbim [3] library), and
  - ModemManager [4]
 
-Establishing a MBIM IP session reequires at least these actions by the
+Establishing a MBIM IP session requires at least these actions by the
 management application:
 
  - open the control channel
@@ -93,7 +93,7 @@ MBIM function can be looked up using sysfs.  For example::
 USB configuration descriptors
 -----------------------------
 The wMaxControlMessage field of the CDC MBIM functional descriptor
-limits the maximum control message size. The managament application is
+limits the maximum control message size. The management application is
 responsible for negotiating a control message size complying with the
 requirements in section 9.3.1 of [1], taking this descriptor field
 into consideration.

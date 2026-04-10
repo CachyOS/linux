@@ -13,9 +13,8 @@
 #include <linux/pci.h>
 #include <linux/io.h>
 #include <linux/init.h>
-#include <linux/of_platform.h>
-#include <linux/of_irq.h>
-#include <linux/of_pci.h>
+#include <linux/mod_devicetable.h>
+#include <linux/platform_device.h>
 
 #include <asm/mach-ralink/rt288x.h>
 
@@ -265,7 +264,7 @@ static struct platform_driver rt288x_pci_driver = {
 	},
 };
 
-int __init pcibios_init(void)
+static int __init pcibios_init(void)
 {
 	int ret = platform_driver_register(&rt288x_pci_driver);
 

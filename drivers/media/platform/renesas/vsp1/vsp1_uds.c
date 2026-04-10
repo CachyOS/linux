@@ -14,6 +14,7 @@
 
 #include "vsp1.h"
 #include "vsp1_dl.h"
+#include "vsp1_entity.h"
 #include "vsp1_pipe.h"
 #include "vsp1_uds.h"
 
@@ -128,17 +129,15 @@ static int uds_enum_frame_size(struct v4l2_subdev *subdev,
 			       struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct vsp1_uds *uds = to_uds(subdev);
-	struct v4l2_subdev_state *config;
+	struct v4l2_subdev_state *state;
 	struct v4l2_mbus_framefmt *format;
 	int ret = 0;
 
-	config = vsp1_entity_get_pad_config(&uds->entity, sd_state,
-					    fse->which);
-	if (!config)
+	state = vsp1_entity_get_state(&uds->entity, sd_state, fse->which);
+	if (!state)
 		return -EINVAL;
 
-	format = vsp1_entity_get_pad_format(&uds->entity, config,
-					    UDS_PAD_SINK);
+	format = v4l2_subdev_state_get_format(state, UDS_PAD_SINK);
 
 	mutex_lock(&uds->entity.lock);
 
@@ -179,15 +178,21 @@ static void uds_try_format(struct vsp1_uds *uds,
 		    fmt->code != MEDIA_BUS_FMT_AYUV8_1X32)
 			fmt->code = MEDIA_BUS_FMT_AYUV8_1X32;
 
+		vsp1_entity_adjust_color_space(fmt);
+
 		fmt->width = clamp(fmt->width, UDS_MIN_SIZE, UDS_MAX_SIZE);
 		fmt->height = clamp(fmt->height, UDS_MIN_SIZE, UDS_MAX_SIZE);
 		break;
 
 	case UDS_PAD_SOURCE:
 		/* The UDS scales but can't perform format conversion. */
-		format = vsp1_entity_get_pad_format(&uds->entity, sd_state,
-						    UDS_PAD_SINK);
+		format = v4l2_subdev_state_get_format(sd_state, UDS_PAD_SINK);
 		fmt->code = format->code;
+
+		fmt->colorspace = format->colorspace;
+		fmt->xfer_func = format->xfer_func;
+		fmt->ycbcr_enc = format->ycbcr_enc;
+		fmt->quantization = format->quantization;
 
 		uds_output_limits(format->width, &minimum, &maximum);
 		fmt->width = clamp(fmt->width, minimum, maximum);
@@ -197,7 +202,6 @@ static void uds_try_format(struct vsp1_uds *uds,
 	}
 
 	fmt->field = V4L2_FIELD_NONE;
-	fmt->colorspace = V4L2_COLORSPACE_SRGB;
 }
 
 static int uds_set_format(struct v4l2_subdev *subdev,
@@ -205,31 +209,29 @@ static int uds_set_format(struct v4l2_subdev *subdev,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct vsp1_uds *uds = to_uds(subdev);
-	struct v4l2_subdev_state *config;
+	struct v4l2_subdev_state *state;
 	struct v4l2_mbus_framefmt *format;
 	int ret = 0;
 
 	mutex_lock(&uds->entity.lock);
 
-	config = vsp1_entity_get_pad_config(&uds->entity, sd_state,
-					    fmt->which);
-	if (!config) {
+	state = vsp1_entity_get_state(&uds->entity, sd_state, fmt->which);
+	if (!state) {
 		ret = -EINVAL;
 		goto done;
 	}
 
-	uds_try_format(uds, config, fmt->pad, &fmt->format);
+	uds_try_format(uds, state, fmt->pad, &fmt->format);
 
-	format = vsp1_entity_get_pad_format(&uds->entity, config, fmt->pad);
+	format = v4l2_subdev_state_get_format(state, fmt->pad);
 	*format = fmt->format;
 
 	if (fmt->pad == UDS_PAD_SINK) {
 		/* Propagate the format to the source pad. */
-		format = vsp1_entity_get_pad_format(&uds->entity, config,
-						    UDS_PAD_SOURCE);
+		format = v4l2_subdev_state_get_format(state, UDS_PAD_SOURCE);
 		*format = fmt->format;
 
-		uds_try_format(uds, config, UDS_PAD_SOURCE, format);
+		uds_try_format(uds, state, UDS_PAD_SOURCE, format);
 	}
 
 done:
@@ -242,7 +244,6 @@ done:
  */
 
 static const struct v4l2_subdev_pad_ops uds_pad_ops = {
-	.init_cfg = vsp1_entity_init_cfg,
 	.enum_mbus_code = uds_enum_mbus_code,
 	.enum_frame_size = uds_enum_frame_size,
 	.get_fmt = vsp1_subdev_get_pad_format,
@@ -258,6 +259,7 @@ static const struct v4l2_subdev_ops uds_ops = {
  */
 
 static void uds_configure_stream(struct vsp1_entity *entity,
+				 struct v4l2_subdev_state *state,
 				 struct vsp1_pipeline *pipe,
 				 struct vsp1_dl_list *dl,
 				 struct vsp1_dl_body *dlb)
@@ -269,10 +271,8 @@ static void uds_configure_stream(struct vsp1_entity *entity,
 	unsigned int vscale;
 	bool multitap;
 
-	input = vsp1_entity_get_pad_format(&uds->entity, uds->entity.config,
-					   UDS_PAD_SINK);
-	output = vsp1_entity_get_pad_format(&uds->entity, uds->entity.config,
-					    UDS_PAD_SOURCE);
+	input = v4l2_subdev_state_get_format(state, UDS_PAD_SINK);
+	output = v4l2_subdev_state_get_format(state, UDS_PAD_SOURCE);
 
 	hscale = uds_compute_ratio(input->width, output->width);
 	vscale = uds_compute_ratio(input->height, output->height);
@@ -307,15 +307,11 @@ static void uds_configure_stream(struct vsp1_entity *entity,
 
 static void uds_configure_partition(struct vsp1_entity *entity,
 				    struct vsp1_pipeline *pipe,
+				    const struct vsp1_partition *partition,
 				    struct vsp1_dl_list *dl,
 				    struct vsp1_dl_body *dlb)
 {
 	struct vsp1_uds *uds = to_uds(&entity->subdev);
-	struct vsp1_partition *partition = pipe->partition;
-	const struct v4l2_mbus_framefmt *output;
-
-	output = vsp1_entity_get_pad_format(&uds->entity, uds->entity.config,
-					    UDS_PAD_SOURCE);
 
 	/* Input size clipping. */
 	vsp1_uds_write(uds, dlb, VI6_UDS_HSZCLIP, VI6_UDS_HSZCLIP_HCEN |
@@ -327,22 +323,20 @@ static void uds_configure_partition(struct vsp1_entity *entity,
 	vsp1_uds_write(uds, dlb, VI6_UDS_CLIP_SIZE,
 		       (partition->uds_source.width
 				<< VI6_UDS_CLIP_SIZE_HSIZE_SHIFT) |
-		       (output->height
+		       (partition->uds_source.height
 				<< VI6_UDS_CLIP_SIZE_VSIZE_SHIFT));
 }
 
 static unsigned int uds_max_width(struct vsp1_entity *entity,
+				  struct v4l2_subdev_state *state,
 				  struct vsp1_pipeline *pipe)
 {
-	struct vsp1_uds *uds = to_uds(&entity->subdev);
 	const struct v4l2_mbus_framefmt *output;
 	const struct v4l2_mbus_framefmt *input;
 	unsigned int hscale;
 
-	input = vsp1_entity_get_pad_format(&uds->entity, uds->entity.config,
-					   UDS_PAD_SINK);
-	output = vsp1_entity_get_pad_format(&uds->entity, uds->entity.config,
-					    UDS_PAD_SOURCE);
+	input = v4l2_subdev_state_get_format(state, UDS_PAD_SINK);
+	output = v4l2_subdev_state_get_format(state, UDS_PAD_SOURCE);
 	hscale = output->width / input->width;
 
 	/*
@@ -368,28 +362,26 @@ static unsigned int uds_max_width(struct vsp1_entity *entity,
  */
 
 static void uds_partition(struct vsp1_entity *entity,
+			  struct v4l2_subdev_state *state,
 			  struct vsp1_pipeline *pipe,
 			  struct vsp1_partition *partition,
 			  unsigned int partition_idx,
-			  struct vsp1_partition_window *window)
+			  struct v4l2_rect *window)
 {
-	struct vsp1_uds *uds = to_uds(&entity->subdev);
 	const struct v4l2_mbus_framefmt *output;
 	const struct v4l2_mbus_framefmt *input;
 
-	/* Initialise the partition state. */
-	partition->uds_sink = *window;
-	partition->uds_source = *window;
-
-	input = vsp1_entity_get_pad_format(&uds->entity, uds->entity.config,
-					   UDS_PAD_SINK);
-	output = vsp1_entity_get_pad_format(&uds->entity, uds->entity.config,
-					    UDS_PAD_SOURCE);
+	input = v4l2_subdev_state_get_format(state, UDS_PAD_SINK);
+	output = v4l2_subdev_state_get_format(state, UDS_PAD_SOURCE);
 
 	partition->uds_sink.width = window->width * input->width
 				  / output->width;
 	partition->uds_sink.left = window->left * input->width
 				 / output->width;
+	partition->uds_sink.height = input->height;
+	partition->uds_sink.top = 0;
+
+	partition->uds_source = *window;
 
 	*window = partition->uds_sink;
 }

@@ -31,8 +31,9 @@
  *
  */
 
-#include "i915_drv.h"
 #include "gvt.h"
+#include "i915_drv.h"
+#include "sched_policy.h"
 
 static bool vgpu_has_pending_workload(struct intel_vgpu *vgpu)
 {
@@ -281,13 +282,12 @@ static int tbs_sched_init(struct intel_gvt *gvt)
 
 	struct gvt_sched_data *data;
 
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = kzalloc_obj(*data);
 	if (!data)
 		return -ENOMEM;
 
 	INIT_LIST_HEAD(&data->lru_runq_head);
-	hrtimer_init(&data->timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
-	data->timer.function = tbs_timer_fn;
+	hrtimer_setup(&data->timer, tbs_timer_fn, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
 	data->period = GVT_DEFAULT_TIME_SLICE;
 	data->gvt = gvt;
 
@@ -312,7 +312,7 @@ static int tbs_sched_init_vgpu(struct intel_vgpu *vgpu)
 {
 	struct vgpu_sched_data *data;
 
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = kzalloc_obj(*data);
 	if (!data)
 		return -ENOMEM;
 
@@ -448,6 +448,7 @@ void intel_vgpu_stop_schedule(struct intel_vgpu *vgpu)
 	struct drm_i915_private *dev_priv = vgpu->gvt->gt->i915;
 	struct intel_engine_cs *engine;
 	enum intel_engine_id id;
+	intel_wakeref_t wakeref;
 
 	if (!vgpu_data->active)
 		return;
@@ -466,7 +467,7 @@ void intel_vgpu_stop_schedule(struct intel_vgpu *vgpu)
 		scheduler->current_vgpu = NULL;
 	}
 
-	intel_runtime_pm_get(&dev_priv->runtime_pm);
+	wakeref = intel_runtime_pm_get(&dev_priv->runtime_pm);
 	spin_lock_bh(&scheduler->mmio_context_lock);
 	for_each_engine(engine, vgpu->gvt->gt, id) {
 		if (scheduler->engine_owner[engine->id] == vgpu) {
@@ -475,6 +476,6 @@ void intel_vgpu_stop_schedule(struct intel_vgpu *vgpu)
 		}
 	}
 	spin_unlock_bh(&scheduler->mmio_context_lock);
-	intel_runtime_pm_put_unchecked(&dev_priv->runtime_pm);
+	intel_runtime_pm_put(&dev_priv->runtime_pm, wakeref);
 	mutex_unlock(&vgpu->gvt->sched_lock);
 }

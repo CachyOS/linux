@@ -111,13 +111,13 @@ should use a file descriptor as the handle for that object -- don't invent a
 new type of userspace object handle when the kernel already has mechanisms and
 well-defined semantics for using file descriptors.
 
-If your new :manpage:`xyzzy(2)` system call does return a new file descriptor,
+If your new xyzzy(2) system call does return a new file descriptor,
 then the flags argument should include a value that is equivalent to setting
 ``O_CLOEXEC`` on the new FD.  This makes it possible for userspace to close
 the timing window between ``xyzzy()`` and calling
 ``fcntl(fd, F_SETFD, FD_CLOEXEC)``, where an unexpected ``fork()`` and
 ``execve()`` in another thread could leak a descriptor to
-the exec'ed program. (However, resist the temptation to re-use the actual value
+the exec'ed program. (However, resist the temptation to reuse the actual value
 of the ``O_CLOEXEC`` constant, as it is architecture-specific and is part of a
 numbering space of ``O_*`` flags that is fairly full.)
 
@@ -127,18 +127,18 @@ descriptor. Making a file descriptor ready for reading or writing is the
 normal way for the kernel to indicate to userspace that an event has
 occurred on the corresponding kernel object.
 
-If your new :manpage:`xyzzy(2)` system call involves a filename argument::
+If your new xyzzy(2) system call involves a filename argument::
 
     int sys_xyzzy(const char __user *path, ..., unsigned int flags);
 
-you should also consider whether an :manpage:`xyzzyat(2)` version is more appropriate::
+you should also consider whether an xyzzyat(2) version is more appropriate::
 
     int sys_xyzzyat(int dfd, const char __user *path, ..., unsigned int flags);
 
 This allows more flexibility for how userspace specifies the file in question;
 in particular it allows userspace to request the functionality for an
 already-opened file descriptor using the ``AT_EMPTY_PATH`` flag, effectively
-giving an :manpage:`fxyzzy(3)` operation for free::
+giving an fxyzzy(3) operation for free::
 
  - xyzzyat(AT_FDCWD, path, ..., 0) is equivalent to xyzzy(path,...)
  - xyzzyat(fd, "", ..., AT_EMPTY_PATH) is equivalent to fxyzzy(fd, ...)
@@ -147,11 +147,11 @@ giving an :manpage:`fxyzzy(3)` operation for free::
 :manpage:`openat(2)` man page; for an example of AT_EMPTY_PATH, see the
 :manpage:`fstatat(2)` man page.)
 
-If your new :manpage:`xyzzy(2)` system call involves a parameter describing an
+If your new xyzzy(2) system call involves a parameter describing an
 offset within a file, make its type ``loff_t`` so that 64-bit offsets can be
 supported even on 32-bit architectures.
 
-If your new :manpage:`xyzzy(2)` system call involves privileged functionality,
+If your new xyzzy(2) system call involves privileged functionality,
 it needs to be governed by the appropriate Linux capability bit (checked with
 a call to ``capable()``), as described in the :manpage:`capabilities(7)` man
 page.  Choose an existing capability bit that governs related functionality,
@@ -160,7 +160,7 @@ under the same bit, as this goes against capabilities' purpose of splitting
 the power of root.  In particular, avoid adding new uses of the already
 overly-general ``CAP_SYS_ADMIN`` capability.
 
-If your new :manpage:`xyzzy(2)` system call manipulates a process other than
+If your new xyzzy(2) system call manipulates a process other than
 the calling process, it should be restricted (using a call to
 ``ptrace_may_access()``) so that only a calling process with the same
 permissions as the target process, or with the necessary capabilities, can
@@ -196,7 +196,7 @@ be cc'ed to linux-api@vger.kernel.org.
 Generic System Call Implementation
 ----------------------------------
 
-The main entry point for your new :manpage:`xyzzy(2)` system call will be called
+The main entry point for your new xyzzy(2) system call will be called
 ``sys_xyzzy()``, but you add this entry point with the appropriate
 ``SYSCALL_DEFINEn()`` macro rather than explicitly.  The 'n' indicates the
 number of arguments to the system call, and the macro takes the system call name
@@ -245,6 +245,52 @@ To summarize, you need a commit that includes:
  - ``SYSCALL_DEFINEn(xyzzy, ...)`` for the entry point
  - corresponding prototype in ``include/linux/syscalls.h``
  - generic table entry in ``include/uapi/asm-generic/unistd.h``
+ - fallback stub in ``kernel/sys_ni.c``
+
+
+.. _syscall_generic_6_11:
+
+Since 6.11
+~~~~~~~~~~
+
+Starting with kernel version 6.11, general system call implementation for the
+following architectures no longer requires modifications to
+``include/uapi/asm-generic/unistd.h``:
+
+ - arc
+ - arm64
+ - csky
+ - hexagon
+ - loongarch
+ - nios2
+ - openrisc
+ - riscv
+
+Instead, you need to update ``scripts/syscall.tbl`` and, if applicable, adjust
+``arch/*/kernel/Makefile.syscalls``.
+
+As ``scripts/syscall.tbl`` serves as a common syscall table across multiple
+architectures, a new entry is required in this table::
+
+    468   common   xyzzy     sys_xyzzy
+
+Note that adding an entry to ``scripts/syscall.tbl`` with the "common" ABI
+also affects all architectures that share this table. For more limited or
+architecture-specific changes, consider using an architecture-specific ABI or
+defining a new one.
+
+If a new ABI, say ``xyz``, is introduced, the corresponding updates should be
+made to ``arch/*/kernel/Makefile.syscalls`` as well::
+
+    syscall_abis_{32,64} += xyz (...)
+
+To summarize, you need a commit that includes:
+
+ - ``CONFIG`` option for the new function, normally in ``init/Kconfig``
+ - ``SYSCALL_DEFINEn(xyzzy, ...)`` for the entry point
+ - corresponding prototype in ``include/linux/syscalls.h``
+ - new entry in ``scripts/syscall.tbl``
+ - (if needed) Makefile updates in ``arch/*/kernel/Makefile.syscalls``
  - fallback stub in ``kernel/sys_ni.c``
 
 
@@ -353,6 +399,41 @@ To summarize, you need:
    ``include/uapi/asm-generic/unistd.h``
 
 
+Since 6.11
+~~~~~~~~~~
+
+This applies to all the architectures listed in :ref:`Since 6.11<syscall_generic_6_11>`
+under "Generic System Call Implementation", except arm64. See
+:ref:`Compatibility System Calls (arm64)<compat_arm64>` for more information.
+
+You need to extend the entry in ``scripts/syscall.tbl`` with an extra column
+to indicate that a 32-bit userspace program running on a 64-bit kernel should
+hit the compat entry point::
+
+    468   common     xyzzy     sys_xyzzy    compat_sys_xyzzy
+
+To summarize, you need:
+
+ - ``COMPAT_SYSCALL_DEFINEn(xyzzy, ...)`` for the compat entry point
+ - corresponding prototype in ``include/linux/compat.h``
+ - modification of the entry in ``scripts/syscall.tbl`` to include an extra
+   "compat" column
+ - (if needed) 32-bit mapping struct in ``include/linux/compat.h``
+
+
+.. _compat_arm64:
+
+Compatibility System Calls (arm64)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+On arm64, there is a dedicated syscall table for compatibility system calls
+targeting 32-bit (AArch32) userspace: ``arch/arm64/tools/syscall_32.tbl``.
+You need to add an additional line to this table specifying the compat
+entry point::
+
+    468   common     xyzzy     sys_xyzzy    compat_sys_xyzzy
+
+
 Compatibility System Calls (x86)
 --------------------------------
 
@@ -378,7 +459,7 @@ the compatibility wrapper::
     ...
     555   x32      xyzzy     __x32_compat_sys_xyzzy
 
-If no pointers are involved, then it is preferable to re-use the 64-bit system
+If no pointers are involved, then it is preferable to reuse the 64-bit system
 call for the x32 ABI (and consequently the entry in
 arch/x86/entry/syscalls/syscall_64.tbl is unchanged).
 
@@ -575,3 +656,6 @@ References and Sources
  - Recommendation from Linus Torvalds that x32 system calls should prefer
    compatibility with 64-bit versions rather than 32-bit versions:
    https://lore.kernel.org/r/CA+55aFxfmwfB7jbbrXxa=K7VBYPfAvmu3XOkGrLbB1UFjX1+Ew@mail.gmail.com
+ - Patch series revising system call table infrastructure to use
+   scripts/syscall.tbl across multiple architectures:
+   https://lore.kernel.org/lkml/20240704143611.2979589-1-arnd@kernel.org

@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2013 STMicroelectronics
  *
- * I2C master mode controller driver, used in STMicroelectronics devices.
+ * I2C controller driver, used in STMicroelectronics devices.
  *
  * Author: Maxime Coquelin <maxime.coquelin@st.com>
  */
@@ -13,12 +13,14 @@
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/of.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
+#include <linux/units.h>
 
 /* SSC registers */
 #define SSC_BRG				0x000
@@ -150,8 +152,8 @@ struct st_i2c_timings {
 
 /**
  * struct st_i2c_client - client specific data
- * @addr: 8-bit slave addr, including r/w bit
- * @count: number of bytes to be transfered
+ * @addr: 8-bit target addr, including r/w bit
+ * @count: number of bytes to be transferred
  * @xfered: number of bytes already transferred
  * @buf: data buffer
  * @result: result of the transfer
@@ -284,7 +286,7 @@ static void st_i2c_hw_config(struct st_i2c_dev *i2c_dev)
 	writel_relaxed(val, i2c_dev->base + SSC_CTL);
 
 	rate = clk_get_rate(i2c_dev->clk);
-	ns_per_clk = 1000000000 / rate;
+	ns_per_clk = HZ_PER_GHZ / rate;
 
 	/* Baudrate */
 	val = rate / (2 * t->rate);
@@ -422,12 +424,8 @@ static void st_i2c_wr_fill_tx_fifo(struct st_i2c_dev *i2c_dev)
 	tx_fstat = readl_relaxed(i2c_dev->base + SSC_TX_FSTAT);
 	tx_fstat &= SSC_TX_FSTAT_STATUS;
 
-	if (c->count < (SSC_TXFIFO_SIZE - tx_fstat))
-		i = c->count;
-	else
-		i = SSC_TXFIFO_SIZE - tx_fstat;
-
-	for (; i > 0; i--, c->count--, c->buf++)
+	for (i = min(c->count, SSC_TXFIFO_SIZE - tx_fstat);
+	     i > 0; i--, c->count--, c->buf++)
 		st_i2c_write_tx_fifo(i2c_dev, *c->buf);
 }
 
@@ -439,7 +437,7 @@ static void st_i2c_wr_fill_tx_fifo(struct st_i2c_dev *i2c_dev)
  * This functions fills the Tx FIFO with fixed pattern when
  * in read mode to trigger clock.
  */
-static void st_i2c_rd_fill_tx_fifo(struct st_i2c_dev *i2c_dev, int max)
+static void st_i2c_rd_fill_tx_fifo(struct st_i2c_dev *i2c_dev, u32 max)
 {
 	struct st_i2c_client *c = &i2c_dev->client;
 	u32 tx_fstat, sta;
@@ -452,12 +450,8 @@ static void st_i2c_rd_fill_tx_fifo(struct st_i2c_dev *i2c_dev, int max)
 	tx_fstat = readl_relaxed(i2c_dev->base + SSC_TX_FSTAT);
 	tx_fstat &= SSC_TX_FSTAT_STATUS;
 
-	if (max < (SSC_TXFIFO_SIZE - tx_fstat))
-		i = max;
-	else
-		i = SSC_TXFIFO_SIZE - tx_fstat;
-
-	for (; i > 0; i--, c->xfered++)
+	for (i = min(max, SSC_TXFIFO_SIZE - tx_fstat);
+	     i > 0; i--, c->xfered++)
 		st_i2c_write_tx_fifo(i2c_dev, 0xff);
 }
 
@@ -647,7 +641,7 @@ static int st_i2c_xfer_msg(struct st_i2c_dev *i2c_dev, struct i2c_msg *msg,
 {
 	struct st_i2c_client *c = &i2c_dev->client;
 	u32 ctl, i2c, it;
-	unsigned long timeout;
+	unsigned long time_left;
 	int ret;
 
 	c->addr		= i2c_8bit_addr_from_msg(msg);
@@ -667,7 +661,7 @@ static int st_i2c_xfer_msg(struct st_i2c_dev *i2c_dev, struct i2c_msg *msg,
 		i2c |= SSC_I2C_ACKG;
 	st_i2c_set_bits(i2c_dev->base + SSC_I2C, i2c);
 
-	/* Write slave address */
+	/* Write target address */
 	st_i2c_write_tx_fifo(i2c_dev, c->addr);
 
 	/* Pre-fill Tx fifo with data in case of write */
@@ -685,15 +679,12 @@ static int st_i2c_xfer_msg(struct st_i2c_dev *i2c_dev, struct i2c_msg *msg,
 		st_i2c_set_bits(i2c_dev->base + SSC_I2C, SSC_I2C_STRTG);
 	}
 
-	timeout = wait_for_completion_timeout(&i2c_dev->complete,
-			i2c_dev->adap.timeout);
+	time_left = wait_for_completion_timeout(&i2c_dev->complete,
+						i2c_dev->adap.timeout);
 	ret = c->result;
 
-	if (!timeout) {
-		dev_err(i2c_dev->dev, "Write to slave 0x%x timed out\n",
-				c->addr);
+	if (!time_left)
 		ret = -ETIMEDOUT;
-	}
 
 	i2c = SSC_I2C_STOPG | SSC_I2C_REPSTRTG;
 	st_i2c_clr_bits(i2c_dev->base + SSC_I2C, i2c);
@@ -740,7 +731,6 @@ static int st_i2c_xfer(struct i2c_adapter *i2c_adap,
 	return (ret < 0) ? ret : i;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int st_i2c_suspend(struct device *dev)
 {
 	struct st_i2c_dev *i2c_dev = dev_get_drvdata(dev);
@@ -762,11 +752,7 @@ static int st_i2c_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(st_i2c_pm, st_i2c_suspend, st_i2c_resume);
-#define ST_I2C_PM	(&st_i2c_pm)
-#else
-#define ST_I2C_PM	NULL
-#endif
+static DEFINE_SIMPLE_DEV_PM_OPS(st_i2c_pm, st_i2c_suspend, st_i2c_resume);
 
 static u32 st_i2c_func(struct i2c_adapter *adap)
 {
@@ -774,7 +760,7 @@ static u32 st_i2c_func(struct i2c_adapter *adap)
 }
 
 static const struct i2c_algorithm st_i2c_algo = {
-	.master_xfer = st_i2c_xfer,
+	.xfer = st_i2c_xfer,
 	.functionality = st_i2c_func,
 };
 
@@ -817,8 +803,7 @@ static int st_i2c_probe(struct platform_device *pdev)
 	if (!i2c_dev)
 		return -ENOMEM;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	i2c_dev->base = devm_ioremap_resource(&pdev->dev, res);
+	i2c_dev->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(i2c_dev->base))
 		return PTR_ERR(i2c_dev->base);
 
@@ -881,13 +866,11 @@ static int st_i2c_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int st_i2c_remove(struct platform_device *pdev)
+static void st_i2c_remove(struct platform_device *pdev)
 {
 	struct st_i2c_dev *i2c_dev = platform_get_drvdata(pdev);
 
 	i2c_del_adapter(&i2c_dev->adap);
-
-	return 0;
 }
 
 static const struct of_device_id st_i2c_match[] = {
@@ -901,7 +884,7 @@ static struct platform_driver st_i2c_driver = {
 	.driver = {
 		.name = "st-i2c",
 		.of_match_table = st_i2c_match,
-		.pm = ST_I2C_PM,
+		.pm = pm_sleep_ptr(&st_i2c_pm),
 	},
 	.probe = st_i2c_probe,
 	.remove = st_i2c_remove,

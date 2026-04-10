@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (C) Fuzhou Rockchip Electronics Co.Ltd
+ * Copyright (C) Rockchip Electronics Co., Ltd.
  * Author:Mark Yao <mark.yao@rock-chips.com>
  */
 
@@ -628,6 +628,7 @@
 #define RK3399_YUV2YUV_WIN			0x02c0
 #define RK3399_YUV2YUV_POST			0x02c4
 #define RK3399_AUTO_GATING_EN			0x02cc
+#define RK3399_DBG_POST_REG1			0x036c
 #define RK3399_WIN0_CSC_COE			0x03a0
 #define RK3399_WIN1_CSC_COE			0x03c0
 #define RK3399_WIN2_CSC_COE			0x03e0
@@ -871,6 +872,9 @@
 /* rk3036 register definition end */
 
 /* rk3126 register definition */
+#define RK3126_INT_SCALER		0x0c
+
+/* win1 register */
 #define RK3126_WIN1_MST			0x4c
 #define RK3126_WIN1_DSP_INFO		0x50
 #define RK3126_WIN1_DSP_ST		0x54
@@ -1028,5 +1032,19 @@
 #define RK3066_WIN2_LUT_ADDR		0x400
 #define RK3066_DSP_LUT_ADDR		0x800
 /* rk3066 register definition end */
+
+/* rk3506 register definition */
+#define RK3506_REG_CFG_DONE		0x00
+#define RK3506_SYS_CTRL2		0x18
+#define RK3506_DSP_CTRL0		0x20
+#define RK3506_DSP_CTRL2		0x28
+#define RK3506_WIN1_CTRL0		0x90
+#define RK3506_WIN1_CTRL1		0x94
+#define RK3506_WIN1_VIR			0x98
+#define RK3506_WIN1_MST			0xa0
+#define RK3506_WIN1_DSP_INFO		0xa4
+#define RK3506_WIN1_DSP_ST		0xa8
+#define RK3506_WIN1_ALPHA_CTRL		0xbc
+/* rk3506 register definition end */
 
 #endif /* _ROCKCHIP_VOP_REG_H */

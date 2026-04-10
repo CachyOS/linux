@@ -9,46 +9,53 @@
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_plane.h>
-#include <drm/drm_plane_helper.h>
+#include <drm/drm_print.h>
+#include <drm/drm_vblank.h>
 #include <drm/drm_vblank_work.h>
 
-#include "i915_irq.h"
-#include "i915_vgpu.h"
 #include "i9xx_plane.h"
 #include "icl_dsi.h"
 #include "intel_atomic.h"
-#include "intel_atomic_plane.h"
 #include "intel_color.h"
 #include "intel_crtc.h"
 #include "intel_cursor.h"
 #include "intel_display_debugfs.h"
+#include "intel_display_irq.h"
 #include "intel_display_trace.h"
 #include "intel_display_types.h"
 #include "intel_drrs.h"
 #include "intel_dsi.h"
+#include "intel_fifo_underrun.h"
+#include "intel_parent.h"
 #include "intel_pipe_crc.h"
+#include "intel_plane.h"
 #include "intel_psr.h"
 #include "intel_sprite.h"
+#include "intel_vblank.h"
 #include "intel_vrr.h"
 #include "skl_universal_plane.h"
 
 static void assert_vblank_disabled(struct drm_crtc *crtc)
 {
-	if (I915_STATE_WARN_ON(drm_crtc_vblank_get(crtc) == 0))
+	struct intel_display *display = to_intel_display(crtc->dev);
+
+	if (INTEL_DISPLAY_STATE_WARN(display, drm_crtc_vblank_get(crtc) == 0,
+				     "[CRTC:%d:%s] vblank assertion failure (expected off, current on)\n",
+				     crtc->base.id, crtc->name))
 		drm_crtc_vblank_put(crtc);
 }
 
-struct intel_crtc *intel_first_crtc(struct drm_i915_private *i915)
+struct intel_crtc *intel_first_crtc(struct intel_display *display)
 {
-	return to_intel_crtc(drm_crtc_from_index(&i915->drm, 0));
+	return to_intel_crtc(drm_crtc_from_index(display->drm, 0));
 }
 
-struct intel_crtc *intel_crtc_for_pipe(struct drm_i915_private *i915,
+struct intel_crtc *intel_crtc_for_pipe(struct intel_display *display,
 				       enum pipe pipe)
 {
 	struct intel_crtc *crtc;
 
-	for_each_intel_crtc(&i915->drm, crtc) {
+	for_each_intel_crtc(display->drm, crtc) {
 		if (crtc->pipe == pipe)
 			return crtc;
 	}
@@ -61,10 +68,10 @@ void intel_crtc_wait_for_next_vblank(struct intel_crtc *crtc)
 	drm_crtc_wait_one_vblank(&crtc->base);
 }
 
-void intel_wait_for_vblank_if_active(struct drm_i915_private *i915,
+void intel_wait_for_vblank_if_active(struct intel_display *display,
 				     enum pipe pipe)
 {
-	struct intel_crtc *crtc = intel_crtc_for_pipe(i915, pipe);
+	struct intel_crtc *crtc = intel_crtc_for_pipe(display, pipe);
 
 	if (crtc->active)
 		intel_crtc_wait_for_next_vblank(crtc);
@@ -72,24 +79,28 @@ void intel_wait_for_vblank_if_active(struct drm_i915_private *i915,
 
 u32 intel_crtc_get_vblank_counter(struct intel_crtc *crtc)
 {
-	struct drm_device *dev = crtc->base.dev;
-	struct drm_vblank_crtc *vblank = &dev->vblank[drm_crtc_index(&crtc->base)];
+	struct drm_vblank_crtc *vblank = drm_crtc_vblank_crtc(&crtc->base);
 
 	if (!crtc->active)
 		return 0;
 
-	if (!vblank->max_vblank_count)
-		return (u32)drm_crtc_accurate_vblank_count(&crtc->base);
+	if (!vblank->max_vblank_count) {
+		/* On preempt-rt we cannot take the vblank spinlock since this function is called from tracepoints */
+		if (IS_ENABLED(CONFIG_PREEMPT_RT))
+			return (u32)drm_crtc_vblank_count(&crtc->base);
+		else
+			return (u32)drm_crtc_accurate_vblank_count(&crtc->base);
+	}
 
 	return crtc->base.funcs->get_vblank_counter(&crtc->base);
 }
 
 u32 intel_crtc_max_vblank_count(const struct intel_crtc_state *crtc_state)
 {
-	struct drm_i915_private *dev_priv = to_i915(crtc_state->uapi.crtc->dev);
+	struct intel_display *display = to_intel_display(crtc_state);
 
 	/*
-	 * From Gen 11, In case of dsi cmd mode, frame counter wouldnt
+	 * From Gen 11, in case of dsi cmd mode, frame counter wouldn't
 	 * have updated at the beginning of TE, if we want to use
 	 * the hw counter, then we would find it updated in only
 	 * the next TE, hence switching to sw counter.
@@ -102,13 +113,13 @@ u32 intel_crtc_max_vblank_count(const struct intel_crtc_state *crtc_state)
 	 * On i965gm the hardware frame counter reads
 	 * zero when the TV encoder is enabled :(
 	 */
-	if (IS_I965GM(dev_priv) &&
+	if (display->platform.i965gm &&
 	    (crtc_state->output_types & BIT(INTEL_OUTPUT_TVOUT)))
 		return 0;
 
-	if (DISPLAY_VER(dev_priv) >= 5 || IS_G4X(dev_priv))
+	if (DISPLAY_VER(display) >= 5 || display->platform.g4x)
 		return 0xffffffff; /* full 32 bit counter */
-	else if (DISPLAY_VER(dev_priv) >= 3)
+	else if (DISPLAY_VER(display) >= 3)
 		return 0xffffff; /* only 24 bits of frame count */
 	else
 		return 0; /* Gen2 doesn't have a hardware frame counter */
@@ -117,6 +128,8 @@ u32 intel_crtc_max_vblank_count(const struct intel_crtc_state *crtc_state)
 void intel_crtc_vblank_on(const struct intel_crtc_state *crtc_state)
 {
 	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
+
+	crtc->vblank_psr_notify = intel_psr_needs_vblank_notification(crtc_state);
 
 	assert_vblank_disabled(&crtc->base);
 	drm_crtc_set_max_vblank_count(&crtc->base,
@@ -133,6 +146,7 @@ void intel_crtc_vblank_on(const struct intel_crtc_state *crtc_state)
 
 void intel_crtc_vblank_off(const struct intel_crtc_state *crtc_state)
 {
+	struct intel_display *display = to_intel_display(crtc_state);
 	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
 
 	/*
@@ -144,13 +158,17 @@ void intel_crtc_vblank_off(const struct intel_crtc_state *crtc_state)
 
 	drm_crtc_vblank_off(&crtc->base);
 	assert_vblank_disabled(&crtc->base);
+
+	crtc->vblank_psr_notify = false;
+
+	flush_work(&display->irq.vblank_notify_work);
 }
 
 struct intel_crtc_state *intel_crtc_state_alloc(struct intel_crtc *crtc)
 {
 	struct intel_crtc_state *crtc_state;
 
-	crtc_state = kmalloc(sizeof(*crtc_state), GFP_KERNEL);
+	crtc_state = kmalloc_obj(*crtc_state);
 
 	if (crtc_state)
 		intel_crtc_state_reset(crtc_state, crtc);
@@ -170,6 +188,7 @@ void intel_crtc_state_reset(struct intel_crtc_state *crtc_state,
 	crtc_state->hsw_workaround_pipe = INVALID_PIPE;
 	crtc_state->scaler_state.scaler_id = -1;
 	crtc_state->mst_master_transcoder = INVALID_TRANSCODER;
+	crtc_state->max_link_bpp_x16 = INT_MAX;
 }
 
 static struct intel_crtc *intel_crtc_alloc(void)
@@ -177,7 +196,7 @@ static struct intel_crtc *intel_crtc_alloc(void)
 	struct intel_crtc_state *crtc_state;
 	struct intel_crtc *crtc;
 
-	crtc = kzalloc(sizeof(*crtc), GFP_KERNEL);
+	crtc = kzalloc_obj(*crtc);
 	if (!crtc)
 		return ERR_PTR(-ENOMEM);
 
@@ -211,7 +230,7 @@ static void intel_crtc_destroy(struct drm_crtc *_crtc)
 
 static int intel_crtc_late_register(struct drm_crtc *crtc)
 {
-	intel_crtc_debugfs_add(crtc);
+	intel_crtc_debugfs_add(to_intel_crtc(crtc));
 	return 0;
 }
 
@@ -289,7 +308,7 @@ static const struct drm_crtc_funcs i8xx_crtc_funcs = {
 	.get_vblank_timestamp = intel_crtc_get_vblank_timestamp,
 };
 
-int intel_crtc_init(struct drm_i915_private *dev_priv, enum pipe pipe)
+static int __intel_crtc_init(struct intel_display *display, enum pipe pipe)
 {
 	struct intel_plane *primary, *cursor;
 	const struct drm_crtc_funcs *funcs;
@@ -301,27 +320,27 @@ int intel_crtc_init(struct drm_i915_private *dev_priv, enum pipe pipe)
 		return PTR_ERR(crtc);
 
 	crtc->pipe = pipe;
-	crtc->num_scalers = RUNTIME_INFO(dev_priv)->num_scalers[pipe];
+	crtc->num_scalers = DISPLAY_RUNTIME_INFO(display)->num_scalers[pipe];
 
-	if (DISPLAY_VER(dev_priv) >= 9)
-		primary = skl_universal_plane_create(dev_priv, pipe,
-						     PLANE_PRIMARY);
+	if (DISPLAY_VER(display) >= 9)
+		primary = skl_universal_plane_create(display, pipe, PLANE_1);
 	else
-		primary = intel_primary_plane_create(dev_priv, pipe);
+		primary = intel_primary_plane_create(display, pipe);
 	if (IS_ERR(primary)) {
 		ret = PTR_ERR(primary);
 		goto fail;
 	}
 	crtc->plane_ids_mask |= BIT(primary->id);
 
-	for_each_sprite(dev_priv, pipe, sprite) {
+	intel_init_fifo_underrun_reporting(display, crtc, false);
+
+	for_each_sprite(display, pipe, sprite) {
 		struct intel_plane *plane;
 
-		if (DISPLAY_VER(dev_priv) >= 9)
-			plane = skl_universal_plane_create(dev_priv, pipe,
-							   PLANE_SPRITE0 + sprite);
+		if (DISPLAY_VER(display) >= 9)
+			plane = skl_universal_plane_create(display, pipe, PLANE_2 + sprite);
 		else
-			plane = intel_sprite_plane_create(dev_priv, pipe, sprite);
+			plane = intel_sprite_plane_create(display, pipe, sprite);
 		if (IS_ERR(plane)) {
 			ret = PTR_ERR(plane);
 			goto fail;
@@ -329,51 +348,55 @@ int intel_crtc_init(struct drm_i915_private *dev_priv, enum pipe pipe)
 		crtc->plane_ids_mask |= BIT(plane->id);
 	}
 
-	cursor = intel_cursor_plane_create(dev_priv, pipe);
+	cursor = intel_cursor_plane_create(display, pipe);
 	if (IS_ERR(cursor)) {
 		ret = PTR_ERR(cursor);
 		goto fail;
 	}
 	crtc->plane_ids_mask |= BIT(cursor->id);
 
-	if (HAS_GMCH(dev_priv)) {
-		if (IS_CHERRYVIEW(dev_priv) ||
-		    IS_VALLEYVIEW(dev_priv) || IS_G4X(dev_priv))
+	if (HAS_GMCH(display)) {
+		if (display->platform.cherryview ||
+		    display->platform.valleyview ||
+		    display->platform.g4x)
 			funcs = &g4x_crtc_funcs;
-		else if (DISPLAY_VER(dev_priv) == 4)
+		else if (DISPLAY_VER(display) == 4)
 			funcs = &i965_crtc_funcs;
-		else if (IS_I945GM(dev_priv) || IS_I915GM(dev_priv))
+		else if (display->platform.i945gm ||
+			 display->platform.i915gm)
 			funcs = &i915gm_crtc_funcs;
-		else if (DISPLAY_VER(dev_priv) == 3)
+		else if (DISPLAY_VER(display) == 3)
 			funcs = &i915_crtc_funcs;
 		else
 			funcs = &i8xx_crtc_funcs;
 	} else {
-		if (DISPLAY_VER(dev_priv) >= 8)
+		if (DISPLAY_VER(display) >= 8)
 			funcs = &bdw_crtc_funcs;
 		else
 			funcs = &ilk_crtc_funcs;
 	}
 
-	ret = drm_crtc_init_with_planes(&dev_priv->drm, &crtc->base,
+	ret = drm_crtc_init_with_planes(display->drm, &crtc->base,
 					&primary->base, &cursor->base,
 					funcs, "pipe %c", pipe_name(pipe));
 	if (ret)
 		goto fail;
 
-	if (DISPLAY_VER(dev_priv) >= 11)
+	if (DISPLAY_VER(display) >= 11)
 		drm_crtc_create_scaling_filter_property(&crtc->base,
 						BIT(DRM_SCALING_FILTER_DEFAULT) |
 						BIT(DRM_SCALING_FILTER_NEAREST_NEIGHBOR));
 
-	intel_color_init(crtc);
-
-	intel_crtc_drrs_init(crtc);
+	intel_color_crtc_init(crtc);
+	intel_drrs_crtc_init(crtc);
 	intel_crtc_crc_init(crtc);
 
 	cpu_latency_qos_add_request(&crtc->vblank_pm_qos, PM_QOS_DEFAULT_VALUE);
 
-	drm_WARN_ON(&dev_priv->drm, drm_crtc_index(&crtc->base) != crtc->pipe);
+	drm_WARN_ON(display->drm, drm_crtc_index(&crtc->base) != crtc->pipe);
+
+	if (HAS_CASF(display) && crtc->num_scalers >= 2)
+		drm_crtc_create_sharpness_strength_property(&crtc->base);
 
 	return 0;
 
@@ -383,13 +406,51 @@ fail:
 	return ret;
 }
 
+int intel_crtc_init(struct intel_display *display)
+{
+	enum pipe pipe;
+	int ret;
+
+	drm_dbg_kms(display->drm, "%d display pipe%s available.\n",
+		    INTEL_NUM_PIPES(display), str_plural(INTEL_NUM_PIPES(display)));
+
+	for_each_pipe(display, pipe) {
+		ret = __intel_crtc_init(display, pipe);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+int intel_crtc_get_pipe_from_crtc_id_ioctl(struct drm_device *dev, void *data,
+					   struct drm_file *file)
+{
+	struct drm_i915_get_pipe_from_crtc_id *pipe_from_crtc_id = data;
+	struct drm_crtc *drm_crtc;
+	struct intel_crtc *crtc;
+
+	drm_crtc = drm_crtc_find(dev, file, pipe_from_crtc_id->crtc_id);
+	if (!drm_crtc)
+		return -ENOENT;
+
+	crtc = to_intel_crtc(drm_crtc);
+	pipe_from_crtc_id->pipe = crtc->pipe;
+
+	return 0;
+}
+
 static bool intel_crtc_needs_vblank_work(const struct intel_crtc_state *crtc_state)
 {
+	struct intel_display *display = to_intel_display(crtc_state);
+
 	return crtc_state->hw.active &&
-		!intel_crtc_needs_modeset(crtc_state) &&
 		!crtc_state->preload_luts &&
-		(crtc_state->uapi.color_mgmt_changed ||
-		 crtc_state->update_pipe);
+		!intel_crtc_needs_modeset(crtc_state) &&
+		(intel_crtc_needs_color_update(crtc_state) &&
+		 !HAS_DOUBLE_BUFFERED_LUT(display)) &&
+		!intel_color_uses_dsb(crtc_state) &&
+		!crtc_state->use_dsb;
 }
 
 static void intel_crtc_vblank_work(struct kthread_work *base)
@@ -406,8 +467,8 @@ static void intel_crtc_vblank_work(struct kthread_work *base)
 	if (crtc_state->uapi.event) {
 		spin_lock_irq(&crtc->base.dev->event_lock);
 		drm_crtc_send_vblank_event(&crtc->base, crtc_state->uapi.event);
-		crtc_state->uapi.event = NULL;
 		spin_unlock_irq(&crtc->base.dev->event_lock);
+		crtc_state->uapi.event = NULL;
 	}
 
 	trace_intel_crtc_vblank_work_end(crtc);
@@ -449,23 +510,25 @@ int intel_usecs_to_scanlines(const struct drm_display_mode *adjusted_mode,
 	if (!adjusted_mode->crtc_htotal)
 		return 1;
 
-	return DIV_ROUND_UP(usecs * adjusted_mode->crtc_clock,
-			    1000 * adjusted_mode->crtc_htotal);
+	return DIV_ROUND_UP_ULL(mul_u32_u32(usecs, adjusted_mode->crtc_clock),
+				1000 * adjusted_mode->crtc_htotal);
 }
 
-static int intel_mode_vblank_start(const struct drm_display_mode *mode)
+int intel_scanlines_to_usecs(const struct drm_display_mode *adjusted_mode,
+			     int scanlines)
 {
-	int vblank_start = mode->crtc_vblank_start;
+	/* paranoia */
+	if (!adjusted_mode->crtc_clock)
+		return 1;
 
-	if (mode->flags & DRM_MODE_FLAG_INTERLACE)
-		vblank_start = DIV_ROUND_UP(vblank_start, 2);
-
-	return vblank_start;
+	return DIV_ROUND_UP_ULL(mul_u32_u32(scanlines, adjusted_mode->crtc_htotal * 1000),
+				adjusted_mode->crtc_clock);
 }
 
 /**
  * intel_pipe_update_start() - start update of a set of display registers
- * @new_crtc_state: the new crtc state
+ * @state: the atomic state
+ * @crtc: the crtc
  *
  * Mark the start of an update to pipe registers that should be updated
  * atomically regarding vblank. If the next vblank will happens within
@@ -475,44 +538,46 @@ static int intel_mode_vblank_start(const struct drm_display_mode *mode)
  * until a subsequent call to intel_pipe_update_end(). That is done to
  * avoid random delays.
  */
-void intel_pipe_update_start(struct intel_crtc_state *new_crtc_state)
+void intel_pipe_update_start(struct intel_atomic_state *state,
+			     struct intel_crtc *crtc)
 {
-	struct intel_crtc *crtc = to_intel_crtc(new_crtc_state->uapi.crtc);
-	struct drm_i915_private *dev_priv = to_i915(crtc->base.dev);
-	const struct drm_display_mode *adjusted_mode = &new_crtc_state->hw.adjusted_mode;
-	long timeout = msecs_to_jiffies_timeout(1);
-	int scanline, min, max, vblank_start;
-	wait_queue_head_t *wq = drm_crtc_vblank_waitqueue(&crtc->base);
-	bool need_vlv_dsi_wa = (IS_VALLEYVIEW(dev_priv) || IS_CHERRYVIEW(dev_priv)) &&
-		intel_crtc_has_type(new_crtc_state, INTEL_OUTPUT_DSI);
-	DEFINE_WAIT(wait);
+	struct intel_display *display = to_intel_display(state);
+	const struct intel_crtc_state *old_crtc_state =
+		intel_atomic_get_old_crtc_state(state, crtc);
+	struct intel_crtc_state *new_crtc_state =
+		intel_atomic_get_new_crtc_state(state, crtc);
+	struct intel_vblank_evade_ctx evade;
+	int scanline;
+
+	drm_WARN_ON(display->drm, new_crtc_state->use_dsb);
 
 	intel_psr_lock(new_crtc_state);
 
-	if (new_crtc_state->do_async_flip)
+	if (new_crtc_state->do_async_flip) {
+		intel_crtc_prepare_vblank_event(new_crtc_state,
+						&crtc->flip_done_event);
 		return;
+	}
 
 	if (intel_crtc_needs_vblank_work(new_crtc_state))
 		intel_crtc_vblank_work_init(new_crtc_state);
 
-	if (new_crtc_state->vrr.enable) {
-		if (intel_vrr_is_push_sent(new_crtc_state))
-			vblank_start = intel_vrr_vmin_vblank_start(new_crtc_state);
-		else
-			vblank_start = intel_vrr_vmax_vblank_start(new_crtc_state);
-	} else {
-		vblank_start = intel_mode_vblank_start(adjusted_mode);
+	if (state->base.legacy_cursor_update) {
+		struct intel_plane *plane;
+		struct intel_plane_state *old_plane_state, *new_plane_state;
+		int i;
+
+		for_each_oldnew_intel_plane_in_state(state, plane, old_plane_state,
+						     new_plane_state, i) {
+			if (old_plane_state->hw.crtc == &crtc->base)
+				intel_plane_init_cursor_vblank_work(old_plane_state,
+								    new_plane_state);
+		}
 	}
 
-	/* FIXME needs to be calibrated sensibly */
-	min = vblank_start - intel_usecs_to_scanlines(adjusted_mode,
-						      VBLANK_EVASION_TIME_US);
-	max = vblank_start - 1;
+	intel_vblank_evade_init(old_crtc_state, new_crtc_state, &evade);
 
-	if (min <= 0 || max <= 0)
-		goto irq_disable;
-
-	if (drm_WARN_ON(&dev_priv->drm, drm_crtc_vblank_get(&crtc->base)))
+	if (drm_WARN_ON(display->drm, drm_crtc_vblank_get(&crtc->base)))
 		goto irq_disable;
 
 	/*
@@ -524,57 +589,13 @@ void intel_pipe_update_start(struct intel_crtc_state *new_crtc_state)
 
 	local_irq_disable();
 
-	crtc->debug.min_vbl = min;
-	crtc->debug.max_vbl = max;
+	crtc->debug.min_vbl = evade.min;
+	crtc->debug.max_vbl = evade.max;
 	trace_intel_pipe_update_start(crtc);
 
-	for (;;) {
-		/*
-		 * prepare_to_wait() has a memory barrier, which guarantees
-		 * other CPUs can see the task state update by the time we
-		 * read the scanline.
-		 */
-		prepare_to_wait(wq, &wait, TASK_UNINTERRUPTIBLE);
-
-		scanline = intel_get_crtc_scanline(crtc);
-		if (scanline < min || scanline > max)
-			break;
-
-		if (!timeout) {
-			drm_err(&dev_priv->drm,
-				"Potential atomic update failure on pipe %c\n",
-				pipe_name(crtc->pipe));
-			break;
-		}
-
-		local_irq_enable();
-
-		timeout = schedule_timeout(timeout);
-
-		local_irq_disable();
-	}
-
-	finish_wait(wq, &wait);
+	scanline = intel_vblank_evade(&evade);
 
 	drm_crtc_vblank_put(&crtc->base);
-
-	/*
-	 * On VLV/CHV DSI the scanline counter would appear to
-	 * increment approx. 1/3 of a scanline before start of vblank.
-	 * The registers still get latched at start of vblank however.
-	 * This means we must not write any registers on the first
-	 * line of vblank (since not the whole line is actually in
-	 * vblank). And unfortunately we can't use the interrupt to
-	 * wait here since it will fire too soon. We could use the
-	 * frame start interrupt instead since it will fire after the
-	 * critical scanline, but that would require more changes
-	 * in the interrupt code. So for now we'll just do the nasty
-	 * thing and poll for the bad scanline to pass us by.
-	 *
-	 * FIXME figure out if BXT+ DSI suffers from this as well
-	 */
-	while (need_vlv_dsi_wa && scanline == vblank_start)
-		scanline = intel_get_crtc_scanline(crtc);
 
 	crtc->debug.scanline_start = scanline;
 	crtc->debug.start_vbl_time = ktime_get();
@@ -617,27 +638,60 @@ static void dbg_vblank_evade(struct intel_crtc *crtc, ktime_t end)
 static void dbg_vblank_evade(struct intel_crtc *crtc, ktime_t end) {}
 #endif
 
+void intel_crtc_arm_vblank_event(struct intel_crtc_state *crtc_state)
+{
+	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
+	unsigned long irqflags;
+
+	if (!crtc_state->uapi.event)
+		return;
+
+	drm_WARN_ON(crtc->base.dev, drm_crtc_vblank_get(&crtc->base) != 0);
+
+	spin_lock_irqsave(&crtc->base.dev->event_lock, irqflags);
+	drm_crtc_arm_vblank_event(&crtc->base, crtc_state->uapi.event);
+	spin_unlock_irqrestore(&crtc->base.dev->event_lock, irqflags);
+
+	crtc_state->uapi.event = NULL;
+}
+
+void intel_crtc_prepare_vblank_event(struct intel_crtc_state *crtc_state,
+				     struct drm_pending_vblank_event **event)
+{
+	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
+	unsigned long irqflags;
+
+	spin_lock_irqsave(&crtc->base.dev->event_lock, irqflags);
+	*event = crtc_state->uapi.event;
+	spin_unlock_irqrestore(&crtc->base.dev->event_lock, irqflags);
+
+	crtc_state->uapi.event = NULL;
+}
+
 /**
  * intel_pipe_update_end() - end update of a set of display registers
- * @new_crtc_state: the new crtc state
+ * @state: the atomic state
+ * @crtc: the crtc
  *
  * Mark the end of an update started with intel_pipe_update_start(). This
  * re-enables interrupts and verifies the update was actually completed
  * before a vblank.
  */
-void intel_pipe_update_end(struct intel_crtc_state *new_crtc_state)
+void intel_pipe_update_end(struct intel_atomic_state *state,
+			   struct intel_crtc *crtc)
 {
-	struct intel_crtc *crtc = to_intel_crtc(new_crtc_state->uapi.crtc);
+	struct intel_display *display = to_intel_display(state);
+	struct intel_crtc_state *new_crtc_state =
+		intel_atomic_get_new_crtc_state(state, crtc);
 	enum pipe pipe = crtc->pipe;
 	int scanline_end = intel_get_crtc_scanline(crtc);
 	u32 end_vbl_count = intel_crtc_get_vblank_counter(crtc);
 	ktime_t end_vbl_time = ktime_get();
-	struct drm_i915_private *dev_priv = to_i915(crtc->base.dev);
 
-	intel_psr_unlock(new_crtc_state);
+	drm_WARN_ON(display->drm, new_crtc_state->use_dsb);
 
 	if (new_crtc_state->do_async_flip)
-		return;
+		goto out;
 
 	trace_intel_pipe_update_end(crtc, end_vbl_count, scanline_end);
 
@@ -645,7 +699,7 @@ void intel_pipe_update_end(struct intel_crtc_state *new_crtc_state)
 	 * Incase of mipi dsi command mode, we need to set frame update
 	 * request for every commit.
 	 */
-	if (DISPLAY_VER(dev_priv) >= 11 &&
+	if (DISPLAY_VER(display) >= 11 &&
 	    intel_crtc_has_type(new_crtc_state, INTEL_OUTPUT_DSI))
 		icl_dsi_frame_update(new_crtc_state);
 
@@ -657,16 +711,26 @@ void intel_pipe_update_end(struct intel_crtc_state *new_crtc_state)
 		drm_vblank_work_schedule(&new_crtc_state->vblank_work,
 					 drm_crtc_accurate_vblank_count(&crtc->base) + 1,
 					 false);
-	} else if (new_crtc_state->uapi.event) {
-		drm_WARN_ON(&dev_priv->drm,
-			    drm_crtc_vblank_get(&crtc->base) != 0);
+	} else {
+		intel_crtc_arm_vblank_event(new_crtc_state);
+	}
 
-		spin_lock(&crtc->base.dev->event_lock);
-		drm_crtc_arm_vblank_event(&crtc->base,
-					  new_crtc_state->uapi.event);
-		spin_unlock(&crtc->base.dev->event_lock);
+	if (state->base.legacy_cursor_update) {
+		struct intel_plane *plane;
+		struct intel_plane_state *old_plane_state;
+		int i;
 
-		new_crtc_state->uapi.event = NULL;
+		for_each_old_intel_plane_in_state(state, plane, old_plane_state, i) {
+			if (old_plane_state->hw.crtc == &crtc->base &&
+			    old_plane_state->unpin_work.vblank) {
+				drm_vblank_work_schedule(&old_plane_state->unpin_work,
+							 drm_crtc_accurate_vblank_count(&crtc->base) + 1,
+							 false);
+
+				/* Remove plane from atomic state, cleanup/free is done from vblank worker. */
+				memset(&state->base.planes[i], 0, sizeof(state->base.planes[i]));
+			}
+		}
 	}
 
 	/*
@@ -683,16 +747,17 @@ void intel_pipe_update_end(struct intel_crtc_state *new_crtc_state)
 	 * which would cause the next frame to terminate already at vmin
 	 * vblank start instead of vmax vblank start.
 	 */
-	intel_vrr_send_push(new_crtc_state);
+	if (!state->base.legacy_cursor_update)
+		intel_vrr_send_push(NULL, new_crtc_state);
 
 	local_irq_enable();
 
-	if (intel_vgpu_active(dev_priv))
-		return;
+	if (intel_parent_vgpu_active(display))
+		goto out;
 
 	if (crtc->debug.start_vbl_count &&
 	    crtc->debug.start_vbl_count != end_vbl_count) {
-		drm_err(&dev_priv->drm,
+		drm_err(display->drm,
 			"Atomic update failure on pipe %c (start=%u end=%u) time %lld us, min %d, max %d, scanline start %d, end %d\n",
 			pipe_name(pipe), crtc->debug.start_vbl_count,
 			end_vbl_count,
@@ -703,4 +768,93 @@ void intel_pipe_update_end(struct intel_crtc_state *new_crtc_state)
 	}
 
 	dbg_vblank_evade(crtc, end_vbl_time);
+
+out:
+	intel_psr_unlock(new_crtc_state);
+}
+
+bool intel_crtc_enable_changed(const struct intel_crtc_state *old_crtc_state,
+			       const struct intel_crtc_state *new_crtc_state)
+{
+	return old_crtc_state->hw.enable != new_crtc_state->hw.enable;
+}
+
+bool intel_any_crtc_enable_changed(struct intel_atomic_state *state)
+{
+	const struct intel_crtc_state *old_crtc_state, *new_crtc_state;
+	struct intel_crtc *crtc;
+	int i;
+
+	for_each_oldnew_intel_crtc_in_state(state, crtc, old_crtc_state,
+					    new_crtc_state, i) {
+		if (intel_crtc_enable_changed(old_crtc_state, new_crtc_state))
+			return true;
+	}
+
+	return false;
+}
+
+bool intel_crtc_active_changed(const struct intel_crtc_state *old_crtc_state,
+			       const struct intel_crtc_state *new_crtc_state)
+{
+	return old_crtc_state->hw.active != new_crtc_state->hw.active;
+}
+
+bool intel_any_crtc_active_changed(struct intel_atomic_state *state)
+{
+	const struct intel_crtc_state *old_crtc_state, *new_crtc_state;
+	struct intel_crtc *crtc;
+	int i;
+
+	for_each_oldnew_intel_crtc_in_state(state, crtc, old_crtc_state,
+					    new_crtc_state, i) {
+		if (intel_crtc_active_changed(old_crtc_state, new_crtc_state))
+			return true;
+	}
+
+	return false;
+}
+
+unsigned int intel_crtc_bw_num_active_planes(const struct intel_crtc_state *crtc_state)
+{
+	/*
+	 * We assume cursors are small enough
+	 * to not cause bandwidth problems.
+	 */
+	return hweight8(crtc_state->active_planes & ~BIT(PLANE_CURSOR));
+}
+
+unsigned int intel_crtc_bw_data_rate(const struct intel_crtc_state *crtc_state)
+{
+	struct intel_display *display = to_intel_display(crtc_state);
+	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
+	unsigned int data_rate = 0;
+	enum plane_id plane_id;
+
+	for_each_plane_id_on_crtc(crtc, plane_id) {
+		/*
+		 * We assume cursors are small enough
+		 * to not cause bandwidth problems.
+		 */
+		if (plane_id == PLANE_CURSOR)
+			continue;
+
+		data_rate += crtc_state->data_rate[plane_id];
+
+		if (DISPLAY_VER(display) < 11)
+			data_rate += crtc_state->data_rate_y[plane_id];
+	}
+
+	return data_rate;
+}
+
+/* "Maximum Pipe Read Bandwidth" */
+int intel_crtc_bw_min_cdclk(const struct intel_crtc_state *crtc_state)
+{
+	struct intel_display *display = to_intel_display(crtc_state);
+
+	if (DISPLAY_VER(display) < 12)
+		return 0;
+
+	return DIV_ROUND_UP_ULL(mul_u32_u32(intel_crtc_bw_data_rate(crtc_state), 10), 512);
 }

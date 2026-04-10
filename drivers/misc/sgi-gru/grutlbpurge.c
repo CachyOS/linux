@@ -65,7 +65,6 @@ static struct gru_tlb_global_handle *get_lock_tgh_handle(struct gru_state
 	struct gru_tlb_global_handle *tgh;
 	int n;
 
-	preempt_disable();
 	if (uv_numa_blade_id() == gru->gs_blade_id)
 		n = get_on_blade_tgh(gru);
 	else
@@ -79,7 +78,6 @@ static struct gru_tlb_global_handle *get_lock_tgh_handle(struct gru_state
 static void get_unlock_tgh_handle(struct gru_tlb_global_handle *tgh)
 {
 	unlock_tgh_handle(tgh);
-	preempt_enable();
 }
 
 /*
@@ -239,7 +237,7 @@ static struct mmu_notifier *gru_alloc_notifier(struct mm_struct *mm)
 {
 	struct gru_mm_struct *gms;
 
-	gms = kzalloc(sizeof(*gms), GFP_KERNEL);
+	gms = kzalloc_obj(*gms);
 	if (!gms)
 		return ERR_PTR(-ENOMEM);
 	STAT(gms_alloc);

@@ -15,7 +15,6 @@
 #include <linux/delay.h>
 #include <linux/mfd/core.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
@@ -110,7 +109,6 @@ static const char *wm8958_main_supplies[] = {
 	"SPKVDD2",
 };
 
-#ifdef CONFIG_PM
 static int wm8994_suspend(struct device *dev)
 {
 	struct wm8994 *wm8994 = dev_get_drvdata(dev);
@@ -213,7 +211,6 @@ err_enable:
 
 	return ret;
 }
-#endif
 
 #ifdef CONFIG_REGULATOR
 static int wm8994_ldo_in_use(struct wm8994_pdata *pdata, int ldo)
@@ -281,20 +278,11 @@ static int wm8994_set_pdata_from_of(struct wm8994 *wm8994)
 	of_property_read_u32_array(np, "wlf,micbias-cfg", pdata->micbias,
 				   ARRAY_SIZE(pdata->micbias));
 
-	pdata->lineout1_diff = true;
-	pdata->lineout2_diff = true;
-	if (of_find_property(np, "wlf,lineout1-se", NULL))
-		pdata->lineout1_diff = false;
-	if (of_find_property(np, "wlf,lineout2-se", NULL))
-		pdata->lineout2_diff = false;
-
-	if (of_find_property(np, "wlf,lineout1-feedback", NULL))
-		pdata->lineout1fb = true;
-	if (of_find_property(np, "wlf,lineout2-feedback", NULL))
-		pdata->lineout2fb = true;
-
-	if (of_find_property(np, "wlf,ldoena-always-driven", NULL))
-		pdata->lineout2fb = true;
+	pdata->lineout1_diff = !of_property_read_bool(np, "wlf,lineout1-se");
+	pdata->lineout2_diff = !of_property_read_bool(np, "wlf,lineout2-se");
+	pdata->lineout1fb = of_property_read_bool(np, "wlf,lineout1-feedback");
+	pdata->lineout2fb = of_property_read_bool(np, "wlf,lineout2-feedback") ||
+		of_property_read_bool(np, "wlf,ldoena-always-driven");
 
 	pdata->spkmode_pu = of_property_read_bool(np, "wlf,spkmode-pu");
 
@@ -330,8 +318,6 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 	ret = wm8994_set_pdata_from_of(wm8994);
 	if (ret != 0)
 		return ret;
-
-	dev_set_drvdata(wm8994->dev, wm8994);
 
 	/* Add the on-chip regulators first for bootstrapping */
 	ret = mfd_add_devices(wm8994->dev, 0,
@@ -623,10 +609,8 @@ static const struct of_device_id wm8994_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, wm8994_of_match);
 
-static int wm8994_i2c_probe(struct i2c_client *i2c,
-				      const struct i2c_device_id *id)
+static int wm8994_i2c_probe(struct i2c_client *i2c)
 {
-	const struct of_device_id *of_id;
 	struct wm8994 *wm8994;
 	int ret;
 
@@ -638,13 +622,7 @@ static int wm8994_i2c_probe(struct i2c_client *i2c,
 	wm8994->dev = &i2c->dev;
 	wm8994->irq = i2c->irq;
 
-	if (i2c->dev.of_node) {
-		of_id = of_match_device(wm8994_of_match, &i2c->dev);
-		if (of_id)
-			wm8994->type = (enum wm8994_type)of_id->data;
-	} else {
-		wm8994->type = id->driver_data;
-	}
+	wm8994->type = (kernel_ulong_t)i2c_get_match_data(i2c);
 
 	wm8994->regmap = devm_regmap_init_i2c(i2c, &wm8994_base_regmap_config);
 	if (IS_ERR(wm8994->regmap)) {
@@ -657,13 +635,11 @@ static int wm8994_i2c_probe(struct i2c_client *i2c,
 	return wm8994_device_init(wm8994, i2c->irq);
 }
 
-static int wm8994_i2c_remove(struct i2c_client *i2c)
+static void wm8994_i2c_remove(struct i2c_client *i2c)
 {
 	struct wm8994 *wm8994 = i2c_get_clientdata(i2c);
 
 	wm8994_device_exit(wm8994);
-
-	return 0;
 }
 
 static const struct i2c_device_id wm8994_i2c_id[] = {
@@ -676,13 +652,13 @@ static const struct i2c_device_id wm8994_i2c_id[] = {
 MODULE_DEVICE_TABLE(i2c, wm8994_i2c_id);
 
 static const struct dev_pm_ops wm8994_pm_ops = {
-	SET_RUNTIME_PM_OPS(wm8994_suspend, wm8994_resume, NULL)
+	RUNTIME_PM_OPS(wm8994_suspend, wm8994_resume, NULL)
 };
 
 static struct i2c_driver wm8994_i2c_driver = {
 	.driver = {
 		.name = "wm8994",
-		.pm = &wm8994_pm_ops,
+		.pm = pm_ptr(&wm8994_pm_ops),
 		.of_match_table = wm8994_of_match,
 	},
 	.probe = wm8994_i2c_probe,

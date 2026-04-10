@@ -9,7 +9,7 @@
 #include <linux/i2c.h>
 #include <linux/mfd/core.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/reboot.h>
 #include <linux/regmap.h>
 
@@ -169,7 +169,7 @@ static int a500_ec_probe(struct i2c_client *client)
 	return 0;
 }
 
-static int a500_ec_remove(struct i2c_client *client)
+static void a500_ec_remove(struct i2c_client *client)
 {
 	if (of_device_is_system_power_controller(client->dev.of_node)) {
 		if (pm_power_off == a500_ec_poweroff)
@@ -177,8 +177,6 @@ static int a500_ec_remove(struct i2c_client *client)
 
 		unregister_restart_handler(&a500_ec_restart_handler);
 	}
-
-	return 0;
 }
 
 static const struct of_device_id a500_ec_match[] = {
@@ -192,7 +190,7 @@ static struct i2c_driver a500_ec_driver = {
 		.name = "acer-a500-embedded-controller",
 		.of_match_table = a500_ec_match,
 	},
-	.probe_new = a500_ec_probe,
+	.probe = a500_ec_probe,
 	.remove = a500_ec_remove,
 };
 module_i2c_driver(a500_ec_driver);

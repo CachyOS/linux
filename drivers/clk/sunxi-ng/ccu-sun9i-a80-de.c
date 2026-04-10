@@ -177,7 +177,7 @@ static struct clk_hw_onecell_data sun9i_a80_de_hw_clks = {
 	.num	= CLK_NUMBER,
 };
 
-static struct ccu_reset_map sun9i_a80_de_resets[] = {
+static const struct ccu_reset_map sun9i_a80_de_resets[] = {
 	[RST_FE0]	= { 0x0c, BIT(0) },
 	[RST_FE1]	= { 0x0c, BIT(1) },
 	[RST_FE2]	= { 0x0c, BIT(2) },
@@ -213,21 +213,14 @@ static int sun9i_a80_de_clk_probe(struct platform_device *pdev)
 		return PTR_ERR(reg);
 
 	bus_clk = devm_clk_get(&pdev->dev, "bus");
-	if (IS_ERR(bus_clk)) {
-		ret = PTR_ERR(bus_clk);
-		if (ret != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "Couldn't get bus clk: %d\n", ret);
-		return ret;
-	}
+	if (IS_ERR(bus_clk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(bus_clk),
+				     "Couldn't get bus clk\n");
 
 	rstc = devm_reset_control_get_exclusive(&pdev->dev, NULL);
-	if (IS_ERR(rstc)) {
-		ret = PTR_ERR(rstc);
-		if (ret != -EPROBE_DEFER)
-			dev_err(&pdev->dev,
-				"Couldn't get reset control: %d\n", ret);
-		return ret;
-	}
+	if (IS_ERR(rstc))
+		return dev_err_probe(&pdev->dev, PTR_ERR(rstc),
+				     "Couldn't get reset control\n");
 
 	/* The bus clock needs to be enabled for us to access the registers */
 	ret = clk_prepare_enable(bus_clk);
@@ -261,6 +254,7 @@ static const struct of_device_id sun9i_a80_de_clk_ids[] = {
 	{ .compatible = "allwinner,sun9i-a80-de-clks" },
 	{ }
 };
+MODULE_DEVICE_TABLE(of, sun9i_a80_de_clk_ids);
 
 static struct platform_driver sun9i_a80_de_clk_driver = {
 	.probe	= sun9i_a80_de_clk_probe,
@@ -272,5 +266,6 @@ static struct platform_driver sun9i_a80_de_clk_driver = {
 };
 module_platform_driver(sun9i_a80_de_clk_driver);
 
-MODULE_IMPORT_NS(SUNXI_CCU);
+MODULE_IMPORT_NS("SUNXI_CCU");
+MODULE_DESCRIPTION("Support for the Allwinner A80 Display Engine CCU");
 MODULE_LICENSE("GPL");

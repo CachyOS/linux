@@ -13,8 +13,8 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/nvmem-provider.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 
 /*
@@ -145,6 +145,7 @@ disable_clk:
 
 static struct nvmem_config sp_ocotp_nvmem_config = {
 	.name = "sp-ocotp",
+	.add_legacy_fixed_of_cells = true,
 	.read_only = true,
 	.word_size = 1,
 	.size = QAC628_OTP_SIZE,
@@ -158,7 +159,6 @@ static int sp_ocotp_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct nvmem_device *nvmem;
 	struct sp_ocotp_priv *otp;
-	struct resource *res;
 	int ret;
 
 	otp = devm_kzalloc(dev, sizeof(*otp), GFP_KERNEL);
@@ -167,13 +167,11 @@ static int sp_ocotp_probe(struct platform_device *pdev)
 
 	otp->dev = dev;
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "hb_gpio");
-	otp->base[HB_GPIO] = devm_ioremap_resource(dev, res);
+	otp->base[HB_GPIO] = devm_platform_ioremap_resource_byname(pdev, "hb_gpio");
 	if (IS_ERR(otp->base[HB_GPIO]))
 		return PTR_ERR(otp->base[HB_GPIO]);
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "otprx");
-	otp->base[OTPRX] = devm_ioremap_resource(dev, res);
+	otp->base[OTPRX] = devm_platform_ioremap_resource_byname(pdev, "otprx");
 	if (IS_ERR(otp->base[OTPRX]))
 		return PTR_ERR(otp->base[OTPRX]);
 
@@ -192,9 +190,11 @@ static int sp_ocotp_probe(struct platform_device *pdev)
 	sp_ocotp_nvmem_config.dev = dev;
 
 	nvmem = devm_nvmem_register(dev, &sp_ocotp_nvmem_config);
-	if (IS_ERR(nvmem))
-		return dev_err_probe(&pdev->dev, PTR_ERR(nvmem),
+	if (IS_ERR(nvmem)) {
+		ret = dev_err_probe(&pdev->dev, PTR_ERR(nvmem),
 						"register nvmem device fail\n");
+		goto err;
+	}
 
 	platform_set_drvdata(pdev, nvmem);
 
@@ -203,6 +203,9 @@ static int sp_ocotp_probe(struct platform_device *pdev)
 		(int)OTP_WORD_SIZE, (int)QAC628_OTP_SIZE);
 
 	return 0;
+err:
+	clk_unprepare(otp->clk);
+	return ret;
 }
 
 static const struct of_device_id sp_ocotp_dt_ids[] = {

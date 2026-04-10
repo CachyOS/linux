@@ -5,6 +5,7 @@
 
 /dts-v1/;
 #include "rk3399-puma.dtsi"
+#include <dt-bindings/input/input.h>
 
 / {
 	model = "Theobroma Systems RK3399-Q7 SoM";
@@ -16,6 +17,44 @@
 
 	chosen {
 		stdout-path = "serial0:115200n8";
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-0 = <&haikou_keys_pin>;
+		pinctrl-names = "default";
+
+		button-batlow-n {
+			gpios = <&gpio0 RK_PB2 GPIO_ACTIVE_LOW>;
+			label = "BATLOW#";
+			linux,code = <KEY_BATTERY>;
+		};
+
+		button-pwrbtn-n {
+			gpios = <&gpio0 RK_PA1 GPIO_ACTIVE_LOW>;
+			label = "PWRBTN#";
+			linux,code = <KEY_POWER>;
+		};
+
+		button-slp-btn-n {
+			gpios = <&gpio0 RK_PB3 GPIO_ACTIVE_LOW>;
+			label = "SLP_BTN#";
+			linux,code = <KEY_SLEEP>;
+		};
+
+		button-wake-n {
+			gpios = <&gpio0 RK_PB1 GPIO_ACTIVE_LOW>;
+			label = "WAKE#";
+			linux,code = <KEY_WAKEUP>;
+			wakeup-source;
+		};
+
+		switch-lid-btn-n {
+			gpios = <&gpio0 RK_PA4 GPIO_ACTIVE_LOW>;
+			label = "LID_BTN#";
+			linux,code = <SW_LID>;
+			linux,input-type = <EV_SW>;
+		};
 	};
 
 	leds {
@@ -49,10 +88,10 @@
 	sgtl5000_clk: sgtl5000-oscillator  {
 			compatible = "fixed-clock";
 			#clock-cells = <0>;
-			clock-frequency  = <24576000>;
+			clock-frequency = <24576000>;
 	};
 
-	dc_12v: dc-12v {
+	dc_12v: regulator-dc-12v {
 		compatible = "regulator-fixed";
 		regulator-name = "dc_12v";
 		regulator-always-on;
@@ -61,7 +100,7 @@
 		regulator-max-microvolt = <12000000>;
 	};
 
-	vcc3v3_baseboard: vcc3v3-baseboard {
+	vcc3v3_baseboard: regulator-vcc3v3-baseboard {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc3v3_baseboard";
 		regulator-always-on;
@@ -71,7 +110,7 @@
 		vin-supply = <&dc_12v>;
 	};
 
-	vcc5v0_baseboard: vcc5v0-baseboard {
+	vcc5v0_baseboard: regulator-vcc5v0-baseboard {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc5v0_baseboard";
 		regulator-always-on;
@@ -81,7 +120,7 @@
 		vin-supply = <&dc_12v>;
 	};
 
-	vcc5v0_otg: vcc5v0-otg-regulator {
+	vcc5v0_otg: regulator-vcc5v0-otg {
 		compatible = "regulator-fixed";
 		enable-active-high;
 		gpio = <&gpio0 RK_PA2 GPIO_ACTIVE_HIGH>;
@@ -91,7 +130,7 @@
 		regulator-always-on;
 	};
 
-	vdda_codec: vdda-codec {
+	vdda_codec: regulator-vdda-codec {
 		compatible = "regulator-fixed";
 		regulator-name = "vdda_codec";
 		regulator-boot-on;
@@ -100,7 +139,7 @@
 		vin-supply = <&vcc5v0_baseboard>;
 	};
 
-	vddd_codec: vddd-codec {
+	vddd_codec: regulator-vddd-codec {
 		compatible = "regulator-fixed";
 		regulator-name = "vddd_codec";
 		regulator-boot-on;
@@ -110,8 +149,15 @@
 	};
 };
 
+&gmac {
+	status = "okay";
+};
+
 &hdmi {
-	ddc-i2c-bus = <&i2c3>;
+	status = "okay";
+};
+
+&hdmi_sound {
 	status = "okay";
 };
 
@@ -147,9 +193,22 @@
 	};
 };
 
-&i2c6 {
+&i2c7 {
+	eeprom@50 {
+		reg = <0x50>;
+		compatible = "atmel,24c01";
+		pagesize = <8>;
+		size = <128>;
+		vcc-supply = <&vcc3v3_baseboard>;
+	};
+};
+
+&i2s0 {
 	status = "okay";
-	clock-frequency = <400000>;
+};
+
+&i2s2 {
+	status = "okay";
 };
 
 &pcie_phy {
@@ -161,23 +220,24 @@
 	num-lanes = <4>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&pcie_clkreqn_cpm>;
+	vpcie3v3-supply = <&vcc3v3_baseboard>;
+	vpcie12v-supply = <&dc_12v>;
 	status = "okay";
 };
 
 &pinctrl {
-	pinctrl-names = "default";
-	pinctrl-0 = <&haikou_pin_hog>;
-
-	hog {
-		haikou_pin_hog: haikou-pin-hog {
+	buttons {
+		haikou_keys_pin: haikou-keys-pin {
 			rockchip,pins =
+			  /* PWRBTN# */
+			  <0 RK_PA1 RK_FUNC_GPIO &pcfg_pull_up>,
 			  /* LID_BTN */
 			  <0 RK_PA4 RK_FUNC_GPIO &pcfg_pull_up>,
 			  /* BATLOW# */
 			  <0 RK_PB2 RK_FUNC_GPIO &pcfg_pull_up>,
 			  /* SLP_BTN# */
 			  <0 RK_PB3 RK_FUNC_GPIO &pcfg_pull_up>,
-			  /* BIOS_DISABLE# */
+			  /* WAKE# */
 			  <0 RK_PB1 RK_FUNC_GPIO &pcfg_pull_up>;
 		};
 	};
@@ -207,7 +267,7 @@
 	cap-sd-highspeed;
 	cd-gpios = <&gpio0 RK_PA7 GPIO_ACTIVE_LOW>;
 	disable-wp;
-	max-frequency = <150000000>;
+	max-frequency = <40000000>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&sdmmc_clk &sdmmc_cmd &sdmmc_cd &sdmmc_bus4>;
 	vmmc-supply = <&vcc3v3_baseboard>;
@@ -243,19 +303,12 @@
 
 &uart0 {
 	pinctrl-names = "default";
-	pinctrl-0 = <&uart0_xfer &uart0_cts &uart0_rts>;
+	pinctrl-0 = <&uart0_xfer>;
 	status = "okay";
 };
 
 &uart2 {
-	status = "okay";
-};
-
-&usb_host0_ehci {
-	status = "okay";
-};
-
-&usb_host0_ohci {
+	rts-gpios = <&gpio2 RK_PC3 GPIO_ACTIVE_HIGH>;
 	status = "okay";
 };
 

@@ -19,6 +19,7 @@
 
 #include <linux/skbuff.h>
 #include <linux/fs.h>
+#include <linux/hex.h>
 #include <linux/vmalloc.h>
 #include <linux/export.h>
 
@@ -1793,8 +1794,6 @@ int ath6kl_debug_init_fs(struct ath6kl *ar)
 {
 	ar->debugfs_phy = debugfs_create_dir("ath6kl",
 					     ar->wiphy->debugfsdir);
-	if (!ar->debugfs_phy)
-		return -ENOMEM;
 
 	debugfs_create_file("tgt_stats", 0400, ar->debugfs_phy, ar,
 			    &fops_tgt_stats);

@@ -39,7 +39,7 @@ struct nv04_fence_priv {
 static int
 nv04_fence_emit(struct nouveau_fence *fence)
 {
-	struct nvif_push *push = fence->channel->chan.push;
+	struct nvif_push *push = &unrcu_pointer(fence->channel)->chan.push;
 	int ret = PUSH_WAIT(push, 2);
 	if (ret == 0) {
 		PUSH_NVSQ(push, NV_SW, 0x0150, fence->base.seqno);
@@ -76,7 +76,7 @@ nv04_fence_context_del(struct nouveau_channel *chan)
 static int
 nv04_fence_context_new(struct nouveau_channel *chan)
 {
-	struct nv04_fence_chan *fctx = kzalloc(sizeof(*fctx), GFP_KERNEL);
+	struct nv04_fence_chan *fctx = kzalloc_obj(*fctx);
 	if (fctx) {
 		nouveau_fence_context_new(chan, &fctx->base);
 		fctx->base.emit = nv04_fence_emit;
@@ -101,7 +101,7 @@ nv04_fence_create(struct nouveau_drm *drm)
 {
 	struct nv04_fence_priv *priv;
 
-	priv = drm->fence = kzalloc(sizeof(*priv), GFP_KERNEL);
+	priv = drm->fence = kzalloc_obj(*priv);
 	if (!priv)
 		return -ENOMEM;
 

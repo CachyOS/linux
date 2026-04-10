@@ -61,7 +61,7 @@ static int create_bbt(struct mtd_info *mtd, uint8_t *buf, struct nand_bbt_descr 
 	int startblock;
 	loff_t from;
 	size_t readlen;
-	struct mtd_oob_ops ops;
+	struct mtd_oob_ops ops = { };
 	int rgn;
 
 	printk(KERN_INFO "Scanning device for bad blocks\n");
@@ -231,7 +231,7 @@ int onenand_default_bbt(struct mtd_info *mtd)
 	struct onenand_chip *this = mtd->priv;
 	struct bbm_info *bbm;
 
-	this->bbm = kzalloc(sizeof(struct bbm_info), GFP_KERNEL);
+	this->bbm = kzalloc_obj(struct bbm_info);
 	if (!this->bbm)
 		return -ENOMEM;
 

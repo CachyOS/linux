@@ -31,11 +31,21 @@ kselftest runs as a userspace process.  Tests that can be written/run in
 userspace may wish to use the `Test Harness`_.  Tests that need to be
 run in kernel space may wish to use a `Test Module`_.
 
+Documentation on the tests
+==========================
+
+For documentation on the kselftests themselves, see:
+
+.. toctree::
+
+   testing-devices
+
 Running the selftests (hotplug tests are run in limited mode)
 =============================================================
 
 To build the tests::
 
+  $ make headers
   $ make -C tools/testing/selftests
 
 To run the tests::
@@ -111,7 +121,7 @@ You can specify multiple tests to skip::
 You can also specify a restricted list of tests to run together with a
 dedicated skiplist::
 
-  $  make TARGETS="bpf breakpoints size timers" SKIP_TARGETS=bpf kselftest
+  $  make TARGETS="breakpoints size timers" SKIP_TARGETS=size kselftest
 
 See the top-level tools/testing/selftests/Makefile for the list of all
 possible targets.
@@ -164,9 +174,31 @@ To see the list of available tests, the `-l` option can be used::
 The `-c` option can be used to run all the tests from a test collection, or
 the `-t` option for specific single tests. Either can be used multiple times::
 
-   $ ./run_kselftest.sh -c bpf -c seccomp -t timers:posix_timers -t timer:nanosleep
+   $ ./run_kselftest.sh -c size -c seccomp -t timers:posix_timers -t timer:nanosleep
 
 For other features see the script usage output, seen with the `-h` option.
+
+Timeout for selftests
+=====================
+
+Selftests are designed to be quick and so a default timeout is used of 45
+seconds for each test. Tests can override the default timeout by adding
+a settings file in their directory and set a timeout variable there to the
+configured a desired upper timeout for the test. Only a few tests override
+the timeout with a value higher than 45 seconds, selftests strives to keep
+it that way. Timeouts in selftests are not considered fatal because the
+system under which a test runs may change and this can also modify the
+expected time it takes to run a test. If you have control over the systems
+which will run the tests you can configure a test runner on those systems to
+use a greater or lower timeout on the command line as with the `-o` or
+the `--override-timeout` argument. For example to use 165 seconds instead
+one would use::
+
+   $ ./run_kselftest.sh --override-timeout 165
+
+You can look at the TAP output to see if you ran into the timeout. Test
+runners which know a test must run under a specific time can then optionally
+treat these timeouts then as fatal.
 
 Packaging selftests
 ===================
@@ -187,7 +219,7 @@ option is supported, such as::
 tests by using variables specified in `Running a subset of selftests`_
 section::
 
-    $ make -C tools/testing/selftests gen_tar TARGETS="bpf" FORMAT=.xz
+    $ make -C tools/testing/selftests gen_tar TARGETS="size" FORMAT=.xz
 
 .. _tar's auto-compress: https://www.gnu.org/software/tar/manual/html_node/gzip.html#auto_002dcompress
 
@@ -205,14 +237,33 @@ In general, the rules for selftests are
  * Don't cause the top-level "make run_tests" to fail if your feature is
    unconfigured.
 
+ * The output of tests must conform to the TAP standard to ensure high
+   testing quality and to capture failures/errors with specific details.
+   The kselftest.h and kselftest_harness.h headers provide wrappers for
+   outputting test results. These wrappers should be used for pass,
+   fail, exit, and skip messages. CI systems can easily parse TAP output
+   messages to detect test results.
+
 Contributing new tests (details)
 ================================
+
+ * In your Makefile, use facilities from lib.mk by including it instead of
+   reinventing the wheel. Specify flags and binaries generation flags on
+   need basis before including lib.mk. ::
+
+    CFLAGS = $(KHDR_INCLUDES)
+    TEST_GEN_PROGS := close_range_test
+    include ../lib.mk
 
  * Use TEST_GEN_XXX if such binaries or files are generated during
    compiling.
 
    TEST_PROGS, TEST_GEN_PROGS mean it is the executable tested by
    default.
+
+   TEST_GEN_MODS_DIR should be used by tests that require modules to be built
+   before the test starts. The variable will contain the name of the directory
+   containing the modules.
 
    TEST_CUSTOM_PROGS should be used by tests that require custom build
    rules and prevent common build rule use.
@@ -224,18 +275,47 @@ Contributing new tests (details)
 
    TEST_PROGS_EXTENDED, TEST_GEN_PROGS_EXTENDED mean it is the
    executable which is not tested by default.
+
    TEST_FILES, TEST_GEN_FILES mean it is the file which is used by
    test.
+
+   TEST_INCLUDES is similar to TEST_FILES, it lists files which should be
+   included when exporting or installing the tests, with the following
+   differences:
+
+    * symlinks to files in other directories are preserved
+    * the part of paths below tools/testing/selftests/ is preserved when
+      copying the files to the output directory
+
+   TEST_INCLUDES is meant to list dependencies located in other directories of
+   the selftests hierarchy.
 
  * First use the headers inside the kernel source and/or git repo, and then the
    system headers.  Headers for the kernel release as opposed to headers
    installed by the distro on the system should be the primary focus to be able
-   to find regressions.
+   to find regressions. Use KHDR_INCLUDES in Makefile to include headers from
+   the kernel source.
 
  * If a test needs specific kernel config options enabled, add a config file in
    the test directory to enable them.
 
    e.g: tools/testing/selftests/android/config
+
+ * Create a .gitignore file inside test directory and add all generated objects
+   in it.
+
+ * Add new test name in TARGETS in selftests/Makefile::
+
+    TARGETS += android
+
+ * All changes should pass::
+
+    kselftest-{all,install,clean,gen_tar}
+    kselftest-{all,install,clean,gen_tar} O=abo_path
+    kselftest-{all,install,clean,gen_tar} O=rel_path
+    make -C tools/testing/selftests {all,install,clean,gen_tar}
+    make -C tools/testing/selftests {all,install,clean,gen_tar} O=abs_path
+    make -C tools/testing/selftests {all,install,clean,gen_tar} O=rel_path
 
 Test Module
 ===========
@@ -250,6 +330,14 @@ assist writing kernel modules that are for use with kselftest:
 - ``tools/testing/selftests/kselftest_module.h``
 - ``tools/testing/selftests/kselftest/module.sh``
 
+Note that test modules should taint the kernel with TAINT_TEST. This will
+happen automatically for modules which are in the ``tools/testing/``
+directory, or for modules which use the ``kselftest_module.h`` header above.
+Otherwise, you'll need to add ``MODULE_INFO(test, "Y")`` to your module
+source. selftests which do not load modules typically should not taint the
+kernel, but in cases where a non-test module is loaded, TEST_TAINT can be
+applied from userspace by writing to ``/proc/sys/kernel/tainted``.
+
 How to use
 ----------
 
@@ -259,7 +347,7 @@ kselftest.  We use kselftests for lib/ as an example.
 1. Create the test module
 
 2. Create the test script that will run (load/unload) the module
-   e.g. ``tools/testing/selftests/lib/printf.sh``
+   e.g. ``tools/testing/selftests/lib/bitmap.sh``
 
 3. Add line to config file e.g. ``tools/testing/selftests/lib/config``
 
@@ -287,7 +375,7 @@ A bare bones test module might look like this:
 
    #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-   #include "../tools/testing/selftests/kselftest/module.h"
+   #include "../tools/testing/selftests/kselftest_module.h"
 
    KSTM_MODULE_GLOBALS();
 
@@ -308,6 +396,7 @@ A bare bones test module might look like this:
    KSTM_MODULE_LOADERS(test_foo);
    MODULE_AUTHOR("John Developer <jd@fooman.org>");
    MODULE_LICENSE("GPL");
+   MODULE_INFO(test, "Y");
 
 Example test script
 -------------------

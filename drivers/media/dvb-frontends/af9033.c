@@ -1049,8 +1049,7 @@ static const struct dvb_frontend_ops af9033_ops = {
 	.i2c_gate_ctrl = af9033_i2c_gate_ctrl,
 };
 
-static int af9033_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int af9033_probe(struct i2c_client *client)
 {
 	struct af9033_config *cfg = client->dev.platform_data;
 	struct af9033_dev *dev;
@@ -1063,7 +1062,7 @@ static int af9033_probe(struct i2c_client *client,
 	};
 
 	/* Allocate memory for the internal state */
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	dev = kzalloc_obj(*dev);
 	if (!dev) {
 		ret = -ENOMEM;
 		goto err;
@@ -1163,7 +1162,7 @@ err:
 	return ret;
 }
 
-static int af9033_remove(struct i2c_client *client)
+static void af9033_remove(struct i2c_client *client)
 {
 	struct af9033_dev *dev = i2c_get_clientdata(client);
 
@@ -1171,12 +1170,10 @@ static int af9033_remove(struct i2c_client *client)
 
 	regmap_exit(dev->regmap);
 	kfree(dev);
-
-	return 0;
 }
 
 static const struct i2c_device_id af9033_id_table[] = {
-	{"af9033", 0},
+	{ "af9033" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, af9033_id_table);

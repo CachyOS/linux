@@ -17,6 +17,7 @@
 #include "fanotify/fanotify.h"
 #include "fdinfo.h"
 #include "fsnotify.h"
+#include "../internal.h"
 
 #if defined(CONFIG_PROC_FS)
 
@@ -41,29 +42,28 @@ static void show_fdinfo(struct seq_file *m, struct file *f,
 #if defined(CONFIG_EXPORTFS)
 static void show_mark_fhandle(struct seq_file *m, struct inode *inode)
 {
-	struct {
-		struct file_handle handle;
-		u8 pad[MAX_HANDLE_SZ];
-	} f;
+	DEFINE_FLEX(struct file_handle, f, f_handle, handle_bytes, MAX_HANDLE_SZ);
 	int size, ret, i;
 
-	f.handle.handle_bytes = sizeof(f.pad);
-	size = f.handle.handle_bytes >> 2;
+	size = f->handle_bytes >> 2;
 
-	ret = exportfs_encode_inode_fh(inode, (struct fid *)f.handle.f_handle, &size, NULL);
-	if ((ret == FILEID_INVALID) || (ret < 0)) {
-		WARN_ONCE(1, "Can't encode file handler for inotify: %d\n", ret);
+	if (!super_trylock_shared(inode->i_sb))
 		return;
-	}
 
-	f.handle.handle_type = ret;
-	f.handle.handle_bytes = size * sizeof(u32);
+	ret = exportfs_encode_fid(inode, (struct fid *)f->f_handle, &size);
+	up_read(&inode->i_sb->s_umount);
+
+	if ((ret == FILEID_INVALID) || (ret < 0))
+		return;
+
+	f->handle_type = ret;
+	f->handle_bytes = size * sizeof(u32);
 
 	seq_printf(m, "fhandle-bytes:%x fhandle-type:%x f_handle:",
-		   f.handle.handle_bytes, f.handle.handle_type);
+		   f->handle_bytes, f->handle_type);
 
-	for (i = 0; i < f.handle.handle_bytes; i++)
-		seq_printf(m, "%02x", (int)f.handle.f_handle[i]);
+	for (i = 0; i < f->handle_bytes; i++)
+		seq_printf(m, "%02x", (int)f->f_handle[i]);
 }
 #else
 static void show_mark_fhandle(struct seq_file *m, struct inode *inode)
@@ -113,7 +113,7 @@ static void fanotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
 			return;
 		seq_printf(m, "fanotify ino:%lx sdev:%x mflags:%x mask:%x ignored_mask:%x ",
 			   inode->i_ino, inode->i_sb->s_dev,
-			   mflags, mark->mask, mark->ignored_mask);
+			   mflags, mark->mask, mark->ignore_mask);
 		show_mark_fhandle(m, inode);
 		seq_putc(m, '\n');
 		iput(inode);
@@ -121,12 +121,17 @@ static void fanotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
 		struct mount *mnt = fsnotify_conn_mount(mark->connector);
 
 		seq_printf(m, "fanotify mnt_id:%x mflags:%x mask:%x ignored_mask:%x\n",
-			   mnt->mnt_id, mflags, mark->mask, mark->ignored_mask);
+			   mnt->mnt_id, mflags, mark->mask, mark->ignore_mask);
 	} else if (mark->connector->type == FSNOTIFY_OBJ_TYPE_SB) {
 		struct super_block *sb = fsnotify_conn_sb(mark->connector);
 
 		seq_printf(m, "fanotify sdev:%x mflags:%x mask:%x ignored_mask:%x\n",
-			   sb->s_dev, mflags, mark->mask, mark->ignored_mask);
+			   sb->s_dev, mflags, mark->mask, mark->ignore_mask);
+	} else if (mark->connector->type == FSNOTIFY_OBJ_TYPE_MNTNS) {
+		struct mnt_namespace *mnt_ns = fsnotify_conn_mntns(mark->connector);
+
+		seq_printf(m, "fanotify mnt_ns:%u mflags:%x mask:%x ignored_mask:%x\n",
+			   mnt_ns->ns.inum, mflags, mark->mask, mark->ignore_mask);
 	}
 }
 

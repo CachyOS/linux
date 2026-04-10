@@ -17,7 +17,7 @@
 #include "vpu_helpers.h"
 
 static const u8 colorprimaries[] = {
-	0,
+	V4L2_COLORSPACE_LAST,
 	V4L2_COLORSPACE_REC709,         /*Rec. ITU-R BT.709-6*/
 	0,
 	0,
@@ -31,7 +31,7 @@ static const u8 colorprimaries[] = {
 };
 
 static const u8 colortransfers[] = {
-	0,
+	V4L2_XFER_FUNC_LAST,
 	V4L2_XFER_FUNC_709,             /*Rec. ITU-R BT.709-6*/
 	0,
 	0,
@@ -53,7 +53,7 @@ static const u8 colortransfers[] = {
 };
 
 static const u8 colormatrixcoefs[] = {
-	0,
+	V4L2_YCBCR_ENC_LAST,
 	V4L2_YCBCR_ENC_709,              /*Rec. ITU-R BT.709-6*/
 	0,
 	0,
@@ -107,77 +107,4 @@ u32 vpu_color_cvrt_full_range_i2v(u32 full_range)
 		return V4L2_QUANTIZATION_FULL_RANGE;
 
 	return V4L2_QUANTIZATION_LIM_RANGE;
-}
-
-int vpu_color_check_primaries(u32 primaries)
-{
-	return vpu_color_cvrt_primaries_v2i(primaries) ? 0 : -EINVAL;
-}
-
-int vpu_color_check_transfers(u32 transfers)
-{
-	return vpu_color_cvrt_transfers_v2i(transfers) ? 0 : -EINVAL;
-}
-
-int vpu_color_check_matrix(u32 matrix)
-{
-	return vpu_color_cvrt_matrix_v2i(matrix) ? 0 : -EINVAL;
-}
-
-int vpu_color_check_full_range(u32 full_range)
-{
-	int ret = -EINVAL;
-
-	switch (full_range) {
-	case V4L2_QUANTIZATION_FULL_RANGE:
-	case V4L2_QUANTIZATION_LIM_RANGE:
-		ret = 0;
-		break;
-	default:
-		break;
-	}
-
-	return ret;
-}
-
-int vpu_color_get_default(u32 primaries, u32 *ptransfers, u32 *pmatrix, u32 *pfull_range)
-{
-	u32 transfers;
-	u32 matrix;
-	u32 full_range;
-
-	switch (primaries) {
-	case V4L2_COLORSPACE_REC709:
-		transfers = V4L2_XFER_FUNC_709;
-		matrix = V4L2_YCBCR_ENC_709;
-		break;
-	case V4L2_COLORSPACE_470_SYSTEM_M:
-	case V4L2_COLORSPACE_470_SYSTEM_BG:
-	case V4L2_COLORSPACE_SMPTE170M:
-		transfers = V4L2_XFER_FUNC_709;
-		matrix = V4L2_YCBCR_ENC_601;
-		break;
-	case V4L2_COLORSPACE_SMPTE240M:
-		transfers = V4L2_XFER_FUNC_SMPTE240M;
-		matrix = V4L2_YCBCR_ENC_SMPTE240M;
-		break;
-	case V4L2_COLORSPACE_BT2020:
-		transfers = V4L2_XFER_FUNC_709;
-		matrix = V4L2_YCBCR_ENC_BT2020;
-		break;
-	default:
-		transfers = V4L2_XFER_FUNC_DEFAULT;
-		matrix = V4L2_YCBCR_ENC_DEFAULT;
-		break;
-	}
-	full_range = V4L2_QUANTIZATION_LIM_RANGE;
-
-	if (ptransfers)
-		*ptransfers = transfers;
-	if (pmatrix)
-		*pmatrix = matrix;
-	if (pfull_range)
-		*pfull_range = full_range;
-
-	return 0;
 }

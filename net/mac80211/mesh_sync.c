@@ -3,7 +3,7 @@
  * Copyright 2011-2012, Pavel Zubarev <pavel.zubarev@gmail.com>
  * Copyright 2011-2012, Marco Porsch <marco.porsch@s2005.tu-chemnitz.de>
  * Copyright 2011-2012, cozybit Inc.
- * Copyright (C) 2021 Intel Corporation
+ * Copyright (C) 2021,2023 Intel Corporation
  */
 
 #include "ieee80211_i.h"
@@ -37,6 +37,8 @@ struct sync_method {
  * mesh_peer_tbtt_adjusting - check if an mp is currently adjusting its TBTT
  *
  * @cfg: mesh config element from the mesh peer (or %NULL)
+ *
+ * Returns: If the mesh peer is currently adjusting its TBTT
  */
 static bool mesh_peer_tbtt_adjusting(const struct ieee80211_meshconf_ie *cfg)
 {
@@ -173,7 +175,7 @@ static void mesh_sync_offset_adjust_tsf(struct ieee80211_sub_if_data *sdata,
 	spin_lock_bh(&ifmsh->sync_offset_lock);
 
 	if (ifmsh->sync_offset_clockdrift_max > TOFFSET_MINIMUM_ADJUSTMENT) {
-		/* Since ajusting the tsf here would
+		/* Since adjusting the tsf here would
 		 * require a possibly blocking call
 		 * to the driver tsf setter, we punt
 		 * the tsf adjustment to the mesh tasklet

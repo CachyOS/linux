@@ -11,7 +11,8 @@
 #include <linux/gpio/consumer.h>
 #include <linux/media-bus-format.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
@@ -278,9 +279,10 @@ static int y030xx067a_probe(struct spi_device *spi)
 	struct y030xx067a *priv;
 	int err;
 
-	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
-	if (!priv)
-		return -ENOMEM;
+	priv = devm_drm_panel_alloc(dev, struct y030xx067a, panel,
+				    &y030xx067a_funcs, DRM_MODE_CONNECTOR_DPI);
+	if (IS_ERR(priv))
+		return PTR_ERR(priv);
 
 	priv->spi = spi;
 	spi_set_drvdata(spi, priv);
@@ -304,9 +306,6 @@ static int y030xx067a_probe(struct spi_device *spi)
 	if (IS_ERR(priv->reset_gpio))
 		return dev_err_probe(dev, PTR_ERR(priv->reset_gpio),
 				     "Failed to get reset GPIO\n");
-
-	drm_panel_init(&priv->panel, dev, &y030xx067a_funcs,
-		       DRM_MODE_CONNECTOR_DPI);
 
 	err = drm_panel_of_backlight(&priv->panel);
 	if (err)
@@ -380,4 +379,5 @@ module_spi_driver(y030xx067a_driver);
 
 MODULE_AUTHOR("Paul Cercueil <paul@crapouillou.net>");
 MODULE_AUTHOR("Christophe Branchereau <cbranchereau@gmail.com>");
+MODULE_DESCRIPTION("Asia Better Technology Ltd. Y030XX067A IPS LCD panel driver");
 MODULE_LICENSE("GPL v2");

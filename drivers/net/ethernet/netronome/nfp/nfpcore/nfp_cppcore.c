@@ -9,7 +9,7 @@
  *          Rolf Neugebauer <rolf.neugebauer@netronome.com>
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/ioport.h>
@@ -802,7 +802,7 @@ int nfp_cpp_area_cache_add(struct nfp_cpp *cpp, size_t size)
 	if (!area)
 		return -ENOMEM;
 
-	cache = kzalloc(sizeof(*cache), GFP_KERNEL);
+	cache = kzalloc_obj(*cache);
 	if (!cache) {
 		nfp_cpp_area_free(area);
 		return -ENOMEM;
@@ -874,7 +874,6 @@ area_cache_get(struct nfp_cpp *cpp, u32 id,
 	}
 
 	/* Adjust the start address to be cache size aligned */
-	cache->id = id;
 	cache->addr = addr & ~(u64)(cache->size - 1);
 
 	/* Re-init to the new ID and address */
@@ -893,6 +892,8 @@ area_cache_get(struct nfp_cpp *cpp, u32 id,
 		mutex_unlock(&cpp->area_cache_mutex);
 		return NULL;
 	}
+
+	cache->id = id;
 
 exit:
 	/* Adjust offset */
@@ -1169,7 +1170,7 @@ nfp_cpp_from_operations(const struct nfp_cpp_operations *ops,
 	u32 xpbaddr;
 	size_t tgt;
 
-	cpp = kzalloc(sizeof(*cpp), GFP_KERNEL);
+	cpp = kzalloc_obj(*cpp);
 	if (!cpp) {
 		err = -ENOMEM;
 		goto err_malloc;

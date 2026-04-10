@@ -185,7 +185,7 @@ static int loop_set_wakeup_filter(struct rc_dev *dev,
 		return 0;
 
 	/* encode the specified filter and loop it back */
-	raw = kmalloc_array(max, sizeof(*raw), GFP_KERNEL);
+	raw = kmalloc_objs(*raw, max);
 	if (!raw)
 		return -ENOMEM;
 
@@ -230,7 +230,6 @@ static int __init loop_init(void)
 	rc->min_timeout		= 1;
 	rc->max_timeout		= IR_MAX_TIMEOUT;
 	rc->rx_resolution	= 1;
-	rc->tx_resolution	= 1;
 	rc->s_tx_mask		= loop_set_tx_mask;
 	rc->s_tx_carrier	= loop_set_tx_carrier;
 	rc->s_tx_duty_cycle	= loop_set_tx_duty_cycle;

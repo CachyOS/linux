@@ -8,10 +8,109 @@
 #include <linux/spinlock.h>
 #include <linux/page-flags.h>
 #include <asm/bug.h>
-#include "misc.h"
+#include <trace/events/btrfs.h>
 #include "ctree.h"
 #include "extent_io.h"
 #include "locking.h"
+
+/*
+ * Lockdep class keys for extent_buffer->lock's in this root.  For a given
+ * eb, the lockdep key is determined by the btrfs_root it belongs to and
+ * the level the eb occupies in the tree.
+ *
+ * Different roots are used for different purposes and may nest inside each
+ * other and they require separate keysets.  As lockdep keys should be
+ * static, assign keysets according to the purpose of the root as indicated
+ * by btrfs_root->root_key.objectid.  This ensures that all special purpose
+ * roots have separate keysets.
+ *
+ * Lock-nesting across peer nodes is always done with the immediate parent
+ * node locked thus preventing deadlock.  As lockdep doesn't know this, use
+ * subclass to avoid triggering lockdep warning in such cases.
+ *
+ * The key is set by the readpage_end_io_hook after the buffer has passed
+ * csum validation but before the pages are unlocked.  It is also set by
+ * btrfs_init_new_buffer on freshly allocated blocks.
+ *
+ * We also add a check to make sure the highest level of the tree is the
+ * same as our lockdep setup here.  If BTRFS_MAX_LEVEL changes, this code
+ * needs update as well.
+ */
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+#if BTRFS_MAX_LEVEL != 8
+#error
+#endif
+
+#define DEFINE_LEVEL(stem, level)					\
+	.names[level] = "btrfs-" stem "-0" #level,
+
+#define DEFINE_NAME(stem)						\
+	DEFINE_LEVEL(stem, 0)						\
+	DEFINE_LEVEL(stem, 1)						\
+	DEFINE_LEVEL(stem, 2)						\
+	DEFINE_LEVEL(stem, 3)						\
+	DEFINE_LEVEL(stem, 4)						\
+	DEFINE_LEVEL(stem, 5)						\
+	DEFINE_LEVEL(stem, 6)						\
+	DEFINE_LEVEL(stem, 7)
+
+static struct btrfs_lockdep_keyset {
+	u64			id;		/* root objectid */
+	/* Longest entry: btrfs-block-group-00 */
+	char			names[BTRFS_MAX_LEVEL][24];
+	struct lock_class_key	keys[BTRFS_MAX_LEVEL];
+} btrfs_lockdep_keysets[] = {
+	{ .id = BTRFS_ROOT_TREE_OBJECTID,	DEFINE_NAME("root")	},
+	{ .id = BTRFS_EXTENT_TREE_OBJECTID,	DEFINE_NAME("extent")	},
+	{ .id = BTRFS_CHUNK_TREE_OBJECTID,	DEFINE_NAME("chunk")	},
+	{ .id = BTRFS_DEV_TREE_OBJECTID,	DEFINE_NAME("dev")	},
+	{ .id = BTRFS_CSUM_TREE_OBJECTID,	DEFINE_NAME("csum")	},
+	{ .id = BTRFS_QUOTA_TREE_OBJECTID,	DEFINE_NAME("quota")	},
+	{ .id = BTRFS_TREE_LOG_OBJECTID,	DEFINE_NAME("log")	},
+	{ .id = BTRFS_TREE_RELOC_OBJECTID,	DEFINE_NAME("treloc")	},
+	{ .id = BTRFS_DATA_RELOC_TREE_OBJECTID,	DEFINE_NAME("dreloc")	},
+	{ .id = BTRFS_UUID_TREE_OBJECTID,	DEFINE_NAME("uuid")	},
+	{ .id = BTRFS_FREE_SPACE_TREE_OBJECTID,	DEFINE_NAME("free-space") },
+	{ .id = BTRFS_BLOCK_GROUP_TREE_OBJECTID, DEFINE_NAME("block-group") },
+	{ .id = BTRFS_RAID_STRIPE_TREE_OBJECTID, DEFINE_NAME("raid-stripe") },
+	{ .id = BTRFS_REMAP_TREE_OBJECTID,      DEFINE_NAME("remap") },
+	{ .id = 0,				DEFINE_NAME("tree")	},
+};
+
+#undef DEFINE_LEVEL
+#undef DEFINE_NAME
+
+void btrfs_set_buffer_lockdep_class(u64 objectid, struct extent_buffer *eb, int level)
+{
+	struct btrfs_lockdep_keyset *ks;
+
+	ASSERT(level < ARRAY_SIZE(ks->keys));
+
+	/* Find the matching keyset, id 0 is the default entry */
+	for (ks = btrfs_lockdep_keysets; ks->id; ks++)
+		if (ks->id == objectid)
+			break;
+
+	lockdep_set_class_and_name(&eb->lock, &ks->keys[level], ks->names[level]);
+}
+
+void btrfs_maybe_reset_lockdep_class(struct btrfs_root *root, struct extent_buffer *eb)
+{
+	if (test_bit(BTRFS_ROOT_RESET_LOCKDEP_CLASS, &root->state))
+		btrfs_set_buffer_lockdep_class(btrfs_root_id(root),
+					       eb, btrfs_header_level(eb));
+}
+
+#endif
+
+#ifdef CONFIG_BTRFS_DEBUG
+static void btrfs_set_eb_lock_owner(struct extent_buffer *eb, pid_t owner)
+{
+	eb->lock_owner = owner;
+}
+#else
+static void btrfs_set_eb_lock_owner(struct extent_buffer *eb, pid_t owner) { }
+#endif
 
 /*
  * Extent buffer locking
@@ -30,14 +129,14 @@
  */
 
 /*
- * __btrfs_tree_read_lock - lock extent buffer for read
+ * btrfs_tree_read_lock_nested - lock extent buffer for read
  * @eb:		the eb to be locked
  * @nest:	the nesting level to be used for lockdep
  *
  * This takes the read lock on the extent buffer, using the specified nesting
  * level for lockdep purposes.
  */
-void __btrfs_tree_read_lock(struct extent_buffer *eb, enum btrfs_lock_nesting nest)
+void btrfs_tree_read_lock_nested(struct extent_buffer *eb, enum btrfs_lock_nesting nest)
 {
 	u64 start_ns = 0;
 
@@ -45,43 +144,21 @@ void __btrfs_tree_read_lock(struct extent_buffer *eb, enum btrfs_lock_nesting ne
 		start_ns = ktime_get_ns();
 
 	down_read_nested(&eb->lock, nest);
-	eb->lock_owner = current->pid;
 	trace_btrfs_tree_read_lock(eb, start_ns);
-}
-
-void btrfs_tree_read_lock(struct extent_buffer *eb)
-{
-	__btrfs_tree_read_lock(eb, BTRFS_NESTING_NORMAL);
 }
 
 /*
  * Try-lock for read.
  *
- * Return 1 if the rwlock has been taken, 0 otherwise
+ * Return true if the rwlock has been taken, false otherwise
  */
-int btrfs_try_tree_read_lock(struct extent_buffer *eb)
+bool btrfs_try_tree_read_lock(struct extent_buffer *eb)
 {
 	if (down_read_trylock(&eb->lock)) {
-		eb->lock_owner = current->pid;
 		trace_btrfs_try_tree_read_lock(eb);
-		return 1;
+		return true;
 	}
-	return 0;
-}
-
-/*
- * Try-lock for write.
- *
- * Return 1 if the rwlock has been taken, 0 otherwise
- */
-int btrfs_try_tree_write_lock(struct extent_buffer *eb)
-{
-	if (down_write_trylock(&eb->lock)) {
-		eb->lock_owner = current->pid;
-		trace_btrfs_try_tree_write_lock(eb);
-		return 1;
-	}
-	return 0;
+	return false;
 }
 
 /*
@@ -90,18 +167,18 @@ int btrfs_try_tree_write_lock(struct extent_buffer *eb)
 void btrfs_tree_read_unlock(struct extent_buffer *eb)
 {
 	trace_btrfs_tree_read_unlock(eb);
-	eb->lock_owner = 0;
 	up_read(&eb->lock);
 }
 
 /*
- * __btrfs_tree_lock - lock eb for write
+ * Lock eb for write.
+ *
  * @eb:		the eb to lock
  * @nest:	the nesting to use for the lock
  *
  * Returns with the eb->lock write locked.
  */
-void __btrfs_tree_lock(struct extent_buffer *eb, enum btrfs_lock_nesting nest)
+void btrfs_tree_lock_nested(struct extent_buffer *eb, enum btrfs_lock_nesting nest)
 	__acquires(&eb->lock)
 {
 	u64 start_ns = 0;
@@ -110,13 +187,8 @@ void __btrfs_tree_lock(struct extent_buffer *eb, enum btrfs_lock_nesting nest)
 		start_ns = ktime_get_ns();
 
 	down_write_nested(&eb->lock, nest);
-	eb->lock_owner = current->pid;
+	btrfs_set_eb_lock_owner(eb, current->pid);
 	trace_btrfs_tree_lock(eb, start_ns);
-}
-
-void btrfs_tree_lock(struct extent_buffer *eb)
-{
-	__btrfs_tree_lock(eb, BTRFS_NESTING_NORMAL);
 }
 
 /*
@@ -125,7 +197,7 @@ void btrfs_tree_lock(struct extent_buffer *eb)
 void btrfs_tree_unlock(struct extent_buffer *eb)
 {
 	trace_btrfs_tree_unlock(eb);
-	eb->lock_owner = 0;
+	btrfs_set_eb_lock_owner(eb, 0);
 	up_write(&eb->lock);
 }
 
@@ -167,6 +239,8 @@ struct extent_buffer *btrfs_lock_root_node(struct btrfs_root *root)
 
 	while (1) {
 		eb = btrfs_root_node(root);
+
+		btrfs_maybe_reset_lockdep_class(root, eb);
 		btrfs_tree_lock(eb);
 		if (eb == root->node)
 			break;
@@ -188,7 +262,34 @@ struct extent_buffer *btrfs_read_lock_root_node(struct btrfs_root *root)
 
 	while (1) {
 		eb = btrfs_root_node(root);
+
+		btrfs_maybe_reset_lockdep_class(root, eb);
 		btrfs_tree_read_lock(eb);
+		if (eb == root->node)
+			break;
+		btrfs_tree_read_unlock(eb);
+		free_extent_buffer(eb);
+	}
+	return eb;
+}
+
+/*
+ * Loop around taking references on and locking the root node of the tree in
+ * nowait mode until we end up with a lock on the root node or returning to
+ * avoid blocking.
+ *
+ * Return: root extent buffer with read lock held or -EAGAIN.
+ */
+struct extent_buffer *btrfs_try_read_lock_root_node(struct btrfs_root *root)
+{
+	struct extent_buffer *eb;
+
+	while (1) {
+		eb = btrfs_root_node(root);
+		if (!btrfs_try_tree_read_lock(eb)) {
+			free_extent_buffer(eb);
+			return ERR_PTR(-EAGAIN);
+		}
 		if (eb == root->node)
 			break;
 		btrfs_tree_read_unlock(eb);
@@ -211,24 +312,12 @@ struct extent_buffer *btrfs_read_lock_root_node(struct btrfs_root *root)
  * acquire the lock.
  */
 
-int btrfs_drew_lock_init(struct btrfs_drew_lock *lock)
+void btrfs_drew_lock_init(struct btrfs_drew_lock *lock)
 {
-	int ret;
-
-	ret = percpu_counter_init(&lock->writers, 0, GFP_KERNEL);
-	if (ret)
-		return ret;
-
 	atomic_set(&lock->readers, 0);
+	atomic_set(&lock->writers, 0);
 	init_waitqueue_head(&lock->pending_readers);
 	init_waitqueue_head(&lock->pending_writers);
-
-	return 0;
-}
-
-void btrfs_drew_lock_destroy(struct btrfs_drew_lock *lock)
-{
-	percpu_counter_destroy(&lock->writers);
 }
 
 /* Return true if acquisition is successful, false otherwise */
@@ -237,10 +326,10 @@ bool btrfs_drew_try_write_lock(struct btrfs_drew_lock *lock)
 	if (atomic_read(&lock->readers))
 		return false;
 
-	percpu_counter_inc(&lock->writers);
+	atomic_inc(&lock->writers);
 
 	/* Ensure writers count is updated before we check for pending readers */
-	smp_mb();
+	smp_mb__after_atomic();
 	if (atomic_read(&lock->readers)) {
 		btrfs_drew_write_unlock(lock);
 		return false;
@@ -260,8 +349,12 @@ void btrfs_drew_write_lock(struct btrfs_drew_lock *lock)
 
 void btrfs_drew_write_unlock(struct btrfs_drew_lock *lock)
 {
-	percpu_counter_dec(&lock->writers);
-	cond_wake_up(&lock->pending_readers);
+	/*
+	 * atomic_dec_and_test() implies a full barrier, so woken up readers are
+	 * guaranteed to see the decrement.
+	 */
+	if (atomic_dec_and_test(&lock->writers))
+		wake_up(&lock->pending_readers);
 }
 
 void btrfs_drew_read_lock(struct btrfs_drew_lock *lock)
@@ -269,15 +362,14 @@ void btrfs_drew_read_lock(struct btrfs_drew_lock *lock)
 	atomic_inc(&lock->readers);
 
 	/*
-	 * Ensure the pending reader count is perceieved BEFORE this reader
+	 * Ensure the pending reader count is perceived BEFORE this reader
 	 * goes to sleep in case of active writers. This guarantees new writers
 	 * won't be allowed and that the current reader will be woken up when
 	 * the last active writer finishes its jobs.
 	 */
 	smp_mb__after_atomic();
 
-	wait_event(lock->pending_readers,
-		   percpu_counter_sum(&lock->writers) == 0);
+	wait_event(lock->pending_readers, atomic_read(&lock->writers) == 0);
 }
 
 void btrfs_drew_read_unlock(struct btrfs_drew_lock *lock)

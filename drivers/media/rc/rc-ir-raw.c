@@ -552,7 +552,8 @@ EXPORT_SYMBOL(ir_raw_encode_scancode);
  */
 static void ir_raw_edge_handle(struct timer_list *t)
 {
-	struct ir_raw_event_ctrl *raw = from_timer(raw, t, edge_handle);
+	struct ir_raw_event_ctrl *raw = timer_container_of(raw, t,
+							   edge_handle);
 	struct rc_dev *dev = raw->dev;
 	unsigned long flags;
 	ktime_t interval;
@@ -614,7 +615,7 @@ int ir_raw_event_prepare(struct rc_dev *dev)
 	if (!dev)
 		return -EINVAL;
 
-	dev->raw = kzalloc(sizeof(*dev->raw), GFP_KERNEL);
+	dev->raw = kzalloc_obj(*dev->raw);
 	if (!dev->raw)
 		return -ENOMEM;
 
@@ -662,7 +663,7 @@ void ir_raw_event_unregister(struct rc_dev *dev)
 		return;
 
 	kthread_stop(dev->raw->thread);
-	del_timer_sync(&dev->raw->edge_handle);
+	timer_delete_sync(&dev->raw->edge_handle);
 
 	mutex_lock(&ir_raw_handler_lock);
 	list_del(&dev->raw->list);

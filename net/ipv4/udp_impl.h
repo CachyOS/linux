@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _UDP4_IMPL_H
 #define _UDP4_IMPL_H
+#include <net/aligned_data.h>
 #include <net/udp.h>
 #include <net/udplite.h>
 #include <net/protocol.h>
@@ -19,8 +20,6 @@ int udp_getsockopt(struct sock *sk, int level, int optname,
 
 int udp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int flags,
 		int *addr_len);
-int udp_sendpage(struct sock *sk, struct page *page, int offset, size_t size,
-		 int flags);
 void udp_destroy_sock(struct sock *sk);
 
 #ifdef CONFIG_PROC_FS

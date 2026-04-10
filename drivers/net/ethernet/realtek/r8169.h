@@ -8,6 +8,7 @@
  * See MAINTAINERS file for support contact information.
  */
 
+#include <linux/netdevice.h>
 #include <linux/types.h>
 #include <linux/phy.h>
 
@@ -22,11 +23,11 @@ enum mac_version {
 	RTL_GIGA_MAC_VER_08,
 	RTL_GIGA_MAC_VER_09,
 	RTL_GIGA_MAC_VER_10,
-	RTL_GIGA_MAC_VER_11,
-	RTL_GIGA_MAC_VER_12,
-	RTL_GIGA_MAC_VER_13,
+	/* support for RTL_GIGA_MAC_VER_11 has been removed */
+	/* RTL_GIGA_MAC_VER_12 was handled the same as VER_17 */
+	/* RTL_GIGA_MAC_VER_13 was merged with VER_10 */
 	RTL_GIGA_MAC_VER_14,
-	RTL_GIGA_MAC_VER_16,
+	/* RTL_GIGA_MAC_VER_16 was merged with VER_10 */
 	RTL_GIGA_MAC_VER_17,
 	RTL_GIGA_MAC_VER_18,
 	RTL_GIGA_MAC_VER_19,
@@ -51,29 +52,45 @@ enum mac_version {
 	RTL_GIGA_MAC_VER_38,
 	RTL_GIGA_MAC_VER_39,
 	RTL_GIGA_MAC_VER_40,
-	RTL_GIGA_MAC_VER_41,
+	/* support for RTL_GIGA_MAC_VER_41 has been removed */
 	RTL_GIGA_MAC_VER_42,
 	RTL_GIGA_MAC_VER_43,
 	RTL_GIGA_MAC_VER_44,
-	RTL_GIGA_MAC_VER_45,
+	/* support for RTL_GIGA_MAC_VER_45 has been removed */
 	RTL_GIGA_MAC_VER_46,
-	RTL_GIGA_MAC_VER_47,
+	/* support for RTL_GIGA_MAC_VER_47 has been removed */
 	RTL_GIGA_MAC_VER_48,
-	RTL_GIGA_MAC_VER_49,
-	RTL_GIGA_MAC_VER_50,
+	/* support for RTL_GIGA_MAC_VER_49 has been removed */
+	/* support for RTL_GIGA_MAC_VER_50 has been removed */
 	RTL_GIGA_MAC_VER_51,
 	RTL_GIGA_MAC_VER_52,
-	RTL_GIGA_MAC_VER_53,
-	RTL_GIGA_MAC_VER_60,
+	/* support for RTL_GIGA_MAC_VER_60 has been removed */
 	RTL_GIGA_MAC_VER_61,
 	RTL_GIGA_MAC_VER_63,
-	RTL_GIGA_MAC_NONE
+	RTL_GIGA_MAC_VER_64,
+	RTL_GIGA_MAC_VER_66,
+	RTL_GIGA_MAC_VER_70,
+	RTL_GIGA_MAC_VER_80,
+	RTL_GIGA_MAC_NONE,
+	RTL_GIGA_MAC_VER_LAST = RTL_GIGA_MAC_NONE - 1,
+	RTL_GIGA_MAC_VER_EXTENDED
 };
 
 struct rtl8169_private;
+struct r8169_led_classdev;
 
 void r8169_apply_firmware(struct rtl8169_private *tp);
 u16 rtl8168h_2_get_adc_bias_ioffset(struct rtl8169_private *tp);
 u8 rtl8168d_efuse_read(struct rtl8169_private *tp, int reg_addr);
 void r8169_hw_phy_config(struct rtl8169_private *tp, struct phy_device *phydev,
 			 enum mac_version ver);
+
+void r8169_get_led_name(struct rtl8169_private *tp, int idx,
+			char *buf, int buf_len);
+int rtl8168_get_led_mode(struct rtl8169_private *tp);
+int rtl8168_led_mod_ctrl(struct rtl8169_private *tp, u16 mask, u16 val);
+struct r8169_led_classdev *rtl8168_init_leds(struct net_device *ndev);
+int rtl8125_get_led_mode(struct rtl8169_private *tp, int index);
+int rtl8125_set_led_mode(struct rtl8169_private *tp, int index, u16 mode);
+struct r8169_led_classdev *rtl8125_init_leds(struct net_device *ndev);
+void r8169_remove_leds(struct r8169_led_classdev *leds);

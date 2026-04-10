@@ -24,7 +24,7 @@ struct via_aux_drv {
 	struct list_head chain;		/* chain to support multiple drivers */
 
 	struct via_aux_bus *bus;	/* the I2C bus used */
-	u8 addr;			/* the I2C slave address */
+	u8 addr;			/* the I2C target address */
 
 	const char *name;	/* human readable name of the driver */
 	void *data;		/* private data of this driver */
@@ -42,7 +42,7 @@ const struct fb_videomode *via_aux_get_preferred_mode(struct via_aux_bus *bus);
 
 static inline bool via_aux_add(struct via_aux_drv *drv)
 {
-	struct via_aux_drv *data = kmalloc(sizeof(*data), GFP_KERNEL);
+	struct via_aux_drv *data = kmalloc_obj(*data);
 
 	if (!data)
 		return false;

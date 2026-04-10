@@ -583,7 +583,7 @@ int iscsit_dataout_datapduinorder_no_fbit(
 	struct iscsi_pdu *pdu)
 {
 	int i, send_recovery_r2t = 0, recovery = 0;
-	u32 length = 0, offset = 0, pdu_count = 0, xfer_len = 0;
+	u32 length = 0, offset = 0, pdu_count = 0;
 	struct iscsit_conn *conn = cmd->conn;
 	struct iscsi_pdu *first_pdu = NULL;
 
@@ -596,7 +596,6 @@ int iscsit_dataout_datapduinorder_no_fbit(
 			if (cmd->pdu_list[i].seq_no == pdu->seq_no) {
 				if (!first_pdu)
 					first_pdu = &cmd->pdu_list[i];
-				xfer_len += cmd->pdu_list[i].length;
 				pdu_count++;
 			} else if (pdu_count)
 				break;
@@ -948,7 +947,7 @@ int iscsit_execute_cmd(struct iscsit_cmd *cmd, int ooo)
 
 			iscsit_set_unsolicited_dataout(cmd);
 		}
-		return transport_handle_cdb_direct(&cmd->se_cmd);
+		return target_submit(&cmd->se_cmd);
 
 	case ISCSI_OP_NOOP_OUT:
 	case ISCSI_OP_TEXT:
@@ -1095,7 +1094,7 @@ void iscsit_handle_dataout_timeout(struct timer_list *t)
 {
 	u32 pdu_length = 0, pdu_offset = 0;
 	u32 r2t_length = 0, r2t_offset = 0;
-	struct iscsit_cmd *cmd = from_timer(cmd, t, dataout_timer);
+	struct iscsit_cmd *cmd = timer_container_of(cmd, t, dataout_timer);
 	struct iscsit_conn *conn = cmd->conn;
 	struct iscsit_session *sess = NULL;
 	struct iscsi_node_attrib *na;
@@ -1228,7 +1227,7 @@ void iscsit_stop_dataout_timer(struct iscsit_cmd *cmd)
 	cmd->dataout_timer_flags |= ISCSI_TF_STOP;
 	spin_unlock_bh(&cmd->dataout_timeout_lock);
 
-	del_timer_sync(&cmd->dataout_timer);
+	timer_delete_sync(&cmd->dataout_timer);
 
 	spin_lock_bh(&cmd->dataout_timeout_lock);
 	cmd->dataout_timer_flags &= ~ISCSI_TF_RUNNING;

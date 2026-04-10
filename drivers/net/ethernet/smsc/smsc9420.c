@@ -18,7 +18,7 @@
 #include <linux/crc32.h>
 #include <linux/slab.h>
 #include <linux/module.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include "smsc9420.h"
 
 #define DRV_NAME		"smsc9420"
@@ -26,6 +26,7 @@
 #define DRV_DESCRIPTION		"SMSC LAN9420 driver"
 #define DRV_VERSION		"1.01"
 
+MODULE_DESCRIPTION("SMSC LAN9420 Ethernet driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_VERSION);
 
@@ -102,7 +103,7 @@ static inline void smsc9420_pci_flush_write(struct smsc9420_pdata *pd)
 
 static int smsc9420_mii_read(struct mii_bus *bus, int phyaddr, int regidx)
 {
-	struct smsc9420_pdata *pd = (struct smsc9420_pdata *)bus->priv;
+	struct smsc9420_pdata *pd = bus->priv;
 	unsigned long flags;
 	u32 addr;
 	int i, reg = -EIO;
@@ -140,7 +141,7 @@ out:
 static int smsc9420_mii_write(struct mii_bus *bus, int phyaddr, int regidx,
 			   u16 val)
 {
-	struct smsc9420_pdata *pd = (struct smsc9420_pdata *)bus->priv;
+	struct smsc9420_pdata *pd = bus->priv;
 	unsigned long flags;
 	u32 addr;
 	int i, reg = -EIO;
@@ -215,10 +216,10 @@ static void smsc9420_ethtool_get_drvinfo(struct net_device *netdev,
 {
 	struct smsc9420_pdata *pd = netdev_priv(netdev);
 
-	strlcpy(drvinfo->driver, DRV_NAME, sizeof(drvinfo->driver));
-	strlcpy(drvinfo->bus_info, pci_name(pd->pdev),
+	strscpy(drvinfo->driver, DRV_NAME, sizeof(drvinfo->driver));
+	strscpy(drvinfo->bus_info, pci_name(pd->pdev),
 		sizeof(drvinfo->bus_info));
-	strlcpy(drvinfo->version, DRV_VERSION, sizeof(drvinfo->version));
+	strscpy(drvinfo->version, DRV_VERSION, sizeof(drvinfo->version));
 }
 
 static u32 smsc9420_ethtool_get_msglevel(struct net_device *netdev)
@@ -1144,8 +1145,7 @@ static int smsc9420_mii_init(struct net_device *dev)
 		goto err_out_1;
 	}
 	pd->mii_bus->name = DRV_MDIONAME;
-	snprintf(pd->mii_bus->id, MII_BUS_ID_SIZE, "%x",
-		(pd->pdev->bus->number << 8) | pd->pdev->devfn);
+	snprintf(pd->mii_bus->id, MII_BUS_ID_SIZE, "%x", pci_dev_id(pd->pdev));
 	pd->mii_bus->priv = pd;
 	pd->mii_bus->read = smsc9420_mii_read;
 	pd->mii_bus->write = smsc9420_mii_write;
@@ -1179,9 +1179,7 @@ static int smsc9420_alloc_tx_ring(struct smsc9420_pdata *pd)
 
 	BUG_ON(!pd->tx_ring);
 
-	pd->tx_buffers = kmalloc_array(TX_RING_SIZE,
-				       sizeof(struct smsc9420_ring_info),
-				       GFP_KERNEL);
+	pd->tx_buffers = kmalloc_objs(struct smsc9420_ring_info, TX_RING_SIZE);
 	if (!pd->tx_buffers)
 		return -ENOMEM;
 
@@ -1212,9 +1210,7 @@ static int smsc9420_alloc_rx_ring(struct smsc9420_pdata *pd)
 
 	BUG_ON(!pd->rx_ring);
 
-	pd->rx_buffers = kmalloc_array(RX_RING_SIZE,
-				       sizeof(struct smsc9420_ring_info),
-				       GFP_KERNEL);
+	pd->rx_buffers = kmalloc_objs(struct smsc9420_ring_info, RX_RING_SIZE);
 	if (pd->rx_buffers == NULL)
 		goto out;
 
@@ -1585,7 +1581,7 @@ smsc9420_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	dev->netdev_ops = &smsc9420_netdev_ops;
 	dev->ethtool_ops = &smsc9420_ethtool_ops;
 
-	netif_napi_add(dev, &pd->napi, smsc9420_rx_poll, NAPI_POLL_WEIGHT);
+	netif_napi_add(dev, &pd->napi, smsc9420_rx_poll);
 
 	result = register_netdev(dev);
 	if (result) {

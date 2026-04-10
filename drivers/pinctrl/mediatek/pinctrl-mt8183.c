@@ -545,6 +545,7 @@ static const struct mtk_eint_hw mt8183_eint_hw = {
 	.ports     = 6,
 	.ap_num    = 212,
 	.db_cnt    = 13,
+	.db_time   = debounce_time_mt6765,
 };
 
 static const struct mtk_pin_soc mt8183_data = {
@@ -575,7 +576,7 @@ static struct platform_driver mt8183_pinctrl_driver = {
 	.driver = {
 		.name = "mt8183-pinctrl",
 		.of_match_table = mt8183_pinctrl_of_match,
-		.pm = &mtk_paris_pinctrl_pm_ops,
+		.pm = pm_sleep_ptr(&mtk_paris_pinctrl_pm_ops),
 	},
 	.probe = mtk_paris_pinctrl_probe,
 };

@@ -4,30 +4,13 @@
 
 #include <vdso/datapage.h>
 
-#ifndef __ASSEMBLY__
-
-#include <generated/vdso64-offsets.h>
-#ifdef CONFIG_COMPAT
-#include <generated/vdso32-offsets.h>
-#endif
-
-#define VDSO64_SYMBOL(tsk, name) ((tsk)->mm->context.vdso_base + (vdso64_offset_##name))
-#ifdef CONFIG_COMPAT
-#define VDSO32_SYMBOL(tsk, name) ((tsk)->mm->context.vdso_base + (vdso32_offset_##name))
-#else
-#define VDSO32_SYMBOL(tsk, name) (-1UL)
-#endif
-
-extern struct vdso_data *vdso_data;
+#ifndef __ASSEMBLER__
 
 int vdso_getcpu_init(void);
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
-/* Default link address for the vDSO */
-#define VDSO_LBASE	0
-
-#define __VVAR_PAGES	2
+#define __VDSO_PAGES	4
 
 #define VDSO_VERSION_STRING	LINUX_2.6.29
 

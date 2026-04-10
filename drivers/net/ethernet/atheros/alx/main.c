@@ -39,7 +39,6 @@
 #include <linux/ipv6.h>
 #include <linux/if_vlan.h>
 #include <linux/mdio.h>
-#include <linux/aer.h>
 #include <linux/bitops.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
@@ -617,7 +616,7 @@ static int alx_set_mac_address(struct net_device *netdev, void *data)
 static int alx_alloc_tx_ring(struct alx_priv *alx, struct alx_tx_queue *txq,
 			     int offset)
 {
-	txq->bufs = kcalloc(txq->count, sizeof(struct alx_buffer), GFP_KERNEL);
+	txq->bufs = kzalloc_objs(struct alx_buffer, txq->count);
 	if (!txq->bufs)
 		return -ENOMEM;
 
@@ -631,7 +630,7 @@ static int alx_alloc_tx_ring(struct alx_priv *alx, struct alx_tx_queue *txq,
 static int alx_alloc_rx_ring(struct alx_priv *alx, struct alx_rx_queue *rxq,
 			     int offset)
 {
-	rxq->bufs = kcalloc(rxq->count, sizeof(struct alx_buffer), GFP_KERNEL);
+	rxq->bufs = kzalloc_objs(struct alx_buffer, rxq->count);
 	if (!rxq->bufs)
 		return -ENOMEM;
 
@@ -747,19 +746,19 @@ static int alx_alloc_napis(struct alx_priv *alx)
 
 	/* allocate alx_napi structures */
 	for (i = 0; i < alx->num_napi; i++) {
-		np = kzalloc(sizeof(struct alx_napi), GFP_KERNEL);
+		np = kzalloc_obj(struct alx_napi);
 		if (!np)
 			goto err_out;
 
 		np->alx = alx;
-		netif_napi_add(alx->dev, &np->napi, alx_poll, 64);
+		netif_napi_add(alx->dev, &np->napi, alx_poll);
 		alx->qnapi[i] = np;
 	}
 
 	/* allocate tx queues */
 	for (i = 0; i < alx->num_txq; i++) {
 		np = alx->qnapi[i];
-		txq = kzalloc(sizeof(*txq), GFP_KERNEL);
+		txq = kzalloc_obj(*txq);
 		if (!txq)
 			goto err_out;
 
@@ -776,7 +775,7 @@ static int alx_alloc_napis(struct alx_priv *alx)
 
 	/* allocate rx queues */
 	np = alx->qnapi[0];
-	rxq = kzalloc(sizeof(*rxq), GFP_KERNEL);
+	rxq = kzalloc_obj(*rxq);
 	if (!rxq)
 		goto err_out;
 
@@ -902,7 +901,7 @@ static int alx_init_intr(struct alx_priv *alx)
 	int ret;
 
 	ret = pci_alloc_irq_vectors(alx->hw.pdev, 1, 1,
-			PCI_IRQ_MSI | PCI_IRQ_LEGACY);
+			PCI_IRQ_MSI | PCI_IRQ_INTX);
 	if (ret < 0)
 		return ret;
 
@@ -1177,7 +1176,7 @@ static int alx_change_mtu(struct net_device *netdev, int mtu)
 	struct alx_priv *alx = netdev_priv(netdev);
 	int max_frame = ALX_MAX_FRAME_LEN(mtu);
 
-	netdev->mtu = mtu;
+	WRITE_ONCE(netdev->mtu, mtu);
 	alx->hw.mtu = mtu;
 	alx->rxbuf_size = max(max_frame, ALX_DEF_RXBUF_SIZE);
 	netdev_update_features(netdev);
@@ -1745,7 +1744,6 @@ static int alx_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto out_pci_disable;
 	}
 
-	pci_enable_pcie_error_reporting(pdev);
 	pci_set_master(pdev);
 
 	if (!pdev->pm_cap) {
@@ -1879,7 +1877,6 @@ out_free_netdev:
 	free_netdev(netdev);
 out_pci_release:
 	pci_release_mem_regions(pdev);
-	pci_disable_pcie_error_reporting(pdev);
 out_pci_disable:
 	pci_disable_device(pdev);
 	return err;
@@ -1897,7 +1894,6 @@ static void alx_remove(struct pci_dev *pdev)
 	iounmap(hw->hw_addr);
 	pci_release_mem_regions(pdev);
 
-	pci_disable_pcie_error_reporting(pdev);
 	pci_disable_device(pdev);
 
 	mutex_destroy(&alx->mtx);
@@ -1905,18 +1901,20 @@ static void alx_remove(struct pci_dev *pdev)
 	free_netdev(alx->dev);
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int alx_suspend(struct device *dev)
 {
 	struct alx_priv *alx = dev_get_drvdata(dev);
 
 	if (!netif_running(alx->dev))
 		return 0;
+
+	rtnl_lock();
 	netif_device_detach(alx->dev);
 
 	mutex_lock(&alx->mtx);
 	__alx_stop(alx);
 	mutex_unlock(&alx->mtx);
+	rtnl_unlock();
 
 	return 0;
 }
@@ -1927,6 +1925,7 @@ static int alx_resume(struct device *dev)
 	struct alx_hw *hw = &alx->hw;
 	int err;
 
+	rtnl_lock();
 	mutex_lock(&alx->mtx);
 	alx_reset_phy(hw);
 
@@ -1943,15 +1942,11 @@ static int alx_resume(struct device *dev)
 
 unlock:
 	mutex_unlock(&alx->mtx);
+	rtnl_unlock();
 	return err;
 }
 
-static SIMPLE_DEV_PM_OPS(alx_pm_ops, alx_suspend, alx_resume);
-#define ALX_PM_OPS      (&alx_pm_ops)
-#else
-#define ALX_PM_OPS      NULL
-#endif
-
+static DEFINE_SIMPLE_DEV_PM_OPS(alx_pm_ops, alx_suspend, alx_resume);
 
 static pci_ers_result_t alx_pci_error_detected(struct pci_dev *pdev,
 					       pci_channel_state_t state)
@@ -2050,7 +2045,7 @@ static struct pci_driver alx_driver = {
 	.probe       = alx_probe,
 	.remove      = alx_remove,
 	.err_handler = &alx_err_handlers,
-	.driver.pm   = ALX_PM_OPS,
+	.driver.pm   = pm_sleep_ptr(&alx_pm_ops),
 };
 
 module_pci_driver(alx_driver);

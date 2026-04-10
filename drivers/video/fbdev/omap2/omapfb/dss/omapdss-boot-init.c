@@ -46,7 +46,7 @@ static void __init omapdss_update_prop(struct device_node *node, char *compat,
 {
 	struct property *prop;
 
-	prop = kzalloc(sizeof(*prop), GFP_KERNEL);
+	prop = kzalloc_obj(*prop);
 	if (!prop)
 		return;
 
@@ -110,8 +110,7 @@ static void __init omapdss_omapify_node(struct device_node *node)
 
 static void __init omapdss_add_to_list(struct device_node *node, bool root)
 {
-	struct dss_conv_node *n = kmalloc(sizeof(struct dss_conv_node),
-		GFP_KERNEL);
+	struct dss_conv_node *n = kmalloc_obj(struct dss_conv_node);
 	if (n) {
 		n->node = node;
 		n->root = root;
@@ -149,8 +148,7 @@ static void __init omapdss_walk_device(struct device_node *node, bool root)
 
 	of_node_put(n);
 
-	n = NULL;
-	while ((n = of_graph_get_next_endpoint(node, n)) != NULL) {
+	for_each_endpoint_of_node(node, n) {
 		struct device_node *pn;
 
 		pn = of_graph_get_remote_port_parent(n);
@@ -192,7 +190,7 @@ static int __init omapdss_boot_init(void)
 	omapdss_walk_device(dss, true);
 
 	for_each_available_child_of_node(dss, child) {
-		if (!of_find_property(child, "compatible", NULL))
+		if (!of_property_present(child, "compatible"))
 			continue;
 
 		omapdss_walk_device(child, true);

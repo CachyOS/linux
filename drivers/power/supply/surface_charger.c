@@ -6,7 +6,7 @@
  * Copyright (C) 2019-2021 Maximilian Luz <luzmaximilian@gmail.com>
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -175,7 +175,7 @@ static void spwr_ac_init(struct spwr_ac_device *ac, struct ssam_device *sdev,
 			 struct ssam_event_registry registry, const char *name)
 {
 	mutex_init(&ac->lock);
-	strncpy(ac->name, name, ARRAY_SIZE(ac->name) - 1);
+	strscpy(ac->name, name, sizeof(ac->name));
 
 	ac->sdev = sdev;
 
@@ -216,7 +216,7 @@ static int spwr_ac_register(struct spwr_ac_device *ac)
 	if (IS_ERR(ac->psy))
 		return PTR_ERR(ac->psy);
 
-	return ssam_notifier_register(ac->sdev->ctrl, &ac->notif);
+	return ssam_device_notifier_register(ac->sdev, &ac->notif);
 }
 
 
@@ -251,7 +251,7 @@ static void surface_ac_remove(struct ssam_device *sdev)
 {
 	struct spwr_ac_device *ac = ssam_device_get_drvdata(sdev);
 
-	ssam_notifier_unregister(sdev->ctrl, &ac->notif);
+	ssam_device_notifier_unregister(sdev, &ac->notif);
 }
 
 static const struct spwr_psy_properties spwr_psy_props_adp1 = {
@@ -260,7 +260,7 @@ static const struct spwr_psy_properties spwr_psy_props_adp1 = {
 };
 
 static const struct ssam_device_id surface_ac_match[] = {
-	{ SSAM_SDEV(BAT, 0x01, 0x01, 0x01), (unsigned long)&spwr_psy_props_adp1 },
+	{ SSAM_SDEV(BAT, SAM, 0x01, 0x01), (unsigned long)&spwr_psy_props_adp1 },
 	{ },
 };
 MODULE_DEVICE_TABLE(ssam, surface_ac_match);

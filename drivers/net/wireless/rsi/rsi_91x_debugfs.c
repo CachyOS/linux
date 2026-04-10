@@ -28,8 +28,7 @@ static int rsi_sdio_stats_read(struct seq_file *seq, void *data)
 {
 	struct rsi_common *common = seq->private;
 	struct rsi_hw *adapter = common->priv;
-	struct rsi_91x_sdiodev *dev =
-		(struct rsi_91x_sdiodev *)adapter->rsi_dev;
+	struct rsi_91x_sdiodev *dev = adapter->rsi_dev;
 
 	seq_printf(seq, "total_sdio_interrupts: %d\n",
 		   dev->rx_info.sdio_int_counter);
@@ -286,7 +285,7 @@ int rsi_init_dbgfs(struct rsi_hw *adapter)
 	int ii;
 	const struct rsi_dbg_files *files;
 
-	dev_dbgfs = kzalloc(sizeof(*dev_dbgfs), GFP_KERNEL);
+	dev_dbgfs = kzalloc_obj(*dev_dbgfs);
 	if (!dev_dbgfs)
 		return -ENOMEM;
 

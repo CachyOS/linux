@@ -12,7 +12,7 @@
 #include <linux/module.h>
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/driver.h>
@@ -33,10 +33,10 @@ struct max11100_state {
 	struct spi_device *spi;
 
 	/*
-	 * DMA (thus cache coherency maintenance) requires the
+	 * DMA (thus cache coherency maintenance) may require the
 	 * transfer buffers to live in their own cache lines.
 	 */
-	u8 buffer[3] ____cacheline_aligned;
+	u8 buffer[3] __aligned(IIO_DMA_MINALIGN);
 };
 
 static const struct iio_chan_spec max11100_channels[] = {
@@ -143,8 +143,8 @@ static int max11100_probe(struct spi_device *spi)
 }
 
 static const struct of_device_id max11100_ids[] = {
-	{.compatible = "maxim,max11100"},
-	{ },
+	{ .compatible = "maxim,max11100" },
+	{ }
 };
 MODULE_DEVICE_TABLE(of, max11100_ids);
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: (GPL-2.0 or MIT)
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
 /*
  * Device Tree Source for the Spider CPU and BreakOut boards
  *
@@ -12,14 +12,6 @@
 / {
 	model = "Renesas Spider CPU and Breakout boards based on r8a779f0";
 	compatible = "renesas,spider-breakout", "renesas,spider-cpu", "renesas,r8a779f0";
-
-	aliases {
-		serial0 = &scif3;
-	};
-
-	chosen {
-		stdout-path = "serial0:115200n8";
-	};
 };
 
 &i2c4 {

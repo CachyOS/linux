@@ -63,7 +63,7 @@ struct ac97_codec_device {
 struct ac97_codec_driver {
 	struct device_driver	driver;
 	int			(*probe)(struct ac97_codec_device *);
-	int			(*remove)(struct ac97_codec_device *);
+	void			(*remove)(struct ac97_codec_device *dev);
 	void			(*shutdown)(struct ac97_codec_device *);
 	const struct ac97_id	*id_table;
 };
@@ -73,10 +73,7 @@ static inline struct ac97_codec_device *to_ac97_device(struct device *d)
 	return container_of(d, struct ac97_codec_device, dev);
 }
 
-static inline struct ac97_codec_driver *to_ac97_driver(struct device_driver *d)
-{
-	return container_of(d, struct ac97_codec_driver, driver);
-}
+#define to_ac97_driver(__drv) container_of_const(__drv, struct ac97_codec_driver, driver)
 
 #if IS_ENABLED(CONFIG_AC97_BUS_NEW)
 int snd_ac97_codec_driver_register(struct ac97_codec_driver *drv);

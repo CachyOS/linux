@@ -308,14 +308,13 @@ err_return:
 	return ret;
 }
 
-static int asm9260_rtc_remove(struct platform_device *pdev)
+static void asm9260_rtc_remove(struct platform_device *pdev)
 {
 	struct asm9260_rtc_priv *priv = platform_get_drvdata(pdev);
 
 	/* Disable alarm matching */
 	iowrite32(BM_AMR_OFF, priv->iobase + HW_AMR);
 	clk_disable_unprepare(priv->clk);
-	return 0;
 }
 
 static const struct of_device_id asm9260_dt_ids[] = {

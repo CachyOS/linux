@@ -91,37 +91,35 @@ static inline void zynqmp_pll_set_mode(struct clk_hw *hw, bool on)
 }
 
 /**
- * zynqmp_pll_round_rate() - Round a clock frequency
+ * zynqmp_pll_determine_rate() - Round a clock frequency
  * @hw:		Handle between common and hardware-specific interfaces
- * @rate:	Desired clock frequency
- * @prate:	Clock frequency of parent clock
+ * @req:	Desired clock frequency
  *
  * Return: Frequency closest to @rate the hardware can generate
  */
-static long zynqmp_pll_round_rate(struct clk_hw *hw, unsigned long rate,
-				  unsigned long *prate)
+static int zynqmp_pll_determine_rate(struct clk_hw *hw,
+				     struct clk_rate_request *req)
 {
 	u32 fbdiv;
-	long rate_div, f;
+	u32 mult, div;
 
-	/* Enable the fractional mode if needed */
-	rate_div = (rate * FRAC_DIV) / *prate;
-	f = rate_div % FRAC_DIV;
-	if (f) {
-		if (rate > PS_PLL_VCO_MAX) {
-			fbdiv = rate / PS_PLL_VCO_MAX;
-			rate = rate / (fbdiv + 1);
-		}
-		if (rate < PS_PLL_VCO_MIN) {
-			fbdiv = DIV_ROUND_UP(PS_PLL_VCO_MIN, rate);
-			rate = rate * fbdiv;
-		}
-		return rate;
+	/* Let rate fall inside the range PS_PLL_VCO_MIN ~ PS_PLL_VCO_MAX */
+	if (req->rate > PS_PLL_VCO_MAX) {
+		div = DIV_ROUND_UP(req->rate, PS_PLL_VCO_MAX);
+		req->rate = req->rate / div;
+	}
+	if (req->rate < PS_PLL_VCO_MIN) {
+		mult = DIV_ROUND_UP(PS_PLL_VCO_MIN, req->rate);
+		req->rate = req->rate * mult;
 	}
 
-	fbdiv = DIV_ROUND_CLOSEST(rate, *prate);
-	fbdiv = clamp_t(u32, fbdiv, PLL_FBDIV_MIN, PLL_FBDIV_MAX);
-	return *prate * fbdiv;
+	fbdiv = DIV_ROUND_CLOSEST(req->rate, req->best_parent_rate);
+	if (fbdiv < PLL_FBDIV_MIN || fbdiv > PLL_FBDIV_MAX) {
+		fbdiv = clamp_t(u32, fbdiv, PLL_FBDIV_MIN, PLL_FBDIV_MAX);
+		req->rate = req->best_parent_rate * fbdiv;
+	}
+
+	return 0;
 }
 
 /**
@@ -295,7 +293,7 @@ static const struct clk_ops zynqmp_pll_ops = {
 	.enable = zynqmp_pll_enable,
 	.disable = zynqmp_pll_disable,
 	.is_enabled = zynqmp_pll_is_enabled,
-	.round_rate = zynqmp_pll_round_rate,
+	.determine_rate = zynqmp_pll_determine_rate,
 	.recalc_rate = zynqmp_pll_recalc_rate,
 	.set_rate = zynqmp_pll_set_rate,
 };
@@ -328,7 +326,7 @@ struct clk_hw *zynqmp_clk_register_pll(const char *name, u32 clk_id,
 	init.parent_names = parents;
 	init.num_parents = 1;
 
-	pll = kzalloc(sizeof(*pll), GFP_KERNEL);
+	pll = kzalloc_obj(*pll);
 	if (!pll)
 		return ERR_PTR(-ENOMEM);
 
@@ -341,8 +339,6 @@ struct clk_hw *zynqmp_clk_register_pll(const char *name, u32 clk_id,
 		kfree(pll);
 		return ERR_PTR(ret);
 	}
-
-	clk_hw_set_rate_range(hw, PS_PLL_VCO_MIN, PS_PLL_VCO_MAX);
 
 	return hw;
 }

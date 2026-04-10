@@ -12,9 +12,6 @@
 #include <linux/interrupt.h>
 #include <linux/spinlock_types.h>
 #include <linux/scatterlist.h>
-#include <linux/crypto.h>
-#include <linux/hash.h>
-#include <crypto/internal/hash.h>
 #include <linux/dma-mapping.h>
 #include <crypto/algapi.h>
 #include <crypto/aead.h>
@@ -72,7 +69,7 @@ static inline int crypto4xx_crypt(struct skcipher_request *req,
 {
 	struct crypto_skcipher *cipher = crypto_skcipher_reqtfm(req);
 	struct crypto4xx_ctx *ctx = crypto_skcipher_ctx(cipher);
-	__le32 iv[AES_IV_SIZE];
+	__le32 iv[AES_IV_SIZE / 4];
 
 	if (check_blocksize && !IS_ALIGNED(req->cryptlen, AES_BLOCK_SIZE))
 		return -EINVAL;
@@ -181,25 +178,11 @@ int crypto4xx_setkey_aes_cbc(struct crypto_skcipher *cipher,
 				    CRYPTO_FEEDBACK_MODE_NO_FB);
 }
 
-int crypto4xx_setkey_aes_cfb(struct crypto_skcipher *cipher,
-			     const u8 *key, unsigned int keylen)
-{
-	return crypto4xx_setkey_aes(cipher, key, keylen, CRYPTO_MODE_CFB,
-				    CRYPTO_FEEDBACK_MODE_128BIT_CFB);
-}
-
 int crypto4xx_setkey_aes_ecb(struct crypto_skcipher *cipher,
 			     const u8 *key, unsigned int keylen)
 {
 	return crypto4xx_setkey_aes(cipher, key, keylen, CRYPTO_MODE_ECB,
 				    CRYPTO_FEEDBACK_MODE_NO_FB);
-}
-
-int crypto4xx_setkey_aes_ofb(struct crypto_skcipher *cipher,
-			     const u8 *key, unsigned int keylen)
-{
-	return crypto4xx_setkey_aes(cipher, key, keylen, CRYPTO_MODE_OFB,
-				    CRYPTO_FEEDBACK_MODE_64BIT_OFB);
 }
 
 int crypto4xx_setkey_rfc3686(struct crypto_skcipher *cipher,
@@ -443,7 +426,7 @@ static int crypto4xx_crypt_aes_ccm(struct aead_request *req, bool decrypt)
 	struct crypto4xx_ctx *ctx  = crypto_tfm_ctx(req->base.tfm);
 	struct crypto4xx_aead_reqctx *rctx = aead_request_ctx(req);
 	struct crypto_aead *aead = crypto_aead_reqtfm(req);
-	__le32 iv[16];
+	__le32 iv[4];
 	u32 tmp_sa[SA_AES128_CCM_LEN + 4];
 	struct dynamic_sa_ctl *sa = (struct dynamic_sa_ctl *)tmp_sa;
 	unsigned int len = req->cryptlen;
@@ -508,19 +491,19 @@ static int crypto4xx_aes_gcm_validate_keylen(unsigned int keylen)
 static int crypto4xx_compute_gcm_hash_key_sw(__le32 *hash_start, const u8 *key,
 					     unsigned int keylen)
 {
-	struct crypto_aes_ctx ctx;
+	struct aes_enckey aes;
 	uint8_t src[16] = { 0 };
 	int rc;
 
-	rc = aes_expandkey(&ctx, key, keylen);
+	rc = aes_prepareenckey(&aes, key, keylen);
 	if (rc) {
-		pr_err("aes_expandkey() failed: %d\n", rc);
+		pr_err("aes_prepareenckey() failed: %d\n", rc);
 		return rc;
 	}
 
-	aes_encrypt(&ctx, src, src);
+	aes_encrypt(&aes, src, src);
 	crypto4xx_memcpy_to_le32(hash_start, src, 16);
-	memzero_explicit(&ctx, sizeof(ctx));
+	memzero_explicit(&aes, sizeof(aes));
 	return 0;
 }
 
@@ -615,107 +598,4 @@ int crypto4xx_encrypt_aes_gcm(struct aead_request *req)
 int crypto4xx_decrypt_aes_gcm(struct aead_request *req)
 {
 	return crypto4xx_crypt_aes_gcm(req, true);
-}
-
-/*
- * HASH SHA1 Functions
- */
-static int crypto4xx_hash_alg_init(struct crypto_tfm *tfm,
-				   unsigned int sa_len,
-				   unsigned char ha,
-				   unsigned char hm)
-{
-	struct crypto_alg *alg = tfm->__crt_alg;
-	struct crypto4xx_alg *my_alg;
-	struct crypto4xx_ctx *ctx = crypto_tfm_ctx(tfm);
-	struct dynamic_sa_hash160 *sa;
-	int rc;
-
-	my_alg = container_of(__crypto_ahash_alg(alg), struct crypto4xx_alg,
-			      alg.u.hash);
-	ctx->dev   = my_alg->dev;
-
-	/* Create SA */
-	if (ctx->sa_in || ctx->sa_out)
-		crypto4xx_free_sa(ctx);
-
-	rc = crypto4xx_alloc_sa(ctx, sa_len);
-	if (rc)
-		return rc;
-
-	crypto_ahash_set_reqsize(__crypto_ahash_cast(tfm),
-				 sizeof(struct crypto4xx_ctx));
-	sa = (struct dynamic_sa_hash160 *)ctx->sa_in;
-	set_dynamic_sa_command_0(&sa->ctrl, SA_SAVE_HASH, SA_NOT_SAVE_IV,
-				 SA_NOT_LOAD_HASH, SA_LOAD_IV_FROM_SA,
-				 SA_NO_HEADER_PROC, ha, SA_CIPHER_ALG_NULL,
-				 SA_PAD_TYPE_ZERO, SA_OP_GROUP_BASIC,
-				 SA_OPCODE_HASH, DIR_INBOUND);
-	set_dynamic_sa_command_1(&sa->ctrl, 0, SA_HASH_MODE_HASH,
-				 CRYPTO_FEEDBACK_MODE_NO_FB, SA_EXTENDED_SN_OFF,
-				 SA_SEQ_MASK_OFF, SA_MC_ENABLE,
-				 SA_NOT_COPY_PAD, SA_NOT_COPY_PAYLOAD,
-				 SA_NOT_COPY_HDR);
-	/* Need to zero hash digest in SA */
-	memset(sa->inner_digest, 0, sizeof(sa->inner_digest));
-	memset(sa->outer_digest, 0, sizeof(sa->outer_digest));
-
-	return 0;
-}
-
-int crypto4xx_hash_init(struct ahash_request *req)
-{
-	struct crypto4xx_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
-	int ds;
-	struct dynamic_sa_ctl *sa;
-
-	sa = ctx->sa_in;
-	ds = crypto_ahash_digestsize(
-			__crypto_ahash_cast(req->base.tfm));
-	sa->sa_command_0.bf.digest_len = ds >> 2;
-	sa->sa_command_0.bf.load_hash_state = SA_LOAD_HASH_FROM_SA;
-
-	return 0;
-}
-
-int crypto4xx_hash_update(struct ahash_request *req)
-{
-	struct crypto_ahash *ahash = crypto_ahash_reqtfm(req);
-	struct crypto4xx_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
-	struct scatterlist dst;
-	unsigned int ds = crypto_ahash_digestsize(ahash);
-
-	sg_init_one(&dst, req->result, ds);
-
-	return crypto4xx_build_pd(&req->base, ctx, req->src, &dst,
-				  req->nbytes, NULL, 0, ctx->sa_in,
-				  ctx->sa_len, 0, NULL);
-}
-
-int crypto4xx_hash_final(struct ahash_request *req)
-{
-	return 0;
-}
-
-int crypto4xx_hash_digest(struct ahash_request *req)
-{
-	struct crypto_ahash *ahash = crypto_ahash_reqtfm(req);
-	struct crypto4xx_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
-	struct scatterlist dst;
-	unsigned int ds = crypto_ahash_digestsize(ahash);
-
-	sg_init_one(&dst, req->result, ds);
-
-	return crypto4xx_build_pd(&req->base, ctx, req->src, &dst,
-				  req->nbytes, NULL, 0, ctx->sa_in,
-				  ctx->sa_len, 0, NULL);
-}
-
-/*
- * SHA1 Algorithm
- */
-int crypto4xx_sha1_alg_init(struct crypto_tfm *tfm)
-{
-	return crypto4xx_hash_alg_init(tfm, SA_HASH160_LEN, SA_HASH_ALG_SHA1,
-				       SA_HASH_MODE_HASH);
 }

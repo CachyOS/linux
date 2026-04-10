@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * tps62360.c -- TI tps62360
  *
@@ -6,20 +7,6 @@
  * Copyright (c) 2012, NVIDIA Corporation.
  *
  * Author: Laxman Dewangan <ldewangan@nvidia.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any kind,
- * whether express or implied; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
- * 02111-1307, USA
  */
 
 #include <linux/kernel.h>
@@ -288,7 +275,7 @@ static const struct regmap_config tps62360_regmap_config = {
 	.reg_bits		= 8,
 	.val_bits		= 8,
 	.max_register		= REG_CHIPID,
-	.cache_type		= REGCACHE_RBTREE,
+	.cache_type		= REGCACHE_MAPLE,
 };
 
 static struct tps62360_regulator_platform_data *
@@ -309,17 +296,10 @@ static struct tps62360_regulator_platform_data *
 		return NULL;
 	}
 
-	if (of_find_property(np, "ti,vsel0-state-high", NULL))
-		pdata->vsel0_def_state = 1;
-
-	if (of_find_property(np, "ti,vsel1-state-high", NULL))
-		pdata->vsel1_def_state = 1;
-
-	if (of_find_property(np, "ti,enable-pull-down", NULL))
-		pdata->en_internal_pulldn = true;
-
-	if (of_find_property(np, "ti,enable-vout-discharge", NULL))
-		pdata->en_discharge = true;
+	pdata->vsel0_def_state = of_property_read_bool(np, "ti,vsel0-state-high");
+	pdata->vsel1_def_state = of_property_read_bool(np, "ti,vsel1-state-high");
+	pdata->en_internal_pulldn = of_property_read_bool(np, "ti,enable-pull-down");
+	pdata->en_discharge = of_property_read_bool(np, "ti,enable-vout-discharge");
 
 	return pdata;
 }
@@ -335,9 +315,9 @@ static const struct of_device_id tps62360_of_match[] = {
 MODULE_DEVICE_TABLE(of, tps62360_of_match);
 #endif
 
-static int tps62360_probe(struct i2c_client *client,
-				     const struct i2c_device_id *id)
+static int tps62360_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct regulator_config config = { };
 	struct tps62360_regulator_platform_data *pdata;
 	struct regulator_dev *rdev;
@@ -508,6 +488,7 @@ MODULE_DEVICE_TABLE(i2c, tps62360_id);
 static struct i2c_driver tps62360_i2c_driver = {
 	.driver = {
 		.name = "tps62360",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = of_match_ptr(tps62360_of_match),
 	},
 	.probe = tps62360_probe,

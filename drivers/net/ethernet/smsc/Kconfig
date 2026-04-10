@@ -54,7 +54,7 @@ config SMC91X
 
 config PCMCIA_SMC91C92
 	tristate "SMC 91Cxx PCMCIA support"
-	depends on PCMCIA
+	depends on PCMCIA && HAS_IOPORT
 	select CRC32
 	select MII
 	help
@@ -74,20 +74,6 @@ config EPIC100
 	  which is based on the SMC83c17x (EPIC/100).
 	  More specific information and updates are available from
 	  <http://www.scyld.com/network/epic100.html>.
-
-config SMC911X
-	tristate "SMSC LAN911[5678] support"
-	select CRC32
-	select MII
-	depends on (ARM || SUPERH || COMPILE_TEST)
-	help
-	  This is a driver for SMSC's LAN911x series of Ethernet chipsets
-	  including the new LAN9115, LAN9116, LAN9117, and LAN9118.
-	  Say Y here if you want it compiled into the kernel.
-
-	  This driver is also available as a module. The module will be
-	  called smc911x.  If you want to compile it as a module, say M
-	  here and read <file:Documentation/kbuild/modules.rst>
 
 config SMSC911X
 	tristate "SMSC LAN911x/LAN921x families embedded ethernet support"

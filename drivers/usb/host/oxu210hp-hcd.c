@@ -15,6 +15,7 @@
 #include <linux/ioport.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 #include <linux/errno.h>
 #include <linux/timer.h>
 #include <linux/list.h>
@@ -27,7 +28,7 @@
 #include <linux/iopoll.h>
 
 #include <asm/irq.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <linux/irq.h>
 #include <linux/platform_device.h>
@@ -169,7 +170,7 @@ struct ehci_regs {
 #define FLAG_CF		(1<<0)		/* true: we'll support "high speed" */
 
 	/* PORTSC: offset 0x44 */
-	u32		port_status[0];	/* up to N_PORTS */
+	u32		port_status[];	/* up to N_PORTS */
 /* 31:23 reserved */
 #define PORT_WKOC_E	(1<<22)		/* wake on overcurrent (enable) */
 #define PORT_WKDISC_E	(1<<21)		/* wake on disconnect (enable) */
@@ -194,31 +195,6 @@ struct ehci_regs {
 #define PORT_CSC	(1<<1)		/* connect status change */
 #define PORT_CONNECT	(1<<0)		/* device connected */
 #define PORT_RWC_BITS   (PORT_CSC | PORT_PEC | PORT_OCC)
-} __packed;
-
-/* Appendix C, Debug port ... intended for use with special "debug devices"
- * that can help if there's no serial console.  (nonstandard enumeration.)
- */
-struct ehci_dbg_port {
-	u32	control;
-#define DBGP_OWNER	(1<<30)
-#define DBGP_ENABLED	(1<<28)
-#define DBGP_DONE	(1<<16)
-#define DBGP_INUSE	(1<<10)
-#define DBGP_ERRCODE(x)	(((x)>>7)&0x07)
-#	define DBGP_ERR_BAD	1
-#	define DBGP_ERR_SIGNAL	2
-#define DBGP_ERROR	(1<<6)
-#define DBGP_GO		(1<<5)
-#define DBGP_OUT	(1<<4)
-#define DBGP_LEN(x)	(((x)>>0)&0x0f)
-	u32	pids;
-#define DBGP_PID_GET(x)		(((x)>>16)&0xff)
-#define DBGP_PID_SET(data, tok)	(((data)<<8)|(tok))
-	u32	data03;
-	u32	data47;
-	u32	address;
-#define DBGP_EPADDR(dev, ep)	(((dev)<<8)|(ep))
 } __packed;
 
 #define	QTD_NEXT(dma)	cpu_to_le32((u32)dma)
@@ -910,7 +886,7 @@ static int oxu_buf_alloc(struct oxu_hcd *oxu, struct ehci_qtd *qtd, int len)
 	int a_blocks;	/* blocks allocated */
 	int i, j;
 
-	/* Don't allocte bigger than supported */
+	/* Don't allocate bigger than supported */
 	if (len > BUFFER_SIZE * BUFFER_NUM) {
 		oxu_err(oxu, "buffer too big (%d)\n", len);
 		return -ENOMEM;
@@ -927,7 +903,7 @@ static int oxu_buf_alloc(struct oxu_hcd *oxu, struct ehci_qtd *qtd, int len)
 
 	/* Find a suitable available data buffer */
 	for (i = 0; i < BUFFER_NUM;
-			i += max(a_blocks, (int)oxu->db_used[i])) {
+			i += max_t(int, a_blocks, oxu->db_used[i])) {
 
 		/* Check all the required blocks are available */
 		for (j = 0; j < a_blocks; j++)
@@ -1151,7 +1127,7 @@ static void ehci_mem_cleanup(struct oxu_hcd *oxu)
 		qh_put(oxu->async);
 	oxu->async = NULL;
 
-	del_timer(&oxu->urb_timer);
+	timer_delete(&oxu->urb_timer);
 
 	oxu->periodic = NULL;
 
@@ -1173,7 +1149,7 @@ static int ehci_mem_init(struct oxu_hcd *oxu, gfp_t flags)
 	for (i = 0; i < QTD_NUM; i++)
 		oxu->qtd_used[i] = 0;
 
-	oxu->murb_pool = kcalloc(MURB_NUM, sizeof(struct oxu_murb), flags);
+	oxu->murb_pool = kzalloc_objs(struct oxu_murb, MURB_NUM, flags);
 	if (!oxu->murb_pool)
 		goto fail;
 
@@ -2781,7 +2757,7 @@ static void ehci_port_power(struct oxu_hcd *oxu, int is_on)
 	if (!HCS_PPC(oxu->hcs_params))
 		return;
 
-	oxu_dbg(oxu, "...power%s ports...\n", is_on ? "up" : "down");
+	oxu_dbg(oxu, "...power%s ports...\n", str_up_down(is_on));
 	for (port = HCS_N_PORTS(oxu->hcs_params); port > 0; ) {
 		if (is_on)
 			oxu_hub_control(oxu_to_hcd(oxu), SetPortFeature,
@@ -2979,7 +2955,7 @@ static irqreturn_t oxu_irq(struct usb_hcd *hcd)
 
 static void oxu_watchdog(struct timer_list *t)
 {
-	struct oxu_hcd	*oxu = from_timer(oxu, t, watchdog);
+	struct oxu_hcd	*oxu = timer_container_of(oxu, t, watchdog);
 	unsigned long flags;
 
 	spin_lock_irqsave(&oxu->lock, flags);
@@ -3065,7 +3041,7 @@ static int oxu_hcd_init(struct usb_hcd *hcd)
 		 * make problems:  throughput reduction (!), data errors...
 		 */
 		if (park) {
-			park = min(park, (unsigned) 3);
+			park = min_t(unsigned int, park, 3);
 			temp |= CMD_PARK;
 			temp |= park << 8;
 		}
@@ -3178,7 +3154,7 @@ static void oxu_stop(struct usb_hcd *hcd)
 	ehci_port_power(oxu, 0);
 
 	/* no more interrupts ... */
-	del_timer_sync(&oxu->watchdog);
+	timer_delete_sync(&oxu->watchdog);
 
 	spin_lock_irq(&oxu->lock);
 	if (HC_IS_RUNNING(hcd->state))
@@ -3911,7 +3887,7 @@ static int oxu_bus_suspend(struct usb_hcd *hcd)
 
 	spin_unlock_irq(&oxu->lock);
 	/* turn off now-idle HC */
-	del_timer_sync(&oxu->watchdog);
+	timer_delete_sync(&oxu->watchdog);
 	spin_lock_irq(&oxu->lock);
 	ehci_halt(oxu);
 	hcd->state = HC_STATE_SUSPENDED;
@@ -4230,8 +4206,7 @@ static int oxu_drv_probe(struct platform_device *pdev)
 		return irq;
 	dev_dbg(&pdev->dev, "IRQ resource %d\n", irq);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	base = devm_ioremap_resource(&pdev->dev, res);
+	base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(base)) {
 		ret = PTR_ERR(base);
 		goto error;
@@ -4278,14 +4253,12 @@ static void oxu_remove(struct platform_device *pdev, struct usb_hcd *hcd)
 	usb_put_hcd(hcd);
 }
 
-static int oxu_drv_remove(struct platform_device *pdev)
+static void oxu_drv_remove(struct platform_device *pdev)
 {
 	struct oxu_info *info = platform_get_drvdata(pdev);
 
 	oxu_remove(pdev, info->hcd[0]);
 	oxu_remove(pdev, info->hcd[1]);
-
-	return 0;
 }
 
 static void oxu_drv_shutdown(struct platform_device *pdev)

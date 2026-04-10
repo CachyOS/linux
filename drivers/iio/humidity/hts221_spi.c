@@ -42,20 +42,20 @@ static int hts221_spi_probe(struct spi_device *spi)
 
 static const struct of_device_id hts221_spi_of_match[] = {
 	{ .compatible = "st,hts221", },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, hts221_spi_of_match);
 
 static const struct spi_device_id hts221_spi_id_table[] = {
 	{ HTS221_DEV_NAME },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, hts221_spi_id_table);
 
 static struct spi_driver hts221_driver = {
 	.driver = {
 		.name = "hts221_spi",
-		.pm = &hts221_pm_ops,
+		.pm = pm_sleep_ptr(&hts221_pm_ops),
 		.of_match_table = hts221_spi_of_match,
 	},
 	.probe = hts221_spi_probe,
@@ -66,3 +66,4 @@ module_spi_driver(hts221_driver);
 MODULE_AUTHOR("Lorenzo Bianconi <lorenzo.bianconi@st.com>");
 MODULE_DESCRIPTION("STMicroelectronics hts221 spi driver");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS("IIO_HTS221");

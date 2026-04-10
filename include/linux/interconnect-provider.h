@@ -33,10 +33,10 @@ struct icc_node_data {
  */
 struct icc_onecell_data {
 	unsigned int num_nodes;
-	struct icc_node *nodes[];
+	struct icc_node *nodes[] __counted_by(num_nodes);
 };
 
-struct icc_node *of_icc_xlate_onecell(struct of_phandle_args *spec,
+struct icc_node *of_icc_xlate_onecell(const struct of_phandle_args *spec,
 				      void *data);
 
 /**
@@ -65,8 +65,9 @@ struct icc_provider {
 			 u32 peak_bw, u32 *agg_avg, u32 *agg_peak);
 	void (*pre_aggregate)(struct icc_node *node);
 	int (*get_bw)(struct icc_node *node, u32 *avg, u32 *peak);
-	struct icc_node* (*xlate)(struct of_phandle_args *spec, void *data);
-	struct icc_node_data* (*xlate_extended)(struct of_phandle_args *spec, void *data);
+	struct icc_node* (*xlate)(const struct of_phandle_args *spec, void *data);
+	struct icc_node_data* (*xlate_extended)(const struct of_phandle_args *spec,
+						void *data);
 	struct device		*dev;
 	int			users;
 	bool			inter_set;
@@ -115,16 +116,19 @@ struct icc_node {
 
 int icc_std_aggregate(struct icc_node *node, u32 tag, u32 avg_bw,
 		      u32 peak_bw, u32 *agg_avg, u32 *agg_peak);
+struct icc_node *icc_node_create_dyn(void);
 struct icc_node *icc_node_create(int id);
 void icc_node_destroy(int id);
+int icc_node_set_name(struct icc_node *node, const struct icc_provider *provider, const char *name);
+int icc_link_nodes(struct icc_node *src_node, struct icc_node **dst_node);
 int icc_link_create(struct icc_node *node, const int dst_id);
-int icc_link_destroy(struct icc_node *src, struct icc_node *dst);
 void icc_node_add(struct icc_node *node, struct icc_provider *provider);
 void icc_node_del(struct icc_node *node);
 int icc_nodes_remove(struct icc_provider *provider);
-int icc_provider_add(struct icc_provider *provider);
-int icc_provider_del(struct icc_provider *provider);
-struct icc_node_data *of_icc_get_from_provider(struct of_phandle_args *spec);
+void icc_provider_init(struct icc_provider *provider);
+int icc_provider_register(struct icc_provider *provider);
+void icc_provider_deregister(struct icc_provider *provider);
+struct icc_node_data *of_icc_get_from_provider(const struct of_phandle_args *spec);
 void icc_sync_state(struct device *dev);
 
 #else
@@ -133,6 +137,11 @@ static inline int icc_std_aggregate(struct icc_node *node, u32 tag, u32 avg_bw,
 				    u32 peak_bw, u32 *agg_avg, u32 *agg_peak)
 {
 	return -ENOTSUPP;
+}
+
+static inline struct icc_node *icc_node_create_dyn(void)
+{
+	return ERR_PTR(-EOPNOTSUPP);
 }
 
 static inline struct icc_node *icc_node_create(int id)
@@ -144,12 +153,18 @@ static inline void icc_node_destroy(int id)
 {
 }
 
-static inline int icc_link_create(struct icc_node *node, const int dst_id)
+static inline int icc_node_set_name(struct icc_node *node, const struct icc_provider *provider,
+				    const char *name)
 {
-	return -ENOTSUPP;
+	return -EOPNOTSUPP;
 }
 
-static inline int icc_link_destroy(struct icc_node *src, struct icc_node *dst)
+static inline int icc_link_nodes(struct icc_node *src_node, struct icc_node **dst_node)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int icc_link_create(struct icc_node *node, const int dst_id)
 {
 	return -ENOTSUPP;
 }
@@ -167,17 +182,16 @@ static inline int icc_nodes_remove(struct icc_provider *provider)
 	return -ENOTSUPP;
 }
 
-static inline int icc_provider_add(struct icc_provider *provider)
+static inline void icc_provider_init(struct icc_provider *provider) { }
+
+static inline int icc_provider_register(struct icc_provider *provider)
 {
 	return -ENOTSUPP;
 }
 
-static inline int icc_provider_del(struct icc_provider *provider)
-{
-	return -ENOTSUPP;
-}
+static inline void icc_provider_deregister(struct icc_provider *provider) { }
 
-static inline struct icc_node_data *of_icc_get_from_provider(struct of_phandle_args *spec)
+static inline struct icc_node_data *of_icc_get_from_provider(const struct of_phandle_args *spec)
 {
 	return ERR_PTR(-ENOTSUPP);
 }

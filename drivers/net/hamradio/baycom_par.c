@@ -427,7 +427,7 @@ static int baycom_ioctl(struct net_device *dev, void __user *data,
 		break;
 
 	case HDLCDRVCTL_GETMODE:
-		strcpy(hi->data.modename, bc->options ? "par96" : "picpar");
+		strscpy(hi->data.modename, bc->options ? "par96" : "picpar");
 		if (copy_to_user(data, hi, sizeof(struct hdlcdrv_ioctl)))
 			return -EFAULT;
 		return 0;
@@ -439,7 +439,7 @@ static int baycom_ioctl(struct net_device *dev, void __user *data,
 		return baycom_setmode(bc, hi->data.modename);
 
 	case HDLCDRVCTL_MODELIST:
-		strcpy(hi->data.modename, "par96,picpar");
+		strscpy(hi->data.modename, "par96,picpar");
 		if (copy_to_user(data, hi, sizeof(struct hdlcdrv_ioctl)))
 			return -EFAULT;
 		return 0;
@@ -503,7 +503,6 @@ static int baycom_par_probe(struct pardevice *par_dev)
 static struct parport_driver baycom_par_driver = {
 	.name = "bcp",
 	.probe = baycom_par_probe,
-	.devmodel = true,
 };
 
 static int __init init_baycompar(void)

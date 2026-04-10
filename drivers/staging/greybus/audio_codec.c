@@ -807,7 +807,7 @@ int gbaudio_register_module(struct gbaudio_module_info *module)
 {
 	int ret;
 	struct snd_soc_component *comp;
-	struct snd_card *card;
+	struct snd_soc_dapm_context *dapm;
 	struct gbaudio_jack *jack = NULL;
 
 	if (!gbcodec) {
@@ -816,37 +816,37 @@ int gbaudio_register_module(struct gbaudio_module_info *module)
 	}
 
 	comp = gbcodec->component;
-	card = comp->card->snd_card;
+	dapm = snd_soc_component_to_dapm(comp);
 
-	down_write(&card->controls_rwsem);
+	mutex_lock(&gbcodec->register_mutex);
 
 	if (module->num_dais) {
 		dev_err(gbcodec->dev,
 			"%d:DAIs not supported via gbcodec driver\n",
 			module->num_dais);
-		up_write(&card->controls_rwsem);
+		mutex_unlock(&gbcodec->register_mutex);
 		return -EINVAL;
 	}
 
 	ret = gbaudio_init_jack(module, comp->card);
 	if (ret) {
-		up_write(&card->controls_rwsem);
+		mutex_unlock(&gbcodec->register_mutex);
 		return ret;
 	}
 
 	if (module->dapm_widgets)
-		snd_soc_dapm_new_controls(&comp->dapm, module->dapm_widgets,
+		snd_soc_dapm_new_controls(dapm, module->dapm_widgets,
 					  module->num_dapm_widgets);
 	if (module->controls)
 		snd_soc_add_component_controls(comp, module->controls,
 					       module->num_controls);
 	if (module->dapm_routes)
-		snd_soc_dapm_add_routes(&comp->dapm, module->dapm_routes,
+		snd_soc_dapm_add_routes(dapm, module->dapm_routes,
 					module->num_dapm_routes);
 
 	/* card already instantiated, create widgets here only */
 	if (comp->card->instantiated) {
-		gbaudio_dapm_link_component_dai_widgets(comp->card, &comp->dapm);
+		gbaudio_dapm_link_component_dai_widgets(comp->card, dapm);
 #ifdef CONFIG_SND_JACK
 		/*
 		 * register jack devices for this module
@@ -867,7 +867,7 @@ int gbaudio_register_module(struct gbaudio_module_info *module)
 		ret = snd_soc_dapm_new_widgets(comp->card);
 	dev_dbg(comp->dev, "Registered %s module\n", module->name);
 
-	up_write(&card->controls_rwsem);
+	mutex_unlock(&gbcodec->register_mutex);
 	return ret;
 }
 EXPORT_SYMBOL(gbaudio_register_module);
@@ -935,13 +935,12 @@ static void gbaudio_codec_cleanup(struct gbaudio_module_info *module)
 void gbaudio_unregister_module(struct gbaudio_module_info *module)
 {
 	struct snd_soc_component *comp = gbcodec->component;
-	struct snd_card *card = comp->card->snd_card;
 	struct gbaudio_jack *jack, *n;
 	int mask;
 
 	dev_dbg(comp->dev, "Unregister %s module\n", module->name);
 
-	down_write(&card->controls_rwsem);
+	mutex_lock(&gbcodec->register_mutex);
 	mutex_lock(&gbcodec->lock);
 	gbaudio_codec_cleanup(module);
 	list_del(&module->list);
@@ -969,30 +968,32 @@ void gbaudio_unregister_module(struct gbaudio_module_info *module)
 #endif
 
 	if (module->dapm_routes) {
+		struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(comp);
+
 		dev_dbg(comp->dev, "Removing %d routes\n",
 			module->num_dapm_routes);
-		snd_soc_dapm_del_routes(&comp->dapm, module->dapm_routes,
+		snd_soc_dapm_del_routes(dapm, module->dapm_routes,
 					module->num_dapm_routes);
 	}
 	if (module->controls) {
 		dev_dbg(comp->dev, "Removing %d controls\n",
 			module->num_controls);
 		/* release control semaphore */
-		up_write(&card->controls_rwsem);
 		gbaudio_remove_component_controls(comp, module->controls,
 						  module->num_controls);
-		down_write(&card->controls_rwsem);
 	}
 	if (module->dapm_widgets) {
+		struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(comp);
+
 		dev_dbg(comp->dev, "Removing %d widgets\n",
 			module->num_dapm_widgets);
-		gbaudio_dapm_free_controls(&comp->dapm, module->dapm_widgets,
+		gbaudio_dapm_free_controls(dapm, module->dapm_widgets,
 					   module->num_dapm_widgets);
 	}
 
 	dev_dbg(comp->dev, "Unregistered %s module\n", module->name);
 
-	up_write(&card->controls_rwsem);
+	mutex_unlock(&gbcodec->register_mutex);
 }
 EXPORT_SYMBOL(gbaudio_unregister_module);
 
@@ -1012,6 +1013,7 @@ static int gbcodec_probe(struct snd_soc_component *comp)
 	info->dev = comp->dev;
 	INIT_LIST_HEAD(&info->module_list);
 	mutex_init(&info->lock);
+	mutex_init(&info->register_mutex);
 	INIT_LIST_HEAD(&info->dai_list);
 
 	/* init dai_list used to maintain runtime stream info */
@@ -1075,11 +1077,6 @@ static int gbaudio_codec_probe(struct platform_device *pdev)
 			gbaudio_dai, ARRAY_SIZE(gbaudio_dai));
 }
 
-static int gbaudio_codec_remove(struct platform_device *pdev)
-{
-	return 0;
-}
-
 static const struct of_device_id greybus_asoc_machine_of_match[]  = {
 	{ .compatible = "toshiba,apb-dummy-codec", },
 	{},
@@ -1094,7 +1091,6 @@ static struct platform_driver gbaudio_codec_driver = {
 		.of_match_table = greybus_asoc_machine_of_match,
 	},
 	.probe = gbaudio_codec_probe,
-	.remove = gbaudio_codec_remove,
 };
 module_platform_driver(gbaudio_codec_driver);
 

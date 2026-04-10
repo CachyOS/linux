@@ -29,11 +29,11 @@ static int switch_fwnode_match(struct device *dev, const void *fwnode)
 	if (!is_typec_switch_dev(dev))
 		return 0;
 
-	return dev_fwnode(dev) == fwnode;
+	return device_match_fwnode(dev, fwnode);
 }
 
-static void *typec_switch_match(struct fwnode_handle *fwnode, const char *id,
-				void *data)
+static void *typec_switch_match(const struct fwnode_handle *fwnode,
+				const char *id, void *data)
 {
 	struct device *dev;
 
@@ -76,7 +76,7 @@ struct typec_switch *fwnode_typec_switch_get(struct fwnode_handle *fwnode)
 	int err;
 	int i;
 
-	sw = kzalloc(sizeof(*sw), GFP_KERNEL);
+	sw = kzalloc_obj(*sw);
 	if (!sw)
 		return ERR_PTR(-ENOMEM);
 
@@ -171,7 +171,7 @@ typec_switch_register(struct device *parent,
 	if (!desc || !desc->set)
 		return ERR_PTR(-EINVAL);
 
-	sw_dev = kzalloc(sizeof(*sw_dev), GFP_KERNEL);
+	sw_dev = kzalloc_obj(*sw_dev);
 	if (!sw_dev)
 		return ERR_PTR(-ENOMEM);
 
@@ -214,7 +214,7 @@ int typec_switch_set(struct typec_switch *sw,
 		sw_dev = sw->sw_devs[i];
 
 		ret = sw_dev->set(sw_dev, orientation);
-		if (ret)
+		if (ret && ret != -EOPNOTSUPP)
 			return ret;
 	}
 
@@ -259,62 +259,25 @@ static int mux_fwnode_match(struct device *dev, const void *fwnode)
 	if (!is_typec_mux_dev(dev))
 		return 0;
 
-	return dev_fwnode(dev) == fwnode;
+	return device_match_fwnode(dev, fwnode);
 }
 
-static void *typec_mux_match(struct fwnode_handle *fwnode, const char *id,
-			     void *data)
+static void *typec_mux_match(const struct fwnode_handle *fwnode,
+			     const char *id, void *data)
 {
-	const struct typec_altmode_desc *desc = data;
 	struct device *dev;
-	bool match;
-	int nval;
-	u16 *val;
-	int ret;
-	int i;
 
 	/*
-	 * Check has the identifier already been "consumed". If it
-	 * has, no need to do any extra connection identification.
+	 * Device graph (OF graph) does not give any means to identify the
+	 * device type or the device class of the remote port parent that @fwnode
+	 * represents, so in order to identify the type or the class of @fwnode
+	 * an additional device property is needed. With typec muxes the
+	 * property is named "mode-switch" (@id). The value of the device
+	 * property is ignored.
 	 */
-	match = !id;
-	if (match)
-		goto find_mux;
-
-	/* Accessory Mode muxes */
-	if (!desc) {
-		match = fwnode_property_present(fwnode, "accessory");
-		if (match)
-			goto find_mux;
-		return NULL;
-	}
-
-	/* Alternate Mode muxes */
-	nval = fwnode_property_count_u16(fwnode, "svid");
-	if (nval <= 0)
+	if (id && !fwnode_property_present(fwnode, id))
 		return NULL;
 
-	val = kcalloc(nval, sizeof(*val), GFP_KERNEL);
-	if (!val)
-		return ERR_PTR(-ENOMEM);
-
-	ret = fwnode_property_read_u16_array(fwnode, "svid", val, nval);
-	if (ret < 0) {
-		kfree(val);
-		return ERR_PTR(ret);
-	}
-
-	for (i = 0; i < nval; i++) {
-		match = val[i] == desc->svid;
-		if (match) {
-			kfree(val);
-			goto find_mux;
-		}
-	}
-	kfree(val);
-	return NULL;
-
-find_mux:
 	dev = class_find_device(&typec_mux_class, NULL, fwnode,
 				mux_fwnode_match);
 
@@ -324,15 +287,13 @@ find_mux:
 /**
  * fwnode_typec_mux_get - Find USB Type-C Multiplexer
  * @fwnode: The caller device node
- * @desc: Alt Mode description
  *
  * Finds a mux linked to the caller. This function is primarily meant for the
  * Type-C drivers. Returns a reference to the mux on success, NULL if no
  * matching connection was found, or ERR_PTR(-EPROBE_DEFER) when a connection
  * was found but the mux has not been enumerated yet.
  */
-struct typec_mux *fwnode_typec_mux_get(struct fwnode_handle *fwnode,
-				       const struct typec_altmode_desc *desc)
+struct typec_mux *fwnode_typec_mux_get(struct fwnode_handle *fwnode)
 {
 	struct typec_mux_dev *mux_devs[TYPEC_MUX_MAX_DEVS];
 	struct typec_mux *mux;
@@ -340,12 +301,12 @@ struct typec_mux *fwnode_typec_mux_get(struct fwnode_handle *fwnode,
 	int err;
 	int i;
 
-	mux = kzalloc(sizeof(*mux), GFP_KERNEL);
+	mux = kzalloc_obj(*mux);
 	if (!mux)
 		return ERR_PTR(-ENOMEM);
 
 	count = fwnode_connection_find_matches(fwnode, "mode-switch",
-					       (void *)desc, typec_mux_match,
+					       NULL, typec_mux_match,
 					       (void **)mux_devs,
 					       ARRAY_SIZE(mux_devs));
 	if (count <= 0) {
@@ -417,7 +378,7 @@ int typec_mux_set(struct typec_mux *mux, struct typec_mux_state *state)
 		mux_dev = mux->mux_devs[i];
 
 		ret = mux_dev->set(mux_dev, state);
-		if (ret)
+		if (ret && ret != -EOPNOTSUPP)
 			return ret;
 	}
 
@@ -454,7 +415,7 @@ typec_mux_register(struct device *parent, const struct typec_mux_desc *desc)
 	if (!desc || !desc->set)
 		return ERR_PTR(-EINVAL);
 
-	mux_dev = kzalloc(sizeof(*mux_dev), GFP_KERNEL);
+	mux_dev = kzalloc_obj(*mux_dev);
 	if (!mux_dev)
 		return ERR_PTR(-ENOMEM);
 
@@ -508,7 +469,6 @@ void *typec_mux_get_drvdata(struct typec_mux_dev *mux_dev)
 }
 EXPORT_SYMBOL_GPL(typec_mux_get_drvdata);
 
-struct class typec_mux_class = {
+const struct class typec_mux_class = {
 	.name = "typec_mux",
-	.owner = THIS_MODULE,
 };

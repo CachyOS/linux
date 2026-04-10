@@ -6,6 +6,7 @@
 
 #include <drm/drm_crtc.h>
 #include <drm/drm_flip_work.h>
+#include <drm/drm_managed.h>
 #include <drm/drm_mode.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
@@ -16,7 +17,6 @@
 struct mdp4_crtc {
 	struct drm_crtc base;
 	char name[8];
-	int id;
 	int ovlp;
 	enum mdp4_dma dma;
 	bool enabled;
@@ -119,18 +119,8 @@ static void unref_cursor_worker(struct drm_flip_work *work, void *val)
 	struct mdp4_kms *mdp4_kms = get_kms(&mdp4_crtc->base);
 	struct msm_kms *kms = &mdp4_kms->base.base;
 
-	msm_gem_unpin_iova(val, kms->aspace);
+	msm_gem_unpin_iova(val, kms->vm);
 	drm_gem_object_put(val);
-}
-
-static void mdp4_crtc_destroy(struct drm_crtc *crtc)
-{
-	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
-
-	drm_crtc_cleanup(crtc);
-	drm_flip_work_cleanup(&mdp4_crtc->unref_cursor_work);
-
-	kfree(mdp4_crtc);
 }
 
 /* statically (for now) map planes to mixer stage (z-order): */
@@ -191,8 +181,8 @@ static void blend_setup(struct drm_crtc *crtc)
 		enum mdp4_pipe pipe_id = mdp4_plane_pipe(plane);
 		int idx = idxs[pipe_id];
 		if (idx > 0) {
-			const struct mdp_format *format =
-					to_mdp_format(msm_framebuffer_format(plane->state->fb));
+			const struct msm_format *format =
+					msm_framebuffer_format(plane->state->fb);
 			alpha[idx-1] = format->alpha_enable;
 		}
 	}
@@ -269,6 +259,7 @@ static void mdp4_crtc_atomic_disable(struct drm_crtc *crtc,
 {
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	struct mdp4_kms *mdp4_kms = get_kms(crtc);
+	unsigned long flags;
 
 	DBG("%s", mdp4_crtc->name);
 
@@ -280,6 +271,14 @@ static void mdp4_crtc_atomic_disable(struct drm_crtc *crtc,
 
 	mdp_irq_unregister(&mdp4_kms->base, &mdp4_crtc->err);
 	mdp4_disable(mdp4_kms);
+
+	if (crtc->state->event && !crtc->state->active) {
+		WARN_ON(mdp4_crtc->event);
+		spin_lock_irqsave(&mdp4_kms->dev->event_lock, flags);
+		drm_crtc_send_vblank_event(crtc, crtc->state->event);
+		crtc->state->event = NULL;
+		spin_unlock_irqrestore(&mdp4_kms->dev->event_lock, flags);
+	}
 
 	mdp4_crtc->enabled = false;
 }
@@ -369,7 +368,7 @@ static void update_cursor(struct drm_crtc *crtc)
 		if (next_bo) {
 			/* take a obj ref + iova ref when we start scanning out: */
 			drm_gem_object_get(next_bo);
-			msm_gem_get_and_pin_iova(next_bo, kms->aspace, &iova);
+			msm_gem_get_and_pin_iova(next_bo, kms->vm, &iova);
 
 			/* enable cursor: */
 			mdp4_write(mdp4_kms, REG_MDP4_DMA_CURSOR_SIZE(dma),
@@ -427,7 +426,7 @@ static int mdp4_crtc_cursor_set(struct drm_crtc *crtc,
 	}
 
 	if (cursor_bo) {
-		ret = msm_gem_get_and_pin_iova(cursor_bo, kms->aspace, &iova);
+		ret = msm_gem_get_and_pin_iova(cursor_bo, kms->vm, &iova);
 		if (ret)
 			goto fail;
 	} else {
@@ -475,7 +474,6 @@ static int mdp4_crtc_cursor_move(struct drm_crtc *crtc, int x, int y)
 
 static const struct drm_crtc_funcs mdp4_crtc_funcs = {
 	.set_config = drm_atomic_helper_set_config,
-	.destroy = mdp4_crtc_destroy,
 	.page_flip = drm_atomic_helper_page_flip,
 	.cursor_set = mdp4_crtc_cursor_set,
 	.cursor_move = mdp4_crtc_cursor_move,
@@ -512,7 +510,7 @@ static void mdp4_crtc_vblank_irq(struct mdp_irq *irq, uint32_t irqstatus)
 
 	if (pending & PENDING_CURSOR) {
 		update_cursor(crtc);
-		drm_flip_work_commit(&mdp4_crtc->unref_cursor_work, priv->wq);
+		drm_flip_work_commit(&mdp4_crtc->unref_cursor_work, priv->kms->wq);
 	}
 }
 
@@ -529,18 +527,19 @@ static void mdp4_crtc_wait_for_flush_done(struct drm_crtc *crtc)
 	struct drm_device *dev = crtc->dev;
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	struct mdp4_kms *mdp4_kms = get_kms(crtc);
+	wait_queue_head_t *queue = drm_crtc_vblank_waitqueue(crtc);
 	int ret;
 
 	ret = drm_crtc_vblank_get(crtc);
 	if (ret)
 		return;
 
-	ret = wait_event_timeout(dev->vblank[drm_crtc_index(crtc)].queue,
+	ret = wait_event_timeout(*queue,
 		!(mdp4_read(mdp4_kms, REG_MDP4_OVERLAY_FLUSH) &
 			mdp4_crtc->flushed_mask),
 		msecs_to_jiffies(50));
 	if (ret <= 0)
-		dev_warn(dev->dev, "vblank time out, crtc=%d\n", mdp4_crtc->id);
+		dev_warn(dev->dev, "vblank time out, crtc=%s\n", mdp4_crtc->base.name);
 
 	mdp4_crtc->flushed_mask = 0;
 
@@ -616,21 +615,29 @@ static const char *dma_names[] = {
 		"DMA_P", "DMA_S", "DMA_E",
 };
 
+static void mdp4_crtc_flip_cleanup(struct drm_device *dev, void *ptr)
+{
+	struct mdp4_crtc *mdp4_crtc = ptr;
+
+	drm_flip_work_cleanup(&mdp4_crtc->unref_cursor_work);
+}
+
 /* initialize crtc */
 struct drm_crtc *mdp4_crtc_init(struct drm_device *dev,
-		struct drm_plane *plane, int id, int ovlp_id,
+		struct drm_plane *plane, int ovlp_id,
 		enum mdp4_dma dma_id)
 {
 	struct drm_crtc *crtc = NULL;
 	struct mdp4_crtc *mdp4_crtc;
+	int ret;
 
-	mdp4_crtc = kzalloc(sizeof(*mdp4_crtc), GFP_KERNEL);
-	if (!mdp4_crtc)
-		return ERR_PTR(-ENOMEM);
+	mdp4_crtc = drmm_crtc_alloc_with_planes(dev, struct mdp4_crtc, base,
+						plane, NULL,
+						&mdp4_crtc_funcs, NULL);
+	if (IS_ERR(mdp4_crtc))
+		return ERR_CAST(mdp4_crtc);
 
 	crtc = &mdp4_crtc->base;
-
-	mdp4_crtc->id = id;
 
 	mdp4_crtc->ovlp = ovlp_id;
 	mdp4_crtc->dma = dma_id;
@@ -648,9 +655,10 @@ struct drm_crtc *mdp4_crtc_init(struct drm_device *dev,
 
 	drm_flip_work_init(&mdp4_crtc->unref_cursor_work,
 			"unref cursor", unref_cursor_worker);
+	ret = drmm_add_action_or_reset(dev, mdp4_crtc_flip_cleanup, mdp4_crtc);
+	if (ret)
+		return ERR_PTR(ret);
 
-	drm_crtc_init_with_planes(dev, crtc, plane, NULL, &mdp4_crtc_funcs,
-				  NULL);
 	drm_crtc_helper_add(crtc, &mdp4_crtc_helper_funcs);
 
 	return crtc;

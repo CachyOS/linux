@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (C) 2018-2019, Intel Corporation. */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/crc32.h>
 #include <linux/device.h>
 #include <linux/firmware.h>
@@ -287,7 +287,7 @@ pldm_parse_desc_tlvs(struct pldmfw_priv *data, struct pldmfw_record *record, u8 
 		if (err)
 			return err;
 
-		desc = kzalloc(sizeof(*desc), GFP_KERNEL);
+		desc = kzalloc_obj(*desc);
 		if (!desc)
 			return -ENOMEM;
 
@@ -328,7 +328,7 @@ pldm_parse_one_record(struct pldmfw_priv *data,
 	int i;
 
 	/* Make a copy and insert it into the record list */
-	record = kzalloc(sizeof(*record), GFP_KERNEL);
+	record = kzalloc_obj(*record);
 	if (!record)
 		return -ENOMEM;
 
@@ -465,7 +465,7 @@ static int pldm_parse_components(struct pldmfw_priv *data)
 		if (err)
 			return err;
 
-		component = kzalloc(sizeof(*component), GFP_KERNEL);
+		component = kzalloc_obj(*component);
 		if (!component)
 			return -ENOMEM;
 
@@ -481,8 +481,16 @@ static int pldm_parse_components(struct pldmfw_priv *data)
 		component->component_data = data->fw->data + offset;
 		component->component_size = size;
 
+		if (data->context->mode == PLDMFW_UPDATE_MODE_SINGLE_COMPONENT &&
+		    data->context->component_identifier != component->identifier)
+			continue;
+
 		list_add_tail(&component->entry, &data->components);
 	}
+
+	if (data->context->mode == PLDMFW_UPDATE_MODE_SINGLE_COMPONENT &&
+	    list_empty(&data->components))
+		return -ENOENT;
 
 	header_crc_ptr = data->fw->data + data->offset;
 
@@ -720,6 +728,9 @@ pldm_send_package_data(struct pldmfw_priv *data)
 	struct pldmfw_record *record = data->matching_record;
 	const struct pldmfw_ops *ops = data->context->ops;
 
+	if (!ops->send_package_data)
+		return 0;
+
 	return ops->send_package_data(data->context, record->package_data,
 				      record->package_data_len);
 }
@@ -745,6 +756,9 @@ pldm_send_component_tables(struct pldmfw_priv *data)
 
 		/* Skip components which are not intended for this device */
 		if (!test_bit(index, bitmap))
+			continue;
+
+		if (!data->context->ops->send_component_table)
 			continue;
 
 		/* determine whether this is the start, middle, end, or both
@@ -834,7 +848,7 @@ int pldmfw_flash_image(struct pldmfw *context, const struct firmware *fw)
 	struct pldmfw_priv *data;
 	int err;
 
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = kzalloc_obj(*data);
 	if (!data)
 		return -ENOMEM;
 
@@ -875,5 +889,4 @@ out_release_data:
 EXPORT_SYMBOL(pldmfw_flash_image);
 
 MODULE_AUTHOR("Jacob Keller <jacob.e.keller@intel.com>");
-MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("PLDM firmware flash update library");

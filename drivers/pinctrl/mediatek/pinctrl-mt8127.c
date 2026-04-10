@@ -8,7 +8,6 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/regmap.h>
 #include <dt-bindings/pinctrl/mt65xx.h>
@@ -286,6 +285,7 @@ static const struct mtk_pinctrl_devdata mt8127_pinctrl_data = {
 		.ports     = 6,
 		.ap_num    = 143,
 		.db_cnt    = 16,
+		.db_time = debounce_time_mt2701,
 	},
 };
 

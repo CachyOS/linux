@@ -6,24 +6,16 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
-#include <linux/pinctrl/pinctrl.h>
 
 #include "pinctrl-msm.h"
-
-#define FUNCTION(fname)					\
-	[msm_mux_##fname] = {				\
-		.name = #fname,				\
-		.groups = fname##_groups,		\
-		.ngroups = ARRAY_SIZE(fname##_groups),	\
-	}
 
 #define REG_SIZE 0x1000
 
 #define PINGROUP(id, f1, f2, f3, f4, f5, f6, f7, f8, f9)	\
 	{						\
-		.name = "gpio" #id,			\
-		.pins = gpio##id##_pins,		\
-		.npins = (unsigned int)ARRAY_SIZE(gpio##id##_pins),	\
+		.grp = PINCTRL_PINGROUP("gpio" #id, 	\
+			gpio##id##_pins, 		\
+			ARRAY_SIZE(gpio##id##_pins)),	\
 		.funcs = (int[]){			\
 			msm_mux_gpio, /* gpio mode */	\
 			msm_mux_##f1,			\
@@ -45,6 +37,8 @@
 		.mux_bit = 2,			\
 		.pull_bit = 0,			\
 		.drv_bit = 6,			\
+		.egpio_enable = 12,		\
+		.egpio_present = 11,		\
 		.oe_bit = 9,			\
 		.in_bit = 0,			\
 		.out_bit = 1,			\
@@ -60,9 +54,9 @@
 
 #define SDC_QDSD_PINGROUP(pg_name, ctl, pull, drv)	\
 	{					        \
-		.name = #pg_name,			\
-		.pins = pg_name##_pins,			\
-		.npins = (unsigned int)ARRAY_SIZE(pg_name##_pins),	\
+		.grp = PINCTRL_PINGROUP(#pg_name, 	\
+			pg_name##_pins, 		\
+			ARRAY_SIZE(pg_name##_pins)),	\
 		.ctl_reg = ctl,				\
 		.io_reg = 0,				\
 		.intr_cfg_reg = 0,			\
@@ -85,9 +79,9 @@
 
 #define UFS_RESET(pg_name, offset)				\
 	{					        \
-		.name = #pg_name,			\
-		.pins = pg_name##_pins,			\
-		.npins = (unsigned int)ARRAY_SIZE(pg_name##_pins),	\
+		.grp = PINCTRL_PINGROUP(#pg_name, 	\
+			pg_name##_pins, 		\
+			ARRAY_SIZE(pg_name##_pins)),	\
 		.ctl_reg = offset,			\
 		.io_reg = offset + 0x4,			\
 		.intr_cfg_reg = 0,			\
@@ -173,6 +167,10 @@ static const struct pinctrl_pin_desc qcm2290_pins[] = {
 	PINCTRL_PIN(62, "GPIO_62"),
 	PINCTRL_PIN(63, "GPIO_63"),
 	PINCTRL_PIN(64, "GPIO_64"),
+	PINCTRL_PIN(65, "GPIO_65"),
+	PINCTRL_PIN(66, "GPIO_66"),
+	PINCTRL_PIN(67, "GPIO_67"),
+	PINCTRL_PIN(68, "GPIO_68"),
 	PINCTRL_PIN(69, "GPIO_69"),
 	PINCTRL_PIN(70, "GPIO_70"),
 	PINCTRL_PIN(71, "GPIO_71"),
@@ -187,12 +185,17 @@ static const struct pinctrl_pin_desc qcm2290_pins[] = {
 	PINCTRL_PIN(80, "GPIO_80"),
 	PINCTRL_PIN(81, "GPIO_81"),
 	PINCTRL_PIN(82, "GPIO_82"),
+	PINCTRL_PIN(83, "GPIO_83"),
+	PINCTRL_PIN(84, "GPIO_84"),
+	PINCTRL_PIN(85, "GPIO_85"),
 	PINCTRL_PIN(86, "GPIO_86"),
 	PINCTRL_PIN(87, "GPIO_87"),
 	PINCTRL_PIN(88, "GPIO_88"),
 	PINCTRL_PIN(89, "GPIO_89"),
 	PINCTRL_PIN(90, "GPIO_90"),
 	PINCTRL_PIN(91, "GPIO_91"),
+	PINCTRL_PIN(92, "GPIO_92"),
+	PINCTRL_PIN(93, "GPIO_93"),
 	PINCTRL_PIN(94, "GPIO_94"),
 	PINCTRL_PIN(95, "GPIO_95"),
 	PINCTRL_PIN(96, "GPIO_96"),
@@ -395,6 +398,7 @@ enum qcm2290_functions {
 	msm_mux_ddr_pxi1,
 	msm_mux_ddr_pxi2,
 	msm_mux_ddr_pxi3,
+	msm_mux_egpio,
 	msm_mux_gcc_gp1,
 	msm_mux_gcc_gp2,
 	msm_mux_gcc_gp3,
@@ -824,6 +828,13 @@ static const char * const sd_write_groups[] = {
 static const char * const jitter_bist_groups[] = {
 	"gpio96", "gpio97",
 };
+static const char * const egpio_groups[] = {
+	"gpio98", "gpio99", "gpio100", "gpio101", "gpio102", "gpio103",
+	"gpio104", "gpio105", "gpio106", "gpio107", "gpio108", "gpio109",
+	"gpio110", "gpio111", "gpio112", "gpio113", "gpio114", "gpio115",
+	"gpio116", "gpio117", "gpio118", "gpio119", "gpio120", "gpio121",
+	"gpio122", "gpio123", "gpio124", "gpio125", "gpio126",
+};
 static const char * const ddr_pxi2_groups[] = {
 	"gpio102", "gpio103",
 };
@@ -837,108 +848,109 @@ static const char * const pwm_9_groups[] = {
 	"gpio115",
 };
 
-static const struct msm_function qcm2290_functions[] = {
-	FUNCTION(adsp_ext),
-	FUNCTION(agera_pll),
-	FUNCTION(atest),
-	FUNCTION(cam_mclk),
-	FUNCTION(cci_async),
-	FUNCTION(cci_i2c),
-	FUNCTION(cci_timer0),
-	FUNCTION(cci_timer1),
-	FUNCTION(cci_timer2),
-	FUNCTION(cci_timer3),
-	FUNCTION(char_exec),
-	FUNCTION(cri_trng),
-	FUNCTION(cri_trng0),
-	FUNCTION(cri_trng1),
-	FUNCTION(dac_calib),
-	FUNCTION(dbg_out),
-	FUNCTION(ddr_bist),
-	FUNCTION(ddr_pxi0),
-	FUNCTION(ddr_pxi1),
-	FUNCTION(ddr_pxi2),
-	FUNCTION(ddr_pxi3),
-	FUNCTION(gcc_gp1),
-	FUNCTION(gcc_gp2),
-	FUNCTION(gcc_gp3),
-	FUNCTION(gpio),
-	FUNCTION(gp_pdm0),
-	FUNCTION(gp_pdm1),
-	FUNCTION(gp_pdm2),
-	FUNCTION(gsm0_tx),
-	FUNCTION(gsm1_tx),
-	FUNCTION(jitter_bist),
-	FUNCTION(mdp_vsync),
-	FUNCTION(mdp_vsync_out_0),
-	FUNCTION(mdp_vsync_out_1),
-	FUNCTION(mpm_pwr),
-	FUNCTION(mss_lte),
-	FUNCTION(m_voc),
-	FUNCTION(nav_gpio),
-	FUNCTION(pa_indicator),
-	FUNCTION(pbs0),
-	FUNCTION(pbs1),
-	FUNCTION(pbs2),
-	FUNCTION(pbs3),
-	FUNCTION(pbs4),
-	FUNCTION(pbs5),
-	FUNCTION(pbs6),
-	FUNCTION(pbs7),
-	FUNCTION(pbs8),
-	FUNCTION(pbs9),
-	FUNCTION(pbs10),
-	FUNCTION(pbs11),
-	FUNCTION(pbs12),
-	FUNCTION(pbs13),
-	FUNCTION(pbs14),
-	FUNCTION(pbs15),
-	FUNCTION(pbs_out),
-	FUNCTION(phase_flag),
-	FUNCTION(pll_bist),
-	FUNCTION(pll_bypassnl),
-	FUNCTION(pll_reset),
-	FUNCTION(prng_rosc),
-	FUNCTION(pwm_0),
-	FUNCTION(pwm_1),
-	FUNCTION(pwm_2),
-	FUNCTION(pwm_3),
-	FUNCTION(pwm_4),
-	FUNCTION(pwm_5),
-	FUNCTION(pwm_6),
-	FUNCTION(pwm_7),
-	FUNCTION(pwm_8),
-	FUNCTION(pwm_9),
-	FUNCTION(qdss_cti),
-	FUNCTION(qdss_gpio),
-	FUNCTION(qup0),
-	FUNCTION(qup1),
-	FUNCTION(qup2),
-	FUNCTION(qup3),
-	FUNCTION(qup4),
-	FUNCTION(qup5),
-	FUNCTION(sdc1_tb),
-	FUNCTION(sdc2_tb),
-	FUNCTION(sd_write),
-	FUNCTION(ssbi_wtr1),
-	FUNCTION(tgu_ch0),
-	FUNCTION(tgu_ch1),
-	FUNCTION(tgu_ch2),
-	FUNCTION(tgu_ch3),
-	FUNCTION(tsense_pwm),
-	FUNCTION(uim1_clk),
-	FUNCTION(uim1_data),
-	FUNCTION(uim1_present),
-	FUNCTION(uim1_reset),
-	FUNCTION(uim2_clk),
-	FUNCTION(uim2_data),
-	FUNCTION(uim2_present),
-	FUNCTION(uim2_reset),
-	FUNCTION(usb_phy),
-	FUNCTION(vfr_1),
-	FUNCTION(vsense_trigger),
-	FUNCTION(wlan1_adc0),
-	FUNCTION(wlan1_adc1),
+static const struct pinfunction qcm2290_functions[] = {
+	MSM_PIN_FUNCTION(adsp_ext),
+	MSM_PIN_FUNCTION(agera_pll),
+	MSM_PIN_FUNCTION(atest),
+	MSM_PIN_FUNCTION(cam_mclk),
+	MSM_PIN_FUNCTION(cci_async),
+	MSM_PIN_FUNCTION(cci_i2c),
+	MSM_PIN_FUNCTION(cci_timer0),
+	MSM_PIN_FUNCTION(cci_timer1),
+	MSM_PIN_FUNCTION(cci_timer2),
+	MSM_PIN_FUNCTION(cci_timer3),
+	MSM_PIN_FUNCTION(char_exec),
+	MSM_PIN_FUNCTION(cri_trng),
+	MSM_PIN_FUNCTION(cri_trng0),
+	MSM_PIN_FUNCTION(cri_trng1),
+	MSM_PIN_FUNCTION(dac_calib),
+	MSM_PIN_FUNCTION(dbg_out),
+	MSM_PIN_FUNCTION(ddr_bist),
+	MSM_PIN_FUNCTION(ddr_pxi0),
+	MSM_PIN_FUNCTION(ddr_pxi1),
+	MSM_PIN_FUNCTION(ddr_pxi2),
+	MSM_PIN_FUNCTION(ddr_pxi3),
+	MSM_GPIO_PIN_FUNCTION(egpio),
+	MSM_PIN_FUNCTION(gcc_gp1),
+	MSM_PIN_FUNCTION(gcc_gp2),
+	MSM_PIN_FUNCTION(gcc_gp3),
+	MSM_GPIO_PIN_FUNCTION(gpio),
+	MSM_PIN_FUNCTION(gp_pdm0),
+	MSM_PIN_FUNCTION(gp_pdm1),
+	MSM_PIN_FUNCTION(gp_pdm2),
+	MSM_PIN_FUNCTION(gsm0_tx),
+	MSM_PIN_FUNCTION(gsm1_tx),
+	MSM_PIN_FUNCTION(jitter_bist),
+	MSM_PIN_FUNCTION(mdp_vsync),
+	MSM_PIN_FUNCTION(mdp_vsync_out_0),
+	MSM_PIN_FUNCTION(mdp_vsync_out_1),
+	MSM_PIN_FUNCTION(mpm_pwr),
+	MSM_PIN_FUNCTION(mss_lte),
+	MSM_PIN_FUNCTION(m_voc),
+	MSM_PIN_FUNCTION(nav_gpio),
+	MSM_PIN_FUNCTION(pa_indicator),
+	MSM_PIN_FUNCTION(pbs0),
+	MSM_PIN_FUNCTION(pbs1),
+	MSM_PIN_FUNCTION(pbs2),
+	MSM_PIN_FUNCTION(pbs3),
+	MSM_PIN_FUNCTION(pbs4),
+	MSM_PIN_FUNCTION(pbs5),
+	MSM_PIN_FUNCTION(pbs6),
+	MSM_PIN_FUNCTION(pbs7),
+	MSM_PIN_FUNCTION(pbs8),
+	MSM_PIN_FUNCTION(pbs9),
+	MSM_PIN_FUNCTION(pbs10),
+	MSM_PIN_FUNCTION(pbs11),
+	MSM_PIN_FUNCTION(pbs12),
+	MSM_PIN_FUNCTION(pbs13),
+	MSM_PIN_FUNCTION(pbs14),
+	MSM_PIN_FUNCTION(pbs15),
+	MSM_PIN_FUNCTION(pbs_out),
+	MSM_PIN_FUNCTION(phase_flag),
+	MSM_PIN_FUNCTION(pll_bist),
+	MSM_PIN_FUNCTION(pll_bypassnl),
+	MSM_PIN_FUNCTION(pll_reset),
+	MSM_PIN_FUNCTION(prng_rosc),
+	MSM_PIN_FUNCTION(pwm_0),
+	MSM_PIN_FUNCTION(pwm_1),
+	MSM_PIN_FUNCTION(pwm_2),
+	MSM_PIN_FUNCTION(pwm_3),
+	MSM_PIN_FUNCTION(pwm_4),
+	MSM_PIN_FUNCTION(pwm_5),
+	MSM_PIN_FUNCTION(pwm_6),
+	MSM_PIN_FUNCTION(pwm_7),
+	MSM_PIN_FUNCTION(pwm_8),
+	MSM_PIN_FUNCTION(pwm_9),
+	MSM_PIN_FUNCTION(qdss_cti),
+	MSM_PIN_FUNCTION(qdss_gpio),
+	MSM_PIN_FUNCTION(qup0),
+	MSM_PIN_FUNCTION(qup1),
+	MSM_PIN_FUNCTION(qup2),
+	MSM_PIN_FUNCTION(qup3),
+	MSM_PIN_FUNCTION(qup4),
+	MSM_PIN_FUNCTION(qup5),
+	MSM_PIN_FUNCTION(sdc1_tb),
+	MSM_PIN_FUNCTION(sdc2_tb),
+	MSM_PIN_FUNCTION(sd_write),
+	MSM_PIN_FUNCTION(ssbi_wtr1),
+	MSM_PIN_FUNCTION(tgu_ch0),
+	MSM_PIN_FUNCTION(tgu_ch1),
+	MSM_PIN_FUNCTION(tgu_ch2),
+	MSM_PIN_FUNCTION(tgu_ch3),
+	MSM_PIN_FUNCTION(tsense_pwm),
+	MSM_PIN_FUNCTION(uim1_clk),
+	MSM_PIN_FUNCTION(uim1_data),
+	MSM_PIN_FUNCTION(uim1_present),
+	MSM_PIN_FUNCTION(uim1_reset),
+	MSM_PIN_FUNCTION(uim2_clk),
+	MSM_PIN_FUNCTION(uim2_data),
+	MSM_PIN_FUNCTION(uim2_present),
+	MSM_PIN_FUNCTION(uim2_reset),
+	MSM_PIN_FUNCTION(usb_phy),
+	MSM_PIN_FUNCTION(vfr_1),
+	MSM_PIN_FUNCTION(vsense_trigger),
+	MSM_PIN_FUNCTION(wlan1_adc0),
+	MSM_PIN_FUNCTION(wlan1_adc1),
 };
 
 /* Every pin is maintained as a single group, and missing or non-existing pin
@@ -1045,35 +1057,35 @@ static const struct msm_pingroup qcm2290_groups[] = {
 	[95] = PINGROUP(95, nav_gpio, gp_pdm0, qdss_gpio, wlan1_adc1, _, _, _, _, _),
 	[96] = PINGROUP(96, qup4, nav_gpio, mdp_vsync, gp_pdm1, sd_write, jitter_bist, qdss_cti, qdss_cti, _),
 	[97] = PINGROUP(97, qup4, nav_gpio, mdp_vsync, gp_pdm2, jitter_bist, qdss_cti, qdss_cti, _, _),
-	[98] = PINGROUP(98, _, _, _, _, _, _, _, _, _),
-	[99] = PINGROUP(99, _, _, _, _, _, _, _, _, _),
-	[100] = PINGROUP(100, atest, _, _, _, _, _, _, _, _),
-	[101] = PINGROUP(101, atest, _, _, _, _, _, _, _, _),
-	[102] = PINGROUP(102, _, phase_flag, dac_calib, ddr_pxi2, _, _, _, _, _),
-	[103] = PINGROUP(103, _, phase_flag, dac_calib, ddr_pxi2, _, _, _, _, _),
-	[104] = PINGROUP(104, _, phase_flag, qdss_gpio, dac_calib, ddr_pxi3, _, pwm_8, _, _),
-	[105] = PINGROUP(105, _, phase_flag, qdss_gpio, dac_calib, ddr_pxi3, _, _, _, _),
-	[106] = PINGROUP(106, nav_gpio, gcc_gp3, qdss_gpio, _, _, _, _, _, _),
-	[107] = PINGROUP(107, nav_gpio, gcc_gp2, qdss_gpio, _, _, _, _, _, _),
-	[108] = PINGROUP(108, nav_gpio, _, _, _, _, _, _, _, _),
-	[109] = PINGROUP(109, _, qdss_gpio, _, _, _, _, _, _, _),
-	[110] = PINGROUP(110, _, qdss_gpio, _, _, _, _, _, _, _),
-	[111] = PINGROUP(111, _, _, _, _, _, _, _, _, _),
-	[112] = PINGROUP(112, _, _, _, _, _, _, _, _, _),
-	[113] = PINGROUP(113, _, _, _, _, _, _, _, _, _),
-	[114] = PINGROUP(114, _, _, _, _, _, _, _, _, _),
-	[115] = PINGROUP(115, _, pwm_9, _, _, _, _, _, _, _),
-	[116] = PINGROUP(116, _, _, _, _, _, _, _, _, _),
-	[117] = PINGROUP(117, _, _, _, _, _, _, _, _, _),
-	[118] = PINGROUP(118, _, _, _, _, _, _, _, _, _),
-	[119] = PINGROUP(119, _, _, _, _, _, _, _, _, _),
-	[120] = PINGROUP(120, _, _, _, _, _, _, _, _, _),
-	[121] = PINGROUP(121, _, _, _, _, _, _, _, _, _),
-	[122] = PINGROUP(122, _, _, _, _, _, _, _, _, _),
-	[123] = PINGROUP(123, _, _, _, _, _, _, _, _, _),
-	[124] = PINGROUP(124, _, _, _, _, _, _, _, _, _),
-	[125] = PINGROUP(125, _, _, _, _, _, _, _, _, _),
-	[126] = PINGROUP(126, _, _, _, _, _, _, _, _, _),
+	[98] = PINGROUP(98, _, _, _, _, _, _, _, _, egpio),
+	[99] = PINGROUP(99, _, _, _, _, _, _, _, _, egpio),
+	[100] = PINGROUP(100, atest, _, _, _, _, _, _, _, egpio),
+	[101] = PINGROUP(101, atest, _, _, _, _, _, _, _, egpio),
+	[102] = PINGROUP(102, _, phase_flag, dac_calib, ddr_pxi2, _, _, _, _, egpio),
+	[103] = PINGROUP(103, _, phase_flag, dac_calib, ddr_pxi2, _, _, _, _, egpio),
+	[104] = PINGROUP(104, _, phase_flag, qdss_gpio, dac_calib, ddr_pxi3, _, pwm_8, _, egpio),
+	[105] = PINGROUP(105, _, phase_flag, qdss_gpio, dac_calib, ddr_pxi3, _, _, _, egpio),
+	[106] = PINGROUP(106, nav_gpio, gcc_gp3, qdss_gpio, _, _, _, _, _, egpio),
+	[107] = PINGROUP(107, nav_gpio, gcc_gp2, qdss_gpio, _, _, _, _, _, egpio),
+	[108] = PINGROUP(108, nav_gpio, _, _, _, _, _, _, _, egpio),
+	[109] = PINGROUP(109, _, qdss_gpio, _, _, _, _, _, _, egpio),
+	[110] = PINGROUP(110, _, qdss_gpio, _, _, _, _, _, _, egpio),
+	[111] = PINGROUP(111, _, _, _, _, _, _, _, _, egpio),
+	[112] = PINGROUP(112, _, _, _, _, _, _, _, _, egpio),
+	[113] = PINGROUP(113, _, _, _, _, _, _, _, _, egpio),
+	[114] = PINGROUP(114, _, _, _, _, _, _, _, _, egpio),
+	[115] = PINGROUP(115, _, pwm_9, _, _, _, _, _, _, egpio),
+	[116] = PINGROUP(116, _, _, _, _, _, _, _, _, egpio),
+	[117] = PINGROUP(117, _, _, _, _, _, _, _, _, egpio),
+	[118] = PINGROUP(118, _, _, _, _, _, _, _, _, egpio),
+	[119] = PINGROUP(119, _, _, _, _, _, _, _, _, egpio),
+	[120] = PINGROUP(120, _, _, _, _, _, _, _, _, egpio),
+	[121] = PINGROUP(121, _, _, _, _, _, _, _, _, egpio),
+	[122] = PINGROUP(122, _, _, _, _, _, _, _, _, egpio),
+	[123] = PINGROUP(123, _, _, _, _, _, _, _, _, egpio),
+	[124] = PINGROUP(124, _, _, _, _, _, _, _, _, egpio),
+	[125] = PINGROUP(125, _, _, _, _, _, _, _, _, egpio),
+	[126] = PINGROUP(126, _, _, _, _, _, _, _, _, egpio),
 	[127] = SDC_QDSD_PINGROUP(sdc1_rclk, 0x84004, 0, 0),
 	[128] = SDC_QDSD_PINGROUP(sdc1_clk, 0x84000, 13, 6),
 	[129] = SDC_QDSD_PINGROUP(sdc1_cmd, 0x84000, 11, 3),
@@ -1103,6 +1115,7 @@ static const struct msm_pinctrl_soc_data qcm2290_pinctrl = {
 	.ngpios = 127,
 	.wakeirq_map = qcm2290_mpm_map,
 	.nwakeirq_map = ARRAY_SIZE(qcm2290_mpm_map),
+	.egpio_func = 9,
 };
 
 static int qcm2290_pinctrl_probe(struct platform_device *pdev)
@@ -1121,7 +1134,6 @@ static struct platform_driver qcm2290_pinctrl_driver = {
 		.of_match_table = qcm2290_pinctrl_of_match,
 	},
 	.probe = qcm2290_pinctrl_probe,
-	.remove = msm_pinctrl_remove,
 };
 
 static int __init qcm2290_pinctrl_init(void)

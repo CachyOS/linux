@@ -11,6 +11,8 @@
 #include <asm/sbi.h>
 #include <asm/smp.h>
 
+#include "head.h"
+
 const struct cpu_operations cpu_ops_spinwait;
 void *__cpu_spinwait_stack_pointer[NR_CPUS] __section(".data");
 void *__cpu_spinwait_task_pointer[NR_CPUS] __section(".data");
@@ -18,7 +20,7 @@ void *__cpu_spinwait_task_pointer[NR_CPUS] __section(".data");
 static void cpu_update_secondary_bootdata(unsigned int cpuid,
 				   struct task_struct *tidle)
 {
-	int hartid = cpuid_to_hartid_map(cpuid);
+	unsigned long hartid = cpuid_to_hartid_map(cpuid);
 
 	/*
 	 * The hartid must be less than NR_CPUS to avoid out-of-bound access
@@ -27,23 +29,13 @@ static void cpu_update_secondary_bootdata(unsigned int cpuid,
 	 * spinwait booting is not the recommended approach for any platforms
 	 * booting Linux in S-mode and can be disabled in the future.
 	 */
-	if (hartid == INVALID_HARTID || hartid >= NR_CPUS)
+	if (hartid == INVALID_HARTID || hartid >= (unsigned long) NR_CPUS)
 		return;
 
 	/* Make sure tidle is updated */
 	smp_mb();
-	WRITE_ONCE(__cpu_spinwait_stack_pointer[hartid],
-		   task_stack_page(tidle) + THREAD_SIZE);
+	WRITE_ONCE(__cpu_spinwait_stack_pointer[hartid], task_pt_regs(tidle));
 	WRITE_ONCE(__cpu_spinwait_task_pointer[hartid], tidle);
-}
-
-static int spinwait_cpu_prepare(unsigned int cpuid)
-{
-	if (!cpu_ops_spinwait.cpu_start) {
-		pr_err("cpu start method not defined for CPU [%d]\n", cpuid);
-		return -ENODEV;
-	}
-	return 0;
 }
 
 static int spinwait_cpu_start(unsigned int cpuid, struct task_struct *tidle)
@@ -62,7 +54,5 @@ static int spinwait_cpu_start(unsigned int cpuid, struct task_struct *tidle)
 }
 
 const struct cpu_operations cpu_ops_spinwait = {
-	.name		= "spinwait",
-	.cpu_prepare	= spinwait_cpu_prepare,
 	.cpu_start	= spinwait_cpu_start,
 };

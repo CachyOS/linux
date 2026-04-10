@@ -8,7 +8,7 @@
  *
  ******************************************************************************/
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <scsi/scsi_proto.h>
 #include <scsi/iscsi_proto.h>
 #include <target/target_core_base.h>
@@ -112,7 +112,8 @@ u8 iscsit_tmr_task_reassign(
 	struct iscsi_tmr_req *tmr_req = cmd->tmr_req;
 	struct se_tmr_req *se_tmr = cmd->se_cmd.se_tmr_req;
 	struct iscsi_tm *hdr = (struct iscsi_tm *) buf;
-	u64 ret, ref_lun;
+	u64 ref_lun;
+	int ret;
 
 	pr_debug("Got TASK_REASSIGN TMR ITT: 0x%08x,"
 		" RefTaskTag: 0x%08x, ExpDataSN: 0x%08x, CID: %hu\n",
@@ -318,7 +319,7 @@ static int iscsit_task_reassign_complete_read(
 		pr_debug("READ ITT: 0x%08x: t_state: %d never sent to"
 			" transport\n", cmd->init_task_tag,
 			cmd->se_cmd.t_state);
-		transport_handle_cdb_direct(se_cmd);
+		target_submit(se_cmd);
 		return 0;
 	}
 

@@ -41,7 +41,7 @@ qtnf_event_handle_sta_assoc(struct qtnf_wmac *mac, struct qtnf_vif *vif,
 		return -EPROTO;
 	}
 
-	sinfo = kzalloc(sizeof(*sinfo), GFP_KERNEL);
+	sinfo = kzalloc_obj(*sinfo);
 	if (!sinfo)
 		return -ENOMEM;
 
@@ -189,7 +189,7 @@ qtnf_event_handle_bss_join(struct qtnf_vif *vif,
 			vif->mac->macid, vif->vifid,
 			join_info->bssid, chandef.chan->hw_value);
 
-		if (!vif->wdev.ssid_len) {
+		if (!vif->wdev.u.client.ssid_len) {
 			pr_warn("VIF%u.%u: SSID unknown for BSS:%pM\n",
 				vif->mac->macid, vif->vifid,
 				join_info->bssid);
@@ -197,7 +197,7 @@ qtnf_event_handle_bss_join(struct qtnf_vif *vif,
 			goto done;
 		}
 
-		ie = kzalloc(2 + vif->wdev.ssid_len, GFP_KERNEL);
+		ie = kzalloc(2 + vif->wdev.u.client.ssid_len, GFP_KERNEL);
 		if (!ie) {
 			pr_warn("VIF%u.%u: IE alloc failed for BSS:%pM\n",
 				vif->mac->macid, vif->vifid,
@@ -207,14 +207,15 @@ qtnf_event_handle_bss_join(struct qtnf_vif *vif,
 		}
 
 		ie[0] = WLAN_EID_SSID;
-		ie[1] = vif->wdev.ssid_len;
-		memcpy(ie + 2, vif->wdev.ssid, vif->wdev.ssid_len);
+		ie[1] = vif->wdev.u.client.ssid_len;
+		memcpy(ie + 2, vif->wdev.u.client.ssid,
+		       vif->wdev.u.client.ssid_len);
 
 		bss = cfg80211_inform_bss(wiphy, chandef.chan,
 					  CFG80211_BSS_FTYPE_UNKNOWN,
 					  join_info->bssid, 0,
 					  WLAN_CAPABILITY_ESS, 100,
-					  ie, 2 + vif->wdev.ssid_len,
+					  ie, 2 + vif->wdev.u.client.ssid_len,
 					  0, GFP_KERNEL);
 		if (!bss) {
 			pr_warn("VIF%u.%u: can't connect to unknown BSS: %pM\n",
@@ -470,15 +471,15 @@ qtnf_event_handle_freq_change(struct qtnf_wmac *mac,
 			continue;
 
 		if (vif->wdev.iftype == NL80211_IFTYPE_STATION &&
-		    !vif->wdev.current_bss)
+		    !vif->wdev.connected)
 			continue;
 
 		if (!vif->netdev)
 			continue;
 
-		mutex_lock(&vif->wdev.mtx);
-		cfg80211_ch_switch_notify(vif->netdev, &chandef);
-		mutex_unlock(&vif->wdev.mtx);
+		wiphy_lock(priv_to_wiphy(vif->mac));
+		cfg80211_ch_switch_notify(vif->netdev, &chandef, 0);
+		wiphy_unlock(priv_to_wiphy(vif->mac));
 	}
 
 	return 0;
@@ -519,21 +520,21 @@ static int qtnf_event_handle_radar(struct qtnf_vif *vif,
 		cfg80211_radar_event(wiphy, &chandef, GFP_KERNEL);
 		break;
 	case QLINK_RADAR_CAC_FINISHED:
-		if (!vif->wdev.cac_started)
+		if (!vif->wdev.links[0].cac_started)
 			break;
 
 		cfg80211_cac_event(vif->netdev, &chandef,
-				   NL80211_RADAR_CAC_FINISHED, GFP_KERNEL);
+				   NL80211_RADAR_CAC_FINISHED, GFP_KERNEL, 0);
 		break;
 	case QLINK_RADAR_CAC_ABORTED:
-		if (!vif->wdev.cac_started)
+		if (!vif->wdev.links[0].cac_started)
 			break;
 
 		cfg80211_cac_event(vif->netdev, &chandef,
-				   NL80211_RADAR_CAC_ABORTED, GFP_KERNEL);
+				   NL80211_RADAR_CAC_ABORTED, GFP_KERNEL, 0);
 		break;
 	case QLINK_RADAR_CAC_STARTED:
-		if (vif->wdev.cac_started)
+		if (vif->wdev.links[0].cac_started)
 			break;
 
 		if (!wiphy_ext_feature_isset(wiphy,
@@ -541,7 +542,7 @@ static int qtnf_event_handle_radar(struct qtnf_vif *vif,
 			break;
 
 		cfg80211_cac_event(vif->netdev, &chandef,
-				   NL80211_RADAR_CAC_STARTED, GFP_KERNEL);
+				   NL80211_RADAR_CAC_STARTED, GFP_KERNEL, 0);
 		break;
 	default:
 		pr_warn("%s: unhandled radar event %u\n",
@@ -661,6 +662,7 @@ qtnf_event_handle_update_owe(struct qtnf_vif *vif,
 	memcpy(ie, owe_ev->ies, ie_len);
 	owe_info.ie_len = ie_len;
 	owe_info.ie = ie;
+	owe_info.assoc_link_id = -1;
 
 	pr_info("%s: external OWE processing: peer=%pM\n",
 		vif->netdev->name, owe_ev->peer);

@@ -40,6 +40,7 @@
 #include <linux/bitops.h>
 #include <linux/mm.h>
 #include <linux/gfp.h>
+#include <linux/of.h>
 
 #include <asm/io.h>
 #include <asm/byteorder.h>
@@ -948,17 +949,6 @@ static irqreturn_t gem_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-#ifdef CONFIG_NET_POLL_CONTROLLER
-static void gem_poll_controller(struct net_device *dev)
-{
-	struct gem *gp = netdev_priv(dev);
-
-	disable_irq(gp->pdev->irq);
-	gem_interrupt(gp->pdev->irq, dev);
-	enable_irq(gp->pdev->irq);
-}
-#endif
-
 static void gem_tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	struct gem *gp = netdev_priv(dev);
@@ -1088,7 +1078,7 @@ static netdev_tx_t gem_start_xmit(struct sk_buff *skb,
 		netif_stop_queue(dev);
 
 		/* netif_stop_queue() must be done before checking
-		 * checking tx index in TX_BUFFS_AVAIL() below, because
+		 * tx index in TX_BUFFS_AVAIL() below, because
 		 * in gem_tx(), we update tx_old before checking for
 		 * netif_queue_stopped().
 		 */
@@ -1491,7 +1481,7 @@ static int gem_mdio_link_not_up(struct gem *gp)
 
 static void gem_link_timer(struct timer_list *t)
 {
-	struct gem *gp = from_timer(gp, t, link_timer);
+	struct gem *gp = timer_container_of(gp, t, link_timer);
 	struct net_device *dev = gp->dev;
 	int restart_aneg = 0;
 
@@ -2190,7 +2180,7 @@ static void gem_do_stop(struct net_device *dev, int wol)
 	gem_disable_ints(gp);
 
 	/* Stop the link timer */
-	del_timer_sync(&gp->link_timer);
+	timer_delete_sync(&gp->link_timer);
 
 	/* We cannot cancel the reset task while holding the
 	 * rtnl lock, we'd get an A->B / B->A deadlock stituation
@@ -2240,7 +2230,7 @@ static void gem_reset_task(struct work_struct *work)
 	}
 
 	/* Stop the link timer */
-	del_timer_sync(&gp->link_timer);
+	timer_delete_sync(&gp->link_timer);
 
 	/* Stop NAPI and tx */
 	gem_netif_stop(gp);
@@ -2498,7 +2488,7 @@ static int gem_change_mtu(struct net_device *dev, int new_mtu)
 {
 	struct gem *gp = netdev_priv(dev);
 
-	dev->mtu = new_mtu;
+	WRITE_ONCE(dev->mtu, new_mtu);
 
 	/* We'll just catch it later when the device is up'd or resumed */
 	if (!netif_running(dev) || !netif_device_present(dev))
@@ -2521,9 +2511,9 @@ static void gem_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info
 {
 	struct gem *gp = netdev_priv(dev);
 
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, pci_name(gp->pdev), sizeof(info->bus_info));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, pci_name(gp->pdev), sizeof(info->bus_info));
 }
 
 static int gem_get_link_ksettings(struct net_device *dev,
@@ -2620,7 +2610,7 @@ static int gem_set_link_ksettings(struct net_device *dev,
 
 	/* Apply settings and restart link process. */
 	if (netif_device_present(gp->dev)) {
-		del_timer_sync(&gp->link_timer);
+		timer_delete_sync(&gp->link_timer);
 		gem_begin_auto_negotiation(gp, cmd);
 	}
 
@@ -2636,7 +2626,7 @@ static int gem_nway_reset(struct net_device *dev)
 
 	/* Restart link process  */
 	if (netif_device_present(gp->dev)) {
-		del_timer_sync(&gp->link_timer);
+		timer_delete_sync(&gp->link_timer);
 		gem_begin_auto_negotiation(gp, NULL);
 	}
 
@@ -2838,9 +2828,6 @@ static const struct net_device_ops gem_netdev_ops = {
 	.ndo_change_mtu		= gem_change_mtu,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address    = gem_set_mac_address,
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	.ndo_poll_controller    = gem_poll_controller,
-#endif
 };
 
 static int gem_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
@@ -2980,7 +2967,7 @@ static int gem_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_out_free_consistent;
 
 	dev->netdev_ops = &gem_netdev_ops;
-	netif_napi_add(dev, &gp->napi, gem_poll, 64);
+	netif_napi_add(dev, &gp->napi, gem_poll);
 	dev->ethtool_ops = &gem_ethtool_ops;
 	dev->watchdog_timeo = 5 * HZ;
 	dev->dma = 0;

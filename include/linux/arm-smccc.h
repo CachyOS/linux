@@ -5,7 +5,13 @@
 #ifndef __LINUX_ARM_SMCCC_H
 #define __LINUX_ARM_SMCCC_H
 
+#include <linux/args.h>
 #include <linux/init.h>
+
+#ifndef __ASSEMBLY__
+#include <linux/uuid.h>
+#endif
+
 #include <uapi/linux/const.h>
 
 /*
@@ -66,6 +72,8 @@
 #define ARM_SMCCC_VERSION_1_3		0x10003
 
 #define ARM_SMCCC_1_3_SVE_HINT		0x10000
+#define ARM_SMCCC_CALL_HINTS		ARM_SMCCC_1_3_SVE_HINT
+
 
 #define ARM_SMCCC_VERSION_FUNC_ID					\
 	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,				\
@@ -104,14 +112,81 @@
 			   ARM_SMCCC_FUNC_QUERY_CALL_UID)
 
 /* KVM UID value: 28b46fb6-2ec5-11e9-a9ca-4b564d003a74 */
-#define ARM_SMCCC_VENDOR_HYP_UID_KVM_REG_0	0xb66fb428U
-#define ARM_SMCCC_VENDOR_HYP_UID_KVM_REG_1	0xe911c52eU
-#define ARM_SMCCC_VENDOR_HYP_UID_KVM_REG_2	0x564bcaa9U
-#define ARM_SMCCC_VENDOR_HYP_UID_KVM_REG_3	0x743a004dU
+#define ARM_SMCCC_VENDOR_HYP_UID_KVM UUID_INIT(\
+	0x28b46fb6, 0x2ec5, 0x11e9, \
+	0xa9, 0xca, 0x4b, 0x56, \
+	0x4d, 0x00, 0x3a, 0x74)
 
 /* KVM "vendor specific" services */
 #define ARM_SMCCC_KVM_FUNC_FEATURES		0
 #define ARM_SMCCC_KVM_FUNC_PTP			1
+/* Start of pKVM hypercall range */
+#define ARM_SMCCC_KVM_FUNC_HYP_MEMINFO		2
+#define ARM_SMCCC_KVM_FUNC_MEM_SHARE		3
+#define ARM_SMCCC_KVM_FUNC_MEM_UNSHARE		4
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_5		5
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_6		6
+#define ARM_SMCCC_KVM_FUNC_MMIO_GUARD		7
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_8		8
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_9		9
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_10		10
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_11		11
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_12		12
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_13		13
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_14		14
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_15		15
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_16		16
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_17		17
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_18		18
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_19		19
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_20		20
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_21		21
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_22		22
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_23		23
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_24		24
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_25		25
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_26		26
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_27		27
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_28		28
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_29		29
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_30		30
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_31		31
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_32		32
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_33		33
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_34		34
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_35		35
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_36		36
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_37		37
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_38		38
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_39		39
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_40		40
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_41		41
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_42		42
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_43		43
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_44		44
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_45		45
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_46		46
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_47		47
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_48		48
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_49		49
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_50		50
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_51		51
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_52		52
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_53		53
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_54		54
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_55		55
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_56		56
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_57		57
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_58		58
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_59		59
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_60		60
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_61		61
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_62		62
+#define ARM_SMCCC_KVM_FUNC_PKVM_RESV_63		63
+/* End of pKVM hypercall range */
+#define ARM_SMCCC_KVM_FUNC_DISCOVER_IMPL_VER	64
+#define ARM_SMCCC_KVM_FUNC_DISCOVER_IMPL_CPUS	65
+
 #define ARM_SMCCC_KVM_FUNC_FEATURES_2		127
 #define ARM_SMCCC_KVM_NUM_FUNCS			128
 
@@ -133,6 +208,42 @@
 			   ARM_SMCCC_SMC_32,				\
 			   ARM_SMCCC_OWNER_VENDOR_HYP,			\
 			   ARM_SMCCC_KVM_FUNC_PTP)
+
+#define ARM_SMCCC_VENDOR_HYP_KVM_HYP_MEMINFO_FUNC_ID			\
+	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,				\
+			   ARM_SMCCC_SMC_64,				\
+			   ARM_SMCCC_OWNER_VENDOR_HYP,			\
+			   ARM_SMCCC_KVM_FUNC_HYP_MEMINFO)
+
+#define ARM_SMCCC_VENDOR_HYP_KVM_MEM_SHARE_FUNC_ID			\
+	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,				\
+			   ARM_SMCCC_SMC_64,				\
+			   ARM_SMCCC_OWNER_VENDOR_HYP,			\
+			   ARM_SMCCC_KVM_FUNC_MEM_SHARE)
+
+#define ARM_SMCCC_VENDOR_HYP_KVM_MEM_UNSHARE_FUNC_ID			\
+	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,				\
+			   ARM_SMCCC_SMC_64,				\
+			   ARM_SMCCC_OWNER_VENDOR_HYP,			\
+			   ARM_SMCCC_KVM_FUNC_MEM_UNSHARE)
+
+#define ARM_SMCCC_VENDOR_HYP_KVM_MMIO_GUARD_FUNC_ID			\
+	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,				\
+			   ARM_SMCCC_SMC_64,				\
+			   ARM_SMCCC_OWNER_VENDOR_HYP,			\
+			   ARM_SMCCC_KVM_FUNC_MMIO_GUARD)
+
+#define ARM_SMCCC_VENDOR_HYP_KVM_DISCOVER_IMPL_VER_FUNC_ID		\
+	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,				\
+			   ARM_SMCCC_SMC_64,				\
+			   ARM_SMCCC_OWNER_VENDOR_HYP,			\
+			   ARM_SMCCC_KVM_FUNC_DISCOVER_IMPL_VER)
+
+#define ARM_SMCCC_VENDOR_HYP_KVM_DISCOVER_IMPL_CPUS_FUNC_ID		\
+	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,				\
+			   ARM_SMCCC_SMC_64,				\
+			   ARM_SMCCC_OWNER_VENDOR_HYP,			\
+			   ARM_SMCCC_KVM_FUNC_DISCOVER_IMPL_CPUS)
 
 /* ptp_kvm counter type ID */
 #define KVM_PTP_VIRT_COUNTER			0
@@ -224,7 +335,74 @@ u32 arm_smccc_get_version(void);
 
 void __init arm_smccc_version_init(u32 version, enum arm_smccc_conduit conduit);
 
-extern u64 smccc_has_sve_hint;
+/**
+ * arm_smccc_get_soc_id_version()
+ *
+ * Returns the SOC ID version.
+ *
+ * When ARM_SMCCC_ARCH_SOC_ID is not present, returns SMCCC_RET_NOT_SUPPORTED.
+ */
+s32 arm_smccc_get_soc_id_version(void);
+
+/**
+ * arm_smccc_get_soc_id_revision()
+ *
+ * Returns the SOC ID revision.
+ *
+ * When ARM_SMCCC_ARCH_SOC_ID is not present, returns SMCCC_RET_NOT_SUPPORTED.
+ */
+s32 arm_smccc_get_soc_id_revision(void);
+
+#ifndef __ASSEMBLY__
+
+/*
+ * Returns whether a specific hypervisor UUID is advertised for the
+ * Vendor Specific Hypervisor Service range.
+ */
+bool arm_smccc_hypervisor_has_uuid(const uuid_t *uuid);
+
+static inline uuid_t smccc_res_to_uuid(u32 r0, u32 r1, u32 r2, u32 r3)
+{
+	uuid_t uuid = {
+		.b = {
+			[0]  = (r0 >> 0)  & 0xff,
+			[1]  = (r0 >> 8)  & 0xff,
+			[2]  = (r0 >> 16) & 0xff,
+			[3]  = (r0 >> 24) & 0xff,
+
+			[4]  = (r1 >> 0)  & 0xff,
+			[5]  = (r1 >> 8)  & 0xff,
+			[6]  = (r1 >> 16) & 0xff,
+			[7]  = (r1 >> 24) & 0xff,
+
+			[8]  = (r2 >> 0)  & 0xff,
+			[9]  = (r2 >> 8)  & 0xff,
+			[10] = (r2 >> 16) & 0xff,
+			[11] = (r2 >> 24) & 0xff,
+
+			[12] = (r3 >> 0)  & 0xff,
+			[13] = (r3 >> 8)  & 0xff,
+			[14] = (r3 >> 16) & 0xff,
+			[15] = (r3 >> 24) & 0xff,
+		},
+	};
+
+	return uuid;
+}
+
+static inline u32 smccc_uuid_to_reg(const uuid_t *uuid, int reg)
+{
+	u32 val = 0;
+
+	val |= (u32)(uuid->b[4 * reg + 0] << 0);
+	val |= (u32)(uuid->b[4 * reg + 1] << 8);
+	val |= (u32)(uuid->b[4 * reg + 2] << 16);
+	val |= (u32)(uuid->b[4 * reg + 3] << 24);
+
+	return val;
+}
+
+#endif /* !__ASSEMBLY__ */
 
 /**
  * struct arm_smccc_res - Result from SMC/HVC call
@@ -306,15 +484,6 @@ struct arm_smccc_quirk {
 };
 
 /**
- * __arm_smccc_sve_check() - Set the SVE hint bit when doing SMC calls
- *
- * Sets the SMCCC hint bit to indicate if there is live state in the SVE
- * registers, this modifies x0 in place and should never be called from C
- * code.
- */
-asmlinkage unsigned long __arm_smccc_sve_check(unsigned long x0);
-
-/**
  * __arm_smccc_smc() - make SMC calls
  * @a0-a7: arguments passed in registers 0 to 7
  * @res: result values from registers 0 to 3
@@ -381,45 +550,26 @@ asmlinkage void __arm_smccc_hvc(unsigned long a0, unsigned long a1,
 
 #endif
 
-/* nVHE hypervisor doesn't have a current thread so needs separate checks */
-#if defined(CONFIG_ARM64_SVE) && !defined(__KVM_NVHE_HYPERVISOR__)
+#define __constraint_read_2	"r" (arg0)
+#define __constraint_read_3	__constraint_read_2, "r" (arg1)
+#define __constraint_read_4	__constraint_read_3, "r" (arg2)
+#define __constraint_read_5	__constraint_read_4, "r" (arg3)
+#define __constraint_read_6	__constraint_read_5, "r" (arg4)
+#define __constraint_read_7	__constraint_read_6, "r" (arg5)
+#define __constraint_read_8	__constraint_read_7, "r" (arg6)
+#define __constraint_read_9	__constraint_read_8, "r" (arg7)
 
-#define SMCCC_SVE_CHECK ALTERNATIVE("nop \n",  "bl __arm_smccc_sve_check \n", \
-				    ARM64_SVE)
-#define smccc_sve_clobbers "x16", "x30", "cc",
-
-#else
-
-#define SMCCC_SVE_CHECK
-#define smccc_sve_clobbers
-
-#endif
-
-#define ___count_args(_0, _1, _2, _3, _4, _5, _6, _7, _8, x, ...) x
-
-#define __count_args(...)						\
-	___count_args(__VA_ARGS__, 7, 6, 5, 4, 3, 2, 1, 0)
-
-#define __constraint_read_0	"r" (arg0)
-#define __constraint_read_1	__constraint_read_0, "r" (arg1)
-#define __constraint_read_2	__constraint_read_1, "r" (arg2)
-#define __constraint_read_3	__constraint_read_2, "r" (arg3)
-#define __constraint_read_4	__constraint_read_3, "r" (arg4)
-#define __constraint_read_5	__constraint_read_4, "r" (arg5)
-#define __constraint_read_6	__constraint_read_5, "r" (arg6)
-#define __constraint_read_7	__constraint_read_6, "r" (arg7)
-
-#define __declare_arg_0(a0, res)					\
+#define __declare_arg_2(a0, res)					\
 	struct arm_smccc_res   *___res = res;				\
 	register unsigned long arg0 asm("r0") = (u32)a0
 
-#define __declare_arg_1(a0, a1, res)					\
+#define __declare_arg_3(a0, a1, res)					\
 	typeof(a1) __a1 = a1;						\
 	struct arm_smccc_res   *___res = res;				\
 	register unsigned long arg0 asm("r0") = (u32)a0;			\
 	register typeof(a1) arg1 asm("r1") = __a1
 
-#define __declare_arg_2(a0, a1, a2, res)				\
+#define __declare_arg_4(a0, a1, a2, res)				\
 	typeof(a1) __a1 = a1;						\
 	typeof(a2) __a2 = a2;						\
 	struct arm_smccc_res   *___res = res;				\
@@ -427,7 +577,7 @@ asmlinkage void __arm_smccc_hvc(unsigned long a0, unsigned long a1,
 	register typeof(a1) arg1 asm("r1") = __a1;			\
 	register typeof(a2) arg2 asm("r2") = __a2
 
-#define __declare_arg_3(a0, a1, a2, a3, res)				\
+#define __declare_arg_5(a0, a1, a2, a3, res)				\
 	typeof(a1) __a1 = a1;						\
 	typeof(a2) __a2 = a2;						\
 	typeof(a3) __a3 = a3;						\
@@ -437,33 +587,25 @@ asmlinkage void __arm_smccc_hvc(unsigned long a0, unsigned long a1,
 	register typeof(a2) arg2 asm("r2") = __a2;			\
 	register typeof(a3) arg3 asm("r3") = __a3
 
-#define __declare_arg_4(a0, a1, a2, a3, a4, res)			\
+#define __declare_arg_6(a0, a1, a2, a3, a4, res)			\
 	typeof(a4) __a4 = a4;						\
-	__declare_arg_3(a0, a1, a2, a3, res);				\
+	__declare_arg_5(a0, a1, a2, a3, res);				\
 	register typeof(a4) arg4 asm("r4") = __a4
 
-#define __declare_arg_5(a0, a1, a2, a3, a4, a5, res)			\
+#define __declare_arg_7(a0, a1, a2, a3, a4, a5, res)			\
 	typeof(a5) __a5 = a5;						\
-	__declare_arg_4(a0, a1, a2, a3, a4, res);			\
+	__declare_arg_6(a0, a1, a2, a3, a4, res);			\
 	register typeof(a5) arg5 asm("r5") = __a5
 
-#define __declare_arg_6(a0, a1, a2, a3, a4, a5, a6, res)		\
+#define __declare_arg_8(a0, a1, a2, a3, a4, a5, a6, res)		\
 	typeof(a6) __a6 = a6;						\
-	__declare_arg_5(a0, a1, a2, a3, a4, a5, res);			\
+	__declare_arg_7(a0, a1, a2, a3, a4, a5, res);			\
 	register typeof(a6) arg6 asm("r6") = __a6
 
-#define __declare_arg_7(a0, a1, a2, a3, a4, a5, a6, a7, res)		\
+#define __declare_arg_9(a0, a1, a2, a3, a4, a5, a6, a7, res)		\
 	typeof(a7) __a7 = a7;						\
-	__declare_arg_6(a0, a1, a2, a3, a4, a5, a6, res);		\
+	__declare_arg_8(a0, a1, a2, a3, a4, a5, a6, res);		\
 	register typeof(a7) arg7 asm("r7") = __a7
-
-#define ___declare_args(count, ...) __declare_arg_ ## count(__VA_ARGS__)
-#define __declare_args(count, ...)  ___declare_args(count, __VA_ARGS__)
-
-#define ___constraints(count)						\
-	: __constraint_read_ ## count					\
-	: smccc_sve_clobbers "memory"
-#define __constraints(count)	___constraints(count)
 
 /*
  * We have an output list that is not necessarily used, and GCC feels
@@ -476,11 +618,13 @@ asmlinkage void __arm_smccc_hvc(unsigned long a0, unsigned long a1,
 		register unsigned long r1 asm("r1");			\
 		register unsigned long r2 asm("r2");			\
 		register unsigned long r3 asm("r3"); 			\
-		__declare_args(__count_args(__VA_ARGS__), __VA_ARGS__);	\
-		asm volatile(SMCCC_SVE_CHECK				\
-			     inst "\n" :				\
+		CONCATENATE(__declare_arg_,				\
+			    COUNT_ARGS(__VA_ARGS__))(__VA_ARGS__);	\
+		asm volatile(inst "\n" :				\
 			     "=r" (r0), "=r" (r1), "=r" (r2), "=r" (r3)	\
-			     __constraints(__count_args(__VA_ARGS__)));	\
+			     : CONCATENATE(__constraint_read_,		\
+					   COUNT_ARGS(__VA_ARGS__))	\
+			     : "memory");				\
 		if (___res)						\
 			*___res = (typeof(*___res)){r0, r1, r2, r3};	\
 	} while (0)
@@ -524,8 +668,12 @@ asmlinkage void __arm_smccc_hvc(unsigned long a0, unsigned long a1,
  */
 #define __fail_smccc_1_1(...)						\
 	do {								\
-		__declare_args(__count_args(__VA_ARGS__), __VA_ARGS__);	\
-		asm ("" : __constraints(__count_args(__VA_ARGS__)));	\
+		CONCATENATE(__declare_arg_,				\
+			    COUNT_ARGS(__VA_ARGS__))(__VA_ARGS__);	\
+		asm ("" :						\
+		     : CONCATENATE(__constraint_read_,			\
+				   COUNT_ARGS(__VA_ARGS__))		\
+		     : "memory");					\
 		if (___res)						\
 			___res->a0 = SMCCC_RET_NOT_SUPPORTED;		\
 	} while (0)
@@ -561,6 +709,46 @@ asmlinkage void __arm_smccc_hvc(unsigned long a0, unsigned long a1,
 		}							\
 		method;							\
 	})
+
+#ifdef CONFIG_ARM64
+
+#define __fail_smccc_1_2(___res)					\
+	do {								\
+		if (___res)						\
+			___res->a0 = SMCCC_RET_NOT_SUPPORTED;		\
+	} while (0)
+
+/*
+ * arm_smccc_1_2_invoke() - make an SMCCC v1.2 compliant call
+ *
+ * @args: SMC args are in the a0..a17 fields of the arm_smcc_1_2_regs structure
+ * @res: result values from registers 0 to 17
+ *
+ * This macro will make either an HVC call or an SMC call depending on the
+ * current SMCCC conduit. If no valid conduit is available then -1
+ * (SMCCC_RET_NOT_SUPPORTED) is returned in @res.a0 (if supplied).
+ *
+ * The return value also provides the conduit that was used.
+ */
+#define arm_smccc_1_2_invoke(args, res) ({				\
+		struct arm_smccc_1_2_regs *__args = args;		\
+		struct arm_smccc_1_2_regs *__res = res;			\
+		int method = arm_smccc_1_1_get_conduit();		\
+		switch (method) {					\
+		case SMCCC_CONDUIT_HVC:					\
+			arm_smccc_1_2_hvc(__args, __res);		\
+			break;						\
+		case SMCCC_CONDUIT_SMC:					\
+			arm_smccc_1_2_smc(__args, __res);		\
+			break;						\
+		default:						\
+			__fail_smccc_1_2(__res);			\
+			method = SMCCC_CONDUIT_NONE;			\
+			break;						\
+		}							\
+		method;							\
+	})
+#endif /*CONFIG_ARM64*/
 
 #endif /*__ASSEMBLY__*/
 #endif /*__LINUX_ARM_SMCCC_H*/

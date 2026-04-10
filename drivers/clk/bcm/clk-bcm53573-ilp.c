@@ -59,7 +59,7 @@ static unsigned long bcm53573_ilp_recalc_rate(struct clk_hw *hw,
 	/*
 	 * At minimum we should loop for a bit to let hardware do the
 	 * measurement. This isn't very accurate however, so for a better
-	 * precision lets try getting 20 different values for and use average.
+	 * precision let's try getting 20 different values and use average.
 	 */
 	while (num < 20) {
 		regmap_read(regmap, PMU_XTAL_FREQ_RATIO, &cur_val);
@@ -102,7 +102,7 @@ static void bcm53573_ilp_init(struct device_node *np)
 	const char *parent_name;
 	int err;
 
-	ilp = kzalloc(sizeof(*ilp), GFP_KERNEL);
+	ilp = kzalloc_obj(*ilp);
 	if (!ilp)
 		return;
 
@@ -112,7 +112,7 @@ static void bcm53573_ilp_init(struct device_node *np)
 		goto err_free_ilp;
 	}
 
-	ilp->regmap = syscon_node_to_regmap(of_get_parent(np));
+	ilp->regmap = syscon_node_to_regmap(np->parent);
 	if (IS_ERR(ilp->regmap)) {
 		err = PTR_ERR(ilp->regmap);
 		goto err_free_ilp;

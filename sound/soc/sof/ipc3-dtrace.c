@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2022 Intel Corporation. All rights reserved.
+// Copyright(c) 2022 Intel Corporation
 //
 // Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
 
@@ -18,6 +18,7 @@
 enum sof_dtrace_state {
 	SOF_DTRACE_DISABLED,
 	SOF_DTRACE_STOPPED,
+	SOF_DTRACE_INITIALIZING,
 	SOF_DTRACE_ENABLED,
 };
 
@@ -31,6 +32,15 @@ struct sof_dtrace_priv {
 	bool dtrace_draining;
 	enum sof_dtrace_state dtrace_state;
 };
+
+static bool trace_pos_update_expected(struct sof_dtrace_priv *priv)
+{
+	if (priv->dtrace_state == SOF_DTRACE_ENABLED ||
+	    priv->dtrace_state == SOF_DTRACE_INITIALIZING)
+		return true;
+
+	return false;
+}
 
 static int trace_filter_append_elem(struct snd_sof_dev *sdev, u32 key, u32 value,
 				    struct sof_ipc_trace_filter_elem *elem_list,
@@ -116,7 +126,7 @@ static int trace_filter_parse(struct snd_sof_dev *sdev, char *string,
 		capacity += TRACE_FILTER_ELEMENTS_PER_ENTRY;
 		entry = strchr(entry + 1, entry_delimiter[0]);
 	}
-	*out = kmalloc(capacity * sizeof(**out), GFP_KERNEL);
+	*out = kmalloc_objs(**out, capacity);
 	if (!*out)
 		return -ENOMEM;
 
@@ -140,7 +150,6 @@ static int ipc3_trace_update_filter(struct snd_sof_dev *sdev, int num_elems,
 				    struct sof_ipc_trace_filter_elem *elems)
 {
 	struct sof_ipc_trace_filter *msg;
-	struct sof_ipc_reply reply;
 	size_t size;
 	int ret;
 
@@ -157,19 +166,22 @@ static int ipc3_trace_update_filter(struct snd_sof_dev *sdev, int num_elems,
 	msg->elem_cnt = num_elems;
 	memcpy(&msg->elems[0], elems, num_elems * sizeof(*elems));
 
-	ret = pm_runtime_get_sync(sdev->dev);
+	ret = pm_runtime_resume_and_get(sdev->dev);
 	if (ret < 0 && ret != -EACCES) {
-		pm_runtime_put_noidle(sdev->dev);
 		dev_err(sdev->dev, "enabling device failed: %d\n", ret);
 		goto error;
 	}
-	ret = sof_ipc_tx_message(sdev->ipc, msg, msg->hdr.size, &reply, sizeof(reply));
-	pm_runtime_mark_last_busy(sdev->dev);
+
+	/* Make sure the DSP/firmware is booted up */
+	ret = snd_sof_boot_dsp_firmware(sdev);
+	if (!ret)
+		ret = sof_ipc_tx_message_no_reply(sdev->ipc, msg, msg->hdr.size);
+
 	pm_runtime_put_autosuspend(sdev->dev);
 
 error:
 	kfree(msg);
-	return ret ? ret : reply.error;
+	return ret;
 }
 
 static ssize_t dfsentry_trace_filter_write(struct file *file, const char __user *from,
@@ -178,7 +190,6 @@ static ssize_t dfsentry_trace_filter_write(struct file *file, const char __user 
 	struct snd_sof_dfsentry *dfse = file->private_data;
 	struct sof_ipc_trace_filter_elem *elems = NULL;
 	struct snd_sof_dev *sdev = dfse->sdev;
-	loff_t pos = 0;
 	int num_elems;
 	char *string;
 	int ret;
@@ -189,15 +200,9 @@ static ssize_t dfsentry_trace_filter_write(struct file *file, const char __user 
 		return -EINVAL;
 	}
 
-	string = kmalloc(count + 1, GFP_KERNEL);
-	if (!string)
-		return -ENOMEM;
-
-	/* assert null termination */
-	string[count] = 0;
-	ret = simple_write_to_buffer(string, count, &pos, from, count);
-	if (ret < 0)
-		goto error;
+	string = memdup_user_nul(from, count);
+	if (IS_ERR(string))
+		return PTR_ERR(string);
 
 	ret = trace_filter_parse(sdev, string, &num_elems, &elems);
 	if (ret < 0)
@@ -242,6 +247,21 @@ static int debugfs_create_trace_filter(struct snd_sof_dev *sdev)
 	return 0;
 }
 
+static bool sof_dtrace_set_host_offset(struct sof_dtrace_priv *priv, u32 new_offset)
+{
+	u32 host_offset = READ_ONCE(priv->host_offset);
+
+	if (host_offset != new_offset) {
+		/* This is a bit paranoid and unlikely that it is needed */
+		u32 ret = cmpxchg(&priv->host_offset, host_offset, new_offset);
+
+		if (ret == host_offset)
+			return true;
+	}
+
+	return false;
+}
+
 static size_t sof_dtrace_avail(struct snd_sof_dev *sdev,
 			       loff_t pos, size_t buffer_size)
 {
@@ -274,7 +294,7 @@ static size_t sof_wait_dtrace_avail(struct snd_sof_dev *sdev, loff_t pos,
 	if (ret)
 		return ret;
 
-	if (priv->dtrace_state != SOF_DTRACE_ENABLED && priv->dtrace_draining) {
+	if (priv->dtrace_draining && !trace_pos_update_expected(priv)) {
 		/*
 		 * tracing has ended and all traces have been
 		 * read by client, return EOF
@@ -328,6 +348,10 @@ static ssize_t dfsentry_dtrace_read(struct file *file, char __user *buffer,
 		return -EIO;
 	}
 
+	/* no new trace data */
+	if (!avail)
+		return 0;
+
 	/* make sure count is <= avail */
 	if (count > avail)
 		count = avail;
@@ -358,7 +382,7 @@ static int dfsentry_dtrace_release(struct inode *inode, struct file *file)
 
 	/* avoid duplicate traces at next open */
 	if (priv->dtrace_state != SOF_DTRACE_ENABLED)
-		priv->host_offset = 0;
+		sof_dtrace_set_host_offset(priv, 0);
 
 	return 0;
 }
@@ -406,7 +430,6 @@ static int ipc3_dtrace_enable(struct snd_sof_dev *sdev)
 	struct sof_ipc_fw_ready *ready = &sdev->fw_ready;
 	struct sof_ipc_fw_version *v = &ready->version;
 	struct sof_ipc_dma_trace_params_ext params;
-	struct sof_ipc_reply ipc_reply;
 	int ret;
 
 	if (!sdev->fw_trace_is_supported)
@@ -434,7 +457,7 @@ static int ipc3_dtrace_enable(struct snd_sof_dev *sdev)
 	params.buffer.pages = priv->dma_trace_pages;
 	params.stream_tag = 0;
 
-	priv->host_offset = 0;
+	sof_dtrace_set_host_offset(priv, 0);
 	priv->dtrace_draining = false;
 
 	ret = sof_dtrace_host_init(sdev, &priv->dmatb, &params);
@@ -442,27 +465,29 @@ static int ipc3_dtrace_enable(struct snd_sof_dev *sdev)
 		dev_err(sdev->dev, "Host dtrace init failed: %d\n", ret);
 		return ret;
 	}
-	dev_dbg(sdev->dev, "%s: stream_tag: %d\n", __func__, params.stream_tag);
+	dev_dbg(sdev->dev, "stream_tag: %d\n", params.stream_tag);
 
 	/* send IPC to the DSP */
-	ret = sof_ipc_tx_message(sdev->ipc, &params, sizeof(params), &ipc_reply, sizeof(ipc_reply));
+	priv->dtrace_state = SOF_DTRACE_INITIALIZING;
+	ret = sof_ipc_tx_message_no_reply(sdev->ipc, &params, sizeof(params));
 	if (ret < 0) {
 		dev_err(sdev->dev, "can't set params for DMA for trace %d\n", ret);
 		goto trace_release;
 	}
 
 start:
+	priv->dtrace_state = SOF_DTRACE_ENABLED;
+
 	ret = sof_dtrace_host_trigger(sdev, SNDRV_PCM_TRIGGER_START);
 	if (ret < 0) {
 		dev_err(sdev->dev, "Host dtrace trigger start failed: %d\n", ret);
 		goto trace_release;
 	}
 
-	priv->dtrace_state = SOF_DTRACE_ENABLED;
-
 	return 0;
 
 trace_release:
+	priv->dtrace_state = SOF_DTRACE_DISABLED;
 	sof_dtrace_host_release(sdev);
 	return ret;
 }
@@ -473,7 +498,7 @@ static int ipc3_dtrace_init(struct snd_sof_dev *sdev)
 	int ret;
 
 	/* dtrace is only supported with SOF_IPC */
-	if (sdev->pdata->ipc_type != SOF_IPC)
+	if (sdev->pdata->ipc_type != SOF_IPC_TYPE_3)
 		return -EOPNOTSUPP;
 
 	if (sdev->fw_trace_data) {
@@ -514,8 +539,7 @@ static int ipc3_dtrace_init(struct snd_sof_dev *sdev)
 		goto table_err;
 
 	priv->dma_trace_pages = ret;
-	dev_dbg(sdev->dev, "%s: dma_trace_pages: %d\n", __func__,
-		priv->dma_trace_pages);
+	dev_dbg(sdev->dev, "dma_trace_pages: %d\n", priv->dma_trace_pages);
 
 	if (sdev->first_boot) {
 		ret = debugfs_create_dtrace(sdev);
@@ -546,11 +570,9 @@ int ipc3_dtrace_posn_update(struct snd_sof_dev *sdev,
 	if (!sdev->fw_trace_is_supported)
 		return 0;
 
-	if (priv->dtrace_state == SOF_DTRACE_ENABLED &&
-	    priv->host_offset != posn->host_offset) {
-		priv->host_offset = posn->host_offset;
+	if (trace_pos_update_expected(priv) &&
+	    sof_dtrace_set_host_offset(priv, posn->host_offset))
 		wake_up(&priv->trace_sleep);
-	}
 
 	if (posn->overflow != 0)
 		dev_err(sdev->dev,
@@ -577,7 +599,6 @@ static void ipc3_dtrace_release(struct snd_sof_dev *sdev, bool only_stop)
 	struct sof_ipc_fw_ready *ready = &sdev->fw_ready;
 	struct sof_ipc_fw_version *v = &ready->version;
 	struct sof_ipc_cmd_hdr hdr;
-	struct sof_ipc_reply ipc_reply;
 	int ret;
 
 	if (!sdev->fw_trace_is_supported || priv->dtrace_state == SOF_DTRACE_DISABLED)
@@ -596,8 +617,7 @@ static void ipc3_dtrace_release(struct snd_sof_dev *sdev, bool only_stop)
 		hdr.size = sizeof(hdr);
 		hdr.cmd = SOF_IPC_GLB_TRACE_MSG | SOF_IPC_TRACE_DMA_FREE;
 
-		ret = sof_ipc_tx_message(sdev->ipc, &hdr, hdr.size,
-					 &ipc_reply, sizeof(ipc_reply));
+		ret = sof_ipc_tx_message_no_reply(sdev->ipc, &hdr, hdr.size);
 		if (ret < 0)
 			dev_err(sdev->dev, "DMA_TRACE_FREE failed with error: %d\n", ret);
 	}

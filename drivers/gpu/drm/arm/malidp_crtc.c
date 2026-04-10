@@ -14,6 +14,7 @@
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
@@ -76,7 +77,6 @@ static void malidp_crtc_atomic_disable(struct drm_crtc *crtc,
 									 crtc);
 	struct malidp_drm *malidp = crtc_to_malidp_device(crtc);
 	struct malidp_hw_device *hwdev = malidp->dev;
-	int err;
 
 	/* always disable planes on the CRTC that is being turned off */
 	drm_atomic_helper_disable_planes_on_crtc(old_state, false);
@@ -86,10 +86,7 @@ static void malidp_crtc_atomic_disable(struct drm_crtc *crtc,
 
 	clk_disable_unprepare(hwdev->pxlclk);
 
-	err = pm_runtime_put(crtc->dev->dev);
-	if (err < 0) {
-		DRM_DEBUG_DRIVER("Failed to disable runtime power management: %d\n", err);
-	}
+	pm_runtime_put(crtc->dev->dev);
 }
 
 static const struct gamma_curve_segment {
@@ -220,7 +217,7 @@ static int malidp_crtc_atomic_check_ctm(struct drm_crtc *crtc,
 
 	/*
 	 * The size of the ctm is checked in
-	 * drm_atomic_replace_property_blob_from_id.
+	 * drm_property_replace_blob_from_id.
 	 */
 	ctm = (struct drm_color_ctm *)state->ctm->data;
 	for (i = 0; i < ARRAY_SIZE(ctm->matrix); ++i) {
@@ -450,7 +447,7 @@ static struct drm_crtc_state *malidp_crtc_duplicate_state(struct drm_crtc *crtc)
 		return NULL;
 
 	old_state = to_malidp_crtc_state(crtc->state);
-	state = kmalloc(sizeof(*state), GFP_KERNEL);
+	state = kmalloc_obj(*state);
 	if (!state)
 		return NULL;
 
@@ -481,8 +478,7 @@ static void malidp_crtc_destroy_state(struct drm_crtc *crtc,
 
 static void malidp_crtc_reset(struct drm_crtc *crtc)
 {
-	struct malidp_crtc_state *state =
-		kzalloc(sizeof(*state), GFP_KERNEL);
+	struct malidp_crtc_state *state = kzalloc_obj(*state);
 
 	if (crtc->state)
 		malidp_crtc_destroy_state(crtc, crtc->state);
@@ -513,7 +509,6 @@ static void malidp_crtc_disable_vblank(struct drm_crtc *crtc)
 }
 
 static const struct drm_crtc_funcs malidp_crtc_funcs = {
-	.destroy = drm_crtc_cleanup,
 	.set_config = drm_atomic_helper_set_config,
 	.page_flip = drm_atomic_helper_page_flip,
 	.reset = malidp_crtc_reset,
@@ -525,7 +520,7 @@ static const struct drm_crtc_funcs malidp_crtc_funcs = {
 
 int malidp_crtc_init(struct drm_device *drm)
 {
-	struct malidp_drm *malidp = drm->dev_private;
+	struct malidp_drm *malidp = drm_to_malidp(drm);
 	struct drm_plane *primary = NULL, *plane;
 	int ret;
 
@@ -547,8 +542,8 @@ int malidp_crtc_init(struct drm_device *drm)
 		return -EINVAL;
 	}
 
-	ret = drm_crtc_init_with_planes(drm, &malidp->crtc, primary, NULL,
-					&malidp_crtc_funcs, NULL);
+	ret = drmm_crtc_init_with_planes(drm, &malidp->crtc, primary, NULL,
+					 &malidp_crtc_funcs, NULL);
 	if (ret)
 		return ret;
 

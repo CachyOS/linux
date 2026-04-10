@@ -272,7 +272,7 @@ static int mace_probe(struct macio_dev *mdev, const struct of_device_id *match)
 	return rc;
 }
 
-static int mace_remove(struct macio_dev *mdev)
+static void mace_remove(struct macio_dev *mdev)
 {
 	struct net_device *dev = macio_get_drvdata(mdev);
 	struct mace_data *mp;
@@ -296,8 +296,6 @@ static int mace_remove(struct macio_dev *mdev)
 	free_netdev(dev);
 
 	macio_release_resources(mdev);
-
-	return 0;
 }
 
 static void dbdma_reset(volatile struct dbdma_regs __iomem *dma)
@@ -525,7 +523,7 @@ static inline void mace_set_timeout(struct net_device *dev)
     struct mace_data *mp = netdev_priv(dev);
 
     if (mp->timeout_active)
-	del_timer(&mp->tx_timeout);
+	timer_delete(&mp->tx_timeout);
     mp->tx_timeout.expires = jiffies + TX_TIMEOUT;
     add_timer(&mp->tx_timeout);
     mp->timeout_active = 1;
@@ -678,7 +676,7 @@ static irqreturn_t mace_interrupt(int irq, void *dev_id)
 
     i = mp->tx_empty;
     while (in_8(&mb->pr) & XMTSV) {
-	del_timer(&mp->tx_timeout);
+	timer_delete(&mp->tx_timeout);
 	mp->timeout_active = 0;
 	/*
 	 * Clear any interrupt indication associated with this status
@@ -807,7 +805,7 @@ static irqreturn_t mace_interrupt(int irq, void *dev_id)
 
 static void mace_tx_timeout(struct timer_list *t)
 {
-    struct mace_data *mp = from_timer(mp, t, tx_timeout);
+    struct mace_data *mp = timer_container_of(mp, t, tx_timeout);
     struct net_device *dev = macio_get_drvdata(mp->mdev);
     volatile struct mace __iomem *mb = mp->mace;
     volatile struct dbdma_regs __iomem *td = mp->tx_dma;
@@ -846,7 +844,7 @@ static void mace_tx_timeout(struct timer_list *t)
     if (mp->tx_bad_runt) {
 	mp->tx_bad_runt = 0;
     } else if (i != mp->tx_fill) {
-	dev_kfree_skb(mp->tx_bufs[i]);
+	dev_kfree_skb_irq(mp->tx_bufs[i]);
 	if (++i >= N_TX_RING)
 	    i = 0;
 	mp->tx_empty = i;

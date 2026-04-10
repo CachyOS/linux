@@ -7,6 +7,8 @@
 
 #include <linux/skbuff.h>
 #include <linux/netdevice.h>
+#include <net/flow.h>
+#include <net/inet_dscp.h>
 #include <net/ip_fib.h>
 #include <linux/tracepoint.h>
 
@@ -32,11 +34,10 @@ TRACE_EVENT(fib_table_lookup,
 		__array(	__u8,	gw6,	16	)
 		__field(	u16,	sport		)
 		__field(	u16,	dport		)
-		__dynamic_array(char,  name,   IFNAMSIZ )
+		__array(char,  name,   IFNAMSIZ )
 	),
 
 	TP_fast_assign(
-		struct in6_addr in6_zero = {};
 		struct net_device *dev;
 		struct in6_addr *in6;
 		__be32 *p32;
@@ -45,7 +46,7 @@ TRACE_EVENT(fib_table_lookup,
 		__entry->err = err;
 		__entry->oif = flp->flowi4_oif;
 		__entry->iif = flp->flowi4_iif;
-		__entry->tos = flp->flowi4_tos;
+		__entry->tos = inet_dscp_to_dsfield(flp->flowi4_dscp);
 		__entry->scope = flp->flowi4_scope;
 		__entry->flags = flp->flowi4_flags;
 
@@ -66,7 +67,7 @@ TRACE_EVENT(fib_table_lookup,
 		}
 
 		dev = nhc ? nhc->nhc_dev : NULL;
-		__assign_str(name, dev ? dev->name : "-");
+		strscpy(__entry->name, dev ? dev->name : "-", IFNAMSIZ);
 
 		if (nhc) {
 			if (nhc->nhc_gw_family == AF_INET) {
@@ -74,7 +75,7 @@ TRACE_EVENT(fib_table_lookup,
 				*p32 = nhc->nhc_gw.ipv4;
 
 				in6 = (struct in6_addr *)__entry->gw6;
-				*in6 = in6_zero;
+				*in6 = in6addr_any;
 			} else if (nhc->nhc_gw_family == AF_INET6) {
 				p32 = (__be32 *) __entry->gw4;
 				*p32 = 0;
@@ -87,7 +88,7 @@ TRACE_EVENT(fib_table_lookup,
 			*p32 = 0;
 
 			in6 = (struct in6_addr *)__entry->gw6;
-			*in6 = in6_zero;
+			*in6 = in6addr_any;
 		}
 	),
 
@@ -95,7 +96,7 @@ TRACE_EVENT(fib_table_lookup,
 		  __entry->tb_id, __entry->oif, __entry->iif, __entry->proto,
 		  __entry->src, __entry->sport, __entry->dst, __entry->dport,
 		  __entry->tos, __entry->scope, __entry->flags,
-		  __get_str(name), __entry->gw4, __entry->gw6, __entry->err)
+		  __entry->name, __entry->gw4, __entry->gw6, __entry->err)
 );
 #endif /* _TRACE_FIB_H */
 

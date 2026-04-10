@@ -8,20 +8,22 @@
 
 #include <linux/types.h>
 
-#include "intel_display.h"
+enum pipe;
+struct intel_crtc;
+struct intel_display;
 
-struct drm_i915_private;
-
-bool intel_set_cpu_fifo_underrun_reporting(struct drm_i915_private *dev_priv,
+void intel_init_fifo_underrun_reporting(struct intel_display *display,
+					struct intel_crtc *crtc, bool enable);
+bool intel_set_cpu_fifo_underrun_reporting(struct intel_display *display,
 					   enum pipe pipe, bool enable);
-bool intel_set_pch_fifo_underrun_reporting(struct drm_i915_private *dev_priv,
+bool intel_set_pch_fifo_underrun_reporting(struct intel_display *display,
 					   enum pipe pch_transcoder,
 					   bool enable);
-void intel_cpu_fifo_underrun_irq_handler(struct drm_i915_private *dev_priv,
+void intel_cpu_fifo_underrun_irq_handler(struct intel_display *display,
 					 enum pipe pipe);
-void intel_pch_fifo_underrun_irq_handler(struct drm_i915_private *dev_priv,
+void intel_pch_fifo_underrun_irq_handler(struct intel_display *display,
 					 enum pipe pch_transcoder);
-void intel_check_cpu_fifo_underruns(struct drm_i915_private *dev_priv);
-void intel_check_pch_fifo_underruns(struct drm_i915_private *dev_priv);
+void intel_check_cpu_fifo_underruns(struct intel_display *display);
+void intel_check_pch_fifo_underruns(struct intel_display *display);
 
 #endif /* __INTEL_FIFO_UNDERRUN_H__ */

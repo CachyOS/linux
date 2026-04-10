@@ -54,7 +54,7 @@ static int __must_check of_clk_bulk_get_all(struct device_node *np,
 	if (!num_clks)
 		return 0;
 
-	clk_bulk = kmalloc_array(num_clks, sizeof(*clk_bulk), GFP_KERNEL);
+	clk_bulk = kmalloc_objs(*clk_bulk, num_clks);
 	if (!clk_bulk)
 		return -ENOMEM;
 
@@ -96,9 +96,9 @@ static int __clk_bulk_get(struct device *dev, int num_clks,
 			if (ret == -ENOENT && optional)
 				continue;
 
-			if (ret != -EPROBE_DEFER)
-				dev_err(dev, "Failed to get clk '%s': %d\n",
-					clks[i].id, ret);
+			dev_err_probe(dev, ret,
+				      "Failed to get clk '%s'\n",
+				      clks[i].id);
 			goto err;
 		}
 	}

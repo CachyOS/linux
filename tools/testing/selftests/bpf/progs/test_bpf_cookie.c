@@ -15,6 +15,8 @@ __u64 uprobe_res;
 __u64 uretprobe_res;
 __u64 tp_res;
 __u64 pe_res;
+__u64 raw_tp_res;
+__u64 tp_btf_res;
 __u64 fentry_res;
 __u64 fexit_res;
 __u64 fmod_ret_res;
@@ -28,14 +30,14 @@ static void update(void *ctx, __u64 *res)
 	*res |= bpf_get_attach_cookie(ctx);
 }
 
-SEC("kprobe/sys_nanosleep")
+SEC("kprobe")
 int handle_kprobe(struct pt_regs *ctx)
 {
 	update(ctx, &kprobe_res);
 	return 0;
 }
 
-SEC("kretprobe/sys_nanosleep")
+SEC("kretprobe")
 int handle_kretprobe(struct pt_regs *ctx)
 {
 	update(ctx, &kretprobe_res);
@@ -84,6 +86,20 @@ SEC("perf_event")
 int handle_pe(struct pt_regs *ctx)
 {
 	update(ctx, &pe_res);
+	return 0;
+}
+
+SEC("raw_tp/sys_enter")
+int handle_raw_tp(void *ctx)
+{
+	update(ctx, &raw_tp_res);
+	return 0;
+}
+
+SEC("tp_btf/sys_enter")
+int handle_tp_btf(void *ctx)
+{
+	update(ctx, &tp_btf_res);
 	return 0;
 }
 

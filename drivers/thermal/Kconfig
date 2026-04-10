@@ -33,6 +33,22 @@ config THERMAL_STATISTICS
 
 	  If in doubt, say N.
 
+config THERMAL_DEBUGFS
+	bool "Thermal subsystem debug support"
+	depends on DEBUG_FS
+	help
+	  Say Y to allow the thermal subsystem to collect diagnostic
+	  information that can be accessed via debugfs.
+
+config THERMAL_CORE_TESTING
+	tristate "Thermal core testing facility"
+	depends on DEBUG_FS
+	help
+	  Say Y to add a debugfs-based thermal core testing facility.
+	  It allows test thermal zones to be created and populated
+	  with trip points in order to exercise the thermal core
+	  functionality in a controlled way.
+
 config THERMAL_EMERGENCY_POWEROFF_DELAY_MS
 	int "Emergency poweroff delay in milli-seconds"
 	default 0
@@ -76,17 +92,6 @@ config THERMAL_OF
 	  Say 'Y' here if you need to build thermal infrastructure
 	  based on device tree.
 
-config THERMAL_WRITABLE_TRIPS
-	bool "Enable writable trip points"
-	help
-	  This option allows the system integrator to choose whether
-	  trip temperatures can be changed from userspace. The
-	  writable trips need to be specified when setting up the
-	  thermal zone but the choice here takes precedence.
-
-	  Say 'Y' here if you would like to allow userspace tools to
-	  change trip temperatures.
-
 choice
 	prompt "Default Thermal governor"
 	default THERMAL_DEFAULT_GOV_STEP_WISE
@@ -125,6 +130,14 @@ config THERMAL_DEFAULT_GOV_POWER_ALLOCATOR
 	  Select this if you want to control temperature based on
 	  system and device power allocation. This governor can only
 	  operate on cooling devices that implement the power API.
+
+config THERMAL_DEFAULT_GOV_BANG_BANG
+	bool "bang_bang"
+	depends on THERMAL_GOV_BANG_BANG
+	help
+	  Use the bang_bang governor as default. This throttles the
+	  devices one step at the time, taking into account the trip
+	  point hysteresis.
 
 endchoice
 
@@ -207,6 +220,15 @@ config DEVFREQ_THERMAL
 
 	  If you want this support, you should say Y here.
 
+config PCIE_THERMAL
+	bool "PCIe cooling support"
+	depends on PCIEPORTBUS
+	help
+	  This implements PCIe cooling mechanism through bandwidth reduction
+	  for PCIe devices.
+
+	  If you want this support, you should say Y here.
+
 config THERMAL_EMULATION
 	bool "Thermal emulation mode support"
 	help
@@ -221,7 +243,7 @@ config THERMAL_EMULATION
 
 config THERMAL_MMIO
 	tristate "Generic Thermal MMIO driver"
-	depends on OF || COMPILE_TEST
+	depends on OF
 	depends on HAS_IOMEM
 	help
 	  This option enables the generic thermal MMIO driver that will use
@@ -235,7 +257,7 @@ config HISI_THERMAL
 	depends on ARCH_HISI || COMPILE_TEST
 	depends on HAS_IOMEM
 	depends on OF
-	default y
+	default ARCH_HISI
 	help
 	  Enable this to plug hisilicon's thermal sensor driver into the Linux
 	  thermal framework. cpufreq is used as the cooling device to throttle
@@ -274,6 +296,16 @@ config IMX8MM_THERMAL
 	  cpufreq is used as the cooling device to throttle CPUs when the passive
 	  trip is crossed.
 
+config IMX91_THERMAL
+	tristate "Temperature sensor driver for NXP i.MX91 SoC"
+	depends on ARCH_MXC || COMPILE_TEST
+	depends on OF
+	help
+	  Include one sensor and six comparators. Each of them compares the
+	  temperature value (from the sensor) against the programmable
+	  threshold values. The direction of the comparison is configurable
+	  (greater / lesser than).
+
 config K3_THERMAL
 	tristate "Texas Instruments K3 thermal support"
 	depends on ARCH_K3 || COMPILE_TEST
@@ -304,6 +336,15 @@ config QORIQ_THERMAL
 	  It supports one critical trip point and one passive trip point. The
 	  cpufreq is used as the cooling device to throttle CPUs when the
 	  passive trip is crossed.
+
+config AIROHA_THERMAL
+	tristate "Airoha thermal sensor driver"
+	depends on ARCH_AIROHA || COMPILE_TEST
+	depends on MFD_SYSCON
+	depends on OF
+	help
+	  Enable this to plug the Airoha thermal sensor driver into the Linux
+	  thermal framework.
 
 config SPEAR_THERMAL
 	tristate "SPEAr thermal sensor driver"
@@ -338,32 +379,6 @@ config ROCKCHIP_THERMAL
 	  ADC (TS-ADC) found on Rockchip SoCs. It supports one critical
 	  trip point. Cpufreq is used as the cooling device and will throttle
 	  CPUs when the Temperature crosses the passive trip point.
-
-config RCAR_THERMAL
-	tristate "Renesas R-Car thermal driver"
-	depends on ARCH_RENESAS || COMPILE_TEST
-	depends on HAS_IOMEM
-	help
-	  Enable this to plug the R-Car thermal sensor driver into the Linux
-	  thermal framework.
-
-config RCAR_GEN3_THERMAL
-	tristate "Renesas R-Car Gen3 and RZ/G2 thermal driver"
-	depends on ARCH_RENESAS || COMPILE_TEST
-	depends on HAS_IOMEM
-	depends on OF
-	help
-	  Enable this to plug the R-Car Gen3 or RZ/G2 thermal sensor driver into
-	  the Linux thermal framework.
-
-config RZG2L_THERMAL
-	tristate "Renesas RZ/G2L thermal driver"
-	depends on ARCH_RENESAS || COMPILE_TEST
-	depends on HAS_IOMEM
-	depends on OF
-	help
-	  Enable this to plug the RZ/G2L thermal sensor driver into the Linux
-	  thermal framework.
 
 config KIRKWOOD_THERMAL
 	tristate "Temperature sensor on Marvell Kirkwood SoCs"
@@ -412,16 +427,10 @@ config DA9062_THERMAL
 	  zone.
 	  Compatible with the DA9062 and DA9061 PMICs.
 
-config MTK_THERMAL
-	tristate "Temperature sensor driver for mediatek SoCs"
-	depends on ARCH_MEDIATEK || COMPILE_TEST
-	depends on HAS_IOMEM
-	depends on NVMEM || NVMEM=n
-	depends on RESET_CONTROLLER
-	default y
-	help
-	  Enable this option if you want to have support for thermal management
-	  controller present in Mediatek SoCs
+menu "Mediatek thermal drivers"
+depends on ARCH_MEDIATEK || COMPILE_TEST
+source "drivers/thermal/mediatek/Kconfig"
+endmenu
 
 config AMLOGIC_THERMAL
 	tristate "Amlogic Thermal Support"
@@ -457,9 +466,11 @@ source "drivers/thermal/samsung/Kconfig"
 endmenu
 
 menu "STMicroelectronics thermal drivers"
-depends on (ARCH_STI || ARCH_STM32) && OF
+depends on (ARCH_STI || ARCH_STM32) && THERMAL_OF
 source "drivers/thermal/st/Kconfig"
 endmenu
+
+source "drivers/thermal/renesas/Kconfig"
 
 source "drivers/thermal/tegra/Kconfig"
 
@@ -496,12 +507,24 @@ config SPRD_THERMAL
 
 config KHADAS_MCU_FAN_THERMAL
 	tristate "Khadas MCU controller FAN cooling support"
-	depends on OF || COMPILE_TEST
+	depends on OF
 	depends on MFD_KHADAS_MCU
 	select MFD_CORE
 	select REGMAP
 	help
 	  If you say yes here you get support for the FAN controlled
 	  by the Microcontroller found on the Khadas VIM boards.
+
+config LOONGSON2_THERMAL
+	tristate "Loongson-2 SoC series thermal driver"
+	depends on LOONGARCH || COMPILE_TEST
+	depends on OF
+	help
+	  Support for Thermal driver found on Loongson-2 SoC series platforms.
+	  The thermal driver realizes get_temp and set_trips function, which
+	  are used to obtain the temperature of the current node and set the
+	  temperature range to trigger the interrupt. When the input temperature
+	  is higher than the high temperature threshold or lower than the low
+	  temperature threshold, the interrupt will occur.
 
 endif

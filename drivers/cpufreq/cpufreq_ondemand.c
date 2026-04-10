@@ -21,37 +21,13 @@
 #define DEF_FREQUENCY_UP_THRESHOLD		(65)
 #define DEF_SAMPLING_DOWN_FACTOR		(10)
 #define MAX_SAMPLING_DOWN_FACTOR		(100000)
-#define MICRO_FREQUENCY_UP_THRESHOLD		(85)
-#define MICRO_FREQUENCY_MIN_SAMPLE_RATE		(10000)
+#define MICRO_FREQUENCY_UP_THRESHOLD		(95)
 #define MIN_FREQUENCY_UP_THRESHOLD		(1)
 #define MAX_FREQUENCY_UP_THRESHOLD		(100)
 
 static struct od_ops od_ops;
 
 static unsigned int default_powersave_bias;
-
-/*
- * Not all CPUs want IO time to be accounted as busy; this depends on how
- * efficient idling at a higher frequency/voltage is.
- * Pavel Machek says this is not so for various generations of AMD and old
- * Intel systems.
- * Mike Chan (android.com) claims this is also not true for ARM.
- * Because of this, whitelist specific known (series) of CPUs by default, and
- * leave all others up to the user.
- */
-static int should_io_be_busy(void)
-{
-#if defined(CONFIG_X86)
-	/*
-	 * For Intel, Core 2 (model 15) and later have an efficient idle.
-	 */
-	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL &&
-			boot_cpu_data.x86 == 6 &&
-			boot_cpu_data.x86_model >= 15)
-		return 1;
-#endif
-	return 0;
-}
 
 /*
  * Find right freq to be set now with powersave_bias on.
@@ -77,7 +53,8 @@ static unsigned int generic_powersave_bias_target(struct cpufreq_policy *policy,
 		return freq_next;
 	}
 
-	index = cpufreq_frequency_table_target(policy, freq_next, relation);
+	index = cpufreq_frequency_table_target(policy, freq_next, policy->min,
+					       policy->max, relation);
 	freq_req = freq_table[index].frequency;
 	freq_reduc = freq_req * od_tuners->powersave_bias / 1000;
 	freq_avg = freq_req - freq_reduc;
@@ -345,7 +322,7 @@ static struct policy_dbs_info *od_alloc(void)
 {
 	struct od_policy_dbs_info *dbs_info;
 
-	dbs_info = kzalloc(sizeof(*dbs_info), GFP_KERNEL);
+	dbs_info = kzalloc_obj(*dbs_info);
 	return dbs_info ? &dbs_info->policy_dbs : NULL;
 }
 
@@ -357,17 +334,12 @@ static void od_free(struct policy_dbs_info *policy_dbs)
 static int od_init(struct dbs_data *dbs_data)
 {
 	struct od_dbs_tuners *tuners;
-	u64 idle_time;
-	int cpu;
 
-	tuners = kzalloc(sizeof(*tuners), GFP_KERNEL);
+	tuners = kzalloc_obj(*tuners);
 	if (!tuners)
 		return -ENOMEM;
 
-	cpu = get_cpu();
-	idle_time = get_cpu_idle_time_us(cpu, NULL);
-	put_cpu();
-	if (idle_time != -1ULL) {
+	if (tick_nohz_is_active()) {
 		/* Idle micro accounting is supported. Use finer thresholds */
 		dbs_data->up_threshold = MICRO_FREQUENCY_UP_THRESHOLD;
 	} else {
@@ -377,7 +349,7 @@ static int od_init(struct dbs_data *dbs_data)
 	dbs_data->sampling_down_factor = DEF_SAMPLING_DOWN_FACTOR;
 	dbs_data->ignore_nice_load = 0;
 	tuners->powersave_bias = default_powersave_bias;
-	dbs_data->io_is_busy = should_io_be_busy();
+	dbs_data->io_is_busy = od_should_io_be_busy();
 
 	dbs_data->tuners = tuners;
 	return 0;
@@ -416,10 +388,13 @@ static struct dbs_governor od_dbs_gov = {
 static void od_set_powersave_bias(unsigned int powersave_bias)
 {
 	unsigned int cpu;
-	cpumask_t done;
+	cpumask_var_t done;
+
+	if (!alloc_cpumask_var(&done, GFP_KERNEL))
+		return;
 
 	default_powersave_bias = powersave_bias;
-	cpumask_clear(&done);
+	cpumask_clear(done);
 
 	cpus_read_lock();
 	for_each_online_cpu(cpu) {
@@ -428,7 +403,7 @@ static void od_set_powersave_bias(unsigned int powersave_bias)
 		struct dbs_data *dbs_data;
 		struct od_dbs_tuners *od_tuners;
 
-		if (cpumask_test_cpu(cpu, &done))
+		if (cpumask_test_cpu(cpu, done))
 			continue;
 
 		policy = cpufreq_cpu_get_raw(cpu);
@@ -439,13 +414,15 @@ static void od_set_powersave_bias(unsigned int powersave_bias)
 		if (!policy_dbs)
 			continue;
 
-		cpumask_or(&done, &done, policy->cpus);
+		cpumask_or(done, done, policy->cpus);
 
 		dbs_data = policy_dbs->dbs_data;
 		od_tuners = dbs_data->tuners;
 		od_tuners->powersave_bias = default_powersave_bias;
 	}
 	cpus_read_unlock();
+
+	free_cpumask_var(done);
 }
 
 void od_register_powersave_bias_handler(unsigned int (*f)

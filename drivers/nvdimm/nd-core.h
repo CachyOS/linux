@@ -82,14 +82,14 @@ static inline void nvdimm_security_overwrite_query(struct work_struct *work)
 }
 #endif
 
-bool is_nvdimm(struct device *dev);
-bool is_nd_pmem(struct device *dev);
-bool is_nd_volatile(struct device *dev);
-static inline bool is_nd_region(struct device *dev)
+bool is_nvdimm(const struct device *dev);
+bool is_nd_pmem(const struct device *dev);
+bool is_nd_volatile(const struct device *dev);
+static inline bool is_nd_region(const struct device *dev)
 {
 	return is_nd_pmem(dev) || is_nd_volatile(dev);
 }
-static inline bool is_memory(struct device *dev)
+static inline bool is_memory(const struct device *dev)
 {
 	return is_nd_pmem(dev) || is_nd_volatile(dev);
 }
@@ -107,6 +107,7 @@ int nvdimm_bus_create_ndctl(struct nvdimm_bus *nvdimm_bus);
 void nvdimm_bus_destroy_ndctl(struct nvdimm_bus *nvdimm_bus);
 void nd_synchronize(void);
 void nd_device_register(struct device *dev);
+void nd_device_register_sync(struct device *dev);
 struct nd_label_id;
 char *nd_label_gen_id(struct nd_label_id *label_id, const uuid_t *uuid,
 		      u32 flags);
@@ -126,8 +127,6 @@ resource_size_t nd_region_allocatable_dpa(struct nd_region *nd_region);
 resource_size_t nd_pmem_available_dpa(struct nd_region *nd_region,
 				      struct nd_mapping *nd_mapping);
 resource_size_t nd_region_available_dpa(struct nd_region *nd_region);
-int nd_region_conflict(struct nd_region *nd_region, resource_size_t start,
-		resource_size_t size);
 resource_size_t nvdimm_allocated_dpa(struct nvdimm_drvdata *ndd,
 		struct nd_label_id *label_id);
 int nvdimm_num_label_slots(struct nvdimm_drvdata *ndd);
@@ -135,8 +134,6 @@ void get_ndd(struct nvdimm_drvdata *ndd);
 resource_size_t __nvdimm_namespace_capacity(struct nd_namespace_common *ndns);
 void nd_detach_ndns(struct device *dev, struct nd_namespace_common **_ndns);
 void __nd_detach_ndns(struct device *dev, struct nd_namespace_common **_ndns);
-bool nd_attach_ndns(struct device *dev, struct nd_namespace_common *attach,
-		struct nd_namespace_common **_ndns);
 bool __nd_attach_ndns(struct device *dev, struct nd_namespace_common *attach,
 		struct nd_namespace_common **_ndns);
 ssize_t nd_namespace_store(struct device *dev,

@@ -137,20 +137,21 @@ static const struct iio_info ltc1660_info = {
 	.write_raw = &ltc1660_write_raw,
 };
 
-static int __maybe_unused ltc1660_suspend(struct device *dev)
+static int ltc1660_suspend(struct device *dev)
 {
 	struct ltc1660_priv *priv = iio_priv(spi_get_drvdata(
 						to_spi_device(dev)));
 	return regmap_write(priv->regmap, LTC1660_REG_SLEEP, 0x00);
 }
 
-static int __maybe_unused ltc1660_resume(struct device *dev)
+static int ltc1660_resume(struct device *dev)
 {
 	struct ltc1660_priv *priv = iio_priv(spi_get_drvdata(
 						to_spi_device(dev)));
 	return regmap_write(priv->regmap, LTC1660_REG_WAKE, 0x00);
 }
-static SIMPLE_DEV_PM_OPS(ltc1660_pm_ops, ltc1660_suspend, ltc1660_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(ltc1660_pm_ops, ltc1660_suspend,
+				ltc1660_resume);
 
 static int ltc1660_probe(struct spi_device *spi)
 {
@@ -218,14 +219,14 @@ static void ltc1660_remove(struct spi_device *spi)
 static const struct of_device_id ltc1660_dt_ids[] = {
 	{ .compatible = "lltc,ltc1660", .data = (void *)ID_LTC1660 },
 	{ .compatible = "lltc,ltc1665", .data = (void *)ID_LTC1665 },
-	{ /* sentinel */ }
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ltc1660_dt_ids);
 
 static const struct spi_device_id ltc1660_id[] = {
 	{"ltc1660", ID_LTC1660},
 	{"ltc1665", ID_LTC1665},
-	{ /* sentinel */ }
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, ltc1660_id);
 
@@ -233,7 +234,7 @@ static struct spi_driver ltc1660_driver = {
 	.driver = {
 		.name = "ltc1660",
 		.of_match_table = ltc1660_dt_ids,
-		.pm = &ltc1660_pm_ops,
+		.pm = pm_sleep_ptr(&ltc1660_pm_ops),
 	},
 	.probe	= ltc1660_probe,
 	.remove = ltc1660_remove,

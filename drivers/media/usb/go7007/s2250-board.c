@@ -494,8 +494,7 @@ static const struct v4l2_subdev_ops s2250_ops = {
 
 /* --------------------------------------------------------------------------*/
 
-static int s2250_probe(struct i2c_client *client,
-		       const struct i2c_device_id *id)
+static int s2250_probe(struct i2c_client *client)
 {
 	struct i2c_client *audio;
 	struct i2c_adapter *adapter = client->adapter;
@@ -510,7 +509,7 @@ static int s2250_probe(struct i2c_client *client,
 	if (IS_ERR(audio))
 		return PTR_ERR(audio);
 
-	state = kzalloc(sizeof(struct s2250), GFP_KERNEL);
+	state = kzalloc_obj(struct s2250);
 	if (state == NULL) {
 		i2c_unregister_device(audio);
 		return -ENOMEM;
@@ -601,7 +600,7 @@ fail:
 	return err;
 }
 
-static int s2250_remove(struct i2c_client *client)
+static void s2250_remove(struct i2c_client *client)
 {
 	struct s2250 *state = to_state(i2c_get_clientdata(client));
 
@@ -609,11 +608,10 @@ static int s2250_remove(struct i2c_client *client)
 	v4l2_device_unregister_subdev(&state->sd);
 	v4l2_ctrl_handler_free(&state->hdl);
 	kfree(state);
-	return 0;
 }
 
 static const struct i2c_device_id s2250_id[] = {
-	{ "s2250", 0 },
+	{ "s2250" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, s2250_id);

@@ -79,7 +79,7 @@
 #include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <scsi/fc/fc_gs.h>
 
@@ -241,6 +241,12 @@ static void fc_lport_ptp_setup(struct fc_lport *lport,
 	}
 	mutex_lock(&lport->disc.disc_mutex);
 	lport->ptp_rdata = fc_rport_create(lport, remote_fid);
+	if (!lport->ptp_rdata) {
+		printk(KERN_WARNING "libfc: Failed to setup lport 0x%x\n",
+			lport->port_id);
+		mutex_unlock(&lport->disc.disc_mutex);
+		return;
+	}
 	kref_get(&lport->ptp_rdata->kref);
 	lport->ptp_rdata->ids.port_name = remote_wwpn;
 	lport->ptp_rdata->ids.node_name = remote_wwnn;
@@ -2043,7 +2049,7 @@ static int fc_lport_els_request(struct bsg_job *job,
 	fh->fh_df_ctl = 0;
 	fh->fh_parm_offset = 0;
 
-	info = kzalloc(sizeof(struct fc_bsg_info), GFP_KERNEL);
+	info = kzalloc_obj(struct fc_bsg_info);
 	if (!info) {
 		fc_frame_free(fp);
 		return -ENOMEM;
@@ -2103,7 +2109,7 @@ static int fc_lport_ct_request(struct bsg_job *job,
 	fh->fh_df_ctl = 0;
 	fh->fh_parm_offset = 0;
 
-	info = kzalloc(sizeof(struct fc_bsg_info), GFP_KERNEL);
+	info = kzalloc_obj(struct fc_bsg_info);
 	if (!info) {
 		fc_frame_free(fp);
 		return -ENOMEM;

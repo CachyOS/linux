@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Utility to set the DAVINCI MUX register from a table in mux.h
  *
@@ -8,10 +9,7 @@
  *
  * Written by Tony Lindgren
  *
- * 2007 (c) MontaVista Software, Inc. This file is licensed under
- * the terms of the GNU General Public License version 2. This program
- * is licensed "as is" without any warranty of any kind, whether express
- * or implied.
+ * 2007 (c) MontaVista Software, Inc.
  *
  * Copyright (C) 2008 Texas Instruments.
  */
@@ -98,19 +96,4 @@ int davinci_cfg_reg(const unsigned long index)
 #endif
 
 	return 0;
-}
-EXPORT_SYMBOL(davinci_cfg_reg);
-
-int davinci_cfg_reg_list(const short pins[])
-{
-	int i, error = -EINVAL;
-
-	if (pins)
-		for (i = 0; pins[i] >= 0; i++) {
-			error = davinci_cfg_reg(pins[i]);
-			if (error)
-				break;
-		}
-
-	return error;
 }

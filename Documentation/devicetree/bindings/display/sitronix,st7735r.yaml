@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/display/sitronix,st7735r.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Sitronix ST7735R Display Panels Device Tree Bindings
+title: Sitronix ST7735R Display Panels
 
 maintainers:
   - David Lechner <david@lechnology.com>
@@ -15,6 +15,7 @@ description:
 
 allOf:
   - $ref: panel/panel-common.yaml#
+  - $ref: /schemas/spi/spi-peripheral-props.yaml#
 
 properties:
   compatible:
@@ -52,11 +53,6 @@ additionalProperties: false
 examples:
   - |
     #include <dt-bindings/gpio/gpio.h>
-
-    backlight: backlight {
-            compatible = "gpio-backlight";
-            gpios = <&gpio 44 GPIO_ACTIVE_HIGH>;
-    };
 
     spi {
             #address-cells = <1>;

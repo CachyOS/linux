@@ -3,7 +3,7 @@
  *    Initial setup-routines for HP 9000 based hardware.
  *
  *    Copyright (C) 1991, 1992, 1995  Linus Torvalds
- *    Modifications for PA-RISC (C) 1999-2008 Helge Deller <deller@gmx.de>
+ *    Modifications for PA-RISC (C) 1999-2026 Helge Deller <deller@gmx.de>
  *    Modifications copyright 1999 SuSE GmbH (Philipp Rumpf)
  *    Modifications copyright 2000 Martin K. Petersen <mkp@mkp.net>
  *    Modifications copyright 2000 Philipp Rumpf <prumpf@tux.org>
@@ -26,6 +26,7 @@
 #include <asm/processor.h>
 #include <asm/page.h>
 #include <asm/pdc.h>
+#include <asm/smp.h>
 #include <asm/pdcpat.h>
 #include <asm/irq.h>		/* for struct irq_region */
 #include <asm/parisc-device.h>
@@ -40,7 +41,7 @@ EXPORT_SYMBOL(_parisc_requires_coherency);
 DEFINE_PER_CPU(struct cpuinfo_parisc, cpu_data);
 
 /*
-**  	PARISC CPU driver - claim "device" and initialize CPU data structures.
+**	PARISC CPU driver - claim "device" and initialize CPU data structures.
 **
 ** Consolidate per CPU initialization into (mostly) one module.
 ** Monarch CPU will initialize boot_cpu_data which shouldn't
@@ -58,7 +59,7 @@ DEFINE_PER_CPU(struct cpuinfo_parisc, cpu_data);
 */
 
 /**
- * init_cpu_profiler - enable/setup per cpu profiling hooks.
+ * init_percpu_prof - enable/setup per cpu profiling hooks.
  * @cpunum: The processor instance.
  *
  * FIXME: doesn't do much yet...
@@ -73,8 +74,8 @@ init_percpu_prof(unsigned long cpunum)
  * processor_probe - Determine if processor driver should claim this device.
  * @dev: The device which has been found.
  *
- * Determine if processor driver should claim this chip (return 0) or not 
- * (return 1).  If so, initialize the chip and tell other partners in crime 
+ * Determine if processor driver should claim this chip (return 0) or not
+ * (return 1).  If so, initialize the chip and tell other partners in crime
  * they have work to do.
  */
 static int __init processor_probe(struct parisc_device *dev)
@@ -109,7 +110,7 @@ static int __init processor_probe(struct parisc_device *dev)
 		unsigned long bytecnt;
 	        pdc_pat_cell_mod_maddr_block_t *pa_pdc_cell;
 
-		pa_pdc_cell = kmalloc(sizeof (*pa_pdc_cell), GFP_KERNEL);
+		pa_pdc_cell = kmalloc_obj(*pa_pdc_cell);
 		if (!pa_pdc_cell)
 			panic("couldn't allocate memory for PDC_PAT_CELL!");
 
@@ -171,7 +172,6 @@ static int __init processor_probe(struct parisc_device *dev)
 	p->cpu_num = cpu_info.cpu_num;
 	p->cpu_loc = cpu_info.cpu_loc;
 
-	set_cpu_possible(cpuid, true);
 	store_cpu_topology(cpuid);
 
 #ifdef CONFIG_SMP
@@ -207,7 +207,7 @@ static int __init processor_probe(struct parisc_device *dev)
 	}
 #endif
 
-	/* 
+	/*
 	 * Bring this CPU up now! (ignore bootstrap cpuid == 0)
 	 */
 #ifdef CONFIG_SMP
@@ -241,9 +241,10 @@ void __init collect_boot_cpu_data(void)
 	/* get CPU-Model Information... */
 #define p ((unsigned long *)&boot_cpu_data.pdc.model)
 	if (pdc_model_info(&boot_cpu_data.pdc.model) == PDC_OK) {
-		printk(KERN_INFO 
-			"model %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx\n",
-			p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8]);
+		pr_info("model 0x%04lx 0x%04lx 0x%04lx 0x%04lx 0x%04lx "
+			"0x%04lx 0x%04lx 0x%04lx 0x%04lx 0x%04lx\n",
+			p[0], p[1], p[2], p[3], p[4],
+			p[5], p[6], p[7], p[8], p[9]);
 
 		add_device_randomness(&boot_cpu_data.pdc.model,
 			sizeof(boot_cpu_data.pdc.model));
@@ -251,15 +252,14 @@ void __init collect_boot_cpu_data(void)
 #undef p
 
 	if (pdc_model_versions(&boot_cpu_data.pdc.versions, 0) == PDC_OK) {
-		printk(KERN_INFO "vers  %08lx\n", 
-			boot_cpu_data.pdc.versions);
+		pr_info("vers  0x%04lx\n", boot_cpu_data.pdc.versions);
 
 		add_device_randomness(&boot_cpu_data.pdc.versions,
 			sizeof(boot_cpu_data.pdc.versions));
 	}
 
 	if (pdc_model_cpuid(&boot_cpu_data.pdc.cpuid) == PDC_OK) {
-		printk(KERN_INFO "CPUID vers %ld rev %ld (0x%08lx)\n",
+		pr_info("CPUID vers %ld rev %ld (0x%04lx)\n",
 			(boot_cpu_data.pdc.cpuid >> 5) & 127,
 			boot_cpu_data.pdc.cpuid & 31,
 			boot_cpu_data.pdc.cpuid);
@@ -272,9 +272,14 @@ void __init collect_boot_cpu_data(void)
 		printk(KERN_INFO "capabilities 0x%lx\n",
 			boot_cpu_data.pdc.capabilities);
 
-	if (pdc_model_sysmodel(boot_cpu_data.pdc.sys_model_name) == PDC_OK)
-		printk(KERN_INFO "model %s\n",
+	if (pdc_model_sysmodel(OS_ID_HPUX, boot_cpu_data.pdc.sys_model_name) == PDC_OK)
+		pr_info("HP-UX model name: %s\n",
 			boot_cpu_data.pdc.sys_model_name);
+
+	serial_no[0] = 0;
+	if (pdc_model_sysmodel(OS_ID_MPEXL, serial_no) == PDC_OK &&
+		serial_no[0])
+		pr_info("MPE/iX model name: %s\n", serial_no);
 
 	dump_stack_set_arch_desc("%s", boot_cpu_data.pdc.sys_model_name);
 
@@ -362,6 +367,8 @@ int init_per_cpu(int cpunum)
 	/* FUTURE: Enable Performance Monitor : ccr bit 0x20 */
 	init_percpu_prof(cpunum);
 
+	btlb_init_per_cpu();
+
 	return ret;
 }
 
@@ -372,10 +379,18 @@ int
 show_cpuinfo (struct seq_file *m, void *v)
 {
 	unsigned long cpu;
+	char cpu_name[60], *p;
+
+	/* strip PA path from CPU name to not confuse lscpu */
+	strscpy(cpu_name, per_cpu(cpu_data, 0).dev->name, sizeof(cpu_name));
+	p = strrchr(cpu_name, '[');
+	if (p)
+		*(--p) = 0;
 
 	for_each_online_cpu(cpu) {
-		const struct cpuinfo_parisc *cpuinfo = &per_cpu(cpu_data, cpu);
 #ifdef CONFIG_SMP
+		const struct cpuinfo_parisc *cpuinfo = &per_cpu(cpu_data, cpu);
+
 		if (0 == cpuinfo->hpa)
 			continue;
 #endif
@@ -420,11 +435,10 @@ show_cpuinfo (struct seq_file *m, void *v)
 
 		seq_printf(m, "model\t\t: %s - %s\n",
 				 boot_cpu_data.pdc.sys_model_name,
-				 cpuinfo->dev ?
-				 cpuinfo->dev->name : "Unknown");
+				 cpu_name);
 
-		seq_printf(m, "hversion\t: 0x%08x\n"
-			        "sversion\t: 0x%08x\n",
+		seq_printf(m, "hversion\t: 0x%04x\n"
+				"sversion\t: 0x%04x\n",
 				 boot_cpu_data.hversion,
 				 boot_cpu_data.sversion );
 
@@ -459,13 +473,6 @@ static struct parisc_driver cpu_driver __refdata = {
  */
 void __init processor_init(void)
 {
-	unsigned int cpu;
-
 	reset_cpu_topology();
-
-	/* reset possible mask. We will mark those which are possible. */
-	for_each_possible_cpu(cpu)
-		set_cpu_possible(cpu, false);
-
 	register_parisc_driver(&cpu_driver);
 }

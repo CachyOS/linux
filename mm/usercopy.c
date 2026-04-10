@@ -12,11 +12,12 @@
 
 #include <linux/mm.h>
 #include <linux/highmem.h>
+#include <linux/kstrtox.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/sched/task.h>
 #include <linux/sched/task_stack.h>
-#include <linux/thread_info.h>
+#include <linux/ucopysize.h>
 #include <linux/vmalloc.h>
 #include <linux/atomic.h>
 #include <linux/jump_label.h>
@@ -161,9 +162,10 @@ static inline void check_bogus_address(const unsigned long ptr, unsigned long n,
 static inline void check_heap_object(const void *ptr, unsigned long n,
 				     bool to_user)
 {
-	uintptr_t addr = (uintptr_t)ptr;
+	unsigned long addr = (unsigned long)ptr;
 	unsigned long offset;
-	struct folio *folio;
+	struct page *page;
+	struct slab *slab;
 
 	if (is_kmap_addr(ptr)) {
 		offset = offset_in_page(ptr);
@@ -172,7 +174,7 @@ static inline void check_heap_object(const void *ptr, unsigned long n,
 		return;
 	}
 
-	if (is_vmalloc_addr(ptr)) {
+	if (is_vmalloc_addr(ptr) && !pagefault_disabled()) {
 		struct vmap_area *area = find_vmap_area(addr);
 
 		if (!area)
@@ -188,19 +190,28 @@ static inline void check_heap_object(const void *ptr, unsigned long n,
 	if (!virt_addr_valid(ptr))
 		return;
 
-	folio = virt_to_folio(ptr);
-
-	if (folio_test_slab(folio)) {
+	page = virt_to_page(ptr);
+	slab = page_slab(page);
+	if (slab) {
 		/* Check slab allocator for flags and size. */
-		__check_heap_object(ptr, n, folio_slab(folio), to_user);
-	} else if (folio_test_large(folio)) {
-		offset = ptr - folio_address(folio);
-		if (n > folio_size(folio) - offset)
+		__check_heap_object(ptr, n, slab, to_user);
+	} else if (PageCompound(page)) {
+		page = compound_head(page);
+		offset = ptr - page_address(page);
+		if (n > page_size(page) - offset)
 			usercopy_abort("page alloc", NULL, to_user, offset, n);
 	}
+
+	/*
+	 * We cannot check non-compound pages.  They might be part of
+	 * a large allocation, in which case crossing a page boundary
+	 * is fine.
+	 */
 }
 
-static DEFINE_STATIC_KEY_FALSE_RO(bypass_usercopy_checks);
+DEFINE_STATIC_KEY_MAYBE_RO(CONFIG_HARDENED_USERCOPY_DEFAULT_ON,
+			   validate_usercopy_range);
+EXPORT_SYMBOL(validate_usercopy_range);
 
 /*
  * Validates that the given object is:
@@ -211,9 +222,6 @@ static DEFINE_STATIC_KEY_FALSE_RO(bypass_usercopy_checks);
  */
 void __check_object_size(const void *ptr, unsigned long n, bool to_user)
 {
-	if (static_branch_unlikely(&bypass_usercopy_checks))
-		return;
-
 	/* Skip all tests if size is zero. */
 	if (!n)
 		return;
@@ -254,11 +262,12 @@ void __check_object_size(const void *ptr, unsigned long n, bool to_user)
 }
 EXPORT_SYMBOL(__check_object_size);
 
-static bool enable_checks __initdata = true;
+static bool enable_checks __initdata =
+		IS_ENABLED(CONFIG_HARDENED_USERCOPY_DEFAULT_ON);
 
 static int __init parse_hardened_usercopy(char *str)
 {
-	if (strtobool(str, &enable_checks))
+	if (kstrtobool(str, &enable_checks))
 		pr_warn("Invalid option string for hardened_usercopy: '%s'\n",
 			str);
 	return 1;
@@ -268,8 +277,10 @@ __setup("hardened_usercopy=", parse_hardened_usercopy);
 
 static int __init set_hardened_usercopy(void)
 {
-	if (enable_checks == false)
-		static_branch_enable(&bypass_usercopy_checks);
+	if (enable_checks)
+		static_branch_enable(&validate_usercopy_range);
+	else
+		static_branch_disable(&validate_usercopy_range);
 	return 1;
 }
 

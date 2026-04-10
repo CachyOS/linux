@@ -3,7 +3,7 @@
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
  *
- * Copyright(c) 2019 Intel Corporation. All rights reserved.
+ * Copyright(c) 2019 Intel Corporation
  *
  * Author: Keyon Jie <yang.jie@linux.intel.com>
  */
@@ -51,5 +51,6 @@
 irqreturn_t cnl_ipc_irq_thread(int irq, void *context);
 int cnl_ipc_send_msg(struct snd_sof_dev *sdev, struct snd_sof_ipc_msg *msg);
 void cnl_ipc_dump(struct snd_sof_dev *sdev);
+void cnl_ipc4_dump(struct snd_sof_dev *sdev);
 
 #endif

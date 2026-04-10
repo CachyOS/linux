@@ -34,7 +34,7 @@
 #define CA_WRITEBACK	(0x4)
 #endif
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 
 #define XTENSA_HWVERSION_RC_2009_0 230000
 
@@ -43,7 +43,7 @@
 #if XCHAL_HAVE_S32C1I && (XCHAL_HW_MIN_VERSION >= XTENSA_HWVERSION_RC_2009_0)
 /*
  * We Have Atomic Operation Control (ATOMCTL) Register; Initialize it.
- * For details see Documentation/xtensa/atomctl.rst
+ * For details see Documentation/arch/xtensa/atomctl.rst
  */
 #if XCHAL_DCACHE_IS_COHERENT
 	movi	a3, 0x25	/* For SMP/MX -- internal for writeback,
@@ -240,6 +240,6 @@
 
 	.endm
 
-#endif /*__ASSEMBLY__*/
+#endif /*__ASSEMBLER__*/
 
 #endif /* _XTENSA_INITIALIZE_MMU_H */

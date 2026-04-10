@@ -8,14 +8,10 @@
 /*  This file is for 92CE/92CU dynamic mechanism only */
 
 #include <drv_types.h>
-#include <rtw_debug.h>
 #include <rtl8723b_hal.h>
 
 /*  Global var */
 
-static void dm_CheckStatistics(struct adapter *Adapter)
-{
-}
 /*  */
 /*  functions */
 /*  */
@@ -145,10 +141,6 @@ void rtl8723b_HalDmWatchDog(struct adapter *Adapter)
 		(hw_init_completed == true) &&
 		((!fw_current_in_ps_mode) && bFwPSAwake)
 	) {
-		/*  */
-		/*  Calculate Tx/Rx statistics. */
-		/*  */
-		dm_CheckStatistics(Adapter);
 		rtw_hal_check_rxfifo_full(Adapter);
 	}
 

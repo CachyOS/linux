@@ -1,18 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * TI clock autoidle support
  *
  * Copyright (C) 2013 Texas Instruments, Inc.
  *
  * Tero Kristo <t-kristo@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/clk-provider.h>
@@ -38,7 +30,7 @@ static LIST_HEAD(autoidle_clks);
 
 /*
  * we have some non-atomic read/write
- * operations behind it, so lets
+ * operations behind it, so let's
  * take one lock for handling autoidle
  * of all clocks
  */
@@ -199,7 +191,7 @@ int __init of_ti_clk_autoidle_setup(struct device_node *node)
 	if (of_property_read_u32(node, "ti,autoidle-shift", &shift))
 		return 0;
 
-	clk = kzalloc(sizeof(*clk), GFP_KERNEL);
+	clk = kzalloc_obj(*clk);
 
 	if (!clk)
 		return -ENOMEM;

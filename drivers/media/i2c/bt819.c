@@ -380,8 +380,7 @@ static const struct v4l2_subdev_ops bt819_ops = {
 
 /* ----------------------------------------------------------------------- */
 
-static int bt819_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int bt819_probe(struct i2c_client *client)
 {
 	int i, ver;
 	struct bt819 *decoder;
@@ -446,22 +445,21 @@ static int bt819_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int bt819_remove(struct i2c_client *client)
+static void bt819_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct bt819 *decoder = to_bt819(sd);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&decoder->hdl);
-	return 0;
 }
 
 /* ----------------------------------------------------------------------- */
 
 static const struct i2c_device_id bt819_id[] = {
-	{ "bt819a", 0 },
-	{ "bt817a", 0 },
-	{ "bt815a", 0 },
+	{ "bt819a" },
+	{ "bt817a" },
+	{ "bt815a" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, bt819_id);

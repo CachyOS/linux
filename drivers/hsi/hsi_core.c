@@ -30,14 +30,14 @@ static struct attribute *hsi_bus_dev_attrs[] = {
 };
 ATTRIBUTE_GROUPS(hsi_bus_dev);
 
-static int hsi_bus_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int hsi_bus_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
 	add_uevent_var(env, "MODALIAS=hsi:%s", dev_name(dev));
 
 	return 0;
 }
 
-static int hsi_bus_match(struct device *dev, struct device_driver *driver)
+static int hsi_bus_match(struct device *dev, const struct device_driver *driver)
 {
 	if (of_driver_match_device(dev, driver))
 		return true;
@@ -48,7 +48,7 @@ static int hsi_bus_match(struct device *dev, struct device_driver *driver)
 	return false;
 }
 
-static struct bus_type hsi_bus_type = {
+static const struct bus_type hsi_bus_type = {
 	.name		= "hsi",
 	.dev_groups	= hsi_bus_dev_groups,
 	.match		= hsi_bus_match,
@@ -70,7 +70,7 @@ struct hsi_client *hsi_new_client(struct hsi_port *port,
 	struct hsi_client *cl;
 	size_t size;
 
-	cl = kzalloc(sizeof(*cl), GFP_KERNEL);
+	cl = kzalloc_obj(*cl);
 	if (!cl)
 		goto err;
 
@@ -203,11 +203,11 @@ static void hsi_add_client_from_dt(struct hsi_port *port,
 	char name[32];
 	int length, cells, err, i, max_chan, mode;
 
-	cl = kzalloc(sizeof(*cl), GFP_KERNEL);
+	cl = kzalloc_obj(*cl);
 	if (!cl)
 		return;
 
-	err = of_modalias_node(client, name, sizeof(name));
+	err = of_alias_from_compatible(client, name, sizeof(name));
 	if (err)
 		goto err;
 
@@ -253,13 +253,13 @@ static void hsi_add_client_from_dt(struct hsi_port *port,
 
 	cl->rx_cfg.num_channels = cells;
 	cl->tx_cfg.num_channels = cells;
-	cl->rx_cfg.channels = kcalloc(cells, sizeof(channel), GFP_KERNEL);
+	cl->rx_cfg.channels = kzalloc_objs(channel, cells);
 	if (!cl->rx_cfg.channels) {
 		err = -ENOMEM;
 		goto err;
 	}
 
-	cl->tx_cfg.channels = kcalloc(cells, sizeof(channel), GFP_KERNEL);
+	cl->tx_cfg.channels = kzalloc_objs(channel, cells);
 	if (!cl->tx_cfg.channels) {
 		err = -ENOMEM;
 		goto err2;
@@ -468,10 +468,10 @@ struct hsi_controller *hsi_alloc_controller(unsigned int n_ports, gfp_t flags)
 	if (!n_ports)
 		return NULL;
 
-	hsi = kzalloc(sizeof(*hsi), flags);
+	hsi = kzalloc_obj(*hsi, flags);
 	if (!hsi)
 		return NULL;
-	port = kcalloc(n_ports, sizeof(*port), flags);
+	port = kzalloc_objs(*port, n_ports, flags);
 	if (!port) {
 		kfree(hsi);
 		return NULL;
@@ -482,7 +482,7 @@ struct hsi_controller *hsi_alloc_controller(unsigned int n_ports, gfp_t flags)
 	device_initialize(&hsi->device);
 
 	for (i = 0; i < n_ports; i++) {
-		port[i] = kzalloc(sizeof(**port), flags);
+		port[i] = kzalloc_obj(**port, flags);
 		if (port[i] == NULL)
 			goto out;
 		port[i]->num = i;
@@ -538,7 +538,7 @@ struct hsi_msg *hsi_alloc_msg(unsigned int nents, gfp_t flags)
 	struct hsi_msg *msg;
 	int err;
 
-	msg = kzalloc(sizeof(*msg), flags);
+	msg = kzalloc_obj(*msg, flags);
 	if (!msg)
 		return NULL;
 

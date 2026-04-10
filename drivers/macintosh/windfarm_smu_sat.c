@@ -171,6 +171,7 @@ static void wf_sat_release(struct kref *ref)
 
 	if (sat->nr >= 0)
 		sats[sat->nr] = NULL;
+	of_node_put(sat->node);
 	kfree(sat);
 }
 
@@ -189,8 +190,7 @@ static const struct wf_sensor_ops wf_sat_ops = {
 	.owner		= THIS_MODULE,
 };
 
-static int wf_sat_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int wf_sat_probe(struct i2c_client *client)
 {
 	struct device_node *dev = client->dev.of_node;
 	struct wf_sat *sat;
@@ -203,7 +203,7 @@ static int wf_sat_probe(struct i2c_client *client,
 	char *name;
 	int vsens[2], isens[2];
 
-	sat = kzalloc(sizeof(struct wf_sat), GFP_KERNEL);
+	sat = kzalloc_obj(struct wf_sat);
 	if (sat == NULL)
 		return -ENOMEM;
 	sat->nr = -1;
@@ -316,7 +316,7 @@ static int wf_sat_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int wf_sat_remove(struct i2c_client *client)
+static void wf_sat_remove(struct i2c_client *client)
 {
 	struct wf_sat *sat = i2c_get_clientdata(client);
 	struct wf_sat_sensor *sens;
@@ -330,12 +330,10 @@ static int wf_sat_remove(struct i2c_client *client)
 	}
 	sat->i2c = NULL;
 	kref_put(&sat->ref, wf_sat_release);
-
-	return 0;
 }
 
 static const struct i2c_device_id wf_sat_id[] = {
-	{ "MAC,smu-sat", 0 },
+	{ "MAC,smu-sat" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wf_sat_id);

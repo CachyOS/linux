@@ -253,7 +253,7 @@ static void do_notify_work(struct work_struct *work)
 
 static int notify_push(unsigned int event_type, u32 controller)
 {
-	struct capictr_event *event = kmalloc(sizeof(*event), GFP_ATOMIC);
+	struct capictr_event *event = kmalloc_obj(*event, GFP_ATOMIC);
 
 	if (!event)
 		return -ENOMEM;
@@ -732,7 +732,7 @@ u16 capi20_get_manufacturer(u32 contr, u8 buf[CAPI_MANUFACTURER_LEN])
 	u16 ret;
 
 	if (contr == 0) {
-		strncpy(buf, capi_manufakturer, CAPI_MANUFACTURER_LEN);
+		strscpy_pad(buf, capi_manufakturer, CAPI_MANUFACTURER_LEN);
 		return CAPI_NOERROR;
 	}
 
@@ -740,7 +740,7 @@ u16 capi20_get_manufacturer(u32 contr, u8 buf[CAPI_MANUFACTURER_LEN])
 
 	ctr = get_capi_ctr_by_nr(contr);
 	if (ctr && ctr->state == CAPI_CTR_RUNNING) {
-		strncpy(buf, ctr->manu, CAPI_MANUFACTURER_LEN);
+		strscpy_pad(buf, ctr->manu, CAPI_MANUFACTURER_LEN);
 		ret = CAPI_NOERROR;
 	} else
 		ret = CAPI_REGNOTINSTALLED;
@@ -798,7 +798,7 @@ u16 capi20_get_serial(u32 contr, u8 serial[CAPI_SERIAL_LEN])
 	u16 ret;
 
 	if (contr == 0) {
-		strlcpy(serial, driver_serial, CAPI_SERIAL_LEN);
+		strscpy(serial, driver_serial, CAPI_SERIAL_LEN);
 		return CAPI_NOERROR;
 	}
 
@@ -806,7 +806,7 @@ u16 capi20_get_serial(u32 contr, u8 serial[CAPI_SERIAL_LEN])
 
 	ctr = get_capi_ctr_by_nr(contr);
 	if (ctr && ctr->state == CAPI_CTR_RUNNING) {
-		strlcpy(serial, ctr->serial, CAPI_SERIAL_LEN);
+		strscpy(serial, ctr->serial, CAPI_SERIAL_LEN);
 		ret = CAPI_NOERROR;
 	} else
 		ret = CAPI_REGNOTINSTALLED;
@@ -907,7 +907,7 @@ int __init kcapi_init(void)
 {
 	int err;
 
-	kcapi_wq = alloc_workqueue("kcapi", 0, 0);
+	kcapi_wq = alloc_workqueue("kcapi", WQ_PERCPU, 0);
 	if (!kcapi_wq)
 		return -ENOMEM;
 
@@ -917,13 +917,16 @@ int __init kcapi_init(void)
 		return err;
 	}
 
-	kcapi_proc_init();
+	if (IS_ENABLED(CONFIG_PROC_FS))
+		kcapi_proc_init();
+
 	return 0;
 }
 
 void kcapi_exit(void)
 {
-	kcapi_proc_exit();
+	if (IS_ENABLED(CONFIG_PROC_FS))
+		kcapi_proc_exit();
 
 	cdebug_exit();
 	destroy_workqueue(kcapi_wq);

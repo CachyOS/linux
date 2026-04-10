@@ -3,7 +3,7 @@
  *
  * Name: acglobal.h - Declarations for global variables
  *
- * Copyright (C) 2000 - 2022, Intel Corp.
+ * Copyright (C) 2000 - 2025, Intel Corp.
  *
  *****************************************************************************/
 
@@ -24,15 +24,12 @@ ACPI_GLOBAL(struct acpi_table_list, acpi_gbl_root_table_list);
 
 ACPI_GLOBAL(struct acpi_table_header *, acpi_gbl_DSDT);
 ACPI_GLOBAL(struct acpi_table_header, acpi_gbl_original_dsdt_header);
+ACPI_INIT_GLOBAL(char *, acpi_gbl_CDAT, NULL);
 ACPI_INIT_GLOBAL(u32, acpi_gbl_dsdt_index, ACPI_INVALID_TABLE_INDEX);
 ACPI_INIT_GLOBAL(u32, acpi_gbl_facs_index, ACPI_INVALID_TABLE_INDEX);
 ACPI_INIT_GLOBAL(u32, acpi_gbl_xfacs_index, ACPI_INVALID_TABLE_INDEX);
 ACPI_INIT_GLOBAL(u32, acpi_gbl_fadt_index, ACPI_INVALID_TABLE_INDEX);
-
-#if (!ACPI_REDUCED_HARDWARE)
-ACPI_GLOBAL(struct acpi_table_facs *, acpi_gbl_FACS);
-
-#endif				/* !ACPI_REDUCED_HARDWARE */
+ACPI_INIT_GLOBAL(struct acpi_table_facs *, acpi_gbl_FACS, NULL);
 
 /* These addresses are calculated from the FADT Event Block addresses */
 
@@ -128,6 +125,7 @@ ACPI_GLOBAL(acpi_table_handler, acpi_gbl_table_handler);
 ACPI_GLOBAL(void *, acpi_gbl_table_handler_context);
 ACPI_GLOBAL(acpi_interface_handler, acpi_gbl_interface_handler);
 ACPI_GLOBAL(struct acpi_sci_handler_info *, acpi_gbl_sci_handler_list);
+ACPI_GLOBAL(struct acpi_ged_handler_info *, acpi_gbl_ged_handler_list);
 
 /* Owner ID support */
 

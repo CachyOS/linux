@@ -104,8 +104,6 @@ void ksys_sync(void)
 	iterate_supers(sync_fs_one_sb, &wait);
 	sync_bdevs(false);
 	sync_bdevs(true);
-	if (unlikely(laptop_mode))
-		laptop_sync_completion();
 }
 
 SYSCALL_DEFINE0(sync)
@@ -117,16 +115,17 @@ SYSCALL_DEFINE0(sync)
 static void do_sync_work(struct work_struct *work)
 {
 	int nowait = 0;
+	int wait = 1;
 
 	/*
 	 * Sync twice to reduce the possibility we skipped some inodes / pages
 	 * because they were temporarily locked
 	 */
-	iterate_supers(sync_inodes_one_sb, &nowait);
+	iterate_supers(sync_inodes_one_sb, NULL);
 	iterate_supers(sync_fs_one_sb, &nowait);
 	sync_bdevs(false);
-	iterate_supers(sync_inodes_one_sb, &nowait);
-	iterate_supers(sync_fs_one_sb, &nowait);
+	iterate_supers(sync_inodes_one_sb, NULL);
+	iterate_supers(sync_fs_one_sb, &wait);
 	sync_bdevs(false);
 	printk("Emergency Sync complete\n");
 	kfree(work);
@@ -136,7 +135,7 @@ void emergency_sync(void)
 {
 	struct work_struct *work;
 
-	work = kmalloc(sizeof(*work), GFP_ATOMIC);
+	work = kmalloc_obj(*work, GFP_ATOMIC);
 	if (work) {
 		INIT_WORK(work, do_sync_work);
 		schedule_work(work);
@@ -148,21 +147,20 @@ void emergency_sync(void)
  */
 SYSCALL_DEFINE1(syncfs, int, fd)
 {
-	struct fd f = fdget(fd);
+	CLASS(fd, f)(fd);
 	struct super_block *sb;
 	int ret, ret2;
 
-	if (!f.file)
+	if (fd_empty(f))
 		return -EBADF;
-	sb = f.file->f_path.dentry->d_sb;
+	sb = fd_file(f)->f_path.dentry->d_sb;
 
 	down_read(&sb->s_umount);
 	ret = sync_filesystem(sb);
 	up_read(&sb->s_umount);
 
-	ret2 = errseq_check_and_advance(&sb->s_wb_err, &f.file->f_sb_err);
+	ret2 = errseq_check_and_advance(&sb->s_wb_err, &fd_file(f)->f_sb_err);
 
-	fdput(f);
 	return ret ? ret : ret2;
 }
 
@@ -183,8 +181,8 @@ int vfs_fsync_range(struct file *file, loff_t start, loff_t end, int datasync)
 
 	if (!file->f_op->fsync)
 		return -EINVAL;
-	if (!datasync && (inode->i_state & I_DIRTY_TIME))
-		mark_inode_dirty_sync(inode);
+	if (!datasync)
+		sync_lazytime(inode);
 	return file->f_op->fsync(file, start, end, datasync);
 }
 EXPORT_SYMBOL(vfs_fsync_range);
@@ -205,14 +203,12 @@ EXPORT_SYMBOL(vfs_fsync);
 
 static int do_fsync(unsigned int fd, int datasync)
 {
-	struct fd f = fdget(fd);
-	int ret = -EBADF;
+	CLASS(fd, f)(fd);
 
-	if (f.file) {
-		ret = vfs_fsync(f.file, datasync);
-		fdput(f);
-	}
-	return ret;
+	if (fd_empty(f))
+		return -EBADF;
+
+	return vfs_fsync(fd_file(f), datasync);
 }
 
 SYSCALL_DEFINE1(fsync, unsigned int, fd)
@@ -283,14 +279,12 @@ int sync_file_range(struct file *file, loff_t offset, loff_t nbytes,
 	}
 
 	if (flags & SYNC_FILE_RANGE_WRITE) {
-		int sync_mode = WB_SYNC_NONE;
-
 		if ((flags & SYNC_FILE_RANGE_WRITE_AND_WAIT) ==
 			     SYNC_FILE_RANGE_WRITE_AND_WAIT)
-			sync_mode = WB_SYNC_ALL;
-
-		ret = __filemap_fdatawrite_range(mapping, offset, endbyte,
-						 sync_mode);
+			ret = filemap_fdatawrite_range(mapping, offset,
+					endbyte);
+		else
+			ret = filemap_flush_range(mapping, offset, endbyte);
 		if (ret < 0)
 			goto out;
 	}
@@ -355,16 +349,12 @@ out:
 int ksys_sync_file_range(int fd, loff_t offset, loff_t nbytes,
 			 unsigned int flags)
 {
-	int ret;
-	struct fd f;
+	CLASS(fd, f)(fd);
 
-	ret = -EBADF;
-	f = fdget(fd);
-	if (f.file)
-		ret = sync_file_range(f.file, offset, nbytes, flags);
+	if (fd_empty(f))
+		return -EBADF;
 
-	fdput(f);
-	return ret;
+	return sync_file_range(fd_file(f), offset, nbytes, flags);
 }
 
 SYSCALL_DEFINE4(sync_file_range, int, fd, loff_t, offset, loff_t, nbytes,

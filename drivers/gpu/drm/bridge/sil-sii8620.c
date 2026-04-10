@@ -6,7 +6,7 @@
  * Andrzej Hajda <a.hajda@samsung.com>
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <drm/bridge/mhl.h>
 #include <drm/drm_bridge.h>
@@ -384,7 +384,7 @@ static void sii8620_mt_msc_cmd_send(struct sii8620 *ctx,
 
 static struct sii8620_mt_msg *sii8620_mt_msg_new(struct sii8620 *ctx)
 {
-	struct sii8620_mt_msg *msg = kzalloc(sizeof(*msg), GFP_KERNEL);
+	struct sii8620_mt_msg *msg = kzalloc_obj(*msg);
 
 	if (!msg)
 		ctx->error = -ENOMEM;
@@ -605,7 +605,7 @@ static void *sii8620_burst_get_tx_buf(struct sii8620 *ctx, int len)
 	u8 *buf = &ctx->burst.tx_buf[ctx->burst.tx_count];
 	int size = len + 2;
 
-	if (ctx->burst.tx_count + size > ARRAY_SIZE(ctx->burst.tx_buf)) {
+	if (ctx->burst.tx_count + size >= ARRAY_SIZE(ctx->burst.tx_buf)) {
 		dev_err(ctx->dev, "TX-BLK buffer exhausted\n");
 		ctx->error = -EINVAL;
 		return NULL;
@@ -622,7 +622,7 @@ static u8 *sii8620_burst_get_rx_buf(struct sii8620 *ctx, int len)
 	u8 *buf = &ctx->burst.rx_buf[ctx->burst.rx_count];
 	int size = len + 1;
 
-	if (ctx->burst.tx_count + size > ARRAY_SIZE(ctx->burst.tx_buf)) {
+	if (ctx->burst.rx_count + size >= ARRAY_SIZE(ctx->burst.rx_buf)) {
 		dev_err(ctx->dev, "RX-BLK buffer exhausted\n");
 		ctx->error = -EINVAL;
 		return NULL;
@@ -2203,6 +2203,7 @@ static inline struct sii8620 *bridge_to_sii8620(struct drm_bridge *bridge)
 }
 
 static int sii8620_attach(struct drm_bridge *bridge,
+			  struct drm_encoder *encoder,
 			  enum drm_bridge_attach_flags flags)
 {
 	struct sii8620 *ctx = bridge_to_sii8620(bridge);
@@ -2284,16 +2285,16 @@ static const struct drm_bridge_funcs sii8620_bridge_funcs = {
 	.mode_valid = sii8620_mode_valid,
 };
 
-static int sii8620_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int sii8620_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct sii8620 *ctx;
 	int ret;
 
-	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
-	if (!ctx)
-		return -ENOMEM;
+	ctx = devm_drm_bridge_alloc(dev, struct sii8620, bridge,
+				    &sii8620_bridge_funcs);
+	if (IS_ERR(ctx))
+		return PTR_ERR(ctx);
 
 	ctx->dev = dev;
 	mutex_init(&ctx->lock);
@@ -2336,7 +2337,6 @@ static int sii8620_probe(struct i2c_client *client,
 
 	i2c_set_clientdata(client, ctx);
 
-	ctx->bridge.funcs = &sii8620_bridge_funcs;
 	ctx->bridge.of_node = dev->of_node;
 	drm_bridge_add(&ctx->bridge);
 
@@ -2346,7 +2346,7 @@ static int sii8620_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int sii8620_remove(struct i2c_client *client)
+static void sii8620_remove(struct i2c_client *client)
 {
 	struct sii8620 *ctx = i2c_get_clientdata(client);
 
@@ -2360,8 +2360,6 @@ static int sii8620_remove(struct i2c_client *client)
 		sii8620_cable_out(ctx);
 	}
 	drm_bridge_remove(&ctx->bridge);
-
-	return 0;
 }
 
 static const struct of_device_id sii8620_dt_match[] = {
@@ -2371,15 +2369,15 @@ static const struct of_device_id sii8620_dt_match[] = {
 MODULE_DEVICE_TABLE(of, sii8620_dt_match);
 
 static const struct i2c_device_id sii8620_id[] = {
-	{ "sii8620", 0 },
-	{ },
+	{ "sii8620" },
+	{ }
 };
 
 MODULE_DEVICE_TABLE(i2c, sii8620_id);
 static struct i2c_driver sii8620_driver = {
 	.driver = {
 		.name	= "sii8620",
-		.of_match_table = of_match_ptr(sii8620_dt_match),
+		.of_match_table = sii8620_dt_match,
 	},
 	.probe		= sii8620_probe,
 	.remove		= sii8620_remove,
@@ -2387,4 +2385,5 @@ static struct i2c_driver sii8620_driver = {
 };
 
 module_i2c_driver(sii8620_driver);
+MODULE_DESCRIPTION("Silicon Image SiI8620 HDMI/MHL bridge driver");
 MODULE_LICENSE("GPL v2");

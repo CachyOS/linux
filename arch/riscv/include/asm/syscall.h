@@ -10,6 +10,7 @@
 #ifndef _ASM_RISCV_SYSCALL_H
 #define _ASM_RISCV_SYSCALL_H
 
+#include <asm/hwprobe.h>
 #include <uapi/linux/audit.h>
 #include <linux/sched.h>
 #include <linux/err.h>
@@ -19,7 +20,7 @@ extern void * const sys_call_table[];
 extern void * const compat_sys_call_table[];
 
 /*
- * Only the low 32 bits of orig_r0 are meaningful, so we return int.
+ * Only the low 32 bits of orig_a0 are meaningful, so we return int.
  * This importantly ignores the high bits on 64-bit, so comparisons
  * sign-extend the low 32 bits.
  */
@@ -27,6 +28,13 @@ static inline int syscall_get_nr(struct task_struct *task,
 				 struct pt_regs *regs)
 {
 	return regs->a7;
+}
+
+static inline void syscall_set_nr(struct task_struct *task,
+				  struct pt_regs *regs,
+				  int nr)
+{
+	regs->a7 = nr;
 }
 
 static inline void syscall_rollback(struct task_struct *task,
@@ -61,8 +69,23 @@ static inline void syscall_get_arguments(struct task_struct *task,
 					 unsigned long *args)
 {
 	args[0] = regs->orig_a0;
-	args++;
-	memcpy(args, &regs->a1, 5 * sizeof(args[0]));
+	args[1] = regs->a1;
+	args[2] = regs->a2;
+	args[3] = regs->a3;
+	args[4] = regs->a4;
+	args[5] = regs->a5;
+}
+
+static inline void syscall_set_arguments(struct task_struct *task,
+					 struct pt_regs *regs,
+					 const unsigned long *args)
+{
+	regs->orig_a0 = args[0];
+	regs->a1 = args[1];
+	regs->a2 = args[2];
+	regs->a3 = args[3];
+	regs->a4 = args[4];
+	regs->a5 = args[5];
 }
 
 static inline int syscall_get_arch(struct task_struct *task)
@@ -74,5 +97,28 @@ static inline int syscall_get_arch(struct task_struct *task)
 #endif
 }
 
+typedef long (*syscall_t)(const struct pt_regs *);
+static inline void syscall_handler(struct pt_regs *regs, ulong syscall)
+{
+	syscall_t fn;
+
+#ifdef CONFIG_COMPAT
+	if ((regs->status & SR_UXL) == SR_UXL_32)
+		fn = compat_sys_call_table[syscall];
+	else
+#endif
+		fn = sys_call_table[syscall];
+
+	regs->a0 = fn(regs);
+}
+
+static inline bool arch_syscall_is_vdso_sigreturn(struct pt_regs *regs)
+{
+	return false;
+}
+
 asmlinkage long sys_riscv_flush_icache(uintptr_t, uintptr_t, uintptr_t);
+
+asmlinkage long sys_riscv_hwprobe(struct riscv_hwprobe *, size_t, size_t,
+				  unsigned long *, unsigned int);
 #endif	/* _ASM_RISCV_SYSCALL_H */

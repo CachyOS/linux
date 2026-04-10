@@ -32,7 +32,6 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <linux/acpi.h>
 #include <linux/device.h>
 #include <linux/dmi.h>
 #include <linux/hwmon.h>
@@ -77,7 +76,7 @@ struct mlxcpld_param {
 
 /**
  * struct mlxcpld_led_priv - LED private data:
- * @cled: LED class device instance
+ * @cdev: LED class device instance
  * @param: LED CPLD access parameters
 **/
 struct mlxcpld_led_priv {

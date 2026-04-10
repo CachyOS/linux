@@ -86,7 +86,7 @@ In the :menuselection:`Sending Preferences` section:
 - :menuselection:`Strip Whitespace Before Sending` must be ``disabled``
 
 When composing the message, the cursor should be placed where the patch
-should appear, and then pressing :kbd:`CTRL-R` let you specify the patch file
+should appear, and then pressing `CTRL-R` let you specify the patch file
 to insert into the message.
 
 Claws Mail (GUI)
@@ -94,7 +94,7 @@ Claws Mail (GUI)
 
 Works. Some people use this successfully for patches.
 
-To insert a patch use :menuselection:`Message-->Insert File` (:kbd:`CTRL-I`)
+To insert a patch use :menuselection:`Message-->Insert File` (`CTRL-I`)
 or an external editor.
 
 If the inserted patch has to be edited in the Claws composition window
@@ -108,11 +108,11 @@ Evolution (GUI)
 Some people use this successfully for patches.
 
 When composing mail select: Preformat
-  from :menuselection:`Format-->Paragraph Style-->Preformatted` (:kbd:`CTRL-7`)
+  from :menuselection:`Format-->Paragraph Style-->Preformatted` (`CTRL-7`)
   or the toolbar
 
 Then use:
-:menuselection:`Insert-->Text File...` (:kbd:`ALT-N x`)
+:menuselection:`Insert-->Text File...` (`ALT-N x`)
 to insert the patch.
 
 You can also ``diff -Nru old.c new.c | xclip``, select
@@ -216,7 +216,7 @@ Mutt is highly customizable. Here is a minimum configuration to start
 using Mutt to send patches through Gmail::
 
   # .muttrc
-  # ================  IMAP ====================
+  # ================  IMAP  ====================
   set imap_user = 'yourusername@gmail.com'
   set imap_pass = 'yourpassword'
   set spoolfile = imaps://imap.gmail.com/INBOX
@@ -277,36 +277,68 @@ Thunderbird (GUI)
 Thunderbird is an Outlook clone that likes to mangle text, but there are ways
 to coerce it into behaving.
 
-- Allow use of an external editor:
-  The easiest thing to do with Thunderbird and patches is to use an
-  "external editor" extension and then just use your favorite ``$EDITOR``
-  for reading/merging patches into the body text.  To do this, download
-  and install the extension, then add a button for it using
-  :menuselection:`View-->Toolbars-->Customize...` and finally just click on it
-  when in the :menuselection:`Compose` dialog.
+After doing the modifications, this includes installing the extensions,
+you need to restart Thunderbird.
 
-  Please note that "external editor" requires that your editor must not
-  fork, or in other words, the editor must not return before closing.
-  You may have to pass additional flags or change the settings of your
-  editor. Most notably if you are using gvim then you must pass the -f
-  option to gvim by putting ``/usr/bin/gvim -f`` (if the binary is in
-  ``/usr/bin``) to the text editor field in :menuselection:`external editor`
-  settings. If you are using some other editor then please read its manual
-  to find out how to do this.
+- Allow use of an external editor:
+
+  The easiest thing to do with Thunderbird and patches is to use extensions
+  which open your favorite external editor.
+
+  Here are some example extensions which are capable of doing this.
+
+  - "External Editor Revived"
+
+    https://github.com/Frederick888/external-editor-revived
+
+    https://addons.thunderbird.net/en-GB/thunderbird/addon/external-editor-revived/
+
+    It requires installing a "native messaging host".
+    Please read the wiki which can be found here:
+    https://github.com/Frederick888/external-editor-revived/wiki
+
+  - "External Editor"
+
+    https://github.com/exteditor/exteditor
+
+    To do this, download and install the extension, then open the
+    :menuselection:`compose` window, add a button for it using
+    :menuselection:`View-->Toolbars-->Customize...`
+    then just click on the new button when you wish to use the external editor.
+
+    Please note that "External Editor" requires that your editor must not
+    fork, or in other words, the editor must not return before closing.
+    You may have to pass additional flags or change the settings of your
+    editor. Most notably if you are using gvim then you must pass the -f
+    option to gvim by putting ``/usr/bin/gvim --nofork"`` (if the binary is in
+    ``/usr/bin``) to the text editor field in :menuselection:`external editor`
+    settings. If you are using some other editor then please read its manual
+    to find out how to do this.
 
 To beat some sense out of the internal editor, do this:
 
-- Edit your Thunderbird config settings so that it won't use ``format=flowed``.
-  Go to :menuselection:`edit-->preferences-->advanced-->config editor` to bring up
-  the thunderbird's registry editor.
+- Edit your Thunderbird config settings so that it won't use ``format=flowed``!
+  Go to your main window and find the button for your main dropdown menu.
+  :menuselection:`Main Menu-->Preferences-->General-->Config Editor...`
+  to bring up the thunderbird's registry editor.
 
-- Set ``mailnews.send_plaintext_flowed`` to ``false``
+  - Set ``mailnews.send_plaintext_flowed`` to ``false``
 
-- Set ``mailnews.wraplength`` from ``72`` to ``0``
+  - Set ``mailnews.wraplength`` from ``72`` to ``0`` **or** install the
+    "Toggle Line Wrap" extension
 
-- :menuselection:`View-->Message Body As-->Plain Text`
+    https://github.com/jan-kiszka/togglelinewrap
 
-- :menuselection:`View-->Character Encoding-->Unicode (UTF-8)`
+    https://addons.thunderbird.net/thunderbird/addon/toggle-line-wrap
+
+    to control this registry on the fly.
+
+- Don't write HTML messages! Go to the main window
+  :menuselection:`Main Menu-->Account Settings-->youracc@server.something-->Composition & Addressing`!
+  There you can disable the option "Compose messages in HTML format".
+
+- Open messages only as plain text! Go to the main window
+  :menuselection:`Main Menu-->View-->Message Body As-->Plain Text`!
 
 TkRat (GUI)
 ***********
@@ -325,3 +357,12 @@ although tab2space problem can be solved with external editor.
 
 Another problem is that Gmail will base64-encode any message that has a
 non-ASCII character. That includes things like European names.
+
+HacKerMaiL (TUI)
+****************
+
+HacKerMaiL (hkml) is a public-inbox based simple mails management tool that
+doesn't require subscription of mailing lists.  It is developed and maintained
+by the DAMON maintainer and aims to support simple development workflows for
+DAMON and general kernel subsystems.  Refer to the README
+(https://github.com/sjp38/hackermail/blob/master/README.md) for details.

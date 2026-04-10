@@ -250,7 +250,7 @@ static bool upper_device_filter(struct ib_device *ib_dev, u32 port,
 
 /**
  * is_upper_ndev_bond_master_filter - Check if a given netdevice
- * is bond master device of netdevice of the the RDMA device of port.
+ * is bond master device of netdevice of the RDMA device of port.
  * @ib_dev:		IB device to check
  * @port:		Port to consider for adding default GID
  * @rdma_ndev:		Pointer to rdma netdevice
@@ -352,7 +352,7 @@ static void enum_netdev_ipv4_ips(struct ib_device *ib_dev,
 	}
 
 	in_dev_for_each_ifa_rcu(ifa, in_dev) {
-		struct sin_list *entry = kzalloc(sizeof(*entry), GFP_ATOMIC);
+		struct sin_list *entry = kzalloc_obj(*entry, GFP_ATOMIC);
 
 		if (!entry)
 			continue;
@@ -395,7 +395,7 @@ static void enum_netdev_ipv6_ips(struct ib_device *ib_dev,
 
 	read_lock_bh(&in6_dev->lock);
 	list_for_each_entry(ifp, &in6_dev->addr_list, if_list) {
-		struct sin6_list *entry = kzalloc(sizeof(*entry), GFP_ATOMIC);
+		struct sin6_list *entry = kzalloc_obj(*entry, GFP_ATOMIC);
 
 		if (!entry)
 			continue;
@@ -515,6 +515,27 @@ void rdma_roce_rescan_device(struct ib_device *ib_dev)
 }
 EXPORT_SYMBOL(rdma_roce_rescan_device);
 
+/**
+ * rdma_roce_rescan_port - Rescan all of the network devices in the system
+ * and add their gids if relevant to the port of the RoCE device.
+ *
+ * @ib_dev: IB device
+ * @port: Port number
+ */
+void rdma_roce_rescan_port(struct ib_device *ib_dev, u32 port)
+{
+	struct net_device *ndev = NULL;
+
+	if (rdma_protocol_roce(ib_dev, port)) {
+		ndev = ib_device_get_netdev(ib_dev, port);
+		if (!ndev)
+			return;
+		enum_all_gids_of_dev_cb(ib_dev, port, ndev, ndev);
+		dev_put(ndev);
+	}
+}
+EXPORT_SYMBOL(rdma_roce_rescan_port);
+
 static void callback_for_addr_gid_device_scan(struct ib_device *device,
 					      u32 port,
 					      struct net_device *rdma_ndev,
@@ -535,7 +556,7 @@ struct upper_list {
 static int netdev_upper_walk(struct net_device *upper,
 			     struct netdev_nested_priv *priv)
 {
-	struct upper_list *entry = kmalloc(sizeof(*entry), GFP_ATOMIC);
+	struct upper_list *entry = kmalloc_obj(*entry, GFP_ATOMIC);
 	struct list_head *upper_list = (struct list_head *)priv->data;
 
 	if (!entry)
@@ -575,16 +596,17 @@ static void handle_netdev_upper(struct ib_device *ib_dev, u32 port,
 	}
 }
 
-static void _roce_del_all_netdev_gids(struct ib_device *ib_dev, u32 port,
-				      struct net_device *event_ndev)
+void roce_del_all_netdev_gids(struct ib_device *ib_dev,
+			      u32 port, struct net_device *ndev)
 {
-	ib_cache_gid_del_all_netdev_gids(ib_dev, port, event_ndev);
+	ib_cache_gid_del_all_netdev_gids(ib_dev, port, ndev);
 }
+EXPORT_SYMBOL(roce_del_all_netdev_gids);
 
 static void del_netdev_upper_ips(struct ib_device *ib_dev, u32 port,
 				 struct net_device *rdma_ndev, void *cookie)
 {
-	handle_netdev_upper(ib_dev, port, cookie, _roce_del_all_netdev_gids);
+	handle_netdev_upper(ib_dev, port, cookie, roce_del_all_netdev_gids);
 }
 
 static void add_netdev_upper_ips(struct ib_device *ib_dev, u32 port,
@@ -601,8 +623,7 @@ static void del_netdev_default_ips_join(struct ib_device *ib_dev, u32 port,
 
 	rcu_read_lock();
 	master_ndev = netdev_master_upper_dev_get_rcu(rdma_ndev);
-	if (master_ndev)
-		dev_hold(master_ndev);
+	dev_hold(master_ndev);
 	rcu_read_unlock();
 
 	if (master_ndev) {
@@ -639,8 +660,7 @@ static int netdevice_queue_work(struct netdev_event_work_cmd *cmds,
 				struct net_device *ndev)
 {
 	unsigned int i;
-	struct netdev_event_work *ndev_work =
-		kmalloc(sizeof(*ndev_work), GFP_KERNEL);
+	struct netdev_event_work *ndev_work = kmalloc_obj(*ndev_work);
 
 	if (!ndev_work)
 		return NOTIFY_DONE;
@@ -837,7 +857,7 @@ static int addr_event(struct notifier_block *this, unsigned long event,
 		return NOTIFY_DONE;
 	}
 
-	work = kmalloc(sizeof(*work), GFP_ATOMIC);
+	work = kmalloc_obj(*work, GFP_ATOMIC);
 	if (!work)
 		return NOTIFY_DONE;
 

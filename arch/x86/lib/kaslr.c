@@ -8,7 +8,7 @@
  */
 #include <asm/asm.h>
 #include <asm/kaslr.h>
-#include <asm/msr.h>
+#include <asm/tsc.h>
 #include <asm/archrandom.h>
 #include <asm/e820/api.h>
 #include <asm/shared/io.h>
@@ -22,7 +22,7 @@
 #include <asm/setup.h>
 
 #define debug_putstr(v) early_printk("%s", v)
-#define has_cpuflag(f) boot_cpu_has(f)
+#define has_cpuflag(f) cpu_feature_enabled(f)
 #define get_boot_seed() kaslr_offset()
 #endif
 

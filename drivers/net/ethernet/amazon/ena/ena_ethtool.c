@@ -5,12 +5,19 @@
 
 #include <linux/ethtool.h>
 #include <linux/pci.h>
+#include <linux/net_tstamp.h>
 
 #include "ena_netdev.h"
+#include "ena_xdp.h"
+#include "ena_phc.h"
 
 struct ena_stats {
 	char name[ETH_GSTRING_LEN];
 	int stat_offset;
+};
+
+struct ena_hw_metrics {
+	char name[ETH_GSTRING_LEN];
 };
 
 #define ENA_STAT_ENA_COM_ENTRY(stat) { \
@@ -40,6 +47,18 @@ struct ena_stats {
 #define ENA_STAT_ENI_ENTRY(stat) \
 	ENA_STAT_HW_ENTRY(stat, eni_stats)
 
+#define ENA_STAT_ENA_SRD_ENTRY(stat) \
+	ENA_STAT_HW_ENTRY(stat, ena_srd_stats)
+
+#define ENA_STAT_ENA_SRD_MODE_ENTRY(stat) { \
+	.name = #stat, \
+	.stat_offset = offsetof(struct ena_admin_ena_srd_info, flags) / sizeof(u64) \
+}
+
+#define ENA_METRIC_ENI_ENTRY(stat) { \
+	.name = #stat \
+}
+
 static const struct ena_stats ena_stats_global_strings[] = {
 	ENA_STAT_GLOBAL_ENTRY(tx_timeout),
 	ENA_STAT_GLOBAL_ENTRY(suspend),
@@ -48,14 +67,35 @@ static const struct ena_stats ena_stats_global_strings[] = {
 	ENA_STAT_GLOBAL_ENTRY(interface_up),
 	ENA_STAT_GLOBAL_ENTRY(interface_down),
 	ENA_STAT_GLOBAL_ENTRY(admin_q_pause),
+	ENA_STAT_GLOBAL_ENTRY(reset_fail),
 };
 
+/* A partial list of hw stats. Used when admin command
+ * with type ENA_ADMIN_GET_STATS_TYPE_CUSTOMER_METRICS is not supported
+ */
 static const struct ena_stats ena_stats_eni_strings[] = {
 	ENA_STAT_ENI_ENTRY(bw_in_allowance_exceeded),
 	ENA_STAT_ENI_ENTRY(bw_out_allowance_exceeded),
 	ENA_STAT_ENI_ENTRY(pps_allowance_exceeded),
 	ENA_STAT_ENI_ENTRY(conntrack_allowance_exceeded),
 	ENA_STAT_ENI_ENTRY(linklocal_allowance_exceeded),
+};
+
+static const struct ena_hw_metrics ena_hw_stats_strings[] = {
+	ENA_METRIC_ENI_ENTRY(bw_in_allowance_exceeded),
+	ENA_METRIC_ENI_ENTRY(bw_out_allowance_exceeded),
+	ENA_METRIC_ENI_ENTRY(pps_allowance_exceeded),
+	ENA_METRIC_ENI_ENTRY(conntrack_allowance_exceeded),
+	ENA_METRIC_ENI_ENTRY(linklocal_allowance_exceeded),
+	ENA_METRIC_ENI_ENTRY(conntrack_allowance_available),
+};
+
+static const struct ena_stats ena_srd_info_strings[] = {
+	ENA_STAT_ENA_SRD_MODE_ENTRY(ena_srd_mode),
+	ENA_STAT_ENA_SRD_ENTRY(ena_srd_tx_pkts),
+	ENA_STAT_ENA_SRD_ENTRY(ena_srd_eligible_tx_pkts),
+	ENA_STAT_ENA_SRD_ENTRY(ena_srd_rx_pkts),
+	ENA_STAT_ENA_SRD_ENTRY(ena_srd_resource_utilization)
 };
 
 static const struct ena_stats ena_stats_tx_strings[] = {
@@ -110,7 +150,9 @@ static const struct ena_stats ena_stats_ena_com_strings[] = {
 #define ENA_STATS_ARRAY_TX		ARRAY_SIZE(ena_stats_tx_strings)
 #define ENA_STATS_ARRAY_RX		ARRAY_SIZE(ena_stats_rx_strings)
 #define ENA_STATS_ARRAY_ENA_COM		ARRAY_SIZE(ena_stats_ena_com_strings)
-#define ENA_STATS_ARRAY_ENI(adapter)	ARRAY_SIZE(ena_stats_eni_strings)
+#define ENA_STATS_ARRAY_ENI		ARRAY_SIZE(ena_stats_eni_strings)
+#define ENA_STATS_ARRAY_ENA_SRD		ARRAY_SIZE(ena_srd_info_strings)
+#define ENA_METRICS_ARRAY_ENI		ARRAY_SIZE(ena_hw_stats_strings)
 
 static void ena_safe_update_stat(u64 *src, u64 *dst,
 				 struct u64_stats_sync *syncp)
@@ -118,9 +160,60 @@ static void ena_safe_update_stat(u64 *src, u64 *dst,
 	unsigned int start;
 
 	do {
-		start = u64_stats_fetch_begin_irq(syncp);
+		start = u64_stats_fetch_begin(syncp);
 		*(dst) = *src;
-	} while (u64_stats_fetch_retry_irq(syncp, start));
+	} while (u64_stats_fetch_retry(syncp, start));
+}
+
+static void ena_metrics_stats(struct ena_adapter *adapter, u64 **data)
+{
+	struct ena_com_dev *dev = adapter->ena_dev;
+	const struct ena_stats *ena_stats;
+	u64 *ptr;
+	int i;
+
+	if (ena_com_get_cap(dev, ENA_ADMIN_CUSTOMER_METRICS)) {
+		u32 supported_metrics_count;
+		int len;
+
+		supported_metrics_count = ena_com_get_customer_metric_count(dev);
+		len = supported_metrics_count * sizeof(u64);
+
+		/* Fill the data buffer, and advance its pointer */
+		ena_com_get_customer_metrics(dev, (char *)(*data), len);
+		(*data) += supported_metrics_count;
+
+	} else if (ena_com_get_cap(dev, ENA_ADMIN_ENI_STATS)) {
+		ena_com_get_eni_stats(dev, &adapter->eni_stats);
+		/* Updating regardless of rc - once we told ethtool how many stats we have
+		 * it will print that much stats. We can't leave holes in the stats
+		 */
+		for (i = 0; i < ENA_STATS_ARRAY_ENI; i++) {
+			ena_stats = &ena_stats_eni_strings[i];
+
+			ptr = (u64 *)&adapter->eni_stats +
+				ena_stats->stat_offset;
+
+			ena_safe_update_stat(ptr, (*data)++, &adapter->syncp);
+		}
+	}
+
+	if (ena_com_get_cap(dev, ENA_ADMIN_ENA_SRD_INFO)) {
+		ena_com_get_ena_srd_info(dev, &adapter->ena_srd_info);
+		/* Get ENA SRD mode */
+		ptr = (u64 *)&adapter->ena_srd_info;
+		ena_safe_update_stat(ptr, (*data)++, &adapter->syncp);
+		for (i = 1; i < ENA_STATS_ARRAY_ENA_SRD; i++) {
+			ena_stats = &ena_srd_info_strings[i];
+			/* Wrapped within an outer struct - need to accommodate an
+			 * additional offset of the ENA SRD mode that was already processed
+			 */
+			ptr = (u64 *)&adapter->ena_srd_info +
+				ena_stats->stat_offset + 1;
+
+			ena_safe_update_stat(ptr, (*data)++, &adapter->syncp);
+		}
+	}
 }
 
 static void ena_queue_stats(struct ena_adapter *adapter, u64 **data)
@@ -177,7 +270,7 @@ static void ena_dev_admin_queue_stats(struct ena_adapter *adapter, u64 **data)
 
 static void ena_get_stats(struct ena_adapter *adapter,
 			  u64 *data,
-			  bool eni_stats_needed)
+			  bool hw_stats_needed)
 {
 	const struct ena_stats *ena_stats;
 	u64 *ptr;
@@ -191,17 +284,8 @@ static void ena_get_stats(struct ena_adapter *adapter,
 		ena_safe_update_stat(ptr, data++, &adapter->syncp);
 	}
 
-	if (eni_stats_needed) {
-		ena_update_hw_stats(adapter);
-		for (i = 0; i < ENA_STATS_ARRAY_ENI(adapter); i++) {
-			ena_stats = &ena_stats_eni_strings[i];
-
-			ptr = (u64 *)&adapter->eni_stats +
-				ena_stats->stat_offset;
-
-			ena_safe_update_stat(ptr, data++, &adapter->syncp);
-		}
-	}
+	if (hw_stats_needed)
+		ena_metrics_stats(adapter, &data);
 
 	ena_queue_stats(adapter, &data);
 	ena_dev_admin_queue_stats(adapter, &data);
@@ -212,9 +296,20 @@ static void ena_get_ethtool_stats(struct net_device *netdev,
 				  u64 *data)
 {
 	struct ena_adapter *adapter = netdev_priv(netdev);
-	struct ena_com_dev *dev = adapter->ena_dev;
 
-	ena_get_stats(adapter, data, ena_com_get_cap(dev, ENA_ADMIN_ENI_STATS));
+	ena_get_stats(adapter, data, true);
+}
+
+static int ena_get_ts_info(struct net_device *netdev,
+			   struct kernel_ethtool_ts_info *info)
+{
+	struct ena_adapter *adapter = netdev_priv(netdev);
+
+	info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE;
+
+	info->phc_index = ena_phc_get_index(adapter);
+
+	return 0;
 }
 
 static int ena_get_sw_stats_count(struct ena_adapter *adapter)
@@ -226,9 +321,17 @@ static int ena_get_sw_stats_count(struct ena_adapter *adapter)
 
 static int ena_get_hw_stats_count(struct ena_adapter *adapter)
 {
-	bool supported = ena_com_get_cap(adapter->ena_dev, ENA_ADMIN_ENI_STATS);
+	struct ena_com_dev *dev = adapter->ena_dev;
+	int count;
 
-	return ENA_STATS_ARRAY_ENI(adapter) * supported;
+	count = ENA_STATS_ARRAY_ENA_SRD * ena_com_get_cap(dev, ENA_ADMIN_ENA_SRD_INFO);
+
+	if (ena_com_get_cap(dev, ENA_ADMIN_CUSTOMER_METRICS))
+		count += ena_com_get_customer_metric_count(dev);
+	else if (ena_com_get_cap(dev, ENA_ADMIN_ENI_STATS))
+		count += ENA_STATS_ARRAY_ENI;
+
+	return count;
 }
 
 int ena_get_sset_count(struct net_device *netdev, int sset)
@@ -242,6 +345,35 @@ int ena_get_sset_count(struct net_device *netdev, int sset)
 	}
 
 	return -EOPNOTSUPP;
+}
+
+static void ena_metrics_stats_strings(struct ena_adapter *adapter, u8 **data)
+{
+	struct ena_com_dev *dev = adapter->ena_dev;
+	const struct ena_hw_metrics *ena_metrics;
+	const struct ena_stats *ena_stats;
+	int i;
+
+	if (ena_com_get_cap(dev, ENA_ADMIN_CUSTOMER_METRICS)) {
+		for (i = 0; i < ENA_METRICS_ARRAY_ENI; i++) {
+			if (ena_com_get_customer_metric_support(dev, i)) {
+				ena_metrics = &ena_hw_stats_strings[i];
+				ethtool_puts(data, ena_metrics->name);
+			}
+		}
+	} else if (ena_com_get_cap(dev, ENA_ADMIN_ENI_STATS)) {
+		for (i = 0; i < ENA_STATS_ARRAY_ENI; i++) {
+			ena_stats = &ena_stats_eni_strings[i];
+			ethtool_puts(data, ena_stats->name);
+		}
+	}
+
+	if (ena_com_get_cap(dev, ENA_ADMIN_ENA_SRD_INFO)) {
+		for (i = 0; i < ENA_STATS_ARRAY_ENA_SRD; i++) {
+			ena_stats = &ena_srd_info_strings[i];
+			ethtool_puts(data, ena_stats->name);
+		}
+	}
 }
 
 static void ena_queue_strings(struct ena_adapter *adapter, u8 **data)
@@ -262,17 +394,14 @@ static void ena_queue_strings(struct ena_adapter *adapter, u8 **data)
 					ena_stats->name);
 		}
 
-		if (!is_xdp) {
-			/* RX stats, in XDP there isn't a RX queue
-			 * counterpart
-			 */
-			for (j = 0; j < ENA_STATS_ARRAY_RX; j++) {
-				ena_stats = &ena_stats_rx_strings[j];
+		/* In XDP there isn't an RX queue counterpart */
+		if (is_xdp)
+			continue;
 
-				ethtool_sprintf(data,
-						"queue_%u_rx_%s", i,
-						ena_stats->name);
-			}
+		for (j = 0; j < ENA_STATS_ARRAY_RX; j++) {
+			ena_stats = &ena_stats_rx_strings[j];
+
+			ethtool_sprintf(data, "queue_%u_rx_%s", i, ena_stats->name);
 		}
 	}
 }
@@ -292,22 +421,18 @@ static void ena_com_dev_strings(u8 **data)
 
 static void ena_get_strings(struct ena_adapter *adapter,
 			    u8 *data,
-			    bool eni_stats_needed)
+			    bool hw_stats_needed)
 {
 	const struct ena_stats *ena_stats;
 	int i;
 
 	for (i = 0; i < ENA_STATS_ARRAY_GLOBAL; i++) {
 		ena_stats = &ena_stats_global_strings[i];
-		ethtool_sprintf(&data, ena_stats->name);
+		ethtool_puts(&data, ena_stats->name);
 	}
 
-	if (eni_stats_needed) {
-		for (i = 0; i < ENA_STATS_ARRAY_ENI(adapter); i++) {
-			ena_stats = &ena_stats_eni_strings[i];
-			ethtool_sprintf(&data, ena_stats->name);
-		}
-	}
+	if (hw_stats_needed)
+		ena_metrics_stats_strings(adapter, &data);
 
 	ena_queue_strings(adapter, &data);
 	ena_com_dev_strings(&data);
@@ -318,11 +443,10 @@ static void ena_get_ethtool_strings(struct net_device *netdev,
 				    u8 *data)
 {
 	struct ena_adapter *adapter = netdev_priv(netdev);
-	struct ena_com_dev *dev = adapter->ena_dev;
 
 	switch (sset) {
 	case ETH_SS_STATS:
-		ena_get_strings(adapter, data, ena_com_get_cap(dev, ENA_ADMIN_ENI_STATS));
+		ena_get_strings(adapter, data, true);
 		break;
 	}
 }
@@ -461,10 +585,18 @@ static void ena_get_drvinfo(struct net_device *dev,
 			    struct ethtool_drvinfo *info)
 {
 	struct ena_adapter *adapter = netdev_priv(dev);
+	ssize_t ret = 0;
 
-	strlcpy(info->driver, DRV_MODULE_NAME, sizeof(info->driver));
-	strlcpy(info->bus_info, pci_name(adapter->pdev),
-		sizeof(info->bus_info));
+	ret = strscpy(info->driver, DRV_MODULE_NAME, sizeof(info->driver));
+	if (ret < 0)
+		netif_dbg(adapter, drv, dev,
+			  "module name will be truncated, status = %zd\n", ret);
+
+	ret = strscpy(info->bus_info, pci_name(adapter->pdev),
+		      sizeof(info->bus_info));
+	if (ret < 0)
+		netif_dbg(adapter, drv, dev,
+			  "bus info will be truncated, status = %zd\n", ret);
 }
 
 static void ena_get_ringparam(struct net_device *netdev,
@@ -476,6 +608,21 @@ static void ena_get_ringparam(struct net_device *netdev,
 
 	ring->tx_max_pending = adapter->max_tx_ring_size;
 	ring->rx_max_pending = adapter->max_rx_ring_size;
+	if (adapter->ena_dev->tx_mem_queue_type == ENA_ADMIN_PLACEMENT_POLICY_DEV) {
+		bool large_llq_supported = adapter->large_llq_header_supported;
+
+		kernel_ring->tx_push = true;
+		kernel_ring->tx_push_buf_len = adapter->ena_dev->tx_max_header_size;
+		if (large_llq_supported)
+			kernel_ring->tx_push_buf_max_len = ENA_LLQ_LARGE_HEADER;
+		else
+			kernel_ring->tx_push_buf_max_len = ENA_LLQ_HEADER;
+	} else {
+		kernel_ring->tx_push = false;
+		kernel_ring->tx_push_buf_max_len = 0;
+		kernel_ring->tx_push_buf_len = 0;
+	}
+
 	ring->tx_pending = adapter->tx_ring[0].ring_size;
 	ring->rx_pending = adapter->rx_ring[0].ring_size;
 }
@@ -486,7 +633,8 @@ static int ena_set_ringparam(struct net_device *netdev,
 			     struct netlink_ext_ack *extack)
 {
 	struct ena_adapter *adapter = netdev_priv(netdev);
-	u32 new_tx_size, new_rx_size;
+	u32 new_tx_size, new_rx_size, new_tx_push_buf_len;
+	bool changed = false;
 
 	new_tx_size = ring->tx_pending < ENA_MIN_RING_SIZE ?
 			ENA_MIN_RING_SIZE : ring->tx_pending;
@@ -496,11 +644,51 @@ static int ena_set_ringparam(struct net_device *netdev,
 			ENA_MIN_RING_SIZE : ring->rx_pending;
 	new_rx_size = rounddown_pow_of_two(new_rx_size);
 
-	if (new_tx_size == adapter->requested_tx_ring_size &&
-	    new_rx_size == adapter->requested_rx_ring_size)
+	changed |= new_tx_size != adapter->requested_tx_ring_size ||
+		   new_rx_size != adapter->requested_rx_ring_size;
+
+	/* This value is ignored if LLQ is not supported */
+	new_tx_push_buf_len = adapter->ena_dev->tx_max_header_size;
+
+	if ((adapter->ena_dev->tx_mem_queue_type == ENA_ADMIN_PLACEMENT_POLICY_DEV) !=
+	    kernel_ring->tx_push) {
+		NL_SET_ERR_MSG_MOD(extack, "Push mode state cannot be modified");
+		return -EINVAL;
+	}
+
+	/* Validate that the push buffer is supported on the underlying device */
+	if (kernel_ring->tx_push_buf_len) {
+		enum ena_admin_placement_policy_type placement;
+
+		new_tx_push_buf_len = kernel_ring->tx_push_buf_len;
+
+		placement = adapter->ena_dev->tx_mem_queue_type;
+		if (placement == ENA_ADMIN_PLACEMENT_POLICY_HOST)
+			return -EOPNOTSUPP;
+
+		if (new_tx_push_buf_len != ENA_LLQ_HEADER &&
+		    new_tx_push_buf_len != ENA_LLQ_LARGE_HEADER) {
+			bool large_llq_sup = adapter->large_llq_header_supported;
+			char large_llq_size_str[40];
+
+			snprintf(large_llq_size_str, 40, ", %lu", ENA_LLQ_LARGE_HEADER);
+
+			NL_SET_ERR_MSG_FMT_MOD(extack,
+					       "Supported tx push buff values: [%lu%s]",
+					       ENA_LLQ_HEADER,
+					       large_llq_sup ? large_llq_size_str : "");
+
+			return -EINVAL;
+		}
+
+		changed |= new_tx_push_buf_len != adapter->ena_dev->tx_max_header_size;
+	}
+
+	if (!changed)
 		return 0;
 
-	return ena_update_queue_sizes(adapter, new_tx_size, new_rx_size);
+	return ena_update_queue_params(adapter, new_tx_size, new_rx_size,
+				       new_tx_push_buf_len);
 }
 
 static u32 ena_flow_hash_to_flow_type(u16 hash_fields)
@@ -547,9 +735,11 @@ static u16 ena_flow_data_to_flow_hash(u32 hash_fields)
 	return data;
 }
 
-static int ena_get_rss_hash(struct ena_com_dev *ena_dev,
-			    struct ethtool_rxnfc *cmd)
+static int ena_get_rxfh_fields(struct net_device *netdev,
+			       struct ethtool_rxfh_fields *cmd)
 {
+	struct ena_adapter *adapter = netdev_priv(netdev);
+	struct ena_com_dev *ena_dev = adapter->ena_dev;
 	enum ena_admin_flow_hash_proto proto;
 	u16 hash_fields;
 	int rc;
@@ -598,9 +788,12 @@ static int ena_get_rss_hash(struct ena_com_dev *ena_dev,
 	return 0;
 }
 
-static int ena_set_rss_hash(struct ena_com_dev *ena_dev,
-			    struct ethtool_rxnfc *cmd)
+static int ena_set_rxfh_fields(struct net_device *netdev,
+			       const struct ethtool_rxfh_fields *cmd,
+			       struct netlink_ext_ack *extack)
 {
+	struct ena_adapter *adapter = netdev_priv(netdev);
+	struct ena_com_dev *ena_dev = adapter->ena_dev;
 	enum ena_admin_flow_hash_proto proto;
 	u16 hash_fields;
 
@@ -642,50 +835,11 @@ static int ena_set_rss_hash(struct ena_com_dev *ena_dev,
 	return ena_com_fill_hash_ctrl(ena_dev, proto, hash_fields);
 }
 
-static int ena_set_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *info)
+static u32 ena_get_rx_ring_count(struct net_device *netdev)
 {
 	struct ena_adapter *adapter = netdev_priv(netdev);
-	int rc = 0;
 
-	switch (info->cmd) {
-	case ETHTOOL_SRXFH:
-		rc = ena_set_rss_hash(adapter->ena_dev, info);
-		break;
-	case ETHTOOL_SRXCLSRLDEL:
-	case ETHTOOL_SRXCLSRLINS:
-	default:
-		netif_err(adapter, drv, netdev,
-			  "Command parameter %d is not supported\n", info->cmd);
-		rc = -EOPNOTSUPP;
-	}
-
-	return rc;
-}
-
-static int ena_get_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *info,
-			 u32 *rules)
-{
-	struct ena_adapter *adapter = netdev_priv(netdev);
-	int rc = 0;
-
-	switch (info->cmd) {
-	case ETHTOOL_GRXRINGS:
-		info->data = adapter->num_io_queues;
-		rc = 0;
-		break;
-	case ETHTOOL_GRXFH:
-		rc = ena_get_rss_hash(adapter->ena_dev, info);
-		break;
-	case ETHTOOL_GRXCLSRLCNT:
-	case ETHTOOL_GRXCLSRULE:
-	case ETHTOOL_GRXCLSRLALL:
-	default:
-		netif_err(adapter, drv, netdev,
-			  "Command parameter %d is not supported\n", info->cmd);
-		rc = -EOPNOTSUPP;
-	}
-
-	return rc;
+	return adapter->num_io_queues;
 }
 
 static u32 ena_get_rxfh_indir_size(struct net_device *netdev)
@@ -695,7 +849,10 @@ static u32 ena_get_rxfh_indir_size(struct net_device *netdev)
 
 static u32 ena_get_rxfh_key_size(struct net_device *netdev)
 {
-	return ENA_HASH_KEY_SIZE;
+	struct ena_adapter *adapter = netdev_priv(netdev);
+	struct ena_rss *rss = &adapter->ena_dev->rss;
+
+	return rss->hash_key ? ENA_HASH_KEY_SIZE : 0;
 }
 
 static int ena_indirection_table_set(struct ena_adapter *adapter,
@@ -746,15 +903,15 @@ static int ena_indirection_table_get(struct ena_adapter *adapter, u32 *indir)
 	return rc;
 }
 
-static int ena_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
-			u8 *hfunc)
+static int ena_get_rxfh(struct net_device *netdev,
+			struct ethtool_rxfh_param *rxfh)
 {
 	struct ena_adapter *adapter = netdev_priv(netdev);
 	enum ena_admin_hash_functions ena_func;
 	u8 func;
 	int rc;
 
-	rc = ena_indirection_table_get(adapter, indir);
+	rc = ena_indirection_table_get(adapter, rxfh->indir);
 	if (rc)
 		return rc;
 
@@ -769,7 +926,7 @@ static int ena_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
 		return rc;
 	}
 
-	rc = ena_com_get_hash_key(adapter->ena_dev, key);
+	rc = ena_com_get_hash_key(adapter->ena_dev, rxfh->key);
 	if (rc)
 		return rc;
 
@@ -786,27 +943,27 @@ static int ena_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
 		return -EOPNOTSUPP;
 	}
 
-	if (hfunc)
-		*hfunc = func;
+	rxfh->hfunc = func;
 
 	return 0;
 }
 
-static int ena_set_rxfh(struct net_device *netdev, const u32 *indir,
-			const u8 *key, const u8 hfunc)
+static int ena_set_rxfh(struct net_device *netdev,
+			struct ethtool_rxfh_param *rxfh,
+			struct netlink_ext_ack *extack)
 {
 	struct ena_adapter *adapter = netdev_priv(netdev);
 	struct ena_com_dev *ena_dev = adapter->ena_dev;
 	enum ena_admin_hash_functions func = 0;
 	int rc;
 
-	if (indir) {
-		rc = ena_indirection_table_set(adapter, indir);
+	if (rxfh->indir) {
+		rc = ena_indirection_table_set(adapter, rxfh->indir);
 		if (rc)
 			return rc;
 	}
 
-	switch (hfunc) {
+	switch (rxfh->hfunc) {
 	case ETH_RSS_HASH_NO_CHANGE:
 		func = ena_com_get_current_hash_function(ena_dev);
 		break;
@@ -818,12 +975,12 @@ static int ena_set_rxfh(struct net_device *netdev, const u32 *indir,
 		break;
 	default:
 		netif_err(adapter, drv, netdev, "Unsupported hfunc %d\n",
-			  hfunc);
+			  rxfh->hfunc);
 		return -EOPNOTSUPP;
 	}
 
-	if (key || func) {
-		rc = ena_com_fill_hash_function(ena_dev, func, key,
+	if (rxfh->key || func) {
+		rc = ena_com_fill_hash_function(ena_dev, func, rxfh->key,
 						ENA_HASH_KEY_SIZE,
 						0xFFFFFFFF);
 		if (unlikely(rc)) {
@@ -850,10 +1007,19 @@ static int ena_set_channels(struct net_device *netdev,
 	struct ena_adapter *adapter = netdev_priv(netdev);
 	u32 count = channels->combined_count;
 	/* The check for max value is already done in ethtool */
-	if (count < ENA_MIN_NUM_IO_QUEUES ||
-	    (ena_xdp_present(adapter) &&
-	    !ena_xdp_legal_queue_count(adapter, count)))
+	if (count < ENA_MIN_NUM_IO_QUEUES)
 		return -EINVAL;
+
+	if (!ena_xdp_legal_queue_count(adapter, count)) {
+		if (ena_xdp_present(adapter))
+			return -EINVAL;
+
+		xdp_clear_features_flag(netdev);
+	} else {
+		xdp_set_features_flag(netdev,
+				      NETDEV_XDP_ACT_BASIC |
+				      NETDEV_XDP_ACT_REDIRECT);
+	}
 
 	return ena_update_queue_count(adapter, count);
 }
@@ -887,11 +1053,7 @@ static int ena_set_tunable(struct net_device *netdev,
 	switch (tuna->id) {
 	case ETHTOOL_RX_COPYBREAK:
 		len = *(u32 *)data;
-		if (len > adapter->netdev->mtu) {
-			ret = -EINVAL;
-			break;
-		}
-		adapter->rx_copybreak = len;
+		ret = ena_set_rx_copybreak(adapter, len);
 		break;
 	default:
 		ret = -EINVAL;
@@ -904,6 +1066,8 @@ static int ena_set_tunable(struct net_device *netdev,
 static const struct ethtool_ops ena_ethtool_ops = {
 	.supported_coalesce_params = ETHTOOL_COALESCE_USECS |
 				     ETHTOOL_COALESCE_USE_ADAPTIVE_RX,
+	.supported_ring_params	= ETHTOOL_RING_USE_TX_PUSH_BUF_LEN |
+				  ETHTOOL_RING_USE_TX_PUSH,
 	.get_link_ksettings	= ena_get_link_ksettings,
 	.get_drvinfo		= ena_get_drvinfo,
 	.get_msglevel		= ena_get_msglevel,
@@ -916,17 +1080,18 @@ static const struct ethtool_ops ena_ethtool_ops = {
 	.get_sset_count         = ena_get_sset_count,
 	.get_strings		= ena_get_ethtool_strings,
 	.get_ethtool_stats      = ena_get_ethtool_stats,
-	.get_rxnfc		= ena_get_rxnfc,
-	.set_rxnfc		= ena_set_rxnfc,
+	.get_rx_ring_count	= ena_get_rx_ring_count,
 	.get_rxfh_indir_size    = ena_get_rxfh_indir_size,
 	.get_rxfh_key_size	= ena_get_rxfh_key_size,
 	.get_rxfh		= ena_get_rxfh,
 	.set_rxfh		= ena_set_rxfh,
+	.get_rxfh_fields	= ena_get_rxfh_fields,
+	.set_rxfh_fields	= ena_set_rxfh_fields,
 	.get_channels		= ena_get_channels,
 	.set_channels		= ena_set_channels,
 	.get_tunable		= ena_get_tunable,
 	.set_tunable		= ena_set_tunable,
-	.get_ts_info            = ethtool_op_get_ts_info,
+	.get_ts_info		= ena_get_ts_info,
 };
 
 void ena_set_ethtool_ops(struct net_device *netdev)
@@ -948,22 +1113,18 @@ static void ena_dump_stats_ex(struct ena_adapter *adapter, u8 *buf)
 		return;
 	}
 
-	strings_buf = devm_kcalloc(&adapter->pdev->dev,
-				   ETH_GSTRING_LEN, strings_num,
-				   GFP_ATOMIC);
+	strings_buf = kcalloc(strings_num, ETH_GSTRING_LEN, GFP_ATOMIC);
 	if (!strings_buf) {
 		netif_err(adapter, drv, netdev,
 			  "Failed to allocate strings_buf\n");
 		return;
 	}
 
-	data_buf = devm_kcalloc(&adapter->pdev->dev,
-				strings_num, sizeof(u64),
-				GFP_ATOMIC);
+	data_buf = kcalloc(strings_num, sizeof(u64), GFP_ATOMIC);
 	if (!data_buf) {
 		netif_err(adapter, drv, netdev,
 			  "Failed to allocate data buf\n");
-		devm_kfree(&adapter->pdev->dev, strings_buf);
+		kfree(strings_buf);
 		return;
 	}
 
@@ -985,8 +1146,8 @@ static void ena_dump_stats_ex(struct ena_adapter *adapter, u8 *buf)
 				  strings_buf + i * ETH_GSTRING_LEN,
 				  data_buf[i]);
 
-	devm_kfree(&adapter->pdev->dev, strings_buf);
-	devm_kfree(&adapter->pdev->dev, data_buf);
+	kfree(strings_buf);
+	kfree(data_buf);
 }
 
 void ena_dump_stats_to_buf(struct ena_adapter *adapter, u8 *buf)

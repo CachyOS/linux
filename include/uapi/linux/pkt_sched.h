@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
-#ifndef __LINUX_PKT_SCHED_H
-#define __LINUX_PKT_SCHED_H
+#ifndef _UAPI__LINUX_PKT_SCHED_H
+#define _UAPI__LINUX_PKT_SCHED_H
 
 #include <linux/const.h>
 #include <linux/types.h>
@@ -477,115 +477,6 @@ enum {
 
 #define TCA_HFSC_MAX (__TCA_HFSC_MAX - 1)
 
-
-/* CBQ section */
-
-#define TC_CBQ_MAXPRIO		8
-#define TC_CBQ_MAXLEVEL		8
-#define TC_CBQ_DEF_EWMA		5
-
-struct tc_cbq_lssopt {
-	unsigned char	change;
-	unsigned char	flags;
-#define TCF_CBQ_LSS_BOUNDED	1
-#define TCF_CBQ_LSS_ISOLATED	2
-	unsigned char  	ewma_log;
-	unsigned char  	level;
-#define TCF_CBQ_LSS_FLAGS	1
-#define TCF_CBQ_LSS_EWMA	2
-#define TCF_CBQ_LSS_MAXIDLE	4
-#define TCF_CBQ_LSS_MINIDLE	8
-#define TCF_CBQ_LSS_OFFTIME	0x10
-#define TCF_CBQ_LSS_AVPKT	0x20
-	__u32		maxidle;
-	__u32		minidle;
-	__u32		offtime;
-	__u32		avpkt;
-};
-
-struct tc_cbq_wrropt {
-	unsigned char	flags;
-	unsigned char	priority;
-	unsigned char	cpriority;
-	unsigned char	__reserved;
-	__u32		allot;
-	__u32		weight;
-};
-
-struct tc_cbq_ovl {
-	unsigned char	strategy;
-#define	TC_CBQ_OVL_CLASSIC	0
-#define	TC_CBQ_OVL_DELAY	1
-#define	TC_CBQ_OVL_LOWPRIO	2
-#define	TC_CBQ_OVL_DROP		3
-#define	TC_CBQ_OVL_RCLASSIC	4
-	unsigned char	priority2;
-	__u16		pad;
-	__u32		penalty;
-};
-
-struct tc_cbq_police {
-	unsigned char	police;
-	unsigned char	__res1;
-	unsigned short	__res2;
-};
-
-struct tc_cbq_fopt {
-	__u32		split;
-	__u32		defmap;
-	__u32		defchange;
-};
-
-struct tc_cbq_xstats {
-	__u32		borrows;
-	__u32		overactions;
-	__s32		avgidle;
-	__s32		undertime;
-};
-
-enum {
-	TCA_CBQ_UNSPEC,
-	TCA_CBQ_LSSOPT,
-	TCA_CBQ_WRROPT,
-	TCA_CBQ_FOPT,
-	TCA_CBQ_OVL_STRATEGY,
-	TCA_CBQ_RATE,
-	TCA_CBQ_RTAB,
-	TCA_CBQ_POLICE,
-	__TCA_CBQ_MAX,
-};
-
-#define TCA_CBQ_MAX	(__TCA_CBQ_MAX - 1)
-
-/* dsmark section */
-
-enum {
-	TCA_DSMARK_UNSPEC,
-	TCA_DSMARK_INDICES,
-	TCA_DSMARK_DEFAULT_INDEX,
-	TCA_DSMARK_SET_TC_INDEX,
-	TCA_DSMARK_MASK,
-	TCA_DSMARK_VALUE,
-	__TCA_DSMARK_MAX,
-};
-
-#define TCA_DSMARK_MAX (__TCA_DSMARK_MAX - 1)
-
-/* ATM  section */
-
-enum {
-	TCA_ATM_UNSPEC,
-	TCA_ATM_FD,		/* file/socket descriptor */
-	TCA_ATM_PTR,		/* pointer to descriptor - later */
-	TCA_ATM_HDR,		/* LL header */
-	TCA_ATM_EXCESS,		/* excess traffic class (0 for CLP)  */
-	TCA_ATM_ADDR,		/* PVC address (for output only) */
-	TCA_ATM_STATE,		/* VC state (ATM_VS_*; for output only) */
-	__TCA_ATM_MAX,
-};
-
-#define TCA_ATM_MAX	(__TCA_ATM_MAX - 1)
-
 /* Network emulator */
 
 enum {
@@ -603,6 +494,7 @@ enum {
 	TCA_NETEM_JITTER64,
 	TCA_NETEM_SLOT,
 	TCA_NETEM_SLOT_DIST,
+	TCA_NETEM_PRNG_SEED,
 	__TCA_NETEM_MAX,
 };
 
@@ -719,6 +611,11 @@ enum {
 
 #define __TC_MQPRIO_SHAPER_MAX (__TC_MQPRIO_SHAPER_MAX - 1)
 
+enum {
+	TC_FP_EXPRESS = 1,
+	TC_FP_PREEMPTIBLE = 2,
+};
+
 struct tc_mqprio_qopt {
 	__u8	num_tc;
 	__u8	prio_tc_map[TC_QOPT_BITMASK + 1];
@@ -733,11 +630,22 @@ struct tc_mqprio_qopt {
 #define TC_MQPRIO_F_MAX_RATE		0x8
 
 enum {
+	TCA_MQPRIO_TC_ENTRY_UNSPEC,
+	TCA_MQPRIO_TC_ENTRY_INDEX,		/* u32 */
+	TCA_MQPRIO_TC_ENTRY_FP,			/* u32 */
+
+	/* add new constants above here */
+	__TCA_MQPRIO_TC_ENTRY_CNT,
+	TCA_MQPRIO_TC_ENTRY_MAX = (__TCA_MQPRIO_TC_ENTRY_CNT - 1)
+};
+
+enum {
 	TCA_MQPRIO_UNSPEC,
 	TCA_MQPRIO_MODE,
 	TCA_MQPRIO_SHAPER,
 	TCA_MQPRIO_MIN_RATE64,
 	TCA_MQPRIO_MAX_RATE64,
+	TCA_MQPRIO_TC_ENTRY,
 	__TCA_MQPRIO_MAX,
 };
 
@@ -924,15 +832,24 @@ enum {
 
 	TCA_FQ_HORIZON_DROP,	/* drop packets beyond horizon, or cap their EDT */
 
+	TCA_FQ_PRIOMAP,		/* prio2band */
+
+	TCA_FQ_WEIGHTS,		/* Weights for each band */
+
+	TCA_FQ_OFFLOAD_HORIZON, /* dequeue paced packets within this horizon immediately (us units) */
+
 	__TCA_FQ_MAX
 };
 
 #define TCA_FQ_MAX	(__TCA_FQ_MAX - 1)
 
+#define FQ_BANDS 3
+#define FQ_MIN_WEIGHT 16384
+
 struct tc_fq_qd_stats {
 	__u64	gc_flows;
-	__u64	highprio_packets;
-	__u64	tcp_retrans;
+	__u64	highprio_packets;	/* obsolete */
+	__u64	tcp_retrans;		/* obsolete */
 	__u64	throttled;
 	__u64	flows_plimit;
 	__u64	pkts_too_long;
@@ -945,6 +862,10 @@ struct tc_fq_qd_stats {
 	__u64	ce_mark;		/* packets above ce_threshold */
 	__u64	horizon_drops;
 	__u64	horizon_caps;
+	__u64	fastpath_packets;
+	__u64	band_drops[FQ_BANDS];
+	__u32	band_pkt_count[FQ_BANDS];
+	__u32	pad;
 };
 
 /* Heavy-Hitter Filter */
@@ -1115,6 +1036,7 @@ enum {
 	TCA_CAKE_STATS_DROP_NEXT_US,
 	TCA_CAKE_STATS_P_DROP,
 	TCA_CAKE_STATS_BLUE_TIMER_US,
+	TCA_CAKE_STATS_ACTIVE_QUEUES,
 	__TCA_CAKE_STATS_MAX
 };
 #define TCA_CAKE_STATS_MAX (__TCA_CAKE_STATS_MAX - 1)
@@ -1233,6 +1155,27 @@ enum {
 #define TCA_TAPRIO_ATTR_FLAG_FULL_OFFLOAD	_BITUL(1)
 
 enum {
+	TCA_TAPRIO_TC_ENTRY_UNSPEC,
+	TCA_TAPRIO_TC_ENTRY_INDEX,		/* u32 */
+	TCA_TAPRIO_TC_ENTRY_MAX_SDU,		/* u32 */
+	TCA_TAPRIO_TC_ENTRY_FP,			/* u32 */
+
+	/* add new constants above here */
+	__TCA_TAPRIO_TC_ENTRY_CNT,
+	TCA_TAPRIO_TC_ENTRY_MAX = (__TCA_TAPRIO_TC_ENTRY_CNT - 1)
+};
+
+enum {
+	TCA_TAPRIO_OFFLOAD_STATS_PAD = 1,	/* u64 */
+	TCA_TAPRIO_OFFLOAD_STATS_WINDOW_DROPS,	/* u64 */
+	TCA_TAPRIO_OFFLOAD_STATS_TX_OVERRUNS,	/* u64 */
+
+	/* add new constants above here */
+	__TCA_TAPRIO_OFFLOAD_STATS_CNT,
+	TCA_TAPRIO_OFFLOAD_STATS_MAX = (__TCA_TAPRIO_OFFLOAD_STATS_CNT - 1)
+};
+
+enum {
 	TCA_TAPRIO_ATTR_UNSPEC,
 	TCA_TAPRIO_ATTR_PRIOMAP, /* struct tc_mqprio_qopt */
 	TCA_TAPRIO_ATTR_SCHED_ENTRY_LIST, /* nested of entry */
@@ -1240,11 +1183,13 @@ enum {
 	TCA_TAPRIO_ATTR_SCHED_SINGLE_ENTRY, /* single entry */
 	TCA_TAPRIO_ATTR_SCHED_CLOCKID, /* s32 */
 	TCA_TAPRIO_PAD,
+	TCA_TAPRIO_ATTR_PAD = TCA_TAPRIO_PAD,
 	TCA_TAPRIO_ATTR_ADMIN_SCHED, /* The admin sched, only used in dump */
 	TCA_TAPRIO_ATTR_SCHED_CYCLE_TIME, /* s64 */
 	TCA_TAPRIO_ATTR_SCHED_CYCLE_TIME_EXTENSION, /* s64 */
 	TCA_TAPRIO_ATTR_FLAGS, /* u32 */
 	TCA_TAPRIO_ATTR_TXTIME_DELAY, /* u32 */
+	TCA_TAPRIO_ATTR_TC_ENTRY, /* nest */
 	__TCA_TAPRIO_ATTR_MAX,
 };
 
@@ -1266,5 +1211,73 @@ enum {
 };
 
 #define TCA_ETS_MAX (__TCA_ETS_MAX - 1)
+
+/* DUALPI2 */
+enum tc_dualpi2_drop_overload {
+	TC_DUALPI2_DROP_OVERLOAD_OVERFLOW = 0,
+	TC_DUALPI2_DROP_OVERLOAD_DROP = 1,
+	__TCA_DUALPI2_DROP_OVERLOAD_MAX,
+};
+#define TCA_DUALPI2_DROP_OVERLOAD_MAX (__TCA_DUALPI2_DROP_OVERLOAD_MAX - 1)
+
+enum tc_dualpi2_drop_early {
+	TC_DUALPI2_DROP_EARLY_DROP_DEQUEUE = 0,
+	TC_DUALPI2_DROP_EARLY_DROP_ENQUEUE = 1,
+	__TCA_DUALPI2_DROP_EARLY_MAX,
+};
+#define TCA_DUALPI2_DROP_EARLY_MAX (__TCA_DUALPI2_DROP_EARLY_MAX - 1)
+
+enum tc_dualpi2_ecn_mask {
+	TC_DUALPI2_ECN_MASK_L4S_ECT = 1,
+	TC_DUALPI2_ECN_MASK_CLA_ECT = 2,
+	TC_DUALPI2_ECN_MASK_ANY_ECT = 3,
+	__TCA_DUALPI2_ECN_MASK_MAX,
+};
+#define TCA_DUALPI2_ECN_MASK_MAX (__TCA_DUALPI2_ECN_MASK_MAX - 1)
+
+enum tc_dualpi2_split_gso {
+	TC_DUALPI2_SPLIT_GSO_NO_SPLIT_GSO = 0,
+	TC_DUALPI2_SPLIT_GSO_SPLIT_GSO = 1,
+	__TCA_DUALPI2_SPLIT_GSO_MAX,
+};
+#define TCA_DUALPI2_SPLIT_GSO_MAX (__TCA_DUALPI2_SPLIT_GSO_MAX - 1)
+
+enum {
+	TCA_DUALPI2_UNSPEC,
+	TCA_DUALPI2_LIMIT,		/* Packets */
+	TCA_DUALPI2_MEMORY_LIMIT,	/* Bytes */
+	TCA_DUALPI2_TARGET,		/* us */
+	TCA_DUALPI2_TUPDATE,		/* us */
+	TCA_DUALPI2_ALPHA,		/* Hz scaled up by 256 */
+	TCA_DUALPI2_BETA,		/* Hz scaled up by 256 */
+	TCA_DUALPI2_STEP_THRESH_PKTS,	/* Step threshold in packets */
+	TCA_DUALPI2_STEP_THRESH_US,	/* Step threshold in microseconds */
+	TCA_DUALPI2_MIN_QLEN_STEP,	/* Minimum qlen to apply STEP_THRESH */
+	TCA_DUALPI2_COUPLING,		/* Coupling factor between queues */
+	TCA_DUALPI2_DROP_OVERLOAD,	/* Whether to drop on overload */
+	TCA_DUALPI2_DROP_EARLY,		/* Whether to drop on enqueue */
+	TCA_DUALPI2_C_PROTECTION,	/* Percentage */
+	TCA_DUALPI2_ECN_MASK,		/* L4S queue classification mask */
+	TCA_DUALPI2_SPLIT_GSO,		/* Split GSO packets at enqueue */
+	TCA_DUALPI2_PAD,
+	__TCA_DUALPI2_MAX
+};
+
+#define TCA_DUALPI2_MAX   (__TCA_DUALPI2_MAX - 1)
+
+struct tc_dualpi2_xstats {
+	__u32 prob;		/* current probability */
+	__u32 delay_c;		/* current delay in C queue */
+	__u32 delay_l;		/* current delay in L queue */
+	__u32 packets_in_c;	/* number of packets enqueued in C queue */
+	__u32 packets_in_l;	/* number of packets enqueued in L queue */
+	__u32 maxq;		/* maximum queue size */
+	__u32 ecn_mark;		/* packets marked with ecn*/
+	__u32 step_marks;	/* ECN marks due to the step AQM */
+	__s32 credit;		/* current c_protection credit */
+	__u32 memory_used;	/* Memory used by both queues */
+	__u32 max_memory_used;	/* Maximum used memory */
+	__u32 memory_limit;	/* Memory limit of both queues */
+};
 
 #endif

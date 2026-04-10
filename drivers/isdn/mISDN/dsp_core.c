@@ -172,6 +172,7 @@ module_param(debug, uint, S_IRUGO | S_IWUSR);
 module_param(options, uint, S_IRUGO | S_IWUSR);
 module_param(poll, uint, S_IRUGO | S_IWUSR);
 module_param(dtmfthreshold, uint, S_IRUGO | S_IWUSR);
+MODULE_DESCRIPTION("mISDN driver for Digital Audio Processing of transparent data");
 MODULE_LICENSE("GPL");
 
 /*int spinnest = 0;*/
@@ -927,7 +928,7 @@ dsp_function(struct mISDNchannel *ch,  struct sk_buff *skb)
 		dsp->tone.hardware = 0;
 		dsp->tone.software = 0;
 		if (timer_pending(&dsp->tone.tl))
-			del_timer(&dsp->tone.tl);
+			timer_delete(&dsp->tone.tl);
 		if (dsp->conf)
 			dsp_cmx_conf(dsp, 0); /* dsp_cmx_hardware will also be
 						 called here */
@@ -974,7 +975,7 @@ dsp_ctrl(struct mISDNchannel *ch, u_int cmd, void *arg)
 		cancel_work_sync(&dsp->workq);
 		spin_lock_irqsave(&dsp_lock, flags);
 		if (timer_pending(&dsp->tone.tl))
-			del_timer(&dsp->tone.tl);
+			timer_delete(&dsp->tone.tl);
 		skb_queue_purge(&dsp->sendq);
 		if (dsp_debug & DEBUG_DSP_CTRL)
 			printk(KERN_DEBUG "%s: releasing member %s\n",
@@ -1195,7 +1196,7 @@ static int __init dsp_init(void)
 	}
 
 	/* set sample timer */
-	timer_setup(&dsp_spl_tl, (void *)dsp_cmx_send, 0);
+	timer_setup(&dsp_spl_tl, dsp_cmx_send, 0);
 	dsp_spl_tl.expires = jiffies + dsp_tics;
 	dsp_spl_jiffies = dsp_spl_tl.expires;
 	add_timer(&dsp_spl_tl);
@@ -1208,7 +1209,7 @@ static void __exit dsp_cleanup(void)
 {
 	mISDN_unregister_Bprotocol(&DSP);
 
-	del_timer_sync(&dsp_spl_tl);
+	timer_delete_sync(&dsp_spl_tl);
 
 	if (!list_empty(&dsp_ilist)) {
 		printk(KERN_ERR "mISDN_dsp: Audio DSP object inst list not "

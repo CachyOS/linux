@@ -352,7 +352,7 @@ static int thmc50_detect(struct i2c_client *client,
 	pr_debug("thmc50: Detected %s (version %x, revision %x)\n",
 		 type_name, (revision >> 4) - 0xc, revision & 0xf);
 
-	strlcpy(info->type, type_name, I2C_NAME_SIZE);
+	strscpy(info->type, type_name, I2C_NAME_SIZE);
 
 	return 0;
 }
@@ -377,8 +377,6 @@ static void thmc50_init_client(struct thmc50_data *data)
 	i2c_smbus_write_byte_data(client, THMC50_REG_CONF, config);
 }
 
-static const struct i2c_device_id thmc50_id[];
-
 static int thmc50_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
@@ -391,7 +389,7 @@ static int thmc50_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	data->client = client;
-	data->type = i2c_match_id(thmc50_id, client)->driver_data;
+	data->type = (uintptr_t)i2c_get_match_data(client);
 	mutex_init(&data->update_lock);
 
 	thmc50_init_client(data);
@@ -420,7 +418,7 @@ static struct i2c_driver thmc50_driver = {
 	.driver = {
 		.name = "thmc50",
 	},
-	.probe_new = thmc50_probe,
+	.probe = thmc50_probe,
 	.id_table = thmc50_id,
 	.detect = thmc50_detect,
 	.address_list = normal_i2c,

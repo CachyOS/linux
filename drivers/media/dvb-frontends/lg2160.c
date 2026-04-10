@@ -1396,7 +1396,7 @@ struct dvb_frontend *lg2160_attach(const struct lg2160_config *config,
 	       i2c_adap ? i2c_adapter_id(i2c_adap) : 0,
 	       config ? config->i2c_addr : 0);
 
-	state = kzalloc(sizeof(struct lg216x_state), GFP_KERNEL);
+	state = kzalloc_obj(struct lg216x_state);
 	if (!state)
 		return NULL;
 
@@ -1426,7 +1426,7 @@ struct dvb_frontend *lg2160_attach(const struct lg2160_config *config,
 
 	return &state->frontend;
 }
-EXPORT_SYMBOL(lg2160_attach);
+EXPORT_SYMBOL_GPL(lg2160_attach);
 
 MODULE_DESCRIPTION("LG Electronics LG216x ATSC/MH Demodulator Driver");
 MODULE_AUTHOR("Michael Krufky <mkrufky@linuxtv.org>");

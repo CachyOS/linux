@@ -101,7 +101,7 @@ struct nfcmrvl_private *nfcmrvl_nci_register_dev(enum nfcmrvl_phy phy,
 	int tailroom;
 	u32 protocols;
 
-	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+	priv = kzalloc_obj(*priv);
 	if (!priv)
 		return ERR_PTR(-ENOMEM);
 
@@ -261,11 +261,7 @@ int nfcmrvl_parse_dt(struct device_node *node,
 		return reset_n_io;
 	}
 	pdata->reset_n_io = reset_n_io;
-
-	if (of_find_property(node, "hci-muxed", NULL))
-		pdata->hci_muxed = 1;
-	else
-		pdata->hci_muxed = 0;
+	pdata->hci_muxed = of_property_read_bool(node, "hci-muxed");
 
 	return 0;
 }

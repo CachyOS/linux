@@ -1,18 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * TI composite clock support
  *
  * Copyright (C) 2013 Texas Instruments, Inc.
  *
  * Tero Kristo <t-kristo@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/clk-provider.h>
@@ -34,8 +26,8 @@ static unsigned long ti_composite_recalc_rate(struct clk_hw *hw,
 	return ti_clk_divider_ops.recalc_rate(hw, parent_rate);
 }
 
-static long ti_composite_round_rate(struct clk_hw *hw, unsigned long rate,
-				    unsigned long *prate)
+static int ti_composite_determine_rate(struct clk_hw *hw,
+				       struct clk_rate_request *req)
 {
 	return -EINVAL;
 }
@@ -48,7 +40,7 @@ static int ti_composite_set_rate(struct clk_hw *hw, unsigned long rate,
 
 static const struct clk_ops ti_composite_divider_ops = {
 	.recalc_rate	= &ti_composite_recalc_rate,
-	.round_rate	= &ti_composite_round_rate,
+	.determine_rate	= &ti_composite_determine_rate,
 	.set_rate	= &ti_composite_set_rate,
 };
 
@@ -184,7 +176,7 @@ static void __init _register_composite(void *user,
 				     &ti_composite_gate_ops, 0);
 
 	if (!IS_ERR(clk)) {
-		ret = ti_clk_add_alias(NULL, clk, name);
+		ret = ti_clk_add_alias(clk, name);
 		if (ret) {
 			clk_unregister(clk);
 			goto cleanup;
@@ -219,7 +211,7 @@ static void __init of_ti_composite_clk_setup(struct device_node *node)
 		return;
 	}
 
-	cclk = kzalloc(sizeof(*cclk), GFP_KERNEL);
+	cclk = kzalloc_obj(*cclk);
 	if (!cclk)
 		return;
 
@@ -261,7 +253,7 @@ int __init ti_clk_add_component(struct device_node *node, struct clk_hw *hw,
 
 	of_clk_parent_fill(node, parent_names, num_parents);
 
-	clk = kzalloc(sizeof(*clk), GFP_KERNEL);
+	clk = kzalloc_obj(*clk);
 	if (!clk) {
 		kfree(parent_names);
 		return -ENOMEM;

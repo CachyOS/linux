@@ -126,7 +126,7 @@ static void lbtf_cmd_work(struct work_struct *work)
  */
 static void command_timer_fn(struct timer_list *t)
 {
-	struct lbtf_private *priv = from_timer(priv, t, command_timer);
+	struct lbtf_private *priv = timer_container_of(priv, t, command_timer);
 	unsigned long flags;
 	lbtf_deb_enter(LBTF_DEB_CMD);
 
@@ -174,7 +174,7 @@ static void lbtf_free_adapter(struct lbtf_private *priv)
 {
 	lbtf_deb_enter(LBTF_DEB_MAIN);
 	lbtf_free_cmd_buffer(priv);
-	del_timer(&priv->command_timer);
+	timer_delete(&priv->command_timer);
 	lbtf_deb_leave(LBTF_DEB_MAIN);
 }
 
@@ -267,7 +267,7 @@ static int lbtf_op_start(struct ieee80211_hw *hw)
 	return 0;
 }
 
-static void lbtf_op_stop(struct ieee80211_hw *hw)
+static void lbtf_op_stop(struct ieee80211_hw *hw, bool suspend)
 {
 	struct lbtf_private *priv = hw->priv;
 	unsigned long flags;
@@ -337,7 +337,7 @@ static void lbtf_op_remove_interface(struct ieee80211_hw *hw,
 	lbtf_deb_leave(LBTF_DEB_MACOPS);
 }
 
-static int lbtf_op_config(struct ieee80211_hw *hw, u32 changed)
+static int lbtf_op_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
 {
 	struct lbtf_private *priv = hw->priv;
 	struct ieee80211_conf *conf = &hw->conf;
@@ -417,7 +417,7 @@ static void lbtf_op_configure_filter(struct ieee80211_hw *hw,
 static void lbtf_op_bss_info_changed(struct ieee80211_hw *hw,
 			struct ieee80211_vif *vif,
 			struct ieee80211_bss_conf *bss_conf,
-			u32 changes)
+			u64 changes)
 {
 	struct lbtf_private *priv = hw->priv;
 	struct sk_buff *beacon;
@@ -427,7 +427,7 @@ static void lbtf_op_bss_info_changed(struct ieee80211_hw *hw,
 		switch (priv->vif->type) {
 		case NL80211_IFTYPE_AP:
 		case NL80211_IFTYPE_MESH_POINT:
-			beacon = ieee80211_beacon_get(hw, vif);
+			beacon = ieee80211_beacon_get(hw, vif, 0);
 			if (beacon) {
 				lbtf_beacon_set(priv, beacon);
 				kfree_skb(beacon);
@@ -473,7 +473,12 @@ static int lbtf_op_get_survey(struct ieee80211_hw *hw, int idx,
 }
 
 static const struct ieee80211_ops lbtf_ops = {
+	.add_chanctx = ieee80211_emulate_add_chanctx,
+	.remove_chanctx = ieee80211_emulate_remove_chanctx,
+	.change_chanctx = ieee80211_emulate_change_chanctx,
+	.switch_vif_chanctx = ieee80211_emulate_switch_vif_chanctx,
 	.tx			= lbtf_op_tx,
+	.wake_tx_queue		= ieee80211_handle_wake_tx_queue,
 	.start			= lbtf_op_start,
 	.stop			= lbtf_op_stop,
 	.add_interface		= lbtf_op_add_interface,
@@ -637,7 +642,7 @@ int lbtf_remove_card(struct lbtf_private *priv)
 	lbtf_deb_enter(LBTF_DEB_MAIN);
 
 	priv->surpriseremoved = 1;
-	del_timer(&priv->command_timer);
+	timer_delete(&priv->command_timer);
 	lbtf_free_adapter(priv);
 	priv->hw = NULL;
 	ieee80211_unregister_hw(hw);
@@ -691,7 +696,7 @@ void lbtf_bcn_sent(struct lbtf_private *priv)
 		}
 	}
 
-	skb = ieee80211_beacon_get(priv->hw, priv->vif);
+	skb = ieee80211_beacon_get(priv->hw, priv->vif, 0);
 
 	if (skb) {
 		lbtf_beacon_set(priv, skb);
@@ -703,7 +708,7 @@ EXPORT_SYMBOL_GPL(lbtf_bcn_sent);
 static int __init lbtf_init_module(void)
 {
 	lbtf_deb_enter(LBTF_DEB_MAIN);
-	lbtf_wq = alloc_workqueue("libertastf", WQ_MEM_RECLAIM, 0);
+	lbtf_wq = alloc_workqueue("libertastf", WQ_MEM_RECLAIM | WQ_UNBOUND, 0);
 	if (lbtf_wq == NULL) {
 		printk(KERN_ERR "libertastf: couldn't create workqueue\n");
 		return -ENOMEM;

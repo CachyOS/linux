@@ -334,7 +334,6 @@ static int sch311x_wdt_close(struct inode *inode, struct file *file)
 
 static const struct file_operations sch311x_wdt_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.write		= sch311x_wdt_write,
 	.unlocked_ioctl	= sch311x_wdt_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
@@ -425,7 +424,7 @@ exit:
 	return err;
 }
 
-static int sch311x_wdt_remove(struct platform_device *pdev)
+static void sch311x_wdt_remove(struct platform_device *pdev)
 {
 	/* Stop the timer before we leave */
 	if (!nowayout)
@@ -436,7 +435,6 @@ static int sch311x_wdt_remove(struct platform_device *pdev)
 	release_region(sch311x_wdt_data.runtime_reg + WDT_TIME_OUT, 4);
 	release_region(sch311x_wdt_data.runtime_reg + GP60, 1);
 	sch311x_wdt_data.runtime_reg = 0;
-	return 0;
 }
 
 static void sch311x_wdt_shutdown(struct platform_device *dev)

@@ -112,7 +112,8 @@ static void pl010_enable_ms(struct uart_port *port)
 
 static void pl010_rx_chars(struct uart_port *port)
 {
-	unsigned int status, ch, flag, rsr, max_count = 256;
+	unsigned int status, rsr, max_count = 256;
+	u8 ch, flag;
 
 	status = readb(port->membase + UART01x_FR);
 	while (UART_RX_DATA(status) && max_count--) {
@@ -164,34 +165,12 @@ static void pl010_rx_chars(struct uart_port *port)
 
 static void pl010_tx_chars(struct uart_port *port)
 {
-	struct circ_buf *xmit = &port->state->xmit;
-	int count;
+	u8 ch;
 
-	if (port->x_char) {
-		writel(port->x_char, port->membase + UART01x_DR);
-		port->icount.tx++;
-		port->x_char = 0;
-		return;
-	}
-	if (uart_circ_empty(xmit) || uart_tx_stopped(port)) {
-		pl010_stop_tx(port);
-		return;
-	}
-
-	count = port->fifosize >> 1;
-	do {
-		writel(xmit->buf[xmit->tail], port->membase + UART01x_DR);
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-		port->icount.tx++;
-		if (uart_circ_empty(xmit))
-			break;
-	} while (--count > 0);
-
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
-		uart_write_wakeup(port);
-
-	if (uart_circ_empty(xmit))
-		pl010_stop_tx(port);
+	uart_port_tx_limited(port, ch, port->fifosize >> 1,
+		true,
+		writel(ch, port->membase + UART01x_DR),
+		({}));
 }
 
 static void pl010_modem_status(struct uart_amba_port *uap)
@@ -228,7 +207,7 @@ static irqreturn_t pl010_int(int irq, void *dev_id)
 	unsigned int status, pass_counter = AMBA_ISR_PASS_LIMIT;
 	int handled = 0;
 
-	spin_lock(&port->lock);
+	uart_port_lock(port);
 
 	status = readb(port->membase + UART010_IIR);
 	if (status) {
@@ -249,7 +228,7 @@ static irqreturn_t pl010_int(int irq, void *dev_id)
 		handled = 1;
 	}
 
-	spin_unlock(&port->lock);
+	uart_port_unlock(port);
 
 	return IRQ_RETVAL(handled);
 }
@@ -291,14 +270,14 @@ static void pl010_break_ctl(struct uart_port *port, int break_state)
 	unsigned long flags;
 	unsigned int lcr_h;
 
-	spin_lock_irqsave(&port->lock, flags);
+	uart_port_lock_irqsave(port, &flags);
 	lcr_h = readb(port->membase + UART010_LCRH);
 	if (break_state == -1)
 		lcr_h |= UART01x_LCRH_BRK;
 	else
 		lcr_h &= ~UART01x_LCRH_BRK;
 	writel(lcr_h, port->membase + UART010_LCRH);
-	spin_unlock_irqrestore(&port->lock, flags);
+	uart_port_unlock_irqrestore(port, flags);
 }
 
 static int pl010_startup(struct uart_port *port)
@@ -370,7 +349,7 @@ static void pl010_shutdown(struct uart_port *port)
 
 static void
 pl010_set_termios(struct uart_port *port, struct ktermios *termios,
-		     struct ktermios *old)
+		  const struct ktermios *old)
 {
 	unsigned int lcr_h, old_cr;
 	unsigned long flags;
@@ -406,7 +385,7 @@ pl010_set_termios(struct uart_port *port, struct ktermios *termios,
 	if (port->fifosize > 1)
 		lcr_h |= UART01x_LCRH_FEN;
 
-	spin_lock_irqsave(&port->lock, flags);
+	uart_port_lock_irqsave(port, &flags);
 
 	/*
 	 * Update the per-port timeout.
@@ -459,22 +438,22 @@ pl010_set_termios(struct uart_port *port, struct ktermios *termios,
 	writel(lcr_h, port->membase + UART010_LCRH);
 	writel(old_cr, port->membase + UART010_CR);
 
-	spin_unlock_irqrestore(&port->lock, flags);
+	uart_port_unlock_irqrestore(port, flags);
 }
 
 static void pl010_set_ldisc(struct uart_port *port, struct ktermios *termios)
 {
 	if (termios->c_line == N_PPS) {
 		port->flags |= UPF_HARDPPS_CD;
-		spin_lock_irq(&port->lock);
+		uart_port_lock_irq(port);
 		pl010_enable_ms(port);
-		spin_unlock_irq(&port->lock);
+		uart_port_unlock_irq(port);
 	} else {
 		port->flags &= ~UPF_HARDPPS_CD;
 		if (!UART_ENABLE_MS(port, termios->c_cflag)) {
-			spin_lock_irq(&port->lock);
+			uart_port_lock_irq(port);
 			pl010_disable_ms(port);
-			spin_unlock_irq(&port->lock);
+			uart_port_unlock_irq(port);
 		}
 	}
 }
@@ -520,7 +499,7 @@ static int pl010_verify_port(struct uart_port *port, struct serial_struct *ser)
 	int ret = 0;
 	if (ser->type != PORT_UNKNOWN && ser->type != PORT_AMBA)
 		ret = -EINVAL;
-	if (ser->irq < 0 || ser->irq >= nr_irqs)
+	if (ser->irq < 0 || ser->irq >= irq_get_nr_irqs())
 		ret = -EINVAL;
 	if (ser->baud_base < 9600)
 		ret = -EINVAL;

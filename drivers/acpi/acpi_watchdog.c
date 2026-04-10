@@ -81,7 +81,7 @@ static const struct acpi_table_wdat *acpi_watchdog_get_wdat(void)
 	return wdat;
 }
 
-/**
+/*
  * Returns true if this system should prefer ACPI based watchdog instead of
  * the native one (which are typically the same hardware).
  */
@@ -103,7 +103,7 @@ void __init acpi_watchdog_init(void)
 {
 	const struct acpi_wdat_entry *entries;
 	const struct acpi_table_wdat *wdat;
-	struct list_head resource_list;
+	LIST_HEAD(resource_list);
 	struct resource_entry *rentry;
 	struct platform_device *pdev;
 	struct resource *resources;
@@ -124,8 +124,6 @@ void __init acpi_watchdog_init(void)
 	if (wdat->pci_segment != 0xff || wdat->pci_bus != 0xff ||
 	    wdat->pci_device != 0xff || wdat->pci_function != 0xff)
 		goto fail_put_wdat;
-
-	INIT_LIST_HEAD(&resource_list);
 
 	entries = (struct acpi_wdat_entry *)(wdat + 1);
 	for (i = 0; i < wdat->entries; i++) {
@@ -168,7 +166,7 @@ void __init acpi_watchdog_init(void)
 		}
 	}
 
-	resources = kcalloc(nresources, sizeof(*resources), GFP_KERNEL);
+	resources = kzalloc_objs(*resources, nresources);
 	if (!resources)
 		goto fail_free_resource_list;
 
@@ -179,7 +177,7 @@ void __init acpi_watchdog_init(void)
 	pdev = platform_device_register_simple("wdat_wdt", PLATFORM_DEVID_NONE,
 					       resources, nresources);
 	if (IS_ERR(pdev))
-		pr_err("Device creation failed: %ld\n", PTR_ERR(pdev));
+		pr_err("Device creation failed: %pe\n", pdev);
 
 	kfree(resources);
 

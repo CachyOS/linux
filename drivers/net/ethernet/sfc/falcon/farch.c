@@ -1631,28 +1631,6 @@ void ef4_farch_rx_push_indir_table(struct ef4_nic *efx)
 	}
 }
 
-/* Looks at available SRAM resources and works out how many queues we
- * can support, and where things like descriptor caches should live.
- *
- * SRAM is split up as follows:
- * 0                          buftbl entries for channels
- * efx->vf_buftbl_base        buftbl entries for SR-IOV
- * efx->rx_dc_base            RX descriptor caches
- * efx->tx_dc_base            TX descriptor caches
- */
-void ef4_farch_dimension_resources(struct ef4_nic *efx, unsigned sram_lim_qw)
-{
-	unsigned vi_count;
-
-	/* Account for the buffer table entries backing the datapath channels
-	 * and the descriptor caches for those channels.
-	 */
-	vi_count = max(efx->n_channels, efx->n_tx_channels * EF4_TXQ_TYPES);
-
-	efx->tx_dc_base = sram_lim_qw - vi_count * TX_DC_ENTRIES;
-	efx->rx_dc_base = efx->tx_dc_base - vi_count * RX_DC_ENTRIES;
-}
-
 u32 ef4_farch_fpga_ver(struct ef4_nic *efx)
 {
 	ef4_oword_t altera_build;
@@ -2711,7 +2689,7 @@ void ef4_farch_filter_table_remove(struct ef4_nic *efx)
 	enum ef4_farch_filter_table_id table_id;
 
 	for (table_id = 0; table_id < EF4_FARCH_FILTER_TABLE_COUNT; table_id++) {
-		kfree(state->table[table_id].used_bitmap);
+		bitmap_free(state->table[table_id].used_bitmap);
 		vfree(state->table[table_id].spec);
 	}
 	kfree(state);
@@ -2723,7 +2701,7 @@ int ef4_farch_filter_table_probe(struct ef4_nic *efx)
 	struct ef4_farch_filter_table *table;
 	unsigned table_id;
 
-	state = kzalloc(sizeof(struct ef4_farch_filter_state), GFP_KERNEL);
+	state = kzalloc_obj(struct ef4_farch_filter_state);
 	if (!state)
 		return -ENOMEM;
 	efx->filter_state = state;
@@ -2740,9 +2718,7 @@ int ef4_farch_filter_table_probe(struct ef4_nic *efx)
 		table = &state->table[table_id];
 		if (table->size == 0)
 			continue;
-		table->used_bitmap = kcalloc(BITS_TO_LONGS(table->size),
-					     sizeof(unsigned long),
-					     GFP_KERNEL);
+		table->used_bitmap = bitmap_zalloc(table->size, GFP_KERNEL);
 		if (!table->used_bitmap)
 			goto fail;
 		table->spec = vzalloc(array_size(sizeof(*table->spec),

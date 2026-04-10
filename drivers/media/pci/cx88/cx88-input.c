@@ -190,8 +190,7 @@ static int __cx88_ir_start(void *priv)
 	ir = core->ir;
 
 	if (ir->polling) {
-		hrtimer_init(&ir->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-		ir->timer.function = cx88_ir_work;
+		hrtimer_setup(&ir->timer, cx88_ir_work, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 		hrtimer_start(&ir->timer,
 			      ktime_set(0, ir->polling * 1000000),
 			      HRTIMER_MODE_REL);
@@ -268,7 +267,7 @@ int cx88_ir_init(struct cx88_core *core, struct pci_dev *pci)
 				 * used with a full-code IR table
 				 */
 
-	ir = kzalloc(sizeof(*ir), GFP_KERNEL);
+	ir = kzalloc_obj(*ir);
 	dev = rc_allocate_device(RC_DRIVER_IR_RAW);
 	if (!ir || !dev)
 		goto err_out_free;
@@ -586,7 +585,7 @@ void cx88_i2c_init_ir(struct cx88_core *core)
 {
 	struct i2c_board_info info;
 	static const unsigned short default_addr_list[] = {
-		0x18, 0x6b, 0x71,
+		0x18, 0x33, 0x6b, 0x71,
 		I2C_CLIENT_END
 	};
 	static const unsigned short pvr2000_addr_list[] = {

@@ -8,16 +8,16 @@
 /**
  * kernel_read_file() - read file contents into a kernel buffer
  *
- * @file	file to read from
- * @offset	where to start reading from (see below).
- * @buf		pointer to a "void *" buffer for reading into (if
+ * @file:	file to read from
+ * @offset:	where to start reading from (see below).
+ * @buf:	pointer to a "void *" buffer for reading into (if
  *		*@buf is NULL, a buffer will be allocated, and
  *		@buf_size will be ignored)
- * @buf_size	size of buf, if already allocated. If @buf not
+ * @buf_size:	size of buf, if already allocated. If @buf not
  *		allocated, this is the largest size to allocate.
- * @file_size	if non-NULL, the full size of @file will be
+ * @file_size:	if non-NULL, the full size of @file will be
  *		written here.
- * @id		the kernel_read_file_id identifying the type of
+ * @id:		the kernel_read_file_id identifying the type of
  *		file contents being read (for LSMs to examine)
  *
  * @offset must be 0 unless both @buf and @file_size are non-NULL
@@ -29,15 +29,15 @@
  * change between calls to kernel_read_file().
  *
  * Returns number of bytes read (no single read will be bigger
- * than INT_MAX), or negative on error.
+ * than SSIZE_MAX), or negative on error.
  *
  */
-int kernel_read_file(struct file *file, loff_t offset, void **buf,
-		     size_t buf_size, size_t *file_size,
-		     enum kernel_read_file_id id)
+ssize_t kernel_read_file(struct file *file, loff_t offset, void **buf,
+			 size_t buf_size, size_t *file_size,
+			 enum kernel_read_file_id id)
 {
 	loff_t i_size, pos;
-	size_t copied;
+	ssize_t copied;
 	void *allocated = NULL;
 	bool whole_file;
 	int ret;
@@ -58,7 +58,7 @@ int kernel_read_file(struct file *file, loff_t offset, void **buf,
 		goto out;
 	}
 	/* The file is too big for sane activities. */
-	if (i_size > INT_MAX) {
+	if (i_size > SSIZE_MAX) {
 		ret = -EFBIG;
 		goto out;
 	}
@@ -124,12 +124,12 @@ out:
 }
 EXPORT_SYMBOL_GPL(kernel_read_file);
 
-int kernel_read_file_from_path(const char *path, loff_t offset, void **buf,
-			       size_t buf_size, size_t *file_size,
-			       enum kernel_read_file_id id)
+ssize_t kernel_read_file_from_path(const char *path, loff_t offset, void **buf,
+				   size_t buf_size, size_t *file_size,
+				   enum kernel_read_file_id id)
 {
 	struct file *file;
-	int ret;
+	ssize_t ret;
 
 	if (!path || !*path)
 		return -EINVAL;
@@ -144,14 +144,14 @@ int kernel_read_file_from_path(const char *path, loff_t offset, void **buf,
 }
 EXPORT_SYMBOL_GPL(kernel_read_file_from_path);
 
-int kernel_read_file_from_path_initns(const char *path, loff_t offset,
-				      void **buf, size_t buf_size,
-				      size_t *file_size,
-				      enum kernel_read_file_id id)
+ssize_t kernel_read_file_from_path_initns(const char *path, loff_t offset,
+					  void **buf, size_t buf_size,
+					  size_t *file_size,
+					  enum kernel_read_file_id id)
 {
 	struct file *file;
 	struct path root;
-	int ret;
+	ssize_t ret;
 
 	if (!path || !*path)
 		return -EINVAL;
@@ -171,19 +171,15 @@ int kernel_read_file_from_path_initns(const char *path, loff_t offset,
 }
 EXPORT_SYMBOL_GPL(kernel_read_file_from_path_initns);
 
-int kernel_read_file_from_fd(int fd, loff_t offset, void **buf,
-			     size_t buf_size, size_t *file_size,
-			     enum kernel_read_file_id id)
+ssize_t kernel_read_file_from_fd(int fd, loff_t offset, void **buf,
+				 size_t buf_size, size_t *file_size,
+				 enum kernel_read_file_id id)
 {
-	struct fd f = fdget(fd);
-	int ret = -EBADF;
+	CLASS(fd, f)(fd);
 
-	if (!f.file || !(f.file->f_mode & FMODE_READ))
-		goto out;
+	if (fd_empty(f) || !(fd_file(f)->f_mode & FMODE_READ))
+		return -EBADF;
 
-	ret = kernel_read_file(f.file, offset, buf, buf_size, file_size, id);
-out:
-	fdput(f);
-	return ret;
+	return kernel_read_file(fd_file(f), offset, buf, buf_size, file_size, id);
 }
 EXPORT_SYMBOL_GPL(kernel_read_file_from_fd);

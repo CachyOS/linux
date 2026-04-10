@@ -26,23 +26,54 @@
  * Authors: Dave Airlie <airlied@redhat.com>
  */
 
+#include <linux/aperture.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/pci.h>
 
-#include <drm/drm_aperture.h>
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
-#include <drm/drm_crtc_helper.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_gem_vram_helper.h>
+#include <drm/drm_fbdev_shmem.h>
+#include <drm/drm_gem_shmem_helper.h>
 #include <drm/drm_module.h>
+#include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 
 #include "ast_drv.h"
 
-int ast_modeset = -1;
+static int ast_modeset = -1;
 
 MODULE_PARM_DESC(modeset, "Disable/Enable modesetting");
 module_param_named(modeset, ast_modeset, int, 0400);
+
+void ast_device_init(struct ast_device *ast,
+		     enum ast_chip chip,
+		     enum ast_config_mode config_mode,
+		     void __iomem *regs,
+		     void __iomem *ioregs,
+		     const struct ast_device_quirks *quirks)
+{
+	ast->quirks = quirks;
+	ast->chip = chip;
+	ast->config_mode = config_mode;
+	ast->regs = regs;
+	ast->ioregs = ioregs;
+}
+
+void __ast_device_set_tx_chip(struct ast_device *ast, enum ast_tx_chip tx_chip)
+{
+	static const char * const info_str[] = {
+		"analog VGA",
+		"Sil164 TMDS transmitter",
+		"DP501 DisplayPort transmitter",
+		"ASPEED DisplayPort transmitter",
+	};
+
+	drm_info(&ast->base, "Using %s\n", info_str[tx_chip]);
+
+	ast->tx_chip = tx_chip;
+}
 
 /*
  * DRM driver
@@ -58,12 +89,12 @@ static const struct drm_driver ast_driver = {
 	.fops = &ast_fops,
 	.name = DRIVER_NAME,
 	.desc = DRIVER_DESC,
-	.date = DRIVER_DATE,
 	.major = DRIVER_MAJOR,
 	.minor = DRIVER_MINOR,
 	.patchlevel = DRIVER_PATCHLEVEL,
 
-	DRM_GEM_VRAM_DRIVER
+	DRM_GEM_SHMEM_DRIVER_OPS,
+	DRM_FBDEV_SHMEM_DRIVER_OPS,
 };
 
 /*
@@ -89,27 +120,197 @@ static const struct pci_device_id ast_pciidlist[] = {
 
 MODULE_DEVICE_TABLE(pci, ast_pciidlist);
 
-static int ast_remove_conflicting_framebuffers(struct pci_dev *pdev)
+static bool ast_is_vga_enabled(void __iomem *ioregs)
 {
-	bool primary = false;
-	resource_size_t base, size;
+	u8 vgaer = __ast_read8(ioregs, AST_IO_VGAER);
 
-	base = pci_resource_start(pdev, 0);
-	size = pci_resource_len(pdev, 0);
-#ifdef CONFIG_X86
-	primary = pdev->resource[PCI_ROM_RESOURCE].flags & IORESOURCE_ROM_SHADOW;
-#endif
+	return vgaer & AST_IO_VGAER_VGA_ENABLE;
+}
 
-	return drm_aperture_remove_conflicting_framebuffers(base, size, primary, &ast_driver);
+static void ast_enable_vga(void __iomem *ioregs)
+{
+	__ast_write8(ioregs, AST_IO_VGAER, AST_IO_VGAER_VGA_ENABLE);
+	__ast_write8(ioregs, AST_IO_VGAMR_W, AST_IO_VGAMR_IOSEL);
+}
+
+/*
+ * Run this function as part of the HW device cleanup; not
+ * when the DRM device gets released.
+ */
+static void ast_enable_mmio_release(void *data)
+{
+	void __iomem *ioregs = (void __force __iomem *)data;
+
+	/* enable standard VGA decode */
+	__ast_write8_i(ioregs, AST_IO_VGACRI, 0xa1, AST_IO_VGACRA1_MMIO_ENABLED);
+}
+
+static int ast_enable_mmio(struct device *dev, void __iomem *ioregs)
+{
+	void *data = (void __force *)ioregs;
+
+	__ast_write8_i(ioregs, AST_IO_VGACRI, 0xa1,
+		       AST_IO_VGACRA1_MMIO_ENABLED |
+		       AST_IO_VGACRA1_VGAIO_DISABLED);
+
+	return devm_add_action_or_reset(dev, ast_enable_mmio_release, data);
+}
+
+static void ast_open_key(void __iomem *ioregs)
+{
+	__ast_write8_i(ioregs, AST_IO_VGACRI, 0x80, AST_IO_VGACR80_PASSWORD);
+}
+
+static int ast_detect_chip(struct pci_dev *pdev,
+			   void __iomem *regs, void __iomem *ioregs,
+			   enum ast_chip *chip_out,
+			   enum ast_config_mode *config_mode_out)
+{
+	struct device *dev = &pdev->dev;
+	struct device_node *np = dev->of_node;
+	enum ast_config_mode config_mode = ast_use_defaults;
+	uint32_t scu_rev = 0xffffffff;
+	enum ast_chip chip;
+	u32 data;
+	u8 vgacrd0, vgacrd1;
+
+	/*
+	 * Find configuration mode and read SCU revision
+	 */
+
+	/* Check if we have device-tree properties */
+	if (np && !of_property_read_u32(np, "aspeed,scu-revision-id", &data)) {
+		/* We do, disable P2A access */
+		config_mode = ast_use_dt;
+		scu_rev = data;
+	} else if (pdev->device == PCI_CHIP_AST2000) { // Not all families have a P2A bridge
+		/*
+		 * The BMC will set SCU 0x40 D[12] to 1 if the P2 bridge
+		 * is disabled. We force using P2A if VGA only mode bit
+		 * is set D[7]
+		 */
+		vgacrd0 = __ast_read8_i(ioregs, AST_IO_VGACRI, 0xd0);
+		vgacrd1 = __ast_read8_i(ioregs, AST_IO_VGACRI, 0xd1);
+		if (!(vgacrd0 & 0x80) || !(vgacrd1 & 0x10)) {
+
+			/*
+			 * We have a P2A bridge and it is enabled.
+			 */
+
+			/* Patch AST2500/AST2510 */
+			if ((pdev->revision & 0xf0) == 0x40) {
+				if (!(vgacrd0 & AST_IO_VGACRD0_VRAM_INIT_STATUS_MASK))
+					ast_2500_patch_ahb(regs);
+			}
+
+			/* Double check that it's actually working */
+			data = __ast_read32(regs, 0xf004);
+			if ((data != 0xffffffff) && (data != 0x00)) {
+				config_mode = ast_use_p2a;
+
+				/* Read SCU7c (silicon revision register) */
+				__ast_write32(regs, 0xf004, 0x1e6e0000);
+				__ast_write32(regs, 0xf000, 0x1);
+				scu_rev = __ast_read32(regs, 0x1207c);
+			}
+		}
+	}
+
+	switch (config_mode) {
+	case ast_use_defaults:
+		dev_info(dev, "Using default configuration\n");
+		break;
+	case ast_use_dt:
+		dev_info(dev, "Using device-tree for configuration\n");
+		break;
+	case ast_use_p2a:
+		dev_info(dev, "Using P2A bridge for configuration\n");
+		break;
+	}
+
+	/*
+	 * Identify chipset
+	 */
+
+	if (pdev->revision >= 0x50) {
+		chip = AST2600;
+		dev_info(dev, "AST 2600 detected\n");
+	} else if (pdev->revision >= 0x40) {
+		switch (scu_rev & 0x300) {
+		case 0x0100:
+			chip = AST2510;
+			dev_info(dev, "AST 2510 detected\n");
+			break;
+		default:
+			chip = AST2500;
+			dev_info(dev, "AST 2500 detected\n");
+			break;
+		}
+	} else if (pdev->revision >= 0x30) {
+		switch (scu_rev & 0x300) {
+		case 0x0100:
+			chip = AST1400;
+			dev_info(dev, "AST 1400 detected\n");
+			break;
+		default:
+			chip = AST2400;
+			dev_info(dev, "AST 2400 detected\n");
+			break;
+		}
+	} else if (pdev->revision >= 0x20) {
+		switch (scu_rev & 0x300) {
+		case 0x0000:
+			chip = AST1300;
+			dev_info(dev, "AST 1300 detected\n");
+			break;
+		default:
+			chip = AST2300;
+			dev_info(dev, "AST 2300 detected\n");
+			break;
+		}
+	} else if (pdev->revision >= 0x10) {
+		switch (scu_rev & 0x0300) {
+		case 0x0200:
+			chip = AST1100;
+			dev_info(dev, "AST 1100 detected\n");
+			break;
+		case 0x0100:
+			chip = AST2200;
+			dev_info(dev, "AST 2200 detected\n");
+			break;
+		case 0x0000:
+			chip = AST2150;
+			dev_info(dev, "AST 2150 detected\n");
+			break;
+		default:
+			chip = AST2100;
+			dev_info(dev, "AST 2100 detected\n");
+			break;
+		}
+	} else {
+		chip = AST2000;
+		dev_info(dev, "AST 2000 detected\n");
+	}
+
+	*chip_out = chip;
+	*config_mode_out = config_mode;
+
+	return __AST_CHIP_GEN(chip);
 }
 
 static int ast_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
-	struct ast_private *ast;
-	struct drm_device *dev;
+	struct device *dev = &pdev->dev;
 	int ret;
+	void __iomem *regs;
+	void __iomem *ioregs;
+	enum ast_config_mode config_mode;
+	enum ast_chip chip;
+	unsigned int chip_gen;
+	struct drm_device *drm;
+	bool need_post = false;
 
-	ret = ast_remove_conflicting_framebuffers(pdev);
+	ret = aperture_remove_conflicting_pci_devices(pdev, ast_driver.name);
 	if (ret)
 		return ret;
 
@@ -117,16 +318,113 @@ static int ast_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (ret)
 		return ret;
 
-	ast = ast_device_create(&ast_driver, pdev, ent->driver_data);
-	if (IS_ERR(ast))
-		return PTR_ERR(ast);
-	dev = &ast->base;
+	regs = pcim_iomap_region(pdev, 1, "ast");
+	if (IS_ERR(regs))
+		return PTR_ERR(regs);
 
-	ret = drm_dev_register(dev, ent->driver_data);
+	if (pdev->revision >= 0x40) {
+		/*
+		 * On AST2500 and later models, MMIO is enabled by
+		 * default. Adopt it to be compatible with ARM.
+		 */
+		resource_size_t len = pci_resource_len(pdev, 1);
+
+		if (len < AST_IO_MM_OFFSET)
+			return -EIO;
+		if ((len - AST_IO_MM_OFFSET) < AST_IO_MM_LENGTH)
+			return -EIO;
+		ioregs = regs + AST_IO_MM_OFFSET;
+	} else if (pci_resource_flags(pdev, 2) & IORESOURCE_IO) {
+		/*
+		 * Map I/O registers if we have a PCI BAR for I/O.
+		 */
+		resource_size_t len = pci_resource_len(pdev, 2);
+
+		if (len < AST_IO_MM_LENGTH)
+			return -EIO;
+		ioregs = pcim_iomap_region(pdev, 2, "ast");
+		if (IS_ERR(ioregs))
+			return PTR_ERR(ioregs);
+	} else {
+		/*
+		 * Anything else is best effort.
+		 */
+		resource_size_t len = pci_resource_len(pdev, 1);
+
+		if (len < AST_IO_MM_OFFSET)
+			return -EIO;
+		if ((len - AST_IO_MM_OFFSET) < AST_IO_MM_LENGTH)
+			return -EIO;
+		ioregs = regs + AST_IO_MM_OFFSET;
+
+		dev_info(dev, "Platform has no I/O space, using MMIO\n");
+	}
+
+	if (!ast_is_vga_enabled(ioregs)) {
+		dev_info(dev, "VGA not enabled on entry, requesting chip POST\n");
+		need_post = true;
+	}
+
+	/*
+	 * If VGA isn't enabled, we need to enable now or subsequent
+	 * access to the scratch registers will fail.
+	 */
+	if (need_post)
+		ast_enable_vga(ioregs);
+	/* Enable extended register access */
+	ast_open_key(ioregs);
+
+	ret = ast_enable_mmio(dev, ioregs);
 	if (ret)
 		return ret;
 
-	drm_fbdev_generic_setup(dev, 32);
+	ret = ast_detect_chip(pdev, regs, ioregs, &chip, &config_mode);
+	if (ret < 0)
+		return ret;
+	chip_gen = ret;
+
+	switch (chip_gen) {
+	case 1:
+		drm = ast_2000_device_create(pdev, &ast_driver, chip, config_mode,
+					     regs, ioregs, need_post);
+		break;
+	case 2:
+		drm = ast_2100_device_create(pdev, &ast_driver, chip, config_mode,
+					     regs, ioregs, need_post);
+		break;
+	case 3:
+		drm = ast_2200_device_create(pdev, &ast_driver, chip, config_mode,
+					     regs, ioregs, need_post);
+		break;
+	case 4:
+		drm = ast_2300_device_create(pdev, &ast_driver, chip, config_mode,
+					     regs, ioregs, need_post);
+		break;
+	case 5:
+		drm = ast_2400_device_create(pdev, &ast_driver, chip, config_mode,
+					     regs, ioregs, need_post);
+		break;
+	case 6:
+		drm = ast_2500_device_create(pdev, &ast_driver, chip, config_mode,
+					     regs, ioregs, need_post);
+		break;
+	case 7:
+		drm = ast_2600_device_create(pdev, &ast_driver, chip, config_mode,
+					     regs, ioregs, need_post);
+		break;
+	default:
+		dev_err(&pdev->dev, "Gen%d not supported\n", chip_gen);
+		return -ENODEV;
+	}
+	if (IS_ERR(drm))
+		return PTR_ERR(drm);
+	pci_set_drvdata(pdev, drm);
+
+	ret = drm_dev_register(drm, ent->driver_data);
+	if (ret)
+		return ret;
+
+	drm_client_setup(drm, NULL);
 
 	return 0;
 }
@@ -137,6 +435,11 @@ static void ast_pci_remove(struct pci_dev *pdev)
 
 	drm_dev_unregister(dev);
 	drm_atomic_helper_shutdown(dev);
+}
+
+static void ast_pci_shutdown(struct pci_dev *pdev)
+{
+	drm_atomic_helper_shutdown(pci_get_drvdata(pdev));
 }
 
 static int ast_drm_freeze(struct drm_device *dev)
@@ -152,7 +455,16 @@ static int ast_drm_freeze(struct drm_device *dev)
 
 static int ast_drm_thaw(struct drm_device *dev)
 {
-	ast_post_gpu(dev);
+	struct ast_device *ast = to_ast_device(dev);
+	int ret;
+
+	ast_enable_vga(ast->ioregs);
+	ast_open_key(ast->ioregs);
+	ast_enable_mmio(dev->dev, ast->ioregs);
+
+	ret = ast_post_gpu(ast);
+	if (ret)
+		return ret;
 
 	return drm_mode_config_helper_resume(dev);
 }
@@ -223,6 +535,7 @@ static struct pci_driver ast_pci_driver = {
 	.id_table = ast_pciidlist,
 	.probe = ast_pci_probe,
 	.remove = ast_pci_remove,
+	.shutdown = ast_pci_shutdown,
 	.driver.pm = &ast_pm_ops,
 };
 

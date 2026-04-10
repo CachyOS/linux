@@ -149,7 +149,7 @@ int phm_wait_on_indirect_register(struct pp_hwmgr *hwmgr,
 	}
 
 	cgs_write_register(hwmgr->device, indirect_port, index);
-	return phm_wait_on_register(hwmgr, indirect_port + 1, mask, value);
+	return phm_wait_on_register(hwmgr, indirect_port + 1, value, mask);
 }
 
 int phm_wait_for_register_unequal(struct pp_hwmgr *hwmgr,
@@ -211,8 +211,7 @@ int phm_trim_voltage_table(struct pp_atomctrl_voltage_table *vol_table)
 	PP_ASSERT_WITH_CODE((NULL != vol_table),
 			"Voltage Table empty.", return -EINVAL);
 
-	table = kzalloc(sizeof(struct pp_atomctrl_voltage_table),
-			GFP_KERNEL);
+	table = kzalloc_obj(struct pp_atomctrl_voltage_table);
 
 	if (NULL == table)
 		return -EINVAL;
@@ -496,8 +495,7 @@ int phm_initializa_dynamic_state_adjustment_rule_settings(struct pp_hwmgr *hwmgr
 	struct phm_ppt_v1_information *pptable_info = (struct phm_ppt_v1_information *)(hwmgr->pptable);
 
 	/* initialize vddc_dep_on_dal_pwrl table */
-	table_clk_vlt = kzalloc(struct_size(table_clk_vlt, entries, 4),
-				GFP_KERNEL);
+	table_clk_vlt = kzalloc_flex(*table_clk_vlt, entries, 4);
 
 	if (NULL == table_clk_vlt) {
 		pr_err("Can not allocate space for vddc_dep_on_dal_pwrl! \n");
@@ -603,21 +601,17 @@ int phm_irq_process(struct amdgpu_device *adev,
 			   struct amdgpu_irq_src *source,
 			   struct amdgpu_iv_entry *entry)
 {
+	struct pp_hwmgr *hwmgr = adev->powerplay.pp_handle;
 	uint32_t client_id = entry->client_id;
 	uint32_t src_id = entry->src_id;
 
 	if (client_id == AMDGPU_IRQ_CLIENTID_LEGACY) {
 		if (src_id == VISLANDS30_IV_SRCID_CG_TSS_THERMAL_LOW_TO_HIGH) {
-			dev_emerg(adev->dev, "ERROR: GPU over temperature range(SW CTF) detected!\n");
-			/*
-			 * SW CTF just occurred.
-			 * Try to do a graceful shutdown to prevent further damage.
-			 */
-			dev_emerg(adev->dev, "ERROR: System is going to shutdown due to GPU SW CTF!\n");
-			orderly_poweroff(true);
-		} else if (src_id == VISLANDS30_IV_SRCID_CG_TSS_THERMAL_HIGH_TO_LOW)
+			schedule_delayed_work(&hwmgr->swctf_delayed_work,
+					      msecs_to_jiffies(AMDGPU_SWCTF_EXTRA_DELAY));
+		} else if (src_id == VISLANDS30_IV_SRCID_CG_TSS_THERMAL_HIGH_TO_LOW) {
 			dev_emerg(adev->dev, "ERROR: GPU under temperature range detected!\n");
-		else if (src_id == VISLANDS30_IV_SRCID_GPIO_19) {
+		} else if (src_id == VISLANDS30_IV_SRCID_GPIO_19) {
 			dev_emerg(adev->dev, "ERROR: GPU HW Critical Temperature Fault(aka CTF) detected!\n");
 			/*
 			 * HW CTF just occurred. Shutdown to prevent further damage.
@@ -626,15 +620,10 @@ int phm_irq_process(struct amdgpu_device *adev,
 			orderly_poweroff(true);
 		}
 	} else if (client_id == SOC15_IH_CLIENTID_THM) {
-		if (src_id == 0) {
-			dev_emerg(adev->dev, "ERROR: GPU over temperature range(SW CTF) detected!\n");
-			/*
-			 * SW CTF just occurred.
-			 * Try to do a graceful shutdown to prevent further damage.
-			 */
-			dev_emerg(adev->dev, "ERROR: System is going to shutdown due to GPU SW CTF!\n");
-			orderly_poweroff(true);
-		} else
+		if (src_id == 0)
+			schedule_delayed_work(&hwmgr->swctf_delayed_work,
+					      msecs_to_jiffies(AMDGPU_SWCTF_EXTRA_DELAY));
+		else
 			dev_emerg(adev->dev, "ERROR: GPU under temperature range detected!\n");
 	} else if (client_id == SOC15_IH_CLIENTID_ROM_SMUIO) {
 		dev_emerg(adev->dev, "ERROR: GPU HW Critical Temperature Fault(aka CTF) detected!\n");
@@ -655,7 +644,7 @@ static const struct amdgpu_irq_src_funcs smu9_irq_funcs = {
 int smu9_register_irq_handlers(struct pp_hwmgr *hwmgr)
 {
 	struct amdgpu_irq_src *source =
-		kzalloc(sizeof(struct amdgpu_irq_src), GFP_KERNEL);
+		kzalloc_obj(struct amdgpu_irq_src);
 
 	if (!source)
 		return -ENOMEM;
@@ -705,7 +694,7 @@ int smu_get_voltage_dependency_table_ppt_v1(
 				return -EINVAL);
 
 	dep_table->count = allowed_dep_table->count;
-	for (i=0; i<dep_table->count; i++) {
+	for (i = 0; i < dep_table->count; i++) {
 		dep_table->entries[i].clk = allowed_dep_table->entries[i].clk;
 		dep_table->entries[i].vddInd = allowed_dep_table->entries[i].vddInd;
 		dep_table->entries[i].vdd_offset = allowed_dep_table->entries[i].vdd_offset;

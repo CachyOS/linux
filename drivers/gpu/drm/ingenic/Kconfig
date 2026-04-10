@@ -6,10 +6,14 @@ config DRM_INGENIC
 	depends on OF
 	depends on COMMON_CLK
 	select DRM_BRIDGE
+	select DRM_CLIENT_SELECTION
 	select DRM_PANEL_BRIDGE
 	select DRM_KMS_HELPER
-	select DRM_GEM_CMA_HELPER
-	select VT_HW_CONSOLE_BINDING if FRAMEBUFFER_CONSOLE
+	select DRM_DISPLAY_HELPER
+	select DRM_BRIDGE_CONNECTOR
+	select DRM_GEM_DMA_HELPER
+	select REGMAP
+	select REGMAP_MMIO
 	help
 	  Choose this option for DRM support for the Ingenic SoCs.
 

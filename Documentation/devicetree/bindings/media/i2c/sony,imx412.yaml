@@ -19,14 +19,12 @@ description:
 
 properties:
   compatible:
-    const: sony,imx412
+    enum:
+      - sony,imx412
+      - sony,imx577
   reg:
     description: I2C address
     maxItems: 1
-
-  assigned-clocks: true
-  assigned-clock-parents: true
-  assigned-clock-rates: true
 
   clocks:
     description: Clock frequency 6MHz, 12MHz, 18MHz, 24MHz or 27MHz
@@ -75,7 +73,7 @@ additionalProperties: false
 
 examples:
   - |
-    i2c0 {
+    i2c {
         #address-cells = <1>;
         #size-cells = <0>;
 
@@ -83,10 +81,6 @@ examples:
             compatible = "sony,imx412";
             reg = <0x1a>;
             clocks = <&imx412_clk>;
-
-            assigned-clocks = <&imx412_clk>;
-            assigned-clock-parents = <&imx412_clk_parent>;
-            assigned-clock-rates = <24000000>;
 
             port {
                 imx412: endpoint {

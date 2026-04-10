@@ -15,8 +15,7 @@
 #include <linux/platform_device.h>
 #include <linux/spi/spi.h>
 #include <linux/acpi.h>
-#include <linux/gpio.h>
-#include <linux/of_gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/regulator/consumer.h>
 #include <linux/mutex.h>
 #include <sound/core.h>
@@ -32,9 +31,7 @@
 #include "rl6231.h"
 #include "rt5665.h"
 
-#define RT5665_NUM_SUPPLIES 3
-
-static const char *rt5665_supply_names[RT5665_NUM_SUPPLIES] = {
+static const char * const rt5665_supply_names[] = {
 	"AVDD",
 	"MICVDD",
 	"VBAT",
@@ -47,7 +44,6 @@ struct rt5665_priv {
 	struct gpio_desc *gpiod_ldo1_en;
 	struct gpio_desc *gpiod_reset;
 	struct snd_soc_jack *hs_jack;
-	struct regulator_bulk_data supplies[RT5665_NUM_SUPPLIES];
 	struct delayed_work jack_detect_work;
 	struct delayed_work calibrate_work;
 	struct delayed_work jd_check_work;
@@ -997,7 +993,7 @@ static const struct snd_kcontrol_new rt5665_if3_adc_swap_mux =
 static int rt5665_hp_vol_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	int ret = snd_soc_put_volsw(kcontrol, ucontrol);
 
 	if (snd_soc_component_read(component, RT5665_STO_NG2_CTRL_1) & RT5665_NG2_EN) {
@@ -1013,7 +1009,7 @@ static int rt5665_hp_vol_put(struct snd_kcontrol *kcontrol,
 static int rt5665_mono_vol_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	int ret = snd_soc_put_volsw(kcontrol, ucontrol);
 
 	if (snd_soc_component_read(component, RT5665_MONO_NG2_CTRL_1) & RT5665_NG2_EN) {
@@ -1025,102 +1021,6 @@ static int rt5665_mono_vol_put(struct snd_kcontrol *kcontrol,
 
 	return ret;
 }
-
-/**
- * rt5665_sel_asrc_clk_src - select ASRC clock source for a set of filters
- * @component: SoC audio component device.
- * @filter_mask: mask of filters.
- * @clk_src: clock source
- *
- * The ASRC function is for asynchronous MCLK and LRCK. Also, since RT5665 can
- * only support standard 32fs or 64fs i2s format, ASRC should be enabled to
- * support special i2s clock format such as Intel's 100fs(100 * sampling rate).
- * ASRC function will track i2s clock and generate a corresponding system clock
- * for codec. This function provides an API to select the clock source for a
- * set of filters specified by the mask. And the codec driver will turn on ASRC
- * for these filters if ASRC is selected as their clock source.
- */
-int rt5665_sel_asrc_clk_src(struct snd_soc_component *component,
-		unsigned int filter_mask, unsigned int clk_src)
-{
-	unsigned int asrc2_mask = 0;
-	unsigned int asrc2_value = 0;
-	unsigned int asrc3_mask = 0;
-	unsigned int asrc3_value = 0;
-
-	switch (clk_src) {
-	case RT5665_CLK_SEL_SYS:
-	case RT5665_CLK_SEL_I2S1_ASRC:
-	case RT5665_CLK_SEL_I2S2_ASRC:
-	case RT5665_CLK_SEL_I2S3_ASRC:
-	case RT5665_CLK_SEL_SYS2:
-	case RT5665_CLK_SEL_SYS3:
-	case RT5665_CLK_SEL_SYS4:
-		break;
-
-	default:
-		return -EINVAL;
-	}
-
-	if (filter_mask & RT5665_DA_STEREO1_FILTER) {
-		asrc2_mask |= RT5665_DA_STO1_CLK_SEL_MASK;
-		asrc2_value = (asrc2_value & ~RT5665_DA_STO1_CLK_SEL_MASK)
-			| (clk_src << RT5665_DA_STO1_CLK_SEL_SFT);
-	}
-
-	if (filter_mask & RT5665_DA_STEREO2_FILTER) {
-		asrc2_mask |= RT5665_DA_STO2_CLK_SEL_MASK;
-		asrc2_value = (asrc2_value & ~RT5665_DA_STO2_CLK_SEL_MASK)
-			| (clk_src << RT5665_DA_STO2_CLK_SEL_SFT);
-	}
-
-	if (filter_mask & RT5665_DA_MONO_L_FILTER) {
-		asrc2_mask |= RT5665_DA_MONOL_CLK_SEL_MASK;
-		asrc2_value = (asrc2_value & ~RT5665_DA_MONOL_CLK_SEL_MASK)
-			| (clk_src << RT5665_DA_MONOL_CLK_SEL_SFT);
-	}
-
-	if (filter_mask & RT5665_DA_MONO_R_FILTER) {
-		asrc2_mask |= RT5665_DA_MONOR_CLK_SEL_MASK;
-		asrc2_value = (asrc2_value & ~RT5665_DA_MONOR_CLK_SEL_MASK)
-			| (clk_src << RT5665_DA_MONOR_CLK_SEL_SFT);
-	}
-
-	if (filter_mask & RT5665_AD_STEREO1_FILTER) {
-		asrc3_mask |= RT5665_AD_STO1_CLK_SEL_MASK;
-		asrc3_value = (asrc2_value & ~RT5665_AD_STO1_CLK_SEL_MASK)
-			| (clk_src << RT5665_AD_STO1_CLK_SEL_SFT);
-	}
-
-	if (filter_mask & RT5665_AD_STEREO2_FILTER) {
-		asrc3_mask |= RT5665_AD_STO2_CLK_SEL_MASK;
-		asrc3_value = (asrc2_value & ~RT5665_AD_STO2_CLK_SEL_MASK)
-			| (clk_src << RT5665_AD_STO2_CLK_SEL_SFT);
-	}
-
-	if (filter_mask & RT5665_AD_MONO_L_FILTER) {
-		asrc3_mask |= RT5665_AD_MONOL_CLK_SEL_MASK;
-		asrc3_value = (asrc3_value & ~RT5665_AD_MONOL_CLK_SEL_MASK)
-			| (clk_src << RT5665_AD_MONOL_CLK_SEL_SFT);
-	}
-
-	if (filter_mask & RT5665_AD_MONO_R_FILTER)  {
-		asrc3_mask |= RT5665_AD_MONOR_CLK_SEL_MASK;
-		asrc3_value = (asrc3_value & ~RT5665_AD_MONOR_CLK_SEL_MASK)
-			| (clk_src << RT5665_AD_MONOR_CLK_SEL_SFT);
-	}
-
-	if (asrc2_mask)
-		snd_soc_component_update_bits(component, RT5665_ASRC_2,
-			asrc2_mask, asrc2_value);
-
-	if (asrc3_mask)
-		snd_soc_component_update_bits(component, RT5665_ASRC_3,
-			asrc3_mask, asrc3_value);
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(rt5665_sel_asrc_clk_src);
 
 static int rt5665_button_detect(struct snd_soc_component *component)
 {
@@ -1167,7 +1067,7 @@ static void rt5665_enable_push_button_irq(struct snd_soc_component *component,
 static int rt5665_headset_detect(struct snd_soc_component *component, int jack_insert)
 {
 	struct rt5665_priv *rt5665 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	unsigned int sar_hs_type, val;
 
 	if (jack_insert) {
@@ -1298,7 +1198,7 @@ static void rt5665_jack_detect_handler(struct work_struct *work)
 		usleep_range(10000, 15000);
 	}
 
-	while (!rt5665->component->card->instantiated) {
+	while (!snd_soc_card_is_instantiated(rt5665->component->card)) {
 		pr_debug("%s\n", __func__);
 		usleep_range(10000, 15000);
 	}
@@ -4220,10 +4120,10 @@ static int rt5665_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	unsigned int reg_val = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		rt5665->master[dai->id] = 1;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		reg_val |= RT5665_I2S_MS_S;
 		rt5665->master[dai->id] = 0;
 		break;
@@ -4617,7 +4517,6 @@ static const struct snd_soc_component_driver soc_component_dev_rt5665 = {
 	.set_jack		= rt5665_set_jack_detect,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 
@@ -4627,7 +4526,7 @@ static const struct regmap_config rt5665_regmap = {
 	.max_register = 0x0400,
 	.volatile_reg = rt5665_volatile_register,
 	.readable_reg = rt5665_readable_register,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.reg_defaults = rt5665_reg,
 	.num_reg_defaults = ARRAY_SIZE(rt5665_reg),
 	.use_single_read = true,
@@ -4635,7 +4534,7 @@ static const struct regmap_config rt5665_regmap = {
 };
 
 static const struct i2c_device_id rt5665_i2c_id[] = {
-	{"rt5665", 0},
+	{"rt5665"},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, rt5665_i2c_id);
@@ -4657,9 +4556,6 @@ static int rt5665_parse_dt(struct rt5665_priv *rt5665, struct device *dev)
 		&rt5665->pdata.dmic2_data_pin);
 	of_property_read_u32(dev->of_node, "realtek,jd-src",
 		&rt5665->pdata.jd_src);
-
-	rt5665->pdata.ldo1_en = of_get_named_gpio(dev->of_node,
-		"realtek,ldo1-en-gpios", 0);
 
 	return 0;
 }
@@ -4749,7 +4645,7 @@ static void rt5665_calibrate_handler(struct work_struct *work)
 	struct rt5665_priv *rt5665 = container_of(work, struct rt5665_priv,
 		calibrate_work.work);
 
-	while (!rt5665->component->card->instantiated) {
+	while (!snd_soc_card_is_instantiated(rt5665->component->card)) {
 		pr_debug("%s\n", __func__);
 		usleep_range(10000, 15000);
 	}
@@ -4761,7 +4657,7 @@ static int rt5665_i2c_probe(struct i2c_client *i2c)
 {
 	struct rt5665_platform_data *pdata = dev_get_platdata(&i2c->dev);
 	struct rt5665_priv *rt5665;
-	int i, ret;
+	int ret;
 	unsigned int val;
 
 	rt5665 = devm_kzalloc(&i2c->dev, sizeof(struct rt5665_priv),
@@ -4777,30 +4673,22 @@ static int rt5665_i2c_probe(struct i2c_client *i2c)
 	else
 		rt5665_parse_dt(rt5665, &i2c->dev);
 
-	for (i = 0; i < ARRAY_SIZE(rt5665->supplies); i++)
-		rt5665->supplies[i].supply = rt5665_supply_names[i];
-
-	ret = devm_regulator_bulk_get(&i2c->dev, ARRAY_SIZE(rt5665->supplies),
-				      rt5665->supplies);
+	ret = devm_regulator_bulk_get_enable(&i2c->dev, ARRAY_SIZE(rt5665_supply_names),
+					     rt5665_supply_names);
 	if (ret != 0) {
 		dev_err(&i2c->dev, "Failed to request supplies: %d\n", ret);
 		return ret;
 	}
 
-	ret = regulator_bulk_enable(ARRAY_SIZE(rt5665->supplies),
-				    rt5665->supplies);
-	if (ret != 0) {
-		dev_err(&i2c->dev, "Failed to enable supplies: %d\n", ret);
-		return ret;
+	rt5665->gpiod_ldo1_en = devm_gpiod_get_optional(&i2c->dev,
+							"realtek,ldo1-en",
+							GPIOD_OUT_HIGH);
+	if (IS_ERR(rt5665->gpiod_ldo1_en)) {
+		dev_err(&i2c->dev, "Failed gpio request ldo1_en\n");
+		return PTR_ERR(rt5665->gpiod_ldo1_en);
 	}
 
-	if (gpio_is_valid(rt5665->pdata.ldo1_en)) {
-		if (devm_gpio_request_one(&i2c->dev, rt5665->pdata.ldo1_en,
-					  GPIOF_OUT_INIT_HIGH, "rt5665"))
-			dev_err(&i2c->dev, "Fail gpio_request gpio_ldo\n");
-	}
-
-	/* Sleep for 300 ms miniumum */
+	/* Sleep for 300 ms minimum */
 	usleep_range(300000, 350000);
 
 	rt5665->regmap = devm_regmap_init_i2c(i2c, &rt5665_regmap);
@@ -4929,7 +4817,7 @@ static int rt5665_i2c_probe(struct i2c_client *i2c)
 			rt5665_irq, IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING
 			| IRQF_ONESHOT, "rt5665", rt5665);
 		if (ret)
-			dev_err(&i2c->dev, "Failed to reguest IRQ: %d\n", ret);
+			dev_err(&i2c->dev, "Failed to request IRQ: %d\n", ret);
 
 	}
 
@@ -4949,16 +4837,16 @@ static void rt5665_i2c_shutdown(struct i2c_client *client)
 static const struct of_device_id rt5665_of_match[] = {
 	{.compatible = "realtek,rt5665"},
 	{.compatible = "realtek,rt5666"},
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, rt5665_of_match);
 #endif
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id rt5665_acpi_match[] = {
-	{"10EC5665", 0,},
-	{"10EC5666", 0,},
-	{},
+	{ "10EC5665" },
+	{ "10EC5666" },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, rt5665_acpi_match);
 #endif
@@ -4969,7 +4857,7 @@ static struct i2c_driver rt5665_i2c_driver = {
 		.of_match_table = of_match_ptr(rt5665_of_match),
 		.acpi_match_table = ACPI_PTR(rt5665_acpi_match),
 	},
-	.probe_new = rt5665_i2c_probe,
+	.probe = rt5665_i2c_probe,
 	.shutdown = rt5665_i2c_shutdown,
 	.id_table = rt5665_i2c_id,
 };

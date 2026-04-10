@@ -328,7 +328,7 @@ get_slot_mapping(struct pci_bus *bus, u8 bus_num, u8 dev_num, u8 *slot)
 		} else {
 			/* Did not get a match on the target PCI device. Check
 			 * if the current IRQ table entry is a PCI-to-PCI
-			 * bridge device.  If so, and it's secondary bus
+			 * bridge device.  If so, and its secondary bus
 			 * matches the bus number for the target device, I need
 			 * to save the bridge's slot number.  If I can not find
 			 * an entry for the target device, I will have to
@@ -593,7 +593,7 @@ static int ctrl_slot_setup(struct controller *ctrl,
 	slot_number = ctrl->first_slot;
 
 	while (number_of_slots) {
-		slot = kzalloc(sizeof(*slot), GFP_KERNEL);
+		slot = kzalloc_obj(*slot);
 		if (!slot) {
 			result = -ENOMEM;
 			goto error;
@@ -822,7 +822,7 @@ static int cpqhpc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_disable_device;
 	}
 
-	ctrl = kzalloc(sizeof(struct controller), GFP_KERNEL);
+	ctrl = kzalloc_obj(struct controller);
 	if (!ctrl) {
 		rc = -ENOMEM;
 		goto err_disable_device;

@@ -77,7 +77,7 @@ It contains following fields:
 * groups: List of sysfs attribute groups to create when creating the watchdog
   device.
 * info: a pointer to a watchdog_info structure. This structure gives some
-  additional information about the watchdog timer itself. (Like it's unique name)
+  additional information about the watchdog timer itself. (Like its unique name)
 * ops: a pointer to the list of watchdog operations that the watchdog supports.
 * gov: a pointer to the assigned watchdog device pretimeout governor or NULL.
 * timeout: the watchdog timer's timeout value (in seconds).
@@ -293,7 +293,7 @@ To initialize the timeout field, the following function can be used::
 
   extern int watchdog_init_timeout(struct watchdog_device *wdd,
                                    unsigned int timeout_parm,
-                                   struct device *dev);
+                                   const struct device *dev);
 
 The watchdog_init_timeout function allows you to initialize the timeout field
 using the module timeout parameter or by retrieving the timeout-sec property from

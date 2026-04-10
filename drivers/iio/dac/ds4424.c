@@ -14,7 +14,6 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/driver.h>
 #include <linux/iio/machine.h>
-#include <linux/iio/consumer.h>
 
 #define DS4422_MAX_DAC_CHANNELS		2
 #define DS4424_MAX_DAC_CHANNELS		4
@@ -141,7 +140,7 @@ static int ds4424_write_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		if (val < S8_MIN || val > S8_MAX)
+		if (val <= S8_MIN || val > S8_MAX)
 			return -EINVAL;
 
 		if (val > 0) {
@@ -171,7 +170,7 @@ static int ds4424_verify_chip(struct iio_dev *indio_dev)
 	return ret;
 }
 
-static int __maybe_unused ds4424_suspend(struct device *dev)
+static int ds4424_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
@@ -189,7 +188,7 @@ static int __maybe_unused ds4424_suspend(struct device *dev)
 	return ret;
 }
 
-static int __maybe_unused ds4424_resume(struct device *dev)
+static int ds4424_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
@@ -206,25 +205,23 @@ static int __maybe_unused ds4424_resume(struct device *dev)
 	return ret;
 }
 
-static SIMPLE_DEV_PM_OPS(ds4424_pm_ops, ds4424_suspend, ds4424_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(ds4424_pm_ops, ds4424_suspend, ds4424_resume);
 
 static const struct iio_info ds4424_info = {
 	.read_raw = ds4424_read_raw,
 	.write_raw = ds4424_write_raw,
 };
 
-static int ds4424_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int ds4424_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct ds4424_data *data;
 	struct iio_dev *indio_dev;
 	int ret;
 
 	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*data));
-	if (!indio_dev) {
-		dev_err(&client->dev, "iio dev alloc failed.\n");
+	if (!indio_dev)
 		return -ENOMEM;
-	}
 
 	data = iio_priv(indio_dev);
 	i2c_set_clientdata(client, indio_dev);
@@ -281,15 +278,13 @@ fail:
 	return ret;
 }
 
-static int ds4424_remove(struct i2c_client *client)
+static void ds4424_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct ds4424_data *data = iio_priv(indio_dev);
 
 	iio_device_unregister(indio_dev);
 	regulator_disable(data->vcc_reg);
-
-	return 0;
 }
 
 static const struct i2c_device_id ds4424_id[] = {
@@ -303,7 +298,7 @@ MODULE_DEVICE_TABLE(i2c, ds4424_id);
 static const struct of_device_id ds4424_of_match[] = {
 	{ .compatible = "maxim,ds4422" },
 	{ .compatible = "maxim,ds4424" },
-	{ },
+	{ }
 };
 
 MODULE_DEVICE_TABLE(of, ds4424_of_match);
@@ -312,7 +307,7 @@ static struct i2c_driver ds4424_driver = {
 	.driver = {
 		.name	= "ds4424",
 		.of_match_table = ds4424_of_match,
-		.pm     = &ds4424_pm_ops,
+		.pm     = pm_sleep_ptr(&ds4424_pm_ops),
 	},
 	.probe		= ds4424_probe,
 	.remove		= ds4424_remove,

@@ -43,7 +43,7 @@
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/iio/buffer.h>
 #include <linux/iio/events.h>
 #include <linux/iio/iio.h>
@@ -237,7 +237,6 @@ enum gp2ap020a00f_thresh_val_id {
 };
 
 struct gp2ap020a00f_data {
-	const struct gp2ap020a00f_platform_data *pdata;
 	struct i2c_client *client;
 	struct mutex lock;
 	char *buffer;
@@ -966,8 +965,7 @@ static irqreturn_t gp2ap020a00f_trigger_handler(int irq, void *data)
 	size_t d_size = 0;
 	int i, out_val, ret;
 
-	for_each_set_bit(i, indio_dev->active_scan_mask,
-		indio_dev->masklength) {
+	iio_for_each_active_channel(indio_dev, i) {
 		ret = regmap_bulk_read(priv->regmap,
 				GP2AP020A00F_DATA_REG(i),
 				&priv->buffer[d_size], 2);
@@ -1161,7 +1159,7 @@ static int gp2ap020a00f_write_event_config(struct iio_dev *indio_dev,
 					   const struct iio_chan_spec *chan,
 					   enum iio_event_type type,
 					   enum iio_event_direction dir,
-					   int state)
+					   bool state)
 {
 	struct gp2ap020a00f_data *data = iio_priv(indio_dev);
 	enum gp2ap020a00f_cmd cmd;
@@ -1285,12 +1283,11 @@ static int gp2ap020a00f_read_raw(struct iio_dev *indio_dev,
 	int err = -EINVAL;
 
 	if (mask == IIO_CHAN_INFO_RAW) {
-		err = iio_device_claim_direct_mode(indio_dev);
-		if (err)
-			return err;
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
 
 		err = gp2ap020a00f_read_channel(data, chan, val);
-		iio_device_release_direct_mode(indio_dev);
+		iio_device_release_direct(indio_dev);
 	}
 	return err < 0 ? err : IIO_VAL_INT;
 }
@@ -1398,8 +1395,7 @@ static int gp2ap020a00f_buffer_postenable(struct iio_dev *indio_dev)
 	 * two separate IIO channels they are treated in the driver logic
 	 * as if they were controlled independently.
 	 */
-	for_each_set_bit(i, indio_dev->active_scan_mask,
-		indio_dev->masklength) {
+	iio_for_each_active_channel(indio_dev, i) {
 		switch (i) {
 		case GP2AP020A00F_SCAN_MODE_LIGHT_CLEAR:
 			err = gp2ap020a00f_exec_cmd(data,
@@ -1436,8 +1432,7 @@ static int gp2ap020a00f_buffer_predisable(struct iio_dev *indio_dev)
 
 	mutex_lock(&data->lock);
 
-	for_each_set_bit(i, indio_dev->active_scan_mask,
-		indio_dev->masklength) {
+	iio_for_each_active_channel(indio_dev, i) {
 		switch (i) {
 		case GP2AP020A00F_SCAN_MODE_LIGHT_CLEAR:
 			err = gp2ap020a00f_exec_cmd(data,
@@ -1467,9 +1462,9 @@ static const struct iio_buffer_setup_ops gp2ap020a00f_buffer_setup_ops = {
 	.predisable = &gp2ap020a00f_buffer_predisable,
 };
 
-static int gp2ap020a00f_probe(struct i2c_client *client,
-				const struct i2c_device_id *id)
+static int gp2ap020a00f_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct gp2ap020a00f_data *data;
 	struct iio_dev *indio_dev;
 	struct regmap *regmap;
@@ -1573,7 +1568,7 @@ error_regulator_disable:
 	return err;
 }
 
-static int gp2ap020a00f_remove(struct i2c_client *client)
+static void gp2ap020a00f_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct gp2ap020a00f_data *data = iio_priv(indio_dev);
@@ -1589,12 +1584,10 @@ static int gp2ap020a00f_remove(struct i2c_client *client)
 	free_irq(client->irq, indio_dev);
 	iio_triggered_buffer_cleanup(indio_dev);
 	regulator_disable(data->vled_reg);
-
-	return 0;
 }
 
 static const struct i2c_device_id gp2ap020a00f_id[] = {
-	{ GP2A_I2C_NAME, 0 },
+	{ GP2A_I2C_NAME },
 	{ }
 };
 

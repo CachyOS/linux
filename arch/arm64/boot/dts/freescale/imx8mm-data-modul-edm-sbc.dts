@@ -46,6 +46,12 @@
 		clock-frequency = <25000000>;
 	};
 
+	clk_xtal32k: clk-xtal32k {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <32768>;
+	};
+
 	panel: panel {
 		backlight = <&backlight>;
 		power-supply = <&reg_panel_vcc>;
@@ -77,12 +83,12 @@
 		enable-active-high;
 	};
 
-	watchdog-gpio {
+	watchdog {
 		/* TPS3813 */
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_watchdog_gpio>;
 		compatible = "linux,wdt-gpio";
-		always-enabled;
+		always-running;
 		gpios = <&gpio1 8 GPIO_ACTIVE_HIGH>;
 		hw_algo = "level";
 		/* Reset triggers in 2..3 seconds */
@@ -114,15 +120,15 @@
 	ddrc_opp_table: opp-table {
 		compatible = "operating-points-v2";
 
-		opp-25M {
+		opp-25000000 {
 			opp-hz = /bits/ 64 <25000000>;
 		};
 
-		opp-100M {
+		opp-100000000 {
 			opp-hz = /bits/ 64 <100000000>;
 		};
 
-		opp-750M {
+		opp-750000000 {
 			opp-hz = /bits/ 64 <750000000>;
 		};
 	};
@@ -162,7 +168,7 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_fec1>;
 	phy-mode = "rgmii-id";
-	phy-handle = <&fec1_phy>;
+	phy-handle = <&fec1_phy_bcm>;
 	phy-supply = <&buck4_reg>;
 	fsl,magic-packet;
 	status = "okay";
@@ -172,7 +178,7 @@
 		#size-cells = <0>;
 
 		/* Atheros AR8031 PHY */
-		fec1_phy: ethernet-phy@0 {
+		fec1_phy_ath: ethernet-phy@0 {
 			compatible = "ethernet-phy-ieee802.3-c22";
 			reg = <0>;
 			/*
@@ -183,10 +189,9 @@
 			reset-gpios = <&gpio1 1 GPIO_ACTIVE_LOW>;
 			reset-assert-us = <10000>;
 			reset-deassert-us = <10000>;
-			qca,clk-out-frequency = <125000000>;
-			qca,clk-out-strength = <AR803X_STRENGTH_FULL>;
 			qca,keep-pll-enabled;
 			vddio-supply = <&vddio>;
+			status = "disabled";
 
 			vddio: vddio-regulator {
 				regulator-name = "VDDIO";
@@ -197,6 +202,20 @@
 			vddh: vddh-regulator {
 				regulator-name = "VDDH";
 			};
+		};
+
+		/* Broadcom BCM54213PE PHY */
+		fec1_phy_bcm: ethernet-phy@1 {
+			compatible = "ethernet-phy-ieee802.3-c22";
+			reg = <1>;
+			/*
+			 * Dedicated ENET_INT# and ENET_WOL# signals are
+			 * unused, the PHY does not provide cable detect
+			 * interrupt.
+			 */
+			reset-gpios = <&gpio1 1 GPIO_ACTIVE_LOW>;
+			reset-assert-us = <10000>;
+			reset-deassert-us = <10000>;
 		};
 	};
 };
@@ -271,6 +290,9 @@
 	pmic: pmic@4b {
 		compatible = "rohm,bd71847";
 		reg = <0x4b>;
+		#clock-cells = <0>;
+		clocks = <&clk_xtal32k>;
+		clock-output-names = "clk-32k-out";
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_pmic>;
 		interrupt-parent = <&gpio1>;
@@ -898,9 +920,8 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_pcie0>;
 	reset-gpio = <&gpio1 5 GPIO_ACTIVE_LOW>;
-	clocks = <&clk IMX8MM_CLK_PCIE1_ROOT>, <&clk IMX8MM_CLK_PCIE1_AUX>,
-		 <&pcieclk 0>;
-	clock-names = "pcie", "pcie_aux", "pcie_bus";
+	clocks = <&clk IMX8MM_CLK_PCIE1_ROOT>, <&pcieclk 0>,
+		 <&clk IMX8MM_CLK_PCIE1_AUX>;
 	assigned-clocks = <&clk IMX8MM_CLK_PCIE1_AUX>,
 			  <&clk IMX8MM_CLK_PCIE1_CTRL>;
 	assigned-clock-rates = <10000000>, <250000000>;
@@ -926,6 +947,10 @@
 	assigned-clock-rates = <22579200>;
 	/* Disabled by default, unless display board plugged in. */
 	status = "disabled";
+};
+
+&snvs_rtc {
+	clocks = <&pmic>;
 };
 
 &uart1 {

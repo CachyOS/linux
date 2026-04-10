@@ -242,7 +242,6 @@ static long rc32434_wdt_ioctl(struct file *file, unsigned int cmd,
 
 static const struct file_operations rc32434_wdt_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.write		= rc32434_wdt_write,
 	.unlocked_ioctl	= rc32434_wdt_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
@@ -298,10 +297,9 @@ static int rc32434_wdt_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int rc32434_wdt_remove(struct platform_device *pdev)
+static void rc32434_wdt_remove(struct platform_device *pdev)
 {
 	misc_deregister(&rc32434_wdt_miscdev);
-	return 0;
 }
 
 static void rc32434_wdt_shutdown(struct platform_device *pdev)

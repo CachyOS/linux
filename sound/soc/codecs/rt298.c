@@ -227,7 +227,7 @@ static int rt298_jack_detect(struct rt298_priv *rt298, bool *hp, bool *mic)
 	if (!rt298->component)
 		return -EINVAL;
 
-	dapm = snd_soc_component_get_dapm(rt298->component);
+	dapm = snd_soc_component_to_dapm(rt298->component);
 
 	if (rt298->pdata.cbj_en) {
 		regmap_read(rt298->regmap, RT298_GET_HP_SENSE, &buf);
@@ -326,39 +326,37 @@ static void rt298_jack_detect_work(struct work_struct *work)
 		SND_JACK_MICROPHONE | SND_JACK_HEADPHONE);
 }
 
-int rt298_mic_detect(struct snd_soc_component *component, struct snd_soc_jack *jack)
+static int rt298_mic_detect(struct snd_soc_component *component,
+			    struct snd_soc_jack *jack, void *data)
 {
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct rt298_priv *rt298 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm;
-	bool hp = false;
-	bool mic = false;
-	int status = 0;
-
-	/* If jack in NULL, disable HS jack */
-	if (!jack) {
-		regmap_update_bits(rt298->regmap, RT298_IRQ_CTRL, 0x2, 0x0);
-		dapm = snd_soc_component_get_dapm(component);
-		snd_soc_dapm_disable_pin(dapm, "LDO1");
-		snd_soc_dapm_sync(dapm);
-		return 0;
-	}
 
 	rt298->jack = jack;
-	regmap_update_bits(rt298->regmap, RT298_IRQ_CTRL, 0x2, 0x2);
 
-	rt298_jack_detect(rt298, &hp, &mic);
-	if (hp)
-		status |= SND_JACK_HEADPHONE;
-
-	if (mic)
-		status |= SND_JACK_MICROPHONE;
-
-	snd_soc_jack_report(rt298->jack, status,
-		SND_JACK_MICROPHONE | SND_JACK_HEADPHONE);
+	if (jack) {
+		/* Enable IRQ */
+		if (rt298->jack->status & SND_JACK_HEADPHONE)
+			snd_soc_dapm_force_enable_pin(dapm, "LDO1");
+		if (rt298->jack->status & SND_JACK_MICROPHONE) {
+			snd_soc_dapm_force_enable_pin(dapm, "HV");
+			snd_soc_dapm_force_enable_pin(dapm, "VREF");
+		}
+		regmap_update_bits(rt298->regmap, RT298_IRQ_CTRL, 0x2, 0x2);
+		/* Send an initial empty report */
+		snd_soc_jack_report(rt298->jack, rt298->jack->status,
+				    SND_JACK_MICROPHONE | SND_JACK_HEADPHONE);
+	} else {
+		/* Disable IRQ */
+		regmap_update_bits(rt298->regmap, RT298_IRQ_CTRL, 0x2, 0x0);
+		snd_soc_dapm_disable_pin(dapm, "HV");
+		snd_soc_dapm_disable_pin(dapm, "VREF");
+		snd_soc_dapm_disable_pin(dapm, "LDO1");
+	}
+	snd_soc_dapm_sync(dapm);
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(rt298_mic_detect);
 
 static int is_mclk_mode(struct snd_soc_dapm_widget *source,
 			 struct snd_soc_dapm_widget *sink)
@@ -791,7 +789,6 @@ static int rt298_hw_params(struct snd_pcm_substream *substream,
 		return -EINVAL;
 	}
 
-	d_len_code = 0;
 	switch (params_width(params)) {
 	/* bit 6:4 Bits per Sample */
 	case 16:
@@ -832,11 +829,11 @@ static int rt298_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	struct snd_soc_component *component = dai->component;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		snd_soc_component_update_bits(component,
 			RT298_I2S_CTRL1, 0x800, 0x800);
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		snd_soc_component_update_bits(component,
 			RT298_I2S_CTRL1, 0x800, 0x0);
 		break;
@@ -952,10 +949,11 @@ static int rt298_set_bclk_ratio(struct snd_soc_dai *dai, unsigned int ratio)
 static int rt298_set_bias_level(struct snd_soc_component *component,
 				 enum snd_soc_bias_level level)
 {
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+
 	switch (level) {
 	case SND_SOC_BIAS_PREPARE:
-		if (SND_SOC_BIAS_STANDBY ==
-			snd_soc_component_get_bias_level(component)) {
+		if (SND_SOC_BIAS_STANDBY == snd_soc_dapm_get_bias_level(dapm)) {
 			snd_soc_component_write(component,
 				RT298_SET_AUDIO_POWER, AC_PWRST_D0);
 			snd_soc_component_update_bits(component, 0x0d, 0x200, 0x200);
@@ -1011,17 +1009,11 @@ static int rt298_probe(struct snd_soc_component *component)
 	struct rt298_priv *rt298 = snd_soc_component_get_drvdata(component);
 
 	rt298->component = component;
+	INIT_DELAYED_WORK(&rt298->jack_detect_work, rt298_jack_detect_work);
 
-	if (rt298->i2c->irq) {
-		regmap_update_bits(rt298->regmap,
-					RT298_IRQ_CTRL, 0x2, 0x2);
-
-		INIT_DELAYED_WORK(&rt298->jack_detect_work,
-					rt298_jack_detect_work);
+	if (rt298->i2c->irq)
 		schedule_delayed_work(&rt298->jack_detect_work,
-					msecs_to_jiffies(1250));
-	}
-
+				      msecs_to_jiffies(1250));
 	return 0;
 }
 
@@ -1030,6 +1022,7 @@ static void rt298_remove(struct snd_soc_component *component)
 	struct rt298_priv *rt298 = snd_soc_component_get_drvdata(component);
 
 	cancel_delayed_work_sync(&rt298->jack_detect_work);
+	rt298->component = NULL;
 }
 
 #ifdef CONFIG_PM
@@ -1120,6 +1113,7 @@ static const struct snd_soc_component_driver soc_component_dev_rt298 = {
 	.suspend		= rt298_suspend,
 	.resume			= rt298_resume,
 	.set_bias_level		= rt298_set_bias_level,
+	.set_jack		= rt298_mic_detect,
 	.controls		= rt298_snd_controls,
 	.num_controls		= ARRAY_SIZE(rt298_snd_controls),
 	.dapm_widgets		= rt298_dapm_widgets,
@@ -1128,7 +1122,6 @@ static const struct snd_soc_component_driver soc_component_dev_rt298 = {
 	.num_dapm_routes	= ARRAY_SIZE(rt298_dapm_routes),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config rt298_regmap = {
@@ -1145,15 +1138,16 @@ static const struct regmap_config rt298_regmap = {
 };
 
 static const struct i2c_device_id rt298_i2c_id[] = {
-	{"rt298", 0},
+	{"rt298"},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, rt298_i2c_id);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id rt298_acpi_match[] = {
-	{ "INT343A", 0 },
-	{},
+	{ "10EC0298" },
+	{ "INT343A" },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, rt298_acpi_match);
 #endif
@@ -1171,6 +1165,13 @@ static const struct dmi_system_id force_combo_jack_table[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Intel Corp"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Geminilake")
+		}
+	},
+	{
+		.ident = "Intel Kabylake R RVP",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Intel Corporation"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Kabylake Client platform")
 		}
 	},
 	{ }
@@ -1281,11 +1282,11 @@ static int rt298_i2c_probe(struct i2c_client *i2c)
 	rt298->is_hp_in = -1;
 
 	if (rt298->i2c->irq) {
-		ret = request_threaded_irq(rt298->i2c->irq, NULL, rt298_irq,
+		ret = devm_request_threaded_irq(&rt298->i2c->dev, rt298->i2c->irq, NULL, rt298_irq,
 			IRQF_TRIGGER_HIGH | IRQF_ONESHOT, "rt298", rt298);
 		if (ret != 0) {
 			dev_err(&i2c->dev,
-				"Failed to reguest IRQ: %d\n", ret);
+				"Failed to request IRQ: %d\n", ret);
 			return ret;
 		}
 	}
@@ -1297,24 +1298,12 @@ static int rt298_i2c_probe(struct i2c_client *i2c)
 	return ret;
 }
 
-static int rt298_i2c_remove(struct i2c_client *i2c)
-{
-	struct rt298_priv *rt298 = i2c_get_clientdata(i2c);
-
-	if (i2c->irq)
-		free_irq(i2c->irq, rt298);
-
-	return 0;
-}
-
-
 static struct i2c_driver rt298_i2c_driver = {
 	.driver = {
 		   .name = "rt298",
 		   .acpi_match_table = ACPI_PTR(rt298_acpi_match),
 		   },
-	.probe_new = rt298_i2c_probe,
-	.remove = rt298_i2c_remove,
+	.probe = rt298_i2c_probe,
 	.id_table = rt298_i2c_id,
 };
 

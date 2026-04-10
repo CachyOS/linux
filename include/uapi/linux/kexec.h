@@ -12,6 +12,8 @@
 /* kexec flags for different usage scenarios */
 #define KEXEC_ON_CRASH		0x00000001
 #define KEXEC_PRESERVE_CONTEXT	0x00000002
+#define KEXEC_UPDATE_ELFCOREHDR	0x00000004
+#define KEXEC_CRASH_HOTPLUG_SUPPORT 0x00000008
 #define KEXEC_ARCH_MASK		0xffff0000
 
 /*
@@ -20,10 +22,16 @@
  * KEXEC_FILE_ON_CRASH : Load/unload operation belongs to kdump image.
  * KEXEC_FILE_NO_INITRAMFS : No initramfs is being loaded. Ignore the initrd
  *                           fd field.
+ * KEXEC_FILE_FORCE_DTB : Force carrying over the current boot's DTB to the new
+ *                        kernel on x86. This is already the default behavior on
+ *                        some other architectures, like ARM64 and PowerPC.
  */
 #define KEXEC_FILE_UNLOAD	0x00000001
 #define KEXEC_FILE_ON_CRASH	0x00000002
 #define KEXEC_FILE_NO_INITRAMFS	0x00000004
+#define KEXEC_FILE_DEBUG	0x00000008
+#define KEXEC_FILE_NO_CMA	0x00000010
+#define KEXEC_FILE_FORCE_DTB	0x00000020
 
 /* These values match the ELF architecture values.
  * Unless there is a good reason that should continue to be the case.

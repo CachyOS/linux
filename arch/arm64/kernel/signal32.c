@@ -17,7 +17,7 @@
 #include <asm/signal32.h>
 #include <asm/traps.h>
 #include <linux/uaccess.h>
-#include <asm/unistd.h>
+#include <asm/unistd_compat_32.h>
 #include <asm/vdso.h>
 
 struct compat_vfp_sigframe {
@@ -103,7 +103,7 @@ static int compat_preserve_vfp_context(struct compat_vfp_sigframe __user *frame)
 	 * Note that this also saves V16-31, which aren't visible
 	 * in AArch32.
 	 */
-	fpsimd_signal_preserve_current_state();
+	fpsimd_save_and_flush_current_state();
 
 	/* Place structure header on the stack */
 	__put_user_error(magic, &frame->magic, err);
@@ -169,14 +169,17 @@ static int compat_restore_vfp_context(struct compat_vfp_sigframe __user *frame)
 	fpsimd.fpsr = fpscr & VFP_FPSCR_STAT_MASK;
 	fpsimd.fpcr = fpscr & VFP_FPSCR_CTRL_MASK;
 
+	if (err)
+		return -EFAULT;
+
 	/*
 	 * We don't need to touch the exception register, so
 	 * reload the hardware state.
 	 */
-	if (!err)
-		fpsimd_update_current_state(&fpsimd);
+	fpsimd_save_and_flush_current_state();
+	current->thread.uw.fpsimd_state = fpsimd;
 
-	return err ? -EFAULT : 0;
+	return 0;
 }
 
 static int compat_restore_sigframe(struct pt_regs *regs,
@@ -451,7 +454,7 @@ int compat_setup_frame(int usig, struct ksignal *ksig, sigset_t *set,
 
 void compat_setup_restart_syscall(struct pt_regs *regs)
 {
-       regs->regs[7] = __NR_compat_restart_syscall;
+       regs->regs[7] = __NR_compat32_restart_syscall;
 }
 
 /*
@@ -460,7 +463,7 @@ void compat_setup_restart_syscall(struct pt_regs *regs)
  */
 static_assert(NSIGILL	== 11);
 static_assert(NSIGFPE	== 15);
-static_assert(NSIGSEGV	== 9);
+static_assert(NSIGSEGV	== 10);
 static_assert(NSIGBUS	== 5);
 static_assert(NSIGTRAP	== 6);
 static_assert(NSIGCHLD	== 6);

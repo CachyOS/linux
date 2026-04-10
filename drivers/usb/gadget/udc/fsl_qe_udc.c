@@ -27,9 +27,10 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/moduleparam.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
@@ -416,7 +417,7 @@ static int qe_ep_rxbd_update(struct qe_ep *ep)
 
 	bd = ep->rxbase;
 
-	ep->rxframe = kmalloc(sizeof(*ep->rxframe), GFP_ATOMIC);
+	ep->rxframe = kmalloc_obj(*ep->rxframe, GFP_ATOMIC);
 	if (!ep->rxframe)
 		return -ENOMEM;
 
@@ -510,7 +511,7 @@ static int qe_ep_register_init(struct qe_udc *udc, unsigned char pipe_num)
 	out_8(&epparam->tbmr, rtfcr);
 
 	tmp = (u16)(ep->ep.maxpacket + USB_CRC_SIZE);
-	/* MRBLR must be divisble by 4 */
+	/* MRBLR must be divisible by 4 */
 	tmp = (u16)(((tmp >> 2) << 2) + 4);
 	out_be16(&epparam->mrblr, tmp);
 
@@ -665,7 +666,7 @@ static int qe_ep_init(struct qe_udc *udc,
 	}
 
 	if ((ep->tm == USBP_TM_CTL) || (ep->dir == USB_DIR_IN)) {
-		ep->txframe = kmalloc(sizeof(*ep->txframe), GFP_ATOMIC);
+		ep->txframe = kmalloc_obj(*ep->txframe, GFP_ATOMIC);
 		if (!ep->txframe)
 			goto en_done2;
 		qe_frame_init(ep->txframe);
@@ -1412,7 +1413,7 @@ static int ep_txframe_handle(struct qe_ep *ep)
 	return 0;
 }
 
-/* confirm the already trainsmited bd */
+/* confirm the already transmitted bd */
 static int qe_ep_txconf(struct qe_ep *ep)
 {
 	struct qe_bd __iomem *bd;
@@ -1669,7 +1670,7 @@ static struct usb_request *qe_alloc_request(struct usb_ep *_ep,	gfp_t gfp_flags)
 {
 	struct qe_req *req;
 
-	req = kzalloc(sizeof(*req), gfp_flags);
+	req = kzalloc_obj(*req, gfp_flags);
 	if (!req)
 		return NULL;
 
@@ -1959,6 +1960,8 @@ static void ch9getstatus(struct qe_udc *udc, u8 request_type, u16 value,
 	} else if ((request_type & USB_RECIP_MASK) == USB_RECIP_ENDPOINT) {
 		/* Get endpoint status */
 		int pipe = index & USB_ENDPOINT_NUMBER_MASK;
+		if (pipe >= USB_MAX_ENDPOINTS)
+			goto stall;
 		struct qe_ep *target_ep = &udc->eps[pipe];
 		u16 usep;
 
@@ -2193,7 +2196,7 @@ static int tx_irq(struct qe_udc *udc)
 }
 
 
-/* setup packect's rx is handle in the function too */
+/* setup packet's rx is handle in the function too */
 static void rx_irq(struct qe_udc *udc)
 {
 	struct qe_ep *ep;
@@ -2285,7 +2288,6 @@ static int fsl_qe_start(struct usb_gadget *gadget,
 	/* lock is needed but whether should use this lock or another */
 	spin_lock_irqsave(&udc->lock, flags);
 
-	driver->driver.bus = NULL;
 	/* hook up the driver */
 	udc->driver = driver;
 	udc->gadget.speed = driver->max_speed;
@@ -2342,7 +2344,7 @@ static struct qe_udc *qe_udc_config(struct platform_device *ofdev)
 	u64 size;
 	u32 offset;
 
-	udc = kzalloc(sizeof(*udc), GFP_KERNEL);
+	udc = kzalloc_obj(*udc);
 	if (!udc)
 		goto cleanup;
 
@@ -2470,16 +2472,11 @@ static const struct of_device_id qe_udc_match[];
 static int qe_udc_probe(struct platform_device *ofdev)
 {
 	struct qe_udc *udc;
-	const struct of_device_id *match;
 	struct device_node *np = ofdev->dev.of_node;
 	struct qe_ep *ep;
 	unsigned int ret = 0;
 	unsigned int i;
 	const void *prop;
-
-	match = of_match_device(qe_udc_match, &ofdev->dev);
-	if (!match)
-		return -EINVAL;
 
 	prop = of_get_property(np, "mode", NULL);
 	if (!prop || strcmp(prop, "peripheral"))
@@ -2492,7 +2489,7 @@ static int qe_udc_probe(struct platform_device *ofdev)
 		return -ENOMEM;
 	}
 
-	udc->soc_type = (unsigned long)match->data;
+	udc->soc_type = (unsigned long)device_get_match_data(&ofdev->dev);
 	udc->usb_regs = of_iomap(np, 0);
 	if (!udc->usb_regs) {
 		ret = -ENOMEM;
@@ -2629,7 +2626,7 @@ static int qe_udc_resume(struct platform_device *dev)
 }
 #endif
 
-static int qe_udc_remove(struct platform_device *ofdev)
+static void qe_udc_remove(struct platform_device *ofdev)
 {
 	struct qe_udc *udc = platform_get_drvdata(ofdev);
 	struct qe_ep *ep;
@@ -2680,8 +2677,6 @@ static int qe_udc_remove(struct platform_device *ofdev)
 
 	/* wait for release() of gadget.dev to free udc */
 	wait_for_completion(&done);
-
-	return 0;
 }
 
 /*-------------------------------------------------------------------------*/

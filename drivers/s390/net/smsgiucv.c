@@ -7,12 +7,14 @@
  * Author(s): Martin Schwidefsky (schwidefsky@de.ibm.com)
  */
 
+#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/device.h>
 #include <linux/slab.h>
 #include <net/iucv/iucv.h>
+#include <asm/machine.h>
 #include <asm/cpcmd.h>
 #include <asm/ebcdic.h>
 #include "smsgiucv.h"
@@ -90,7 +92,7 @@ int smsg_register_callback(const char *prefix,
 {
 	struct smsg_callback *cb;
 
-	cb = kmalloc(sizeof(struct smsg_callback), GFP_KERNEL);
+	cb = kmalloc_obj(struct smsg_callback);
 	if (!cb)
 		return -ENOMEM;
 	cb->prefix = prefix;
@@ -138,7 +140,7 @@ static int __init smsg_init(void)
 {
 	int rc;
 
-	if (!MACHINE_IS_VM) {
+	if (!machine_is_vm()) {
 		rc = -EPROTONOSUPPORT;
 		goto out;
 	}

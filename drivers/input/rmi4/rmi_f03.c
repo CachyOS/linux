@@ -61,14 +61,14 @@ void rmi_f03_commit_buttons(struct rmi_function *fn)
 	struct f03_data *f03 = dev_get_drvdata(&fn->dev);
 	struct serio *serio = f03->serio;
 
-	serio_pause_rx(serio);
+	guard(serio_pause_rx)(serio);
+
 	if (serio->drv) {
 		serio->drv->interrupt(serio, PSMOUSE_OOB_EXTRA_BTNS,
 				      SERIO_OOB_DATA);
 		serio->drv->interrupt(serio, f03->overwrite_buttons,
 				      SERIO_OOB_DATA);
 	}
-	serio_continue_rx(serio);
 }
 
 static int rmi_f03_pt_write(struct serio *id, unsigned char val)
@@ -171,7 +171,7 @@ static int rmi_f03_register_pt(struct f03_data *f03)
 {
 	struct serio *serio;
 
-	serio = kzalloc(sizeof(struct serio), GFP_KERNEL);
+	serio = kzalloc_obj(struct serio);
 	if (!serio)
 		return -ENOMEM;
 
@@ -181,7 +181,7 @@ static int rmi_f03_register_pt(struct f03_data *f03)
 	serio->close = rmi_f03_pt_close;
 	serio->port_data = f03;
 
-	strlcpy(serio->name, "RMI4 PS/2 pass-through", sizeof(serio->name));
+	strscpy(serio->name, "RMI4 PS/2 pass-through", sizeof(serio->name));
 	snprintf(serio->phys, sizeof(serio->phys), "%s/serio0",
 		 dev_name(&f03->fn->dev));
 	serio->dev.parent = &f03->fn->dev;

@@ -31,12 +31,11 @@ driver model device node, and its I2C address.
 
 ::
 
-  static struct i2c_device_id foo_idtable[] = {
+  static const struct i2c_device_id foo_idtable[] = {
 	{ "foo", my_id_for_foo },
 	{ "bar", my_id_for_bar },
 	{ }
   };
-
   MODULE_DEVICE_TABLE(i2c, foo_idtable);
 
   static struct i2c_driver foo_driver = {
@@ -46,12 +45,8 @@ driver model device node, and its I2C address.
 	},
 
 	.id_table	= foo_idtable,
-	.probe_new	= foo_probe,
+	.probe		= foo_probe,
 	.remove		= foo_remove,
-	/* if device autodetection is needed: */
-	.class		= I2C_CLASS_SOMETHING,
-	.detect		= foo_detect,
-	.address_list	= normal_i2c,
 
 	.shutdown	= foo_shutdown,	/* optional */
 	.command	= foo_command,	/* optional, deprecated */
@@ -156,7 +151,7 @@ those devices, and a remove() method to unbind.
 ::
 
 	static int foo_probe(struct i2c_client *client);
-	static int foo_remove(struct i2c_client *client);
+	static void foo_remove(struct i2c_client *client);
 
 Remember that the i2c_driver does not create those client handles.  The
 handle may be used during foo_probe().  If foo_probe() reports success
@@ -203,27 +198,8 @@ reference for later use.
 Device Detection
 ----------------
 
-Sometimes you do not know in advance which I2C devices are connected to
-a given I2C bus.  This is for example the case of hardware monitoring
-devices on a PC's SMBus.  In that case, you may want to let your driver
-detect supported devices automatically.  This is how the legacy model
-was working, and is now available as an extension to the standard
-driver model.
-
-You simply have to define a detect callback which will attempt to
-identify supported devices (returning 0 for supported ones and -ENODEV
-for unsupported ones), a list of addresses to probe, and a device type
-(or class) so that only I2C buses which may have that type of device
-connected (and not otherwise enumerated) will be probed.  For example,
-a driver for a hardware monitoring chip for which auto-detection is
-needed would set its class to I2C_CLASS_HWMON, and only I2C adapters
-with a class including I2C_CLASS_HWMON would be probed by this driver.
-Note that the absence of matching classes does not prevent the use of
-a device of that type on the given I2C adapter.  All it prevents is
-auto-detection; explicit instantiation of devices is still possible.
-
-Note that this mechanism is purely optional and not suitable for all
-devices.  You need some reliable way to identify the supported devices
+The device detection mechanism comes with a number of disadvantages.
+You need some reliable way to identify the supported devices
 (typically using device-specific, dedicated identification registers),
 otherwise misdetections are likely to occur and things can get wrong
 quickly.  Keep in mind that the I2C protocol doesn't include any
@@ -231,9 +207,8 @@ standard way to detect the presence of a chip at a given address, let
 alone a standard way to identify devices.  Even worse is the lack of
 semantics associated to bus transfers, which means that the same
 transfer can be seen as a read operation by a chip and as a write
-operation by another chip.  For these reasons, explicit device
-instantiation should always be preferred to auto-detection where
-possible.
+operation by another chip.  For these reasons, device detection is
+considered a legacy mechanism and shouldn't be used in new code.
 
 
 Device Deletion
@@ -364,7 +339,7 @@ stop condition is issued between transaction. The i2c_msg structure
 contains for each message the client address, the number of bytes of the
 message and the message data itself.
 
-You can read the file ``i2c-protocol`` for more information about the
+You can read the file i2c-protocol.rst for more information about the
 actual I2C protocol.
 
 
@@ -414,7 +389,7 @@ transactions return 0 on success; the 'read' transactions return the read
 value, except for block transactions, which return the number of values
 read. The block buffers need not be longer than 32 bytes.
 
-You can read the file ``smbus-protocol`` for more information about the
+You can read the file smbus-protocol.rst for more information about the
 actual SMBus protocol.
 
 

@@ -116,7 +116,7 @@ qla2x00_dfs_create_rport(scsi_qla_host_t *vha, struct fc_port *fp)
 
 	sprintf(wwn, "pn-%016llx", wwn_to_u64(fp->port_name));
 	fp->dfs_rport_dir = debugfs_create_dir(wwn, vha->dfs_rport_root);
-	if (!fp->dfs_rport_dir)
+	if (IS_ERR(fp->dfs_rport_dir))
 		return;
 	if (NVME_TARGET(vha->hw, fp))
 		debugfs_create_file("dev_loss_tmo", 0600, fp->dfs_rport_dir,
@@ -179,10 +179,9 @@ qla2x00_dfs_tgt_port_database_show(struct seq_file *s, void *unused)
 	struct qla_hw_data *ha = vha->hw;
 	struct gid_list_info *gid_list;
 	dma_addr_t gid_list_dma;
-	fc_port_t fc_port;
 	char *id_iter;
 	int rc, i;
-	uint16_t entries, loop_id;
+	uint16_t entries;
 
 	seq_printf(s, "%s\n", vha->host_str);
 	gid_list = dma_alloc_coherent(&ha->pdev->dev,
@@ -205,18 +204,11 @@ qla2x00_dfs_tgt_port_database_show(struct seq_file *s, void *unused)
 	seq_puts(s, "Port Name	Port ID		Loop ID\n");
 
 	for (i = 0; i < entries; i++) {
-		struct gid_list_info *gid =
-			(struct gid_list_info *)id_iter;
-		loop_id = le16_to_cpu(gid->loop_id);
-		memset(&fc_port, 0, sizeof(fc_port_t));
+		struct gid_list_info *gid = (struct gid_list_info *)id_iter;
 
-		fc_port.loop_id = loop_id;
-
-		rc = qla24xx_gpdb_wait(vha, &fc_port, 0);
-		seq_printf(s, "%8phC  %02x%02x%02x  %d\n",
-			   fc_port.port_name, fc_port.d_id.b.domain,
-			   fc_port.d_id.b.area, fc_port.d_id.b.al_pa,
-			   fc_port.loop_id);
+		rc = qla24xx_print_fc_port_id(vha, s, le16_to_cpu(gid->loop_id));
+		if (rc != QLA_SUCCESS)
+			break;
 		id_iter += ha->gid_list_info_size;
 	}
 out_free_id_list:
@@ -235,7 +227,7 @@ qla_dfs_fw_resource_cnt_show(struct seq_file *s, void *unused)
 	uint16_t mb[MAX_IOCB_MB_REG];
 	int rc;
 	struct qla_hw_data *ha = vha->hw;
-	u16 iocbs_used, i;
+	u16 iocbs_used, i, exch_used;
 
 	rc = qla24xx_res_count_wait(vha, mb, SIZEOF_IOCB_MB_REG);
 	if (rc != QLA_SUCCESS) {
@@ -263,13 +255,29 @@ qla_dfs_fw_resource_cnt_show(struct seq_file *s, void *unused)
 	if (ql2xenforce_iocb_limit) {
 		/* lock is not require. It's an estimate. */
 		iocbs_used = ha->base_qpair->fwres.iocbs_used;
+		exch_used = ha->base_qpair->fwres.exch_used;
 		for (i = 0; i < ha->max_qpairs; i++) {
-			if (ha->queue_pair_map[i])
+			if (ha->queue_pair_map[i]) {
 				iocbs_used += ha->queue_pair_map[i]->fwres.iocbs_used;
+				exch_used += ha->queue_pair_map[i]->fwres.exch_used;
+			}
 		}
 
 		seq_printf(s, "Driver: estimate iocb used [%d] high water limit [%d]\n",
 			   iocbs_used, ha->base_qpair->fwres.iocbs_limit);
+
+		seq_printf(s, "estimate exchange used[%d] high water limit [%d]\n",
+			   exch_used, ha->base_qpair->fwres.exch_limit);
+
+		if (ql2xenforce_iocb_limit == 2) {
+			iocbs_used = atomic_read(&ha->fwres.iocb_used);
+			exch_used  = atomic_read(&ha->fwres.exch_used);
+			seq_printf(s, "        estimate iocb2 used [%d] high water limit [%d]\n",
+					iocbs_used, ha->fwres.iocb_limit);
+
+			seq_printf(s, "        estimate exchange2 used[%d] high water limit [%d] \n",
+					exch_used, ha->fwres.exch_limit);
+		}
 	}
 
 	return 0;
@@ -393,26 +401,31 @@ qla2x00_dfs_fce_show(struct seq_file *s, void *unused)
 
 	mutex_lock(&ha->fce_mutex);
 
-	seq_puts(s, "FCE Trace Buffer\n");
-	seq_printf(s, "In Pointer = %llx\n\n", (unsigned long long)ha->fce_wr);
-	seq_printf(s, "Base = %llx\n\n", (unsigned long long) ha->fce_dma);
-	seq_puts(s, "FCE Enable Registers\n");
-	seq_printf(s, "%08x %08x %08x %08x %08x %08x\n",
-	    ha->fce_mb[0], ha->fce_mb[2], ha->fce_mb[3], ha->fce_mb[4],
-	    ha->fce_mb[5], ha->fce_mb[6]);
+	if (ha->flags.user_enabled_fce) {
+		seq_puts(s, "FCE Trace Buffer\n");
+		seq_printf(s, "In Pointer = %llx\n\n", (unsigned long long)ha->fce_wr);
+		seq_printf(s, "Base = %llx\n\n", (unsigned long long)ha->fce_dma);
+		seq_puts(s, "FCE Enable Registers\n");
+		seq_printf(s, "%08x %08x %08x %08x %08x %08x\n",
+			   ha->fce_mb[0], ha->fce_mb[2], ha->fce_mb[3], ha->fce_mb[4],
+			   ha->fce_mb[5], ha->fce_mb[6]);
 
-	fce = (uint32_t *) ha->fce;
-	fce_start = (unsigned long long) ha->fce_dma;
-	for (cnt = 0; cnt < fce_calc_size(ha->fce_bufs) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			seq_printf(s, "\n%llx: ",
-			    (unsigned long long)((cnt * 4) + fce_start));
-		else
-			seq_putc(s, ' ');
-		seq_printf(s, "%08x", *fce++);
+		fce = (uint32_t *)ha->fce;
+		fce_start = (unsigned long long)ha->fce_dma;
+		for (cnt = 0; cnt < fce_calc_size(ha->fce_bufs) / 4; cnt++) {
+			if (cnt % 8 == 0)
+				seq_printf(s, "\n%llx: ",
+					   (unsigned long long)((cnt * 4) + fce_start));
+			else
+				seq_putc(s, ' ');
+			seq_printf(s, "%08x", *fce++);
+		}
+
+		seq_puts(s, "\nEnd\n");
+	} else {
+		seq_puts(s, "FCE Trace is currently not enabled\n");
+		seq_puts(s, "\techo [ 1 | 0 ] > fce\n");
 	}
-
-	seq_puts(s, "\nEnd\n");
 
 	mutex_unlock(&ha->fce_mutex);
 
@@ -451,7 +464,7 @@ qla2x00_dfs_fce_release(struct inode *inode, struct file *file)
 	struct qla_hw_data *ha = vha->hw;
 	int rval;
 
-	if (ha->flags.fce_enabled)
+	if (ha->flags.fce_enabled || !ha->fce)
 		goto out;
 
 	mutex_lock(&ha->fce_mutex);
@@ -472,11 +485,88 @@ out:
 	return single_release(inode, file);
 }
 
+static ssize_t
+qla2x00_dfs_fce_write(struct file *file, const char __user *buffer,
+		      size_t count, loff_t *pos)
+{
+	struct seq_file *s = file->private_data;
+	struct scsi_qla_host *vha = s->private;
+	struct qla_hw_data *ha = vha->hw;
+	char *buf;
+	int rc = 0;
+	unsigned long enable;
+
+	if (!IS_QLA25XX(ha) && !IS_QLA81XX(ha) && !IS_QLA83XX(ha) &&
+	    !IS_QLA27XX(ha) && !IS_QLA28XX(ha)) {
+		ql_dbg(ql_dbg_user, vha, 0xd034,
+		       "this adapter does not support FCE.");
+		return -EINVAL;
+	}
+
+	buf = memdup_user_nul(buffer, count);
+	if (IS_ERR(buf)) {
+		ql_dbg(ql_dbg_user, vha, 0xd037,
+		    "fail to copy user buffer.");
+		return PTR_ERR(buf);
+	}
+
+	enable = kstrtoul(buf, 0, 0);
+	rc = count;
+
+	mutex_lock(&ha->fce_mutex);
+
+	if (enable) {
+		if (ha->flags.user_enabled_fce) {
+			mutex_unlock(&ha->fce_mutex);
+			goto out_free;
+		}
+		ha->flags.user_enabled_fce = 1;
+		if (!ha->fce) {
+			rc = qla2x00_alloc_fce_trace(vha);
+			if (rc) {
+				ha->flags.user_enabled_fce = 0;
+				mutex_unlock(&ha->fce_mutex);
+				goto out_free;
+			}
+
+			/* adjust fw dump buffer to take into account of this feature */
+			if (!ha->flags.fce_dump_buf_alloced)
+				qla2x00_alloc_fw_dump(vha);
+		}
+
+		if (!ha->flags.fce_enabled)
+			qla_enable_fce_trace(vha);
+
+		ql_dbg(ql_dbg_user, vha, 0xd045, "User enabled FCE .\n");
+	} else {
+		if (!ha->flags.user_enabled_fce) {
+			mutex_unlock(&ha->fce_mutex);
+			goto out_free;
+		}
+		ha->flags.user_enabled_fce = 0;
+		if (ha->flags.fce_enabled) {
+			qla2x00_disable_fce_trace(vha, NULL, NULL);
+			ha->flags.fce_enabled = 0;
+		}
+
+		qla2x00_free_fce_trace(ha);
+		/* no need to re-adjust fw dump buffer */
+
+		ql_dbg(ql_dbg_user, vha, 0xd04f, "User disabled FCE .\n");
+	}
+
+	mutex_unlock(&ha->fce_mutex);
+out_free:
+	kfree(buf);
+	return rc;
+}
+
 static const struct file_operations dfs_fce_ops = {
 	.open		= qla2x00_dfs_fce_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= qla2x00_dfs_fce_release,
+	.write		= qla2x00_dfs_fce_write,
 };
 
 static int
@@ -489,13 +579,69 @@ qla_dfs_naqp_show(struct seq_file *s, void *unused)
 	return 0;
 }
 
-static int
-qla_dfs_naqp_open(struct inode *inode, struct file *file)
-{
-	struct scsi_qla_host *vha = inode->i_private;
+/*
+ * Helper macros for setting up debugfs entries.
+ * _name: The name of the debugfs entry
+ * _ctx_struct: The context that was passed when creating the debugfs file
+ *
+ * QLA_DFS_SETUP_RD could be used when there is only a show function.
+ * - show function take the name qla_dfs_<sysfs-name>_show
+ *
+ * QLA_DFS_SETUP_RW could be used when there are both show and write functions.
+ * - show function take the name  qla_dfs_<sysfs-name>_show
+ * - write function take the name qla_dfs_<sysfs-name>_write
+ *
+ * To have a new debugfs entry, do:
+ * 1. Create a "struct dentry *" in the appropriate structure in the format
+ * dfs_<sysfs-name>
+ * 2. Setup debugfs entries using QLA_DFS_SETUP_RD / QLA_DFS_SETUP_RW
+ * 3. Create debugfs file in qla2x00_dfs_setup() using QLA_DFS_CREATE_FILE
+ * or QLA_DFS_ROOT_CREATE_FILE
+ * 4. Remove debugfs file in qla2x00_dfs_remove() using QLA_DFS_REMOVE_FILE
+ * or QLA_DFS_ROOT_REMOVE_FILE
+ *
+ * Example for creating "TEST" sysfs file:
+ * 1. struct qla_hw_data { ... struct dentry *dfs_TEST; }
+ * 2. QLA_DFS_SETUP_RD(TEST);
+ * 3. In qla2x00_dfs_setup():
+ * QLA_DFS_CREATE_FILE(ha, TEST, 0600, ha->dfs_dir, vha);
+ * 4. In qla2x00_dfs_remove():
+ * QLA_DFS_REMOVE_FILE(ha, TEST);
+ */
+#define QLA_DFS_SETUP_RD(_name)	DEFINE_SHOW_ATTRIBUTE(qla_dfs_##_name)
 
-	return single_open(file, qla_dfs_naqp_show, vha);
-}
+#define QLA_DFS_SETUP_RW(_name)	DEFINE_SHOW_STORE_ATTRIBUTE(qla_dfs_##_name)
+
+#define QLA_DFS_ROOT_CREATE_FILE(_name, _perm, _ctx)			\
+	do {								\
+		if (!qla_dfs_##_name)					\
+			qla_dfs_##_name = debugfs_create_file(#_name,	\
+					_perm, qla2x00_dfs_root, _ctx,	\
+					&qla_dfs_##_name##_fops);	\
+	} while (0)
+
+#define QLA_DFS_ROOT_REMOVE_FILE(_name)					\
+	do {								\
+		if (qla_dfs_##_name) {					\
+			debugfs_remove(qla_dfs_##_name);		\
+			qla_dfs_##_name = NULL;				\
+		}							\
+	} while (0)
+
+#define QLA_DFS_CREATE_FILE(_struct, _name, _perm, _parent, _ctx)	\
+	do {								\
+		(_struct)->dfs_##_name = debugfs_create_file(#_name,	\
+					_perm, _parent, _ctx,		\
+					&qla_dfs_##_name##_fops)	\
+	} while (0)
+
+#define QLA_DFS_REMOVE_FILE(_struct, _name)				\
+	do {								\
+		if ((_struct)->dfs_##_name) {				\
+			debugfs_remove((_struct)->dfs_##_name);		\
+			(_struct)->dfs_##_name = NULL;			\
+		}							\
+	} while (0)
 
 static ssize_t
 qla_dfs_naqp_write(struct file *file, const char __user *buffer,
@@ -544,15 +690,7 @@ out_free:
 	kfree(buf);
 	return rc;
 }
-
-static const struct file_operations dfs_naqp_ops = {
-	.open		= qla_dfs_naqp_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-	.write		= qla_dfs_naqp_write,
-};
-
+QLA_DFS_SETUP_RW(naqp);
 
 int
 qla2x00_dfs_setup(scsi_qla_host_t *vha)
@@ -561,8 +699,6 @@ qla2x00_dfs_setup(scsi_qla_host_t *vha)
 
 	if (!IS_QLA25XX(ha) && !IS_QLA81XX(ha) && !IS_QLA83XX(ha) &&
 	    !IS_QLA27XX(ha) && !IS_QLA28XX(ha))
-		goto out;
-	if (!ha->fce)
 		goto out;
 
 	if (qla2x00_dfs_root)
@@ -598,15 +734,15 @@ create_nodes:
 
 	if (IS_QLA27XX(ha) || IS_QLA83XX(ha) || IS_QLA28XX(ha)) {
 		ha->tgt.dfs_naqp = debugfs_create_file("naqp",
-		    0400, ha->dfs_dir, vha, &dfs_naqp_ops);
-		if (!ha->tgt.dfs_naqp) {
+		    0400, ha->dfs_dir, vha, &qla_dfs_naqp_fops);
+		if (IS_ERR(ha->tgt.dfs_naqp)) {
 			ql_log(ql_log_warn, vha, 0xd011,
 			       "Unable to create debugFS naqp node.\n");
 			goto out;
 		}
 	}
 	vha->dfs_rport_root = debugfs_create_dir("rports", ha->dfs_dir);
-	if (!vha->dfs_rport_root) {
+	if (IS_ERR(vha->dfs_rport_root)) {
 		ql_log(ql_log_warn, vha, 0xd012,
 		       "Unable to create debugFS rports node.\n");
 		goto out;

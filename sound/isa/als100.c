@@ -23,8 +23,6 @@
 #include <sound/opl3.h>
 #include <sound/sb.h>
 
-#define PFX "als100: "
-
 MODULE_DESCRIPTION("Avance Logic ALS007/ALS1X0");
 MODULE_AUTHOR("Massimo Piccioni <dafastidio@libero.it>");
 MODULE_LICENSE("GPL");
@@ -112,7 +110,7 @@ static int snd_card_als100_pnp(int dev, struct snd_card_als100 *acard,
 
 	err = pnp_activate_dev(pdev);
 	if (err < 0) {
-		snd_printk(KERN_ERR PFX "AUDIO pnp configure failure\n");
+		dev_err(&pdev->dev, "AUDIO pnp configure failure\n");
 		return err;
 	}
 	port[dev] = pnp_port_start(pdev, 0);
@@ -135,7 +133,7 @@ static int snd_card_als100_pnp(int dev, struct snd_card_als100 *acard,
 	     __mpu_error:
 	     	if (pdev) {
 		     	pnp_release_card_device(pdev);
-	     		snd_printk(KERN_ERR PFX "MPU401 pnp configure failure, skipping\n");
+			dev_err(&pdev->dev, "MPU401 pnp configure failure, skipping\n");
 	     	}
 	     	acard->devmpu = NULL;
 	     	mpu_port[dev] = -1;
@@ -151,7 +149,7 @@ static int snd_card_als100_pnp(int dev, struct snd_card_als100 *acard,
 	      __fm_error:
 	     	if (pdev) {
 		     	pnp_release_card_device(pdev);
-	     		snd_printk(KERN_ERR PFX "OPL3 pnp configure failure, skipping\n");
+			dev_err(&pdev->dev, "OPL3 pnp configure failure, skipping\n");
 	     	}
 	     	acard->devopl = NULL;
 	     	fm_port[dev] = -1;
@@ -194,14 +192,14 @@ static int snd_card_als100_probe(int dev,
 	acard->chip = chip;
 
 	if (pid->driver_data == SB_HW_DT019X) {
-		strcpy(card->driver, "DT-019X");
-		strcpy(card->shortname, "Diamond Tech. DT-019X");
+		strscpy(card->driver, "DT-019X");
+		strscpy(card->shortname, "Diamond Tech. DT-019X");
 		snprintf(card->longname, sizeof(card->longname),
 			 "Diamond Tech. DT-019X, %s at 0x%lx, irq %d, dma %d",
 			 chip->name, chip->port, irq[dev], dma8[dev]);
 	} else {
-		strcpy(card->driver, "ALS100");
-		strcpy(card->shortname, "Avance Logic ALS100");
+		strscpy(card->driver, "ALS100");
+		strscpy(card->shortname, "Avance Logic ALS100");
 		snprintf(card->longname, sizeof(card->longname),
 			 "Avance Logic ALS100, %s at 0x%lx, irq %d, dma %d&%d",
 			 chip->name, chip->port, irq[dev], dma8[dev],
@@ -230,15 +228,15 @@ static int snd_card_als100_probe(int dev,
 					mpu_port[dev], 0, 
 					mpu_irq[dev],
 					NULL) < 0)
-			snd_printk(KERN_ERR PFX "no MPU-401 device at 0x%lx\n", mpu_port[dev]);
+			dev_err(card->dev, "no MPU-401 device at 0x%lx\n", mpu_port[dev]);
 	}
 
 	if (fm_port[dev] > 0 && fm_port[dev] != SNDRV_AUTO_PORT) {
 		if (snd_opl3_create(card,
 				    fm_port[dev], fm_port[dev] + 2,
 				    OPL3_HW_AUTO, 0, &opl3) < 0) {
-			snd_printk(KERN_ERR PFX "no OPL device at 0x%lx-0x%lx\n",
-				   fm_port[dev], fm_port[dev] + 2);
+			dev_err(card->dev, "no OPL device at 0x%lx-0x%lx\n",
+				fm_port[dev], fm_port[dev] + 2);
 		} else {
 			error = snd_opl3_timer_new(opl3, 0, 1);
 			if (error < 0)
@@ -324,7 +322,7 @@ static int __init alsa_card_als100_init(void)
 	if (!als100_devices) {
 		pnp_unregister_card_driver(&als100_pnpc_driver);
 #ifdef MODULE
-		snd_printk(KERN_ERR "no Avance Logic based soundcards found\n");
+		pr_err("no Avance Logic based soundcards found\n");
 #endif
 		return -ENODEV;
 	}

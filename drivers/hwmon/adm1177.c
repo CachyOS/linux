@@ -10,6 +10,8 @@
 #include <linux/hwmon.h>
 #include <linux/i2c.h>
 #include <linux/init.h>
+#include <linux/math64.h>
+#include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/regulator/consumer.h>
 
@@ -26,16 +28,14 @@
 /**
  * struct adm1177_state - driver instance specific data
  * @client:		pointer to i2c client
- * @reg:		regulator info for the power supply of the device
  * @r_sense_uohm:	current sense resistor value
  * @alert_threshold_ua:	current limit for shutdown
  * @vrange_high:	internal voltage divider
  */
 struct adm1177_state {
 	struct i2c_client	*client;
-	struct regulator	*reg;
 	u32			r_sense_uohm;
-	u32			alert_threshold_ua;
+	u64			alert_threshold_ua;
 	bool			vrange_high;
 };
 
@@ -50,7 +50,7 @@ static int adm1177_write_cmd(struct adm1177_state *st, u8 cmd)
 }
 
 static int adm1177_write_alert_thr(struct adm1177_state *st,
-				   u32 alert_threshold_ua)
+				   u64 alert_threshold_ua)
 {
 	u64 val;
 	int ret;
@@ -93,8 +93,8 @@ static int adm1177_read(struct device *dev, enum hwmon_sensor_types type,
 			*val = div_u64((105840000ull * dummy),
 				       4096 * st->r_sense_uohm);
 			return 0;
-		case hwmon_curr_max_alarm:
-			*val = st->alert_threshold_ua;
+		case hwmon_curr_max:
+			*val = div_u64(st->alert_threshold_ua, 1000);
 			return 0;
 		default:
 			return -EOPNOTSUPP;
@@ -128,9 +128,10 @@ static int adm1177_write(struct device *dev, enum hwmon_sensor_types type,
 	switch (type) {
 	case hwmon_curr:
 		switch (attr) {
-		case hwmon_curr_max_alarm:
-			adm1177_write_alert_thr(st, val);
-			return 0;
+		case hwmon_curr_max:
+			val = clamp_val(val, 0,
+					div_u64(105840000ULL, st->r_sense_uohm));
+			return adm1177_write_alert_thr(st, (u64)val * 1000);
 		default:
 			return -EOPNOTSUPP;
 		}
@@ -158,7 +159,7 @@ static umode_t adm1177_is_visible(const void *data,
 			if (st->r_sense_uohm)
 				return 0444;
 			return 0;
-		case hwmon_curr_max_alarm:
+		case hwmon_curr_max:
 			if (st->r_sense_uohm)
 				return 0644;
 			return 0;
@@ -170,9 +171,9 @@ static umode_t adm1177_is_visible(const void *data,
 	return 0;
 }
 
-static const struct hwmon_channel_info *adm1177_info[] = {
+static const struct hwmon_channel_info * const adm1177_info[] = {
 	HWMON_CHANNEL_INFO(curr,
-			   HWMON_C_INPUT | HWMON_C_MAX_ALARM),
+			   HWMON_C_INPUT | HWMON_C_MAX),
 	HWMON_CHANNEL_INFO(in,
 			   HWMON_I_INPUT),
 	NULL
@@ -189,19 +190,13 @@ static const struct hwmon_chip_info adm1177_chip_info = {
 	.info = adm1177_info,
 };
 
-static void adm1177_remove(void *data)
-{
-	struct adm1177_state *st = data;
-
-	regulator_disable(st->reg);
-}
-
 static int adm1177_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct device *hwmon_dev;
 	struct adm1177_state *st;
-	u32 alert_threshold_ua;
+	u64 alert_threshold_ua;
+	u32 prop;
 	int ret;
 
 	st = devm_kzalloc(dev, sizeof(*st), GFP_KERNEL);
@@ -210,41 +205,33 @@ static int adm1177_probe(struct i2c_client *client)
 
 	st->client = client;
 
-	st->reg = devm_regulator_get_optional(&client->dev, "vref");
-	if (IS_ERR(st->reg)) {
-		if (PTR_ERR(st->reg) == -EPROBE_DEFER)
-			return -EPROBE_DEFER;
-
-		st->reg = NULL;
-	} else {
-		ret = regulator_enable(st->reg);
-		if (ret)
-			return ret;
-		ret = devm_add_action_or_reset(&client->dev, adm1177_remove,
-					       st);
-		if (ret)
-			return ret;
-	}
+	ret = devm_regulator_get_enable_optional(&client->dev, "vref");
+	if (ret == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
 
 	if (device_property_read_u32(dev, "shunt-resistor-micro-ohms",
 				     &st->r_sense_uohm))
 		st->r_sense_uohm = 0;
-	if (device_property_read_u32(dev, "adi,shutdown-threshold-microamp",
-				     &alert_threshold_ua)) {
-		if (st->r_sense_uohm)
-			/*
-			 * set maximum default value from datasheet based on
-			 * shunt-resistor
-			 */
-			alert_threshold_ua = div_u64(105840000000,
-						     st->r_sense_uohm);
-		else
-			alert_threshold_ua = 0;
+	if (!device_property_read_u32(dev, "adi,shutdown-threshold-microamp",
+				      &prop)) {
+		alert_threshold_ua = prop;
+	} else if (st->r_sense_uohm) {
+		/*
+		 * set maximum default value from datasheet based on
+		 * shunt-resistor
+		 */
+		alert_threshold_ua = div_u64(105840000000ULL,
+					     st->r_sense_uohm);
+	} else {
+		alert_threshold_ua = 0;
 	}
 	st->vrange_high = device_property_read_bool(dev,
 						    "adi,vrange-high-enable");
-	if (alert_threshold_ua && st->r_sense_uohm)
-		adm1177_write_alert_thr(st, alert_threshold_ua);
+	if (alert_threshold_ua && st->r_sense_uohm) {
+		ret = adm1177_write_alert_thr(st, alert_threshold_ua);
+		if (ret)
+			return ret;
+	}
 
 	ret = adm1177_write_cmd(st, ADM1177_CMD_V_CONT |
 				    ADM1177_CMD_I_CONT |
@@ -259,7 +246,7 @@ static int adm1177_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id adm1177_id[] = {
-	{"adm1177", 0},
+	{"adm1177"},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, adm1177_id);
@@ -271,12 +258,11 @@ static const struct of_device_id adm1177_dt_ids[] = {
 MODULE_DEVICE_TABLE(of, adm1177_dt_ids);
 
 static struct i2c_driver adm1177_driver = {
-	.class = I2C_CLASS_HWMON,
 	.driver = {
 		.name = "adm1177",
 		.of_match_table = adm1177_dt_ids,
 	},
-	.probe_new = adm1177_probe,
+	.probe = adm1177_probe,
 	.id_table = adm1177_id,
 };
 module_i2c_driver(adm1177_driver);

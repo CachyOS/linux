@@ -12,28 +12,32 @@
  */
 #define pr_fmt(fmt) "pinmux core: " fmt
 
+#include <linux/array_size.h>
 #include <linux/ctype.h>
-#include <linux/kernel.h>
-#include <linux/module.h>
-#include <linux/init.h>
-#include <linux/device.h>
-#include <linux/slab.h>
-#include <linux/radix-tree.h>
-#include <linux/err.h>
-#include <linux/list.h>
-#include <linux/string.h>
+#include <linux/cleanup.h>
 #include <linux/debugfs.h>
+#include <linux/device.h>
+#include <linux/err.h>
+#include <linux/init.h>
+#include <linux/list.h>
+#include <linux/module.h>
+#include <linux/radix-tree.h>
 #include <linux/seq_file.h>
+#include <linux/slab.h>
+#include <linux/string.h>
+
 #include <linux/pinctrl/machine.h>
+#include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
+
 #include "core.h"
 #include "pinmux.h"
 
 int pinmux_check_ops(struct pinctrl_dev *pctldev)
 {
 	const struct pinmux_ops *ops = pctldev->desc->pmxops;
-	unsigned nfuncs;
-	unsigned selector = 0;
+	unsigned int nfuncs;
+	unsigned int selector = 0;
 
 	/* Check that we implement required operations */
 	if (!ops ||
@@ -81,16 +85,24 @@ int pinmux_validate_map(const struct pinctrl_map *map, int i)
  * Controllers not defined as strict will always return true,
  * menaning that the gpio can be used.
  */
-bool pinmux_can_be_used_for_gpio(struct pinctrl_dev *pctldev, unsigned pin)
+bool pinmux_can_be_used_for_gpio(struct pinctrl_dev *pctldev, unsigned int pin)
 {
 	struct pin_desc *desc = pin_desc_get(pctldev, pin);
 	const struct pinmux_ops *ops = pctldev->desc->pmxops;
+	const struct pinctrl_setting_mux *mux_setting;
+	bool func_is_gpio = false;
 
 	/* Can't inspect pin, assume it can be used */
 	if (!desc || !ops)
 		return true;
 
-	if (ops->strict && desc->mux_usecount)
+	mux_setting = desc->mux_setting;
+
+	guard(mutex)(&desc->mux_lock);
+	if (mux_setting && ops->function_is_gpio)
+		func_is_gpio = ops->function_is_gpio(pctldev, mux_setting->func);
+
+	if (ops->strict && desc->mux_usecount && !func_is_gpio)
 		return false;
 
 	return !(ops->strict && !!desc->gpio_owner);
@@ -111,7 +123,9 @@ static int pin_request(struct pinctrl_dev *pctldev,
 {
 	struct pin_desc *desc;
 	const struct pinmux_ops *ops = pctldev->desc->pmxops;
+	const struct pinctrl_setting_mux *mux_setting;
 	int status = -EINVAL;
+	bool gpio_ok = false;
 
 	desc = pin_desc_get(pctldev, pin);
 	if (desc == NULL) {
@@ -121,32 +135,44 @@ static int pin_request(struct pinctrl_dev *pctldev,
 		goto out;
 	}
 
+	mux_setting = desc->mux_setting;
+
 	dev_dbg(pctldev->dev, "request pin %d (%s) for %s\n",
 		pin, desc->name, owner);
 
-	if ((!gpio_range || ops->strict) &&
-	    desc->mux_usecount && strcmp(desc->mux_owner, owner)) {
-		dev_err(pctldev->dev,
-			"pin %s already requested by %s; cannot claim for %s\n",
-			desc->name, desc->mux_owner, owner);
-		goto out;
-	}
+	scoped_guard(mutex, &desc->mux_lock) {
+		if (mux_setting) {
+			if (ops->function_is_gpio)
+				gpio_ok = ops->function_is_gpio(pctldev,
+								mux_setting->func);
+		} else {
+			gpio_ok = true;
+		}
 
-	if ((gpio_range || ops->strict) && desc->gpio_owner) {
-		dev_err(pctldev->dev,
-			"pin %s already requested by %s; cannot claim for %s\n",
-			desc->name, desc->gpio_owner, owner);
-		goto out;
-	}
+		if ((!gpio_range || ops->strict) && !gpio_ok &&
+		    desc->mux_usecount && strcmp(desc->mux_owner, owner)) {
+			dev_err(pctldev->dev,
+				"pin %s already requested by %s; cannot claim for %s\n",
+				desc->name, desc->mux_owner, owner);
+			goto out;
+		}
 
-	if (gpio_range) {
-		desc->gpio_owner = owner;
-	} else {
-		desc->mux_usecount++;
-		if (desc->mux_usecount > 1)
-			return 0;
+		if ((gpio_range || ops->strict) && !gpio_ok && desc->gpio_owner) {
+			dev_err(pctldev->dev,
+				"pin %s already requested by %s; cannot claim for %s\n",
+				desc->name, desc->gpio_owner, owner);
+			goto out;
+		}
 
-		desc->mux_owner = owner;
+		if (gpio_range) {
+			desc->gpio_owner = owner;
+		} else {
+			desc->mux_usecount++;
+			if (desc->mux_usecount > 1)
+				return 0;
+
+			desc->mux_owner = owner;
+		}
 	}
 
 	/* Let each pin increase references to this module */
@@ -170,25 +196,25 @@ static int pin_request(struct pinctrl_dev *pctldev,
 	else
 		status = 0;
 
-	if (status) {
-		dev_err(pctldev->dev, "request() failed for pin %d\n", pin);
+	if (status)
 		module_put(pctldev->owner);
-	}
 
 out_free_pin:
 	if (status) {
-		if (gpio_range) {
-			desc->gpio_owner = NULL;
-		} else {
-			desc->mux_usecount--;
-			if (!desc->mux_usecount)
-				desc->mux_owner = NULL;
+		scoped_guard(mutex, &desc->mux_lock) {
+			if (gpio_range) {
+				desc->gpio_owner = NULL;
+			} else {
+				desc->mux_usecount--;
+				if (!desc->mux_usecount)
+					desc->mux_owner = NULL;
+			}
 		}
 	}
 out:
 	if (status)
-		dev_err(pctldev->dev, "pin-%d (%s) status %d\n",
-			pin, owner, status);
+		dev_err_probe(pctldev->dev, status, "pin-%d (%s)\n",
+			      pin, owner);
 
 	return status;
 }
@@ -218,15 +244,26 @@ static const char *pin_free(struct pinctrl_dev *pctldev, int pin,
 		return NULL;
 	}
 
-	if (!gpio_range) {
-		/*
-		 * A pin should not be freed more times than allocated.
-		 */
-		if (WARN_ON(!desc->mux_usecount))
-			return NULL;
-		desc->mux_usecount--;
-		if (desc->mux_usecount)
-			return NULL;
+	scoped_guard(mutex, &desc->mux_lock) {
+		if (!gpio_range) {
+			/*
+			 * A pin should not be freed more times than allocated.
+			 */
+			if (WARN_ON(!desc->mux_usecount))
+				return NULL;
+			desc->mux_usecount--;
+			if (desc->mux_usecount)
+				return NULL;
+		}
+
+		if (gpio_range) {
+			owner = desc->gpio_owner;
+			desc->gpio_owner = NULL;
+		} else {
+			owner = desc->mux_owner;
+			desc->mux_owner = NULL;
+			desc->mux_setting = NULL;
+		}
 	}
 
 	/*
@@ -237,15 +274,6 @@ static const char *pin_free(struct pinctrl_dev *pctldev, int pin,
 		ops->gpio_disable_free(pctldev, gpio_range, pin);
 	else if (ops->free)
 		ops->free(pctldev, pin);
-
-	if (gpio_range) {
-		owner = desc->gpio_owner;
-		desc->gpio_owner = NULL;
-	} else {
-		owner = desc->mux_owner;
-		desc->mux_owner = NULL;
-		desc->mux_setting = NULL;
-	}
 
 	module_put(pctldev->owner);
 
@@ -261,7 +289,7 @@ static const char *pin_free(struct pinctrl_dev *pctldev, int pin,
  */
 int pinmux_request_gpio(struct pinctrl_dev *pctldev,
 			struct pinctrl_gpio_range *range,
-			unsigned pin, unsigned gpio)
+			unsigned int pin, unsigned int gpio)
 {
 	const char *owner;
 	int ret;
@@ -284,7 +312,7 @@ int pinmux_request_gpio(struct pinctrl_dev *pctldev,
  * @pin: the affected currently GPIO-muxed in pin
  * @range: applicable GPIO range
  */
-void pinmux_free_gpio(struct pinctrl_dev *pctldev, unsigned pin,
+void pinmux_free_gpio(struct pinctrl_dev *pctldev, unsigned int pin,
 		      struct pinctrl_gpio_range *range)
 {
 	const char *owner;
@@ -302,7 +330,7 @@ void pinmux_free_gpio(struct pinctrl_dev *pctldev, unsigned pin,
  */
 int pinmux_gpio_direction(struct pinctrl_dev *pctldev,
 			  struct pinctrl_gpio_range *range,
-			  unsigned pin, bool input)
+			  unsigned int pin, bool input)
 {
 	const struct pinmux_ops *ops;
 	int ret;
@@ -321,14 +349,14 @@ static int pinmux_func_name_to_selector(struct pinctrl_dev *pctldev,
 					const char *function)
 {
 	const struct pinmux_ops *ops = pctldev->desc->pmxops;
-	unsigned nfuncs = ops->get_functions_count(pctldev);
-	unsigned selector = 0;
+	unsigned int nfuncs = ops->get_functions_count(pctldev);
+	unsigned int selector = 0;
 
 	/* See if this pctldev has this function */
 	while (selector < nfuncs) {
 		const char *fname = ops->get_function_name(pctldev, selector);
 
-		if (!strcmp(function, fname))
+		if (fname && !strcmp(function, fname))
 			return selector;
 
 		selector++;
@@ -343,7 +371,7 @@ int pinmux_map_to_setting(const struct pinctrl_map *map,
 	struct pinctrl_dev *pctldev = setting->pctldev;
 	const struct pinmux_ops *pmxops = pctldev->desc->pmxops;
 	char const * const *groups;
-	unsigned num_groups;
+	unsigned int num_groups;
 	int ret;
 	const char *group;
 
@@ -408,8 +436,8 @@ int pinmux_enable_setting(const struct pinctrl_setting *setting)
 	const struct pinctrl_ops *pctlops = pctldev->desc->pctlops;
 	const struct pinmux_ops *ops = pctldev->desc->pmxops;
 	int ret = 0;
-	const unsigned *pins = NULL;
-	unsigned num_pins = 0;
+	const unsigned int *pins = NULL;
+	unsigned int num_pins = 0;
 	int i;
 	struct pin_desc *desc;
 
@@ -440,9 +468,8 @@ int pinmux_enable_setting(const struct pinctrl_setting *setting)
 			pname = desc ? desc->name : "non-existing";
 			gname = pctlops->get_group_name(pctldev,
 						setting->data.mux.group);
-			dev_err(pctldev->dev,
-				"could not request pin %d (%s) from group %s "
-				" on device %s\n",
+			dev_err_probe(pctldev->dev, ret,
+				"could not request pin %d (%s) from group %s on device %s\n",
 				pins[i], pname, gname,
 				pinctrl_dev_get_name(pctldev));
 			goto err_pin_request;
@@ -458,7 +485,8 @@ int pinmux_enable_setting(const struct pinctrl_setting *setting)
 				 pins[i]);
 			continue;
 		}
-		desc->mux_setting = &(setting->data.mux);
+		scoped_guard(mutex, &desc->mux_lock)
+			desc->mux_setting = &(setting->data.mux);
 	}
 
 	ret = ops->set_mux(pctldev, setting->data.mux.func,
@@ -472,8 +500,10 @@ int pinmux_enable_setting(const struct pinctrl_setting *setting)
 err_set_mux:
 	for (i = 0; i < num_pins; i++) {
 		desc = pin_desc_get(pctldev, pins[i]);
-		if (desc)
-			desc->mux_setting = NULL;
+		if (desc) {
+			scoped_guard(mutex, &desc->mux_lock)
+				desc->mux_setting = NULL;
+		}
 	}
 err_pin_request:
 	/* On error release all taken pins */
@@ -488,10 +518,11 @@ void pinmux_disable_setting(const struct pinctrl_setting *setting)
 	struct pinctrl_dev *pctldev = setting->pctldev;
 	const struct pinctrl_ops *pctlops = pctldev->desc->pctlops;
 	int ret = 0;
-	const unsigned *pins = NULL;
-	unsigned num_pins = 0;
+	const unsigned int *pins = NULL;
+	unsigned int num_pins = 0;
 	int i;
 	struct pin_desc *desc;
+	bool is_equal;
 
 	if (pctlops->get_group_pins)
 		ret = pctlops->get_group_pins(pctldev, setting->data.mux.group,
@@ -517,7 +548,10 @@ void pinmux_disable_setting(const struct pinctrl_setting *setting)
 				 pins[i]);
 			continue;
 		}
-		if (desc->mux_setting == &(setting->data.mux)) {
+		scoped_guard(mutex, &desc->mux_lock)
+			is_equal = (desc->mux_setting == &(setting->data.mux));
+
+		if (is_equal) {
 			pin_free(pctldev, pins[i], NULL);
 		} else {
 			const char *gname;
@@ -525,9 +559,7 @@ void pinmux_disable_setting(const struct pinctrl_setting *setting)
 			gname = pctlops->get_group_name(pctldev,
 						setting->data.mux.group);
 			dev_warn(pctldev->dev,
-				 "not freeing pin %d (%s) as part of "
-				 "deactivating group %s - it is already "
-				 "used for some other setting",
+				 "not freeing pin %d (%s) as part of deactivating group %s - it is already used for some other setting",
 				 pins[i], desc->name, gname);
 		}
 	}
@@ -540,8 +572,8 @@ static int pinmux_functions_show(struct seq_file *s, void *what)
 {
 	struct pinctrl_dev *pctldev = s->private;
 	const struct pinmux_ops *pmxops = pctldev->desc->pmxops;
-	unsigned nfuncs;
-	unsigned func_selector = 0;
+	unsigned int nfuncs;
+	unsigned int func_selector = 0;
 
 	if (!pmxops)
 		return 0;
@@ -552,7 +584,7 @@ static int pinmux_functions_show(struct seq_file *s, void *what)
 		const char *func = pmxops->get_function_name(pctldev,
 							  func_selector);
 		const char * const *groups;
-		unsigned num_groups;
+		unsigned int num_groups;
 		int ret;
 		int i;
 
@@ -577,13 +609,14 @@ static int pinmux_functions_show(struct seq_file *s, void *what)
 
 	return 0;
 }
+DEFINE_SHOW_ATTRIBUTE(pinmux_functions);
 
 static int pinmux_pins_show(struct seq_file *s, void *what)
 {
 	struct pinctrl_dev *pctldev = s->private;
 	const struct pinctrl_ops *pctlops = pctldev->desc->pctlops;
 	const struct pinmux_ops *pmxops = pctldev->desc->pmxops;
-	unsigned i, pin;
+	unsigned int i, pin;
 
 	if (!pmxops)
 		return 0;
@@ -609,46 +642,49 @@ static int pinmux_pins_show(struct seq_file *s, void *what)
 		if (desc == NULL)
 			continue;
 
-		if (desc->mux_owner &&
-		    !strcmp(desc->mux_owner, pinctrl_dev_get_name(pctldev)))
-			is_hog = true;
+		scoped_guard(mutex, &desc->mux_lock) {
+			if (desc->mux_owner &&
+			    !strcmp(desc->mux_owner, pinctrl_dev_get_name(pctldev)))
+				is_hog = true;
 
-		if (pmxops->strict) {
-			if (desc->mux_owner)
-				seq_printf(s, "pin %d (%s): device %s%s",
-					   pin, desc->name, desc->mux_owner,
+			if (pmxops->strict) {
+				if (desc->mux_owner)
+					seq_printf(s, "pin %d (%s): device %s%s",
+						   pin, desc->name, desc->mux_owner,
+						   is_hog ? " (HOG)" : "");
+				else if (desc->gpio_owner)
+					seq_printf(s, "pin %d (%s): GPIO %s",
+						   pin, desc->name, desc->gpio_owner);
+				else
+					seq_printf(s, "pin %d (%s): UNCLAIMED",
+						   pin, desc->name);
+			} else {
+				/* For non-strict controllers */
+				seq_printf(s, "pin %d (%s): %s %s%s", pin, desc->name,
+					   desc->mux_owner ? desc->mux_owner
+					   : "(MUX UNCLAIMED)",
+					   desc->gpio_owner ? desc->gpio_owner
+					   : "(GPIO UNCLAIMED)",
 					   is_hog ? " (HOG)" : "");
-			else if (desc->gpio_owner)
-				seq_printf(s, "pin %d (%s): GPIO %s",
-					   pin, desc->name, desc->gpio_owner);
-			else
-				seq_printf(s, "pin %d (%s): UNCLAIMED",
-					   pin, desc->name);
-		} else {
-			/* For non-strict controllers */
-			seq_printf(s, "pin %d (%s): %s %s%s", pin, desc->name,
-				   desc->mux_owner ? desc->mux_owner
-				   : "(MUX UNCLAIMED)",
-				   desc->gpio_owner ? desc->gpio_owner
-				   : "(GPIO UNCLAIMED)",
-				   is_hog ? " (HOG)" : "");
-		}
+			}
 
-		/* If mux: print function+group claiming the pin */
-		if (desc->mux_setting)
-			seq_printf(s, " function %s group %s\n",
-				   pmxops->get_function_name(pctldev,
-					desc->mux_setting->func),
-				   pctlops->get_group_name(pctldev,
-					desc->mux_setting->group));
-		else
-			seq_putc(s, '\n');
+			/* If mux: print function+group claiming the pin */
+			if (desc->mux_setting)
+				seq_printf(s, " function %s group %s\n",
+					   pmxops->get_function_name(pctldev,
+						desc->mux_setting->func),
+					   pctlops->get_group_name(pctldev,
+						desc->mux_setting->group));
+			else
+				seq_putc(s, '\n');
+		}
 	}
 
 	mutex_unlock(&pctldev->mutex);
 
 	return 0;
 }
+DEFINE_SHOW_ATTRIBUTE(pinmux_pins);
 
 void pinmux_show_map(struct seq_file *s, const struct pinctrl_map *map)
 {
@@ -671,11 +707,12 @@ void pinmux_show_setting(struct seq_file *s,
 		   setting->data.mux.func);
 }
 
-DEFINE_SHOW_ATTRIBUTE(pinmux_functions);
-DEFINE_SHOW_ATTRIBUTE(pinmux_pins);
+static int pinmux_select_show(struct seq_file *s, void *unused)
+{
+	return -EPERM;
+}
 
-#define PINMUX_SELECT_MAX 128
-static ssize_t pinmux_select(struct file *file, const char __user *user_buf,
+static ssize_t pinmux_select_write(struct file *file, const char __user *user_buf,
 				   size_t len, loff_t *ppos)
 {
 	struct seq_file *sfile = file->private_data;
@@ -686,17 +723,9 @@ static ssize_t pinmux_select(struct file *file, const char __user *user_buf,
 	unsigned int num_groups;
 	int fsel, gsel, ret;
 
-	if (len > PINMUX_SELECT_MAX)
-		return -ENOMEM;
-
-	buf = kzalloc(PINMUX_SELECT_MAX, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-
-	ret = strncpy_from_user(buf, user_buf, PINMUX_SELECT_MAX);
-	if (ret < 0)
-		goto exit_free_buf;
-	buf[len-1] = '\0';
+	buf = memdup_user_nul(user_buf, len);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
 
 	/* remove leading and trailing spaces of input buffer */
 	gname = strstrip(buf);
@@ -741,10 +770,8 @@ static ssize_t pinmux_select(struct file *file, const char __user *user_buf,
 	}
 
 	ret = pinctrl_get_group_selector(pctldev, gname);
-	if (ret < 0) {
-		dev_err(pctldev->dev, "failed to get group selector for %s", gname);
+	if (ret < 0)
 		goto exit_free_buf;
-	}
 	gsel = ret;
 
 	ret = pmxops->set_mux(pctldev, fsel, gsel);
@@ -759,19 +786,7 @@ exit_free_buf:
 
 	return ret;
 }
-
-static int pinmux_select_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, NULL, inode->i_private);
-}
-
-static const struct file_operations pinmux_select_ops = {
-	.owner = THIS_MODULE,
-	.open = pinmux_select_open,
-	.write = pinmux_select,
-	.llseek = no_llseek,
-	.release = single_release,
-};
+DEFINE_SHOW_STORE_ATTRIBUTE(pinmux_select);
 
 void pinmux_init_device_debugfs(struct dentry *devroot,
 			 struct pinctrl_dev *pctldev)
@@ -781,7 +796,7 @@ void pinmux_init_device_debugfs(struct dentry *devroot,
 	debugfs_create_file("pinmux-pins", 0444,
 			    devroot, pctldev, &pinmux_pins_fops);
 	debugfs_create_file("pinmux-select", 0200,
-			    devroot, pctldev, &pinmux_select_ops);
+			    devroot, pctldev, &pinmux_select_fops);
 }
 
 #endif /* CONFIG_DEBUG_FS */
@@ -814,7 +829,7 @@ pinmux_generic_get_function_name(struct pinctrl_dev *pctldev,
 	if (!function)
 		return NULL;
 
-	return function->name;
+	return function->func->name;
 }
 EXPORT_SYMBOL_GPL(pinmux_generic_get_function_name);
 
@@ -823,12 +838,12 @@ EXPORT_SYMBOL_GPL(pinmux_generic_get_function_name);
  * @pctldev: pin controller device
  * @selector: function number
  * @groups: array of pin groups
- * @num_groups: number of pin groups
+ * @ngroups: number of pin groups
  */
 int pinmux_generic_get_function_groups(struct pinctrl_dev *pctldev,
 				       unsigned int selector,
 				       const char * const **groups,
-				       unsigned * const num_groups)
+				       unsigned int * const ngroups)
 {
 	struct function_desc *function;
 
@@ -839,8 +854,8 @@ int pinmux_generic_get_function_groups(struct pinctrl_dev *pctldev,
 			__func__, selector);
 		return -EINVAL;
 	}
-	*groups = function->group_names;
-	*num_groups = function->num_group_names;
+	*groups = function->func->groups;
+	*ngroups = function->func->ngroups;
 
 	return 0;
 }
@@ -851,8 +866,8 @@ EXPORT_SYMBOL_GPL(pinmux_generic_get_function_groups);
  * @pctldev: pin controller device
  * @selector: function number
  */
-struct function_desc *pinmux_generic_get_function(struct pinctrl_dev *pctldev,
-						  unsigned int selector)
+const struct function_desc *
+pinmux_generic_get_function(struct pinctrl_dev *pctldev, unsigned int selector)
 {
 	struct function_desc *function;
 
@@ -866,26 +881,59 @@ struct function_desc *pinmux_generic_get_function(struct pinctrl_dev *pctldev,
 EXPORT_SYMBOL_GPL(pinmux_generic_get_function);
 
 /**
+ * pinmux_generic_function_is_gpio() - returns true if given function is a GPIO
+ * @pctldev: pin controller device
+ * @selector: function number
+ *
+ * Returns:
+ * True if given function is a GPIO, false otherwise.
+ */
+bool pinmux_generic_function_is_gpio(struct pinctrl_dev *pctldev,
+				     unsigned int selector)
+{
+	struct function_desc *function;
+
+	function = radix_tree_lookup(&pctldev->pin_function_tree, selector);
+	if (!function)
+		return false;
+
+	return function->func->flags & PINFUNCTION_FLAG_GPIO;
+}
+EXPORT_SYMBOL_GPL(pinmux_generic_function_is_gpio);
+
+/**
  * pinmux_generic_add_function() - adds a function group
  * @pctldev: pin controller device
  * @name: name of the function
  * @groups: array of pin groups
- * @num_groups: number of pin groups
+ * @ngroups: number of pin groups
  * @data: pin controller driver specific data
  */
 int pinmux_generic_add_function(struct pinctrl_dev *pctldev,
 				const char *name,
 				const char * const *groups,
-				const unsigned int num_groups,
+				const unsigned int ngroups,
 				void *data)
 {
+	struct pinfunction func = PINCTRL_PINFUNCTION(name, groups, ngroups);
+
+	return pinmux_generic_add_pinfunction(pctldev, &func, data);
+}
+EXPORT_SYMBOL_GPL(pinmux_generic_add_function);
+
+/**
+ * pinmux_generic_add_pinfunction() - adds a function group
+ * @pctldev: pin controller device
+ * @func: pinfunction structure describing the function group
+ * @data: pin controller driver specific data
+ */
+int pinmux_generic_add_pinfunction(struct pinctrl_dev *pctldev,
+				   const struct pinfunction *func, void *data)
+{
 	struct function_desc *function;
-	int selector;
+	int selector, error;
 
-	if (!name)
-		return -EINVAL;
-
-	selector = pinmux_func_name_to_selector(pctldev, name);
+	selector = pinmux_func_name_to_selector(pctldev, func->name);
 	if (selector >= 0)
 		return selector;
 
@@ -895,18 +943,28 @@ int pinmux_generic_add_function(struct pinctrl_dev *pctldev,
 	if (!function)
 		return -ENOMEM;
 
-	function->name = name;
-	function->group_names = groups;
-	function->num_group_names = num_groups;
+	/*
+	 * FIXME: It's generally a bad idea to use devres in subsystem core
+	 * code - managed interfaces are aimed at drivers - but pinctrl already
+	 * uses it all over the place so it's a larger piece of technical debt
+	 * to fix.
+	 */
+	function->func = devm_kmemdup_const(pctldev->dev, func,
+					    sizeof(*func), GFP_KERNEL);
+	if (!function->func)
+		return -ENOMEM;
+
 	function->data = data;
 
-	radix_tree_insert(&pctldev->pin_function_tree, selector, function);
+	error = radix_tree_insert(&pctldev->pin_function_tree, selector, function);
+	if (error)
+		return error;
 
 	pctldev->num_functions++;
 
 	return selector;
 }
-EXPORT_SYMBOL_GPL(pinmux_generic_add_function);
+EXPORT_SYMBOL_GPL(pinmux_generic_add_pinfunction);
 
 /**
  * pinmux_generic_remove_function() - removes a numbered function

@@ -4,13 +4,13 @@
 //
 // Based on WM8523 ALSA SoC Audio driver written by Mark Brown
 
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/gpio/consumer.h>
-#include <linux/of_device.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -42,7 +42,7 @@ static const struct snd_soc_dapm_route uda1334_dapm_routes[] = {
 static int uda1334_put_deemph(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct uda1334_priv *uda1334 = snd_soc_component_get_drvdata(component);
 	int deemph = ucontrol->value.integer.value[0];
 
@@ -57,7 +57,7 @@ static int uda1334_put_deemph(struct snd_kcontrol *kcontrol,
 static int uda1334_get_deemph(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct uda1334_priv *uda1334 = snd_soc_component_get_drvdata(component);
 	int ret;
 
@@ -169,7 +169,7 @@ static int uda1334_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 static int uda1334_set_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
 {
 	fmt &= (SND_SOC_DAIFMT_FORMAT_MASK | SND_SOC_DAIFMT_INV_MASK |
-		SND_SOC_DAIFMT_MASTER_MASK);
+		SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK);
 
 	if (fmt != (SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 		    SND_SOC_DAIFMT_CBC_CFC)) {
@@ -236,7 +236,6 @@ static const struct snd_soc_component_driver soc_component_dev_uda1334 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct of_device_id uda1334_of_match[] = {

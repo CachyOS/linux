@@ -48,6 +48,7 @@
 #include <linux/platform_device.h>
 
 #include <drm/drm_drv.h>
+#include <drm/drm_print.h>
 
 #include "vc4_drv.h"
 #include "vc4_regs.h"
@@ -56,8 +57,6 @@
 #define V3D_DRIVER_IRQS (V3D_INT_OUTOMEM | \
 			 V3D_INT_FLDONE | \
 			 V3D_INT_FRDONE)
-
-DECLARE_WAIT_QUEUE_HEAD(render_wait);
 
 static void
 vc4_overflow_mem_work(struct work_struct *work)
@@ -78,7 +77,7 @@ vc4_overflow_mem_work(struct work_struct *work)
 
 	bin_bo_slot = vc4_v3d_get_bin_slot(vc4);
 	if (bin_bo_slot < 0) {
-		DRM_ERROR("Couldn't allocate binner overflow mem\n");
+		drm_err(&vc4->base, "Couldn't allocate binner overflow mem\n");
 		goto complete;
 	}
 
@@ -105,7 +104,7 @@ vc4_overflow_mem_work(struct work_struct *work)
 	}
 	vc4->bin_alloc_overflow = BIT(bin_bo_slot);
 
-	V3D_WRITE(V3D_BPOA, bo->base.paddr + bin_bo_slot * vc4->bin_alloc_size);
+	V3D_WRITE(V3D_BPOA, bo->base.dma_addr + bin_bo_slot * vc4->bin_alloc_size);
 	V3D_WRITE(V3D_BPOS, bo->base.base.size);
 	V3D_WRITE(V3D_INTCTL, V3D_INT_OUTOMEM);
 	V3D_WRITE(V3D_INTENA, V3D_INT_OUTOMEM);
@@ -265,6 +264,9 @@ vc4_irq_enable(struct drm_device *dev)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 
+	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
+		return;
+
 	if (!vc4->v3d)
 		return;
 
@@ -279,6 +281,9 @@ vc4_irq_disable(struct drm_device *dev)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 
+	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
+		return;
+
 	if (!vc4->v3d)
 		return;
 
@@ -289,14 +294,18 @@ vc4_irq_disable(struct drm_device *dev)
 	V3D_WRITE(V3D_INTCTL, V3D_DRIVER_IRQS);
 
 	/* Finish any interrupt handler still in flight. */
-	disable_irq(vc4->irq);
+	synchronize_irq(vc4->irq);
 
 	cancel_work_sync(&vc4->overflow_mem_work);
 }
 
 int vc4_irq_install(struct drm_device *dev, int irq)
 {
+	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	int ret;
+
+	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
+		return -ENODEV;
 
 	if (irq == IRQ_NOTCONNECTED)
 		return -ENOTCONN;
@@ -316,6 +325,9 @@ void vc4_irq_uninstall(struct drm_device *dev)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 
+	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
+		return;
+
 	vc4_irq_disable(dev);
 	free_irq(vc4->irq, dev);
 }
@@ -325,6 +337,9 @@ void vc4_irq_reset(struct drm_device *dev)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	unsigned long irqflags;
+
+	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
+		return;
 
 	/* Acknowledge any stale IRQs. */
 	V3D_WRITE(V3D_INTCTL, V3D_DRIVER_IRQS);

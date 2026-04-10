@@ -136,7 +136,23 @@ static void	bfa_fcs_rport_sm_fc4_off_delete(struct bfa_fcs_rport_s *rport,
 static void	bfa_fcs_rport_sm_delete_pending(struct bfa_fcs_rport_s *rport,
 						enum rport_event event);
 
-static struct bfa_sm_table_s rport_sm_table[] = {
+struct bfa_fcs_rport_sm_table_s {
+	bfa_fcs_rport_sm_t sm;		/*  state machine function	*/
+	enum bfa_rport_state state;	/*  state machine encoding	*/
+	char		*name;		/*  state name for display	*/
+};
+
+static inline enum bfa_rport_state
+bfa_rport_sm_to_state(struct bfa_fcs_rport_sm_table_s *smt, bfa_fcs_rport_sm_t sm)
+{
+	int i = 0;
+
+	while (smt[i].sm && smt[i].sm != sm)
+		i++;
+	return smt[i].state;
+}
+
+static struct bfa_fcs_rport_sm_table_s rport_sm_table[] = {
 	{BFA_SM(bfa_fcs_rport_sm_uninit), BFA_RPORT_UNINIT},
 	{BFA_SM(bfa_fcs_rport_sm_plogi_sending), BFA_RPORT_PLOGI},
 	{BFA_SM(bfa_fcs_rport_sm_plogiacc_sending), BFA_RPORT_ONLINE},
@@ -2630,27 +2646,6 @@ bfa_fcs_rport_create_by_wwn(struct bfa_fcs_lport_s *port, wwn_t rpwwn)
 	bfa_sm_send_event(rport, RPSM_EVENT_ADDRESS_DISC);
 	return rport;
 }
-/*
- * Called by bport in private loop topology to indicate that a
- * rport has been discovered and plogi has been completed.
- *
- * @param[in] port	- base port or vport
- * @param[in] rpid	- remote port ID
- */
-void
-bfa_fcs_rport_start(struct bfa_fcs_lport_s *port, struct fchs_s *fchs,
-	 struct fc_logi_s *plogi)
-{
-	struct bfa_fcs_rport_s *rport;
-
-	rport = bfa_fcs_rport_alloc(port, WWN_NULL, fchs->s_id);
-	if (!rport)
-		return;
-
-	bfa_fcs_rport_update(rport, plogi);
-
-	bfa_sm_send_event(rport, RPSM_EVENT_PLOGI_COMP);
-}
 
 /*
  *	Called by bport/vport to handle PLOGI received from a new remote port.
@@ -2964,7 +2959,7 @@ bfa_fcs_rport_send_ls_rjt(struct bfa_fcs_rport_s *rport, struct fchs_s *rx_fchs,
 int
 bfa_fcs_rport_get_state(struct bfa_fcs_rport_s *rport)
 {
-	return bfa_sm_to_state(rport_sm_table, rport->sm);
+	return bfa_rport_sm_to_state(rport_sm_table, rport->sm);
 }
 
 
@@ -3073,21 +3068,6 @@ bfa_fcs_rport_lookup(struct bfa_fcs_lport_s *port, wwn_t rpwwn)
 	return rport;
 }
 
-struct bfa_fcs_rport_s *
-bfa_fcs_rport_lookup_by_nwwn(struct bfa_fcs_lport_s *port, wwn_t rnwwn)
-{
-	struct bfa_fcs_rport_s *rport;
-
-	rport = bfa_fcs_lport_get_rport_by_nwwn(port, rnwwn);
-	if (rport == NULL) {
-		/*
-		 * TBD Error handling
-		 */
-	}
-
-	return rport;
-}
-
 /*
  * Remote port features (RPF) implementation.
  */
@@ -3106,20 +3086,6 @@ static void     bfa_fcs_rpf_rpsc2_response(void *fcsarg,
 			struct fchs_s *rsp_fchs);
 
 static void     bfa_fcs_rpf_timeout(void *arg);
-
-/*
- *  fcs_rport_ftrs_sm FCS rport state machine events
- */
-
-enum rpf_event {
-	RPFSM_EVENT_RPORT_OFFLINE  = 1, /* Rport offline		*/
-	RPFSM_EVENT_RPORT_ONLINE   = 2,	/* Rport online			*/
-	RPFSM_EVENT_FCXP_SENT      = 3,	/* Frame from has been sent	*/
-	RPFSM_EVENT_TIMEOUT	   = 4, /* Rport SM timeout event	*/
-	RPFSM_EVENT_RPSC_COMP      = 5,
-	RPFSM_EVENT_RPSC_FAIL      = 6,
-	RPFSM_EVENT_RPSC_ERROR     = 7,
-};
 
 static void	bfa_fcs_rpf_sm_uninit(struct bfa_fcs_rpf_s *rpf,
 					enum rpf_event event);

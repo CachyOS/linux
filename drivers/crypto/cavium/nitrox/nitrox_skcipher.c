@@ -337,12 +337,11 @@ static int nitrox_3des_decrypt(struct skcipher_request *skreq)
 static int nitrox_aes_xts_setkey(struct crypto_skcipher *cipher,
 				 const u8 *key, unsigned int keylen)
 {
-	struct crypto_tfm *tfm = crypto_skcipher_tfm(cipher);
-	struct nitrox_crypto_ctx *nctx = crypto_tfm_ctx(tfm);
+	struct nitrox_crypto_ctx *nctx = crypto_skcipher_ctx(cipher);
 	struct flexi_crypto_context *fctx;
 	int aes_keylen, ret;
 
-	ret = xts_check_key(tfm, key, keylen);
+	ret = xts_verify_key(cipher, key, keylen);
 	if (ret)
 		return ret;
 
@@ -362,8 +361,7 @@ static int nitrox_aes_xts_setkey(struct crypto_skcipher *cipher,
 static int nitrox_aes_ctr_rfc3686_setkey(struct crypto_skcipher *cipher,
 					 const u8 *key, unsigned int keylen)
 {
-	struct crypto_tfm *tfm = crypto_skcipher_tfm(cipher);
-	struct nitrox_crypto_ctx *nctx = crypto_tfm_ctx(tfm);
+	struct nitrox_crypto_ctx *nctx = crypto_skcipher_ctx(cipher);
 	struct flexi_crypto_context *fctx;
 	int aes_keylen;
 
@@ -406,25 +404,6 @@ static struct skcipher_alg nitrox_skciphers[] = { {
 	.base = {
 		.cra_name = "ecb(aes)",
 		.cra_driver_name = "n5_ecb(aes)",
-		.cra_priority = PRIO,
-		.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_ALLOCATES_MEMORY,
-		.cra_blocksize = AES_BLOCK_SIZE,
-		.cra_ctxsize = sizeof(struct nitrox_crypto_ctx),
-		.cra_alignmask = 0,
-		.cra_module = THIS_MODULE,
-	},
-	.min_keysize = AES_MIN_KEY_SIZE,
-	.max_keysize = AES_MAX_KEY_SIZE,
-	.ivsize = AES_BLOCK_SIZE,
-	.setkey = nitrox_aes_setkey,
-	.encrypt = nitrox_aes_encrypt,
-	.decrypt = nitrox_aes_decrypt,
-	.init = nitrox_skcipher_init,
-	.exit = nitrox_skcipher_exit,
-}, {
-	.base = {
-		.cra_name = "cfb(aes)",
-		.cra_driver_name = "n5_cfb(aes)",
 		.cra_priority = PRIO,
 		.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_ALLOCATES_MEMORY,
 		.cra_blocksize = AES_BLOCK_SIZE,

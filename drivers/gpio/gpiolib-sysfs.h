@@ -3,6 +3,8 @@
 #ifndef GPIOLIB_SYSFS_H
 #define GPIOLIB_SYSFS_H
 
+struct gpio_device;
+
 #ifdef CONFIG_GPIO_SYSFS
 
 int gpiochip_sysfs_register(struct gpio_device *gdev);

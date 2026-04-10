@@ -535,7 +535,7 @@ static irqreturn_t wcove_typec_irq(int irq, void *data)
 				goto err;
 			}
 
-			tcpm_pd_receive(wcove->tcpm, &msg);
+			tcpm_pd_receive(wcove->tcpm, &msg, TCPC_TX_SOP);
 
 			ret = regmap_read(wcove->regmap, USBC_RXSTATUS,
 					  &status);
@@ -621,10 +621,6 @@ static int wcove_typec_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	irq = regmap_irq_get_virq(pmic->irq_chip_data_chgr, irq);
-	if (irq < 0)
-		return irq;
-
 	ret = guid_parse(WCOVE_DSM_UUID, &wcove->guid);
 	if (ret)
 		return ret;
@@ -671,7 +667,7 @@ static int wcove_typec_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int wcove_typec_remove(struct platform_device *pdev)
+static void wcove_typec_remove(struct platform_device *pdev)
 {
 	struct wcove_typec *wcove = platform_get_drvdata(pdev);
 	unsigned int val;
@@ -684,8 +680,6 @@ static int wcove_typec_remove(struct platform_device *pdev)
 
 	tcpm_unregister_port(wcove->tcpm);
 	fwnode_remove_software_node(wcove->tcpc.fwnode);
-
-	return 0;
 }
 
 static struct platform_driver wcove_typec_driver = {

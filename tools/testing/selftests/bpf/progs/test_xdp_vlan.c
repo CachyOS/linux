@@ -98,12 +98,12 @@ bool parse_eth_frame(struct ethhdr *eth, void *data_end, struct parse_pkt *pkt)
 	return true;
 }
 
-/* Hint, VLANs are choosen to hit network-byte-order issues */
+/* Hint, VLANs are chosen to hit network-byte-order issues */
 #define TESTVLAN 4011 /* 0xFAB */
 // #define TO_VLAN  4000 /* 0xFA0 (hint 0xOA0 = 160) */
 
-SEC("xdp_drop_vlan_4011")
-int  xdp_prognum0(struct xdp_md *ctx)
+SEC("xdp")
+int xdp_drop_vlan_4011(struct xdp_md *ctx)
 {
 	void *data_end = (void *)(long)ctx->data_end;
 	void *data     = (void *)(long)ctx->data;
@@ -144,8 +144,8 @@ Load prog with ip tool:
 /* Changing VLAN to zero, have same practical effect as removing the VLAN. */
 #define TO_VLAN	0
 
-SEC("xdp_vlan_change")
-int  xdp_prognum1(struct xdp_md *ctx)
+SEC("xdp")
+int xdp_vlan_change(struct xdp_md *ctx)
 {
 	void *data_end = (void *)(long)ctx->data_end;
 	void *data     = (void *)(long)ctx->data;
@@ -160,7 +160,7 @@ int  xdp_prognum1(struct xdp_md *ctx)
 
 		/* Modifying VLAN, preserve top 4 bits */
 		vlan_hdr->h_vlan_TCI =
-			bpf_htons((bpf_ntohs(vlan_hdr->h_vlan_TCI) & 0xf000)
+			bpf_htons((bpf_ntohs(vlan_hdr->h_vlan_TCI) & 0xf000U)
 				  | TO_VLAN);
 	}
 
@@ -178,8 +178,8 @@ int  xdp_prognum1(struct xdp_md *ctx)
 #endif
 #define VLAN_HDR_SZ	4	/* bytes */
 
-SEC("xdp_vlan_remove_outer")
-int  xdp_prognum2(struct xdp_md *ctx)
+SEC("xdp")
+int xdp_vlan_remove_outer(struct xdp_md *ctx)
 {
 	void *data_end = (void *)(long)ctx->data_end;
 	void *data     = (void *)(long)ctx->data;
@@ -195,7 +195,7 @@ int  xdp_prognum2(struct xdp_md *ctx)
 
 	/* Moving Ethernet header, dest overlap with src, memmove handle this */
 	dest = data;
-	dest+= VLAN_HDR_SZ;
+	dest += VLAN_HDR_SZ;
 	/*
 	 * Notice: Taking over vlan_hdr->h_vlan_encapsulated_proto, by
 	 * only moving two MAC addrs (12 bytes), not overwriting last 2 bytes
@@ -207,19 +207,6 @@ int  xdp_prognum2(struct xdp_md *ctx)
 	bpf_xdp_adjust_head(ctx, VLAN_HDR_SZ);
 
 	return XDP_PASS;
-}
-
-static __always_inline
-void shift_mac_4bytes_16bit(void *data)
-{
-	__u16 *p = data;
-
-	p[7] = p[5]; /* delete p[7] was vlan_hdr->h_vlan_TCI */
-	p[6] = p[4]; /* delete p[6] was ethhdr->h_proto */
-	p[5] = p[3];
-	p[4] = p[2];
-	p[3] = p[1];
-	p[2] = p[0];
 }
 
 static __always_inline
@@ -237,8 +224,8 @@ void shift_mac_4bytes_32bit(void *data)
 	p[1] = p[0];
 }
 
-SEC("xdp_vlan_remove_outer2")
-int  xdp_prognum3(struct xdp_md *ctx)
+SEC("xdp")
+int xdp_vlan_remove_outer2(struct xdp_md *ctx)
 {
 	void *data_end = (void *)(long)ctx->data_end;
 	void *data     = (void *)(long)ctx->data;
@@ -267,8 +254,8 @@ int  xdp_prognum3(struct xdp_md *ctx)
  * The TC-clsact eBPF programs (currently) need to be attach via TC commands
  */
 
-SEC("tc_vlan_push")
-int _tc_progA(struct __sk_buff *ctx)
+SEC("tc")
+int tc_vlan_push(struct __sk_buff *ctx)
 {
 	bpf_skb_vlan_push(ctx, bpf_htons(ETH_P_8021Q), TESTVLAN);
 

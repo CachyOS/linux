@@ -61,7 +61,7 @@ static int __jfs_set_acl(tid_t tid, struct inode *inode, int type,
 {
 	char *ea_name;
 	int rc;
-	int size = 0;
+	size_t size = 0;
 	char *value = NULL;
 
 	switch (type) {
@@ -76,16 +76,11 @@ static int __jfs_set_acl(tid_t tid, struct inode *inode, int type,
 	}
 
 	if (acl) {
-		size = posix_acl_xattr_size(acl->a_count);
-		value = kmalloc(size, GFP_KERNEL);
+		value = posix_acl_to_xattr(&init_user_ns, acl, &size, GFP_KERNEL);
 		if (!value)
 			return -ENOMEM;
-		rc = posix_acl_to_xattr(&init_user_ns, acl, value, size);
-		if (rc < 0)
-			goto out;
 	}
 	rc = __jfs_setxattr(tid, inode, ea_name, value, size, 0);
-out:
 	kfree(value);
 
 	if (!rc)
@@ -94,18 +89,19 @@ out:
 	return rc;
 }
 
-int jfs_set_acl(struct user_namespace *mnt_userns, struct inode *inode,
+int jfs_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 		struct posix_acl *acl, int type)
 {
 	int rc;
 	tid_t tid;
 	int update_mode = 0;
+	struct inode *inode = d_inode(dentry);
 	umode_t mode = inode->i_mode;
 
 	tid = txBegin(inode->i_sb, 0);
 	mutex_lock(&JFS_IP(inode)->commit_mutex);
 	if (type == ACL_TYPE_ACCESS && acl) {
-		rc = posix_acl_update_mode(&init_user_ns, inode, &mode, &acl);
+		rc = posix_acl_update_mode(&nop_mnt_idmap, inode, &mode, &acl);
 		if (rc)
 			goto end_tx;
 		if (mode != inode->i_mode)
@@ -115,7 +111,7 @@ int jfs_set_acl(struct user_namespace *mnt_userns, struct inode *inode,
 	if (!rc) {
 		if (update_mode) {
 			inode->i_mode = mode;
-			inode->i_ctime = current_time(inode);
+			inode_set_ctime_current(inode);
 			mark_inode_dirty(inode);
 		}
 		rc = txCommit(tid, 1, &inode, 0);

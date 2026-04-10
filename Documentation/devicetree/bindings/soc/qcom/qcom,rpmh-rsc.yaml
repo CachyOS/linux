@@ -28,7 +28,7 @@ description: |
     SLEEP   - Triggered by F/W
     WAKE    - Triggered by F/W
     CONTROL - Triggered by F/W
-  See also:: <dt-bindings/soc/qcom,rpmh-rsc.h>
+  See also: <dt-bindings/soc/qcom,rpmh-rsc.h>
 
   The order in which they are described in the DT, should match the hardware
   configuration.
@@ -44,7 +44,13 @@ description: |
 
 properties:
   compatible:
-    const: qcom,rpmh-rsc
+    oneOf:
+      - items:
+          - enum:
+              - qcom,sc7180-rpmh-apps-rsc
+              - qcom,sdm845-rpmh-apps-rsc
+          - const: qcom,rpmh-rsc
+      - const: qcom,rpmh-rsc
 
   interrupts:
     minItems: 1
@@ -65,33 +71,22 @@ properties:
 
   qcom,tcs-config:
     $ref: /schemas/types.yaml#/definitions/uint32-matrix
+    minItems: 4
+    maxItems: 4
     items:
-      - items:
-          - description: TCS type
-            enum: [ 0, 1, 2, 3 ]
-          - description: Number of TCS
-      - items:
-          - description: TCS type
-            enum: [ 0, 1, 2, 3 ]
-          - description: Number of TCS
-      - items:
-          - description: TCS type
-            enum: [ 0, 1, 2, 3]
-          - description: Numbe r of TCS
-      - items:
-          - description: TCS type
-            enum: [ 0, 1, 2, 3 ]
-          - description: Number of TCS
+      items:
+        - description: |
+            TCS type::
+             - ACTIVE_TCS
+             - SLEEP_TCS
+             - WAKE_TCS
+             - CONTROL_TCS
+          enum: [ 0, 1, 2, 3 ]
+        - description: Number of TCS
     description: |
       The tuple defining the configuration of TCS. Must have two cells which
       describe each TCS type.  The order of the TCS must match the hardware
       configuration.
-      Cell 1 (TCS Type):: TCS types to be specified::
-       - ACTIVE_TCS
-       - SLEEP_TCS
-       - WAKE_TCS
-       - CONTROL_TCS
-      Cell 2 (Number of TCS):: <u32>
 
   qcom,tcs-offset:
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -110,6 +105,9 @@ properties:
       - const: drv-2
       - const: drv-3
 
+  power-domains:
+    maxItems: 1
+
   bcm-voter:
     $ref: /schemas/interconnect/qcom,bcm-voter.yaml#
 
@@ -120,8 +118,9 @@ properties:
     $ref: /schemas/power/qcom,rpmpd.yaml#
 
 patternProperties:
-  '-regulators$':
+  '^regulators(-[0-9])?$':
     $ref: /schemas/regulator/qcom,rpmh-regulator.yaml#
+    unevaluatedProperties: false
 
 required:
   - compatible
@@ -131,6 +130,21 @@ required:
   - qcom,tcs-offset
   - reg
   - reg-names
+
+allOf:
+  # Some platforms may lack a OSI-mode PSCI implementation, which implies the
+  # system power domain can't provide feedback about entering power collapse
+  - if:
+      not:
+        properties:
+          compatible:
+            contains:
+              enum:
+                - qcom,sc7180-rpmh-apps-rsc
+                - qcom,sdm845-rpmh-apps-rsc
+    then:
+      required:
+        - power-domains
 
 additionalProperties: false
 
@@ -162,6 +176,7 @@ examples:
                           <SLEEP_TCS   3>,
                           <WAKE_TCS    3>,
                           <CONTROL_TCS 1>;
+        power-domains = <&CLUSTER_PD>;
       };
 
   - |
@@ -185,6 +200,7 @@ examples:
                           <SLEEP_TCS   1>,
                           <WAKE_TCS    1>,
                           <CONTROL_TCS 0>;
+        power-domains = <&CLUSTER_PD>;
     };
 
   - |
@@ -208,6 +224,7 @@ examples:
                           <SLEEP_TCS   3>,
                           <WAKE_TCS    3>,
                           <CONTROL_TCS 0>;
+        power-domains = <&CLUSTER_PD>;
 
         clock-controller {
             compatible = "qcom,sm8350-rpmh-clk";

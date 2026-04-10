@@ -7,8 +7,8 @@
 #include <linux/slab.h>
 #include <linux/errno.h>
 #include <linux/irq.h>
-#include <linux/of_device.h>
 #include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <asm/leon.h>
 #include <asm/leon_amba.h>
@@ -29,7 +29,7 @@ static int of_bus_pci_match(struct device_node *np)
 		 * parent as-is, not with the PCI translate
 		 * method which chops off the top address cell.
 		 */
-		if (!of_find_property(np, "ranges", NULL))
+		if (!of_property_present(np, "ranges"))
 			return 0;
 
 		return 1;
@@ -223,7 +223,7 @@ static int __init build_one_resource(struct device_node *parent,
 static int __init use_1to1_mapping(struct device_node *pp)
 {
 	/* If we have a ranges property in the parent, use it.  */
-	if (of_find_property(pp, "ranges", NULL) != NULL)
+	if (of_property_present(pp, "ranges"))
 		return 0;
 
 	/* Some SBUS devices use intermediate nodes to express
@@ -340,7 +340,7 @@ static void __init build_device_resources(struct platform_device *op,
 static struct platform_device * __init scan_one_device(struct device_node *dp,
 						 struct device *parent)
 {
-	struct platform_device *op = kzalloc(sizeof(*op), GFP_KERNEL);
+	struct platform_device *op = kzalloc_obj(*op);
 	const struct linux_prom_irqs *intr;
 	struct dev_archdata *sd;
 	int len, i;
@@ -387,6 +387,7 @@ static struct platform_device * __init scan_one_device(struct device_node *dp,
 
 	if (of_device_register(op)) {
 		printk("%pOF: Could not register of device.\n", dp);
+		put_device(&op->dev);
 		kfree(op);
 		op = NULL;
 	}

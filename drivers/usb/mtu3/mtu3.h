@@ -16,6 +16,7 @@
 #include <linux/extcon.h>
 #include <linux/interrupt.h>
 #include <linux/list.h>
+#include <linux/of.h>
 #include <linux/phy/phy.h>
 #include <linux/regulator/consumer.h>
 #include <linux/usb.h>
@@ -64,7 +65,7 @@ struct mtu3_request;
 #define MTU3_U3_IP_SLOT_DEFAULT 2
 #define MTU3_U2_IP_SLOT_DEFAULT 1
 
-/**
+/*
  * IP TRUNK version
  * from 0x1003 version, USB3 Gen2 is supported, two changes affect driver:
  * 1. MAXPKT and MULTI bits layout of TXCSR1 and RXCSR1 are adjusted,
@@ -73,9 +74,9 @@ struct mtu3_request;
  */
 #define MTU3_TRUNK_VERS_1003	0x1003
 
-/**
+/*
  * Normally the device works on HS or SS, to simplify fifo management,
- * devide fifo into some 512B parts, use bitmap to manage it; And
+ * divide fifo into some 512B parts, use bitmap to manage it; And
  * 128 bits size of bitmap is large enough, that means it can manage
  * up to 64KB fifo size.
  * NOTE: MTU3_EP_FIFO_UNIT should be power of two
@@ -84,13 +85,13 @@ struct mtu3_request;
 #define MTU3_FIFO_BIT_SIZE		128
 #define MTU3_U2_IP_EP0_FIFO_SIZE	64
 
-/**
+/*
  * Maximum size of ep0 response buffer for ch9 requests,
  * the SET_SEL request uses 6 so far, and GET_STATUS is 2
  */
 #define EP0_RESPONSE_BUF  6
 
-#define BULK_CLKS_CNT	4
+#define BULK_CLKS_CNT	6
 
 /* device operated link and speed got from DEVICE_CONF register */
 enum mtu3_speed {
@@ -102,6 +103,7 @@ enum mtu3_speed {
 };
 
 /**
+ * enum mtu3_g_ep0_state - endpoint 0 states
  * @MU3D_EP0_STATE_SETUP: waits for SETUP or received a SETUP
  *		without data stage.
  * @MU3D_EP0_STATE_TX: IN data stage
@@ -120,11 +122,12 @@ enum mtu3_g_ep0_state {
 };
 
 /**
- * MTU3_DR_FORCE_NONE: automatically switch host and periperal mode
+ * enum mtu3_dr_force_mode - indicates host/OTG operating mode
+ * @MTU3_DR_FORCE_NONE: automatically switch host and peripheral mode
  *		by IDPIN signal.
- * MTU3_DR_FORCE_HOST: force to enter host mode and override OTG
+ * @MTU3_DR_FORCE_HOST: force to enter host mode and override OTG
  *		IDPIN signal.
- * MTU3_DR_FORCE_DEVICE: force to enter peripheral mode.
+ * @MTU3_DR_FORCE_DEVICE: force to enter peripheral mode.
  */
 enum mtu3_dr_force_mode {
 	MTU3_DR_FORCE_NONE = 0,
@@ -133,6 +136,7 @@ enum mtu3_dr_force_mode {
 };
 
 /**
+ * struct mtu3_fifo_info - HW FIFO description and management data
  * @base: the base address of fifo
  * @limit: the bitmap size in bits
  * @bitmap: fifo bitmap in unit of @MTU3_EP_FIFO_UNIT
@@ -144,7 +148,7 @@ struct mtu3_fifo_info {
 };
 
 /**
- * General Purpose Descriptor (GPD):
+ * struct qmu_gpd - General Purpose Descriptor (GPD):
  *	The format of TX GPD is a little different from RX one.
  *	And the size of GPD is 16 bytes.
  *
@@ -178,11 +182,13 @@ struct qmu_gpd {
 } __packed;
 
 /**
-* dma: physical base address of GPD segment
-* start: virtual base address of GPD segment
-* end: the last GPD element
-* enqueue: the first empty GPD to use
-* dequeue: the first completed GPD serviced by ISR
+* struct mtu3_gpd_ring - GPD ring descriptor
+* @dma: physical base address of GPD segment
+* @start: virtual base address of GPD segment
+* @end: the last GPD element
+* @enqueue: the first empty GPD to use
+* @dequeue: the first completed GPD serviced by ISR
+*
 * NOTE: the size of GPD ring should be >= 2
 */
 struct mtu3_gpd_ring {
@@ -194,6 +200,7 @@ struct mtu3_gpd_ring {
 };
 
 /**
+* struct otg_switch_mtk - OTG/dual-role switch management
 * @vbus: vbus 5V used by host mode
 * @edev: external connector used to detect vbus and iddig changes
 * @id_nb : notifier for iddig(idpin) detection
@@ -221,6 +228,7 @@ struct otg_switch_mtk {
 };
 
 /**
+ * struct ssusb_mtk - SuperSpeed USB descriptor (MTK)
  * @mac_base: register base address of device MAC, exclude xHCI's
  * @ippc_base: register base address of IP Power and Clock interface (IPPC)
  * @vusb33: usb3.3V shared by device/host IP
@@ -267,6 +275,7 @@ struct ssusb_mtk {
 };
 
 /**
+ * struct mtu3_ep - common mtu3 endpoint description
  * @fifo_size: it is (@slot + 1) * @fifo_seg_size
  * @fifo_seg_size: it is roundup_pow_of_two(@maxp)
  */
@@ -317,6 +326,7 @@ static inline struct ssusb_mtk *dev_to_ssusb(struct device *dev)
  * @ep0_req: dummy request used while handling standard USB requests
  *		for GET_STATUS and SET_SEL
  * @setup_buf: ep0 response buffer for GET_STATUS and SET_SEL requests
+ * @u3_capable: is capable of supporting USB3
  */
 struct mtu3 {
 	spinlock_t lock;
@@ -353,10 +363,12 @@ struct mtu3 {
 	unsigned softconnect:1;
 	unsigned u1_enable:1;
 	unsigned u2_enable:1;
-	unsigned is_u3_ip:1;
+	unsigned u3_capable:1;
 	unsigned delayed_status:1;
 	unsigned gen2cp:1;
 	unsigned connected:1;
+	unsigned async_callbacks:1;
+	unsigned separate_fifo:1;
 
 	u8 address;
 	u8 test_mode_nr;

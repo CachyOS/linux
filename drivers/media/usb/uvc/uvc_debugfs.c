@@ -29,7 +29,7 @@ static int uvc_debugfs_stats_open(struct inode *inode, struct file *file)
 	struct uvc_streaming *stream = inode->i_private;
 	struct uvc_debugfs_buffer *buf;
 
-	buf = kmalloc(sizeof(*buf), GFP_KERNEL);
+	buf = kmalloc_obj(*buf);
 	if (buf == NULL)
 		return -ENOMEM;
 
@@ -59,7 +59,6 @@ static int uvc_debugfs_stats_release(struct inode *inode, struct file *file)
 static const struct file_operations uvc_debugfs_stats_fops = {
 	.owner = THIS_MODULE,
 	.open = uvc_debugfs_stats_open,
-	.llseek = no_llseek,
 	.read = uvc_debugfs_stats_read,
 	.release = uvc_debugfs_stats_release,
 };

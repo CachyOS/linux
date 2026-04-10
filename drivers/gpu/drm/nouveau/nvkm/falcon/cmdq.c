@@ -51,7 +51,7 @@ static void
 nvkm_falcon_cmdq_push(struct nvkm_falcon_cmdq *cmdq, void *data, u32 size)
 {
 	struct nvkm_falcon *falcon = cmdq->qmgr->falcon;
-	nvkm_falcon_load_dmem(falcon, data, cmdq->position, size, 0);
+	nvkm_falcon_pio_wr(falcon, data, 0, 0, DMEM, cmdq->position, size, 0, false);
 	cmdq->position += ALIGN(size, QUEUE_ALIGNMENT);
 }
 
@@ -203,7 +203,7 @@ nvkm_falcon_cmdq_new(struct nvkm_falcon_qmgr *qmgr, const char *name,
 {
 	struct nvkm_falcon_cmdq *cmdq = *pcmdq;
 
-	if (!(cmdq = *pcmdq = kzalloc(sizeof(*cmdq), GFP_KERNEL)))
+	if (!(cmdq = *pcmdq = kzalloc_obj(*cmdq)))
 		return -ENOMEM;
 
 	cmdq->qmgr = qmgr;

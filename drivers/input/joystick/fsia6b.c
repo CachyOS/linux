@@ -132,7 +132,7 @@ static int fsia6b_serio_connect(struct serio *serio, struct serio_driver *drv)
 	int i, j;
 	int sw_id = 0;
 
-	fsia6b = kzalloc(sizeof(*fsia6b), GFP_KERNEL);
+	fsia6b = kzalloc_obj(*fsia6b);
 	if (!fsia6b)
 		return -ENOMEM;
 
@@ -149,7 +149,7 @@ static int fsia6b_serio_connect(struct serio *serio, struct serio_driver *drv)
 	}
 	fsia6b->dev = input_dev;
 
-	snprintf(fsia6b->phys, sizeof(fsia6b->phys), "%s/input0", serio->phys);
+	scnprintf(fsia6b->phys, sizeof(fsia6b->phys), "%s/input0", serio->phys);
 
 	input_dev->name = DRIVER_DESC;
 	input_dev->phys = fsia6b->phys;

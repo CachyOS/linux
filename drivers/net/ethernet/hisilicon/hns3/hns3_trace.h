@@ -37,8 +37,7 @@ DECLARE_EVENT_CLASS(hns3_skb_template,
 		__entry->gso_segs = skb_shinfo(skb)->gso_segs;
 		__entry->gso_type = skb_shinfo(skb)->gso_type;
 		__entry->hdr_len = skb->encapsulation ?
-		skb_inner_transport_offset(skb) + inner_tcp_hdrlen(skb) :
-		skb_transport_offset(skb) + tcp_hdrlen(skb);
+		skb_inner_tcp_all_headers(skb) : skb_tcp_all_headers(skb);
 		__entry->ip_summed = skb->ip_summed;
 		__entry->fraglist = skb_has_frag_list(skb);
 		hns3_shinfo_pack(skb_shinfo(skb), __entry->size);
@@ -85,7 +84,7 @@ TRACE_EVENT(hns3_tx_desc,
 		__entry->desc_dma = ring->desc_dma_addr,
 		memcpy(__entry->desc, &ring->desc[cur_ntu],
 		       sizeof(struct hns3_desc));
-		__assign_str(devname, ring->tqp->handle->kinfo.netdev->name);
+		__assign_str(devname);
 	),
 
 	TP_printk(
@@ -118,7 +117,7 @@ TRACE_EVENT(hns3_rx_desc,
 		__entry->buf_dma = ring->desc_cb[ring->next_to_clean].dma;
 		memcpy(__entry->desc, &ring->desc[ring->next_to_clean],
 		       sizeof(struct hns3_desc));
-		__assign_str(devname, ring->tqp->handle->kinfo.netdev->name);
+		__assign_str(devname);
 	),
 
 	TP_printk(

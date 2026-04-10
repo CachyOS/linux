@@ -101,6 +101,12 @@ int nilfs_segbuf_extend_segsum(struct nilfs_segment_buffer *segbuf)
 	if (unlikely(!bh))
 		return -ENOMEM;
 
+	lock_buffer(bh);
+	if (!buffer_uptodate(bh)) {
+		memset(bh->b_data, 0, bh->b_size);
+		set_buffer_uptodate(bh);
+	}
+	unlock_buffer(bh);
 	nilfs_segbuf_add_segsum_buffer(segbuf, bh);
 	return 0;
 }
@@ -199,7 +205,6 @@ static void nilfs_segbuf_fill_in_data_crc(struct nilfs_segment_buffer *segbuf,
 {
 	struct buffer_head *bh;
 	struct nilfs_segment_summary *raw_sum;
-	void *kaddr;
 	u32 crc;
 
 	bh = list_entry(segbuf->sb_segsum_buffers.next, struct buffer_head,
@@ -214,9 +219,13 @@ static void nilfs_segbuf_fill_in_data_crc(struct nilfs_segment_buffer *segbuf,
 		crc = crc32_le(crc, bh->b_data, bh->b_size);
 	}
 	list_for_each_entry(bh, &segbuf->sb_payload_buffers, b_assoc_buffers) {
-		kaddr = kmap_atomic(bh->b_page);
-		crc = crc32_le(crc, kaddr + bh_offset(bh), bh->b_size);
-		kunmap_atomic(kaddr);
+		size_t offset = offset_in_folio(bh->b_folio, bh->b_data);
+		unsigned char *from;
+
+		/* Do not support block sizes larger than PAGE_SIZE */
+		from = kmap_local_folio(bh->b_folio, offset);
+		crc = crc32_le(crc, from, bh->b_size);
+		kunmap_local(from);
 	}
 	raw_sum->ss_datasum = cpu_to_le32(crc);
 }
@@ -368,7 +377,7 @@ static int nilfs_segbuf_submit_bh(struct nilfs_segment_buffer *segbuf,
 				  struct nilfs_write_info *wi,
 				  struct buffer_head *bh)
 {
-	int len, err;
+	int err;
 
 	BUG_ON(wi->nr_vecs <= 0);
  repeat:
@@ -379,8 +388,8 @@ static int nilfs_segbuf_submit_bh(struct nilfs_segment_buffer *segbuf,
 			(wi->nilfs->ns_blocksize_bits - 9);
 	}
 
-	len = bio_add_page(wi->bio, bh->b_page, bh->b_size, bh_offset(bh));
-	if (len == bh->b_size) {
+	if (bio_add_folio(wi->bio, bh->b_folio, bh->b_size,
+			  offset_in_folio(bh->b_folio, bh->b_data))) {
 		wi->end++;
 		return 0;
 	}
@@ -397,12 +406,7 @@ static int nilfs_segbuf_submit_bh(struct nilfs_segment_buffer *segbuf,
  * @segbuf: buffer storing a log to be written
  * @nilfs: nilfs object
  *
- * Return Value: On Success, 0 is returned. On Error, one of the following
- * negative error code is returned.
- *
- * %-EIO - I/O error
- *
- * %-ENOMEM - Insufficient memory available.
+ * Return: Always 0.
  */
 static int nilfs_segbuf_write(struct nilfs_segment_buffer *segbuf,
 			      struct the_nilfs *nilfs)
@@ -443,10 +447,7 @@ static int nilfs_segbuf_write(struct nilfs_segment_buffer *segbuf,
  * nilfs_segbuf_wait - wait for completion of requested BIOs
  * @segbuf: segment buffer
  *
- * Return Value: On Success, 0 is returned. On Error, one of the following
- * negative error code is returned.
- *
- * %-EIO - I/O error
+ * Return: 0 on success, or %-EIO if I/O error is detected.
  */
 static int nilfs_segbuf_wait(struct nilfs_segment_buffer *segbuf)
 {

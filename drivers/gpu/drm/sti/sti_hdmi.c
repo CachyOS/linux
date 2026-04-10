@@ -8,6 +8,7 @@
 #include <linux/component.h>
 #include <linux/debugfs.h>
 #include <linux/hdmi.h>
+#include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/io.h>
 #include <linux/platform_device.h>
@@ -167,6 +168,11 @@ struct sti_hdmi_connector {
 #define to_sti_hdmi_connector(x) \
 	container_of(x, struct sti_hdmi_connector, drm_connector)
 
+static struct sti_hdmi *drm_bridge_to_sti_hdmi(struct drm_bridge *bridge)
+{
+	return container_of(bridge, struct sti_hdmi, bridge);
+}
+
 static const struct drm_prop_enum_list colorspace_mode_names[] = {
 	{ HDMI_COLORSPACE_RGB, "rgb" },
 	{ HDMI_COLORSPACE_YUV422, "yuv422" },
@@ -265,6 +271,7 @@ static void hdmi_active_area(struct sti_hdmi *hdmi)
  */
 static void hdmi_config(struct sti_hdmi *hdmi)
 {
+	struct drm_connector *connector = hdmi->drm_connector;
 	u32 conf;
 
 	DRM_DEBUG_DRIVER("\n");
@@ -274,7 +281,7 @@ static void hdmi_config(struct sti_hdmi *hdmi)
 
 	/* Select encryption type and the framing mode */
 	conf |= HDMI_CFG_ESS_NOT_OESS;
-	if (hdmi->hdmi_monitor)
+	if (connector->display_info.is_hdmi)
 		conf |= HDMI_CFG_HDMI_NOT_DVI;
 
 	/* Set Hsync polarity */
@@ -747,7 +754,7 @@ static void hdmi_debugfs_init(struct sti_hdmi *hdmi, struct drm_minor *minor)
 
 static void sti_hdmi_disable(struct drm_bridge *bridge)
 {
-	struct sti_hdmi *hdmi = bridge->driver_private;
+	struct sti_hdmi *hdmi = drm_bridge_to_sti_hdmi(bridge);
 
 	u32 val = hdmi_read(hdmi, HDMI_CFG);
 
@@ -879,7 +886,7 @@ static int hdmi_audio_configure(struct sti_hdmi *hdmi)
 
 static void sti_hdmi_pre_enable(struct drm_bridge *bridge)
 {
-	struct sti_hdmi *hdmi = bridge->driver_private;
+	struct sti_hdmi *hdmi = drm_bridge_to_sti_hdmi(bridge);
 
 	DRM_DEBUG_DRIVER("\n");
 
@@ -934,13 +941,13 @@ static void sti_hdmi_set_mode(struct drm_bridge *bridge,
 			      const struct drm_display_mode *mode,
 			      const struct drm_display_mode *adjusted_mode)
 {
-	struct sti_hdmi *hdmi = bridge->driver_private;
+	struct sti_hdmi *hdmi = drm_bridge_to_sti_hdmi(bridge);
 	int ret;
 
 	DRM_DEBUG_DRIVER("\n");
 
 	/* Copy the drm display mode in the connector local structure */
-	memcpy(&hdmi->mode, mode, sizeof(struct drm_display_mode));
+	drm_mode_copy(&hdmi->mode, mode);
 
 	/* Update clock framerate according to the selected mode */
 	ret = clk_set_rate(hdmi->clk_pix, mode->clock * 1000);
@@ -972,28 +979,32 @@ static const struct drm_bridge_funcs sti_hdmi_bridge_funcs = {
 
 static int sti_hdmi_connector_get_modes(struct drm_connector *connector)
 {
+	const struct drm_display_info *info = &connector->display_info;
 	struct sti_hdmi_connector *hdmi_connector
 		= to_sti_hdmi_connector(connector);
 	struct sti_hdmi *hdmi = hdmi_connector->hdmi;
-	struct edid *edid;
+	const struct drm_edid *drm_edid;
 	int count;
 
 	DRM_DEBUG_DRIVER("\n");
 
-	edid = drm_get_edid(connector, hdmi->ddc_adapt);
-	if (!edid)
+	drm_edid = drm_edid_read(connector);
+
+	drm_edid_connector_update(connector, drm_edid);
+
+	cec_notifier_set_phys_addr(hdmi->notifier,
+				   connector->display_info.source_physical_address);
+
+	if (!drm_edid)
 		goto fail;
 
-	hdmi->hdmi_monitor = drm_detect_hdmi_monitor(edid);
+	count = drm_edid_connector_add_modes(connector);
+
 	DRM_DEBUG_KMS("%s : %dx%d cm\n",
-		      (hdmi->hdmi_monitor ? "hdmi monitor" : "dvi monitor"),
-		      edid->width_cm, edid->height_cm);
-	cec_notifier_set_phys_addr_from_edid(hdmi->notifier, edid);
+		      info->is_hdmi ? "hdmi monitor" : "dvi monitor",
+		      info->width_mm / 10, info->height_mm / 10);
 
-	count = drm_add_edid_modes(connector, edid);
-	drm_connector_update_edid_property(connector, edid);
-
-	kfree(edid);
+	drm_edid_free(drm_edid);
 	return count;
 
 fail:
@@ -1003,8 +1014,9 @@ fail:
 
 #define CLK_TOLERANCE_HZ 50
 
-static int sti_hdmi_connector_mode_valid(struct drm_connector *connector,
-					struct drm_display_mode *mode)
+static enum drm_mode_status
+sti_hdmi_connector_mode_valid(struct drm_connector *connector,
+			      const struct drm_display_mode *mode)
 {
 	int target = mode->clock * 1000;
 	int target_min = target - CLK_TOLERANCE_HZ;
@@ -1175,12 +1187,12 @@ static int hdmi_audio_hw_params(struct device *dev,
 	DRM_DEBUG_DRIVER("\n");
 
 	if ((daifmt->fmt != HDMI_I2S) || daifmt->bit_clk_inv ||
-	    daifmt->frame_clk_inv || daifmt->bit_clk_master ||
-	    daifmt->frame_clk_master) {
+	    daifmt->frame_clk_inv || daifmt->bit_clk_provider ||
+	    daifmt->frame_clk_provider) {
 		dev_err(dev, "%s: Bad flags %d %d %d %d\n", __func__,
 			daifmt->bit_clk_inv, daifmt->frame_clk_inv,
-			daifmt->bit_clk_master,
-			daifmt->frame_clk_master);
+			daifmt->bit_clk_provider,
+			daifmt->frame_clk_provider);
 		return -EINVAL;
 	}
 
@@ -1218,7 +1230,9 @@ static int hdmi_audio_get_eld(struct device *dev, void *data, uint8_t *buf, size
 	struct drm_connector *connector = hdmi->drm_connector;
 
 	DRM_DEBUG_DRIVER("\n");
+	mutex_lock(&connector->eld_mutex);
 	memcpy(buf, connector->eld, min(sizeof(connector->eld), len));
+	mutex_unlock(&connector->eld_mutex);
 
 	return 0;
 }
@@ -1228,7 +1242,6 @@ static const struct hdmi_codec_ops audio_codec_ops = {
 	.audio_shutdown = hdmi_audio_shutdown,
 	.mute_stream = hdmi_audio_mute,
 	.get_eld = hdmi_audio_get_eld,
-	.no_capture_mute = 1,
 };
 
 static int sti_hdmi_register_audio_driver(struct device *dev,
@@ -1238,6 +1251,7 @@ static int sti_hdmi_register_audio_driver(struct device *dev,
 		.ops = &audio_codec_ops,
 		.max_i2s_channels = 8,
 		.i2s = 1,
+		.no_capture_mute = 1,
 	};
 
 	DRM_DEBUG_DRIVER("\n");
@@ -1264,7 +1278,6 @@ static int sti_hdmi_bind(struct device *dev, struct device *master, void *data)
 	struct sti_hdmi_connector *connector;
 	struct cec_connector_info conn_info;
 	struct drm_connector *drm_connector;
-	struct drm_bridge *bridge;
 	int err;
 
 	/* Set the drm device handle */
@@ -1280,13 +1293,7 @@ static int sti_hdmi_bind(struct device *dev, struct device *master, void *data)
 
 	connector->hdmi = hdmi;
 
-	bridge = devm_kzalloc(dev, sizeof(*bridge), GFP_KERNEL);
-	if (!bridge)
-		return -EINVAL;
-
-	bridge->driver_private = hdmi;
-	bridge->funcs = &sti_hdmi_bridge_funcs;
-	drm_bridge_attach(encoder, bridge, NULL, 0);
+	drm_bridge_attach(encoder, &hdmi->bridge, NULL, 0);
 
 	connector->encoder = encoder;
 
@@ -1371,15 +1378,14 @@ static int sti_hdmi_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct sti_hdmi *hdmi;
 	struct device_node *np = dev->of_node;
-	struct resource *res;
 	struct device_node *ddc;
 	int ret;
 
 	DRM_INFO("%s\n", __func__);
 
-	hdmi = devm_kzalloc(dev, sizeof(*hdmi), GFP_KERNEL);
-	if (!hdmi)
-		return -ENOMEM;
+	hdmi = devm_drm_bridge_alloc(dev, struct sti_hdmi, bridge, &sti_hdmi_bridge_funcs);
+	if (IS_ERR(hdmi))
+		return PTR_ERR(hdmi);
 
 	ddc = of_parse_phandle(pdev->dev.of_node, "ddc", 0);
 	if (ddc) {
@@ -1390,17 +1396,9 @@ static int sti_hdmi_probe(struct platform_device *pdev)
 	}
 
 	hdmi->dev = pdev->dev;
-
-	/* Get resources */
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "hdmi-reg");
-	if (!res) {
-		DRM_ERROR("Invalid hdmi resource\n");
-		ret = -ENOMEM;
-		goto release_adapter;
-	}
-	hdmi->regs = devm_ioremap(dev, res->start, resource_size(res));
-	if (!hdmi->regs) {
-		ret = -ENOMEM;
+	hdmi->regs = devm_platform_ioremap_resource_byname(pdev, "hdmi-reg");
+	if (IS_ERR(hdmi->regs)) {
+		ret = PTR_ERR(hdmi->regs);
 		goto release_adapter;
 	}
 
@@ -1461,6 +1459,7 @@ static int sti_hdmi_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, hdmi);
 
+	drm_bridge_add(&hdmi->bridge);
 	return component_add(&pdev->dev, &sti_hdmi_ops);
 
  release_adapter:
@@ -1469,7 +1468,7 @@ static int sti_hdmi_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int sti_hdmi_remove(struct platform_device *pdev)
+static void sti_hdmi_remove(struct platform_device *pdev)
 {
 	struct sti_hdmi *hdmi = dev_get_drvdata(&pdev->dev);
 
@@ -1477,14 +1476,12 @@ static int sti_hdmi_remove(struct platform_device *pdev)
 	if (hdmi->audio_pdev)
 		platform_device_unregister(hdmi->audio_pdev);
 	component_del(&pdev->dev, &sti_hdmi_ops);
-
-	return 0;
+	drm_bridge_remove(&hdmi->bridge);
 }
 
 struct platform_driver sti_hdmi_driver = {
 	.driver = {
 		.name = "sti-hdmi",
-		.owner = THIS_MODULE,
 		.of_match_table = hdmi_of_match,
 	},
 	.probe = sti_hdmi_probe,

@@ -3,10 +3,13 @@
 
 #include <linux/list.h>
 #include <linux/kref.h>
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+#include <linux/mount.h>
+#endif
 #include <linux/mutex.h>
 #include <linux/idr.h>
+#include <linux/sched.h>
 
-#include <drm/drm_legacy.h>
 #include <drm/drm_mode_config.h>
 
 struct drm_driver;
@@ -22,6 +25,28 @@ struct inode;
 struct pci_dev;
 struct pci_controller;
 
+/*
+ * Recovery methods for wedged device in order of less to more side-effects.
+ * To be used with drm_dev_wedged_event() as recovery @method. Callers can
+ * use any one, multiple (or'd) or none depending on their needs.
+ *
+ * Refer to "Device Wedging" chapter in Documentation/gpu/drm-uapi.rst for more
+ * details.
+ */
+#define DRM_WEDGE_RECOVERY_NONE		BIT(0)	/* optional telemetry collection */
+#define DRM_WEDGE_RECOVERY_REBIND	BIT(1)	/* unbind + bind driver */
+#define DRM_WEDGE_RECOVERY_BUS_RESET	BIT(2)	/* unbind + reset bus device + bind */
+#define DRM_WEDGE_RECOVERY_VENDOR	BIT(3)	/* vendor specific recovery method */
+
+/**
+ * struct drm_wedge_task_info - information about the guilty task of a wedge dev
+ */
+struct drm_wedge_task_info {
+	/** @pid: pid of the task */
+	pid_t pid;
+	/** @comm: command name of the task */
+	char comm[TASK_COMM_LEN];
+};
 
 /**
  * enum switch_power_state - power state of drm device
@@ -58,6 +83,28 @@ struct drm_device {
 	struct device *dev;
 
 	/**
+	 * @dma_dev:
+	 *
+	 * Device for DMA operations. Only required if the device @dev
+	 * cannot perform DMA by itself. Should be NULL otherwise. Call
+	 * drm_dev_dma_dev() to get the DMA device instead of using this
+	 * field directly. Call drm_dev_set_dma_dev() to set this field.
+	 *
+	 * DRM devices are sometimes bound to virtual devices that cannot
+	 * perform DMA by themselves. Drivers should set this field to the
+	 * respective DMA controller.
+	 *
+	 * Devices on USB and other peripheral busses also cannot perform
+	 * DMA by themselves. The @dma_dev field should point the bus
+	 * controller that does DMA on behalve of such a device. Required
+	 * for importing buffers via dma-buf.
+	 *
+	 * If set, the DRM core automatically releases the reference on the
+	 * device.
+	 */
+	struct device *dma_dev;
+
+	/**
 	 * @managed:
 	 *
 	 * Managed resources linked to the lifetime of this &drm_device as
@@ -87,11 +134,27 @@ struct drm_device {
 	 */
 	void *dev_private;
 
-	/** @primary: Primary node */
+	/**
+	 * @primary:
+	 *
+	 * Primary node. Drivers should not interact with this
+	 * directly. debugfs interfaces can be registered with
+	 * drm_debugfs_add_file(), and sysfs should be directly added on the
+	 * hardware (and not character device node) struct device @dev.
+	 */
 	struct drm_minor *primary;
 
-	/** @render: Render node */
+	/**
+	 * @render:
+	 *
+	 * Render node. Drivers should not interact with this directly ever.
+	 * Drivers should not expose any additional interfaces in debugfs or
+	 * sysfs on this node.
+	 */
 	struct drm_minor *render;
+
+	/** @accel: Compute Acceleration node */
+	struct drm_minor *accel;
 
 	/**
 	 * @registered:
@@ -107,6 +170,18 @@ struct drm_device {
 	 * Protected by &master_mutex
 	 */
 	struct drm_master *master;
+
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	/**
+	 * @huge_mnt:
+	 *
+	 * Huge tmpfs mountpoint used at GEM object initialization
+	 * drm_gem_object_init(). Drivers can call drm_gem_huge_mnt_create() to
+	 * create, mount and use it. The default tmpfs mountpoint (`shm_mnt`) is
+	 * used if NULL.
+	 */
+	struct vfsmount *huge_mnt;
+#endif
 
 	/**
 	 * @driver_features: per-device driver features
@@ -131,16 +206,6 @@ struct drm_device {
 
 	/** @unique: Unique name of the device */
 	char *unique;
-
-	/**
-	 * @struct_mutex:
-	 *
-	 * Lock for others (not &drm_minor.master and &drm_file.is_master)
-	 *
-	 * WARNING:
-	 * Only drivers annotated with DRIVER_LEGACY should be using this.
-	 */
-	struct mutex struct_mutex;
 
 	/**
 	 * @master_mutex:
@@ -189,6 +254,14 @@ struct drm_device {
 	struct list_head clientlist;
 
 	/**
+	 * @client_sysrq_list:
+	 *
+	 * Entry into list of devices registered for sysrq. Allows in-kernel
+	 * clients on this device to handle sysrq keys.
+	 */
+	struct list_head client_sysrq_list;
+
+	/**
 	 * @vblank_disable_immediate:
 	 *
 	 * If true, vblank interrupt will be disabled immediately when the
@@ -198,8 +271,9 @@ struct drm_device {
 	 * This can be set to true it the hardware has a working vblank counter
 	 * with high-precision timestamping (otherwise there are races) and the
 	 * driver uses drm_crtc_vblank_on() and drm_crtc_vblank_off()
-	 * appropriately. See also @max_vblank_count and
-	 * &drm_crtc_funcs.get_vblank_counter.
+	 * appropriately. Also, see @max_vblank_count,
+	 * &drm_crtc_funcs.get_vblank_counter and
+	 * &drm_vblank_crtc_config.disable_immediate.
 	 */
 	bool vblank_disable_immediate;
 
@@ -295,71 +369,31 @@ struct drm_device {
 	 */
 	struct drm_fb_helper *fb_helper;
 
-	/* Everything below here is for legacy driver, never use! */
-	/* private: */
-#if IS_ENABLED(CONFIG_DRM_LEGACY)
-	/* List of devices per driver for stealth attach cleanup */
-	struct list_head legacy_dev_list;
-
-#ifdef __alpha__
-	/** @hose: PCI hose, only used on ALPHA platforms. */
-	struct pci_controller *hose;
-#endif
-
-	/* AGP data */
-	struct drm_agp_head *agp;
-
-	/* Context handle management - linked list of context handles */
-	struct list_head ctxlist;
-
-	/* Context handle management - mutex for &ctxlist */
-	struct mutex ctxlist_mutex;
-
-	/* Context handle management */
-	struct idr ctx_idr;
-
-	/* Memory management - linked list of regions */
-	struct list_head maplist;
-
-	/* Memory management - user token hash table for maps */
-	struct drm_open_hash map_hash;
-
-	/* Context handle management - list of vmas (for debugging) */
-	struct list_head vmalist;
-
-	/* Optional pointer for DMA support */
-	struct drm_device_dma *dma;
-
-	/* Context swapping flag */
-	__volatile__ long context_flag;
-
-	/* Last current context */
-	int last_context;
-
-	/* Lock for &buf_use and a few other things. */
-	spinlock_t buf_lock;
-
-	/* Usage counter for buffers in use -- cannot alloc */
-	int buf_use;
-
-	/* Buffer allocation in progress */
-	atomic_t buf_alloc;
-
-	struct {
-		int context;
-		struct drm_hw_lock *lock;
-	} sigdata;
-
-	struct drm_local_map *agp_buffer_map;
-	unsigned int agp_buffer_token;
-
-	/* Scatter gather memory */
-	struct drm_sg_mem *sg;
-
-	/* IRQs */
-	bool irq_enabled;
-	int irq;
-#endif
+	/**
+	 * @debugfs_root:
+	 *
+	 * Root directory for debugfs files.
+	 */
+	struct dentry *debugfs_root;
 };
+
+void drm_dev_set_dma_dev(struct drm_device *dev, struct device *dma_dev);
+
+/**
+ * drm_dev_dma_dev - returns the DMA device for a DRM device
+ * @dev: DRM device
+ *
+ * Returns the DMA device of the given DRM device. By default, this
+ * the DRM device's parent. See drm_dev_set_dma_dev().
+ *
+ * Returns:
+ * A DMA-capable device for the DRM device.
+ */
+static inline struct device *drm_dev_dma_dev(struct drm_device *dev)
+{
+	if (dev->dma_dev)
+		return dev->dma_dev;
+	return dev->dev;
+}
 
 #endif

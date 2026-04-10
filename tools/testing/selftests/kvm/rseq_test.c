@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
-#define _GNU_SOURCE /* for program_invocation_short_name */
+
+/*
+ * Include rseq.c without _GNU_SOURCE defined, before including any headers, so
+ * that rseq.c is compiled with its configuration, not KVM selftests' config.
+ */
+#undef _GNU_SOURCE
+#include "../rseq/rseq.c"
+#define _GNU_SOURCE
+
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -19,18 +27,7 @@
 #include "kvm_util.h"
 #include "processor.h"
 #include "test_util.h"
-
-#define VCPU_ID 0
-
-static __thread volatile struct rseq __rseq = {
-	.cpu_id = RSEQ_CPU_ID_UNINITIALIZED,
-};
-
-/*
- * Use an arbitrary, bogus signature for configuring rseq, this test does not
- * actually enter an rseq critical section.
- */
-#define RSEQ_SIG 0xdeadbeef
+#include "ucall_common.h"
 
 /*
  * Any bug related to task migration is likely to be timing-dependent; perform
@@ -49,14 +46,6 @@ static void guest_code(void)
 {
 	for (;;)
 		GUEST_SYNC(0);
-}
-
-static void sys_rseq(int flags)
-{
-	int r;
-
-	r = syscall(__NR_rseq, &__rseq, sizeof(__rseq), flags, RSEQ_SIG);
-	TEST_ASSERT(!r, "rseq failed, errno = %d (%s)", errno, strerror(errno));
 }
 
 static int next_cpu(int cpu)
@@ -82,8 +71,9 @@ static int next_cpu(int cpu)
 	return cpu;
 }
 
-static void *migration_worker(void *ign)
+static void *migration_worker(void *__rseq_tid)
 {
+	pid_t rseq_tid = (pid_t)(unsigned long)__rseq_tid;
 	cpu_set_t allowed_mask;
 	int r, i, cpu;
 
@@ -102,11 +92,11 @@ static void *migration_worker(void *ign)
 		atomic_inc(&seq_cnt);
 
 		/*
-		 * Ensure the odd count is visible while sched_getcpu() isn't
+		 * Ensure the odd count is visible while getcpu() isn't
 		 * stable, i.e. while changing affinity is in-progress.
 		 */
 		smp_wmb();
-		r = sched_setaffinity(0, sizeof(allowed_mask), &allowed_mask);
+		r = sched_setaffinity(rseq_tid, sizeof(allowed_mask), &allowed_mask);
 		TEST_ASSERT(!r, "sched_setaffinity failed, errno = %d (%s)",
 			    errno, strerror(errno));
 		smp_wmb();
@@ -143,10 +133,10 @@ static void *migration_worker(void *ign)
 		 *     check completes.
 		 *
 		 *  3. To ensure the read-side makes efficient forward progress,
-		 *     e.g. if sched_getcpu() involves a syscall.  Stalling the
-		 *     read-side means the test will spend more time waiting for
-		 *     sched_getcpu() to stabilize and less time trying to hit
-		 *     the timing-dependent bug.
+		 *     e.g. if getcpu() involves a syscall. Stalling the read-side
+		 *     means the test will spend more time waiting for getcpu()
+		 *     to stabilize and less time trying to hit the timing-dependent
+		 *     bug.
 		 *
 		 * Because any bug in this area is likely to be timing-dependent,
 		 * run with a range of delays at 1us intervals from 1us to 10us
@@ -173,12 +163,11 @@ static void *migration_worker(void *ign)
 	return NULL;
 }
 
-static int calc_min_max_cpu(void)
+static void calc_min_max_cpu(void)
 {
 	int i, cnt, nproc;
 
-	if (CPU_COUNT(&possible_mask) < 2)
-		return -EINVAL;
+	TEST_REQUIRE(CPU_COUNT(&possible_mask) >= 2);
 
 	/*
 	 * CPU_SET doesn't provide a FOR_EACH helper, get the min/max CPU that
@@ -200,49 +189,87 @@ static int calc_min_max_cpu(void)
 		cnt++;
 	}
 
-	return (cnt < 2) ? -EINVAL : 0;
+	__TEST_REQUIRE(cnt >= 2,
+		       "Only one usable CPU, task migration not possible");
+}
+
+static void help(const char *name)
+{
+	puts("");
+	printf("usage: %s [-h] [-u] [-l latency]\n", name);
+	printf(" -u: Don't sanity check the number of successful KVM_RUNs\n");
+	printf(" -l: Set /dev/cpu_dma_latency to suppress deep sleep states\n");
+	puts("");
+	exit(0);
 }
 
 int main(int argc, char *argv[])
 {
-	int r, i, snapshot;
+	int r, i, snapshot, opt, fd = -1, latency = -1;
+	bool skip_sanity_check = false;
 	struct kvm_vm *vm;
+	struct kvm_vcpu *vcpu;
 	u32 cpu, rseq_cpu;
 
-	/* Tell stdout not to buffer its content */
-	setbuf(stdout, NULL);
+	while ((opt = getopt(argc, argv, "hl:u")) != -1) {
+		switch (opt) {
+		case 'u':
+			skip_sanity_check = true;
+			break;
+		case 'l':
+			latency = atoi_paranoid(optarg);
+			break;
+		case 'h':
+		default:
+			help(argv[0]);
+			break;
+		}
+	}
 
 	r = sched_getaffinity(0, sizeof(possible_mask), &possible_mask);
 	TEST_ASSERT(!r, "sched_getaffinity failed, errno = %d (%s)", errno,
 		    strerror(errno));
 
-	if (calc_min_max_cpu()) {
-		print_skip("Only one usable CPU, task migration not possible");
-		exit(KSFT_SKIP);
-	}
+	calc_min_max_cpu();
 
-	sys_rseq(0);
+	r = rseq_register_current_thread();
+	TEST_ASSERT(!r, "rseq_register_current_thread failed, errno = %d (%s)",
+		    errno, strerror(errno));
 
 	/*
 	 * Create and run a dummy VM that immediately exits to userspace via
 	 * GUEST_SYNC, while concurrently migrating the process by setting its
 	 * CPU affinity.
 	 */
-	vm = vm_create_default(VCPU_ID, 0, guest_code);
-	ucall_init(vm, NULL);
+	vm = vm_create_with_one_vcpu(&vcpu, guest_code);
 
-	pthread_create(&migration_thread, NULL, migration_worker, 0);
+	pthread_create(&migration_thread, NULL, migration_worker,
+		       (void *)(unsigned long)syscall(SYS_gettid));
+
+	if (latency >= 0) {
+		/*
+		 * Writes to cpu_dma_latency persist only while the file is
+		 * open, i.e. it allows userspace to provide guaranteed latency
+		 * while running a workload.  Keep the file open until the test
+		 * completes, otherwise writing cpu_dma_latency is meaningless.
+		 */
+		fd = open("/dev/cpu_dma_latency", O_RDWR);
+		TEST_ASSERT(fd >= 0, __KVM_SYSCALL_ERROR("open() /dev/cpu_dma_latency", fd));
+
+		r = write(fd, &latency, 4);
+		TEST_ASSERT(r >= 1, "Error setting /dev/cpu_dma_latency");
+	}
 
 	for (i = 0; !done; i++) {
-		vcpu_run(vm, VCPU_ID);
-		TEST_ASSERT(get_ucall(vm, VCPU_ID, NULL) == UCALL_SYNC,
+		vcpu_run(vcpu);
+		TEST_ASSERT(get_ucall(vcpu, NULL) == UCALL_SYNC,
 			    "Guest failed?");
 
 		/*
 		 * Verify rseq's CPU matches sched's CPU.  Ensure migration
-		 * doesn't occur between sched_getcpu() and reading the rseq
-		 * cpu_id by rereading both if the sequence count changes, or
-		 * if the count is odd (migration in-progress).
+		 * doesn't occur between getcpu() and reading the rseq cpu_id
+		 * by rereading both if the sequence count changes, or if the
+		 * count is odd (migration in-progress).
 		 */
 		do {
 			/*
@@ -252,35 +279,48 @@ int main(int argc, char *argv[])
 			snapshot = atomic_read(&seq_cnt) & ~1;
 
 			/*
-			 * Ensure reading sched_getcpu() and rseq.cpu_id
-			 * complete in a single "no migration" window, i.e. are
-			 * not reordered across the seq_cnt reads.
+			 * Ensure calling getcpu() and reading rseq.cpu_id complete
+			 * in a single "no migration" window, i.e. are not reordered
+			 * across the seq_cnt reads.
 			 */
 			smp_rmb();
-			cpu = sched_getcpu();
-			rseq_cpu = READ_ONCE(__rseq.cpu_id);
+			r = sys_getcpu(&cpu, NULL);
+			TEST_ASSERT(!r, "getcpu failed, errno = %d (%s)",
+				    errno, strerror(errno));
+			rseq_cpu = rseq_current_cpu_raw();
 			smp_rmb();
 		} while (snapshot != atomic_read(&seq_cnt));
 
 		TEST_ASSERT(rseq_cpu == cpu,
-			    "rseq CPU = %d, sched CPU = %d\n", rseq_cpu, cpu);
+			    "rseq CPU = %d, sched CPU = %d", rseq_cpu, cpu);
 	}
+
+	if (fd > 0)
+		close(fd);
 
 	/*
 	 * Sanity check that the test was able to enter the guest a reasonable
 	 * number of times, e.g. didn't get stalled too often/long waiting for
-	 * sched_getcpu() to stabilize.  A 2:1 migration:KVM_RUN ratio is a
-	 * fairly conservative ratio on x86-64, which can do _more_ KVM_RUNs
-	 * than migrations given the 1us+ delay in the migration task.
+	 * getcpu() to stabilize.  A 2:1 migration:KVM_RUN ratio is a fairly
+	 * conservative ratio on x86-64, which can do _more_ KVM_RUNs than
+	 * migrations given the 1us+ delay in the migration task.
+	 *
+	 * Another reason why it may have small migration:KVM_RUN ratio is that,
+	 * on systems with large low power mode wakeup latency, it may happen
+	 * quite often that the scheduler is not able to wake up the target CPU
+	 * before the vCPU thread is scheduled to another CPU.
 	 */
-	TEST_ASSERT(i > (NR_TASK_MIGRATIONS / 2),
-		    "Only performed %d KVM_RUNs, task stalled too much?\n", i);
+	TEST_ASSERT(skip_sanity_check || i > (NR_TASK_MIGRATIONS / 2),
+		    "Only performed %d KVM_RUNs, task stalled too much?\n\n"
+		    "  Try disabling deep sleep states to reduce CPU wakeup latency,\n"
+		    "  e.g. via cpuidle.off=1 or via -l <latency>, or run with -u to\n"
+		    "  disable this sanity check.", i);
 
 	pthread_join(migration_thread, NULL);
 
 	kvm_vm_free(vm);
 
-	sys_rseq(RSEQ_FLAG_UNREGISTER);
+	rseq_unregister_current_thread();
 
 	return 0;
 }

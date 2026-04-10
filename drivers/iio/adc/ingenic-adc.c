@@ -17,7 +17,9 @@
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
 #include <linux/mutex.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 
 #define JZ_ADC_REG_ENABLE		0x00
 #define JZ_ADC_REG_CFG			0x04
@@ -717,12 +719,12 @@ static int ingenic_adc_read_raw(struct iio_dev *iio_dev,
 	}
 }
 
-static int ingenic_adc_of_xlate(struct iio_dev *iio_dev,
-				const struct of_phandle_args *iiospec)
+static int ingenic_adc_fwnode_xlate(struct iio_dev *iio_dev,
+				    const struct fwnode_reference_args *iiospec)
 {
 	int i;
 
-	if (!iiospec->args_count)
+	if (!iiospec->nargs)
 		return -EINVAL;
 
 	for (i = 0; i < iio_dev->num_channels; ++i)
@@ -732,16 +734,11 @@ static int ingenic_adc_of_xlate(struct iio_dev *iio_dev,
 	return -EINVAL;
 }
 
-static void ingenic_adc_clk_cleanup(void *data)
-{
-	clk_unprepare(data);
-}
-
 static const struct iio_info ingenic_adc_info = {
 	.write_raw = ingenic_adc_write_raw,
 	.read_raw = ingenic_adc_read_raw,
 	.read_avail = ingenic_adc_read_avail,
-	.of_xlate = ingenic_adc_of_xlate,
+	.fwnode_xlate = ingenic_adc_fwnode_xlate,
 };
 
 static int ingenic_adc_buffer_enable(struct iio_dev *iio_dev)
@@ -856,13 +853,13 @@ static int ingenic_adc_probe(struct platform_device *pdev)
 	if (IS_ERR(adc->base))
 		return PTR_ERR(adc->base);
 
-	adc->clk = devm_clk_get(dev, "adc");
+	adc->clk = devm_clk_get_prepared(dev, "adc");
 	if (IS_ERR(adc->clk)) {
 		dev_err(dev, "Unable to get clock\n");
 		return PTR_ERR(adc->clk);
 	}
 
-	ret = clk_prepare_enable(adc->clk);
+	ret = clk_enable(adc->clk);
 	if (ret) {
 		dev_err(dev, "Failed to enable clock\n");
 		return ret;
@@ -891,12 +888,6 @@ static int ingenic_adc_probe(struct platform_device *pdev)
 	usleep_range(2000, 3000); /* Must wait at least 2ms. */
 	clk_disable(adc->clk);
 
-	ret = devm_add_action_or_reset(dev, ingenic_adc_clk_cleanup, adc->clk);
-	if (ret) {
-		dev_err(dev, "Unable to add action\n");
-		return ret;
-	}
-
 	iio_dev->name = "jz-adc";
 	iio_dev->modes = INDIO_DIRECT_MODE | INDIO_BUFFER_SOFTWARE;
 	iio_dev->setup_ops = &ingenic_buffer_setup_ops;
@@ -917,7 +908,7 @@ static const struct of_device_id ingenic_adc_of_match[] = {
 	{ .compatible = "ingenic,jz4760-adc", .data = &jz4760_adc_soc_data, },
 	{ .compatible = "ingenic,jz4760b-adc", .data = &jz4760_adc_soc_data, },
 	{ .compatible = "ingenic,jz4770-adc", .data = &jz4770_adc_soc_data, },
-	{ },
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ingenic_adc_of_match);
 
@@ -929,4 +920,5 @@ static struct platform_driver ingenic_adc_driver = {
 	.probe = ingenic_adc_probe,
 };
 module_platform_driver(ingenic_adc_driver);
+MODULE_DESCRIPTION("ADC driver for the Ingenic JZ47xx SoCs");
 MODULE_LICENSE("GPL v2");

@@ -258,7 +258,7 @@ struct dvb_frontend *isl6423_attach(struct dvb_frontend *fe,
 {
 	struct isl6423_dev *isl6423;
 
-	isl6423 = kzalloc(sizeof(struct isl6423_dev), GFP_KERNEL);
+	isl6423 = kzalloc_obj(struct isl6423_dev);
 	if (!isl6423)
 		return NULL;
 
@@ -289,7 +289,7 @@ exit:
 	fe->sec_priv = NULL;
 	return NULL;
 }
-EXPORT_SYMBOL(isl6423_attach);
+EXPORT_SYMBOL_GPL(isl6423_attach);
 
 MODULE_DESCRIPTION("ISL6423 SEC");
 MODULE_AUTHOR("Manu Abraham");

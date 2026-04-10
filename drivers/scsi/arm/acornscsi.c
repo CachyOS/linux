@@ -591,7 +591,7 @@ datadir_t acornscsi_datadirection(int command)
     case CHANGE_DEFINITION:	case COMPARE:		case COPY:
     case COPY_VERIFY:		case LOG_SELECT:	case MODE_SELECT:
     case MODE_SELECT_10:	case SEND_DIAGNOSTIC:	case WRITE_BUFFER:
-    case FORMAT_UNIT:		case REASSIGN_BLOCKS:	case RESERVE:
+    case FORMAT_UNIT:		case REASSIGN_BLOCKS:	case RESERVE_6:
     case SEARCH_EQUAL:		case SEARCH_HIGH:	case SEARCH_LOW:
     case WRITE_6:		case WRITE_10:		case WRITE_VERIFY:
     case UPDATE_BLOCK:		case WRITE_LONG:	case WRITE_SAME:
@@ -2408,7 +2408,7 @@ acornscsi_intr(int irq, void *dev_id)
  * Params   : cmd  - SCSI command
  * Returns  : 0, or < 0 on error.
  */
-static int acornscsi_queuecmd_lck(struct scsi_cmnd *SCpnt)
+static enum scsi_qc_status acornscsi_queuecmd_lck(struct scsi_cmnd *SCpnt)
 {
     struct scsi_pointer *scsi_pointer = arm_scsi_pointer(SCpnt);
     void (*done)(struct scsi_cmnd *) = scsi_done;
@@ -2450,7 +2450,7 @@ static int acornscsi_queuecmd_lck(struct scsi_cmnd *SCpnt)
     return 0;
 }
 
-DEF_SCSI_QCMD(acornscsi_queuecmd)
+static DEF_SCSI_QCMD(acornscsi_queuecmd)
 
 enum res_abort { res_not_running, res_success, res_success_clear, res_snooze };
 
@@ -2552,7 +2552,7 @@ static enum res_abort acornscsi_do_abort(AS_Host *host, struct scsi_cmnd *SCpnt)
  * Params   : SCpnt - command to abort
  * Returns  : one of SCSI_ABORT_ macros
  */
-int acornscsi_abort(struct scsi_cmnd *SCpnt)
+static int acornscsi_abort(struct scsi_cmnd *SCpnt)
 {
 	AS_Host *host = (AS_Host *) SCpnt->device->host->hostdata;
 	int result;
@@ -2634,7 +2634,7 @@ int acornscsi_abort(struct scsi_cmnd *SCpnt)
  * Params   : SCpnt  - command causing reset
  * Returns  : one of SCSI_RESET_ macros
  */
-int acornscsi_host_reset(struct scsi_cmnd *SCpnt)
+static int acornscsi_host_reset(struct scsi_cmnd *SCpnt)
 {
 	AS_Host *host = (AS_Host *)SCpnt->device->host->hostdata;
 	struct scsi_cmnd *SCptr;
@@ -2679,8 +2679,7 @@ int acornscsi_host_reset(struct scsi_cmnd *SCpnt)
  * Params  : host - host to give information on
  * Returns : a constant string
  */
-const
-char *acornscsi_info(struct Scsi_Host *host)
+static const char *acornscsi_info(struct Scsi_Host *host)
 {
     static char string[100], *p;
 
@@ -2780,7 +2779,7 @@ static int acornscsi_show_info(struct seq_file *m, struct Scsi_Host *instance)
     return 0;
 }
 
-static struct scsi_host_template acornscsi_template = {
+static const struct scsi_host_template acornscsi_template = {
 	.module			= THIS_MODULE,
 	.show_info		= acornscsi_show_info,
 	.name			= "AcornSCSI",

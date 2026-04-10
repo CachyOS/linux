@@ -43,7 +43,7 @@ struct psz_buffer {
  *
  * @magic: magic num for kmsg dump header
  * @time: kmsg dump trigger time
- * @compressed: whether conpressed
+ * @compressed: whether compressed
  * @counter: kmsg dump counter
  * @reason: the kmsg dump reason (e.g. oops, panic, etc)
  * @data: pointer to log data
@@ -214,7 +214,7 @@ static int psz_zone_write(struct pstore_zone *zone,
 		atomic_set(&zone->buffer->datalen, wlen + off);
 	}
 
-	/* avoid to damage old records */
+	/* avoid damaging old records */
 	if (!is_on_panic() && !atomic_read(&pstore_zone_cxt.recovered))
 		goto dirty;
 
@@ -249,7 +249,7 @@ static int psz_zone_write(struct pstore_zone *zone,
 
 	return 0;
 dirty:
-	/* no need to mark dirty if going to try next zone */
+	/* no need to mark it dirty if going to try next zone */
 	if (wcnt == -ENOMSG)
 		return -ENOMSG;
 	atomic_set(&zone->dirty, true);
@@ -363,7 +363,7 @@ static int psz_kmsg_recover_data(struct psz_context *cxt)
 		rcnt = info->read((char *)buf, zone->buffer_size + sizeof(*buf),
 				zone->off);
 		if (rcnt != zone->buffer_size + sizeof(*buf))
-			return (int)rcnt < 0 ? (int)rcnt : -EIO;
+			return rcnt < 0 ? rcnt : -EIO;
 	}
 	return 0;
 }
@@ -372,13 +372,13 @@ static int psz_kmsg_recover_meta(struct psz_context *cxt)
 {
 	struct pstore_zone_info *info = cxt->pstore_zone_info;
 	struct pstore_zone *zone;
-	size_t rcnt, len;
+	ssize_t rcnt, len;
 	struct psz_buffer *buf;
 	struct psz_kmsg_header *hdr;
 	struct timespec64 time = { };
 	unsigned long i;
 	/*
-	 * Recover may on panic, we can't allocate any memory by kmalloc.
+	 * Recover may happen on panic, we can't allocate any memory by kmalloc.
 	 * So, we use local array instead.
 	 */
 	char buffer_header[sizeof(*buf) + sizeof(*hdr)] = {0};
@@ -400,7 +400,7 @@ static int psz_kmsg_recover_meta(struct psz_context *cxt)
 			continue;
 		} else if (rcnt != len) {
 			pr_err("read %s with id %lu failed\n", zone->name, i);
-			return (int)rcnt < 0 ? (int)rcnt : -EIO;
+			return rcnt < 0 ? rcnt : -EIO;
 		}
 
 		if (buf->sig != zone->buffer->sig) {
@@ -502,7 +502,7 @@ static int psz_recover_zone(struct psz_context *cxt, struct pstore_zone *zone)
 	rcnt = info->read((char *)&tmpbuf, len, zone->off);
 	if (rcnt != len) {
 		pr_debug("read zone %s failed\n", zone->name);
-		return (int)rcnt < 0 ? (int)rcnt : -EIO;
+		return rcnt < 0 ? rcnt : -EIO;
 	}
 
 	if (tmpbuf.sig != zone->buffer->sig) {
@@ -544,7 +544,7 @@ static int psz_recover_zone(struct psz_context *cxt, struct pstore_zone *zone)
 	rcnt = info->read(buf, len - start, off + start);
 	if (rcnt != len - start) {
 		pr_err("read zone %s failed\n", zone->name);
-		ret = (int)rcnt < 0 ? (int)rcnt : -EIO;
+		ret = rcnt < 0 ? rcnt : -EIO;
 		goto free_oldbuf;
 	}
 
@@ -552,7 +552,7 @@ static int psz_recover_zone(struct psz_context *cxt, struct pstore_zone *zone)
 	rcnt = info->read(buf + len - start, start, off);
 	if (rcnt != start) {
 		pr_err("read zone %s failed\n", zone->name);
-		ret = (int)rcnt < 0 ? (int)rcnt : -EIO;
+		ret = rcnt < 0 ? rcnt : -EIO;
 		goto free_oldbuf;
 	}
 
@@ -761,7 +761,7 @@ static inline int notrace psz_kmsg_write_record(struct psz_context *cxt,
 		/* avoid destroying old data, allocate a new one */
 		len = zone->buffer_size + sizeof(*zone->buffer);
 		zone->oldbuf = zone->buffer;
-		zone->buffer = kzalloc(len, GFP_KERNEL);
+		zone->buffer = kzalloc(len, GFP_ATOMIC);
 		if (!zone->buffer) {
 			zone->buffer = zone->oldbuf;
 			return -ENOMEM;
@@ -856,11 +856,11 @@ static int notrace psz_record_write(struct pstore_zone *zone,
 
 	/**
 	 * psz_zone_write will set datalen as start + cnt.
-	 * It work if actual data length lesser than buffer size.
-	 * If data length greater than buffer size, pmsg will rewrite to
-	 * beginning of zone, which make buffer->datalen wrongly.
+	 * It works if actual data length is lesser than buffer size.
+	 * If data length is greater than buffer size, pmsg will rewrite to
+	 * the beginning of the zone, which makes buffer->datalen wrong.
 	 * So we should reset datalen as buffer size once actual data length
-	 * greater than buffer size.
+	 * is greater than buffer size.
 	 */
 	if (is_full_data) {
 		atomic_set(&zone->buffer->datalen, zone->buffer_size);
@@ -878,8 +878,9 @@ static int notrace psz_pstore_write(struct pstore_record *record)
 		atomic_set(&cxt->on_panic, 1);
 
 	/*
-	 * if on panic, do not write except panic records
-	 * Fix case that panic_write prints log which wakes up console backend.
+	 * If on panic, do not write anything except panic records.
+	 * Fix the case when panic_write prints log that wakes up
+	 * console backend.
 	 */
 	if (is_on_panic() && record->type != PSTORE_TYPE_DMESG)
 		return -EBUSY;
@@ -973,6 +974,8 @@ static ssize_t psz_kmsg_read(struct pstore_zone *zone,
 		char *buf = kasprintf(GFP_KERNEL, "%s: Total %d times\n",
 				      kmsg_dump_reason_str(record->reason),
 				      record->count);
+		if (!buf)
+			return -ENOMEM;
 		hlen = strlen(buf);
 		record->buf = krealloc(buf, hlen + size, GFP_KERNEL);
 		if (!record->buf) {
@@ -1163,7 +1166,7 @@ static struct pstore_zone *psz_init_zone(enum pstore_type_id type,
 		return ERR_PTR(-ENOMEM);
 	}
 
-	zone = kzalloc(sizeof(struct pstore_zone), GFP_KERNEL);
+	zone = kzalloc_obj(struct pstore_zone);
 	if (!zone)
 		return ERR_PTR(-ENOMEM);
 
@@ -1210,12 +1213,16 @@ static struct pstore_zone **psz_init_zones(enum pstore_type_id type,
 	}
 
 	c = total_size / record_size;
-	zones = kcalloc(c, sizeof(*zones), GFP_KERNEL);
+	if (unlikely(!c)) {
+		pr_err("zone %s total_size too small\n", name);
+		return ERR_PTR(-EINVAL);
+	}
+
+	zones = kzalloc_objs(*zones, c);
 	if (!zones) {
 		pr_err("allocate for zones %s failed\n", name);
 		return ERR_PTR(-ENOMEM);
 	}
-	memset(zones, 0, c * sizeof(*zones));
 
 	for (i = 0; i < c; i++) {
 		zone = psz_init_zone(type, off, record_size);

@@ -13,6 +13,29 @@
 #include <asm/cpufeature.h>
 #include <asm/page.h>
 
+static pgprot_t protection_map[16] __ro_after_init = {
+	[VM_NONE]					= PAGE_NONE,
+	[VM_READ]					= PAGE_READONLY,
+	[VM_WRITE]					= PAGE_READONLY,
+	[VM_WRITE | VM_READ]				= PAGE_READONLY,
+	/* PAGE_EXECONLY if Enhanced PAN */
+	[VM_EXEC]					= PAGE_READONLY_EXEC,
+	[VM_EXEC | VM_READ]				= PAGE_READONLY_EXEC,
+	[VM_EXEC | VM_WRITE]				= PAGE_READONLY_EXEC,
+	[VM_EXEC | VM_WRITE | VM_READ]			= PAGE_READONLY_EXEC,
+	[VM_SHARED]					= PAGE_NONE,
+	[VM_SHARED | VM_READ]				= PAGE_READONLY,
+	[VM_SHARED | VM_WRITE]				= PAGE_SHARED,
+	[VM_SHARED | VM_WRITE | VM_READ]		= PAGE_SHARED,
+	/* PAGE_EXECONLY if Enhanced PAN */
+	[VM_SHARED | VM_EXEC]				= PAGE_READONLY_EXEC,
+	[VM_SHARED | VM_EXEC | VM_READ]			= PAGE_READONLY_EXEC,
+	[VM_SHARED | VM_EXEC | VM_WRITE]		= PAGE_SHARED_EXEC,
+	[VM_SHARED | VM_EXEC | VM_WRITE | VM_READ]	= PAGE_SHARED_EXEC
+};
+
+static ptdesc_t gcs_page_prot __ro_after_init = _PAGE_GCS_RO;
+
 /*
  * You really shouldn't be using read() or write() on /dev/mem.  This might go
  * away in the future.
@@ -47,19 +70,36 @@ static int __init adjust_protection_map(void)
 	 * With Enhanced PAN we can honour the execute-only permissions as
 	 * there is no PAN override with such mappings.
 	 */
-	if (cpus_have_const_cap(ARM64_HAS_EPAN)) {
+	if (cpus_have_cap(ARM64_HAS_EPAN)) {
 		protection_map[VM_EXEC] = PAGE_EXECONLY;
 		protection_map[VM_EXEC | VM_SHARED] = PAGE_EXECONLY;
+	}
+
+	if (lpa2_is_enabled()) {
+		for (int i = 0; i < ARRAY_SIZE(protection_map); i++)
+			pgprot_val(protection_map[i]) &= ~PTE_SHARED;
+		gcs_page_prot &= ~PTE_SHARED;
 	}
 
 	return 0;
 }
 arch_initcall(adjust_protection_map);
 
-pgprot_t vm_get_page_prot(unsigned long vm_flags)
+pgprot_t vm_get_page_prot(vm_flags_t vm_flags)
 {
-	pteval_t prot = pgprot_val(protection_map[vm_flags &
+	ptdesc_t prot;
+
+	/* Short circuit GCS to avoid bloating the table. */
+	if (system_supports_gcs() && (vm_flags & VM_SHADOW_STACK)) {
+		/* Honour mprotect(PROT_NONE) on shadow stack mappings */
+		if (vm_flags & VM_ACCESS_FLAGS)
+			prot = gcs_page_prot;
+		else
+			prot = pgprot_val(protection_map[VM_NONE]);
+	} else {
+		prot = pgprot_val(protection_map[vm_flags &
 				   (VM_READ|VM_WRITE|VM_EXEC|VM_SHARED)]);
+	}
 
 	if (vm_flags & VM_ARM64_BTI)
 		prot |= PTE_GP;
@@ -76,6 +116,17 @@ pgprot_t vm_get_page_prot(unsigned long vm_flags)
 	 */
 	if (vm_flags & VM_MTE)
 		prot |= PTE_ATTRINDX(MT_NORMAL_TAGGED);
+
+#ifdef CONFIG_ARCH_HAS_PKEYS
+	if (system_supports_poe()) {
+		if (vm_flags & VM_PKEY_BIT0)
+			prot |= PTE_PO_IDX_0;
+		if (vm_flags & VM_PKEY_BIT1)
+			prot |= PTE_PO_IDX_1;
+		if (vm_flags & VM_PKEY_BIT2)
+			prot |= PTE_PO_IDX_2;
+	}
+#endif
 
 	return __pgprot(prot);
 }

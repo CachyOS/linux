@@ -19,17 +19,15 @@ ice_aq_send_msg_to_vf(struct ice_hw *hw, u16 vfid, u32 v_opcode, u32 v_retval,
 		      u8 *msg, u16 msglen, struct ice_sq_cd *cd);
 
 u32 ice_conv_link_speed_to_virtchnl(bool adv_link_support, u16 link_speed);
+void ice_mbx_vf_dec_trig_e830(const struct ice_hw *hw,
+			      const struct ice_rq_event_info *event);
+void ice_mbx_vf_clear_cnt_e830(const struct ice_hw *hw, u16 vf_id);
 int
 ice_mbx_vf_state_handler(struct ice_hw *hw, struct ice_mbx_data *mbx_data,
-			 u16 vf_id, bool *is_mal_vf);
-int
-ice_mbx_clear_malvf(struct ice_mbx_snapshot *snap, unsigned long *all_malvfs,
-		    u16 bitmap_len, u16 vf_id);
-int ice_mbx_init_snapshot(struct ice_hw *hw, u16 vf_count);
-void ice_mbx_deinit_snapshot(struct ice_hw *hw);
-int
-ice_mbx_report_malvf(struct ice_hw *hw, unsigned long *all_malvfs,
-		     u16 bitmap_len, u16 vf_id, bool *report_malvf);
+			 struct ice_mbx_vf_info *vf_info, bool *report_malvf);
+void ice_mbx_clear_malvf(struct ice_mbx_vf_info *vf_info);
+void ice_mbx_init_vf_info(struct ice_hw *hw, struct ice_mbx_vf_info *vf_info);
+void ice_mbx_init_snapshot(struct ice_hw *hw);
 #else /* CONFIG_PCI_IOV */
 static inline int
 ice_aq_send_msg_to_vf(struct ice_hw __always_unused *hw,
@@ -46,6 +44,16 @@ ice_conv_link_speed_to_virtchnl(bool __always_unused adv_link_support,
 				u16 __always_unused link_speed)
 {
 	return 0;
+}
+
+static inline void ice_mbx_init_snapshot(struct ice_hw *hw)
+{
+}
+
+static inline void
+ice_mbx_vf_dec_trig_e830(const struct ice_hw *hw,
+			 const struct ice_rq_event_info *event)
+{
 }
 
 #endif /* CONFIG_PCI_IOV */

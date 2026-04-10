@@ -14,6 +14,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <linux/export.h>
 #include <linux/relay.h>
 #include <linux/random.h>
 #include "ath9k.h"
@@ -471,7 +472,7 @@ int ath_cmn_process_fft(struct ath_spec_scan_priv *spec_priv, struct ieee80211_h
 	u8 sample_buf[SPECTRAL_SAMPLE_MAX_LEN] = {0};
 	struct ath_hw *ah = spec_priv->ah;
 	struct ath_common *common = ath9k_hw_common(spec_priv->ah);
-	struct ath_softc *sc = (struct ath_softc *)common->priv;
+	struct ath_softc *sc = common->priv;
 	u8 num_bins, *vdata = (u8 *)hdr;
 	struct ath_radar_info *radar_info;
 	int len = rs->rs_datalen;
@@ -628,12 +629,12 @@ int ath_cmn_process_fft(struct ath_spec_scan_priv *spec_priv, struct ieee80211_h
 				else
 					RX_STAT_INC(sc, rx_spectral_sample_err);
 
-				memset(sample_buf, 0, SPECTRAL_SAMPLE_MAX_LEN);
-
 				/* Mix the received bins to the /dev/random
 				 * pool
 				 */
 				add_device_randomness(sample_buf, num_bins);
+
+				memset(sample_buf, 0, SPECTRAL_SAMPLE_MAX_LEN);
 			}
 
 			/* Process a normal frame */
@@ -734,7 +735,7 @@ void ath9k_cmn_spectral_scan_trigger(struct ath_common *common,
 				 ATH9K_RX_FILTER_PHYRADAR |
 				 ATH9K_RX_FILTER_PHYERR);
 
-	/* TODO: usually this should not be neccesary, but for some reason
+	/* TODO: usually this should not be necessary, but for some reason
 	 * (or in some mode?) the trigger must be called after the
 	 * configuration, otherwise the register will have its values reset
 	 * (on my ar9220 to value 0x01002310)
@@ -855,16 +856,11 @@ static ssize_t write_file_spectral_short_repeat(struct file *file,
 {
 	struct ath_spec_scan_priv *spec_priv = file->private_data;
 	unsigned long val;
-	char buf[32];
-	ssize_t len;
+	ssize_t ret;
 
-	len = min(count, sizeof(buf) - 1);
-	if (copy_from_user(buf, user_buf, len))
-		return -EFAULT;
-
-	buf[len] = '\0';
-	if (kstrtoul(buf, 0, &val))
-		return -EINVAL;
+	ret = kstrtoul_from_user(user_buf, count, 0, &val);
+	if (ret)
+		return ret;
 
 	if (val > 1)
 		return -EINVAL;
@@ -903,17 +899,11 @@ static ssize_t write_file_spectral_count(struct file *file,
 {
 	struct ath_spec_scan_priv *spec_priv = file->private_data;
 	unsigned long val;
-	char buf[32];
-	ssize_t len;
+	ssize_t ret;
 
-	len = min(count, sizeof(buf) - 1);
-	if (copy_from_user(buf, user_buf, len))
-		return -EFAULT;
-
-	buf[len] = '\0';
-	if (kstrtoul(buf, 0, &val))
-		return -EINVAL;
-
+	ret = kstrtoul_from_user(user_buf, count, 0, &val);
+	if (ret)
+		return ret;
 	if (val > 255)
 		return -EINVAL;
 
@@ -951,16 +941,11 @@ static ssize_t write_file_spectral_period(struct file *file,
 {
 	struct ath_spec_scan_priv *spec_priv = file->private_data;
 	unsigned long val;
-	char buf[32];
-	ssize_t len;
+	ssize_t ret;
 
-	len = min(count, sizeof(buf) - 1);
-	if (copy_from_user(buf, user_buf, len))
-		return -EFAULT;
-
-	buf[len] = '\0';
-	if (kstrtoul(buf, 0, &val))
-		return -EINVAL;
+	ret = kstrtoul_from_user(user_buf, count, 0, &val);
+	if (ret)
+		return ret;
 
 	if (val > 255)
 		return -EINVAL;
@@ -999,16 +984,11 @@ static ssize_t write_file_spectral_fft_period(struct file *file,
 {
 	struct ath_spec_scan_priv *spec_priv = file->private_data;
 	unsigned long val;
-	char buf[32];
-	ssize_t len;
+	ssize_t ret;
 
-	len = min(count, sizeof(buf) - 1);
-	if (copy_from_user(buf, user_buf, len))
-		return -EFAULT;
-
-	buf[len] = '\0';
-	if (kstrtoul(buf, 0, &val))
-		return -EINVAL;
+	ret = kstrtoul_from_user(user_buf, count, 0, &val);
+	if (ret)
+		return ret;
 
 	if (val > 15)
 		return -EINVAL;

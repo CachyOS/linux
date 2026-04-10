@@ -29,6 +29,9 @@
 		ethernet3 = &mscc_felix_port1;
 		ethernet4 = &mscc_felix_port2;
 		ethernet5 = &mscc_felix_port3;
+		ethernet6 = &mscc_felix_port4;
+		ethernet7 = &mscc_felix_port5;
+		ethernet8 = &enetc_port3;
 	};
 
 	chosen {
@@ -151,6 +154,10 @@
 	status = "okay";
 };
 
+&enetc_port3 {
+	status = "okay";
+};
+
 &esdhc {
 	sd-uhs-sdr104;
 	sd-uhs-sdr50;
@@ -193,6 +200,37 @@
 		reg = <0x77>;
 		#address-cells = <1>;
 		#size-cells = <0>;
+
+		i2c@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0x0>;
+
+			/* Atmel AT24C512C-XHD­B: 64 KB EEPROM */
+			eeprom@50 {
+				compatible = "atmel,24c512";
+				reg = <0x50>;
+				#address-cells = <1>;
+				#size-cells = <1>;
+			};
+
+			/* AT24C04C 512-byte DDR4 SPD EEPROM */
+			/* Documentation says 0x51, but must be even and i2cdetect says 0x52 */
+			eeprom@52 {
+				compatible = "atmel,24c04";
+				reg = <0x52>;
+				#address-cells = <1>;
+				#size-cells = <1>;
+			};
+
+			/* Atmel AT24C02C-XHM­B: 256-byte EEPROM */
+			eeprom@57 {
+				compatible = "atmel,24c02";
+				reg = <0x57>;
+				#address-cells = <1>;
+				#size-cells = <1>;
+			};
+		};
 
 		i2c@1 {
 			#address-cells = <1>;
@@ -278,7 +316,10 @@
 };
 
 &mscc_felix_port4 {
-	ethernet = <&enetc_port2>;
+	status = "okay";
+};
+
+&mscc_felix_port5 {
 	status = "okay";
 };
 

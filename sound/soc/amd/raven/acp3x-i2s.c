@@ -80,7 +80,7 @@ static int acp3x_i2s_hwparams(struct snd_pcm_substream *substream,
 	u32 val;
 	u32 reg_val, frmt_reg;
 
-	prtd = asoc_substream_to_rtd(substream);
+	prtd = snd_soc_substream_to_rtd(substream);
 	rtd = substream->runtime->private_data;
 	card = prtd->card;
 	adata = snd_soc_dai_get_drvdata(dai);
@@ -149,8 +149,9 @@ static int acp3x_i2s_trigger(struct snd_pcm_substream *substream,
 				int cmd, struct snd_soc_dai *dai)
 {
 	struct i2s_stream_instance *rtd;
-	u32 ret, val, period_bytes, reg_val, ier_val, water_val;
+	u32 val, period_bytes, reg_val, ier_val, water_val;
 	u32 buf_size, buf_reg;
+	int ret;
 
 	rtd = substream->runtime->private_data;
 	period_bytes = frames_to_bytes(substream->runtime,
@@ -257,7 +258,8 @@ static const struct snd_soc_dai_ops acp3x_i2s_dai_ops = {
 };
 
 static const struct snd_soc_component_driver acp3x_dai_component = {
-	.name           = DRV_NAME,
+	.name			= DRV_NAME,
+	.legacy_dai_naming	= 1,
 };
 
 static struct snd_soc_dai_driver acp3x_i2s_dai = {
@@ -314,16 +316,8 @@ static int acp3x_dai_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int acp3x_dai_remove(struct platform_device *pdev)
-{
-	/* As we use devm_ memory alloc there is nothing TBD here */
-
-	return 0;
-}
-
 static struct platform_driver acp3x_dai_driver = {
 	.probe = acp3x_dai_probe,
-	.remove = acp3x_dai_remove,
 	.driver = {
 		.name = "acp3x_i2s_playcap",
 	},

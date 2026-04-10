@@ -15,7 +15,7 @@
 
 本文通过演示DAMON的默认用户空间工具，简要地介绍了如何使用DAMON。请注意，为了简洁
 起见，本文档只描述了它的部分功能。更多细节请参考该工具的使用文档。
-`doc <https://github.com/awslabs/damo/blob/next/USAGE.md>`_ .
+`doc <https://github.com/damonitor/damo/blob/next/USAGE.md>`_ .
 
 
 前提条件
@@ -31,19 +31,11 @@
 ------------
 
 在演示中，我们将使用DAMON的默认用户空间工具，称为DAMON Operator（DAMO）。它可以在
-https://github.com/awslabs/damo找到。下面的例子假设DAMO在你的$PATH上。当然，但
+https://github.com/damonitor/damo找到。下面的例子假设DAMO在你的$PATH上。当然，但
 这并不是强制性的。
 
-因为DAMO使用的是DAMON的debugfs接口(详情请参考 :doc:`usage` 中的使用方法) 你应该
-确保debugfs被挂载。手动挂载它，如下所示::
-
-    # mount -t debugfs none /sys/kernel/debug/
-
-或者在你的 ``/etc/fstab`` 文件中添加以下一行，这样你的系统就可以在启动时自动挂载
-debugfs了::
-
-    debugfs /sys/kernel/debug debugfs defaults 0 0
-
+因为DAMO使用了DAMON的sysfs接口（详情请参考:doc:`usage`），你应该确保
+:doc:`sysfs </filesystems/sysfs>` 被挂载。
 
 记录数据访问模式
 ================

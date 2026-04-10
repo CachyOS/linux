@@ -75,7 +75,6 @@ enum adv748x_csi2_pads {
 
 struct adv748x_csi2 {
 	struct adv748x_state *state;
-	struct v4l2_mbus_framefmt format;
 	unsigned int page;
 	unsigned int port;
 	unsigned int num_lanes;
@@ -173,7 +172,6 @@ struct adv748x_afe {
  *
  * @endpoints:		parsed device node endpoints for each port
  *
- * @i2c_addresses:	I2C Page addresses
  * @i2c_clients:	I2C clients for the page accesses
  * @regmap:		regmap configuration pages.
  *
@@ -322,7 +320,7 @@ struct adv748x_state {
 
 /* Free run pattern select */
 #define ADV748X_SDP_FRP			0x14
-#define ADV748X_SDP_FRP_MASK		GENMASK(3, 1)
+#define ADV748X_SDP_FRP_MASK		GENMASK(2, 0)
 
 /* Saturation */
 #define ADV748X_SDP_SD_SAT_U		0xe3	/* user_map_rw_reg_e3 */
@@ -417,7 +415,7 @@ int adv748x_write_block(struct adv748x_state *state, int client_page,
 
 static inline struct v4l2_subdev *adv748x_get_remote_sd(struct media_pad *pad)
 {
-	pad = media_entity_remote_pad(pad);
+	pad = media_pad_remote_pad_first(pad);
 	if (!pad)
 		return NULL;
 
@@ -427,9 +425,6 @@ static inline struct v4l2_subdev *adv748x_get_remote_sd(struct media_pad *pad)
 void adv748x_subdev_init(struct v4l2_subdev *sd, struct adv748x_state *state,
 			 const struct v4l2_subdev_ops *ops, u32 function,
 			 const char *ident);
-
-int adv748x_register_subdevs(struct adv748x_state *state,
-			     struct v4l2_device *v4l2_dev);
 
 int adv748x_tx_power(struct adv748x_csi2 *tx, bool on);
 

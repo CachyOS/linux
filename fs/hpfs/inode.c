@@ -36,9 +36,9 @@ void hpfs_init_inode(struct inode *i)
 	hpfs_inode->i_rddir_off = NULL;
 	hpfs_inode->i_dirty = 0;
 
-	i->i_ctime.tv_sec = i->i_ctime.tv_nsec = 0;
-	i->i_mtime.tv_sec = i->i_mtime.tv_nsec = 0;
-	i->i_atime.tv_sec = i->i_atime.tv_nsec = 0;
+	inode_set_ctime(i, 0, 0);
+	inode_set_mtime(i, 0, 0);
+	inode_set_atime(i, 0, 0);
 }
 
 void hpfs_read_inode(struct inode *i)
@@ -184,7 +184,7 @@ void hpfs_write_inode(struct inode *i)
 	struct hpfs_inode_info *hpfs_inode = hpfs_i(i);
 	struct inode *parent;
 	if (i->i_ino == hpfs_sb(i->i_sb)->sb_root) return;
-	if (hpfs_inode->i_rddir_off && !atomic_read(&i->i_count)) {
+	if (hpfs_inode->i_rddir_off && !icount_read(i)) {
 		if (*hpfs_inode->i_rddir_off)
 			pr_err("write_inode: some position still there\n");
 		kfree(hpfs_inode->i_rddir_off);
@@ -196,7 +196,7 @@ void hpfs_write_inode(struct inode *i)
 	parent = iget_locked(i->i_sb, hpfs_inode->i_parent_dir);
 	if (parent) {
 		hpfs_inode->i_dirty = 0;
-		if (parent->i_state & I_NEW) {
+		if (inode_state_read_once(parent) & I_NEW) {
 			hpfs_init_inode(parent);
 			hpfs_read_inode(parent);
 			unlock_new_inode(parent);
@@ -230,9 +230,9 @@ void hpfs_write_inode_nolock(struct inode *i)
 	}
 	hpfs_write_inode_ea(i, fnode);
 	if (de) {
-		de->write_date = cpu_to_le32(gmt_to_local(i->i_sb, i->i_mtime.tv_sec));
-		de->read_date = cpu_to_le32(gmt_to_local(i->i_sb, i->i_atime.tv_sec));
-		de->creation_date = cpu_to_le32(gmt_to_local(i->i_sb, i->i_ctime.tv_sec));
+		de->write_date = cpu_to_le32(gmt_to_local(i->i_sb, inode_get_mtime_sec(i)));
+		de->read_date = cpu_to_le32(gmt_to_local(i->i_sb, inode_get_atime_sec(i)));
+		de->creation_date = cpu_to_le32(gmt_to_local(i->i_sb, inode_get_ctime_sec(i)));
 		de->read_only = !(i->i_mode & 0222);
 		de->ea_size = cpu_to_le32(hpfs_inode->i_ea_size);
 		hpfs_mark_4buffers_dirty(&qbh);
@@ -240,9 +240,9 @@ void hpfs_write_inode_nolock(struct inode *i)
 	}
 	if (S_ISDIR(i->i_mode)) {
 		if ((de = map_dirent(i, hpfs_inode->i_dno, "\001\001", 2, NULL, &qbh))) {
-			de->write_date = cpu_to_le32(gmt_to_local(i->i_sb, i->i_mtime.tv_sec));
-			de->read_date = cpu_to_le32(gmt_to_local(i->i_sb, i->i_atime.tv_sec));
-			de->creation_date = cpu_to_le32(gmt_to_local(i->i_sb, i->i_ctime.tv_sec));
+			de->write_date = cpu_to_le32(gmt_to_local(i->i_sb, inode_get_mtime_sec(i)));
+			de->read_date = cpu_to_le32(gmt_to_local(i->i_sb, inode_get_atime_sec(i)));
+			de->creation_date = cpu_to_le32(gmt_to_local(i->i_sb, inode_get_ctime_sec(i)));
 			de->read_only = !(i->i_mode & 0222);
 			de->ea_size = cpu_to_le32(/*hpfs_inode->i_ea_size*/0);
 			de->file_size = cpu_to_le32(0);
@@ -257,7 +257,7 @@ void hpfs_write_inode_nolock(struct inode *i)
 	brelse(bh);
 }
 
-int hpfs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
+int hpfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 		 struct iattr *attr)
 {
 	struct inode *inode = d_inode(dentry);
@@ -275,7 +275,7 @@ int hpfs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 	if ((attr->ia_valid & ATTR_SIZE) && attr->ia_size > inode->i_size)
 		goto out_unlock;
 
-	error = setattr_prepare(&init_user_ns, dentry, attr);
+	error = setattr_prepare(&nop_mnt_idmap, dentry, attr);
 	if (error)
 		goto out_unlock;
 
@@ -289,7 +289,7 @@ int hpfs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 		hpfs_truncate(inode);
 	}
 
-	setattr_copy(&init_user_ns, inode, attr);
+	setattr_copy(&nop_mnt_idmap, inode, attr);
 
 	hpfs_write_inode(inode);
 

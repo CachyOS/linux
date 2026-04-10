@@ -265,11 +265,11 @@ milbeaut_hdmac_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
 	if (!is_slave_direction(direction))
 		return NULL;
 
-	md = kzalloc(sizeof(*md), GFP_NOWAIT);
+	md = kzalloc_obj(*md, GFP_NOWAIT);
 	if (!md)
 		return NULL;
 
-	md->sgl = kcalloc(sg_len, sizeof(*sgl), GFP_NOWAIT);
+	md->sgl = kzalloc_objs(*sgl, sg_len, GFP_NOWAIT);
 	if (!md->sgl) {
 		kfree(md);
 		return NULL;
@@ -531,7 +531,7 @@ disable_clk:
 	return ret;
 }
 
-static int milbeaut_hdmac_remove(struct platform_device *pdev)
+static void milbeaut_hdmac_remove(struct platform_device *pdev)
 {
 	struct milbeaut_hdmac_device *mdev = platform_get_drvdata(pdev);
 	struct dma_chan *chan;
@@ -546,16 +546,21 @@ static int milbeaut_hdmac_remove(struct platform_device *pdev)
 	 */
 	list_for_each_entry(chan, &mdev->ddev.channels, device_node) {
 		ret = dmaengine_terminate_sync(chan);
-		if (ret)
-			return ret;
+		if (ret) {
+			/*
+			 * This results in resource leakage and maybe also
+			 * use-after-free errors as e.g. *mdev is kfreed.
+			 */
+			dev_alert(&pdev->dev, "Failed to terminate channel %d (%pe)\n",
+				  chan->chan_id, ERR_PTR(ret));
+			return;
+		}
 		milbeaut_hdmac_free_chan_resources(chan);
 	}
 
 	of_dma_controller_free(pdev->dev.of_node);
 	dma_async_device_unregister(&mdev->ddev);
 	clk_disable_unprepare(mdev->clk);
-
-	return 0;
 }
 
 static const struct of_device_id milbeaut_hdmac_match[] = {

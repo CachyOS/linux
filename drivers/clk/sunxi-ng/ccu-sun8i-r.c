@@ -5,7 +5,7 @@
 
 #include <linux/clk-provider.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 
 #include "ccu_common.h"
@@ -114,7 +114,7 @@ static struct ccu_mp a83t_ir_clk = {
 	},
 };
 
-static struct ccu_common *sun8i_a83t_r_ccu_clks[] = {
+static struct ccu_common *sun8i_r_ccu_clks[] = {
 	&ar100_clk.common,
 	&apb0_clk.common,
 	&apb0_pio_clk.common,
@@ -124,32 +124,8 @@ static struct ccu_common *sun8i_a83t_r_ccu_clks[] = {
 	&apb0_uart_clk.common,
 	&apb0_i2c_clk.common,
 	&apb0_twd_clk.common,
+	&ir_clk.common,
 	&a83t_ir_clk.common,
-};
-
-static struct ccu_common *sun8i_h3_r_ccu_clks[] = {
-	&ar100_clk.common,
-	&apb0_clk.common,
-	&apb0_pio_clk.common,
-	&apb0_ir_clk.common,
-	&apb0_timer_clk.common,
-	&apb0_uart_clk.common,
-	&apb0_i2c_clk.common,
-	&apb0_twd_clk.common,
-	&ir_clk.common,
-};
-
-static struct ccu_common *sun50i_a64_r_ccu_clks[] = {
-	&ar100_clk.common,
-	&apb0_clk.common,
-	&apb0_pio_clk.common,
-	&apb0_ir_clk.common,
-	&apb0_timer_clk.common,
-	&apb0_rsb_clk.common,
-	&apb0_uart_clk.common,
-	&apb0_i2c_clk.common,
-	&apb0_twd_clk.common,
-	&ir_clk.common,
 };
 
 static struct clk_hw_onecell_data sun8i_a83t_r_hw_clks = {
@@ -202,7 +178,7 @@ static struct clk_hw_onecell_data sun50i_a64_r_hw_clks = {
 	.num	= CLK_NUMBER,
 };
 
-static struct ccu_reset_map sun8i_a83t_r_ccu_resets[] = {
+static const struct ccu_reset_map sun8i_a83t_r_ccu_resets[] = {
 	[RST_APB0_IR]		=  { 0xb0, BIT(1) },
 	[RST_APB0_TIMER]	=  { 0xb0, BIT(2) },
 	[RST_APB0_RSB]		=  { 0xb0, BIT(3) },
@@ -210,14 +186,14 @@ static struct ccu_reset_map sun8i_a83t_r_ccu_resets[] = {
 	[RST_APB0_I2C]		=  { 0xb0, BIT(6) },
 };
 
-static struct ccu_reset_map sun8i_h3_r_ccu_resets[] = {
+static const struct ccu_reset_map sun8i_h3_r_ccu_resets[] = {
 	[RST_APB0_IR]		=  { 0xb0, BIT(1) },
 	[RST_APB0_TIMER]	=  { 0xb0, BIT(2) },
 	[RST_APB0_UART]		=  { 0xb0, BIT(4) },
 	[RST_APB0_I2C]		=  { 0xb0, BIT(6) },
 };
 
-static struct ccu_reset_map sun50i_a64_r_ccu_resets[] = {
+static const struct ccu_reset_map sun50i_a64_r_ccu_resets[] = {
 	[RST_APB0_IR]		=  { 0xb0, BIT(1) },
 	[RST_APB0_TIMER]	=  { 0xb0, BIT(2) },
 	[RST_APB0_RSB]		=  { 0xb0, BIT(3) },
@@ -226,8 +202,8 @@ static struct ccu_reset_map sun50i_a64_r_ccu_resets[] = {
 };
 
 static const struct sunxi_ccu_desc sun8i_a83t_r_ccu_desc = {
-	.ccu_clks	= sun8i_a83t_r_ccu_clks,
-	.num_ccu_clks	= ARRAY_SIZE(sun8i_a83t_r_ccu_clks),
+	.ccu_clks	= sun8i_r_ccu_clks,
+	.num_ccu_clks	= ARRAY_SIZE(sun8i_r_ccu_clks),
 
 	.hw_clks	= &sun8i_a83t_r_hw_clks,
 
@@ -236,8 +212,8 @@ static const struct sunxi_ccu_desc sun8i_a83t_r_ccu_desc = {
 };
 
 static const struct sunxi_ccu_desc sun8i_h3_r_ccu_desc = {
-	.ccu_clks	= sun8i_h3_r_ccu_clks,
-	.num_ccu_clks	= ARRAY_SIZE(sun8i_h3_r_ccu_clks),
+	.ccu_clks	= sun8i_r_ccu_clks,
+	.num_ccu_clks	= ARRAY_SIZE(sun8i_r_ccu_clks),
 
 	.hw_clks	= &sun8i_h3_r_hw_clks,
 
@@ -246,8 +222,8 @@ static const struct sunxi_ccu_desc sun8i_h3_r_ccu_desc = {
 };
 
 static const struct sunxi_ccu_desc sun50i_a64_r_ccu_desc = {
-	.ccu_clks	= sun50i_a64_r_ccu_clks,
-	.num_ccu_clks	= ARRAY_SIZE(sun50i_a64_r_ccu_clks),
+	.ccu_clks	= sun8i_r_ccu_clks,
+	.num_ccu_clks	= ARRAY_SIZE(sun8i_r_ccu_clks),
 
 	.hw_clks	= &sun50i_a64_r_hw_clks,
 
@@ -286,6 +262,7 @@ static const struct of_device_id sun8i_r_ccu_ids[] = {
 	},
 	{ }
 };
+MODULE_DEVICE_TABLE(of, sun8i_r_ccu_ids);
 
 static struct platform_driver sun8i_r_ccu_driver = {
 	.probe	= sun8i_r_ccu_probe,
@@ -297,5 +274,6 @@ static struct platform_driver sun8i_r_ccu_driver = {
 };
 module_platform_driver(sun8i_r_ccu_driver);
 
-MODULE_IMPORT_NS(SUNXI_CCU);
+MODULE_IMPORT_NS("SUNXI_CCU");
+MODULE_DESCRIPTION("Support for Allwinner SoCs' PRCM CCUs");
 MODULE_LICENSE("GPL");

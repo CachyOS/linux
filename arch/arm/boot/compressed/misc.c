@@ -23,7 +23,9 @@ unsigned int __machine_arch_type;
 #include <linux/types.h>
 #include <linux/linkage.h>
 #include "misc.h"
+#ifdef CONFIG_ARCH_EP93XX
 #include "misc-ep93xx.h"
+#endif
 
 static void putstr(const char *ptr);
 
@@ -101,9 +103,6 @@ static void putstr(const char *ptr)
 /*
  * gzip declarations
  */
-extern char input_data[];
-extern char input_data_end[];
-
 unsigned char *output_data;
 
 unsigned long free_mem_ptr;
@@ -128,9 +127,6 @@ asmlinkage void __div0(void)
 {
 	error("Attempting division by 0!");
 }
-
-extern int do_decompress(u8 *input, int len, u8 *output, void (*error)(char *x));
-
 
 void
 decompress_kernel(unsigned long output_start, unsigned long free_mem_ptr_p,
@@ -158,7 +154,7 @@ decompress_kernel(unsigned long output_start, unsigned long free_mem_ptr_p,
 		putstr(" done, booting the kernel.\n");
 }
 
-void fortify_panic(const char *name)
+void __fortify_panic(const u8 reason, size_t avail, size_t size)
 {
 	error("detected buffer overflow");
 }

@@ -7,6 +7,7 @@
  * Copyright (C) 2005 IBM Corporation.
  */
 
+#include <linux/irq.h>
 #include <linux/kexec.h>
 #include <linux/mm.h>
 #include <linux/string.h>
@@ -55,7 +56,7 @@ void default_machine_kexec(struct kimage *image)
 				reboot_code_buffer + KEXEC_CONTROL_PAGE_SIZE);
 	printk(KERN_INFO "Bye!\n");
 
-	if (!IS_ENABLED(CONFIG_FSL_BOOKE) && !IS_ENABLED(CONFIG_44x))
+	if (!IS_ENABLED(CONFIG_PPC_85xx) && !IS_ENABLED(CONFIG_44x))
 		relocate_new_kernel(page_list, reboot_code_buffer_phys, image->start);
 
 	/* now call it */

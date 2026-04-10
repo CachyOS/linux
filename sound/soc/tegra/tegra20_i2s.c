@@ -34,7 +34,7 @@
 
 #define DRV_NAME "tegra20-i2s"
 
-static __maybe_unused int tegra20_i2s_runtime_suspend(struct device *dev)
+static int tegra20_i2s_runtime_suspend(struct device *dev)
 {
 	struct tegra20_i2s *i2s = dev_get_drvdata(dev);
 
@@ -45,7 +45,7 @@ static __maybe_unused int tegra20_i2s_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static __maybe_unused int tegra20_i2s_runtime_resume(struct device *dev)
+static int tegra20_i2s_runtime_resume(struct device *dev)
 {
 	struct tegra20_i2s *i2s = dev_get_drvdata(dev);
 	int ret;
@@ -95,11 +95,11 @@ static int tegra20_i2s_set_fmt(struct snd_soc_dai *dai,
 	}
 
 	mask |= TEGRA20_I2S_CTRL_MASTER_ENABLE;
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBS_CFS:
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_BP_FP:
 		val |= TEGRA20_I2S_CTRL_MASTER_ENABLE;
 		break;
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_BC_FC:
 		break;
 	default:
 		return -EINVAL;
@@ -256,8 +256,8 @@ static int tegra20_i2s_probe(struct snd_soc_dai *dai)
 {
 	struct tegra20_i2s *i2s = snd_soc_dai_get_drvdata(dai);
 
-	dai->capture_dma_data = &i2s->capture_dma_data;
-	dai->playback_dma_data = &i2s->playback_dma_data;
+	snd_soc_dai_init_dma_data(dai,	&i2s->playback_dma_data,
+					&i2s->capture_dma_data);
 
 	return 0;
 }
@@ -273,13 +273,12 @@ static int tegra20_i2s_filter_rates(struct snd_pcm_hw_params *params,
 	struct snd_soc_dai *dai = rule->private;
 	struct tegra20_i2s *i2s = dev_get_drvdata(dai->dev);
 	struct clk *parent = clk_get_parent(i2s->clk_i2s);
-	long i, parent_rate, valid_rates = 0;
+	unsigned long i, parent_rate, valid_rates = 0;
 
 	parent_rate = clk_get_rate(parent);
-	if (parent_rate <= 0) {
-		dev_err(dai->dev, "Can't get parent clock rate: %ld\n",
-			parent_rate);
-		return parent_rate ?: -EINVAL;
+	if (!parent_rate) {
+		dev_err(dai->dev, "Can't get parent clock rate\n");
+		return -EINVAL;
 	}
 
 	for (i = 0; i < ARRAY_SIZE(tegra20_i2s_rates); i++) {
@@ -311,6 +310,7 @@ static int tegra20_i2s_startup(struct snd_pcm_substream *substream,
 }
 
 static const struct snd_soc_dai_ops tegra20_i2s_dai_ops = {
+	.probe		= tegra20_i2s_probe,
 	.set_fmt	= tegra20_i2s_set_fmt,
 	.hw_params	= tegra20_i2s_hw_params,
 	.trigger	= tegra20_i2s_trigger,
@@ -318,7 +318,6 @@ static const struct snd_soc_dai_ops tegra20_i2s_dai_ops = {
 };
 
 static const struct snd_soc_dai_driver tegra20_i2s_dai_template = {
-	.probe = tegra20_i2s_probe,
 	.playback = {
 		.stream_name = "Playback",
 		.channels_min = 2,
@@ -338,7 +337,8 @@ static const struct snd_soc_dai_driver tegra20_i2s_dai_template = {
 };
 
 static const struct snd_soc_component_driver tegra20_i2s_component = {
-	.name		= DRV_NAME,
+	.name			= DRV_NAME,
+	.legacy_dai_naming	= 1,
 };
 
 static bool tegra20_i2s_wr_rd_reg(struct device *dev, unsigned int reg)
@@ -474,13 +474,11 @@ err:
 	return ret;
 }
 
-static int tegra20_i2s_platform_remove(struct platform_device *pdev)
+static void tegra20_i2s_platform_remove(struct platform_device *pdev)
 {
 	tegra_pcm_platform_unregister(&pdev->dev);
 	snd_soc_unregister_component(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static const struct of_device_id tegra20_i2s_of_match[] = {
@@ -489,17 +487,16 @@ static const struct of_device_id tegra20_i2s_of_match[] = {
 };
 
 static const struct dev_pm_ops tegra20_i2s_pm_ops = {
-	SET_RUNTIME_PM_OPS(tegra20_i2s_runtime_suspend,
-			   tegra20_i2s_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
+	RUNTIME_PM_OPS(tegra20_i2s_runtime_suspend,
+		       tegra20_i2s_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 };
 
 static struct platform_driver tegra20_i2s_driver = {
 	.driver = {
 		.name = DRV_NAME,
 		.of_match_table = tegra20_i2s_of_match,
-		.pm = &tegra20_i2s_pm_ops,
+		.pm = pm_ptr(&tegra20_i2s_pm_ops),
 	},
 	.probe = tegra20_i2s_platform_probe,
 	.remove = tegra20_i2s_platform_remove,

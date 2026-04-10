@@ -1,15 +1,5 @@
-/*
- * Copyright (C) 2014 Broadcom Corporation
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+// SPDX-License-Identifier: GPL-2.0-only
+// Copyright (C) 2014 Broadcom Corporation
 
 #include <linux/clk.h>
 #include <linux/delay.h>
@@ -77,7 +67,7 @@
 
 /* BSC block register map structure to cache fields to be written */
 struct bsc_regs {
-	u32	chip_address;           /* slave address */
+	u32	chip_address;           /* target address */
 	u32	data_in[N_DATA_REGS];   /* tx data buffer*/
 	u32	cnt_reg;		/* rx/tx data length */
 	u32	ctl_reg;		/* control register */
@@ -170,6 +160,7 @@ struct brcmstb_i2c_dev {
 	struct completion done;
 	u32 clk_freq_hz;
 	int data_regsz;
+	bool atomic;
 };
 
 /* register accessors for both be and le cpu arch */
@@ -250,7 +241,7 @@ static int brcmstb_i2c_wait_for_completion(struct brcmstb_i2c_dev *dev)
 	int ret = 0;
 	unsigned long timeout = msecs_to_jiffies(I2C_TIMEOUT);
 
-	if (dev->irq >= 0) {
+	if (dev->irq >= 0 && !dev->atomic) {
 		if (!wait_for_completion_timeout(&dev->done, timeout))
 			ret = -ETIMEDOUT;
 	} else {
@@ -297,7 +288,7 @@ static int brcmstb_send_i2c_cmd(struct brcmstb_i2c_dev *dev,
 		return rc;
 
 	/* only if we are in interrupt mode */
-	if (dev->irq >= 0)
+	if (dev->irq >= 0 && !dev->atomic)
 		reinit_completion(&dev->done);
 
 	/* enable BSC CTL interrupt line */
@@ -329,7 +320,7 @@ cmd_out:
 	return rc;
 }
 
-/* Actual data transfer through the BSC master */
+/* Actual data transfer through the BSC controller */
 static int brcmstb_i2c_xfer_bsc_data(struct brcmstb_i2c_dev *dev,
 				     u8 *buf, unsigned int len,
 				     struct i2c_msg *pmsg)
@@ -423,23 +414,22 @@ static int brcmstb_i2c_do_addr(struct brcmstb_i2c_dev *dev,
 
 	if (msg->flags & I2C_M_TEN) {
 		/* First byte is 11110XX0 where XX is upper 2 bits */
-		addr = 0xF0 | ((msg->addr & 0x300) >> 7);
+		addr = i2c_10bit_addr_hi_from_msg(msg) & ~I2C_M_RD;
 		bsc_writel(dev, addr, chip_address);
 
 		/* Second byte is the remaining 8 bits */
-		addr = msg->addr & 0xFF;
+		addr = i2c_10bit_addr_lo_from_msg(msg);
 		if (brcmstb_i2c_write_data_byte(dev, &addr, 0) < 0)
 			return -EREMOTEIO;
 
 		if (msg->flags & I2C_M_RD) {
 			/* For read, send restart without stop condition */
-			brcmstb_set_i2c_start_stop(dev, COND_RESTART
-						   | COND_NOSTOP);
+			brcmstb_set_i2c_start_stop(dev, COND_RESTART | COND_NOSTOP);
+
 			/* Then re-send the first byte with the read bit set */
-			addr = 0xF0 | ((msg->addr & 0x300) >> 7) | 0x01;
+			addr = i2c_10bit_addr_hi_from_msg(msg);
 			if (brcmstb_i2c_write_data_byte(dev, &addr, 0) < 0)
 				return -EREMOTEIO;
-
 		}
 	} else {
 		addr = i2c_8bit_addr_from_msg(msg);
@@ -450,7 +440,6 @@ static int brcmstb_i2c_do_addr(struct brcmstb_i2c_dev *dev,
 	return 0;
 }
 
-/* Master transfer function */
 static int brcmstb_i2c_xfer(struct i2c_adapter *adapter,
 			    struct i2c_msg msgs[], int num)
 {
@@ -482,7 +471,7 @@ static int brcmstb_i2c_xfer(struct i2c_adapter *adapter,
 
 		brcmstb_set_i2c_start_stop(dev, cond);
 
-		/* Send slave address */
+		/* Send target address */
 		if (!(pmsg->flags & I2C_M_NOSTART)) {
 			rc = brcmstb_i2c_do_addr(dev, pmsg);
 			if (rc < 0) {
@@ -530,6 +519,23 @@ out:
 
 }
 
+static int brcmstb_i2c_xfer_atomic(struct i2c_adapter *adapter,
+				   struct i2c_msg msgs[], int num)
+{
+	struct brcmstb_i2c_dev *dev = i2c_get_adapdata(adapter);
+	int ret;
+
+	if (dev->irq >= 0)
+		disable_irq(dev->irq);
+	dev->atomic = true;
+	ret = brcmstb_i2c_xfer(adapter, msgs, num);
+	dev->atomic = false;
+	if (dev->irq >= 0)
+		enable_irq(dev->irq);
+
+	return ret;
+}
+
 static u32 brcmstb_i2c_functionality(struct i2c_adapter *adap)
 {
 	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL | I2C_FUNC_10BIT_ADDR
@@ -537,7 +543,8 @@ static u32 brcmstb_i2c_functionality(struct i2c_adapter *adap)
 }
 
 static const struct i2c_algorithm brcmstb_i2c_algo = {
-	.master_xfer = brcmstb_i2c_xfer,
+	.xfer = brcmstb_i2c_xfer,
+	.xfer_atomic = brcmstb_i2c_xfer_atomic,
 	.functionality = brcmstb_i2c_functionality,
 };
 
@@ -585,12 +592,10 @@ static void brcmstb_i2c_set_bsc_reg_defaults(struct brcmstb_i2c_dev *dev)
 static int bcm2711_release_bsc(struct brcmstb_i2c_dev *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev->device);
-	struct resource *iomem;
 	void __iomem *autoi2c;
 
 	/* Map hardware registers */
-	iomem = platform_get_resource_byname(pdev, IORESOURCE_MEM, "auto-i2c");
-	autoi2c = devm_ioremap_resource(&pdev->dev, iomem);
+	autoi2c = devm_platform_ioremap_resource_byname(pdev, "auto-i2c");
 	if (IS_ERR(autoi2c))
 		return PTR_ERR(autoi2c);
 
@@ -606,11 +611,10 @@ static int bcm2711_release_bsc(struct brcmstb_i2c_dev *dev)
 
 static int brcmstb_i2c_probe(struct platform_device *pdev)
 {
-	int rc = 0;
 	struct brcmstb_i2c_dev *dev;
 	struct i2c_adapter *adap;
-	struct resource *iomem;
 	const char *int_name;
+	int rc;
 
 	/* Allocate memory for private data structure */
 	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
@@ -626,18 +630,15 @@ static int brcmstb_i2c_probe(struct platform_device *pdev)
 	init_completion(&dev->done);
 
 	/* Map hardware registers */
-	iomem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	dev->base = devm_ioremap_resource(dev->device, iomem);
-	if (IS_ERR(dev->base)) {
-		rc = -ENOMEM;
-		goto probe_errorout;
-	}
+	dev->base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(dev->base))
+		return PTR_ERR(dev->base);
 
 	if (of_device_is_compatible(dev->device->of_node,
 				    "brcm,bcm2711-hdmi-i2c")) {
 		rc = bcm2711_release_bsc(dev);
 		if (rc)
-			goto probe_errorout;
+			return rc;
 	}
 
 	rc = of_property_read_string(dev->device->of_node, "interrupt-names",
@@ -684,35 +685,28 @@ static int brcmstb_i2c_probe(struct platform_device *pdev)
 	adap = &dev->adapter;
 	i2c_set_adapdata(adap, dev);
 	adap->owner = THIS_MODULE;
-	strlcpy(adap->name, "Broadcom STB : ", sizeof(adap->name));
-	if (int_name)
-		strlcat(adap->name, int_name, sizeof(adap->name));
+	strscpy(adap->name, dev_name(&pdev->dev), sizeof(adap->name));
 	adap->algo = &brcmstb_i2c_algo;
 	adap->dev.parent = &pdev->dev;
 	adap->dev.of_node = pdev->dev.of_node;
 	rc = i2c_add_adapter(adap);
 	if (rc)
-		goto probe_errorout;
+		return rc;
 
 	dev_info(dev->device, "%s@%dhz registered in %s mode\n",
 		 int_name ? int_name : " ", dev->clk_freq_hz,
 		 (dev->irq >= 0) ? "interrupt" : "polling");
 
 	return 0;
-
-probe_errorout:
-	return rc;
 }
 
-static int brcmstb_i2c_remove(struct platform_device *pdev)
+static void brcmstb_i2c_remove(struct platform_device *pdev)
 {
 	struct brcmstb_i2c_dev *dev = platform_get_drvdata(pdev);
 
 	i2c_del_adapter(&dev->adapter);
-	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int brcmstb_i2c_suspend(struct device *dev)
 {
 	struct brcmstb_i2c_dev *i2c_dev = dev_get_drvdata(dev);
@@ -730,10 +724,9 @@ static int brcmstb_i2c_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(brcmstb_i2c_pm, brcmstb_i2c_suspend,
-			 brcmstb_i2c_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(brcmstb_i2c_pm, brcmstb_i2c_suspend,
+				brcmstb_i2c_resume);
 
 static const struct of_device_id brcmstb_i2c_of_match[] = {
 	{.compatible = "brcm,brcmstb-i2c"},
@@ -747,7 +740,7 @@ static struct platform_driver brcmstb_i2c_driver = {
 	.driver = {
 		   .name = "brcmstb-i2c",
 		   .of_match_table = brcmstb_i2c_of_match,
-		   .pm = &brcmstb_i2c_pm,
+		   .pm = pm_sleep_ptr(&brcmstb_i2c_pm),
 		   },
 	.probe = brcmstb_i2c_probe,
 	.remove = brcmstb_i2c_remove,

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB
 /*
- * Copyright 2018-2021 Amazon.com, Inc. or its affiliates. All rights reserved.
+ * Copyright 2018-2024 Amazon.com, Inc. or its affiliates. All rights reserved.
  */
 
 #include <linux/dma-buf.h>
@@ -13,18 +13,18 @@
 #include <rdma/ib_user_verbs.h>
 #include <rdma/ib_verbs.h>
 #include <rdma/uverbs_ioctl.h>
+#define UVERBS_MODULE_NAME efa_ib
+#include <rdma/uverbs_named_ioctl.h>
+#include <rdma/ib_user_ioctl_cmds.h>
 
 #include "efa.h"
+#include "efa_io_defs.h"
 
 enum {
 	EFA_MMAP_DMA_PAGE = 0,
 	EFA_MMAP_IO_WC,
 	EFA_MMAP_IO_NC,
 };
-
-#define EFA_AENQ_ENABLED_GROUPS \
-	(BIT(EFA_ADMIN_FATAL_ERROR) | BIT(EFA_ADMIN_WARNING) | \
-	 BIT(EFA_ADMIN_NOTIFICATION) | BIT(EFA_ADMIN_KEEP_ALIVE))
 
 struct efa_user_mmap_entry {
 	struct rdma_user_mmap_entry rdma_entry;
@@ -60,6 +60,15 @@ struct efa_user_mmap_entry {
 	op(EFA_RDMA_READ_BYTES, "rdma_read_bytes") \
 	op(EFA_RDMA_READ_WR_ERR, "rdma_read_wr_err") \
 	op(EFA_RDMA_READ_RESP_BYTES, "rdma_read_resp_bytes") \
+	op(EFA_RDMA_WRITE_WRS, "rdma_write_wrs") \
+	op(EFA_RDMA_WRITE_BYTES, "rdma_write_bytes") \
+	op(EFA_RDMA_WRITE_WR_ERR, "rdma_write_wr_err") \
+	op(EFA_RDMA_WRITE_RECV_BYTES, "rdma_write_recv_bytes") \
+	op(EFA_RETRANS_BYTES, "retrans_bytes") \
+	op(EFA_RETRANS_PKTS, "retrans_pkts") \
+	op(EFA_RETRANS_TIMEOUT_EVENS, "retrans_timeout_events") \
+	op(EFA_UNRESPONSIVE_REMOTE_EVENTS, "unresponsive_remote_events") \
+	op(EFA_IMPAIRED_REMOTE_CONN_EVENTS, "impaired_remote_conn_events") \
 
 #define EFA_STATS_ENUM(ename, name) ename,
 #define EFA_STATS_STR(ename, nam) \
@@ -80,6 +89,8 @@ enum efa_hw_port_stats {
 static const struct rdma_stat_desc efa_port_stats_descs[] = {
 	EFA_DEFINE_PORT_STATS(EFA_STATS_STR)
 };
+
+#define EFA_DEFAULT_LINK_SPEED_GBPS   100
 
 #define EFA_CHUNK_PAYLOAD_SHIFT       12
 #define EFA_CHUNK_PAYLOAD_SIZE        BIT(EFA_CHUNK_PAYLOAD_SHIFT)
@@ -242,11 +253,22 @@ int efa_query_device(struct ib_device *ibdev,
 		resp.max_rq_wr = dev_attr->max_rq_depth;
 		resp.max_rdma_size = dev_attr->max_rdma_size;
 
+		resp.device_caps |= EFA_QUERY_DEVICE_CAPS_CQ_WITH_SGID;
+		resp.device_caps |= EFA_QUERY_DEVICE_CAPS_CQ_WITH_EXT_MEM;
 		if (EFA_DEV_CAP(dev, RDMA_READ))
 			resp.device_caps |= EFA_QUERY_DEVICE_CAPS_RDMA_READ;
 
 		if (EFA_DEV_CAP(dev, RNR_RETRY))
 			resp.device_caps |= EFA_QUERY_DEVICE_CAPS_RNR_RETRY;
+
+		if (EFA_DEV_CAP(dev, DATA_POLLING_128))
+			resp.device_caps |= EFA_QUERY_DEVICE_CAPS_DATA_POLLING_128;
+
+		if (EFA_DEV_CAP(dev, RDMA_WRITE))
+			resp.device_caps |= EFA_QUERY_DEVICE_CAPS_RDMA_WRITE;
+
+		if (EFA_DEV_CAP(dev, UNSOLICITED_WRITE_RECV))
+			resp.device_caps |= EFA_QUERY_DEVICE_CAPS_UNSOLICITED_WRITE_RECV;
 
 		if (dev->neqs)
 			resp.device_caps |= EFA_QUERY_DEVICE_CAPS_CQ_NOTIFICATIONS;
@@ -263,10 +285,47 @@ int efa_query_device(struct ib_device *ibdev,
 	return 0;
 }
 
+static void efa_link_gbps_to_speed_and_width(u16 gbps,
+					     enum ib_port_speed *speed,
+					     enum ib_port_width *width)
+{
+	if (gbps >= 400) {
+		*width = IB_WIDTH_8X;
+		*speed = IB_SPEED_HDR;
+	} else if (gbps >= 200) {
+		*width = IB_WIDTH_4X;
+		*speed = IB_SPEED_HDR;
+	} else if (gbps >= 120) {
+		*width = IB_WIDTH_12X;
+		*speed = IB_SPEED_FDR10;
+	} else if (gbps >= 100) {
+		*width = IB_WIDTH_4X;
+		*speed = IB_SPEED_EDR;
+	} else if (gbps >= 60) {
+		*width = IB_WIDTH_12X;
+		*speed = IB_SPEED_DDR;
+	} else if (gbps >= 50) {
+		*width = IB_WIDTH_1X;
+		*speed = IB_SPEED_HDR;
+	} else if (gbps >= 40) {
+		*width = IB_WIDTH_4X;
+		*speed = IB_SPEED_FDR10;
+	} else if (gbps >= 30) {
+		*width = IB_WIDTH_12X;
+		*speed = IB_SPEED_SDR;
+	} else {
+		*width = IB_WIDTH_1X;
+		*speed = IB_SPEED_EDR;
+	}
+}
+
 int efa_query_port(struct ib_device *ibdev, u32 port,
 		   struct ib_port_attr *props)
 {
 	struct efa_dev *dev = to_edev(ibdev);
+	enum ib_port_speed link_speed;
+	enum ib_port_width link_width;
+	u16 link_gbps;
 
 	props->lmc = 1;
 
@@ -274,8 +333,10 @@ int efa_query_port(struct ib_device *ibdev, u32 port,
 	props->phys_state = IB_PORT_PHYS_STATE_LINK_UP;
 	props->gid_tbl_len = 1;
 	props->pkey_tbl_len = 1;
-	props->active_speed = IB_SPEED_EDR;
-	props->active_width = IB_WIDTH_4X;
+	link_gbps = dev->dev_attr.max_link_speed_gbps ?: EFA_DEFAULT_LINK_SPEED_GBPS;
+	efa_link_gbps_to_speed_and_width(link_gbps, &link_speed, &link_width);
+	props->active_speed = link_speed;
+	props->active_width = link_width;
 	props->max_mtu = ib_mtu_int_to_enum(dev->dev_attr.mtu);
 	props->active_mtu = ib_mtu_int_to_enum(dev->dev_attr.mtu);
 	props->max_msg_sz = dev->dev_attr.mtu;
@@ -441,11 +502,11 @@ int efa_destroy_qp(struct ib_qp *ibqp, struct ib_udata *udata)
 
 	ibdev_dbg(&dev->ibdev, "Destroy qp[%u]\n", ibqp->qp_num);
 
-	efa_qp_user_mmap_entries_remove(qp);
-
 	err = efa_destroy_qp_handle(dev, qp->qp_handle);
 	if (err)
 		return err;
+
+	efa_qp_user_mmap_entries_remove(qp);
 
 	if (qp->rq_cpu_addr) {
 		ibdev_dbg(&dev->ibdev,
@@ -464,7 +525,7 @@ efa_user_mmap_entry_insert(struct ib_ucontext *ucontext,
 			   u64 address, size_t length,
 			   u8 mmap_flag, u64 *offset)
 {
-	struct efa_user_mmap_entry *entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	struct efa_user_mmap_entry *entry = kzalloc_obj(*entry);
 	int err;
 
 	if (!entry)
@@ -506,7 +567,7 @@ static int qp_mmap_entries_setup(struct efa_qp *qp,
 
 	address = dev->mem_bar_addr + resp->llq_desc_offset;
 	length = PAGE_ALIGN(params->sq_ring_size_in_bytes +
-			    (resp->llq_desc_offset & ~PAGE_MASK));
+			    offset_in_page(resp->llq_desc_offset));
 
 	qp->llq_desc_mmap_entry =
 		efa_user_mmap_entry_insert(&ucontext->ibucontext,
@@ -624,6 +685,7 @@ int efa_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
 	struct efa_ibv_create_qp cmd = {};
 	struct efa_qp *qp = to_eqp(ibqp);
 	struct efa_ucontext *ucontext;
+	u16 supported_efa_flags = 0;
 	int err;
 
 	ucontext = rdma_udata_to_drv_context(udata, struct efa_ucontext,
@@ -661,10 +723,20 @@ int efa_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
 		goto err_out;
 	}
 
-	if (cmd.comp_mask) {
+	if (cmd.comp_mask || !is_reserved_cleared(cmd.reserved_98)) {
 		ibdev_dbg(&dev->ibdev,
 			  "Incompatible ABI params, unknown fields in udata\n");
 		err = -EINVAL;
+		goto err_out;
+	}
+
+	if (EFA_DEV_CAP(dev, UNSOLICITED_WRITE_RECV))
+		supported_efa_flags |= EFA_CREATE_QP_WITH_UNSOLICITED_WRITE_RECV;
+
+	if (cmd.flags & ~supported_efa_flags) {
+		ibdev_dbg(&dev->ibdev, "Unsupported EFA QP create flags[%#x], supported[%#x]\n",
+			  cmd.flags, supported_efa_flags);
+		err = -EOPNOTSUPP;
 		goto err_out;
 	}
 
@@ -706,6 +778,11 @@ int efa_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
 			  qp->rq_cpu_addr, qp->rq_size, &qp->rq_dma_addr);
 		create_qp_params.rq_base_addr = qp->rq_dma_addr;
 	}
+
+	create_qp_params.sl = cmd.sl;
+
+	if (cmd.flags & EFA_CREATE_QP_WITH_UNSOLICITED_WRITE_RECV)
+		create_qp_params.unsolicited_write_recv = true;
 
 	err = efa_com_create_qp(&dev->edev, &create_qp_params,
 				&create_qp_resp);
@@ -1005,14 +1082,17 @@ int efa_destroy_cq(struct ib_cq *ibcq, struct ib_udata *udata)
 		  "Destroy cq[%d] virt[0x%p] freed: size[%lu], dma[%pad]\n",
 		  cq->cq_idx, cq->cpu_addr, cq->size, &cq->dma_addr);
 
-	efa_cq_user_mmap_entries_remove(cq);
 	efa_destroy_cq_idx(dev, cq->cq_idx);
+	efa_cq_user_mmap_entries_remove(cq);
 	if (cq->eq) {
 		xa_erase(&dev->cqs_xa, cq->cq_idx);
 		synchronize_irq(cq->eq->irq.irqn);
 	}
-	efa_free_mapped(dev, cq->cpu_addr, cq->dma_addr, cq->size,
-			DMA_FROM_DEVICE);
+
+	if (cq->umem)
+		ib_umem_release(cq->umem);
+	else
+		efa_free_mapped(dev, cq->cpu_addr, cq->dma_addr, cq->size, DMA_FROM_DEVICE);
 	return 0;
 }
 
@@ -1051,9 +1131,10 @@ static int cq_mmap_entries_setup(struct efa_dev *dev, struct efa_cq *cq,
 	return 0;
 }
 
-int efa_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
-		  struct ib_udata *udata)
+int efa_create_cq_umem(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
+		       struct ib_umem *umem, struct uverbs_attr_bundle *attrs)
 {
+	struct ib_udata *udata = &attrs->driver_udata;
 	struct efa_ucontext *ucontext = rdma_udata_to_drv_context(
 		udata, struct efa_ucontext, ibucontext);
 	struct efa_com_create_cq_params params = {};
@@ -1064,6 +1145,7 @@ int efa_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
 	struct efa_ibv_create_cq cmd = {};
 	struct efa_cq *cq = to_ecq(ibcq);
 	int entries = attr->cqe;
+	bool set_src_addr;
 	int err;
 
 	ibdev_dbg(ibdev, "create_cq entries %d\n", entries);
@@ -1109,7 +1191,10 @@ int efa_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
 		goto err_out;
 	}
 
-	if (!cmd.cq_entry_size) {
+	set_src_addr = !!(cmd.flags & EFA_CREATE_CQ_WITH_SGID);
+	if ((cmd.cq_entry_size != sizeof(struct efa_io_rx_cdesc_ex)) &&
+	    (set_src_addr ||
+	     cmd.cq_entry_size != sizeof(struct efa_io_rx_cdesc))) {
 		ibdev_dbg(ibdev,
 			  "Invalid entry size [%u]\n", cmd.cq_entry_size);
 		err = -EINVAL;
@@ -1126,18 +1211,38 @@ int efa_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
 
 	cq->ucontext = ucontext;
 	cq->size = PAGE_ALIGN(cmd.cq_entry_size * entries * cmd.num_sub_cqs);
-	cq->cpu_addr = efa_zalloc_mapped(dev, &cq->dma_addr, cq->size,
-					 DMA_FROM_DEVICE);
-	if (!cq->cpu_addr) {
-		err = -ENOMEM;
-		goto err_out;
+
+	if (umem) {
+		if (umem->length < cq->size) {
+			ibdev_dbg(&dev->ibdev, "External memory too small\n");
+			err = -EINVAL;
+			goto err_out;
+		}
+
+		if (!ib_umem_is_contiguous(umem)) {
+			ibdev_dbg(&dev->ibdev, "Non contiguous CQ unsupported\n");
+			err = -EINVAL;
+			goto err_out;
+		}
+
+		cq->cpu_addr = NULL;
+		cq->dma_addr = ib_umem_start_dma_addr(umem);
+		cq->umem = umem;
+	} else {
+		cq->cpu_addr = efa_zalloc_mapped(dev, &cq->dma_addr, cq->size,
+						 DMA_FROM_DEVICE);
+		if (!cq->cpu_addr) {
+			err = -ENOMEM;
+			goto err_out;
+		}
 	}
 
 	params.uarn = cq->ucontext->uarn;
-	params.cq_depth = entries;
+	params.sub_cq_depth = entries;
 	params.dma_addr = cq->dma_addr;
 	params.entry_size_in_bytes = cmd.cq_entry_size;
 	params.num_sub_cqs = cmd.num_sub_cqs;
+	params.set_src_addr = set_src_addr;
 	if (cmd.flags & EFA_CREATE_CQ_WITH_COMPLETION_CHANNEL) {
 		cq->eq = efa_vec2eq(dev, attr->comp_vector);
 		params.eqn = cq->eq->eeq.eqn;
@@ -1154,7 +1259,9 @@ int efa_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
 	cq->ibcq.cqe = result.actual_depth;
 	WARN_ON_ONCE(entries != result.actual_depth);
 
-	err = cq_mmap_entries_setup(dev, cq, &resp, result.db_valid);
+	if (!umem)
+		err = cq_mmap_entries_setup(dev, cq, &resp, result.db_valid);
+
 	if (err) {
 		ibdev_dbg(ibdev, "Could not setup cq[%u] mmap entries\n",
 			  cq->cq_idx);
@@ -1193,12 +1300,18 @@ err_remove_mmap:
 err_destroy_cq:
 	efa_destroy_cq_idx(dev, cq->cq_idx);
 err_free_mapped:
-	efa_free_mapped(dev, cq->cpu_addr, cq->dma_addr, cq->size,
-			DMA_FROM_DEVICE);
-
+	if (!umem)
+		efa_free_mapped(dev, cq->cpu_addr, cq->dma_addr, cq->size,
+				DMA_FROM_DEVICE);
 err_out:
 	atomic64_inc(&dev->stats.create_cq_err);
 	return err;
+}
+
+int efa_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
+		  struct uverbs_attr_bundle *attrs)
+{
+	return efa_create_cq_umem(ibcq, attr, NULL, attrs);
 }
 
 static int umem_to_page_list(struct efa_dev *dev,
@@ -1207,12 +1320,8 @@ static int umem_to_page_list(struct efa_dev *dev,
 			     u32 hp_cnt,
 			     u8 hp_shift)
 {
-	u32 pages_in_hp = BIT(hp_shift - PAGE_SHIFT);
 	struct ib_block_iter biter;
 	unsigned int hp_idx = 0;
-
-	ibdev_dbg(&dev->ibdev, "hp_cnt[%u], pages_in_hp[%u]\n",
-		  hp_cnt, pages_in_hp);
 
 	rdma_umem_for_each_dma_block(umem, &biter, BIT(hp_shift))
 		page_list[hp_idx++] = rdma_block_iter_dma_address(&biter);
@@ -1226,7 +1335,7 @@ static struct scatterlist *efa_vmalloc_buf_to_sg(u64 *buf, int page_cnt)
 	struct page *pg;
 	int i;
 
-	sglist = kmalloc_array(page_cnt, sizeof(*sglist), GFP_KERNEL);
+	sglist = kmalloc_objs(*sglist, page_cnt);
 	if (!sglist)
 		return NULL;
 	sg_init_table(sglist, page_cnt);
@@ -1265,9 +1374,7 @@ static int pbl_chunk_list_create(struct efa_dev *dev, struct pbl_context *pbl)
 	chunk_list_size = DIV_ROUND_UP(page_cnt, EFA_PTRS_PER_CHUNK);
 
 	chunk_list->size = chunk_list_size;
-	chunk_list->chunks = kcalloc(chunk_list_size,
-				     sizeof(*chunk_list->chunks),
-				     GFP_KERNEL);
+	chunk_list->chunks = kzalloc_objs(*chunk_list->chunks, chunk_list_size);
 	if (!chunk_list->chunks)
 		return -ENOMEM;
 
@@ -1390,7 +1497,7 @@ static int pbl_continuous_initialize(struct efa_dev *dev,
  */
 static int pbl_indirect_initialize(struct efa_dev *dev, struct pbl_context *pbl)
 {
-	u32 size_in_pages = DIV_ROUND_UP(pbl->pbl_buf_size_in_bytes, PAGE_SIZE);
+	u32 size_in_pages = DIV_ROUND_UP(pbl->pbl_buf_size_in_bytes, EFA_CHUNK_PAYLOAD_SIZE);
 	struct scatterlist *sgl;
 	int sg_dma_cnt, err;
 
@@ -1554,7 +1661,7 @@ static struct efa_mr *efa_alloc_mr(struct ib_pd *ibpd, int access_flags,
 	struct efa_mr *mr;
 
 	if (udata && udata->inlen &&
-	    !ib_is_udata_cleared(udata, 0, sizeof(udata->inlen))) {
+	    !ib_is_udata_cleared(udata, 0, udata->inlen)) {
 		ibdev_dbg(&dev->ibdev,
 			  "Incompatible ABI params, udata not cleared\n");
 		return ERR_PTR(-EINVAL);
@@ -1562,7 +1669,8 @@ static struct efa_mr *efa_alloc_mr(struct ib_pd *ibpd, int access_flags,
 
 	supp_access_flags =
 		IB_ACCESS_LOCAL_WRITE |
-		(EFA_DEV_CAP(dev, RDMA_READ) ? IB_ACCESS_REMOTE_READ : 0);
+		(EFA_DEV_CAP(dev, RDMA_READ) ? IB_ACCESS_REMOTE_READ : 0) |
+		(EFA_DEV_CAP(dev, RDMA_WRITE) ? IB_ACCESS_REMOTE_WRITE : 0);
 
 	access_flags &= ~IB_ACCESS_OPTIONAL;
 	if (access_flags & ~supp_access_flags) {
@@ -1572,7 +1680,7 @@ static struct efa_mr *efa_alloc_mr(struct ib_pd *ibpd, int access_flags,
 		return ERR_PTR(-EOPNOTSUPP);
 	}
 
-	mr = kzalloc(sizeof(*mr), GFP_KERNEL);
+	mr = kzalloc_obj(*mr);
 	if (!mr)
 		return ERR_PTR(-ENOMEM);
 
@@ -1635,6 +1743,12 @@ static int efa_register_mr(struct ib_pd *ibpd, struct efa_mr *mr, u64 start,
 	mr->ibmr.lkey = result.l_key;
 	mr->ibmr.rkey = result.r_key;
 	mr->ibmr.length = length;
+	mr->ic_info.recv_ic_id = result.ic_info.recv_ic_id;
+	mr->ic_info.rdma_read_ic_id = result.ic_info.rdma_read_ic_id;
+	mr->ic_info.rdma_recv_ic_id = result.ic_info.rdma_recv_ic_id;
+	mr->ic_info.recv_ic_id_valid = result.ic_info.recv_ic_id_valid;
+	mr->ic_info.rdma_read_ic_id_valid = result.ic_info.rdma_read_ic_id_valid;
+	mr->ic_info.rdma_recv_ic_id_valid = result.ic_info.rdma_recv_ic_id_valid;
 	ibdev_dbg(&dev->ibdev, "Registered mr[%d]\n", mr->ibmr.lkey);
 
 	return 0;
@@ -1643,14 +1757,20 @@ static int efa_register_mr(struct ib_pd *ibpd, struct efa_mr *mr, u64 start,
 struct ib_mr *efa_reg_user_mr_dmabuf(struct ib_pd *ibpd, u64 start,
 				     u64 length, u64 virt_addr,
 				     int fd, int access_flags,
-				     struct ib_udata *udata)
+				     struct ib_dmah *dmah,
+				     struct uverbs_attr_bundle *attrs)
 {
 	struct efa_dev *dev = to_edev(ibpd->device);
 	struct ib_umem_dmabuf *umem_dmabuf;
 	struct efa_mr *mr;
 	int err;
 
-	mr = efa_alloc_mr(ibpd, access_flags, udata);
+	if (dmah) {
+		err = -EOPNOTSUPP;
+		goto err_out;
+	}
+
+	mr = efa_alloc_mr(ibpd, access_flags, &attrs->driver_udata);
 	if (IS_ERR(mr)) {
 		err = PTR_ERR(mr);
 		goto err_out;
@@ -1660,7 +1780,8 @@ struct ib_mr *efa_reg_user_mr_dmabuf(struct ib_pd *ibpd, u64 start,
 						access_flags);
 	if (IS_ERR(umem_dmabuf)) {
 		err = PTR_ERR(umem_dmabuf);
-		ibdev_dbg(&dev->ibdev, "Failed to get dmabuf umem[%d]\n", err);
+		ibdev_dbg(&dev->ibdev, "Failed to get dmabuf umem[%pe]\n",
+			  umem_dmabuf);
 		goto err_free;
 	}
 
@@ -1682,11 +1803,17 @@ err_out:
 
 struct ib_mr *efa_reg_mr(struct ib_pd *ibpd, u64 start, u64 length,
 			 u64 virt_addr, int access_flags,
+			 struct ib_dmah *dmah,
 			 struct ib_udata *udata)
 {
 	struct efa_dev *dev = to_edev(ibpd->device);
 	struct efa_mr *mr;
 	int err;
+
+	if (dmah) {
+		err = -EOPNOTSUPP;
+		goto err_out;
+	}
 
 	mr = efa_alloc_mr(ibpd, access_flags, udata);
 	if (IS_ERR(mr)) {
@@ -1698,7 +1825,8 @@ struct ib_mr *efa_reg_mr(struct ib_pd *ibpd, u64 start, u64 length,
 	if (IS_ERR(mr->umem)) {
 		err = PTR_ERR(mr->umem);
 		ibdev_dbg(&dev->ibdev,
-			  "Failed to pin and map user space memory[%d]\n", err);
+			  "Failed to pin and map user space memory[%pe]\n",
+			  mr->umem);
 		goto err_free;
 	}
 
@@ -1715,6 +1843,39 @@ err_free:
 err_out:
 	atomic64_inc(&dev->stats.reg_mr_err);
 	return ERR_PTR(err);
+}
+
+static int UVERBS_HANDLER(EFA_IB_METHOD_MR_QUERY)(struct uverbs_attr_bundle *attrs)
+{
+	struct ib_mr *ibmr = uverbs_attr_get_obj(attrs, EFA_IB_ATTR_QUERY_MR_HANDLE);
+	struct efa_mr *mr = to_emr(ibmr);
+	u16 ic_id_validity = 0;
+	int ret;
+
+	ret = uverbs_copy_to(attrs, EFA_IB_ATTR_QUERY_MR_RESP_RECV_IC_ID,
+			     &mr->ic_info.recv_ic_id, sizeof(mr->ic_info.recv_ic_id));
+	if (ret)
+		return ret;
+
+	ret = uverbs_copy_to(attrs, EFA_IB_ATTR_QUERY_MR_RESP_RDMA_READ_IC_ID,
+			     &mr->ic_info.rdma_read_ic_id, sizeof(mr->ic_info.rdma_read_ic_id));
+	if (ret)
+		return ret;
+
+	ret = uverbs_copy_to(attrs, EFA_IB_ATTR_QUERY_MR_RESP_RDMA_RECV_IC_ID,
+			     &mr->ic_info.rdma_recv_ic_id, sizeof(mr->ic_info.rdma_recv_ic_id));
+	if (ret)
+		return ret;
+
+	if (mr->ic_info.recv_ic_id_valid)
+		ic_id_validity |= EFA_QUERY_MR_VALIDITY_RECV_IC_ID;
+	if (mr->ic_info.rdma_read_ic_id_valid)
+		ic_id_validity |= EFA_QUERY_MR_VALIDITY_RDMA_READ_IC_ID;
+	if (mr->ic_info.rdma_recv_ic_id_valid)
+		ic_id_validity |= EFA_QUERY_MR_VALIDITY_RDMA_RECV_IC_ID;
+
+	return uverbs_copy_to(attrs, EFA_IB_ATTR_QUERY_MR_RESP_IC_ID_VALIDITY,
+			      &ic_id_validity, sizeof(ic_id_validity));
 }
 
 int efa_dereg_mr(struct ib_mr *ibmr, struct ib_udata *udata)
@@ -2066,8 +2227,10 @@ static int efa_fill_port_stats(struct efa_dev *dev, struct rdma_hw_stats *stats,
 {
 	struct efa_com_get_stats_params params = {};
 	union efa_com_get_stats_result result;
+	struct efa_com_rdma_write_stats *rws;
 	struct efa_com_rdma_read_stats *rrs;
 	struct efa_com_messages_stats *ms;
+	struct efa_com_network_stats *ns;
 	struct efa_com_basic_stats *bs;
 	int err;
 
@@ -2107,6 +2270,31 @@ static int efa_fill_port_stats(struct efa_dev *dev, struct rdma_hw_stats *stats,
 	stats->value[EFA_RDMA_READ_WR_ERR] = rrs->read_wr_err;
 	stats->value[EFA_RDMA_READ_RESP_BYTES] = rrs->read_resp_bytes;
 
+	if (EFA_DEV_CAP(dev, RDMA_WRITE)) {
+		params.type = EFA_ADMIN_GET_STATS_TYPE_RDMA_WRITE;
+		err = efa_com_get_stats(&dev->edev, &params, &result);
+		if (err)
+			return err;
+
+		rws = &result.rdma_write_stats;
+		stats->value[EFA_RDMA_WRITE_WRS] = rws->write_wrs;
+		stats->value[EFA_RDMA_WRITE_BYTES] = rws->write_bytes;
+		stats->value[EFA_RDMA_WRITE_WR_ERR] = rws->write_wr_err;
+		stats->value[EFA_RDMA_WRITE_RECV_BYTES] = rws->write_recv_bytes;
+	}
+
+	params.type = EFA_ADMIN_GET_STATS_TYPE_NETWORK;
+	err = efa_com_get_stats(&dev->edev, &params, &result);
+	if (err)
+		return err;
+
+	ns = &result.network_stats;
+	stats->value[EFA_RETRANS_BYTES] = ns->retrans_bytes;
+	stats->value[EFA_RETRANS_PKTS] = ns->retrans_pkts;
+	stats->value[EFA_RETRANS_TIMEOUT_EVENS] = ns->retrans_timeout_events;
+	stats->value[EFA_UNRESPONSIVE_REMOTE_EVENTS] = ns->unresponsive_remote_events;
+	stats->value[EFA_IMPAIRED_REMOTE_CONN_EVENTS] = ns->impaired_remote_conn_events;
+
 	return ARRAY_SIZE(efa_port_stats_descs);
 }
 
@@ -2125,3 +2313,30 @@ enum rdma_link_layer efa_port_link_layer(struct ib_device *ibdev,
 	return IB_LINK_LAYER_UNSPECIFIED;
 }
 
+DECLARE_UVERBS_NAMED_METHOD(EFA_IB_METHOD_MR_QUERY,
+			    UVERBS_ATTR_IDR(EFA_IB_ATTR_QUERY_MR_HANDLE,
+					    UVERBS_OBJECT_MR,
+					    UVERBS_ACCESS_READ,
+					    UA_MANDATORY),
+			    UVERBS_ATTR_PTR_OUT(EFA_IB_ATTR_QUERY_MR_RESP_IC_ID_VALIDITY,
+						UVERBS_ATTR_TYPE(u16),
+						UA_MANDATORY),
+			    UVERBS_ATTR_PTR_OUT(EFA_IB_ATTR_QUERY_MR_RESP_RECV_IC_ID,
+						UVERBS_ATTR_TYPE(u16),
+						UA_MANDATORY),
+			    UVERBS_ATTR_PTR_OUT(EFA_IB_ATTR_QUERY_MR_RESP_RDMA_READ_IC_ID,
+						UVERBS_ATTR_TYPE(u16),
+						UA_MANDATORY),
+			    UVERBS_ATTR_PTR_OUT(EFA_IB_ATTR_QUERY_MR_RESP_RDMA_RECV_IC_ID,
+						UVERBS_ATTR_TYPE(u16),
+						UA_MANDATORY));
+
+ADD_UVERBS_METHODS(efa_mr,
+		   UVERBS_OBJECT_MR,
+		   &UVERBS_METHOD(EFA_IB_METHOD_MR_QUERY));
+
+const struct uapi_definition efa_uapi_defs[] = {
+	UAPI_DEF_CHAIN_OBJ_TREE(UVERBS_OBJECT_MR,
+				&efa_mr),
+	{},
+};

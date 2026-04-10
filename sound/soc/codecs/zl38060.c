@@ -385,15 +385,14 @@ static const struct snd_soc_component_driver zl38_component_dev = {
 	.dapm_routes		= zl38_dapm_routes,
 	.num_dapm_routes	= ARRAY_SIZE(zl38_dapm_routes),
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
-static void chip_gpio_set(struct gpio_chip *c, unsigned int offset, int val)
+static int chip_gpio_set(struct gpio_chip *c, unsigned int offset, int val)
 {
 	struct regmap *regmap = gpiochip_get_data(c);
 	unsigned int mask = BIT(offset);
 
-	regmap_update_bits(regmap, REG_GPIO_DAT, mask, val ? mask : 0);
+	return regmap_update_bits(regmap, REG_GPIO_DAT, mask, val ? mask : 0);
 }
 
 static int chip_gpio_get(struct gpio_chip *c, unsigned int offset)
@@ -423,8 +422,12 @@ chip_direction_output(struct gpio_chip *c, unsigned int offset, int val)
 {
 	struct regmap *regmap = gpiochip_get_data(c);
 	unsigned int mask = BIT(offset);
+	int ret;
 
-	chip_gpio_set(c, offset, val);
+	ret = chip_gpio_set(c, offset, val);
+	if (ret)
+		return ret;
+
 	return regmap_update_bits(regmap, REG_GPIO_DIR, mask, mask);
 }
 
@@ -609,7 +612,7 @@ static int zl38_spi_probe(struct spi_device *spi)
 					       &zl38_dai, 1);
 }
 
-static const struct of_device_id zl38_dt_ids[] = {
+static const struct of_device_id zl38_dt_ids[] __maybe_unused = {
 	{ .compatible = "mscc,zl38060", },
 	{ /* sentinel */ }
 };

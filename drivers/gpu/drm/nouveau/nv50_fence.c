@@ -35,14 +35,14 @@
 static int
 nv50_fence_context_new(struct nouveau_channel *chan)
 {
-	struct nv10_fence_priv *priv = chan->drm->fence;
+	struct nv10_fence_priv *priv = chan->cli->drm->fence;
 	struct nv10_fence_chan *fctx;
 	struct ttm_resource *reg = priv->bo->bo.resource;
 	u32 start = reg->start * PAGE_SIZE;
 	u32 limit = start + priv->bo->bo.base.size - 1;
 	int ret;
 
-	fctx = chan->fence = kzalloc(sizeof(*fctx), GFP_KERNEL);
+	fctx = chan->fence = kzalloc_obj(*fctx);
 	if (!fctx)
 		return -ENOMEM;
 
@@ -71,7 +71,7 @@ nv50_fence_create(struct nouveau_drm *drm)
 	struct nv10_fence_priv *priv;
 	int ret = 0;
 
-	priv = drm->fence = kzalloc(sizeof(*priv), GFP_KERNEL);
+	priv = drm->fence = kzalloc_obj(*priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -81,20 +81,7 @@ nv50_fence_create(struct nouveau_drm *drm)
 	priv->base.context_del = nv10_fence_context_del;
 	spin_lock_init(&priv->lock);
 
-	ret = nouveau_bo_new(&drm->client, 4096, 0x1000,
-			     NOUVEAU_GEM_DOMAIN_VRAM,
-			     0, 0x0000, NULL, NULL, &priv->bo);
-	if (!ret) {
-		ret = nouveau_bo_pin(priv->bo, NOUVEAU_GEM_DOMAIN_VRAM, false);
-		if (!ret) {
-			ret = nouveau_bo_map(priv->bo);
-			if (ret)
-				nouveau_bo_unpin(priv->bo);
-		}
-		if (ret)
-			nouveau_bo_ref(NULL, &priv->bo);
-	}
-
+	ret = nouveau_bo_new_map(&drm->client, NOUVEAU_GEM_DOMAIN_VRAM, PAGE_SIZE, &priv->bo);
 	if (ret) {
 		nv10_fence_destroy(drm);
 		return ret;

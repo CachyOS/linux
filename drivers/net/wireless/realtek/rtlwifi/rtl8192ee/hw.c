@@ -714,17 +714,17 @@ static void _rtl92ee_gen_refresh_led_state(struct ieee80211_hw *hw)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_ps_ctl *ppsc = rtl_psc(rtl_priv(hw));
-	struct rtl_led *pled0 = &rtlpriv->ledctl.sw_led0;
+	enum rtl_led_pin pin0 = rtlpriv->ledctl.sw_led0;
 
 	if (rtlpriv->rtlhal.up_first_time)
 		return;
 
 	if (ppsc->rfoff_reason == RF_CHANGE_BY_IPS)
-		rtl92ee_sw_led_on(hw, pled0);
+		rtl92ee_sw_led_on(hw, pin0);
 	else if (ppsc->rfoff_reason == RF_CHANGE_BY_INIT)
-		rtl92ee_sw_led_on(hw, pled0);
+		rtl92ee_sw_led_on(hw, pin0);
 	else
-		rtl92ee_sw_led_off(hw, pled0);
+		rtl92ee_sw_led_off(hw, pin0);
 }
 
 static bool _rtl92ee_init_mac(struct ieee80211_hw *hw)
@@ -1320,7 +1320,6 @@ int rtl92ee_hw_init(struct ieee80211_hw *hw)
 		err = 1;
 		return err;
 	}
-	rtlhal->rx_tag = 0;
 	rtl_write_word(rtlpriv, REG_PCIE_CTRL_REG, 0x8000);
 	err = rtl92ee_download_fw(hw, false);
 	if (err) {
@@ -1732,7 +1731,7 @@ void rtl92ee_update_interrupt_mask(struct ieee80211_hw *hw,
 	rtl92ee_enable_interrupt(hw);
 }
 
-static u8 _rtl92ee_get_chnl_group(u8 chnl)
+static __always_inline u8 _rtl92ee_get_chnl_group(u8 chnl)
 {
 	u8 group = 0;
 
@@ -2010,8 +2009,9 @@ static void _rtl8192ee_read_power_value_fromprom(struct ieee80211_hw *hw,
 	}
 }
 
-static void _rtl92ee_read_txpower_info_from_hwpg(struct ieee80211_hw *hw,
-						 bool autoload_fail, u8 *hwinfo)
+static noinline_for_stack void
+_rtl92ee_read_txpower_info_from_hwpg(struct ieee80211_hw *hw,
+				     bool autoload_fail, u8 *hwinfo)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_efuse *efu = rtl_efuse(rtl_priv(hw));

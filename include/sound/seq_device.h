@@ -43,6 +43,8 @@ struct snd_seq_device {
  *	Typically, call snd_device_free(dev->card, dev->driver_data)
  */
 struct snd_seq_driver {
+	int (*probe)(struct snd_seq_device *dev);
+	void (*remove)(struct snd_seq_device *dev);
 	struct device_driver driver;
 	char *id;
 	int argsize;
@@ -78,5 +80,6 @@ void snd_seq_driver_unregister(struct snd_seq_driver *drv);
  */
 #define SNDRV_SEQ_DEV_ID_MIDISYNTH	"seq-midi"
 #define SNDRV_SEQ_DEV_ID_OPL3		"opl3-synth"
+#define SNDRV_SEQ_DEV_ID_UMP		"seq-ump-client"
 
 #endif /* __SOUND_SEQ_DEVICE_H */

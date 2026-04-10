@@ -50,7 +50,7 @@ struct skcipher_def {
 /* Perform cipher operations with the chacha lib */
 static int test_lib_chacha(u8 *revert, u8 *cipher, u8 *plain)
 {
-	u32 chacha_state[CHACHA_STATE_WORDS];
+	struct chacha_state chacha_state;
 	u8 iv[16], key[32];
 	u64 start, end;
 
@@ -66,10 +66,10 @@ static int test_lib_chacha(u8 *revert, u8 *cipher, u8 *plain)
 	}
 
 	/* Encrypt */
-	chacha_init_arch(chacha_state, (u32*)key, iv);
+	chacha_init(&chacha_state, (u32 *)key, iv);
 
 	start = ktime_get_ns();
-	chacha_crypt_arch(chacha_state, cipher, plain, data_size, 20);
+	chacha_crypt_arch(&chacha_state, cipher, plain, data_size, 20);
 	end = ktime_get_ns();
 
 
@@ -81,10 +81,10 @@ static int test_lib_chacha(u8 *revert, u8 *cipher, u8 *plain)
 	pr_info("lib encryption took: %lld nsec", end - start);
 
 	/* Decrypt */
-	chacha_init_arch(chacha_state, (u32 *)key, iv);
+	chacha_init(&chacha_state, (u32 *)key, iv);
 
 	start = ktime_get_ns();
-	chacha_crypt_arch(chacha_state, revert, cipher, data_size, 20);
+	chacha_crypt_arch(&chacha_state, revert, cipher, data_size, 20);
 	end = ktime_get_ns();
 
 	if (debug)
@@ -252,29 +252,26 @@ static int __init chacha_s390_test_init(void)
 	memset(plain, 'a', data_size);
 	get_random_bytes(plain, (data_size > 256 ? 256 : data_size));
 
-	cipher_generic = vmalloc(data_size);
+	cipher_generic = vzalloc(data_size);
 	if (!cipher_generic) {
 		pr_info("could not allocate cipher_generic buffer\n");
 		ret = -2;
 		goto out;
 	}
-	memset(cipher_generic, 0, data_size);
 
-	cipher_s390 = vmalloc(data_size);
+	cipher_s390 = vzalloc(data_size);
 	if (!cipher_s390) {
 		pr_info("could not allocate cipher_s390 buffer\n");
 		ret = -2;
 		goto out;
 	}
-	memset(cipher_s390, 0, data_size);
 
-	revert = vmalloc(data_size);
+	revert = vzalloc(data_size);
 	if (!revert) {
 		pr_info("could not allocate revert buffer\n");
 		ret = -2;
 		goto out;
 	}
-	memset(revert, 0, data_size);
 
 	if (debug)
 		print_hex_dump(KERN_INFO, "src: ", DUMP_PREFIX_OFFSET,

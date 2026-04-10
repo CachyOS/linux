@@ -18,7 +18,7 @@
 #include <linux/iopoll.h>
 #include <linux/math.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/reset.h>
@@ -28,7 +28,6 @@
 
 #include <soc/tegra/fuse.h>
 
-#include "../thermal_core.h"
 #include "../thermal_hwmon.h"
 
 #define TSENSOR_SENSOR0_CONFIG0				0x0
@@ -159,9 +158,9 @@ static void devm_tegra_tsensor_hw_disable(void *data)
 	tegra_tsensor_hw_disable(ts);
 }
 
-static int tegra_tsensor_get_temp(void *data, int *temp)
+static int tegra_tsensor_get_temp(struct thermal_zone_device *tz, int *temp)
 {
-	const struct tegra_tsensor_channel *tsc = data;
+	const struct tegra_tsensor_channel *tsc = thermal_zone_device_priv(tz);
 	const struct tegra_tsensor *ts = tsc->ts;
 	int err, c1, c2, c3, c4, counter;
 	u32 val;
@@ -217,9 +216,9 @@ static int tegra_tsensor_temp_to_counter(const struct tegra_tsensor *ts, int tem
 	return DIV_ROUND_CLOSEST(c2 * 1000000 - ts->calib.b, ts->calib.a);
 }
 
-static int tegra_tsensor_set_trips(void *data, int low, int high)
+static int tegra_tsensor_set_trips(struct thermal_zone_device *tz, int low, int high)
 {
-	const struct tegra_tsensor_channel *tsc = data;
+	const struct tegra_tsensor_channel *tsc = thermal_zone_device_priv(tz);
 	const struct tegra_tsensor *ts = tsc->ts;
 	u32 val;
 
@@ -240,7 +239,7 @@ static int tegra_tsensor_set_trips(void *data, int low, int high)
 	return 0;
 }
 
-static const struct thermal_zone_of_device_ops ops = {
+static const struct thermal_zone_device_ops ops = {
 	.get_temp = tegra_tsensor_get_temp,
 	.set_trips = tegra_tsensor_set_trips,
 };
@@ -304,34 +303,37 @@ stop_channel:
 	return 0;
 }
 
-static void tegra_tsensor_get_hw_channel_trips(struct thermal_zone_device *tzd,
-					       int *hot_trip, int *crit_trip)
-{
-	unsigned int i;
+struct trip_temps {
+	int hot_trip;
+	int crit_trip;
+};
 
+static int tegra_tsensor_get_trips_cb(struct thermal_trip *trip, void *arg)
+{
+	struct trip_temps *temps = arg;
+
+	if (trip->type == THERMAL_TRIP_HOT)
+		temps->hot_trip = trip->temperature;
+	else if (trip->type == THERMAL_TRIP_CRITICAL)
+		temps->crit_trip = trip->temperature;
+
+	return 0;
+}
+
+static void tegra_tsensor_get_hw_channel_trips(struct thermal_zone_device *tzd,
+					       struct trip_temps *temps)
+{
 	/*
 	 * 90C is the maximal critical temperature of all Tegra30 SoC variants,
 	 * use it for the default trip if unspecified in a device-tree.
 	 */
-	*hot_trip  = 85000;
-	*crit_trip = 90000;
+	temps->hot_trip  = 85000;
+	temps->crit_trip = 90000;
 
-	for (i = 0; i < tzd->trips; i++) {
-		enum thermal_trip_type type;
-		int trip_temp;
-
-		tzd->ops->get_trip_temp(tzd, i, &trip_temp);
-		tzd->ops->get_trip_type(tzd, i, &type);
-
-		if (type == THERMAL_TRIP_HOT)
-			*hot_trip = trip_temp;
-
-		if (type == THERMAL_TRIP_CRITICAL)
-			*crit_trip = trip_temp;
-	}
+	thermal_zone_for_each_trip(tzd, tegra_tsensor_get_trips_cb, temps);
 
 	/* clamp hardware trips to the calibration limits */
-	*hot_trip = clamp(*hot_trip, 25000, 90000);
+	temps->hot_trip = clamp(temps->hot_trip, 25000, 90000);
 
 	/*
 	 * Kernel will perform a normal system shut down if it will
@@ -340,7 +342,7 @@ static void tegra_tsensor_get_hw_channel_trips(struct thermal_zone_device *tzd,
 	 * shut down gracefully before sending signal to the Power
 	 * Management controller.
 	 */
-	*crit_trip = clamp(*crit_trip + 5000, 25000, 90000);
+	temps->crit_trip = clamp(temps->crit_trip + 5000, 25000, 90000);
 }
 
 static int tegra_tsensor_enable_hw_channel(const struct tegra_tsensor *ts,
@@ -348,7 +350,8 @@ static int tegra_tsensor_enable_hw_channel(const struct tegra_tsensor *ts,
 {
 	const struct tegra_tsensor_channel *tsc = &ts->ch[id];
 	struct thermal_zone_device *tzd = tsc->tzd;
-	int err, hot_trip = 0, crit_trip = 0;
+	struct trip_temps temps = { 0 };
+	int err;
 	u32 val;
 
 	if (!tzd) {
@@ -359,27 +362,24 @@ static int tegra_tsensor_enable_hw_channel(const struct tegra_tsensor *ts,
 		return 0;
 	}
 
-	tegra_tsensor_get_hw_channel_trips(tzd, &hot_trip, &crit_trip);
-
-	/* prevent potential racing with tegra_tsensor_set_trips() */
-	mutex_lock(&tzd->lock);
+	tegra_tsensor_get_hw_channel_trips(tzd, &temps);
 
 	dev_info_once(ts->dev, "ch%u: PMC emergency shutdown trip set to %dC\n",
-		      id, DIV_ROUND_CLOSEST(crit_trip, 1000));
+		      id, DIV_ROUND_CLOSEST(temps.crit_trip, 1000));
 
-	hot_trip  = tegra_tsensor_temp_to_counter(ts, hot_trip);
-	crit_trip = tegra_tsensor_temp_to_counter(ts, crit_trip);
+	temps.hot_trip  = tegra_tsensor_temp_to_counter(ts, temps.hot_trip);
+	temps.crit_trip = tegra_tsensor_temp_to_counter(ts, temps.crit_trip);
 
 	/* program LEVEL2 counter threshold */
 	val = readl_relaxed(tsc->regs + TSENSOR_SENSOR0_CONFIG1);
 	val &= ~TSENSOR_SENSOR0_CONFIG1_TH2;
-	val |= FIELD_PREP(TSENSOR_SENSOR0_CONFIG1_TH2, hot_trip);
+	val |= FIELD_PREP(TSENSOR_SENSOR0_CONFIG1_TH2, temps.hot_trip);
 	writel_relaxed(val, tsc->regs + TSENSOR_SENSOR0_CONFIG1);
 
 	/* program LEVEL3 counter threshold */
 	val = readl_relaxed(tsc->regs + TSENSOR_SENSOR0_CONFIG2);
 	val &= ~TSENSOR_SENSOR0_CONFIG2_TH3;
-	val |= FIELD_PREP(TSENSOR_SENSOR0_CONFIG2_TH3, crit_trip);
+	val |= FIELD_PREP(TSENSOR_SENSOR0_CONFIG2_TH3, temps.crit_trip);
 	writel_relaxed(val, tsc->regs + TSENSOR_SENSOR0_CONFIG2);
 
 	/*
@@ -405,8 +405,6 @@ static int tegra_tsensor_enable_hw_channel(const struct tegra_tsensor *ts,
 	val |= FIELD_PREP(TSENSOR_SENSOR0_CONFIG0_INTR_HW_FREQ_DIV_EN, 1);
 	val |= FIELD_PREP(TSENSOR_SENSOR0_CONFIG0_INTR_THERMAL_RST_EN, 1);
 	writel_relaxed(val, tsc->regs + TSENSOR_SENSOR0_CONFIG0);
-
-	mutex_unlock(&tzd->lock);
 
 	err = thermal_zone_device_enable(tzd);
 	if (err) {
@@ -516,7 +514,7 @@ static int tegra_tsensor_register_channel(struct tegra_tsensor *ts,
 	tsc->id = id;
 	tsc->regs = ts->regs + 0x40 * (hw_id + 1);
 
-	tsc->tzd = devm_thermal_zone_of_sensor_register(ts->dev, id, tsc, &ops);
+	tsc->tzd = devm_thermal_of_zone_register(ts->dev, id, tsc, &ops);
 	if (IS_ERR(tsc->tzd)) {
 		if (PTR_ERR(tsc->tzd) != -ENODEV)
 			return dev_err_probe(ts->dev, PTR_ERR(tsc->tzd),
@@ -530,8 +528,7 @@ static int tegra_tsensor_register_channel(struct tegra_tsensor *ts,
 		return 0;
 	}
 
-	if (devm_thermal_add_hwmon_sysfs(tsc->tzd))
-		dev_warn(ts->dev, "failed to add hwmon sysfs attributes\n");
+	devm_thermal_add_hwmon_sysfs(ts->dev, tsc->tzd);
 
 	return 0;
 }
@@ -587,18 +584,26 @@ static int tegra_tsensor_probe(struct platform_device *pdev)
 			return err;
 	}
 
+	/*
+	 * Enable the channels before setting the interrupt so
+	 * set_trips() can not be called while we are setting up the
+	 * register TSENSOR_SENSOR0_CONFIG1. With this we close a
+	 * potential race window where we are setting up the TH2 and
+	 * the temperature hits TH1 resulting to an update of the
+	 * TSENSOR_SENSOR0_CONFIG1 register in the ISR.
+	 */
+	for (i = 0; i < ARRAY_SIZE(ts->ch); i++) {
+		err = tegra_tsensor_enable_hw_channel(ts, i);
+		if (err)
+			return err;
+	}
+
 	err = devm_request_threaded_irq(&pdev->dev, irq, NULL,
 					tegra_tsensor_isr, IRQF_ONESHOT,
 					"tegra_tsensor", ts);
 	if (err)
 		return dev_err_probe(&pdev->dev, err,
 				     "failed to request interrupt\n");
-
-	for (i = 0; i < ARRAY_SIZE(ts->ch); i++) {
-		err = tegra_tsensor_enable_hw_channel(ts, i);
-		if (err)
-			return err;
-	}
 
 	return 0;
 }

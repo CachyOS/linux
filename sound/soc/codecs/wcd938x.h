@@ -75,9 +75,6 @@
 #define WCD938X_MICB_PULL_UP			2
 #define WCD938X_MICB_PULL_DOWN			3
 #define WCD938X_ANA_MICB2                       (0x3023)
-#define WCD938X_ANA_MICB2_ENABLE		BIT(6)
-#define WCD938X_ANA_MICB2_ENABLE_MASK		GENMASK(7, 6)
-#define WCD938X_ANA_MICB2_VOUT_MASK		GENMASK(5, 0)
 #define WCD938X_ANA_MICB2_RAMP                  (0x3024)
 #define WCD938X_RAMP_EN_MASK			BIT(7)
 #define WCD938X_RAMP_SHIFT_CTRL_MASK		GENMASK(4, 2)
@@ -588,20 +585,7 @@
 #define WCD938X_DIGITAL_DEM_BYPASS_DATA3        (0x34D8)
 #define WCD938X_MAX_REGISTER			(WCD938X_DIGITAL_DEM_BYPASS_DATA3)
 
-#define WCD938X_MAX_SWR_PORTS	5
-#define WCD938X_MAX_TX_SWR_PORTS 4
 #define WCD938X_MAX_SWR_CH_IDS	15
-
-struct wcd938x_sdw_ch_info {
-	int port_num;
-	unsigned int ch_mask;
-};
-
-#define WCD_SDW_CH(id, pn, cmask)	\
-	[id] = {			\
-		.port_num = pn,		\
-		.ch_mask = cmask,	\
-	}
 
 enum wcd938x_tx_sdw_ports {
 	WCD938X_ADC_1_2_PORT = 1,
@@ -609,6 +593,7 @@ enum wcd938x_tx_sdw_ports {
 	/* DMIC0_0, DMIC0_1, DMIC1_0, DMIC1_1 */
 	WCD938X_DMIC_0_3_MBHC_PORT,
 	WCD938X_DMIC_4_7_PORT,
+	WCD938X_MAX_TX_SWR_PORTS = WCD938X_DMIC_4_7_PORT,
 };
 
 enum wcd938x_tx_sdw_channels {
@@ -633,6 +618,7 @@ enum wcd938x_rx_sdw_ports {
 	WCD938X_COMP_PORT,
 	WCD938X_LO_PORT,
 	WCD938X_DSD_PORT,
+	WCD938X_MAX_SWR_PORTS = WCD938X_DSD_PORT,
 };
 
 enum wcd938x_rx_sdw_channels {
@@ -645,10 +631,6 @@ enum wcd938x_rx_sdw_channels {
 	WCD938X_DSD_R,
 	WCD938X_DSD_L,
 };
-enum {
-	WCD938X_SDW_DIR_RX,
-	WCD938X_SDW_DIR_TX,
-};
 
 struct wcd938x_priv;
 struct wcd938x_sdw_priv {
@@ -656,13 +638,13 @@ struct wcd938x_sdw_priv {
 	struct sdw_stream_config sconfig;
 	struct sdw_stream_runtime *sruntime;
 	struct sdw_port_config port_config[WCD938X_MAX_SWR_PORTS];
-	struct wcd938x_sdw_ch_info *ch_info;
+	const struct wcd_sdw_ch_info *ch_info;
 	bool port_enable[WCD938X_MAX_SWR_CH_IDS];
 	int active_ports;
-	int num_ports;
 	bool is_tx;
 	struct wcd938x_priv *wcd938x;
 	struct irq_domain *slave_irq;
+	struct regmap *regmap;
 };
 
 #if IS_ENABLED(CONFIG_SND_SOC_WCD938X_SDW)
@@ -676,10 +658,6 @@ int wcd938x_sdw_hw_params(struct wcd938x_sdw_priv *wcd,
 			  struct snd_pcm_substream *substream,
 			  struct snd_pcm_hw_params *params,
 			  struct snd_soc_dai *dai);
-
-struct device *wcd938x_sdw_device_get(struct device_node *np);
-int wcd938x_swr_get_current_bank(struct sdw_slave *sdev);
-
 #else
 
 static inline int wcd938x_sdw_free(struct wcd938x_sdw_priv *wcd,
@@ -704,14 +682,5 @@ static inline int wcd938x_sdw_hw_params(struct wcd938x_sdw_priv *wcd,
 	return -EOPNOTSUPP;
 }
 
-static inline struct device *wcd938x_sdw_device_get(struct device_node *np)
-{
-	return NULL;
-}
-
-static inline int wcd938x_swr_get_current_bank(struct sdw_slave *sdev)
-{
-	return 0;
-}
 #endif /* CONFIG_SND_SOC_WCD938X_SDW */
 #endif /* __WCD938X_H__ */

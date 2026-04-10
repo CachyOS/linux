@@ -51,6 +51,7 @@
 
 	cp0_usb3_0_phy: cp0-usb3-0-phy {
 		compatible = "usb-nop-xceiv";
+		#phy-cells = <0>;
 		vcc-supply = <&cp0_reg_usb3_0_vbus>;
 	};
 
@@ -65,6 +66,7 @@
 
 	cp1_usb3_0_phy: cp1-usb3-0-phy {
 		compatible = "usb-nop-xceiv";
+		#phy-cells = <0>;
 		vcc-supply = <&cp1_reg_usb3_0_vbus>;
 	};
 };
@@ -122,7 +124,6 @@
 	/* U31 */
 	expander0: pca9555@21 {
 		compatible = "nxp,pca9555";
-		pinctrl-names = "default";
 		gpio-controller;
 		#gpio-cells = <2>;
 		reg = <0x21>;
@@ -131,7 +132,6 @@
 	/* U25 */
 	expander1: pca9555@25 {
 		compatible = "nxp,pca9555";
-		pinctrl-names = "default";
 		gpio-controller;
 		#gpio-cells = <2>;
 		reg = <0x25>;
@@ -145,11 +145,12 @@
 
 	sata-port@0 {
 		phys = <&cp0_comphy1 0>;
-		phy-names = "cp0-sata0-0-phy";
+		status = "okay";
 	};
+
 	sata-port@1 {
 		phys = <&cp0_comphy3 1>;
-		phy-names = "cp0-sata0-1-phy";
+		status = "okay";
 	};
 };
 
@@ -306,11 +307,9 @@
 
 	sata-port@0 {
 		phys = <&cp1_comphy1 0>;
-		phy-names = "cp1-sata0-0-phy";
 	};
 	sata-port@1 {
 		phys = <&cp1_comphy3 1>;
-		phy-names = "cp1-sata0-1-phy";
 	};
 };
 

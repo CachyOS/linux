@@ -179,7 +179,7 @@ static unsigned int ad7291_threshold_reg(const struct iio_chan_spec *chan,
 		offset = AD7291_VOLTAGE_OFFSET;
 		break;
 	default:
-	    return 0;
+		return 0;
 	}
 
 	switch (info) {
@@ -269,7 +269,7 @@ static int ad7291_write_event_config(struct iio_dev *indio_dev,
 				     const struct iio_chan_spec *chan,
 				     enum iio_event_type type,
 				     enum iio_event_direction dir,
-				     int state)
+				     bool state)
 {
 	int ret = 0;
 	struct ad7291_chip_info *chip = iio_priv(indio_dev);
@@ -465,9 +465,9 @@ static void ad7291_reg_disable(void *reg)
 	regulator_disable(reg);
 }
 
-static int ad7291_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int ad7291_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct ad7291_chip_info *chip;
 	struct iio_dev *indio_dev;
 	int ret;
@@ -536,15 +536,15 @@ static int ad7291_probe(struct i2c_client *client,
 }
 
 static const struct i2c_device_id ad7291_id[] = {
-	{ "ad7291", 0 },
-	{}
+	{ "ad7291" },
+	{ }
 };
 
 MODULE_DEVICE_TABLE(i2c, ad7291_id);
 
 static const struct of_device_id ad7291_of_match[] = {
 	{ .compatible = "adi,ad7291" },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ad7291_of_match);
 

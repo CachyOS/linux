@@ -56,6 +56,16 @@ config REGULATOR_USERSPACE_CONSUMER
 
 	  If unsure, say no.
 
+config REGULATOR_NETLINK_EVENTS
+	bool "Enable support for receiving regulator events via netlink"
+	depends on NET
+	help
+	  Enabling this option allows the kernel to broadcast regulator events using
+	  the netlink mechanism. User-space applications can subscribe to these events
+	  for real-time updates on various regulator events.
+
+	  If unsure, say no.
+
 config REGULATOR_88PG86X
 	tristate "Marvell 88PG86X voltage regulators"
 	depends on I2C
@@ -81,6 +91,12 @@ config REGULATOR_88PM8607
 	help
 	  This driver supports 88PM8607 voltage regulator chips.
 
+config REGULATOR_88PM886
+	tristate "Marvell 88PM886 voltage regulators"
+	depends on MFD_88PM886_PMIC
+	help
+	  This driver implements support for Marvell 88PM886 voltage regulators.
+
 config REGULATOR_ACT8865
 	tristate "Active-semi act8865 voltage regulator"
 	depends on I2C
@@ -105,6 +121,17 @@ config REGULATOR_AD5398
 	help
 	  This driver supports AD5398 and AD5821 current regulator chips.
 	  If building into module, its name is ad5398.ko.
+
+config REGULATOR_ADP5055
+	tristate "Analog Devices ADP5055 Triple Buck Regulator"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  This driver controls an Analog Devices ADP5055 with triple buck
+	  regulators using an I2C interface.
+
+	  Say M here if you want to include support for the regulator as a
+	  module.
 
 config REGULATOR_ANATOP
 	tristate "Freescale i.MX on-chip ANATOP LDO regulators"
@@ -178,6 +205,14 @@ config REGULATOR_ATC260X
 	  ATC260x PMICs. This will enable support for all the software
 	  controllable DCDC/LDO regulators.
 
+config REGULATOR_AW37503
+	tristate "Awinic AW37503 Dual Output Power regulators"
+	depends on I2C && GPIOLIB
+	select REGMAP_I2C
+	help
+	  This driver supports AW37503 single inductor - dual output
+	  power supply specifically designed for display panels.
+
 config REGULATOR_AXP20X
 	tristate "X-POWERS AXP20X PMIC Regulators"
 	depends on MFD_AXP20X
@@ -206,13 +241,13 @@ config REGULATOR_BD71815
 	  will be called bd71815-regulator.
 
 config REGULATOR_BD71828
-	tristate "ROHM BD71828 Power Regulator"
+	tristate "ROHM BD71828, BD72720 and BD73900 Power Regulators"
 	depends on MFD_ROHM_BD71828
 	select REGULATOR_ROHM
 	help
-	  This driver supports voltage regulators on ROHM BD71828 PMIC.
-	  This will enable support for the software controllable buck
-	  and LDO regulators.
+	  This driver supports voltage regulators on ROHM BD71828,
+	  BD71879, BD72720 and BD73900 PMICs. This will enable
+	  support for the software controllable buck and LDO regulators.
 
 	  This driver can also be built as a module. If so, the module
 	  will be called bd71828-regulator.
@@ -250,6 +285,26 @@ config REGULATOR_BD957XMUF
 	  This driver can also be built as a module. If so, the module
 	  will be called bd9576-regulator.
 
+config REGULATOR_BD96801
+	tristate "ROHM BD96801 Power Regulator"
+	depends on MFD_ROHM_BD96801
+	select REGULATOR_ROHM
+	help
+	  This driver supports voltage regulators on ROHM BD96801 PMIC.
+	  This will enable support for the software controllable buck
+	  and LDO regulators.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called bd96801-regulator.
+
+config REGULATOR_BQ257XX
+	tristate "TI BQ257XX regulator family"
+	depends on MFD_BQ257XX
+	depends on GPIOLIB || COMPILE_TEST
+	help
+	  Say Y to enable support for the boost regulator function of
+	  the BQ257XX family of charger circuits.
+
 config REGULATOR_CPCAP
 	tristate "Motorola CPCAP regulator"
 	depends on MFD_CPCAP
@@ -270,7 +325,7 @@ config REGULATOR_CROS_EC
 config REGULATOR_DA903X
 	tristate "Dialog Semiconductor DA9030/DA9034 regulators"
 	depends on PMIC_DA903X
-	depends on !CC_IS_CLANG # https://bugs.llvm.org/show_bug.cgi?id=38789
+	depends on !CC_IS_CLANG # https://llvm.org/pr38789
 	help
 	  Say y here to support the BUCKs and LDOs regulators found on
 	  Dialog Semiconductor DA9030/DA9034 PMIC.
@@ -377,7 +432,7 @@ config REGULATOR_FAN53555
 
 config REGULATOR_FAN53880
 	tristate "Fairchild FAN53880 Regulator"
-	depends on I2C && (OF || COMPILE_TEST)
+	depends on I2C && OF
 	select REGMAP_I2C
 	help
 	  This driver supports Fairchild (ON Semiconductor) FAN53880
@@ -444,6 +499,16 @@ config REGULATOR_ISL6271A
 	depends on I2C
 	help
 	  This driver supports ISL6271A voltage regulator chip.
+
+config REGULATOR_FP9931
+	tristate "FitiPower FP9931/JD9930 EPD regulator"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  This driver supports the FP9931/JD9930 voltage regulator chip
+	  which is used to provide power to Electronic Paper Displays
+	  so it is found in E-Book readers.
+	  If HWMON is enabled, it also provides temperature measurement.
 
 config REGULATOR_LM363X
 	tristate "TI LM363X voltage regulators"
@@ -546,6 +611,37 @@ config REGULATOR_MAX1586
 	  regulator via I2C bus. The provided regulator is suitable
 	  for PXA27x chips to control VCC_CORE and VCC_USIM voltages.
 
+config REGULATOR_MAX5970
+	tristate "Maxim 5970/5978 power switch and monitor"
+	depends on I2C
+	depends on OF
+	depends on MFD_MAX5970
+	help
+	  This driver controls a Maxim 5970/5978 switch via I2C bus.
+	  The MAX5970/5978 is a smart switch with no output regulation, but
+	  fault protection and voltage and current monitoring capabilities.
+
+config REGULATOR_MAX77503
+	tristate "Analog Devices MAX77503 Regulator"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  This driver controls a Analog Devices MAX77503 14V input, 1.5A
+	  high-efficiency buck converter via I2C bus.
+	  Say M here if you want to include support for the regulator as a
+	  module.
+
+config REGULATOR_MAX77541
+	tristate "Analog Devices MAX77541/77540 Regulator"
+	depends on MFD_MAX77541
+	help
+	  This driver controls a Analog Devices MAX77541/77540 regulators
+	  via I2C bus. Both MAX77540 and MAX77541 are dual-phase
+	  high-efficiency buck converter. Say Y here to
+	  enable the regulator driver.
+	  Say M here if you want to include support for the regulator as a
+	  module.
+
 config REGULATOR_MAX77620
 	tristate "Maxim 77620/MAX20024 voltage regulator"
 	depends on MFD_MAX77620 || COMPILE_TEST
@@ -562,6 +658,25 @@ config REGULATOR_MAX77650
 	  Regulator driver for MAX77650/77651 PMIC from Maxim
 	  Semiconductor. This device has a SIMO with three independent
 	  power rails and an LDO.
+
+config REGULATOR_MAX77675
+	tristate "Maxim MAX77675 regulator driver"
+	depends on I2C && OF
+	select REGMAP_I2C
+	help
+	  This driver controls the Maxim MAX77675 power regulator via I2C.
+	  It supports four programmable buck-boost outputs.
+	  Say Y here to enable the regulator driver
+
+config REGULATOR_MAX77857
+	tristate "ADI MAX77857/MAX77831 regulator support"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  This driver controls a ADI MAX77857 and MAX77831 regulators.
+	  via I2C bus. MAX77857 and MAX77831 are high efficiency buck-boost
+	  converters with input voltage range (2.5V to 16V). Say Y here to
+	  enable the regulator driver
 
 config REGULATOR_MAX8649
 	tristate "Maxim 8649 voltage regulator"
@@ -645,6 +760,14 @@ config REGULATOR_MAX20086
 	  protectorvia I2C bus. The regulator has 2 or 4 outputs depending on
 	  the device model. This driver is only capable to turn on/off them.
 
+config REGULATOR_MAX20411
+	tristate "Maxim MAX20411 High-Efficiency Single Step-Down Converter"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  This driver controls the Maxim MAX20411 family of high-efficiency,
+	  syncrhonous step-down converters.
+
 config REGULATOR_MAX77686
 	tristate "Maxim 77686 regulator"
 	depends on MFD_MAX77686 || COMPILE_TEST
@@ -680,6 +803,15 @@ config REGULATOR_MAX77826
 	  The regulator include 15 LDOs, BUCK and BUCK BOOST regulator.
 	  It includes support for control of output voltage. This
 	  regulator is found on the Samsung Galaxy S5 (klte) smartphone.
+
+config REGULATOR_MAX77838
+	tristate "Maxim 77838 regulator"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  This driver controls a Maxim 77838 regulator via I2C bus.
+	  The regulator include 4 LDOs and a BUCK regulator. It's
+	  present on the Samsung Galaxy S7 lineup of smartphones.
 
 config REGULATOR_MC13XXX_CORE
 	tristate
@@ -733,7 +865,7 @@ config REGULATOR_MP8859
 
 config REGULATOR_MP886X
 	tristate "MPS MP8869 regulator driver"
-	depends on I2C && (OF || COMPILE_TEST)
+	depends on I2C && OF
 	select REGMAP_I2C
 	help
 	  This driver supports the MP8869 voltage regulator.
@@ -768,12 +900,49 @@ config REGULATOR_MT6315
 	  This driver supports the control of different power rails of device
 	  through regulator interface.
 
+config REGULATOR_MT6316
+	tristate "MT6316 SPMI PMIC regulator driver"
+	depends on SPMI
+	select REGMAP_SPMI
+	help
+	  Say Y here to enable support for 2+2, 3+1 and 4 phase regulators
+	  found in the MediaTek MT6316 BP, CP, DP, HP, VP and TP SPMI PMICs.
+	  This driver supports the control of different power rails of device
+	  through regulator interface.
+
 config REGULATOR_MT6323
 	tristate "MediaTek MT6323 PMIC"
 	depends on MFD_MT6397
 	help
 	  Say y here to select this option to enable the power regulator of
 	  MediaTek MT6323 PMIC.
+	  This driver supports the control of different power rails of device
+	  through regulator interface.
+
+config REGULATOR_MT6331
+	tristate "MediaTek MT6331 PMIC"
+	depends on MFD_MT6397
+	help
+	  Say y here to select this option to enable the power regulator of
+	  MediaTek MT6331 PMIC.
+	  This driver supports the control of different power rails of device
+	  through regulator interface
+
+config REGULATOR_MT6332
+	tristate "MediaTek MT6332 PMIC"
+	depends on MFD_MT6397
+	help
+	  Say y here to select this option to enable the power regulator of
+	  MediaTek MT6332 PMIC.
+	  This driver supports the control of different power rails of device
+	  through regulator interface
+
+config REGULATOR_MT6357
+	tristate "MediaTek MT6357 PMIC"
+	depends on MFD_MT6397
+	help
+	  Say y here to select this option to enable the power regulator of
+	  MediaTek MT6357 PMIC.
 	  This driver supports the control of different power rails of device
 	  through regulator interface.
 
@@ -803,6 +972,24 @@ config REGULATOR_MT6360
 	  This is support MT6360 PMIC/LDO part include
 	  2-channel buck with Thermal Shutdown and Overload Protection
 	  6-channel High PSRR and Low Dropout LDO.
+
+config REGULATOR_MT6363
+	tristate "MT6363 SPMI PMIC regulator driver"
+	depends on SPMI
+	select REGMAP_SPMI
+	help
+	  Say Y here to enable support for regulators found in the MediaTek
+	  MT6363 SPMI PMIC.
+	  This driver supports the control of different power rails of device
+	  through regulator interface.
+
+config REGULATOR_MT6370
+	tristate "MT6370 SubPMIC Regulator"
+	depends on MFD_MT6370
+	help
+	  Say Y here to enable MT6370 regulator support.
+	  This driver supports the control for DisplayBias voltages and one
+	  general purpose LDO which is commonly used to drive the vibrator.
 
 config REGULATOR_MT6380
 	tristate "MediaTek MT6380 PMIC"
@@ -861,6 +1048,13 @@ config REGULATOR_PCA9450
 	  Say y here to support the NXP PCA9450A/PCA9450B/PCA9450C PMIC
 	  regulator driver.
 
+config REGULATOR_PF9453
+	tristate "NXP PF9453 regulator driver"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  Say y here to support the NXP PF9453 PMIC regulator driver.
+
 config REGULATOR_PCAP
 	tristate "Motorola PCAP2 regulator driver"
 	depends on EZX_PCAP
@@ -868,12 +1062,25 @@ config REGULATOR_PCAP
 	 This driver provides support for the voltage regulators of the
 	 PCAP2 PMIC.
 
-config REGULATOR_PCF50633
-	tristate "NXP PCF50633 regulator driver"
-	depends on MFD_PCF50633
+config REGULATOR_PF0900
+	tristate "NXP PF0900/PF0901/PF09XX regulator driver"
+	depends on I2C
+	select REGMAP_I2C
 	help
-	 Say Y here to support the voltage regulators and converters
-	 on PCF50633
+	Say y here to support the NXP PF0900/PF0901/PF09XX PMIC
+	regulator driver.
+
+config REGULATOR_PF530X
+	tristate "NXP PF5300/PF5301/PF5302 regulator driver"
+	depends on I2C && OF
+	select REGMAP_I2C
+	help
+	  Say y here to support the regulators found on the NXP
+	  PF5300/PF5301/PF5302 PMIC.
+
+	  Say M here if you want to support for the regulators found
+	  on the NXP PF5300/PF5301/PF5302 PMIC. The module will be named
+	  "pf530x-regulator".
 
 config REGULATOR_PF8X00
 	tristate "NXP PF8100/PF8121A/PF8200 regulator driver"
@@ -918,12 +1125,40 @@ config REGULATOR_PV88090
 	  Say y here to support the voltage regulators and convertors
 	  on PV88090
 
+config REGULATOR_PF1550
+	tristate "NXP PF1550 regulator"
+	depends on MFD_PF1550
+	help
+	  Say y here to select this option to enable the regulators on
+	  the PF1550 PMICs.
+	  This driver controls the PF1550 regulators via I2C bus.
+	  The regulators include three bucks and three ldos.
+
 config REGULATOR_PWM
 	tristate "PWM voltage regulator"
 	depends on PWM
 	help
 	  This driver supports PWM controlled voltage regulators. PWM
 	  duty cycle can increase or decrease the voltage.
+
+config REGULATOR_QCOM_PM8008
+	tristate "Qualcomm PM8008 PMIC regulators"
+	depends on MFD_QCOM_PM8008
+	help
+	  Select this option to enable support for the voltage regulators in
+	  Qualcomm PM8008 PMICs.
+
+config REGULATOR_QCOM_REFGEN
+	tristate "Qualcomm REFGEN regulator driver"
+	depends on ARCH_QCOM || COMPILE_TEST
+	depends on HAS_IOMEM
+	depends on REGMAP
+	help
+	  This driver supports the MMIO-mapped reference voltage regulator,
+	  used internally by some PHYs on many Qualcomm SoCs.
+
+	  Say M here if you want to include support for this regulator as
+	  a module. The module will be named "qcom-refgen-regulator".
 
 config REGULATOR_QCOM_RPM
 	tristate "Qualcomm RPM regulator driver"
@@ -980,8 +1215,21 @@ config REGULATOR_QCOM_USB_VBUS
 	  Say M here if you want to include support for enabling the VBUS output
 	  as a module. The module will be named "qcom_usb_vbus_regulator".
 
+config REGULATOR_RAA215300
+	tristate "Renesas RAA215300 driver"
+	select REGMAP_I2C
+	depends on COMMON_CLK
+	depends on I2C
+	help
+	  If you say yes to this option, support will be included for the
+	  Renesas RAA215300 PMIC.
+
+	  Say M here if you want to include support for Renesas RAA215300 PMIC
+	  as a module. The module will be named "raa215300".
+
 config REGULATOR_RASPBERRYPI_TOUCHSCREEN_ATTINY
 	tristate "Raspberry Pi 7-inch touchscreen panel ATTINY regulator"
+	depends on ARM || ARM64 || COMPILE_TEST
 	depends on BACKLIGHT_CLASS_DEVICE
 	depends on I2C
 	depends on OF_GPIO
@@ -990,6 +1238,18 @@ config REGULATOR_RASPBERRYPI_TOUCHSCREEN_ATTINY
 	  This driver supports ATTINY regulator on the Raspberry Pi 7-inch
 	  touchscreen unit. The regulator is used to enable power to the
 	  TC358762, display and to control backlight.
+
+config REGULATOR_RASPBERRYPI_TOUCHSCREEN_V2
+	tristate "Raspberry Pi 7-inch touchscreen panel V2 regulator"
+	depends on ARM || ARM64 || COMPILE_TEST
+	depends on GPIOLIB
+	depends on I2C && OF
+	select GPIO_REGMAP
+	select REGMAP_I2C
+	help
+	  This driver supports regulator on the V2 Raspberry Pi touchscreen
+	  unit. The regulator is used to enable power to the display and to
+	  control backlight PWM.
 
 config REGULATOR_RC5T583
 	tristate "RICOH RC5T583 Power regulators"
@@ -1003,7 +1263,7 @@ config REGULATOR_RC5T583
 
 config REGULATOR_RK808
 	tristate "Rockchip RK805/RK808/RK809/RK817/RK818 Power regulators"
-	depends on MFD_RK808
+	depends on MFD_RK8XX
 	help
 	  Select this option to enable the power regulator of ROCKCHIP
 	  PMIC RK805,RK809&RK817,RK808 and RK818.
@@ -1029,6 +1289,16 @@ config REGULATOR_RT4801
 	  This adds support for voltage regulators in Richtek RT4801 Display Bias IC.
 	  The device supports two regulators (DSVP/DSVN).
 
+config REGULATOR_RT4803
+	tristate "Richtek RT4803 boost regulator"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  This adds support for RT4803 boost converter that integrates the
+	  bypass switch. If the input voltage is low than the required voltage,
+	  RT4803 will enter boost mode. Otherwise, enable internal bypass
+	  switch to enter bypass mode.
+
 config REGULATOR_RT4831
 	tristate "Richtek RT4831 DSV Regulators"
 	depends on MFD_RT4831
@@ -1047,6 +1317,28 @@ config REGULATOR_RT5033
 	  RT5033 PMIC. The device supports multiple regulators like
 	  current source, LDO and Buck.
 
+config REGULATOR_RT5120
+	tristate "Richtek RT5120 PMIC Regulators"
+	depends on MFD_RT5120
+	help
+	  This adds support for voltage regulator in Richtek RT5120 PMIC.
+	  It integrates 4 channels buck controller, 1 channel LDO, 1 EXTEN
+	  to control external power source. Only BUCK1 is adjustable from
+	  600mV to 1395mV, per step 6.250mV. The others are all fixed voltage
+	  by external hardware circuit.
+
+config REGULATOR_RT5133
+	tristate "Richtek RT5133 PMIC Regulators"
+	depends on I2C && GPIOLIB && OF
+	select REGMAP
+	select CRC8
+	select OF_GPIO
+	help
+	  This driver adds support for RT5133 PMIC regulators.
+	  RT5133 is an integrated chip. It includes 8 LDOs and 3 GPOs that
+	  can be used to drive output high/low purpose. The dependency of the
+	  GPO block is internally LDO1 Voltage.
+
 config REGULATOR_RT5190A
 	tristate "Richtek RT5190A PMIC"
 	depends on I2C
@@ -1056,6 +1348,19 @@ config REGULATOR_RT5190A
 	  It integratas 1 channel buck controller, 3 channels high efficiency
 	  buck converters, 1 LDO, mute AC OFF depop function, with the general
 	  I2C control interface.
+
+config REGULATOR_RT5739
+	tristate "Richtek RT5739 Regulator"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  This adds support for voltage regulator in Richtek RT5739.
+	  It's a step-down switching voltage regulator. Using a proprietary
+	  architecture with synchronous rectification, it is capable of
+	  delivering 3.5A continuously at over 80% efficiency.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called rt5739.
 
 config REGULATOR_RT5759
 	tristate "Richtek RT5759 Regulator"
@@ -1078,6 +1383,17 @@ config REGULATOR_RT6160
 	  The wide output range is from 2025mV to 5200mV and can be used on most
 	  common application scenario.
 
+config REGULATOR_RT6190
+	tristate "Richtek RT6190 4-Switch BuckBoost controller"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  The RT6190 is a 4-Switch BuckBoost controller designed for converting
+	  input voltage to output voltage that can be equal to, higher or lower
+	  than input voltage. It operates with wide input voltage range from
+	  4.5V to 36V, and the output voltage can be set from 3V to 36V by
+	  external FB pin.
+
 config REGULATOR_RT6245
 	tristate "Richtek RT6245 voltage regulator"
 	depends on I2C
@@ -1086,6 +1402,15 @@ config REGULATOR_RT6245
 	  This adds support for Richtek RT6245 voltage regulator.
 	  It can support up to 14A output current and adjustable output voltage
 	  from 0.4375V to 1.3875V, per step 12.5mV.
+
+config REGULATOR_RT8092
+	tristate "Richtek RT8092 voltage regulator"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  The RT8092 is a peak-current mode PWM step-down DC/DC converter with
+	  I2C control interface. It is capable of delivering 4A continuing
+	  current over a wide input range from 2.5V to 5.5V.
 
 config REGULATOR_RTQ2134
 	tristate "Richtek RTQ2134 SubPMIC Regulator"
@@ -1116,6 +1441,25 @@ config REGULATOR_RTQ6752
 	  synchronous boost converters for PAVDD, and one synchronous NAVDD
 	  buck-boost. This device is suitable for automotive TFT-LCD panel.
 
+config REGULATOR_RTQ2208
+	tristate "Richtek RTQ2208 SubPMIC Regulator"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  This driver adds support for RTQ2208 SubPMIC regulators.
+	  The RTQ2208 is a multi-phase, programmable power management IC that
+	  integrate with dual multi-configurable, synchronous buck converters
+	  and two ldos. It features wide output voltage range from 0.4V to 2.05V
+	  and the capability to configure the corresponding power stages.
+
+config REGULATOR_S2DOS05
+	tristate "Samsung S2DOS05 voltage regulator"
+	depends on MFD_SEC_CORE || COMPILE_TEST
+	help
+	  This driver provides support for the voltage regulators of the S2DOS05.
+	  The S2DOS05 is a companion power management IC for the smart phones.
+	  The S2DOS05 has 4 LDOs and 1 BUCK outputs.
+
 config REGULATOR_S2MPA01
 	tristate "Samsung S2MPA01 voltage regulator"
 	depends on MFD_SEC_CORE || COMPILE_TEST
@@ -1124,10 +1468,10 @@ config REGULATOR_S2MPA01
 	 via I2C bus. S2MPA01 has 10 Bucks and 26 LDO outputs.
 
 config REGULATOR_S2MPS11
-	tristate "Samsung S2MPS11/13/14/15/S2MPU02 voltage regulator"
+	tristate "Samsung S2MPS11/13/14/15/S2MPU02/05 voltage regulator"
 	depends on MFD_SEC_CORE || COMPILE_TEST
 	help
-	 This driver supports a Samsung S2MPS11/13/14/15/S2MPU02 voltage
+	 This driver supports a Samsung S2MPS11/13/14/15/S2MPU02/05 voltage
 	 output regulator via I2C bus. The chip is comprised of high efficient
 	 Buck converters including Dual-Phase Buck converter, Buck-Boost
 	 converter, various LDOs.
@@ -1167,12 +1511,18 @@ config REGULATOR_SLG51000
 	  The SLG51000 is seven compact and customizable low dropout
 	  regulators.
 
-config REGULATOR_SM5703
-	tristate "Silicon Mitus SM5703 regulators"
-	depends on MFD_SM5703
+config REGULATOR_SPACEMIT_P1
+	tristate "SpacemiT P1 regulators"
+	depends on ARCH_SPACEMIT || COMPILE_TEST
+	depends on I2C
+	select MFD_SPACEMIT_P1
+	default ARCH_SPACEMIT
 	help
-	  This driver provides support for voltage regulators of SM5703
-	  multi-function device.
+	  Enable support for regulators implemented by the SpacemiT P1
+	  power controller.  The P1 implements 6 high-efficiency buck
+	  converters and 12 programmable LDO regulators.  To compile this
+	  driver as a module, choose M here.  The module will be called
+	  "spacemit-pmic".
 
 config REGULATOR_STM32_BOOSTER
 	tristate "STMicroelectronics STM32 BOOSTER"
@@ -1234,28 +1584,37 @@ config REGULATOR_STW481X_VMMC
 	  This driver supports the internal VMMC regulator in the STw481x
 	  PMIC chips.
 
+config REGULATOR_SUN20I
+	tristate "Allwinner D1 internal LDOs"
+	depends on ARCH_SUNXI || COMPILE_TEST
+	select MFD_SYSCON
+	default ARCH_SUNXI
+	help
+	  This driver supports the internal LDOs in the Allwinner D1 SoC.
+
 config REGULATOR_SY7636A
 	tristate "Silergy SY7636A voltage regulator"
+	depends on MFD_SY7636A
 	help
 	  This driver supports Silergy SY3686A voltage regulator.
 
 config REGULATOR_SY8106A
 	tristate "Silergy SY8106A regulator"
-	depends on I2C && (OF || COMPILE_TEST)
+	depends on I2C && OF
 	select REGMAP_I2C
 	help
 	  This driver supports SY8106A single output regulator.
 
 config REGULATOR_SY8824X
 	tristate "Silergy SY8824C/SY8824E regulator"
-	depends on I2C && (OF || COMPILE_TEST)
+	depends on I2C && OF
 	select REGMAP_I2C
 	help
 	  This driver supports SY8824C single output regulator.
 
 config REGULATOR_SY8827N
 	tristate "Silergy SY8827N regulator"
-	depends on I2C && (OF || COMPILE_TEST)
+	depends on I2C && OF
 	select REGMAP_I2C
 	help
 	  This driver supports SY8827N single output regulator.
@@ -1299,6 +1658,17 @@ config REGULATOR_TPS6286X
 	  high-frequency synchronous step-down converters with an I2C
 	  interface.
 
+config REGULATOR_TPS6287X
+	tristate "TI TPS6287x Power Regulator"
+	depends on I2C && OF
+	select REGMAP_I2C
+	help
+	  This driver supports TPS6287x voltage regulator chips. These are
+	  pin-to-pin high-frequency synchronous step-down dc-dc converters
+	  with an I2C interface.
+
+	  If built as a module it will be called tps6287x-regulator.
+
 config REGULATOR_TPS65023
 	tristate "TI TPS65023 Power regulators"
 	depends on I2C
@@ -1338,6 +1708,17 @@ config REGULATOR_TPS65132
 	  This driver supports TPS65132 single inductor - dual output
 	  power supply specifically designed for display panels.
 
+config REGULATOR_TPS65185
+	tristate "TI TPS65185 EPD regulator"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  This driver supports the TPS65185 voltage regulator chip
+	  which is used to provide power to Electronic Paper Displays
+	  so it is found in E-Book readers.
+	  If HWWON is enabled, it also provides temperature measurement.
+
+
 config REGULATOR_TPS65217
 	tristate "TI TPS65217 Power regulators"
 	depends on MFD_TPS65217
@@ -1355,6 +1736,36 @@ config REGULATOR_TPS65218
 	  provides six step-down converters and one general-purpose LDO
 	  voltage regulators. It supports software based voltage control
 	  for different voltage domains
+
+config REGULATOR_TPS65219
+	tristate "TI TPS65219 Power regulators"
+	depends on MFD_TPS65219 && OF
+	help
+	  This driver supports TPS65219, TPS65215, and TPS65214 voltage
+	  regulator chips.
+	  TPS65219 series of PMICs have 3 single phase BUCKs & 4 LDOs
+	  voltage regulators.
+	  TPS65215 PMIC has 3 single phase BUCKs & 2 LDOs.
+	  TPS65214 PMIC has 3 synchronous stepdown DC-DC converters & 2
+	  LDOs. One LDO supports a maximum output current of 300 mA and the
+	  other a maximum of 500 mA
+	  All 3 PMICs support software based voltage control for different
+	  voltage domains.
+
+config REGULATOR_TPS6594
+	tristate "TI TPS6594 Power regulators"
+	depends on MFD_TPS6594 && OF
+	default MFD_TPS6594
+	help
+	  This driver supports TPS6594 series and TPS65224 voltage regulator chips.
+	  TPS6594 series of PMICs have 5 BUCKs and 4 LDOs
+	  voltage regulators.
+	  BUCKs 1,2,3,4 can be used in single phase or multiphase mode.
+	  Part number defines which single or multiphase mode is i used.
+	  It supports software based voltage control
+	  for different voltage domains.
+	  TPS65224 PMIC has 4 BUCKs and 3 LDOs. BUCK12 can be used in dual phase.
+	  All BUCKs and LDOs volatge can be controlled through software.
 
 config REGULATOR_TPS6524X
 	tristate "TI TPS6524X Power regulators"
@@ -1408,6 +1819,15 @@ config REGULATOR_UNIPHIER
 	default ARCH_UNIPHIER
 	help
 	  Support for regulators implemented on Socionext UniPhier SoCs.
+
+config REGULATOR_RZG2L_VBCTRL
+	tristate "Renesas RZ/G2L USB VBUS regulator driver"
+	depends on RESET_RZG2L_USBPHY_CTRL || COMPILE_TEST
+	depends on OF
+	select REGMAP_MMIO
+	default RESET_RZG2L_USBPHY_CTRL
+	help
+	  Support for VBUS regulators implemented on Renesas RZ/G2L SoCs.
 
 config REGULATOR_VCTRL
 	tristate "Voltage controlled regulators"

@@ -34,7 +34,7 @@ enum hmc5843_ids {
  * @regmap:		hardware access register maps
  * @variant:		describe chip variants
  * @scan:		buffer to pack data for passing to
- *			iio_push_to_buffers_with_timestamp()
+ *			iio_push_to_buffers_with_ts()
  */
 struct hmc5843_data {
 	struct device *dev;
@@ -44,7 +44,7 @@ struct hmc5843_data {
 	struct iio_mount_matrix orientation;
 	struct {
 		__be16 chans[3];
-		s64 timestamp __aligned(8);
+		aligned_s64 timestamp;
 	} scan;
 };
 
@@ -52,16 +52,5 @@ int hmc5843_common_probe(struct device *dev, struct regmap *regmap,
 			 enum hmc5843_ids id, const char *name);
 void hmc5843_common_remove(struct device *dev);
 
-int hmc5843_common_suspend(struct device *dev);
-int hmc5843_common_resume(struct device *dev);
-
-#ifdef CONFIG_PM_SLEEP
-static __maybe_unused SIMPLE_DEV_PM_OPS(hmc5843_pm_ops,
-					hmc5843_common_suspend,
-					hmc5843_common_resume);
-#define HMC5843_PM_OPS (&hmc5843_pm_ops)
-#else
-#define HMC5843_PM_OPS NULL
-#endif
-
+extern const struct dev_pm_ops hmc5843_pm_ops;
 #endif /* HMC5843_CORE_H */

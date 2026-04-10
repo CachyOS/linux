@@ -18,13 +18,19 @@
  *	x1 - src
  */
 SYM_FUNC_START(__pi_copy_page)
-alternative_if ARM64_HAS_NO_HW_PREFETCH
-	// Prefetch three cache lines ahead.
-	prfm	pldl1strm, [x1, #128]
-	prfm	pldl1strm, [x1, #256]
-	prfm	pldl1strm, [x1, #384]
+#ifdef CONFIG_AS_HAS_MOPS
+	.arch_extension mops
+alternative_if_not ARM64_HAS_MOPS
+	b	.Lno_mops
 alternative_else_nop_endif
 
+	mov	x2, #PAGE_SIZE
+	cpypwn	[x0]!, [x1]!, x2!
+	cpymwn	[x0]!, [x1]!, x2!
+	cpyewn	[x0]!, [x1]!, x2!
+	ret
+.Lno_mops:
+#endif
 	ldp	x2, x3, [x1]
 	ldp	x4, x5, [x1, #16]
 	ldp	x6, x7, [x1, #32]
@@ -38,10 +44,6 @@ alternative_else_nop_endif
 	add	x1, x1, #128
 1:
 	tst	x0, #(PAGE_SIZE - 1)
-
-alternative_if ARM64_HAS_NO_HW_PREFETCH
-	prfm	pldl1strm, [x1, #384]
-alternative_else_nop_endif
 
 	stnp	x2, x3, [x0, #-256]
 	ldp	x2, x3, [x1]

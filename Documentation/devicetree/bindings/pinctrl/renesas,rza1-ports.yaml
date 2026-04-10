@@ -32,7 +32,7 @@ properties:
     maxItems: 1
 
 allOf:
-  - $ref: "pinctrl.yaml#"
+  - $ref: pinctrl.yaml#
 
 required:
   - compatible
@@ -41,6 +41,7 @@ required:
 patternProperties:
   "^gpio-[0-9]*$":
     type: object
+    additionalProperties: false
 
     description:
       Each port of the r7s72100 pin controller hardware is itself a GPIO
@@ -63,7 +64,6 @@ patternProperties:
       - gpio-controller
       - '#gpio-cells'
       - gpio-ranges
-
 
 additionalProperties:
   anyOf:
@@ -107,7 +107,6 @@ additionalProperties:
             Integers values in "pinmux" argument list are assembled as:
             ((PORT * 16 + PIN) | MUX_FUNC << 16)
 
-        phandle: true
         input-enable: true
         output-enable: true
 
@@ -117,11 +116,8 @@ additionalProperties:
       additionalProperties: false
 
     - type: object
-      properties:
-        phandle: true
-
       additionalProperties:
-        $ref: "#/additionalProperties/anyOf/0"
+        $ref: '#/additionalProperties/anyOf/0'
 
 examples:
   - |
@@ -153,7 +149,6 @@ examples:
                     pinmux = <RZA1_PINMUX(3, 0, 6)>, <RZA1_PINMUX(3, 2, 4)>;
             };
 
-
             /*
              * I2c master: both SDA and SCL pins need bi-directional operations
              * Pin #4 on port #1 is configured as alternate function #1.
@@ -164,7 +159,6 @@ examples:
             i2c2_pins: i2c2 {
                     pinmux = <RZA1_PINMUX(1, 4, 1)>, <RZA1_PINMUX(1, 5, 1)>;
             };
-
 
             /*
              * Multi-function timer input and output compare pins.

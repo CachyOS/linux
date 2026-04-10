@@ -26,8 +26,6 @@
 #include <linux/slab.h>
 #include <linux/pm_runtime.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
-#include <linux/of_address.h>
 #include <linux/interrupt.h>
 #include <linux/clk.h>
 #include <linux/io.h>
@@ -511,7 +509,7 @@ err_ioremap:
 	return ret;
 }
 
-static int omap_rng_remove(struct platform_device *pdev)
+static void omap_rng_remove(struct platform_device *pdev)
 {
 	struct omap_rng_dev *priv = platform_get_drvdata(pdev);
 
@@ -523,8 +521,6 @@ static int omap_rng_remove(struct platform_device *pdev)
 
 	clk_disable_unprepare(priv->clk);
 	clk_disable_unprepare(priv->clk_reg);
-
-	return 0;
 }
 
 static int __maybe_unused omap_rng_suspend(struct device *dev)
@@ -568,4 +564,5 @@ static struct platform_driver omap_rng_driver = {
 module_platform_driver(omap_rng_driver);
 MODULE_ALIAS("platform:omap_rng");
 MODULE_AUTHOR("Deepak Saxena (and others)");
+MODULE_DESCRIPTION("RNG driver for TI OMAP CPU family");
 MODULE_LICENSE("GPL");

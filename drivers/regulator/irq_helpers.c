@@ -64,16 +64,16 @@ static void regulator_notifier_isr_work(struct work_struct *work)
 reread:
 	if (d->fatal_cnt && h->retry_cnt > d->fatal_cnt) {
 		if (!d->die)
-			return hw_protection_shutdown("Regulator HW failure? - no IC recovery",
-						      REGULATOR_FORCED_SAFETY_SHUTDOWN_WAIT_MS);
+			return hw_protection_trigger("Regulator HW failure? - no IC recovery",
+						     REGULATOR_FORCED_SAFETY_SHUTDOWN_WAIT_MS);
 		ret = d->die(rid);
 		/*
 		 * If the 'last resort' IC recovery failed we will have
 		 * nothing else left to do...
 		 */
 		if (ret)
-			return hw_protection_shutdown("Regulator HW failure. IC recovery failed",
-						      REGULATOR_FORCED_SAFETY_SHUTDOWN_WAIT_MS);
+			return hw_protection_trigger("Regulator HW failure. IC recovery failed",
+						     REGULATOR_FORCED_SAFETY_SHUTDOWN_WAIT_MS);
 
 		/*
 		 * If h->die() was implemented we assume recovery has been
@@ -146,7 +146,7 @@ enable_out:
 
 reschedule:
 	if (!d->high_prio)
-		mod_delayed_work(system_wq, &h->isr_work,
+		mod_delayed_work(system_dfl_wq, &h->isr_work,
 				 msecs_to_jiffies(tmo));
 	else
 		mod_delayed_work(system_highpri_wq, &h->isr_work,
@@ -263,14 +263,14 @@ fail_out:
 	if (d->fatal_cnt && h->retry_cnt > d->fatal_cnt) {
 		/* If we have no recovery, just try shut down straight away */
 		if (!d->die) {
-			hw_protection_shutdown("Regulator failure. Retry count exceeded",
-					       REGULATOR_FORCED_SAFETY_SHUTDOWN_WAIT_MS);
+			hw_protection_trigger("Regulator failure. Retry count exceeded",
+					      REGULATOR_FORCED_SAFETY_SHUTDOWN_WAIT_MS);
 		} else {
 			ret = d->die(rid);
 			/* If die() failed shut down as a last attempt to save the HW */
 			if (ret)
-				hw_protection_shutdown("Regulator failure. Recovery failed",
-						       REGULATOR_FORCED_SAFETY_SHUTDOWN_WAIT_MS);
+				hw_protection_trigger("Regulator failure. Recovery failed",
+						      REGULATOR_FORCED_SAFETY_SHUTDOWN_WAIT_MS);
 		}
 	}
 
@@ -333,7 +333,7 @@ static void init_rdev_errors(struct regulator_irq *h)
  *			IRQ.
  * @rdev_amount:	Amount of regulators associated with this IRQ.
  *
- * Return: handle to irq_helper or an ERR_PTR() encoded error code.
+ * Return: handle to irq_helper or an ERR_PTR() encoded negative error number.
  */
 void *regulator_irq_helper(struct device *dev,
 			   const struct regulator_irq_desc *d, int irq,
@@ -352,6 +352,9 @@ void *regulator_irq_helper(struct device *dev,
 
 	h->irq = irq;
 	h->desc = *d;
+	h->desc.name = devm_kstrdup(dev, d->name, GFP_KERNEL);
+	if (!h->desc.name)
+		return ERR_PTR(-ENOMEM);
 
 	ret = init_rdev_state(dev, h, rdev, common_errs, per_rdev_errs,
 			      rdev_amount);
@@ -401,16 +404,21 @@ EXPORT_SYMBOL_GPL(regulator_irq_helper_cancel);
 /**
  * regulator_irq_map_event_simple - regulator IRQ notification for trivial IRQs
  *
- * @irq:	Number of IRQ that occurred
- * @rid:	Information about the event IRQ indicates
- * @dev_mask:	mask indicating the regulator originating the IRQ
+ * @irq:	Number of IRQ that occurred.
+ * @rid:	Information about the event IRQ indicates.
+ *		The function fills in the &regulator_err_state->notifs
+ *		and &regulator_err_state->errors fields of
+ *		&regulator_irq_data->states as output.
+ * @dev_mask:	mask indicating the regulator originating the IRQ.
  *
  * Regulators whose IRQ has single, well defined purpose (always indicate
  * exactly one event, and are relevant to exactly one regulator device) can
- * use this function as their map_event callbac for their regulator IRQ
- * notification helperk. Exactly one rdev and exactly one error (in
+ * use this function as their map_event callback for their regulator IRQ
+ * notification helper. Exactly one rdev and exactly one error (in
  * "common_errs"-field) can be given at IRQ helper registration for
  * regulator_irq_map_event_simple() to be viable.
+ *
+ * Return: 0.
  */
 int regulator_irq_map_event_simple(int irq, struct regulator_irq_data *rid,
 			    unsigned long *dev_mask)

@@ -125,8 +125,7 @@ static const struct iio_info dmard06_info = {
 	.read_raw	= dmard06_read_raw,
 };
 
-static int dmard06_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int dmard06_probe(struct i2c_client *client)
 {
 	int ret;
 	struct iio_dev *indio_dev;
@@ -138,10 +137,8 @@ static int dmard06_probe(struct i2c_client *client,
 	}
 
 	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*dmard06));
-	if (!indio_dev) {
-		dev_err(&client->dev, "Failed to allocate iio device\n");
+	if (!indio_dev)
 		return -ENOMEM;
-	}
 
 	dmard06 = iio_priv(indio_dev);
 	dmard06->client = client;
@@ -202,9 +199,9 @@ static DEFINE_SIMPLE_DEV_PM_OPS(dmard06_pm_ops, dmard06_suspend,
 				dmard06_resume);
 
 static const struct i2c_device_id dmard06_id[] = {
-	{ "dmard05", 0 },
-	{ "dmard06", 0 },
-	{ "dmard07", 0 },
+	{ "dmard05" },
+	{ "dmard06" },
+	{ "dmard07" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, dmard06_id);

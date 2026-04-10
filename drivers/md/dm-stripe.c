@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2001-2003 Sistina Software (UK) Limited.
  *
@@ -14,6 +15,8 @@
 #include <linux/dax.h>
 #include <linux/slab.h>
 #include <linux/log2.h>
+
+static struct workqueue_struct *dm_stripe_wq;
 
 #define DM_MSG_PREFIX "striped"
 #define DM_IO_ERROR_THRESHOLD 15
@@ -41,7 +44,7 @@ struct stripe_c {
 	/* Work struct used for triggering events*/
 	struct work_struct trigger_event;
 
-	struct stripe stripe[];
+	struct stripe stripe[] __counted_by(stripes);
 };
 
 /*
@@ -108,15 +111,13 @@ static int stripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	width = ti->len;
 	if (sector_div(width, stripes)) {
-		ti->error = "Target length not divisible by "
-		    "number of stripes";
+		ti->error = "Target length not divisible by number of stripes";
 		return -EINVAL;
 	}
 
 	tmp_len = width;
 	if (sector_div(tmp_len, chunk_size)) {
-		ti->error = "Target length not divisible by "
-		    "chunk size";
+		ti->error = "Target length not divisible by chunk size";
 		return -EINVAL;
 	}
 
@@ -124,15 +125,13 @@ static int stripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	 * Do we have enough arguments for that many stripes ?
 	 */
 	if (argc != (2 + 2 * stripes)) {
-		ti->error = "Not enough destinations "
-			"specified";
+		ti->error = "Not enough destinations specified";
 		return -EINVAL;
 	}
 
-	sc = kmalloc(struct_size(sc, stripe, stripes), GFP_KERNEL);
+	sc = kmalloc_flex(*sc, stripe, stripes);
 	if (!sc) {
-		ti->error = "Memory allocation for striped context "
-		    "failed";
+		ti->error = "Memory allocation for striped context failed";
 		return -ENOMEM;
 	}
 
@@ -158,6 +157,7 @@ static int stripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ti->num_discard_bios = stripes;
 	ti->num_secure_erase_bios = stripes;
 	ti->num_write_zeroes_bios = stripes;
+	ti->flush_bypasses_map = true;
 
 	sc->chunk_size = chunk_size;
 	if (chunk_size & (chunk_size - 1))
@@ -190,7 +190,7 @@ static int stripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 static void stripe_dtr(struct dm_target *ti)
 {
 	unsigned int i;
-	struct stripe_c *sc = (struct stripe_c *) ti->private;
+	struct stripe_c *sc = ti->private;
 
 	for (i = 0; i < sc->stripes; i++)
 		dm_put_device(ti, sc->stripe[i].dev);
@@ -262,18 +262,18 @@ static int stripe_map_range(struct stripe_c *sc, struct bio *bio,
 			sc->stripe[target_stripe].physical_start;
 		bio->bi_iter.bi_size = to_bytes(end - begin);
 		return DM_MAPIO_REMAPPED;
-	} else {
-		/* The range doesn't map to the target stripe */
-		bio_endio(bio);
-		return DM_MAPIO_SUBMITTED;
 	}
+
+	/* The range doesn't map to the target stripe */
+	bio_endio(bio);
+	return DM_MAPIO_SUBMITTED;
 }
 
-static int stripe_map(struct dm_target *ti, struct bio *bio)
+int stripe_map(struct dm_target *ti, struct bio *bio)
 {
 	struct stripe_c *sc = ti->private;
 	uint32_t stripe;
-	unsigned target_bio_nr;
+	unsigned int target_bio_nr;
 
 	if (bio->bi_opf & REQ_PREFLUSH) {
 		target_bio_nr = dm_bio_get_target_bio_nr(bio);
@@ -316,7 +316,7 @@ static struct dax_device *stripe_dax_pgoff(struct dm_target *ti, pgoff_t *pgoff)
 
 static long stripe_dax_direct_access(struct dm_target *ti, pgoff_t pgoff,
 		long nr_pages, enum dax_access_mode mode, void **kaddr,
-		pfn_t *pfn)
+		unsigned long *pfn)
 {
 	struct dax_device *dax_dev = stripe_dax_pgoff(ti, &pgoff);
 
@@ -359,23 +359,21 @@ static size_t stripe_dax_recovery_write(struct dm_target *ti, pgoff_t pgoff,
  */
 
 static void stripe_status(struct dm_target *ti, status_type_t type,
-			  unsigned status_flags, char *result, unsigned maxlen)
+			  unsigned int status_flags, char *result, unsigned int maxlen)
 {
-	struct stripe_c *sc = (struct stripe_c *) ti->private;
+	struct stripe_c *sc = ti->private;
 	unsigned int sz = 0;
 	unsigned int i;
 
 	switch (type) {
 	case STATUSTYPE_INFO:
 		DMEMIT("%d ", sc->stripes);
-		for (i = 0; i < sc->stripes; i++)  {
+		for (i = 0; i < sc->stripes; i++)
 			DMEMIT("%s ", sc->stripe[i].dev->name);
-		}
+
 		DMEMIT("1 ");
-		for (i = 0; i < sc->stripes; i++) {
-			DMEMIT("%c", atomic_read(&(sc->stripe[i].error_count)) ?
-			       'D' : 'A');
-		}
+		for (i = 0; i < sc->stripes; i++)
+			DMEMIT("%c", atomic_read(&(sc->stripe[i].error_count)) ?  'D' : 'A');
 		break;
 
 	case STATUSTYPE_TABLE:
@@ -406,8 +404,8 @@ static void stripe_status(struct dm_target *ti, status_type_t type,
 static int stripe_end_io(struct dm_target *ti, struct bio *bio,
 		blk_status_t *error)
 {
-	unsigned i;
-	char major_minor[16];
+	unsigned int i;
+	char major_minor[22];
 	struct stripe_c *sc = ti->private;
 
 	if (!*error)
@@ -419,8 +417,7 @@ static int stripe_end_io(struct dm_target *ti, struct bio *bio,
 	if (*error == BLK_STS_NOTSUPP)
 		return DM_ENDIO_DONE;
 
-	memset(major_minor, 0, sizeof(major_minor));
-	sprintf(major_minor, "%d:%d", MAJOR(bio_dev(bio)), MINOR(bio_dev(bio)));
+	format_dev_t(major_minor, bio_dev(bio));
 
 	/*
 	 * Test to see which stripe drive triggered the event
@@ -433,7 +430,7 @@ static int stripe_end_io(struct dm_target *ti, struct bio *bio,
 			atomic_inc(&(sc->stripe[i].error_count));
 			if (atomic_read(&(sc->stripe[i].error_count)) <
 			    DM_IO_ERROR_THRESHOLD)
-				schedule_work(&sc->trigger_event);
+				queue_work(dm_stripe_wq, &sc->trigger_event);
 		}
 
 	return DM_ENDIO_DONE;
@@ -444,7 +441,7 @@ static int stripe_iterate_devices(struct dm_target *ti,
 {
 	struct stripe_c *sc = ti->private;
 	int ret = 0;
-	unsigned i = 0;
+	unsigned int i = 0;
 
 	do {
 		ret = fn(ti, sc->stripe[i].dev,
@@ -459,16 +456,30 @@ static void stripe_io_hints(struct dm_target *ti,
 			    struct queue_limits *limits)
 {
 	struct stripe_c *sc = ti->private;
-	unsigned chunk_size = sc->chunk_size << SECTOR_SHIFT;
+	unsigned int io_min, io_opt, max_hw_discard_sectors = limits->max_hw_discard_sectors;
 
-	blk_limits_io_min(limits, chunk_size);
-	blk_limits_io_opt(limits, chunk_size * sc->stripes);
+	limits->chunk_sectors = sc->chunk_size;
+
+	if (!check_shl_overflow(sc->chunk_size, SECTOR_SHIFT, &io_min) &&
+	    !check_mul_overflow(io_min, sc->stripes, &io_opt)) {
+		limits->io_min = io_min;
+		limits->io_opt = io_opt;
+	}
+	if (max_hw_discard_sectors >= sc->chunk_size) {
+		if (!check_mul_overflow(max_hw_discard_sectors, sc->stripes, &max_hw_discard_sectors)) {
+			max_hw_discard_sectors = rounddown(max_hw_discard_sectors,
+					sc->chunk_size * sc->stripes);
+			limits->max_hw_discard_sectors = max_hw_discard_sectors;
+		} else
+			limits->max_hw_discard_sectors = UINT_MAX >> SECTOR_SHIFT;
+	}
 }
 
 static struct target_type stripe_target = {
 	.name   = "striped",
-	.version = {1, 6, 0},
-	.features = DM_TARGET_PASSES_INTEGRITY | DM_TARGET_NOWAIT,
+	.version = {1, 7, 0},
+	.features = DM_TARGET_PASSES_INTEGRITY | DM_TARGET_NOWAIT |
+		    DM_TARGET_ATOMIC_WRITES | DM_TARGET_PASSES_CRYPTO,
 	.module = THIS_MODULE,
 	.ctr    = stripe_ctr,
 	.dtr    = stripe_dtr,
@@ -486,9 +497,14 @@ int __init dm_stripe_init(void)
 {
 	int r;
 
+	dm_stripe_wq = alloc_workqueue("dm_stripe_wq", WQ_PERCPU, 0);
+	if (!dm_stripe_wq)
+		return -ENOMEM;
 	r = dm_register_target(&stripe_target);
-	if (r < 0)
+	if (r < 0) {
+		destroy_workqueue(dm_stripe_wq);
 		DMWARN("target registration failed");
+	}
 
 	return r;
 }
@@ -496,4 +512,5 @@ int __init dm_stripe_init(void)
 void dm_stripe_exit(void)
 {
 	dm_unregister_target(&stripe_target);
+	destroy_workqueue(dm_stripe_wq);
 }

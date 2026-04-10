@@ -8,7 +8,7 @@ title: Qualcomm RPMh Network-On-Chip Interconnect
 
 maintainers:
   - Georgi Djakov <georgi.djakov@linaro.org>
-  - Odelu Kukatla <okukatla@codeaurora.org>
+  - Odelu Kukatla <quic_okukatla@quicinc.com>
 
 description: |
    RPMh interconnect providers support system bandwidth requirements through
@@ -36,18 +36,6 @@ properties:
       - qcom,sc7180-npu-noc
       - qcom,sc7180-qup-virt
       - qcom,sc7180-system-noc
-      - qcom,sc7280-aggre1-noc
-      - qcom,sc7280-aggre2-noc
-      - qcom,sc7280-clk-virt
-      - qcom,sc7280-cnoc2
-      - qcom,sc7280-cnoc3
-      - qcom,sc7280-dc-noc
-      - qcom,sc7280-gem-noc
-      - qcom,sc7280-lpass-ag-noc
-      - qcom,sc7280-mc-virt
-      - qcom,sc7280-mmss-noc
-      - qcom,sc7280-nsp-noc
-      - qcom,sc7280-system-noc
       - qcom,sc8180x-aggre1-noc
       - qcom,sc8180x-aggre2-noc
       - qcom,sc8180x-camnoc-virt
@@ -55,23 +43,18 @@ properties:
       - qcom,sc8180x-config-noc
       - qcom,sc8180x-dc-noc
       - qcom,sc8180x-gem-noc
-      - qcom,sc8180x-ipa-virt
       - qcom,sc8180x-mc-virt
       - qcom,sc8180x-mmss-noc
       - qcom,sc8180x-qup-virt
       - qcom,sc8180x-system-noc
-      - qcom,sc8280xp-aggre1-noc
-      - qcom,sc8280xp-aggre2-noc
-      - qcom,sc8280xp-clk-virt
-      - qcom,sc8280xp-config-noc
-      - qcom,sc8280xp-dc-noc
-      - qcom,sc8280xp-gem-noc
-      - qcom,sc8280xp-lpass-ag-noc
-      - qcom,sc8280xp-mc-virt
-      - qcom,sc8280xp-mmss-noc
-      - qcom,sc8280xp-nspa-noc
-      - qcom,sc8280xp-nspb-noc
-      - qcom,sc8280xp-system-noc
+      - qcom,sdm670-aggre1-noc
+      - qcom,sdm670-aggre2-noc
+      - qcom,sdm670-config-noc
+      - qcom,sdm670-dc-noc
+      - qcom,sdm670-gladiator-noc
+      - qcom,sdm670-mem-noc
+      - qcom,sdm670-mmss-noc
+      - qcom,sdm670-system-noc
       - qcom,sdm845-aggre1-noc
       - qcom,sdm845-aggre2-noc
       - qcom,sdm845-config-noc
@@ -88,12 +71,11 @@ properties:
       - qcom,sdx65-system-noc
       - qcom,sm8150-aggre1-noc
       - qcom,sm8150-aggre2-noc
-      - qcom,sm8150-camnoc-noc
+      - qcom,sm8150-camnoc-virt
       - qcom,sm8150-compute-noc
       - qcom,sm8150-config-noc
       - qcom,sm8150-dc-noc
       - qcom,sm8150-gem-noc
-      - qcom,sm8150-ipa-virt
       - qcom,sm8150-mc-virt
       - qcom,sm8150-mmss-noc
       - qcom,sm8150-system-noc
@@ -103,10 +85,10 @@ properties:
       - qcom,sm8250-config-noc
       - qcom,sm8250-dc-noc
       - qcom,sm8250-gem-noc
-      - qcom,sm8250-ipa-virt
       - qcom,sm8250-mc-virt
       - qcom,sm8250-mmss-noc
       - qcom,sm8250-npu-noc
+      - qcom,sm8250-qup-virt
       - qcom,sm8250-system-noc
       - qcom,sm8350-aggre1-noc
       - qcom,sm8350-aggre2-noc
@@ -118,56 +100,45 @@ properties:
       - qcom,sm8350-mmss-noc
       - qcom,sm8350-compute-noc
       - qcom,sm8350-system-noc
-      - qcom,sm8450-aggre1-noc
-      - qcom,sm8450-aggre2-noc
-      - qcom,sm8450-clk-virt
-      - qcom,sm8450-config-noc
-      - qcom,sm8450-gem-noc
-      - qcom,sm8450-lpass-ag-noc
-      - qcom,sm8450-mc-virt
-      - qcom,sm8450-mmss-noc
-      - qcom,sm8450-nsp-noc
-      - qcom,sm8450-pcie-anoc
-      - qcom,sm8450-system-noc
 
-  '#interconnect-cells':
-    enum: [ 1, 2 ]
-
-  qcom,bcm-voters:
-    $ref: /schemas/types.yaml#/definitions/phandle-array
-    items:
-      maxItems: 1
-    description: |
-      List of phandles to qcom,bcm-voter nodes that are required by
-      this interconnect to send RPMh commands.
-
-  qcom,bcm-voter-names:
-    description: |
-      Names for each of the qcom,bcm-voters specified.
+  '#interconnect-cells': true
 
 required:
   - compatible
-  - reg
-  - '#interconnect-cells'
-  - qcom,bcm-voters
 
-additionalProperties: false
+allOf:
+  - $ref: qcom,rpmh-common.yaml#
+  - if:
+      not:
+        properties:
+          compatible:
+            enum:
+              - qcom,sc8180x-camnoc-virt
+              - qcom,sc8180x-mc-virt
+              - qcom,sc8180x-qup-virt
+              - qcom,sdx65-mc-virt
+              - qcom,sm8250-qup-virt
+    then:
+      required:
+        - reg
+
+unevaluatedProperties: false
 
 examples:
   - |
-      #include <dt-bindings/interconnect/qcom,sdm845.h>
+    #include <dt-bindings/interconnect/qcom,sdm845.h>
 
-      mem_noc: interconnect@1380000 {
-             compatible = "qcom,sdm845-mem-noc";
-             reg = <0x01380000 0x27200>;
-             #interconnect-cells = <1>;
-             qcom,bcm-voters = <&apps_bcm_voter>;
-      };
+    interconnect@1380000 {
+        compatible = "qcom,sdm845-mem-noc";
+        reg = <0x01380000 0x27200>;
+        #interconnect-cells = <1>;
+        qcom,bcm-voters = <&apps_bcm_voter>;
+    };
 
-      mmss_noc: interconnect@1740000 {
-             compatible = "qcom,sdm845-mmss-noc";
-             reg = <0x01740000 0x1c1000>;
-             #interconnect-cells = <1>;
-             qcom,bcm-voter-names = "apps", "disp";
-             qcom,bcm-voters = <&apps_bcm_voter>, <&disp_bcm_voter>;
-      };
+    interconnect@1740000 {
+        compatible = "qcom,sdm845-mmss-noc";
+        reg = <0x01740000 0x1c1000>;
+        #interconnect-cells = <1>;
+        qcom,bcm-voter-names = "apps", "disp";
+        qcom,bcm-voters = <&apps_bcm_voter>, <&disp_bcm_voter>;
+    };

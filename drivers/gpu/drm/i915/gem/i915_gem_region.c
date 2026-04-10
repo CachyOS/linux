@@ -60,6 +60,8 @@ __i915_gem_object_create_region(struct intel_memory_region *mem,
 	if (page_size)
 		default_page_size = page_size;
 
+	/* We should be able to fit a page within an sg entry */
+	GEM_BUG_ON(overflows_type(default_page_size, u32));
 	GEM_BUG_ON(!is_power_of_2_u64(default_page_size));
 	GEM_BUG_ON(default_page_size < PAGE_SIZE);
 
@@ -80,7 +82,7 @@ __i915_gem_object_create_region(struct intel_memory_region *mem,
 
 	/*
 	 * Anything smaller than the min_page_size can't be freely inserted into
-	 * the GTT, due to alignemnt restrictions. For such special objects,
+	 * the GTT, due to alignment restrictions. For such special objects,
 	 * make sure we force memcpy based suspend-resume. In the future we can
 	 * revisit this, either by allowing special mis-aligned objects in the
 	 * migration path, or by mapping all of LMEM upfront using cheap 1G
@@ -127,7 +129,7 @@ i915_gem_object_create_region_at(struct intel_memory_region *mem,
 		return ERR_PTR(-EINVAL);
 
 	if (!(flags & I915_BO_ALLOC_GPU_ONLY) &&
-	    offset + size > mem->io_size &&
+	    offset + size > resource_size(&mem->io) &&
 	    !i915_ggtt_has_aperture(to_gt(mem->i915)->ggtt))
 		return ERR_PTR(-ENOSPC);
 

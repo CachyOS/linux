@@ -6,7 +6,6 @@
  ******************************************************************************/
 
 #include <drv_types.h>
-#include <rtw_debug.h>
 #include <rtl8723b_hal.h>
 
 /**
@@ -153,7 +152,7 @@ static u32 phy_RFSerialRead_8723B(
  * @Data:	The new register Data in the target bit position
  *			of the target to be read
  *
- * .. Note::	Threre are three types of serial operations:
+ * .. Note::	There are three types of serial operations:
  *		1. Software serial write
  *		2. Hardware LSSI-Low Speed Serial Interface
  *		3. Hardware HSSI-High speed
@@ -280,7 +279,7 @@ void PHY_SetRFReg_8723B(
 
 
 /*-----------------------------------------------------------------------------
- * PHY_MACConfig8192C - Condig MAC by header file or parameter file.
+ * PHY_MACConfig8192C - Config MAC by header file or parameter file.
  *
  * Revised History:
  *  When		Who		Remark
@@ -325,7 +324,7 @@ static void phy_InitBBRFRegisterDefinition(struct adapter *Adapter)
 	pHalData->PHYRegDef[RF_PATH_A].rfHSSIPara2 = rFPGA0_XA_HSSIParameter2;  /* wire control parameter2 */
 	pHalData->PHYRegDef[RF_PATH_B].rfHSSIPara2 = rFPGA0_XB_HSSIParameter2;  /* wire control parameter2 */
 
-	/*  Tranceiver Readback LSSI/HSPI mode */
+	/*  Transceiver Readback LSSI/HSPI mode */
 	pHalData->PHYRegDef[RF_PATH_A].rfLSSIReadBack = rFPGA0_XA_LSSIReadBack;
 	pHalData->PHYRegDef[RF_PATH_B].rfLSSIReadBack = rFPGA0_XB_LSSIReadBack;
 	pHalData->PHYRegDef[RF_PATH_A].rfLSSIReadBackPi = TransceiverA_HSPI_Readback;
@@ -339,13 +338,10 @@ static int phy_BB8723b_Config_ParaFile(struct adapter *Adapter)
 
 	/*  Read Tx Power Limit File */
 	PHY_InitTxPowerLimit(Adapter);
-	if (
-		Adapter->registrypriv.RegEnableTxPowerLimit == 1 ||
-		(Adapter->registrypriv.RegEnableTxPowerLimit == 2 && pHalData->EEPROMRegulatory == 1)
-	) {
-		ODM_ConfigRFWithHeaderFile(&pHalData->odmpriv,
-					   CONFIG_RF_TXPWR_LMT, 0);
-	}
+	if (Adapter->registrypriv.reg_enable_tx_power_limit == 1 ||
+	    (Adapter->registrypriv.reg_enable_tx_power_limit == 2 &&
+	   pHalData->EEPROMRegulatory == 1))
+		ODM_ConfigRFWithHeaderFile(&pHalData->odmpriv, CONFIG_RF_TXPWR_LMT, 0);
 
 	/*  */
 	/*  1. Read PHY_REG.TXT BB INIT!! */
@@ -354,20 +350,18 @@ static int phy_BB8723b_Config_ParaFile(struct adapter *Adapter)
 
 	/*  If EEPROM or EFUSE autoload OK, We must config by PHY_REG_PG.txt */
 	PHY_InitTxPowerByRate(Adapter);
-	if (
-		Adapter->registrypriv.RegEnableTxPowerByRate == 1 ||
-		(Adapter->registrypriv.RegEnableTxPowerByRate == 2 && pHalData->EEPROMRegulatory != 2)
-	) {
-		ODM_ConfigBBWithHeaderFile(&pHalData->odmpriv,
-					   CONFIG_BB_PHY_REG_PG);
+
+	if (Adapter->registrypriv.reg_enable_tx_power_by_rate == 1 ||
+	    (Adapter->registrypriv.reg_enable_tx_power_by_rate == 2 &&
+	   pHalData->EEPROMRegulatory != 2)) {
+		ODM_ConfigBBWithHeaderFile(&pHalData->odmpriv, CONFIG_BB_PHY_REG_PG);
 
 		if (pHalData->odmpriv.PhyRegPgValueType == PHY_REG_PG_EXACT_VALUE)
 			PHY_TxPowerByRateConfiguration(Adapter);
 
-		if (
-			Adapter->registrypriv.RegEnableTxPowerLimit == 1 ||
-			(Adapter->registrypriv.RegEnableTxPowerLimit == 2 && pHalData->EEPROMRegulatory == 1)
-		)
+		if (Adapter->registrypriv.reg_enable_tx_power_limit == 1 ||
+		    (Adapter->registrypriv.reg_enable_tx_power_limit == 2 &&
+		   pHalData->EEPROMRegulatory == 1))
 			PHY_ConvertTxPowerLimitToPowerIndex(Adapter);
 	}
 
@@ -542,7 +536,7 @@ u8 PHY_GetTxPowerIndex(
 
 	limit = phy_get_tx_pwr_lmt(
 		padapter,
-		padapter->registrypriv.RegPwrTblSel,
+		padapter->registrypriv.reg_pwr_tbl_sel,
 		pHalData->CurrentChannelBW,
 		RFPath,
 		Rate,
@@ -574,10 +568,6 @@ void PHY_SetTxPowerLevel8723B(struct adapter *Adapter, u8 Channel)
 	}
 
 	PHY_SetTxPowerLevelByPath(Adapter, Channel, RFPath);
-}
-
-void PHY_GetTxPowerLevel8723B(struct adapter *Adapter, s32 *powerlevel)
-{
 }
 
 static void phy_SetRegBW_8723B(
@@ -763,17 +753,6 @@ static void PHY_HandleSwChnlAndSetBW8723B(
 			pHalData->CurrentCenterFrequencyIndex1 = tmpCenterFrequencyIndex1;
 		}
 	}
-}
-
-void PHY_SetBWMode8723B(
-	struct adapter *Adapter,
-	enum channel_width Bandwidth, /*  20M or 40M */
-	unsigned char Offset /*  Upper, Lower, or Don't care */
-)
-{
-	struct hal_com_data *pHalData = GET_HAL_DATA(Adapter);
-
-	PHY_HandleSwChnlAndSetBW8723B(Adapter, false, true, pHalData->CurrentChannel, Bandwidth, Offset, Offset, pHalData->CurrentChannel);
 }
 
 /*  Call after initialization */

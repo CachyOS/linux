@@ -17,7 +17,6 @@
 #include <linux/mfd/core.h>
 #include <linux/mfd/tps65090.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/err.h>
 
 #define NUM_INT_REG 2
@@ -121,14 +120,13 @@ static const struct regmap_irq tps65090_irqs[] = {
 	},
 };
 
-static struct regmap_irq_chip tps65090_irq_chip = {
+static const struct regmap_irq_chip tps65090_irq_chip = {
 	.name = "tps65090",
 	.irqs = tps65090_irqs,
 	.num_irqs = ARRAY_SIZE(tps65090_irqs),
 	.num_regs = NUM_INT_REG,
 	.status_base = TPS65090_REG_INTR_STS,
-	.mask_base = TPS65090_REG_INTR_MASK,
-	.mask_invert = true,
+	.unmask_base = TPS65090_REG_INTR_MASK,
 };
 
 static bool is_volatile_reg(struct device *dev, unsigned int reg)
@@ -153,7 +151,7 @@ static const struct regmap_config tps65090_regmap_config = {
 	.val_bits = 8,
 	.max_register = TPS65090_MAX_REG,
 	.num_reg_defaults_raw = TPS65090_NUM_REGS,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.volatile_reg = is_volatile_reg,
 };
 
@@ -164,8 +162,7 @@ static const struct of_device_id tps65090_of_match[] = {
 };
 #endif
 
-static int tps65090_i2c_probe(struct i2c_client *client,
-			      const struct i2c_device_id *id)
+static int tps65090_i2c_probe(struct i2c_client *client)
 {
 	struct tps65090_platform_data *pdata = dev_get_platdata(&client->dev);
 	int irq_base = 0;
@@ -228,8 +225,8 @@ err_irq_exit:
 
 
 static const struct i2c_device_id tps65090_id_table[] = {
-	{ "tps65090", 0 },
-	{ },
+	{ "tps65090" },
+	{ }
 };
 
 static struct i2c_driver tps65090_driver = {

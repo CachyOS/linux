@@ -12,6 +12,8 @@
 #include <linux/if_ether.h>
 #include <linux/percpu.h>
 #include <asm/asm-extable.h>
+#include <asm/sclp.h>
+#include <asm/cio.h>
 
 enum diag_stat_enum {
 	DIAG_STAT_X008,
@@ -20,6 +22,7 @@ enum diag_stat_enum {
 	DIAG_STAT_X014,
 	DIAG_STAT_X044,
 	DIAG_STAT_X064,
+	DIAG_STAT_X08C,
 	DIAG_STAT_X09C,
 	DIAG_STAT_X0DC,
 	DIAG_STAT_X204,
@@ -33,13 +36,24 @@ enum diag_stat_enum {
 	DIAG_STAT_X2FC,
 	DIAG_STAT_X304,
 	DIAG_STAT_X308,
+	DIAG_STAT_X310,
 	DIAG_STAT_X318,
+	DIAG_STAT_X320,
+	DIAG_STAT_X324,
+	DIAG_STAT_X49C,
 	DIAG_STAT_X500,
 	NR_DIAG_STAT
 };
 
 void diag_stat_inc(enum diag_stat_enum nr);
 void diag_stat_inc_norecursion(enum diag_stat_enum nr);
+
+struct hypfs_diag0c_entry;
+
+/*
+ * Diagnose 0c: Pseudo Timer
+ */
+void diag0c(struct hypfs_diag0c_entry *data);
 
 /*
  * Diagnose 10: Release page range
@@ -52,7 +66,7 @@ static inline void diag10_range(unsigned long start_pfn, unsigned long num_pfn)
 	end_addr = pfn_to_phys(start_pfn + num_pfn - 1);
 
 	diag_stat_inc(DIAG_STAT_X010);
-	asm volatile(
+	asm_inline volatile(
 		"0:	diag	%0,%1,0x10\n"
 		"1:	nopr	%%r7\n"
 		EX_TABLE(0b, 1b)
@@ -79,9 +93,19 @@ struct diag210 {
 	u8 vrdccrty;	/* real device type (output) */
 	u8 vrdccrmd;	/* real device model (output) */
 	u8 vrdccrft;	/* real device feature (output) */
-} __attribute__((packed, aligned(4)));
+} __packed __aligned(4);
 
 extern int diag210(struct diag210 *addr);
+
+struct diag8c {
+	u8 flags;
+	u8 num_partitions;
+	u16 width;
+	u16 height;
+	u8 data[];
+} __packed __aligned(4);
+
+extern int diag8c(struct diag8c *out, struct ccw_dev_id *devno);
 
 /* bit is set in flags, when physical cpu info is included in diag 204 data */
 #define DIAG204_LPAR_PHYS_FLG 0x80
@@ -95,6 +119,10 @@ enum diag204_sc {
 	DIAG204_SUBC_STIB6 = 6,
 	DIAG204_SUBC_STIB7 = 7
 };
+
+#define DIAG204_SUBCODE_MASK 0xffff
+#define DIAG204_BIF_BIT 0x80000000
+#define DIAG204_BUSY_WAIT (HZ / 10)
 
 /* The two available diag 204 data formats */
 enum diag204_format {
@@ -304,6 +332,11 @@ union diag318_info {
 	};
 };
 
+static inline bool diag204_has_bif(void)
+{
+	return sclp.has_diag204_bif;
+}
+
 int diag204(unsigned long subcode, unsigned long size, void *addr);
 int diag224(void *ptr);
 int diag26c(void *req, void *resp, enum diag26c_sc subcode);
@@ -316,9 +349,10 @@ struct hypfs_diag0c_entry;
  */
 struct diag_ops {
 	int (*diag210)(struct diag210 *addr);
-	int (*diag26c)(void *req, void *resp, enum diag26c_sc subcode);
+	int (*diag26c)(unsigned long rx, unsigned long rx1, enum diag26c_sc subcode);
 	int (*diag14)(unsigned long rx, unsigned long ry1, unsigned long subcode);
-	void (*diag0c)(struct hypfs_diag0c_entry *entry);
+	int (*diag8c)(struct diag8c *addr, struct ccw_dev_id *devno, size_t len);
+	void (*diag0c)(unsigned long rx);
 	void (*diag308_reset)(void);
 };
 
@@ -326,9 +360,18 @@ extern struct diag_ops diag_amode31_ops;
 extern struct diag210 *__diag210_tmp_amode31;
 
 int _diag210_amode31(struct diag210 *addr);
-int _diag26c_amode31(void *req, void *resp, enum diag26c_sc subcode);
+int _diag26c_amode31(unsigned long rx, unsigned long rx1, enum diag26c_sc subcode);
 int _diag14_amode31(unsigned long rx, unsigned long ry1, unsigned long subcode);
-void _diag0c_amode31(struct hypfs_diag0c_entry *entry);
+void _diag0c_amode31(unsigned long rx);
 void _diag308_reset_amode31(void);
+int _diag8c_amode31(struct diag8c *addr, struct ccw_dev_id *devno, size_t len);
+
+/* diag 49c subcodes */
+enum diag49c_sc {
+	DIAG49C_SUBC_ACK = 0,
+	DIAG49C_SUBC_REG = 1
+};
+
+int diag49c(unsigned long subcode);
 
 #endif /* _ASM_S390_DIAG_H */

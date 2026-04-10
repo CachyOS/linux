@@ -411,7 +411,8 @@ static irqreturn_t aha1542_interrupt(int irq, void *dev_id)
 	}
 }
 
-static int aha1542_queuecommand(struct Scsi_Host *sh, struct scsi_cmnd *cmd)
+static enum scsi_qc_status aha1542_queuecommand(struct Scsi_Host *sh,
+						struct scsi_cmnd *cmd)
 {
 	struct aha1542_cmd *acmd = scsi_cmd_priv(cmd);
 	struct aha1542_hostdata *aha1542 = shost_priv(sh);
@@ -737,7 +738,8 @@ fail:
 }
 
 /* return non-zero on detection */
-static struct Scsi_Host *aha1542_hw_init(struct scsi_host_template *tpnt, struct device *pdev, int indx)
+static struct Scsi_Host *aha1542_hw_init(const struct scsi_host_template *tpnt,
+					 struct device *pdev, int indx)
 {
 	unsigned int base_io = io[indx];
 	struct Scsi_Host *sh;
@@ -991,7 +993,7 @@ static int aha1542_host_reset(struct scsi_cmnd *cmd)
 }
 
 static int aha1542_biosparam(struct scsi_device *sdev,
-		struct block_device *bdev, sector_t capacity, int geom[])
+		struct gendisk *unused, sector_t capacity, int geom[])
 {
 	struct aha1542_hostdata *aha1542 = shost_priv(sdev->host);
 
@@ -1008,6 +1010,8 @@ static int aha1542_biosparam(struct scsi_device *sdev,
 
 	return 0;
 }
+
+MODULE_DESCRIPTION("Adaptec AHA-1542 SCSI host adapter driver");
 MODULE_LICENSE("GPL");
 
 static int aha1542_init_cmd_priv(struct Scsi_Host *shost, struct scsi_cmnd *cmd)
@@ -1031,7 +1035,7 @@ static int aha1542_exit_cmd_priv(struct Scsi_Host *shost, struct scsi_cmnd *cmd)
 	return 0;
 }
 
-static struct scsi_host_template driver_template = {
+static const struct scsi_host_template driver_template = {
 	.module			= THIS_MODULE,
 	.proc_name		= "aha1542",
 	.name			= "Adaptec 1542",

@@ -73,7 +73,7 @@ int percpu_ref_init(struct percpu_ref *ref, percpu_ref_func_t *release,
 	if (!ref->percpu_count_ptr)
 		return -ENOMEM;
 
-	data = kzalloc(sizeof(*ref->data), gfp);
+	data = kzalloc_obj(*ref->data, gfp);
 	if (!data) {
 		free_percpu((void __percpu *)ref->percpu_count_ptr);
 		ref->percpu_count_ptr = 0;
@@ -230,7 +230,8 @@ static void __percpu_ref_switch_to_atomic(struct percpu_ref *ref,
 		percpu_ref_noop_confirm_switch;
 
 	percpu_ref_get(ref);	/* put after confirmation */
-	call_rcu(&ref->data->rcu, percpu_ref_switch_to_atomic_rcu);
+	call_rcu_hurry(&ref->data->rcu,
+		       percpu_ref_switch_to_atomic_rcu);
 }
 
 static void __percpu_ref_switch_to_percpu(struct percpu_ref *ref)

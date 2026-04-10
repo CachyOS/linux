@@ -14,7 +14,7 @@
 #include <linux/wait.h>
 
 #include <asm/byteorder.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 /*
  * The device has only 3 fan channels/connectors. But all HID reports have
@@ -663,7 +663,7 @@ static const struct hwmon_ops nzxt_smart2_hwmon_ops = {
 	.write = nzxt_smart2_hwmon_write,
 };
 
-static const struct hwmon_channel_info *nzxt_smart2_channel_info[] = {
+static const struct hwmon_channel_info * const nzxt_smart2_channel_info[] = {
 	HWMON_CHANNEL_INFO(fan, HWMON_F_INPUT | HWMON_F_LABEL,
 			   HWMON_F_INPUT | HWMON_F_LABEL,
 			   HWMON_F_INPUT | HWMON_F_LABEL),
@@ -736,9 +736,9 @@ static int nzxt_smart2_hid_probe(struct hid_device *hdev,
 
 	init_waitqueue_head(&drvdata->wq);
 
-	mutex_init(&drvdata->mutex);
-	devm_add_action(&hdev->dev, (void (*)(void *))mutex_destroy,
-			&drvdata->mutex);
+	ret = devm_mutex_init(&hdev->dev, &drvdata->mutex);
+	if (ret)
+		return ret;
 
 	ret = hid_parse(hdev);
 	if (ret)
@@ -787,9 +787,13 @@ static void nzxt_smart2_hid_remove(struct hid_device *hdev)
 static const struct hid_device_id nzxt_smart2_hid_id_table[] = {
 	{ HID_USB_DEVICE(0x1e71, 0x2006) }, /* NZXT Smart Device V2 */
 	{ HID_USB_DEVICE(0x1e71, 0x200d) }, /* NZXT Smart Device V2 */
+	{ HID_USB_DEVICE(0x1e71, 0x200f) }, /* NZXT Smart Device V2 */
 	{ HID_USB_DEVICE(0x1e71, 0x2009) }, /* NZXT RGB & Fan Controller */
 	{ HID_USB_DEVICE(0x1e71, 0x200e) }, /* NZXT RGB & Fan Controller */
 	{ HID_USB_DEVICE(0x1e71, 0x2010) }, /* NZXT RGB & Fan Controller */
+	{ HID_USB_DEVICE(0x1e71, 0x2011) }, /* NZXT RGB & Fan Controller (6 RGB) */
+	{ HID_USB_DEVICE(0x1e71, 0x2019) }, /* NZXT RGB & Fan Controller (6 RGB) */
+	{ HID_USB_DEVICE(0x1e71, 0x2020) }, /* NZXT RGB & Fan Controller (6 RGB) */
 	{},
 };
 

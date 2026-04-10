@@ -14,7 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/mfd/stmpe.h>
 #include <linux/module.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/device.h>
 
@@ -267,10 +267,8 @@ static int stmpe_adc_probe(struct platform_device *pdev)
 		return irq_adc;
 
 	indio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(struct stmpe_adc));
-	if (!indio_dev) {
-		dev_err(&pdev->dev, "failed allocating iio device\n");
+	if (!indio_dev)
 		return -ENOMEM;
-	}
 
 	info = iio_priv(indio_dev);
 	mutex_init(&info->lock);
@@ -333,7 +331,7 @@ static int stmpe_adc_probe(struct platform_device *pdev)
 	return devm_iio_device_register(&pdev->dev, indio_dev);
 }
 
-static int __maybe_unused stmpe_adc_resume(struct device *dev)
+static int stmpe_adc_resume(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct stmpe_adc *info = iio_priv(indio_dev);
@@ -343,11 +341,11 @@ static int __maybe_unused stmpe_adc_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(stmpe_adc_pm_ops, NULL, stmpe_adc_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(stmpe_adc_pm_ops, NULL, stmpe_adc_resume);
 
 static const struct of_device_id stmpe_adc_ids[] = {
 	{ .compatible = "st,stmpe-adc", },
-	{ },
+	{ }
 };
 MODULE_DEVICE_TABLE(of, stmpe_adc_ids);
 
@@ -355,7 +353,7 @@ static struct platform_driver stmpe_adc_driver = {
 	.probe		= stmpe_adc_probe,
 	.driver		= {
 		.name	= "stmpe-adc",
-		.pm	= &stmpe_adc_pm_ops,
+		.pm	= pm_sleep_ptr(&stmpe_adc_pm_ops),
 		.of_match_table = stmpe_adc_ids,
 	},
 };

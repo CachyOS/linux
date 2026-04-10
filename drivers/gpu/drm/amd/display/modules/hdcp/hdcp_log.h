@@ -26,13 +26,12 @@
 #ifndef MOD_HDCP_LOG_H_
 #define MOD_HDCP_LOG_H_
 
-#ifdef CONFIG_DRM_AMD_DC_HDCP
 #define HDCP_LOG_ERR(hdcp, ...) DRM_DEBUG_KMS(__VA_ARGS__)
 #define HDCP_LOG_VER(hdcp, ...) DRM_DEBUG_KMS(__VA_ARGS__)
 #define HDCP_LOG_FSM(hdcp, ...) DRM_DEBUG_KMS(__VA_ARGS__)
 #define HDCP_LOG_TOP(hdcp, ...) pr_debug("[HDCP_TOP]:"__VA_ARGS__)
 #define HDCP_LOG_DDC(hdcp, ...) pr_debug("[HDCP_DDC]:"__VA_ARGS__)
-#endif
+#define HDCP_LOG_TRA(hdcp) do {} while (0)
 
 /* default logs */
 #define HDCP_ERROR_TRACE(hdcp, status) \
@@ -88,10 +87,12 @@
 #define HDCP_CPIRQ_TRACE(hdcp) \
 		HDCP_LOG_FSM(hdcp, "[Link %d] --> CPIRQ", hdcp->config.index)
 #define HDCP_EVENT_TRACE(hdcp, event) \
-		if (event == MOD_HDCP_EVENT_WATCHDOG_TIMEOUT) \
-			HDCP_TIMEOUT_TRACE(hdcp); \
-		else if (event == MOD_HDCP_EVENT_CPIRQ) \
-			HDCP_CPIRQ_TRACE(hdcp)
+		do { \
+			if (event == MOD_HDCP_EVENT_WATCHDOG_TIMEOUT) \
+				HDCP_TIMEOUT_TRACE(hdcp); \
+			else if (event == MOD_HDCP_EVENT_CPIRQ) \
+				HDCP_CPIRQ_TRACE(hdcp);	\
+		} while (0)
 /* TODO: find some way to tell if logging is off to save time */
 #define HDCP_DDC_READ_TRACE(hdcp, msg_name, msg, msg_size) do { \
 		mod_hdcp_dump_binary_message(msg, msg_size, hdcp->buf, \
@@ -129,6 +130,11 @@
 #define HDCP_TOP_INTERFACE_TRACE_WITH_INDEX(hdcp, i) do { \
 		HDCP_LOG_TOP(hdcp, "\n"); \
 		HDCP_LOG_TOP(hdcp, "[Link %d] %s display %d", hdcp->config.index, __func__, i); \
+} while (0)
+
+#define HDCP_AUTH_COMPLETE_TRACE(hdcp) do { \
+		mod_hdcp_log_ddc_trace(hdcp); \
+		HDCP_LOG_TRA(hdcp); \
 } while (0)
 
 #endif // MOD_HDCP_LOG_H_

@@ -15,7 +15,7 @@ Please notice, however, that, if:
 
 you should use the main media development tree ``master`` branch:
 
-    https://git.linuxtv.org/media_tree.git/
+    https://git.linuxtv.org/media.git/
 
 In this case, you may find some useful information at the
 `LinuxTv wiki pages <https://linuxtv.org/wiki>`_:
@@ -137,7 +137,7 @@ The ``LIRC user interface`` option adds enhanced functionality when using the
 from remote controllers.
 
 The ``Support for eBPF programs attached to lirc devices`` option allows
-the usage of special programs (called eBPF) that would allow aplications
+the usage of special programs (called eBPF) that would allow applications
 to add extra remote controller decoding functionality to the Linux Kernel.
 
 The ``Remote controller decoders`` option allows selecting the

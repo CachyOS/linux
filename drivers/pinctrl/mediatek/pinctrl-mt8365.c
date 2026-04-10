@@ -6,7 +6,6 @@
 
 #include <dt-bindings/pinctrl/mt65xx.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/module.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/platform_device.h>
@@ -416,6 +415,23 @@ static const struct mtk_pin_ies_smt_set mt8365_smt_set[] = {
 	MTK_PIN_IES_SMT_SPEC(144, 144, 0x480, 22),
 };
 
+static int mt8365_set_clr_mode(struct regmap *regmap,
+		unsigned int bit, unsigned int reg_pullen, unsigned int reg_pullsel,
+		bool enable, bool isup)
+{
+	int ret;
+
+	ret = regmap_update_bits(regmap, reg_pullen, BIT(bit), enable << bit);
+	if (ret)
+		return -EINVAL;
+
+	ret = regmap_update_bits(regmap, reg_pullsel, BIT(bit), isup << bit);
+	if (ret)
+		return -EINVAL;
+
+	return 0;
+}
+
 static const struct mtk_pinctrl_devdata mt8365_pinctrl_data = {
 	.pins = mtk_pins_mt8365,
 	.npins = ARRAY_SIZE(mtk_pins_mt8365),
@@ -431,6 +447,7 @@ static const struct mtk_pinctrl_devdata mt8365_pinctrl_data = {
 	.n_spec_pupd = ARRAY_SIZE(mt8365_spec_pupd),
 	.spec_pull_set = mtk_pctrl_spec_pull_set_samereg,
 	.spec_ies_smt_set = mtk_pconf_spec_set_ies_smt_range,
+	.mt8365_set_clr_mode = mt8365_set_clr_mode,
 	.dir_offset = 0x0140,
 	.dout_offset = 0x00A0,
 	.din_offset = 0x0000,
@@ -439,7 +456,6 @@ static const struct mtk_pinctrl_devdata mt8365_pinctrl_data = {
 	.smt_offset = 0x0470,
 	.pullen_offset = 0x0860,
 	.pullsel_offset = 0x0900,
-	.drv_offset = 0x0710,
 	.type1_start = 145,
 	.type1_end = 145,
 	.port_shf = 4,
@@ -453,6 +469,7 @@ static const struct mtk_pinctrl_devdata mt8365_pinctrl_data = {
 		.ports     = 5,
 		.ap_num = 160,
 		.db_cnt = 160,
+		.db_time   = debounce_time_mt6765,
 	},
 };
 
@@ -466,7 +483,7 @@ static struct platform_driver mtk_pinctrl_driver = {
 	.driver = {
 		.name = "mediatek-mt8365-pinctrl",
 		.of_match_table = mt8365_pctrl_match,
-		.pm = &mtk_eint_pm_ops,
+		.pm = pm_sleep_ptr(&mtk_eint_pm_ops),
 	},
 };
 
@@ -476,6 +493,5 @@ static int __init mtk_pinctrl_init(void)
 }
 arch_initcall(mtk_pinctrl_init);
 
-MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("MediaTek MT8365 Pinctrl Driver");
 MODULE_AUTHOR("Zhiyong Tao <zhiyong.tao@mediatek.com>");

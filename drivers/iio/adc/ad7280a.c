@@ -7,6 +7,7 @@
 
 #include <linux/bitfield.h>
 #include <linux/bits.h>
+#include <linux/cleanup.h>
 #include <linux/crc8.h>
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -183,7 +184,7 @@ struct ad7280_state {
 	unsigned char			cb_mask[AD7280A_MAX_CHAIN];
 	struct mutex			lock; /* protect sensor state */
 
-	__be32				tx ____cacheline_aligned;
+	__be32				tx __aligned(IIO_DMA_MINALIGN);
 	__be32				rx;
 };
 
@@ -540,7 +541,7 @@ static ssize_t ad7280_store_balance_timer(struct iio_dev *indio_dev,
 	int val, val2;
 	int ret;
 
-	ret = iio_str_to_fixpoint(buf, 1000, &val, &val2);
+	ret = iio_str_to_fixpoint(buf, 100, &val, &val2);
 	if (ret)
 		return ret;
 
@@ -571,7 +572,7 @@ static const struct iio_chan_spec_ext_info ad7280_cell_ext_info[] = {
 		.write = ad7280_store_balance_timer,
 		.shared = IIO_SEPARATE,
 	},
-	{}
+	{ }
 };
 
 static const struct iio_event_spec ad7280_events[] = {
@@ -803,16 +804,16 @@ static irqreturn_t ad7280_event_handler(int irq, void *private)
 {
 	struct iio_dev *indio_dev = private;
 	struct ad7280_state *st = iio_priv(indio_dev);
-	unsigned int *channels;
 	int i, ret;
 
-	channels = kcalloc(st->scan_cnt, sizeof(*channels), GFP_KERNEL);
+	unsigned int *channels __free(kfree) = kcalloc(st->scan_cnt, sizeof(*channels),
+						       GFP_KERNEL);
 	if (!channels)
 		return IRQ_HANDLED;
 
 	ret = ad7280_read_all_channels(st, st->scan_cnt, channels);
 	if (ret < 0)
-		goto out;
+		return IRQ_HANDLED;
 
 	for (i = 0; i < st->scan_cnt; i++) {
 		unsigned int val;
@@ -821,17 +822,15 @@ static irqreturn_t ad7280_event_handler(int irq, void *private)
 		if (FIELD_GET(AD7280A_TRANS_READ_CONV_CHANADDR_MSK, channels[i]) <=
 		    AD7280A_CELL_VOLTAGE_6_REG) {
 			if (val >= st->cell_threshhigh) {
-				u64 tmp = IIO_EVENT_CODE(IIO_VOLTAGE, 1, 0,
-							 IIO_EV_DIR_RISING,
-							 IIO_EV_TYPE_THRESH,
-							 0, 0, 0);
+				u64 tmp = IIO_DIFF_EVENT_CODE(IIO_VOLTAGE, 0, 0,
+							IIO_EV_TYPE_THRESH,
+							IIO_EV_DIR_RISING);
 				iio_push_event(indio_dev, tmp,
 					       iio_get_time_ns(indio_dev));
 			} else if (val <= st->cell_threshlow) {
-				u64 tmp = IIO_EVENT_CODE(IIO_VOLTAGE, 1, 0,
-							 IIO_EV_DIR_FALLING,
-							 IIO_EV_TYPE_THRESH,
-							 0, 0, 0);
+				u64 tmp = IIO_DIFF_EVENT_CODE(IIO_VOLTAGE, 0, 0,
+							IIO_EV_TYPE_THRESH,
+							IIO_EV_DIR_FALLING);
 				iio_push_event(indio_dev, tmp,
 					       iio_get_time_ns(indio_dev));
 			}
@@ -851,9 +850,6 @@ static irqreturn_t ad7280_event_handler(int irq, void *private)
 			}
 		}
 	}
-
-out:
-	kfree(channels);
 
 	return IRQ_HANDLED;
 }
@@ -1028,7 +1024,9 @@ static int ad7280_probe(struct spi_device *spi)
 
 	st->spi->max_speed_hz = AD7280A_MAX_SPI_CLK_HZ;
 	st->spi->mode = SPI_MODE_1;
-	spi_setup(st->spi);
+	ret = spi_setup(st->spi);
+	if (ret < 0)
+		return ret;
 
 	st->ctrl_lb = FIELD_PREP(AD7280A_CTRL_LB_ACQ_TIME_MSK, st->acquisition_time) |
 		FIELD_PREP(AD7280A_CTRL_LB_THERMISTOR_MSK, st->thermistor_term_en);
@@ -1092,8 +1090,8 @@ static int ad7280_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id ad7280_id[] = {
-	{"ad7280a", 0},
-	{}
+	{ "ad7280a", 0 },
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad7280_id);
 

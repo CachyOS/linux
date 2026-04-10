@@ -15,11 +15,14 @@
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_edid.h>
 #include <drm/drm_fb_helper.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_plane_helper.h>
+#include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 
 #include "hgsmi_channels.h"
@@ -260,15 +263,15 @@ static int vbox_primary_atomic_check(struct drm_plane *plane,
 	struct drm_crtc_state *crtc_state = NULL;
 
 	if (new_state->crtc) {
-		crtc_state = drm_atomic_get_existing_crtc_state(state,
-								new_state->crtc);
+		crtc_state = drm_atomic_get_new_crtc_state(state,
+							   new_state->crtc);
 		if (WARN_ON(!crtc_state))
 			return -EINVAL;
 	}
 
 	return drm_atomic_helper_check_plane_state(new_state, crtc_state,
-						   DRM_PLANE_HELPER_NO_SCALING,
-						   DRM_PLANE_HELPER_NO_SCALING,
+						   DRM_PLANE_NO_SCALING,
+						   DRM_PLANE_NO_SCALING,
 						   false, true);
 }
 
@@ -342,15 +345,15 @@ static int vbox_cursor_atomic_check(struct drm_plane *plane,
 	int ret;
 
 	if (new_state->crtc) {
-		crtc_state = drm_atomic_get_existing_crtc_state(state,
-								new_state->crtc);
+		crtc_state = drm_atomic_get_new_crtc_state(state,
+							   new_state->crtc);
 		if (WARN_ON(!crtc_state))
 			return -EINVAL;
 	}
 
 	ret = drm_atomic_helper_check_plane_state(new_state, crtc_state,
-						  DRM_PLANE_HELPER_NO_SCALING,
-						  DRM_PLANE_HELPER_NO_SCALING,
+						  DRM_PLANE_NO_SCALING,
+						  DRM_PLANE_NO_SCALING,
 						  true, true);
 	if (ret)
 		return ret;
@@ -427,8 +430,8 @@ static void vbox_cursor_atomic_update(struct drm_plane *plane,
 	flags = VBOX_MOUSE_POINTER_VISIBLE | VBOX_MOUSE_POINTER_SHAPE |
 		VBOX_MOUSE_POINTER_ALPHA;
 	hgsmi_update_pointer_shape(vbox->guest_pool, flags,
-				   min_t(u32, max(fb->hot_x, 0), width),
-				   min_t(u32, max(fb->hot_y, 0), height),
+				   min_t(u32, max(new_state->hotspot_x, 0), width),
+				   min_t(u32, max(new_state->hotspot_y, 0), height),
 				   width, height, vbox->cursor_data, data_size);
 
 	mutex_unlock(&vbox->hw_mutex);
@@ -475,7 +478,7 @@ static const struct drm_plane_helper_funcs vbox_cursor_helper_funcs = {
 static const struct drm_plane_funcs vbox_cursor_plane_funcs = {
 	.update_plane	= drm_atomic_helper_update_plane,
 	.disable_plane	= drm_atomic_helper_disable_plane,
-	.destroy	= drm_primary_helper_destroy,
+	.destroy	= drm_plane_helper_destroy,
 	DRM_GEM_SHADOW_PLANE_FUNCS,
 };
 
@@ -494,7 +497,7 @@ static const struct drm_plane_helper_funcs vbox_primary_helper_funcs = {
 static const struct drm_plane_funcs vbox_primary_plane_funcs = {
 	.update_plane	= drm_atomic_helper_update_plane,
 	.disable_plane	= drm_atomic_helper_disable_plane,
-	.destroy	= drm_primary_helper_destroy,
+	.destroy	= drm_plane_helper_destroy,
 	.reset		= drm_atomic_helper_plane_reset,
 	.atomic_duplicate_state = drm_atomic_helper_plane_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_plane_destroy_state,
@@ -525,7 +528,7 @@ static struct drm_plane *vbox_create_plane(struct vbox_private *vbox,
 		return ERR_PTR(-EINVAL);
 	}
 
-	plane = kzalloc(sizeof(*plane), GFP_KERNEL);
+	plane = kzalloc_obj(*plane);
 	if (!plane)
 		return ERR_PTR(-ENOMEM);
 
@@ -559,7 +562,7 @@ static struct vbox_crtc *vbox_crtc_init(struct drm_device *dev, unsigned int i)
 	if (ret)
 		return ERR_PTR(ret);
 
-	vbox_crtc = kzalloc(sizeof(*vbox_crtc), GFP_KERNEL);
+	vbox_crtc = kzalloc_obj(*vbox_crtc);
 	if (!vbox_crtc)
 		return ERR_PTR(-ENOMEM);
 
@@ -619,7 +622,7 @@ static struct drm_encoder *vbox_encoder_init(struct drm_device *dev,
 {
 	struct vbox_encoder *vbox_encoder;
 
-	vbox_encoder = kzalloc(sizeof(*vbox_encoder), GFP_KERNEL);
+	vbox_encoder = kzalloc_obj(*vbox_encoder);
 	if (!vbox_encoder)
 		return NULL;
 
@@ -805,7 +808,7 @@ static int vbox_connector_init(struct drm_device *dev,
 	struct vbox_connector *vbox_connector;
 	struct drm_connector *connector;
 
-	vbox_connector = kzalloc(sizeof(*vbox_connector), GFP_KERNEL);
+	vbox_connector = kzalloc_obj(*vbox_connector);
 	if (!vbox_connector)
 		return -ENOMEM;
 

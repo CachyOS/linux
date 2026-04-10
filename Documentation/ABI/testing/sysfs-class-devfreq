@@ -52,6 +52,9 @@ Description:
 
 			echo 0 > /sys/class/devfreq/.../trans_stat
 
+		If the transition table is bigger than PAGE_SIZE, reading
+		this will return an -EFBIG error.
+
 What:		/sys/class/devfreq/.../available_frequencies
 Date:		October 2012
 Contact:	Nishanth Menon <nm@ti.com>
@@ -129,3 +132,12 @@ Description:
 
 		A list of governors that support the node:
 		- simple_ondemand
+
+What:		/sys/class/devfreq/.../related_cpus
+Date:		June 2025
+Contact:	Linux power management list <linux-pm@vger.kernel.org>
+Description:	The list of CPUs whose performance is closely related to the
+		frequency of this devfreq domain.
+
+		This file is only present if a specific devfreq device is
+		closely associated with a subset of CPUs.

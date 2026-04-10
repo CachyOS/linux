@@ -160,8 +160,8 @@ int hvcs_get_partner_info(uint32_t unit_address, struct list_head *head,
 
 		/* This is a very small struct and will be freed soon in
 		 * hvcs_free_partner_info(). */
-		next_partner_info = kmalloc(sizeof(struct hvcs_partner_info),
-				GFP_ATOMIC);
+		next_partner_info = kmalloc_obj(struct hvcs_partner_info,
+						GFP_ATOMIC);
 
 		if (!next_partner_info) {
 			printk(KERN_WARNING "HVCONSOLE: kmalloc() failed to"
@@ -176,7 +176,7 @@ int hvcs_get_partner_info(uint32_t unit_address, struct list_head *head,
 			= (unsigned int)last_p_partition_ID;
 
 		/* copy the Null-term char too */
-		strlcpy(&next_partner_info->location_code[0],
+		strscpy(&next_partner_info->location_code[0],
 			(char *)&pi_buff[2],
 			sizeof(next_partner_info->location_code));
 

@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Kernel Debugger Architecture Independent Stack Traceback
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  *
  * Copyright (c) 1999-2004 Silicon Graphics, Inc.  All Rights Reserved.
  * Copyright (c) 2009 Wind River Systems, Inc.  All Rights Reserved.
@@ -144,7 +141,7 @@ kdb_bt(int argc, const char **argv)
 			kdb_ps_suppressed();
 		/* Run the active tasks first */
 		for_each_online_cpu(cpu) {
-			p = kdb_curr_task(cpu);
+			p = curr_task(cpu);
 			if (kdb_bt1(p, mask, btaprompt))
 				return 0;
 		}

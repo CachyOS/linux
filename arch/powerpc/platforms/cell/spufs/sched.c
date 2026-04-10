@@ -508,7 +508,7 @@ static void __spu_del_from_rq(struct spu_context *ctx)
 
 	if (!list_empty(&ctx->rq)) {
 		if (!--spu_prio->nr_waiting)
-			del_timer(&spusched_timer);
+			timer_delete(&spusched_timer);
 		list_del_init(&ctx->rq);
 
 		if (list_empty(&spu_prio->runq[prio]))
@@ -868,7 +868,7 @@ static int __spu_deactivate(struct spu_context *ctx, int force, int max_prio)
 }
 
 /**
- * spu_deactivate - unbind a context from it's physical spu
+ * spu_deactivate - unbind a context from its physical spu
  * @ctx:	spu context to unbind
  *
  * Unbind @ctx from the physical spu it is running on and schedule
@@ -1082,7 +1082,7 @@ int __init spu_sched_init(void)
 	struct proc_dir_entry *entry;
 	int err = -ENOMEM, i;
 
-	spu_prio = kzalloc(sizeof(struct spu_prio_array), GFP_KERNEL);
+	spu_prio = kzalloc_obj(struct spu_prio_array);
 	if (!spu_prio)
 		goto out;
 
@@ -1126,8 +1126,8 @@ void spu_sched_exit(void)
 
 	remove_proc_entry("spu_loadavg", NULL);
 
-	del_timer_sync(&spusched_timer);
-	del_timer_sync(&spuloadavg_timer);
+	timer_delete_sync(&spusched_timer);
+	timer_delete_sync(&spuloadavg_timer);
 	kthread_stop(spusched_task);
 
 	for (node = 0; node < MAX_NUMNODES; node++) {

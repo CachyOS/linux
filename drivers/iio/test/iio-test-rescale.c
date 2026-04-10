@@ -29,7 +29,7 @@ struct rescale_tc_data {
 	const char *expected_off;
 };
 
-const struct rescale_tc_data scale_cases[] = {
+static const struct rescale_tc_data scale_cases[] = {
 	/*
 	 * Typical use cases
 	 */
@@ -477,7 +477,7 @@ const struct rescale_tc_data scale_cases[] = {
 	},
 };
 
-const struct rescale_tc_data offset_cases[] = {
+static const struct rescale_tc_data offset_cases[] = {
 	/*
 	 * Typical use cases
 	 */
@@ -652,6 +652,8 @@ static void iio_rescale_test_scale(struct kunit *test)
 	int rel_ppm;
 	int ret;
 
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, buff);
+
 	rescale.numerator = t->numerator;
 	rescale.denominator = t->denominator;
 	rescale.offset = t->offset;
@@ -681,6 +683,8 @@ static void iio_rescale_test_offset(struct kunit *test)
 	int values[2];
 	int ret;
 
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, buff_off);
+
 	rescale.numerator = t->numerator;
 	rescale.denominator = t->denominator;
 	rescale.offset = t->offset;
@@ -700,7 +704,7 @@ static void iio_rescale_test_offset(struct kunit *test)
 static struct kunit_case iio_rescale_test_cases[] = {
 	KUNIT_CASE_PARAM(iio_rescale_test_scale, iio_rescale_scale_gen_params),
 	KUNIT_CASE_PARAM(iio_rescale_test_offset, iio_rescale_offset_gen_params),
-	{}
+	{ }
 };
 
 static struct kunit_suite iio_rescale_test_suite = {
@@ -708,3 +712,8 @@ static struct kunit_suite iio_rescale_test_suite = {
 	.test_cases = iio_rescale_test_cases,
 };
 kunit_test_suite(iio_rescale_test_suite);
+
+MODULE_AUTHOR("Liam Beguin <liambeguin@gmail.com>");
+MODULE_DESCRIPTION("Test IIO rescale conversion functions");
+MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS("IIO_RESCALE");

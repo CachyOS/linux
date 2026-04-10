@@ -6,7 +6,7 @@
  * Copyright (C) 2022 Luca Ceresoli
  *
  * Author: Laxman Dewangan <ldewangan@nvidia.com>
- * Author: Luca Ceresoli <luca@lucaceresoli.net>
+ * Author: Luca Ceresoli <luca.ceresoli@bootlin.com>
  */
 
 #include <linux/err.h>
@@ -25,7 +25,6 @@ static bool nowayout = WATCHDOG_NOWAYOUT;
 
 /**
  * struct max77620_variant - Data specific to a chip variant
- * @wdt_info:            watchdog descriptor
  * @reg_onoff_cnfg2:     ONOFF_CNFG2 register offset
  * @reg_cnfg_glbl2:      CNFG_GLBL2 register offset
  * @reg_cnfg_glbl3:      CNFG_GLBL3 register offset
@@ -260,5 +259,5 @@ MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started "
 	"(default=" __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
 MODULE_AUTHOR("Laxman Dewangan <ldewangan@nvidia.com>");
-MODULE_AUTHOR("Luca Ceresoli <luca@lucaceresoli.net>");
+MODULE_AUTHOR("Luca Ceresoli <luca.ceresoli@bootlin.com>");
 MODULE_LICENSE("GPL v2");

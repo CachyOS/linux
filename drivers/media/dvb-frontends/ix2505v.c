@@ -267,7 +267,7 @@ struct dvb_frontend *ix2505v_attach(struct dvb_frontend *fe,
 		goto error;
 	}
 
-	state = kzalloc(sizeof(struct ix2505v_state), GFP_KERNEL);
+	state = kzalloc_obj(struct ix2505v_state);
 	if (NULL == state)
 		return NULL;
 
@@ -302,7 +302,7 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(ix2505v_attach);
+EXPORT_SYMBOL_GPL(ix2505v_attach);
 
 module_param_named(debug, ix2505v_debug, int, 0644);
 MODULE_PARM_DESC(debug, "Turn on/off frontend debugging (default:off).");

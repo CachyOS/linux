@@ -12,7 +12,6 @@
 #include <linux/regulator/consumer.h>
 #include <linux/acpi.h>
 #include <linux/of.h>
-#include <linux/of_gpio.h>
 #include <linux/slab.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -23,17 +22,24 @@
 
 #include "tlv320adcx140.h"
 
+static const char *const adcx140_supply_names[] = {
+	"avdd",
+	"iovdd",
+};
+
+#define ADCX140_NUM_SUPPLIES ARRAY_SIZE(adcx140_supply_names)
+
 struct adcx140_priv {
-	struct snd_soc_component *component;
 	struct regulator *supply_areg;
+	struct regulator_bulk_data supplies[ADCX140_NUM_SUPPLIES];
 	struct gpio_desc *gpio_reset;
 	struct regmap *regmap;
 	struct device *dev;
 
 	bool micbias_vg;
+	bool phase_calib_on;
 
 	unsigned int dai_fmt;
-	unsigned int tdm_delay;
 	unsigned int slot_width;
 };
 
@@ -123,6 +129,34 @@ static const struct reg_default adcx140_reg_defaults[] = {
 	{ ADCX140_DEV_STS1, 0x80 },
 };
 
+static const struct regmap_range adcx140_wr_ranges[] = {
+	regmap_reg_range(ADCX140_PAGE_SELECT, ADCX140_SLEEP_CFG),
+	regmap_reg_range(ADCX140_SHDN_CFG, ADCX140_SHDN_CFG),
+	regmap_reg_range(ADCX140_ASI_CFG0, ADCX140_ASI_CFG2),
+	regmap_reg_range(ADCX140_ASI_CH1, ADCX140_MST_CFG1),
+	regmap_reg_range(ADCX140_CLK_SRC, ADCX140_CLK_SRC),
+	regmap_reg_range(ADCX140_PDMCLK_CFG, ADCX140_GPO_CFG3),
+	regmap_reg_range(ADCX140_GPO_VAL, ADCX140_GPO_VAL),
+	regmap_reg_range(ADCX140_GPI_CFG0, ADCX140_GPI_CFG1),
+	regmap_reg_range(ADCX140_GPI_MON, ADCX140_GPI_MON),
+	regmap_reg_range(ADCX140_INT_CFG, ADCX140_INT_MASK0),
+	regmap_reg_range(ADCX140_BIAS_CFG, ADCX140_CH4_CFG4),
+	regmap_reg_range(ADCX140_CH5_CFG2, ADCX140_CH5_CFG4),
+	regmap_reg_range(ADCX140_CH6_CFG2, ADCX140_CH6_CFG4),
+	regmap_reg_range(ADCX140_CH7_CFG2, ADCX140_CH7_CFG4),
+	regmap_reg_range(ADCX140_CH8_CFG2, ADCX140_CH8_CFG4),
+	regmap_reg_range(ADCX140_DSP_CFG0, ADCX140_DRE_CFG0),
+	regmap_reg_range(ADCX140_AGC_CFG0, ADCX140_AGC_CFG0),
+	regmap_reg_range(ADCX140_IN_CH_EN, ADCX140_PWR_CFG),
+	regmap_reg_range(ADCX140_PHASE_CALIB, ADCX140_PHASE_CALIB),
+	regmap_reg_range(0x7e, 0x7e),
+};
+
+static const struct regmap_access_table adcx140_wr_table = {
+	.yes_ranges = adcx140_wr_ranges,
+	.n_yes_ranges = ARRAY_SIZE(adcx140_wr_ranges),
+};
+
 static const struct regmap_range_cfg adcx140_ranges[] = {
 	{
 		.range_min = 0,
@@ -158,6 +192,7 @@ static const struct regmap_config adcx140_i2c_regmap = {
 	.num_ranges = ARRAY_SIZE(adcx140_ranges),
 	.max_register = 12 * 128,
 	.volatile_reg = adcx140_volatile,
+	.wr_table = &adcx140_wr_table,
 };
 
 /* Digital Volume control. From -100 to 27 dB in 0.5 dB steps */
@@ -186,6 +221,13 @@ static SOC_ENUM_SINGLE_DECL(decimation_filter_enum, ADCX140_DSP_CFG0, 4,
 static const struct snd_kcontrol_new decimation_filter_controls[] = {
 	SOC_DAPM_ENUM("Decimation Filter", decimation_filter_enum),
 };
+
+static const char * const channel_summation_text[] = {
+	"Disabled", "2 Channel", "4 Channel"
+};
+
+static SOC_ENUM_SINGLE_DECL(channel_summation_enum, ADCX140_DSP_CFG0, 2,
+			    channel_summation_text);
 
 static const char * const pdmclk_text[] = {
 	"2.8224 MHz", "1.4112 MHz", "705.6 kHz", "5.6448 MHz"
@@ -339,7 +381,7 @@ static const struct snd_kcontrol_new adcx140_dapm_ch4_dre_en_switch =
 	SOC_DAPM_SINGLE("Switch", ADCX140_CH4_CFG0, 0, 1, 0);
 
 static const struct snd_kcontrol_new adcx140_dapm_dre_en_switch =
-	SOC_DAPM_SINGLE("Switch", ADCX140_DSP_CFG1, 3, 1, 0);
+	SOC_DAPM_SINGLE("Switch", ADCX140_DSP_CFG1, 3, 1, 1);
 
 /* Output Mixer */
 static const struct snd_kcontrol_new adcx140_output_mixer_controls[] = {
@@ -593,6 +635,50 @@ static const struct snd_soc_dapm_route adcx140_audio_map[] = {
 	{"MIC4M Input Mux", "Digital", "MIC4M"},
 };
 
+#define ADCX140_PHASE_CALIB_SWITCH(xname) {\
+	.iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = (xname), \
+	.access = SNDRV_CTL_ELEM_ACCESS_READWRITE,\
+	.info = adcx140_phase_calib_info, \
+	.get = adcx140_phase_calib_get, \
+	.put = adcx140_phase_calib_put}
+
+static int adcx140_phase_calib_info(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_info *uinfo)
+{
+	uinfo->type = SNDRV_CTL_ELEM_TYPE_BOOLEAN;
+	uinfo->count = 1;
+	uinfo->value.integer.min = 0;
+	uinfo->value.integer.max = 1;
+	return 0;
+}
+
+static int adcx140_phase_calib_get(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *value)
+{
+	struct snd_soc_component *codec = snd_kcontrol_chip(kcontrol);
+	struct adcx140_priv *adcx140 = snd_soc_component_get_drvdata(codec);
+
+	value->value.integer.value[0] = adcx140->phase_calib_on ? 1 : 0;
+
+
+	return 0;
+}
+
+static int adcx140_phase_calib_put(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *value)
+{
+	struct snd_soc_component *codec = snd_kcontrol_chip(kcontrol);
+	struct adcx140_priv *adcx140 = snd_soc_component_get_drvdata(codec);
+
+	bool v = value->value.integer.value[0] ? true : false;
+
+	if (adcx140->phase_calib_on != v) {
+		adcx140->phase_calib_on = v;
+		return 1;
+	}
+	return 0;
+}
+
 static const struct snd_kcontrol_new adcx140_snd_controls[] = {
 	SOC_SINGLE_TLV("Analog CH1 Mic Gain Volume", ADCX140_CH1_CFG1, 2, 42, 0,
 			adc_tlv),
@@ -629,6 +715,11 @@ static const struct snd_kcontrol_new adcx140_snd_controls[] = {
 			0, 0xff, 0, dig_vol_tlv),
 	SOC_SINGLE_TLV("Digital CH8 Out Volume", ADCX140_CH8_CFG2,
 			0, 0xff, 0, dig_vol_tlv),
+	ADCX140_PHASE_CALIB_SWITCH("Phase Calibration Switch"),
+
+	SOC_SINGLE("Biquads Per Channel", ADCX140_DSP_CFG1, 5, 3, 0),
+
+	SOC_ENUM("Channel Summation", channel_summation_enum),
 };
 
 static int adcx140_reset(struct adcx140_priv *adcx140)
@@ -654,12 +745,21 @@ static int adcx140_reset(struct adcx140_priv *adcx140)
 static void adcx140_pwr_ctrl(struct adcx140_priv *adcx140, bool power_state)
 {
 	int pwr_ctrl = 0;
+	int ret = 0;
 
 	if (power_state)
 		pwr_ctrl = ADCX140_PWR_CFG_ADC_PDZ | ADCX140_PWR_CFG_PLL_PDZ;
 
 	if (adcx140->micbias_vg && power_state)
 		pwr_ctrl |= ADCX140_PWR_CFG_BIAS_PDZ;
+
+	if (pwr_ctrl) {
+		ret = regmap_write(adcx140->regmap, ADCX140_PHASE_CALIB,
+			adcx140->phase_calib_on ? 0x00 : 0x40);
+		if (ret)
+			dev_err(adcx140->dev, "%s: register write error %d\n",
+				__func__, ret);
+	}
 
 	regmap_update_bits(adcx140->regmap, ADCX140_PWR_CFG,
 			   ADCX140_PWR_CTRL_MSK, pwr_ctrl);
@@ -673,7 +773,7 @@ static int adcx140_hw_params(struct snd_pcm_substream *substream,
 	struct adcx140_priv *adcx140 = snd_soc_component_get_drvdata(component);
 	u8 data = 0;
 
-	switch (params_width(params)) {
+	switch (params_physical_width(params)) {
 	case 16:
 		data = ADCX140_16_BIT_WORD;
 		break;
@@ -688,7 +788,7 @@ static int adcx140_hw_params(struct snd_pcm_substream *substream,
 		break;
 	default:
 		dev_err(component->dev, "%s: Unsupported width %d\n",
-			__func__, params_width(params));
+			__func__, params_physical_width(params));
 		return -EINVAL;
 	}
 
@@ -713,16 +813,14 @@ static int adcx140_set_dai_fmt(struct snd_soc_dai *codec_dai,
 	bool inverted_bclk = false;
 
 	/* set master/slave audio interface */
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_CBP_CFP:
 		iface_reg2 |= ADCX140_BCLK_FSYNC_MASTER;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		break;
-	case SND_SOC_DAIFMT_CBS_CFM:
-	case SND_SOC_DAIFMT_CBM_CFS:
 	default:
-		dev_err(component->dev, "Invalid DAI master/slave interface\n");
+		dev_err(component->dev, "Invalid DAI clock provider\n");
 		return -EINVAL;
 	}
 
@@ -792,12 +890,13 @@ static int adcx140_set_dai_tdm_slot(struct snd_soc_dai *codec_dai,
 {
 	struct snd_soc_component *component = codec_dai->component;
 	struct adcx140_priv *adcx140 = snd_soc_component_get_drvdata(component);
-	unsigned int lsb;
 
-	/* TDM based on DSP mode requires slots to be adjacent */
-	lsb = __ffs(tx_mask);
-	if ((lsb + 1) != __fls(tx_mask)) {
-		dev_err(component->dev, "Invalid mask, slots must be adjacent\n");
+	/*
+	 * The chip itself supports arbitrary masks, but the driver currently
+	 * only supports adjacent slots beginning at the first slot.
+	 */
+	if (tx_mask != GENMASK(__fls(tx_mask), 0)) {
+		dev_err(component->dev, "Only lower adjacent slots are supported\n");
 		return -EINVAL;
 	}
 
@@ -812,7 +911,6 @@ static int adcx140_set_dai_tdm_slot(struct snd_soc_dai *codec_dai,
 		return -EINVAL;
 	}
 
-	adcx140->tdm_delay = lsb;
 	adcx140->slot_width = slot_width;
 
 	return 0;
@@ -870,7 +968,7 @@ static int adcx140_configure_gpio(struct adcx140_priv *adcx140)
 
 	gpio_count = device_property_count_u32(adcx140->dev,
 			"ti,gpio-config");
-	if (gpio_count == 0)
+	if (gpio_count <= 0)
 		return 0;
 
 	if (gpio_count != ADCX140_NUM_GPIO_CFGS)
@@ -1023,19 +1121,91 @@ out:
 	return ret;
 }
 
+static int adcx140_pwr_off(struct adcx140_priv *adcx140)
+{
+	int ret;
+
+	regcache_cache_only(adcx140->regmap, true);
+	regcache_mark_dirty(adcx140->regmap);
+
+	/* Assert the reset GPIO */
+	gpiod_set_value_cansleep(adcx140->gpio_reset, 0);
+
+	/*
+	 * Datasheet - TLV320ADC3140 Rev. B, TLV320ADC5140 Rev. A,
+	 * TLV320ADC6140 Rev. A 8.4.1:
+	 * wait for hw shutdown (25ms) + >= 1ms
+	 */
+	usleep_range(30000, 100000);
+
+	/* Power off the regulators, `avdd` and `iovdd` */
+	ret = regulator_bulk_disable(ARRAY_SIZE(adcx140->supplies),
+				     adcx140->supplies);
+	if (ret) {
+		dev_err(adcx140->dev, "Failed to disable supplies: %d\n", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int adcx140_pwr_on(struct adcx140_priv *adcx140)
+{
+	int ret;
+
+	/* Power on the regulators, `avdd` and `iovdd` */
+	ret = regulator_bulk_enable(ARRAY_SIZE(adcx140->supplies),
+					adcx140->supplies);
+	if (ret) {
+		dev_err(adcx140->dev, "Failed to enable supplies: %d\n", ret);
+		return ret;
+	}
+
+	/* De-assert the reset GPIO */
+	gpiod_set_value_cansleep(adcx140->gpio_reset, 1);
+
+	/*
+	 * Datasheet - TLV320ADC3140 Rev. B, TLV320ADC5140 Rev. A,
+	 * TLV320ADC6140 Rev. A 8.4.2:
+	 * wait >= 10 ms after entering sleep mode.
+	 */
+	usleep_range(10000, 100000);
+
+	regcache_cache_only(adcx140->regmap, false);
+
+	/* Flush the regcache */
+	ret = regcache_sync(adcx140->regmap);
+	if (ret) {
+		dev_err(adcx140->dev, "Failed to restore register map: %d\n",
+			ret);
+		return  ret;
+	}
+
+	return 0;
+}
+
 static int adcx140_set_bias_level(struct snd_soc_component *component,
 				  enum snd_soc_bias_level level)
 {
 	struct adcx140_priv *adcx140 = snd_soc_component_get_drvdata(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	enum snd_soc_bias_level prev_level = snd_soc_dapm_get_bias_level(dapm);
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
 	case SND_SOC_BIAS_PREPARE:
+		if (prev_level == SND_SOC_BIAS_STANDBY)
+			adcx140_pwr_ctrl(adcx140, true);
+		break;
 	case SND_SOC_BIAS_STANDBY:
-		adcx140_pwr_ctrl(adcx140, true);
+		if (prev_level == SND_SOC_BIAS_PREPARE)
+			adcx140_pwr_ctrl(adcx140, false);
+		if (prev_level == SND_SOC_BIAS_OFF)
+			return adcx140_pwr_on(adcx140);
 		break;
 	case SND_SOC_BIAS_OFF:
-		adcx140_pwr_ctrl(adcx140, false);
+		if (prev_level == SND_SOC_BIAS_STANDBY)
+			return adcx140_pwr_off(adcx140);
 		break;
 	}
 
@@ -1055,7 +1225,6 @@ static const struct snd_soc_component_driver soc_codec_driver_adcx140 = {
 	.idle_bias_on		= 0,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static struct snd_soc_dai_driver adcx140_dai_driver[] = {
@@ -1099,11 +1268,25 @@ static int adcx140_i2c_probe(struct i2c_client *i2c)
 	if (!adcx140)
 		return -ENOMEM;
 
+	adcx140->phase_calib_on = false;
 	adcx140->dev = &i2c->dev;
+
+	for (int i = 0; i < ADCX140_NUM_SUPPLIES; i++)
+		adcx140->supplies[i].supply = adcx140_supply_names[i];
+
+	ret = devm_regulator_bulk_get(&i2c->dev, ADCX140_NUM_SUPPLIES,
+				 adcx140->supplies);
+	if (ret) {
+		dev_err_probe(&i2c->dev, ret, "Failed to request supplies\n");
+		return ret;
+	}
 
 	adcx140->gpio_reset = devm_gpiod_get_optional(adcx140->dev,
 						      "reset", GPIOD_OUT_LOW);
 	if (IS_ERR(adcx140->gpio_reset))
+		return dev_err_probe(&i2c->dev, PTR_ERR(adcx140->gpio_reset),
+				     "Failed to get Reset GPIO\n");
+	if (!adcx140->gpio_reset)
 		dev_info(&i2c->dev, "Reset GPIO not defined\n");
 
 	adcx140->supply_areg = devm_regulator_get_optional(adcx140->dev,
@@ -1133,6 +1316,8 @@ static int adcx140_i2c_probe(struct i2c_client *i2c)
 		return ret;
 	}
 
+	regcache_cache_only(adcx140->regmap, true);
+
 	i2c_set_clientdata(i2c, adcx140);
 
 	return devm_snd_soc_register_component(&i2c->dev,
@@ -1153,7 +1338,7 @@ static struct i2c_driver adcx140_i2c_driver = {
 		.name	= "tlv320adcx140-codec",
 		.of_match_table = of_match_ptr(tlv320adcx140_of_match),
 	},
-	.probe_new	= adcx140_i2c_probe,
+	.probe		= adcx140_i2c_probe,
 	.id_table	= adcx140_i2c_id,
 };
 module_i2c_driver(adcx140_i2c_driver);

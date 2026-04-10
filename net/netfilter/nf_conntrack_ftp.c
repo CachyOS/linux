@@ -33,10 +33,6 @@ MODULE_AUTHOR("Rusty Russell <rusty@rustcorp.com.au>");
 MODULE_DESCRIPTION("ftp connection tracking helper");
 MODULE_ALIAS("ip_conntrack_ftp");
 MODULE_ALIAS_NFCT_HELPER(HELPER_NAME);
-
-/* This is slow, but it's simple. --RR */
-static char *ftp_buffer;
-
 static DEFINE_SPINLOCK(nf_ftp_lock);
 
 #define MAX_PORTS 8
@@ -47,13 +43,13 @@ module_param_array(ports, ushort, &ports_c, 0400);
 static bool loose;
 module_param(loose, bool, 0600);
 
-unsigned int (*nf_nat_ftp_hook)(struct sk_buff *skb,
-				enum ip_conntrack_info ctinfo,
-				enum nf_ct_ftp_type type,
-				unsigned int protoff,
-				unsigned int matchoff,
-				unsigned int matchlen,
-				struct nf_conntrack_expect *exp);
+unsigned int (__rcu *nf_nat_ftp_hook)(struct sk_buff *skb,
+				      enum ip_conntrack_info ctinfo,
+				      enum nf_ct_ftp_type type,
+				      unsigned int protoff,
+				      unsigned int matchoff,
+				      unsigned int matchlen,
+				      struct nf_conntrack_expect *exp);
 EXPORT_SYMBOL_GPL(nf_nat_ftp_hook);
 
 static int try_rfc959(const char *, size_t, struct nf_conntrack_man *,
@@ -398,6 +394,9 @@ static int help(struct sk_buff *skb,
 		return NF_ACCEPT;
 	}
 
+	if (unlikely(skb_linearize(skb)))
+		return NF_DROP;
+
 	th = skb_header_pointer(skb, protoff, sizeof(_tcph), &_tcph);
 	if (th == NULL)
 		return NF_ACCEPT;
@@ -411,12 +410,9 @@ static int help(struct sk_buff *skb,
 	}
 	datalen = skb->len - dataoff;
 
+	/* seqadj (nat) uses ct->lock internally, nf_nat_ftp would cause deadlock */
 	spin_lock_bh(&nf_ftp_lock);
-	fb_ptr = skb_header_pointer(skb, dataoff, datalen, ftp_buffer);
-	if (!fb_ptr) {
-		spin_unlock_bh(&nf_ftp_lock);
-		return NF_ACCEPT;
-	}
+	fb_ptr = skb->data + dataoff;
 
 	ends_in_nl = (fb_ptr[datalen - 1] == '\n');
 	seq = ntohl(th->seq) + datalen;
@@ -571,7 +567,6 @@ static const struct nf_conntrack_expect_policy ftp_exp_policy = {
 static void __exit nf_conntrack_ftp_fini(void)
 {
 	nf_conntrack_helpers_unregister(ftp, ports_c * 2);
-	kfree(ftp_buffer);
 }
 
 static int __init nf_conntrack_ftp_init(void)
@@ -579,10 +574,6 @@ static int __init nf_conntrack_ftp_init(void)
 	int i, ret = 0;
 
 	NF_CT_HELPER_BUILD_BUG_ON(sizeof(struct nf_ct_ftp_master));
-
-	ftp_buffer = kmalloc(65536, GFP_KERNEL);
-	if (!ftp_buffer)
-		return -ENOMEM;
 
 	if (ports_c == 0)
 		ports[ports_c++] = FTP_PORT;
@@ -603,7 +594,6 @@ static int __init nf_conntrack_ftp_init(void)
 	ret = nf_conntrack_helpers_register(ftp, ports_c * 2);
 	if (ret < 0) {
 		pr_err("failed to register helpers\n");
-		kfree(ftp_buffer);
 		return ret;
 	}
 

@@ -547,8 +547,6 @@ static int ov9640_set_fmt(struct v4l2_subdev *sd,
 	if (format->which == V4L2_SUBDEV_FORMAT_ACTIVE)
 		return ov9640_s_fmt(sd, mf);
 
-	sd_state->pads->try_fmt = *mf;
-
 	return 0;
 }
 
@@ -682,8 +680,7 @@ static const struct v4l2_subdev_ops ov9640_subdev_ops = {
 /*
  * i2c_driver function
  */
-static int ov9640_probe(struct i2c_client *client,
-			const struct i2c_device_id *did)
+static int ov9640_probe(struct i2c_client *client)
 {
 	struct ov9640_priv *priv;
 	int ret;
@@ -721,9 +718,10 @@ static int ov9640_probe(struct i2c_client *client,
 
 	priv->subdev.ctrl_handler = &priv->hdl;
 
-	priv->clk = devm_clk_get(&client->dev, "mclk");
+	priv->clk = devm_v4l2_sensor_clk_get(&client->dev, "mclk");
 	if (IS_ERR(priv->clk)) {
-		ret = PTR_ERR(priv->clk);
+		ret = dev_err_probe(&client->dev, PTR_ERR(priv->clk),
+				    "failed to get mclk\n");
 		goto ectrlinit;
 	}
 
@@ -744,19 +742,17 @@ ectrlinit:
 	return ret;
 }
 
-static int ov9640_remove(struct i2c_client *client)
+static void ov9640_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov9640_priv *priv = to_ov9640_sensor(sd);
 
 	v4l2_async_unregister_subdev(&priv->subdev);
 	v4l2_ctrl_handler_free(&priv->hdl);
-
-	return 0;
 }
 
 static const struct i2c_device_id ov9640_id[] = {
-	{ "ov9640", 0 },
+	{ "ov9640" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ov9640_id);

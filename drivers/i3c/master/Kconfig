@@ -1,7 +1,17 @@
 # SPDX-License-Identifier: GPL-2.0-only
+config ADI_I3C_MASTER
+	tristate "Analog Devices I3C master driver"
+	depends on HAS_IOMEM
+	help
+	  Support for Analog Devices I3C Controller IP, an AXI-interfaced IP
+	  core that supports I3C and I2C devices, multiple speed-grades and I3C
+	  IBIs.
+
+	  This driver can also be built as a module. If so, the module will be
+	  called adi-i3c-master.
+
 config CDNS_I3C_MASTER
 	tristate "Cadence I3C master driver"
-	depends on I3C
 	depends on HAS_IOMEM
 	depends on !(ALPHA || PARISC)
 	help
@@ -9,7 +19,6 @@ config CDNS_I3C_MASTER
 
 config DW_I3C_MASTER
 	tristate "Synospsys DesignWare I3C master driver"
-	depends on I3C
 	depends on HAS_IOMEM
 	depends on !(ALPHA || PARISC)
 	# ALPHA and PARISC needs {read,write}sl()
@@ -22,9 +31,22 @@ config DW_I3C_MASTER
 	  This driver can also be built as a module.  If so, the module
 	  will be called dw-i3c-master.
 
+config AST2600_I3C_MASTER
+	tristate "ASPEED AST2600 I3C master driver"
+	depends on DW_I3C_MASTER
+	depends on ARCH_ASPEED || COMPILE_TEST
+	select MFD_SYSCON
+	help
+	  Support for ASPEED AST2600 I3C Controller.
+
+	  This hardware is an instance of the DW I3C controller; this
+	  driver adds platform- specific support for AST2600 hardware.
+
+	  This driver can also be built as a module.  If so, the module
+	  will be called ast2600-i3c-master.
+
 config SVC_I3C_MASTER
 	tristate "Silvaco I3C Dual-Role Master driver"
-	depends on I3C
 	depends on HAS_IOMEM
 	depends on !(ALPHA || PARISC)
 	help
@@ -32,7 +54,6 @@ config SVC_I3C_MASTER
 
 config MIPI_I3C_HCI
 	tristate "MIPI I3C Host Controller Interface driver (EXPERIMENTAL)"
-	depends on I3C
 	depends on HAS_IOMEM
 	help
 	  Support for hardware following the MIPI Aliance's I3C Host Controller
@@ -43,3 +64,25 @@ config MIPI_I3C_HCI
 
 	  This driver can also be built as a module.  If so, the module will be
 	  called mipi-i3c-hci.
+
+config MIPI_I3C_HCI_PCI
+	tristate "MIPI I3C Host Controller Interface PCI support"
+	depends on MIPI_I3C_HCI
+	depends on PCI
+	select MFD_CORE
+	help
+	  Support for MIPI I3C Host Controller Interface compatible hardware
+	  on the PCI bus.
+
+	  This driver can also be built as a module. If so, the module will be
+	  called mipi-i3c-hci-pci.
+
+config RENESAS_I3C
+	tristate "Renesas I3C controller driver"
+	depends on HAS_IOMEM
+	depends on ARCH_RENESAS || COMPILE_TEST
+	help
+	  Support the Renesas I3C controller as found in some RZ variants.
+
+	  This driver can also be built as a module. If so, the module will be
+	  called renesas-i3c.

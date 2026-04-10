@@ -57,7 +57,7 @@ static unsigned char new_state[16] = {
 
 static struct chtls_sock *chtls_sock_create(struct chtls_dev *cdev)
 {
-	struct chtls_sock *csk = kzalloc(sizeof(*csk), GFP_ATOMIC);
+	struct chtls_sock *csk = kzalloc_obj(*csk, GFP_ATOMIC);
 
 	if (!csk)
 		return NULL;
@@ -171,7 +171,7 @@ static void chtls_purge_receive_queue(struct sock *sk)
 	struct sk_buff *skb;
 
 	while ((skb = __skb_dequeue(&sk->sk_receive_queue)) != NULL) {
-		skb_dst_set(skb, (void *)NULL);
+		skb_dstref_steal(skb);
 		kfree_skb(skb);
 	}
 }
@@ -194,7 +194,7 @@ static void chtls_purge_recv_queue(struct sock *sk)
 	struct sk_buff *skb;
 
 	while ((skb = __skb_dequeue(&tlsk->sk_recv_queue)) != NULL) {
-		skb_dst_set(skb, NULL);
+		skb_dstref_steal(skb);
 		kfree_skb(skb);
 	}
 }
@@ -505,7 +505,7 @@ static void reset_listen_child(struct sock *child)
 
 	chtls_send_reset(child, CPL_ABORT_SEND_RST, skb);
 	sock_orphan(child);
-	INC_ORPHAN_COUNT(child);
+	tcp_orphan_count_inc();
 	if (child->sk_state == TCP_CLOSE)
 		inet_csk_destroy_sock(child);
 }
@@ -548,7 +548,7 @@ static struct listen_info *listen_hash_add(struct chtls_dev *cdev,
 					   struct sock *sk,
 					   unsigned int stid)
 {
-	struct listen_info *p = kmalloc(sizeof(*p), GFP_KERNEL);
+	struct listen_info *p = kmalloc_obj(*p);
 
 	if (p) {
 		int key = listen_hashfn(sk);
@@ -666,7 +666,7 @@ int chtls_listen_start(struct chtls_dev *cdev, struct sock *sk)
 	if (listen_hash_find(cdev, sk) >= 0)   /* already have it */
 		return -EADDRINUSE;
 
-	ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
+	ctx = kmalloc_obj(*ctx);
 	if (!ctx)
 		return -ENOMEM;
 
@@ -870,7 +870,7 @@ static void do_abort_syn_rcv(struct sock *child, struct sock *parent)
 		 * created only after 3 way handshake is done.
 		 */
 		sock_orphan(child);
-		INC_ORPHAN_COUNT(child);
+		tcp_orphan_count_inc();
 		chtls_release_resources(child);
 		chtls_conn_done(child);
 	} else {
@@ -951,6 +951,7 @@ static unsigned int chtls_select_mss(const struct chtls_sock *csk,
 	struct tcp_sock *tp;
 	unsigned int mss;
 	struct sock *sk;
+	u16 user_mss;
 
 	mss = ntohs(req->tcpopt.mss);
 	sk = csk->sk;
@@ -969,8 +970,9 @@ static unsigned int chtls_select_mss(const struct chtls_sock *csk,
 		tcpoptsz += round_up(TCPOLEN_TIMESTAMP, 4);
 
 	tp->advmss = dst_metric_advmss(dst);
-	if (USER_MSS(tp) && tp->advmss > USER_MSS(tp))
-		tp->advmss = USER_MSS(tp);
+	user_mss = USER_MSS(tp);
+	if (user_mss && tp->advmss > user_mss)
+		tp->advmss = user_mss;
 	if (tp->advmss > pmtu - iphdrsz)
 		tp->advmss = pmtu - iphdrsz;
 	if (mss && tp->advmss > mss)
@@ -1063,14 +1065,13 @@ static void chtls_pass_accept_rpl(struct sk_buff *skb,
 	opt2 |= WND_SCALE_EN_V(WSCALE_OK(tp));
 	rpl5->opt0 = cpu_to_be64(opt0);
 	rpl5->opt2 = cpu_to_be32(opt2);
-	rpl5->iss = cpu_to_be32((prandom_u32() & ~7UL) - 1);
+	rpl5->iss = cpu_to_be32((get_random_u32() & ~7UL) - 1);
 	set_wr_txq(skb, CPL_PRIORITY_SETUP, csk->port_id);
 	t4_set_arp_err_handler(skb, sk, chtls_accept_rpl_arp_failure);
 	cxgb4_l2t_send(csk->egress_dev, skb, csk->l2t_entry);
 }
 
-static void inet_inherit_port(struct inet_hashinfo *hash_info,
-			      struct sock *lsk, struct sock *newsk)
+static void inet_inherit_port(struct sock *lsk, struct sock *newsk)
 {
 	local_bh_disable();
 	__inet_inherit_port(lsk, newsk);
@@ -1198,12 +1199,12 @@ static struct sock *chtls_recv_sock(struct sock *lsk,
 		struct ipv6_pinfo *newnp = inet6_sk(newsk);
 		struct ipv6_pinfo *np = inet6_sk(lsk);
 
-		inet_sk(newsk)->pinet6 = &newtcp6sk->inet6;
+		newinet->pinet6 = &newtcp6sk->inet6;
+		newinet->ipv6_fl_list = NULL;
 		memcpy(newnp, np, sizeof(struct ipv6_pinfo));
 		newsk->sk_v6_daddr = treq->ir_v6_rmt_addr;
 		newsk->sk_v6_rcv_saddr = treq->ir_v6_loc_addr;
 		inet6_sk(newsk)->saddr = treq->ir_v6_loc_addr;
-		newnp->ipv6_fl_list = NULL;
 		newnp->pktoptions = NULL;
 		newsk->sk_bound_dev_if = treq->ir_iif;
 		newinet->inet_opt = NULL;
@@ -1236,11 +1237,11 @@ static struct sock *chtls_recv_sock(struct sock *lsk,
 	csk->sndbuf = newsk->sk_sndbuf;
 	csk->smac_idx = ((struct port_info *)netdev_priv(ndev))->smt_idx;
 	RCV_WSCALE(tp) = select_rcv_wscale(tcp_full_space(newsk),
-					   sock_net(newsk)->
-						ipv4.sysctl_tcp_window_scaling,
+					   READ_ONCE(sock_net(newsk)->
+						     ipv4.sysctl_tcp_window_scaling),
 					   tp->window_clamp);
 	neigh_release(n);
-	inet_inherit_port(&tcp_hashinfo, lsk, newsk);
+	inet_inherit_port(lsk, newsk);
 	csk_set_flag(csk, CSK_CONN_INLINE);
 	bh_unlock_sock(newsk); /* tcp_create_openreq_child ->sk_clone_lock */
 
@@ -1384,7 +1385,7 @@ static void chtls_pass_accept_request(struct sock *sk,
 #endif
 	}
 	if (req->tcpopt.wsf <= 14 &&
-	    sock_net(sk)->ipv4.sysctl_tcp_window_scaling) {
+	    READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_window_scaling)) {
 		inet_rsk(oreq)->wscale_ok = 1;
 		inet_rsk(oreq)->snd_wscale = req->tcpopt.wsf;
 	}
@@ -1392,7 +1393,7 @@ static void chtls_pass_accept_request(struct sock *sk,
 	th_ecn = tcph->ece && tcph->cwr;
 	if (th_ecn) {
 		ect = !INET_ECN_is_not_ect(ip_dsfield);
-		ecn_ok = sock_net(sk)->ipv4.sysctl_tcp_ecn;
+		ecn_ok = READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_ecn);
 		if ((!ect && ecn_ok) || tcp_ca_needs_ecn(sk))
 			inet_rsk(oreq)->ecn_ok = 1;
 	}
@@ -1467,7 +1468,7 @@ static void make_established(struct sock *sk, u32 snd_isn, unsigned int opt)
 	tp->write_seq = snd_isn;
 	tp->snd_nxt = snd_isn;
 	tp->snd_una = snd_isn;
-	inet_sk(sk)->inet_id = prandom_u32();
+	atomic_set(&inet_sk(sk)->inet_id, get_random_u16());
 	assign_rxopt(sk, opt);
 
 	if (tp->rcv_wnd > (RCV_BUFSIZ_M << 10))
@@ -1735,7 +1736,7 @@ static int chtls_rx_data(struct chtls_dev *cdev, struct sk_buff *skb)
 		pr_err("can't find conn. for hwtid %u.\n", hwtid);
 		return -EINVAL;
 	}
-	skb_dst_set(skb, NULL);
+	skb_dstref_steal(skb);
 	process_cpl_msg(chtls_recv_data, sk, skb);
 	return 0;
 }
@@ -1787,7 +1788,7 @@ static int chtls_rx_pdu(struct chtls_dev *cdev, struct sk_buff *skb)
 		pr_err("can't find conn. for hwtid %u.\n", hwtid);
 		return -EINVAL;
 	}
-	skb_dst_set(skb, NULL);
+	skb_dstref_steal(skb);
 	process_cpl_msg(chtls_recv_pdu, sk, skb);
 	return 0;
 }
@@ -1856,7 +1857,7 @@ static int chtls_rx_cmp(struct chtls_dev *cdev, struct sk_buff *skb)
 		pr_err("can't find conn. for hwtid %u.\n", hwtid);
 		return -EINVAL;
 	}
-	skb_dst_set(skb, NULL);
+	skb_dstref_steal(skb);
 	process_cpl_msg(chtls_rx_hdr, sk, skb);
 
 	return 0;
@@ -2260,7 +2261,7 @@ static void chtls_rx_ack(struct sock *sk, struct sk_buff *skb)
 
 		if (tp->snd_una != snd_una) {
 			tp->snd_una = snd_una;
-			tp->rcv_tstamp = tcp_time_stamp(tp);
+			tp->rcv_tstamp = tcp_jiffies32;
 			if (tp->snd_una == tp->snd_nxt &&
 			    !csk_flag_nochk(csk, CSK_TX_FAILOVER))
 				csk_reset_flag(csk, CSK_TX_WAIT_IDLE);

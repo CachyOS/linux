@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
-# # Copyright (c) 2021 Aspeed Tehchnology Inc.
+# # Copyright (c) 2021 Aspeed Technology Inc.
 %YAML 1.2
 ---
 $id: http://devicetree.org/schemas/mfd/aspeed-lpc.yaml#
@@ -27,7 +27,7 @@ description:
     as LPC firmware hub cycles, configuration of the LPC-to-AHB mapping, UART
     management and bus snoop configuration.
 
-  * A set of SuperIO[3] scratch registers enableing implementation of e.g. custom
+  * A set of SuperIO[3] scratch registers enabling implementation of e.g. custom
     hardware management protocols for handover between the host and baseboard
     management controller.
 
@@ -48,16 +48,16 @@ properties:
   reg:
     maxItems: 1
 
-  "#address-cells":
+  '#address-cells':
     const: 1
 
-  "#size-cells":
+  '#size-cells':
     const: 1
 
   ranges: true
 
 patternProperties:
-  "^lpc-ctrl@[0-9a-f]+$":
+  '^lpc-ctrl@[0-9a-f]+$':
     type: object
     additionalProperties: false
 
@@ -92,7 +92,7 @@ patternProperties:
       - compatible
       - clocks
 
-  "^reset-controller@[0-9a-f]+$":
+  '^reset-controller@[0-9a-f]+$':
     type: object
     additionalProperties: false
 
@@ -118,7 +118,7 @@ patternProperties:
       - compatible
       - '#reset-cells'
 
-  "^lpc-snoop@[0-9a-f]+$":
+  '^lpc-snoop@[0-9a-f]+$':
     type: object
     additionalProperties: false
 
@@ -137,6 +137,9 @@ patternProperties:
       reg:
         maxItems: 1
 
+      clocks:
+        maxItems: 1
+
       interrupts:
         maxItems: 1
 
@@ -149,15 +152,15 @@ patternProperties:
       - interrupts
       - snoop-ports
 
-  "^uart-routing@[0-9a-f]+$":
+  '^uart-routing@[0-9a-f]+$':
     $ref: /schemas/soc/aspeed/uart-routing.yaml#
     description: The UART routing control under LPC register space
 
 required:
   - compatible
   - reg
-  - "#address-cells"
-  - "#size-cells"
+  - '#address-cells'
+  - '#size-cells'
   - ranges
 
 additionalProperties:

@@ -19,12 +19,13 @@ static inline struct quota_info *sb_dqopt(struct super_block *sb)
 	return &sb->s_dquot;
 }
 
-/* i_mutex must being held */
-static inline bool is_quota_modification(struct inode *inode, struct iattr *ia)
+/* i_rwsem must being held */
+static inline bool is_quota_modification(struct mnt_idmap *idmap,
+					 struct inode *inode, struct iattr *ia)
 {
-	return (ia->ia_valid & ATTR_SIZE) ||
-		(ia->ia_valid & ATTR_UID && !uid_eq(ia->ia_uid, inode->i_uid)) ||
-		(ia->ia_valid & ATTR_GID && !gid_eq(ia->ia_gid, inode->i_gid));
+	return ((ia->ia_valid & ATTR_SIZE) ||
+		i_uid_needs_update(idmap, ia, inode) ||
+		i_gid_needs_update(idmap, ia, inode));
 }
 
 #if defined(CONFIG_QUOTA)
@@ -56,7 +57,7 @@ static inline bool dquot_is_busy(struct dquot *dquot)
 {
 	if (test_bit(DQ_MOD_B, &dquot->dq_flags))
 		return true;
-	if (atomic_read(&dquot->dq_count) > 1)
+	if (atomic_read(&dquot->dq_count) > 0)
 		return true;
 	return false;
 }
@@ -73,7 +74,7 @@ void __dquot_free_space(struct inode *inode, qsize_t number, int flags);
 
 int dquot_alloc_inode(struct inode *inode);
 
-int dquot_claim_space_nodirty(struct inode *inode, qsize_t number);
+void dquot_claim_space_nodirty(struct inode *inode, qsize_t number);
 void dquot_free_inode(struct inode *inode);
 void dquot_reclaim_space_nodirty(struct inode *inode, qsize_t number);
 
@@ -115,7 +116,8 @@ int dquot_set_dqblk(struct super_block *sb, struct kqid id,
 		struct qc_dqblk *di);
 
 int __dquot_transfer(struct inode *inode, struct dquot **transfer_to);
-int dquot_transfer(struct inode *inode, struct iattr *iattr);
+int dquot_transfer(struct mnt_idmap *idmap, struct inode *inode,
+		   struct iattr *iattr);
 
 static inline struct mem_dqinfo *sb_dqinfo(struct super_block *sb, int type)
 {
@@ -234,7 +236,8 @@ static inline void dquot_free_inode(struct inode *inode)
 {
 }
 
-static inline int dquot_transfer(struct inode *inode, struct iattr *iattr)
+static inline int dquot_transfer(struct mnt_idmap *idmap,
+				 struct inode *inode, struct iattr *iattr)
 {
 	return 0;
 }
@@ -254,10 +257,9 @@ static inline void __dquot_free_space(struct inode *inode, qsize_t number,
 		inode_sub_bytes(inode, number);
 }
 
-static inline int dquot_claim_space_nodirty(struct inode *inode, qsize_t number)
+static inline void dquot_claim_space_nodirty(struct inode *inode, qsize_t number)
 {
 	inode_add_bytes(inode, number);
-	return 0;
 }
 
 static inline int dquot_reclaim_space_nodirty(struct inode *inode,
@@ -355,14 +357,10 @@ static inline int dquot_reserve_block(struct inode *inode, qsize_t nr)
 				DQUOT_SPACE_WARN|DQUOT_SPACE_RESERVE);
 }
 
-static inline int dquot_claim_block(struct inode *inode, qsize_t nr)
+static inline void dquot_claim_block(struct inode *inode, qsize_t nr)
 {
-	int ret;
-
-	ret = dquot_claim_space_nodirty(inode, nr << inode->i_blkbits);
-	if (!ret)
-		mark_inode_dirty_sync(inode);
-	return ret;
+	dquot_claim_space_nodirty(inode, nr << inode->i_blkbits);
+	mark_inode_dirty_sync(inode);
 }
 
 static inline void dquot_reclaim_block(struct inode *inode, qsize_t nr)

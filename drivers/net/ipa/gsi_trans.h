@@ -1,25 +1,24 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 
 /* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
- * Copyright (C) 2019-2020 Linaro Ltd.
+ * Copyright (C) 2019-2024 Linaro Ltd.
  */
 #ifndef _GSI_TRANS_H_
 #define _GSI_TRANS_H_
 
-#include <linux/types.h>
-#include <linux/refcount.h>
 #include <linux/completion.h>
 #include <linux/dma-direction.h>
+#include <linux/refcount.h>
+#include <linux/types.h>
 
 #include "ipa_cmd.h"
 
+struct device;
 struct page;
 struct scatterlist;
-struct device;
 struct sk_buff;
 
 struct gsi;
-struct gsi_trans;
 struct gsi_trans_pool;
 
 /* Maximum number of TREs in an IPA immediate command transaction */
@@ -29,13 +28,12 @@ struct gsi_trans_pool;
  * struct gsi_trans - a GSI transaction
  *
  * Most fields in this structure for internal use by the transaction core code:
- * @links:	Links for channel transaction lists by state
  * @gsi:	GSI pointer
  * @channel_id: Channel number transaction is associated with
  * @cancelled:	If set by the core code, transaction was cancelled
- * @tre_count:	Number of TREs reserved for this transaction
- * @used:	Number of TREs *used* (could be less than tre_count)
- * @len:	Total # of transfer bytes represented in sgl[] (set by core)
+ * @rsvd_count:	Number of TREs reserved for this transaction
+ * @used_count:	Number of TREs *used* (could be less than rsvd_count)
+ * @len:	Number of bytes sent or received by the transaction
  * @data:	Preserved but not touched by the core transaction code
  * @cmd_opcode:	Array of command opcodes (command channel only)
  * @sgl:	An array of scatter/gather entries managed by core code
@@ -45,19 +43,18 @@ struct gsi_trans_pool;
  * @byte_count:	TX channel byte count recorded when transaction committed
  * @trans_count: Channel transaction count when committed (for BQL accounting)
  *
- * The size used for some fields in this structure were chosen to ensure
- * the full structure size is no larger than 128 bytes.
+ * The @len field is set when the transaction is committed.  For RX
+ * transactions it is updated later to reflect the actual number of bytes
+ * received.
  */
 struct gsi_trans {
-	struct list_head links;		/* gsi_channel lists */
-
 	struct gsi *gsi;
 	u8 channel_id;
 
 	bool cancelled;			/* true if transaction was cancelled */
 
-	u8 tre_count;			/* # TREs requested */
-	u8 used;			/* # entries used in sgl[] */
+	u8 rsvd_count;			/* # TREs requested */
+	u8 used_count;			/* # entries used in sgl[] */
 	u32 len;			/* total # bytes across sgl[] */
 
 	union {
@@ -76,7 +73,7 @@ struct gsi_trans {
 
 /**
  * gsi_trans_pool_init() - Initialize a pool of structures for transactions
- * @pool:	GSI transaction poll pointer
+ * @pool:	GSI transaction pool pointer
  * @size:	Size of elements in the pool
  * @count:	Minimum number of elements in the pool
  * @max_alloc:	Maximum number of elements allocated at a time from pool

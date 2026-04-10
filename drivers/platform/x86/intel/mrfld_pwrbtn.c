@@ -78,13 +78,12 @@ static int mrfld_pwrbtn_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int mrfld_pwrbtn_remove(struct platform_device *pdev)
+static void mrfld_pwrbtn_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 
 	dev_pm_clear_wake_irq(dev);
 	device_init_wakeup(dev, false);
-	return 0;
 }
 
 static const struct platform_device_id mrfld_pwrbtn_id_table[] = {

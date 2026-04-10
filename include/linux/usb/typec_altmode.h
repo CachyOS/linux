@@ -9,6 +9,14 @@
 
 #define MODE_DISCOVERY_MAX	6
 
+extern const struct device_type typec_port_altmode_dev_type;
+extern const struct device_type typec_plug_altmode_dev_type;
+extern const struct device_type typec_partner_altmode_dev_type;
+
+#define is_typec_port_altmode(dev) ((dev)->type == &typec_port_altmode_dev_type)
+#define is_typec_plug_altmode(dev) ((dev)->type == &typec_plug_altmode_dev_type)
+#define is_typec_partner_altmode(dev) ((dev)->type == &typec_partner_altmode_dev_type)
+
 struct typec_altmode_ops;
 
 /**
@@ -20,6 +28,7 @@ struct typec_altmode_ops;
  * @active: Tells has the mode been entered or not
  * @desc: Optional human readable description of the mode
  * @ops: Operations vector from the driver
+ * @cable_ops: Cable operations vector from the driver.
  */
 struct typec_altmode {
 	struct device			dev;
@@ -27,9 +36,12 @@ struct typec_altmode {
 	int				mode;
 	u32				vdo;
 	unsigned int			active:1;
+	u8				priority;
+	bool			mode_selection;
 
 	char				*desc;
 	const struct typec_altmode_ops	*ops;
+	const struct typec_cable_ops	*cable_ops;
 };
 
 #define to_typec_altmode(d) container_of(d, struct typec_altmode, dev)
@@ -67,13 +79,41 @@ struct typec_altmode_ops {
 
 int typec_altmode_enter(struct typec_altmode *altmode, u32 *vdo);
 int typec_altmode_exit(struct typec_altmode *altmode);
-void typec_altmode_attention(struct typec_altmode *altmode, u32 vdo);
+int typec_altmode_attention(struct typec_altmode *altmode, u32 vdo);
 int typec_altmode_vdm(struct typec_altmode *altmode,
 		      const u32 header, const u32 *vdo, int count);
 int typec_altmode_notify(struct typec_altmode *altmode, unsigned long conf,
 			 void *data);
 const struct typec_altmode *
 typec_altmode_get_partner(struct typec_altmode *altmode);
+
+/**
+ * struct typec_cable_ops - Cable alternate mode operations vector
+ * @enter: Operations to be executed with Enter Mode Command
+ * @exit: Operations to be executed with Exit Mode Command
+ * @vdm: Callback for SVID specific commands
+ */
+struct typec_cable_ops {
+	int (*enter)(struct typec_altmode *altmode, enum typec_plug_index sop, u32 *vdo);
+	int (*exit)(struct typec_altmode *altmode, enum typec_plug_index sop);
+	int (*vdm)(struct typec_altmode *altmode, enum typec_plug_index sop,
+		   const u32 hdr, const u32 *vdo, int cnt);
+};
+
+int typec_cable_altmode_enter(struct typec_altmode *altmode, enum typec_plug_index sop, u32 *vdo);
+int typec_cable_altmode_exit(struct typec_altmode *altmode, enum typec_plug_index sop);
+int typec_cable_altmode_vdm(struct typec_altmode *altmode, enum typec_plug_index sop,
+			    const u32 header, const u32 *vdo, int count);
+
+/**
+ * typec_altmode_get_cable_svdm_version - Get negotiated SVDM version for cable plug
+ * @altmode: Handle to the alternate mode
+ */
+static inline int
+typec_altmode_get_cable_svdm_version(struct typec_altmode *altmode)
+{
+	return typec_get_cable_svdm_version(typec_altmode2port(altmode));
+}
 
 /*
  * These are the connector states (USB, Safe and Alt Mode) defined in USB Type-C
@@ -124,7 +164,7 @@ struct typec_altmode *typec_match_altmode(struct typec_altmode **altmodes,
 
 /**
  * typec_altmode_get_orientation - Get cable plug orientation
- * altmode: Handle to the alternate mode
+ * @altmode: Handle to the alternate mode
  */
 static inline enum typec_orientation
 typec_altmode_get_orientation(struct typec_altmode *altmode)
@@ -140,6 +180,19 @@ static inline int
 typec_altmode_get_svdm_version(struct typec_altmode *altmode)
 {
 	return typec_get_negotiated_svdm_version(typec_altmode2port(altmode));
+}
+
+/**
+ * typec_altmode_get_data_role - Get port data role
+ * @altmode: Handle to the alternate mode
+ *
+ * Alt Mode drivers should only issue Enter Mode through the port if they are
+ * the DFP.
+ */
+static inline enum typec_data_role
+typec_altmode_get_data_role(struct typec_altmode *altmode)
+{
+	return typec_get_data_role(typec_altmode2port(altmode));
 }
 
 /**
@@ -187,5 +240,45 @@ void typec_altmode_unregister_driver(struct typec_altmode_driver *drv);
 #define module_typec_altmode_driver(__typec_altmode_driver) \
 	module_driver(__typec_altmode_driver, typec_altmode_register_driver, \
 		      typec_altmode_unregister_driver)
+
+/**
+ * typec_mode_selection_start - Start an alternate mode selection process
+ * @partner: Handle to the Type-C partner device
+ * @delay: Delay between mode entry/exit attempts, ms
+ * @timeout: Timeout for a mode entry attempt, ms
+ *
+ * This function initiates the process of attempting to enter an Alternate Mode
+ * supported by the connected Type-C partner.
+ * Returns 0 on success, or a negative error code on failure.
+ */
+int typec_mode_selection_start(struct typec_partner *partner,
+			       const unsigned int delay, const unsigned int timeout);
+
+/**
+ * typec_altmode_state_update - Report the current status of an Alternate Mode
+ * negotiation
+ * @partner: Handle to the Type-C partner device
+ * @svid: Standard or Vendor ID of the Alternate Mode. A value of 0 should be
+ * passed if no mode is currently active
+ * @result: Result of the entry operation. This should be 0 on success, or a
+ * negative error code if the negotiation failed
+ *
+ * This function should be called by an Alternate Mode driver to report the
+ * result of an asynchronous alternate mode entry request. It signals what the
+ * current active SVID is (or 0 if none) and the success or failure status of
+ * the last attempt.
+ */
+void typec_altmode_state_update(struct typec_partner *partner, const u16 svid,
+				const int result);
+
+/**
+ * typec_mode_selection_delete - Delete an alternate mode selection instance
+ * @partner: Handle to the Type-C partner device.
+ *
+ * This function cancels a pending alternate mode selection request that was
+ * previously started with typec_mode_selection_start().
+ * This is typically called when the partner disconnects.
+ */
+void typec_mode_selection_delete(struct typec_partner *partner);
 
 #endif /* __USB_TYPEC_ALTMODE_H */

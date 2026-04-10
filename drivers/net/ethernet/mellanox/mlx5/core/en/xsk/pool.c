@@ -6,10 +6,10 @@
 #include "setup.h"
 #include "en/params.h"
 
-static int mlx5e_xsk_map_pool(struct mlx5e_priv *priv,
+static int mlx5e_xsk_map_pool(struct mlx5_core_dev *mdev,
 			      struct xsk_buff_pool *pool)
 {
-	struct device *dev = mlx5_core_dma_dev(priv->mdev);
+	struct device *dev = mlx5_core_dma_dev(mdev);
 
 	return xsk_pool_dma_map(pool, dev, DMA_ATTR_SKIP_CPU_SYNC);
 }
@@ -23,8 +23,7 @@ static void mlx5e_xsk_unmap_pool(struct mlx5e_priv *priv,
 static int mlx5e_xsk_get_pools(struct mlx5e_xsk *xsk)
 {
 	if (!xsk->pools) {
-		xsk->pools = kcalloc(MLX5E_MAX_NUM_CHANNELS,
-				     sizeof(*xsk->pools), GFP_KERNEL);
+		xsk->pools = kzalloc_objs(*xsk->pools, MLX5E_MAX_NUM_CHANNELS);
 		if (unlikely(!xsk->pools))
 			return -ENOMEM;
 	}
@@ -72,6 +71,7 @@ void mlx5e_build_xsk_param(struct xsk_buff_pool *pool, struct mlx5e_xsk_param *x
 {
 	xsk->headroom = xsk_pool_get_headroom(pool);
 	xsk->chunk_size = xsk_pool_get_chunk_size(pool);
+	xsk->unaligned = pool->unaligned;
 }
 
 static int mlx5e_xsk_enable_locked(struct mlx5e_priv *priv,
@@ -88,7 +88,7 @@ static int mlx5e_xsk_enable_locked(struct mlx5e_priv *priv,
 	if (unlikely(!mlx5e_xsk_is_pool_sane(pool)))
 		return -EINVAL;
 
-	err = mlx5e_xsk_map_pool(priv, pool);
+	err = mlx5e_xsk_map_pool(mlx5_sd_ch_ix_get_dev(priv->mdev, ix), pool);
 	if (unlikely(err))
 		return err;
 
@@ -97,6 +97,15 @@ static int mlx5e_xsk_enable_locked(struct mlx5e_priv *priv,
 		goto err_unmap_pool;
 
 	mlx5e_build_xsk_param(pool, &xsk);
+
+	if (priv->channels.params.rq_wq_type == MLX5_WQ_TYPE_LINKED_LIST_STRIDING_RQ &&
+	    mlx5e_mpwrq_umr_mode(priv->mdev, &xsk) == MLX5E_MPWRQ_UMR_MODE_OVERSIZED) {
+		const char *recommendation = is_power_of_2(xsk.chunk_size) ?
+			"Upgrade firmware" : "Disable striding RQ";
+
+		mlx5_core_warn(priv->mdev, "Expected slowdown with XSK frame size %u. %s for better performance.\n",
+			       xsk.chunk_size, recommendation);
+	}
 
 	if (!test_bit(MLX5E_STATE_OPENED, &priv->state)) {
 		/* XSK objects will be created on open. */
@@ -117,21 +126,18 @@ static int mlx5e_xsk_enable_locked(struct mlx5e_priv *priv,
 		goto err_remove_pool;
 
 	mlx5e_activate_xsk(c);
-	mlx5e_trigger_napi_icosq(c);
+	mlx5e_trigger_napi_async_icosq(c);
 
 	/* Don't wait for WQEs, because the newer xdpsock sample doesn't provide
 	 * any Fill Ring entries at the setup stage.
 	 */
 
-	err = mlx5e_rx_res_xsk_activate(priv->rx_res, &priv->channels, ix);
-	if (unlikely(err))
-		goto err_deactivate;
+	mlx5e_rx_res_xsk_update(priv->rx_res, &priv->channels, ix, true);
+
+	mlx5e_deactivate_rq(&c->rq);
+	mlx5e_flush_rq(&c->rq, MLX5_RQC_STATE_RDY);
 
 	return 0;
-
-err_deactivate:
-	mlx5e_deactivate_xsk(c);
-	mlx5e_close_xsk(c);
 
 err_remove_pool:
 	mlx5e_xsk_remove_pool(&priv->xsk, ix);
@@ -170,7 +176,13 @@ static int mlx5e_xsk_disable_locked(struct mlx5e_priv *priv, u16 ix)
 		goto remove_pool;
 
 	c = priv->channels.c[ix];
-	mlx5e_rx_res_xsk_deactivate(priv->rx_res, ix);
+
+	mlx5e_activate_rq(&c->rq);
+	mlx5e_trigger_napi_async_icosq(c);
+	mlx5e_wait_for_min_rx_wqes(&c->rq, MLX5E_RQ_WQES_TIMEOUT);
+
+	mlx5e_rx_res_xsk_update(priv->rx_res, &priv->channels, ix, false);
+
 	mlx5e_deactivate_xsk(c);
 	mlx5e_close_xsk(c);
 
@@ -208,11 +220,10 @@ int mlx5e_xsk_setup_pool(struct net_device *dev, struct xsk_buff_pool *pool, u16
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
 	struct mlx5e_params *params = &priv->channels.params;
-	u16 ix;
 
-	if (unlikely(!mlx5e_qid_get_ch_if_in_group(params, qid, MLX5E_RQ_GROUP_XSK, &ix)))
+	if (unlikely(qid >= params->num_channels))
 		return -EINVAL;
 
-	return pool ? mlx5e_xsk_enable_pool(priv, pool, ix) :
-		      mlx5e_xsk_disable_pool(priv, ix);
+	return pool ? mlx5e_xsk_enable_pool(priv, pool, qid) :
+		      mlx5e_xsk_disable_pool(priv, qid);
 }

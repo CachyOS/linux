@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
 /*
- * Copyright 2018-2021 Amazon.com, Inc. or its affiliates. All rights reserved.
+ * Copyright 2018-2025 Amazon.com, Inc. or its affiliates. All rights reserved.
  */
 
 #include "efa_com.h"
@@ -31,6 +31,10 @@ int efa_com_create_qp(struct efa_com_dev *edev,
 	create_qp_cmd.qp_alloc_size.recv_queue_depth =
 			params->rq_depth;
 	create_qp_cmd.uar = params->uarn;
+	create_qp_cmd.sl = params->sl;
+
+	if (params->unsolicited_write_recv)
+		EFA_SET(&create_qp_cmd.flags, EFA_ADMIN_CREATE_QP_CMD_UNSOLICITED_WRITE_RECV, 1);
 
 	err = efa_com_cmd_exec(aq,
 			       (struct efa_admin_aq_entry *)&create_qp_cmd,
@@ -160,7 +164,7 @@ int efa_com_create_cq(struct efa_com_dev *edev,
 	EFA_SET(&create_cmd.cq_caps_2,
 		EFA_ADMIN_CREATE_CQ_CMD_CQ_ENTRY_SIZE_WORDS,
 		params->entry_size_in_bytes / 4);
-	create_cmd.cq_depth = params->cq_depth;
+	create_cmd.sub_cq_depth = params->sub_cq_depth;
 	create_cmd.num_sub_cqs = params->num_sub_cqs;
 	create_cmd.uar = params->uarn;
 	if (params->interrupt_mode_enabled) {
@@ -168,7 +172,10 @@ int efa_com_create_cq(struct efa_com_dev *edev,
 			EFA_ADMIN_CREATE_CQ_CMD_INTERRUPT_MODE_ENABLED, 1);
 		create_cmd.eqn = params->eqn;
 	}
-
+	if (params->set_src_addr) {
+		EFA_SET(&create_cmd.cq_caps_2,
+			EFA_ADMIN_CREATE_CQ_CMD_SET_SRC_ADDR, 1);
+	}
 	efa_com_set_dma_addr(params->dma_addr,
 			     &create_cmd.cq_ba.mem_addr_high,
 			     &create_cmd.cq_ba.mem_addr_low);
@@ -185,7 +192,7 @@ int efa_com_create_cq(struct efa_com_dev *edev,
 	}
 
 	result->cq_idx = cmd_completion.cq_idx;
-	result->actual_depth = params->cq_depth;
+	result->actual_depth = params->sub_cq_depth;
 	result->db_off = cmd_completion.db_offset;
 	result->db_valid = EFA_GET(&cmd_completion.flags,
 				   EFA_ADMIN_CREATE_CQ_RESP_DB_VALID);
@@ -267,6 +274,15 @@ int efa_com_register_mr(struct efa_com_dev *edev,
 
 	result->l_key = cmd_completion.l_key;
 	result->r_key = cmd_completion.r_key;
+	result->ic_info.recv_ic_id = cmd_completion.recv_ic_id;
+	result->ic_info.rdma_read_ic_id = cmd_completion.rdma_read_ic_id;
+	result->ic_info.rdma_recv_ic_id = cmd_completion.rdma_recv_ic_id;
+	result->ic_info.recv_ic_id_valid = EFA_GET(&cmd_completion.validity,
+						   EFA_ADMIN_REG_MR_RESP_RECV_IC_ID);
+	result->ic_info.rdma_read_ic_id_valid = EFA_GET(&cmd_completion.validity,
+							EFA_ADMIN_REG_MR_RESP_RDMA_READ_IC_ID);
+	result->ic_info.rdma_recv_ic_id_valid = EFA_GET(&cmd_completion.validity,
+							EFA_ADMIN_REG_MR_RESP_RDMA_RECV_IC_ID);
 
 	return 0;
 }
@@ -450,6 +466,8 @@ int efa_com_get_device_attr(struct efa_com_dev *edev,
 	result->db_bar = resp.u.device_attr.db_bar;
 	result->max_rdma_size = resp.u.device_attr.max_rdma_size;
 	result->device_caps = resp.u.device_attr.device_caps;
+	result->guid = resp.u.device_attr.guid;
+	result->max_link_speed_gbps = resp.u.device_attr.max_link_speed_gbps;
 
 	if (result->admin_api_version < 1) {
 		ibdev_err_ratelimited(
@@ -751,6 +769,11 @@ int efa_com_get_stats(struct efa_com_dev *edev,
 	struct efa_com_admin_queue *aq = &edev->aq;
 	struct efa_admin_aq_get_stats_cmd cmd = {};
 	struct efa_admin_acq_get_stats_resp resp;
+	struct efa_admin_rdma_write_stats *rws;
+	struct efa_admin_rdma_read_stats *rrs;
+	struct efa_admin_messages_stats *ms;
+	struct efa_admin_network_stats *ns;
+	struct efa_admin_basic_stats *bs;
 	int err;
 
 	cmd.aq_common_descriptor.opcode = EFA_ADMIN_GET_STATS;
@@ -773,23 +796,41 @@ int efa_com_get_stats(struct efa_com_dev *edev,
 
 	switch (cmd.type) {
 	case EFA_ADMIN_GET_STATS_TYPE_BASIC:
-		result->basic_stats.tx_bytes = resp.u.basic_stats.tx_bytes;
-		result->basic_stats.tx_pkts = resp.u.basic_stats.tx_pkts;
-		result->basic_stats.rx_bytes = resp.u.basic_stats.rx_bytes;
-		result->basic_stats.rx_pkts = resp.u.basic_stats.rx_pkts;
-		result->basic_stats.rx_drops = resp.u.basic_stats.rx_drops;
+		bs = &resp.u.basic_stats;
+		result->basic_stats.tx_bytes = bs->tx_bytes;
+		result->basic_stats.tx_pkts = bs->tx_pkts;
+		result->basic_stats.rx_bytes = bs->rx_bytes;
+		result->basic_stats.rx_pkts = bs->rx_pkts;
+		result->basic_stats.rx_drops = bs->rx_drops;
 		break;
 	case EFA_ADMIN_GET_STATS_TYPE_MESSAGES:
-		result->messages_stats.send_bytes = resp.u.messages_stats.send_bytes;
-		result->messages_stats.send_wrs = resp.u.messages_stats.send_wrs;
-		result->messages_stats.recv_bytes = resp.u.messages_stats.recv_bytes;
-		result->messages_stats.recv_wrs = resp.u.messages_stats.recv_wrs;
+		ms = &resp.u.messages_stats;
+		result->messages_stats.send_bytes = ms->send_bytes;
+		result->messages_stats.send_wrs = ms->send_wrs;
+		result->messages_stats.recv_bytes = ms->recv_bytes;
+		result->messages_stats.recv_wrs = ms->recv_wrs;
 		break;
 	case EFA_ADMIN_GET_STATS_TYPE_RDMA_READ:
-		result->rdma_read_stats.read_wrs = resp.u.rdma_read_stats.read_wrs;
-		result->rdma_read_stats.read_bytes = resp.u.rdma_read_stats.read_bytes;
-		result->rdma_read_stats.read_wr_err = resp.u.rdma_read_stats.read_wr_err;
-		result->rdma_read_stats.read_resp_bytes = resp.u.rdma_read_stats.read_resp_bytes;
+		rrs = &resp.u.rdma_read_stats;
+		result->rdma_read_stats.read_wrs = rrs->read_wrs;
+		result->rdma_read_stats.read_bytes = rrs->read_bytes;
+		result->rdma_read_stats.read_wr_err = rrs->read_wr_err;
+		result->rdma_read_stats.read_resp_bytes = rrs->read_resp_bytes;
+		break;
+	case EFA_ADMIN_GET_STATS_TYPE_RDMA_WRITE:
+		rws = &resp.u.rdma_write_stats;
+		result->rdma_write_stats.write_wrs = rws->write_wrs;
+		result->rdma_write_stats.write_bytes = rws->write_bytes;
+		result->rdma_write_stats.write_wr_err = rws->write_wr_err;
+		result->rdma_write_stats.write_recv_bytes = rws->write_recv_bytes;
+		break;
+	case EFA_ADMIN_GET_STATS_TYPE_NETWORK:
+		ns = &resp.u.network_stats;
+		result->network_stats.retrans_bytes = ns->retrans_bytes;
+		result->network_stats.retrans_pkts = ns->retrans_pkts;
+		result->network_stats.retrans_timeout_events = ns->retrans_timeout_events;
+		result->network_stats.unresponsive_remote_events = ns->unresponsive_remote_events;
+		result->network_stats.impaired_remote_conn_events = ns->impaired_remote_conn_events;
 		break;
 	}
 

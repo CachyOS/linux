@@ -15,7 +15,7 @@
 /*
  * Get a newly allocated inode to go with a negative dentry.
  */
-static int orangefs_create(struct user_namespace *mnt_userns,
+static int orangefs_create(struct mnt_idmap *idmap,
 			struct inode *dir,
 			struct dentry *dentry,
 			umode_t mode,
@@ -38,11 +38,9 @@ static int orangefs_create(struct user_namespace *mnt_userns,
 
 	new_op->upcall.req.create.parent_refn = parent->refn;
 
-	fill_default_sys_attrs(new_op->upcall.req.create.attributes,
-			       ORANGEFS_TYPE_METAFILE, mode);
+	fill_default_sys_attrs(new_op->upcall.req.create.attributes, mode);
 
-	strncpy(new_op->upcall.req.create.d_name,
-		dentry->d_name.name, ORANGEFS_NAME_MAX - 1);
+	strscpy(new_op->upcall.req.create.d_name, dentry->d_name.name);
 
 	ret = service_operation(new_op, __func__, get_interruptible_flag(dir));
 
@@ -137,8 +135,7 @@ static struct dentry *orangefs_lookup(struct inode *dir, struct dentry *dentry,
 		     &parent->refn.khandle);
 	new_op->upcall.req.lookup.parent_refn = parent->refn;
 
-	strncpy(new_op->upcall.req.lookup.d_name, dentry->d_name.name,
-		ORANGEFS_NAME_MAX - 1);
+	strscpy(new_op->upcall.req.lookup.d_name, dentry->d_name.name);
 
 	gossip_debug(GOSSIP_NAME_DEBUG,
 		     "%s: doing lookup on %s under %pU,%d\n",
@@ -192,8 +189,7 @@ static int orangefs_unlink(struct inode *dir, struct dentry *dentry)
 		return -ENOMEM;
 
 	new_op->upcall.req.remove.parent_refn = parent->refn;
-	strncpy(new_op->upcall.req.remove.d_name, dentry->d_name.name,
-		ORANGEFS_NAME_MAX - 1);
+	strscpy(new_op->upcall.req.remove.d_name, dentry->d_name.name);
 
 	ret = service_operation(new_op, "orangefs_unlink",
 				get_interruptible_flag(inode));
@@ -216,7 +212,7 @@ static int orangefs_unlink(struct inode *dir, struct dentry *dentry)
 	return ret;
 }
 
-static int orangefs_symlink(struct user_namespace *mnt_userns,
+static int orangefs_symlink(struct mnt_idmap *idmap,
 		         struct inode *dir,
 			 struct dentry *dentry,
 			 const char *symname)
@@ -243,14 +239,10 @@ static int orangefs_symlink(struct user_namespace *mnt_userns,
 
 	new_op->upcall.req.sym.parent_refn = parent->refn;
 
-	fill_default_sys_attrs(new_op->upcall.req.sym.attributes,
-			       ORANGEFS_TYPE_SYMLINK,
-			       mode);
+	fill_default_sys_attrs(new_op->upcall.req.sym.attributes, mode);
 
-	strncpy(new_op->upcall.req.sym.entry_name,
-		dentry->d_name.name,
-		ORANGEFS_NAME_MAX - 1);
-	strncpy(new_op->upcall.req.sym.target, symname, ORANGEFS_NAME_MAX - 1);
+	strscpy(new_op->upcall.req.sym.entry_name, dentry->d_name.name);
+	strscpy(new_op->upcall.req.sym.target, symname);
 
 	ret = service_operation(new_op, __func__, get_interruptible_flag(dir));
 
@@ -305,8 +297,8 @@ out:
 	return ret;
 }
 
-static int orangefs_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
-			  struct dentry *dentry, umode_t mode)
+static struct dentry *orangefs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
+				     struct dentry *dentry, umode_t mode)
 {
 	struct orangefs_inode_s *parent = ORANGEFS_I(dir);
 	struct orangefs_kernel_op_s *new_op;
@@ -317,15 +309,13 @@ static int orangefs_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 
 	new_op = op_alloc(ORANGEFS_VFS_OP_MKDIR);
 	if (!new_op)
-		return -ENOMEM;
+		return ERR_PTR(-ENOMEM);
 
 	new_op->upcall.req.mkdir.parent_refn = parent->refn;
 
-	fill_default_sys_attrs(new_op->upcall.req.mkdir.attributes,
-			      ORANGEFS_TYPE_DIRECTORY, mode);
+	fill_default_sys_attrs(new_op->upcall.req.mkdir.attributes, mode);
 
-	strncpy(new_op->upcall.req.mkdir.d_name,
-		dentry->d_name.name, ORANGEFS_NAME_MAX - 1);
+	strscpy(new_op->upcall.req.mkdir.d_name, dentry->d_name.name);
 
 	ret = service_operation(new_op, __func__, get_interruptible_flag(dir));
 
@@ -372,10 +362,10 @@ static int orangefs_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 	__orangefs_setattr(dir, &iattr);
 out:
 	op_release(new_op);
-	return ret;
+	return ERR_PTR(ret);
 }
 
-static int orangefs_rename(struct user_namespace *mnt_userns,
+static int orangefs_rename(struct mnt_idmap *idmap,
 			struct inode *old_dir,
 			struct dentry *old_dentry,
 			struct inode *new_dir,
@@ -405,12 +395,8 @@ static int orangefs_rename(struct user_namespace *mnt_userns,
 	new_op->upcall.req.rename.old_parent_refn = ORANGEFS_I(old_dir)->refn;
 	new_op->upcall.req.rename.new_parent_refn = ORANGEFS_I(new_dir)->refn;
 
-	strncpy(new_op->upcall.req.rename.d_old_name,
-		old_dentry->d_name.name,
-		ORANGEFS_NAME_MAX - 1);
-	strncpy(new_op->upcall.req.rename.d_new_name,
-		new_dentry->d_name.name,
-		ORANGEFS_NAME_MAX - 1);
+	strscpy(new_op->upcall.req.rename.d_old_name, old_dentry->d_name.name);
+	strscpy(new_op->upcall.req.rename.d_new_name, new_dentry->d_name.name);
 
 	ret = service_operation(new_op,
 				"orangefs_rename",
@@ -421,7 +407,7 @@ static int orangefs_rename(struct user_namespace *mnt_userns,
 		     ret);
 
 	if (new_dentry->d_inode)
-		new_dentry->d_inode->i_ctime = current_time(new_dentry->d_inode);
+		inode_set_ctime_current(d_inode(new_dentry));
 
 	op_release(new_op);
 	return ret;
@@ -430,7 +416,7 @@ static int orangefs_rename(struct user_namespace *mnt_userns,
 /* ORANGEFS implementation of VFS inode operations for directories */
 const struct inode_operations orangefs_dir_inode_operations = {
 	.lookup = orangefs_lookup,
-	.get_acl = orangefs_get_acl,
+	.get_inode_acl = orangefs_get_acl,
 	.set_acl = orangefs_set_acl,
 	.create = orangefs_create,
 	.unlink = orangefs_unlink,

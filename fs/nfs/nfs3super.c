@@ -14,9 +14,6 @@ struct nfs_subversion nfs_v3 = {
 	.rpc_vers = &nfs_version3,
 	.rpc_ops  = &nfs_v3_clientops,
 	.sops     = &nfs_sops,
-#ifdef CONFIG_NFS_V3_ACL
-	.xattr    = nfs3_xattr_handlers,
-#endif
 };
 
 static int __init init_nfs_v3(void)
@@ -30,6 +27,7 @@ static void __exit exit_nfs_v3(void)
 	unregister_nfs_version(&nfs_v3);
 }
 
+MODULE_DESCRIPTION("NFSv3 client support");
 MODULE_LICENSE("GPL");
 
 module_init(init_nfs_v3);

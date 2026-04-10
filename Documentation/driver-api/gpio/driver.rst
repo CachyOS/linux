@@ -7,7 +7,7 @@ This document serves as a guide for writers of GPIO chip drivers.
 Each GPIO controller driver needs to include the following header, which defines
 the structures used to define a GPIO driver::
 
-	#include <linux/gpio/driver.h>
+  #include <linux/gpio/driver.h>
 
 
 Internal Representation of GPIOs
@@ -69,9 +69,8 @@ driver code:
 
 The code implementing a gpio_chip should support multiple instances of the
 controller, preferably using the driver model. That code will configure each
-gpio_chip and issue gpiochip_add(), gpiochip_add_data(), or
-devm_gpiochip_add_data().  Removing a GPIO controller should be rare; use
-gpiochip_remove() when it is unavoidable.
+gpio_chip and issue gpiochip_add_data() or devm_gpiochip_add_data(). Removing
+a GPIO controller should be rare; use gpiochip_remove() when it is unavoidable.
 
 Often a gpio_chip is part of an instance-specific structure with states not
 exposed by the GPIO interfaces, such as addressing, power management, and more.
@@ -119,7 +118,7 @@ GPIO lines with debounce support
 Debouncing is a configuration set to a pin indicating that it is connected to
 a mechanical switch or button, or similar that may bounce. Bouncing means the
 line is pulled high/low quickly at very short intervals for mechanical
-reasons. This can result in the value being unstable or irqs fireing repeatedly
+reasons. This can result in the value being unstable or irqs firing repeatedly
 unless the line is debounced.
 
 Debouncing in practice involves setting up a timer when something happens on
@@ -144,7 +143,7 @@ is not open, it will present a high-impedance (tristate) to the external rail::
      in ----||                   |/
             ||--+         in ----|
                 |                |\
-               GND	           GND
+               GND                 GND
 
 This configuration is normally used as a way to achieve one of two things:
 
@@ -218,10 +217,10 @@ not support open drain/open source in hardware, the GPIO library will instead
 use a trick: when a line is set as output, if the line is flagged as open
 drain, and the IN output value is low, it will be driven low as usual. But
 if the IN output value is set to high, it will instead *NOT* be driven high,
-instead it will be switched to input, as input mode is high impedance, thus
-achieveing an "open drain emulation" of sorts: electrically the behaviour will
-be identical, with the exception of possible hardware glitches when switching
-the mode of the line.
+instead it will be switched to input, as input mode is an equivalent to
+high impedance, thus achieving an "open drain emulation" of sorts: electrically
+the behaviour will be identical, with the exception of possible hardware glitches
+when switching the mode of the line.
 
 For open source configuration the same principle is used, just that instead
 of actively driving the line low, it is set to input.
@@ -550,10 +549,10 @@ the interrupt separately and go with it:
   struct my_gpio *g;
   struct gpio_irq_chip *girq;
 
-  ret = devm_request_threaded_irq(dev, irq, NULL,
-		irq_thread_fn, IRQF_ONESHOT, "my-chip", g);
+  ret = devm_request_threaded_irq(dev, irq, NULL, irq_thread_fn,
+                                  IRQF_ONESHOT, "my-chip", g);
   if (ret < 0)
-	return ret;
+      return ret;
 
   /* Get a pointer to the gpio_irq_chip */
   girq = &g->gc.irq;
@@ -642,7 +641,7 @@ In this case the typical set-up will look like this:
 
 As you can see pretty similar, but you do not supply a parent handler for
 the IRQ, instead a parent irqdomain, an fwnode for the hardware and
-a funcion .child_to_parent_hwirq() that has the purpose of looking up
+a function .child_to_parent_hwirq() that has the purpose of looking up
 the parent hardware irq from a child (i.e. this gpio chip) hardware irq.
 As always it is good to look at examples in the kernel tree for advice
 on how to find the required pieces.
@@ -681,12 +680,12 @@ certain operations and keep track of usage inside of the gpiolib subsystem.
 Input GPIOs can be used as IRQ signals. When this happens, a driver is requested
 to mark the GPIO as being used as an IRQ::
 
-	int gpiochip_lock_as_irq(struct gpio_chip *chip, unsigned int offset)
+  int gpiochip_lock_as_irq(struct gpio_chip *chip, unsigned int offset)
 
 This will prevent the use of non-irq related GPIO APIs until the GPIO IRQ lock
 is released::
 
-	void gpiochip_unlock_as_irq(struct gpio_chip *chip, unsigned int offset)
+  void gpiochip_unlock_as_irq(struct gpio_chip *chip, unsigned int offset)
 
 When implementing an irqchip inside a GPIO driver, these two functions should
 typically be called in the .startup() and .shutdown() callbacks from the
@@ -708,12 +707,12 @@ When a GPIO is used as an IRQ signal, then gpiolib also needs to know if
 the IRQ is enabled or disabled. In order to inform gpiolib about this,
 the irqchip driver should call::
 
-	void gpiochip_disable_irq(struct gpio_chip *chip, unsigned int offset)
+  void gpiochip_disable_irq(struct gpio_chip *chip, unsigned int offset)
 
 This allows drivers to drive the GPIO as an output while the IRQ is
 disabled. When the IRQ is enabled again, a driver should call::
 
-	void gpiochip_enable_irq(struct gpio_chip *chip, unsigned int offset)
+  void gpiochip_enable_irq(struct gpio_chip *chip, unsigned int offset)
 
 When implementing an irqchip inside a GPIO driver, these two functions should
 typically be called in the .irq_disable() and .irq_enable() callbacks from the
@@ -751,7 +750,7 @@ compliance:
 - Test your driver with the appropriate in-kernel real-time test cases for both
   level and edge IRQs
 
-* [1] http://www.spinics.net/lists/linux-omap/msg120425.html
+* [1] https://lore.kernel.org/r/1437496011-11486-1-git-send-email-bigeasy@linutronix.de/
 * [2] https://lore.kernel.org/r/1443209283-20781-2-git-send-email-grygorii.strashko@ti.com
 * [3] https://lore.kernel.org/r/1443209283-20781-3-git-send-email-grygorii.strashko@ti.com
 
@@ -763,12 +762,12 @@ Sometimes it is useful to allow a GPIO chip driver to request its own GPIO
 descriptors through the gpiolib API. A GPIO driver can use the following
 functions to request and free descriptors::
 
-	struct gpio_desc *gpiochip_request_own_desc(struct gpio_desc *desc,
-						    u16 hwnum,
-						    const char *label,
-						    enum gpiod_flags flags)
+  struct gpio_desc *gpiochip_request_own_desc(struct gpio_desc *desc,
+                                              u16 hwnum,
+                                              const char *label,
+                                              enum gpiod_flags flags)
 
-	void gpiochip_free_own_desc(struct gpio_desc *desc)
+  void gpiochip_free_own_desc(struct gpio_desc *desc)
 
 Descriptors requested with gpiochip_request_own_desc() must be released with
 gpiochip_free_own_desc().

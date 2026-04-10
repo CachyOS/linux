@@ -8,10 +8,10 @@ config MLX5_CORE
 	depends on PCI
 	select AUXILIARY_BUS
 	select NET_DEVLINK
-	depends on VXLAN || !VXLAN
 	depends on MLXFW || !MLXFW
 	depends on PTP_1588_CLOCK_OPTIONAL
 	depends on PCI_HYPERV_INTERFACE || !PCI_HYPERV_INTERFACE
+	depends on HWMON || !HWMON
 	help
 	  Core driver for low level functionality of the ConnectX-4 and
 	  Connect-IB cards by Mellanox Technologies.
@@ -30,6 +30,7 @@ config MLX5_CORE_EN
 	bool "Mellanox 5th generation network adapters (ConnectX series) Ethernet support"
 	depends on NETDEVICES && ETHERNET && INET && PCI && MLX5_CORE
 	select PAGE_POOL
+	select PAGE_POOL_STATS
 	select DIMLIB
 	help
 	  Ethernet support in Mellanox Technologies ConnectX-4 NIC.
@@ -79,13 +80,13 @@ config MLX5_BRIDGE
 	default y
 	help
 	  mlx5 ConnectX offloads support for Ethernet Bridging (BRIDGE).
-	  Enable adding representors of mlx5 uplink and VF ports to Bridge and
-	  offloading rules for traffic between such ports. Supports VLANs (trunk and
+	  Enable offloading FDB rules from a bridge device containing
+	  representors of mlx5 uplink and VF ports. Supports VLANs (trunk and
 	  access modes).
 
 config MLX5_CLS_ACT
 	bool "MLX5 TC classifier action support"
-	depends on MLX5_ESWITCH && NET_CLS_ACT
+	depends on MLX5_ESWITCH && NET_CLS_ACT && NET_TC_SKB_EXT
 	default y
 	help
 	  mlx5 ConnectX offloads support for TC classifier action (NET_CLS_ACT),
@@ -100,7 +101,7 @@ config MLX5_CLS_ACT
 
 config MLX5_TC_CT
 	bool "MLX5 TC connection tracking offload support"
-	depends on MLX5_CLS_ACT && NF_FLOW_TABLE && NET_ACT_CT && NET_TC_SKB_EXT
+	depends on MLX5_CLS_ACT && NF_FLOW_TABLE && NET_ACT_CT
 	default y
 	help
 	  Say Y here if you want to support offloading connection tracking rules
@@ -139,6 +140,14 @@ config MLX5_CORE_IPOIB
 	help
 	  MLX5 IPoIB offloads & acceleration support.
 
+config MLX5_MACSEC
+	bool "Connect-X support for MACSec offload"
+	depends on MLX5_CORE_EN
+	depends on MACSEC
+	default n
+	help
+	  Build support for MACsec cryptography-offload acceleration in the NIC.
+
 config MLX5_EN_IPSEC
 	bool "Mellanox Technologies IPsec Connect-X support"
 	depends on MLX5_CORE_EN
@@ -163,6 +172,16 @@ config MLX5_SW_STEERING
 	help
 	Build support for software-managed steering in the NIC.
 
+config MLX5_HW_STEERING
+	bool "Mellanox Technologies hardware-managed steering"
+	depends on MLX5_CORE_EN && MLX5_ESWITCH
+	default y
+	help
+	Build support for Hardware-Managed Flow Steering (HMFS) in the NIC.
+	HMFS is a new approach to managing steering rules where STEs are
+	written to ICM by HW (as opposed to SW in software-managed steering),
+	which allows higher rate of rule insertion.
+
 config MLX5_SF
 	bool "Mellanox Technologies subfunction device support using auxiliary device"
 	depends on MLX5_CORE && MLX5_CORE_EN
@@ -180,3 +199,22 @@ config MLX5_SF_MANAGER
 	port is managed through devlink.  A subfunction supports RDMA, netdevice
 	and vdpa device. It is similar to a SRIOV VF but it doesn't require
 	SRIOV support.
+
+config MLX5_DPLL
+	tristate "Mellanox 5th generation network adapters (ConnectX series) DPLL support"
+	depends on NETDEVICES && ETHERNET && PCI && MLX5_CORE
+	select DPLL
+	help
+	  DPLL support in Mellanox Technologies ConnectX NICs.
+
+config MLX5_EN_PSP
+	bool "Mellanox Technologies support for PSP cryptography-offload acceleration"
+	depends on INET_PSP
+	depends on MLX5_CORE_EN
+	default y
+	help
+	  mlx5 device offload support for Google PSP Security Protocol offload.
+	  Adds support for PSP encryption offload and for SPI and key generation
+	  interfaces to PSP Stack which supports PSP crypto offload.
+
+	  If unsure, say Y.

@@ -13,6 +13,7 @@
 #include "ishtp-dev.h"
 #include "hbm.h"
 #include "client.h"
+#include "loader.h"
 
 /**
  * ishtp_hbm_fw_cl_allocate() - Allocate FW clients
@@ -33,8 +34,7 @@ static void ishtp_hbm_fw_cl_allocate(struct ishtp_device *dev)
 		return;
 
 	/* allocate storage for fw clients representation */
-	clients = kcalloc(dev->fw_clients_num, sizeof(struct ishtp_fw_client),
-			  GFP_KERNEL);
+	clients = kzalloc_objs(struct ishtp_fw_client, dev->fw_clients_num);
 	if (!clients) {
 		dev->dev_state = ISHTP_DEV_RESETTING;
 		ish_hw_reset(dev);
@@ -570,6 +570,10 @@ void ishtp_hbm_dispatch(struct ishtp_device *dev,
 			return;
 		}
 
+		/* Start firmware loading process if it has loader capability */
+		if (version_res->host_version_supported & ISHTP_SUPPORT_CAP_LOADER)
+			queue_work(dev->unbound_wq, &dev->work_fw_loader);
+
 		dev->version.major_version = HBM_MAJOR_VERSION;
 		dev->version.minor_version = HBM_MINOR_VERSION;
 		if (dev->dev_state == ISHTP_DEV_INIT_CLIENTS &&
@@ -859,9 +863,23 @@ void	recv_hbm(struct ishtp_device *dev, struct ishtp_msg_hdr *ishtp_hdr)
 	dev->rd_msg_fifo_tail = (dev->rd_msg_fifo_tail + IPC_PAYLOAD_SIZE) %
 		(RD_INT_FIFO_SIZE * IPC_PAYLOAD_SIZE);
 	spin_unlock_irqrestore(&dev->rd_msg_spinlock, flags);
-	schedule_work(&dev->bh_hbm_work);
+	queue_work(dev->unbound_wq, &dev->bh_hbm_work);
 eoi:
 	return;
+}
+
+/**
+ * ishtp_loader_recv_msg() - Receive a message from the ISHTP device
+ * @dev: The ISHTP device
+ * @buf: The buffer containing the message
+ */
+static void ishtp_loader_recv_msg(struct ishtp_device *dev, void *buf)
+{
+	if (dev->fw_loader_rx_buf)
+		memcpy(dev->fw_loader_rx_buf, buf, dev->fw_loader_rx_size);
+
+	dev->fw_loader_received = true;
+	wake_up_interruptible(&dev->wait_loader_recvd_msg);
 }
 
 /**
@@ -890,6 +908,8 @@ void recv_fixed_cl_msg(struct ishtp_device *dev,
 		else
 			dev_err(dev->devc, "unknown fixed client msg [%02X]\n",
 				msg_hdr->cmd);
+	} else if (ishtp_hdr->fw_addr == ISHTP_LOADER_CLIENT_ADDR) {
+		ishtp_loader_recv_msg(dev, rd_msg_buf);
 	}
 }
 

@@ -14,9 +14,9 @@
 #include <linux/module.h>
 #include <linux/err.h>
 #include <linux/usb/composite.h>
+#include <linux/usb/func_utils.h>
 
 #include "g_zero.h"
-#include "u_f.h"
 
 /*
  * LOOPBACK FUNCTION ... a testing vehicle for USB peripherals,
@@ -211,9 +211,7 @@ autoconf_fail:
 	if (ret)
 		return ret;
 
-	DBG(cdev, "%s speed %s: IN/%s, OUT/%s\n",
-	    (gadget_is_superspeed(c->cdev->gadget) ? "super" :
-	     (gadget_is_dualspeed(c->cdev->gadget) ? "dual" : "full")),
+	DBG(cdev, "%s: IN/%s, OUT/%s\n",
 			f->name, loop->in_ep->name, loop->out_ep->name);
 	return 0;
 }
@@ -427,7 +425,7 @@ static struct usb_function *loopback_alloc(struct usb_function_instance *fi)
 	struct f_loopback	*loop;
 	struct f_lb_opts	*lb_opts;
 
-	loop = kzalloc(sizeof *loop, GFP_KERNEL);
+	loop = kzalloc_obj(*loop);
 	if (!loop)
 		return ERR_PTR(-ENOMEM);
 
@@ -466,7 +464,7 @@ static void lb_attr_release(struct config_item *item)
 	usb_put_function_instance(&lb_opts->func_inst);
 }
 
-static struct configfs_item_operations lb_item_ops = {
+static const struct configfs_item_operations lb_item_ops = {
 	.release		= lb_attr_release,
 };
 
@@ -570,7 +568,7 @@ static struct usb_function_instance *loopback_alloc_instance(void)
 {
 	struct f_lb_opts *lb_opts;
 
-	lb_opts = kzalloc(sizeof(*lb_opts), GFP_KERNEL);
+	lb_opts = kzalloc_obj(*lb_opts);
 	if (!lb_opts)
 		return ERR_PTR(-ENOMEM);
 	mutex_init(&lb_opts->lock);
@@ -595,4 +593,5 @@ void __exit lb_modexit(void)
 	usb_function_unregister(&Loopbackusb_func);
 }
 
+MODULE_DESCRIPTION("USB peripheral loopback configuration driver");
 MODULE_LICENSE("GPL");

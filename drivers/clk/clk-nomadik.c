@@ -17,6 +17,7 @@
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
 #include <linux/spinlock.h>
+#include <linux/string_choices.h>
 #include <linux/reboot.h>
 
 /*
@@ -99,7 +100,7 @@ static void __init nomadik_src_init(void)
 	if (!src_base) {
 		pr_err("%s: must have src parent node with REGS (%pOFn)\n",
 		       __func__, np);
-		return;
+		goto out_put;
 	}
 
 	/* Set all timers to use the 2.4 MHz TIMCLK */
@@ -116,9 +117,9 @@ static void __init nomadik_src_init(void)
 
 	val = readl(src_base + SRC_XTALCR);
 	pr_info("SXTALO is %s\n",
-		(val & SRC_XTALCR_SXTALDIS) ? "disabled" : "enabled");
+		str_disabled_enabled(val & SRC_XTALCR_SXTALDIS));
 	pr_info("MXTAL is %s\n",
-		(val & SRC_XTALCR_MXTALSTAT) ? "enabled" : "disabled");
+		str_enabled_disabled(val & SRC_XTALCR_MXTALSTAT));
 	if (of_property_read_bool(np, "disable-sxtalo")) {
 		/* The machine uses an external oscillator circuit */
 		val |= SRC_XTALCR_SXTALDIS;
@@ -132,10 +133,13 @@ static void __init nomadik_src_init(void)
 	}
 	writel(val, src_base + SRC_XTALCR);
 	register_reboot_notifier(&nomadik_clk_reboot_notifier);
+
+out_put:
+	of_node_put(np);
 }
 
 /**
- * struct clk_pll1 - Nomadik PLL1 clock
+ * struct clk_pll - Nomadik PLL clock
  * @hw: corresponding clock hardware entry
  * @id: PLL instance: 1 or 2
  */
@@ -266,7 +270,7 @@ pll_clk_register(struct device *dev, const char *name,
 		return ERR_PTR(-EINVAL);
 	}
 
-	pll = kzalloc(sizeof(*pll), GFP_KERNEL);
+	pll = kzalloc_obj(*pll);
 	if (!pll)
 		return ERR_PTR(-ENOMEM);
 
@@ -353,7 +357,7 @@ src_clk_register(struct device *dev, const char *name,
 	struct clk_src *sclk;
 	struct clk_init_data init;
 
-	sclk = kzalloc(sizeof(*sclk), GFP_KERNEL);
+	sclk = kzalloc_obj(*sclk);
 	if (!sclk)
 		return ERR_PTR(-ENOMEM);
 

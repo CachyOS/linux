@@ -3,7 +3,7 @@
  * Maxim MAX77714 Core Driver
  *
  * Copyright (C) 2022 Luca Ceresoli
- * Author: Luca Ceresoli <luca@lucaceresoli.net>
+ * Author: Luca Ceresoli <luca.ceresoli@bootlin.com>
  */
 
 #include <linux/i2c.h>
@@ -143,10 +143,10 @@ static struct i2c_driver max77714_driver = {
 		.name = "max77714",
 		.of_match_table = max77714_dt_match,
 	},
-	.probe_new = max77714_probe,
+	.probe = max77714_probe,
 };
 module_i2c_driver(max77714_driver);
 
 MODULE_DESCRIPTION("Maxim MAX77714 MFD core driver");
-MODULE_AUTHOR("Luca Ceresoli <luca@lucaceresoli.net>");
+MODULE_AUTHOR("Luca Ceresoli <luca.ceresoli@bootlin.com>");
 MODULE_LICENSE("GPL");

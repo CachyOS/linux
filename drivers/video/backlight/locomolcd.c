@@ -16,7 +16,6 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/interrupt.h>
-#include <linux/fb.h>
 #include <linux/backlight.h>
 
 #include <asm/hardware/locomo.h>
@@ -95,8 +94,6 @@ void locomolcd_power(int on)
 	/* read comadj */
 	if (comadj == -1 && machine_is_collie())
 		comadj = 128;
-	if (comadj == -1 && machine_is_poodle())
-		comadj = 118;
 
 	if (on)
 		locomolcd_on(comadj);
@@ -180,14 +177,6 @@ static int locomolcd_probe(struct locomo_dev *ldev)
 	locomolcd_dev = ldev;
 
 	locomo_gpio_set_dir(ldev->dev.parent, LOCOMO_GPIO_FL_VR, 0);
-
-	/*
-	 * the poodle_lcd_power function is called for the first time
-	 * from fs_initcall, which is before locomo is activated.
-	 * We need to recall poodle_lcd_power here
-	 */
-	if (machine_is_poodle())
-		locomolcd_power(1);
 
 	local_irq_restore(flags);
 

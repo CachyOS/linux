@@ -266,7 +266,7 @@ static int au1550nd_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+	ctx = kzalloc_obj(*ctx);
 	if (!ctx)
 		return -ENOMEM;
 
@@ -337,7 +337,7 @@ out1:
 	return ret;
 }
 
-static int au1550nd_remove(struct platform_device *pdev)
+static void au1550nd_remove(struct platform_device *pdev)
 {
 	struct au1550nd_ctx *ctx = platform_get_drvdata(pdev);
 	struct resource *r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -350,7 +350,6 @@ static int au1550nd_remove(struct platform_device *pdev)
 	iounmap(ctx->base);
 	release_mem_region(r->start, 0x1000);
 	kfree(ctx);
-	return 0;
 }
 
 static struct platform_driver au1550nd_driver = {

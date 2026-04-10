@@ -312,14 +312,12 @@ error:
 	return ret;
 }
 
-static int max197_remove(struct platform_device *pdev)
+static void max197_remove(struct platform_device *pdev)
 {
 	struct max197_data *data = platform_get_drvdata(pdev);
 
 	hwmon_device_unregister(data->hwmon_dev);
 	sysfs_remove_group(&pdev->dev.kobj, &max197_sysfs_group);
-
-	return 0;
 }
 
 static const struct platform_device_id max197_device_ids[] = {

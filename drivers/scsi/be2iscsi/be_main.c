@@ -139,7 +139,7 @@ beiscsi_disp_param(_name)\
 beiscsi_change_param(_name, _minval, _maxval, _defval)\
 beiscsi_store_param(_name)\
 beiscsi_init_param(_name, _minval, _maxval, _defval)\
-DEVICE_ATTR(beiscsi_##_name, S_IRUGO | S_IWUSR,\
+static DEVICE_ATTR(beiscsi_##_name, S_IRUGO | S_IWUSR,\
 	      beiscsi_##_name##_disp, beiscsi_##_name##_store)
 
 /*
@@ -155,14 +155,14 @@ BEISCSI_RW_ATTR(log_enable, 0x00,
 		"\t\t\t\tConfiguration Path	: 0x20\n"
 		"\t\t\t\tiSCSI Protocol		: 0x40\n");
 
-DEVICE_ATTR(beiscsi_drvr_ver, S_IRUGO, beiscsi_drvr_ver_disp, NULL);
-DEVICE_ATTR(beiscsi_adapter_family, S_IRUGO, beiscsi_adap_family_disp, NULL);
-DEVICE_ATTR(beiscsi_fw_ver, S_IRUGO, beiscsi_fw_ver_disp, NULL);
-DEVICE_ATTR(beiscsi_phys_port, S_IRUGO, beiscsi_phys_port_disp, NULL);
-DEVICE_ATTR(beiscsi_active_session_count, S_IRUGO,
-	     beiscsi_active_session_disp, NULL);
-DEVICE_ATTR(beiscsi_free_session_count, S_IRUGO,
-	     beiscsi_free_session_disp, NULL);
+static DEVICE_ATTR(beiscsi_drvr_ver, S_IRUGO, beiscsi_drvr_ver_disp, NULL);
+static DEVICE_ATTR(beiscsi_adapter_family, S_IRUGO, beiscsi_adap_family_disp, NULL);
+static DEVICE_ATTR(beiscsi_fw_ver, S_IRUGO, beiscsi_fw_ver_disp, NULL);
+static DEVICE_ATTR(beiscsi_phys_port, S_IRUGO, beiscsi_phys_port_disp, NULL);
+static DEVICE_ATTR(beiscsi_active_session_count, S_IRUGO,
+		   beiscsi_active_session_disp, NULL);
+static DEVICE_ATTR(beiscsi_free_session_count, S_IRUGO,
+		   beiscsi_free_session_disp, NULL);
 
 static struct attribute *beiscsi_attrs[] = {
 	&dev_attr_beiscsi_log_enable.attr,
@@ -231,6 +231,7 @@ static int beiscsi_eh_abort(struct scsi_cmnd *sc)
 	cls_session = starget_to_session(scsi_target(sc->device));
 	session = cls_session->dd_data;
 
+completion_check:
 	/* check if we raced, task just got cleaned up under us */
 	spin_lock_bh(&session->back_lock);
 	if (!abrt_task || !abrt_task->sc) {
@@ -238,7 +239,13 @@ static int beiscsi_eh_abort(struct scsi_cmnd *sc)
 		return SUCCESS;
 	}
 	/* get a task ref till FW processes the req for the ICD used */
-	__iscsi_get_task(abrt_task);
+	if (!iscsi_get_task(abrt_task)) {
+		spin_unlock(&session->back_lock);
+		/* We are just about to call iscsi_free_task so wait for it. */
+		udelay(5);
+		goto completion_check;
+	}
+
 	abrt_io_task = abrt_task->dd_data;
 	conn = abrt_task->conn;
 	beiscsi_conn = conn->dd_data;
@@ -296,7 +303,7 @@ static int beiscsi_eh_device_reset(struct scsi_cmnd *sc)
 	beiscsi_conn = conn->dd_data;
 	phba = beiscsi_conn->phba;
 
-	inv_tbl = kzalloc(sizeof(*inv_tbl), GFP_ATOMIC);
+	inv_tbl = kzalloc_obj(*inv_tbl, GFP_ATOMIC);
 	if (!inv_tbl) {
 		spin_unlock_bh(&session->frwd_lock);
 		beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_EH,
@@ -323,7 +330,15 @@ static int beiscsi_eh_device_reset(struct scsi_cmnd *sc)
 		}
 
 		/* get a task ref till FW processes the req for the ICD used */
-		__iscsi_get_task(task);
+		if (!iscsi_get_task(task)) {
+			/*
+			 * The task has completed in the driver and is
+			 * completing in libiscsi. Just ignore it here. When we
+			 * call iscsi_eh_device_reset, it will wait for us.
+			 */
+			continue;
+		}
+
 		io_task = task->dd_data;
 		/* mark WRB invalid which have been not processed by FW yet */
 		if (is_chip_be2_be3r(phba)) {
@@ -383,7 +398,7 @@ static const struct pci_device_id beiscsi_pci_id_table[] = {
 MODULE_DEVICE_TABLE(pci, beiscsi_pci_id_table);
 
 
-static struct scsi_host_template beiscsi_sht = {
+static const struct scsi_host_template beiscsi_sht = {
 	.module = THIS_MODULE,
 	.name = "Emulex 10Gbe open-iscsi Initiator Driver",
 	.proc_name = DRV_NAME,
@@ -2461,25 +2476,21 @@ static int beiscsi_alloc_mem(struct beiscsi_hba *phba)
 
 	/* Allocate memory for wrb_context */
 	phwi_ctrlr = phba->phwi_ctrlr;
-	phwi_ctrlr->wrb_context = kcalloc(phba->params.cxns_per_ctrl,
-					  sizeof(struct hwi_wrb_context),
-					  GFP_KERNEL);
+	phwi_ctrlr->wrb_context = kzalloc_objs(struct hwi_wrb_context,
+					       phba->params.cxns_per_ctrl);
 	if (!phwi_ctrlr->wrb_context) {
 		kfree(phba->phwi_ctrlr);
 		return -ENOMEM;
 	}
 
-	phba->init_mem = kcalloc(SE_MEM_MAX, sizeof(*mem_descr),
-				 GFP_KERNEL);
+	phba->init_mem = kzalloc_objs(*mem_descr, SE_MEM_MAX);
 	if (!phba->init_mem) {
 		kfree(phwi_ctrlr->wrb_context);
 		kfree(phba->phwi_ctrlr);
 		return -ENOMEM;
 	}
 
-	mem_arr_orig = kmalloc_array(BEISCSI_MAX_FRAGS_INIT,
-				     sizeof(*mem_arr_orig),
-				     GFP_KERNEL);
+	mem_arr_orig = kmalloc_objs(*mem_arr_orig, BEISCSI_MAX_FRAGS_INIT);
 	if (!mem_arr_orig) {
 		kfree(phba->init_mem);
 		kfree(phwi_ctrlr->wrb_context);
@@ -2527,8 +2538,7 @@ static int beiscsi_alloc_mem(struct beiscsi_hba *phba)
 		} while (alloc_size);
 		mem_descr->num_elements = j;
 		mem_descr->size_in_bytes = phba->mem_req[i];
-		mem_descr->mem_array = kmalloc_array(j, sizeof(*mem_arr),
-						     GFP_KERNEL);
+		mem_descr->mem_array = kmalloc_objs(*mem_arr, j);
 		if (!mem_descr->mem_array)
 			goto free_mem;
 
@@ -2614,9 +2624,8 @@ static int beiscsi_init_wrb_handle(struct beiscsi_hba *phba)
 
 	/* Allocate memory for WRBQ */
 	phwi_ctxt = phwi_ctrlr->phwi_ctxt;
-	phwi_ctxt->be_wrbq = kcalloc(phba->params.cxns_per_ctrl,
-				     sizeof(struct be_queue_info),
-				     GFP_KERNEL);
+	phwi_ctxt->be_wrbq = kzalloc_objs(struct be_queue_info,
+					  phba->params.cxns_per_ctrl);
 	if (!phwi_ctxt->be_wrbq) {
 		beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
 			    "BM_%d : WRBQ Mem Alloc Failed\n");
@@ -2626,18 +2635,16 @@ static int beiscsi_init_wrb_handle(struct beiscsi_hba *phba)
 	for (index = 0; index < phba->params.cxns_per_ctrl; index++) {
 		pwrb_context = &phwi_ctrlr->wrb_context[index];
 		pwrb_context->pwrb_handle_base =
-				kcalloc(phba->params.wrbs_per_cxn,
-					sizeof(struct wrb_handle *),
-					GFP_KERNEL);
+				kzalloc_objs(struct wrb_handle *,
+					     phba->params.wrbs_per_cxn);
 		if (!pwrb_context->pwrb_handle_base) {
 			beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
 				    "BM_%d : Mem Alloc Failed. Failing to load\n");
 			goto init_wrb_hndl_failed;
 		}
 		pwrb_context->pwrb_handle_basestd =
-				kcalloc(phba->params.wrbs_per_cxn,
-					sizeof(struct wrb_handle *),
-					GFP_KERNEL);
+				kzalloc_objs(struct wrb_handle *,
+					     phba->params.wrbs_per_cxn);
 		if (!pwrb_context->pwrb_handle_basestd) {
 			beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
 				    "BM_%d : Mem Alloc Failed. Failing to load\n");
@@ -2695,6 +2702,7 @@ init_wrb_hndl_failed:
 		kfree(pwrb_context->pwrb_handle_base);
 		kfree(pwrb_context->pwrb_handle_basestd);
 	}
+	kfree(phwi_ctxt->be_wrbq);
 	return -ENOMEM;
 }
 
@@ -3347,9 +3355,7 @@ beiscsi_create_wrb_rings(struct beiscsi_hba *phba,
 	idx = 0;
 	mem_descr = phba->init_mem;
 	mem_descr += HWI_MEM_WRB;
-	pwrb_arr = kmalloc_array(phba->params.cxns_per_ctrl,
-				 sizeof(*pwrb_arr),
-				 GFP_KERNEL);
+	pwrb_arr = kmalloc_objs(*pwrb_arr, phba->params.cxns_per_ctrl);
 	if (!pwrb_arr) {
 		beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
 			    "BM_%d : Memory alloc failed in create wrb ring.\n");
@@ -3886,18 +3892,16 @@ static int beiscsi_init_sgl_handle(struct beiscsi_hba *phba)
 	mem_descr_sglh = phba->init_mem;
 	mem_descr_sglh += HWI_MEM_SGLH;
 	if (1 == mem_descr_sglh->num_elements) {
-		phba->io_sgl_hndl_base = kcalloc(phba->params.ios_per_ctrl,
-						 sizeof(struct sgl_handle *),
-						 GFP_KERNEL);
+		phba->io_sgl_hndl_base = kzalloc_objs(struct sgl_handle *,
+						      phba->params.ios_per_ctrl);
 		if (!phba->io_sgl_hndl_base) {
 			beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
 				    "BM_%d : Mem Alloc Failed. Failing to load\n");
 			return -ENOMEM;
 		}
 		phba->eh_sgl_hndl_base =
-			kcalloc(phba->params.icds_per_ctrl -
-					phba->params.ios_per_ctrl,
-				sizeof(struct sgl_handle *), GFP_KERNEL);
+			kzalloc_objs(struct sgl_handle *,
+				     phba->params.icds_per_ctrl - phba->params.ios_per_ctrl);
 		if (!phba->eh_sgl_hndl_base) {
 			kfree(phba->io_sgl_hndl_base);
 			beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
@@ -3988,8 +3992,7 @@ static int hba_setup_cid_tbls(struct beiscsi_hba *phba)
 
 	for (ulp_num = 0; ulp_num < BEISCSI_ULP_COUNT; ulp_num++) {
 		if (test_bit(ulp_num, (void *)&phba->fw_config.ulp_supported)) {
-			ptr_cid_info = kzalloc(sizeof(struct ulp_cid_info),
-					       GFP_KERNEL);
+			ptr_cid_info = kzalloc_obj(struct ulp_cid_info);
 
 			if (!ptr_cid_info) {
 				ret = -ENOMEM;
@@ -4015,18 +4018,16 @@ static int hba_setup_cid_tbls(struct beiscsi_hba *phba)
 			phba->cid_array_info[ulp_num] = ptr_cid_info;
 		}
 	}
-	phba->ep_array = kcalloc(phba->params.cxns_per_ctrl,
-				 sizeof(struct iscsi_endpoint *),
-				 GFP_KERNEL);
+	phba->ep_array = kzalloc_objs(struct iscsi_endpoint *,
+				      phba->params.cxns_per_ctrl);
 	if (!phba->ep_array) {
 		ret = -ENOMEM;
 
 		goto free_memory;
 	}
 
-	phba->conn_table = kcalloc(phba->params.cxns_per_ctrl,
-				   sizeof(struct beiscsi_conn *),
-				   GFP_KERNEL);
+	phba->conn_table = kzalloc_objs(struct beiscsi_conn *,
+					phba->params.cxns_per_ctrl);
 	if (!phba->conn_table) {
 		kfree(phba->ep_array);
 		phba->ep_array = NULL;
@@ -5224,7 +5225,7 @@ static void beiscsi_eqd_update_work(struct work_struct *work)
 
 static void beiscsi_hw_tpe_check(struct timer_list *t)
 {
-	struct beiscsi_hba *phba = from_timer(phba, t, hw_check);
+	struct beiscsi_hba *phba = timer_container_of(phba, t, hw_check);
 	u32 wait;
 
 	/* if not TPE, do nothing */
@@ -5241,7 +5242,7 @@ static void beiscsi_hw_tpe_check(struct timer_list *t)
 
 static void beiscsi_hw_health_check(struct timer_list *t)
 {
-	struct beiscsi_hba *phba = from_timer(phba, t, hw_check);
+	struct beiscsi_hba *phba = timer_container_of(phba, t, hw_check);
 
 	beiscsi_detect_ue(phba);
 	if (beiscsi_detect_ue(phba)) {
@@ -5432,7 +5433,7 @@ static pci_ers_result_t beiscsi_eeh_err_detected(struct pci_dev *pdev,
 		    "BM_%d : EEH error detected\n");
 
 	/* first stop UE detection when PCI error detected */
-	del_timer_sync(&phba->hw_check);
+	timer_delete_sync(&phba->hw_check);
 	cancel_delayed_work_sync(&phba->recover_port);
 
 	/* sessions are no longer valid, so first fail the sessions */
@@ -5512,7 +5513,6 @@ static int beiscsi_dev_probe(struct pci_dev *pcidev,
 	struct beiscsi_hba *phba = NULL;
 	struct be_eq_obj *pbe_eq;
 	unsigned int s_handle;
-	char wq_name[20];
 	int ret, i;
 
 	ret = beiscsi_enable_pci(pcidev);
@@ -5529,13 +5529,6 @@ static int beiscsi_dev_probe(struct pci_dev *pcidev,
 		ret = -ENOMEM;
 		goto disable_pci;
 	}
-
-	/* Enable EEH reporting */
-	ret = pci_enable_pcie_error_reporting(pcidev);
-	if (ret)
-		beiscsi_log(phba, KERN_WARNING, BEISCSI_LOG_INIT,
-			    "BM_%d : PCIe Error Reporting "
-			    "Enabling Failed\n");
 
 	pci_save_state(pcidev);
 
@@ -5625,9 +5618,9 @@ static int beiscsi_dev_probe(struct pci_dev *pcidev,
 
 	phba->ctrl.mcc_alloc_index = phba->ctrl.mcc_free_index = 0;
 
-	snprintf(wq_name, sizeof(wq_name), "beiscsi_%02x_wq",
-		 phba->shost->host_no);
-	phba->wq = alloc_workqueue("%s", WQ_MEM_RECLAIM, 1, wq_name);
+	phba->wq = alloc_workqueue("beiscsi_%02x_wq",
+				   WQ_MEM_RECLAIM | WQ_PERCPU, 1,
+				   phba->shost->host_no);
 	if (!phba->wq) {
 		beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
 			    "BM_%d : beiscsi_dev_probe-"
@@ -5721,7 +5714,6 @@ free_hba:
 	pci_disable_msix(phba->pcidev);
 	pci_dev_put(phba->pcidev);
 	iscsi_host_free(phba->shost);
-	pci_disable_pcie_error_reporting(pcidev);
 	pci_set_drvdata(pcidev, NULL);
 disable_pci:
 	pci_release_regions(pcidev);
@@ -5740,12 +5732,12 @@ static void beiscsi_remove(struct pci_dev *pcidev)
 	}
 
 	/* first stop UE detection before unloading */
-	del_timer_sync(&phba->hw_check);
+	timer_delete_sync(&phba->hw_check);
 	cancel_delayed_work_sync(&phba->recover_port);
 	cancel_work_sync(&phba->sess_work);
 
 	beiscsi_iface_destroy_default(phba);
-	iscsi_host_remove(phba->shost);
+	iscsi_host_remove(phba->shost, false);
 	beiscsi_disable_port(phba, 1);
 
 	/* after cancelling boot_work */
@@ -5764,14 +5756,13 @@ static void beiscsi_remove(struct pci_dev *pcidev)
 
 	pci_dev_put(phba->pcidev);
 	iscsi_host_free(phba->shost);
-	pci_disable_pcie_error_reporting(pcidev);
 	pci_set_drvdata(pcidev, NULL);
 	pci_release_regions(pcidev);
 	pci_disable_device(pcidev);
 }
 
 
-static struct pci_error_handlers beiscsi_eeh_handlers = {
+static const struct pci_error_handlers beiscsi_eeh_handlers = {
 	.error_detected = beiscsi_eeh_err_detected,
 	.slot_reset = beiscsi_eeh_reset,
 	.resume = beiscsi_eeh_resume,

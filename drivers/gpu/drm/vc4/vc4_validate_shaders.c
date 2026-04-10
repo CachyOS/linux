@@ -41,6 +41,8 @@
  * this validation is only performed at BO creation time.
  */
 
+#include <drm/drm_print.h>
+
 #include "vc4_drv.h"
 #include "vc4_qpu_defines.h"
 
@@ -776,14 +778,18 @@ vc4_handle_branch_target(struct vc4_shader_validation_state *validation_state)
 }
 
 struct vc4_validated_shader_info *
-vc4_validate_shader(struct drm_gem_cma_object *shader_obj)
+vc4_validate_shader(struct drm_gem_dma_object *shader_obj)
 {
+	struct vc4_dev *vc4 = to_vc4_dev(shader_obj->base.dev);
 	bool found_shader_end = false;
 	int shader_end_ip = 0;
 	uint32_t last_thread_switch_ip = -3;
 	uint32_t ip;
 	struct vc4_validated_shader_info *validated_shader = NULL;
 	struct vc4_shader_validation_state validation_state;
+
+	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
+		return NULL;
 
 	memset(&validation_state, 0, sizeof(validation_state));
 	validation_state.shader = shader_obj->vaddr;
@@ -797,7 +803,7 @@ vc4_validate_shader(struct drm_gem_cma_object *shader_obj)
 	if (!validation_state.branch_targets)
 		goto fail;
 
-	validated_shader = kcalloc(1, sizeof(*validated_shader), GFP_KERNEL);
+	validated_shader = kzalloc_objs(*validated_shader, 1);
 	if (!validated_shader)
 		goto fail;
 

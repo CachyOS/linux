@@ -49,34 +49,19 @@ static void vgem_fence_release(struct dma_fence *base)
 {
 	struct vgem_fence *fence = container_of(base, typeof(*fence), base);
 
-	del_timer_sync(&fence->timer);
+	timer_delete_sync(&fence->timer);
 	dma_fence_free(&fence->base);
-}
-
-static void vgem_fence_value_str(struct dma_fence *fence, char *str, int size)
-{
-	snprintf(str, size, "%llu", fence->seqno);
-}
-
-static void vgem_fence_timeline_value_str(struct dma_fence *fence, char *str,
-					  int size)
-{
-	snprintf(str, size, "%llu",
-		 dma_fence_is_signaled(fence) ? fence->seqno : 0);
 }
 
 static const struct dma_fence_ops vgem_fence_ops = {
 	.get_driver_name = vgem_fence_get_driver_name,
 	.get_timeline_name = vgem_fence_get_timeline_name,
 	.release = vgem_fence_release,
-
-	.fence_value_str = vgem_fence_value_str,
-	.timeline_value_str = vgem_fence_timeline_value_str,
 };
 
 static void vgem_fence_timeout(struct timer_list *t)
 {
-	struct vgem_fence *fence = from_timer(fence, t, timer);
+	struct vgem_fence *fence = timer_container_of(fence, t, timer);
 
 	dma_fence_signal(&fence->base);
 }
@@ -86,7 +71,7 @@ static struct dma_fence *vgem_fence_create(struct vgem_file *vfile,
 {
 	struct vgem_fence *fence;
 
-	fence = kzalloc(sizeof(*fence), GFP_KERNEL);
+	fence = kzalloc_obj(*fence);
 	if (!fence)
 		return NULL;
 
@@ -94,7 +79,7 @@ static struct dma_fence *vgem_fence_create(struct vgem_file *vfile,
 	dma_fence_init(&fence->base, &vgem_fence_ops, &fence->lock,
 		       dma_fence_context_alloc(1), 1);
 
-	timer_setup(&fence->timer, vgem_fence_timeout, 0);
+	timer_setup(&fence->timer, vgem_fence_timeout, TIMER_IRQSAFE);
 
 	/* We force the fence to expire within 10s to prevent driver hangs */
 	mod_timer(&fence->timer, jiffies + VGEM_FENCE_TIMEOUT);
@@ -249,4 +234,5 @@ void vgem_fence_close(struct vgem_file *vfile)
 {
 	idr_for_each(&vfile->fence_idr, __vgem_fence_idr_fini, vfile);
 	idr_destroy(&vfile->fence_idr);
+	mutex_destroy(&vfile->fence_mutex);
 }

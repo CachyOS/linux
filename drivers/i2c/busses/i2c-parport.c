@@ -288,7 +288,7 @@ static void i2c_parport_attach(struct parport *port)
 		return;
 	}
 
-	adapter = kzalloc(sizeof(struct i2c_par), GFP_KERNEL);
+	adapter = kzalloc_obj(struct i2c_par);
 	if (!adapter)
 		return;
 	memset(&i2c_parport_cb, 0, sizeof(i2c_parport_cb));
@@ -308,7 +308,7 @@ static void i2c_parport_attach(struct parport *port)
 	/* Fill the rest of the structure */
 	adapter->adapter.owner = THIS_MODULE;
 	adapter->adapter.class = I2C_CLASS_HWMON;
-	strlcpy(adapter->adapter.name, "Parallel port adapter",
+	strscpy(adapter->adapter.name, "Parallel port adapter",
 		sizeof(adapter->adapter.name));
 	adapter->algo_data = parport_algo_data;
 	/* Slow down if we can't sense SCL */
@@ -400,7 +400,6 @@ static struct parport_driver i2c_parport_driver = {
 	.name = "i2c-parport",
 	.match_port = i2c_parport_attach,
 	.detach = i2c_parport_detach,
-	.devmodel = true,
 };
 module_parport_driver(i2c_parport_driver);
 

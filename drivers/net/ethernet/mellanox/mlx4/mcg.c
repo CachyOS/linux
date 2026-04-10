@@ -162,7 +162,7 @@ static int new_steering_entry(struct mlx4_dev *dev, u8 port,
 		return -EINVAL;
 
 	s_steer = &mlx4_priv(dev)->steer[port - 1];
-	new_entry = kzalloc(sizeof(*new_entry), GFP_KERNEL);
+	new_entry = kzalloc_obj(*new_entry);
 	if (!new_entry)
 		return -ENOMEM;
 
@@ -175,7 +175,7 @@ static int new_steering_entry(struct mlx4_dev *dev, u8 port,
 	 */
 	pqp = get_promisc_qp(dev, port, steer, qpn);
 	if (pqp) {
-		dqp = kmalloc(sizeof(*dqp), GFP_KERNEL);
+		dqp = kmalloc_obj(*dqp);
 		if (!dqp) {
 			err = -ENOMEM;
 			goto out_alloc;
@@ -274,7 +274,7 @@ static int existing_steering_entry(struct mlx4_dev *dev, u8 port,
 	}
 
 	/* add the qp as a duplicate on this index */
-	dqp = kmalloc(sizeof(*dqp), GFP_KERNEL);
+	dqp = kmalloc_obj(*dqp);
 	if (!dqp)
 		return -ENOMEM;
 	dqp->qpn = qpn;
@@ -294,7 +294,7 @@ static bool check_duplicate_entry(struct mlx4_dev *dev, u8 port,
 	struct mlx4_promisc_qp *dqp, *tmp_dqp;
 
 	if (port < 1 || port > dev->caps.num_ports)
-		return NULL;
+		return false;
 
 	s_steer = &mlx4_priv(dev)->steer[port - 1];
 
@@ -375,7 +375,7 @@ static bool can_remove_steering_entry(struct mlx4_dev *dev, u8 port,
 	bool ret = false;
 
 	if (port < 1 || port > dev->caps.num_ports)
-		return NULL;
+		return false;
 
 	s_steer = &mlx4_priv(dev)->steer[port - 1];
 
@@ -443,7 +443,7 @@ static int add_promisc_qp(struct mlx4_dev *dev, u8 port,
 		goto out_mutex;
 	}
 
-	pqp = kmalloc(sizeof(*pqp), GFP_KERNEL);
+	pqp = kmalloc_obj(*pqp);
 	if (!pqp) {
 		err = -ENOMEM;
 		goto out_mutex;
@@ -479,7 +479,7 @@ static int add_promisc_qp(struct mlx4_dev *dev, u8 port,
 					/* Entry already exists.
 					 * Add to duplicates.
 					 */
-					dqp = kmalloc(sizeof(*dqp), GFP_KERNEL);
+					dqp = kmalloc_obj(*dqp);
 					if (!dqp) {
 						err = -ENOMEM;
 						goto out_mailbox;

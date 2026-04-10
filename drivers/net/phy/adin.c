@@ -68,8 +68,29 @@
 #define ADIN1300_EEE_CAP_REG			0x8000
 #define ADIN1300_EEE_ADV_REG			0x8001
 #define ADIN1300_EEE_LPABLE_REG			0x8002
+
+#define ADIN1300_FLD_EN_REG			0x8E27
+#define   ADIN1300_FLD_PCS_ERR_100_EN		BIT(7)
+#define   ADIN1300_FLD_PCS_ERR_1000_EN		BIT(6)
+#define   ADIN1300_FLD_SLCR_OUT_STUCK_100_EN	BIT(5)
+#define   ADIN1300_FLD_SLCR_OUT_STUCK_1000_EN	BIT(4)
+#define   ADIN1300_FLD_SLCR_IN_ZDET_100_EN	BIT(3)
+#define   ADIN1300_FLD_SLCR_IN_ZDET_1000_EN	BIT(2)
+#define   ADIN1300_FLD_SLCR_IN_INVLD_100_EN	BIT(1)
+#define   ADIN1300_FLD_SLCR_IN_INVLD_1000_EN	BIT(0)
+/* These bits are the ones which are enabled by default. */
+#define ADIN1300_FLD_EN_ON	\
+	(ADIN1300_FLD_SLCR_OUT_STUCK_100_EN | \
+	 ADIN1300_FLD_SLCR_OUT_STUCK_1000_EN | \
+	 ADIN1300_FLD_SLCR_IN_ZDET_100_EN | \
+	 ADIN1300_FLD_SLCR_IN_ZDET_1000_EN | \
+	 ADIN1300_FLD_SLCR_IN_INVLD_1000_EN)
+
 #define ADIN1300_CLOCK_STOP_REG			0x9400
 #define ADIN1300_LPI_WAKE_ERR_CNT_REG		0xa000
+
+#define ADIN1300_B_100_ZPTM_DIMRX		0xB685
+#define ADIN1300_B_100_ZPTM_EN_DIMRX		BIT(0)
 
 #define ADIN1300_CDIAG_RUN			0xba1b
 #define   ADIN1300_CDIAG_RUN_EN			BIT(0)
@@ -416,6 +437,37 @@ static int adin_set_edpd(struct phy_device *phydev, u16 tx_interval)
 			  val);
 }
 
+static int adin_get_fast_down(struct phy_device *phydev, u8 *msecs)
+{
+	int reg;
+
+	reg = phy_read_mmd(phydev, MDIO_MMD_VEND1, ADIN1300_FLD_EN_REG);
+	if (reg < 0)
+		return reg;
+
+	if (reg & ADIN1300_FLD_EN_ON)
+		*msecs = ETHTOOL_PHY_FAST_LINK_DOWN_ON;
+	else
+		*msecs = ETHTOOL_PHY_FAST_LINK_DOWN_OFF;
+
+	return 0;
+}
+
+static int adin_set_fast_down(struct phy_device *phydev, const u8 *msecs)
+{
+	if (*msecs == ETHTOOL_PHY_FAST_LINK_DOWN_ON)
+		return phy_set_bits_mmd(phydev, MDIO_MMD_VEND1,
+					ADIN1300_FLD_EN_REG,
+					ADIN1300_FLD_EN_ON);
+
+	if (*msecs == ETHTOOL_PHY_FAST_LINK_DOWN_OFF)
+		return phy_clear_bits_mmd(phydev, MDIO_MMD_VEND1,
+					  ADIN1300_FLD_EN_REG,
+					  ADIN1300_FLD_EN_ON);
+
+	return -EINVAL;
+}
+
 static int adin_get_tunable(struct phy_device *phydev,
 			    struct ethtool_tunable *tuna, void *data)
 {
@@ -424,6 +476,8 @@ static int adin_get_tunable(struct phy_device *phydev,
 		return adin_get_downshift(phydev, data);
 	case ETHTOOL_PHY_EDPD:
 		return adin_get_edpd(phydev, data);
+	case ETHTOOL_PHY_FAST_LINK_DOWN:
+		return adin_get_fast_down(phydev, data);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -437,6 +491,8 @@ static int adin_set_tunable(struct phy_device *phydev,
 		return adin_set_downshift(phydev, *(const u8 *)data);
 	case ETHTOOL_PHY_EDPD:
 		return adin_set_edpd(phydev, *(const u16 *)data);
+	case ETHTOOL_PHY_FAST_LINK_DOWN:
+		return adin_set_fast_down(phydev, data);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -469,6 +525,19 @@ static int adin_config_clk_out(struct phy_device *phydev)
 			      ADIN1300_GE_CLK_CFG_MASK, sel);
 }
 
+static int adin_config_zptm100(struct phy_device *phydev)
+{
+	struct device *dev = &phydev->mdio.dev;
+
+	if (!(device_property_read_bool(dev, "adi,low-cmode-impedance")))
+		return 0;
+
+	/* clear bit 0 to configure for lowest common-mode impedance */
+	return phy_clear_bits_mmd(phydev, MDIO_MMD_VEND1,
+					  ADIN1300_B_100_ZPTM_DIMRX,
+					  ADIN1300_B_100_ZPTM_EN_DIMRX);
+}
+
 static int adin_config_init(struct phy_device *phydev)
 {
 	int rc;
@@ -492,6 +561,10 @@ static int adin_config_init(struct phy_device *phydev)
 		return rc;
 
 	rc = adin_config_clk_out(phydev);
+	if (rc < 0)
+		return rc;
+
+	rc = adin_config_zptm100(phydev);
 	if (rc < 0)
 		return rc;
 
@@ -748,10 +821,8 @@ static void adin_get_strings(struct phy_device *phydev, u8 *data)
 {
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(adin_hw_stats); i++) {
-		strlcpy(&data[i * ETH_GSTRING_LEN],
-			adin_hw_stats[i].string, ETH_GSTRING_LEN);
-	}
+	for (i = 0; i < ARRAY_SIZE(adin_hw_stats); i++)
+		ethtool_puts(&data, adin_hw_stats[i].string);
 }
 
 static int adin_read_mmd_stat_regs(struct phy_device *phydev,
@@ -987,7 +1058,7 @@ static struct phy_driver adin_driver[] = {
 
 module_phy_driver(adin_driver);
 
-static struct mdio_device_id __maybe_unused adin_tbl[] = {
+static const struct mdio_device_id __maybe_unused adin_tbl[] = {
 	{ PHY_ID_MATCH_MODEL(PHY_ID_ADIN1200) },
 	{ PHY_ID_MATCH_MODEL(PHY_ID_ADIN1300) },
 	{ }

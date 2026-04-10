@@ -15,6 +15,7 @@
 #include <linux/spinlock_types.h>
 #include <linux/rwsem.h>
 #include <linux/kref.h>
+#include <linux/completion.h>
 #include <linux/comedi.h>
 
 #define COMEDI_VERSION(a, b, c) (((a) << 16) + ((b) << 8) + (c))
@@ -234,16 +235,12 @@ struct comedi_buf_page {
  *
  * A COMEDI data buffer is allocated as individual pages, either in
  * conventional memory or DMA coherent memory, depending on the attached,
- * low-level hardware device.  (The buffer pages also get mapped into the
- * kernel's contiguous virtual address space pointed to by the 'prealloc_buf'
- * member of &struct comedi_async.)
+ * low-level hardware device.
  *
  * The buffer is normally freed when the COMEDI device is detached from the
  * low-level driver (which may happen due to device removal), but if it happens
  * to be mmapped at the time, the pages cannot be freed until the buffer has
- * been munmapped.  That is what the reference counter is for.  (The virtual
- * address space pointed by 'prealloc_buf' is freed when the COMEDI device is
- * detached.)
+ * been munmapped.  That is what the reference counter is for.
  */
 struct comedi_buf_map {
 	struct device *dma_hw_dev;
@@ -255,7 +252,6 @@ struct comedi_buf_map {
 
 /**
  * struct comedi_async - Control data for asynchronous COMEDI commands
- * @prealloc_buf: Kernel virtual address of allocated acquisition buffer.
  * @prealloc_bufsz: Buffer size (in bytes).
  * @buf_map: Map of buffer pages.
  * @max_bufsize: Maximum allowed buffer size (in bytes).
@@ -277,6 +273,8 @@ struct comedi_buf_map {
  * @events: Bit-vector of events that have occurred.
  * @cmd: Details of comedi command in progress.
  * @wait_head: Task wait queue for file reader or writer.
+ * @run_complete: "run complete" completion event.
+ * @run_active: "run active" reference counter.
  * @cb_mask: Bit-vector of events that should wake waiting tasks.
  * @inttrig: Software trigger function for command, or NULL.
  *
@@ -344,7 +342,6 @@ struct comedi_buf_map {
  * less than or equal to UINT_MAX).
  */
 struct comedi_async {
-	void *prealloc_buf;
 	unsigned int prealloc_bufsz;
 	struct comedi_buf_map *buf_map;
 	unsigned int max_bufsize;
@@ -363,6 +360,8 @@ struct comedi_async {
 	unsigned int events;
 	struct comedi_cmd cmd;
 	wait_queue_head_t wait_head;
+	struct completion run_complete;
+	refcount_t run_active;
 	unsigned int cb_mask;
 	int (*inttrig)(struct comedi_device *dev, struct comedi_subdevice *s,
 		       unsigned int x);
@@ -590,6 +589,8 @@ struct comedi_device *comedi_dev_get_from_minor(unsigned int minor);
 int comedi_dev_put(struct comedi_device *dev);
 
 bool comedi_is_subdevice_running(struct comedi_subdevice *s);
+bool comedi_get_is_subdevice_running(struct comedi_subdevice *s);
+void comedi_put_is_subdevice_running(struct comedi_subdevice *s);
 
 void *comedi_alloc_spriv(struct comedi_subdevice *s, size_t size);
 void comedi_set_spriv_auto_free(struct comedi_subdevice *s);
@@ -633,7 +634,7 @@ extern const struct comedi_lrange range_unknown;
  */
 struct comedi_lrange {
 	int length;
-	struct comedi_krange range[];
+	struct comedi_krange range[] __counted_by(length);
 };
 
 /**

@@ -3,14 +3,15 @@
  * Copyright (C) 2017 NVIDIA CORPORATION.  All rights reserved.
  */
 
+#include <linux/dma-mapping.h>
 #include <linux/iommu.h>
 #include <linux/interconnect.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
-#include <drm/drm_plane_helper.h>
 
 #include "dc.h"
 #include "plane.h"
@@ -35,7 +36,7 @@ static void tegra_plane_reset(struct drm_plane *plane)
 	kfree(plane->state);
 	plane->state = NULL;
 
-	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	state = kzalloc_obj(*state);
 	if (state) {
 		plane->state = &state->base;
 		plane->state->plane = plane;
@@ -54,7 +55,7 @@ tegra_plane_atomic_duplicate_state(struct drm_plane *plane)
 	struct tegra_plane_state *copy;
 	unsigned int i;
 
-	copy = kmalloc(sizeof(*copy), GFP_KERNEL);
+	copy = kmalloc_obj(*copy);
 	if (!copy)
 		return NULL;
 
@@ -776,21 +777,17 @@ int tegra_plane_interconnect_init(struct tegra_plane *plane)
 
 	plane->icc_mem = devm_of_icc_get(dev, icc_name);
 	err = PTR_ERR_OR_ZERO(plane->icc_mem);
-	if (err) {
-		dev_err_probe(dev, err, "failed to get %s interconnect\n",
-			      icc_name);
-		return err;
-	}
+	if (err)
+		return dev_err_probe(dev, err, "failed to get %s interconnect\n",
+				     icc_name);
 
 	/* plane B on T20/30 has a dedicated memory client for a 6-tap vertical filter */
 	if (plane->index == 1 && dc->soc->has_win_b_vfilter_mem_client) {
 		plane->icc_mem_vfilter = devm_of_icc_get(dev, "winb-vfilter");
 		err = PTR_ERR_OR_ZERO(plane->icc_mem_vfilter);
-		if (err) {
-			dev_err_probe(dev, err, "failed to get %s interconnect\n",
-				      "winb-vfilter");
-			return err;
-		}
+		if (err)
+			return dev_err_probe(dev, err, "failed to get %s interconnect\n",
+					     "winb-vfilter");
 	}
 
 	return 0;

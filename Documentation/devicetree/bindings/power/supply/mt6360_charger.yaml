@@ -21,11 +21,11 @@ properties:
     description: Maximum CHGIN regulation voltage in uV.
     enum: [ 5500000, 6500000, 11000000, 14500000 ]
 
-
   usb-otg-vbus-regulator:
     type: object
     description: OTG boost regulator.
     $ref: /schemas/regulator/regulator.yaml#
+    unevaluatedProperties: false
 
 required:
   - compatible
@@ -39,7 +39,6 @@ examples:
       richtek,vinovp-microvolt = <14500000>;
 
       otg_vbus_regulator: usb-otg-vbus-regulator {
-        regulator-compatible = "usb-otg-vbus";
         regulator-name = "usb-otg-vbus";
         regulator-min-microvolt = <4425000>;
         regulator-max-microvolt = <5825000>;

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
  * Copyright(c) 2018 Intel Corporation.
  */
@@ -104,9 +104,6 @@ static ssize_t fault_opcodes_write(struct file *file, const char __user *buf,
 		goto free_data;
 	}
 
-	ret = debugfs_file_get(file->f_path.dentry);
-	if (unlikely(ret))
-		goto free_data;
 	ptr = data;
 	token = ptr;
 	for (ptr = data; *ptr; ptr = end + 1, token = ptr) {
@@ -154,7 +151,6 @@ static ssize_t fault_opcodes_write(struct file *file, const char __user *buf,
 	}
 	ret = len;
 
-	debugfs_file_put(file->f_path.dentry);
 free_data:
 	kfree(data);
 	return ret;
@@ -173,9 +169,6 @@ static ssize_t fault_opcodes_read(struct file *file, char __user *buf,
 	data = kcalloc(datalen, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
-	ret = debugfs_file_get(file->f_path.dentry);
-	if (unlikely(ret))
-		goto free_data;
 	bit = find_first_bit(fault->opcodes, bitsize);
 	while (bit < bitsize) {
 		zero = find_next_zero_bit(fault->opcodes, bitsize, bit);
@@ -189,11 +182,9 @@ static ssize_t fault_opcodes_read(struct file *file, char __user *buf,
 					 bit);
 		bit = find_next_bit(fault->opcodes, bitsize, zero);
 	}
-	debugfs_file_put(file->f_path.dentry);
 	data[size - 1] = '\n';
 	data[size] = '\0';
 	ret = simple_read_from_buffer(buf, len, pos, data, size);
-free_data:
 	kfree(data);
 	return ret;
 }
@@ -203,7 +194,6 @@ static const struct file_operations __fault_opcodes_fops = {
 	.open = fault_opcodes_open,
 	.read = fault_opcodes_read,
 	.write = fault_opcodes_write,
-	.llseek = no_llseek
 };
 
 void hfi1_fault_exit_debugfs(struct hfi1_ibdev *ibd)
@@ -219,7 +209,7 @@ int hfi1_fault_init_debugfs(struct hfi1_ibdev *ibd)
 	struct dentry *parent = ibd->hfi1_ibdev_dbg;
 	struct dentry *fault_dir;
 
-	ibd->fault = kzalloc(sizeof(*ibd->fault), GFP_KERNEL);
+	ibd->fault = kzalloc_obj(*ibd->fault);
 	if (!ibd->fault)
 		return -ENOMEM;
 

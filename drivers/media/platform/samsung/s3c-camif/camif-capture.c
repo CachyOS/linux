@@ -525,8 +525,6 @@ static const struct vb2_ops s3c_camif_qops = {
 	.queue_setup	 = queue_setup,
 	.buf_prepare	 = buffer_prepare,
 	.buf_queue	 = buffer_queue,
-	.wait_prepare	 = vb2_ops_wait_prepare,
-	.wait_finish	 = vb2_ops_wait_finish,
 	.start_streaming = start_streaming,
 	.stop_streaming	 = stop_streaming,
 };
@@ -574,7 +572,7 @@ static int s3c_camif_close(struct file *file)
 
 	mutex_lock(&camif->lock);
 
-	if (vp->owner == file->private_data) {
+	if (vp->owner == file_to_v4l2_fh(file)) {
 		camif_stop_capture(vp);
 		vb2_queue_release(&vp->vb_queue);
 		vp->owner = NULL;
@@ -597,7 +595,7 @@ static __poll_t s3c_camif_poll(struct file *file,
 	__poll_t ret;
 
 	mutex_lock(&camif->lock);
-	if (vp->owner && vp->owner != file->private_data)
+	if (vp->owner && vp->owner != file_to_v4l2_fh(file))
 		ret = EPOLLERR;
 	else
 		ret = vb2_poll(&vp->vb_queue, file, wait);
@@ -611,7 +609,7 @@ static int s3c_camif_mmap(struct file *file, struct vm_area_struct *vma)
 	struct camif_vp *vp = video_drvdata(file);
 	int ret;
 
-	if (vp->owner && vp->owner != file->private_data)
+	if (vp->owner && vp->owner != file_to_v4l2_fh(file))
 		ret = -EBUSY;
 	else
 		ret = vb2_mmap(&vp->vb_queue, vma);
@@ -793,7 +791,7 @@ static int s3c_camif_vidioc_s_fmt(struct file *file, void *priv,
 	out_frame->rect.top = 0;
 
 	if (vp->owner == NULL)
-		vp->owner = priv;
+		vp->owner = file_to_v4l2_fh(file);
 
 	pr_debug("%ux%u. payload: %u. fmt: 0x%08x. %d %d. sizeimage: %d. bpl: %d\n",
 		 out_frame->f_width, out_frame->f_height, vp->payload,
@@ -806,17 +804,18 @@ static int s3c_camif_vidioc_s_fmt(struct file *file, void *priv,
 /* Only check pixel formats at the sensor and the camif subdev pads */
 static int camif_pipeline_validate(struct camif_dev *camif)
 {
-	struct v4l2_subdev_format src_fmt;
+	struct v4l2_subdev_format src_fmt = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+	};
 	struct media_pad *pad;
 	int ret;
 
 	/* Retrieve format at the sensor subdev source pad */
-	pad = media_entity_remote_pad(&camif->pads[0]);
+	pad = media_pad_remote_pad_first(&camif->pads[0]);
 	if (!pad || !is_media_entity_v4l2_subdev(pad->entity))
 		return -EPIPE;
 
 	src_fmt.pad = pad->index;
-	src_fmt.which = V4L2_SUBDEV_FORMAT_ACTIVE;
 	ret = v4l2_subdev_call(camif->sensor.sd, pad, get_fmt, NULL, &src_fmt);
 	if (ret < 0 && ret != -ENOIOCTLCMD)
 		return -EPIPE;
@@ -842,19 +841,19 @@ static int s3c_camif_streamon(struct file *file, void *priv,
 	if (type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
 
-	if (vp->owner && vp->owner != priv)
+	if (vp->owner && vp->owner != file_to_v4l2_fh(file))
 		return -EBUSY;
 
 	if (s3c_vp_active(vp))
 		return 0;
 
-	ret = media_pipeline_start(sensor, camif->m_pipeline);
+	ret = media_pipeline_start(sensor->pads, camif->m_pipeline);
 	if (ret < 0)
 		return ret;
 
 	ret = camif_pipeline_validate(camif);
 	if (ret < 0) {
-		media_pipeline_stop(sensor);
+		media_pipeline_stop(sensor->pads);
 		return ret;
 	}
 
@@ -873,12 +872,12 @@ static int s3c_camif_streamoff(struct file *file, void *priv,
 	if (type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
 
-	if (vp->owner && vp->owner != priv)
+	if (vp->owner && vp->owner != file_to_v4l2_fh(file))
 		return -EBUSY;
 
 	ret = vb2_streamoff(&vp->vb_queue, type);
 	if (ret == 0)
-		media_pipeline_stop(&camif->sensor.sd->entity);
+		media_pipeline_stop(camif->sensor.sd->entity.pads);
 	return ret;
 }
 
@@ -889,9 +888,9 @@ static int s3c_camif_reqbufs(struct file *file, void *priv,
 	int ret;
 
 	pr_debug("[vp%d] rb count: %d, owner: %p, priv: %p\n",
-		 vp->id, rb->count, vp->owner, priv);
+		 vp->id, rb->count, vp->owner, file_to_v4l2_fh(file));
 
-	if (vp->owner && vp->owner != priv)
+	if (vp->owner && vp->owner != file_to_v4l2_fh(file))
 		return -EBUSY;
 
 	if (rb->count)
@@ -911,7 +910,7 @@ static int s3c_camif_reqbufs(struct file *file, void *priv,
 
 	vp->reqbufs_count = rb->count;
 	if (vp->owner == NULL && rb->count > 0)
-		vp->owner = priv;
+		vp->owner = file_to_v4l2_fh(file);
 
 	return ret;
 }
@@ -930,7 +929,7 @@ static int s3c_camif_qbuf(struct file *file, void *priv,
 
 	pr_debug("[vp%d]\n", vp->id);
 
-	if (vp->owner && vp->owner != priv)
+	if (vp->owner && vp->owner != file_to_v4l2_fh(file))
 		return -EBUSY;
 
 	return vb2_qbuf(&vp->vb_queue, vp->vdev.v4l2_dev->mdev, buf);
@@ -943,7 +942,7 @@ static int s3c_camif_dqbuf(struct file *file, void *priv,
 
 	pr_debug("[vp%d] sequence: %d\n", vp->id, vp->frame_sequence);
 
-	if (vp->owner && vp->owner != priv)
+	if (vp->owner && vp->owner != file_to_v4l2_fh(file))
 		return -EBUSY;
 
 	return vb2_dqbuf(&vp->vb_queue, buf, file->f_flags & O_NONBLOCK);
@@ -955,14 +954,14 @@ static int s3c_camif_create_bufs(struct file *file, void *priv,
 	struct camif_vp *vp = video_drvdata(file);
 	int ret;
 
-	if (vp->owner && vp->owner != priv)
+	if (vp->owner && vp->owner != file_to_v4l2_fh(file))
 		return -EBUSY;
 
 	create->count = max_t(u32, 1, create->count);
 	ret = vb2_create_bufs(&vp->vb_queue, create);
 
 	if (!ret && vp->owner == NULL)
-		vp->owner = priv;
+		vp->owner = file_to_v4l2_fh(file);
 
 	return ret;
 }
@@ -1031,9 +1030,9 @@ static int s3c_camif_s_selection(struct file *file, void *priv,
 	vp->state |= ST_VP_CONFIG;
 	spin_unlock_irqrestore(&camif->slock, flags);
 
-	pr_debug("type: %#x, target: %#x, flags: %#x, (%d,%d)/%dx%d\n",
-		sel->type, sel->target, sel->flags,
-		sel->r.left, sel->r.top, sel->r.width, sel->r.height);
+	pr_debug("type: %#x, target: %#x, flags: %#x, (%d,%d)/%ux%u\n",
+		 sel->type, sel->target, sel->flags,
+		 sel->r.left, sel->r.top, sel->r.width, sel->r.height);
 
 	return 0;
 }
@@ -1132,12 +1131,12 @@ int s3c_camif_register_video_node(struct camif_dev *camif, int idx)
 
 	ret = vb2_queue_init(q);
 	if (ret)
-		goto err_vd_rel;
+		return ret;
 
 	vp->pad.flags = MEDIA_PAD_FL_SINK;
 	ret = media_entity_pads_init(&vfd->entity, 1, &vp->pad);
 	if (ret)
-		goto err_vd_rel;
+		return ret;
 
 	video_set_drvdata(vfd, vp);
 
@@ -1170,8 +1169,6 @@ err_ctrlh_free:
 	v4l2_ctrl_handler_free(&vp->ctrl_handler);
 err_me_cleanup:
 	media_entity_cleanup(&vfd->entity);
-err_vd_rel:
-	video_device_release(vfd);
 	return ret;
 }
 
@@ -1217,7 +1214,7 @@ static int s3c_camif_subdev_get_fmt(struct v4l2_subdev *sd,
 	struct v4l2_mbus_framefmt *mf = &fmt->format;
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-		mf = v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
+		mf = v4l2_subdev_state_get_format(sd_state, fmt->pad);
 		fmt->format = *mf;
 		return 0;
 	}
@@ -1306,7 +1303,7 @@ static int s3c_camif_subdev_set_fmt(struct v4l2_subdev *sd,
 	__camif_subdev_try_format(camif, mf, fmt->pad);
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-		mf = v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
+		mf = v4l2_subdev_state_get_format(sd_state, fmt->pad);
 		*mf = fmt->format;
 		mutex_unlock(&camif->lock);
 		return 0;
@@ -1358,7 +1355,7 @@ static int s3c_camif_subdev_get_selection(struct v4l2_subdev *sd,
 		return -EINVAL;
 
 	if (sel->which == V4L2_SUBDEV_FORMAT_TRY) {
-		sel->r = *v4l2_subdev_get_try_crop(sd, sd_state, sel->pad);
+		sel->r = *v4l2_subdev_state_get_crop(sd_state, sel->pad);
 		return 0;
 	}
 
@@ -1375,7 +1372,7 @@ static int s3c_camif_subdev_get_selection(struct v4l2_subdev *sd,
 
 	mutex_unlock(&camif->lock);
 
-	v4l2_dbg(1, debug, sd, "%s: crop: (%d,%d) %dx%d, size: %ux%u\n",
+	v4l2_dbg(1, debug, sd, "%s: crop: (%d,%d)/%ux%u, size: %ux%u\n",
 		 __func__, crop->left, crop->top, crop->width,
 		 crop->height, mf->width, mf->height);
 
@@ -1427,7 +1424,7 @@ static void __camif_try_crop(struct camif_dev *camif, struct v4l2_rect *r)
 		}
 	}
 
-	v4l2_dbg(1, debug, &camif->v4l2_dev, "crop: (%d,%d)/%dx%d, fmt: %ux%u\n",
+	v4l2_dbg(1, debug, &camif->v4l2_dev, "crop: (%d,%d)/%ux%u, fmt: %ux%u\n",
 		 r->left, r->top, r->width, r->height, mf->width, mf->height);
 }
 
@@ -1446,7 +1443,7 @@ static int s3c_camif_subdev_set_selection(struct v4l2_subdev *sd,
 	__camif_try_crop(camif, &sel->r);
 
 	if (sel->which == V4L2_SUBDEV_FORMAT_TRY) {
-		*v4l2_subdev_get_try_crop(sd, sd_state, sel->pad) = sel->r;
+		*v4l2_subdev_state_get_crop(sd_state, sel->pad) = sel->r;
 	} else {
 		unsigned long flags;
 		unsigned int i;
@@ -1467,7 +1464,7 @@ static int s3c_camif_subdev_set_selection(struct v4l2_subdev *sd,
 	}
 	mutex_unlock(&camif->lock);
 
-	v4l2_dbg(1, debug, sd, "%s: (%d,%d) %dx%d, f_w: %u, f_h: %u\n",
+	v4l2_dbg(1, debug, sd, "%s: (%d,%d)/%ux%u, f_w: %u, f_h: %u\n",
 		 __func__, crop->left, crop->top, crop->width, crop->height,
 		 camif->mbus_fmt.width, camif->mbus_fmt.height);
 

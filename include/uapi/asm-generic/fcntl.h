@@ -6,7 +6,6 @@
 
 /*
  * FMODE_EXEC is 0x20
- * FMODE_NONOTIFY is 0x4000000
  * These cannot be used by userspace O_* until internal and external open
  * flags are split.
  * -Eric Paris
@@ -91,7 +90,6 @@
 
 /* a horrid kludge trying to make sure that this will fail on old kernels */
 #define O_TMPFILE (__O_TMPFILE | O_DIRECTORY)
-#define O_TMPFILE_MASK (__O_TMPFILE | O_DIRECTORY | O_CREAT)      
 
 #ifndef O_NDELAY
 #define O_NDELAY	O_NONBLOCK
@@ -192,6 +190,7 @@ struct f_owner_ex {
 
 #define F_LINUX_SPECIFIC_BASE	1024
 
+#ifndef HAVE_ARCH_STRUCT_FLOCK
 struct flock {
 	short	l_type;
 	short	l_whence;
@@ -216,5 +215,6 @@ struct flock64 {
 	__ARCH_FLOCK64_PAD
 #endif
 };
+#endif /* HAVE_ARCH_STRUCT_FLOCK */
 
 #endif /* _ASM_GENERIC_FCNTL_H */

@@ -649,7 +649,7 @@ int fm10k_queue_vlan_request(struct fm10k_intfc *interface,
 	/* This must be atomic since we may be called while the netdev
 	 * addr_list_lock is held
 	 */
-	request = kzalloc(sizeof(*request), GFP_ATOMIC);
+	request = kzalloc_obj(*request, GFP_ATOMIC);
 	if (!request)
 		return -ENOMEM;
 
@@ -688,7 +688,7 @@ int fm10k_queue_mac_request(struct fm10k_intfc *interface, u16 glort,
 	/* This must be atomic since we may be called while the netdev
 	 * addr_list_lock is held
 	 */
-	request = kzalloc(sizeof(*request), GFP_ATOMIC);
+	request = kzalloc_obj(*request, GFP_ATOMIC);
 	if (!request)
 		return -ENOMEM;
 
@@ -1229,10 +1229,10 @@ static void fm10k_get_stats64(struct net_device *netdev,
 			continue;
 
 		do {
-			start = u64_stats_fetch_begin_irq(&ring->syncp);
+			start = u64_stats_fetch_begin(&ring->syncp);
 			packets = ring->stats.packets;
 			bytes   = ring->stats.bytes;
-		} while (u64_stats_fetch_retry_irq(&ring->syncp, start));
+		} while (u64_stats_fetch_retry(&ring->syncp, start));
 
 		stats->rx_packets += packets;
 		stats->rx_bytes   += bytes;
@@ -1245,10 +1245,10 @@ static void fm10k_get_stats64(struct net_device *netdev,
 			continue;
 
 		do {
-			start = u64_stats_fetch_begin_irq(&ring->syncp);
+			start = u64_stats_fetch_begin(&ring->syncp);
 			packets = ring->stats.packets;
 			bytes   = ring->stats.bytes;
-		} while (u64_stats_fetch_retry_irq(&ring->syncp, start));
+		} while (u64_stats_fetch_retry(&ring->syncp, start));
 
 		stats->tx_packets += packets;
 		stats->tx_bytes   += bytes;

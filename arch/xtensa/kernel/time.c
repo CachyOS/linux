@@ -121,10 +121,6 @@ static irqreturn_t timer_interrupt(int irq, void *dev_id)
 
 	set_linux_timer(get_linux_timer());
 	evt->event_handler(evt);
-
-	/* Allow platform to do something useful (Wdog). */
-	platform_heartbeat();
-
 	return IRQ_HANDLED;
 }
 
@@ -154,6 +150,7 @@ static void __init calibrate_ccount(void)
 	cpu = of_find_compatible_node(NULL, NULL, "cdns,xtensa-cpu");
 	if (cpu) {
 		clk = of_clk_get(cpu, 0);
+		of_node_put(cpu);
 		if (!IS_ERR(clk)) {
 			ccount_freq = clk_get_rate(clk);
 			return;

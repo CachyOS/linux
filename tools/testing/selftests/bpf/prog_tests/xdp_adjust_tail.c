@@ -4,7 +4,7 @@
 
 static void test_xdp_adjust_tail_shrink(void)
 {
-	const char *file = "./test_xdp_adjust_tail_shrink.o";
+	const char *file = "./test_xdp_adjust_tail_shrink.bpf.o";
 	__u32 expect_sz;
 	struct bpf_object *obj;
 	int err, prog_fd;
@@ -18,7 +18,7 @@ static void test_xdp_adjust_tail_shrink(void)
 	);
 
 	err = bpf_prog_test_load(file, BPF_PROG_TYPE_XDP, &obj, &prog_fd);
-	if (ASSERT_OK(err, "test_xdp_adjust_tail_shrink"))
+	if (!ASSERT_OK(err, "test_xdp_adjust_tail_shrink"))
 		return;
 
 	err = bpf_prog_test_run_opts(prog_fd, &topts);
@@ -37,23 +37,28 @@ static void test_xdp_adjust_tail_shrink(void)
 	bpf_object__close(obj);
 }
 
-static void test_xdp_adjust_tail_grow(void)
+static void test_xdp_adjust_tail_grow(bool is_64k_pagesize)
 {
-	const char *file = "./test_xdp_adjust_tail_grow.o";
+	const char *file = "./test_xdp_adjust_tail_grow.bpf.o";
 	struct bpf_object *obj;
-	char buf[4096]; /* avoid segfault: large buf to hold grow results */
+	char buf[8192]; /* avoid segfault: large buf to hold grow results */
 	__u32 expect_sz;
 	int err, prog_fd;
 	LIBBPF_OPTS(bpf_test_run_opts, topts,
 		.data_in = &pkt_v4,
-		.data_size_in = sizeof(pkt_v4),
 		.data_out = buf,
 		.data_size_out = sizeof(buf),
 		.repeat = 1,
 	);
 
+	/* topts.data_size_in as a special signal to bpf prog */
+	if (is_64k_pagesize)
+		topts.data_size_in = sizeof(pkt_v4) - 1;
+	else
+		topts.data_size_in = sizeof(pkt_v4);
+
 	err = bpf_prog_test_load(file, BPF_PROG_TYPE_XDP, &obj, &prog_fd);
-	if (ASSERT_OK(err, "test_xdp_adjust_tail_grow"))
+	if (!ASSERT_OK(err, "test_xdp_adjust_tail_grow"))
 		return;
 
 	err = bpf_prog_test_run_opts(prog_fd, &topts);
@@ -63,6 +68,7 @@ static void test_xdp_adjust_tail_grow(void)
 	expect_sz = sizeof(pkt_v6) + 40; /* Test grow with 40 bytes */
 	topts.data_in = &pkt_v6;
 	topts.data_size_in = sizeof(pkt_v6);
+	topts.data_size_out = sizeof(buf);
 	err = bpf_prog_test_run_opts(prog_fd, &topts);
 	ASSERT_OK(err, "ipv6");
 	ASSERT_EQ(topts.retval, XDP_TX, "ipv6 retval");
@@ -73,12 +79,19 @@ static void test_xdp_adjust_tail_grow(void)
 
 static void test_xdp_adjust_tail_grow2(void)
 {
-	const char *file = "./test_xdp_adjust_tail_grow.o";
+	const char *file = "./test_xdp_adjust_tail_grow.bpf.o";
 	char buf[4096]; /* avoid segfault: large buf to hold grow results */
-	int tailroom = 320; /* SKB_DATA_ALIGN(sizeof(struct skb_shared_info))*/;
 	struct bpf_object *obj;
 	int err, cnt, i;
 	int max_grow, prog_fd;
+	/* SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) */
+#if defined(__s390x__)
+	int tailroom = 512;
+#elif defined(__powerpc__)
+	int tailroom = 384;
+#else
+	int tailroom = 320;
+#endif
 
 	LIBBPF_OPTS(bpf_test_run_opts, tattr,
 		.repeat		= 1,
@@ -89,7 +102,7 @@ static void test_xdp_adjust_tail_grow2(void)
 	);
 
 	err = bpf_prog_test_load(file, BPF_PROG_TYPE_XDP, &obj, &prog_fd);
-	if (ASSERT_OK(err, "test_xdp_adjust_tail_grow"))
+	if (!ASSERT_OK(err, "test_xdp_adjust_tail_grow"))
 		return;
 
 	/* Test case-64 */
@@ -135,7 +148,7 @@ static void test_xdp_adjust_tail_grow2(void)
 
 static void test_xdp_adjust_frags_tail_shrink(void)
 {
-	const char *file = "./test_xdp_adjust_tail_shrink.o";
+	const char *file = "./test_xdp_adjust_tail_shrink.bpf.o";
 	__u32 exp_size;
 	struct bpf_program *prog;
 	struct bpf_object *obj;
@@ -200,9 +213,9 @@ out:
 	bpf_object__close(obj);
 }
 
-static void test_xdp_adjust_frags_tail_grow(void)
+static void test_xdp_adjust_frags_tail_grow_4k(void)
 {
-	const char *file = "./test_xdp_adjust_tail_grow.o";
+	const char *file = "./test_xdp_adjust_tail_grow.bpf.o";
 	__u32 exp_size;
 	struct bpf_program *prog;
 	struct bpf_object *obj;
@@ -216,7 +229,7 @@ static void test_xdp_adjust_frags_tail_grow(void)
 
 	prog = bpf_object__next_program(obj, NULL);
 	if (bpf_object__load(obj))
-		return;
+		goto out;
 
 	prog_fd = bpf_program__fd(prog);
 
@@ -238,14 +251,20 @@ static void test_xdp_adjust_frags_tail_grow(void)
 	ASSERT_EQ(topts.retval, XDP_TX, "9Kb+10b retval");
 	ASSERT_EQ(topts.data_size_out, exp_size, "9Kb+10b size");
 
-	for (i = 0; i < 9000; i++)
-		ASSERT_EQ(buf[i], 1, "9Kb+10b-old");
+	for (i = 0; i < 9000; i++) {
+		if (buf[i] != 1)
+			ASSERT_EQ(buf[i], 1, "9Kb+10b-old");
+	}
 
-	for (i = 9000; i < 9010; i++)
-		ASSERT_EQ(buf[i], 0, "9Kb+10b-new");
+	for (i = 9000; i < 9010; i++) {
+		if (buf[i] != 0)
+			ASSERT_EQ(buf[i], 0, "9Kb+10b-new");
+	}
 
-	for (i = 9010; i < 16384; i++)
-		ASSERT_EQ(buf[i], 1, "9Kb+10b-untouched");
+	for (i = 9010; i < 16384; i++) {
+		if (buf[i] != 1)
+			ASSERT_EQ(buf[i], 1, "9Kb+10b-untouched");
+	}
 
 	/* Test a too large grow */
 	memset(buf, 1, 16384);
@@ -265,16 +284,93 @@ out:
 	bpf_object__close(obj);
 }
 
+static void test_xdp_adjust_frags_tail_grow_64k(void)
+{
+	const char *file = "./test_xdp_adjust_tail_grow.bpf.o";
+	__u32 exp_size;
+	struct bpf_program *prog;
+	struct bpf_object *obj;
+	int err, i, prog_fd;
+	__u8 *buf;
+	LIBBPF_OPTS(bpf_test_run_opts, topts);
+
+	obj = bpf_object__open(file);
+	if (libbpf_get_error(obj))
+		return;
+
+	prog = bpf_object__next_program(obj, NULL);
+	if (bpf_object__load(obj))
+		goto out;
+
+	prog_fd = bpf_program__fd(prog);
+
+	buf = malloc(262144);
+	if (!ASSERT_OK_PTR(buf, "alloc buf 256Kb"))
+		goto out;
+
+	/* Test case add 10 bytes to last frag */
+	memset(buf, 1, 262144);
+	exp_size = 90000 + 10;
+
+	topts.data_in = buf;
+	topts.data_out = buf;
+	topts.data_size_in = 90000;
+	topts.data_size_out = 262144;
+	err = bpf_prog_test_run_opts(prog_fd, &topts);
+
+	ASSERT_OK(err, "90Kb+10b");
+	ASSERT_EQ(topts.retval, XDP_TX, "90Kb+10b retval");
+	ASSERT_EQ(topts.data_size_out, exp_size, "90Kb+10b size");
+
+	for (i = 0; i < 90000; i++) {
+		if (buf[i] != 1)
+			ASSERT_EQ(buf[i], 1, "90Kb+10b-old");
+	}
+
+	for (i = 90000; i < 90010; i++) {
+		if (buf[i] != 0)
+			ASSERT_EQ(buf[i], 0, "90Kb+10b-new");
+	}
+
+	for (i = 90010; i < 262144; i++) {
+		if (buf[i] != 1)
+			ASSERT_EQ(buf[i], 1, "90Kb+10b-untouched");
+	}
+
+	/* Test a too large grow */
+	memset(buf, 1, 262144);
+	exp_size = 90001;
+
+	topts.data_in = topts.data_out = buf;
+	topts.data_size_in = 90001;
+	topts.data_size_out = 262144;
+	err = bpf_prog_test_run_opts(prog_fd, &topts);
+
+	ASSERT_OK(err, "90Kb+10b");
+	ASSERT_EQ(topts.retval, XDP_DROP, "90Kb+10b retval");
+	ASSERT_EQ(topts.data_size_out, exp_size, "90Kb+10b size");
+
+	free(buf);
+out:
+	bpf_object__close(obj);
+}
+
 void test_xdp_adjust_tail(void)
 {
+	int page_size = getpagesize();
+
 	if (test__start_subtest("xdp_adjust_tail_shrink"))
 		test_xdp_adjust_tail_shrink();
 	if (test__start_subtest("xdp_adjust_tail_grow"))
-		test_xdp_adjust_tail_grow();
+		test_xdp_adjust_tail_grow(page_size == 65536);
 	if (test__start_subtest("xdp_adjust_tail_grow2"))
 		test_xdp_adjust_tail_grow2();
 	if (test__start_subtest("xdp_adjust_frags_tail_shrink"))
 		test_xdp_adjust_frags_tail_shrink();
-	if (test__start_subtest("xdp_adjust_frags_tail_grow"))
-		test_xdp_adjust_frags_tail_grow();
+	if (test__start_subtest("xdp_adjust_frags_tail_grow")) {
+		if (page_size == 65536)
+			test_xdp_adjust_frags_tail_grow_64k();
+		else
+			test_xdp_adjust_frags_tail_grow_4k();
+	}
 }

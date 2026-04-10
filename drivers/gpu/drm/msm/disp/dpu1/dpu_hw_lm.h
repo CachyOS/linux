@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -8,9 +9,9 @@
 
 #include "dpu_hw_mdss.h"
 #include "dpu_hw_util.h"
-#include "dpu_hw_blk.h"
 
 struct dpu_hw_mixer;
+struct dpu_hw_stage_cfg;
 
 struct dpu_hw_mixer_cfg {
 	u32 out_width;
@@ -24,44 +25,60 @@ struct dpu_hw_color3_cfg {
 };
 
 /**
- *
  * struct dpu_hw_lm_ops : Interface to the mixer Hw driver functions
  *  Assumption is these functions will be called after clocks are enabled
  */
 struct dpu_hw_lm_ops {
-	/*
-	 * Sets up mixer output width and height
+	/**
+	 * @setup_mixer_out: Sets up mixer output width and height
 	 * and border color if enabled
 	 */
 	void (*setup_mixer_out)(struct dpu_hw_mixer *ctx,
 		struct dpu_hw_mixer_cfg *cfg);
 
-	/*
-	 * Alpha blending configuration
+	/**
+	 * @setup_blend_config: Alpha blending configuration
 	 * for the specified stage
 	 */
 	void (*setup_blend_config)(struct dpu_hw_mixer *ctx, uint32_t stage,
 		uint32_t fg_alpha, uint32_t bg_alpha, uint32_t blend_op);
 
-	/*
-	 * Alpha color component selection from either fg or bg
+	/**
+	 * @setup_alpha_out: Alpha color component selection from either fg or bg
 	 */
 	void (*setup_alpha_out)(struct dpu_hw_mixer *ctx, uint32_t mixer_op);
 
 	/**
-	 * setup_border_color : enable/disable border color
+	 * @clear_all_blendstages: Clear layer mixer to pipe configuration
+	 * @ctx		: mixer ctx pointer
+	 * Returns: 0 on success or -error
+	 */
+	int (*clear_all_blendstages)(struct dpu_hw_mixer *ctx);
+
+	/**
+	 * @setup_blendstage: Configure layer mixer to pipe configuration
+	 * @ctx		: mixer ctx pointer
+	 * @lm		: layer mixer enumeration
+	 * @stage_cfg	: blend stage configuration
+	 * Returns: 0 on success or -error
+	 */
+	int (*setup_blendstage)(struct dpu_hw_mixer *ctx, enum dpu_lm lm,
+				struct dpu_hw_stage_cfg *stage_cfg);
+
+	/**
+	 * @setup_border_color : enable/disable border color
 	 */
 	void (*setup_border_color)(struct dpu_hw_mixer *ctx,
 		struct dpu_mdss_color *color,
 		u8 border_en);
 
 	/**
-	 * setup_misr: Enable/disable MISR
+	 * @setup_misr: Enable/disable MISR
 	 */
-	void (*setup_misr)(struct dpu_hw_mixer *ctx, bool enable, u32 frame_count);
+	void (*setup_misr)(struct dpu_hw_mixer *ctx);
 
 	/**
-	 * collect_misr: Read MISR signature
+	 * @collect_misr: Read MISR signature
 	 */
 	int (*collect_misr)(struct dpu_hw_mixer *ctx, u32 *misr_value);
 };
@@ -93,21 +110,9 @@ static inline struct dpu_hw_mixer *to_dpu_hw_mixer(struct dpu_hw_blk *hw)
 	return container_of(hw, struct dpu_hw_mixer, base);
 }
 
-/**
- * dpu_hw_lm_init(): Initializes the mixer hw driver object.
- * should be called once before accessing every mixer.
- * @idx:  mixer index for which driver object is required
- * @addr: mapped register io address of MDP
- * @m :   pointer to mdss catalog data
- */
-struct dpu_hw_mixer *dpu_hw_lm_init(enum dpu_lm idx,
-		void __iomem *addr,
-		const struct dpu_mdss_cfg *m);
-
-/**
- * dpu_hw_lm_destroy(): Destroys layer mixer driver context
- * @lm:   Pointer to LM driver context
- */
-void dpu_hw_lm_destroy(struct dpu_hw_mixer *lm);
+struct dpu_hw_mixer *dpu_hw_lm_init(struct drm_device *dev,
+				    const struct dpu_lm_cfg *cfg,
+				    void __iomem *addr,
+				    const struct dpu_mdss_version *mdss_ver);
 
 #endif /*_DPU_HW_LM_H */

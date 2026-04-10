@@ -11,14 +11,14 @@
  */
 
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/i2c.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/delay.h>
 #include <linux/util_macros.h>
-#include <linux/acpi.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 /* I2C commands: */
 #define HP206C_CMD_SOFT_RST	0x06
@@ -352,9 +352,9 @@ static const struct iio_info hp206c_info = {
 	.write_raw = hp206c_write_raw,
 };
 
-static int hp206c_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int hp206c_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct iio_dev *indio_dev;
 	struct hp206c_data *data;
 	int ret;
@@ -396,24 +396,22 @@ static int hp206c_probe(struct i2c_client *client,
 
 static const struct i2c_device_id hp206c_id[] = {
 	{"hp206c"},
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, hp206c_id);
 
-#ifdef CONFIG_ACPI
 static const struct acpi_device_id hp206c_acpi_match[] = {
 	{"HOP206C", 0},
-	{ },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, hp206c_acpi_match);
-#endif
 
 static struct i2c_driver hp206c_driver = {
 	.probe = hp206c_probe,
 	.id_table = hp206c_id,
 	.driver = {
 		.name = "hp206c",
-		.acpi_match_table = ACPI_PTR(hp206c_acpi_match),
+		.acpi_match_table = hp206c_acpi_match,
 	},
 };
 

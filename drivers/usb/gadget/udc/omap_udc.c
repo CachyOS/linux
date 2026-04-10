@@ -18,6 +18,7 @@
 #include <linux/errno.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 #include <linux/timer.h>
 #include <linux/list.h>
 #include <linux/interrupt.h>
@@ -36,7 +37,7 @@
 
 #include <asm/byteorder.h>
 #include <asm/irq.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <asm/mach-types.h>
 
 #include <linux/omap-dma.h>
@@ -56,7 +57,6 @@
 /* ISO too */
 #define	USE_ISO
 
-#define	DRIVER_DESC	"OMAP UDC driver"
 #define	DRIVER_VERSION	"4 October 2004"
 
 #define OMAP_DMA_USB_W2FC_TX0		29
@@ -110,7 +110,6 @@ MODULE_PARM_DESC(use_dma, "enable/disable DMA");
 
 
 static const char driver_name[] = "omap_udc";
-static const char driver_desc[] = DRIVER_DESC;
 
 /*-------------------------------------------------------------------------*/
 
@@ -253,7 +252,7 @@ static int omap_ep_disable(struct usb_ep *_ep)
 	ep->has_dma = 0;
 	omap_writew(UDC_SET_HALT, UDC_CTRL);
 	list_del_init(&ep->iso);
-	del_timer(&ep->timer);
+	timer_delete(&ep->timer);
 
 	spin_unlock_irqrestore(&ep->udc->lock, flags);
 
@@ -268,7 +267,7 @@ omap_alloc_request(struct usb_ep *ep, gfp_t gfp_flags)
 {
 	struct omap_req	*req;
 
-	req = kzalloc(sizeof(*req), gfp_flags);
+	req = kzalloc_obj(*req, gfp_flags);
 	if (!req)
 		return NULL;
 
@@ -578,13 +577,13 @@ static void finish_in_dma(struct omap_ep *ep, struct omap_req *req, int status)
 
 static void next_out_dma(struct omap_ep *ep, struct omap_req *req)
 {
-	unsigned packets = req->req.length - req->req.actual;
+	unsigned int packets = req->req.length - req->req.actual;
 	int dma_trigger = 0;
 	u16 w;
 
 	/* set up this DMA transfer, enable the fifo, start */
 	packets /= ep->ep.maxpacket;
-	packets = min(packets, (unsigned)UDC_RXN_TC + 1);
+	packets = min_t(unsigned int, packets, UDC_RXN_TC + 1);
 	req->dma_bytes = packets * ep->ep.maxpacket;
 	omap_set_dma_transfer_params(ep->lch, OMAP_DMA_DATA_TYPE_S16,
 			ep->ep.maxpacket >> 1, packets,
@@ -1254,7 +1253,7 @@ static int omap_vbus_session(struct usb_gadget *gadget, int is_active)
 
 	udc = container_of(gadget, struct omap_udc, gadget);
 	spin_lock_irqsave(&udc->lock, flags);
-	VDBG("VBUS %s\n", is_active ? "on" : "off");
+	VDBG("VBUS %s\n", str_on_off(is_active));
 	udc->vbus_active = (is_active != 0);
 	if (cpu_is_omap15xx()) {
 		/* "software" detect, ignored if !VBUS_MODE_1510 */
@@ -1861,7 +1860,7 @@ static irqreturn_t omap_udc_irq(int irq, void *_udc)
 
 static void pio_out_timer(struct timer_list *t)
 {
-	struct omap_ep	*ep = from_timer(ep, t, timer);
+	struct omap_ep	*ep = timer_container_of(ep, t, timer);
 	unsigned long	flags;
 	u16		stat_flg;
 
@@ -2036,12 +2035,8 @@ static irqreturn_t omap_udc_iso_irq(int irq, void *_dev)
 
 static inline int machine_without_vbus_sense(void)
 {
-	return machine_is_omap_innovator()
-		|| machine_is_omap_osk()
-		|| machine_is_omap_palmte()
-		|| machine_is_sx1()
-		/* No known omap7xx boards with vbus sense */
-		|| cpu_is_omap7xx();
+	return  machine_is_omap_osk() || machine_is_omap_palmte() ||
+		machine_is_sx1();
 }
 
 static int omap_udc_start(struct usb_gadget *g,
@@ -2066,7 +2061,6 @@ static int omap_udc_start(struct usb_gadget *g,
 	udc->softconnect = 1;
 
 	/* hook up the driver */
-	driver->driver.bus = NULL;
 	udc->driver = driver;
 	spin_unlock_irqrestore(&udc->lock, flags);
 
@@ -2234,7 +2228,7 @@ static int proc_otg_show(struct seq_file *s)
 	char		*ctrl_name = "(UNKNOWN)";
 
 	tmp = omap_readl(OTG_REV);
-	ctrl_name = "tranceiver_ctrl";
+	ctrl_name = "transceiver_ctrl";
 	trans = omap_readw(USB_TRANSCEIVER_CTRL);
 	seq_printf(s, "\nOTG rev %d.%d, %s %05x\n",
 		tmp >> 4, tmp & 0xf, ctrl_name, trans);
@@ -2304,13 +2298,11 @@ static int proc_udc_show(struct seq_file *s, void *_)
 
 	spin_lock_irqsave(&udc->lock, flags);
 
-	seq_printf(s, "%s, version: " DRIVER_VERSION
+	seq_printf(s, "OMAP UDC driver, version: " DRIVER_VERSION
 #ifdef	USE_ISO
 		" (iso)"
 #endif
-		"%s\n",
-		driver_desc,
-		use_dma ?  " (dma)" : "");
+		"%s\n", use_dma ?  " (dma)" : "");
 
 	tmp = omap_readw(UDC_REV) & 0xff;
 	seq_printf(s,
@@ -2558,7 +2550,7 @@ omap_ep_setup(char *name, u8 addr, u8 type,
 
 	/* set up driver data structures */
 	BUG_ON(strlen(name) >= sizeof ep->name);
-	strlcpy(ep->name, name, sizeof ep->name);
+	strscpy(ep->name, name, sizeof(ep->name));
 	INIT_LIST_HEAD(&ep->queue);
 	INIT_LIST_HEAD(&ep->iso);
 	ep->bEndpointAddress = addr;
@@ -2635,7 +2627,7 @@ omap_udc_setup(struct platform_device *odev, struct usb_phy *xceiv)
 	/* UDC_PULLUP_EN gates the chip clock */
 	/* OTG_SYSCON_1 |= DEV_IDLE_EN; */
 
-	udc = kzalloc(sizeof(*udc), GFP_KERNEL);
+	udc = kzalloc_obj(*udc);
 	if (!udc)
 		return -ENOMEM;
 
@@ -2759,9 +2751,6 @@ static int omap_udc_probe(struct platform_device *pdev)
 	struct clk		*dc_clk = NULL;
 	struct clk		*hhc_clk = NULL;
 
-	if (cpu_is_omap7xx())
-		use_dma = 0;
-
 	/* NOTE:  "knows" the order of the resources! */
 	if (!request_mem_region(pdev->resource[0].start,
 			resource_size(&pdev->resource[0]),
@@ -2773,16 +2762,6 @@ static int omap_udc_probe(struct platform_device *pdev)
 	if (cpu_is_omap16xx()) {
 		dc_clk = clk_get(&pdev->dev, "usb_dc_ck");
 		hhc_clk = clk_get(&pdev->dev, "usb_hhc_ck");
-		BUG_ON(IS_ERR(dc_clk) || IS_ERR(hhc_clk));
-		/* can't use omap_udc_enable_clock yet */
-		clk_prepare_enable(dc_clk);
-		clk_prepare_enable(hhc_clk);
-		udelay(100);
-	}
-
-	if (cpu_is_omap7xx()) {
-		dc_clk = clk_get(&pdev->dev, "usb_dc_ck");
-		hhc_clk = clk_get(&pdev->dev, "l3_ocpi_ck");
 		BUG_ON(IS_ERR(dc_clk) || IS_ERR(hhc_clk));
 		/* can't use omap_udc_enable_clock yet */
 		clk_prepare_enable(dc_clk);
@@ -2914,7 +2893,7 @@ bad_on_1710:
 		goto cleanup1;
 	}
 #endif
-	if (cpu_is_omap16xx() || cpu_is_omap7xx()) {
+	if (cpu_is_omap16xx()) {
 		udc->dc_clk = dc_clk;
 		udc->hhc_clk = hhc_clk;
 		clk_disable(hhc_clk);
@@ -2933,7 +2912,7 @@ cleanup0:
 	if (!IS_ERR_OR_NULL(xceiv))
 		usb_put_phy(xceiv);
 
-	if (cpu_is_omap16xx() || cpu_is_omap7xx()) {
+	if (cpu_is_omap16xx()) {
 		clk_disable_unprepare(hhc_clk);
 		clk_disable_unprepare(dc_clk);
 		clk_put(hhc_clk);
@@ -2946,7 +2925,7 @@ cleanup0:
 	return status;
 }
 
-static int omap_udc_remove(struct platform_device *pdev)
+static void omap_udc_remove(struct platform_device *pdev)
 {
 	DECLARE_COMPLETION_ONSTACK(done);
 
@@ -2958,8 +2937,6 @@ static int omap_udc_remove(struct platform_device *pdev)
 
 	release_mem_region(pdev->resource[0].start,
 			   resource_size(&pdev->resource[0]));
-
-	return 0;
 }
 
 /* suspend/resume/wakeup from sysfs (echo > power/state) or when the
@@ -3014,6 +2991,6 @@ static struct platform_driver udc_driver = {
 
 module_platform_driver(udc_driver);
 
-MODULE_DESCRIPTION(DRIVER_DESC);
+MODULE_DESCRIPTION("OMAP UDC driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:omap_udc");

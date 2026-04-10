@@ -20,8 +20,7 @@
         "Counter": "0,1",
         "EventCode": "0xC4",
         "EventName": "BR_INST_RETIRED.ANY",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x0"
+        "SampleAfterValue": "2000000"
     },
     {
         "BriefDescription": "Retired branch instructions.",
@@ -37,8 +36,7 @@
         "EventCode": "0xC5",
         "EventName": "BR_INST_RETIRED.MISPRED",
         "PEBS": "1",
-        "SampleAfterValue": "200000",
-        "UMask": "0x0"
+        "SampleAfterValue": "200000"
     },
     {
         "BriefDescription": "Retired branch instructions that were mispredicted not-taken.",
@@ -189,24 +187,21 @@
         "Counter": "Fixed counter 2",
         "EventCode": "0xA",
         "EventName": "CPU_CLK_UNHALTED.CORE",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x0"
+        "SampleAfterValue": "2000000"
     },
     {
         "BriefDescription": "Core cycles when core is not halted",
         "Counter": "0,1",
         "EventCode": "0x3C",
         "EventName": "CPU_CLK_UNHALTED.CORE_P",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x0"
+        "SampleAfterValue": "2000000"
     },
     {
         "BriefDescription": "Reference cycles when core is not halted.",
         "Counter": "Fixed counter 3",
         "EventCode": "0xA",
         "EventName": "CPU_CLK_UNHALTED.REF",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x0"
+        "SampleAfterValue": "2000000"
     },
     {
         "BriefDescription": "Cycles the divider is busy.",
@@ -215,6 +210,14 @@
         "EventName": "CYCLES_DIV_BUSY",
         "SampleAfterValue": "2000000",
         "UMask": "0x1"
+    },
+    {
+        "BriefDescription": "Memory cluster signals to block micro-op dispatch for any reason",
+        "Counter": "0,1",
+        "EventCode": "0x9",
+        "EventName": "DISPATCH_BLOCKED.ANY",
+        "SampleAfterValue": "200000",
+        "UMask": "0x20"
     },
     {
         "BriefDescription": "Divide operations retired",
@@ -237,8 +240,7 @@
         "Counter": "Fixed counter 1",
         "EventCode": "0xA",
         "EventName": "INST_RETIRED.ANY",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x0"
+        "SampleAfterValue": "2000000"
     },
     {
         "BriefDescription": "Instructions retired (precise event).",
@@ -246,8 +248,7 @@
         "EventCode": "0xC0",
         "EventName": "INST_RETIRED.ANY_P",
         "PEBS": "2",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x0"
+        "SampleAfterValue": "2000000"
     },
     {
         "BriefDescription": "Self-Modifying Code detected.",

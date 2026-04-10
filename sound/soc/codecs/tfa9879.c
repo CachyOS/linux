@@ -111,8 +111,8 @@ static int tfa9879_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	int i2s_set;
 	int sck_pol;
 
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBS_CFS:
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_CBC_CFC:
 		break;
 	default:
 		return -EINVAL;
@@ -235,7 +235,6 @@ static const struct snd_soc_component_driver tfa9879_component = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config tfa9879_regmap = {
@@ -297,7 +296,7 @@ static int tfa9879_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id tfa9879_i2c_id[] = {
-	{ "tfa9879", 0 },
+	{ "tfa9879" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tfa9879_i2c_id);
@@ -313,7 +312,7 @@ static struct i2c_driver tfa9879_i2c_driver = {
 		.name = "tfa9879",
 		.of_match_table = tfa9879_of_match,
 	},
-	.probe_new = tfa9879_i2c_probe,
+	.probe = tfa9879_i2c_probe,
 	.id_table = tfa9879_i2c_id,
 };
 

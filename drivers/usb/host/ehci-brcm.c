@@ -31,8 +31,8 @@ static inline void ehci_brcm_wait_for_sof(struct ehci_hcd *ehci, u32 delay)
 	int res;
 
 	/* Wait for next microframe (every 125 usecs) */
-	res = readl_relaxed_poll_timeout(&ehci->regs->frame_index, val,
-					 val != frame_idx, 1, 130);
+	res = readl_relaxed_poll_timeout_atomic(&ehci->regs->frame_index,
+						val, val != frame_idx, 1, 130);
 	if (res)
 		ehci_err(ehci, "Error waiting for SOF\n");
 	udelay(delay);
@@ -140,8 +140,8 @@ static int ehci_brcm_probe(struct platform_device *pdev)
 		return err;
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq <= 0)
-		return irq ? irq : -EINVAL;
+	if (irq < 0)
+		return irq;
 
 	/* Hook the hub control routine to work around a bug */
 	ehci_brcm_hc_driver.hub_control = ehci_brcm_hub_control;
@@ -188,7 +188,7 @@ err_hcd:
 	return err;
 }
 
-static int ehci_brcm_remove(struct platform_device *dev)
+static void ehci_brcm_remove(struct platform_device *dev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(dev);
 	struct brcm_priv *priv = hcd_to_ehci_priv(hcd);
@@ -196,7 +196,6 @@ static int ehci_brcm_remove(struct platform_device *dev)
 	usb_remove_hcd(hcd);
 	clk_disable_unprepare(priv->clk);
 	usb_put_hcd(hcd);
-	return 0;
 }
 
 static int __maybe_unused ehci_brcm_suspend(struct device *dev)
@@ -247,6 +246,7 @@ static const struct of_device_id brcm_ehci_of_match[] = {
 	{ .compatible = "brcm,bcm7445-ehci", },
 	{}
 };
+MODULE_DEVICE_TABLE(of, brcm_ehci_of_match);
 
 static struct platform_driver ehci_brcm_driver = {
 	.probe		= ehci_brcm_probe,

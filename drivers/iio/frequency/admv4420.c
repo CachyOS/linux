@@ -13,7 +13,7 @@
 #include <linux/spi/spi.h>
 #include <linux/units.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 /* ADMV4420 Register Map */
 #define ADMV4420_SPI_CONFIG_1			0x00
@@ -113,7 +113,7 @@ struct admv4420_state {
 	struct admv4420_n_counter	n_counter;
 	enum admv4420_mux_sel		mux_sel;
 	struct mutex			lock;
-	u8				transf_buf[4] ____cacheline_aligned;
+	u8				transf_buf[4] __aligned(IIO_DMA_MINALIGN);
 };
 
 static const struct regmap_config admv4420_regmap_config = {

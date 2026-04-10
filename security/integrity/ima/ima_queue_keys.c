@@ -72,7 +72,7 @@ static struct ima_key_entry *ima_alloc_key_entry(struct key *keyring,
 	const char *audit_cause = "ENOMEM";
 	struct ima_key_entry *entry;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (entry) {
 		entry->payload = kmemdup(payload, payload_len, GFP_KERNEL);
 		entry->keyring_name = kstrdup(keyring->description,
@@ -159,7 +159,7 @@ void ima_process_queued_keys(void)
 
 	list_for_each_entry_safe(entry, tmp, &ima_keys, list) {
 		if (!timer_expired)
-			process_buffer_measurement(&init_user_ns, NULL,
+			process_buffer_measurement(&nop_mnt_idmap, NULL,
 						   entry->payload,
 						   entry->payload_len,
 						   entry->keyring_name,

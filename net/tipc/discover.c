@@ -148,8 +148,8 @@ static bool tipc_disc_addr_trial_msg(struct tipc_discoverer *d,
 {
 	struct net *net = d->net;
 	struct tipc_net *tn = tipc_net(net);
-	bool trial = time_before(jiffies, tn->addr_trial_end);
 	u32 self = tipc_own_addr(net);
+	bool trial = time_before(jiffies, tn->addr_trial_end) && !self;
 
 	if (mtyp == DSC_TRIAL_FAIL_MSG) {
 		if (!trial)
@@ -211,7 +211,10 @@ void tipc_disc_rcv(struct net *net, struct sk_buff *skb,
 	u32 self;
 	int err;
 
-	skb_linearize(skb);
+	if (skb_linearize(skb)) {
+		kfree_skb(skb);
+		return;
+	}
 	hdr = buf_msg(skb);
 
 	if (caps & TIPC_NODE_ID128)
@@ -289,7 +292,7 @@ void tipc_disc_remove_dest(struct tipc_discoverer *d)
  */
 static void tipc_disc_timeout(struct timer_list *t)
 {
-	struct tipc_discoverer *d = from_timer(d, t, timer);
+	struct tipc_discoverer *d = timer_container_of(d, t, timer);
 	struct tipc_net *tn = tipc_net(d->net);
 	struct tipc_media_addr maddr;
 	struct sk_buff *skb = NULL;
@@ -350,7 +353,7 @@ int tipc_disc_create(struct net *net, struct tipc_bearer *b,
 	struct tipc_net *tn = tipc_net(net);
 	struct tipc_discoverer *d;
 
-	d = kmalloc(sizeof(*d), GFP_ATOMIC);
+	d = kmalloc_obj(*d, GFP_ATOMIC);
 	if (!d)
 		return -ENOMEM;
 	d->skb = tipc_buf_acquire(MAX_H_SIZE + NODE_ID_LEN, GFP_ATOMIC);
@@ -385,7 +388,7 @@ int tipc_disc_create(struct net *net, struct tipc_bearer *b,
  */
 void tipc_disc_delete(struct tipc_discoverer *d)
 {
-	del_timer_sync(&d->timer);
+	timer_shutdown_sync(&d->timer);
 	kfree_skb(d->skb);
 	kfree(d);
 }

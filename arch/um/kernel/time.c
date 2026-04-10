@@ -19,17 +19,21 @@
 #include <asm/param.h>
 #include <kern_util.h>
 #include <os.h>
+#include <linux/delay.h>
 #include <linux/time-internal.h>
 #include <linux/um_timetravel.h>
 #include <shared/init.h>
 
 #ifdef CONFIG_UML_TIME_TRAVEL_SUPPORT
+#include <linux/sched/clock.h>
+
 enum time_travel_mode time_travel_mode;
 EXPORT_SYMBOL_GPL(time_travel_mode);
 
 static bool time_travel_start_set;
 static unsigned long long time_travel_start;
 static unsigned long long time_travel_time;
+static unsigned long long time_travel_shm_offset;
 static LIST_HEAD(time_travel_events);
 static LIST_HEAD(time_travel_irqs);
 static unsigned long long time_travel_timer_interval;
@@ -39,8 +43,20 @@ static int time_travel_ext_fd = -1;
 static unsigned int time_travel_ext_waiting;
 static bool time_travel_ext_prev_request_valid;
 static unsigned long long time_travel_ext_prev_request;
-static bool time_travel_ext_free_until_valid;
-static unsigned long long time_travel_ext_free_until;
+static unsigned long long *time_travel_ext_free_until;
+static unsigned long long _time_travel_ext_free_until;
+static u16 time_travel_shm_id;
+static struct um_timetravel_schedshm *time_travel_shm;
+static union um_timetravel_schedshm_client *time_travel_shm_client;
+
+unsigned long tt_extra_sched_jiffies;
+
+notrace unsigned long long sched_clock(void)
+{
+	return (unsigned long long)(jiffies - INITIAL_JIFFIES +
+				    tt_extra_sched_jiffies)
+					* (NSEC_PER_SEC / HZ);
+}
 
 static void time_travel_set_time(unsigned long long ns)
 {
@@ -57,7 +73,51 @@ enum time_travel_message_handling {
 	TTMH_IDLE,
 	TTMH_POLL,
 	TTMH_READ,
+	TTMH_READ_START_ACK,
 };
+
+static u64 bc_message;
+int time_travel_should_print_bc_msg;
+
+void _time_travel_print_bc_msg(void)
+{
+	time_travel_should_print_bc_msg = 0;
+	printk(KERN_INFO "time-travel: received broadcast 0x%llx\n", bc_message);
+}
+
+static void time_travel_setup_shm(int fd, u16 id)
+{
+	u32 len;
+
+	time_travel_shm = os_mmap_rw_shared(fd, sizeof(*time_travel_shm));
+
+	if (!time_travel_shm)
+		goto out;
+
+	len = time_travel_shm->len;
+
+	if (time_travel_shm->version != UM_TIMETRAVEL_SCHEDSHM_VERSION ||
+	    len < struct_size(time_travel_shm, clients, id + 1)) {
+		os_unmap_memory(time_travel_shm, sizeof(*time_travel_shm));
+		time_travel_shm = NULL;
+		goto out;
+	}
+
+	time_travel_shm = os_mremap_rw_shared(time_travel_shm,
+					      sizeof(*time_travel_shm),
+					      len);
+	if (!time_travel_shm)
+		goto out;
+
+	time_travel_shm_offset = time_travel_shm->current_time;
+	time_travel_shm_client = &time_travel_shm->clients[id];
+	time_travel_shm_client->capa |= UM_TIMETRAVEL_SCHEDSHM_CAP_TIME_SHARE;
+	time_travel_shm_id = id;
+	/* always look at that free_until from now on */
+	time_travel_ext_free_until = &time_travel_shm->free_until;
+out:
+	os_close_file(fd);
+}
 
 static void time_travel_handle_message(struct um_timetravel_msg *msg,
 				       enum time_travel_message_handling mode)
@@ -79,7 +139,20 @@ static void time_travel_handle_message(struct um_timetravel_msg *msg,
 		}
 	}
 
-	ret = os_read_file(time_travel_ext_fd, msg, sizeof(*msg));
+	if (unlikely(mode == TTMH_READ_START_ACK)) {
+		int fd[UM_TIMETRAVEL_SHARED_MAX_FDS];
+
+		ret = os_rcv_fd_msg(time_travel_ext_fd, fd,
+				    ARRAY_SIZE(fd), msg, sizeof(*msg));
+		if (ret == sizeof(*msg)) {
+			time_travel_setup_shm(fd[UM_TIMETRAVEL_SHARED_MEMFD],
+					      msg->time & UM_TIMETRAVEL_START_ACK_ID);
+			/* we don't use the logging for now */
+			os_close_file(fd[UM_TIMETRAVEL_SHARED_LOGFD]);
+		}
+	} else {
+		ret = os_read_file(time_travel_ext_fd, msg, sizeof(*msg));
+	}
 
 	if (ret == 0)
 		panic("time-travel external link is broken\n");
@@ -95,10 +168,24 @@ static void time_travel_handle_message(struct um_timetravel_msg *msg,
 		return;
 	case UM_TIMETRAVEL_RUN:
 		time_travel_set_time(msg->time);
+		if (time_travel_shm) {
+			/* no request right now since we're running */
+			time_travel_shm_client->flags &=
+				~UM_TIMETRAVEL_SCHEDSHM_FLAGS_REQ_RUN;
+			/* no ack for shared memory RUN */
+			return;
+		}
 		break;
 	case UM_TIMETRAVEL_FREE_UNTIL:
-		time_travel_ext_free_until_valid = true;
-		time_travel_ext_free_until = msg->time;
+		/* not supposed to get this with shm, but ignore it */
+		if (time_travel_shm)
+			break;
+		time_travel_ext_free_until = &_time_travel_ext_free_until;
+		_time_travel_ext_free_until = msg->time;
+		break;
+	case UM_TIMETRAVEL_BROADCAST:
+		bc_message = msg->time;
+		time_travel_should_print_bc_msg = 1;
 		break;
 	}
 
@@ -135,8 +222,15 @@ static u64 time_travel_ext_req(u32 op, u64 time)
 	block_signals_hard();
 	os_write_file(time_travel_ext_fd, &msg, sizeof(msg));
 
+	/* no ACK expected for WAIT in shared memory mode */
+	if (msg.op == UM_TIMETRAVEL_WAIT && time_travel_shm)
+		goto done;
+
 	while (msg.op != UM_TIMETRAVEL_ACK)
-		time_travel_handle_message(&msg, TTMH_READ);
+		time_travel_handle_message(&msg,
+					   op == UM_TIMETRAVEL_START ?
+						TTMH_READ_START_ACK :
+						TTMH_READ);
 
 	if (msg.seq != mseq)
 		panic("time-travel: ACK message has different seqno! op=%d, seq=%d != %d time=%lld\n",
@@ -144,6 +238,7 @@ static u64 time_travel_ext_req(u32 op, u64 time)
 
 	if (op == UM_TIMETRAVEL_GET)
 		time_travel_set_time(msg.time);
+done:
 	unblock_signals_hard();
 
 	return msg.time;
@@ -179,19 +274,47 @@ static void time_travel_ext_update_request(unsigned long long time)
 	/*
 	 * if we're running and are allowed to run past the request
 	 * then we don't need to update it either
+	 *
+	 * Note for shm we ignore FREE_UNTIL messages and leave the pointer
+	 * to shared memory, and for non-shm the offset is 0.
 	 */
-	if (!time_travel_ext_waiting && time_travel_ext_free_until_valid &&
-	    time < time_travel_ext_free_until)
+	if (!time_travel_ext_waiting && time_travel_ext_free_until &&
+	    time < (*time_travel_ext_free_until - time_travel_shm_offset))
 		return;
 
 	time_travel_ext_prev_request = time;
 	time_travel_ext_prev_request_valid = true;
+
+	if (time_travel_shm) {
+		union um_timetravel_schedshm_client *running;
+
+		running = &time_travel_shm->clients[time_travel_shm->running_id];
+
+		if (running->capa & UM_TIMETRAVEL_SCHEDSHM_CAP_TIME_SHARE) {
+			time_travel_shm_client->flags |=
+				UM_TIMETRAVEL_SCHEDSHM_FLAGS_REQ_RUN;
+			time += time_travel_shm_offset;
+			time_travel_shm_client->req_time = time;
+			if (time < time_travel_shm->free_until)
+				time_travel_shm->free_until = time;
+			return;
+		}
+	}
+
 	time_travel_ext_req(UM_TIMETRAVEL_REQUEST, time);
 }
 
 void __time_travel_propagate_time(void)
 {
 	static unsigned long long last_propagated;
+
+	if (time_travel_shm) {
+		if (time_travel_shm->running_id != time_travel_shm_id)
+			panic("time-travel: setting time while not running\n");
+		time_travel_shm->current_time = time_travel_time +
+						time_travel_shm_offset;
+		return;
+	}
 
 	if (last_propagated == time_travel_time)
 		return;
@@ -208,9 +331,12 @@ static bool time_travel_ext_request(unsigned long long time)
 	 * If we received an external sync point ("free until") then we
 	 * don't have to request/wait for anything until then, unless
 	 * we're already waiting.
+	 *
+	 * Note for shm we ignore FREE_UNTIL messages and leave the pointer
+	 * to shared memory, and for non-shm the offset is 0.
 	 */
-	if (!time_travel_ext_waiting && time_travel_ext_free_until_valid &&
-	    time < time_travel_ext_free_until)
+	if (!time_travel_ext_waiting && time_travel_ext_free_until &&
+	    time < (*time_travel_ext_free_until - time_travel_shm_offset))
 		return false;
 
 	time_travel_ext_update_request(time);
@@ -224,7 +350,8 @@ static void time_travel_ext_wait(bool idle)
 	};
 
 	time_travel_ext_prev_request_valid = false;
-	time_travel_ext_free_until_valid = false;
+	if (!time_travel_shm)
+		time_travel_ext_free_until = NULL;
 	time_travel_ext_waiting++;
 
 	time_travel_ext_req(UM_TIMETRAVEL_WAIT, -1);
@@ -247,7 +374,11 @@ static void time_travel_ext_wait(bool idle)
 
 static void time_travel_ext_get_time(void)
 {
-	time_travel_ext_req(UM_TIMETRAVEL_GET, -1);
+	if (time_travel_shm)
+		time_travel_set_time(time_travel_shm->current_time -
+				     time_travel_shm_offset);
+	else
+		time_travel_ext_req(UM_TIMETRAVEL_GET, -1);
 }
 
 static void __time_travel_update_time(unsigned long long ns, bool idle)
@@ -319,10 +450,15 @@ void time_travel_add_event_rel(struct time_travel_event *e,
 	time_travel_add_event(e, time_travel_time + delay_ns);
 }
 
-void time_travel_periodic_timer(struct time_travel_event *e)
+static void time_travel_periodic_timer(struct time_travel_event *e)
 {
 	time_travel_add_event(&time_travel_timer_event,
 			      time_travel_time + time_travel_timer_interval);
+
+	/* clock tick; decrease extra jiffies by keeping sched_clock constant */
+	if (tt_extra_sched_jiffies > 0)
+		tt_extra_sched_jiffies -= 1;
+
 	deliver_alarm();
 }
 
@@ -432,9 +568,29 @@ static void time_travel_update_time(unsigned long long next, bool idle)
 	time_travel_del_event(&ne);
 }
 
+static void time_travel_update_time_rel(unsigned long long offs)
+{
+	unsigned long flags;
+
+	/*
+	 * Disable interrupts before calculating the new time so
+	 * that a real timer interrupt (signal) can't happen at
+	 * a bad time e.g. after we read time_travel_time but
+	 * before we've completed updating the time.
+	 */
+	local_irq_save(flags);
+	time_travel_update_time(time_travel_time + offs, false);
+	local_irq_restore(flags);
+}
+
 void time_travel_ndelay(unsigned long nsec)
 {
-	time_travel_update_time(time_travel_time + nsec, false);
+	/*
+	 * Not strictly needed to use _rel() version since this is
+	 * only used in INFCPU/EXT modes, but it doesn't hurt and
+	 * is more readable too.
+	 */
+	time_travel_update_time_rel(nsec);
 }
 EXPORT_SYMBOL(time_travel_ndelay);
 
@@ -454,6 +610,10 @@ EXPORT_SYMBOL_GPL(time_travel_add_irq_event);
 
 static void time_travel_oneshot_timer(struct time_travel_event *e)
 {
+	/* clock tick; decrease extra jiffies by keeping sched_clock constant */
+	if (tt_extra_sched_jiffies > 0)
+		tt_extra_sched_jiffies -= 1;
+
 	deliver_alarm();
 }
 
@@ -465,9 +625,10 @@ void time_travel_sleep(void)
 	 * controller application.
 	 */
 	unsigned long long next = S64_MAX;
+	int cpu = raw_smp_processor_id();
 
 	if (time_travel_mode == TT_MODE_BASIC)
-		os_timer_disable();
+		os_timer_disable(cpu);
 
 	time_travel_update_time(next, true);
 
@@ -478,9 +639,9 @@ void time_travel_sleep(void)
 			 * This is somewhat wrong - we should get the first
 			 * one sooner like the os_timer_one_shot() below...
 			 */
-			os_timer_set_interval(time_travel_timer_interval);
+			os_timer_set_interval(cpu, time_travel_timer_interval);
 		} else {
-			os_timer_one_shot(time_travel_timer_event.time - next);
+			os_timer_one_shot(cpu, time_travel_timer_event.time - next);
 		}
 	}
 }
@@ -568,7 +729,11 @@ static void time_travel_set_start(void)
 #define time_travel_time 0
 #define time_travel_ext_waiting 0
 
-static inline void time_travel_update_time(unsigned long long ns, bool retearly)
+static inline void time_travel_update_time(unsigned long long ns, bool idle)
+{
+}
+
+static inline void time_travel_update_time_rel(unsigned long long offs)
 {
 }
 
@@ -594,6 +759,8 @@ extern u64 time_travel_ext_req(u32 op, u64 time);
 #define time_travel_del_event(e) do { } while (0)
 #endif
 
+static struct clock_event_device timer_clockevent[NR_CPUS];
+
 void timer_handler(int sig, struct siginfo *unused_si, struct uml_pt_regs *regs)
 {
 	unsigned long flags;
@@ -616,12 +783,14 @@ void timer_handler(int sig, struct siginfo *unused_si, struct uml_pt_regs *regs)
 
 static int itimer_shutdown(struct clock_event_device *evt)
 {
+	int cpu = evt - &timer_clockevent[0];
+
 	if (time_travel_mode != TT_MODE_OFF)
 		time_travel_del_event(&time_travel_timer_event);
 
 	if (time_travel_mode != TT_MODE_INFCPU &&
 	    time_travel_mode != TT_MODE_EXTERNAL)
-		os_timer_disable();
+		os_timer_disable(cpu);
 
 	return 0;
 }
@@ -629,6 +798,7 @@ static int itimer_shutdown(struct clock_event_device *evt)
 static int itimer_set_periodic(struct clock_event_device *evt)
 {
 	unsigned long long interval = NSEC_PER_SEC / HZ;
+	int cpu = evt - &timer_clockevent[0];
 
 	if (time_travel_mode != TT_MODE_OFF) {
 		time_travel_del_event(&time_travel_timer_event);
@@ -641,7 +811,7 @@ static int itimer_set_periodic(struct clock_event_device *evt)
 
 	if (time_travel_mode != TT_MODE_INFCPU &&
 	    time_travel_mode != TT_MODE_EXTERNAL)
-		os_timer_set_interval(interval);
+		os_timer_set_interval(cpu, interval);
 
 	return 0;
 }
@@ -661,7 +831,7 @@ static int itimer_next_event(unsigned long delta,
 
 	if (time_travel_mode != TT_MODE_INFCPU &&
 	    time_travel_mode != TT_MODE_EXTERNAL)
-		return os_timer_one_shot(delta);
+		return os_timer_one_shot(raw_smp_processor_id(), delta);
 
 	return 0;
 }
@@ -671,10 +841,9 @@ static int itimer_one_shot(struct clock_event_device *evt)
 	return itimer_next_event(0, evt);
 }
 
-static struct clock_event_device timer_clockevent = {
+static struct clock_event_device _timer_clockevent = {
 	.name			= "posix-timer",
 	.rating			= 250,
-	.cpumask		= cpu_possible_mask,
 	.features		= CLOCK_EVT_FEAT_PERIODIC |
 				  CLOCK_EVT_FEAT_ONESHOT,
 	.set_state_shutdown	= itimer_shutdown,
@@ -692,13 +861,21 @@ static struct clock_event_device timer_clockevent = {
 
 static irqreturn_t um_timer(int irq, void *dev)
 {
-	if (get_current()->mm != NULL)
-	{
-        /* userspace - relay signal, results in correct userspace timers */
-		os_alarm_process(get_current()->mm->context.id.u.pid);
-	}
+	int cpu = raw_smp_processor_id();
+	struct clock_event_device *evt = &timer_clockevent[cpu];
 
-	(*timer_clockevent.event_handler)(&timer_clockevent);
+	/*
+	 * Interrupt the (possibly) running userspace process, technically this
+	 * should only happen if userspace is currently executing.
+	 * With infinite CPU time-travel, we can only get here when userspace
+	 * is not executing. Do not notify there and avoid spurious scheduling.
+	 */
+	if (time_travel_mode != TT_MODE_INFCPU &&
+	    time_travel_mode != TT_MODE_EXTERNAL &&
+	    get_current()->mm)
+		os_alarm_process(get_current()->mm->context.id.pid);
+
+	evt->event_handler(evt);
 
 	return IRQ_HANDLED;
 }
@@ -720,9 +897,7 @@ static u64 timer_read(struct clocksource *cs)
 		 */
 		if (!irqs_disabled() && !in_interrupt() && !in_softirq() &&
 		    !time_travel_ext_waiting)
-			time_travel_update_time(time_travel_time +
-						TIMER_MULTIPLIER,
-						false);
+			time_travel_update_time_rel(TIMER_MULTIPLIER);
 		return time_travel_time / TIMER_MULTIPLIER;
 	}
 
@@ -737,7 +912,24 @@ static struct clocksource timer_clocksource = {
 	.flags		= CLOCK_SOURCE_IS_CONTINUOUS,
 };
 
-static void __init um_timer_setup(void)
+int um_setup_timer(void)
+{
+	int cpu = raw_smp_processor_id();
+	struct clock_event_device *evt = &timer_clockevent[cpu];
+	int err;
+
+	err = os_timer_create();
+	if (err)
+		return err;
+
+	memcpy(evt, &_timer_clockevent, sizeof(*evt));
+	evt->cpumask = cpumask_of(cpu);
+	clockevents_register_device(evt);
+
+	return 0;
+}
+
+static void __init um_timer_init(void)
 {
 	int err;
 
@@ -746,8 +938,8 @@ static void __init um_timer_setup(void)
 		printk(KERN_ERR "register_timer : request_irq failed - "
 		       "errno = %d\n", -err);
 
-	err = os_timer_create();
-	if (err != 0) {
+	err = um_setup_timer();
+	if (err) {
 		printk(KERN_ERR "creation of timer failed - errno = %d\n", -err);
 		return;
 	}
@@ -757,7 +949,6 @@ static void __init um_timer_setup(void)
 		printk(KERN_ERR "clocksource_register_hz returned %d\n", err);
 		return;
 	}
-	clockevents_register_device(&timer_clockevent);
 }
 
 void read_persistent_clock64(struct timespec64 *ts)
@@ -778,7 +969,7 @@ void read_persistent_clock64(struct timespec64 *ts)
 void __init time_init(void)
 {
 	timer_set_signal_handler();
-	late_time_init = um_timer_setup;
+	late_time_init = um_timer_init;
 }
 
 #ifdef CONFIG_UML_TIME_TRAVEL_SUPPORT
@@ -790,25 +981,25 @@ unsigned long calibrate_delay_is_known(void)
 	return 0;
 }
 
-int setup_time_travel(char *str)
+static int setup_time_travel(char *str)
 {
 	if (strcmp(str, "=inf-cpu") == 0) {
 		time_travel_mode = TT_MODE_INFCPU;
-		timer_clockevent.name = "time-travel-timer-infcpu";
+		_timer_clockevent.name = "time-travel-timer-infcpu";
 		timer_clocksource.name = "time-travel-clock";
 		return 1;
 	}
 
 	if (strncmp(str, "=ext:", 5) == 0) {
 		time_travel_mode = TT_MODE_EXTERNAL;
-		timer_clockevent.name = "time-travel-timer-external";
+		_timer_clockevent.name = "time-travel-timer-external";
 		timer_clocksource.name = "time-travel-clock-external";
 		return time_travel_connect_external(str + 5);
 	}
 
 	if (!*str) {
 		time_travel_mode = TT_MODE_BASIC;
-		timer_clockevent.name = "time-travel-timer";
+		_timer_clockevent.name = "time-travel-timer";
 		timer_clocksource.name = "time-travel-clock";
 		return 1;
 	}
@@ -819,28 +1010,28 @@ int setup_time_travel(char *str)
 __setup("time-travel", setup_time_travel);
 __uml_help(setup_time_travel,
 "time-travel\n"
-"This option just enables basic time travel mode, in which the clock/timers\n"
-"inside the UML instance skip forward when there's nothing to do, rather than\n"
-"waiting for real time to elapse. However, instance CPU speed is limited by\n"
-"the real CPU speed, so e.g. a 10ms timer will always fire after ~10ms wall\n"
-"clock (but quicker when there's nothing to do).\n"
+"    This option just enables basic time travel mode, in which the clock/timers\n"
+"    inside the UML instance skip forward when there's nothing to do, rather than\n"
+"    waiting for real time to elapse. However, instance CPU speed is limited by\n"
+"    the real CPU speed, so e.g. a 10ms timer will always fire after ~10ms wall\n"
+"    clock (but quicker when there's nothing to do).\n"
 "\n"
 "time-travel=inf-cpu\n"
-"This enables time travel mode with infinite processing power, in which there\n"
-"are no wall clock timers, and any CPU processing happens - as seen from the\n"
-"guest - instantly. This can be useful for accurate simulation regardless of\n"
-"debug overhead, physical CPU speed, etc. but is somewhat dangerous as it can\n"
-"easily lead to getting stuck (e.g. if anything in the system busy loops).\n"
+"    This enables time travel mode with infinite processing power, in which there\n"
+"    are no wall clock timers, and any CPU processing happens - as seen from the\n"
+"    guest - instantly. This can be useful for accurate simulation regardless of\n"
+"    debug overhead, physical CPU speed, etc. but is somewhat dangerous as it can\n"
+"    easily lead to getting stuck (e.g. if anything in the system busy loops).\n"
 "\n"
 "time-travel=ext:[ID:]/path/to/socket\n"
-"This enables time travel mode similar to =inf-cpu, except the system will\n"
-"use the given socket to coordinate with a central scheduler, in order to\n"
-"have more than one system simultaneously be on simulated time. The virtio\n"
-"driver code in UML knows about this so you can also simulate networks and\n"
-"devices using it, assuming the device has the right capabilities.\n"
-"The optional ID is a 64-bit integer that's sent to the central scheduler.\n");
+"    This enables time travel mode similar to =inf-cpu, except the system will\n"
+"    use the given socket to coordinate with a central scheduler, in order to\n"
+"    have more than one system simultaneously be on simulated time. The virtio\n"
+"    driver code in UML knows about this so you can also simulate networks and\n"
+"    devices using it, assuming the device has the right capabilities.\n"
+"    The optional ID is a 64-bit integer that's sent to the central scheduler.\n\n");
 
-int setup_time_travel_start(char *str)
+static int setup_time_travel_start(char *str)
 {
 	int err;
 
@@ -852,9 +1043,50 @@ int setup_time_travel_start(char *str)
 	return 1;
 }
 
-__setup("time-travel-start", setup_time_travel_start);
+__setup("time-travel-start=", setup_time_travel_start);
 __uml_help(setup_time_travel_start,
-"time-travel-start=<seconds>\n"
-"Configure the UML instance's wall clock to start at this value rather than\n"
-"the host's wall clock at the time of UML boot.\n");
+"time-travel-start=<nanoseconds>\n"
+"    Configure the UML instance's wall clock to start at this value rather than\n"
+"    the host's wall clock at the time of UML boot.\n\n");
+
+static struct kobject *bc_time_kobject;
+
+static ssize_t bc_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	return sprintf(buf, "0x%llx", bc_message);
+}
+
+static ssize_t bc_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	int ret;
+	u64 user_bc_message;
+
+	ret = kstrtou64(buf, 0, &user_bc_message);
+	if (ret)
+		return ret;
+
+	bc_message = user_bc_message;
+
+	time_travel_ext_req(UM_TIMETRAVEL_BROADCAST, bc_message);
+	pr_info("um: time: sent broadcast message: 0x%llx\n", bc_message);
+	return count;
+}
+
+static struct kobj_attribute bc_attribute = __ATTR(bc-message, 0660, bc_show, bc_store);
+
+static int __init um_bc_start(void)
+{
+	if (time_travel_mode != TT_MODE_EXTERNAL)
+		return 0;
+
+	bc_time_kobject = kobject_create_and_add("um-ext-time", kernel_kobj);
+	if (!bc_time_kobject)
+		return 0;
+
+	if (sysfs_create_file(bc_time_kobject, &bc_attribute.attr))
+		pr_debug("failed to create the bc file in /sys/kernel/um_time");
+
+	return 0;
+}
+late_initcall(um_bc_start);
 #endif

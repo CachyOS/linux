@@ -23,28 +23,14 @@
  * linked at. The routines below are all implemented in assembler in a
  * position independent manner
  */
-__efistub_memcmp		= memcmp;
-__efistub_memchr		= memchr;
-__efistub_memcpy		= memcpy;
-__efistub_memmove		= memmove;
-__efistub_memset		= memset;
-__efistub_strlen		= strlen;
-__efistub_strnlen		= strnlen;
-__efistub_strcmp		= strcmp;
-__efistub_strncmp		= strncmp;
-__efistub_strrchr		= strrchr;
-
-#ifdef CONFIG_KASAN
-__efistub___memcpy		= memcpy;
-__efistub___memmove		= memmove;
-__efistub___memset		= memset;
-#endif
-
 __efistub__start		= _start;
 __efistub__start_kernel		= _start_kernel;
 __efistub__end			= _end;
 __efistub__edata		= _edata;
-__efistub_screen_info		= screen_info;
+__efistub___init_text_end	= __init_text_end;
+#if defined(CONFIG_EFI_EARLYCON) || defined(CONFIG_SYSFB)
+__efistub_sysfb_primary_display	= sysfb_primary_display;
+#endif
 
 #endif
 

@@ -22,14 +22,14 @@
 #include <linux/usb/otg.h>
 #include <linux/platform_device.h>
 #include <linux/fsl_devices.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
 #include <linux/io.h>
 
 #include "ehci.h"
 #include "ehci-fsl.h"
 
 #define DRIVER_DESC "Freescale EHCI Host controller driver"
-#define DRV_NAME "ehci-fsl"
+#define DRV_NAME "fsl-ehci"
 
 static struct hc_driver __read_mostly fsl_ehci_hc_driver;
 
@@ -76,14 +76,9 @@ static int fsl_ehci_drv_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (!res) {
-		dev_err(&pdev->dev,
-			"Found HC with no IRQ. Check %s setup!\n",
-			dev_name(&pdev->dev));
-		return -ENODEV;
-	}
-	irq = res->start;
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0)
+		return irq;
 
 	hcd = __usb_create_hcd(&fsl_ehci_hc_driver, pdev->dev.parent,
 			       &pdev->dev, dev_name(&pdev->dev), NULL);
@@ -92,8 +87,7 @@ static int fsl_ehci_drv_probe(struct platform_device *pdev)
 		goto err1;
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	hcd->regs = devm_ioremap_resource(&pdev->dev, res);
+	hcd->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(hcd->regs)) {
 		retval = PTR_ERR(hcd->regs);
 		goto err2;
@@ -416,14 +410,12 @@ static int ehci_fsl_setup(struct usb_hcd *hcd)
 	return retval;
 }
 
-struct ehci_fsl {
-	struct ehci_hcd	ehci;
-
-#ifdef CONFIG_PM
+struct ehci_fsl_priv {
 	/* Saved USB PHY settings, need to restore after deep sleep. */
 	u32 usb_ctrl;
-#endif
 };
+
+#define hcd_to_ehci_fsl_priv(h) ((struct ehci_fsl_priv *) hcd_to_ehci(h)->priv)
 
 #ifdef CONFIG_PM
 
@@ -572,17 +564,10 @@ static inline int ehci_fsl_mpc512x_drv_resume(struct device *dev)
 }
 #endif /* CONFIG_PPC_MPC512x */
 
-static struct ehci_fsl *hcd_to_ehci_fsl(struct usb_hcd *hcd)
-{
-	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
-
-	return container_of(ehci, struct ehci_fsl, ehci);
-}
-
 static int ehci_fsl_drv_suspend(struct device *dev)
 {
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
-	struct ehci_fsl *ehci_fsl = hcd_to_ehci_fsl(hcd);
+	struct ehci_fsl_priv *priv = hcd_to_ehci_fsl_priv(hcd);
 	void __iomem *non_ehci = hcd->regs;
 
 	if (of_device_is_compatible(dev->parent->of_node,
@@ -595,14 +580,14 @@ static int ehci_fsl_drv_suspend(struct device *dev)
 	if (!fsl_deep_sleep())
 		return 0;
 
-	ehci_fsl->usb_ctrl = ioread32be(non_ehci + FSL_SOC_USB_CTRL);
+	priv->usb_ctrl = ioread32be(non_ehci + FSL_SOC_USB_CTRL);
 	return 0;
 }
 
 static int ehci_fsl_drv_resume(struct device *dev)
 {
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
-	struct ehci_fsl *ehci_fsl = hcd_to_ehci_fsl(hcd);
+	struct ehci_fsl_priv *priv = hcd_to_ehci_fsl_priv(hcd);
 	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
 	void __iomem *non_ehci = hcd->regs;
 
@@ -618,7 +603,7 @@ static int ehci_fsl_drv_resume(struct device *dev)
 	usb_root_hub_lost_power(hcd->self.root_hub);
 
 	/* Restore USB PHY settings and enable the controller. */
-	iowrite32be(ehci_fsl->usb_ctrl, non_ehci + FSL_SOC_USB_CTRL);
+	iowrite32be(priv->usb_ctrl, non_ehci + FSL_SOC_USB_CTRL);
 
 	ehci_reset(ehci);
 	ehci_fsl_reinit(ehci);
@@ -677,7 +662,7 @@ static int ehci_start_port_reset(struct usb_hcd *hcd, unsigned port)
 #endif /* CONFIG_USB_OTG */
 
 static const struct ehci_driver_overrides ehci_fsl_overrides __initconst = {
-	.extra_priv_size = sizeof(struct ehci_fsl),
+	.extra_priv_size = sizeof(struct ehci_fsl_priv),
 	.reset = ehci_fsl_setup,
 };
 
@@ -689,7 +674,7 @@ static const struct ehci_driver_overrides ehci_fsl_overrides __initconst = {
  *
  * Reverses the effect of usb_hcd_fsl_probe().
  */
-static int fsl_ehci_drv_remove(struct platform_device *pdev)
+static void fsl_ehci_drv_remove(struct platform_device *pdev)
 {
 	struct fsl_usb2_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	struct usb_hcd *hcd = platform_get_drvdata(pdev);
@@ -708,8 +693,6 @@ static int fsl_ehci_drv_remove(struct platform_device *pdev)
 	if (pdata->exit)
 		pdata->exit(pdev);
 	usb_put_hcd(hcd);
-
-	return 0;
 }
 
 static struct platform_driver ehci_fsl_driver = {
@@ -717,7 +700,7 @@ static struct platform_driver ehci_fsl_driver = {
 	.remove = fsl_ehci_drv_remove,
 	.shutdown = usb_hcd_platform_shutdown,
 	.driver = {
-		.name = "fsl-ehci",
+		.name = DRV_NAME,
 		.pm = EHCI_FSL_PM_OPS,
 	},
 };
@@ -726,8 +709,6 @@ static int __init ehci_fsl_init(void)
 {
 	if (usb_disabled())
 		return -ENODEV;
-
-	pr_info(DRV_NAME ": " DRIVER_DESC "\n");
 
 	ehci_init_driver(&fsl_ehci_hc_driver, &ehci_fsl_overrides);
 

@@ -18,6 +18,9 @@ struct rtw_hci_ops {
 	void (*deep_ps)(struct rtw_dev *rtwdev, bool enter);
 	void (*link_ps)(struct rtw_dev *rtwdev, bool enter);
 	void (*interface_cfg)(struct rtw_dev *rtwdev);
+	void (*dynamic_rx_agg)(struct rtw_dev *rtwdev, bool enable);
+	void (*write_firmware_page)(struct rtw_dev *rtwdev, u32 page,
+				    const u8 *data, u32 size);
 
 	int (*write_data_rsvd_page)(struct rtw_dev *rtwdev, u8 *buf, u32 size);
 	int (*write_data_h2c)(struct rtw_dev *rtwdev, u8 *buf, u32 size);
@@ -70,6 +73,18 @@ static inline void rtw_hci_link_ps(struct rtw_dev *rtwdev, bool enter)
 static inline void rtw_hci_interface_cfg(struct rtw_dev *rtwdev)
 {
 	rtwdev->hci.ops->interface_cfg(rtwdev);
+}
+
+static inline void rtw_hci_dynamic_rx_agg(struct rtw_dev *rtwdev, bool enable)
+{
+	if (rtwdev->hci.ops->dynamic_rx_agg)
+		rtwdev->hci.ops->dynamic_rx_agg(rtwdev, enable);
+}
+
+static inline void rtw_hci_write_firmware_page(struct rtw_dev *rtwdev, u32 page,
+					       const u8 *data, u32 size)
+{
+	rtwdev->hci.ops->write_firmware_page(rtwdev, page, data, size);
 }
 
 static inline int
@@ -166,12 +181,11 @@ static inline u32
 rtw_read_rf(struct rtw_dev *rtwdev, enum rtw_rf_path rf_path,
 	    u32 addr, u32 mask)
 {
-	unsigned long flags;
 	u32 val;
 
-	spin_lock_irqsave(&rtwdev->rf_lock, flags);
+	lockdep_assert_held(&rtwdev->mutex);
+
 	val = rtwdev->chip->ops->read_rf(rtwdev, rf_path, addr, mask);
-	spin_unlock_irqrestore(&rtwdev->rf_lock, flags);
 
 	return val;
 }
@@ -180,11 +194,9 @@ static inline void
 rtw_write_rf(struct rtw_dev *rtwdev, enum rtw_rf_path rf_path,
 	     u32 addr, u32 mask, u32 data)
 {
-	unsigned long flags;
+	lockdep_assert_held(&rtwdev->mutex);
 
-	spin_lock_irqsave(&rtwdev->rf_lock, flags);
 	rtwdev->chip->ops->write_rf(rtwdev, rf_path, addr, mask, data);
-	spin_unlock_irqrestore(&rtwdev->rf_lock, flags);
 }
 
 static inline u32

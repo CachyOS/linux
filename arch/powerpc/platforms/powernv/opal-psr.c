@@ -132,10 +132,9 @@ void __init opal_psr_init(void)
 		return;
 	}
 
-	psr_attrs = kcalloc(of_get_child_count(psr), sizeof(*psr_attrs),
-			    GFP_KERNEL);
+	psr_attrs = kzalloc_objs(*psr_attrs, of_get_child_count(psr));
 	if (!psr_attrs)
-		return;
+		goto out_put_psr;
 
 	psr_kobj = kobject_create_and_add("psr", opal_kobj);
 	if (!psr_kobj) {
@@ -162,10 +161,14 @@ void __init opal_psr_init(void)
 		}
 		i++;
 	}
+	of_node_put(psr);
 
 	return;
 out_kobj:
+	of_node_put(node);
 	kobject_put(psr_kobj);
 out:
 	kfree(psr_attrs);
+out_put_psr:
+	of_node_put(psr);
 }

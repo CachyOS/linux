@@ -67,7 +67,7 @@ static int __init ingenic_intc_of_init(struct device_node *node,
 	int parent_irq, err = 0;
 	unsigned i;
 
-	intc = kzalloc(sizeof(*intc), GFP_KERNEL);
+	intc = kzalloc_obj(*intc);
 	if (!intc) {
 		err = -ENOMEM;
 		goto out_err;
@@ -90,8 +90,8 @@ static int __init ingenic_intc_of_init(struct device_node *node,
 		goto out_unmap_irq;
 	}
 
-	domain = irq_domain_add_linear(node, num_chips * 32,
-				       &irq_generic_chip_ops, NULL);
+	domain = irq_domain_create_linear(of_fwnode_handle(node), num_chips * 32,
+					  &irq_generic_chip_ops, NULL);
 	if (!domain) {
 		err = -ENOMEM;
 		goto out_unmap_base;

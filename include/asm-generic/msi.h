@@ -4,7 +4,7 @@
 
 #include <linux/types.h>
 
-#ifdef CONFIG_GENERIC_MSI_IRQ_DOMAIN
+#ifdef CONFIG_GENERIC_MSI_IRQ
 
 #ifndef NUM_MSI_ALLOC_SCRATCHPAD_REGS
 # define NUM_MSI_ALLOC_SCRATCHPAD_REGS	2
@@ -33,9 +33,10 @@ typedef struct msi_alloc_info {
 
 /* Device generating MSIs is proxying for another device */
 #define MSI_ALLOC_FLAGS_PROXY_DEVICE	(1UL << 0)
+#define MSI_ALLOC_FLAGS_FIXED_MSG_DATA	(1UL << 1)
 
 #define GENERIC_MSI_DOMAIN_OPS		1
 
-#endif /* CONFIG_GENERIC_MSI_IRQ_DOMAIN */
+#endif /* CONFIG_GENERIC_MSI_IRQ */
 
 #endif

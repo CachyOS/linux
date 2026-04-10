@@ -80,7 +80,7 @@ static struct usb_phy *__of_usb_find_phy(struct device_node *node)
 	return ERR_PTR(-EPROBE_DEFER);
 }
 
-static struct usb_phy *__device_to_usb_phy(struct device *dev)
+static struct usb_phy *__device_to_usb_phy(const struct device *dev)
 {
 	struct usb_phy *usb_phy;
 
@@ -145,9 +145,9 @@ static void usb_phy_notify_charger_work(struct work_struct *work)
 	kobject_uevent(&usb_phy->dev->kobj, KOBJ_CHANGE);
 }
 
-static int usb_phy_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int usb_phy_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct usb_phy *usb_phy;
+	const struct usb_phy *usb_phy;
 	char uchger_state[50] = { 0 };
 	char uchger_type[50] = { 0 };
 	unsigned long flags;
@@ -346,13 +346,6 @@ static void devm_usb_phy_release2(struct device *dev, void *_res)
 	usb_put_phy(res->phy);
 }
 
-static int devm_usb_phy_match(struct device *dev, void *res, void *match_data)
-{
-	struct usb_phy **phy = res;
-
-	return *phy == match_data;
-}
-
 static void usb_charger_init(struct usb_phy *usb_phy)
 {
 	usb_phy->chg_type = UNKNOWN_TYPE;
@@ -365,7 +358,7 @@ static int usb_add_extcon(struct usb_phy *x)
 {
 	int ret;
 
-	if (of_property_read_bool(x->dev->of_node, "extcon")) {
+	if (of_property_present(x->dev->of_node, "extcon")) {
 		x->edev = extcon_get_edev_by_phandle(x->dev, 0);
 		if (IS_ERR(x->edev))
 			return PTR_ERR(x->edev);
@@ -615,25 +608,6 @@ struct usb_phy *devm_usb_get_phy_by_phandle(struct device *dev,
 EXPORT_SYMBOL_GPL(devm_usb_get_phy_by_phandle);
 
 /**
- * devm_usb_put_phy - release the USB PHY
- * @dev: device that wants to release this phy
- * @phy: the phy returned by devm_usb_get_phy()
- *
- * destroys the devres associated with this phy and invokes usb_put_phy
- * to release the phy.
- *
- * For use by USB host and peripheral drivers.
- */
-void devm_usb_put_phy(struct device *dev, struct usb_phy *phy)
-{
-	int r;
-
-	r = devres_destroy(dev, devm_usb_phy_release, devm_usb_phy_match, phy);
-	dev_WARN_ONCE(dev, r, "couldn't find PHY resource\n");
-}
-EXPORT_SYMBOL_GPL(devm_usb_put_phy);
-
-/**
  * usb_put_phy - release the USB PHY
  * @x: the phy returned by usb_get_phy()
  *
@@ -672,6 +646,8 @@ int usb_add_phy(struct usb_phy *x, enum usb_phy_type type)
 		return -EINVAL;
 	}
 
+	INIT_LIST_HEAD(&x->head);
+
 	usb_charger_init(x);
 	ret = usb_add_extcon(x);
 	if (ret)
@@ -699,7 +675,7 @@ out:
 }
 EXPORT_SYMBOL_GPL(usb_add_phy);
 
-static struct device_type usb_phy_dev_type = {
+static const struct device_type usb_phy_dev_type = {
 	.name = "usb_phy",
 	.uevent = usb_phy_uevent,
 };
@@ -721,6 +697,8 @@ int usb_add_phy_dev(struct usb_phy *x)
 		dev_err(x->dev, "no device provided for PHY\n");
 		return -EINVAL;
 	}
+
+	INIT_LIST_HEAD(&x->head);
 
 	usb_charger_init(x);
 	ret = usb_add_extcon(x);

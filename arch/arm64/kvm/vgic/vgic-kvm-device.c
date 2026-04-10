@@ -5,6 +5,7 @@
  * Copyright (C) 2015 ARM Ltd.
  * Author: Marc Zyngier <marc.zyngier@arm.com>
  */
+#include <linux/irqchip/arm-gic-v3.h>
 #include <linux/kvm_host.h>
 #include <kvm/arm_vgic.h>
 #include <linux/uaccess.h>
@@ -27,7 +28,8 @@ int vgic_check_iorange(struct kvm *kvm, phys_addr_t ioaddr,
 	if (addr + size < addr)
 		return -EINVAL;
 
-	if (addr & ~kvm_phys_mask(kvm) || addr + size > kvm_phys_size(kvm))
+	if (addr & ~kvm_phys_mask(&kvm->arch.mmu) ||
+	    (addr + size) > kvm_phys_size(&kvm->arch.mmu))
 		return -E2BIG;
 
 	return 0;
@@ -41,11 +43,42 @@ static int vgic_check_type(struct kvm *kvm, int type_needed)
 		return 0;
 }
 
+int kvm_set_legacy_vgic_v2_addr(struct kvm *kvm, struct kvm_arm_device_addr *dev_addr)
+{
+	struct vgic_dist *vgic = &kvm->arch.vgic;
+	int r;
+
+	mutex_lock(&kvm->arch.config_lock);
+	switch (FIELD_GET(KVM_ARM_DEVICE_TYPE_MASK, dev_addr->id)) {
+	case KVM_VGIC_V2_ADDR_TYPE_DIST:
+		r = vgic_check_type(kvm, KVM_DEV_TYPE_ARM_VGIC_V2);
+		if (!r)
+			r = vgic_check_iorange(kvm, vgic->vgic_dist_base, dev_addr->addr,
+					       SZ_4K, KVM_VGIC_V2_DIST_SIZE);
+		if (!r)
+			vgic->vgic_dist_base = dev_addr->addr;
+		break;
+	case KVM_VGIC_V2_ADDR_TYPE_CPU:
+		r = vgic_check_type(kvm, KVM_DEV_TYPE_ARM_VGIC_V2);
+		if (!r)
+			r = vgic_check_iorange(kvm, vgic->vgic_cpu_base, dev_addr->addr,
+					       SZ_4K, KVM_VGIC_V2_CPU_SIZE);
+		if (!r)
+			vgic->vgic_cpu_base = dev_addr->addr;
+		break;
+	default:
+		r = -ENODEV;
+	}
+
+	mutex_unlock(&kvm->arch.config_lock);
+
+	return r;
+}
+
 /**
  * kvm_vgic_addr - set or get vgic VM base addresses
  * @kvm:   pointer to the vm struct
- * @type:  the VGIC addr type, one of KVM_VGIC_V[23]_ADDR_TYPE_XXX
- * @addr:  pointer to address value
+ * @attr:  pointer to the attribute being retrieved/updated
  * @write: if true set the address in the VM address space, if false read the
  *          address
  *
@@ -57,15 +90,26 @@ static int vgic_check_type(struct kvm *kvm, int type_needed)
  * overlapping regions in case of a virtual GICv3 here, since we don't know
  * the number of VCPUs yet, so we defer this check to map_resources().
  */
-int kvm_vgic_addr(struct kvm *kvm, unsigned long type, u64 *addr, bool write)
+static int kvm_vgic_addr(struct kvm *kvm, struct kvm_device_attr *attr, bool write)
 {
-	int r = 0;
+	u64 __user *uaddr = (u64 __user *)attr->addr;
 	struct vgic_dist *vgic = &kvm->arch.vgic;
 	phys_addr_t *addr_ptr, alignment, size;
 	u64 undef_value = VGIC_ADDR_UNDEF;
+	u64 addr;
+	int r;
 
-	mutex_lock(&kvm->lock);
-	switch (type) {
+	/* Reading a redistributor region addr implies getting the index */
+	if (write || attr->attr == KVM_VGIC_V3_ADDR_TYPE_REDIST_REGION)
+		if (get_user(addr, uaddr))
+			return -EFAULT;
+
+	/*
+	 * Since we can't hold config_lock while registering the redistributor
+	 * iodevs, take the slots_lock immediately.
+	 */
+	mutex_lock(&kvm->slots_lock);
+	switch (attr->attr) {
 	case KVM_VGIC_V2_ADDR_TYPE_DIST:
 		r = vgic_check_type(kvm, KVM_DEV_TYPE_ARM_VGIC_V2);
 		addr_ptr = &vgic->vgic_dist_base;
@@ -91,7 +135,7 @@ int kvm_vgic_addr(struct kvm *kvm, unsigned long type, u64 *addr, bool write)
 		if (r)
 			break;
 		if (write) {
-			r = vgic_v3_set_redist_base(kvm, 0, *addr, 0);
+			r = vgic_v3_set_redist_base(kvm, 0, addr, 0);
 			goto out;
 		}
 		rdreg = list_first_entry_or_null(&vgic->rd_regions,
@@ -111,14 +155,12 @@ int kvm_vgic_addr(struct kvm *kvm, unsigned long type, u64 *addr, bool write)
 		if (r)
 			break;
 
-		index = *addr & KVM_VGIC_V3_RDIST_INDEX_MASK;
+		index = addr & KVM_VGIC_V3_RDIST_INDEX_MASK;
 
 		if (write) {
-			gpa_t base = *addr & KVM_VGIC_V3_RDIST_BASE_MASK;
-			u32 count = (*addr & KVM_VGIC_V3_RDIST_COUNT_MASK)
-					>> KVM_VGIC_V3_RDIST_COUNT_SHIFT;
-			u8 flags = (*addr & KVM_VGIC_V3_RDIST_FLAGS_MASK)
-					>> KVM_VGIC_V3_RDIST_FLAGS_SHIFT;
+			gpa_t base = addr & KVM_VGIC_V3_RDIST_BASE_MASK;
+			u32 count = FIELD_GET(KVM_VGIC_V3_RDIST_COUNT_MASK, addr);
+			u8 flags = FIELD_GET(KVM_VGIC_V3_RDIST_FLAGS_MASK, addr);
 
 			if (!count || flags)
 				r = -EINVAL;
@@ -134,9 +176,9 @@ int kvm_vgic_addr(struct kvm *kvm, unsigned long type, u64 *addr, bool write)
 			goto out;
 		}
 
-		*addr = index;
-		*addr |= rdreg->base;
-		*addr |= (u64)rdreg->count << KVM_VGIC_V3_RDIST_COUNT_SHIFT;
+		addr = index;
+		addr |= rdreg->base;
+		addr |= (u64)rdreg->count << KVM_VGIC_V3_RDIST_COUNT_SHIFT;
 		goto out;
 	}
 	default:
@@ -146,16 +188,22 @@ int kvm_vgic_addr(struct kvm *kvm, unsigned long type, u64 *addr, bool write)
 	if (r)
 		goto out;
 
+	mutex_lock(&kvm->arch.config_lock);
 	if (write) {
-		r = vgic_check_iorange(kvm, *addr_ptr, *addr, alignment, size);
+		r = vgic_check_iorange(kvm, *addr_ptr, addr, alignment, size);
 		if (!r)
-			*addr_ptr = *addr;
+			*addr_ptr = addr;
 	} else {
-		*addr = *addr_ptr;
+		addr = *addr_ptr;
 	}
+	mutex_unlock(&kvm->arch.config_lock);
 
 out:
-	mutex_unlock(&kvm->lock);
+	mutex_unlock(&kvm->slots_lock);
+
+	if (!r && !write)
+		r =  put_user(addr, uaddr);
+
 	return r;
 }
 
@@ -165,17 +213,9 @@ static int vgic_set_common_attr(struct kvm_device *dev,
 	int r;
 
 	switch (attr->group) {
-	case KVM_DEV_ARM_VGIC_GRP_ADDR: {
-		u64 __user *uaddr = (u64 __user *)(long)attr->addr;
-		u64 addr;
-		unsigned long type = (unsigned long)attr->attr;
-
-		if (copy_from_user(&addr, uaddr, sizeof(addr)))
-			return -EFAULT;
-
-		r = kvm_vgic_addr(dev->kvm, type, &addr, true);
+	case KVM_DEV_ARM_VGIC_GRP_ADDR:
+		r = kvm_vgic_addr(dev->kvm, attr, true);
 		return (r == -ENODEV) ? -ENXIO : r;
-	}
 	case KVM_DEV_ARM_VGIC_GRP_NR_IRQS: {
 		u32 __user *uaddr = (u32 __user *)(long)attr->addr;
 		u32 val;
@@ -195,23 +235,49 @@ static int vgic_set_common_attr(struct kvm_device *dev,
 		    (val & 31))
 			return -EINVAL;
 
-		mutex_lock(&dev->kvm->lock);
+		mutex_lock(&dev->kvm->arch.config_lock);
 
-		if (vgic_ready(dev->kvm) || dev->kvm->arch.vgic.nr_spis)
+		/*
+		 * Either userspace has already configured NR_IRQS or
+		 * the vgic has already been initialized and vgic_init()
+		 * supplied a default amount of SPIs.
+		 */
+		if (dev->kvm->arch.vgic.nr_spis)
 			ret = -EBUSY;
 		else
 			dev->kvm->arch.vgic.nr_spis =
 				val - VGIC_NR_PRIVATE_IRQS;
 
-		mutex_unlock(&dev->kvm->lock);
+		mutex_unlock(&dev->kvm->arch.config_lock);
 
 		return ret;
 	}
 	case KVM_DEV_ARM_VGIC_GRP_CTRL: {
 		switch (attr->attr) {
 		case KVM_DEV_ARM_VGIC_CTRL_INIT:
-			mutex_lock(&dev->kvm->lock);
+			mutex_lock(&dev->kvm->arch.config_lock);
 			r = vgic_init(dev->kvm);
+			mutex_unlock(&dev->kvm->arch.config_lock);
+			return r;
+		case KVM_DEV_ARM_VGIC_SAVE_PENDING_TABLES:
+			/*
+			 * OK, this one isn't common at all, but we
+			 * want to handle all control group attributes
+			 * in a single place.
+			 */
+			if (vgic_check_type(dev->kvm, KVM_DEV_TYPE_ARM_VGIC_V3))
+				return -ENXIO;
+			mutex_lock(&dev->kvm->lock);
+
+			if (kvm_trylock_all_vcpus(dev->kvm)) {
+				mutex_unlock(&dev->kvm->lock);
+				return -EBUSY;
+			}
+
+			mutex_lock(&dev->kvm->arch.config_lock);
+			r = vgic_v3_save_pending_tables(dev->kvm);
+			mutex_unlock(&dev->kvm->arch.config_lock);
+			kvm_unlock_all_vcpus(dev->kvm);
 			mutex_unlock(&dev->kvm->lock);
 			return r;
 		}
@@ -228,22 +294,9 @@ static int vgic_get_common_attr(struct kvm_device *dev,
 	int r = -ENXIO;
 
 	switch (attr->group) {
-	case KVM_DEV_ARM_VGIC_GRP_ADDR: {
-		u64 __user *uaddr = (u64 __user *)(long)attr->addr;
-		u64 addr;
-		unsigned long type = (unsigned long)attr->attr;
-
-		if (copy_from_user(&addr, uaddr, sizeof(addr)))
-			return -EFAULT;
-
-		r = kvm_vgic_addr(dev->kvm, type, &addr, false);
-		if (r)
-			return (r == -ENODEV) ? -ENXIO : r;
-
-		if (copy_to_user(uaddr, &addr, sizeof(addr)))
-			return -EFAULT;
-		break;
-	}
+	case KVM_DEV_ARM_VGIC_GRP_ADDR:
+		r = kvm_vgic_addr(dev->kvm, attr, false);
+		return (r == -ENODEV) ? -ENXIO : r;
 	case KVM_DEV_ARM_VGIC_GRP_NR_IRQS: {
 		u32 __user *uaddr = (u32 __user *)(long)attr->addr;
 
@@ -291,56 +344,14 @@ int kvm_register_vgic_device(unsigned long type)
 int vgic_v2_parse_attr(struct kvm_device *dev, struct kvm_device_attr *attr,
 		       struct vgic_reg_attr *reg_attr)
 {
-	int cpuid;
+	int cpuid = FIELD_GET(KVM_DEV_ARM_VGIC_CPUID_MASK, attr->attr);
 
-	cpuid = (attr->attr & KVM_DEV_ARM_VGIC_CPUID_MASK) >>
-		 KVM_DEV_ARM_VGIC_CPUID_SHIFT;
-
-	if (cpuid >= atomic_read(&dev->kvm->online_vcpus))
+	reg_attr->addr = attr->attr & KVM_DEV_ARM_VGIC_OFFSET_MASK;
+	reg_attr->vcpu = kvm_get_vcpu_by_id(dev->kvm, cpuid);
+	if (!reg_attr->vcpu)
 		return -EINVAL;
 
-	reg_attr->vcpu = kvm_get_vcpu(dev->kvm, cpuid);
-	reg_attr->addr = attr->attr & KVM_DEV_ARM_VGIC_OFFSET_MASK;
-
 	return 0;
-}
-
-/* unlocks vcpus from @vcpu_lock_idx and smaller */
-static void unlock_vcpus(struct kvm *kvm, int vcpu_lock_idx)
-{
-	struct kvm_vcpu *tmp_vcpu;
-
-	for (; vcpu_lock_idx >= 0; vcpu_lock_idx--) {
-		tmp_vcpu = kvm_get_vcpu(kvm, vcpu_lock_idx);
-		mutex_unlock(&tmp_vcpu->mutex);
-	}
-}
-
-void unlock_all_vcpus(struct kvm *kvm)
-{
-	unlock_vcpus(kvm, atomic_read(&kvm->online_vcpus) - 1);
-}
-
-/* Returns true if all vcpus were locked, false otherwise */
-bool lock_all_vcpus(struct kvm *kvm)
-{
-	struct kvm_vcpu *tmp_vcpu;
-	unsigned long c;
-
-	/*
-	 * Any time a vcpu is run, vcpu_load is called which tries to grab the
-	 * vcpu->mutex.  By grabbing the vcpu->mutex of all VCPUs we ensure
-	 * that no other VCPUs are run and fiddle with the vgic state while we
-	 * access it.
-	 */
-	kvm_for_each_vcpu(c, tmp_vcpu, kvm) {
-		if (!mutex_trylock(&tmp_vcpu->mutex)) {
-			unlock_vcpus(kvm, c - 1);
-			return false;
-		}
-	}
-
-	return true;
 }
 
 /**
@@ -348,17 +359,18 @@ bool lock_all_vcpus(struct kvm *kvm)
  *
  * @dev:      kvm device handle
  * @attr:     kvm device attribute
- * @reg:      address the value is read or written
  * @is_write: true if userspace is writing a register
  */
 static int vgic_v2_attr_regs_access(struct kvm_device *dev,
 				    struct kvm_device_attr *attr,
-				    u32 *reg, bool is_write)
+				    bool is_write)
 {
+	u32 __user *uaddr = (u32 __user *)(unsigned long)attr->addr;
 	struct vgic_reg_attr reg_attr;
 	gpa_t addr;
 	struct kvm_vcpu *vcpu;
 	int ret;
+	u32 val;
 
 	ret = vgic_v2_parse_attr(dev, attr, &reg_attr);
 	if (ret)
@@ -367,83 +379,68 @@ static int vgic_v2_attr_regs_access(struct kvm_device *dev,
 	vcpu = reg_attr.vcpu;
 	addr = reg_attr.addr;
 
+	if (is_write)
+		if (get_user(val, uaddr))
+			return -EFAULT;
+
 	mutex_lock(&dev->kvm->lock);
+
+	if (kvm_trylock_all_vcpus(dev->kvm)) {
+		mutex_unlock(&dev->kvm->lock);
+		return -EBUSY;
+	}
+
+	mutex_lock(&dev->kvm->arch.config_lock);
 
 	ret = vgic_init(dev->kvm);
 	if (ret)
 		goto out;
 
-	if (!lock_all_vcpus(dev->kvm)) {
-		ret = -EBUSY;
-		goto out;
-	}
-
 	switch (attr->group) {
 	case KVM_DEV_ARM_VGIC_GRP_CPU_REGS:
-		ret = vgic_v2_cpuif_uaccess(vcpu, is_write, addr, reg);
+		ret = vgic_v2_cpuif_uaccess(vcpu, is_write, addr, &val);
 		break;
 	case KVM_DEV_ARM_VGIC_GRP_DIST_REGS:
-		ret = vgic_v2_dist_uaccess(vcpu, is_write, addr, reg);
+		ret = vgic_v2_dist_uaccess(vcpu, is_write, addr, &val);
 		break;
 	default:
 		ret = -EINVAL;
 		break;
 	}
 
-	unlock_all_vcpus(dev->kvm);
 out:
+	mutex_unlock(&dev->kvm->arch.config_lock);
+	kvm_unlock_all_vcpus(dev->kvm);
 	mutex_unlock(&dev->kvm->lock);
+
+	if (!ret && !is_write)
+		ret = put_user(val, uaddr);
+
 	return ret;
 }
 
 static int vgic_v2_set_attr(struct kvm_device *dev,
 			    struct kvm_device_attr *attr)
 {
-	int ret;
-
-	ret = vgic_set_common_attr(dev, attr);
-	if (ret != -ENXIO)
-		return ret;
-
 	switch (attr->group) {
 	case KVM_DEV_ARM_VGIC_GRP_DIST_REGS:
-	case KVM_DEV_ARM_VGIC_GRP_CPU_REGS: {
-		u32 __user *uaddr = (u32 __user *)(long)attr->addr;
-		u32 reg;
-
-		if (get_user(reg, uaddr))
-			return -EFAULT;
-
-		return vgic_v2_attr_regs_access(dev, attr, &reg, true);
+	case KVM_DEV_ARM_VGIC_GRP_CPU_REGS:
+		return vgic_v2_attr_regs_access(dev, attr, true);
+	default:
+		return vgic_set_common_attr(dev, attr);
 	}
-	}
-
-	return -ENXIO;
 }
 
 static int vgic_v2_get_attr(struct kvm_device *dev,
 			    struct kvm_device_attr *attr)
 {
-	int ret;
-
-	ret = vgic_get_common_attr(dev, attr);
-	if (ret != -ENXIO)
-		return ret;
-
 	switch (attr->group) {
 	case KVM_DEV_ARM_VGIC_GRP_DIST_REGS:
-	case KVM_DEV_ARM_VGIC_GRP_CPU_REGS: {
-		u32 __user *uaddr = (u32 __user *)(long)attr->addr;
-		u32 reg = 0;
-
-		ret = vgic_v2_attr_regs_access(dev, attr, &reg, false);
-		if (ret)
-			return ret;
-		return put_user(reg, uaddr);
+	case KVM_DEV_ARM_VGIC_GRP_CPU_REGS:
+		return vgic_v2_attr_regs_access(dev, attr, false);
+	default:
+		return vgic_get_common_attr(dev, attr);
 	}
-	}
-
-	return -ENXIO;
 }
 
 static int vgic_v2_has_attr(struct kvm_device *dev,
@@ -508,22 +505,40 @@ int vgic_v3_parse_attr(struct kvm_device *dev, struct kvm_device_attr *attr,
 }
 
 /*
+ * Allow access to certain ID-like registers prior to VGIC initialization,
+ * thereby allowing the VMM to provision the features / sizing of the VGIC.
+ */
+static bool reg_allowed_pre_init(struct kvm_device_attr *attr)
+{
+	if (attr->group != KVM_DEV_ARM_VGIC_GRP_DIST_REGS)
+		return false;
+
+	switch (attr->attr & KVM_DEV_ARM_VGIC_OFFSET_MASK) {
+	case GICD_IIDR:
+	case GICD_TYPER2:
+		return true;
+	default:
+		return false;
+	}
+}
+
+/*
  * vgic_v3_attr_regs_access - allows user space to access VGIC v3 state
  *
  * @dev:      kvm device handle
  * @attr:     kvm device attribute
- * @reg:      address the value is read or written
  * @is_write: true if userspace is writing a register
  */
 static int vgic_v3_attr_regs_access(struct kvm_device *dev,
 				    struct kvm_device_attr *attr,
-				    u64 *reg, bool is_write)
+				    bool is_write)
 {
 	struct vgic_reg_attr reg_attr;
 	gpa_t addr;
 	struct kvm_vcpu *vcpu;
+	bool uaccess;
+	u32 val;
 	int ret;
-	u32 tmp32;
 
 	ret = vgic_v3_parse_attr(dev, attr, &reg_attr);
 	if (ret)
@@ -532,43 +547,45 @@ static int vgic_v3_attr_regs_access(struct kvm_device *dev,
 	vcpu = reg_attr.vcpu;
 	addr = reg_attr.addr;
 
-	mutex_lock(&dev->kvm->lock);
-
-	if (unlikely(!vgic_initialized(dev->kvm))) {
-		ret = -EBUSY;
-		goto out;
+	switch (attr->group) {
+	case KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS:
+		/* Sysregs uaccess is performed by the sysreg handling code */
+		uaccess = false;
+		break;
+	default:
+		uaccess = true;
 	}
 
-	if (!lock_all_vcpus(dev->kvm)) {
+	if (uaccess && is_write) {
+		u32 __user *uaddr = (u32 __user *)(unsigned long)attr->addr;
+		if (get_user(val, uaddr))
+			return -EFAULT;
+	}
+
+	mutex_lock(&dev->kvm->lock);
+
+	if (kvm_trylock_all_vcpus(dev->kvm)) {
+		mutex_unlock(&dev->kvm->lock);
+		return -EBUSY;
+	}
+
+	mutex_lock(&dev->kvm->arch.config_lock);
+
+	if (!(vgic_initialized(dev->kvm) || reg_allowed_pre_init(attr))) {
 		ret = -EBUSY;
 		goto out;
 	}
 
 	switch (attr->group) {
 	case KVM_DEV_ARM_VGIC_GRP_DIST_REGS:
-		if (is_write)
-			tmp32 = *reg;
-
-		ret = vgic_v3_dist_uaccess(vcpu, is_write, addr, &tmp32);
-		if (!is_write)
-			*reg = tmp32;
+		ret = vgic_v3_dist_uaccess(vcpu, is_write, addr, &val);
 		break;
 	case KVM_DEV_ARM_VGIC_GRP_REDIST_REGS:
-		if (is_write)
-			tmp32 = *reg;
-
-		ret = vgic_v3_redist_uaccess(vcpu, is_write, addr, &tmp32);
-		if (!is_write)
-			*reg = tmp32;
+		ret = vgic_v3_redist_uaccess(vcpu, is_write, addr, &val);
 		break;
-	case KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS: {
-		u64 regid;
-
-		regid = (attr->attr & KVM_DEV_ARM_VGIC_SYSREG_INSTR_MASK);
-		ret = vgic_v3_cpu_sysregs_uaccess(vcpu, is_write,
-						  regid, reg);
+	case KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS:
+		ret = vgic_v3_cpu_sysregs_uaccess(vcpu, attr, is_write);
 		break;
-	}
 	case KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO: {
 		unsigned int info, intid;
 
@@ -578,7 +595,7 @@ static int vgic_v3_attr_regs_access(struct kvm_device *dev,
 			intid = attr->attr &
 				KVM_DEV_ARM_VGIC_LINE_LEVEL_INTID_MASK;
 			ret = vgic_v3_line_level_info_uaccess(vcpu, is_write,
-							      intid, reg);
+							      intid, &val);
 		} else {
 			ret = -EINVAL;
 		}
@@ -589,120 +606,68 @@ static int vgic_v3_attr_regs_access(struct kvm_device *dev,
 		break;
 	}
 
-	unlock_all_vcpus(dev->kvm);
 out:
+	mutex_unlock(&dev->kvm->arch.config_lock);
+	kvm_unlock_all_vcpus(dev->kvm);
 	mutex_unlock(&dev->kvm->lock);
+
+	if (!ret && uaccess && !is_write) {
+		u32 __user *uaddr = (u32 __user *)(unsigned long)attr->addr;
+		ret = put_user(val, uaddr);
+	}
+
 	return ret;
 }
 
 static int vgic_v3_set_attr(struct kvm_device *dev,
 			    struct kvm_device_attr *attr)
 {
-	int ret;
-
-	ret = vgic_set_common_attr(dev, attr);
-	if (ret != -ENXIO)
-		return ret;
-
 	switch (attr->group) {
 	case KVM_DEV_ARM_VGIC_GRP_DIST_REGS:
-	case KVM_DEV_ARM_VGIC_GRP_REDIST_REGS: {
-		u32 __user *uaddr = (u32 __user *)(long)attr->addr;
-		u32 tmp32;
-		u64 reg;
+	case KVM_DEV_ARM_VGIC_GRP_REDIST_REGS:
+	case KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS:
+	case KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO:
+		return vgic_v3_attr_regs_access(dev, attr, true);
+	case KVM_DEV_ARM_VGIC_GRP_MAINT_IRQ: {
+		u32 __user *uaddr = (u32 __user *)attr->addr;
+		u32 val;
 
-		if (get_user(tmp32, uaddr))
+		if (get_user(val, uaddr))
 			return -EFAULT;
 
-		reg = tmp32;
-		return vgic_v3_attr_regs_access(dev, attr, &reg, true);
+		guard(mutex)(&dev->kvm->arch.config_lock);
+		if (vgic_initialized(dev->kvm))
+			return -EBUSY;
+
+		if (!irq_is_ppi(val))
+			return -EINVAL;
+
+		dev->kvm->arch.vgic.mi_intid = val;
+		return 0;
 	}
-	case KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS: {
-		u64 __user *uaddr = (u64 __user *)(long)attr->addr;
-		u64 reg;
-
-		if (get_user(reg, uaddr))
-			return -EFAULT;
-
-		return vgic_v3_attr_regs_access(dev, attr, &reg, true);
+	default:
+		return vgic_set_common_attr(dev, attr);
 	}
-	case KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO: {
-		u32 __user *uaddr = (u32 __user *)(long)attr->addr;
-		u64 reg;
-		u32 tmp32;
-
-		if (get_user(tmp32, uaddr))
-			return -EFAULT;
-
-		reg = tmp32;
-		return vgic_v3_attr_regs_access(dev, attr, &reg, true);
-	}
-	case KVM_DEV_ARM_VGIC_GRP_CTRL: {
-		int ret;
-
-		switch (attr->attr) {
-		case KVM_DEV_ARM_VGIC_SAVE_PENDING_TABLES:
-			mutex_lock(&dev->kvm->lock);
-
-			if (!lock_all_vcpus(dev->kvm)) {
-				mutex_unlock(&dev->kvm->lock);
-				return -EBUSY;
-			}
-			ret = vgic_v3_save_pending_tables(dev->kvm);
-			unlock_all_vcpus(dev->kvm);
-			mutex_unlock(&dev->kvm->lock);
-			return ret;
-		}
-		break;
-	}
-	}
-	return -ENXIO;
 }
 
 static int vgic_v3_get_attr(struct kvm_device *dev,
 			    struct kvm_device_attr *attr)
 {
-	int ret;
-
-	ret = vgic_get_common_attr(dev, attr);
-	if (ret != -ENXIO)
-		return ret;
-
 	switch (attr->group) {
 	case KVM_DEV_ARM_VGIC_GRP_DIST_REGS:
-	case KVM_DEV_ARM_VGIC_GRP_REDIST_REGS: {
+	case KVM_DEV_ARM_VGIC_GRP_REDIST_REGS:
+	case KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS:
+	case KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO:
+		return vgic_v3_attr_regs_access(dev, attr, false);
+	case KVM_DEV_ARM_VGIC_GRP_MAINT_IRQ: {
 		u32 __user *uaddr = (u32 __user *)(long)attr->addr;
-		u64 reg;
-		u32 tmp32;
 
-		ret = vgic_v3_attr_regs_access(dev, attr, &reg, false);
-		if (ret)
-			return ret;
-		tmp32 = reg;
-		return put_user(tmp32, uaddr);
+		guard(mutex)(&dev->kvm->arch.config_lock);
+		return put_user(dev->kvm->arch.vgic.mi_intid, uaddr);
 	}
-	case KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS: {
-		u64 __user *uaddr = (u64 __user *)(long)attr->addr;
-		u64 reg;
-
-		ret = vgic_v3_attr_regs_access(dev, attr, &reg, false);
-		if (ret)
-			return ret;
-		return put_user(reg, uaddr);
+	default:
+		return vgic_get_common_attr(dev, attr);
 	}
-	case KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO: {
-		u32 __user *uaddr = (u32 __user *)(long)attr->addr;
-		u64 reg;
-		u32 tmp32;
-
-		ret = vgic_v3_attr_regs_access(dev, attr, &reg, false);
-		if (ret)
-			return ret;
-		tmp32 = reg;
-		return put_user(tmp32, uaddr);
-	}
-	}
-	return -ENXIO;
 }
 
 static int vgic_v3_has_attr(struct kvm_device *dev,
@@ -722,6 +687,7 @@ static int vgic_v3_has_attr(struct kvm_device *dev,
 	case KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS:
 		return vgic_v3_has_attr_regs(dev, attr);
 	case KVM_DEV_ARM_VGIC_GRP_NR_IRQS:
+	case KVM_DEV_ARM_VGIC_GRP_MAINT_IRQ:
 		return 0;
 	case KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO: {
 		if (((attr->attr & KVM_DEV_ARM_VGIC_LINE_LEVEL_INFO_MASK) >>

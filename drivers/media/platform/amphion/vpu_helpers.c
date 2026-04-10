@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include "vpu.h"
+#include "vpu_defs.h"
 #include "vpu_core.h"
 #include "vpu_rpc.h"
 #include "vpu_helpers.h"
@@ -57,6 +58,36 @@ const struct vpu_format *vpu_helper_find_format(struct vpu_inst *inst, u32 type,
 	}
 
 	return NULL;
+}
+
+const struct vpu_format *vpu_helper_find_sibling(struct vpu_inst *inst, u32 type, u32 pixelfmt)
+{
+	const struct vpu_format *fmt;
+	const struct vpu_format *sibling;
+
+	fmt = vpu_helper_find_format(inst, type, pixelfmt);
+	if (!fmt || !fmt->sibling)
+		return NULL;
+
+	sibling = vpu_helper_find_format(inst, type, fmt->sibling);
+	if (!sibling || sibling->sibling != fmt->pixfmt ||
+	    sibling->comp_planes != fmt->comp_planes)
+		return NULL;
+
+	return sibling;
+}
+
+bool vpu_helper_match_format(struct vpu_inst *inst, u32 type, u32 fmta, u32 fmtb)
+{
+	const struct vpu_format *sibling;
+
+	if (fmta == fmtb)
+		return true;
+
+	sibling = vpu_helper_find_sibling(inst, type, fmta);
+	if (sibling && sibling->pixfmt == fmtb)
+		return true;
+	return false;
 }
 
 const struct vpu_format *vpu_helper_enum_format(struct vpu_inst *inst, u32 type, int index)
@@ -123,9 +154,10 @@ static u32 get_nv12_plane_size(u32 width, u32 height, int plane_no,
 	u32 bytesperline;
 	u32 size = 0;
 
-	bytesperline = ALIGN(width, stride);
+	bytesperline = width;
 	if (pbl)
 		bytesperline = max(bytesperline, *pbl);
+	bytesperline = ALIGN(bytesperline, stride);
 	height = ALIGN(height, 2);
 	if (plane_no == 0)
 		size = bytesperline * height;
@@ -148,13 +180,13 @@ static u32 get_tiled_8l128_plane_size(u32 fmt, u32 width, u32 height, int plane_
 
 	if (interlaced)
 		hs++;
-	if (fmt == V4L2_PIX_FMT_NV12M_10BE_8L128)
+	if (fmt == V4L2_PIX_FMT_NV12M_10BE_8L128 || fmt == V4L2_PIX_FMT_NV12_10BE_8L128)
 		bitdepth = 10;
 	bytesperline = DIV_ROUND_UP(width * bitdepth, BITS_PER_BYTE);
-	bytesperline = ALIGN(bytesperline, 1 << ws);
-	bytesperline = ALIGN(bytesperline, stride);
 	if (pbl)
 		bytesperline = max(bytesperline, *pbl);
+	bytesperline = ALIGN(bytesperline, 1 << ws);
+	bytesperline = ALIGN(bytesperline, stride);
 	height = ALIGN(height, 1 << hs);
 	if (plane_no == 0)
 		size = bytesperline * height;
@@ -172,9 +204,10 @@ static u32 get_default_plane_size(u32 width, u32 height, int plane_no,
 	u32 bytesperline;
 	u32 size = 0;
 
-	bytesperline = ALIGN(width, stride);
+	bytesperline = width;
 	if (pbl)
 		bytesperline = max(bytesperline, *pbl);
+	bytesperline = ALIGN(bytesperline, stride);
 	if (plane_no == 0)
 		size = bytesperline * height;
 	if (pbl)
@@ -187,9 +220,12 @@ u32 vpu_helper_get_plane_size(u32 fmt, u32 w, u32 h, int plane_no,
 			      u32 stride, u32 interlaced, u32 *pbl)
 {
 	switch (fmt) {
+	case V4L2_PIX_FMT_NV12:
 	case V4L2_PIX_FMT_NV12M:
 		return get_nv12_plane_size(w, h, plane_no, stride, interlaced, pbl);
+	case V4L2_PIX_FMT_NV12_8L128:
 	case V4L2_PIX_FMT_NV12M_8L128:
+	case V4L2_PIX_FMT_NV12_10BE_8L128:
 	case V4L2_PIX_FMT_NV12M_10BE_8L128:
 		return get_tiled_8l128_plane_size(fmt, w, h, plane_no, stride, interlaced, pbl);
 	default:
@@ -411,4 +447,188 @@ int vpu_find_src_by_dst(struct vpu_pair *pairs, u32 cnt, u32 dst)
 	}
 
 	return -EINVAL;
+}
+
+const char *vpu_id_name(u32 id)
+{
+	switch (id) {
+	case VPU_CMD_ID_NOOP: return "noop";
+	case VPU_CMD_ID_CONFIGURE_CODEC: return "configure codec";
+	case VPU_CMD_ID_START: return "start";
+	case VPU_CMD_ID_STOP: return "stop";
+	case VPU_CMD_ID_ABORT: return "abort";
+	case VPU_CMD_ID_RST_BUF: return "reset buf";
+	case VPU_CMD_ID_SNAPSHOT: return "snapshot";
+	case VPU_CMD_ID_FIRM_RESET: return "reset firmware";
+	case VPU_CMD_ID_UPDATE_PARAMETER: return "update parameter";
+	case VPU_CMD_ID_FRAME_ENCODE: return "encode frame";
+	case VPU_CMD_ID_SKIP: return "skip";
+	case VPU_CMD_ID_FS_ALLOC: return "alloc fb";
+	case VPU_CMD_ID_FS_RELEASE: return "release fb";
+	case VPU_CMD_ID_TIMESTAMP: return "timestamp";
+	case VPU_CMD_ID_DEBUG: return "debug";
+	case VPU_MSG_ID_RESET_DONE: return "reset done";
+	case VPU_MSG_ID_START_DONE: return "start done";
+	case VPU_MSG_ID_STOP_DONE: return "stop done";
+	case VPU_MSG_ID_ABORT_DONE: return "abort done";
+	case VPU_MSG_ID_BUF_RST: return "buf reset done";
+	case VPU_MSG_ID_MEM_REQUEST: return "mem request";
+	case VPU_MSG_ID_PARAM_UPD_DONE: return "param upd done";
+	case VPU_MSG_ID_FRAME_INPUT_DONE: return "frame input done";
+	case VPU_MSG_ID_ENC_DONE: return "encode done";
+	case VPU_MSG_ID_DEC_DONE: return "frame display";
+	case VPU_MSG_ID_FRAME_REQ: return "fb request";
+	case VPU_MSG_ID_FRAME_RELEASE: return "fb release";
+	case VPU_MSG_ID_SEQ_HDR_FOUND: return "seq hdr found";
+	case VPU_MSG_ID_RES_CHANGE: return "resolution change";
+	case VPU_MSG_ID_PIC_HDR_FOUND: return "pic hdr found";
+	case VPU_MSG_ID_PIC_DECODED: return "picture decoded";
+	case VPU_MSG_ID_PIC_EOS: return "eos";
+	case VPU_MSG_ID_FIFO_LOW: return "fifo low";
+	case VPU_MSG_ID_BS_ERROR: return "bs error";
+	case VPU_MSG_ID_UNSUPPORTED: return "unsupported";
+	case VPU_MSG_ID_FIRMWARE_XCPT: return "exception";
+	case VPU_MSG_ID_PIC_SKIPPED: return "skipped";
+	case VPU_MSG_ID_DBG_MSG: return "debug msg";
+	}
+	return "<unknown>";
+}
+
+const char *vpu_codec_state_name(enum vpu_codec_state state)
+{
+	switch (state) {
+	case VPU_CODEC_STATE_DEINIT: return "initialization";
+	case VPU_CODEC_STATE_CONFIGURED: return "configured";
+	case VPU_CODEC_STATE_START: return "start";
+	case VPU_CODEC_STATE_STARTED: return "started";
+	case VPU_CODEC_STATE_ACTIVE: return "active";
+	case VPU_CODEC_STATE_SEEK: return "seek";
+	case VPU_CODEC_STATE_STOP: return "stop";
+	case VPU_CODEC_STATE_DRAIN: return "drain";
+	case VPU_CODEC_STATE_DYAMIC_RESOLUTION_CHANGE: return "resolution change";
+	}
+	return "<unknown>";
+}
+
+struct codec_id_mapping {
+	u32 id;
+	u32 v4l2_id;
+};
+
+static struct codec_id_mapping h264_profiles[] = {
+	{66,  V4L2_MPEG_VIDEO_H264_PROFILE_BASELINE},
+	{77,  V4L2_MPEG_VIDEO_H264_PROFILE_MAIN},
+	{88,  V4L2_MPEG_VIDEO_H264_PROFILE_EXTENDED},
+	{100, V4L2_MPEG_VIDEO_H264_PROFILE_HIGH}
+};
+
+static struct codec_id_mapping h264_levels[] = {
+	{10,  V4L2_MPEG_VIDEO_H264_LEVEL_1_0},
+	{9,   V4L2_MPEG_VIDEO_H264_LEVEL_1B},
+	{11,  V4L2_MPEG_VIDEO_H264_LEVEL_1_1},
+	{12,  V4L2_MPEG_VIDEO_H264_LEVEL_1_2},
+	{13,  V4L2_MPEG_VIDEO_H264_LEVEL_1_3},
+	{20,  V4L2_MPEG_VIDEO_H264_LEVEL_2_0},
+	{21,  V4L2_MPEG_VIDEO_H264_LEVEL_2_1},
+	{22,  V4L2_MPEG_VIDEO_H264_LEVEL_2_2},
+	{30,  V4L2_MPEG_VIDEO_H264_LEVEL_3_0},
+	{31,  V4L2_MPEG_VIDEO_H264_LEVEL_3_1},
+	{32,  V4L2_MPEG_VIDEO_H264_LEVEL_3_2},
+	{40,  V4L2_MPEG_VIDEO_H264_LEVEL_4_0},
+	{41,  V4L2_MPEG_VIDEO_H264_LEVEL_4_1},
+	{42,  V4L2_MPEG_VIDEO_H264_LEVEL_4_2},
+	{50,  V4L2_MPEG_VIDEO_H264_LEVEL_5_0},
+	{51,  V4L2_MPEG_VIDEO_H264_LEVEL_5_1},
+	{52,  V4L2_MPEG_VIDEO_H264_LEVEL_5_2},
+	{60,  V4L2_MPEG_VIDEO_H264_LEVEL_6_0},
+	{61,  V4L2_MPEG_VIDEO_H264_LEVEL_6_1},
+	{62,  V4L2_MPEG_VIDEO_H264_LEVEL_6_2}
+};
+
+static struct codec_id_mapping hevc_profiles[] = {
+	{1,   V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN},
+	{2,   V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN_10}
+};
+
+static struct codec_id_mapping hevc_levels[] = {
+	{30,  V4L2_MPEG_VIDEO_HEVC_LEVEL_1},
+	{60,  V4L2_MPEG_VIDEO_HEVC_LEVEL_2},
+	{63,  V4L2_MPEG_VIDEO_HEVC_LEVEL_2_1},
+	{90,  V4L2_MPEG_VIDEO_HEVC_LEVEL_3},
+	{93,  V4L2_MPEG_VIDEO_HEVC_LEVEL_3_1},
+	{120, V4L2_MPEG_VIDEO_HEVC_LEVEL_4},
+	{123, V4L2_MPEG_VIDEO_HEVC_LEVEL_4_1},
+	{150, V4L2_MPEG_VIDEO_HEVC_LEVEL_5},
+	{153, V4L2_MPEG_VIDEO_HEVC_LEVEL_5_1},
+	{156, V4L2_MPEG_VIDEO_HEVC_LEVEL_5_2},
+	{180, V4L2_MPEG_VIDEO_HEVC_LEVEL_6},
+	{183, V4L2_MPEG_VIDEO_HEVC_LEVEL_6_1},
+	{186, V4L2_MPEG_VIDEO_HEVC_LEVEL_6_2}
+};
+
+static u32 vpu_find_v4l2_id(u32 id, struct codec_id_mapping *array, u32 array_sz)
+{
+	u32 i;
+
+	if (!array || !array_sz)
+		return 0;
+
+	for (i = 0; i < array_sz; i++) {
+		if (id == array[i].id)
+			return array[i].v4l2_id;
+	}
+
+	return 0;
+}
+
+u32 vpu_get_h264_v4l2_profile(struct vpu_dec_codec_info *hdr)
+{
+	if (!hdr)
+		return 0;
+
+	/*
+	 * In H.264 Document section A.2.1.1 Constrained Baseline profile
+	 * Conformance of a bitstream to the Constrained Baseline profile is indicated by
+	 * profile_idc being equal to 66 with constraint_set1_flag being equal to 1.
+	 */
+	if (hdr->profile_idc == 66 && hdr->constraint_set1_flag)
+		return V4L2_MPEG_VIDEO_H264_PROFILE_CONSTRAINED_BASELINE;
+
+	return vpu_find_v4l2_id(hdr->profile_idc, h264_profiles, ARRAY_SIZE(h264_profiles));
+}
+
+u32 vpu_get_h264_v4l2_level(struct vpu_dec_codec_info *hdr)
+{
+	if (!hdr)
+		return 0;
+
+	/*
+	 * In H.264 Document section 7.4.2.1.1 Sequence parameter set data semantics
+	 * If profile_idc is equal to 66, 77, or 88 and level_idc is equal to 11,
+	 * constraint_set3_flag equal to 1 indicates that the coded video sequence
+	 * obeys all constraints specified in Annex A for level 1b
+	 * and constraint_set3_flag equal to 0 indicates that the coded video sequence
+	 * obeys all constraints specified in Annex A for level 1.1.
+	 */
+	if (hdr->level_idc == 11 && hdr->constraint_set3_flag &&
+	    (hdr->profile_idc == 66 || hdr->profile_idc == 77 || hdr->profile_idc == 88))
+		return V4L2_MPEG_VIDEO_H264_LEVEL_1B;
+
+	return vpu_find_v4l2_id(hdr->level_idc, h264_levels, ARRAY_SIZE(h264_levels));
+}
+
+u32 vpu_get_hevc_v4l2_profile(struct vpu_dec_codec_info *hdr)
+{
+	if (!hdr)
+		return 0;
+
+	return vpu_find_v4l2_id(hdr->profile_idc, hevc_profiles, ARRAY_SIZE(hevc_profiles));
+}
+
+u32 vpu_get_hevc_v4l2_level(struct vpu_dec_codec_info *hdr)
+{
+	if (!hdr)
+		return 0;
+
+	return vpu_find_v4l2_id(hdr->level_idc, hevc_levels, ARRAY_SIZE(hevc_levels));
 }

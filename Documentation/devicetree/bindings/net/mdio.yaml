@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/net/mdio.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: MDIO Bus Generic Binding
+title: MDIO Bus Common Properties
 
 maintainers:
   - Andrew Lunn <andrew@lunn.ch>
@@ -19,7 +19,7 @@ description:
 
 properties:
   $nodename:
-    pattern: "^mdio(@.*)?"
+    pattern: '^mdio(-(bus|external))?(@.+|-([0-9]+))?$'
 
   "#address-cells":
     const: 1

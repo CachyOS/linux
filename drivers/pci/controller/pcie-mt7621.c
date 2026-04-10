@@ -30,6 +30,8 @@
 #include <linux/reset.h>
 #include <linux/sys_soc.h>
 
+#include "../pci.h"
+
 /* MediaTek-specific configuration registers */
 #define PCIE_FTS_NUM			0x70c
 #define PCIE_FTS_NUM_MASK		GENMASK(15, 8)
@@ -58,6 +60,7 @@
 #define PCIE_PORT_LINKUP		BIT(0)
 #define PCIE_PORT_CNT			3
 
+#define INIT_PORTS_DELAY_MS		100
 #define PERST_DELAY_MS			100
 
 /**
@@ -120,19 +123,12 @@ static inline void pcie_port_write(struct mt7621_pcie_port *port,
 	writel_relaxed(val, port->base + reg);
 }
 
-static inline u32 mt7621_pcie_get_cfgaddr(unsigned int bus, unsigned int slot,
-					 unsigned int func, unsigned int where)
-{
-	return (((where & 0xf00) >> 8) << 24) | (bus << 16) | (slot << 11) |
-		(func << 8) | (where & 0xfc) | 0x80000000;
-}
-
 static void __iomem *mt7621_pcie_map_bus(struct pci_bus *bus,
 					 unsigned int devfn, int where)
 {
 	struct mt7621_pcie *pcie = bus->sysdata;
-	u32 address = mt7621_pcie_get_cfgaddr(bus->number, PCI_SLOT(devfn),
-					     PCI_FUNC(devfn), where);
+	u32 address = PCI_CONF1_EXT_ADDRESS(bus->number, PCI_SLOT(devfn),
+					    PCI_FUNC(devfn), where);
 
 	writel_relaxed(address, pcie->base + RALINK_PCI_CONFIG_ADDR);
 
@@ -147,7 +143,7 @@ static struct pci_ops mt7621_pcie_ops = {
 
 static u32 read_config(struct mt7621_pcie *pcie, unsigned int dev, u32 reg)
 {
-	u32 address = mt7621_pcie_get_cfgaddr(0, dev, 0, reg);
+	u32 address = PCI_CONF1_EXT_ADDRESS(0, dev, 0, reg);
 
 	pcie_write(pcie, address, RALINK_PCI_CONFIG_ADDR);
 	return pcie_read(pcie, RALINK_PCI_CONFIG_DATA);
@@ -156,7 +152,7 @@ static u32 read_config(struct mt7621_pcie *pcie, unsigned int dev, u32 reg)
 static void write_config(struct mt7621_pcie *pcie, unsigned int dev,
 			 u32 reg, u32 val)
 {
-	u32 address = mt7621_pcie_get_cfgaddr(0, dev, 0, reg);
+	u32 address = PCI_CONF1_EXT_ADDRESS(0, dev, 0, reg);
 
 	pcie_write(pcie, address, RALINK_PCI_CONFIG_ADDR);
 	pcie_write(pcie, val, RALINK_PCI_CONFIG_DATA);
@@ -206,7 +202,7 @@ static int mt7621_pcie_parse_port(struct mt7621_pcie *pcie,
 	struct mt7621_pcie_port *port;
 	struct device *dev = pcie->dev;
 	struct platform_device *pdev = to_platform_device(dev);
-	char name[10];
+	char name[11];
 	int err;
 
 	port = devm_kzalloc(dev, sizeof(*port), GFP_KERNEL);
@@ -262,30 +258,25 @@ static int mt7621_pcie_parse_dt(struct mt7621_pcie *pcie)
 {
 	struct device *dev = pcie->dev;
 	struct platform_device *pdev = to_platform_device(dev);
-	struct device_node *node = dev->of_node, *child;
+	struct device_node *node = dev->of_node;
 	int err;
 
 	pcie->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(pcie->base))
 		return PTR_ERR(pcie->base);
 
-	for_each_available_child_of_node(node, child) {
+	for_each_available_child_of_node_scoped(node, child) {
 		int slot;
 
 		err = of_pci_get_devfn(child);
-		if (err < 0) {
-			of_node_put(child);
-			dev_err(dev, "failed to parse devfn: %d\n", err);
-			return err;
-		}
+		if (err < 0)
+			return dev_err_probe(dev, err, "failed to parse devfn\n");
 
 		slot = PCI_SLOT(err);
 
 		err = mt7621_pcie_parse_port(pcie, child, slot);
-		if (err) {
-			of_node_put(child);
+		if (err)
 			return err;
-		}
 	}
 
 	return 0;
@@ -374,6 +365,7 @@ static int mt7621_pcie_init_ports(struct mt7621_pcie *pcie)
 		}
 	}
 
+	msleep(INIT_PORTS_DELAY_MS);
 	mt7621_pcie_reset_ep_deassert(pcie);
 
 	tmp = NULL;
@@ -381,8 +373,8 @@ static int mt7621_pcie_init_ports(struct mt7621_pcie *pcie)
 		u32 slot = port->slot;
 
 		if (!mt7621_pcie_port_is_linkup(port)) {
-			dev_err(dev, "pcie%d no card, disable it (RST & CLK)\n",
-				slot);
+			dev_info(dev, "pcie%d no card, disable it (RST & CLK)\n",
+				 slot);
 			mt7621_control_assert(port);
 			port->enabled = false;
 			num_disabled++;
@@ -471,7 +463,8 @@ static int mt7621_pcie_register_host(struct pci_host_bridge *host)
 }
 
 static const struct soc_device_attribute mt7621_pcie_quirks_match[] = {
-	{ .soc_id = "mt7621", .revision = "E2" }
+	{ .soc_id = "mt7621", .revision = "E2" },
+	{ /* sentinel */ }
 };
 
 static int mt7621_pcie_probe(struct platform_device *pdev)
@@ -526,15 +519,13 @@ remove_resets:
 	return err;
 }
 
-static int mt7621_pcie_remove(struct platform_device *pdev)
+static void mt7621_pcie_remove(struct platform_device *pdev)
 {
 	struct mt7621_pcie *pcie = platform_get_drvdata(pdev);
 	struct mt7621_pcie_port *port;
 
 	list_for_each_entry(port, &pcie->ports, list)
 		reset_control_put(port->pcie_rst);
-
-	return 0;
 }
 
 static const struct of_device_id mt7621_pcie_ids[] = {
@@ -553,4 +544,5 @@ static struct platform_driver mt7621_pcie_driver = {
 };
 builtin_platform_driver(mt7621_pcie_driver);
 
+MODULE_DESCRIPTION("MediaTek MT7621 PCIe host controller driver");
 MODULE_LICENSE("GPL v2");

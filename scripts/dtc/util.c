@@ -23,12 +23,39 @@
 #include "util.h"
 #include "version_gen.h"
 
+void fprint_path_escaped(FILE *fp, const char *path)
+{
+	const char *p = path;
+
+	while (*p) {
+		if (*p == ' ') {
+			fputc('\\', fp);
+			fputc(' ', fp);
+		} else {
+			fputc(*p, fp);
+		}
+
+		p++;
+	}
+}
+
 char *xstrdup(const char *s)
 {
 	int len = strlen(s) + 1;
 	char *d = xmalloc(len);
 
 	memcpy(d, s, len);
+
+	return d;
+}
+
+char *xstrndup(const char *s, size_t n)
+{
+	size_t len = strnlen(s, n) + 1;
+	char *d = xmalloc(len);
+
+	memcpy(d, s, len - 1);
+	d[len - 1] = '\0';
 
 	return d;
 }
@@ -353,11 +380,11 @@ int utilfdt_decode_type(const char *fmt, int *type, int *size)
 	}
 
 	/* we should now have a type */
-	if ((*fmt == '\0') || !strchr("iuxs", *fmt))
+	if ((*fmt == '\0') || !strchr("iuxsr", *fmt))
 		return -1;
 
 	/* convert qualifier (bhL) to byte size */
-	if (*fmt != 's')
+	if (*fmt != 's' && *fmt != 'r')
 		*size = qualifier == 'b' ? 1 :
 				qualifier == 'h' ? 2 :
 				qualifier == 'l' ? 4 : -1;

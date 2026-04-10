@@ -347,7 +347,7 @@ static const struct file_operations bt_bmc_fops = {
 
 static void poll_timer(struct timer_list *t)
 {
-	struct bt_bmc *bt_bmc = from_timer(bt_bmc, t, poll_timer);
+	struct bt_bmc *bt_bmc = timer_container_of(bt_bmc, t, poll_timer);
 
 	bt_bmc->poll_timer.expires += msecs_to_jiffies(500);
 	wake_up(&bt_bmc->queue);
@@ -459,14 +459,13 @@ static int bt_bmc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int bt_bmc_remove(struct platform_device *pdev)
+static void bt_bmc_remove(struct platform_device *pdev)
 {
 	struct bt_bmc *bt_bmc = dev_get_drvdata(&pdev->dev);
 
 	misc_deregister(&bt_bmc->miscdev);
 	if (bt_bmc->irq < 0)
-		del_timer_sync(&bt_bmc->poll_timer);
-	return 0;
+		timer_delete_sync(&bt_bmc->poll_timer);
 }
 
 static const struct of_device_id bt_bmc_match[] = {

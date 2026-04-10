@@ -285,11 +285,6 @@ efct_lio_npiv_check_prod_write_protect(struct se_portal_group *se_tpg)
 	return tpg->tpg_attrib.prod_mode_write_protect;
 }
 
-static u32 efct_lio_tpg_get_inst_index(struct se_portal_group *se_tpg)
-{
-	return 1;
-}
-
 static int efct_lio_check_stop_free(struct se_cmd *se_cmd)
 {
 	struct efct_scsi_tgt_io *ocp =
@@ -355,15 +350,6 @@ static void efct_lio_close_session(struct se_session *se_sess)
 	efc_node_post_shutdown(node, NULL);
 }
 
-static u32 efct_lio_sess_get_index(struct se_session *se_sess)
-{
-	return 0;
-}
-
-static void efct_lio_set_default_node_attrs(struct se_node_acl *nacl)
-{
-}
-
 static int efct_lio_get_cmd_state(struct se_cmd *cmd)
 {
 	struct efct_scsi_tgt_io *ocp =
@@ -396,7 +382,7 @@ efct_lio_sg_unmap(struct efct_io *io)
 		return;
 
 	dma_unmap_sg(&io->efct->pci->dev, cmd->t_data_sg,
-		     ocp->seg_map_cnt, cmd->data_direction);
+		     cmd->t_data_nents, cmd->data_direction);
 	ocp->seg_map_cnt = 0;
 }
 
@@ -758,7 +744,7 @@ efct_lio_make_nport(struct target_fabric_configfs *tf,
 		return ERR_PTR(-ENXIO);
 	}
 
-	lio_nport = kzalloc(sizeof(*lio_nport), GFP_KERNEL);
+	lio_nport = kzalloc_obj(*lio_nport);
 	if (!lio_nport)
 		return ERR_PTR(-ENOMEM);
 
@@ -810,7 +796,7 @@ efct_lio_npiv_make_nport(struct target_fabric_configfs *tf,
 		return ERR_PTR(-ENXIO);
 	}
 
-	lio_vport = kzalloc(sizeof(*lio_vport), GFP_KERNEL);
+	lio_vport = kzalloc_obj(*lio_vport);
 	if (!lio_vport)
 		return ERR_PTR(-ENOMEM);
 
@@ -822,7 +808,7 @@ efct_lio_npiv_make_nport(struct target_fabric_configfs *tf,
 	efct_format_wwn(lio_vport->wwpn_str, sizeof(lio_vport->wwpn_str),
 			"naa.", npiv_wwpn);
 
-	vport_list = kzalloc(sizeof(*vport_list), GFP_KERNEL);
+	vport_list = kzalloc_obj(*vport_list);
 	if (!vport_list) {
 		kfree(lio_vport);
 		return ERR_PTR(-ENOMEM);
@@ -909,7 +895,7 @@ efct_lio_make_tpg(struct se_wwn *wwn, const char *name)
 	if (kstrtoul(name + 5, 10, &n) || n > USHRT_MAX)
 		return ERR_PTR(-EINVAL);
 
-	tpg = kzalloc(sizeof(*tpg), GFP_KERNEL);
+	tpg = kzalloc_obj(*tpg);
 	if (!tpg)
 		return ERR_PTR(-ENOMEM);
 
@@ -972,7 +958,7 @@ efct_lio_npiv_make_tpg(struct se_wwn *wwn, const char *name)
 		return ERR_PTR(-EINVAL);
 	}
 
-	tpg = kzalloc(sizeof(*tpg), GFP_KERNEL);
+	tpg = kzalloc_obj(*tpg);
 	if (!tpg)
 		return ERR_PTR(-ENOMEM);
 
@@ -1083,7 +1069,7 @@ static int efct_session_cb(struct se_portal_group *se_tpg,
 	struct efct_node *tgt_node;
 	struct efct *efct = node->efc->base;
 
-	tgt_node = kzalloc(sizeof(*tgt_node), GFP_KERNEL);
+	tgt_node = kzalloc_obj(*tgt_node);
 	if (!tgt_node)
 		return -ENOMEM;
 
@@ -1128,7 +1114,8 @@ int efct_scsi_tgt_new_device(struct efct *efct)
 	atomic_set(&efct->tgt_efct.watermark_hit, 0);
 	atomic_set(&efct->tgt_efct.initiator_count, 0);
 
-	lio_wq = create_singlethread_workqueue("efct_lio_worker");
+	lio_wq = alloc_ordered_workqueue("%s", WQ_MEM_RECLAIM,
+					 "efct_lio_worker");
 	if (!lio_wq) {
 		efc_log_err(efct, "workqueue create failed\n");
 		return -EIO;
@@ -1240,7 +1227,7 @@ int efct_scsi_new_initiator(struct efc *efc, struct efc_node *node)
 	 * Since LIO only supports initiator validation at thread level,
 	 * we are open minded and accept all callers.
 	 */
-	wq_data = kzalloc(sizeof(*wq_data), GFP_ATOMIC);
+	wq_data = kzalloc_obj(*wq_data, GFP_ATOMIC);
 	if (!wq_data)
 		return -ENOMEM;
 
@@ -1305,7 +1292,7 @@ int efct_scsi_del_initiator(struct efc *efc, struct efc_node *node, int reason)
 		return -EIO;
 	}
 
-	wq_data = kzalloc(sizeof(*wq_data), GFP_ATOMIC);
+	wq_data = kzalloc_obj(*wq_data, GFP_ATOMIC);
 	if (!wq_data)
 		return -ENOMEM;
 
@@ -1607,14 +1594,11 @@ static const struct target_core_fabric_ops efct_lio_ops = {
 	.tpg_check_demo_mode_cache      = efct_lio_check_demo_mode_cache,
 	.tpg_check_demo_mode_write_protect = efct_lio_check_demo_write_protect,
 	.tpg_check_prod_mode_write_protect = efct_lio_check_prod_write_protect,
-	.tpg_get_inst_index		= efct_lio_tpg_get_inst_index,
 	.check_stop_free		= efct_lio_check_stop_free,
 	.aborted_task			= efct_lio_aborted_task,
 	.release_cmd			= efct_lio_release_cmd,
 	.close_session			= efct_lio_close_session,
-	.sess_get_index			= efct_lio_sess_get_index,
 	.write_pending			= efct_lio_write_pending,
-	.set_default_node_attributes	= efct_lio_set_default_node_attrs,
 	.get_cmd_state			= efct_lio_get_cmd_state,
 	.queue_data_in			= efct_lio_queue_data_in,
 	.queue_status			= efct_lio_queue_status,
@@ -1628,6 +1612,8 @@ static const struct target_core_fabric_ops efct_lio_ops = {
 	.sess_get_initiator_sid		= NULL,
 	.tfc_tpg_base_attrs		= efct_lio_tpg_attrs,
 	.tfc_tpg_attrib_attrs           = efct_lio_tpg_attrib_attrs,
+	.default_submit_type		= TARGET_DIRECT_SUBMIT,
+	.direct_submit_supp		= 1,
 };
 
 static const struct target_core_fabric_ops efct_lio_npiv_ops = {
@@ -1644,14 +1630,11 @@ static const struct target_core_fabric_ops efct_lio_npiv_ops = {
 					efct_lio_npiv_check_demo_write_protect,
 	.tpg_check_prod_mode_write_protect =
 					efct_lio_npiv_check_prod_write_protect,
-	.tpg_get_inst_index		= efct_lio_tpg_get_inst_index,
 	.check_stop_free		= efct_lio_check_stop_free,
 	.aborted_task			= efct_lio_aborted_task,
 	.release_cmd			= efct_lio_release_cmd,
 	.close_session			= efct_lio_close_session,
-	.sess_get_index			= efct_lio_sess_get_index,
 	.write_pending			= efct_lio_write_pending,
-	.set_default_node_attributes	= efct_lio_set_default_node_attrs,
 	.get_cmd_state			= efct_lio_get_cmd_state,
 	.queue_data_in			= efct_lio_queue_data_in,
 	.queue_status			= efct_lio_queue_status,
@@ -1666,6 +1649,9 @@ static const struct target_core_fabric_ops efct_lio_npiv_ops = {
 	.sess_get_initiator_sid		= NULL,
 	.tfc_tpg_base_attrs		= efct_lio_npiv_tpg_attrs,
 	.tfc_tpg_attrib_attrs		= efct_lio_npiv_tpg_attrib_attrs,
+
+	.default_submit_type		= TARGET_DIRECT_SUBMIT,
+	.direct_submit_supp		= 1,
 };
 
 int efct_scsi_tgt_driver_init(void)

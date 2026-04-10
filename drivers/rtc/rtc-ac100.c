@@ -99,7 +99,7 @@ struct ac100_rtc_dev {
 	struct clk_hw_onecell_data *clk_data;
 };
 
-/**
+/*
  * Clock controls for 3 clock output pins
  */
 
@@ -140,42 +140,16 @@ static unsigned long ac100_clkout_recalc_rate(struct clk_hw *hw,
 				   AC100_CLKOUT_DIV_WIDTH);
 }
 
-static long ac100_clkout_round_rate(struct clk_hw *hw, unsigned long rate,
-				    unsigned long prate)
-{
-	unsigned long best_rate = 0, tmp_rate, tmp_prate;
-	int i;
-
-	if (prate == AC100_RTC_32K_RATE)
-		return divider_round_rate(hw, rate, &prate, NULL,
-					  AC100_CLKOUT_DIV_WIDTH,
-					  CLK_DIVIDER_POWER_OF_TWO);
-
-	for (i = 0; ac100_clkout_prediv[i].div; i++) {
-		tmp_prate = DIV_ROUND_UP(prate, ac100_clkout_prediv[i].val);
-		tmp_rate = divider_round_rate(hw, rate, &tmp_prate, NULL,
-					      AC100_CLKOUT_DIV_WIDTH,
-					      CLK_DIVIDER_POWER_OF_TWO);
-
-		if (tmp_rate > rate)
-			continue;
-		if (rate - tmp_rate < best_rate - tmp_rate)
-			best_rate = tmp_rate;
-	}
-
-	return best_rate;
-}
-
 static int ac100_clkout_determine_rate(struct clk_hw *hw,
 				       struct clk_rate_request *req)
 {
-	struct clk_hw *best_parent;
+	int i, ret, num_parents = clk_hw_get_num_parents(hw);
+	struct clk_hw *best_parent = NULL;
 	unsigned long best = 0;
-	int i, num_parents = clk_hw_get_num_parents(hw);
 
 	for (i = 0; i < num_parents; i++) {
 		struct clk_hw *parent = clk_hw_get_parent_by_index(hw, i);
-		unsigned long tmp, prate;
+		unsigned long prate;
 
 		/*
 		 * The clock has two parents, one is a fixed clock which is
@@ -199,13 +173,40 @@ static int ac100_clkout_determine_rate(struct clk_hw *hw,
 
 		prate = clk_hw_get_rate(parent);
 
-		tmp = ac100_clkout_round_rate(hw, req->rate, prate);
+		if (prate == AC100_RTC_32K_RATE) {
+			struct clk_rate_request div_req = *req;
 
-		if (tmp > req->rate)
-			continue;
-		if (req->rate - tmp < req->rate - best) {
-			best = tmp;
-			best_parent = parent;
+			div_req.best_parent_rate = prate;
+
+			ret = divider_determine_rate(hw, &div_req, NULL,
+						     AC100_CLKOUT_DIV_WIDTH,
+						     CLK_DIVIDER_POWER_OF_TWO);
+			if (ret != 0 || div_req.rate > req->rate) {
+				continue;
+			} else if (req->rate - div_req.rate < req->rate - best) {
+				best = div_req.rate;
+				best_parent = parent;
+			}
+		} else {
+			int j;
+
+			for (j = 0; ac100_clkout_prediv[j].div; j++) {
+				struct clk_rate_request div_req = *req;
+				unsigned long tmp_prate;
+
+				tmp_prate = DIV_ROUND_UP(prate, ac100_clkout_prediv[j].div);
+				div_req.best_parent_rate = tmp_prate;
+
+				ret = divider_determine_rate(hw, &div_req, NULL,
+							     AC100_CLKOUT_DIV_WIDTH,
+							     CLK_DIVIDER_POWER_OF_TWO);
+				if (ret != 0 || div_req.rate > req->rate) {
+					continue;
+				} else if (req->rate - div_req.rate < req->rate - best) {
+					best = div_req.rate;
+					best_parent = parent;
+				}
+			}
 		}
 	}
 
@@ -213,7 +214,7 @@ static int ac100_clkout_determine_rate(struct clk_hw *hw,
 		return -EINVAL;
 
 	req->best_parent_hw = best_parent;
-	req->best_parent_rate = best;
+	req->best_parent_rate = clk_hw_get_rate(best_parent);
 	req->rate = best;
 
 	return 0;
@@ -378,7 +379,7 @@ static void ac100_rtc_unregister_clks(struct ac100_rtc_dev *chip)
 	clk_unregister_fixed_rate(chip->rtc_32k_clk->clk);
 }
 
-/**
+/*
  * RTC related bits
  */
 static int ac100_rtc_get_time(struct device *dev, struct rtc_time *rtc_tm)
@@ -613,13 +614,11 @@ static int ac100_rtc_probe(struct platform_device *pdev)
 	return devm_rtc_register_device(chip->rtc);
 }
 
-static int ac100_rtc_remove(struct platform_device *pdev)
+static void ac100_rtc_remove(struct platform_device *pdev)
 {
 	struct ac100_rtc_dev *chip = platform_get_drvdata(pdev);
 
 	ac100_rtc_unregister_clks(chip);
-
-	return 0;
 }
 
 static const struct of_device_id ac100_rtc_match[] = {

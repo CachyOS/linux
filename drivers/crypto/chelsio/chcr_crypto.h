@@ -241,16 +241,15 @@ struct chcr_aead_ctx {
 };
 
 struct hmac_ctx {
-	struct crypto_shash *base_hash;
 	u8 ipad[CHCR_HASH_MAX_BLOCK_SIZE_128];
 	u8 opad[CHCR_HASH_MAX_BLOCK_SIZE_128];
 };
 
 struct __crypto_ctx {
 	union {
-		DECLARE_FLEX_ARRAY(struct hmac_ctx, hmacctx);
-		DECLARE_FLEX_ARRAY(struct ablk_ctx, ablkctx);
-		DECLARE_FLEX_ARRAY(struct chcr_aead_ctx, aeadctx);
+		struct hmac_ctx hmacctx;
+		struct ablk_ctx ablkctx;
+		struct chcr_aead_ctx aeadctx;
 	};
 };
 
@@ -344,7 +343,6 @@ void chcr_add_cipher_dst_ent(struct skcipher_request *req,
 			     struct cpl_rx_phys_dsgl *phys_cpl,
 			     struct  cipher_wr_param *wrparam,
 			     unsigned short qid);
-int sg_nents_len_skip(struct scatterlist *sg, u64 len, u64 skip);
 void chcr_add_hash_src_ent(struct ahash_request *req, struct ulptx_sgl *ulptx,
 			   struct hash_wr_param *param);
 int chcr_hash_dma_map(struct device *dev, struct ahash_request *req);

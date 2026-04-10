@@ -8,19 +8,21 @@
 
 #include <asm/addrspace.h>
 
+#include "decompress.h"
+
 #if defined(CONFIG_MACH_LOONGSON64) || defined(CONFIG_MIPS_MALTA)
 #define UART_BASE 0x1fd003f8
 #define PORT(offset) (CKSEG1ADDR(UART_BASE) + (offset))
 #endif
 
-#ifdef CONFIG_AR7
-#include <ar7.h>
-#define PORT(offset) (CKSEG1ADDR(AR7_REGS_UART0) + (4 * offset))
-#endif
-
 #ifdef CONFIG_MACH_INGENIC
 #define INGENIC_UART_BASE_ADDR	(0x10030000 + 0x1000 * CONFIG_ZBOOT_INGENIC_UART)
 #define PORT(offset) (CKSEG1ADDR(INGENIC_UART_BASE_ADDR) + (4 * offset))
+#endif
+
+#ifdef CONFIG_ECONET
+#define EN75_UART_BASE	0x1fbf0003
+#define PORT(offset)	(CKSEG1ADDR(EN75_UART_BASE) + (4 * (offset)))
 #endif
 
 #ifndef IOTYPE

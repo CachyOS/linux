@@ -30,6 +30,9 @@ properties:
           - const: samsung,usb-connector-11pin
           - const: usb-b-connector
 
+  reg:
+    maxItems: 1
+
   label:
     description: Symbolic name for the connector.
 
@@ -63,7 +66,6 @@ properties:
       Particularly, if use an output GPIO to control a VBUS regulator, should
       model it as a regulator. See bindings/regulator/fixed-regulator.yaml
 
-  # The following are optional properties for "usb-c-connector".
   power-role:
     description: Determines the power role that the Type C connector will
       support. "dual" refers to Dual Role Port (DRP).
@@ -116,30 +118,6 @@ properties:
 
   # The following are optional properties for "usb-c-connector" with power
   # delivery support.
-  source-pdos:
-    description: An array of u32 with each entry providing supported power
-      source data object(PDO), the detailed bit definitions of PDO can be found
-      in "Universal Serial Bus Power Delivery Specification" chapter 6.4.1.2
-      Source_Capabilities Message, the order of each entry(PDO) should follow
-      the PD spec chapter 6.4.1. Required for power source and power dual role.
-      User can specify the source PDO array via PDO_FIXED/BATT/VAR/PPS_APDO()
-      defined in dt-bindings/usb/pd.h.
-    minItems: 1
-    maxItems: 7
-    $ref: /schemas/types.yaml#/definitions/uint32-array
-
-  sink-pdos:
-    description: An array of u32 with each entry providing supported power sink
-      data object(PDO), the detailed bit definitions of PDO can be found in
-      "Universal Serial Bus Power Delivery Specification" chapter 6.4.1.3
-      Sink Capabilities Message, the order of each entry(PDO) should follow the
-      PD spec chapter 6.4.1. Required for power sink and power dual role. User
-      can specify the sink PDO array via PDO_FIXED/BATT/VAR/PPS_APDO() defined
-      in dt-bindings/usb/pd.h.
-    minItems: 1
-    maxItems: 7
-    $ref: /schemas/types.yaml#/definitions/uint32-array
-
   sink-vdos:
     description: An array of u32 with each entry, a Vendor Defined Message Object (VDO),
       providing additional information corresponding to the product, the detailed bit
@@ -163,10 +141,50 @@ properties:
     maxItems: 6
     $ref: /schemas/types.yaml#/definitions/uint32-array
 
-  op-sink-microwatt:
-    description: Sink required operating power in microwatt, if source can't
-      offer the power, Capability Mismatch is set. Required for power sink and
-      power dual role.
+  accessory-mode-audio:
+    type: boolean
+    description: Whether the device supports Audio Adapter Accessory Mode. This
+      is only necessary if there are no other means to discover supported
+      alternative modes (e.g. through the UCSI firmware interface).
+
+  accessory-mode-debug:
+    type: boolean
+    description: Whether the device supports Debug Accessory Mode. This
+      is only necessary if there are no other means to discover supported
+      alternative modes (e.g. through the UCSI firmware interface).
+
+  altmodes:
+    type: object
+    description: List of Alternative Modes supported by the schematics on the
+      particular device. This is only necessary if there are no other means to
+      discover supported alternative modes (e.g. through the UCSI firmware
+      interface).
+
+    additionalProperties: false
+
+    patternProperties:
+      "^(displayport)$":
+        type: object
+        description:
+          A single USB-C Alternative Mode as supported by the USB-C connector logic.
+
+        additionalProperties: false
+
+        properties:
+          svid:
+            $ref: /schemas/types.yaml#/definitions/uint16
+            description: Unique value assigned by USB-IF to the Vendor / AltMode.
+            enum: [ 0xff01 ]
+          vdo:
+            $ref: /schemas/types.yaml#/definitions/uint32
+            description: VDO returned by Discover Modes USB PD command.
+
+  port:
+    $ref: /schemas/graph.yaml#/properties/port
+    description: OF graph bindings modeling a data bus to the connector, e.g.
+      there is a single High Speed (HS) port present in this connector. If there
+      is more than one bus (several port, with 'reg' property), they can be grouped
+      under 'ports'.
 
   ports:
     $ref: /schemas/graph.yaml#/properties/ports
@@ -217,18 +235,115 @@ properties:
       state as defined in 7.4.2 Sink Electrical Parameters of USB Power Delivery Specification
       Revision 3.0, Version 1.2. When the property is set, the port requests pSnkStby(2.5W -
       5V@500mA) upon entering SNK_DISCOVERY(instead of 3A or the 1.5A, Rp current advertised, during
-      SNK_DISCOVERY) and the actual currrent limit after reception of PS_Ready for PD link or during
+      SNK_DISCOVERY) and the actual current limit after reception of PS_Ready for PD link or during
       SNK_READY for non-pd link.
     type: boolean
 
+  capabilities:
+    description: A child node to contain all the selectable USB Power Delivery capabilities.
+    type: object
+
+    patternProperties:
+      "^caps-[0-9]+$":
+        description: Child nodes under "capabilities" node. Each node contains a selectable USB
+          Power Delivery capability.
+        type: object
+        $ref: "#/$defs/capabilities"
+        unevaluatedProperties: false
+
+    additionalProperties: false
+
+  sink-wait-cap-time-ms:
+    description: Represents the max time in ms that USB Type-C port (in sink
+      role) should wait for the port partner (source role) to send source caps.
+      SinkWaitCap timer starts when port in sink role attaches to the source.
+      This timer will stop when sink receives PD source cap advertisement before
+      timeout in which case it'll move to capability negotiation stage. A
+      timeout leads to a hard reset message by the port.
+    minimum: 310
+    maximum: 620
+    default: 310
+
+  ps-source-off-time-ms:
+    description: Represents the max time in ms that a DRP in source role should
+      take to turn off power after the PsSourceOff timer starts. PsSourceOff
+      timer starts when a sink's PHY layer receives EOP of the GoodCRC message
+      (corresponding to an Accept message sent in response to a PR_Swap or a
+      FR_Swap request). This timer stops when last bit of GoodCRC EOP
+      corresponding to the received PS_RDY message is transmitted by the PHY
+      layer. A timeout shall lead to error recovery in the type-c port.
+    minimum: 750
+    maximum: 920
+    default: 920
+
+  cc-debounce-time-ms:
+    description: Represents the max time in ms that a port shall wait to
+      determine if it's attached to a partner.
+    minimum: 100
+    maximum: 200
+    default: 200
+
+  sink-bc12-completion-time-ms:
+    description: Represents the max time in ms that a port in sink role takes
+      to complete Battery Charger (BC1.2) Detection. BC1.2 detection is a
+      hardware mechanism, which in some TCPC implementations, can run in
+      parallel once the Type-C connection state machine reaches the "potential
+      connect as sink" state. In TCPCs where this causes delays to respond to
+      the incoming PD messages, sink-bc12-completion-time-ms is used to delay
+      PD negotiation till BC1.2 detection completes.
+    default: 0
+
+  pd-revision:
+    description: Specifies the maximum USB PD revision and version supported by
+      the connector. This property is specified in the following order;
+      <revision_major, revision_minor, version_major, version_minor>.
+    $ref: /schemas/types.yaml#/definitions/uint8-array
+    maxItems: 4
+
 dependencies:
-  sink-vdos-v1: [ 'sink-vdos' ]
-  sink-vdos: [ 'sink-vdos-v1' ]
+  pd-disable: [typec-power-opmode]
+  sink-vdos-v1: [ sink-vdos ]
+  sink-vdos: [ sink-vdos-v1 ]
 
 required:
   - compatible
 
+$defs:
+  capabilities:
+    type: object
+
+    properties:
+      source-pdos:
+        description: An array of u32 with each entry providing supported power
+          source data object(PDO), the detailed bit definitions of PDO can be found
+          in "Universal Serial Bus Power Delivery Specification" chapter 6.4.1.2
+          Source_Capabilities Message, the order of each entry(PDO) should follow
+          the PD spec chapter 6.4.1. Required for power source and power dual role.
+          User can specify the source PDO array via PDO_FIXED/BATT/VAR/PPS_APDO()
+          defined in dt-bindings/usb/pd.h.
+        minItems: 1
+        maxItems: 7
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+
+      sink-pdos:
+        description: An array of u32 with each entry providing supported power sink
+          data object(PDO), the detailed bit definitions of PDO can be found in
+          "Universal Serial Bus Power Delivery Specification" chapter 6.4.1.3
+          Sink Capabilities Message, the order of each entry(PDO) should follow the
+          PD spec chapter 6.4.1. Required for power sink and power dual role. User
+          can specify the sink PDO array via PDO_FIXED/BATT/VAR/PPS_APDO() defined
+          in dt-bindings/usb/pd.h.
+        minItems: 1
+        maxItems: 7
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+
+      op-sink-microwatt:
+        description: Sink required operating power in microwatt, if source can't
+          offer the power, Capability Mismatch is set. Required for power sink and
+          power dual role.
+
 allOf:
+  - $ref: "#/$defs/capabilities"
   - if:
       properties:
         compatible:
@@ -257,17 +372,17 @@ anyOf:
         - typec-power-opmode
         - new-source-frs-typec-current
 
-additionalProperties: true
+unevaluatedProperties: false
 
 examples:
   # Micro-USB connector with HS lines routed via controller (MUIC).
   - |
     muic-max77843 {
-      usb_con1: connector {
-        compatible = "usb-b-connector";
-        label = "micro-USB";
-        type = "micro";
-      };
+        usb_con1: connector {
+            compatible = "usb-b-connector";
+            label = "micro-USB";
+            type = "micro";
+        };
     };
 
   # USB-C connector attached to CC controller (s2mm005), HS lines routed
@@ -275,51 +390,75 @@ examples:
   # DisplayPort video lines are routed to the connector via SS mux in USB3 PHY.
   - |
     ccic: s2mm005 {
-      usb_con2: connector {
-        compatible = "usb-c-connector";
-        label = "USB-C";
+        usb_con2: connector {
+            compatible = "usb-c-connector";
+            label = "USB-C";
 
-        ports {
-          #address-cells = <1>;
-          #size-cells = <0>;
+            altmodes {
+                displayport {
+                    svid = /bits/ 16 <0xff01>;
+                    vdo = <0x00001c46>;
+                };
+            };
 
-          port@0 {
-            reg = <0>;
-            usb_con_hs: endpoint {
-              remote-endpoint = <&max77865_usbc_hs>;
+            ports {
+                #address-cells = <1>;
+                #size-cells = <0>;
+
+                port@0 {
+                    reg = <0>;
+                    usb_con_hs: endpoint {
+                        remote-endpoint = <&max77865_usbc_hs>;
+                    };
+                };
+                port@1 {
+                    reg = <1>;
+                    usb_con_ss: endpoint {
+                        remote-endpoint = <&usbdrd_phy_ss>;
+                    };
+                };
+                port@2 {
+                    reg = <2>;
+                    usb_con_sbu: endpoint {
+                        remote-endpoint = <&dp_aux>;
+                    };
+                };
             };
-          };
-          port@1 {
-            reg = <1>;
-            usb_con_ss: endpoint {
-              remote-endpoint = <&usbdrd_phy_ss>;
-            };
-          };
-          port@2 {
-            reg = <2>;
-            usb_con_sbu: endpoint {
-              remote-endpoint = <&dp_aux>;
-            };
-          };
         };
-      };
     };
 
   # USB-C connector attached to a typec port controller(ptn5110), which has
-  # power delivery support and enables drp.
+  # power delivery support, explicitly defines time properties and enables drp.
   - |
     #include <dt-bindings/usb/pd.h>
     typec: ptn5110 {
-      usb_con3: connector {
+        usb_con3: connector {
+            compatible = "usb-c-connector";
+            label = "USB-C";
+            power-role = "dual";
+            try-power-role = "sink";
+            source-pdos = <PDO_FIXED(5000, 2000, PDO_FIXED_USB_COMM)>;
+            sink-pdos = <PDO_FIXED(5000, 2000, PDO_FIXED_USB_COMM)
+                         PDO_VAR(5000, 12000, 2000)>;
+            op-sink-microwatt = <10000000>;
+            sink-wait-cap-time-ms = <465>;
+            ps-source-off-time-ms = <835>;
+            cc-debounce-time-ms = <101>;
+            sink-bc12-completion-time-ms = <500>;
+        };
+    };
+
+  # USB-C connector attached to SoC with a single High-Speed controller
+  - |
+    connector {
         compatible = "usb-c-connector";
         label = "USB-C";
-        power-role = "dual";
-        try-power-role = "sink";
-        source-pdos = <PDO_FIXED(5000, 2000, PDO_FIXED_USB_COMM)>;
-        sink-pdos = <PDO_FIXED(5000, 2000, PDO_FIXED_USB_COMM)
-                     PDO_VAR(5000, 12000, 2000)>;
-        op-sink-microwatt = <10000000>;
-      };
+
+        port {
+            high_speed_ep: endpoint {
+                remote-endpoint = <&usb_hs_ep>;
+            };
+        };
     };
 
   # USB-C connector attached to SoC and USB3 typec port controller(hd3ss3220)
@@ -332,20 +471,20 @@ examples:
         data-role = "dual";
 
         ports {
-                #address-cells = <1>;
-                #size-cells = <0>;
-                port@0 {
-                        reg = <0>;
-                        hs_ep: endpoint {
-                                remote-endpoint = <&usb3_hs_ep>;
-                        };
+            #address-cells = <1>;
+            #size-cells = <0>;
+            port@0 {
+                reg = <0>;
+                hs_ep: endpoint {
+                    remote-endpoint = <&usb3_hs_ep>;
                 };
-                port@1 {
-                        reg = <1>;
-                        ss_ep: endpoint {
-                                remote-endpoint = <&hd3ss3220_in_ep>;
-                        };
+            };
+            port@1 {
+                reg = <1>;
+                ss_ep: endpoint {
+                    remote-endpoint = <&hd3ss3220_in_ep>;
                 };
+            };
         };
     };
 
@@ -354,12 +493,12 @@ examples:
     #include <dt-bindings/gpio/gpio.h>
 
     usb {
-      connector {
-        compatible = "gpio-usb-b-connector", "usb-b-connector";
-        type = "micro";
-        id-gpios = <&pio 12 GPIO_ACTIVE_HIGH>;
-        vbus-supply = <&usb_p0_vbus>;
-      };
+        connector {
+            compatible = "gpio-usb-b-connector", "usb-b-connector";
+            type = "micro";
+            id-gpios = <&pio 12 GPIO_ACTIVE_HIGH>;
+            vbus-supply = <&usb_p0_vbus>;
+        };
     };
 
   # Micro-USB connector with HS lines routed via controller (MUIC) and MHL
@@ -367,27 +506,27 @@ examples:
   # mobile phone
   - |
     muic-max77843 {
-      usb_con4: connector {
-        compatible = "samsung,usb-connector-11pin", "usb-b-connector";
-        label = "micro-USB";
-        type = "micro";
+        usb_con4: connector {
+            compatible = "samsung,usb-connector-11pin", "usb-b-connector";
+            label = "micro-USB";
+            type = "micro";
 
-        ports {
-          #address-cells = <1>;
-          #size-cells = <0>;
+            ports {
+                #address-cells = <1>;
+                #size-cells = <0>;
 
-          port@0 {
-            reg = <0>;
-            muic_to_usb: endpoint {
-              remote-endpoint = <&usb_to_muic>;
+                port@0 {
+                    reg = <0>;
+                    muic_to_usb: endpoint {
+                        remote-endpoint = <&usb_to_muic>;
+                    };
+                };
+                port@3 {
+                    reg = <3>;
+                    usb_con_mhl: endpoint {
+                        remote-endpoint = <&sii8620_mhl>;
+                    };
+                };
             };
-          };
-          port@3 {
-            reg = <3>;
-            usb_con_mhl: endpoint {
-              remote-endpoint = <&sii8620_mhl>;
-            };
-          };
         };
-      };
     };

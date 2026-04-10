@@ -15,11 +15,13 @@
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/seq_file.h>
+#include <linux/slab.h>
+
 #include <linux/pinctrl/machine.h>
+#include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
-#include <linux/pinctrl/pinconf.h>
-#include <linux/slab.h>
 
 #include "../core.h"
 #include "../pinctrl-utils.h"
@@ -94,6 +96,7 @@ static const struct cfg_param {
 	{"nvidia,slew-rate-falling",	TEGRA_PINCONF_PARAM_SLEW_RATE_FALLING},
 	{"nvidia,slew-rate-rising",	TEGRA_PINCONF_PARAM_SLEW_RATE_RISING},
 	{"nvidia,drive-type",		TEGRA_PINCONF_PARAM_DRIVE_TYPE},
+	{"nvidia,gpio-mode",		TEGRA_PINCONF_PARAM_GPIO_MODE},
 };
 
 static int tegra_pinctrl_dt_subnode_to_map(struct pinctrl_dev *pctldev,
@@ -118,7 +121,7 @@ static int tegra_pinctrl_dt_subnode_to_map(struct pinctrl_dev *pctldev,
 		/* EINVAL=missing, which is fine since it's optional */
 		if (ret != -EINVAL)
 			dev_err(dev,
-				"could not parse property nvidia,function\n");
+				"%pOF: could not parse property nvidia,function\n", np);
 		function = NULL;
 	}
 
@@ -132,8 +135,8 @@ static int tegra_pinctrl_dt_subnode_to_map(struct pinctrl_dev *pctldev,
 				goto exit;
 		/* EINVAL=missing, which is fine since it's optional */
 		} else if (ret != -EINVAL) {
-			dev_err(dev, "could not parse property %s\n",
-				cfg_params[i].property);
+			dev_err(dev, "%pOF: could not parse property %s\n",
+				np, cfg_params[i].property);
 		}
 	}
 
@@ -144,7 +147,7 @@ static int tegra_pinctrl_dt_subnode_to_map(struct pinctrl_dev *pctldev,
 		reserve++;
 	ret = of_property_count_strings(np, "nvidia,pins");
 	if (ret < 0) {
-		dev_err(dev, "could not parse property nvidia,pins\n");
+		dev_err(dev, "%pOF: could not parse property nvidia,pins\n", np);
 		goto exit;
 	}
 	reserve *= ret;
@@ -186,20 +189,18 @@ static int tegra_pinctrl_dt_node_to_map(struct pinctrl_dev *pctldev,
 					unsigned *num_maps)
 {
 	unsigned reserved_maps;
-	struct device_node *np;
 	int ret;
 
 	reserved_maps = 0;
 	*map = NULL;
 	*num_maps = 0;
 
-	for_each_child_of_node(np_config, np) {
+	for_each_child_of_node_scoped(np_config, np) {
 		ret = tegra_pinctrl_dt_subnode_to_map(pctldev, np, map,
 						      &reserved_maps, num_maps);
 		if (ret < 0) {
 			pinctrl_utils_free_map(pctldev, *map,
 				*num_maps);
-			of_node_put(np);
 			return ret;
 		}
 	}
@@ -230,7 +231,7 @@ static const char *tegra_pinctrl_get_func_name(struct pinctrl_dev *pctldev,
 {
 	struct tegra_pmx *pmx = pinctrl_dev_get_drvdata(pctldev);
 
-	return pmx->soc->functions[function].name;
+	return pmx->functions[function].name;
 }
 
 static int tegra_pinctrl_get_func_groups(struct pinctrl_dev *pctldev,
@@ -240,8 +241,8 @@ static int tegra_pinctrl_get_func_groups(struct pinctrl_dev *pctldev,
 {
 	struct tegra_pmx *pmx = pinctrl_dev_get_drvdata(pctldev);
 
-	*groups = pmx->soc->functions[function].groups;
-	*num_groups = pmx->soc->functions[function].ngroups;
+	*groups = pmx->functions[function].groups;
+	*num_groups = pmx->functions[function].ngroups;
 
 	return 0;
 }
@@ -270,13 +271,16 @@ static int tegra_pinctrl_set_mux(struct pinctrl_dev *pctldev,
 	val = pmx_readl(pmx, g->mux_bank, g->mux_reg);
 	val &= ~(0x3 << g->mux_bit);
 	val |= i << g->mux_bit;
+	/* Set the SFIO/GPIO selection to SFIO when under pinmux control*/
+	if (pmx->soc->sfsel_in_mux)
+		val |= (1 << g->sfsel_bit);
 	pmx_writel(pmx, val, g->mux_bank, g->mux_reg);
 
 	return 0;
 }
 
-static const struct tegra_pingroup *tegra_pinctrl_get_group(struct pinctrl_dev *pctldev,
-					unsigned int offset)
+static int tegra_pinctrl_get_group_index(struct pinctrl_dev *pctldev,
+					 unsigned int offset)
 {
 	struct tegra_pmx *pmx = pinctrl_dev_get_drvdata(pctldev);
 	unsigned int group, num_pins, j;
@@ -289,12 +293,35 @@ static const struct tegra_pingroup *tegra_pinctrl_get_group(struct pinctrl_dev *
 			continue;
 		for (j = 0; j < num_pins; j++) {
 			if (offset == pins[j])
-				return &pmx->soc->groups[group];
+				return group;
 		}
 	}
 
-	dev_err(pctldev->dev, "Pingroup not found for pin %u\n", offset);
-	return NULL;
+	return -EINVAL;
+}
+
+static const struct tegra_pingroup *tegra_pinctrl_get_group(struct pinctrl_dev *pctldev,
+							    unsigned int offset,
+							    int group_index)
+{
+	struct tegra_pmx *pmx = pinctrl_dev_get_drvdata(pctldev);
+
+	if (group_index < 0 || group_index >= pmx->soc->ngroups)
+		return NULL;
+
+	return &pmx->soc->groups[group_index];
+}
+
+static struct tegra_pingroup_config *tegra_pinctrl_get_group_config(struct pinctrl_dev *pctldev,
+								    unsigned int offset,
+								    int group_index)
+{
+	struct tegra_pmx *pmx = pinctrl_dev_get_drvdata(pctldev);
+
+	if (group_index < 0)
+		return NULL;
+
+	return &pmx->pingroup_configs[group_index];
 }
 
 static int tegra_pinctrl_gpio_request_enable(struct pinctrl_dev *pctldev,
@@ -303,12 +330,15 @@ static int tegra_pinctrl_gpio_request_enable(struct pinctrl_dev *pctldev,
 {
 	struct tegra_pmx *pmx = pinctrl_dev_get_drvdata(pctldev);
 	const struct tegra_pingroup *group;
+	struct tegra_pingroup_config *config;
+	int group_index;
 	u32 value;
 
 	if (!pmx->soc->sfsel_in_mux)
 		return 0;
 
-	group = tegra_pinctrl_get_group(pctldev, offset);
+	group_index = tegra_pinctrl_get_group_index(pctldev, offset);
+	group = tegra_pinctrl_get_group(pctldev, offset, group_index);
 
 	if (!group)
 		return -EINVAL;
@@ -316,7 +346,11 @@ static int tegra_pinctrl_gpio_request_enable(struct pinctrl_dev *pctldev,
 	if (group->mux_reg < 0 || group->sfsel_bit < 0)
 		return -EINVAL;
 
+	config = tegra_pinctrl_get_group_config(pctldev, offset, group_index);
+	if (!config)
+		return -EINVAL;
 	value = pmx_readl(pmx, group->mux_bank, group->mux_reg);
+	config->is_sfsel = (value & BIT(group->sfsel_bit)) != 0;
 	value &= ~BIT(group->sfsel_bit);
 	pmx_writel(pmx, value, group->mux_bank, group->mux_reg);
 
@@ -329,12 +363,15 @@ static void tegra_pinctrl_gpio_disable_free(struct pinctrl_dev *pctldev,
 {
 	struct tegra_pmx *pmx = pinctrl_dev_get_drvdata(pctldev);
 	const struct tegra_pingroup *group;
+	struct tegra_pingroup_config *config;
+	int group_index;
 	u32 value;
 
 	if (!pmx->soc->sfsel_in_mux)
 		return;
 
-	group = tegra_pinctrl_get_group(pctldev, offset);
+	group_index = tegra_pinctrl_get_group_index(pctldev, offset);
+	group = tegra_pinctrl_get_group(pctldev, offset, group_index);
 
 	if (!group)
 		return;
@@ -342,8 +379,12 @@ static void tegra_pinctrl_gpio_disable_free(struct pinctrl_dev *pctldev,
 	if (group->mux_reg < 0 || group->sfsel_bit < 0)
 		return;
 
+	config = tegra_pinctrl_get_group_config(pctldev, offset, group_index);
+	if (!config)
+		return;
 	value = pmx_readl(pmx, group->mux_bank, group->mux_reg);
-	value |= BIT(group->sfsel_bit);
+	if (config->is_sfsel)
+		value |= BIT(group->sfsel_bit);
 	pmx_writel(pmx, value, group->mux_bank, group->mux_reg);
 }
 
@@ -467,6 +508,16 @@ static int tegra_pinconf_reg(struct tegra_pmx *pmx,
 		}
 		*bit = g->drvtype_bit;
 		*width = 2;
+		break;
+	case TEGRA_PINCONF_PARAM_GPIO_MODE:
+		if (pmx->soc->sfsel_in_mux) {
+			*bank = g->mux_bank;
+			*reg = g->mux_reg;
+			*bit = g->sfsel_bit;
+			*width = 1;
+		} else {
+			*reg = -EINVAL;
+		}
 		break;
 	default:
 		dev_err(pmx->dev, "Invalid config param %04x\n", param);
@@ -634,6 +685,14 @@ static void tegra_pinconf_group_dbg_show(struct pinctrl_dev *pctldev,
 		seq_printf(s, "\n\t%s=%u",
 			   strip_prefix(cfg_params[i].property), val);
 	}
+
+	if (g->mux_reg >= 0) {
+		/* read pinmux function and dump to seq_file */
+		val = pmx_readl(pmx, g->mux_bank, g->mux_reg);
+		val = g->funcs[(val >> g->mux_bit) & 0x3];
+
+		seq_printf(s, "\n\tfunction=%s", pmx->functions[val].name);
+	}
 }
 
 static void tegra_pinconf_config_dbg_show(struct pinctrl_dev *pctldev,
@@ -666,19 +725,6 @@ static const struct pinconf_ops tegra_pinconf_ops = {
 	.pin_config_group_dbg_show = tegra_pinconf_group_dbg_show,
 	.pin_config_config_dbg_show = tegra_pinconf_config_dbg_show,
 #endif
-};
-
-static struct pinctrl_gpio_range tegra_pinctrl_gpio_range = {
-	.name = "Tegra GPIOs",
-	.id = 0,
-	.base = 0,
-};
-
-static struct pinctrl_desc tegra_pinctrl_desc = {
-	.pctlops = &tegra_pinctrl_ops,
-	.pmxops = &tegra_pinmux_ops,
-	.confops = &tegra_pinconf_ops,
-	.owner = THIS_MODULE,
 };
 
 static void tegra_pinctrl_clear_parked_bits(struct tegra_pmx *pmx)
@@ -758,10 +804,7 @@ static int tegra_pinctrl_resume(struct device *dev)
 	return 0;
 }
 
-const struct dev_pm_ops tegra_pinctrl_pm = {
-	.suspend_noirq = &tegra_pinctrl_suspend,
-	.resume_noirq = &tegra_pinctrl_resume
-};
+DEFINE_NOIRQ_DEV_PM_OPS(tegra_pinctrl_pm, tegra_pinctrl_suspend, tegra_pinctrl_resume);
 
 static bool tegra_pinctrl_gpio_node_has_range(struct tegra_pmx *pmx)
 {
@@ -796,24 +839,36 @@ int tegra_pinctrl_probe(struct platform_device *pdev,
 	pmx->dev = &pdev->dev;
 	pmx->soc = soc_data;
 
+	pmx->pingroup_configs = devm_kcalloc(&pdev->dev,
+					     pmx->soc->ngroups, sizeof(*pmx->pingroup_configs),
+					     GFP_KERNEL);
+	if (!pmx->pingroup_configs)
+		return -ENOMEM;
+
 	/*
 	 * Each mux group will appear in 4 functions' list of groups.
 	 * This over-allocates slightly, since not all groups are mux groups.
 	 */
-	pmx->group_pins = devm_kcalloc(&pdev->dev,
-		soc_data->ngroups * 4, sizeof(*pmx->group_pins),
-		GFP_KERNEL);
+	pmx->group_pins = devm_kcalloc(&pdev->dev, pmx->soc->ngroups * 4,
+				       sizeof(*pmx->group_pins), GFP_KERNEL);
 	if (!pmx->group_pins)
 		return -ENOMEM;
 
-	group_pins = pmx->group_pins;
-	for (fn = 0; fn < soc_data->nfunctions; fn++) {
-		struct tegra_function *func = &soc_data->functions[fn];
+	pmx->functions = devm_kcalloc(&pdev->dev, pmx->soc->nfunctions,
+				      sizeof(*pmx->functions), GFP_KERNEL);
+	if (!pmx->functions)
+		return -ENOMEM;
 
+	group_pins = pmx->group_pins;
+
+	for (fn = 0; fn < pmx->soc->nfunctions; fn++) {
+		struct tegra_function *func = &pmx->functions[fn];
+
+		func->name = pmx->soc->functions[fn];
 		func->groups = group_pins;
 
-		for (gn = 0; gn < soc_data->ngroups; gn++) {
-			const struct tegra_pingroup *g = &soc_data->groups[gn];
+		for (gn = 0; gn < pmx->soc->ngroups; gn++) {
+			const struct tegra_pingroup *g = &pmx->soc->groups[gn];
 
 			if (g->mux_reg == -1)
 				continue;
@@ -825,16 +880,24 @@ int tegra_pinctrl_probe(struct platform_device *pdev,
 				continue;
 
 			BUG_ON(group_pins - pmx->group_pins >=
-				soc_data->ngroups * 4);
+				pmx->soc->ngroups * 4);
 			*group_pins++ = g->name;
 			func->ngroups++;
 		}
 	}
 
-	tegra_pinctrl_gpio_range.npins = pmx->soc->ngpios;
-	tegra_pinctrl_desc.name = dev_name(&pdev->dev);
-	tegra_pinctrl_desc.pins = pmx->soc->pins;
-	tegra_pinctrl_desc.npins = pmx->soc->npins;
+	pmx->gpio_range.name = "Tegra GPIOs";
+	pmx->gpio_range.id = 0;
+	pmx->gpio_range.base = 0;
+	pmx->gpio_range.npins = pmx->soc->ngpios;
+
+	pmx->desc.pctlops = &tegra_pinctrl_ops;
+	pmx->desc.pmxops = &tegra_pinmux_ops;
+	pmx->desc.confops = &tegra_pinconf_ops;
+	pmx->desc.owner = THIS_MODULE;
+	pmx->desc.name = dev_name(&pdev->dev);
+	pmx->desc.pins = pmx->soc->pins;
+	pmx->desc.npins = pmx->soc->npins;
 
 	for (i = 0; ; i++) {
 		res = platform_get_resource(pdev, IORESOURCE_MEM, i);
@@ -860,7 +923,7 @@ int tegra_pinctrl_probe(struct platform_device *pdev,
 			return PTR_ERR(pmx->regs[i]);
 	}
 
-	pmx->pctl = devm_pinctrl_register(&pdev->dev, &tegra_pinctrl_desc, pmx);
+	pmx->pctl = devm_pinctrl_register(&pdev->dev, &pmx->desc, pmx);
 	if (IS_ERR(pmx->pctl)) {
 		dev_err(&pdev->dev, "Couldn't register pinctrl driver\n");
 		return PTR_ERR(pmx->pctl);
@@ -869,7 +932,7 @@ int tegra_pinctrl_probe(struct platform_device *pdev,
 	tegra_pinctrl_clear_parked_bits(pmx);
 
 	if (pmx->soc->ngpios > 0 && !tegra_pinctrl_gpio_node_has_range(pmx))
-		pinctrl_add_gpio_range(pmx->pctl, &tegra_pinctrl_gpio_range);
+		pinctrl_add_gpio_range(pmx->pctl, &pmx->gpio_range);
 
 	platform_set_drvdata(pdev, pmx);
 

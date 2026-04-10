@@ -18,10 +18,12 @@
 #include <linux/uidgid.h>
 #include <linux/wait.h>
 #include <linux/rwsem.h>
+#include <linux/cache.h>
 
 struct file;
 struct dentry;
 struct iattr;
+struct ns_common;
 struct seq_file;
 struct vm_area_struct;
 struct vm_operations_struct;
@@ -33,6 +35,62 @@ struct fs_context;
 struct kernfs_fs_context;
 struct kernfs_open_node;
 struct kernfs_iattrs;
+
+/*
+ * NR_KERNFS_LOCK_BITS determines size (NR_KERNFS_LOCKS) of hash
+ * table of locks.
+ * Having a small hash table would impact scalability, since
+ * more and more kernfs_node objects will end up using same lock
+ * and having a very large hash table would waste memory.
+ *
+ * At the moment size of hash table of locks is being set based on
+ * the number of CPUs as follows:
+ *
+ * NR_CPU      NR_KERNFS_LOCK_BITS      NR_KERNFS_LOCKS
+ *   1                  1                       2
+ *  2-3                 2                       4
+ *  4-7                 4                       16
+ *  8-15                6                       64
+ *  16-31               8                       256
+ *  32 and more         10                      1024
+ *
+ * The above relation between NR_CPU and number of locks is based
+ * on some internal experimentation which involved booting qemu
+ * with different values of smp, performing some sysfs operations
+ * on all CPUs and observing how increase in number of locks impacts
+ * completion time of these sysfs operations on each CPU.
+ */
+#ifdef CONFIG_SMP
+#define NR_KERNFS_LOCK_BITS (2 * (ilog2(NR_CPUS < 32 ? NR_CPUS : 32)))
+#else
+#define NR_KERNFS_LOCK_BITS     1
+#endif
+
+#define NR_KERNFS_LOCKS     (1 << NR_KERNFS_LOCK_BITS)
+
+/*
+ * There's one kernfs_open_file for each open file and one kernfs_open_node
+ * for each kernfs_node with one or more open files.
+ *
+ * filp->private_data points to seq_file whose ->private points to
+ * kernfs_open_file.
+ *
+ * kernfs_open_files are chained at kernfs_open_node->files, which is
+ * protected by kernfs_global_locks.open_file_mutex[i].
+ *
+ * To reduce possible contention in sysfs access, arising due to single
+ * locks, use an array of locks (e.g. open_file_mutex) and use kernfs_node
+ * object address as hash keys to get the index of these locks.
+ *
+ * Hashed mutexes are safe to use here because operations using these don't
+ * rely on global exclusion.
+ *
+ * In future we intend to replace other global locks with hashed ones as well.
+ * kernfs_global_locks acts as a holder for all such hash tables.
+ */
+struct kernfs_global_locks {
+	struct mutex open_file_mutex[NR_KERNFS_LOCKS];
+};
 
 enum kernfs_node_type {
 	KERNFS_DIR		= 0x0001,
@@ -51,10 +109,12 @@ enum kernfs_node_flag {
 	KERNFS_HAS_SEQ_SHOW	= 0x0040,
 	KERNFS_HAS_MMAP		= 0x0080,
 	KERNFS_LOCKDEP		= 0x0100,
+	KERNFS_HIDDEN		= 0x0200,
 	KERNFS_SUICIDAL		= 0x0400,
 	KERNFS_SUICIDED		= 0x0800,
 	KERNFS_EMPTY_DIR	= 0x1000,
 	KERNFS_HAS_RELEASE	= 0x2000,
+	KERNFS_REMOVING		= 0x4000,
 };
 
 /* @flags for kernfs_create_root() */
@@ -88,6 +148,11 @@ enum kernfs_root_flag {
 	 * Support user xattrs to be written to nodes rooted at this root.
 	 */
 	KERNFS_ROOT_SUPPORT_USER_XATTR		= 0x0008,
+
+	/*
+	 * Renames must not change the parent node.
+	 */
+	KERNFS_ROOT_INVARIANT_PARENT		= 0x0010,
 };
 
 /* type-specific structures for kernfs_node union members */
@@ -114,7 +179,7 @@ struct kernfs_elem_symlink {
 
 struct kernfs_elem_attr {
 	const struct kernfs_ops	*ops;
-	struct kernfs_open_node	*open;
+	struct kernfs_open_node __rcu	*open;
 	loff_t			size;
 	struct kernfs_node	*notify_next;	/* for kernfs_notify() */
 };
@@ -140,20 +205,21 @@ struct kernfs_node {
 	 * never moved to a different parent, it is safe to access the
 	 * parent directly.
 	 */
-	struct kernfs_node	*parent;
-	const char		*name;
+	struct kernfs_node	__rcu *__parent;
+	const char		__rcu *name;
 
 	struct rb_node		rb;
 
-	const void		*ns;	/* namespace tag */
+	const struct ns_common	*ns;	/* namespace tag */
 	unsigned int		hash;	/* ns + name hash */
+	unsigned short		flags;
+	umode_t			mode;
+
 	union {
 		struct kernfs_elem_dir		dir;
 		struct kernfs_elem_symlink	symlink;
 		struct kernfs_elem_attr		attr;
 	};
-
-	void			*priv;
 
 	/*
 	 * 64bit unique ID.  On 64bit ino setups, id is the ino.  On 32bit,
@@ -161,9 +227,10 @@ struct kernfs_node {
 	 */
 	u64			id;
 
-	unsigned short		flags;
-	umode_t			mode;
+	void			*priv;
 	struct kernfs_iattrs	*iattr;
+
+	struct rcu_head		rcu;
 };
 
 /*
@@ -257,6 +324,7 @@ struct kernfs_ops {
 			 struct poll_table_struct *pt);
 
 	int (*mmap)(struct kernfs_open_file *of, struct vm_area_struct *vma);
+	loff_t (*llseek)(struct kernfs_open_file *of, loff_t offset, int whence);
 };
 
 /*
@@ -264,7 +332,7 @@ struct kernfs_ops {
  */
 struct kernfs_fs_context {
 	struct kernfs_root	*root;		/* Root of the hierarchy being mounted */
-	void			*ns_tag;	/* Namespace tag of the mount (or NULL) */
+	struct ns_common	*ns_tag;	/* Namespace tag of the mount (or NULL) */
 	unsigned long		magic;		/* File system specific magic number */
 
 	/* The following are set/used by kernfs_mount() */
@@ -333,15 +401,17 @@ static inline bool kernfs_ns_enabled(struct kernfs_node *kn)
 }
 
 int kernfs_name(struct kernfs_node *kn, char *buf, size_t buflen);
-int kernfs_path_from_node(struct kernfs_node *root_kn, struct kernfs_node *kn,
+int kernfs_path_from_node(struct kernfs_node *kn_to, struct kernfs_node *kn_from,
 			  char *buf, size_t buflen);
 void pr_cont_kernfs_name(struct kernfs_node *kn);
 void pr_cont_kernfs_path(struct kernfs_node *kn);
 struct kernfs_node *kernfs_get_parent(struct kernfs_node *kn);
 struct kernfs_node *kernfs_find_and_get_ns(struct kernfs_node *parent,
-					   const char *name, const void *ns);
+					   const char *name,
+					   const struct ns_common *ns);
 struct kernfs_node *kernfs_walk_and_get_ns(struct kernfs_node *parent,
-					   const char *path, const void *ns);
+					   const char *path,
+					   const struct ns_common *ns);
 void kernfs_get(struct kernfs_node *kn);
 void kernfs_put(struct kernfs_node *kn);
 
@@ -354,11 +424,13 @@ struct dentry *kernfs_node_dentry(struct kernfs_node *kn,
 struct kernfs_root *kernfs_create_root(struct kernfs_syscall_ops *scops,
 				       unsigned int flags, void *priv);
 void kernfs_destroy_root(struct kernfs_root *root);
+unsigned int kernfs_root_flags(struct kernfs_node *kn);
 
 struct kernfs_node *kernfs_create_dir_ns(struct kernfs_node *parent,
 					 const char *name, umode_t mode,
 					 kuid_t uid, kgid_t gid,
-					 void *priv, const void *ns);
+					 void *priv,
+					 const struct ns_common *ns);
 struct kernfs_node *kernfs_create_empty_dir(struct kernfs_node *parent,
 					    const char *name);
 struct kernfs_node *__kernfs_create_file(struct kernfs_node *parent,
@@ -366,20 +438,22 @@ struct kernfs_node *__kernfs_create_file(struct kernfs_node *parent,
 					 kuid_t uid, kgid_t gid,
 					 loff_t size,
 					 const struct kernfs_ops *ops,
-					 void *priv, const void *ns,
+					 void *priv,
+					 const struct ns_common *ns,
 					 struct lock_class_key *key);
 struct kernfs_node *kernfs_create_link(struct kernfs_node *parent,
 				       const char *name,
 				       struct kernfs_node *target);
 void kernfs_activate(struct kernfs_node *kn);
+void kernfs_show(struct kernfs_node *kn, bool show);
 void kernfs_remove(struct kernfs_node *kn);
 void kernfs_break_active_protection(struct kernfs_node *kn);
 void kernfs_unbreak_active_protection(struct kernfs_node *kn);
 bool kernfs_remove_self(struct kernfs_node *kn);
 int kernfs_remove_by_name_ns(struct kernfs_node *parent, const char *name,
-			     const void *ns);
+			     const struct ns_common *ns);
 int kernfs_rename_ns(struct kernfs_node *kn, struct kernfs_node *new_parent,
-		     const char *new_name, const void *new_ns);
+		     const char *new_name, const struct ns_common *new_ns);
 int kernfs_setattr(struct kernfs_node *kn, const struct iattr *iattr);
 __poll_t kernfs_generic_poll(struct kernfs_open_file *of,
 			     struct poll_table_struct *pt);
@@ -390,7 +464,7 @@ int kernfs_xattr_get(struct kernfs_node *kn, const char *name,
 int kernfs_xattr_set(struct kernfs_node *kn, const char *name,
 		     const void *value, size_t size, int flags);
 
-const void *kernfs_super_ns(struct super_block *sb);
+const struct ns_common *kernfs_super_ns(struct super_block *sb);
 int kernfs_get_tree(struct fs_context *fc);
 void kernfs_free_fs_context(struct fs_context *fc);
 void kernfs_kill_sb(struct super_block *sb);
@@ -425,11 +499,11 @@ static inline struct kernfs_node *kernfs_get_parent(struct kernfs_node *kn)
 
 static inline struct kernfs_node *
 kernfs_find_and_get_ns(struct kernfs_node *parent, const char *name,
-		       const void *ns)
+		       const struct ns_common *ns)
 { return NULL; }
 static inline struct kernfs_node *
 kernfs_walk_and_get_ns(struct kernfs_node *parent, const char *path,
-		       const void *ns)
+		       const struct ns_common *ns)
 { return NULL; }
 
 static inline void kernfs_get(struct kernfs_node *kn) { }
@@ -451,18 +525,21 @@ kernfs_create_root(struct kernfs_syscall_ops *scops, unsigned int flags,
 { return ERR_PTR(-ENOSYS); }
 
 static inline void kernfs_destroy_root(struct kernfs_root *root) { }
+static inline unsigned int kernfs_root_flags(struct kernfs_node *kn)
+{ return 0; }
 
 static inline struct kernfs_node *
 kernfs_create_dir_ns(struct kernfs_node *parent, const char *name,
 		     umode_t mode, kuid_t uid, kgid_t gid,
-		     void *priv, const void *ns)
+		     void *priv, const struct ns_common *ns)
 { return ERR_PTR(-ENOSYS); }
 
 static inline struct kernfs_node *
 __kernfs_create_file(struct kernfs_node *parent, const char *name,
 		     umode_t mode, kuid_t uid, kgid_t gid,
 		     loff_t size, const struct kernfs_ops *ops,
-		     void *priv, const void *ns, struct lock_class_key *key)
+		     void *priv, const struct ns_common *ns,
+		     struct lock_class_key *key)
 { return ERR_PTR(-ENOSYS); }
 
 static inline struct kernfs_node *
@@ -478,16 +555,22 @@ static inline bool kernfs_remove_self(struct kernfs_node *kn)
 { return false; }
 
 static inline int kernfs_remove_by_name_ns(struct kernfs_node *kn,
-					   const char *name, const void *ns)
+					   const char *name,
+					   const struct ns_common *ns)
 { return -ENOSYS; }
 
 static inline int kernfs_rename_ns(struct kernfs_node *kn,
 				   struct kernfs_node *new_parent,
-				   const char *new_name, const void *new_ns)
+				   const char *new_name,
+				   const struct ns_common *new_ns)
 { return -ENOSYS; }
 
 static inline int kernfs_setattr(struct kernfs_node *kn,
 				 const struct iattr *iattr)
+{ return -ENOSYS; }
+
+static inline __poll_t kernfs_generic_poll(struct kernfs_open_file *of,
+					   struct poll_table_struct *pt)
 { return -ENOSYS; }
 
 static inline void kernfs_notify(struct kernfs_node *kn) { }
@@ -500,7 +583,7 @@ static inline int kernfs_xattr_set(struct kernfs_node *kn, const char *name,
 				   const void *value, size_t size, int flags)
 { return -ENOSYS; }
 
-static inline const void *kernfs_super_ns(struct super_block *sb)
+static inline const struct ns_common *kernfs_super_ns(struct super_block *sb)
 { return NULL; }
 
 static inline int kernfs_get_tree(struct fs_context *fc)

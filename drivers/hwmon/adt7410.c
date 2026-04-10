@@ -7,6 +7,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/init.h>
 #include <linux/i2c.h>
 #include <linux/regmap.h>
@@ -69,7 +70,7 @@ static const struct regmap_config adt7410_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 16,
 	.max_register = ADT7X10_ID,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.volatile_reg = adt7410_regmap_is_volatile,
 	.reg_read = adt7410_reg_read,
 	.reg_write = adt7410_reg_write,
@@ -88,21 +89,29 @@ static int adt7410_i2c_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id adt7410_ids[] = {
-	{ "adt7410", 0 },
-	{ "adt7420", 0 },
+	{ "adt7410" },
+	{ "adt7420" },
+	{ "adt7422" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, adt7410_ids);
 
+static const struct of_device_id adt7410_of_match[] = {
+	{ .compatible = "adi,adt7410" },
+	{ .compatible = "adi,adt7420" },
+	{ .compatible = "adi,adt7422" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, adt7410_of_match);
+
 static struct i2c_driver adt7410_driver = {
-	.class		= I2C_CLASS_HWMON,
 	.driver = {
 		.name	= "adt7410",
-		.pm	= ADT7X10_DEV_PM_OPS,
+		.pm	= pm_sleep_ptr(&adt7x10_dev_pm_ops),
+		.of_match_table = adt7410_of_match,
 	},
-	.probe_new	= adt7410_i2c_probe,
+	.probe		= adt7410_i2c_probe,
 	.id_table	= adt7410_ids,
-	.address_list	= I2C_ADDRS(0x48, 0x49, 0x4a, 0x4b),
 };
 module_i2c_driver(adt7410_driver);
 

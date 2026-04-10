@@ -20,6 +20,15 @@
 #include "rseq-abi.h"
 #include "compiler.h"
 
+#ifndef rseq_sizeof_field
+#define rseq_sizeof_field(TYPE, MEMBER) sizeof((((TYPE *)0)->MEMBER))
+#endif
+
+#ifndef rseq_offsetofend
+#define rseq_offsetofend(TYPE, MEMBER) \
+	(offsetof(TYPE, MEMBER)	+ rseq_sizeof_field(TYPE, MEMBER))
+#endif
+
 /*
  * Empty code injection macros, override when testing.
  * It is important to consider that the ASM injection macros need to be
@@ -47,13 +56,38 @@
 
 #include "rseq-thread-pointer.h"
 
-/* Offset from the thread pointer to the rseq area.  */
+/* Offset from the thread pointer to the rseq area. */
 extern ptrdiff_t rseq_offset;
-/* Size of the registered rseq area.  0 if the registration was
-   unsuccessful.  */
+
+/*
+ * The rseq ABI is composed of extensible feature fields. The extensions
+ * are done by appending additional fields at the end of the structure.
+ * The rseq_size defines the size of the active feature set which can be
+ * used by the application for the current rseq registration. Features
+ * starting at offset >= rseq_size are inactive and should not be used.
+ *
+ * The rseq_size is the intersection between the available allocation
+ * size for the rseq area and the feature size supported by the kernel.
+ * unsuccessful.
+ */
 extern unsigned int rseq_size;
-/* Flags used during rseq registration.  */
+
+/* Flags used during rseq registration. */
 extern unsigned int rseq_flags;
+
+enum rseq_mo {
+	RSEQ_MO_RELAXED = 0,
+	RSEQ_MO_CONSUME = 1,	/* Unused */
+	RSEQ_MO_ACQUIRE = 2,	/* Unused */
+	RSEQ_MO_RELEASE = 3,
+	RSEQ_MO_ACQ_REL = 4,	/* Unused */
+	RSEQ_MO_SEQ_CST = 5,	/* Unused */
+};
+
+enum rseq_percpu_mode {
+	RSEQ_PERCPU_CPU_ID = 0,
+	RSEQ_PERCPU_MM_CID = 1,
+};
 
 static inline struct rseq_abi *rseq_get_abi(void)
 {
@@ -95,6 +129,8 @@ static inline struct rseq_abi *rseq_get_abi(void)
 #include <rseq-s390.h>
 #elif defined(__riscv)
 #include <rseq-riscv.h>
+#elif defined(__or1k__)
+#include <rseq-or1k.h>
 #else
 #error unsupported target
 #endif
@@ -117,6 +153,16 @@ int rseq_unregister_current_thread(void);
  * Restartable sequence fallback for reading the current CPU number.
  */
 int32_t rseq_fallback_current_cpu(void);
+
+/*
+ * Restartable sequence fallback for reading the current node number.
+ */
+int32_t rseq_fallback_current_node(void);
+
+/*
+ * Returns true if rseq is supported.
+ */
+bool rseq_available(void);
 
 /*
  * Values returned can be either the current CPU number, -1 (rseq is
@@ -153,6 +199,30 @@ static inline uint32_t rseq_current_cpu(void)
 	return cpu;
 }
 
+static inline bool rseq_node_id_available(void)
+{
+	return (int) rseq_size >= rseq_offsetofend(struct rseq_abi, node_id);
+}
+
+/*
+ * Current NUMA node number.
+ */
+static inline uint32_t rseq_current_node_id(void)
+{
+	assert(rseq_node_id_available());
+	return RSEQ_ACCESS_ONCE(rseq_get_abi()->node_id);
+}
+
+static inline bool rseq_mm_cid_available(void)
+{
+	return (int) rseq_size >= rseq_offsetofend(struct rseq_abi, mm_cid);
+}
+
+static inline uint32_t rseq_current_mm_cid(void)
+{
+	return RSEQ_ACCESS_ONCE(rseq_get_abi()->mm_cid);
+}
+
 static inline void rseq_clear_rseq_cs(void)
 {
 	RSEQ_WRITE_ONCE(rseq_get_abi()->rseq_cs.arch.ptr, 0);
@@ -172,6 +242,151 @@ static inline void rseq_clear_rseq_cs(void)
 static inline void rseq_prepare_unload(void)
 {
 	rseq_clear_rseq_cs();
+}
+
+static inline __attribute__((always_inline))
+int rseq_cmpeqv_storev(enum rseq_mo rseq_mo, enum rseq_percpu_mode percpu_mode,
+		       intptr_t *v, intptr_t expect,
+		       intptr_t newv, int cpu)
+{
+	if (rseq_mo != RSEQ_MO_RELAXED)
+		return -1;
+	switch (percpu_mode) {
+	case RSEQ_PERCPU_CPU_ID:
+		return rseq_cmpeqv_storev_relaxed_cpu_id(v, expect, newv, cpu);
+	case RSEQ_PERCPU_MM_CID:
+		return rseq_cmpeqv_storev_relaxed_mm_cid(v, expect, newv, cpu);
+	}
+	return -1;
+}
+
+/*
+ * Compare @v against @expectnot. When it does _not_ match, load @v
+ * into @load, and store the content of *@v + voffp into @v.
+ */
+static inline __attribute__((always_inline))
+int rseq_cmpnev_storeoffp_load(enum rseq_mo rseq_mo, enum rseq_percpu_mode percpu_mode,
+			       intptr_t *v, intptr_t expectnot, long voffp, intptr_t *load,
+			       int cpu)
+{
+	if (rseq_mo != RSEQ_MO_RELAXED)
+		return -1;
+	switch (percpu_mode) {
+	case RSEQ_PERCPU_CPU_ID:
+		return rseq_cmpnev_storeoffp_load_relaxed_cpu_id(v, expectnot, voffp, load, cpu);
+	case RSEQ_PERCPU_MM_CID:
+		return rseq_cmpnev_storeoffp_load_relaxed_mm_cid(v, expectnot, voffp, load, cpu);
+	}
+	return -1;
+}
+
+static inline __attribute__((always_inline))
+int rseq_addv(enum rseq_mo rseq_mo, enum rseq_percpu_mode percpu_mode,
+	      intptr_t *v, intptr_t count, int cpu)
+{
+	if (rseq_mo != RSEQ_MO_RELAXED)
+		return -1;
+	switch (percpu_mode) {
+	case RSEQ_PERCPU_CPU_ID:
+		return rseq_addv_relaxed_cpu_id(v, count, cpu);
+	case RSEQ_PERCPU_MM_CID:
+		return rseq_addv_relaxed_mm_cid(v, count, cpu);
+	}
+	return -1;
+}
+
+#ifdef RSEQ_ARCH_HAS_OFFSET_DEREF_ADDV
+/*
+ *   pval = *(ptr+off)
+ *  *pval += inc;
+ */
+static inline __attribute__((always_inline))
+int rseq_offset_deref_addv(enum rseq_mo rseq_mo, enum rseq_percpu_mode percpu_mode,
+			   intptr_t *ptr, long off, intptr_t inc, int cpu)
+{
+	if (rseq_mo != RSEQ_MO_RELAXED)
+		return -1;
+	switch (percpu_mode) {
+	case RSEQ_PERCPU_CPU_ID:
+		return rseq_offset_deref_addv_relaxed_cpu_id(ptr, off, inc, cpu);
+	case RSEQ_PERCPU_MM_CID:
+		return rseq_offset_deref_addv_relaxed_mm_cid(ptr, off, inc, cpu);
+	}
+	return -1;
+}
+#endif
+
+static inline __attribute__((always_inline))
+int rseq_cmpeqv_trystorev_storev(enum rseq_mo rseq_mo, enum rseq_percpu_mode percpu_mode,
+				 intptr_t *v, intptr_t expect,
+				 intptr_t *v2, intptr_t newv2,
+				 intptr_t newv, int cpu)
+{
+	switch (rseq_mo) {
+	case RSEQ_MO_RELAXED:
+		switch (percpu_mode) {
+		case RSEQ_PERCPU_CPU_ID:
+			return rseq_cmpeqv_trystorev_storev_relaxed_cpu_id(v, expect, v2, newv2, newv, cpu);
+		case RSEQ_PERCPU_MM_CID:
+			return rseq_cmpeqv_trystorev_storev_relaxed_mm_cid(v, expect, v2, newv2, newv, cpu);
+		}
+		return -1;
+	case RSEQ_MO_RELEASE:
+		switch (percpu_mode) {
+		case RSEQ_PERCPU_CPU_ID:
+			return rseq_cmpeqv_trystorev_storev_release_cpu_id(v, expect, v2, newv2, newv, cpu);
+		case RSEQ_PERCPU_MM_CID:
+			return rseq_cmpeqv_trystorev_storev_release_mm_cid(v, expect, v2, newv2, newv, cpu);
+		}
+		return -1;
+	default:
+		return -1;
+	}
+}
+
+static inline __attribute__((always_inline))
+int rseq_cmpeqv_cmpeqv_storev(enum rseq_mo rseq_mo, enum rseq_percpu_mode percpu_mode,
+			      intptr_t *v, intptr_t expect,
+			      intptr_t *v2, intptr_t expect2,
+			      intptr_t newv, int cpu)
+{
+	if (rseq_mo != RSEQ_MO_RELAXED)
+		return -1;
+	switch (percpu_mode) {
+	case RSEQ_PERCPU_CPU_ID:
+		return rseq_cmpeqv_cmpeqv_storev_relaxed_cpu_id(v, expect, v2, expect2, newv, cpu);
+	case RSEQ_PERCPU_MM_CID:
+		return rseq_cmpeqv_cmpeqv_storev_relaxed_mm_cid(v, expect, v2, expect2, newv, cpu);
+	}
+	return -1;
+}
+
+static inline __attribute__((always_inline))
+int rseq_cmpeqv_trymemcpy_storev(enum rseq_mo rseq_mo, enum rseq_percpu_mode percpu_mode,
+				 intptr_t *v, intptr_t expect,
+				 void *dst, void *src, size_t len,
+				 intptr_t newv, int cpu)
+{
+	switch (rseq_mo) {
+	case RSEQ_MO_RELAXED:
+		switch (percpu_mode) {
+		case RSEQ_PERCPU_CPU_ID:
+			return rseq_cmpeqv_trymemcpy_storev_relaxed_cpu_id(v, expect, dst, src, len, newv, cpu);
+		case RSEQ_PERCPU_MM_CID:
+			return rseq_cmpeqv_trymemcpy_storev_relaxed_mm_cid(v, expect, dst, src, len, newv, cpu);
+		}
+		return -1;
+	case RSEQ_MO_RELEASE:
+		switch (percpu_mode) {
+		case RSEQ_PERCPU_CPU_ID:
+			return rseq_cmpeqv_trymemcpy_storev_release_cpu_id(v, expect, dst, src, len, newv, cpu);
+		case RSEQ_PERCPU_MM_CID:
+			return rseq_cmpeqv_trymemcpy_storev_release_mm_cid(v, expect, dst, src, len, newv, cpu);
+		}
+		return -1;
+	default:
+		return -1;
+	}
 }
 
 #endif  /* RSEQ_H_ */

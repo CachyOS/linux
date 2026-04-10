@@ -44,18 +44,11 @@ static inline void vsp1_rpf_write(struct vsp1_rwpf *rpf,
 }
 
 /* -----------------------------------------------------------------------------
- * V4L2 Subdevice Operations
- */
-
-static const struct v4l2_subdev_ops rpf_ops = {
-	.pad    = &vsp1_rwpf_pad_ops,
-};
-
-/* -----------------------------------------------------------------------------
  * VSP1 Entity Operations
  */
 
 static void rpf_configure_stream(struct vsp1_entity *entity,
+				 struct v4l2_subdev_state *state,
 				 struct vsp1_pipeline *pipe,
 				 struct vsp1_dl_list *dl,
 				 struct vsp1_dl_body *dlb)
@@ -88,14 +81,10 @@ static void rpf_configure_stream(struct vsp1_entity *entity,
 	vsp1_rpf_write(rpf, dlb, VI6_RPF_SRCM_PSTRIDE, pstride);
 
 	/* Format */
-	sink_format = vsp1_entity_get_pad_format(&rpf->entity,
-						 rpf->entity.config,
-						 RWPF_PAD_SINK);
-	source_format = vsp1_entity_get_pad_format(&rpf->entity,
-						   rpf->entity.config,
-						   RWPF_PAD_SOURCE);
+	sink_format = v4l2_subdev_state_get_format(state, RWPF_PAD_SINK);
+	source_format = v4l2_subdev_state_get_format(state, RWPF_PAD_SOURCE);
 
-	infmt = VI6_RPF_INFMT_CIPM
+	infmt = (pipe->iif ? 0 : VI6_RPF_INFMT_CIPM)
 	      | (fmtinfo->hwfmt << VI6_RPF_INFMT_RDFMT_SHIFT);
 
 	if (fmtinfo->swap_yc)
@@ -103,20 +92,102 @@ static void rpf_configure_stream(struct vsp1_entity *entity,
 	if (fmtinfo->swap_uv)
 		infmt |= VI6_RPF_INFMT_SPUVS;
 
-	if (sink_format->code != source_format->code)
-		infmt |= VI6_RPF_INFMT_CSC;
+	if (sink_format->code != source_format->code) {
+		u16 ycbcr_enc;
+		u16 quantization;
+		u32 rdtm;
+
+		if (sink_format->code == MEDIA_BUS_FMT_AYUV8_1X32) {
+			ycbcr_enc = sink_format->ycbcr_enc;
+			quantization = sink_format->quantization;
+		} else {
+			ycbcr_enc = source_format->ycbcr_enc;
+			quantization = source_format->quantization;
+		}
+
+		if (ycbcr_enc == V4L2_YCBCR_ENC_601 &&
+		    quantization == V4L2_QUANTIZATION_LIM_RANGE)
+			rdtm = VI6_RPF_INFMT_RDTM_BT601;
+		else if (ycbcr_enc == V4L2_YCBCR_ENC_601 &&
+			 quantization == V4L2_QUANTIZATION_FULL_RANGE)
+			rdtm = VI6_RPF_INFMT_RDTM_BT601_EXT;
+		else if (ycbcr_enc == V4L2_YCBCR_ENC_709 &&
+			 quantization == V4L2_QUANTIZATION_LIM_RANGE)
+			rdtm = VI6_RPF_INFMT_RDTM_BT709;
+		else
+			rdtm = VI6_RPF_INFMT_RDTM_BT709_EXT;
+
+		infmt |= VI6_RPF_INFMT_CSC | rdtm;
+	}
 
 	vsp1_rpf_write(rpf, dlb, VI6_RPF_INFMT, infmt);
 	vsp1_rpf_write(rpf, dlb, VI6_RPF_DSWAP, fmtinfo->swap);
+
+	/* No further configuration for VSPX. */
+	if (pipe->iif) {
+		/* VSPX wants alpha_sel to be set to 0. */
+		vsp1_rpf_write(rpf, dlb, VI6_RPF_ALPH_SEL, 0);
+		return;
+	}
+
+	if (entity->vsp1->info->gen == 4) {
+		u32 ext_infmt0;
+		u32 ext_infmt1;
+		u32 ext_infmt2;
+
+		switch (fmtinfo->fourcc) {
+		case V4L2_PIX_FMT_RGBX1010102:
+			ext_infmt0 = VI6_RPF_EXT_INFMT0_BYPP_M1_RGB10;
+			ext_infmt1 = VI6_RPF_EXT_INFMT1_PACK_CPOS(0, 10, 20, 0);
+			ext_infmt2 = VI6_RPF_EXT_INFMT2_PACK_CLEN(10, 10, 10, 0);
+			break;
+
+		case V4L2_PIX_FMT_RGBA1010102:
+			ext_infmt0 = VI6_RPF_EXT_INFMT0_BYPP_M1_RGB10;
+			ext_infmt1 = VI6_RPF_EXT_INFMT1_PACK_CPOS(0, 10, 20, 30);
+			ext_infmt2 = VI6_RPF_EXT_INFMT2_PACK_CLEN(10, 10, 10, 2);
+			break;
+
+		case V4L2_PIX_FMT_ARGB2101010:
+			ext_infmt0 = VI6_RPF_EXT_INFMT0_BYPP_M1_RGB10;
+			ext_infmt1 = VI6_RPF_EXT_INFMT1_PACK_CPOS(2, 12, 22, 0);
+			ext_infmt2 = VI6_RPF_EXT_INFMT2_PACK_CLEN(10, 10, 10, 2);
+			break;
+
+		case V4L2_PIX_FMT_Y210:
+			ext_infmt0 = VI6_RPF_EXT_INFMT0_F2B |
+				     VI6_RPF_EXT_INFMT0_IPBD_Y_10 |
+				     VI6_RPF_EXT_INFMT0_IPBD_C_10;
+			ext_infmt1 = 0x0;
+			ext_infmt2 = 0x0;
+			break;
+
+		case V4L2_PIX_FMT_Y212:
+			ext_infmt0 = VI6_RPF_EXT_INFMT0_F2B |
+				     VI6_RPF_EXT_INFMT0_IPBD_Y_12 |
+				     VI6_RPF_EXT_INFMT0_IPBD_C_12;
+			ext_infmt1 = 0x0;
+			ext_infmt2 = 0x0;
+			break;
+
+		default:
+			ext_infmt0 = 0;
+			ext_infmt1 = 0;
+			ext_infmt2 = 0;
+			break;
+		}
+
+		vsp1_rpf_write(rpf, dlb, VI6_RPF_EXT_INFMT0, ext_infmt0);
+		vsp1_rpf_write(rpf, dlb, VI6_RPF_EXT_INFMT1, ext_infmt1);
+		vsp1_rpf_write(rpf, dlb, VI6_RPF_EXT_INFMT2, ext_infmt2);
+	}
 
 	/* Output location. */
 	if (pipe->brx) {
 		const struct v4l2_rect *compose;
 
-		compose = vsp1_entity_get_pad_selection(pipe->brx,
-							pipe->brx->config,
-							rpf->brx_input,
-							V4L2_SEL_TGT_COMPOSE);
+		compose = v4l2_subdev_state_get_compose(pipe->brx->state,
+							rpf->brx_input);
 		left = compose->left;
 		top = compose->top;
 	}
@@ -133,18 +204,18 @@ static void rpf_configure_stream(struct vsp1_entity *entity,
 	 * a fixed alpha value set through the V4L2_CID_ALPHA_COMPONENT control
 	 * otherwise.
 	 *
-	 * The Gen3 RPF has extended alpha capability and can both multiply the
+	 * The Gen3+ RPF has extended alpha capability and can both multiply the
 	 * alpha channel by a fixed global alpha value, and multiply the pixel
 	 * components to convert the input to premultiplied alpha.
 	 *
 	 * As alpha premultiplication is available in the BRx for both Gen2 and
-	 * Gen3 we handle it there and use the Gen3 alpha multiplier for global
+	 * Gen3+ we handle it there and use the Gen3 alpha multiplier for global
 	 * alpha multiplication only. This however prevents conversion to
 	 * premultiplied alpha if no BRx is present in the pipeline. If that use
 	 * case turns out to be useful we will revisit the implementation (for
 	 * Gen3 only).
 	 *
-	 * We enable alpha multiplication on Gen3 using the fixed alpha value
+	 * We enable alpha multiplication on Gen3+ using the fixed alpha value
 	 * set through the V4L2_CID_ALPHA_COMPONENT control when the input
 	 * contains an alpha channel. On Gen2 the global alpha is ignored in
 	 * that case.
@@ -155,7 +226,7 @@ static void rpf_configure_stream(struct vsp1_entity *entity,
 		       (fmtinfo->alpha ? VI6_RPF_ALPH_SEL_ASEL_PACKED
 				       : VI6_RPF_ALPH_SEL_ASEL_FIXED));
 
-	if (entity->vsp1->info->gen == 3) {
+	if (entity->vsp1->info->gen >= 3) {
 		u32 mult;
 
 		if (fmtinfo->alpha) {
@@ -240,6 +311,7 @@ static void rpf_configure_frame(struct vsp1_entity *entity,
 
 static void rpf_configure_partition(struct vsp1_entity *entity,
 				    struct vsp1_pipeline *pipe,
+				    const struct vsp1_partition *partition,
 				    struct vsp1_dl_list *dl,
 				    struct vsp1_dl_body *dlb)
 {
@@ -248,7 +320,7 @@ static void rpf_configure_partition(struct vsp1_entity *entity,
 	struct vsp1_device *vsp1 = rpf->entity.vsp1;
 	const struct vsp1_format_info *fmtinfo = rpf->fmtinfo;
 	const struct v4l2_pix_format_mplane *format = &rpf->format;
-	struct v4l2_rect crop;
+	struct v4l2_rect crop = partition->rpf[rpf->entity.index];
 
 	/*
 	 * Source size and crop offsets.
@@ -258,22 +330,6 @@ static void rpf_configure_partition(struct vsp1_entity *entity,
 	 * offsets are needed, as planes 2 and 3 always have identical
 	 * strides.
 	 */
-	crop = *vsp1_rwpf_get_crop(rpf, rpf->entity.config);
-
-	/*
-	 * Partition Algorithm Control
-	 *
-	 * The partition algorithm can split this frame into multiple
-	 * slices. We must scale our partition window based on the pipe
-	 * configuration to match the destination partition window.
-	 * To achieve this, we adjust our crop to provide a 'sub-crop'
-	 * matching the expected partition window. Only 'left' and
-	 * 'width' need to be adjusted.
-	 */
-	if (pipe->partitions > 1) {
-		crop.width = pipe->partition->rpf.width;
-		crop.left += pipe->partition->rpf.left;
-	}
 
 	if (pipe->interlaced) {
 		crop.height = round_down(crop.height / 2, fmtinfo->vsub);
@@ -301,10 +357,10 @@ static void rpf_configure_partition(struct vsp1_entity *entity,
 	}
 
 	/*
-	 * On Gen3 hardware the SPUVS bit has no effect on 3-planar
+	 * On Gen3+ hardware the SPUVS bit has no effect on 3-planar
 	 * formats. Swap the U and V planes manually in that case.
 	 */
-	if (vsp1->info->gen == 3 && format->num_planes == 3 &&
+	if (vsp1->info->gen >= 3 && format->num_planes == 3 &&
 	    fmtinfo->swap_uv)
 		swap(mem.addr[1], mem.addr[2]);
 
@@ -322,12 +378,30 @@ static void rpf_configure_partition(struct vsp1_entity *entity,
 }
 
 static void rpf_partition(struct vsp1_entity *entity,
+			  struct v4l2_subdev_state *state,
 			  struct vsp1_pipeline *pipe,
 			  struct vsp1_partition *partition,
 			  unsigned int partition_idx,
-			  struct vsp1_partition_window *window)
+			  struct v4l2_rect *window)
 {
-	partition->rpf = *window;
+	struct vsp1_rwpf *rpf = to_rwpf(&entity->subdev);
+	struct v4l2_rect *rpf_rect = &partition->rpf[rpf->entity.index];
+
+	/*
+	 * Partition Algorithm Control
+	 *
+	 * The partition algorithm can split this frame into multiple slices. We
+	 * must adjust our partition window based on the pipe configuration to
+	 * match the destination partition window. To achieve this, we adjust
+	 * our crop to provide a 'sub-crop' matching the expected partition
+	 * window.
+	 */
+	*rpf_rect = *v4l2_subdev_state_get_crop(state, RWPF_PAD_SINK);
+
+	if (pipe->partitions > 1) {
+		rpf_rect->width = window->width;
+		rpf_rect->left += window->left;
+	}
 }
 
 static const struct vsp1_entity_operations rpf_entity_ops = {
@@ -359,7 +433,7 @@ struct vsp1_rwpf *vsp1_rpf_create(struct vsp1_device *vsp1, unsigned int index)
 	rpf->entity.index = index;
 
 	sprintf(name, "rpf.%u", index);
-	ret = vsp1_entity_init(vsp1, &rpf->entity, name, 2, &rpf_ops,
+	ret = vsp1_entity_init(vsp1, &rpf->entity, name, 2, &vsp1_rwpf_subdev_ops,
 			       MEDIA_ENT_F_PROC_VIDEO_PIXEL_FORMATTER);
 	if (ret < 0)
 		return ERR_PTR(ret);

@@ -192,7 +192,7 @@ static struct txx9dmac_desc *txx9dmac_desc_alloc(struct txx9dmac_chan *dc,
 	struct txx9dmac_dev *ddev = dc->ddev;
 	struct txx9dmac_desc *desc;
 
-	desc = kzalloc(sizeof(*desc), flags);
+	desc = kzalloc_obj(*desc, flags);
 	if (!desc)
 		return NULL;
 	INIT_LIST_HEAD(&desc->tx_list);
@@ -1151,7 +1151,7 @@ static int __init txx9dmac_chan_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int txx9dmac_chan_remove(struct platform_device *pdev)
+static void txx9dmac_chan_remove(struct platform_device *pdev)
 {
 	struct txx9dmac_chan *dc = platform_get_drvdata(pdev);
 
@@ -1162,7 +1162,6 @@ static int txx9dmac_chan_remove(struct platform_device *pdev)
 		tasklet_kill(&dc->tasklet);
 	}
 	dc->ddev->chan[pdev->id % TXX9_DMA_MAX_NR_CHANNELS] = NULL;
-	return 0;
 }
 
 static int __init txx9dmac_probe(struct platform_device *pdev)
@@ -1215,7 +1214,7 @@ static int __init txx9dmac_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int txx9dmac_remove(struct platform_device *pdev)
+static void txx9dmac_remove(struct platform_device *pdev)
 {
 	struct txx9dmac_dev *ddev = platform_get_drvdata(pdev);
 
@@ -1224,7 +1223,6 @@ static int txx9dmac_remove(struct platform_device *pdev)
 		devm_free_irq(&pdev->dev, ddev->irq, ddev);
 		tasklet_kill(&ddev->tasklet);
 	}
-	return 0;
 }
 
 static void txx9dmac_shutdown(struct platform_device *pdev)

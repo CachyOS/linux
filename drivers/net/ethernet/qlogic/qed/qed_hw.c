@@ -23,7 +23,10 @@
 #include "qed_reg_addr.h"
 #include "qed_sriov.h"
 
-#define QED_BAR_ACQUIRE_TIMEOUT 1000
+#define QED_BAR_ACQUIRE_TIMEOUT_USLEEP_CNT	1000
+#define QED_BAR_ACQUIRE_TIMEOUT_USLEEP		1000
+#define QED_BAR_ACQUIRE_TIMEOUT_UDELAY_CNT	100000
+#define QED_BAR_ACQUIRE_TIMEOUT_UDELAY		10
 
 /* Invalid values */
 #define QED_BAR_INVALID_OFFSET          (cpu_to_le32(-1))
@@ -43,7 +46,7 @@ struct qed_ptt_pool {
 
 int qed_ptt_pool_alloc(struct qed_hwfn *p_hwfn)
 {
-	struct qed_ptt_pool *p_pool = kmalloc(sizeof(*p_pool), GFP_KERNEL);
+	struct qed_ptt_pool *p_pool = kmalloc_obj(*p_pool);
 	int i;
 
 	if (!p_pool)
@@ -66,17 +69,6 @@ int qed_ptt_pool_alloc(struct qed_hwfn *p_hwfn)
 	return 0;
 }
 
-void qed_ptt_invalidate(struct qed_hwfn *p_hwfn)
-{
-	struct qed_ptt *p_ptt;
-	int i;
-
-	for (i = 0; i < PXP_EXTERNAL_BAR_PF_WINDOW_NUM; i++) {
-		p_ptt = &p_hwfn->p_ptt_pool->ptts[i];
-		p_ptt->pxp.offset = QED_BAR_INVALID_OFFSET;
-	}
-}
-
 void qed_ptt_pool_free(struct qed_hwfn *p_hwfn)
 {
 	kfree(p_hwfn->p_ptt_pool);
@@ -85,11 +77,21 @@ void qed_ptt_pool_free(struct qed_hwfn *p_hwfn)
 
 struct qed_ptt *qed_ptt_acquire(struct qed_hwfn *p_hwfn)
 {
+	return qed_ptt_acquire_context(p_hwfn, false);
+}
+
+struct qed_ptt *qed_ptt_acquire_context(struct qed_hwfn *p_hwfn, bool is_atomic)
+{
 	struct qed_ptt *p_ptt;
-	unsigned int i;
+	unsigned int i, count;
+
+	if (is_atomic)
+		count = QED_BAR_ACQUIRE_TIMEOUT_UDELAY_CNT;
+	else
+		count = QED_BAR_ACQUIRE_TIMEOUT_USLEEP_CNT;
 
 	/* Take the free PTT from the list */
-	for (i = 0; i < QED_BAR_ACQUIRE_TIMEOUT; i++) {
+	for (i = 0; i < count; i++) {
 		spin_lock_bh(&p_hwfn->p_ptt_pool->lock);
 
 		if (!list_empty(&p_hwfn->p_ptt_pool->free_list)) {
@@ -105,7 +107,12 @@ struct qed_ptt *qed_ptt_acquire(struct qed_hwfn *p_hwfn)
 		}
 
 		spin_unlock_bh(&p_hwfn->p_ptt_pool->lock);
-		usleep_range(1000, 2000);
+
+		if (is_atomic)
+			udelay(QED_BAR_ACQUIRE_TIMEOUT_UDELAY);
+		else
+			usleep_range(QED_BAR_ACQUIRE_TIMEOUT_USLEEP,
+				     QED_BAR_ACQUIRE_TIMEOUT_USLEEP * 2);
 	}
 
 	DP_NOTICE(p_hwfn, "PTT acquire timeout - failed to allocate PTT\n");
@@ -578,6 +585,7 @@ static int qed_dmae_operation_wait(struct qed_hwfn *p_hwfn)
 	barrier();
 	while (*p_hwfn->dmae_info.p_completion_word != DMAE_COMPLETION_VAL) {
 		udelay(DMAE_MIN_WAIT_TIME);
+		cond_resched();
 		if (++wait_cnt > wait_cnt_limit) {
 			DP_NOTICE(p_hwfn->cdev,
 				  "Timed-out waiting for operation to complete. Completion word is 0x%08x expected 0x%08x.\n",

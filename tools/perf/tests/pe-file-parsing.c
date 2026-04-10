@@ -24,7 +24,7 @@ static int run_dir(const char *d)
 {
 	char filename[PATH_MAX];
 	char debugfile[PATH_MAX];
-	struct build_id bid;
+	struct build_id bid = { .size = 0, };
 	char debuglink[PATH_MAX];
 	char expect_build_id[] = {
 		0x5a, 0x0f, 0xd8, 0x82, 0xb5, 0x30, 0x84, 0x22,
@@ -34,6 +34,7 @@ static int run_dir(const char *d)
 	struct dso *dso;
 	struct symbol *sym;
 	int ret;
+	size_t idx;
 
 	scnprintf(filename, PATH_MAX, "%s/pe-file.exe", d);
 	ret = filename__read_build_id(filename, &bid);
@@ -61,7 +62,7 @@ static int run_dir(const char *d)
 	TEST_ASSERT_VAL("Failed to load symbols", ret == 0);
 
 	dso__sort_by_name(dso);
-	sym = dso__find_symbol_by_name(dso, "main");
+	sym = dso__find_symbol_by_name(dso, "main", &idx);
 	TEST_ASSERT_VAL("Failed to find main", sym);
 	dso__delete(dso);
 

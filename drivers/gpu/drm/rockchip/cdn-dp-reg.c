@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (C) Fuzhou Rockchip Electronics Co.Ltd
+ * Copyright (C) Rockchip Electronics Co., Ltd.
  * Author: Chris Zhong <zyw@rock-chips.com>
  */
 
@@ -10,6 +10,8 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/reset.h>
+
+#include <drm/drm_print.h>
 
 #include "cdn-dp-core.h"
 #include "cdn-dp-reg.h"

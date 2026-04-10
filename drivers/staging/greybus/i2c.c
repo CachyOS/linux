@@ -235,7 +235,7 @@ static int gb_i2c_probe(struct gbphy_device *gbphy_dev,
 	struct i2c_adapter *adapter;
 	int ret;
 
-	gb_i2c_dev = kzalloc(sizeof(*gb_i2c_dev), GFP_KERNEL);
+	gb_i2c_dev = kzalloc_obj(*gb_i2c_dev);
 	if (!gb_i2c_dev)
 		return -ENOMEM;
 
@@ -264,7 +264,7 @@ static int gb_i2c_probe(struct gbphy_device *gbphy_dev,
 	/* Looks good; up our i2c adapter */
 	adapter = &gb_i2c_dev->adapter;
 	adapter->owner = THIS_MODULE;
-	adapter->class = I2C_CLASS_HWMON | I2C_CLASS_SPD;
+	adapter->class = I2C_CLASS_HWMON;
 	adapter->algo = &gb_i2c_algorithm;
 
 	adapter->dev.parent = &gbphy_dev->dev;
@@ -318,4 +318,5 @@ static struct gbphy_driver i2c_driver = {
 };
 
 module_gbphy_driver(i2c_driver);
+MODULE_DESCRIPTION("I2C bridge driver for the Greybus 'generic' I2C module");
 MODULE_LICENSE("GPL v2");

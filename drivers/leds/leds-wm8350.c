@@ -242,13 +242,12 @@ static int wm8350_led_probe(struct platform_device *pdev)
 	return led_classdev_register(&pdev->dev, &led->cdev);
 }
 
-static int wm8350_led_remove(struct platform_device *pdev)
+static void wm8350_led_remove(struct platform_device *pdev)
 {
 	struct wm8350_led *led = platform_get_drvdata(pdev);
 
 	led_classdev_unregister(&led->cdev);
 	wm8350_led_disable(led);
-	return 0;
 }
 
 static struct platform_driver wm8350_led_driver = {

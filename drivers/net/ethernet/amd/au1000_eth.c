@@ -571,7 +571,7 @@ static struct db_dest *au1000_GetFreeDB(struct au1000_private *aup)
 	return pDB;
 }
 
-void au1000_ReleaseDB(struct au1000_private *aup, struct db_dest *pDB)
+static void au1000_ReleaseDB(struct au1000_private *aup, struct db_dest *pDB)
 {
 	struct db_dest *pDBfree = aup->pDBfree;
 	if (pDBfree)
@@ -650,7 +650,7 @@ au1000_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
 {
 	struct au1000_private *aup = netdev_priv(dev);
 
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
 	snprintf(info->bus_info, sizeof(info->bus_info), "%s %d", DRV_NAME,
 		 aup->mac_id);
 }
@@ -786,7 +786,7 @@ static int au1000_rx(struct net_device *dev)
 			frmlen = (status & RX_FRAME_LEN_MASK);
 			frmlen -= 4; /* Remove FCS */
 			skb = netdev_alloc_skb(dev, frmlen + 2);
-			if (skb == NULL) {
+			if (!skb) {
 				dev->stats.rx_dropped++;
 				continue;
 			}
@@ -1199,7 +1199,7 @@ static int au1000_probe(struct platform_device *pdev)
 	}
 
 	aup->mii_bus = mdiobus_alloc();
-	if (aup->mii_bus == NULL) {
+	if (!aup->mii_bus) {
 		dev_err(&pdev->dev, "failed to allocate mdiobus structure\n");
 		err = -ENOMEM;
 		goto err_mdiobus_alloc;
@@ -1284,7 +1284,7 @@ static int au1000_probe(struct platform_device *pdev)
 	return 0;
 
 err_out:
-	if (aup->mii_bus != NULL)
+	if (aup->mii_bus)
 		mdiobus_unregister(aup->mii_bus);
 
 	/* here we should have a valid dev plus aup-> register addresses
@@ -1323,7 +1323,7 @@ out:
 	return err;
 }
 
-static int au1000_remove(struct platform_device *pdev)
+static void au1000_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 	struct au1000_private *aup = netdev_priv(dev);
@@ -1359,8 +1359,6 @@ static int au1000_remove(struct platform_device *pdev)
 	release_mem_region(macen->start, resource_size(macen));
 
 	free_netdev(dev);
-
-	return 0;
 }
 
 static struct platform_driver au1000_eth_driver = {

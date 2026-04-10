@@ -27,8 +27,6 @@
  * Pre-requisites: headers required by header of this unit
  */
 
-#include <linux/slab.h>
-
 #include "dm_services.h"
 
 #include "include/gpio_interface.h"
@@ -272,7 +270,7 @@ struct gpio *dal_gpio_create(
 	uint32_t en,
 	enum gpio_pin_output_state output_state)
 {
-	struct gpio *gpio = kzalloc(sizeof(struct gpio), GFP_KERNEL);
+	struct gpio *gpio = kzalloc_obj(struct gpio);
 
 	if (!gpio) {
 		ASSERT_CRITICAL(false);

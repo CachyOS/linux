@@ -234,7 +234,7 @@ static void efar_set_dmamode (struct ata_port *ap, struct ata_device *adev)
 	spin_unlock_irqrestore(&efar_lock, flags);
 }
 
-static struct scsi_host_template efar_sht = {
+static const struct scsi_host_template efar_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -243,7 +243,7 @@ static struct ata_port_operations efar_ops = {
 	.cable_detect		= efar_cable_detect,
 	.set_piomode		= efar_set_piomode,
 	.set_dmamode		= efar_set_dmamode,
-	.prereset		= efar_pre_reset,
+	.reset.prereset		= efar_pre_reset,
 };
 
 

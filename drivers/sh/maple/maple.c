@@ -59,6 +59,7 @@ struct maple_device_specify {
 static bool checked[MAPLE_PORTS];
 static bool empty[MAPLE_PORTS];
 static struct maple_device *baseunits[MAPLE_PORTS];
+static const struct bus_type maple_bus_type;
 
 /**
  * maple_driver_register - register a maple driver
@@ -186,7 +187,7 @@ static struct mapleq *maple_allocq(struct maple_device *mdev)
 {
 	struct mapleq *mq;
 
-	mq = kzalloc(sizeof(*mq), GFP_KERNEL);
+	mq = kzalloc_obj(*mq);
 	if (!mq)
 		goto failed_nomem;
 
@@ -214,7 +215,7 @@ static struct maple_device *maple_alloc_dev(int port, int unit)
 	/* zero this out to avoid kobj subsystem
 	* thinking it has already been registered */
 
-	mdev = kzalloc(sizeof(*mdev), GFP_KERNEL);
+	mdev = kzalloc_obj(*mdev);
 	if (!mdev)
 		return NULL;
 
@@ -746,9 +747,9 @@ static int maple_get_dma_buffer(void)
 }
 
 static int maple_match_bus_driver(struct device *devptr,
-				  struct device_driver *drvptr)
+				  const struct device_driver *drvptr)
 {
-	struct maple_driver *maple_drv = to_maple_driver(drvptr);
+	const struct maple_driver *maple_drv = to_maple_driver(drvptr);
 	struct maple_device *maple_dev = to_maple_dev(devptr);
 
 	/* Trap empty port case */
@@ -757,12 +758,6 @@ static int maple_match_bus_driver(struct device *devptr,
 	else if (maple_dev->devinfo.function &
 		 cpu_to_be32(maple_drv->function))
 		return 1;
-	return 0;
-}
-
-static int maple_bus_uevent(struct device *dev,
-			    struct kobj_uevent_env *env)
-{
 	return 0;
 }
 
@@ -779,12 +774,10 @@ static struct maple_driver maple_unsupported_device = {
 /*
  * maple_bus_type - core maple bus structure
  */
-struct bus_type maple_bus_type = {
+static const struct bus_type maple_bus_type = {
 	.name = "maple",
 	.match = maple_match_bus_driver,
-	.uevent = maple_bus_uevent,
 };
-EXPORT_SYMBOL_GPL(maple_bus_type);
 
 static struct device maple_bus = {
 	.init_name = "maple",

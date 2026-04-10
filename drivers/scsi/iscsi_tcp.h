@@ -28,6 +28,11 @@ struct iscsi_sw_tcp_send {
 
 struct iscsi_sw_tcp_conn {
 	struct socket		*sock;
+	/* Taken when accessing the sock from the netlink/sysfs interface */
+	struct mutex		sock_lock;
+
+	struct work_struct	recvwork;
+	bool			queue_recv;
 
 	struct iscsi_sw_tcp_send out;
 	/* old values for socket callbacks */
@@ -36,14 +41,12 @@ struct iscsi_sw_tcp_conn {
 	void			(*old_write_space)(struct sock *);
 
 	/* data and header digests */
-	struct ahash_request	*tx_hash;	/* CRC32C (Tx) */
-	struct ahash_request	*rx_hash;	/* CRC32C (Rx) */
+	u32			tx_crc;	/* CRC32C (Tx) */
+	u32			rx_crc;	/* CRC32C (Rx) */
 
 	/* MIB custom statistics */
 	uint32_t		sendpage_failures_cnt;
 	uint32_t		discontiguous_hdr_cnt;
-
-	ssize_t (*sendpage)(struct socket *, struct page *, int, size_t, int);
 };
 
 struct iscsi_sw_tcp_host {

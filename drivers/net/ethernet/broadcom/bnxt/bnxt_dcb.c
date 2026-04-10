@@ -16,7 +16,7 @@
 #include <linux/pci.h>
 #include <linux/etherdevice.h>
 #include <rdma/ib_verbs.h>
-#include "bnxt_hsi.h"
+#include <linux/bnxt/hsi.h>
 #include "bnxt.h"
 #include "bnxt_hwrm.h"
 #include "bnxt_dcb.h"
@@ -98,7 +98,6 @@ static int bnxt_hwrm_queue_cos2bw_cfg(struct bnxt *bp, struct ieee_ets *ets,
 {
 	struct hwrm_queue_cos2bw_cfg_input *req;
 	struct bnxt_cos2bw_cfg cos2bw;
-	void *data;
 	int rc, i;
 
 	rc = hwrm_req_init(bp, req, HWRM_QUEUE_COS2BW_CFG);
@@ -129,11 +128,15 @@ static int bnxt_hwrm_queue_cos2bw_cfg(struct bnxt *bp, struct ieee_ets *ets,
 				cpu_to_le32((ets->tc_tx_bw[i] * 100) |
 					    BW_VALUE_UNIT_PERCENT1_100);
 		}
-		data = &req->unused_0 + qidx * (sizeof(cos2bw) - 4);
-		memcpy(data, &cos2bw.queue_id, sizeof(cos2bw) - 4);
 		if (qidx == 0) {
 			req->queue_id0 = cos2bw.queue_id;
-			req->unused_0 = 0;
+			req->queue_id0_min_bw = cos2bw.min_bw;
+			req->queue_id0_max_bw = cos2bw.max_bw;
+			req->queue_id0_tsa_assign = cos2bw.tsa;
+			req->queue_id0_pri_lvl = cos2bw.pri_lvl;
+			req->queue_id0_bw_weight = cos2bw.bw_weight;
+		} else {
+			memcpy(&req->cfg[i - 1], &cos2bw.cfg, sizeof(cos2bw.cfg));
 		}
 	}
 	return hwrm_req_send(bp, req);
@@ -144,7 +147,6 @@ static int bnxt_hwrm_queue_cos2bw_qcfg(struct bnxt *bp, struct ieee_ets *ets)
 	struct hwrm_queue_cos2bw_qcfg_output *resp;
 	struct hwrm_queue_cos2bw_qcfg_input *req;
 	struct bnxt_cos2bw_cfg cos2bw;
-	void *data;
 	int rc, i;
 
 	rc = hwrm_req_init(bp, req, HWRM_QUEUE_COS2BW_QCFG);
@@ -158,13 +160,19 @@ static int bnxt_hwrm_queue_cos2bw_qcfg(struct bnxt *bp, struct ieee_ets *ets)
 		return rc;
 	}
 
-	data = &resp->queue_id0 + offsetof(struct bnxt_cos2bw_cfg, queue_id);
-	for (i = 0; i < bp->max_tc; i++, data += sizeof(cos2bw.cfg)) {
+	for (i = 0; i < bp->max_tc; i++) {
 		int tc;
 
-		memcpy(&cos2bw.cfg, data, sizeof(cos2bw.cfg));
-		if (i == 0)
+		if (i == 0) {
 			cos2bw.queue_id = resp->queue_id0;
+			cos2bw.min_bw = resp->queue_id0_min_bw;
+			cos2bw.max_bw = resp->queue_id0_max_bw;
+			cos2bw.tsa = resp->queue_id0_tsa_assign;
+			cos2bw.pri_lvl = resp->queue_id0_pri_lvl;
+			cos2bw.bw_weight = resp->queue_id0_bw_weight;
+		} else {
+			memcpy(&cos2bw.cfg, &resp->cfg[i - 1], sizeof(cos2bw.cfg));
+		}
 
 		tc = bnxt_queue_to_tc(bp, cos2bw.queue_id);
 		if (tc < 0)
@@ -220,7 +228,7 @@ static int bnxt_queue_remap(struct bnxt *bp, unsigned int lltc_mask)
 		}
 	}
 	if (bp->ieee_ets) {
-		int tc = netdev_get_num_tc(bp->dev);
+		int tc = bp->num_tc;
 
 		if (!tc)
 			tc = 1;
@@ -479,7 +487,9 @@ static int bnxt_ets_validate(struct bnxt *bp, struct ieee_ets *ets, u8 *tc)
 
 		if ((ets->tc_tx_bw[i] || ets->tc_tsa[i]) && i > bp->max_tc)
 			return -EINVAL;
+	}
 
+	for (i = 0; i < max_tc; i++) {
 		switch (ets->tc_tsa[i]) {
 		case IEEE_8021QAZ_TSA_STRICT:
 			break;
@@ -519,7 +529,7 @@ static int bnxt_dcbnl_ieee_getets(struct net_device *dev, struct ieee_ets *ets)
 		if (bp->dcbx_cap & DCB_CAP_DCBX_HOST)
 			return 0;
 
-		my_ets = kzalloc(sizeof(*my_ets), GFP_KERNEL);
+		my_ets = kzalloc_obj(*my_ets);
 		if (!my_ets)
 			return -ENOMEM;
 		rc = bnxt_hwrm_queue_cos2bw_qcfg(bp, my_ets);
@@ -558,7 +568,7 @@ static int bnxt_dcbnl_ieee_setets(struct net_device *dev, struct ieee_ets *ets)
 	rc = bnxt_ets_validate(bp, ets, &max_tc);
 	if (!rc) {
 		if (!my_ets) {
-			my_ets = kzalloc(sizeof(*my_ets), GFP_KERNEL);
+			my_ets = kzalloc_obj(*my_ets);
 			if (!my_ets)
 				return -ENOMEM;
 			/* initialize PRI2TC mappings to invalid value */
@@ -594,7 +604,7 @@ static int bnxt_dcbnl_ieee_getpfc(struct net_device *dev, struct ieee_pfc *pfc)
 		if (bp->dcbx_cap & DCB_CAP_DCBX_HOST)
 			return 0;
 
-		my_pfc = kzalloc(sizeof(*my_pfc), GFP_KERNEL);
+		my_pfc = kzalloc_obj(*my_pfc);
 		if (!my_pfc)
 			return 0;
 		bp->ieee_pfc = my_pfc;
@@ -632,7 +642,7 @@ static int bnxt_dcbnl_ieee_setpfc(struct net_device *dev, struct ieee_pfc *pfc)
 		return -EINVAL;
 
 	if (!my_pfc) {
-		my_pfc = kzalloc(sizeof(*my_pfc), GFP_KERNEL);
+		my_pfc = kzalloc_obj(*my_pfc);
 		if (!my_pfc)
 			return -ENOMEM;
 		bp->ieee_pfc = my_pfc;

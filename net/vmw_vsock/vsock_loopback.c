@@ -15,8 +15,7 @@
 struct vsock_loopback {
 	struct workqueue_struct *workqueue;
 
-	spinlock_t pkt_list_lock; /* protects pkt_list */
-	struct list_head pkt_list;
+	struct sk_buff_head pkt_queue;
 	struct work_struct pkt_work;
 };
 
@@ -27,15 +26,12 @@ static u32 vsock_loopback_get_local_cid(void)
 	return VMADDR_CID_LOCAL;
 }
 
-static int vsock_loopback_send_pkt(struct virtio_vsock_pkt *pkt)
+static int vsock_loopback_send_pkt(struct sk_buff *skb, struct net *net)
 {
 	struct vsock_loopback *vsock = &the_vsock_loopback;
-	int len = pkt->len;
+	int len = skb->len;
 
-	spin_lock_bh(&vsock->pkt_list_lock);
-	list_add_tail(&pkt->list, &vsock->pkt_list);
-	spin_unlock_bh(&vsock->pkt_list_lock);
-
+	virtio_vsock_skb_queue_tail(&vsock->pkt_queue, skb);
 	queue_work(vsock->workqueue, &vsock->pkt_work);
 
 	return len;
@@ -44,26 +40,25 @@ static int vsock_loopback_send_pkt(struct virtio_vsock_pkt *pkt)
 static int vsock_loopback_cancel_pkt(struct vsock_sock *vsk)
 {
 	struct vsock_loopback *vsock = &the_vsock_loopback;
-	struct virtio_vsock_pkt *pkt, *n;
-	LIST_HEAD(freeme);
 
-	spin_lock_bh(&vsock->pkt_list_lock);
-	list_for_each_entry_safe(pkt, n, &vsock->pkt_list, list) {
-		if (pkt->vsk != vsk)
-			continue;
-		list_move(&pkt->list, &freeme);
-	}
-	spin_unlock_bh(&vsock->pkt_list_lock);
-
-	list_for_each_entry_safe(pkt, n, &freeme, list) {
-		list_del(&pkt->list);
-		virtio_transport_free_pkt(pkt);
-	}
+	virtio_transport_purge_skbs(vsk, &vsock->pkt_queue);
 
 	return 0;
 }
 
-static bool vsock_loopback_seqpacket_allow(u32 remote_cid);
+static bool vsock_loopback_seqpacket_allow(struct vsock_sock *vsk,
+					   u32 remote_cid);
+
+static bool vsock_loopback_stream_allow(struct vsock_sock *vsk, u32 cid,
+					u32 port)
+{
+	return true;
+}
+
+static bool vsock_loopback_msgzerocopy_allow(void)
+{
+	return true;
+}
 
 static struct virtio_transport loopback_transport = {
 	.transport = {
@@ -89,12 +84,14 @@ static struct virtio_transport loopback_transport = {
 		.stream_has_space         = virtio_transport_stream_has_space,
 		.stream_rcvhiwat          = virtio_transport_stream_rcvhiwat,
 		.stream_is_active         = virtio_transport_stream_is_active,
-		.stream_allow             = virtio_transport_stream_allow,
+		.stream_allow             = vsock_loopback_stream_allow,
 
 		.seqpacket_dequeue        = virtio_transport_seqpacket_dequeue,
 		.seqpacket_enqueue        = virtio_transport_seqpacket_enqueue,
 		.seqpacket_allow          = vsock_loopback_seqpacket_allow,
 		.seqpacket_has_data       = virtio_transport_seqpacket_has_data,
+
+		.msgzerocopy_allow        = vsock_loopback_msgzerocopy_allow,
 
 		.notify_poll_in           = virtio_transport_notify_poll_in,
 		.notify_poll_out          = virtio_transport_notify_poll_out,
@@ -107,34 +104,43 @@ static struct virtio_transport loopback_transport = {
 		.notify_send_pre_enqueue  = virtio_transport_notify_send_pre_enqueue,
 		.notify_send_post_enqueue = virtio_transport_notify_send_post_enqueue,
 		.notify_buffer_size       = virtio_transport_notify_buffer_size,
+		.notify_set_rcvlowat      = virtio_transport_notify_set_rcvlowat,
+
+		.unsent_bytes             = virtio_transport_unsent_bytes,
+
+		.read_skb = virtio_transport_read_skb,
 	},
 
 	.send_pkt = vsock_loopback_send_pkt,
 };
 
-static bool vsock_loopback_seqpacket_allow(u32 remote_cid)
+static bool
+vsock_loopback_seqpacket_allow(struct vsock_sock *vsk, u32 remote_cid)
 {
-	return true;
+	return vsock_net_mode_global(vsk);
 }
 
 static void vsock_loopback_work(struct work_struct *work)
 {
 	struct vsock_loopback *vsock =
 		container_of(work, struct vsock_loopback, pkt_work);
-	LIST_HEAD(pkts);
+	struct sk_buff_head pkts;
+	struct sk_buff *skb;
 
-	spin_lock_bh(&vsock->pkt_list_lock);
-	list_splice_init(&vsock->pkt_list, &pkts);
-	spin_unlock_bh(&vsock->pkt_list_lock);
+	skb_queue_head_init(&pkts);
 
-	while (!list_empty(&pkts)) {
-		struct virtio_vsock_pkt *pkt;
+	spin_lock_bh(&vsock->pkt_queue.lock);
+	skb_queue_splice_init(&vsock->pkt_queue, &pkts);
+	spin_unlock_bh(&vsock->pkt_queue.lock);
 
-		pkt = list_first_entry(&pkts, struct virtio_vsock_pkt, list);
-		list_del_init(&pkt->list);
-
-		virtio_transport_deliver_tap_pkt(pkt);
-		virtio_transport_recv_pkt(&loopback_transport, pkt);
+	while ((skb = __skb_dequeue(&pkts))) {
+		/* Decrement the bytes_unsent counter without deallocating skb
+		 * It is freed by the receiver.
+		 */
+		virtio_transport_consume_skb_sent(skb, false);
+		virtio_transport_deliver_tap_pkt(skb);
+		virtio_transport_recv_pkt(&loopback_transport, skb,
+					  sock_net(skb->sk));
 	}
 }
 
@@ -143,12 +149,11 @@ static int __init vsock_loopback_init(void)
 	struct vsock_loopback *vsock = &the_vsock_loopback;
 	int ret;
 
-	vsock->workqueue = alloc_workqueue("vsock-loopback", 0, 0);
+	vsock->workqueue = alloc_workqueue("vsock-loopback", WQ_PERCPU, 0);
 	if (!vsock->workqueue)
 		return -ENOMEM;
 
-	spin_lock_init(&vsock->pkt_list_lock);
-	INIT_LIST_HEAD(&vsock->pkt_list);
+	skb_queue_head_init(&vsock->pkt_queue);
 	INIT_WORK(&vsock->pkt_work, vsock_loopback_work);
 
 	ret = vsock_core_register(&loopback_transport.transport,
@@ -166,20 +171,12 @@ out_wq:
 static void __exit vsock_loopback_exit(void)
 {
 	struct vsock_loopback *vsock = &the_vsock_loopback;
-	struct virtio_vsock_pkt *pkt;
 
 	vsock_core_unregister(&loopback_transport.transport);
 
 	flush_work(&vsock->pkt_work);
 
-	spin_lock_bh(&vsock->pkt_list_lock);
-	while (!list_empty(&vsock->pkt_list)) {
-		pkt = list_first_entry(&vsock->pkt_list,
-				       struct virtio_vsock_pkt, list);
-		list_del(&pkt->list);
-		virtio_transport_free_pkt(pkt);
-	}
-	spin_unlock_bh(&vsock->pkt_list_lock);
+	virtio_vsock_skb_queue_purge(&vsock->pkt_queue);
 
 	destroy_workqueue(vsock->workqueue);
 }

@@ -7,7 +7,6 @@
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
 #include <sound/jack.h>
-#include <linux/gpio.h>
 #include <linux/module.h>
 
 #include "../codecs/wm8994.h"
@@ -23,9 +22,9 @@ static int littlemill_set_bias_level(struct snd_soc_card *card,
 	int ret;
 
 	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[0]);
-	aif1_dai = asoc_rtd_to_codec(rtd, 0);
+	aif1_dai = snd_soc_rtd_to_codec(rtd, 0);
 
-	if (dapm->dev != aif1_dai->dev)
+	if (snd_soc_dapm_to_dev(dapm) != aif1_dai->dev)
 		return 0;
 
 	switch (level) {
@@ -34,7 +33,7 @@ static int littlemill_set_bias_level(struct snd_soc_card *card,
 		 * If we've not already clocked things via hw_params()
 		 * then do so now, otherwise these are noops.
 		 */
-		if (dapm->bias_level == SND_SOC_BIAS_STANDBY) {
+		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_STANDBY) {
 			ret = snd_soc_dai_set_pll(aif1_dai, WM8994_FLL1,
 						  WM8994_FLL_SRC_MCLK2, 32768,
 						  sample_rate * 512);
@@ -70,9 +69,9 @@ static int littlemill_set_bias_level_post(struct snd_soc_card *card,
 	int ret;
 
 	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[0]);
-	aif1_dai = asoc_rtd_to_codec(rtd, 0);
+	aif1_dai = snd_soc_rtd_to_codec(rtd, 0);
 
-	if (dapm->dev != aif1_dai->dev)
+	if (snd_soc_dapm_to_dev(dapm) != aif1_dai->dev)
 		return 0;
 
 	switch (level) {
@@ -96,16 +95,14 @@ static int littlemill_set_bias_level_post(struct snd_soc_card *card,
 		break;
 	}
 
-	dapm->bias_level = level;
-
 	return 0;
 }
 
 static int littlemill_hw_params(struct snd_pcm_substream *substream,
 				struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
-	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
 	int ret;
 
 	sample_rate = params_rate(params);
@@ -157,7 +154,7 @@ static struct snd_soc_dai_link littlemill_dai[] = {
 		.name = "CPU",
 		.stream_name = "CPU",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
-				| SND_SOC_DAIFMT_CBM_CFM,
+				| SND_SOC_DAIFMT_CBP_CFP,
 		.ops = &littlemill_ops,
 		SND_SOC_DAILINK_REG(cpu),
 	},
@@ -165,9 +162,10 @@ static struct snd_soc_dai_link littlemill_dai[] = {
 		.name = "Baseband",
 		.stream_name = "Baseband",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
-				| SND_SOC_DAIFMT_CBM_CFM,
+				| SND_SOC_DAIFMT_CBP_CFP,
 		.ignore_suspend = 1,
-		.params = &baseband_params,
+		.c2c_params = &baseband_params,
+		.num_c2c_params = 1,
 		SND_SOC_DAILINK_REG(baseband),
 	},
 };
@@ -175,13 +173,13 @@ static struct snd_soc_dai_link littlemill_dai[] = {
 static int bbclk_ev(struct snd_soc_dapm_widget *w,
 		    struct snd_kcontrol *kcontrol, int event)
 {
-	struct snd_soc_card *card = w->dapm->card;
+	struct snd_soc_card *card = snd_soc_dapm_to_card(w->dapm);
 	struct snd_soc_pcm_runtime *rtd;
 	struct snd_soc_dai *aif2_dai;
 	int ret;
 
 	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[1]);
-	aif2_dai = asoc_rtd_to_cpu(rtd, 0);
+	aif2_dai = snd_soc_rtd_to_cpu(rtd, 0);
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
@@ -224,12 +222,15 @@ static int bbclk_ev(struct snd_soc_dapm_widget *w,
 }
 
 static const struct snd_kcontrol_new controls[] = {
+	SOC_DAPM_PIN_SWITCH("Headphone"),
+	SOC_DAPM_PIN_SWITCH("Headset Mic"),
 	SOC_DAPM_PIN_SWITCH("WM1250 Input"),
 	SOC_DAPM_PIN_SWITCH("WM1250 Output"),
 };
 
 static const struct snd_soc_dapm_widget widgets[] = {
 	SND_SOC_DAPM_HP("Headphone", NULL),
+	SND_SOC_DAPM_HP("Headset Mic", NULL),
 
 	SND_SOC_DAPM_MIC("AMIC", NULL),
 	SND_SOC_DAPM_MIC("DMIC", NULL),
@@ -254,6 +255,16 @@ static const struct snd_soc_dapm_route audio_paths[] = {
 };
 
 static struct snd_soc_jack littlemill_headset;
+static struct snd_soc_jack_pin littlemill_headset_pins[] = {
+	{
+		.pin = "Headphone",
+		.mask = SND_JACK_HEADPHONE,
+	},
+	{
+		.pin = "Headset Mic",
+		.mask = SND_JACK_MICROPHONE,
+	},
+};
 
 static int littlemill_late_probe(struct snd_soc_card *card)
 {
@@ -264,11 +275,11 @@ static int littlemill_late_probe(struct snd_soc_card *card)
 	int ret;
 
 	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[0]);
-	component = asoc_rtd_to_codec(rtd, 0)->component;
-	aif1_dai = asoc_rtd_to_codec(rtd, 0);
+	component = snd_soc_rtd_to_codec(rtd, 0)->component;
+	aif1_dai = snd_soc_rtd_to_codec(rtd, 0);
 
 	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[1]);
-	aif2_dai = asoc_rtd_to_cpu(rtd, 0);
+	aif2_dai = snd_soc_rtd_to_cpu(rtd, 0);
 
 	ret = snd_soc_dai_set_sysclk(aif1_dai, WM8994_SYSCLK_MCLK2,
 				     32768, SND_SOC_CLOCK_IN);
@@ -280,12 +291,14 @@ static int littlemill_late_probe(struct snd_soc_card *card)
 	if (ret < 0)
 		return ret;
 
-	ret = snd_soc_card_jack_new(card, "Headset",
-				    SND_JACK_HEADSET | SND_JACK_MECHANICAL |
-				    SND_JACK_BTN_0 | SND_JACK_BTN_1 |
-				    SND_JACK_BTN_2 | SND_JACK_BTN_3 |
-				    SND_JACK_BTN_4 | SND_JACK_BTN_5,
-				    &littlemill_headset);
+	ret = snd_soc_card_jack_new_pins(card, "Headset",
+					 SND_JACK_HEADSET | SND_JACK_MECHANICAL |
+					 SND_JACK_BTN_0 | SND_JACK_BTN_1 |
+					 SND_JACK_BTN_2 | SND_JACK_BTN_3 |
+					 SND_JACK_BTN_4 | SND_JACK_BTN_5,
+					 &littlemill_headset,
+					 littlemill_headset_pins,
+					 ARRAY_SIZE(littlemill_headset_pins));
 	if (ret)
 		return ret;
 

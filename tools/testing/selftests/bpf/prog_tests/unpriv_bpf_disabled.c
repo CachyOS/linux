@@ -7,6 +7,7 @@
 #include "test_unpriv_bpf_disabled.skel.h"
 
 #include "cap_helpers.h"
+#include "bpf_util.h"
 
 /* Using CAP_LAST_CAP is risky here, since it can get pulled in from
  * an old /usr/include/linux/capability.h and be < CAP_BPF; as a result
@@ -146,7 +147,7 @@ static void test_unpriv_bpf_disabled_negative(struct test_unpriv_bpf_disabled *s
 		BPF_MOV64_IMM(BPF_REG_0, 0),
 		BPF_EXIT_INSN(),
 	};
-	const size_t prog_insn_cnt = sizeof(prog_insns) / sizeof(struct bpf_insn);
+	const size_t prog_insn_cnt = ARRAY_SIZE(prog_insns);
 	LIBBPF_OPTS(bpf_prog_load_opts, load_opts);
 	struct bpf_map_info map_info = {};
 	__u32 map_info_len = sizeof(map_info);
@@ -171,7 +172,11 @@ static void test_unpriv_bpf_disabled_negative(struct test_unpriv_bpf_disabled *s
 				prog_insns, prog_insn_cnt, &load_opts),
 		  -EPERM, "prog_load_fails");
 
-	for (i = BPF_MAP_TYPE_HASH; i <= BPF_MAP_TYPE_BLOOM_FILTER; i++)
+	/* some map types require particular correct parameters which could be
+	 * sanity-checked before enforcing -EPERM, so only validate that
+	 * the simple ARRAY and HASH maps are failing with -EPERM
+	 */
+	for (i = BPF_MAP_TYPE_HASH; i <= BPF_MAP_TYPE_ARRAY; i++)
 		ASSERT_EQ(bpf_map_create(i, NULL, sizeof(int), sizeof(int), 1, NULL),
 			  -EPERM, "map_create_fails");
 
@@ -179,7 +184,7 @@ static void test_unpriv_bpf_disabled_negative(struct test_unpriv_bpf_disabled *s
 	ASSERT_EQ(bpf_prog_get_next_id(prog_id, &next), -EPERM, "prog_get_next_id_fails");
 	ASSERT_EQ(bpf_prog_get_next_id(0, &next), -EPERM, "prog_get_next_id_fails");
 
-	if (ASSERT_OK(bpf_obj_get_info_by_fd(map_fds[0], &map_info, &map_info_len),
+	if (ASSERT_OK(bpf_map_get_info_by_fd(map_fds[0], &map_info, &map_info_len),
 		      "obj_get_info_by_fd")) {
 		ASSERT_EQ(bpf_map_get_fd_by_id(map_info.id), -EPERM, "map_get_fd_by_id_fails");
 		ASSERT_EQ(bpf_map_get_next_id(map_info.id, &next), -EPERM,
@@ -187,8 +192,8 @@ static void test_unpriv_bpf_disabled_negative(struct test_unpriv_bpf_disabled *s
 	}
 	ASSERT_EQ(bpf_map_get_next_id(0, &next), -EPERM, "map_get_next_id_fails");
 
-	if (ASSERT_OK(bpf_obj_get_info_by_fd(bpf_link__fd(skel->links.sys_nanosleep_enter),
-					     &link_info, &link_info_len),
+	if (ASSERT_OK(bpf_link_get_info_by_fd(bpf_link__fd(skel->links.sys_nanosleep_enter),
+					      &link_info, &link_info_len),
 		      "obj_get_info_by_fd")) {
 		ASSERT_EQ(bpf_link_get_fd_by_id(link_info.id), -EPERM, "link_get_fd_by_id_fails");
 		ASSERT_EQ(bpf_link_get_next_id(link_info.id, &next), -EPERM,
@@ -269,7 +274,7 @@ void test_unpriv_bpf_disabled(void)
 	}
 
 	prog_fd = bpf_program__fd(skel->progs.sys_nanosleep_enter);
-	ASSERT_OK(bpf_obj_get_info_by_fd(prog_fd, &prog_info, &prog_info_len),
+	ASSERT_OK(bpf_prog_get_info_by_fd(prog_fd, &prog_info, &prog_info_len),
 		  "obj_get_info_by_fd");
 	prog_id = prog_info.id;
 	ASSERT_GT(prog_id, 0, "valid_prog_id");

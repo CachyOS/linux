@@ -40,7 +40,7 @@ MODULE_ALIAS("ip_set_hash:net,iface");
 #define IP_SET_HASH_WITH_MULTI
 #define IP_SET_HASH_WITH_NET0
 
-#define STRLCPY(a, b)	strlcpy(a, b, IFNAMSIZ)
+#define STRSCPY(a, b)	strscpy(a, b, IFNAMSIZ)
 
 /* IPv4 variant */
 
@@ -138,9 +138,9 @@ hash_netiface4_data_next(struct hash_netiface4_elem *next,
 #include "ip_set_hash_gen.h"
 
 #if IS_ENABLED(CONFIG_BRIDGE_NETFILTER)
-static const char *get_physindev_name(const struct sk_buff *skb)
+static const char *get_physindev_name(const struct sk_buff *skb, struct net *net)
 {
-	struct net_device *dev = nf_bridge_get_physindev(skb);
+	struct net_device *dev = nf_bridge_get_physindev(skb, net);
 
 	return dev ? dev->name : NULL;
 }
@@ -177,16 +177,16 @@ hash_netiface4_kadt(struct ip_set *set, const struct sk_buff *skb,
 
 	if (opt->cmdflags & IPSET_FLAG_PHYSDEV) {
 #if IS_ENABLED(CONFIG_BRIDGE_NETFILTER)
-		const char *eiface = SRCDIR ? get_physindev_name(skb) :
+		const char *eiface = SRCDIR ? get_physindev_name(skb, xt_net(par)) :
 					      get_physoutdev_name(skb);
 
 		if (!eiface)
 			return -EINVAL;
-		STRLCPY(e.iface, eiface);
+		STRSCPY(e.iface, eiface);
 		e.physdev = 1;
 #endif
 	} else {
-		STRLCPY(e.iface, SRCDIR ? IFACE(in) : IFACE(out));
+		STRSCPY(e.iface, SRCDIR ? IFACE(in) : IFACE(out));
 	}
 
 	if (strlen(e.iface) == 0)
@@ -202,7 +202,7 @@ hash_netiface4_uadt(struct ip_set *set, struct nlattr *tb[],
 	ipset_adtfn adtfn = set->variant->adt[adt];
 	struct hash_netiface4_elem e = { .cidr = HOST_MASK, .elem = 1 };
 	struct ip_set_ext ext = IP_SET_INIT_UEXT(set);
-	u32 ip = 0, ip_to = 0, ipn, n = 0;
+	u32 ip = 0, ip_to = 0, i = 0;
 	int ret;
 
 	if (tb[IPSET_ATTR_LINENO])
@@ -256,19 +256,16 @@ hash_netiface4_uadt(struct ip_set *set, struct nlattr *tb[],
 	} else {
 		ip_set_mask_from_to(ip, ip_to, e.cidr);
 	}
-	ipn = ip;
-	do {
-		ipn = ip_set_range_to_cidr(ipn, ip_to, &e.cidr);
-		n++;
-	} while (ipn++ < ip_to);
-
-	if (n > IPSET_MAX_RANGE)
-		return -ERANGE;
 
 	if (retried)
 		ip = ntohl(h->next.ip);
 	do {
+		i++;
 		e.ip = htonl(ip);
+		if (i > IPSET_MAX_RANGE) {
+			hash_netiface4_data_next(&h->next, &e);
+			return -ERANGE;
+		}
 		ip = ip_set_range_to_cidr(ip, ip_to, &e.cidr);
 		ret = adtfn(set, &e, &ext, &ext, flags);
 
@@ -398,16 +395,16 @@ hash_netiface6_kadt(struct ip_set *set, const struct sk_buff *skb,
 
 	if (opt->cmdflags & IPSET_FLAG_PHYSDEV) {
 #if IS_ENABLED(CONFIG_BRIDGE_NETFILTER)
-		const char *eiface = SRCDIR ? get_physindev_name(skb) :
+		const char *eiface = SRCDIR ? get_physindev_name(skb, xt_net(par)) :
 					      get_physoutdev_name(skb);
 
 		if (!eiface)
 			return -EINVAL;
-		STRLCPY(e.iface, eiface);
+		STRSCPY(e.iface, eiface);
 		e.physdev = 1;
 #endif
 	} else {
-		STRLCPY(e.iface, SRCDIR ? IFACE(in) : IFACE(out));
+		STRSCPY(e.iface, SRCDIR ? IFACE(in) : IFACE(out));
 	}
 
 	if (strlen(e.iface) == 0)

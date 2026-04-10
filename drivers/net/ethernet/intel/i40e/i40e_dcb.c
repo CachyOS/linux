@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright(c) 2013 - 2021 Intel Corporation. */
 
+#include <linux/bitfield.h>
 #include "i40e_adminq.h"
-#include "i40e_prototype.h"
+#include "i40e_alloc.h"
 #include "i40e_dcb.h"
+#include "i40e_prototype.h"
 
 /**
  * i40e_get_dcbx_status
@@ -12,16 +14,15 @@
  *
  * Get the DCBX status from the Firmware
  **/
-i40e_status i40e_get_dcbx_status(struct i40e_hw *hw, u16 *status)
+int i40e_get_dcbx_status(struct i40e_hw *hw, u16 *status)
 {
 	u32 reg;
 
 	if (!status)
-		return I40E_ERR_PARAM;
+		return -EINVAL;
 
 	reg = rd32(hw, I40E_PRTDCB_GENS);
-	*status = (u16)((reg & I40E_PRTDCB_GENS_DCBX_STATUS_MASK) >>
-			I40E_PRTDCB_GENS_DCBX_STATUS_SHIFT);
+	*status = FIELD_GET(I40E_PRTDCB_GENS_DCBX_STATUS_MASK, reg);
 
 	return 0;
 }
@@ -50,12 +51,9 @@ static void i40e_parse_ieee_etscfg_tlv(struct i40e_lldp_org_tlv *tlv,
 	 * |1bit | 1bit|3 bits|3bits|
 	 */
 	etscfg = &dcbcfg->etscfg;
-	etscfg->willing = (u8)((buf[offset] & I40E_IEEE_ETS_WILLING_MASK) >>
-			       I40E_IEEE_ETS_WILLING_SHIFT);
-	etscfg->cbs = (u8)((buf[offset] & I40E_IEEE_ETS_CBS_MASK) >>
-			   I40E_IEEE_ETS_CBS_SHIFT);
-	etscfg->maxtcs = (u8)((buf[offset] & I40E_IEEE_ETS_MAXTC_MASK) >>
-			      I40E_IEEE_ETS_MAXTC_SHIFT);
+	etscfg->willing = FIELD_GET(I40E_IEEE_ETS_WILLING_MASK, buf[offset]);
+	etscfg->cbs = FIELD_GET(I40E_IEEE_ETS_CBS_MASK, buf[offset]);
+	etscfg->maxtcs = FIELD_GET(I40E_IEEE_ETS_MAXTC_MASK, buf[offset]);
 
 	/* Move offset to Priority Assignment Table */
 	offset++;
@@ -69,11 +67,9 @@ static void i40e_parse_ieee_etscfg_tlv(struct i40e_lldp_org_tlv *tlv,
 	 *        -----------------------------------------
 	 */
 	for (i = 0; i < 4; i++) {
-		priority = (u8)((buf[offset] & I40E_IEEE_ETS_PRIO_1_MASK) >>
-				I40E_IEEE_ETS_PRIO_1_SHIFT);
-		etscfg->prioritytable[i * 2] =  priority;
-		priority = (u8)((buf[offset] & I40E_IEEE_ETS_PRIO_0_MASK) >>
-				I40E_IEEE_ETS_PRIO_0_SHIFT);
+		priority = FIELD_GET(I40E_IEEE_ETS_PRIO_1_MASK, buf[offset]);
+		etscfg->prioritytable[i * 2] = priority;
+		priority = FIELD_GET(I40E_IEEE_ETS_PRIO_0_MASK, buf[offset]);
 		etscfg->prioritytable[i * 2 + 1] = priority;
 		offset++;
 	}
@@ -124,12 +120,10 @@ static void i40e_parse_ieee_etsrec_tlv(struct i40e_lldp_org_tlv *tlv,
 	 *        -----------------------------------------
 	 */
 	for (i = 0; i < 4; i++) {
-		priority = (u8)((buf[offset] & I40E_IEEE_ETS_PRIO_1_MASK) >>
-				I40E_IEEE_ETS_PRIO_1_SHIFT);
-		dcbcfg->etsrec.prioritytable[i*2] =  priority;
-		priority = (u8)((buf[offset] & I40E_IEEE_ETS_PRIO_0_MASK) >>
-				I40E_IEEE_ETS_PRIO_0_SHIFT);
-		dcbcfg->etsrec.prioritytable[i*2 + 1] = priority;
+		priority = FIELD_GET(I40E_IEEE_ETS_PRIO_1_MASK, buf[offset]);
+		dcbcfg->etsrec.prioritytable[i * 2] = priority;
+		priority = FIELD_GET(I40E_IEEE_ETS_PRIO_0_MASK, buf[offset]);
+		dcbcfg->etsrec.prioritytable[(i * 2) + 1] = priority;
 		offset++;
 	}
 
@@ -170,12 +164,9 @@ static void i40e_parse_ieee_pfccfg_tlv(struct i40e_lldp_org_tlv *tlv,
 	 * -----------------------------------------
 	 * |1bit | 1bit|2 bits|4bits| 1 octet      |
 	 */
-	dcbcfg->pfc.willing = (u8)((buf[0] & I40E_IEEE_PFC_WILLING_MASK) >>
-				   I40E_IEEE_PFC_WILLING_SHIFT);
-	dcbcfg->pfc.mbc = (u8)((buf[0] & I40E_IEEE_PFC_MBC_MASK) >>
-			       I40E_IEEE_PFC_MBC_SHIFT);
-	dcbcfg->pfc.pfccap = (u8)((buf[0] & I40E_IEEE_PFC_CAP_MASK) >>
-				  I40E_IEEE_PFC_CAP_SHIFT);
+	dcbcfg->pfc.willing = FIELD_GET(I40E_IEEE_PFC_WILLING_MASK, buf[0]);
+	dcbcfg->pfc.mbc = FIELD_GET(I40E_IEEE_PFC_MBC_MASK, buf[0]);
+	dcbcfg->pfc.pfccap = FIELD_GET(I40E_IEEE_PFC_CAP_MASK, buf[0]);
 	dcbcfg->pfc.pfcenable = buf[1];
 }
 
@@ -196,8 +187,7 @@ static void i40e_parse_ieee_app_tlv(struct i40e_lldp_org_tlv *tlv,
 	u8 *buf;
 
 	typelength = ntohs(tlv->typelength);
-	length = (u16)((typelength & I40E_LLDP_TLV_LEN_MASK) >>
-		       I40E_LLDP_TLV_LEN_SHIFT);
+	length = FIELD_GET(I40E_LLDP_TLV_LEN_MASK, typelength);
 	buf = tlv->tlvinfo;
 
 	/* The App priority table starts 5 octets after TLV header */
@@ -215,12 +205,10 @@ static void i40e_parse_ieee_app_tlv(struct i40e_lldp_org_tlv *tlv,
 	 *        -----------------------------------------
 	 */
 	while (offset < length) {
-		dcbcfg->app[i].priority = (u8)((buf[offset] &
-						I40E_IEEE_APP_PRIO_MASK) >>
-					       I40E_IEEE_APP_PRIO_SHIFT);
-		dcbcfg->app[i].selector = (u8)((buf[offset] &
-						I40E_IEEE_APP_SEL_MASK) >>
-					       I40E_IEEE_APP_SEL_SHIFT);
+		dcbcfg->app[i].priority = FIELD_GET(I40E_IEEE_APP_PRIO_MASK,
+						    buf[offset]);
+		dcbcfg->app[i].selector = FIELD_GET(I40E_IEEE_APP_SEL_MASK,
+						    buf[offset]);
 		dcbcfg->app[i].protocolid = (buf[offset + 1] << 0x8) |
 					     buf[offset + 2];
 		/* Move to next app */
@@ -248,8 +236,7 @@ static void i40e_parse_ieee_tlv(struct i40e_lldp_org_tlv *tlv,
 	u8 subtype;
 
 	ouisubtype = ntohl(tlv->ouisubtype);
-	subtype = (u8)((ouisubtype & I40E_LLDP_TLV_SUBTYPE_MASK) >>
-		       I40E_LLDP_TLV_SUBTYPE_SHIFT);
+	subtype = FIELD_GET(I40E_LLDP_TLV_SUBTYPE_MASK, ouisubtype);
 	switch (subtype) {
 	case I40E_IEEE_SUBTYPE_ETS_CFG:
 		i40e_parse_ieee_etscfg_tlv(tlv, dcbcfg);
@@ -299,11 +286,9 @@ static void i40e_parse_cee_pgcfg_tlv(struct i40e_cee_feat_tlv *tlv,
 	 *        -----------------------------------------
 	 */
 	for (i = 0; i < 4; i++) {
-		priority = (u8)((buf[offset] & I40E_CEE_PGID_PRIO_1_MASK) >>
-				 I40E_CEE_PGID_PRIO_1_SHIFT);
-		etscfg->prioritytable[i * 2] =  priority;
-		priority = (u8)((buf[offset] & I40E_CEE_PGID_PRIO_0_MASK) >>
-				 I40E_CEE_PGID_PRIO_0_SHIFT);
+		priority = FIELD_GET(I40E_CEE_PGID_PRIO_1_MASK, buf[offset]);
+		etscfg->prioritytable[i * 2] = priority;
+		priority = FIELD_GET(I40E_CEE_PGID_PRIO_0_MASK, buf[offset]);
 		etscfg->prioritytable[i * 2 + 1] = priority;
 		offset++;
 	}
@@ -360,8 +345,7 @@ static void i40e_parse_cee_app_tlv(struct i40e_cee_feat_tlv *tlv,
 	u8 i;
 
 	typelength = ntohs(tlv->hdr.typelen);
-	length = (u16)((typelength & I40E_LLDP_TLV_LEN_MASK) >>
-		       I40E_LLDP_TLV_LEN_SHIFT);
+	length = FIELD_GET(I40E_LLDP_TLV_LEN_MASK, typelength);
 
 	dcbcfg->numapps = length / sizeof(*app);
 
@@ -417,15 +401,13 @@ static void i40e_parse_cee_tlv(struct i40e_lldp_org_tlv *tlv,
 	u32 ouisubtype;
 
 	ouisubtype = ntohl(tlv->ouisubtype);
-	subtype = (u8)((ouisubtype & I40E_LLDP_TLV_SUBTYPE_MASK) >>
-		       I40E_LLDP_TLV_SUBTYPE_SHIFT);
+	subtype = FIELD_GET(I40E_LLDP_TLV_SUBTYPE_MASK, ouisubtype);
 	/* Return if not CEE DCBX */
 	if (subtype != I40E_CEE_DCBX_TYPE)
 		return;
 
 	typelength = ntohs(tlv->typelength);
-	tlvlen = (u16)((typelength & I40E_LLDP_TLV_LEN_MASK) >>
-			I40E_LLDP_TLV_LEN_SHIFT);
+	tlvlen = FIELD_GET(I40E_LLDP_TLV_LEN_MASK, typelength);
 	len = sizeof(tlv->typelength) + sizeof(ouisubtype) +
 	      sizeof(struct i40e_cee_ctrl_tlv);
 	/* Return if no CEE DCBX Feature TLVs */
@@ -435,11 +417,8 @@ static void i40e_parse_cee_tlv(struct i40e_lldp_org_tlv *tlv,
 	sub_tlv = (struct i40e_cee_feat_tlv *)((char *)tlv + len);
 	while (feat_tlv_count < I40E_CEE_MAX_FEAT_TYPE) {
 		typelength = ntohs(sub_tlv->hdr.typelen);
-		sublen = (u16)((typelength &
-				I40E_LLDP_TLV_LEN_MASK) >>
-				I40E_LLDP_TLV_LEN_SHIFT);
-		subtype = (u8)((typelength & I40E_LLDP_TLV_TYPE_MASK) >>
-				I40E_LLDP_TLV_TYPE_SHIFT);
+		sublen = FIELD_GET(I40E_LLDP_TLV_LEN_MASK, typelength);
+		subtype = FIELD_GET(I40E_LLDP_TLV_TYPE_MASK, typelength);
 		switch (subtype) {
 		case I40E_CEE_SUBTYPE_PG_CFG:
 			i40e_parse_cee_pgcfg_tlv(sub_tlv, dcbcfg);
@@ -476,8 +455,7 @@ static void i40e_parse_org_tlv(struct i40e_lldp_org_tlv *tlv,
 	u32 oui;
 
 	ouisubtype = ntohl(tlv->ouisubtype);
-	oui = (u32)((ouisubtype & I40E_LLDP_TLV_OUI_MASK) >>
-		    I40E_LLDP_TLV_OUI_SHIFT);
+	oui = FIELD_GET(I40E_LLDP_TLV_OUI_MASK, ouisubtype);
 	switch (oui) {
 	case I40E_IEEE_8021QAZ_OUI:
 		i40e_parse_ieee_tlv(tlv, dcbcfg);
@@ -497,28 +475,26 @@ static void i40e_parse_org_tlv(struct i40e_lldp_org_tlv *tlv,
  *
  * Parse DCB configuration from the LLDPDU
  **/
-i40e_status i40e_lldp_to_dcb_config(u8 *lldpmib,
-				    struct i40e_dcbx_config *dcbcfg)
+int i40e_lldp_to_dcb_config(u8 *lldpmib,
+			    struct i40e_dcbx_config *dcbcfg)
 {
-	i40e_status ret = 0;
 	struct i40e_lldp_org_tlv *tlv;
-	u16 type;
-	u16 length;
 	u16 typelength;
 	u16 offset = 0;
+	int ret = 0;
+	u16 length;
+	u16 type;
 
 	if (!lldpmib || !dcbcfg)
-		return I40E_ERR_PARAM;
+		return -EINVAL;
 
 	/* set to the start of LLDPDU */
 	lldpmib += ETH_HLEN;
 	tlv = (struct i40e_lldp_org_tlv *)lldpmib;
 	while (1) {
 		typelength = ntohs(tlv->typelength);
-		type = (u16)((typelength & I40E_LLDP_TLV_TYPE_MASK) >>
-			     I40E_LLDP_TLV_TYPE_SHIFT);
-		length = (u16)((typelength & I40E_LLDP_TLV_LEN_MASK) >>
-			       I40E_LLDP_TLV_LEN_SHIFT);
+		type = FIELD_GET(I40E_LLDP_TLV_TYPE_MASK, typelength);
+		length = FIELD_GET(I40E_LLDP_TLV_LEN_MASK, typelength);
 		offset += sizeof(typelength) + length;
 
 		/* END TLV or beyond LLDPDU size */
@@ -551,12 +527,12 @@ i40e_status i40e_lldp_to_dcb_config(u8 *lldpmib,
  *
  * Query DCB configuration from the Firmware
  **/
-i40e_status i40e_aq_get_dcb_config(struct i40e_hw *hw, u8 mib_type,
-				   u8 bridgetype,
-				   struct i40e_dcbx_config *dcbcfg)
+int i40e_aq_get_dcb_config(struct i40e_hw *hw, u8 mib_type,
+			   u8 bridgetype,
+			   struct i40e_dcbx_config *dcbcfg)
 {
-	i40e_status ret = 0;
 	struct i40e_virt_mem mem;
+	int ret = 0;
 	u8 *lldpmib;
 
 	/* Allocate the LLDPDU */
@@ -592,7 +568,7 @@ static void i40e_cee_to_dcb_v1_config(
 {
 	u16 status, tlv_status = le16_to_cpu(cee_cfg->tlv_status);
 	u16 app_prio = le16_to_cpu(cee_cfg->oper_app_prio);
-	u8 i, tc, err;
+	u8 i, err;
 
 	/* CEE PG data to ETS config */
 	dcbcfg->etscfg.maxtcs = cee_cfg->oper_num_tc;
@@ -601,13 +577,13 @@ static void i40e_cee_to_dcb_v1_config(
 	 * from those in the CEE Priority Group sub-TLV.
 	 */
 	for (i = 0; i < 4; i++) {
-		tc = (u8)((cee_cfg->oper_prio_tc[i] &
-			 I40E_CEE_PGID_PRIO_0_MASK) >>
-			 I40E_CEE_PGID_PRIO_0_SHIFT);
-		dcbcfg->etscfg.prioritytable[i * 2] =  tc;
-		tc = (u8)((cee_cfg->oper_prio_tc[i] &
-			 I40E_CEE_PGID_PRIO_1_MASK) >>
-			 I40E_CEE_PGID_PRIO_1_SHIFT);
+		u8 tc;
+
+		tc = FIELD_GET(I40E_CEE_PGID_PRIO_0_MASK,
+			       cee_cfg->oper_prio_tc[i]);
+		dcbcfg->etscfg.prioritytable[i * 2] = tc;
+		tc = FIELD_GET(I40E_CEE_PGID_PRIO_1_MASK,
+			       cee_cfg->oper_prio_tc[i]);
 		dcbcfg->etscfg.prioritytable[i*2 + 1] = tc;
 	}
 
@@ -629,8 +605,7 @@ static void i40e_cee_to_dcb_v1_config(
 	dcbcfg->pfc.pfcenable = cee_cfg->oper_pfc_en;
 	dcbcfg->pfc.pfccap = I40E_MAX_TRAFFIC_CLASS;
 
-	status = (tlv_status & I40E_AQC_CEE_APP_STATUS_MASK) >>
-		  I40E_AQC_CEE_APP_STATUS_SHIFT;
+	status = FIELD_GET(I40E_AQC_CEE_APP_STATUS_MASK, tlv_status);
 	err = (status & I40E_TLV_STATUS_ERR) ? 1 : 0;
 	/* Add APPs if Error is False */
 	if (!err) {
@@ -639,22 +614,19 @@ static void i40e_cee_to_dcb_v1_config(
 
 		/* FCoE APP */
 		dcbcfg->app[0].priority =
-			(app_prio & I40E_AQC_CEE_APP_FCOE_MASK) >>
-			 I40E_AQC_CEE_APP_FCOE_SHIFT;
+			FIELD_GET(I40E_AQC_CEE_APP_FCOE_MASK, app_prio);
 		dcbcfg->app[0].selector = I40E_APP_SEL_ETHTYPE;
 		dcbcfg->app[0].protocolid = I40E_APP_PROTOID_FCOE;
 
 		/* iSCSI APP */
 		dcbcfg->app[1].priority =
-			(app_prio & I40E_AQC_CEE_APP_ISCSI_MASK) >>
-			 I40E_AQC_CEE_APP_ISCSI_SHIFT;
+			FIELD_GET(I40E_AQC_CEE_APP_ISCSI_MASK, app_prio);
 		dcbcfg->app[1].selector = I40E_APP_SEL_TCPIP;
 		dcbcfg->app[1].protocolid = I40E_APP_PROTOID_ISCSI;
 
 		/* FIP APP */
 		dcbcfg->app[2].priority =
-			(app_prio & I40E_AQC_CEE_APP_FIP_MASK) >>
-			 I40E_AQC_CEE_APP_FIP_SHIFT;
+			FIELD_GET(I40E_AQC_CEE_APP_FIP_MASK, app_prio);
 		dcbcfg->app[2].selector = I40E_APP_SEL_ETHTYPE;
 		dcbcfg->app[2].protocolid = I40E_APP_PROTOID_FIP;
 	}
@@ -673,7 +645,7 @@ static void i40e_cee_to_dcb_config(
 {
 	u32 status, tlv_status = le32_to_cpu(cee_cfg->tlv_status);
 	u16 app_prio = le16_to_cpu(cee_cfg->oper_app_prio);
-	u8 i, tc, err, sync, oper;
+	u8 i, err, sync, oper;
 
 	/* CEE PG data to ETS config */
 	dcbcfg->etscfg.maxtcs = cee_cfg->oper_num_tc;
@@ -682,13 +654,13 @@ static void i40e_cee_to_dcb_config(
 	 * from those in the CEE Priority Group sub-TLV.
 	 */
 	for (i = 0; i < 4; i++) {
-		tc = (u8)((cee_cfg->oper_prio_tc[i] &
-			 I40E_CEE_PGID_PRIO_0_MASK) >>
-			 I40E_CEE_PGID_PRIO_0_SHIFT);
-		dcbcfg->etscfg.prioritytable[i * 2] =  tc;
-		tc = (u8)((cee_cfg->oper_prio_tc[i] &
-			 I40E_CEE_PGID_PRIO_1_MASK) >>
-			 I40E_CEE_PGID_PRIO_1_SHIFT);
+		u8 tc;
+
+		tc = FIELD_GET(I40E_CEE_PGID_PRIO_0_MASK,
+			       cee_cfg->oper_prio_tc[i]);
+		dcbcfg->etscfg.prioritytable[i * 2] = tc;
+		tc = FIELD_GET(I40E_CEE_PGID_PRIO_1_MASK,
+			       cee_cfg->oper_prio_tc[i]);
 		dcbcfg->etscfg.prioritytable[i * 2 + 1] = tc;
 	}
 
@@ -711,8 +683,7 @@ static void i40e_cee_to_dcb_config(
 	dcbcfg->pfc.pfccap = I40E_MAX_TRAFFIC_CLASS;
 
 	i = 0;
-	status = (tlv_status & I40E_AQC_CEE_FCOE_STATUS_MASK) >>
-		  I40E_AQC_CEE_FCOE_STATUS_SHIFT;
+	status = FIELD_GET(I40E_AQC_CEE_FCOE_STATUS_MASK, tlv_status);
 	err = (status & I40E_TLV_STATUS_ERR) ? 1 : 0;
 	sync = (status & I40E_TLV_STATUS_SYNC) ? 1 : 0;
 	oper = (status & I40E_TLV_STATUS_OPER) ? 1 : 0;
@@ -720,15 +691,13 @@ static void i40e_cee_to_dcb_config(
 	if (!err && sync && oper) {
 		/* FCoE APP */
 		dcbcfg->app[i].priority =
-			(app_prio & I40E_AQC_CEE_APP_FCOE_MASK) >>
-			 I40E_AQC_CEE_APP_FCOE_SHIFT;
+			FIELD_GET(I40E_AQC_CEE_APP_FCOE_MASK, app_prio);
 		dcbcfg->app[i].selector = I40E_APP_SEL_ETHTYPE;
 		dcbcfg->app[i].protocolid = I40E_APP_PROTOID_FCOE;
 		i++;
 	}
 
-	status = (tlv_status & I40E_AQC_CEE_ISCSI_STATUS_MASK) >>
-		  I40E_AQC_CEE_ISCSI_STATUS_SHIFT;
+	status = FIELD_GET(I40E_AQC_CEE_ISCSI_STATUS_MASK, tlv_status);
 	err = (status & I40E_TLV_STATUS_ERR) ? 1 : 0;
 	sync = (status & I40E_TLV_STATUS_SYNC) ? 1 : 0;
 	oper = (status & I40E_TLV_STATUS_OPER) ? 1 : 0;
@@ -736,15 +705,13 @@ static void i40e_cee_to_dcb_config(
 	if (!err && sync && oper) {
 		/* iSCSI APP */
 		dcbcfg->app[i].priority =
-			(app_prio & I40E_AQC_CEE_APP_ISCSI_MASK) >>
-			 I40E_AQC_CEE_APP_ISCSI_SHIFT;
+			FIELD_GET(I40E_AQC_CEE_APP_ISCSI_MASK, app_prio);
 		dcbcfg->app[i].selector = I40E_APP_SEL_TCPIP;
 		dcbcfg->app[i].protocolid = I40E_APP_PROTOID_ISCSI;
 		i++;
 	}
 
-	status = (tlv_status & I40E_AQC_CEE_FIP_STATUS_MASK) >>
-		  I40E_AQC_CEE_FIP_STATUS_SHIFT;
+	status = FIELD_GET(I40E_AQC_CEE_FIP_STATUS_MASK, tlv_status);
 	err = (status & I40E_TLV_STATUS_ERR) ? 1 : 0;
 	sync = (status & I40E_TLV_STATUS_SYNC) ? 1 : 0;
 	oper = (status & I40E_TLV_STATUS_OPER) ? 1 : 0;
@@ -752,8 +719,7 @@ static void i40e_cee_to_dcb_config(
 	if (!err && sync && oper) {
 		/* FIP APP */
 		dcbcfg->app[i].priority =
-			(app_prio & I40E_AQC_CEE_APP_FIP_MASK) >>
-			 I40E_AQC_CEE_APP_FIP_SHIFT;
+			FIELD_GET(I40E_AQC_CEE_APP_FIP_MASK, app_prio);
 		dcbcfg->app[i].selector = I40E_APP_SEL_ETHTYPE;
 		dcbcfg->app[i].protocolid = I40E_APP_PROTOID_FIP;
 		i++;
@@ -767,9 +733,9 @@ static void i40e_cee_to_dcb_config(
  *
  * Get IEEE mode DCB configuration from the Firmware
  **/
-static i40e_status i40e_get_ieee_dcb_config(struct i40e_hw *hw)
+static int i40e_get_ieee_dcb_config(struct i40e_hw *hw)
 {
-	i40e_status ret = 0;
+	int ret = 0;
 
 	/* IEEE mode */
 	hw->local_dcbx_config.dcbx_mode = I40E_DCBX_MODE_IEEE;
@@ -784,7 +750,7 @@ static i40e_status i40e_get_ieee_dcb_config(struct i40e_hw *hw)
 				     I40E_AQ_LLDP_BRIDGE_TYPE_NEAREST_BRIDGE,
 				     &hw->remote_dcbx_config);
 	/* Don't treat ENOENT as an error for Remote MIBs */
-	if (hw->aq.asq_last_status == I40E_AQ_RC_ENOENT)
+	if (hw->aq.asq_last_status == LIBIE_AQ_RC_ENOENT)
 		ret = 0;
 
 out:
@@ -797,21 +763,18 @@ out:
  *
  * Get DCB configuration from the Firmware
  **/
-i40e_status i40e_get_dcb_config(struct i40e_hw *hw)
+int i40e_get_dcb_config(struct i40e_hw *hw)
 {
-	i40e_status ret = 0;
-	struct i40e_aqc_get_cee_dcb_cfg_resp cee_cfg;
 	struct i40e_aqc_get_cee_dcb_cfg_v1_resp cee_v1_cfg;
+	struct i40e_aqc_get_cee_dcb_cfg_resp cee_cfg;
+	int ret = 0;
 
 	/* If Firmware version < v4.33 on X710/XL710, IEEE only */
-	if ((hw->mac.type == I40E_MAC_XL710) &&
-	    (((hw->aq.fw_maj_ver == 4) && (hw->aq.fw_min_ver < 33)) ||
-	      (hw->aq.fw_maj_ver < 4)))
+	if (hw->mac.type == I40E_MAC_XL710 && i40e_is_fw_ver_lt(hw, 4, 33))
 		return i40e_get_ieee_dcb_config(hw);
 
 	/* If Firmware version == v4.33 on X710/XL710, use old CEE struct */
-	if ((hw->mac.type == I40E_MAC_XL710) &&
-	    ((hw->aq.fw_maj_ver == 4) && (hw->aq.fw_min_ver == 33))) {
+	if (hw->mac.type == I40E_MAC_XL710 && i40e_is_fw_ver_eq(hw, 4, 33)) {
 		ret = i40e_aq_get_cee_dcb_config(hw, &cee_v1_cfg,
 						 sizeof(cee_v1_cfg), NULL);
 		if (!ret) {
@@ -836,7 +799,7 @@ i40e_status i40e_get_dcb_config(struct i40e_hw *hw)
 	}
 
 	/* CEE mode not enabled try querying IEEE data */
-	if (hw->aq.asq_last_status == I40E_AQ_RC_ENOENT)
+	if (hw->aq.asq_last_status == LIBIE_AQ_RC_ENOENT)
 		return i40e_get_ieee_dcb_config(hw);
 
 	if (ret)
@@ -853,7 +816,7 @@ i40e_status i40e_get_dcb_config(struct i40e_hw *hw)
 				     I40E_AQ_LLDP_BRIDGE_TYPE_NEAREST_BRIDGE,
 				     &hw->remote_dcbx_config);
 	/* Don't treat ENOENT as an error for Remote MIBs */
-	if (hw->aq.asq_last_status == I40E_AQ_RC_ENOENT)
+	if (hw->aq.asq_last_status == LIBIE_AQ_RC_ENOENT)
 		ret = 0;
 
 out:
@@ -867,17 +830,17 @@ out:
  *
  * Update DCB configuration from the Firmware
  **/
-i40e_status i40e_init_dcb(struct i40e_hw *hw, bool enable_mib_change)
+int i40e_init_dcb(struct i40e_hw *hw, bool enable_mib_change)
 {
-	i40e_status ret = 0;
 	struct i40e_lldp_variables lldp_cfg;
 	u8 adminstatus = 0;
+	int ret = 0;
 
 	if (!hw->func_caps.dcb)
-		return I40E_NOT_SUPPORTED;
+		return -EOPNOTSUPP;
 
 	/* Read LLDP NVM area */
-	if (hw->flags & I40E_HW_FLAG_FW_LLDP_PERSISTENT) {
+	if (test_bit(I40E_HW_CAP_FW_LLDP_PERSISTENT, hw->caps)) {
 		u8 offset = 0;
 
 		if (hw->mac.type == I40E_MAC_XL710)
@@ -885,7 +848,7 @@ i40e_status i40e_init_dcb(struct i40e_hw *hw, bool enable_mib_change)
 		else if (hw->mac.type == I40E_MAC_X722)
 			offset = I40E_LLDP_CURRENT_STATUS_X722_OFFSET;
 		else
-			return I40E_NOT_SUPPORTED;
+			return -EOPNOTSUPP;
 
 		ret = i40e_read_nvm_module_data(hw,
 						I40E_SR_EMP_SR_SETTINGS_PTR,
@@ -897,7 +860,7 @@ i40e_status i40e_init_dcb(struct i40e_hw *hw, bool enable_mib_change)
 		ret = i40e_read_lldp_cfg(hw, &lldp_cfg);
 	}
 	if (ret)
-		return I40E_ERR_NOT_READY;
+		return -EBUSY;
 
 	/* Get the LLDP AdminStatus for the current port */
 	adminstatus = lldp_cfg.adminstatus >> (hw->port * 4);
@@ -906,7 +869,7 @@ i40e_status i40e_init_dcb(struct i40e_hw *hw, bool enable_mib_change)
 	/* LLDP agent disabled */
 	if (!adminstatus) {
 		hw->dcbx_status = I40E_DCBX_STATUS_DISABLED;
-		return I40E_ERR_NOT_READY;
+		return -EBUSY;
 	}
 
 	/* Get DCBX status */
@@ -922,7 +885,7 @@ i40e_status i40e_init_dcb(struct i40e_hw *hw, bool enable_mib_change)
 		if (ret)
 			return ret;
 	} else if (hw->dcbx_status == I40E_DCBX_STATUS_DISABLED) {
-		return I40E_ERR_NOT_READY;
+		return -EBUSY;
 	}
 
 	/* Configure the LLDP MIB change event */
@@ -940,16 +903,16 @@ i40e_status i40e_init_dcb(struct i40e_hw *hw, bool enable_mib_change)
  * Get status of FW Link Layer Discovery Protocol (LLDP) Agent.
  * Status of agent is reported via @lldp_status parameter.
  **/
-enum i40e_status_code
+int
 i40e_get_fw_lldp_status(struct i40e_hw *hw,
 			enum i40e_get_fw_lldp_status_resp *lldp_status)
 {
 	struct i40e_virt_mem mem;
-	i40e_status ret;
 	u8 *lldpmib;
+	int ret;
 
 	if (!lldp_status)
-		return I40E_ERR_PARAM;
+		return -EINVAL;
 
 	/* Allocate buffer for the LLDPDU */
 	ret = i40e_allocate_virt_mem(hw, &mem, I40E_LLDPDU_SIZE);
@@ -962,11 +925,11 @@ i40e_get_fw_lldp_status(struct i40e_hw *hw,
 
 	if (!ret) {
 		*lldp_status = I40E_GET_FW_LLDP_STATUS_ENABLED;
-	} else if (hw->aq.asq_last_status == I40E_AQ_RC_ENOENT) {
+	} else if (hw->aq.asq_last_status == LIBIE_AQ_RC_ENOENT) {
 		/* MIB is not available yet but the agent is running */
 		*lldp_status = I40E_GET_FW_LLDP_STATUS_ENABLED;
 		ret = 0;
-	} else if (hw->aq.asq_last_status == I40E_AQ_RC_EPERM) {
+	} else if (hw->aq.asq_last_status == LIBIE_AQ_RC_EPERM) {
 		*lldp_status = I40E_GET_FW_LLDP_STATUS_DISABLED;
 		ret = 0;
 	}
@@ -1189,7 +1152,7 @@ static void i40e_add_ieee_app_pri_tlv(struct i40e_lldp_org_tlv *tlv,
 		selector = dcbcfg->app[i].selector & 0x7;
 		buf[offset] = (priority << I40E_IEEE_APP_PRIO_SHIFT) | selector;
 		buf[offset + 1] = (dcbcfg->app[i].protocolid >> 0x8) & 0xFF;
-		buf[offset + 2] =  dcbcfg->app[i].protocolid & 0xFF;
+		buf[offset + 2] = dcbcfg->app[i].protocolid & 0xFF;
 		/* Move to next app */
 		offset += 3;
 		i++;
@@ -1238,13 +1201,13 @@ static void i40e_add_dcb_tlv(struct i40e_lldp_org_tlv *tlv,
  *
  * Set DCB configuration to the Firmware
  **/
-i40e_status i40e_set_dcb_config(struct i40e_hw *hw)
+int i40e_set_dcb_config(struct i40e_hw *hw)
 {
 	struct i40e_dcbx_config *dcbcfg;
 	struct i40e_virt_mem mem;
 	u8 mib_type, *lldpmib;
-	i40e_status ret;
 	u16 miblen;
+	int ret;
 
 	/* update the hw local config */
 	dcbcfg = &hw->local_dcbx_config;
@@ -1274,8 +1237,8 @@ i40e_status i40e_set_dcb_config(struct i40e_hw *hw)
  *
  * send DCB configuration to FW
  **/
-i40e_status i40e_dcb_config_to_lldp(u8 *lldpmib, u16 *miblen,
-				    struct i40e_dcbx_config *dcbcfg)
+int i40e_dcb_config_to_lldp(u8 *lldpmib, u16 *miblen,
+			    struct i40e_dcbx_config *dcbcfg)
 {
 	u16 length, offset = 0, tlvid, typelength;
 	struct i40e_lldp_org_tlv *tlv;
@@ -1285,8 +1248,7 @@ i40e_status i40e_dcb_config_to_lldp(u8 *lldpmib, u16 *miblen,
 	do {
 		i40e_add_dcb_tlv(tlv, dcbcfg, tlvid++);
 		typelength = ntohs(tlv->typelength);
-		length = (u16)((typelength & I40E_LLDP_TLV_LEN_MASK) >>
-				I40E_LLDP_TLV_LEN_SHIFT);
+		length = FIELD_GET(I40E_LLDP_TLV_LEN_MASK, typelength);
 		if (length)
 			offset += length + I40E_IEEE_TLV_HEADER_LENGTH;
 		/* END TLV or beyond LLDPDU size */
@@ -1299,7 +1261,7 @@ i40e_status i40e_dcb_config_to_lldp(u8 *lldpmib, u16 *miblen,
 			      sizeof(tlv->typelength) + length);
 	} while (tlvid < I40E_TLV_ID_END_OF_LLDPPDU);
 	*miblen = offset;
-	return I40E_SUCCESS;
+	return 0;
 }
 
 /**
@@ -1321,20 +1283,16 @@ void i40e_dcb_hw_rx_fifo_config(struct i40e_hw *hw,
 	u32 reg = rd32(hw, I40E_PRTDCB_RETSC);
 
 	reg &= ~I40E_PRTDCB_RETSC_ETS_MODE_MASK;
-	reg |= ((u32)ets_mode << I40E_PRTDCB_RETSC_ETS_MODE_SHIFT) &
-		I40E_PRTDCB_RETSC_ETS_MODE_MASK;
+	reg |= FIELD_PREP(I40E_PRTDCB_RETSC_ETS_MODE_MASK, ets_mode);
 
 	reg &= ~I40E_PRTDCB_RETSC_NON_ETS_MODE_MASK;
-	reg |= ((u32)non_ets_mode << I40E_PRTDCB_RETSC_NON_ETS_MODE_SHIFT) &
-		I40E_PRTDCB_RETSC_NON_ETS_MODE_MASK;
+	reg |= FIELD_PREP(I40E_PRTDCB_RETSC_NON_ETS_MODE_MASK, non_ets_mode);
 
 	reg &= ~I40E_PRTDCB_RETSC_ETS_MAX_EXP_MASK;
-	reg |= (max_exponent << I40E_PRTDCB_RETSC_ETS_MAX_EXP_SHIFT) &
-		I40E_PRTDCB_RETSC_ETS_MAX_EXP_MASK;
+	reg |= FIELD_PREP(I40E_PRTDCB_RETSC_ETS_MAX_EXP_MASK, max_exponent);
 
 	reg &= ~I40E_PRTDCB_RETSC_LLTC_MASK;
-	reg |= (lltc_map << I40E_PRTDCB_RETSC_LLTC_SHIFT) &
-		I40E_PRTDCB_RETSC_LLTC_MASK;
+	reg |= FIELD_PREP(I40E_PRTDCB_RETSC_LLTC_MASK, lltc_map);
 	wr32(hw, I40E_PRTDCB_RETSC, reg);
 }
 
@@ -1389,14 +1347,12 @@ void i40e_dcb_hw_rx_cmd_monitor_config(struct i40e_hw *hw,
 	 */
 	reg = rd32(hw, I40E_PRT_SWR_PM_THR);
 	reg &= ~I40E_PRT_SWR_PM_THR_THRESHOLD_MASK;
-	reg |= (threshold << I40E_PRT_SWR_PM_THR_THRESHOLD_SHIFT) &
-		I40E_PRT_SWR_PM_THR_THRESHOLD_MASK;
+	reg |= FIELD_PREP(I40E_PRT_SWR_PM_THR_THRESHOLD_MASK, threshold);
 	wr32(hw, I40E_PRT_SWR_PM_THR, reg);
 
 	reg = rd32(hw, I40E_PRTDCB_RPPMC);
 	reg &= ~I40E_PRTDCB_RPPMC_RX_FIFO_SIZE_MASK;
-	reg |= (fifo_size << I40E_PRTDCB_RPPMC_RX_FIFO_SIZE_SHIFT) &
-		I40E_PRTDCB_RPPMC_RX_FIFO_SIZE_MASK;
+	reg |= FIELD_PREP(I40E_PRTDCB_RPPMC_RX_FIFO_SIZE_MASK, fifo_size);
 	wr32(hw, I40E_PRTDCB_RPPMC, reg);
 }
 
@@ -1438,19 +1394,17 @@ void i40e_dcb_hw_pfc_config(struct i40e_hw *hw,
 		reg &= ~I40E_PRTDCB_MFLCN_RFCE_MASK;
 		reg &= ~I40E_PRTDCB_MFLCN_RPFCE_MASK;
 		if (pfc_en) {
-			reg |= BIT(I40E_PRTDCB_MFLCN_RPFCM_SHIFT) &
-				I40E_PRTDCB_MFLCN_RPFCM_MASK;
-			reg |= ((u32)pfc_en << I40E_PRTDCB_MFLCN_RPFCE_SHIFT) &
-				I40E_PRTDCB_MFLCN_RPFCE_MASK;
+			reg |= FIELD_PREP(I40E_PRTDCB_MFLCN_RPFCM_MASK, 1);
+			reg |= FIELD_PREP(I40E_PRTDCB_MFLCN_RPFCE_MASK,
+					  pfc_en);
 		}
 		wr32(hw, I40E_PRTDCB_MFLCN, reg);
 
 		reg = rd32(hw, I40E_PRTDCB_FCCFG);
 		reg &= ~I40E_PRTDCB_FCCFG_TFCE_MASK;
 		if (pfc_en)
-			reg |= (I40E_DCB_PFC_ENABLED <<
-				I40E_PRTDCB_FCCFG_TFCE_SHIFT) &
-				I40E_PRTDCB_FCCFG_TFCE_MASK;
+			reg |= FIELD_PREP(I40E_PRTDCB_FCCFG_TFCE_MASK,
+					  I40E_DCB_PFC_ENABLED);
 		wr32(hw, I40E_PRTDCB_FCCFG, reg);
 
 		/* FCTTV and FCRTV to be set by default */
@@ -1468,25 +1422,22 @@ void i40e_dcb_hw_pfc_config(struct i40e_hw *hw,
 
 		reg = rd32(hw, I40E_PRTMAC_HSEC_CTL_RX_PAUSE_ENABLE);
 		reg &= ~I40E_PRTMAC_HSEC_CTL_RX_PAUSE_ENABLE_MASK;
-		reg |= ((u32)pfc_en <<
-			   I40E_PRTMAC_HSEC_CTL_RX_PAUSE_ENABLE_SHIFT) &
-			I40E_PRTMAC_HSEC_CTL_RX_PAUSE_ENABLE_MASK;
+		reg |= FIELD_PREP(I40E_PRTMAC_HSEC_CTL_RX_PAUSE_ENABLE_MASK,
+				  pfc_en);
 		wr32(hw, I40E_PRTMAC_HSEC_CTL_RX_PAUSE_ENABLE, reg);
 
 		reg = rd32(hw, I40E_PRTMAC_HSEC_CTL_TX_PAUSE_ENABLE);
 		reg &= ~I40E_PRTMAC_HSEC_CTL_TX_PAUSE_ENABLE_MASK;
-		reg |= ((u32)pfc_en <<
-			   I40E_PRTMAC_HSEC_CTL_TX_PAUSE_ENABLE_SHIFT) &
-			I40E_PRTMAC_HSEC_CTL_TX_PAUSE_ENABLE_MASK;
+		reg |= FIELD_PREP(I40E_PRTMAC_HSEC_CTL_TX_PAUSE_ENABLE_MASK,
+				  pfc_en);
 		wr32(hw, I40E_PRTMAC_HSEC_CTL_TX_PAUSE_ENABLE, reg);
 
 		for (i = 0; i < I40E_PRTMAC_HSEC_CTL_TX_PAUSE_REFRESH_TIMER_MAX_INDEX; i++) {
 			reg = rd32(hw, I40E_PRTMAC_HSEC_CTL_TX_PAUSE_REFRESH_TIMER(i));
 			reg &= ~I40E_PRTMAC_HSEC_CTL_TX_PAUSE_REFRESH_TIMER_MASK;
 			if (pfc_en) {
-				reg |= ((u32)refresh_time <<
-					I40E_PRTMAC_HSEC_CTL_TX_PAUSE_REFRESH_TIMER_SHIFT) &
-					I40E_PRTMAC_HSEC_CTL_TX_PAUSE_REFRESH_TIMER_MASK;
+				reg |= FIELD_PREP(I40E_PRTMAC_HSEC_CTL_TX_PAUSE_REFRESH_TIMER_MASK,
+						  refresh_time);
 			}
 			wr32(hw, I40E_PRTMAC_HSEC_CTL_TX_PAUSE_REFRESH_TIMER(i), reg);
 		}
@@ -1498,14 +1449,12 @@ void i40e_dcb_hw_pfc_config(struct i40e_hw *hw,
 
 	reg = rd32(hw, I40E_PRTDCB_TC2PFC);
 	reg &= ~I40E_PRTDCB_TC2PFC_TC2PFC_MASK;
-	reg |= ((u32)tc2pfc << I40E_PRTDCB_TC2PFC_TC2PFC_SHIFT) &
-		I40E_PRTDCB_TC2PFC_TC2PFC_MASK;
+	reg |= FIELD_PREP(I40E_PRTDCB_TC2PFC_TC2PFC_MASK, tc2pfc);
 	wr32(hw, I40E_PRTDCB_TC2PFC, reg);
 
 	reg = rd32(hw, I40E_PRTDCB_RUP);
 	reg &= ~I40E_PRTDCB_RUP_NOVLANUP_MASK;
-	reg |= ((u32)first_pfc_prio << I40E_PRTDCB_RUP_NOVLANUP_SHIFT) &
-		 I40E_PRTDCB_RUP_NOVLANUP_MASK;
+	reg |= FIELD_PREP(I40E_PRTDCB_RUP_NOVLANUP_MASK, first_pfc_prio);
 	wr32(hw, I40E_PRTDCB_RUP, reg);
 
 	reg = rd32(hw, I40E_PRTDCB_TDPMC);
@@ -1537,23 +1486,8 @@ void i40e_dcb_hw_set_num_tc(struct i40e_hw *hw, u8 num_tc)
 	u32 reg = rd32(hw, I40E_PRTDCB_GENC);
 
 	reg &= ~I40E_PRTDCB_GENC_NUMTC_MASK;
-	reg |= ((u32)num_tc << I40E_PRTDCB_GENC_NUMTC_SHIFT) &
-		I40E_PRTDCB_GENC_NUMTC_MASK;
+	reg |= FIELD_PREP(I40E_PRTDCB_GENC_NUMTC_MASK, num_tc);
 	wr32(hw, I40E_PRTDCB_GENC, reg);
-}
-
-/**
- * i40e_dcb_hw_get_num_tc
- * @hw: pointer to the hw struct
- *
- * Returns number of traffic classes configured in HW
- **/
-u8 i40e_dcb_hw_get_num_tc(struct i40e_hw *hw)
-{
-	u32 reg = rd32(hw, I40E_PRTDCB_GENC);
-
-	return (u8)((reg & I40E_PRTDCB_GENC_NUMTC_MASK) >>
-		I40E_PRTDCB_GENC_NUMTC_SHIFT);
 }
 
 /**
@@ -1576,13 +1510,13 @@ void i40e_dcb_hw_rx_ets_bw_config(struct i40e_hw *hw, u8 *bw_share,
 		reg = rd32(hw, I40E_PRTDCB_RETSTCC(i));
 		reg &= ~(I40E_PRTDCB_RETSTCC_BWSHARE_MASK     |
 			 I40E_PRTDCB_RETSTCC_UPINTC_MODE_MASK |
-			 I40E_PRTDCB_RETSTCC_ETSTC_SHIFT);
-		reg |= ((u32)bw_share[i] << I40E_PRTDCB_RETSTCC_BWSHARE_SHIFT) &
-			 I40E_PRTDCB_RETSTCC_BWSHARE_MASK;
-		reg |= ((u32)mode[i] << I40E_PRTDCB_RETSTCC_UPINTC_MODE_SHIFT) &
-			 I40E_PRTDCB_RETSTCC_UPINTC_MODE_MASK;
-		reg |= ((u32)prio_type[i] << I40E_PRTDCB_RETSTCC_ETSTC_SHIFT) &
-			 I40E_PRTDCB_RETSTCC_ETSTC_MASK;
+			 I40E_PRTDCB_RETSTCC_ETSTC_MASK);
+		reg |= FIELD_PREP(I40E_PRTDCB_RETSTCC_BWSHARE_MASK,
+				  bw_share[i]);
+		reg |= FIELD_PREP(I40E_PRTDCB_RETSTCC_UPINTC_MODE_MASK,
+				  mode[i]);
+		reg |= FIELD_PREP(I40E_PRTDCB_RETSTCC_ETSTC_MASK,
+				  prio_type[i]);
 		wr32(hw, I40E_PRTDCB_RETSTCC(i), reg);
 	}
 }
@@ -1722,8 +1656,7 @@ void i40e_dcb_hw_rx_pb_config(struct i40e_hw *hw,
 	if (new_val < old_val) {
 		reg = rd32(hw, I40E_PRTRPB_SLW);
 		reg &= ~I40E_PRTRPB_SLW_SLW_MASK;
-		reg |= (new_val << I40E_PRTRPB_SLW_SLW_SHIFT) &
-			I40E_PRTRPB_SLW_SLW_MASK;
+		reg |= FIELD_PREP(I40E_PRTRPB_SLW_SLW_MASK, new_val);
 		wr32(hw, I40E_PRTRPB_SLW, reg);
 	}
 
@@ -1736,8 +1669,8 @@ void i40e_dcb_hw_rx_pb_config(struct i40e_hw *hw,
 		if (new_val < old_val) {
 			reg = rd32(hw, I40E_PRTRPB_SLT(i));
 			reg &= ~I40E_PRTRPB_SLT_SLT_TCN_MASK;
-			reg |= (new_val << I40E_PRTRPB_SLT_SLT_TCN_SHIFT) &
-				I40E_PRTRPB_SLT_SLT_TCN_MASK;
+			reg |= FIELD_PREP(I40E_PRTRPB_SLT_SLT_TCN_MASK,
+					  new_val);
 			wr32(hw, I40E_PRTRPB_SLT(i), reg);
 		}
 
@@ -1746,8 +1679,8 @@ void i40e_dcb_hw_rx_pb_config(struct i40e_hw *hw,
 		if (new_val < old_val) {
 			reg = rd32(hw, I40E_PRTRPB_DLW(i));
 			reg &= ~I40E_PRTRPB_DLW_DLW_TCN_MASK;
-			reg |= (new_val << I40E_PRTRPB_DLW_DLW_TCN_SHIFT) &
-				I40E_PRTRPB_DLW_DLW_TCN_MASK;
+			reg |= FIELD_PREP(I40E_PRTRPB_DLW_DLW_TCN_MASK,
+					  new_val);
 			wr32(hw, I40E_PRTRPB_DLW(i), reg);
 		}
 	}
@@ -1758,8 +1691,7 @@ void i40e_dcb_hw_rx_pb_config(struct i40e_hw *hw,
 	if (new_val < old_val) {
 		reg = rd32(hw, I40E_PRTRPB_SHW);
 		reg &= ~I40E_PRTRPB_SHW_SHW_MASK;
-		reg |= (new_val << I40E_PRTRPB_SHW_SHW_SHIFT) &
-			I40E_PRTRPB_SHW_SHW_MASK;
+		reg |= FIELD_PREP(I40E_PRTRPB_SHW_SHW_MASK, new_val);
 		wr32(hw, I40E_PRTRPB_SHW, reg);
 	}
 
@@ -1772,8 +1704,8 @@ void i40e_dcb_hw_rx_pb_config(struct i40e_hw *hw,
 		if (new_val < old_val) {
 			reg = rd32(hw, I40E_PRTRPB_SHT(i));
 			reg &= ~I40E_PRTRPB_SHT_SHT_TCN_MASK;
-			reg |= (new_val << I40E_PRTRPB_SHT_SHT_TCN_SHIFT) &
-				I40E_PRTRPB_SHT_SHT_TCN_MASK;
+			reg |= FIELD_PREP(I40E_PRTRPB_SHT_SHT_TCN_MASK,
+					  new_val);
 			wr32(hw, I40E_PRTRPB_SHT(i), reg);
 		}
 
@@ -1782,8 +1714,8 @@ void i40e_dcb_hw_rx_pb_config(struct i40e_hw *hw,
 		if (new_val < old_val) {
 			reg = rd32(hw, I40E_PRTRPB_DHW(i));
 			reg &= ~I40E_PRTRPB_DHW_DHW_TCN_MASK;
-			reg |= (new_val << I40E_PRTRPB_DHW_DHW_TCN_SHIFT) &
-				I40E_PRTRPB_DHW_DHW_TCN_MASK;
+			reg |= FIELD_PREP(I40E_PRTRPB_DHW_DHW_TCN_MASK,
+					  new_val);
 			wr32(hw, I40E_PRTRPB_DHW(i), reg);
 		}
 	}
@@ -1793,8 +1725,7 @@ void i40e_dcb_hw_rx_pb_config(struct i40e_hw *hw,
 		new_val = new_pb_cfg->tc_pool_size[i];
 		reg = rd32(hw, I40E_PRTRPB_DPS(i));
 		reg &= ~I40E_PRTRPB_DPS_DPS_TCN_MASK;
-		reg |= (new_val << I40E_PRTRPB_DPS_DPS_TCN_SHIFT) &
-			I40E_PRTRPB_DPS_DPS_TCN_MASK;
+		reg |= FIELD_PREP(I40E_PRTRPB_DPS_DPS_TCN_MASK, new_val);
 		wr32(hw, I40E_PRTRPB_DPS(i), reg);
 	}
 
@@ -1802,8 +1733,7 @@ void i40e_dcb_hw_rx_pb_config(struct i40e_hw *hw,
 	new_val = new_pb_cfg->shared_pool_size;
 	reg = rd32(hw, I40E_PRTRPB_SPS);
 	reg &= ~I40E_PRTRPB_SPS_SPS_MASK;
-	reg |= (new_val << I40E_PRTRPB_SPS_SPS_SHIFT) &
-		I40E_PRTRPB_SPS_SPS_MASK;
+	reg |= FIELD_PREP(I40E_PRTRPB_SPS_SPS_MASK, new_val);
 	wr32(hw, I40E_PRTRPB_SPS, reg);
 
 	/* Program the shared pool low water mark per port if increasing */
@@ -1812,8 +1742,7 @@ void i40e_dcb_hw_rx_pb_config(struct i40e_hw *hw,
 	if (new_val > old_val) {
 		reg = rd32(hw, I40E_PRTRPB_SLW);
 		reg &= ~I40E_PRTRPB_SLW_SLW_MASK;
-		reg |= (new_val << I40E_PRTRPB_SLW_SLW_SHIFT) &
-			I40E_PRTRPB_SLW_SLW_MASK;
+		reg |= FIELD_PREP(I40E_PRTRPB_SLW_SLW_MASK, new_val);
 		wr32(hw, I40E_PRTRPB_SLW, reg);
 	}
 
@@ -1826,8 +1755,8 @@ void i40e_dcb_hw_rx_pb_config(struct i40e_hw *hw,
 		if (new_val > old_val) {
 			reg = rd32(hw, I40E_PRTRPB_SLT(i));
 			reg &= ~I40E_PRTRPB_SLT_SLT_TCN_MASK;
-			reg |= (new_val << I40E_PRTRPB_SLT_SLT_TCN_SHIFT) &
-				I40E_PRTRPB_SLT_SLT_TCN_MASK;
+			reg |= FIELD_PREP(I40E_PRTRPB_SLT_SLT_TCN_MASK,
+					  new_val);
 			wr32(hw, I40E_PRTRPB_SLT(i), reg);
 		}
 
@@ -1836,8 +1765,8 @@ void i40e_dcb_hw_rx_pb_config(struct i40e_hw *hw,
 		if (new_val > old_val) {
 			reg = rd32(hw, I40E_PRTRPB_DLW(i));
 			reg &= ~I40E_PRTRPB_DLW_DLW_TCN_MASK;
-			reg |= (new_val << I40E_PRTRPB_DLW_DLW_TCN_SHIFT) &
-				I40E_PRTRPB_DLW_DLW_TCN_MASK;
+			reg |= FIELD_PREP(I40E_PRTRPB_DLW_DLW_TCN_MASK,
+					  new_val);
 			wr32(hw, I40E_PRTRPB_DLW(i), reg);
 		}
 	}
@@ -1848,8 +1777,7 @@ void i40e_dcb_hw_rx_pb_config(struct i40e_hw *hw,
 	if (new_val > old_val) {
 		reg = rd32(hw, I40E_PRTRPB_SHW);
 		reg &= ~I40E_PRTRPB_SHW_SHW_MASK;
-		reg |= (new_val << I40E_PRTRPB_SHW_SHW_SHIFT) &
-			I40E_PRTRPB_SHW_SHW_MASK;
+		reg |= FIELD_PREP(I40E_PRTRPB_SHW_SHW_MASK, new_val);
 		wr32(hw, I40E_PRTRPB_SHW, reg);
 	}
 
@@ -1862,8 +1790,8 @@ void i40e_dcb_hw_rx_pb_config(struct i40e_hw *hw,
 		if (new_val > old_val) {
 			reg = rd32(hw, I40E_PRTRPB_SHT(i));
 			reg &= ~I40E_PRTRPB_SHT_SHT_TCN_MASK;
-			reg |= (new_val << I40E_PRTRPB_SHT_SHT_TCN_SHIFT) &
-				I40E_PRTRPB_SHT_SHT_TCN_MASK;
+			reg |= FIELD_PREP(I40E_PRTRPB_SHT_SHT_TCN_MASK,
+					  new_val);
 			wr32(hw, I40E_PRTRPB_SHT(i), reg);
 		}
 
@@ -1872,8 +1800,8 @@ void i40e_dcb_hw_rx_pb_config(struct i40e_hw *hw,
 		if (new_val > old_val) {
 			reg = rd32(hw, I40E_PRTRPB_DHW(i));
 			reg &= ~I40E_PRTRPB_DHW_DHW_TCN_MASK;
-			reg |= (new_val << I40E_PRTRPB_DHW_DHW_TCN_SHIFT) &
-				I40E_PRTRPB_DHW_DHW_TCN_MASK;
+			reg |= FIELD_PREP(I40E_PRTRPB_DHW_DHW_TCN_MASK,
+					  new_val);
 			wr32(hw, I40E_PRTRPB_DHW(i), reg);
 		}
 	}
@@ -1888,13 +1816,13 @@ void i40e_dcb_hw_rx_pb_config(struct i40e_hw *hw,
  *
  * Reads the LLDP configuration data from NVM using passed addresses
  **/
-static i40e_status _i40e_read_lldp_cfg(struct i40e_hw *hw,
-				       struct i40e_lldp_variables *lldp_cfg,
-				       u8 module, u32 word_offset)
+static int _i40e_read_lldp_cfg(struct i40e_hw *hw,
+			       struct i40e_lldp_variables *lldp_cfg,
+			       u8 module, u32 word_offset)
 {
 	u32 address, offset = (2 * word_offset);
-	i40e_status ret;
 	__le16 raw_mem;
+	int ret;
 	u16 mem;
 
 	ret = i40e_acquire_nvm(hw, I40E_RESOURCE_READ);
@@ -1950,14 +1878,14 @@ err_lldp_cfg:
  *
  * Reads the LLDP configuration data from NVM
  **/
-i40e_status i40e_read_lldp_cfg(struct i40e_hw *hw,
-			       struct i40e_lldp_variables *lldp_cfg)
+int i40e_read_lldp_cfg(struct i40e_hw *hw,
+		       struct i40e_lldp_variables *lldp_cfg)
 {
-	i40e_status ret = 0;
+	int ret = 0;
 	u32 mem;
 
 	if (!lldp_cfg)
-		return I40E_ERR_PARAM;
+		return -EINVAL;
 
 	ret = i40e_acquire_nvm(hw, I40E_RESOURCE_READ);
 	if (ret)

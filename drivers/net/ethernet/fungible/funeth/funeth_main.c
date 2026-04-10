@@ -339,8 +339,7 @@ static int fun_alloc_queue_irqs(struct net_device *dev, unsigned int ntx,
 			return PTR_ERR(irq);
 
 		fp->num_rx_irqs++;
-		netif_napi_add(dev, &irq->napi, fun_rxq_napi_poll,
-			       NAPI_POLL_WEIGHT);
+		netif_napi_add(dev, &irq->napi, fun_rxq_napi_poll);
 	}
 
 	netif_info(fp, intr, dev, "Reserved %u/%u IRQs for Tx/Rx queues\n",
@@ -425,7 +424,7 @@ static struct funeth_txq **alloc_xdpqs(struct net_device *dev, unsigned int nqs,
 	unsigned int i;
 	int err;
 
-	xdpqs = kcalloc(nqs, sizeof(*xdpqs), GFP_KERNEL);
+	xdpqs = kzalloc_objs(*xdpqs, nqs);
 	if (!xdpqs)
 		return ERR_PTR(-ENOMEM);
 
@@ -487,7 +486,7 @@ static int fun_alloc_rings(struct net_device *netdev, struct fun_qset *qset)
 	if (err)
 		return err;
 
-	rxqs = kcalloc(qset->ntxqs + qset->nrxqs, sizeof(*rxqs), GFP_KERNEL);
+	rxqs = kzalloc_objs(*rxqs, qset->ntxqs + qset->nrxqs);
 	if (!rxqs)
 		return -ENOMEM;
 
@@ -928,7 +927,7 @@ static int fun_change_mtu(struct net_device *netdev, int new_mtu)
 
 	rc = fun_port_write_cmd(fp, FUN_ADMIN_PORT_KEY_MTU, new_mtu);
 	if (!rc)
-		netdev->mtu = new_mtu;
+		WRITE_ONCE(netdev->mtu, new_mtu);
 	return rc;
 }
 
@@ -1015,26 +1014,25 @@ static int fun_get_port_attributes(struct net_device *netdev)
 	return 0;
 }
 
-static int fun_hwtstamp_get(struct net_device *dev, struct ifreq *ifr)
+static int fun_hwtstamp_get(struct net_device *dev,
+			    struct kernel_hwtstamp_config *config)
 {
 	const struct funeth_priv *fp = netdev_priv(dev);
 
-	return copy_to_user(ifr->ifr_data, &fp->hwtstamp_cfg,
-			    sizeof(fp->hwtstamp_cfg)) ? -EFAULT : 0;
+	*config = fp->hwtstamp_cfg;
+	return 0;
 }
 
-static int fun_hwtstamp_set(struct net_device *dev, struct ifreq *ifr)
+static int fun_hwtstamp_set(struct net_device *dev,
+			    struct kernel_hwtstamp_config *config,
+			    struct netlink_ext_ack *extack)
 {
 	struct funeth_priv *fp = netdev_priv(dev);
-	struct hwtstamp_config cfg;
-
-	if (copy_from_user(&cfg, ifr->ifr_data, sizeof(cfg)))
-		return -EFAULT;
 
 	/* no TX HW timestamps */
-	cfg.tx_type = HWTSTAMP_TX_OFF;
+	config->tx_type = HWTSTAMP_TX_OFF;
 
-	switch (cfg.rx_filter) {
+	switch (config->rx_filter) {
 	case HWTSTAMP_FILTER_NONE:
 		break;
 	case HWTSTAMP_FILTER_ALL:
@@ -1052,26 +1050,14 @@ static int fun_hwtstamp_set(struct net_device *dev, struct ifreq *ifr)
 	case HWTSTAMP_FILTER_PTP_V2_SYNC:
 	case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
 	case HWTSTAMP_FILTER_NTP_ALL:
-		cfg.rx_filter = HWTSTAMP_FILTER_ALL;
+		config->rx_filter = HWTSTAMP_FILTER_ALL;
 		break;
 	default:
 		return -ERANGE;
 	}
 
-	fp->hwtstamp_cfg = cfg;
-	return copy_to_user(ifr->ifr_data, &cfg, sizeof(cfg)) ? -EFAULT : 0;
-}
-
-static int fun_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
-{
-	switch (cmd) {
-	case SIOCSHWTSTAMP:
-		return fun_hwtstamp_set(dev, ifr);
-	case SIOCGHWTSTAMP:
-		return fun_hwtstamp_get(dev, ifr);
-	default:
-		return -EOPNOTSUPP;
-	}
+	fp->hwtstamp_cfg = *config;
+	return 0;
 }
 
 /* Prepare the queues for XDP. */
@@ -1161,6 +1147,11 @@ static int fun_xdp_setup(struct net_device *dev, struct netdev_bpf *xdp)
 			WRITE_ONCE(rxqs[i]->xdp_prog, prog);
 	}
 
+	if (prog)
+		xdp_features_set_redirect_target(dev, true);
+	else
+		xdp_features_clear_redirect_target(dev);
+
 	dev->max_mtu = prog ? XDP_MAX_MTU : FUN_MAX_MTU;
 	old_prog = xchg(&fp->xdp_prog, prog);
 	if (old_prog)
@@ -1179,19 +1170,12 @@ static int fun_xdp(struct net_device *dev, struct netdev_bpf *xdp)
 	}
 }
 
-static struct devlink_port *fun_get_devlink_port(struct net_device *netdev)
-{
-	struct funeth_priv *fp = netdev_priv(netdev);
-
-	return &fp->dl_port;
-}
-
 static int fun_init_vports(struct fun_ethdev *ed, unsigned int n)
 {
 	if (ed->num_vports)
 		return -EINVAL;
 
-	ed->vport_info = kvcalloc(n, sizeof(*ed->vport_info), GFP_KERNEL);
+	ed->vport_info = kvzalloc_objs(*ed->vport_info, n);
 	if (!ed->vport_info)
 		return -ENOMEM;
 	ed->num_vports = n;
@@ -1343,7 +1327,6 @@ static const struct net_device_ops fun_netdev_ops = {
 	.ndo_change_mtu		= fun_change_mtu,
 	.ndo_set_mac_address	= fun_set_macaddr,
 	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_eth_ioctl		= fun_ioctl,
 	.ndo_uninit		= fun_uninit,
 	.ndo_bpf		= fun_xdp,
 	.ndo_xdp_xmit		= fun_xdp_xmit_frames,
@@ -1351,13 +1334,15 @@ static const struct net_device_ops fun_netdev_ops = {
 	.ndo_set_vf_vlan	= fun_set_vf_vlan,
 	.ndo_set_vf_rate	= fun_set_vf_rate,
 	.ndo_get_vf_config	= fun_get_vf_config,
-	.ndo_get_devlink_port	= fun_get_devlink_port,
+	.ndo_hwtstamp_get	= fun_hwtstamp_get,
+	.ndo_hwtstamp_set	= fun_hwtstamp_set,
 };
 
 #define GSO_ENCAP_FLAGS (NETIF_F_GSO_GRE | NETIF_F_GSO_IPXIP4 | \
 			 NETIF_F_GSO_IPXIP6 | NETIF_F_GSO_UDP_TUNNEL | \
 			 NETIF_F_GSO_UDP_TUNNEL_CSUM)
-#define TSO_FLAGS (NETIF_F_TSO | NETIF_F_TSO6 | NETIF_F_TSO_ECN)
+#define TSO_FLAGS (NETIF_F_TSO | NETIF_F_TSO6 | NETIF_F_TSO_ECN | \
+		   NETIF_F_GSO_UDP_L4)
 #define VLAN_FEAT (NETIF_F_SG | NETIF_F_HW_CSUM | TSO_FLAGS | \
 		   GSO_ENCAP_FLAGS | NETIF_F_HIGHDMA)
 
@@ -1760,6 +1745,7 @@ static int fun_create_netdev(struct fun_ethdev *ed, unsigned int portid)
 		goto free_rss;
 
 	SET_NETDEV_DEV(netdev, fdev->dev);
+	SET_NETDEV_DEVLINK_PORT(netdev, &fp->dl_port);
 	netdev->netdev_ops = &fun_netdev_ops;
 
 	netdev->hw_features = NETIF_F_SG | NETIF_F_RXHASH | NETIF_F_RXCSUM;
@@ -1772,6 +1758,7 @@ static int fun_create_netdev(struct fun_ethdev *ed, unsigned int portid)
 	netdev->vlan_features = netdev->features & VLAN_FEAT;
 	netdev->mpls_features = netdev->vlan_features;
 	netdev->hw_enc_features = netdev->hw_features;
+	netdev->xdp_features = NETDEV_XDP_ACT_BASIC | NETDEV_XDP_ACT_REDIRECT;
 
 	netdev->min_mtu = ETH_MIN_MTU;
 	netdev->max_mtu = FUN_MAX_MTU;
@@ -1800,17 +1787,12 @@ static int fun_create_netdev(struct fun_ethdev *ed, unsigned int portid)
 	rc = register_netdev(netdev);
 	if (rc)
 		goto unreg_devlink;
-
-	if (fp->dl_port.devlink)
-		devlink_port_type_eth_set(&fp->dl_port, netdev);
-
 	return 0;
 
 unreg_devlink:
 	ed->netdevs[portid] = NULL;
 	fun_ktls_cleanup(fp);
-	if (fp->dl_port.devlink)
-		devlink_port_unregister(&fp->dl_port);
+	devlink_port_unregister(&fp->dl_port);
 free_stats:
 	fun_free_stats_area(fp);
 free_rss:
@@ -1829,11 +1811,8 @@ static void fun_destroy_netdev(struct net_device *netdev)
 	struct funeth_priv *fp;
 
 	fp = netdev_priv(netdev);
-	if (fp->dl_port.devlink) {
-		devlink_port_type_clear(&fp->dl_port);
-		devlink_port_unregister(&fp->dl_port);
-	}
 	unregister_netdev(netdev);
+	devlink_port_unregister(&fp->dl_port);
 	fun_ktls_cleanup(fp);
 	fun_free_stats_area(fp);
 	fun_free_rss(fp);
@@ -1854,7 +1833,7 @@ static int fun_create_ports(struct fun_ethdev *ed, unsigned int nports)
 		return -EINVAL;
 	}
 
-	ed->netdevs = kcalloc(nports, sizeof(*ed->netdevs), GFP_KERNEL);
+	ed->netdevs = kzalloc_objs(*ed->netdevs, nports);
 	if (!ed->netdevs)
 		return -ENOMEM;
 

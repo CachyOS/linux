@@ -16,6 +16,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/firmware.h>
+#include <linux/pci.h>
 #include <linux/pm_runtime.h>
 #include <linux/pm_qos.h>
 #include <linux/async.h>
@@ -63,7 +64,7 @@ static irqreturn_t intel_sst_interrupt_mrfld(int irq, void *context)
 		header.p.header_high.part.done = 0;
 		sst_shim_write64(drv->shim, drv->ipc_reg.ipcx, header.full);
 
-		/* write 1 to clear status register */;
+		/* write 1 to clear status register */
 		isr.part.done_interrupt = 1;
 		sst_shim_write64(drv->shim, SST_ISRX, isr.full);
 		spin_unlock(&drv->ipc_spin_lock);
@@ -114,7 +115,7 @@ static irqreturn_t intel_sst_interrupt_mrfld(int irq, void *context)
 static irqreturn_t intel_sst_irq_thread_mrfld(int irq, void *context)
 {
 	struct intel_sst_drv *drv = (struct intel_sst_drv *) context;
-	struct ipc_post *__msg, *msg = NULL;
+	struct ipc_post *__msg, *msg;
 	unsigned long irq_flags;
 
 	spin_lock_irqsave(&drv->rx_msg_lock, irq_flags);
@@ -174,9 +175,9 @@ int sst_driver_ops(struct intel_sst_drv *sst)
 {
 
 	switch (sst->dev_id) {
-	case SST_MRFLD_PCI_ID:
-	case SST_BYT_ACPI_ID:
-	case SST_CHV_ACPI_ID:
+	case PCI_DEVICE_ID_INTEL_SST_TNG:
+	case PCI_DEVICE_ID_INTEL_SST_BYT:
+	case PCI_DEVICE_ID_INTEL_SST_BSW:
 		sst->tstamp = SST_TIME_STAMP_MRFLD;
 		sst->ops = &mrfld_ops;
 		return 0;
@@ -221,8 +222,13 @@ static void sst_init_locks(struct intel_sst_drv *ctx)
 	spin_lock_init(&ctx->block_lock);
 }
 
+/*
+ * Driver handles PCI IDs in ACPI - sst_acpi_probe() - and we are using only
+ * device ID part. If real ACPI ID appears, the kstrtouint() returns error, so
+ * we are fine with using unsigned short as dev_id type.
+ */
 int sst_alloc_drv_context(struct intel_sst_drv **ctx,
-		struct device *dev, unsigned int dev_id)
+		struct device *dev, unsigned short dev_id)
 {
 	*ctx = devm_kzalloc(dev, sizeof(struct intel_sst_drv), GFP_KERNEL);
 	if (!(*ctx))
@@ -242,11 +248,11 @@ static ssize_t firmware_version_show(struct device *dev,
 
 	if (ctx->fw_version.type == 0 && ctx->fw_version.major == 0 &&
 	    ctx->fw_version.minor == 0 && ctx->fw_version.build == 0)
-		return sprintf(buf, "FW not yet loaded\n");
+		return sysfs_emit(buf, "FW not yet loaded\n");
 	else
-		return sprintf(buf, "v%02x.%02x.%02x.%02x\n",
-			       ctx->fw_version.type, ctx->fw_version.major,
-			       ctx->fw_version.minor, ctx->fw_version.build);
+		return sysfs_emit(buf, "v%02x.%02x.%02x.%02x\n",
+				  ctx->fw_version.type, ctx->fw_version.major,
+				  ctx->fw_version.minor, ctx->fw_version.build);
 
 }
 
@@ -457,7 +463,7 @@ static int intel_sst_suspend(struct device *dev)
 		return -EBUSY;
 
 	/* save the memories */
-	fw_save = kzalloc(sizeof(*fw_save), GFP_KERNEL);
+	fw_save = kzalloc_obj(*fw_save);
 	if (!fw_save)
 		return -ENOMEM;
 	fw_save->iram = kvzalloc(ctx->iram_end - ctx->iram_base, GFP_KERNEL);

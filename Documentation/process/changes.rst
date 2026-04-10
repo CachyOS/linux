@@ -29,22 +29,23 @@ you probably needn't concern yourself with pcmciautils.
 ====================== ===============  ========================================
         Program        Minimal version       Command to check the version
 ====================== ===============  ========================================
-GNU C                  5.1              gcc --version
-Clang/LLVM (optional)  11.0.0           clang --version
-GNU make               3.81             make --version
+GNU C                  8.1              gcc --version
+Clang/LLVM (optional)  15.0.0           clang --version
+Rust (optional)        1.78.0           rustc --version
+bindgen (optional)     0.65.1           bindgen --version
+GNU make               4.0              make --version
 bash                   4.2              bash --version
-binutils               2.23             ld -v
+binutils               2.30             ld -v
 flex                   2.5.35           flex --version
 bison                  2.0              bison --version
-pahole                 1.16             pahole --version
-util-linux             2.10o            fdformat --version
+pahole                 1.22             pahole --version
+util-linux             2.10o            mount --version
 kmod                   13               depmod -V
 e2fsprogs              1.41.4           e2fsck -V
 jfsutils               1.1.3            fsck.jfs -V
-reiserfsprogs          3.6.3            reiserfsck -V
 xfsprogs               2.6.0            xfs_db -V
 squashfs-tools         4.0              mksquashfs -version
-btrfs-progs            0.18             btrfsck
+btrfs-progs            0.18             btrfs --version
 pcmciautils            004              pccardctl -V
 quota-tools            3.09             quota -V
 PPP                    2.4.0            pppd --version
@@ -56,8 +57,12 @@ mcelog                 0.6              mcelog --version
 iptables               1.4.2            iptables -V
 openssl & libcrypto    1.0.0            openssl version
 bc                     1.06.95          bc --version
-Sphinx\ [#f1]_         1.7              sphinx-build --version
-cpio                   any              cpio --version
+Sphinx\ [#f1]_         3.4.3            sphinx-build --version
+GNU tar                1.28             tar --version
+gtags (optional)       6.6.5            gtags --version
+mkimage (optional)     2017.01          mkimage --version
+Python                 3.9.x            python3 --version
+GNU AWK (optional)     5.1.0            gawk --version
 ====================== ===============  ========================================
 
 .. [#f1] Sphinx is needed only to build the Kernel documentation
@@ -80,10 +85,26 @@ kernels. Older releases aren't guaranteed to work, and we may drop workarounds
 from the kernel that were used to support older versions. Please see additional
 docs on :ref:`Building Linux with Clang/LLVM <kbuild_llvm>`.
 
+Rust (optional)
+---------------
+
+A recent version of the Rust compiler is required.
+
+Please see Documentation/rust/quick-start.rst for instructions on how to
+satisfy the build requirements of Rust support. In particular, the ``Makefile``
+target ``rustavailable`` is useful to check why the Rust toolchain may not
+be detected.
+
+bindgen (optional)
+------------------
+
+``bindgen`` is used to generate the Rust bindings to the C side of the kernel.
+It depends on ``libclang``.
+
 Make
 ----
 
-You will need GNU make 3.81 or later to build the kernel.
+You will need GNU make 4.0 or later to build the kernel.
 
 Bash
 ----
@@ -94,7 +115,7 @@ Bash 4.2 or newer is needed.
 Binutils
 --------
 
-Binutils 2.23 or newer is needed to build the kernel.
+Binutils 2.30 or newer is needed to build the kernel.
 
 pkg-config
 ----------
@@ -117,12 +138,12 @@ Bison
 Since Linux 4.16, the build system generates parsers
 during build.  This requires bison 2.0 or later.
 
-pahole:
--------
+pahole
+------
 
 Since Linux 5.2, if CONFIG_DEBUG_INFO_BTF is selected, the build system
 generates BTF (BPF Type Format) from DWARF in vmlinux, a bit later from kernel
-modules as well.  This requires pahole v1.16 or later.
+modules as well.  This requires pahole v1.22 or later.
 
 It is found in the 'dwarves' or 'pahole' distro packages or from
 https://fedorapeople.org/~acme/dwarves/.
@@ -132,6 +153,13 @@ Perl
 
 You will need perl 5 and the following modules: ``Getopt::Long``,
 ``Getopt::Std``, ``File::Basename``, and ``File::Find`` to build the kernel.
+
+Python
+------
+
+Several config options require it: it is required for arm/arm64
+default configs, CONFIG_LTO_CLANG, some DRM optional configs,
+the kernel-doc tool, and docs build (Sphinx), among others.
 
 BC
 --
@@ -149,6 +177,32 @@ You will need openssl to build kernels 3.7 and higher if module signing is
 enabled.  You will also need openssl development packages to build kernels 4.3
 and higher.
 
+Tar
+---
+
+GNU tar is needed if you want to enable access to the kernel headers via sysfs
+(CONFIG_IKHEADERS).
+
+gtags / GNU GLOBAL (optional)
+-----------------------------
+
+The kernel build requires GNU GLOBAL version 6.6.5 or later to generate
+tag files through ``make gtags``.  This is due to its use of the gtags
+``-C (--directory)`` flag.
+
+mkimage
+-------
+
+This tool is used when building a Flat Image Tree (FIT), commonly used on ARM
+platforms. The tool is available via the ``u-boot-tools`` package or can be
+built from the U-Boot source code. See the instructions at
+https://docs.u-boot.org/en/latest/build/tools.html#building-tools-for-linux
+
+GNU AWK
+-------
+
+GNU AWK is needed if you want kernel builds to generate address range data for
+builtin modules (CONFIG_BUILTIN_MODULE_RANGES).
 
 System utilities
 ****************
@@ -164,7 +218,7 @@ DevFS has been obsoleted in favour of udev
 Linux documentation for functions is transitioning to inline
 documentation via specially-formatted comments near their
 definitions in the source.  These comments can be combined with ReST
-files the Documentation/ directory to make enriched documentation, which can
+files in the Documentation/ directory to make enriched documentation, which can
 then be converted to PostScript, HTML, LaTex, ePUB and PDF files.
 In order to convert from ReST format to a format of your choice, you'll need
 Sphinx.
@@ -174,7 +228,7 @@ Util-linux
 
 New versions of util-linux provide ``fdisk`` support for larger disks,
 support new options to mount, recognize more supported partition
-types, have a fdformat which works with 2.4 kernels, and similar goodies.
+types, and similar goodies.
 You'll probably want to upgrade.
 
 Ksymoops
@@ -213,14 +267,6 @@ The following utilities are available:
 - ``mkfs.jfs`` - create a JFS formatted partition.
 
 - other file system utilities are also available in this package.
-
-Reiserfsprogs
--------------
-
-The reiserfsprogs package should be used for reiserfs-3.6.x
-(Linux kernels 2.4.x). It is a combined package and contains working
-versions of ``mkreiserfs``, ``resize_reiserfs``, ``debugreiserfs`` and
-``reiserfsck``. These utils work on both i386 and alpha platforms.
 
 Xfsprogs
 --------
@@ -348,6 +394,12 @@ Sphinx
 Please see :ref:`sphinx_install` in :ref:`Documentation/doc-guide/sphinx.rst <sphinxdoc>`
 for details about Sphinx requirements.
 
+rustdoc
+-------
+
+``rustdoc`` is used to generate the documentation for Rust code. Please see
+Documentation/rust/general-information.rst for more information.
+
 Getting updated software
 ========================
 
@@ -363,6 +415,16 @@ Clang/LLVM
 ----------
 
 - :ref:`Getting LLVM <getting_llvm>`.
+
+Rust
+----
+
+- Documentation/rust/quick-start.rst.
+
+bindgen
+-------
+
+- Documentation/rust/quick-start.rst.
 
 Make
 ----
@@ -427,12 +489,7 @@ E2fsprogs
 JFSutils
 --------
 
-- <http://jfs.sourceforge.net/>
-
-Reiserfsprogs
--------------
-
-- <https://git.kernel.org/pub/scm/linux/kernel/git/jeffm/reiserfsprogs.git/>
+- <https://jfs.sourceforge.net/>
 
 Xfsprogs
 --------
@@ -448,7 +505,7 @@ Pcmciautils
 Quota-tools
 -----------
 
-- <http://sourceforge.net/projects/linuxquota/>
+- <https://sourceforge.net/projects/linuxquota/>
 
 
 Intel P6 microcode
@@ -469,12 +526,7 @@ FUSE
 mcelog
 ------
 
-- <http://www.mcelog.org/>
-
-cpio
-----
-
-- <https://www.gnu.org/software/cpio/>
+- <https://www.mcelog.org/>
 
 Networking
 **********
@@ -489,7 +541,8 @@ PPP
 NFS-utils
 ---------
 
-- <http://sourceforge.net/project/showfiles.php?group_id=14>
+- <https://sourceforge.net/project/showfiles.php?group_id=14>
+- <https://nfs.sourceforge.net/>
 
 Iptables
 --------
@@ -504,12 +557,7 @@ Ip-route2
 OProfile
 --------
 
-- <http://oprofile.sf.net/download/>
-
-NFS-Utils
----------
-
-- <http://nfs.sourceforge.net/>
+- <https://oprofile.sf.net/download/>
 
 Kernel documentation
 ********************

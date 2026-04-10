@@ -19,7 +19,7 @@
 #include <linux/spi/spi.h>
 #include <linux/units.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 /* ADMV1014 Register Map */
 #define ADMV1014_REG_SPI_CONTROL		0x00
@@ -127,7 +127,7 @@ struct admv1014_state {
 	unsigned int			quad_se_mode;
 	unsigned int			p1db_comp;
 	bool				det_en;
-	u8				data[3] ____cacheline_aligned;
+	u8				data[3] __aligned(IIO_DMA_MINALIGN);
 };
 
 static const int mixer_vgate_table[] = {106, 107, 108, 110, 111, 112, 113, 114,
@@ -669,8 +669,7 @@ static int admv1014_init(struct admv1014_state *st)
 	chip_id = FIELD_GET(ADMV1014_CHIP_ID_MSK, chip_id);
 	if (chip_id != ADMV1014_CHIP_ID) {
 		dev_err(&spi->dev, "Invalid Chip ID.\n");
-		ret = -EINVAL;
-		return ret;
+		return -EINVAL;
 	}
 
 	ret = __admv1014_spi_update_bits(st, ADMV1014_REG_QUAD,
@@ -700,8 +699,10 @@ static int admv1014_init(struct admv1014_state *st)
 			 ADMV1014_DET_EN_MSK;
 
 	enable_reg = FIELD_PREP(ADMV1014_P1DB_COMPENSATION_MSK, st->p1db_comp ? 3 : 0) |
-		     FIELD_PREP(ADMV1014_IF_AMP_PD_MSK, !(st->input_mode)) |
-		     FIELD_PREP(ADMV1014_BB_AMP_PD_MSK, st->input_mode) |
+		     FIELD_PREP(ADMV1014_IF_AMP_PD_MSK,
+				(st->input_mode == ADMV1014_IF_MODE) ? 0 : 1) |
+		     FIELD_PREP(ADMV1014_BB_AMP_PD_MSK,
+				(st->input_mode == ADMV1014_IF_MODE) ? 1 : 0) |
 		     FIELD_PREP(ADMV1014_DET_EN_MSK, st->det_en);
 
 	return __admv1014_spi_update_bits(st, ADMV1014_REG_ENABLE, enable_reg_msk, enable_reg);
@@ -709,7 +710,6 @@ static int admv1014_init(struct admv1014_state *st)
 
 static int admv1014_properties_parse(struct admv1014_state *st)
 {
-	const char *str;
 	unsigned int i;
 	struct spi_device *spi = st->spi;
 	int ret;
@@ -718,27 +718,21 @@ static int admv1014_properties_parse(struct admv1014_state *st)
 
 	st->p1db_comp = device_property_read_bool(&spi->dev, "adi,p1db-compensation-enable");
 
-	ret = device_property_read_string(&spi->dev, "adi,input-mode", &str);
-	if (ret) {
-		st->input_mode = ADMV1014_IQ_MODE;
-	} else {
-		ret = match_string(input_mode_names, ARRAY_SIZE(input_mode_names), str);
-		if (ret < 0)
-			return ret;
-
+	ret = device_property_match_property_string(&spi->dev, "adi,input-mode",
+						    input_mode_names,
+						    ARRAY_SIZE(input_mode_names));
+	if (ret >= 0)
 		st->input_mode = ret;
-	}
+	else
+		st->input_mode = ADMV1014_IQ_MODE;
 
-	ret = device_property_read_string(&spi->dev, "adi,quad-se-mode", &str);
-	if (ret) {
-		st->quad_se_mode = ADMV1014_SE_MODE_POS;
-	} else {
-		ret = match_string(quad_se_mode_names, ARRAY_SIZE(quad_se_mode_names), str);
-		if (ret < 0)
-			return ret;
-
+	ret = device_property_match_property_string(&spi->dev, "adi,quad-se-mode",
+						    quad_se_mode_names,
+						    ARRAY_SIZE(quad_se_mode_names));
+	if (ret >= 0)
 		st->quad_se_mode = ADMV1014_SE_MODE_POS + (ret * 3);
-	}
+	else
+		st->quad_se_mode = ADMV1014_SE_MODE_POS;
 
 	for (i = 0; i < ADMV1014_NUM_REGULATORS; ++i)
 		st->regulators[i].supply = admv1014_reg_name[i];
@@ -798,13 +792,13 @@ static int admv1014_probe(struct spi_device *spi)
 
 static const struct spi_device_id admv1014_id[] = {
 	{ "admv1014", 0 },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, admv1014_id);
 
 static const struct of_device_id admv1014_of_match[] = {
 	{ .compatible = "adi,admv1014" },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, admv1014_of_match);
 

@@ -28,15 +28,15 @@ static int ptp_kvm_get_time_fn(ktime_t *device_time,
 			       struct system_counterval_t *system_counter,
 			       void *ctx)
 {
-	long ret;
-	u64 cycle;
+	enum clocksource_ids cs_id;
 	struct timespec64 tspec;
-	struct clocksource *cs;
+	u64 cycle;
+	int ret;
 
 	spin_lock(&kvm_ptp_lock);
 
 	preempt_disable_notrace();
-	ret = kvm_arch_ptp_get_crosststamp(&cycle, &tspec, &cs);
+	ret = kvm_arch_ptp_get_crosststamp(&cycle, &tspec, &cs_id);
 	if (ret) {
 		spin_unlock(&kvm_ptp_lock);
 		preempt_enable_notrace();
@@ -46,7 +46,7 @@ static int ptp_kvm_get_time_fn(ktime_t *device_time,
 	preempt_enable_notrace();
 
 	system_counter->cycles = cycle;
-	system_counter->cs = cs;
+	system_counter->cs_id = cs_id;
 
 	*device_time = timespec64_to_ktime(tspec);
 
@@ -66,7 +66,7 @@ static int ptp_kvm_getcrosststamp(struct ptp_clock_info *ptp,
  * PTP clock operations
  */
 
-static int ptp_kvm_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
+static int ptp_kvm_adjfine(struct ptp_clock_info *ptp, long delta)
 {
 	return -EOPNOTSUPP;
 }
@@ -115,7 +115,7 @@ static const struct ptp_clock_info ptp_kvm_caps = {
 	.n_ext_ts	= 0,
 	.n_pins		= 0,
 	.pps		= 0,
-	.adjfreq	= ptp_kvm_adjfreq,
+	.adjfine	= ptp_kvm_adjfine,
 	.adjtime	= ptp_kvm_adjtime,
 	.gettime64	= ptp_kvm_gettime,
 	.settime64	= ptp_kvm_settime,
@@ -130,6 +130,7 @@ static struct kvm_ptp_clock kvm_ptp_clock;
 static void __exit ptp_kvm_exit(void)
 {
 	ptp_clock_unregister(kvm_ptp_clock.ptp_clock);
+	kvm_arch_ptp_exit();
 }
 
 static int __init ptp_kvm_init(void)

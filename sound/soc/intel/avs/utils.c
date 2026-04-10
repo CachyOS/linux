@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2021-2022 Intel Corporation. All rights reserved.
+// Copyright(c) 2021-2022 Intel Corporation
 //
 // Authors: Cezary Rojewski <cezary.rojewski@intel.com>
 //          Amadeusz Slawinski <amadeuszx.slawinski@linux.intel.com>
@@ -124,7 +124,7 @@ avs_module_ida_alloc(struct avs_dev *adev, struct avs_mods_info *newinfo, bool p
 		tocopy_count = oldinfo->count;
 	}
 
-	ida_ptrs = kcalloc(newinfo->count, sizeof(*ida_ptrs), GFP_KERNEL);
+	ida_ptrs = kzalloc_objs(*ida_ptrs, newinfo->count);
 	if (!ida_ptrs)
 		return -ENOMEM;
 
@@ -132,7 +132,7 @@ avs_module_ida_alloc(struct avs_dev *adev, struct avs_mods_info *newinfo, bool p
 		memcpy(ida_ptrs, adev->mod_idas, tocopy_count * sizeof(*ida_ptrs));
 
 	for (i = tocopy_count; i < newinfo->count; i++) {
-		ida_ptrs[i] = kzalloc(sizeof(**ida_ptrs), GFP_KERNEL);
+		ida_ptrs[i] = kzalloc_obj(**ida_ptrs);
 		if (!ida_ptrs[i]) {
 			while (i--)
 				kfree(ida_ptrs[i]);
@@ -246,11 +246,11 @@ int avs_request_firmware(struct avs_dev *adev, const struct firmware **fw_p, con
 	}
 
 	/* FW is not loaded, let's load it now and add to the list */
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (!entry)
 		return -ENOMEM;
 
-	entry->name = kstrdup(name, GFP_KERNEL);
+	entry->name = kstrdup_const(name, GFP_KERNEL);
 	if (!entry->name) {
 		kfree(entry);
 		return -ENOMEM;
@@ -258,7 +258,7 @@ int avs_request_firmware(struct avs_dev *adev, const struct firmware **fw_p, con
 
 	ret = request_firmware(&entry->fw, name, adev->dev);
 	if (ret < 0) {
-		kfree(entry->name);
+		kfree_const(entry->name);
 		kfree(entry);
 		return ret;
 	}
@@ -282,7 +282,7 @@ void avs_release_last_firmware(struct avs_dev *adev)
 
 	list_del(&entry->node);
 	release_firmware(entry->fw);
-	kfree(entry->name);
+	kfree_const(entry->name);
 	kfree(entry);
 }
 
@@ -296,29 +296,7 @@ void avs_release_firmwares(struct avs_dev *adev)
 	list_for_each_entry_safe(entry, tmp, &adev->fw_list, node) {
 		list_del(&entry->node);
 		release_firmware(entry->fw);
-		kfree(entry->name);
+		kfree_const(entry->name);
 		kfree(entry);
 	}
-}
-
-unsigned int __kfifo_fromio_locked(struct kfifo *fifo, const void __iomem *src, unsigned int len,
-				   spinlock_t *lock)
-{
-	struct __kfifo *__fifo = &fifo->kfifo;
-	unsigned long flags;
-	unsigned int l, off;
-
-	spin_lock_irqsave(lock, flags);
-	len = min(len, kfifo_avail(fifo));
-	off = __fifo->in & __fifo->mask;
-	l = min(len, kfifo_size(fifo) - off);
-
-	memcpy_fromio(__fifo->data + off, src, l);
-	memcpy_fromio(__fifo->data, src + l, len - l);
-	/* Make sure data copied from SRAM is visible to all CPUs. */
-	smp_mb();
-	__fifo->in += len;
-	spin_unlock_irqrestore(lock, flags);
-
-	return len;
 }

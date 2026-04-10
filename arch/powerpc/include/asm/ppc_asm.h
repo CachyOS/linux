@@ -12,7 +12,7 @@
 #include <asm/feature-fixups.h>
 #include <asm/extable.h>
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 
 #define SZL			(BITS_PER_LONG/8)
 
@@ -34,6 +34,20 @@
 .endm
 
 /*
+ * This expands to a sequence of register clears for regs start to end
+ * inclusive, of the form:
+ *
+ *   li rN, 0
+ */
+.macro ZEROIZE_REGS start, end
+	.Lreg=\start
+	.rept (\end - \start + 1)
+	li	.Lreg, 0
+	.Lreg=.Lreg+1
+	.endr
+.endm
+
+/*
  * Macros for storing registers into and loading registers from
  * exception frames.
  */
@@ -49,8 +63,35 @@
 #define REST_NVGPRS(base)		REST_GPRS(13, 31, base)
 #endif
 
+#define	ZEROIZE_GPRS(start, end)	ZEROIZE_REGS start, end
+#ifdef __powerpc64__
+#define	ZEROIZE_NVGPRS()		ZEROIZE_GPRS(14, 31)
+#else
+#define	ZEROIZE_NVGPRS()		ZEROIZE_GPRS(13, 31)
+#endif
+#define	ZEROIZE_GPR(n)			ZEROIZE_GPRS(n, n)
+
 #define SAVE_GPR(n, base)		SAVE_GPRS(n, n, base)
 #define REST_GPR(n, base)		REST_GPRS(n, n, base)
+
+/* macros for handling user register sanitisation */
+#ifdef CONFIG_INTERRUPT_SANITIZE_REGISTERS
+#define SANITIZE_SYSCALL_GPRS()			ZEROIZE_GPR(0);		\
+						ZEROIZE_GPRS(5, 12);	\
+						ZEROIZE_NVGPRS()
+#define SANITIZE_GPR(n)				ZEROIZE_GPR(n)
+#define SANITIZE_GPRS(start, end)		ZEROIZE_GPRS(start, end)
+#define SANITIZE_NVGPRS()			ZEROIZE_NVGPRS()
+#define SANITIZE_RESTORE_NVGPRS()		REST_NVGPRS(r1)
+#define HANDLER_RESTORE_NVGPRS()
+#else
+#define SANITIZE_SYSCALL_GPRS()
+#define SANITIZE_GPR(n)
+#define SANITIZE_GPRS(start, end)
+#define SANITIZE_NVGPRS()
+#define SANITIZE_RESTORE_NVGPRS()
+#define HANDLER_RESTORE_NVGPRS()		REST_NVGPRS(r1)
+#endif /* CONFIG_INTERRUPT_SANITIZE_REGISTERS */
 
 #define SAVE_FPR(n, base)	stfd	n,8*TS_FPRWIDTH*(n)(base)
 #define SAVE_2FPRS(n, base)	SAVE_FPR(n, base); SAVE_FPR(n+1, base)
@@ -140,6 +181,15 @@
 #ifdef __KERNEL__
 
 /*
+ * Used to name C functions called from asm
+ */
+#if defined(__powerpc64__) && defined(CONFIG_PPC_KERNEL_PCREL)
+#define CFUNC(name) name@notoc
+#else
+#define CFUNC(name) name
+#endif
+
+/*
  * We use __powerpc64__ here because we want the compat VDSO to use the 32-bit
  * version below in the else case of the ifdef.
  */
@@ -151,11 +201,13 @@
 
 #ifdef CONFIG_PPC64_ELF_ABI_V2
 #define STK_GOT		24
-#define __STK_PARAM(i)	(32 + ((i)-3)*8)
+#define STK_PARAM_AREA	32
 #else
 #define STK_GOT		40
-#define __STK_PARAM(i)	(48 + ((i)-3)*8)
+#define STK_PARAM_AREA	48
 #endif
+
+#define __STK_PARAM(i)	(STK_PARAM_AREA + ((i)-3)*8)
 #define STK_PARAM(i)	__STK_PARAM(__REG_##i)
 
 #ifdef CONFIG_PPC64_ELF_ABI_V2
@@ -166,6 +218,9 @@
 	.globl name; \
 name:
 
+#ifdef CONFIG_PPC_KERNEL_PCREL
+#define _GLOBAL_TOC _GLOBAL
+#else
 #define _GLOBAL_TOC(name) \
 	.align 2 ; \
 	.type name,@function; \
@@ -174,6 +229,7 @@ name: \
 0:	addis r2,r12,(.TOC.-0b)@ha; \
 	addi r2,r2,(.TOC.-0b)@l; \
 	.localentry name,.-name
+#endif
 
 #define DOTSYM(a)	a
 
@@ -305,6 +361,17 @@ n:
 
 #ifdef __powerpc64__
 
+#ifdef CONFIG_PPC_KERNEL_PCREL
+#define __LOAD_PACA_TOC(reg)			\
+	li	reg,-1
+#else
+#define __LOAD_PACA_TOC(reg)			\
+	ld	reg,PACATOC(r13)
+#endif
+
+#define LOAD_PACA_TOC()				\
+	__LOAD_PACA_TOC(r2)
+
 #define LOAD_REG_IMMEDIATE(reg, expr) __LOAD_REG_IMMEDIATE reg, expr
 
 #define LOAD_REG_IMMEDIATE_SYM(reg, tmp, expr)	\
@@ -314,14 +381,41 @@ n:
 	ori	reg, reg, (expr)@l;		\
 	rldimi	reg, tmp, 32, 0
 
+#ifdef CONFIG_PPC_KERNEL_PCREL
 #define LOAD_REG_ADDR(reg,name)			\
-	ld	reg,name@got(r2)
+	pla	reg,name@pcrel
+
+#else
+#define LOAD_REG_ADDR(reg,name)			\
+	addis	reg,r2,name@toc@ha;		\
+	addi	reg,reg,name@toc@l
+#endif
+
+#ifdef CONFIG_PPC_BOOK3E_64
+/*
+ * This is used in register-constrained interrupt handlers. Not to be used
+ * by BOOK3S. ld complains with "got/toc optimization is not supported" if r2
+ * is not used for the TOC offset, so use @got(tocreg). If the interrupt
+ * handlers saved r2 instead, LOAD_REG_ADDR could be used.
+ */
+#define LOAD_REG_ADDR_ALTTOC(reg,tocreg,name)	\
+	ld	reg,name@got(tocreg)
+#endif
 
 #define LOAD_REG_ADDRBASE(reg,name)	LOAD_REG_ADDR(reg,name)
 #define ADDROFF(name)			0
 
 /* offsets for stack frame layout */
 #define LRSAVE	16
+
+/*
+ * GCC stack frames follow a different pattern on 32 vs 64. This can be used
+ * to make asm frames be consistent with C.
+ */
+#define PPC_CREATE_STACK_FRAME(size)			\
+	mflr		r0;				\
+	std		r0,16(r1);			\
+	stdu		r1,-(size)(r1)
 
 #else /* 32-bit */
 
@@ -339,10 +433,15 @@ n:
 /* offsets for stack frame layout */
 #define LRSAVE	4
 
+#define PPC_CREATE_STACK_FRAME(size)			\
+	stwu		r1,-(size)(r1);			\
+	mflr		r0;				\
+	stw		r0,(size+4)(r1)
+
 #endif
 
 /* various errata or part fixups */
-#if defined(CONFIG_PPC_CELL) || defined(CONFIG_PPC_FSL_BOOK3E)
+#if defined(CONFIG_PPC_CELL) || defined(CONFIG_PPC_E500)
 #define MFTB(dest)			\
 90:	mfspr dest, SPRN_TBRL;		\
 BEGIN_FTR_SECTION_NESTED(96);		\
@@ -383,7 +482,7 @@ END_FTR_SECTION_NESTED(CPU_FTR_CELL_TB_BUG, CPU_FTR_CELL_TB_BUG, 96)
  * and they must be used.
  */
 
-#if !defined(CONFIG_4xx) && !defined(CONFIG_PPC_8xx)
+#if !defined(CONFIG_44x) && !defined(CONFIG_PPC_8xx)
 #define tlbia					\
 	li	r4,1024;			\
 	mtctr	r4;				\
@@ -409,7 +508,25 @@ END_FTR_SECTION_NESTED(CPU_FTR_CELL_TB_BUG, CPU_FTR_CELL_TB_BUG, 96)
  */
 #define DCBT_BOOK3S_STOP_ALL_STREAM_IDS(scratch)	\
        lis     scratch,0x60000000@h;			\
-       dcbt    0,scratch,0b01010
+       .machine push;					\
+       .machine power4;					\
+       dcbt    0,scratch,0b01010;			\
+       .machine pop;
+
+#define DCBT_SETUP_STREAMS(from, from_parms, to, to_parms, scratch)	\
+	lis	scratch,0x8000;	/* GO=1 */				\
+	clrldi	scratch,scratch,32;					\
+	.machine push;							\
+	.machine power4;						\
+	/* setup read stream 0 */					\
+	dcbt	0,from,0b01000;		/* addr from */			\
+	dcbt	0,from_parms,0b01010;	/* length and depth from */	\
+	/* setup write stream 1 */					\
+	dcbtst	0,to,0b01000;		/* addr to */			\
+	dcbtst	0,to_parms,0b01010;	/* length and depth to */	\
+	eieio;								\
+	dcbt	0,scratch,0b01010;	/* all streams GO */		\
+	.machine pop;
 
 /*
  * toreal/fromreal/tophys/tovirt macros. 32-bit BookE makes them
@@ -709,7 +826,7 @@ END_FTR_SECTION_NESTED(CPU_FTR_CELL_TB_BUG, CPU_FTR_CELL_TB_BUG, 96)
  * kernel is built for.
  */
 
-#ifdef CONFIG_PPC_BOOK3E
+#ifdef CONFIG_PPC_BOOK3E_64
 #define FIXUP_ENDIAN
 #else
 /*
@@ -749,9 +866,9 @@ END_FTR_SECTION_NESTED(CPU_FTR_CELL_TB_BUG, CPU_FTR_CELL_TB_BUG, 96)
 	.long 0x2402004c; /* hrfid				*/ \
 191:
 
-#endif /* !CONFIG_PPC_BOOK3E */
+#endif /* !CONFIG_PPC_BOOK3E_64 */
 
-#endif /*  __ASSEMBLY__ */
+#endif /*  __ASSEMBLER__ */
 
 #define SOFT_MASK_TABLE(_start, _end)		\
 	stringify_in_c(.section __soft_mask_table,"a";)\
@@ -768,7 +885,7 @@ END_FTR_SECTION_NESTED(CPU_FTR_CELL_TB_BUG, CPU_FTR_CELL_TB_BUG, 96)
 	stringify_in_c(.llong (_target);)	\
 	stringify_in_c(.previous)
 
-#ifdef CONFIG_PPC_FSL_BOOK3E
+#ifdef CONFIG_PPC_E500
 #define BTB_FLUSH(reg)			\
 	lis reg,BUCSR_INIT@h;		\
 	ori reg,reg,BUCSR_INIT@l;	\
@@ -776,6 +893,14 @@ END_FTR_SECTION_NESTED(CPU_FTR_CELL_TB_BUG, CPU_FTR_CELL_TB_BUG, 96)
 	isync;
 #else
 #define BTB_FLUSH(reg)
-#endif /* CONFIG_PPC_FSL_BOOK3E */
+#endif /* CONFIG_PPC_E500 */
+
+#if defined(CONFIG_PPC64_ELF_ABI_V1)
+#define STACK_FRAME_PARAMS 48
+#elif defined(CONFIG_PPC64_ELF_ABI_V2)
+#define STACK_FRAME_PARAMS 32
+#elif defined(CONFIG_PPC32)
+#define STACK_FRAME_PARAMS 8
+#endif
 
 #endif /* _ASM_POWERPC_PPC_ASM_H */

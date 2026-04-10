@@ -34,6 +34,7 @@
 #include <linux/of.h>
 #include <linux/of_fdt.h>
 
+#include <asm/asm-prototypes.h>
 #include <asm/kvm_guest.h>
 #include <asm/io.h>
 #include <asm/kdump.h>
@@ -59,7 +60,7 @@
 #include <asm/xmon.h>
 #include <asm/udbg.h>
 #include <asm/kexec.h>
-#include <asm/code-patching.h>
+#include <asm/text-patching.h>
 #include <asm/ftrace.h>
 #include <asm/opal.h>
 #include <asm/cputhreads.h>
@@ -86,7 +87,7 @@ struct ppc64_caches ppc64_caches = {
 };
 EXPORT_SYMBOL_GPL(ppc64_caches);
 
-#if defined(CONFIG_PPC_BOOK3E) && defined(CONFIG_SMP)
+#if defined(CONFIG_PPC_BOOK3E_64) && defined(CONFIG_SMP)
 void __init setup_tlb_core_data(void)
 {
 	int cpu;
@@ -113,7 +114,6 @@ void __init setup_tlb_core_data(void)
 		 * Should we panic instead?
 		 */
 		WARN_ONCE(smt_enabled_at_boot >= 2 &&
-			  !mmu_has_feature(MMU_FTR_USE_TLBRSRV) &&
 			  book3e_htw_mode != PPC_HTW_E6500,
 			  "%s: unsupported MMU configuration\n", __func__);
 	}
@@ -141,10 +141,7 @@ void __init check_smt_enabled(void)
 			smt_enabled_at_boot = 0;
 		else {
 			int smt;
-			int rc;
-
-			rc = kstrtoint(smt_enabled_cmdline, 10, &smt);
-			if (!rc)
+			if (!kstrtoint(smt_enabled_cmdline, 10, &smt))
 				smt_enabled_at_boot =
 					min(threads_per_core, smt);
 		}
@@ -177,14 +174,26 @@ early_param("smt-enabled", early_smt_enabled);
 #endif /* CONFIG_SMP */
 
 /** Fix up paca fields required for the boot cpu */
-static void __init fixup_boot_paca(void)
+static void __init fixup_boot_paca(struct paca_struct *boot_paca)
 {
 	/* The boot cpu is started */
-	get_paca()->cpu_start = 1;
+	boot_paca->cpu_start = 1;
+#ifdef CONFIG_PPC_BOOK3S_64
+	/*
+	 * Give the early boot machine check stack somewhere to use, use
+	 * half of the init stack. This is a bit hacky but there should not be
+	 * deep stack usage in early init so shouldn't overflow it or overwrite
+	 * things.
+	 */
+	boot_paca->mc_emergency_sp = (void *)&init_thread_union +
+		(THREAD_SIZE/2);
+#endif
 	/* Allow percpu accesses to work until we setup percpu data */
-	get_paca()->data_offset = 0;
-	/* Mark interrupts disabled in PACA */
-	irq_soft_mask_set(IRQS_DISABLED);
+	boot_paca->data_offset = 0;
+	/* Mark interrupts soft and hard disabled in PACA */
+	boot_paca->irq_soft_mask = IRQS_DISABLED;
+	boot_paca->irq_happened = PACA_IRQ_HARD_DIS;
+	WARN_ON(mfmsr() & MSR_EE);
 }
 
 static void __init configure_exceptions(void)
@@ -351,10 +360,14 @@ void __init early_setup(unsigned long dt_ptr)
 	 * what CPU we are on.
 	 */
 	initialise_paca(&boot_paca, 0);
-	setup_paca(&boot_paca);
-	fixup_boot_paca();
+	fixup_boot_paca(&boot_paca);
+	WARN_ON(local_paca);
+	setup_paca(&boot_paca); /* install the paca into registers */
 
 	/* -------- printk is now safe to use ------- */
+
+	if (IS_ENABLED(CONFIG_PPC_BOOK3S_64) && (mfmsr() & MSR_HV))
+		enable_machine_check();
 
 	/* Try new device tree based feature discovery ... */
 	if (!dt_cpu_ftrs_init(__va(dt_ptr)))
@@ -369,17 +382,21 @@ void __init early_setup(unsigned long dt_ptr)
 	/*
 	 * Do early initialization using the flattened device
 	 * tree, such as retrieving the physical memory map or
-	 * calculating/retrieving the hash table size.
+	 * calculating/retrieving the hash table size, discover
+	 * boot_cpuid and boot_cpu_hwid.
 	 */
 	early_init_devtree(__va(dt_ptr));
 
-	/* Now we know the logical id of our boot cpu, setup the paca. */
-	if (boot_cpuid != 0) {
-		/* Poison paca_ptrs[0] again if it's not the boot cpu */
-		memset(&paca_ptrs[0], 0x88, sizeof(paca_ptrs[0]));
-	}
-	setup_paca(paca_ptrs[boot_cpuid]);
-	fixup_boot_paca();
+	allocate_paca_ptrs();
+	allocate_paca(boot_cpuid);
+	set_hard_smp_processor_id(boot_cpuid, boot_cpu_hwid);
+	fixup_boot_paca(paca_ptrs[boot_cpuid]);
+	setup_paca(paca_ptrs[boot_cpuid]); /* install the paca into registers */
+	// smp_processor_id() now reports boot_cpuid
+
+#ifdef CONFIG_SMP
+	task_thread_info(current)->cpu = boot_cpuid; // fix task_cpu(current)
+#endif
 
 	/*
 	 * Configure exception handlers. This include setting up trampolines
@@ -460,7 +477,7 @@ void early_setup_secondary(void)
 
 #endif /* CONFIG_SMP */
 
-void panic_smp_self_stop(void)
+void __noreturn panic_smp_self_stop(void)
 {
 	hard_irq_disable();
 	spin_begin();
@@ -674,13 +691,9 @@ void __init initialize_cache_info(void)
  */
 __init u64 ppc64_bolted_size(void)
 {
-#ifdef CONFIG_PPC_BOOK3E
+#ifdef CONFIG_PPC_BOOK3E_64
 	/* Freescale BookE bolts the entire linear mapping */
-	/* XXX: BookE ppc64_rma_limit setup seems to disagree? */
-	if (early_mmu_has_feature(MMU_FTR_TYPE_FSL_E))
-		return linear_map_top;
-	/* Other BookE, we assume the first GB is bolted */
-	return 1ul << 30;
+	return linear_map_top;
 #else
 	/* BookS radix, does not take faults on linear mapping */
 	if (early_radix_enabled())
@@ -724,7 +737,7 @@ void __init irqstack_early_init(void)
 	}
 }
 
-#ifdef CONFIG_PPC_BOOK3E
+#ifdef CONFIG_PPC_BOOK3E_64
 void __init exc_lvl_early_init(void)
 {
 	unsigned int i;
@@ -814,6 +827,7 @@ static __init int pcpu_cpu_to_node(int cpu)
 
 unsigned long __per_cpu_offset[NR_CPUS] __read_mostly;
 EXPORT_SYMBOL(__per_cpu_offset);
+DEFINE_STATIC_KEY_FALSE(__percpu_first_chunk_is_paged);
 
 void __init setup_per_cpu_areas(void)
 {
@@ -826,7 +840,7 @@ void __init setup_per_cpu_areas(void)
 	/*
 	 * BookE and BookS radix are historical values and should be revisited.
 	 */
-	if (IS_ENABLED(CONFIG_PPC_BOOK3E)) {
+	if (IS_ENABLED(CONFIG_PPC_BOOK3E_64)) {
 		atom_size = SZ_1M;
 	} else if (radix_enabled()) {
 		atom_size = PAGE_SIZE;
@@ -856,6 +870,7 @@ void __init setup_per_cpu_areas(void)
 	if (rc < 0)
 		panic("cannot initialize percpu area (err=%d)", rc);
 
+	static_key_enable(&__percpu_first_chunk_is_paged.key);
 	delta = (unsigned long)pcpu_base_addr - (unsigned long)__per_cpu_start;
 	for_each_possible_cpu(cpu) {
                 __per_cpu_offset[cpu] = delta + pcpu_unit_offsets[cpu];
@@ -874,7 +889,7 @@ unsigned long memory_block_size_bytes(void)
 }
 #endif
 
-#if defined(CONFIG_PPC_INDIRECT_PIO) || defined(CONFIG_PPC_INDIRECT_MMIO)
+#ifdef CONFIG_PPC_INDIRECT_PIO
 struct ppc_pci_io ppc_pci_io;
 EXPORT_SYMBOL(ppc_pci_io);
 #endif
@@ -902,6 +917,7 @@ static int __init disable_hardlockup_detector(void)
 	hardlockup_detector_disable();
 #else
 	if (firmware_has_feature(FW_FEATURE_LPAR)) {
+		check_kvm_guest();
 		if (is_kvm_guest())
 			hardlockup_detector_disable();
 	}

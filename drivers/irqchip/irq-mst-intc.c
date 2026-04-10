@@ -143,7 +143,7 @@ static void mst_intc_polarity_restore(struct mst_intc_chip_data *cd)
 		writew_relaxed(cd->saved_polarity_conf[i], addr + i * 4);
 }
 
-static void mst_irq_resume(void)
+static void mst_irq_resume(void *data)
 {
 	struct mst_intc_chip_data *cd;
 
@@ -151,7 +151,7 @@ static void mst_irq_resume(void)
 		mst_intc_polarity_restore(cd);
 }
 
-static int mst_irq_suspend(void)
+static int mst_irq_suspend(void *data)
 {
 	struct mst_intc_chip_data *cd;
 
@@ -160,14 +160,18 @@ static int mst_irq_suspend(void)
 	return 0;
 }
 
-static struct syscore_ops mst_irq_syscore_ops = {
+static const struct syscore_ops mst_irq_syscore_ops = {
 	.suspend	= mst_irq_suspend,
 	.resume		= mst_irq_resume,
 };
 
+static struct syscore mst_irq_syscore = {
+	.ops = &mst_irq_syscore_ops,
+};
+
 static int __init mst_irq_pm_init(void)
 {
-	register_syscore_ops(&mst_irq_syscore_ops);
+	register_syscore(&mst_irq_syscore);
 	return 0;
 }
 late_initcall(mst_irq_pm_init);
@@ -259,7 +263,7 @@ static int __init mst_intc_of_init(struct device_node *dn,
 	    of_property_read_u32_index(dn, "mstar,irqs-map-range", 1, &irq_end))
 		return -EINVAL;
 
-	cd = kzalloc(sizeof(*cd), GFP_KERNEL);
+	cd = kzalloc_obj(*cd);
 	if (!cd)
 		return -ENOMEM;
 
@@ -273,8 +277,8 @@ static int __init mst_intc_of_init(struct device_node *dn,
 	raw_spin_lock_init(&cd->lock);
 	cd->irq_start = irq_start;
 	cd->nr_irqs = irq_end - irq_start + 1;
-	domain = irq_domain_add_hierarchy(domain_parent, 0, cd->nr_irqs, dn,
-					  &mst_intc_domain_ops, cd);
+	domain = irq_domain_create_hierarchy(domain_parent, 0, cd->nr_irqs, of_fwnode_handle(dn),
+					     &mst_intc_domain_ops, cd);
 	if (!domain) {
 		iounmap(cd->base);
 		kfree(cd);

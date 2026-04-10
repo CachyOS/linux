@@ -458,7 +458,7 @@ struct dvb_frontend *atbm8830_attach(const struct atbm8830_config *config,
 	if (config == NULL || i2c == NULL)
 		return NULL;
 
-	priv = kzalloc(sizeof(struct atbm_state), GFP_KERNEL);
+	priv = kzalloc_obj(struct atbm_state);
 	if (priv == NULL)
 		goto error_out;
 
@@ -489,7 +489,7 @@ error_out:
 	return NULL;
 
 }
-EXPORT_SYMBOL(atbm8830_attach);
+EXPORT_SYMBOL_GPL(atbm8830_attach);
 
 MODULE_DESCRIPTION("AltoBeam ATBM8830/8831 GB20600 demodulator driver");
 MODULE_AUTHOR("David T. L. Wong <davidtlwong@gmail.com>");

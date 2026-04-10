@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2021 Facebook */
-#include <linux/bpf.h>
-#include <time.h>
+
+#include <vmlinux.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <bpf/bpf_helpers.h>
-#include "bpf_tcp_helpers.h"
+#include <bpf/bpf_tracing.h>
+
+#define CLOCK_MONOTONIC 1
+#define CLOCK_BOOTTIME 7
 
 char _license[] SEC("license") = "GPL";
+
 struct hmap_elem {
 	int counter;
 	struct bpf_timer timer;
@@ -46,11 +51,26 @@ struct {
 	__type(value, struct elem);
 } lru SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, int);
+	__type(value, struct elem);
+} abs_timer SEC(".maps"), soft_timer_pinned SEC(".maps"), abs_timer_pinned SEC(".maps"),
+	race_array SEC(".maps");
+
 __u64 bss_data;
+__u64 abs_data;
 __u64 err;
 __u64 ok;
+__u64 test_hits;
+__u64 update_hits;
+__u64 cancel_hits;
 __u64 callback_check = 52;
 __u64 callback2_check = 52;
+__u64 pinned_callback_check;
+__s32 pinned_cpu;
+bool async_cancel = 0;
 
 #define ARRAY 1
 #define HTAB 2
@@ -120,7 +140,7 @@ static int timer_cb1(void *map, int *key, struct bpf_timer *timer)
 }
 
 SEC("fentry/bpf_fentry_test1")
-int BPF_PROG(test1, int a)
+int BPF_PROG2(test1, int, a)
 {
 	struct bpf_timer *arr_timer, *lru_timer;
 	struct elem init = {};
@@ -149,6 +169,29 @@ int BPF_PROG(test1, int a)
 	if (!arr_timer)
 		return 0;
 	bpf_timer_init(arr_timer, &array, CLOCK_MONOTONIC);
+	return 0;
+}
+
+static int timer_error(void *map, int *key, struct bpf_timer *timer)
+{
+	err = 42;
+	return 0;
+}
+
+SEC("syscall")
+int test_async_cancel_succeed(void *ctx)
+{
+	struct bpf_timer *arr_timer;
+	int array_key = ARRAY;
+
+	arr_timer = bpf_map_lookup_elem(&array, &array_key);
+	if (!arr_timer)
+		return 0;
+	bpf_timer_init(arr_timer, &array, CLOCK_MONOTONIC);
+	bpf_timer_set_callback(arr_timer, timer_error);
+	bpf_timer_start(arr_timer, 100000 /* 100us */, 0);
+	bpf_timer_cancel_async(arr_timer);
+	ok = 7;
 	return 0;
 }
 
@@ -208,17 +251,6 @@ static int timer_cb2(void *map, int *key, struct hmap_elem *val)
 		 */
 		bpf_map_delete_elem(map, key);
 
-		/* in non-preallocated hashmap both 'key' and 'val' are RCU
-		 * protected and still valid though this element was deleted
-		 * from the map. Arm this timer for ~35 seconds. When callback
-		 * finishes the call_rcu will invoke:
-		 * htab_elem_free_rcu
-		 *   check_and_free_timer
-		 *     bpf_timer_cancel_and_free
-		 * to cancel this 35 second sleep and delete the timer for real.
-		 */
-		if (bpf_timer_start(&val->timer, 1ull << 35, 0) != 0)
-			err |= 256;
 		ok |= 4;
 	}
 	return 0;
@@ -247,7 +279,7 @@ int bpf_timer_test(void)
 }
 
 SEC("fentry/bpf_fentry_test2")
-int BPF_PROG(test2, int a, int b)
+int BPF_PROG2(test2, int, a, int, b)
 {
 	struct hmap_elem init = {}, *val;
 	int key = HTAB, key_malloc = HTAB_MALLOC;
@@ -294,4 +326,192 @@ int BPF_PROG(test2, int a, int b)
 		bpf_timer_init(&val->timer, &hmap_malloc, CLOCK_BOOTTIME);
 
 	return bpf_timer_test();
+}
+
+/* callback for absolute timer */
+static int timer_cb3(void *map, int *key, struct bpf_timer *timer)
+{
+	abs_data += 6;
+
+	if (abs_data < 12) {
+		bpf_timer_start(timer, bpf_ktime_get_boot_ns() + 1000,
+				BPF_F_TIMER_ABS);
+	} else {
+		/* Re-arm timer ~35 seconds in future */
+		bpf_timer_start(timer, bpf_ktime_get_boot_ns() + (1ull << 35),
+				BPF_F_TIMER_ABS);
+	}
+
+	return 0;
+}
+
+SEC("fentry/bpf_fentry_test3")
+int BPF_PROG2(test3, int, a)
+{
+	int key = 0;
+	struct bpf_timer *timer;
+
+	bpf_printk("test3");
+
+	timer = bpf_map_lookup_elem(&abs_timer, &key);
+	if (timer) {
+		if (bpf_timer_init(timer, &abs_timer, CLOCK_BOOTTIME) != 0)
+			err |= 2048;
+		bpf_timer_set_callback(timer, timer_cb3);
+		bpf_timer_start(timer, bpf_ktime_get_boot_ns() + 1000,
+				BPF_F_TIMER_ABS);
+	}
+
+	return 0;
+}
+
+/* callback for pinned timer */
+static int timer_cb_pinned(void *map, int *key, struct bpf_timer *timer)
+{
+	__s32 cpu = bpf_get_smp_processor_id();
+
+	if (cpu != pinned_cpu)
+		err |= 16384;
+
+	pinned_callback_check++;
+	return 0;
+}
+
+static void test_pinned_timer(bool soft)
+{
+	int key = 0;
+	void *map;
+	struct bpf_timer *timer;
+	__u64 flags = BPF_F_TIMER_CPU_PIN;
+	__u64 start_time;
+
+	if (soft) {
+		map = &soft_timer_pinned;
+		start_time = 0;
+	} else {
+		map = &abs_timer_pinned;
+		start_time = bpf_ktime_get_boot_ns();
+		flags |= BPF_F_TIMER_ABS;
+	}
+
+	timer = bpf_map_lookup_elem(map, &key);
+	if (timer) {
+		if (bpf_timer_init(timer, map, CLOCK_BOOTTIME) != 0)
+			err |= 4096;
+		bpf_timer_set_callback(timer, timer_cb_pinned);
+		pinned_cpu = bpf_get_smp_processor_id();
+		bpf_timer_start(timer, start_time + 1000, flags);
+	} else {
+		err |= 8192;
+	}
+}
+
+SEC("fentry/bpf_fentry_test4")
+int BPF_PROG2(test4, int, a)
+{
+	bpf_printk("test4");
+	test_pinned_timer(true);
+
+	return 0;
+}
+
+SEC("fentry/bpf_fentry_test5")
+int BPF_PROG2(test5, int, a)
+{
+	bpf_printk("test5");
+	test_pinned_timer(false);
+
+	return 0;
+}
+
+static int race_timer_callback(void *race_array, int *race_key, struct bpf_timer *timer)
+{
+	bpf_timer_start(timer, 1000000, 0);
+	return 0;
+}
+
+/* Callback that updates its own map element */
+static int update_self_callback(void *map, int *key, struct bpf_timer *timer)
+{
+	struct elem init = {};
+
+	bpf_map_update_elem(map, key, &init, BPF_ANY);
+	__sync_fetch_and_add(&update_hits, 1);
+	return 0;
+}
+
+/* Callback that cancels itself using async cancel */
+static int cancel_self_callback(void *map, int *key, struct bpf_timer *timer)
+{
+	bpf_timer_cancel_async(timer);
+	__sync_fetch_and_add(&cancel_hits, 1);
+	return 0;
+}
+
+enum test_mode {
+	TEST_RACE_SYNC,
+	TEST_RACE_ASYNC,
+	TEST_UPDATE,
+	TEST_CANCEL,
+};
+
+static __always_inline int test_common(enum test_mode mode)
+{
+	struct bpf_timer *timer;
+	struct elem init;
+	int ret, key = 0;
+
+	__builtin_memset(&init, 0, sizeof(struct elem));
+
+	bpf_map_update_elem(&race_array, &key, &init, BPF_ANY);
+	timer = bpf_map_lookup_elem(&race_array, &key);
+	if (!timer)
+		return 0;
+
+	ret = bpf_timer_init(timer, &race_array, CLOCK_MONOTONIC);
+	if (ret && ret != -EBUSY)
+		return 0;
+
+	if (mode == TEST_RACE_SYNC || mode == TEST_RACE_ASYNC)
+		bpf_timer_set_callback(timer, race_timer_callback);
+	else if (mode == TEST_UPDATE)
+		bpf_timer_set_callback(timer, update_self_callback);
+	else
+		bpf_timer_set_callback(timer, cancel_self_callback);
+
+	bpf_timer_start(timer, 0, 0);
+
+	if (mode == TEST_RACE_ASYNC)
+		bpf_timer_cancel_async(timer);
+	else if (mode == TEST_RACE_SYNC)
+		bpf_timer_cancel(timer);
+
+	return 0;
+}
+
+SEC("syscall")
+int race(void *ctx)
+{
+	return test_common(async_cancel ? TEST_RACE_ASYNC : TEST_RACE_SYNC);
+}
+
+SEC("perf_event")
+int nmi_race(void *ctx)
+{
+	__sync_fetch_and_add(&test_hits, 1);
+	return test_common(TEST_RACE_ASYNC);
+}
+
+SEC("perf_event")
+int nmi_update(void *ctx)
+{
+	__sync_fetch_and_add(&test_hits, 1);
+	return test_common(TEST_UPDATE);
+}
+
+SEC("perf_event")
+int nmi_cancel(void *ctx)
+{
+	__sync_fetch_and_add(&test_hits, 1);
+	return test_common(TEST_CANCEL);
 }

@@ -21,7 +21,7 @@
  * XXX No longer using virtual page tables, kill this upper limit...
  */
 #define VA_BITS		44
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #define VPTE_SIZE	(1UL << (VA_BITS - PAGE_SHIFT + 3))
 #else
 #define VPTE_SIZE	(1 << (VA_BITS - PAGE_SHIFT + 3))
@@ -45,7 +45,7 @@
 
 #endif
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 /* The Sparc processor specific thread struct. */
 /* XXX This should die, everything can go into thread_info now. */
@@ -62,7 +62,7 @@ struct thread_struct {
 #endif
 };
 
-#endif /* !(__ASSEMBLY__) */
+#endif /* !(__ASSEMBLER__) */
 
 #ifndef CONFIG_DEBUG_SPINLOCK
 #define INIT_THREAD  {			\
@@ -75,7 +75,7 @@ struct thread_struct {
 }
 #endif /* !(CONFIG_DEBUG_SPINLOCK) */
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #include <linux/types.h>
 #include <asm/fpumacro.h>
@@ -176,9 +176,6 @@ do { \
 	regs->tstate &= ~TSTATE_PEF;	\
 } while (0)
 
-/* Free all resources held by a thread. */
-#define release_thread(tsk)		do { } while (0)
-
 unsigned long __get_wchan(struct task_struct *task);
 
 #define task_pt_regs(tsk) (task_thread_info(tsk)->kregs)
@@ -216,7 +213,6 @@ unsigned long __get_wchan(struct task_struct *task);
  */
 #define ARCH_HAS_PREFETCH
 #define ARCH_HAS_PREFETCHW
-#define ARCH_HAS_SPINLOCK_PREFETCH
 
 static inline void prefetch(const void *x)
 {
@@ -242,12 +238,10 @@ static inline void prefetchw(const void *x)
 			     : "r" (x));
 }
 
-#define spin_lock_prefetch(x)	prefetchw(x)
-
 #define HAVE_ARCH_PICK_MMAP_LAYOUT
 
 int do_mathemu(struct pt_regs *regs, struct fpustate *f, bool illegal_insn_trap);
 
-#endif /* !(__ASSEMBLY__) */
+#endif /* !(__ASSEMBLER__) */
 
 #endif /* !(__ASM_SPARC64_PROCESSOR_H) */

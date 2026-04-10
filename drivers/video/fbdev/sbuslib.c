@@ -5,13 +5,14 @@
  */
 
 #include <linux/compat.h>
+#include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/string.h>
 #include <linux/fb.h>
 #include <linux/mm.h>
 #include <linux/uaccess.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 
 #include <asm/fbio.h>
 
@@ -38,7 +39,7 @@ static unsigned long sbusfb_mmapsize(long size, unsigned long fbsize)
 	return fbsize * (-size);
 }
 
-int sbusfb_mmap_helper(struct sbus_mmap_map *map,
+int sbusfb_mmap_helper(const struct sbus_mmap_map *map,
 		       unsigned long physbase,
 		       unsigned long fbsize,
 		       unsigned long iospace,
@@ -48,7 +49,7 @@ int sbusfb_mmap_helper(struct sbus_mmap_map *map,
 	unsigned long map_offset = 0;
 	unsigned long off;
 	int i;
-                                        
+
 	if (!(vma->vm_flags & (VM_SHARED | VM_MAYSHARE)))
 		return -EINVAL;
 
@@ -60,6 +61,7 @@ int sbusfb_mmap_helper(struct sbus_mmap_map *map,
 
 	/* VM_IO | VM_DONTEXPAND | VM_DONTDUMP are set by remap_pfn_range() */
 
+	vma->vm_page_prot = pgprot_decrypted(vma->vm_page_prot);
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
 	/* Each page, see which map applies */
@@ -72,7 +74,7 @@ int sbusfb_mmap_helper(struct sbus_mmap_map *map,
 #define POFF_MASK	(PAGE_MASK|0x1UL)
 #else
 #define POFF_MASK	(PAGE_MASK)
-#endif				
+#endif
 				map_offset = (physbase + map[i].poff) & POFF_MASK;
 				break;
 			}

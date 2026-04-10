@@ -53,7 +53,7 @@ static int ioa_add_path(struct path_selector *ps, struct dm_path *path,
 		return -EINVAL;
 	}
 
-	pi = kzalloc(sizeof(*pi), GFP_KERNEL);
+	pi = kzalloc_obj(*pi);
 	if (!pi) {
 		*error = "io-affinity ps: Error allocating path context";
 		return -ENOMEM;
@@ -108,16 +108,15 @@ free_pi:
 	return ret;
 }
 
-static int ioa_create(struct path_selector *ps, unsigned argc, char **argv)
+static int ioa_create(struct path_selector *ps, unsigned int argc, char **argv)
 {
 	struct selector *s;
 
-	s = kmalloc(sizeof(*s), GFP_KERNEL);
+	s = kmalloc_obj(*s);
 	if (!s)
 		return -ENOMEM;
 
-	s->path_map = kzalloc(nr_cpu_ids * sizeof(struct path_info *),
-			      GFP_KERNEL);
+	s->path_map = kzalloc_objs(struct path_info *, nr_cpu_ids);
 	if (!s->path_map)
 		goto free_selector;
 
@@ -138,7 +137,7 @@ free_selector:
 static void ioa_destroy(struct path_selector *ps)
 {
 	struct selector *s = ps->context;
-	unsigned cpu;
+	unsigned int cpu;
 
 	for_each_cpu(cpu, s->path_mask)
 		ioa_free_path(s, cpu);
@@ -162,7 +161,7 @@ static int ioa_status(struct path_selector *ps, struct dm_path *path,
 		return sz;
 	}
 
-	switch(type) {
+	switch (type) {
 	case STATUSTYPE_INFO:
 		DMEMIT("%d ", atomic_read(&s->map_misses));
 		break;
@@ -260,10 +259,7 @@ static int __init dm_ioa_init(void)
 
 static void __exit dm_ioa_exit(void)
 {
-	int ret = dm_unregister_path_selector(&ioa_ps);
-
-	if (ret < 0)
-		DMERR("unregister failed %d", ret);
+	dm_unregister_path_selector(&ioa_ps);
 }
 
 module_init(dm_ioa_init);

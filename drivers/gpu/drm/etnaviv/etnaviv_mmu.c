@@ -6,6 +6,8 @@
 #include <linux/dma-mapping.h>
 #include <linux/scatterlist.h>
 
+#include <drm/drm_print.h>
+
 #include "common.xml.h"
 #include "etnaviv_cmdbuf.h"
 #include "etnaviv_drv.h"
@@ -18,12 +20,6 @@ static void etnaviv_context_unmap(struct etnaviv_iommu_context *context,
 {
 	size_t unmapped_page, unmapped = 0;
 	size_t pgsize = SZ_4K;
-
-	if (!IS_ALIGNED(iova | size, pgsize)) {
-		pr_err("unaligned: iova 0x%lx size 0x%zx min_pagesz 0x%zx\n",
-		       iova, size, pgsize);
-		return;
-	}
 
 	while (unmapped < size) {
 		unmapped_page = context->global->ops->unmap(context, iova,
@@ -45,12 +41,6 @@ static int etnaviv_context_map(struct etnaviv_iommu_context *context,
 	size_t orig_size = size;
 	int ret = 0;
 
-	if (!IS_ALIGNED(iova | paddr | size, pgsize)) {
-		pr_err("unaligned: iova 0x%lx pa %pa size 0x%zx min_pagesz 0x%zx\n",
-		       iova, &paddr, size, pgsize);
-		return -EINVAL;
-	}
-
 	while (size) {
 		ret = context->global->ops->map(context, iova, paddr, pgsize,
 						prot);
@@ -69,9 +59,11 @@ static int etnaviv_context_map(struct etnaviv_iommu_context *context,
 	return ret;
 }
 
-static int etnaviv_iommu_map(struct etnaviv_iommu_context *context, u32 iova,
-			     struct sg_table *sgt, unsigned len, int prot)
-{	struct scatterlist *sg;
+static int etnaviv_iommu_map(struct etnaviv_iommu_context *context,
+			     u32 iova, unsigned int va_len,
+			     struct sg_table *sgt, int prot)
+{
+	struct scatterlist *sg;
 	unsigned int da = iova;
 	unsigned int i;
 	int ret;
@@ -80,15 +72,25 @@ static int etnaviv_iommu_map(struct etnaviv_iommu_context *context, u32 iova,
 		return -EINVAL;
 
 	for_each_sgtable_dma_sg(sgt, sg, i) {
-		u32 pa = sg_dma_address(sg) - sg->offset;
-		size_t bytes = sg_dma_len(sg) + sg->offset;
+		phys_addr_t pa = sg_dma_address(sg);
+		unsigned int da_len = sg_dma_len(sg);
+		unsigned int bytes = min_t(unsigned int, da_len, va_len);
 
-		VERB("map[%d]: %08x %08x(%zx)", i, iova, pa, bytes);
+		VERB("map[%d]: %08x %pap(%x)", i, da, &pa, bytes);
+
+		if (!IS_ALIGNED(iova | pa | bytes, SZ_4K)) {
+			dev_err(context->global->dev,
+				"unaligned: iova 0x%x pa %pa size 0x%x\n",
+				iova, &pa, bytes);
+			ret = -EINVAL;
+			goto fail;
+		}
 
 		ret = etnaviv_context_map(context, da, pa, bytes, prot);
 		if (ret)
 			goto fail;
 
+		va_len -= bytes;
 		da += bytes;
 	}
 
@@ -104,21 +106,7 @@ fail:
 static void etnaviv_iommu_unmap(struct etnaviv_iommu_context *context, u32 iova,
 				struct sg_table *sgt, unsigned len)
 {
-	struct scatterlist *sg;
-	unsigned int da = iova;
-	int i;
-
-	for_each_sgtable_dma_sg(sgt, sg, i) {
-		size_t bytes = sg_dma_len(sg) + sg->offset;
-
-		etnaviv_context_unmap(context, da, bytes);
-
-		VERB("unmap[%d]: %08x(%zx)", i, iova, bytes);
-
-		BUG_ON(!PAGE_ALIGNED(bytes));
-
-		da += bytes;
-	}
+	etnaviv_context_unmap(context, iova, len);
 
 	context->flush_seq++;
 }
@@ -131,8 +119,21 @@ static void etnaviv_iommu_remove_mapping(struct etnaviv_iommu_context *context,
 	lockdep_assert_held(&context->lock);
 
 	etnaviv_iommu_unmap(context, mapping->vram_node.start,
-			    etnaviv_obj->sgt, etnaviv_obj->base.size);
+			    etnaviv_obj->sgt, etnaviv_obj->size);
 	drm_mm_remove_node(&mapping->vram_node);
+}
+
+void etnaviv_iommu_reap_mapping(struct etnaviv_vram_mapping *mapping)
+{
+	struct etnaviv_iommu_context *context = mapping->context;
+
+	lockdep_assert_held(&context->lock);
+	WARN_ON(mapping->use);
+
+	etnaviv_iommu_remove_mapping(context, mapping);
+	etnaviv_iommu_context_put(mapping->context);
+	mapping->context = NULL;
+	list_del_init(&mapping->mmu_node);
 }
 
 static int etnaviv_iommu_find_iova(struct etnaviv_iommu_context *context,
@@ -202,10 +203,7 @@ static int etnaviv_iommu_find_iova(struct etnaviv_iommu_context *context,
 		 * this mapping.
 		 */
 		list_for_each_entry_safe(m, n, &list, scan_node) {
-			etnaviv_iommu_remove_mapping(context, m);
-			etnaviv_iommu_context_put(m->context);
-			m->context = NULL;
-			list_del_init(&m->mmu_node);
+			etnaviv_iommu_reap_mapping(m);
 			list_del_init(&m->scan_node);
 		}
 
@@ -257,10 +255,7 @@ static int etnaviv_iommu_insert_exact(struct etnaviv_iommu_context *context,
 	}
 
 	list_for_each_entry_safe(m, n, &scan_list, scan_node) {
-		etnaviv_iommu_remove_mapping(context, m);
-		etnaviv_iommu_context_put(m->context);
-		m->context = NULL;
-		list_del_init(&m->mmu_node);
+		etnaviv_iommu_reap_mapping(m);
 		list_del_init(&m->scan_node);
 	}
 
@@ -298,16 +293,14 @@ int etnaviv_iommu_map_gem(struct etnaviv_iommu_context *context,
 	node = &mapping->vram_node;
 
 	if (va)
-		ret = etnaviv_iommu_insert_exact(context, node,
-						 etnaviv_obj->base.size, va);
+		ret = etnaviv_iommu_insert_exact(context, node, etnaviv_obj->size, va);
 	else
-		ret = etnaviv_iommu_find_iova(context, node,
-					      etnaviv_obj->base.size);
+		ret = etnaviv_iommu_find_iova(context, node, etnaviv_obj->size);
 	if (ret < 0)
 		goto unlock;
 
 	mapping->iova = node->start;
-	ret = etnaviv_iommu_map(context, node->start, sgt, etnaviv_obj->base.size,
+	ret = etnaviv_iommu_map(context, node->start, etnaviv_obj->size, sgt,
 				ETNAVIV_PROT_READ | ETNAVIV_PROT_WRITE);
 
 	if (ret < 0) {
@@ -351,7 +344,7 @@ static void etnaviv_iommu_context_free(struct kref *kref)
 		container_of(kref, struct etnaviv_iommu_context, refcount);
 
 	etnaviv_cmdbuf_suballoc_unmap(context, &context->cmdbuf_mapping);
-
+	mutex_destroy(&context->lock);
 	context->global->ops->free(context);
 }
 void etnaviv_iommu_context_put(struct etnaviv_iommu_context *context)
@@ -501,7 +494,7 @@ int etnaviv_iommu_global_init(struct etnaviv_gpu *gpu)
 		return 0;
 	}
 
-	global = kzalloc(sizeof(*global), GFP_KERNEL);
+	global = kzalloc_obj(*global);
 	if (!global)
 		return -ENOMEM;
 
@@ -545,6 +538,9 @@ void etnaviv_iommu_global_fini(struct etnaviv_gpu *gpu)
 {
 	struct etnaviv_drm_private *priv = gpu->drm->dev_private;
 	struct etnaviv_iommu_global *global = priv->mmu_global;
+
+	if (!global)
+		return;
 
 	if (--global->use > 0)
 		return;

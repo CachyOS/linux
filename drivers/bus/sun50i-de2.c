@@ -24,10 +24,9 @@ static int sun50i_de2_bus_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int sun50i_de2_bus_remove(struct platform_device *pdev)
+static void sun50i_de2_bus_remove(struct platform_device *pdev)
 {
 	sunxi_sram_release(&pdev->dev);
-	return 0;
 }
 
 static const struct of_device_id sun50i_de2_bus_of_match[] = {

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-only
-#include <linux/aer.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>
 #include <linux/list.h>
@@ -442,7 +441,7 @@ static int nitrox_probe(struct pci_dev *pdev,
 		goto flr_fail;
 	pci_set_master(pdev);
 
-	ndev = kzalloc(sizeof(*ndev), GFP_KERNEL);
+	ndev = kzalloc_obj(*ndev);
 	if (!ndev) {
 		err = -ENOMEM;
 		goto ndev_fail;

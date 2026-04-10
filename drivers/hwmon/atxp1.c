@@ -16,6 +16,7 @@
 #include <linux/hwmon.h>
 #include <linux/hwmon-vid.h>
 #include <linux/err.h>
+#include <linux/kstrtox.h>
 #include <linux/mutex.h>
 #include <linux/sysfs.h>
 #include <linux/slab.h>
@@ -277,7 +278,7 @@ static int atxp1_probe(struct i2c_client *client)
 };
 
 static const struct i2c_device_id atxp1_id[] = {
-	{ "atxp1", 0 },
+	{ "atxp1" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, atxp1_id);
@@ -287,7 +288,7 @@ static struct i2c_driver atxp1_driver = {
 	.driver = {
 		.name	= "atxp1",
 	},
-	.probe_new	= atxp1_probe,
+	.probe		= atxp1_probe,
 	.id_table	= atxp1_id,
 };
 

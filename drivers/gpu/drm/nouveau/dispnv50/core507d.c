@@ -22,7 +22,7 @@
 #include "core.h"
 #include "head.h"
 
-#include <nvif/cl507d.h>
+#include <nvif/if0014.h>
 #include <nvif/push507c.h>
 #include <nvif/timer.h>
 
@@ -33,7 +33,7 @@
 int
 core507d_update(struct nv50_core *core, u32 *interlock, bool ntfy)
 {
-	struct nvif_push *push = core->chan.push;
+	struct nvif_push *push = &core->chan.push;
 	int ret;
 
 	if ((ret = PUSH_WAIT(push, (ntfy ? 2 : 0) + 3)))
@@ -80,7 +80,7 @@ core507d_ntfy_init(struct nouveau_bo *bo, u32 offset)
 int
 core507d_read_caps(struct nv50_disp *disp)
 {
-	struct nvif_push *push = disp->core->chan.push;
+	struct nvif_push *push = &disp->core->chan.push;
 	int ret;
 
 	ret = PUSH_WAIT(push, 6);
@@ -130,7 +130,7 @@ core507d_caps_init(struct nouveau_drm *drm, struct nv50_disp *disp)
 int
 core507d_init(struct nv50_core *core)
 {
-	struct nvif_push *push = core->chan.push;
+	struct nvif_push *push = &core->chan.push;
 	int ret;
 
 	if ((ret = PUSH_WAIT(push, 2)))
@@ -157,16 +157,17 @@ int
 core507d_new_(const struct nv50_core_func *func, struct nouveau_drm *drm,
 	      s32 oclass, struct nv50_core **pcore)
 {
-	struct nv50_disp_core_channel_dma_v0 args = {};
+	struct nvif_disp_chan_v0 args = {};
 	struct nv50_disp *disp = nv50_disp(drm->dev);
 	struct nv50_core *core;
 	int ret;
 
-	if (!(core = *pcore = kzalloc(sizeof(*core), GFP_KERNEL)))
+	if (!(core = *pcore = kzalloc_obj(*core)))
 		return -ENOMEM;
 	core->func = func;
+	core->disp = disp;
 
-	ret = nv50_dmac_create(&drm->client.device, &disp->disp->object,
+	ret = nv50_dmac_create(drm,
 			       &oclass, 0, &args, sizeof(args),
 			       disp->sync->offset, &core->chan);
 	if (ret) {

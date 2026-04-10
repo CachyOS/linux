@@ -65,6 +65,7 @@
 	SRI(AFMT_60958_1, DIG, id), \
 	SRI(AFMT_60958_2, DIG, id), \
 	SRI(DIG_FE_CNTL, DIG, id), \
+	SR(DAC_SOURCE_SELECT), \
 	SRI(HDMI_CONTROL, DIG, id), \
 	SRI(HDMI_GC, DIG, id), \
 	SRI(HDMI_GENERIC_PACKET_CONTROL0, DIG, id), \
@@ -115,7 +116,7 @@
 #define SE_SF(reg_name, field_name, post_fix)\
 	.field_name = reg_name ## __ ## field_name ## post_fix
 
-#define SE_COMMON_MASK_SH_LIST_DCE_COMMON_BASE(mask_sh)\
+#define SE_COMMON_MASK_SH_LIST_DCE_COMMON(mask_sh)\
 	SE_SF(AFMT_VBI_PACKET_CONTROL, AFMT_GENERIC_INDEX, mask_sh),\
 	SE_SF(AFMT_VBI_PACKET_CONTROL, AFMT_GENERIC0_UPDATE, mask_sh),\
 	SE_SF(AFMT_VBI_PACKET_CONTROL, AFMT_GENERIC2_UPDATE, mask_sh),\
@@ -140,6 +141,7 @@
 	SE_SF(HDMI_VBI_PACKET_CONTROL, HDMI_GC_CONT, mask_sh),\
 	SE_SF(HDMI_VBI_PACKET_CONTROL, HDMI_GC_SEND, mask_sh),\
 	SE_SF(HDMI_VBI_PACKET_CONTROL, HDMI_NULL_SEND, mask_sh),\
+	SE_SF(HDMI_VBI_PACKET_CONTROL, HDMI_ACP_SEND, mask_sh),\
 	SE_SF(HDMI_INFOFRAME_CONTROL0, HDMI_AUDIO_INFO_SEND, mask_sh),\
 	SE_SF(AFMT_INFOFRAME_CONTROL0, AFMT_AUDIO_INFO_UPDATE, mask_sh),\
 	SE_SF(HDMI_INFOFRAME_CONTROL1, HDMI_AUDIO_INFO_LINE, mask_sh),\
@@ -202,10 +204,7 @@
 	SE_SF(AFMT_AUDIO_PACKET_CONTROL, AFMT_AUDIO_SAMPLE_SEND, mask_sh),\
 	SE_SF(DIG_FE_CNTL, DIG_SOURCE_SELECT, mask_sh)
 
-#define SE_COMMON_MASK_SH_LIST_DCE_COMMON(mask_sh)\
-	SE_COMMON_MASK_SH_LIST_DCE_COMMON_BASE(mask_sh)
-
-#define SE_COMMON_MASK_SH_LIST_SOC_BASE(mask_sh)\
+#define SE_COMMON_MASK_SH_LIST_SOC(mask_sh)\
 	SE_SF(DIG0_AFMT_VBI_PACKET_CONTROL, AFMT_GENERIC_INDEX, mask_sh),\
 	SE_SF(DIG0_AFMT_GENERIC_HDR, AFMT_GENERIC_HB0, mask_sh),\
 	SE_SF(DIG0_AFMT_GENERIC_HDR, AFMT_GENERIC_HB1, mask_sh),\
@@ -227,6 +226,7 @@
 	SE_SF(DIG0_HDMI_VBI_PACKET_CONTROL, HDMI_GC_CONT, mask_sh),\
 	SE_SF(DIG0_HDMI_VBI_PACKET_CONTROL, HDMI_GC_SEND, mask_sh),\
 	SE_SF(DIG0_HDMI_VBI_PACKET_CONTROL, HDMI_NULL_SEND, mask_sh),\
+	SE_SF(DIG0_HDMI_VBI_PACKET_CONTROL, HDMI_ACP_SEND, mask_sh),\
 	SE_SF(DIG0_HDMI_INFOFRAME_CONTROL0, HDMI_AUDIO_INFO_SEND, mask_sh),\
 	SE_SF(DIG0_AFMT_INFOFRAME_CONTROL0, AFMT_AUDIO_INFO_UPDATE, mask_sh),\
 	SE_SF(DIG0_HDMI_INFOFRAME_CONTROL1, HDMI_AUDIO_INFO_LINE, mask_sh),\
@@ -288,13 +288,11 @@
 	SE_SF(DIG0_DIG_FE_CNTL, DIG_STEREOSYNC_GATE_EN, mask_sh),\
 	SE_SF(DIG0_DIG_FE_CNTL, DIG_SOURCE_SELECT, mask_sh)
 
-#define SE_COMMON_MASK_SH_LIST_SOC(mask_sh)\
-	SE_COMMON_MASK_SH_LIST_SOC_BASE(mask_sh)
-
 #define SE_COMMON_MASK_SH_LIST_DCE80_100(mask_sh)\
 	SE_COMMON_MASK_SH_LIST_DCE_COMMON(mask_sh),\
 	SE_SF(TMDS_CNTL, TMDS_PIXEL_ENCODING, mask_sh),\
-	SE_SF(TMDS_CNTL, TMDS_COLOR_FORMAT, mask_sh)
+	SE_SF(TMDS_CNTL, TMDS_COLOR_FORMAT, mask_sh),\
+	SE_SF(DAC_SOURCE_SELECT, DAC_SOURCE_SELECT, mask_sh)
 
 #define SE_COMMON_MASK_SH_LIST_DCE110(mask_sh)\
 	SE_COMMON_MASK_SH_LIST_DCE_COMMON(mask_sh),\
@@ -414,6 +412,7 @@ struct dce_stream_encoder_shift {
 	uint8_t HDMI_GC_SEND;
 	uint8_t HDMI_NULL_SEND;
 	uint8_t HDMI_DATA_SCRAMBLE_EN;
+	uint8_t HDMI_ACP_SEND;
 	uint8_t HDMI_AUDIO_INFO_SEND;
 	uint8_t AFMT_AUDIO_INFO_UPDATE;
 	uint8_t HDMI_AUDIO_INFO_LINE;
@@ -497,6 +496,7 @@ struct dce_stream_encoder_shift {
 	uint8_t DP_VID_N_MUL;
 	uint8_t DP_VID_M_DOUBLE_VALUE_EN;
 	uint8_t DIG_SOURCE_SELECT;
+	uint8_t DAC_SOURCE_SELECT;
 };
 
 struct dce_stream_encoder_mask {
@@ -545,6 +545,7 @@ struct dce_stream_encoder_mask {
 	uint32_t HDMI_GC_SEND;
 	uint32_t HDMI_NULL_SEND;
 	uint32_t HDMI_DATA_SCRAMBLE_EN;
+	uint32_t HDMI_ACP_SEND;
 	uint32_t HDMI_AUDIO_INFO_SEND;
 	uint32_t AFMT_AUDIO_INFO_UPDATE;
 	uint32_t HDMI_AUDIO_INFO_LINE;
@@ -628,6 +629,7 @@ struct dce_stream_encoder_mask {
 	uint32_t DP_VID_N_MUL;
 	uint32_t DP_VID_M_DOUBLE_VALUE_EN;
 	uint32_t DIG_SOURCE_SELECT;
+	uint32_t DAC_SOURCE_SELECT;
 };
 
 struct dce110_stream_enc_registers {
@@ -655,6 +657,7 @@ struct dce110_stream_enc_registers {
 	uint32_t AFMT_60958_1;
 	uint32_t AFMT_60958_2;
 	uint32_t DIG_FE_CNTL;
+	uint32_t DAC_SOURCE_SELECT;
 	uint32_t DP_MSE_RATE_CNTL;
 	uint32_t DP_MSE_RATE_UPDATE;
 	uint32_t DP_PIXEL_FORMAT;
@@ -710,6 +713,14 @@ void dce110_stream_encoder_construct(
 	const struct dce_stream_encoder_shift *se_shift,
 	const struct dce_stream_encoder_mask *se_mask);
 
+void dce110_analog_stream_encoder_construct(
+	struct dce110_stream_encoder *enc110,
+	struct dc_context *ctx,
+	struct dc_bios *bp,
+	enum engine_id eng_id,
+	const struct dce110_stream_enc_registers *regs,
+	const struct dce_stream_encoder_shift *se_shift,
+	const struct dce_stream_encoder_mask *se_mask);
 
 void dce110_se_audio_mute_control(
 	struct stream_encoder *enc, bool mute);

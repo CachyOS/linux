@@ -231,7 +231,7 @@ are the following:
 	present).
 
 	The existence of the limit may be a result of some (often unintentional)
-	BIOS settings, restrictions coming from a service processor or another
+	BIOS settings, restrictions coming from a service processor or other
 	BIOS/HW-based mechanisms.
 
 	This does not cover ACPI thermal limitations which can be discovered
@@ -248,6 +248,20 @@ are the following:
 	If that frequency cannot be determined, this attribute should not
 	be present.
 
+``cpuinfo_avg_freq``
+        An average frequency (in KHz) of all CPUs belonging to a given policy,
+        derived from a hardware provided feedback and reported on a time frame
+        spanning at most few milliseconds.
+
+        This is expected to be based on the frequency the hardware actually runs
+        at and, as such, might require specialised hardware support (such as AMU
+        extension on ARM). If one cannot be determined, this attribute should
+        not be present.
+
+        Note that failed attempt to retrieve current frequency for a given
+        CPU(s) will result in an appropriate error, i.e.: EAGAIN for CPU that
+        remains idle (raised on ARM).
+
 ``cpuinfo_max_freq``
 	Maximum possible operating frequency the CPUs belonging to this policy
 	can run at (in kHz).
@@ -260,12 +274,12 @@ are the following:
 	The time it takes to switch the CPUs belonging to this policy from one
 	P-state to another, in nanoseconds.
 
-	If unknown or if known to be so high that the scaling driver does not
-	work with the `ondemand`_ governor, -1 (:c:macro:`CPUFREQ_ETERNAL`)
-	will be returned by reads from this attribute.
-
 ``related_cpus``
 	List of all (online and offline) CPUs belonging to this policy.
+
+``scaling_available_frequencies``
+	List of available frequencies of the CPUs belonging to this policy
+	(in kHz).
 
 ``scaling_available_governors``
 	List of ``CPUFreq`` scaling governors present in the kernel that can
@@ -289,7 +303,8 @@ are the following:
 	Some architectures (e.g. ``x86``) may attempt to provide information
 	more precisely reflecting the current CPU frequency through this
 	attribute, but that still may not be the exact current CPU frequency as
-	seen by the hardware at the moment.
+	seen by the hardware at the moment. This behavior though, is only
+	available via c:macro:``CPUFREQ_ARCH_CUR_FREQ`` option.
 
 ``scaling_driver``
 	The scaling driver currently in use.
@@ -379,7 +394,9 @@ policy limits change after that.
 
 This governor does not do anything by itself.  Instead, it allows user space
 to set the CPU frequency for the policy it is attached to by writing to the
-``scaling_setspeed`` attribute of that policy.
+``scaling_setspeed`` attribute of that policy. Though the intention may be to
+set an exact frequency for the policy, the actual frequency may vary depending
+on hardware coordination, thermal and power limits, and other factors.
 
 ``schedutil``
 -------------
@@ -421,8 +438,8 @@ This governor exposes only one tunable:
 
 ``rate_limit_us``
 	Minimum time (in microseconds) that has to pass between two consecutive
-	runs of governor computations (default: 1000 times the scaling driver's
-	transition latency).
+	runs of governor computations (default: 1.5 times the scaling driver's
+	transition latency or 1ms if the driver does not provide a latency value).
 
 	The purpose of this tunable is to reduce the scheduler context overhead
 	of the governor which might be excessive without it.
@@ -470,17 +487,17 @@ This governor exposes the following tunables:
 	This is how often the governor's worker routine should run, in
 	microseconds.
 
-	Typically, it is set to values of the order of 10000 (10 ms).  Its
-	default value is equal to the value of ``cpuinfo_transition_latency``
-	for each policy this governor is attached to (but since the unit here
-	is greater by 1000, this means that the time represented by
-	``sampling_rate`` is 1000 times greater than the transition latency by
-	default).
+	Typically, it is set to values of the order of 2000 (2 ms).  Its
+	default value is to add a 50% breathing room
+	to ``cpuinfo_transition_latency`` on each policy this governor is
+	attached to. The minimum is typically the length of two scheduler
+	ticks.
 
 	If this tunable is per-policy, the following shell command sets the time
-	represented by it to be 750 times as high as the transition latency::
+	represented by it to be 1.5 times as high as the transition latency
+	(the default)::
 
-	# echo `$(($(cat cpuinfo_transition_latency) * 750 / 1000)) > ondemand/sampling_rate
+	# echo `$(($(cat cpuinfo_transition_latency) * 3 / 2))` > ondemand/sampling_rate
 
 ``up_threshold``
 	If the estimated CPU load is above this value (in percent), the governor

@@ -58,7 +58,7 @@ static inline void heartbeat_toggle_bit(struct heartbeat_data *hd,
 
 static void heartbeat_timer(struct timer_list *t)
 {
-	struct heartbeat_data *hd = from_timer(hd, t, timer);
+	struct heartbeat_data *hd = timer_container_of(hd, t, timer);
 	static unsigned bit = 0, up = 1;
 
 	heartbeat_toggle_bit(hd, bit, hd->flags & HEARTBEAT_INVERTED);
@@ -91,7 +91,7 @@ static int heartbeat_drv_probe(struct platform_device *pdev)
 	if (pdev->dev.platform_data) {
 		hd = pdev->dev.platform_data;
 	} else {
-		hd = kzalloc(sizeof(struct heartbeat_data), GFP_KERNEL);
+		hd = kzalloc_obj(struct heartbeat_data);
 		if (unlikely(!hd))
 			return -ENOMEM;
 	}

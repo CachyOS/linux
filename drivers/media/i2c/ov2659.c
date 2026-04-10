@@ -1031,17 +1031,13 @@ static int ov2659_get_fmt(struct v4l2_subdev *sd,
 	dev_dbg(&client->dev, "ov2659_get_fmt\n");
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-#ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
 		struct v4l2_mbus_framefmt *mf;
 
-		mf = v4l2_subdev_get_try_format(sd, sd_state, 0);
+		mf = v4l2_subdev_state_get_format(sd_state, 0);
 		mutex_lock(&ov2659->lock);
 		fmt->format = *mf;
 		mutex_unlock(&ov2659->lock);
 		return 0;
-#else
-		return -EINVAL;
-#endif
 	}
 
 	mutex_lock(&ov2659->lock);
@@ -1113,10 +1109,8 @@ static int ov2659_set_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&ov2659->lock);
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-#ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		mf = v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
+		mf = v4l2_subdev_state_get_format(sd_state, fmt->pad);
 		*mf = fmt->format;
-#endif
 	} else {
 		s64 val;
 
@@ -1306,12 +1300,11 @@ static int ov2659_power_on(struct device *dev)
  * V4L2 subdev internal operations
  */
 
-#ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
 static int ov2659_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	struct v4l2_mbus_framefmt *format =
-				v4l2_subdev_get_try_format(sd, fh->state, 0);
+				v4l2_subdev_state_get_format(fh->state, 0);
 
 	dev_dbg(&client->dev, "%s:\n", __func__);
 
@@ -1319,7 +1312,6 @@ static int ov2659_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 
 	return 0;
 }
-#endif
 
 static const struct v4l2_subdev_core_ops ov2659_subdev_core_ops = {
 	.log_status = v4l2_ctrl_subdev_log_status,
@@ -1338,7 +1330,6 @@ static const struct v4l2_subdev_pad_ops ov2659_subdev_pad_ops = {
 	.set_fmt = ov2659_set_fmt,
 };
 
-#ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
 static const struct v4l2_subdev_ops ov2659_subdev_ops = {
 	.core  = &ov2659_subdev_core_ops,
 	.video = &ov2659_subdev_video_ops,
@@ -1348,7 +1339,6 @@ static const struct v4l2_subdev_ops ov2659_subdev_ops = {
 static const struct v4l2_subdev_internal_ops ov2659_subdev_internal_ops = {
 	.open = ov2659_open,
 };
-#endif
 
 static int ov2659_detect(struct v4l2_subdev *sd)
 {
@@ -1398,7 +1388,7 @@ ov2659_get_pdata(struct i2c_client *client)
 	if (!IS_ENABLED(CONFIG_OF) || !client->dev.of_node)
 		return client->dev.platform_data;
 
-	endpoint = of_graph_get_next_endpoint(client->dev.of_node, NULL);
+	endpoint = of_graph_get_endpoint_by_regs(client->dev.of_node, 0, -1);
 	if (!endpoint)
 		return NULL;
 
@@ -1447,9 +1437,10 @@ static int ov2659_probe(struct i2c_client *client)
 	ov2659->pdata = pdata;
 	ov2659->client = client;
 
-	ov2659->clk = devm_clk_get(&client->dev, "xvclk");
+	ov2659->clk = devm_v4l2_sensor_clk_get(&client->dev, "xvclk");
 	if (IS_ERR(ov2659->clk))
-		return PTR_ERR(ov2659->clk);
+		return dev_err_probe(&client->dev, PTR_ERR(ov2659->clk),
+				     "failed to get xvclk\n");
 
 	ov2659->xvclk_frequency = clk_get_rate(ov2659->clk);
 	if (ov2659->xvclk_frequency < 6000000 ||
@@ -1479,25 +1470,23 @@ static int ov2659_probe(struct i2c_client *client)
 				     V4L2_CID_TEST_PATTERN,
 				     ARRAY_SIZE(ov2659_test_pattern_menu) - 1,
 				     0, 0, ov2659_test_pattern_menu);
-	ov2659->sd.ctrl_handler = &ov2659->ctrls;
 
 	if (ov2659->ctrls.error) {
 		dev_err(&client->dev, "%s: control initialization error %d\n",
 			__func__, ov2659->ctrls.error);
+		v4l2_ctrl_handler_free(&ov2659->ctrls);
 		return  ov2659->ctrls.error;
 	}
 
+	ov2659->sd.ctrl_handler = &ov2659->ctrls;
 	sd = &ov2659->sd;
 	client->flags |= I2C_CLIENT_SCCB;
-#ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-	v4l2_i2c_subdev_init(sd, client, &ov2659_subdev_ops);
 
+	v4l2_i2c_subdev_init(sd, client, &ov2659_subdev_ops);
 	sd->internal_ops = &ov2659_subdev_internal_ops;
 	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE |
 		     V4L2_SUBDEV_FL_HAS_EVENTS;
-#endif
 
-#if defined(CONFIG_MEDIA_CONTROLLER)
 	ov2659->pad.flags = MEDIA_PAD_FL_SOURCE;
 	sd->entity.function = MEDIA_ENT_F_CAM_SENSOR;
 	ret = media_entity_pads_init(&sd->entity, 1, &ov2659->pad);
@@ -1505,7 +1494,6 @@ static int ov2659_probe(struct i2c_client *client)
 		v4l2_ctrl_handler_free(&ov2659->ctrls);
 		return ret;
 	}
-#endif
 
 	mutex_init(&ov2659->lock);
 
@@ -1544,7 +1532,7 @@ error:
 	return ret;
 }
 
-static int ov2659_remove(struct i2c_client *client)
+static void ov2659_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov2659 *ov2659 = to_ov2659(sd);
@@ -1558,8 +1546,6 @@ static int ov2659_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		ov2659_power_off(&client->dev);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 static const struct dev_pm_ops ov2659_pm_ops = {
@@ -1567,8 +1553,8 @@ static const struct dev_pm_ops ov2659_pm_ops = {
 };
 
 static const struct i2c_device_id ov2659_id[] = {
-	{ "ov2659", 0 },
-	{ /* sentinel */ },
+	{ "ov2659" },
+	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(i2c, ov2659_id);
 
@@ -1586,7 +1572,7 @@ static struct i2c_driver ov2659_i2c_driver = {
 		.pm	= &ov2659_pm_ops,
 		.of_match_table = of_match_ptr(ov2659_of_match),
 	},
-	.probe_new	= ov2659_probe,
+	.probe		= ov2659_probe,
 	.remove		= ov2659_remove,
 	.id_table	= ov2659_id,
 };

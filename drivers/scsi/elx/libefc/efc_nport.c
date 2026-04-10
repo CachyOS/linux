@@ -82,7 +82,7 @@ efc_nport_alloc(struct efc_domain *domain, uint64_t wwpn, uint64_t wwnn,
 		}
 	}
 
-	nport = kzalloc(sizeof(*nport), GFP_ATOMIC);
+	nport = kzalloc_obj(*nport, GFP_ATOMIC);
 	if (!nport)
 		return nport;
 
@@ -705,9 +705,9 @@ efc_nport_vport_del(struct efc *efc, struct efc_domain *domain,
 	spin_lock_irqsave(&efc->lock, flags);
 	list_for_each_entry(nport, &domain->nport_list, list_entry) {
 		if (nport->wwpn == wwpn && nport->wwnn == wwnn) {
-			kref_put(&nport->ref, nport->release);
 			/* Shutdown this NPORT */
 			efc_sm_post_event(&nport->sm, EFC_EVT_SHUTDOWN, NULL);
+			kref_put(&nport->ref, nport->release);
 			break;
 		}
 	}
@@ -756,7 +756,7 @@ efc_vport_create_spec(struct efc *efc, uint64_t wwnn, uint64_t wwpn,
 		}
 	}
 
-	vport = kzalloc(sizeof(*vport), GFP_ATOMIC);
+	vport = kzalloc_obj(*vport, GFP_ATOMIC);
 	if (!vport) {
 		spin_unlock_irqrestore(&efc->vport_lock, flags);
 		return NULL;

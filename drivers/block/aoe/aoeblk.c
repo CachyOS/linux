@@ -24,8 +24,8 @@ static DEFINE_MUTEX(aoeblk_mutex);
 static struct kmem_cache *buf_pool_cache;
 static struct dentry *aoe_debugfs_dir;
 
-/* GPFS needs a larger value than the default. */
-static int aoe_maxsectors;
+/* random default picked from the historic block max_sectors cap */
+static int aoe_maxsectors = 2560;
 module_param(aoe_maxsectors, int, 0644);
 MODULE_PARM_DESC(aoe_maxsectors,
 	"When nonzero, set the maximum number of sectors per I/O request");
@@ -108,7 +108,7 @@ static ssize_t aoedisk_show_payload(struct device *dev,
 	return sysfs_emit(page, "%lu\n", d->maxbcnt);
 }
 
-static int aoedisk_debugfs_show(struct seq_file *s, void *ignored)
+static int aoe_debugfs_show(struct seq_file *s, void *ignored)
 {
 	struct aoedev *d;
 	struct aoetgt **t, **te;
@@ -151,11 +151,7 @@ static int aoedisk_debugfs_show(struct seq_file *s, void *ignored)
 
 	return 0;
 }
-
-static int aoe_debugfs_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, aoedisk_debugfs_show, inode->i_private);
-}
+DEFINE_SHOW_ATTRIBUTE(aoe_debugfs);
 
 static DEVICE_ATTR(state, 0444, aoedisk_show_state, NULL);
 static DEVICE_ATTR(mac, 0444, aoedisk_show_mac, NULL);
@@ -184,13 +180,6 @@ static const struct attribute_group *aoe_attr_groups[] = {
 	NULL,
 };
 
-static const struct file_operations aoe_debugfs_fops = {
-	.open = aoe_debugfs_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
-
 static void
 aoedisk_add_debugfs(struct aoedev *d)
 {
@@ -215,9 +204,9 @@ aoedisk_rm_debugfs(struct aoedev *d)
 }
 
 static int
-aoeblk_open(struct block_device *bdev, fmode_t mode)
+aoeblk_open(struct gendisk *disk, blk_mode_t mode)
 {
-	struct aoedev *d = bdev->bd_disk->private_data;
+	struct aoedev *d = disk->private_data;
 	ulong flags;
 
 	if (!virt_addr_valid(d)) {
@@ -243,7 +232,7 @@ aoeblk_open(struct block_device *bdev, fmode_t mode)
 }
 
 static void
-aoeblk_release(struct gendisk *disk, fmode_t mode)
+aoeblk_release(struct gendisk *disk)
 {
 	struct aoedev *d = disk->private_data;
 	ulong flags;
@@ -280,9 +269,9 @@ static blk_status_t aoeblk_queue_rq(struct blk_mq_hw_ctx *hctx,
 }
 
 static int
-aoeblk_getgeo(struct block_device *bdev, struct hd_geometry *geo)
+aoeblk_getgeo(struct gendisk *disk, struct hd_geometry *geo)
 {
-	struct aoedev *d = bdev->bd_disk->private_data;
+	struct aoedev *d = disk->private_data;
 
 	if ((d->flags & DEVFL_UP) == 0) {
 		printk(KERN_ERR "aoe: disk not up\n");
@@ -296,7 +285,7 @@ aoeblk_getgeo(struct block_device *bdev, struct hd_geometry *geo)
 }
 
 static int
-aoeblk_ioctl(struct block_device *bdev, fmode_t mode, uint cmd, ulong arg)
+aoeblk_ioctl(struct block_device *bdev, blk_mode_t mode, uint cmd, ulong arg)
 {
 	struct aoedev *d;
 
@@ -344,6 +333,12 @@ aoeblk_gdalloc(void *vp)
 	struct gendisk *gd;
 	mempool_t *mp;
 	struct blk_mq_tag_set *set;
+	sector_t ssize;
+	struct queue_limits lim = {
+		.max_hw_sectors		= aoe_maxsectors,
+		.io_opt			= SZ_2M,
+		.features		= BLK_FEAT_ROTATIONAL,
+	};
 	ulong flags;
 	int late = 0;
 	int err;
@@ -373,7 +368,6 @@ aoeblk_gdalloc(void *vp)
 	set->nr_hw_queues = 1;
 	set->queue_depth = 128;
 	set->numa_node = NUMA_NO_NODE;
-	set->flags = BLK_MQ_F_SHOULD_MERGE;
 	err = blk_mq_alloc_tag_set(set);
 	if (err) {
 		pr_err("aoe: cannot allocate tag set for %ld.%d\n",
@@ -381,7 +375,7 @@ aoeblk_gdalloc(void *vp)
 		goto err_mempool;
 	}
 
-	gd = blk_mq_alloc_disk(set, d);
+	gd = blk_mq_alloc_disk(set, &lim, d);
 	if (IS_ERR(gd)) {
 		pr_err("aoe: cannot allocate block queue for %ld.%d\n",
 			d->aoemajor, d->aoeminor);
@@ -394,19 +388,15 @@ aoeblk_gdalloc(void *vp)
 	WARN_ON(d->flags & DEVFL_TKILL);
 	WARN_ON(d->gd);
 	WARN_ON(d->flags & DEVFL_UP);
-	blk_queue_max_hw_sectors(gd->queue, BLK_DEF_MAX_SECTORS);
-	blk_queue_io_opt(gd->queue, SZ_2M);
 	d->bufpool = mp;
 	d->blkq = gd->queue;
 	d->gd = gd;
-	if (aoe_maxsectors)
-		blk_queue_max_hw_sectors(gd->queue, aoe_maxsectors);
 	gd->major = AOE_MAJOR;
 	gd->first_minor = d->sysminor;
 	gd->minors = AOE_PARTITIONS;
 	gd->fops = &aoe_bdops;
 	gd->private_data = d;
-	set_capacity(gd, d->ssize);
+	ssize = d->ssize;
 	snprintf(gd->disk_name, sizeof gd->disk_name, "etherd/e%ld.%d",
 		d->aoemajor, d->aoeminor);
 
@@ -414,6 +404,8 @@ aoeblk_gdalloc(void *vp)
 	d->flags |= DEVFL_UP;
 
 	spin_unlock_irqrestore(&d->lock, flags);
+
+	set_capacity(gd, ssize);
 
 	err = device_add_disk(NULL, gd, aoe_attr_groups);
 	if (err)
@@ -427,7 +419,7 @@ aoeblk_gdalloc(void *vp)
 	return;
 
 out_disk_cleanup:
-	blk_cleanup_disk(gd);
+	put_disk(gd);
 err_tagset:
 	blk_mq_free_tag_set(set);
 err_mempool:

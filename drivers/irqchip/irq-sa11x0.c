@@ -85,7 +85,7 @@ static struct sa1100irq_state {
 	unsigned int	iccr;
 } sa1100irq_state;
 
-static int sa1100irq_suspend(void)
+static int sa1100irq_suspend(void *data)
 {
 	struct sa1100irq_state *st = &sa1100irq_state;
 
@@ -102,7 +102,7 @@ static int sa1100irq_suspend(void)
 	return 0;
 }
 
-static void sa1100irq_resume(void)
+static void sa1100irq_resume(void *data)
 {
 	struct sa1100irq_state *st = &sa1100irq_state;
 
@@ -114,21 +114,24 @@ static void sa1100irq_resume(void)
 	}
 }
 
-static struct syscore_ops sa1100irq_syscore_ops = {
+static const struct syscore_ops sa1100irq_syscore_ops = {
 	.suspend	= sa1100irq_suspend,
 	.resume		= sa1100irq_resume,
 };
 
+static struct syscore sa1100irq_syscore = {
+	.ops = &sa1100irq_syscore_ops,
+};
+
 static int __init sa1100irq_init_devicefs(void)
 {
-	register_syscore_ops(&sa1100irq_syscore_ops);
+	register_syscore(&sa1100irq_syscore);
 	return 0;
 }
 
 device_initcall(sa1100irq_init_devicefs);
 
-static asmlinkage void __exception_irq_entry
-sa1100_handle_irq(struct pt_regs *regs)
+static void __exception_irq_entry sa1100_handle_irq(struct pt_regs *regs)
 {
 	uint32_t icip, icmr, mask;
 
@@ -163,7 +166,7 @@ void __init sa11x0_init_irq_nodt(int irq_start, resource_size_t io_start)
 	 */
 	writel_relaxed(1, iobase + ICCR);
 
-	sa1100_normal_irqdomain = irq_domain_add_simple(NULL,
+	sa1100_normal_irqdomain = irq_domain_create_simple(NULL,
 			32, irq_start,
 			&sa1100_normal_irqdomain_ops, NULL);
 

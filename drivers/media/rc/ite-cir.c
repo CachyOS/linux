@@ -1304,7 +1304,7 @@ static int ite_probe(struct pnp_dev *pdev, const struct pnp_device_id
 	int model_no;
 	int io_rsrc_no;
 
-	itdev = kzalloc(sizeof(struct ite_dev), GFP_KERNEL);
+	itdev = kzalloc_obj(struct ite_dev);
 	if (!itdev)
 		return ret;
 
@@ -1380,7 +1380,6 @@ static int ite_probe(struct pnp_dev *pdev, const struct pnp_device_id
 	rdev->timeout = IR_DEFAULT_TIMEOUT;
 	rdev->max_timeout = 10 * IR_DEFAULT_TIMEOUT;
 	rdev->rx_resolution = ITE_BAUDRATE_DIVISOR * sample_period / 1000;
-	rdev->tx_resolution = ITE_BAUDRATE_DIVISOR * sample_period / 1000;
 
 	/* set up transmitter related values */
 	rdev->tx_ir = ite_tx_ir;

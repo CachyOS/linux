@@ -84,7 +84,7 @@ struct vpfe_config {
 	/* information about each subdev */
 	struct vpfe_subdev_info sub_devs[VPFE_MAX_SUBDEV];
 	/* Flat array, arranged in groups */
-	struct v4l2_async_subdev *asd[VPFE_MAX_SUBDEV];
+	struct v4l2_async_connection *asd[VPFE_MAX_SUBDEV];
 };
 
 struct vpfe_cap_buffer {
@@ -267,7 +267,7 @@ struct vpfe_device {
 	 * is different from the image window
 	 */
 	struct v4l2_rect crop;
-	/* Buffer queue used in video-buf */
+	/* Buffer queue used in vb2 */
 	struct vb2_queue buffer_queue;
 	/* Queue of filled frames */
 	struct list_head dma_queue;

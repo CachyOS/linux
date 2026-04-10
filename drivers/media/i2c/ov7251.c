@@ -922,6 +922,8 @@ static int ov7251_set_power_on(struct device *dev)
 		return ret;
 	}
 
+	usleep_range(1000, 1100);
+
 	gpiod_set_value_cansleep(ov7251->enable_gpio, 1);
 
 	/* wait at least 65536 external clock cycles */
@@ -934,6 +936,8 @@ static int ov7251_set_power_on(struct device *dev)
 					ARRAY_SIZE(ov7251_global_init_setting));
 	if (ret < 0) {
 		dev_err(ov7251->dev, "error during global init\n");
+		gpiod_set_value_cansleep(ov7251->enable_gpio, 0);
+		clk_disable_unprepare(ov7251->xclk);
 		ov7251_regulators_disable(ov7251);
 		return ret;
 	}
@@ -1137,7 +1141,7 @@ __ov7251_get_pad_format(struct ov7251 *ov7251,
 {
 	switch (which) {
 	case V4L2_SUBDEV_FORMAT_TRY:
-		return v4l2_subdev_get_try_format(&ov7251->sd, sd_state, pad);
+		return v4l2_subdev_state_get_format(sd_state, pad);
 	case V4L2_SUBDEV_FORMAT_ACTIVE:
 		return &ov7251->fmt;
 	default:
@@ -1167,7 +1171,7 @@ __ov7251_get_pad_crop(struct ov7251 *ov7251,
 {
 	switch (which) {
 	case V4L2_SUBDEV_FORMAT_TRY:
-		return v4l2_subdev_get_try_crop(&ov7251->sd, sd_state, pad);
+		return v4l2_subdev_state_get_crop(sd_state, pad);
 	case V4L2_SUBDEV_FORMAT_ACTIVE:
 		return &ov7251->crop;
 	default:
@@ -1280,8 +1284,8 @@ exit:
 	return ret;
 }
 
-static int ov7251_entity_init_cfg(struct v4l2_subdev *subdev,
-				  struct v4l2_subdev_state *sd_state)
+static int ov7251_init_state(struct v4l2_subdev *subdev,
+			     struct v4l2_subdev_state *sd_state)
 {
 	struct v4l2_subdev_format fmt = {
 		.which = sd_state ? V4L2_SUBDEV_FORMAT_TRY
@@ -1338,9 +1342,11 @@ static int ov7251_s_stream(struct v4l2_subdev *subdev, int enable)
 	mutex_lock(&ov7251->lock);
 
 	if (enable) {
-		ret = pm_runtime_get_sync(ov7251->dev);
-		if (ret < 0)
-			goto unlock_out;
+		ret = pm_runtime_resume_and_get(ov7251->dev);
+		if (ret) {
+			mutex_unlock(&ov7251->lock);
+			return ret;
+		}
 
 		ret = ov7251_pll_configure(ov7251);
 		if (ret) {
@@ -1372,20 +1378,27 @@ static int ov7251_s_stream(struct v4l2_subdev *subdev, int enable)
 		pm_runtime_put(ov7251->dev);
 	}
 
-unlock_out:
 	mutex_unlock(&ov7251->lock);
 	return ret;
 
 err_power_down:
-	pm_runtime_put_noidle(ov7251->dev);
+	pm_runtime_put(ov7251->dev);
 	mutex_unlock(&ov7251->lock);
 	return ret;
 }
 
 static int ov7251_get_frame_interval(struct v4l2_subdev *subdev,
+				     struct v4l2_subdev_state *sd_state,
 				     struct v4l2_subdev_frame_interval *fi)
 {
 	struct ov7251 *ov7251 = to_ov7251(subdev);
+
+	/*
+	 * FIXME: Implement support for V4L2_SUBDEV_FORMAT_TRY, using the V4L2
+	 * subdev active state API.
+	 */
+	if (fi->which != V4L2_SUBDEV_FORMAT_ACTIVE)
+		return -EINVAL;
 
 	mutex_lock(&ov7251->lock);
 	fi->interval = ov7251->current_mode->timeperframe;
@@ -1395,11 +1408,19 @@ static int ov7251_get_frame_interval(struct v4l2_subdev *subdev,
 }
 
 static int ov7251_set_frame_interval(struct v4l2_subdev *subdev,
+				     struct v4l2_subdev_state *sd_state,
 				     struct v4l2_subdev_frame_interval *fi)
 {
 	struct ov7251 *ov7251 = to_ov7251(subdev);
 	const struct ov7251_mode_info *new_mode;
 	int ret = 0;
+
+	/*
+	 * FIXME: Implement support for V4L2_SUBDEV_FORMAT_TRY, using the V4L2
+	 * subdev active state API.
+	 */
+	if (fi->which != V4L2_SUBDEV_FORMAT_ACTIVE)
+		return -EINVAL;
 
 	mutex_lock(&ov7251->lock);
 	new_mode = ov7251_find_mode_by_ival(ov7251, &fi->interval);
@@ -1433,23 +1454,26 @@ exit:
 
 static const struct v4l2_subdev_video_ops ov7251_video_ops = {
 	.s_stream = ov7251_s_stream,
-	.g_frame_interval = ov7251_get_frame_interval,
-	.s_frame_interval = ov7251_set_frame_interval,
 };
 
 static const struct v4l2_subdev_pad_ops ov7251_subdev_pad_ops = {
-	.init_cfg = ov7251_entity_init_cfg,
 	.enum_mbus_code = ov7251_enum_mbus_code,
 	.enum_frame_size = ov7251_enum_frame_size,
 	.enum_frame_interval = ov7251_enum_frame_ival,
 	.get_fmt = ov7251_get_format,
 	.set_fmt = ov7251_set_format,
 	.get_selection = ov7251_get_selection,
+	.get_frame_interval = ov7251_get_frame_interval,
+	.set_frame_interval = ov7251_set_frame_interval,
 };
 
 static const struct v4l2_subdev_ops ov7251_subdev_ops = {
 	.video = &ov7251_video_ops,
 	.pad = &ov7251_subdev_pad_ops,
+};
+
+static const struct v4l2_subdev_internal_ops ov7251_internal_ops = {
+	.init_state = ov7251_init_state,
 };
 
 static int ov7251_check_hwcfg(struct ov7251 *ov7251)
@@ -1462,9 +1486,14 @@ static int ov7251_check_hwcfg(struct ov7251 *ov7251)
 	unsigned int i, j;
 	int ret;
 
+	/*
+	 * Sometimes the fwnode graph is initialized by the bridge driver
+	 * Bridge drivers doing this may also add GPIO mappings, wait for this.
+	 */
 	endpoint = fwnode_graph_get_next_endpoint(fwnode, NULL);
 	if (!endpoint)
-		return -EPROBE_DEFER; /* could be provided by cio2-bridge */
+		return dev_err_probe(ov7251->dev, -EPROBE_DEFER,
+				     "waiting for fwnode graph endpoint\n");
 
 	ret = v4l2_fwnode_endpoint_alloc_parse(endpoint, &bus_cfg);
 	fwnode_handle_put(endpoint);
@@ -1601,7 +1630,6 @@ static int ov7251_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct ov7251 *ov7251;
-	unsigned int rate = 0, clk_rate = 0;
 	int ret;
 	int i;
 
@@ -1617,33 +1645,12 @@ static int ov7251_probe(struct i2c_client *client)
 		return ret;
 
 	/* get system clock (xclk) */
-	ov7251->xclk = devm_clk_get_optional(dev, NULL);
+	ov7251->xclk = devm_v4l2_sensor_clk_get(dev, NULL);
 	if (IS_ERR(ov7251->xclk))
 		return dev_err_probe(dev, PTR_ERR(ov7251->xclk),
 				     "could not get xclk");
 
-	/*
-	 * We could have either a 24MHz or 19.2MHz clock rate from either DT or
-	 * ACPI. We also need to support the IPU3 case which will have both an
-	 * external clock AND a clock-frequency property.
-	 */
-	ret = fwnode_property_read_u32(dev_fwnode(dev), "clock-frequency",
-				       &rate);
-	if (ret && !ov7251->xclk)
-		return dev_err_probe(dev, ret, "invalid clock config\n");
-
-	clk_rate = clk_get_rate(ov7251->xclk);
-	ov7251->xclk_freq = clk_rate ? clk_rate : rate;
-
-	if (ov7251->xclk_freq == 0)
-		return dev_err_probe(dev, -EINVAL, "invalid clock frequency\n");
-
-	if (!ret && ov7251->xclk) {
-		ret = clk_set_rate(ov7251->xclk, rate);
-		if (ret)
-			return dev_err_probe(dev, ret,
-					     "failed to set clock rate\n");
-	}
+	ov7251->xclk_freq = clk_get_rate(ov7251->xclk);
 
 	for (i = 0; i < ARRAY_SIZE(supported_xclk_rates); i++)
 		if (ov7251->xclk_freq == supported_xclk_rates[i])
@@ -1674,7 +1681,7 @@ static int ov7251_probe(struct i2c_client *client)
 		return PTR_ERR(ov7251->analog_regulator);
 	}
 
-	ov7251->enable_gpio = devm_gpiod_get(dev, "enable", GPIOD_OUT_HIGH);
+	ov7251->enable_gpio = devm_gpiod_get(dev, "enable", GPIOD_OUT_LOW);
 	if (IS_ERR(ov7251->enable_gpio)) {
 		dev_err(dev, "cannot get enable gpio\n");
 		return PTR_ERR(ov7251->enable_gpio);
@@ -1690,6 +1697,7 @@ static int ov7251_probe(struct i2c_client *client)
 	}
 
 	v4l2_i2c_subdev_init(&ov7251->sd, client, &ov7251_subdev_ops);
+	ov7251->sd.internal_ops = &ov7251_internal_ops;
 	ov7251->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	ov7251->pad.flags = MEDIA_PAD_FL_SOURCE;
 	ov7251->sd.dev = &client->dev;
@@ -1747,7 +1755,7 @@ static int ov7251_probe(struct i2c_client *client)
 		goto free_entity;
 	}
 
-	ov7251_entity_init_cfg(&ov7251->sd, NULL);
+	ov7251_init_state(&ov7251->sd, NULL);
 
 	return 0;
 
@@ -1766,7 +1774,7 @@ destroy_mutex:
 	return ret;
 }
 
-static int ov7251_remove(struct i2c_client *client)
+static void ov7251_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov7251 *ov7251 = to_ov7251(sd);
@@ -1780,8 +1788,6 @@ static int ov7251_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(ov7251->dev))
 		ov7251_set_power_off(ov7251->dev);
 	pm_runtime_set_suspended(ov7251->dev);
-
-	return 0;
 }
 
 static const struct dev_pm_ops ov7251_pm_ops = {
@@ -1807,7 +1813,7 @@ static struct i2c_driver ov7251_i2c_driver = {
 		.name  = "ov7251",
 		.pm = &ov7251_pm_ops,
 	},
-	.probe_new  = ov7251_probe,
+	.probe = ov7251_probe,
 	.remove = ov7251_remove,
 };
 

@@ -23,9 +23,14 @@
 #ifndef __AMDGPU_CS_H__
 #define __AMDGPU_CS_H__
 
+#include <linux/ww_mutex.h>
+#include <drm/drm_exec.h>
+
 #include "amdgpu_job.h"
 #include "amdgpu_bo_list.h"
 #include "amdgpu_ring.h"
+
+#define AMDGPU_CS_GANG_SIZE	4
 
 struct amdgpu_bo_va_mapping;
 
@@ -50,16 +55,17 @@ struct amdgpu_cs_parser {
 	unsigned		nchunks;
 	struct amdgpu_cs_chunk	*chunks;
 
-	/* scheduler job object */
-	struct amdgpu_job	*job;
-	struct drm_sched_entity	*entity;
+	/* scheduler job objects */
+	unsigned int		gang_size;
+	unsigned int		gang_leader_idx;
+	struct drm_sched_entity	*entities[AMDGPU_CS_GANG_SIZE];
+	struct amdgpu_job	*jobs[AMDGPU_CS_GANG_SIZE];
+	struct amdgpu_job	*gang_leader;
 
 	/* buffer objects */
-	struct ww_acquire_ctx		ticket;
+	struct drm_exec			exec;
 	struct amdgpu_bo_list		*bo_list;
 	struct amdgpu_mn		*mn;
-	struct amdgpu_bo_list_entry	vm_pd;
-	struct list_head		validated;
 	struct dma_fence		*fence;
 	uint64_t			bytes_moved_threshold;
 	uint64_t			bytes_moved_vis_threshold;
@@ -67,10 +73,12 @@ struct amdgpu_cs_parser {
 	uint64_t			bytes_moved_vis;
 
 	/* user fence */
-	struct amdgpu_bo_list_entry	uf_entry;
+	struct amdgpu_bo		*uf_bo;
 
 	unsigned			num_post_deps;
 	struct amdgpu_cs_post_dep	*post_deps;
+
+	struct amdgpu_sync		sync;
 };
 
 int amdgpu_cs_find_mapping(struct amdgpu_cs_parser *parser,

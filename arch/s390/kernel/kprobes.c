@@ -9,11 +9,11 @@
 
 #define pr_fmt(fmt) "kprobes: " fmt
 
-#include <linux/moduleloader.h>
 #include <linux/kprobes.h>
 #include <linux/ptrace.h>
 #include <linux/preempt.h>
 #include <linux/stop_machine.h>
+#include <linux/cpufeature.h>
 #include <linux/kdebug.h>
 #include <linux/uaccess.h>
 #include <linux/extable.h>
@@ -21,6 +21,8 @@
 #include <linux/slab.h>
 #include <linux/hardirq.h>
 #include <linux/ftrace.h>
+#include <linux/execmem.h>
+#include <asm/text-patching.h>
 #include <asm/set_memory.h>
 #include <asm/sections.h>
 #include <asm/dis.h>
@@ -31,40 +33,16 @@ DEFINE_PER_CPU(struct kprobe_ctlblk, kprobe_ctlblk);
 
 struct kretprobe_blackpoint kretprobe_blacklist[] = { };
 
-DEFINE_INSN_CACHE_OPS(s390_insn);
-
-static int insn_page_in_use;
-
 void *alloc_insn_page(void)
 {
 	void *page;
 
-	page = module_alloc(PAGE_SIZE);
+	page = execmem_alloc(EXECMEM_KPROBES, PAGE_SIZE);
 	if (!page)
 		return NULL;
-	__set_memory((unsigned long) page, 1, SET_MEMORY_RO | SET_MEMORY_X);
+	set_memory_rox((unsigned long)page, 1);
 	return page;
 }
-
-static void *alloc_s390_insn_page(void)
-{
-	if (xchg(&insn_page_in_use, 1) == 1)
-		return NULL;
-	return &kprobes_insn_page;
-}
-
-static void free_s390_insn_page(void *page)
-{
-	xchg(&insn_page_in_use, 0);
-}
-
-struct kprobe_insn_cache kprobe_s390_insn_slots = {
-	.mutex = __MUTEX_INITIALIZER(kprobe_s390_insn_slots.mutex),
-	.alloc = alloc_s390_insn_page,
-	.free = free_s390_insn_page,
-	.pages = LIST_HEAD_INIT(kprobe_s390_insn_slots.pages),
-	.insn_size = MAX_INSN_SIZE,
-};
 
 static void copy_instruction(struct kprobe *p)
 {
@@ -79,10 +57,10 @@ static void copy_instruction(struct kprobe *p)
 	if (probe_is_insn_relative_long(&insn[0])) {
 		/*
 		 * For pc-relative instructions in RIL-b or RIL-c format patch
-		 * the RI2 displacement field. We have already made sure that
-		 * the insn slot for the patched instruction is within the same
-		 * 2GB area as the original instruction (either kernel image or
-		 * module area). Therefore the new displacement will always fit.
+		 * the RI2 displacement field. The insn slot for the to be
+		 * patched instruction is within the same 4GB area like the
+		 * original instruction. Therefore the new displacement will
+		 * always fit.
 		 */
 		disp = *(s32 *)&insn[1];
 		addr = (u64)(unsigned long)p->addr;
@@ -93,34 +71,6 @@ static void copy_instruction(struct kprobe *p)
 	s390_kernel_write(p->ainsn.insn, &insn, len);
 }
 NOKPROBE_SYMBOL(copy_instruction);
-
-static int s390_get_insn_slot(struct kprobe *p)
-{
-	/*
-	 * Get an insn slot that is within the same 2GB area like the original
-	 * instruction. That way instructions with a 32bit signed displacement
-	 * field can be patched and executed within the insn slot.
-	 */
-	p->ainsn.insn = NULL;
-	if (is_kernel((unsigned long)p->addr))
-		p->ainsn.insn = get_s390_insn_slot();
-	else if (is_module_addr(p->addr))
-		p->ainsn.insn = get_insn_slot();
-	return p->ainsn.insn ? 0 : -ENOMEM;
-}
-NOKPROBE_SYMBOL(s390_get_insn_slot);
-
-static void s390_free_insn_slot(struct kprobe *p)
-{
-	if (!p->ainsn.insn)
-		return;
-	if (is_kernel((unsigned long)p->addr))
-		free_s390_insn_slot(p->ainsn.insn, 0);
-	else
-		free_insn_slot(p->ainsn.insn, 0);
-	p->ainsn.insn = NULL;
-}
-NOKPROBE_SYMBOL(s390_free_insn_slot);
 
 /* Check if paddr is at an instruction boundary */
 static bool can_probe(unsigned long paddr)
@@ -175,7 +125,8 @@ int arch_prepare_kprobe(struct kprobe *p)
 	/* Make sure the probe isn't going on a difficult instruction */
 	if (probe_is_prohibited_opcode(p->addr))
 		return -EINVAL;
-	if (s390_get_insn_slot(p))
+	p->ainsn.insn = get_insn_slot();
+	if (!p->ainsn.insn)
 		return -ENOMEM;
 	copy_instruction(p);
 	return 0;
@@ -203,7 +154,12 @@ void arch_arm_kprobe(struct kprobe *p)
 {
 	struct swap_insn_args args = {.p = p, .arm_kprobe = 1};
 
-	stop_machine_cpuslocked(swap_instruction, &args, NULL);
+	if (cpu_has_seq_insn()) {
+		swap_instruction(&args);
+		text_poke_sync();
+	} else {
+		stop_machine_cpuslocked(swap_instruction, &args, NULL);
+	}
 }
 NOKPROBE_SYMBOL(arch_arm_kprobe);
 
@@ -211,13 +167,21 @@ void arch_disarm_kprobe(struct kprobe *p)
 {
 	struct swap_insn_args args = {.p = p, .arm_kprobe = 0};
 
-	stop_machine_cpuslocked(swap_instruction, &args, NULL);
+	if (cpu_has_seq_insn()) {
+		swap_instruction(&args);
+		text_poke_sync();
+	} else {
+		stop_machine_cpuslocked(swap_instruction, &args, NULL);
+	}
 }
 NOKPROBE_SYMBOL(arch_disarm_kprobe);
 
 void arch_remove_kprobe(struct kprobe *p)
 {
-	s390_free_insn_slot(p);
+	if (!p->ainsn.insn)
+		return;
+	free_insn_slot(p->ainsn.insn, 0);
+	p->ainsn.insn = NULL;
 }
 NOKPROBE_SYMBOL(arch_remove_kprobe);
 
@@ -225,20 +189,27 @@ static void enable_singlestep(struct kprobe_ctlblk *kcb,
 			      struct pt_regs *regs,
 			      unsigned long ip)
 {
-	struct per_regs per_kprobe;
+	union {
+		struct ctlreg regs[3];
+		struct {
+			struct ctlreg control;
+			struct ctlreg start;
+			struct ctlreg end;
+		};
+	} per_kprobe;
 
 	/* Set up the PER control registers %cr9-%cr11 */
-	per_kprobe.control = PER_EVENT_IFETCH;
-	per_kprobe.start = ip;
-	per_kprobe.end = ip;
+	per_kprobe.control.val = PER_EVENT_IFETCH;
+	per_kprobe.start.val = ip;
+	per_kprobe.end.val = ip;
 
 	/* Save control regs and psw mask */
-	__ctl_store(kcb->kprobe_saved_ctl, 9, 11);
+	__local_ctl_store(9, 11, kcb->kprobe_saved_ctl);
 	kcb->kprobe_saved_imask = regs->psw.mask &
 		(PSW_MASK_PER | PSW_MASK_IO | PSW_MASK_EXT);
 
 	/* Set PER control regs, turns on single step for the given address */
-	__ctl_load(per_kprobe, 9, 11);
+	__local_ctl_load(9, 11, per_kprobe.regs);
 	regs->psw.mask |= PSW_MASK_PER;
 	regs->psw.mask &= ~(PSW_MASK_IO | PSW_MASK_EXT);
 	regs->psw.addr = ip;
@@ -250,7 +221,7 @@ static void disable_singlestep(struct kprobe_ctlblk *kcb,
 			       unsigned long ip)
 {
 	/* Restore control regs and psw mask, set new psw address */
-	__ctl_load(kcb->kprobe_saved_ctl, 9, 11);
+	__local_ctl_load(9, 11, kcb->kprobe_saved_ctl);
 	regs->psw.mask &= ~PSW_MASK_PER;
 	regs->psw.mask |= kcb->kprobe_saved_imask;
 	regs->psw.addr = ip;
@@ -279,18 +250,9 @@ static void pop_kprobe(struct kprobe_ctlblk *kcb)
 {
 	__this_cpu_write(current_kprobe, kcb->prev_kprobe.kp);
 	kcb->kprobe_status = kcb->prev_kprobe.status;
+	kcb->prev_kprobe.kp = NULL;
 }
 NOKPROBE_SYMBOL(pop_kprobe);
-
-void arch_prepare_kretprobe(struct kretprobe_instance *ri, struct pt_regs *regs)
-{
-	ri->ret_addr = (kprobe_opcode_t *)regs->gprs[14];
-	ri->fp = (void *)regs->gprs[15];
-
-	/* Replace the return addr with trampoline addr */
-	regs->gprs[14] = (unsigned long)&__kretprobe_trampoline;
-}
-NOKPROBE_SYMBOL(arch_prepare_kretprobe);
 
 static void kprobe_reenter_check(struct kprobe_ctlblk *kcb, struct kprobe *p)
 {
@@ -372,26 +334,6 @@ static int kprobe_handler(struct pt_regs *regs)
 }
 NOKPROBE_SYMBOL(kprobe_handler);
 
-void arch_kretprobe_fixup_return(struct pt_regs *regs,
-				 kprobe_opcode_t *correct_ret_addr)
-{
-	/* Replace fake return address with real one. */
-	regs->gprs[14] = (unsigned long)correct_ret_addr;
-}
-NOKPROBE_SYMBOL(arch_kretprobe_fixup_return);
-
-/*
- * Called from __kretprobe_trampoline
- */
-void trampoline_probe_handler(struct pt_regs *regs)
-{
-	kretprobe_trampoline_handler(regs, (void *)regs->gprs[15]);
-}
-NOKPROBE_SYMBOL(trampoline_probe_handler);
-
-/* assembler function that handles the kretprobes must not be probed itself */
-NOKPROBE_SYMBOL(__kretprobe_trampoline);
-
 /*
  * Called after single-stepping.  p->addr is the address of the
  * instruction whose first byte has been replaced by the "breakpoint"
@@ -433,12 +375,11 @@ static int post_kprobe_handler(struct pt_regs *regs)
 	if (!p)
 		return 0;
 
+	resume_execution(p, regs);
 	if (kcb->kprobe_status != KPROBE_REENTER && p->post_handler) {
 		kcb->kprobe_status = KPROBE_HIT_SSDONE;
 		p->post_handler(p, regs, 0);
 	}
-
-	resume_execution(p, regs);
 	pop_kprobe(kcb);
 	preempt_enable_no_resched();
 
@@ -547,6 +488,12 @@ NOKPROBE_SYMBOL(kprobe_exceptions_notify);
 int __init arch_init_kprobes(void)
 {
 	return 0;
+}
+
+int __init arch_populate_kprobe_blacklist(void)
+{
+	return kprobe_add_area_blacklist((unsigned long)__irqentry_text_start,
+					 (unsigned long)__irqentry_text_end);
 }
 
 int arch_trampoline_kprobe(struct kprobe *p)

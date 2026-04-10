@@ -7,6 +7,8 @@
 
 #include <linux/fs.h>
 #include <linux/nls.h>
+#include <linux/ctype.h>
+#include <linux/posix_acl.h>
 
 #include "debug.h"
 #include "ntfs.h"
@@ -66,7 +68,7 @@ static struct dentry *ntfs_lookup(struct inode *dir, struct dentry *dentry,
 				  u32 flags)
 {
 	struct ntfs_inode *ni = ntfs_i(dir);
-	struct cpu_str *uni = __getname();
+	struct cpu_str *uni = kmalloc(PATH_MAX, GFP_KERNEL);
 	struct inode *inode;
 	int err;
 
@@ -79,11 +81,21 @@ static struct dentry *ntfs_lookup(struct inode *dir, struct dentry *dentry,
 		if (err < 0)
 			inode = ERR_PTR(err);
 		else {
-			ni_lock(ni);
+			ni_lock_dir(ni);
 			inode = dir_search_u(dir, uni, NULL);
 			ni_unlock(ni);
 		}
-		__putname(uni);
+		kfree(uni);
+	}
+
+	/*
+	 * Check for a null pointer
+	 * If the MFT record of ntfs inode is not a base record, inode->i_op can be NULL.
+	 * This causes null pointer dereference in d_splice_alias().
+	 */
+	if (!IS_ERR_OR_NULL(inode) && !inode->i_op) {
+		iput(inode);
+		inode = ERR_PTR(-EINVAL);
 	}
 
 	return d_splice_alias(inode, dentry);
@@ -92,31 +104,21 @@ static struct dentry *ntfs_lookup(struct inode *dir, struct dentry *dentry,
 /*
  * ntfs_create - inode_operations::create
  */
-static int ntfs_create(struct user_namespace *mnt_userns, struct inode *dir,
+static int ntfs_create(struct mnt_idmap *idmap, struct inode *dir,
 		       struct dentry *dentry, umode_t mode, bool excl)
 {
-	struct inode *inode;
-
-	inode = ntfs_create_inode(mnt_userns, dir, dentry, NULL, S_IFREG | mode,
-				  0, NULL, 0, NULL);
-
-	return IS_ERR(inode) ? PTR_ERR(inode) : 0;
+	return ntfs_create_inode(idmap, dir, dentry, NULL, S_IFREG | mode, 0,
+				 NULL, 0, NULL);
 }
 
 /*
- * ntfs_mknod
- *
- * inode_operations::mknod
+ * ntfs_mknod - inode_operations::mknod
  */
-static int ntfs_mknod(struct user_namespace *mnt_userns, struct inode *dir,
+static int ntfs_mknod(struct mnt_idmap *idmap, struct inode *dir,
 		      struct dentry *dentry, umode_t mode, dev_t rdev)
 {
-	struct inode *inode;
-
-	inode = ntfs_create_inode(mnt_userns, dir, dentry, NULL, mode, rdev,
-				  NULL, 0, NULL);
-
-	return IS_ERR(inode) ? PTR_ERR(inode) : 0;
+	return ntfs_create_inode(idmap, dir, dentry, NULL, mode, rdev, NULL, 0,
+				 NULL);
 }
 
 /*
@@ -144,8 +146,8 @@ static int ntfs_link(struct dentry *ode, struct inode *dir, struct dentry *de)
 	err = ntfs_link_inode(inode, de);
 
 	if (!err) {
-		dir->i_ctime = dir->i_mtime = inode->i_ctime =
-			current_time(dir);
+		inode_set_ctime_current(inode);
+		inode_set_mtime_to_ts(dir, inode_set_ctime_current(dir));
 		mark_inode_dirty(inode);
 		mark_inode_dirty(dir);
 		d_instantiate(de, inode);
@@ -169,6 +171,13 @@ static int ntfs_unlink(struct inode *dir, struct dentry *dentry)
 	struct ntfs_inode *ni = ntfs_i(dir);
 	int err;
 
+	/* Avoid any operation if inode is bad. */
+	if (unlikely(is_bad_ni(ni)))
+		return -EINVAL;
+
+	if (unlikely(ntfs3_forced_shutdown(dir->i_sb)))
+		return -EIO;
+
 	ni_lock_dir(ni);
 
 	err = ntfs_unlink_inode(dir, dentry);
@@ -181,39 +190,46 @@ static int ntfs_unlink(struct inode *dir, struct dentry *dentry)
 /*
  * ntfs_symlink - inode_operations::symlink
  */
-static int ntfs_symlink(struct user_namespace *mnt_userns, struct inode *dir,
+static int ntfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 			struct dentry *dentry, const char *symname)
 {
 	u32 size = strlen(symname);
-	struct inode *inode;
 
-	inode = ntfs_create_inode(mnt_userns, dir, dentry, NULL, S_IFLNK | 0777,
-				  0, symname, size, NULL);
+	/* Avoid any operation if inode is bad. */
+	if (unlikely(is_bad_ni(ntfs_i(dir))))
+		return -EINVAL;
 
-	return IS_ERR(inode) ? PTR_ERR(inode) : 0;
+	if (unlikely(ntfs3_forced_shutdown(dir->i_sb)))
+		return -EIO;
+
+	return ntfs_create_inode(idmap, dir, dentry, NULL, S_IFLNK | 0777, 0,
+				 symname, size, NULL);
 }
 
 /*
- * ntfs_mkdir- inode_operations::mkdir
+ * ntfs_mkdir - inode_operations::mkdir
  */
-static int ntfs_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
-		      struct dentry *dentry, umode_t mode)
+static struct dentry *ntfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
+				 struct dentry *dentry, umode_t mode)
 {
-	struct inode *inode;
-
-	inode = ntfs_create_inode(mnt_userns, dir, dentry, NULL, S_IFDIR | mode,
-				  0, NULL, 0, NULL);
-
-	return IS_ERR(inode) ? PTR_ERR(inode) : 0;
+	return ERR_PTR(ntfs_create_inode(idmap, dir, dentry, NULL,
+					 S_IFDIR | mode, 0, NULL, 0, NULL));
 }
 
 /*
- * ntfs_rmdir - inode_operations::rm_dir
+ * ntfs_rmdir - inode_operations::rmdir
  */
 static int ntfs_rmdir(struct inode *dir, struct dentry *dentry)
 {
 	struct ntfs_inode *ni = ntfs_i(dir);
 	int err;
+
+	/* Avoid any operation if inode is bad. */
+	if (unlikely(is_bad_ni(ni)))
+		return -EINVAL;
+
+	if (unlikely(ntfs3_forced_shutdown(dir->i_sb)))
+		return -EIO;
 
 	ni_lock_dir(ni);
 
@@ -227,7 +243,7 @@ static int ntfs_rmdir(struct inode *dir, struct dentry *dentry)
 /*
  * ntfs_rename - inode_operations::rename
  */
-static int ntfs_rename(struct user_namespace *mnt_userns, struct inode *dir,
+static int ntfs_rename(struct mnt_idmap *idmap, struct inode *dir,
 		       struct dentry *dentry, struct inode *new_dir,
 		       struct dentry *new_dentry, u32 flags)
 {
@@ -240,7 +256,7 @@ static int ntfs_rename(struct user_namespace *mnt_userns, struct inode *dir,
 	struct ntfs_inode *ni = ntfs_i(inode);
 	struct inode *new_inode = d_inode(new_dentry);
 	struct NTFS_DE *de, *new_de;
-	bool is_same, is_bad;
+	bool is_same;
 	/*
 	 * de		- memory of PATH_MAX bytes:
 	 * [0-1024)	- original name (dentry->d_name)
@@ -251,6 +267,13 @@ static int ntfs_rename(struct user_namespace *mnt_userns, struct inode *dir,
 	static_assert(SIZEOF_ATTRIBUTE_FILENAME_MAX + sizeof(struct NTFS_DE) <
 		      1024);
 	static_assert(PATH_MAX >= 4 * 1024);
+
+	/* Avoid any operation if inode is bad. */
+	if (unlikely(is_bad_ni(ni)))
+		return -EINVAL;
+
+	if (unlikely(ntfs3_forced_shutdown(sb)))
+		return -EIO;
 
 	if (flags & ~RENAME_NOREPLACE)
 		return -EINVAL;
@@ -280,8 +303,7 @@ static int ntfs_rename(struct user_namespace *mnt_userns, struct inode *dir,
 			return err;
 	}
 
-	/* Allocate PATH_MAX bytes. */
-	de = __getname();
+	de = kmalloc(PATH_MAX, GFP_KERNEL);
 	if (!de)
 		return -ENOMEM;
 
@@ -303,23 +325,16 @@ static int ntfs_rename(struct user_namespace *mnt_userns, struct inode *dir,
 
 	ni_lock_dir(dir_ni);
 	ni_lock(ni);
+	if (dir_ni != new_dir_ni)
+		ni_lock_dir2(new_dir_ni);
 
-	is_bad = false;
-	err = ni_rename(dir_ni, new_dir_ni, ni, de, new_de, &is_bad);
-	if (is_bad) {
-		/* Restore after failed rename failed too. */
-		make_bad_inode(inode);
-		ntfs_inode_err(inode, "failed to undo rename");
-		ntfs_set_state(sbi, NTFS_DIRTY_ERROR);
-	} else if (!err) {
-		inode->i_ctime = dir->i_ctime = dir->i_mtime =
-			current_time(dir);
+	err = ni_rename(dir_ni, new_dir_ni, ni, de, new_de);
+	if (!err) {
+		simple_rename_timestamp(dir, dentry, new_dir, new_dentry);
 		mark_inode_dirty(inode);
 		mark_inode_dirty(dir);
-		if (dir != new_dir) {
-			new_dir->i_mtime = new_dir->i_ctime = dir->i_ctime;
+		if (dir != new_dir)
 			mark_inode_dirty(new_dir);
-		}
 
 		if (IS_DIRSYNC(dir))
 			ntfs_sync_inode(dir);
@@ -328,10 +343,12 @@ static int ntfs_rename(struct user_namespace *mnt_userns, struct inode *dir,
 			ntfs_sync_inode(inode);
 	}
 
+	if (dir_ni != new_dir_ni)
+		ni_unlock(new_dir_ni);
 	ni_unlock(ni);
 	ni_unlock(dir_ni);
 out:
-	__putname(de);
+	kfree(de);
 	return err;
 }
 
@@ -357,6 +374,133 @@ struct dentry *ntfs3_get_parent(struct dentry *child)
 	return ERR_PTR(-ENOENT);
 }
 
+/*
+ * dentry_operations::d_hash
+ */
+static int ntfs_d_hash(const struct dentry *dentry, struct qstr *name)
+{
+	struct ntfs_sb_info *sbi;
+	const char *n = name->name;
+	unsigned int len = name->len;
+	unsigned long hash;
+	struct cpu_str *uni;
+	unsigned int c;
+	int err;
+
+	/* First try fast implementation. */
+	hash = init_name_hash(dentry);
+
+	for (;;) {
+		if (!len--) {
+			name->hash = end_name_hash(hash);
+			return 0;
+		}
+
+		c = *n++;
+		if (c >= 0x80)
+			break;
+
+		hash = partial_name_hash(toupper(c), hash);
+	}
+
+	/*
+	 * Try slow way with current upcase table
+	 */
+	uni = kmalloc(PATH_MAX, GFP_NOWAIT);
+	if (!uni)
+		return -ENOMEM;
+
+	sbi = dentry->d_sb->s_fs_info;
+
+	err = ntfs_nls_to_utf16(sbi, name->name, name->len, uni, NTFS_NAME_LEN,
+				UTF16_HOST_ENDIAN);
+	if (err < 0)
+		goto out;
+
+	if (!err) {
+		err = -EINVAL;
+		goto out;
+	}
+
+	hash = ntfs_names_hash(uni->name, uni->len, sbi->upcase,
+			       init_name_hash(dentry));
+	name->hash = end_name_hash(hash);
+	err = 0;
+
+out:
+	kfree(uni);
+	return err;
+}
+
+/*
+ * dentry_operations::d_compare
+ */
+static int ntfs_d_compare(const struct dentry *dentry, unsigned int len1,
+			  const char *str, const struct qstr *name)
+{
+	struct ntfs_sb_info *sbi;
+	int ret;
+	const char *n1 = str;
+	const char *n2 = name->name;
+	unsigned int len2 = name->len;
+	unsigned int lm = min(len1, len2);
+	unsigned char c1, c2;
+	struct cpu_str *uni1;
+	struct le_str *uni2;
+
+	/* First try fast implementation. */
+	for (;;) {
+		if (!lm--)
+			return len1 != len2;
+
+		if ((c1 = *n1++) == (c2 = *n2++))
+			continue;
+
+		if (c1 >= 0x80 || c2 >= 0x80)
+			break;
+
+		if (toupper(c1) != toupper(c2))
+			return 1;
+	}
+
+	/*
+	 * Try slow way with current upcase table
+	 */
+	sbi = dentry->d_sb->s_fs_info;
+	uni1 = kmalloc(PATH_MAX, GFP_NOWAIT);
+	if (!uni1)
+		return -ENOMEM;
+
+	ret = ntfs_nls_to_utf16(sbi, str, len1, uni1, NTFS_NAME_LEN,
+				UTF16_HOST_ENDIAN);
+	if (ret < 0)
+		goto out;
+
+	if (!ret) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	uni2 = Add2Ptr(uni1, 2048);
+
+	ret = ntfs_nls_to_utf16(sbi, name->name, name->len,
+				(struct cpu_str *)uni2, NTFS_NAME_LEN,
+				UTF16_LITTLE_ENDIAN);
+	if (ret < 0)
+		goto out;
+
+	if (!ret) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	ret = !ntfs_cmp_names_cpu(uni1, uni2, sbi->upcase, false) ? 0 : 1;
+
+out:
+	kfree(uni1);
+	return ret;
+}
+
 // clang-format off
 const struct inode_operations ntfs_dir_inode_operations = {
 	.lookup		= ntfs_lookup,
@@ -368,20 +512,25 @@ const struct inode_operations ntfs_dir_inode_operations = {
 	.rmdir		= ntfs_rmdir,
 	.mknod		= ntfs_mknod,
 	.rename		= ntfs_rename,
-	.permission	= ntfs_permission,
 	.get_acl	= ntfs_get_acl,
 	.set_acl	= ntfs_set_acl,
-	.setattr	= ntfs3_setattr,
+	.setattr	= ntfs_setattr,
 	.getattr	= ntfs_getattr,
 	.listxattr	= ntfs_listxattr,
 	.fiemap		= ntfs_fiemap,
 };
 
 const struct inode_operations ntfs_special_inode_operations = {
-	.setattr	= ntfs3_setattr,
+	.setattr	= ntfs_setattr,
 	.getattr	= ntfs_getattr,
 	.listxattr	= ntfs_listxattr,
 	.get_acl	= ntfs_get_acl,
 	.set_acl	= ntfs_set_acl,
 };
+
+const struct dentry_operations ntfs_dentry_ops = {
+	.d_hash		= ntfs_d_hash,
+	.d_compare	= ntfs_d_compare,
+};
+
 // clang-format on

@@ -7,10 +7,17 @@ config AMD_IOMMU
 	select PCI_ATS
 	select PCI_PRI
 	select PCI_PASID
+	select IRQ_MSI_LIB
+	select MMU_NOTIFIER
 	select IOMMU_API
 	select IOMMU_IOVA
-	select IOMMU_DMA
-	select IOMMU_IO_PGTABLE
+	select IOMMU_SVA
+	select IOMMU_IOPF
+	select IOMMUFD_DRIVER if IOMMUFD
+	select GENERIC_PT
+	select IOMMU_PT
+	select IOMMU_PT_AMDV1
+	select IOMMU_PT_X86_64
 	depends on X86_64 && PCI && ACPI && HAVE_CMPXCHG_DOUBLE
 	help
 	  With this option you can enable support for AMD IOMMU hardware in
@@ -23,14 +30,15 @@ config AMD_IOMMU
 	  your BIOS for an option to enable it or if you have an IVRS ACPI
 	  table.
 
-config AMD_IOMMU_V2
-	tristate "AMD IOMMU Version 2 driver"
+config AMD_IOMMU_IOMMUFD
+	bool "Enable IOMMUFD features for AMD IOMMU (EXPERIMENTAL)"
+	depends on IOMMUFD
 	depends on AMD_IOMMU
-	select MMU_NOTIFIER
 	help
-	  This option enables support for the AMD IOMMUv2 features of the IOMMU
-	  hardware. Select this option if you want to use devices that support
-	  the PCI PRI and PASID interface.
+	  Support for IOMMUFD features intended to support virtual machines
+	  with accelerated virtual IOMMUs.
+
+	  Say Y here if you are doing development and testing on this feature.
 
 config AMD_IOMMU_DEBUGFS
 	bool "Enable AMD IOMMU internals in DebugFS"

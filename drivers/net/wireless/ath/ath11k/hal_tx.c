@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause-Clear
 /*
  * Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include "hal_desc.h"
@@ -36,7 +37,7 @@ static const u8 dscp_tid_map[DSCP_TID_MAP_TBL_ENTRY_SIZE] = {
 void ath11k_hal_tx_cmd_desc_setup(struct ath11k_base *ab, void *cmd,
 				  struct hal_tx_info *ti)
 {
-	struct hal_tcl_data_cmd *tcl_cmd = (struct hal_tcl_data_cmd *)cmd;
+	struct hal_tcl_data_cmd *tcl_cmd = cmd;
 
 	tcl_cmd->buf_addr_info.info0 =
 		FIELD_PREP(BUFFER_ADDR_INFO0_ADDR, ti->paddr);
@@ -44,8 +45,7 @@ void ath11k_hal_tx_cmd_desc_setup(struct ath11k_base *ab, void *cmd,
 		FIELD_PREP(BUFFER_ADDR_INFO1_ADDR,
 			   ((uint64_t)ti->paddr >> HAL_ADDR_MSB_REG_SHIFT));
 	tcl_cmd->buf_addr_info.info1 |=
-		FIELD_PREP(BUFFER_ADDR_INFO1_RET_BUF_MGR,
-			   (ti->ring_id + HAL_RX_BUF_RBM_SW0_BM)) |
+		FIELD_PREP(BUFFER_ADDR_INFO1_RET_BUF_MGR, ti->rbm_id) |
 		FIELD_PREP(BUFFER_ADDR_INFO1_SW_COOKIE, ti->desc_id);
 
 	tcl_cmd->info0 =

@@ -7,9 +7,11 @@
 #ifndef __ASM_BARRIER_H
 #define __ASM_BARRIER_H
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #include <linux/kasan-checks.h>
+
+#include <asm/alternative-macros.h>
 
 #define __nops(n)	".rept	" #n "\nnop\n.endr\n"
 #define nops(n)		asm volatile(__nops(n))
@@ -38,25 +40,33 @@
  */
 #define dgh()		asm volatile("hint #6" : : : "memory")
 
+#define spec_bar()	asm volatile(ALTERNATIVE("dsb nsh\nisb\n",		\
+						 SB_BARRIER_INSN"nop\n",	\
+						 ARM64_HAS_SB))
+
+#define gsb_ack()	asm volatile(GSB_ACK_BARRIER_INSN : : : "memory")
+#define gsb_sys()	asm volatile(GSB_SYS_BARRIER_INSN : : : "memory")
+
 #ifdef CONFIG_ARM64_PSEUDO_NMI
 #define pmr_sync()						\
 	do {							\
-		extern struct static_key_false gic_pmr_sync;	\
-								\
-		if (static_branch_unlikely(&gic_pmr_sync))	\
-			dsb(sy);				\
+		asm volatile(					\
+		ALTERNATIVE_CB("dsb sy",			\
+			       ARM64_HAS_GIC_PRIO_RELAXED_SYNC,	\
+			       alt_cb_patch_nops)		\
+		);						\
 	} while(0)
 #else
 #define pmr_sync()	do {} while (0)
 #endif
 
-#define mb()		dsb(sy)
-#define rmb()		dsb(ld)
-#define wmb()		dsb(st)
+#define __mb()		dsb(sy)
+#define __rmb()		dsb(ld)
+#define __wmb()		dsb(st)
 
-#define dma_mb()	dmb(osh)
-#define dma_rmb()	dmb(oshld)
-#define dma_wmb()	dmb(oshst)
+#define __dma_mb()	dmb(osh)
+#define __dma_rmb()	dmb(oshld)
+#define __dma_wmb()	dmb(oshst)
 
 #define io_stop_wc()	dgh()
 
@@ -128,25 +138,25 @@ do {									\
 	case 1:								\
 		asm volatile ("stlrb %w1, %0"				\
 				: "=Q" (*__p)				\
-				: "r" (*(__u8 *)__u.__c)		\
+				: "rZ" (*(__u8 *)__u.__c)		\
 				: "memory");				\
 		break;							\
 	case 2:								\
 		asm volatile ("stlrh %w1, %0"				\
 				: "=Q" (*__p)				\
-				: "r" (*(__u16 *)__u.__c)		\
+				: "rZ" (*(__u16 *)__u.__c)		\
 				: "memory");				\
 		break;							\
 	case 4:								\
 		asm volatile ("stlr %w1, %0"				\
 				: "=Q" (*__p)				\
-				: "r" (*(__u32 *)__u.__c)		\
+				: "rZ" (*(__u32 *)__u.__c)		\
 				: "memory");				\
 		break;							\
 	case 8:								\
-		asm volatile ("stlr %1, %0"				\
+		asm volatile ("stlr %x1, %0"				\
 				: "=Q" (*__p)				\
-				: "r" (*(__u64 *)__u.__c)		\
+				: "rZ" (*(__u64 *)__u.__c)		\
 				: "memory");				\
 		break;							\
 	}								\
@@ -211,6 +221,6 @@ do {									\
 
 #include <asm-generic/barrier.h>
 
-#endif	/* __ASSEMBLY__ */
+#endif	/* __ASSEMBLER__ */
 
 #endif	/* __ASM_BARRIER_H */

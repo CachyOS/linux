@@ -26,7 +26,6 @@
 
 MODULE_AUTHOR("Talel Shenhar");
 MODULE_DESCRIPTION("Amazon's Annapurna Labs Interrupt Controller Driver");
-MODULE_LICENSE("GPL v2");
 
 enum al_fic_state {
 	AL_FIC_UNCONFIGURED = 0,
@@ -66,15 +65,13 @@ static int al_fic_irq_set_type(struct irq_data *data, unsigned int flow_type)
 	struct irq_chip_generic *gc = irq_data_get_irq_chip_data(data);
 	struct al_fic *fic = gc->private;
 	enum al_fic_state new_state;
-	int ret = 0;
 
-	irq_gc_lock(gc);
+	guard(raw_spinlock)(&gc->lock);
 
 	if (((flow_type & IRQ_TYPE_SENSE_MASK) != IRQ_TYPE_LEVEL_HIGH) &&
 	    ((flow_type & IRQ_TYPE_SENSE_MASK) != IRQ_TYPE_EDGE_RISING)) {
 		pr_debug("fic doesn't support flow type %d\n", flow_type);
-		ret = -EINVAL;
-		goto err;
+		return -EINVAL;
 	}
 
 	new_state = (flow_type & IRQ_TYPE_LEVEL_HIGH) ?
@@ -92,16 +89,10 @@ static int al_fic_irq_set_type(struct irq_data *data, unsigned int flow_type)
 	if (fic->state == AL_FIC_UNCONFIGURED) {
 		al_fic_set_trigger(fic, gc, new_state);
 	} else if (fic->state != new_state) {
-		pr_debug("fic %s state already configured to %d\n",
-			 fic->name, fic->state);
-		ret = -EINVAL;
-		goto err;
+		pr_debug("fic %s state already configured to %d\n", fic->name, fic->state);
+		return -EINVAL;
 	}
-
-err:
-	irq_gc_unlock(gc);
-
-	return ret;
+	return 0;
 }
 
 static void al_fic_irq_handler(struct irq_desc *desc)
@@ -140,7 +131,7 @@ static int al_fic_register(struct device_node *node,
 	struct irq_chip_generic *gc;
 	int ret;
 
-	fic->domain = irq_domain_add_linear(node,
+	fic->domain = irq_domain_create_linear(of_fwnode_handle(node),
 					    NR_FIC_IRQS,
 					    &irq_generic_chip_ops,
 					    fic);
@@ -203,7 +194,7 @@ static struct al_fic *al_fic_wire_init(struct device_node *node,
 	int ret;
 	u32 control = CONTROL_MASK_MSI_X;
 
-	fic = kzalloc(sizeof(*fic), GFP_KERNEL);
+	fic = kzalloc_obj(*fic);
 	if (!fic)
 		return ERR_PTR(-ENOMEM);
 

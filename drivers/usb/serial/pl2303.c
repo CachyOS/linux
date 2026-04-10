@@ -24,13 +24,14 @@
 #include <linux/uaccess.h>
 #include <linux/usb.h>
 #include <linux/usb/serial.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include "pl2303.h"
 
 
 #define PL2303_QUIRK_UART_STATE_IDX0		BIT(0)
 #define PL2303_QUIRK_LEGACY			BIT(1)
 #define PL2303_QUIRK_ENDPOINT_HACK		BIT(2)
+#define PL2303_QUIRK_NO_BREAK_GETLINE		BIT(3)
 
 static const struct usb_device_id id_table[] = {
 	{ USB_DEVICE(PL2303_VENDOR_ID, PL2303_PRODUCT_ID),
@@ -118,6 +119,7 @@ static const struct usb_device_id id_table[] = {
 	{ USB_DEVICE(SMART_VENDOR_ID, SMART_PRODUCT_ID) },
 	{ USB_DEVICE(AT_VENDOR_ID, AT_VTKIT3_PRODUCT_ID) },
 	{ USB_DEVICE(IBM_VENDOR_ID, IBM_PRODUCT_ID) },
+	{ USB_DEVICE(MACROSILICON_VENDOR_ID, MACROSILICON_MS3020_PRODUCT_ID) },
 	{ }					/* Terminating entry */
 };
 
@@ -173,7 +175,7 @@ MODULE_DEVICE_TABLE(usb, id_table);
 #define PL2303_HXN_FLOWCTRL_RTS_CTS	0x18
 #define PL2303_HXN_FLOWCTRL_XON_XOFF	0x0c
 
-static void pl2303_set_break(struct usb_serial_port *port, bool enable);
+static int pl2303_set_break(struct usb_serial_port *port, bool enable);
 
 enum pl2303_type {
 	TYPE_H,
@@ -436,22 +438,29 @@ static int pl2303_detect_type(struct usb_serial *serial)
 		break;
 	case 0x200:
 		switch (bcdDevice) {
-		case 0x100:
+		case 0x100:	/* GC */
 		case 0x105:
+			return TYPE_HXN;
+		case 0x300:	/* GT / TA */
+			if (pl2303_supports_hx_status(serial))
+				return TYPE_TA;
+			fallthrough;
 		case 0x305:
+		case 0x400:	/* GL */
 		case 0x405:
+			return TYPE_HXN;
+		case 0x500:	/* GE / TB */
+			if (pl2303_supports_hx_status(serial))
+				return TYPE_TB;
+			fallthrough;
+		case 0x505:
+		case 0x600:	/* GS */
 		case 0x605:
-			/*
-			 * Assume it's an HXN-type if the device doesn't
-			 * support the old read request value.
-			 */
-			if (!pl2303_supports_hx_status(serial))
-				return TYPE_HXN;
-			break;
-		case 0x300:
-			return TYPE_TA;
-		case 0x500:
-			return TYPE_TB;
+		case 0x700:	/* GR */
+		case 0x705:
+		case 0x905:	/* GT-2AB */
+		case 0x1005:	/* GC-Q20 */
+			return TYPE_HXN;
 		}
 		break;
 	}
@@ -459,6 +468,25 @@ static int pl2303_detect_type(struct usb_serial *serial)
 	dev_err(&serial->interface->dev,
 			"unknown device type, please report to linux-usb@vger.kernel.org\n");
 	return -ENODEV;
+}
+
+static bool pl2303_is_hxd_clone(struct usb_serial *serial)
+{
+	struct usb_device *udev = serial->dev;
+	unsigned char *buf;
+	int ret;
+
+	buf = kmalloc(7, GFP_KERNEL);
+	if (!buf)
+		return false;
+
+	ret = usb_control_msg(udev, usb_rcvctrlpipe(udev, 0),
+			      GET_LINE_REQUEST, GET_LINE_REQUEST_TYPE,
+			      0, 0, buf, 7, 100);
+
+	kfree(buf);
+
+	return ret == -EPIPE;
 }
 
 static int pl2303_startup(struct usb_serial *serial)
@@ -475,13 +503,16 @@ static int pl2303_startup(struct usb_serial *serial)
 	type = ret;
 	dev_dbg(&serial->interface->dev, "device type: %s\n", pl2303_type_data[type].name);
 
-	spriv = kzalloc(sizeof(*spriv), GFP_KERNEL);
+	spriv = kzalloc_obj(*spriv);
 	if (!spriv)
 		return -ENOMEM;
 
 	spriv->type = &pl2303_type_data[type];
 	spriv->quirks = (unsigned long)usb_get_serial_data(serial);
 	spriv->quirks |= spriv->type->quirks;
+
+	if (type == TYPE_HXD && pl2303_is_hxd_clone(serial))
+		spriv->quirks |= PL2303_QUIRK_NO_BREAK_GETLINE;
 
 	usb_set_serial_data(serial, spriv);
 
@@ -524,7 +555,7 @@ static int pl2303_port_probe(struct usb_serial_port *port)
 {
 	struct pl2303_private *priv;
 
-	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+	priv = kzalloc_obj(*priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -719,8 +750,17 @@ static void pl2303_encode_baud_rate(struct tty_struct *tty,
 static int pl2303_get_line_request(struct usb_serial_port *port,
 							unsigned char buf[7])
 {
-	struct usb_device *udev = port->serial->dev;
+	struct usb_serial *serial = port->serial;
+	struct pl2303_serial_private *spriv = usb_get_serial_data(serial);
+	struct usb_device *udev = serial->dev;
 	int ret;
+
+	if (spriv->quirks & PL2303_QUIRK_NO_BREAK_GETLINE) {
+		struct pl2303_private *priv = usb_get_serial_port_data(port);
+
+		memcpy(buf, priv->line_settings, 7);
+		return 0;
+	}
 
 	ret = usb_control_msg(udev, usb_rcvctrlpipe(udev, 0),
 				GET_LINE_REQUEST, GET_LINE_REQUEST_TYPE,
@@ -784,7 +824,8 @@ static bool pl2303_enable_xonxoff(struct tty_struct *tty, const struct pl2303_ty
 }
 
 static void pl2303_set_termios(struct tty_struct *tty,
-		struct usb_serial_port *port, struct ktermios *old_termios)
+			       struct usb_serial_port *port,
+			       const struct ktermios *old_termios)
 {
 	struct usb_serial *serial = port->serial;
 	struct pl2303_serial_private *spriv = usb_get_serial_data(serial);
@@ -1054,11 +1095,15 @@ static int pl2303_carrier_raised(struct usb_serial_port *port)
 	return 0;
 }
 
-static void pl2303_set_break(struct usb_serial_port *port, bool enable)
+static int pl2303_set_break(struct usb_serial_port *port, bool enable)
 {
 	struct usb_serial *serial = port->serial;
+	struct pl2303_serial_private *spriv = usb_get_serial_data(serial);
 	u16 state;
 	int result;
+
+	if (spriv->quirks & PL2303_QUIRK_NO_BREAK_GETLINE)
+		return -ENOTTY;
 
 	if (enable)
 		state = BREAK_ON;
@@ -1071,15 +1116,19 @@ static void pl2303_set_break(struct usb_serial_port *port, bool enable)
 	result = usb_control_msg(serial->dev, usb_sndctrlpipe(serial->dev, 0),
 				 BREAK_REQUEST, BREAK_REQUEST_TYPE, state,
 				 0, NULL, 0, 100);
-	if (result)
+	if (result) {
 		dev_err(&port->dev, "error sending break = %d\n", result);
+		return result;
+	}
+
+	return 0;
 }
 
-static void pl2303_break_ctl(struct tty_struct *tty, int state)
+static int pl2303_break_ctl(struct tty_struct *tty, int state)
 {
 	struct usb_serial_port *port = tty->driver_data;
 
-	pl2303_set_break(port, state);
+	return pl2303_set_break(port, state);
 }
 
 static void pl2303_update_line_status(struct usb_serial_port *port,
@@ -1224,7 +1273,6 @@ static void pl2303_process_read_urb(struct urb *urb)
 
 static struct usb_serial_driver pl2303_device = {
 	.driver = {
-		.owner =	THIS_MODULE,
 		.name =		"pl2303",
 	},
 	.id_table =		id_table,

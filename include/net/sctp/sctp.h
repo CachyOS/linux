@@ -28,7 +28,7 @@
 #define __net_sctp_h__
 
 /* Header Strategy.
- *    Start getting some control over the header file depencies:
+ *    Start getting some control over the header file dependencies:
  *       includes
  *       constants
  *       structs
@@ -67,11 +67,6 @@
 #define SCTP_PROTOSW_FLAG INET_PROTOSW_PERMANENT
 #endif
 
-/* Round an int up to the next multiple of 4.  */
-#define SCTP_PAD4(s) (((s)+3)&~3)
-/* Truncate to the previous multiple of 4.  */
-#define SCTP_TRUNC4(s) ((s)&~3)
-
 /*
  * Function declarations.
  */
@@ -90,7 +85,7 @@ void sctp_udp_sock_stop(struct net *net);
 /*
  * sctp/socket.c
  */
-int sctp_inet_connect(struct socket *sock, struct sockaddr *uaddr,
+int sctp_inet_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
 		      int addr_len, int flags);
 int sctp_backlog_rcv(struct sock *sk, struct sk_buff *skb);
 int sctp_inet_listen(struct socket *sock, int backlog);
@@ -99,8 +94,7 @@ void sctp_data_ready(struct sock *sk);
 __poll_t sctp_poll(struct file *file, struct socket *sock,
 		poll_table *wait);
 void sctp_sock_rfree(struct sk_buff *skb);
-void sctp_copy_sock(struct sock *newsk, struct sock *sk,
-		    struct sctp_association *asoc);
+
 extern struct percpu_counter sctp_sockets_allocated;
 int sctp_asconf_mgmt(struct sctp_sock *, struct sctp_sockaddr_entry *);
 struct sk_buff *sctp_skb_recv_datagram(struct sock *, int, int *);
@@ -114,7 +108,7 @@ struct sctp_transport *sctp_transport_get_idx(struct net *net,
 			struct rhashtable_iter *iter, int pos);
 int sctp_transport_lookup_process(sctp_callback_t cb, struct net *net,
 				  const union sctp_addr *laddr,
-				  const union sctp_addr *paddr, void *p);
+				  const union sctp_addr *paddr, void *p, int dif);
 int sctp_transport_traverse_process(sctp_callback_t cb, sctp_callback_t cb_done,
 				    struct net *net, int *pos, void *p);
 int sctp_for_each_endpoint(int (*cb)(struct sctp_endpoint *, void *), void *p);
@@ -153,8 +147,6 @@ void sctp_icmp_redirect(struct sock *, struct sctp_transport *,
 void sctp_icmp_proto_unreachable(struct sock *sk,
 				 struct sctp_association *asoc,
 				 struct sctp_transport *t);
-void sctp_backlog_migrate(struct sctp_association *assoc,
-			  struct sock *oldsk, struct sock *newsk);
 int sctp_transport_hashtable_init(void);
 void sctp_transport_hashtable_destroy(void);
 int sctp_hash_transport(struct sctp_transport *t);
@@ -162,10 +154,12 @@ void sctp_unhash_transport(struct sctp_transport *t);
 struct sctp_transport *sctp_addrs_lookup_transport(
 				struct net *net,
 				const union sctp_addr *laddr,
-				const union sctp_addr *paddr);
+				const union sctp_addr *paddr,
+				int dif, int sdif);
 struct sctp_transport *sctp_epaddr_lookup_transport(
 				const struct sctp_endpoint *ep,
 				const union sctp_addr *paddr);
+bool sctp_sk_bound_dev_eq(struct net *net, int bound_dev_if, int dif, int sdif);
 
 /*
  * sctp/proc.c
@@ -369,8 +363,6 @@ sctp_assoc_to_state(const struct sctp_association *asoc)
 /* Look up the association by its id.  */
 struct sctp_association *sctp_id2assoc(struct sock *sk, sctp_assoc_t id);
 
-int sctp_do_peeloff(struct sock *sk, sctp_assoc_t id, struct socket **sockp);
-
 /* A macro to walk a list of skbs.  */
 #define sctp_skb_for_each(pos, head, tmp) \
 	skb_queue_walk_safe(head, pos, tmp)
@@ -428,11 +420,11 @@ static inline bool sctp_chunk_pending(const struct sctp_chunk *chunk)
  * the chunk length to indicate when to stop.  Make sure
  * there is room for a param header too.
  */
-#define sctp_walk_params(pos, chunk, member)\
-_sctp_walk_params((pos), (chunk), ntohs((chunk)->chunk_hdr.length), member)
+#define sctp_walk_params(pos, chunk)\
+_sctp_walk_params((pos), (chunk), ntohs((chunk)->chunk_hdr.length))
 
-#define _sctp_walk_params(pos, chunk, end, member)\
-for (pos.v = chunk->member;\
+#define _sctp_walk_params(pos, chunk, end)\
+for (pos.v = (u8 *)(chunk + 1);\
      (pos.v + offsetof(struct sctp_paramhdr, length) + sizeof(pos.p->length) <=\
       (void *)chunk + end) &&\
      pos.v <= (void *)chunk + end - ntohs(pos.p->length) &&\
@@ -455,8 +447,8 @@ for (err = (struct sctp_errhdr *)((void *)chunk_hdr + \
 _sctp_walk_fwdtsn((pos), (chunk), ntohs((chunk)->chunk_hdr->length) - sizeof(struct sctp_fwdtsn_chunk))
 
 #define _sctp_walk_fwdtsn(pos, chunk, end)\
-for (pos = chunk->subh.fwdtsn_hdr->skip;\
-     (void *)pos <= (void *)chunk->subh.fwdtsn_hdr->skip + end - sizeof(struct sctp_fwdtsn_skip);\
+for (pos = (void *)(chunk->subh.fwdtsn_hdr + 1);\
+     (void *)pos <= (void *)(chunk->subh.fwdtsn_hdr + 1) + end - sizeof(struct sctp_fwdtsn_skip);\
      pos++)
 
 /* External references. */
@@ -641,7 +633,7 @@ static inline void sctp_transport_pl_reset(struct sctp_transport *t)
 		}
 	} else {
 		if (t->pl.state != SCTP_PL_DISABLED) {
-			if (del_timer(&t->probe_timer))
+			if (timer_delete(&t->probe_timer))
 				sctp_transport_put(t);
 			t->pl.state = SCTP_PL_DISABLED;
 		}

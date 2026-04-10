@@ -21,13 +21,9 @@
 
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
+#include <linux/string_choices.h>
 #include <uapi/linux/usb/audio.h>
 #include "usb.h"
-
-static inline const char *plural(int n)
-{
-	return (n == 1 ? "" : "s");
-}
 
 static int is_rndis(struct usb_interface_descriptor *desc)
 {
@@ -59,9 +55,25 @@ int usb_choose_configuration(struct usb_device *udev)
 	int num_configs;
 	int insufficient_power = 0;
 	struct usb_host_config *c, *best;
+	struct usb_device_driver *udriver;
+
+	/*
+	 * If a USB device (not an interface) doesn't have a driver then the
+	 * kernel has no business trying to select or install a configuration
+	 * for it.
+	 */
+	if (!udev->dev.driver)
+		return -1;
+	udriver = to_usb_device_driver(udev->dev.driver);
 
 	if (usb_device_is_owned(udev))
 		return 0;
+
+	if (udriver->choose_configuration) {
+		i = udriver->choose_configuration(udev);
+		if (i >= 0)
+			return i;
+	}
 
 	best = NULL;
 	c = udev->config;
@@ -178,18 +190,18 @@ int usb_choose_configuration(struct usb_device *udev)
 	if (insufficient_power > 0)
 		dev_info(&udev->dev, "rejected %d configuration%s "
 			"due to insufficient available bus power\n",
-			insufficient_power, plural(insufficient_power));
+			insufficient_power, str_plural(insufficient_power));
 
 	if (best) {
 		i = best->desc.bConfigurationValue;
 		dev_dbg(&udev->dev,
 			"configuration #%d chosen from %d choice%s\n",
-			i, num_configs, plural(num_configs));
+			i, num_configs, str_plural(num_configs));
 	} else {
 		i = -1;
 		dev_warn(&udev->dev,
 			"no configuration chosen from %d choice%s\n",
-			num_configs, plural(num_configs));
+			num_configs, str_plural(num_configs));
 	}
 	return i;
 }
@@ -231,7 +243,7 @@ int usb_generic_driver_probe(struct usb_device *udev)
 	 * with the driver core and lets interface drivers bind to them.
 	 */
 	if (udev->authorized == 0)
-		dev_err(&udev->dev, "Device is not authorized for usage\n");
+		dev_info(&udev->dev, "Device is not authorized for usage\n");
 	else {
 		c = usb_choose_configuration(udev);
 		if (c >= 0) {

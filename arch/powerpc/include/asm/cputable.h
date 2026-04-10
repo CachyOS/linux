@@ -7,7 +7,7 @@
 #include <uapi/asm/cputable.h>
 #include <asm/asm-const.h>
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 /* This structure can grow, it's real size is used by head.S code
  * via the mkdefs mechanism.
@@ -70,9 +70,6 @@ struct cpu_spec {
 	/* Used to restore cpu setup on secondary processors and at resume */
 	cpu_restore_t	cpu_restore;
 
-	/* Used by oprofile userspace to select the right counters */
-	char		*oprofile_cpu_type;
-
 	/* Name of processor class, for the ELF AT_PLATFORM entry */
 	char		*platform;
 
@@ -106,7 +103,7 @@ extern void cpu_feature_keys_init(void);
 static inline void cpu_feature_keys_init(void) { }
 #endif
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 /* CPU kernel features */
 
@@ -195,8 +192,10 @@ static inline void cpu_feature_keys_init(void) { }
 #define CPU_FTR_P9_RADIX_PREFETCH_BUG	LONG_ASM_CONST(0x0002000000000000)
 #define CPU_FTR_ARCH_31			LONG_ASM_CONST(0x0004000000000000)
 #define CPU_FTR_DAWR1			LONG_ASM_CONST(0x0008000000000000)
+#define CPU_FTR_DEXCR_NPHIE		LONG_ASM_CONST(0x0010000000000000)
+#define CPU_FTR_P11_PVR			LONG_ASM_CONST(0x0020000000000000)
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #define CPU_FTR_PPCAS_ARCH_V2	(CPU_FTR_NOEXECUTE)
 
@@ -254,7 +253,7 @@ static inline void cpu_feature_keys_init(void) { }
  * This is also required by 52xx family.
  */
 #if defined(CONFIG_SMP) || defined(CONFIG_MPC10X_BRIDGE) \
-	|| defined(CONFIG_PPC_83xx) || defined(CONFIG_8260) \
+	|| defined(CONFIG_PPC_83xx) || defined(CONFIG_PPC_82xx) \
 	|| defined(CONFIG_PPC_MPC52xx)
 #define CPU_FTR_COMMON                  CPU_FTR_NEED_COHERENT
 #else
@@ -355,7 +354,6 @@ static inline void cpu_feature_keys_init(void) { }
 	    CPU_FTR_COMMON | CPU_FTR_FPU_UNAVAILABLE  | CPU_FTR_NOEXECUTE)
 #define CPU_FTRS_CLASSIC32	(CPU_FTR_COMMON)
 #define CPU_FTRS_8XX	(CPU_FTR_NOEXECUTE)
-#define CPU_FTRS_40X	(CPU_FTR_NOEXECUTE)
 #define CPU_FTRS_44X	(CPU_FTR_NOEXECUTE)
 #define CPU_FTRS_440x6	(CPU_FTR_NOEXECUTE | \
 	    CPU_FTR_INDEXED_DCR)
@@ -454,7 +452,11 @@ static inline void cpu_feature_keys_init(void) { }
 	    CPU_FTR_CFAR | CPU_FTR_HVMODE | CPU_FTR_VMX_COPY | \
 	    CPU_FTR_DBELL | CPU_FTR_HAS_PPR | CPU_FTR_ARCH_207S | \
 	    CPU_FTR_ARCH_300 | CPU_FTR_ARCH_31 | \
-	    CPU_FTR_DAWR | CPU_FTR_DAWR1)
+	    CPU_FTR_DAWR | CPU_FTR_DAWR1 | \
+	    CPU_FTR_DEXCR_NPHIE)
+
+#define CPU_FTRS_POWER11	(CPU_FTRS_POWER10 | CPU_FTR_P11_PVR)
+
 #define CPU_FTRS_CELL	(CPU_FTR_LWSYNC | \
 	    CPU_FTR_PPCAS_ARCH_V2 | CPU_FTR_CTRL | \
 	    CPU_FTR_ALTIVEC_COMP | CPU_FTR_MMCRA | CPU_FTR_SMT | \
@@ -466,7 +468,7 @@ static inline void cpu_feature_keys_init(void) { }
 #define CPU_FTRS_COMPATIBLE	(CPU_FTR_PPCAS_ARCH_V2)
 
 #ifdef CONFIG_PPC64
-#ifdef CONFIG_PPC_BOOK3E
+#ifdef CONFIG_PPC_BOOK3E_64
 #define CPU_FTRS_POSSIBLE	(CPU_FTRS_E6500 | CPU_FTRS_E5500)
 #else
 #ifdef CONFIG_CPU_LITTLE_ENDIAN
@@ -474,7 +476,7 @@ static inline void cpu_feature_keys_init(void) { }
 	    (CPU_FTRS_POWER7 | CPU_FTRS_POWER8E | CPU_FTRS_POWER8 | \
 	     CPU_FTR_ALTIVEC_COMP | CPU_FTR_VSX_COMP | CPU_FTRS_POWER9 | \
 	     CPU_FTRS_POWER9_DD2_1 | CPU_FTRS_POWER9_DD2_2 | \
-	     CPU_FTRS_POWER9_DD2_3 | CPU_FTRS_POWER10)
+	     CPU_FTRS_POWER9_DD2_3 | CPU_FTRS_POWER10 | CPU_FTRS_POWER11)
 #else
 #define CPU_FTRS_POSSIBLE	\
 	    (CPU_FTRS_PPC970 | CPU_FTRS_POWER5 | \
@@ -482,7 +484,7 @@ static inline void cpu_feature_keys_init(void) { }
 	     CPU_FTRS_POWER8 | CPU_FTRS_CELL | CPU_FTRS_PA6T | \
 	     CPU_FTR_VSX_COMP | CPU_FTR_ALTIVEC_COMP | CPU_FTRS_POWER9 | \
 	     CPU_FTRS_POWER9_DD2_1 | CPU_FTRS_POWER9_DD2_2 | \
-	     CPU_FTRS_POWER9_DD2_3 | CPU_FTRS_POWER10)
+	     CPU_FTRS_POWER9_DD2_3 | CPU_FTRS_POWER10 | CPU_FTRS_POWER11)
 #endif /* CONFIG_CPU_LITTLE_ENDIAN */
 #endif
 #else
@@ -505,15 +507,12 @@ enum {
 #ifdef CONFIG_PPC_8xx
 	    CPU_FTRS_8XX |
 #endif
-#ifdef CONFIG_40x
-	    CPU_FTRS_40X |
-#endif
 #ifdef CONFIG_PPC_47x
 	    CPU_FTRS_47X | CPU_FTR_476_DD2 |
 #elif defined(CONFIG_44x)
 	    CPU_FTRS_44X | CPU_FTRS_440x6 |
 #endif
-#ifdef CONFIG_E500
+#ifdef CONFIG_PPC_E500
 	    CPU_FTRS_E500 | CPU_FTRS_E500_2 |
 #endif
 #ifdef CONFIG_PPC_E500MC
@@ -524,7 +523,7 @@ enum {
 #endif /* __powerpc64__ */
 
 #ifdef CONFIG_PPC64
-#ifdef CONFIG_PPC_BOOK3E
+#ifdef CONFIG_PPC_BOOK3E_64
 #define CPU_FTRS_ALWAYS		(CPU_FTRS_E6500 & CPU_FTRS_E5500)
 #else
 
@@ -543,20 +542,21 @@ enum {
 #define CPU_FTRS_DT_CPU_BASE	(~0ul)
 #endif
 
+/* pseries may disable DBELL with ibm,pi-features */
 #ifdef CONFIG_CPU_LITTLE_ENDIAN
 #define CPU_FTRS_ALWAYS \
-	    (CPU_FTRS_POSSIBLE & ~CPU_FTR_HVMODE & CPU_FTRS_POWER7 & \
-	     CPU_FTRS_POWER8E & CPU_FTRS_POWER8 & CPU_FTRS_POWER9 & \
-	     CPU_FTRS_POWER9_DD2_1 & CPU_FTRS_POWER9_DD2_2 & \
-	     CPU_FTRS_POWER10 & CPU_FTRS_DT_CPU_BASE)
+	    (CPU_FTRS_POSSIBLE & ~CPU_FTR_HVMODE & ~CPU_FTR_DBELL & \
+	     CPU_FTRS_POWER7 & CPU_FTRS_POWER8E & CPU_FTRS_POWER8 & \
+	     CPU_FTRS_POWER9 & CPU_FTRS_POWER9_DD2_1 & CPU_FTRS_POWER9_DD2_2 & \
+	     CPU_FTRS_POWER10 & CPU_FTRS_POWER11 & CPU_FTRS_DT_CPU_BASE)
 #else
 #define CPU_FTRS_ALWAYS		\
 	    (CPU_FTRS_PPC970 & CPU_FTRS_POWER5 & \
 	     CPU_FTRS_POWER6 & CPU_FTRS_POWER7 & CPU_FTRS_CELL & \
 	     CPU_FTRS_PA6T & CPU_FTRS_POWER8 & CPU_FTRS_POWER8E & \
-	     ~CPU_FTR_HVMODE & CPU_FTRS_POSSIBLE & CPU_FTRS_POWER9 & \
-	     CPU_FTRS_POWER9_DD2_1 & CPU_FTRS_POWER9_DD2_2 & \
-	     CPU_FTRS_POWER10 & CPU_FTRS_DT_CPU_BASE)
+	     ~CPU_FTR_HVMODE & ~CPU_FTR_DBELL & CPU_FTRS_POSSIBLE & \
+	     CPU_FTRS_POWER9 & CPU_FTRS_POWER9_DD2_1 & CPU_FTRS_POWER9_DD2_2 & \
+	     CPU_FTRS_POWER10 & CPU_FTRS_POWER11 & CPU_FTRS_DT_CPU_BASE)
 #endif /* CONFIG_CPU_LITTLE_ENDIAN */
 #endif
 #else
@@ -579,15 +579,12 @@ enum {
 #ifdef CONFIG_PPC_8xx
 	    CPU_FTRS_8XX &
 #endif
-#ifdef CONFIG_40x
-	    CPU_FTRS_40X &
-#endif
 #ifdef CONFIG_PPC_47x
 	    CPU_FTRS_47X &
 #elif defined(CONFIG_44x)
 	    CPU_FTRS_44X & CPU_FTRS_440x6 &
 #endif
-#ifdef CONFIG_E500
+#ifdef CONFIG_PPC_E500
 	    CPU_FTRS_E500 & CPU_FTRS_E500_2 &
 #endif
 #ifdef CONFIG_PPC_E500MC
@@ -605,6 +602,6 @@ enum {
  */
 #define HBP_NUM_MAX	2
 
-#endif /* !__ASSEMBLY__ */
+#endif /* !__ASSEMBLER__ */
 
 #endif /* __ASM_POWERPC_CPUTABLE_H */

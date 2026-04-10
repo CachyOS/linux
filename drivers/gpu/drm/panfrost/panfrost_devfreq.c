@@ -4,8 +4,11 @@
 #include <linux/clk.h>
 #include <linux/devfreq.h>
 #include <linux/devfreq_cooling.h>
+#include <linux/nvmem-consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm_opp.h>
+
+#include <drm/drm_print.h>
 
 #include "panfrost_device.h"
 #include "panfrost_devfreq.h"
@@ -28,14 +31,20 @@ static void panfrost_devfreq_update_utilization(struct panfrost_devfreq *pfdevfr
 static int panfrost_devfreq_target(struct device *dev, unsigned long *freq,
 				   u32 flags)
 {
+	struct panfrost_device *pfdev = dev_get_drvdata(dev);
 	struct dev_pm_opp *opp;
+	int err;
 
 	opp = devfreq_recommended_opp(dev, freq, flags);
 	if (IS_ERR(opp))
 		return PTR_ERR(opp);
 	dev_pm_opp_put(opp);
 
-	return dev_pm_opp_set_rate(dev, *freq);
+	err = dev_pm_opp_set_rate(dev, *freq);
+	if (!err)
+		pfdev->pfdevfreq.current_frequency = *freq;
+
+	return err;
 }
 
 static void panfrost_devfreq_reset(struct panfrost_devfreq *pfdevfreq)
@@ -67,7 +76,7 @@ static int panfrost_devfreq_get_dev_status(struct device *dev,
 
 	spin_unlock_irqrestore(&pfdevfreq->lock, irqflags);
 
-	dev_dbg(pfdev->dev, "busy %lu total %lu %lu %% freq %lu MHz\n",
+	dev_dbg(pfdev->base.dev, "busy %lu total %lu %lu %% freq %lu MHz\n",
 		status->busy_time, status->total_time,
 		status->busy_time / (status->total_time / 100),
 		status->current_frequency / 1000 / 1000);
@@ -82,15 +91,41 @@ static struct devfreq_dev_profile panfrost_devfreq_profile = {
 	.get_dev_status = panfrost_devfreq_get_dev_status,
 };
 
+static int panfrost_read_speedbin(struct device *dev)
+{
+	u32 val;
+	int ret;
+
+	ret = nvmem_cell_read_variable_le_u32(dev, "speed-bin", &val);
+	if (ret) {
+		/*
+		 * -ENOENT means that this platform doesn't support speedbins
+		 * as it didn't declare any speed-bin nvmem: in this case, we
+		 * keep going without it; any other error means that we are
+		 * supposed to read the bin value, but we failed doing so.
+		 */
+		if (ret != -ENOENT && ret != -EOPNOTSUPP) {
+			DRM_DEV_ERROR(dev, "Cannot read speed-bin (%d).", ret);
+			return ret;
+		}
+
+		return 0;
+	}
+	DRM_DEV_DEBUG(dev, "Using speed-bin = 0x%x\n", val);
+
+	return devm_pm_opp_set_supported_hw(dev, &val, 1);
+}
+
 int panfrost_devfreq_init(struct panfrost_device *pfdev)
 {
 	int ret;
 	struct dev_pm_opp *opp;
 	unsigned long cur_freq;
-	struct device *dev = &pfdev->pdev->dev;
+	struct device *dev = pfdev->base.dev;
 	struct devfreq *devfreq;
 	struct thermal_cooling_device *cooling;
 	struct panfrost_devfreq *pfdevfreq = &pfdev->pfdevfreq;
+	unsigned long freq = ULONG_MAX;
 
 	if (pfdev->comp->num_supplies > 1) {
 		/*
@@ -101,8 +136,11 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
 		return 0;
 	}
 
-	ret = devm_pm_opp_set_regulators(dev, pfdev->comp->supply_names,
-					 pfdev->comp->num_supplies);
+	ret = panfrost_read_speedbin(dev);
+	if (ret)
+		return ret;
+
+	ret = devm_pm_opp_set_regulators(dev, pfdev->comp->supply_names);
 	if (ret) {
 		/* Continue if the optional regulator is missing */
 		if (ret != -ENODEV) {
@@ -132,6 +170,32 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
 		return PTR_ERR(opp);
 
 	panfrost_devfreq_profile.initial_freq = cur_freq;
+
+	/*
+	 * We could wait until panfrost_devfreq_target() to set this value, but
+	 * since the simple_ondemand governor works asynchronously, there's a
+	 * chance by the time someone opens the device's fdinfo file, current
+	 * frequency hasn't been updated yet, so let's just do an early set.
+	 */
+	pfdevfreq->current_frequency = cur_freq;
+
+	/*
+	 * Set the recommend OPP this will enable and configure the regulator
+	 * if any and will avoid a switch off by regulator_late_cleanup()
+	 */
+	ret = dev_pm_opp_set_opp(dev, opp);
+	dev_pm_opp_put(opp);
+	if (ret) {
+		DRM_DEV_ERROR(dev, "Couldn't set recommended OPP\n");
+		return ret;
+	}
+
+	/* Find the fastest defined rate  */
+	opp = dev_pm_opp_find_freq_floor(dev, &freq);
+	if (IS_ERR(opp))
+		return PTR_ERR(opp);
+	pfdevfreq->fast_rate = freq;
+
 	dev_pm_opp_put(opp);
 
 	/*

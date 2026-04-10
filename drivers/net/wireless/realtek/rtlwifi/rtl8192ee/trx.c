@@ -550,9 +550,11 @@ u16 rtl92ee_get_available_desc(struct ieee80211_hw *hw, u8 q_idx)
 	return point_diff;
 }
 
-void rtl92ee_pre_fill_tx_bd_desc(struct ieee80211_hw *hw,
-				 u8 *tx_bd_desc8, u8 *desc8, u8 queue_index,
-				 struct sk_buff *skb, dma_addr_t addr)
+static void rtl92ee_pre_fill_tx_bd_desc(struct ieee80211_hw *hw,
+					u8 *tx_bd_desc8, u8 *desc8,
+					u8 queue_index,
+					struct sk_buff *skb,
+					dma_addr_t addr)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_pci *rtlpci = rtl_pcidev(rtl_pcipriv(hw));
@@ -827,9 +829,8 @@ void rtl92ee_tx_fill_desc(struct ieee80211_hw *hw,
 	rtl_dbg(rtlpriv, COMP_SEND, DBG_TRACE, "\n");
 }
 
-void rtl92ee_tx_fill_cmddesc(struct ieee80211_hw *hw,
-			     u8 *pdesc8, bool firstseg,
-			     bool lastseg, struct sk_buff *skb)
+void rtl92ee_tx_fill_cmddesc(struct ieee80211_hw *hw, u8 *pdesc8,
+			     struct sk_buff *skb)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_pci *rtlpci = rtl_pcidev(rtl_pcipriv(hw));
@@ -846,8 +847,7 @@ void rtl92ee_tx_fill_cmddesc(struct ieee80211_hw *hw,
 	}
 	clear_pci_tx_desc_content(pdesc, txdesc_len);
 
-	if (firstseg)
-		set_tx_desc_offset(pdesc, txdesc_len);
+	set_tx_desc_offset(pdesc, txdesc_len);
 
 	set_tx_desc_tx_rate(pdesc, DESC_RATE1M);
 
@@ -997,7 +997,6 @@ bool rtl92ee_is_tx_desc_closed(struct ieee80211_hw *hw, u8 hw_queue, u16 index)
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	u16 read_point, write_point;
 	bool ret = false;
-	static u8 stop_report_cnt;
 	struct rtl8192_tx_ring *ring = &rtlpci->tx_ring[hw_queue];
 
 	{
@@ -1037,13 +1036,6 @@ bool rtl92ee_is_tx_desc_closed(struct ieee80211_hw *hw, u8 hw_queue, u16 index)
 	if (rtlpriv->rtlhal.driver_is_goingto_unload ||
 	    rtlpriv->psc.rfoff_reason > RF_CHANGE_BY_PS)
 		ret = true;
-
-	if (hw_queue < BEACON_QUEUE) {
-		if (!ret)
-			stop_report_cnt++;
-		else
-			stop_report_cnt = 0;
-	}
 
 	return ret;
 }

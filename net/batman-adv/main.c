@@ -6,21 +6,19 @@
 
 #include "main.h"
 
+#include <linux/array_size.h>
 #include <linux/atomic.h>
 #include <linux/build_bug.h>
 #include <linux/byteorder/generic.h>
 #include <linux/container_of.h>
-#include <linux/crc32c.h>
 #include <linux/device.h>
 #include <linux/errno.h>
-#include <linux/genetlink.h>
 #include <linux/gfp.h>
 #include <linux/if_ether.h>
 #include <linux/if_vlan.h>
 #include <linux/init.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
-#include <linux/kernel.h>
 #include <linux/kobject.h>
 #include <linux/kref.h>
 #include <linux/list.h>
@@ -28,15 +26,16 @@
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/printk.h>
-#include <linux/rculist.h>
 #include <linux/rcupdate.h>
 #include <linux/skbuff.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <linux/sprintf.h>
 #include <linux/stddef.h>
 #include <linux/string.h>
 #include <linux/workqueue.h>
 #include <net/dsfield.h>
+#include <net/genetlink.h>
 #include <net/rtnetlink.h>
 #include <uapi/linux/batadv_packet.h>
 #include <uapi/linux/batman_adv.h>
@@ -50,13 +49,12 @@
 #include "gateway_common.h"
 #include "hard-interface.h"
 #include "log.h"
+#include "mesh-interface.h"
 #include "multicast.h"
 #include "netlink.h"
-#include "network-coding.h"
 #include "originator.h"
 #include "routing.h"
 #include "send.h"
-#include "soft-interface.h"
 #include "tp_meter.h"
 #include "translation-table.h"
 
@@ -67,8 +65,6 @@ struct list_head batadv_hardif_list;
 unsigned int batadv_hardif_generation;
 static int (*batadv_rx_handler[256])(struct sk_buff *skb,
 				     struct batadv_hard_iface *recv_if);
-
-unsigned char batadv_broadcast_addr[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
 struct workqueue_struct *batadv_event_workqueue;
 
@@ -105,7 +101,6 @@ static int __init batadv_init(void)
 
 	batadv_v_init();
 	batadv_iv_init();
-	batadv_nc_init();
 	batadv_tp_meter_init();
 
 	batadv_event_workqueue = create_singlethread_workqueue("bat_events");
@@ -142,14 +137,14 @@ static void __exit batadv_exit(void)
 }
 
 /**
- * batadv_mesh_init() - Initialize soft interface
- * @soft_iface: netdev struct of the soft interface
+ * batadv_mesh_init() - Initialize mesh interface
+ * @mesh_iface: netdev struct of the mesh interface
  *
  * Return: 0 on success or negative error number in case of failure
  */
-int batadv_mesh_init(struct net_device *soft_iface)
+int batadv_mesh_init(struct net_device *mesh_iface)
 {
-	struct batadv_priv *bat_priv = netdev_priv(soft_iface);
+	struct batadv_priv *bat_priv = netdev_priv(mesh_iface);
 	int ret;
 
 	spin_lock_init(&bat_priv->forw_bat_list_lock);
@@ -166,7 +161,7 @@ int batadv_mesh_init(struct net_device *soft_iface)
 #endif
 	spin_lock_init(&bat_priv->tvlv.container_list_lock);
 	spin_lock_init(&bat_priv->tvlv.handler_list_lock);
-	spin_lock_init(&bat_priv->softif_vlan_list_lock);
+	spin_lock_init(&bat_priv->meshif_vlan_list_lock);
 	spin_lock_init(&bat_priv->tp_list_lock);
 
 	INIT_HLIST_HEAD(&bat_priv->forw_bat_list);
@@ -185,7 +180,7 @@ int batadv_mesh_init(struct net_device *soft_iface)
 #endif
 	INIT_HLIST_HEAD(&bat_priv->tvlv.container_list);
 	INIT_HLIST_HEAD(&bat_priv->tvlv.handler_list);
-	INIT_HLIST_HEAD(&bat_priv->softif_vlan_list);
+	INIT_HLIST_HEAD(&bat_priv->meshif_vlan_list);
 	INIT_HLIST_HEAD(&bat_priv->tp_list);
 
 	bat_priv->gw.generation = 0;
@@ -220,12 +215,6 @@ int batadv_mesh_init(struct net_device *soft_iface)
 		goto err_dat;
 	}
 
-	ret = batadv_nc_mesh_init(bat_priv);
-	if (ret < 0) {
-		atomic_set(&bat_priv->mesh_state, BATADV_MESH_DEACTIVATING);
-		goto err_nc;
-	}
-
 	batadv_gw_init(bat_priv);
 	batadv_mcast_init(bat_priv);
 
@@ -234,8 +223,6 @@ int batadv_mesh_init(struct net_device *soft_iface)
 
 	return 0;
 
-err_nc:
-	batadv_dat_free(bat_priv);
 err_dat:
 	batadv_bla_free(bat_priv);
 err_bla:
@@ -252,12 +239,12 @@ err_orig:
 }
 
 /**
- * batadv_mesh_free() - Deinitialize soft interface
- * @soft_iface: netdev struct of the soft interface
+ * batadv_mesh_free() - Deinitialize mesh interface
+ * @mesh_iface: netdev struct of the mesh interface
  */
-void batadv_mesh_free(struct net_device *soft_iface)
+void batadv_mesh_free(struct net_device *mesh_iface)
 {
-	struct batadv_priv *bat_priv = netdev_priv(soft_iface);
+	struct batadv_priv *bat_priv = netdev_priv(mesh_iface);
 
 	atomic_set(&bat_priv->mesh_state, BATADV_MESH_DEACTIVATING);
 
@@ -266,7 +253,6 @@ void batadv_mesh_free(struct net_device *soft_iface)
 	batadv_gw_node_free(bat_priv);
 
 	batadv_v_mesh_free(bat_priv);
-	batadv_nc_mesh_free(bat_priv);
 	batadv_dat_free(bat_priv);
 	batadv_bla_free(bat_priv);
 
@@ -296,7 +282,7 @@ void batadv_mesh_free(struct net_device *soft_iface)
 /**
  * batadv_is_my_mac() - check if the given mac address belongs to any of the
  *  real interfaces in the current mesh
- * @bat_priv: the bat priv with all the soft interface information
+ * @bat_priv: the bat priv with all the mesh interface information
  * @addr: the address to check
  *
  * Return: 'true' if the mac address was found, false otherwise.
@@ -304,14 +290,12 @@ void batadv_mesh_free(struct net_device *soft_iface)
 bool batadv_is_my_mac(struct batadv_priv *bat_priv, const u8 *addr)
 {
 	const struct batadv_hard_iface *hard_iface;
+	struct list_head *iter;
 	bool is_my_mac = false;
 
 	rcu_read_lock();
-	list_for_each_entry_rcu(hard_iface, &batadv_hardif_list, list) {
+	netdev_for_each_lower_private_rcu(bat_priv->mesh_iface, hard_iface, iter) {
 		if (hard_iface->if_status != BATADV_IF_ACTIVE)
-			continue;
-
-		if (hard_iface->soft_iface != bat_priv->soft_iface)
 			continue;
 
 		if (batadv_compare_eth(hard_iface->net_dev->dev_addr, addr)) {
@@ -339,11 +323,6 @@ int batadv_max_header_len(void)
 			   sizeof(struct batadv_unicast_4addr_packet));
 	header_len = max_t(int, header_len,
 			   sizeof(struct batadv_bcast_packet));
-
-#ifdef CONFIG_BATMAN_ADV_NC
-	header_len = max_t(int, header_len,
-			   sizeof(struct batadv_coded_packet));
-#endif
 
 	return header_len + ETH_HLEN;
 }
@@ -456,10 +435,10 @@ int batadv_batman_skb_recv(struct sk_buff *skb, struct net_device *dev,
 	if (unlikely(skb->mac_len != ETH_HLEN || !skb_mac_header(skb)))
 		goto err_free;
 
-	if (!hard_iface->soft_iface)
+	if (!hard_iface->mesh_iface)
 		goto err_free;
 
-	bat_priv = netdev_priv(hard_iface->soft_iface);
+	bat_priv = netdev_priv(hard_iface->mesh_iface);
 
 	if (atomic_read(&bat_priv->mesh_state) != BATADV_MESH_ACTIVE)
 		goto err_free;
@@ -532,6 +511,8 @@ static void batadv_recv_handler_init(void)
 
 	/* broadcast packet */
 	batadv_rx_handler[BATADV_BCAST] = batadv_recv_bcast_packet;
+	/* multicast packet */
+	batadv_rx_handler[BATADV_MCAST] = batadv_recv_mcast_packet;
 
 	/* unicast packets ... */
 	/* unicast with 4 addresses packet */
@@ -580,39 +561,6 @@ void batadv_recv_handler_unregister(u8 packet_type)
 }
 
 /**
- * batadv_skb_crc32() - calculate CRC32 of the whole packet and skip bytes in
- *  the header
- * @skb: skb pointing to fragmented socket buffers
- * @payload_ptr: Pointer to position inside the head buffer of the skb
- *  marking the start of the data to be CRC'ed
- *
- * payload_ptr must always point to an address in the skb head buffer and not to
- * a fragment.
- *
- * Return: big endian crc32c of the checksummed data
- */
-__be32 batadv_skb_crc32(struct sk_buff *skb, u8 *payload_ptr)
-{
-	u32 crc = 0;
-	unsigned int from;
-	unsigned int to = skb->len;
-	struct skb_seq_state st;
-	const u8 *data;
-	unsigned int len;
-	unsigned int consumed = 0;
-
-	from = (unsigned int)(payload_ptr - skb->data);
-
-	skb_prepare_seq_read(skb, from, to, &st);
-	while ((len = skb_seq_read(consumed, &data, &st)) != 0) {
-		crc = crc32c(crc, data, len);
-		consumed += len;
-	}
-
-	return htonl(crc);
-}
-
-/**
  * batadv_get_vid() - extract the VLAN identifier from skb if any
  * @skb: the buffer containing the packet
  * @header_len: length of the batman header preceding the ethernet header
@@ -634,6 +582,13 @@ unsigned short batadv_get_vid(struct sk_buff *skb, size_t header_len)
 
 	vhdr = (struct vlan_ethhdr *)(skb->data + header_len);
 	vid = ntohs(vhdr->h_vlan_TCI) & VLAN_VID_MASK;
+
+	/* VID 0 is only used to indicate "priority tag" frames which only
+	 * contain priority information and no VID.
+	 */
+	if (vid == 0)
+		return BATADV_NO_FLAGS;
+
 	vid |= BATADV_VLAN_HAS_TAG;
 
 	return vid;
@@ -641,7 +596,7 @@ unsigned short batadv_get_vid(struct sk_buff *skb, size_t header_len)
 
 /**
  * batadv_vlan_ap_isola_get() - return AP isolation status for the given vlan
- * @bat_priv: the bat priv with all the soft interface information
+ * @bat_priv: the bat priv with all the mesh interface information
  * @vid: the VLAN identifier for which the AP isolation attributed as to be
  *  looked up
  *
@@ -651,15 +606,15 @@ unsigned short batadv_get_vid(struct sk_buff *skb, size_t header_len)
 bool batadv_vlan_ap_isola_get(struct batadv_priv *bat_priv, unsigned short vid)
 {
 	bool ap_isolation_enabled = false;
-	struct batadv_softif_vlan *vlan;
+	struct batadv_meshif_vlan *vlan;
 
 	/* if the AP isolation is requested on a VLAN, then check for its
 	 * setting in the proper VLAN private data structure
 	 */
-	vlan = batadv_softif_vlan_get(bat_priv, vid);
+	vlan = batadv_meshif_vlan_get(bat_priv, vid);
 	if (vlan) {
 		ap_isolation_enabled = atomic_read(&vlan->ap_isolation);
-		batadv_softif_vlan_put(vlan);
+		batadv_meshif_vlan_put(vlan);
 	}
 
 	return ap_isolation_enabled;
@@ -667,7 +622,7 @@ bool batadv_vlan_ap_isola_get(struct batadv_priv *bat_priv, unsigned short vid)
 
 /**
  * batadv_throw_uevent() - Send an uevent with batman-adv specific env data
- * @bat_priv: the bat priv with all the soft interface information
+ * @bat_priv: the bat priv with all the mesh interface information
  * @type: subsystem type of event. Stored in uevent's BATTYPE
  * @action: action type of event. Stored in uevent's BATACTION
  * @data: string with additional information to the event (ignored for
@@ -682,35 +637,37 @@ int batadv_throw_uevent(struct batadv_priv *bat_priv, enum batadv_uev_type type,
 	struct kobject *bat_kobj;
 	char *uevent_env[4] = { NULL, NULL, NULL, NULL };
 
-	bat_kobj = &bat_priv->soft_iface->dev.kobj;
+	bat_kobj = &bat_priv->mesh_iface->dev.kobj;
 
 	uevent_env[0] = kasprintf(GFP_ATOMIC,
 				  "%s%s", BATADV_UEV_TYPE_VAR,
 				  batadv_uev_type_str[type]);
 	if (!uevent_env[0])
-		goto out;
+		goto report_error;
 
 	uevent_env[1] = kasprintf(GFP_ATOMIC,
 				  "%s%s", BATADV_UEV_ACTION_VAR,
 				  batadv_uev_action_str[action]);
 	if (!uevent_env[1])
-		goto out;
+		goto free_first_env;
 
 	/* If the event is DEL, ignore the data field */
 	if (action != BATADV_UEV_DEL) {
 		uevent_env[2] = kasprintf(GFP_ATOMIC,
 					  "%s%s", BATADV_UEV_DATA_VAR, data);
 		if (!uevent_env[2])
-			goto out;
+			goto free_second_env;
 	}
 
 	ret = kobject_uevent_env(bat_kobj, KOBJ_CHANGE, uevent_env);
-out:
-	kfree(uevent_env[0]);
-	kfree(uevent_env[1]);
 	kfree(uevent_env[2]);
+free_second_env:
+	kfree(uevent_env[1]);
+free_first_env:
+	kfree(uevent_env[0]);
 
 	if (ret)
+report_error:
 		batadv_dbg(BATADV_DBG_BATMAN, bat_priv,
 			   "Impossible to send uevent for (%s,%s,%s) event (err: %d)\n",
 			   batadv_uev_type_str[type],

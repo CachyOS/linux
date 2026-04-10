@@ -24,11 +24,9 @@ static void __init sun8i_h3_bus_gates_init(struct device_node *node)
 	const char *parents[PARENT_MAX];
 	struct clk_onecell_data *clk_data;
 	const char *clk_name;
-	struct property *prop;
 	struct resource res;
 	void __iomem *clk_reg;
 	void __iomem *reg;
-	const __be32 *p;
 	int number, i;
 	u8 clk_bit;
 	int index;
@@ -46,19 +44,19 @@ static void __init sun8i_h3_bus_gates_init(struct device_node *node)
 		parents[i] = of_clk_get_parent_name(node, idx);
 	}
 
-	clk_data = kmalloc(sizeof(struct clk_onecell_data), GFP_KERNEL);
+	clk_data = kmalloc_obj(struct clk_onecell_data);
 	if (!clk_data)
 		goto err_unmap;
 
 	number = of_property_count_u32_elems(node, "clock-indices");
 	of_property_read_u32_index(node, "clock-indices", number - 1, &number);
 
-	clk_data->clks = kcalloc(number + 1, sizeof(struct clk *), GFP_KERNEL);
+	clk_data->clks = kzalloc_objs(struct clk *, number + 1);
 	if (!clk_data->clks)
 		goto err_free_data;
 
 	i = 0;
-	of_property_for_each_u32(node, "clock-indices", prop, p, index) {
+	of_property_for_each_u32(node, "clock-indices", index) {
 		of_property_read_string_index(node, "clock-output-names",
 					      i, &clk_name);
 

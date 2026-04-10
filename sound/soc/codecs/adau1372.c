@@ -8,10 +8,10 @@
 
 #include <linux/clk.h>
 #include <linux/delay.h>
-#include <linux/gcd.h>
 #include <linux/gpio/consumer.h>
 #include <linux/init.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/pm.h>
 #include <linux/slab.h>
 
@@ -25,7 +25,6 @@
 #include "adau-utils.h"
 
 struct adau1372 {
-	struct clk *clk;
 	struct regmap *regmap;
 	void (*switch_mode)(struct device *dev);
 	bool use_pll;
@@ -207,10 +206,10 @@ static const struct snd_kcontrol_new adau1372_controls[] = {
 		       2, 1, 0, adau1372_pga_boost_tlv),
 	SOC_SINGLE_TLV("PGA 3 Boost Capture Volume", ADAU1372_REG_PGA_BOOST,
 		       3, 1, 0, adau1372_pga_boost_tlv),
-	SOC_SINGLE("PGA 0 Capture Switch", ADAU1372_REG_PGA_CTRL(0), 7, 1, 1),
-	SOC_SINGLE("PGA 1 Capture Switch", ADAU1372_REG_PGA_CTRL(1), 7, 1, 1),
-	SOC_SINGLE("PGA 2 Capture Switch", ADAU1372_REG_PGA_CTRL(2), 7, 1, 1),
-	SOC_SINGLE("PGA 3 Capture Switch", ADAU1372_REG_PGA_CTRL(3), 7, 1, 1),
+	SOC_SINGLE("PGA 0 Capture Switch", ADAU1372_REG_PGA_CTRL(0), 7, 1, 0),
+	SOC_SINGLE("PGA 1 Capture Switch", ADAU1372_REG_PGA_CTRL(1), 7, 1, 0),
+	SOC_SINGLE("PGA 2 Capture Switch", ADAU1372_REG_PGA_CTRL(2), 7, 1, 0),
+	SOC_SINGLE("PGA 3 Capture Switch", ADAU1372_REG_PGA_CTRL(3), 7, 1, 0),
 
 	SOC_SINGLE_TLV("DAC 0 Playback Volume", ADAU1372_REG_DAC_VOL(0),
 		       0, 0xff, 1, adau1372_digital_tlv),
@@ -370,10 +369,10 @@ static const struct snd_soc_dapm_widget adau1372_dapm_widgets[] = {
 	SND_SOC_DAPM_SUPPLY("MICBIAS0", ADAU1372_REG_MICBIAS, 4, 0, NULL, 0),
 	SND_SOC_DAPM_SUPPLY("MICBIAS1", ADAU1372_REG_MICBIAS, 5, 0, NULL, 0),
 
-	SND_SOC_DAPM_PGA("PGA0", ADAU1372_REG_PGA_CTRL(0), 6, 0, NULL, 0),
-	SND_SOC_DAPM_PGA("PGA1", ADAU1372_REG_PGA_CTRL(1), 6, 0, NULL, 0),
-	SND_SOC_DAPM_PGA("PGA2", ADAU1372_REG_PGA_CTRL(2), 6, 0, NULL, 0),
-	SND_SOC_DAPM_PGA("PGA3", ADAU1372_REG_PGA_CTRL(3), 6, 0, NULL, 0),
+	SND_SOC_DAPM_PGA("PGA0", ADAU1372_REG_PGA_CTRL(0), 6, 1, NULL, 0),
+	SND_SOC_DAPM_PGA("PGA1", ADAU1372_REG_PGA_CTRL(1), 6, 1, NULL, 0),
+	SND_SOC_DAPM_PGA("PGA2", ADAU1372_REG_PGA_CTRL(2), 6, 1, NULL, 0),
+	SND_SOC_DAPM_PGA("PGA3", ADAU1372_REG_PGA_CTRL(3), 6, 1, NULL, 0),
 	SND_SOC_DAPM_ADC("ADC0", NULL, ADAU1372_REG_ADC_CTRL2, 0, 0),
 	SND_SOC_DAPM_ADC("ADC1", NULL, ADAU1372_REG_ADC_CTRL2, 1, 0),
 	SND_SOC_DAPM_ADC("ADC2", NULL, ADAU1372_REG_ADC_CTRL3, 0, 0),
@@ -663,6 +662,7 @@ static int adau1372_hw_params(struct snd_pcm_substream *substream,
 	case 16:
 		sai1 = ADAU1372_SAI1_BCLKRATE;
 		break;
+	case 24:
 	case 32:
 		sai1 = 0;
 		break;
@@ -700,6 +700,7 @@ static int adau1372_set_tdm_slot(struct snd_soc_dai *dai, unsigned int tx_mask,
 	case 16:
 		sai1 = ADAU1372_SAI1_BCLK_TDMC;
 		break;
+	case 24:
 	case 32:
 		sai1 = 0;
 		break;
@@ -761,7 +762,7 @@ static int adau1372_startup(struct snd_pcm_substream *substream, struct snd_soc_
 	return 0;
 }
 
-static void adau1372_enable_pll(struct adau1372 *adau1372)
+static int adau1372_enable_pll(struct adau1372 *adau1372)
 {
 	unsigned int val, timeout = 0;
 	int ret;
@@ -777,19 +778,26 @@ static void adau1372_enable_pll(struct adau1372 *adau1372)
 		timeout++;
 	} while (!(val & 1) && timeout < 3);
 
-	if (ret < 0 || !(val & 1))
+	if (ret < 0 || !(val & 1)) {
 		dev_err(adau1372->dev, "Failed to lock PLL\n");
+		return ret < 0 ? ret : -ETIMEDOUT;
+	}
+
+	return 0;
 }
 
-static void adau1372_set_power(struct adau1372 *adau1372, bool enable)
+static int adau1372_set_power(struct adau1372 *adau1372, bool enable)
 {
 	if (adau1372->enabled == enable)
-		return;
+		return 0;
 
 	if (enable) {
 		unsigned int clk_ctrl = ADAU1372_CLK_CTRL_MCLK_EN;
+		int ret;
 
-		clk_prepare_enable(adau1372->mclk);
+		ret = clk_prepare_enable(adau1372->mclk);
+		if (ret)
+			return ret;
 		if (adau1372->pd_gpio)
 			gpiod_set_value(adau1372->pd_gpio, 0);
 
@@ -803,7 +811,14 @@ static void adau1372_set_power(struct adau1372 *adau1372, bool enable)
 		 * accessed.
 		 */
 		if (adau1372->use_pll) {
-			adau1372_enable_pll(adau1372);
+			ret = adau1372_enable_pll(adau1372);
+			if (ret) {
+				regcache_cache_only(adau1372->regmap, true);
+				if (adau1372->pd_gpio)
+					gpiod_set_value(adau1372->pd_gpio, 1);
+				clk_disable_unprepare(adau1372->mclk);
+				return ret;
+			}
 			clk_ctrl |= ADAU1372_CLK_CTRL_CLKSRC;
 		}
 
@@ -828,6 +843,8 @@ static void adau1372_set_power(struct adau1372 *adau1372, bool enable)
 	}
 
 	adau1372->enabled = enable;
+
+	return 0;
 }
 
 static int adau1372_set_bias_level(struct snd_soc_component *component,
@@ -841,11 +858,9 @@ static int adau1372_set_bias_level(struct snd_soc_component *component,
 	case SND_SOC_BIAS_PREPARE:
 		break;
 	case SND_SOC_BIAS_STANDBY:
-		adau1372_set_power(adau1372, true);
-		break;
+		return adau1372_set_power(adau1372, true);
 	case SND_SOC_BIAS_OFF:
-		adau1372_set_power(adau1372, false);
-		break;
+		return adau1372_set_power(adau1372, false);
 	}
 
 	return 0;
@@ -870,7 +885,9 @@ static const struct snd_soc_dai_ops adau1372_dai_ops = {
 	.startup = adau1372_startup,
 };
 
-#define ADAU1372_FORMATS (SNDRV_PCM_FMTBIT_S16_LE |	SNDRV_PCM_FMTBIT_S32_LE)
+#define ADAU1372_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | \
+			  SNDRV_PCM_FMTBIT_S24_LE | \
+			  SNDRV_PCM_FMTBIT_S32_LE)
 
 static struct snd_soc_dai_driver adau1372_dai_driver = {
 	.name = "adau1372",
@@ -925,9 +942,9 @@ int adau1372_probe(struct device *dev, struct regmap *regmap,
 	if (!adau1372)
 		return -ENOMEM;
 
-	adau1372->clk = devm_clk_get(dev, "mclk");
-	if (IS_ERR(adau1372->clk))
-		return PTR_ERR(adau1372->clk);
+	adau1372->mclk = devm_clk_get(dev, "mclk");
+	if (IS_ERR(adau1372->mclk))
+		return PTR_ERR(adau1372->mclk);
 
 	adau1372->pd_gpio = devm_gpiod_get_optional(dev, "powerdown", GPIOD_OUT_HIGH);
 	if (IS_ERR(adau1372->pd_gpio))
@@ -947,7 +964,7 @@ int adau1372_probe(struct device *dev, struct regmap *regmap,
 	 * 12.288MHz. Automatically choose a valid configuration from the
 	 * external clock.
 	 */
-	rate = clk_get_rate(adau1372->clk);
+	rate = clk_get_rate(adau1372->mclk);
 
 	switch (rate) {
 	case 12288000:
@@ -1054,9 +1071,16 @@ const struct regmap_config adau1372_regmap_config = {
 	.reg_defaults = adau1372_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(adau1372_reg_defaults),
 	.volatile_reg = adau1372_volatile_register,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 };
 EXPORT_SYMBOL_GPL(adau1372_regmap_config);
+
+const struct of_device_id adau1372_of_match[] = {
+	{ .compatible = "adi,adau1372" },
+	{ }
+};
+EXPORT_SYMBOL_GPL(adau1372_of_match);
+MODULE_DEVICE_TABLE(of, adau1372_of_match);
 
 MODULE_DESCRIPTION("ASoC ADAU1372 CODEC driver");
 MODULE_AUTHOR("Lars-Peter Clausen <lars@metafoo.de>");

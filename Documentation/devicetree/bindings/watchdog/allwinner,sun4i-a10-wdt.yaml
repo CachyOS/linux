@@ -4,14 +4,14 @@
 $id: http://devicetree.org/schemas/watchdog/allwinner,sun4i-a10-wdt.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Allwinner A10 Watchdog Device Tree Bindings
-
-allOf:
-  - $ref: "watchdog.yaml#"
+title: Allwinner A10 Watchdog
 
 maintainers:
   - Chen-Yu Tsai <wens@csie.org>
   - Maxime Ripard <mripard@kernel.org>
+
+allOf:
+  - $ref: watchdog.yaml#
 
 properties:
   compatible:
@@ -32,6 +32,7 @@ properties:
       - items:
           - const: allwinner,sun20i-d1-wdt-reset
           - const: allwinner,sun20i-d1-wdt
+      - const: allwinner,sun55i-a523-wdt
 
   reg:
     maxItems: 1
@@ -60,6 +61,7 @@ if:
           - allwinner,sun20i-d1-wdt-reset
           - allwinner,sun50i-r329-wdt
           - allwinner,sun50i-r329-wdt-reset
+          - allwinner,sun55i-a523-wdt
 
 then:
   properties:

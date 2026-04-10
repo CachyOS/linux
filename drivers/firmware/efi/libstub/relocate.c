@@ -23,23 +23,14 @@
 efi_status_t efi_low_alloc_above(unsigned long size, unsigned long align,
 				 unsigned long *addr, unsigned long min)
 {
-	unsigned long map_size, desc_size, buff_size;
-	efi_memory_desc_t *map;
+	struct efi_boot_memmap *map __free(efi_pool) = NULL;
 	efi_status_t status;
 	unsigned long nr_pages;
 	int i;
-	struct efi_boot_memmap boot_map;
 
-	boot_map.map		= &map;
-	boot_map.map_size	= &map_size;
-	boot_map.desc_size	= &desc_size;
-	boot_map.desc_ver	= NULL;
-	boot_map.key_ptr	= NULL;
-	boot_map.buff_size	= &buff_size;
-
-	status = efi_get_memory_map(&boot_map);
+	status = efi_get_memory_map(&map, false);
 	if (status != EFI_SUCCESS)
-		goto fail;
+		return status;
 
 	/*
 	 * Enforce minimum alignment that EFI or Linux requires when
@@ -52,14 +43,17 @@ efi_status_t efi_low_alloc_above(unsigned long size, unsigned long align,
 
 	size = round_up(size, EFI_ALLOC_ALIGN);
 	nr_pages = size / EFI_PAGE_SIZE;
-	for (i = 0; i < map_size / desc_size; i++) {
+	for (i = 0; i < map->map_size / map->desc_size; i++) {
 		efi_memory_desc_t *desc;
-		unsigned long m = (unsigned long)map;
+		unsigned long m = (unsigned long)map->map;
 		u64 start, end;
 
-		desc = efi_early_memdesc_ptr(m, desc_size, i);
+		desc = efi_memdesc_ptr(m, map->desc_size, i);
 
 		if (desc->type != EFI_CONVENTIONAL_MEMORY)
+			continue;
+
+		if (desc->attribute & EFI_MEMORY_HOT_PLUGGABLE)
 			continue;
 
 		if (efi_soft_reserve_enabled() &&
@@ -87,12 +81,10 @@ efi_status_t efi_low_alloc_above(unsigned long size, unsigned long align,
 		}
 	}
 
-	if (i == map_size / desc_size)
-		status = EFI_NOT_FOUND;
+	if (i == map->map_size / map->desc_size)
+		return EFI_NOT_FOUND;
 
-	efi_bs_call(free_pool, map);
-fail:
-	return status;
+	return EFI_SUCCESS;
 }
 
 /**

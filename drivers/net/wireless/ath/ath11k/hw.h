@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause-Clear */
 /*
  * Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2022, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #ifndef ATH11K_HW_H
@@ -64,6 +64,7 @@
 #define TARGET_NUM_WDS_ENTRIES		32
 #define TARGET_DMA_BURST_SIZE		1
 #define TARGET_RX_BATCHMODE		1
+#define TARGET_EMA_MAX_PROFILE_PERIOD	8
 
 #define ATH11K_HW_MAX_QUEUES		4
 #define ATH11K_QUEUE_LEN		4096
@@ -79,6 +80,8 @@
 #define ATH11K_AMSS_FILE		"amss.bin"
 #define ATH11K_M3_FILE			"m3.bin"
 #define ATH11K_REGDB_FILE_NAME		"regdb.bin"
+
+#define ATH11K_CE_OFFSET(ab)	(ab->mem_ce - ab->mem)
 
 enum ath11k_hw_rate_cck {
 	ATH11K_HW_RATE_CCK_LP_11M = 0,
@@ -122,8 +125,16 @@ struct ath11k_hw_ring_mask {
 	u8 host2rxdma[ATH11K_EXT_IRQ_GRP_NUM_MAX];
 };
 
+struct ath11k_hw_tcl2wbm_rbm_map {
+	u8 tcl_ring_num;
+	u8 wbm_ring_num;
+	u8 rbm_id;
+};
+
 struct ath11k_hw_hal_params {
 	enum hal_rx_buf_return_buf_manager rx_buf_rbm;
+	const struct ath11k_hw_tcl2wbm_rbm_map *tcl2wbm_rbm_map;
+	size_t num_tx_rings;
 };
 
 struct ath11k_hw_params {
@@ -151,14 +162,13 @@ struct ath11k_hw_params {
 	u32 target_ce_count;
 	const struct service_to_pipe *svc_to_ce_map;
 	u32 svc_to_ce_map_len;
+	const struct ce_ie_addr *ce_ie_addr;
+	const struct ce_remap *ce_remap;
 
 	bool single_pdev_only;
-	u32 rfkill_pin;
-	u32 rfkill_cfg;
-	u32 rfkill_on_level;
 
 	bool rxdma1_enable;
-	int num_rxmda_per_pdev;
+	int num_rxdma_per_pdev;
 	bool rx_mac_buf_ring;
 	bool vdev_start_delay;
 	bool htt_peer_map_v2;
@@ -169,6 +179,7 @@ struct ath11k_hw_params {
 		u8 summary_pad_sz;
 		u8 fft_hdr_len;
 		u16 max_fft_bins;
+		bool fragment_160mhz;
 	} spectral;
 
 	u16 interface_modes;
@@ -177,7 +188,9 @@ struct ath11k_hw_params {
 	bool supports_shadow_regs;
 	bool idle_ps;
 	bool supports_sta_ps;
-	bool cold_boot_calib;
+	bool coldboot_cal_mm;
+	bool coldboot_cal_ftm;
+	bool cbcal_restart_fw;
 	int fw_mem_mode;
 	u32 num_vdevs;
 	u32 num_peers;
@@ -186,7 +199,6 @@ struct ath11k_hw_params {
 	bool supports_regdb;
 	bool fix_l1ss;
 	bool credit_flow;
-	u8 max_tx_ring;
 	const struct ath11k_hw_hal_params *hal_params;
 	bool supports_dynamic_smps_6ghz;
 	bool alloc_cacheable_memory;
@@ -201,10 +213,24 @@ struct ath11k_hw_params {
 	bool fixed_mem_region;
 	bool static_window_map;
 	bool hybrid_bus_type;
-	u8 dp_window_idx;
-	u8 ce_window_idx;
 	bool fixed_fw_mem;
 	bool support_off_channel_tx;
+	bool supports_multi_bssid;
+
+	struct {
+		u32 start;
+		u32 end;
+	} sram_dump;
+
+	bool tcl_ring_retry;
+	u32 tx_ring_size;
+	bool smp2p_wow_exit;
+	bool support_fw_mac_sequence;
+	bool support_dual_stations;
+	bool pdev_suspend;
+	bool cfr_support;
+	u32 cfr_num_stream_bufs;
+	u32 cfr_stream_buf_size;
 };
 
 struct ath11k_hw_ops {
@@ -244,9 +270,10 @@ struct ath11k_hw_ops {
 	struct rx_attention *(*rx_desc_get_attention)(struct hal_rx_desc *desc);
 	u8 *(*rx_desc_get_msdu_payload)(struct hal_rx_desc *desc);
 	void (*reo_setup)(struct ath11k_base *ab);
-	u16 (*mpdu_info_get_peerid)(u8 *tlv_data);
+	u16 (*mpdu_info_get_peerid)(struct hal_rx_mpdu_info *mpdu_info);
 	bool (*rx_desc_mac_addr2_valid)(struct hal_rx_desc *desc);
 	u8* (*rx_desc_mpdu_start_addr2)(struct hal_rx_desc *desc);
+	u32 (*get_ring_selector)(struct sk_buff *skb);
 };
 
 extern const struct ath11k_hw_ops ipq8074_ops;
@@ -255,13 +282,22 @@ extern const struct ath11k_hw_ops qca6390_ops;
 extern const struct ath11k_hw_ops qcn9074_ops;
 extern const struct ath11k_hw_ops wcn6855_ops;
 extern const struct ath11k_hw_ops wcn6750_ops;
+extern const struct ath11k_hw_ops ipq5018_ops;
 
 extern const struct ath11k_hw_ring_mask ath11k_hw_ring_mask_ipq8074;
 extern const struct ath11k_hw_ring_mask ath11k_hw_ring_mask_qca6390;
 extern const struct ath11k_hw_ring_mask ath11k_hw_ring_mask_qcn9074;
+extern const struct ath11k_hw_ring_mask ath11k_hw_ring_mask_wcn6750;
 
+extern const struct ce_ie_addr ath11k_ce_ie_addr_ipq8074;
+extern const struct ce_ie_addr ath11k_ce_ie_addr_ipq5018;
+
+extern const struct ce_remap ath11k_ce_remap_ipq5018;
+
+extern const struct ath11k_hw_hal_params ath11k_hw_hal_params_ipq5018;
 extern const struct ath11k_hw_hal_params ath11k_hw_hal_params_ipq8074;
 extern const struct ath11k_hw_hal_params ath11k_hw_hal_params_qca6390;
+extern const struct ath11k_hw_hal_params ath11k_hw_hal_params_wcn6750;
 
 static inline
 int ath11k_hw_get_mac_from_pdev_id(struct ath11k_hw_params *hw,
@@ -388,6 +424,7 @@ extern const struct ath11k_hw_regs qca6390_regs;
 extern const struct ath11k_hw_regs qcn9074_regs;
 extern const struct ath11k_hw_regs wcn6855_regs;
 extern const struct ath11k_hw_regs wcn6750_regs;
+extern const struct ath11k_hw_regs ipq5018_regs;
 
 static inline const char *ath11k_bd_ie_type_str(enum ath11k_bd_ie_type type)
 {
@@ -402,4 +439,5 @@ static inline const char *ath11k_bd_ie_type_str(enum ath11k_bd_ie_type type)
 }
 
 extern const struct cfg80211_sar_capa ath11k_hw_sar_capa_wcn6855;
+
 #endif

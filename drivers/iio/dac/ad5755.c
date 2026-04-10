@@ -189,14 +189,14 @@ struct ad5755_state {
 	struct mutex			lock;
 
 	/*
-	 * DMA (thus cache coherency maintenance) requires the
+	 * DMA (thus cache coherency maintenance) may require the
 	 * transfer buffers to live in their own cache lines.
 	 */
 
 	union {
 		__be32 d32;
 		u8 d8[4];
-	} data[2] ____cacheline_aligned;
+	} data[2] __aligned(IIO_DMA_MINALIGN);
 };
 
 enum ad5755_type {
@@ -522,7 +522,7 @@ static const struct iio_chan_spec_ext_info ad5755_ext_info[] = {
 		.write = ad5755_write_powerdown,
 		.shared = IIO_SEPARATE,
 	},
-	{ },
+	{ }
 };
 
 #define AD5755_CHANNEL(_bits) {					\
@@ -699,7 +699,6 @@ static const struct ad5755_platform_data ad5755_default_pdata = {
 
 static struct ad5755_platform_data *ad5755_parse_fw(struct device *dev)
 {
-	struct fwnode_handle *pp;
 	struct ad5755_platform_data *pdata;
 	unsigned int tmp;
 	unsigned int tmparray[3];
@@ -746,11 +745,12 @@ static struct ad5755_platform_data *ad5755_parse_fw(struct device *dev)
 	}
 
 	devnr = 0;
-	device_for_each_child_node(dev, pp) {
+	device_for_each_child_node_scoped(dev, pp) {
 		if (devnr >= AD5755_NUM_CHANNELS) {
 			dev_err(dev,
 				"There are too many channels defined in DT\n");
-			goto error_out;
+			devm_kfree(dev, pdata);
+			return NULL;
 		}
 
 		pdata->dac[devnr].mode = AD5755_MODE_CURRENT_4mA_20mA;
@@ -800,15 +800,10 @@ static struct ad5755_platform_data *ad5755_parse_fw(struct device *dev)
 	}
 
 	return pdata;
-
- error_out:
-	devm_kfree(dev, pdata);
-	return NULL;
 }
 
 static int ad5755_probe(struct spi_device *spi)
 {
-	enum ad5755_type type = spi_get_device_id(spi)->driver_data;
 	const struct ad5755_platform_data *pdata;
 	struct iio_dev *indio_dev;
 	struct ad5755_state *st;
@@ -823,7 +818,7 @@ static int ad5755_probe(struct spi_device *spi)
 	st = iio_priv(indio_dev);
 	spi_set_drvdata(spi, indio_dev);
 
-	st->chip_info = &ad5755_chip_info_tbl[type];
+	st->chip_info = spi_get_device_match_data(spi);
 	st->spi = spi;
 	st->pwr_down = 0xf;
 
@@ -853,21 +848,21 @@ static int ad5755_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id ad5755_id[] = {
-	{ "ad5755", ID_AD5755 },
-	{ "ad5755-1", ID_AD5755 },
-	{ "ad5757", ID_AD5757 },
-	{ "ad5735", ID_AD5735 },
-	{ "ad5737", ID_AD5737 },
-	{}
+	{ "ad5755", (kernel_ulong_t)&ad5755_chip_info_tbl[ID_AD5755] },
+	{ "ad5755-1", (kernel_ulong_t)&ad5755_chip_info_tbl[ID_AD5755] },
+	{ "ad5757", (kernel_ulong_t)&ad5755_chip_info_tbl[ID_AD5757] },
+	{ "ad5735", (kernel_ulong_t)&ad5755_chip_info_tbl[ID_AD5735] },
+	{ "ad5737", (kernel_ulong_t)&ad5755_chip_info_tbl[ID_AD5737] },
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad5755_id);
 
 static const struct of_device_id ad5755_of_match[] = {
-	{ .compatible = "adi,ad5755" },
-	{ .compatible = "adi,ad5755-1" },
-	{ .compatible = "adi,ad5757" },
-	{ .compatible = "adi,ad5735" },
-	{ .compatible = "adi,ad5737" },
+	{ .compatible = "adi,ad5755", &ad5755_chip_info_tbl[ID_AD5755] },
+	{ .compatible = "adi,ad5755-1", &ad5755_chip_info_tbl[ID_AD5755] },
+	{ .compatible = "adi,ad5757", &ad5755_chip_info_tbl[ID_AD5757] },
+	{ .compatible = "adi,ad5735", &ad5755_chip_info_tbl[ID_AD5735] },
+	{ .compatible = "adi,ad5737", &ad5755_chip_info_tbl[ID_AD5737] },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, ad5755_of_match);
@@ -875,6 +870,7 @@ MODULE_DEVICE_TABLE(of, ad5755_of_match);
 static struct spi_driver ad5755_driver = {
 	.driver = {
 		.name = "ad5755",
+		.of_match_table = ad5755_of_match,
 	},
 	.probe = ad5755_probe,
 	.id_table = ad5755_id,

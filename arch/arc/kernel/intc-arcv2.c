@@ -56,7 +56,7 @@ void arc_init_IRQ(void)
 	WRITE_AUX(AUX_IRQ_CTRL, ictrl);
 
 	/*
-	 * ARCv2 core intc provides multiple interrupt priorities (upto 16).
+	 * ARCv2 core intc provides multiple interrupt priorities (up to 16).
 	 * Typical builds though have only two levels (0-high, 1-low)
 	 * Linux by default uses lower prio 1 for most irqs, reserving 0 for
 	 * NMI style interrupts in future (say perf)
@@ -108,7 +108,7 @@ static void arcv2_irq_unmask(struct irq_data *data)
 	write_aux_reg(AUX_IRQ_ENABLE, 1);
 }
 
-void arcv2_irq_enable(struct irq_data *data)
+static void arcv2_irq_enable(struct irq_data *data)
 {
 	/* set default priority */
 	write_aux_reg(AUX_IRQ_SELECT, data->hwirq);
@@ -170,7 +170,7 @@ init_onchip_IRQ(struct device_node *intc, struct device_node *parent)
 	if (parent)
 		panic("DeviceTree incore intc not a root irq controller\n");
 
-	root_domain = irq_domain_add_linear(intc, nr_cpu_irqs, &arcv2_irq_ops, NULL);
+	root_domain = irq_domain_create_linear(of_fwnode_handle(intc), nr_cpu_irqs, &arcv2_irq_ops, NULL);
 	if (!root_domain)
 		panic("root irq domain not avail\n");
 
@@ -178,7 +178,7 @@ init_onchip_IRQ(struct device_node *intc, struct device_node *parent)
 	 * Needed for primary domain lookup to succeed
 	 * This is a primary irqchip, and can never have a parent
 	 */
-	irq_set_default_host(root_domain);
+	irq_set_default_domain(root_domain);
 
 #ifdef CONFIG_SMP
 	irq_create_mapping(root_domain, IPI_IRQ);

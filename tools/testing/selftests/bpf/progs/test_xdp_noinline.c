@@ -15,6 +15,7 @@
 #include <linux/udp.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
+#include "bpf_compiler.h"
 
 static __always_inline __u32 rol32(__u32 word, unsigned int shift)
 {
@@ -239,7 +240,7 @@ bool parse_udp(void *data, void *data_end,
 	udp = data + off;
 
 	if (udp + 1 > data_end)
-		return 0;
+		return false;
 	if (!is_icmp) {
 		pckt->flow.port16[0] = udp->source;
 		pckt->flow.port16[1] = udp->dest;
@@ -247,7 +248,7 @@ bool parse_udp(void *data, void *data_end,
 		pckt->flow.port16[0] = udp->dest;
 		pckt->flow.port16[1] = udp->source;
 	}
-	return 1;
+	return true;
 }
 
 static __attribute__ ((noinline))
@@ -261,7 +262,7 @@ bool parse_tcp(void *data, void *data_end,
 
 	tcp = data + off;
 	if (tcp + 1 > data_end)
-		return 0;
+		return false;
 	if (tcp->syn)
 		pckt->flags |= (1 << 1);
 	if (!is_icmp) {
@@ -271,7 +272,7 @@ bool parse_tcp(void *data, void *data_end,
 		pckt->flow.port16[0] = tcp->dest;
 		pckt->flow.port16[1] = tcp->source;
 	}
-	return 1;
+	return true;
 }
 
 static __attribute__ ((noinline))
@@ -287,7 +288,7 @@ bool encap_v6(struct xdp_md *xdp, struct ctl_value *cval,
 	void *data;
 
 	if (bpf_xdp_adjust_head(xdp, 0 - (int)sizeof(struct ipv6hdr)))
-		return 0;
+		return false;
 	data = (void *)(long)xdp->data;
 	data_end = (void *)(long)xdp->data_end;
 	new_eth = data;
@@ -295,7 +296,7 @@ bool encap_v6(struct xdp_md *xdp, struct ctl_value *cval,
 	old_eth = data + sizeof(struct ipv6hdr);
 	if (new_eth + 1 > data_end ||
 	    old_eth + 1 > data_end || ip6h + 1 > data_end)
-		return 0;
+		return false;
 	memcpy(new_eth->eth_dest, cval->mac, 6);
 	memcpy(new_eth->eth_source, old_eth->eth_dest, 6);
 	new_eth->eth_proto = 56710;
@@ -314,8 +315,16 @@ bool encap_v6(struct xdp_md *xdp, struct ctl_value *cval,
 	ip6h->saddr.in6_u.u6_addr32[2] = 3;
 	ip6h->saddr.in6_u.u6_addr32[3] = ip_suffix;
 	memcpy(ip6h->daddr.in6_u.u6_addr32, dst->dstv6, 16);
-	return 1;
+	return true;
 }
+
+#ifndef __clang__
+#pragma GCC push_options
+/* GCC optimization collapses functions and increases the number of arguments
+ * beyond the compatible amount supported by BPF.
+ */
+#pragma GCC optimize("-fno-ipa-sra")
+#endif
 
 static __attribute__ ((noinline))
 bool encap_v4(struct xdp_md *xdp, struct ctl_value *cval,
@@ -335,7 +344,7 @@ bool encap_v4(struct xdp_md *xdp, struct ctl_value *cval,
 	ip_suffix <<= 15;
 	ip_suffix ^= pckt->flow.src;
 	if (bpf_xdp_adjust_head(xdp, 0 - (int)sizeof(struct iphdr)))
-		return 0;
+		return false;
 	data = (void *)(long)xdp->data;
 	data_end = (void *)(long)xdp->data_end;
 	new_eth = data;
@@ -343,7 +352,7 @@ bool encap_v4(struct xdp_md *xdp, struct ctl_value *cval,
 	old_eth = data + sizeof(struct iphdr);
 	if (new_eth + 1 > data_end ||
 	    old_eth + 1 > data_end || iph + 1 > data_end)
-		return 0;
+		return false;
 	memcpy(new_eth->eth_dest, cval->mac, 6);
 	memcpy(new_eth->eth_source, old_eth->eth_dest, 6);
 	new_eth->eth_proto = 8;
@@ -362,53 +371,18 @@ bool encap_v4(struct xdp_md *xdp, struct ctl_value *cval,
 	iph->ttl = 4;
 
 	next_iph_u16 = (__u16 *) iph;
-#pragma clang loop unroll(full)
+	__pragma_loop_unroll_full
 	for (int i = 0; i < sizeof(struct iphdr) >> 1; i++)
 		csum += *next_iph_u16++;
 	iph->check = ~((csum & 0xffff) + (csum >> 16));
 	if (bpf_xdp_adjust_head(xdp, (int)sizeof(struct iphdr)))
-		return 0;
-	return 1;
+		return false;
+	return true;
 }
 
-static __attribute__ ((noinline))
-bool decap_v6(struct xdp_md *xdp, void **data, void **data_end, bool inner_v4)
-{
-	struct eth_hdr *new_eth;
-	struct eth_hdr *old_eth;
-
-	old_eth = *data;
-	new_eth = *data + sizeof(struct ipv6hdr);
-	memcpy(new_eth->eth_source, old_eth->eth_source, 6);
-	memcpy(new_eth->eth_dest, old_eth->eth_dest, 6);
-	if (inner_v4)
-		new_eth->eth_proto = 8;
-	else
-		new_eth->eth_proto = 56710;
-	if (bpf_xdp_adjust_head(xdp, (int)sizeof(struct ipv6hdr)))
-		return 0;
-	*data = (void *)(long)xdp->data;
-	*data_end = (void *)(long)xdp->data_end;
-	return 1;
-}
-
-static __attribute__ ((noinline))
-bool decap_v4(struct xdp_md *xdp, void **data, void **data_end)
-{
-	struct eth_hdr *new_eth;
-	struct eth_hdr *old_eth;
-
-	old_eth = *data;
-	new_eth = *data + sizeof(struct iphdr);
-	memcpy(new_eth->eth_source, old_eth->eth_source, 6);
-	memcpy(new_eth->eth_dest, old_eth->eth_dest, 6);
-	new_eth->eth_proto = 8;
-	if (bpf_xdp_adjust_head(xdp, (int)sizeof(struct iphdr)))
-		return 0;
-	*data = (void *)(long)xdp->data;
-	*data_end = (void *)(long)xdp->data_end;
-	return 1;
-}
+#ifndef __clang__
+#pragma GCC pop_options
+#endif
 
 static __attribute__ ((noinline))
 int swap_mac_and_send(void *data, void *data_end)
@@ -430,7 +404,6 @@ int send_icmp_reply(void *data, void *data_end)
 	__u16 *next_iph_u16;
 	__u32 tmp_addr = 0;
 	struct iphdr *iph;
-	__u32 csum1 = 0;
 	__u32 csum = 0;
 	__u64 off = 0;
 
@@ -449,7 +422,7 @@ int send_icmp_reply(void *data, void *data_end)
 	iph->saddr = tmp_addr;
 	iph->check = 0;
 	next_iph_u16 = (__u16 *) iph;
-#pragma clang loop unroll(full)
+	__pragma_loop_unroll_full
 	for (int i = 0; i < sizeof(struct iphdr) >> 1; i++)
 		csum += *next_iph_u16++;
 	iph->check = ~((csum & 0xffff) + (csum >> 16));
@@ -627,12 +600,13 @@ static void connection_table_lookup(struct real_definition **real,
 __attribute__ ((noinline))
 static int process_l3_headers_v6(struct packet_description *pckt,
 				 __u8 *protocol, __u64 off,
-				 __u16 *pkt_bytes, void *data,
-				 void *data_end)
+				 __u16 *pkt_bytes, void *extra_args[2])
 {
 	struct ipv6hdr *ip6h;
 	__u64 iph_len;
 	int action;
+	void *data = extra_args[0];
+	void *data_end = extra_args[1];
 
 	ip6h = data + off;
 	if (ip6h + 1 > data_end)
@@ -658,12 +632,12 @@ static int process_l3_headers_v6(struct packet_description *pckt,
 __attribute__ ((noinline))
 static int process_l3_headers_v4(struct packet_description *pckt,
 				 __u8 *protocol, __u64 off,
-				 __u16 *pkt_bytes, void *data,
-				 void *data_end)
+				 __u16 *pkt_bytes, void *extra_args[2])
 {
 	struct iphdr *iph;
-	__u64 iph_len;
 	int action;
+	void *data = extra_args[0];
+	void *data_end = extra_args[1];
 
 	iph = data + off;
 	if (iph + 1 > data_end)
@@ -696,7 +670,6 @@ static int process_packet(void *data, __u64 off, void *data_end,
 	struct packet_description pckt = { };
 	struct vip_definition vip = { };
 	struct lb_stats *data_stats;
-	struct eth_hdr *eth = data;
 	void *lru_map = &lru_cache;
 	struct vip_meta *vip_info;
 	__u32 lru_stats_key = 513;
@@ -704,17 +677,17 @@ static int process_packet(void *data, __u64 off, void *data_end,
 	__u32 stats_key = 512;
 	struct ctl_value *cval;
 	__u16 pkt_bytes;
-	__u64 iph_len;
 	__u8 protocol;
 	__u32 vip_num;
 	int action;
+	void *extra_args[2] = { data, data_end };
 
 	if (is_ipv6)
 		action = process_l3_headers_v6(&pckt, &protocol, off,
-					       &pkt_bytes, data, data_end);
+					       &pkt_bytes, extra_args);
 	else
 		action = process_l3_headers_v4(&pckt, &protocol, off,
-					       &pkt_bytes, data, data_end);
+					       &pkt_bytes, extra_args);
 	if (action >= 0)
 		return action;
 	protocol = pckt.flow.proto;

@@ -1249,8 +1249,7 @@ static int maven_shutdown_client(struct i2c_client* clnt) {
 	return 0;
 }
 
-static int maven_probe(struct i2c_client *client,
-		       const struct i2c_device_id *id)
+static int maven_probe(struct i2c_client *client)
 {
 	struct i2c_adapter *adapter = client->adapter;
 	int err = -ENODEV;
@@ -1261,7 +1260,7 @@ static int maven_probe(struct i2c_client *client,
 					      I2C_FUNC_NOSTART |
 					      I2C_FUNC_PROTOCOL_MANGLING))
 		goto ERROR0;
-	if (!(data = kzalloc(sizeof(*data), GFP_KERNEL))) {
+	if (!(data = kzalloc_obj(*data))) {
 		err = -ENOMEM;
 		goto ERROR0;
 	}
@@ -1276,15 +1275,14 @@ ERROR0:;
 	return err;
 }
 
-static int maven_remove(struct i2c_client *client)
+static void maven_remove(struct i2c_client *client)
 {
 	maven_shutdown_client(client);
 	kfree(i2c_get_clientdata(client));
-	return 0;
 }
 
 static const struct i2c_device_id maven_id[] = {
-	{ "maven", 0 },
+	{ "maven" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, maven_id);

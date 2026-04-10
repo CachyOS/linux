@@ -234,9 +234,9 @@ static const struct irq_domain_ops tc3589x_irq_ops = {
 
 static int tc3589x_irq_init(struct tc3589x *tc3589x, struct device_node *np)
 {
-	tc3589x->domain = irq_domain_add_simple(
-		np, TC3589x_NR_INTERNAL_IRQS, 0,
-		&tc3589x_irq_ops, tc3589x);
+	tc3589x->domain = irq_domain_create_simple(of_fwnode_handle(np),
+						   TC3589x_NR_INTERNAL_IRQS, 0,
+						   &tc3589x_irq_ops, tc3589x);
 
 	if (!tc3589x->domain) {
 		dev_err(tc3589x->dev, "Failed to create irqdomain\n");
@@ -312,8 +312,6 @@ static int tc3589x_device_init(struct tc3589x *tc3589x)
 }
 
 static const struct of_device_id tc3589x_match[] = {
-	/* Legacy compatible string */
-	{ .compatible = "tc3589x", .data = (void *) TC3589X_UNKNOWN },
 	{ .compatible = "toshiba,tc35890", .data = (void *) TC3589X_TC35890 },
 	{ .compatible = "toshiba,tc35892", .data = (void *) TC3589X_TC35892 },
 	{ .compatible = "toshiba,tc35893", .data = (void *) TC3589X_TC35893 },
@@ -340,7 +338,7 @@ tc3589x_of_probe(struct device *dev, enum tc3589x_version *version)
 	of_id = of_match_device(tc3589x_match, dev);
 	if (!of_id)
 		return ERR_PTR(-ENODEV);
-	*version = (enum tc3589x_version) of_id->data;
+	*version = (uintptr_t) of_id->data;
 
 	for_each_child_of_node(np, child) {
 		if (of_device_is_compatible(child, "toshiba,tc3589x-gpio"))
@@ -352,9 +350,9 @@ tc3589x_of_probe(struct device *dev, enum tc3589x_version *version)
 	return pdata;
 }
 
-static int tc3589x_probe(struct i2c_client *i2c,
-				   const struct i2c_device_id *id)
+static int tc3589x_probe(struct i2c_client *i2c)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(i2c);
 	struct device_node *np = i2c->dev.of_node;
 	struct tc3589x_platform_data *pdata = dev_get_platdata(&i2c->dev);
 	struct tc3589x *tc3589x;
@@ -429,16 +427,13 @@ static int tc3589x_probe(struct i2c_client *i2c,
 	return 0;
 }
 
-static int tc3589x_remove(struct i2c_client *client)
+static void tc3589x_remove(struct i2c_client *client)
 {
 	struct tc3589x *tc3589x = i2c_get_clientdata(client);
 
 	mfd_remove_devices(tc3589x->dev);
-
-	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int tc3589x_suspend(struct device *dev)
 {
 	struct tc3589x *tc3589x = dev_get_drvdata(dev);
@@ -466,9 +461,9 @@ static int tc3589x_resume(struct device *dev)
 
 	return ret;
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(tc3589x_dev_pm_ops, tc3589x_suspend, tc3589x_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(tc3589x_dev_pm_ops,
+				tc3589x_suspend, tc3589x_resume);
 
 static const struct i2c_device_id tc3589x_id[] = {
 	{ "tc35890", TC3589X_TC35890 },
@@ -485,8 +480,8 @@ MODULE_DEVICE_TABLE(i2c, tc3589x_id);
 static struct i2c_driver tc3589x_driver = {
 	.driver = {
 		.name	= "tc3589x",
-		.pm	= &tc3589x_dev_pm_ops,
-		.of_match_table = of_match_ptr(tc3589x_match),
+		.pm	= pm_sleep_ptr(&tc3589x_dev_pm_ops),
+		.of_match_table = tc3589x_match,
 	},
 	.probe		= tc3589x_probe,
 	.remove		= tc3589x_remove,
@@ -505,6 +500,5 @@ static void __exit tc3589x_exit(void)
 }
 module_exit(tc3589x_exit);
 
-MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("TC3589x MFD core driver");
 MODULE_AUTHOR("Hanumath Prasad, Rabin Vincent");

@@ -26,6 +26,7 @@
 
 #include <linux/irqdomain.h>
 #include "soc15_ih_clientid.h"
+#include "soc_v1_0_ih_clientid.h"
 #include "amdgpu_ih.h"
 
 #define AMDGPU_MAX_IRQ_SRC_ID		0x100
@@ -53,7 +54,7 @@ struct amdgpu_iv_entry {
 	uint64_t timestamp;
 	unsigned timestamp_src;
 	unsigned pasid;
-	unsigned pasid_src;
+	unsigned node_id;
 	unsigned src_data[AMDGPU_IRQ_SRC_DATA_MAX_SIZE_DW];
 	const uint32_t *iv_entry;
 };
@@ -98,7 +99,27 @@ struct amdgpu_irq {
 	struct irq_domain		*domain; /* GPU irq controller domain */
 	unsigned			virq[AMDGPU_MAX_IRQ_SRC_ID];
 	uint32_t                        srbm_soft_reset;
+	u32                             retry_cam_doorbell_index;
+	bool                            retry_cam_enabled;
 };
+
+enum interrupt_node_id_per_aid {
+	AID0_NODEID = 0,
+	XCD0_NODEID = 1,
+	XCD1_NODEID = 2,
+	AID1_NODEID = 4,
+	XCD2_NODEID = 5,
+	XCD3_NODEID = 6,
+	AID2_NODEID = 8,
+	XCD4_NODEID = 9,
+	XCD5_NODEID = 10,
+	AID3_NODEID = 12,
+	XCD6_NODEID = 13,
+	XCD7_NODEID = 14,
+	NODEID_MAX,
+};
+
+extern const int node_id_to_phys_map[NODEID_MAX];
 
 void amdgpu_irq_disable_all(struct amdgpu_device *adev);
 
@@ -126,5 +147,6 @@ void amdgpu_irq_gpu_reset_resume_helper(struct amdgpu_device *adev);
 int amdgpu_irq_add_domain(struct amdgpu_device *adev);
 void amdgpu_irq_remove_domain(struct amdgpu_device *adev);
 unsigned amdgpu_irq_create_mapping(struct amdgpu_device *adev, unsigned src_id);
+void amdgpu_restore_msix(struct amdgpu_device *adev);
 
 #endif

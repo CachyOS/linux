@@ -519,15 +519,15 @@ int npe_load_firmware(struct npe *npe, const char *name, struct device *dev)
 		u32 id;
 		u32 size;
 		union {
-			u32 data[0];
-			struct dl_block blocks[0];
+			DECLARE_FLEX_ARRAY(u32, data);
+			DECLARE_FLEX_ARRAY(struct dl_block, blocks);
 		};
 	} *image;
 
 	struct dl_codeblock {
 		u32 npe_addr;
 		u32 size;
-		u32 data[0];
+		u32 data[];
 	} *cb;
 
 	int i, j, err, data_size, instr_size, blocks, table_end;
@@ -736,7 +736,7 @@ static int ixp4xx_npe_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int ixp4xx_npe_remove(struct platform_device *pdev)
+static void ixp4xx_npe_remove(struct platform_device *pdev)
 {
 	int i;
 
@@ -744,8 +744,6 @@ static int ixp4xx_npe_remove(struct platform_device *pdev)
 		if (npe_tab[i].regs) {
 			npe_reset(&npe_tab[i]);
 		}
-
-	return 0;
 }
 
 static const struct of_device_id ixp4xx_npe_of_match[] = {
@@ -758,7 +756,7 @@ static const struct of_device_id ixp4xx_npe_of_match[] = {
 static struct platform_driver ixp4xx_npe_driver = {
 	.driver = {
 		.name           = "ixp4xx-npe",
-		.of_match_table = of_match_ptr(ixp4xx_npe_of_match),
+		.of_match_table = ixp4xx_npe_of_match,
 	},
 	.probe = ixp4xx_npe_probe,
 	.remove = ixp4xx_npe_remove,
@@ -766,6 +764,7 @@ static struct platform_driver ixp4xx_npe_driver = {
 module_platform_driver(ixp4xx_npe_driver);
 
 MODULE_AUTHOR("Krzysztof Halasa");
+MODULE_DESCRIPTION("Intel IXP4xx Network Processor Engine driver");
 MODULE_LICENSE("GPL v2");
 MODULE_FIRMWARE(NPE_A_FIRMWARE);
 MODULE_FIRMWARE(NPE_B_FIRMWARE);

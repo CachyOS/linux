@@ -374,6 +374,7 @@ static void irq_restore_context(void)
 static void irq_save_secure_context(void)
 {
 	u32 ret;
+
 	ret = omap_secure_dispatcher(OMAP4_HAL_SAVEGIC_INDEX,
 				FLAG_START_CRITICAL,
 				0, 0, 0, 0, 0);
@@ -584,9 +585,8 @@ static int __init wakeupgen_init(struct device_node *node,
 		wakeupgen_ops = &am43xx_wakeupgen_ops;
 	}
 
-	domain = irq_domain_add_hierarchy(parent_domain, 0, max_irqs,
-					  node, &wakeupgen_domain_ops,
-					  NULL);
+	domain = irq_domain_create_hierarchy(parent_domain, 0, max_irqs, of_fwnode_handle(node),
+					     &wakeupgen_domain_ops, NULL);
 	if (!domain) {
 		iounmap(wakeupgen_base);
 		return -ENOMEM;

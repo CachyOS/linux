@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 
-#include <inttypes.h>
-#include <stdio.h>
-#include <string.h>
-#include "debug.h"
-#include "symbol.h"
-#include "callchain.h"
+#include "callchain.h" // prototype of arch__add_leaf_frame_record_opts
+#include "perf_regs.h"
 #include "record.h"
+
+#define SMPL_REG_MASK(b) (1ULL << (b))
 
 void arch__add_leaf_frame_record_opts(struct record_opts *opts)
 {
-	opts->sample_user_regs |= sample_reg_masks[PERF_REG_ARM64_LR].mask;
+	opts->sample_user_regs |= SMPL_REG_MASK(PERF_REG_ARM64_LR);
 }

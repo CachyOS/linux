@@ -145,7 +145,7 @@ u32 brcmf_flowring_create(struct brcmf_flowring *flow, u8 da[ETH_ALEN],
 		if (i == flow->nrofrings)
 			return -ENOMEM;
 
-		ring = kzalloc(sizeof(*ring), GFP_ATOMIC);
+		ring = kzalloc_obj(*ring, GFP_ATOMIC);
 		if (!ring)
 			return -ENOMEM;
 
@@ -360,7 +360,7 @@ struct brcmf_flowring *brcmf_flowring_attach(struct device *dev, u16 nrofrings)
 	struct brcmf_flowring *flow;
 	u32 i;
 
-	flow = kzalloc(sizeof(*flow), GFP_KERNEL);
+	flow = kzalloc_obj(*flow);
 	if (flow) {
 		flow->dev = dev;
 		flow->nrofrings = nrofrings;
@@ -369,8 +369,7 @@ struct brcmf_flowring *brcmf_flowring_attach(struct device *dev, u16 nrofrings)
 			flow->addr_mode[i] = ADDR_INDIRECT;
 		for (i = 0; i < ARRAY_SIZE(flow->hash); i++)
 			flow->hash[i].ifidx = BRCMF_FLOWRING_INVALID_IFIDX;
-		flow->rings = kcalloc(nrofrings, sizeof(*flow->rings),
-				      GFP_KERNEL);
+		flow->rings = kzalloc_objs(*flow->rings, nrofrings);
 		if (!flow->rings) {
 			kfree(flow);
 			flow = NULL;
@@ -419,7 +418,6 @@ void brcmf_flowring_configure_addr_mode(struct brcmf_flowring *flow, int ifidx,
 				flowid = flow->hash[i].flowid;
 				if (flow->rings[flowid]->status != RING_OPEN)
 					continue;
-				flow->rings[flowid]->status = RING_CLOSING;
 				brcmf_msgbuf_delete_flowring(drvr, flowid);
 			}
 		}
@@ -458,10 +456,8 @@ void brcmf_flowring_delete_peer(struct brcmf_flowring *flow, int ifidx,
 		if ((sta || (memcmp(hash[i].mac, peer, ETH_ALEN) == 0)) &&
 		    (hash[i].ifidx == ifidx)) {
 			flowid = flow->hash[i].flowid;
-			if (flow->rings[flowid]->status == RING_OPEN) {
-				flow->rings[flowid]->status = RING_CLOSING;
+			if (flow->rings[flowid]->status == RING_OPEN)
 				brcmf_msgbuf_delete_flowring(drvr, flowid);
-			}
 		}
 	}
 
@@ -483,7 +479,7 @@ void brcmf_flowring_add_tdls_peer(struct brcmf_flowring *flow, int ifidx,
 	struct brcmf_flowring_tdls_entry *tdls_entry;
 	struct brcmf_flowring_tdls_entry *search;
 
-	tdls_entry = kzalloc(sizeof(*tdls_entry), GFP_ATOMIC);
+	tdls_entry = kzalloc_obj(*tdls_entry, GFP_ATOMIC);
 	if (tdls_entry == NULL)
 		return;
 

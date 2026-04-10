@@ -33,7 +33,7 @@
 int
 corec37d_wndw_owner(struct nv50_core *core)
 {
-	struct nvif_push *push = core->chan.push;
+	struct nvif_push *push = &core->chan.push;
 	const u32 windows = 8; /*XXX*/
 	int ret, i;
 
@@ -51,7 +51,7 @@ corec37d_wndw_owner(struct nv50_core *core)
 int
 corec37d_update(struct nv50_core *core, u32 *interlock, bool ntfy)
 {
-	struct nvif_push *push = core->chan.push;
+	struct nvif_push *push = &core->chan.push;
 	int ret;
 
 	if ((ret = PUSH_WAIT(push, (ntfy ? 2 * 2 : 0) + 5)))
@@ -105,7 +105,7 @@ int corec37d_caps_init(struct nouveau_drm *drm, struct nv50_disp *disp)
 	int ret;
 
 	ret = nvif_object_ctor(&disp->disp->object, "dispCaps", 0,
-			       GV100_DISP_CAPS, NULL, 0, &disp->caps);
+			       disp->core->func->caps_class, NULL, 0, &disp->caps);
 	if (ret) {
 		NV_ERROR(drm,
 			 "Failed to init notifier caps region: %d\n",
@@ -127,7 +127,7 @@ int corec37d_caps_init(struct nouveau_drm *drm, struct nv50_disp *disp)
 static int
 corec37d_init(struct nv50_core *core)
 {
-	struct nvif_push *push = core->chan.push;
+	struct nvif_push *push = &core->chan.push;
 	const u32 windows = 8; /*XXX*/
 	int ret, i;
 
@@ -162,6 +162,7 @@ corec37d = {
 	.init = corec37d_init,
 	.ntfy_init = corec37d_ntfy_init,
 	.caps_init = corec37d_caps_init,
+	.caps_class = GV100_DISP_CAPS,
 	.ntfy_wait_done = corec37d_ntfy_wait_done,
 	.update = corec37d_update,
 	.wndw.owner = corec37d_wndw_owner,

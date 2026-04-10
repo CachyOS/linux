@@ -9,10 +9,11 @@
 #include <linux/slab.h>
 #include <linux/device.h>
 #include <linux/devfreq.h>
+#include <linux/devfreq-governor.h>
+#include <linux/kstrtox.h>
 #include <linux/pm.h>
 #include <linux/mutex.h>
 #include <linux/module.h>
-#include "governor.h"
 
 struct userspace_data {
 	unsigned long user_frequency;
@@ -21,7 +22,7 @@ struct userspace_data {
 
 static int devfreq_userspace_func(struct devfreq *df, unsigned long *freq)
 {
-	struct userspace_data *data = df->data;
+	struct userspace_data *data = df->governor_data;
 
 	if (data->valid)
 		*freq = data->user_frequency;
@@ -39,10 +40,13 @@ static ssize_t set_freq_store(struct device *dev, struct device_attribute *attr,
 	unsigned long wanted;
 	int err = 0;
 
-	mutex_lock(&devfreq->lock);
-	data = devfreq->data;
+	err = kstrtoul(buf, 0, &wanted);
+	if (err)
+		return err;
 
-	sscanf(buf, "%lu", &wanted);
+	mutex_lock(&devfreq->lock);
+	data = devfreq->governor_data;
+
 	data->user_frequency = wanted;
 	data->valid = true;
 	err = update_devfreq(devfreq);
@@ -60,7 +64,7 @@ static ssize_t set_freq_show(struct device *dev,
 	int err = 0;
 
 	mutex_lock(&devfreq->lock);
-	data = devfreq->data;
+	data = devfreq->governor_data;
 
 	if (data->valid)
 		err = sprintf(buf, "%lu\n", data->user_frequency);
@@ -83,15 +87,14 @@ static const struct attribute_group dev_attr_group = {
 static int userspace_init(struct devfreq *devfreq)
 {
 	int err = 0;
-	struct userspace_data *data = kzalloc(sizeof(struct userspace_data),
-					      GFP_KERNEL);
+	struct userspace_data *data = kzalloc_obj(struct userspace_data);
 
 	if (!data) {
 		err = -ENOMEM;
 		goto out;
 	}
 	data->valid = false;
-	devfreq->data = data;
+	devfreq->governor_data = data;
 
 	err = sysfs_create_group(&devfreq->dev.kobj, &dev_attr_group);
 out:
@@ -107,8 +110,8 @@ static void userspace_exit(struct devfreq *devfreq)
 	if (devfreq->dev.kobj.sd)
 		sysfs_remove_group(&devfreq->dev.kobj, &dev_attr_group);
 
-	kfree(devfreq->data);
-	devfreq->data = NULL;
+	kfree(devfreq->governor_data);
+	devfreq->governor_data = NULL;
 }
 
 static int devfreq_userspace_handler(struct devfreq *devfreq,
@@ -153,4 +156,5 @@ static void __exit devfreq_userspace_exit(void)
 	return;
 }
 module_exit(devfreq_userspace_exit);
+MODULE_DESCRIPTION("DEVFREQ Userspace governor");
 MODULE_LICENSE("GPL");

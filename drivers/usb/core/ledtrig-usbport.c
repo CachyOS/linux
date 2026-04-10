@@ -10,6 +10,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/slab.h>
+#include <linux/sysfs.h>
 #include <linux/usb.h>
 #include <linux/usb/of.h>
 
@@ -87,7 +88,7 @@ static ssize_t usbport_trig_port_show(struct device *dev,
 						      struct usbport_trig_port,
 						      attr);
 
-	return sprintf(buf, "%d\n", port->observed) + 1;
+	return sysfs_emit(buf, "%d\n", port->observed) + 1;
 }
 
 static ssize_t usbport_trig_port_store(struct device *dev,
@@ -189,7 +190,7 @@ static int usbport_trig_add_port(struct usbport_trig_data *usbport_data,
 	size_t len;
 	int err;
 
-	port = kzalloc(sizeof(*port), GFP_KERNEL);
+	port = kzalloc_obj(*port);
 	if (!port) {
 		err = -ENOMEM;
 		goto err_out;
@@ -304,7 +305,7 @@ static int usbport_trig_activate(struct led_classdev *led_cdev)
 	struct usbport_trig_data *usbport_data;
 	int err;
 
-	usbport_data = kzalloc(sizeof(*usbport_data), GFP_KERNEL);
+	usbport_data = kzalloc_obj(*usbport_data);
 	if (!usbport_data)
 		return -ENOMEM;
 	usbport_data->led_cdev = led_cdev;
@@ -350,18 +351,7 @@ static struct led_trigger usbport_led_trigger = {
 	.deactivate = usbport_trig_deactivate,
 };
 
-static int __init usbport_trig_init(void)
-{
-	return led_trigger_register(&usbport_led_trigger);
-}
-
-static void __exit usbport_trig_exit(void)
-{
-	led_trigger_unregister(&usbport_led_trigger);
-}
-
-module_init(usbport_trig_init);
-module_exit(usbport_trig_exit);
+module_led_trigger(usbport_led_trigger);
 
 MODULE_AUTHOR("Rafał Miłecki <rafal@milecki.pl>");
 MODULE_DESCRIPTION("USB port trigger");

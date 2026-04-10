@@ -26,6 +26,7 @@ struct sock;
 #define ISCSI_RX_THREAD_NAME		"iscsi_trx"
 #define ISCSI_TX_THREAD_NAME		"iscsi_ttx"
 #define ISCSI_IQN_LEN			224
+#define NA_AUTHENTICATION_INHERITED	-1
 
 /* struct iscsi_node_attrib sanity values */
 #define NA_DATAOUT_TIMEOUT		3
@@ -49,9 +50,6 @@ struct sock;
 #define TA_LOGIN_TIMEOUT		15
 #define TA_LOGIN_TIMEOUT_MAX		30
 #define TA_LOGIN_TIMEOUT_MIN		5
-#define TA_NETIF_TIMEOUT		2
-#define TA_NETIF_TIMEOUT_MAX		15
-#define TA_NETIF_TIMEOUT_MIN		2
 #define TA_GENERATE_NODE_ACLS		0
 #define TA_DEFAULT_CMDSN_DEPTH		64
 #define TA_DEFAULT_CMDSN_DEPTH_MAX	512
@@ -561,12 +559,13 @@ struct iscsit_conn {
 #define LOGIN_FLAGS_READ_ACTIVE		2
 #define LOGIN_FLAGS_WRITE_ACTIVE	3
 #define LOGIN_FLAGS_CLOSED		4
+#define LOGIN_FLAGS_WORKER_RUNNING	5
 	unsigned long		login_flags;
 	struct delayed_work	login_work;
 	struct iscsi_login	*login;
 	struct timer_list	nopin_timer;
 	struct timer_list	nopin_response_timer;
-	struct timer_list	transport_timer;
+	struct timer_list	login_timer;
 	struct task_struct	*login_kworker;
 	/* Spinlock used for add/deleting cmd's from conn_cmd_list */
 	spinlock_t		cmd_lock;
@@ -575,9 +574,8 @@ struct iscsit_conn {
 	spinlock_t		nopin_timer_lock;
 	spinlock_t		response_queue_lock;
 	spinlock_t		state_lock;
-	/* libcrypto RX and TX contexts for crc32c */
-	struct ahash_request	*conn_rx_hash;
-	struct ahash_request	*conn_tx_hash;
+	spinlock_t		login_timer_lock;
+	spinlock_t		login_worker_lock;
 	/* Used for scheduling TX and RX connection kthreads */
 	cpumask_var_t		conn_cpumask;
 	cpumask_var_t		allowed_cpumask;
@@ -599,6 +597,7 @@ struct iscsit_conn {
 	struct iscsi_tpg_np	*tpg_np;
 	/* Pointer to parent session */
 	struct iscsit_session	*sess;
+	struct target_cmd_counter *cmd_cnt;
 	int			bitmap_id;
 	int			rx_thread_active;
 	struct task_struct	*rx_thread;
@@ -715,6 +714,7 @@ struct iscsi_login {
 } ____cacheline_aligned;
 
 struct iscsi_node_attrib {
+	s32			authentication;
 	u32			dataout_timeout;
 	u32			dataout_timeout_retries;
 	u32			default_erl;
@@ -758,10 +758,15 @@ struct iscsi_node_acl {
 	struct iscsi_node_stat_grps node_stat_grps;
 };
 
+static inline struct iscsi_node_acl *
+to_iscsi_nacl(struct se_node_acl *se_nacl)
+{
+	return container_of(se_nacl, struct iscsi_node_acl, se_node_acl);
+}
+
 struct iscsi_tpg_attrib {
 	u32			authentication;
 	u32			login_timeout;
-	u32			netif_timeout;
 	u32			generate_node_acls;
 	u32			cache_dynamic_acls;
 	u32			default_cmdsn_depth;
@@ -783,7 +788,6 @@ struct iscsi_np {
 	enum np_thread_state_table np_thread_state;
 	bool                    enabled;
 	atomic_t		np_reset_count;
-	enum iscsi_timer_flags_table np_login_timer_flags;
 	u32			np_exports;
 	enum np_flags_table	np_flags;
 	spinlock_t		np_thread_lock;
@@ -791,7 +795,6 @@ struct iscsi_np {
 	struct socket		*np_socket;
 	struct sockaddr_storage np_sockaddr;
 	struct task_struct	*np_thread;
-	struct timer_list	np_login_timer;
 	void			*np_context;
 	struct iscsit_transport *np_transport;
 	struct list_head	np_list;
@@ -838,6 +841,12 @@ struct iscsi_portal_group {
 	struct list_head	tpg_gnp_list;
 	struct list_head	tpg_list;
 } ____cacheline_aligned;
+
+static inline struct iscsi_portal_group *
+to_iscsi_tpg(struct se_portal_group *se_tpg)
+{
+	return container_of(se_tpg, struct iscsi_portal_group, tpg_se_tpg);
+}
 
 struct iscsi_wwn_stat_grps {
 	struct config_group	iscsi_stat_group;

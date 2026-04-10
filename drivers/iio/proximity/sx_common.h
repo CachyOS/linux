@@ -26,6 +26,7 @@ static_assert(SX_COMMON_MAX_NUM_CHANNELS < BITS_PER_LONG);
 struct sx_common_reg_default {
 	u8 reg;
 	u8 def;
+	const char *property;
 };
 
 /**
@@ -101,8 +102,6 @@ struct sx_common_chip_info {
  * @client:		I2C client structure.
  * @trig:		IIO trigger object.
  * @regmap:		Register map.
- * @num_default_regs:	Number of default registers to set at init.
- * @supplies:		Power supplies object.
  * @chan_prox_stat:	Last reading of the proximity status for each channel.
  *			We only send an event to user space when this changes.
  * @trigger_enabled:	True when the device trigger is enabled.
@@ -120,14 +119,13 @@ struct sx_common_data {
 	struct iio_trigger *trig;
 	struct regmap *regmap;
 
-	struct regulator_bulk_data supplies[2];
 	unsigned long chan_prox_stat;
 	bool trigger_enabled;
 
 	/* Ensure correct alignment of timestamp when present. */
 	struct {
 		__be16 channels[SX_COMMON_MAX_NUM_CHANNELS];
-		s64 ts __aligned(8);
+		aligned_s64 ts;
 	} buffer;
 
 	unsigned int suspend_ctrl;
@@ -145,7 +143,7 @@ int sx_common_read_event_config(struct iio_dev *indio_dev,
 int sx_common_write_event_config(struct iio_dev *indio_dev,
 				 const struct iio_chan_spec *chan,
 				 enum iio_event_type type,
-				 enum iio_event_direction dir, int state);
+				 enum iio_event_direction dir, bool state);
 
 int sx_common_probe(struct i2c_client *client,
 		    const struct sx_common_chip_info *chip_info,

@@ -3,6 +3,93 @@
 #include <linux/tcp.h>
 #include <linux/rcupdate.h>
 #include <net/tcp.h>
+#include <net/busy_poll.h>
+
+/*
+ * This function is called to set a Fast Open socket's "fastopen_rsk" field
+ * to NULL when a TFO socket no longer needs to access the request_sock.
+ * This happens only after 3WHS has been either completed or aborted (e.g.,
+ * RST is received).
+ *
+ * Before TFO, a child socket is created only after 3WHS is completed,
+ * hence it never needs to access the request_sock. things get a lot more
+ * complex with TFO. A child socket, accepted or not, has to access its
+ * request_sock for 3WHS processing, e.g., to retransmit SYN-ACK pkts,
+ * until 3WHS is either completed or aborted. Afterwards the req will stay
+ * until either the child socket is accepted, or in the rare case when the
+ * listener is closed before the child is accepted.
+ *
+ * In short, a request socket is only freed after BOTH 3WHS has completed
+ * (or aborted) and the child socket has been accepted (or listener closed).
+ * When a child socket is accepted, its corresponding req->sk is set to
+ * NULL since it's no longer needed. More importantly, "req->sk == NULL"
+ * will be used by the code below to determine if a child socket has been
+ * accepted or not, and the check is protected by the fastopenq->lock
+ * described below.
+ *
+ * Note that fastopen_rsk is only accessed from the child socket's context
+ * with its socket lock held. But a request_sock (req) can be accessed by
+ * both its child socket through fastopen_rsk, and a listener socket through
+ * icsk_accept_queue.rskq_accept_head. To protect the access a simple spin
+ * lock per listener "icsk->icsk_accept_queue.fastopenq->lock" is created.
+ * only in the rare case when both the listener and the child locks are held,
+ * e.g., in inet_csk_listen_stop() do we not need to acquire the lock.
+ * The lock also protects other fields such as fastopenq->qlen, which is
+ * decremented by this function when fastopen_rsk is no longer needed.
+ *
+ * Note that another solution was to simply use the existing socket lock
+ * from the listener. But first socket lock is difficult to use. It is not
+ * a simple spin lock - one must consider sock_owned_by_user() and arrange
+ * to use sk_add_backlog() stuff. But what really makes it infeasible is the
+ * locking hierarchy violation. E.g., inet_csk_listen_stop() may try to
+ * acquire a child's lock while holding listener's socket lock.
+ *
+ * This function also sets "treq->tfo_listener" to false.
+ * treq->tfo_listener is used by the listener so it is protected by the
+ * fastopenq->lock in this function.
+ */
+void reqsk_fastopen_remove(struct sock *sk, struct request_sock *req,
+			   bool reset)
+{
+	struct sock *lsk = req->rsk_listener;
+	struct fastopen_queue *fastopenq;
+
+	fastopenq = &inet_csk(lsk)->icsk_accept_queue.fastopenq;
+
+	RCU_INIT_POINTER(tcp_sk(sk)->fastopen_rsk, NULL);
+	spin_lock_bh(&fastopenq->lock);
+	fastopenq->qlen--;
+	tcp_rsk(req)->tfo_listener = false;
+	if (req->sk)	/* the child socket hasn't been accepted yet */
+		goto out;
+
+	if (!reset || lsk->sk_state != TCP_LISTEN) {
+		/* If the listener has been closed don't bother with the
+		 * special RST handling below.
+		 */
+		spin_unlock_bh(&fastopenq->lock);
+		reqsk_put(req);
+		return;
+	}
+	/* Wait for 60secs before removing a req that has triggered RST.
+	 * This is a simple defense against TFO spoofing attack - by
+	 * counting the req against fastopen.max_qlen, and disabling
+	 * TFO when the qlen exceeds max_qlen.
+	 *
+	 * For more details see CoNext'11 "TCP Fast Open" paper.
+	 */
+	req->rsk_timer.expires = jiffies + 60*HZ;
+	if (fastopenq->rskq_rst_head == NULL)
+		fastopenq->rskq_rst_head = req;
+	else
+		fastopenq->rskq_rst_tail->dl_next = req;
+
+	req->dl_next = NULL;
+	fastopenq->rskq_rst_tail = req;
+	fastopenq->qlen++;
+out:
+	spin_unlock_bh(&fastopenq->lock);
+}
 
 void tcp_fastopen_init_key_once(struct net *net)
 {
@@ -49,7 +136,7 @@ void tcp_fastopen_ctx_destroy(struct net *net)
 {
 	struct tcp_fastopen_context *ctxt;
 
-	ctxt = xchg((__force struct tcp_fastopen_context **)&net->ipv4.tcp_fastopen_ctx, NULL);
+	ctxt = unrcu_pointer(xchg(&net->ipv4.tcp_fastopen_ctx, NULL));
 
 	if (ctxt)
 		call_rcu(&ctxt->rcu, tcp_fastopen_ctx_free);
@@ -62,7 +149,7 @@ int tcp_fastopen_reset_cipher(struct net *net, struct sock *sk,
 	struct fastopen_queue *q;
 	int err = 0;
 
-	ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
+	ctx = kmalloc_obj(*ctx);
 	if (!ctx) {
 		err = -ENOMEM;
 		goto out;
@@ -80,9 +167,10 @@ int tcp_fastopen_reset_cipher(struct net *net, struct sock *sk,
 
 	if (sk) {
 		q = &inet_csk(sk)->icsk_accept_queue.fastopenq;
-		octx = xchg((__force struct tcp_fastopen_context **)&q->ctx, ctx);
+		octx = unrcu_pointer(xchg(&q->ctx, RCU_INITIALIZER(ctx)));
 	} else {
-		octx = xchg((__force struct tcp_fastopen_context **)&net->ipv4.tcp_fastopen_ctx, ctx);
+		octx = unrcu_pointer(xchg(&net->ipv4.tcp_fastopen_ctx,
+					  RCU_INITIALIZER(ctx)));
 	}
 
 	if (octx)
@@ -177,7 +265,7 @@ void tcp_fastopen_add_skb(struct sock *sk, struct sk_buff *skb)
 	if (!skb)
 		return;
 
-	skb_dst_drop(skb);
+	tcp_cleanup_skb(skb);
 	/* segs_in has been initialized to 1 in tcp_create_openreq_child().
 	 * Hence, reset segs_in to 0 before calling tcp_segs_in()
 	 * to avoid double counting.  Also, tcp_segs_in() expects
@@ -194,7 +282,7 @@ void tcp_fastopen_add_skb(struct sock *sk, struct sk_buff *skb)
 	TCP_SKB_CB(skb)->tcp_flags &= ~TCPHDR_SYN;
 
 	tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq;
-	__skb_queue_tail(&sk->sk_receive_queue, skb);
+	tcp_add_receive_queue(sk, skb);
 	tp->syn_data_acked = 1;
 
 	/* u64_stats_update_begin(&tp->syncp) not needed here,
@@ -245,7 +333,7 @@ static struct sock *tcp_fastopen_create_child(struct sock *sk,
 	bool own_req;
 
 	child = inet_csk(sk)->icsk_af_ops->syn_recv_sock(sk, skb, req, NULL,
-							 NULL, &own_req);
+							 NULL, &own_req, NULL);
 	if (!child)
 		return NULL;
 
@@ -272,10 +360,13 @@ static struct sock *tcp_fastopen_create_child(struct sock *sk,
 	 * The request socket is not added to the ehash
 	 * because it's been added to the accept queue directly.
 	 */
-	inet_csk_reset_xmit_timer(child, ICSK_TIME_RETRANS,
-				  TCP_TIMEOUT_INIT, TCP_RTO_MAX);
+	req->timeout = tcp_timeout_init(child);
+	tcp_reset_xmit_timer(child, ICSK_TIME_RETRANS,
+			     req->timeout, false);
 
 	refcount_set(&req->rsk_refcnt, 2);
+
+	sk_mark_napi_id_set(child, skb);
 
 	/* Now finish processing the fastopen child socket. */
 	tcp_init_transfer(child, BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB, skb);
@@ -295,6 +386,7 @@ static struct sock *tcp_fastopen_create_child(struct sock *sk,
 static bool tcp_fastopen_queue_check(struct sock *sk)
 {
 	struct fastopen_queue *fastopenq;
+	int max_qlen;
 
 	/* Make sure the listener has enabled fastopen, and we don't
 	 * exceed the max # of pending TFO requests allowed before trying
@@ -307,10 +399,11 @@ static bool tcp_fastopen_queue_check(struct sock *sk)
 	 * temporarily vs a server not supporting Fast Open at all.
 	 */
 	fastopenq = &inet_csk(sk)->icsk_accept_queue.fastopenq;
-	if (fastopenq->max_qlen == 0)
+	max_qlen = READ_ONCE(fastopenq->max_qlen);
+	if (max_qlen == 0)
 		return false;
 
-	if (fastopenq->qlen >= fastopenq->max_qlen) {
+	if (fastopenq->qlen >= max_qlen) {
 		struct request_sock *req1;
 		spin_lock(&fastopenq->lock);
 		req1 = fastopenq->rskq_rst_head;
@@ -332,7 +425,7 @@ static bool tcp_fastopen_no_cookie(const struct sock *sk,
 				   const struct dst_entry *dst,
 				   int flag)
 {
-	return (sock_net(sk)->ipv4.sysctl_tcp_fastopen & flag) ||
+	return (READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_fastopen) & flag) ||
 	       tcp_sk(sk)->fastopen_no_cookie ||
 	       (dst && dst_metric(dst, RTAX_FASTOPEN_NO_COOKIE));
 }
@@ -347,7 +440,7 @@ struct sock *tcp_try_fastopen(struct sock *sk, struct sk_buff *skb,
 			      const struct dst_entry *dst)
 {
 	bool syn_data = TCP_SKB_CB(skb)->end_seq != TCP_SKB_CB(skb)->seq + 1;
-	int tcp_fastopen = sock_net(sk)->ipv4.sysctl_tcp_fastopen;
+	int tcp_fastopen = READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_fastopen);
 	struct tcp_fastopen_cookie valid_foc = { .len = -1 };
 	struct sock *child;
 	int ret = 0;
@@ -397,6 +490,7 @@ fastopen:
 				}
 				NET_INC_STATS(sock_net(sk),
 					      LINUX_MIB_TCPFASTOPENPASSIVE);
+				tcp_sk(child)->syn_fastopen_child = 1;
 				return child;
 			}
 			NET_INC_STATS(sock_net(sk),
@@ -448,15 +542,15 @@ bool tcp_fastopen_defer_connect(struct sock *sk, int *err)
 
 	if (tp->fastopen_connect && !tp->fastopen_req) {
 		if (tcp_fastopen_cookie_check(sk, &mss, &cookie)) {
-			inet_sk(sk)->defer_connect = 1;
+			inet_set_bit(DEFER_CONNECT, sk);
 			return true;
 		}
 
 		/* Alloc fastopen_req in order for FO option to be included
 		 * in SYN
 		 */
-		tp->fastopen_req = kzalloc(sizeof(*tp->fastopen_req),
-					   sk->sk_allocation);
+		tp->fastopen_req = kzalloc_obj(*tp->fastopen_req,
+					       sk->sk_allocation);
 		if (tp->fastopen_req)
 			tp->fastopen_req->cookie = cookie;
 		else
@@ -464,7 +558,7 @@ bool tcp_fastopen_defer_connect(struct sock *sk, int *err)
 	}
 	return false;
 }
-EXPORT_SYMBOL(tcp_fastopen_defer_connect);
+EXPORT_IPV6_MOD(tcp_fastopen_defer_connect);
 
 /*
  * The following code block is to deal with middle box issues with TFO:
@@ -489,7 +583,7 @@ void tcp_fastopen_active_disable(struct sock *sk)
 {
 	struct net *net = sock_net(sk);
 
-	if (!sock_net(sk)->ipv4.sysctl_tcp_fastopen_blackhole_timeout)
+	if (!READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_fastopen_blackhole_timeout))
 		return;
 
 	/* Paired with READ_ONCE() in tcp_fastopen_active_should_disable() */
@@ -510,7 +604,8 @@ void tcp_fastopen_active_disable(struct sock *sk)
  */
 bool tcp_fastopen_active_should_disable(struct sock *sk)
 {
-	unsigned int tfo_bh_timeout = sock_net(sk)->ipv4.sysctl_tcp_fastopen_blackhole_timeout;
+	unsigned int tfo_bh_timeout =
+		READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_fastopen_blackhole_timeout);
 	unsigned long timeout;
 	int tfo_da_times;
 	int multiplier;
@@ -550,6 +645,7 @@ bool tcp_fastopen_active_should_disable(struct sock *sk)
 void tcp_fastopen_active_disable_ofo_check(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
+	struct net_device *dev;
 	struct dst_entry *dst;
 	struct sk_buff *skb;
 
@@ -566,10 +662,12 @@ void tcp_fastopen_active_disable_ofo_check(struct sock *sk)
 		}
 	} else if (tp->syn_fastopen_ch &&
 		   atomic_read(&sock_net(sk)->ipv4.tfo_active_disable_times)) {
-		dst = sk_dst_get(sk);
-		if (!(dst && dst->dev && (dst->dev->flags & IFF_LOOPBACK)))
+		rcu_read_lock();
+		dst = __sk_dst_get(sk);
+		dev = dst ? dst_dev_rcu(dst) : NULL;
+		if (!(dev && (dev->flags & IFF_LOOPBACK)))
 			atomic_set(&sock_net(sk)->ipv4.tfo_active_disable_times, 0);
-		dst_release(dst);
+		rcu_read_unlock();
 	}
 }
 

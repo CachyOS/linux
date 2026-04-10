@@ -19,7 +19,7 @@
 #include <asm/sigcontext.h>
 #include <asm/ptrace.h>
 
-#include "../../kselftest.h"
+#include "kselftest.h"
 
 /* <linux/elf.h> and <sys/auxv.h> don't like each other, so: */
 #ifndef NT_ARM_SVE
@@ -29,6 +29,16 @@
 #ifndef NT_ARM_SSVE
 #define NT_ARM_SSVE 0x40b
 #endif
+
+/*
+ * The architecture defines the maximum VQ as 16 but for extensibility
+ * the kernel specifies the SVE_VQ_MAX as 512 resulting in us running
+ * a *lot* more tests than are useful if we use it.  Until the
+ * architecture is extended let's limit our coverage to what is
+ * currently allowed, plus one extra to ensure we cover constraining
+ * the VL as expected.
+ */
+#define TEST_VQ_MAX 17
 
 struct vec_type {
 	const char *name;
@@ -55,8 +65,8 @@ static const struct vec_type vec_types[] = {
 	},
 };
 
-#define VL_TESTS (((SVE_VQ_MAX - SVE_VQ_MIN) + 1) * 4)
-#define FLAG_TESTS 2
+#define VL_TESTS (((TEST_VQ_MAX - SVE_VQ_MIN) + 1) * 4)
+#define FLAG_TESTS 4
 #define FPSIMD_TESTS 2
 
 #define EXPECTED_TESTS ((VL_TESTS + FLAG_TESTS + FPSIMD_TESTS) * ARRAY_SIZE(vec_types))
@@ -72,10 +82,12 @@ static void fill_buf(char *buf, size_t size)
 static int do_child(void)
 {
 	if (ptrace(PTRACE_TRACEME, -1, NULL, NULL))
-		ksft_exit_fail_msg("PTRACE_TRACEME", strerror(errno));
+		ksft_exit_fail_msg("ptrace(PTRACE_TRACEME) failed: %s (%d)\n",
+				   strerror(errno), errno);
 
 	if (raise(SIGSTOP))
-		ksft_exit_fail_msg("raise(SIGSTOP)", strerror(errno));
+		ksft_exit_fail_msg("raise(SIGSTOP) failed: %s (%d)\n",
+				   strerror(errno), errno);
 
 	return EXIT_SUCCESS;
 }
@@ -83,19 +95,27 @@ static int do_child(void)
 static int get_fpsimd(pid_t pid, struct user_fpsimd_state *fpsimd)
 {
 	struct iovec iov;
+	int ret;
 
 	iov.iov_base = fpsimd;
 	iov.iov_len = sizeof(*fpsimd);
-	return ptrace(PTRACE_GETREGSET, pid, NT_PRFPREG, &iov);
+	ret = ptrace(PTRACE_GETREGSET, pid, NT_PRFPREG, &iov);
+	if (ret == -1)
+		ksft_perror("ptrace(PTRACE_GETREGSET)");
+	return ret;
 }
 
 static int set_fpsimd(pid_t pid, struct user_fpsimd_state *fpsimd)
 {
 	struct iovec iov;
+	int ret;
 
 	iov.iov_base = fpsimd;
 	iov.iov_len = sizeof(*fpsimd);
-	return ptrace(PTRACE_SETREGSET, pid, NT_PRFPREG, &iov);
+	ret = ptrace(PTRACE_SETREGSET, pid, NT_PRFPREG, &iov);
+	if (ret == -1)
+		ksft_perror("ptrace(PTRACE_SETREGSET)");
+	return ret;
 }
 
 static struct user_sve_header *get_sve(pid_t pid, const struct vec_type *type,
@@ -103,8 +123,9 @@ static struct user_sve_header *get_sve(pid_t pid, const struct vec_type *type,
 {
 	struct user_sve_header *sve;
 	void *p;
-	size_t sz = sizeof *sve;
+	size_t sz = sizeof(*sve);
 	struct iovec iov;
+	int ret;
 
 	while (1) {
 		if (*size < sz) {
@@ -120,8 +141,11 @@ static struct user_sve_header *get_sve(pid_t pid, const struct vec_type *type,
 
 		iov.iov_base = *buf;
 		iov.iov_len = sz;
-		if (ptrace(PTRACE_GETREGSET, pid, type->regset, &iov))
+		ret = ptrace(PTRACE_GETREGSET, pid, type->regset, &iov);
+		if (ret) {
+			ksft_perror("ptrace(PTRACE_GETREGSET)");
 			goto error;
+		}
 
 		sve = *buf;
 		if (sve->size <= sz)
@@ -140,10 +164,46 @@ static int set_sve(pid_t pid, const struct vec_type *type,
 		   const struct user_sve_header *sve)
 {
 	struct iovec iov;
+	int ret;
 
 	iov.iov_base = (void *)sve;
 	iov.iov_len = sve->size;
-	return ptrace(PTRACE_SETREGSET, pid, type->regset, &iov);
+	ret = ptrace(PTRACE_SETREGSET, pid, type->regset, &iov);
+	if (ret == -1)
+		ksft_perror("ptrace(PTRACE_SETREGSET)");
+	return ret;
+}
+
+/* A read operation fails */
+static void read_fails(pid_t child, const struct vec_type *type)
+{
+	struct user_sve_header *new_sve = NULL;
+	size_t new_sve_size = 0;
+	void *ret;
+
+	ret = get_sve(child, type, (void **)&new_sve, &new_sve_size);
+
+	ksft_test_result(ret == NULL, "%s unsupported read fails\n",
+			 type->name);
+
+	free(new_sve);
+}
+
+/* A write operation fails */
+static void write_fails(pid_t child, const struct vec_type *type)
+{
+	struct user_sve_header sve;
+	int ret;
+
+	/* Just the header, no data */
+	memset(&sve, 0, sizeof(sve));
+	sve.size = sizeof(sve);
+	sve.flags = SVE_PT_REGS_SVE;
+	sve.vl = SVE_VL_MIN;
+	ret = set_sve(child, type, &sve);
+
+	ksft_test_result(ret != 0, "%s unsupported write fails\n",
+			 type->name);
 }
 
 /* Validate setting and getting the inherit flag */
@@ -158,7 +218,7 @@ static void ptrace_set_get_inherit(pid_t child, const struct vec_type *type)
 	memset(&sve, 0, sizeof(sve));
 	sve.size = sizeof(sve);
 	sve.vl = sve_vl_from_vq(SVE_VQ_MIN);
-	sve.flags = SVE_PT_VL_INHERIT;
+	sve.flags = SVE_PT_VL_INHERIT | SVE_PT_REGS_SVE;
 	ret = set_sve(child, type, &sve);
 	if (ret != 0) {
 		ksft_test_result_fail("Failed to set %s SVE_PT_VL_INHERIT\n",
@@ -223,6 +283,7 @@ static void ptrace_set_get_vl(pid_t child, const struct vec_type *type,
 	/* Set the VL by doing a set with no register payload */
 	memset(&sve, 0, sizeof(sve));
 	sve.size = sizeof(sve);
+	sve.flags = SVE_PT_REGS_SVE;
 	sve.vl = vl;
 	ret = set_sve(child, type, &sve);
 	if (ret != 0) {
@@ -241,7 +302,7 @@ static void ptrace_set_get_vl(pid_t child, const struct vec_type *type,
 		return;
 	}
 
-	ksft_test_result(new_sve->vl = prctl_vl, "Set %s VL %u\n",
+	ksft_test_result(new_sve->vl == prctl_vl, "Set %s VL %u\n",
 			 type->name, vl);
 
 	free(new_sve);
@@ -255,6 +316,25 @@ static void check_u32(unsigned int vl, const char *reg,
 		       vl, reg, *in, *out);
 		(*errors)++;
 	}
+}
+
+/* Set out of range VLs */
+static void ptrace_set_vl_ranges(pid_t child, const struct vec_type *type)
+{
+	struct user_sve_header sve;
+	int ret;
+
+	memset(&sve, 0, sizeof(sve));
+	sve.flags = SVE_PT_REGS_SVE;
+	sve.size = sizeof(sve);
+
+	ret = set_sve(child, type, &sve);
+	ksft_test_result(ret != 0, "%s Set invalid VL 0\n", type->name);
+
+	sve.vl = SVE_VL_MAX + SVE_VQ_BYTES;
+	ret = set_sve(child, type, &sve);
+	ksft_test_result(ret != 0, "%s Set invalid VL %d\n", type->name,
+			 SVE_VL_MAX + SVE_VQ_BYTES);
 }
 
 /* Access the FPSIMD registers via the SVE regset */
@@ -289,8 +369,10 @@ static void ptrace_sve_fpsimd(pid_t child, const struct vec_type *type)
 			p[j] = j;
 	}
 
+	/* This should only succeed for SVE */
 	ret = set_sve(child, type, sve);
-	ksft_test_result(ret == 0, "%s FPSIMD set via SVE: %d\n",
+	ksft_test_result((type->regset == NT_ARM_SVE) == (ret == 0),
+			 "%s FPSIMD set via SVE: %d\n",
 			 type->name, ret);
 	if (ret)
 		goto out;
@@ -307,6 +389,58 @@ static void ptrace_sve_fpsimd(pid_t child, const struct vec_type *type)
 	else
 		ksft_test_result_fail("%s get_fpsimd() gave different state\n",
 				      type->name);
+
+out:
+	free(svebuf);
+}
+
+/* Write the FPSIMD registers via the SVE regset when SVE is not supported */
+static void ptrace_sve_fpsimd_no_sve(pid_t child)
+{
+	void *svebuf;
+	struct user_sve_header *sve;
+	struct user_fpsimd_state *fpsimd, new_fpsimd;
+	unsigned int i, j;
+	unsigned char *p;
+	int ret;
+
+	svebuf = malloc(SVE_PT_SIZE(0, SVE_PT_REGS_FPSIMD));
+	if (!svebuf) {
+		ksft_test_result_fail("Failed to allocate FPSIMD buffer\n");
+		return;
+	}
+
+	/* On a system without SVE the VL should be set to 0 */
+	memset(svebuf, 0, SVE_PT_SIZE(0, SVE_PT_REGS_FPSIMD));
+	sve = svebuf;
+	sve->flags = SVE_PT_REGS_FPSIMD;
+	sve->size = SVE_PT_SIZE(0, SVE_PT_REGS_FPSIMD);
+	sve->vl = 0;
+
+	/* Try to set a known FPSIMD state via PT_REGS_SVE */
+	fpsimd = (struct user_fpsimd_state *)((char *)sve +
+					      SVE_PT_FPSIMD_OFFSET);
+	for (i = 0; i < 32; ++i) {
+		p = (unsigned char *)&fpsimd->vregs[i];
+
+		for (j = 0; j < sizeof(fpsimd->vregs[i]); ++j)
+			p[j] = j;
+	}
+
+	ret = set_sve(child, &vec_types[0], sve);
+	ksft_test_result(ret == 0, "FPSIMD write via SVE\n");
+	if (ret) {
+		ksft_test_result_skip("Verify FPSIMD write via SVE\n");
+		goto out;
+	}
+
+	/* Verify via the FPSIMD regset */
+	if (get_fpsimd(child, &new_fpsimd)) {
+		ksft_test_result_skip("Verify FPSIMD write via SVE\n");
+		goto out;
+	}
+	ksft_test_result(memcmp(fpsimd, &new_fpsimd, sizeof(*fpsimd)) == 0,
+			 "Verify FPSIMD write via SVE\n");
 
 out:
 	free(svebuf);
@@ -330,7 +464,7 @@ static void ptrace_set_sve_get_sve_data(pid_t child,
 	data_size = SVE_PT_SVE_OFFSET + SVE_PT_SVE_SIZE(vq, SVE_PT_REGS_SVE);
 	write_buf = malloc(data_size);
 	if (!write_buf) {
-		ksft_test_result_fail("Error allocating %d byte buffer for %s VL %u\n",
+		ksft_test_result_fail("Error allocating %ld byte buffer for %s VL %u\n",
 				      data_size, type->name, vl);
 		return;
 	}
@@ -431,7 +565,7 @@ static void ptrace_set_sve_get_fpsimd_data(pid_t child,
 	data_size = SVE_PT_SVE_OFFSET + SVE_PT_SVE_SIZE(vq, SVE_PT_REGS_SVE);
 	write_buf = malloc(data_size);
 	if (!write_buf) {
-		ksft_test_result_fail("Error allocating %d byte buffer for %s VL %u\n",
+		ksft_test_result_fail("Error allocating %ld byte buffer for %s VL %u\n",
 				      data_size, type->name, vl);
 		return;
 	}
@@ -535,7 +669,7 @@ static void ptrace_set_fpsimd_get_sve_data(pid_t child,
 	read_sve = read_buf;
 
 	if (read_sve->vl != vl) {
-		ksft_test_result_fail("Child VL != expected VL %d\n",
+		ksft_test_result_fail("Child VL != expected VL: %u != %u\n",
 				      read_sve->vl, vl);
 		goto out;
 	}
@@ -545,7 +679,7 @@ static void ptrace_set_fpsimd_get_sve_data(pid_t child,
 	case SVE_PT_REGS_FPSIMD:
 		expected_size = SVE_PT_FPSIMD_SIZE(vq, SVE_PT_REGS_FPSIMD);
 		if (read_sve_size < expected_size) {
-			ksft_test_result_fail("Read %d bytes, expected %d\n",
+			ksft_test_result_fail("Read %ld bytes, expected %ld\n",
 					      read_sve_size, expected_size);
 			goto out;
 		}
@@ -561,7 +695,7 @@ static void ptrace_set_fpsimd_get_sve_data(pid_t child,
 	case SVE_PT_REGS_SVE:
 		expected_size = SVE_PT_SVE_SIZE(vq, SVE_PT_REGS_SVE);
 		if (read_sve_size < expected_size) {
-			ksft_test_result_fail("Read %d bytes, expected %d\n",
+			ksft_test_result_fail("Read %ld bytes, expected %ld\n",
 					      read_sve_size, expected_size);
 			goto out;
 		}
@@ -668,6 +802,20 @@ static int do_parent(pid_t child)
 	}
 
 	for (i = 0; i < ARRAY_SIZE(vec_types); i++) {
+		/*
+		 * If the vector type isn't supported reads and writes
+		 * should fail.
+		 */
+		if (!(getauxval(vec_types[i].hwcap_type) & vec_types[i].hwcap)) {
+			read_fails(child, &vec_types[i]);
+			write_fails(child, &vec_types[i]);
+		} else {
+			ksft_test_result_skip("%s unsupported read fails\n",
+					      vec_types[i].name);
+			ksft_test_result_skip("%s unsupported write fails\n",
+					      vec_types[i].name);
+		}
+
 		/* FPSIMD via SVE regset */
 		if (getauxval(vec_types[i].hwcap_type) & vec_types[i].hwcap) {
 			ptrace_sve_fpsimd(child, &vec_types[i]);
@@ -688,8 +836,19 @@ static int do_parent(pid_t child)
 					      vec_types[i].name);
 		}
 
+		/* Setting out of bounds VLs should fail */
+		if (getauxval(vec_types[i].hwcap_type) & vec_types[i].hwcap) {
+			ptrace_set_vl_ranges(child, &vec_types[i]);
+		} else {
+			ksft_test_result_skip("%s Set invalid VL 0\n",
+					      vec_types[i].name);
+			ksft_test_result_skip("%s Set invalid VL %d\n",
+					      vec_types[i].name,
+					      SVE_VL_MAX + SVE_VQ_BYTES);
+		}
+
 		/* Step through every possible VQ */
-		for (vq = SVE_VQ_MIN; vq <= SVE_VQ_MAX; vq++) {
+		for (vq = SVE_VQ_MIN; vq <= TEST_VQ_MAX; vq++) {
 			vl = sve_vl_from_vq(vq);
 
 			/* First, try to set this vector length */
@@ -719,6 +878,15 @@ static int do_parent(pid_t child)
 		}
 	}
 
+	/* We support SVE writes of FPSMID format on SME only systems */
+	if (!(getauxval(AT_HWCAP) & HWCAP_SVE) &&
+	    (getauxval(AT_HWCAP2) & HWCAP2_SME)) {
+		ptrace_sve_fpsimd_no_sve(child);
+	} else {
+		ksft_test_result_skip("FPSIMD write via SVE\n");
+		ksft_test_result_skip("Verify FPSIMD write via SVE\n");
+	}
+
 	ret = EXIT_SUCCESS;
 
 error:
@@ -737,9 +905,6 @@ int main(void)
 
 	ksft_print_header();
 	ksft_set_plan(EXPECTED_TESTS);
-
-	if (!(getauxval(AT_HWCAP) & HWCAP_SVE))
-		ksft_exit_skip("SVE not available\n");
 
 	child = fork();
 	if (!child)

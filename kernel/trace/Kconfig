@@ -31,6 +31,14 @@ config HAVE_FUNCTION_GRAPH_TRACER
 	help
 	  See Documentation/trace/ftrace-design.rst
 
+config HAVE_FUNCTION_GRAPH_FREGS
+	bool
+
+config HAVE_FTRACE_GRAPH_FUNC
+	bool
+	help
+	  True if ftrace_graph_func() is defined.
+
 config HAVE_DYNAMIC_FTRACE
 	bool
 	help
@@ -42,19 +50,44 @@ config HAVE_DYNAMIC_FTRACE_WITH_REGS
 config HAVE_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
 	bool
 
+config HAVE_SINGLE_FTRACE_DIRECT_OPS
+	bool
+
+config HAVE_DYNAMIC_FTRACE_WITH_CALL_OPS
+	bool
+
+config HAVE_EXTRA_IPI_TRACEPOINTS
+	bool
+	help
+	 For architectures that use ipi_raise, ipi_entry and ipi_exit
+	 tracepoints.
+
 config HAVE_DYNAMIC_FTRACE_WITH_ARGS
 	bool
 	help
 	 If this is set, then arguments and stack can be found from
-	 the pt_regs passed into the function callback regs parameter
+	 the ftrace_regs passed into the function callback regs parameter
 	 by default, even without setting the REGS flag in the ftrace_ops.
-	 This allows for use of regs_get_kernel_argument() and
-	 kernel_stack_pointer().
+	 This allows for use of ftrace_regs_get_argument() and
+	 ftrace_regs_get_stack_pointer().
 
-config HAVE_FTRACE_MCOUNT_RECORD
+config HAVE_FTRACE_REGS_HAVING_PT_REGS
 	bool
 	help
-	  See Documentation/trace/ftrace-design.rst
+	 If this is set, ftrace_regs has pt_regs, thus it can convert to
+	 pt_regs without allocating memory.
+
+config HAVE_DYNAMIC_FTRACE_NO_PATCHABLE
+	bool
+	help
+	  If the architecture generates __patchable_function_entries sections
+	  but does not want them included in the ftrace locations.
+
+config HAVE_DYNAMIC_FTRACE_WITH_JMP
+	bool
+	help
+	  If the architecture supports to replace the __fentry__ with a
+	  "jmp" instruction.
 
 config HAVE_SYSCALL_TRACEPOINTS
 	bool
@@ -76,6 +109,13 @@ config HAVE_OBJTOOL_MCOUNT
 	help
 	  Arch supports objtool --mcount
 
+config HAVE_OBJTOOL_NOP_MCOUNT
+	bool
+	help
+	  Arch supports the objtool options --mcount with --mnop.
+	  An architecture can select this if it wants to enable nop'ing
+	  of ftrace locations.
+
 config HAVE_C_RECORDMCOUNT
 	bool
 	help
@@ -96,6 +136,7 @@ config BUILDTIME_MCOUNT_SORT
 
 config TRACER_MAX_TRACE
 	bool
+	select TRACER_SNAPSHOT
 
 config TRACE_CLOCK
 	bool
@@ -144,7 +185,7 @@ config TRACING
 	select BINARY_PRINTF
 	select EVENT_TRACING
 	select TRACE_CLOCK
-	select TASKS_RCU if PREEMPTION
+	select NEED_TASKS_RCU
 
 config GENERIC_TRACER
 	bool
@@ -169,6 +210,19 @@ menuconfig FTRACE
 
 if FTRACE
 
+config TRACEFS_AUTOMOUNT_DEPRECATED
+	bool "Automount tracefs on debugfs [DEPRECATED]"
+	depends on TRACING
+	default y
+	help
+	  The tracing interface was moved from /sys/kernel/debug/tracing
+	  to /sys/kernel/tracing in 2015, but the tracing file system
+	  was still automounted in /sys/kernel/debug for backward
+	  compatibility with tooling.
+
+	  The new interface has been around for more than 10 years and
+	  the old debug mount will soon be removed.
+
 config BOOTTIME_TRACING
 	bool "Boot-time Tracing support"
 	depends on TRACING
@@ -185,7 +239,7 @@ config FUNCTION_TRACER
 	select GENERIC_TRACER
 	select CONTEXT_SWITCH_TRACER
 	select GLOB
-	select TASKS_RCU if PREEMPTION
+	select NEED_TASKS_RCU
 	select TASKS_RUDE_RCU
 	help
 	  Enable the kernel to trace every kernel function. This is done
@@ -194,7 +248,8 @@ config FUNCTION_TRACER
 	  sequence is then dynamically patched into a tracer call when
 	  tracing is enabled by the administrator. If it's runtime disabled
 	  (the bootup default), then the overhead of the instructions is very
-	  small and not measurable even in micro-benchmarks.
+	  small and not measurable even in micro-benchmarks (at least on
+	  x86, but may have impact on other architectures).
 
 config FUNCTION_GRAPH_TRACER
 	bool "Kernel Function Graph Tracer"
@@ -210,8 +265,41 @@ config FUNCTION_GRAPH_TRACER
 	  the return value. This is done by setting the current return
 	  address on the current task structure into a stack of calls.
 
+config FUNCTION_GRAPH_RETVAL
+	bool "Kernel Function Graph Return Value"
+	depends on HAVE_FUNCTION_GRAPH_FREGS
+	depends on FUNCTION_GRAPH_TRACER
+	default n
+	help
+	  Support recording and printing the function return value when
+	  using function graph tracer. It can be helpful to locate functions
+	  that return errors. This feature is off by default, and you can
+	  enable it via the trace option funcgraph-retval.
+	  See Documentation/trace/ftrace.rst
+
+config FUNCTION_GRAPH_RETADDR
+	bool "Kernel Function Graph Return Address"
+	depends on FUNCTION_GRAPH_TRACER
+	default n
+	help
+	  Support recording and printing the function return address when
+	  using function graph tracer. It can be helpful to locate code line that
+	  the function is called. This feature is off by default, and you can
+	  enable it via the trace option funcgraph-retaddr.
+
+config FUNCTION_TRACE_ARGS
+       bool
+	depends on PROBE_EVENTS_BTF_ARGS
+	default y
+	help
+	  If supported with function argument access API and BTF, then
+	  the function tracer and function graph tracer will support printing
+	  of function arguments. This feature is off by default, and can be
+	  enabled via the trace option func-args (for the function tracer) and
+	  funcgraph-args (for the function graph tracer)
+
 config DYNAMIC_FTRACE
-	bool "enable/disable function tracing dynamically"
+	bool
 	depends on FUNCTION_TRACER
 	depends on HAVE_DYNAMIC_FTRACE
 	default y
@@ -225,7 +313,7 @@ config DYNAMIC_FTRACE
 	  enabled, and the functions not enabled will not affect
 	  performance of the system.
 
-	  See the files in /sys/kernel/debug/tracing:
+	  See the files in /sys/kernel/tracing:
 	    available_filter_functions
 	    set_ftrace_filter
 	    set_ftrace_notrace
@@ -240,20 +328,43 @@ config DYNAMIC_FTRACE_WITH_REGS
 
 config DYNAMIC_FTRACE_WITH_DIRECT_CALLS
 	def_bool y
-	depends on DYNAMIC_FTRACE_WITH_REGS
+	depends on DYNAMIC_FTRACE_WITH_REGS || DYNAMIC_FTRACE_WITH_ARGS
 	depends on HAVE_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
+
+config DYNAMIC_FTRACE_WITH_CALL_OPS
+	def_bool y
+	depends on HAVE_DYNAMIC_FTRACE_WITH_CALL_OPS
 
 config DYNAMIC_FTRACE_WITH_ARGS
 	def_bool y
 	depends on DYNAMIC_FTRACE
 	depends on HAVE_DYNAMIC_FTRACE_WITH_ARGS
 
+config DYNAMIC_FTRACE_WITH_JMP
+	def_bool y
+	depends on DYNAMIC_FTRACE
+	depends on DYNAMIC_FTRACE_WITH_DIRECT_CALLS
+	depends on HAVE_DYNAMIC_FTRACE_WITH_JMP
+
+config FUNCTION_SELF_TRACING
+	bool "Function trace tracing code"
+	depends on FUNCTION_TRACER
+	help
+	  Normally all the tracing code is set to notrace, where the function
+	  tracer will ignore all the tracing functions. Sometimes it is useful
+	  for debugging to trace some of the tracing infratructure itself.
+	  Enable this to allow some of the tracing infrastructure to be traced
+	  by the function tracer. Note, this will likely add noise to function
+	  tracing if events and other tracing features are enabled along with
+	  function tracing.
+
+	  If unsure, say N.
+
 config FPROBE
 	bool "Kernel Function Probe (fprobe)"
-	depends on FUNCTION_TRACER
-	depends on DYNAMIC_FTRACE_WITH_REGS
-	depends on HAVE_RETHOOK
-	select RETHOOK
+	depends on HAVE_FUNCTION_GRAPH_FREGS && HAVE_FTRACE_GRAPH_FUNC
+	depends on DYNAMIC_FTRACE_WITH_ARGS
+	select FUNCTION_GRAPH_TRACER
 	default n
 	help
 	  This option enables kernel function probe (fprobe) based on ftrace.
@@ -285,7 +396,7 @@ config STACK_TRACER
 	select KALLSYMS
 	help
 	  This special tracer records the maximum stack footprint of the
-	  kernel and displays it in /sys/kernel/debug/tracing/stack_trace.
+	  kernel and displays it in /sys/kernel/tracing/stack_trace.
 
 	  This tracer works by hooking into every function call that the
 	  kernel executes, and keeping a maximum stack depth value and
@@ -315,7 +426,6 @@ config IRQSOFF_TRACER
 	select GENERIC_TRACER
 	select TRACER_MAX_TRACE
 	select RING_BUFFER_ALLOW_SWAP
-	select TRACER_SNAPSHOT
 	select TRACER_SNAPSHOT_PER_CPU_SWAP
 	help
 	  This option measures the time spent in irqs-off critical
@@ -325,7 +435,7 @@ config IRQSOFF_TRACER
 	  disabled by default and can be runtime (re-)started
 	  via:
 
-	      echo 0 > /sys/kernel/debug/tracing/tracing_max_latency
+	      echo 0 > /sys/kernel/tracing/tracing_max_latency
 
 	  (Note that kernel size and overhead increase with this option
 	  enabled. This option and the preempt-off timing option can be
@@ -338,7 +448,6 @@ config PREEMPT_TRACER
 	select GENERIC_TRACER
 	select TRACER_MAX_TRACE
 	select RING_BUFFER_ALLOW_SWAP
-	select TRACER_SNAPSHOT
 	select TRACER_SNAPSHOT_PER_CPU_SWAP
 	select TRACE_PREEMPT_TOGGLE
 	help
@@ -349,7 +458,7 @@ config PREEMPT_TRACER
 	  disabled by default and can be runtime (re-)started
 	  via:
 
-	      echo 0 > /sys/kernel/debug/tracing/tracing_max_latency
+	      echo 0 > /sys/kernel/tracing/tracing_max_latency
 
 	  (Note that kernel size and overhead increase with this option
 	  enabled. This option and the irqs-off timing option can be
@@ -360,7 +469,6 @@ config SCHED_TRACER
 	select GENERIC_TRACER
 	select CONTEXT_SWITCH_TRACER
 	select TRACER_MAX_TRACE
-	select TRACER_SNAPSHOT
 	help
 	  This tracer tracks the latency of the highest priority task
 	  to be scheduled in, starting from the point it has woken up.
@@ -368,6 +476,7 @@ config SCHED_TRACER
 config HWLAT_TRACER
 	bool "Tracer to detect hardware latencies (like SMIs)"
 	select GENERIC_TRACER
+	select TRACER_MAX_TRACE
 	help
 	 This tracer, when enabled will create one or more kernel threads,
 	 depending on what the cpumask file is set to, which each thread
@@ -403,6 +512,7 @@ config HWLAT_TRACER
 config OSNOISE_TRACER
 	bool "OS Noise tracer"
 	select GENERIC_TRACER
+	select TRACER_MAX_TRACE
 	help
 	  In the context of high-performance computing (HPC), the Operating
 	  System Noise (osnoise) refers to the interference experienced by an
@@ -492,15 +602,31 @@ config FTRACE_SYSCALLS
 	help
 	  Basic tracer to catch the syscall entry and exit events.
 
+config TRACE_SYSCALL_BUF_SIZE_DEFAULT
+	int "System call user read max size"
+	range 0 165
+	default 63
+	depends on FTRACE_SYSCALLS
+	help
+	 Some system call trace events will record the data from a user
+	 space address that one of the parameters point to. The amount of
+	 data per event is limited. That limit is set by this config and
+	 this config also affects how much user space data perf can read.
+
+	 For a tracing instance, this size may be changed by writing into
+	 its syscall_user_buf_size file.
+
 config TRACER_SNAPSHOT
 	bool "Create a snapshot trace buffer"
-	select TRACER_MAX_TRACE
 	help
 	  Allow tracing users to take snapshot of the current buffer using the
 	  ftrace interface, e.g.:
 
-	      echo 1 > /sys/kernel/debug/tracing/snapshot
+	      echo 1 > /sys/kernel/tracing/snapshot
 	      cat snapshot
+
+	  Note, the latency tracers select this option. To disable it,
+	  all the latency tracers need to be disabled.
 
 config TRACER_SNAPSHOT_PER_CPU_SWAP
 	bool "Allow snapshot to swap per CPU"
@@ -511,7 +637,7 @@ config TRACER_SNAPSHOT_PER_CPU_SWAP
 	  full swap (all buffers). If this is set, then the following is
 	  allowed:
 
-	      echo 1 > /sys/kernel/debug/tracing/per_cpu/cpu2/snapshot
+	      echo 1 > /sys/kernel/tracing/per_cpu/cpu2/snapshot
 
 	  After which, only the tracing buffer for CPU 2 was swapped with
 	  the main tracing buffer, and the other CPU buffers remain the same.
@@ -558,7 +684,7 @@ config PROFILE_ANNOTATED_BRANCHES
 	  This tracer profiles all likely and unlikely macros
 	  in the kernel. It will display the results in:
 
-	  /sys/kernel/debug/tracing/trace_stat/branch_annotated
+	  /sys/kernel/tracing/trace_stat/branch_annotated
 
 	  Note: this will add a significant overhead; only turn this
 	  on if you need to profile the system's use of these macros.
@@ -571,7 +697,7 @@ config PROFILE_ALL_BRANCHES
 	  taken in the kernel is recorded whether it hit or miss.
 	  The results will be displayed in:
 
-	  /sys/kernel/debug/tracing/trace_stat/branch_all
+	  /sys/kernel/tracing/trace_stat/branch_all
 
 	  This option also enables the likely/unlikely profiler.
 
@@ -622,10 +748,36 @@ config BLK_DEV_IO_TRACE
 	  Tracing also is possible using the ftrace interface, e.g.:
 
 	    echo 1 > /sys/block/sda/sda1/trace/enable
-	    echo blk > /sys/kernel/debug/tracing/current_tracer
-	    cat /sys/kernel/debug/tracing/trace_pipe
+	    echo blk > /sys/kernel/tracing/current_tracer
+	    cat /sys/kernel/tracing/trace_pipe
 
 	  If unsure, say N.
+
+config FPROBE_EVENTS
+	depends on FPROBE
+	depends on HAVE_REGS_AND_STACK_ACCESS_API
+	bool "Enable fprobe-based dynamic events"
+	select TRACING
+	select PROBE_EVENTS
+	select DYNAMIC_EVENTS
+	default y
+	help
+	  This allows user to add tracing events on the function entry and
+	  exit via ftrace interface. The syntax is same as the kprobe events
+	  and the kprobe events on function entry and exit will be
+	  transparently converted to this fprobe events.
+
+config PROBE_EVENTS_BTF_ARGS
+	depends on HAVE_FUNCTION_ARG_ACCESS_API
+	depends on FPROBE_EVENTS || KPROBE_EVENTS
+	depends on DEBUG_INFO_BTF && BPF_SYSCALL
+	bool "Support BTF function arguments for probe events"
+	default y
+	help
+	  The user can specify the arguments of the probe event using the names
+	  of the arguments of the probed function, when the probe location is a
+	  kernel function entry or a tracepoint.
+	  This is available only if BTF (BPF Type Format) support is enabled.
 
 config KPROBE_EVENTS
 	depends on KPROBES
@@ -684,6 +836,20 @@ config UPROBE_EVENTS
 	  This option is required if you plan to use perf-probe subcommand
 	  of perf tools on user space applications.
 
+config EPROBE_EVENTS
+	bool "Enable event-based dynamic events"
+	depends on TRACING
+	depends on HAVE_REGS_AND_STACK_ACCESS_API
+	select PROBE_EVENTS
+	select DYNAMIC_EVENTS
+	default y
+	help
+	  Eprobes are dynamic events that can be placed on other existing
+	  events. It can be used to limit what fields are recorded in
+	  an event or even dereference a field of an event. It can
+	  convert the type of an event field. For example, turn an
+	  address into a string.
+
 config BPF_EVENTS
 	depends on BPF_SYSCALL
 	depends on (KPROBE_EVENTS || UPROBE_EVENTS) && PERF_EVENTS
@@ -708,27 +874,22 @@ config BPF_KPROBE_OVERRIDE
 	 Allows BPF to override the execution of a probed function and
 	 set a different return value.  This is used for error injection.
 
-config FTRACE_MCOUNT_RECORD
-	def_bool y
-	depends on DYNAMIC_FTRACE
-	depends on HAVE_FTRACE_MCOUNT_RECORD
-
 config FTRACE_MCOUNT_USE_PATCHABLE_FUNCTION_ENTRY
 	bool
-	depends on FTRACE_MCOUNT_RECORD
+	depends on DYNAMIC_FTRACE
 
 config FTRACE_MCOUNT_USE_CC
 	def_bool y
 	depends on $(cc-option,-mrecord-mcount)
 	depends on !FTRACE_MCOUNT_USE_PATCHABLE_FUNCTION_ENTRY
-	depends on FTRACE_MCOUNT_RECORD
+	depends on DYNAMIC_FTRACE
 
 config FTRACE_MCOUNT_USE_OBJTOOL
 	def_bool y
 	depends on HAVE_OBJTOOL_MCOUNT
 	depends on !FTRACE_MCOUNT_USE_PATCHABLE_FUNCTION_ENTRY
 	depends on !FTRACE_MCOUNT_USE_CC
-	depends on FTRACE_MCOUNT_RECORD
+	depends on DYNAMIC_FTRACE
 	select OBJTOOL
 
 config FTRACE_MCOUNT_USE_RECORDMCOUNT
@@ -736,7 +897,7 @@ config FTRACE_MCOUNT_USE_RECORDMCOUNT
 	depends on !FTRACE_MCOUNT_USE_PATCHABLE_FUNCTION_ENTRY
 	depends on !FTRACE_MCOUNT_USE_CC
 	depends on !FTRACE_MCOUNT_USE_OBJTOOL
-	depends on FTRACE_MCOUNT_RECORD
+	depends on DYNAMIC_FTRACE
 
 config TRACING_MAP
 	bool
@@ -769,15 +930,15 @@ config USER_EVENTS
 	bool "User trace events"
 	select TRACING
 	select DYNAMIC_EVENTS
-	depends on BROKEN || COMPILE_TEST # API needs to be straighten out
 	help
 	  User trace events are user-defined trace events that
 	  can be used like an existing kernel trace event.  User trace
 	  events are generated by writing to a tracefs file.  User
 	  processes can determine if their tracing events should be
-	  generated by memory mapping a tracefs file and checking for
-	  an associated byte being non-zero.
+	  generated by registering a value and bit with the kernel
+	  that reflects when it is enabled or not.
 
+	  See Documentation/trace/user_events.rst.
 	  If in doubt, say N.
 
 config HIST_TRIGGERS
@@ -901,7 +1062,7 @@ config FTRACE_RECORD_RECURSION
 
 config FTRACE_RECORD_RECURSION_SIZE
 	int "Max number of recursed functions to record"
-	default	128
+	default 128
 	depends on FTRACE_RECORD_RECURSION
 	help
 	  This defines the limit of number of functions that can be
@@ -910,6 +1071,19 @@ config FTRACE_RECORD_RECURSION_SIZE
 	  This file can be reset, but the limit can not change in
 	  size at runtime.
 
+config FTRACE_VALIDATE_RCU_IS_WATCHING
+	bool "Validate RCU is on during ftrace execution"
+	depends on FUNCTION_TRACER
+	depends on ARCH_WANTS_NO_INSTR
+	help
+	  All callbacks that attach to the function tracing have some sort of
+	  protection against recursion. This option is only to verify that
+	  ftrace (and other users of ftrace_test_recursion_trylock()) are not
+	  called outside of RCU, as if they are, it can cause a race. But it
+	  also has a noticeable overhead when enabled.
+
+	  If unsure, say N
+
 config RING_BUFFER_RECORD_RECURSION
 	bool "Record functions that recurse in the ring buffer"
 	depends on FTRACE_RECORD_RECURSION
@@ -917,8 +1091,8 @@ config RING_BUFFER_RECORD_RECURSION
 	default y
 	help
 	  The ring buffer has its own internal recursion. Although when
-	  recursion happens it wont cause harm because of the protection,
-	  but it does cause an unwanted overhead. Enabling this option will
+	  recursion happens it won't cause harm because of the protection,
+	  but it does cause unwanted overhead. Enabling this option will
 	  place where recursion was detected into the ftrace "recursed_functions"
 	  file.
 
@@ -1001,8 +1175,8 @@ config RING_BUFFER_STARTUP_TEST
 	 The test runs for 10 seconds. This will slow your boot time
 	 by at least 10 more seconds.
 
-	 At the end of the test, statics and more checks are done.
-	 It will output the stats of each per cpu buffer. What
+	 At the end of the test, statistics and more checks are done.
+	 It will output the stats of each per cpu buffer: What
 	 was written, the sizes, what was read, what was lost, and
 	 other similar details.
 
@@ -1059,7 +1233,7 @@ config PREEMPTIRQ_DELAY_TEST
 
 config SYNTH_EVENT_GEN_TEST
 	tristate "Test module for in-kernel synthetic event generation"
-	depends on SYNTH_EVENTS
+	depends on SYNTH_EVENTS && m
 	help
           This option creates a test module to check the base
           functionality of in-kernel synthetic event definition and
@@ -1072,7 +1246,7 @@ config SYNTH_EVENT_GEN_TEST
 
 config KPROBE_EVENT_GEN_TEST
 	tristate "Test module for in-kernel kprobe event generation"
-	depends on KPROBE_EVENTS
+	depends on KPROBE_EVENTS && m
 	help
           This option creates a test module to check the base
           functionality of in-kernel kprobe event definition.
@@ -1104,5 +1278,7 @@ config HIST_TRIGGERS_DEBUG
           running histograms.
 
           If unsure, say N.
+
+source "kernel/trace/rv/Kconfig"
 
 endif # FTRACE

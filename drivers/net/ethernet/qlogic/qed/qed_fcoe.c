@@ -383,7 +383,7 @@ qed_fcoe_allocate_connection(struct qed_hwfn *p_hwfn,
 	}
 	spin_unlock_bh(&p_hwfn->p_fcoe_info->lock);
 
-	p_conn = kzalloc(sizeof(*p_conn), GFP_KERNEL);
+	p_conn = kzalloc_obj(*p_conn);
 	if (!p_conn)
 		return -ENOMEM;
 
@@ -535,7 +535,7 @@ int qed_fcoe_alloc(struct qed_hwfn *p_hwfn)
 	struct qed_fcoe_info *p_fcoe_info;
 
 	/* Allocate LL2's set struct */
-	p_fcoe_info = kzalloc(sizeof(*p_fcoe_info), GFP_KERNEL);
+	p_fcoe_info = kzalloc_obj(*p_fcoe_info);
 	if (!p_fcoe_info) {
 		DP_NOTICE(p_hwfn, "Failed to allocate qed_fcoe_info'\n");
 		return -ENOMEM;
@@ -693,13 +693,14 @@ static void _qed_fcoe_get_pstats(struct qed_hwfn *p_hwfn,
 }
 
 static int qed_fcoe_get_stats(struct qed_hwfn *p_hwfn,
-			      struct qed_fcoe_stats *p_stats)
+			      struct qed_fcoe_stats *p_stats,
+			      bool is_atomic)
 {
 	struct qed_ptt *p_ptt;
 
 	memset(p_stats, 0, sizeof(*p_stats));
 
-	p_ptt = qed_ptt_acquire(p_hwfn);
+	p_ptt = qed_ptt_acquire_context(p_hwfn, is_atomic);
 
 	if (!p_ptt) {
 		DP_ERR(p_hwfn, "Failed to acquire ptt\n");
@@ -816,8 +817,8 @@ static int qed_fcoe_start(struct qed_dev *cdev, struct qed_fcoe_tid *tasks)
 	hash_init(cdev->connections);
 
 	if (tasks) {
-		struct qed_tid_mem *tid_info = kzalloc(sizeof(*tid_info),
-						       GFP_ATOMIC);
+		struct qed_tid_mem *tid_info = kzalloc_obj(*tid_info,
+							   GFP_ATOMIC);
 
 		if (!tid_info) {
 			DP_NOTICE(cdev,
@@ -854,7 +855,7 @@ static int qed_fcoe_acquire_conn(struct qed_dev *cdev,
 	int rc;
 
 	/* Allocate a hashed connection */
-	hash_con = kzalloc(sizeof(*hash_con), GFP_KERNEL);
+	hash_con = kzalloc_obj(*hash_con);
 	if (!hash_con) {
 		DP_NOTICE(cdev, "Failed to allocate hashed connection\n");
 		return -ENOMEM;
@@ -973,19 +974,27 @@ static int qed_fcoe_destroy_conn(struct qed_dev *cdev,
 					QED_SPQ_MODE_EBLOCK, NULL);
 }
 
+static int qed_fcoe_stats_context(struct qed_dev *cdev,
+				  struct qed_fcoe_stats *stats,
+				  bool is_atomic)
+{
+	return qed_fcoe_get_stats(QED_AFFIN_HWFN(cdev), stats, is_atomic);
+}
+
 static int qed_fcoe_stats(struct qed_dev *cdev, struct qed_fcoe_stats *stats)
 {
-	return qed_fcoe_get_stats(QED_AFFIN_HWFN(cdev), stats);
+	return qed_fcoe_stats_context(cdev, stats, false);
 }
 
 void qed_get_protocol_stats_fcoe(struct qed_dev *cdev,
-				 struct qed_mcp_fcoe_stats *stats)
+				 struct qed_mcp_fcoe_stats *stats,
+				 bool is_atomic)
 {
 	struct qed_fcoe_stats proto_stats;
 
 	/* Retrieve FW statistics */
 	memset(&proto_stats, 0, sizeof(proto_stats));
-	if (qed_fcoe_stats(cdev, &proto_stats)) {
+	if (qed_fcoe_stats_context(cdev, &proto_stats, is_atomic)) {
 		DP_VERBOSE(cdev, QED_MSG_STORAGE,
 			   "Failed to collect FCoE statistics\n");
 		return;

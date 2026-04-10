@@ -2,7 +2,6 @@
 #ifndef __Q6_ASM_H__
 #define __Q6_ASM_H__
 #include "q6dsp-common.h"
-#include <dt-bindings/sound/qcom,q6asm.h>
 
 /* ASM client callback events */
 #define CMD_PAUSE			0x0001
@@ -36,16 +35,16 @@ enum {
 #define ASM_LAST_BUFFER_FLAG           BIT(30)
 
 struct q6asm_flac_cfg {
-        u32 sample_rate;
-        u32 ext_sample_rate;
-        u32 min_frame_size;
-        u32 max_frame_size;
-        u16 stream_info_present;
-        u16 min_blk_size;
-        u16 max_blk_size;
-        u16 ch_cfg;
-        u16 sample_size;
-        u16 md5_sum;
+	u32 sample_rate;
+	u32 ext_sample_rate;
+	u32 min_frame_size;
+	u32 max_frame_size;
+	u16 stream_info_present;
+	u16 min_blk_size;
+	u16 max_blk_size;
+	u16 ch_cfg;
+	u16 sample_size;
+	u16 md5_sum;
 };
 
 struct q6asm_wma_cfg {
@@ -149,4 +148,5 @@ int q6asm_map_memory_regions(unsigned int dir,
 			     phys_addr_t phys,
 			     size_t period_sz, unsigned int periods);
 int q6asm_unmap_memory_regions(unsigned int dir, struct audio_client *ac);
+int q6asm_get_hw_pointer(struct audio_client *ac, unsigned int dir);
 #endif /* __Q6_ASM_H__ */

@@ -92,7 +92,7 @@ static ssize_t temp_show(struct device *dev, struct device_attribute *da,
 	/* use integer division instead of equivalent right shift to
 	   guarantee arithmetic shift and preserve the sign */
 	temp = (((s16) err) * 250) / 32;
-	return scnprintf(buf, PAGE_SIZE, "%d\n", temp);
+	return sysfs_emit(buf, "%d\n", temp);
 }
 
 static ssize_t convrate_store(struct device *dev, struct device_attribute *da,
@@ -137,7 +137,7 @@ static ssize_t convrate_show(struct device *dev, struct device_attribute *da,
 	int res;
 
 	res = (data->ctrl & LM73_CTRL_RES_MASK) >> LM73_CTRL_RES_SHIFT;
-	return scnprintf(buf, PAGE_SIZE, "%hu\n", lm73_convrates[res]);
+	return sysfs_emit(buf, "%hu\n", lm73_convrates[res]);
 }
 
 static ssize_t maxmin_alarm_show(struct device *dev,
@@ -154,7 +154,7 @@ static ssize_t maxmin_alarm_show(struct device *dev,
 	data->ctrl = ctrl;
 	mutex_unlock(&data->lock);
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", (ctrl >> attr->index) & 1);
+	return sysfs_emit(buf, "%d\n", (ctrl >> attr->index) & 1);
 
 abort:
 	mutex_unlock(&data->lock);
@@ -220,7 +220,7 @@ lm73_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id lm73_ids[] = {
-	{ "lm73", 0 },
+	{ "lm73" },
 	{ /* LIST END */ }
 };
 MODULE_DEVICE_TABLE(i2c, lm73_ids);
@@ -257,7 +257,7 @@ static int lm73_detect(struct i2c_client *new_client,
 	if (id < 0 || id != LM73_ID)
 		return -ENODEV;
 
-	strlcpy(info->type, "lm73", I2C_NAME_SIZE);
+	strscpy(info->type, "lm73", I2C_NAME_SIZE);
 
 	return 0;
 }
@@ -277,7 +277,7 @@ static struct i2c_driver lm73_driver = {
 		.name	= "lm73",
 		.of_match_table = lm73_of_match,
 	},
-	.probe_new	= lm73_probe,
+	.probe		= lm73_probe,
 	.id_table	= lm73_ids,
 	.detect		= lm73_detect,
 	.address_list	= normal_i2c,

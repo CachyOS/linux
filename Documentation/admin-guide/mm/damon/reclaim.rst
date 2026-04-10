@@ -46,13 +46,7 @@ that is built with ``CONFIG_DAMON_RECLAIM=y``.
 To let sysadmins enable or disable it and tune for the given system,
 DAMON_RECLAIM utilizes module parameters.  That is, you can put
 ``damon_reclaim.<parameter>=<value>`` on the kernel boot command line or write
-proper values to ``/sys/modules/damon_reclaim/parameters/<parameter>`` files.
-
-Note that the parameter values except ``enabled`` are applied only when
-DAMON_RECLAIM starts.  Therefore, if you want to apply new parameter values in
-runtime and DAMON_RECLAIM is already enabled, you should disable and re-enable
-it via ``enabled`` parameter file.  Writing of the new values to proper
-parameter values should be done before the re-enablement.
+proper values to ``/sys/module/damon_reclaim/parameters/<parameter>`` files.
 
 Below are the description of each parameter.
 
@@ -122,6 +116,33 @@ quota_ms milliseconds or quota_sz bytes within quota_reset_interval_ms
 milliseconds.
 
 1 second by default.
+
+quota_mem_pressure_us
+---------------------
+
+Desired level of memory pressure-stall time in microseconds.
+
+While keeping the caps that set by other quotas, DAMON_RECLAIM automatically
+increases and decreases the effective level of the quota aiming this level of
+memory pressure is incurred.  System-wide ``some`` memory PSI in microseconds
+per quota reset interval (``quota_reset_interval_ms``) is collected and
+compared to this value to see if the aim is satisfied.  Value zero means
+disabling this auto-tuning feature.
+
+Disabled by default.
+
+quota_autotune_feedback
+-----------------------
+
+User-specifiable feedback for auto-tuning of the effective quota.
+
+While keeping the caps that set by other quotas, DAMON_RECLAIM automatically
+increases and decreases the effective level of the quota aiming receiving this
+feedback of value ``10,000`` from the user.  DAMON_RECLAIM assumes the feedback
+value and the quota are positively proportional.  Value zero means disabling
+this auto-tuning feature.
+
+Disabled by default.
 
 wmarks_interval
 ---------------
@@ -211,6 +232,37 @@ The end physical address of memory region that DAMON_RECLAIM will do work
 against.  That is, DAMON_RECLAIM will find cold memory regions in this region
 and reclaims.  By default, biggest System RAM is used as the region.
 
+addr_unit
+---------
+
+A scale factor for memory addresses and bytes.
+
+This parameter is for setting and getting the :ref:`address unit
+<damon_design_addr_unit>` parameter of the DAMON instance for DAMON_RECLAIM.
+
+``monitor_region_start`` and ``monitor_region_end`` should be provided in this
+unit.  For example, let's suppose ``addr_unit``, ``monitor_region_start`` and
+``monitor_region_end`` are set as ``1024``, ``0`` and ``10``, respectively.
+Then DAMON_RECLAIM will work for 10 KiB length of physical address range that
+starts from address zero (``[0 * 1024, 10 * 1024)`` in bytes).
+
+``bytes_reclaim_tried_regions`` and ``bytes_reclaimed_regions`` are also in
+this unit.  For example, let's suppose values of ``addr_unit``,
+``bytes_reclaim_tried_regions`` and ``bytes_reclaimed_regions`` are ``1024``,
+``42``, and ``32``, respectively.  Then it means DAMON_RECLAIM tried to reclaim
+42 KiB memory and successfully reclaimed 32 KiB memory in total.
+
+If unsure, use only the default value (``1``) and forget about this.
+
+skip_anon
+---------
+
+Skip anonymous pages reclamation.
+
+If this parameter is set as ``Y``, DAMON_RECLAIM does not reclaim anonymous
+pages.  By default, ``N``.
+
+
 kdamond_pid
 -----------
 
@@ -257,7 +309,7 @@ therefore the free memory rate becomes lower than 20%, it asks DAMON_RECLAIM to
 do nothing again, so that we can fall back to the LRU-list based page
 granularity reclamation. ::
 
-    # cd /sys/modules/damon_reclaim/parameters
+    # cd /sys/module/damon_reclaim/parameters
     # echo 30000000 > min_age
     # echo $((1 * 1024 * 1024 * 1024)) > quota_sz
     # echo 1000 > quota_reset_interval_ms
@@ -268,4 +320,4 @@ granularity reclamation. ::
 
 .. [1] https://research.google/pubs/pub48551/
 .. [2] https://lwn.net/Articles/787611/
-.. [3] https://www.kernel.org/doc/html/latest/vm/free_page_reporting.html
+.. [3] https://www.kernel.org/doc/html/latest/mm/free_page_reporting.html

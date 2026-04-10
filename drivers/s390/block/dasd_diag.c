@@ -8,8 +8,6 @@
  *
  */
 
-#define KMSG_COMPONENT "dasd"
-
 #include <linux/kernel_stat.h>
 #include <linux/stddef.h>
 #include <linux/kernel.h>
@@ -20,19 +18,20 @@
 #include <linux/init.h>
 #include <linux/jiffies.h>
 #include <asm/asm-extable.h>
+#include <asm/machine.h>
 #include <asm/dasd.h>
 #include <asm/debug.h>
 #include <asm/diag.h>
 #include <asm/ebcdic.h>
-#include <asm/io.h>
+#include <linux/io.h>
 #include <asm/irq.h>
 #include <asm/vtoc.h>
+#include <asm/asm.h>
 
 #include "dasd_int.h"
 #include "dasd_diag.h"
 
-#define PRINTK_HEADER "dasd(diag):"
-
+MODULE_DESCRIPTION("S/390 Support for DIAG access to DASD Disks");
 MODULE_LICENSE("GPL");
 
 /* The maximum number of blocks per request (max_blocks) is dependent on the
@@ -70,22 +69,24 @@ static const u8 DASD_DIAG_CMS1[] = { 0xc3, 0xd4, 0xe2, 0xf1 };/* EBCDIC CMS1 */
 static inline int __dia250(void *iob, int cmd)
 {
 	union register_pair rx = { .even = (unsigned long)iob, };
+	int cc, exception;
 	typedef union {
 		struct dasd_diag_init_io init_io;
 		struct dasd_diag_rw_io rw_io;
 	} addr_type;
-	int cc;
 
-	cc = 3;
-	asm volatile(
+	exception = 1;
+	asm_inline volatile(
 		"	diag	%[rx],%[cmd],0x250\n"
-		"0:	ipm	%[cc]\n"
-		"	srl	%[cc],28\n"
+		"0:	lhi	%[exc],0\n"
 		"1:\n"
+		CC_IPM(cc)
 		EX_TABLE(0b,1b)
-		: [cc] "+&d" (cc), [rx] "+&d" (rx.pair), "+m" (*(addr_type *)iob)
+		: CC_OUT(cc, cc), [rx] "+d" (rx.pair),
+		  "+m" (*(addr_type *)iob), [exc] "+d" (exception)
 		: [cmd] "d" (cmd)
-		: "cc");
+		: CC_CLOBBER);
+	cc = exception ? 3 : CC_TRANSFORM(cc);
 	return cc | rx.odd;
 }
 
@@ -324,7 +325,7 @@ dasd_diag_check_device(struct dasd_device *device)
 	int rc;
 
 	if (private == NULL) {
-		private = kzalloc(sizeof(*private), GFP_KERNEL);
+		private = kzalloc_obj(*private);
 		if (private == NULL) {
 			DBF_DEV_EVENT(DBF_WARNING, device, "%s",
 				"Allocating memory for private DASD data "
@@ -394,7 +395,7 @@ dasd_diag_check_device(struct dasd_device *device)
 		rc = -ENOMEM;
 		goto out;
 	}
-	bio = kzalloc(sizeof(*bio), GFP_KERNEL);
+	bio = kzalloc_obj(*bio);
 	if (bio == NULL)  {
 		DBF_DEV_EVENT(DBF_WARNING, device, "%s",
 			      "No memory to allocate initialization bio");
@@ -621,24 +622,9 @@ dasd_diag_dump_sense(struct dasd_device *device, struct dasd_ccw_req * req,
 		    "dump sense not available for DIAG data");
 }
 
-/*
- * Initialize block layer request queue.
- */
-static void dasd_diag_setup_blk_queue(struct dasd_block *block)
+static unsigned int dasd_diag_max_sectors(struct dasd_block *block)
 {
-	unsigned int logical_block_size = block->bp_block;
-	struct request_queue *q = block->request_queue;
-	int max;
-
-	max = DIAG_MAX_BLOCKS << block->s2b_shift;
-	blk_queue_flag_set(QUEUE_FLAG_NONROT, q);
-	q->limits.max_dev_sectors = max;
-	blk_queue_logical_block_size(q, logical_block_size);
-	blk_queue_max_hw_sectors(q, max);
-	blk_queue_max_segments(q, USHRT_MAX);
-	/* With page sized segments each segment can be translated into one idaw/tidaw */
-	blk_queue_max_segment_size(q, PAGE_SIZE);
-	blk_queue_segment_boundary(q, PAGE_SIZE - 1);
+	return DIAG_MAX_BLOCKS << block->s2b_shift;
 }
 
 static int dasd_diag_pe_handler(struct dasd_device *device,
@@ -651,10 +637,10 @@ static struct dasd_discipline dasd_diag_discipline = {
 	.owner = THIS_MODULE,
 	.name = "DIAG",
 	.ebcname = "DIAG",
+	.max_sectors = dasd_diag_max_sectors,
 	.check_device = dasd_diag_check_device,
 	.pe_handler = dasd_diag_pe_handler,
 	.fill_geometry = dasd_diag_fill_geometry,
-	.setup_blk_queue = dasd_diag_setup_blk_queue,
 	.start_IO = dasd_start_diag,
 	.term_IO = dasd_diag_term_IO,
 	.handle_terminated_request = dasd_diag_handle_terminated_request,
@@ -669,7 +655,7 @@ static struct dasd_discipline dasd_diag_discipline = {
 static int __init
 dasd_diag_init(void)
 {
-	if (!MACHINE_IS_VM) {
+	if (!machine_is_vm()) {
 		pr_info("Discipline %s cannot be used without z/VM\n",
 			dasd_diag_discipline.name);
 		return -ENODEV;

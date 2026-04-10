@@ -11,6 +11,7 @@
 #include <linux/sysfs.h>
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
+#include <linux/termios_internal.h>
 #include <asm/vio.h>
 #include <asm/ldc.h>
 
@@ -35,7 +36,7 @@ struct vcc_port {
 	 * and guarantee that any characters that the driver accepts will
 	 * be eventually sent, either immediately or later.
 	 */
-	int chars_in_buffer;
+	size_t chars_in_buffer;
 	struct vio_vcc buffer;
 
 	struct timer_list rx_timer;
@@ -355,7 +356,7 @@ done:
 
 static void vcc_rx_timer(struct timer_list *t)
 {
-	struct vcc_port *port = from_timer(port, t, rx_timer);
+	struct vcc_port *port = timer_container_of(port, t, rx_timer);
 	struct vio_driver_state *vio;
 	unsigned long flags;
 	int rv;
@@ -381,10 +382,10 @@ done:
 
 static void vcc_tx_timer(struct timer_list *t)
 {
-	struct vcc_port *port = from_timer(port, t, tx_timer);
+	struct vcc_port *port = timer_container_of(port, t, tx_timer);
 	struct vio_vcc *pkt;
 	unsigned long flags;
-	int tosend = 0;
+	size_t tosend = 0;
 	int rv;
 
 	spin_lock_irqsave(&port->lock, flags);
@@ -573,23 +574,27 @@ static int vcc_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 		return -ENODEV;
 	}
 
-	port = kzalloc(sizeof(struct vcc_port), GFP_KERNEL);
+	port = kzalloc_obj(struct vcc_port);
 	if (!port)
 		return -ENOMEM;
 
 	name = kstrdup(dev_name(&vdev->dev), GFP_KERNEL);
+	if (!name) {
+		rv = -ENOMEM;
+		goto free_port;
+	}
 
 	rv = vio_driver_init(&port->vio, vdev, VDEV_CONSOLE_CON, vcc_versions,
 			     ARRAY_SIZE(vcc_versions), NULL, name);
 	if (rv)
-		goto free_port;
+		goto free_name;
 
 	port->vio.debug = vcc_dbg_vio;
 	vcc_ldc_cfg.debug = vcc_dbg_ldc;
 
 	rv = vio_ldc_alloc(&port->vio, &vcc_ldc_cfg, port);
 	if (rv)
-		goto free_port;
+		goto free_name;
 
 	spin_lock_init(&port->lock);
 
@@ -623,6 +628,11 @@ static int vcc_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 		goto unreg_tty;
 	}
 	port->domain = kstrdup(domain, GFP_KERNEL);
+	if (!port->domain) {
+		rv = -ENOMEM;
+		goto unreg_tty;
+	}
+
 
 	mdesc_release(hp);
 
@@ -652,8 +662,9 @@ free_table:
 	vcc_table_remove(port->index);
 free_ldc:
 	vio_ldc_free(&port->vio);
-free_port:
+free_name:
 	kfree(name);
+free_port:
 	kfree(port);
 
 	return rv;
@@ -672,8 +683,8 @@ static void vcc_remove(struct vio_dev *vdev)
 {
 	struct vcc_port *port = dev_get_drvdata(&vdev->dev);
 
-	del_timer_sync(&port->rx_timer);
-	del_timer_sync(&port->tx_timer);
+	timer_delete_sync(&port->rx_timer);
+	timer_delete_sync(&port->tx_timer);
 
 	/* If there's a process with the device open, do a synchronous
 	 * hangup of the TTY. This *may* cause the process to call close
@@ -689,7 +700,7 @@ static void vcc_remove(struct vio_dev *vdev)
 
 	tty_unregister_device(vcc_tty_driver, port->index);
 
-	del_timer_sync(&port->vio.timer);
+	timer_delete_sync(&port->vio.timer);
 	vio_ldc_free(&port->vio);
 	sysfs_remove_group(&vdev->dev.kobj, &vcc_attribute_group);
 	dev_set_drvdata(&vdev->dev, NULL);
@@ -803,14 +814,13 @@ static void vcc_hangup(struct tty_struct *tty)
 	tty_port_hangup(tty->port);
 }
 
-static int vcc_write(struct tty_struct *tty, const unsigned char *buf,
-		     int count)
+static ssize_t vcc_write(struct tty_struct *tty, const u8 *buf, size_t count)
 {
 	struct vcc_port *port;
 	struct vio_vcc *pkt;
 	unsigned long flags;
-	int total_sent = 0;
-	int tosend = 0;
+	size_t total_sent = 0;
+	size_t tosend = 0;
 	int rv = -EINVAL;
 
 	port = vcc_get_ne(tty->index);
@@ -826,7 +836,8 @@ static int vcc_write(struct tty_struct *tty, const unsigned char *buf,
 
 	while (count > 0) {
 		/* Minimum of data to write and space available */
-		tosend = min(count, (VCC_BUFF_LEN - port->chars_in_buffer));
+		tosend = min_t(size_t, count,
+			       (VCC_BUFF_LEN - port->chars_in_buffer));
 
 		if (!tosend)
 			break;
@@ -846,7 +857,7 @@ static int vcc_write(struct tty_struct *tty, const unsigned char *buf,
 		 * hypervisor actually took it because we have it buffered.
 		 */
 		rv = ldc_write(port->vio.lp, pkt, (VIO_TAG_SIZE + tosend));
-		vccdbg("VCC: write: ldc_write(%d)=%d\n",
+		vccdbg("VCC: write: ldc_write(%zu)=%d\n",
 		       (VIO_TAG_SIZE + tosend), rv);
 
 		total_sent += tosend;
@@ -863,7 +874,7 @@ static int vcc_write(struct tty_struct *tty, const unsigned char *buf,
 
 	vcc_put(port, false);
 
-	vccdbg("VCC: write: total=%d rv=%d", total_sent, rv);
+	vccdbg("VCC: write: total=%zu rv=%d", total_sent, rv);
 
 	return total_sent ? total_sent : rv;
 }
@@ -946,7 +957,7 @@ static int vcc_install(struct tty_driver *driver, struct tty_struct *tty)
 	if (ret)
 		return ret;
 
-	port_tty = kzalloc(sizeof(struct tty_port), GFP_KERNEL);
+	port_tty = kzalloc_obj(struct tty_port);
 	if (!port_tty)
 		return -ENOMEM;
 

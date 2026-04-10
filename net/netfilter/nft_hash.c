@@ -51,7 +51,8 @@ static void nft_symhash_eval(const struct nft_expr *expr,
 	struct sk_buff *skb = pkt->skb;
 	u32 h;
 
-	h = reciprocal_scale(__skb_get_hash_symmetric(skb), priv->modulus);
+	h = reciprocal_scale(__skb_get_hash_symmetric_net(nft_net(pkt), skb),
+			     priv->modulus);
 
 	regs->data[priv->dreg] = h + priv->offset;
 }
@@ -59,7 +60,7 @@ static void nft_symhash_eval(const struct nft_expr *expr,
 static const struct nla_policy nft_hash_policy[NFTA_HASH_MAX + 1] = {
 	[NFTA_HASH_SREG]	= { .type = NLA_U32 },
 	[NFTA_HASH_DREG]	= { .type = NLA_U32 },
-	[NFTA_HASH_LEN]		= { .type = NLA_U32 },
+	[NFTA_HASH_LEN]		= NLA_POLICY_MAX(NLA_BE32, 255),
 	[NFTA_HASH_MODULUS]	= { .type = NLA_U32 },
 	[NFTA_HASH_SEED]	= { .type = NLA_U32 },
 	[NFTA_HASH_OFFSET]	= { .type = NLA_U32 },
@@ -91,7 +92,7 @@ static int nft_jhash_init(const struct nft_ctx *ctx,
 
 	priv->len = len;
 
-	err = nft_parse_register_load(tb[NFTA_HASH_SREG], &priv->sreg, len);
+	err = nft_parse_register_load(ctx, tb[NFTA_HASH_SREG], &priv->sreg, len);
 	if (err < 0)
 		return err;
 
@@ -139,7 +140,7 @@ static int nft_symhash_init(const struct nft_ctx *ctx,
 }
 
 static int nft_jhash_dump(struct sk_buff *skb,
-			  const struct nft_expr *expr)
+			  const struct nft_expr *expr, bool reset)
 {
 	const struct nft_jhash *priv = nft_expr_priv(expr);
 
@@ -176,7 +177,7 @@ static bool nft_jhash_reduce(struct nft_regs_track *track,
 }
 
 static int nft_symhash_dump(struct sk_buff *skb,
-			    const struct nft_expr *expr)
+			    const struct nft_expr *expr, bool reset)
 {
 	const struct nft_symhash *priv = nft_expr_priv(expr);
 

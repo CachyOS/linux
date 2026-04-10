@@ -3,7 +3,7 @@
 #include <linux/buffer_head.h>
 #include <linux/exportfs.h>
 #include <linux/iso_fs.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 enum isofs_file_format {
 	isofs_file_normal = 0,
@@ -106,7 +106,9 @@ static inline unsigned int isonum_733(u8 *p)
 	/* Ignore bigendian datum due to broken mastering programs */
 	return get_unaligned_le32(p);
 }
-extern int iso_date(u8 *, int);
+#define ISO_DATE_HIGH_SIERRA (1 << 0)
+#define ISO_DATE_LONG_FORM (1 << 1)
+struct timespec64 iso_date(u8 *p, int flags);
 
 struct inode;		/* To make gcc happy */
 

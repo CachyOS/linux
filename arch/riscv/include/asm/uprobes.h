@@ -4,7 +4,7 @@
 #define _ASM_RISCV_UPROBES_H
 
 #include <asm/probes.h>
-#include <asm/patch.h>
+#include <asm/text-patching.h>
 #include <asm/bug.h>
 
 #define MAX_UINSN_BYTES		8
@@ -34,7 +34,18 @@ struct arch_uprobe {
 	bool simulate;
 };
 
+#ifdef CONFIG_UPROBES
 bool uprobe_breakpoint_handler(struct pt_regs *regs);
 bool uprobe_single_step_handler(struct pt_regs *regs);
+#else
+static inline bool uprobe_breakpoint_handler(struct pt_regs *regs)
+{
+	return false;
+}
 
+static inline bool uprobe_single_step_handler(struct pt_regs *regs)
+{
+	return false;
+}
+#endif /* CONFIG_UPROBES */
 #endif /* _ASM_RISCV_UPROBES_H */

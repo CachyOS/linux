@@ -133,8 +133,7 @@ struct radeon_bo_list *radeon_vm_get_bos(struct radeon_device *rdev,
 	struct radeon_bo_list *list;
 	unsigned i, idx;
 
-	list = kvmalloc_array(vm->max_pde_used + 2,
-			     sizeof(struct radeon_bo_list), GFP_KERNEL);
+	list = kvmalloc_objs(struct radeon_bo_list, vm->max_pde_used + 2);
 	if (!list)
 		return NULL;
 
@@ -142,10 +141,9 @@ struct radeon_bo_list *radeon_vm_get_bos(struct radeon_device *rdev,
 	list[0].robj = vm->page_directory;
 	list[0].preferred_domains = RADEON_GEM_DOMAIN_VRAM;
 	list[0].allowed_domains = RADEON_GEM_DOMAIN_VRAM;
-	list[0].tv.bo = &vm->page_directory->tbo;
-	list[0].tv.num_shared = 1;
+	list[0].shared = true;
 	list[0].tiling_flags = 0;
-	list_add(&list[0].tv.head, head);
+	list_add(&list[0].list, head);
 
 	for (i = 0, idx = 1; i <= vm->max_pde_used; i++) {
 		if (!vm->page_tables[i].bo)
@@ -154,10 +152,9 @@ struct radeon_bo_list *radeon_vm_get_bos(struct radeon_device *rdev,
 		list[idx].robj = vm->page_tables[i].bo;
 		list[idx].preferred_domains = RADEON_GEM_DOMAIN_VRAM;
 		list[idx].allowed_domains = RADEON_GEM_DOMAIN_VRAM;
-		list[idx].tv.bo = &list[idx].robj->tbo;
-		list[idx].tv.num_shared = 1;
+		list[idx].shared = true;
 		list[idx].tiling_flags = 0;
-		list_add(&list[idx++].tv.head, head);
+		list_add(&list[idx++].list, head);
 	}
 
 	return list;
@@ -323,7 +320,7 @@ struct radeon_bo_va *radeon_vm_bo_add(struct radeon_device *rdev,
 {
 	struct radeon_bo_va *bo_va;
 
-	bo_va = kzalloc(sizeof(struct radeon_bo_va), GFP_KERNEL);
+	bo_va = kzalloc_obj(struct radeon_bo_va);
 	if (bo_va == NULL)
 		return NULL;
 
@@ -497,7 +494,7 @@ int radeon_vm_bo_set_addr(struct radeon_device *rdev,
 	if (bo_va->it.start || bo_va->it.last) {
 		/* add a clone of the bo_va to clear the old address */
 		struct radeon_bo_va *tmp;
-		tmp = kzalloc(sizeof(struct radeon_bo_va), GFP_KERNEL);
+		tmp = kzalloc_obj(struct radeon_bo_va);
 		if (!tmp) {
 			mutex_unlock(&vm->mutex);
 			r = -ENOMEM;
@@ -1204,13 +1201,17 @@ int radeon_vm_init(struct radeon_device *rdev, struct radeon_vm *vm)
 	r = radeon_bo_create(rdev, pd_size, align, true,
 			     RADEON_GEM_DOMAIN_VRAM, 0, NULL,
 			     NULL, &vm->page_directory);
-	if (r)
+	if (r) {
+		kfree(vm->page_tables);
+		vm->page_tables = NULL;
 		return r;
-
+	}
 	r = radeon_vm_clear_bo(rdev, vm->page_directory);
 	if (r) {
 		radeon_bo_unref(&vm->page_directory);
 		vm->page_directory = NULL;
+		kfree(vm->page_tables);
+		vm->page_tables = NULL;
 		return r;
 	}
 

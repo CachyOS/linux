@@ -12,26 +12,11 @@
 #include <net/bpf_sk_storage.h>
 
 /* "extern" is to avoid sparse warning.  It is only used in bpf_struct_ops.c. */
-extern struct bpf_struct_ops bpf_tcp_congestion_ops;
-
-static u32 optional_ops[] = {
-	offsetof(struct tcp_congestion_ops, init),
-	offsetof(struct tcp_congestion_ops, release),
-	offsetof(struct tcp_congestion_ops, set_state),
-	offsetof(struct tcp_congestion_ops, cwnd_event),
-	offsetof(struct tcp_congestion_ops, in_ack_event),
-	offsetof(struct tcp_congestion_ops, pkts_acked),
-	offsetof(struct tcp_congestion_ops, min_tso_segs),
-	offsetof(struct tcp_congestion_ops, sndbuf_expand),
-	offsetof(struct tcp_congestion_ops, cong_control),
-};
-
-static u32 unsupported_ops[] = {
-	offsetof(struct tcp_congestion_ops, get_info),
-};
+static struct bpf_struct_ops bpf_tcp_congestion_ops;
 
 static const struct btf_type *tcp_sock_type;
 static u32 tcp_sock_id, sock_id;
+static const struct btf_type *tcp_congestion_ops_type;
 
 static int bpf_tcp_ca_init(struct btf *btf)
 {
@@ -48,34 +33,13 @@ static int bpf_tcp_ca_init(struct btf *btf)
 	tcp_sock_id = type_id;
 	tcp_sock_type = btf_type_by_id(btf, tcp_sock_id);
 
+	type_id = btf_find_by_name_kind(btf, "tcp_congestion_ops", BTF_KIND_STRUCT);
+	if (type_id < 0)
+		return -EINVAL;
+	tcp_congestion_ops_type = btf_type_by_id(btf, type_id);
+
 	return 0;
 }
-
-static bool is_optional(u32 member_offset)
-{
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_SIZE(optional_ops); i++) {
-		if (member_offset == optional_ops[i])
-			return true;
-	}
-
-	return false;
-}
-
-static bool is_unsupported(u32 member_offset)
-{
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_SIZE(unsupported_ops); i++) {
-		if (member_offset == unsupported_ops[i])
-			return true;
-	}
-
-	return false;
-}
-
-extern struct btf *btf_vmlinux;
 
 static bool bpf_tcp_ca_is_valid_access(int off, int size,
 				       enum bpf_access_type type,
@@ -85,7 +49,9 @@ static bool bpf_tcp_ca_is_valid_access(int off, int size,
 	if (!bpf_tracing_btf_ctx_access(off, size, type, prog, info))
 		return false;
 
-	if (info->reg_type == PTR_TO_BTF_ID && info->btf_id == sock_id)
+	if (base_type(info->reg_type) == PTR_TO_BTF_ID &&
+	    !bpf_type_has_unsafe_modifiers(info->reg_type) &&
+	    info->btf_id == sock_id)
 		/* promote it to tcp_sock */
 		info->btf_id = tcp_sock_id;
 
@@ -93,24 +59,25 @@ static bool bpf_tcp_ca_is_valid_access(int off, int size,
 }
 
 static int bpf_tcp_ca_btf_struct_access(struct bpf_verifier_log *log,
-					const struct btf *btf,
-					const struct btf_type *t, int off,
-					int size, enum bpf_access_type atype,
-					u32 *next_btf_id,
-					enum bpf_type_flag *flag)
+					const struct bpf_reg_state *reg,
+					int off, int size)
 {
+	const struct btf_type *t;
 	size_t end;
 
-	if (atype == BPF_READ)
-		return btf_struct_access(log, btf, t, off, size, atype, next_btf_id,
-					 flag);
-
+	t = btf_type_by_id(reg->btf, reg->btf_id);
 	if (t != tcp_sock_type) {
 		bpf_log(log, "only read is supported\n");
 		return -EACCES;
 	}
 
 	switch (off) {
+	case offsetof(struct sock, sk_pacing_rate):
+		end = offsetofend(struct sock, sk_pacing_rate);
+		break;
+	case offsetof(struct sock, sk_pacing_status):
+		end = offsetofend(struct sock, sk_pacing_status);
+		break;
 	case bpf_ctx_range(struct inet_connection_sock, icsk_ca_priv):
 		end = offsetofend(struct inet_connection_sock, icsk_ca_priv);
 		break;
@@ -124,11 +91,17 @@ static int bpf_tcp_ca_btf_struct_access(struct bpf_verifier_log *log,
 	case offsetof(struct tcp_sock, snd_cwnd_cnt):
 		end = offsetofend(struct tcp_sock, snd_cwnd_cnt);
 		break;
+	case offsetof(struct tcp_sock, snd_cwnd_stamp):
+		end = offsetofend(struct tcp_sock, snd_cwnd_stamp);
+		break;
 	case offsetof(struct tcp_sock, snd_ssthresh):
 		end = offsetofend(struct tcp_sock, snd_ssthresh);
 		break;
 	case offsetof(struct tcp_sock, ecn_flags):
 		end = offsetofend(struct tcp_sock, ecn_flags);
+		break;
+	case offsetof(struct tcp_sock, app_limited):
+		end = offsetofend(struct tcp_sock, app_limited);
 		break;
 	default:
 		bpf_log(log, "no write support to tcp_sock at off %d\n", off);
@@ -142,13 +115,13 @@ static int bpf_tcp_ca_btf_struct_access(struct bpf_verifier_log *log,
 		return -EACCES;
 	}
 
-	return NOT_INIT;
+	return 0;
 }
 
 BPF_CALL_2(bpf_tcp_send_ack, struct tcp_sock *, tp, u32, rcv_nxt)
 {
 	/* bpf_tcp_ca prog cannot have NULL tp */
-	__tcp_send_ack((struct sock *)tp, rcv_nxt);
+	__tcp_send_ack((struct sock *)tp, rcv_nxt, 0);
 	return 0;
 }
 
@@ -169,7 +142,7 @@ static u32 prog_ops_moff(const struct bpf_prog *prog)
 	u32 midx;
 
 	midx = prog->expected_attach_type;
-	t = bpf_tcp_congestion_ops.type;
+	t = tcp_congestion_ops_type;
 	m = &btf_type_member(t)[midx];
 
 	return __btf_member_bit_offset(t, m) / 8;
@@ -211,21 +184,21 @@ bpf_tcp_ca_get_func_proto(enum bpf_func_id func_id,
 	case BPF_FUNC_ktime_get_coarse_ns:
 		return &bpf_ktime_get_coarse_ns_proto;
 	default:
-		return bpf_base_func_proto(func_id);
+		return bpf_base_func_proto(func_id, prog);
 	}
 }
 
-BTF_SET_START(bpf_tcp_ca_check_kfunc_ids)
-BTF_ID(func, tcp_reno_ssthresh)
-BTF_ID(func, tcp_reno_cong_avoid)
-BTF_ID(func, tcp_reno_undo_cwnd)
-BTF_ID(func, tcp_slow_start)
-BTF_ID(func, tcp_cong_avoid_ai)
-BTF_SET_END(bpf_tcp_ca_check_kfunc_ids)
+BTF_KFUNCS_START(bpf_tcp_ca_check_kfunc_ids)
+BTF_ID_FLAGS(func, tcp_reno_ssthresh)
+BTF_ID_FLAGS(func, tcp_reno_cong_avoid)
+BTF_ID_FLAGS(func, tcp_reno_undo_cwnd)
+BTF_ID_FLAGS(func, tcp_slow_start)
+BTF_ID_FLAGS(func, tcp_cong_avoid_ai)
+BTF_KFUNCS_END(bpf_tcp_ca_check_kfunc_ids)
 
 static const struct btf_kfunc_id_set bpf_tcp_ca_kfunc_set = {
-	.owner     = THIS_MODULE,
-	.check_set = &bpf_tcp_ca_check_kfunc_ids,
+	.owner = THIS_MODULE,
+	.set   = &bpf_tcp_ca_check_kfunc_ids,
 };
 
 static const struct bpf_verifier_ops bpf_tcp_ca_verifier_ops = {
@@ -240,7 +213,6 @@ static int bpf_tcp_ca_init_member(const struct btf_type *t,
 {
 	const struct tcp_congestion_ops *utcp_ca;
 	struct tcp_congestion_ops *tcp_ca;
-	int prog_fd;
 	u32 moff;
 
 	utcp_ca = (const struct tcp_congestion_ops *)udata;
@@ -257,52 +229,121 @@ static int bpf_tcp_ca_init_member(const struct btf_type *t,
 		if (bpf_obj_name_cpy(tcp_ca->name, utcp_ca->name,
 				     sizeof(tcp_ca->name)) <= 0)
 			return -EINVAL;
-		if (tcp_ca_find(utcp_ca->name))
-			return -EEXIST;
 		return 1;
 	}
 
-	if (!btf_type_resolve_func_ptr(btf_vmlinux, member->type, NULL))
-		return 0;
-
-	/* Ensure bpf_prog is provided for compulsory func ptr */
-	prog_fd = (int)(*(unsigned long *)(udata + moff));
-	if (!prog_fd && !is_optional(moff) && !is_unsupported(moff))
-		return -EINVAL;
-
 	return 0;
 }
 
-static int bpf_tcp_ca_check_member(const struct btf_type *t,
-				   const struct btf_member *member)
-{
-	if (is_unsupported(__btf_member_bit_offset(t, member) / 8))
-		return -ENOTSUPP;
-	return 0;
-}
-
-static int bpf_tcp_ca_reg(void *kdata)
+static int bpf_tcp_ca_reg(void *kdata, struct bpf_link *link)
 {
 	return tcp_register_congestion_control(kdata);
 }
 
-static void bpf_tcp_ca_unreg(void *kdata)
+static void bpf_tcp_ca_unreg(void *kdata, struct bpf_link *link)
 {
 	tcp_unregister_congestion_control(kdata);
 }
 
-struct bpf_struct_ops bpf_tcp_congestion_ops = {
+static int bpf_tcp_ca_update(void *kdata, void *old_kdata, struct bpf_link *link)
+{
+	return tcp_update_congestion_control(kdata, old_kdata);
+}
+
+static int bpf_tcp_ca_validate(void *kdata)
+{
+	return tcp_validate_congestion_control(kdata);
+}
+
+static u32 bpf_tcp_ca_ssthresh(struct sock *sk)
+{
+	return 0;
+}
+
+static void bpf_tcp_ca_cong_avoid(struct sock *sk, u32 ack, u32 acked)
+{
+}
+
+static void bpf_tcp_ca_set_state(struct sock *sk, u8 new_state)
+{
+}
+
+static void bpf_tcp_ca_cwnd_event(struct sock *sk, enum tcp_ca_event ev)
+{
+}
+
+static void bpf_tcp_ca_in_ack_event(struct sock *sk, u32 flags)
+{
+}
+
+static void bpf_tcp_ca_pkts_acked(struct sock *sk, const struct ack_sample *sample)
+{
+}
+
+static u32 bpf_tcp_ca_min_tso_segs(struct sock *sk)
+{
+	return 0;
+}
+
+static void bpf_tcp_ca_cong_control(struct sock *sk, u32 ack, int flag,
+				    const struct rate_sample *rs)
+{
+}
+
+static u32 bpf_tcp_ca_undo_cwnd(struct sock *sk)
+{
+	return 0;
+}
+
+static u32 bpf_tcp_ca_sndbuf_expand(struct sock *sk)
+{
+	return 0;
+}
+
+static void __bpf_tcp_ca_init(struct sock *sk)
+{
+}
+
+static void __bpf_tcp_ca_release(struct sock *sk)
+{
+}
+
+static struct tcp_congestion_ops __bpf_ops_tcp_congestion_ops = {
+	.ssthresh = bpf_tcp_ca_ssthresh,
+	.cong_avoid = bpf_tcp_ca_cong_avoid,
+	.set_state = bpf_tcp_ca_set_state,
+	.cwnd_event = bpf_tcp_ca_cwnd_event,
+	.in_ack_event = bpf_tcp_ca_in_ack_event,
+	.pkts_acked = bpf_tcp_ca_pkts_acked,
+	.min_tso_segs = bpf_tcp_ca_min_tso_segs,
+	.cong_control = bpf_tcp_ca_cong_control,
+	.undo_cwnd = bpf_tcp_ca_undo_cwnd,
+	.sndbuf_expand = bpf_tcp_ca_sndbuf_expand,
+
+	.init = __bpf_tcp_ca_init,
+	.release = __bpf_tcp_ca_release,
+};
+
+static struct bpf_struct_ops bpf_tcp_congestion_ops = {
 	.verifier_ops = &bpf_tcp_ca_verifier_ops,
 	.reg = bpf_tcp_ca_reg,
 	.unreg = bpf_tcp_ca_unreg,
-	.check_member = bpf_tcp_ca_check_member,
+	.update = bpf_tcp_ca_update,
 	.init_member = bpf_tcp_ca_init_member,
 	.init = bpf_tcp_ca_init,
+	.validate = bpf_tcp_ca_validate,
 	.name = "tcp_congestion_ops",
+	.cfi_stubs = &__bpf_ops_tcp_congestion_ops,
+	.owner = THIS_MODULE,
 };
 
 static int __init bpf_tcp_ca_kfunc_init(void)
 {
-	return register_btf_kfunc_id_set(BPF_PROG_TYPE_STRUCT_OPS, &bpf_tcp_ca_kfunc_set);
+	int ret;
+
+	ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_STRUCT_OPS, &bpf_tcp_ca_kfunc_set);
+	ret = ret ?: register_bpf_struct_ops(&bpf_tcp_congestion_ops, tcp_congestion_ops);
+
+	return ret;
 }
 late_initcall(bpf_tcp_ca_kfunc_init);

@@ -13,7 +13,7 @@
 #include <linux/namei.h>
 #include "internal.h"
 
-static const struct constant_table bool_names[] = {
+const struct constant_table bool_names[] = {
 	{ "0",		false },
 	{ "1",		true },
 	{ "false",	false },
@@ -22,6 +22,7 @@ static const struct constant_table bool_names[] = {
 	{ "yes",	true },
 	{ },
 };
+EXPORT_SYMBOL(bool_names);
 
 static const struct constant_table *
 __lookup_constant(const struct constant_table *tbl, const char *name)
@@ -83,8 +84,8 @@ static const struct fs_parameter_spec *fs_lookup_key(
 }
 
 /*
- * fs_parse - Parse a filesystem configuration parameter
- * @fc: The filesystem context to log errors through.
+ * __fs_parse - Parse a filesystem configuration parameter
+ * @log: The filesystem context to log errors through.
  * @desc: The parameter description to use.
  * @param: The parameter.
  * @result: Where to place the result of the parse
@@ -138,15 +139,16 @@ EXPORT_SYMBOL(__fs_parse);
  * @fc: The filesystem context to log errors through.
  * @param: The parameter.
  * @want_bdev: T if want a blockdev
+ * @flags: Pathwalk flags passed to filename_lookup()
  * @_path: The result of the lookup
  */
 int fs_lookup_param(struct fs_context *fc,
 		    struct fs_parameter *param,
 		    bool want_bdev,
+		    unsigned int flags,
 		    struct path *_path)
 {
 	struct filename *f;
-	unsigned int flags = 0;
 	bool put_f;
 	int ret;
 
@@ -155,6 +157,7 @@ int fs_lookup_param(struct fs_context *fc,
 		f = getname_kernel(param->string);
 		if (IS_ERR(f))
 			return PTR_ERR(f);
+		param->dirfd = AT_FDCWD;
 		put_f = true;
 		break;
 	case fs_value_is_filename:
@@ -307,6 +310,60 @@ int fs_param_is_fd(struct p_log *log, const struct fs_parameter_spec *p,
 }
 EXPORT_SYMBOL(fs_param_is_fd);
 
+int fs_param_is_file_or_string(struct p_log *log,
+			       const struct fs_parameter_spec *p,
+			       struct fs_parameter *param,
+			       struct fs_parse_result *result)
+{
+	switch (param->type) {
+	case fs_value_is_string:
+		return fs_param_is_string(log, p, param, result);
+	case fs_value_is_file:
+		result->uint_32 = param->dirfd;
+		if (result->uint_32 <= INT_MAX)
+			return 0;
+		break;
+	default:
+		break;
+	}
+	return fs_param_bad_value(log, param);
+}
+EXPORT_SYMBOL(fs_param_is_file_or_string);
+
+int fs_param_is_uid(struct p_log *log, const struct fs_parameter_spec *p,
+		    struct fs_parameter *param, struct fs_parse_result *result)
+{
+	kuid_t uid;
+
+	if (fs_param_is_u32(log, p, param, result) != 0)
+		return fs_param_bad_value(log, param);
+
+	uid = make_kuid(current_user_ns(), result->uint_32);
+	if (!uid_valid(uid))
+		return inval_plog(log, "Invalid uid '%s'", param->string);
+
+	result->uid = uid;
+	return 0;
+}
+EXPORT_SYMBOL(fs_param_is_uid);
+
+int fs_param_is_gid(struct p_log *log, const struct fs_parameter_spec *p,
+		    struct fs_parameter *param, struct fs_parse_result *result)
+{
+	kgid_t gid;
+
+	if (fs_param_is_u32(log, p, param, result) != 0)
+		return fs_param_bad_value(log, param);
+
+	gid = make_kgid(current_user_ns(), result->uint_32);
+	if (!gid_valid(gid))
+		return inval_plog(log, "Invalid gid '%s'", param->string);
+
+	result->gid = gid;
+	return 0;
+}
+EXPORT_SYMBOL(fs_param_is_gid);
+
 int fs_param_is_blockdev(struct p_log *log, const struct fs_parameter_spec *p,
 		  struct fs_parameter *param, struct fs_parse_result *result)
 {
@@ -323,58 +380,9 @@ EXPORT_SYMBOL(fs_param_is_path);
 
 #ifdef CONFIG_VALIDATE_FS_PARSER
 /**
- * validate_constant_table - Validate a constant table
- * @tbl: The constant table to validate.
- * @tbl_size: The size of the table.
- * @low: The lowest permissible value.
- * @high: The highest permissible value.
- * @special: One special permissible value outside of the range.
- */
-bool validate_constant_table(const struct constant_table *tbl, size_t tbl_size,
-			     int low, int high, int special)
-{
-	size_t i;
-	bool good = true;
-
-	if (tbl_size == 0) {
-		pr_warn("VALIDATE C-TBL: Empty\n");
-		return true;
-	}
-
-	for (i = 0; i < tbl_size; i++) {
-		if (!tbl[i].name) {
-			pr_err("VALIDATE C-TBL[%zu]: Null\n", i);
-			good = false;
-		} else if (i > 0 && tbl[i - 1].name) {
-			int c = strcmp(tbl[i-1].name, tbl[i].name);
-
-			if (c == 0) {
-				pr_err("VALIDATE C-TBL[%zu]: Duplicate %s\n",
-				       i, tbl[i].name);
-				good = false;
-			}
-			if (c > 0) {
-				pr_err("VALIDATE C-TBL[%zu]: Missorted %s>=%s\n",
-				       i, tbl[i-1].name, tbl[i].name);
-				good = false;
-			}
-		}
-
-		if (tbl[i].value != special &&
-		    (tbl[i].value < low || tbl[i].value > high)) {
-			pr_err("VALIDATE C-TBL[%zu]: %s->%d const out of range (%d-%d)\n",
-			       i, tbl[i].name, tbl[i].value, low, high);
-			good = false;
-		}
-	}
-
-	return good;
-}
-
-/**
- * fs_validate_description - Validate a parameter description
- * @name: The parameter name to search for.
- * @desc: The parameter description to validate.
+ * fs_validate_description - Validate a parameter specification array
+ * @name: Owner name of the parameter specification array
+ * @desc: The parameter specification array to validate.
  */
 bool fs_validate_description(const char *name,
 	const struct fs_parameter_spec *desc)

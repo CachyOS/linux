@@ -20,7 +20,7 @@
 /* Maximum number of subcores per physical core */
 #define MAX_SUBCORES		4
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 
 #ifdef CONFIG_KVM_BOOK3S_HANDLER
 
@@ -58,7 +58,7 @@ kvmppc_resume_\intno:
 
 #endif /* CONFIG_KVM_BOOK3S_HANDLER */
 
-#else  /*__ASSEMBLY__ */
+#else  /*__ASSEMBLER__ */
 
 struct kvmppc_vcore;
 
@@ -105,7 +105,7 @@ struct kvmppc_host_state {
 	void __iomem *xive_tima_virt;
 	u32 saved_xirr;
 	u64 dabr;
-	u64 host_mmcr[10];	/* MMCR 0,1,A, SIAR, SDAR, MMCR2, SIER, MMCR3, SIER2/3 */
+	u64 host_mmcr[7];	/* MMCR 0,1,A, SIAR, SDAR, MMCR2, SIER */
 	u32 host_pmc[8];
 	u64 host_purr;
 	u64 host_spurr;
@@ -150,7 +150,7 @@ struct kvmppc_book3s_shadow_vcpu {
 #endif
 };
 
-#endif /*__ASSEMBLY__ */
+#endif /*__ASSEMBLER__ */
 
 /* Values for kvm_state */
 #define KVM_HWTHREAD_IN_KERNEL	0

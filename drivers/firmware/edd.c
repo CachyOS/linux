@@ -608,7 +608,7 @@ static void edd_release(struct kobject * kobj)
 	kfree(dev);
 }
 
-static struct kobj_type edd_ktype = {
+static const struct kobj_type edd_ktype = {
 	.release	= edd_release,
 	.sysfs_ops	= &edd_attr_ops,
 };
@@ -740,7 +740,7 @@ edd_init(void)
 		return -ENOMEM;
 
 	for (i = 0; i < edd_num_devices(); i++) {
-		edev = kzalloc(sizeof (*edev), GFP_KERNEL);
+		edev = kzalloc_obj(*edev);
 		if (!edev) {
 			rc = -ENOMEM;
 			goto out;

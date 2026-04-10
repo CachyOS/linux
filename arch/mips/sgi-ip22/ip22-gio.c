@@ -12,7 +12,7 @@
 #include <asm/sgi/mc.h>
 #include <asm/sgi/ip22.h>
 
-static struct bus_type gio_bus_type;
+static const struct bus_type gio_bus_type;
 
 static struct {
 	const char *name;
@@ -111,7 +111,7 @@ void gio_device_unregister(struct gio_device *giodev)
 }
 EXPORT_SYMBOL_GPL(gio_device_unregister);
 
-static int gio_bus_match(struct device *dev, struct device_driver *drv)
+static int gio_bus_match(struct device *dev, const struct device_driver *drv)
 {
 	struct gio_device *gio_dev = to_gio_device(dev);
 	struct gio_driver *gio_drv = to_gio_driver(drv);
@@ -148,7 +148,7 @@ static void gio_device_remove(struct device *dev)
 	struct gio_device *gio_dev = to_gio_device(dev);
 	struct gio_driver *drv = to_gio_driver(dev->driver);
 
-	if (dev->driver && drv->remove)
+	if (drv->remove)
 		drv->remove(gio_dev);
 }
 
@@ -165,9 +165,8 @@ static ssize_t modalias_show(struct device *dev, struct device_attribute *a,
 			     char *buf)
 {
 	struct gio_device *gio_dev = to_gio_device(dev);
-	int len = snprintf(buf, PAGE_SIZE, "gio:%x\n", gio_dev->id.id);
 
-	return (len >= PAGE_SIZE) ? (PAGE_SIZE - 1) : len;
+	return sysfs_emit(buf, "gio:%x\n", gio_dev->id.id);
 }
 static DEVICE_ATTR_RO(modalias);
 
@@ -177,7 +176,7 @@ static ssize_t name_show(struct device *dev,
 	struct gio_device *giodev;
 
 	giodev = to_gio_device(dev);
-	return sprintf(buf, "%s", giodev->name);
+	return sysfs_emit(buf, "%s\n", giodev->name);
 }
 static DEVICE_ATTR_RO(name);
 
@@ -187,7 +186,7 @@ static ssize_t id_show(struct device *dev,
 	struct gio_device *giodev;
 
 	giodev = to_gio_device(dev);
-	return sprintf(buf, "%x", giodev->id.id);
+	return sysfs_emit(buf, "%x\n", giodev->id.id);
 }
 static DEVICE_ATTR_RO(id);
 
@@ -199,9 +198,9 @@ static struct attribute *gio_dev_attrs[] = {
 };
 ATTRIBUTE_GROUPS(gio_dev);
 
-static int gio_device_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int gio_device_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct gio_device *gio_dev = to_gio_device(dev);
+	const struct gio_device *gio_dev = to_gio_device(dev);
 
 	add_uevent_var(env, "MODALIAS=gio:%x", gio_dev->id.id);
 	return 0;
@@ -246,7 +245,7 @@ void gio_set_master(struct gio_device *dev)
 }
 EXPORT_SYMBOL_GPL(gio_set_master);
 
-void ip22_gio_set_64bit(int slotno)
+static void ip22_gio_set_64bit(int slotno)
 {
 	u32 tmp = sgimc->giopar;
 
@@ -362,7 +361,7 @@ static void ip22_check_gio(int slotno, unsigned long addr, int irq)
 		}
 		printk(KERN_INFO "GIO: slot %d : %s (id %x)\n",
 		       slotno, name, id);
-		gio_dev = kzalloc(sizeof *gio_dev, GFP_KERNEL);
+		gio_dev = kzalloc_obj(*gio_dev);
 		if (!gio_dev)
 			return;
 		gio_dev->name = name;
@@ -373,12 +372,13 @@ static void ip22_check_gio(int slotno, unsigned long addr, int irq)
 		gio_dev->resource.flags = IORESOURCE_MEM;
 		gio_dev->irq = irq;
 		dev_set_name(&gio_dev->dev, "%d", slotno);
-		gio_device_register(gio_dev);
+		if (gio_device_register(gio_dev))
+			gio_dev_put(gio_dev);
 	} else
 		printk(KERN_INFO "GIO: slot %d : Empty\n", slotno);
 }
 
-static struct bus_type gio_bus_type = {
+static const struct bus_type gio_bus_type = {
 	.name	   = "gio",
 	.dev_groups = gio_dev_groups,
 	.match	   = gio_bus_match,
@@ -395,7 +395,7 @@ static struct resource gio_bus_resource = {
 	.flags = IORESOURCE_MEM,
 };
 
-int __init ip22_gio_init(void)
+static int __init ip22_gio_init(void)
 {
 	unsigned int pbdma __maybe_unused;
 	int ret;

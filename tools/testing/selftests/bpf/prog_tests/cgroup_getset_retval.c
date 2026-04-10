@@ -10,6 +10,7 @@
 
 #include "cgroup_getset_retval_setsockopt.skel.h"
 #include "cgroup_getset_retval_getsockopt.skel.h"
+#include "cgroup_getset_retval_hooks.skel.h"
 
 #define SOL_CUSTOM	0xdeadbeef
 
@@ -23,6 +24,8 @@ static void test_setsockopt_set(int cgroup_fd, int sock_fd)
 	obj = cgroup_getset_retval_setsockopt__open_and_load();
 	if (!ASSERT_OK_PTR(obj, "skel-load"))
 		return;
+
+	obj->bss->page_size = sysconf(_SC_PAGESIZE);
 
 	/* Attach setsockopt that sets EUNATCH, assert that
 	 * we actually get that error when we run setsockopt()
@@ -57,6 +60,8 @@ static void test_setsockopt_set_and_get(int cgroup_fd, int sock_fd)
 	obj = cgroup_getset_retval_setsockopt__open_and_load();
 	if (!ASSERT_OK_PTR(obj, "skel-load"))
 		return;
+
+	obj->bss->page_size = sysconf(_SC_PAGESIZE);
 
 	/* Attach setsockopt that sets EUNATCH, and one that gets the
 	 * previously set errno. Assert that we get the same errno back.
@@ -99,6 +104,8 @@ static void test_setsockopt_default_zero(int cgroup_fd, int sock_fd)
 	if (!ASSERT_OK_PTR(obj, "skel-load"))
 		return;
 
+	obj->bss->page_size = sysconf(_SC_PAGESIZE);
+
 	/* Attach setsockopt that gets the previously set errno.
 	 * Assert that, without anything setting one, we get 0.
 	 */
@@ -132,6 +139,8 @@ static void test_setsockopt_default_zero_and_set(int cgroup_fd, int sock_fd)
 	obj = cgroup_getset_retval_setsockopt__open_and_load();
 	if (!ASSERT_OK_PTR(obj, "skel-load"))
 		return;
+
+	obj->bss->page_size = sysconf(_SC_PAGESIZE);
 
 	/* Attach setsockopt that gets the previously set errno, and then
 	 * one that sets the errno to EUNATCH. Assert that the get does not
@@ -175,6 +184,8 @@ static void test_setsockopt_override(int cgroup_fd, int sock_fd)
 	obj = cgroup_getset_retval_setsockopt__open_and_load();
 	if (!ASSERT_OK_PTR(obj, "skel-load"))
 		return;
+
+	obj->bss->page_size = sysconf(_SC_PAGESIZE);
 
 	/* Attach setsockopt that sets EUNATCH, then one that sets EISCONN,
 	 * and then one that gets the exported errno. Assert both the syscall
@@ -223,6 +234,8 @@ static void test_setsockopt_legacy_eperm(int cgroup_fd, int sock_fd)
 	if (!ASSERT_OK_PTR(obj, "skel-load"))
 		return;
 
+	obj->bss->page_size = sysconf(_SC_PAGESIZE);
+
 	/* Attach setsockopt that return a reject without setting errno
 	 * (legacy reject), and one that gets the errno. Assert that for
 	 * backward compatibility the syscall result in EPERM, and this
@@ -266,6 +279,8 @@ static void test_setsockopt_legacy_no_override(int cgroup_fd, int sock_fd)
 	obj = cgroup_getset_retval_setsockopt__open_and_load();
 	if (!ASSERT_OK_PTR(obj, "skel-load"))
 		return;
+
+	obj->bss->page_size = sysconf(_SC_PAGESIZE);
 
 	/* Attach setsockopt that sets EUNATCH, then one that return a reject
 	 * without setting errno, and then one that gets the exported errno.
@@ -318,6 +333,8 @@ static void test_getsockopt_get(int cgroup_fd, int sock_fd)
 	if (!ASSERT_OK_PTR(obj, "skel-load"))
 		return;
 
+	obj->bss->page_size = sysconf(_SC_PAGESIZE);
+
 	/* Attach getsockopt that gets previously set errno. Assert that the
 	 * error from kernel is in both ctx_retval_value and retval_value.
 	 */
@@ -358,6 +375,8 @@ static void test_getsockopt_override(int cgroup_fd, int sock_fd)
 	if (!ASSERT_OK_PTR(obj, "skel-load"))
 		return;
 
+	obj->bss->page_size = sysconf(_SC_PAGESIZE);
+
 	/* Attach getsockopt that sets retval to -EISCONN. Assert that this
 	 * overrides the value from kernel.
 	 */
@@ -395,6 +414,8 @@ static void test_getsockopt_retval_sync(int cgroup_fd, int sock_fd)
 	if (!ASSERT_OK_PTR(obj, "skel-load"))
 		return;
 
+	obj->bss->page_size = sysconf(_SC_PAGESIZE);
+
 	/* Attach getsockopt that sets retval to -EISCONN, and one that clears
 	 * ctx retval. Assert that the clearing ctx retval is synced to helper
 	 * and clears any errors both from kernel and BPF..
@@ -431,6 +452,50 @@ close_bpf_object:
 	bpf_link__destroy(link_get_retval);
 
 	cgroup_getset_retval_getsockopt__destroy(obj);
+}
+
+struct exposed_hook {
+	const char *name;
+	int expected_err;
+} exposed_hooks[] = {
+
+#define BPF_RETVAL_HOOK(NAME, SECTION, CTX, EXPECTED_ERR) \
+	{ \
+		.name = #NAME, \
+		.expected_err = EXPECTED_ERR, \
+	},
+
+#include "cgroup_getset_retval_hooks.h"
+
+#undef BPF_RETVAL_HOOK
+};
+
+static void test_exposed_hooks(int cgroup_fd, int sock_fd)
+{
+	struct cgroup_getset_retval_hooks *skel;
+	struct bpf_program *prog;
+	int err;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(exposed_hooks); i++) {
+		skel = cgroup_getset_retval_hooks__open();
+		if (!ASSERT_OK_PTR(skel, "cgroup_getset_retval_hooks__open"))
+			continue;
+
+		prog = bpf_object__find_program_by_name(skel->obj, exposed_hooks[i].name);
+		if (!ASSERT_NEQ(prog, NULL, "bpf_object__find_program_by_name"))
+			goto close_skel;
+
+		err = bpf_program__set_autoload(prog, true);
+		if (!ASSERT_OK(err, "bpf_program__set_autoload"))
+			goto close_skel;
+
+		err = cgroup_getset_retval_hooks__load(skel);
+		ASSERT_EQ(err, exposed_hooks[i].expected_err, "expected_err");
+
+close_skel:
+		cgroup_getset_retval_hooks__destroy(skel);
+	}
 }
 
 void test_cgroup_getset_retval(void)
@@ -475,6 +540,9 @@ void test_cgroup_getset_retval(void)
 
 	if (test__start_subtest("getsockopt-retval_sync"))
 		test_getsockopt_retval_sync(cgroup_fd, sock_fd);
+
+	if (test__start_subtest("exposed_hooks"))
+		test_exposed_hooks(cgroup_fd, sock_fd);
 
 close_fd:
 	close(cgroup_fd);

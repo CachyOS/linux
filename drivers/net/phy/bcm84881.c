@@ -29,8 +29,19 @@ static int bcm84881_wait_init(struct phy_device *phydev)
 					 100000, 2000000, false);
 }
 
+static void bcm84881_fill_possible_interfaces(struct phy_device *phydev)
+{
+	unsigned long *possible = phydev->possible_interfaces;
+
+	__set_bit(PHY_INTERFACE_MODE_SGMII, possible);
+	__set_bit(PHY_INTERFACE_MODE_2500BASEX, possible);
+	__set_bit(PHY_INTERFACE_MODE_10GBASER, possible);
+}
+
 static int bcm84881_config_init(struct phy_device *phydev)
 {
+	bcm84881_fill_possible_interfaces(phydev);
+
 	switch (phydev->interface) {
 	case PHY_INTERFACE_MODE_SGMII:
 	case PHY_INTERFACE_MODE_2500BASEX:
@@ -39,6 +50,7 @@ static int bcm84881_config_init(struct phy_device *phydev)
 	default:
 		return -ENODEV;
 	}
+
 	return 0;
 }
 
@@ -120,7 +132,7 @@ static int bcm84881_aneg_done(struct phy_device *phydev)
 
 	bmsr = phy_read_mmd(phydev, MDIO_MMD_AN, MDIO_AN_C22 + MII_BMSR);
 	if (bmsr < 0)
-		return val;
+		return bmsr;
 
 	return !!(val & MDIO_AN_STAT1_COMPLETE) &&
 	       !!(bmsr & BMSR_ANEGCOMPLETE);
@@ -146,7 +158,7 @@ static int bcm84881_read_status(struct phy_device *phydev)
 
 	bmsr = phy_read_mmd(phydev, MDIO_MMD_AN, MDIO_AN_C22 + MII_BMSR);
 	if (bmsr < 0)
-		return val;
+		return bmsr;
 
 	phydev->autoneg_complete = !!(val & MDIO_AN_STAT1_COMPLETE) &&
 				   !!(bmsr & BMSR_ANEGCOMPLETE);
@@ -223,11 +235,21 @@ static int bcm84881_read_status(struct phy_device *phydev)
 	return genphy_c45_read_mdix(phydev);
 }
 
+/* The Broadcom BCM84881 in the Methode DM7052 is unable to provide a SGMII
+ * or 802.3z control word, so inband will not work.
+ */
+static unsigned int bcm84881_inband_caps(struct phy_device *phydev,
+					 phy_interface_t interface)
+{
+	return LINK_INBAND_DISABLE;
+}
+
 static struct phy_driver bcm84881_drivers[] = {
 	{
 		.phy_id		= 0xae025150,
 		.phy_id_mask	= 0xfffffff0,
 		.name		= "Broadcom BCM84881",
+		.inband_caps	= bcm84881_inband_caps,
 		.config_init	= bcm84881_config_init,
 		.probe		= bcm84881_probe,
 		.get_features	= bcm84881_get_features,
@@ -240,7 +262,7 @@ static struct phy_driver bcm84881_drivers[] = {
 module_phy_driver(bcm84881_drivers);
 
 /* FIXME: module auto-loading for Clause 45 PHYs seems non-functional */
-static struct mdio_device_id __maybe_unused bcm84881_tbl[] = {
+static const struct mdio_device_id __maybe_unused bcm84881_tbl[] = {
 	{ 0xae025150, 0xfffffff0 },
 	{ },
 };

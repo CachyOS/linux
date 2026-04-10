@@ -178,7 +178,6 @@ static long watchdog_ioctl(struct file *file, unsigned int cmd,
 
 static const struct file_operations watchdog_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.write		= watchdog_write,
 	.unlocked_ioctl	= watchdog_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
@@ -206,8 +205,6 @@ static int __init footbridge_watchdog_init(void)
 	pr_info("Footbridge Watchdog Timer: 0.01, timer margin: %d sec\n",
 		soft_margin);
 
-	if (machine_is_cats())
-		pr_warn("Warning: Watchdog reset may not work on this machine\n");
 	return 0;
 }
 

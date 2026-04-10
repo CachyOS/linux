@@ -59,7 +59,7 @@
 #include <net/cfg80211.h>
 #include <net/ieee80211_radiotap.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <net/mac80211.h>
 #include "base.h"
@@ -230,13 +230,13 @@ ath5k_chip_name(enum ath5k_srev_type type, u_int16_t val)
 }
 static unsigned int ath5k_ioread32(void *hw_priv, u32 reg_offset)
 {
-	struct ath5k_hw *ah = (struct ath5k_hw *) hw_priv;
+	struct ath5k_hw *ah = hw_priv;
 	return ath5k_hw_reg_read(ah, reg_offset);
 }
 
 static void ath5k_iowrite32(void *hw_priv, u32 val, u32 reg_offset)
 {
-	struct ath5k_hw *ah = (struct ath5k_hw *) hw_priv;
+	struct ath5k_hw *ah = hw_priv;
 	ath5k_hw_reg_write(ah, val, reg_offset);
 }
 
@@ -919,8 +919,8 @@ ath5k_desc_alloc(struct ath5k_hw *ah)
 	ATH5K_DBG(ah, ATH5K_DEBUG_ANY, "DMA map: %p (%zu) -> %llx\n",
 		ds, ah->desc_len, (unsigned long long)ah->desc_daddr);
 
-	bf = kcalloc(1 + ATH_TXBUF + ATH_RXBUF + ATH_BCBUF,
-			sizeof(struct ath5k_buf), GFP_KERNEL);
+	bf = kzalloc_objs(struct ath5k_buf,
+			  1 + ATH_TXBUF + ATH_RXBUF + ATH_BCBUF);
 	if (bf == NULL) {
 		ATH5K_ERR(ah, "can't allocate bufptr\n");
 		ret = -ENOMEM;
@@ -1770,7 +1770,7 @@ ath5k_tx_frame_completed(struct ath5k_hw *ah, struct sk_buff *skb,
 		ah->stats.antenna_tx[0]++; /* invalid */
 
 	trace_ath5k_tx_complete(ah, skb, txq, ts);
-	ieee80211_tx_status(ah->hw, skb);
+	ieee80211_tx_status_skb(ah->hw, skb);
 }
 
 static void
@@ -1946,7 +1946,7 @@ ath5k_beacon_update(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 		goto out;
 	}
 
-	skb = ieee80211_beacon_get(hw, vif);
+	skb = ieee80211_beacon_get(hw, vif, 0);
 
 	if (!skb) {
 		ret = -ENOMEM;
@@ -1982,7 +1982,7 @@ ath5k_beacon_send(struct ath5k_hw *ah)
 
 	/*
 	 * Check if the previous beacon has gone out.  If
-	 * not, don't don't try to post another: skip this
+	 * not, don't try to post another: skip this
 	 * period and wait for the next.  Missed beacons
 	 * indicate a problem and should not occur.  If we
 	 * miss too many consecutive beacons reset the device.
@@ -2847,7 +2847,7 @@ static void ath5k_stop_tasklets(struct ath5k_hw *ah)
  * if another thread does a system call and the thread doing the
  * stop is preempted).
  */
-void ath5k_stop(struct ieee80211_hw *hw)
+void ath5k_stop(struct ieee80211_hw *hw, bool suspend)
 {
 	struct ath5k_hw *ah = hw->priv;
 	int ret;

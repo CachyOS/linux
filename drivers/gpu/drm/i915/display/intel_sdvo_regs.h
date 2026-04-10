@@ -57,7 +57,7 @@ struct intel_sdvo_caps {
 	u8 device_rev_id;
 	u8 sdvo_version_major;
 	u8 sdvo_version_minor;
-	unsigned int sdvo_inputs_mask:2;
+	unsigned int sdvo_num_inputs:2;
 	unsigned int smooth_scaling:1;
 	unsigned int sharp_scaling:1;
 	unsigned int up_scaling:1;
@@ -244,7 +244,7 @@ struct intel_sdvo_set_target_input_args {
  * Takes a struct intel_sdvo_output_flags of which outputs are targeted by
  * future output commands.
  *
- * Affected commands inclue SET_OUTPUT_TIMINGS_PART[12],
+ * Affected commands include SET_OUTPUT_TIMINGS_PART[12],
  * GET_OUTPUT_TIMINGS_PART[12], and GET_OUTPUT_PIXEL_CLOCK_RANGE.
  */
 #define SDVO_CMD_SET_TARGET_OUTPUT			0x11

@@ -89,9 +89,9 @@ static void sxgbe_enable_eee_mode(const struct sxgbe_priv_data *priv)
 
 void sxgbe_disable_eee_mode(struct sxgbe_priv_data * const priv)
 {
-	/* Exit and disable EEE in case of we are are in LPI state. */
+	/* Exit and disable EEE in case of we are in LPI state. */
 	priv->hw->mac->reset_eee_mode(priv->ioaddr);
-	del_timer_sync(&priv->eee_ctrl_timer);
+	timer_delete_sync(&priv->eee_ctrl_timer);
 	priv->tx_path_in_lpi_mode = false;
 }
 
@@ -104,7 +104,8 @@ void sxgbe_disable_eee_mode(struct sxgbe_priv_data * const priv)
  */
 static void sxgbe_eee_ctrl_timer(struct timer_list *t)
 {
-	struct sxgbe_priv_data *priv = from_timer(priv, t, eee_ctrl_timer);
+	struct sxgbe_priv_data *priv = timer_container_of(priv, t,
+							  eee_ctrl_timer);
 
 	sxgbe_enable_eee_mode(priv);
 	mod_timer(&priv->eee_ctrl_timer, SXGBE_LPI_TIMER(eee_timer));
@@ -130,7 +131,6 @@ bool sxgbe_eee_init(struct sxgbe_priv_data * const priv)
 		if (phy_init_eee(ndev->phydev, true))
 			return false;
 
-		priv->eee_active = 1;
 		timer_setup(&priv->eee_ctrl_timer, sxgbe_eee_ctrl_timer, 0);
 		priv->eee_ctrl_timer.expires = SXGBE_LPI_TIMER(eee_timer);
 		add_timer(&priv->eee_ctrl_timer);
@@ -489,15 +489,13 @@ static int init_rx_ring(struct net_device *dev, u8 queue_no,
 		return -ENOMEM;
 
 	/* allocate memory for RX skbuff array */
-	rx_ring->rx_skbuff_dma = kmalloc_array(rx_rsize,
-					       sizeof(dma_addr_t), GFP_KERNEL);
+	rx_ring->rx_skbuff_dma = kmalloc_objs(dma_addr_t, rx_rsize);
 	if (!rx_ring->rx_skbuff_dma) {
 		ret = -ENOMEM;
 		goto err_free_dma_rx;
 	}
 
-	rx_ring->rx_skbuff = kmalloc_array(rx_rsize,
-					   sizeof(struct sk_buff *), GFP_KERNEL);
+	rx_ring->rx_skbuff = kmalloc_objs(struct sk_buff *, rx_rsize);
 	if (!rx_ring->rx_skbuff) {
 		ret = -ENOMEM;
 		goto err_free_skbuff_dma;
@@ -1013,7 +1011,7 @@ static void sxgbe_disable_mtl_engine(struct sxgbe_priv_data *priv)
  */
 static void sxgbe_tx_timer(struct timer_list *t)
 {
-	struct sxgbe_tx_queue *p = from_timer(p, t, txtimer);
+	struct sxgbe_tx_queue *p = timer_container_of(p, t, txtimer);
 	sxgbe_tx_queue_clean(p);
 }
 
@@ -1045,7 +1043,7 @@ static void sxgbe_tx_del_timer(struct sxgbe_priv_data *priv)
 
 	SXGBE_FOR_EACH_QUEUE(SXGBE_TX_QUEUES, queue_num) {
 		struct sxgbe_tx_queue *p = priv->txq[queue_num];
-		del_timer_sync(&p->txtimer);
+		timer_delete_sync(&p->txtimer);
 	}
 }
 
@@ -1209,7 +1207,7 @@ static int sxgbe_release(struct net_device *dev)
 	struct sxgbe_priv_data *priv = netdev_priv(dev);
 
 	if (priv->eee_enabled)
-		del_timer_sync(&priv->eee_ctrl_timer);
+		timer_delete_sync(&priv->eee_ctrl_timer);
 
 	/* Stop and disconnect the PHY */
 	if (dev->phydev) {
@@ -1521,8 +1519,10 @@ static int sxgbe_rx(struct sxgbe_priv_data *priv, int limit)
 
 		skb = priv->rxq[qnum]->rx_skbuff[entry];
 
-		if (unlikely(!skb))
+		if (unlikely(!skb)) {
 			netdev_err(priv->dev, "rx descriptor is not consistent\n");
+			break;
+		}
 
 		prefetch(skb->data - NET_IP_ALIGN);
 		priv->rxq[qnum]->rx_skbuff[entry] = NULL;
@@ -1805,7 +1805,7 @@ static int sxgbe_set_features(struct net_device *dev,
  */
 static int sxgbe_change_mtu(struct net_device *dev, int new_mtu)
 {
-	dev->mtu = new_mtu;
+	WRITE_ONCE(dev->mtu, new_mtu);
 
 	if (!netif_running(dev))
 		return 0;
@@ -2005,7 +2005,7 @@ static int sxgbe_hw_init(struct sxgbe_priv_data * const priv)
 {
 	u32 ctrl_ids;
 
-	priv->hw = kmalloc(sizeof(*priv->hw), GFP_KERNEL);
+	priv->hw = kmalloc_obj(*priv->hw);
 	if(!priv->hw)
 		return -ENOMEM;
 
@@ -2143,7 +2143,7 @@ struct sxgbe_priv_data *sxgbe_drv_probe(struct device *device,
 		pr_info("Enable RX Mitigation via HW Watchdog Timer\n");
 	}
 
-	netif_napi_add(ndev, &priv->napi, sxgbe_poll, 64);
+	netif_napi_add(ndev, &priv->napi, sxgbe_poll);
 
 	spin_lock_init(&priv->stats_lock);
 
@@ -2203,7 +2203,7 @@ error_free_netdev:
  * Description: this function resets the TX/RX processes, disables the MAC RX/TX
  * changes the link status, releases the DMA descriptor rings.
  */
-int sxgbe_drv_remove(struct net_device *ndev)
+void sxgbe_drv_remove(struct net_device *ndev)
 {
 	struct sxgbe_priv_data *priv = netdev_priv(ndev);
 	u8 queue_num;
@@ -2231,8 +2231,6 @@ int sxgbe_drv_remove(struct net_device *ndev)
 	kfree(priv->hw);
 
 	free_netdev(ndev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM

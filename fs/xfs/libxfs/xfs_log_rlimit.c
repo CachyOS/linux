@@ -3,7 +3,7 @@
  * Copyright (c) 2013 Jie Liu.
  * All Rights Reserved.
  */
-#include "xfs.h"
+#include "xfs_platform.h"
 #include "xfs_fs.h"
 #include "xfs_shared.h"
 #include "xfs_format.h"
@@ -15,6 +15,34 @@
 #include "xfs_da_btree.h"
 #include "xfs_bmap_btree.h"
 #include "xfs_trace.h"
+
+/*
+ * Shortly after enabling the large extents count feature in 2023, longstanding
+ * bugs were found in the code that computes the minimum log size.  Luckily,
+ * the bugs resulted in over-estimates of that size, so there's no impact to
+ * existing users.  However, we don't want to reduce the minimum log size
+ * because that can create the situation where a newer mkfs writes a new
+ * filesystem that an older kernel won't mount.
+ *
+ * Several years prior, we also discovered that the transaction reservations
+ * for rmap and reflink operations were unnecessarily large.  That was fixed,
+ * but the minimum log size computation was left alone to avoid the
+ * compatibility problems noted above.  Fix that too.
+ *
+ * Therefore, we only may correct the computation starting with filesystem
+ * features that didn't exist in 2023.  In other words, only turn this on if
+ * the filesystem has parent pointers.
+ *
+ * This function can be called before the XFS_HAS_* flags have been set up,
+ * (e.g. mkfs) so we must check the ondisk superblock.
+ */
+static inline bool
+xfs_want_minlogsize_fixes(
+	struct xfs_sb	*sb)
+{
+	return xfs_sb_is_v5(sb) &&
+	       xfs_sb_has_incompat_feature(sb, XFS_SB_FEAT_INCOMPAT_PARENT);
+}
 
 /*
  * Calculate the maximum length in bytes that would be required for a local
@@ -31,6 +59,15 @@ xfs_log_calc_max_attrsetm_res(
 	       MAXNAMELEN - 1;
 	nblks = XFS_DAENTER_SPACE_RES(mp, XFS_ATTR_FORK);
 	nblks += XFS_B_TO_FSB(mp, size);
+
+	/*
+	 * If the feature set is new enough, correct a unit conversion error in
+	 * the xattr transaction reservation code that resulted in oversized
+	 * minimum log size computations.
+	 */
+	if (xfs_want_minlogsize_fixes(&mp->m_sb))
+		size = XFS_B_TO_FSB(mp, size);
+
 	nblks += XFS_NEXTENTADD_SPACE_RES(mp, size, XFS_ATTR_FORK);
 
 	return  M_RES(mp)->tr_attrsetm.tr_logres +
@@ -49,6 +86,16 @@ xfs_log_calc_trans_resv_for_minlogblocks(
 	unsigned int		rmap_maxlevels = mp->m_rmap_maxlevels;
 
 	/*
+	 * If the feature set is new enough, drop the oversized minimum log
+	 * size computation introduced by the original reflink code.
+	 */
+	if (xfs_want_minlogsize_fixes(&mp->m_sb)) {
+		xfs_trans_resv_calc(mp, resv);
+		resv->tr_atomic_ioend = M_RES(mp)->tr_atomic_ioend;
+		return;
+	}
+
+	/*
 	 * In the early days of rmap+reflink, we always set the rmap maxlevels
 	 * to 9 even if the AG was small enough that it would never grow to
 	 * that height.  Transaction reservation sizes influence the minimum
@@ -60,6 +107,9 @@ xfs_log_calc_trans_resv_for_minlogblocks(
 		mp->m_rmap_maxlevels = XFS_OLD_REFLINK_RMAP_MAXLEVELS;
 
 	xfs_trans_resv_calc(mp, resv);
+
+	/* Copy the dynamic transaction reservation types from the running fs */
+	resv->tr_atomic_ioend = M_RES(mp)->tr_atomic_ioend;
 
 	if (xfs_has_reflink(mp)) {
 		/*

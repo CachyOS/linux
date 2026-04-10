@@ -20,21 +20,14 @@
 
 #include "arizona.h"
 
-static int arizona_i2c_probe(struct i2c_client *i2c,
-			     const struct i2c_device_id *id)
+static int arizona_i2c_probe(struct i2c_client *i2c)
 {
-	const void *match_data;
 	struct arizona *arizona;
 	const struct regmap_config *regmap_config = NULL;
-	unsigned long type = 0;
+	unsigned long type;
 	int ret;
 
-	match_data = device_get_match_data(&i2c->dev);
-	if (match_data)
-		type = (unsigned long)match_data;
-	else if (id)
-		type = id->driver_data;
-
+	type = (uintptr_t)i2c_get_match_data(i2c);
 	switch (type) {
 	case WM5102:
 		if (IS_ENABLED(CONFIG_MFD_WM5102))
@@ -84,13 +77,11 @@ static int arizona_i2c_probe(struct i2c_client *i2c,
 	return arizona_dev_init(arizona);
 }
 
-static int arizona_i2c_remove(struct i2c_client *i2c)
+static void arizona_i2c_remove(struct i2c_client *i2c)
 {
 	struct arizona *arizona = dev_get_drvdata(&i2c->dev);
 
 	arizona_dev_exit(arizona);
-
-	return 0;
 }
 
 static const struct i2c_device_id arizona_i2c_id[] = {
@@ -114,12 +105,13 @@ static const struct of_device_id arizona_i2c_of_match[] = {
 	{ .compatible = "wlf,wm1814", .data = (void *)WM1814 },
 	{},
 };
+MODULE_DEVICE_TABLE(of, arizona_i2c_of_match);
 #endif
 
 static struct i2c_driver arizona_i2c_driver = {
 	.driver = {
 		.name	= "arizona",
-		.pm	= &arizona_pm_ops,
+		.pm	= pm_ptr(&arizona_pm_ops),
 		.of_match_table	= of_match_ptr(arizona_i2c_of_match),
 	},
 	.probe		= arizona_i2c_probe,

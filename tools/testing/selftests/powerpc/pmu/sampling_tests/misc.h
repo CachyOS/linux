@@ -5,12 +5,15 @@
  * Copyright 2022, Kajol Jain, IBM Corp.
  */
 
+#include <sys/stat.h>
 #include "../event.h"
 
+#define POWER11 0x82
 #define POWER10 0x80
 #define POWER9  0x4e
 #define PERF_POWER9_MASK        0x7f8ffffffffffff
 #define PERF_POWER10_MASK       0x7ffffffffffffff
+#define PERF_POWER11_MASK       PERF_POWER10_MASK
 
 #define MMCR0_FC56      0x00000010UL /* freeze counters 5 and 6 */
 #define MMCR0_PMCCEXT   0x00000200UL /* PMCCEXT control */
@@ -35,6 +38,9 @@ extern int ev_mask_mmcr3_src, ev_shift_mmcr3_src;
 extern int pvr;
 extern u64 platform_extended_mask;
 extern int check_pvr_for_sampling_tests(void);
+extern int platform_check_for_tests(void);
+extern int check_extended_regs_support(void);
+extern u64 perf_get_platform_reg_mask(void);
 
 /*
  * Event code field extraction macro.
@@ -52,6 +58,9 @@ void *__event_read_samples(void *sample_buff, size_t *size, u64 *sample_count);
 int collect_samples(void *sample_buff);
 u64 *get_intr_regs(struct event *event, void *sample_buff);
 u64 get_reg_value(u64 *intr_regs, char *register_name);
+int get_thresh_cmp_val(struct event event);
+bool check_for_generic_compat_pmu(void);
+bool check_for_compat_mode(void);
 
 static inline int get_mmcr0_fc56(u64 mmcr0, int pmc)
 {
@@ -160,21 +169,21 @@ static inline int get_mmcr2_fcta(u64 mmcr2, int pmc)
 
 static inline int get_mmcr2_l2l3(u64 mmcr2, int pmc)
 {
-	if (pvr == POWER10)
+	if (have_hwcap2(PPC_FEATURE2_ARCH_3_1))
 		return ((mmcr2 & 0xf8) >> 3);
 	return 0;
 }
 
 static inline int get_mmcr3_src(u64 mmcr3, int pmc)
 {
-	if (pvr != POWER10)
+	if (!have_hwcap2(PPC_FEATURE2_ARCH_3_1))
 		return 0;
 	return ((mmcr3 >> ((49 - (15 * ((pmc) - 1))))) & 0x7fff);
 }
 
 static inline int get_mmcra_thd_cmp(u64 mmcra, int pmc)
 {
-	if (pvr == POWER10)
+	if (have_hwcap2(PPC_FEATURE2_ARCH_3_1))
 		return ((mmcra >> 45) & 0x7ff);
 	return ((mmcra >> 45) & 0x3ff);
 }
@@ -184,9 +193,9 @@ static inline int get_mmcra_sm(u64 mmcra, int pmc)
 	return ((mmcra >> 42) & 0x3);
 }
 
-static inline int get_mmcra_bhrb_disable(u64 mmcra, int pmc)
+static inline u64 get_mmcra_bhrb_disable(u64 mmcra, int pmc)
 {
-	if (pvr == POWER10)
+	if (have_hwcap2(PPC_FEATURE2_ARCH_3_1))
 		return mmcra & BHRB_DISABLE;
 	return 0;
 }

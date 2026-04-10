@@ -99,7 +99,7 @@
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/slab.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/of_graph.h>
 #include <linux/module.h>
 #include <linux/regmap.h>
@@ -753,7 +753,7 @@ static int ak4613_dai_trigger(struct snd_pcm_substream *substream, int cmd,
  *	SND_SOC_DAIFMT_CBC_CFC
  *	SND_SOC_DAIFMT_CBP_CFP
  */
-static u64 ak4613_dai_formats =
+static const u64 ak4613_dai_formats =
 	SND_SOC_POSSIBLE_DAIFMT_I2S	|
 	SND_SOC_POSSIBLE_DAIFMT_LEFT_J;
 
@@ -827,7 +827,6 @@ static const struct snd_soc_component_driver soc_component_dev_ak4613 = {
 	.num_dapm_routes	= ARRAY_SIZE(ak4613_intercon),
 	.idle_bias_on		= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static void ak4613_parse_of(struct ak4613_priv *priv,
@@ -841,14 +840,14 @@ static void ak4613_parse_of(struct ak4613_priv *priv,
 	/* Input 1 - 2 */
 	for (i = 0; i < 2; i++) {
 		snprintf(prop, sizeof(prop), "asahi-kasei,in%d-single-end", i + 1);
-		if (!of_get_property(np, prop, NULL))
+		if (!of_property_read_bool(np, prop))
 			priv->ic |= 1 << i;
 	}
 
 	/* Output 1 - 6 */
 	for (i = 0; i < 6; i++) {
 		snprintf(prop, sizeof(prop), "asahi-kasei,out%d-single-end", i + 1);
-		if (!of_get_property(np, prop, NULL))
+		if (!of_property_read_bool(np, prop))
 			priv->oc |= 1 << i;
 	}
 
@@ -868,10 +867,12 @@ static void ak4613_parse_of(struct ak4613_priv *priv,
 
 	/*
 	 * connected STDI
+	 * TDM support is assuming it is probed via Audio-Graph-Card style here.
+	 * Default is SDTIx1 if it was probed via Simple-Audio-Card for now.
 	 */
 	sdti_num = of_graph_get_endpoint_count(np);
-	if (WARN_ON((sdti_num > 3) || (sdti_num < 1)))
-		return;
+	if ((sdti_num >= SDTx_MAX) || (sdti_num < 1))
+		sdti_num = 1;
 
 	AK4613_CONFIG_SDTI_set(priv, sdti_num);
 }
@@ -879,20 +880,11 @@ static void ak4613_parse_of(struct ak4613_priv *priv,
 static int ak4613_i2c_probe(struct i2c_client *i2c)
 {
 	struct device *dev = &i2c->dev;
-	struct device_node *np = dev->of_node;
 	const struct regmap_config *regmap_cfg;
 	struct regmap *regmap;
 	struct ak4613_priv *priv;
 
-	regmap_cfg = NULL;
-	if (np)
-		regmap_cfg = of_device_get_match_data(dev);
-	else {
-		const struct i2c_device_id *id =
-			i2c_match_id(ak4613_i2c_id, i2c);
-		regmap_cfg = (const struct regmap_config *)id->driver_data;
-	}
-
+	regmap_cfg = i2c_get_match_data(i2c);
 	if (!regmap_cfg)
 		return -EINVAL;
 
@@ -919,18 +911,12 @@ static int ak4613_i2c_probe(struct i2c_client *i2c)
 				      &ak4613_dai, 1);
 }
 
-static int ak4613_i2c_remove(struct i2c_client *client)
-{
-	return 0;
-}
-
 static struct i2c_driver ak4613_i2c_driver = {
 	.driver = {
 		.name = "ak4613-codec",
 		.of_match_table = ak4613_of_match,
 	},
-	.probe_new	= ak4613_i2c_probe,
-	.remove		= ak4613_i2c_remove,
+	.probe		= ak4613_i2c_probe,
 	.id_table	= ak4613_i2c_id,
 };
 

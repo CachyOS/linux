@@ -32,8 +32,9 @@ void autofs_catatonic_mode(struct autofs_sb_info *sbi)
 		wq->status = -ENOENT; /* Magic is gone - report failure */
 		kfree(wq->name.name - wq->offset);
 		wq->name.name = NULL;
-		wq->wait_ctr--;
-		wake_up_interruptible(&wq->queue);
+		wake_up(&wq->queue);
+		if (!--wq->wait_ctr)
+			kfree(wq);
 		wq = nwq;
 	}
 	fput(sbi->pipe);	/* Close the pipe */
@@ -375,7 +376,7 @@ int autofs_wait(struct autofs_sb_info *sbi,
 
 	if (!wq) {
 		/* Create a new wait queue */
-		wq = kmalloc(sizeof(struct autofs_wait_queue), GFP_KERNEL);
+		wq = kmalloc_obj(struct autofs_wait_queue);
 		if (!wq) {
 			kfree(name);
 			mutex_unlock(&sbi->wq_mutex);

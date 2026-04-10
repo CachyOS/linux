@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: ISC
+// SPDX-License-Identifier: BSD-3-Clause-Clear
 /* Copyright (C) 2019 MediaTek Inc.
  *
  * Author: Ryder Lee <ryder.lee@mediatek.com>
@@ -26,14 +26,14 @@ mt7622_init_tx_queues_multi(struct mt7615_dev *dev)
 	for (i = 0; i < ARRAY_SIZE(wmm_queue_map); i++) {
 		ret = mt76_init_tx_queue(&dev->mphy, i, wmm_queue_map[i],
 					 MT7615_TX_RING_SIZE / 2,
-					 MT_TX_RING_BASE, 0);
+					 MT_TX_RING_BASE, NULL, 0);
 		if (ret)
 			return ret;
 	}
 
 	ret = mt76_init_tx_queue(&dev->mphy, MT_TXQ_PSD, MT7622_TXQ_MGMT,
 				 MT7615_TX_MGMT_RING_SIZE,
-				 MT_TX_RING_BASE, 0);
+				 MT_TX_RING_BASE, NULL, 0);
 	if (ret)
 		return ret;
 
@@ -44,7 +44,7 @@ mt7622_init_tx_queues_multi(struct mt7615_dev *dev)
 static int
 mt7615_init_tx_queues(struct mt7615_dev *dev)
 {
-	int ret, i;
+	int ret;
 
 	ret = mt76_init_mcu_queue(&dev->mt76, MT_MCUQ_FWDL, MT7615_TXQ_FWDL,
 				  MT7615_TX_FWDL_RING_SIZE, MT_TX_RING_BASE);
@@ -54,13 +54,10 @@ mt7615_init_tx_queues(struct mt7615_dev *dev)
 	if (!is_mt7615(&dev->mt76))
 		return mt7622_init_tx_queues_multi(dev);
 
-	ret = mt76_init_tx_queue(&dev->mphy, 0, 0, MT7615_TX_RING_SIZE,
-				 MT_TX_RING_BASE, 0);
+	ret = mt76_connac_init_tx_queues(&dev->mphy, 0, MT7615_TX_RING_SIZE,
+					 MT_TX_RING_BASE, NULL, 0);
 	if (ret)
 		return ret;
-
-	for (i = 1; i <= MT_TXQ_PSD ; i++)
-		dev->mphy.q_tx[i] = dev->mphy.q_tx[0];
 
 	return mt76_init_mcu_queue(&dev->mt76, MT_MCUQ_WM, MT7615_TXQ_MCU,
 				   MT7615_TX_MCU_RING_SIZE, MT_TX_RING_BASE);
@@ -70,7 +67,7 @@ static int mt7615_poll_tx(struct napi_struct *napi, int budget)
 {
 	struct mt7615_dev *dev;
 
-	dev = container_of(napi, struct mt7615_dev, mt76.tx_napi);
+	dev = mt76_priv(napi->dev);
 	if (!mt76_connac_pm_ref(&dev->mphy, &dev->pm)) {
 		napi_complete(napi);
 		queue_work(dev->mt76.wq, &dev->pm.wake_work);
@@ -79,7 +76,8 @@ static int mt7615_poll_tx(struct napi_struct *napi, int budget)
 
 	mt76_queue_tx_cleanup(dev, dev->mt76.q_mcu[MT_MCUQ_WM], false);
 	if (napi_complete(napi))
-		mt7615_irq_enable(dev, mt7615_tx_mcu_int_mask(dev));
+		mt76_connac_irq_enable(&dev->mt76,
+				       mt7615_tx_mcu_int_mask(dev));
 
 	mt76_connac_pm_unref(&dev->mphy, &dev->pm);
 
@@ -91,7 +89,7 @@ static int mt7615_poll_rx(struct napi_struct *napi, int budget)
 	struct mt7615_dev *dev;
 	int done;
 
-	dev = container_of(napi->dev, struct mt7615_dev, mt76.napi_dev);
+	dev = mt76_priv(napi->dev);
 
 	if (!mt76_connac_pm_ref(&dev->mphy, &dev->pm)) {
 		napi_complete(napi);
@@ -284,7 +282,7 @@ int mt7615_dma_init(struct mt7615_dev *dev)
 	if (ret < 0)
 		return ret;
 
-	netif_napi_add_tx(&dev->mt76.tx_napi_dev, &dev->mt76.tx_napi,
+	netif_napi_add_tx(dev->mt76.tx_napi_dev, &dev->mt76.tx_napi,
 			  mt7615_poll_tx);
 	napi_enable(&dev->mt76.tx_napi);
 
@@ -300,7 +298,7 @@ int mt7615_dma_init(struct mt7615_dev *dev)
 	else
 	    mask |= MT_INT_MCU_CMD;
 
-	mt7615_irq_enable(dev, mask);
+	mt76_connac_irq_enable(&dev->mt76, mask);
 
 	mt7615_dma_start(dev);
 

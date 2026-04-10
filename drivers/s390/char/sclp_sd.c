@@ -5,20 +5,18 @@
  * Copyright IBM Corp. 2017
  */
 
-#define KMSG_COMPONENT "sclp_sd"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "sclp_sd: " fmt
 
 #include <linux/completion.h>
+#include <linux/jiffies.h>
 #include <linux/kobject.h>
 #include <linux/list.h>
 #include <linux/printk.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/async.h>
-#include <linux/export.h>
 #include <linux/mutex.h>
-
-#include <asm/pgalloc.h>
+#include <linux/pgalloc.h>
 
 #include "sclp.h"
 
@@ -27,6 +25,8 @@
 #define SD_EQ_SIZE		2
 
 #define SD_DI_CONFIG		3
+
+#define SD_TIMEOUT		msecs_to_jiffies(30000)
 
 struct sclp_sd_evbuf {
 	struct evbuf_header hdr;
@@ -194,6 +194,10 @@ static int sclp_sd_sync(unsigned long page, u8 eq, u8 di, u64 sat, u64 sa,
 	struct sclp_sd_evbuf *evbuf;
 	int rc;
 
+	if (!sclp_sd_register.sclp_send_mask ||
+	    !sclp_sd_register.sclp_receive_mask)
+		return -EIO;
+
 	sclp_sd_listener_init(&listener, __pa(sccb));
 	sclp_sd_listener_add(&listener);
 
@@ -230,9 +234,12 @@ static int sclp_sd_sync(unsigned long page, u8 eq, u8 di, u64 sat, u64 sa,
 		goto out;
 	}
 	if (!(evbuf->rflags & 0x80)) {
-		rc = wait_for_completion_interruptible(&listener.completion);
-		if (rc)
+		rc = wait_for_completion_interruptible_timeout(&listener.completion, SD_TIMEOUT);
+		if (rc == 0)
+			rc = -ETIME;
+		if (rc < 0)
 			goto out;
+		rc = 0;
 		evbuf = &listener.evbuf;
 	}
 	switch (evbuf->status) {
@@ -319,9 +326,15 @@ static int sclp_sd_store_data(struct sclp_sd_data *result, u8 di)
 	rc = sclp_sd_sync(page, SD_EQ_STORE_DATA, di, asce, (u64) data, &dsize,
 			  &esize);
 	if (rc) {
-		/* Cancel running request if interrupted */
-		if (rc == -ERESTARTSYS)
-			sclp_sd_sync(page, SD_EQ_HALT, di, 0, 0, NULL, NULL);
+		/* Cancel running request if interrupted or timed out */
+		if (rc == -ERESTARTSYS || rc == -ETIME) {
+			if (sclp_sd_sync(page, SD_EQ_HALT, di, 0, 0, NULL, NULL)) {
+				pr_warn("Could not stop Store Data request - leaking at least %zu bytes\n",
+					(size_t)dsize * PAGE_SIZE);
+				data = NULL;
+				asce = 0;
+			}
+		}
 		vfree(data);
 		goto out;
 	}
@@ -460,7 +473,7 @@ static struct kobj_type sclp_sd_file_ktype = {
  * on EOF.
  */
 static ssize_t data_read(struct file *file, struct kobject *kobj,
-			 struct bin_attribute *attr, char *buffer,
+			 const struct bin_attribute *attr, char *buffer,
 			 loff_t off, size_t size)
 {
 	struct sclp_sd_file *sd_file = to_sd_file(kobj);
@@ -505,7 +518,7 @@ static __init struct sclp_sd_file *sclp_sd_file_create(const char *name, u8 di)
 	struct sclp_sd_file *sd_file;
 	int rc;
 
-	sd_file = kzalloc(sizeof(*sd_file), GFP_KERNEL);
+	sd_file = kzalloc_obj(*sd_file);
 	if (!sd_file)
 		return NULL;
 	sd_file->di = di;

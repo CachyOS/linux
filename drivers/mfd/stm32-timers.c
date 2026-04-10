@@ -5,9 +5,12 @@
  */
 
 #include <linux/bitfield.h>
+#include <linux/export.h>
 #include <linux/mfd/stm32-timers.h>
 #include <linux/module.h>
 #include <linux/of_platform.h>
+#include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/reset.h>
 
 #define STM32_TIMERS_MAX_REGISTERS	0x3fc
@@ -172,6 +175,31 @@ static void stm32_timers_get_arr_size(struct stm32_timers *ddata)
 	regmap_write(ddata->regmap, TIM_ARR, arr);
 }
 
+static int stm32_timers_probe_hwcfgr(struct device *dev, struct stm32_timers *ddata)
+{
+	u32 val;
+
+	ddata->ipidr = (uintptr_t)device_get_match_data(dev);
+	if (!ddata->ipidr) {
+		/* Fallback to legacy method for probing counter width */
+		stm32_timers_get_arr_size(ddata);
+		return 0;
+	}
+
+	regmap_read(ddata->regmap, TIM_IPIDR, &val);
+	if (val != ddata->ipidr) {
+		dev_err(dev, "Unsupported device detected: %u\n", val);
+		return -EINVAL;
+	}
+
+	regmap_read(ddata->regmap, TIM_HWCFGR2, &val);
+
+	/* Counter width in bits, max reload value is BIT(width) - 1 */
+	ddata->max_arr = BIT(FIELD_GET(TIM_HWCFGR2_CNT_WIDTH, val)) - 1;
+
+	return 0;
+}
+
 static int stm32_timers_dma_probe(struct device *dev,
 				   struct stm32_timers *ddata)
 {
@@ -214,6 +242,48 @@ static void stm32_timers_dma_remove(struct device *dev,
 			dma_release_channel(ddata->dma.chans[i]);
 }
 
+static const char * const stm32_timers_irq_name[STM32_TIMERS_MAX_IRQS] = {
+	"brk", "up", "trg-com", "cc"
+};
+
+static int stm32_timers_irq_probe(struct platform_device *pdev,
+				  struct stm32_timers *ddata)
+{
+	int i, ret;
+
+	/*
+	 * STM32 Timer may have either:
+	 * - a unique global interrupt line
+	 * - four dedicated interrupt lines that may be handled separately.
+	 * Optionally get them here, to be used by child devices.
+	 */
+	ret = platform_get_irq_byname_optional(pdev, "global");
+	if (ret < 0 && ret != -ENXIO) {
+		return ret;
+	} else if (ret != -ENXIO) {
+		ddata->irq[STM32_TIMERS_IRQ_GLOBAL_BRK] = ret;
+		ddata->nr_irqs = 1;
+		return 0;
+	}
+
+	for (i = 0; i < STM32_TIMERS_MAX_IRQS; i++) {
+		ret = platform_get_irq_byname_optional(pdev, stm32_timers_irq_name[i]);
+		if (ret < 0 && ret != -ENXIO) {
+			return ret;
+		} else if (ret != -ENXIO) {
+			ddata->irq[i] = ret;
+			ddata->nr_irqs++;
+		}
+	}
+
+	if (ddata->nr_irqs && ddata->nr_irqs != STM32_TIMERS_MAX_IRQS) {
+		dev_err(&pdev->dev, "Invalid number of IRQs %d\n", ddata->nr_irqs);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static int stm32_timers_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -226,8 +296,7 @@ static int stm32_timers_probe(struct platform_device *pdev)
 	if (!ddata)
 		return -ENOMEM;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	mmio = devm_ioremap_resource(dev, res);
+	mmio = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(mmio))
 		return PTR_ERR(mmio);
 
@@ -243,7 +312,13 @@ static int stm32_timers_probe(struct platform_device *pdev)
 	if (IS_ERR(ddata->clk))
 		return PTR_ERR(ddata->clk);
 
-	stm32_timers_get_arr_size(ddata);
+	ret = stm32_timers_probe_hwcfgr(dev, ddata);
+	if (ret)
+		return ret;
+
+	ret = stm32_timers_irq_probe(pdev, ddata);
+	if (ret)
+		return ret;
 
 	ret = stm32_timers_dma_probe(dev, ddata);
 	if (ret) {
@@ -260,7 +335,7 @@ static int stm32_timers_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int stm32_timers_remove(struct platform_device *pdev)
+static void stm32_timers_remove(struct platform_device *pdev)
 {
 	struct stm32_timers *ddata = platform_get_drvdata(pdev);
 
@@ -270,12 +345,11 @@ static int stm32_timers_remove(struct platform_device *pdev)
 	 */
 	of_platform_depopulate(&pdev->dev);
 	stm32_timers_dma_remove(&pdev->dev, ddata);
-
-	return 0;
 }
 
 static const struct of_device_id stm32_timers_of_match[] = {
 	{ .compatible = "st,stm32-timers", },
+	{ .compatible = "st,stm32mp25-timers", .data = (void *)STM32MP25_TIM_IPIDR },
 	{ /* end node */ },
 };
 MODULE_DEVICE_TABLE(of, stm32_timers_of_match);

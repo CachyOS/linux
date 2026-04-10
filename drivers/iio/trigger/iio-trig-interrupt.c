@@ -48,7 +48,7 @@ static int iio_interrupt_trigger_probe(struct platform_device *pdev)
 		goto error_ret;
 	}
 
-	trig_info = kzalloc(sizeof(*trig_info), GFP_KERNEL);
+	trig_info = kzalloc_obj(*trig_info);
 	if (!trig_info) {
 		ret = -ENOMEM;
 		goto error_free_trigger;
@@ -81,7 +81,7 @@ error_ret:
 	return ret;
 }
 
-static int iio_interrupt_trigger_remove(struct platform_device *pdev)
+static void iio_interrupt_trigger_remove(struct platform_device *pdev)
 {
 	struct iio_trigger *trig;
 	struct iio_interrupt_trigger_info *trig_info;
@@ -92,8 +92,6 @@ static int iio_interrupt_trigger_remove(struct platform_device *pdev)
 	free_irq(trig_info->irq, trig);
 	kfree(trig_info);
 	iio_trigger_free(trig);
-
-	return 0;
 }
 
 static struct platform_driver iio_interrupt_trigger_driver = {

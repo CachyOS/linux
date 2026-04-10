@@ -3,7 +3,7 @@
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
  *
- * Copyright(c) 2017 Intel Corporation. All rights reserved.
+ * Copyright(c) 2017 Intel Corporation
  *
  * Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
  */
@@ -20,6 +20,10 @@ enum sof_intel_hw_ip_version {
 	SOF_INTEL_CAVS_1_8,	/* CannonLake, CometLake, CoffeeLake */
 	SOF_INTEL_CAVS_2_0,	/* IceLake, JasperLake */
 	SOF_INTEL_CAVS_2_5,	/* TigerLake, AlderLake */
+	SOF_INTEL_ACE_1_0,	/* MeteorLake */
+	SOF_INTEL_ACE_2_0,	/* LunarLake */
+	SOF_INTEL_ACE_3_0,	/* PantherLake */
+	SOF_INTEL_ACE_4_0,	/* NovaLake */
 };
 
 /*
@@ -181,13 +185,24 @@ struct sof_intel_dsp_desc {
 	int ssp_base_offset;		/* base address of the SSPs */
 	u32 sdw_shim_base;
 	u32 sdw_alh_base;
+	u32 d0i3_offset;
 	u32 quirks;
+	const char *platform;
 	enum sof_intel_hw_ip_version hw_ip_version;
+	int (*read_sdw_lcount)(struct snd_sof_dev *sdev);
+	void (*enable_sdw_irq)(struct snd_sof_dev *sdev, bool enable);
 	bool (*check_sdw_irq)(struct snd_sof_dev *sdev);
+	bool (*check_sdw_wakeen_irq)(struct snd_sof_dev *sdev);
+	void (*sdw_process_wakeen)(struct snd_sof_dev *sdev);
 	bool (*check_ipc_irq)(struct snd_sof_dev *sdev);
+	bool (*check_mic_privacy_irq)(struct snd_sof_dev *sdev, bool alt, int elid);
+	void (*process_mic_privacy)(struct snd_sof_dev *sdev, bool alt, int elid);
+	int (*power_down_dsp)(struct snd_sof_dev *sdev);
+	int (*disable_interrupts)(struct snd_sof_dev *sdev);
+	int (*cl_init)(struct snd_sof_dev *sdev, int stream_tag, bool imr_boot);
 };
 
-extern struct snd_sof_dsp_ops sof_tng_ops;
+extern const struct snd_sof_dsp_ops sof_tng_ops;
 
 extern const struct sof_intel_dsp_desc tng_chip_info;
 

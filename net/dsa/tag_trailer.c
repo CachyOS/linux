@@ -8,16 +8,17 @@
 #include <linux/list.h>
 #include <linux/slab.h>
 
-#include "dsa_priv.h"
+#include "tag.h"
+
+#define TRAILER_NAME "trailer"
 
 static struct sk_buff *trailer_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	struct dsa_port *dp = dsa_slave_to_port(dev);
 	u8 *trailer;
 
 	trailer = skb_put(skb, 4);
 	trailer[0] = 0x80;
-	trailer[1] = 1 << dp->index;
+	trailer[1] = dsa_xmit_port_mask(skb, dev);
 	trailer[2] = 0x10;
 	trailer[3] = 0x00;
 
@@ -39,7 +40,7 @@ static struct sk_buff *trailer_rcv(struct sk_buff *skb, struct net_device *dev)
 
 	source_port = trailer[1] & 7;
 
-	skb->dev = dsa_master_find_slave(dev, 0, source_port);
+	skb->dev = dsa_conduit_find_user(dev, 0, source_port);
 	if (!skb->dev)
 		return NULL;
 
@@ -50,14 +51,15 @@ static struct sk_buff *trailer_rcv(struct sk_buff *skb, struct net_device *dev)
 }
 
 static const struct dsa_device_ops trailer_netdev_ops = {
-	.name	= "trailer",
+	.name	= TRAILER_NAME,
 	.proto	= DSA_TAG_PROTO_TRAILER,
 	.xmit	= trailer_xmit,
 	.rcv	= trailer_rcv,
 	.needed_tailroom = 4,
 };
 
+MODULE_DESCRIPTION("DSA tag driver for switches using a trailer tag");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_TRAILER);
+MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_TRAILER, TRAILER_NAME);
 
 module_dsa_tag_driver(trailer_netdev_ops);

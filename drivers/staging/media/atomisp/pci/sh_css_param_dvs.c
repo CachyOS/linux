@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #include "sh_css_param_dvs.h"
@@ -31,8 +22,7 @@ alloc_dvs_6axis_table(const struct ia_css_resolution *frame_res,
 	int err = 0;
 	struct ia_css_dvs_6axis_config  *dvs_config = NULL;
 
-	dvs_config = kvmalloc(sizeof(struct ia_css_dvs_6axis_config),
-			      GFP_KERNEL);
+	dvs_config = kvmalloc_obj(struct ia_css_dvs_6axis_config);
 	if (!dvs_config)	{
 		IA_CSS_ERROR("out of memory");
 		err = -ENOMEM;
@@ -202,9 +192,6 @@ generate_dvs_6axis_table_from_config(struct ia_css_dvs_6axis_config
 void
 free_dvs_6axis_table(struct ia_css_dvs_6axis_config  **dvs_6axis_config)
 {
-	assert(dvs_6axis_config);
-	assert(*dvs_6axis_config);
-
 	if ((dvs_6axis_config) && (*dvs_6axis_config)) {
 		IA_CSS_ENTER_PRIVATE("dvs_6axis_config %p", (*dvs_6axis_config));
 		if ((*dvs_6axis_config)->xcoords_y) {

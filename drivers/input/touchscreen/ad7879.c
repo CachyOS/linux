@@ -22,6 +22,7 @@
 
 #include <linux/device.h>
 #include <linux/delay.h>
+#include <linux/export.h>
 #include <linux/input.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
@@ -237,7 +238,7 @@ static void ad7879_ts_event_release(struct ad7879 *ts)
 
 static void ad7879_timer(struct timer_list *t)
 {
-	struct ad7879 *ts = from_timer(ts, t, timer);
+	struct ad7879 *ts = timer_container_of(ts, t, timer);
 
 	ad7879_ts_event_release(ts);
 }
@@ -273,7 +274,7 @@ static void __ad7879_disable(struct ad7879 *ts)
 		AD7879_PM(AD7879_PM_SHUTDOWN);
 	disable_irq(ts->irq);
 
-	if (del_timer_sync(&ts->timer))
+	if (timer_delete_sync(&ts->timer))
 		ad7879_ts_event_release(ts);
 
 	ad7879_write(ts, AD7879_REG_CTRL2, reg);
@@ -391,6 +392,12 @@ static const struct attribute_group ad7879_attr_group = {
 	.attrs = ad7879_attributes,
 };
 
+const struct attribute_group *ad7879_groups[] = {
+	&ad7879_attr_group,
+	NULL
+};
+EXPORT_SYMBOL_GPL(ad7879_groups);
+
 #ifdef CONFIG_GPIOLIB
 static int ad7879_gpio_direction_input(struct gpio_chip *chip,
 					unsigned gpio)
@@ -438,10 +445,11 @@ static int ad7879_gpio_get_value(struct gpio_chip *chip, unsigned gpio)
 	return !!(val & AD7879_GPIO_DATA);
 }
 
-static void ad7879_gpio_set_value(struct gpio_chip *chip,
-				  unsigned gpio, int value)
+static int ad7879_gpio_set_value(struct gpio_chip *chip, unsigned int gpio,
+				 int value)
 {
 	struct ad7879 *ts = gpiochip_get_data(chip);
+	int ret;
 
 	mutex_lock(&ts->mutex);
 	if (value)
@@ -449,8 +457,10 @@ static void ad7879_gpio_set_value(struct gpio_chip *chip,
 	else
 		ts->cmd_crtl2 &= ~AD7879_GPIO_DATA;
 
-	ad7879_write(ts, AD7879_REG_CTRL2, ts->cmd_crtl2);
+	ret = ad7879_write(ts, AD7879_REG_CTRL2, ts->cmd_crtl2);
 	mutex_unlock(&ts->mutex);
+
+	return ret;
 }
 
 static int ad7879_gpio_add(struct ad7879 *ts)
@@ -611,10 +621,6 @@ int ad7879_probe(struct device *dev, struct regmap *regmap,
 	}
 
 	__ad7879_disable(ts);
-
-	err = devm_device_add_group(dev, &ad7879_attr_group);
-	if (err)
-		return err;
 
 	err = ad7879_gpio_add(ts);
 	if (err)

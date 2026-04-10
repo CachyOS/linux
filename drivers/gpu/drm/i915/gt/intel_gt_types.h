@@ -11,6 +11,7 @@
 #include <linux/llist.h>
 #include <linux/mutex.h>
 #include <linux/notifier.h>
+#include <linux/seqlock.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
@@ -19,6 +20,7 @@
 #include "intel_gsc.h"
 
 #include "i915_vma.h"
+#include "i915_perf_types.h"
 #include "intel_engine_types.h"
 #include "intel_gt_buffer_pool_types.h"
 #include "intel_hwconfig.h"
@@ -28,7 +30,7 @@
 #include "intel_rps_types.h"
 #include "intel_migrate_types.h"
 #include "intel_wakeref.h"
-#include "pxp/intel_pxp_types.h"
+#include "intel_wopcm.h"
 
 struct drm_i915_private;
 struct i915_ggtt;
@@ -58,6 +60,16 @@ enum intel_steering_type {
 	L3BANK,
 	MSLICE,
 	LNCF,
+	GAM,
+	DSS,
+	OADDRM,
+
+	/*
+	 * On some platforms there are multiple types of MCR registers that
+	 * will always return a non-terminated value at instance (0, 0).  We'll
+	 * lump those all into a single category to keep things simple.
+	 */
+	INSTANCE0,
 
 	NUM_STEERING_TYPES
 };
@@ -68,15 +80,48 @@ enum intel_submission_method {
 	INTEL_SUBMISSION_GUC,
 };
 
+struct gt_defaults {
+	u32 min_freq;
+	u32 max_freq;
+
+	u8 rps_up_threshold;
+	u8 rps_down_threshold;
+};
+
+enum intel_gt_type {
+	GT_PRIMARY,
+	GT_TILE,
+	GT_MEDIA,
+};
+
 struct intel_gt {
 	struct drm_i915_private *i915;
+	const char *name;
+	enum intel_gt_type type;
+
 	struct intel_uncore *uncore;
 	struct i915_ggtt *ggtt;
 
 	struct intel_uc uc;
 	struct intel_gsc gsc;
+	struct intel_wopcm wopcm;
 
-	struct mutex tlb_invalidate_lock;
+	struct {
+		/* Serialize global tlb invalidations */
+		struct mutex invalidate_lock;
+
+		/*
+		 * Batch TLB invalidations
+		 *
+		 * After unbinding the PTE, we need to ensure the TLB
+		 * are invalidated prior to releasing the physical pages.
+		 * But we only need one such invalidation for all unbinds,
+		 * so we track how many TLB invalidations have been
+		 * performed since unbind the PTE and only emit an extra
+		 * invalidate if no full barrier has been passed.
+		 */
+		seqcount_mutex_t seqno;
+	} tlb;
 
 	struct i915_wa_list wa_list;
 
@@ -126,7 +171,7 @@ struct intel_gt {
 	struct intel_rc6 rc6;
 	struct intel_rps rps;
 
-	spinlock_t irq_lock;
+	spinlock_t *irq_lock;
 	u32 gt_imr;
 	u32 pm_ier;
 	u32 pm_imr;
@@ -162,6 +207,14 @@ struct intel_gt {
 					    [MAX_ENGINE_INSTANCE + 1];
 	enum intel_submission_method submission_method;
 
+	struct {
+		/*
+		 * Mask of the non fused CCS slices
+		 * to be used for the load balancing
+		 */
+		intel_engine_mask_t cslices;
+	} ccs;
+
 	/*
 	 * Default address space (either GGTT or ppGTT depending on arch).
 	 *
@@ -189,6 +242,14 @@ struct intel_gt {
 		u8 groupid;
 		u8 instanceid;
 	} default_steering;
+
+	/**
+	 * @mcr_lock: Protects the MCR steering register
+	 *
+	 * Protects the MCR steering register (e.g., GEN8_MCR_SELECTOR).
+	 * Should be taken before uncore->lock in cases where both are desired.
+	 */
+	spinlock_t mcr_lock;
 
 	/*
 	 * Base of per-tile GTTMMADR where we can derive the MMIO and the GGTT.
@@ -221,12 +282,30 @@ struct intel_gt {
 
 	struct {
 		u8 uc_index;
+		u8 wb_index; /* Only used on HAS_L3_CCS_READ() platforms */
 	} mocs;
-
-	struct intel_pxp pxp;
 
 	/* gt/gtN sysfs */
 	struct kobject sysfs_gt;
+
+	/* sysfs defaults per gt */
+	struct gt_defaults defaults;
+	struct kobject *sysfs_defaults;
+
+	struct work_struct wedge;
+
+	struct i915_perf_gt perf;
+
+	/** link: &ggtt.gt_list */
+	struct list_head ggtt_link;
+};
+
+struct intel_gt_definition {
+	enum intel_gt_type type;
+	char *name;
+	u32 mapping_base;
+	u32 gsi_offset;
+	intel_engine_mask_t engine_mask;
 };
 
 enum intel_gt_scratch_field {
@@ -238,12 +317,8 @@ enum intel_gt_scratch_field {
 
 	/* 8 bytes */
 	INTEL_GT_SCRATCH_FIELD_COHERENTL3_WA = 256,
-
-	/* 6 * 8 bytes */
-	INTEL_GT_SCRATCH_FIELD_PERF_CS_GPR = 2048,
-
-	/* 4 bytes */
-	INTEL_GT_SCRATCH_FIELD_PERF_PREDICATE_RESULT_1 = 2096,
 };
+
+#define intel_gt_support_legacy_fencing(gt) ((gt)->ggtt->num_fences > 0)
 
 #endif /* __INTEL_GT_TYPES_H__ */

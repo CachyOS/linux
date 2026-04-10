@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/mips/realtek-rtl.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Realtek RTL83xx/93xx SoC series device tree bindings
+title: Realtek RTL83xx/93xx SoC series
 
 maintainers:
   - Bert Vermeulen <bert@biot.com>
@@ -20,5 +20,9 @@ properties:
           - enum:
               - cisco,sg220-26
           - const: realtek,rtl8382-soc
+      - items:
+          - enum:
+              - cameo,rtl9302c-2x-rtl8224-2xge
+          - const: realtek,rtl9302-soc
 
 additionalProperties: true

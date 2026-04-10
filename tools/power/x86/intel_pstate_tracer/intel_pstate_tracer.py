@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
 # -*- coding: utf-8 -*-
 #
@@ -11,11 +11,11 @@ then this utility enables and collects trace data for a user specified interval
 and generates performance plots.
 
 Prerequisites:
-    Python version 2.7.x or higher
+    Python version 3.6.x or higher
     gnuplot 5.0 or higher
-    gnuplot-py 1.8 or higher
+    python3-gnuplot 1.8 or higher
     (Most of the distributions have these required packages. They may be called
-     gnuplot-py, phython-gnuplot or phython3-gnuplot, gnuplot-nox, ... )
+     gnuplot-py, python-gnuplot or python3-gnuplot, gnuplot-nox, ... )
 
     HWP (Hardware P-States are disabled)
     Kernel config for Linux trace is enabled
@@ -23,7 +23,7 @@ Prerequisites:
     see print_help(): for Usage and Output details
 
 """
-from __future__ import print_function
+
 from datetime import datetime
 import subprocess
 import os
@@ -373,7 +373,7 @@ def clear_trace_file():
     """ Clear trace file """
 
     try:
-        f_handle = open('/sys/kernel/debug/tracing/trace', 'w')
+        f_handle = open('/sys/kernel/tracing/trace', 'w')
         f_handle.close()
     except:
         print('IO error clearing trace file ')
@@ -401,7 +401,7 @@ def set_trace_buffer_size(memory):
     """ Set trace buffer size """
 
     try:
-       with open('/sys/kernel/debug/tracing/buffer_size_kb', 'w') as fp:
+       with open('/sys/kernel/tracing/buffer_size_kb', 'w') as fp:
           fp.write(memory)
     except:
        print('IO error setting trace buffer size ')
@@ -411,7 +411,7 @@ def free_trace_buffer():
     """ Free the trace buffer memory """
 
     try:
-       open('/sys/kernel/debug/tracing/buffer_size_kb'
+       open('/sys/kernel/tracing/buffer_size_kb'
                  , 'w').write("1")
     except:
         print('IO error freeing trace buffer ')
@@ -495,7 +495,7 @@ def signal_handler(signal, frame):
         sys.exit(0)
 
 if __name__ == "__main__":
-    trace_file = "/sys/kernel/debug/tracing/events/power/pstate_sample/enable"
+    trace_file = "/sys/kernel/tracing/events/power/pstate_sample/enable"
     signal.signal(signal.SIGINT, signal_handler)
 
     interval = ""
@@ -562,14 +562,14 @@ if __name__ == "__main__":
 
     # Temporary (or perhaps not)
     cur_version = sys.version_info
-    print('python version (should be >= 2.7):')
+    print('python version (should be >= 3.6):')
     print(cur_version)
 
     # Left as "cleanup" for potential future re-run ability.
     cleanup_data_files()
 
     if interval:
-        filename = "/sys/kernel/debug/tracing/trace"
+        filename = "/sys/kernel/tracing/trace"
         clear_trace_file()
         set_trace_buffer_size(memory)
         enable_trace(trace_file)

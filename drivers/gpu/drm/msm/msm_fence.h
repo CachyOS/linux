@@ -16,34 +16,29 @@
  * incrementing fence seqno at the end of each submit
  */
 struct msm_fence_context {
+	/** @dev: the drm device */
 	struct drm_device *dev;
-	/** name: human readable name for fence timeline */
+	/** @name: human readable name for fence timeline */
 	char name[32];
-	/** context: see dma_fence_context_alloc() */
+	/** @context: see dma_fence_context_alloc() */
 	unsigned context;
-	/** index: similar to context, but local to msm_fence_context's */
+	/** @index: similar to context, but local to msm_fence_context's */
 	unsigned index;
-
 	/**
-	 * last_fence:
-	 *
+	 * @last_fence:
 	 * Last assigned fence, incremented each time a fence is created
 	 * on this fence context.  If last_fence == completed_fence,
 	 * there is no remaining pending work
 	 */
 	uint32_t last_fence;
-
 	/**
-	 * completed_fence:
-	 *
+	 * @completed_fence:
 	 * The last completed fence, updated from the CPU after interrupt
 	 * from GPU
 	 */
 	uint32_t completed_fence;
-
 	/**
-	 * fenceptr:
-	 *
+	 * @fenceptr:
 	 * The address that the GPU directly writes with completed fence
 	 * seqno.  This can be ahead of completed_fence.  We can peek at
 	 * this to see if a fence has already signaled but the CPU hasn't
@@ -51,7 +46,34 @@ struct msm_fence_context {
 	 */
 	volatile uint32_t *fenceptr;
 
+	/**
+	 * @spinlock: fence context spinlock
+	 */
 	spinlock_t spinlock;
+
+	/*
+	 * TODO this doesn't really deal with multiple deadlines, like
+	 * if userspace got multiple frames ahead.. OTOH atomic updates
+	 * don't queue, so maybe that is ok
+	 */
+
+	/** @next_deadline: Time of next deadline */
+	ktime_t next_deadline;
+	/**
+	 * @next_deadline_fence:
+	 * Fence value for next pending deadline.  The deadline timer is
+	 * canceled when this fence is signaled.
+	 */
+	uint32_t next_deadline_fence;
+	/**
+	 * @deadline_timer: tracks nearest deadline of a fence timeline and
+	 * expires just before it.
+	 */
+	struct hrtimer deadline_timer;
+	/**
+	 * @deadline_work: work to do after deadline_timer expires
+	 */
+	struct kthread_work deadline_work;
 };
 
 struct msm_fence_context * msm_fence_context_alloc(struct drm_device *dev,
@@ -61,7 +83,8 @@ void msm_fence_context_free(struct msm_fence_context *fctx);
 bool msm_fence_completed(struct msm_fence_context *fctx, uint32_t fence);
 void msm_update_fence(struct msm_fence_context *fctx, uint32_t fence);
 
-struct dma_fence * msm_fence_alloc(struct msm_fence_context *fctx);
+struct dma_fence * msm_fence_alloc(void);
+void msm_fence_init(struct dma_fence *fence, struct msm_fence_context *fctx);
 
 static inline bool
 fence_before(uint32_t a, uint32_t b)

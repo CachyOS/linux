@@ -10,6 +10,8 @@
  *  Copyright:	MontaVista Software, Inc.
  */
 
+#include <asm/syscalls.h>
+
 /*
  * The legacy ABI and the new ARM EABI have different rules making some
  * syscalls incompatible especially with structure arguments.
@@ -73,6 +75,7 @@
 #include <linux/syscalls.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
+#include <linux/filelock.h>
 #include <linux/cred.h>
 #include <linux/fcntl.h>
 #include <linux/eventpoll.h>
@@ -232,23 +235,23 @@ asmlinkage long sys_oabi_fcntl64(unsigned int fd, unsigned int cmd,
 				 unsigned long arg)
 {
 	void __user *argp = (void __user *)arg;
-	struct fd f = fdget_raw(fd);
+	CLASS(fd_raw, f)(fd);
 	struct flock64 flock;
-	long err = -EBADF;
+	long err;
 
-	if (!f.file)
-		goto out;
+	if (fd_empty(f))
+		return -EBADF;
 
 	switch (cmd) {
 	case F_GETLK64:
 	case F_OFD_GETLK:
-		err = security_file_fcntl(f.file, cmd, arg);
+		err = security_file_fcntl(fd_file(f), cmd, arg);
 		if (err)
 			break;
 		err = get_oabi_flock(&flock, argp);
 		if (err)
 			break;
-		err = fcntl_getlk64(f.file, cmd, &flock);
+		err = fcntl_getlk64(fd_file(f), cmd, &flock);
 		if (!err)
 		       err = put_oabi_flock(&flock, argp);
 		break;
@@ -256,20 +259,18 @@ asmlinkage long sys_oabi_fcntl64(unsigned int fd, unsigned int cmd,
 	case F_SETLKW64:
 	case F_OFD_SETLK:
 	case F_OFD_SETLKW:
-		err = security_file_fcntl(f.file, cmd, arg);
+		err = security_file_fcntl(fd_file(f), cmd, arg);
 		if (err)
 			break;
 		err = get_oabi_flock(&flock, argp);
 		if (err)
 			break;
-		err = fcntl_setlk64(fd, f.file, cmd, &flock);
+		err = fcntl_setlk64(fd, fd_file(f), cmd, &flock);
 		break;
 	default:
 		err = sys_fcntl64(fd, cmd, arg);
 		break;
 	}
-	fdput(f);
-out:
 	return err;
 }
 
@@ -348,7 +349,7 @@ asmlinkage long sys_oabi_semtimedop(int semid,
 		return -E2BIG;
 	if (nsops < 1 || nsops > SEMOPM)
 		return -EINVAL;
-	sops = kvmalloc_array(nsops, sizeof(*sops), GFP_KERNEL);
+	sops = kvmalloc_objs(*sops, nsops);
 	if (!sops)
 		return -ENOMEM;
 	err = 0;

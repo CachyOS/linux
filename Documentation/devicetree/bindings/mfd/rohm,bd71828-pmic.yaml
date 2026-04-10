@@ -4,10 +4,10 @@
 $id: http://devicetree.org/schemas/mfd/rohm,bd71828-pmic.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: ROHM BD71828 Power Management Integrated Circuit bindings
+title: ROHM BD71828 Power Management Integrated Circuit
 
 maintainers:
-  - Matti Vaittinen <matti.vaittinen@fi.rohmeurope.com>
+  - Matti Vaittinen <mazziesaccount@gmail.com>
 
 description: |
   BD71828GW is a single-chip power management IC for battery-powered portable
@@ -17,7 +17,12 @@ description: |
 
 properties:
   compatible:
-    const: rohm,bd71828
+    oneOf:
+      - const: rohm,bd71828
+
+      - items:
+          - const: rohm,bd71879
+          - const: rohm,bd71828
 
   reg:
     description:
@@ -46,32 +51,35 @@ properties:
 
   rohm,clkout-open-drain:
     description: clk32kout mode. Set to 1 for "open-drain" or 0 for "cmos".
-    $ref: "/schemas/types.yaml#/definitions/uint32"
+    $ref: /schemas/types.yaml#/definitions/uint32
     minimum: 0
     maximum: 1
 
-  rohm,charger-sense-resistor-ohms:
-    minimum: 10000000
-    maximum: 50000000
+  rohm,charger-sense-resistor-micro-ohms:
+    minimum: 10000
+    maximum: 50000
+    default: 30000
     description: |
       BD71827 and BD71828 have SAR ADC for measuring charging currents.
       External sense resistor (RSENSE in data sheet) should be used. If some
-      other but 30MOhm resistor is used the resistance value should be given
-      here in Ohms.
+      other but 30mOhm resistor is used the resistance value should be given
+      here in microohms.
 
   regulators:
-    $ref: ../regulator/rohm,bd71828-regulator.yaml
+    $ref: /schemas/regulator/rohm,bd71828-regulator.yaml
     description:
       List of child nodes that specify the regulators.
 
   leds:
-    $ref: ../leds/rohm,bd71828-leds.yaml
+    $ref: /schemas/leds/rohm,bd71828-leds.yaml
 
   gpio-reserved-ranges:
     description: |
       Usage of BD71828 GPIO pins can be changed via OTP. This property can be
       used to mark the pins which should not be configured for GPIO. Please see
       the ../gpio/gpio.txt for more information.
+
+  system-power-controller: true
 
 required:
   - compatible
@@ -107,7 +115,7 @@ examples:
             #gpio-cells = <2>;
             gpio-reserved-ranges = <0 1>, <2 1>;
 
-            rohm,charger-sense-resistor-ohms = <10000000>;
+            rohm,charger-sense-resistor-micro-ohms = <10000>;
 
             regulators {
                 buck1: BUCK1 {

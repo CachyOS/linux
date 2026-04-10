@@ -23,6 +23,7 @@ properties:
               - amlogic,meson8m2-saradc
               - amlogic,meson-gxbb-saradc
               - amlogic,meson-gxl-saradc
+              - amlogic,meson-gxlx-saradc
               - amlogic,meson-gxm-saradc
               - amlogic,meson-axg-saradc
               - amlogic,meson-g12a-saradc
@@ -66,6 +67,9 @@ properties:
   nvmem-cell-names:
     const: temperature_calib
 
+  power-domains:
+    maxItems: 1
+
 allOf:
   - if:
       properties:
@@ -95,6 +99,7 @@ allOf:
         compatible:
           contains:
             enum:
+              - amlogic,meson8-saradc
               - amlogic,meson8b-saradc
               - amlogic,meson8m2-saradc
     then:

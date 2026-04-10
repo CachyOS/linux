@@ -212,13 +212,12 @@ static int als_set_default_config(struct i2c_client *client)
 	return ret_val;
 }
 
-static int apds9802als_probe(struct i2c_client *client,
-			     const struct i2c_device_id *id)
+static int apds9802als_probe(struct i2c_client *client)
 {
 	int res;
 	struct als_data *data;
 
-	data = kzalloc(sizeof(struct als_data), GFP_KERNEL);
+	data = kzalloc_obj(struct als_data);
 	if (data == NULL) {
 		dev_err(&client->dev, "Memory allocation failed\n");
 		return -ENOMEM;
@@ -242,7 +241,7 @@ als_error1:
 	return res;
 }
 
-static int apds9802als_remove(struct i2c_client *client)
+static void apds9802als_remove(struct i2c_client *client)
 {
 	struct als_data *data = i2c_get_clientdata(client);
 
@@ -256,7 +255,6 @@ static int apds9802als_remove(struct i2c_client *client)
 	pm_runtime_put_noidle(&client->dev);
 
 	kfree(data);
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -287,7 +285,7 @@ static UNIVERSAL_DEV_PM_OPS(apds9802als_pm_ops, apds9802als_suspend,
 #endif	/* CONFIG_PM */
 
 static const struct i2c_device_id apds9802als_id[] = {
-	{ DRIVER_NAME, 0 },
+	{ DRIVER_NAME },
 	{ }
 };
 

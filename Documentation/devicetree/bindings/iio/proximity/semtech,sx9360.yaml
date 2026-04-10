@@ -36,7 +36,7 @@ properties:
     const: 1
 
   semtech,resolution:
-    $ref: /schemas/types.yaml#/definitions/uint32-array
+    $ref: /schemas/types.yaml#/definitions/uint32
     enum: [8, 16, 32, 64, 128, 256, 512, 1024]
     description:
       Capacitance measurement resolution. For both phases, "reference" and
@@ -60,6 +60,14 @@ properties:
       Average positive filter strength. A value of 0 represents off and
       UINT_MAX (4294967295) represents infinite. Other values
       represent 1-1/N.
+
+  semtech,input-precharge-resistor-ohms:
+    default: 0
+    multipleOf: 2000
+    minimum: 0
+    maximum: 30000
+    description:
+      Pre-charge input resistance in Ohm.
 
 required:
   - compatible
@@ -85,5 +93,6 @@ examples:
         semtech,resolution = <256>;
         semtech,proxraw-strength = <2>;
         semtech,avg-pos-strength = <64>;
+        semtech,input-precharge-resistor-ohms = <4000>;
       };
     };

@@ -193,6 +193,7 @@ static int xrx200_alloc_buf(struct xrx200_chan *ch, void *(*alloc)(unsigned int 
 
 	ch->rx_buff[ch->dma.desc] = alloc(priv->rx_skb_size);
 	if (!ch->rx_buff[ch->dma.desc]) {
+		ch->rx_buff[ch->dma.desc] = buf;
 		ret = -ENOMEM;
 		goto skip;
 	}
@@ -239,6 +240,12 @@ static int xrx200_hw_receive(struct xrx200_chan *ch)
 	}
 
 	skb = build_skb(buf, priv->rx_skb_size);
+	if (!skb) {
+		skb_free_frag(buf);
+		net_dev->stats.rx_dropped++;
+		return -ENOMEM;
+	}
+
 	skb_reserve(skb, NET_SKB_PAD);
 	skb_put(skb, len);
 
@@ -288,7 +295,7 @@ static int xrx200_poll_rx(struct napi_struct *napi, int budget)
 			if (ret == XRX200_DMA_PACKET_IN_PROGRESS)
 				continue;
 			if (ret != XRX200_DMA_PACKET_COMPLETE)
-				return ret;
+				break;
 			rx++;
 		} else {
 			break;
@@ -412,7 +419,7 @@ xrx200_change_mtu(struct net_device *net_dev, int new_mtu)
 	int curr_desc;
 	int ret = 0;
 
-	net_dev->mtu = new_mtu;
+	WRITE_ONCE(net_dev->mtu, new_mtu);
 	priv->rx_buf_size = xrx200_buffer_size(new_mtu);
 	priv->rx_skb_size = xrx200_skb_size(priv->rx_buf_size);
 
@@ -433,7 +440,7 @@ xrx200_change_mtu(struct net_device *net_dev, int new_mtu)
 		buff = ch_rx->rx_buff[ch_rx->dma.desc];
 		ret = xrx200_alloc_buf(ch_rx, netdev_alloc_frag);
 		if (ret) {
-			net_dev->mtu = old_mtu;
+			WRITE_ONCE(net_dev->mtu, old_mtu);
 			priv->rx_buf_size = xrx200_buffer_size(old_mtu);
 			priv->rx_skb_size = xrx200_skb_size(priv->rx_buf_size);
 			break;
@@ -613,8 +620,7 @@ static int xrx200_probe(struct platform_device *pdev)
 			 PMAC_HD_CTL);
 
 	/* setup NAPI */
-	netif_napi_add(net_dev, &priv->chan_rx.napi, xrx200_poll_rx,
-		       NAPI_POLL_WEIGHT);
+	netif_napi_add(net_dev, &priv->chan_rx.napi, xrx200_poll_rx);
 	netif_napi_add_tx(net_dev, &priv->chan_tx.napi,
 			  xrx200_tx_housekeeping);
 
@@ -635,7 +641,7 @@ err_uninit_dma:
 	return err;
 }
 
-static int xrx200_remove(struct platform_device *pdev)
+static void xrx200_remove(struct platform_device *pdev)
 {
 	struct xrx200_priv *priv = platform_get_drvdata(pdev);
 	struct net_device *net_dev = priv->net_dev;
@@ -653,8 +659,6 @@ static int xrx200_remove(struct platform_device *pdev)
 
 	/* shut down hardware */
 	xrx200_hw_cleanup(priv);
-
-	return 0;
 }
 
 static const struct of_device_id xrx200_match[] = {

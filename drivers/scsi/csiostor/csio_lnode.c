@@ -38,7 +38,7 @@
 #include <linux/utsname.h>
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_transport_fc.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <scsi/fc/fc_els.h>
 #include <scsi/fc/fc_fs.h>
 #include <scsi/fc/fc_gs.h>
@@ -1095,7 +1095,7 @@ csio_handle_link_down(struct csio_hw *hw, uint8_t portid, uint32_t fcfi,
 int
 csio_is_lnode_ready(struct csio_lnode *ln)
 {
-	return (csio_get_state(ln) == ((csio_sm_state_t)csio_lns_ready));
+	return (csio_get_state(ln) == csio_lns_ready);
 }
 
 /*****************************************************************************/
@@ -1366,15 +1366,15 @@ csio_free_fcfinfo(struct kref *kref)
 void
 csio_lnode_state_to_str(struct csio_lnode *ln, int8_t *str)
 {
-	if (csio_get_state(ln) == ((csio_sm_state_t)csio_lns_uninit)) {
+	if (csio_get_state(ln) == csio_lns_uninit) {
 		strcpy(str, "UNINIT");
 		return;
 	}
-	if (csio_get_state(ln) == ((csio_sm_state_t)csio_lns_ready)) {
+	if (csio_get_state(ln) == csio_lns_ready) {
 		strcpy(str, "READY");
 		return;
 	}
-	if (csio_get_state(ln) == ((csio_sm_state_t)csio_lns_offline)) {
+	if (csio_get_state(ln) == csio_lns_offline) {
 		strcpy(str, "OFFLINE");
 		return;
 	}
@@ -1837,7 +1837,7 @@ csio_ln_fdmi_init(struct csio_lnode *ln)
 	struct csio_dma_buf	*dma_buf;
 
 	/* Allocate MGMT request required for FDMI */
-	ln->mgmt_req = kzalloc(sizeof(struct csio_ioreq), GFP_KERNEL);
+	ln->mgmt_req = kzalloc_obj(struct csio_ioreq);
 	if (!ln->mgmt_req) {
 		csio_ln_err(ln, "Failed to alloc ioreq for FDMI\n");
 		CSIO_INC_STATS(hw, n_err_nomem);
@@ -2002,7 +2002,7 @@ csio_ln_init(struct csio_lnode *ln)
 
 		/* This is the lnode used during initialization */
 
-		ln->fcfinfo = kzalloc(sizeof(struct csio_fcf_info), GFP_KERNEL);
+		ln->fcfinfo = kzalloc_obj(struct csio_fcf_info);
 		if (!ln->fcfinfo) {
 			csio_ln_err(ln, "Failed to alloc FCF record\n");
 			CSIO_INC_STATS(hw, n_err_nomem);
@@ -2029,8 +2029,7 @@ csio_ln_init(struct csio_lnode *ln)
 			ln->fcfinfo = pln->fcfinfo;
 		} else {
 			/* Another non-root physical lnode (FCF) */
-			ln->fcfinfo = kzalloc(sizeof(struct csio_fcf_info),
-								GFP_KERNEL);
+			ln->fcfinfo = kzalloc_obj(struct csio_fcf_info);
 			if (!ln->fcfinfo) {
 				csio_ln_err(ln, "Failed to alloc FCF info\n");
 				CSIO_INC_STATS(hw, n_err_nomem);

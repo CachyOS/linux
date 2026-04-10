@@ -12,15 +12,15 @@
 #include <linux/platform_device.h>
 
 #define UNIPHIER_FI2C_CR	0x00	/* control register */
-#define     UNIPHIER_FI2C_CR_MST	BIT(3)	/* master mode */
+#define     UNIPHIER_FI2C_CR_MST	BIT(3)	/* controller mode */
 #define     UNIPHIER_FI2C_CR_STA	BIT(2)	/* start condition */
 #define     UNIPHIER_FI2C_CR_STO	BIT(1)	/* stop condition */
 #define     UNIPHIER_FI2C_CR_NACK	BIT(0)	/* do not return ACK */
 #define UNIPHIER_FI2C_DTTX	0x04	/* TX FIFO */
-#define     UNIPHIER_FI2C_DTTX_CMD	BIT(8)	/* send command (slave addr) */
+#define     UNIPHIER_FI2C_DTTX_CMD	BIT(8)	/* send command (target addr) */
 #define     UNIPHIER_FI2C_DTTX_RD	BIT(0)	/* read transaction */
 #define UNIPHIER_FI2C_DTRX	0x04	/* RX FIFO */
-#define UNIPHIER_FI2C_SLAD	0x0c	/* slave address */
+#define UNIPHIER_FI2C_SLAD	0x0c	/* target address */
 #define UNIPHIER_FI2C_CYC	0x10	/* clock cycle control */
 #define UNIPHIER_FI2C_LCTL	0x14	/* clock low period control */
 #define UNIPHIER_FI2C_SSUT	0x18	/* restart/stop setup time control */
@@ -96,7 +96,7 @@ static void uniphier_fi2c_fill_txfifo(struct uniphier_fi2c_priv *priv,
 	int fifo_space = UNIPHIER_FI2C_FIFO_SIZE;
 
 	/*
-	 * TX-FIFO stores slave address in it for the first access.
+	 * TX-FIFO stores target address in it for the first access.
 	 * Decrement the counter.
 	 */
 	if (first)
@@ -252,7 +252,7 @@ static void uniphier_fi2c_tx_init(struct uniphier_fi2c_priv *priv, u16 addr,
 
 	/* do not use TX byte counter */
 	writel(0, priv->membase + UNIPHIER_FI2C_TBC);
-	/* set slave address */
+	/* set target address */
 	writel(UNIPHIER_FI2C_DTTX_CMD | addr << 1,
 	       priv->membase + UNIPHIER_FI2C_DTTX);
 	/*
@@ -288,7 +288,7 @@ static void uniphier_fi2c_rx_init(struct uniphier_fi2c_priv *priv, u16 addr)
 
 	uniphier_fi2c_set_irqs(priv);
 
-	/* set slave address with RD bit */
+	/* set target address with RD bit */
 	writel(UNIPHIER_FI2C_DTTX_CMD | UNIPHIER_FI2C_DTTX_RD | addr << 1,
 	       priv->membase + UNIPHIER_FI2C_DTTX);
 }
@@ -310,9 +310,8 @@ static void uniphier_fi2c_recover(struct uniphier_fi2c_priv *priv)
 	i2c_recover_bus(&priv->adap);
 }
 
-static int uniphier_fi2c_master_xfer_one(struct i2c_adapter *adap,
-					 struct i2c_msg *msg, bool repeat,
-					 bool stop)
+static int uniphier_fi2c_xfer_one(struct i2c_adapter *adap, struct i2c_msg *msg,
+				  bool repeat, bool stop)
 {
 	struct uniphier_fi2c_priv *priv = i2c_get_adapdata(adap);
 	bool is_read = msg->flags & I2C_M_RD;
@@ -340,7 +339,7 @@ static int uniphier_fi2c_master_xfer_one(struct i2c_adapter *adap,
 		uniphier_fi2c_tx_init(priv, msg->addr, repeat);
 
 	/*
-	 * For a repeated START condition, writing a slave address to the FIFO
+	 * For a repeated START condition, writing a target address to the FIFO
 	 * kicks the controller. So, the UNIPHIER_FI2C_CR register should be
 	 * written only for a non-repeated START condition.
 	 */
@@ -358,7 +357,6 @@ static int uniphier_fi2c_master_xfer_one(struct i2c_adapter *adap,
 	spin_unlock_irqrestore(&priv->lock, flags);
 
 	if (!time_left) {
-		dev_err(&adap->dev, "transaction timeout.\n");
 		uniphier_fi2c_recover(priv);
 		return -ETIMEDOUT;
 	}
@@ -404,8 +402,7 @@ static int uniphier_fi2c_check_bus_busy(struct i2c_adapter *adap)
 	return 0;
 }
 
-static int uniphier_fi2c_master_xfer(struct i2c_adapter *adap,
-				     struct i2c_msg *msgs, int num)
+static int uniphier_fi2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 {
 	struct i2c_msg *msg, *emsg = msgs + num;
 	bool repeat = false;
@@ -419,7 +416,7 @@ static int uniphier_fi2c_master_xfer(struct i2c_adapter *adap,
 		/* Emit STOP if it is the last message or I2C_M_STOP is set. */
 		bool stop = (msg + 1 == emsg) || (msg->flags & I2C_M_STOP);
 
-		ret = uniphier_fi2c_master_xfer_one(adap, msg, repeat, stop);
+		ret = uniphier_fi2c_xfer_one(adap, msg, repeat, stop);
 		if (ret)
 			return ret;
 
@@ -435,7 +432,7 @@ static u32 uniphier_fi2c_functionality(struct i2c_adapter *adap)
 }
 
 static const struct i2c_algorithm uniphier_fi2c_algo = {
-	.master_xfer = uniphier_fi2c_master_xfer,
+	.xfer = uniphier_fi2c_xfer,
 	.functionality = uniphier_fi2c_functionality,
 };
 
@@ -535,27 +532,16 @@ static int uniphier_fi2c_probe(struct platform_device *pdev)
 	if (of_property_read_u32(dev->of_node, "clock-frequency", &bus_speed))
 		bus_speed = I2C_MAX_STANDARD_MODE_FREQ;
 
-	if (!bus_speed || bus_speed > I2C_MAX_FAST_MODE_FREQ) {
-		dev_err(dev, "invalid clock-frequency %d\n", bus_speed);
-		return -EINVAL;
-	}
+	if (!bus_speed || bus_speed > I2C_MAX_FAST_MODE_FREQ)
+		return dev_err_probe(dev, -EINVAL, "invalid clock-frequency %d\n", bus_speed);
 
-	priv->clk = devm_clk_get(dev, NULL);
-	if (IS_ERR(priv->clk)) {
-		dev_err(dev, "failed to get clock\n");
-		return PTR_ERR(priv->clk);
-	}
-
-	ret = clk_prepare_enable(priv->clk);
-	if (ret)
-		return ret;
+	priv->clk = devm_clk_get_enabled(dev, NULL);
+	if (IS_ERR(priv->clk))
+		return dev_err_probe(dev, PTR_ERR(priv->clk), "failed to enable clock\n");
 
 	clk_rate = clk_get_rate(priv->clk);
-	if (!clk_rate) {
-		dev_err(dev, "input clock rate should not be zero\n");
-		ret = -EINVAL;
-		goto disable_clk;
-	}
+	if (!clk_rate)
+		return dev_err_probe(dev, -EINVAL, "input clock rate should not be zero\n");
 
 	priv->clk_cycle = clk_rate / bus_speed;
 	init_completion(&priv->comp);
@@ -564,7 +550,7 @@ static int uniphier_fi2c_probe(struct platform_device *pdev)
 	priv->adap.algo = &uniphier_fi2c_algo;
 	priv->adap.dev.parent = dev;
 	priv->adap.dev.of_node = dev->of_node;
-	strlcpy(priv->adap.name, "UniPhier FI2C", sizeof(priv->adap.name));
+	strscpy(priv->adap.name, "UniPhier FI2C", sizeof(priv->adap.name));
 	priv->adap.bus_recovery_info = &uniphier_fi2c_bus_recovery_info;
 	i2c_set_adapdata(&priv->adap, priv);
 	platform_set_drvdata(pdev, priv);
@@ -573,27 +559,17 @@ static int uniphier_fi2c_probe(struct platform_device *pdev)
 
 	ret = devm_request_irq(dev, irq, uniphier_fi2c_interrupt, 0,
 			       pdev->name, priv);
-	if (ret) {
-		dev_err(dev, "failed to request irq %d\n", irq);
-		goto disable_clk;
-	}
-
-	ret = i2c_add_adapter(&priv->adap);
-disable_clk:
 	if (ret)
-		clk_disable_unprepare(priv->clk);
+		return dev_err_probe(dev, ret, "failed to request irq %d\n", irq);
 
-	return ret;
+	return i2c_add_adapter(&priv->adap);
 }
 
-static int uniphier_fi2c_remove(struct platform_device *pdev)
+static void uniphier_fi2c_remove(struct platform_device *pdev)
 {
 	struct uniphier_fi2c_priv *priv = platform_get_drvdata(pdev);
 
 	i2c_del_adapter(&priv->adap);
-	clk_disable_unprepare(priv->clk);
-
-	return 0;
 }
 
 static int __maybe_unused uniphier_fi2c_suspend(struct device *dev)

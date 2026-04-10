@@ -55,6 +55,11 @@ static int dtv5100_i2c_msg(struct dvb_usb_device *d, u8 addr,
 	}
 	index = (addr << 8) + wbuf[0];
 
+	if (rlen > sizeof(st->data)) {
+		warn("rlen = %x is too big!\n", rlen);
+		return -EINVAL;
+	}
+
 	memcpy(st->data, rbuf, rlen);
 	msleep(1); /* avoid I2C errors */
 	return usb_control_msg(d->udev, pipe, request,
@@ -97,7 +102,7 @@ static u32 dtv5100_i2c_func(struct i2c_adapter *adapter)
 	return I2C_FUNC_I2C;
 }
 
-static struct i2c_algorithm dtv5100_i2c_algo = {
+static const struct i2c_algorithm dtv5100_i2c_algo = {
 	.master_xfer   = dtv5100_i2c_xfer,
 	.functionality = dtv5100_i2c_func,
 };
@@ -166,7 +171,7 @@ enum {
 	AME_DTV5100,
 };
 
-static struct usb_device_id dtv5100_table[] = {
+static const struct usb_device_id dtv5100_table[] = {
 	DVB_USB_DEV(AME, AME_DTV5100),
 	{ }
 };

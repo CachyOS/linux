@@ -11,13 +11,10 @@ description: The STMicroelectronics sensor devices are pretty straight-forward
   what type of sensor it is.
   Note that whilst this covers many STMicro MEMs sensors, some more complex
   IMUs need their own bindings.
-  The STMicroelectronics sensor devices are pretty straight-forward I2C or
-  SPI devices, all sharing the same device tree descriptions no matter what
-  type of sensor it is.
 
 maintainers:
   - Denis Ciocca <denis.ciocca@st.com>
-  - Linus Walleij <linus.walleij@linaro.org>
+  - Linus Walleij <linusw@kernel.org>
 
 properties:
   compatible:
@@ -29,6 +26,7 @@ properties:
           - st,lis2dw12
           - st,lis2hh12
           - st,lis2dh12-accel
+          - st,lis2ds12
           - st,lis302dl
           - st,lis331dl-accel
           - st,lis331dlh-accel
@@ -39,6 +37,7 @@ properties:
           - st,lis3lv02dl-accel
           - st,lng2dm-accel
           - st,lsm303agr-accel
+          - st,lsm303c-accel
           - st,lsm303dl-accel
           - st,lsm303dlh-accel
           - st,lsm303dlhc-accel
@@ -47,6 +46,9 @@ properties:
           - st,lsm330d-accel
           - st,lsm330dl-accel
           - st,lsm330dlc-accel
+      - items:
+          - const: st,iis328dq
+          - const: st,h3lis331dl-accel
       - description: Silan Accelerometers
         enum:
           - silan,sc7a20
@@ -63,9 +65,11 @@ properties:
           - st,lsm9ds0-gyro
       - description: STMicroelectronics Magnetometers
         enum:
+          - st,iis2mdc
           - st,lis2mdl
           - st,lis3mdl-magn
           - st,lsm303agr-magn
+          - st,lsm303c-magn
           - st,lsm303dlh-magn
           - st,lsm303dlhc-magn
           - st,lsm303dlm-magn
@@ -73,6 +77,7 @@ properties:
       - description: STMicroelectronics Pressure Sensors
         enum:
           - st,lps001wp-press
+          - st,lps22df
           - st,lps22hb-press
           - st,lps22hh
           - st,lps25h-press
@@ -81,6 +86,7 @@ properties:
           - st,lps35hw
       - description: IMUs
         enum:
+          - st,lsm303d-imu
           - st,lsm9ds0-imu
       - description: Deprecated bindings
         enum:
@@ -93,7 +99,7 @@ properties:
 
   interrupts:
     description: interrupt line(s) connected to the DRDY line(s) and/or the
-      Intertial interrupt lines INT1 and INT2 if these exist. This means up to
+      Inertial interrupt lines INT1 and INT2 if these exist. This means up to
       three interrupts, and the DRDY must be the first one if it exists on
       the package. The trigger edge of the interrupts is sometimes software
       configurable in the hardware so the operating system should parse this
@@ -141,6 +147,7 @@ allOf:
             - st,lis2mdl
             - st,lis3l02dq
             - st,lis3lv02dl-accel
+            - st,lps22df
             - st,lps22hb-press
             - st,lps22hh
             - st,lps25h-press

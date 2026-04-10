@@ -23,6 +23,8 @@
 #include <asm/sn/intr.h>
 #include <asm/sn/irq_alloc.h>
 
+#include "ip27-common.h"
+
 struct hub_irq_data {
 	u64	*irq_mask[2];
 	cpuid_t	cpu;
@@ -127,7 +129,7 @@ static int hub_domain_alloc(struct irq_domain *domain, unsigned int virq,
 	if (nr_irqs > 1 || !info)
 		return -EINVAL;
 
-	hd = kzalloc(sizeof(*hd), GFP_KERNEL);
+	hd = kzalloc_obj(*hd);
 	if (!hd)
 		return -ENOMEM;
 
@@ -163,7 +165,7 @@ static void hub_domain_free(struct irq_domain *domain,
 		return;
 
 	irqd = irq_domain_get_irq_data(domain, virq);
-	if (irqd && irqd->chip_data)
+	if (irqd)
 		kfree(irqd->chip_data);
 }
 
@@ -275,7 +277,6 @@ void __init arch_init_irq(void)
 {
 	struct irq_domain *domain;
 	struct fwnode_handle *fn;
-	int i;
 
 	mips_cpu_irq_init();
 
@@ -284,23 +285,19 @@ void __init arch_init_irq(void)
 	 * Mark these as reserved right away so they won't be used accidentally
 	 * later.
 	 */
-	for (i = 0; i <= CPU_CALL_B_IRQ; i++)
-		set_bit(i, hub_irq_map);
-
-	for (i = NI_BRDCAST_ERR_A; i <= MSC_PANIC_INTR; i++)
-		set_bit(i, hub_irq_map);
+	bitmap_set(hub_irq_map, 0, CPU_CALL_B_IRQ + 1);
+	bitmap_set(hub_irq_map, NI_BRDCAST_ERR_A, MSC_PANIC_INTR - NI_BRDCAST_ERR_A + 1);
 
 	fn = irq_domain_alloc_named_fwnode("HUB");
-	WARN_ON(fn == NULL);
-	if (!fn)
-		return;
-	domain = irq_domain_create_linear(fn, IP27_HUB_IRQ_COUNT,
-					  &hub_domain_ops, NULL);
-	WARN_ON(domain == NULL);
-	if (!domain)
+	if (WARN_ON(fn == NULL))
 		return;
 
-	irq_set_default_host(domain);
+	domain = irq_domain_create_linear(fn, IP27_HUB_IRQ_COUNT,
+					  &hub_domain_ops, NULL);
+	if (WARN_ON(domain == NULL))
+		return;
+
+	irq_set_default_domain(domain);
 
 	irq_set_percpu_devid(IP27_HUB_PEND0_IRQ);
 	irq_set_chained_handler_and_data(IP27_HUB_PEND0_IRQ, ip27_do_irq_mask0,

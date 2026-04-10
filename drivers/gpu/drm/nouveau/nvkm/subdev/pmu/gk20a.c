@@ -197,7 +197,6 @@ gk20a_dvfs_data= {
 static const struct nvkm_pmu_func
 gk20a_pmu = {
 	.flcn = &gt215_pmu_flcn,
-	.enabled = gf100_pmu_enabled,
 	.init = gk20a_pmu_init,
 	.fini = gk20a_pmu_fini,
 	.reset = gf100_pmu_reset,
@@ -216,7 +215,7 @@ gk20a_pmu_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
 	struct gk20a_pmu *pmu;
 	int ret;
 
-	if (!(pmu = kzalloc(sizeof(*pmu), GFP_KERNEL)))
+	if (!(pmu = kzalloc_obj(*pmu)))
 		return -ENOMEM;
 	*ppmu = &pmu->base;
 

@@ -6,6 +6,7 @@
 
 #include <linux/mm.h>
 #include <linux/fs.h>
+#include <linux/filelock.h>
 #include <linux/posix_acl.h>
 #include <linux/quotaops.h>
 #include "jfs_incore.h"
@@ -26,8 +27,8 @@ int jfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 		return rc;
 
 	inode_lock(inode);
-	if (!(inode->i_state & I_DIRTY_ALL) ||
-	    (datasync && !(inode->i_state & I_DIRTY_DATASYNC))) {
+	if (!(inode_state_read_once(inode) & I_DIRTY_ALL) ||
+	    (datasync && !(inode_state_read_once(inode) & I_DIRTY_DATASYNC))) {
 		/* Make sure committed changes hit the disk */
 		jfs_flush_journal(JFS_SBI(inode->i_sb)->log, 1);
 		inode_unlock(inode);
@@ -43,6 +44,9 @@ int jfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 static int jfs_open(struct inode *inode, struct file *file)
 {
 	int rc;
+
+	if (S_ISREG(inode->i_mode) && inode->i_size < 0)
+		return -EIO;
 
 	if ((rc = dquot_file_open(inode, file)))
 		return rc;
@@ -85,24 +89,24 @@ static int jfs_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-int jfs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
+int jfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 		struct iattr *iattr)
 {
 	struct inode *inode = d_inode(dentry);
 	int rc;
 
-	rc = setattr_prepare(&init_user_ns, dentry, iattr);
+	rc = setattr_prepare(&nop_mnt_idmap, dentry, iattr);
 	if (rc)
 		return rc;
 
-	if (is_quota_modification(inode, iattr)) {
+	if (is_quota_modification(&nop_mnt_idmap, inode, iattr)) {
 		rc = dquot_initialize(inode);
 		if (rc)
 			return rc;
 	}
 	if ((iattr->ia_valid & ATTR_UID && !uid_eq(iattr->ia_uid, inode->i_uid)) ||
 	    (iattr->ia_valid & ATTR_GID && !gid_eq(iattr->ia_gid, inode->i_gid))) {
-		rc = dquot_transfer(inode, iattr);
+		rc = dquot_transfer(&nop_mnt_idmap, inode, iattr);
 		if (rc)
 			return rc;
 	}
@@ -119,11 +123,11 @@ int jfs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 		jfs_truncate(inode);
 	}
 
-	setattr_copy(&init_user_ns, inode, iattr);
+	setattr_copy(&nop_mnt_idmap, inode, iattr);
 	mark_inode_dirty(inode);
 
 	if (iattr->ia_valid & ATTR_MODE)
-		rc = posix_acl_chmod(&init_user_ns, inode, inode->i_mode);
+		rc = posix_acl_chmod(&nop_mnt_idmap, dentry, inode->i_mode);
 	return rc;
 }
 
@@ -133,7 +137,7 @@ const struct inode_operations jfs_file_inode_operations = {
 	.fileattr_get	= jfs_fileattr_get,
 	.fileattr_set	= jfs_fileattr_set,
 #ifdef CONFIG_JFS_POSIX_ACL
-	.get_acl	= jfs_get_acl,
+	.get_inode_acl	= jfs_get_acl,
 	.set_acl	= jfs_set_acl,
 #endif
 };
@@ -143,11 +147,12 @@ const struct file_operations jfs_file_operations = {
 	.llseek		= generic_file_llseek,
 	.read_iter	= generic_file_read_iter,
 	.write_iter	= generic_file_write_iter,
-	.mmap		= generic_file_mmap,
-	.splice_read	= generic_file_splice_read,
+	.mmap_prepare	= generic_file_mmap_prepare,
+	.splice_read	= filemap_splice_read,
 	.splice_write	= iter_file_splice_write,
 	.fsync		= jfs_fsync,
 	.release	= jfs_release,
 	.unlocked_ioctl = jfs_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
+	.setlease	= generic_setlease,
 };

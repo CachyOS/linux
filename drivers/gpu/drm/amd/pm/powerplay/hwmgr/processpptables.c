@@ -382,8 +382,7 @@ static int get_clock_voltage_dependency_table(struct pp_hwmgr *hwmgr,
 	unsigned long i;
 	struct phm_clock_voltage_dependency_table *dep_table;
 
-	dep_table = kzalloc(struct_size(dep_table, entries, table->ucNumEntries),
-			    GFP_KERNEL);
+	dep_table = kzalloc_flex(*dep_table, entries, table->ucNumEntries);
 	if (NULL == dep_table)
 		return -ENOMEM;
 
@@ -409,7 +408,7 @@ static int get_valid_clk(struct pp_hwmgr *hwmgr,
 	unsigned long i;
 	struct phm_clock_array *clock_table;
 
-	clock_table = kzalloc(struct_size(clock_table, values, table->count), GFP_KERNEL);
+	clock_table = kzalloc_flex(*clock_table, values, table->count);
 	if (!clock_table)
 		return -ENOMEM;
 
@@ -701,8 +700,6 @@ static int init_non_clock_fields(struct pp_hwmgr *hwmgr,
 	ps->pcie.lanes = ((le32_to_cpu(pnon_clock_info->ulCapsAndSettings) &
 				ATOM_PPLIB_PCIE_LINK_WIDTH_MASK) >>
 				ATOM_PPLIB_PCIE_LINK_WIDTH_SHIFT) + 1;
-
-	ps->pcie.lanes = 0;
 
 	ps->display.disableFrameModulation = false;
 
@@ -1185,6 +1182,8 @@ static int init_overdrive_limits(struct pp_hwmgr *hwmgr,
 	fw_info = smu_atom_get_data_table(hwmgr->adev,
 			 GetIndexIntoMasterTable(DATA, FirmwareInfo),
 			 &size, &frev, &crev);
+	PP_ASSERT_WITH_CODE(fw_info != NULL,
+			    "Missing firmware info!", return -EINVAL);
 
 	if ((fw_info->ucTableFormatRevision == 1)
 	    && (le16_to_cpu(fw_info->usStructureSize) >= sizeof(ATOM_FIRMWARE_INFO_V1_4)))
@@ -1209,8 +1208,7 @@ static int get_uvd_clock_voltage_limit_table(struct pp_hwmgr *hwmgr,
 	unsigned long i;
 	struct phm_uvd_clock_voltage_dependency_table *uvd_table;
 
-	uvd_table = kzalloc(struct_size(uvd_table, entries, table->numEntries),
-			    GFP_KERNEL);
+	uvd_table = kzalloc_flex(*uvd_table, entries, table->numEntries);
 	if (!uvd_table)
 		return -ENOMEM;
 
@@ -1237,10 +1235,9 @@ static int get_vce_clock_voltage_limit_table(struct pp_hwmgr *hwmgr,
 		const VCEClockInfoArray    *array)
 {
 	unsigned long i;
-	struct phm_vce_clock_voltage_dependency_table *vce_table = NULL;
+	struct phm_vce_clock_voltage_dependency_table *vce_table;
 
-	vce_table = kzalloc(struct_size(vce_table, entries, table->numEntries),
-			    GFP_KERNEL);
+	vce_table = kzalloc_flex(*vce_table, entries, table->numEntries);
 	if (!vce_table)
 		return -ENOMEM;
 
@@ -1267,8 +1264,7 @@ static int get_samu_clock_voltage_limit_table(struct pp_hwmgr *hwmgr,
 	unsigned long i;
 	struct phm_samu_clock_voltage_dependency_table *samu_table;
 
-	samu_table = kzalloc(struct_size(samu_table, entries, table->numEntries),
-			     GFP_KERNEL);
+	samu_table = kzalloc_flex(*samu_table, entries, table->numEntries);
 	if (!samu_table)
 		return -ENOMEM;
 
@@ -1292,8 +1288,7 @@ static int get_acp_clock_voltage_limit_table(struct pp_hwmgr *hwmgr,
 	unsigned long i;
 	struct phm_acp_clock_voltage_dependency_table *acp_table;
 
-	acp_table = kzalloc(struct_size(acp_table, entries, table->numEntries),
-			    GFP_KERNEL);
+	acp_table = kzalloc_flex(*acp_table, entries, table->numEntries);
 	if (!acp_table)
 		return -ENOMEM;
 
@@ -1487,8 +1482,8 @@ static int get_cac_leakage_table(struct pp_hwmgr *hwmgr,
 	if (!hwmgr || !table || !ptable)
 		return -EINVAL;
 
-	cac_leakage_table = kzalloc(struct_size(cac_leakage_table, entries, table->ucNumEntries),
-				    GFP_KERNEL);
+	cac_leakage_table = kzalloc_flex(*cac_leakage_table, entries,
+					 table->ucNumEntries);
 	if (!cac_leakage_table)
 		return -ENOMEM;
 
@@ -1514,7 +1509,7 @@ static int get_cac_leakage_table(struct pp_hwmgr *hwmgr,
 static int get_platform_power_management_table(struct pp_hwmgr *hwmgr,
 			ATOM_PPLIB_PPM_Table *atom_ppm_table)
 {
-	struct phm_ppm_table *ptr = kzalloc(sizeof(struct phm_ppm_table), GFP_KERNEL);
+	struct phm_ppm_table *ptr = kzalloc_obj(struct phm_ppm_table);
 
 	if (NULL == ptr)
 		return -ENOMEM;
@@ -1625,8 +1620,8 @@ static int init_phase_shedding_table(struct pp_hwmgr *hwmgr,
 			unsigned long i;
 
 
-			table = kzalloc(struct_size(table, entries, ptable->ucNumEntries),
-					GFP_KERNEL);
+			table = kzalloc_flex(*table, entries,
+					     ptable->ucNumEntries);
 			if (!table)
 				return -ENOMEM;
 

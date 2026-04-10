@@ -9,6 +9,12 @@
 #include <linux/perf_event.h>
 #include <linux/types.h>
 
+/*
+ * The following macro can be used to determine if this header defines
+ * perf_dlfilter_sample machine_pid and vcpu.
+ */
+#define PERF_DLFILTER_HAS_MACHINE_PID
+
 /* Definitions for perf_dlfilter_sample flags */
 enum {
 	PERF_DLFILTER_FLAG_BRANCH	= 1ULL << 0,
@@ -62,6 +68,8 @@ struct perf_dlfilter_sample {
 	__u64 raw_callchain_nr;	/* Number of raw_callchain entries */
 	const __u64 *raw_callchain; /* Refer <linux/perf_event.h> */
 	const char *event;
+	__s32 machine_pid;
+	__s32 vcpu;
 };
 
 /*
@@ -79,10 +87,11 @@ struct perf_dlfilter_al {
 	__u8  is_64_bit; /* Only valid if dso is not NULL */
 	__u8  is_kernel_ip; /* True if in kernel space */
 	__u32 buildid_size;
-	__u8 *buildid;
+	const __u8 *buildid;
 	/* Below members are only populated by resolve_ip() */
 	__u8 filtered; /* True if this sample event will be filtered out */
 	const char *comm;
+	void *priv; /* Private data. Do not change */
 };
 
 struct perf_dlfilter_fns {
@@ -94,7 +103,8 @@ struct perf_dlfilter_fns {
 	char **(*args)(void *ctx, int *dlargc);
 	/*
 	 * Return information about address (al->size must be set before
-	 * calling). Returns 0 on success, -1 otherwise.
+	 * calling). Returns 0 on success, -1 otherwise. Call al_cleanup()
+	 * when 'al' data is no longer needed.
 	 */
 	__s32 (*resolve_address)(void *ctx, __u64 address, struct perf_dlfilter_al *al);
 	/* Return instruction bytes and length */
@@ -105,8 +115,13 @@ struct perf_dlfilter_fns {
 	struct perf_event_attr *(*attr)(void *ctx);
 	/* Read object code, return numbers of bytes read */
 	__s32 (*object_code)(void *ctx, __u64 ip, void *buf, __u32 len);
+	/*
+	 * If present (i.e. must check al_cleanup != NULL), call after
+	 * resolve_address() to free any associated resources.
+	 */
+	void (*al_cleanup)(void *ctx, struct perf_dlfilter_al *al);
 	/* Reserved */
-	void *(*reserved[120])(void *);
+	void *(*reserved[119])(void *);
 };
 
 /*

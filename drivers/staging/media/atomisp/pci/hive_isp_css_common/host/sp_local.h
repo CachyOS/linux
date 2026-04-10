@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2010-2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #ifndef __SP_LOCAL_H_INCLUDED__
@@ -18,32 +9,6 @@
 
 #include <type_support.h>
 #include "sp_global.h"
-
-struct sp_state_s {
-	int		pc;
-	int		status_register;
-	bool	is_broken;
-	bool	is_idle;
-	bool	is_sleeping;
-	bool	is_stalling;
-};
-
-struct sp_stall_s {
-	bool	fifo0;
-	bool	fifo1;
-	bool	fifo2;
-	bool	fifo3;
-	bool	fifo4;
-	bool	fifo5;
-	bool	fifo6;
-	bool	fifo7;
-	bool	fifo8;
-	bool	fifo9;
-	bool	fifoa;
-	bool	dmem;
-	bool	control_master;
-	bool	icache_master;
-};
 
 #define sp_address_of(var)	(HIVE_ADDR_ ## var)
 

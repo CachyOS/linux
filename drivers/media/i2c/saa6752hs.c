@@ -6,7 +6,7 @@
 
     AC-3 support:
 
-    Copyright (C) 2008 Hans Verkuil <hverkuil@xs4all.nl>
+    Copyright (C) 2008 Hans Verkuil <hverkuil@kernel.org>
 
   */
 
@@ -594,10 +594,8 @@ static int saa6752hs_set_fmt(struct v4l2_subdev *sd,
 	f->field = V4L2_FIELD_INTERLACED;
 	f->colorspace = V4L2_COLORSPACE_SMPTE170M;
 
-	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
-		sd_state->pads->try_fmt = *f;
+	if (format->which == V4L2_SUBDEV_FORMAT_TRY)
 		return 0;
-	}
 
 	/*
 	  FIXME: translate and round width/height into EMPRESS
@@ -659,8 +657,7 @@ static const struct v4l2_subdev_ops saa6752hs_ops = {
 	.pad = &saa6752hs_pad_ops,
 };
 
-static int saa6752hs_probe(struct i2c_client *client,
-		const struct i2c_device_id *id)
+static int saa6752hs_probe(struct i2c_client *client)
 {
 	struct saa6752hs_state *h;
 	struct v4l2_subdev *sd;
@@ -764,17 +761,16 @@ static int saa6752hs_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int saa6752hs_remove(struct i2c_client *client)
+static void saa6752hs_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&to_state(sd)->hdl);
-	return 0;
 }
 
 static const struct i2c_device_id saa6752hs_id[] = {
-	{ "saa6752hs", 0 },
+	{ "saa6752hs" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, saa6752hs_id);

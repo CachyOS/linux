@@ -299,6 +299,18 @@ Use ethtool to view and set link-down-on-close, as follows::
   ethtool --show-priv-flags ethX
   ethtool --set-priv-flags ethX link-down-on-close [on|off]
 
+Setting the mdd-auto-reset-vf Private Flag
+------------------------------------------
+
+When the mdd-auto-reset-vf private flag is set to "on", the problematic VF will
+be automatically reset if a malformed descriptor is detected. If the flag is
+set to "off", the problematic VF will be disabled.
+
+Use ethtool to view and set mdd-auto-reset-vf, as follows::
+
+  ethtool --show-priv-flags ethX
+  ethtool --set-priv-flags ethX mdd-auto-reset-vf [on|off]
+
 Viewing Link Messages
 ---------------------
 Link messages will not be displayed to the console if the distribution is
@@ -399,8 +411,8 @@ operate only in full duplex and only at their native speed.
 NAPI
 ----
 NAPI (Rx polling mode) is supported in the i40e driver.
-For more information on NAPI, see
-https://wiki.linuxfoundation.org/networking/napi
+
+See :ref:`Documentation/networking/napi.rst <napi>` for more information.
 
 Flow Control
 ------------
@@ -759,13 +771,8 @@ enabled when setting up DCB on your switch.
 Support
 =======
 For general information, go to the Intel support website at:
-
 https://www.intel.com/support/
-
-or the Intel Wired Networking project hosted by Sourceforge at:
-
-https://sourceforge.net/projects/e1000
 
 If an issue is identified with the released source code on a supported kernel
 with a supported adapter, email the specific information related to the issue
-to e1000-devel@lists.sf.net.
+to intel-wired-lan@lists.osuosl.org.

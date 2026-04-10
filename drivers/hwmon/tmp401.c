@@ -24,7 +24,6 @@
 #include <linux/hwmon.h>
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 
@@ -107,7 +106,6 @@ MODULE_DEVICE_TABLE(i2c, tmp401_id);
 struct tmp401_data {
 	struct i2c_client *client;
 	struct regmap *regmap;
-	struct mutex update_lock;
 	enum chips kind;
 
 	bool extended_range;
@@ -256,7 +254,7 @@ static int tmp401_reg_write(void *context, unsigned int reg, unsigned int val)
 static const struct regmap_config tmp401_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 16,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.volatile_reg = tmp401_regmap_is_volatile,
 	.reg_read = tmp401_reg_read,
 	.reg_write = tmp401_reg_write,
@@ -308,7 +306,9 @@ static int tmp401_temp_read(struct device *dev, u32 attr, int channel, long *val
 {
 	struct tmp401_data *data = dev_get_drvdata(dev);
 	struct regmap *regmap = data->regmap;
+	unsigned int regs[2] = { TMP401_TEMP_MSB[3][channel], TMP401_TEMP_CRIT_HYST };
 	unsigned int regval;
+	u16 regvals[2];
 	int reg, ret;
 
 	switch (attr) {
@@ -325,20 +325,11 @@ static int tmp401_temp_read(struct device *dev, u32 attr, int channel, long *val
 		*val = tmp401_register_to_temp(regval, data->extended_range);
 		break;
 	case hwmon_temp_crit_hyst:
-		mutex_lock(&data->update_lock);
-		reg = TMP401_TEMP_MSB[3][channel];
-		ret = regmap_read(regmap, reg, &regval);
-		if (ret < 0)
-			goto unlock;
-		*val = tmp401_register_to_temp(regval, data->extended_range);
-		ret = regmap_read(regmap, TMP401_TEMP_CRIT_HYST, &regval);
-		if (ret < 0)
-			goto unlock;
-		*val -= regval * 1000;
-unlock:
-		mutex_unlock(&data->update_lock);
+		ret = regmap_multi_reg_read(regmap, regs, regvals, 2);
 		if (ret < 0)
 			return ret;
+		*val = tmp401_register_to_temp(regvals[0], data->extended_range) -
+							(regvals[1] * 1000);
 		break;
 	case hwmon_temp_fault:
 	case hwmon_temp_min_alarm:
@@ -364,7 +355,6 @@ static int tmp401_temp_write(struct device *dev, u32 attr, int channel,
 	unsigned int regval;
 	int reg, ret, temp;
 
-	mutex_lock(&data->update_lock);
 	switch (attr) {
 	case hwmon_temp_min:
 	case hwmon_temp_max:
@@ -393,7 +383,6 @@ static int tmp401_temp_write(struct device *dev, u32 attr, int channel,
 		ret = -EOPNOTSUPP;
 		break;
 	}
-	mutex_unlock(&data->update_lock);
 	return ret;
 }
 
@@ -408,7 +397,7 @@ static int tmp401_chip_read(struct device *dev, u32 attr, int channel, long *val
 		ret = regmap_read(data->regmap, TMP401_CONVERSION_RATE, &regval);
 		if (ret < 0)
 			return ret;
-		*val = (1 << (7 - regval)) * 125;
+		*val = (1 << (7 - min(regval, 7))) * 125;
 		break;
 	case hwmon_chip_temp_reset_history:
 		*val = 0;
@@ -443,7 +432,6 @@ static int tmp401_chip_write(struct device *dev, u32 attr, int channel, long val
 	struct regmap *regmap = data->regmap;
 	int err;
 
-	mutex_lock(&data->update_lock);
 	switch (attr) {
 	case hwmon_chip_update_interval:
 		err = tmp401_set_convrate(regmap, val);
@@ -463,8 +451,6 @@ static int tmp401_chip_write(struct device *dev, u32 attr, int channel, long val
 		err = -EOPNOTSUPP;
 		break;
 	}
-	mutex_unlock(&data->update_lock);
-
 	return err;
 }
 
@@ -671,7 +657,7 @@ static int tmp401_detect(struct i2c_client *client,
 	if (reg > 15)
 		return -ENODEV;
 
-	strlcpy(info->type, tmp401_id[kind].name, I2C_NAME_SIZE);
+	strscpy(info->type, tmp401_id[kind].name, I2C_NAME_SIZE);
 
 	return 0;
 }
@@ -692,8 +678,7 @@ static int tmp401_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	data->client = client;
-	mutex_init(&data->update_lock);
-	data->kind = i2c_match_id(tmp401_id, client)->driver_data;
+	data->kind = (uintptr_t)i2c_get_match_data(client);
 
 	data->regmap = devm_regmap_init(dev, NULL, data, &tmp401_regmap_config);
 	if (IS_ERR(data->regmap))
@@ -766,7 +751,7 @@ static struct i2c_driver tmp401_driver = {
 		.name	= "tmp401",
 		.of_match_table = of_match_ptr(tmp4xx_of_match),
 	},
-	.probe_new	= tmp401_probe,
+	.probe		= tmp401_probe,
 	.id_table	= tmp401_id,
 	.detect		= tmp401_detect,
 	.address_list	= normal_i2c,

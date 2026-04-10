@@ -94,6 +94,7 @@
 	{H_GET_HCA_INFO,		"H_GET_HCA_INFO"}, \
 	{H_GET_PERF_COUNT,		"H_GET_PERF_COUNT"}, \
 	{H_MANAGE_TRACE,		"H_MANAGE_TRACE"}, \
+	{H_GET_CPU_CHARACTERISTICS,	"H_GET_CPU_CHARACTERISTICS"}, \
 	{H_FREE_LOGICAL_LAN_BUFFER,	"H_FREE_LOGICAL_LAN_BUFFER"}, \
 	{H_QUERY_INT_STATE,		"H_QUERY_INT_STATE"}, \
 	{H_POLL_PENDING,		"H_POLL_PENDING"}, \
@@ -125,7 +126,25 @@
 	{H_COP,				"H_COP"}, \
 	{H_GET_MPP_X,			"H_GET_MPP_X"}, \
 	{H_SET_MODE,			"H_SET_MODE"}, \
-	{H_RTAS,			"H_RTAS"}
+	{H_REGISTER_PROC_TBL,		"H_REGISTER_PROC_TBL"}, \
+	{H_QUERY_VAS_CAPABILITIES,	"H_QUERY_VAS_CAPABILITIES"}, \
+	{H_INT_GET_SOURCE_INFO,		"H_INT_GET_SOURCE_INFO"}, \
+	{H_INT_SET_SOURCE_CONFIG,	"H_INT_SET_SOURCE_CONFIG"}, \
+	{H_INT_GET_QUEUE_INFO,		"H_INT_GET_QUEUE_INFO"}, \
+	{H_INT_SET_QUEUE_CONFIG,	"H_INT_SET_QUEUE_CONFIG"}, \
+	{H_INT_ESB,			"H_INT_ESB"}, \
+	{H_INT_RESET,			"H_INT_RESET"}, \
+	{H_RPT_INVALIDATE,		"H_RPT_INVALIDATE"}, \
+	{H_RTAS,			"H_RTAS"}, \
+	{H_LOGICAL_MEMOP,		"H_LOGICAL_MEMOP"}, \
+	{H_CAS,				"H_CAS"}, \
+	{H_UPDATE_DT,			"H_UPDATE_DT"}, \
+	{H_GET_PERF_COUNTER_INFO,	"H_GET_PERF_COUNTER_INFO"}, \
+	{H_SET_PARTITION_TABLE,		"H_SET_PARTITION_TABLE"}, \
+	{H_ENTER_NESTED,		"H_ENTER_NESTED"}, \
+	{H_TLB_INVALIDATE,		"H_TLB_INVALIDATE"}, \
+	{H_COPY_TOFROM_GUEST,		"H_COPY_TOFROM_GUEST"}
+
 
 #define kvm_trace_symbol_kvmret \
 	{RESUME_GUEST,			"RESUME_GUEST"}, \
@@ -493,6 +512,35 @@ TRACE_EVENT(kvmppc_run_vcpu_exit,
 			__entry->vcpu_id, __entry->exit, __entry->ret)
 );
 
+#ifdef CONFIG_PPC_PSERIES
+
+TRACE_EVENT_FN_COND(kvmppc_vcpu_stats,
+	TP_PROTO(struct kvm_vcpu *vcpu, u64 l1_to_l2_cs, u64 l2_to_l1_cs, u64 l2_runtime),
+
+	TP_ARGS(vcpu, l1_to_l2_cs, l2_to_l1_cs, l2_runtime),
+
+	TP_CONDITION(l1_to_l2_cs || l2_to_l1_cs || l2_runtime),
+
+	TP_STRUCT__entry(
+		__field(int,		vcpu_id)
+		__field(u64,		l1_to_l2_cs)
+		__field(u64,		l2_to_l1_cs)
+		__field(u64,		l2_runtime)
+	),
+
+	TP_fast_assign(
+		__entry->vcpu_id  = vcpu->vcpu_id;
+		__entry->l1_to_l2_cs = l1_to_l2_cs;
+		__entry->l2_to_l1_cs = l2_to_l1_cs;
+		__entry->l2_runtime = l2_runtime;
+	),
+
+	TP_printk("VCPU %d: l1_to_l2_cs_time=%llu ns l2_to_l1_cs_time=%llu ns l2_runtime=%llu ns",
+		__entry->vcpu_id,  __entry->l1_to_l2_cs,
+		__entry->l2_to_l1_cs, __entry->l2_runtime),
+	kvmhv_counters_tracepoint_regfunc, kvmhv_counters_tracepoint_unregfunc
+);
+#endif
 #endif /* _TRACE_KVM_HV_H */
 
 /* This part must be outside protection */

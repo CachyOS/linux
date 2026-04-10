@@ -152,7 +152,6 @@ multiq_reset(struct Qdisc *sch)
 
 	for (band = 0; band < q->bands; band++)
 		qdisc_reset(q->queues[band]);
-	sch->q.qlen = 0;
 	q->curband = 0;
 }
 
@@ -186,7 +185,7 @@ static int multiq_tune(struct Qdisc *sch, struct nlattr *opt,
 
 	qopt->bands = qdisc_dev(sch)->real_num_tx_queues;
 
-	removed = kmalloc(sizeof(*removed) * (q->max_bands - q->bands),
+	removed = kmalloc(sizeof(*removed) * (q->max_bands - qopt->bands),
 			  GFP_KERNEL);
 	if (!removed)
 		return -ENOMEM;
@@ -250,7 +249,7 @@ static int multiq_init(struct Qdisc *sch, struct nlattr *opt,
 
 	q->max_bands = qdisc_dev(sch)->num_tx_queues;
 
-	q->queues = kcalloc(q->max_bands, sizeof(struct Qdisc *), GFP_KERNEL);
+	q->queues = kzalloc_objs(struct Qdisc *, q->max_bands);
 	if (!q->queues)
 		return -ENOBUFS;
 	for (i = 0; i < q->max_bands; i++)
@@ -354,15 +353,8 @@ static void multiq_walk(struct Qdisc *sch, struct qdisc_walker *arg)
 		return;
 
 	for (band = 0; band < q->bands; band++) {
-		if (arg->count < arg->skip) {
-			arg->count++;
-			continue;
-		}
-		if (arg->fn(sch, band + 1, arg) < 0) {
-			arg->stop = 1;
+		if (!tc_qdisc_stats_dump(sch, band + 1, arg))
 			break;
-		}
-		arg->count++;
 	}
 }
 
@@ -403,6 +395,7 @@ static struct Qdisc_ops multiq_qdisc_ops __read_mostly = {
 	.dump		=	multiq_dump,
 	.owner		=	THIS_MODULE,
 };
+MODULE_ALIAS_NET_SCH("multiq");
 
 static int __init multiq_module_init(void)
 {
@@ -418,3 +411,4 @@ module_init(multiq_module_init)
 module_exit(multiq_module_exit)
 
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Multi queue to hardware queue mapping qdisc");

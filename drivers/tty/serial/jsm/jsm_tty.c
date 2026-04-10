@@ -152,14 +152,14 @@ static void jsm_tty_send_xchar(struct uart_port *port, char ch)
 		container_of(port, struct jsm_channel, uart_port);
 	struct ktermios *termios;
 
-	spin_lock_irqsave(&port->lock, lock_flags);
+	uart_port_lock_irqsave(port, &lock_flags);
 	termios = &port->state->port.tty->termios;
 	if (ch == termios->c_cc[VSTART])
 		channel->ch_bd->bd_ops->send_start_character(channel);
 
 	if (ch == termios->c_cc[VSTOP])
 		channel->ch_bd->bd_ops->send_stop_character(channel);
-	spin_unlock_irqrestore(&port->lock, lock_flags);
+	uart_port_unlock_irqrestore(port, lock_flags);
 }
 
 static void jsm_tty_stop_rx(struct uart_port *port)
@@ -176,13 +176,13 @@ static void jsm_tty_break(struct uart_port *port, int break_state)
 	struct jsm_channel *channel =
 		container_of(port, struct jsm_channel, uart_port);
 
-	spin_lock_irqsave(&port->lock, lock_flags);
+	uart_port_lock_irqsave(port, &lock_flags);
 	if (break_state == -1)
 		channel->ch_bd->bd_ops->send_break(channel);
 	else
 		channel->ch_bd->bd_ops->clear_break(channel);
 
-	spin_unlock_irqrestore(&port->lock, lock_flags);
+	uart_port_unlock_irqrestore(port, lock_flags);
 }
 
 static int jsm_tty_open(struct uart_port *port)
@@ -241,7 +241,7 @@ static int jsm_tty_open(struct uart_port *port)
 	channel->ch_cached_lsr = 0;
 	channel->ch_stops_sent = 0;
 
-	spin_lock_irqsave(&port->lock, lock_flags);
+	uart_port_lock_irqsave(port, &lock_flags);
 	termios = &port->state->port.tty->termios;
 	channel->ch_c_cflag	= termios->c_cflag;
 	channel->ch_c_iflag	= termios->c_iflag;
@@ -261,7 +261,7 @@ static int jsm_tty_open(struct uart_port *port)
 	jsm_carrier(channel);
 
 	channel->ch_open_count++;
-	spin_unlock_irqrestore(&port->lock, lock_flags);
+	uart_port_unlock_irqrestore(port, lock_flags);
 
 	jsm_dbg(OPEN, &channel->ch_bd->pci_dev, "finish\n");
 	return 0;
@@ -300,14 +300,14 @@ static void jsm_tty_close(struct uart_port *port)
 }
 
 static void jsm_tty_set_termios(struct uart_port *port,
-				 struct ktermios *termios,
-				 struct ktermios *old_termios)
+				struct ktermios *termios,
+				const struct ktermios *old_termios)
 {
 	unsigned long lock_flags;
 	struct jsm_channel *channel =
 		container_of(port, struct jsm_channel, uart_port);
 
-	spin_lock_irqsave(&port->lock, lock_flags);
+	uart_port_lock_irqsave(port, &lock_flags);
 	channel->ch_c_cflag	= termios->c_cflag;
 	channel->ch_c_iflag	= termios->c_iflag;
 	channel->ch_c_oflag	= termios->c_oflag;
@@ -317,7 +317,7 @@ static void jsm_tty_set_termios(struct uart_port *port,
 
 	channel->ch_bd->bd_ops->param(channel);
 	jsm_carrier(channel);
-	spin_unlock_irqrestore(&port->lock, lock_flags);
+	uart_port_unlock_irqrestore(port, lock_flags);
 }
 
 static const char *jsm_tty_type(struct uart_port *port)
@@ -391,7 +391,7 @@ int jsm_tty_init(struct jsm_board *brd)
 			 * Okay to malloc with GFP_KERNEL, we are not at
 			 * interrupt context, and there are no locks held.
 			 */
-			brd->channels[i] = kzalloc(sizeof(struct jsm_channel), GFP_KERNEL);
+			brd->channels[i] = kzalloc_obj(struct jsm_channel);
 			if (!brd->channels[i]) {
 				jsm_dbg(CORE, &brd->pci_dev,
 					"%s:%d Unable to allocate memory for channel struct\n",
@@ -451,6 +451,7 @@ int jsm_uart_port_init(struct jsm_board *brd)
 		if (!brd->channels[i])
 			continue;
 
+		brd->channels[i]->uart_port.dev = &brd->pci_dev->dev;
 		brd->channels[i]->uart_port.irq = brd->irq;
 		brd->channels[i]->uart_port.uartclk = 14745600;
 		brd->channels[i]->uart_port.type = PORT_JSM;

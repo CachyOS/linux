@@ -8,8 +8,8 @@
 #ifndef __ASM_PARISC_FLOPPY_H
 #define __ASM_PARISC_FLOPPY_H
 
+#include <linux/sizes.h>
 #include <linux/vmalloc.h>
-
 
 /*
  * The DMA channel used by the floppy controller cannot access data at
@@ -20,14 +20,11 @@
  * floppy accesses go through the track buffer.
  */
 #define _CROSS_64KB(a,s,vdma) \
-(!(vdma) && ((unsigned long)(a)/K_64 != ((unsigned long)(a) + (s) - 1) / K_64))
-
-#define CROSS_64KB(a,s) _CROSS_64KB(a,s,use_virtual_dma & 1)
-
+	(!(vdma) && \
+	 ((unsigned long)(a) / SZ_64K != ((unsigned long)(a) + (s) - 1) / SZ_64K))
 
 #define SW fd_routine[use_virtual_dma&1]
 #define CSW fd_routine[can_use_virtual_dma & 1]
-
 
 #define fd_inb(base, reg)		readb((base) + (reg))
 #define fd_outb(value, base, reg)	writeb(value, (base) + (reg))
@@ -179,7 +176,7 @@ static void _fd_chose_dma_mode(char *addr, unsigned long size)
 {
 	if(can_use_virtual_dma == 2) {
 		if((unsigned int) addr >= (unsigned int) high_memory ||
-		   virt_to_bus(addr) >= 0x1000000 ||
+		   virt_to_phys(addr) >= 0x1000000 ||
 		   _CROSS_64KB(addr, size, 0))
 			use_virtual_dma = 1;
 		else
@@ -206,7 +203,7 @@ static int vdma_dma_setup(char *addr, unsigned long size, int mode, int io)
 static int hard_dma_setup(char *addr, unsigned long size, int mode, int io)
 {
 #ifdef FLOPPY_SANITY_CHECK
-	if (CROSS_64KB(addr, size)) {
+	if (_CROSS_64KB(addr, size, use_virtual_dma & 1)) {
 		printk("DMA crossing 64-K boundary %p-%p\n", addr, addr+size);
 		return -1;
 	}
@@ -215,7 +212,7 @@ static int hard_dma_setup(char *addr, unsigned long size, int mode, int io)
 	doing_pdma = 0;
 	clear_dma_ff(FLOPPY_DMA);
 	set_dma_mode(FLOPPY_DMA,mode);
-	set_dma_addr(FLOPPY_DMA,virt_to_bus(addr));
+	set_dma_addr(FLOPPY_DMA,virt_to_phys(addr));
 	set_dma_count(FLOPPY_DMA,size);
 	enable_dma(FLOPPY_DMA);
 	return 0;

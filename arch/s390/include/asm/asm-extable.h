@@ -9,9 +9,13 @@
 #define EX_TYPE_NONE		0
 #define EX_TYPE_FIXUP		1
 #define EX_TYPE_BPF		2
-#define EX_TYPE_UA_STORE	3
-#define EX_TYPE_UA_LOAD_MEM	4
+#define EX_TYPE_UA_FAULT	3
 #define EX_TYPE_UA_LOAD_REG	5
+#define EX_TYPE_UA_LOAD_REGPAIR	6
+#define EX_TYPE_ZEROPAD		7
+#define EX_TYPE_FPC		8
+#define EX_TYPE_UA_MVCOS_TO	9
+#define EX_TYPE_UA_MVCOS_FROM	10
 
 #define EX_DATA_REG_ERR_SHIFT	0
 #define EX_DATA_REG_ERR		GENMASK(3, 0)
@@ -22,18 +26,9 @@
 #define EX_DATA_LEN_SHIFT	8
 #define EX_DATA_LEN		GENMASK(11, 8)
 
-#define __EX_TABLE(_section, _fault, _target, _type)			\
-	stringify_in_c(.section	_section,"a";)				\
-	stringify_in_c(.align	4;)					\
-	stringify_in_c(.long	(_fault) - .;)				\
-	stringify_in_c(.long	(_target) - .;)				\
-	stringify_in_c(.short	(_type);)				\
-	stringify_in_c(.short	0;)					\
-	stringify_in_c(.previous)
-
-#define __EX_TABLE_UA(_section, _fault, _target, _type, _regerr, _regaddr, _len)\
+#define __EX_TABLE(_section, _fault, _target, _type, _regerr, _regaddr, _len)	\
 	stringify_in_c(.section _section,"a";)					\
-	stringify_in_c(.align	4;)						\
+	stringify_in_c(.balign	4;)						\
 	stringify_in_c(.long	(_fault) - .;)					\
 	stringify_in_c(.long	(_target) - .;)					\
 	stringify_in_c(.short	(_type);)					\
@@ -71,18 +66,30 @@
 	stringify_in_c(.previous)
 
 #define EX_TABLE(_fault, _target)					\
-	__EX_TABLE(__ex_table, _fault, _target, EX_TYPE_FIXUP)
+	__EX_TABLE(__ex_table, _fault, _target, EX_TYPE_FIXUP, __stringify(%%r0), __stringify(%%r0), 0)
 
 #define EX_TABLE_AMODE31(_fault, _target)				\
-	__EX_TABLE(.amode31.ex_table, _fault, _target, EX_TYPE_FIXUP)
+	__EX_TABLE(.amode31.ex_table, _fault, _target, EX_TYPE_FIXUP, __stringify(%%r0), __stringify(%%r0), 0)
 
-#define EX_TABLE_UA_STORE(_fault, _target, _regerr)			\
-	__EX_TABLE_UA(__ex_table, _fault, _target, EX_TYPE_UA_STORE, _regerr, _regerr, 0)
-
-#define EX_TABLE_UA_LOAD_MEM(_fault, _target, _regerr, _regmem, _len)	\
-	__EX_TABLE_UA(__ex_table, _fault, _target, EX_TYPE_UA_LOAD_MEM, _regerr, _regmem, _len)
+#define EX_TABLE_UA_FAULT(_fault, _target, _regerr)			\
+	__EX_TABLE(__ex_table, _fault, _target, EX_TYPE_UA_FAULT, _regerr, _regerr, 0)
 
 #define EX_TABLE_UA_LOAD_REG(_fault, _target, _regerr, _regzero)	\
-	__EX_TABLE_UA(__ex_table, _fault, _target, EX_TYPE_UA_LOAD_REG, _regerr, _regzero, 0)
+	__EX_TABLE(__ex_table, _fault, _target, EX_TYPE_UA_LOAD_REG, _regerr, _regzero, 0)
+
+#define EX_TABLE_UA_LOAD_REGPAIR(_fault, _target, _regerr, _regzero)	\
+	__EX_TABLE(__ex_table, _fault, _target, EX_TYPE_UA_LOAD_REGPAIR, _regerr, _regzero, 0)
+
+#define EX_TABLE_ZEROPAD(_fault, _target, _regdata, _regaddr)		\
+	__EX_TABLE(__ex_table, _fault, _target, EX_TYPE_ZEROPAD, _regdata, _regaddr, 0)
+
+#define EX_TABLE_FPC(_fault, _target)					\
+	__EX_TABLE(__ex_table, _fault, _target, EX_TYPE_FPC, __stringify(%%r0), __stringify(%%r0), 0)
+
+#define EX_TABLE_UA_MVCOS_TO(_fault, _target)				\
+	__EX_TABLE(__ex_table, _fault, _target, EX_TYPE_UA_MVCOS_TO, __stringify(%%r0), __stringify(%%r0), 0)
+
+#define EX_TABLE_UA_MVCOS_FROM(_fault, _target)				\
+	__EX_TABLE(__ex_table, _fault, _target, EX_TYPE_UA_MVCOS_FROM, __stringify(%%r0), __stringify(%%r0), 0)
 
 #endif /* __ASM_EXTABLE_H */

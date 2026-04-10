@@ -15,10 +15,11 @@
 #include <linux/mii.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
+#include <linux/of.h>
 #include <linux/of_net.h>
 #include <linux/of_mdio.h>
-#include <linux/of_platform.h>
 #include <linux/phy.h>
+#include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/reset.h>
 #include <linux/types.h>
@@ -395,8 +396,8 @@ static void ave_ethtool_get_drvinfo(struct net_device *ndev,
 {
 	struct device *dev = ndev->dev.parent;
 
-	strlcpy(info->driver, dev->driver->name, sizeof(info->driver));
-	strlcpy(info->bus_info, dev_name(dev), sizeof(info->bus_info));
+	strscpy(info->driver, dev->driver->name, sizeof(info->driver));
+	strscpy(info->bus_info, dev_name(dev), sizeof(info->bus_info));
 	ave_hw_read_version(ndev, info->fw_version, sizeof(info->fw_version));
 }
 
@@ -585,10 +586,8 @@ static int ave_rxdesc_prepare(struct net_device *ndev, int entry)
 	skb = priv->rx.desc[entry].skbs;
 	if (!skb) {
 		skb = netdev_alloc_skb(ndev, AVE_MAX_ETHFRAME);
-		if (!skb) {
-			netdev_err(ndev, "can't allocate skb for Rx\n");
+		if (!skb)
 			return -ENOMEM;
-		}
 		skb->data += AVE_FRAME_HEADROOM;
 		skb->tail += AVE_FRAME_HEADROOM;
 	}
@@ -1229,6 +1228,8 @@ static int ave_init(struct net_device *ndev)
 
 	phy_support_asym_pause(phydev);
 
+	phydev->mac_managed_pm = true;
+
 	phy_attached_info(phydev);
 
 	return 0;
@@ -1272,15 +1273,13 @@ static int ave_open(struct net_device *ndev)
 	if (ret)
 		return ret;
 
-	priv->tx.desc = kcalloc(priv->tx.ndesc, sizeof(*priv->tx.desc),
-				GFP_KERNEL);
+	priv->tx.desc = kzalloc_objs(*priv->tx.desc, priv->tx.ndesc);
 	if (!priv->tx.desc) {
 		ret = -ENOMEM;
 		goto out_free_irq;
 	}
 
-	priv->rx.desc = kcalloc(priv->rx.ndesc, sizeof(*priv->rx.desc),
-				GFP_KERNEL);
+	priv->rx.desc = kzalloc_objs(*priv->rx.desc, priv->rx.ndesc);
 	if (!priv->rx.desc) {
 		kfree(priv->tx.desc);
 		ret = -ENOMEM;
@@ -1506,16 +1505,16 @@ static void ave_get_stats64(struct net_device *ndev,
 	unsigned int start;
 
 	do {
-		start = u64_stats_fetch_begin_irq(&priv->stats_rx.syncp);
+		start = u64_stats_fetch_begin(&priv->stats_rx.syncp);
 		stats->rx_packets = priv->stats_rx.packets;
 		stats->rx_bytes	  = priv->stats_rx.bytes;
-	} while (u64_stats_fetch_retry_irq(&priv->stats_rx.syncp, start));
+	} while (u64_stats_fetch_retry(&priv->stats_rx.syncp, start));
 
 	do {
-		start = u64_stats_fetch_begin_irq(&priv->stats_tx.syncp);
+		start = u64_stats_fetch_begin(&priv->stats_tx.syncp);
 		stats->tx_packets = priv->stats_tx.packets;
 		stats->tx_bytes	  = priv->stats_tx.bytes;
-	} while (u64_stats_fetch_retry_irq(&priv->stats_tx.syncp, start));
+	} while (u64_stats_fetch_retry(&priv->stats_tx.syncp, start));
 
 	stats->rx_errors      = priv->stats_rx.errors;
 	stats->tx_errors      = priv->stats_tx.errors;
@@ -1687,8 +1686,7 @@ static int ave_probe(struct platform_device *pdev)
 		 pdev->name, pdev->id);
 
 	/* Register as a NAPI supported driver */
-	netif_napi_add(ndev, &priv->napi_rx, ave_napi_poll_rx,
-		       NAPI_POLL_WEIGHT);
+	netif_napi_add(ndev, &priv->napi_rx, ave_napi_poll_rx);
 	netif_napi_add_tx(ndev, &priv->napi_tx, ave_napi_poll_tx);
 
 	platform_set_drvdata(pdev, ndev);
@@ -1717,7 +1715,7 @@ out_del_napi:
 	return ret;
 }
 
-static int ave_remove(struct platform_device *pdev)
+static void ave_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct ave_private *priv = netdev_priv(ndev);
@@ -1725,8 +1723,6 @@ static int ave_remove(struct platform_device *pdev)
 	unregister_netdev(ndev);
 	netif_napi_del(&priv->napi_rx);
 	netif_napi_del(&priv->napi_tx);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -1757,15 +1753,13 @@ static int ave_resume(struct device *dev)
 
 	ave_global_reset(ndev);
 
+	ret = phy_init_hw(ndev->phydev);
+	if (ret)
+		return ret;
+
 	ave_ethtool_get_wol(ndev, &wol);
 	wol.wolopts = priv->wolopts;
 	__ave_ethtool_set_wol(ndev, &wol);
-
-	if (ndev->phydev) {
-		ret = phy_resume(ndev->phydev);
-		if (ret)
-			return ret;
-	}
 
 	if (netif_running(ndev)) {
 		ret = ave_open(ndev);

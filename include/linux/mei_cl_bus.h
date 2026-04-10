@@ -11,6 +11,7 @@
 
 struct mei_cl_device;
 struct mei_device;
+struct scatterlist;
 
 typedef void (*mei_cldev_cb_t)(struct mei_cl_device *cldev);
 
@@ -30,11 +31,11 @@ typedef void (*mei_cldev_cb_t)(struct mei_cl_device *cldev);
  * @rx_work: async work to execute Rx event callback
  * @rx_cb: Drivers register this callback to get asynchronous ME
  *	Rx buffer pending notifications.
- * @notif_work: async work to execute FW notif event callback
+ * @notif_work: async work to execute FW notify event callback
  * @notif_cb: Drivers register this callback to get asynchronous ME
  *	FW notification pending notifications.
  *
- * @do_match: wheather device can be matched with a driver
+ * @do_match: whether the device can be matched with a driver
  * @is_added: device is already scanned
  * @priv_data: client private data
  */
@@ -93,22 +94,26 @@ void mei_cldev_driver_unregister(struct mei_cl_driver *cldrv);
 
 ssize_t mei_cldev_send(struct mei_cl_device *cldev, const u8 *buf,
 		       size_t length);
+ssize_t mei_cldev_send_timeout(struct mei_cl_device *cldev, const u8 *buf,
+			       size_t length, unsigned long timeout);
 ssize_t mei_cldev_recv(struct mei_cl_device *cldev, u8 *buf, size_t length);
-ssize_t mei_cldev_recv_nonblock(struct mei_cl_device *cldev, u8 *buf,
-				size_t length);
+ssize_t mei_cldev_recv_timeout(struct mei_cl_device *cldev, u8 *buf, size_t length,
+			       unsigned long timeout);
 ssize_t mei_cldev_send_vtag(struct mei_cl_device *cldev, const u8 *buf,
 			    size_t length, u8 vtag);
+ssize_t mei_cldev_send_vtag_timeout(struct mei_cl_device *cldev, const u8 *buf,
+				    size_t length, u8 vtag, unsigned long timeout);
 ssize_t mei_cldev_recv_vtag(struct mei_cl_device *cldev, u8 *buf, size_t length,
 			    u8 *vtag);
-ssize_t mei_cldev_recv_nonblock_vtag(struct mei_cl_device *cldev, u8 *buf,
-				     size_t length, u8 *vtag);
+ssize_t mei_cldev_recv_vtag_timeout(struct mei_cl_device *cldev, u8 *buf, size_t length,
+			    u8 *vtag, unsigned long timeout);
 
 int mei_cldev_register_rx_cb(struct mei_cl_device *cldev, mei_cldev_cb_t rx_cb);
 int mei_cldev_register_notif_cb(struct mei_cl_device *cldev,
 				mei_cldev_cb_t notif_cb);
 
-const uuid_le *mei_cldev_uuid(const struct mei_cl_device *cldev);
 u8 mei_cldev_ver(const struct mei_cl_device *cldev);
+size_t mei_cldev_mtu(const struct mei_cl_device *cldev);
 
 void *mei_cldev_get_drvdata(const struct mei_cl_device *cldev);
 void mei_cldev_set_drvdata(struct mei_cl_device *cldev, void *data);
@@ -116,6 +121,11 @@ void mei_cldev_set_drvdata(struct mei_cl_device *cldev, void *data);
 int mei_cldev_enable(struct mei_cl_device *cldev);
 int mei_cldev_disable(struct mei_cl_device *cldev);
 bool mei_cldev_enabled(const struct mei_cl_device *cldev);
+ssize_t mei_cldev_send_gsc_command(struct mei_cl_device *cldev,
+				   u8 client_id, u32 fence_id,
+				   struct scatterlist *sg_in,
+				   size_t total_in_len,
+				   struct scatterlist *sg_out);
 
 void *mei_cldev_dma_map(struct mei_cl_device *cldev, u8 buffer_id, size_t size);
 int mei_cldev_dma_unmap(struct mei_cl_device *cldev);

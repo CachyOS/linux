@@ -9,11 +9,9 @@
 #include <linux/errno.h>
 #include <linux/hid.h>
 #include <linux/hwmon.h>
-#include <linux/hwmon-sysfs.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/types.h>
 
@@ -32,32 +30,36 @@
  *	  but it is better to not rely on this (it is also hard to parse)
  *	- the driver uses raw events to be accessible from userspace (though this is not really
  *	  supported, it is just there for convenience, may be removed in the future)
- *	- a reply always start with the length and command in the same order the request used it
+ *	- a reply always starts with the length and command in the same order the request used it
  *	- length of the reply data is specific to the command used
  *	- some of the commands work on a rail and can be switched to a specific rail (0 = 12v,
  *	  1 = 5v, 2 = 3.3v)
  *	- the format of the init command 0xFE is swapped length/command bytes
  *	- parameter bytes amount and values are specific to the command (rail setting is the only
- *	  for now that uses non-zero values)
- *	- there are much more commands, especially for configuring the device, but they are not
- *	  supported because a wrong command/length can lockup the micro-controller
+ *	  one for now that uses non-zero values)
  *	- the driver supports debugfs for values not fitting into the hwmon class
- *	- not every device class (HXi, RMi or AXi) supports all commands
- *	- it is a pure sensors reading driver (will not support configuring)
+ *	- not every device class (HXi or RMi) supports all commands
+ *	- if configured wrong the PSU resets or shuts down, often before actually hitting the
+ *	  reported critical temperature
+ *	- new models like HX1500i Series 2023 have changes in the reported vendor and product
+ *	  strings, both are slightly longer now, report vendor and product in one string and are
+ *	  the same now
  */
 
 #define DRIVER_NAME		"corsair-psu"
 
-#define REPLY_SIZE		16 /* max length of a reply to a single command */
+#define REPLY_SIZE		24 /* max length of a reply to a single command */
 #define CMD_BUFFER_SIZE		64
 #define CMD_TIMEOUT_MS		250
 #define SECONDS_PER_HOUR	(60 * 60)
 #define SECONDS_PER_DAY		(SECONDS_PER_HOUR * 24)
 #define RAIL_COUNT		3 /* 3v3 + 5v + 12v */
 #define TEMP_COUNT		2
+#define OCP_MULTI_RAIL		0x02
 
 #define PSU_CMD_SELECT_RAIL	0x00 /* expects length 2 */
-#define PSU_CMD_RAIL_VOLTS_HCRIT 0x40 /* the rest of the commands expect length 3 */
+#define PSU_CMD_FAN_PWM		0x3B /* the rest of the commands expect length 3 */
+#define PSU_CMD_RAIL_VOLTS_HCRIT 0x40
 #define PSU_CMD_RAIL_VOLTS_LCRIT 0x44
 #define PSU_CMD_RAIL_AMPS_HCRIT	0x46
 #define PSU_CMD_TEMP_HCRIT	0x4F
@@ -71,9 +73,11 @@
 #define PSU_CMD_RAIL_WATTS	0x96
 #define PSU_CMD_VEND_STR	0x99
 #define PSU_CMD_PROD_STR	0x9A
-#define PSU_CMD_TOTAL_WATTS	0xEE
 #define PSU_CMD_TOTAL_UPTIME	0xD1
 #define PSU_CMD_UPTIME		0xD2
+#define PSU_CMD_OCPMODE		0xD8
+#define PSU_CMD_TOTAL_WATTS	0xEE
+#define PSU_CMD_FAN_PWM_ENABLE	0xF0
 #define PSU_CMD_INIT		0xFE
 
 #define L_IN_VOLTS		"v_in"
@@ -118,7 +122,6 @@ struct corsairpsu_data {
 	struct device *hwmon_dev;
 	struct dentry *debugfs;
 	struct completion wait_completion;
-	struct mutex lock; /* for locking access to cmd_buffer */
 	u8 *cmd_buffer;
 	char vendor[REPLY_SIZE];
 	char product[REPLY_SIZE];
@@ -141,6 +144,14 @@ static int corsairpsu_linear11_to_int(const u16 val, const int scale)
 	const int result = mant * scale;
 
 	return (exp >= 0) ? (result << exp) : (result >> -exp);
+}
+
+/* the micro-controller uses percentage values to control pwm */
+static int corsairpsu_dutycycle_to_pwm(const long dutycycle)
+{
+	const int result = (256 << 16) / 100;
+
+	return (result * dutycycle) >> 16;
 }
 
 static int corsairpsu_usb_cmd(struct corsairpsu_data *priv, u8 p0, u8 p1, u8 p2, void *data)
@@ -206,7 +217,6 @@ static int corsairpsu_request(struct corsairpsu_data *priv, u8 cmd, u8 rail, voi
 {
 	int ret;
 
-	mutex_lock(&priv->lock);
 	switch (cmd) {
 	case PSU_CMD_RAIL_VOLTS_HCRIT:
 	case PSU_CMD_RAIL_VOLTS_LCRIT:
@@ -216,17 +226,13 @@ static int corsairpsu_request(struct corsairpsu_data *priv, u8 cmd, u8 rail, voi
 	case PSU_CMD_RAIL_WATTS:
 		ret = corsairpsu_usb_cmd(priv, 2, PSU_CMD_SELECT_RAIL, rail, NULL);
 		if (ret < 0)
-			goto cmd_fail;
+			return ret;
 		break;
 	default:
 		break;
 	}
 
-	ret = corsairpsu_usb_cmd(priv, 3, cmd, 0, data);
-
-cmd_fail:
-	mutex_unlock(&priv->lock);
-	return ret;
+	return corsairpsu_usb_cmd(priv, 3, cmd, 0, data);
 }
 
 static int corsairpsu_get_value(struct corsairpsu_data *priv, u8 cmd, u8 rail, long *val)
@@ -242,8 +248,8 @@ static int corsairpsu_get_value(struct corsairpsu_data *priv, u8 cmd, u8 rail, l
 	/*
 	 * the biggest value here comes from the uptime command and to exceed MAXINT total uptime
 	 * needs to be about 68 years, the rest are u16 values and the biggest value coming out of
-	 * the LINEAR11 conversion are the watts values which are about 1200 for the strongest psu
-	 * supported (HX1200i)
+	 * the LINEAR11 conversion are the watts values which are about 1500 for the strongest psu
+	 * supported (HX1500i)
 	 */
 	tmp = ((long)data[3] << 24) + (data[2] << 16) + (data[1] << 8) + data[0];
 	switch (cmd) {
@@ -262,12 +268,31 @@ static int corsairpsu_get_value(struct corsairpsu_data *priv, u8 cmd, u8 rail, l
 	case PSU_CMD_FAN:
 		*val = corsairpsu_linear11_to_int(tmp & 0xFFFF, 1);
 		break;
+	case PSU_CMD_FAN_PWM_ENABLE:
+		*val = corsairpsu_linear11_to_int(tmp & 0xFFFF, 1);
+		/*
+		 * 0 = automatic mode, means the micro-controller controls the fan using a plan
+		 *     which can be modified, but changing this plan is not supported by this
+		 *     driver, the matching PWM mode is automatic fan speed control = PWM 2
+		 * 1 = fixed mode, fan runs at a fixed speed represented by a percentage
+		 *     value 0-100, this matches the PWM manual fan speed control = PWM 1
+		 * technically there is no PWM no fan speed control mode, it would be a combination
+		 * of 1 at 100%
+		 */
+		if (*val == 0)
+			*val = 2;
+		break;
+	case PSU_CMD_FAN_PWM:
+		*val = corsairpsu_linear11_to_int(tmp & 0xFFFF, 1);
+		*val = corsairpsu_dutycycle_to_pwm(*val);
+		break;
 	case PSU_CMD_RAIL_WATTS:
 	case PSU_CMD_TOTAL_WATTS:
 		*val = corsairpsu_linear11_to_int(tmp & 0xFFFF, 1000000);
 		break;
 	case PSU_CMD_TOTAL_UPTIME:
 	case PSU_CMD_UPTIME:
+	case PSU_CMD_OCPMODE:
 		*val = tmp;
 		break;
 	default:
@@ -346,6 +371,18 @@ static umode_t corsairpsu_hwmon_fan_is_visible(const struct corsairpsu_data *pri
 	}
 }
 
+static umode_t corsairpsu_hwmon_pwm_is_visible(const struct corsairpsu_data *priv, u32 attr,
+					       int channel)
+{
+	switch (attr) {
+	case hwmon_pwm_input:
+	case hwmon_pwm_enable:
+		return 0444;
+	default:
+		return 0;
+	}
+}
+
 static umode_t corsairpsu_hwmon_power_is_visible(const struct corsairpsu_data *priv, u32 attr,
 						 int channel)
 {
@@ -413,6 +450,8 @@ static umode_t corsairpsu_hwmon_ops_is_visible(const void *data, enum hwmon_sens
 		return corsairpsu_hwmon_temp_is_visible(priv, attr, channel);
 	case hwmon_fan:
 		return corsairpsu_hwmon_fan_is_visible(priv, attr, channel);
+	case hwmon_pwm:
+		return corsairpsu_hwmon_pwm_is_visible(priv, attr, channel);
 	case hwmon_power:
 		return corsairpsu_hwmon_power_is_visible(priv, attr, channel);
 	case hwmon_in:
@@ -442,6 +481,20 @@ static int corsairpsu_hwmon_temp_read(struct corsairpsu_data *priv, u32 attr, in
 	}
 
 	return err;
+}
+
+static int corsairpsu_hwmon_pwm_read(struct corsairpsu_data *priv, u32 attr, int channel, long *val)
+{
+	switch (attr) {
+	case hwmon_pwm_input:
+		return corsairpsu_get_value(priv, PSU_CMD_FAN_PWM, 0, val);
+	case hwmon_pwm_enable:
+		return corsairpsu_get_value(priv, PSU_CMD_FAN_PWM_ENABLE, 0, val);
+	default:
+		break;
+	}
+
+	return -EOPNOTSUPP;
 }
 
 static int corsairpsu_hwmon_power_read(struct corsairpsu_data *priv, u32 attr, int channel,
@@ -528,6 +581,8 @@ static int corsairpsu_hwmon_ops_read(struct device *dev, enum hwmon_sensor_types
 		if (attr == hwmon_fan_input)
 			return corsairpsu_get_value(priv, PSU_CMD_FAN, 0, val);
 		return -EOPNOTSUPP;
+	case hwmon_pwm:
+		return corsairpsu_hwmon_pwm_read(priv, attr, channel, val);
 	case hwmon_power:
 		return corsairpsu_hwmon_power_read(priv, attr, channel, val);
 	case hwmon_in:
@@ -568,7 +623,7 @@ static const struct hwmon_ops corsairpsu_hwmon_ops = {
 	.read_string	= corsairpsu_hwmon_ops_read_string,
 };
 
-static const struct hwmon_channel_info *corsairpsu_info[] = {
+static const struct hwmon_channel_info *const corsairpsu_info[] = {
 	HWMON_CHANNEL_INFO(chip,
 			   HWMON_C_REGISTER_TZ),
 	HWMON_CHANNEL_INFO(temp,
@@ -576,6 +631,8 @@ static const struct hwmon_channel_info *corsairpsu_info[] = {
 			   HWMON_T_INPUT | HWMON_T_LABEL | HWMON_T_CRIT),
 	HWMON_CHANNEL_INFO(fan,
 			   HWMON_F_INPUT | HWMON_F_LABEL),
+	HWMON_CHANNEL_INFO(pwm,
+			   HWMON_PWM_INPUT | HWMON_PWM_ENABLE),
 	HWMON_CHANNEL_INFO(power,
 			   HWMON_P_INPUT | HWMON_P_LABEL,
 			   HWMON_P_INPUT | HWMON_P_LABEL,
@@ -660,6 +717,29 @@ static int product_show(struct seq_file *seqf, void *unused)
 }
 DEFINE_SHOW_ATTRIBUTE(product);
 
+static int ocpmode_show(struct seq_file *seqf, void *unused)
+{
+	struct corsairpsu_data *priv = seqf->private;
+	long val;
+	int ret;
+
+	/*
+	 * The rail mode is switchable on the fly. The RAW interface can be used for this. But it
+	 * will not be included here, because I consider it somewhat dangerous for the health of the
+	 * PSU. The returned value can be a bogus one, if the PSU is in the process of switching and
+	 * getting of the value itself can also fail during this. Because of this every other value
+	 * than OCP_MULTI_RAIL can be considered as "single rail".
+	 */
+	ret = corsairpsu_get_value(priv, PSU_CMD_OCPMODE, 0, &val);
+	if (ret < 0)
+		seq_puts(seqf, "N/A\n");
+	else
+		seq_printf(seqf, "%s\n", (val == OCP_MULTI_RAIL) ? "multi rail" : "single rail");
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(ocpmode);
+
 static void corsairpsu_debugfs_init(struct corsairpsu_data *priv)
 {
 	char name[32];
@@ -671,6 +751,7 @@ static void corsairpsu_debugfs_init(struct corsairpsu_data *priv)
 	debugfs_create_file("uptime_total", 0444, priv->debugfs, priv, &uptime_total_fops);
 	debugfs_create_file("vendor", 0444, priv->debugfs, priv, &vendor_fops);
 	debugfs_create_file("product", 0444, priv->debugfs, priv, &product_fops);
+	debugfs_create_file("ocpmode", 0444, priv->debugfs, priv, &ocpmode_fops);
 }
 
 #else
@@ -708,7 +789,6 @@ static int corsairpsu_probe(struct hid_device *hdev, const struct hid_device_id 
 
 	priv->hdev = hdev;
 	hid_set_drvdata(hdev, priv);
-	mutex_init(&priv->lock);
 	init_completion(&priv->wait_completion);
 
 	hid_device_io_start(hdev);
@@ -786,13 +866,17 @@ static const struct hid_device_id corsairpsu_idtable[] = {
 	{ HID_USB_DEVICE(0x1b1c, 0x1c04) }, /* Corsair HX650i */
 	{ HID_USB_DEVICE(0x1b1c, 0x1c05) }, /* Corsair HX750i */
 	{ HID_USB_DEVICE(0x1b1c, 0x1c06) }, /* Corsair HX850i */
-	{ HID_USB_DEVICE(0x1b1c, 0x1c07) }, /* Corsair HX1000i */
-	{ HID_USB_DEVICE(0x1b1c, 0x1c08) }, /* Corsair HX1200i */
+	{ HID_USB_DEVICE(0x1b1c, 0x1c07) }, /* Corsair HX1000i Legacy */
+	{ HID_USB_DEVICE(0x1b1c, 0x1c08) }, /* Corsair HX1200i Legacy */
 	{ HID_USB_DEVICE(0x1b1c, 0x1c09) }, /* Corsair RM550i */
 	{ HID_USB_DEVICE(0x1b1c, 0x1c0a) }, /* Corsair RM650i */
 	{ HID_USB_DEVICE(0x1b1c, 0x1c0b) }, /* Corsair RM750i */
 	{ HID_USB_DEVICE(0x1b1c, 0x1c0c) }, /* Corsair RM850i */
 	{ HID_USB_DEVICE(0x1b1c, 0x1c0d) }, /* Corsair RM1000i */
+	{ HID_USB_DEVICE(0x1b1c, 0x1c1e) }, /* Corsair HX1000i Series 2023 */
+	{ HID_USB_DEVICE(0x1b1c, 0x1c1f) }, /* Corsair HX1500i Legacy and Series 2023 */
+	{ HID_USB_DEVICE(0x1b1c, 0x1c23) }, /* Corsair HX1200i Series 2023 */
+	{ HID_USB_DEVICE(0x1b1c, 0x1c27) }, /* Corsair HX1200i Series 2025 */
 	{ },
 };
 MODULE_DEVICE_TABLE(hid, corsairpsu_idtable);
@@ -808,7 +892,23 @@ static struct hid_driver corsairpsu_driver = {
 	.reset_resume	= corsairpsu_resume,
 #endif
 };
-module_hid_driver(corsairpsu_driver);
+
+static int __init corsair_init(void)
+{
+	return hid_register_driver(&corsairpsu_driver);
+}
+
+static void __exit corsair_exit(void)
+{
+	hid_unregister_driver(&corsairpsu_driver);
+}
+
+/*
+ * With module_init() the driver would load before the HID bus when
+ * built-in, so use late_initcall() instead.
+ */
+late_initcall(corsair_init);
+module_exit(corsair_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Wilken Gottwalt <wilken.gottwalt@posteo.net>");

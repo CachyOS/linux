@@ -26,8 +26,8 @@
  *
  */
 
-#include "i915_drv.h"
-#include "i915_reg.h"
+#include <drm/drm_print.h>
+
 #include "intel_display_types.h"
 #include "intel_dvo_dev.h"
 
@@ -399,13 +399,13 @@ static bool ns2501_readb(struct intel_dvo_device *dvo, int addr, u8 *ch)
 
 	struct i2c_msg msgs[] = {
 		{
-		 .addr = dvo->slave_addr,
+		 .addr = dvo->target_addr,
 		 .flags = 0,
 		 .len = 1,
 		 .buf = out_buf,
 		 },
 		{
-		 .addr = dvo->slave_addr,
+		 .addr = dvo->target_addr,
 		 .flags = I2C_M_RD,
 		 .len = 1,
 		 .buf = in_buf,
@@ -423,7 +423,7 @@ static bool ns2501_readb(struct intel_dvo_device *dvo, int addr, u8 *ch)
 	if (!ns->quiet) {
 		DRM_DEBUG_KMS
 		    ("Unable to read register 0x%02x from %s:0x%02x.\n", addr,
-		     adapter->name, dvo->slave_addr);
+		     adapter->name, dvo->target_addr);
 	}
 
 	return false;
@@ -442,7 +442,7 @@ static bool ns2501_writeb(struct intel_dvo_device *dvo, int addr, u8 ch)
 	u8 out_buf[2];
 
 	struct i2c_msg msg = {
-		.addr = dvo->slave_addr,
+		.addr = dvo->target_addr,
 		.flags = 0,
 		.len = 2,
 		.buf = out_buf,
@@ -457,7 +457,7 @@ static bool ns2501_writeb(struct intel_dvo_device *dvo, int addr, u8 ch)
 
 	if (!ns->quiet) {
 		DRM_DEBUG_KMS("Unable to write register 0x%02x to %s:%d\n",
-			      addr, adapter->name, dvo->slave_addr);
+			      addr, adapter->name, dvo->target_addr);
 	}
 
 	return false;
@@ -476,7 +476,7 @@ static bool ns2501_init(struct intel_dvo_device *dvo,
 	struct ns2501_priv *ns;
 	unsigned char ch;
 
-	ns = kzalloc(sizeof(struct ns2501_priv), GFP_KERNEL);
+	ns = kzalloc_obj(*ns);
 	if (ns == NULL)
 		return false;
 
@@ -488,8 +488,8 @@ static bool ns2501_init(struct intel_dvo_device *dvo,
 		goto out;
 
 	if (ch != (NS2501_VID & 0xff)) {
-		DRM_DEBUG_KMS("ns2501 not detected got %d: from %s Slave %d.\n",
-			      ch, adapter->name, dvo->slave_addr);
+		DRM_DEBUG_KMS("ns2501 not detected got %d: from %s Target %d.\n",
+			      ch, adapter->name, dvo->target_addr);
 		goto out;
 	}
 
@@ -497,8 +497,8 @@ static bool ns2501_init(struct intel_dvo_device *dvo,
 		goto out;
 
 	if (ch != (NS2501_DID & 0xff)) {
-		DRM_DEBUG_KMS("ns2501 not detected got %d: from %s Slave %d.\n",
-			      ch, adapter->name, dvo->slave_addr);
+		DRM_DEBUG_KMS("ns2501 not detected got %d: from %s Target %d.\n",
+			      ch, adapter->name, dvo->target_addr);
 		goto out;
 	}
 	ns->quiet = false;
@@ -519,13 +519,13 @@ static enum drm_connector_status ns2501_detect(struct intel_dvo_device *dvo)
 	 * Even if not, the detection bit of the 2501 is unreliable as
 	 * it only works for some display types.
 	 * It is even more unreliable as the PLL must be active for
-	 * allowing reading from the chiop.
+	 * allowing reading from the chip.
 	 */
 	return connector_status_connected;
 }
 
 static enum drm_mode_status ns2501_mode_valid(struct intel_dvo_device *dvo,
-					      struct drm_display_mode *mode)
+					      const struct drm_display_mode *mode)
 {
 	DRM_DEBUG_KMS
 	    ("is mode valid (hdisplay=%d,htotal=%d,vdisplay=%d,vtotal=%d)\n",
@@ -551,7 +551,7 @@ static void ns2501_mode_set(struct intel_dvo_device *dvo,
 			    const struct drm_display_mode *adjusted_mode)
 {
 	const struct ns2501_configuration *conf;
-	struct ns2501_priv *ns = (struct ns2501_priv *)(dvo->dev_priv);
+	struct ns2501_priv *ns = dvo->dev_priv;
 	int mode_idx, i;
 
 	DRM_DEBUG_KMS
@@ -655,7 +655,7 @@ static bool ns2501_get_hw_state(struct intel_dvo_device *dvo)
 /* set the NS2501 power state */
 static void ns2501_dpms(struct intel_dvo_device *dvo, bool enable)
 {
-	struct ns2501_priv *ns = (struct ns2501_priv *)(dvo->dev_priv);
+	struct ns2501_priv *ns = dvo->dev_priv;
 
 	DRM_DEBUG_KMS("Trying set the dpms of the DVO to %i\n", enable);
 

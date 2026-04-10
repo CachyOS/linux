@@ -167,7 +167,7 @@ static ssize_t text_show(struct device *dev,
 	struct usb_interface *intf = to_usb_interface(dev);
 	struct usb_sevsegdev *mydev = usb_get_intfdata(intf);
 
-	return snprintf(buf, mydev->textlength, "%s\n", mydev->text);
+	return sysfs_emit(buf, "%s\n", mydev->text);
 }
 
 static ssize_t text_store(struct device *dev,
@@ -305,10 +305,10 @@ static int sevseg_probe(struct usb_interface *interface,
 	const struct usb_device_id *id)
 {
 	struct usb_device *udev = interface_to_usbdev(interface);
-	struct usb_sevsegdev *mydev = NULL;
+	struct usb_sevsegdev *mydev;
 	int rc = -ENOMEM;
 
-	mydev = kzalloc(sizeof(struct usb_sevsegdev), GFP_KERNEL);
+	mydev = kzalloc_obj(struct usb_sevsegdev);
 	if (!mydev)
 		goto error_mem;
 

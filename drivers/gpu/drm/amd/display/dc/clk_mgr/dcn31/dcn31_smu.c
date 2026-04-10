@@ -23,7 +23,6 @@
  *
  */
 
-#include <linux/delay.h>
 #include "core_types.h"
 #include "clk_mgr_internal.h"
 #include "reg_helper.h"
@@ -39,6 +38,12 @@
 
 #define FN(reg_name, field) \
 	FD(reg_name##__##field)
+
+#include "logger_types.h"
+#undef DC_LOGGER
+#define DC_LOGGER \
+	CTX->logger
+#define smu_print(str, ...) {DC_LOG_SMU(str, ##__VA_ARGS__); }
 
 #define VBIOSSMC_MSG_TestMessage                  0x1
 #define VBIOSSMC_MSG_GetSmuVersion                0x2
@@ -102,7 +107,9 @@ static int dcn31_smu_send_msg_with_param(struct clk_mgr_internal *clk_mgr,
 	uint32_t result;
 
 	result = dcn31_smu_wait_for_response(clk_mgr, 10, 200000);
-	ASSERT(result == VBIOSSMC_Result_OK);
+
+	if (result != VBIOSSMC_Result_OK)
+		smu_print("SMU Response was not OK. SMU response after wait received is: %d\n", result);
 
 	if (result == VBIOSSMC_Status_BUSY) {
 		return -1;
@@ -122,7 +129,7 @@ static int dcn31_smu_send_msg_with_param(struct clk_mgr_internal *clk_mgr,
 	if (result == VBIOSSMC_Result_Failed) {
 		if (msg_id == VBIOSSMC_MSG_TransferTableDram2Smu &&
 		    param == TABLE_WATERMARKS)
-			DC_LOG_WARNING("Watermarks table not configured properly by SMU");
+			DC_LOG_DEBUG("Watermarks table not configured properly by SMU");
 		else
 			ASSERT(0);
 		REG_WRITE(MP1_SMN_C2PMSG_91, VBIOSSMC_Result_OK);
@@ -321,8 +328,8 @@ void dcn31_smu_set_zstate_support(struct clk_mgr_internal *clk_mgr, enum dcn_zst
 			(support == DCN_ZSTATE_SUPPORT_ALLOW_Z10_ONLY))
 		support = DCN_ZSTATE_SUPPORT_DISALLOW;
 
-
-	if (support == DCN_ZSTATE_SUPPORT_ALLOW_Z10_ONLY)
+	if (support == DCN_ZSTATE_SUPPORT_ALLOW_Z10_ONLY ||
+	    support == DCN_ZSTATE_SUPPORT_ALLOW_Z8_Z10_ONLY)
 		param = 1;
 	else
 		param = 0;

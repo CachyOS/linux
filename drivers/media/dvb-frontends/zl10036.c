@@ -3,7 +3,7 @@
  * Driver for Zarlink zl10036 DVB-S silicon tuner
  *
  * Copyright (C) 2006 Tino Reichardt
- * Copyright (C) 2007-2009 Matthias Schwarzott <zzam@gentoo.de>
+ * Copyright (C) 2007-2009 Matthias Schwarzott <zzam@gentoo.org>
  *
  **
  * The data sheet for this tuner can be found at:
@@ -89,7 +89,7 @@ static int zl10036_write(struct zl10036_state *state, u8 buf[], u8 count)
 	int ret;
 
 	if (zl10036_debug & 0x02) {
-		/* every 8bit-value satisifes this!
+		/* every 8bit-value satisfies this!
 		 * so only check for debug log */
 		if ((buf[0] & 0x80) == 0x00)
 			reg = 2;
@@ -457,7 +457,7 @@ struct dvb_frontend *zl10036_attach(struct dvb_frontend *fe,
 		return NULL;
 	}
 
-	state = kzalloc(sizeof(struct zl10036_state), GFP_KERNEL);
+	state = kzalloc_obj(struct zl10036_state);
 	if (!state)
 		return NULL;
 
@@ -496,7 +496,7 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(zl10036_attach);
+EXPORT_SYMBOL_GPL(zl10036_attach);
 
 module_param_named(debug, zl10036_debug, int, 0644);
 MODULE_PARM_DESC(debug, "Turn on/off frontend debugging (default:off).");

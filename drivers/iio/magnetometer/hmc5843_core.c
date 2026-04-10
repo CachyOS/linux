@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Device driver for the the HMC5843 multi-chip module designed
+ * Device driver for the HMC5843 multi-chip module designed
  * for low field magnetic sensing.
  *
  * Copyright (C) 2010 Texas Instruments
@@ -452,8 +452,8 @@ static irqreturn_t hmc5843_trigger_handler(int irq, void *p)
 	if (ret < 0)
 		goto done;
 
-	iio_push_to_buffers_with_timestamp(indio_dev, &data->scan,
-					   iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_ts(indio_dev, &data->scan, sizeof(data->scan),
+				    iio_get_time_ns(indio_dev));
 
 done:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -603,19 +603,19 @@ static const struct iio_info hmc5843_info = {
 
 static const unsigned long hmc5843_scan_masks[] = {0x7, 0};
 
-int hmc5843_common_suspend(struct device *dev)
+static int hmc5843_common_suspend(struct device *dev)
 {
 	return hmc5843_set_mode(iio_priv(dev_get_drvdata(dev)),
 				HMC5843_MODE_SLEEP);
 }
-EXPORT_SYMBOL_NS(hmc5843_common_suspend, IIO_HMC5843);
 
-int hmc5843_common_resume(struct device *dev)
+static int hmc5843_common_resume(struct device *dev)
 {
 	return hmc5843_set_mode(iio_priv(dev_get_drvdata(dev)),
 		HMC5843_MODE_CONVERSION_CONTINUOUS);
 }
-EXPORT_SYMBOL_NS(hmc5843_common_resume, IIO_HMC5843);
+EXPORT_NS_SIMPLE_DEV_PM_OPS(hmc5843_pm_ops, hmc5843_common_suspend,
+			    hmc5843_common_resume, IIO_HMC5843);
 
 int hmc5843_common_probe(struct device *dev, struct regmap *regmap,
 			 enum hmc5843_ids id, const char *name)
@@ -669,7 +669,7 @@ buffer_setup_err:
 	hmc5843_set_mode(iio_priv(indio_dev), HMC5843_MODE_SLEEP);
 	return ret;
 }
-EXPORT_SYMBOL_NS(hmc5843_common_probe, IIO_HMC5843);
+EXPORT_SYMBOL_NS(hmc5843_common_probe, "IIO_HMC5843");
 
 void hmc5843_common_remove(struct device *dev)
 {
@@ -681,7 +681,7 @@ void hmc5843_common_remove(struct device *dev)
 	/*  sleep mode to save power */
 	hmc5843_set_mode(iio_priv(indio_dev), HMC5843_MODE_SLEEP);
 }
-EXPORT_SYMBOL_NS(hmc5843_common_remove, IIO_HMC5843);
+EXPORT_SYMBOL_NS(hmc5843_common_remove, "IIO_HMC5843");
 
 MODULE_AUTHOR("Shubhrajyoti Datta <shubhrajyoti@ti.com>");
 MODULE_DESCRIPTION("HMC5843/5883/5883L/5983 core driver");

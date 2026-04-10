@@ -34,29 +34,33 @@
 #define _GVT_H_
 
 #include <uapi/linux/pci_regs.h>
-#include <linux/kvm_host.h>
+#include <linux/mdev.h>
 #include <linux/vfio.h>
+#include <asm/kvm_page_track.h>
 
-#include "i915_drv.h"
-#include "intel_gvt.h"
+#include "display/intel_display_limits.h"
 
+#include "gt/intel_gt.h"
+
+#include "cmd_parser.h"
 #include "debug.h"
-#include "mmio.h"
-#include "reg.h"
-#include "interrupt.h"
-#include "gtt.h"
 #include "display.h"
+#include "dmabuf.h"
 #include "edid.h"
 #include "execlist.h"
-#include "scheduler.h"
-#include "sched_policy.h"
-#include "mmio_context.h"
-#include "cmd_parser.h"
 #include "fb_decoder.h"
-#include "dmabuf.h"
+#include "gtt.h"
+#include "intel_gvt.h"
+#include "interrupt.h"
+#include "mmio.h"
+#include "mmio_context.h"
 #include "page_track.h"
+#include "reg.h"
+#include "scheduler.h"
 
 #define GVT_MAX_VGPU 8
+
+struct engine_mmio;
 
 /* Describe per-platform limitations. */
 struct intel_gvt_device_info {
@@ -85,7 +89,6 @@ struct intel_vgpu_gm {
 /* Fences owned by a vGPU */
 struct intel_vgpu_fence {
 	struct i915_fence_reg *regs[INTEL_GVT_MAX_NUM_FENCES];
-	u32 base;
 	u32 size;
 };
 
@@ -115,7 +118,6 @@ struct intel_vgpu_irq {
 };
 
 struct intel_vgpu_opregion {
-	bool mapped;
 	void *va;
 	u32 gfn[INTEL_GVT_OPREGION_PAGES];
 };
@@ -171,12 +173,18 @@ struct intel_vgpu_submission {
 
 #define KVMGT_DEBUGFS_FILENAME		"kvmgt_nr_cache_entries"
 
+enum {
+	INTEL_VGPU_STATUS_ATTACHED = 0,
+	INTEL_VGPU_STATUS_ACTIVE,
+	INTEL_VGPU_STATUS_NR_BITS,
+};
+
 struct intel_vgpu {
+	struct vfio_device vfio_device;
 	struct intel_gvt *gvt;
 	struct mutex vgpu_lock;
 	int id;
-	bool active;
-	bool attached;
+	DECLARE_BITMAP(status, INTEL_VGPU_STATUS_NR_BITS);
 	bool pv_notified;
 	bool failsafe;
 	unsigned int resetting_eng;
@@ -211,10 +219,8 @@ struct intel_vgpu {
 
 	u32 scan_nonprivbb;
 
-	struct vfio_device vfio_device;
 	struct vfio_region *region;
 	int num_regions;
-	struct eventfd_ctx *intx_trigger;
 	struct eventfd_ctx *msi_trigger;
 
 	/*
@@ -225,9 +231,6 @@ struct intel_vgpu {
 	struct rb_root dma_addr_cache;
 	unsigned long nr_cache_entries;
 	struct mutex cache_lock;
-
-	struct notifier_block iommu_notifier;
-	atomic_t released;
 
 	struct kvm_page_track_notifier_node track_node;
 #define NR_BKT (1 << 18)
@@ -250,7 +253,6 @@ struct intel_gvt_fence {
 
 /* Special MMIO blocks. */
 struct gvt_mmio_block {
-	unsigned int device;
 	i915_reg_t   offset;
 	unsigned int size;
 	gvt_mmio_func read;
@@ -295,15 +297,25 @@ struct intel_gvt_firmware {
 	bool firmware_loaded;
 };
 
-#define NR_MAX_INTEL_VGPU_TYPES 20
-struct intel_vgpu_type {
-	char name[16];
-	unsigned int avail_instance;
-	unsigned int low_gm_size;
-	unsigned int high_gm_size;
+struct intel_vgpu_config {
+	unsigned int low_mm;
+	unsigned int high_mm;
 	unsigned int fence;
+
+	/*
+	 * A vGPU with a weight of 8 will get twice as much GPU as a vGPU with
+	 * a weight of 4 on a contended host, different vGPU type has different
+	 * weight set. Legal weights range from 1 to 16.
+	 */
 	unsigned int weight;
-	enum intel_vgpu_edid resolution;
+	enum intel_vgpu_edid edid;
+	const char *name;
+};
+
+struct intel_vgpu_type {
+	struct mdev_type type;
+	char name[16];
+	const struct intel_vgpu_config *conf;
 };
 
 struct intel_gvt {
@@ -327,6 +339,8 @@ struct intel_gvt {
 	struct intel_gvt_workload_scheduler scheduler;
 	struct notifier_block shadow_ctx_notifier_block[I915_NUM_ENGINES];
 	DECLARE_HASHTABLE(cmd_table, GVT_CMD_HASH_BITS);
+	struct mdev_parent parent;
+	struct mdev_type **mdev_types;
 	struct intel_vgpu_type *types;
 	unsigned int num_types;
 	struct intel_vgpu *idle_vgpu;
@@ -351,11 +365,6 @@ struct intel_gvt {
 
 	struct dentry *debugfs_root;
 };
-
-static inline struct intel_gvt *to_gvt(struct drm_i915_private *i915)
-{
-	return i915->gvt;
-}
 
 enum {
 	/* Scheduling trigger by timer */
@@ -431,32 +440,22 @@ int intel_gvt_load_firmware(struct intel_gvt *gvt);
 #define vgpu_hidden_gmadr_end(vgpu) \
 	(vgpu_hidden_gmadr_base(vgpu) + vgpu_hidden_sz(vgpu) - 1)
 
-#define vgpu_fence_base(vgpu) (vgpu->fence.base)
 #define vgpu_fence_sz(vgpu) (vgpu->fence.size)
 
 /* ring context size i.e. the first 0x50 dwords*/
 #define RING_CTX_SIZE 320
 
-struct intel_vgpu_creation_params {
-	__u64 low_gm_sz;  /* in MB */
-	__u64 high_gm_sz; /* in MB */
-	__u64 fence_sz;
-	__u64 resolution;
-	__s32 primary;
-	__u64 vgpu_id;
-
-	__u32 weight;
-};
-
 int intel_vgpu_alloc_resource(struct intel_vgpu *vgpu,
-			      struct intel_vgpu_creation_params *param);
+			      const struct intel_vgpu_config *conf);
 void intel_vgpu_reset_resource(struct intel_vgpu *vgpu);
 void intel_vgpu_free_resource(struct intel_vgpu *vgpu);
 void intel_vgpu_write_fence(struct intel_vgpu *vgpu,
 	u32 fence, u64 value);
 
-/* Macros for easily accessing vGPU virtual/shadow register.
-   Explicitly seperate use for typed MMIO reg or real offset.*/
+/*
+ * Macros for easily accessing vGPU virtual/shadow register.
+ * Explicitly separate use for typed MMIO reg or real offset.
+ */
 #define vgpu_vreg_t(vgpu, reg) \
 	(*(u32 *)(vgpu->mmio.vreg + i915_mmio_reg_offset(reg)))
 #define vgpu_vreg(vgpu, offset) \
@@ -468,7 +467,7 @@ void intel_vgpu_write_fence(struct intel_vgpu *vgpu,
 
 #define for_each_active_vgpu(gvt, vgpu, id) \
 	idr_for_each_entry((&(gvt)->vgpu_idr), (vgpu), (id)) \
-		for_each_if(vgpu->active)
+		for_each_if(test_bit(INTEL_VGPU_STATUS_ACTIVE, vgpu->status))
 
 static inline void intel_vgpu_write_pci_bar(struct intel_vgpu *vgpu,
 					    u32 offset, u32 val, bool low)
@@ -495,8 +494,8 @@ void intel_gvt_clean_vgpu_types(struct intel_gvt *gvt);
 
 struct intel_vgpu *intel_gvt_create_idle_vgpu(struct intel_gvt *gvt);
 void intel_gvt_destroy_idle_vgpu(struct intel_vgpu *vgpu);
-struct intel_vgpu *intel_gvt_create_vgpu(struct intel_gvt *gvt,
-					 struct intel_vgpu_type *type);
+int intel_gvt_create_vgpu(struct intel_vgpu *vgpu,
+			  const struct intel_vgpu_config *conf);
 void intel_gvt_destroy_vgpu(struct intel_vgpu *vgpu);
 void intel_gvt_release_vgpu(struct intel_vgpu *vgpu);
 void intel_gvt_reset_vgpu_locked(struct intel_vgpu *vgpu, bool dmlr,
@@ -534,12 +533,6 @@ int intel_gvt_set_edid(struct intel_vgpu *vgpu, int port_num);
 	    gvt_gmadr_is_hidden(gvt, gmadr))
 
 bool intel_gvt_ggtt_validate_range(struct intel_vgpu *vgpu, u64 addr, u32 size);
-int intel_gvt_ggtt_gmadr_g2h(struct intel_vgpu *vgpu, u64 g_addr, u64 *h_addr);
-int intel_gvt_ggtt_gmadr_h2g(struct intel_vgpu *vgpu, u64 h_addr, u64 *g_addr);
-int intel_gvt_ggtt_index_g2h(struct intel_vgpu *vgpu, unsigned long g_index,
-			     unsigned long *h_index);
-int intel_gvt_ggtt_h2g_index(struct intel_vgpu *vgpu, unsigned long h_index,
-			     unsigned long *g_index);
 
 void intel_vgpu_init_cfg_space(struct intel_vgpu *vgpu,
 		bool primary);
@@ -577,14 +570,15 @@ enum {
 	GVT_FAILSAFE_GUEST_ERR,
 };
 
-static inline void mmio_hw_access_pre(struct intel_gt *gt)
+static inline intel_wakeref_t mmio_hw_access_pre(struct intel_gt *gt)
 {
-	intel_runtime_pm_get(gt->uncore->rpm);
+	return intel_runtime_pm_get(gt->uncore->rpm);
 }
 
-static inline void mmio_hw_access_post(struct intel_gt *gt)
+static inline void mmio_hw_access_post(struct intel_gt *gt,
+				       intel_wakeref_t wakeref)
 {
-	intel_runtime_pm_put_unchecked(gt->uncore->rpm);
+	intel_runtime_pm_put(gt->uncore->rpm, wakeref);
 }
 
 /**
@@ -705,7 +699,7 @@ static inline void intel_gvt_mmio_set_cmd_write_patch(
  * @offset: register offset
  *
  * Returns:
- * True if GPU commmand write to an MMIO should be patched
+ * True if GPU command write to an MMIO should be patched.
  */
 static inline bool intel_gvt_mmio_is_cmd_write_patch(
 			struct intel_gvt *gvt, unsigned int offset)
@@ -726,7 +720,7 @@ static inline bool intel_gvt_mmio_is_cmd_write_patch(
 static inline int intel_gvt_read_gpa(struct intel_vgpu *vgpu, unsigned long gpa,
 		void *buf, unsigned long len)
 {
-	if (!vgpu->attached)
+	if (!test_bit(INTEL_VGPU_STATUS_ATTACHED, vgpu->status))
 		return -ESRCH;
 	return vfio_dma_rw(&vgpu->vfio_device, gpa, buf, len, false);
 }
@@ -744,7 +738,7 @@ static inline int intel_gvt_read_gpa(struct intel_vgpu *vgpu, unsigned long gpa,
 static inline int intel_gvt_write_gpa(struct intel_vgpu *vgpu,
 		unsigned long gpa, void *buf, unsigned long len)
 {
-	if (!vgpu->attached)
+	if (!test_bit(INTEL_VGPU_STATUS_ATTACHED, vgpu->status))
 		return -ESRCH;
 	return vfio_dma_rw(&vgpu->vfio_device, gpa, buf, len, true);
 }

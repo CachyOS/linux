@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * mmp2 clock framework source file
  *
  * Copyright (C) 2012 Marvell
  * Chao Xie <xiechao.mail@gmail.com>
  * Copyright (C) 2020 Lubomir Rintel <lkundrak@v3.sk>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/module.h>
@@ -81,6 +78,8 @@
 #define MPMU_PLL_DIFF_CTRL	0x68
 #define MPMU_PLL2_CTRL1		0x414
 
+#define NR_CLKS		200
+
 enum mmp2_clk_model {
 	CLK_MODEL_MMP2,
 	CLK_MODEL_MMP3,
@@ -144,9 +143,9 @@ static struct mmp_clk_factor_masks uart_factor_masks = {
 	.den_shift = 0,
 };
 
-static struct mmp_clk_factor_tbl uart_factor_tbl[] = {
-	{.num = 8125, .den = 1536},	/*14.745MHZ */
-	{.num = 3521, .den = 689},	/*19.23MHZ */
+static struct u32_fract uart_factor_tbl[] = {
+	{ .numerator = 8125, .denominator = 1536 },	/* 14.745MHZ */
+	{ .numerator = 3521, .denominator =  689 },	/* 19.23MHZ */
 };
 
 static struct mmp_clk_factor_masks i2s_factor_masks = {
@@ -158,16 +157,16 @@ static struct mmp_clk_factor_masks i2s_factor_masks = {
 	.enable_mask = 0xd0000000,
 };
 
-static struct mmp_clk_factor_tbl i2s_factor_tbl[] = {
-	{.num = 24868, .den =  511},	/*  2.0480 MHz */
-	{.num = 28003, .den =  793},	/*  2.8224 MHz */
-	{.num = 24941, .den = 1025},	/*  4.0960 MHz */
-	{.num = 28003, .den = 1586},	/*  5.6448 MHz */
-	{.num = 31158, .den = 2561},	/*  8.1920 MHz */
-	{.num = 16288, .den = 1845},	/* 11.2896 MHz */
-	{.num = 20772, .den = 2561},	/* 12.2880 MHz */
-	{.num =  8144, .den = 1845},	/* 22.5792 MHz */
-	{.num = 10386, .den = 2561},	/* 24.5760 MHz */
+static struct u32_fract i2s_factor_tbl[] = {
+	{ .numerator = 24868, .denominator =  511 },	/*  2.0480 MHz */
+	{ .numerator = 28003, .denominator =  793 },	/*  2.8224 MHz */
+	{ .numerator = 24941, .denominator = 1025 },	/*  4.0960 MHz */
+	{ .numerator = 28003, .denominator = 1586 },	/*  5.6448 MHz */
+	{ .numerator = 31158, .denominator = 2561 },	/*  8.1920 MHz */
+	{ .numerator = 16288, .denominator = 1845 },	/* 11.2896 MHz */
+	{ .numerator = 20772, .denominator = 2561 },	/* 12.2880 MHz */
+	{ .numerator =  8144, .denominator = 1845 },	/* 22.5792 MHz */
+	{ .numerator = 10386, .denominator = 2561 },	/* 24.5760 MHz */
 };
 
 static DEFINE_SPINLOCK(acgr_lock);
@@ -463,7 +462,7 @@ static void mmp2_clk_reset_init(struct device_node *np,
 	int i, nr_resets;
 
 	nr_resets = ARRAY_SIZE(apbc_gate_clks);
-	cells = kcalloc(nr_resets, sizeof(*cells), GFP_KERNEL);
+	cells = kzalloc_objs(*cells, nr_resets);
 	if (!cells)
 		return;
 
@@ -517,7 +516,7 @@ static void __init mmp2_clk_init(struct device_node *np)
 {
 	struct mmp2_clk_unit *pxa_unit;
 
-	pxa_unit = kzalloc(sizeof(*pxa_unit), GFP_KERNEL);
+	pxa_unit = kzalloc_obj(*pxa_unit);
 	if (!pxa_unit)
 		return;
 
@@ -546,7 +545,7 @@ static void __init mmp2_clk_init(struct device_node *np)
 
 	mmp2_pm_domain_init(np, pxa_unit);
 
-	mmp_clk_init(np, &pxa_unit->unit, MMP2_NR_CLKS);
+	mmp_clk_init(np, &pxa_unit->unit, NR_CLKS);
 
 	mmp2_main_clk_init(pxa_unit);
 

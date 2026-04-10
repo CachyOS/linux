@@ -27,7 +27,7 @@
 #include <subdev/bios/init.h>
 #include <subdev/bios/rammap.h>
 
-static int
+int
 gp100_ram_init(struct nvkm_ram *ram)
 {
 	struct nvkm_subdev *subdev = &ram->fb->subdev;
@@ -91,7 +91,7 @@ gp100_ram_new(struct nvkm_fb *fb, struct nvkm_ram **pram)
 {
 	struct nvkm_ram *ram;
 
-	if (!(ram = *pram = kzalloc(sizeof(*ram), GFP_KERNEL)))
+	if (!(ram = *pram = kzalloc_obj(*ram)))
 		return -ENOMEM;
 
 	return gf100_ram_ctor(&gp100_ram, fb, ram);

@@ -113,16 +113,6 @@ static int timeriomem_rng_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res)
-		return -ENXIO;
-
-	if (res->start % 4 != 0 || resource_size(res) < 4) {
-		dev_err(&pdev->dev,
-			"address must be at least four bytes wide and 32-bit aligned\n");
-		return -EINVAL;
-	}
-
 	/* Allocate memory for the device structure (and zero it) */
 	priv = devm_kzalloc(&pdev->dev,
 			sizeof(struct timeriomem_rng_private), GFP_KERNEL);
@@ -130,6 +120,16 @@ static int timeriomem_rng_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	platform_set_drvdata(pdev, priv);
+
+	priv->io_base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+	if (IS_ERR(priv->io_base))
+		return PTR_ERR(priv->io_base);
+
+	if (res->start % 4 != 0 || resource_size(res) < 4) {
+		dev_err(&pdev->dev,
+			"address must be at least four bytes wide and 32-bit aligned\n");
+		return -EINVAL;
+	}
 
 	if (pdev->dev.of_node) {
 		int i;
@@ -145,25 +145,17 @@ static int timeriomem_rng_probe(struct platform_device *pdev)
 		if (!of_property_read_u32(pdev->dev.of_node,
 						"quality", &i))
 			priv->rng_ops.quality = i;
-		else
-			priv->rng_ops.quality = 0;
 	} else {
 		period = pdata->period;
 		priv->rng_ops.quality = pdata->quality;
 	}
 
-	priv->period = ns_to_ktime(period * NSEC_PER_USEC);
+	priv->period = us_to_ktime(period);
 	init_completion(&priv->completion);
-	hrtimer_init(&priv->timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
-	priv->timer.function = timeriomem_rng_trigger;
+	hrtimer_setup(&priv->timer, timeriomem_rng_trigger, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
 
 	priv->rng_ops.name = dev_name(&pdev->dev);
 	priv->rng_ops.read = timeriomem_rng_read;
-
-	priv->io_base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(priv->io_base)) {
-		return PTR_ERR(priv->io_base);
-	}
 
 	/* Assume random data is already available. */
 	priv->present = 1;
@@ -181,13 +173,11 @@ static int timeriomem_rng_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int timeriomem_rng_remove(struct platform_device *pdev)
+static void timeriomem_rng_remove(struct platform_device *pdev)
 {
 	struct timeriomem_rng_private *priv = platform_get_drvdata(pdev);
 
 	hrtimer_cancel(&priv->timer);
-
-	return 0;
 }
 
 static const struct of_device_id timeriomem_rng_match[] = {

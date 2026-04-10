@@ -6,7 +6,8 @@
  */
 
 /dts-v1/;
-#include "rk3399-nanopi-m4.dts"
+
+#include "rk3399-nanopi-m4.dtsi"
 
 / {
 	model = "FriendlyElec NanoPi M4B";
@@ -19,7 +20,7 @@
 		keyup-threshold-microvolt = <1500000>;
 		poll-interval = <100>;
 
-		recovery {
+		button-recovery {
 			label = "Recovery";
 			linux,code = <KEY_VENDOR>;
 			press-threshold-microvolt = <18000>;

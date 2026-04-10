@@ -25,7 +25,6 @@
 
 #include "hard-interface.h"
 #include "originator.h"
-#include "routing.h"
 #include "send.h"
 
 /**
@@ -157,7 +156,7 @@ static bool batadv_frag_insert_packet(struct batadv_orig_node *orig_node,
 	seqno = ntohs(frag_packet->seqno);
 	bucket = seqno % BATADV_FRAG_BUFFER_COUNT;
 
-	frag_entry_new = kmalloc(sizeof(*frag_entry_new), GFP_ATOMIC);
+	frag_entry_new = kmalloc_obj(*frag_entry_new, GFP_ATOMIC);
 	if (!frag_entry_new)
 		goto err;
 
@@ -350,19 +349,15 @@ bool batadv_frag_skb_fwd(struct sk_buff *skb,
 			 struct batadv_hard_iface *recv_if,
 			 struct batadv_orig_node *orig_node_src)
 {
-	struct batadv_priv *bat_priv = netdev_priv(recv_if->soft_iface);
-	struct batadv_orig_node *orig_node_dst;
+	struct batadv_priv *bat_priv = netdev_priv(recv_if->mesh_iface);
 	struct batadv_neigh_node *neigh_node = NULL;
 	struct batadv_frag_packet *packet;
 	u16 total_size;
 	bool ret = false;
 
 	packet = (struct batadv_frag_packet *)skb->data;
-	orig_node_dst = batadv_orig_hash_find(bat_priv, packet->dest);
-	if (!orig_node_dst)
-		goto out;
 
-	neigh_node = batadv_find_router(bat_priv, orig_node_dst, recv_if);
+	neigh_node = batadv_orig_to_router(bat_priv, packet->dest, recv_if);
 	if (!neigh_node)
 		goto out;
 
@@ -381,7 +376,6 @@ bool batadv_frag_skb_fwd(struct sk_buff *skb,
 	}
 
 out:
-	batadv_orig_node_put(orig_node_dst);
 	batadv_neigh_node_put(neigh_node);
 	return ret;
 }

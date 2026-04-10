@@ -7,8 +7,7 @@
  *
  */
 
-#define KMSG_COMPONENT "hmcdrv"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "hmcdrv: " fmt
 
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -90,10 +89,10 @@ static int sclp_ftp_et7(const struct hmcdrv_ftp_cmdspec *ftp)
 	struct completion completion;
 	struct sclp_diag_sccb *sccb;
 	struct sclp_req *req;
-	size_t len;
+	ssize_t len;
 	int rc;
 
-	req = kzalloc(sizeof(*req), GFP_KERNEL);
+	req = kzalloc_obj(*req);
 	sccb = (void *) get_zeroed_page(GFP_KERNEL | GFP_DMA);
 	if (!req || !sccb) {
 		rc = -ENOMEM;
@@ -117,9 +116,9 @@ static int sclp_ftp_et7(const struct hmcdrv_ftp_cmdspec *ftp)
 	sccb->evbuf.mdd.ftp.length = ftp->len;
 	sccb->evbuf.mdd.ftp.bufaddr = virt_to_phys(ftp->buf);
 
-	len = strlcpy(sccb->evbuf.mdd.ftp.fident, ftp->fname,
+	len = strscpy(sccb->evbuf.mdd.ftp.fident, ftp->fname,
 		      HMCDRV_FTP_FIDENT_MAX);
-	if (len >= HMCDRV_FTP_FIDENT_MAX) {
+	if (len < 0) {
 		rc = -EINVAL;
 		goto out_free;
 	}

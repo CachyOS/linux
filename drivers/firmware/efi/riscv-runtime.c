@@ -14,18 +14,18 @@
 #include <linux/io.h>
 #include <linux/memblock.h>
 #include <linux/mm_types.h>
+#include <linux/pgalloc.h>
+#include <linux/pgtable.h>
 #include <linux/preempt.h>
 #include <linux/rbtree.h>
 #include <linux/rwsem.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
-#include <linux/pgtable.h>
 
 #include <asm/cacheflush.h>
 #include <asm/efi.h>
 #include <asm/mmu.h>
-#include <asm/pgalloc.h>
 
 static bool __init efi_virtmap_init(void)
 {
@@ -36,20 +36,12 @@ static bool __init efi_virtmap_init(void)
 	init_new_context(NULL, &efi_mm);
 
 	for_each_efi_memory_desc(md) {
-		phys_addr_t phys = md->phys_addr;
-		int ret;
-
 		if (!(md->attribute & EFI_MEMORY_RUNTIME))
 			continue;
-		if (md->virt_addr == 0)
+		if (md->virt_addr == U64_MAX)
 			return false;
 
-		ret = efi_create_mapping(&efi_mm, md);
-		if (ret) {
-			pr_warn("  EFI remap %pa: failed to create mapping (%d)\n",
-				&phys, ret);
-			return false;
-		}
+		efi_create_mapping(&efi_mm, md);
 	}
 
 	if (efi_memattr_apply_permissions(&efi_mm, efi_set_mapping_permissions))
@@ -85,13 +77,13 @@ static int __init riscv_enable_runtime_services(void)
 		efi_memory_desc_t *md;
 
 		for_each_efi_memory_desc(md) {
-			int md_size = md->num_pages << EFI_PAGE_SHIFT;
+			u64 md_size = md->num_pages << EFI_PAGE_SHIFT;
 			struct resource *res;
 
 			if (!(md->attribute & EFI_MEMORY_SP))
 				continue;
 
-			res = kzalloc(sizeof(*res), GFP_KERNEL);
+			res = kzalloc_obj(*res);
 			if (WARN_ON(!res))
 				break;
 
@@ -130,14 +122,38 @@ static int __init riscv_enable_runtime_services(void)
 }
 early_initcall(riscv_enable_runtime_services);
 
-void efi_virtmap_load(void)
+static void efi_virtmap_load(void)
 {
 	preempt_disable();
 	switch_mm(current->active_mm, &efi_mm, NULL);
 }
 
-void efi_virtmap_unload(void)
+static void efi_virtmap_unload(void)
 {
 	switch_mm(&efi_mm, current->active_mm, NULL);
 	preempt_enable();
 }
+
+void arch_efi_call_virt_setup(void)
+{
+	sync_kernel_mappings(efi_mm.pgd);
+	efi_virtmap_load();
+}
+
+void arch_efi_call_virt_teardown(void)
+{
+	efi_virtmap_unload();
+}
+
+static int __init riscv_dmi_init(void)
+{
+	/*
+	 * On riscv, DMI depends on UEFI, and dmi_setup() needs to
+	 * be called early because dmi_id_init(), which is an arch_initcall
+	 * itself, depends on dmi_scan_machine() having been called already.
+	 */
+	dmi_setup();
+
+	return 0;
+}
+core_initcall(riscv_dmi_init);

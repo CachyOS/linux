@@ -114,6 +114,7 @@ set_debug(const char *val, const struct kernel_param *kp)
 }
 
 MODULE_AUTHOR("Karsten Keil");
+MODULE_DESCRIPTION("mISDN driver for NETJet cards");
 MODULE_LICENSE("GPL v2");
 MODULE_VERSION(NETJET_REV);
 module_param_call(debug, set_debug, param_get_uint, &debug, S_IRUGO | S_IWUSR);
@@ -956,7 +957,7 @@ nj_release(struct tiger_hw *card)
 	}
 	if (card->irq > 0)
 		free_irq(card->irq, card);
-	if (card->isac.dch.dev.dev.class)
+	if (device_is_registered(&card->isac.dch.dev.dev))
 		mISDN_unregister_device(&card->isac.dch.dev);
 
 	for (i = 0; i < 2; i++) {
@@ -970,7 +971,6 @@ nj_release(struct tiger_hw *card)
 	write_lock_irqsave(&card_lock, flags);
 	list_del(&card->list);
 	write_unlock_irqrestore(&card_lock, flags);
-	pci_clear_master(card->pdev);
 	pci_disable_device(card->pdev);
 	pci_set_drvdata(card->pdev, NULL);
 	kfree(card);
@@ -1070,7 +1070,7 @@ nj_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		return -ENODEV;
 	}
 
-	card = kzalloc(sizeof(struct tiger_hw), GFP_KERNEL);
+	card = kzalloc_obj(struct tiger_hw);
 	if (!card) {
 		pr_info("No kmem for Netjet\n");
 		return err;

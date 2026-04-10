@@ -3,15 +3,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #ifndef __IA_CSS_HDR_TYPES_H
@@ -57,9 +48,9 @@ struct ia_css_hdr_exclusion_params {
 };
 
 /**
- * \brief HDR public paramterers.
+ * \brief HDR public parameters.
  * \details Struct with all parameters for HDR that can be seet from
- * the CSS API. Currenly, only test parameters are defined.
+ * the CSS API. Currently, only test parameters are defined.
  */
 struct ia_css_hdr_config {
 	struct ia_css_hdr_irradiance_params irradiance; /** HDR irradiance parameters */

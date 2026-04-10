@@ -70,15 +70,6 @@ nf_conntrack_generic_timeout - INTEGER (seconds)
 	Default for generic timeout.  This refers to layer 4 unknown/unsupported
 	protocols.
 
-nf_conntrack_helper - BOOLEAN
-	- 0 - disabled (default)
-	- not 0 - enabled
-
-	Enable automatic conntrack helper assignment.
-	If disabled it is required to set up iptables rules to assign
-	helpers to connections.  See the CT target description in the
-	iptables-extensions(8) man page for further information.
-
 nf_conntrack_icmp_timeout - INTEGER (seconds)
 	default 30
 
@@ -94,7 +85,6 @@ nf_conntrack_log_invalid - INTEGER
 	- 1   - log ICMP packets
 	- 6   - log TCP packets
 	- 17  - log UDP packets
-	- 33  - log DCCP packets
 	- 41  - log ICMPv6 packets
 	- 136 - log UDPLITE packets
 	- 255 - log packets of any protocol
@@ -172,6 +162,35 @@ nf_conntrack_timestamp - BOOLEAN
 
 	Enable connection tracking flow timestamping.
 
+nf_conntrack_sctp_timeout_closed - INTEGER (seconds)
+	default 10
+
+nf_conntrack_sctp_timeout_cookie_wait - INTEGER (seconds)
+	default 3
+
+nf_conntrack_sctp_timeout_cookie_echoed - INTEGER (seconds)
+	default 3
+
+nf_conntrack_sctp_timeout_established - INTEGER (seconds)
+	default 210
+
+	Default is set to (hb_interval * path_max_retrans + rto_max)
+
+nf_conntrack_sctp_timeout_shutdown_sent - INTEGER (seconds)
+	default 3
+
+nf_conntrack_sctp_timeout_shutdown_recd - INTEGER (seconds)
+	default 3
+
+nf_conntrack_sctp_timeout_shutdown_ack_sent - INTEGER (seconds)
+	default 3
+
+nf_conntrack_sctp_timeout_heartbeat_sent - INTEGER (seconds)
+	default 30
+
+	This timeout is used to setup conntrack entry on secondary paths.
+	Default is set to hb_interval.
+
 nf_conntrack_udp_timeout - INTEGER (seconds)
 	default 30
 
@@ -202,11 +221,11 @@ nf_flowtable_tcp_timeout - INTEGER (seconds)
 
         Control offload timeout for tcp connections.
         TCP connections may be offloaded from nf conntrack to nf flow table.
-        Once aged, the connection is returned to nf conntrack with tcp pickup timeout.
+        Once aged, the connection is returned to nf conntrack.
 
 nf_flowtable_udp_timeout - INTEGER (seconds)
         default 30
 
         Control offload timeout for udp connections.
         UDP connections may be offloaded from nf conntrack to nf flow table.
-        Once aged, the connection is returned to nf conntrack with udp pickup timeout.
+        Once aged, the connection is returned to nf conntrack.

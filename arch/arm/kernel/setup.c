@@ -15,10 +15,10 @@
 #include <linux/console.h>
 #include <linux/seq_file.h>
 #include <linux/screen_info.h>
-#include <linux/of_platform.h>
 #include <linux/init.h>
 #include <linux/kexec.h>
 #include <linux/libfdt.h>
+#include <linux/of.h>
 #include <linux/of_fdt.h>
 #include <linux/cpu.h>
 #include <linux/interrupt.h>
@@ -75,13 +75,6 @@ static int __init fpe_setup(char *line)
 
 __setup("fpe=", fpe_setup);
 #endif
-
-extern void init_default_cache_policy(unsigned long);
-extern void paging_init(const struct machine_desc *desc);
-extern void early_mm_init(const struct machine_desc *);
-extern void adjust_lowmem_bounds(void);
-extern enum reboot_mode reboot_mode;
-extern void setup_dma_zone(const struct machine_desc *desc);
 
 unsigned int processor_id;
 EXPORT_SYMBOL(processor_id);
@@ -450,6 +443,8 @@ static void __init cpuid_init_hwcaps(void)
 {
 	int block;
 	u32 isar5;
+	u32 isar6;
+	u32 pfr2;
 
 	if (cpu_architecture() < CPU_ARCH_ARMv7)
 		return;
@@ -485,6 +480,18 @@ static void __init cpuid_init_hwcaps(void)
 	block = cpuid_feature_extract_field(isar5, 16);
 	if (block >= 1)
 		elf_hwcap2 |= HWCAP2_CRC32;
+
+	/* Check for Speculation barrier instruction */
+	isar6 = read_cpuid_ext(CPUID_EXT_ISAR6);
+	block = cpuid_feature_extract_field(isar6, 12);
+	if (block >= 1)
+		elf_hwcap2 |= HWCAP2_SB;
+
+	/* Check for Speculative Store Bypassing control */
+	pfr2 = read_cpuid_ext(CPUID_EXT_PFR2);
+	block = cpuid_feature_extract_field(pfr2, 4);
+	if (block >= 1)
+		elf_hwcap2 |= HWCAP2_SSBS;
 }
 
 static void __init elf_hwcap_fixup(void)
@@ -873,10 +880,7 @@ static void __init request_standard_resources(const struct machine_desc *mdesc)
 		 */
 		boot_alias_start = phys_to_idmap(start);
 		if (arm_has_idmap_alias() && boot_alias_start != IDMAP_INVALID_ADDR) {
-			res = memblock_alloc(sizeof(*res), SMP_CACHE_BYTES);
-			if (!res)
-				panic("%s: Failed to allocate %zu bytes\n",
-				      __func__, sizeof(*res));
+			res = memblock_alloc_or_panic(sizeof(*res), SMP_CACHE_BYTES);
 			res->name = "System RAM (boot alias)";
 			res->start = boot_alias_start;
 			res->end = phys_to_idmap(res_end);
@@ -884,10 +888,7 @@ static void __init request_standard_resources(const struct machine_desc *mdesc)
 			request_resource(&iomem_resource, res);
 		}
 
-		res = memblock_alloc(sizeof(*res), SMP_CACHE_BYTES);
-		if (!res)
-			panic("%s: Failed to allocate %zu bytes\n", __func__,
-			      sizeof(*res));
+		res = memblock_alloc_or_panic(sizeof(*res), SMP_CACHE_BYTES);
 		res->name  = "System RAM";
 		res->start = start;
 		res->end = res_end;
@@ -921,9 +922,8 @@ static void __init request_standard_resources(const struct machine_desc *mdesc)
 		request_resource(&ioport_resource, &lp2);
 }
 
-#if defined(CONFIG_VGA_CONSOLE) || defined(CONFIG_DUMMY_CONSOLE) || \
-    defined(CONFIG_EFI)
-struct screen_info screen_info = {
+#if defined(CONFIG_VGA_CONSOLE)
+struct screen_info vgacon_screen_info = {
  .orig_video_lines	= 30,
  .orig_video_cols	= 80,
  .orig_video_mode	= 0,
@@ -973,7 +973,7 @@ static int __init init_machine_late(void)
 }
 late_initcall(init_machine_late);
 
-#ifdef CONFIG_KEXEC
+#ifdef CONFIG_CRASH_RESERVE
 /*
  * The crash region must be aligned to 128MB to avoid
  * zImage relocating below the reserved region.
@@ -1003,7 +1003,8 @@ static void __init reserve_crashkernel(void)
 
 	total_mem = get_total_mem();
 	ret = parse_crashkernel(boot_command_line, total_mem,
-				&crash_size, &crash_base);
+				&crash_size, &crash_base,
+				NULL, NULL, NULL);
 	/* invalid value specified or crashkernel=0 */
 	if (ret || !crash_size)
 		return;
@@ -1059,7 +1060,7 @@ static void __init reserve_crashkernel(void)
 }
 #else
 static inline void reserve_crashkernel(void) {}
-#endif /* CONFIG_KEXEC */
+#endif /* CONFIG_CRASH_RESERVE*/
 
 void __init hyp_mode_check(void)
 {
@@ -1128,7 +1129,7 @@ void __init setup_arch(char **cmdline_p)
 	setup_initial_init_mm(_text, _etext, _edata, _end);
 
 	/* populate cmd_line too for later use, preserving boot_command_line */
-	strlcpy(cmd_line, boot_command_line, COMMAND_LINE_SIZE);
+	strscpy(cmd_line, boot_command_line, COMMAND_LINE_SIZE);
 	*cmdline_p = cmd_line;
 
 	early_fixmap_init();
@@ -1141,7 +1142,7 @@ void __init setup_arch(char **cmdline_p)
 #endif
 	setup_dma_zone(mdesc);
 	xen_early_init();
-	efi_init();
+	arm_efi_init();
 	/*
 	 * Make sure the calculation for lowmem/highmem is set appropriately
 	 * before reserving/allocating any memory
@@ -1184,13 +1185,9 @@ void __init setup_arch(char **cmdline_p)
 
 	reserve_crashkernel();
 
-#ifdef CONFIG_GENERIC_IRQ_MULTI_HANDLER
-	handle_arch_irq = mdesc->handle_irq;
-#endif
-
 #ifdef CONFIG_VT
 #if defined(CONFIG_VGA_CONSOLE)
-	conswitchp = &vga_con;
+	vgacon_register_screen(&vgacon_screen_info);
 #endif
 #endif
 
@@ -1198,20 +1195,10 @@ void __init setup_arch(char **cmdline_p)
 		mdesc->init_early();
 }
 
-
-static int __init topology_init(void)
+bool arch_cpu_is_hotpluggable(int num)
 {
-	int cpu;
-
-	for_each_possible_cpu(cpu) {
-		struct cpuinfo_arm *cpuinfo = &per_cpu(cpu_data, cpu);
-		cpuinfo->cpu.hotpluggable = platform_can_hotplug_cpu(cpu);
-		register_cpu(&cpuinfo->cpu, cpu);
-	}
-
-	return 0;
+	return platform_can_hotplug_cpu(num);
 }
-subsys_initcall(topology_init);
 
 #ifdef CONFIG_HAVE_PROC_CPU
 static int __init proc_cpu_init(void)
@@ -1249,6 +1236,12 @@ static const char *hwcap_str[] = {
 	"vfpd32",
 	"lpae",
 	"evtstrm",
+	"fphp",
+	"asimdhp",
+	"asimddp",
+	"asimdfhm",
+	"asimdbf16",
+	"i8mm",
 	NULL
 };
 
@@ -1258,6 +1251,8 @@ static const char *hwcap2_str[] = {
 	"sha1",
 	"sha2",
 	"crc32",
+	"sb",
+	"ssbs",
 	NULL
 };
 

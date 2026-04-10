@@ -19,7 +19,7 @@
 #include <linux/regmap.h>
 
 #include <media/dvb_frontend.h>
-#include <media/dvb_math.h>
+#include <linux/int_log.h>
 #include "si2165_priv.h"
 #include "si2165.h"
 
@@ -513,10 +513,8 @@ static int si2165_upload_firmware(struct si2165_state *state)
 	ret = 0;
 	state->firmware_loaded = true;
 error:
-	if (fw) {
-		release_firmware(fw);
-		fw = NULL;
-	}
+	release_firmware(fw);
+	fw = NULL;
 
 	return ret;
 }
@@ -1144,8 +1142,7 @@ static const struct dvb_frontend_ops si2165_ops = {
 	.read_ber          = si2165_read_ber,
 };
 
-static int si2165_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int si2165_probe(struct i2c_client *client)
 {
 	struct si2165_state *state = NULL;
 	struct si2165_platform_data *pdata = client->dev.platform_data;
@@ -1161,7 +1158,7 @@ static int si2165_probe(struct i2c_client *client,
 	};
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	state = kzalloc_obj(*state);
 	if (!state) {
 		ret = -ENOMEM;
 		goto error;
@@ -1274,18 +1271,17 @@ error:
 	return ret;
 }
 
-static int si2165_remove(struct i2c_client *client)
+static void si2165_remove(struct i2c_client *client)
 {
 	struct si2165_state *state = i2c_get_clientdata(client);
 
 	dev_dbg(&client->dev, "\n");
 
 	kfree(state);
-	return 0;
 }
 
 static const struct i2c_device_id si2165_id_table[] = {
-	{"si2165", 0},
+	{ "si2165" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, si2165_id_table);

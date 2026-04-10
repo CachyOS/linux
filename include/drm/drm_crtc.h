@@ -25,37 +25,24 @@
 #ifndef __DRM_CRTC_H__
 #define __DRM_CRTC_H__
 
-#include <linux/i2c.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
-#include <linux/fb.h>
-#include <linux/hdmi.h>
-#include <linux/media-bus-format.h>
-#include <uapi/drm/drm_mode.h>
-#include <uapi/drm/drm_fourcc.h>
 #include <drm/drm_modeset_lock.h>
-#include <drm/drm_rect.h>
 #include <drm/drm_mode_object.h>
-#include <drm/drm_framebuffer.h>
 #include <drm/drm_modes.h>
-#include <drm/drm_connector.h>
 #include <drm/drm_device.h>
-#include <drm/drm_property.h>
-#include <drm/drm_edid.h>
 #include <drm/drm_plane.h>
-#include <drm/drm_blend.h>
-#include <drm/drm_color_mgmt.h>
 #include <drm/drm_debugfs_crc.h>
 #include <drm/drm_mode_config.h>
 
+struct drm_connector;
 struct drm_device;
+struct drm_framebuffer;
 struct drm_mode_set;
 struct drm_file;
-struct drm_clip_rect;
 struct drm_printer;
 struct drm_self_refresh_data;
 struct device_node;
-struct dma_fence;
 struct edid;
 
 static inline int64_t U642I64(uint64_t val)
@@ -90,11 +77,6 @@ struct drm_plane_helper_funcs;
  * intended to indicate whether a full modeset is needed, rather than strictly
  * describing what has changed in a commit. See also:
  * drm_atomic_crtc_needs_modeset()
- *
- * WARNING: Transitional helpers (like drm_helper_crtc_mode_set() or
- * drm_helper_crtc_mode_set_base()) do not maintain many of the derived control
- * state like @plane_mask so drivers not converted over to atomic helpers should
- * not rely on these being accurate!
  */
 struct drm_crtc_state {
 	/** @crtc: backpointer to the CRTC */
@@ -204,7 +186,7 @@ struct drm_crtc_state {
 	 * this case the driver will send the VBLANK event on its own when the
 	 * writeback job is complete.
 	 */
-	bool no_vblank : 1;
+	bool no_vblank;
 
 	/**
 	 * @plane_mask: Bitmask of drm_plane_mask(plane) of planes attached to
@@ -334,6 +316,17 @@ struct drm_crtc_state {
 	 * Scaling filter to be applied
 	 */
 	enum drm_scaling_filter scaling_filter;
+
+	/**
+	 * @sharpness_strength:
+	 *
+	 * Used by the user to set the sharpness intensity.
+	 * The value ranges from 0-255.
+	 * Default value is 0 which disable the sharpness feature.
+	 * Any value greater than 0 enables sharpening with the
+	 * specified strength.
+	 */
+	u8 sharpness_strength;
 
 	/**
 	 * @event:
@@ -1107,6 +1100,12 @@ struct drm_crtc {
 	struct drm_property *scaling_filter_property;
 
 	/**
+	 * @sharpness_strength_property: property to apply
+	 * the intensity of the sharpness requested.
+	 */
+	struct drm_property *sharpness_strength_property;
+
+	/**
 	 * @state:
 	 *
 	 * Current atomic state for this CRTC.
@@ -1229,6 +1228,15 @@ int drm_crtc_init_with_planes(struct drm_device *dev,
 			      struct drm_plane *cursor,
 			      const struct drm_crtc_funcs *funcs,
 			      const char *name, ...);
+
+__printf(6, 7)
+int drmm_crtc_init_with_planes(struct drm_device *dev,
+			       struct drm_crtc *crtc,
+			       struct drm_plane *primary,
+			       struct drm_plane *cursor,
+			       const struct drm_crtc_funcs *funcs,
+			       const char *name, ...);
+
 void drm_crtc_cleanup(struct drm_crtc *crtc);
 
 __printf(7, 8)
@@ -1332,5 +1340,6 @@ static inline struct drm_crtc *drm_crtc_find(struct drm_device *dev,
 
 int drm_crtc_create_scaling_filter_property(struct drm_crtc *crtc,
 					    unsigned int supported_filters);
-
+bool drm_crtc_in_clone_mode(struct drm_crtc_state *crtc_state);
+int drm_crtc_create_sharpness_strength_property(struct drm_crtc *crtc);
 #endif /* __DRM_CRTC_H__ */

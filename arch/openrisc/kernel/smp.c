@@ -13,6 +13,7 @@
 
 #include <linux/smp.h>
 #include <linux/cpu.h>
+#include <linux/interrupt.h>
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
 #include <linux/irq.h>
@@ -23,6 +24,9 @@
 #include <asm/cacheflush.h>
 #include <asm/time.h>
 
+asmlinkage __init void secondary_start_kernel(void);
+
+static unsigned int ipi_irq __ro_after_init;
 static void (*smp_cross_call)(const struct cpumask *, unsigned int);
 
 unsigned long secondary_release = -1;
@@ -36,6 +40,14 @@ enum ipi_msg_type {
 };
 
 static DEFINE_SPINLOCK(boot_lock);
+
+static void or1k_ipi_enable(void)
+{
+	if (WARN_ON_ONCE(!ipi_irq))
+		return;
+
+	enable_percpu_irq(ipi_irq, 0);
+}
 
 static void boot_secondary(unsigned int cpu, struct task_struct *idle)
 {
@@ -53,10 +65,6 @@ static void boot_secondary(unsigned int cpu, struct task_struct *idle)
 	 * calibrations, then wait for it to finish
 	 */
 	spin_unlock(&boot_lock);
-}
-
-void __init smp_prepare_boot_cpu(void)
-{
 }
 
 void __init smp_init_cpus(void)
@@ -138,6 +146,7 @@ asmlinkage __init void secondary_start_kernel(void)
 	complete(&cpu_running);
 
 	synchronise_count_slave(cpu);
+	or1k_ipi_enable();
 	set_cpu_online(cpu, true);
 
 	local_irq_enable();
@@ -173,7 +182,7 @@ void handle_IPI(unsigned int ipi_msg)
 	}
 }
 
-void smp_send_reschedule(int cpu)
+void arch_smp_send_reschedule(int cpu)
 {
 	smp_cross_call(cpumask_of(cpu), IPI_RESCHEDULE);
 }
@@ -197,15 +206,18 @@ void smp_send_stop(void)
 	smp_call_function(stop_this_cpu, NULL, 0);
 }
 
-/* not supported, yet */
-int setup_profiling_timer(unsigned int multiplier)
+void __init set_smp_cross_call(void (*fn)(const struct cpumask *, unsigned int),
+			       unsigned int irq)
 {
-	return -EINVAL;
-}
+	if (WARN_ON(ipi_irq))
+		return;
 
-void __init set_smp_cross_call(void (*fn)(const struct cpumask *, unsigned int))
-{
 	smp_cross_call = fn;
+
+	ipi_irq = irq;
+
+	/* Enabled IPIs for boot CPU immediately */
+	or1k_ipi_enable();
 }
 
 void arch_send_call_function_single_ipi(int cpu)

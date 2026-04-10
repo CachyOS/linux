@@ -44,6 +44,7 @@ int enetc_setup_cbdr(struct device *dev, struct enetc_hw *hw, int bd_count,
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(enetc_setup_cbdr);
 
 void enetc_teardown_cbdr(struct enetc_cbdr *cbdr)
 {
@@ -57,6 +58,41 @@ void enetc_teardown_cbdr(struct enetc_cbdr *cbdr)
 	cbdr->bd_base = NULL;
 	cbdr->dma_dev = NULL;
 }
+EXPORT_SYMBOL_GPL(enetc_teardown_cbdr);
+
+int enetc4_setup_cbdr(struct enetc_si *si)
+{
+	struct ntmp_user *user = &si->ntmp_user;
+	struct device *dev = &si->pdev->dev;
+	struct enetc_hw *hw = &si->hw;
+	struct netc_cbdr_regs regs;
+
+	user->cbdr_num = 1;
+	user->dev = dev;
+	user->ring = devm_kcalloc(dev, user->cbdr_num,
+				  sizeof(struct netc_cbdr), GFP_KERNEL);
+	if (!user->ring)
+		return -ENOMEM;
+
+	regs.pir = hw->reg + ENETC_SICBDRPIR;
+	regs.cir = hw->reg + ENETC_SICBDRCIR;
+	regs.mr = hw->reg + ENETC_SICBDRMR;
+	regs.bar0 = hw->reg + ENETC_SICBDRBAR0;
+	regs.bar1 = hw->reg + ENETC_SICBDRBAR1;
+	regs.lenr = hw->reg + ENETC_SICBDRLENR;
+
+	return ntmp_init_cbdr(user->ring, dev, &regs);
+}
+EXPORT_SYMBOL_GPL(enetc4_setup_cbdr);
+
+void enetc4_teardown_cbdr(struct enetc_si *si)
+{
+	struct ntmp_user *user = &si->ntmp_user;
+
+	ntmp_free_cbdr(user->ring);
+	user->dev = NULL;
+}
+EXPORT_SYMBOL_GPL(enetc4_teardown_cbdr);
 
 static void enetc_clean_cbdr(struct enetc_cbdr *ring)
 {
@@ -127,6 +163,7 @@ int enetc_send_cmd(struct enetc_si *si, struct enetc_cbd *cbd)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(enetc_send_cmd);
 
 int enetc_clear_mac_flt_entry(struct enetc_si *si, int index)
 {
@@ -140,6 +177,7 @@ int enetc_clear_mac_flt_entry(struct enetc_si *si, int index)
 
 	return enetc_send_cmd(si, &cbd);
 }
+EXPORT_SYMBOL_GPL(enetc_clear_mac_flt_entry);
 
 int enetc_set_mac_flt_entry(struct enetc_si *si, int index,
 			    char *mac_addr, int si_map)
@@ -165,6 +203,7 @@ int enetc_set_mac_flt_entry(struct enetc_si *si, int index,
 
 	return enetc_send_cmd(si, &cbd);
 }
+EXPORT_SYMBOL_GPL(enetc_set_mac_flt_entry);
 
 /* Set entry in RFS table */
 int enetc_set_fs_entry(struct enetc_si *si, struct enetc_cmd_rfse *rfse,
@@ -197,6 +236,7 @@ int enetc_set_fs_entry(struct enetc_si *si, struct enetc_cmd_rfse *rfse,
 
 	return err;
 }
+EXPORT_SYMBOL_GPL(enetc_set_fs_entry);
 
 static int enetc_cmd_rss_table(struct enetc_si *si, u32 *table, int count,
 			       bool read)
@@ -242,9 +282,23 @@ int enetc_get_rss_table(struct enetc_si *si, u32 *table, int count)
 {
 	return enetc_cmd_rss_table(si, table, count, true);
 }
+EXPORT_SYMBOL_GPL(enetc_get_rss_table);
 
 /* Set RSS table */
 int enetc_set_rss_table(struct enetc_si *si, const u32 *table, int count)
 {
 	return enetc_cmd_rss_table(si, (u32 *)table, count, false);
 }
+EXPORT_SYMBOL_GPL(enetc_set_rss_table);
+
+int enetc4_get_rss_table(struct enetc_si *si, u32 *table, int count)
+{
+	return ntmp_rsst_query_entry(&si->ntmp_user, table, count);
+}
+EXPORT_SYMBOL_GPL(enetc4_get_rss_table);
+
+int enetc4_set_rss_table(struct enetc_si *si, const u32 *table, int count)
+{
+	return ntmp_rsst_update_entry(&si->ntmp_user, table, count);
+}
+EXPORT_SYMBOL_GPL(enetc4_set_rss_table);

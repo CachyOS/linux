@@ -260,7 +260,7 @@ static u32 af9015_i2c_func(struct i2c_adapter *adapter)
 	return I2C_FUNC_I2C;
 }
 
-static struct i2c_algorithm af9015_i2c_algo = {
+static const struct i2c_algorithm af9015_i2c_algo = {
 	.master_xfer = af9015_i2c_xfer,
 	.functionality = af9015_i2c_func,
 };
@@ -1165,7 +1165,7 @@ static int af9015_rc_query(struct dvb_usb_device *d)
 	/* If any of these are non-zero, assume invalid data */
 	if (buf[1] || buf[2] || buf[3]) {
 		dev_dbg(&intf->dev, "invalid data\n");
-		return ret;
+		return 0;
 	}
 
 	/* Check for repeat of previous code */
@@ -1174,7 +1174,7 @@ static int af9015_rc_query(struct dvb_usb_device *d)
 		dev_dbg(&intf->dev, "key repeated\n");
 		rc_repeat(d->rc_dev);
 		state->rc_repeat = buf[6];
-		return ret;
+		return 0;
 	}
 
 	/* Only process key if canary killed */

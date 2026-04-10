@@ -598,7 +598,6 @@ static int pmic_probe(struct spi_device *spi)
 
 	spi_set_drvdata(spi, hw);
 
-	memset(hw, 0, sizeof(struct tps6524x));
 	hw->dev = dev;
 	hw->spi = spi;
 	mutex_init(&hw->lock);
@@ -628,6 +627,7 @@ static struct spi_driver pmic_driver = {
 	.probe		= pmic_probe,
 	.driver		= {
 		.name	= "tps6524x",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 };
 

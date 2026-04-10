@@ -477,7 +477,7 @@ bool sja1105_gating_check_conflicts(struct sja1105_private *priv, int port,
 	if (list_empty(&gating_cfg->entries))
 		return false;
 
-	dummy = kzalloc(struct_size(dummy, entries, num_entries), GFP_KERNEL);
+	dummy = kzalloc_flex(*dummy, entries, num_entries);
 	if (!dummy) {
 		NL_SET_ERR_MSG_MOD(extack, "Failed to allocate memory");
 		return true;
@@ -516,10 +516,11 @@ int sja1105_setup_tc_taprio(struct dsa_switch *ds, int port,
 	/* Can't change an already configured port (must delete qdisc first).
 	 * Can't delete the qdisc from an unconfigured port.
 	 */
-	if (!!tas_data->offload[port] == admin->enable)
+	if ((!!tas_data->offload[port] && admin->cmd == TAPRIO_CMD_REPLACE) ||
+	    (!tas_data->offload[port] && admin->cmd == TAPRIO_CMD_DESTROY))
 		return -EINVAL;
 
-	if (!admin->enable) {
+	if (admin->cmd == TAPRIO_CMD_DESTROY) {
 		taprio_offload_free(tas_data->offload[port]);
 		tas_data->offload[port] = NULL;
 
@@ -528,6 +529,8 @@ int sja1105_setup_tc_taprio(struct dsa_switch *ds, int port,
 			return rc;
 
 		return sja1105_static_config_reload(priv, SJA1105_SCHEDULING);
+	} else if (admin->cmd != TAPRIO_CMD_REPLACE) {
+		return -EOPNOTSUPP;
 	}
 
 	/* The cycle time extension is the amount of time the last cycle from
@@ -772,9 +775,8 @@ static void sja1105_tas_state_machine(struct work_struct *work)
 		base_time_ts = ns_to_timespec64(base_time);
 		now_ts = ns_to_timespec64(now);
 
-		dev_dbg(ds->dev, "OPER base time %lld.%09ld (now %lld.%09ld)\n",
-			base_time_ts.tv_sec, base_time_ts.tv_nsec,
-			now_ts.tv_sec, now_ts.tv_nsec);
+		dev_dbg(ds->dev, "OPER base time %ptSp (now %ptSp)\n",
+			&base_time_ts, &now_ts);
 
 		break;
 
@@ -795,8 +797,7 @@ static void sja1105_tas_state_machine(struct work_struct *work)
 		if (now < tas_data->oper_base_time) {
 			/* TAS has not started yet */
 			diff = ns_to_timespec64(tas_data->oper_base_time - now);
-			dev_dbg(ds->dev, "time to start: [%lld.%09ld]",
-				diff.tv_sec, diff.tv_nsec);
+			dev_dbg(ds->dev, "time to start: [%ptSp]", &diff);
 			break;
 		}
 

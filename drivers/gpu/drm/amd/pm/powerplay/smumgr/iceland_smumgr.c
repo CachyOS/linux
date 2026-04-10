@@ -259,9 +259,9 @@ static int iceland_start_smu(struct pp_hwmgr *hwmgr)
 
 static int iceland_smu_init(struct pp_hwmgr *hwmgr)
 {
-	struct iceland_smumgr *iceland_priv = NULL;
+	struct iceland_smumgr *iceland_priv;
 
-	iceland_priv = kzalloc(sizeof(struct iceland_smumgr), GFP_KERNEL);
+	iceland_priv = kzalloc_obj(struct iceland_smumgr);
 
 	if (iceland_priv == NULL)
 		return -ENOMEM;
@@ -2028,7 +2028,7 @@ static int iceland_init_smc_table(struct pp_hwmgr *hwmgr)
 	table->VoltageResponseTime  = 0;
 	table->PhaseResponseTime  = 0;
 	table->MemoryThermThrottleEnable  = 1;
-	table->PCIeBootLinkLevel = 0;
+	table->PCIeBootLinkLevel = (uint8_t) (data->dpm_table.pcie_speed_table.count);
 	table->PCIeGenInterval = 1;
 
 	result = iceland_populate_smc_svi2_config(hwmgr, table);
@@ -2165,7 +2165,7 @@ static int iceland_program_mem_timing_parameters(struct pp_hwmgr *hwmgr)
 	struct smu7_hwmgr *data = (struct smu7_hwmgr *)(hwmgr->backend);
 
 	if (data->need_update_smu7_dpm_table &
-		(DPMTABLE_OD_UPDATE_SCLK + DPMTABLE_OD_UPDATE_MCLK))
+		(DPMTABLE_OD_UPDATE_SCLK | DPMTABLE_OD_UPDATE_MCLK))
 		return iceland_program_memory_timing_parameters(hwmgr);
 
 	return 0;
@@ -2263,6 +2263,7 @@ static uint32_t iceland_get_mac_definition(uint32_t value)
 	case SMU_MAX_ENTRIES_SMIO:
 		return SMU71_MAX_ENTRIES_SMIO;
 	case SMU_MAX_LEVELS_VDDC:
+	case SMU_MAX_LEVELS_VDDGFX:
 		return SMU71_MAX_LEVELS_VDDC;
 	case SMU_MAX_LEVELS_VDDCI:
 		return SMU71_MAX_LEVELS_VDDCI;
@@ -2607,7 +2608,7 @@ static int iceland_initialize_mc_reg_table(struct pp_hwmgr *hwmgr)
 	struct iceland_mc_reg_table *ni_table = &smu_data->mc_reg_table;
 	uint8_t module_index = iceland_get_memory_modile_index(hwmgr);
 
-	table = kzalloc(sizeof(pp_atomctrl_mc_reg_table), GFP_KERNEL);
+	table = kzalloc_obj(pp_atomctrl_mc_reg_table);
 
 	if (NULL == table)
 		return -ENOMEM;
@@ -2654,9 +2655,8 @@ static int iceland_initialize_mc_reg_table(struct pp_hwmgr *hwmgr)
 
 static bool iceland_is_dpm_running(struct pp_hwmgr *hwmgr)
 {
-	return (1 == PHM_READ_INDIRECT_FIELD(hwmgr->device,
-			CGS_IND_REG__SMC, FEATURE_STATUS, VOLTAGE_CONTROLLER_ON))
-			? true : false;
+	return PHM_READ_INDIRECT_FIELD(hwmgr->device,
+			CGS_IND_REG__SMC, FEATURE_STATUS, VOLTAGE_CONTROLLER_ON) == 1;
 }
 
 const struct pp_smumgr_func iceland_smu_funcs = {

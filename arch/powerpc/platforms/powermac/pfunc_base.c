@@ -136,6 +136,8 @@ static void __init macio_gpio_init_one(struct macio_chip *macio)
 	for_each_child_of_node(gparent, gp)
 		pmf_do_functions(gp, NULL, 0, PMF_FLAGS_ON_INIT, NULL);
 
+	of_node_put(gparent);
+
 	/* Note: We do not at this point implement the "at sleep" or "at wake"
 	 * functions. I yet to find any for GPIOs anyway
 	 */
@@ -311,7 +313,7 @@ static void __init uninorth_install_pfunc(void)
 	/*
 	 * Install handlers for the hwclock child if any
 	 */
-	for (np = NULL; (np = of_get_next_child(uninorth_node, np)) != NULL;)
+	for_each_child_of_node(uninorth_node, np)
 		if (of_node_name_eq(np, "hw-clock")) {
 			unin_hwclock = np;
 			break;

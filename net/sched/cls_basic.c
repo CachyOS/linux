@@ -18,6 +18,7 @@
 #include <net/netlink.h>
 #include <net/act_api.h>
 #include <net/pkt_cls.h>
+#include <net/tc_wrapper.h>
 
 struct basic_head {
 	struct list_head	flist;
@@ -36,8 +37,9 @@ struct basic_filter {
 	struct rcu_work		rwork;
 };
 
-static int basic_classify(struct sk_buff *skb, const struct tcf_proto *tp,
-			  struct tcf_result *res)
+TC_INDIRECT_SCOPE int basic_classify(struct sk_buff *skb,
+				     const struct tcf_proto *tp,
+				     struct tcf_result *res)
 {
 	int r;
 	struct basic_head *head = rcu_dereference_bh(tp->root);
@@ -75,7 +77,7 @@ static int basic_init(struct tcf_proto *tp)
 {
 	struct basic_head *head;
 
-	head = kzalloc(sizeof(*head), GFP_KERNEL);
+	head = kzalloc_obj(*head);
 	if (head == NULL)
 		return -ENOBUFS;
 	INIT_LIST_HEAD(&head->flist);
@@ -191,7 +193,7 @@ static int basic_change(struct net *net, struct sk_buff *in_skb,
 			return -EINVAL;
 	}
 
-	fnew = kzalloc(sizeof(*fnew), GFP_KERNEL);
+	fnew = kzalloc_obj(*fnew);
 	if (!fnew)
 		return -ENOBUFS;
 
@@ -251,15 +253,8 @@ static void basic_walk(struct tcf_proto *tp, struct tcf_walker *arg,
 	struct basic_filter *f;
 
 	list_for_each_entry(f, &head->flist, link) {
-		if (arg->count < arg->skip)
-			goto skip;
-
-		if (arg->fn(tp, f, arg) < 0) {
-			arg->stop = 1;
+		if (!tc_cls_stats_dump(tp, arg, f))
 			break;
-		}
-skip:
-		arg->count++;
 	}
 }
 
@@ -268,12 +263,7 @@ static void basic_bind_class(void *fh, u32 classid, unsigned long cl, void *q,
 {
 	struct basic_filter *f = fh;
 
-	if (f && f->res.classid == classid) {
-		if (cl)
-			__tcf_bind_filter(q, &f->res, base);
-		else
-			__tcf_unbind_filter(q, &f->res);
-	}
+	tc_cls_bind_class(classid, cl, q, &f->res, base);
 }
 
 static int basic_dump(struct net *net, struct tcf_proto *tp, void *fh,
@@ -338,6 +328,7 @@ static struct tcf_proto_ops cls_basic_ops __read_mostly = {
 	.bind_class	=	basic_bind_class,
 	.owner		=	THIS_MODULE,
 };
+MODULE_ALIAS_NET_CLS("basic");
 
 static int __init init_basic(void)
 {
@@ -351,4 +342,5 @@ static void __exit exit_basic(void)
 
 module_init(init_basic)
 module_exit(exit_basic)
+MODULE_DESCRIPTION("TC basic classifier");
 MODULE_LICENSE("GPL");

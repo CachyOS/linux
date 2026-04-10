@@ -16,15 +16,58 @@ config ABP060MG
 	  To compile this driver as a module, choose M here: the module
 	  will be called abp060mg.
 
+config ABP2030PA
+	tristate
+	select IIO_BUFFER
+	select IIO_TRIGGERED_BUFFER
+
+config ABP2030PA_I2C
+	tristate "Honeywell ABP2 pressure sensor series I2C driver"
+	depends on I2C
+	select ABP2030PA
+	help
+	  Say Y here to build I2C bus support for the Honeywell ABP2
+	  series pressure and temperature digital sensor.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called abp2030pa_i2c and you will also get abp2030pa
+	  for the core module.
+
+config ABP2030PA_SPI
+	tristate "Honeywell ABP2 pressure sensor series SPI driver"
+	depends on SPI_MASTER
+	select ABP2030PA
+	help
+	  Say Y here to build SPI bus support for the Honeywell ABP2
+	  series pressure and temperature digital sensor.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called abp2030pa_spi and you will also get abp2030pa
+	  for the core module.
+
+config ROHM_BM1390
+	tristate "ROHM BM1390GLV-Z pressure sensor driver"
+	depends on I2C
+	select REGMAP_I2C
+	select IIO_BUFFER
+	select IIO_TRIGGERED_BUFFER
+	help
+	  Support for the ROHM BM1390 pressure sensor. The BM1390GLV-Z
+	  can measure pressures ranging from 300 hPa to 1300 hPa with
+	  configurable measurement averaging and internal FIFO. The
+	  sensor does also provide temperature measurements.
+
 config BMP280
-	tristate "Bosch Sensortec BMP180/BMP280 pressure sensor I2C driver"
+	tristate "Bosch Sensortec BMP180/BMP280/BMP380/BMP580 pressure sensor driver"
 	depends on (I2C || SPI_MASTER)
 	select REGMAP
 	select BMP280_I2C if (I2C)
 	select BMP280_SPI if (SPI_MASTER)
+	select IIO_BUFFER
+	select IIO_TRIGGERED_BUFFER
 	help
-	  Say yes here to build support for Bosch Sensortec BMP180 and BMP280
-	  pressure and temperature sensors. Also supports the BME280 with
+	  Say yes here to build support for Bosch Sensortec BMP180, BMP280, BMP380
+	  and BMP580 pressure and temperature sensors. Also supports the BME280 with
 	  an additional humidity sensor channel.
 
 	  To compile this driver as a module, choose M here: the core module
@@ -100,6 +143,30 @@ config HP03
 	  To compile this driver as a module, choose M here: the module
 	  will be called hp03.
 
+config HSC030PA
+	tristate "Honeywell HSC/SSC TruStability pressure sensor series"
+	depends on (I2C || SPI_MASTER)
+	select HSC030PA_I2C if I2C
+	select HSC030PA_SPI if SPI_MASTER
+	select IIO_BUFFER
+	select IIO_TRIGGERED_BUFFER
+	help
+	  Say Y here to build support for the Honeywell TruStability
+	  HSC and SSC pressure and temperature sensor series.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called hsc030pa.
+
+config HSC030PA_I2C
+	tristate
+	depends on HSC030PA
+	depends on I2C
+
+config HSC030PA_SPI
+	tristate
+	depends on HSC030PA
+	depends on SPI_MASTER
+
 config ICP10100
 	tristate "InvenSense ICP-101xx pressure and temperature sensor"
 	depends on I2C
@@ -148,6 +215,35 @@ config MPL3115
 	  To compile this driver as a module, choose M here: the module
 	  will be called mpl3115.
 
+config MPRLS0025PA
+	tristate
+	select IIO_BUFFER
+	select IIO_TRIGGERED_BUFFER
+
+config MPRLS0025PA_I2C
+	tristate "Honeywell MPR pressure sensor series I2C driver"
+	depends on I2C
+	select MPRLS0025PA
+	help
+	  Say Y here to build I2C bus support for the Honeywell MicroPressure
+	  series sensor.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called mprls0025pa_i2c and you will also get mprls0025pa
+	  for the core module.
+
+config MPRLS0025PA_SPI
+	tristate "Honeywell MPR pressure sensor series SPI driver"
+	depends on SPI_MASTER
+	select MPRLS0025PA
+	help
+	  Say Y here to build SPI bus support for the Honeywell MicroPressure
+	  series sensor.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called mprls0025pa_spi and you will also get mprls0025pa
+	  for the core module.
+
 config MS5611
 	tristate "Measurement Specialties MS5611 pressure sensor driver"
 	select IIO_BUFFER
@@ -189,6 +285,16 @@ config MS5637
 
 	  This driver can also be built as a module. If so, the module will
 	  be called ms5637.
+
+config SDP500
+	tristate "Sensirion SDP500 differential pressure sensor I2C driver"
+	depends on I2C
+	select CRC8
+	help
+	  Say Y here to build support for Sensirion SDP500 differential pressure
+	  sensor I2C driver.
+	  To compile this driver as a module, choose M here: the core module
+	  will be called sdp500.
 
 config IIO_ST_PRESS
 	tristate "STMicroelectronics pressure sensor Driver"
@@ -265,5 +371,17 @@ config ZPA2326_I2C
 config ZPA2326_SPI
 	tristate
 	select REGMAP_SPI
+
+config ADP810
+	tristate "Aosong adp810 differential pressure and temperature sensor"
+	depends on I2C
+	select CRC8
+	help
+	  Say yes here to build adp810 differential pressure and temperature
+	  sensor driver. ADP810 can measure pressure range up to 500Pa.
+	  It supports an I2C interface for data communication.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called adp810
 
 endmenu

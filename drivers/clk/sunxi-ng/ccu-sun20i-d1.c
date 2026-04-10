@@ -104,6 +104,8 @@ static struct ccu_nm pll_video0_4x_clk = {
 	.lock		= BIT(28),
 	.n		= _SUNXI_CCU_MULT_MIN(8, 8, 12),
 	.m		= _SUNXI_CCU_DIV(1, 1), /* input divider */
+	.min_rate	= 252000000U,
+	.max_rate	= 2400000000U,
 	.common		= {
 		.reg		= 0x040,
 		.hw.init	= CLK_HW_INIT_PARENTS_DATA("pll-video0-4x", osc24M,
@@ -126,6 +128,8 @@ static struct ccu_nm pll_video1_4x_clk = {
 	.lock		= BIT(28),
 	.n		= _SUNXI_CCU_MULT_MIN(8, 8, 12),
 	.m		= _SUNXI_CCU_DIV(1, 1), /* input divider */
+	.min_rate	= 252000000U,
+	.max_rate	= 2400000000U,
 	.common		= {
 		.reg		= 0x048,
 		.hw.init	= CLK_HW_INIT_PARENTS_DATA("pll-video1-4x", osc24M,
@@ -175,6 +179,8 @@ static struct ccu_nm pll_audio0_4x_clk = {
 	.m		= _SUNXI_CCU_DIV(16, 6),
 	.sdm		= _SUNXI_CCU_SDM(pll_audio0_sdm_table, BIT(24),
 					 0x178, BIT(31)),
+	.min_rate	= 180000000U,
+	.max_rate	= 3000000000U,
 	.common		= {
 		.reg		= 0x078,
 		.features	= CCU_FEATURE_SIGMA_DELTA_MOD,
@@ -202,6 +208,8 @@ static struct ccu_nm pll_audio1_clk = {
 	.lock		= BIT(28),
 	.n		= _SUNXI_CCU_MULT_MIN(8, 8, 12),
 	.m		= _SUNXI_CCU_DIV(1, 1),
+	.min_rate	= 180000000U,
+	.max_rate	= 3000000000U,
 	.common		= {
 		.reg		= 0x080,
 		.hw.init	= CLK_HW_INIT_PARENTS_DATA("pll-audio1", osc24M,
@@ -232,7 +240,7 @@ static const struct clk_parent_data cpux_parents[] = {
 	{ .hw = &pll_periph0_800M_clk.common.hw },
 };
 static SUNXI_CCU_MUX_DATA(cpux_clk, "cpux", cpux_parents,
-			  0x500, 24, 3, CLK_SET_RATE_PARENT);
+			  0x500, 24, 3, CLK_SET_RATE_PARENT | CLK_IS_CRITICAL);
 
 static const struct clk_hw *cpux_hws[] = { &cpux_clk.common.hw };
 static SUNXI_CCU_M_HWS(cpux_axi_clk, "cpux-axi",
@@ -404,19 +412,23 @@ static const struct clk_parent_data mmc0_mmc1_parents[] = {
 	{ .hw = &pll_periph0_2x_clk.common.hw },
 	{ .hw = &pll_audio1_div2_clk.common.hw },
 };
-static SUNXI_CCU_MP_DATA_WITH_MUX_GATE(mmc0_clk, "mmc0", mmc0_mmc1_parents, 0x830,
-				       0, 4,	/* M */
-				       8, 2,	/* P */
-				       24, 3,	/* mux */
-				       BIT(31),	/* gate */
-				       0);
+static SUNXI_CCU_MP_DATA_WITH_MUX_GATE_POSTDIV(mmc0_clk, "mmc0",
+					       mmc0_mmc1_parents, 0x830,
+					       0, 4,		/* M */
+					       8, 2,		/* P */
+					       24, 3,		/* mux */
+					       BIT(31),		/* gate */
+					       2,		/* post-div */
+					       0);
 
-static SUNXI_CCU_MP_DATA_WITH_MUX_GATE(mmc1_clk, "mmc1", mmc0_mmc1_parents, 0x834,
-				       0, 4,	/* M */
-				       8, 2,	/* P */
-				       24, 3,	/* mux */
-				       BIT(31),	/* gate */
-				       0);
+static SUNXI_CCU_MP_DATA_WITH_MUX_GATE_POSTDIV(mmc1_clk, "mmc1",
+					       mmc0_mmc1_parents, 0x834,
+					       0, 4,		/* M */
+					       8, 2,		/* P */
+					       24, 3,		/* mux */
+					       BIT(31),		/* gate */
+					       2,		/* post-div */
+					       0);
 
 static const struct clk_parent_data mmc2_parents[] = {
 	{ .fw_name = "hosc" },
@@ -425,12 +437,14 @@ static const struct clk_parent_data mmc2_parents[] = {
 	{ .hw = &pll_periph0_800M_clk.common.hw },
 	{ .hw = &pll_audio1_div2_clk.common.hw },
 };
-static SUNXI_CCU_MP_DATA_WITH_MUX_GATE(mmc2_clk, "mmc2", mmc2_parents, 0x838,
-				       0, 4,	/* M */
-				       8, 2,	/* P */
-				       24, 3,	/* mux */
-				       BIT(31),	/* gate */
-				       0);
+static SUNXI_CCU_MP_DATA_WITH_MUX_GATE_POSTDIV(mmc2_clk, "mmc2", mmc2_parents,
+					       0x838,
+					       0, 4,		/* M */
+					       8, 2,		/* P */
+					       24, 3,		/* mux */
+					       BIT(31),		/* gate */
+					       2,		/* post-div */
+					       0);
 
 static SUNXI_CCU_GATE_HWS(bus_mmc0_clk, "bus-mmc0", psi_ahb_hws,
 			  0x84c, BIT(0), 0);
@@ -460,6 +474,11 @@ static SUNXI_CCU_GATE_HWS(bus_i2c2_clk, "bus-i2c2", apb1_hws,
 			  0x91c, BIT(2), 0);
 static SUNXI_CCU_GATE_HWS(bus_i2c3_clk, "bus-i2c3", apb1_hws,
 			  0x91c, BIT(3), 0);
+
+static SUNXI_CCU_GATE_HWS(bus_can0_clk, "bus-can0", apb1_hws,
+			  0x92c, BIT(0), 0);
+static SUNXI_CCU_GATE_HWS(bus_can1_clk, "bus-can1", apb1_hws,
+			  0x92c, BIT(1), 0);
 
 static const struct clk_parent_data spi_parents[] = {
 	{ .fw_name = "hosc" },
@@ -989,6 +1008,8 @@ static struct ccu_common *sun20i_d1_ccu_clks[] = {
 	&bus_i2c1_clk.common,
 	&bus_i2c2_clk.common,
 	&bus_i2c3_clk.common,
+	&bus_can0_clk.common,
+	&bus_can1_clk.common,
 	&spi0_clk.common,
 	&spi1_clk.common,
 	&bus_spi0_clk.common,
@@ -1139,6 +1160,8 @@ static struct clk_hw_onecell_data sun20i_d1_hw_clks = {
 		[CLK_BUS_I2C1]		= &bus_i2c1_clk.common.hw,
 		[CLK_BUS_I2C2]		= &bus_i2c2_clk.common.hw,
 		[CLK_BUS_I2C3]		= &bus_i2c3_clk.common.hw,
+		[CLK_BUS_CAN0]		= &bus_can0_clk.common.hw,
+		[CLK_BUS_CAN1]		= &bus_can1_clk.common.hw,
 		[CLK_SPI0]		= &spi0_clk.common.hw,
 		[CLK_SPI1]		= &spi1_clk.common.hw,
 		[CLK_BUS_SPI0]		= &bus_spi0_clk.common.hw,
@@ -1215,7 +1238,7 @@ static struct clk_hw_onecell_data sun20i_d1_hw_clks = {
 	},
 };
 
-static struct ccu_reset_map sun20i_d1_ccu_resets[] = {
+static const struct ccu_reset_map sun20i_d1_ccu_resets[] = {
 	[RST_MBUS]		= { 0x540, BIT(30) },
 	[RST_BUS_DE]		= { 0x60c, BIT(16) },
 	[RST_BUS_DI]		= { 0x62c, BIT(16) },
@@ -1244,6 +1267,8 @@ static struct ccu_reset_map sun20i_d1_ccu_resets[] = {
 	[RST_BUS_I2C1]		= { 0x91c, BIT(17) },
 	[RST_BUS_I2C2]		= { 0x91c, BIT(18) },
 	[RST_BUS_I2C3]		= { 0x91c, BIT(19) },
+	[RST_BUS_CAN0]		= { 0x92c, BIT(16) },
+	[RST_BUS_CAN1]		= { 0x92c, BIT(17) },
 	[RST_BUS_SPI0]		= { 0x96c, BIT(16) },
 	[RST_BUS_SPI1]		= { 0x96c, BIT(17) },
 	[RST_BUS_EMAC]		= { 0x97c, BIT(16) },
@@ -1352,7 +1377,7 @@ static int sun20i_d1_ccu_probe(struct platform_device *pdev)
 
 	/* Enforce m1 = 0, m0 = 0 for PLL_AUDIO0 */
 	val = readl(reg + SUN20I_D1_PLL_AUDIO0_REG);
-	val &= ~BIT(1) | BIT(0);
+	val &= ~(BIT(1) | BIT(0));
 	writel(val, reg + SUN20I_D1_PLL_AUDIO0_REG);
 
 	/* Force fanout-27M factor N to 0. */
@@ -1375,6 +1400,7 @@ static const struct of_device_id sun20i_d1_ccu_ids[] = {
 	{ .compatible = "allwinner,sun20i-d1-ccu" },
 	{ }
 };
+MODULE_DEVICE_TABLE(of, sun20i_d1_ccu_ids);
 
 static struct platform_driver sun20i_d1_ccu_driver = {
 	.probe	= sun20i_d1_ccu_probe,
@@ -1386,5 +1412,6 @@ static struct platform_driver sun20i_d1_ccu_driver = {
 };
 module_platform_driver(sun20i_d1_ccu_driver);
 
-MODULE_IMPORT_NS(SUNXI_CCU);
+MODULE_IMPORT_NS("SUNXI_CCU");
+MODULE_DESCRIPTION("Support for the Allwinner D1/R528/T113 CCU");
 MODULE_LICENSE("GPL");

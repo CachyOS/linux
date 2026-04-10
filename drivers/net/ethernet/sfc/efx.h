@@ -12,6 +12,7 @@
 #include "net_driver.h"
 #include "ef100_rx.h"
 #include "ef100_tx.h"
+#include "efx_common.h"
 #include "filter.h"
 
 int efx_net_open(struct net_device *net_dev);
@@ -29,8 +30,6 @@ static inline netdev_tx_t efx_enqueue_skb(struct efx_tx_queue *tx_queue, struct 
 			       tx_queue, skb);
 }
 void efx_xmit_done_single(struct efx_tx_queue *tx_queue);
-int efx_setup_tc(struct net_device *net_dev, enum tc_setup_type type,
-		 void *type_data);
 extern unsigned int efx_piobuf_size;
 
 /* RX */
@@ -159,7 +158,7 @@ static inline s32 efx_filter_get_rx_ids(struct efx_nic *efx,
 }
 
 /* RSS contexts */
-static inline bool efx_rss_active(struct efx_rss_context *ctx)
+static inline bool efx_rss_active(struct efx_rss_context_priv *ctx)
 {
 	return ctx->context_id != EFX_MCDI_RSS_CONTEXT_INVALID;
 }
@@ -169,7 +168,6 @@ extern const struct ethtool_ops efx_ethtool_ops;
 
 /* Global */
 unsigned int efx_usecs_to_ticks(struct efx_nic *efx, unsigned int usecs);
-unsigned int efx_ticks_to_usecs(struct efx_nic *efx, unsigned int ticks);
 int efx_init_irq_moderation(struct efx_nic *efx, unsigned int tx_usecs,
 			    unsigned int rx_usecs, bool rx_adaptive,
 			    bool rx_may_override_tx);
@@ -206,6 +204,9 @@ static inline void efx_device_detach_sync(struct efx_nic *efx)
 {
 	struct net_device *dev = efx->net_dev;
 
+	/* We must stop reps (which use our TX) before we stop ourselves. */
+	efx_detach_reps(efx);
+
 	/* Lock/freeze all TX queues so that we can be sure the
 	 * TX scheduler is stopped when we're done and before
 	 * netif_device_present() becomes false.
@@ -217,8 +218,11 @@ static inline void efx_device_detach_sync(struct efx_nic *efx)
 
 static inline void efx_device_attach_if_not_resetting(struct efx_nic *efx)
 {
-	if ((efx->state != STATE_DISABLED) && !efx->reset_pending)
+	if ((efx->state != STATE_DISABLED) && !efx->reset_pending) {
 		netif_device_attach(efx->net_dev);
+		if (efx->state == STATE_NET_UP)
+			efx_attach_reps(efx);
+	}
 }
 
 static inline bool efx_rwsem_assert_write_locked(struct rw_semaphore *sem)

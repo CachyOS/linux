@@ -257,7 +257,8 @@ static int process_scmi_regulator_of_node(struct scmi_device *sdev,
 					  struct device_node *np,
 					  struct scmi_regulator_info *rinfo)
 {
-	u32 dom, ret;
+	u32 dom;
+	int ret;
 
 	ret = of_property_read_u32(np, "reg", &dom);
 	if (ret)
@@ -297,7 +298,7 @@ static int process_scmi_regulator_of_node(struct scmi_device *sdev,
 static int scmi_regulator_probe(struct scmi_device *sdev)
 {
 	int d, ret, num_doms;
-	struct device_node *np, *child;
+	struct device_node *np;
 	const struct scmi_handle *handle = sdev->handle;
 	struct scmi_regulator_info *rinfo;
 	struct scmi_protocol_handle *ph;
@@ -311,16 +312,12 @@ static int scmi_regulator_probe(struct scmi_device *sdev)
 		return PTR_ERR(voltage_ops);
 
 	num_doms = voltage_ops->num_domains_get(ph);
-	if (num_doms <= 0) {
-		if (!num_doms) {
-			dev_err(&sdev->dev,
-				"number of voltage domains invalid\n");
-			num_doms = -EINVAL;
-		} else {
-			dev_err(&sdev->dev,
-				"failed to get voltage domains - err:%d\n",
-				num_doms);
-		}
+	if (!num_doms)
+		return 0;
+
+	if (num_doms < 0) {
+		dev_err(&sdev->dev, "failed to get voltage domains - err:%d\n",
+			num_doms);
 
 		return num_doms;
 	}
@@ -343,14 +340,13 @@ static int scmi_regulator_probe(struct scmi_device *sdev)
 	 * plausible SCMI Voltage Domain number, all belonging to this SCMI
 	 * platform instance node (handle->dev->of_node).
 	 */
+	of_node_get(handle->dev->of_node);
 	np = of_find_node_by_name(handle->dev->of_node, "regulators");
-	for_each_child_of_node(np, child) {
+	for_each_child_of_node_scoped(np, child) {
 		ret = process_scmi_regulator_of_node(sdev, ph, child, rinfo);
 		/* abort on any mem issue */
-		if (ret == -ENOMEM) {
-			of_node_put(child);
+		if (ret == -ENOMEM)
 			return ret;
-		}
 	}
 	of_node_put(np);
 	/*

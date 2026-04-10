@@ -7,11 +7,11 @@
  * Copyright (C) 2002 Dag Arne Osvik <osvik@ii.uib.no>
  */
 
+#include <crypto/algapi.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/errno.h>
-#include <asm/unaligned.h>
-#include <linux/crypto.h>
+#include <linux/unaligned.h>
 #include <linux/types.h>
 #include <crypto/serpent.h>
 
@@ -599,7 +599,7 @@ static void __exit serpent_mod_fini(void)
 	crypto_unregister_alg(&srp_alg);
 }
 
-subsys_initcall(serpent_mod_init);
+module_init(serpent_mod_init);
 module_exit(serpent_mod_fini);
 
 MODULE_LICENSE("GPL");

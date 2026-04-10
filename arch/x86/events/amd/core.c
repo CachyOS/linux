@@ -2,6 +2,7 @@
 #include <linux/perf_event.h>
 #include <linux/jump_label.h>
 #include <linux/export.h>
+#include <linux/kvm_types.h>
 #include <linux/types.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -9,6 +10,7 @@
 #include <linux/jiffies.h>
 #include <asm/apicdef.h>
 #include <asm/apic.h>
+#include <asm/msr.h>
 #include <asm/nmi.h>
 
 #include "../perf_event.h"
@@ -250,7 +252,7 @@ static const u64 amd_perfmon_event_map[PERF_COUNT_HW_MAX] =
 /*
  * AMD Performance Monitor Family 17h and later:
  */
-static const u64 amd_f17h_perfmon_event_map[PERF_COUNT_HW_MAX] =
+static const u64 amd_zen1_perfmon_event_map[PERF_COUNT_HW_MAX] =
 {
 	[PERF_COUNT_HW_CPU_CYCLES]		= 0x0076,
 	[PERF_COUNT_HW_INSTRUCTIONS]		= 0x00c0,
@@ -262,10 +264,39 @@ static const u64 amd_f17h_perfmon_event_map[PERF_COUNT_HW_MAX] =
 	[PERF_COUNT_HW_STALLED_CYCLES_BACKEND]	= 0x0187,
 };
 
+static const u64 amd_zen2_perfmon_event_map[PERF_COUNT_HW_MAX] =
+{
+	[PERF_COUNT_HW_CPU_CYCLES]		= 0x0076,
+	[PERF_COUNT_HW_INSTRUCTIONS]		= 0x00c0,
+	[PERF_COUNT_HW_CACHE_REFERENCES]	= 0xff60,
+	[PERF_COUNT_HW_CACHE_MISSES]		= 0x0964,
+	[PERF_COUNT_HW_BRANCH_INSTRUCTIONS]	= 0x00c2,
+	[PERF_COUNT_HW_BRANCH_MISSES]		= 0x00c3,
+	[PERF_COUNT_HW_STALLED_CYCLES_FRONTEND]	= 0x00a9,
+};
+
+static const u64 amd_zen4_perfmon_event_map[PERF_COUNT_HW_MAX] =
+{
+	[PERF_COUNT_HW_CPU_CYCLES]		= 0x0076,
+	[PERF_COUNT_HW_INSTRUCTIONS]		= 0x00c0,
+	[PERF_COUNT_HW_CACHE_REFERENCES]	= 0xff60,
+	[PERF_COUNT_HW_CACHE_MISSES]		= 0x0964,
+	[PERF_COUNT_HW_BRANCH_INSTRUCTIONS]	= 0x00c2,
+	[PERF_COUNT_HW_BRANCH_MISSES]		= 0x00c3,
+	[PERF_COUNT_HW_STALLED_CYCLES_FRONTEND]	= 0x00a9,
+	[PERF_COUNT_HW_REF_CPU_CYCLES]		= 0x100000120,
+};
+
 static u64 amd_pmu_event_map(int hw_event)
 {
-	if (boot_cpu_data.x86 >= 0x17)
-		return amd_f17h_perfmon_event_map[hw_event];
+	if (cpu_feature_enabled(X86_FEATURE_ZEN4) || boot_cpu_data.x86 >= 0x1a)
+		return amd_zen4_perfmon_event_map[hw_event];
+
+	if (cpu_feature_enabled(X86_FEATURE_ZEN2) || boot_cpu_data.x86 >= 0x19)
+		return amd_zen2_perfmon_event_map[hw_event];
+
+	if (cpu_feature_enabled(X86_FEATURE_ZEN1))
+		return amd_zen1_perfmon_event_map[hw_event];
 
 	return amd_perfmon_event_map[hw_event];
 }
@@ -330,16 +361,10 @@ static inline bool amd_is_pair_event_code(struct hw_perf_event *hwc)
 	}
 }
 
-#define AMD_FAM19H_BRS_EVENT 0xc4 /* RETIRED_TAKEN_BRANCH_INSTRUCTIONS */
-static inline int amd_is_brs_event(struct perf_event *e)
-{
-	return (e->hw.config & AMD64_RAW_EVENT_MASK) == AMD_FAM19H_BRS_EVENT;
-}
+DEFINE_STATIC_CALL_RET0(amd_pmu_branch_hw_config, *x86_pmu.hw_config);
 
 static int amd_core_hw_config(struct perf_event *event)
 {
-	int ret = 0;
-
 	if (event->attr.exclude_host && event->attr.exclude_guest)
 		/*
 		 * When HO == GO == 1 the hardware treats that as GO == HO == 0
@@ -356,66 +381,10 @@ static int amd_core_hw_config(struct perf_event *event)
 	if ((x86_pmu.flags & PMU_FL_PAIR) && amd_is_pair_event_code(&event->hw))
 		event->hw.flags |= PERF_X86_EVENT_PAIR;
 
-	/*
-	 * if branch stack is requested
-	 */
-	if (has_branch_stack(event)) {
-		/*
-		 * Due to interrupt holding, BRS is not recommended in
-		 * counting mode.
-		 */
-		if (!is_sampling_event(event))
-			return -EINVAL;
+	if (has_branch_stack(event))
+		return static_call(amd_pmu_branch_hw_config)(event);
 
-		/*
-		 * Due to the way BRS operates by holding the interrupt until
-		 * lbr_nr entries have been captured, it does not make sense
-		 * to allow sampling on BRS with an event that does not match
-		 * what BRS is capturing, i.e., retired taken branches.
-		 * Otherwise the correlation with the event's period is even
-		 * more loose:
-		 *
-		 * With retired taken branch:
-		 *   Effective P = P + 16 + X
-		 * With any other event:
-		 *   Effective P = P + Y + X
-		 *
-		 * Where X is the number of taken branches due to interrupt
-		 * skid. Skid is large.
-		 *
-		 * Where Y is the occurences of the event while BRS is
-		 * capturing the lbr_nr entries.
-		 *
-		 * By using retired taken branches, we limit the impact on the
-		 * Y variable. We know it cannot be more than the depth of
-		 * BRS.
-		 */
-		if (!amd_is_brs_event(event))
-			return -EINVAL;
-
-		/*
-		 * BRS implementation does not work with frequency mode
-		 * reprogramming of the period.
-		 */
-		if (event->attr.freq)
-			return -EINVAL;
-		/*
-		 * The kernel subtracts BRS depth from period, so it must
-		 * be big enough.
-		 */
-		if (event->attr.sample_period <= x86_pmu.lbr_nr)
-			return -EINVAL;
-
-		/*
-		 * Check if we can allow PERF_SAMPLE_BRANCH_STACK
-		 */
-		ret = amd_brs_setup_filter(event);
-
-		/* only set in case of success */
-		if (!ret)
-			event->hw.flags |= PERF_X86_EVENT_AMD_BRS;
-	}
-	return ret;
+	return 0;
 }
 
 static inline int amd_is_nb_event(struct hw_perf_event *hwc)
@@ -436,7 +405,7 @@ static int amd_pmu_hw_config(struct perf_event *event)
 
 	/* pass precise event sampling to ibs: */
 	if (event->attr.precise_ip && get_ibs_caps())
-		return -ENOENT;
+		return forward_event_to_ibs(event);
 
 	if (has_branch_stack(event) && !x86_pmu.lbr_nr)
 		return -EOPNOTSUPP;
@@ -465,8 +434,10 @@ static void __amd_put_nb_event_constraints(struct cpu_hw_events *cpuc,
 	 * be removed on one CPU at a time AND PMU is disabled
 	 * when we come here
 	 */
-	for (i = 0; i < x86_pmu.num_counters; i++) {
-		if (cmpxchg(nb->owners + i, event, NULL) == event)
+	for_each_set_bit(i, x86_pmu.cntr_mask, X86_PMC_IDX_MAX) {
+		struct perf_event *tmp = event;
+
+		if (try_cmpxchg(nb->owners + i, &tmp, NULL))
 			break;
 	}
 }
@@ -532,7 +503,7 @@ __amd_get_nb_event_constraints(struct cpu_hw_events *cpuc, struct perf_event *ev
 	 * because of successive calls to x86_schedule_events() from
 	 * hw_perf_group_sched_in() without hw_perf_enable()
 	 */
-	for_each_set_bit(idx, c->idxmsk, x86_pmu.num_counters) {
+	for_each_set_bit(idx, c->idxmsk, x86_pmu_max_num_counters(NULL)) {
 		if (new == -1 || hwc->idx == idx)
 			/* assign free slot, prefer hwc->idx */
 			old = cmpxchg(nb->owners + idx, NULL, event);
@@ -575,28 +546,43 @@ static struct amd_nb *amd_alloc_nb(int cpu)
 	/*
 	 * initialize all possible NB constraints
 	 */
-	for (i = 0; i < x86_pmu.num_counters; i++) {
+	for_each_set_bit(i, x86_pmu.cntr_mask, X86_PMC_IDX_MAX) {
 		__set_bit(i, nb->event_constraints[i].idxmsk);
 		nb->event_constraints[i].weight = 1;
 	}
 	return nb;
 }
 
+typedef void (amd_pmu_branch_reset_t)(void);
+DEFINE_STATIC_CALL_NULL(amd_pmu_branch_reset, amd_pmu_branch_reset_t);
+
 static void amd_pmu_cpu_reset(int cpu)
 {
+	if (x86_pmu.lbr_nr)
+		static_call(amd_pmu_branch_reset)();
+
 	if (x86_pmu.version < 2)
 		return;
 
 	/* Clear enable bits i.e. PerfCntrGlobalCtl.PerfCntrEn */
-	wrmsrl(MSR_AMD64_PERF_CNTR_GLOBAL_CTL, 0);
+	wrmsrq(MSR_AMD64_PERF_CNTR_GLOBAL_CTL, 0);
 
-	/* Clear overflow bits i.e. PerfCntrGLobalStatus.PerfCntrOvfl */
-	wrmsrl(MSR_AMD64_PERF_CNTR_GLOBAL_STATUS_CLR, amd_pmu_global_cntr_mask);
+	/*
+	 * Clear freeze and overflow bits i.e. PerfCntrGLobalStatus.LbrFreeze
+	 * and PerfCntrGLobalStatus.PerfCntrOvfl
+	 */
+	wrmsrq(MSR_AMD64_PERF_CNTR_GLOBAL_STATUS_CLR,
+	       GLOBAL_STATUS_LBRS_FROZEN | amd_pmu_global_cntr_mask);
 }
 
 static int amd_pmu_cpu_prepare(int cpu)
 {
 	struct cpu_hw_events *cpuc = &per_cpu(cpu_hw_events, cpu);
+
+	cpuc->lbr_sel = kzalloc_node(sizeof(struct er_account), GFP_KERNEL,
+				     cpu_to_node(cpu));
+	if (!cpuc->lbr_sel)
+		return -ENOMEM;
 
 	WARN_ON_ONCE(cpuc->amd_nb);
 
@@ -604,10 +590,13 @@ static int amd_pmu_cpu_prepare(int cpu)
 		return 0;
 
 	cpuc->amd_nb = amd_alloc_nb(cpu);
-	if (!cpuc->amd_nb)
-		return -ENOMEM;
+	if (cpuc->amd_nb)
+		return 0;
 
-	return 0;
+	kfree(cpuc->lbr_sel);
+	cpuc->lbr_sel = NULL;
+
+	return -ENOMEM;
 }
 
 static void amd_pmu_cpu_starting(int cpu)
@@ -618,11 +607,12 @@ static void amd_pmu_cpu_starting(int cpu)
 	int i, nb_id;
 
 	cpuc->perf_ctr_virt_mask = AMD64_EVENTSEL_HOSTONLY;
+	amd_pmu_cpu_reset(cpu);
 
 	if (!x86_pmu.amd_nb_constraints)
 		return;
 
-	nb_id = topology_die_id(cpu);
+	nb_id = topology_amd_node_id(cpu);
 	WARN_ON_ONCE(nb_id == BAD_APICID);
 
 	for_each_online_cpu(i) {
@@ -639,19 +629,17 @@ static void amd_pmu_cpu_starting(int cpu)
 
 	cpuc->amd_nb->nb_id = nb_id;
 	cpuc->amd_nb->refcnt++;
-
-	amd_brs_reset();
-	amd_pmu_cpu_reset(cpu);
 }
 
 static void amd_pmu_cpu_dead(int cpu)
 {
-	struct cpu_hw_events *cpuhw;
+	struct cpu_hw_events *cpuhw = &per_cpu(cpu_hw_events, cpu);
+
+	kfree(cpuhw->lbr_sel);
+	cpuhw->lbr_sel = NULL;
 
 	if (!x86_pmu.amd_nb_constraints)
 		return;
-
-	cpuhw = &per_cpu(cpu_hw_events, cpu);
 
 	if (cpuhw->amd_nb) {
 		struct amd_nb *nb = cpuhw->amd_nb;
@@ -661,13 +649,11 @@ static void amd_pmu_cpu_dead(int cpu)
 
 		cpuhw->amd_nb = NULL;
 	}
-
-	amd_pmu_cpu_reset(cpu);
 }
 
-static inline void amd_pmu_set_global_ctl(u64 ctl)
+static __always_inline void amd_pmu_set_global_ctl(u64 ctl)
 {
-	wrmsrl(MSR_AMD64_PERF_CNTR_GLOBAL_CTL, ctl);
+	wrmsrq(MSR_AMD64_PERF_CNTR_GLOBAL_CTL, ctl);
 }
 
 static inline u64 amd_pmu_get_global_status(void)
@@ -675,9 +661,9 @@ static inline u64 amd_pmu_get_global_status(void)
 	u64 status;
 
 	/* PerfCntrGlobalStatus is read-only */
-	rdmsrl(MSR_AMD64_PERF_CNTR_GLOBAL_STATUS, status);
+	rdmsrq(MSR_AMD64_PERF_CNTR_GLOBAL_STATUS, status);
 
-	return status & amd_pmu_global_cntr_mask;
+	return status;
 }
 
 static inline void amd_pmu_ack_global_status(u64 status)
@@ -688,16 +674,14 @@ static inline void amd_pmu_ack_global_status(u64 status)
 	 * clears the same bit in PerfCntrGlobalStatus
 	 */
 
-	/* Only allow modifications to PerfCntrGlobalStatus.PerfCntrOvfl */
-	status &= amd_pmu_global_cntr_mask;
-	wrmsrl(MSR_AMD64_PERF_CNTR_GLOBAL_STATUS_CLR, status);
+	wrmsrq(MSR_AMD64_PERF_CNTR_GLOBAL_STATUS_CLR, status);
 }
 
 static bool amd_pmu_test_overflow_topbit(int idx)
 {
 	u64 counter;
 
-	rdmsrl(x86_pmu_event_addr(idx), counter);
+	rdmsrq(x86_pmu_event_addr(idx), counter);
 
 	return !(counter & BIT_ULL(x86_pmu.cntval_bits - 1));
 }
@@ -755,7 +739,7 @@ static void amd_pmu_check_overflow(void)
 	 * counters are always enabled when this function is called and
 	 * ARCH_PERFMON_EVENTSEL_INT is always set.
 	 */
-	for (idx = 0; idx < x86_pmu.num_counters; idx++) {
+	for_each_set_bit(idx, x86_pmu.cntr_mask, X86_PMC_IDX_MAX) {
 		if (!test_bit(idx, cpuc->active_mask))
 			continue;
 
@@ -775,12 +759,17 @@ static void amd_pmu_enable_all(int added)
 
 	amd_brs_enable_all();
 
-	for (idx = 0; idx < x86_pmu.num_counters; idx++) {
+	for_each_set_bit(idx, x86_pmu.cntr_mask, X86_PMC_IDX_MAX) {
 		/* only activate events which are marked as active */
 		if (!test_bit(idx, cpuc->active_mask))
 			continue;
 
-		amd_pmu_enable_event(cpuc->events[idx]);
+		/*
+		 * FIXME: cpuc->events[idx] can become NULL in a subtle race
+		 * condition with NMI->throttle->x86_pmu_stop().
+		 */
+		if (cpuc->events[idx])
+			amd_pmu_enable_event(cpuc->events[idx]);
 	}
 }
 
@@ -799,9 +788,15 @@ static void amd_pmu_v2_enable_event(struct perf_event *event)
 	__x86_pmu_enable_event(hwc, ARCH_PERFMON_EVENTSEL_ENABLE);
 }
 
-static void amd_pmu_v2_enable_all(int added)
+static __always_inline void amd_pmu_core_enable_all(void)
 {
 	amd_pmu_set_global_ctl(amd_pmu_global_cntr_mask);
+}
+
+static void amd_pmu_v2_enable_all(int added)
+{
+	amd_pmu_lbr_enable_all();
+	amd_pmu_core_enable_all();
 }
 
 static void amd_pmu_disable_event(struct perf_event *event)
@@ -828,23 +823,32 @@ static void amd_pmu_disable_all(void)
 	amd_pmu_check_overflow();
 }
 
+static __always_inline void amd_pmu_core_disable_all(void)
+{
+	amd_pmu_set_global_ctl(0);
+}
+
 static void amd_pmu_v2_disable_all(void)
 {
-	/* Disable all PMCs */
-	amd_pmu_set_global_ctl(0);
+	amd_pmu_core_disable_all();
+	amd_pmu_lbr_disable_all();
 	amd_pmu_check_overflow();
 }
+
+DEFINE_STATIC_CALL_NULL(amd_pmu_branch_add, *x86_pmu.add);
 
 static void amd_pmu_add_event(struct perf_event *event)
 {
 	if (needs_branch_stack(event))
-		amd_pmu_brs_add(event);
+		static_call(amd_pmu_branch_add)(event);
 }
+
+DEFINE_STATIC_CALL_NULL(amd_pmu_branch_del, *x86_pmu.del);
 
 static void amd_pmu_del_event(struct perf_event *event)
 {
 	if (needs_branch_stack(event))
-		amd_pmu_brs_del(event);
+		static_call(amd_pmu_branch_del)(event);
 }
 
 /*
@@ -896,8 +900,7 @@ static int amd_pmu_handle_irq(struct pt_regs *regs)
 	pmu_enabled = cpuc->enabled;
 	cpuc->enabled = 0;
 
-	/* stop everything (includes BRS) */
-	amd_pmu_disable_all();
+	amd_brs_disable_all();
 
 	/* Drain BRS is in use (could be inactive) */
 	if (cpuc->lbr_users)
@@ -908,19 +911,51 @@ static int amd_pmu_handle_irq(struct pt_regs *regs)
 
 	cpuc->enabled = pmu_enabled;
 	if (pmu_enabled)
-		amd_pmu_enable_all(0);
+		amd_brs_enable_all();
 
 	return amd_pmu_adjust_nmi_window(handled);
+}
+
+/*
+ * AMD-specific callback invoked through perf_snapshot_branch_stack static
+ * call, defined in include/linux/perf_event.h. See its definition for API
+ * details. It's up to caller to provide enough space in *entries* to fit all
+ * LBR records, otherwise returned result will be truncated to *cnt* entries.
+ */
+static int amd_pmu_v2_snapshot_branch_stack(struct perf_branch_entry *entries, unsigned int cnt)
+{
+	struct cpu_hw_events *cpuc;
+	unsigned long flags;
+
+	/*
+	 * The sequence of steps to freeze LBR should be completely inlined
+	 * and contain no branches to minimize contamination of LBR snapshot
+	 */
+	local_irq_save(flags);
+	amd_pmu_core_disable_all();
+	__amd_pmu_lbr_disable();
+
+	cpuc = this_cpu_ptr(&cpu_hw_events);
+
+	amd_pmu_lbr_read();
+	cnt = min(cnt, x86_pmu.lbr_nr);
+	memcpy(entries, cpuc->lbr_entries, sizeof(struct perf_branch_entry) * cnt);
+
+	amd_pmu_v2_enable_all(0);
+	local_irq_restore(flags);
+
+	return cnt;
 }
 
 static int amd_pmu_v2_handle_irq(struct pt_regs *regs)
 {
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
+	static atomic64_t status_warned = ATOMIC64_INIT(0);
+	u64 reserved, status, mask, new_bits, prev_bits;
 	struct perf_sample_data data;
 	struct hw_perf_event *hwc;
 	struct perf_event *event;
 	int handled = 0, idx;
-	u64 status, mask;
 	bool pmu_enabled;
 
 	/*
@@ -930,8 +965,8 @@ static int amd_pmu_v2_handle_irq(struct pt_regs *regs)
 	pmu_enabled = cpuc->enabled;
 	cpuc->enabled = 0;
 
-	/* Stop counting */
-	amd_pmu_v2_disable_all();
+	/* Stop counting but do not disable LBR */
+	amd_pmu_core_disable_all();
 
 	status = amd_pmu_get_global_status();
 
@@ -939,7 +974,21 @@ static int amd_pmu_v2_handle_irq(struct pt_regs *regs)
 	if (!status)
 		goto done;
 
-	for (idx = 0; idx < x86_pmu.num_counters; idx++) {
+	/* Read branch records */
+	if (x86_pmu.lbr_nr) {
+		amd_pmu_lbr_read();
+		status &= ~GLOBAL_STATUS_LBRS_FROZEN;
+	}
+
+	reserved = status & ~amd_pmu_global_cntr_mask;
+	if (reserved)
+		pr_warn_once("Reserved PerfCntrGlobalStatus bits are set (0x%llx), please consider updating microcode\n",
+			     reserved);
+
+	/* Clear any reserved bits set by buggy microcode */
+	status &= amd_pmu_global_cntr_mask;
+
+	for_each_set_bit(idx, x86_pmu.cntr_mask, X86_PMC_IDX_MAX) {
 		if (!test_bit(idx, cpuc->active_mask))
 			continue;
 
@@ -953,15 +1002,15 @@ static int amd_pmu_v2_handle_irq(struct pt_regs *regs)
 
 		/* Event overflow */
 		handled++;
+		status &= ~mask;
 		perf_sample_data_init(&data, 0, hwc->last_period);
 
 		if (!x86_perf_event_set_period(event))
 			continue;
 
-		if (perf_event_overflow(event, &data, regs))
-			x86_pmu_stop(event, 0);
+		perf_sample_save_brstack(&data, event, &cpuc->lbr_stack, NULL);
 
-		status &= ~mask;
+		perf_event_overflow(event, &data, regs);
 	}
 
 	/*
@@ -969,9 +1018,14 @@ static int amd_pmu_v2_handle_irq(struct pt_regs *regs)
 	 * the corresponding PMCs are expected to be inactive according to the
 	 * active_mask
 	 */
-	WARN_ON(status > 0);
+	if (status > 0) {
+		prev_bits = atomic64_fetch_or(status, &status_warned);
+		// A new bit was set for the very first time.
+		new_bits = status & ~prev_bits;
+		WARN(new_bits, "New overflows for inactive PMCs: %llx\n", new_bits);
+	}
 
-	/* Clear overflow bits */
+	/* Clear overflow and freeze bits */
 	amd_pmu_ack_global_status(~status);
 
 	/*
@@ -985,7 +1039,7 @@ done:
 
 	/* Resume counting only if PMU is active */
 	if (pmu_enabled)
-		amd_pmu_v2_enable_all(0);
+		amd_pmu_core_enable_all();
 
 	return amd_pmu_adjust_nmi_window(handled);
 }
@@ -1202,7 +1256,7 @@ static void amd_put_event_constraints_f17h(struct cpu_hw_events *cpuc,
  * period of each one and given that the BRS saturates, it would not be possible
  * to guarantee correlated content for all events. Therefore, in situations
  * where multiple events want to use BRS, the kernel enforces mutual exclusion.
- * Exclusion is enforced by chosing only one counter for events using BRS.
+ * Exclusion is enforced by choosing only one counter for events using BRS.
  * The event scheduling logic will then automatically multiplex the
  * events and ensure that at most one event is actively using BRS.
  *
@@ -1248,23 +1302,14 @@ static ssize_t amd_event_sysfs_show(char *page, u64 config)
 	return x86_event_sysfs_show(page, config, event);
 }
 
-static void amd_pmu_sched_task(struct perf_event_context *ctx,
-				 bool sched_in)
-{
-	if (sched_in && x86_pmu.lbr_nr)
-		amd_pmu_brs_sched_task(ctx, sched_in);
-}
-
-static u64 amd_pmu_limit_period(struct perf_event *event, u64 left)
+static void amd_pmu_limit_period(struct perf_event *event, s64 *left)
 {
 	/*
 	 * Decrease period by the depth of the BRS feature to get the last N
 	 * taken branches and approximate the desired period
 	 */
-	if (has_branch_stack(event) && left > x86_pmu.lbr_nr)
-		left -= x86_pmu.lbr_nr;
-
-	return left;
+	if (has_branch_stack(event) && *left > x86_pmu.lbr_nr)
+		*left -= x86_pmu.lbr_nr;
 }
 
 static __initconst const struct x86_pmu amd_pmu = {
@@ -1281,7 +1326,7 @@ static __initconst const struct x86_pmu amd_pmu = {
 	.addr_offset            = amd_pmu_addr_offset,
 	.event_map		= amd_pmu_event_map,
 	.max_events		= ARRAY_SIZE(amd_perfmon_event_map),
-	.num_counters		= AMD64_NUM_COUNTERS,
+	.cntr_mask64		= GENMASK_ULL(AMD64_NUM_COUNTERS - 1, 0),
 	.add			= amd_pmu_add_event,
 	.del			= amd_pmu_del_event,
 	.cntval_bits		= 48,
@@ -1311,22 +1356,24 @@ static ssize_t branches_show(struct device *cdev,
 
 static DEVICE_ATTR_RO(branches);
 
-static struct attribute *amd_pmu_brs_attrs[] = {
+static struct attribute *amd_pmu_branches_attrs[] = {
 	&dev_attr_branches.attr,
 	NULL,
 };
 
 static umode_t
-amd_brs_is_visible(struct kobject *kobj, struct attribute *attr, int i)
+amd_branches_is_visible(struct kobject *kobj, struct attribute *attr, int i)
 {
 	return x86_pmu.lbr_nr ? attr->mode : 0;
 }
 
-static struct attribute_group group_caps_amd_brs = {
+static struct attribute_group group_caps_amd_branches = {
 	.name  = "caps",
-	.attrs = amd_pmu_brs_attrs,
-	.is_visible = amd_brs_is_visible,
+	.attrs = amd_pmu_branches_attrs,
+	.is_visible = amd_branches_is_visible,
 };
+
+#ifdef CONFIG_PERF_EVENTS_AMD_BRS
 
 EVENT_ATTR_STR(branch-brs, amd_branch_brs,
 	       "event=" __stringify(AMD_FAM19H_BRS_EVENT)"\n");
@@ -1336,15 +1383,26 @@ static struct attribute *amd_brs_events_attrs[] = {
 	NULL,
 };
 
+static umode_t
+amd_brs_is_visible(struct kobject *kobj, struct attribute *attr, int i)
+{
+	return static_cpu_has(X86_FEATURE_BRS) && x86_pmu.lbr_nr ?
+	       attr->mode : 0;
+}
+
 static struct attribute_group group_events_amd_brs = {
 	.name       = "events",
 	.attrs      = amd_brs_events_attrs,
 	.is_visible = amd_brs_is_visible,
 };
 
+#endif	/* CONFIG_PERF_EVENTS_AMD_BRS */
+
 static const struct attribute_group *amd_attr_update[] = {
-	&group_caps_amd_brs,
+	&group_caps_amd_branches,
+#ifdef CONFIG_PERF_EVENTS_AMD_BRS
 	&group_events_amd_brs,
+#endif
 	NULL,
 };
 
@@ -1367,7 +1425,7 @@ static int __init amd_core_pmu_init(void)
 	 */
 	x86_pmu.eventsel	= MSR_F15H_PERF_CTL;
 	x86_pmu.perfctr		= MSR_F15H_PERF_CTR;
-	x86_pmu.num_counters	= AMD64_NUM_COUNTERS_CORE;
+	x86_pmu.cntr_mask64	= GENMASK_ULL(AMD64_NUM_COUNTERS_CORE - 1, 0);
 
 	/* Check for Performance Monitoring v2 support */
 	if (boot_cpu_has(X86_FEATURE_PERFMON_V2)) {
@@ -1377,9 +1435,11 @@ static int __init amd_core_pmu_init(void)
 		x86_pmu.version = 2;
 
 		/* Find the number of available Core PMCs */
-		x86_pmu.num_counters = ebx.split.num_core_pmc;
+		x86_pmu.cntr_mask64 = GENMASK_ULL(ebx.split.num_core_pmc - 1, 0);
 
-		amd_pmu_global_cntr_mask = (1ULL << x86_pmu.num_counters) - 1;
+		amd_pmu_global_cntr_mask = x86_pmu.cntr_mask64;
+
+		x86_get_pmu(smp_processor_id())->capabilities |= PERF_PMU_CAP_MEDIATED_VPMU;
 
 		/* Update PMC handling functions */
 		x86_pmu.enable_all = amd_pmu_v2_enable_all;
@@ -1407,12 +1467,12 @@ static int __init amd_core_pmu_init(void)
 		 * even numbered counter that has a consecutive adjacent odd
 		 * numbered counter following it.
 		 */
-		for (i = 0; i < x86_pmu.num_counters - 1; i += 2)
-			even_ctr_mask |= 1 << i;
+		for (i = 0; i < x86_pmu_max_num_counters(NULL) - 1; i += 2)
+			even_ctr_mask |= BIT_ULL(i);
 
 		pair_constraint = (struct event_constraint)
 				    __EVENT_CONSTRAINT(0, even_ctr_mask, 0,
-				    x86_pmu.num_counters / 2, 0,
+				    x86_pmu_max_num_counters(NULL) / 2, 0,
 				    PERF_X86_EVENT_PAIR);
 
 		x86_pmu.get_event_constraints = amd_get_event_constraints_f17h;
@@ -1421,13 +1481,31 @@ static int __init amd_core_pmu_init(void)
 		x86_pmu.flags |= PMU_FL_PAIR;
 	}
 
-	/*
-	 * BRS requires special event constraints and flushing on ctxsw.
-	 */
-	if (boot_cpu_data.x86 >= 0x19 && !amd_brs_init()) {
+	/* LBR and BRS are mutually exclusive features */
+	if (!amd_pmu_lbr_init()) {
+		/* LBR requires flushing on context switch */
+		x86_pmu.sched_task = amd_pmu_lbr_sched_task;
+		static_call_update(amd_pmu_branch_hw_config, amd_pmu_lbr_hw_config);
+		static_call_update(amd_pmu_branch_reset, amd_pmu_lbr_reset);
+		static_call_update(amd_pmu_branch_add, amd_pmu_lbr_add);
+		static_call_update(amd_pmu_branch_del, amd_pmu_lbr_del);
+
+		/* Only support branch_stack snapshot on perfmon v2 */
+		if (x86_pmu.handle_irq == amd_pmu_v2_handle_irq)
+			static_call_update(perf_snapshot_branch_stack, amd_pmu_v2_snapshot_branch_stack);
+	} else if (!amd_brs_init()) {
+		/*
+		 * BRS requires special event constraints and flushing on ctxsw.
+		 */
 		x86_pmu.get_event_constraints = amd_get_event_constraints_f19h;
-		x86_pmu.sched_task = amd_pmu_sched_task;
+		x86_pmu.sched_task = amd_pmu_brs_sched_task;
 		x86_pmu.limit_period = amd_pmu_limit_period;
+
+		static_call_update(amd_pmu_branch_hw_config, amd_brs_hw_config);
+		static_call_update(amd_pmu_branch_reset, amd_brs_reset);
+		static_call_update(amd_pmu_branch_add, amd_pmu_brs_add);
+		static_call_update(amd_pmu_branch_del, amd_pmu_brs_del);
+
 		/*
 		 * put_event_constraints callback same as Fam17h, set above
 		 */
@@ -1499,7 +1577,7 @@ void amd_pmu_enable_virt(void)
 	/* Reload all events */
 	amd_pmu_reload_virt();
 }
-EXPORT_SYMBOL_GPL(amd_pmu_enable_virt);
+EXPORT_SYMBOL_FOR_KVM(amd_pmu_enable_virt);
 
 void amd_pmu_disable_virt(void)
 {
@@ -1516,4 +1594,4 @@ void amd_pmu_disable_virt(void)
 	/* Reload all events */
 	amd_pmu_reload_virt();
 }
-EXPORT_SYMBOL_GPL(amd_pmu_disable_virt);
+EXPORT_SYMBOL_FOR_KVM(amd_pmu_disable_virt);

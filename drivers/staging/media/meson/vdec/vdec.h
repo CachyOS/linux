@@ -101,7 +101,6 @@ struct amvdec_core {
  * @conf_esparser: mandatory call to let the vdec configure the ESPARSER
  * @vififo_level: mandatory call to get the current amount of data
  *		  in the VIFIFO
- * @use_offsets: mandatory call. Returns 1 if the VDEC supports vififo offsets
  */
 struct amvdec_ops {
 	int (*start)(struct amvdec_session *sess);
@@ -282,6 +281,11 @@ struct amvdec_session {
 	enum amvdec_status status;
 	void *priv;
 };
+
+static inline struct amvdec_session *file_to_amvdec_session(struct file *filp)
+{
+	return container_of(file_to_v4l2_fh(filp), struct amvdec_session, fh);
+}
 
 u32 amvdec_get_output_size(struct amvdec_session *sess);
 

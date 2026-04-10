@@ -35,47 +35,63 @@
  */
 static int amdgpu_vm_sdma_map_table(struct amdgpu_bo_vm *table)
 {
+	return amdgpu_ttm_alloc_gart(&table->bo.tbo);
+}
+
+/* Allocate a new job for @count PTE updates */
+static int amdgpu_vm_sdma_alloc_job(struct amdgpu_vm_update_params *p,
+				    unsigned int count, u64 k_job_id)
+{
+	enum amdgpu_ib_pool_type pool = p->immediate ? AMDGPU_IB_POOL_IMMEDIATE
+		: AMDGPU_IB_POOL_DELAYED;
+	struct drm_sched_entity *entity = p->immediate ? &p->vm->immediate
+		: &p->vm->delayed;
+	unsigned int ndw;
 	int r;
 
-	r = amdgpu_ttm_alloc_gart(&table->bo.tbo);
+	/* estimate how many dw we need */
+	ndw = AMDGPU_VM_SDMA_MIN_NUM_DW;
+	if (p->pages_addr)
+		ndw += count * 2;
+	ndw = min(ndw, AMDGPU_VM_SDMA_MAX_NUM_DW);
+
+	r = amdgpu_job_alloc_with_ib(p->adev, entity, AMDGPU_FENCE_OWNER_VM,
+				     ndw * 4, pool, &p->job, k_job_id);
 	if (r)
 		return r;
 
-	if (table->shadow)
-		r = amdgpu_ttm_alloc_gart(&table->shadow->tbo);
-
-	return r;
+	p->num_dw_left = ndw;
+	return 0;
 }
 
 /**
  * amdgpu_vm_sdma_prepare - prepare SDMA command submission
  *
  * @p: see amdgpu_vm_update_params definition
- * @resv: reservation object with embedded fence
- * @sync_mode: synchronization mode
+ * @sync: amdgpu_sync object with fences to wait for
+ * @k_job_id: identifier of the job, for tracing purpose
  *
  * Returns:
  * Negativ errno, 0 for success.
  */
 static int amdgpu_vm_sdma_prepare(struct amdgpu_vm_update_params *p,
-				  struct dma_resv *resv,
-				  enum amdgpu_sync_mode sync_mode)
+				  struct amdgpu_sync *sync, u64 k_job_id)
 {
-	enum amdgpu_ib_pool_type pool = p->immediate ? AMDGPU_IB_POOL_IMMEDIATE
-		: AMDGPU_IB_POOL_DELAYED;
-	unsigned int ndw = AMDGPU_VM_SDMA_MIN_NUM_DW;
 	int r;
 
-	r = amdgpu_job_alloc_with_ib(p->adev, ndw * 4, pool, &p->job);
+	r = amdgpu_vm_sdma_alloc_job(p, 0, k_job_id);
 	if (r)
 		return r;
 
-	p->num_dw_left = ndw;
-
-	if (!resv)
+	if (!sync)
 		return 0;
 
-	return amdgpu_sync_resv(p->adev, &p->job->sync, resv, sync_mode, p->vm);
+	r = amdgpu_sync_push_to_job(sync, p->job);
+	if (r) {
+		p->num_dw_left = 0;
+		amdgpu_job_free(p->job);
+	}
+	return r;
 }
 
 /**
@@ -91,20 +107,20 @@ static int amdgpu_vm_sdma_commit(struct amdgpu_vm_update_params *p,
 				 struct dma_fence **fence)
 {
 	struct amdgpu_ib *ib = p->job->ibs;
-	struct drm_sched_entity *entity;
 	struct amdgpu_ring *ring;
 	struct dma_fence *f;
-	int r;
 
-	entity = p->immediate ? &p->vm->immediate : &p->vm->delayed;
-	ring = container_of(entity->rq->sched, struct amdgpu_ring, sched);
+	ring = container_of(p->vm->delayed.rq->sched, struct amdgpu_ring,
+			    sched);
 
 	WARN_ON(ib->length_dw == 0);
 	amdgpu_ring_pad_ib(ring, ib);
+
+	if (p->needs_flush)
+		atomic64_inc(&p->vm->tlb_seq);
+
 	WARN_ON(ib->length_dw > p->num_dw_left);
-	r = amdgpu_job_submit(p->job, entity, AMDGPU_FENCE_OWNER_VM, &f);
-	if (r)
-		goto error;
+	f = amdgpu_job_submit(p->job);
 
 	if (p->unlocked) {
 		struct dma_fence *tmp = dma_fence_get(f);
@@ -112,17 +128,21 @@ static int amdgpu_vm_sdma_commit(struct amdgpu_vm_update_params *p,
 		swap(p->vm->last_unlocked, tmp);
 		dma_fence_put(tmp);
 	} else {
-		amdgpu_bo_fence(p->vm->root.bo, f, true);
+		dma_resv_add_fence(p->vm->root.bo->tbo.base.resv, f,
+				   DMA_RESV_USAGE_BOOKKEEP);
 	}
 
-	if (fence && !p->immediate)
+	if (fence && !p->immediate) {
+		/*
+		 * Most hw generations now have a separate queue for page table
+		 * updates, but when the queue is shared with userspace we need
+		 * the extra CPU round trip to correctly flush the TLB.
+		 */
+		set_bit(DRM_SCHED_FENCE_DONT_PIPELINE, &f->flags);
 		swap(*fence, f);
+	}
 	dma_fence_put(f);
 	return 0;
-
-error:
-	amdgpu_job_free(p->job);
-	return r;
 }
 
 /**
@@ -144,7 +164,7 @@ static void amdgpu_vm_sdma_copy_ptes(struct amdgpu_vm_update_params *p,
 
 	src += p->num_dw_left * 4;
 
-	pe += amdgpu_gmc_sign_extend(amdgpu_bo_gpu_offset_no_check(bo));
+	pe += amdgpu_bo_gpu_offset_no_check(bo);
 	trace_amdgpu_vm_copy_ptes(pe, src, count, p->immediate);
 
 	amdgpu_vm_copy_pte(p->adev, ib, pe, src, count);
@@ -171,7 +191,7 @@ static void amdgpu_vm_sdma_set_ptes(struct amdgpu_vm_update_params *p,
 {
 	struct amdgpu_ib *ib = p->job->ibs;
 
-	pe += amdgpu_gmc_sign_extend(amdgpu_bo_gpu_offset_no_check(bo));
+	pe += amdgpu_bo_gpu_offset_no_check(bo);
 	trace_amdgpu_vm_set_ptes(pe, addr, count, incr, flags, p->immediate);
 	if (count < 3) {
 		amdgpu_vm_write_pte(p->adev, ib, pe, addr | flags,
@@ -202,8 +222,6 @@ static int amdgpu_vm_sdma_update(struct amdgpu_vm_update_params *p,
 				 uint64_t flags)
 {
 	struct amdgpu_bo *bo = &vmbo->bo;
-	enum amdgpu_ib_pool_type pool = p->immediate ? AMDGPU_IB_POOL_IMMEDIATE
-		: AMDGPU_IB_POOL_DELAYED;
 	struct dma_resv_iter cursor;
 	unsigned int i, ndw, nptes;
 	struct dma_fence *fence;
@@ -211,12 +229,17 @@ static int amdgpu_vm_sdma_update(struct amdgpu_vm_update_params *p,
 	int r;
 
 	/* Wait for PD/PT moves to be completed */
-	dma_resv_for_each_fence(&cursor, bo->tbo.base.resv,
-				DMA_RESV_USAGE_KERNEL, fence) {
-		r = amdgpu_sync_fence(&p->job->sync, fence);
-		if (r)
+	dma_resv_iter_begin(&cursor, bo->tbo.base.resv, DMA_RESV_USAGE_KERNEL);
+	dma_resv_for_each_fence_unlocked(&cursor, fence) {
+		dma_fence_get(fence);
+		r = drm_sched_job_add_dependency(&p->job->base, fence);
+		if (r) {
+			dma_fence_put(fence);
+			dma_resv_iter_end(&cursor);
 			return r;
+		}
 	}
+	dma_resv_iter_end(&cursor);
 
 	do {
 		ndw = p->num_dw_left;
@@ -227,34 +250,21 @@ static int amdgpu_vm_sdma_update(struct amdgpu_vm_update_params *p,
 			if (r)
 				return r;
 
-			/* estimate how many dw we need */
-			ndw = 32;
-			if (p->pages_addr)
-				ndw += count * 2;
-			ndw = max(ndw, AMDGPU_VM_SDMA_MIN_NUM_DW);
-			ndw = min(ndw, AMDGPU_VM_SDMA_MAX_NUM_DW);
-
-			r = amdgpu_job_alloc_with_ib(p->adev, ndw * 4, pool,
-						     &p->job);
+			r = amdgpu_vm_sdma_alloc_job(p, count,
+						     AMDGPU_KERNEL_JOB_ID_VM_UPDATE);
 			if (r)
 				return r;
-
-			p->num_dw_left = ndw;
 		}
 
 		if (!p->pages_addr) {
 			/* set page commands needed */
-			if (vmbo->shadow)
-				amdgpu_vm_sdma_set_ptes(p, vmbo->shadow, pe, addr,
-							count, incr, flags);
 			amdgpu_vm_sdma_set_ptes(p, bo, pe, addr, count,
 						incr, flags);
 			return 0;
 		}
 
 		/* copy commands needed */
-		ndw -= p->adev->vm_manager.vm_pte_funcs->copy_pte_num_dw *
-			(vmbo->shadow ? 2 : 1);
+		ndw -= p->adev->vm_manager.vm_pte_funcs->copy_pte_num_dw;
 
 		/* for padding */
 		ndw -= 7;
@@ -269,8 +279,6 @@ static int amdgpu_vm_sdma_update(struct amdgpu_vm_update_params *p,
 			pte[i] |= flags;
 		}
 
-		if (vmbo->shadow)
-			amdgpu_vm_sdma_copy_ptes(p, vmbo->shadow, pe, nptes);
 		amdgpu_vm_sdma_copy_ptes(p, bo, pe, nptes);
 
 		pe += nptes * 8;

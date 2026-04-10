@@ -47,7 +47,7 @@
 int usbtv_set_regs(struct usbtv *usbtv, const u16 regs[][2], int size)
 {
 	int ret;
-	int pipe = usb_rcvctrlpipe(usbtv->udev, 0);
+	int pipe = usb_sndctrlpipe(usbtv->udev, 0);
 	int i;
 
 	for (i = 0; i < size; i++) {
@@ -87,7 +87,7 @@ static int usbtv_probe(struct usb_interface *intf,
 	size = size * usb_endpoint_maxp_mult(&ep->desc);
 
 	/* Device structure */
-	usbtv = kzalloc(sizeof(struct usbtv), GFP_KERNEL);
+	usbtv = kzalloc_obj(struct usbtv);
 	if (usbtv == NULL)
 		return -ENOMEM;
 	usbtv->dev = dev;

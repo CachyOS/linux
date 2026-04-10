@@ -226,8 +226,8 @@ enum dp_alt_mode {
 
 struct graphics_object_id {
 	uint32_t  id:8;
-	uint32_t  enum_id:4;
-	uint32_t  type:4;
+	enum object_enum_id  enum_id :4;
+	enum object_type  type :4;
 	uint32_t  reserved:16; /* for padding. total size should be u32 */
 };
 
@@ -309,5 +309,12 @@ static inline bool dal_graphics_object_id_equal(
 		return true;
 	}
 	return false;
+}
+
+static inline bool dc_connector_supports_analog(const enum connector_id conn)
+{
+	return conn == CONNECTOR_ID_VGA ||
+		conn == CONNECTOR_ID_SINGLE_LINK_DVII ||
+		conn == CONNECTOR_ID_DUAL_LINK_DVII;
 }
 #endif

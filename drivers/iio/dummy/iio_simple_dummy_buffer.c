@@ -31,6 +31,11 @@ static const s16 fakedata[] = {
 	[DUMMY_INDEX_ACCELX] = 344,
 };
 
+struct dummy_scan {
+	s16 data[ARRAY_SIZE(fakedata)];
+	aligned_s64 timestamp;
+};
+
 /**
  * iio_simple_dummy_trigger_h() - the trigger handler function
  * @irq: the interrupt number
@@ -45,11 +50,18 @@ static irqreturn_t iio_simple_dummy_trigger_h(int irq, void *p)
 {
 	struct iio_poll_func *pf = p;
 	struct iio_dev *indio_dev = pf->indio_dev;
+	struct dummy_scan *scan;
 	int i = 0, j;
-	u16 *data;
 
-	data = kmalloc(indio_dev->scan_bytes, GFP_KERNEL);
-	if (!data)
+	/*
+	 * Note that some buses such as SPI require DMA safe buffers which
+	 * cannot be on the stack. Two easy ways to do this:
+	 *  - Local kzalloc (as done here)
+	 *  - A buffer at the end of the structure accessed via iio_priv()
+	 *    that is marked __aligned(IIO_DMA_MINALIGN).
+	 */
+	scan = kzalloc_obj(*scan);
+	if (!scan)
 		goto done;
 
 	/*
@@ -68,14 +80,13 @@ static irqreturn_t iio_simple_dummy_trigger_h(int irq, void *p)
 	 * Here let's pretend we have random access. And the values are in the
 	 * constant table fakedata.
 	 */
-	for_each_set_bit(j, indio_dev->active_scan_mask, indio_dev->masklength)
-		data[i++] = fakedata[j];
+	iio_for_each_active_channel(indio_dev, j)
+		scan->data[i++] = fakedata[j];
 
-	iio_push_to_buffers_with_timestamp(indio_dev, data,
-					   iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_ts(indio_dev, scan, sizeof(*scan),
+				    iio_get_time_ns(indio_dev));
 
-	kfree(data);
-
+	kfree(scan);
 done:
 	/*
 	 * Tell the core we are done with this trigger and ready for the

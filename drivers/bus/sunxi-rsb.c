@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * RSB (Reduced Serial Bus) driver.
  *
  * Author: Chen-Yu Tsai <wens@csie.org>
- *
- * This file is licensed under the terms of the GNU General Public License
- * version 2.  This program is licensed "as is" without any warranty of any
- * kind, whether express or implied.
  *
  * The RSB controller looks like an SMBus controller which only supports
  * byte and word data transfers. But, it differs from standard SMBus
@@ -31,7 +28,6 @@
  * This document is officially released by Allwinner.
  *
  * This driver is based on i2c-sun6i-p2wi.c, the P2WI bus driver.
- *
  */
 
 #include <linux/clk.h>
@@ -43,7 +39,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
-#include <linux/of_platform.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
@@ -132,9 +128,9 @@ struct sunxi_rsb {
 };
 
 /* bus / slave device related functions */
-static struct bus_type sunxi_rsb_bus;
+static const struct bus_type sunxi_rsb_bus;
 
-static int sunxi_rsb_device_match(struct device *dev, struct device_driver *drv)
+static int sunxi_rsb_device_match(struct device *dev, const struct device_driver *drv)
 {
 	return of_driver_match_device(dev, drv);
 }
@@ -176,12 +172,17 @@ static void sunxi_rsb_device_remove(struct device *dev)
 	drv->remove(to_sunxi_rsb_device(dev));
 }
 
-static struct bus_type sunxi_rsb_bus = {
+static int sunxi_rsb_device_modalias(const struct device *dev, struct kobj_uevent_env *env)
+{
+	return of_device_uevent_modalias(dev, env);
+}
+
+static const struct bus_type sunxi_rsb_bus = {
 	.name		= RSB_CTRL_NAME,
 	.match		= sunxi_rsb_device_match,
 	.probe		= sunxi_rsb_device_probe,
 	.remove		= sunxi_rsb_device_remove,
-	.uevent		= of_device_uevent_modalias,
+	.uevent		= sunxi_rsb_device_modalias,
 };
 
 static void sunxi_rsb_dev_release(struct device *dev)
@@ -204,7 +205,7 @@ static struct sunxi_rsb_device *sunxi_rsb_device_create(struct sunxi_rsb *rsb,
 	int err;
 	struct sunxi_rsb_device *rdev;
 
-	rdev = kzalloc(sizeof(*rdev), GFP_KERNEL);
+	rdev = kzalloc_obj(*rdev);
 	if (!rdev)
 		return ERR_PTR(-ENOMEM);
 
@@ -271,6 +272,9 @@ EXPORT_SYMBOL_GPL(sunxi_rsb_driver_register);
 /* common code that starts a transfer */
 static int _sunxi_rsb_run_xfer(struct sunxi_rsb *rsb)
 {
+	u32 int_mask, status;
+	bool timeout;
+
 	if (readl(rsb->regs + RSB_CTRL) & RSB_CTRL_START_TRANS) {
 		dev_dbg(rsb->dev, "RSB transfer still in progress\n");
 		return -EBUSY;
@@ -278,13 +282,23 @@ static int _sunxi_rsb_run_xfer(struct sunxi_rsb *rsb)
 
 	reinit_completion(&rsb->complete);
 
-	writel(RSB_INTS_LOAD_BSY | RSB_INTS_TRANS_ERR | RSB_INTS_TRANS_OVER,
-	       rsb->regs + RSB_INTE);
+	int_mask = RSB_INTS_LOAD_BSY | RSB_INTS_TRANS_ERR | RSB_INTS_TRANS_OVER;
+	writel(int_mask, rsb->regs + RSB_INTE);
 	writel(RSB_CTRL_START_TRANS | RSB_CTRL_GLOBAL_INT_ENB,
 	       rsb->regs + RSB_CTRL);
 
-	if (!wait_for_completion_io_timeout(&rsb->complete,
-					    msecs_to_jiffies(100))) {
+	if (irqs_disabled()) {
+		timeout = readl_poll_timeout_atomic(rsb->regs + RSB_INTS,
+						    status, (status & int_mask),
+						    10, 100000);
+		writel(status, rsb->regs + RSB_INTS);
+	} else {
+		timeout = !wait_for_completion_io_timeout(&rsb->complete,
+							  msecs_to_jiffies(100));
+		status = rsb->status;
+	}
+
+	if (timeout) {
 		dev_dbg(rsb->dev, "RSB timeout\n");
 
 		/* abort the transfer */
@@ -296,18 +310,18 @@ static int _sunxi_rsb_run_xfer(struct sunxi_rsb *rsb)
 		return -ETIMEDOUT;
 	}
 
-	if (rsb->status & RSB_INTS_LOAD_BSY) {
+	if (status & RSB_INTS_LOAD_BSY) {
 		dev_dbg(rsb->dev, "RSB busy\n");
 		return -EBUSY;
 	}
 
-	if (rsb->status & RSB_INTS_TRANS_ERR) {
-		if (rsb->status & RSB_INTS_TRANS_ERR_ACK) {
+	if (status & RSB_INTS_TRANS_ERR) {
+		if (status & RSB_INTS_TRANS_ERR_ACK) {
 			dev_dbg(rsb->dev, "RSB slave nack\n");
 			return -EINVAL;
 		}
 
-		if (rsb->status & RSB_INTS_TRANS_ERR_DATA) {
+		if (status & RSB_INTS_TRANS_ERR_DATA) {
 			dev_dbg(rsb->dev, "RSB transfer data error\n");
 			return -EIO;
 		}
@@ -359,7 +373,6 @@ static int sunxi_rsb_read(struct sunxi_rsb *rsb, u8 rtaddr, u8 addr,
 unlock:
 	mutex_unlock(&rsb->lock);
 
-	pm_runtime_mark_last_busy(rsb->dev);
 	pm_runtime_put_autosuspend(rsb->dev);
 
 	return ret;
@@ -403,7 +416,6 @@ static int sunxi_rsb_write(struct sunxi_rsb *rsb, u8 rtaddr, u8 addr,
 
 	mutex_unlock(&rsb->lock);
 
-	pm_runtime_mark_last_busy(rsb->dev);
 	pm_runtime_put_autosuspend(rsb->dev);
 
 	return ret;
@@ -443,7 +455,7 @@ static void regmap_sunxi_rsb_free_ctx(void *context)
 	kfree(ctx);
 }
 
-static struct regmap_bus regmap_sunxi_rsb = {
+static const struct regmap_bus regmap_sunxi_rsb = {
 	.reg_write = regmap_sunxi_rsb_reg_write,
 	.reg_read = regmap_sunxi_rsb_reg_read,
 	.free_context = regmap_sunxi_rsb_free_ctx,
@@ -465,7 +477,7 @@ static struct sunxi_rsb_ctx *regmap_sunxi_rsb_init_ctx(struct sunxi_rsb_device *
 		return ERR_PTR(-EINVAL);
 	}
 
-	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+	ctx = kzalloc_obj(*ctx);
 	if (!ctx)
 		return ERR_PTR(-ENOMEM);
 
@@ -732,18 +744,15 @@ static int sunxi_rsb_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct device_node *np = dev->of_node;
-	struct resource *r;
 	struct sunxi_rsb *rsb;
 	u32 clk_freq = 3000000;
 	int irq, ret;
 
 	of_property_read_u32(np, "clock-frequency", &clk_freq);
-	if (clk_freq > RSB_MAX_FREQ) {
-		dev_err(dev,
-			"clock-frequency (%u Hz) is too high (max = 20MHz)\n",
-			clk_freq);
-		return -EINVAL;
-	}
+	if (clk_freq > RSB_MAX_FREQ)
+		return dev_err_probe(dev, -EINVAL,
+				     "clock-frequency (%u Hz) is too high (max = 20MHz)\n",
+				     clk_freq);
 
 	rsb = devm_kzalloc(dev, sizeof(*rsb), GFP_KERNEL);
 	if (!rsb)
@@ -752,8 +761,7 @@ static int sunxi_rsb_probe(struct platform_device *pdev)
 	rsb->dev = dev;
 	rsb->clk_freq = clk_freq;
 	platform_set_drvdata(pdev, rsb);
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	rsb->regs = devm_ioremap_resource(dev, r);
+	rsb->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(rsb->regs))
 		return PTR_ERR(rsb->regs);
 
@@ -762,28 +770,22 @@ static int sunxi_rsb_probe(struct platform_device *pdev)
 		return irq;
 
 	rsb->clk = devm_clk_get(dev, NULL);
-	if (IS_ERR(rsb->clk)) {
-		ret = PTR_ERR(rsb->clk);
-		dev_err(dev, "failed to retrieve clk: %d\n", ret);
-		return ret;
-	}
+	if (IS_ERR(rsb->clk))
+		return dev_err_probe(dev, PTR_ERR(rsb->clk),
+				     "failed to retrieve clk\n");
 
 	rsb->rstc = devm_reset_control_get(dev, NULL);
-	if (IS_ERR(rsb->rstc)) {
-		ret = PTR_ERR(rsb->rstc);
-		dev_err(dev, "failed to retrieve reset controller: %d\n", ret);
-		return ret;
-	}
+	if (IS_ERR(rsb->rstc))
+		return dev_err_probe(dev, PTR_ERR(rsb->rstc),
+				     "failed to retrieve reset controller\n");
 
 	init_completion(&rsb->complete);
 	mutex_init(&rsb->lock);
 
 	ret = devm_request_irq(dev, irq, sunxi_rsb_irq, 0, RSB_CTRL_NAME, rsb);
-	if (ret) {
-		dev_err(dev, "can't register interrupt handler irq %d: %d\n",
-			irq, ret);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "can't register interrupt handler irq %d\n", irq);
 
 	ret = sunxi_rsb_hw_init(rsb);
 	if (ret)
@@ -805,21 +807,11 @@ static int sunxi_rsb_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int sunxi_rsb_remove(struct platform_device *pdev)
+static void sunxi_rsb_remove(struct platform_device *pdev)
 {
 	struct sunxi_rsb *rsb = platform_get_drvdata(pdev);
 
 	device_for_each_child(rsb->dev, NULL, sunxi_rsb_remove_devices);
-	pm_runtime_disable(&pdev->dev);
-	sunxi_rsb_hw_exit(rsb);
-
-	return 0;
-}
-
-static void sunxi_rsb_shutdown(struct platform_device *pdev)
-{
-	struct sunxi_rsb *rsb = platform_get_drvdata(pdev);
-
 	pm_runtime_disable(&pdev->dev);
 	sunxi_rsb_hw_exit(rsb);
 }
@@ -838,8 +830,7 @@ MODULE_DEVICE_TABLE(of, sunxi_rsb_of_match_table);
 
 static struct platform_driver sunxi_rsb_driver = {
 	.probe = sunxi_rsb_probe,
-	.remove	= sunxi_rsb_remove,
-	.shutdown = sunxi_rsb_shutdown,
+	.remove = sunxi_rsb_remove,
 	.driver	= {
 		.name = RSB_CTRL_NAME,
 		.of_match_table = sunxi_rsb_of_match_table,
@@ -857,7 +848,13 @@ static int __init sunxi_rsb_init(void)
 		return ret;
 	}
 
-	return platform_driver_register(&sunxi_rsb_driver);
+	ret = platform_driver_register(&sunxi_rsb_driver);
+	if (ret) {
+		bus_unregister(&sunxi_rsb_bus);
+		return ret;
+	}
+
+	return 0;
 }
 module_init(sunxi_rsb_init);
 

@@ -6,7 +6,10 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
+
+#include <linux/compiler.h>
 
 #include "test_signals.h"
 
@@ -15,6 +18,44 @@ int test_setup(struct tdescr *td);
 void test_cleanup(struct tdescr *td);
 int test_run(struct tdescr *td);
 void test_result(struct tdescr *td);
+
+#ifndef __NR_prctl
+#define __NR_prctl 167
+#endif
+
+/*
+ * The prctl takes 1 argument but we need to ensure that the other
+ * values passed in registers to the syscall are zero since the kernel
+ * validates them.
+ */
+#define gcs_set_state(state)					\
+	({								\
+		register long _num  __asm__ ("x8") = __NR_prctl;	\
+		register long _arg1 __asm__ ("x0") =  PR_SET_SHADOW_STACK_STATUS; \
+		register long _arg2 __asm__ ("x1") = (long)(state);	\
+		register long _arg3 __asm__ ("x2") = 0;			\
+		register long _arg4 __asm__ ("x3") = 0;			\
+		register long _arg5 __asm__ ("x4") = 0;			\
+	                                                                      \
+		__asm__  volatile (					\
+			"svc #0\n"					\
+			: "=r"(_arg1)					\
+			: "r"(_arg1), "r"(_arg2),			\
+			  "r"(_arg3), "r"(_arg4),			\
+			  "r"(_arg5), "r"(_num)				\
+			: "memory", "cc"				\
+			);						\
+		_arg1;							\
+	})
+
+static inline __attribute__((always_inline)) uint64_t get_gcspr_el0(void)
+{
+	uint64_t val;
+
+	asm volatile("mrs %0, S3_3_C2_C5_1" : "=r" (val));
+
+	return val;
+}
 
 static inline bool feats_ok(struct tdescr *td)
 {
@@ -56,16 +97,29 @@ static inline bool feats_ok(struct tdescr *td)
  * at sizeof(ucontext_t).
  */
 static __always_inline bool get_current_context(struct tdescr *td,
-						ucontext_t *dest_uc)
+						ucontext_t *dest_uc,
+						size_t dest_sz)
 {
 	static volatile bool seen_already;
+	int i;
+	char *uc = (char *)dest_uc;
 
 	assert(td && dest_uc);
 	/* it's a genuine invocation..reinit */
 	seen_already = 0;
 	td->live_uc_valid = 0;
-	td->live_sz = sizeof(*dest_uc);
-	memset(dest_uc, 0x00, td->live_sz);
+	td->live_sz = dest_sz;
+
+	/*
+	 * This is a memset() but we don't want the compiler to
+	 * optimise it into either instructions or a library call
+	 * which might be incompatible with streaming mode.
+	 */
+	for (i = 0; i < td->live_sz; i++) {
+		uc[i] = 0;
+		OPTIMIZER_HIDE_VAR(uc[0]);
+	}
+
 	td->live_uc = dest_uc;
 	/*
 	 * Grab ucontext_t triggering a SIGTRAP.
@@ -101,6 +155,17 @@ static __always_inline bool get_current_context(struct tdescr *td,
 		      : "+m" (*dest_uc)
 		      :
 		      : "memory");
+
+	/*
+	 * If we were grabbing a streaming mode context then we may
+	 * have entered streaming mode behind the system's back and
+	 * libc or compiler generated code might decide to do
+	 * something invalid in streaming mode, or potentially even
+	 * the state of ZA.  Issue a SMSTOP to exit both now we have
+	 * grabbed the state.
+	 */
+	if (td->feats_supported & FEAT_SME)
+		asm volatile("msr S0_3_C4_C6_3, xzr");
 
 	/*
 	 * If we get here with seen_already==1 it implies the td->live_uc

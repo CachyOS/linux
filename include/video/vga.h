@@ -2,15 +2,15 @@
  * linux/include/video/vga.h -- standard VGA chipset interaction
  *
  * Copyright 1999 Jeff Garzik <jgarzik@pobox.com>
- * 
+ *
  * Copyright history from vga16fb.c:
  *	Copyright 1999 Ben Pfaff and Petr Vandrovec
- *	Based on VGA info at http://www.osdever.net/FreeVGA/home.htm 
+ *	Based on VGA info at http://www.osdever.net/FreeVGA/home.htm
  *	Based on VESA framebuffer (c) 1998 Gerd Knorr
  *
  * This file is subject to the terms and conditions of the GNU General
  * Public License.  See the file COPYING in the main directory of this
- * archive for more details.  
+ * archive for more details.
  *
  */
 
@@ -22,6 +22,8 @@
 #include <asm/vga.h>
 #include <asm/byteorder.h>
 
+#define VGA_FB_PHYS_BASE	0xA0000 /* VGA framebuffer I/O base */
+#define VGA_FB_PHYS_SIZE	65536	/* VGA framebuffer I/O size */
 
 /* Some of the code below is taken from SVGAlib.  The original,
    unmodified copyright notice for that code is below. */
@@ -190,30 +192,10 @@ struct vgastate {
 	__u32 num_gfx;		/* number of gfx registers, 0 for default  */
 	__u32 num_seq;		/* number of seq registers, 0 for default  */
 	void *vidstate;
-};	
+};
 
 extern int save_vga(struct vgastate *state);
 extern int restore_vga(struct vgastate *state);
-
-/*
- * generic VGA port read/write
- */
- 
-static inline unsigned char vga_io_r (unsigned short port)
-{
-	return inb_p(port);
-}
-
-static inline void vga_io_w (unsigned short port, unsigned char val)
-{
-	outb_p(val, port);
-}
-
-static inline void vga_io_w_fast (unsigned short port, unsigned char reg,
-				  unsigned char val)
-{
-	outw(VGA_OUT16VAL (val, reg), port);
-}
 
 static inline unsigned char vga_mm_r (void __iomem *regbase, unsigned short port)
 {
@@ -229,6 +211,27 @@ static inline void vga_mm_w_fast (void __iomem *regbase, unsigned short port,
 				  unsigned char reg, unsigned char val)
 {
 	writew (VGA_OUT16VAL (val, reg), regbase + port);
+}
+
+/*
+ * generic VGA port read/write
+ */
+#ifdef CONFIG_HAS_IOPORT
+
+static inline unsigned char vga_io_r (unsigned short port)
+{
+	return inb_p(port);
+}
+
+static inline void vga_io_w (unsigned short port, unsigned char val)
+{
+	outb_p(val, port);
+}
+
+static inline void vga_io_w_fast (unsigned short port, unsigned char reg,
+				  unsigned char val)
+{
+	outw(VGA_OUT16VAL (val, reg), port);
 }
 
 static inline unsigned char vga_r (void __iomem *regbase, unsigned short port)
@@ -256,12 +259,29 @@ static inline void vga_w_fast (void __iomem *regbase, unsigned short port,
 	else
 		vga_io_w_fast (port, reg, val);
 }
+#else /* CONFIG_HAS_IOPORT */
+static inline unsigned char vga_r (void __iomem *regbase, unsigned short port)
+{
+	return vga_mm_r (regbase, port);
+}
 
+static inline void vga_w (void __iomem *regbase, unsigned short port, unsigned char val)
+{
+	vga_mm_w (regbase, port, val);
+}
+
+
+static inline void vga_w_fast (void __iomem *regbase, unsigned short port,
+			       unsigned char reg, unsigned char val)
+{
+	vga_mm_w_fast (regbase, port, reg, val);
+}
+#endif /* CONFIG_HAS_IOPORT */
 
 /*
  * VGA CRTC register read/write
  */
- 
+
 static inline unsigned char vga_rcrt (void __iomem *regbase, unsigned char reg)
 {
         vga_w (regbase, VGA_CRT_IC, reg);
@@ -278,6 +298,7 @@ static inline void vga_wcrt (void __iomem *regbase, unsigned char reg, unsigned 
 #endif /* VGA_OUTW_WRITE */
 }
 
+#ifdef CONFIG_HAS_IOPORT
 static inline unsigned char vga_io_rcrt (unsigned char reg)
 {
         vga_io_w (VGA_CRT_IC, reg);
@@ -293,6 +314,7 @@ static inline void vga_io_wcrt (unsigned char reg, unsigned char val)
         vga_io_w (VGA_CRT_DC, val);
 #endif /* VGA_OUTW_WRITE */
 }
+#endif /* CONFIG_HAS_IOPORT */
 
 static inline unsigned char vga_mm_rcrt (void __iomem *regbase, unsigned char reg)
 {
@@ -314,7 +336,7 @@ static inline void vga_mm_wcrt (void __iomem *regbase, unsigned char reg, unsign
 /*
  * VGA sequencer register read/write
  */
- 
+
 static inline unsigned char vga_rseq (void __iomem *regbase, unsigned char reg)
 {
         vga_w (regbase, VGA_SEQ_I, reg);
@@ -331,6 +353,7 @@ static inline void vga_wseq (void __iomem *regbase, unsigned char reg, unsigned 
 #endif /* VGA_OUTW_WRITE */
 }
 
+#ifdef CONFIG_HAS_IOPORT
 static inline unsigned char vga_io_rseq (unsigned char reg)
 {
         vga_io_w (VGA_SEQ_I, reg);
@@ -346,6 +369,7 @@ static inline void vga_io_wseq (unsigned char reg, unsigned char val)
         vga_io_w (VGA_SEQ_D, val);
 #endif /* VGA_OUTW_WRITE */
 }
+#endif /* CONFIG_HAS_IOPORT */
 
 static inline unsigned char vga_mm_rseq (void __iomem *regbase, unsigned char reg)
 {
@@ -366,7 +390,7 @@ static inline void vga_mm_wseq (void __iomem *regbase, unsigned char reg, unsign
 /*
  * VGA graphics controller register read/write
  */
- 
+
 static inline unsigned char vga_rgfx (void __iomem *regbase, unsigned char reg)
 {
         vga_w (regbase, VGA_GFX_I, reg);
@@ -383,6 +407,7 @@ static inline void vga_wgfx (void __iomem *regbase, unsigned char reg, unsigned 
 #endif /* VGA_OUTW_WRITE */
 }
 
+#ifdef CONFIG_HAS_IOPORT
 static inline unsigned char vga_io_rgfx (unsigned char reg)
 {
         vga_io_w (VGA_GFX_I, reg);
@@ -398,6 +423,7 @@ static inline void vga_io_wgfx (unsigned char reg, unsigned char val)
         vga_io_w (VGA_GFX_D, val);
 #endif /* VGA_OUTW_WRITE */
 }
+#endif /* CONFIG_HAS_IOPORT */
 
 static inline unsigned char vga_mm_rgfx (void __iomem *regbase, unsigned char reg)
 {
@@ -419,7 +445,7 @@ static inline void vga_mm_wgfx (void __iomem *regbase, unsigned char reg, unsign
 /*
  * VGA attribute controller register read/write
  */
- 
+
 static inline unsigned char vga_rattr (void __iomem *regbase, unsigned char reg)
 {
         vga_w (regbase, VGA_ATT_IW, reg);
@@ -432,6 +458,7 @@ static inline void vga_wattr (void __iomem *regbase, unsigned char reg, unsigned
         vga_w (regbase, VGA_ATT_W, val);
 }
 
+#ifdef CONFIG_HAS_IOPORT
 static inline unsigned char vga_io_rattr (unsigned char reg)
 {
         vga_io_w (VGA_ATT_IW, reg);
@@ -443,6 +470,7 @@ static inline void vga_io_wattr (unsigned char reg, unsigned char val)
         vga_io_w (VGA_ATT_IW, reg);
         vga_io_w (VGA_ATT_W, val);
 }
+#endif /* CONFIG_HAS_IOPORT */
 
 static inline unsigned char vga_mm_rattr (void __iomem *regbase, unsigned char reg)
 {

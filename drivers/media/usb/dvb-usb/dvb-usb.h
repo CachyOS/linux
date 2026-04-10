@@ -73,8 +73,8 @@ struct dvb_usb_device_description {
 	const char *name;
 
 #define DVB_USB_ID_MAX_NUM 15
-	struct usb_device_id *cold_ids[DVB_USB_ID_MAX_NUM];
-	struct usb_device_id *warm_ids[DVB_USB_ID_MAX_NUM];
+	const struct usb_device_id *cold_ids[DVB_USB_ID_MAX_NUM];
+	const struct usb_device_id *warm_ids[DVB_USB_ID_MAX_NUM];
 };
 
 static inline u8 rc5_custom(struct rc_map_table *key)
@@ -126,8 +126,6 @@ struct usb_data_stream_properties {
  * @caps: capabilities of the DVB USB device.
  * @pid_filter_count: number of PID filter position in the optional hardware
  *  PID-filter.
- * @num_frontends: number of frontends of the DVB USB adapter.
- * @frontend_ctrl: called to power on/off active frontend.
  * @streaming_ctrl: called to start and stop the MPEG2-TS streaming of the
  *  device (not URB submitting/killing).
  *  This callback will be called without data URBs being active - data URBs
@@ -311,7 +309,7 @@ struct dvb_usb_device_properties {
 		struct dvb_rc core;
 	} rc;
 
-	struct i2c_algorithm *i2c_algo;
+	const struct i2c_algorithm *i2c_algo;
 
 	int generic_bulk_ctrl_endpoint;
 	int generic_bulk_ctrl_endpoint_response;

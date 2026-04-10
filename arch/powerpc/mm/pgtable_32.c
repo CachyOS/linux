@@ -48,15 +48,10 @@ notrace void __init early_ioremap_init(void)
 	early_ioremap_setup();
 }
 
-static void __init *early_alloc_pgtable(unsigned long size)
+void __init *early_alloc_pgtable(unsigned long size)
 {
-	void *ptr = memblock_alloc(size, size);
+	return memblock_alloc_or_panic(size, size);
 
-	if (!ptr)
-		panic("%s: Failed to allocate %lu bytes align=0x%lx\n",
-		      __func__, size, size);
-
-	return ptr;
 }
 
 pte_t __init *early_pte_alloc_kernel(pmd_t *pmdp, unsigned long va)
@@ -109,7 +104,7 @@ static void __init __mapin_ram_chunk(unsigned long offset, unsigned long top)
 	p = memstart_addr + s;
 	for (; s < top; s += PAGE_SIZE) {
 		ktext = core_kernel_text(v);
-		map_kernel_page(v, p, ktext ? PAGE_KERNEL_TEXT : PAGE_KERNEL);
+		map_kernel_page(v, p, ktext ? PAGE_KERNEL_X : PAGE_KERNEL);
 		v += PAGE_SIZE;
 		p += PAGE_SIZE;
 	}
@@ -130,58 +125,58 @@ void __init mapin_ram(void)
 	}
 }
 
-void mark_initmem_nx(void)
+static int __mark_initmem_nx(void)
 {
 	unsigned long numpages = PFN_UP((unsigned long)_einittext) -
 				 PFN_DOWN((unsigned long)_sinittext);
+	int err;
 
-	if (v_block_mapped((unsigned long)_sinittext)) {
-		mmu_mark_initmem_nx();
-	} else {
-		set_memory_nx((unsigned long)_sinittext, numpages);
-		set_memory_rw((unsigned long)_sinittext, numpages);
+	err = mmu_mark_initmem_nx();
+
+	if (!v_block_mapped((unsigned long)_sinittext)) {
+		err = set_memory_nx((unsigned long)_sinittext, numpages);
+		if (err)
+			return err;
+		err = set_memory_rw((unsigned long)_sinittext, numpages);
 	}
+	return err;
+}
+
+void mark_initmem_nx(void)
+{
+	int err = __mark_initmem_nx();
+
+	if (err)
+		panic("%s() failed, err = %d\n", __func__, err);
 }
 
 #ifdef CONFIG_STRICT_KERNEL_RWX
-void mark_rodata_ro(void)
+static int __mark_rodata_ro(void)
 {
 	unsigned long numpages;
 
 	if (IS_ENABLED(CONFIG_STRICT_MODULE_RWX) && mmu_has_feature(MMU_FTR_HPTE_TABLE))
 		pr_warn("This platform has HASH MMU, STRICT_MODULE_RWX won't work\n");
 
-	if (v_block_mapped((unsigned long)_stext + 1)) {
-		mmu_mark_rodata_ro();
-		ptdump_check_wx();
-		return;
-	}
+	if (v_block_mapped((unsigned long)_stext + 1))
+		return mmu_mark_rodata_ro();
 
 	/*
-	 * mark .text and .rodata as read only. Use __init_begin rather than
-	 * __end_rodata to cover NOTES and EXCEPTION_TABLE.
+	 * mark text and rodata as read only. __end_rodata is set by
+	 * powerpc's linker script and includes tables and data
+	 * requiring relocation which are not put in RO_DATA.
 	 */
-	numpages = PFN_UP((unsigned long)__init_begin) -
+	numpages = PFN_UP((unsigned long)__end_rodata) -
 		   PFN_DOWN((unsigned long)_stext);
 
-	set_memory_ro((unsigned long)_stext, numpages);
+	return set_memory_ro((unsigned long)_stext, numpages);
+}
 
-	// mark_initmem_nx() should have already run by now
-	ptdump_check_wx();
+void mark_rodata_ro(void)
+{
+	int err = __mark_rodata_ro();
+
+	if (err)
+		panic("%s() failed, err = %d\n", __func__, err);
 }
 #endif
-
-#if defined(CONFIG_ARCH_SUPPORTS_DEBUG_PAGEALLOC) && defined(CONFIG_DEBUG_PAGEALLOC)
-void __kernel_map_pages(struct page *page, int numpages, int enable)
-{
-	unsigned long addr = (unsigned long)page_address(page);
-
-	if (PageHighMem(page))
-		return;
-
-	if (enable)
-		set_memory_p(addr, numpages);
-	else
-		set_memory_np(addr, numpages);
-}
-#endif /* CONFIG_DEBUG_PAGEALLOC */

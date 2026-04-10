@@ -91,7 +91,7 @@ __mtk_create_ept(struct mtk_rpmsg_rproc_subdev *mtk_subdev,
 	struct platform_device *pdev = mtk_subdev->pdev;
 	int ret;
 
-	mept = kzalloc(sizeof(*mept), GFP_KERNEL);
+	mept = kzalloc_obj(*mept);
 	if (!mept)
 		return NULL;
 	mept->mtk_subdev = mtk_subdev;
@@ -201,7 +201,7 @@ static int mtk_rpmsg_register_device(struct mtk_rpmsg_rproc_subdev *mtk_subdev,
 	struct mtk_rpmsg_device *mdev;
 	struct platform_device *pdev = mtk_subdev->pdev;
 
-	mdev = kzalloc(sizeof(*mdev), GFP_KERNEL);
+	mdev = kzalloc_obj(*mdev);
 	if (!mdev)
 		return -ENOMEM;
 
@@ -234,7 +234,9 @@ static void mtk_register_device_work_function(struct work_struct *register_work)
 		if (info->registered)
 			continue;
 
+		mutex_unlock(&subdev->channels_lock);
 		ret = mtk_rpmsg_register_device(subdev, &info->info);
+		mutex_lock(&subdev->channels_lock);
 		if (ret) {
 			dev_err(&pdev->dev, "Can't create rpmsg_device\n");
 			continue;
@@ -250,7 +252,7 @@ static int mtk_rpmsg_create_device(struct mtk_rpmsg_rproc_subdev *mtk_subdev,
 {
 	struct mtk_rpmsg_channel_info *info;
 
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	info = kzalloc_obj(*info);
 	if (!info)
 		return -ENOMEM;
 
@@ -378,7 +380,7 @@ mtk_rpmsg_create_rproc_subdev(struct platform_device *pdev,
 {
 	struct mtk_rpmsg_rproc_subdev *mtk_subdev;
 
-	mtk_subdev = kzalloc(sizeof(*mtk_subdev), GFP_KERNEL);
+	mtk_subdev = kzalloc_obj(*mtk_subdev);
 	if (!mtk_subdev)
 		return NULL;
 

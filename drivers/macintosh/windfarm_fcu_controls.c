@@ -363,7 +363,7 @@ static void wf_fcu_add_fan(struct wf_fcu_priv *pv, const char *name,
 {
 	struct wf_fcu_fan *fan;
 
-	fan = kzalloc(sizeof(*fan), GFP_KERNEL);
+	fan = kzalloc_obj(*fan);
 	if (!fan)
 		return;
 	fan->fcu_priv = pv;
@@ -514,12 +514,11 @@ static int wf_fcu_init_chip(struct wf_fcu_priv *pv)
 	return 0;
 }
 
-static int wf_fcu_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int wf_fcu_probe(struct i2c_client *client)
 {
 	struct wf_fcu_priv *pv;
 
-	pv = kzalloc(sizeof(*pv), GFP_KERNEL);
+	pv = kzalloc_obj(*pv);
 	if (!pv)
 		return -ENOMEM;
 
@@ -560,7 +559,7 @@ static int wf_fcu_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int wf_fcu_remove(struct i2c_client *client)
+static void wf_fcu_remove(struct i2c_client *client)
 {
 	struct wf_fcu_priv *pv = dev_get_drvdata(&client->dev);
 	struct wf_fcu_fan *fan;
@@ -571,11 +570,10 @@ static int wf_fcu_remove(struct i2c_client *client)
 		wf_unregister_control(&fan->ctrl);
 	}
 	kref_put(&pv->ref, wf_fcu_release);
-	return 0;
 }
 
 static const struct i2c_device_id wf_fcu_id[] = {
-	{ "MAC,fcu", 0 },
+	{ "MAC,fcu" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wf_fcu_id);

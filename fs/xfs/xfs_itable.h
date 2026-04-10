@@ -8,19 +8,20 @@
 /* In-memory representation of a userspace request for batch inode data. */
 struct xfs_ibulk {
 	struct xfs_mount	*mp;
-	struct user_namespace   *mnt_userns;
+	struct mnt_idmap	*idmap;
 	void __user		*ubuffer; /* user output buffer */
 	xfs_ino_t		startino; /* start with this inode */
 	unsigned int		icount;   /* number of elements in ubuffer */
 	unsigned int		ocount;   /* number of records returned */
-	unsigned int		flags;    /* see XFS_IBULK_FLAG_* */
+	unsigned int		flags;    /* XFS_IBULK_FLAG_* */
+	unsigned int		iwalk_flags; /* XFS_IWALK_FLAG_* */
 };
 
-/* Only iterate within the same AG as startino */
-#define XFS_IBULK_SAME_AG	(1U << 0)
-
 /* Fill out the bs_extents64 field if set. */
-#define XFS_IBULK_NREXT64	(1U << 1)
+#define XFS_IBULK_NREXT64	(1U << 0)
+
+/* Signal that we can return metadata directories. */
+#define XFS_IBULK_METADIR	(1U << 1)
 
 /*
  * Advance the user buffer pointer by one record of the given size.  If the

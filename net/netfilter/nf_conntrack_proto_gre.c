@@ -33,12 +33,14 @@
 #include <linux/skbuff.h>
 #include <linux/slab.h>
 #include <net/dst.h>
+#include <net/gre.h>
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
 #include <net/netfilter/nf_conntrack_l4proto.h>
 #include <net/netfilter/nf_conntrack_helper.h>
 #include <net/netfilter/nf_conntrack_core.h>
 #include <net/netfilter/nf_conntrack_timeout.h>
+#include <net/pptp.h>
 #include <linux/netfilter/nf_conntrack_proto_gre.h>
 #include <linux/netfilter/nf_conntrack_pptp.h>
 
@@ -106,7 +108,7 @@ int nf_ct_gre_keymap_add(struct nf_conn *ct, enum ip_conntrack_dir dir,
 		return -EEXIST;
 	}
 
-	km = kmalloc(sizeof(*km), GFP_ATOMIC);
+	km = kmalloc_obj(*km, GFP_ATOMIC);
 	if (!km)
 		return -ENOMEM;
 	memcpy(&km->tuple, t, sizeof(*t));
@@ -205,6 +207,8 @@ int nf_conntrack_gre_packet(struct nf_conn *ct,
 			    enum ip_conntrack_info ctinfo,
 			    const struct nf_hook_state *state)
 {
+	unsigned long status;
+
 	if (!nf_ct_is_confirmed(ct)) {
 		unsigned int *timeouts = nf_ct_timeout_lookup(ct);
 
@@ -217,11 +221,17 @@ int nf_conntrack_gre_packet(struct nf_conn *ct,
 		ct->proto.gre.timeout = timeouts[GRE_CT_UNREPLIED];
 	}
 
+	status = READ_ONCE(ct->status);
 	/* If we've seen traffic both ways, this is a GRE connection.
 	 * Extend timeout. */
-	if (ct->status & IPS_SEEN_REPLY) {
+	if (status & IPS_SEEN_REPLY) {
 		nf_ct_refresh_acct(ct, ctinfo, skb,
 				   ct->proto.gre.stream_timeout);
+
+		/* never set ASSURED for IPS_NAT_CLASH, they time out soon */
+		if (unlikely((status & IPS_NAT_CLASH)))
+			return NF_ACCEPT;
+
 		/* Also, more likely to be important, and not a probe. */
 		if (!test_and_set_bit(IPS_ASSURED_BIT, &ct->status))
 			nf_conntrack_event_cache(IPCT_ASSURED, ct);
@@ -296,6 +306,7 @@ void nf_conntrack_gre_init_net(struct net *net)
 /* protocol helper struct */
 const struct nf_conntrack_l4proto nf_conntrack_l4proto_gre = {
 	.l4proto	 = IPPROTO_GRE,
+	.allow_clash	 = true,
 #ifdef CONFIG_NF_CONNTRACK_PROCFS
 	.print_conntrack = gre_print_conntrack,
 #endif

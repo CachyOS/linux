@@ -23,7 +23,6 @@
 #include <linux/module.h>
 #include <linux/notifier.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/rculist.h>
@@ -301,25 +300,34 @@ static bool sh_dmae_channel_busy(struct shdma_chan *schan)
 	return dmae_is_busy(sh_chan);
 }
 
-static void sh_dmae_setup_xfer(struct shdma_chan *schan,
-			       int slave_id)
+static int sh_dmae_setup_xfer(struct shdma_chan *schan, int slave_id)
 {
 	struct sh_dmae_chan *sh_chan = container_of(schan, struct sh_dmae_chan,
 						    shdma_chan);
 
+	int ret = 0;
 	if (slave_id >= 0) {
 		const struct sh_dmae_slave_config *cfg =
 			sh_chan->config;
 
-		dmae_set_dmars(sh_chan, cfg->mid_rid);
-		dmae_set_chcr(sh_chan, cfg->chcr);
+		ret = dmae_set_dmars(sh_chan, cfg->mid_rid);
+		if (ret < 0)
+			goto END;
+
+		ret = dmae_set_chcr(sh_chan, cfg->chcr);
+		if (ret < 0)
+			goto END;
+
 	} else {
 		dmae_init(sh_chan);
 	}
+
+END:
+	return ret;
 }
 
 /*
- * Find a slave channel configuration from the contoller list by either a slave
+ * Find a slave channel configuration from the controller list by either a slave
  * ID in the non-DT case, or by a MID/RID value in the DT case
  */
 static const struct sh_dmae_slave_config *dmae_find_slave(
@@ -678,7 +686,7 @@ static int sh_dmae_probe(struct platform_device *pdev)
 	int err, errirq, i, irq_cnt = 0, irqres = 0, irq_cap = 0;
 	struct sh_dmae_device *shdev;
 	struct dma_device *dma_dev;
-	struct resource *chan, *dmars, *errirq_res, *chanirq_res;
+	struct resource *dmars, *errirq_res, *chanirq_res;
 
 	if (pdev->dev.of_node)
 		pdata = of_device_get_match_data(&pdev->dev);
@@ -689,7 +697,6 @@ static int sh_dmae_probe(struct platform_device *pdev)
 	if (!pdata || !pdata->channel_num)
 		return -ENODEV;
 
-	chan = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	/* DMARS area is optional */
 	dmars = platform_get_resource(pdev, IORESOURCE_MEM, 1);
 	/*
@@ -709,7 +716,7 @@ static int sh_dmae_probe(struct platform_device *pdev)
 	 *    requested with the IRQF_SHARED flag
 	 */
 	errirq_res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (!chan || !errirq_res)
+	if (!errirq_res)
 		return -ENODEV;
 
 	shdev = devm_kzalloc(&pdev->dev, sizeof(struct sh_dmae_device),
@@ -719,7 +726,7 @@ static int sh_dmae_probe(struct platform_device *pdev)
 
 	dma_dev = &shdev->shdma_dev.dma_dev;
 
-	shdev->chan_reg = devm_ioremap_resource(&pdev->dev, chan);
+	shdev->chan_reg = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(shdev->chan_reg))
 		return PTR_ERR(shdev->chan_reg);
 	if (dmars) {
@@ -884,7 +891,7 @@ eshdma:
 	return err;
 }
 
-static int sh_dmae_remove(struct platform_device *pdev)
+static void sh_dmae_remove(struct platform_device *pdev)
 {
 	struct sh_dmae_device *shdev = platform_get_drvdata(pdev);
 	struct dma_device *dma_dev = &shdev->shdma_dev.dma_dev;
@@ -901,8 +908,6 @@ static int sh_dmae_remove(struct platform_device *pdev)
 	shdma_cleanup(&shdev->shdma_dev);
 
 	synchronize_rcu();
-
-	return 0;
 }
 
 static struct platform_driver sh_dmae_driver = {

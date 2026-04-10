@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2019 Intel Corporation. All rights reserved.
+// Copyright(c) 2019 Intel Corporation
 
 #include <linux/module.h>
 #include <sound/pcm.h>
@@ -15,7 +15,7 @@
 
 /*
  * Search card topology and return PCM device number
- * matching Nth HDMI device (zero-based index).
+ * matching Nth playback HDMI device (zero-based index).
  */
 static struct snd_pcm *hda_dsp_hdmi_pcm_handle(struct snd_soc_card *card,
 					       int hdmi_idx)
@@ -25,8 +25,17 @@ static struct snd_pcm *hda_dsp_hdmi_pcm_handle(struct snd_soc_card *card,
 	int i = 0;
 
 	for_each_card_rtds(card, rtd) {
-		spcm = rtd->pcm ?
-			rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].pcm : NULL;
+		/* ignore BE PCMs */
+		if (rtd->dai_link && rtd->dai_link->no_pcm)
+			continue;
+
+		spcm = rtd->pcm;
+
+		/* ignore PCMs with no playback streams */
+		if (!spcm || !spcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream)
+			continue;
+
+		/* look for FE PCMs with name "HDMI x" */
 		if (spcm && strstr(spcm->id, "HDMI")) {
 			if (i == hdmi_idx)
 				return rtd->pcm;
@@ -54,7 +63,7 @@ int hda_dsp_hdmi_build_controls(struct snd_soc_card *card,
 		return -EINVAL;
 
 	hda_pvt = snd_soc_component_get_drvdata(comp);
-	hcodec = &hda_pvt->codec;
+	hcodec = hda_pvt->codec;
 
 	list_for_each_entry(hpcm, &hcodec->pcm_list_head, list) {
 		spcm = hda_dsp_hdmi_pcm_handle(card, i);
@@ -62,8 +71,8 @@ int hda_dsp_hdmi_build_controls(struct snd_soc_card *card,
 			hpcm->pcm = spcm;
 			hpcm->device = spcm->device;
 			dev_dbg(card->dev,
-				"%s: mapping HDMI converter %d to PCM %d (%p)\n",
-				__func__, i, hpcm->device, spcm);
+				"mapping HDMI converter %d to PCM %d (%p)\n",
+				i, hpcm->device, spcm);
 		} else {
 			hpcm->pcm = NULL;
 			hpcm->device = SNDRV_PCM_INVALID_DEVICE;
@@ -83,7 +92,7 @@ int hda_dsp_hdmi_build_controls(struct snd_soc_card *card,
 
 	return err;
 }
-EXPORT_SYMBOL_NS(hda_dsp_hdmi_build_controls, SND_SOC_INTEL_HDA_DSP_COMMON);
+EXPORT_SYMBOL_NS(hda_dsp_hdmi_build_controls, "SND_SOC_INTEL_HDA_DSP_COMMON");
 
 #endif
 

@@ -59,7 +59,7 @@ int main(int argc, char **argv)
 		return 2;
 	}
 
-	ret = bpf_prog_test_load("test_lirc_mode2_kern.o",
+	ret = bpf_prog_test_load("test_lirc_mode2_kern.bpf.o",
 				 BPF_PROG_TYPE_LIRC_MODE2, &obj, &progfd);
 	if (ret) {
 		printf("Failed to load bpf program\n");
@@ -74,7 +74,7 @@ int main(int argc, char **argv)
 
 	/* Let's try detach it before it was ever attached */
 	ret = bpf_prog_detach2(progfd, lircfd, BPF_LIRC_MODE2);
-	if (ret != -1 || errno != ENOENT) {
+	if (ret != -ENOENT) {
 		printf("bpf_prog_detach2 not attached should fail: %m\n");
 		return 1;
 	}

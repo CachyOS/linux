@@ -125,7 +125,6 @@ static void __init md_setup_drive(struct md_setup_args *args)
 	char *devname = args->device_names;
 	dev_t devices[MD_SB_DISKS + 1], mdev;
 	struct mdu_array_info_s ainfo = { };
-	struct block_device *bdev;
 	struct mddev *mddev;
 	int err = 0, i;
 	char name[16];
@@ -148,7 +147,8 @@ static void __init md_setup_drive(struct md_setup_args *args)
 		if (p)
 			*p++ = 0;
 
-		dev = name_to_dev_t(devname);
+		if (early_lookup_bdev(devname, &dev))
+			dev = 0;
 		if (strncmp(devname, "/dev/", 5) == 0)
 			devname += 5;
 		snprintf(comp_name, 63, "/dev/%s", devname);
@@ -169,24 +169,16 @@ static void __init md_setup_drive(struct md_setup_args *args)
 
 	pr_info("md: Loading %s: %s\n", name, args->device_names);
 
-	bdev = blkdev_get_by_dev(mdev, FMODE_READ, NULL);
-	if (IS_ERR(bdev)) {
-		pr_err("md: open failed - cannot start array %s\n", name);
+	mddev = md_alloc(mdev, name);
+	if (IS_ERR(mddev)) {
+		pr_err("md: md_alloc failed - cannot start array %s\n", name);
 		return;
 	}
 
-	err = -EIO;
-	if (WARN(bdev->bd_disk->fops != &md_fops,
-			"Opening block device %x resulted in non-md device\n",
-			mdev))
-		goto out_blkdev_put;
-
-	mddev = bdev->bd_disk->private_data;
-
-	err = mddev_lock(mddev);
+	err = mddev_suspend_and_lock(mddev);
 	if (err) {
 		pr_err("md: failed to lock array %s\n", name);
-		goto out_blkdev_put;
+		goto out_mddev_put;
 	}
 
 	if (!list_empty(&mddev->disks) || mddev->raid_disks) {
@@ -229,9 +221,9 @@ static void __init md_setup_drive(struct md_setup_args *args)
 	if (err)
 		pr_warn("md: starting %s failed\n", name);
 out_unlock:
-	mddev_unlock(mddev);
-out_blkdev_put:
-	blkdev_put(bdev, FMODE_READ);
+	mddev_unlock_and_resume(mddev);
+out_mddev_put:
+	mddev_put(mddev);
 }
 
 static int __init raid_setup(char *str)

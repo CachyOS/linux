@@ -167,8 +167,7 @@ static const struct dvb_tuner_ops tua9001_tuner_ops = {
 	.get_if_frequency = tua9001_get_if_frequency,
 };
 
-static int tua9001_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int tua9001_probe(struct i2c_client *client)
 {
 	struct tua9001_dev *dev;
 	struct tua9001_platform_data *pdata = client->dev.platform_data;
@@ -179,7 +178,7 @@ static int tua9001_probe(struct i2c_client *client,
 		.val_bits = 16,
 	};
 
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	dev = kzalloc_obj(*dev);
 	if (!dev) {
 		ret = -ENOMEM;
 		goto err;
@@ -227,7 +226,7 @@ err:
 	return ret;
 }
 
-static int tua9001_remove(struct i2c_client *client)
+static void tua9001_remove(struct i2c_client *client)
 {
 	struct tua9001_dev *dev = i2c_get_clientdata(client);
 	struct dvb_frontend *fe = dev->fe;
@@ -243,11 +242,10 @@ static int tua9001_remove(struct i2c_client *client)
 			dev_err(&client->dev, "Tuner disable failed (%pe)\n", ERR_PTR(ret));
 	}
 	kfree(dev);
-	return 0;
 }
 
 static const struct i2c_device_id tua9001_id_table[] = {
-	{"tua9001", 0},
+	{ "tua9001" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, tua9001_id_table);

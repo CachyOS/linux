@@ -15,7 +15,6 @@
 #include <linux/jiffies.h>
 #include <linux/hwmon.h>
 #include <linux/err.h>
-#include <linux/mutex.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/regmap.h>
@@ -55,7 +54,6 @@
 /* Each client has this additional data */
 struct adt7x10_data {
 	struct regmap		*regmap;
-	struct mutex		update_lock;
 	u8			config;
 	u8			oldconfig;
 	bool			valid;		/* true if temperature valid */
@@ -137,17 +135,13 @@ static int adt7x10_temp_read(struct adt7x10_data *data, int index, long *val)
 	unsigned int regval;
 	int ret;
 
-	mutex_lock(&data->update_lock);
 	if (index == adt7x10_temperature && !data->valid) {
 		/* wait for valid temperature */
 		ret = adt7x10_temp_ready(data->regmap);
-		if (ret) {
-			mutex_unlock(&data->update_lock);
+		if (ret)
 			return ret;
-		}
 		data->valid = true;
 	}
-	mutex_unlock(&data->update_lock);
 
 	ret = regmap_read(data->regmap, ADT7X10_REG_TEMP[index], &regval);
 	if (ret)
@@ -159,32 +153,21 @@ static int adt7x10_temp_read(struct adt7x10_data *data, int index, long *val)
 
 static int adt7x10_temp_write(struct adt7x10_data *data, int index, long temp)
 {
-	int ret;
-
-	mutex_lock(&data->update_lock);
-	ret = regmap_write(data->regmap, ADT7X10_REG_TEMP[index],
-			   ADT7X10_TEMP_TO_REG(temp));
-	mutex_unlock(&data->update_lock);
-	return ret;
+	return regmap_write(data->regmap, ADT7X10_REG_TEMP[index],
+			    ADT7X10_TEMP_TO_REG(temp));
 }
 
 static int adt7x10_hyst_read(struct adt7x10_data *data, int index, long *val)
 {
-	int hyst, temp, ret;
+	unsigned int regs[2] = {ADT7X10_T_HYST, ADT7X10_REG_TEMP[index]};
+	int hyst, ret;
+	u16 regdata[2];
 
-	mutex_lock(&data->update_lock);
-	ret = regmap_read(data->regmap, ADT7X10_T_HYST, &hyst);
-	if (ret) {
-		mutex_unlock(&data->update_lock);
-		return ret;
-	}
-
-	ret = regmap_read(data->regmap, ADT7X10_REG_TEMP[index], &temp);
-	mutex_unlock(&data->update_lock);
+	ret = regmap_multi_reg_read(data->regmap, regs, regdata, 2);
 	if (ret)
 		return ret;
 
-	hyst = (hyst & ADT7X10_T_HYST_MASK) * 1000;
+	hyst = (regdata[0] & ADT7X10_T_HYST_MASK) * 1000;
 
 	/*
 	 * hysteresis is stored as a 4 bit offset in the device, convert it
@@ -194,7 +177,7 @@ static int adt7x10_hyst_read(struct adt7x10_data *data, int index, long *val)
 	if (index == adt7x10_t_alarm_low)
 		hyst = -hyst;
 
-	*val = ADT7X10_REG_TO_TEMP(data, temp) - hyst;
+	*val = ADT7X10_REG_TO_TEMP(data, regdata[1]) - hyst;
 	return 0;
 }
 
@@ -203,22 +186,17 @@ static int adt7x10_hyst_write(struct adt7x10_data *data, long hyst)
 	unsigned int regval;
 	int limit, ret;
 
-	mutex_lock(&data->update_lock);
-
 	/* convert absolute hysteresis value to a 4 bit delta value */
 	ret = regmap_read(data->regmap, ADT7X10_T_ALARM_HIGH, &regval);
 	if (ret < 0)
-		goto abort;
+		return ret;
 
 	limit = ADT7X10_REG_TO_TEMP(data, regval);
 
 	hyst = clamp_val(hyst, ADT7X10_TEMP_MIN, ADT7X10_TEMP_MAX);
 	regval = clamp_val(DIV_ROUND_CLOSEST(limit - hyst, 1000), 0,
 			   ADT7X10_T_HYST_MASK);
-	ret = regmap_write(data->regmap, ADT7X10_T_HYST, regval);
-abort:
-	mutex_unlock(&data->update_lock);
-	return ret;
+	return regmap_write(data->regmap, ADT7X10_T_HYST, regval);
 }
 
 static int adt7x10_alarm_read(struct adt7x10_data *data, int index, long *val)
@@ -309,7 +287,7 @@ static int adt7x10_write(struct device *dev, enum hwmon_sensor_types type,
 	}
 }
 
-static const struct hwmon_channel_info *adt7x10_info[] = {
+static const struct hwmon_channel_info * const adt7x10_info[] = {
 	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_MIN |
 			   HWMON_T_CRIT | HWMON_T_MAX_HYST | HWMON_T_MIN_HYST |
 			   HWMON_T_CRIT_HYST | HWMON_T_MIN_ALARM |
@@ -350,7 +328,6 @@ int adt7x10_probe(struct device *dev, const char *name, int irq,
 	data->regmap = regmap;
 
 	dev_set_drvdata(dev, data);
-	mutex_init(&data->update_lock);
 
 	/* configure as specified */
 	ret = regmap_read(regmap, ADT7X10_CONFIG, &config);
@@ -397,8 +374,6 @@ int adt7x10_probe(struct device *dev, const char *name, int irq,
 }
 EXPORT_SYMBOL_GPL(adt7x10_probe);
 
-#ifdef CONFIG_PM_SLEEP
-
 static int adt7x10_suspend(struct device *dev)
 {
 	struct adt7x10_data *data = dev_get_drvdata(dev);
@@ -414,10 +389,7 @@ static int adt7x10_resume(struct device *dev)
 	return regmap_write(data->regmap, ADT7X10_CONFIG, data->config);
 }
 
-SIMPLE_DEV_PM_OPS(adt7x10_dev_pm_ops, adt7x10_suspend, adt7x10_resume);
-EXPORT_SYMBOL_GPL(adt7x10_dev_pm_ops);
-
-#endif /* CONFIG_PM_SLEEP */
+EXPORT_SIMPLE_DEV_PM_OPS(adt7x10_dev_pm_ops, adt7x10_suspend, adt7x10_resume);
 
 MODULE_AUTHOR("Hartmut Knaack");
 MODULE_DESCRIPTION("ADT7410/ADT7420, ADT7310/ADT7320 common code");

@@ -27,8 +27,6 @@
  * Pre-requisites: headers required by header of this unit
  */
 
-#include <linux/slab.h>
-
 #include "dm_services.h"
 #include "include/gpio_interface.h"
 #include "include/gpio_service_interface.h"
@@ -58,9 +56,9 @@ struct gpio_service *dal_gpio_service_create(
 	struct dc_context *ctx)
 {
 	struct gpio_service *service;
-	uint32_t index_of_id;
+	int32_t index_of_id;
 
-	service = kzalloc(sizeof(struct gpio_service), GFP_KERNEL);
+	service = kzalloc_obj(struct gpio_service);
 
 	if (!service) {
 		BREAK_TO_DEBUGGER();
@@ -114,7 +112,7 @@ struct gpio_service *dal_gpio_service_create(
 	return service;
 
 failure_2:
-	while (index_of_id) {
+	while (index_of_id > 0) {
 		--index_of_id;
 		kfree(service->busyness[index_of_id]);
 	}
@@ -130,7 +128,7 @@ struct gpio *dal_gpio_service_create_irq(
 	uint32_t offset,
 	uint32_t mask)
 {
-	enum gpio_id id;
+	enum gpio_id id = 0;
 	uint32_t en;
 
 	if (!service->translate.funcs->offset_to_id(offset, mask, &id, &en)) {
@@ -146,7 +144,7 @@ struct gpio *dal_gpio_service_create_generic_mux(
 	uint32_t offset,
 	uint32_t mask)
 {
-	enum gpio_id id;
+	enum gpio_id id = 0;
 	uint32_t en;
 	struct gpio *generic;
 
@@ -180,7 +178,7 @@ struct gpio_pin_info dal_gpio_get_generic_pin_info(
 	enum gpio_id id,
 	uint32_t en)
 {
-	struct gpio_pin_info pin;
+	struct gpio_pin_info pin = {0};
 
 	if (service->translate.funcs->id_to_offset) {
 		service->translate.funcs->id_to_offset(id, en, &pin);
@@ -241,6 +239,9 @@ static bool is_pin_busy(
 	enum gpio_id id,
 	uint32_t en)
 {
+	if (id == GPIO_ID_UNKNOWN)
+		return false;
+
 	return service->busyness[id][en];
 }
 
@@ -249,6 +250,9 @@ static void set_pin_busy(
 	enum gpio_id id,
 	uint32_t en)
 {
+	if (id == GPIO_ID_UNKNOWN)
+		return;
+
 	service->busyness[id][en] = true;
 }
 
@@ -257,6 +261,9 @@ static void set_pin_free(
 	enum gpio_id id,
 	uint32_t en)
 {
+	if (id == GPIO_ID_UNKNOWN)
+		return;
+
 	service->busyness[id][en] = false;
 }
 
@@ -265,7 +272,7 @@ enum gpio_result dal_gpio_service_lock(
 	enum gpio_id id,
 	uint32_t en)
 {
-	if (!service->busyness[id]) {
+	if (id != GPIO_ID_UNKNOWN && !service->busyness[id]) {
 		ASSERT_CRITICAL(false);
 		return GPIO_RESULT_OPEN_FAILED;
 	}
@@ -279,7 +286,7 @@ enum gpio_result dal_gpio_service_unlock(
 	enum gpio_id id,
 	uint32_t en)
 {
-	if (!service->busyness[id]) {
+	if (id != GPIO_ID_UNKNOWN && !service->busyness[id]) {
 		ASSERT_CRITICAL(false);
 		return GPIO_RESULT_OPEN_FAILED;
 	}
@@ -404,6 +411,20 @@ enum dc_irq_source dal_irq_get_rx_source(
 	}
 }
 
+enum dc_irq_source dal_irq_get_read_request(
+	const struct gpio *irq)
+{
+	enum gpio_id id = dal_gpio_get_id(irq);
+
+	switch (id) {
+	case GPIO_ID_HPD:
+		return (enum dc_irq_source)(DC_IRQ_SOURCE_DCI2C_RR_DDC1 +
+			dal_gpio_get_enum(irq));
+	default:
+		return DC_IRQ_SOURCE_INVALID;
+	}
+}
+
 enum gpio_result dal_irq_setup_hpd_filter(
 	struct gpio *irq,
 	struct gpio_hpd_config *config)
@@ -436,7 +457,6 @@ struct gpio *dal_gpio_create_irq(
 	case GPIO_ID_GPIO_PAD:
 	break;
 	default:
-		id = GPIO_ID_HPD;
 		ASSERT_CRITICAL(false);
 		return NULL;
 	}
@@ -478,7 +498,7 @@ struct ddc *dal_gpio_create_ddc(
 	if (!service->translate.funcs->offset_to_id(offset, mask, &id, &en))
 		return NULL;
 
-	ddc = kzalloc(sizeof(struct ddc), GFP_KERNEL);
+	ddc = kzalloc_obj(struct ddc);
 
 	if (!ddc) {
 		BREAK_TO_DEBUGGER();

@@ -16,6 +16,7 @@
 / {
 	model = "Qualcomm Technologies, Inc. SM8150 MTP";
 	compatible = "qcom,sm8150-mtp", "qcom,sm8150";
+	chassis-type = "handset";
 
 	aliases {
 		serial0 = &uart2;
@@ -51,7 +52,7 @@
 };
 
 &apps_rsc {
-	pm8150-rpmh-regulators {
+	regulators-0 {
 		compatible = "qcom,pm8150-rpmh-regulators";
 		qcom,pmic-id = "a";
 
@@ -206,7 +207,7 @@
 		};
 	};
 
-	pm8150l-rpmh-regulators {
+	regulators-1 {
 		compatible = "qcom,pm8150l-rpmh-regulators";
 		qcom,pmic-id = "c";
 
@@ -319,7 +320,7 @@
 		};
 	};
 
-	pm8009-rpmh-regulators {
+	regulators-2 {
 		compatible = "qcom,pm8009-rpmh-regulators";
 		qcom,pmic-id = "f";
 
@@ -357,6 +358,15 @@
 	status = "okay";
 };
 
+&gpu_zap_shader {
+	firmware-name = "qcom/sm8150/a640_zap.mbn";
+};
+
+&pon {
+	mode-bootloader = <0x2>;
+	mode-recovery = <0x1>;
+};
+
 &pon_pwrkey {
 	status = "okay";
 };
@@ -373,22 +383,22 @@
 
 &remoteproc_adsp {
 	status = "okay";
-	firmware-name = "qcom/sm8150/adsp.mdt";
+	firmware-name = "qcom/sm8150/adsp.mbn";
 };
 
 &remoteproc_cdsp {
 	status = "okay";
-	firmware-name = "qcom/sm8150/cdsp.mdt";
+	firmware-name = "qcom/sm8150/cdsp.mbn";
 };
 
 &remoteproc_mpss {
 	status = "okay";
-	firmware-name = "qcom/sm8150/modem.mdt";
+	firmware-name = "qcom/sm8150/modem.mbn";
 };
 
 &remoteproc_slpi {
 	status = "okay";
-	firmware-name = "qcom/sm8150/slpi.mdt";
+	firmware-name = "qcom/sm8150/slpi.mbn";
 };
 
 &tlmm {

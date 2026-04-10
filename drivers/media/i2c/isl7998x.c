@@ -8,7 +8,7 @@
 
 #include <linux/bitfield.h>
 #include <linux/delay.h>
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/of_graph.h>
@@ -665,7 +665,7 @@ static int isl7998x_set_standard(struct isl7998x *isl7998x, v4l2_std_id norm)
 static int isl7998x_init(struct isl7998x *isl7998x)
 {
 	const unsigned int lanes = isl7998x->nr_mipi_lanes;
-	const u32 isl7998x_video_in_chan_map[] = { 0x00, 0x11, 0x02, 0x02 };
+	static const u32 isl7998x_video_in_chan_map[] = { 0x00, 0x11, 0x02, 0x02 };
 	const struct reg_sequence isl7998x_init_seq_custom[] = {
 		{ ISL7998X_REG_P0_VIDEO_IN_CHAN_CTL,
 		  isl7998x_video_in_chan_map[isl7998x->nr_inputs - 1] },
@@ -1007,8 +1007,8 @@ static int isl7998x_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&isl7998x->lock);
 
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
-		format->format = *v4l2_subdev_get_try_format(sd, sd_state,
-							     format->pad);
+		format->format = *v4l2_subdev_state_get_format(sd_state,
+							       format->pad);
 		goto out;
 	}
 
@@ -1044,7 +1044,7 @@ static int isl7998x_set_fmt(struct v4l2_subdev *sd,
 	mf->field = mode->field;
 
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY)
-		*v4l2_subdev_get_try_format(sd, sd_state, format->pad) = format->format;
+		*v4l2_subdev_state_get_format(sd_state, format->pad) = format->format;
 
 	mutex_unlock(&isl7998x->lock);
 
@@ -1337,7 +1337,7 @@ static const struct regmap_config isl7998x_regmap = {
 	.rd_table	= &isl7998x_readable_table,
 	.wr_table	= &isl7998x_writeable_table,
 	.volatile_table	= &isl7998x_volatile_table,
-	.cache_type	= REGCACHE_RBTREE,
+	.cache_type	= REGCACHE_MAPLE,
 };
 
 static int isl7998x_mc_init(struct isl7998x *isl7998x)
@@ -1544,7 +1544,7 @@ err_entity_cleanup:
 	return ret;
 }
 
-static int isl7998x_remove(struct i2c_client *client)
+static void isl7998x_remove(struct i2c_client *client)
 {
 	struct isl7998x *isl7998x = i2c_to_isl7998x(client);
 
@@ -1552,8 +1552,6 @@ static int isl7998x_remove(struct i2c_client *client)
 	v4l2_async_unregister_subdev(&isl7998x->subdev);
 	isl7998x_remove_controls(isl7998x);
 	media_entity_cleanup(&isl7998x->subdev.entity);
-
-	return 0;
 }
 
 static const struct of_device_id isl7998x_of_match[] = {
@@ -1563,8 +1561,8 @@ static const struct of_device_id isl7998x_of_match[] = {
 MODULE_DEVICE_TABLE(of, isl7998x_of_match);
 
 static const struct i2c_device_id isl7998x_id[] = {
-	{ "isl79987", 0 },
-	{ /* sentinel */ },
+	{ "isl79987" },
+	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(i2c, isl7998x_id);
 
@@ -1613,10 +1611,10 @@ static const struct dev_pm_ops isl7998x_pm_ops = {
 static struct i2c_driver isl7998x_i2c_driver = {
 	.driver = {
 		.name = "isl7998x",
-		.of_match_table = of_match_ptr(isl7998x_of_match),
+		.of_match_table = isl7998x_of_match,
 		.pm = &isl7998x_pm_ops,
 	},
-	.probe_new	= isl7998x_probe,
+	.probe		= isl7998x_probe,
 	.remove		= isl7998x_remove,
 	.id_table	= isl7998x_id,
 };

@@ -39,7 +39,7 @@
 #include <linux/tty_flip.h>
 #include <linux/module.h>
 #include <linux/uaccess.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/usb.h>
 #include <linux/usb/serial.h>
 #include "kl5kusb105.h"
@@ -56,7 +56,8 @@ static void klsi_105_port_remove(struct usb_serial_port *port);
 static int  klsi_105_open(struct tty_struct *tty, struct usb_serial_port *port);
 static void klsi_105_close(struct usb_serial_port *port);
 static void klsi_105_set_termios(struct tty_struct *tty,
-			struct usb_serial_port *port, struct ktermios *old);
+				 struct usb_serial_port *port,
+				 const struct ktermios *old_termios);
 static int  klsi_105_tiocmget(struct tty_struct *tty);
 static void klsi_105_process_read_urb(struct urb *urb);
 static int klsi_105_prepare_write_buffer(struct usb_serial_port *port,
@@ -74,7 +75,6 @@ MODULE_DEVICE_TABLE(usb, id_table);
 
 static struct usb_serial_driver kl5kusb105d_device = {
 	.driver = {
-		.owner =	THIS_MODULE,
 		.name =		"kl5kusb105d",
 	},
 	.description =		"KL5KUSB105D / PalmConnect",
@@ -189,7 +189,7 @@ static int klsi_105_port_probe(struct usb_serial_port *port)
 {
 	struct klsi_105_private *priv;
 
-	priv = kmalloc(sizeof(*priv), GFP_KERNEL);
+	priv = kmalloc_obj(*priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -366,7 +366,7 @@ static void klsi_105_process_read_urb(struct urb *urb)
 
 static void klsi_105_set_termios(struct tty_struct *tty,
 				 struct usb_serial_port *port,
-				 struct ktermios *old_termios)
+				 const struct ktermios *old_termios)
 {
 	struct klsi_105_private *priv = usb_get_serial_port_data(port);
 	struct device *dev = &port->dev;
@@ -378,7 +378,7 @@ static void klsi_105_set_termios(struct tty_struct *tty,
 	unsigned long flags;
 	speed_t baud;
 
-	cfg = kmalloc(sizeof(*cfg), GFP_KERNEL);
+	cfg = kmalloc_obj(*cfg);
 	if (!cfg)
 		return;
 

@@ -15,6 +15,9 @@ struct netns_nf {
 	const struct nf_logger __rcu *nf_loggers[NFPROTO_NUMPROTO];
 #ifdef CONFIG_SYSCTL
 	struct ctl_table_header *nf_log_dir_header;
+#ifdef CONFIG_LWTUNNEL
+	struct ctl_table_header *nf_lwtnl_dir_header;
+#endif
 #endif
 	struct nf_hook_entries __rcu *hooks_ipv4[NF_INET_NUMHOOKS];
 	struct nf_hook_entries __rcu *hooks_ipv6[NF_INET_NUMHOOKS];
@@ -23,9 +26,6 @@ struct netns_nf {
 #endif
 #ifdef CONFIG_NETFILTER_FAMILY_BRIDGE
 	struct nf_hook_entries __rcu *hooks_bridge[NF_INET_NUMHOOKS];
-#endif
-#if IS_ENABLED(CONFIG_DECNET)
-	struct nf_hook_entries __rcu *hooks_decnet[NF_DN_NUMHOOKS];
 #endif
 #if IS_ENABLED(CONFIG_NF_DEFRAG_IPV4)
 	unsigned int defrag_ipv4_users;

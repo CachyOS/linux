@@ -173,8 +173,15 @@ superio_exit(int ioreg)
 #define NCT6683_CUSTOMER_ID_INTEL	0x805
 #define NCT6683_CUSTOMER_ID_MITAC	0xa0e
 #define NCT6683_CUSTOMER_ID_MSI		0x201
+#define NCT6683_CUSTOMER_ID_MSI2	0x200
+#define NCT6683_CUSTOMER_ID_MSI3	0x207
+#define NCT6683_CUSTOMER_ID_MSI4	0x20d
+#define NCT6683_CUSTOMER_ID_AMD		0x162b
 #define NCT6683_CUSTOMER_ID_ASROCK		0xe2c
 #define NCT6683_CUSTOMER_ID_ASROCK2	0xe1b
+#define NCT6683_CUSTOMER_ID_ASROCK3	0x1631
+#define NCT6683_CUSTOMER_ID_ASROCK4	0x163e
+#define NCT6683_CUSTOMER_ID_ASROCK5	0x1621
 
 #define NCT6683_REG_BUILD_YEAR		0x604
 #define NCT6683_REG_BUILD_MONTH		0x605
@@ -412,7 +419,7 @@ nct6683_create_attr_group(struct device *dev,
 	struct sensor_device_attr_u *su;
 	struct attribute_group *group;
 	struct attribute **attrs;
-	int i, j, count;
+	int i, count;
 
 	if (repeat <= 0)
 		return ERR_PTR(-EINVAL);
@@ -443,7 +450,7 @@ nct6683_create_attr_group(struct device *dev,
 
 	for (i = 0; i < repeat; i++) {
 		t = tg->templates;
-		for (j = 0; *t != NULL; j++) {
+		while (*t) {
 			snprintf(su->name, sizeof(su->name),
 				 (*t)->dev_attr.attr.name, tg->base + i);
 			if ((*t)->s2) {
@@ -1220,13 +1227,29 @@ static int nct6683_probe(struct platform_device *pdev)
 		break;
 	case NCT6683_CUSTOMER_ID_MSI:
 		break;
+	case NCT6683_CUSTOMER_ID_MSI2:
+		break;
+	case NCT6683_CUSTOMER_ID_MSI3:
+		break;
+	case NCT6683_CUSTOMER_ID_MSI4:
+		break;
+	case NCT6683_CUSTOMER_ID_AMD:
+		break;
 	case NCT6683_CUSTOMER_ID_ASROCK:
 		break;
 	case NCT6683_CUSTOMER_ID_ASROCK2:
 		break;
+	case NCT6683_CUSTOMER_ID_ASROCK3:
+		break;
+	case NCT6683_CUSTOMER_ID_ASROCK4:
+		break;
+	case NCT6683_CUSTOMER_ID_ASROCK5:
+		break;
 	default:
 		if (!force)
 			return -ENODEV;
+		dev_warn(dev, "Enabling support for unknown customer ID 0x%04x\n", data->customer_id);
+		break;
 	}
 
 	nct6683_init_device(data);

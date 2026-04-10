@@ -46,10 +46,11 @@
 #define SVWKS_CSB5_REVISION_NEW	0x92 /* min PCI_REVISION_ID for UDMA5 (A2.0) */
 #define SVWKS_CSB6_REVISION	0xa0 /* min PCI_REVISION_ID for UDMA4 (A1.0) */
 
-/* Seagate Barracuda ATA IV Family drives in UDMA mode 5
- * can overrun their FIFOs when used with the CSB5 */
-
-static const char *csb_bad_ata100[] = {
+/*
+ * Seagate Barracuda ATA IV Family drives in UDMA mode 5
+ * can overrun their FIFOs when used with the CSB5.
+ */
+static const char * const csb_bad_ata100[] = {
 	"ST320011A",
 	"ST340016A",
 	"ST360021A",
@@ -150,7 +151,7 @@ static u8 serverworks_is_csb(struct pci_dev *pdev)
  *	bug we hit.
  */
 
-static unsigned long serverworks_osb4_filter(struct ata_device *adev, unsigned long mask)
+static unsigned int serverworks_osb4_filter(struct ata_device *adev, unsigned int mask)
 {
 	if (adev->class == ATA_DEV_ATA)
 		mask &= ~ATA_MASK_UDMA;
@@ -163,10 +164,11 @@ static unsigned long serverworks_osb4_filter(struct ata_device *adev, unsigned l
  *	@adev: ATA device
  *	@mask: Mask of proposed modes
  *
- *	Check the blacklist and disable UDMA5 if matched
+ *	Check the list of devices with broken UDMA5 and
+ *	disable UDMA5 if matched.
  */
-
-static unsigned long serverworks_csb_filter(struct ata_device *adev, unsigned long mask)
+static unsigned int serverworks_csb_filter(struct ata_device *adev,
+					   unsigned int mask)
 {
 	const char *p;
 	char model_num[ATA_ID_PROD_LEN + 1];
@@ -252,13 +254,13 @@ static void serverworks_set_dmamode(struct ata_port *ap, struct ata_device *adev
 	pci_write_config_byte(pdev, 0x54, ultra_cfg);
 }
 
-static struct scsi_host_template serverworks_osb4_sht = {
+static const struct scsi_host_template serverworks_osb4_sht = {
 	ATA_BASE_SHT(DRV_NAME),
 	.sg_tablesize	= LIBATA_DUMB_MAX_PRD,
 	.dma_boundary	= ATA_DMA_BOUNDARY,
 };
 
-static struct scsi_host_template serverworks_csb_sht = {
+static const struct scsi_host_template serverworks_csb_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -413,7 +415,7 @@ static int serverworks_init_one(struct pci_dev *pdev, const struct pci_device_id
 		}
 	};
 	const struct ata_port_info *ppi[] = { &info[id->driver_data], NULL };
-	struct scsi_host_template *sht = &serverworks_csb_sht;
+	const struct scsi_host_template *sht = &serverworks_csb_sht;
 	int rc;
 
 	rc = pcim_enable_device(pdev);

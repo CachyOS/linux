@@ -226,7 +226,7 @@ static long ioctl_memcpy(struct fsl_hv_ioctl_memcpy __user *p)
 	 * 'pages' is an array of struct page pointers that's initialized by
 	 * get_user_pages_fast().
 	 */
-	pages = kcalloc(num_pages, sizeof(struct page *), GFP_KERNEL);
+	pages = kzalloc_objs(struct page *, num_pages);
 	if (!pages) {
 		pr_debug("fsl-hv: could not allocate page list\n");
 		return -ENOMEM;
@@ -660,7 +660,7 @@ static int fsl_hv_open(struct inode *inode, struct file *filp)
 	struct doorbell_queue *dbq;
 	unsigned long flags;
 
-	dbq = kzalloc(sizeof(struct doorbell_queue), GFP_KERNEL);
+	dbq = kzalloc_obj(struct doorbell_queue);
 	if (!dbq) {
 		pr_err("fsl-hv: out of memory\n");
 		return -ENOMEM;
@@ -796,7 +796,7 @@ static int has_fsl_hypervisor(void)
 	if (!node)
 		return 0;
 
-	ret = of_find_property(node, "fsl,hv-version", NULL) != NULL;
+	ret = of_property_present(node, "fsl,hv-version");
 
 	of_node_put(node);
 
@@ -839,13 +839,13 @@ static int __init fsl_hypervisor_init(void)
 
 		handle = of_get_property(np, "interrupts", NULL);
 		irq = irq_of_parse_and_map(np, 0);
-		if (!handle || (irq == NO_IRQ)) {
+		if (!handle || !irq) {
 			pr_err("fsl-hv: no 'interrupts' property in %pOF node\n",
 				np);
 			continue;
 		}
 
-		dbisr = kzalloc(sizeof(*dbisr), GFP_KERNEL);
+		dbisr = kzalloc_obj(*dbisr);
 		if (!dbisr)
 			goto out_of_memory;
 

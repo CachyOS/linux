@@ -3,14 +3,16 @@
  * Copyright (C) 2017 Broadcom
  */
 
-#include <linux/gpio/driver.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/irq.h>
+#include <linux/gpio/driver.h>
+#include <linux/gpio/generic.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/seq_file.h>
 #include <linux/spinlock.h>
 
 #define IPROC_CCA_INT_F_GPIOINT		BIT(0)
@@ -27,8 +29,7 @@
 #define IPROC_GPIO_CCA_INT_EDGE		0x24
 
 struct iproc_gpio_chip {
-	struct irq_chip irqchip;
-	struct gpio_chip gc;
+	struct gpio_generic_chip gen_gc;
 	spinlock_t lock;
 	struct device *dev;
 	void __iomem *base;
@@ -38,7 +39,7 @@ struct iproc_gpio_chip {
 static inline struct iproc_gpio_chip *
 to_iproc_gpio(struct gpio_chip *gc)
 {
-	return container_of(gc, struct iproc_gpio_chip, gc);
+	return container_of(to_gpio_generic_chip(gc), struct iproc_gpio_chip, gen_gc);
 }
 
 static void iproc_gpio_irq_ack(struct irq_data *d)
@@ -69,6 +70,7 @@ static void iproc_gpio_irq_unmask(struct irq_data *d)
 	u32 irq = d->irq;
 	u32 int_mask, irq_type, event_mask;
 
+	gpiochip_enable_irq(gc, pin);
 	spin_lock_irqsave(&chip->lock, flags);
 	irq_type = irq_get_trigger_type(irq);
 	event_mask = readl_relaxed(chip->base + IPROC_GPIO_CCA_INT_EVENT_MASK);
@@ -110,6 +112,7 @@ static void iproc_gpio_irq_mask(struct irq_data *d)
 			       chip->base + IPROC_GPIO_CCA_INT_LEVEL_MASK);
 	}
 	spin_unlock_irqrestore(&chip->lock, flags);
+	gpiochip_disable_irq(gc, pin);
 }
 
 static int iproc_gpio_irq_set_type(struct irq_data *d, u32 type)
@@ -191,8 +194,27 @@ static irqreturn_t iproc_gpio_irq_handler(int irq, void *data)
 	return int_bits ? IRQ_HANDLED : IRQ_NONE;
 }
 
+static void iproc_gpio_irq_print_chip(struct irq_data *d, struct seq_file *p)
+{
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	struct iproc_gpio_chip *chip = to_iproc_gpio(gc);
+
+	seq_puts(p, dev_name(chip->dev));
+}
+
+static const struct irq_chip iproc_gpio_irq_chip = {
+	.irq_ack = iproc_gpio_irq_ack,
+	.irq_mask = iproc_gpio_irq_mask,
+	.irq_unmask = iproc_gpio_irq_unmask,
+	.irq_set_type = iproc_gpio_irq_set_type,
+	.irq_print_chip = iproc_gpio_irq_print_chip,
+	.flags = IRQCHIP_IMMUTABLE,
+	GPIOCHIP_IRQ_RESOURCE_HELPERS,
+};
+
 static int iproc_gpio_probe(struct platform_device *pdev)
 {
+	struct gpio_generic_chip_config config;
 	struct device *dev = &pdev->dev;
 	struct device_node *dn = pdev->dev.of_node;
 	struct iproc_gpio_chip *chip;
@@ -211,34 +233,28 @@ static int iproc_gpio_probe(struct platform_device *pdev)
 	if (IS_ERR(chip->base))
 		return PTR_ERR(chip->base);
 
-	ret = bgpio_init(&chip->gc, dev, 4,
-			 chip->base + IPROC_GPIO_CCA_DIN,
-			 chip->base + IPROC_GPIO_CCA_DOUT,
-			 NULL,
-			 chip->base + IPROC_GPIO_CCA_OUT_EN,
-			 NULL,
-			 0);
+	config = (struct gpio_generic_chip_config) {
+		.dev = dev,
+		.sz = 4,
+		.dat = chip->base + IPROC_GPIO_CCA_DIN,
+		.set = chip->base + IPROC_GPIO_CCA_DOUT,
+		.dirout = chip->base + IPROC_GPIO_CCA_OUT_EN,
+	};
+
+	ret = gpio_generic_chip_init(&chip->gen_gc, &config);
 	if (ret) {
 		dev_err(dev, "unable to init GPIO chip\n");
 		return ret;
 	}
 
-	chip->gc.label = dev_name(dev);
+	chip->gen_gc.gc.label = dev_name(dev);
 	if (!of_property_read_u32(dn, "ngpios", &num_gpios))
-		chip->gc.ngpio = num_gpios;
+		chip->gen_gc.gc.ngpio = num_gpios;
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq > 0) {
 		struct gpio_irq_chip *girq;
-		struct irq_chip *irqc;
 		u32 val;
-
-		irqc = &chip->irqchip;
-		irqc->name = dev_name(dev);
-		irqc->irq_ack = iproc_gpio_irq_ack;
-		irqc->irq_mask = iproc_gpio_irq_mask;
-		irqc->irq_unmask = iproc_gpio_irq_unmask;
-		irqc->irq_set_type = iproc_gpio_irq_set_type;
 
 		chip->intr = devm_platform_ioremap_resource(pdev, 1);
 		if (IS_ERR(chip->intr))
@@ -254,14 +270,14 @@ static int iproc_gpio_probe(struct platform_device *pdev)
 		 * a flow-handler because the irq is shared.
 		 */
 		ret = devm_request_irq(dev, irq, iproc_gpio_irq_handler,
-				       IRQF_SHARED, chip->gc.label, &chip->gc);
+				       IRQF_SHARED, chip->gen_gc.gc.label, &chip->gen_gc.gc);
 		if (ret) {
 			dev_err(dev, "Fail to request IRQ%d: %d\n", irq, ret);
 			return ret;
 		}
 
-		girq = &chip->gc.irq;
-		girq->chip = irqc;
+		girq = &chip->gen_gc.gc.irq;
+		gpio_irq_chip_set_chip(girq, &iproc_gpio_irq_chip);
 		/* This will let us handle the parent IRQ in the driver */
 		girq->parent_handler = NULL;
 		girq->num_parents = 0;
@@ -270,7 +286,7 @@ static int iproc_gpio_probe(struct platform_device *pdev)
 		girq->handler = handle_simple_irq;
 	}
 
-	ret = devm_gpiochip_add_data(dev, &chip->gc, chip);
+	ret = devm_gpiochip_add_data(dev, &chip->gen_gc.gc, chip);
 	if (ret) {
 		dev_err(dev, "unable to add GPIO chip\n");
 		return ret;
@@ -279,13 +295,9 @@ static int iproc_gpio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int iproc_gpio_remove(struct platform_device *pdev)
+static void iproc_gpio_remove(struct platform_device *pdev)
 {
-	struct iproc_gpio_chip *chip;
-
-	chip = platform_get_drvdata(pdev);
-	if (!chip)
-		return -ENODEV;
+	struct iproc_gpio_chip *chip = platform_get_drvdata(pdev);
 
 	if (chip->intr) {
 		u32 val;
@@ -294,8 +306,6 @@ static int iproc_gpio_remove(struct platform_device *pdev)
 		val &= ~IPROC_CCA_INT_F_GPIOINT;
 		writel_relaxed(val, chip->intr + IPROC_CCA_INT_MASK);
 	}
-
-	return 0;
 }
 
 static const struct of_device_id bcm_iproc_gpio_of_match[] = {

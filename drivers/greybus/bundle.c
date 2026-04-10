@@ -166,7 +166,7 @@ static const struct dev_pm_ops gb_bundle_pm_ops = {
 	SET_RUNTIME_PM_OPS(gb_bundle_suspend, gb_bundle_resume, gb_bundle_idle)
 };
 
-struct device_type greybus_bundle_type = {
+const struct device_type greybus_bundle_type = {
 	.name =		"greybus_bundle",
 	.release =	gb_bundle_release,
 	.pm =		&gb_bundle_pm_ops,
@@ -197,7 +197,7 @@ struct gb_bundle *gb_bundle_create(struct gb_interface *intf, u8 bundle_id,
 		return NULL;
 	}
 
-	bundle = kzalloc(sizeof(*bundle), GFP_KERNEL);
+	bundle = kzalloc_obj(*bundle);
 	if (!bundle)
 		return NULL;
 

@@ -14,11 +14,8 @@
 #include <linux/slab.h>
 #include <linux/i2c.h>
 #include <linux/hwmon.h>
-#include <linux/hwmon-sysfs.h>
 #include <linux/err.h>
-#include <linux/mutex.h>
 #include <linux/device.h>
-#include <linux/jiffies.h>
 #include <linux/regmap.h>
 
 #define TMP103_TEMP_REG		0x00
@@ -119,7 +116,7 @@ static umode_t tmp103_is_visible(const void *data, enum hwmon_sensor_types type,
 	}
 }
 
-static const struct hwmon_channel_info *tmp103_info[] = {
+static const struct hwmon_channel_info * const tmp103_info[] = {
 	HWMON_CHANNEL_INFO(chip,
 			   HWMON_C_REGISTER_TZ),
 	HWMON_CHANNEL_INFO(temp,
@@ -178,7 +175,7 @@ static int tmp103_probe(struct i2c_client *client)
 	return PTR_ERR_OR_ZERO(hwmon_dev);
 }
 
-static int __maybe_unused tmp103_suspend(struct device *dev)
+static int tmp103_suspend(struct device *dev)
 {
 	struct regmap *regmap = dev_get_drvdata(dev);
 
@@ -186,7 +183,7 @@ static int __maybe_unused tmp103_suspend(struct device *dev)
 				  TMP103_CONF_SD_MASK, 0);
 }
 
-static int __maybe_unused tmp103_resume(struct device *dev)
+static int tmp103_resume(struct device *dev)
 {
 	struct regmap *regmap = dev_get_drvdata(dev);
 
@@ -194,10 +191,10 @@ static int __maybe_unused tmp103_resume(struct device *dev)
 				  TMP103_CONF_SD_MASK, TMP103_CONF_SD);
 }
 
-static SIMPLE_DEV_PM_OPS(tmp103_dev_pm_ops, tmp103_suspend, tmp103_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(tmp103_dev_pm_ops, tmp103_suspend, tmp103_resume);
 
 static const struct i2c_device_id tmp103_id[] = {
-	{ "tmp103", 0 },
+	{ "tmp103" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tmp103_id);
@@ -212,9 +209,9 @@ static struct i2c_driver tmp103_driver = {
 	.driver = {
 		.name	= "tmp103",
 		.of_match_table = of_match_ptr(tmp103_of_match),
-		.pm	= &tmp103_dev_pm_ops,
+		.pm	= pm_sleep_ptr(&tmp103_dev_pm_ops),
 	},
-	.probe_new	= tmp103_probe,
+	.probe		= tmp103_probe,
 	.id_table	= tmp103_id,
 };
 

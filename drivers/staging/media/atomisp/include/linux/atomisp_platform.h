@@ -3,22 +3,11 @@
  * Support for Medifield PNW Camera Imaging ISP subsystem.
  *
  * Copyright (c) 2010 Intel Corporation. All Rights Reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version
- * 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- *
  */
 #ifndef ATOMISP_PLATFORM_H_
 #define ATOMISP_PLATFORM_H_
 
-#include <asm/intel-family.h>
+#include <asm/cpu_device_id.h>
 #include <asm/processor.h>
 
 #include <linux/i2c.h>
@@ -109,57 +98,14 @@ enum atomisp_input_format {
 
 #define N_ATOMISP_INPUT_FORMAT (ATOMISP_INPUT_FORMAT_USER_DEF8 + 1)
 
-enum intel_v4l2_subdev_type {
-	RAW_CAMERA = 1,
-	SOC_CAMERA = 2,
-	CAMERA_MOTOR = 3,
-	LED_FLASH = 4,
-	XENON_FLASH = 5,
-	FILE_INPUT = 6,
-	TEST_PATTERN = 7,
-};
-
-struct intel_v4l2_subdev_id {
-	char name[17];
-	enum intel_v4l2_subdev_type type;
-	enum atomisp_camera_port    port;
-};
-
-struct intel_v4l2_subdev_i2c_board_info {
-	struct i2c_board_info board_info;
-	int i2c_adapter_id;
-};
-
 struct intel_v4l2_subdev_table {
-	struct intel_v4l2_subdev_i2c_board_info v4l2_subdev;
-	enum intel_v4l2_subdev_type type;
 	enum atomisp_camera_port port;
+	unsigned int lanes;
 	struct v4l2_subdev *subdev;
 };
 
-struct atomisp_platform_data {
-	struct intel_v4l2_subdev_table *subdevs;
-};
-
-/* Describe the capacities of one single sensor. */
-struct atomisp_sensor_caps {
-	/* The number of streams this sensor can output. */
-	int stream_num;
-	bool is_slave;
-};
-
-/* Describe the capacities of sensors connected to one camera port. */
-struct atomisp_camera_caps {
-	/* The number of sensors connected to this camera port. */
-	int sensor_num;
-	/* The capacities of each sensor. */
-	struct atomisp_sensor_caps sensor[MAX_SENSORS_PER_PORT];
-	/* Define whether stream control is required for multiple streams. */
-	bool multi_stream_ctrl;
-};
-
 /*
- *  Sensor of external ISP can send multiple steams with different mipi data
+ *  Sensor of external ISP can send multiple streams with different mipi data
  * type in the same virtual channel. This information needs to come from the
  * sensor or external ISP
  */
@@ -181,28 +127,9 @@ struct atomisp_input_stream_info {
 	/*
 	 * if more isys_configs is more than 0, sensor needs to configure the
 	 * input format differently. width and height can be 0. If width and
-	 * height is not zero, then the corresponsing data needs to be set
+	 * height is not zero, then the corresponding data needs to be set
 	 */
 	struct atomisp_isys_config_info isys_info[MAX_STREAMS_PER_CHANNEL];
-};
-
-struct camera_vcm_control;
-struct camera_vcm_ops {
-	int (*power_up)(struct v4l2_subdev *sd, struct camera_vcm_control *vcm);
-	int (*power_down)(struct v4l2_subdev *sd,
-			  struct camera_vcm_control *vcm);
-	int (*queryctrl)(struct v4l2_subdev *sd, struct v4l2_queryctrl *qc,
-			 struct camera_vcm_control *vcm);
-	int (*g_ctrl)(struct v4l2_subdev *sd, struct v4l2_control *ctrl,
-		      struct camera_vcm_control *vcm);
-	int (*s_ctrl)(struct v4l2_subdev *sd, struct v4l2_control *ctrl,
-		      struct camera_vcm_control *vcm);
-};
-
-struct camera_vcm_control {
-	char camera_module[CAMERA_MODULE_ID_LEN];
-	struct camera_vcm_ops *ops;
-	struct list_head list;
 };
 
 struct camera_sensor_platform_data {
@@ -218,8 +145,6 @@ struct camera_sensor_platform_data {
 	int (*v1p8_ctrl)(struct v4l2_subdev *subdev, int on);
 	int (*v2p8_ctrl)(struct v4l2_subdev *subdev, int on);
 	int (*v1p2_ctrl)(struct v4l2_subdev *subdev, int on);
-	struct camera_vcm_control *(*get_vcm_ctrl)(struct v4l2_subdev *subdev,
-		char *module_id);
 };
 
 struct camera_mipi_info {
@@ -227,33 +152,30 @@ struct camera_mipi_info {
 	unsigned int                    num_lanes;
 	enum atomisp_input_format       input_format;
 	enum atomisp_bayer_order        raw_bayer_order;
-	struct atomisp_sensor_mode_data data;
 	enum atomisp_input_format       metadata_format;
 	u32                             metadata_width;
 	u32                             metadata_height;
 	const u32                       *metadata_effective_width;
 };
 
-const struct atomisp_platform_data *atomisp_get_platform_data(void);
-const struct atomisp_camera_caps *atomisp_get_default_camera_caps(void);
+const struct intel_v4l2_subdev_table *atomisp_platform_get_subdevs(void);
+int atomisp_register_sensor_no_gmin(struct v4l2_subdev *subdev, u32 lanes,
+				    enum atomisp_input_format format,
+				    enum atomisp_bayer_order bayer_order);
+void atomisp_unregister_subdev(struct v4l2_subdev *subdev);
 
 /* API from old platform_camera.h, new CPUID implementation */
-#define __IS_SOC(x) (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL && \
-		     boot_cpu_data.x86 == 6 &&                       \
-		     boot_cpu_data.x86_model == (x))
-#define __IS_SOCS(x,y) (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL && \
-		        boot_cpu_data.x86 == 6 &&                       \
-		        (boot_cpu_data.x86_model == (x) || \
-		         boot_cpu_data.x86_model == (y)))
+#define __IS_SOC(x) (boot_cpu_data.x86_vfm == x)
+#define __IS_SOCS(x, y) (boot_cpu_data.x86_vfm == x || boot_cpu_data.x86_vfm == y)
 
-#define IS_MFLD	__IS_SOC(INTEL_FAM6_ATOM_SALTWELL_MID)
-#define IS_BYT	__IS_SOC(INTEL_FAM6_ATOM_SILVERMONT)
-#define IS_CHT	__IS_SOC(INTEL_FAM6_ATOM_AIRMONT)
-#define IS_MRFD	__IS_SOC(INTEL_FAM6_ATOM_SILVERMONT_MID)
-#define IS_MOFD	__IS_SOC(INTEL_FAM6_ATOM_AIRMONT_MID)
+#define IS_MFLD	__IS_SOC(INTEL_ATOM_SALTWELL_MID)
+#define IS_BYT	__IS_SOC(INTEL_ATOM_SILVERMONT)
+#define IS_CHT	__IS_SOC(INTEL_ATOM_AIRMONT)
+#define IS_MRFD	__IS_SOC(INTEL_ATOM_SILVERMONT_MID)
+#define IS_MOFD	__IS_SOC(INTEL_ATOM_SILVERMONT_MID2)
 
 /* Both CHT and MOFD come with ISP2401 */
-#define IS_ISP2401 __IS_SOCS(INTEL_FAM6_ATOM_AIRMONT, \
-			     INTEL_FAM6_ATOM_AIRMONT_MID)
+#define IS_ISP2401 __IS_SOCS(INTEL_ATOM_AIRMONT, \
+			     INTEL_ATOM_SILVERMONT_MID2)
 
 #endif /* ATOMISP_PLATFORM_H_ */

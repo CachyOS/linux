@@ -36,7 +36,9 @@ struct aa_caps {
 
 extern struct aa_sfs_entry aa_sfs_entry_caps[];
 
-int aa_capable(struct aa_label *label, int cap, unsigned int opts);
+kernel_cap_t aa_profile_capget(struct aa_profile *profile);
+int aa_capable(const struct cred *subj_cred, struct aa_label *label,
+	       int cap, unsigned int opts);
 
 static inline void aa_free_cap_rules(struct aa_caps *caps)
 {

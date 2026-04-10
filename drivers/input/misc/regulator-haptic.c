@@ -14,6 +14,7 @@
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 
 #define MAX_MAGNITUDE_SHIFT	16
 
@@ -44,7 +45,7 @@ static int regulator_haptic_toggle(struct regulator_haptic *haptic, bool on)
 		if (error) {
 			dev_err(haptic->dev,
 				"failed to switch regulator %s: %d\n",
-				on ? "on" : "off", error);
+				str_on_off(on), error);
 			return error;
 		}
 
@@ -83,12 +84,10 @@ static void regulator_haptic_work(struct work_struct *work)
 	struct regulator_haptic *haptic = container_of(work,
 					struct regulator_haptic, work);
 
-	mutex_lock(&haptic->mutex);
+	guard(mutex)(&haptic->mutex);
 
 	if (!haptic->suspended)
 		regulator_haptic_set_voltage(haptic, haptic->magnitude);
-
-	mutex_unlock(&haptic->mutex);
 }
 
 static int regulator_haptic_play_effect(struct input_dev *input, void *data,
@@ -201,32 +200,28 @@ static int regulator_haptic_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int __maybe_unused regulator_haptic_suspend(struct device *dev)
+static int regulator_haptic_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct regulator_haptic *haptic = platform_get_drvdata(pdev);
-	int error;
 
-	error = mutex_lock_interruptible(&haptic->mutex);
-	if (error)
-		return error;
+	scoped_guard(mutex_intr, &haptic->mutex) {
+		regulator_haptic_set_voltage(haptic, 0);
+		haptic->suspended = true;
 
-	regulator_haptic_set_voltage(haptic, 0);
+		return 0;
+	}
 
-	haptic->suspended = true;
-
-	mutex_unlock(&haptic->mutex);
-
-	return 0;
+	return -EINTR;
 }
 
-static int __maybe_unused regulator_haptic_resume(struct device *dev)
+static int regulator_haptic_resume(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct regulator_haptic *haptic = platform_get_drvdata(pdev);
 	unsigned int magnitude;
 
-	mutex_lock(&haptic->mutex);
+	guard(mutex)(&haptic->mutex);
 
 	haptic->suspended = false;
 
@@ -234,12 +229,10 @@ static int __maybe_unused regulator_haptic_resume(struct device *dev)
 	if (magnitude)
 		regulator_haptic_set_voltage(haptic, magnitude);
 
-	mutex_unlock(&haptic->mutex);
-
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(regulator_haptic_pm_ops,
+static DEFINE_SIMPLE_DEV_PM_OPS(regulator_haptic_pm_ops,
 		regulator_haptic_suspend, regulator_haptic_resume);
 
 static const struct of_device_id regulator_haptic_dt_match[] = {
@@ -253,7 +246,7 @@ static struct platform_driver regulator_haptic_driver = {
 	.driver		= {
 		.name		= "regulator-haptic",
 		.of_match_table = regulator_haptic_dt_match,
-		.pm		= &regulator_haptic_pm_ops,
+		.pm		= pm_sleep_ptr(&regulator_haptic_pm_ops),
 	},
 };
 module_platform_driver(regulator_haptic_driver);

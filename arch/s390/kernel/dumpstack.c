@@ -17,6 +17,7 @@
 #include <linux/sched.h>
 #include <linux/sched/debug.h>
 #include <linux/sched/task_stack.h>
+#include <asm/asm-offsets.h>
 #include <asm/processor.h>
 #include <asm/debug.h>
 #include <asm/dis.h>
@@ -41,60 +42,50 @@ const char *stack_type_name(enum stack_type type)
 EXPORT_SYMBOL_GPL(stack_type_name);
 
 static inline bool in_stack(unsigned long sp, struct stack_info *info,
-			    enum stack_type type, unsigned long low,
-			    unsigned long high)
+			    enum stack_type type, unsigned long stack)
 {
-	if (sp < low || sp >= high)
+	if (sp < stack || sp >= stack + THREAD_SIZE)
 		return false;
 	info->type = type;
-	info->begin = low;
-	info->end = high;
+	info->begin = stack;
+	info->end = stack + THREAD_SIZE;
 	return true;
 }
 
 static bool in_task_stack(unsigned long sp, struct task_struct *task,
 			  struct stack_info *info)
 {
-	unsigned long stack;
+	unsigned long stack = (unsigned long)task_stack_page(task);
 
-	stack = (unsigned long) task_stack_page(task);
-	return in_stack(sp, info, STACK_TYPE_TASK, stack, stack + THREAD_SIZE);
+	return in_stack(sp, info, STACK_TYPE_TASK, stack);
 }
 
 static bool in_irq_stack(unsigned long sp, struct stack_info *info)
 {
-	unsigned long frame_size, top;
+	unsigned long stack = get_lowcore()->async_stack - STACK_INIT_OFFSET;
 
-	frame_size = STACK_FRAME_OVERHEAD + sizeof(struct pt_regs);
-	top = S390_lowcore.async_stack + frame_size;
-	return in_stack(sp, info, STACK_TYPE_IRQ, top - THREAD_SIZE, top);
+	return in_stack(sp, info, STACK_TYPE_IRQ, stack);
 }
 
 static bool in_nodat_stack(unsigned long sp, struct stack_info *info)
 {
-	unsigned long frame_size, top;
+	unsigned long stack = get_lowcore()->nodat_stack - STACK_INIT_OFFSET;
 
-	frame_size = STACK_FRAME_OVERHEAD + sizeof(struct pt_regs);
-	top = S390_lowcore.nodat_stack + frame_size;
-	return in_stack(sp, info, STACK_TYPE_NODAT, top - THREAD_SIZE, top);
+	return in_stack(sp, info, STACK_TYPE_NODAT, stack);
 }
 
 static bool in_mcck_stack(unsigned long sp, struct stack_info *info)
 {
-	unsigned long frame_size, top;
+	unsigned long stack = get_lowcore()->mcck_stack - STACK_INIT_OFFSET;
 
-	frame_size = STACK_FRAME_OVERHEAD + sizeof(struct pt_regs);
-	top = S390_lowcore.mcck_stack + frame_size;
-	return in_stack(sp, info, STACK_TYPE_MCCK, top - THREAD_SIZE, top);
+	return in_stack(sp, info, STACK_TYPE_MCCK, stack);
 }
 
 static bool in_restart_stack(unsigned long sp, struct stack_info *info)
 {
-	unsigned long frame_size, top;
+	unsigned long stack = get_lowcore()->restart_stack - STACK_INIT_OFFSET;
 
-	frame_size = STACK_FRAME_OVERHEAD + sizeof(struct pt_regs);
-	top = S390_lowcore.restart_stack + frame_size;
-	return in_stack(sp, info, STACK_TYPE_RESTART, top - THREAD_SIZE, top);
+	return in_stack(sp, info, STACK_TYPE_RESTART, stack);
 }
 
 int get_stack_info(unsigned long sp, struct task_struct *task,
@@ -152,18 +143,28 @@ void show_stack(struct task_struct *task, unsigned long *stack,
 static void show_last_breaking_event(struct pt_regs *regs)
 {
 	printk("Last Breaking-Event-Address:\n");
-	printk(" [<%016lx>] %pSR\n", regs->last_break, (void *)regs->last_break);
+	printk(" [<%016lx>] ", regs->last_break);
+	if (user_mode(regs)) {
+		print_vma_addr(KERN_CONT, regs->last_break);
+		pr_cont("\n");
+	} else {
+		pr_cont("%pSR\n", (void *)regs->last_break);
+	}
 }
 
 void show_registers(struct pt_regs *regs)
 {
 	struct psw_bits *psw = &psw_bits(regs->psw);
+	unsigned long pswaddr;
 	char *mode;
 
+	pswaddr = regs->psw.addr;
+	if (test_pt_regs_flag(regs, PIF_PSW_ADDR_ADJUSTED))
+		pswaddr = __forward_psw(regs->psw, regs->int_code >> 16);
 	mode = user_mode(regs) ? "User" : "Krnl";
-	printk("%s PSW : %px %px", mode, (void *)regs->psw.mask, (void *)regs->psw.addr);
+	printk("%s PSW : %px %px", mode, (void *)regs->psw.mask, (void *)pswaddr);
 	if (!user_mode(regs))
-		pr_cont(" (%pSR)", (void *)regs->psw.addr);
+		pr_cont(" (%pSR)", (void *)pswaddr);
 	pr_cont("\n");
 	printk("           R:%x T:%x IO:%x EX:%x Key:%x M:%x W:%x "
 	       "P:%x AS:%x CC:%x PM:%x", psw->per, psw->dat, psw->io, psw->ext,
@@ -202,13 +203,8 @@ void __noreturn die(struct pt_regs *regs, const char *str)
 	console_verbose();
 	spin_lock_irq(&die_lock);
 	bust_spinlocks(1);
-	printk("%s: %04x ilc:%d [#%d] ", str, regs->int_code & 0xffff,
+	printk("%s: %04x ilc:%d [#%d]", str, regs->int_code & 0xffff,
 	       regs->int_code >> 17, ++die_counter);
-#ifdef CONFIG_PREEMPT
-	pr_cont("PREEMPT ");
-#elif defined(CONFIG_PREEMPT_RT)
-	pr_cont("PREEMPT_RT ");
-#endif
 	pr_cont("SMP ");
 	if (debug_pagealloc_enabled())
 		pr_cont("DEBUG_PAGEALLOC");

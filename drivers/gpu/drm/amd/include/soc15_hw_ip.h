@@ -43,6 +43,7 @@
 #define DAZ_HWID                                         274
 #define SDPMUX_HWID                                       19
 #define NTB_HWID                                          20
+#define VPE_HWID                                          21
 #define IOHC_HWID                                         24
 #define L2IMU_HWID                                        28
 #define VCE_HWID                                          32
@@ -99,5 +100,7 @@
 #define XGMI_HWID                                        200
 #define XGBE_HWID                                        216
 #define MP0_HWID                                         255
+#define ATU_HWID                                         294
+#define AIGC_HWID                                        295
 
 #endif

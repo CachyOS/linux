@@ -11,7 +11,6 @@
 #include <linux/kernel.h>
 #include <linux/compiler.h>
 #include <linux/string.h>
-#include <linux/version.h>
 #include <linux/pci.h>
 #include <linux/delay.h>
 #include <scsi/scsi_transport.h>
@@ -87,18 +86,6 @@ void qedi_dbg_notice(struct qedi_dbg_ctx *qedi, const char *func, u32 line,
 		     const char *fmt, ...);
 void qedi_dbg_info(struct qedi_dbg_ctx *qedi, const char *func, u32 line,
 		   u32 info, const char *fmt, ...);
-
-struct Scsi_Host;
-
-struct sysfs_bin_attrs {
-	char *name;
-	struct bin_attribute *attr;
-};
-
-int qedi_create_sysfs_attr(struct Scsi_Host *shost,
-			   struct sysfs_bin_attrs *iter);
-void qedi_remove_sysfs_attr(struct Scsi_Host *shost,
-			    struct sysfs_bin_attrs *iter);
 
 /* DebugFS related code */
 struct qedi_list_of_funcs {

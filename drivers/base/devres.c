@@ -29,10 +29,10 @@ struct devres {
 	 * Some archs want to perform DMA into kmalloc caches
 	 * and need a guaranteed alignment larger than
 	 * the alignment of a 64-bit integer.
-	 * Thus we use ARCH_KMALLOC_MINALIGN here and get exactly the same
-	 * buffer alignment as if it was allocated by plain kmalloc().
+	 * Thus we use ARCH_DMA_MINALIGN for data[] which will force the same
+	 * alignment for struct devres when allocated by kmalloc().
 	 */
-	u8 __aligned(ARCH_KMALLOC_MINALIGN) data[];
+	u8 __aligned(ARCH_DMA_MINALIGN) data[];
 };
 
 struct devres_group {
@@ -85,7 +85,7 @@ static void group_close_release(struct device *dev, void *res)
 	/* noop */
 }
 
-static struct devres_group * node_to_group(struct devres_node *node)
+static struct devres_group *node_to_group(struct devres_node *node)
 {
 	if (node->release == &group_open_release)
 		return container_of(node, struct devres_group, node[0]);
@@ -101,11 +101,14 @@ static bool check_dr_size(size_t size, size_t *tot_size)
 					size, tot_size)))
 		return false;
 
+	/* Actually allocate the full kmalloc bucket size. */
+	*tot_size = kmalloc_size_roundup(*tot_size);
+
 	return true;
 }
 
-static __always_inline struct devres * alloc_dr(dr_release_t release,
-						size_t size, gfp_t gfp, int nid)
+static __always_inline struct devres *alloc_dr(dr_release_t release,
+					       size_t size, gfp_t gfp, int nid)
 {
 	size_t tot_size;
 	struct devres *dr;
@@ -117,7 +120,9 @@ static __always_inline struct devres * alloc_dr(dr_release_t release,
 	if (unlikely(!dr))
 		return NULL;
 
-	memset(dr, 0, offsetof(struct devres, data));
+	/* No need to clear memory twice */
+	if (!(gfp & __GFP_ZERO))
+		memset(dr, 0, offsetof(struct devres, data));
 
 	INIT_LIST_HEAD(&dr->node.entry);
 	dr->node.release = release;
@@ -278,8 +283,8 @@ static struct devres *find_dr(struct device *dev, dr_release_t release,
  * RETURNS:
  * Pointer to found devres, NULL if not found.
  */
-void * devres_find(struct device *dev, dr_release_t release,
-		   dr_match_t match, void *match_data)
+void *devres_find(struct device *dev, dr_release_t release,
+		  dr_match_t match, void *match_data)
 {
 	struct devres *dr;
 	unsigned long flags;
@@ -308,8 +313,8 @@ EXPORT_SYMBOL_GPL(devres_find);
  * RETURNS:
  * Pointer to found or added devres.
  */
-void * devres_get(struct device *dev, void *new_res,
-		  dr_match_t match, void *match_data)
+void *devres_get(struct device *dev, void *new_res,
+		 dr_match_t match, void *match_data)
 {
 	struct devres *new_dr = container_of(new_res, struct devres, data);
 	struct devres *dr;
@@ -344,8 +349,8 @@ EXPORT_SYMBOL_GPL(devres_get);
  * RETURNS:
  * Pointer to removed devres on success, NULL if not found.
  */
-void * devres_remove(struct device *dev, dr_release_t release,
-		     dr_match_t match, void *match_data)
+void *devres_remove(struct device *dev, dr_release_t release,
+		    dr_match_t match, void *match_data)
 {
 	struct devres *dr;
 	unsigned long flags;
@@ -544,12 +549,12 @@ int devres_release_all(struct device *dev)
  * RETURNS:
  * ID of the new group, NULL on failure.
  */
-void * devres_open_group(struct device *dev, void *id, gfp_t gfp)
+void *devres_open_group(struct device *dev, void *id, gfp_t gfp)
 {
 	struct devres_group *grp;
 	unsigned long flags;
 
-	grp = kmalloc(sizeof(*grp), gfp);
+	grp = kmalloc_obj(*grp, gfp);
 	if (unlikely(!grp))
 		return NULL;
 
@@ -562,6 +567,7 @@ void * devres_open_group(struct device *dev, void *id, gfp_t gfp)
 	grp->id = grp;
 	if (id)
 		grp->id = id;
+	grp->color = 0;
 
 	spin_lock_irqsave(&dev->devres_lock, flags);
 	add_dr(dev, &grp->node[0]);
@@ -570,8 +576,11 @@ void * devres_open_group(struct device *dev, void *id, gfp_t gfp)
 }
 EXPORT_SYMBOL_GPL(devres_open_group);
 
-/* Find devres group with ID @id.  If @id is NULL, look for the latest. */
-static struct devres_group * find_group(struct device *dev, void *id)
+/*
+ * Find devres group with ID @id.  If @id is NULL, look for the latest open
+ * group.
+ */
+static struct devres_group *find_group(struct device *dev, void *id)
 {
 	struct devres_node *node;
 
@@ -681,6 +690,13 @@ int devres_release_group(struct device *dev, void *id)
 		spin_unlock_irqrestore(&dev->devres_lock, flags);
 
 		release_nodes(dev, &todo);
+	} else if (list_empty(&dev->devres_head)) {
+		/*
+		 * dev is probably dying via devres_release_all(): groups
+		 * have already been removed and are on the process of
+		 * being released - don't touch and don't warn.
+		 */
+		spin_unlock_irqrestore(&dev->devres_lock, flags);
 	} else {
 		WARN_ON(1);
 		spin_unlock_irqrestore(&dev->devres_lock, flags);
@@ -717,20 +733,21 @@ static void devm_action_release(struct device *dev, void *res)
 }
 
 /**
- * devm_add_action() - add a custom action to list of managed resources
+ * __devm_add_action() - add a custom action to list of managed resources
  * @dev: Device that owns the action
  * @action: Function that should be called
  * @data: Pointer to data passed to @action implementation
+ * @name: Name of the resource (for debugging purposes)
  *
  * This adds a custom action to the list of managed resources so that
  * it gets executed as part of standard resource unwinding.
  */
-int devm_add_action(struct device *dev, void (*action)(void *), void *data)
+int __devm_add_action(struct device *dev, void (*action)(void *), void *data, const char *name)
 {
 	struct action_devres *devres;
 
-	devres = devres_alloc(devm_action_release,
-			      sizeof(struct action_devres), GFP_KERNEL);
+	devres = __devres_alloc_node(devm_action_release, sizeof(struct action_devres),
+				     GFP_KERNEL, NUMA_NO_NODE, name);
 	if (!devres)
 		return -ENOMEM;
 
@@ -740,28 +757,52 @@ int devm_add_action(struct device *dev, void (*action)(void *), void *data)
 	devres_add(dev, devres);
 	return 0;
 }
-EXPORT_SYMBOL_GPL(devm_add_action);
+EXPORT_SYMBOL_GPL(__devm_add_action);
 
-/**
- * devm_remove_action() - removes previously added custom action
- * @dev: Device that owns the action
- * @action: Function implementing the action
- * @data: Pointer to data passed to @action implementation
- *
- * Removes instance of @action previously added by devm_add_action().
- * Both action and data should match one of the existing entries.
- */
-void devm_remove_action(struct device *dev, void (*action)(void *), void *data)
+bool devm_is_action_added(struct device *dev, void (*action)(void *), void *data)
 {
 	struct action_devres devres = {
 		.data = data,
 		.action = action,
 	};
 
-	WARN_ON(devres_destroy(dev, devm_action_release, devm_action_match,
-			       &devres));
+	return devres_find(dev, devm_action_release, devm_action_match, &devres);
 }
-EXPORT_SYMBOL_GPL(devm_remove_action);
+EXPORT_SYMBOL_GPL(devm_is_action_added);
+
+/**
+ * devm_remove_action_nowarn() - removes previously added custom action
+ * @dev: Device that owns the action
+ * @action: Function implementing the action
+ * @data: Pointer to data passed to @action implementation
+ *
+ * Removes instance of @action previously added by devm_add_action().
+ * Both action and data should match one of the existing entries.
+ *
+ * In contrast to devm_remove_action(), this function does not WARN() if no
+ * entry could have been found.
+ *
+ * This should only be used if the action is contained in an object with
+ * independent lifetime management, e.g. the Devres rust abstraction.
+ *
+ * Causing the warning from regular driver code most likely indicates an abuse
+ * of the devres API.
+ *
+ * Returns: 0 on success, -ENOENT if no entry could have been found.
+ */
+int devm_remove_action_nowarn(struct device *dev,
+			      void (*action)(void *),
+			      void *data)
+{
+	struct action_devres devres = {
+		.data = data,
+		.action = action,
+	};
+
+	return devres_destroy(dev, devm_action_release, devm_action_match,
+			      &devres);
+}
+EXPORT_SYMBOL_GPL(devm_remove_action_nowarn);
 
 /**
  * devm_release_action() - release previously added custom action
@@ -890,9 +931,12 @@ void *devm_krealloc(struct device *dev, void *ptr, size_t new_size, gfp_t gfp)
 	/*
 	 * Otherwise: allocate new, larger chunk. We need to allocate before
 	 * taking the lock as most probably the caller uses GFP_KERNEL.
+	 * alloc_dr() will call check_dr_size() to reserve extra memory
+	 * for struct devres automatically, so size @new_size user request
+	 * is delivered to it directly as devm_kmalloc() does.
 	 */
 	new_dr = alloc_dr(devm_kmalloc_release,
-			  total_new_size, gfp, dev_to_node(dev));
+			  new_size, gfp, dev_to_node(dev));
 	if (!new_dr)
 		return NULL;
 
@@ -943,17 +987,10 @@ EXPORT_SYMBOL_GPL(devm_krealloc);
  */
 char *devm_kstrdup(struct device *dev, const char *s, gfp_t gfp)
 {
-	size_t size;
-	char *buf;
-
 	if (!s)
 		return NULL;
 
-	size = strlen(s) + 1;
-	buf = devm_kmalloc(dev, size, gfp);
-	if (buf)
-		memcpy(buf, s, size);
-	return buf;
+	return devm_kmemdup(dev, s, strlen(s) + 1, gfp);
 }
 EXPORT_SYMBOL_GPL(devm_kstrdup);
 
@@ -1080,6 +1117,27 @@ void *devm_kmemdup(struct device *dev, const void *src, size_t len, gfp_t gfp)
 }
 EXPORT_SYMBOL_GPL(devm_kmemdup);
 
+/**
+ * devm_kmemdup_const - conditionally duplicate and manage a region of memory
+ *
+ * @dev: Device this memory belongs to
+ * @src: memory region to duplicate
+ * @len: memory region length,
+ * @gfp: GFP mask to use
+ *
+ * Return: source address if it is in .rodata or the return value of kmemdup()
+ * to which the function falls back otherwise.
+ */
+const void *
+devm_kmemdup_const(struct device *dev, const void *src, size_t len, gfp_t gfp)
+{
+	if (is_kernel_rodata((unsigned long)src))
+		return src;
+
+	return devm_kmemdup(dev, src, len, gfp);
+}
+EXPORT_SYMBOL_GPL(devm_kmemdup_const);
+
 struct pages_devres {
 	unsigned long addr;
 	unsigned int order;
@@ -1164,13 +1222,6 @@ static void devm_percpu_release(struct device *dev, void *pdata)
 	free_percpu(p);
 }
 
-static int devm_percpu_match(struct device *dev, void *data, void *p)
-{
-	struct devres *devr = container_of(data, struct devres, data);
-
-	return *(void **)devr->data == p;
-}
-
 /**
  * __devm_alloc_percpu - Resource-managed alloc_percpu
  * @dev: Device to allocate per-cpu memory for
@@ -1206,17 +1257,3 @@ void __percpu *__devm_alloc_percpu(struct device *dev, size_t size,
 	return pcpu;
 }
 EXPORT_SYMBOL_GPL(__devm_alloc_percpu);
-
-/**
- * devm_free_percpu - Resource-managed free_percpu
- * @dev: Device this memory belongs to
- * @pdata: Per-cpu memory to free
- *
- * Free memory allocated with devm_alloc_percpu().
- */
-void devm_free_percpu(struct device *dev, void __percpu *pdata)
-{
-	WARN_ON(devres_destroy(dev, devm_percpu_release, devm_percpu_match,
-			       (__force void *)pdata));
-}
-EXPORT_SYMBOL_GPL(devm_free_percpu);

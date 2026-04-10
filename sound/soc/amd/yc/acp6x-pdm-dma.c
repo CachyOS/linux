@@ -7,6 +7,7 @@
 
 #include <linux/platform_device.h>
 #include <linux/module.h>
+#include <linux/bitfield.h>
 #include <linux/err.h>
 #include <linux/io.h>
 #include <sound/pcm_params.h>
@@ -17,6 +18,10 @@
 #include "acp6x.h"
 
 #define DRV_NAME "acp_yc_pdm_dma"
+
+static int pdm_gain = 3;
+module_param(pdm_gain, int, 0644);
+MODULE_PARM_DESC(pdm_gain, "Gain control (0-3)");
 
 static const struct snd_pcm_hardware acp6x_pdm_hardware_capture = {
 	.info = SNDRV_PCM_INFO_INTERLEAVED |
@@ -55,7 +60,8 @@ static void acp6x_enable_pdm_clock(void __iomem *acp_base)
 
 	acp6x_writel(pdm_clk_enable, acp_base + ACP_WOV_CLK_CTRL);
 	pdm_ctrl = acp6x_readl(acp_base + ACP_WOV_MISC_CTRL);
-	pdm_ctrl |= ACP_WOV_MISC_CTRL_MASK;
+	pdm_ctrl &= ~ACP_WOV_GAIN_CONTROL;
+	pdm_ctrl |= FIELD_PREP(ACP_WOV_GAIN_CONTROL, clamp(pdm_gain, 0, 3));
 	acp6x_writel(pdm_ctrl, acp_base + ACP_WOV_MISC_CTRL);
 }
 
@@ -181,7 +187,7 @@ static int acp6x_pdm_dma_open(struct snd_soc_component *component,
 
 	runtime = substream->runtime;
 	adata = dev_get_drvdata(component->dev);
-	pdm_data = kzalloc(sizeof(*pdm_data), GFP_KERNEL);
+	pdm_data = kzalloc_obj(*pdm_data);
 	if (!pdm_data)
 		return -EINVAL;
 
@@ -335,12 +341,13 @@ static struct snd_soc_dai_driver acp6x_pdm_dai_driver = {
 };
 
 static const struct snd_soc_component_driver acp6x_pdm_component = {
-	.name		= DRV_NAME,
-	.open		= acp6x_pdm_dma_open,
-	.close		= acp6x_pdm_dma_close,
-	.hw_params	= acp6x_pdm_dma_hw_params,
-	.pointer	= acp6x_pdm_dma_pointer,
-	.pcm_construct	= acp6x_pdm_dma_new,
+	.name			= DRV_NAME,
+	.open			= acp6x_pdm_dma_open,
+	.close			= acp6x_pdm_dma_close,
+	.hw_params		= acp6x_pdm_dma_hw_params,
+	.pointer		= acp6x_pdm_dma_pointer,
+	.pcm_construct		= acp6x_pdm_dma_new,
+	.legacy_dai_naming	= 1,
 };
 
 static int acp6x_pdm_audio_probe(struct platform_device *pdev)
@@ -376,18 +383,18 @@ static int acp6x_pdm_audio_probe(struct platform_device *pdev)
 	}
 	pm_runtime_set_autosuspend_delay(&pdev->dev, ACP_SUSPEND_DELAY_MS);
 	pm_runtime_use_autosuspend(&pdev->dev);
+	pm_runtime_mark_last_busy(&pdev->dev);
+	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
-	pm_runtime_allow(&pdev->dev);
 	return 0;
 }
 
-static int acp6x_pdm_audio_remove(struct platform_device *pdev)
+static void acp6x_pdm_audio_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
-	return 0;
 }
 
-static int __maybe_unused acp6x_pdm_resume(struct device *dev)
+static int acp6x_pdm_resume(struct device *dev)
 {
 	struct pdm_dev_data *adata;
 	struct snd_pcm_runtime *runtime;
@@ -408,7 +415,7 @@ static int __maybe_unused acp6x_pdm_resume(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused acp6x_pdm_suspend(struct device *dev)
+static int acp6x_pdm_suspend(struct device *dev)
 {
 	struct pdm_dev_data *adata;
 
@@ -417,7 +424,7 @@ static int __maybe_unused acp6x_pdm_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused acp6x_pdm_runtime_resume(struct device *dev)
+static int acp6x_pdm_runtime_resume(struct device *dev)
 {
 	struct pdm_dev_data *adata;
 
@@ -427,8 +434,8 @@ static int __maybe_unused acp6x_pdm_runtime_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops acp6x_pdm_pm_ops = {
-	SET_RUNTIME_PM_OPS(acp6x_pdm_suspend, acp6x_pdm_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(acp6x_pdm_suspend, acp6x_pdm_resume)
+	RUNTIME_PM_OPS(acp6x_pdm_suspend, acp6x_pdm_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(acp6x_pdm_suspend, acp6x_pdm_resume)
 };
 
 static struct platform_driver acp6x_pdm_dma_driver = {
@@ -436,7 +443,7 @@ static struct platform_driver acp6x_pdm_dma_driver = {
 	.remove = acp6x_pdm_audio_remove,
 	.driver = {
 		.name = "acp_yc_pdm_dma",
-		.pm = &acp6x_pdm_pm_ops,
+		.pm = pm_ptr(&acp6x_pdm_pm_ops),
 	},
 };
 

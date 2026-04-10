@@ -294,9 +294,8 @@ static int ne_setup_cpu_pool(const char *ne_cpu_list)
 
 	ne_cpu_pool.nr_parent_vm_cores = nr_cpu_ids / ne_cpu_pool.nr_threads_per_core;
 
-	ne_cpu_pool.avail_threads_per_core = kcalloc(ne_cpu_pool.nr_parent_vm_cores,
-						     sizeof(*ne_cpu_pool.avail_threads_per_core),
-						     GFP_KERNEL);
+	ne_cpu_pool.avail_threads_per_core = kzalloc_objs(*ne_cpu_pool.avail_threads_per_core,
+							  ne_cpu_pool.nr_parent_vm_cores);
 	if (!ne_cpu_pool.avail_threads_per_core) {
 		rc = -ENOMEM;
 
@@ -928,23 +927,21 @@ static int ne_set_user_memory_region_ioctl(struct ne_enclave *ne_enclave,
 	if (rc < 0)
 		return rc;
 
-	ne_mem_region = kzalloc(sizeof(*ne_mem_region), GFP_KERNEL);
+	ne_mem_region = kzalloc_obj(*ne_mem_region);
 	if (!ne_mem_region)
 		return -ENOMEM;
 
 	max_nr_pages = mem_region.memory_size / NE_MIN_MEM_REGION_SIZE;
 
-	ne_mem_region->pages = kcalloc(max_nr_pages, sizeof(*ne_mem_region->pages),
-				       GFP_KERNEL);
+	ne_mem_region->pages = kzalloc_objs(*ne_mem_region->pages, max_nr_pages);
 	if (!ne_mem_region->pages) {
 		rc = -ENOMEM;
 
 		goto free_mem_region;
 	}
 
-	phys_contig_mem_regions.regions = kcalloc(max_nr_pages,
-						  sizeof(*phys_contig_mem_regions.regions),
-						  GFP_KERNEL);
+	phys_contig_mem_regions.regions = kzalloc_objs(*phys_contig_mem_regions.regions,
+						       max_nr_pages);
 	if (!phys_contig_mem_regions.regions) {
 		rc = -ENOMEM;
 
@@ -1617,7 +1614,7 @@ static int ne_create_vm_ioctl(struct ne_pci_dev *ne_pci_dev, u64 __user *slot_ui
 
 	mutex_unlock(&ne_cpu_pool.mutex);
 
-	ne_enclave = kzalloc(sizeof(*ne_enclave), GFP_KERNEL);
+	ne_enclave = kzalloc_obj(*ne_enclave);
 	if (!ne_enclave)
 		return -ENOMEM;
 
@@ -1629,9 +1626,8 @@ static int ne_create_vm_ioctl(struct ne_pci_dev *ne_pci_dev, u64 __user *slot_ui
 
 	mutex_unlock(&ne_cpu_pool.mutex);
 
-	ne_enclave->threads_per_core = kcalloc(ne_enclave->nr_parent_vm_cores,
-					       sizeof(*ne_enclave->threads_per_core),
-					       GFP_KERNEL);
+	ne_enclave->threads_per_core = kzalloc_objs(*ne_enclave->threads_per_core,
+						    ne_enclave->nr_parent_vm_cores);
 	if (!ne_enclave->threads_per_core) {
 		rc = -ENOMEM;
 
@@ -1759,35 +1755,10 @@ static long ne_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 #if defined(CONFIG_NITRO_ENCLAVES_MISC_DEV_TEST)
 #include "ne_misc_dev_test.c"
-
-static inline int ne_misc_dev_test_init(void)
-{
-	return __kunit_test_suites_init(ne_misc_dev_test_suites);
-}
-
-static inline void ne_misc_dev_test_exit(void)
-{
-	__kunit_test_suites_exit(ne_misc_dev_test_suites);
-}
-#else
-static inline int ne_misc_dev_test_init(void)
-{
-	return 0;
-}
-
-static inline void ne_misc_dev_test_exit(void)
-{
-}
 #endif
 
 static int __init ne_init(void)
 {
-	int rc = 0;
-
-	rc = ne_misc_dev_test_init();
-	if (rc < 0)
-		return rc;
-
 	mutex_init(&ne_cpu_pool.mutex);
 
 	return pci_register_driver(&ne_pci_driver);
@@ -1798,8 +1769,6 @@ static void __exit ne_exit(void)
 	pci_unregister_driver(&ne_pci_driver);
 
 	ne_teardown_cpu_pool();
-
-	ne_misc_dev_test_exit();
 }
 
 module_init(ne_init);

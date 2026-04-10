@@ -64,7 +64,7 @@ static int update_liodn_stash(int liodn, struct fsl_dma_domain *dma_domain,
 	spin_lock_irqsave(&iommu_lock, flags);
 	ret = pamu_update_paace_stash(liodn, val);
 	if (ret) {
-		pr_debug("Failed to update SPAACE for liodn %d\n ", liodn);
+		pr_debug("Failed to update SPAACE for liodn %d\n", liodn);
 		spin_unlock_irqrestore(&iommu_lock, flags);
 		return ret;
 	}
@@ -178,7 +178,7 @@ static phys_addr_t fsl_pamu_iova_to_phys(struct iommu_domain *domain,
 	return iova;
 }
 
-static bool fsl_pamu_capable(enum iommu_cap cap)
+static bool fsl_pamu_capable(struct device *dev, enum iommu_cap cap)
 {
 	return cap == IOMMU_CAP_CACHE_COHERENCY;
 }
@@ -196,6 +196,13 @@ static struct iommu_domain *fsl_pamu_domain_alloc(unsigned type)
 {
 	struct fsl_dma_domain *dma_domain;
 
+	/*
+	 * FIXME: This isn't creating an unmanaged domain since the
+	 * default_domain_ops do not have any map/unmap function it doesn't meet
+	 * the requirements for __IOMMU_DOMAIN_PAGING. The only purpose seems to
+	 * allow drivers/soc/fsl/qbman/qman_portal.c to do
+	 * fsl_pamu_configure_l1_stash()
+	 */
 	if (type != IOMMU_DOMAIN_UNMANAGED)
 		return NULL;
 
@@ -231,7 +238,7 @@ static int update_domain_stash(struct fsl_dma_domain *dma_domain, u32 val)
 }
 
 static int fsl_pamu_attach_device(struct iommu_domain *domain,
-				  struct device *dev)
+				  struct device *dev, struct iommu_domain *old)
 {
 	struct fsl_dma_domain *dma_domain = to_fsl_dma_domain(domain);
 	unsigned long flags;
@@ -258,7 +265,7 @@ static int fsl_pamu_attach_device(struct iommu_domain *domain,
 	liodn = of_get_property(dev->of_node, "fsl,liodn", &len);
 	if (!liodn) {
 		pr_debug("missing fsl,liodn property at %pOF\n", dev->of_node);
-		return -EINVAL;
+		return -ENODEV;
 	}
 
 	spin_lock_irqsave(&dma_domain->domain_lock, flags);
@@ -267,7 +274,7 @@ static int fsl_pamu_attach_device(struct iommu_domain *domain,
 		if (liodn[i] >= PAACE_NUMBER_ENTRIES) {
 			pr_debug("Invalid liodn %d, attach device failed for %pOF\n",
 				 liodn[i], dev->of_node);
-			ret = -EINVAL;
+			ret = -ENODEV;
 			break;
 		}
 
@@ -283,14 +290,32 @@ static int fsl_pamu_attach_device(struct iommu_domain *domain,
 	return ret;
 }
 
-static void fsl_pamu_detach_device(struct iommu_domain *domain,
-				   struct device *dev)
+/*
+ * FIXME: fsl/pamu is completely broken in terms of how it works with the iommu
+ * API. Immediately after probe the HW is left in an IDENTITY translation and
+ * the driver provides a non-working UNMANAGED domain that it can switch over
+ * to. However it cannot switch back to an IDENTITY translation, instead it
+ * switches to what looks like BLOCKING.
+ */
+static int fsl_pamu_platform_attach(struct iommu_domain *platform_domain,
+				    struct device *dev,
+				    struct iommu_domain *old)
 {
-	struct fsl_dma_domain *dma_domain = to_fsl_dma_domain(domain);
+	struct fsl_dma_domain *dma_domain;
 	const u32 *prop;
 	int len;
 	struct pci_dev *pdev = NULL;
 	struct pci_controller *pci_ctl;
+
+	/*
+	 * Hack to keep things working as they always have, only leaving an
+	 * UNMANAGED domain makes it BLOCKING.
+	 */
+	if (old == platform_domain || !old ||
+	    old->type != IOMMU_DOMAIN_UNMANAGED)
+		return 0;
+
+	dma_domain = to_fsl_dma_domain(old);
 
 	/*
 	 * Use LIODN of the PCI controller while detaching a
@@ -312,7 +337,17 @@ static void fsl_pamu_detach_device(struct iommu_domain *domain,
 		detach_device(dev, dma_domain);
 	else
 		pr_debug("missing fsl,liodn property at %pOF\n", dev->of_node);
+	return 0;
 }
+
+static struct iommu_domain_ops fsl_pamu_platform_ops = {
+	.attach_dev = fsl_pamu_platform_attach,
+};
+
+static struct iommu_domain fsl_pamu_platform_domain = {
+	.type = IOMMU_DOMAIN_PLATFORM,
+	.ops = &fsl_pamu_platform_ops,
+};
 
 /* Set the domain stash attribute */
 int fsl_pamu_configure_l1_stash(struct iommu_domain *domain, u32 cpu)
@@ -334,17 +369,6 @@ int fsl_pamu_configure_l1_stash(struct iommu_domain *domain, u32 cpu)
 	return ret;
 }
 
-static struct iommu_group *get_device_iommu_group(struct device *dev)
-{
-	struct iommu_group *group;
-
-	group = iommu_group_get(dev);
-	if (!group)
-		group = iommu_group_alloc();
-
-	return group;
-}
-
 static  bool check_pci_ctl_endpt_part(struct pci_controller *pci_ctl)
 {
 	u32 version;
@@ -356,110 +380,61 @@ static  bool check_pci_ctl_endpt_part(struct pci_controller *pci_ctl)
 	return version >= 0x204;
 }
 
-/* Get iommu group information from peer devices or devices on the parent bus */
-static struct iommu_group *get_shared_pci_device_group(struct pci_dev *pdev)
-{
-	struct pci_dev *tmp;
-	struct iommu_group *group;
-	struct pci_bus *bus = pdev->bus;
-
-	/*
-	 * Traverese the pci bus device list to get
-	 * the shared iommu group.
-	 */
-	while (bus) {
-		list_for_each_entry(tmp, &bus->devices, bus_list) {
-			if (tmp == pdev)
-				continue;
-			group = iommu_group_get(&tmp->dev);
-			if (group)
-				return group;
-		}
-
-		bus = bus->parent;
-	}
-
-	return NULL;
-}
-
-static struct iommu_group *get_pci_device_group(struct pci_dev *pdev)
-{
-	struct pci_controller *pci_ctl;
-	bool pci_endpt_partitioning;
-	struct iommu_group *group = NULL;
-
-	pci_ctl = pci_bus_to_host(pdev->bus);
-	pci_endpt_partitioning = check_pci_ctl_endpt_part(pci_ctl);
-	/* We can partition PCIe devices so assign device group to the device */
-	if (pci_endpt_partitioning) {
-		group = pci_device_group(&pdev->dev);
-
-		/*
-		 * PCIe controller is not a paritionable entity
-		 * free the controller device iommu_group.
-		 */
-		if (pci_ctl->parent->iommu_group)
-			iommu_group_remove_device(pci_ctl->parent);
-	} else {
-		/*
-		 * All devices connected to the controller will share the
-		 * PCI controllers device group. If this is the first
-		 * device to be probed for the pci controller, copy the
-		 * device group information from the PCI controller device
-		 * node and remove the PCI controller iommu group.
-		 * For subsequent devices, the iommu group information can
-		 * be obtained from sibling devices (i.e. from the bus_devices
-		 * link list).
-		 */
-		if (pci_ctl->parent->iommu_group) {
-			group = get_device_iommu_group(pci_ctl->parent);
-			iommu_group_remove_device(pci_ctl->parent);
-		} else {
-			group = get_shared_pci_device_group(pdev);
-		}
-	}
-
-	if (!group)
-		group = ERR_PTR(-ENODEV);
-
-	return group;
-}
-
 static struct iommu_group *fsl_pamu_device_group(struct device *dev)
 {
-	struct iommu_group *group = ERR_PTR(-ENODEV);
-	int len;
+	struct iommu_group *group;
+	struct pci_dev *pdev;
 
 	/*
-	 * For platform devices we allocate a separate group for
-	 * each of the devices.
+	 * For platform devices we allocate a separate group for each of the
+	 * devices.
 	 */
-	if (dev_is_pci(dev))
-		group = get_pci_device_group(to_pci_dev(dev));
-	else if (of_get_property(dev->of_node, "fsl,liodn", &len))
-		group = get_device_iommu_group(dev);
+	if (!dev_is_pci(dev))
+		return generic_device_group(dev);
 
+	/*
+	 * We can partition PCIe devices so assign device group to the device
+	 */
+	pdev = to_pci_dev(dev);
+	if (check_pci_ctl_endpt_part(pci_bus_to_host(pdev->bus)))
+		return pci_device_group(&pdev->dev);
+
+	/*
+	 * All devices connected to the controller will share the same device
+	 * group.
+	 *
+	 * Due to ordering between fsl_pamu_init() and fsl_pci_init() it is
+	 * guaranteed that the pci_ctl->parent platform_device will have the
+	 * iommu driver bound and will already have a group set. So we just
+	 * re-use this group as the group for every device in the hose.
+	 */
+	group = iommu_group_get(pci_bus_to_host(pdev->bus)->parent);
+	if (WARN_ON(!group))
+		return ERR_PTR(-EINVAL);
 	return group;
 }
 
 static struct iommu_device *fsl_pamu_probe_device(struct device *dev)
 {
+	/*
+	 * uboot must fill the fsl,liodn for platform devices to be supported by
+	 * the iommu.
+	 */
+	if (!dev_is_pci(dev) &&
+	    !of_property_present(dev->of_node, "fsl,liodn"))
+		return ERR_PTR(-ENODEV);
+
 	return &pamu_iommu;
 }
 
-static void fsl_pamu_release_device(struct device *dev)
-{
-}
-
 static const struct iommu_ops fsl_pamu_ops = {
+	.default_domain = &fsl_pamu_platform_domain,
 	.capable	= fsl_pamu_capable,
 	.domain_alloc	= fsl_pamu_domain_alloc,
 	.probe_device	= fsl_pamu_probe_device,
-	.release_device	= fsl_pamu_release_device,
 	.device_group   = fsl_pamu_device_group,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= fsl_pamu_attach_device,
-		.detach_dev	= fsl_pamu_detach_device,
 		.iova_to_phys	= fsl_pamu_iova_to_phys,
 		.free		= fsl_pamu_domain_free,
 	}
@@ -481,11 +456,7 @@ int __init pamu_domain_init(void)
 	if (ret) {
 		iommu_device_sysfs_remove(&pamu_iommu);
 		pr_err("Can't register iommu device\n");
-		return ret;
 	}
-
-	bus_set_iommu(&platform_bus_type, &fsl_pamu_ops);
-	bus_set_iommu(&pci_bus_type, &fsl_pamu_ops);
 
 	return ret;
 }

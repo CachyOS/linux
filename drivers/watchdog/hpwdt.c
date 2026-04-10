@@ -12,6 +12,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/device.h>
+#include <linux/hex.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -20,7 +21,9 @@
 #include <linux/pci_ids.h>
 #include <linux/types.h>
 #include <linux/watchdog.h>
+#ifdef CONFIG_HPWDT_NMI_DECODING
 #include <asm/nmi.h>
+#endif
 #include <linux/crash_dump.h>
 
 #define HPWDT_VERSION			"2.0.4"
@@ -31,7 +34,6 @@
 #define DEFAULT_MARGIN			30
 #define PRETIMEOUT_SEC			9
 
-static bool ilo5;
 static unsigned int soft_margin = DEFAULT_MARGIN;	/* in seconds */
 static bool nowayout = WATCHDOG_NOWAYOUT;
 static bool pretimeout = IS_ENABLED(CONFIG_HPWDT_NMI_DECODING);
@@ -176,10 +178,7 @@ static int hpwdt_pretimeout(unsigned int ulReason, struct pt_regs *regs)
 		"3. OA Forward Progress Log\n"
 		"4. iLO Event Log";
 
-	if (ilo5 && ulReason == NMI_UNKNOWN && !mynmi)
-		return NMI_DONE;
-
-	if (ilo5 && !pretimeout && !mynmi)
+	if (ulReason == NMI_UNKNOWN && !mynmi)
 		return NMI_DONE;
 
 	if (kdumptimeout < 0)
@@ -361,9 +360,6 @@ static int hpwdt_init_one(struct pci_dev *dev,
 				pretimeout ? "on" : "off");
 	dev_info(&dev->dev, "kdumptimeout: %d.\n", kdumptimeout);
 
-	if (dev->subsystem_vendor == PCI_VENDOR_ID_HP_3PAR)
-		ilo5 = true;
-
 	return 0;
 
 error_wd_register:
@@ -383,11 +379,36 @@ static void hpwdt_exit(struct pci_dev *dev)
 	pci_disable_device(dev);
 }
 
+static int hpwdt_suspend(struct device *dev)
+{
+	if (watchdog_active(&hpwdt_dev))
+		hpwdt_stop();
+
+	return 0;
+}
+
+static int hpwdt_resume(struct device *dev)
+{
+	if (watchdog_active(&hpwdt_dev))
+		hpwdt_start(&hpwdt_dev);
+
+	return 0;
+}
+
+static const struct dev_pm_ops hpwdt_pm_ops = {
+	LATE_SYSTEM_SLEEP_PM_OPS(hpwdt_suspend, hpwdt_resume)
+};
+
 static struct pci_driver hpwdt_driver = {
 	.name = "hpwdt",
 	.id_table = hpwdt_devices,
 	.probe = hpwdt_init_one,
 	.remove = hpwdt_exit,
+
+	.driver = {
+		.name = "hpwdt",
+		.pm = &hpwdt_pm_ops,
+	}
 };
 
 MODULE_AUTHOR("Tom Mingarelli");

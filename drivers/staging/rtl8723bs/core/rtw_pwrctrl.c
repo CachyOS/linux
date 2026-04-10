@@ -5,10 +5,8 @@
  *
  ******************************************************************************/
 #include <drv_types.h>
-#include <rtw_debug.h>
 #include <hal_data.h>
 #include <linux/jiffies.h>
-
 
 void _ips_enter(struct adapter *padapter)
 {
@@ -57,9 +55,8 @@ int _ips_leave(struct adapter *padapter)
 		pwrpriv->ips_leave_cnts++;
 
 		result = rtw_ips_pwr_up(padapter);
-		if (result == _SUCCESS) {
+		if (result == _SUCCESS)
 			pwrpriv->rf_pwrstate = rf_on;
-		}
 		pwrpriv->bips_processing = false;
 
 		pwrpriv->bkeepfwalive = false;
@@ -73,9 +70,6 @@ int ips_leave(struct adapter *padapter)
 {
 	struct pwrctrl_priv *pwrpriv = adapter_to_pwrctl(padapter);
 	int ret;
-
-	if (!is_primary_adapter(padapter))
-		return _SUCCESS;
 
 	mutex_lock(&pwrpriv->lock);
 	ret = _ips_leave(padapter);
@@ -145,8 +139,6 @@ exit:
 void rtw_ps_processor(struct adapter *padapter)
 {
 	struct pwrctrl_priv *pwrpriv = adapter_to_pwrctl(padapter);
-	struct dvobj_priv *psdpriv = padapter->dvobj;
-	struct debug_priv *pdbgpriv = &psdpriv->drv_dbg;
 	u32 ps_deny = 0;
 
 	mutex_lock(&adapter_to_pwrctl(padapter)->lock);
@@ -155,10 +147,8 @@ void rtw_ps_processor(struct adapter *padapter)
 	if (ps_deny != 0)
 		goto exit;
 
-	if (pwrpriv->bInSuspend) {/* system suspend or autosuspend */
-		pdbgpriv->dbg_ps_insuspend_cnt++;
+	if (pwrpriv->bInSuspend) /* system suspend or autosuspend */
 		return;
-	}
 
 	pwrpriv->ps_processing = true;
 
@@ -181,7 +171,7 @@ exit:
 static void pwr_state_check_handler(struct timer_list *t)
 {
 	struct pwrctrl_priv *pwrctrlpriv =
-		from_timer(pwrctrlpriv, t, pwr_state_check_timer);
+		timer_container_of(pwrctrlpriv, t, pwr_state_check_timer);
 	struct adapter *padapter = pwrctrlpriv->adapter;
 
 	rtw_ps_cmd(padapter);
@@ -285,14 +275,12 @@ void rtw_set_rpwm(struct adapter *padapter, u8 pslv)
 	if (rpwm & PS_ACK) {
 		unsigned long start_time;
 		u8 cpwm_now;
-		u8 poll_cnt = 0;
 
 		start_time = jiffies;
 
 		/*  polling cpwm */
 		do {
 			mdelay(1);
-			poll_cnt++;
 			rtw_hal_get_hwreg(padapter, HW_VAR_CPWM, &cpwm_now);
 			if ((cpwm_orig ^ cpwm_now) & 0x80) {
 				pwrpriv->cpwm = PS_STATE_S4;
@@ -438,10 +426,7 @@ s32 LPS_RF_ON_check(struct adapter *padapter, u32 delay_ms)
 	return err;
 }
 
-/*  */
-/* 	Description: */
-/* 		Enter the leisure power save mode. */
-/*  */
+/* Description: Enter the leisure power save mode. */
 void LPS_Enter(struct adapter *padapter, const char *msg)
 {
 	struct dvobj_priv *dvobj = adapter_to_dvobj(padapter);
@@ -452,14 +437,10 @@ void LPS_Enter(struct adapter *padapter, const char *msg)
 	if (hal_btcoex_IsBtControlLps(padapter))
 		return;
 
-	/* Skip lps enter request if number of assocated adapters is not 1 */
+	/* Skip lps enter request if number of associated adapters is not 1 */
 	if (check_fwstate(&(dvobj->padapters->mlmepriv), WIFI_ASOC_STATE))
 		n_assoc_iface++;
 	if (n_assoc_iface != 1)
-		return;
-
-	/* Skip lps enter request for adapter not port0 */
-	if (get_iface_type(padapter) != IFACE_PORT0)
 		return;
 
 	if (!PS_RDY_CHECK(dvobj->padapters))
@@ -478,10 +459,7 @@ void LPS_Enter(struct adapter *padapter, const char *msg)
 	}
 }
 
-/*  */
-/* 	Description: */
-/* 		Leave the leisure power save mode. */
-/*  */
+/* Description: Leave the leisure power save mode. */
 void LPS_Leave(struct adapter *padapter, const char *msg)
 {
 #define LPS_LEAVE_TIMEOUT_MS 100
@@ -559,9 +537,8 @@ void LeaveAllPowerSaveMode(struct adapter *Adapter)
 
 		LPS_Leave_check(Adapter);
 	} else {
-		if (adapter_to_pwrctl(Adapter)->rf_pwrstate == rf_off) {
+		if (adapter_to_pwrctl(Adapter)->rf_pwrstate == rf_off)
 			ips_leave(Adapter);
-		}
 	}
 }
 
@@ -687,7 +664,8 @@ exit:
  */
 static void pwr_rpwm_timeout_handler(struct timer_list *t)
 {
-	struct pwrctrl_priv *pwrpriv = from_timer(pwrpriv, t, pwr_rpwm_timer);
+	struct pwrctrl_priv *pwrpriv = timer_container_of(pwrpriv, t,
+							  pwr_rpwm_timer);
 
 	if ((pwrpriv->rpwm == pwrpriv->cpwm) || (pwrpriv->cpwm >= PS_STATE_S2))
 		return;
@@ -1006,7 +984,6 @@ void rtw_init_pwrctrl_priv(struct adapter *padapter)
 	pwrctrlpriv->wowlan_ap_mode = false;
 }
 
-
 void rtw_free_pwrctrl_priv(struct adapter *adapter)
 {
 }
@@ -1018,11 +995,11 @@ inline void rtw_set_ips_deny(struct adapter *padapter, u32 ms)
 }
 
 /*
-* rtw_pwr_wakeup - Wake the NIC up from: 1)IPS. 2)USB autosuspend
-* @adapter: pointer to struct adapter structure
-* @ips_deffer_ms: the ms will prevent from falling into IPS after wakeup
-* Return _SUCCESS or _FAIL
-*/
+ * rtw_pwr_wakeup - Wake the NIC up from: 1)IPS. 2)USB autosuspend
+ * @adapter: pointer to struct adapter structure
+ * @ips_deffer_ms: the ms will prevent from falling into IPS after wakeup
+ * Return _SUCCESS or _FAIL
+ */
 
 int _rtw_pwr_wakeup(struct adapter *padapter, u32 ips_deffer_ms, const char *caller)
 {

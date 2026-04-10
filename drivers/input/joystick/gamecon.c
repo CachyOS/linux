@@ -11,9 +11,6 @@
  *	Raphael Assenat
  */
 
-/*
- */
-
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/kernel.h>
@@ -294,7 +291,7 @@ static int gc_n64_init_ff(struct input_dev *dev, int i)
 	struct gc_subdev *sdev;
 	int err;
 
-	sdev = kmalloc(sizeof(*sdev), GFP_KERNEL);
+	sdev = kmalloc_obj(*sdev);
 	if (!sdev)
 		return -ENOMEM;
 
@@ -729,7 +726,7 @@ static void gc_psx_process_packet(struct gc *gc)
 
 static void gc_timer(struct timer_list *t)
 {
-	struct gc *gc = from_timer(gc, t, timer);
+	struct gc *gc = timer_container_of(gc, t, timer);
 
 /*
  * N64 pads - must be read first, any read confuses them for 200 us
@@ -768,33 +765,31 @@ static void gc_timer(struct timer_list *t)
 static int gc_open(struct input_dev *dev)
 {
 	struct gc *gc = input_get_drvdata(dev);
-	int err;
 
-	err = mutex_lock_interruptible(&gc->mutex);
-	if (err)
-		return err;
+	scoped_guard(mutex_intr, &gc->mutex) {
+		if (!gc->used++) {
+			parport_claim(gc->pd);
+			parport_write_control(gc->pd->port, 0x04);
+			mod_timer(&gc->timer, jiffies + GC_REFRESH_TIME);
+		}
 
-	if (!gc->used++) {
-		parport_claim(gc->pd);
-		parport_write_control(gc->pd->port, 0x04);
-		mod_timer(&gc->timer, jiffies + GC_REFRESH_TIME);
+		return 0;
 	}
 
-	mutex_unlock(&gc->mutex);
-	return 0;
+	return -EINTR;
 }
 
 static void gc_close(struct input_dev *dev)
 {
 	struct gc *gc = input_get_drvdata(dev);
 
-	mutex_lock(&gc->mutex);
+	guard(mutex)(&gc->mutex);
+
 	if (!--gc->used) {
-		del_timer_sync(&gc->timer);
+		timer_delete_sync(&gc->timer);
 		parport_write_control(gc->pd->port, 0x00);
 		parport_release(gc->pd);
 	}
-	mutex_unlock(&gc->mutex);
 }
 
 static int gc_setup_pad(struct gc *gc, int idx, int pad_type)
@@ -953,7 +948,7 @@ static void gc_attach(struct parport *pp)
 		return;
 	}
 
-	gc = kzalloc(sizeof(struct gc), GFP_KERNEL);
+	gc = kzalloc_obj(*gc);
 	if (!gc) {
 		pr_err("Not enough memory\n");
 		goto err_unreg_pardev;
@@ -1019,7 +1014,6 @@ static struct parport_driver gc_parport_driver = {
 	.name = "gamecon",
 	.match_port = gc_attach,
 	.detach = gc_detach,
-	.devmodel = true,
 };
 
 static int __init gc_init(void)

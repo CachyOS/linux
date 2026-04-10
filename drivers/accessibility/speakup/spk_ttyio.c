@@ -55,7 +55,7 @@ static int spk_ttyio_ldisc_open(struct tty_struct *tty)
 	if (!tty->ops->write)
 		return -EOPNOTSUPP;
 
-	ldisc_data = kmalloc(sizeof(*ldisc_data), GFP_KERNEL);
+	ldisc_data = kmalloc_obj(*ldisc_data);
 	if (!ldisc_data)
 		return -ENOMEM;
 
@@ -71,15 +71,14 @@ static void spk_ttyio_ldisc_close(struct tty_struct *tty)
 	kfree(tty->disc_data);
 }
 
-static int spk_ttyio_receive_buf2(struct tty_struct *tty,
-				  const unsigned char *cp,
-				  const char *fp, int count)
+static size_t spk_ttyio_receive_buf2(struct tty_struct *tty, const u8 *cp,
+				     const u8 *fp, size_t count)
 {
 	struct spk_ldisc_data *ldisc_data = tty->disc_data;
 	struct spk_synth *synth = ldisc_data->synth;
 
 	if (synth->read_buff_add) {
-		int i;
+		unsigned int i;
 
 		for (i = 0; i < count; i++)
 			synth->read_buff_add(cp[i]);
@@ -353,6 +352,9 @@ EXPORT_SYMBOL_GPL(spk_ttyio_synth_probe);
 void spk_ttyio_release(struct spk_synth *in_synth)
 {
 	struct tty_struct *tty = in_synth->dev;
+
+	if (tty == NULL)
+		return;
 
 	tty_lock(tty);
 

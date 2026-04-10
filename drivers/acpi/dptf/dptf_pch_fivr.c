@@ -41,7 +41,7 @@ static int pch_fivr_read(acpi_handle handle, char *method, struct pch_fivr_resp 
 	ret = 0;
 
 release_buffer:
-	kfree(buffer.pointer);
+	ACPI_FREE(buffer.pointer);
 	return ret;
 }
 
@@ -141,18 +141,18 @@ static int pch_fivr_add(struct platform_device *pdev)
 	return 0;
 }
 
-static int pch_fivr_remove(struct platform_device *pdev)
+static void pch_fivr_remove(struct platform_device *pdev)
 {
 	sysfs_remove_group(&pdev->dev.kobj, &pch_fivr_attribute_group);
-
-	return 0;
 }
 
 static const struct acpi_device_id pch_fivr_device_ids[] = {
 	{"INTC1045", 0},
 	{"INTC1049", 0},
 	{"INTC1064", 0},
+	{"INTC106B", 0},
 	{"INTC10A3", 0},
+	{"INTC10D7", 0},
 	{"", 0},
 };
 MODULE_DEVICE_TABLE(acpi, pch_fivr_device_ids);

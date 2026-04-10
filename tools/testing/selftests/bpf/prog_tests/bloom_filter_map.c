@@ -2,13 +2,18 @@
 /* Copyright (c) 2021 Facebook */
 
 #include <sys/syscall.h>
+#include <limits.h>
 #include <test_progs.h>
 #include "bloom_filter_map.skel.h"
+
+#ifndef NUMA_NO_NODE
+#define NUMA_NO_NODE	(-1)
+#endif
 
 static void test_fail_cases(void)
 {
 	LIBBPF_OPTS(bpf_map_create_opts, opts);
-	__u32 value;
+	__u32 value = 0;
 	int fd, err;
 
 	/* Invalid key size */
@@ -19,6 +24,11 @@ static void test_fail_cases(void)
 	/* Invalid value size */
 	fd = bpf_map_create(BPF_MAP_TYPE_BLOOM_FILTER, NULL, 0, 0, 100, NULL);
 	if (!ASSERT_LT(fd, 0, "bpf_map_create bloom filter invalid value size 0"))
+		close(fd);
+
+	/* Invalid value size: too big */
+	fd = bpf_map_create(BPF_MAP_TYPE_BLOOM_FILTER, NULL, 0, INT32_MAX, 100, NULL);
+	if (!ASSERT_LT(fd, 0, "bpf_map_create bloom filter invalid value too large"))
 		close(fd);
 
 	/* Invalid max entries size */
@@ -63,6 +73,7 @@ static void test_success_cases(void)
 
 	/* Create a map */
 	opts.map_flags = BPF_F_ZERO_SEED | BPF_F_NUMA_NODE;
+	opts.numa_node = NUMA_NO_NODE;
 	fd = bpf_map_create(BPF_MAP_TYPE_BLOOM_FILTER, NULL, 0, sizeof(value), 100, &opts);
 	if (!ASSERT_GE(fd, 0, "bpf_map_create bloom filter success case"))
 		return;
@@ -193,8 +204,8 @@ error:
 
 void test_bloom_filter_map(void)
 {
-	__u32 *rand_vals, nr_rand_vals;
-	struct bloom_filter_map *skel;
+	__u32 *rand_vals = NULL, nr_rand_vals = 0;
+	struct bloom_filter_map *skel = NULL;
 	int err;
 
 	test_fail_cases();

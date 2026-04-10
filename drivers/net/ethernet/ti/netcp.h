@@ -65,14 +65,14 @@ struct netcp_addr {
 
 struct netcp_stats {
 	struct u64_stats_sync   syncp_rx ____cacheline_aligned_in_smp;
-	u64                     rx_packets;
-	u64                     rx_bytes;
+	u64_stats_t             rx_packets;
+	u64_stats_t             rx_bytes;
 	u32                     rx_errors;
 	u32                     rx_dropped;
 
 	struct u64_stats_sync   syncp_tx ____cacheline_aligned_in_smp;
-	u64                     tx_packets;
-	u64                     tx_bytes;
+	u64_stats_t             tx_packets;
+	u64_stats_t             tx_bytes;
 	u32                     tx_errors;
 	u32                     tx_dropped;
 };
@@ -207,6 +207,11 @@ struct netcp_module {
 	int	(*del_vid)(void *intf_priv, int vid);
 	int	(*ioctl)(void *intf_priv, struct ifreq *req, int cmd);
 	int	(*set_rx_mode)(void *intf_priv, bool promisc);
+	int	(*hwtstamp_get)(void *intf_priv,
+				struct kernel_hwtstamp_config *cfg);
+	int	(*hwtstamp_set)(void *intf_priv,
+				struct kernel_hwtstamp_config *cfg,
+				struct netlink_ext_ack *extack);
 
 	/* used internally */
 	struct list_head	module_list;
@@ -233,8 +238,6 @@ int netcp_register_rxhook(struct netcp_intf *netcp_priv, int order,
 			  netcp_hook_rtn *hook_rtn, void *hook_data);
 int netcp_unregister_rxhook(struct netcp_intf *netcp_priv, int order,
 			    netcp_hook_rtn *hook_rtn, void *hook_data);
-void *netcp_device_find_module(struct netcp_device *netcp_device,
-			       const char *name);
 
 /* SGMII functions */
 int netcp_sgmii_reset(void __iomem *sgmii_ofs, int port);

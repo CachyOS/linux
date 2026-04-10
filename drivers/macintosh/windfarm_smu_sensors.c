@@ -200,7 +200,7 @@ static struct smu_ad_sensor *smu_ads_create(struct device_node *node)
 	const char *l;
 	const u32 *v;
 
-	ads = kmalloc(sizeof(struct smu_ad_sensor), GFP_KERNEL);
+	ads = kmalloc_obj(struct smu_ad_sensor);
 	if (ads == NULL)
 		return NULL;
 	l = of_get_property(node, "location", NULL);
@@ -274,8 +274,8 @@ struct smu_cpu_power_sensor {
 	struct list_head	link;
 	struct wf_sensor	*volts;
 	struct wf_sensor	*amps;
-	int			fake_volts : 1;
-	int			quadratic : 1;
+	unsigned int		fake_volts : 1;
+	unsigned int		quadratic : 1;
 	struct wf_sensor	sens;
 };
 #define to_smu_cpu_power(c) container_of(c, struct smu_cpu_power_sensor, sens)
@@ -338,7 +338,7 @@ smu_cpu_power_create(struct wf_sensor *volts, struct wf_sensor *amps)
 {
 	struct smu_cpu_power_sensor *pow;
 
-	pow = kmalloc(sizeof(struct smu_cpu_power_sensor), GFP_KERNEL);
+	pow = kmalloc_obj(struct smu_cpu_power_sensor);
 	if (pow == NULL)
 		return NULL;
 	pow->sens.ops = &smu_cpu_power_ops;

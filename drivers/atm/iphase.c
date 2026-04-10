@@ -90,6 +90,7 @@ module_param(IA_RX_BUF, int, 0);
 module_param(IA_RX_BUF_SZ, int, 0);
 module_param(IADebugFlag, uint, 0644);
 
+MODULE_DESCRIPTION("Driver for Interphase ATM PCI NICs");
 MODULE_LICENSE("GPL");
 
 /**************************** IA_LIB **********************************/
@@ -113,7 +114,7 @@ static void ia_enque_head_rtn_q (IARTN_Q *que, IARTN_Q * data)
 }
 
 static int ia_enque_rtn_q (IARTN_Q *que, struct desc_tbl_t data) {
-   IARTN_Q *entry = kmalloc(sizeof(*entry), GFP_ATOMIC);
+   IARTN_Q *entry = kmalloc_obj(*entry, GFP_ATOMIC);
    if (!entry)
       return -ENOMEM;
    entry->data = data;
@@ -739,7 +740,7 @@ static u16 ia_eeprom_get (IADEV *iadev, u32 addr)
         u32	t;
 	int	i;
 	/*
-	 * Read the first bit that was clocked with the falling edge of the
+	 * Read the first bit that was clocked with the falling edge of
 	 * the last command data clock
 	 */
 	NVRAM_CMD(IAREAD + addr);
@@ -1977,9 +1978,7 @@ static int tx_init(struct atm_dev *dev)
 		buf_desc_ptr++;		  
 		tx_pkt_start += iadev->tx_buf_sz;  
 	}  
-	iadev->tx_buf = kmalloc_array(iadev->num_tx_desc,
-				      sizeof(*iadev->tx_buf),
-				      GFP_KERNEL);
+	iadev->tx_buf = kmalloc_objs(*iadev->tx_buf, iadev->num_tx_desc);
         if (!iadev->tx_buf) {
             printk(KERN_ERR DEV_LABEL " couldn't get mem\n");
 	    goto err_free_dle;
@@ -1988,7 +1987,7 @@ static int tx_init(struct atm_dev *dev)
        	{
 	    struct cpcs_trailer *cpcs;
  
-       	    cpcs = kmalloc(sizeof(*cpcs), GFP_KERNEL|GFP_DMA);
+       	    cpcs = kmalloc_obj(*cpcs, GFP_KERNEL | GFP_DMA);
             if(!cpcs) {                
 		printk(KERN_ERR DEV_LABEL " couldn't get freepage\n"); 
 		goto err_free_tx_bufs;
@@ -1999,9 +1998,7 @@ static int tx_init(struct atm_dev *dev)
 						       sizeof(*cpcs),
 						       DMA_TO_DEVICE);
         }
-	iadev->desc_tbl = kmalloc_array(iadev->num_tx_desc,
-					sizeof(*iadev->desc_tbl),
-					GFP_KERNEL);
+	iadev->desc_tbl = kmalloc_objs(*iadev->desc_tbl, iadev->num_tx_desc);
 	if (!iadev->desc_tbl) {
 		printk(KERN_ERR DEV_LABEL " couldn't get mem\n");
 		goto err_free_all_tx_bufs;
@@ -2129,9 +2126,7 @@ static int tx_init(struct atm_dev *dev)
 	memset((caddr_t)(iadev->seg_ram+i),  0, iadev->num_vc*4);
 	vc = (struct main_vc *)iadev->MAIN_VC_TABLE_ADDR;  
 	evc = (struct ext_vc *)iadev->EXT_VC_TABLE_ADDR;  
-	iadev->testTable = kmalloc_array(iadev->num_vc,
-					 sizeof(*iadev->testTable),
-					 GFP_KERNEL);
+	iadev->testTable = kmalloc_objs(*iadev->testTable, iadev->num_vc);
         if (!iadev->testTable) {
            printk("Get freepage  failed\n");
 	   goto err_free_desc_tbl;
@@ -2140,8 +2135,7 @@ static int tx_init(struct atm_dev *dev)
 	{  
 		memset((caddr_t)vc, 0, sizeof(*vc));  
 		memset((caddr_t)evc, 0, sizeof(*evc));  
-                iadev->testTable[i] = kmalloc(sizeof(struct testTable_t),
-						GFP_KERNEL);
+                iadev->testTable[i] = kmalloc_obj(struct testTable_t);
 		if (!iadev->testTable[i])
 			goto err_free_test_tables;
               	iadev->testTable[i]->lastTime = 0;
@@ -2291,19 +2285,21 @@ static int get_esi(struct atm_dev *dev)
 static int reset_sar(struct atm_dev *dev)  
 {  
 	IADEV *iadev;  
-	int i, error = 1;  
+	int i, error;
 	unsigned int pci[64];  
 	  
 	iadev = INPH_IA_DEV(dev);  
-	for(i=0; i<64; i++)  
-	  if ((error = pci_read_config_dword(iadev->pci,  
-				i*4, &pci[i])) != PCIBIOS_SUCCESSFUL)  
-  	      return error;  
+	for (i = 0; i < 64; i++) {
+		error = pci_read_config_dword(iadev->pci, i * 4, &pci[i]);
+		if (error != PCIBIOS_SUCCESSFUL)
+			return error;
+	}
 	writel(0, iadev->reg+IPHASE5575_EXT_RESET);  
-	for(i=0; i<64; i++)  
-	  if ((error = pci_write_config_dword(iadev->pci,  
-					i*4, pci[i])) != PCIBIOS_SUCCESSFUL)  
-	    return error;  
+	for (i = 0; i < 64; i++) {
+		error = pci_write_config_dword(iadev->pci, i * 4, pci[i]);
+		if (error != PCIBIOS_SUCCESSFUL)
+			return error;
+	}
 	udelay(5);  
 	return 0;  
 }  
@@ -2709,7 +2705,7 @@ static int ia_open(struct atm_vcc *vcc)
                                  vcc->dev->number, vcc->vpi, vcc->vci);)  
   
 	/* Device dependent initialization */  
-	ia_vcc = kmalloc(sizeof(*ia_vcc), GFP_KERNEL);  
+	ia_vcc = kmalloc_obj(*ia_vcc);  
 	if (!ia_vcc) return -ENOMEM;  
 	vcc->dev_data = ia_vcc;
   
@@ -2795,7 +2791,7 @@ static int ia_ioctl(struct atm_dev *dev, unsigned int cmd, void __user *arg)
              rfredn_t        *rfL;
                      
 	     if (!capable(CAP_NET_ADMIN)) return -EPERM;
-	     regs_local = kmalloc(sizeof(*regs_local), GFP_KERNEL);
+	     regs_local = kmalloc_obj(*regs_local);
 	     if (!regs_local) return -ENOMEM;
 	     ffL = &regs_local->ffredn;
 	     rfL = &regs_local->rfredn;
@@ -3165,7 +3161,7 @@ static int ia_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	IADEV *iadev;  
 	int ret;
 
-	iadev = kzalloc(sizeof(*iadev), GFP_KERNEL);
+	iadev = kzalloc_obj(*iadev);
 	if (!iadev) {
 		ret = -ENOMEM;
 		goto err_out;
@@ -3280,7 +3276,7 @@ static void __exit ia_module_exit(void)
 {
 	pci_unregister_driver(&ia_driver);
 
-	del_timer_sync(&ia_timer);
+	timer_delete_sync(&ia_timer);
 }
 
 module_init(ia_module_init);

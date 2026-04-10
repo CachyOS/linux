@@ -10,44 +10,69 @@ maintainers:
   - Chris Brandt <chris.brandt@renesas.com>
   - Wolfram Sang <wsa+renesas@sang-engineering.com>
 
-allOf:
-  - $ref: /schemas/i2c/i2c-controller.yaml#
-
 properties:
   compatible:
-    items:
+    oneOf:
+      - items:
+          - enum:
+              - renesas,riic-r7s72100   # RZ/A1H
+              - renesas,riic-r7s9210    # RZ/A2M
+              - renesas,riic-r9a07g043  # RZ/G2UL and RZ/Five
+              - renesas,riic-r9a07g044  # RZ/G2{L,LC}
+              - renesas,riic-r9a07g054  # RZ/V2L
+          - const: renesas,riic-rz      # RZ/A or RZ/G2L
+
+      - items:
+          - enum:
+              - renesas,riic-r9a08g045   # RZ/G3S
+              - renesas,riic-r9a09g047   # RZ/G3E
+              - renesas,riic-r9a09g056   # RZ/V2N
+          - const: renesas,riic-r9a09g057   # RZ/V2H(P)
+
       - enum:
-          - renesas,riic-r7s72100   # RZ/A1H
-          - renesas,riic-r7s9210    # RZ/A2M
-          - renesas,riic-r9a07g043  # RZ/G2UL
-          - renesas,riic-r9a07g044  # RZ/G2{L,LC}
-          - renesas,riic-r9a07g054  # RZ/V2L
-      - const: renesas,riic-rz      # RZ/A or RZ/G2L
+          - renesas,riic-r9a09g057   # RZ/V2H(P)
+          - renesas,riic-r9a09g077   # RZ/T2H
+
+      - items:
+          - const: renesas,riic-r9a09g087  # RZ/N2H
+          - const: renesas,riic-r9a09g077  # RZ/T2H
 
   reg:
     maxItems: 1
 
   interrupts:
-    items:
-      - description: Transmit End Interrupt
-      - description: Receive Data Full Interrupt
-      - description: Transmit Data Empty Interrupt
-      - description: Stop Condition Detection Interrupt
-      - description: Start Condition Detection Interrupt
-      - description: NACK Reception Interrupt
-      - description: Arbitration-Lost Interrupt
-      - description: Timeout Interrupt
+    oneOf:
+      - items:
+          - description: Transmit End Interrupt
+          - description: Receive Data Full Interrupt
+          - description: Transmit Data Empty Interrupt
+          - description: Stop Condition Detection Interrupt
+          - description: Start Condition Detection Interrupt
+          - description: NACK Reception Interrupt
+          - description: Arbitration-Lost Interrupt
+          - description: Timeout Interrupt
+      - items:
+          - description: Transfer Error Or Event Generation
+          - description: Receive Data Full Interrupt
+          - description: Transmit Data Empty Interrupt
+          - description: Transmit End Interrupt
 
   interrupt-names:
-    items:
-      - const: tei
-      - const: ri
-      - const: ti
-      - const: spi
-      - const: sti
-      - const: naki
-      - const: ali
-      - const: tmoi
+    oneOf:
+      - items:
+          - const: tei
+          - const: ri
+          - const: ti
+          - const: spi
+          - const: sti
+          - const: naki
+          - const: ali
+          - const: tmoi
+      - items:
+          - const: eei
+          - const: rxi
+          - const: txi
+          - const: tei
 
   clock-frequency:
     description:
@@ -58,6 +83,9 @@ properties:
     maxItems: 1
 
   power-domains:
+    maxItems: 1
+
+  resets:
     maxItems: 1
 
 required:
@@ -71,17 +99,40 @@ required:
   - '#address-cells'
   - '#size-cells'
 
-if:
-  properties:
-    compatible:
-      contains:
-        enum:
-          - renesas,riic-r9a07g043
-          - renesas,riic-r9a07g044
-          - renesas,riic-r9a07g054
-then:
-  required:
-    - resets
+allOf:
+  - $ref: /schemas/i2c/i2c-controller.yaml#
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: renesas,riic-r9a09g077
+    then:
+      properties:
+        interrupts:
+          maxItems: 4
+        interrupt-names:
+          maxItems: 4
+        resets: false
+    else:
+      properties:
+        interrupts:
+          minItems: 8
+        interrupt-names:
+          minItems: 8
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - renesas,riic-r9a07g043
+              - renesas,riic-r9a07g044
+              - renesas,riic-r9a07g054
+              - renesas,riic-r9a09g057
+    then:
+      required:
+        - resets
 
 unevaluatedProperties: false
 
@@ -91,21 +142,21 @@ examples:
     #include <dt-bindings/interrupt-controller/arm-gic.h>
 
     i2c0: i2c@fcfee000 {
-            compatible = "renesas,riic-r7s72100", "renesas,riic-rz";
-            reg = <0xfcfee000 0x44>;
-            interrupts = <GIC_SPI 157 IRQ_TYPE_LEVEL_HIGH>,
-                         <GIC_SPI 158 IRQ_TYPE_EDGE_RISING>,
-                         <GIC_SPI 159 IRQ_TYPE_EDGE_RISING>,
-                         <GIC_SPI 160 IRQ_TYPE_LEVEL_HIGH>,
-                         <GIC_SPI 161 IRQ_TYPE_LEVEL_HIGH>,
-                         <GIC_SPI 162 IRQ_TYPE_LEVEL_HIGH>,
-                         <GIC_SPI 163 IRQ_TYPE_LEVEL_HIGH>,
-                         <GIC_SPI 164 IRQ_TYPE_LEVEL_HIGH>;
-            interrupt-names = "tei", "ri", "ti", "spi", "sti", "naki", "ali",
-                              "tmoi";
-            clocks = <&mstp9_clks R7S72100_CLK_I2C0>;
-            clock-frequency = <100000>;
-            power-domains = <&cpg_clocks>;
-            #address-cells = <1>;
-            #size-cells = <0>;
+        compatible = "renesas,riic-r7s72100", "renesas,riic-rz";
+        reg = <0xfcfee000 0x44>;
+        interrupts = <GIC_SPI 157 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 158 IRQ_TYPE_EDGE_RISING>,
+                     <GIC_SPI 159 IRQ_TYPE_EDGE_RISING>,
+                     <GIC_SPI 160 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 161 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 162 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 163 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 164 IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "tei", "ri", "ti", "spi", "sti", "naki", "ali",
+                          "tmoi";
+        clocks = <&mstp9_clks R7S72100_CLK_I2C0>;
+        clock-frequency = <100000>;
+        power-domains = <&cpg_clocks>;
+        #address-cells = <1>;
+        #size-cells = <0>;
     };

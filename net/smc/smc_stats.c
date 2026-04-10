@@ -20,7 +20,7 @@
 
 int smc_stats_init(struct net *net)
 {
-	net->smc.fback_rsn = kzalloc(sizeof(*net->smc.fback_rsn), GFP_KERNEL);
+	net->smc.fback_rsn = kzalloc_obj(*net->smc.fback_rsn);
 	if (!net->smc.fback_rsn)
 		goto err_fback;
 	net->smc.smc_stats = alloc_percpu(struct smc_stats);
@@ -218,6 +218,12 @@ static int smc_nl_fill_stats_tech_data(struct sk_buff *skb,
 			      smc_tech->tx_bytes,
 			      SMC_NLA_STATS_PAD))
 		goto errattr;
+	if (nla_put_uint(skb, SMC_NLA_STATS_T_RX_RMB_USAGE,
+			 smc_tech->rx_rmbuse))
+		goto errattr;
+	if (nla_put_uint(skb, SMC_NLA_STATS_T_TX_RMB_USAGE,
+			 smc_tech->tx_rmbuse))
+		goto errattr;
 	if (nla_put_u64_64bit(skb, SMC_NLA_STATS_T_RX_CNT,
 			      smc_tech->rx_cnt,
 			      SMC_NLA_STATS_PAD))
@@ -227,7 +233,7 @@ static int smc_nl_fill_stats_tech_data(struct sk_buff *skb,
 			      SMC_NLA_STATS_PAD))
 		goto errattr;
 	if (nla_put_u64_64bit(skb, SMC_NLA_STATS_T_SENDPAGE_CNT,
-			      smc_tech->sendpage_cnt,
+			      0,
 			      SMC_NLA_STATS_PAD))
 		goto errattr;
 	if (nla_put_u64_64bit(skb, SMC_NLA_STATS_T_CORK_CNT,
@@ -279,7 +285,7 @@ int smc_nl_get_stats(struct sk_buff *skb,
 	attrs = nla_nest_start(skb, SMC_GEN_STATS);
 	if (!attrs)
 		goto errnest;
-	stats = kzalloc(sizeof(*stats), GFP_KERNEL);
+	stats = kzalloc_obj(*stats);
 	if (!stats)
 		goto erralloc;
 	size = sizeof(*stats) / sizeof(u64);

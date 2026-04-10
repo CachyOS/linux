@@ -329,14 +329,6 @@ struct ipoib_dev_priv {
 
 	unsigned long flags;
 
-	/*
-	 * This protects access to the child_intfs list.
-	 * To READ from child_intfs the RTNL or vlan_rwsem read side must be
-	 * held.  To WRITE RTNL and the vlan_rwsem write side must be held (in
-	 * that order) This lock exists because we have a few contexts where
-	 * we need the child_intfs, but do not want to grab the RTNL.
-	 */
-	struct rw_semaphore vlan_rwsem;
 	struct mutex mcast_mutex;
 
 	struct rb_root  path_tree;
@@ -351,10 +343,12 @@ struct ipoib_dev_priv {
 	struct workqueue_struct *wq;
 	struct delayed_work mcast_task;
 	struct work_struct carrier_on_task;
+	struct work_struct reschedule_napi_work;
 	struct work_struct flush_light;
 	struct work_struct flush_normal;
 	struct work_struct flush_heavy;
 	struct work_struct restart_task;
+	struct work_struct tx_timeout_work;
 	struct delayed_work ah_reap_task;
 	struct delayed_work neigh_reap_task;
 	struct ib_device *ca;
@@ -397,6 +391,9 @@ struct ipoib_dev_priv {
 	struct ib_event_handler event_handler;
 
 	struct net_device *parent;
+	/* 'child_intfs' and 'list' membership of all child devices are
+	 * protected by the netdev instance lock of 'dev'.
+	 */
 	struct list_head child_intfs;
 	struct list_head list;
 	int    child_type;
@@ -499,6 +496,7 @@ int ipoib_send(struct net_device *dev, struct sk_buff *skb,
 	       struct ib_ah *address, u32 dqpn);
 void ipoib_reap_ah(struct work_struct *work);
 
+void ipoib_napi_schedule_work(struct work_struct *work);
 struct ipoib_path *__path_find(struct net_device *dev, void *gid);
 void ipoib_mark_paths_invalid(struct net_device *dev);
 void ipoib_flush_paths(struct net_device *dev);
@@ -506,11 +504,12 @@ struct net_device *ipoib_intf_alloc(struct ib_device *hca, u32 port,
 				    const char *format);
 int ipoib_intf_init(struct ib_device *hca, u32 port, const char *format,
 		    struct net_device *dev);
-void ipoib_ib_tx_timer_func(struct timer_list *t);
 void ipoib_ib_dev_flush_light(struct work_struct *work);
 void ipoib_ib_dev_flush_normal(struct work_struct *work);
 void ipoib_ib_dev_flush_heavy(struct work_struct *work);
-void ipoib_pkey_event(struct work_struct *work);
+void ipoib_queue_work(struct ipoib_dev_priv *priv,
+		      enum ipoib_flush_level level);
+void ipoib_ib_tx_timeout_work(struct work_struct *work);
 void ipoib_ib_dev_cleanup(struct net_device *dev);
 
 int ipoib_ib_dev_open_default(struct net_device *dev);
@@ -529,7 +528,6 @@ void ipoib_mcast_restart_task(struct work_struct *work);
 void ipoib_mcast_start_thread(struct net_device *dev);
 void ipoib_mcast_stop_thread(struct net_device *dev);
 
-void ipoib_mcast_dev_down(struct net_device *dev);
 void ipoib_mcast_dev_flush(struct net_device *dev);
 
 int ipoib_dma_map_tx(struct ib_device *ca, struct ipoib_tx_buf *tx_req);
@@ -606,7 +604,6 @@ int  ipoib_set_mode(struct net_device *dev, const char *buf);
 
 void ipoib_setup_common(struct net_device *dev);
 
-void ipoib_pkey_open(struct ipoib_dev_priv *priv);
 void ipoib_drain_cq(struct net_device *dev);
 
 void ipoib_set_ethtool_ops(struct net_device *dev);

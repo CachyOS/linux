@@ -168,7 +168,7 @@ static int fcoe_sysfs_fcf_add(struct fcoe_fcf *new)
 	LIBFCOE_FIP_DBG(fip, "New FCF fab %16.16llx mac %pM\n",
 			new->fabric_name, new->fcf_mac);
 
-	temp = kzalloc(sizeof(*temp), GFP_KERNEL);
+	temp = kzalloc_obj(*temp);
 	if (!temp)
 		goto out;
 
@@ -302,7 +302,7 @@ void fcoe_ctlr_destroy(struct fcoe_ctlr *fip)
 	fcoe_ctlr_set_state(fip, FIP_ST_DISABLED);
 	fcoe_ctlr_reset_fcfs(fip);
 	mutex_unlock(&fip->ctlr_mutex);
-	del_timer_sync(&fip->timer);
+	timer_delete_sync(&fip->timer);
 	cancel_work_sync(&fip->timer_work);
 }
 EXPORT_SYMBOL(fcoe_ctlr_destroy);
@@ -478,7 +478,7 @@ EXPORT_SYMBOL(fcoe_ctlr_link_up);
 static void fcoe_ctlr_reset(struct fcoe_ctlr *fip)
 {
 	fcoe_ctlr_reset_fcfs(fip);
-	del_timer(&fip->timer);
+	timer_delete(&fip->timer);
 	fip->ctlr_ka_time = 0;
 	fip->port_ka_time = 0;
 	fip->sol_time = 0;
@@ -1043,7 +1043,7 @@ static void fcoe_ctlr_recv_adv(struct fcoe_ctlr *fip, struct sk_buff *skb)
 		if (fip->fcf_count >= FCOE_CTLR_FCF_LIMIT)
 			goto out;
 
-		fcf = kmalloc(sizeof(*fcf), GFP_ATOMIC);
+		fcf = kmalloc_obj(*fcf, GFP_ATOMIC);
 		if (!fcf)
 			goto out;
 
@@ -1378,8 +1378,7 @@ static void fcoe_ctlr_recv_clr_vlink(struct fcoe_ctlr *fip,
 	 */
 	num_vlink_desc = rlen / sizeof(*vp);
 	if (num_vlink_desc)
-		vlink_desc_arr = kmalloc_array(num_vlink_desc, sizeof(vp),
-					       GFP_ATOMIC);
+		vlink_desc_arr = kmalloc_objs(vp, num_vlink_desc, GFP_ATOMIC);
 	if (!vlink_desc_arr)
 		return;
 	num_vlink_desc = 0;
@@ -1773,7 +1772,7 @@ unlock:
  */
 static void fcoe_ctlr_timeout(struct timer_list *t)
 {
-	struct fcoe_ctlr *fip = from_timer(fip, t, timer);
+	struct fcoe_ctlr *fip = timer_container_of(fip, t, timer);
 
 	schedule_work(&fip->timer_work);
 }
@@ -2233,7 +2232,7 @@ static void fcoe_ctlr_vn_restart(struct fcoe_ctlr *fip)
 
 	if (fip->probe_tries < FIP_VN_RLIM_COUNT) {
 		fip->probe_tries++;
-		wait = prandom_u32() % FIP_VN_PROBE_WAIT;
+		wait = get_random_u32_below(FIP_VN_PROBE_WAIT);
 	} else
 		wait = FIP_VN_RLIM_INT;
 	mod_timer(&fip->timer, jiffies + msecs_to_jiffies(wait));
@@ -3125,7 +3124,7 @@ static void fcoe_ctlr_vn_timeout(struct fcoe_ctlr *fip)
 					  fcoe_all_vn2vn, 0);
 			fip->port_ka_time = jiffies +
 				 msecs_to_jiffies(FIP_VN_BEACON_INT +
-					(prandom_u32() % FIP_VN_BEACON_FUZZ));
+					get_random_u32_below(FIP_VN_BEACON_FUZZ));
 		}
 		if (time_before(fip->port_ka_time, next_time))
 			next_time = fip->port_ka_time;

@@ -75,7 +75,6 @@ static const struct efx_sw_stat_desc efx_sw_stat_desc[] = {
 	EFX_ETHTOOL_UINT_TXQ_STAT(pio_packets),
 	EFX_ETHTOOL_UINT_TXQ_STAT(cb_packets),
 	EFX_ETHTOOL_ATOMIC_NIC_ERROR_STAT(rx_reset),
-	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_tobe_disc),
 	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_ip_hdr_chksum_err),
 	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_tcp_udp_chksum_err),
 	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_inner_ip_hdr_chksum_err),
@@ -83,14 +82,15 @@ static const struct efx_sw_stat_desc efx_sw_stat_desc[] = {
 	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_outer_ip_hdr_chksum_err),
 	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_outer_tcp_udp_chksum_err),
 	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_eth_crc_err),
-	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_mcast_mismatch),
 	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_frm_trunc),
+	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_overlength),
 	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_merge_events),
 	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_merge_packets),
 	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_xdp_drops),
 	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_xdp_bad_drops),
 	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_xdp_tx),
 	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_xdp_redirect),
+	EFX_ETHTOOL_UINT_CHANNEL_STAT(rx_mport_bad),
 #ifdef CONFIG_RFS_ACCEL
 	EFX_ETHTOOL_UINT_CHANNEL_STAT_NO_N(rfs_filter_count),
 	EFX_ETHTOOL_UINT_CHANNEL_STAT(rfs_succeeded),
@@ -103,24 +103,24 @@ static const struct efx_sw_stat_desc efx_sw_stat_desc[] = {
 void efx_ethtool_get_drvinfo(struct net_device *net_dev,
 			     struct ethtool_drvinfo *info)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 
-	strlcpy(info->driver, KBUILD_MODNAME, sizeof(info->driver));
+	strscpy(info->driver, KBUILD_MODNAME, sizeof(info->driver));
 	efx_mcdi_print_fwver(efx, info->fw_version,
 			     sizeof(info->fw_version));
-	strlcpy(info->bus_info, pci_name(efx->pci_dev), sizeof(info->bus_info));
+	strscpy(info->bus_info, pci_name(efx->pci_dev), sizeof(info->bus_info));
 }
 
 u32 efx_ethtool_get_msglevel(struct net_device *net_dev)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 
 	return efx->msg_enable;
 }
 
 void efx_ethtool_set_msglevel(struct net_device *net_dev, u32 msg_enable)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 
 	efx->msg_enable = msg_enable;
 }
@@ -128,16 +128,16 @@ void efx_ethtool_set_msglevel(struct net_device *net_dev, u32 msg_enable)
 void efx_ethtool_self_test(struct net_device *net_dev,
 			   struct ethtool_test *test, u64 *data)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 	struct efx_self_tests *efx_tests;
 	bool already_up;
 	int rc = -ENOMEM;
 
-	efx_tests = kzalloc(sizeof(*efx_tests), GFP_KERNEL);
+	efx_tests = kzalloc_obj(*efx_tests);
 	if (!efx_tests)
 		goto fail;
 
-	if (efx->state != STATE_READY) {
+	if (!efx_net_active(efx->state)) {
 		rc = -EBUSY;
 		goto out;
 	}
@@ -176,7 +176,7 @@ fail:
 void efx_ethtool_get_pauseparam(struct net_device *net_dev,
 				struct ethtool_pauseparam *pause)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 
 	pause->rx_pause = !!(efx->wanted_fc & EFX_FC_RX);
 	pause->tx_pause = !!(efx->wanted_fc & EFX_FC_TX);
@@ -186,7 +186,7 @@ void efx_ethtool_get_pauseparam(struct net_device *net_dev,
 int efx_ethtool_set_pauseparam(struct net_device *net_dev,
 			       struct ethtool_pauseparam *pause)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 	u8 wanted_fc, old_fc;
 	u32 old_adv;
 	int rc = 0;
@@ -395,7 +395,7 @@ int efx_ethtool_fill_self_tests(struct efx_nic *efx,
 	return n;
 }
 
-static size_t efx_describe_per_queue_stats(struct efx_nic *efx, u8 *strings)
+static size_t efx_describe_per_queue_stats(struct efx_nic *efx, u8 **strings)
 {
 	size_t n_stats = 0;
 	struct efx_channel *channel;
@@ -403,24 +403,22 @@ static size_t efx_describe_per_queue_stats(struct efx_nic *efx, u8 *strings)
 	efx_for_each_channel(channel, efx) {
 		if (efx_channel_has_tx_queues(channel)) {
 			n_stats++;
-			if (strings != NULL) {
-				snprintf(strings, ETH_GSTRING_LEN,
-					 "tx-%u.tx_packets",
-					 channel->tx_queue[0].queue /
-					 EFX_MAX_TXQ_PER_CHANNEL);
+			if (!strings)
+				continue;
 
-				strings += ETH_GSTRING_LEN;
-			}
+			ethtool_sprintf(strings, "tx-%u.tx_packets",
+					channel->tx_queue[0].queue /
+						EFX_MAX_TXQ_PER_CHANNEL);
 		}
 	}
 	efx_for_each_channel(channel, efx) {
 		if (efx_channel_has_rx_queue(channel)) {
 			n_stats++;
-			if (strings != NULL) {
-				snprintf(strings, ETH_GSTRING_LEN,
-					 "rx-%d.rx_packets", channel->channel);
-				strings += ETH_GSTRING_LEN;
-			}
+			if (!strings)
+				continue;
+
+			ethtool_sprintf(strings, "rx-%d.rx_packets",
+					channel->channel);
 		}
 	}
 	if (efx->xdp_tx_queue_count && efx->xdp_tx_queues) {
@@ -428,11 +426,11 @@ static size_t efx_describe_per_queue_stats(struct efx_nic *efx, u8 *strings)
 
 		for (xdp = 0; xdp < efx->xdp_tx_queue_count; xdp++) {
 			n_stats++;
-			if (strings) {
-				snprintf(strings, ETH_GSTRING_LEN,
-					 "tx-xdp-cpu-%hu.tx_packets", xdp);
-				strings += ETH_GSTRING_LEN;
-			}
+			if (!strings)
+				continue;
+
+			ethtool_sprintf(strings, "tx-xdp-cpu-%hu.tx_packets",
+					xdp);
 		}
 	}
 
@@ -441,7 +439,7 @@ static size_t efx_describe_per_queue_stats(struct efx_nic *efx, u8 *strings)
 
 int efx_ethtool_get_sset_count(struct net_device *net_dev, int string_set)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 
 	switch (string_set) {
 	case ETH_SS_STATS:
@@ -459,20 +457,16 @@ int efx_ethtool_get_sset_count(struct net_device *net_dev, int string_set)
 void efx_ethtool_get_strings(struct net_device *net_dev,
 			     u32 string_set, u8 *strings)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 	int i;
 
 	switch (string_set) {
 	case ETH_SS_STATS:
-		strings += (efx->type->describe_stats(efx, strings) *
-			    ETH_GSTRING_LEN);
+		efx->type->describe_stats(efx, &strings);
 		for (i = 0; i < EFX_ETHTOOL_SW_STAT_COUNT; i++)
-			strlcpy(strings + i * ETH_GSTRING_LEN,
-				efx_sw_stat_desc[i].name, ETH_GSTRING_LEN);
-		strings += EFX_ETHTOOL_SW_STAT_COUNT * ETH_GSTRING_LEN;
-		strings += (efx_describe_per_queue_stats(efx, strings) *
-			    ETH_GSTRING_LEN);
-		efx_ptp_describe_stats(efx, strings);
+			ethtool_puts(&strings, efx_sw_stat_desc[i].name);
+		efx_describe_per_queue_stats(efx, &strings);
+		efx_ptp_describe_stats(efx, &strings);
 		break;
 	case ETH_SS_TEST:
 		efx_ethtool_fill_self_tests(efx, NULL, strings, NULL);
@@ -487,7 +481,7 @@ void efx_ethtool_get_stats(struct net_device *net_dev,
 			   struct ethtool_stats *stats,
 			   u64 *data)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 	const struct efx_sw_stat_desc *stat;
 	struct efx_channel *channel;
 	struct efx_tx_queue *tx_queue;
@@ -561,7 +555,7 @@ void efx_ethtool_get_stats(struct net_device *net_dev,
 int efx_ethtool_get_link_ksettings(struct net_device *net_dev,
 				   struct ethtool_link_ksettings *cmd)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 	struct efx_link_state *link_state = &efx->link_state;
 
 	mutex_lock(&efx->mac_lock);
@@ -584,7 +578,7 @@ int efx_ethtool_get_link_ksettings(struct net_device *net_dev,
 int efx_ethtool_set_link_ksettings(struct net_device *net_dev,
 				   const struct ethtool_link_ksettings *cmd)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 	int rc;
 
 	/* GMAC does not support 1000Mbps HD */
@@ -604,7 +598,7 @@ int efx_ethtool_set_link_ksettings(struct net_device *net_dev,
 int efx_ethtool_get_fecparam(struct net_device *net_dev,
 			     struct ethtool_fecparam *fecparam)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 	int rc;
 
 	mutex_lock(&efx->mac_lock);
@@ -617,7 +611,7 @@ int efx_ethtool_get_fecparam(struct net_device *net_dev,
 int efx_ethtool_set_fecparam(struct net_device *net_dev,
 			     struct ethtool_fecparam *fecparam)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 	int rc;
 
 	mutex_lock(&efx->mac_lock);
@@ -806,67 +800,71 @@ static int efx_ethtool_get_class_rule(struct efx_nic *efx,
 	return rc;
 }
 
+int efx_ethtool_get_rxfh_fields(struct net_device *net_dev,
+				struct ethtool_rxfh_fields *info)
+{
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
+	struct efx_rss_context_priv *ctx;
+	__u64 data;
+	int rc = 0;
+
+	ctx = &efx->rss_context.priv;
+
+	if (info->rss_context) {
+		ctx = efx_find_rss_context_entry(efx, info->rss_context);
+		if (!ctx)
+			return -ENOENT;
+	}
+
+	data = 0;
+	if (!efx_rss_active(ctx)) /* No RSS */
+		goto out_setdata_unlock;
+
+	switch (info->flow_type) {
+	case UDP_V4_FLOW:
+	case UDP_V6_FLOW:
+		if (ctx->rx_hash_udp_4tuple)
+			data = (RXH_L4_B_0_1 | RXH_L4_B_2_3 |
+				RXH_IP_SRC | RXH_IP_DST);
+		else
+			data = RXH_IP_SRC | RXH_IP_DST;
+		break;
+	case TCP_V4_FLOW:
+	case TCP_V6_FLOW:
+		data = (RXH_L4_B_0_1 | RXH_L4_B_2_3 |
+			RXH_IP_SRC | RXH_IP_DST);
+		break;
+	case SCTP_V4_FLOW:
+	case SCTP_V6_FLOW:
+	case AH_ESP_V4_FLOW:
+	case AH_ESP_V6_FLOW:
+	case IPV4_FLOW:
+	case IPV6_FLOW:
+		data = RXH_IP_SRC | RXH_IP_DST;
+		break;
+	default:
+		break;
+	}
+out_setdata_unlock:
+	info->data = data;
+	return rc;
+}
+
+u32 efx_ethtool_get_rx_ring_count(struct net_device *net_dev)
+{
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
+
+	return efx->n_rx_channels;
+}
+
 int efx_ethtool_get_rxnfc(struct net_device *net_dev,
 			  struct ethtool_rxnfc *info, u32 *rule_locs)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 	u32 rss_context = 0;
 	s32 rc = 0;
 
 	switch (info->cmd) {
-	case ETHTOOL_GRXRINGS:
-		info->data = efx->n_rx_channels;
-		return 0;
-
-	case ETHTOOL_GRXFH: {
-		struct efx_rss_context *ctx = &efx->rss_context;
-		__u64 data;
-
-		mutex_lock(&efx->rss_lock);
-		if (info->flow_type & FLOW_RSS && info->rss_context) {
-			ctx = efx_find_rss_context_entry(efx, info->rss_context);
-			if (!ctx) {
-				rc = -ENOENT;
-				goto out_unlock;
-			}
-		}
-
-		data = 0;
-		if (!efx_rss_active(ctx)) /* No RSS */
-			goto out_setdata_unlock;
-
-		switch (info->flow_type & ~FLOW_RSS) {
-		case UDP_V4_FLOW:
-		case UDP_V6_FLOW:
-			if (ctx->rx_hash_udp_4tuple)
-				data = (RXH_L4_B_0_1 | RXH_L4_B_2_3 |
-					RXH_IP_SRC | RXH_IP_DST);
-			else
-				data = RXH_IP_SRC | RXH_IP_DST;
-			break;
-		case TCP_V4_FLOW:
-		case TCP_V6_FLOW:
-			data = (RXH_L4_B_0_1 | RXH_L4_B_2_3 |
-				RXH_IP_SRC | RXH_IP_DST);
-			break;
-		case SCTP_V4_FLOW:
-		case SCTP_V6_FLOW:
-		case AH_ESP_V4_FLOW:
-		case AH_ESP_V6_FLOW:
-		case IPV4_FLOW:
-		case IPV6_FLOW:
-			data = RXH_IP_SRC | RXH_IP_DST;
-			break;
-		default:
-			break;
-		}
-out_setdata_unlock:
-		info->data = data;
-out_unlock:
-		mutex_unlock(&efx->rss_lock);
-		return rc;
-	}
-
 	case ETHTOOL_GRXCLSRLCNT:
 		info->data = efx_filter_get_rx_id_limit(efx);
 		if (info->data == 0)
@@ -1127,7 +1125,7 @@ static int efx_ethtool_set_class_rule(struct efx_nic *efx,
 int efx_ethtool_set_rxnfc(struct net_device *net_dev,
 			  struct ethtool_rxnfc *info)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 
 	if (efx_filter_get_rx_id_limit(efx) == 0)
 		return -EOPNOTSUPP;
@@ -1148,7 +1146,7 @@ int efx_ethtool_set_rxnfc(struct net_device *net_dev,
 
 u32 efx_ethtool_get_rxfh_indir_size(struct net_device *net_dev)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 
 	if (efx->n_rx_channels == 1)
 		return 0;
@@ -1157,40 +1155,132 @@ u32 efx_ethtool_get_rxfh_indir_size(struct net_device *net_dev)
 
 u32 efx_ethtool_get_rxfh_key_size(struct net_device *net_dev)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 
 	return efx->type->rx_hash_key_size;
 }
 
-int efx_ethtool_get_rxfh(struct net_device *net_dev, u32 *indir, u8 *key,
-			 u8 *hfunc)
+int efx_ethtool_get_rxfh(struct net_device *net_dev,
+			 struct ethtool_rxfh_param *rxfh)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 	int rc;
+
+	if (rxfh->rss_context) /* core should never call us for these */
+		return -EINVAL;
 
 	rc = efx->type->rx_pull_rss_config(efx);
 	if (rc)
 		return rc;
 
-	if (hfunc)
-		*hfunc = ETH_RSS_HASH_TOP;
-	if (indir)
-		memcpy(indir, efx->rss_context.rx_indir_table,
+	rxfh->hfunc = ETH_RSS_HASH_TOP;
+	if (rxfh->indir)
+		memcpy(rxfh->indir, efx->rss_context.rx_indir_table,
 		       sizeof(efx->rss_context.rx_indir_table));
-	if (key)
-		memcpy(key, efx->rss_context.rx_hash_key,
+	if (rxfh->key)
+		memcpy(rxfh->key, efx->rss_context.rx_hash_key,
 		       efx->type->rx_hash_key_size);
 	return 0;
 }
 
-int efx_ethtool_set_rxfh(struct net_device *net_dev, const u32 *indir,
-			 const u8 *key, const u8 hfunc)
+int efx_ethtool_modify_rxfh_context(struct net_device *net_dev,
+				    struct ethtool_rxfh_context *ctx,
+				    const struct ethtool_rxfh_param *rxfh,
+				    struct netlink_ext_ack *extack)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
+	struct efx_rss_context_priv *priv;
+	const u32 *indir = rxfh->indir;
+	const u8 *key = rxfh->key;
+
+	if (!efx->type->rx_push_rss_context_config) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "NIC type does not support custom contexts");
+		return -EOPNOTSUPP;
+	}
+	/* Hash function is Toeplitz, cannot be changed */
+	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
+	    rxfh->hfunc != ETH_RSS_HASH_TOP) {
+		NL_SET_ERR_MSG_MOD(extack, "Only Toeplitz hash is supported");
+		return -EOPNOTSUPP;
+	}
+
+	priv = ethtool_rxfh_context_priv(ctx);
+
+	if (!key)
+		key = ethtool_rxfh_context_key(ctx);
+	if (!indir)
+		indir = ethtool_rxfh_context_indir(ctx);
+
+	return efx->type->rx_push_rss_context_config(efx, priv, indir, key,
+						     false);
+}
+
+int efx_ethtool_create_rxfh_context(struct net_device *net_dev,
+				    struct ethtool_rxfh_context *ctx,
+				    const struct ethtool_rxfh_param *rxfh,
+				    struct netlink_ext_ack *extack)
+{
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
+	struct efx_rss_context_priv *priv;
+
+	priv = ethtool_rxfh_context_priv(ctx);
+
+	priv->context_id = EFX_MCDI_RSS_CONTEXT_INVALID;
+	priv->rx_hash_udp_4tuple = false;
+	/* Generate default indir table and/or key if not specified.
+	 * We use ctx as a place to store these; this is fine because
+	 * we're doing a create, so if we fail then the ctx will just
+	 * be deleted.
+	 */
+	if (!rxfh->indir)
+		efx_set_default_rx_indir_table(efx, ethtool_rxfh_context_indir(ctx));
+	if (!rxfh->key)
+		netdev_rss_key_fill(ethtool_rxfh_context_key(ctx),
+				    ctx->key_size);
+	if (rxfh->hfunc == ETH_RSS_HASH_NO_CHANGE)
+		ctx->hfunc = ETH_RSS_HASH_TOP;
+	if (rxfh->input_xfrm == RXH_XFRM_NO_CHANGE)
+		ctx->input_xfrm = 0;
+	return efx_ethtool_modify_rxfh_context(net_dev, ctx, rxfh, extack);
+}
+
+int efx_ethtool_remove_rxfh_context(struct net_device *net_dev,
+				    struct ethtool_rxfh_context *ctx,
+				    u32 rss_context,
+				    struct netlink_ext_ack *extack)
+{
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
+	struct efx_rss_context_priv *priv;
+
+	if (!efx->type->rx_push_rss_context_config) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "NIC type does not support custom contexts");
+		return -EOPNOTSUPP;
+	}
+
+	priv = ethtool_rxfh_context_priv(ctx);
+	return efx->type->rx_push_rss_context_config(efx, priv, NULL, NULL,
+						     true);
+}
+
+int efx_ethtool_set_rxfh(struct net_device *net_dev,
+			 struct ethtool_rxfh_param *rxfh,
+			 struct netlink_ext_ack *extack)
+{
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
+	u32 *indir = rxfh->indir;
+	u8 *key = rxfh->key;
 
 	/* Hash function is Toeplitz, cannot be changed */
-	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
+	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
+	    rxfh->hfunc != ETH_RSS_HASH_TOP)
 		return -EOPNOTSUPP;
+
+	/* Custom contexts should use new API */
+	if (WARN_ON_ONCE(rxfh->rss_context))
+		return -EIO;
+
 	if (!indir && !key)
 		return 0;
 
@@ -1202,105 +1292,9 @@ int efx_ethtool_set_rxfh(struct net_device *net_dev, const u32 *indir,
 	return efx->type->rx_push_rss_config(efx, true, indir, key);
 }
 
-int efx_ethtool_get_rxfh_context(struct net_device *net_dev, u32 *indir,
-				 u8 *key, u8 *hfunc, u32 rss_context)
-{
-	struct efx_nic *efx = netdev_priv(net_dev);
-	struct efx_rss_context *ctx;
-	int rc = 0;
-
-	if (!efx->type->rx_pull_rss_context_config)
-		return -EOPNOTSUPP;
-
-	mutex_lock(&efx->rss_lock);
-	ctx = efx_find_rss_context_entry(efx, rss_context);
-	if (!ctx) {
-		rc = -ENOENT;
-		goto out_unlock;
-	}
-	rc = efx->type->rx_pull_rss_context_config(efx, ctx);
-	if (rc)
-		goto out_unlock;
-
-	if (hfunc)
-		*hfunc = ETH_RSS_HASH_TOP;
-	if (indir)
-		memcpy(indir, ctx->rx_indir_table, sizeof(ctx->rx_indir_table));
-	if (key)
-		memcpy(key, ctx->rx_hash_key, efx->type->rx_hash_key_size);
-out_unlock:
-	mutex_unlock(&efx->rss_lock);
-	return rc;
-}
-
-int efx_ethtool_set_rxfh_context(struct net_device *net_dev,
-				 const u32 *indir, const u8 *key,
-				 const u8 hfunc, u32 *rss_context,
-				 bool delete)
-{
-	struct efx_nic *efx = netdev_priv(net_dev);
-	struct efx_rss_context *ctx;
-	bool allocated = false;
-	int rc;
-
-	if (!efx->type->rx_push_rss_context_config)
-		return -EOPNOTSUPP;
-	/* Hash function is Toeplitz, cannot be changed */
-	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
-		return -EOPNOTSUPP;
-
-	mutex_lock(&efx->rss_lock);
-
-	if (*rss_context == ETH_RXFH_CONTEXT_ALLOC) {
-		if (delete) {
-			/* alloc + delete == Nothing to do */
-			rc = -EINVAL;
-			goto out_unlock;
-		}
-		ctx = efx_alloc_rss_context_entry(efx);
-		if (!ctx) {
-			rc = -ENOMEM;
-			goto out_unlock;
-		}
-		ctx->context_id = EFX_MCDI_RSS_CONTEXT_INVALID;
-		/* Initialise indir table and key to defaults */
-		efx_set_default_rx_indir_table(efx, ctx);
-		netdev_rss_key_fill(ctx->rx_hash_key, sizeof(ctx->rx_hash_key));
-		allocated = true;
-	} else {
-		ctx = efx_find_rss_context_entry(efx, *rss_context);
-		if (!ctx) {
-			rc = -ENOENT;
-			goto out_unlock;
-		}
-	}
-
-	if (delete) {
-		/* delete this context */
-		rc = efx->type->rx_push_rss_context_config(efx, ctx, NULL, NULL);
-		if (!rc)
-			efx_free_rss_context_entry(ctx);
-		goto out_unlock;
-	}
-
-	if (!key)
-		key = ctx->rx_hash_key;
-	if (!indir)
-		indir = ctx->rx_indir_table;
-
-	rc = efx->type->rx_push_rss_context_config(efx, ctx, indir, key);
-	if (rc && allocated)
-		efx_free_rss_context_entry(ctx);
-	else
-		*rss_context = ctx->user_id;
-out_unlock:
-	mutex_unlock(&efx->rss_lock);
-	return rc;
-}
-
 int efx_ethtool_reset(struct net_device *net_dev, u32 *flags)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 	int rc;
 
 	rc = efx->type->map_reset_flags(flags);
@@ -1314,7 +1308,7 @@ int efx_ethtool_get_module_eeprom(struct net_device *net_dev,
 				  struct ethtool_eeprom *ee,
 				  u8 *data)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 	int ret;
 
 	mutex_lock(&efx->mac_lock);
@@ -1327,7 +1321,7 @@ int efx_ethtool_get_module_eeprom(struct net_device *net_dev,
 int efx_ethtool_get_module_info(struct net_device *net_dev,
 				struct ethtool_modinfo *modinfo)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 	int ret;
 
 	mutex_lock(&efx->mac_lock);

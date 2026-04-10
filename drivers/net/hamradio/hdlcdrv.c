@@ -377,7 +377,7 @@ void hdlcdrv_arbitrate(struct net_device *dev, struct hdlcdrv_state *s)
 	if ((--s->hdlctx.slotcnt) > 0)
 		return;
 	s->hdlctx.slotcnt = s->ch_params.slottime;
-	if ((prandom_u32() % 256) > s->ch_params.ppersist)
+	if (get_random_u8() > s->ch_params.ppersist)
 		return;
 	start_tx(dev, s);
 }
@@ -600,7 +600,7 @@ static int hdlcdrv_siocdevprivate(struct net_device *dev, struct ifreq *ifr,
 
 	case HDLCDRVCTL_DRIVERNAME:
 		if (s->ops && s->ops->drvname) {
-			strlcpy(bi.data.drivername, s->ops->drvname,
+			strscpy(bi.data.drivername, s->ops->drvname,
 				sizeof(bi.data.drivername));
 			break;
 		}
@@ -742,26 +742,6 @@ EXPORT_SYMBOL(hdlcdrv_unregister);
 
 /* --------------------------------------------------------------------- */
 
-static int __init hdlcdrv_init_driver(void)
-{
-	printk(KERN_INFO "hdlcdrv: (C) 1996-2000 Thomas Sailer HB9JNX/AE4WA\n");
-	printk(KERN_INFO "hdlcdrv: version 0.8\n");
-	return 0;
-}
-
-/* --------------------------------------------------------------------- */
-
-static void __exit hdlcdrv_cleanup_driver(void)
-{
-	printk(KERN_INFO "hdlcdrv: cleanup\n");
-}
-
-/* --------------------------------------------------------------------- */
-
 MODULE_AUTHOR("Thomas M. Sailer, sailer@ife.ee.ethz.ch, hb9jnx@hb9w.che.eu");
 MODULE_DESCRIPTION("Packet Radio network interface HDLC encoder/decoder");
 MODULE_LICENSE("GPL");
-module_init(hdlcdrv_init_driver);
-module_exit(hdlcdrv_cleanup_driver);
-
-/* --------------------------------------------------------------------- */

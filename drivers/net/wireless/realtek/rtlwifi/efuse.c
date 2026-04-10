@@ -162,9 +162,18 @@ void efuse_write_1byte(struct ieee80211_hw *hw, u16 address, u8 value)
 void read_efuse_byte(struct ieee80211_hw *hw, u16 _offset, u8 *pbuf)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
+	u16 max_attempts = 10000;
 	u32 value32;
 	u8 readbyte;
 	u16 retry;
+
+	/*
+	 * In case of USB devices, transfer speeds are limited, hence
+	 * efuse I/O reads could be (way) slower. So, decrease (a lot)
+	 * the read attempts in case of failures.
+	 */
+	if (rtlpriv->rtlhal.interface == INTF_USB)
+		max_attempts = 10;
 
 	rtl_write_byte(rtlpriv, rtlpriv->cfg->maps[EFUSE_CTRL] + 1,
 		       (_offset & 0xff));
@@ -178,7 +187,7 @@ void read_efuse_byte(struct ieee80211_hw *hw, u16 _offset, u8 *pbuf)
 
 	retry = 0;
 	value32 = rtl_read_dword(rtlpriv, rtlpriv->cfg->maps[EFUSE_CTRL]);
-	while (!(((value32 >> 24) & 0xff) & 0x80) && (retry < 10000)) {
+	while (!(((value32 >> 24) & 0xff) & 0x80) && (retry < max_attempts)) {
 		value32 = rtl_read_dword(rtlpriv,
 					 rtlpriv->cfg->maps[EFUSE_CTRL]);
 		retry++;
@@ -1211,7 +1220,7 @@ static u8 efuse_calculate_word_cnts(u8 word_en)
 }
 
 int rtl_get_hwinfo(struct ieee80211_hw *hw, struct rtl_priv *rtlpriv,
-		   int max_size, u8 *hwinfo, int *params)
+		   int max_size, u8 *hwinfo, const int *params)
 {
 	struct rtl_efuse *rtlefuse = rtl_efuse(rtl_priv(hw));
 	struct rtl_pci_priv *rtlpcipriv = rtl_pcipriv(hw);
@@ -1287,18 +1296,44 @@ int rtl_get_hwinfo(struct ieee80211_hw *hw, struct rtl_priv *rtlpriv,
 }
 EXPORT_SYMBOL_GPL(rtl_get_hwinfo);
 
-void rtl_fw_block_write(struct ieee80211_hw *hw, const u8 *buffer, u32 size)
+static void _rtl_fw_block_write_usb(struct ieee80211_hw *hw, u8 *buffer, u32 size)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
-	u8 *pu4byteptr = (u8 *)buffer;
+	u32 start = START_ADDRESS;
+	u32 n;
+
+	while (size > 0) {
+		if (size >= 64)
+			n = 64;
+		else if (size >= 8)
+			n = 8;
+		else
+			n = 1;
+
+		rtl_write_chunk(rtlpriv, start, n, buffer);
+
+		start += n;
+		buffer += n;
+		size -= n;
+	}
+}
+
+void rtl_fw_block_write(struct ieee80211_hw *hw, u8 *buffer, u32 size)
+{
+	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	u32 i;
 
-	for (i = 0; i < size; i++)
-		rtl_write_byte(rtlpriv, (START_ADDRESS + i), *(pu4byteptr + i));
+	if (rtlpriv->rtlhal.interface == INTF_PCI) {
+		for (i = 0; i < size; i++)
+			rtl_write_byte(rtlpriv, (START_ADDRESS + i),
+				       *(buffer + i));
+	} else if (rtlpriv->rtlhal.interface == INTF_USB) {
+		_rtl_fw_block_write_usb(hw, buffer, size);
+	}
 }
 EXPORT_SYMBOL_GPL(rtl_fw_block_write);
 
-void rtl_fw_page_write(struct ieee80211_hw *hw, u32 page, const u8 *buffer,
+void rtl_fw_page_write(struct ieee80211_hw *hw, u32 page, u8 *buffer,
 		       u32 size)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);

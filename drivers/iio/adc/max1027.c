@@ -73,13 +73,13 @@ enum max1027_id {
 };
 
 static const struct spi_device_id max1027_id[] = {
-	{"max1027", max1027},
-	{"max1029", max1029},
-	{"max1031", max1031},
-	{"max1227", max1227},
-	{"max1229", max1229},
-	{"max1231", max1231},
-	{}
+	{ "max1027", max1027 },
+	{ "max1029", max1029 },
+	{ "max1031", max1031 },
+	{ "max1227", max1227 },
+	{ "max1229", max1229 },
+	{ "max1231", max1231 },
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, max1027_id);
 
@@ -90,7 +90,7 @@ static const struct of_device_id max1027_adc_dt_ids[] = {
 	{ .compatible = "maxim,max1227" },
 	{ .compatible = "maxim,max1229" },
 	{ .compatible = "maxim,max1231" },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, max1027_adc_dt_ids);
 
@@ -272,7 +272,7 @@ struct max1027_state {
 	struct mutex			lock;
 	struct completion		complete;
 
-	u8				reg ____cacheline_aligned;
+	u8				reg __aligned(IIO_DMA_MINALIGN);
 };
 
 static int max1027_wait_eoc(struct iio_dev *indio_dev)
@@ -336,10 +336,6 @@ static int max1027_read_single_value(struct iio_dev *indio_dev,
 	int ret;
 	struct max1027_state *st = iio_priv(indio_dev);
 
-	ret = iio_device_claim_direct_mode(indio_dev);
-	if (ret)
-		return ret;
-
 	/* Configure conversion register with the requested chan */
 	st->reg = MAX1027_CONV_REG | MAX1027_CHAN(chan->channel) |
 		  MAX1027_NOSCAN;
@@ -349,7 +345,6 @@ static int max1027_read_single_value(struct iio_dev *indio_dev,
 	if (ret < 0) {
 		dev_err(&indio_dev->dev,
 			"Failed to configure conversion register\n");
-		iio_device_release_direct_mode(indio_dev);
 		return ret;
 	}
 
@@ -364,9 +359,6 @@ static int max1027_read_single_value(struct iio_dev *indio_dev,
 
 	/* Read result */
 	ret = spi_read(st->spi, st->buffer, (chan->type == IIO_TEMP) ? 4 : 2);
-
-	iio_device_release_direct_mode(indio_dev);
-
 	if (ret < 0)
 		return ret;
 
@@ -382,37 +374,32 @@ static int max1027_read_raw(struct iio_dev *indio_dev,
 	int ret = 0;
 	struct max1027_state *st = iio_priv(indio_dev);
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
+
 		ret = max1027_read_single_value(indio_dev, chan, val);
-		break;
+		iio_device_release_direct(indio_dev);
+		return ret;
 	case IIO_CHAN_INFO_SCALE:
 		switch (chan->type) {
 		case IIO_TEMP:
 			*val = 1;
 			*val2 = 8;
-			ret = IIO_VAL_FRACTIONAL;
-			break;
+			return IIO_VAL_FRACTIONAL;
 		case IIO_VOLTAGE:
 			*val = 2500;
 			*val2 = chan->scan_type.realbits;
-			ret = IIO_VAL_FRACTIONAL_LOG2;
-			break;
+			return IIO_VAL_FRACTIONAL_LOG2;
 		default:
-			ret = -EINVAL;
-			break;
+			return -EINVAL;
 		}
-		break;
 	default:
-		ret = -EINVAL;
-		break;
+		return -EINVAL;
 	}
-
-	mutex_unlock(&st->lock);
-
-	return ret;
 }
 
 static int max1027_debugfs_reg_access(struct iio_dev *indio_dev,

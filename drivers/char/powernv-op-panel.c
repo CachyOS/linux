@@ -167,7 +167,7 @@ static int oppanel_probe(struct platform_device *pdev)
 	if (!oppanel_data)
 		return -ENOMEM;
 
-	oppanel_lines = kcalloc(num_lines, sizeof(oppanel_line_t), GFP_KERNEL);
+	oppanel_lines = kzalloc_objs(oppanel_line_t, num_lines);
 	if (!oppanel_lines) {
 		rc = -ENOMEM;
 		goto free_oppanel_data;
@@ -195,12 +195,11 @@ free_oppanel_data:
 	return rc;
 }
 
-static int oppanel_remove(struct platform_device *pdev)
+static void oppanel_remove(struct platform_device *pdev)
 {
 	misc_deregister(&oppanel_dev);
 	kfree(oppanel_lines);
 	kfree(oppanel_data);
-	return 0;
 }
 
 static const struct of_device_id oppanel_match[] = {

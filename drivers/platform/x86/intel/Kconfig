@@ -41,6 +41,19 @@ config INTEL_VBTN
 	  To compile this driver as a module, choose M here: the module will
 	  be called intel_vbtn.
 
+config INTEL_EHL_PSE_IO
+	tristate "Intel Elkhart Lake PSE I/O driver"
+	depends on PCI
+	select AUXILIARY_BUS
+	help
+	  Select this option to enable Intel Elkhart Lake PSE GPIO and Timed
+	  I/O support. This driver enumerates the PCI parent device and
+	  creates auxiliary child devices for these capabilities. The actual
+	  functionalities are provided by their respective auxiliary drivers.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called intel_ehl_pse_io.
+
 config INTEL_INT0002_VGPIO
 	tristate "Intel ACPI INT0002 Virtual GPIO driver"
 	depends on GPIOLIB && ACPI && PM_SLEEP
@@ -62,7 +75,7 @@ config INTEL_INT0002_VGPIO
 
 config INTEL_OAKTRAIL
 	tristate "Intel Oaktrail Platform Extras"
-	depends on ACPI
+	depends on ACPI_EC
 	depends on ACPI_VIDEO || ACPI_VIDEO=n
 	depends on RFKILL && BACKLIGHT_CLASS_DEVICE && ACPI
 	help
@@ -79,6 +92,17 @@ config INTEL_BXTWC_PMIC_TMU
 	  Select this driver to use Intel Broxton Whiskey Cove PMIC TMU feature.
 	  This driver enables the alarm wakeup functionality in the TMU unit of
 	  Whiskey Cove PMIC.
+
+config INTEL_BYTCRC_PWRSRC
+	tristate "Intel Bay Trail Crystal Cove power source driver"
+	depends on INTEL_SOC_PMIC
+	depends on POWER_SUPPLY
+	help
+	  This option adds a power source driver for Crystal Cove PMICs
+	  on Intel Bay Trail devices.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called intel_bytcrc_pwrsrc.
 
 config INTEL_CHTDC_TI_PWRBTN
 	tristate "Intel Cherry Trail Dollar Cove TI power button driver"
@@ -157,13 +181,13 @@ config INTEL_RST
 	  as usual.
 
 config INTEL_SDSI
-	tristate "Intel Software Defined Silicon Driver"
+	tristate "Intel On Demand (Software Defined Silicon) Driver"
 	depends on INTEL_VSEC
 	depends on X86_64
 	help
-	  This driver enables access to the Intel Software Defined Silicon
-	  interface used to provision silicon features with an authentication
-	  certificate and capability license.
+	  This driver enables access to the Intel On Demand (formerly Software
+	  Defined Silicon) interface used to provision silicon features with an
+	  authentication certificate and capability license.
 
 	  To compile this driver as a module, choose M here: the module will
 	  be called intel_sdsi.
@@ -181,6 +205,30 @@ config INTEL_SMARTCONNECT
 
 	  This driver checks to determine whether the device has Intel Smart
 	  Connect enabled, and if so disables it.
+
+config INTEL_TPMI_POWER_DOMAINS
+	tristate
+
+config INTEL_TPMI
+	tristate "Intel Topology Aware Register and PM Capsule Interface (TPMI)"
+	depends on INTEL_VSEC
+	depends on X86_64
+	select INTEL_TPMI_POWER_DOMAINS
+	help
+	  The Intel Topology Aware Register and PM Capsule Interface (TPMI),
+	  provides enumerable MMIO interface for power management features.
+	  This driver creates devices, so that other PM feature driver can
+	  be loaded for PM specific feature operation.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called intel_vsec_tpmi.
+
+config INTEL_PLR_TPMI
+        tristate "Intel SoC TPMI Power Limit Reasons driver"
+        depends on INTEL_TPMI
+        help
+          This driver provides the TPMI power limit reasons status information
+          via debugfs files.
 
 config INTEL_TURBO_MAX_3
 	bool "Intel Turbo Boost Max Technology 3.0 enumeration driver"

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Device Tree support for Armada 370 and XP platforms.
  *
@@ -6,10 +7,6 @@
  * Lior Amsalem <alior@marvell.com>
  * Gregory CLEMENT <gregory.clement@free-electrons.com>
  * Thomas Petazzoni <thomas.petazzoni@free-electrons.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/kernel.h>
@@ -89,6 +86,9 @@ static int __init mvebu_scan_mem(unsigned long node, const char *uname,
 		base = dt_mem_next_cell(dt_root_addr_cells, &reg);
 		size = dt_mem_next_cell(dt_root_size_cells, &reg);
 
+		if (size < MVEBU_DDR_TRAINING_AREA_SZ)
+			pr_warn("Too little memory to reserve for DDR training\n");
+
 		memblock_reserve(base, MVEBU_DDR_TRAINING_AREA_SZ);
 	}
 
@@ -127,7 +127,7 @@ static void __init i2c_quirk(void)
 	for_each_compatible_node(np, NULL, "marvell,mv78230-i2c") {
 		struct property *new_compat;
 
-		new_compat = kzalloc(sizeof(*new_compat), GFP_KERNEL);
+		new_compat = kzalloc_obj(*new_compat);
 
 		new_compat->name = kstrdup("compatible", GFP_KERNEL);
 		new_compat->length = sizeof("marvell,mv78230-a0-i2c");

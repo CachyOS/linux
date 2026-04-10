@@ -19,6 +19,7 @@
 static DEFINE_PER_CPU(struct clock_event_device, gic_clockevent_device);
 static int gic_timer_irq;
 static unsigned int gic_frequency;
+static unsigned int gic_count_width;
 static bool __read_mostly gic_clock_unstable;
 
 static void gic_clocksource_unstable(char *reason);
@@ -76,13 +77,6 @@ static irqreturn_t gic_compare_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static struct irqaction gic_compare_irqaction = {
-	.handler = gic_compare_interrupt,
-	.percpu_dev_id = &gic_clockevent_device,
-	.flags = IRQF_PERCPU | IRQF_TIMER,
-	.name = "timer",
-};
-
 static void gic_clockevent_cpu_init(unsigned int cpu,
 				    struct clock_event_device *cd)
 {
@@ -114,6 +108,9 @@ static void gic_update_frequency(void *data)
 
 static int gic_starting_cpu(unsigned int cpu)
 {
+	/* Ensure the GIC counter is running */
+	clear_gic_config(GIC_CONFIG_COUNTSTOP);
+
 	gic_clockevent_cpu_init(cpu, this_cpu_ptr(&gic_clockevent_device));
 	return 0;
 }
@@ -148,7 +145,8 @@ static int gic_clockevent_init(void)
 	if (!gic_frequency)
 		return -ENXIO;
 
-	ret = setup_percpu_irq(gic_timer_irq, &gic_compare_irqaction);
+	ret = request_percpu_irq(gic_timer_irq, gic_compare_interrupt,
+				 "timer", &gic_clockevent_device);
 	if (ret < 0) {
 		pr_err("IRQ %d setup failed (%d)\n", gic_timer_irq, ret);
 		return ret;
@@ -163,6 +161,37 @@ static int gic_clockevent_init(void)
 static u64 gic_hpt_read(struct clocksource *cs)
 {
 	return gic_read_count();
+}
+
+static u64 gic_hpt_read_multicluster(struct clocksource *cs)
+{
+	unsigned int hi, hi2, lo;
+	u64 count;
+
+	mips_cm_lock_other(0, 0, 0, CM_GCR_Cx_OTHER_BLOCK_GLOBAL);
+
+	if (mips_cm_is64) {
+		count = read_gic_redir_counter();
+		goto out;
+	}
+
+	hi = read_gic_redir_counter_32h();
+	while (true) {
+		lo = read_gic_redir_counter_32l();
+
+		/* If hi didn't change then lo didn't wrap & we're done */
+		hi2 = read_gic_redir_counter_32h();
+		if (hi2 == hi)
+			break;
+
+		/* Otherwise, repeat with the latest hi value */
+		hi = hi2;
+	}
+
+	count = (((u64)hi) << 32) + lo;
+out:
+	mips_cm_unlock_other();
+	return count;
 }
 
 static struct clocksource gic_clocksource = {
@@ -186,18 +215,26 @@ static void gic_clocksource_unstable(char *reason)
 
 static int __init __gic_clocksource_init(void)
 {
-	unsigned int count_width;
 	int ret;
 
 	/* Set clocksource mask. */
-	count_width = read_gic_config() & GIC_CONFIG_COUNTBITS;
-	count_width >>= __ffs(GIC_CONFIG_COUNTBITS);
-	count_width *= 4;
-	count_width += 32;
-	gic_clocksource.mask = CLOCKSOURCE_MASK(count_width);
+	gic_count_width = read_gic_config() & GIC_CONFIG_COUNTBITS;
+	gic_count_width >>= __ffs(GIC_CONFIG_COUNTBITS);
+	gic_count_width *= 4;
+	gic_count_width += 32;
+	gic_clocksource.mask = CLOCKSOURCE_MASK(gic_count_width);
 
 	/* Calculate a somewhat reasonable rating value. */
-	gic_clocksource.rating = 200 + gic_frequency / 10000000;
+	if (mips_cm_revision() >= CM_REV_CM3 || !IS_ENABLED(CONFIG_CPU_FREQ))
+		gic_clocksource.rating = 300; /* Good when frequecy is stable */
+	else
+		gic_clocksource.rating = 200;
+	gic_clocksource.rating += clamp(gic_frequency / 10000000, 0, 99);
+
+	if (mips_cps_multicluster_cpus()) {
+		gic_clocksource.read = &gic_hpt_read_multicluster;
+		gic_clocksource.vdso_clock_mode = VDSO_CLOCKMODE_NONE;
+	}
 
 	ret = clocksource_register_hz(&gic_clocksource, gic_frequency);
 	if (ret < 0)
@@ -248,19 +285,17 @@ static int __init gic_clocksource_of_init(struct device_node *node)
 			pr_warn("Unable to register clock notifier\n");
 	}
 
-	/* And finally start the counter */
-	clear_gic_config(GIC_CONFIG_COUNTSTOP);
-
 	/*
 	 * It's safe to use the MIPS GIC timer as a sched clock source only if
 	 * its ticks are stable, which is true on either the platforms with
 	 * stable CPU frequency or on the platforms with CM3 and CPU frequency
 	 * change performed by the CPC core clocks divider.
 	 */
-	if (mips_cm_revision() >= CM_REV_CM3 || !IS_ENABLED(CONFIG_CPU_FREQ)) {
+	if ((mips_cm_revision() >= CM_REV_CM3 || !IS_ENABLED(CONFIG_CPU_FREQ)) &&
+	     !mips_cps_multicluster_cpus()) {
 		sched_clock_register(mips_cm_is64 ?
 				     gic_read_count_64 : gic_read_count_2x32,
-				     64, gic_frequency);
+				     gic_count_width, gic_frequency);
 	}
 
 	return 0;

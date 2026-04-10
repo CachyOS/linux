@@ -3,15 +3,42 @@
 #ifndef __ARM64_ASM_SETUP_H
 #define __ARM64_ASM_SETUP_H
 
-#include <uapi/asm/setup.h>
+#include <linux/string.h>
 
-void *get_early_fdt_ptr(void);
-void early_fdt_map(u64 dt_phys);
+#include <uapi/asm/setup.h>
 
 /*
  * These two variables are used in the head.S file.
  */
 extern phys_addr_t __fdt_pointer __initdata;
 extern u64 __cacheline_aligned boot_args[4];
+
+static inline bool arch_parse_debug_rodata(char *arg)
+{
+	extern bool rodata_enabled;
+	extern bool rodata_full;
+
+	if (!arg)
+		return false;
+
+	if (!strcmp(arg, "on")) {
+		rodata_enabled = rodata_full = true;
+		return true;
+	}
+
+	if (!strcmp(arg, "off")) {
+		rodata_enabled = rodata_full = false;
+		return true;
+	}
+
+	if (!strcmp(arg, "noalias")) {
+		rodata_enabled = true;
+		rodata_full = false;
+		return true;
+	}
+
+	return false;
+}
+#define arch_parse_debug_rodata arch_parse_debug_rodata
 
 #endif

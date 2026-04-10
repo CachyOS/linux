@@ -12,19 +12,19 @@
 #include <net/netlink.h>
 #include <net/pkt_sched.h>
 #include <net/pkt_cls.h>
+#include <net/tc_wrapper.h>
 
 #include <linux/tc_act/tc_vlan.h>
 #include <net/tc_act/tc_vlan.h>
 
-static unsigned int vlan_net_id;
 static struct tc_action_ops act_vlan_ops;
 
-static int tcf_vlan_act(struct sk_buff *skb, const struct tc_action *a,
-			struct tcf_result *res)
+TC_INDIRECT_SCOPE int tcf_vlan_act(struct sk_buff *skb,
+				   const struct tc_action *a,
+				   struct tcf_result *res)
 {
 	struct tcf_vlan *v = to_vlan(a);
 	struct tcf_vlan_params *p;
-	int action;
 	int err;
 	u16 tci;
 
@@ -36,8 +36,6 @@ static int tcf_vlan_act(struct sk_buff *skb, const struct tc_action *a,
 	 */
 	if (skb_at_tc_ingress(skb))
 		skb_push_rcsum(skb, skb->mac_len);
-
-	action = READ_ONCE(v->tcf_action);
 
 	p = rcu_dereference_bh(v->vlan_p);
 
@@ -95,7 +93,8 @@ out:
 	if (skb_at_tc_ingress(skb))
 		skb_pull_rcsum(skb, skb->mac_len);
 
-	return action;
+	skb_reset_mac_len(skb);
+	return p->action;
 
 drop:
 	tcf_action_inc_drop_qstats(&v->common);
@@ -117,7 +116,7 @@ static int tcf_vlan_init(struct net *net, struct nlattr *nla,
 			 struct tcf_proto *tp, u32 flags,
 			 struct netlink_ext_ack *extack)
 {
-	struct tc_action_net *tn = net_generic(net, vlan_net_id);
+	struct tc_action_net *tn = net_generic(net, act_vlan_ops.net_id);
 	bool bind = flags & TCA_ACT_FLAGS_BIND;
 	struct nlattr *tb[TCA_VLAN_MAX + 1];
 	struct tcf_chain *goto_ch = NULL;
@@ -150,7 +149,7 @@ static int tcf_vlan_init(struct net *net, struct nlattr *nla,
 		return err;
 	exists = err;
 	if (exists && bind)
-		return 0;
+		return ACT_P_BOUND;
 
 	switch (parm->v_action) {
 	case TCA_VLAN_ACT_POP:
@@ -234,7 +233,7 @@ static int tcf_vlan_init(struct net *net, struct nlattr *nla,
 
 	v = to_vlan(*a);
 
-	p = kzalloc(sizeof(*p), GFP_KERNEL);
+	p = kzalloc_obj(*p);
 	if (!p) {
 		err = -ENOMEM;
 		goto put_chain;
@@ -253,6 +252,7 @@ static int tcf_vlan_init(struct net *net, struct nlattr *nla,
 			   ETH_ALEN);
 	}
 
+	p->action = parm->action;
 	spin_lock_bh(&v->tcf_lock);
 	goto_ch = tcf_action_set_ctrlact(*a, parm->action, goto_ch);
 	p = rcu_replace_pointer(v->vlan_p, p, lockdep_is_held(&v->tcf_lock));
@@ -295,9 +295,9 @@ static int tcf_vlan_dump(struct sk_buff *skb, struct tc_action *a,
 	};
 	struct tcf_t t;
 
-	spin_lock_bh(&v->tcf_lock);
-	opt.action = v->tcf_action;
-	p = rcu_dereference_protected(v->vlan_p, lockdep_is_held(&v->tcf_lock));
+	rcu_read_lock();
+	p = rcu_dereference(v->vlan_p);
+	opt.action = p->action;
 	opt.v_action = p->tcfv_action;
 	if (nla_put(skb, TCA_VLAN_PARMS, sizeof(opt), &opt))
 		goto nla_put_failure;
@@ -323,24 +323,14 @@ static int tcf_vlan_dump(struct sk_buff *skb, struct tc_action *a,
 	tcf_tm_dump(&t, &v->tcf_tm);
 	if (nla_put_64bit(skb, TCA_VLAN_TM, sizeof(t), &t, TCA_VLAN_PAD))
 		goto nla_put_failure;
-	spin_unlock_bh(&v->tcf_lock);
+	rcu_read_unlock();
 
 	return skb->len;
 
 nla_put_failure:
-	spin_unlock_bh(&v->tcf_lock);
+	rcu_read_unlock();
 	nlmsg_trim(skb, b);
 	return -1;
-}
-
-static int tcf_vlan_walker(struct net *net, struct sk_buff *skb,
-			   struct netlink_callback *cb, int type,
-			   const struct tc_action_ops *ops,
-			   struct netlink_ext_ack *extack)
-{
-	struct tc_action_net *tn = net_generic(net, vlan_net_id);
-
-	return tcf_generic_walker(tn, skb, cb, type, ops, extack);
 }
 
 static void tcf_vlan_stats_update(struct tc_action *a, u64 bytes, u64 packets,
@@ -351,13 +341,6 @@ static void tcf_vlan_stats_update(struct tc_action *a, u64 bytes, u64 packets,
 
 	tcf_action_update_stats(a, bytes, packets, drops, hw);
 	tm->lastuse = max_t(u64, tm->lastuse, lastuse);
-}
-
-static int tcf_vlan_search(struct net *net, struct tc_action **a, u32 index)
-{
-	struct tc_action_net *tn = net_generic(net, vlan_net_id);
-
-	return tcf_idr_search(tn, a, index);
 }
 
 static size_t tcf_vlan_get_fill_size(const struct tc_action *act)
@@ -438,30 +421,29 @@ static struct tc_action_ops act_vlan_ops = {
 	.dump		=	tcf_vlan_dump,
 	.init		=	tcf_vlan_init,
 	.cleanup	=	tcf_vlan_cleanup,
-	.walk		=	tcf_vlan_walker,
 	.stats_update	=	tcf_vlan_stats_update,
 	.get_fill_size	=	tcf_vlan_get_fill_size,
-	.lookup		=	tcf_vlan_search,
 	.offload_act_setup =	tcf_vlan_offload_act_setup,
 	.size		=	sizeof(struct tcf_vlan),
 };
+MODULE_ALIAS_NET_ACT("vlan");
 
 static __net_init int vlan_init_net(struct net *net)
 {
-	struct tc_action_net *tn = net_generic(net, vlan_net_id);
+	struct tc_action_net *tn = net_generic(net, act_vlan_ops.net_id);
 
 	return tc_action_net_init(net, tn, &act_vlan_ops);
 }
 
 static void __net_exit vlan_exit_net(struct list_head *net_list)
 {
-	tc_action_net_exit(net_list, vlan_net_id);
+	tc_action_net_exit(net_list, act_vlan_ops.net_id);
 }
 
 static struct pernet_operations vlan_net_ops = {
 	.init = vlan_init_net,
 	.exit_batch = vlan_exit_net,
-	.id   = &vlan_net_id,
+	.id   = &act_vlan_ops.net_id,
 	.size = sizeof(struct tc_action_net),
 };
 

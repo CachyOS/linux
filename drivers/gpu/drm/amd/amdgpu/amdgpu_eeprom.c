@@ -79,16 +79,18 @@
  * That is, for an I2C EEPROM driver everything is controlled by
  * the "eeprom_addr".
  *
+ * See also top of amdgpu_ras_eeprom.c.
+ *
  * P.S. If you need to write, lock and read the Identification Page,
  * (M24M02-DR device only, which we do not use), change the "7" to
  * "0xF" in the macro below, and let the client set bit 20 to 1 in
  * "eeprom_addr", and set A10 to 0 to write into it, and A10 and A1 to
  * 1 to lock it permanently.
  */
-#define MAKE_I2C_ADDR(_aa) ((0xA << 3) | (((_aa) >> 16) & 7))
+#define MAKE_I2C_ADDR(_aa) ((0xA << 3) | (((_aa) >> 16) & 0xF))
 
 static int __amdgpu_eeprom_xfer(struct i2c_adapter *i2c_adap, u32 eeprom_addr,
-				u8 *eeprom_buf, u16 buf_size, bool read)
+				u8 *eeprom_buf, u32 buf_size, bool read)
 {
 	u8 eeprom_offset_buf[EEPROM_OFFSET_SIZE];
 	struct i2c_msg msgs[] = {
@@ -131,15 +133,15 @@ static int __amdgpu_eeprom_xfer(struct i2c_adapter *i2c_adap, u32 eeprom_addr,
 			 * cycle begins. This is implied for the
 			 * "i2c_transfer()" abstraction.
 			 */
-			len = min(EEPROM_PAGE_SIZE - (eeprom_addr &
-						      EEPROM_PAGE_MASK),
-				  (u32)buf_size);
+			len = min(EEPROM_PAGE_SIZE - (eeprom_addr & EEPROM_PAGE_MASK),
+					buf_size);
 		} else {
 			/* Reading from the EEPROM has no limitation
 			 * on the number of bytes read from the EEPROM
 			 * device--they are simply sequenced out.
+			 * Keep in mind that i2c_msg.len is u16 type.
 			 */
-			len = buf_size;
+			len = min(U16_MAX, buf_size);
 		}
 		msgs[1].len = len;
 		msgs[1].buf = eeprom_buf;
@@ -177,10 +179,12 @@ static int __amdgpu_eeprom_xfer(struct i2c_adapter *i2c_adap, u32 eeprom_addr,
  * Returns the number of bytes read/written; -errno on error.
  */
 static int amdgpu_eeprom_xfer(struct i2c_adapter *i2c_adap, u32 eeprom_addr,
-			      u8 *eeprom_buf, u16 buf_size, bool read)
+			      u8 *eeprom_buf, u32 buf_size, bool read)
 {
 	const struct i2c_adapter_quirks *quirks = i2c_adap->quirks;
 	u16 limit;
+	u16 ps; /* Partial size */
+	int res = 0, r;
 
 	if (!quirks)
 		limit = 0;
@@ -196,35 +200,32 @@ static int amdgpu_eeprom_xfer(struct i2c_adapter *i2c_adap, u32 eeprom_addr,
 		dev_err_ratelimited(&i2c_adap->dev,
 				    "maddr:0x%04X size:0x%02X:quirk max_%s_len must be > %d",
 				    eeprom_addr, buf_size,
-				    read ? "read" : "write", EEPROM_OFFSET_SIZE);
+				    str_read_write(read), EEPROM_OFFSET_SIZE);
 		return -EINVAL;
-	} else {
-		u16 ps; /* Partial size */
-		int res = 0, r;
-
-		/* The "limit" includes all data bytes sent/received,
-		 * which would include the EEPROM_OFFSET_SIZE bytes.
-		 * Account for them here.
-		 */
-		limit -= EEPROM_OFFSET_SIZE;
-		for ( ; buf_size > 0;
-		      buf_size -= ps, eeprom_addr += ps, eeprom_buf += ps) {
-			ps = min(limit, buf_size);
-
-			r = __amdgpu_eeprom_xfer(i2c_adap, eeprom_addr,
-						 eeprom_buf, ps, read);
-			if (r < 0)
-				return r;
-			res += r;
-		}
-
-		return res;
 	}
+
+	/* The "limit" includes all data bytes sent/received,
+	 * which would include the EEPROM_OFFSET_SIZE bytes.
+	 * Account for them here.
+	 */
+	limit -= EEPROM_OFFSET_SIZE;
+	for ( ; buf_size > 0;
+	      buf_size -= ps, eeprom_addr += ps, eeprom_buf += ps) {
+		ps = min(limit, buf_size);
+
+		r = __amdgpu_eeprom_xfer(i2c_adap, eeprom_addr,
+					 eeprom_buf, ps, read);
+		if (r < 0)
+			return r;
+		res += r;
+	}
+
+	return res;
 }
 
 int amdgpu_eeprom_read(struct i2c_adapter *i2c_adap,
 		       u32 eeprom_addr, u8 *eeprom_buf,
-		       u16 bytes)
+		       u32 bytes)
 {
 	return amdgpu_eeprom_xfer(i2c_adap, eeprom_addr, eeprom_buf, bytes,
 				  true);
@@ -232,7 +233,7 @@ int amdgpu_eeprom_read(struct i2c_adapter *i2c_adap,
 
 int amdgpu_eeprom_write(struct i2c_adapter *i2c_adap,
 			u32 eeprom_addr, u8 *eeprom_buf,
-			u16 bytes)
+			u32 bytes)
 {
 	return amdgpu_eeprom_xfer(i2c_adap, eeprom_addr, eeprom_buf, bytes,
 				  false);

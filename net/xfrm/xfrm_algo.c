@@ -5,12 +5,13 @@
  * Copyright (c) 2002 James Morris <jmorris@intercode.com.au>
  */
 
+#include <crypto/acompress.h>
+#include <crypto/aead.h>
 #include <crypto/hash.h>
 #include <crypto/skcipher.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/pfkeyv2.h>
-#include <linux/crypto.h>
 #include <linux/scatterlist.h>
 #include <net/xfrm.h>
 #if IS_ENABLED(CONFIG_INET_ESP) || IS_ENABLED(CONFIG_INET6_ESP)
@@ -644,38 +645,33 @@ static inline int calg_entries(void)
 }
 
 struct xfrm_algo_list {
+	int (*find)(const char *name, u32 type, u32 mask);
 	struct xfrm_algo_desc *algs;
 	int entries;
-	u32 type;
-	u32 mask;
 };
 
 static const struct xfrm_algo_list xfrm_aead_list = {
+	.find = crypto_has_aead,
 	.algs = aead_list,
 	.entries = ARRAY_SIZE(aead_list),
-	.type = CRYPTO_ALG_TYPE_AEAD,
-	.mask = CRYPTO_ALG_TYPE_MASK,
 };
 
 static const struct xfrm_algo_list xfrm_aalg_list = {
+	.find = crypto_has_ahash,
 	.algs = aalg_list,
 	.entries = ARRAY_SIZE(aalg_list),
-	.type = CRYPTO_ALG_TYPE_HASH,
-	.mask = CRYPTO_ALG_TYPE_HASH_MASK,
 };
 
 static const struct xfrm_algo_list xfrm_ealg_list = {
+	.find = crypto_has_skcipher,
 	.algs = ealg_list,
 	.entries = ARRAY_SIZE(ealg_list),
-	.type = CRYPTO_ALG_TYPE_SKCIPHER,
-	.mask = CRYPTO_ALG_TYPE_MASK,
 };
 
 static const struct xfrm_algo_list xfrm_calg_list = {
+	.find = crypto_has_acomp,
 	.algs = calg_list,
 	.entries = ARRAY_SIZE(calg_list),
-	.type = CRYPTO_ALG_TYPE_COMPRESS,
-	.mask = CRYPTO_ALG_TYPE_MASK,
 };
 
 static struct xfrm_algo_desc *xfrm_find_algo(
@@ -696,8 +692,7 @@ static struct xfrm_algo_desc *xfrm_find_algo(
 		if (!probe)
 			break;
 
-		status = crypto_has_alg(list[i].name, algo_list->type,
-					algo_list->mask);
+		status = algo_list->find(list[i].name, 0, 0);
 		if (!status)
 			break;
 
@@ -833,8 +828,7 @@ void xfrm_probe_algs(void)
 	}
 
 	for (i = 0; i < calg_entries(); i++) {
-		status = crypto_has_comp(calg_list[i].name, 0,
-					 CRYPTO_ALG_ASYNC);
+		status = crypto_has_acomp(calg_list[i].name, 0, 0);
 		if (calg_list[i].available != status)
 			calg_list[i].available = status;
 	}
@@ -863,4 +857,5 @@ int xfrm_count_pfkey_enc_supported(void)
 }
 EXPORT_SYMBOL_GPL(xfrm_count_pfkey_enc_supported);
 
+MODULE_DESCRIPTION("XFRM Algorithm interface");
 MODULE_LICENSE("GPL");

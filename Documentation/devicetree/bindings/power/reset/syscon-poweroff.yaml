@@ -15,10 +15,16 @@ description: |+
   defined by the register map pointed by syscon reference plus the offset
   with the value and mask defined in the poweroff node.
   Default will be little endian mode, 32 bit access only.
+  The SYSCON register map is normally retrieved from the parental dt-node. So
+  the SYSCON poweroff node should be represented as a sub-node of a "syscon",
+  "simple-mfd" node.
 
 properties:
   compatible:
     const: syscon-poweroff
+
+  reg:
+    maxItems: 1
 
   mask:
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -30,7 +36,10 @@ properties:
 
   regmap:
     $ref: /schemas/types.yaml#/definitions/phandle
-    description: Phandle to the register map node.
+    deprecated: true
+    description:
+      Phandle to the register map node. This property is deprecated in favor of
+      the syscon-poweroff node being a child of a system controller node.
 
   value:
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -38,8 +47,10 @@ properties:
 
 required:
   - compatible
-  - regmap
-  - offset
+
+anyOf:
+  - required: [offset]
+  - required: [reg]
 
 additionalProperties: false
 
@@ -56,7 +67,6 @@ examples:
   - |
     poweroff {
         compatible = "syscon-poweroff";
-        regmap = <&regmapnode>;
         offset = <0x0>;
         mask = <0x7a>;
     };

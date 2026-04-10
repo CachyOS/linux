@@ -213,16 +213,16 @@ struct fdc_word {
  */
 
 /* ranges >= 1 && sizes[0] >= 1 */
-static struct fdc_word mips_ejtag_fdc_encode(const char **ptrs,
+static struct fdc_word mips_ejtag_fdc_encode(const u8 **ptrs,
 					     unsigned int *sizes,
 					     unsigned int ranges)
 {
 	struct fdc_word word = { 0, 0 };
-	const char **ptrs_end = ptrs + ranges;
+	const u8 **ptrs_end = ptrs + ranges;
 
 	for (; ptrs < ptrs_end; ++ptrs) {
-		const char *ptr = *(ptrs++);
-		const char *end = ptr + *(sizes++);
+		const u8 *ptr = *(ptrs++);
+		const u8 *end = ptr + *(sizes++);
 
 		for (; ptr < end; ++ptr) {
 			word.word |= (u8)*ptr << (8*word.bytes);
@@ -309,7 +309,7 @@ static void mips_ejtag_fdc_console_write(struct console *c, const char *s,
 	unsigned int i, buf_len, cpu;
 	bool done_cr = false;
 	char buf[4];
-	const char *buf_ptr = buf;
+	const u8 *buf_ptr = buf;
 	/* Number of bytes of input data encoded up to each byte in buf */
 	u8 inc[4];
 
@@ -417,7 +417,7 @@ static unsigned int mips_ejtag_fdc_put_chan(struct mips_ejtag_fdc_tty *priv,
 {
 	struct mips_ejtag_fdc_tty_port *dport;
 	struct tty_struct *tty;
-	const char *ptrs[2];
+	const u8 *ptrs[2];
 	unsigned int sizes[2] = { 0 };
 	struct fdc_word word = { .bytes = 0 };
 	unsigned long flags;
@@ -683,7 +683,8 @@ static irqreturn_t mips_ejtag_fdc_isr(int irq, void *dev_id)
  */
 static void mips_ejtag_fdc_tty_timer(struct timer_list *t)
 {
-	struct mips_ejtag_fdc_tty *priv = from_timer(priv, t, poll_timer);
+	struct mips_ejtag_fdc_tty *priv = timer_container_of(priv, t,
+						             poll_timer);
 
 	mips_ejtag_fdc_handle(priv);
 	if (!priv->removing)
@@ -796,8 +797,8 @@ static void mips_ejtag_fdc_tty_hangup(struct tty_struct *tty)
 	tty_port_hangup(tty->port);
 }
 
-static int mips_ejtag_fdc_tty_write(struct tty_struct *tty,
-				    const unsigned char *buf, int total)
+static ssize_t mips_ejtag_fdc_tty_write(struct tty_struct *tty, const u8 *buf,
+					size_t total)
 {
 	int count, block;
 	struct mips_ejtag_fdc_tty_port *dport = tty->driver_data;
@@ -816,7 +817,7 @@ static int mips_ejtag_fdc_tty_write(struct tty_struct *tty,
 	 */
 	spin_lock(&dport->xmit_lock);
 	/* Work out how many bytes we can write to the xmit buffer */
-	total = min(total, (int)(priv->xmit_size - dport->xmit_cnt));
+	total = min_t(size_t, total, priv->xmit_size - dport->xmit_cnt);
 	atomic_add(total, &priv->xmit_total);
 	dport->xmit_cnt += total;
 	/* Write the actual bytes (may need splitting if it wraps) */
@@ -916,7 +917,7 @@ static int mips_ejtag_fdc_tty_probe(struct mips_cdmm_device *dev)
 	mips_ejtag_fdc_write(priv, REG_FDCFG, cfg);
 
 	/* Make each port's xmit FIFO big enough to fill FDC TX FIFO */
-	priv->xmit_size = min(tx_fifo * 4, (unsigned int)SERIAL_XMIT_SIZE);
+	priv->xmit_size = min(tx_fifo * 4, (unsigned int)UART_XMIT_SIZE);
 
 	driver = tty_alloc_driver(NUM_TTY_CHANNELS, TTY_DRIVER_REAL_RAW);
 	if (IS_ERR(driver))
@@ -1031,7 +1032,7 @@ err_stop_irq:
 		raw_spin_unlock_irq(&priv->lock);
 	} else {
 		priv->removing = true;
-		del_timer_sync(&priv->poll_timer);
+		timer_delete_sync(&priv->poll_timer);
 	}
 	kthread_stop(priv->thread);
 err_destroy_ports:
@@ -1061,7 +1062,7 @@ static int mips_ejtag_fdc_tty_cpu_down(struct mips_cdmm_device *dev)
 		raw_spin_unlock_irq(&priv->lock);
 	} else {
 		priv->removing = true;
-		del_timer_sync(&priv->poll_timer);
+		timer_delete_sync(&priv->poll_timer);
 	}
 	kthread_stop(priv->thread);
 
@@ -1154,7 +1155,7 @@ static char kgdbfdc_rbuf[4];
 
 /* write buffer to allow compaction */
 static unsigned int kgdbfdc_wbuflen;
-static char kgdbfdc_wbuf[4];
+static u8 kgdbfdc_wbuf[4];
 
 static void __iomem *kgdbfdc_setup(void)
 {
@@ -1215,14 +1216,14 @@ static int kgdbfdc_read_char(void)
 /* push an FDC word from write buffer to TX FIFO */
 static void kgdbfdc_push_one(void)
 {
-	const char *bufs[1] = { kgdbfdc_wbuf };
+	const u8 *bufs[1] = { kgdbfdc_wbuf };
 	struct fdc_word word;
 	void __iomem *regs;
 	unsigned int i;
 
 	/* Construct a word from any data in buffer */
 	word = mips_ejtag_fdc_encode(bufs, &kgdbfdc_wbuflen, 1);
-	/* Relocate any remaining data to beginnning of buffer */
+	/* Relocate any remaining data to beginning of buffer */
 	kgdbfdc_wbuflen -= word.bytes;
 	for (i = 0; i < kgdbfdc_wbuflen; ++i)
 		kgdbfdc_wbuf[i] = kgdbfdc_wbuf[i + word.bytes];

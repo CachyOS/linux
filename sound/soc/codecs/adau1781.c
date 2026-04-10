@@ -381,7 +381,7 @@ static int adau1781_set_input_mode(struct adau *adau, unsigned int reg,
 
 static int adau1781_component_probe(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct adau1781_platform_data *pdata = dev_get_platdata(component->dev);
 	struct adau *adau = snd_soc_component_get_drvdata(component);
 	int ret;
@@ -439,7 +439,6 @@ static const struct snd_soc_component_driver adau1781_component_driver = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 #define ADAU1781_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE | \
@@ -473,7 +472,7 @@ const struct regmap_config adau1781_regmap_config = {
 	.readable_reg		= adau1781_readable_register,
 	.volatile_reg		= adau17x1_volatile_register,
 	.precious_reg		= adau17x1_precious_register,
-	.cache_type		= REGCACHE_RBTREE,
+	.cache_type		= REGCACHE_MAPLE,
 };
 EXPORT_SYMBOL_GPL(adau1781_regmap_config);
 

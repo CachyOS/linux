@@ -168,8 +168,8 @@ static int irqc_probe(struct platform_device *pdev)
 
 	p->cpu_int_base = p->iomem + IRQC_INT_CPU_BASE(0); /* SYS-SPI */
 
-	p->irq_domain = irq_domain_add_linear(dev->of_node, p->number_of_irqs,
-					      &irq_generic_chip_ops, p);
+	p->irq_domain = irq_domain_create_linear(dev_fwnode(dev), p->number_of_irqs,
+						 &irq_generic_chip_ops, p);
 	if (!p->irq_domain) {
 		ret = -ENXIO;
 		dev_err(dev, "cannot initialize irq domain\n");
@@ -218,17 +218,16 @@ err_runtime_pm_disable:
 	return ret;
 }
 
-static int irqc_remove(struct platform_device *pdev)
+static void irqc_remove(struct platform_device *pdev)
 {
 	struct irqc_priv *p = platform_get_drvdata(pdev);
 
 	irq_domain_remove(p->irq_domain);
 	pm_runtime_put(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-	return 0;
 }
 
-static int __maybe_unused irqc_suspend(struct device *dev)
+static int irqc_suspend(struct device *dev)
 {
 	struct irqc_priv *p = dev_get_drvdata(dev);
 
@@ -238,7 +237,7 @@ static int __maybe_unused irqc_suspend(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(irqc_pm_ops, irqc_suspend, NULL);
+static DEFINE_SIMPLE_DEV_PM_OPS(irqc_pm_ops, irqc_suspend, NULL);
 
 static const struct of_device_id irqc_dt_ids[] = {
 	{ .compatible = "renesas,irqc", },
@@ -250,9 +249,9 @@ static struct platform_driver irqc_device_driver = {
 	.probe		= irqc_probe,
 	.remove		= irqc_remove,
 	.driver		= {
-		.name	= "renesas_irqc",
+		.name		= "renesas_irqc",
 		.of_match_table	= irqc_dt_ids,
-		.pm	= &irqc_pm_ops,
+		.pm		= pm_sleep_ptr(&irqc_pm_ops),
 	}
 };
 
@@ -270,4 +269,3 @@ module_exit(irqc_exit);
 
 MODULE_AUTHOR("Magnus Damm");
 MODULE_DESCRIPTION("Renesas IRQC Driver");
-MODULE_LICENSE("GPL v2");

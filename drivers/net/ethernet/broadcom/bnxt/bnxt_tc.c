@@ -19,8 +19,8 @@
 #include <net/tc_act/tc_pedit.h>
 #include <net/tc_act/tc_tunnel_key.h>
 #include <net/vxlan.h>
+#include <linux/bnxt/hsi.h>
 
-#include "bnxt_hsi.h"
 #include "bnxt.h"
 #include "bnxt_hwrm.h"
 #include "bnxt_sriov.h"
@@ -244,7 +244,7 @@ bnxt_tc_parse_pedit(struct bnxt *bp, struct bnxt_tc_actions *actions,
 			   offset < offset_of_ip6_daddr + 16) {
 			actions->nat.src_xlate = false;
 			idx = (offset - offset_of_ip6_daddr) / 4;
-			actions->nat.l3.ipv6.saddr.s6_addr32[idx] = htonl(val);
+			actions->nat.l3.ipv6.daddr.s6_addr32[idx] = htonl(val);
 		} else {
 			netdev_err(bp->dev,
 				   "%s: IPv6_hdr: Invalid pedit field\n",
@@ -370,15 +370,19 @@ static int bnxt_tc_parse_flow(struct bnxt *bp,
 			      struct bnxt_tc_flow *flow)
 {
 	struct flow_rule *rule = flow_cls_offload_flow_rule(tc_flow_cmd);
+	struct netlink_ext_ack *extack = tc_flow_cmd->common.extack;
 	struct flow_dissector *dissector = rule->match.dissector;
 
 	/* KEY_CONTROL and KEY_BASIC are needed for forming a meaningful key */
-	if ((dissector->used_keys & BIT(FLOW_DISSECTOR_KEY_CONTROL)) == 0 ||
-	    (dissector->used_keys & BIT(FLOW_DISSECTOR_KEY_BASIC)) == 0) {
-		netdev_info(bp->dev, "cannot form TC key: used_keys = 0x%x\n",
+	if ((dissector->used_keys & BIT_ULL(FLOW_DISSECTOR_KEY_CONTROL)) == 0 ||
+	    (dissector->used_keys & BIT_ULL(FLOW_DISSECTOR_KEY_BASIC)) == 0) {
+		netdev_info(bp->dev, "cannot form TC key: used_keys = 0x%llx\n",
 			    dissector->used_keys);
 		return -EOPNOTSUPP;
 	}
+
+	if (flow_rule_match_has_control_flags(rule, extack))
+		return -EOPNOTSUPP;
 
 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_BASIC)) {
 		struct flow_match_basic match;
@@ -973,7 +977,7 @@ bnxt_tc_get_l2_node(struct bnxt *bp, struct rhashtable *l2_table,
 
 	l2_node = rhashtable_lookup_fast(l2_table, l2_key, ht_params);
 	if (!l2_node) {
-		l2_node = kzalloc(sizeof(*l2_node), GFP_KERNEL);
+		l2_node = kzalloc_obj(*l2_node);
 		if (!l2_node) {
 			rc = -ENOMEM;
 			return NULL;
@@ -1124,7 +1128,7 @@ bnxt_tc_get_tunnel_node(struct bnxt *bp, struct rhashtable *tunnel_table,
 
 	tunnel_node = rhashtable_lookup_fast(tunnel_table, tun_key, *ht_params);
 	if (!tunnel_node) {
-		tunnel_node = kzalloc(sizeof(*tunnel_node), GFP_KERNEL);
+		tunnel_node = kzalloc_obj(*tunnel_node);
 		if (!tunnel_node) {
 			rc = -ENOMEM;
 			goto err;
@@ -1312,7 +1316,7 @@ static int bnxt_tc_get_decap_handle(struct bnxt *bp, struct bnxt_tc_flow *flow,
 
 	/* Check if there's another flow using the same tunnel decap.
 	 * If not, add this tunnel to the table and resolve the other
-	 * tunnel header fileds. Ignore src_port in the tunnel_key,
+	 * tunnel header fields. Ignore src_port in the tunnel_key,
 	 * since it is not required for decap filters.
 	 */
 	decap_key->tp_src = 0;
@@ -1406,7 +1410,7 @@ static int bnxt_tc_get_encap_handle(struct bnxt *bp, struct bnxt_tc_flow *flow,
 
 	/* Check if there's another flow using the same tunnel encap.
 	 * If not, add this tunnel to the table and resolve the other
-	 * tunnel header fileds
+	 * tunnel header fields
 	 */
 	encap_node = bnxt_tc_get_tunnel_node(bp, &tc_info->encap_table,
 					     &tc_info->encap_ht_params,
@@ -1531,7 +1535,7 @@ static int bnxt_tc_add_flow(struct bnxt *bp, u16 src_fid,
 	int rc;
 
 	/* allocate memory for the new flow and it's node */
-	new_node = kzalloc(sizeof(*new_node), GFP_KERNEL);
+	new_node = kzalloc_obj(*new_node);
 	if (!new_node) {
 		rc = -ENOMEM;
 		goto done;
@@ -1911,7 +1915,7 @@ static int bnxt_tc_setup_indr_block(struct net_device *netdev, struct Qdisc *sch
 
 	switch (f->command) {
 	case FLOW_BLOCK_BIND:
-		cb_priv = kmalloc(sizeof(*cb_priv), GFP_KERNEL);
+		cb_priv = kmalloc_obj(*cb_priv);
 		if (!cb_priv)
 			return -ENOMEM;
 
@@ -2014,7 +2018,7 @@ int bnxt_init_tc(struct bnxt *bp)
 	if (bp->hwrm_spec_code < 0x10803)
 		return 0;
 
-	tc_info = kzalloc(sizeof(*tc_info), GFP_KERNEL);
+	tc_info = kzalloc_obj(*tc_info);
 	if (!tc_info)
 		return -ENOMEM;
 	mutex_init(&tc_info->lock);
@@ -2075,6 +2079,7 @@ destroy_flow_table:
 	rhashtable_destroy(&tc_info->flow_table);
 free_tc_info:
 	kfree(tc_info);
+	bp->tc_info = NULL;
 	return rc;
 }
 

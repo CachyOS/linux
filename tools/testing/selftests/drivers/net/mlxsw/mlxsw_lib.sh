@@ -42,7 +42,7 @@ __mlxsw_only_on_spectrum()
 	local src=$1; shift
 
 	if ! mlxsw_on_spectrum "$rev"; then
-		log_test_skip $src:$caller "(Spectrum-$rev only)"
+		log_test_xfail $src:$caller "(Spectrum-$rev only)"
 		return 1
 	fi
 }
@@ -60,4 +60,18 @@ mlxsw_only_on_spectrum()
 	done
 
 	return 1
+}
+
+mlxsw_max_descriptors_get()
+{
+	local spectrum_rev=$MLXSW_SPECTRUM_REV
+
+	case $spectrum_rev in
+	1) echo 81920 ;;
+	2) echo 136960 ;;
+	3) echo 204800 ;;
+	4) echo 220000 ;;
+	*) echo "Unknown max descriptors for chip revision." > /dev/stderr
+	   return 1 ;;
+	esac
 }

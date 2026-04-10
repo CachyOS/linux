@@ -50,7 +50,6 @@
 #include <linux/pid.h>
 #include <linux/smp.h>
 #include <linux/mm.h>
-#include <linux/vmacache.h>
 #include <linux/rcupdate.h>
 #include <linux/irq.h>
 #include <linux/security.h>
@@ -282,17 +281,6 @@ static void kgdb_flush_swbreak_addr(unsigned long addr)
 {
 	if (!CACHE_FLUSH_IS_SAFE)
 		return;
-
-	if (current->mm) {
-		int i;
-
-		for (i = 0; i < VMACACHE_SIZE; i++) {
-			if (!current->vmacache.vmas[i])
-				continue;
-			flush_cache_range(current->vmacache.vmas[i],
-					  addr, addr + BREAK_INSTR_SIZE);
-		}
-	}
 
 	/* Force flush instruction cache if it was outside the mm */
 	flush_icache_range(addr, addr + BREAK_INSTR_SIZE);
@@ -849,10 +837,6 @@ kgdb_handle_exception(int evector, int signo, int ecode, struct pt_regs *regs)
 {
 	struct kgdb_state kgdb_var;
 	struct kgdb_state *ks = &kgdb_var;
-	int ret = 0;
-
-	if (arch_kgdb_ops.enable_nmi)
-		arch_kgdb_ops.enable_nmi(0);
 	/*
 	 * Avoid entering the debugger if we were triggered due to an oops
 	 * but panic_timeout indicates the system should automatically
@@ -870,15 +854,11 @@ kgdb_handle_exception(int evector, int signo, int ecode, struct pt_regs *regs)
 	ks->linux_regs		= regs;
 
 	if (kgdb_reenter_check(ks))
-		goto out; /* Ouch, double exception ! */
+		return 0; /* Ouch, double exception ! */
 	if (kgdb_info[ks->cpu].enter_kgdb != 0)
-		goto out;
+		return 0;
 
-	ret = kgdb_cpu_enter(ks, regs, DCPU_WANT_MASTER);
-out:
-	if (arch_kgdb_ops.enable_nmi)
-		arch_kgdb_ops.enable_nmi(1);
-	return ret;
+	return kgdb_cpu_enter(ks, regs, DCPU_WANT_MASTER);
 }
 NOKPROBE_SYMBOL(kgdb_handle_exception);
 
@@ -980,7 +960,7 @@ static int __init opt_kgdb_con(char *str)
 early_param("kgdbcon", opt_kgdb_con);
 
 #ifdef CONFIG_MAGIC_SYSRQ
-static void sysrq_handle_dbg(int key)
+static void sysrq_handle_dbg(u8 key)
 {
 	if (!dbg_io_ops) {
 		pr_crit("ERROR: No KGDB I/O module available\n");
@@ -1017,6 +997,9 @@ void kgdb_panic(const char *msg)
 	 */
 	if (panic_timeout)
 		return;
+
+	debug_locks_off();
+	console_flush_on_panic(CONSOLE_FLUSH_PENDING);
 
 	if (dbg_kdb_mode)
 		kdb_printf("PANIC: %s\n", msg);

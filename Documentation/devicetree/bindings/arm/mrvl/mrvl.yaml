@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/arm/mrvl/mrvl.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Marvell Platforms Device Tree Bindings
+title: Marvell Platforms
 
 maintainers:
   - Lubomir Rintel <lkundrak@v3.sk>
@@ -35,6 +35,11 @@ properties:
           - enum:
               - dell,wyse-ariel
           - const: marvell,mmp3
+      - description: PXA1908 based boards
+        items:
+          - enum:
+              - samsung,coreprimevelte
+          - const: marvell,pxa1908
 
 additionalProperties: true
 

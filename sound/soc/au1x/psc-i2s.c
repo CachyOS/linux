@@ -91,10 +91,10 @@ static int au1xpsc_i2s_set_fmt(struct snd_soc_dai *cpu_dai,
 	}
 
 	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:	/* CODEC provider */
+	case SND_SOC_DAIFMT_BC_FC:	/* CODEC provider */
 		ct |= PSC_I2SCFG_MS;	/* PSC I2S consumer mode */
 		break;
-	case SND_SOC_DAIFMT_CBC_CFC:	/* CODEC consumer */
+	case SND_SOC_DAIFMT_BP_FP:	/* CODEC consumer */
 		ct &= ~PSC_I2SCFG_MS;	/* PSC I2S provider mode */
 		break;
 	default:
@@ -286,7 +286,8 @@ static const struct snd_soc_dai_driver au1xpsc_i2s_dai_template = {
 };
 
 static const struct snd_soc_component_driver au1xpsc_i2s_component = {
-	.name		= "au1xpsc-i2s",
+	.name			= "au1xpsc-i2s",
+	.legacy_dai_naming	= 1,
 };
 
 static int au1xpsc_i2s_drvprobe(struct platform_device *pdev)
@@ -343,7 +344,7 @@ static int au1xpsc_i2s_drvprobe(struct platform_device *pdev)
 				&au1xpsc_i2s_component, &wd->dai_drv, 1);
 }
 
-static int au1xpsc_i2s_drvremove(struct platform_device *pdev)
+static void au1xpsc_i2s_drvremove(struct platform_device *pdev)
 {
 	struct au1xpsc_audio_data *wd = platform_get_drvdata(pdev);
 
@@ -351,11 +352,8 @@ static int au1xpsc_i2s_drvremove(struct platform_device *pdev)
 	wmb(); /* drain writebuffer */
 	__raw_writel(PSC_CTRL_DISABLE, PSC_CTRL(wd));
 	wmb(); /* drain writebuffer */
-
-	return 0;
 }
 
-#ifdef CONFIG_PM
 static int au1xpsc_i2s_drvsuspend(struct device *dev)
 {
 	struct au1xpsc_audio_data *wd = dev_get_drvdata(dev);
@@ -386,23 +384,13 @@ static int au1xpsc_i2s_drvresume(struct device *dev)
 	return 0;
 }
 
-static const struct dev_pm_ops au1xpsci2s_pmops = {
-	.suspend	= au1xpsc_i2s_drvsuspend,
-	.resume		= au1xpsc_i2s_drvresume,
-};
-
-#define AU1XPSCI2S_PMOPS &au1xpsci2s_pmops
-
-#else
-
-#define AU1XPSCI2S_PMOPS NULL
-
-#endif
+static DEFINE_SIMPLE_DEV_PM_OPS(au1xpsci2s_pmops, au1xpsc_i2s_drvsuspend,
+				au1xpsc_i2s_drvresume);
 
 static struct platform_driver au1xpsc_i2s_driver = {
 	.driver		= {
 		.name	= "au1xpsc_i2s",
-		.pm	= AU1XPSCI2S_PMOPS,
+		.pm	= pm_ptr(&au1xpsci2s_pmops),
 	},
 	.probe		= au1xpsc_i2s_drvprobe,
 	.remove		= au1xpsc_i2s_drvremove,

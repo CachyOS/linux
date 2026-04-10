@@ -43,7 +43,7 @@ struct perf_file_section {
 
 Flags section:
 
-For each of the optional features a perf_file_section it placed after the data
+For each of the optional features a perf_file_section is placed after the data
 section if the feature bit is set in the perf_header flags bitset. The
 respective perf_file_section points to the data of the additional header and
 defines its size.
@@ -348,6 +348,16 @@ to special needs.
 
 struct perf_bpil, which contains detailed information about
 a BPF program, including type, id, tag, jited/xlated instructions, etc.
+The format of data in HEADER_BPF_PROG_INFO is as follows:
+	u32 count
+
+	struct perf_bpil {
+		u32 info_len;	/* size of struct bpf_prog_info, when the tool is compiled */
+		u32 data_len;	/* total bytes allocated for data, round up to 8 bytes */
+		u64 arrays;	/* which arrays are included in data */
+		struct bpf_prog_info info;
+		u8  data[];
+	}[count];
 
         HEADER_BPF_BTF = 26,
 
@@ -370,7 +380,7 @@ struct {
 	u32	mmap_len;
 };
 
-Indicates that trace contains records of PERF_RECORD_COMPRESSED type
+Indicates that trace contains records of PERF_RECORD_COMPRESSED2 type
 that have perf_events records in compressed form.
 
 	HEADER_CPU_PMU_CAPS = 28,
@@ -419,20 +429,39 @@ Example:
   cpu_core cpu list : 0-15
   cpu_atom cpu list : 16-23
 
-	HEADER_HYBRID_CPU_PMU_CAPS = 31,
+	HEADER_PMU_CAPS = 31,
 
-	A list of hybrid CPU PMU capabilities.
+	List of pmu capabilities (except cpu pmu which is already
+	covered by HEADER_CPU_PMU_CAPS). Note that hybrid cpu pmu
+	capabilities are also stored here.
 
 struct {
 	u32 nr_pmu;
 	struct {
-		u32 nr_cpu_pmu_caps;
+		u32 nr_caps;
 		{
 			char	name[];
 			char	value[];
-		} [nr_cpu_pmu_caps];
+		} [nr_caps];
 		char pmu_name[];
 	} [nr_pmu];
+};
+
+	HEADER_CPU_DOMAIN_INFO = 32,
+
+List of cpu-domain relation info. The format of the data is as below.
+
+struct domain_info {
+	int domain;
+	char dname[];
+	char cpumask[];
+	char cpulist[];
+};
+
+struct cpu_domain_info {
+	int cpu;
+	int nr_domains;
+	struct domain_info domains[];
 };
 
 	other bits are reserved and should ignored for now
@@ -600,16 +629,40 @@ struct auxtrace_error_event {
 Describes a header feature. These are records used in pipe-mode that
 contain information that otherwise would be in perf.data file's header.
 
-	PERF_RECORD_COMPRESSED 			= 81,
+	PERF_RECORD_COMPRESSED 			= 81, /* deprecated */
+
+The header is followed by compressed data frame that can be decompressed
+into array of perf trace records. The size of the entire compressed event
+record including the header is limited by the max value of header.size.
+
+It is deprecated and new files should use PERF_RECORD_COMPRESSED2 to gurantee
+8-byte alignment.
 
 struct compressed_event {
 	struct perf_event_header	header;
 	char				data[];
 };
 
-The header is followed by compressed data frame that can be decompressed
-into array of perf trace records. The size of the entire compressed event
-record including the header is limited by the max value of header.size.
+	PERF_RECORD_FINISHED_INIT			= 82,
+
+Marks the end of records for the system, pre-existing threads in system wide
+sessions, etc. Those are the ones prefixed PERF_RECORD_USER_*.
+
+This is used, for instance, to 'perf inject' events after init and before
+regular events, those emitted by the kernel, to support combining guest and
+host records.
+
+	PERF_RECORD_COMPRESSED2			= 83,
+
+8-byte aligned version of `PERF_RECORD_COMPRESSED`. `header.size` indicates the
+total record size, including padding for 8-byte alignment, and `data_size`
+specifies the actual size of the compressed data.
+
+struct perf_record_compressed2 {
+	struct perf_event_header	header;
+	__u64				data_size;
+	char				data[];
+};
 
 Event types
 

@@ -1,6 +1,6 @@
 What:		/sys/power/
 Date:		August 2006
-Contact:	Rafael J. Wysocki <rjw@rjwysocki.net>
+Contact:	Rafael J. Wysocki <rafael@kernel.org>
 Description:
 		The /sys/power directory will contain files that will
 		provide a unified interface to the power management
@@ -8,7 +8,7 @@ Description:
 
 What:		/sys/power/state
 Date:		November 2016
-Contact:	Rafael J. Wysocki <rjw@rjwysocki.net>
+Contact:	Rafael J. Wysocki <rafael@kernel.org>
 Description:
 		The /sys/power/state file controls system sleep states.
 		Reading from this file returns the available sleep state
@@ -23,7 +23,7 @@ Description:
 
 What:		/sys/power/mem_sleep
 Date:		November 2016
-Contact:	Rafael J. Wysocki <rjw@rjwysocki.net>
+Contact:	Rafael J. Wysocki <rafael@kernel.org>
 Description:
 		The /sys/power/mem_sleep file controls the operating mode of
 		system suspend.  Reading from it returns the available modes
@@ -41,7 +41,7 @@ Description:
 
 What:		/sys/power/disk
 Date:		September 2006
-Contact:	Rafael J. Wysocki <rjw@rjwysocki.net>
+Contact:	Rafael J. Wysocki <rafael@kernel.org>
 Description:
 		The /sys/power/disk file controls the operating mode of the
 		suspend-to-disk mechanism.  Reading from this file returns
@@ -90,7 +90,7 @@ Description:
 
 What:		/sys/power/image_size
 Date:		August 2006
-Contact:	Rafael J. Wysocki <rjw@rjwysocki.net>
+Contact:	Rafael J. Wysocki <rafael@kernel.org>
 Description:
 		The /sys/power/image_size file controls the size of the image
 		created by the suspend-to-disk mechanism.  It can be written a
@@ -107,7 +107,7 @@ Description:
 
 What:		/sys/power/pm_trace
 Date:		August 2006
-Contact:	Rafael J. Wysocki <rjw@rjwysocki.net>
+Contact:	Rafael J. Wysocki <rafael@kernel.org>
 Description:
 		The /sys/power/pm_trace file controls the code which saves the
 		last PM event point in the RTC across reboots, so that you can
@@ -131,7 +131,7 @@ Description:
 		CAUTION: Using it will cause your machine's real-time (CMOS)
 		clock to be set to a random invalid time after a resume.
 
-What;		/sys/power/pm_trace_dev_match
+What:		/sys/power/pm_trace_dev_match
 Date:		October 2010
 Contact:	James Hogan <jhogan@kernel.org>
 Description:
@@ -152,11 +152,11 @@ Description:
 		case further investigation is required to determine which
 		device is causing the problem.  Note that genuine RTC clock
 		values (such as when pm_trace has not been used), can still
-		match a device and output it's name here.
+		match a device and output its name here.
 
 What:		/sys/power/pm_async
 Date:		January 2009
-Contact:	Rafael J. Wysocki <rjw@rjwysocki.net>
+Contact:	Rafael J. Wysocki <rafael@kernel.org>
 Description:
 		The /sys/power/pm_async file controls the switch allowing the
 		user space to enable or disable asynchronous suspend and resume
@@ -169,7 +169,7 @@ Description:
 
 What:		/sys/power/wakeup_count
 Date:		July 2010
-Contact:	Rafael J. Wysocki <rjw@rjwysocki.net>
+Contact:	Rafael J. Wysocki <rafael@kernel.org>
 Description:
 		The /sys/power/wakeup_count file allows user space to put the
 		system into a sleep state while taking into account the
@@ -184,7 +184,7 @@ Description:
 
 What:		/sys/power/reserved_size
 Date:		May 2011
-Contact:	Rafael J. Wysocki <rjw@rjwysocki.net>
+Contact:	Rafael J. Wysocki <rafael@kernel.org>
 Description:
 		The /sys/power/reserved_size file allows user space to control
 		the amount of memory reserved for allocations made by device
@@ -198,7 +198,7 @@ Description:
 
 What:		/sys/power/autosleep
 Date:		April 2012
-Contact:	Rafael J. Wysocki <rjw@rjwysocki.net>
+Contact:	Rafael J. Wysocki <rafael@kernel.org>
 Description:
 		The /sys/power/autosleep file can be written one of the strings
 		returned by reads from /sys/power/state.  If that happens, a
@@ -215,7 +215,7 @@ Description:
 
 What:		/sys/power/wake_lock
 Date:		February 2012
-Contact:	Rafael J. Wysocki <rjw@rjwysocki.net>
+Contact:	Rafael J. Wysocki <rafael@kernel.org>
 Description:
 		The /sys/power/wake_lock file allows user space to create
 		wakeup source objects and activate them on demand (if one of
@@ -242,7 +242,7 @@ Description:
 
 What:		/sys/power/wake_unlock
 Date:		February 2012
-Contact:	Rafael J. Wysocki <rjw@rjwysocki.net>
+Contact:	Rafael J. Wysocki <rafael@kernel.org>
 Description:
 		The /sys/power/wake_unlock file allows user space to deactivate
 		wakeup sources created with the help of /sys/power/wake_lock.
@@ -283,7 +283,7 @@ Description:
 
 What:		/sys/power/pm_debug_messages
 Date:		July 2017
-Contact:	Rafael J. Wysocki <rjw@rjwysocki.net>
+Contact:	Rafael J. Wysocki <rafael@kernel.org>
 Description:
 		The /sys/power/pm_debug_messages file controls the printing
 		of debug messages from the system suspend/hiberbation
@@ -413,6 +413,35 @@ Description:
 		The /sys/power/suspend_stats/last_failed_step file contains
 		the last failed step in the suspend/resume path.
 
+What:		/sys/power/suspend_stats/last_hw_sleep
+Date:		June 2023
+Contact:	Mario Limonciello <mario.limonciello@amd.com>
+Description:
+		The /sys/power/suspend_stats/last_hw_sleep file
+		contains the duration of time spent in a hardware sleep
+		state in the most recent system suspend-resume cycle.
+		This number is measured in microseconds.
+
+What:		/sys/power/suspend_stats/total_hw_sleep
+Date:		June 2023
+Contact:	Mario Limonciello <mario.limonciello@amd.com>
+Description:
+		The /sys/power/suspend_stats/total_hw_sleep file
+		contains the aggregate of time spent in a hardware sleep
+		state since the kernel was booted. This number
+		is measured in microseconds.
+
+What:		/sys/power/suspend_stats/max_hw_sleep
+Date:		June 2023
+Contact:	Mario Limonciello <mario.limonciello@amd.com>
+Description:
+		The /sys/power/suspend_stats/max_hw_sleep file
+		contains the maximum amount of time that the hardware can
+		report for time spent in a hardware sleep state. When sleep
+		cycles are longer than this time, the values for
+		'total_hw_sleep' and 'last_hw_sleep' may not be accurate.
+		This number is measured in microseconds.
+
 What:		/sys/power/sync_on_suspend
 Date:		October 2019
 Contact:	Jonas Meurer <jonas@freesources.org>
@@ -425,3 +454,19 @@ Description:
 		disables it.  Reads from the file return the current value.
 		The default is "1" if the build-time "SUSPEND_SKIP_SYNC" config
 		flag is unset, or "0" otherwise.
+
+What:           /sys/power/hibernate_compression_threads
+Date:           October 2025
+Contact:        <luoxueqin@kylinos.cn>
+Description:
+                Controls the number of threads used for compression
+                and decompression of hibernation images.
+
+                The value can be adjusted at runtime to balance
+                performance and CPU utilization.
+
+                The change takes effect on the next hibernation or
+                resume operation.
+
+                Minimum value: 1
+                Default value: 3

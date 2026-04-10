@@ -40,7 +40,11 @@ struct counter_comp_node {
 	a.signal_u32_read == b.signal_u32_read || \
 	a.device_u64_read == b.device_u64_read || \
 	a.count_u64_read == b.count_u64_read || \
-	a.signal_u64_read == b.signal_u64_read)
+	a.signal_u64_read == b.signal_u64_read || \
+	a.signal_array_u32_read == b.signal_array_u32_read || \
+	a.device_array_u64_read == b.device_array_u64_read || \
+	a.count_array_u64_read == b.count_array_u64_read || \
+	a.signal_array_u64_read == b.signal_array_u64_read)
 
 #define counter_comp_read_is_set(comp) \
 	(comp.action_read || \
@@ -52,7 +56,11 @@ struct counter_comp_node {
 	comp.signal_u32_read || \
 	comp.device_u64_read || \
 	comp.count_u64_read || \
-	comp.signal_u64_read)
+	comp.signal_u64_read || \
+	comp.signal_array_u32_read || \
+	comp.device_array_u64_read || \
+	comp.count_array_u64_read || \
+	comp.signal_array_u64_read)
 
 static ssize_t counter_chrdev_read(struct file *filp, char __user *buf,
 				   size_t len, loff_t *f_ps)
@@ -144,7 +152,7 @@ static int counter_set_event_node(struct counter_device *const counter,
 	/* If event is not already in the list */
 	if (&event_node->l == &counter->next_events_list) {
 		/* Allocate new event node */
-		event_node = kmalloc(sizeof(*event_node), GFP_KERNEL);
+		event_node = kmalloc_obj(*event_node);
 		if (!event_node)
 			return -ENOMEM;
 
@@ -164,7 +172,7 @@ static int counter_set_event_node(struct counter_device *const counter,
 		}
 
 	/* Allocate component node */
-	comp_node = kmalloc(sizeof(*comp_node), GFP_KERNEL);
+	comp_node = kmalloc_obj(*comp_node);
 	if (!comp_node) {
 		err = -ENOMEM;
 		goto exit_free_event_node;
@@ -228,6 +236,31 @@ static int counter_disable_events(struct counter_device *const counter)
 	return err;
 }
 
+static int counter_get_ext(const struct counter_comp *const ext,
+			   const size_t num_ext, const size_t component_id,
+			   size_t *const ext_idx, size_t *const id)
+{
+	struct counter_array *element;
+
+	*id = 0;
+	for (*ext_idx = 0; *ext_idx < num_ext; (*ext_idx)++) {
+		if (*id == component_id)
+			return 0;
+
+		if (ext[*ext_idx].type == COUNTER_COMP_ARRAY) {
+			element = ext[*ext_idx].priv;
+
+			if (component_id - *id < element->length)
+				return 0;
+
+			*id += element->length;
+		} else
+			(*id)++;
+	}
+
+	return -EINVAL;
+}
+
 static int counter_add_watch(struct counter_device *const counter,
 			     const unsigned long arg)
 {
@@ -237,6 +270,7 @@ static int counter_add_watch(struct counter_device *const counter,
 	size_t parent, id;
 	struct counter_comp *ext;
 	size_t num_ext;
+	size_t ext_idx, ext_id;
 	int err = 0;
 
 	if (copy_from_user(&watch, uwatch, sizeof(watch)))
@@ -314,11 +348,11 @@ static int counter_add_watch(struct counter_device *const counter,
 		comp_node.comp.priv = counter->counts[parent].synapses + id;
 		break;
 	case COUNTER_COMPONENT_EXTENSION:
-		if (id >= num_ext)
-			return -EINVAL;
-		id = array_index_nospec(id, num_ext);
+		err = counter_get_ext(ext, num_ext, id, &ext_idx, &ext_id);
+		if (err < 0)
+			return err;
 
-		comp_node.comp = ext[id];
+		comp_node.comp = ext[ext_idx];
 		break;
 	default:
 		return -EINVAL;
@@ -420,7 +454,6 @@ out_unlock:
 
 static const struct file_operations counter_fops = {
 	.owner = THIS_MODULE,
-	.llseek = no_llseek,
 	.read = counter_chrdev_read,
 	.poll = counter_chrdev_poll,
 	.unlocked_ioctl = counter_chrdev_ioctl,
@@ -451,14 +484,56 @@ void counter_chrdev_remove(struct counter_device *const counter)
 	kfifo_free(&counter->events);
 }
 
+static int counter_get_array_data(struct counter_device *const counter,
+				  const enum counter_scope scope,
+				  void *const parent,
+				  const struct counter_comp *const comp,
+				  const size_t idx, u64 *const value)
+{
+	const struct counter_array *const element = comp->priv;
+	u32 value_u32 = 0;
+	int ret;
+
+	switch (element->type) {
+	case COUNTER_COMP_SIGNAL_POLARITY:
+		if (scope != COUNTER_SCOPE_SIGNAL)
+			return -EINVAL;
+		ret = comp->signal_array_u32_read(counter, parent, idx,
+						  &value_u32);
+		*value = value_u32;
+		return ret;
+	case COUNTER_COMP_U64:
+		switch (scope) {
+		case COUNTER_SCOPE_DEVICE:
+			return comp->device_array_u64_read(counter, idx, value);
+		case COUNTER_SCOPE_SIGNAL:
+			return comp->signal_array_u64_read(counter, parent, idx,
+							   value);
+		case COUNTER_SCOPE_COUNT:
+			return comp->count_array_u64_read(counter, parent, idx,
+							  value);
+		default:
+			return -EINVAL;
+		}
+	default:
+		return -EINVAL;
+	}
+}
+
 static int counter_get_data(struct counter_device *const counter,
 			    const struct counter_comp_node *const comp_node,
 			    u64 *const value)
 {
 	const struct counter_comp *const comp = &comp_node->comp;
-	void *const parent = comp_node->parent;
+	const enum counter_scope scope = comp_node->component.scope;
+	const size_t id = comp_node->component.id;
+	struct counter_signal *const signal = comp_node->parent;
+	struct counter_count *const count = comp_node->parent;
 	u8 value_u8 = 0;
 	u32 value_u32 = 0;
+	const struct counter_comp *ext;
+	size_t num_ext;
+	size_t ext_idx, ext_id;
 	int ret;
 
 	if (comp_node->component.type == COUNTER_COMPONENT_NONE)
@@ -467,15 +542,15 @@ static int counter_get_data(struct counter_device *const counter,
 	switch (comp->type) {
 	case COUNTER_COMP_U8:
 	case COUNTER_COMP_BOOL:
-		switch (comp_node->component.scope) {
+		switch (scope) {
 		case COUNTER_SCOPE_DEVICE:
 			ret = comp->device_u8_read(counter, &value_u8);
 			break;
 		case COUNTER_SCOPE_SIGNAL:
-			ret = comp->signal_u8_read(counter, parent, &value_u8);
+			ret = comp->signal_u8_read(counter, signal, &value_u8);
 			break;
 		case COUNTER_SCOPE_COUNT:
-			ret = comp->count_u8_read(counter, parent, &value_u8);
+			ret = comp->count_u8_read(counter, count, &value_u8);
 			break;
 		default:
 			return -EINVAL;
@@ -487,16 +562,17 @@ static int counter_get_data(struct counter_device *const counter,
 	case COUNTER_COMP_ENUM:
 	case COUNTER_COMP_COUNT_DIRECTION:
 	case COUNTER_COMP_COUNT_MODE:
-		switch (comp_node->component.scope) {
+	case COUNTER_COMP_SIGNAL_POLARITY:
+		switch (scope) {
 		case COUNTER_SCOPE_DEVICE:
 			ret = comp->device_u32_read(counter, &value_u32);
 			break;
 		case COUNTER_SCOPE_SIGNAL:
-			ret = comp->signal_u32_read(counter, parent,
+			ret = comp->signal_u32_read(counter, signal,
 						    &value_u32);
 			break;
 		case COUNTER_SCOPE_COUNT:
-			ret = comp->count_u32_read(counter, parent, &value_u32);
+			ret = comp->count_u32_read(counter, count, &value_u32);
 			break;
 		default:
 			return -EINVAL;
@@ -504,21 +580,43 @@ static int counter_get_data(struct counter_device *const counter,
 		*value = value_u32;
 		return ret;
 	case COUNTER_COMP_U64:
-		switch (comp_node->component.scope) {
+		switch (scope) {
 		case COUNTER_SCOPE_DEVICE:
 			return comp->device_u64_read(counter, value);
 		case COUNTER_SCOPE_SIGNAL:
-			return comp->signal_u64_read(counter, parent, value);
+			return comp->signal_u64_read(counter, signal, value);
 		case COUNTER_SCOPE_COUNT:
-			return comp->count_u64_read(counter, parent, value);
+			return comp->count_u64_read(counter, count, value);
 		default:
 			return -EINVAL;
 		}
 	case COUNTER_COMP_SYNAPSE_ACTION:
-		ret = comp->action_read(counter, parent, comp->priv,
-					&value_u32);
+		ret = comp->action_read(counter, count, comp->priv, &value_u32);
 		*value = value_u32;
 		return ret;
+	case COUNTER_COMP_ARRAY:
+		switch (scope) {
+		case COUNTER_SCOPE_DEVICE:
+			ext = counter->ext;
+			num_ext = counter->num_ext;
+			break;
+		case COUNTER_SCOPE_SIGNAL:
+			ext = signal->ext;
+			num_ext = signal->num_ext;
+			break;
+		case COUNTER_SCOPE_COUNT:
+			ext = count->ext;
+			num_ext = count->num_ext;
+			break;
+		default:
+			return -EINVAL;
+		}
+		ret = counter_get_ext(ext, num_ext, id, &ext_idx, &ext_id);
+		if (ret < 0)
+			return ret;
+
+		return counter_get_array_data(counter, scope, comp_node->parent,
+					      comp, id - ext_id, value);
 	default:
 		return -EINVAL;
 	}
@@ -574,4 +672,4 @@ exit_early:
 	if (copied)
 		wake_up_poll(&counter->events_wait, EPOLLIN);
 }
-EXPORT_SYMBOL_GPL(counter_push_event);
+EXPORT_SYMBOL_NS_GPL(counter_push_event, "COUNTER");

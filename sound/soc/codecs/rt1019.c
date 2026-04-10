@@ -18,7 +18,6 @@
 #include <linux/i2c.h>
 #include <linux/platform_device.h>
 #include <linux/firmware.h>
-#include <linux/gpio.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -391,18 +390,18 @@ static int rt1019_set_tdm_slot(struct snd_soc_dai *dai, unsigned int tx_mask,
 			unsigned int rx_mask, int slots, int slot_width)
 {
 	struct snd_soc_component *component = dai->component;
-	unsigned int val = 0, rx_slotnum;
+	unsigned int cn = 0, cl = 0, rx_slotnum;
 	int ret = 0, first_bit;
 
 	switch (slots) {
 	case 4:
-		val |= RT1019_I2S_TX_4CH;
+		cn = RT1019_I2S_TX_4CH;
 		break;
 	case 6:
-		val |= RT1019_I2S_TX_6CH;
+		cn = RT1019_I2S_TX_6CH;
 		break;
 	case 8:
-		val |= RT1019_I2S_TX_8CH;
+		cn = RT1019_I2S_TX_8CH;
 		break;
 	case 2:
 		break;
@@ -412,16 +411,16 @@ static int rt1019_set_tdm_slot(struct snd_soc_dai *dai, unsigned int tx_mask,
 
 	switch (slot_width) {
 	case 20:
-		val |= RT1019_I2S_DL_20;
+		cl = RT1019_TDM_CL_20;
 		break;
 	case 24:
-		val |= RT1019_I2S_DL_24;
+		cl = RT1019_TDM_CL_24;
 		break;
 	case 32:
-		val |= RT1019_I2S_DL_32;
+		cl = RT1019_TDM_CL_32;
 		break;
 	case 8:
-		val |= RT1019_I2S_DL_8;
+		cl = RT1019_TDM_CL_8;
 		break;
 	case 16:
 		break;
@@ -470,8 +469,10 @@ static int rt1019_set_tdm_slot(struct snd_soc_dai *dai, unsigned int tx_mask,
 		goto _set_tdm_err_;
 	}
 
+	snd_soc_component_update_bits(component, RT1019_TDM_1,
+		RT1019_TDM_CL_MASK, cl);
 	snd_soc_component_update_bits(component, RT1019_TDM_2,
-		RT1019_I2S_CH_TX_MASK | RT1019_I2S_DF_MASK, val);
+		RT1019_I2S_CH_TX_MASK, cn);
 
 _set_tdm_err_:
 	return ret;
@@ -522,7 +523,6 @@ static const struct snd_soc_component_driver soc_component_dev_rt1019 = {
 	.num_dapm_widgets	= ARRAY_SIZE(rt1019_dapm_widgets),
 	.dapm_routes		= rt1019_dapm_routes,
 	.num_dapm_routes	= ARRAY_SIZE(rt1019_dapm_routes),
-	.non_legacy_dai_naming	= 1,
 	.endianness		= 1,
 };
 
@@ -534,27 +534,27 @@ static const struct regmap_config rt1019_regmap = {
 	.max_register = RT1019_BEEP_2,
 	.volatile_reg = rt1019_volatile_register,
 	.readable_reg = rt1019_readable_register,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.reg_defaults = rt1019_reg,
 	.num_reg_defaults = ARRAY_SIZE(rt1019_reg),
 };
 
 static const struct i2c_device_id rt1019_i2c_id[] = {
-	{ "rt1019", 0 },
+	{ "rt1019" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt1019_i2c_id);
 
-static const struct of_device_id rt1019_of_match[] = {
+static const struct of_device_id rt1019_of_match[] __maybe_unused = {
 	{ .compatible = "realtek,rt1019", },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, rt1019_of_match);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id rt1019_acpi_match[] = {
-	{ "10EC1019", 0},
-	{ },
+	{ "10EC1019" },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, rt1019_acpi_match);
 #endif
@@ -599,7 +599,7 @@ static struct i2c_driver rt1019_i2c_driver = {
 		.of_match_table = of_match_ptr(rt1019_of_match),
 		.acpi_match_table = ACPI_PTR(rt1019_acpi_match),
 	},
-	.probe_new = rt1019_i2c_probe,
+	.probe = rt1019_i2c_probe,
 	.id_table = rt1019_i2c_id,
 };
 module_i2c_driver(rt1019_i2c_driver);

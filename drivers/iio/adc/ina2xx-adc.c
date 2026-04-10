@@ -28,7 +28,7 @@
 #include <linux/iio/sysfs.h>
 #include <linux/kthread.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/sched/task.h>
 #include <linux/util_macros.h>
@@ -124,6 +124,7 @@ static const struct regmap_config ina2xx_regmap_config = {
 enum ina2xx_ids { ina219, ina226 };
 
 struct ina2xx_config {
+	const char *name;
 	u16 config_default;
 	int calibration_value;
 	int shunt_voltage_lsb;	/* nV */
@@ -149,12 +150,13 @@ struct ina2xx_chip_info {
 	/* data buffer needs space for channel data and timestamp */
 	struct {
 		u16 chan[4];
-		u64 ts __aligned(8);
+		aligned_s64 ts;
 	} scan;
 };
 
 static const struct ina2xx_config ina2xx_config[] = {
 	[ina219] = {
+		.name = "ina219",
 		.config_default = INA219_CONFIG_DEFAULT,
 		.calibration_value = 4096,
 		.shunt_voltage_lsb = 10000,
@@ -164,6 +166,7 @@ static const struct ina2xx_config ina2xx_config[] = {
 		.chip_id = ina219,
 	},
 	[ina226] = {
+		.name = "ina226",
 		.config_default = INA226_CONFIG_DEFAULT,
 		.calibration_value = 2048,
 		.shunt_voltage_lsb = 2500,
@@ -752,8 +755,7 @@ static int ina2xx_work_buffer(struct iio_dev *indio_dev)
 	 * Single register reads: bulk_read will not work with ina226/219
 	 * as there is no auto-increment of the register pointer.
 	 */
-	for_each_set_bit(bit, indio_dev->active_scan_mask,
-			 indio_dev->masklength) {
+	iio_for_each_active_channel(indio_dev, bit) {
 		unsigned int val;
 
 		ret = regmap_read(chip->regmap,
@@ -764,7 +766,7 @@ static int ina2xx_work_buffer(struct iio_dev *indio_dev)
 		chip->scan.chan[i++] = val;
 	}
 
-	iio_push_to_buffers_with_timestamp(indio_dev, &chip->scan, time);
+	iio_push_to_buffers_with_ts(indio_dev, &chip->scan, sizeof(chip->scan), time);
 
 	return 0;
 };
@@ -946,9 +948,9 @@ static int ina2xx_init(struct ina2xx_chip_info *chip, unsigned int config)
 	return ina2xx_set_calibration(chip);
 }
 
-static int ina2xx_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int ina2xx_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct ina2xx_chip_info *chip;
 	struct iio_dev *indio_dev;
 	unsigned int val;
@@ -996,7 +998,7 @@ static int ina2xx_probe(struct i2c_client *client,
 	/* Patch the current config register with default. */
 	val = chip->config->config_default;
 
-	if (id->driver_data == ina226) {
+	if (type == ina226) {
 		ina226_set_average(chip, INA226_DEFAULT_AVG, &val);
 		ina226_set_int_time_vbus(chip, INA226_DEFAULT_IT, &val);
 		ina226_set_int_time_vshunt(chip, INA226_DEFAULT_IT, &val);
@@ -1015,7 +1017,7 @@ static int ina2xx_probe(struct i2c_client *client,
 	}
 
 	indio_dev->modes = INDIO_DIRECT_MODE;
-	if (id->driver_data == ina226) {
+	if (type == ina226) {
 		indio_dev->channels = ina226_channels;
 		indio_dev->num_channels = ARRAY_SIZE(ina226_channels);
 		indio_dev->info = &ina226_info;
@@ -1024,7 +1026,7 @@ static int ina2xx_probe(struct i2c_client *client,
 		indio_dev->num_channels = ARRAY_SIZE(ina219_channels);
 		indio_dev->info = &ina219_info;
 	}
-	indio_dev->name = id->name;
+	indio_dev->name = id ? id->name : chip->config->name;
 
 	ret = devm_iio_kfifo_buffer_setup(&client->dev, indio_dev,
 					  &ina2xx_setup_ops);
@@ -1034,25 +1036,28 @@ static int ina2xx_probe(struct i2c_client *client,
 	return iio_device_register(indio_dev);
 }
 
-static int ina2xx_remove(struct i2c_client *client)
+static void ina2xx_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct ina2xx_chip_info *chip = iio_priv(indio_dev);
+	int ret;
 
 	iio_device_unregister(indio_dev);
 
 	/* Powerdown */
-	return regmap_update_bits(chip->regmap, INA2XX_CONFIG,
-				  INA2XX_MODE_MASK, 0);
+	ret = regmap_clear_bits(chip->regmap, INA2XX_CONFIG, INA2XX_MODE_MASK);
+	if (ret)
+		dev_warn(&client->dev, "Failed to power down device (%pe)\n",
+			 ERR_PTR(ret));
 }
 
 static const struct i2c_device_id ina2xx_id[] = {
-	{"ina219", ina219},
-	{"ina220", ina219},
-	{"ina226", ina226},
-	{"ina230", ina226},
-	{"ina231", ina226},
-	{}
+	{ "ina219", ina219 },
+	{ "ina220", ina219 },
+	{ "ina226", ina226 },
+	{ "ina230", ina226 },
+	{ "ina231", ina226 },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ina2xx_id);
 
@@ -1077,7 +1082,7 @@ static const struct of_device_id ina2xx_of_match[] = {
 		.compatible = "ti,ina231",
 		.data = (void *)ina226
 	},
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ina2xx_of_match);
 

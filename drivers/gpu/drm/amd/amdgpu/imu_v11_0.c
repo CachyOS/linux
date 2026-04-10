@@ -24,17 +24,27 @@
 #include <linux/firmware.h>
 #include "amdgpu.h"
 #include "amdgpu_imu.h"
+#include "amdgpu_dpm.h"
+
+#include "imu_v11_0_3.h"
 
 #include "gc/gc_11_0_0_offset.h"
 #include "gc/gc_11_0_0_sh_mask.h"
 
 MODULE_FIRMWARE("amdgpu/gc_11_0_0_imu.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_0_0_imu_kicker.bin");
 MODULE_FIRMWARE("amdgpu/gc_11_0_1_imu.bin");
 MODULE_FIRMWARE("amdgpu/gc_11_0_2_imu.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_0_3_imu.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_0_4_imu.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_5_0_imu.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_5_1_imu.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_5_2_imu.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_5_3_imu.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_5_4_imu.bin");
 
 static int imu_v11_0_init_microcode(struct amdgpu_device *adev)
 {
-	char fw_name[40];
 	char ucode_prefix[30];
 	int err;
 	const struct imu_firmware_header_v1_0 *imu_hdr;
@@ -43,16 +53,16 @@ static int imu_v11_0_init_microcode(struct amdgpu_device *adev)
 	DRM_DEBUG("\n");
 
 	amdgpu_ucode_ip_version_decode(adev, GC_HWIP, ucode_prefix, sizeof(ucode_prefix));
+	if (amdgpu_is_kicker_fw(adev))
+		err = amdgpu_ucode_request(adev, &adev->gfx.imu_fw, AMDGPU_UCODE_REQUIRED,
+					   "amdgpu/%s_imu_kicker.bin", ucode_prefix);
+	else
+		err = amdgpu_ucode_request(adev, &adev->gfx.imu_fw, AMDGPU_UCODE_REQUIRED,
+					   "amdgpu/%s_imu.bin", ucode_prefix);
+	if (err)
+		goto out;
 
-	snprintf(fw_name, sizeof(fw_name), "amdgpu/%s_imu.bin", ucode_prefix);
-	err = request_firmware(&adev->gfx.imu_fw, fw_name, adev->dev);
-	if (err)
-		goto out;
-	err = amdgpu_ucode_validate(adev->gfx.imu_fw);
-	if (err)
-		goto out;
 	imu_hdr = (const struct imu_firmware_header_v1_0 *)adev->gfx.imu_fw->data;
-	adev->gfx.imu_fw_version = le32_to_cpu(imu_hdr->header.ucode_version);
 	//adev->gfx.imu_feature_version = le32_to_cpu(imu_hdr->ucode_feature_version);
 	
 	if (adev->firmware.load_type == AMDGPU_FW_LOAD_PSP) {
@@ -66,14 +76,15 @@ static int imu_v11_0_init_microcode(struct amdgpu_device *adev)
 		info->fw = adev->gfx.imu_fw;
 		adev->firmware.fw_size +=
 			ALIGN(le32_to_cpu(imu_hdr->imu_dram_ucode_size_bytes), PAGE_SIZE);
-	}
+	} else
+		adev->gfx.imu_fw_version = le32_to_cpu(imu_hdr->header.ucode_version);
 
 out:
 	if (err) {
 		dev_err(adev->dev,
-			"gfx11: Failed to load firmware \"%s\"\n",
-			fw_name);
-		release_firmware(adev->gfx.imu_fw);
+			"gfx11: Failed to load firmware \"%s_imu.bin\"\n",
+			ucode_prefix);
+		amdgpu_ucode_release(&adev->gfx.imu_fw);
 	}
 
 	return err;
@@ -117,32 +128,9 @@ static int imu_v11_0_load_microcode(struct amdgpu_device *adev)
 	return 0;
 }
 
-static void imu_v11_0_setup(struct amdgpu_device *adev)
+static int imu_v11_0_wait_for_reset_status(struct amdgpu_device *adev)
 {
-	int imu_reg_val;
-
-	//enable IMU debug mode
-	WREG32_SOC15(GC, 0, regGFX_IMU_C2PMSG_ACCESS_CTRL0, 0xffffff);
-	WREG32_SOC15(GC, 0, regGFX_IMU_C2PMSG_ACCESS_CTRL1, 0xffff);
-
-	imu_reg_val = RREG32_SOC15(GC, 0, regGFX_IMU_C2PMSG_16);
-	imu_reg_val |= 0x1;
-	WREG32_SOC15(GC, 0, regGFX_IMU_C2PMSG_16, imu_reg_val);
-
-	//disble imu Rtavfs, SmsRepair, DfllBTC, and ClkB
-	imu_reg_val = RREG32_SOC15(GC, 0, regGFX_IMU_SCRATCH_10);
-	imu_reg_val |= 0x10007;
-	WREG32_SOC15(GC, 0, regGFX_IMU_SCRATCH_10, imu_reg_val);
-}
-
-static int imu_v11_0_start(struct amdgpu_device *adev)
-{
-	int imu_reg_val, i;
-
-	//Start IMU by set GFX_IMU_CORE_CTRL.CRESET = 0
-	imu_reg_val = RREG32_SOC15(GC, 0, regGFX_IMU_CORE_CTRL);
-	imu_reg_val &= 0xfffffffe;
-	WREG32_SOC15(GC, 0, regGFX_IMU_CORE_CTRL, imu_reg_val);
+	int i, imu_reg_val = 0;
 
 	for (i = 0; i < adev->usec_timeout; i++) {
 		imu_reg_val = RREG32_SOC15(GC, 0, regGFX_IMU_GFX_RESET_CTRL);
@@ -157,6 +145,41 @@ static int imu_v11_0_start(struct amdgpu_device *adev)
 	}
 
 	return 0;
+}
+
+static void imu_v11_0_setup(struct amdgpu_device *adev)
+{
+	int imu_reg_val;
+
+	//enable IMU debug mode
+	WREG32_SOC15(GC, 0, regGFX_IMU_C2PMSG_ACCESS_CTRL0, 0xffffff);
+	WREG32_SOC15(GC, 0, regGFX_IMU_C2PMSG_ACCESS_CTRL1, 0xffff);
+
+	if (adev->gfx.imu.mode == DEBUG_MODE) {
+		imu_reg_val = RREG32_SOC15(GC, 0, regGFX_IMU_C2PMSG_16);
+		imu_reg_val |= 0x1;
+		WREG32_SOC15(GC, 0, regGFX_IMU_C2PMSG_16, imu_reg_val);
+	}
+
+	//disable imu Rtavfs, SmsRepair, DfllBTC, and ClkB
+	imu_reg_val = RREG32_SOC15(GC, 0, regGFX_IMU_SCRATCH_10);
+	imu_reg_val |= 0x10007;
+	WREG32_SOC15(GC, 0, regGFX_IMU_SCRATCH_10, imu_reg_val);
+}
+
+static int imu_v11_0_start(struct amdgpu_device *adev)
+{
+	int imu_reg_val;
+
+	//Start IMU by set GFX_IMU_CORE_CTRL.CRESET = 0
+	imu_reg_val = RREG32_SOC15(GC, 0, regGFX_IMU_CORE_CTRL);
+	imu_reg_val &= 0xfffffffe;
+	WREG32_SOC15(GC, 0, regGFX_IMU_CORE_CTRL, imu_reg_val);
+
+	if (adev->flags & AMD_IS_APU)
+		amdgpu_dpm_set_gfx_power_up_by_imu(adev);
+
+	return imu_v11_0_wait_for_reset_status(adev);
 }
 
 static const struct imu_rlc_ram_golden imu_rlc_ram_golden_11[] =
@@ -338,7 +361,7 @@ static void imu_v11_0_program_rlc_ram(struct amdgpu_device *adev)
 
 	WREG32_SOC15(GC, 0, regGFX_IMU_RLC_RAM_INDEX, 0x2);
 
-	switch (adev->ip_versions[GC_HWIP][0]) {
+	switch (amdgpu_ip_version(adev, GC_HWIP, 0)) {
 	case IP_VERSION(11, 0, 0):
 		program_imu_rlc_ram(adev, imu_rlc_ram_golden_11,
 				(const u32)ARRAY_SIZE(imu_rlc_ram_golden_11));
@@ -346,6 +369,9 @@ static void imu_v11_0_program_rlc_ram(struct amdgpu_device *adev)
 	case IP_VERSION(11, 0, 2):
 		program_imu_rlc_ram(adev, imu_rlc_ram_golden_11_0_2,
 				(const u32)ARRAY_SIZE(imu_rlc_ram_golden_11_0_2));
+		break;
+	case IP_VERSION(11, 0, 3):
+		imu_v11_0_3_program_rlc_ram(adev);
 		break;
 	default:
 		BUG();
@@ -364,4 +390,5 @@ const struct amdgpu_imu_funcs gfx_v11_0_imu_funcs = {
 	.setup_imu = imu_v11_0_setup,
 	.start_imu = imu_v11_0_start,
 	.program_rlc_ram = imu_v11_0_program_rlc_ram,
+	.wait_for_reset_status = imu_v11_0_wait_for_reset_status,
 };

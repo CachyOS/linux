@@ -27,400 +27,20 @@
 #include <linux/spinlock.h>
 #include <linux/vmalloc.h>
 #include <linux/sched.h>
-#include <linux/pgtable.h>
-#include <linux/bootmem_info.h>
+#include <linux/pgalloc.h>
 
 #include <asm/dma.h>
-#include <asm/pgalloc.h>
 #include <asm/tlbflush.h>
 
-#ifdef CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
-/**
- * struct vmemmap_remap_walk - walk vmemmap page table
- *
- * @remap_pte:		called for each lowest-level entry (PTE).
- * @nr_walked:		the number of walked pte.
- * @reuse_page:		the page which is reused for the tail vmemmap pages.
- * @reuse_addr:		the virtual address of the @reuse_page page.
- * @vmemmap_pages:	the list head of the vmemmap pages that can be freed
- *			or is mapped from.
- */
-struct vmemmap_remap_walk {
-	void (*remap_pte)(pte_t *pte, unsigned long addr,
-			  struct vmemmap_remap_walk *walk);
-	unsigned long nr_walked;
-	struct page *reuse_page;
-	unsigned long reuse_addr;
-	struct list_head *vmemmap_pages;
-};
-
-static int __split_vmemmap_huge_pmd(pmd_t *pmd, unsigned long start)
-{
-	pmd_t __pmd;
-	int i;
-	unsigned long addr = start;
-	struct page *page = pmd_page(*pmd);
-	pte_t *pgtable = pte_alloc_one_kernel(&init_mm);
-
-	if (!pgtable)
-		return -ENOMEM;
-
-	pmd_populate_kernel(&init_mm, &__pmd, pgtable);
-
-	for (i = 0; i < PMD_SIZE / PAGE_SIZE; i++, addr += PAGE_SIZE) {
-		pte_t entry, *pte;
-		pgprot_t pgprot = PAGE_KERNEL;
-
-		entry = mk_pte(page + i, pgprot);
-		pte = pte_offset_kernel(&__pmd, addr);
-		set_pte_at(&init_mm, addr, pte, entry);
-	}
-
-	spin_lock(&init_mm.page_table_lock);
-	if (likely(pmd_leaf(*pmd))) {
-		/* Make pte visible before pmd. See comment in pmd_install(). */
-		smp_wmb();
-		pmd_populate_kernel(&init_mm, pmd, pgtable);
-		flush_tlb_kernel_range(start, start + PMD_SIZE);
-	} else {
-		pte_free_kernel(&init_mm, pgtable);
-	}
-	spin_unlock(&init_mm.page_table_lock);
-
-	return 0;
-}
-
-static int split_vmemmap_huge_pmd(pmd_t *pmd, unsigned long start)
-{
-	int leaf;
-
-	spin_lock(&init_mm.page_table_lock);
-	leaf = pmd_leaf(*pmd);
-	spin_unlock(&init_mm.page_table_lock);
-
-	if (!leaf)
-		return 0;
-
-	return __split_vmemmap_huge_pmd(pmd, start);
-}
-
-static void vmemmap_pte_range(pmd_t *pmd, unsigned long addr,
-			      unsigned long end,
-			      struct vmemmap_remap_walk *walk)
-{
-	pte_t *pte = pte_offset_kernel(pmd, addr);
-
-	/*
-	 * The reuse_page is found 'first' in table walk before we start
-	 * remapping (which is calling @walk->remap_pte).
-	 */
-	if (!walk->reuse_page) {
-		walk->reuse_page = pte_page(*pte);
-		/*
-		 * Because the reuse address is part of the range that we are
-		 * walking, skip the reuse address range.
-		 */
-		addr += PAGE_SIZE;
-		pte++;
-		walk->nr_walked++;
-	}
-
-	for (; addr != end; addr += PAGE_SIZE, pte++) {
-		walk->remap_pte(pte, addr, walk);
-		walk->nr_walked++;
-	}
-}
-
-static int vmemmap_pmd_range(pud_t *pud, unsigned long addr,
-			     unsigned long end,
-			     struct vmemmap_remap_walk *walk)
-{
-	pmd_t *pmd;
-	unsigned long next;
-
-	pmd = pmd_offset(pud, addr);
-	do {
-		int ret;
-
-		ret = split_vmemmap_huge_pmd(pmd, addr & PMD_MASK);
-		if (ret)
-			return ret;
-
-		next = pmd_addr_end(addr, end);
-		vmemmap_pte_range(pmd, addr, next, walk);
-	} while (pmd++, addr = next, addr != end);
-
-	return 0;
-}
-
-static int vmemmap_pud_range(p4d_t *p4d, unsigned long addr,
-			     unsigned long end,
-			     struct vmemmap_remap_walk *walk)
-{
-	pud_t *pud;
-	unsigned long next;
-
-	pud = pud_offset(p4d, addr);
-	do {
-		int ret;
-
-		next = pud_addr_end(addr, end);
-		ret = vmemmap_pmd_range(pud, addr, next, walk);
-		if (ret)
-			return ret;
-	} while (pud++, addr = next, addr != end);
-
-	return 0;
-}
-
-static int vmemmap_p4d_range(pgd_t *pgd, unsigned long addr,
-			     unsigned long end,
-			     struct vmemmap_remap_walk *walk)
-{
-	p4d_t *p4d;
-	unsigned long next;
-
-	p4d = p4d_offset(pgd, addr);
-	do {
-		int ret;
-
-		next = p4d_addr_end(addr, end);
-		ret = vmemmap_pud_range(p4d, addr, next, walk);
-		if (ret)
-			return ret;
-	} while (p4d++, addr = next, addr != end);
-
-	return 0;
-}
-
-static int vmemmap_remap_range(unsigned long start, unsigned long end,
-			       struct vmemmap_remap_walk *walk)
-{
-	unsigned long addr = start;
-	unsigned long next;
-	pgd_t *pgd;
-
-	VM_BUG_ON(!IS_ALIGNED(start, PAGE_SIZE));
-	VM_BUG_ON(!IS_ALIGNED(end, PAGE_SIZE));
-
-	pgd = pgd_offset_k(addr);
-	do {
-		int ret;
-
-		next = pgd_addr_end(addr, end);
-		ret = vmemmap_p4d_range(pgd, addr, next, walk);
-		if (ret)
-			return ret;
-	} while (pgd++, addr = next, addr != end);
-
-	/*
-	 * We only change the mapping of the vmemmap virtual address range
-	 * [@start + PAGE_SIZE, end), so we only need to flush the TLB which
-	 * belongs to the range.
-	 */
-	flush_tlb_kernel_range(start + PAGE_SIZE, end);
-
-	return 0;
-}
+#include "hugetlb_vmemmap.h"
 
 /*
- * Free a vmemmap page. A vmemmap page can be allocated from the memblock
- * allocator or buddy allocator. If the PG_reserved flag is set, it means
- * that it allocated from the memblock allocator, just free it via the
- * free_bootmem_page(). Otherwise, use __free_page().
+ * Flags for vmemmap_populate_range and friends.
  */
-static inline void free_vmemmap_page(struct page *page)
-{
-	if (PageReserved(page))
-		free_bootmem_page(page);
-	else
-		__free_page(page);
-}
+/* Get a ref on the head page struct page, for ZONE_DEVICE compound pages */
+#define VMEMMAP_POPULATE_PAGEREF	0x0001
 
-/* Free a list of the vmemmap pages */
-static void free_vmemmap_page_list(struct list_head *list)
-{
-	struct page *page, *next;
-
-	list_for_each_entry_safe(page, next, list, lru) {
-		list_del(&page->lru);
-		free_vmemmap_page(page);
-	}
-}
-
-static void vmemmap_remap_pte(pte_t *pte, unsigned long addr,
-			      struct vmemmap_remap_walk *walk)
-{
-	/*
-	 * Remap the tail pages as read-only to catch illegal write operation
-	 * to the tail pages.
-	 */
-	pgprot_t pgprot = PAGE_KERNEL_RO;
-	pte_t entry = mk_pte(walk->reuse_page, pgprot);
-	struct page *page = pte_page(*pte);
-
-	list_add_tail(&page->lru, walk->vmemmap_pages);
-	set_pte_at(&init_mm, addr, pte, entry);
-}
-
-/*
- * How many struct page structs need to be reset. When we reuse the head
- * struct page, the special metadata (e.g. page->flags or page->mapping)
- * cannot copy to the tail struct page structs. The invalid value will be
- * checked in the free_tail_pages_check(). In order to avoid the message
- * of "corrupted mapping in tail page". We need to reset at least 3 (one
- * head struct page struct and two tail struct page structs) struct page
- * structs.
- */
-#define NR_RESET_STRUCT_PAGE		3
-
-static inline void reset_struct_pages(struct page *start)
-{
-	int i;
-	struct page *from = start + NR_RESET_STRUCT_PAGE;
-
-	for (i = 0; i < NR_RESET_STRUCT_PAGE; i++)
-		memcpy(start + i, from, sizeof(*from));
-}
-
-static void vmemmap_restore_pte(pte_t *pte, unsigned long addr,
-				struct vmemmap_remap_walk *walk)
-{
-	pgprot_t pgprot = PAGE_KERNEL;
-	struct page *page;
-	void *to;
-
-	BUG_ON(pte_page(*pte) != walk->reuse_page);
-
-	page = list_first_entry(walk->vmemmap_pages, struct page, lru);
-	list_del(&page->lru);
-	to = page_to_virt(page);
-	copy_page(to, (void *)walk->reuse_addr);
-	reset_struct_pages(to);
-
-	set_pte_at(&init_mm, addr, pte, mk_pte(page, pgprot));
-}
-
-/**
- * vmemmap_remap_free - remap the vmemmap virtual address range [@start, @end)
- *			to the page which @reuse is mapped to, then free vmemmap
- *			which the range are mapped to.
- * @start:	start address of the vmemmap virtual address range that we want
- *		to remap.
- * @end:	end address of the vmemmap virtual address range that we want to
- *		remap.
- * @reuse:	reuse address.
- *
- * Return: %0 on success, negative error code otherwise.
- */
-int vmemmap_remap_free(unsigned long start, unsigned long end,
-		       unsigned long reuse)
-{
-	int ret;
-	LIST_HEAD(vmemmap_pages);
-	struct vmemmap_remap_walk walk = {
-		.remap_pte	= vmemmap_remap_pte,
-		.reuse_addr	= reuse,
-		.vmemmap_pages	= &vmemmap_pages,
-	};
-
-	/*
-	 * In order to make remapping routine most efficient for the huge pages,
-	 * the routine of vmemmap page table walking has the following rules
-	 * (see more details from the vmemmap_pte_range()):
-	 *
-	 * - The range [@start, @end) and the range [@reuse, @reuse + PAGE_SIZE)
-	 *   should be continuous.
-	 * - The @reuse address is part of the range [@reuse, @end) that we are
-	 *   walking which is passed to vmemmap_remap_range().
-	 * - The @reuse address is the first in the complete range.
-	 *
-	 * So we need to make sure that @start and @reuse meet the above rules.
-	 */
-	BUG_ON(start - reuse != PAGE_SIZE);
-
-	mmap_read_lock(&init_mm);
-	ret = vmemmap_remap_range(reuse, end, &walk);
-	if (ret && walk.nr_walked) {
-		end = reuse + walk.nr_walked * PAGE_SIZE;
-		/*
-		 * vmemmap_pages contains pages from the previous
-		 * vmemmap_remap_range call which failed.  These
-		 * are pages which were removed from the vmemmap.
-		 * They will be restored in the following call.
-		 */
-		walk = (struct vmemmap_remap_walk) {
-			.remap_pte	= vmemmap_restore_pte,
-			.reuse_addr	= reuse,
-			.vmemmap_pages	= &vmemmap_pages,
-		};
-
-		vmemmap_remap_range(reuse, end, &walk);
-	}
-	mmap_read_unlock(&init_mm);
-
-	free_vmemmap_page_list(&vmemmap_pages);
-
-	return ret;
-}
-
-static int alloc_vmemmap_page_list(unsigned long start, unsigned long end,
-				   gfp_t gfp_mask, struct list_head *list)
-{
-	unsigned long nr_pages = (end - start) >> PAGE_SHIFT;
-	int nid = page_to_nid((struct page *)start);
-	struct page *page, *next;
-
-	while (nr_pages--) {
-		page = alloc_pages_node(nid, gfp_mask, 0);
-		if (!page)
-			goto out;
-		list_add_tail(&page->lru, list);
-	}
-
-	return 0;
-out:
-	list_for_each_entry_safe(page, next, list, lru)
-		__free_pages(page, 0);
-	return -ENOMEM;
-}
-
-/**
- * vmemmap_remap_alloc - remap the vmemmap virtual address range [@start, end)
- *			 to the page which is from the @vmemmap_pages
- *			 respectively.
- * @start:	start address of the vmemmap virtual address range that we want
- *		to remap.
- * @end:	end address of the vmemmap virtual address range that we want to
- *		remap.
- * @reuse:	reuse address.
- * @gfp_mask:	GFP flag for allocating vmemmap pages.
- *
- * Return: %0 on success, negative error code otherwise.
- */
-int vmemmap_remap_alloc(unsigned long start, unsigned long end,
-			unsigned long reuse, gfp_t gfp_mask)
-{
-	LIST_HEAD(vmemmap_pages);
-	struct vmemmap_remap_walk walk = {
-		.remap_pte	= vmemmap_restore_pte,
-		.reuse_addr	= reuse,
-		.vmemmap_pages	= &vmemmap_pages,
-	};
-
-	/* See the comment in the vmemmap_remap_free(). */
-	BUG_ON(start - reuse != PAGE_SIZE);
-
-	if (alloc_vmemmap_page_list(start, end, gfp_mask, &vmemmap_pages))
-		return -ENOMEM;
-
-	mmap_read_lock(&init_mm);
-	vmemmap_remap_range(reuse, end, &walk);
-	mmap_read_unlock(&init_mm);
-
-	return 0;
-}
-#endif /* CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP */
+#include "internal.h"
 
 /*
  * Allocate a block of memory to be used to back the virtual memory map
@@ -433,8 +53,7 @@ static void * __ref __earlyonly_bootmem_alloc(int node,
 				unsigned long align,
 				unsigned long goal)
 {
-	return memblock_alloc_try_nid_raw(size, align, goal,
-					       MEMBLOCK_ALLOC_ACCESSIBLE, node);
+	return memmap_alloc(size, align, goal, node, false);
 }
 
 void * __meminit vmemmap_alloc_block(unsigned long size, int node)
@@ -524,41 +143,42 @@ static void * __meminit altmap_alloc_block_buf(unsigned long size,
 void __meminit vmemmap_verify(pte_t *pte, int node,
 				unsigned long start, unsigned long end)
 {
-	unsigned long pfn = pte_pfn(*pte);
+	unsigned long pfn = pte_pfn(ptep_get(pte));
 	int actual_node = early_pfn_to_nid(pfn);
 
 	if (node_distance(actual_node, node) > LOCAL_DISTANCE)
-		pr_warn("[%lx-%lx] potential offnode page_structs\n",
+		pr_warn_once("[%lx-%lx] potential offnode page_structs\n",
 			start, end - 1);
 }
 
 pte_t * __meminit vmemmap_pte_populate(pmd_t *pmd, unsigned long addr, int node,
 				       struct vmem_altmap *altmap,
-				       struct page *reuse)
+				       unsigned long ptpfn, unsigned long flags)
 {
 	pte_t *pte = pte_offset_kernel(pmd, addr);
-	if (pte_none(*pte)) {
+	if (pte_none(ptep_get(pte))) {
 		pte_t entry;
 		void *p;
 
-		if (!reuse) {
+		if (ptpfn == (unsigned long)-1) {
 			p = vmemmap_alloc_block_buf(PAGE_SIZE, node, altmap);
 			if (!p)
 				return NULL;
+			ptpfn = PHYS_PFN(__pa(p));
 		} else {
 			/*
 			 * When a PTE/PMD entry is freed from the init_mm
-			 * there's a a free_pages() call to this page allocated
+			 * there's a free_pages() call to this page allocated
 			 * above. Thus this get_page() is paired with the
 			 * put_page_testzero() on the freeing path.
 			 * This can only called by certain ZONE_DEVICE path,
 			 * and through vmemmap_populate_compound_pages() when
 			 * slab is available.
 			 */
-			get_page(reuse);
-			p = page_to_virt(reuse);
+			if (flags & VMEMMAP_POPULATE_PAGEREF)
+				get_page(pfn_to_page(ptpfn));
 		}
-		entry = pfn_pte(__pa(p) >> PAGE_SHIFT, PAGE_KERNEL);
+		entry = pfn_pte(ptpfn, PAGE_KERNEL);
 		set_pte_at(&init_mm, addr, pte, entry);
 	}
 	return pte;
@@ -582,6 +202,7 @@ pmd_t * __meminit vmemmap_pmd_populate(pud_t *pud, unsigned long addr, int node)
 		void *p = vmemmap_alloc_block_zero(PAGE_SIZE, node);
 		if (!p)
 			return NULL;
+		kernel_pte_init(p);
 		pmd_populate_kernel(&init_mm, pmd, p);
 	}
 	return pmd;
@@ -594,6 +215,7 @@ pud_t * __meminit vmemmap_pud_populate(p4d_t *p4d, unsigned long addr, int node)
 		void *p = vmemmap_alloc_block_zero(PAGE_SIZE, node);
 		if (!p)
 			return NULL;
+		pmd_init(p);
 		pud_populate(&init_mm, pud, p);
 	}
 	return pud;
@@ -606,7 +228,8 @@ p4d_t * __meminit vmemmap_p4d_populate(pgd_t *pgd, unsigned long addr, int node)
 		void *p = vmemmap_alloc_block_zero(PAGE_SIZE, node);
 		if (!p)
 			return NULL;
-		p4d_populate(&init_mm, p4d, p);
+		pud_init(p);
+		p4d_populate_kernel(addr, p4d, p);
 	}
 	return p4d;
 }
@@ -618,14 +241,15 @@ pgd_t * __meminit vmemmap_pgd_populate(unsigned long addr, int node)
 		void *p = vmemmap_alloc_block_zero(PAGE_SIZE, node);
 		if (!p)
 			return NULL;
-		pgd_populate(&init_mm, pgd, p);
+		pgd_populate_kernel(addr, pgd, p);
 	}
 	return pgd;
 }
 
 static pte_t * __meminit vmemmap_populate_address(unsigned long addr, int node,
 					      struct vmem_altmap *altmap,
-					      struct page *reuse)
+					      unsigned long ptpfn,
+					      unsigned long flags)
 {
 	pgd_t *pgd;
 	p4d_t *p4d;
@@ -645,7 +269,7 @@ static pte_t * __meminit vmemmap_populate_address(unsigned long addr, int node,
 	pmd = vmemmap_pmd_populate(pud, addr, node);
 	if (!pmd)
 		return NULL;
-	pte = vmemmap_pte_populate(pmd, addr, node, altmap, reuse);
+	pte = vmemmap_pte_populate(pmd, addr, node, altmap, ptpfn, flags);
 	if (!pte)
 		return NULL;
 	vmemmap_verify(pte, node, addr, addr + PAGE_SIZE);
@@ -656,13 +280,15 @@ static pte_t * __meminit vmemmap_populate_address(unsigned long addr, int node,
 static int __meminit vmemmap_populate_range(unsigned long start,
 					    unsigned long end, int node,
 					    struct vmem_altmap *altmap,
-					    struct page *reuse)
+					    unsigned long ptpfn,
+					    unsigned long flags)
 {
 	unsigned long addr = start;
 	pte_t *pte;
 
 	for (; addr < end; addr += PAGE_SIZE) {
-		pte = vmemmap_populate_address(addr, node, altmap, reuse);
+		pte = vmemmap_populate_address(addr, node, altmap,
+					       ptpfn, flags);
 		if (!pte)
 			return -ENOMEM;
 	}
@@ -673,9 +299,173 @@ static int __meminit vmemmap_populate_range(unsigned long start,
 int __meminit vmemmap_populate_basepages(unsigned long start, unsigned long end,
 					 int node, struct vmem_altmap *altmap)
 {
-	return vmemmap_populate_range(start, end, node, altmap, NULL);
+	return vmemmap_populate_range(start, end, node, altmap, -1, 0);
 }
 
+/*
+ * Undo populate_hvo, and replace it with a normal base page mapping.
+ * Used in memory init in case a HVO mapping needs to be undone.
+ *
+ * This can happen when it is discovered that a memblock allocated
+ * hugetlb page spans multiple zones, which can only be verified
+ * after zones have been initialized.
+ *
+ * We know that:
+ * 1) The first @headsize / PAGE_SIZE vmemmap pages were individually
+ *    allocated through memblock, and mapped.
+ *
+ * 2) The rest of the vmemmap pages are mirrors of the last head page.
+ */
+int __meminit vmemmap_undo_hvo(unsigned long addr, unsigned long end,
+				      int node, unsigned long headsize)
+{
+	unsigned long maddr, pfn;
+	pte_t *pte;
+	int headpages;
+
+	/*
+	 * Should only be called early in boot, so nothing will
+	 * be accessing these page structures.
+	 */
+	WARN_ON(!early_boot_irqs_disabled);
+
+	headpages = headsize >> PAGE_SHIFT;
+
+	/*
+	 * Clear mirrored mappings for tail page structs.
+	 */
+	for (maddr = addr + headsize; maddr < end; maddr += PAGE_SIZE) {
+		pte = virt_to_kpte(maddr);
+		pte_clear(&init_mm, maddr, pte);
+	}
+
+	/*
+	 * Clear and free mappings for head page and first tail page
+	 * structs.
+	 */
+	for (maddr = addr; headpages-- > 0; maddr += PAGE_SIZE) {
+		pte = virt_to_kpte(maddr);
+		pfn = pte_pfn(ptep_get(pte));
+		pte_clear(&init_mm, maddr, pte);
+		memblock_phys_free(PFN_PHYS(pfn), PAGE_SIZE);
+	}
+
+	flush_tlb_kernel_range(addr, end);
+
+	return vmemmap_populate(addr, end, node, NULL);
+}
+
+/*
+ * Write protect the mirrored tail page structs for HVO. This will be
+ * called from the hugetlb code when gathering and initializing the
+ * memblock allocated gigantic pages. The write protect can't be
+ * done earlier, since it can't be guaranteed that the reserved
+ * page structures will not be written to during initialization,
+ * even if CONFIG_DEFERRED_STRUCT_PAGE_INIT is enabled.
+ *
+ * The PTEs are known to exist, and nothing else should be touching
+ * these pages. The caller is responsible for any TLB flushing.
+ */
+void vmemmap_wrprotect_hvo(unsigned long addr, unsigned long end,
+				    int node, unsigned long headsize)
+{
+	unsigned long maddr;
+	pte_t *pte;
+
+	for (maddr = addr + headsize; maddr < end; maddr += PAGE_SIZE) {
+		pte = virt_to_kpte(maddr);
+		ptep_set_wrprotect(&init_mm, maddr, pte);
+	}
+}
+
+/*
+ * Populate vmemmap pages HVO-style. The first page contains the head
+ * page and needed tail pages, the other ones are mirrors of the first
+ * page.
+ */
+int __meminit vmemmap_populate_hvo(unsigned long addr, unsigned long end,
+				       int node, unsigned long headsize)
+{
+	pte_t *pte;
+	unsigned long maddr;
+
+	for (maddr = addr; maddr < addr + headsize; maddr += PAGE_SIZE) {
+		pte = vmemmap_populate_address(maddr, node, NULL, -1, 0);
+		if (!pte)
+			return -ENOMEM;
+	}
+
+	/*
+	 * Reuse the last page struct page mapped above for the rest.
+	 */
+	return vmemmap_populate_range(maddr, end, node, NULL,
+					pte_pfn(ptep_get(pte)), 0);
+}
+
+void __weak __meminit vmemmap_set_pmd(pmd_t *pmd, void *p, int node,
+				      unsigned long addr, unsigned long next)
+{
+}
+
+int __weak __meminit vmemmap_check_pmd(pmd_t *pmd, int node,
+				       unsigned long addr, unsigned long next)
+{
+	return 0;
+}
+
+int __meminit vmemmap_populate_hugepages(unsigned long start, unsigned long end,
+					 int node, struct vmem_altmap *altmap)
+{
+	unsigned long addr;
+	unsigned long next;
+	pgd_t *pgd;
+	p4d_t *p4d;
+	pud_t *pud;
+	pmd_t *pmd;
+
+	for (addr = start; addr < end; addr = next) {
+		next = pmd_addr_end(addr, end);
+
+		pgd = vmemmap_pgd_populate(addr, node);
+		if (!pgd)
+			return -ENOMEM;
+
+		p4d = vmemmap_p4d_populate(pgd, addr, node);
+		if (!p4d)
+			return -ENOMEM;
+
+		pud = vmemmap_pud_populate(p4d, addr, node);
+		if (!pud)
+			return -ENOMEM;
+
+		pmd = pmd_offset(pud, addr);
+		if (pmd_none(pmdp_get(pmd))) {
+			void *p;
+
+			p = vmemmap_alloc_block_buf(PMD_SIZE, node, altmap);
+			if (p) {
+				vmemmap_set_pmd(pmd, p, node, addr, next);
+				continue;
+			} else if (altmap) {
+				/*
+				 * No fallback: In any case we care about, the
+				 * altmap should be reasonably sized and aligned
+				 * such that vmemmap_alloc_block_buf() will always
+				 * succeed. For consistency with the PTE case,
+				 * return an error here as failure could indicate
+				 * a configuration issue with the size of the altmap.
+				 */
+				return -ENOMEM;
+			}
+		} else if (vmemmap_check_pmd(pmd, node, addr, next))
+			continue;
+		if (vmemmap_populate_basepages(addr, next, node, altmap))
+			return -ENOMEM;
+	}
+	return 0;
+}
+
+#ifndef vmemmap_populate_compound_pages
 /*
  * For compound pages bigger than section size (e.g. x86 1G compound
  * pages with 2M subsection size) fill the rest of sections as tail
@@ -732,37 +522,41 @@ static int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
 		 * with just tail struct pages.
 		 */
 		return vmemmap_populate_range(start, end, node, NULL,
-					      pte_page(*pte));
+					      pte_pfn(ptep_get(pte)),
+					      VMEMMAP_POPULATE_PAGEREF);
 	}
 
 	size = min(end - start, pgmap_vmemmap_nr(pgmap) * sizeof(struct page));
 	for (addr = start; addr < end; addr += size) {
-		unsigned long next = addr, last = addr + size;
+		unsigned long next, last = addr + size;
 
 		/* Populate the head page vmemmap page */
-		pte = vmemmap_populate_address(addr, node, NULL, NULL);
+		pte = vmemmap_populate_address(addr, node, NULL, -1, 0);
 		if (!pte)
 			return -ENOMEM;
 
 		/* Populate the tail pages vmemmap page */
 		next = addr + PAGE_SIZE;
-		pte = vmemmap_populate_address(next, node, NULL, NULL);
+		pte = vmemmap_populate_address(next, node, NULL, -1, 0);
 		if (!pte)
 			return -ENOMEM;
 
 		/*
 		 * Reuse the previous page for the rest of tail pages
-		 * See layout diagram in Documentation/vm/vmemmap_dedup.rst
+		 * See layout diagram in Documentation/mm/vmemmap_dedup.rst
 		 */
 		next += PAGE_SIZE;
 		rc = vmemmap_populate_range(next, last, node, NULL,
-					    pte_page(*pte));
+					    pte_pfn(ptep_get(pte)),
+					    VMEMMAP_POPULATE_PAGEREF);
 		if (rc)
 			return -ENOMEM;
 	}
 
 	return 0;
 }
+
+#endif
 
 struct page * __meminit __populate_section_memmap(unsigned long pfn,
 		unsigned long nr_pages, int nid, struct vmem_altmap *altmap,
@@ -776,8 +570,7 @@ struct page * __meminit __populate_section_memmap(unsigned long pfn,
 		!IS_ALIGNED(nr_pages, PAGES_PER_SUBSECTION)))
 		return NULL;
 
-	if (is_power_of_2(sizeof(struct page)) &&
-	    pgmap && pgmap_vmemmap_nr(pgmap) > 1 && !altmap)
+	if (vmemmap_can_optimize(altmap, pgmap))
 		r = vmemmap_populate_compound_pages(pfn, start, end, nid, pgmap);
 	else
 		r = vmemmap_populate(start, end, nid, altmap);
@@ -787,3 +580,28 @@ struct page * __meminit __populate_section_memmap(unsigned long pfn,
 
 	return pfn_to_page(pfn);
 }
+
+#ifdef CONFIG_SPARSEMEM_VMEMMAP_PREINIT
+/*
+ * This is called just before initializing sections for a NUMA node.
+ * Any special initialization that needs to be done before the
+ * generic initialization can be done from here. Sections that
+ * are initialized in hooks called from here will be skipped by
+ * the generic initialization.
+ */
+void __init sparse_vmemmap_init_nid_early(int nid)
+{
+	hugetlb_vmemmap_init_early(nid);
+}
+
+/*
+ * This is called just before the initialization of page structures
+ * through memmap_init. Zones are now initialized, so any work that
+ * needs to be done that needs zone information can be done from
+ * here.
+ */
+void __init sparse_vmemmap_init_nid_late(int nid)
+{
+	hugetlb_vmemmap_init_late(nid);
+}
+#endif

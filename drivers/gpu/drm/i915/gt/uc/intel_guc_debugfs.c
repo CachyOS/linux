@@ -71,12 +71,74 @@ static bool intel_eval_slpc_support(void *data)
 	return intel_guc_slpc_is_used(guc);
 }
 
+static int guc_sched_disable_delay_ms_get(void *data, u64 *val)
+{
+	struct intel_guc *guc = data;
+
+	if (!intel_guc_submission_is_used(guc))
+		return -ENODEV;
+
+	*val = (u64)guc->submission_state.sched_disable_delay_ms;
+
+	return 0;
+}
+
+static int guc_sched_disable_delay_ms_set(void *data, u64 val)
+{
+	struct intel_guc *guc = data;
+
+	if (!intel_guc_submission_is_used(guc))
+		return -ENODEV;
+
+	/* clamp to a practical limit, 1 minute is reasonable for a longest delay */
+	guc->submission_state.sched_disable_delay_ms = min_t(u64, val, 60000);
+
+	return 0;
+}
+DEFINE_SIMPLE_ATTRIBUTE(guc_sched_disable_delay_ms_fops,
+			guc_sched_disable_delay_ms_get,
+			guc_sched_disable_delay_ms_set, "%lld\n");
+
+static int guc_sched_disable_gucid_threshold_get(void *data, u64 *val)
+{
+	struct intel_guc *guc = data;
+
+	if (!intel_guc_submission_is_used(guc))
+		return -ENODEV;
+
+	*val = guc->submission_state.sched_disable_gucid_threshold;
+	return 0;
+}
+
+static int guc_sched_disable_gucid_threshold_set(void *data, u64 val)
+{
+	struct intel_guc *guc = data;
+
+	if (!intel_guc_submission_is_used(guc))
+		return -ENODEV;
+
+	if (val > intel_guc_sched_disable_gucid_threshold_max(guc))
+		guc->submission_state.sched_disable_gucid_threshold =
+			intel_guc_sched_disable_gucid_threshold_max(guc);
+	else
+		guc->submission_state.sched_disable_gucid_threshold = val;
+
+	return 0;
+}
+DEFINE_SIMPLE_ATTRIBUTE(guc_sched_disable_gucid_threshold_fops,
+			guc_sched_disable_gucid_threshold_get,
+			guc_sched_disable_gucid_threshold_set, "%lld\n");
+
 void intel_guc_debugfs_register(struct intel_guc *guc, struct dentry *root)
 {
 	static const struct intel_gt_debugfs_file files[] = {
-		{ "guc_info", &guc_info_fops, NULL },
-		{ "guc_registered_contexts", &guc_registered_contexts_fops, NULL },
-		{ "guc_slpc_info", &guc_slpc_info_fops, &intel_eval_slpc_support},
+		{ .name = "guc_info", .fops = &guc_info_fops },
+		{ .name = "guc_registered_contexts", .fops = &guc_registered_contexts_fops },
+		{ .name = "guc_slpc_info", .fops = &guc_slpc_info_fops,
+		  .eval = intel_eval_slpc_support },
+		{ .name = "guc_sched_disable_delay_ms", .fops = &guc_sched_disable_delay_ms_fops },
+		{ .name = "guc_sched_disable_gucid_threshold",
+		  .fops = &guc_sched_disable_gucid_threshold_fops },
 	};
 
 	if (!intel_guc_is_supported(guc))

@@ -2,6 +2,7 @@
 /* Copyright (c) 2019 Mellanox Technologies. */
 
 #include "ecpf.h"
+#include "eswitch.h"
 
 bool mlx5_read_embedded_cpu(struct mlx5_core_dev *dev)
 {
@@ -49,7 +50,7 @@ static int mlx5_host_pf_init(struct mlx5_core_dev *dev)
 	/* ECPF shall enable HCA for host PF in the same way a PF
 	 * does this for its VFs when ECPF is not a eswitch manager.
 	 */
-	err = mlx5_cmd_host_pf_enable_hca(dev);
+	err = mlx5_esw_host_pf_enable_hca(dev);
 	if (err)
 		mlx5_core_err(dev, "Failed to enable external host PF HCA err(%d)\n", err);
 
@@ -63,7 +64,7 @@ static void mlx5_host_pf_cleanup(struct mlx5_core_dev *dev)
 	if (mlx5_ecpf_esw_admins_host_pf(dev))
 		return;
 
-	err = mlx5_cmd_host_pf_disable_hca(dev);
+	err = mlx5_esw_host_pf_disable_hca(dev);
 	if (err) {
 		mlx5_core_err(dev, "Failed to disable external host PF HCA err(%d)\n", err);
 		return;
@@ -87,7 +88,11 @@ void mlx5_ec_cleanup(struct mlx5_core_dev *dev)
 
 	mlx5_host_pf_cleanup(dev);
 
-	err = mlx5_wait_for_pages(dev, &dev->priv.host_pf_pages);
+	err = mlx5_wait_for_pages(dev, &dev->priv.page_counters[MLX5_HOST_PF]);
 	if (err)
 		mlx5_core_warn(dev, "Timeout reclaiming external host PF pages err(%d)\n", err);
+
+	err = mlx5_wait_for_pages(dev, &dev->priv.page_counters[MLX5_VF]);
+	if (err)
+		mlx5_core_warn(dev, "Timeout reclaiming external host VFs pages err(%d)\n", err);
 }

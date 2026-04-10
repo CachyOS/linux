@@ -29,13 +29,13 @@ struct adc084s021 {
 	/* Buffer used to align data */
 	struct {
 		__be16 channels[4];
-		s64 ts __aligned(8);
+		aligned_s64 ts;
 	} scan;
 	/*
-	 * DMA (thus cache coherency maintenance) requires the
+	 * DMA (thus cache coherency maintenance) may require the
 	 * transfer buffers to live in their own cache line.
 	 */
-	u16 tx_buf[4] ____cacheline_aligned;
+	u16 tx_buf[4] __aligned(IIO_DMA_MINALIGN);
 	__be16 rx_buf[5]; /* First 16-bits are trash */
 };
 
@@ -96,19 +96,18 @@ static int adc084s021_read_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		ret = iio_device_claim_direct_mode(indio_dev);
-		if (ret < 0)
-			return ret;
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
 
 		ret = regulator_enable(adc->reg);
 		if (ret) {
-			iio_device_release_direct_mode(indio_dev);
+			iio_device_release_direct(indio_dev);
 			return ret;
 		}
 
 		adc->tx_buf[0] = channel->channel << 3;
 		ret = adc084s021_adc_conversion(adc, &be_val);
-		iio_device_release_direct_mode(indio_dev);
+		iio_device_release_direct(indio_dev);
 		regulator_disable(adc->reg);
 		if (ret < 0)
 			return ret;
@@ -152,8 +151,8 @@ static irqreturn_t adc084s021_buffer_trigger_handler(int irq, void *pollfunc)
 	if (adc084s021_adc_conversion(adc, adc->scan.channels) < 0)
 		dev_err(&adc->spi->dev, "Failed to read data\n");
 
-	iio_push_to_buffers_with_timestamp(indio_dev, &adc->scan,
-					   iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_ts(indio_dev, &adc->scan, sizeof(adc->scan),
+				    iio_get_time_ns(indio_dev));
 	mutex_unlock(&adc->lock);
 	iio_trigger_notify_done(indio_dev->trig);
 
@@ -166,8 +165,7 @@ static int adc084s021_buffer_preenable(struct iio_dev *indio_dev)
 	int scan_index;
 	int i = 0;
 
-	for_each_set_bit(scan_index, indio_dev->active_scan_mask,
-			 indio_dev->masklength) {
+	iio_for_each_active_channel(indio_dev, scan_index) {
 		const struct iio_chan_spec *channel =
 			&indio_dev->channels[scan_index];
 		adc->tx_buf[i++] = channel->channel << 3;
@@ -202,10 +200,8 @@ static int adc084s021_probe(struct spi_device *spi)
 	int ret;
 
 	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*adc));
-	if (!indio_dev) {
-		dev_err(&spi->dev, "Failed to allocate IIO device\n");
+	if (!indio_dev)
 		return -ENOMEM;
-	}
 
 	adc = iio_priv(indio_dev);
 	adc->spi = spi;
@@ -243,13 +239,13 @@ static int adc084s021_probe(struct spi_device *spi)
 
 static const struct of_device_id adc084s021_of_match[] = {
 	{ .compatible = "ti,adc084s021", },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, adc084s021_of_match);
 
 static const struct spi_device_id adc084s021_id[] = {
 	{ ADC084S021_DRIVER_NAME, 0 },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, adc084s021_id);
 

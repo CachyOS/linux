@@ -23,13 +23,17 @@ struct fixed_partitions_quirks {
 	int (*post_parse)(struct mtd_info *mtd, struct mtd_partition *parts, int nr_parts);
 };
 
+#ifdef CONFIG_MTD_OF_PARTS_BCM4908
 static struct fixed_partitions_quirks bcm4908_partitions_quirks = {
 	.post_parse = bcm4908_partitions_post_parse,
 };
+#endif
 
+#ifdef CONFIG_MTD_OF_PARTS_LINKSYS_NS
 static struct fixed_partitions_quirks linksys_ns_partitions_quirks = {
 	.post_parse = linksys_ns_partitions_post_parse,
 };
+#endif
 
 static const struct of_device_id parse_ofpart_match_table[];
 
@@ -77,6 +81,7 @@ static int parse_fixed_partitions(struct mtd_info *master,
 	of_id = of_match_node(parse_ofpart_match_table, ofpart_node);
 	if (dedicated && !of_id) {
 		/* The 'partitions' subnode might be used by another parser */
+		of_node_put(ofpart_node);
 		return 0;
 	}
 
@@ -91,12 +96,18 @@ static int parse_fixed_partitions(struct mtd_info *master,
 		nr_parts++;
 	}
 
-	if (nr_parts == 0)
+	if (nr_parts == 0) {
+		if (dedicated)
+			of_node_put(ofpart_node);
 		return 0;
+	}
 
-	parts = kcalloc(nr_parts, sizeof(*parts), GFP_KERNEL);
-	if (!parts)
+	parts = kzalloc_objs(*parts, nr_parts);
+	if (!parts) {
+		if (dedicated)
+			of_node_put(ofpart_node);
 		return -ENOMEM;
+	}
 
 	i = 0;
 	for_each_child_of_node(ofpart_node,  pp) {
@@ -122,6 +133,25 @@ static int parse_fixed_partitions(struct mtd_info *master,
 
 		a_cells = of_n_addr_cells(pp);
 		s_cells = of_n_size_cells(pp);
+		if (!dedicated && s_cells == 0) {
+			/*
+			 * This is a ugly workaround to not create
+			 * regression on devices that are still creating
+			 * partitions as direct children of the nand controller.
+			 * This can happen in case the nand controller node has
+			 * #size-cells equal to 0 and the firmware (e.g.
+			 * U-Boot) just add the partitions there assuming
+			 * 32-bit addressing.
+			 *
+			 * If you get this warning your firmware and/or DTS
+			 * should be really fixed.
+			 *
+			 * This is working only for devices smaller than 4GiB.
+			 */
+			pr_warn("%s: ofpart partition %pOF (%pOF) #size-cells is wrongly set to <0>, assuming <1> for parsing partitions.\n",
+				master->name, pp, mtd_node);
+			s_cells = 1;
+		}
 		if (len / 4 != a_cells + s_cells) {
 			pr_debug("%s: ofpart partition %pOF (%pOF) error parsing reg property.\n",
 				 master->name, pp,
@@ -138,10 +168,10 @@ static int parse_fixed_partitions(struct mtd_info *master,
 			partname = of_get_property(pp, "name", &len);
 		parts[i].name = partname;
 
-		if (of_get_property(pp, "read-only", &len))
+		if (of_property_read_bool(pp, "read-only"))
 			parts[i].mask_flags |= MTD_WRITEABLE;
 
-		if (of_get_property(pp, "lock", &len))
+		if (of_property_read_bool(pp, "lock"))
 			parts[i].mask_flags |= MTD_POWERUP_LOCK;
 
 		if (of_property_read_bool(pp, "slc-mode"))
@@ -156,6 +186,9 @@ static int parse_fixed_partitions(struct mtd_info *master,
 	if (quirks && quirks->post_parse)
 		quirks->post_parse(master, parts, nr_parts);
 
+	if (dedicated)
+		of_node_put(ofpart_node);
+
 	*pparts = parts;
 	return nr_parts;
 
@@ -164,6 +197,8 @@ ofpart_fail:
 	       master->name, pp, mtd_node);
 	ret = -EINVAL;
 ofpart_none:
+	if (dedicated)
+		of_node_put(ofpart_node);
 	of_node_put(pp);
 	kfree(parts);
 	return ret;
@@ -173,8 +208,12 @@ static const struct of_device_id parse_ofpart_match_table[] = {
 	/* Generic */
 	{ .compatible = "fixed-partitions" },
 	/* Customized */
+#ifdef CONFIG_MTD_OF_PARTS_BCM4908
 	{ .compatible = "brcm,bcm4908-partitions", .data = &bcm4908_partitions_quirks, },
+#endif
+#ifdef CONFIG_MTD_OF_PARTS_LINKSYS_NS
 	{ .compatible = "linksys,ns-partitions", .data = &linksys_ns_partitions_quirks, },
+#endif
 	{},
 };
 MODULE_DEVICE_TABLE(of, parse_ofpart_match_table);
@@ -210,7 +249,7 @@ static int parse_ofoldpart_partitions(struct mtd_info *master,
 
 	nr_parts = plen / sizeof(part[0]);
 
-	parts = kcalloc(nr_parts, sizeof(*parts), GFP_KERNEL);
+	parts = kzalloc_objs(*parts, nr_parts);
 	if (!parts)
 		return -ENOMEM;
 

@@ -12,6 +12,8 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 
+#include <drm/drm_print.h>
+
 #include "panfrost_device.h"
 #include "panfrost_features.h"
 #include "panfrost_issues.h"
@@ -22,9 +24,13 @@
 static irqreturn_t panfrost_gpu_irq_handler(int irq, void *data)
 {
 	struct panfrost_device *pfdev = data;
-	u32 state = gpu_read(pfdev, GPU_INT_STAT);
-	u32 fault_status = gpu_read(pfdev, GPU_FAULT_STATUS);
+	u32 fault_status, state;
 
+	if (test_bit(PANFROST_COMP_BIT_GPU, pfdev->is_suspended))
+		return IRQ_NONE;
+
+	fault_status = gpu_read(pfdev, GPU_FAULT_STATUS);
+	state = gpu_read(pfdev, GPU_INT_STAT);
 	if (!state)
 		return IRQ_NONE;
 
@@ -32,12 +38,12 @@ static irqreturn_t panfrost_gpu_irq_handler(int irq, void *data)
 		u64 address = (u64) gpu_read(pfdev, GPU_FAULT_ADDRESS_HI) << 32;
 		address |= gpu_read(pfdev, GPU_FAULT_ADDRESS_LO);
 
-		dev_warn(pfdev->dev, "GPU Fault 0x%08x (%s) at 0x%016llx\n",
+		dev_warn(pfdev->base.dev, "GPU Fault 0x%08x (%s) at 0x%016llx\n",
 			 fault_status, panfrost_exception_name(fault_status & 0xFF),
 			 address);
 
 		if (state & GPU_IRQ_MULTIPLE_FAULT)
-			dev_warn(pfdev->dev, "There were multiple GPU faults - some have not been reported\n");
+			dev_warn(pfdev->base.dev, "There were multiple GPU faults - some have not been reported\n");
 
 		gpu_write(pfdev, GPU_INT_MASK, 0);
 	}
@@ -60,18 +66,39 @@ int panfrost_gpu_soft_reset(struct panfrost_device *pfdev)
 
 	gpu_write(pfdev, GPU_INT_MASK, 0);
 	gpu_write(pfdev, GPU_INT_CLEAR, GPU_IRQ_RESET_COMPLETED);
-	gpu_write(pfdev, GPU_CMD, GPU_CMD_SOFT_RESET);
 
+	clear_bit(PANFROST_COMP_BIT_GPU, pfdev->is_suspended);
+
+	gpu_write(pfdev, GPU_CMD, GPU_CMD_SOFT_RESET);
 	ret = readl_relaxed_poll_timeout(pfdev->iomem + GPU_INT_RAWSTAT,
-		val, val & GPU_IRQ_RESET_COMPLETED, 100, 10000);
+		val, val & GPU_IRQ_RESET_COMPLETED, 10, 10000);
 
 	if (ret) {
-		dev_err(pfdev->dev, "gpu soft reset timed out\n");
-		return ret;
+		dev_err(pfdev->base.dev, "gpu soft reset timed out, attempting hard reset\n");
+
+		gpu_write(pfdev, GPU_CMD, GPU_CMD_HARD_RESET);
+		ret = readl_relaxed_poll_timeout(pfdev->iomem + GPU_INT_RAWSTAT, val,
+						 val & GPU_IRQ_RESET_COMPLETED, 100, 10000);
+		if (ret) {
+			dev_err(pfdev->base.dev, "gpu hard reset timed out\n");
+			return ret;
+		}
 	}
 
 	gpu_write(pfdev, GPU_INT_CLEAR, GPU_IRQ_MASK_ALL);
-	gpu_write(pfdev, GPU_INT_MASK, GPU_IRQ_MASK_ALL);
+
+	/* Only enable the interrupts we care about */
+	gpu_write(pfdev, GPU_INT_MASK,
+		  GPU_IRQ_MASK_ERROR |
+		  GPU_IRQ_PERFCNT_SAMPLE_COMPLETED |
+		  GPU_IRQ_CLEAN_CACHES_COMPLETED);
+
+	/*
+	 * All in-flight jobs should have released their cycle
+	 * counter references upon reset, but let us make sure
+	 */
+	if (drm_WARN_ON(&pfdev->base, atomic_read(&pfdev->cycle_counter.use_count) != 0))
+		atomic_set(&pfdev->cycle_counter.use_count, 0);
 
 	return 0;
 }
@@ -108,6 +135,9 @@ static void panfrost_gpu_init_quirks(struct panfrost_device *pfdev)
 			quirks |= SC_LS_ALLOW_ATTR_TYPES;
 	}
 
+	if (panfrost_has_hw_issue(pfdev, HW_ISSUE_TTRX_2968_TTRX_3162))
+		quirks |= SC_VAR_ALGORITHM;
+
 	if (panfrost_has_hw_feature(pfdev, HW_FEATURE_TLS_HASHING))
 		quirks |= SC_TLS_HASH_ENABLE;
 
@@ -124,25 +154,13 @@ static void panfrost_gpu_init_quirks(struct panfrost_device *pfdev)
 	gpu_write(pfdev, GPU_TILER_CONFIG, quirks);
 
 
-	quirks = gpu_read(pfdev, GPU_L2_MMU_CONFIG);
-
-	/* Limit read & write ID width for AXI */
-	if (panfrost_has_hw_feature(pfdev, HW_FEATURE_3BIT_EXT_RW_L2_MMU_CONFIG))
-		quirks &= ~(L2_MMU_CONFIG_3BIT_LIMIT_EXTERNAL_READS |
-			    L2_MMU_CONFIG_3BIT_LIMIT_EXTERNAL_WRITES);
-	else
-		quirks &= ~(L2_MMU_CONFIG_LIMIT_EXTERNAL_READS |
-			    L2_MMU_CONFIG_LIMIT_EXTERNAL_WRITES);
-
-	gpu_write(pfdev, GPU_L2_MMU_CONFIG, quirks);
-
 	quirks = 0;
 	if ((panfrost_model_eq(pfdev, 0x860) || panfrost_model_eq(pfdev, 0x880)) &&
 	    pfdev->features.revision >= 0x2000)
 		quirks |= JM_MAX_JOB_THROTTLE_LIMIT << JM_JOB_THROTTLE_LIMIT_SHIFT;
 	else if (panfrost_model_eq(pfdev, 0x6000) &&
-		 pfdev->features.coherency_features == COHERENCY_ACE)
-		quirks |= (COHERENCY_ACE_LITE | COHERENCY_ACE) <<
+		 pfdev->features.coherency_features == BIT(COHERENCY_ACE))
+		quirks |= (BIT(COHERENCY_ACE_LITE) | BIT(COHERENCY_ACE)) <<
 			   JM_FORCE_COHERENCY_FEATURES_SHIFT;
 
 	if (panfrost_has_hw_feature(pfdev, HW_FEATURE_IDVS_GROUP_SIZE))
@@ -161,7 +179,6 @@ static void panfrost_gpu_init_quirks(struct panfrost_device *pfdev)
 struct panfrost_model {
 	const char *name;
 	u32 id;
-	u32 id_mask;
 	u64 features;
 	u64 issues;
 	struct {
@@ -210,9 +227,25 @@ static const struct panfrost_model gpu_models[] = {
 	GPU_MODEL(g52, 0x7002),
 	GPU_MODEL(g31, 0x7003,
 		GPU_REV(g31, 1, 0)),
+
+	GPU_MODEL(g57, 0x9001,
+		GPU_REV(g57, 0, 0)),
+
+	/* MediaTek MT8192 has a Mali-G57 with a different GPU ID from the
+	 * standard. Arm's driver does not appear to handle this model.
+	 * ChromeOS has a hack downstream for it. Treat it as equivalent to
+	 * standard Mali-G57 for now.
+	 */
+	GPU_MODEL(g57, 0x9003,
+		GPU_REV(g57, 0, 0)),
+
+	/* MediaTek MT8188 Mali-G57 MC3 */
+	GPU_MODEL(g57, 0x9093,
+		GPU_REV(g57, 0, 0)),
+	{0},
 };
 
-static void panfrost_gpu_init_features(struct panfrost_device *pfdev)
+static int panfrost_gpu_init_features(struct panfrost_device *pfdev)
 {
 	u32 gpu_id, num_js, major, minor, status, rev;
 	const char *name = "unknown";
@@ -230,7 +263,27 @@ static void panfrost_gpu_init_features(struct panfrost_device *pfdev)
 	pfdev->features.max_threads = gpu_read(pfdev, GPU_THREAD_MAX_THREADS);
 	pfdev->features.thread_max_workgroup_sz = gpu_read(pfdev, GPU_THREAD_MAX_WORKGROUP_SIZE);
 	pfdev->features.thread_max_barrier_sz = gpu_read(pfdev, GPU_THREAD_MAX_BARRIER_SIZE);
-	pfdev->features.coherency_features = gpu_read(pfdev, GPU_COHERENCY_FEATURES);
+
+	if (panfrost_has_hw_feature(pfdev, HW_FEATURE_COHERENCY_REG))
+		pfdev->features.coherency_features = gpu_read(pfdev, GPU_COHERENCY_FEATURES);
+	else
+		pfdev->features.coherency_features = BIT(COHERENCY_ACE_LITE);
+
+	BUILD_BUG_ON(COHERENCY_ACE_LITE != DRM_PANFROST_GPU_COHERENCY_ACE_LITE);
+	BUILD_BUG_ON(COHERENCY_ACE != DRM_PANFROST_GPU_COHERENCY_ACE);
+	BUILD_BUG_ON(COHERENCY_NONE != DRM_PANFROST_GPU_COHERENCY_NONE);
+
+	if (!pfdev->coherent) {
+		pfdev->features.selected_coherency = COHERENCY_NONE;
+	} else if (pfdev->features.coherency_features & BIT(COHERENCY_ACE)) {
+		pfdev->features.selected_coherency = COHERENCY_ACE;
+	} else if (pfdev->features.coherency_features & BIT(COHERENCY_ACE_LITE)) {
+		pfdev->features.selected_coherency = COHERENCY_ACE_LITE;
+	} else {
+		drm_WARN(&pfdev->base, true, "No known coherency protocol supported");
+		pfdev->features.selected_coherency = COHERENCY_NONE;
+	}
+
 	pfdev->features.afbc_features = gpu_read(pfdev, GPU_AFBC_FEATURES);
 	for (i = 0; i < 4; i++)
 		pfdev->features.texture_features[i] = gpu_read(pfdev, GPU_TEXTURE_FEATURES(i));
@@ -297,16 +350,22 @@ static void panfrost_gpu_init_features(struct panfrost_device *pfdev)
 		break;
 	}
 
+	if (!model->name) {
+		dev_err(pfdev->base.dev, "GPU model not found: mali-%s id rev %#x %#x\n",
+			name, gpu_id, rev);
+		return -ENODEV;
+	}
+
 	bitmap_from_u64(pfdev->features.hw_features, hw_feat);
 	bitmap_from_u64(pfdev->features.hw_issues, hw_issues);
 
-	dev_info(pfdev->dev, "mali-%s id 0x%x major 0x%x minor 0x%x status 0x%x",
+	dev_info(pfdev->base.dev, "mali-%s id 0x%x major 0x%x minor 0x%x status 0x%x",
 		 name, gpu_id, major, minor, status);
-	dev_info(pfdev->dev, "features: %64pb, issues: %64pb",
+	dev_info(pfdev->base.dev, "features: %64pb, issues: %64pb",
 		 pfdev->features.hw_features,
 		 pfdev->features.hw_issues);
 
-	dev_info(pfdev->dev, "Features: L2:0x%08x Shader:0x%08x Tiler:0x%08x Mem:0x%0x MMU:0x%08x AS:0x%x JS:0x%x",
+	dev_info(pfdev->base.dev, "Features: L2:0x%08x Shader:0x%08x Tiler:0x%08x Mem:0x%0x MMU:0x%08x AS:0x%x JS:0x%x",
 		 pfdev->features.l2_features,
 		 pfdev->features.core_features,
 		 pfdev->features.tiler_features,
@@ -315,86 +374,172 @@ static void panfrost_gpu_init_features(struct panfrost_device *pfdev)
 		 pfdev->features.as_present,
 		 pfdev->features.js_present);
 
-	dev_info(pfdev->dev, "shader_present=0x%0llx l2_present=0x%0llx",
+	dev_info(pfdev->base.dev, "shader_present=0x%0llx l2_present=0x%0llx",
 		 pfdev->features.shader_present, pfdev->features.l2_present);
+
+	return 0;
+}
+
+void panfrost_cycle_counter_get(struct panfrost_device *pfdev)
+{
+	if (atomic_inc_not_zero(&pfdev->cycle_counter.use_count))
+		return;
+
+	spin_lock(&pfdev->cycle_counter.lock);
+	if (atomic_inc_return(&pfdev->cycle_counter.use_count) == 1)
+		gpu_write(pfdev, GPU_CMD, GPU_CMD_CYCLE_COUNT_START);
+	spin_unlock(&pfdev->cycle_counter.lock);
+}
+
+void panfrost_cycle_counter_put(struct panfrost_device *pfdev)
+{
+	if (atomic_add_unless(&pfdev->cycle_counter.use_count, -1, 1))
+		return;
+
+	spin_lock(&pfdev->cycle_counter.lock);
+	if (atomic_dec_return(&pfdev->cycle_counter.use_count) == 0)
+		gpu_write(pfdev, GPU_CMD, GPU_CMD_CYCLE_COUNT_STOP);
+	spin_unlock(&pfdev->cycle_counter.lock);
+}
+
+unsigned long long panfrost_cycle_counter_read(struct panfrost_device *pfdev)
+{
+	u32 hi, lo;
+
+	do {
+		hi = gpu_read(pfdev, GPU_CYCLE_COUNT_HI);
+		lo = gpu_read(pfdev, GPU_CYCLE_COUNT_LO);
+	} while (hi != gpu_read(pfdev, GPU_CYCLE_COUNT_HI));
+
+	return ((u64)hi << 32) | lo;
+}
+
+unsigned long long panfrost_timestamp_read(struct panfrost_device *pfdev)
+{
+	u32 hi, lo;
+
+	do {
+		hi = gpu_read(pfdev, GPU_TIMESTAMP_HI);
+		lo = gpu_read(pfdev, GPU_TIMESTAMP_LO);
+	} while (hi != gpu_read(pfdev, GPU_TIMESTAMP_HI));
+
+	return ((u64)hi << 32) | lo;
+}
+
+static u64 panfrost_get_core_mask(struct panfrost_device *pfdev)
+{
+	u64 core_mask;
+
+	if (pfdev->features.l2_present == 1)
+		return U64_MAX;
+
+	/*
+	 * Only support one core group now.
+	 * ~(l2_present - 1) unsets all bits in l2_present except
+	 * the bottom bit. (l2_present - 2) has all the bits in
+	 * the first core group set. AND them together to generate
+	 * a mask of cores in the first core group.
+	 */
+	core_mask = ~(pfdev->features.l2_present - 1) &
+		     (pfdev->features.l2_present - 2);
+	dev_info_once(pfdev->base.dev, "using only 1st core group (%lu cores from %lu)\n",
+		      hweight64(core_mask),
+		      hweight64(pfdev->features.shader_present));
+
+	return core_mask;
 }
 
 void panfrost_gpu_power_on(struct panfrost_device *pfdev)
 {
 	int ret;
 	u32 val;
-	u64 core_mask = U64_MAX;
+	u64 core_mask;
 
 	panfrost_gpu_init_quirks(pfdev);
+	core_mask = panfrost_get_core_mask(pfdev);
 
-	if (pfdev->features.l2_present != 1) {
-		/*
-		 * Only support one core group now.
-		 * ~(l2_present - 1) unsets all bits in l2_present except
-		 * the bottom bit. (l2_present - 2) has all the bits in
-		 * the first core group set. AND them together to generate
-		 * a mask of cores in the first core group.
-		 */
-		core_mask = ~(pfdev->features.l2_present - 1) &
-			     (pfdev->features.l2_present - 2);
-		dev_info_once(pfdev->dev, "using only 1st core group (%lu cores from %lu)\n",
-			      hweight64(core_mask),
-			      hweight64(pfdev->features.shader_present));
-	}
 	gpu_write(pfdev, L2_PWRON_LO, pfdev->features.l2_present & core_mask);
 	ret = readl_relaxed_poll_timeout(pfdev->iomem + L2_READY_LO,
 		val, val == (pfdev->features.l2_present & core_mask),
-		100, 20000);
+		10, 20000);
 	if (ret)
-		dev_err(pfdev->dev, "error powering up gpu L2");
+		dev_err(pfdev->base.dev, "error powering up gpu L2");
 
 	gpu_write(pfdev, SHADER_PWRON_LO,
 		  pfdev->features.shader_present & core_mask);
 	ret = readl_relaxed_poll_timeout(pfdev->iomem + SHADER_READY_LO,
 		val, val == (pfdev->features.shader_present & core_mask),
-		100, 20000);
+		10, 20000);
 	if (ret)
-		dev_err(pfdev->dev, "error powering up gpu shader");
+		dev_err(pfdev->base.dev, "error powering up gpu shader");
 
 	gpu_write(pfdev, TILER_PWRON_LO, pfdev->features.tiler_present);
 	ret = readl_relaxed_poll_timeout(pfdev->iomem + TILER_READY_LO,
-		val, val == pfdev->features.tiler_present, 100, 1000);
+		val, val == pfdev->features.tiler_present, 10, 1000);
 	if (ret)
-		dev_err(pfdev->dev, "error powering up gpu tiler");
+		dev_err(pfdev->base.dev, "error powering up gpu tiler");
 }
 
 void panfrost_gpu_power_off(struct panfrost_device *pfdev)
 {
-	gpu_write(pfdev, TILER_PWROFF_LO, 0);
-	gpu_write(pfdev, SHADER_PWROFF_LO, 0);
-	gpu_write(pfdev, L2_PWROFF_LO, 0);
+	int ret;
+	u32 val;
+
+	gpu_write(pfdev, SHADER_PWROFF_LO, pfdev->features.shader_present);
+	ret = readl_relaxed_poll_timeout(pfdev->iomem + SHADER_PWRTRANS_LO,
+					 val, !val, 1, 2000);
+	if (ret)
+		dev_err(pfdev->base.dev, "shader power transition timeout");
+
+	gpu_write(pfdev, TILER_PWROFF_LO, pfdev->features.tiler_present);
+	ret = readl_relaxed_poll_timeout(pfdev->iomem + TILER_PWRTRANS_LO,
+					 val, !val, 1, 2000);
+	if (ret)
+		dev_err(pfdev->base.dev, "tiler power transition timeout");
+
+	gpu_write(pfdev, L2_PWROFF_LO, pfdev->features.l2_present);
+	ret = readl_poll_timeout(pfdev->iomem + L2_PWRTRANS_LO,
+				 val, !val, 0, 2000);
+	if (ret)
+		dev_err(pfdev->base.dev, "l2 power transition timeout");
+}
+
+void panfrost_gpu_suspend_irq(struct panfrost_device *pfdev)
+{
+	set_bit(PANFROST_COMP_BIT_GPU, pfdev->is_suspended);
+
+	gpu_write(pfdev, GPU_INT_MASK, 0);
+	synchronize_irq(pfdev->gpu_irq);
 }
 
 int panfrost_gpu_init(struct panfrost_device *pfdev)
 {
-	int err, irq;
+	int err;
 
 	err = panfrost_gpu_soft_reset(pfdev);
 	if (err)
 		return err;
 
-	panfrost_gpu_init_features(pfdev);
-
-	err = dma_set_mask_and_coherent(pfdev->dev,
-		DMA_BIT_MASK(FIELD_GET(0xff00, pfdev->features.mmu_features)));
+	err = panfrost_gpu_init_features(pfdev);
 	if (err)
 		return err;
 
-	dma_set_max_seg_size(pfdev->dev, UINT_MAX);
+	err = dma_set_mask_and_coherent(pfdev->base.dev,
+					DMA_BIT_MASK(FIELD_GET(0xff00,
+							       pfdev->features.mmu_features)));
+	if (err)
+		return err;
 
-	irq = platform_get_irq_byname(to_platform_device(pfdev->dev), "gpu");
-	if (irq <= 0)
-		return -ENODEV;
+	dma_set_max_seg_size(pfdev->base.dev, UINT_MAX);
 
-	err = devm_request_irq(pfdev->dev, irq, panfrost_gpu_irq_handler,
+	pfdev->gpu_irq = platform_get_irq_byname(to_platform_device(pfdev->base.dev), "gpu");
+	if (pfdev->gpu_irq < 0)
+		return pfdev->gpu_irq;
+
+	err = devm_request_irq(pfdev->base.dev, pfdev->gpu_irq, panfrost_gpu_irq_handler,
 			       IRQF_SHARED, KBUILD_MODNAME "-gpu", pfdev);
 	if (err) {
-		dev_err(pfdev->dev, "failed to request gpu irq");
+		dev_err(pfdev->base.dev, "failed to request gpu irq");
 		return err;
 	}
 
@@ -414,9 +559,9 @@ u32 panfrost_gpu_get_latest_flush_id(struct panfrost_device *pfdev)
 
 	if (panfrost_has_hw_feature(pfdev, HW_FEATURE_FLUSH_REDUCTION)) {
 		/* Flush reduction only makes sense when the GPU is kept powered on between jobs */
-		if (pm_runtime_get_if_in_use(pfdev->dev)) {
+		if (pm_runtime_get_if_in_use(pfdev->base.dev)) {
 			flush_id = gpu_read(pfdev, GPU_LATEST_FLUSH_ID);
-			pm_runtime_put(pfdev->dev);
+			pm_runtime_put(pfdev->base.dev);
 			return flush_id;
 		}
 	}

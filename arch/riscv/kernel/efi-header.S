@@ -6,9 +6,10 @@
 
 #include <linux/pe.h>
 #include <linux/sizes.h>
+#include <asm/set_memory.h>
 
 	.macro	__EFI_PE_HEADER
-	.long	PE_MAGIC
+	.long	IMAGE_NT_SIGNATURE
 coff_header:
 #ifdef CONFIG_64BIT
 	.short	IMAGE_FILE_MACHINE_RISCV64		// Machine
@@ -26,14 +27,18 @@ coff_header:
 
 optional_header:
 #ifdef CONFIG_64BIT
-	.short	PE_OPT_MAGIC_PE32PLUS			// PE32+ format
+	.short	IMAGE_NT_OPTIONAL_HDR64_MAGIC		// PE32+ format
 #else
-	.short	PE_OPT_MAGIC_PE32			// PE32 format
+	.short	IMAGE_NT_OPTIONAL_HDR32_MAGIC		// PE32 format
 #endif
 	.byte	0x02					// MajorLinkerVersion
 	.byte	0x14					// MinorLinkerVersion
 	.long	__pecoff_text_end - efi_header_end	// SizeOfCode
-	.long	__pecoff_data_virt_size			// SizeOfInitializedData
+#ifdef __clang__
+	.long   __pecoff_data_virt_size			// SizeOfInitializedData
+#else
+	.long	__pecoff_data_virt_end - __pecoff_text_end	// SizeOfInitializedData
+#endif
 	.long	0					// SizeOfUninitializedData
 	.long	__efistub_efi_pe_entry - _start		// AddressOfEntryPoint
 	.long	efi_header_end - _start			// BaseOfCode
@@ -59,7 +64,7 @@ extra_header_fields:
 	.long	efi_header_end - _start			// SizeOfHeaders
 	.long	0					// CheckSum
 	.short	IMAGE_SUBSYSTEM_EFI_APPLICATION		// Subsystem
-	.short	0					// DllCharacteristics
+	.short	IMAGE_DLLCHARACTERISTICS_NX_COMPAT	// DllCharacteristics
 	.quad	0					// SizeOfStackReserve
 	.quad	0					// SizeOfStackCommit
 	.quad	0					// SizeOfHeapReserve
@@ -91,9 +96,17 @@ section_table:
 		IMAGE_SCN_MEM_EXECUTE			// Characteristics
 
 	.ascii	".data\0\0\0"
-	.long	__pecoff_data_virt_size			// VirtualSize
+#ifdef __clang__
+	.long   __pecoff_data_virt_size			// VirtualSize
+#else
+	.long	__pecoff_data_virt_end - __pecoff_text_end	// VirtualSize
+#endif
 	.long	__pecoff_text_end - _start		// VirtualAddress
-	.long	__pecoff_data_raw_size			// SizeOfRawData
+#ifdef __clang__
+	.long   __pecoff_data_raw_size			// SizeOfRawData
+#else
+	.long	__pecoff_data_raw_end - __pecoff_text_end	// SizeOfRawData
+#endif
 	.long	__pecoff_text_end - _start		// PointerToRawData
 
 	.long	0					// PointerToRelocations

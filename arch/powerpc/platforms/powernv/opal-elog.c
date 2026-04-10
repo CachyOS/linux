@@ -146,7 +146,7 @@ static struct attribute *elog_default_attrs[] = {
 };
 ATTRIBUTE_GROUPS(elog_default);
 
-static struct kobj_type elog_ktype = {
+static const struct kobj_type elog_ktype = {
 	.sysfs_ops = &elog_sysfs_ops,
 	.release = &elog_release,
 	.default_groups = elog_default_groups,
@@ -156,7 +156,7 @@ static struct kobj_type elog_ktype = {
 #define OPAL_MAX_ERRLOG_SIZE	16384
 
 static ssize_t raw_attr_read(struct file *filep, struct kobject *kobj,
-			     struct bin_attribute *bin_attr,
+			     const struct bin_attribute *bin_attr,
 			     char *buffer, loff_t pos, size_t count)
 {
 	int opal_rc;
@@ -190,7 +190,7 @@ static void create_elog_obj(uint64_t id, size_t size, uint64_t type)
 	struct elog_obj *elog;
 	int rc;
 
-	elog = kzalloc(sizeof(*elog), GFP_KERNEL);
+	elog = kzalloc_obj(*elog);
 	if (!elog)
 		return;
 

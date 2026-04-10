@@ -737,7 +737,7 @@ struct dvb_frontend* tda10086_attach(const struct tda10086_config* config,
 	dprintk ("%s\n", __func__);
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(struct tda10086_state), GFP_KERNEL);
+	state = kzalloc_obj(struct tda10086_state);
 	if (!state)
 		return NULL;
 
@@ -764,4 +764,4 @@ MODULE_DESCRIPTION("Philips TDA10086 DVB-S Demodulator");
 MODULE_AUTHOR("Andrew de Quincey");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(tda10086_attach);
+EXPORT_SYMBOL_GPL(tda10086_attach);

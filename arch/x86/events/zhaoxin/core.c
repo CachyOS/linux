@@ -15,6 +15,7 @@
 #include <asm/cpufeature.h>
 #include <asm/hardirq.h>
 #include <asm/apic.h>
+#include <asm/msr.h>
 
 #include "../perf_event.h"
 
@@ -254,26 +255,26 @@ static __initconst const u64 zxe_hw_cache_event_ids
 
 static void zhaoxin_pmu_disable_all(void)
 {
-	wrmsrl(MSR_CORE_PERF_GLOBAL_CTRL, 0);
+	wrmsrq(MSR_CORE_PERF_GLOBAL_CTRL, 0);
 }
 
 static void zhaoxin_pmu_enable_all(int added)
 {
-	wrmsrl(MSR_CORE_PERF_GLOBAL_CTRL, x86_pmu.intel_ctrl);
+	wrmsrq(MSR_CORE_PERF_GLOBAL_CTRL, x86_pmu.intel_ctrl);
 }
 
 static inline u64 zhaoxin_pmu_get_status(void)
 {
 	u64 status;
 
-	rdmsrl(MSR_CORE_PERF_GLOBAL_STATUS, status);
+	rdmsrq(MSR_CORE_PERF_GLOBAL_STATUS, status);
 
 	return status;
 }
 
 static inline void zhaoxin_pmu_ack_status(u64 ack)
 {
-	wrmsrl(MSR_CORE_PERF_GLOBAL_OVF_CTRL, ack);
+	wrmsrq(MSR_CORE_PERF_GLOBAL_OVF_CTRL, ack);
 }
 
 static inline void zxc_pmu_ack_status(u64 ack)
@@ -293,9 +294,9 @@ static void zhaoxin_pmu_disable_fixed(struct hw_perf_event *hwc)
 
 	mask = 0xfULL << (idx * 4);
 
-	rdmsrl(hwc->config_base, ctrl_val);
+	rdmsrq(hwc->config_base, ctrl_val);
 	ctrl_val &= ~mask;
-	wrmsrl(hwc->config_base, ctrl_val);
+	wrmsrq(hwc->config_base, ctrl_val);
 }
 
 static void zhaoxin_pmu_disable_event(struct perf_event *event)
@@ -329,10 +330,10 @@ static void zhaoxin_pmu_enable_fixed(struct hw_perf_event *hwc)
 	bits <<= (idx * 4);
 	mask = 0xfULL << (idx * 4);
 
-	rdmsrl(hwc->config_base, ctrl_val);
+	rdmsrq(hwc->config_base, ctrl_val);
 	ctrl_val &= ~mask;
 	ctrl_val |= bits;
-	wrmsrl(hwc->config_base, ctrl_val);
+	wrmsrq(hwc->config_base, ctrl_val);
 }
 
 static void zhaoxin_pmu_enable_event(struct perf_event *event)
@@ -397,8 +398,7 @@ again:
 		if (!x86_perf_event_set_period(event))
 			continue;
 
-		if (perf_event_overflow(event, &data, regs))
-			x86_pmu_stop(event, 0);
+		perf_event_overflow(event, &data, regs);
 	}
 
 	/*
@@ -530,18 +530,24 @@ __init int zhaoxin_pmu_init(void)
 	pr_info("Version check pass!\n");
 
 	x86_pmu.version			= version;
-	x86_pmu.num_counters		= eax.split.num_counters;
+	x86_pmu.cntr_mask64		= GENMASK_ULL(eax.split.num_counters - 1, 0);
 	x86_pmu.cntval_bits		= eax.split.bit_width;
 	x86_pmu.cntval_mask		= (1ULL << eax.split.bit_width) - 1;
 	x86_pmu.events_maskl		= ebx.full;
 	x86_pmu.events_mask_len		= eax.split.mask_length;
 
-	x86_pmu.num_counters_fixed = edx.split.num_counters_fixed;
+	x86_pmu.fixed_cntr_mask64	= GENMASK_ULL(edx.split.num_counters_fixed - 1, 0);
 	x86_add_quirk(zhaoxin_arch_events_quirk);
 
 	switch (boot_cpu_data.x86) {
 	case 0x06:
-		if (boot_cpu_data.x86_model == 0x0f || boot_cpu_data.x86_model == 0x19) {
+		/*
+		 * Support Zhaoxin CPU from ZXC series, exclude Nano series through FMS.
+		 * Nano FMS: Family=6, Model=F, Stepping=[0-A][C-D]
+		 * ZXC FMS: Family=6, Model=F, Stepping=E-F OR Family=6, Model=0x19, Stepping=0-3
+		 */
+		if ((boot_cpu_data.x86_model == 0x0f && boot_cpu_data.x86_stepping >= 0x0e) ||
+			boot_cpu_data.x86_model == 0x19) {
 
 			x86_pmu.max_period = x86_pmu.cntval_mask >> 1;
 
@@ -598,13 +604,13 @@ __init int zhaoxin_pmu_init(void)
 		return -ENODEV;
 	}
 
-	x86_pmu.intel_ctrl = (1 << (x86_pmu.num_counters)) - 1;
-	x86_pmu.intel_ctrl |= ((1LL << x86_pmu.num_counters_fixed)-1) << INTEL_PMC_IDX_FIXED;
+	x86_pmu.intel_ctrl = x86_pmu.cntr_mask64;
+	x86_pmu.intel_ctrl |= x86_pmu.fixed_cntr_mask64 << INTEL_PMC_IDX_FIXED;
 
 	if (x86_pmu.event_constraints) {
 		for_each_event_constraint(c, x86_pmu.event_constraints) {
-			c->idxmsk64 |= (1ULL << x86_pmu.num_counters) - 1;
-			c->weight += x86_pmu.num_counters;
+			c->idxmsk64 |= x86_pmu.cntr_mask64;
+			c->weight += x86_pmu_num_counters(NULL);
 		}
 	}
 

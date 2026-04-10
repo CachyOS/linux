@@ -27,6 +27,7 @@ static const char * const fw_upload_err_str[] = {
 	[FW_UPLOAD_ERR_INVALID_SIZE] = "invalid-file-size",
 	[FW_UPLOAD_ERR_RW_ERROR]     = "read-write-error",
 	[FW_UPLOAD_ERR_WEAROUT]	     = "flash-wearout",
+	[FW_UPLOAD_ERR_FW_INVALID]   = "firmware-invalid",
 };
 
 static const char *fw_upload_progress(struct device *dev,
@@ -99,8 +100,10 @@ static ssize_t cancel_store(struct device *dev, struct device_attribute *attr,
 		return -EINVAL;
 
 	mutex_lock(&fwlp->lock);
-	if (fwlp->progress == FW_UPLOAD_PROG_IDLE)
-		ret = -ENODEV;
+	if (fwlp->progress == FW_UPLOAD_PROG_IDLE) {
+		mutex_unlock(&fwlp->lock);
+		return -ENODEV;
+	}
 
 	fwlp->ops->cancel(fwlp->fw_upload);
 	mutex_unlock(&fwlp->lock);
@@ -264,6 +267,15 @@ int fw_upload_start(struct fw_sysfs *fw_sysfs)
 	return 0;
 }
 
+void fw_upload_free(struct fw_sysfs *fw_sysfs)
+{
+	struct fw_upload_priv *fw_upload_priv = fw_sysfs->fw_upload_priv;
+
+	free_fw_priv(fw_sysfs->fw_priv);
+	kfree(fw_upload_priv->fw_upload);
+	kfree(fw_upload_priv);
+}
+
 /**
  * firmware_upload_register() - register for the firmware upload sysfs API
  * @module: kernel module of this device
@@ -303,13 +315,13 @@ firmware_upload_register(struct module *module, struct device *parent,
 	if (!try_module_get(module))
 		return ERR_PTR(-EFAULT);
 
-	fw_upload = kzalloc(sizeof(*fw_upload), GFP_KERNEL);
+	fw_upload = kzalloc_obj(*fw_upload);
 	if (!fw_upload) {
 		ret = -ENOMEM;
 		goto exit_module_put;
 	}
 
-	fw_upload_priv = kzalloc(sizeof(*fw_upload_priv), GFP_KERNEL);
+	fw_upload_priv = kzalloc_obj(*fw_upload_priv);
 	if (!fw_upload_priv) {
 		ret = -ENOMEM;
 		goto free_fw_upload;
@@ -377,6 +389,7 @@ void firmware_upload_unregister(struct fw_upload *fw_upload)
 {
 	struct fw_sysfs *fw_sysfs = fw_upload->priv;
 	struct fw_upload_priv *fw_upload_priv = fw_sysfs->fw_upload_priv;
+	struct module *module = fw_upload_priv->module;
 
 	mutex_lock(&fw_upload_priv->lock);
 	if (fw_upload_priv->progress == FW_UPLOAD_PROG_IDLE) {
@@ -392,6 +405,6 @@ void firmware_upload_unregister(struct fw_upload *fw_upload)
 
 unregister:
 	device_unregister(&fw_sysfs->dev);
-	module_put(fw_upload_priv->module);
+	module_put(module);
 }
 EXPORT_SYMBOL_GPL(firmware_upload_unregister);

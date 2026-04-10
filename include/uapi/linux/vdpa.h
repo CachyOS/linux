@@ -19,6 +19,7 @@ enum vdpa_command {
 	VDPA_CMD_DEV_GET,		/* can dump */
 	VDPA_CMD_DEV_CONFIG_GET,	/* can dump */
 	VDPA_CMD_DEV_VSTATS_GET,
+	VDPA_CMD_DEV_ATTR_SET,
 };
 
 enum vdpa_attr {
@@ -46,11 +47,32 @@ enum vdpa_attr {
 
 	VDPA_ATTR_DEV_NEGOTIATED_FEATURES,	/* u64 */
 	VDPA_ATTR_DEV_MGMTDEV_MAX_VQS,		/* u32 */
+	/* virtio features that are supported by the vDPA management device */
 	VDPA_ATTR_DEV_SUPPORTED_FEATURES,	/* u64 */
 
 	VDPA_ATTR_DEV_QUEUE_INDEX,              /* u32 */
 	VDPA_ATTR_DEV_VENDOR_ATTR_NAME,		/* string */
 	VDPA_ATTR_DEV_VENDOR_ATTR_VALUE,        /* u64 */
+
+	/* virtio features that are provisioned to the vDPA device */
+	VDPA_ATTR_DEV_FEATURES,                 /* u64 */
+
+	VDPA_ATTR_DEV_BLK_CFG_CAPACITY,		/* u64 */
+	VDPA_ATTR_DEV_BLK_CFG_SIZE_MAX,		/* u32 */
+	VDPA_ATTR_DEV_BLK_CFG_BLK_SIZE,		/* u32 */
+	VDPA_ATTR_DEV_BLK_CFG_SEG_MAX,		/* u32 */
+	VDPA_ATTR_DEV_BLK_CFG_NUM_QUEUES,	/* u16 */
+	VDPA_ATTR_DEV_BLK_CFG_PHY_BLK_EXP,	/* u8 */
+	VDPA_ATTR_DEV_BLK_CFG_ALIGN_OFFSET,	/* u8 */
+	VDPA_ATTR_DEV_BLK_CFG_MIN_IO_SIZE,	/* u16 */
+	VDPA_ATTR_DEV_BLK_CFG_OPT_IO_SIZE,	/* u32 */
+	VDPA_ATTR_DEV_BLK_CFG_MAX_DISCARD_SEC,	/* u32 */
+	VDPA_ATTR_DEV_BLK_CFG_MAX_DISCARD_SEG,	/* u32 */
+	VDPA_ATTR_DEV_BLK_CFG_DISCARD_SEC_ALIGN,/* u32 */
+	VDPA_ATTR_DEV_BLK_CFG_MAX_WRITE_ZEROES_SEC,	/* u32 */
+	VDPA_ATTR_DEV_BLK_CFG_MAX_WRITE_ZEROES_SEG,	/* u32 */
+	VDPA_ATTR_DEV_BLK_READ_ONLY,		/* u8 */
+	VDPA_ATTR_DEV_BLK_FLUSH,		/* u8 */
 
 	/* new attributes must be added above here */
 	VDPA_ATTR_MAX,

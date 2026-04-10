@@ -103,19 +103,6 @@ static int max3191x_direction_input(struct gpio_chip *gpio, unsigned int offset)
 	return 0;
 }
 
-static int max3191x_direction_output(struct gpio_chip *gpio,
-				     unsigned int offset, int value)
-{
-	return -EINVAL;
-}
-
-static void max3191x_set(struct gpio_chip *gpio, unsigned int offset, int value)
-{ }
-
-static void max3191x_set_multiple(struct gpio_chip *gpio, unsigned long *mask,
-				  unsigned long *bits)
-{ }
-
 static unsigned int max3191x_wordlen(struct max3191x_chip *max3191x)
 {
 	return max3191x->mode == STATUS_BYTE_ENABLED ? 2 : 1;
@@ -309,23 +296,21 @@ static int max3191x_set_config(struct gpio_chip *gpio, unsigned int offset,
 	return 0;
 }
 
-static void gpiod_set_array_single_value_cansleep(unsigned int ndescs,
-						  struct gpio_desc **desc,
-						  struct gpio_array *info,
+static void max3191x_gpiod_multi_set_single_value(struct gpio_descs *descs,
 						  int value)
 {
 	unsigned long *values;
 
-	values = bitmap_alloc(ndescs, GFP_KERNEL);
+	values = bitmap_alloc(descs->ndescs, GFP_KERNEL);
 	if (!values)
 		return;
 
 	if (value)
-		bitmap_fill(values, ndescs);
+		bitmap_fill(values, descs->ndescs);
 	else
-		bitmap_zero(values, ndescs);
+		bitmap_zero(values, descs->ndescs);
 
-	gpiod_set_array_value_cansleep(ndescs, desc, info, values);
+	gpiod_multi_set_value_cansleep(descs, values);
 	bitmap_free(values);
 }
 
@@ -396,10 +381,8 @@ static int max3191x_probe(struct spi_device *spi)
 	max3191x->mode = device_property_read_bool(dev, "maxim,modesel-8bit")
 				 ? STATUS_BYTE_DISABLED : STATUS_BYTE_ENABLED;
 	if (max3191x->modesel_pins)
-		gpiod_set_array_single_value_cansleep(
-				 max3191x->modesel_pins->ndescs,
-				 max3191x->modesel_pins->desc,
-				 max3191x->modesel_pins->info, max3191x->mode);
+		max3191x_gpiod_multi_set_single_value(max3191x->modesel_pins,
+						      max3191x->mode);
 
 	max3191x->ignore_uv = device_property_read_bool(dev,
 						  "maxim,ignore-undervoltage");
@@ -425,9 +408,6 @@ static int max3191x_probe(struct spi_device *spi)
 
 	max3191x->gpio.get_direction = max3191x_get_direction;
 	max3191x->gpio.direction_input = max3191x_direction_input;
-	max3191x->gpio.direction_output = max3191x_direction_output;
-	max3191x->gpio.set = max3191x_set;
-	max3191x->gpio.set_multiple = max3191x_set_multiple;
 	max3191x->gpio.get = max3191x_get;
 	max3191x->gpio.get_multiple = max3191x_get_multiple;
 	max3191x->gpio.set_config = max3191x_set_config;
@@ -457,7 +437,6 @@ static int __init max3191x_register_driver(struct spi_driver *sdrv)
 	return spi_register_driver(sdrv);
 }
 
-#ifdef CONFIG_OF
 static const struct of_device_id max3191x_of_id[] = {
 	{ .compatible = "maxim,max31910" },
 	{ .compatible = "maxim,max31911" },
@@ -468,7 +447,6 @@ static const struct of_device_id max3191x_of_id[] = {
 	{ }
 };
 MODULE_DEVICE_TABLE(of, max3191x_of_id);
-#endif
 
 static const struct spi_device_id max3191x_spi_id[] = {
 	{ "max31910" },
@@ -484,7 +462,7 @@ MODULE_DEVICE_TABLE(spi, max3191x_spi_id);
 static struct spi_driver max3191x_driver = {
 	.driver = {
 		.name		= "max3191x",
-		.of_match_table	= of_match_ptr(max3191x_of_id),
+		.of_match_table	= max3191x_of_id,
 	},
 	.probe	  = max3191x_probe,
 	.remove	  = max3191x_remove,

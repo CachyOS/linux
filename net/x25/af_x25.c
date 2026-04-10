@@ -359,7 +359,7 @@ static void __x25_destroy_socket(struct sock *);
  */
 static void x25_destroy_timer(struct timer_list *t)
 {
-	struct sock *sk = from_timer(sk, t, sk_timer);
+	struct sock *sk = timer_container_of(sk, t, sk_timer);
 
 	x25_destroy_socket_from_timer(sk);
 }
@@ -460,11 +460,11 @@ static int x25_getsockopt(struct socket *sock, int level, int optname,
 	if (get_user(len, optlen))
 		goto out;
 
-	len = min_t(unsigned int, len, sizeof(int));
-
 	rc = -EINVAL;
 	if (len < 0)
 		goto out;
+
+	len = min_t(unsigned int, len, sizeof(int));
 
 	rc = -EFAULT;
 	if (put_user(len, optlen))
@@ -482,6 +482,12 @@ static int x25_listen(struct socket *sock, int backlog)
 	int rc = -EOPNOTSUPP;
 
 	lock_sock(sk);
+	if (sock->state != SS_UNCONNECTED) {
+		rc = -EINVAL;
+		release_sock(sk);
+		return rc;
+	}
+
 	if (sk->sk_state != TCP_LISTEN) {
 		memset(&x25_sk(sk)->dest_addr, 0, X25_ADDR_LEN);
 		sk->sk_max_ack_backlog = backlog;
@@ -592,7 +598,7 @@ static struct sock *x25_make_new(struct sock *osk)
 	x25 = x25_sk(sk);
 
 	sk->sk_type        = osk->sk_type;
-	sk->sk_priority    = osk->sk_priority;
+	sk->sk_priority    = READ_ONCE(osk->sk_priority);
 	sk->sk_protocol    = osk->sk_protocol;
 	sk->sk_rcvbuf      = osk->sk_rcvbuf;
 	sk->sk_sndbuf      = osk->sk_sndbuf;
@@ -664,7 +670,7 @@ out:
 	return 0;
 }
 
-static int x25_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
+static int x25_bind(struct socket *sock, struct sockaddr_unsized *uaddr, int addr_len)
 {
 	struct sock *sk = sock->sk;
 	struct sockaddr_x25 *addr = (struct sockaddr_x25 *)uaddr;
@@ -698,7 +704,7 @@ static int x25_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 		rc = -EINVAL;
 	}
 	release_sock(sk);
-	SOCK_DEBUG(sk, "x25_bind: socket is bound\n");
+	net_dbg_ratelimited("x25_bind: socket is bound\n");
 out:
 	return rc;
 }
@@ -719,6 +725,11 @@ static int x25_wait_for_connection_establishment(struct sock *sk)
 			sk->sk_socket->state = SS_UNCONNECTED;
 			break;
 		}
+		rc = -ENOTCONN;
+		if (sk->sk_state == TCP_CLOSE) {
+			sk->sk_socket->state = SS_UNCONNECTED;
+			break;
+		}
 		rc = 0;
 		if (sk->sk_state != TCP_ESTABLISHED) {
 			release_sock(sk);
@@ -732,7 +743,7 @@ static int x25_wait_for_connection_establishment(struct sock *sk)
 	return rc;
 }
 
-static int x25_connect(struct socket *sock, struct sockaddr *uaddr,
+static int x25_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
 		       int addr_len, int flags)
 {
 	struct sock *sk = sock->sk;
@@ -860,8 +871,8 @@ static int x25_wait_for_data(struct sock *sk, long timeout)
 	return rc;
 }
 
-static int x25_accept(struct socket *sock, struct socket *newsock, int flags,
-		      bool kern)
+static int x25_accept(struct socket *sock, struct socket *newsock,
+		      struct proto_accept_arg *arg)
 {
 	struct sock *sk = sock->sk;
 	struct sock *newsk;
@@ -880,7 +891,7 @@ static int x25_accept(struct socket *sock, struct socket *newsock, int flags,
 	if (sk->sk_state != TCP_LISTEN)
 		goto out2;
 
-	rc = x25_wait_for_data(sk, sk->sk_rcvtimeo);
+	rc = x25_wait_for_data(sk, READ_ONCE(sk->sk_rcvtimeo));
 	if (rc)
 		goto out2;
 	skb = skb_dequeue(&sk->sk_receive_queue);
@@ -1154,10 +1165,10 @@ static int x25_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 		goto out;
 	}
 
-	SOCK_DEBUG(sk, "x25_sendmsg: sendto: Addresses built.\n");
+	net_dbg_ratelimited("x25_sendmsg: sendto: Addresses built.\n");
 
 	/* Build a packet */
-	SOCK_DEBUG(sk, "x25_sendmsg: sendto: building packet.\n");
+	net_dbg_ratelimited("x25_sendmsg: sendto: building packet.\n");
 
 	if ((msg->msg_flags & MSG_OOB) && len > 32)
 		len = 32;
@@ -1176,7 +1187,7 @@ static int x25_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 	/*
 	 *	Put the data on the end
 	 */
-	SOCK_DEBUG(sk, "x25_sendmsg: Copying user data\n");
+	net_dbg_ratelimited("x25_sendmsg: Copying user data\n");
 
 	skb_reset_transport_header(skb);
 	skb_put(skb, len);
@@ -1200,7 +1211,7 @@ static int x25_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 	/*
 	 *	Push down the X.25 header
 	 */
-	SOCK_DEBUG(sk, "x25_sendmsg: Building X.25 Header.\n");
+	net_dbg_ratelimited("x25_sendmsg: Building X.25 Header.\n");
 
 	if (msg->msg_flags & MSG_OOB) {
 		if (x25->neighbour->extended) {
@@ -1234,8 +1245,8 @@ static int x25_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 			skb->data[0] |= X25_Q_BIT;
 	}
 
-	SOCK_DEBUG(sk, "x25_sendmsg: Built header.\n");
-	SOCK_DEBUG(sk, "x25_sendmsg: Transmitting buffer\n");
+	net_dbg_ratelimited("x25_sendmsg: Built header.\n");
+	net_dbg_ratelimited("x25_sendmsg: Transmitting buffer\n");
 
 	rc = -ENOTCONN;
 	if (sk->sk_state != TCP_ESTABLISHED)
@@ -1746,7 +1757,6 @@ static const struct proto_ops x25_proto_ops = {
 	.sendmsg =	x25_sendmsg,
 	.recvmsg =	x25_recvmsg,
 	.mmap =		sock_no_mmap,
-	.sendpage =	sock_no_sendpage,
 };
 
 static struct packet_type x25_packet_type __read_mostly = {

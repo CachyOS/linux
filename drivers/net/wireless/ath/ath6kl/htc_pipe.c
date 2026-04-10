@@ -237,8 +237,7 @@ static int htc_issue_packets(struct htc_target *target,
 
 		packet->info.tx.flags |= HTC_FLAGS_TX_FIXUP_NETBUF;
 
-		/* Endianess? */
-		put_unaligned((u16) payload_len, &htc_hdr->payld_len);
+		put_unaligned_le16(payload_len, &htc_hdr->payld_len);
 		htc_hdr->flags = packet->info.tx.flags;
 		htc_hdr->eid = (u8) packet->endpoint;
 		htc_hdr->ctrl[0] = 0;
@@ -511,7 +510,7 @@ static struct htc_packet *build_htc_txctrl_packet(void)
 	struct htc_packet *packet = NULL;
 	struct sk_buff *skb;
 
-	packet = kzalloc(sizeof(struct htc_packet), GFP_KERNEL);
+	packet = kzalloc_obj(struct htc_packet);
 	if (packet == NULL)
 		return NULL;
 
@@ -719,7 +718,7 @@ static struct htc_packet *htc_lookup_tx_packet(struct htc_target *target,
 	spin_lock_bh(&target->tx_lock);
 
 	/*
-	 * interate from the front of tx lookup queue
+	 * iterate from the front of tx lookup queue
 	 * this lookup should be fast since lower layers completes in-order and
 	 * so the completed packet should be at the head of the list generally
 	 */
@@ -960,8 +959,8 @@ static int ath6kl_htc_pipe_rx_complete(struct ath6kl *ar, struct sk_buff *skb,
 	 * Thus the possibility of ar->htc_target being NULL
 	 * via ath6kl_recv_complete -> ath6kl_usb_io_comp_work.
 	 */
-	if (WARN_ON_ONCE(!target)) {
-		ath6kl_err("Target not yet initialized\n");
+	if (!target) {
+		ath6kl_dbg(ATH6KL_DBG_HTC, "Target not yet initialized\n");
 		status = -EINVAL;
 		goto free_skb;
 	}
@@ -1410,7 +1409,7 @@ static void *ath6kl_htc_pipe_create(struct ath6kl *ar)
 	struct htc_packet *packet;
 	int i;
 
-	target = kzalloc(sizeof(struct htc_target), GFP_KERNEL);
+	target = kzalloc_obj(struct htc_target);
 	if (target == NULL) {
 		ath6kl_err("htc create unable to allocate memory\n");
 		status = -ENOMEM;
@@ -1424,13 +1423,13 @@ static void *ath6kl_htc_pipe_create(struct ath6kl *ar)
 	reset_endpoint_states(target);
 
 	for (i = 0; i < HTC_PACKET_CONTAINER_ALLOCATION; i++) {
-		packet = kzalloc(sizeof(struct htc_packet), GFP_KERNEL);
+		packet = kzalloc_obj(struct htc_packet);
 
 		if (packet != NULL)
 			free_htc_packet_container(target, packet);
 	}
 
-	target->dev = kzalloc(sizeof(*target->dev), GFP_KERNEL);
+	target->dev = kzalloc_obj(*target->dev);
 	if (!target->dev) {
 		ath6kl_err("unable to allocate memory\n");
 		status = -ENOMEM;

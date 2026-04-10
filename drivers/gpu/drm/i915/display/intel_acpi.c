@@ -7,10 +7,14 @@
 
 #include <linux/pci.h>
 #include <linux/acpi.h>
+#include <acpi/video.h>
 
-#include "i915_drv.h"
+#include <drm/drm_print.h>
+
 #include "intel_acpi.h"
+#include "intel_display_core.h"
 #include "intel_display_types.h"
+#include "intel_display_utils.h"
 
 #define INTEL_DSM_REVISION_ID 1 /* For Calpella anyway... */
 #define INTEL_DSM_FN_PLATFORM_MUX_INFO 1 /* No args */
@@ -92,6 +96,7 @@ static void intel_dsm_platform_mux_info(acpi_handle dhandle)
 
 	if (!pkg->package.count) {
 		DRM_DEBUG_DRIVER("no connection in _DSM\n");
+		ACPI_FREE(pkg);
 		return;
 	}
 
@@ -152,7 +157,7 @@ static acpi_handle intel_dsm_pci_probe(struct pci_dev *pdev)
 static bool intel_dsm_detect(void)
 {
 	acpi_handle dhandle = NULL;
-	char acpi_method_name[255] = { 0 };
+	char acpi_method_name[255] = {};
 	struct acpi_buffer buffer = {sizeof(acpi_method_name), acpi_method_name};
 	struct pci_dev *pdev = NULL;
 	int vga_count = 0;
@@ -182,9 +187,9 @@ void intel_unregister_dsm_handler(void)
 {
 }
 
-void intel_dsm_get_bios_data_funcs_supported(struct drm_i915_private *i915)
+void intel_dsm_get_bios_data_funcs_supported(struct intel_display *display)
 {
-	struct pci_dev *pdev = to_pci_dev(i915->drm.dev);
+	struct pci_dev *pdev = to_pci_dev(display->drm->dev);
 	acpi_handle dhandle;
 	union acpi_object *obj;
 
@@ -262,15 +267,14 @@ static u32 acpi_display_type(struct intel_connector *connector)
 	return display_type;
 }
 
-void intel_acpi_device_id_update(struct drm_i915_private *dev_priv)
+void intel_acpi_device_id_update(struct intel_display *display)
 {
-	struct drm_device *drm_dev = &dev_priv->drm;
 	struct intel_connector *connector;
 	struct drm_connector_list_iter conn_iter;
 	u8 display_index[16] = {};
 
 	/* Populate the ACPI IDs for all connectors for a given drm_device */
-	drm_connector_list_iter_begin(drm_dev, &conn_iter);
+	drm_connector_list_iter_begin(display->drm, &conn_iter);
 	for_each_intel_connector_iter(connector, &conn_iter) {
 		u32 device_id, type;
 
@@ -287,10 +291,10 @@ void intel_acpi_device_id_update(struct drm_i915_private *dev_priv)
 }
 
 /* NOTE: The connector order must be final before this is called. */
-void intel_acpi_assign_connector_fwnodes(struct drm_i915_private *i915)
+void intel_acpi_assign_connector_fwnodes(struct intel_display *display)
 {
+	struct drm_device *drm_dev = display->drm;
 	struct drm_connector_list_iter conn_iter;
-	struct drm_device *drm_dev = &i915->drm;
 	struct fwnode_handle *fwnode = NULL;
 	struct drm_connector *connector;
 	struct acpi_device *adev;
@@ -330,4 +334,30 @@ void intel_acpi_assign_connector_fwnodes(struct drm_i915_private *i915)
 	 * put this, otherwise fwnode is NULL and the put is a no-op.
 	 */
 	fwnode_handle_put(fwnode);
+}
+
+void intel_acpi_video_register(struct intel_display *display)
+{
+	struct drm_connector_list_iter conn_iter;
+	struct drm_connector *connector;
+
+	acpi_video_register();
+
+	/*
+	 * If i915 is driving an internal panel without registering its native
+	 * backlight handler try to register the acpi_video backlight.
+	 * For panels not driven by i915 another GPU driver may still register
+	 * a native backlight later and acpi_video_register_backlight() should
+	 * only be called after any native backlights have been registered.
+	 */
+	drm_connector_list_iter_begin(display->drm, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
+		struct intel_panel *panel = &to_intel_connector(connector)->panel;
+
+		if (panel->backlight.funcs && !panel->backlight.device) {
+			acpi_video_register_backlight();
+			break;
+		}
+	}
+	drm_connector_list_iter_end(&conn_iter);
 }

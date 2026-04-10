@@ -279,7 +279,9 @@ static int tda18271c2_rf_tracking_filters_correction(struct dvb_frontend *fe,
 	if (approx > 255)
 		approx = 255;
 
-	tda18271_lookup_map(fe, RF_CAL_DC_OVER_DT, &freq, &dc_over_dt);
+	ret = tda18271_lookup_map(fe, RF_CAL_DC_OVER_DT, &freq, &dc_over_dt);
+	if (tda_fail(ret))
+		goto fail;
 
 	/* calculate temperature compensation */
 	rfcal_comp = dc_over_dt * (s32)(tm_current - priv->tm_rfcal) / 1000;
@@ -470,7 +472,6 @@ static int tda18271_powerscan(struct dvb_frontend *fe,
 	/* algorithm initialization */
 	sgn = 1;
 	*freq_out = *freq_in;
-	bcal = 0;
 	count = 0;
 	wait = false;
 

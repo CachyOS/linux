@@ -3,6 +3,7 @@
 
 #include <asm/cpu_device_id.h>
 #include <asm/intel-family.h>
+#include <asm/msr.h>
 #include "uncore.h"
 #include "uncore_discovery.h"
 
@@ -34,6 +35,7 @@ static struct event_constraint uncore_constraint_fixed =
 struct event_constraint uncore_constraint_empty =
 	EVENT_CONSTRAINT(0, 0, 0);
 
+MODULE_DESCRIPTION("Support for Intel uncore performance events");
 MODULE_LICENSE("GPL");
 
 int uncore_pcibus_to_dieid(struct pci_bus *bus)
@@ -65,6 +67,21 @@ int uncore_die_to_segment(int die)
 	return bus ? pci_domain_nr(bus) : -EINVAL;
 }
 
+int uncore_device_to_die(struct pci_dev *dev)
+{
+	int node = pcibus_to_node(dev->bus);
+	int cpu;
+
+	for_each_cpu(cpu, cpumask_of_pcibus(dev->bus)) {
+		struct cpuinfo_x86 *c = &cpu_data(cpu);
+
+		if (c->initialized && cpu_to_node(cpu) == node)
+			return c->topo.logical_die_id;
+	}
+
+	return -1;
+}
+
 static void uncore_free_pcibus_map(void)
 {
 	struct pci2phy_map *map, *tmp;
@@ -90,7 +107,7 @@ lookup:
 
 	if (!alloc) {
 		raw_spin_unlock(&pci2phy_map_lock);
-		alloc = kmalloc(sizeof(struct pci2phy_map), GFP_KERNEL);
+		alloc = kmalloc_obj(struct pci2phy_map);
 		raw_spin_lock(&pci2phy_map_lock);
 
 		if (!alloc)
@@ -134,7 +151,7 @@ u64 uncore_msr_read_counter(struct intel_uncore_box *box, struct perf_event *eve
 {
 	u64 count;
 
-	rdmsrl(event->hw.event_base, count);
+	rdmsrq(event->hw.event_base, count);
 
 	return count;
 }
@@ -248,6 +265,9 @@ static void uncore_assign_hw_event(struct intel_uncore_box *box,
 		return;
 	}
 
+	if (intel_generic_uncore_assign_hw_event(event, box))
+		return;
+
 	hwc->config_base = uncore_event_ctl(box, hwc->idx);
 	hwc->event_base  = uncore_perf_ctr(box, hwc->idx);
 }
@@ -286,17 +306,11 @@ static enum hrtimer_restart uncore_pmu_hrtimer(struct hrtimer *hrtimer)
 {
 	struct intel_uncore_box *box;
 	struct perf_event *event;
-	unsigned long flags;
 	int bit;
 
 	box = container_of(hrtimer, struct intel_uncore_box, hrtimer);
 	if (!box->n_active || box->cpu != smp_processor_id())
 		return HRTIMER_NORESTART;
-	/*
-	 * disable local interrupt to prevent uncore_pmu_event_start/stop
-	 * to interrupt the update process
-	 */
-	local_irq_save(flags);
 
 	/*
 	 * handle boxes with an active event list as opposed to active
@@ -309,8 +323,6 @@ static enum hrtimer_restart uncore_pmu_hrtimer(struct hrtimer *hrtimer)
 	for_each_set_bit(bit, box->active_mask, UNCORE_PMC_IDX_MAX)
 		uncore_perf_event_update(box, box->events[bit]);
 
-	local_irq_restore(flags);
-
 	hrtimer_forward_now(hrtimer, ns_to_ktime(box->hrtimer_duration));
 	return HRTIMER_RESTART;
 }
@@ -318,7 +330,7 @@ static enum hrtimer_restart uncore_pmu_hrtimer(struct hrtimer *hrtimer)
 void uncore_pmu_start_hrtimer(struct intel_uncore_box *box)
 {
 	hrtimer_start(&box->hrtimer, ns_to_ktime(box->hrtimer_duration),
-		      HRTIMER_MODE_REL_PINNED);
+		      HRTIMER_MODE_REL_PINNED_HARD);
 }
 
 void uncore_pmu_cancel_hrtimer(struct intel_uncore_box *box)
@@ -328,8 +340,7 @@ void uncore_pmu_cancel_hrtimer(struct intel_uncore_box *box)
 
 static void uncore_pmu_init_hrtimer(struct intel_uncore_box *box)
 {
-	hrtimer_init(&box->hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	box->hrtimer.function = uncore_pmu_hrtimer;
+	hrtimer_setup(&box->hrtimer, uncore_pmu_hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_HARD);
 }
 
 static struct intel_uncore_box *uncore_alloc_box(struct intel_uncore_type *type,
@@ -425,7 +436,7 @@ uncore_get_event_constraint(struct intel_uncore_box *box, struct perf_event *eve
 
 	if (type->constraints) {
 		for_each_event_constraint(c, type->constraints) {
-			if ((event->hw.config & c->cmask) == c->code)
+			if (constraint_match(c, event->hw.config))
 				return c;
 		}
 	}
@@ -726,7 +737,7 @@ static int uncore_pmu_event_init(struct perf_event *event)
 
 	pmu = uncore_event_to_pmu(event);
 	/* no device found for this pmu */
-	if (pmu->func_id < 0)
+	if (!pmu->registered)
 		return -ENOENT;
 
 	/* Sampling not supported yet */
@@ -828,7 +839,9 @@ static void uncore_pmu_disable(struct pmu *pmu)
 static ssize_t uncore_get_attr_cpumask(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
-	return cpumap_print_to_pagebuf(true, buf, &uncore_cpu_mask);
+	struct intel_uncore_pmu *pmu = container_of(dev_get_drvdata(dev), struct intel_uncore_pmu, pmu);
+
+	return cpumap_print_to_pagebuf(true, buf, &pmu->cpu_mask);
 }
 
 static DEVICE_ATTR(cpumask, S_IRUGO, uncore_get_attr_cpumask, NULL);
@@ -842,6 +855,15 @@ static const struct attribute_group uncore_pmu_attr_group = {
 	.attrs = uncore_pmu_attrs,
 };
 
+static inline int uncore_get_box_id(struct intel_uncore_type *type,
+				    struct intel_uncore_pmu *pmu)
+{
+	if (type->boxes)
+		return intel_uncore_find_discovery_unit_id(type->boxes, -1, pmu->pmu_idx);
+
+	return pmu->pmu_idx;
+}
+
 void uncore_get_alias_name(char *pmu_name, struct intel_uncore_pmu *pmu)
 {
 	struct intel_uncore_type *type = pmu->type;
@@ -850,7 +872,7 @@ void uncore_get_alias_name(char *pmu_name, struct intel_uncore_pmu *pmu)
 		sprintf(pmu_name, "uncore_type_%u", type->type_id);
 	else {
 		sprintf(pmu_name, "uncore_type_%u_%d",
-			type->type_id, type->box_ids[pmu->pmu_idx]);
+			type->type_id, uncore_get_box_id(type, pmu));
 	}
 }
 
@@ -877,7 +899,7 @@ static void uncore_get_pmu_name(struct intel_uncore_pmu *pmu)
 		 * Use the box ID from the discovery table if applicable.
 		 */
 		sprintf(pmu->name, "uncore_%s_%d", type->name,
-			type->box_ids ? type->box_ids[pmu->pmu_idx] : pmu->pmu_idx);
+			uncore_get_box_id(type, pmu));
 	}
 }
 
@@ -940,6 +962,9 @@ static void uncore_type_exit(struct intel_uncore_type *type)
 	if (type->cleanup_mapping)
 		type->cleanup_mapping(type);
 
+	if (type->cleanup_extra_boxes)
+		type->cleanup_extra_boxes(type);
+
 	if (pmu) {
 		for (i = 0; i < type->num_boxes; i++, pmu++) {
 			uncore_pmu_unregister(pmu);
@@ -948,10 +973,7 @@ static void uncore_type_exit(struct intel_uncore_type *type)
 		kfree(type->pmus);
 		type->pmus = NULL;
 	}
-	if (type->box_ids) {
-		kfree(type->box_ids);
-		type->box_ids = NULL;
-	}
+
 	kfree(type->events_group);
 	type->events_group = NULL;
 }
@@ -962,20 +984,19 @@ static void uncore_types_exit(struct intel_uncore_type **types)
 		uncore_type_exit(*types);
 }
 
-static int __init uncore_type_init(struct intel_uncore_type *type, bool setid)
+static int __init uncore_type_init(struct intel_uncore_type *type)
 {
 	struct intel_uncore_pmu *pmus;
 	size_t size;
 	int i, j;
 
-	pmus = kcalloc(type->num_boxes, sizeof(*pmus), GFP_KERNEL);
+	pmus = kzalloc_objs(*pmus, type->num_boxes);
 	if (!pmus)
 		return -ENOMEM;
 
 	size = uncore_max_dies() * sizeof(struct intel_uncore_box *);
 
 	for (i = 0; i < type->num_boxes; i++) {
-		pmus[i].func_id	= setid ? i : -1;
 		pmus[i].pmu_idx	= i;
 		pmus[i].type	= type;
 		pmus[i].boxes	= kzalloc(size, GFP_KERNEL);
@@ -995,8 +1016,7 @@ static int __init uncore_type_init(struct intel_uncore_type *type, bool setid)
 		} *attr_group;
 		for (i = 0; type->event_descs[i].attr.attr.name; i++);
 
-		attr_group = kzalloc(struct_size(attr_group, attrs, i + 1),
-								GFP_KERNEL);
+		attr_group = kzalloc_flex(*attr_group, attrs, i + 1);
 		if (!attr_group)
 			goto err;
 
@@ -1025,12 +1045,12 @@ err:
 }
 
 static int __init
-uncore_types_init(struct intel_uncore_type **types, bool setid)
+uncore_types_init(struct intel_uncore_type **types)
 {
 	int ret;
 
 	for (; *types; types++) {
-		ret = uncore_type_init(*types, setid);
+		ret = uncore_type_init(*types);
 		if (ret)
 			return ret;
 	}
@@ -1055,22 +1075,19 @@ static struct intel_uncore_pmu *
 uncore_pci_find_dev_pmu_from_types(struct pci_dev *pdev)
 {
 	struct intel_uncore_type **types = uncore_pci_uncores;
+	struct intel_uncore_discovery_unit *unit;
 	struct intel_uncore_type *type;
-	u64 box_ctl;
-	int i, die;
+	struct rb_node *node;
 
 	for (; *types; types++) {
 		type = *types;
-		for (die = 0; die < __uncore_max_dies; die++) {
-			for (i = 0; i < type->num_boxes; i++) {
-				if (!type->box_ctls[die])
-					continue;
-				box_ctl = type->box_ctls[die] + type->pci_offsets[i];
-				if (pdev->devfn == UNCORE_DISCOVERY_PCI_DEVFN(box_ctl) &&
-				    pdev->bus->number == UNCORE_DISCOVERY_PCI_BUS(box_ctl) &&
-				    pci_domain_nr(pdev->bus) == UNCORE_DISCOVERY_PCI_DOMAIN(box_ctl))
-					return &type->pmus[i];
-			}
+
+		for (node = rb_first(type->boxes); node; node = rb_next(node)) {
+			unit = rb_entry(node, struct intel_uncore_discovery_unit, node);
+			if (pdev->devfn == UNCORE_DISCOVERY_PCI_DEVFN(unit->addr) &&
+			    pdev->bus->number == UNCORE_DISCOVERY_PCI_BUS(unit->addr) &&
+			    pci_domain_nr(pdev->bus) == UNCORE_DISCOVERY_PCI_DOMAIN(unit->addr))
+				return &type->pmus[unit->pmu_idx];
 		}
 	}
 
@@ -1132,11 +1149,6 @@ static int uncore_pci_pmu_register(struct pci_dev *pdev,
 	box = uncore_alloc_box(type, NUMA_NO_NODE);
 	if (!box)
 		return -ENOMEM;
-
-	if (pmu->func_id < 0)
-		pmu->func_id = pdev->devfn;
-	else
-		WARN_ON_ONCE(pmu->func_id != pdev->devfn);
 
 	atomic_inc(&box->refcnt);
 	box->dieid = die;
@@ -1312,8 +1324,6 @@ static void uncore_pci_sub_driver_init(void)
 				continue;
 
 			pmu = &type->pmus[UNCORE_PCI_DEV_IDX(ids->driver_data)];
-			if (!pmu)
-				continue;
 
 			if (uncore_pci_get_dev_die_info(pci_sub_dev, &die))
 				continue;
@@ -1346,28 +1356,25 @@ static struct notifier_block uncore_pci_notifier = {
 static void uncore_pci_pmus_register(void)
 {
 	struct intel_uncore_type **types = uncore_pci_uncores;
+	struct intel_uncore_discovery_unit *unit;
 	struct intel_uncore_type *type;
 	struct intel_uncore_pmu *pmu;
+	struct rb_node *node;
 	struct pci_dev *pdev;
-	u64 box_ctl;
-	int i, die;
 
 	for (; *types; types++) {
 		type = *types;
-		for (die = 0; die < __uncore_max_dies; die++) {
-			for (i = 0; i < type->num_boxes; i++) {
-				if (!type->box_ctls[die])
-					continue;
-				box_ctl = type->box_ctls[die] + type->pci_offsets[i];
-				pdev = pci_get_domain_bus_and_slot(UNCORE_DISCOVERY_PCI_DOMAIN(box_ctl),
-								   UNCORE_DISCOVERY_PCI_BUS(box_ctl),
-								   UNCORE_DISCOVERY_PCI_DEVFN(box_ctl));
-				if (!pdev)
-					continue;
-				pmu = &type->pmus[i];
 
-				uncore_pci_pmu_register(pdev, type, pmu, die);
-			}
+		for (node = rb_first(type->boxes); node; node = rb_next(node)) {
+			unit = rb_entry(node, struct intel_uncore_discovery_unit, node);
+			pdev = pci_get_domain_bus_and_slot(UNCORE_DISCOVERY_PCI_DOMAIN(unit->addr),
+							   UNCORE_DISCOVERY_PCI_BUS(unit->addr),
+							   UNCORE_DISCOVERY_PCI_DEVFN(unit->addr));
+
+			if (!pdev)
+				continue;
+			pmu = &type->pmus[unit->pmu_idx];
+			uncore_pci_pmu_register(pdev, type, pmu, unit->die);
 		}
 	}
 
@@ -1386,7 +1393,7 @@ static int __init uncore_pci_init(void)
 		goto err;
 	}
 
-	ret = uncore_types_init(uncore_pci_uncores, false);
+	ret = uncore_types_init(uncore_pci_uncores);
 	if (ret)
 		goto errtype;
 
@@ -1432,6 +1439,18 @@ static void uncore_pci_exit(void)
 	}
 }
 
+static bool uncore_die_has_box(struct intel_uncore_type *type,
+			       int die, unsigned int pmu_idx)
+{
+	if (!type->boxes)
+		return true;
+
+	if (intel_uncore_find_discovery_unit_id(type->boxes, die, pmu_idx) < 0)
+		return false;
+
+	return true;
+}
+
 static void uncore_change_type_ctx(struct intel_uncore_type *type, int old_cpu,
 				   int new_cpu)
 {
@@ -1447,18 +1466,25 @@ static void uncore_change_type_ctx(struct intel_uncore_type *type, int old_cpu,
 
 		if (old_cpu < 0) {
 			WARN_ON_ONCE(box->cpu != -1);
-			box->cpu = new_cpu;
+			if (uncore_die_has_box(type, die, pmu->pmu_idx)) {
+				box->cpu = new_cpu;
+				cpumask_set_cpu(new_cpu, &pmu->cpu_mask);
+			}
 			continue;
 		}
 
-		WARN_ON_ONCE(box->cpu != old_cpu);
+		WARN_ON_ONCE(box->cpu != -1 && box->cpu != old_cpu);
 		box->cpu = -1;
+		cpumask_clear_cpu(old_cpu, &pmu->cpu_mask);
 		if (new_cpu < 0)
 			continue;
 
+		if (!uncore_die_has_box(type, die, pmu->pmu_idx))
+			continue;
 		uncore_pmu_cancel_hrtimer(box);
 		perf_pmu_migrate_context(&pmu->pmu, old_cpu, new_cpu);
 		box->cpu = new_cpu;
+		cpumask_set_cpu(new_cpu, &pmu->cpu_mask);
 	}
 }
 
@@ -1481,7 +1507,7 @@ static void uncore_box_unref(struct intel_uncore_type **types, int id)
 		pmu = type->pmus;
 		for (i = 0; i < type->num_boxes; i++, pmu++) {
 			box = pmu->boxes[id];
-			if (box && atomic_dec_return(&box->refcnt) == 0)
+			if (box && box->cpu >= 0 && atomic_dec_return(&box->refcnt) == 0)
 				uncore_box_exit(box);
 		}
 	}
@@ -1571,7 +1597,7 @@ static int uncore_box_ref(struct intel_uncore_type **types,
 		pmu = type->pmus;
 		for (i = 0; i < type->num_boxes; i++, pmu++) {
 			box = pmu->boxes[id];
-			if (box && atomic_inc_return(&box->refcnt) == 1)
+			if (box && box->cpu >= 0 && atomic_inc_return(&box->refcnt) == 1)
 				uncore_box_init(box);
 		}
 	}
@@ -1635,7 +1661,7 @@ static int __init uncore_cpu_init(void)
 {
 	int ret;
 
-	ret = uncore_types_init(uncore_msr_uncores, true);
+	ret = uncore_types_init(uncore_msr_uncores);
 	if (ret)
 		goto err;
 
@@ -1654,7 +1680,7 @@ static int __init uncore_mmio_init(void)
 	struct intel_uncore_type **types = uncore_mmio_uncores;
 	int ret;
 
-	ret = uncore_types_init(types, true);
+	ret = uncore_types_init(types);
 	if (ret)
 		goto err;
 
@@ -1670,196 +1696,281 @@ err:
 	return ret;
 }
 
-struct intel_uncore_init_fun {
-	void	(*cpu_init)(void);
-	int	(*pci_init)(void);
-	void	(*mmio_init)(void);
-	bool	use_discovery;
-};
+static int uncore_mmio_global_init(u64 ctl)
+{
+	void __iomem *io_addr;
 
-static const struct intel_uncore_init_fun nhm_uncore_init __initconst = {
+	io_addr = ioremap(ctl, sizeof(ctl));
+	if (!io_addr)
+		return -ENOMEM;
+
+	/* Clear freeze bit (0) to enable all counters. */
+	writel(0, io_addr);
+
+	iounmap(io_addr);
+	return 0;
+}
+
+static const struct uncore_plat_init nhm_uncore_init __initconst = {
 	.cpu_init = nhm_uncore_cpu_init,
 };
 
-static const struct intel_uncore_init_fun snb_uncore_init __initconst = {
+static const struct uncore_plat_init snb_uncore_init __initconst = {
 	.cpu_init = snb_uncore_cpu_init,
 	.pci_init = snb_uncore_pci_init,
 };
 
-static const struct intel_uncore_init_fun ivb_uncore_init __initconst = {
+static const struct uncore_plat_init ivb_uncore_init __initconst = {
 	.cpu_init = snb_uncore_cpu_init,
 	.pci_init = ivb_uncore_pci_init,
 };
 
-static const struct intel_uncore_init_fun hsw_uncore_init __initconst = {
+static const struct uncore_plat_init hsw_uncore_init __initconst = {
 	.cpu_init = snb_uncore_cpu_init,
 	.pci_init = hsw_uncore_pci_init,
 };
 
-static const struct intel_uncore_init_fun bdw_uncore_init __initconst = {
+static const struct uncore_plat_init bdw_uncore_init __initconst = {
 	.cpu_init = snb_uncore_cpu_init,
 	.pci_init = bdw_uncore_pci_init,
 };
 
-static const struct intel_uncore_init_fun snbep_uncore_init __initconst = {
+static const struct uncore_plat_init snbep_uncore_init __initconst = {
 	.cpu_init = snbep_uncore_cpu_init,
 	.pci_init = snbep_uncore_pci_init,
 };
 
-static const struct intel_uncore_init_fun nhmex_uncore_init __initconst = {
+static const struct uncore_plat_init nhmex_uncore_init __initconst = {
 	.cpu_init = nhmex_uncore_cpu_init,
 };
 
-static const struct intel_uncore_init_fun ivbep_uncore_init __initconst = {
+static const struct uncore_plat_init ivbep_uncore_init __initconst = {
 	.cpu_init = ivbep_uncore_cpu_init,
 	.pci_init = ivbep_uncore_pci_init,
 };
 
-static const struct intel_uncore_init_fun hswep_uncore_init __initconst = {
+static const struct uncore_plat_init hswep_uncore_init __initconst = {
 	.cpu_init = hswep_uncore_cpu_init,
 	.pci_init = hswep_uncore_pci_init,
 };
 
-static const struct intel_uncore_init_fun bdx_uncore_init __initconst = {
+static const struct uncore_plat_init bdx_uncore_init __initconst = {
 	.cpu_init = bdx_uncore_cpu_init,
 	.pci_init = bdx_uncore_pci_init,
 };
 
-static const struct intel_uncore_init_fun knl_uncore_init __initconst = {
+static const struct uncore_plat_init knl_uncore_init __initconst = {
 	.cpu_init = knl_uncore_cpu_init,
 	.pci_init = knl_uncore_pci_init,
 };
 
-static const struct intel_uncore_init_fun skl_uncore_init __initconst = {
+static const struct uncore_plat_init skl_uncore_init __initconst = {
 	.cpu_init = skl_uncore_cpu_init,
 	.pci_init = skl_uncore_pci_init,
 };
 
-static const struct intel_uncore_init_fun skx_uncore_init __initconst = {
+static const struct uncore_plat_init skx_uncore_init __initconst = {
 	.cpu_init = skx_uncore_cpu_init,
 	.pci_init = skx_uncore_pci_init,
 };
 
-static const struct intel_uncore_init_fun icl_uncore_init __initconst = {
+static const struct uncore_plat_init icl_uncore_init __initconst = {
 	.cpu_init = icl_uncore_cpu_init,
 	.pci_init = skl_uncore_pci_init,
 };
 
-static const struct intel_uncore_init_fun tgl_uncore_init __initconst = {
+static const struct uncore_plat_init tgl_uncore_init __initconst = {
 	.cpu_init = tgl_uncore_cpu_init,
 	.mmio_init = tgl_uncore_mmio_init,
 };
 
-static const struct intel_uncore_init_fun tgl_l_uncore_init __initconst = {
+static const struct uncore_plat_init tgl_l_uncore_init __initconst = {
 	.cpu_init = tgl_uncore_cpu_init,
 	.mmio_init = tgl_l_uncore_mmio_init,
 };
 
-static const struct intel_uncore_init_fun rkl_uncore_init __initconst = {
+static const struct uncore_plat_init rkl_uncore_init __initconst = {
 	.cpu_init = tgl_uncore_cpu_init,
 	.pci_init = skl_uncore_pci_init,
 };
 
-static const struct intel_uncore_init_fun adl_uncore_init __initconst = {
+static const struct uncore_plat_init adl_uncore_init __initconst = {
 	.cpu_init = adl_uncore_cpu_init,
 	.mmio_init = adl_uncore_mmio_init,
 };
 
-static const struct intel_uncore_init_fun icx_uncore_init __initconst = {
+static const struct uncore_plat_init mtl_uncore_init __initconst = {
+	.cpu_init = mtl_uncore_cpu_init,
+	.mmio_init = adl_uncore_mmio_init,
+};
+
+static const struct uncore_plat_init lnl_uncore_init __initconst = {
+	.cpu_init = lnl_uncore_cpu_init,
+	.mmio_init = lnl_uncore_mmio_init,
+};
+
+static const struct uncore_plat_init ptl_uncore_init __initconst = {
+	.cpu_init = ptl_uncore_cpu_init,
+	.mmio_init = ptl_uncore_mmio_init,
+	.domain[0].discovery_base = UNCORE_DISCOVERY_MSR,
+	.domain[0].global_init = uncore_mmio_global_init,
+};
+
+static const struct uncore_plat_init nvl_uncore_init __initconst = {
+	.cpu_init = nvl_uncore_cpu_init,
+	.mmio_init = ptl_uncore_mmio_init,
+	.domain[0].discovery_base = PACKAGE_UNCORE_DISCOVERY_MSR,
+	.domain[0].global_init = uncore_mmio_global_init,
+};
+
+static const struct uncore_plat_init icx_uncore_init __initconst = {
 	.cpu_init = icx_uncore_cpu_init,
 	.pci_init = icx_uncore_pci_init,
 	.mmio_init = icx_uncore_mmio_init,
 };
 
-static const struct intel_uncore_init_fun snr_uncore_init __initconst = {
+static const struct uncore_plat_init snr_uncore_init __initconst = {
 	.cpu_init = snr_uncore_cpu_init,
 	.pci_init = snr_uncore_pci_init,
 	.mmio_init = snr_uncore_mmio_init,
 };
 
-static const struct intel_uncore_init_fun spr_uncore_init __initconst = {
+static const struct uncore_plat_init spr_uncore_init __initconst = {
 	.cpu_init = spr_uncore_cpu_init,
 	.pci_init = spr_uncore_pci_init,
 	.mmio_init = spr_uncore_mmio_init,
-	.use_discovery = true,
+	.domain[0].base_is_pci = true,
+	.domain[0].discovery_base = UNCORE_DISCOVERY_TABLE_DEVICE,
+	.domain[0].units_ignore = spr_uncore_units_ignore,
 };
 
-static const struct intel_uncore_init_fun generic_uncore_init __initconst = {
+static const struct uncore_plat_init gnr_uncore_init __initconst = {
+	.cpu_init = gnr_uncore_cpu_init,
+	.pci_init = gnr_uncore_pci_init,
+	.mmio_init = gnr_uncore_mmio_init,
+	.domain[0].base_is_pci = true,
+	.domain[0].discovery_base = UNCORE_DISCOVERY_TABLE_DEVICE,
+	.domain[0].units_ignore = gnr_uncore_units_ignore,
+};
+
+static const struct uncore_plat_init dmr_uncore_init __initconst = {
+	.pci_init = dmr_uncore_pci_init,
+	.mmio_init = dmr_uncore_mmio_init,
+	.domain[0].base_is_pci = true,
+	.domain[0].discovery_base = DMR_UNCORE_DISCOVERY_TABLE_DEVICE,
+	.domain[0].units_ignore = dmr_uncore_imh_units_ignore,
+	.domain[1].discovery_base = CBB_UNCORE_DISCOVERY_MSR,
+	.domain[1].units_ignore = dmr_uncore_cbb_units_ignore,
+	.domain[1].global_init = uncore_mmio_global_init,
+};
+
+static const struct uncore_plat_init generic_uncore_init __initconst = {
 	.cpu_init = intel_uncore_generic_uncore_cpu_init,
 	.pci_init = intel_uncore_generic_uncore_pci_init,
 	.mmio_init = intel_uncore_generic_uncore_mmio_init,
+	.domain[0].base_is_pci = true,
+	.domain[0].discovery_base = PCI_ANY_ID,
+	.domain[1].discovery_base = UNCORE_DISCOVERY_MSR,
 };
 
 static const struct x86_cpu_id intel_uncore_match[] __initconst = {
-	X86_MATCH_INTEL_FAM6_MODEL(NEHALEM_EP,		&nhm_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(NEHALEM,		&nhm_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(WESTMERE,		&nhm_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(WESTMERE_EP,		&nhm_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(SANDYBRIDGE,		&snb_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(IVYBRIDGE,		&ivb_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(HASWELL,		&hsw_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(HASWELL_L,		&hsw_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(HASWELL_G,		&hsw_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(BROADWELL,		&bdw_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(BROADWELL_G,		&bdw_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(SANDYBRIDGE_X,	&snbep_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(NEHALEM_EX,		&nhmex_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(WESTMERE_EX,		&nhmex_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(IVYBRIDGE_X,		&ivbep_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(HASWELL_X,		&hswep_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(BROADWELL_X,		&bdx_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(BROADWELL_D,		&bdx_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(XEON_PHI_KNL,	&knl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(XEON_PHI_KNM,	&knl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(SKYLAKE,		&skl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(SKYLAKE_L,		&skl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(SKYLAKE_X,		&skx_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(KABYLAKE_L,		&skl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(KABYLAKE,		&skl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(COMETLAKE_L,		&skl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(COMETLAKE,		&skl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(ICELAKE_L,		&icl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(ICELAKE_NNPI,	&icl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(ICELAKE,		&icl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(ICELAKE_D,		&icx_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(ICELAKE_X,		&icx_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(TIGERLAKE_L,		&tgl_l_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(TIGERLAKE,		&tgl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(ROCKETLAKE,		&rkl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(ALDERLAKE,		&adl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(ALDERLAKE_L,		&adl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(ALDERLAKE_N,		&adl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(RAPTORLAKE,		&adl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(RAPTORLAKE_P,	&adl_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(SAPPHIRERAPIDS_X,	&spr_uncore_init),
-	X86_MATCH_INTEL_FAM6_MODEL(ATOM_TREMONT_D,	&snr_uncore_init),
+	X86_MATCH_VFM(INTEL_NEHALEM_EP,		&nhm_uncore_init),
+	X86_MATCH_VFM(INTEL_NEHALEM,		&nhm_uncore_init),
+	X86_MATCH_VFM(INTEL_WESTMERE,		&nhm_uncore_init),
+	X86_MATCH_VFM(INTEL_WESTMERE_EP,	&nhm_uncore_init),
+	X86_MATCH_VFM(INTEL_SANDYBRIDGE,	&snb_uncore_init),
+	X86_MATCH_VFM(INTEL_IVYBRIDGE,		&ivb_uncore_init),
+	X86_MATCH_VFM(INTEL_HASWELL,		&hsw_uncore_init),
+	X86_MATCH_VFM(INTEL_HASWELL_L,		&hsw_uncore_init),
+	X86_MATCH_VFM(INTEL_HASWELL_G,		&hsw_uncore_init),
+	X86_MATCH_VFM(INTEL_BROADWELL,		&bdw_uncore_init),
+	X86_MATCH_VFM(INTEL_BROADWELL_G,	&bdw_uncore_init),
+	X86_MATCH_VFM(INTEL_SANDYBRIDGE_X,	&snbep_uncore_init),
+	X86_MATCH_VFM(INTEL_NEHALEM_EX,		&nhmex_uncore_init),
+	X86_MATCH_VFM(INTEL_WESTMERE_EX,	&nhmex_uncore_init),
+	X86_MATCH_VFM(INTEL_IVYBRIDGE_X,	&ivbep_uncore_init),
+	X86_MATCH_VFM(INTEL_HASWELL_X,		&hswep_uncore_init),
+	X86_MATCH_VFM(INTEL_BROADWELL_X,	&bdx_uncore_init),
+	X86_MATCH_VFM(INTEL_BROADWELL_D,	&bdx_uncore_init),
+	X86_MATCH_VFM(INTEL_XEON_PHI_KNL,	&knl_uncore_init),
+	X86_MATCH_VFM(INTEL_XEON_PHI_KNM,	&knl_uncore_init),
+	X86_MATCH_VFM(INTEL_SKYLAKE,		&skl_uncore_init),
+	X86_MATCH_VFM(INTEL_SKYLAKE_L,		&skl_uncore_init),
+	X86_MATCH_VFM(INTEL_SKYLAKE_X,		&skx_uncore_init),
+	X86_MATCH_VFM(INTEL_KABYLAKE_L,		&skl_uncore_init),
+	X86_MATCH_VFM(INTEL_KABYLAKE,		&skl_uncore_init),
+	X86_MATCH_VFM(INTEL_COMETLAKE_L,	&skl_uncore_init),
+	X86_MATCH_VFM(INTEL_COMETLAKE,		&skl_uncore_init),
+	X86_MATCH_VFM(INTEL_ICELAKE_L,		&icl_uncore_init),
+	X86_MATCH_VFM(INTEL_ICELAKE_NNPI,	&icl_uncore_init),
+	X86_MATCH_VFM(INTEL_ICELAKE,		&icl_uncore_init),
+	X86_MATCH_VFM(INTEL_ICELAKE_D,		&icx_uncore_init),
+	X86_MATCH_VFM(INTEL_ICELAKE_X,		&icx_uncore_init),
+	X86_MATCH_VFM(INTEL_TIGERLAKE_L,	&tgl_l_uncore_init),
+	X86_MATCH_VFM(INTEL_TIGERLAKE,		&tgl_uncore_init),
+	X86_MATCH_VFM(INTEL_ROCKETLAKE,		&rkl_uncore_init),
+	X86_MATCH_VFM(INTEL_ALDERLAKE,		&adl_uncore_init),
+	X86_MATCH_VFM(INTEL_ALDERLAKE_L,	&adl_uncore_init),
+	X86_MATCH_VFM(INTEL_RAPTORLAKE,		&adl_uncore_init),
+	X86_MATCH_VFM(INTEL_RAPTORLAKE_P,	&adl_uncore_init),
+	X86_MATCH_VFM(INTEL_RAPTORLAKE_S,	&adl_uncore_init),
+	X86_MATCH_VFM(INTEL_METEORLAKE,		&mtl_uncore_init),
+	X86_MATCH_VFM(INTEL_METEORLAKE_L,	&mtl_uncore_init),
+	X86_MATCH_VFM(INTEL_ARROWLAKE,		&mtl_uncore_init),
+	X86_MATCH_VFM(INTEL_ARROWLAKE_U,	&mtl_uncore_init),
+	X86_MATCH_VFM(INTEL_ARROWLAKE_H,	&mtl_uncore_init),
+	X86_MATCH_VFM(INTEL_LUNARLAKE_M,	&lnl_uncore_init),
+	X86_MATCH_VFM(INTEL_PANTHERLAKE_L,	&ptl_uncore_init),
+	X86_MATCH_VFM(INTEL_WILDCATLAKE_L,	&ptl_uncore_init),
+	X86_MATCH_VFM(INTEL_NOVALAKE,		&nvl_uncore_init),
+	X86_MATCH_VFM(INTEL_NOVALAKE_L,		&nvl_uncore_init),
+	X86_MATCH_VFM(INTEL_SAPPHIRERAPIDS_X,	&spr_uncore_init),
+	X86_MATCH_VFM(INTEL_EMERALDRAPIDS_X,	&spr_uncore_init),
+	X86_MATCH_VFM(INTEL_GRANITERAPIDS_X,	&gnr_uncore_init),
+	X86_MATCH_VFM(INTEL_GRANITERAPIDS_D,	&gnr_uncore_init),
+	X86_MATCH_VFM(INTEL_ATOM_TREMONT_D,	&snr_uncore_init),
+	X86_MATCH_VFM(INTEL_ATOM_GRACEMONT,	&adl_uncore_init),
+	X86_MATCH_VFM(INTEL_ATOM_CRESTMONT_X,	&gnr_uncore_init),
+	X86_MATCH_VFM(INTEL_ATOM_CRESTMONT,	&gnr_uncore_init),
+	X86_MATCH_VFM(INTEL_ATOM_DARKMONT_X,	&gnr_uncore_init),
+	X86_MATCH_VFM(INTEL_DIAMONDRAPIDS_X,	&dmr_uncore_init),
 	{},
 };
 MODULE_DEVICE_TABLE(x86cpu, intel_uncore_match);
 
+static bool uncore_use_discovery(struct uncore_plat_init *config)
+{
+	for (int i = 0; i < UNCORE_DISCOVERY_DOMAINS; i++) {
+		if (config->domain[i].discovery_base)
+			return true;
+	}
+
+	return false;
+}
+
 static int __init intel_uncore_init(void)
 {
 	const struct x86_cpu_id *id;
-	struct intel_uncore_init_fun *uncore_init;
+	struct uncore_plat_init *uncore_init;
 	int pret = 0, cret = 0, mret = 0, ret;
 
 	if (boot_cpu_has(X86_FEATURE_HYPERVISOR))
 		return -ENODEV;
 
 	__uncore_max_dies =
-		topology_max_packages() * topology_max_die_per_package();
+		topology_max_packages() * topology_max_dies_per_package();
 
 	id = x86_match_cpu(intel_uncore_match);
 	if (!id) {
-		if (!uncore_no_discover && intel_uncore_has_discovery_tables())
-			uncore_init = (struct intel_uncore_init_fun *)&generic_uncore_init;
-		else
+		uncore_init = (struct uncore_plat_init *)&generic_uncore_init;
+		if (uncore_no_discover || !uncore_discovery(uncore_init))
 			return -ENODEV;
 	} else {
-		uncore_init = (struct intel_uncore_init_fun *)id->driver_data;
-		if (uncore_no_discover && uncore_init->use_discovery)
+		uncore_init = (struct uncore_plat_init *)id->driver_data;
+		if (uncore_no_discover && uncore_use_discovery(uncore_init))
 			return -ENODEV;
-		if (uncore_init->use_discovery && !intel_uncore_has_discovery_tables())
+		if (uncore_use_discovery(uncore_init) &&
+		    !uncore_discovery(uncore_init))
 			return -ENODEV;
 	}
 

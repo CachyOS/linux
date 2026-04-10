@@ -543,7 +543,7 @@ static struct pnv_vas_window *vas_window_alloc(struct vas_instance *vinst)
 	if (winid < 0)
 		return ERR_PTR(winid);
 
-	window = kzalloc(sizeof(*window), GFP_KERNEL);
+	window = kzalloc_obj(*window);
 	if (!window)
 		goto out_free;
 
@@ -1059,7 +1059,7 @@ struct vas_window *vas_tx_win_open(int vasid, enum vas_cop_type cop,
 		}
 	} else {
 		/*
-		 * Interrupt hanlder or fault window setup failed. Means
+		 * Interrupt handler or fault window setup failed. Means
 		 * NX can not generate fault for page fault. So not
 		 * opening for user space tx window.
 		 */
@@ -1310,8 +1310,8 @@ int vas_win_close(struct vas_window *vwin)
 	/* if send window, drop reference to matching receive window */
 	if (window->tx_win) {
 		if (window->user_win) {
-			put_vas_user_win_ref(&vwin->task_ref);
 			mm_context_remove_vas_window(vwin->task_ref.mm);
+			put_vas_user_win_ref(&vwin->task_ref);
 		}
 		put_rx_win(window->rxwin);
 	}

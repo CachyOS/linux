@@ -12,7 +12,7 @@
 #include <linux/fs.h>
 #include <linux/blkdev.h>
 #include <linux/cdrom.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "hfsplus_fs.h"
 #include "hfsplus_raw.h"
@@ -30,8 +30,7 @@ struct hfsplus_wd {
  * @sector: block to read or write, for blocks of HFSPLUS_SECTOR_SIZE bytes
  * @buf: buffer for I/O
  * @data: output pointer for location of requested data
- * @op: direction of I/O
- * @op_flags: request op flags
+ * @opf: I/O operation type and flags
  *
  * The unit of I/O is hfsplus_min_io_size(sb), which may be bigger than
  * HFSPLUS_SECTOR_SIZE, and @buf must be sized accordingly. On reads
@@ -43,50 +42,25 @@ struct hfsplus_wd {
  * that starts at the rounded-down address. As long as the data was
  * read using hfsplus_submit_bio() and the same buffer is used things
  * will work correctly.
+ *
+ * Returns: %0 on success else -errno code
  */
 int hfsplus_submit_bio(struct super_block *sb, sector_t sector,
-		       void *buf, void **data, int op, int op_flags)
+		       void *buf, void **data, blk_opf_t opf)
 {
-	struct bio *bio;
-	int ret = 0;
-	u64 io_size;
-	loff_t start;
-	int offset;
+	u64 io_size = hfsplus_min_io_size(sb);
+	loff_t start = (loff_t)sector << HFSPLUS_SECTOR_SHIFT;
+	int offset = start & (io_size - 1);
 
-	/*
-	 * Align sector to hardware sector size and find offset. We
-	 * assume that io_size is a power of two, which _should_
-	 * be true.
-	 */
-	io_size = hfsplus_min_io_size(sb);
-	start = (loff_t)sector << HFSPLUS_SECTOR_SHIFT;
-	offset = start & (io_size - 1);
-	sector &= ~((io_size >> HFSPLUS_SECTOR_SHIFT) - 1);
-
-	bio = bio_alloc(sb->s_bdev, 1, op | op_flags, GFP_NOIO);
-	bio->bi_iter.bi_sector = sector;
-
-	if (op != WRITE && data)
+	if ((opf & REQ_OP_MASK) != REQ_OP_WRITE && data)
 		*data = (u8 *)buf + offset;
 
-	while (io_size > 0) {
-		unsigned int page_offset = offset_in_page(buf);
-		unsigned int len = min_t(unsigned int, PAGE_SIZE - page_offset,
-					 io_size);
-
-		ret = bio_add_page(bio, virt_to_page(buf), len, page_offset);
-		if (ret != len) {
-			ret = -EIO;
-			goto out;
-		}
-		io_size -= len;
-		buf = (u8 *)buf + len;
-	}
-
-	ret = submit_bio_wait(bio);
-out:
-	bio_put(bio);
-	return ret < 0 ? ret : 0;
+	/*
+	 * Align sector to hardware sector size and find offset. We assume that
+	 * io_size is a power of two, which _should_ be true.
+	 */
+	sector &= ~((io_size >> HFSPLUS_SECTOR_SHIFT) - 1);
+	return bdev_rw_virt(sb->s_bdev, sector, buf, io_size, opf);
 }
 
 static int hfsplus_read_mdb(void *bufptr, struct hfsplus_wd *wd)
@@ -170,6 +144,8 @@ int hfsplus_read_wrapper(struct super_block *sb)
 	if (!blocksize)
 		goto out;
 
+	sbi->min_io_size = blocksize;
+
 	if (hfsplus_get_last_session(sb, &part_start, &part_size))
 		goto out;
 
@@ -184,7 +160,7 @@ int hfsplus_read_wrapper(struct super_block *sb)
 reread:
 	error = hfsplus_submit_bio(sb, part_start + HFSPLUS_VOLHEAD_SECTOR,
 				   sbi->s_vhdr_buf, (void **)&sbi->s_vhdr,
-				   REQ_OP_READ, 0);
+				   REQ_OP_READ);
 	if (error)
 		goto out_free_backup_vhdr;
 
@@ -216,8 +192,7 @@ reread:
 
 	error = hfsplus_submit_bio(sb, part_start + part_size - 2,
 				   sbi->s_backup_vhdr_buf,
-				   (void **)&sbi->s_backup_vhdr, REQ_OP_READ,
-				   0);
+				   (void **)&sbi->s_backup_vhdr, REQ_OP_READ);
 	if (error)
 		goto out_free_backup_vhdr;
 

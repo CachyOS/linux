@@ -50,7 +50,7 @@ struct ad5272_data {
 	struct i2c_client       *client;
 	struct mutex            lock;
 	const struct ad5272_cfg *cfg;
-	u8                      buf[2] ____cacheline_aligned;
+	u8                      buf[2] __aligned(IIO_DMA_MINALIGN);
 };
 
 static const struct iio_chan_spec ad5272_channel = {
@@ -158,9 +158,9 @@ static int ad5272_reset(struct ad5272_data *data)
 	return 0;
 }
 
-static int ad5272_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int ad5272_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct device *dev = &client->dev;
 	struct iio_dev *indio_dev;
 	struct ad5272_data *data;
@@ -199,7 +199,7 @@ static const struct of_device_id ad5272_dt_ids[] = {
 	{ .compatible = "adi,ad5272-100", .data = (void *)AD5272_100 },
 	{ .compatible = "adi,ad5274-020", .data = (void *)AD5274_020 },
 	{ .compatible = "adi,ad5274-100", .data = (void *)AD5274_100 },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ad5272_dt_ids);
 
@@ -209,7 +209,7 @@ static const struct i2c_device_id ad5272_id[] = {
 	{ "ad5272-100", AD5272_100 },
 	{ "ad5274-020", AD5274_020 },
 	{ "ad5274-100", AD5274_100 },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ad5272_id);
 

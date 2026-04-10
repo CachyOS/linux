@@ -10,9 +10,6 @@
  * ThrustMaster DirectConnect (BSP) joystick family driver for Linux
  */
 
-/*
- */
-
 #include <linux/delay.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
@@ -267,7 +264,7 @@ static int tmdc_setup_port(struct tmdc *tmdc, int idx, unsigned char *data)
 	int i, j, b = 0;
 	int err;
 
-	tmdc->port[idx] = port = kzalloc(sizeof (struct tmdc_port), GFP_KERNEL);
+	tmdc->port[idx] = port = kzalloc_obj(struct tmdc_port);
 	input_dev = input_allocate_device();
 	if (!port || !input_dev) {
 		err = -ENOMEM;
@@ -351,7 +348,8 @@ static int tmdc_connect(struct gameport *gameport, struct gameport_driver *drv)
 	int i;
 	int err;
 
-	if (!(tmdc = kzalloc(sizeof(struct tmdc), GFP_KERNEL)))
+	tmdc = kzalloc_obj(*tmdc);
+	if (!tmdc)
 		return -ENOMEM;
 
 	tmdc->gameport = gameport;

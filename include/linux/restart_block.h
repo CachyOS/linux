@@ -6,9 +6,10 @@
 #define __LINUX_RESTART_BLOCK_H
 
 #include <linux/compiler.h>
-#include <linux/types.h>
 #include <linux/time64.h>
+#include <linux/types.h>
 
+struct __kernel_timespec;
 struct timespec;
 struct old_timespec32;
 struct pollfd;
@@ -26,13 +27,13 @@ struct restart_block {
 	unsigned long arch_data;
 	long (*fn)(struct restart_block *);
 	union {
-		/* For futex_wait and futex_wait_requeue_pi */
+		/* For futex_wait() */
 		struct {
 			u32 __user *uaddr;
 			u32 val;
 			u32 flags;
 			u32 bitset;
-			u64 time;
+			ktime_t time;
 			u32 __user *uaddr2;
 		} futex;
 		/* For nanosleep */
@@ -43,15 +44,14 @@ struct restart_block {
 				struct __kernel_timespec __user *rmtp;
 				struct old_timespec32 __user *compat_rmtp;
 			};
-			u64 expires;
+			ktime_t expires;
 		} nanosleep;
 		/* For poll */
 		struct {
 			struct pollfd __user *ufds;
 			int nfds;
 			int has_timeout;
-			unsigned long tv_sec;
-			unsigned long tv_nsec;
+			struct timespec64 end_time;
 		} poll;
 	};
 };

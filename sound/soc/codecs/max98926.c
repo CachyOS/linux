@@ -496,7 +496,6 @@ static const struct snd_soc_component_driver soc_component_dev_max98926 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config max98926_regmap = {
@@ -529,7 +528,8 @@ static int max98926_i2c_probe(struct i2c_client *i2c)
 				"Failed to allocate regmap: %d\n", ret);
 		goto err_out;
 	}
-	if (of_property_read_bool(i2c->dev.of_node, "interleave-mode"))
+	if (of_property_read_bool(i2c->dev.of_node, "maxim,interleave-mode") ||
+	    of_property_read_bool(i2c->dev.of_node, "interleave-mode"))
 		max98926->interleave_mode = true;
 
 	if (!of_property_read_u32(i2c->dev.of_node, "vmon-slot-no", &value)) {
@@ -565,7 +565,7 @@ err_out:
 }
 
 static const struct i2c_device_id max98926_i2c_id[] = {
-	{ "max98926", 0 },
+	{ "max98926" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max98926_i2c_id);
@@ -583,7 +583,7 @@ static struct i2c_driver max98926_i2c_driver = {
 		.name = "max98926",
 		.of_match_table = of_match_ptr(max98926_of_match),
 	},
-	.probe_new = max98926_i2c_probe,
+	.probe = max98926_i2c_probe,
 	.id_table = max98926_i2c_id,
 };
 

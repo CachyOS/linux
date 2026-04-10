@@ -52,7 +52,7 @@ static int rzn1_wdt_ping(struct watchdog_device *w)
 {
 	struct rzn1_watchdog *wdt = watchdog_get_drvdata(w);
 
-	/* Any value retrigggers the watchdog */
+	/* Any value retriggers the watchdog */
 	writel(0, wdt->base + RZN1_WDT_RETRIGGER);
 
 	return 0;
@@ -98,11 +98,6 @@ static const struct watchdog_ops rzn1_wdt_ops = {
 	.ping = rzn1_wdt_ping,
 };
 
-static void rzn1_wdt_clk_disable_unprepare(void *data)
-{
-	clk_disable_unprepare(data);
-}
-
 static int rzn1_wdt_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -132,22 +127,11 @@ static int rzn1_wdt_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	clk = devm_clk_get(dev, NULL);
+	clk = devm_clk_get_enabled(dev, NULL);
 	if (IS_ERR(clk)) {
 		dev_err(dev, "failed to get the clock\n");
 		return PTR_ERR(clk);
 	}
-
-	ret = clk_prepare_enable(clk);
-	if (ret) {
-		dev_err(dev, "failed to prepare/enable the clock\n");
-		return ret;
-	}
-
-	ret = devm_add_action_or_reset(dev, rzn1_wdt_clk_disable_unprepare,
-				       clk);
-	if (ret)
-		return ret;
 
 	clk_rate = clk_get_rate(clk);
 	if (!clk_rate) {
@@ -156,9 +140,9 @@ static int rzn1_wdt_probe(struct platform_device *pdev)
 	}
 
 	wdt->clk_rate_khz = clk_rate / 1000;
-	wdt->wdtdev.info = &rzn1_wdt_info,
-	wdt->wdtdev.ops = &rzn1_wdt_ops,
-	wdt->wdtdev.status = WATCHDOG_NOWAYOUT_INIT_STATUS,
+	wdt->wdtdev.info = &rzn1_wdt_info;
+	wdt->wdtdev.ops = &rzn1_wdt_ops;
+	wdt->wdtdev.status = WATCHDOG_NOWAYOUT_INIT_STATUS;
 	wdt->wdtdev.parent = dev;
 	/*
 	 * The period of the watchdog cannot be changed once set

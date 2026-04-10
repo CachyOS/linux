@@ -50,7 +50,7 @@ static int detach_port(char *port)
 
 	ret = usbip_vhci_driver_open();
 	if (ret < 0) {
-		err("open vhci_driver");
+		err("open vhci_driver (is vhci_hcd loaded?)");
 		return -1;
 	}
 
@@ -68,6 +68,7 @@ static int detach_port(char *port)
 	}
 
 	if (!found) {
+		ret = -1;
 		err("Invalid port %s > maxports %d",
 			port, vhci_driver->nports);
 		goto call_driver_close;

@@ -73,7 +73,7 @@ int __init efi_alloc_page_tables(void)
 	gfp_t gfp_mask;
 
 	gfp_mask = GFP_KERNEL | __GFP_ZERO;
-	efi_pgd = (pgd_t *)__get_free_pages(gfp_mask, PGD_ALLOCATION_ORDER);
+	efi_pgd = (pgd_t *)__get_free_pages(gfp_mask, pgd_allocation_order());
 	if (!efi_pgd)
 		goto fail;
 
@@ -89,6 +89,7 @@ int __init efi_alloc_page_tables(void)
 	efi_mm.pgd = efi_pgd;
 	mm_init_cpumask(&efi_mm);
 	init_new_context(NULL, &efi_mm);
+	set_notrack_mm(&efi_mm);
 
 	return 0;
 
@@ -96,7 +97,7 @@ free_p4d:
 	if (pgtable_l5_enabled())
 		free_page((unsigned long)pgd_page_vaddr(*pgd));
 free_pgd:
-	free_pages((unsigned long)efi_pgd, PGD_ALLOCATION_ORDER);
+	free_pages((unsigned long)efi_pgd, pgd_allocation_order());
 fail:
 	return -ENOMEM;
 }
@@ -176,7 +177,8 @@ virt_to_phys_or_null_size(void *va, unsigned long size)
 
 int __init efi_setup_page_tables(unsigned long pa_memmap, unsigned num_pages)
 {
-	unsigned long pfn, text, pf, rodata;
+	extern const u8 __efi64_thunk_ret_tramp[];
+	unsigned long pfn, text, pf, rodata, tramp;
 	struct page *page;
 	unsigned npages;
 	pgd_t *pgd = efi_mm.pgd;
@@ -214,8 +216,8 @@ int __init efi_setup_page_tables(unsigned long pa_memmap, unsigned num_pages)
 	 * When SEV-ES is active, the GHCB as set by the kernel will be used
 	 * by firmware. Create a 1:1 unencrypted mapping for each GHCB.
 	 */
-	if (sev_es_efi_map_ghcbs(pgd)) {
-		pr_err("Failed to create 1:1 mapping for the GHCBs!\n");
+	if (sev_es_efi_map_ghcbs_cas(pgd)) {
+		pr_err("Failed to create 1:1 mapping for the GHCBs and CAs!\n");
 		return 1;
 	}
 
@@ -238,11 +240,9 @@ int __init efi_setup_page_tables(unsigned long pa_memmap, unsigned num_pages)
 
 	npages = (_etext - _text) >> PAGE_SHIFT;
 	text = __pa(_text);
-	pfn = text >> PAGE_SHIFT;
 
-	pf = _PAGE_ENC;
-	if (kernel_map_pages_in_pgd(pgd, pfn, text, npages, pf)) {
-		pr_err("Failed to map kernel text 1:1\n");
+	if (kernel_unmap_pages_in_pgd(pgd, text, npages)) {
+		pr_err("Failed to unmap kernel text 1:1 mapping\n");
 		return 1;
 	}
 
@@ -253,6 +253,15 @@ int __init efi_setup_page_tables(unsigned long pa_memmap, unsigned num_pages)
 	pf = _PAGE_NX | _PAGE_ENC;
 	if (kernel_map_pages_in_pgd(pgd, pfn, rodata, npages, pf)) {
 		pr_err("Failed to map kernel rodata 1:1\n");
+		return 1;
+	}
+
+	tramp = __pa(__efi64_thunk_ret_tramp);
+	pfn = tramp >> PAGE_SHIFT;
+
+	pf = _PAGE_ENC;
+	if (kernel_map_pages_in_pgd(pgd, pfn, tramp, 1, pf)) {
+		pr_err("Failed to map mixed mode return trampoline\n");
 		return 1;
 	}
 
@@ -381,9 +390,14 @@ static int __init efi_update_mappings(efi_memory_desc_t *md, unsigned long pf)
 	return err1 || err2;
 }
 
-static int __init efi_update_mem_attr(struct mm_struct *mm, efi_memory_desc_t *md)
+bool efi_disable_ibt_for_runtime __ro_after_init = true;
+
+static int __init efi_update_mem_attr(struct mm_struct *mm, efi_memory_desc_t *md,
+				      bool has_ibt)
 {
 	unsigned long pf = 0;
+
+	efi_disable_ibt_for_runtime |= !has_ibt;
 
 	if (md->attribute & EFI_MEMORY_XP)
 		pf |= _PAGE_NX;
@@ -399,50 +413,9 @@ static int __init efi_update_mem_attr(struct mm_struct *mm, efi_memory_desc_t *m
 
 void __init efi_runtime_update_mappings(void)
 {
-	efi_memory_desc_t *md;
-
-	/*
-	 * Use the EFI Memory Attribute Table for mapping permissions if it
-	 * exists, since it is intended to supersede EFI_PROPERTIES_TABLE.
-	 */
 	if (efi_enabled(EFI_MEM_ATTR)) {
+		efi_disable_ibt_for_runtime = false;
 		efi_memattr_apply_permissions(NULL, efi_update_mem_attr);
-		return;
-	}
-
-	/*
-	 * EFI_MEMORY_ATTRIBUTES_TABLE is intended to replace
-	 * EFI_PROPERTIES_TABLE. So, use EFI_PROPERTIES_TABLE to update
-	 * permissions only if EFI_MEMORY_ATTRIBUTES_TABLE is not
-	 * published by the firmware. Even if we find a buggy implementation of
-	 * EFI_MEMORY_ATTRIBUTES_TABLE, don't fall back to
-	 * EFI_PROPERTIES_TABLE, because of the same reason.
-	 */
-
-	if (!efi_enabled(EFI_NX_PE_DATA))
-		return;
-
-	for_each_efi_memory_desc(md) {
-		unsigned long pf = 0;
-
-		if (!(md->attribute & EFI_MEMORY_RUNTIME))
-			continue;
-
-		if (!(md->attribute & EFI_MEMORY_WB))
-			pf |= _PAGE_PCD;
-
-		if ((md->attribute & EFI_MEMORY_XP) ||
-			(md->type == EFI_RUNTIME_SERVICES_DATA))
-			pf |= _PAGE_NX;
-
-		if (!(md->attribute & EFI_MEMORY_RO) &&
-			(md->type != EFI_RUNTIME_SERVICES_CODE))
-			pf |= _PAGE_RW;
-
-		if (cc_platform_has(CC_ATTR_GUEST_MEM_ENCRYPT))
-			pf |= _PAGE_ENC;
-
-		efi_update_mappings(md, pf);
 	}
 }
 
@@ -460,17 +433,29 @@ void __init efi_dump_pagetable(void)
  * can not change under us.
  * It should be ensured that there are no concurrent calls to this function.
  */
-void efi_enter_mm(void)
+static void efi_enter_mm(void)
 {
-	efi_prev_mm = current->active_mm;
-	current->active_mm = &efi_mm;
-	switch_mm(efi_prev_mm, &efi_mm, NULL);
+	efi_prev_mm = use_temporary_mm(&efi_mm);
 }
 
-void efi_leave_mm(void)
+static void efi_leave_mm(void)
 {
-	current->active_mm = efi_prev_mm;
-	switch_mm(&efi_mm, efi_prev_mm, NULL);
+	unuse_temporary_mm(efi_prev_mm);
+}
+
+void arch_efi_call_virt_setup(void)
+{
+	efi_sync_low_kernel_mappings();
+	efi_fpu_begin();
+	firmware_restrict_branch_speculation_start();
+	efi_enter_mm();
+}
+
+void arch_efi_call_virt_teardown(void)
+{
+	efi_leave_mm();
+	firmware_restrict_branch_speculation_end();
+	efi_fpu_end();
 }
 
 static DEFINE_SPINLOCK(efi_runtime_lock);
@@ -839,9 +824,9 @@ efi_set_virtual_address_map(unsigned long memory_map_size,
 
 	/* Disable interrupts around EFI calls: */
 	local_irq_save(flags);
-	status = efi_call(efi.runtime->set_virtual_address_map,
-			  memory_map_size, descriptor_size,
-			  descriptor_version, virtual_map);
+	status = arch_efi_call_virt(efi.runtime, set_virtual_address_map,
+				    memory_map_size, descriptor_size,
+				    descriptor_version, virtual_map);
 	local_irq_restore(flags);
 
 	efi_fpu_end();

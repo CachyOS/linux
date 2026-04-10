@@ -621,6 +621,7 @@ static int adau1761_set_bias_level(struct snd_soc_component *component,
 				 enum snd_soc_bias_level level)
 {
 	struct adau *adau = snd_soc_component_get_drvdata(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
@@ -632,7 +633,7 @@ static int adau1761_set_bias_level(struct snd_soc_component *component,
 		regmap_update_bits(adau->regmap, ADAU17X1_CLOCK_CONTROL,
 			ADAU17X1_CLOCK_CONTROL_SYSCLK_EN,
 			ADAU17X1_CLOCK_CONTROL_SYSCLK_EN);
-		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF)
+		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF)
 			regcache_sync(adau->regmap);
 		break;
 	case SND_SOC_BIAS_OFF:
@@ -658,7 +659,7 @@ static enum adau1761_output_mode adau1761_get_lineout_mode(
 
 static int adau1761_setup_digmic_jackdetect(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct adau1761_platform_data *pdata = component->dev->platform_data;
 	struct adau *adau = snd_soc_component_get_drvdata(component);
 	enum adau1761_digmic_jackdet_pin_mode mode;
@@ -721,7 +722,7 @@ static int adau1761_setup_digmic_jackdetect(struct snd_soc_component *component)
 
 static int adau1761_setup_headphone_mode(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct adau *adau = snd_soc_component_get_drvdata(component);
 	struct adau1761_platform_data *pdata = component->dev->platform_data;
 	enum adau1761_output_mode mode;
@@ -819,7 +820,7 @@ static bool adau1761_readable_register(struct device *dev, unsigned int reg)
 
 static int adau1761_component_probe(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct adau1761_platform_data *pdata = component->dev->platform_data;
 	struct adau *adau = snd_soc_component_get_drvdata(component);
 	int ret;
@@ -930,7 +931,6 @@ static const struct snd_soc_component_driver adau1761_component_driver = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 #define ADAU1761_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE | \
@@ -1015,7 +1015,7 @@ const struct regmap_config adau1761_regmap_config = {
 	.readable_reg = adau1761_readable_register,
 	.volatile_reg = adau17x1_volatile_register,
 	.precious_reg = adau17x1_precious_register,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 };
 EXPORT_SYMBOL_GPL(adau1761_regmap_config);
 

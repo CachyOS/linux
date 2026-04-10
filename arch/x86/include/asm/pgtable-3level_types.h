@@ -2,7 +2,7 @@
 #ifndef _ASM_X86_PGTABLE_3LEVEL_DEFS_H
 #define _ASM_X86_PGTABLE_3LEVEL_DEFS_H
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #include <linux/types.h>
 
 typedef u64	pteval_t;
@@ -18,11 +18,16 @@ typedef union {
 	};
 	pteval_t pte;
 } pte_t;
-#endif	/* !__ASSEMBLY__ */
 
-#define SHARED_KERNEL_PMD	(!static_cpu_has(X86_FEATURE_PTI))
+typedef union {
+	struct {
+		unsigned long pmd_low, pmd_high;
+	};
+	pmdval_t pmd;
+} pmd_t;
+#endif	/* !__ASSEMBLER__ */
 
-#define ARCH_PAGE_TABLE_SYNC_MASK	(SHARED_KERNEL_PMD ? 0 : PGTBL_PMD_MODIFIED)
+#define ARCH_PAGE_TABLE_SYNC_MASK	PGTBL_PMD_MODIFIED
 
 /*
  * PGDIR_SHIFT determines what a top-level page table entry can map

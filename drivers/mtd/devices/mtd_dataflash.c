@@ -13,7 +13,6 @@
 #include <linux/err.h>
 #include <linux/math64.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 
 #include <linux/spi/spi.h>
 #include <linux/spi/flash.h>
@@ -96,13 +95,6 @@ struct dataflash {
 	struct mtd_info		mtd;
 };
 
-static const struct spi_device_id dataflash_dev_ids[] = {
-	{ "at45" },
-	{ "dataflash" },
-	{ },
-};
-MODULE_DEVICE_TABLE(spi, dataflash_dev_ids);
-
 #ifdef CONFIG_OF
 static const struct of_device_id dataflash_dt_ids[] = {
 	{ .compatible = "atmel,at45", },
@@ -111,6 +103,13 @@ static const struct of_device_id dataflash_dt_ids[] = {
 };
 MODULE_DEVICE_TABLE(of, dataflash_dt_ids);
 #endif
+
+static const struct spi_device_id dataflash_spi_ids[] = {
+	{ .name = "at45", },
+	{ .name = "dataflash", },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(spi, dataflash_spi_ids);
 
 /* ......................................................................... */
 
@@ -628,7 +627,7 @@ static int add_dataflash_otp(struct spi_device *spi, char *name, int nr_pages,
 	char				*otp_tag = "";
 	int				err = 0;
 
-	priv = kzalloc(sizeof *priv, GFP_KERNEL);
+	priv = kzalloc_obj(*priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -639,7 +638,7 @@ static int add_dataflash_otp(struct spi_device *spi, char *name, int nr_pages,
 
 	/* name must be usable with cmdlinepart */
 	sprintf(priv->name, "spi%d.%d-%s",
-			spi->master->bus_num, spi->chip_select,
+			spi->controller->bus_num, spi_get_chipselect(spi, 0),
 			name);
 
 	device = &priv->mtd;
@@ -932,10 +931,9 @@ static struct spi_driver dataflash_driver = {
 		.name		= "mtd_dataflash",
 		.of_match_table = of_match_ptr(dataflash_dt_ids),
 	},
-	.id_table = dataflash_dev_ids,
-
 	.probe		= dataflash_probe,
 	.remove		= dataflash_remove,
+	.id_table	= dataflash_spi_ids,
 
 	/* FIXME:  investigate suspend and resume... */
 };

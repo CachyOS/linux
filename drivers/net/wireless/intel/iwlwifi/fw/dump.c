@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2012-2014, 2018-2021 Intel Corporation
+ * Copyright (C) 2012-2014, 2018-2025 Intel Corporation
  * Copyright (C) 2013-2014 Intel Mobile Communications GmbH
  * Copyright (C) 2015-2017 Intel Deutschland GmbH
  */
@@ -157,7 +157,7 @@ static void iwl_fwrt_dump_lmac_error_log(struct iwl_fw_runtime *fwrt, u8 lmac_nu
 			base = fwrt->fw->inst_errlog_ptr;
 	}
 
-	if (base < 0x400000) {
+	if (!base) {
 		IWL_ERR(fwrt,
 			"Not valid error log pointer 0x%08X for %s uCode\n",
 			base,
@@ -168,17 +168,17 @@ static void iwl_fwrt_dump_lmac_error_log(struct iwl_fw_runtime *fwrt, u8 lmac_nu
 
 	/* check if there is a HW error */
 	val = iwl_trans_read_mem32(trans, base);
-	if (((val & ~0xf) == 0xa5a5a5a0) || ((val & ~0xf) == 0x5a5a5a50)) {
+	if (iwl_trans_is_hw_error_value(val)) {
 		int err;
 
 		IWL_ERR(trans, "HW error, resetting before reading\n");
 
 		/* reset the device */
-		err = iwl_trans_sw_reset(trans, true);
+		err = iwl_trans_sw_reset(trans);
 		if (err)
 			return;
 
-		err = iwl_finish_nic_init(trans);
+		err = iwl_trans_activate_nic(trans);
 		if (err)
 			return;
 	}
@@ -365,10 +365,10 @@ static void iwl_fwrt_dump_iml_error_log(struct iwl_fw_runtime *fwrt)
 	struct iwl_trans *trans = fwrt->trans;
 	u32 error, data1;
 
-	if (fwrt->trans->trans_cfg->device_family >= IWL_DEVICE_FAMILY_22000) {
+	if (fwrt->trans->mac_cfg->device_family >= IWL_DEVICE_FAMILY_22000) {
 		error = UMAG_SB_CPU_2_STATUS;
 		data1 = UMAG_SB_CPU_1_STATUS;
-	} else if (fwrt->trans->trans_cfg->device_family >=
+	} else if (fwrt->trans->mac_cfg->device_family >=
 		   IWL_DEVICE_FAMILY_8000) {
 		error = SB_CPU_2_STATUS;
 		data1 = SB_CPU_1_STATUS;
@@ -376,7 +376,7 @@ static void iwl_fwrt_dump_iml_error_log(struct iwl_fw_runtime *fwrt)
 		return;
 	}
 
-	error = iwl_read_umac_prph(trans, UMAG_SB_CPU_2_STATUS);
+	error = iwl_read_umac_prph(trans, error);
 
 	IWL_ERR(trans, "IML/ROM dump:\n");
 
@@ -387,7 +387,7 @@ static void iwl_fwrt_dump_iml_error_log(struct iwl_fw_runtime *fwrt)
 	IWL_ERR(fwrt, "0x%08X | IML/ROM data1\n",
 		iwl_read_umac_prph(trans, data1));
 
-	if (fwrt->trans->trans_cfg->device_family >= IWL_DEVICE_FAMILY_22000)
+	if (fwrt->trans->mac_cfg->device_family >= IWL_DEVICE_FAMILY_22000)
 		IWL_ERR(fwrt, "0x%08X | IML/ROM WFPM_AUTH_KEY_0\n",
 			iwl_read_umac_prph(trans, SB_MODIFY_CFG_FLAG));
 }
@@ -414,6 +414,10 @@ static void iwl_fwrt_dump_fseq_regs(struct iwl_fw_runtime *fwrt)
 		FSEQ_REG(CNVR_AUX_MISC_CHIP),
 		FSEQ_REG(CNVR_SCU_SD_REGS_SD_REG_DIG_DCDC_VTRIM),
 		FSEQ_REG(CNVR_SCU_SD_REGS_SD_REG_ACTIVE_VDIG_MIRROR),
+		FSEQ_REG(FSEQ_PREV_CNVIO_INIT_VERSION),
+		FSEQ_REG(FSEQ_WIFI_FSEQ_VERSION),
+		FSEQ_REG(FSEQ_BT_FSEQ_VERSION),
+		FSEQ_REG(FSEQ_CLASS_TP_VERSION),
 	};
 
 	if (!iwl_trans_grab_nic_access(trans))
@@ -431,7 +435,10 @@ static void iwl_fwrt_dump_fseq_regs(struct iwl_fw_runtime *fwrt)
 
 void iwl_fwrt_dump_error_logs(struct iwl_fw_runtime *fwrt)
 {
-	if (!test_bit(STATUS_DEVICE_ENABLED, &fwrt->trans->status)) {
+	struct iwl_pc_data *pc_data;
+	u8 count;
+
+	if (!iwl_trans_device_enabled(fwrt->trans)) {
 		IWL_ERR(fwrt,
 			"DEVICE_ENABLED bit is not set. Aborting dump.\n");
 		return;
@@ -443,12 +450,27 @@ void iwl_fwrt_dump_error_logs(struct iwl_fw_runtime *fwrt)
 	iwl_fwrt_dump_umac_error_log(fwrt);
 	iwl_fwrt_dump_tcm_error_log(fwrt, 0);
 	iwl_fwrt_dump_rcm_error_log(fwrt, 0);
-	iwl_fwrt_dump_tcm_error_log(fwrt, 1);
-	iwl_fwrt_dump_rcm_error_log(fwrt, 1);
+	if (fwrt->trans->dbg.tcm_error_event_table[1])
+		iwl_fwrt_dump_tcm_error_log(fwrt, 1);
+	if (fwrt->trans->dbg.rcm_error_event_table[1])
+		iwl_fwrt_dump_rcm_error_log(fwrt, 1);
 	iwl_fwrt_dump_iml_error_log(fwrt);
 	iwl_fwrt_dump_fseq_regs(fwrt);
+	if (fwrt->trans->mac_cfg->device_family >= IWL_DEVICE_FAMILY_22000) {
+		pc_data = fwrt->trans->dbg.pc_data;
 
-	if (fwrt->trans->trans_cfg->device_family >= IWL_DEVICE_FAMILY_BZ) {
+		if (!iwl_trans_grab_nic_access(fwrt->trans))
+			return;
+		for (count = 0; count < fwrt->trans->dbg.num_pc;
+		     count++, pc_data++)
+			IWL_ERR(fwrt, "%s: 0x%x\n",
+				pc_data->pc_name,
+				iwl_read_prph_no_grab(fwrt->trans,
+						      pc_data->pc_address));
+		iwl_trans_release_nic_access(fwrt->trans);
+	}
+
+	if (fwrt->trans->mac_cfg->device_family >= IWL_DEVICE_FAMILY_BZ) {
 		u32 scratch = iwl_read32(fwrt->trans, CSR_FUNC_SCRATCH);
 
 		IWL_ERR(fwrt, "Function Scratch status:\n");
@@ -456,3 +478,31 @@ void iwl_fwrt_dump_error_logs(struct iwl_fw_runtime *fwrt)
 	}
 }
 IWL_EXPORT_SYMBOL(iwl_fwrt_dump_error_logs);
+
+bool iwl_fwrt_read_err_table(struct iwl_trans *trans, u32 base, u32 *err_id)
+{
+	struct error_table_start {
+		/* cf. struct iwl_error_event_table */
+		u32 valid;
+		__le32 err_id;
+	} err_info = {};
+	int ret;
+
+	if (err_id)
+		*err_id = 0;
+
+	if (!base)
+		return false;
+
+	ret = iwl_trans_read_mem_bytes(trans, base,
+				       &err_info, sizeof(err_info));
+
+	if (ret)
+		return true;
+
+	if (err_info.valid && err_id)
+		*err_id = le32_to_cpu(err_info.err_id);
+
+	return !!err_info.valid;
+}
+IWL_EXPORT_SYMBOL(iwl_fwrt_read_err_table);

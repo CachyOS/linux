@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _KDB_H
 #define _KDB_H
 
 /*
  * Kernel Debugger Architecture Independent Global Headers
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  *
  * Copyright (c) 2000-2007 Silicon Graphics, Inc.  All Rights Reserved.
  * Copyright (C) 2000 Stephane Eranian <eranian@hpl.hp.com>
@@ -14,6 +11,7 @@
  */
 
 #include <linux/list.h>
+#include <linux/smp.h>
 
 /* Shifted versions of the command enable bits are be used if the command
  * has no arguments (see kdb_check_flags). This allows commands, such as
@@ -104,7 +102,7 @@ extern int kdb_initial_cpu;
 #define KDB_NOENVVALUE	(-6)
 #define KDB_NOTIMP	(-7)
 #define KDB_ENVFULL	(-8)
-#define KDB_ENVBUFFULL	(-9)
+#define KDB_KMALLOCFAILED	(-9)
 #define KDB_TOOMANYBPT	(-10)
 #define KDB_TOOMANYDBREGS (-11)
 #define KDB_DUPBPT	(-12)
@@ -139,9 +137,6 @@ extern const char *kdb_diemsg;
 					  * not use keyboard */
 
 extern unsigned int kdb_flags;	/* Global flags, see kdb_state for per cpu state */
-
-extern void kdb_save_flags(void);
-extern void kdb_restore_flags(void);
 
 #define KDB_FLAG(flag)		(kdb_flags & KDB_FLAG_##flag)
 #define KDB_FLAG_SET(flag)	((void)(kdb_flags |= KDB_FLAG_##flag))
@@ -196,6 +191,8 @@ int kdb_process_cpu(const struct task_struct *p)
 	return cpu;
 }
 
+extern void kdb_send_sig(struct task_struct *p, int sig);
+
 #ifdef CONFIG_KALLSYMS
 extern const char *kdb_walk_kallsyms(loff_t *pos);
 #else /* ! CONFIG_KALLSYMS */
@@ -208,11 +205,26 @@ static inline const char *kdb_walk_kallsyms(loff_t *pos)
 /* Dynamic kdb shell command registration */
 extern int kdb_register(kdbtab_t *cmd);
 extern void kdb_unregister(kdbtab_t *cmd);
+
+/* Return true when KDB as locked for printing a message on this CPU. */
+static inline
+bool kdb_printf_on_this_cpu(void)
+{
+	/*
+	 * We can use raw_smp_processor_id() here because the task could
+	 * not get migrated when KDB has locked for printing on this CPU.
+	 */
+	return unlikely(READ_ONCE(kdb_printf_cpu) == raw_smp_processor_id());
+}
+
 #else /* ! CONFIG_KGDB_KDB */
 static inline __printf(1, 2) int kdb_printf(const char *fmt, ...) { return 0; }
 static inline void kdb_init(int level) {}
 static inline int kdb_register(kdbtab_t *cmd) { return 0; }
 static inline void kdb_unregister(kdbtab_t *cmd) {}
+
+static inline bool kdb_printf_on_this_cpu(void) { return false; }
+
 #endif	/* CONFIG_KGDB_KDB */
 enum {
 	KDB_NOT_INITIALIZED,

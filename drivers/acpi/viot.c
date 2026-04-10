@@ -19,12 +19,11 @@
 #define pr_fmt(fmt) "ACPI: VIOT: " fmt
 
 #include <linux/acpi_viot.h>
-#include <linux/dma-iommu.h>
-#include <linux/fwnode.h>
 #include <linux/iommu.h>
 #include <linux/list.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 
 struct viot_iommu {
 	/* Node offset within the table */
@@ -88,7 +87,7 @@ static int __init viot_get_pci_iommu_fwnode(struct viot_iommu *viommu,
 		return -ENODEV;
 	}
 
-	fwnode = pdev->dev.fwnode;
+	fwnode = dev_fwnode(&pdev->dev);
 	if (!fwnode) {
 		/*
 		 * PCI devices aren't necessarily described by ACPI. Create a
@@ -101,7 +100,7 @@ static int __init viot_get_pci_iommu_fwnode(struct viot_iommu *viommu,
 		}
 		set_primary_fwnode(&pdev->dev, fwnode);
 	}
-	viommu->fwnode = pdev->dev.fwnode;
+	viommu->fwnode = dev_fwnode(&pdev->dev);
 	pci_dev_put(pdev);
 	return 0;
 }
@@ -143,7 +142,7 @@ static struct viot_iommu * __init viot_get_iommu(unsigned int offset)
 	if (viot_check_bounds(hdr))
 		return NULL;
 
-	viommu = kzalloc(sizeof(*viommu), GFP_KERNEL);
+	viommu = kzalloc_obj(*viommu);
 	if (!viommu)
 		return NULL;
 
@@ -194,7 +193,7 @@ static int __init viot_parse_node(const struct acpi_viot_header *hdr)
 	    hdr->type == ACPI_VIOT_NODE_VIRTIO_IOMMU_MMIO)
 		return 0;
 
-	ep = kzalloc(sizeof(*ep), GFP_KERNEL);
+	ep = kzalloc_obj(*ep);
 	if (!ep)
 		return -ENOMEM;
 
@@ -249,6 +248,26 @@ err_free:
 }
 
 /**
+ * acpi_viot_early_init - Test the presence of VIOT and enable ACS
+ *
+ * If the VIOT does exist, ACS must be enabled. This cannot be
+ * done in acpi_viot_init() which is called after the bus scan
+ */
+void __init acpi_viot_early_init(void)
+{
+#ifdef CONFIG_PCI
+	acpi_status status;
+	struct acpi_table_header *hdr;
+
+	status = acpi_get_table(ACPI_SIG_VIOT, 0, &hdr);
+	if (ACPI_FAILURE(status))
+		return;
+	pci_request_acs();
+	acpi_put_table(hdr);
+#endif
+}
+
+/**
  * acpi_viot_init - Parse the VIOT table
  *
  * Parse the VIOT table, prepare the list of endpoints to be used during DMA
@@ -288,27 +307,21 @@ void __init acpi_viot_init(void)
 static int viot_dev_iommu_init(struct device *dev, struct viot_iommu *viommu,
 			       u32 epid)
 {
-	const struct iommu_ops *ops;
-
-	if (!viommu)
+	if (!viommu || !IS_ENABLED(CONFIG_VIRTIO_IOMMU))
 		return -ENODEV;
 
 	/* We're not translating ourself */
-	if (viommu->fwnode == dev->fwnode)
+	if (device_match_fwnode(dev, viommu->fwnode))
 		return -EINVAL;
 
-	ops = iommu_ops_from_fwnode(viommu->fwnode);
-	if (!ops)
-		return IS_ENABLED(CONFIG_VIRTIO_IOMMU) ?
-			-EPROBE_DEFER : -ENODEV;
-
-	return acpi_iommu_fwspec_init(dev, epid, viommu->fwnode, ops);
+	return acpi_iommu_fwspec_init(dev, epid, viommu->fwnode);
 }
 
 static int viot_pci_dev_iommu_init(struct pci_dev *pdev, u16 dev_id, void *data)
 {
 	u32 epid;
 	struct viot_endpoint *ep;
+	struct device *aliased_dev = data;
 	u32 domain_nr = pci_domain_nr(pdev->bus);
 
 	list_for_each_entry(ep, &viot_pci_ranges, list) {
@@ -319,13 +332,7 @@ static int viot_pci_dev_iommu_init(struct pci_dev *pdev, u16 dev_id, void *data)
 			epid = ((domain_nr - ep->segment_start) << 16) +
 				dev_id - ep->bdf_start + ep->endpoint_id;
 
-			/*
-			 * If we found a PCI range managed by the viommu, we're
-			 * the one that has to request ACS.
-			 */
-			pci_request_acs();
-
-			return viot_dev_iommu_init(&pdev->dev, ep->viommu,
+			return viot_dev_iommu_init(aliased_dev, ep->viommu,
 						   epid);
 		}
 	}
@@ -359,7 +366,7 @@ int viot_iommu_configure(struct device *dev)
 {
 	if (dev_is_pci(dev))
 		return pci_for_each_dma_alias(to_pci_dev(dev),
-					      viot_pci_dev_iommu_init, NULL);
+					      viot_pci_dev_iommu_init, dev);
 	else if (dev_is_platform(dev))
 		return viot_mmio_dev_iommu_init(to_platform_device(dev));
 	return -ENODEV;

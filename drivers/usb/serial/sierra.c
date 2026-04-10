@@ -421,7 +421,7 @@ static int sierra_write(struct tty_struct *tty, struct usb_serial_port *port,
 	unsigned long flags;
 	unsigned char *buffer;
 	struct urb *urb;
-	size_t writesize = min((size_t)count, (size_t)MAX_TRANSFER);
+	size_t writesize = min_t(size_t, count, MAX_TRANSFER);
 	int retval = 0;
 
 	/* verify that we actually have some data to write */
@@ -453,7 +453,7 @@ static int sierra_write(struct tty_struct *tty, struct usb_serial_port *port,
 		goto error_simple;
 	}
 
-	buffer = kmalloc(writesize, GFP_ATOMIC);
+	buffer = kmemdup(buf, writesize, GFP_ATOMIC);
 	if (!buffer) {
 		retval = -ENOMEM;
 		goto error_no_buffer;
@@ -464,8 +464,6 @@ static int sierra_write(struct tty_struct *tty, struct usb_serial_port *port,
 		retval = -ENOMEM;
 		goto error_no_urb;
 	}
-
-	memcpy(buffer, buf, writesize);
 
 	usb_serial_debug_data(&port->dev, __func__, writesize, buffer);
 
@@ -737,7 +735,8 @@ static void sierra_close(struct usb_serial_port *port)
 
 	/*
 	 * Need to take susp_lock to make sure port is not already being
-	 * resumed, but no need to hold it due to initialized
+	 * resumed, but no need to hold it due to the tty-port initialized
+	 * flag.
 	 */
 	spin_lock_irq(&intfdata->susp_lock);
 	if (--intfdata->open_ports == 0)
@@ -829,7 +828,7 @@ static int sierra_startup(struct usb_serial *serial)
 {
 	struct sierra_intf_private *intfdata;
 
-	intfdata = kzalloc(sizeof(*intfdata), GFP_KERNEL);
+	intfdata = kzalloc_obj(*intfdata);
 	if (!intfdata)
 		return -ENOMEM;
 
@@ -862,7 +861,7 @@ static int sierra_port_probe(struct usb_serial_port *port)
 	const struct sierra_iface_list *himemory_list;
 	u8 ifnum;
 
-	portdata = kzalloc(sizeof(*portdata), GFP_KERNEL);
+	portdata = kzalloc_obj(*portdata);
 	if (!portdata)
 		return -ENOMEM;
 
@@ -1022,7 +1021,6 @@ static int sierra_resume(struct usb_serial *serial)
 
 static struct usb_serial_driver sierra_device = {
 	.driver = {
-		.owner =	THIS_MODULE,
 		.name =		"sierra",
 	},
 	.description       = "Sierra USB modem",

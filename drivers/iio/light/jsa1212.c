@@ -12,10 +12,10 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/mutex.h>
-#include <linux/acpi.h>
 #include <linux/regmap.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -106,7 +106,6 @@
 #define JSA1212_PXS_DELAY_MS	100
 
 #define JSA1212_DRIVER_NAME	"jsa1212"
-#define JSA1212_REGMAP_NAME	"jsa1212_regmap"
 
 enum jsa1212_op_mode {
 	JSA1212_OPMODE_ALS_EN,
@@ -300,7 +299,7 @@ static bool jsa1212_is_volatile_reg(struct device *dev, unsigned int reg)
 }
 
 static const struct regmap_config jsa1212_regmap_config = {
-	.name =  JSA1212_REGMAP_NAME,
+	.name = "jsa1212_regmap",
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = JSA1212_MAX_REG,
@@ -308,8 +307,7 @@ static const struct regmap_config jsa1212_regmap_config = {
 	.volatile_reg = jsa1212_is_volatile_reg,
 };
 
-static int jsa1212_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int jsa1212_probe(struct i2c_client *client)
 {
 	struct jsa1212_data *data;
 	struct iio_dev *indio_dev;
@@ -373,14 +371,14 @@ static int jsa1212_power_off(struct jsa1212_data *data)
 	return ret;
 }
 
-static int jsa1212_remove(struct i2c_client *client)
+static void jsa1212_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct jsa1212_data *data = iio_priv(indio_dev);
 
 	iio_device_unregister(indio_dev);
 
-	return jsa1212_power_off(data);
+	jsa1212_power_off(data);
 }
 
 static int jsa1212_suspend(struct device *dev)
@@ -425,12 +423,12 @@ static DEFINE_SIMPLE_DEV_PM_OPS(jsa1212_pm_ops, jsa1212_suspend,
 
 static const struct acpi_device_id jsa1212_acpi_match[] = {
 	{"JSA1212", 0},
-	{ },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, jsa1212_acpi_match);
 
 static const struct i2c_device_id jsa1212_id[] = {
-	{ JSA1212_DRIVER_NAME, 0 },
+	{ JSA1212_DRIVER_NAME },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, jsa1212_id);
@@ -439,7 +437,7 @@ static struct i2c_driver jsa1212_driver = {
 	.driver = {
 		.name	= JSA1212_DRIVER_NAME,
 		.pm	= pm_sleep_ptr(&jsa1212_pm_ops),
-		.acpi_match_table = ACPI_PTR(jsa1212_acpi_match),
+		.acpi_match_table = jsa1212_acpi_match,
 	},
 	.probe		= jsa1212_probe,
 	.remove		= jsa1212_remove,

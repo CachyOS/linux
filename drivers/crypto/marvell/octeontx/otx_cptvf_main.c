@@ -31,7 +31,7 @@ static int init_worker_threads(struct otx_cptvf *cptvf)
 	struct otx_cptvf_wqe_info *cwqe_info;
 	int i;
 
-	cwqe_info = kzalloc(sizeof(*cwqe_info), GFP_KERNEL);
+	cwqe_info = kzalloc_obj(*cwqe_info);
 	if (!cwqe_info)
 		return -ENOMEM;
 
@@ -100,7 +100,7 @@ static int alloc_pending_queues(struct otx_cpt_pending_qinfo *pqinfo, u32 qlen,
 	pqinfo->num_queues = num_queues;
 
 	for_each_pending_queue(pqinfo, queue, i) {
-		queue->head = kcalloc(qlen, sizeof(*queue->head), GFP_KERNEL);
+		queue->head = kzalloc_objs(*queue->head, qlen);
 		if (!queue->head) {
 			ret = -ENOMEM;
 			goto pending_qfail;
@@ -168,7 +168,8 @@ static void free_command_queues(struct otx_cptvf *cptvf,
 			chunk = list_first_entry(&cqinfo->queue[i].chead,
 					struct otx_cpt_cmd_chunk, nextchunk);
 
-			dma_free_coherent(&pdev->dev, chunk->size,
+			dma_free_coherent(&pdev->dev,
+					  chunk->size + OTX_CPT_NEXT_CHUNK_PTR_SIZE,
 					  chunk->head,
 					  chunk->dma_addr);
 			chunk->head = NULL;
@@ -211,7 +212,7 @@ static int alloc_command_queues(struct otx_cptvf *cptvf,
 		queue = &cqinfo->queue[i];
 		INIT_LIST_HEAD(&queue->chead);
 		do {
-			curr = kzalloc(sizeof(*curr), GFP_KERNEL);
+			curr = kzalloc_obj(*curr);
 			if (!curr)
 				goto cmd_qfail;
 
@@ -661,7 +662,7 @@ static ssize_t vf_type_show(struct device *dev,
 		msg = "Invalid";
 	}
 
-	return scnprintf(buf, PAGE_SIZE, "%s\n", msg);
+	return sysfs_emit(buf, "%s\n", msg);
 }
 
 static ssize_t vf_engine_group_show(struct device *dev,
@@ -670,7 +671,7 @@ static ssize_t vf_engine_group_show(struct device *dev,
 {
 	struct otx_cptvf *cptvf = dev_get_drvdata(dev);
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", cptvf->vfgrp);
+	return sysfs_emit(buf, "%d\n", cptvf->vfgrp);
 }
 
 static ssize_t vf_engine_group_store(struct device *dev,
@@ -706,7 +707,7 @@ static ssize_t vf_coalesc_time_wait_show(struct device *dev,
 {
 	struct otx_cptvf *cptvf = dev_get_drvdata(dev);
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n",
+	return sysfs_emit(buf, "%d\n",
 			 cptvf_read_vq_done_timewait(cptvf));
 }
 
@@ -716,7 +717,7 @@ static ssize_t vf_coalesc_num_wait_show(struct device *dev,
 {
 	struct otx_cptvf *cptvf = dev_get_drvdata(dev);
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n",
+	return sysfs_emit(buf, "%d\n",
 			 cptvf_read_vq_done_numwait(cptvf));
 }
 

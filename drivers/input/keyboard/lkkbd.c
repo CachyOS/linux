@@ -46,9 +46,6 @@
  * http://www.vt100.net/manx/details?pn=EK-104AA-TM-001;id=21;cp=1
  */
 
-/*
- */
-
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -359,18 +356,18 @@ static void lkkbd_detection_done(struct lkkbd *lk)
 	 */
 	switch (lk->id[4]) {
 	case 1:
-		strlcpy(lk->name, "DEC LK201 keyboard", sizeof(lk->name));
+		strscpy(lk->name, "DEC LK201 keyboard", sizeof(lk->name));
 
 		if (lk201_compose_is_alt)
 			lk->keycode[0xb1] = KEY_LEFTALT;
 		break;
 
 	case 2:
-		strlcpy(lk->name, "DEC LK401 keyboard", sizeof(lk->name));
+		strscpy(lk->name, "DEC LK401 keyboard", sizeof(lk->name));
 		break;
 
 	default:
-		strlcpy(lk->name, "Unknown DEC keyboard", sizeof(lk->name));
+		strscpy(lk->name, "Unknown DEC keyboard", sizeof(lk->name));
 		printk(KERN_ERR
 			"lkkbd: keyboard on %s is unknown, please report to "
 			"Jan-Benedict Glaw <jbglaw@lug-owl.de>\n", lk->phys);
@@ -611,7 +608,7 @@ static int lkkbd_connect(struct serio *serio, struct serio_driver *drv)
 	int i;
 	int err;
 
-	lk = kzalloc(sizeof(struct lkkbd), GFP_KERNEL);
+	lk = kzalloc_obj(*lk);
 	input_dev = input_allocate_device();
 	if (!lk || !input_dev) {
 		err = -ENOMEM;
@@ -626,7 +623,7 @@ static int lkkbd_connect(struct serio *serio, struct serio_driver *drv)
 	lk->ctrlclick_volume = ctrlclick_volume;
 	memcpy(lk->keycode, lkkbd_keycode, sizeof(lk->keycode));
 
-	strlcpy(lk->name, "DEC LK keyboard", sizeof(lk->name));
+	strscpy(lk->name, "DEC LK keyboard", sizeof(lk->name));
 	snprintf(lk->phys, sizeof(lk->phys), "%s/input0", serio->phys);
 
 	input_dev->name = lk->name;
@@ -673,7 +670,8 @@ static int lkkbd_connect(struct serio *serio, struct serio_driver *drv)
 
 	return 0;
 
- fail3:	serio_close(serio);
+ fail3:	disable_work_sync(&lk->tq);
+	serio_close(serio);
  fail2:	serio_set_drvdata(serio, NULL);
  fail1:	input_free_device(input_dev);
 	kfree(lk);
@@ -686,6 +684,8 @@ static int lkkbd_connect(struct serio *serio, struct serio_driver *drv)
 static void lkkbd_disconnect(struct serio *serio)
 {
 	struct lkkbd *lk = serio_get_drvdata(serio);
+
+	disable_work_sync(&lk->tq);
 
 	input_get_device(lk->dev);
 	input_unregister_device(lk->dev);

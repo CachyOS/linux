@@ -34,6 +34,7 @@ nvkm_nvenc_dtor(struct nvkm_engine *engine)
 static const struct nvkm_engine_func
 nvkm_nvenc = {
 	.dtor = nvkm_nvenc_dtor,
+	.sclass = { {} },
 };
 
 int
@@ -43,7 +44,7 @@ nvkm_nvenc_new_(const struct nvkm_nvenc_fwif *fwif, struct nvkm_device *device,
 	struct nvkm_nvenc *nvenc;
 	int ret;
 
-	if (!(nvenc = *pnvenc = kzalloc(sizeof(*nvenc), GFP_KERNEL)))
+	if (!(nvenc = *pnvenc = kzalloc_obj(*nvenc)))
 		return -ENOMEM;
 
 	ret = nvkm_engine_ctor(&nvkm_nvenc, device, type, inst, true,
@@ -59,4 +60,4 @@ nvkm_nvenc_new_(const struct nvkm_nvenc_fwif *fwif, struct nvkm_device *device,
 
 	return nvkm_falcon_ctor(nvenc->func->flcn, &nvenc->engine.subdev,
 				nvenc->engine.subdev.name, 0, &nvenc->falcon);
-};
+}

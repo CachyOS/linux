@@ -19,9 +19,14 @@
 #include <linux/uaccess.h>
 #include <uapi/linux/isst_if.h>
 
+#include <asm/cpu_device_id.h>
+#include <asm/intel-family.h>
+#include <asm/msr.h>
+
 #include "isst_if_common.h"
 
 #define MSR_THREAD_ID_INFO	0x53
+#define MSR_PM_LOGICAL_ID	0x54
 #define MSR_CPU_BUS_NUMBER	0x128
 
 static struct isst_if_cmd_cb punit_callbacks[ISST_IF_DEV_MAX];
@@ -31,6 +36,7 @@ static int punit_msr_white_list[] = {
 	MSR_CONFIG_TDP_CONTROL,
 	MSR_TURBO_RATIO_LIMIT1,
 	MSR_TURBO_RATIO_LIMIT2,
+	MSR_PM_LOGICAL_ID,
 };
 
 struct isst_valid_cmd_ranges {
@@ -47,7 +53,7 @@ struct isst_cmd_set_req_type {
 
 static const struct isst_valid_cmd_ranges isst_valid_cmds[] = {
 	{0xD0, 0x00, 0x03},
-	{0x7F, 0x00, 0x0B},
+	{0x7F, 0x00, 0x0C},
 	{0x7F, 0x10, 0x12},
 	{0x7F, 0x20, 0x23},
 	{0x94, 0x03, 0x03},
@@ -73,15 +79,17 @@ struct isst_cmd {
 	u32 param;
 };
 
+static bool isst_hpm_support;
+
 static DECLARE_HASHTABLE(isst_hash, 8);
 static DEFINE_MUTEX(isst_hash_lock);
 
 static int isst_store_new_cmd(int cmd, u32 cpu, int mbox_cmd_type, u32 param,
-			      u32 data)
+			      u64 data)
 {
 	struct isst_cmd *sst_cmd;
 
-	sst_cmd = kmalloc(sizeof(*sst_cmd), GFP_KERNEL);
+	sst_cmd = kmalloc_obj(*sst_cmd);
 	if (!sst_cmd)
 		return -ENOMEM;
 
@@ -112,6 +120,7 @@ static void isst_delete_hash(void)
  * isst_store_cmd() - Store command to a hash table
  * @cmd: Mailbox command.
  * @sub_cmd: Mailbox sub-command or MSR id.
+ * @cpu: Target CPU for the command
  * @mbox_cmd_type: Mailbox or MSR command.
  * @param: Mailbox parameter.
  * @data: Mailbox request data or MSR data.
@@ -183,31 +192,12 @@ void isst_resume_common(void)
 			if (cb->registered)
 				isst_mbox_resume_command(cb, sst_cmd);
 		} else {
-			wrmsrl_safe_on_cpu(sst_cmd->cpu, sst_cmd->cmd,
+			wrmsrq_safe_on_cpu(sst_cmd->cpu, sst_cmd->cmd,
 					   sst_cmd->data);
 		}
 	}
 }
 EXPORT_SYMBOL_GPL(isst_resume_common);
-
-static void isst_restore_msr_local(int cpu)
-{
-	struct isst_cmd *sst_cmd;
-	int i;
-
-	mutex_lock(&isst_hash_lock);
-	for (i = 0; i < ARRAY_SIZE(punit_msr_white_list); ++i) {
-		if (!punit_msr_white_list[i])
-			break;
-
-		hash_for_each_possible(isst_hash, sst_cmd, hnode,
-				       punit_msr_white_list[i]) {
-			if (!sst_cmd->mbox_cmd_type && sst_cmd->cpu == cpu)
-				wrmsrl_safe(sst_cmd->cmd, sst_cmd->data);
-		}
-	}
-	mutex_unlock(&isst_hash_lock);
-}
 
 /**
  * isst_if_mbox_cmd_invalid() - Check invalid mailbox commands
@@ -261,11 +251,13 @@ bool isst_if_mbox_cmd_set_req(struct isst_if_mbox_cmd *cmd)
 }
 EXPORT_SYMBOL_GPL(isst_if_mbox_cmd_set_req);
 
+static int isst_if_api_version;
+
 static int isst_if_get_platform_info(void __user *argp)
 {
 	struct isst_if_platform_info info;
 
-	info.api_version = ISST_IF_API_VERSION;
+	info.api_version = isst_if_api_version;
 	info.driver_version = ISST_IF_DRIVER_VERSION;
 	info.max_cmds_per_ioctl = ISST_IF_CMD_LIMIT;
 	info.mbox_supported = punit_callbacks[ISST_IF_DEV_MBOX].registered;
@@ -277,39 +269,48 @@ static int isst_if_get_platform_info(void __user *argp)
 	return 0;
 }
 
+#define ISST_MAX_BUS_NUMBER	2
 
 struct isst_if_cpu_info {
 	/* For BUS 0 and BUS 1 only, which we need for PUNIT interface */
-	int bus_info[2];
-	struct pci_dev *pci_dev[2];
+	int bus_info[ISST_MAX_BUS_NUMBER];
+	struct pci_dev *pci_dev[ISST_MAX_BUS_NUMBER];
 	int punit_cpu_id;
 	int numa_node;
 };
 
+struct isst_if_pkg_info {
+	struct pci_dev *pci_dev[ISST_MAX_BUS_NUMBER];
+};
+
 static struct isst_if_cpu_info *isst_cpu_info;
-#define ISST_MAX_PCI_DOMAINS	8
+static struct isst_if_pkg_info *isst_pkg_info;
 
 static struct pci_dev *_isst_if_get_pci_dev(int cpu, int bus_no, int dev, int fn)
 {
 	struct pci_dev *matched_pci_dev = NULL;
 	struct pci_dev *pci_dev = NULL;
-	int no_matches = 0;
-	int i, bus_number;
+	struct pci_dev *_pci_dev = NULL;
+	int no_matches = 0, pkg_id;
+	int bus_number;
 
-	if (bus_no < 0 || bus_no > 1 || cpu < 0 || cpu >= nr_cpu_ids ||
-	    cpu >= num_possible_cpus())
+	if (bus_no < 0 || bus_no >= ISST_MAX_BUS_NUMBER || cpu < 0 ||
+	    cpu >= nr_cpu_ids || cpu >= num_possible_cpus())
+		return NULL;
+
+	pkg_id = topology_logical_package_id(cpu);
+	if (pkg_id >= topology_max_packages())
 		return NULL;
 
 	bus_number = isst_cpu_info[cpu].bus_info[bus_no];
 	if (bus_number < 0)
 		return NULL;
 
-	for (i = 0; i < ISST_MAX_PCI_DOMAINS; ++i) {
-		struct pci_dev *_pci_dev;
+	for_each_pci_dev(_pci_dev) {
 		int node;
 
-		_pci_dev = pci_get_domain_bus_and_slot(i, bus_number, PCI_DEVFN(dev, fn));
-		if (!_pci_dev)
+		if (_pci_dev->bus->number != bus_number ||
+		    _pci_dev->devfn != PCI_DEVFN(dev, fn))
 			continue;
 
 		++no_matches;
@@ -318,12 +319,14 @@ static struct pci_dev *_isst_if_get_pci_dev(int cpu, int bus_no, int dev, int fn
 
 		node = dev_to_node(&_pci_dev->dev);
 		if (node == NUMA_NO_NODE) {
-			pr_info("Fail to get numa node for CPU:%d bus:%d dev:%d fn:%d\n",
-				cpu, bus_no, dev, fn);
+			pr_info_once("Fail to get numa node for CPU:%d bus:%d dev:%d fn:%d\n",
+				     cpu, bus_no, dev, fn);
 			continue;
 		}
 
 		if (node == isst_cpu_info[cpu].numa_node) {
+			isst_pkg_info[pkg_id].pci_dev[bus_no] = _pci_dev;
+
 			pci_dev = _pci_dev;
 			break;
 		}
@@ -342,13 +345,17 @@ static struct pci_dev *_isst_if_get_pci_dev(int cpu, int bus_no, int dev, int fn
 	if (!pci_dev && no_matches == 1)
 		pci_dev = matched_pci_dev;
 
+	/* Return pci_dev pointer for any matched CPU in the package */
+	if (!pci_dev)
+		pci_dev = isst_pkg_info[pkg_id].pci_dev[bus_no];
+
 	return pci_dev;
 }
 
 /**
  * isst_if_get_pci_dev() - Get the PCI device instance for a CPU
  * @cpu: Logical CPU number.
- * @bus_number: The bus number assigned by the hardware.
+ * @bus_no: The bus number assigned by the hardware.
  * @dev: The device number assigned by the hardware.
  * @fn: The function number assigned by the hardware.
  *
@@ -361,8 +368,8 @@ struct pci_dev *isst_if_get_pci_dev(int cpu, int bus_no, int dev, int fn)
 {
 	struct pci_dev *pci_dev;
 
-	if (bus_no < 0 || bus_no > 1 || cpu < 0 || cpu >= nr_cpu_ids ||
-	    cpu >= num_possible_cpus())
+	if (bus_no < 0 || bus_no >= ISST_MAX_BUS_NUMBER  || cpu < 0 ||
+	    cpu >= nr_cpu_ids || cpu >= num_possible_cpus())
 		return NULL;
 
 	pci_dev = isst_cpu_info[cpu].pci_dev[bus_no];
@@ -381,7 +388,7 @@ static int isst_if_cpu_online(unsigned int cpu)
 
 	isst_cpu_info[cpu].numa_node = cpu_to_node(cpu);
 
-	ret = rdmsrl_safe(MSR_CPU_BUS_NUMBER, &data);
+	ret = rdmsrq_safe(MSR_CPU_BUS_NUMBER, &data);
 	if (ret) {
 		/* This is not a fatal error on MSR mailbox only I/F */
 		isst_cpu_info[cpu].bus_info[0] = -1;
@@ -393,14 +400,21 @@ static int isst_if_cpu_online(unsigned int cpu)
 		isst_cpu_info[cpu].pci_dev[1] = _isst_if_get_pci_dev(cpu, 1, 30, 1);
 	}
 
-	ret = rdmsrl_safe(MSR_THREAD_ID_INFO, &data);
+	if (isst_hpm_support) {
+
+		ret = rdmsrq_safe(MSR_PM_LOGICAL_ID, &data);
+		if (!ret)
+			goto set_punit_id;
+	}
+
+	ret = rdmsrq_safe(MSR_THREAD_ID_INFO, &data);
 	if (ret) {
 		isst_cpu_info[cpu].punit_cpu_id = -1;
 		return ret;
 	}
-	isst_cpu_info[cpu].punit_cpu_id = data;
 
-	isst_restore_msr_local(cpu);
+set_punit_id:
+	isst_cpu_info[cpu].punit_cpu_id = data;
 
 	return 0;
 }
@@ -411,16 +425,21 @@ static int isst_if_cpu_info_init(void)
 {
 	int ret;
 
-	isst_cpu_info = kcalloc(num_possible_cpus(),
-				sizeof(*isst_cpu_info),
-				GFP_KERNEL);
+	isst_cpu_info = kzalloc_objs(*isst_cpu_info, num_possible_cpus());
 	if (!isst_cpu_info)
 		return -ENOMEM;
+
+	isst_pkg_info = kzalloc_objs(*isst_pkg_info, topology_max_packages());
+	if (!isst_pkg_info) {
+		kfree(isst_cpu_info);
+		return -ENOMEM;
+	}
 
 	ret = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN,
 				"platform/x86/isst-if:online",
 				isst_if_cpu_online, NULL);
 	if (ret < 0) {
+		kfree(isst_pkg_info);
 		kfree(isst_cpu_info);
 		return ret;
 	}
@@ -433,6 +452,7 @@ static int isst_if_cpu_info_init(void)
 static void isst_if_cpu_info_exit(void)
 {
 	cpuhp_remove_state(isst_if_online_id);
+	kfree(isst_pkg_info);
 	kfree(isst_cpu_info);
 };
 
@@ -480,7 +500,7 @@ static long isst_if_msr_cmd_req(u8 *cmd_ptr, int *write_only, int resume)
 		if (!capable(CAP_SYS_ADMIN))
 			return -EPERM;
 
-		ret = wrmsrl_safe_on_cpu(msr_cmd->logical_cpu,
+		ret = wrmsrq_safe_on_cpu(msr_cmd->logical_cpu,
 					 msr_cmd->msr,
 					 msr_cmd->data);
 		*write_only = 1;
@@ -491,7 +511,7 @@ static long isst_if_msr_cmd_req(u8 *cmd_ptr, int *write_only, int resume)
 	} else {
 		u64 data;
 
-		ret = rdmsrl_safe_on_cpu(msr_cmd->logical_cpu,
+		ret = rdmsrq_safe_on_cpu(msr_cmd->logical_cpu,
 					 msr_cmd->msr, &data);
 		if (!ret) {
 			msr_cmd->data = data;
@@ -562,6 +582,7 @@ static long isst_if_def_ioctl(struct file *file, unsigned int cmd,
 	struct isst_if_cmd_cb cmd_cb;
 	struct isst_if_cmd_cb *cb;
 	long ret = -ENOTTY;
+	int i;
 
 	switch (cmd) {
 	case ISST_IF_GET_PLATFORM_INFO:
@@ -590,6 +611,16 @@ static long isst_if_def_ioctl(struct file *file, unsigned int cmd,
 		ret = isst_if_exec_multi_cmd(argp, &cmd_cb);
 		break;
 	default:
+		for (i = 0; i < ISST_IF_DEV_MAX; ++i) {
+			struct isst_if_cmd_cb *cb = &punit_callbacks[i];
+			int ret;
+
+			if (cb->def_ioctl) {
+				ret = cb->def_ioctl(file, cmd, arg);
+				if (!ret)
+					return ret;
+			}
+		}
 		break;
 	}
 
@@ -598,10 +629,6 @@ static long isst_if_def_ioctl(struct file *file, unsigned int cmd,
 
 /* Lock to prevent module registration when already opened by user space */
 static DEFINE_MUTEX(punit_misc_dev_open_lock);
-/* Lock to allow one share misc device for all ISST interace */
-static DEFINE_MUTEX(punit_misc_dev_reg_lock);
-static int misc_usage_count;
-static int misc_device_ret;
 static int misc_device_open;
 
 static int isst_if_open(struct inode *inode, struct file *file)
@@ -667,39 +694,23 @@ static struct miscdevice isst_if_char_driver = {
 
 static int isst_misc_reg(void)
 {
-	mutex_lock(&punit_misc_dev_reg_lock);
-	if (misc_device_ret)
-		goto unlock_exit;
+	int ret;
 
-	if (!misc_usage_count) {
-		misc_device_ret = isst_if_cpu_info_init();
-		if (misc_device_ret)
-			goto unlock_exit;
+	ret = isst_if_cpu_info_init();
+	if (ret)
+		return ret;
 
-		misc_device_ret = misc_register(&isst_if_char_driver);
-		if (misc_device_ret) {
-			isst_if_cpu_info_exit();
-			goto unlock_exit;
-		}
-	}
-	misc_usage_count++;
+	ret = misc_register(&isst_if_char_driver);
+	if (ret)
+		isst_if_cpu_info_exit();
 
-unlock_exit:
-	mutex_unlock(&punit_misc_dev_reg_lock);
-
-	return misc_device_ret;
+	return ret;
 }
 
 static void isst_misc_unreg(void)
 {
-	mutex_lock(&punit_misc_dev_reg_lock);
-	if (misc_usage_count)
-		misc_usage_count--;
-	if (!misc_usage_count && !misc_device_ret) {
-		misc_deregister(&isst_if_char_driver);
-		isst_if_cpu_info_exit();
-	}
-	mutex_unlock(&punit_misc_dev_reg_lock);
+	misc_deregister(&isst_if_char_driver);
+	isst_if_cpu_info_exit();
 }
 
 /**
@@ -719,10 +730,11 @@ static void isst_misc_unreg(void)
  */
 int isst_if_cdev_register(int device_type, struct isst_if_cmd_cb *cb)
 {
-	int ret;
-
 	if (device_type >= ISST_IF_DEV_MAX)
 		return -EINVAL;
+
+	if (device_type < ISST_IF_DEV_TPMI && isst_hpm_support)
+		return -ENODEV;
 
 	mutex_lock(&punit_misc_dev_open_lock);
 	/* Device is already open, we don't want to add new callbacks */
@@ -730,19 +742,14 @@ int isst_if_cdev_register(int device_type, struct isst_if_cmd_cb *cb)
 		mutex_unlock(&punit_misc_dev_open_lock);
 		return -EAGAIN;
 	}
+	if (!cb->api_version)
+		cb->api_version = ISST_IF_API_VERSION;
+	if (cb->api_version > isst_if_api_version)
+		isst_if_api_version = cb->api_version;
 	memcpy(&punit_callbacks[device_type], cb, sizeof(*cb));
 	punit_callbacks[device_type].registered = 1;
 	mutex_unlock(&punit_misc_dev_open_lock);
 
-	ret = isst_misc_reg();
-	if (ret) {
-		/*
-		 * No need of mutex as the misc device register failed
-		 * as no one can open device yet. Hence no contention.
-		 */
-		punit_callbacks[device_type].registered = 0;
-		return ret;
-	}
 	return 0;
 }
 EXPORT_SYMBOL_GPL(isst_if_cdev_register);
@@ -758,8 +765,8 @@ EXPORT_SYMBOL_GPL(isst_if_cdev_register);
  */
 void isst_if_cdev_unregister(int device_type)
 {
-	isst_misc_unreg();
 	mutex_lock(&punit_misc_dev_open_lock);
+	punit_callbacks[device_type].def_ioctl = NULL;
 	punit_callbacks[device_type].registered = 0;
 	if (device_type == ISST_IF_DEV_MBOX)
 		isst_delete_hash();
@@ -767,4 +774,53 @@ void isst_if_cdev_unregister(int device_type)
 }
 EXPORT_SYMBOL_GPL(isst_if_cdev_unregister);
 
+#define SST_HPM_SUPPORTED	0x01
+#define SST_MBOX_SUPPORTED	0x02
+
+static const struct x86_cpu_id isst_cpu_ids[] = {
+	X86_MATCH_VFM(INTEL_ATOM_CRESTMONT,	SST_HPM_SUPPORTED),
+	X86_MATCH_VFM(INTEL_ATOM_CRESTMONT_X,	SST_HPM_SUPPORTED),
+	X86_MATCH_VFM(INTEL_ATOM_DARKMONT_X,	SST_HPM_SUPPORTED),
+	X86_MATCH_VFM(INTEL_EMERALDRAPIDS_X,	0),
+	X86_MATCH_VFM(INTEL_GRANITERAPIDS_D,	SST_HPM_SUPPORTED),
+	X86_MATCH_VFM(INTEL_GRANITERAPIDS_X,	SST_HPM_SUPPORTED),
+	X86_MATCH_VFM(INTEL_ICELAKE_D,		0),
+	X86_MATCH_VFM(INTEL_ICELAKE_X,		0),
+	X86_MATCH_VFM(INTEL_DIAMONDRAPIDS_X,	SST_HPM_SUPPORTED),
+	X86_MATCH_VFM(INTEL_SAPPHIRERAPIDS_X,	0),
+	X86_MATCH_VFM(INTEL_SKYLAKE_X,		SST_MBOX_SUPPORTED),
+	{}
+};
+MODULE_DEVICE_TABLE(x86cpu, isst_cpu_ids);
+
+static int __init isst_if_common_init(void)
+{
+	const struct x86_cpu_id *id;
+
+	id = x86_match_cpu(isst_cpu_ids);
+	if (!id)
+		return -ENODEV;
+
+	if (id->driver_data == SST_HPM_SUPPORTED) {
+		isst_hpm_support = true;
+	} else if (id->driver_data == SST_MBOX_SUPPORTED) {
+		u64 data;
+
+		/* Can fail only on some Skylake-X generations */
+		if (rdmsrq_safe(MSR_OS_MAILBOX_INTERFACE, &data) ||
+		    rdmsrq_safe(MSR_OS_MAILBOX_DATA, &data))
+			return -ENODEV;
+	}
+
+	return isst_misc_reg();
+}
+module_init(isst_if_common_init)
+
+static void __exit isst_if_common_exit(void)
+{
+	isst_misc_unreg();
+}
+module_exit(isst_if_common_exit)
+
+MODULE_DESCRIPTION("ISST common interface module");
 MODULE_LICENSE("GPL v2");

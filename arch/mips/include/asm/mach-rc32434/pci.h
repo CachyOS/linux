@@ -167,7 +167,7 @@ struct pci_msu {
 #define PCI_CFGA_DEV		0x0000f800
 #define PCI_CFGA_DEV_INTERN	0
 #define PCI_CFGA_BUS_BIT	16
-#define PCI CFGA_BUS		0x00ff0000
+#define PCI_CFGA_BUS		0x00ff0000
 #define PCI_CFGA_BUS_TYPE0	0
 #define PCI_CFGA_EN		(1 << 31)
 
@@ -374,7 +374,7 @@ struct pci_msu {
 				 PCI_CFG04_STAT_SSE | \
 				 PCI_CFG04_STAT_PE)
 
-#define KORINA_CNFG1		((KORINA_STAT<<16)|KORINA_CMD)
+#define KORINA_CNFG1		(KORINA_STAT | KORINA_CMD)
 
 #define KORINA_REVID		0
 #define KORINA_CLASS_CODE	0

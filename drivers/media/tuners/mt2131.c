@@ -248,7 +248,7 @@ struct dvb_frontend * mt2131_attach(struct dvb_frontend *fe,
 
 	dprintk(1, "%s()\n", __func__);
 
-	priv = kzalloc(sizeof(struct mt2131_priv), GFP_KERNEL);
+	priv = kzalloc_obj(struct mt2131_priv);
 	if (priv == NULL)
 		return NULL;
 
@@ -274,7 +274,7 @@ struct dvb_frontend * mt2131_attach(struct dvb_frontend *fe,
 	fe->tuner_priv = priv;
 	return fe;
 }
-EXPORT_SYMBOL(mt2131_attach);
+EXPORT_SYMBOL_GPL(mt2131_attach);
 
 MODULE_AUTHOR("Steven Toth");
 MODULE_DESCRIPTION("Microtune MT2131 silicon tuner driver");

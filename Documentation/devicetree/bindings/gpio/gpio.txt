@@ -35,8 +35,8 @@ and bit-banged data signals:
 		     <&gpio1 15 0>;
 
 In the above example, &gpio1 uses 2 cells to specify a gpio. The first cell is
-a local offset to the GPIO line and the second cell represent consumer flags,
-such as if the consumer desire the line to be active low (inverted) or open
+a local offset to the GPIO line and the second cell represents consumer flags,
+such as if the consumer desires the line to be active low (inverted) or open
 drain. This is the recommended practice.
 
 The exact meaning of each specifier cell is controller specific, and must be
@@ -59,7 +59,7 @@ GPIO pin number, and GPIO flags as accepted by the "qe_pio_e" gpio-controller.
 Optional standard bitfield specifiers for the last cell:
 
 - Bit 0: 0 means active high, 1 means active low
-- Bit 1: 0 mean push-pull wiring, see:
+- Bit 1: 0 means push-pull wiring, see:
            https://en.wikipedia.org/wiki/Push-pull_output
          1 means single-ended wiring, see:
            https://en.wikipedia.org/wiki/Single-ended_triode
@@ -154,18 +154,35 @@ of the GPIOs that can't be used.
 
 Optionally, a GPIO controller may have a "gpio-line-names" property. This is
 an array of strings defining the names of the GPIO lines going out of the
-GPIO controller. This name should be the most meaningful producer name
-for the system, such as a rail name indicating the usage. Package names
-such as pin name are discouraged: such lines have opaque names (since they
-are by definition generic purpose) and such names are usually not very
-helpful. For example "MMC-CD", "Red LED Vdd" and "ethernet reset" are
-reasonable line names as they describe what the line is used for. "GPIO0"
-is not a good name to give to a GPIO line. Placeholders are discouraged:
-rather use the "" (blank string) if the use of the GPIO line is undefined
-in your design. The names are assigned starting from line offset 0 from
-left to right from the passed array. An incomplete array (where the number
-of passed named are less than ngpios) will still be used up until the last
-provided valid line index.
+GPIO controller.
+
+For lines which are routed to on-board devices, this name should be
+the most meaningful producer name for the system, such as a rail name
+indicating the usage. Package names, such as a pin name, are discouraged:
+such lines have opaque names (since they are by definition general-purpose)
+and such names are usually not very helpful. For example "MMC-CD", "Red LED
+Vdd" and "ethernet reset" are reasonable line names as they describe what
+the line is used for. "GPIO0" is not a good name to give to a GPIO line
+that is hard-wired to a specific device.
+
+However, in the case of lines that are routed to a general purpose header
+(e.g. the Raspberry Pi 40-pin header), and therefore are not hard-wired to
+specific devices, using a pin number or the names on the header is fine
+provided these are real (preferably unique) names. Using an SoC's pad name
+or package name, or names made up from kernel-internal software constructs,
+are strongly discouraged. For example "pin8 [gpio14/uart0_txd]" is fine
+if the board's documentation labels pin 8 as such. However "PortB_24" (an
+example of a name from an SoC's reference manual) would not be desirable.
+
+In either case placeholders are discouraged: rather use the "" (blank
+string) if the use of the GPIO line is undefined in your design. Ideally,
+try to add comments to the dts file describing the naming convention
+you have chosen, and specifying from where the names are derived.
+
+The names are assigned starting from line offset 0, from left to right,
+from the passed array. An incomplete array (where the number of passed
+names is less than ngpios) will be used up until the last provided valid
+line index.
 
 Example:
 
@@ -287,7 +304,7 @@ pins 50..69.
 It is also possible to use pin groups for gpio ranges when pin groups are the
 easiest and most convenient mapping.
 
-Both both <pinctrl-base> and <count> must set to 0 when using named pin groups
+Both <pinctrl-base> and <count> must be set to 0 when using named pin groups
 names.
 
 The property gpio-ranges-group-names must contain exactly one string for each
@@ -296,7 +313,7 @@ range.
 Elements of gpio-ranges-group-names must contain the name of a pin group
 defined in the respective pin controller. The number of pins/GPIO lines in the
 range is the number of pins in that pin group. The number of pins of that
-group is defined int the implementation and not in the device tree.
+group is defined in the implementation and not in the device tree.
 
 If numerical and named pin groups are mixed, the string corresponding to a
 numerical pin range in gpio-ranges-group-names must be empty.

@@ -112,7 +112,7 @@ static const struct regulator_ops wm8400_dcdc_ops = {
 	.get_optimum_mode = wm8400_dcdc_get_optimum_mode,
 };
 
-static struct regulator_desc regulators[] = {
+static const struct regulator_desc regulators[] = {
 	{
 		.name = "LDO1",
 		.id = WM8400_LDO1,
@@ -223,6 +223,7 @@ static int wm8400_regulator_probe(struct platform_device *pdev)
 static struct platform_driver wm8400_regulator_driver = {
 	.driver = {
 		.name = "wm8400-regulator",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe = wm8400_regulator_probe,
 };

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2012-2014, 2021 Intel Corporation
+ * Copyright (C) 2012-2014, 2021-2022, 2024 Intel Corporation
  * Copyright (C) 2013-2014 Intel Mobile Communications GmbH
  * Copyright (C) 2015 Intel Deutschland GmbH
  */
@@ -10,7 +10,7 @@
 #include "mvm.h"
 
 void iwl_mvm_set_wowlan_qos_seq(struct iwl_mvm_sta *mvm_ap_sta,
-				struct iwl_wowlan_config_cmd *cmd)
+				struct iwl_wowlan_config_cmd_v6 *cmd)
 {
 	int i;
 
@@ -30,7 +30,8 @@ int iwl_mvm_send_proto_offload(struct iwl_mvm *mvm,
 			       struct ieee80211_vif *vif,
 			       bool disable_offloading,
 			       bool offload_ns,
-			       u32 cmd_flags)
+			       u32 cmd_flags,
+			       u8 sta_id)
 {
 	union {
 		struct iwl_proto_offload_cmd_v1 v1;
@@ -192,14 +193,21 @@ int iwl_mvm_send_proto_offload(struct iwl_mvm *mvm,
 		size = sizeof(cmd.v1);
 	}
 
-	if (vif->bss_conf.arp_addr_cnt) {
+	if (vif->cfg.arp_addr_cnt) {
 		enabled |= IWL_D3_PROTO_OFFLOAD_ARP | IWL_D3_PROTO_IPV4_VALID;
-		common->host_ipv4_addr = vif->bss_conf.arp_addr_list[0];
+		common->host_ipv4_addr = vif->cfg.arp_addr_list[0];
 		memcpy(common->arp_mac_addr, vif->addr, ETH_ALEN);
 	}
 
+	if (fw_has_capa(&mvm->fw->ucode_capa,
+			IWL_UCODE_TLV_CAPA_OFFLOAD_BTM_SUPPORT))
+		enabled |= IWL_D3_PROTO_OFFLOAD_BTM;
+
 	if (!disable_offloading)
 		common->enabled = cpu_to_le32(enabled);
+
+	if (ver >= 4)
+		cmd.v4.sta_id = cpu_to_le32(sta_id);
 
 	hcmd.len[0] = size;
 	return iwl_mvm_send_cmd(mvm, &hcmd);

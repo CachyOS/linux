@@ -4,7 +4,9 @@
 #ifndef _I40E_TXRX_H_
 #define _I40E_TXRX_H_
 
+#include <linux/net/intel/libie/pctype.h>
 #include <net/xdp.h>
+#include "i40e_type.h"
 
 /* Interrupt Throttling and Rate Limiting Goodies */
 #define I40E_DEFAULT_IRQ_WORK      256
@@ -57,7 +59,7 @@ static inline u16 i40e_intrl_usec_to_reg(int intrl)
  * mentioning ITR_INDX, ITR_NONE cannot be used as an index 'n' into any
  * register but instead is a special value meaning "don't update" ITR0/1/2.
  */
-enum i40e_dyn_idx_t {
+enum i40e_dyn_idx {
 	I40E_IDX_ITR0 = 0,
 	I40E_IDX_ITR1 = 1,
 	I40E_IDX_ITR2 = 2,
@@ -67,32 +69,33 @@ enum i40e_dyn_idx_t {
 /* these are indexes into ITRN registers */
 #define I40E_RX_ITR    I40E_IDX_ITR0
 #define I40E_TX_ITR    I40E_IDX_ITR1
+#define I40E_SW_ITR    I40E_IDX_ITR2
 
 /* Supported RSS offloads */
-#define I40E_DEFAULT_RSS_HENA ( \
-	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV4_UDP) | \
-	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV4_SCTP) | \
-	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV4_TCP) | \
-	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV4_OTHER) | \
-	BIT_ULL(I40E_FILTER_PCTYPE_FRAG_IPV4) | \
-	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV6_UDP) | \
-	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV6_TCP) | \
-	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV6_SCTP) | \
-	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV6_OTHER) | \
-	BIT_ULL(I40E_FILTER_PCTYPE_FRAG_IPV6) | \
-	BIT_ULL(I40E_FILTER_PCTYPE_L2_PAYLOAD))
+#define I40E_DEFAULT_RSS_HASHCFG ( \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_NONF_IPV4_UDP) | \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_NONF_IPV4_SCTP) | \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_NONF_IPV4_TCP) | \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_NONF_IPV4_OTHER) | \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_FRAG_IPV4) | \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_NONF_IPV6_UDP) | \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_NONF_IPV6_TCP) | \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_NONF_IPV6_SCTP) | \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_NONF_IPV6_OTHER) | \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_FRAG_IPV6) | \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_L2_PAYLOAD))
 
-#define I40E_DEFAULT_RSS_HENA_EXPANDED (I40E_DEFAULT_RSS_HENA | \
-	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV4_TCP_SYN_NO_ACK) | \
-	BIT_ULL(I40E_FILTER_PCTYPE_NONF_UNICAST_IPV4_UDP) | \
-	BIT_ULL(I40E_FILTER_PCTYPE_NONF_MULTICAST_IPV4_UDP) | \
-	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV6_TCP_SYN_NO_ACK) | \
-	BIT_ULL(I40E_FILTER_PCTYPE_NONF_UNICAST_IPV6_UDP) | \
-	BIT_ULL(I40E_FILTER_PCTYPE_NONF_MULTICAST_IPV6_UDP))
+#define I40E_DEFAULT_RSS_HASHCFG_EXPANDED (I40E_DEFAULT_RSS_HASHCFG | \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_NONF_IPV4_TCP_SYN_NO_ACK) | \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_NONF_UNICAST_IPV4_UDP) | \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_NONF_MULTICAST_IPV4_UDP) | \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_NONF_IPV6_TCP_SYN_NO_ACK) | \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_NONF_UNICAST_IPV6_UDP) | \
+	BIT_ULL(LIBIE_FILTER_PCTYPE_NONF_MULTICAST_IPV6_UDP))
 
-#define i40e_pf_get_default_rss_hena(pf) \
-	(((pf)->hw_features & I40E_HW_MULTIPLE_TCP_UDP_RSS_PCTYPE) ? \
-	  I40E_DEFAULT_RSS_HENA_EXPANDED : I40E_DEFAULT_RSS_HENA)
+#define i40e_pf_get_default_rss_hashcfg(pf) \
+	(test_bit(I40E_HW_CAP_MULTI_TCP_UDP_RSS_PCTYPE, (pf)->hw.caps) ? \
+	 I40E_DEFAULT_RSS_HASHCFG_EXPANDED : I40E_DEFAULT_RSS_HASHCFG)
 
 /* Supported Rx Buffer Sizes (a multiple of 128) */
 #define I40E_RXBUFFER_256   256
@@ -277,6 +280,7 @@ struct i40e_rx_buffer {
 	struct page *page;
 	__u32 page_offset;
 	__u16 pagecnt_bias;
+	__u32 page_count;
 };
 
 struct i40e_queue_stats {
@@ -304,7 +308,7 @@ struct i40e_rx_queue_stats {
 	u64 page_busy_count;
 };
 
-enum i40e_ring_state_t {
+enum i40e_ring_state {
 	__I40E_TX_FDIR_INIT_DONE,
 	__I40E_TX_XPS_INIT_DONE,
 	__I40E_RING_STATE_NBITS /* must be last */
@@ -336,6 +340,17 @@ struct i40e_ring {
 	u8 dcb_tc;			/* Traffic class of ring */
 	u8 __iomem *tail;
 
+	/* Storing xdp_buff on ring helps in saving the state of partially built
+	 * packet when i40e_clean_rx_ring_irq() must return before it sees EOP
+	 * and to resume packet building for this ring in the next call to
+	 * i40e_clean_rx_ring_irq().
+	 */
+	struct xdp_buff xdp;
+
+	/* Next descriptor to be processed; next_to_clean is updated only on
+	 * processing EOP descriptor
+	 */
+	u16 next_to_process;
 	/* high bit set means dynamic, use accessor routines to read/write.
 	 * hardware only supports 2us resolution for the ITR registers.
 	 * these values always store the USER setting, and must be converted
@@ -380,14 +395,6 @@ struct i40e_ring {
 
 	struct rcu_head rcu;		/* to avoid race on free */
 	u16 next_to_alloc;
-	struct sk_buff *skb;		/* When i40e_clean_rx_ring_irq() must
-					 * return before it sees the EOP for
-					 * the current packet, we save that skb
-					 * here and resume receiving this
-					 * packet the next time
-					 * i40e_clean_rx_ring_irq() is called
-					 * for this ring.
-					 */
 
 	struct i40e_channel *ch;
 	u16 rx_offset;
@@ -464,12 +471,13 @@ void i40e_free_rx_resources(struct i40e_ring *rx_ring);
 int i40e_napi_poll(struct napi_struct *napi, int budget);
 void i40e_force_wb(struct i40e_vsi *vsi, struct i40e_q_vector *q_vector);
 u32 i40e_get_tx_pending(struct i40e_ring *ring, bool in_sw);
-void i40e_detect_recover_hung(struct i40e_vsi *vsi);
+void i40e_detect_recover_hung(struct i40e_pf *pf);
 int __i40e_maybe_stop_tx(struct i40e_ring *tx_ring, int size);
 bool __i40e_chk_linearize(struct sk_buff *skb);
 int i40e_xdp_xmit(struct net_device *dev, int n, struct xdp_frame **frames,
 		  u32 flags);
-int i40e_alloc_rx_bi(struct i40e_ring *rx_ring);
+bool i40e_is_non_eop(struct i40e_ring *rx_ring,
+		     union i40e_rx_desc *rx_desc);
 
 /**
  * i40e_get_head - Retrieve head from head writeback

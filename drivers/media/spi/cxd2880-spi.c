@@ -388,7 +388,7 @@ static int cxd2880_start_feed(struct dvb_demux_feed *feed)
 
 	if (dvb_spi->feed_count == 0) {
 		dvb_spi->ts_buf =
-			kmalloc(MAX_TRANS_PKT * 188,
+			kzalloc(MAX_TRANS_PKT * 188,
 				GFP_KERNEL | GFP_DMA);
 		if (!dvb_spi->ts_buf) {
 			pr_err("ts buffer allocate failed\n");
@@ -516,7 +516,7 @@ cxd2880_spi_probe(struct spi_device *spi)
 		return -EINVAL;
 	}
 
-	dvb_spi = kzalloc(sizeof(struct cxd2880_dvb_spi), GFP_KERNEL);
+	dvb_spi = kzalloc_obj(struct cxd2880_dvb_spi);
 	if (!dvb_spi)
 		return -ENOMEM;
 

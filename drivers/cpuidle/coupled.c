@@ -54,7 +54,7 @@
  * variable is not locked.  It is only written from the cpu that
  * it stores (or by the on/offlining cpu if that cpu is offline),
  * and only read after all the cpus are ready for the coupled idle
- * state are are no longer updating it.
+ * state are no longer updating it.
  *
  * Three atomic counters are used.  alive_count tracks the number
  * of cpus in the coupled set that are currently or soon will be
@@ -439,13 +439,8 @@ static int cpuidle_coupled_clear_pokes(int cpu)
 
 static bool cpuidle_coupled_any_pokes_pending(struct cpuidle_coupled *coupled)
 {
-	cpumask_t cpus;
-	int ret;
-
-	cpumask_and(&cpus, cpu_online_mask, &coupled->coupled_cpus);
-	ret = cpumask_and(&cpus, &cpuidle_coupled_poke_pending, &cpus);
-
-	return ret;
+	return cpumask_first_and_and(cpu_online_mask, &coupled->coupled_cpus,
+				     &cpuidle_coupled_poke_pending) < nr_cpu_ids;
 }
 
 /**
@@ -626,9 +621,7 @@ out:
 
 static void cpuidle_coupled_update_online_cpus(struct cpuidle_coupled *coupled)
 {
-	cpumask_t cpus;
-	cpumask_and(&cpus, cpu_online_mask, &coupled->coupled_cpus);
-	coupled->online_count = cpumask_weight(&cpus);
+	coupled->online_count = cpumask_weight_and(cpu_online_mask, &coupled->coupled_cpus);
 }
 
 /**
@@ -658,7 +651,7 @@ int cpuidle_coupled_register_device(struct cpuidle_device *dev)
 	}
 
 	/* No existing coupled info found, create a new one */
-	coupled = kzalloc(sizeof(struct cpuidle_coupled), GFP_KERNEL);
+	coupled = kzalloc_obj(struct cpuidle_coupled);
 	if (!coupled)
 		return -ENOMEM;
 

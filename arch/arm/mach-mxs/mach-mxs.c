@@ -11,13 +11,11 @@
 #include <linux/err.h>
 #include <linux/gpio.h>
 #include <linux/init.h>
-#include <linux/irqchip/mxs.h>
 #include <linux/reboot.h>
 #include <linux/micrel_phy.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/phy.h>
-#include <linux/pinctrl/consumer.h>
 #include <linux/sys_soc.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
@@ -175,7 +173,7 @@ static void __init update_fec_mac_prop(enum mac_oui oui)
 
 		from = np;
 
-		if (of_get_property(np, "local-mac-address", NULL))
+		if (of_property_present(np, "local-mac-address"))
 			continue;
 
 		newmac = kzalloc(sizeof(*newmac) + 6, GFP_KERNEL);
@@ -358,7 +356,9 @@ static int __init mxs_restart_init(void)
 {
 	struct device_node *np;
 
-	np = of_find_compatible_node(NULL, NULL, "fsl,clkctrl");
+	np = of_find_compatible_node(NULL, NULL, "fsl,imx23-clkctrl");
+	if (!np)
+		np = of_find_compatible_node(NULL, NULL, "fsl,imx28-clkctrl");
 	reset_addr = of_iomap(np, 0);
 	if (!reset_addr)
 		return -ENODEV;
@@ -387,14 +387,16 @@ static void __init mxs_machine_init(void)
 	const u32 *ocotp = mxs_get_ocotp();
 	int ret;
 
-	soc_dev_attr = kzalloc(sizeof(*soc_dev_attr), GFP_KERNEL);
+	soc_dev_attr = kzalloc_obj(*soc_dev_attr);
 	if (!soc_dev_attr)
 		return;
 
 	root = of_find_node_by_path("/");
 	ret = of_property_read_string(root, "model", &soc_dev_attr->machine);
-	if (ret)
+	if (ret) {
+		kfree(soc_dev_attr);
 		return;
+	}
 
 	soc_dev_attr->family = "Freescale MXS Family";
 	soc_dev_attr->soc_id = mxs_get_soc_id();
@@ -471,7 +473,6 @@ static const char *const mxs_dt_compat[] __initconst = {
 };
 
 DT_MACHINE_START(MXS, "Freescale MXS (Device Tree)")
-	.handle_irq	= icoll_handle_irq,
 	.init_machine	= mxs_machine_init,
 	.init_late      = mxs_pm_init,
 	.dt_compat	= mxs_dt_compat,

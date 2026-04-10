@@ -9,6 +9,8 @@
  * PPC64 updates by Dave Engebretsen (engebret@us.ibm.com)
  */
 
+#include <linux/export.h>
+#include <linux/linkage.h>
 #include <linux/sys.h>
 #include <asm/unistd.h>
 #include <asm/errno.h>
@@ -22,7 +24,6 @@
 #include <asm/kexec.h>
 #include <asm/ptrace.h>
 #include <asm/mmu.h>
-#include <asm/export.h>
 #include <asm/feature-fixups.h>
 
 	.text
@@ -73,7 +74,7 @@ _GLOBAL(rmci_off)
 	blr
 #endif /* CONFIG_PPC_EARLY_DEBUG_BOOTX */
 
-#if defined(CONFIG_PPC_PMAC) || defined(CONFIG_PPC_MAPLE)
+#ifdef CONFIG_PPC_PMAC
 
 /*
  * Do an IO access in real mode
@@ -136,7 +137,7 @@ _GLOBAL(real_writeb)
 	sync
 	isync
 	blr
-#endif /* defined(CONFIG_PPC_PMAC) || defined(CONFIG_PPC_MAPLE) */
+#endif // CONFIG_PPC_PMAC
 
 #ifdef CONFIG_PPC_PASEMI
 
@@ -173,7 +174,7 @@ _GLOBAL(real_205_writeb)
 #endif /* CONFIG_PPC_PASEMI */
 
 
-#if defined(CONFIG_CPU_FREQ_PMAC64) || defined(CONFIG_CPU_FREQ_MAPLE)
+#ifdef CONFIG_CPU_FREQ_PMAC64
 /*
  * SCOM access functions for 970 (FX only for now)
  *
@@ -191,7 +192,7 @@ _GLOBAL(scom970_read)
 	xori	r0,r0,MSR_EE
 	mtmsrd	r0,1
 
-	/* rotate 24 bits SCOM address 8 bits left and mask out it's low 8 bits
+	/* rotate 24 bits SCOM address 8 bits left and mask out its low 8 bits
 	 * (including parity). On current CPUs they must be 0'd,
 	 * and finally or in RW bit
 	 */
@@ -225,7 +226,7 @@ _GLOBAL(scom970_write)
 	xori	r0,r0,MSR_EE
 	mtmsrd	r0,1
 
-	/* rotate 24 bits SCOM address 8 bits left and mask out it's low 8 bits
+	/* rotate 24 bits SCOM address 8 bits left and mask out its low 8 bits
 	 * (including parity). On current CPUs they must be 0'd.
 	 */
 
@@ -242,7 +243,7 @@ _GLOBAL(scom970_write)
 	/* restore interrupts */
 	mtmsrd	r5,1
 	blr
-#endif /* CONFIG_CPU_FREQ_PMAC64 || CONFIG_CPU_FREQ_MAPLE */
+#endif // CONFIG_CPU_FREQ_PMAC64
 
 /* kexec_wait(phys_cpu)
  *
@@ -286,7 +287,7 @@ kexec_flag:
 
 
 #ifdef CONFIG_KEXEC_CORE
-#ifdef CONFIG_PPC_BOOK3E
+#ifdef CONFIG_PPC_BOOK3E_64
 /*
  * BOOK3E has no real MMU mode, so we have to setup the initial TLB
  * for a core to identity map v:0 to p:0.  This current implementation
@@ -353,8 +354,8 @@ _GLOBAL(kexec_smp_wait)
  *
  * don't overwrite r3 here, it is live for kexec_wait above.
  */
-real_mode:	/* assume normal blr return */
-#ifdef CONFIG_PPC_BOOK3E
+SYM_FUNC_START_LOCAL(real_mode)	/* assume normal blr return */
+#ifdef CONFIG_PPC_BOOK3E_64
 	/* Create an identity mapping. */
 	b	kexec_create_tlb
 #else
@@ -370,6 +371,7 @@ real_mode:	/* assume normal blr return */
 	mtspr	SPRN_SRR0,r11
 	rfid
 #endif
+SYM_FUNC_END(real_mode)
 
 /*
  * kexec_sequence(newstack, start, image, control, clear_all(),
@@ -384,7 +386,7 @@ _GLOBAL(kexec_sequence)
 	std	r0,16(r1)
 
 	/* switch stacks to newstack -- &kexec_stack.stack */
-	stdu	r1,THREAD_SIZE-STACK_FRAME_OVERHEAD(r3)
+	stdu	r1,THREAD_SIZE-STACK_FRAME_MIN_SIZE(r3)
 	mr	r1,r3
 
 	li	r0,0
@@ -401,7 +403,7 @@ _GLOBAL(kexec_sequence)
 	std	r26,-48(r1)
 	std	r25,-56(r1)
 
-	stdu	r1,-STACK_FRAME_OVERHEAD-64(r1)
+	stdu	r1,-STACK_FRAME_MIN_SIZE-64(r1)
 
 	/* save args into preserved regs */
 	mr	r31,r3			/* newstack (both) */
@@ -413,7 +415,7 @@ _GLOBAL(kexec_sequence)
 	lhz	r25,PACAHWCPUID(r13)	/* get our phys cpu from paca */
 
 	/* disable interrupts, we are overwriting kernel data next */
-#ifdef CONFIG_PPC_BOOK3E
+#ifdef CONFIG_PPC_BOOK3E_64
 	wrteei	0
 #else
 	mfmsr	r3
@@ -430,7 +432,7 @@ _GLOBAL(kexec_sequence)
 1:
 	/* copy dest pages, flush whole dest image */
 	mr	r3,r29
-	bl	kexec_copy_flush	/* (image) */
+	bl	CFUNC(kexec_copy_flush)	/* (image) */
 
 	/* turn off mmu now if not done earlier */
 	cmpdi	r26,0

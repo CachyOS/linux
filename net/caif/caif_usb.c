@@ -20,6 +20,7 @@
 #include <net/caif/cfpkt.h>
 #include <net/caif/cfcnfg.h>
 
+MODULE_DESCRIPTION("ST-Ericsson CAIF modem protocol USB support");
 MODULE_LICENSE("GPL");
 
 #define CFUSB_PAD_DESCR_SZ 1	/* Alignment descriptor length */
@@ -84,7 +85,7 @@ static void cfusbl_ctrlcmd(struct cflayer *layr, enum caif_ctrlcmd ctrl,
 static struct cflayer *cfusbl_create(int phyid, const u8 ethaddr[ETH_ALEN],
 				      u8 braddr[ETH_ALEN])
 {
-	struct cfusbl *this = kmalloc(sizeof(struct cfusbl), GFP_ATOMIC);
+	struct cfusbl *this = kmalloc_obj(struct cfusbl, GFP_ATOMIC);
 
 	if (!this)
 		return NULL;
@@ -133,6 +134,9 @@ static int cfusbl_device_notify(struct notifier_block *me, unsigned long what,
 	struct usbnet *usbnet;
 	struct usb_device *usbdev;
 	int res;
+
+	if (what == NETDEV_UNREGISTER && dev->reg_state >= NETREG_UNREGISTERED)
+		return 0;
 
 	/* Check whether we have a NCM device, and find its VID/PID. */
 	if (!(dev->dev.parent && dev->dev.parent->driver &&
@@ -184,7 +188,7 @@ static int cfusbl_device_notify(struct notifier_block *me, unsigned long what,
 		dev_add_pack(&caif_usb_type);
 	pack_added = true;
 
-	strlcpy(layer->name, dev->name, sizeof(layer->name));
+	strscpy(layer->name, dev->name, sizeof(layer->name));
 
 	return 0;
 err:

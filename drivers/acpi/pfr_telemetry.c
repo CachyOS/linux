@@ -144,7 +144,7 @@ static int get_pfrt_log_data_info(struct pfrt_log_data_info *data_info,
 	ret = 0;
 
 free_acpi_buffer:
-	kfree(out_obj);
+	ACPI_FREE(out_obj);
 
 	return ret;
 }
@@ -180,7 +180,7 @@ static int set_pfrt_log_level(int level, struct pfrt_log_device *pfrt_log_dev)
 		ret = -EBUSY;
 	}
 
-	kfree(out_obj);
+	ACPI_FREE(out_obj);
 
 	return ret;
 }
@@ -218,7 +218,7 @@ static int get_pfrt_log_level(struct pfrt_log_device *pfrt_log_dev)
 	ret = obj->integer.value;
 
 free_acpi_buffer:
-	kfree(out_obj);
+	ACPI_FREE(out_obj);
 
 	return ret;
 }
@@ -272,9 +272,6 @@ static long pfrt_log_ioctl(struct file *file, unsigned int cmd, unsigned long ar
 
 	case PFRT_LOG_IOC_GET_INFO:
 		info.log_level = get_pfrt_log_level(pfrt_log_dev);
-		if (ret < 0)
-			return ret;
-
 		info.log_type = pfrt_log_dev->info.log_type;
 		info.log_revid = pfrt_log_dev->info.log_revid;
 		if (copy_to_user(p, &info, sizeof(info)))
@@ -310,7 +307,7 @@ pfrt_log_mmap(struct file *file, struct vm_area_struct *vma)
 		return -EROFS;
 
 	/* changing from read to write with mprotect is not allowed */
-	vma->vm_flags &= ~VM_MAYWRITE;
+	vm_flags_clear(vma, VM_MAYWRITE);
 
 	pfrt_log_dev = to_pfrt_log_dev(file);
 
@@ -347,13 +344,11 @@ static const struct file_operations acpi_pfrt_log_fops = {
 	.llseek		= noop_llseek,
 };
 
-static int acpi_pfrt_log_remove(struct platform_device *pdev)
+static void acpi_pfrt_log_remove(struct platform_device *pdev)
 {
 	struct pfrt_log_device *pfrt_log_dev = platform_get_drvdata(pdev);
 
 	misc_deregister(&pfrt_log_dev->miscdev);
-
-	return 0;
 }
 
 static void pfrt_log_put_idx(void *data)

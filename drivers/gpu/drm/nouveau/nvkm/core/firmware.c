@@ -22,6 +22,9 @@
 #include <core/device.h>
 #include <core/firmware.h>
 
+#include <subdev/fb.h>
+#include <subdev/mmu.h>
+
 int
 nvkm_firmware_load_name(const struct nvkm_subdev *subdev, const char *base,
 			const char *name, int ver, const struct firmware **pfw)
@@ -76,8 +79,7 @@ nvkm_firmware_get(const struct nvkm_subdev *subdev, const char *fwname, int ver,
 	int i;
 
 	/* Convert device name to lowercase */
-	strncpy(cname, device->chip->name, sizeof(cname));
-	cname[sizeof(cname) - 1] = '\0';
+	strscpy(cname, device->chip->name, sizeof(cname));
 	i = strlen(cname);
 	while (i) {
 		--i;
@@ -106,4 +108,202 @@ void
 nvkm_firmware_put(const struct firmware *fw)
 {
 	release_firmware(fw);
+}
+
+#define nvkm_firmware_mem(p) container_of((p), struct nvkm_firmware, mem.memory)
+
+static struct scatterlist *
+nvkm_firmware_mem_sgl(struct nvkm_memory *memory)
+{
+	struct nvkm_firmware *fw = nvkm_firmware_mem(memory);
+
+	switch (fw->func->type) {
+	case NVKM_FIRMWARE_IMG_DMA: return &fw->mem.sgl;
+	case NVKM_FIRMWARE_IMG_SGT: return  fw->mem.sgt.sgl;
+	default:
+		WARN_ON(1);
+		break;
+	}
+
+	return NULL;
+}
+
+static int
+nvkm_firmware_mem_map(struct nvkm_memory *memory, u64 offset, struct nvkm_vmm *vmm,
+		      struct nvkm_vma *vma, void *argv, u32 argc)
+{
+	struct nvkm_firmware *fw = nvkm_firmware_mem(memory);
+	struct nvkm_vmm_map map = {
+		.memory = &fw->mem.memory,
+		.offset = offset,
+		.sgl = nvkm_firmware_mem_sgl(memory),
+	};
+
+	if (!map.sgl)
+		return -ENOSYS;
+
+	return nvkm_vmm_map(vmm, vma, argv, argc, &map);
+}
+
+static u64
+nvkm_firmware_mem_size(struct nvkm_memory *memory)
+{
+	struct scatterlist *sgl = nvkm_firmware_mem_sgl(memory);
+
+	return sgl ? sg_dma_len(sgl) : 0;
+}
+
+static u64
+nvkm_firmware_mem_addr(struct nvkm_memory *memory)
+{
+	BUG_ON(nvkm_firmware_mem(memory)->func->type != NVKM_FIRMWARE_IMG_DMA);
+	return nvkm_firmware_mem(memory)->phys;
+}
+
+static u8
+nvkm_firmware_mem_page(struct nvkm_memory *memory)
+{
+	return PAGE_SHIFT;
+}
+
+static enum nvkm_memory_target
+nvkm_firmware_mem_target(struct nvkm_memory *memory)
+{
+	if (nvkm_firmware_mem(memory)->device->func->tegra)
+		return NVKM_MEM_TARGET_NCOH;
+
+	return NVKM_MEM_TARGET_HOST;
+}
+
+static void *
+nvkm_firmware_mem_dtor(struct nvkm_memory *memory)
+{
+	return NULL;
+}
+
+static const struct nvkm_memory_func
+nvkm_firmware_mem = {
+	.dtor = nvkm_firmware_mem_dtor,
+	.target = nvkm_firmware_mem_target,
+	.page = nvkm_firmware_mem_page,
+	.addr = nvkm_firmware_mem_addr,
+	.size = nvkm_firmware_mem_size,
+	.map = nvkm_firmware_mem_map,
+};
+
+void
+nvkm_firmware_dtor(struct nvkm_firmware *fw)
+{
+	struct nvkm_memory *memory = &fw->mem.memory;
+
+	if (!fw->img)
+		return;
+
+	switch (fw->func->type) {
+	case NVKM_FIRMWARE_IMG_RAM:
+		kfree(fw->img);
+		break;
+	case NVKM_FIRMWARE_IMG_DMA:
+		nvkm_memory_unref(&memory);
+		dma_free_noncoherent(fw->device->dev, sg_dma_len(&fw->mem.sgl),
+				     fw->img, fw->phys, DMA_TO_DEVICE);
+		break;
+	case NVKM_FIRMWARE_IMG_SGT:
+		nvkm_memory_unref(&memory);
+		dma_unmap_sgtable(fw->device->dev, &fw->mem.sgt, DMA_TO_DEVICE, 0);
+		sg_free_table(&fw->mem.sgt);
+		vfree(fw->img);
+		break;
+	default:
+		WARN_ON(1);
+		break;
+	}
+
+	fw->img = NULL;
+}
+
+int
+nvkm_firmware_ctor(const struct nvkm_firmware_func *func, const char *name,
+		   struct nvkm_device *device, const void *src, int len, struct nvkm_firmware *fw)
+{
+	fw->func = func;
+	fw->name = name;
+	fw->device = device;
+	fw->len = len;
+
+	switch (fw->func->type) {
+	case NVKM_FIRMWARE_IMG_RAM:
+		fw->img = kmemdup(src, fw->len, GFP_KERNEL);
+		break;
+	case NVKM_FIRMWARE_IMG_DMA: {
+		dma_addr_t addr;
+		len = ALIGN(fw->len, PAGE_SIZE);
+
+		fw->img = dma_alloc_noncoherent(fw->device->dev,
+						len, &addr,
+						DMA_TO_DEVICE,
+						GFP_KERNEL);
+		if (fw->img) {
+			memcpy(fw->img, src, fw->len);
+			fw->phys = addr;
+		}
+
+		sg_init_one(&fw->mem.sgl, fw->img, len);
+		sg_dma_address(&fw->mem.sgl) = fw->phys;
+		sg_dma_len(&fw->mem.sgl) = len;
+	}
+		break;
+	case NVKM_FIRMWARE_IMG_SGT:
+		len = ALIGN(fw->len, PAGE_SIZE);
+
+		fw->img = vmalloc(len);
+		if (fw->img) {
+			int pages = len >> PAGE_SHIFT;
+			int ret = 0;
+
+			memcpy(fw->img, src, fw->len);
+
+			ret = sg_alloc_table(&fw->mem.sgt, pages, GFP_KERNEL);
+			if (ret == 0) {
+				struct scatterlist *sgl;
+				u8 *data = fw->img;
+				int i;
+
+				for_each_sgtable_sg(&fw->mem.sgt, sgl, i) {
+					struct page *page = vmalloc_to_page(data);
+
+					if (!page) {
+						ret = -EFAULT;
+						break;
+					}
+
+					sg_set_page(sgl, page, PAGE_SIZE, 0);
+					data += PAGE_SIZE;
+				}
+
+				if (ret == 0) {
+					ret = dma_map_sgtable(fw->device->dev, &fw->mem.sgt,
+							      DMA_TO_DEVICE, 0);
+				}
+
+				if (ret)
+					sg_free_table(&fw->mem.sgt);
+			}
+
+			if (ret) {
+				vfree(fw->img);
+				fw->img = NULL;
+			}
+		}
+		break;
+	default:
+		WARN_ON(1);
+		return -EINVAL;
+	}
+
+	if (!fw->img)
+		return -ENOMEM;
+
+	nvkm_memory_ctor(&nvkm_firmware_mem, &fw->mem.memory);
+	return 0;
 }

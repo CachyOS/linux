@@ -73,7 +73,7 @@ static void stm32_timer_of_bits_set(struct timer_of *to, int bits)
  * Accessor helper to get the number of bits in the timer-of private
  * structure.
  *
- * Returns an integer corresponding to the number of bits.
+ * Returns: an integer corresponding to the number of bits.
  */
 static int stm32_timer_of_bits_get(struct timer_of *to)
 {
@@ -177,7 +177,7 @@ static irqreturn_t stm32_clock_event_handler(int irq, void *dev_id)
 }
 
 /**
- * stm32_timer_width - Sort out the timer width (32/16)
+ * stm32_timer_set_width - Sort out the timer width (32/16)
  * @to: a pointer to a timer-of structure
  *
  * Write the 32-bit max value and read/return the result. If the timer
@@ -291,7 +291,7 @@ static int __init stm32_timer_init(struct device_node *node)
 	struct timer_of *to;
 	int ret;
 
-	to = kzalloc(sizeof(*to), GFP_KERNEL);
+	to = kzalloc_obj(*to);
 	if (!to)
 		return -ENOMEM;
 
@@ -302,8 +302,7 @@ static int __init stm32_timer_init(struct device_node *node)
 	if (ret)
 		goto err;
 
-	to->private_data = kzalloc(sizeof(struct stm32_timer_private),
-				   GFP_KERNEL);
+	to->private_data = kzalloc_obj(struct stm32_timer_private);
 	if (!to->private_data) {
 		ret = -ENOMEM;
 		goto deinit;

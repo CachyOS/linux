@@ -59,6 +59,15 @@ enum hdmi_infoframe_type {
 #define HDMI_DRM_INFOFRAME_SIZE    26
 #define HDMI_VENDOR_INFOFRAME_SIZE  4
 
+/*
+ * HDMI 1.3a table 5-14 states that the largest InfoFrame_length is 27,
+ * not including the packet header or checksum byte. We include the
+ * checksum byte in HDMI_INFOFRAME_HEADER_SIZE, so this should allow
+ * HDMI_INFOFRAME_SIZE(MAX) to be the largest buffer we could ever need
+ * for any HDMI infoframe.
+ */
+#define HDMI_MAX_INFOFRAME_SIZE    27
+
 #define HDMI_INFOFRAME_SIZE(type)	\
 	(HDMI_INFOFRAME_HEADER_SIZE + HDMI_ ## type ## _INFOFRAME_SIZE)
 
@@ -170,19 +179,19 @@ struct hdmi_avi_infoframe {
 	enum hdmi_infoframe_type type;
 	unsigned char version;
 	unsigned char length;
+	bool itc;
+	unsigned char pixel_repeat;
 	enum hdmi_colorspace colorspace;
 	enum hdmi_scan_mode scan_mode;
 	enum hdmi_colorimetry colorimetry;
 	enum hdmi_picture_aspect picture_aspect;
 	enum hdmi_active_aspect active_aspect;
-	bool itc;
 	enum hdmi_extended_colorimetry extended_colorimetry;
 	enum hdmi_quantization_range quantization_range;
 	enum hdmi_nups nups;
 	unsigned char video_code;
 	enum hdmi_ycc_quantization_range ycc_quantization_range;
 	enum hdmi_content_type content_type;
-	unsigned char pixel_repeat;
 	unsigned short top_bar;
 	unsigned short bottom_bar;
 	unsigned short left_bar;
@@ -336,7 +345,12 @@ ssize_t hdmi_audio_infoframe_pack(struct hdmi_audio_infoframe *frame,
 				  void *buffer, size_t size);
 ssize_t hdmi_audio_infoframe_pack_only(const struct hdmi_audio_infoframe *frame,
 				       void *buffer, size_t size);
-int hdmi_audio_infoframe_check(struct hdmi_audio_infoframe *frame);
+int hdmi_audio_infoframe_check(const struct hdmi_audio_infoframe *frame);
+
+struct dp_sdp;
+ssize_t
+hdmi_audio_infoframe_pack_for_dp(const struct hdmi_audio_infoframe *frame,
+				 struct dp_sdp *sdp, u8 dp_version);
 
 enum hdmi_3d_structure {
 	HDMI_3D_STRUCTURE_INVALID = -1,
@@ -431,7 +445,6 @@ ssize_t hdmi_infoframe_pack(union hdmi_infoframe *frame, void *buffer,
 			    size_t size);
 ssize_t hdmi_infoframe_pack_only(const union hdmi_infoframe *frame,
 				 void *buffer, size_t size);
-int hdmi_infoframe_check(union hdmi_infoframe *frame);
 int hdmi_infoframe_unpack(union hdmi_infoframe *frame,
 			  const void *buffer, size_t size);
 void hdmi_infoframe_log(const char *level, struct device *dev,

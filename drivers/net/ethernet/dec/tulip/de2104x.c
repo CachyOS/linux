@@ -49,7 +49,7 @@
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <linux/uaccess.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 MODULE_AUTHOR("Jeff Garzik <jgarzik@pobox.com>");
 MODULE_DESCRIPTION("Intel/Digital 21040/1 series PCI Ethernet driver");
@@ -963,7 +963,7 @@ static void de_next_media (struct de_private *de, const u32 *media,
 
 static void de21040_media_timer (struct timer_list *t)
 {
-	struct de_private *de = from_timer(de, t, media_timer);
+	struct de_private *de = timer_container_of(de, t, media_timer);
 	struct net_device *dev = de->dev;
 	u32 status = dr32(SIAStatus);
 	unsigned int carrier;
@@ -1044,7 +1044,7 @@ static unsigned int de_ok_to_advertise (struct de_private *de, u32 new_media)
 
 static void de21041_media_timer (struct timer_list *t)
 {
-	struct de_private *de = from_timer(de, t, media_timer);
+	struct de_private *de = timer_container_of(de, t, media_timer);
 	struct net_device *dev = de->dev;
 	u32 status = dr32(SIAStatus);
 	unsigned int carrier;
@@ -1428,7 +1428,7 @@ static int de_close (struct net_device *dev)
 
 	netif_dbg(de, ifdown, dev, "disabling interface\n");
 
-	del_timer_sync(&de->media_timer);
+	timer_delete_sync(&de->media_timer);
 
 	spin_lock_irqsave(&de->lock, flags);
 	de_stop_hw(de);
@@ -1452,7 +1452,7 @@ static void de_tx_timeout (struct net_device *dev, unsigned int txqueue)
 		   dr32(MacStatus), dr32(MacMode), dr32(SIAStatus),
 		   de->rx_tail, de->tx_head, de->tx_tail);
 
-	del_timer_sync(&de->media_timer);
+	timer_delete_sync(&de->media_timer);
 
 	disable_irq(irq);
 	spin_lock_irq(&de->lock);
@@ -1606,8 +1606,8 @@ static void de_get_drvinfo (struct net_device *dev,struct ethtool_drvinfo *info)
 {
 	struct de_private *de = netdev_priv(dev);
 
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->bus_info, pci_name(de->pdev), sizeof(info->bus_info));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->bus_info, pci_name(de->pdev), sizeof(info->bus_info));
 }
 
 static int de_get_regs_len(struct net_device *dev)
@@ -2126,7 +2126,7 @@ static int __maybe_unused de_suspend(struct device *dev_d)
 	if (netif_running (dev)) {
 		const int irq = pdev->irq;
 
-		del_timer_sync(&de->media_timer);
+		timer_delete_sync(&de->media_timer);
 
 		disable_irq(irq);
 		spin_lock_irq(&de->lock);

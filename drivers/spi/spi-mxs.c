@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0+
 //
-// Freescale MXS SPI master driver
+// Freescale MXS SPI host driver
 //
 // Copyright 2012 DENX Software Engineering, GmbH.
 // Copyright 2012 Freescale Semiconductor, Inc.
@@ -39,6 +39,7 @@
 #include <linux/spi/spi.h>
 #include <linux/spi/mxs-spi.h>
 #include <trace/events/spi.h>
+#include <linux/dma/mxs-dma.h>
 
 #define DRIVER_NAME		"mxs-spi"
 
@@ -63,7 +64,7 @@ struct mxs_spi {
 static int mxs_spi_setup_transfer(struct spi_device *dev,
 				  const struct spi_transfer *t)
 {
-	struct mxs_spi *spi = spi_master_get_devdata(dev->master);
+	struct mxs_spi *spi = spi_controller_get_devdata(dev->controller);
 	struct mxs_ssp *ssp = &spi->ssp;
 	const unsigned int hz = min(dev->max_speed_hz, t->speed_hz);
 
@@ -181,7 +182,7 @@ static int mxs_spi_txrx_dma(struct mxs_spi *spi,
 	if (!len)
 		return -EINVAL;
 
-	dma_xfer = kcalloc(sgs, sizeof(*dma_xfer), GFP_KERNEL);
+	dma_xfer = kzalloc_objs(*dma_xfer, sgs);
 	if (!dma_xfer)
 		return -ENOMEM;
 
@@ -252,7 +253,7 @@ static int mxs_spi_txrx_dma(struct mxs_spi *spi,
 		desc = dmaengine_prep_slave_sg(ssp->dmach,
 				&dma_xfer[sg_count].sg, 1,
 				(flags & TXRX_WRITE) ? DMA_MEM_TO_DEV : DMA_DEV_TO_MEM,
-				DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
+				DMA_PREP_INTERRUPT | MXS_DMA_CTRL_WAIT4END);
 
 		if (!desc) {
 			dev_err(ssp->dev,
@@ -357,10 +358,10 @@ static int mxs_spi_txrx_pio(struct mxs_spi *spi,
 	return -ETIMEDOUT;
 }
 
-static int mxs_spi_transfer_one(struct spi_master *master,
+static int mxs_spi_transfer_one(struct spi_controller *host,
 				struct spi_message *m)
 {
-	struct mxs_spi *spi = spi_master_get_devdata(master);
+	struct mxs_spi *spi = spi_controller_get_devdata(host);
 	struct mxs_ssp *ssp = &spi->ssp;
 	struct spi_transfer *t;
 	unsigned int flag;
@@ -369,7 +370,7 @@ static int mxs_spi_transfer_one(struct spi_master *master,
 	/* Program CS register bits here, it will be used for all transfers. */
 	writel(BM_SSP_CTRL0_WAIT_FOR_CMD | BM_SSP_CTRL0_WAIT_FOR_IRQ,
 	       ssp->base + HW_SSP_CTRL0 + STMP_OFFSET_REG_CLR);
-	writel(mxs_spi_cs_to_reg(m->spi->chip_select),
+	writel(mxs_spi_cs_to_reg(spi_get_chipselect(m->spi, 0)),
 	       ssp->base + HW_SSP_CTRL0 + STMP_OFFSET_REG_SET);
 
 	list_for_each_entry(t, &m->transfers, transfer_list) {
@@ -380,12 +381,14 @@ static int mxs_spi_transfer_one(struct spi_master *master,
 		if (status)
 			break;
 
+		t->effective_speed_hz = ssp->clk_rate;
+
 		/* De-assert on last transfer, inverted by cs_change flag */
 		flag = (&t->transfer_list == m->transfers.prev) ^ t->cs_change ?
 		       TXRX_DEASSERT_CS : 0;
 
 		/*
-		 * Small blocks can be transfered via PIO.
+		 * Small blocks can be transferred via PIO.
 		 * Measured by empiric means:
 		 *
 		 * dd if=/dev/mtdblock0 of=/dev/null bs=1024k count=1
@@ -432,15 +435,15 @@ static int mxs_spi_transfer_one(struct spi_master *master,
 	}
 
 	m->status = status;
-	spi_finalize_current_message(master);
+	spi_finalize_current_message(host);
 
 	return status;
 }
 
 static int mxs_spi_runtime_suspend(struct device *dev)
 {
-	struct spi_master *master = dev_get_drvdata(dev);
-	struct mxs_spi *spi = spi_master_get_devdata(master);
+	struct spi_controller *host = dev_get_drvdata(dev);
+	struct mxs_spi *spi = spi_controller_get_devdata(host);
 	struct mxs_ssp *ssp = &spi->ssp;
 	int ret;
 
@@ -460,8 +463,8 @@ static int mxs_spi_runtime_suspend(struct device *dev)
 
 static int mxs_spi_runtime_resume(struct device *dev)
 {
-	struct spi_master *master = dev_get_drvdata(dev);
-	struct mxs_spi *spi = spi_master_get_devdata(master);
+	struct spi_controller *host = dev_get_drvdata(dev);
+	struct mxs_spi *spi = spi_controller_get_devdata(host);
 	struct mxs_ssp *ssp = &spi->ssp;
 	int ret;
 
@@ -476,12 +479,12 @@ static int mxs_spi_runtime_resume(struct device *dev)
 	return ret;
 }
 
-static int __maybe_unused mxs_spi_suspend(struct device *dev)
+static int mxs_spi_suspend(struct device *dev)
 {
-	struct spi_master *master = dev_get_drvdata(dev);
+	struct spi_controller *host = dev_get_drvdata(dev);
 	int ret;
 
-	ret = spi_master_suspend(master);
+	ret = spi_controller_suspend(host);
 	if (ret)
 		return ret;
 
@@ -491,9 +494,9 @@ static int __maybe_unused mxs_spi_suspend(struct device *dev)
 		return 0;
 }
 
-static int __maybe_unused mxs_spi_resume(struct device *dev)
+static int mxs_spi_resume(struct device *dev)
 {
-	struct spi_master *master = dev_get_drvdata(dev);
+	struct spi_controller *host = dev_get_drvdata(dev);
 	int ret;
 
 	if (!pm_runtime_suspended(dev))
@@ -503,7 +506,7 @@ static int __maybe_unused mxs_spi_resume(struct device *dev)
 	if (ret)
 		return ret;
 
-	ret = spi_master_resume(master);
+	ret = spi_controller_resume(host);
 	if (ret < 0 && !pm_runtime_suspended(dev))
 		mxs_spi_runtime_suspend(dev);
 
@@ -511,9 +514,8 @@ static int __maybe_unused mxs_spi_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops mxs_spi_pm = {
-	SET_RUNTIME_PM_OPS(mxs_spi_runtime_suspend,
-			   mxs_spi_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(mxs_spi_suspend, mxs_spi_resume)
+	RUNTIME_PM_OPS(mxs_spi_runtime_suspend, mxs_spi_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(mxs_spi_suspend, mxs_spi_resume)
 };
 
 static const struct of_device_id mxs_spi_dt_ids[] = {
@@ -528,7 +530,7 @@ static int mxs_spi_probe(struct platform_device *pdev)
 	const struct of_device_id *of_id =
 			of_match_device(mxs_spi_dt_ids, &pdev->dev);
 	struct device_node *np = pdev->dev.of_node;
-	struct spi_master *master;
+	struct spi_controller *host;
 	struct mxs_spi *spi;
 	struct mxs_ssp *ssp;
 	struct clk *clk;
@@ -561,21 +563,21 @@ static int mxs_spi_probe(struct platform_device *pdev)
 	if (ret)
 		clk_freq = clk_freq_default;
 
-	master = spi_alloc_master(&pdev->dev, sizeof(*spi));
-	if (!master)
+	host = spi_alloc_host(&pdev->dev, sizeof(*spi));
+	if (!host)
 		return -ENOMEM;
 
-	platform_set_drvdata(pdev, master);
+	platform_set_drvdata(pdev, host);
 
-	master->transfer_one_message = mxs_spi_transfer_one;
-	master->bits_per_word_mask = SPI_BPW_MASK(8);
-	master->mode_bits = SPI_CPOL | SPI_CPHA;
-	master->num_chipselect = 3;
-	master->dev.of_node = np;
-	master->flags = SPI_MASTER_HALF_DUPLEX;
-	master->auto_runtime_pm = true;
+	host->transfer_one_message = mxs_spi_transfer_one;
+	host->bits_per_word_mask = SPI_BPW_MASK(8);
+	host->mode_bits = SPI_CPOL | SPI_CPHA;
+	host->num_chipselect = 3;
+	host->dev.of_node = np;
+	host->flags = SPI_CONTROLLER_HALF_DUPLEX;
+	host->auto_runtime_pm = true;
 
-	spi = spi_master_get_devdata(master);
+	spi = spi_controller_get_devdata(host);
 	ssp = &spi->ssp;
 	ssp->dev = &pdev->dev;
 	ssp->clk = clk;
@@ -587,13 +589,13 @@ static int mxs_spi_probe(struct platform_device *pdev)
 	ret = devm_request_irq(&pdev->dev, irq_err, mxs_ssp_irq_handler, 0,
 			       dev_name(&pdev->dev), ssp);
 	if (ret)
-		goto out_master_free;
+		goto out_host_free;
 
 	ssp->dmach = dma_request_chan(&pdev->dev, "rx-tx");
 	if (IS_ERR(ssp->dmach)) {
 		dev_err(ssp->dev, "Failed to request DMA\n");
 		ret = PTR_ERR(ssp->dmach);
-		goto out_master_free;
+		goto out_host_free;
 	}
 
 	pm_runtime_enable(ssp->dev);
@@ -617,9 +619,9 @@ static int mxs_spi_probe(struct platform_device *pdev)
 	if (ret)
 		goto out_pm_runtime_put;
 
-	ret = devm_spi_register_master(&pdev->dev, master);
+	ret = devm_spi_register_controller(&pdev->dev, host);
 	if (ret) {
-		dev_err(&pdev->dev, "Cannot register SPI master, %d\n", ret);
+		dev_err(&pdev->dev, "Cannot register SPI host, %d\n", ret);
 		goto out_pm_runtime_put;
 	}
 
@@ -633,19 +635,19 @@ out_pm_runtime_disable:
 	pm_runtime_disable(ssp->dev);
 out_dma_release:
 	dma_release_channel(ssp->dmach);
-out_master_free:
-	spi_master_put(master);
+out_host_free:
+	spi_controller_put(host);
 	return ret;
 }
 
-static int mxs_spi_remove(struct platform_device *pdev)
+static void mxs_spi_remove(struct platform_device *pdev)
 {
-	struct spi_master *master;
+	struct spi_controller *host;
 	struct mxs_spi *spi;
 	struct mxs_ssp *ssp;
 
-	master = platform_get_drvdata(pdev);
-	spi = spi_master_get_devdata(master);
+	host = platform_get_drvdata(pdev);
+	spi = spi_controller_get_devdata(host);
 	ssp = &spi->ssp;
 
 	pm_runtime_disable(&pdev->dev);
@@ -653,23 +655,21 @@ static int mxs_spi_remove(struct platform_device *pdev)
 		mxs_spi_runtime_suspend(&pdev->dev);
 
 	dma_release_channel(ssp->dmach);
-
-	return 0;
 }
 
 static struct platform_driver mxs_spi_driver = {
 	.probe	= mxs_spi_probe,
-	.remove	= mxs_spi_remove,
+	.remove = mxs_spi_remove,
 	.driver	= {
 		.name	= DRIVER_NAME,
 		.of_match_table = mxs_spi_dt_ids,
-		.pm = &mxs_spi_pm,
+		.pm = pm_ptr(&mxs_spi_pm),
 	},
 };
 
 module_platform_driver(mxs_spi_driver);
 
 MODULE_AUTHOR("Marek Vasut <marex@denx.de>");
-MODULE_DESCRIPTION("MXS SPI master driver");
+MODULE_DESCRIPTION("MXS SPI host driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:mxs-spi");

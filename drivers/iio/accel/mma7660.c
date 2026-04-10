@@ -7,8 +7,8 @@
  * IIO driver for Freescale MMA7660FC; 7-bit I2C address: 0x4c.
  */
 
-#include <linux/acpi.h>
 #include <linux/i2c.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -38,21 +38,6 @@
 
 static const int mma7660_nscale = 467142857;
 
-#define MMA7660_CHANNEL(reg, axis) {	\
-	.type = IIO_ACCEL,	\
-	.address = reg,	\
-	.modified = 1,	\
-	.channel2 = IIO_MOD_##axis,	\
-	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),	\
-	.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),	\
-}
-
-static const struct iio_chan_spec mma7660_channels[] = {
-	MMA7660_CHANNEL(MMA7660_REG_XOUT, X),
-	MMA7660_CHANNEL(MMA7660_REG_YOUT, Y),
-	MMA7660_CHANNEL(MMA7660_REG_ZOUT, Z),
-};
-
 enum mma7660_mode {
 	MMA7660_MODE_STANDBY,
 	MMA7660_MODE_ACTIVE
@@ -62,6 +47,21 @@ struct mma7660_data {
 	struct i2c_client *client;
 	struct mutex lock;
 	enum mma7660_mode mode;
+	struct iio_mount_matrix orientation;
+};
+
+static const struct iio_mount_matrix *
+mma7660_get_mount_matrix(const struct iio_dev *indio_dev,
+			const struct iio_chan_spec *chan)
+{
+	struct mma7660_data *data = iio_priv(indio_dev);
+
+	return &data->orientation;
+}
+
+static const struct iio_chan_spec_ext_info mma7660_ext_info[] = {
+	IIO_MOUNT_MATRIX(IIO_SHARED_BY_DIR, mma7660_get_mount_matrix),
+	{ }
 };
 
 static IIO_CONST_ATTR(in_accel_scale_available, MMA7660_SCALE_AVAIL);
@@ -73,6 +73,22 @@ static struct attribute *mma7660_attributes[] = {
 
 static const struct attribute_group mma7660_attribute_group = {
 	.attrs = mma7660_attributes
+};
+
+#define MMA7660_CHANNEL(reg, axis) {	\
+	.type = IIO_ACCEL,	\
+	.address = reg,	\
+	.modified = 1,	\
+	.channel2 = IIO_MOD_##axis,	\
+	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),	\
+	.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),	\
+	.ext_info = mma7660_ext_info,				\
+}
+
+static const struct iio_chan_spec mma7660_channels[] = {
+	MMA7660_CHANNEL(MMA7660_REG_XOUT, X),
+	MMA7660_CHANNEL(MMA7660_REG_YOUT, Y),
+	MMA7660_CHANNEL(MMA7660_REG_ZOUT, Z),
 };
 
 static int mma7660_set_mode(struct mma7660_data *data,
@@ -169,24 +185,25 @@ static const struct iio_info mma7660_info = {
 	.attrs			= &mma7660_attribute_group,
 };
 
-static int mma7660_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int mma7660_probe(struct i2c_client *client)
 {
 	int ret;
 	struct iio_dev *indio_dev;
 	struct mma7660_data *data;
 
 	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*data));
-	if (!indio_dev) {
-		dev_err(&client->dev, "iio allocation failed!\n");
+	if (!indio_dev)
 		return -ENOMEM;
-	}
 
 	data = iio_priv(indio_dev);
 	data->client = client;
 	i2c_set_clientdata(client, indio_dev);
 	mutex_init(&data->lock);
 	data->mode = MMA7660_MODE_STANDBY;
+
+	ret = iio_read_mount_matrix(&client->dev, &data->orientation);
+	if (ret)
+		return ret;
 
 	indio_dev->info = &mma7660_info;
 	indio_dev->name = MMA7660_DRIVER_NAME;
@@ -207,7 +224,7 @@ static int mma7660_probe(struct i2c_client *client,
 	return ret;
 }
 
-static int mma7660_remove(struct i2c_client *client)
+static void mma7660_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	int ret;
@@ -218,8 +235,6 @@ static int mma7660_remove(struct i2c_client *client)
 	if (ret)
 		dev_warn(&client->dev, "Failed to put device in stand-by mode (%pe), ignoring\n",
 			 ERR_PTR(ret));
-
-	return 0;
 }
 
 static int mma7660_suspend(struct device *dev)
@@ -244,8 +259,8 @@ static DEFINE_SIMPLE_DEV_PM_OPS(mma7660_pm_ops, mma7660_suspend,
 				mma7660_resume);
 
 static const struct i2c_device_id mma7660_i2c_id[] = {
-	{"mma7660", 0},
-	{}
+	{ "mma7660" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, mma7660_i2c_id);
 
@@ -255,9 +270,9 @@ static const struct of_device_id mma7660_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, mma7660_of_match);
 
-static const struct acpi_device_id __maybe_unused mma7660_acpi_id[] = {
+static const struct acpi_device_id mma7660_acpi_id[] = {
 	{"MMA7660", 0},
-	{}
+	{ }
 };
 
 MODULE_DEVICE_TABLE(acpi, mma7660_acpi_id);
@@ -267,7 +282,7 @@ static struct i2c_driver mma7660_driver = {
 		.name = "mma7660",
 		.pm = pm_sleep_ptr(&mma7660_pm_ops),
 		.of_match_table = mma7660_of_match,
-		.acpi_match_table = ACPI_PTR(mma7660_acpi_id),
+		.acpi_match_table = mma7660_acpi_id,
 	},
 	.probe		= mma7660_probe,
 	.remove		= mma7660_remove,

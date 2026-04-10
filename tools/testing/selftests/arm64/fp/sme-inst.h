@@ -5,6 +5,8 @@
 #ifndef SME_INST_H
 #define SME_INST_H
 
+#define REG_FPMR                                        S3_3_C4_C4_2
+
 /*
  * RDSVL X\nx, #\imm
  */
@@ -46,6 +48,26 @@
 		| (((\nw) & 3) << 13)		\
 		| ((\nxbase) << 5)		\
 		| ((\offset) & 7)
+.endm
+
+/*
+ * LDR (ZT0)
+ *
+ *	LDR ZT0, nx
+ */
+.macro _ldr_zt nx
+	.inst	0xe11f8000			\
+		| (((\nx) & 0x1f) << 5)
+.endm
+
+/*
+ * STR (ZT0)
+ *
+ *	STR ZT0, nx
+ */
+.macro _str_zt nx
+	.inst	0xe13f8000			\
+		| (((\nx) & 0x1f) << 5)
 .endm
 
 #endif

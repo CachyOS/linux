@@ -66,13 +66,14 @@ void snd_seq_queue_client_leave(int client);
 int snd_seq_enqueue_event(struct snd_seq_event_cell *cell, int atomic, int hop);
 
 /* Remove events */
-void snd_seq_queue_client_leave_cells(int client);
 void snd_seq_queue_remove_cells(int client, struct snd_seq_remove_events *info);
 
 /* return pointer to queue structure for specified id */
 struct snd_seq_queue *queueptr(int queueid);
 /* unlock */
 #define queuefree(q) snd_use_lock_free(&(q)->use_lock)
+
+DEFINE_FREE(snd_seq_queue, struct snd_seq_queue *, if (!IS_ERR_OR_NULL(_T)) queuefree(_T))
 
 /* return the (first) queue matching with the specified name */
 struct snd_seq_queue *snd_seq_queue_find_name(char *name);
@@ -84,7 +85,6 @@ void snd_seq_check_queue(struct snd_seq_queue *q, int atomic, int hop);
 int snd_seq_queue_check_access(int queueid, int client);
 int snd_seq_queue_timer_set_tempo(int queueid, int client, struct snd_seq_queue_tempo *info);
 int snd_seq_queue_set_owner(int queueid, int client, int locked);
-int snd_seq_queue_set_locked(int queueid, int client, int locked);
 int snd_seq_queue_timer_open(int queueid);
 int snd_seq_queue_timer_close(int queueid);
 int snd_seq_queue_use(int queueid, int client, int use);

@@ -245,6 +245,7 @@ set_debug(const char *val, const struct kernel_param *kp)
 }
 
 MODULE_AUTHOR("Karsten Keil");
+MODULE_DESCRIPTION("mISDN driver for cards based on Infineon ISDN chipsets");
 MODULE_LICENSE("GPL v2");
 MODULE_VERSION(INFINEON_REV);
 module_param_call(debug, set_debug, param_get_uint, &debug, S_IRUGO | S_IWUSR);
@@ -1073,7 +1074,7 @@ inf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	int err = -ENOMEM;
 	struct inf_hw *card;
 
-	card = kzalloc(sizeof(struct inf_hw), GFP_KERNEL);
+	card = kzalloc_obj(struct inf_hw);
 	if (!card) {
 		pr_info("No memory for Infineon ISDN card\n");
 		return err;
@@ -1107,7 +1108,7 @@ inf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		struct inf_hw *sc;
 
 		for (i = 1; i < 4; i++) {
-			sc = kzalloc(sizeof(struct inf_hw), GFP_KERNEL);
+			sc = kzalloc_obj(struct inf_hw);
 			if (!sc) {
 				release_card(card);
 				pci_disable_device(pdev);

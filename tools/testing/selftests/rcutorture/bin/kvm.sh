@@ -14,9 +14,8 @@
 scriptname=$0
 args="$*"
 
-T=${TMPDIR-/tmp}/kvm.sh.$$
+T="`mktemp -d ${TMPDIR-/tmp}/kvm.sh.XXXXXX`"
 trap 'rm -rf $T' 0
-mkdir $T
 
 cd `dirname $scriptname`/../../../../../
 
@@ -43,6 +42,7 @@ TORTURE_JITTER_STOP=""
 TORTURE_KCONFIG_KASAN_ARG=""
 TORTURE_KCONFIG_KCSAN_ARG=""
 TORTURE_KMAKE_ARG=""
+TORTURE_NO_AFFINITY=""
 TORTURE_QEMU_MEM=512
 torture_qemu_mem_default=1
 TORTURE_REMOTE=
@@ -50,6 +50,7 @@ TORTURE_SHUTDOWN_GRACE=180
 TORTURE_SUITE=rcu
 TORTURE_MOD=rcutorture
 TORTURE_TRUST_MAKE=""
+debuginfo="CONFIG_DEBUG_INFO_NONE=n CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT=y"
 resdir=""
 configs=""
 cpus=0
@@ -69,6 +70,7 @@ usage () {
 	echo "       --cpus N"
 	echo "       --datestamp string"
 	echo "       --defconfig string"
+	echo "       --debug-info"
 	echo "       --dryrun batches|scenarios|sched|script"
 	echo "       --duration minutes | <seconds>s | <hours>h | <days>d"
 	echo "       --gdb"
@@ -78,9 +80,11 @@ usage () {
 	echo "       --kasan"
 	echo "       --kconfig Kconfig-options"
 	echo "       --kcsan"
+	echo "       --kill-previous"
 	echo "       --kmake-arg kernel-make-arguments"
 	echo "       --mac nn:nn:nn:nn:nn:nn"
 	echo "       --memory megabytes|nnnG"
+	echo "       --no-affinity"
 	echo "       --no-initrd"
 	echo "       --qemu-args qemu-arguments"
 	echo "       --qemu-cmd qemu-system-..."
@@ -136,6 +140,15 @@ do
 		ds=$2
 		shift
 		;;
+	--debug-info|--debuginfo)
+		if test -z "$TORTURE_KCONFIG_KCSAN_ARG" && test -z "$TORTURE_BOOT_GDB_ARG"
+		then
+			TORTURE_KCONFIG_KCSAN_ARG="$debuginfo"; export TORTURE_KCONFIG_KCSAN_ARG
+			TORTURE_BOOT_GDB_ARG="nokaslr"; export TORTURE_BOOT_GDB_ARG
+		else
+			echo "Ignored redundant --debug-info (implied by --kcsan &c)"
+		fi
+		;;
 	--defconfig)
 		checkarg --defconfig "defconfigtype" "$#" "$2" '^[^/][^/]*$' '^--'
 		TORTURE_DEFCONFIG=$2
@@ -164,7 +177,7 @@ do
 		shift
 		;;
 	--gdb)
-		TORTURE_KCONFIG_GDB_ARG="CONFIG_DEBUG_INFO=y"; export TORTURE_KCONFIG_GDB_ARG
+		TORTURE_KCONFIG_GDB_ARG="$debuginfo"; export TORTURE_KCONFIG_GDB_ARG
 		TORTURE_BOOT_GDB_ARG="nokaslr"; export TORTURE_BOOT_GDB_ARG
 		TORTURE_QEMU_GDB_ARG="-s -S"; export TORTURE_QEMU_GDB_ARG
 		;;
@@ -180,19 +193,22 @@ do
 		shift
 		;;
 	--kasan)
-		TORTURE_KCONFIG_KASAN_ARG="CONFIG_DEBUG_INFO=y CONFIG_KASAN=y"; export TORTURE_KCONFIG_KASAN_ARG
+		TORTURE_KCONFIG_KASAN_ARG="$debuginfo CONFIG_KASAN=y"; export TORTURE_KCONFIG_KASAN_ARG
 		if test -n "$torture_qemu_mem_default"
 		then
 			TORTURE_QEMU_MEM=2G
 		fi
 		;;
 	--kconfig|--kconfigs)
-		checkarg --kconfig "(Kconfig options)" $# "$2" '^CONFIG_[A-Z0-9_]\+=\([ynm]\|[0-9]\+\)\( CONFIG_[A-Z0-9_]\+=\([ynm]\|[0-9]\+\)\)*$' '^error$'
+		checkarg --kconfig "(Kconfig options)" $# "$2" '^\(#CHECK#\)\?CONFIG_[A-Z0-9_]\+=\([ynm]\|-\?[0-9]\+\|"[^"]*"\)\( \+\(#CHECK#\)\?CONFIG_[A-Z0-9_]\+=\([ynm]\|-\?[0-9]\+\|"[^"]*"\)\)* *$' '^error$'
 		TORTURE_KCONFIG_ARG="`echo "$TORTURE_KCONFIG_ARG $2" | sed -e 's/^ *//' -e 's/ *$//'`"
 		shift
 		;;
 	--kcsan)
-		TORTURE_KCONFIG_KCSAN_ARG="CONFIG_DEBUG_INFO=y CONFIG_KCSAN=y CONFIG_KCSAN_STRICT=y CONFIG_KCSAN_REPORT_ONCE_IN_MS=100000 CONFIG_KCSAN_VERBOSE=y CONFIG_DEBUG_LOCK_ALLOC=y CONFIG_PROVE_LOCKING=y"; export TORTURE_KCONFIG_KCSAN_ARG
+		TORTURE_KCONFIG_KCSAN_ARG="$debuginfo CONFIG_KCSAN=y CONFIG_KCSAN_STRICT=y CONFIG_KCSAN_REPORT_ONCE_IN_MS=100000 CONFIG_KCSAN_VERBOSE=y CONFIG_DEBUG_LOCK_ALLOC=y CONFIG_PROVE_LOCKING=y"; export TORTURE_KCONFIG_KCSAN_ARG
+		;;
+	--kill-previous)
+		TORTURE_KILL_PREVIOUS=1
 		;;
 	--kmake-arg|--kmake-args)
 		checkarg --kmake-arg "(kernel make arguments)" $# "$2" '.*' '^error$'
@@ -209,6 +225,9 @@ do
 		TORTURE_QEMU_MEM=$2
 		torture_qemu_mem_default=
 		shift
+		;;
+	--no-affinity)
+		TORTURE_NO_AFFINITY="no-affinity"
 		;;
 	--no-initrd)
 		TORTURE_INITRD=""; export TORTURE_INITRD
@@ -259,6 +278,42 @@ do
 	esac
 	shift
 done
+
+# Prevent concurrent kvm.sh runs on the same source tree.  The flock
+# is automatically released when the script exits, even if killed.
+TORTURE_LOCK="$RCUTORTURE/.kvm.sh.lock"
+
+# Terminate any processes holding the lock file, if requested.
+if test -n "$TORTURE_KILL_PREVIOUS"
+then
+	if test -e "$TORTURE_LOCK"
+	then
+		echo "Killing processes holding $TORTURE_LOCK..."
+		if fuser -k "$TORTURE_LOCK" >/dev/null 2>&1
+		then
+			sleep 2
+			echo "Previous kvm.sh processes killed."
+		else
+			echo "No processes were holding the lock."
+		fi
+	else
+		echo "No lock file exists, nothing to kill."
+	fi
+fi
+
+if test -z "$dryrun"
+then
+	# Create a file descriptor and flock it, so that when kvm.sh (and its
+	# children) exit, the flock is released by the kernel automatically.
+	exec 9>"$TORTURE_LOCK"
+	if ! flock -n 9
+	then
+		echo "ERROR: Another kvm.sh instance is already running on this tree."
+		echo "       Lock file: $TORTURE_LOCK"
+		echo "       To run kvm.sh, kill all existing kvm.sh runs first (--kill-previous)."
+		exit 1
+	fi
+fi
 
 if test -n "$dryrun" || test -z "$TORTURE_INITRD" || tools/testing/selftests/rcutorture/bin/mkinitrd.sh
 then
@@ -407,6 +462,7 @@ TORTURE_KCONFIG_KASAN_ARG="$TORTURE_KCONFIG_KASAN_ARG"; export TORTURE_KCONFIG_K
 TORTURE_KCONFIG_KCSAN_ARG="$TORTURE_KCONFIG_KCSAN_ARG"; export TORTURE_KCONFIG_KCSAN_ARG
 TORTURE_KMAKE_ARG="$TORTURE_KMAKE_ARG"; export TORTURE_KMAKE_ARG
 TORTURE_MOD="$TORTURE_MOD"; export TORTURE_MOD
+TORTURE_NO_AFFINITY="$TORTURE_NO_AFFINITY"; export TORTURE_NO_AFFINITY
 TORTURE_QEMU_CMD="$TORTURE_QEMU_CMD"; export TORTURE_QEMU_CMD
 TORTURE_QEMU_INTERACTIVE="$TORTURE_QEMU_INTERACTIVE"; export TORTURE_QEMU_INTERACTIVE
 TORTURE_QEMU_MAC="$TORTURE_QEMU_MAC"; export TORTURE_QEMU_MAC
@@ -426,18 +482,7 @@ echo $scriptname $args
 touch $resdir/$ds/log
 echo $scriptname $args >> $resdir/$ds/log
 echo ${TORTURE_SUITE} > $resdir/$ds/torture_suite
-echo Build directory: `pwd` > $resdir/$ds/testid.txt
-if test -d .git
-then
-	echo Current commit: `git rev-parse HEAD` >> $resdir/$ds/testid.txt
-	echo >> $resdir/$ds/testid.txt
-	echo ' ---' Output of "'"git status"'": >> $resdir/$ds/testid.txt
-	git status >> $resdir/$ds/testid.txt
-	echo >> $resdir/$ds/testid.txt
-	echo >> $resdir/$ds/testid.txt
-	echo ' ---' Output of "'"git diff HEAD"'": >> $resdir/$ds/testid.txt
-	git diff HEAD >> $resdir/$ds/testid.txt
-fi
+mktestid.sh $resdir/$ds
 ___EOF___
 kvm-assign-cpus.sh /sys/devices/system/node > $T/cpuarray.awk
 kvm-get-cpus-script.sh $T/cpuarray.awk $T/dumpbatches.awk
@@ -586,7 +631,7 @@ awk < $T/cfgcpu.pack \
 echo kvm-end-run-stats.sh "$resdir/$ds" "$starttime" >> $T/script
 
 # Extract the tests and their batches from the script.
-egrep 'Start batch|Starting build\.' $T/script | grep -v ">>" |
+grep -E 'Start batch|Starting build\.' $T/script | grep -v ">>" |
 	sed -e 's/:.*$//' -e 's/^echo //' -e 's/-ovf//' |
 	awk '
 	/^----Start/ {
@@ -623,7 +668,7 @@ then
 elif test "$dryrun" = sched
 then
 	# Extract the test run schedule from the script.
-	egrep 'Start batch|Starting build\.' $T/script | grep -v ">>" |
+	grep -E 'Start batch|Starting build\.' $T/script | grep -v ">>" |
 		sed -e 's/:.*$//' -e 's/^echo //'
 	nbuilds="`grep 'Starting build\.' $T/script |
 		  grep -v ">>" | sed -e 's/:.*$//' -e 's/^echo //' |
@@ -656,4 +701,4 @@ fi
 # Control buffer size: --bootargs trace_buf_size=3k
 # Get trace-buffer dumps on all oopses: --bootargs ftrace_dump_on_oops
 # Ditto, but dump only the oopsing CPU: --bootargs ftrace_dump_on_oops=orig_cpu
-# Heavy-handed way to also dump on warnings: --bootargs panic_on_warn
+# Heavy-handed way to also dump on warnings: --bootargs panic_on_warn=1

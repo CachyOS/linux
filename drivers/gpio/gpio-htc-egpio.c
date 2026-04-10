@@ -170,7 +170,7 @@ static int egpio_direction_input(struct gpio_chip *chip, unsigned offset)
  * Output pins
  */
 
-static void egpio_set(struct gpio_chip *chip, unsigned offset, int value)
+static int egpio_set(struct gpio_chip *chip, unsigned int offset, int value)
 {
 	unsigned long     flag;
 	struct egpio_chip *egpio;
@@ -198,6 +198,8 @@ static void egpio_set(struct gpio_chip *chip, unsigned offset, int value)
 		egpio->cached_values &= ~(1 << offset);
 	egpio_writew((egpio->cached_values >> shift) & ei->reg_mask, ei, reg);
 	spin_unlock_irqrestore(&ei->lock, flag);
+
+	return 0;
 }
 
 static int egpio_direction_output(struct gpio_chip *chip,
@@ -206,12 +208,10 @@ static int egpio_direction_output(struct gpio_chip *chip,
 	struct egpio_chip *egpio;
 
 	egpio = gpiochip_get_data(chip);
-	if (test_bit(offset, &egpio->is_out)) {
-		egpio_set(chip, offset, value);
-		return 0;
-	} else {
-		return -EINVAL;
-	}
+	if (test_bit(offset, &egpio->is_out))
+		return egpio_set(chip, offset, value);
+
+	return -EINVAL;
 }
 
 static int egpio_get_direction(struct gpio_chip *chip, unsigned offset)
@@ -364,21 +364,20 @@ static int __init egpio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM
-static int egpio_suspend(struct platform_device *pdev, pm_message_t state)
+static int egpio_suspend(struct device *dev)
 {
-	struct egpio_info *ei = platform_get_drvdata(pdev);
+	struct egpio_info *ei = dev_get_drvdata(dev);
 
-	if (ei->chained_irq && device_may_wakeup(&pdev->dev))
+	if (ei->chained_irq && device_may_wakeup(dev))
 		enable_irq_wake(ei->chained_irq);
 	return 0;
 }
 
-static int egpio_resume(struct platform_device *pdev)
+static int egpio_resume(struct device *dev)
 {
-	struct egpio_info *ei = platform_get_drvdata(pdev);
+	struct egpio_info *ei = dev_get_drvdata(dev);
 
-	if (ei->chained_irq && device_may_wakeup(&pdev->dev))
+	if (ei->chained_irq && device_may_wakeup(dev))
 		disable_irq_wake(ei->chained_irq);
 
 	/* Update registers from the cache, in case
@@ -386,19 +385,15 @@ static int egpio_resume(struct platform_device *pdev)
 	egpio_write_cache(ei);
 	return 0;
 }
-#else
-#define egpio_suspend NULL
-#define egpio_resume NULL
-#endif
 
+static DEFINE_SIMPLE_DEV_PM_OPS(egpio_pm_ops, egpio_suspend, egpio_resume);
 
 static struct platform_driver egpio_driver = {
 	.driver = {
 		.name = "htc-egpio",
 		.suppress_bind_attrs = true,
+		.pm = pm_sleep_ptr(&egpio_pm_ops),
 	},
-	.suspend      = egpio_suspend,
-	.resume       = egpio_resume,
 };
 
 static int __init egpio_init(void)

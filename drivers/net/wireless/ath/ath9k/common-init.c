@@ -16,6 +16,7 @@
 
 /* We use the hw_value as an index into our private channel structure */
 
+#include <linux/export.h>
 #include "common.h"
 
 #define CHAN2G(_freq, _idx)  { \
@@ -124,7 +125,7 @@ static struct ieee80211_rate ath9k_legacy_rates[] = {
 
 int ath9k_cmn_init_channels_rates(struct ath_common *common)
 {
-	struct ath_hw *ah = (struct ath_hw *)common->ah;
+	struct ath_hw *ah = common->ah;
 	void *channels;
 
 	BUILD_BUG_ON(ARRAY_SIZE(ath9k_2ghz_chantable) +

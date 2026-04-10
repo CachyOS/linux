@@ -1476,7 +1476,7 @@ static u32 MT2063_CalcLO2Mult(u32 *Div,
 }
 
 /*
- * FindClearTuneFilter() - Calculate the corrrect ClearTune filter to be
+ * FindClearTuneFilter() - Calculate the correct ClearTune filter to be
  *			   used for a given input frequency.
  *
  * @state:	ptr to tuner data structure
@@ -2212,7 +2212,7 @@ struct dvb_frontend *mt2063_attach(struct dvb_frontend *fe,
 
 	dprintk(2, "\n");
 
-	state = kzalloc(sizeof(struct mt2063_state), GFP_KERNEL);
+	state = kzalloc_obj(struct mt2063_state);
 	if (!state)
 		return NULL;
 

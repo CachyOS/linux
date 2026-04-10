@@ -15,7 +15,7 @@
 #include "log.h"
 #include "timens.h"
 
-int run_test(int clockid, struct timespec now)
+static int run_test(int clockid, struct timespec now)
 {
 	struct itimerspec new_value;
 	long long elapsed;
@@ -56,7 +56,7 @@ int run_test(int clockid, struct timespec now)
 			return pr_perror("timerfd_gettime");
 
 		elapsed = new_value.it_value.tv_sec;
-		if (abs(elapsed - 3600) > 60) {
+		if (llabs(elapsed - 3600) > 60) {
 			ksft_test_result_fail("clockid: %d elapsed: %lld\n",
 					      clockid, elapsed);
 			return 1;
@@ -74,6 +74,8 @@ int main(int argc, char *argv[])
 	char buf[4096];
 	pid_t pid;
 	struct timespec btime_now, mtime_now;
+
+	ksft_print_header();
 
 	nscheck();
 

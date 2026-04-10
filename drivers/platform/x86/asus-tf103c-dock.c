@@ -26,7 +26,7 @@
 #include <linux/module.h>
 #include <linux/pm.h>
 #include <linux/workqueue.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 static bool fnlock;
 module_param(fnlock, bool, 0644);
@@ -250,7 +250,7 @@ static int tf103c_dock_hid_raw_request(struct hid_device *hid, u8 reportnum,
 	return 0;
 }
 
-static struct hid_ll_driver tf103c_dock_hid_ll_driver = {
+static const struct hid_ll_driver tf103c_dock_hid_ll_driver = {
 	.parse = tf103c_dock_hid_parse,
 	.start = tf103c_dock_hid_start,
 	.stop = tf103c_dock_hid_stop,
@@ -259,7 +259,7 @@ static struct hid_ll_driver tf103c_dock_hid_ll_driver = {
 	.raw_request = tf103c_dock_hid_raw_request,
 };
 
-static int tf103c_dock_toprow_codes[13][2] = {
+static const int tf103c_dock_toprow_codes[13][2] = {
 	/* Normal,            AltGr pressed */
 	{ KEY_POWER,          KEY_F1 },
 	{ KEY_RFKILL,         KEY_F2 },
@@ -490,7 +490,7 @@ static void tf103c_dock_enable_touchpad(struct tf103c_dock_data *dock)
 		return;
 	}
 
-	strscpy(board_info.type, "elan_i2c", I2C_NAME_SIZE);
+	strscpy(board_info.type, "elan_i2c");
 	board_info.addr = TF103C_DOCK_TP_ADDR;
 	board_info.dev_name = TF103C_DOCK_DEV_NAME "-tp";
 	board_info.irq = dock->tp_irq;
@@ -795,7 +795,7 @@ static int tf103c_dock_probe(struct i2c_client *client)
 	 */
 	dock->ec_client = client;
 
-	strscpy(board_info.type, "tf103c-dock-intr", I2C_NAME_SIZE);
+	strscpy(board_info.type, "tf103c-dock-intr");
 	board_info.addr = TF103C_DOCK_INTR_ADDR;
 	board_info.dev_name = TF103C_DOCK_DEV_NAME "-intr";
 
@@ -803,7 +803,7 @@ static int tf103c_dock_probe(struct i2c_client *client)
 	if (IS_ERR(dock->intr_client))
 		return dev_err_probe(dev, PTR_ERR(dock->intr_client), "creating intr client\n");
 
-	strscpy(board_info.type, "tf103c-dock-kbd", I2C_NAME_SIZE);
+	strscpy(board_info.type, "tf103c-dock-kbd");
 	board_info.addr = TF103C_DOCK_KBD_ADDR;
 	board_info.dev_name = TF103C_DOCK_DEV_NAME "-kbd";
 
@@ -846,8 +846,8 @@ static int tf103c_dock_probe(struct i2c_client *client)
 	dock->hid->vendor = 0x0b05;  /* USB_VENDOR_ID_ASUSTEK */
 	dock->hid->product = 0x0103; /* From TF-103-C */
 	dock->hid->version = 0x0100; /* 1.0 */
-	strscpy(dock->hid->name, "Asus TF103C Dock Keyboard", sizeof(dock->hid->name));
-	strscpy(dock->hid->phys, dev_name(dev), sizeof(dock->hid->phys));
+	strscpy(dock->hid->name, "Asus TF103C Dock Keyboard");
+	strscpy(dock->hid->phys, dev_name(dev));
 
 	ret = hid_add_device(dock->hid);
 	if (ret)
@@ -856,7 +856,7 @@ static int tf103c_dock_probe(struct i2c_client *client)
 	/* 5. Setup irqchip for touchpad IRQ pass-through */
 	dock->tp_irqchip.name = KBUILD_MODNAME;
 
-	dock->tp_irq_domain = irq_domain_add_linear(NULL, 1, &irq_domain_simple_ops, NULL);
+	dock->tp_irq_domain = irq_domain_create_linear(NULL, 1, &irq_domain_simple_ops, NULL);
 	if (!dock->tp_irq_domain)
 		return -ENOMEM;
 
@@ -878,14 +878,12 @@ static int tf103c_dock_probe(struct i2c_client *client)
 	return 0;
 }
 
-static int tf103c_dock_remove(struct i2c_client *client)
+static void tf103c_dock_remove(struct i2c_client *client)
 {
 	struct tf103c_dock_data *dock = i2c_get_clientdata(client);
 
 	tf103c_dock_stop_hpd(dock);
 	tf103c_dock_disable(dock);
-
-	return 0;
 }
 
 static int __maybe_unused tf103c_dock_suspend(struct device *dev)
@@ -935,7 +933,7 @@ static struct i2c_driver tf103c_dock_driver = {
 		.pm = &tf103c_dock_pm_ops,
 		.acpi_match_table = tf103c_dock_acpi_match,
 	},
-	.probe_new = tf103c_dock_probe,
+	.probe = tf103c_dock_probe,
 	.remove	= tf103c_dock_remove,
 };
 module_i2c_driver(tf103c_dock_driver);

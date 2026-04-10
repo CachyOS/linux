@@ -23,9 +23,12 @@
 #include <asm/fpu/api.h>
 #include <asm/debugreg.h>
 #include <asm/cpu.h>
+#include <asm/cacheinfo.h>
 #include <asm/mmu_context.h>
 #include <asm/cpu_device_id.h>
 #include <asm/microcode.h>
+#include <asm/msr.h>
+#include <asm/fred.h>
 
 #ifdef CONFIG_X86_32
 __visible unsigned long saved_context_ebx;
@@ -42,7 +45,7 @@ static void msr_save_context(struct saved_context *ctxt)
 
 	while (msr < end) {
 		if (msr->valid)
-			rdmsrl(msr->info.msr_no, msr->info.reg.q);
+			rdmsrq(msr->info.msr_no, msr->info.reg.q);
 		msr++;
 	}
 }
@@ -54,7 +57,7 @@ static void msr_restore_context(struct saved_context *ctxt)
 
 	while (msr < end) {
 		if (msr->valid)
-			wrmsrl(msr->info.msr_no, msr->info.reg.q);
+			wrmsrq(msr->info.msr_no, msr->info.reg.q);
 		msr++;
 	}
 }
@@ -108,12 +111,12 @@ static void __save_processor_state(struct saved_context *ctxt)
 	savesegment(ds, ctxt->ds);
 	savesegment(es, ctxt->es);
 
-	rdmsrl(MSR_FS_BASE, ctxt->fs_base);
-	rdmsrl(MSR_GS_BASE, ctxt->kernelmode_gs_base);
-	rdmsrl(MSR_KERNEL_GS_BASE, ctxt->usermode_gs_base);
+	rdmsrq(MSR_FS_BASE, ctxt->fs_base);
+	rdmsrq(MSR_GS_BASE, ctxt->kernelmode_gs_base);
+	rdmsrq(MSR_KERNEL_GS_BASE, ctxt->usermode_gs_base);
 	mtrr_save_fixed_ranges(NULL);
 
-	rdmsrl(MSR_EFER, ctxt->efer);
+	rdmsrq(MSR_EFER, ctxt->efer);
 #endif
 
 	/*
@@ -123,7 +126,7 @@ static void __save_processor_state(struct saved_context *ctxt)
 	ctxt->cr2 = read_cr2();
 	ctxt->cr3 = __read_cr3();
 	ctxt->cr4 = __read_cr4();
-	ctxt->misc_enable_saved = !rdmsrl_safe(MSR_IA32_MISC_ENABLE,
+	ctxt->misc_enable_saved = !rdmsrq_safe(MSR_IA32_MISC_ENABLE,
 					       &ctxt->misc_enable);
 	msr_save_context(ctxt);
 }
@@ -196,7 +199,7 @@ static void notrace __restore_processor_state(struct saved_context *ctxt)
 	struct cpuinfo_x86 *c;
 
 	if (ctxt->misc_enable_saved)
-		wrmsrl(MSR_IA32_MISC_ENABLE, ctxt->misc_enable);
+		wrmsrq(MSR_IA32_MISC_ENABLE, ctxt->misc_enable);
 	/*
 	 * control registers
 	 */
@@ -206,7 +209,7 @@ static void notrace __restore_processor_state(struct saved_context *ctxt)
 		__write_cr4(ctxt->cr4);
 #else
 /* CONFIG X86_64 */
-	wrmsrl(MSR_EFER, ctxt->efer);
+	wrmsrq(MSR_EFER, ctxt->efer);
 	__write_cr4(ctxt->cr4);
 #endif
 	write_cr3(ctxt->cr3);
@@ -229,7 +232,20 @@ static void notrace __restore_processor_state(struct saved_context *ctxt)
 	 * handlers or in complicated helpers like load_gs_index().
 	 */
 #ifdef CONFIG_X86_64
-	wrmsrl(MSR_GS_BASE, ctxt->kernelmode_gs_base);
+	wrmsrq(MSR_GS_BASE, ctxt->kernelmode_gs_base);
+
+	/*
+	 * Reinitialize FRED to ensure the FRED MSRs contain the same values
+	 * as before hibernation.
+	 *
+	 * Note, the setup of FRED RSPs requires access to percpu data
+	 * structures.  Therefore, FRED reinitialization can only occur after
+	 * the percpu access pointer (i.e., MSR_GS_BASE) is restored.
+	 */
+	if (ctxt->cr4 & X86_CR4_FRED) {
+		cpu_init_fred_exceptions();
+		cpu_init_fred_rsps();
+	}
 #else
 	loadsegment(fs, __KERNEL_PERCPU);
 #endif
@@ -252,8 +268,8 @@ static void notrace __restore_processor_state(struct saved_context *ctxt)
 	 * restoring the selectors clobbers the bases.  Keep in mind
 	 * that MSR_KERNEL_GS_BASE is horribly misnamed.
 	 */
-	wrmsrl(MSR_FS_BASE, ctxt->fs_base);
-	wrmsrl(MSR_KERNEL_GS_BASE, ctxt->usermode_gs_base);
+	wrmsrq(MSR_FS_BASE, ctxt->fs_base);
+	wrmsrq(MSR_KERNEL_GS_BASE, ctxt->usermode_gs_base);
 #else
 	loadsegment(gs, ctxt->gs);
 #endif
@@ -261,7 +277,7 @@ static void notrace __restore_processor_state(struct saved_context *ctxt)
 	do_fpu_end();
 	tsc_verify_tsc_adjust(true);
 	x86_platform.restore_sched_clock_state();
-	mtrr_bp_restore();
+	cache_bp_restore();
 	perf_restore_debug_store();
 
 	c = &cpu_data(smp_processor_id());
@@ -287,7 +303,7 @@ EXPORT_SYMBOL(restore_processor_state);
 #endif
 
 #if defined(CONFIG_HIBERNATION) && defined(CONFIG_HOTPLUG_CPU)
-static void resume_play_dead(void)
+static void __noreturn resume_play_dead(void)
 {
 	play_dead_common();
 	tboot_shutdown(TB_SHUTDOWN_WFS);
@@ -350,43 +366,6 @@ static int bsp_pm_callback(struct notifier_block *nb, unsigned long action,
 	case PM_HIBERNATION_PREPARE:
 		ret = bsp_check();
 		break;
-#ifdef CONFIG_DEBUG_HOTPLUG_CPU0
-	case PM_RESTORE_PREPARE:
-		/*
-		 * When system resumes from hibernation, online CPU0 because
-		 * 1. it's required for resume and
-		 * 2. the CPU was online before hibernation
-		 */
-		if (!cpu_online(0))
-			_debug_hotplug_cpu(0, 1);
-		break;
-	case PM_POST_RESTORE:
-		/*
-		 * When a resume really happens, this code won't be called.
-		 *
-		 * This code is called only when user space hibernation software
-		 * prepares for snapshot device during boot time. So we just
-		 * call _debug_hotplug_cpu() to restore to CPU0's state prior to
-		 * preparing the snapshot device.
-		 *
-		 * This works for normal boot case in our CPU0 hotplug debug
-		 * mode, i.e. CPU0 is offline and user mode hibernation
-		 * software initializes during boot time.
-		 *
-		 * If CPU0 is online and user application accesses snapshot
-		 * device after boot time, this will offline CPU0 and user may
-		 * see different CPU0 state before and after accessing
-		 * the snapshot device. But hopefully this is not a case when
-		 * user debugging CPU0 hotplug. Even if users hit this case,
-		 * they can easily online CPU0 back.
-		 *
-		 * To simplify this debug code, we only consider normal boot
-		 * case. Otherwise we need to remember CPU0's state and restore
-		 * to that state and resolve racy conditions etc.
-		 */
-		_debug_hotplug_cpu(0, 0);
-		break;
-#endif
 	default:
 		break;
 	}
@@ -415,7 +394,7 @@ static int msr_build_context(const u32 *msr_id, const int num)
 
 	total_num = saved_msrs->num + num;
 
-	msr_array = kmalloc_array(total_num, sizeof(struct saved_msr), GFP_KERNEL);
+	msr_array = kmalloc_objs(struct saved_msr, total_num);
 	if (!msr_array) {
 		pr_err("x86/pm: Can not allocate memory to save/restore MSRs during suspend.\n");
 		return -ENOMEM;
@@ -436,7 +415,7 @@ static int msr_build_context(const u32 *msr_id, const int num)
 		u64 dummy;
 
 		msr_array[i].info.msr_no	= msr_id[j];
-		msr_array[i].valid		= !rdmsrl_safe(msr_id[j], &dummy);
+		msr_array[i].valid		= !rdmsrq_safe(msr_id[j], &dummy);
 		msr_array[i].info.reg.q		= 0;
 	}
 	saved_msrs->num   = total_num;
@@ -513,15 +492,23 @@ static int pm_cpu_check(const struct x86_cpu_id *c)
 
 static void pm_save_spec_msr(void)
 {
-	u32 spec_msr_id[] = {
-		MSR_IA32_SPEC_CTRL,
-		MSR_IA32_TSX_CTRL,
-		MSR_TSX_FORCE_ABORT,
-		MSR_IA32_MCU_OPT_CTRL,
-		MSR_AMD64_LS_CFG,
+	struct msr_enumeration {
+		u32 msr_no;
+		u32 feature;
+	} msr_enum[] = {
+		{ MSR_IA32_SPEC_CTRL,	 X86_FEATURE_MSR_SPEC_CTRL },
+		{ MSR_IA32_TSX_CTRL,	 X86_FEATURE_MSR_TSX_CTRL },
+		{ MSR_TSX_FORCE_ABORT,	 X86_FEATURE_TSX_FORCE_ABORT },
+		{ MSR_IA32_MCU_OPT_CTRL, X86_FEATURE_SRBDS_CTRL },
+		{ MSR_AMD64_LS_CFG,	 X86_FEATURE_LS_CFG_SSBD },
+		{ MSR_AMD64_DE_CFG,	 X86_FEATURE_LFENCE_RDTSC },
 	};
+	int i;
 
-	msr_build_context(spec_msr_id, ARRAY_SIZE(spec_msr_id));
+	for (i = 0; i < ARRAY_SIZE(msr_enum); i++) {
+		if (boot_cpu_has(msr_enum[i].feature))
+			msr_build_context(&msr_enum[i].msr_no, 1);
+	}
 }
 
 static int pm_check_save_msr(void)

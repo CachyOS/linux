@@ -11,7 +11,6 @@
 #include <linux/i2c.h>
 #include <linux/gpio/consumer.h>
 #include <linux/of_irq.h>
-#include <linux/of_gpio.h>
 #include <linux/acpi.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
@@ -487,8 +486,7 @@ static const struct acpi_gpio_mapping acpi_st21nfca_gpios[] = {
 	{},
 };
 
-static int st21nfca_hci_i2c_probe(struct i2c_client *client,
-				  const struct i2c_device_id *id)
+static int st21nfca_hci_i2c_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct st21nfca_i2c_phy *phy;
@@ -562,7 +560,7 @@ out_free:
 	return r;
 }
 
-static int st21nfca_hci_i2c_remove(struct i2c_client *client)
+static void st21nfca_hci_i2c_remove(struct i2c_client *client)
 {
 	struct st21nfca_i2c_phy *phy = i2c_get_clientdata(client);
 
@@ -571,12 +569,10 @@ static int st21nfca_hci_i2c_remove(struct i2c_client *client)
 	if (phy->powered)
 		st21nfca_hci_i2c_disable(phy);
 	kfree_skb(phy->pending_skb);
-
-	return 0;
 }
 
 static const struct i2c_device_id st21nfca_hci_i2c_id_table[] = {
-	{ST21NFCA_HCI_DRIVER_NAME, 0},
+	{ ST21NFCA_HCI_DRIVER_NAME },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, st21nfca_hci_i2c_id_table);

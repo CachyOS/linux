@@ -2429,7 +2429,7 @@ csio_hw_flash_fw(struct csio_hw *hw, int *reset)
 	/* allocate memory to read the header of the firmware on the
 	 * card
 	 */
-	card_fw = kmalloc(sizeof(*card_fw), GFP_KERNEL);
+	card_fw = kmalloc_obj(*card_fw);
 	if (!card_fw)
 		return -ENOMEM;
 
@@ -3701,7 +3701,7 @@ csio_mberr_worker(void *data)
 	struct csio_mb *mbp_next;
 	int rv;
 
-	del_timer_sync(&mbm->timer);
+	timer_delete_sync(&mbm->timer);
 
 	spin_lock_irq(&hw->lock);
 	if (list_empty(&mbm->cbfn_q)) {
@@ -3738,7 +3738,7 @@ csio_mberr_worker(void *data)
 static void
 csio_hw_mb_timer(struct timer_list *t)
 {
-	struct csio_mbm *mbm = from_timer(mbm, t, timer);
+	struct csio_mbm *mbm = timer_container_of(mbm, t, timer);
 	struct csio_hw *hw = mbm->hw;
 	struct csio_mb *mbp = NULL;
 
@@ -4107,7 +4107,7 @@ csio_mgmt_req_lookup(struct csio_mgmtm *mgmtm, struct csio_ioreq *io_req)
 static void
 csio_mgmt_tmo_handler(struct timer_list *t)
 {
-	struct csio_mgmtm *mgmtm = from_timer(mgmtm, t, mgmt_timer);
+	struct csio_mgmtm *mgmtm = timer_container_of(mgmtm, t, mgmt_timer);
 	struct list_head *tmp;
 	struct csio_ioreq *io_req;
 
@@ -4210,7 +4210,7 @@ csio_mgmtm_init(struct csio_mgmtm *mgmtm, struct csio_hw *hw)
 static void
 csio_mgmtm_exit(struct csio_mgmtm *mgmtm)
 {
-	del_timer_sync(&mgmtm->mgmt_timer);
+	timer_delete_sync(&mgmtm->mgmt_timer);
 }
 
 
@@ -4389,7 +4389,7 @@ csio_hw_init(struct csio_hw *hw)
 	INIT_LIST_HEAD(&hw->evt_free_q);
 	for (i = 0; i < csio_evtq_sz; i++) {
 
-		evt_entry = kzalloc(sizeof(struct csio_evt_msg), GFP_KERNEL);
+		evt_entry = kzalloc_obj(struct csio_evt_msg);
 		if (!evt_entry) {
 			rv = -ENOMEM;
 			csio_err(hw, "Failed to initialize eventq");

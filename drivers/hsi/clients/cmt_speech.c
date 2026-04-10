@@ -139,7 +139,7 @@ static void cs_notify(u32 message, struct list_head *head)
 		goto out;
 	}
 
-	entry = kmalloc(sizeof(*entry), GFP_ATOMIC);
+	entry = kmalloc_obj(*entry, GFP_ATOMIC);
 	if (!entry) {
 		dev_err(&cs_char_data.cl->device,
 			"Can't allocate new entry for the queue.\n");
@@ -273,7 +273,7 @@ static int cs_alloc_cmds(struct cs_hsi_iface *hi)
 		msg = hsi_alloc_msg(1, GFP_KERNEL);
 		if (!msg)
 			goto out;
-		buf = kmalloc(sizeof(*buf), GFP_KERNEL);
+		buf = kmalloc_obj(*buf);
 		if (!buf) {
 			hsi_free_msg(msg);
 			goto out;
@@ -985,7 +985,7 @@ static int cs_hsi_start(struct cs_hsi_iface **hi, struct hsi_client *cl,
 			unsigned long mmap_base, unsigned long mmap_size)
 {
 	int err = 0;
-	struct cs_hsi_iface *hsi_if = kzalloc(sizeof(*hsi_if), GFP_KERNEL);
+	struct cs_hsi_iface *hsi_if = kzalloc_obj(*hsi_if);
 
 	dev_dbg(&cl->device, "cs_hsi_start\n");
 
@@ -1089,7 +1089,7 @@ static vm_fault_t cs_char_vma_fault(struct vm_fault *vmf)
 	struct cs_char *csdata = vmf->vma->vm_private_data;
 	struct page *page;
 
-	page = virt_to_page(csdata->mmap_base);
+	page = virt_to_page((void *)csdata->mmap_base);
 	get_page(page);
 	vmf->page = page;
 
@@ -1264,7 +1264,7 @@ static int cs_char_mmap(struct file *file, struct vm_area_struct *vma)
 	if (vma_pages(vma) != 1)
 		return -EINVAL;
 
-	vma->vm_flags |= VM_IO | VM_DONTDUMP | VM_DONTEXPAND;
+	vm_flags_set(vma, VM_IO | VM_DONTDUMP | VM_DONTEXPAND);
 	vma->vm_ops = &cs_char_vm_ops;
 	vma->vm_private_data = file->private_data;
 

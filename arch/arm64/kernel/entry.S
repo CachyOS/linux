@@ -25,6 +25,7 @@
 #include <asm/processor.h>
 #include <asm/ptrace.h>
 #include <asm/scs.h>
+#include <asm/stacktrace/frame.h>
 #include <asm/thread_info.h>
 #include <asm/asm-uaccess.h>
 #include <asm/unistd.h>
@@ -54,7 +55,6 @@
 	.endif
 
 	sub	sp, sp, #PT_REGS_SIZE
-#ifdef CONFIG_VMAP_STACK
 	/*
 	 * Test whether the SP has overflowed, without corrupting a GPR.
 	 * Task and IRQ stacks are aligned so that SP & (1 << THREAD_SHIFT)
@@ -96,17 +96,15 @@
 	/* We were already on the overflow stack. Restore sp/x0 and carry on. */
 	sub	sp, sp, x0
 	mrs	x0, tpidrro_el0
-#endif
 	b	el\el\ht\()_\regsize\()_\label
 .org .Lventry_start\@ + 128	// Did we overflow the ventry slot?
 	.endm
 
-	.macro tramp_alias, dst, sym, tmp
-	mov_q	\dst, TRAMP_VALIAS
-	adr_l	\tmp, \sym
-	add	\dst, \dst, \tmp
-	adr_l	\tmp, .entry.tramp.text
-	sub	\dst, \dst, \tmp
+	.macro	tramp_alias, dst, sym
+	.set	.Lalias\@, TRAMP_VALIAS + \sym - .entry.tramp.text
+	movz	\dst, :abs_g2_s:.Lalias\@
+	movk	\dst, :abs_g1_nc:.Lalias\@
+	movk	\dst, :abs_g0_nc:.Lalias\@
 	.endm
 
 	/*
@@ -114,7 +112,7 @@
 	 * them if required.
 	 */
 	.macro	apply_ssbd, state, tmp1, tmp2
-alternative_cb	spectre_v4_patch_fw_mitigation_enable
+alternative_cb	ARM64_ALWAYS_SYSTEM, spectre_v4_patch_fw_mitigation_enable
 	b	.L__asm_ssbd_skip\@		// Patched to NOP
 alternative_cb_end
 	ldr_this_cpu	\tmp2, arm64_ssbd_callback_required, \tmp1
@@ -123,7 +121,7 @@ alternative_cb_end
 	tbnz	\tmp2, #TIF_SSBD, .L__asm_ssbd_skip\@
 	mov	w0, #ARM_SMCCC_ARCH_WORKAROUND_2
 	mov	w1, #\state
-alternative_cb	smccc_patch_fw_mitigation_conduit
+alternative_cb	ARM64_ALWAYS_SYSTEM, smccc_patch_fw_mitigation_conduit
 	nop					// Patched to SMC/HVC #0
 alternative_cb_end
 .L__asm_ssbd_skip\@:
@@ -175,7 +173,7 @@ alternative_else_nop_endif
 
 	.macro mte_set_kernel_gcr, tmp, tmp2
 #ifdef CONFIG_KASAN_HW_TAGS
-alternative_cb	kasan_hw_tags_enable
+alternative_cb	ARM64_ALWAYS_SYSTEM, kasan_hw_tags_enable
 	b	1f
 alternative_cb_end
 	mov	\tmp, KERNEL_GCR_EL1
@@ -186,7 +184,7 @@ alternative_cb_end
 
 	.macro mte_set_user_gcr, tsk, tmp, tmp2
 #ifdef CONFIG_KASAN_HW_TAGS
-alternative_cb	kasan_hw_tags_enable
+alternative_cb	ARM64_ALWAYS_SYSTEM, kasan_hw_tags_enable
 	b	1f
 alternative_cb_end
 	ldr	\tmp, [\tsk, #THREAD_MTE_CTRL]
@@ -197,6 +195,9 @@ alternative_cb_end
 	.endm
 
 	.macro	kernel_entry, el, regsize = 64
+	.if	\el == 0
+	alternative_insn nop, SET_PSTATE_DIT(1), ARM64_HAS_DIT
+	.endif
 	.if	\regsize == 32
 	mov	w0, w0				// zero upper 32 bits of x0
 	.endif
@@ -272,7 +273,7 @@ alternative_if ARM64_HAS_ADDRESS_AUTH
 alternative_else_nop_endif
 1:
 
-	scs_load tsk
+	scs_load_current
 	.else
 	add	x21, sp, #PT_REGS_SIZE
 	get_current_task tsk
@@ -282,15 +283,16 @@ alternative_else_nop_endif
 	stp	lr, x21, [sp, #S_LR]
 
 	/*
-	 * For exceptions from EL0, create a final frame record.
-	 * For exceptions from EL1, create a synthetic frame record so the
-	 * interrupted code shows up in the backtrace.
+	 * Create a metadata frame record. The unwinder will use this to
+	 * identify and unwind exception boundaries.
 	 */
-	.if \el == 0
 	stp	xzr, xzr, [sp, #S_STACKFRAME]
+	.if \el == 0
+	mov	x0, #FRAME_META_TYPE_FINAL
 	.else
-	stp	x29, x22, [sp, #S_STACKFRAME]
+	mov	x0, #FRAME_META_TYPE_PT_REGS
 	.endif
+	str	x0, [sp, #S_STACKFRAME_TYPE]
 	add	x29, sp, #S_STACKFRAME
 
 #ifdef CONFIG_ARM64_SW_TTBR0_PAN
@@ -308,13 +310,16 @@ alternative_else_nop_endif
 	.endif
 
 #ifdef CONFIG_ARM64_PSEUDO_NMI
-	/* Save pmr */
-alternative_if ARM64_HAS_IRQ_PRIO_MASKING
+alternative_if_not ARM64_HAS_GIC_PRIO_MASKING
+	b	.Lskip_pmr_save\@
+alternative_else_nop_endif
+
 	mrs_s	x20, SYS_ICC_PMR_EL1
-	str	x20, [sp, #S_PMR_SAVE]
+	str	w20, [sp, #S_PMR]
 	mov	x20, #GIC_PRIO_IRQON | GIC_PRIO_PSR_I_SET
 	msr_s	SYS_ICC_PMR_EL1, x20
-alternative_else_nop_endif
+
+.Lskip_pmr_save\@:
 #endif
 
 	/*
@@ -333,15 +338,19 @@ alternative_else_nop_endif
 	.endif
 
 #ifdef CONFIG_ARM64_PSEUDO_NMI
-	/* Restore pmr */
-alternative_if ARM64_HAS_IRQ_PRIO_MASKING
-	ldr	x20, [sp, #S_PMR_SAVE]
-	msr_s	SYS_ICC_PMR_EL1, x20
-	mrs_s	x21, SYS_ICC_CTLR_EL1
-	tbz	x21, #6, .L__skip_pmr_sync\@	// Check for ICC_CTLR_EL1.PMHE
-	dsb	sy				// Ensure priority change is seen by redistributor
-.L__skip_pmr_sync\@:
+alternative_if_not ARM64_HAS_GIC_PRIO_MASKING
+	b	.Lskip_pmr_restore\@
 alternative_else_nop_endif
+
+	ldr	w20, [sp, #S_PMR]
+	msr_s	SYS_ICC_PMR_EL1, x20
+
+	/* Ensure priority change is seen by redistributor */
+alternative_if_not ARM64_HAS_GIC_PRIO_RELAXED_SYNC
+	dsb	sy
+alternative_else_nop_endif
+
+.Lskip_pmr_restore\@:
 #endif
 
 	ldp	x21, x22, [sp, #S_PC]		// load ELR, SPSR
@@ -419,29 +428,37 @@ alternative_else_nop_endif
 	ldp	x28, x29, [sp, #16 * 14]
 
 	.if	\el == 0
-alternative_if_not ARM64_UNMAP_KERNEL_AT_EL0
-	ldr	lr, [sp, #S_LR]
-	add	sp, sp, #PT_REGS_SIZE		// restore sp
-	eret
-alternative_else_nop_endif
 #ifdef CONFIG_UNMAP_KERNEL_AT_EL0
-	bne	4f
+	alternative_insn "b .L_skip_tramp_exit_\@", nop, ARM64_UNMAP_KERNEL_AT_EL0
+
 	msr	far_el1, x29
-	tramp_alias	x30, tramp_exit_native, x29
-	br	x30
-4:
-	tramp_alias	x30, tramp_exit_compat, x29
-	br	x30
+
+	ldr_this_cpu	x30, this_cpu_vector, x29
+	tramp_alias	x29, tramp_exit
+	msr		vbar_el1, x30		// install vector table
+	ldr		lr, [sp, #S_LR]		// restore x30
+	add		sp, sp, #PT_REGS_SIZE	// restore sp
+	br		x29
+
+.L_skip_tramp_exit_\@:
 #endif
-	.else
+	.endif
+
 	ldr	lr, [sp, #S_LR]
 	add	sp, sp, #PT_REGS_SIZE		// restore sp
 
+	.if \el == 0
+	/* This must be after the last explicit memory access */
+alternative_if ARM64_WORKAROUND_SPECULATIVE_UNPRIV_LOAD
+	tlbi	vale1, xzr
+	dsb	nsh
+alternative_else_nop_endif
+	.else
 	/* Ensure any device/NC reads complete */
 	alternative_insn nop, "dmb sy", ARM64_WORKAROUND_1508412
+	.endif
 
 	eret
-	.endif
 	sb
 	.endm
 
@@ -502,7 +519,7 @@ tsk	.req	x28		// current thread_info
 SYM_CODE_START(vectors)
 	kernel_ventry	1, t, 64, sync		// Synchronous EL1t
 	kernel_ventry	1, t, 64, irq		// IRQ EL1t
-	kernel_ventry	1, t, 64, fiq		// FIQ EL1h
+	kernel_ventry	1, t, 64, fiq		// FIQ EL1t
 	kernel_ventry	1, t, 64, error		// Error EL1t
 
 	kernel_ventry	1, h, 64, sync		// Synchronous EL1h
@@ -521,7 +538,6 @@ SYM_CODE_START(vectors)
 	kernel_ventry	0, t, 32, error		// Error 32-bit EL0
 SYM_CODE_END(vectors)
 
-#ifdef CONFIG_VMAP_STACK
 SYM_CODE_START_LOCAL(__bad_stack)
 	/*
 	 * We detected an overflow in kernel_ventry, which switched to the
@@ -549,7 +565,6 @@ SYM_CODE_START_LOCAL(__bad_stack)
 	bl	handle_bad_stack
 	ASM_BUG()
 SYM_CODE_END(__bad_stack)
-#endif /* CONFIG_VMAP_STACK */
 
 
 	.macro entry_handler el:req, ht:req, regsize:req, label:req
@@ -595,7 +610,7 @@ SYM_CODE_END(ret_to_kernel)
 SYM_CODE_START_LOCAL(ret_to_user)
 	ldr	x19, [tsk, #TSK_TI_FLAGS]	// re-check for single-step
 	enable_step_tsk x19, x2
-#ifdef CONFIG_GCC_PLUGIN_STACKLEAK
+#ifdef CONFIG_KSTACK_ERASE
 	bl	stackleak_erase_on_task_stack
 #endif
 	kernel_exit 0
@@ -636,18 +651,28 @@ alternative_else_nop_endif
 	 */
 	.endm
 
-	.macro tramp_data_page	dst
-	adr_l	\dst, .entry.tramp.text
-	sub	\dst, \dst, PAGE_SIZE
-	.endm
-
-	.macro tramp_data_read_var	dst, var
-#ifdef CONFIG_RANDOMIZE_BASE
-	tramp_data_page		\dst
-	add	\dst, \dst, #:lo12:__entry_tramp_data_\var
-	ldr	\dst, [\dst]
+	.macro		tramp_data_read_var	dst, var
+#ifdef CONFIG_RELOCATABLE
+	ldr		\dst, .L__tramp_data_\var
+	.ifndef		.L__tramp_data_\var
+	.pushsection	".entry.tramp.rodata", "a", %progbits
+	.align		3
+.L__tramp_data_\var:
+	.quad		\var
+	.popsection
+	.endif
 #else
-	ldr	\dst, =\var
+	/*
+	 * As !RELOCATABLE implies !RANDOMIZE_BASE the address is always a
+	 * compile time constant (and hence not secret and not worth hiding).
+	 *
+	 * As statically allocated kernel code and data always live in the top
+	 * 47 bits of the address space we can sign-extend bit 47 and avoid an
+	 * instruction to load the upper 16 bits (which must be 0xFFFF).
+	 */
+	movz		\dst, :abs_g2_s:\var
+	movk		\dst, :abs_g1_nc:\var
+	movk		\dst, :abs_g0_nc:\var
 #endif
 	.endm
 
@@ -695,7 +720,7 @@ alternative_else_nop_endif
 	msr	vbar_el1, x30
 	isb
 	.else
-	ldr	x30, =vectors
+	adr_l	x30, vectors
 	.endif // \kpti == 1
 
 	.if	\bhb == BHB_MITIGATION_FW
@@ -710,22 +735,6 @@ alternative_else_nop_endif
 	add	x30, x30, #(1b - \vector_start + 4)
 	ret
 .org 1b + 128	// Did we overflow the ventry slot?
-	.endm
-
-	.macro tramp_exit, regsize = 64
-	tramp_data_read_var	x30, this_cpu_vector
-	get_this_cpu_offset x29
-	ldr	x30, [x30, x29]
-
-	msr	vbar_el1, x30
-	ldr	lr, [sp, #S_LR]
-	tramp_unmap_kernel	x29
-	.if	\regsize == 64
-	mrs	x29, far_el1
-	.endif
-	add	sp, sp, #PT_REGS_SIZE		// restore sp
-	eret
-	sb
 	.endm
 
 	.macro	generate_tramp_vector,	kpti, bhb
@@ -748,7 +757,7 @@ alternative_else_nop_endif
  */
 	.pushsection ".entry.tramp.text", "ax"
 	.align	11
-SYM_CODE_START_NOALIGN(tramp_vectors)
+SYM_CODE_START_LOCAL_NOALIGN(tramp_vectors)
 #ifdef CONFIG_MITIGATE_SPECTRE_BRANCH_HISTORY
 	generate_tramp_vector	kpti=1, bhb=BHB_MITIGATION_LOOP
 	generate_tramp_vector	kpti=1, bhb=BHB_MITIGATION_FW
@@ -757,31 +766,13 @@ SYM_CODE_START_NOALIGN(tramp_vectors)
 	generate_tramp_vector	kpti=1, bhb=BHB_MITIGATION_NONE
 SYM_CODE_END(tramp_vectors)
 
-SYM_CODE_START(tramp_exit_native)
-	tramp_exit
-SYM_CODE_END(tramp_exit_native)
-
-SYM_CODE_START(tramp_exit_compat)
-	tramp_exit	32
-SYM_CODE_END(tramp_exit_compat)
-
-	.ltorg
+SYM_CODE_START_LOCAL(tramp_exit)
+	tramp_unmap_kernel	x29
+	mrs		x29, far_el1		// restore x29
+	eret
+	sb
+SYM_CODE_END(tramp_exit)
 	.popsection				// .entry.tramp.text
-#ifdef CONFIG_RANDOMIZE_BASE
-	.pushsection ".rodata", "a"
-	.align PAGE_SHIFT
-SYM_DATA_START(__entry_tramp_data_start)
-__entry_tramp_data_vectors:
-	.quad	vectors
-#ifdef CONFIG_ARM_SDE_INTERFACE
-__entry_tramp_data___sdei_asm_handler:
-	.quad	__sdei_asm_handler
-#endif /* CONFIG_ARM_SDE_INTERFACE */
-__entry_tramp_data_this_cpu_vector:
-	.quad	this_cpu_vector
-SYM_DATA_END(__entry_tramp_data_start)
-	.popsection				// .rodata
-#endif /* CONFIG_RANDOMIZE_BASE */
 #endif /* CONFIG_UNMAP_KERNEL_AT_EL0 */
 
 /*
@@ -830,6 +821,7 @@ SYM_CODE_END(__bp_harden_el1_vectors)
  *
  */
 SYM_FUNC_START(cpu_switch_to)
+	save_and_disable_daif x11
 	mov	x10, #THREAD_CPU_CONTEXT
 	add	x8, x0, x10
 	mov	x9, sp
@@ -852,7 +844,8 @@ SYM_FUNC_START(cpu_switch_to)
 	msr	sp_el0, x1
 	ptrauth_keys_install_kernel x1, x8, x9, x10
 	scs_save x0
-	scs_load x1
+	scs_load_current
+	restore_irq x11
 	ret
 SYM_FUNC_END(cpu_switch_to)
 NOKPROBE(cpu_switch_to)
@@ -879,31 +872,33 @@ NOKPROBE(ret_from_fork)
  * Calls func(regs) using this CPU's irq stack and shadow irq stack.
  */
 SYM_FUNC_START(call_on_irq_stack)
+	save_and_disable_daif x9
 #ifdef CONFIG_SHADOW_CALL_STACK
-	stp	scs_sp, xzr, [sp, #-16]!
+	get_current_task x16
+	scs_save x16
 	ldr_this_cpu scs_sp, irq_shadow_call_stack_ptr, x17
 #endif
+
 	/* Create a frame record to save our LR and SP (implicit in FP) */
 	stp	x29, x30, [sp, #-16]!
 	mov	x29, sp
 
 	ldr_this_cpu x16, irq_stack_ptr, x17
-	mov	x15, #IRQ_STACK_SIZE
-	add	x16, x16, x15
 
 	/* Move to the new stack and call the function there */
-	mov	sp, x16
+	add	sp, x16, #IRQ_STACK_SIZE
+	restore_irq x9
 	blr	x1
 
+	save_and_disable_daif x9
 	/*
 	 * Restore the SP from the FP, and restore the FP and LR from the frame
 	 * record.
 	 */
 	mov	sp, x29
 	ldp	x29, x30, [sp], #16
-#ifdef CONFIG_SHADOW_CALL_STACK
-	ldp	scs_sp, xzr, [sp], #16
-#endif
+	scs_load_current
+	restore_irq x9
 	ret
 SYM_FUNC_END(call_on_irq_stack)
 NOKPROBE(call_on_irq_stack)
@@ -932,7 +927,6 @@ NOKPROBE(call_on_irq_stack)
  * This clobbers x4, __sdei_handler() will restore this from firmware's
  * copy.
  */
-.ltorg
 .pushsection ".entry.tramp.text", "ax"
 SYM_CODE_START(__sdei_asm_entry_trampoline)
 	mrs	x4, ttbr1_el1
@@ -967,7 +961,6 @@ SYM_CODE_START(__sdei_asm_exit_trampoline)
 1:	sdei_handler_exit exit_mode=x2
 SYM_CODE_END(__sdei_asm_exit_trampoline)
 NOKPROBE(__sdei_asm_exit_trampoline)
-	.ltorg
 .popsection		// .entry.tramp.text
 #endif /* CONFIG_UNMAP_KERNEL_AT_EL0 */
 
@@ -1004,11 +997,14 @@ SYM_CODE_START(__sdei_asm_handler)
 
 	mov	x19, x1
 
-#if defined(CONFIG_VMAP_STACK) || defined(CONFIG_SHADOW_CALL_STACK)
+	/* Store the registered-event for crash_smp_send_stop() */
 	ldrb	w4, [x19, #SDEI_EVENT_PRIORITY]
-#endif
+	cbnz	w4, 1f
+	adr_this_cpu dst=x5, sym=sdei_active_normal_event, tmp=x6
+	b	2f
+1:	adr_this_cpu dst=x5, sym=sdei_active_critical_event, tmp=x6
+2:	str	x19, [x5]
 
-#ifdef CONFIG_VMAP_STACK
 	/*
 	 * entry.S may have been using sp as a scratch register, find whether
 	 * this is a normal or critical event and switch to the appropriate
@@ -1021,7 +1017,6 @@ SYM_CODE_START(__sdei_asm_handler)
 2:	mov	x6, #SDEI_STACK_SIZE
 	add	x5, x5, x6
 	mov	sp, x5
-#endif
 
 #ifdef CONFIG_SHADOW_CALL_STACK
 	/* Use a separate shadow call stack for normal and critical events */
@@ -1073,14 +1068,33 @@ SYM_CODE_START(__sdei_asm_handler)
 
 	ldr_l	x2, sdei_exit_mode
 
+	/* Clear the registered-event seen by crash_smp_send_stop() */
+	ldrb	w3, [x4, #SDEI_EVENT_PRIORITY]
+	cbnz	w3, 1f
+	adr_this_cpu dst=x5, sym=sdei_active_normal_event, tmp=x6
+	b	2f
+1:	adr_this_cpu dst=x5, sym=sdei_active_critical_event, tmp=x6
+2:	str	xzr, [x5]
+
 alternative_if_not ARM64_UNMAP_KERNEL_AT_EL0
 	sdei_handler_exit exit_mode=x2
 alternative_else_nop_endif
 
 #ifdef CONFIG_UNMAP_KERNEL_AT_EL0
-	tramp_alias	dst=x5, sym=__sdei_asm_exit_trampoline, tmp=x3
+	tramp_alias	dst=x5, sym=__sdei_asm_exit_trampoline
 	br	x5
 #endif
 SYM_CODE_END(__sdei_asm_handler)
 NOKPROBE(__sdei_asm_handler)
+
+SYM_CODE_START(__sdei_handler_abort)
+	mov_q	x0, SDEI_1_0_FN_SDEI_EVENT_COMPLETE_AND_RESUME
+	adr	x1, 1f
+	ldr_l	x2, sdei_exit_mode
+	sdei_handler_exit exit_mode=x2
+	// exit the handler and jump to the next instruction.
+	// Exit will stomp x0-x17, PSTATE, ELR_ELx, and SPSR_ELx.
+1:	ret
+SYM_CODE_END(__sdei_handler_abort)
+NOKPROBE(__sdei_handler_abort)
 #endif /* CONFIG_ARM_SDE_INTERFACE */

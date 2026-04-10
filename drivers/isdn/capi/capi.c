@@ -49,7 +49,9 @@ MODULE_LICENSE("GPL");
 /* -------- driver information -------------------------------------- */
 
 static DEFINE_MUTEX(capi_mutex);
-static struct class *capi_class;
+static const struct class capi_class = {
+	.name = "capi",
+};
 static int capi_major = 68;		/* allocated */
 
 module_param_named(major, capi_major, uint, 0);
@@ -146,7 +148,7 @@ static int capiminor_add_ack(struct capiminor *mp, u16 datahandle)
 {
 	struct ackqueue_entry *n;
 
-	n = kmalloc(sizeof(*n), GFP_ATOMIC);
+	n = kmalloc_obj(*n, GFP_ATOMIC);
 	if (unlikely(!n)) {
 		printk(KERN_ERR "capi: alloc datahandle failed\n");
 		return -1;
@@ -213,7 +215,7 @@ static struct capiminor *capiminor_alloc(struct capi20_appl *ap, u32 ncci)
 	struct device *dev;
 	unsigned int minor;
 
-	mp = kzalloc(sizeof(*mp), GFP_KERNEL);
+	mp = kzalloc_obj(*mp);
 	if (!mp) {
 		printk(KERN_ERR "capi: can't alloc capiminor\n");
 		return NULL;
@@ -304,15 +306,9 @@ static void capincci_alloc_minor(struct capidev *cdev, struct capincci *np)
 static void capincci_free_minor(struct capincci *np)
 {
 	struct capiminor *mp = np->minorp;
-	struct tty_struct *tty;
 
 	if (mp) {
-		tty = tty_port_tty_get(&mp->port);
-		if (tty) {
-			tty_vhangup(tty);
-			tty_kref_put(tty);
-		}
-
+		tty_port_tty_vhangup(&mp->port);
 		capiminor_free(mp);
 	}
 }
@@ -345,7 +341,7 @@ static struct capincci *capincci_alloc(struct capidev *cdev, u32 ncci)
 {
 	struct capincci *np;
 
-	np = kzalloc(sizeof(*np), GFP_KERNEL);
+	np = kzalloc_obj(*np);
 	if (!np)
 		return NULL;
 	np->ncci = ncci;
@@ -985,7 +981,7 @@ static int capi_open(struct inode *inode, struct file *file)
 {
 	struct capidev *cdev;
 
-	cdev = kzalloc(sizeof(*cdev), GFP_KERNEL);
+	cdev = kzalloc_obj(*cdev);
 	if (!cdev)
 		return -ENOMEM;
 
@@ -1022,7 +1018,6 @@ static int capi_release(struct inode *inode, struct file *file)
 static const struct file_operations capi_fops =
 {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.read		= capi_read,
 	.write		= capi_write,
 	.poll		= capi_poll,
@@ -1077,13 +1072,13 @@ static void capinc_tty_close(struct tty_struct *tty, struct file *filp)
 	tty_port_close(&mp->port, tty, filp);
 }
 
-static int capinc_tty_write(struct tty_struct *tty,
-			    const unsigned char *buf, int count)
+static ssize_t capinc_tty_write(struct tty_struct *tty, const u8 *buf,
+				size_t count)
 {
 	struct capiminor *mp = tty->driver_data;
 	struct sk_buff *skb;
 
-	pr_debug("capinc_tty_write(count=%d)\n", count);
+	pr_debug("capinc_tty_write(count=%zu)\n", count);
 
 	spin_lock_bh(&mp->outlock);
 	skb = mp->outskb;
@@ -1112,7 +1107,7 @@ static int capinc_tty_write(struct tty_struct *tty,
 	return count;
 }
 
-static int capinc_tty_put_char(struct tty_struct *tty, unsigned char ch)
+static int capinc_tty_put_char(struct tty_struct *tty, u8 ch)
 {
 	struct capiminor *mp = tty->driver_data;
 	bool invoke_send = false;
@@ -1231,9 +1226,9 @@ static void capinc_tty_hangup(struct tty_struct *tty)
 	tty_port_hangup(&mp->port);
 }
 
-static void capinc_tty_send_xchar(struct tty_struct *tty, char ch)
+static void capinc_tty_send_xchar(struct tty_struct *tty, u8 ch)
 {
-	pr_debug("capinc_tty_send_xchar(%d)\n", ch);
+	pr_debug("capinc_tty_send_xchar(%u)\n", ch);
 }
 
 static const struct tty_operations capinc_ops = {
@@ -1264,8 +1259,7 @@ static int __init capinc_tty_init(void)
 	if (capi_ttyminors <= 0)
 		capi_ttyminors = CAPINC_NR_PORTS;
 
-	capiminors = kcalloc(capi_ttyminors, sizeof(struct capiminor *),
-			     GFP_KERNEL);
+	capiminors = kzalloc_objs(struct capiminor *, capi_ttyminors);
 	if (!capiminors)
 		return -ENOMEM;
 
@@ -1393,18 +1387,19 @@ static int __init capi_init(void)
 		kcapi_exit();
 		return major_ret;
 	}
-	capi_class = class_create(THIS_MODULE, "capi");
-	if (IS_ERR(capi_class)) {
+
+	ret = class_register(&capi_class);
+	if (ret) {
 		unregister_chrdev(capi_major, "capi20");
 		kcapi_exit();
-		return PTR_ERR(capi_class);
+		return ret;
 	}
 
-	device_create(capi_class, NULL, MKDEV(capi_major, 0), NULL, "capi20");
+	device_create(&capi_class, NULL, MKDEV(capi_major, 0), NULL, "capi20");
 
 	if (capinc_tty_init() < 0) {
-		device_destroy(capi_class, MKDEV(capi_major, 0));
-		class_destroy(capi_class);
+		device_destroy(&capi_class, MKDEV(capi_major, 0));
+		class_unregister(&capi_class);
 		unregister_chrdev(capi_major, "capi20");
 		kcapi_exit();
 		return -ENOMEM;
@@ -1427,8 +1422,8 @@ static void __exit capi_exit(void)
 {
 	proc_exit();
 
-	device_destroy(capi_class, MKDEV(capi_major, 0));
-	class_destroy(capi_class);
+	device_destroy(&capi_class, MKDEV(capi_major, 0));
+	class_unregister(&capi_class);
 	unregister_chrdev(capi_major, "capi20");
 
 	capinc_tty_exit();

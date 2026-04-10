@@ -6,12 +6,15 @@
  * test source files.
  */
 #include "lkdtm.h"
+#include <linux/cpu.h>
 #include <linux/list.h>
+#include <linux/hrtimer.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
 #include <linux/sched/task_stack.h>
-#include <linux/uaccess.h>
 #include <linux/slab.h>
+#include <linux/stop_machine.h>
+#include <linux/uaccess.h>
 
 #if IS_ENABLED(CONFIG_X86_32) && !IS_ENABLED(CONFIG_UML)
 #include <asm/desc.h>
@@ -29,7 +32,7 @@ struct lkdtm_list {
 #if defined(CONFIG_FRAME_WARN) && (CONFIG_FRAME_WARN > 0)
 #define REC_STACK_SIZE (_AC(CONFIG_FRAME_WARN, UL) / 2)
 #else
-#define REC_STACK_SIZE (THREAD_SIZE / 8)
+#define REC_STACK_SIZE (THREAD_SIZE / 8UL)
 #endif
 #define REC_NUM_DEFAULT ((THREAD_SIZE / REC_STACK_SIZE) * 2)
 
@@ -73,9 +76,84 @@ static void lkdtm_PANIC(void)
 	panic("dumptest");
 }
 
+static int panic_stop_irqoff_fn(void *arg)
+{
+	atomic_t *v = arg;
+
+	/*
+	 * As stop_machine() disables interrupts, all CPUs within this function
+	 * have interrupts disabled and cannot take a regular IPI.
+	 *
+	 * The last CPU which enters here will trigger a panic, and as all CPUs
+	 * cannot take a regular IPI, we'll only be able to stop secondaries if
+	 * smp_send_stop() or crash_smp_send_stop() uses an NMI.
+	 */
+	if (atomic_inc_return(v) == num_online_cpus())
+		panic("panic stop irqoff test");
+
+	for (;;)
+		cpu_relax();
+}
+
+static void lkdtm_PANIC_STOP_IRQOFF(void)
+{
+	atomic_t v = ATOMIC_INIT(0);
+	stop_machine(panic_stop_irqoff_fn, &v, cpu_online_mask);
+}
+
+static bool wait_for_panic;
+
+static enum hrtimer_restart panic_in_hardirq(struct hrtimer *timer)
+{
+	panic("from hard IRQ context");
+
+	wait_for_panic = false;
+	return HRTIMER_NORESTART;
+}
+
+static void lkdtm_PANIC_IN_HARDIRQ(void)
+{
+	struct hrtimer timer;
+
+	wait_for_panic = true;
+	hrtimer_setup_on_stack(&timer, panic_in_hardirq,
+			       CLOCK_MONOTONIC, HRTIMER_MODE_REL_HARD);
+	hrtimer_start(&timer, us_to_ktime(100), HRTIMER_MODE_REL_HARD);
+
+	while (READ_ONCE(wait_for_panic))
+		cpu_relax();
+
+	hrtimer_cancel(&timer);
+}
+
 static void lkdtm_BUG(void)
 {
 	BUG();
+}
+
+static bool wait_for_bug;
+
+static enum hrtimer_restart bug_in_hardirq(struct hrtimer *timer)
+{
+	BUG();
+
+	wait_for_bug = false;
+	return HRTIMER_NORESTART;
+}
+
+static void lkdtm_BUG_IN_HARDIRQ(void)
+{
+	struct hrtimer timer;
+
+	wait_for_bug = true;
+	hrtimer_setup_on_stack(&timer, bug_in_hardirq,
+			       CLOCK_MONOTONIC, HRTIMER_MODE_REL_HARD);
+	hrtimer_start(&timer, us_to_ktime(100), HRTIMER_MODE_REL_HARD);
+
+	while (READ_ONCE(wait_for_bug))
+		cpu_relax();
+
+	hrtimer_cancel(&timer);
 }
 
 static int warn_counter;
@@ -259,6 +337,35 @@ static void lkdtm_HARDLOCKUP(void)
 		cpu_relax();
 }
 
+static void __lkdtm_SMP_CALL_LOCKUP(void *unused)
+{
+	for (;;)
+		cpu_relax();
+}
+
+static void lkdtm_SMP_CALL_LOCKUP(void)
+{
+	unsigned int cpu, target;
+
+	cpus_read_lock();
+
+	cpu = get_cpu();
+	target = cpumask_any_but(cpu_online_mask, cpu);
+
+	if (target >= nr_cpu_ids) {
+		pr_err("FAIL: no other online CPUs\n");
+		goto out_put_cpus;
+	}
+
+	smp_call_function_single(target, __lkdtm_SMP_CALL_LOCKUP, NULL, 1);
+
+	pr_err("FAIL: did not hang\n");
+
+out_put_cpus:
+	put_cpu();
+	cpus_read_unlock();
+}
+
 static void lkdtm_SPINLOCKUP(void)
 {
 	/* Must be called twice to trigger. */
@@ -267,14 +374,15 @@ static void lkdtm_SPINLOCKUP(void)
 	__release(&lock_me_up);
 }
 
-static void lkdtm_HUNG_TASK(void)
+static void __noreturn lkdtm_HUNG_TASK(void)
 {
 	set_current_state(TASK_UNINTERRUPTIBLE);
 	schedule();
+	BUG();
 }
 
-volatile unsigned int huge = INT_MAX - 2;
-volatile unsigned int ignored;
+static volatile unsigned int huge = INT_MAX - 2;
+static volatile unsigned int ignored;
 
 static void lkdtm_OVERFLOW_SIGNED(void)
 {
@@ -305,11 +413,11 @@ static void lkdtm_OVERFLOW_UNSIGNED(void)
 	ignored = value;
 }
 
-/* Intentionally using old-style flex array definition of 1 byte. */
+/* Intentionally using unannotated flex array definition. */
 struct array_bounds_flex_array {
 	int one;
 	int two;
-	char data[1];
+	char data[];
 };
 
 struct array_bounds {
@@ -341,7 +449,7 @@ static void lkdtm_ARRAY_BOUNDS(void)
 	 * For the uninstrumented flex array member, also touch 1 byte
 	 * beyond to verify it is correctly uninstrumented.
 	 */
-	for (i = 0; i < sizeof(not_checked->data) + 1; i++)
+	for (i = 0; i < 2; i++)
 		not_checked->data[i] = 'A';
 
 	pr_info("Array access beyond bounds ...\n");
@@ -352,6 +460,119 @@ static void lkdtm_ARRAY_BOUNDS(void)
 	kfree(checked);
 	pr_err("FAIL: survived array bounds overflow!\n");
 	if (IS_ENABLED(CONFIG_UBSAN_BOUNDS))
+		pr_expected_config(CONFIG_UBSAN_TRAP);
+	else
+		pr_expected_config(CONFIG_UBSAN_BOUNDS);
+}
+
+struct lkdtm_cb_fam {
+	unsigned long flags;
+	int count;
+	int array[] __counted_by(count);
+};
+
+static volatile int element_count = 4;
+
+static void lkdtm_FAM_BOUNDS(void)
+{
+	struct lkdtm_cb_fam *inst;
+
+	inst = kzalloc_flex(*inst, array, element_count + 1);
+	if (!inst) {
+		pr_err("FAIL: could not allocate test struct!\n");
+		return;
+	}
+
+	inst->count = element_count;
+	pr_info("Array access within bounds ...\n");
+	inst->array[1] = element_count;
+	ignored = inst->array[1];
+
+	pr_info("Array access beyond bounds ...\n");
+	inst->array[element_count] = element_count;
+	ignored = inst->array[element_count];
+
+	kfree(inst);
+
+	pr_err("FAIL: survived access of invalid flexible array member index!\n");
+
+	if (!IS_ENABLED(CONFIG_CC_HAS_COUNTED_BY))
+		pr_warn("This is expected since this %s was built with a compiler that does not support __counted_by\n",
+			lkdtm_kernel_info);
+	else if (IS_ENABLED(CONFIG_UBSAN_BOUNDS))
+		pr_expected_config(CONFIG_UBSAN_TRAP);
+	else
+		pr_expected_config(CONFIG_UBSAN_BOUNDS);
+}
+
+struct lkdtm_extra {
+	short a, b;
+	u16 sixteen;
+	u32 bigger;
+	u64 biggest;
+};
+
+struct lkdtm_cb_ptr {
+	int a, b, c;
+	int nr_extra;
+	char *buf __counted_by_ptr(len);
+	size_t len;
+	struct lkdtm_extra *extra __counted_by_ptr(nr_extra);
+};
+
+static noinline void check_ptr_len(struct lkdtm_cb_ptr *p, size_t len)
+{
+	if (__member_size(p->buf) != len)
+		pr_err("FAIL: could not determine size of inst->buf: %zu\n",
+			__member_size(p->buf));
+	else
+		pr_info("good: inst->buf length is %zu\n", len);
+}
+
+static void lkdtm_PTR_BOUNDS(void)
+{
+	struct lkdtm_cb_ptr *inst;
+
+	inst = kzalloc_obj(*inst);
+	if (!inst) {
+		pr_err("FAIL: could not allocate struct lkdtm_cb_ptr!\n");
+		return;
+	}
+
+	inst->buf = kzalloc(element_count, GFP_KERNEL);
+	if (!inst->buf) {
+		pr_err("FAIL: could not allocate inst->buf!\n");
+		return;
+	}
+	inst->len = element_count;
+
+	/* Double element_count */
+	inst->extra = kzalloc_objs(*inst->extra, element_count * 2);
+	inst->nr_extra = element_count * 2;
+
+	pr_info("Pointer access within bounds ...\n");
+	check_ptr_len(inst, 4);
+	/* All 4 bytes */
+	inst->buf[0] = 'A';
+	inst->buf[1] = 'B';
+	inst->buf[2] = 'C';
+	inst->buf[3] = 'D';
+	/* Halfway into the array */
+	inst->extra[element_count].biggest = 0x1000;
+
+	pr_info("Pointer access beyond bounds ...\n");
+	ignored = inst->extra[inst->nr_extra].b;
+
+	kfree(inst->extra);
+	kfree(inst->buf);
+	kfree(inst);
+
+	pr_err("FAIL: survived access of invalid pointer member offset!\n");
+
+	if (!IS_ENABLED(CONFIG_CC_HAS_COUNTED_BY_PTR))
+		pr_warn("This is expected since this %s was built with a compiler that does not support __counted_by_ptr\n",
+			lkdtm_kernel_info);
+	else if (IS_ENABLED(CONFIG_UBSAN_BOUNDS))
 		pr_expected_config(CONFIG_UBSAN_TRAP);
 	else
 		pr_expected_config(CONFIG_UBSAN_BOUNDS);
@@ -393,7 +614,7 @@ static void lkdtm_CORRUPT_LIST_ADD(void)
 		pr_err("Overwrite did not happen, but no BUG?!\n");
 	else {
 		pr_err("list_add() corruption not detected!\n");
-		pr_expected_config(CONFIG_DEBUG_LIST);
+		pr_expected_config(CONFIG_LIST_HARDENED);
 	}
 }
 
@@ -420,7 +641,7 @@ static void lkdtm_CORRUPT_LIST_DEL(void)
 		pr_err("Overwrite did not happen, but no BUG?!\n");
 	else {
 		pr_err("list_del() corruption not detected!\n");
-		pr_expected_config(CONFIG_DEBUG_LIST);
+		pr_expected_config(CONFIG_LIST_HARDENED);
 	}
 }
 
@@ -487,6 +708,7 @@ static void lkdtm_UNSET_SMEP(void)
 	 * the cr4 writing instruction.
 	 */
 	insn = (unsigned char *)native_write_cr4;
+	OPTIMIZER_HIDE_VAR(insn);
 	for (i = 0; i < MOV_CR4_DEPTH; i++) {
 		/* mov %rdi, %cr4 */
 		if (insn[i] == 0x0f && insn[i+1] == 0x22 && insn[i+2] == 0xe7)
@@ -597,7 +819,10 @@ static noinline void lkdtm_CORRUPT_PAC(void)
 
 static struct crashtype crashtypes[] = {
 	CRASHTYPE(PANIC),
+	CRASHTYPE(PANIC_STOP_IRQOFF),
+	CRASHTYPE(PANIC_IN_HARDIRQ),
 	CRASHTYPE(BUG),
+	CRASHTYPE(BUG_IN_HARDIRQ),
 	CRASHTYPE(WARNING),
 	CRASHTYPE(WARNING_MESSAGE),
 	CRASHTYPE(EXCEPTION),
@@ -610,11 +835,14 @@ static struct crashtype crashtypes[] = {
 	CRASHTYPE(UNALIGNED_LOAD_STORE_WRITE),
 	CRASHTYPE(SOFTLOCKUP),
 	CRASHTYPE(HARDLOCKUP),
+	CRASHTYPE(SMP_CALL_LOCKUP),
 	CRASHTYPE(SPINLOCKUP),
 	CRASHTYPE(HUNG_TASK),
 	CRASHTYPE(OVERFLOW_SIGNED),
 	CRASHTYPE(OVERFLOW_UNSIGNED),
 	CRASHTYPE(ARRAY_BOUNDS),
+	CRASHTYPE(FAM_BOUNDS),
+	CRASHTYPE(PTR_BOUNDS),
 	CRASHTYPE(CORRUPT_LIST_ADD),
 	CRASHTYPE(CORRUPT_LIST_DEL),
 	CRASHTYPE(STACK_GUARD_PAGE_LEADING),

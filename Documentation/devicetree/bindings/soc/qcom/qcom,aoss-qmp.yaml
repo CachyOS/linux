@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/soc/qcom/qcom,aoss-qmp.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Qualcomm Always-On Subsystem side channel binding
+title: Qualcomm Always-On Subsystem side channel
 
 maintainers:
   - Bjorn Andersson <bjorn.andersson@linaro.org>
@@ -13,7 +13,7 @@ description:
   This binding describes the hardware component responsible for side channel
   requests to the always-on subsystem (AOSS), used for certain power management
   requests that is not handled by the standard RPMh interface. Each client in the
-  SoC has it's own block of message RAM and IRQ for communication with the AOSS.
+  SoC has its own block of message RAM and IRQ for communication with the AOSS.
   The protocol used to communicate in the message RAM is known as Qualcomm
   Messaging Protocol (QMP)
 
@@ -25,14 +25,31 @@ properties:
   compatible:
     items:
       - enum:
+          - qcom,glymur-aoss-qmp
+          - qcom,kaanapali-aoss-qmp
+          - qcom,milos-aoss-qmp
+          - qcom,qcs615-aoss-qmp
+          - qcom,qcs8300-aoss-qmp
+          - qcom,qdu1000-aoss-qmp
+          - qcom,sa8255p-aoss-qmp
+          - qcom,sa8775p-aoss-qmp
+          - qcom,sar2130p-aoss-qmp
           - qcom,sc7180-aoss-qmp
           - qcom,sc7280-aoss-qmp
           - qcom,sc8180x-aoss-qmp
+          - qcom,sc8280xp-aoss-qmp
+          - qcom,sdx75-aoss-qmp
           - qcom,sdm845-aoss-qmp
           - qcom,sm6350-aoss-qmp
+          - qcom,sm7150-aoss-qmp
           - qcom,sm8150-aoss-qmp
           - qcom,sm8250-aoss-qmp
           - qcom,sm8350-aoss-qmp
+          - qcom,sm8450-aoss-qmp
+          - qcom,sm8550-aoss-qmp
+          - qcom,sm8650-aoss-qmp
+          - qcom,sm8750-aoss-qmp
+          - qcom,x1e80100-aoss-qmp
       - const: qcom,aoss-qmp
 
   reg:
@@ -72,7 +89,7 @@ patternProperties:
     description:
       The AOSS side channel also provides the controls for three cooling devices,
       these are expressed as subnodes of the QMP node. The name of the node is
-      used to identify the resource and must therefor be "cx", "mx" or "ebi".
+      used to identify the resource and must therefore be "cx", "mx" or "ebi".
 
     properties:
       "#cooling-cells":

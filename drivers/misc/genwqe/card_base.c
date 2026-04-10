@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/**
+/*
  * IBM Accelerator Family 'GenWQE'
  *
  * (C) Copyright IBM Corp. 2013
@@ -19,7 +19,6 @@
 #include <linux/types.h>
 #include <linux/pci.h>
 #include <linux/err.h>
-#include <linux/aer.h>
 #include <linux/string.h>
 #include <linux/sched.h>
 #include <linux/wait.h>
@@ -43,7 +42,7 @@ MODULE_VERSION(DRV_VERSION);
 MODULE_LICENSE("GPL");
 
 static char genwqe_driver_name[] = GENWQE_DEVNAME;
-static struct class *class_genwqe;
+
 static struct dentry *debugfs_genwqe;
 static struct genwqe_dev *genwqe_devices[GENWQE_CARD_NO_MAX];
 
@@ -106,6 +105,26 @@ static const struct pci_device_id genwqe_device_table[] = {
 MODULE_DEVICE_TABLE(pci, genwqe_device_table);
 
 /**
+ * genwqe_devnode() - Set default access mode for genwqe devices.
+ * @dev:	Pointer to device (unused)
+ * @mode:	Carrier to pass-back given mode (permissions)
+ *
+ * Default mode should be rw for everybody. Do not change default
+ * device name.
+ */
+static char *genwqe_devnode(const struct device *dev, umode_t *mode)
+{
+	if (mode)
+		*mode = 0666;
+	return NULL;
+}
+
+static const struct class class_genwqe = {
+	.name = GENWQE_DEVNAME,
+	.devnode = genwqe_devnode,
+};
+
+/**
  * genwqe_dev_alloc() - Create and prepare a new card descriptor
  *
  * Return: Pointer to card descriptor, or ERR_PTR(err) on error
@@ -122,12 +141,12 @@ static struct genwqe_dev *genwqe_dev_alloc(void)
 	if (i >= GENWQE_CARD_NO_MAX)
 		return ERR_PTR(-ENODEV);
 
-	cd = kzalloc(sizeof(struct genwqe_dev), GFP_KERNEL);
+	cd = kzalloc_obj(struct genwqe_dev);
 	if (!cd)
 		return ERR_PTR(-ENOMEM);
 
 	cd->card_idx = i;
-	cd->class_genwqe = class_genwqe;
+	cd->class_genwqe = &class_genwqe;
 	cd->debugfs_genwqe = debugfs_genwqe;
 
 	/*
@@ -384,8 +403,7 @@ static int genwqe_ffdc_buffs_alloc(struct genwqe_dev *cd)
 		/* currently support only the debug units mentioned here */
 		cd->ffdc[type].entries = e;
 		cd->ffdc[type].regs =
-			kmalloc_array(e, sizeof(struct genwqe_reg),
-				      GFP_KERNEL);
+			kmalloc_objs(struct genwqe_reg, e);
 		/*
 		 * regs == NULL is ok, the using code treats this as no regs,
 		 * Printing warning is ok in this case.
@@ -1099,7 +1117,6 @@ static int genwqe_pci_setup(struct genwqe_dev *cd)
 	}
 
 	pci_set_master(pci_dev);
-	pci_enable_pcie_error_reporting(pci_dev);
 
 	/* EEH recovery requires PCIe fundamental reset */
 	pci_dev->needs_freset = 1;
@@ -1342,34 +1359,17 @@ static struct pci_driver genwqe_driver = {
 };
 
 /**
- * genwqe_devnode() - Set default access mode for genwqe devices.
- * @dev:	Pointer to device (unused)
- * @mode:	Carrier to pass-back given mode (permissions)
- *
- * Default mode should be rw for everybody. Do not change default
- * device name.
- */
-static char *genwqe_devnode(struct device *dev, umode_t *mode)
-{
-	if (mode)
-		*mode = 0666;
-	return NULL;
-}
-
-/**
  * genwqe_init_module() - Driver registration and initialization
  */
 static int __init genwqe_init_module(void)
 {
 	int rc;
 
-	class_genwqe = class_create(THIS_MODULE, GENWQE_DEVNAME);
-	if (IS_ERR(class_genwqe)) {
+	rc = class_register(&class_genwqe);
+	if (rc) {
 		pr_err("[%s] create class failed\n", __func__);
 		return -ENOMEM;
 	}
-
-	class_genwqe->devnode = genwqe_devnode;
 
 	debugfs_genwqe = debugfs_create_dir(GENWQE_DEVNAME, NULL);
 
@@ -1383,7 +1383,7 @@ static int __init genwqe_init_module(void)
 
  err_out0:
 	debugfs_remove(debugfs_genwqe);
-	class_destroy(class_genwqe);
+	class_unregister(&class_genwqe);
 	return rc;
 }
 
@@ -1394,7 +1394,7 @@ static void __exit genwqe_exit_module(void)
 {
 	pci_unregister_driver(&genwqe_driver);
 	debugfs_remove(debugfs_genwqe);
-	class_destroy(class_genwqe);
+	class_unregister(&class_genwqe);
 }
 
 module_init(genwqe_init_module);

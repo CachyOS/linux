@@ -26,7 +26,7 @@
 struct nvkm_top_device *
 nvkm_top_device_new(struct nvkm_top *top)
 {
-	struct nvkm_top_device *info = kmalloc(sizeof(*info), GFP_KERNEL);
+	struct nvkm_top_device *info = kmalloc_obj(*info);
 	if (info) {
 		info->type = NVKM_SUBDEV_NR;
 		info->inst = -1;
@@ -117,11 +117,15 @@ nvkm_top_fault(struct nvkm_device *device, int fault)
 	return NULL;
 }
 
-static int
-nvkm_top_oneinit(struct nvkm_subdev *subdev)
+int
+nvkm_top_parse(struct nvkm_device *device)
 {
-	struct nvkm_top *top = nvkm_top(subdev);
-	return top->func->oneinit(top);
+	struct nvkm_top *top = device->top;
+
+	if (!top || !list_empty(&top->device))
+		return 0;
+
+	return top->func->parse(top);
 }
 
 static void *
@@ -141,7 +145,6 @@ nvkm_top_dtor(struct nvkm_subdev *subdev)
 static const struct nvkm_subdev_func
 nvkm_top = {
 	.dtor = nvkm_top_dtor,
-	.oneinit = nvkm_top_oneinit,
 };
 
 int
@@ -149,7 +152,7 @@ nvkm_top_new_(const struct nvkm_top_func *func, struct nvkm_device *device,
 	      enum nvkm_subdev_type type, int inst, struct nvkm_top **ptop)
 {
 	struct nvkm_top *top;
-	if (!(top = *ptop = kzalloc(sizeof(*top), GFP_KERNEL)))
+	if (!(top = *ptop = kzalloc_obj(*top)))
 		return -ENOMEM;
 	nvkm_subdev_ctor(&nvkm_top, device, type, inst, &top->subdev);
 	top->func = func;

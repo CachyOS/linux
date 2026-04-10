@@ -23,6 +23,20 @@ config CLK_RV110X
 	help
 	  Build the driver for RV110x Clock Driver.
 
+config CLK_RV1126
+	bool "Rockchip RV1126 clock controller support"
+	depends on ARM || COMPILE_TEST
+	default y
+	help
+	  Build the driver for RV1126 Clock Driver.
+
+config CLK_RV1126B
+	bool "Rockchip RV1126B clock controller support"
+	depends on ARM64 || COMPILE_TEST
+	default y
+	help
+	  Build the driver for RV1126B Clock Driver.
+
 config CLK_RK3036
 	bool "Rockchip RK3036 clock controller support"
 	depends on ARM || COMPILE_TEST
@@ -86,10 +100,46 @@ config CLK_RK3399
 	help
 	  Build the driver for RK3399 Clock Driver.
 
+config CLK_RK3506
+	bool "Rockchip RK3506 clock controller support"
+	depends on ARM || COMPILE_TEST
+	default y
+	help
+	  Build the driver for RK3506 Clock Driver.
+
+config CLK_RK3528
+	bool "Rockchip RK3528 clock controller support"
+	depends on ARM64 || COMPILE_TEST
+	default y
+	help
+	  Build the driver for RK3528 Clock Controller.
+
+config CLK_RK3562
+	bool "Rockchip RK3562 clock controller support"
+	depends on ARM64 || COMPILE_TEST
+	default y
+	help
+	  Build the driver for RK3562 Clock Controller.
+
 config CLK_RK3568
 	bool "Rockchip RK3568 clock controller support"
 	depends on ARM64 || COMPILE_TEST
 	default y
 	help
 	  Build the driver for RK3568 Clock Driver.
+
+config CLK_RK3576
+	bool "Rockchip RK3576 clock controller support"
+	depends on ARM64 || COMPILE_TEST
+	default y
+	help
+	  Build the driver for RK3576 Clock Driver.
+
+config CLK_RK3588
+	bool "Rockchip RK3588 clock controller support"
+	depends on ARM64 || COMPILE_TEST
+	default y
+	help
+	  Build the driver for RK3588 Clock Driver.
+
 endif

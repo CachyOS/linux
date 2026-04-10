@@ -66,7 +66,7 @@ static irqreturn_t do_mac53c94_interrupt(int, void *);
 static void cmd_done(struct fsc_state *, int result);
 static void set_dma_cmds(struct fsc_state *, struct scsi_cmnd *);
 
-static int mac53c94_queue_lck(struct scsi_cmnd *cmd)
+static enum scsi_qc_status mac53c94_queue_lck(struct scsi_cmnd *cmd)
 {
 	struct fsc_state *state;
 
@@ -392,7 +392,7 @@ static void set_dma_cmds(struct fsc_state *state, struct scsi_cmnd *cmd)
 	mac53c94_priv(cmd)->this_residual = total;
 }
 
-static struct scsi_host_template mac53c94_template = {
+static const struct scsi_host_template mac53c94_template = {
 	.proc_name	= "53c94",
 	.name		= "53C94",
 	.queuecommand	= mac53c94_queue,
@@ -462,9 +462,8 @@ static int mac53c94_probe(struct macio_dev *mdev, const struct of_device_id *mat
        	 * +1 to allow for aligning.
 	 * XXX FIXME: Use DMA consistent routines
 	 */
-       	dma_cmd_space = kmalloc_array(host->sg_tablesize + 2,
-					     sizeof(struct dbdma_cmd),
-					     GFP_KERNEL);
+       	dma_cmd_space = kmalloc_objs(struct dbdma_cmd,
+					    host->sg_tablesize + 2);
 	if (!dma_cmd_space) {
 		printk(KERN_ERR "mac53c94: couldn't allocate dma "
 		       "command space for %pOF\n", node);
@@ -508,7 +507,7 @@ static int mac53c94_probe(struct macio_dev *mdev, const struct of_device_id *mat
 	return rc;
 }
 
-static int mac53c94_remove(struct macio_dev *mdev)
+static void mac53c94_remove(struct macio_dev *mdev)
 {
 	struct fsc_state *fp = (struct fsc_state *)macio_get_drvdata(mdev);
 	struct Scsi_Host *host = fp->host;
@@ -526,10 +525,7 @@ static int mac53c94_remove(struct macio_dev *mdev)
 	scsi_host_put(host);
 
 	macio_release_resources(mdev);
-
-	return 0;
 }
-
 
 static struct of_device_id mac53c94_match[] = 
 {

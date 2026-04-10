@@ -269,18 +269,17 @@ static const unsigned char cmi8330_sb_init_values[][2] = {
 static int cmi8330_add_sb_mixers(struct snd_sb *chip)
 {
 	int idx, err;
-	unsigned long flags;
 
-	spin_lock_irqsave(&chip->mixer_lock, flags);
-	snd_sbmixer_write(chip, 0x00, 0x00);		/* mixer reset */
-	spin_unlock_irqrestore(&chip->mixer_lock, flags);
+	scoped_guard(spinlock_irqsave, &chip->mixer_lock) {
+		snd_sbmixer_write(chip, 0x00, 0x00);	/* mixer reset */
+	}
 
 	/* mute and zero volume channels */
 	for (idx = 0; idx < ARRAY_SIZE(cmi8330_sb_init_values); idx++) {
-		spin_lock_irqsave(&chip->mixer_lock, flags);
-		snd_sbmixer_write(chip, cmi8330_sb_init_values[idx][0],
-				  cmi8330_sb_init_values[idx][1]);
-		spin_unlock_irqrestore(&chip->mixer_lock, flags);
+		scoped_guard(spinlock_irqsave, &chip->mixer_lock) {
+			snd_sbmixer_write(chip, cmi8330_sb_init_values[idx][0],
+					  cmi8330_sb_init_values[idx][1]);
+		}
 	}
 
 	for (idx = 0; idx < ARRAY_SIZE(cmi8330_sb_mixers); idx++) {
@@ -297,7 +296,7 @@ static int snd_cmi8330_mixer(struct snd_card *card, struct snd_cmi8330 *acard)
 	unsigned int idx;
 	int err;
 
-	strcpy(card->mixername, (acard->type == CMI8329) ? "CMI8329" : "CMI8330/C3D");
+	strscpy(card->mixername, (acard->type == CMI8329) ? "CMI8329" : "CMI8330/C3D");
 
 	for (idx = 0; idx < ARRAY_SIZE(snd_cmi8330_controls); idx++) {
 		err = snd_ctl_add(card,
@@ -342,7 +341,7 @@ static int snd_cmi8330_pnp(int dev, struct snd_cmi8330 *acard,
 
 	err = pnp_activate_dev(pdev);
 	if (err < 0) {
-		snd_printk(KERN_ERR "AD1848 PnP configure failure\n");
+		dev_err(&pdev->dev, "AD1848 PnP configure failure\n");
 		return -EBUSY;
 	}
 	wssport[dev] = pnp_port_start(pdev, 0);
@@ -356,7 +355,7 @@ static int snd_cmi8330_pnp(int dev, struct snd_cmi8330 *acard,
 
 	err = pnp_activate_dev(pdev);
 	if (err < 0) {
-		snd_printk(KERN_ERR "SB16 PnP configure failure\n");
+		dev_err(&pdev->dev, "SB16 PnP configure failure\n");
 		return -EBUSY;
 	}
 	sbport[dev] = pnp_port_start(pdev, 0);
@@ -376,7 +375,7 @@ static int snd_cmi8330_pnp(int dev, struct snd_cmi8330 *acard,
 
 	err = pnp_activate_dev(pdev);
 	if (err < 0)
-		snd_printk(KERN_ERR "MPU-401 PnP configure failure: will be disabled\n");
+		dev_err(&pdev->dev, "MPU-401 PnP configure failure: will be disabled\n");
 	else {
 		mpuport[dev] = pnp_port_start(pdev, 0);
 		mpuirq[dev] = pnp_irq(pdev, 0);
@@ -437,7 +436,7 @@ static int snd_cmi8330_pcm(struct snd_card *card, struct snd_cmi8330 *chip)
 	err = snd_pcm_new(card, (chip->type == CMI8329) ? "CMI8329" : "CMI8330", 0, 1, 1, &pcm);
 	if (err < 0)
 		return err;
-	strcpy(pcm->name, (chip->type == CMI8329) ? "CMI8329" : "CMI8330");
+	strscpy(pcm->name, (chip->type == CMI8329) ? "CMI8329" : "CMI8330");
 	pcm->private_data = chip;
 	
 	/* SB16 */
@@ -498,8 +497,6 @@ static int snd_cmi8330_resume(struct snd_card *card)
 #define is_isapnp_selected(dev)		0
 #endif
 
-#define PFX	"cmi8330: "
-
 static int snd_cmi8330_card_new(struct device *pdev, int dev,
 				struct snd_card **cardp)
 {
@@ -510,7 +507,7 @@ static int snd_cmi8330_card_new(struct device *pdev, int dev,
 	err = snd_devm_card_new(pdev, index[dev], id[dev], THIS_MODULE,
 				sizeof(struct snd_cmi8330), &card);
 	if (err < 0) {
-		snd_printk(KERN_ERR PFX "could not get a new card\n");
+		dev_err(pdev, "could not get a new card\n");
 		return err;
 	}
 	acard = card->private_data;
@@ -531,11 +528,11 @@ static int snd_cmi8330_probe(struct snd_card *card, int dev)
 			     wssdma[dev], -1,
 			     WSS_HW_DETECT, 0, &acard->wss);
 	if (err < 0) {
-		snd_printk(KERN_ERR PFX "AD1848 device busy??\n");
+		dev_err(card->dev, "AD1848 device busy??\n");
 		return err;
 	}
 	if (acard->wss->hardware != WSS_HW_CMI8330) {
-		snd_printk(KERN_ERR PFX "AD1848 not found during probe\n");
+		dev_err(card->dev, "AD1848 not found during probe\n");
 		return -ENODEV;
 	}
 
@@ -546,11 +543,11 @@ static int snd_cmi8330_probe(struct snd_card *card, int dev)
 			       sbdma16[dev],
 			       SB_HW_AUTO, &acard->sb);
 	if (err < 0) {
-		snd_printk(KERN_ERR PFX "SB16 device busy??\n");
+		dev_err(card->dev, "SB16 device busy??\n");
 		return err;
 	}
 	if (acard->sb->hardware != SB_HW_16) {
-		snd_printk(KERN_ERR PFX "SB16 not found during probe\n");
+		dev_err(card->dev, "SB16 not found during probe\n");
 		return -ENODEV;
 	}
 
@@ -561,22 +558,22 @@ static int snd_cmi8330_probe(struct snd_card *card, int dev)
 
 	err = snd_cmi8330_mixer(card, acard);
 	if (err < 0) {
-		snd_printk(KERN_ERR PFX "failed to create mixers\n");
+		dev_err(card->dev, "failed to create mixers\n");
 		return err;
 	}
 
 	err = snd_cmi8330_pcm(card, acard);
 	if (err < 0) {
-		snd_printk(KERN_ERR PFX "failed to create pcms\n");
+		dev_err(card->dev, "failed to create pcms\n");
 		return err;
 	}
 	if (fmport[dev] != SNDRV_AUTO_PORT) {
 		if (snd_opl3_create(card,
 				    fmport[dev], fmport[dev] + 2,
 				    OPL3_HW_AUTO, 0, &opl3) < 0) {
-			snd_printk(KERN_ERR PFX
-				   "no OPL device at 0x%lx-0x%lx ?\n",
-				   fmport[dev], fmport[dev] + 2);
+			dev_err(card->dev,
+				"no OPL device at 0x%lx-0x%lx ?\n",
+				fmport[dev], fmport[dev] + 2);
 		} else {
 			err = snd_opl3_hwdep_new(opl3, 0, 1, NULL);
 			if (err < 0)
@@ -588,12 +585,12 @@ static int snd_cmi8330_probe(struct snd_card *card, int dev)
 		if (snd_mpu401_uart_new(card, 0, MPU401_HW_MPU401,
 					mpuport[dev], 0, mpuirq[dev],
 					NULL) < 0)
-			printk(KERN_ERR PFX "no MPU-401 device at 0x%lx.\n",
+			dev_err(card->dev, "no MPU-401 device at 0x%lx.\n",
 				mpuport[dev]);
 	}
 
-	strcpy(card->driver, (acard->type == CMI8329) ? "CMI8329" : "CMI8330/C3D");
-	strcpy(card->shortname, (acard->type == CMI8329) ? "C-Media CMI8329" : "C-Media CMI8330/C3D");
+	strscpy(card->driver, (acard->type == CMI8329) ? "CMI8329" : "CMI8330/C3D");
+	strscpy(card->shortname, (acard->type == CMI8329) ? "C-Media CMI8329" : "C-Media CMI8330/C3D");
 	sprintf(card->longname, "%s at 0x%lx, irq %d, dma %d",
 		card->shortname,
 		acard->wss->port,
@@ -609,11 +606,11 @@ static int snd_cmi8330_isa_match(struct device *pdev,
 	if (!enable[dev] || is_isapnp_selected(dev))
 		return 0;
 	if (wssport[dev] == SNDRV_AUTO_PORT) {
-		snd_printk(KERN_ERR PFX "specify wssport\n");
+		dev_err(pdev, "specify wssport\n");
 		return 0;
 	}
 	if (sbport[dev] == SNDRV_AUTO_PORT) {
-		snd_printk(KERN_ERR PFX "specify sbport\n");
+		dev_err(pdev, "specify sbport\n");
 		return 0;
 	}
 	return 1;
@@ -683,7 +680,7 @@ static int snd_cmi8330_pnp_detect(struct pnp_card_link *pcard,
 		return res;
 	res = snd_cmi8330_pnp(dev, card->private_data, pcard, pid);
 	if (res < 0) {
-		snd_printk(KERN_ERR PFX "PnP detection failed\n");
+		dev_err(card->dev, "PnP detection failed\n");
 		return res;
 	}
 	res = snd_cmi8330_probe(card, dev);

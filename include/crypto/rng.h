@@ -9,6 +9,8 @@
 #ifndef _CRYPTO_RNG_H
 #define _CRYPTO_RNG_H
 
+#include <linux/atomic.h>
+#include <linux/container_of.h>
 #include <linux/crypto.h>
 
 struct crypto_rng;
@@ -94,18 +96,20 @@ static inline struct crypto_tfm *crypto_rng_tfm(struct crypto_rng *tfm)
 	return &tfm->base;
 }
 
+static inline struct rng_alg *__crypto_rng_alg(struct crypto_alg *alg)
+{
+	return container_of(alg, struct rng_alg, base);
+}
+
 /**
- * crypto_rng_alg - obtain name of RNG
- * @tfm: cipher handle
+ * crypto_rng_alg() - obtain 'struct rng_alg' pointer from RNG handle
+ * @tfm: RNG handle
  *
- * Return the generic name (cra_name) of the initialized random number generator
- *
- * Return: generic name string
+ * Return: Pointer to 'struct rng_alg', derived from @tfm RNG handle
  */
 static inline struct rng_alg *crypto_rng_alg(struct crypto_rng *tfm)
 {
-	return container_of(crypto_rng_tfm(tfm)->__crt_alg,
-			    struct rng_alg, base);
+	return __crypto_rng_alg(crypto_rng_tfm(tfm)->__crt_alg);
 }
 
 /**
@@ -137,13 +141,7 @@ static inline int crypto_rng_generate(struct crypto_rng *tfm,
 				      const u8 *src, unsigned int slen,
 				      u8 *dst, unsigned int dlen)
 {
-	struct crypto_alg *alg = tfm->base.__crt_alg;
-	int ret;
-
-	crypto_stats_get(alg);
-	ret = crypto_rng_alg(tfm)->generate(tfm, src, slen, dst, dlen);
-	crypto_stats_rng_generate(alg, dlen, ret);
-	return ret;
+	return crypto_rng_alg(tfm)->generate(tfm, src, slen, dst, dlen);
 }
 
 /**
@@ -171,12 +169,11 @@ static inline int crypto_rng_get_bytes(struct crypto_rng *tfm,
  *
  * The reset function completely re-initializes the random number generator
  * referenced by the cipher handle by clearing the current state. The new state
- * is initialized with the caller provided seed or automatically, depending
- * on the random number generator type (the ANSI X9.31 RNG requires
- * caller-provided seed, the SP800-90A DRBGs perform an automatic seeding).
- * The seed is provided as a parameter to this function call. The provided seed
- * should have the length of the seed size defined for the random number
- * generator as defined by crypto_rng_seedsize.
+ * is initialized with the caller provided seed or automatically, depending on
+ * the random number generator type. (The SP800-90A DRBGs perform an automatic
+ * seeding.) The seed is provided as a parameter to this function call. The
+ * provided seed should have the length of the seed size defined for the random
+ * number generator as defined by crypto_rng_seedsize.
  *
  * Return: 0 if the setting of the key was successful; < 0 if an error occurred
  */

@@ -47,7 +47,7 @@ static struct resource standard_io_resources[] = {
 		.name = "keyboard",
 		.start = 0x60,
 		.end = 0x6f,
-		.flags = IORESOURCE_IO | IORESOURCE_BUSY
+		.flags = IORESOURCE_IO
 	},
 	{
 		.name = "dma page reg",
@@ -161,7 +161,7 @@ static void __init pci_clock_check(void)
 #if defined(CONFIG_VT) && defined(CONFIG_VGA_CONSOLE)
 static void __init screen_info_setup(void)
 {
-	screen_info = (struct screen_info) {
+	static struct screen_info si = {
 		.orig_x = 0,
 		.orig_y = 25,
 		.ext_mem_k = 0,
@@ -175,6 +175,8 @@ static void __init screen_info_setup(void)
 		.orig_video_isVGA = VIDEO_TYPE_VGAC,
 		.orig_video_points = 16
 	};
+
+	vgacon_register_screen(&si);
 }
 #endif
 
@@ -211,7 +213,7 @@ void __init plat_mem_setup(void)
 
 	/* Request I/O space for devices used on the Malta board. */
 	for (i = 0; i < ARRAY_SIZE(standard_io_resources); i++)
-		request_resource(&ioport_resource, standard_io_resources+i);
+		insert_resource(&ioport_resource, standard_io_resources + i);
 
 	/*
 	 * Enable DMA channel 4 (cascade channel) in the PIIX4 south bridge.

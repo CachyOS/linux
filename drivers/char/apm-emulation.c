@@ -141,22 +141,11 @@ static struct apm_queue kapmd_queue;
 
 static DEFINE_MUTEX(state_lock);
 
-static const char driver_version[] = "1.13";	/* no spaces */
-
-
-
-/*
- * Compatibility cruft until the IPAQ people move over to the new
- * interface.
- */
-static void __apm_get_power_status(struct apm_power_info *info)
-{
-}
 
 /*
  * This allows machines to provide their own "apm get power status" function.
  */
-void (*apm_get_power_status)(struct apm_power_info *) = __apm_get_power_status;
+void (*apm_get_power_status)(struct apm_power_info *);
 EXPORT_SYMBOL(apm_get_power_status);
 
 
@@ -354,7 +343,7 @@ static int apm_open(struct inode * inode, struct file * filp)
 {
 	struct apm_user *as;
 
-	as = kzalloc(sizeof(*as), GFP_KERNEL);
+	as = kzalloc_obj(*as);
 	if (as) {
 		/*
 		 * XXX - this is a tiny bit broken, when we consider BSD
@@ -435,6 +424,8 @@ static struct miscdevice apm_device = {
  */
 static int proc_apm_show(struct seq_file *m, void *v)
 {
+	static const char driver_version[] = "1.13";	/* no spaces */
+
 	struct apm_power_info info;
 	char *units;
 
@@ -544,7 +535,7 @@ static int apm_suspend_notifier(struct notifier_block *nb,
 		wake_up_interruptible(&apm_waitqueue);
 
 		/*
-		 * Wait for the the suspend_acks_pending variable to drop to
+		 * Wait for the suspend_acks_pending variable to drop to
 		 * zero, meaning everybody acked the suspend event (or the
 		 * process was killed.)
 		 *

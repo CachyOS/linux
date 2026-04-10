@@ -29,12 +29,14 @@ properties:
     $ref: /schemas/types.yaml#/definitions/uint32
     description: Offset in the register map for the mode register (in bytes)
 
-patternProperties:
-  "^mode-.+":
-    $ref: /schemas/types.yaml#/definitions/uint32
-    description: Vendor-specific mode value written to the mode register
+allOf:
+  - $ref: reboot-mode.yaml#
 
-additionalProperties: false
+patternProperties:
+  "^mode-.*$":
+    maxItems: 1
+
+unevaluatedProperties: false
 
 required:
   - compatible

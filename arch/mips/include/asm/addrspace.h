@@ -15,7 +15,7 @@
 /*
  *  Configure language
  */
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 #define _ATYPE_
 #define _ATYPE32_
 #define _ATYPE64_
@@ -34,7 +34,7 @@
 /*
  *  32-bit MIPS address spaces
  */
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 #define _ACAST32_
 #define _ACAST64_
 #else
@@ -46,6 +46,11 @@
  * Returns the kernel segment base of a given address
  */
 #define KSEGX(a)		((_ACAST32_(a)) & _ACAST32_(0xe0000000))
+
+/*
+ * Gives the size of each kernel segment
+ */
+#define CSEGX_SIZE		0x20000000
 
 /*
  * Returns the physical address of a CKSEGx / XKPHYS address

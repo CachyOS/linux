@@ -25,7 +25,9 @@
 
 #include "hdcp.h"
 
+#ifndef MIN
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
+#endif
 #define HDCP_I2C_ADDR 0x3a	/* 0x74 >> 1*/
 #define KSV_READ_SIZE 0xf	/* 0x6803b - 0x6802c */
 #define HDCP_MAX_AUX_TRANSACTION_SIZE 16
@@ -156,7 +158,15 @@ static enum mod_hdcp_status read(struct mod_hdcp *hdcp,
 	uint32_t cur_size = 0;
 	uint32_t data_offset = 0;
 
+	if (msg_id == MOD_HDCP_MESSAGE_ID_INVALID ||
+		msg_id >= MOD_HDCP_MESSAGE_ID_MAX)
+		return MOD_HDCP_STATUS_DDC_FAILURE;
+
 	if (is_dp_hdcp(hdcp)) {
+		int num_dpcd_addrs = ARRAY_SIZE(hdcp_dpcd_addrs);
+		if (msg_id >= num_dpcd_addrs)
+			return MOD_HDCP_STATUS_DDC_FAILURE;
+
 		while (buf_len > 0) {
 			cur_size = MIN(buf_len, HDCP_MAX_AUX_TRANSACTION_SIZE);
 			success = hdcp->config.ddc.funcs.read_dpcd(hdcp->config.ddc.handle,
@@ -171,6 +181,10 @@ static enum mod_hdcp_status read(struct mod_hdcp *hdcp,
 			data_offset += cur_size;
 		}
 	} else {
+		int num_i2c_offsets = ARRAY_SIZE(hdcp_i2c_offsets);
+		if (msg_id >= num_i2c_offsets)
+			return MOD_HDCP_STATUS_DDC_FAILURE;
+
 		success = hdcp->config.ddc.funcs.read_i2c(
 				hdcp->config.ddc.handle,
 				HDCP_I2C_ADDR,
@@ -215,7 +229,15 @@ static enum mod_hdcp_status write(struct mod_hdcp *hdcp,
 	uint32_t cur_size = 0;
 	uint32_t data_offset = 0;
 
+	if (msg_id == MOD_HDCP_MESSAGE_ID_INVALID ||
+		msg_id >= MOD_HDCP_MESSAGE_ID_MAX)
+		return MOD_HDCP_STATUS_DDC_FAILURE;
+
 	if (is_dp_hdcp(hdcp)) {
+		int num_dpcd_addrs = ARRAY_SIZE(hdcp_dpcd_addrs);
+		if (msg_id >= num_dpcd_addrs)
+			return MOD_HDCP_STATUS_DDC_FAILURE;
+
 		while (buf_len > 0) {
 			cur_size = MIN(buf_len, HDCP_MAX_AUX_TRANSACTION_SIZE);
 			success = hdcp->config.ddc.funcs.write_dpcd(
@@ -231,6 +253,10 @@ static enum mod_hdcp_status write(struct mod_hdcp *hdcp,
 			data_offset += cur_size;
 		}
 	} else {
+		int num_i2c_offsets = ARRAY_SIZE(hdcp_i2c_offsets);
+		if (msg_id >= num_i2c_offsets)
+			return MOD_HDCP_STATUS_DDC_FAILURE;
+
 		hdcp->buf[0] = hdcp_i2c_offsets[msg_id];
 		memmove(&hdcp->buf[1], buf, buf_len);
 		success = hdcp->config.ddc.funcs.write_i2c(
@@ -662,3 +688,76 @@ enum mod_hdcp_status mod_hdcp_clear_cp_irq_status(struct mod_hdcp *hdcp)
 
 	return MOD_HDCP_STATUS_INVALID_OPERATION;
 }
+
+static bool write_stall_read_lc_fw_aux(struct mod_hdcp *hdcp)
+{
+	struct mod_hdcp_message_hdcp2 *hdcp2 = &hdcp->auth.msg.hdcp2;
+
+	struct mod_hdcp_atomic_op_aux write = {
+		hdcp_dpcd_addrs[MOD_HDCP_MESSAGE_ID_WRITE_LC_INIT],
+		hdcp2->lc_init + 1,
+		sizeof(hdcp2->lc_init) - 1,
+	};
+	struct mod_hdcp_atomic_op_aux stall = { 0, NULL, 0, };
+	struct mod_hdcp_atomic_op_aux read = {
+		hdcp_dpcd_addrs[MOD_HDCP_MESSAGE_ID_READ_LC_SEND_L_PRIME],
+		hdcp2->lc_l_prime + 1,
+		sizeof(hdcp2->lc_l_prime) - 1,
+	};
+
+	hdcp2->lc_l_prime[0] = HDCP_2_2_LC_SEND_LPRIME;
+
+	return hdcp->config.ddc.funcs.atomic_write_poll_read_aux(
+			hdcp->config.ddc.handle,
+			&write,
+			&stall,
+			&read,
+			16 * 1000,
+			0
+	);
+}
+
+static bool write_poll_read_lc_fw_i2c(struct mod_hdcp *hdcp)
+{
+	struct mod_hdcp_message_hdcp2 *hdcp2 = &hdcp->auth.msg.hdcp2;
+	uint8_t expected_rxstatus[2] = { sizeof(hdcp2->lc_l_prime) };
+
+	hdcp->buf[0] = hdcp_i2c_offsets[MOD_HDCP_MESSAGE_ID_WRITE_LC_INIT];
+	memmove(&hdcp->buf[1], hdcp2->lc_init, sizeof(hdcp2->lc_init));
+
+	struct mod_hdcp_atomic_op_i2c write = {
+		HDCP_I2C_ADDR,
+		0,
+		hdcp->buf,
+		sizeof(hdcp2->lc_init) + 1,
+	};
+	struct mod_hdcp_atomic_op_i2c poll = {
+		HDCP_I2C_ADDR,
+		hdcp_i2c_offsets[MOD_HDCP_MESSAGE_ID_READ_RXSTATUS],
+		expected_rxstatus,
+		sizeof(expected_rxstatus),
+	};
+	struct mod_hdcp_atomic_op_i2c read = {
+		HDCP_I2C_ADDR,
+		hdcp_i2c_offsets[MOD_HDCP_MESSAGE_ID_READ_LC_SEND_L_PRIME],
+		hdcp2->lc_l_prime,
+		sizeof(hdcp2->lc_l_prime),
+	};
+
+	return hdcp->config.ddc.funcs.atomic_write_poll_read_i2c(
+			hdcp->config.ddc.handle,
+			&write,
+			&poll,
+			&read,
+			20 * 1000,
+			6
+	);
+}
+
+enum mod_hdcp_status mod_hdcp_write_poll_read_lc_fw(struct mod_hdcp *hdcp)
+{
+	const bool success = (is_dp_hdcp(hdcp) ? write_stall_read_lc_fw_aux : write_poll_read_lc_fw_i2c)(hdcp);
+
+	return success ? MOD_HDCP_STATUS_SUCCESS : MOD_HDCP_STATUS_HDCP2_LOCALITY_COMBO_READ_FAILURE;
+}
+

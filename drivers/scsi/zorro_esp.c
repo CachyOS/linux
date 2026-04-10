@@ -713,7 +713,7 @@ MODULE_DEVICE_TABLE(zorro, zorro_esp_zorro_tbl);
 static int zorro_esp_probe(struct zorro_dev *z,
 				       const struct zorro_device_id *ent)
 {
-	struct scsi_host_template *tpnt = &scsi_esp_template;
+	const struct scsi_host_template *tpnt = &scsi_esp_template;
 	struct Scsi_Host *host;
 	struct esp *esp;
 	const struct zorro_driver_data *zdd;
@@ -726,7 +726,7 @@ static int zorro_esp_probe(struct zorro_dev *z,
 
 	pr_info("%s found at address 0x%lx.\n", zdd->name, board);
 
-	zep = kzalloc(sizeof(*zep), GFP_KERNEL);
+	zep = kzalloc_obj(*zep);
 	if (!zep) {
 		pr_err("Can't allocate device private data!\n");
 		return -ENOMEM;

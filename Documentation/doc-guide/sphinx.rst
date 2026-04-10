@@ -28,7 +28,7 @@ Sphinx Install
 ==============
 
 The ReST markups currently used by the Documentation/ files are meant to be
-built with ``Sphinx`` version 1.7 or higher.
+built with ``Sphinx`` version 3.4.3 or higher.
 
 There's a script that checks for the Sphinx requirements. Please see
 :ref:`sphinx-pre-install` for further details.
@@ -42,23 +42,14 @@ with your distributions. In order to do so, it is recommended to install
 Sphinx inside a virtual environment, using ``virtualenv-3``
 or ``virtualenv``, depending on how your distribution packaged Python 3.
 
-.. note::
+In summary, if you want to install the latest version of Sphinx, you
+should do::
 
-   #) It is recommended to use the RTD theme for html output. Depending
-      on the Sphinx version, it should be installed separately,
-      with ``pip install sphinx_rtd_theme``.
+       $ virtualenv sphinx_latest
+       $ . sphinx_latest/bin/activate
+       (sphinx_latest) $ pip install -r Documentation/sphinx/requirements.txt
 
-   #) Some ReST pages contain math expressions. Due to the way Sphinx works,
-      those expressions are written using LaTeX notation. It needs texlive
-      installed with amsfonts and amsmath in order to evaluate them.
-
-In summary, if you want to install Sphinx version 2.4.4, you should do::
-
-       $ virtualenv sphinx_2.4.4
-       $ . sphinx_2.4.4/bin/activate
-       (sphinx_2.4.4) $ pip install -r Documentation/sphinx/requirements.txt
-
-After running ``. sphinx_2.4.4/bin/activate``, the prompt will change,
+After running ``. sphinx_latest/bin/activate``, the prompt will change,
 in order to indicate that you're using the new environment. If you
 open a new shell, you need to rerun this command to enter again at
 the virtual environment before building the documentation.
@@ -67,8 +58,7 @@ Image output
 ------------
 
 The kernel documentation build system contains an extension that
-handles images on both GraphViz and SVG formats (see
-:ref:`sphinx_kfigure`).
+handles images in both GraphViz and SVG formats (see :ref:`sphinx_kfigure`).
 
 For it to work, you need to install both GraphViz and ImageMagick
 packages. If those packages are not installed, the build system will
@@ -86,16 +76,37 @@ Depending on the distribution, you may also need to install a series of
 ``texlive`` packages that provide the minimal set of functionalities
 required for ``XeLaTeX`` to work.
 
+Math Expressions in HTML
+------------------------
+
+Some ReST pages contain math expressions. Due to the way Sphinx works,
+those expressions are written using LaTeX notation.
+There are two options for Sphinx to render math expressions in html output.
+One is an extension called `imgmath`_ which converts math expressions into
+images and embeds them in html pages.
+The other is an extension called `mathjax`_ which delegates math rendering
+to JavaScript capable web browsers.
+The former was the only option for pre-6.1 kernel documentation and it
+requires quite a few texlive packages including amsfonts and amsmath among
+others.
+
+Since kernel release 6.1, html pages with math expressions can be built
+without installing any texlive packages. See `Choice of Math Renderer`_ for
+further info.
+
+.. _imgmath: https://www.sphinx-doc.org/en/master/usage/extensions/math.html#module-sphinx.ext.imgmath
+.. _mathjax: https://www.sphinx-doc.org/en/master/usage/extensions/math.html#module-sphinx.ext.mathjax
+
 .. _sphinx-pre-install:
 
 Checking for Sphinx dependencies
 --------------------------------
 
-There's a script that automatically check for Sphinx dependencies. If it can
+There's a script that automatically checks for Sphinx dependencies. If it can
 recognize your distribution, it will also give a hint about the install
 command line options for your distro::
 
-	$ ./scripts/sphinx-pre-install
+	$ ./tools/docs/sphinx-pre-install
 	Checking if the needed tools for Fedora release 26 (Twenty Six) are available
 	Warning: better to also install "texlive-luatex85".
 	You should run:
@@ -105,7 +116,7 @@ command line options for your distro::
 		. sphinx_2.4.4/bin/activate
 		pip install -r Documentation/sphinx/requirements.txt
 
-	Can't build as 1 mandatory dependency is missing at ./scripts/sphinx-pre-install line 468.
+	Can't build as 1 mandatory dependency is missing at ./tools/docs/sphinx-pre-install line 468.
 
 By default, it checks all the requirements for both html and PDF, including
 the requirements for images, math expressions and LaTeX build, and assumes
@@ -120,6 +131,29 @@ It supports two optional parameters:
 ``--no-virtualenv``
 	Use OS packaging for Sphinx instead of Python virtual environment.
 
+Installing Sphinx Minimal Version
+---------------------------------
+
+When changing Sphinx build system, it is important to ensure that
+the minimal version will still be supported. Nowadays, it is
+becoming harder to do that on modern distributions, as it is not
+possible to install with Python 3.13 and above.
+
+Testing with the lowest supported Python version as defined at
+Documentation/process/changes.rst can be done by creating
+a venv with it with, and install minimal requirements with::
+
+	/usr/bin/python3.9 -m venv sphinx_min
+	. sphinx_min/bin/activate
+	pip install -r Documentation/sphinx/min_requirements.txt
+
+A more comprehensive test can be done by using:
+
+	tools/docs/test_doc_build.py
+
+Such script create one Python venv per supported version,
+optionally building documentation for a range of Sphinx versions.
+
 
 Sphinx Build
 ============
@@ -130,10 +164,9 @@ section of ``make help``. The generated documentation is placed in
 format-specific subdirectories under ``Documentation/output``.
 
 To generate documentation, Sphinx (``sphinx-build``) must obviously be
-installed. For prettier HTML output, the Read the Docs Sphinx theme
-(``sphinx_rtd_theme``) is used if available. For PDF output you'll also need
-``XeLaTeX`` and ``convert(1)`` from ImageMagick (https://www.imagemagick.org).
-All of these are widely available and packaged in distributions.
+installed.  For PDF output you'll also need ``XeLaTeX`` and ``convert(1)``
+from ImageMagick (https://www.imagemagick.org).\ [#ink]_ All of these are
+widely available and packaged in distributions.
 
 To pass extra options to Sphinx, you can use the ``SPHINXOPTS`` make
 variable. For example, use ``make SPHINXOPTS=-v htmldocs`` to get more verbose
@@ -142,15 +175,60 @@ output.
 It is also possible to pass an extra DOCS_CSS overlay file, in order to customize
 the html layout, by using the ``DOCS_CSS`` make variable.
 
-By default, the build will try to use the Read the Docs sphinx theme:
-
-    https://github.com/readthedocs/sphinx_rtd_theme
-
-If the theme is not available, it will fall-back to the classic one.
-
+By default, the "Alabaster" theme is used to build the HTML documentation;
+this theme is bundled with Sphinx and need not be installed separately.
 The Sphinx theme can be overridden by using the ``DOCS_THEME`` make variable.
 
+.. note::
+
+   Some people might prefer to use the RTD theme for html output.
+   Depending on the Sphinx version, it should be installed separately,
+   with ``pip install sphinx_rtd_theme``.
+
+There is another make variable ``SPHINXDIRS``, which is useful when test
+building a subset of documentation.  For example, you can build documents
+under ``Documentation/doc-guide`` by running
+``make SPHINXDIRS=doc-guide htmldocs``.
+The documentation section of ``make help`` will show you the list of
+subdirectories you can specify.
+
 To remove the generated documentation, run ``make cleandocs``.
+
+.. [#ink] Having ``inkscape(1)`` from Inkscape (https://inkscape.org)
+	  as well would improve the quality of images embedded in PDF
+	  documents, especially for kernel releases 5.18 and later.
+
+Choice of Math Renderer
+-----------------------
+
+Since kernel release 6.1, mathjax works as a fallback math renderer for
+html output.\ [#sph1_8]_
+
+Math renderer is chosen depending on available commands as shown below:
+
+.. table:: Math Renderer Choices for HTML
+
+    ============= ================= ============
+    Math renderer Required commands Image format
+    ============= ================= ============
+    imgmath       latex, dvipng     PNG (raster)
+    mathjax
+    ============= ================= ============
+
+The choice can be overridden by setting an environment variable
+``SPHINX_IMGMATH`` as shown below:
+
+.. table:: Effect of Setting ``SPHINX_IMGMATH``
+
+    ====================== ========
+    Setting                Renderer
+    ====================== ========
+    ``SPHINX_IMGMATH=yes`` imgmath
+    ``SPHINX_IMGMATH=no``  mathjax
+    ====================== ========
+
+.. [#sph1_8] Fallback of math renderer requires Sphinx >=1.8.
+
 
 Writing Documentation
 =====================
@@ -228,7 +306,7 @@ Here are some specific guidelines for the kernel documentation:
   from highlighting. For a short snippet of code embedded in the text, use \`\`.
 
 
-the C domain
+The C domain
 ------------
 
 The **Sphinx C Domain** (name c) is suited for documentation of C API. E.g. a
@@ -258,9 +336,18 @@ the documentation build system will automatically turn a reference to
 function name exists.  If you see ``c:func:`` use in a kernel document,
 please feel free to remove it.
 
+Tables
+------
+
+ReStructuredText provides several options for table syntax. Kernel style for
+tables is to prefer *simple table* syntax or *grid table* syntax. See the
+`reStructuredText user reference for table syntax`_ for more details.
+
+.. _reStructuredText user reference for table syntax:
+   https://docutils.sourceforge.io/docs/user/rst/quickref.html#tables
 
 list tables
------------
+~~~~~~~~~~~
 
 The list-table formats can be useful for tables that are not easily laid
 out in the usual Sphinx ASCII-art formats.  These formats are nearly
@@ -370,6 +457,15 @@ path.
 
 For information on cross-referencing to kernel-doc functions or types, see
 Documentation/doc-guide/kernel-doc.rst.
+
+Referencing commits
+~~~~~~~~~~~~~~~~~~~
+
+References to git commits are automatically hyperlinked given that they are
+written in one of these formats::
+
+    commit 72bf4f1767f0
+    commit 72bf4f1767f0 ("net: do not leave an empty skb in write queue")
 
 .. _sphinx_kfigure:
 

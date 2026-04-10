@@ -2,10 +2,13 @@
 /*
  * 3-axis accelerometer driver supporting following Bosch-Sensortec chips:
  *  - BMI088
+ *  - BMI085
+ *  - BMI090L
  *
  * Copyright (c) 2018-2021, Topic Embedded Products
  */
 
+#include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -15,7 +18,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "bmi088-accel.h"
 
@@ -73,6 +76,8 @@
 #define BMI088_ACCEL_FIFO_MODE_FIFO			0x40
 #define BMI088_ACCEL_FIFO_MODE_STREAM			0x80
 
+#define BMIO088_ACCEL_ACC_RANGE_MSK			GENMASK(1, 0)
+
 enum bmi088_accel_axis {
 	AXIS_X,
 	AXIS_Y,
@@ -109,22 +114,18 @@ enum bmi088_odr_modes {
 	BMI088_ACCEL_MODE_ODR_1600 = 0xc,
 };
 
-struct bmi088_scale_info {
-	int scale;
-	u8 reg_range;
-};
-
 struct bmi088_accel_chip_info {
 	const char *name;
 	u8 chip_id;
 	const struct iio_chan_spec *channels;
 	int num_channels;
+	const int scale_table[4][2];
 };
 
 struct bmi088_accel_data {
 	struct regmap *regmap;
 	const struct bmi088_accel_chip_info *chip_info;
-	u8 buffer[2] ____cacheline_aligned; /* shared DMA safe buffer */
+	u8 buffer[2] __aligned(IIO_DMA_MINALIGN); /* shared DMA safe buffer */
 };
 
 static const struct regmap_range bmi088_volatile_ranges[] = {
@@ -144,9 +145,9 @@ const struct regmap_config bmi088_regmap_conf = {
 	.val_bits = 8,
 	.max_register = 0x7E,
 	.volatile_table = &bmi088_volatile_table,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 };
-EXPORT_SYMBOL_NS_GPL(bmi088_regmap_conf, IIO_BMI088);
+EXPORT_SYMBOL_NS_GPL(bmi088_regmap_conf, "IIO_BMI088");
 
 static int bmi088_accel_power_up(struct bmi088_accel_data *data)
 {
@@ -236,6 +237,21 @@ static int bmi088_accel_set_sample_freq(struct bmi088_accel_data *data, int val)
 				  BMI088_ACCEL_MODE_ODR_MASK, regval);
 }
 
+static int bmi088_accel_set_scale(struct bmi088_accel_data *data, int val, int val2)
+{
+	unsigned int i;
+
+	for (i = 0; i < 4; i++)
+		if (val  == data->chip_info->scale_table[i][0] &&
+		    val2 == data->chip_info->scale_table[i][1])
+			break;
+
+	if (i == 4)
+		return -EINVAL;
+
+	return regmap_write(data->regmap, BMI088_ACCEL_REG_ACC_RANGE, i);
+}
+
 static int bmi088_accel_get_temp(struct bmi088_accel_data *data, int *val)
 {
 	int ret;
@@ -280,6 +296,7 @@ static int bmi088_accel_read_raw(struct iio_dev *indio_dev,
 	struct bmi088_accel_data *data = iio_priv(indio_dev);
 	struct device *dev = regmap_get_device(data->regmap);
 	int ret;
+	int reg;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
@@ -296,12 +313,13 @@ static int bmi088_accel_read_raw(struct iio_dev *indio_dev,
 			if (ret)
 				return ret;
 
-			ret = iio_device_claim_direct_mode(indio_dev);
-			if (ret)
+			if (!iio_device_claim_direct(indio_dev)) {
+				ret = -EBUSY;
 				goto out_read_raw_pm_put;
+			}
 
 			ret = bmi088_accel_get_axis(data, chan, val);
-			iio_device_release_direct_mode(indio_dev);
+			iio_device_release_direct(indio_dev);
 			if (!ret)
 				ret = IIO_VAL_INT;
 
@@ -330,13 +348,14 @@ static int bmi088_accel_read_raw(struct iio_dev *indio_dev,
 				return ret;
 
 			ret = regmap_read(data->regmap,
-					  BMI088_ACCEL_REG_ACC_RANGE, val);
+					  BMI088_ACCEL_REG_ACC_RANGE, &reg);
 			if (ret)
 				goto out_read_raw_pm_put;
 
-			*val2 = 15 - (*val & 0x3);
-			*val = 3 * 980;
-			ret = IIO_VAL_FRACTIONAL_LOG2;
+			reg = FIELD_GET(BMIO088_ACCEL_ACC_RANGE_MSK, reg);
+			*val  = data->chip_info->scale_table[reg][0];
+			*val2 = data->chip_info->scale_table[reg][1];
+			ret = IIO_VAL_INT_PLUS_MICRO;
 
 			goto out_read_raw_pm_put;
 		default:
@@ -356,7 +375,6 @@ static int bmi088_accel_read_raw(struct iio_dev *indio_dev,
 	return -EINVAL;
 
 out_read_raw_pm_put:
-	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
 
 	return ret;
@@ -367,7 +385,14 @@ static int bmi088_accel_read_avail(struct iio_dev *indio_dev,
 			     const int **vals, int *type, int *length,
 			     long mask)
 {
+	struct bmi088_accel_data *data = iio_priv(indio_dev);
+
 	switch (mask) {
+	case IIO_CHAN_INFO_SCALE:
+		*vals = (const int *)data->chip_info->scale_table;
+		*length = 8;
+		*type = IIO_VAL_INT_PLUS_MICRO;
+		return IIO_AVAIL_LIST;
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		*type = IIO_VAL_INT_PLUS_MICRO;
 		*vals = bmi088_sample_freqs;
@@ -387,13 +412,20 @@ static int bmi088_accel_write_raw(struct iio_dev *indio_dev,
 	int ret;
 
 	switch (mask) {
+	case IIO_CHAN_INFO_SCALE:
+		ret = pm_runtime_resume_and_get(dev);
+		if (ret)
+			return ret;
+
+		ret = bmi088_accel_set_scale(data, val, val2);
+		pm_runtime_put_autosuspend(dev);
+		return ret;
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		ret = pm_runtime_resume_and_get(dev);
 		if (ret)
 			return ret;
 
 		ret = bmi088_accel_set_sample_freq(data, val);
-		pm_runtime_mark_last_busy(dev);
 		pm_runtime_put_autosuspend(dev);
 		return ret;
 	default:
@@ -408,7 +440,8 @@ static int bmi088_accel_write_raw(struct iio_dev *indio_dev,
 	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW), \
 	.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE) | \
 				BIT(IIO_CHAN_INFO_SAMP_FREQ), \
-	.info_mask_shared_by_type_available = BIT(IIO_CHAN_INFO_SAMP_FREQ), \
+	.info_mask_shared_by_type_available = BIT(IIO_CHAN_INFO_SAMP_FREQ) | \
+				BIT(IIO_CHAN_INFO_SCALE), \
 	.scan_index = AXIS_##_axis, \
 }
 
@@ -427,11 +460,26 @@ static const struct iio_chan_spec bmi088_accel_channels[] = {
 };
 
 static const struct bmi088_accel_chip_info bmi088_accel_chip_info_tbl[] = {
-	[0] = {
-		.name = "bmi088a",
+	[BOSCH_BMI085] = {
+		.name = "bmi085-accel",
+		.chip_id = 0x1F,
+		.channels = bmi088_accel_channels,
+		.num_channels = ARRAY_SIZE(bmi088_accel_channels),
+		.scale_table = {{0, 598}, {0, 1196}, {0, 2393}, {0, 4785}},
+	},
+	[BOSCH_BMI088] = {
+		.name = "bmi088-accel",
 		.chip_id = 0x1E,
 		.channels = bmi088_accel_channels,
 		.num_channels = ARRAY_SIZE(bmi088_accel_channels),
+		.scale_table = {{0, 897}, {0, 1794}, {0, 3589}, {0, 7178}},
+	},
+	[BOSCH_BMI090L] = {
+		.name = "bmi090l-accel",
+		.chip_id = 0x1A,
+		.channels = bmi088_accel_channels,
+		.num_channels = ARRAY_SIZE(bmi088_accel_channels),
+		.scale_table = {{0, 897}, {0, 1794}, {0, 3589}, {0, 7178}},
 	},
 };
 
@@ -446,11 +494,14 @@ static const unsigned long bmi088_accel_scan_masks[] = {
 	0
 };
 
-static int bmi088_accel_chip_init(struct bmi088_accel_data *data)
+static int bmi088_accel_chip_init(struct bmi088_accel_data *data, enum bmi_device_type type)
 {
 	struct device *dev = regmap_get_device(data->regmap);
 	int ret, i;
 	unsigned int val;
+
+	if (type >= BOSCH_UNKNOWN)
+		return -ENODEV;
 
 	/* Do a dummy read to enable SPI interface, won't harm I2C */
 	regmap_read(data->regmap, BMI088_ACCEL_REG_INT_STATUS, &val);
@@ -477,22 +528,23 @@ static int bmi088_accel_chip_init(struct bmi088_accel_data *data)
 	}
 
 	/* Validate chip ID */
-	for (i = 0; i < ARRAY_SIZE(bmi088_accel_chip_info_tbl); i++) {
-		if (bmi088_accel_chip_info_tbl[i].chip_id == val) {
-			data->chip_info = &bmi088_accel_chip_info_tbl[i];
+	for (i = 0; i < ARRAY_SIZE(bmi088_accel_chip_info_tbl); i++)
+		if (bmi088_accel_chip_info_tbl[i].chip_id == val)
 			break;
-		}
-	}
-	if (i == ARRAY_SIZE(bmi088_accel_chip_info_tbl)) {
-		dev_err(dev, "Invalid chip %x\n", val);
-		return -ENODEV;
-	}
+
+	if (i == ARRAY_SIZE(bmi088_accel_chip_info_tbl))
+		data->chip_info = &bmi088_accel_chip_info_tbl[type];
+	else
+		data->chip_info = &bmi088_accel_chip_info_tbl[i];
+
+	if (i != type)
+		dev_warn(dev, "unexpected chip id 0x%X\n", val);
 
 	return 0;
 }
 
 int bmi088_accel_core_probe(struct device *dev, struct regmap *regmap,
-	int irq, const char *name, bool block_supported)
+	int irq, enum bmi_device_type type)
 {
 	struct bmi088_accel_data *data;
 	struct iio_dev *indio_dev;
@@ -507,13 +559,13 @@ int bmi088_accel_core_probe(struct device *dev, struct regmap *regmap,
 
 	data->regmap = regmap;
 
-	ret = bmi088_accel_chip_init(data);
+	ret = bmi088_accel_chip_init(data, type);
 	if (ret)
 		return ret;
 
 	indio_dev->channels = data->chip_info->channels;
 	indio_dev->num_channels = data->chip_info->num_channels;
-	indio_dev->name = name ? name : data->chip_info->name;
+	indio_dev->name = data->chip_info->name;
 	indio_dev->available_scan_masks = bmi088_accel_scan_masks;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->info = &bmi088_accel_info;
@@ -533,7 +585,7 @@ int bmi088_accel_core_probe(struct device *dev, struct regmap *regmap,
 
 	return ret;
 }
-EXPORT_SYMBOL_NS_GPL(bmi088_accel_core_probe, IIO_BMI088);
+EXPORT_SYMBOL_NS_GPL(bmi088_accel_core_probe, "IIO_BMI088");
 
 
 void bmi088_accel_core_remove(struct device *dev)
@@ -547,9 +599,9 @@ void bmi088_accel_core_remove(struct device *dev)
 	pm_runtime_set_suspended(dev);
 	bmi088_accel_power_down(data);
 }
-EXPORT_SYMBOL_NS_GPL(bmi088_accel_core_remove, IIO_BMI088);
+EXPORT_SYMBOL_NS_GPL(bmi088_accel_core_remove, "IIO_BMI088");
 
-static int __maybe_unused bmi088_accel_runtime_suspend(struct device *dev)
+static int bmi088_accel_runtime_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct bmi088_accel_data *data = iio_priv(indio_dev);
@@ -557,7 +609,7 @@ static int __maybe_unused bmi088_accel_runtime_suspend(struct device *dev)
 	return bmi088_accel_power_down(data);
 }
 
-static int __maybe_unused bmi088_accel_runtime_resume(struct device *dev)
+static int bmi088_accel_runtime_resume(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct bmi088_accel_data *data = iio_priv(indio_dev);
@@ -565,13 +617,10 @@ static int __maybe_unused bmi088_accel_runtime_resume(struct device *dev)
 	return bmi088_accel_power_up(data);
 }
 
-const struct dev_pm_ops bmi088_accel_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
-	SET_RUNTIME_PM_OPS(bmi088_accel_runtime_suspend,
-			   bmi088_accel_runtime_resume, NULL)
-};
-EXPORT_SYMBOL_NS_GPL(bmi088_accel_pm_ops, IIO_BMI088);
+EXPORT_NS_GPL_RUNTIME_DEV_PM_OPS(bmi088_accel_pm_ops,
+				 bmi088_accel_runtime_suspend,
+				 bmi088_accel_runtime_resume, NULL,
+				 IIO_BMI088);
 
 MODULE_AUTHOR("Niek van Agt <niek.van.agt@topicproducts.com>");
 MODULE_LICENSE("GPL v2");

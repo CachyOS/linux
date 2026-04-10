@@ -9,7 +9,7 @@
 
 #include <asm/sysreg.h>
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #include <linux/irqchip/arm-gic-common.h>
 #include <linux/stringify.h>
@@ -77,6 +77,14 @@ static inline u64 gic_read_iar_cavium_thunderx(void)
 		return irqstat;
 
 	return 0x3ff;
+}
+
+static u64 __maybe_unused gic_read_iar(void)
+{
+	if (alternative_has_cap_unlikely(ARM64_WORKAROUND_CAVIUM_23154))
+		return gic_read_iar_cavium_thunderx();
+	else
+		return gic_read_iar_common();
 }
 
 static inline void gic_write_ctlr(u32 val)
@@ -167,21 +175,6 @@ static inline bool gic_prio_masking_enabled(void)
 
 static inline void gic_pmr_mask_irqs(void)
 {
-	BUILD_BUG_ON(GICD_INT_DEF_PRI < (__GIC_PRIO_IRQOFF |
-					 GIC_PRIO_PSR_I_SET));
-	BUILD_BUG_ON(GICD_INT_DEF_PRI >= GIC_PRIO_IRQON);
-	/*
-	 * Need to make sure IRQON allows IRQs when SCR_EL3.FIQ is cleared
-	 * and non-secure PMR accesses are not subject to the shifts that
-	 * are applied to IRQ priorities
-	 */
-	BUILD_BUG_ON((0x80 | (GICD_INT_DEF_PRI >> 1)) >= GIC_PRIO_IRQON);
-	/*
-	 * Same situation as above, but now we make sure that we can mask
-	 * regular interrupts.
-	 */
-	BUILD_BUG_ON((0x80 | (GICD_INT_DEF_PRI >> 1)) < (__GIC_PRIO_IRQOFF_NS |
-							 GIC_PRIO_PSR_I_SET));
 	gic_write_pmr(GIC_PRIO_IRQOFF);
 }
 
@@ -190,5 +183,10 @@ static inline void gic_arch_enable_irqs(void)
 	asm volatile ("msr daifclr, #3" : : : "memory");
 }
 
-#endif /* __ASSEMBLY__ */
+static inline bool gic_has_relaxed_pmr_sync(void)
+{
+	return cpus_have_cap(ARM64_HAS_GIC_PRIO_RELAXED_SYNC);
+}
+
+#endif /* __ASSEMBLER__ */
 #endif /* __ASM_ARCH_GICV3_H */

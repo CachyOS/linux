@@ -174,7 +174,6 @@ static struct proto_ops algif_rng_ops = {
 	.bind		=	sock_no_bind,
 	.accept		=	sock_no_accept,
 	.sendmsg	=	sock_no_sendmsg,
-	.sendpage	=	sock_no_sendpage,
 
 	.release	=	af_alg_release,
 	.recvmsg	=	rng_recvmsg,
@@ -192,7 +191,6 @@ static struct proto_ops __maybe_unused algif_rng_test_ops = {
 	.mmap		=	sock_no_mmap,
 	.bind		=	sock_no_bind,
 	.accept		=	sock_no_accept,
-	.sendpage	=	sock_no_sendpage,
 
 	.release	=	af_alg_release,
 	.recvmsg	=	rng_test_recvmsg,
@@ -204,7 +202,7 @@ static void *rng_bind(const char *name, u32 type, u32 mask)
 	struct rng_parent_ctx *pctx;
 	struct crypto_rng *rng;
 
-	pctx = kzalloc(sizeof(*pctx), GFP_KERNEL);
+	pctx = kzalloc_obj(*pctx);
 	if (!pctx)
 		return ERR_PTR(-ENOMEM);
 
@@ -250,9 +248,8 @@ static int rng_accept_parent(void *private, struct sock *sk)
 	if (!ctx)
 		return -ENOMEM;
 
+	memset(ctx, 0, len);
 	ctx->len = len;
-	ctx->addtl = NULL;
-	ctx->addtl_len = 0;
 
 	/*
 	 * No seeding done at that point -- if multiple accepts are

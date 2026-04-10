@@ -175,14 +175,6 @@ MODULE_LICENSE("GPL");
 * mga_dev : represents one ks0127 chip.
 ****************************************************************************/
 
-struct adjust {
-	int	contrast;
-	int	bright;
-	int	hue;
-	int	ugain;
-	int	vgain;
-};
-
 struct ks0127 {
 	struct v4l2_subdev sd;
 	v4l2_std_id	norm;
@@ -650,7 +642,7 @@ static const struct v4l2_subdev_ops ks0127_ops = {
 /* ----------------------------------------------------------------------- */
 
 
-static int ks0127_probe(struct i2c_client *client, const struct i2c_device_id *id)
+static int ks0127_probe(struct i2c_client *client)
 {
 	struct ks0127 *ks;
 	struct v4l2_subdev *sd;
@@ -675,20 +667,19 @@ static int ks0127_probe(struct i2c_client *client, const struct i2c_device_id *i
 	return 0;
 }
 
-static int ks0127_remove(struct i2c_client *client)
+static void ks0127_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
 	ks0127_write(sd, KS_OFMTA, 0x20); /* tristate */
 	ks0127_write(sd, KS_CMDA, 0x2c | 0x80); /* power down */
-	return 0;
 }
 
 static const struct i2c_device_id ks0127_id[] = {
-	{ "ks0127", 0 },
-	{ "ks0127b", 0 },
-	{ "ks0122s", 0 },
+	{ "ks0127" },
+	{ "ks0127b" },
+	{ "ks0122s" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ks0127_id);

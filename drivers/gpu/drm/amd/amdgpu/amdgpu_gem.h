@@ -33,6 +33,8 @@
 #define AMDGPU_GEM_DOMAIN_MAX		0x3
 #define gem_to_amdgpu_bo(gobj) container_of((gobj), struct amdgpu_bo, tbo.base)
 
+extern const struct drm_gem_object_funcs amdgpu_gem_object_funcs;
+
 unsigned long amdgpu_gem_timeout(uint64_t timeout_ns);
 
 /*
@@ -43,8 +45,7 @@ int amdgpu_gem_object_create(struct amdgpu_device *adev, unsigned long size,
 			     int alignment, u32 initial_domain,
 			     u64 flags, enum ttm_bo_type type,
 			     struct dma_resv *resv,
-			     struct drm_gem_object **obj);
-
+			     struct drm_gem_object **obj, int8_t xcp_id_plus1);
 int amdgpu_mode_dumb_create(struct drm_file *file_priv,
 			    struct drm_device *dev,
 			    struct drm_mode_create_dumb *args);
@@ -62,13 +63,28 @@ int amdgpu_gem_mmap_ioctl(struct drm_device *dev, void *data,
 			  struct drm_file *filp);
 int amdgpu_gem_wait_idle_ioctl(struct drm_device *dev, void *data,
 			      struct drm_file *filp);
-uint64_t amdgpu_gem_va_map_flags(struct amdgpu_device *adev, uint32_t flags);
 int amdgpu_gem_va_ioctl(struct drm_device *dev, void *data,
 			  struct drm_file *filp);
 int amdgpu_gem_op_ioctl(struct drm_device *dev, void *data,
 			struct drm_file *filp);
+int amdgpu_gem_list_handles_ioctl(struct drm_device *dev, void *data,
+				  struct drm_file *filp);
 
 int amdgpu_gem_metadata_ioctl(struct drm_device *dev, void *data,
 				struct drm_file *filp);
+
+#define AMDGPU_GEM_CREATE_SETTABLE_MASK	(AMDGPU_GEM_CREATE_CPU_ACCESS_REQUIRED | \
+	AMDGPU_GEM_CREATE_NO_CPU_ACCESS | \
+	AMDGPU_GEM_CREATE_CPU_GTT_USWC | \
+	AMDGPU_GEM_CREATE_VRAM_CLEARED | \
+	AMDGPU_GEM_CREATE_VM_ALWAYS_VALID | \
+	AMDGPU_GEM_CREATE_EXPLICIT_SYNC | \
+	AMDGPU_GEM_CREATE_VRAM_WIPE_ON_RELEASE | \
+	AMDGPU_GEM_CREATE_ENCRYPTED | \
+	AMDGPU_GEM_CREATE_GFX12_DCC | \
+	AMDGPU_GEM_CREATE_DISCARDABLE | \
+	AMDGPU_GEM_CREATE_COHERENT | \
+	AMDGPU_GEM_CREATE_UNCACHED | \
+	AMDGPU_GEM_CREATE_EXT_COHERENT)
 
 #endif

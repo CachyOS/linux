@@ -355,30 +355,7 @@ static int uniphier_aio_prepare(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-const struct snd_soc_dai_ops uniphier_aio_i2s_ops = {
-	.set_sysclk  = uniphier_aio_set_sysclk,
-	.set_pll     = uniphier_aio_set_pll,
-	.set_fmt     = uniphier_aio_set_fmt,
-	.startup     = uniphier_aio_startup,
-	.shutdown    = uniphier_aio_shutdown,
-	.hw_params   = uniphier_aio_hw_params,
-	.hw_free     = uniphier_aio_hw_free,
-	.prepare     = uniphier_aio_prepare,
-};
-EXPORT_SYMBOL_GPL(uniphier_aio_i2s_ops);
-
-const struct snd_soc_dai_ops uniphier_aio_spdif_ops = {
-	.set_sysclk  = uniphier_aio_set_sysclk,
-	.set_pll     = uniphier_aio_set_pll,
-	.startup     = uniphier_aio_startup,
-	.shutdown    = uniphier_aio_shutdown,
-	.hw_params   = uniphier_aio_hw_params,
-	.hw_free     = uniphier_aio_hw_free,
-	.prepare     = uniphier_aio_prepare,
-};
-EXPORT_SYMBOL_GPL(uniphier_aio_spdif_ops);
-
-int uniphier_aio_dai_probe(struct snd_soc_dai *dai)
+static int uniphier_aio_dai_probe(struct snd_soc_dai *dai)
 {
 	struct uniphier_aio *aio = uniphier_priv(dai);
 	int i;
@@ -403,9 +380,8 @@ int uniphier_aio_dai_probe(struct snd_soc_dai *dai)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(uniphier_aio_dai_probe);
 
-int uniphier_aio_dai_remove(struct snd_soc_dai *dai)
+static int uniphier_aio_dai_remove(struct snd_soc_dai *dai)
 {
 	struct uniphier_aio *aio = uniphier_priv(dai);
 
@@ -413,7 +389,138 @@ int uniphier_aio_dai_remove(struct snd_soc_dai *dai)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(uniphier_aio_dai_remove);
+
+static int uniphier_aio_ld11_probe(struct snd_soc_dai *dai)
+{
+	int ret;
+
+	ret = uniphier_aio_dai_probe(dai);
+	if (ret < 0)
+		return ret;
+
+	ret = snd_soc_dai_set_pll(dai, AUD_PLL_A1, 0, 0, 36864000);
+	if (ret < 0)
+		return ret;
+	ret = snd_soc_dai_set_pll(dai, AUD_PLL_F1, 0, 0, 36864000);
+	if (ret < 0)
+		return ret;
+
+	ret = snd_soc_dai_set_pll(dai, AUD_PLL_A2, 0, 0, 33868800);
+	if (ret < 0)
+		return ret;
+	ret = snd_soc_dai_set_pll(dai, AUD_PLL_F2, 0, 0, 33868800);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static int uniphier_aio_pxs2_probe(struct snd_soc_dai *dai)
+{
+	int ret;
+
+	ret = uniphier_aio_dai_probe(dai);
+	if (ret < 0)
+		return ret;
+
+	ret = snd_soc_dai_set_pll(dai, AUD_PLL_A1, 0, 0, 36864000);
+	if (ret < 0)
+		return ret;
+	ret = snd_soc_dai_set_pll(dai, AUD_PLL_F1, 0, 0, 36864000);
+	if (ret < 0)
+		return ret;
+
+	ret = snd_soc_dai_set_pll(dai, AUD_PLL_A2, 0, 0, 33868800);
+	if (ret < 0)
+		return ret;
+	ret = snd_soc_dai_set_pll(dai, AUD_PLL_F2, 0, 0, 33868800);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+const struct snd_soc_dai_ops uniphier_aio_i2s_ld11_ops = {
+	.probe		= uniphier_aio_ld11_probe,
+	.remove		= uniphier_aio_dai_remove,
+	.set_sysclk	= uniphier_aio_set_sysclk,
+	.set_pll	= uniphier_aio_set_pll,
+	.set_fmt	= uniphier_aio_set_fmt,
+	.startup	= uniphier_aio_startup,
+	.shutdown	= uniphier_aio_shutdown,
+	.hw_params	= uniphier_aio_hw_params,
+	.hw_free	= uniphier_aio_hw_free,
+	.prepare	= uniphier_aio_prepare,
+};
+EXPORT_SYMBOL_GPL(uniphier_aio_i2s_ld11_ops);
+
+const struct snd_soc_dai_ops uniphier_aio_spdif_ld11_ops = {
+	.probe		= uniphier_aio_ld11_probe,
+	.remove		= uniphier_aio_dai_remove,
+	.set_sysclk	= uniphier_aio_set_sysclk,
+	.set_pll	= uniphier_aio_set_pll,
+	.startup	= uniphier_aio_startup,
+	.shutdown	= uniphier_aio_shutdown,
+	.hw_params	= uniphier_aio_hw_params,
+	.hw_free	= uniphier_aio_hw_free,
+	.prepare	= uniphier_aio_prepare,
+};
+EXPORT_SYMBOL_GPL(uniphier_aio_spdif_ld11_ops);
+
+const struct snd_soc_dai_ops uniphier_aio_spdif_ld11_ops2 = {
+	.probe		= uniphier_aio_ld11_probe,
+	.remove		= uniphier_aio_dai_remove,
+	.set_sysclk	= uniphier_aio_set_sysclk,
+	.set_pll	= uniphier_aio_set_pll,
+	.startup	= uniphier_aio_startup,
+	.shutdown	= uniphier_aio_shutdown,
+	.hw_params	= uniphier_aio_hw_params,
+	.hw_free	= uniphier_aio_hw_free,
+	.prepare	= uniphier_aio_prepare,
+	.compress_new	= snd_soc_new_compress,
+};
+EXPORT_SYMBOL_GPL(uniphier_aio_spdif_ld11_ops2);
+
+const struct snd_soc_dai_ops uniphier_aio_i2s_pxs2_ops = {
+	.probe		= uniphier_aio_pxs2_probe,
+	.remove		= uniphier_aio_dai_remove,
+	.set_sysclk	= uniphier_aio_set_sysclk,
+	.set_pll	= uniphier_aio_set_pll,
+	.set_fmt	= uniphier_aio_set_fmt,
+	.startup	= uniphier_aio_startup,
+	.shutdown	= uniphier_aio_shutdown,
+	.hw_params	= uniphier_aio_hw_params,
+	.hw_free	= uniphier_aio_hw_free,
+	.prepare	= uniphier_aio_prepare,
+};
+EXPORT_SYMBOL_GPL(uniphier_aio_i2s_pxs2_ops);
+
+const struct snd_soc_dai_ops uniphier_aio_spdif_pxs2_ops = {
+	.probe		= uniphier_aio_pxs2_probe,
+	.remove		= uniphier_aio_dai_remove,
+	.set_sysclk	= uniphier_aio_set_sysclk,
+	.set_pll	= uniphier_aio_set_pll,
+	.startup	= uniphier_aio_startup,
+	.shutdown	= uniphier_aio_shutdown,
+	.hw_params	= uniphier_aio_hw_params,
+	.hw_free	= uniphier_aio_hw_free,
+	.prepare	= uniphier_aio_prepare,
+};
+EXPORT_SYMBOL_GPL(uniphier_aio_spdif_pxs2_ops);
+
+const struct snd_soc_dai_ops uniphier_aio_spdif_pxs2_ops2 = {
+	.probe		= uniphier_aio_pxs2_probe,
+	.remove		= uniphier_aio_dai_remove,
+	.set_sysclk	= uniphier_aio_set_sysclk,
+	.set_pll	= uniphier_aio_set_pll,
+	.startup	= uniphier_aio_startup,
+	.shutdown	= uniphier_aio_shutdown,
+	.hw_params	= uniphier_aio_hw_params,
+	.hw_free	= uniphier_aio_hw_free,
+	.prepare	= uniphier_aio_prepare,
+	.compress_new	= snd_soc_new_compress,
+};
+EXPORT_SYMBOL_GPL(uniphier_aio_spdif_pxs2_ops2);
 
 static void uniphier_aio_dai_suspend(struct snd_soc_dai *dai)
 {
@@ -516,7 +623,7 @@ static int uniphier_aio_vol_info(struct snd_kcontrol *kcontrol,
 static int uniphier_aio_vol_get(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *comp = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
 	struct uniphier_aio_chip *chip = snd_soc_component_get_drvdata(comp);
 	struct uniphier_aio_sub *sub;
 	int oport_hw = kcontrol->private_value;
@@ -533,7 +640,7 @@ static int uniphier_aio_vol_get(struct snd_kcontrol *kcontrol,
 static int uniphier_aio_vol_put(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *comp = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
 	struct uniphier_aio_chip *chip = snd_soc_component_get_drvdata(comp);
 	struct uniphier_aio_sub *sub;
 	int oport_hw = kcontrol->private_value;
@@ -655,14 +762,10 @@ int uniphier_aio_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	chip->num_plls = chip->chip_spec->num_plls;
-	chip->plls = devm_kcalloc(dev,
-				  chip->num_plls,
-				  sizeof(struct uniphier_aio_pll),
-				  GFP_KERNEL);
+	chip->plls = devm_kmemdup_array(dev, chip->chip_spec->plls, chip->num_plls,
+					sizeof(*chip->chip_spec->plls), GFP_KERNEL);
 	if (!chip->plls)
 		return -ENOMEM;
-	memcpy(chip->plls, chip->chip_spec->plls,
-	       sizeof(struct uniphier_aio_pll) * chip->num_plls);
 
 	for (i = 0; i < chip->num_aios; i++) {
 		struct uniphier_aio *aio = &chip->aios[i];
@@ -715,14 +818,12 @@ err_out_clock:
 }
 EXPORT_SYMBOL_GPL(uniphier_aio_probe);
 
-int uniphier_aio_remove(struct platform_device *pdev)
+void uniphier_aio_remove(struct platform_device *pdev)
 {
 	struct uniphier_aio_chip *chip = platform_get_drvdata(pdev);
 
 	reset_control_assert(chip->rst);
 	clk_disable_unprepare(chip->clk);
-
-	return 0;
 }
 EXPORT_SYMBOL_GPL(uniphier_aio_remove);
 

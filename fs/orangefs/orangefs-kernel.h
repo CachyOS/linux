@@ -32,6 +32,8 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/fs.h>
+#include <linux/fs_context.h>
+#include <linux/fs_parser.h>
 #include <linux/vmalloc.h>
 
 #include <linux/aio.h>
@@ -53,7 +55,7 @@
 #include <linux/exportfs.h>
 #include <linux/hashtable.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "orangefs-dev-proto.h"
 
@@ -93,23 +95,13 @@ enum orangefs_vfs_op_states {
 	OP_VFS_STATE_GIVEN_UP = 16,
 };
 
-/*
- * orangefs kernel memory related flags
- */
-
-#if (defined CONFIG_DEBUG_SLAB)
-#define ORANGEFS_CACHE_CREATE_FLAGS SLAB_RED_ZONE
-#else
-#define ORANGEFS_CACHE_CREATE_FLAGS 0
-#endif
-
-extern int orangefs_init_acl(struct inode *inode, struct inode *dir);
-extern const struct xattr_handler *orangefs_xattr_handlers[];
+extern const struct xattr_handler * const orangefs_xattr_handlers[];
 
 extern struct posix_acl *orangefs_get_acl(struct inode *inode, int type, bool rcu);
-extern int orangefs_set_acl(struct user_namespace *mnt_userns,
-			    struct inode *inode, struct posix_acl *acl,
+extern int orangefs_set_acl(struct mnt_idmap *idmap,
+			    struct dentry *dentry, struct posix_acl *acl,
 			    int type);
+int __orangefs_set_acl(struct inode *inode, struct posix_acl *acl, int type);
 
 /*
  * orangefs data structures
@@ -338,11 +330,9 @@ void purge_waiting_ops(void);
  * defined in super.c
  */
 extern uint64_t orangefs_features;
+extern const struct fs_parameter_spec orangefs_fs_param_spec[];
 
-struct dentry *orangefs_mount(struct file_system_type *fst,
-			   int flags,
-			   const char *devname,
-			   void *data);
+int orangefs_init_fs_context(struct fs_context *fc);
 
 void orangefs_kill_sb(struct super_block *sb);
 int orangefs_remount(struct orangefs_sb_info_s *);
@@ -356,20 +346,22 @@ void fsid_key_table_finalize(void);
 vm_fault_t orangefs_page_mkwrite(struct vm_fault *);
 struct inode *orangefs_new_inode(struct super_block *sb,
 			      struct inode *dir,
-			      int mode,
+			      umode_t mode,
 			      dev_t dev,
 			      struct orangefs_object_kref *ref);
 
 int __orangefs_setattr(struct inode *, struct iattr *);
-int orangefs_setattr(struct user_namespace *, struct dentry *, struct iattr *);
+int __orangefs_setattr_mode(struct dentry *dentry, struct iattr *iattr);
+int orangefs_setattr(struct mnt_idmap *, struct dentry *, struct iattr *);
 
-int orangefs_getattr(struct user_namespace *mnt_userns, const struct path *path,
+int orangefs_getattr(struct mnt_idmap *idmap, const struct path *path,
 		     struct kstat *stat, u32 request_mask, unsigned int flags);
 
-int orangefs_permission(struct user_namespace *mnt_userns,
+int orangefs_permission(struct mnt_idmap *idmap,
 			struct inode *inode, int mask);
 
-int orangefs_update_time(struct inode *, struct timespec64 *, int);
+int orangefs_update_time(struct inode *inode, enum fs_update_time type,
+		unsigned int flags);
 
 /*
  * defined in xattr.c
@@ -471,7 +463,7 @@ int service_operation(struct orangefs_kernel_op_s *op,
 	((ORANGEFS_SB(inode->i_sb)->flags & ORANGEFS_OPT_INTR) ? \
 		ORANGEFS_OP_INTERRUPTIBLE : 0)
 
-#define fill_default_sys_attrs(sys_attr, type, mode)			\
+#define fill_default_sys_attrs(sys_attr, mode)			\
 do {									\
 	sys_attr.owner = from_kuid(&init_user_ns, current_fsuid()); \
 	sys_attr.group = from_kgid(&init_user_ns, current_fsgid()); \

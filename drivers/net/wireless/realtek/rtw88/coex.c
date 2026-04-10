@@ -13,7 +13,7 @@
 static u8 rtw_coex_next_rssi_state(struct rtw_dev *rtwdev, u8 pre_state,
 				   u8 rssi, u8 rssi_thresh)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	u8 tol = chip->rssi_tolerance;
 	u8 next_state;
 
@@ -36,7 +36,7 @@ static u8 rtw_coex_next_rssi_state(struct rtw_dev *rtwdev, u8 pre_state,
 static void rtw_coex_limited_tx(struct rtw_dev *rtwdev,
 				bool tx_limit_en, bool ampdu_limit_en)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	u8 num_of_active_port = 1;
@@ -309,7 +309,7 @@ static void rtw_coex_tdma_timer_base(struct rtw_dev *rtwdev, u8 type)
 {
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
-	u8 para[2] = {0};
+	u8 para[6] = {};
 	u8 times;
 	u16 tbtt_interval = coex_stat->wl_beacon_interval;
 
@@ -365,7 +365,7 @@ static void rtw_coex_set_wl_pri_mask(struct rtw_dev *rtwdev, u8 bitmap,
 
 void rtw_coex_write_scbd(struct rtw_dev *rtwdev, u16 bitpos, bool set)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	u16 val = 0x2;
@@ -400,7 +400,7 @@ EXPORT_SYMBOL(rtw_coex_write_scbd);
 
 static u16 rtw_coex_read_scbd(struct rtw_dev *rtwdev)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 
 	if (!chip->scbd_support)
 		return 0;
@@ -410,7 +410,7 @@ static u16 rtw_coex_read_scbd(struct rtw_dev *rtwdev)
 
 static void rtw_coex_check_rfk(struct rtw_dev *rtwdev)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_coex_rfe *coex_rfe = &coex->rfe;
@@ -446,7 +446,7 @@ static void rtw_coex_check_rfk(struct rtw_dev *rtwdev)
 	}
 }
 
-static void rtw_coex_query_bt_info(struct rtw_dev *rtwdev)
+void rtw_coex_query_bt_info(struct rtw_dev *rtwdev)
 {
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
@@ -489,16 +489,34 @@ static void rtw_coex_monitor_bt_ctr(struct rtw_dev *rtwdev)
 
 static void rtw_coex_monitor_bt_enable(struct rtw_dev *rtwdev)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_coex_dm *coex_dm = &coex->dm;
 	bool bt_disabled = false;
+	bool bt_active = true;
 	u16 score_board;
 
 	if (chip->scbd_support) {
 		score_board = rtw_coex_read_scbd(rtwdev);
 		bt_disabled = !(score_board & COEX_SCBD_ONOFF);
+	} else {
+		if (coex_stat->hi_pri_tx == 0 && coex_stat->hi_pri_rx == 0 &&
+		    coex_stat->lo_pri_tx == 0 && coex_stat->lo_pri_rx == 0)
+			bt_active = false;
+
+		if (coex_stat->hi_pri_tx == 0xffff && coex_stat->hi_pri_rx == 0xffff &&
+		    coex_stat->lo_pri_tx == 0xffff && coex_stat->lo_pri_rx == 0xffff)
+			bt_active = false;
+
+		if (bt_active) {
+			coex_stat->bt_disable_cnt = 0;
+			bt_disabled = false;
+		} else {
+			coex_stat->bt_disable_cnt++;
+			if (coex_stat->bt_disable_cnt >= 10)
+				bt_disabled = true;
+		}
 	}
 
 	if (coex_stat->bt_disabled != bt_disabled) {
@@ -524,10 +542,10 @@ static void rtw_coex_monitor_bt_enable(struct rtw_dev *rtwdev)
 
 static void rtw_coex_update_wl_link_info(struct rtw_dev *rtwdev, u8 reason)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_coex_dm *coex_dm = &coex->dm;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_traffic_stats *stats = &rtwdev->stats;
 	bool is_5G = false;
 	bool wl_busy = false;
@@ -633,7 +651,7 @@ static struct sk_buff *rtw_coex_info_request(struct rtw_dev *rtwdev,
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct sk_buff *skb_resp = NULL;
 
-	mutex_lock(&coex->mutex);
+	lockdep_assert_held(&rtwdev->mutex);
 
 	rtw_fw_query_bt_mp_info(rtwdev, req);
 
@@ -650,7 +668,6 @@ static struct sk_buff *rtw_coex_info_request(struct rtw_dev *rtwdev,
 	}
 
 out:
-	mutex_unlock(&coex->mutex);
 	return skb_resp;
 }
 
@@ -706,10 +723,10 @@ static const char *rtw_coex_get_bt_status_string(u8 bt_status)
 
 static void rtw_coex_update_bt_link_info(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_coex_dm *coex_dm = &coex->dm;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 i;
 	u8 rssi_state;
 	u8 rssi_step;
@@ -806,7 +823,7 @@ static void rtw_coex_update_bt_link_info(struct rtw_dev *rtwdev)
 
 static void rtw_coex_update_wl_ch_info(struct rtw_dev *rtwdev, u8 type)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
 	struct rtw_coex_dm *coex_dm = &rtwdev->coex.dm;
 	struct rtw_coex_stat *coex_stat = &rtwdev->coex.stat;
@@ -933,7 +950,7 @@ EXPORT_SYMBOL(rtw_coex_write_indirect_reg);
 
 static void rtw_coex_coex_ctrl_owner(struct rtw_dev *rtwdev, bool wifi_control)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	const struct rtw_hw_reg *btg_reg = chip->btg_reg;
 
 	if (wifi_control) {
@@ -951,12 +968,18 @@ static void rtw_coex_coex_ctrl_owner(struct rtw_dev *rtwdev, bool wifi_control)
 
 static void rtw_coex_set_gnt_bt(struct rtw_dev *rtwdev, u8 state)
 {
+	if (!rtwdev->chip->ltecoex_addr)
+		return;
+
 	rtw_coex_write_indirect_reg(rtwdev, LTE_COEX_CTRL, 0xc000, state);
 	rtw_coex_write_indirect_reg(rtwdev, LTE_COEX_CTRL, 0x0c00, state);
 }
 
 static void rtw_coex_set_gnt_wl(struct rtw_dev *rtwdev, u8 state)
 {
+	if (!rtwdev->chip->ltecoex_addr)
+		return;
+
 	rtw_coex_write_indirect_reg(rtwdev, LTE_COEX_CTRL, 0x3000, state);
 	rtw_coex_write_indirect_reg(rtwdev, LTE_COEX_CTRL, 0x0300, state);
 }
@@ -981,7 +1004,7 @@ static void rtw_coex_mimo_ps(struct rtw_dev *rtwdev, bool force, bool state)
 static void rtw_btc_wltoggle_table_a(struct rtw_dev *rtwdev, bool force,
 				     u8 table_case)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
 	u8 h2c_para[6] = {0};
 	u32 table_wl = 0x5a5a5a5a;
@@ -1065,9 +1088,9 @@ static void rtw_coex_set_table(struct rtw_dev *rtwdev, bool force, u32 table0,
 
 static void rtw_coex_table(struct rtw_dev *rtwdev, bool force, u8 type)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_dm *coex_dm = &coex->dm;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 
@@ -1135,9 +1158,9 @@ static void rtw_coex_power_save_state(struct rtw_dev *rtwdev, u8 ps_type,
 static void rtw_coex_set_tdma(struct rtw_dev *rtwdev, u8 byte1, u8 byte2,
 			      u8 byte3, u8 byte4, u8 byte5)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_dm *coex_dm = &coex->dm;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	u8 ps_type = COEX_PS_WIFI_NATIVE;
 	bool ap_enable = false;
@@ -1193,10 +1216,10 @@ static void rtw_coex_set_tdma(struct rtw_dev *rtwdev, u8 byte1, u8 byte2,
 
 static void rtw_coex_tdma(struct rtw_dev *rtwdev, bool force, u32 tcase)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_dm *coex_dm = &coex->dm;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
 	u8 n, type;
 	bool turn_on;
@@ -1478,28 +1501,28 @@ static u8 rtw_coex_algorithm(struct rtw_dev *rtwdev)
 		algorithm = COEX_ALGO_HFP;
 		break;
 	case           BPM_HID:
-	case BPM_HFP + BPM_HID:
+	case BPM_HFP | BPM_HID:
 		algorithm = COEX_ALGO_HID;
 		break;
-	case BPM_HFP           + BPM_A2DP:
-	case           BPM_HID + BPM_A2DP:
-	case BPM_HFP + BPM_HID + BPM_A2DP:
+	case BPM_HFP           | BPM_A2DP:
+	case           BPM_HID | BPM_A2DP:
+	case BPM_HFP | BPM_HID | BPM_A2DP:
 		algorithm = COEX_ALGO_A2DP_HID;
 		break;
-	case BPM_HFP                      + BPM_PAN:
-	case           BPM_HID            + BPM_PAN:
-	case BPM_HFP + BPM_HID            + BPM_PAN:
+	case BPM_HFP                      | BPM_PAN:
+	case           BPM_HID            | BPM_PAN:
+	case BPM_HFP | BPM_HID            | BPM_PAN:
 		algorithm = COEX_ALGO_PAN_HID;
 		break;
-	case BPM_HFP           + BPM_A2DP + BPM_PAN:
-	case           BPM_HID + BPM_A2DP + BPM_PAN:
-	case BPM_HFP + BPM_HID + BPM_A2DP + BPM_PAN:
+	case BPM_HFP           | BPM_A2DP | BPM_PAN:
+	case           BPM_HID | BPM_A2DP | BPM_PAN:
+	case BPM_HFP | BPM_HID | BPM_A2DP | BPM_PAN:
 		algorithm = COEX_ALGO_A2DP_PAN_HID;
 		break;
 	case                                BPM_PAN:
 		algorithm = COEX_ALGO_PAN;
 		break;
-	case                     BPM_A2DP + BPM_PAN:
+	case                     BPM_A2DP | BPM_PAN:
 		algorithm = COEX_ALGO_A2DP_PAN;
 		break;
 	case                     BPM_A2DP:
@@ -1526,8 +1549,8 @@ static u8 rtw_coex_algorithm(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_coex_all_off(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case;
 
 	rtw_dbg(rtwdev, RTW_DBG_COEX, "[BTCoex], %s()\n", __func__);
@@ -1549,11 +1572,11 @@ static void rtw_coex_action_coex_all_off(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_freerun(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_coex_dm *coex_dm = &coex->dm;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 level = 0;
 	bool bt_afh_loss = true;
 
@@ -1594,8 +1617,8 @@ static void rtw_coex_action_freerun(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_rf4ce(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case;
 
 	rtw_dbg(rtwdev, RTW_DBG_COEX, "[BTCoex], %s()\n", __func__);
@@ -1619,8 +1642,8 @@ static void rtw_coex_action_rf4ce(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_bt_whql_test(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case;
 
 	rtw_dbg(rtwdev, RTW_DBG_COEX, "[BTCoex], %s()\n", __func__);
@@ -1644,10 +1667,10 @@ static void rtw_coex_action_bt_whql_test(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_bt_relink(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case;
 	u32 slot_type = 0;
 
@@ -1684,11 +1707,11 @@ static void rtw_coex_action_bt_relink(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_bt_idle(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_coex_dm *coex_dm = &coex->dm;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex_rfe *coex_rfe = &coex->rfe;
 	u8 table_case = 0xff, tdma_case = 0xff;
 
@@ -1753,10 +1776,10 @@ exit:
 
 static void rtw_coex_action_bt_inquiry(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	bool wl_hi_pri = false;
 	u8 table_case, tdma_case;
 	u32 slot_type = 0;
@@ -1853,11 +1876,11 @@ static void rtw_coex_action_bt_inquiry(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_bt_game_hid(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
 	struct rtw_coex_dm *coex_dm = &coex->dm;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case;
 
 	rtw_dbg(rtwdev, RTW_DBG_COEX, "[BTCoex], %s()\n", __func__);
@@ -1901,10 +1924,10 @@ static void rtw_coex_action_bt_game_hid(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_bt_hfp(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case;
 
 	rtw_dbg(rtwdev, RTW_DBG_COEX, "[BTCoex], %s()\n", __func__);
@@ -1932,10 +1955,10 @@ static void rtw_coex_action_bt_hfp(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_bt_hid(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case;
 	u32 slot_type = 0;
 	bool bt_multi_link_remain = false, is_toggle_table = false;
@@ -2015,11 +2038,11 @@ static void rtw_coex_action_bt_hid(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_bt_a2dp(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_coex_dm *coex_dm = &coex->dm;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case;
 	u32 slot_type = 0;
 
@@ -2057,10 +2080,10 @@ static void rtw_coex_action_bt_a2dp(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_bt_a2dpsink(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case;
 	bool ap_enable = false;
 
@@ -2096,10 +2119,10 @@ static void rtw_coex_action_bt_a2dpsink(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_bt_pan(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case;
 
 	rtw_dbg(rtwdev, RTW_DBG_COEX, "[BTCoex], %s()\n", __func__);
@@ -2133,11 +2156,11 @@ static void rtw_coex_action_bt_pan(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_bt_a2dp_hid(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_coex_dm *coex_dm = &coex->dm;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case, interval = 0;
 	u32 slot_type = 0;
 	bool is_toggle_table = false;
@@ -2190,12 +2213,11 @@ static void rtw_coex_action_bt_a2dp_hid(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_bt_a2dp_pan(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case;
-	bool wl_cpt_test = false, bt_cpt_test = false;
 
 	rtw_dbg(rtwdev, RTW_DBG_COEX, "[BTCoex], %s()\n", __func__);
 
@@ -2203,29 +2225,16 @@ static void rtw_coex_action_bt_a2dp_pan(struct rtw_dev *rtwdev)
 	rtw_coex_set_rf_para(rtwdev, chip->wl_rf_para_rx[0]);
 	if (efuse->share_ant) {
 		/* Shared-Ant */
-		if (wl_cpt_test) {
-			if (coex_stat->wl_gl_busy) {
-				table_case = 20;
-				tdma_case = 17;
-			} else {
-				table_case = 10;
-				tdma_case = 15;
-			}
-		} else if (bt_cpt_test) {
-			table_case = 26;
-			tdma_case = 26;
-		} else {
-			if (coex_stat->wl_gl_busy &&
-			    coex_stat->wl_noisy_level == 0)
-				table_case = 14;
-			else
-				table_case = 10;
+		if (coex_stat->wl_gl_busy &&
+		    coex_stat->wl_noisy_level == 0)
+			table_case = 14;
+		else
+			table_case = 10;
 
-			if (coex_stat->wl_gl_busy)
-				tdma_case = 15;
-			else
-				tdma_case = 20;
-		}
+		if (coex_stat->wl_gl_busy)
+			tdma_case = 15;
+		else
+			tdma_case = 20;
 	} else {
 		/* Non-Shared-Ant */
 		table_case = 112;
@@ -2236,21 +2245,17 @@ static void rtw_coex_action_bt_a2dp_pan(struct rtw_dev *rtwdev)
 			tdma_case = 120;
 	}
 
-	if (wl_cpt_test)
-		rtw_coex_set_rf_para(rtwdev, chip->wl_rf_para_rx[1]);
-	else
-		rtw_coex_set_rf_para(rtwdev, chip->wl_rf_para_rx[0]);
-
+	rtw_coex_set_rf_para(rtwdev, chip->wl_rf_para_rx[0]);
 	rtw_coex_table(rtwdev, false, table_case);
 	rtw_coex_tdma(rtwdev, false, tdma_case);
 }
 
 static void rtw_coex_action_bt_pan_hid(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case;
 
 	rtw_dbg(rtwdev, RTW_DBG_COEX, "[BTCoex], %s()\n", __func__);
@@ -2282,10 +2287,10 @@ static void rtw_coex_action_bt_pan_hid(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_bt_a2dp_pan_hid(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case;
 
 	rtw_dbg(rtwdev, RTW_DBG_COEX, "[BTCoex], %s()\n", __func__);
@@ -2316,9 +2321,9 @@ static void rtw_coex_action_bt_a2dp_pan_hid(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_wl_under5g(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	u8 table_case, tdma_case;
 
@@ -2348,8 +2353,8 @@ static void rtw_coex_action_wl_under5g(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_wl_only(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case;
 
 	rtw_dbg(rtwdev, RTW_DBG_COEX, "[BTCoex], %s()\n", __func__);
@@ -2372,9 +2377,9 @@ static void rtw_coex_action_wl_only(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_wl_native_lps(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	u8 table_case, tdma_case;
 
@@ -2411,10 +2416,10 @@ static void rtw_coex_action_wl_native_lps(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_wl_linkscan(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case;
 	u32 slot_type = 0;
 
@@ -2451,8 +2456,8 @@ static void rtw_coex_action_wl_linkscan(struct rtw_dev *rtwdev)
 
 static void rtw_coex_action_wl_not_connected(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 table_case, tdma_case;
 
 	rtw_dbg(rtwdev, RTW_DBG_COEX, "[BTCoex], %s()\n", __func__);
@@ -2528,8 +2533,8 @@ static void rtw_coex_action_wl_connected(struct rtw_dev *rtwdev)
 
 static void rtw_coex_run_coex(struct rtw_dev *rtwdev, u8 reason)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex_dm *coex_dm = &coex->dm;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	bool rf4ce_en = false;
@@ -2766,16 +2771,19 @@ void rtw_coex_power_on_setting(struct rtw_dev *rtwdev)
 	rtw_write8(rtwdev, 0xff1a, 0x0);
 	rtw_coex_set_gnt_debug(rtwdev);
 }
+EXPORT_SYMBOL(rtw_coex_power_on_setting);
 
 void rtw_coex_power_off_setting(struct rtw_dev *rtwdev)
 {
 	rtw_write16(rtwdev, REG_WIFI_BT_INFO, BIT_BT_INT_EN);
 }
+EXPORT_SYMBOL(rtw_coex_power_off_setting);
 
 void rtw_coex_init_hw_config(struct rtw_dev *rtwdev, bool wifi_only)
 {
 	__rtw_coex_init_hw_config(rtwdev, wifi_only);
 }
+EXPORT_SYMBOL(rtw_coex_init_hw_config);
 
 void rtw_coex_ips_notify(struct rtw_dev *rtwdev, u8 type)
 {
@@ -3002,9 +3010,9 @@ void rtw_coex_media_status_notify(struct rtw_dev *rtwdev, u8 type)
 
 void rtw_coex_bt_info_notify(struct rtw_dev *rtwdev, u8 *buf, u8 length)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex_dm *coex_dm = &coex->dm;
 	u32 bt_relink_time;
 	u8 i, rsp_source = 0, type;
@@ -3270,8 +3278,8 @@ static const u8 coex_bt_hidinfo_xb[] = {0x58, 0x62, 0x6f};
 
 void rtw_coex_bt_hid_info_notify(struct rtw_dev *rtwdev, u8 *buf, u8 length)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_coex_hid *hidinfo;
 	struct rtw_coex_hid_info_a *hida;
@@ -3360,8 +3368,8 @@ void rtw_coex_bt_hid_info_notify(struct rtw_dev *rtwdev, u8 *buf, u8 length)
 
 void rtw_coex_query_bt_hid_list(struct rtw_dev *rtwdev)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex *coex = &rtwdev->coex;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
 	struct rtw_coex_hid *hidinfo;
 	u8 i, handle;
@@ -3582,7 +3590,7 @@ static const char *rtw_coex_get_reason_string(u8 reason)
 static u8 rtw_coex_get_table_index(struct rtw_dev *rtwdev, u32 wl_reg_6c0,
 				   u32 wl_reg_6c4)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
 	u8 ans = 0xFF;
 	u8 n, i;
@@ -3618,8 +3626,8 @@ static u8 rtw_coex_get_table_index(struct rtw_dev *rtwdev, u32 wl_reg_6c0,
 
 static u8 rtw_coex_get_tdma_index(struct rtw_dev *rtwdev, u8 *tdma_para)
 {
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
-	struct rtw_chip_info *chip = rtwdev->chip;
 	u8 ans = 0xFF;
 	u8 n, i, j;
 	u8 load_cur_tab_val;
@@ -3736,7 +3744,7 @@ static int rtw_coex_val_info(struct rtw_dev *rtwdev,
 
 static void rtw_coex_set_coexinfo_hw(struct rtw_dev *rtwdev, struct seq_file *m)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	const struct rtw_reg_domain *reg;
 	char addr_info[INFO_SIZE];
 	int n_addr = 0;
@@ -3910,7 +3918,7 @@ static const char *rtw_coex_get_wl_coex_mode(u8 coex_wl_link_mode)
 
 void rtw_coex_display_coex_info(struct rtw_dev *rtwdev, struct seq_file *m)
 {
-	struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
 	struct rtw_coex *coex = &rtwdev->coex;
 	struct rtw_coex_stat *coex_stat = &coex->stat;
@@ -3923,7 +3931,7 @@ void rtw_coex_display_coex_info(struct rtw_dev *rtwdev, struct seq_file *m)
 	u8 sys_lte;
 	u16 score_board_WB, score_board_BW;
 	u32 wl_reg_6c0, wl_reg_6c4, wl_reg_6c8, wl_reg_778, wl_reg_6cc;
-	u32 lte_coex, bt_coex;
+	u32 lte_coex = 0, bt_coex = 0;
 	int i;
 
 	score_board_BW = rtw_coex_read_scbd(rtwdev);
@@ -3935,10 +3943,14 @@ void rtw_coex_display_coex_info(struct rtw_dev *rtwdev, struct seq_file *m)
 	wl_reg_778 = rtw_read8(rtwdev, REG_BT_STAT_CTRL);
 
 	sys_lte = rtw_read8(rtwdev, 0x73);
-	lte_coex = rtw_coex_read_indirect_reg(rtwdev, 0x38);
-	bt_coex = rtw_coex_read_indirect_reg(rtwdev, 0x54);
+	if (rtwdev->chip->ltecoex_addr) {
+		lte_coex = rtw_coex_read_indirect_reg(rtwdev, 0x38);
+		bt_coex = rtw_coex_read_indirect_reg(rtwdev, 0x54);
+	}
 
-	if (!coex_stat->bt_disabled && !coex_stat->bt_mailbox_reply) {
+	if (!coex_stat->wl_under_ips &&
+	    (!coex_stat->wl_under_lps || coex_stat->wl_force_lps_ctrl) &&
+	    !coex_stat->bt_disabled && !coex_stat->bt_mailbox_reply) {
 		rtw_coex_get_bt_supported_version(rtwdev,
 				&coex_stat->bt_supported_version);
 		rtw_coex_get_bt_patch_version(rtwdev, &coex_stat->patch_ver);
@@ -4057,7 +4069,7 @@ void rtw_coex_display_coex_info(struct rtw_dev *rtwdev, struct seq_file *m)
 		   rtwdev->stats.tx_throughput, rtwdev->stats.rx_throughput);
 	seq_printf(m, "%-40s = %u/ %u/ %u\n",
 		   "IPS/ Low Power/ PS mode",
-		   test_bit(RTW_FLAG_INACTIVE_PS, rtwdev->flags),
+		   !test_bit(RTW_FLAG_POWERON, rtwdev->flags),
 		   test_bit(RTW_FLAG_LEISURE_PS_DEEP, rtwdev->flags),
 		   rtwdev->lps_conf.mode);
 

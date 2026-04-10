@@ -281,10 +281,8 @@
     {
         "BriefDescription": "Reference cycles when thread is not halted (fixed counter)",
         "Counter": "Fixed counter 3",
-        "EventCode": "0x0",
         "EventName": "CPU_CLK_UNHALTED.REF",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x0"
+        "SampleAfterValue": "2000000"
     },
     {
         "BriefDescription": "Reference base clock (133 Mhz) cycles when thread is not halted (programmable counter)",
@@ -297,18 +295,15 @@
     {
         "BriefDescription": "Cycles when thread is not halted (fixed counter)",
         "Counter": "Fixed counter 2",
-        "EventCode": "0x0",
         "EventName": "CPU_CLK_UNHALTED.THREAD",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x0"
+        "SampleAfterValue": "2000000"
     },
     {
         "BriefDescription": "Cycles when thread is not halted (programmable counter)",
         "Counter": "0,1,2,3",
         "EventCode": "0x3C",
         "EventName": "CPU_CLK_UNHALTED.THREAD_P",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x0"
+        "SampleAfterValue": "2000000"
     },
     {
         "BriefDescription": "Total CPU cycles",
@@ -317,8 +312,7 @@
         "EventCode": "0x3C",
         "EventName": "CPU_CLK_UNHALTED.TOTAL_CYCLES",
         "Invert": "1",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x0"
+        "SampleAfterValue": "2000000"
     },
     {
         "BriefDescription": "Any Instruction Length Decoder stall cycles",
@@ -387,10 +381,8 @@
     {
         "BriefDescription": "Instructions retired (fixed counter)",
         "Counter": "Fixed counter 1",
-        "EventCode": "0x0",
         "EventName": "INST_RETIRED.ANY",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x0"
+        "SampleAfterValue": "2000000"
     },
     {
         "BriefDescription": "Instructions retired (Programmable counter and Precise Event)",

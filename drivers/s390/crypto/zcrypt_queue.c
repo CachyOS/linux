@@ -11,6 +11,7 @@
  *  MSGTYPE restruct:		  Holger Dengler <hd@linux.vnet.ibm.com>
  */
 
+#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -18,7 +19,6 @@
 #include <linux/fs.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
-#include <linux/compat.h>
 #include <linux/slab.h>
 #include <linux/atomic.h>
 #include <linux/uaccess.h>
@@ -42,9 +42,9 @@ static ssize_t online_show(struct device *dev,
 {
 	struct zcrypt_queue *zq = dev_get_drvdata(dev);
 	struct ap_queue *aq = to_ap_queue(dev);
-	int online = aq->config && zq->online ? 1 : 0;
+	int online = aq->config && !aq->chkstop && zq->online ? 1 : 0;
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", online);
+	return sysfs_emit(buf, "%d\n", online);
 }
 
 static ssize_t online_store(struct device *dev,
@@ -59,7 +59,8 @@ static ssize_t online_store(struct device *dev,
 	if (sscanf(buf, "%d\n", &online) != 1 || online < 0 || online > 1)
 		return -EINVAL;
 
-	if (online && (!aq->config || !aq->card->config))
+	if (online && (!aq->config || !aq->card->config ||
+		       aq->chkstop || aq->card->chkstop))
 		return -ENODEV;
 	if (online && !zc->online)
 		return -EINVAL;
@@ -84,7 +85,7 @@ static ssize_t load_show(struct device *dev,
 {
 	struct zcrypt_queue *zq = dev_get_drvdata(dev);
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", atomic_read(&zq->load));
+	return sysfs_emit(buf, "%d\n", atomic_read(&zq->load));
 }
 
 static DEVICE_ATTR_RO(load);
@@ -114,7 +115,7 @@ struct zcrypt_queue *zcrypt_queue_alloc(size_t reply_buf_size)
 {
 	struct zcrypt_queue *zq;
 
-	zq = kzalloc(sizeof(*zq), GFP_KERNEL);
+	zq = kzalloc_obj(*zq);
 	if (!zq)
 		return NULL;
 	zq->reply.msg = kmalloc(reply_buf_size, GFP_KERNEL);

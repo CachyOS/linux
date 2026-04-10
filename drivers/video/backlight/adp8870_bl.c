@@ -11,7 +11,6 @@
 #include <linux/pm.h>
 #include <linux/platform_device.h>
 #include <linux/i2c.h>
-#include <linux/fb.h>
 #include <linux/backlight.h>
 #include <linux/leds.h>
 #include <linux/workqueue.h>
@@ -836,9 +835,9 @@ static const struct attribute_group adp8870_bl_attr_group = {
 	.attrs = adp8870_bl_attributes,
 };
 
-static int adp8870_probe(struct i2c_client *client,
-					const struct i2c_device_id *id)
+static int adp8870_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct backlight_properties props;
 	struct backlight_device *bl;
 	struct adp8870_bl *data;
@@ -925,7 +924,7 @@ out:
 	return ret;
 }
 
-static int adp8870_remove(struct i2c_client *client)
+static void adp8870_remove(struct i2c_client *client)
 {
 	struct adp8870_bl *data = i2c_get_clientdata(client);
 
@@ -937,8 +936,6 @@ static int adp8870_remove(struct i2c_client *client)
 	if (data->pdata->en_ambl_sens)
 		sysfs_remove_group(&data->bl->dev.kobj,
 			&adp8870_bl_attr_group);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -965,7 +962,7 @@ static SIMPLE_DEV_PM_OPS(adp8870_i2c_pm_ops, adp8870_i2c_suspend,
 			adp8870_i2c_resume);
 
 static const struct i2c_device_id adp8870_id[] = {
-	{ "adp8870", 0 },
+	{ "adp8870" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adp8870_id);
@@ -975,8 +972,8 @@ static struct i2c_driver adp8870_driver = {
 		.name	= KBUILD_MODNAME,
 		.pm	= &adp8870_i2c_pm_ops,
 	},
-	.probe    = adp8870_probe,
-	.remove   = adp8870_remove,
+	.probe = adp8870_probe,
+	.remove = adp8870_remove,
 	.id_table = adp8870_id,
 };
 

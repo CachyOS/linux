@@ -2,7 +2,9 @@
 #ifndef _ASM_X86_ASM_H
 #define _ASM_X86_ASM_H
 
-#ifdef __ASSEMBLY__
+#include <linux/annotate.h>
+
+#ifdef __ASSEMBLER__
 # define __ASM_FORM(x, ...)		x,## __VA_ARGS__
 # define __ASM_FORM_RAW(x, ...)		x,## __VA_ARGS__
 # define __ASM_FORM_COMMA(x, ...)	x,## __VA_ARGS__,
@@ -113,31 +115,32 @@
 
 #endif
 
-/*
- * Macros to generate condition code outputs from inline assembly,
- * The output operand must be type "bool".
- */
-#ifdef __GCC_ASM_FLAG_OUTPUTS__
-# define CC_SET(c) "\n\t/* output condition code " #c "*/\n"
-# define CC_OUT(c) "=@cc" #c
-#else
-# define CC_SET(c) "\n\tset" #c " %[_cc_" #c "]\n"
-# define CC_OUT(c) [_cc_ ## c] "=qm"
+#ifndef __ASSEMBLER__
+static __always_inline __pure void *rip_rel_ptr(void *p)
+{
+	asm("leaq %c1(%%rip), %0" : "=r"(p) : "i"(p));
+
+	return p;
+}
 #endif
 
 #ifdef __KERNEL__
 
+#ifndef COMPILE_OFFSETS
+#include <asm/asm-offsets.h>
+#endif
+
 # include <asm/extable_fixup_types.h>
 
 /* Exception table entry */
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 
-# define _ASM_EXTABLE_TYPE(from, to, type)			\
-	.pushsection "__ex_table","a" ;				\
-	.balign 4 ;						\
-	.long (from) - . ;					\
-	.long (to) - . ;					\
-	.long type ;						\
+# define _ASM_EXTABLE_TYPE(from, to, type)				\
+	.pushsection "__ex_table", "aM", @progbits, EXTABLE_SIZE ;	\
+	.balign 4 ;							\
+	.long (from) - . ;						\
+	.long (to) - . ;						\
+	.long type ;							\
 	.popsection
 
 # ifdef CONFIG_KPROBES
@@ -150,7 +153,7 @@
 #  define _ASM_NOKPROBE(entry)
 # endif
 
-#else /* ! __ASSEMBLY__ */
+#else /* ! __ASSEMBLER__ */
 
 # define DEFINE_EXTABLE_TYPE_REG \
 	".macro extable_type_reg type:req reg:req\n"						\
@@ -180,7 +183,8 @@
 	".purgem extable_type_reg\n"
 
 # define _ASM_EXTABLE_TYPE(from, to, type)			\
-	" .pushsection \"__ex_table\",\"a\"\n"			\
+	" .pushsection __ex_table, \"aM\", @progbits, "		\
+		       __stringify(EXTABLE_SIZE) "\n"		\
 	" .balign 4\n"						\
 	" .long (" #from ") - .\n"				\
 	" .long (" #to ") - .\n"				\
@@ -188,7 +192,8 @@
 	" .popsection\n"
 
 # define _ASM_EXTABLE_TYPE_REG(from, to, type, reg)				\
-	" .pushsection \"__ex_table\",\"a\"\n"					\
+	" .pushsection __ex_table, \"aM\", @progbits, "				\
+		       __stringify(EXTABLE_SIZE) "\n"				\
 	" .balign 4\n"								\
 	" .long (" #from ") - .\n"						\
 	" .long (" #to ") - .\n"						\
@@ -199,6 +204,17 @@
 
 /* For C file, we already have NOKPROBE_SYMBOL macro */
 
+/* Insert a comma if args are non-empty */
+#define COMMA(x...)		__COMMA(x)
+#define __COMMA(...)		, ##__VA_ARGS__
+
+/*
+ * Combine multiple asm inline constraint args into a single arg for passing to
+ * another macro.
+ */
+#define ASM_OUTPUT(x...)	x
+#define ASM_INPUT(x...)		x
+
 /*
  * This output constraint should be used for any inline asm which has a "call"
  * instruction.  Otherwise the asm may be inserted before the frame pointer
@@ -207,7 +223,7 @@
  */
 register unsigned long current_stack_pointer asm(_ASM_SP);
 #define ASM_CALL_CONSTRAINT "+r" (current_stack_pointer)
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 #define _ASM_EXTABLE(from, to)					\
 	_ASM_EXTABLE_TYPE(from, to, EX_TYPE_DEFAULT)
@@ -215,11 +231,27 @@ register unsigned long current_stack_pointer asm(_ASM_SP);
 #define _ASM_EXTABLE_UA(from, to)				\
 	_ASM_EXTABLE_TYPE(from, to, EX_TYPE_UACCESS)
 
-#define _ASM_EXTABLE_CPY(from, to)				\
-	_ASM_EXTABLE_TYPE(from, to, EX_TYPE_COPY)
-
 #define _ASM_EXTABLE_FAULT(from, to)				\
 	_ASM_EXTABLE_TYPE(from, to, EX_TYPE_FAULT)
+
+/*
+ * Both i386 and x86_64 returns 64-bit values in edx:eax for certain
+ * instructions, but GCC's "A" constraint has different meanings.
+ * For i386, "A" means exactly edx:eax, while for x86_64 it
+ * means rax *or* rdx.
+ *
+ * These helpers wrapping these semantic differences save one instruction
+ * clearing the high half of 'low':
+ */
+#ifdef CONFIG_X86_64
+# define EAX_EDX_DECLARE_ARGS(val, low, high)	unsigned long low, high
+# define EAX_EDX_VAL(val, low, high)		((low) | (high) << 32)
+# define EAX_EDX_RET(val, low, high)		"=a" (low), "=d" (high)
+#else
+# define EAX_EDX_DECLARE_ARGS(val, low, high)	u64 val
+# define EAX_EDX_VAL(val, low, high)		(val)
+# define EAX_EDX_RET(val, low, high)		"=A" (val)
+#endif
 
 #endif /* __KERNEL__ */
 #endif /* _ASM_X86_ASM_H */

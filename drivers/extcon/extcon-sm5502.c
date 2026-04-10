@@ -227,7 +227,6 @@ static const struct regmap_irq_chip sm5502_muic_irq_chip = {
 	.name			= "sm5502",
 	.status_base		= SM5502_REG_INT1,
 	.mask_base		= SM5502_REG_INTMASK1,
-	.mask_invert		= false,
 	.num_regs		= 2,
 	.irqs			= sm5502_irqs,
 	.num_irqs		= ARRAY_SIZE(sm5502_irqs),
@@ -276,7 +275,6 @@ static const struct regmap_irq_chip sm5504_muic_irq_chip = {
 	.name			= "sm5504",
 	.status_base		= SM5502_REG_INT1,
 	.mask_base		= SM5502_REG_INTMASK1,
-	.mask_invert		= false,
 	.num_regs		= 2,
 	.irqs			= sm5504_irqs,
 	.num_irqs		= ARRAY_SIZE(sm5504_irqs),
@@ -842,7 +840,7 @@ static struct i2c_driver sm5502_muic_i2c_driver = {
 		.pm	= &sm5502_muic_pm_ops,
 		.of_match_table = sm5502_dt_match,
 	},
-	.probe_new = sm5022_muic_i2c_probe,
+	.probe = sm5022_muic_i2c_probe,
 	.id_table = sm5502_i2c_id,
 };
 

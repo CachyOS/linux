@@ -21,6 +21,8 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/unistd.h>
+#include <linux/property.h>
+#include "mdio-private.h"
 
 void mdio_device_free(struct mdio_device *mdiodev)
 {
@@ -30,18 +32,8 @@ EXPORT_SYMBOL(mdio_device_free);
 
 static void mdio_device_release(struct device *dev)
 {
+	fwnode_handle_put(dev->fwnode);
 	kfree(to_mdio_device(dev));
-}
-
-int mdio_device_bus_match(struct device *dev, struct device_driver *drv)
-{
-	struct mdio_device *mdiodev = to_mdio_device(dev);
-	struct mdio_driver *mdiodrv = to_mdio_driver(drv);
-
-	if (mdiodrv->mdiodrv.flags & MDIO_DEVICE_IS_PHY)
-		return 0;
-
-	return strcmp(mdiodev->modalias, drv->name) == 0;
 }
 
 struct mdio_device *mdio_device_create(struct mii_bus *bus, int addr)
@@ -49,7 +41,7 @@ struct mdio_device *mdio_device_create(struct mii_bus *bus, int addr)
 	struct mdio_device *mdiodev;
 
 	/* We allocate the device, and initialize the default values */
-	mdiodev = kzalloc(sizeof(*mdiodev), GFP_KERNEL);
+	mdiodev = kzalloc_obj(*mdiodev);
 	if (!mdiodev)
 		return ERR_PTR(-ENOMEM);
 
@@ -60,6 +52,7 @@ struct mdio_device *mdio_device_create(struct mii_bus *bus, int addr)
 	mdiodev->device_remove = mdio_device_remove;
 	mdiodev->bus = bus;
 	mdiodev->addr = addr;
+	mdiodev->reset_state = -1;
 
 	dev_set_name(&mdiodev->dev, PHY_ID_FMT, bus->id, addr);
 
@@ -72,6 +65,8 @@ EXPORT_SYMBOL(mdio_device_create);
 /**
  * mdio_device_register - Register the mdio device on the MDIO bus
  * @mdiodev: mdio_device structure to be added to the MDIO bus
+ *
+ * Return: Zero if successful, negative error code on failure
  */
 int mdio_device_register(struct mdio_device *mdiodev)
 {
@@ -113,11 +108,67 @@ void mdio_device_remove(struct mdio_device *mdiodev)
 }
 EXPORT_SYMBOL(mdio_device_remove);
 
+/**
+ * mdio_device_register_reset - Read and initialize the reset properties of
+ *				an mdio device
+ * @mdiodev: mdio_device structure
+ *
+ * Return: Zero if successful, negative error code on failure
+ */
+int mdio_device_register_reset(struct mdio_device *mdiodev)
+{
+	struct reset_control *reset;
+
+	/* Deassert the optional reset signal */
+	mdiodev->reset_gpio = gpiod_get_optional(&mdiodev->dev,
+						 "reset", GPIOD_OUT_LOW);
+	if (IS_ERR(mdiodev->reset_gpio))
+		return PTR_ERR(mdiodev->reset_gpio);
+
+	if (mdiodev->reset_gpio)
+		gpiod_set_consumer_name(mdiodev->reset_gpio, "PHY reset");
+
+	reset = reset_control_get_optional_exclusive(&mdiodev->dev, "phy");
+	if (IS_ERR(reset)) {
+		gpiod_put(mdiodev->reset_gpio);
+		mdiodev->reset_gpio = NULL;
+		return PTR_ERR(reset);
+	}
+
+	mdiodev->reset_ctrl = reset;
+
+	/* Read optional firmware properties */
+	device_property_read_u32(&mdiodev->dev, "reset-assert-us",
+				 &mdiodev->reset_assert_delay);
+	device_property_read_u32(&mdiodev->dev, "reset-deassert-us",
+				 &mdiodev->reset_deassert_delay);
+
+	return 0;
+}
+
+/**
+ * mdio_device_unregister_reset - uninitialize the reset properties of
+ *				  an mdio device
+ * @mdiodev: mdio_device structure
+ */
+void mdio_device_unregister_reset(struct mdio_device *mdiodev)
+{
+	gpiod_put(mdiodev->reset_gpio);
+	mdiodev->reset_gpio = NULL;
+	reset_control_put(mdiodev->reset_ctrl);
+	mdiodev->reset_ctrl = NULL;
+	mdiodev->reset_assert_delay = 0;
+	mdiodev->reset_deassert_delay = 0;
+}
+
 void mdio_device_reset(struct mdio_device *mdiodev, int value)
 {
 	unsigned int d;
 
 	if (!mdiodev->reset_gpio && !mdiodev->reset_ctrl)
+		return;
+
+	if (mdiodev->reset_state == value)
 		return;
 
 	if (mdiodev->reset_gpio)
@@ -133,6 +184,8 @@ void mdio_device_reset(struct mdio_device *mdiodev, int value)
 	d = value ? mdiodev->reset_assert_delay : mdiodev->reset_deassert_delay;
 	if (d)
 		fsleep(d);
+
+	mdiodev->reset_state = value;
 }
 EXPORT_SYMBOL(mdio_device_reset);
 
@@ -142,6 +195,8 @@ EXPORT_SYMBOL(mdio_device_reset);
  *
  * Description: Take care of setting up the mdio_device structure
  * and calling the driver to probe the device.
+ *
+ * Return: Zero if successful, negative error code on failure
  */
 static int mdio_probe(struct device *dev)
 {
@@ -192,6 +247,8 @@ static void mdio_shutdown(struct device *dev)
 /**
  * mdio_driver_register - register an mdio_driver with the MDIO layer
  * @drv: new mdio_driver to register
+ *
+ * Return: Zero if successful, negative error code on failure
  */
 int mdio_driver_register(struct mdio_driver *drv)
 {

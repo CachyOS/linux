@@ -678,13 +678,8 @@ static int alc5623_set_dai_fmt(struct snd_soc_dai *codec_dai,
 	switch (fmt & SND_SOC_DAIFMT_INV_MASK) {
 	case SND_SOC_DAIFMT_NB_NF:
 		break;
-	case SND_SOC_DAIFMT_IB_IF:
-		iface |= ALC5623_DAI_MAIN_I2S_BCLK_POL_CTRL;
-		break;
 	case SND_SOC_DAIFMT_IB_NF:
 		iface |= ALC5623_DAI_MAIN_I2S_BCLK_POL_CTRL;
-		break;
-	case SND_SOC_DAIFMT_NB_IF:
 		break;
 	default:
 		return -EINVAL;
@@ -888,7 +883,7 @@ static int alc5623_resume(struct snd_soc_component *component)
 static int alc5623_probe(struct snd_soc_component *component)
 {
 	struct alc5623_priv *alc5623 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 
 	alc5623_reset(component);
 
@@ -956,7 +951,6 @@ static const struct snd_soc_component_driver soc_component_device_alc5623 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config alc5623_regmap = {
@@ -988,9 +982,9 @@ static int alc5623_i2c_probe(struct i2c_client *client)
 	struct alc5623_priv *alc5623;
 	struct device_node *np;
 	unsigned int vid1, vid2;
+	unsigned int matched_id;
 	int ret;
 	u32 val32;
-	const struct i2c_device_id *id;
 
 	alc5623 = devm_kzalloc(&client->dev, sizeof(struct alc5623_priv),
 			       GFP_KERNEL);
@@ -1017,12 +1011,12 @@ static int alc5623_i2c_probe(struct i2c_client *client)
 	}
 	vid2 >>= 8;
 
-	id = i2c_match_id(alc5623_i2c_table, client);
+	matched_id = (uintptr_t)i2c_get_match_data(client);
 
-	if ((vid1 != 0x10ec) || (vid2 != id->driver_data)) {
+	if ((vid1 != 0x10ec) || (vid2 != matched_id)) {
 		dev_err(&client->dev, "unknown or wrong codec\n");
-		dev_err(&client->dev, "Expected %x:%lx, got %x:%x\n",
-				0x10ec, id->driver_data,
+		dev_err(&client->dev, "Expected %x:%x, got %x:%x\n",
+				0x10ec, matched_id,
 				vid1, vid2);
 		return -ENODEV;
 	}
@@ -1084,7 +1078,7 @@ static struct i2c_driver alc5623_i2c_driver = {
 		.name = "alc562x-codec",
 		.of_match_table = of_match_ptr(alc5623_of_match),
 	},
-	.probe_new = alc5623_i2c_probe,
+	.probe = alc5623_i2c_probe,
 	.id_table = alc5623_i2c_table,
 };
 

@@ -8,7 +8,7 @@ title: Analog Devices ADM1266 Cascadable Super Sequencer with Margin
   Control and Fault Recording
 
 maintainers:
-  - Alexandru Tachici <alexandru.tachici@analog.com>
+  - Cedric Encarnacion <cedricjustine.encarnacion@analog.com>
 
 description: |
   Analog Devices ADM1266 Cascadable Super Sequencer with Margin
@@ -39,13 +39,13 @@ additionalProperties: false
 
 examples:
   - |
-    i2c0 {
+    i2c {
         #address-cells = <1>;
         #size-cells = <0>;
 
         adm1266@40 {
-                compatible = "adi,adm1266";
-                reg = <0x40>;
+            compatible = "adi,adm1266";
+            reg = <0x40>;
         };
     };
 ...

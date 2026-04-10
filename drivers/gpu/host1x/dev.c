@@ -11,8 +11,9 @@
 #include <linux/io.h>
 #include <linux/list.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 
@@ -28,6 +29,7 @@
 
 #include "bus.h"
 #include "channel.h"
+#include "context.h"
 #include "debug.h"
 #include "dev.h"
 #include "intr.h"
@@ -38,6 +40,12 @@
 #include "hw/host1x05.h"
 #include "hw/host1x06.h"
 #include "hw/host1x07.h"
+#include "hw/host1x08.h"
+
+void host1x_common_writel(struct host1x *host1x, u32 v, u32 r)
+{
+	writel(v, host1x->common_regs + r);
+}
 
 void host1x_hypervisor_writel(struct host1x *host1x, u32 v, u32 r)
 {
@@ -62,6 +70,15 @@ u32 host1x_sync_readl(struct host1x *host1x, u32 r)
 
 	return readl(sync_regs + r);
 }
+
+#ifdef CONFIG_64BIT
+u64 host1x_sync_readq(struct host1x *host1x, u32 r)
+{
+	void __iomem *sync_regs = host1x->regs + host1x->info->sync_offset;
+
+	return readq(sync_regs + r);
+}
+#endif
 
 void host1x_ch_writel(struct host1x_channel *ch, u32 v, u32 r)
 {
@@ -134,18 +151,29 @@ static const struct host1x_info host1x05_info = {
 };
 
 static const struct host1x_sid_entry tegra186_sid_table[] = {
-	{
-		/* VIC */
-		.base = 0x1af0,
-		.offset = 0x30,
-		.limit = 0x34
-	},
-	{
-		/* NVDEC */
-		.base = 0x1b00,
-		.offset = 0x30,
-		.limit = 0x34
-	},
+	{ /* SE1      */  .base = 0x1ac8, .offset = 0x90,    .limit = 0x90    },
+	{ /* SE2      */  .base = 0x1ad0, .offset = 0x90,    .limit = 0x90    },
+	{ /* SE3      */  .base = 0x1ad8, .offset = 0x90,    .limit = 0x90    },
+	{ /* SE4      */  .base = 0x1ae0, .offset = 0x90,    .limit = 0x90    },
+	{ /* ISP      */  .base = 0x1ae8, .offset = 0x50,    .limit = 0x50    },
+	{ /* VIC      */  .base = 0x1af0, .offset = 0x30,    .limit = 0x34    },
+	{ /* NVENC    */  .base = 0x1af8, .offset = 0x30,    .limit = 0x34    },
+	{ /* NVDEC    */  .base = 0x1b00, .offset = 0x30,    .limit = 0x34    },
+	{ /* NVJPG    */  .base = 0x1b08, .offset = 0x30,    .limit = 0x34    },
+	{ /* TSEC     */  .base = 0x1b10, .offset = 0x30,    .limit = 0x34    },
+	{ /* TSECB    */  .base = 0x1b18, .offset = 0x30,    .limit = 0x34    },
+	{ /* VI 0     */  .base = 0x1b80, .offset = 0x10000, .limit = 0x10000 },
+	{ /* VI 1     */  .base = 0x1b88, .offset = 0x20000, .limit = 0x20000 },
+	{ /* VI 2     */  .base = 0x1b90, .offset = 0x30000, .limit = 0x30000 },
+	{ /* VI 3     */  .base = 0x1b98, .offset = 0x40000, .limit = 0x40000 },
+	{ /* VI 4     */  .base = 0x1ba0, .offset = 0x50000, .limit = 0x50000 },
+	{ /* VI 5     */  .base = 0x1ba8, .offset = 0x60000, .limit = 0x60000 },
+	{ /* VI 6     */  .base = 0x1bb0, .offset = 0x70000, .limit = 0x70000 },
+	{ /* VI 7     */  .base = 0x1bb8, .offset = 0x80000, .limit = 0x80000 },
+	{ /* VI 8     */  .base = 0x1bc0, .offset = 0x90000, .limit = 0x90000 },
+	{ /* VI 9     */  .base = 0x1bc8, .offset = 0xa0000, .limit = 0xa0000 },
+	{ /* VI 10    */  .base = 0x1bd0, .offset = 0xb0000, .limit = 0xb0000 },
+	{ /* VI 11    */  .base = 0x1bd8, .offset = 0xc0000, .limit = 0xc0000 },
 };
 
 static const struct host1x_info host1x06_info = {
@@ -161,27 +189,30 @@ static const struct host1x_info host1x06_info = {
 	.num_sid_entries = ARRAY_SIZE(tegra186_sid_table),
 	.sid_table = tegra186_sid_table,
 	.reserve_vblank_syncpts = false,
+	.skip_reset_assert = true,
 };
 
 static const struct host1x_sid_entry tegra194_sid_table[] = {
-	{
-		/* VIC */
-		.base = 0x1af0,
-		.offset = 0x30,
-		.limit = 0x34
-	},
-	{
-		/* NVDEC */
-		.base = 0x1b00,
-		.offset = 0x30,
-		.limit = 0x34
-	},
-	{
-		/* NVDEC1 */
-		.base = 0x1bc0,
-		.offset = 0x30,
-		.limit = 0x34
-	},
+	{ /* SE1          */  .base = 0x1ac8, .offset = 0x90,  .limit = 0x90  },
+	{ /* SE2          */  .base = 0x1ad0, .offset = 0x90,  .limit = 0x90  },
+	{ /* SE3          */  .base = 0x1ad8, .offset = 0x90,  .limit = 0x90  },
+	{ /* SE4          */  .base = 0x1ae0, .offset = 0x90,  .limit = 0x90  },
+	{ /* ISP          */  .base = 0x1ae8, .offset = 0x800, .limit = 0x800 },
+	{ /* VIC          */  .base = 0x1af0, .offset = 0x30,  .limit = 0x34  },
+	{ /* NVENC        */  .base = 0x1af8, .offset = 0x30,  .limit = 0x34  },
+	{ /* NVDEC        */  .base = 0x1b00, .offset = 0x30,  .limit = 0x34  },
+	{ /* NVJPG        */  .base = 0x1b08, .offset = 0x30,  .limit = 0x34  },
+	{ /* TSEC         */  .base = 0x1b10, .offset = 0x30,  .limit = 0x34  },
+	{ /* TSECB        */  .base = 0x1b18, .offset = 0x30,  .limit = 0x34  },
+	{ /* VI           */  .base = 0x1b80, .offset = 0x800, .limit = 0x800 },
+	{ /* VI_THI       */  .base = 0x1b88, .offset = 0x30,  .limit = 0x34  },
+	{ /* ISP_THI      */  .base = 0x1b90, .offset = 0x30,  .limit = 0x34  },
+	{ /* PVA0_CLUSTER */  .base = 0x1b98, .offset = 0x0,   .limit = 0x0   },
+	{ /* PVA0_CLUSTER */  .base = 0x1ba0, .offset = 0x0,   .limit = 0x0   },
+	{ /* NVDLA0       */  .base = 0x1ba8, .offset = 0x30,  .limit = 0x34  },
+	{ /* NVDLA1       */  .base = 0x1bb0, .offset = 0x30,  .limit = 0x34  },
+	{ /* NVENC1       */  .base = 0x1bb8, .offset = 0x30,  .limit = 0x34  },
+	{ /* NVDEC1       */  .base = 0x1bc0, .offset = 0x30,  .limit = 0x34  },
 };
 
 static const struct host1x_info host1x07_info = {
@@ -199,7 +230,65 @@ static const struct host1x_info host1x07_info = {
 	.reserve_vblank_syncpts = false,
 };
 
+/*
+ * Tegra234 has two stream ID protection tables, one for setting stream IDs
+ * through the channel path via SETSTREAMID, and one for setting them via
+ * MMIO. We program each engine's data stream ID in the channel path table
+ * and firmware stream ID in the MMIO path table.
+ */
+static const struct host1x_sid_entry tegra234_sid_table[] = {
+	{ /* SE1 MMIO     */  .base = 0x1650, .offset = 0x90,  .limit = 0x90  },
+	{ /* SE1 ch       */  .base = 0x1730, .offset = 0x90,  .limit = 0x90  },
+	{ /* SE2 MMIO     */  .base = 0x1658, .offset = 0x90,  .limit = 0x90  },
+	{ /* SE2 ch       */  .base = 0x1738, .offset = 0x90,  .limit = 0x90  },
+	{ /* SE4 MMIO     */  .base = 0x1660, .offset = 0x90,  .limit = 0x90  },
+	{ /* SE4 ch       */  .base = 0x1740, .offset = 0x90,  .limit = 0x90  },
+	{ /* ISP MMIO     */  .base = 0x1680, .offset = 0x800, .limit = 0x800 },
+	{ /* VIC MMIO     */  .base = 0x1688, .offset = 0x34,  .limit = 0x34  },
+	{ /* VIC ch       */  .base = 0x17b8, .offset = 0x30,  .limit = 0x30  },
+	{ /* NVENC MMIO   */  .base = 0x1690, .offset = 0x34,  .limit = 0x34  },
+	{ /* NVENC ch     */  .base = 0x17c0, .offset = 0x30,  .limit = 0x30  },
+	{ /* NVDEC MMIO   */  .base = 0x1698, .offset = 0x34,  .limit = 0x34  },
+	{ /* NVDEC ch     */  .base = 0x17c8, .offset = 0x30,  .limit = 0x30  },
+	{ /* NVJPG MMIO   */  .base = 0x16a0, .offset = 0x34,  .limit = 0x34  },
+	{ /* NVJPG ch     */  .base = 0x17d0, .offset = 0x30,  .limit = 0x30  },
+	{ /* TSEC MMIO    */  .base = 0x16a8, .offset = 0x30,  .limit = 0x34  },
+	{ /* NVJPG1 MMIO  */  .base = 0x16b0, .offset = 0x34,  .limit = 0x34  },
+	{ /* NVJPG1 ch    */  .base = 0x17a8, .offset = 0x30,  .limit = 0x30  },
+	{ /* VI MMIO      */  .base = 0x16b8, .offset = 0x800, .limit = 0x800 },
+	{ /* VI_THI MMIO  */  .base = 0x16c0, .offset = 0x30,  .limit = 0x34  },
+	{ /* ISP_THI MMIO */  .base = 0x16c8, .offset = 0x30,  .limit = 0x34  },
+	{ /* NVDLA MMIO   */  .base = 0x16d8, .offset = 0x30,  .limit = 0x34  },
+	{ /* NVDLA ch     */  .base = 0x17e0, .offset = 0x30,  .limit = 0x34  },
+	{ /* NVDLA1 MMIO  */  .base = 0x16e0, .offset = 0x30,  .limit = 0x34  },
+	{ /* NVDLA1 ch    */  .base = 0x17e8, .offset = 0x30,  .limit = 0x34  },
+	{ /* OFA MMIO     */  .base = 0x16e8, .offset = 0x34,  .limit = 0x34  },
+	{ /* OFA ch       */  .base = 0x1768, .offset = 0x30,  .limit = 0x30  },
+	{ /* VI2 MMIO     */  .base = 0x16f0, .offset = 0x800, .limit = 0x800 },
+	{ /* VI2_THI MMIO */  .base = 0x16f8, .offset = 0x30,  .limit = 0x34  },
+};
+
+static const struct host1x_info host1x08_info = {
+	.nb_channels = 63,
+	.nb_pts = 1024,
+	.nb_mlocks = 24,
+	.nb_bases = 0,
+	.init = host1x08_init,
+	.sync_offset = 0x0,
+	.dma_mask = DMA_BIT_MASK(40),
+	.has_wide_gather = true,
+	.has_hypervisor = true,
+	.has_common = true,
+	.num_sid_entries = ARRAY_SIZE(tegra234_sid_table),
+	.sid_table = tegra234_sid_table,
+	.streamid_vm_table = { 0x1004, 128 },
+	.classid_vm_table = { 0x1404, 25 },
+	.mmio_vm_table = { 0x1504, 25 },
+	.reserve_vblank_syncpts = false,
+};
+
 static const struct of_device_id host1x_of_match[] = {
+	{ .compatible = "nvidia,tegra234-host1x", .data = &host1x08_info, },
 	{ .compatible = "nvidia,tegra194-host1x", .data = &host1x07_info, },
 	{ .compatible = "nvidia,tegra186-host1x", .data = &host1x06_info, },
 	{ .compatible = "nvidia,tegra210-host1x", .data = &host1x05_info, },
@@ -211,7 +300,7 @@ static const struct of_device_id host1x_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, host1x_of_match);
 
-static void host1x_setup_sid_table(struct host1x *host)
+static void host1x_setup_virtualization_tables(struct host1x *host)
 {
 	const struct host1x_info *info = host->info;
 	unsigned int i;
@@ -225,10 +314,29 @@ static void host1x_setup_sid_table(struct host1x *host)
 		host1x_hypervisor_writel(host, entry->offset, entry->base);
 		host1x_hypervisor_writel(host, entry->limit, entry->base + 4);
 	}
+
+	for (i = 0; i < info->streamid_vm_table.count; i++) {
+		/* Allow access to all stream IDs to all VMs. */
+		host1x_hypervisor_writel(host, 0xff, info->streamid_vm_table.base + 4 * i);
+	}
+
+	for (i = 0; i < info->classid_vm_table.count; i++) {
+		/* Allow access to all classes to all VMs. */
+		host1x_hypervisor_writel(host, 0xff, info->classid_vm_table.base + 4 * i);
+	}
+
+	for (i = 0; i < info->mmio_vm_table.count; i++) {
+		/* Use VM1 (that's us) as originator VMID for engine MMIO accesses. */
+		host1x_hypervisor_writel(host, 0x1, info->mmio_vm_table.base + 4 * i);
+	}
 }
 
 static bool host1x_wants_iommu(struct host1x *host1x)
 {
+	/* Our IOMMU usage policy doesn't currently play well with GART */
+	if (of_machine_is_compatible("nvidia,tegra20"))
+		return false;
+
 	/*
 	 * If we support addressing a maximum of 32 bits of physical memory
 	 * and if the host1x firewall is enabled, there's no need to enable
@@ -262,6 +370,10 @@ static bool host1x_wants_iommu(struct host1x *host1x)
 	return true;
 }
 
+/*
+ * Returns ERR_PTR on failure, NULL if the translation is IDENTITY, otherwise a
+ * valid paging domain.
+ */
 static struct iommu_domain *host1x_iommu_attach(struct host1x *host)
 {
 	struct iommu_domain *domain = iommu_get_domain_for_dev(host->dev);
@@ -286,6 +398,8 @@ static struct iommu_domain *host1x_iommu_attach(struct host1x *host)
 	 * Similarly, if host1x is already attached to an IOMMU (via the DMA
 	 * API), don't try to attach again.
 	 */
+	if (domain && domain->type == IOMMU_DOMAIN_IDENTITY)
+		domain = NULL;
 	if (!host1x_wants_iommu(host) || domain)
 		return domain;
 
@@ -299,9 +413,10 @@ static struct iommu_domain *host1x_iommu_attach(struct host1x *host)
 		if (err < 0)
 			goto put_group;
 
-		host->domain = iommu_domain_alloc(&platform_bus_type);
-		if (!host->domain) {
-			err = -ENOMEM;
+		host->domain = iommu_paging_domain_alloc(host->dev);
+		if (IS_ERR(host->domain)) {
+			err = PTR_ERR(host->domain);
+			host->domain = NULL;
 			goto put_cache;
 		}
 
@@ -402,18 +517,13 @@ static int host1x_get_resets(struct host1x *host)
 		return err;
 	}
 
-	if (WARN_ON(!host->resets[1].rstc))
-		return -ENOENT;
-
 	return 0;
 }
 
 static int host1x_probe(struct platform_device *pdev)
 {
 	struct host1x *host;
-	struct resource *regs, *hv_regs = NULL;
-	int syncpt_irq;
-	int err;
+	int err, i;
 
 	host = devm_kzalloc(&pdev->dev, sizeof(*host), GFP_KERNEL);
 	if (!host)
@@ -422,30 +532,49 @@ static int host1x_probe(struct platform_device *pdev)
 	host->info = of_device_get_match_data(&pdev->dev);
 
 	if (host->info->has_hypervisor) {
-		regs = platform_get_resource_byname(pdev, IORESOURCE_MEM, "vm");
-		if (!regs) {
-			dev_err(&pdev->dev, "failed to get vm registers\n");
-			return -ENXIO;
-		}
+		host->regs = devm_platform_ioremap_resource_byname(pdev, "vm");
+		if (IS_ERR(host->regs))
+			return PTR_ERR(host->regs);
 
-		hv_regs = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-						       "hypervisor");
-		if (!hv_regs) {
-			dev_err(&pdev->dev,
-				"failed to get hypervisor registers\n");
-			return -ENXIO;
+		host->hv_regs = devm_platform_ioremap_resource_byname(pdev, "hypervisor");
+		if (IS_ERR(host->hv_regs))
+			return PTR_ERR(host->hv_regs);
+
+		if (host->info->has_common) {
+			host->common_regs = devm_platform_ioremap_resource_byname(pdev, "common");
+			if (IS_ERR(host->common_regs))
+				return PTR_ERR(host->common_regs);
 		}
 	} else {
-		regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-		if (!regs) {
-			dev_err(&pdev->dev, "failed to get registers\n");
-			return -ENXIO;
-		}
+		host->regs = devm_platform_ioremap_resource(pdev, 0);
+		if (IS_ERR(host->regs))
+			return PTR_ERR(host->regs);
 	}
 
-	syncpt_irq = platform_get_irq(pdev, 0);
-	if (syncpt_irq < 0)
-		return syncpt_irq;
+	for (i = 0; i < ARRAY_SIZE(host->syncpt_irqs); i++) {
+		char irq_name[] = "syncptX";
+
+		sprintf(irq_name, "syncpt%d", i);
+
+		err = platform_get_irq_byname_optional(pdev, irq_name);
+		if (err == -ENXIO)
+			break;
+		if (err < 0)
+			return err;
+
+		host->syncpt_irqs[i] = err;
+	}
+
+	host->num_syncpt_irqs = i;
+
+	/* Device tree without irq names */
+	if (i == 0) {
+		host->syncpt_irqs[0] = platform_get_irq(pdev, 0);
+		if (host->syncpt_irqs[0] < 0)
+			return host->syncpt_irqs[0];
+
+		host->num_syncpt_irqs = 1;
+	}
 
 	mutex_init(&host->devices_lock);
 	INIT_LIST_HEAD(&host->devices);
@@ -454,16 +583,6 @@ static int host1x_probe(struct platform_device *pdev)
 
 	/* set common host1x device data */
 	platform_set_drvdata(pdev, host);
-
-	host->regs = devm_ioremap_resource(&pdev->dev, regs);
-	if (IS_ERR(host->regs))
-		return PTR_ERR(host->regs);
-
-	if (host->info->has_hypervisor) {
-		host->hv_regs = devm_ioremap_resource(&pdev->dev, hv_regs);
-		if (IS_ERR(host->hv_regs))
-			return PTR_ERR(host->hv_regs);
-	}
 
 	host->dev->dma_parms = &host->dma_parms;
 	dma_set_max_seg_size(host->dev, UINT_MAX);
@@ -475,14 +594,8 @@ static int host1x_probe(struct platform_device *pdev)
 	}
 
 	host->clk = devm_clk_get(&pdev->dev, NULL);
-	if (IS_ERR(host->clk)) {
-		err = PTR_ERR(host->clk);
-
-		if (err != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "failed to get clock: %d\n", err);
-
-		return err;
-	}
+	if (IS_ERR(host->clk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(host->clk), "failed to get clock\n");
 
 	err = host1x_get_resets(host);
 	if (err)
@@ -503,17 +616,19 @@ static int host1x_probe(struct platform_device *pdev)
 		goto iommu_exit;
 	}
 
-	err = host1x_syncpt_init(host);
+	err = host1x_memory_context_list_init(host);
 	if (err) {
-		dev_err(&pdev->dev, "failed to initialize syncpts\n");
+		dev_err(&pdev->dev, "failed to initialize context list\n");
 		goto free_channels;
 	}
 
-	err = host1x_intr_init(host, syncpt_irq);
+	err = host1x_syncpt_init(host);
 	if (err) {
-		dev_err(&pdev->dev, "failed to initialize interrupts\n");
-		goto deinit_syncpt;
+		dev_err(&pdev->dev, "failed to initialize syncpts\n");
+		goto free_contexts;
 	}
+
+	mutex_init(&host->intr_mutex);
 
 	pm_runtime_enable(&pdev->dev);
 
@@ -525,6 +640,12 @@ static int host1x_probe(struct platform_device *pdev)
 	err = pm_runtime_resume_and_get(&pdev->dev);
 	if (err)
 		goto pm_disable;
+
+	err = host1x_intr_init(host);
+	if (err) {
+		dev_err(&pdev->dev, "failed to initialize interrupts\n");
+		goto pm_put;
+	}
 
 	host1x_debug_init(host);
 
@@ -542,14 +663,14 @@ unregister:
 	host1x_unregister(host);
 deinit_debugfs:
 	host1x_debug_deinit(host);
-
+	host1x_intr_deinit(host);
+pm_put:
 	pm_runtime_put_sync_suspend(&pdev->dev);
 pm_disable:
 	pm_runtime_disable(&pdev->dev);
-
-	host1x_intr_deinit(host);
-deinit_syncpt:
 	host1x_syncpt_deinit(host);
+free_contexts:
+	host1x_memory_context_list_free(&host->context_list);
 free_channels:
 	host1x_channel_list_free(&host->channel_list);
 iommu_exit:
@@ -560,7 +681,7 @@ destroy_cache:
 	return err;
 }
 
-static int host1x_remove(struct platform_device *pdev)
+static void host1x_remove(struct platform_device *pdev)
 {
 	struct host1x *host = platform_get_drvdata(pdev);
 
@@ -571,11 +692,10 @@ static int host1x_remove(struct platform_device *pdev)
 
 	host1x_intr_deinit(host);
 	host1x_syncpt_deinit(host);
+	host1x_memory_context_list_free(&host->context_list);
 	host1x_channel_list_free(&host->channel_list);
 	host1x_iommu_exit(host);
 	host1x_bo_cache_destroy(&host->cache);
-
-	return 0;
 }
 
 static int __maybe_unused host1x_runtime_suspend(struct device *dev)
@@ -583,16 +703,19 @@ static int __maybe_unused host1x_runtime_suspend(struct device *dev)
 	struct host1x *host = dev_get_drvdata(dev);
 	int err;
 
+	host1x_channel_stop_all(host);
 	host1x_intr_stop(host);
 	host1x_syncpt_save(host);
 
-	err = reset_control_bulk_assert(host->nresets, host->resets);
-	if (err) {
-		dev_err(dev, "failed to assert reset: %d\n", err);
-		goto resume_host1x;
-	}
+	if (!host->info->skip_reset_assert) {
+		err = reset_control_bulk_assert(host->nresets, host->resets);
+		if (err) {
+			dev_err(dev, "failed to assert reset: %d\n", err);
+			goto resume_host1x;
+		}
 
-	usleep_range(1000, 2000);
+		usleep_range(1000, 2000);
+	}
 
 	clk_disable_unprepare(host->clk);
 	reset_control_bulk_release(host->nresets, host->resets);
@@ -600,7 +723,7 @@ static int __maybe_unused host1x_runtime_suspend(struct device *dev)
 	return 0;
 
 resume_host1x:
-	host1x_setup_sid_table(host);
+	host1x_setup_virtualization_tables(host);
 	host1x_syncpt_restore(host);
 	host1x_intr_start(host);
 
@@ -630,7 +753,7 @@ static int __maybe_unused host1x_runtime_resume(struct device *dev)
 		goto disable_clk;
 	}
 
-	host1x_setup_sid_table(host);
+	host1x_setup_virtualization_tables(host);
 	host1x_syncpt_restore(host);
 	host1x_intr_start(host);
 
@@ -647,7 +770,7 @@ release_reset:
 static const struct dev_pm_ops host1x_pm_ops = {
 	SET_RUNTIME_PM_OPS(host1x_runtime_suspend, host1x_runtime_resume,
 			   NULL)
-	/* TODO: add system suspend-resume once driver will be ready for that */
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 };
 
 static struct platform_driver tegra_host1x_driver = {
@@ -701,6 +824,7 @@ u64 host1x_get_dma_mask(struct host1x *host1x)
 }
 EXPORT_SYMBOL(host1x_get_dma_mask);
 
+MODULE_SOFTDEP("post: tegra-drm");
 MODULE_AUTHOR("Thierry Reding <thierry.reding@avionic-design.de>");
 MODULE_AUTHOR("Terje Bergstrom <tbergstrom@nvidia.com>");
 MODULE_DESCRIPTION("Host1x driver for Tegra products");

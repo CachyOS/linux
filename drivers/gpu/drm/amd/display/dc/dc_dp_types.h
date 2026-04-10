@@ -27,6 +27,7 @@
 #define DC_DP_TYPES_H
 
 #include "os_types.h"
+#include "dc_ddc_types.h"
 
 enum dc_lane_count {
 	LANE_COUNT_UNKNOWN = 0,
@@ -46,20 +47,21 @@ enum dc_lane_count {
  */
 enum dc_link_rate {
 	LINK_RATE_UNKNOWN = 0,
-	LINK_RATE_LOW = 0x06,		// Rate_1 (RBR)	- 1.62 Gbps/Lane
-	LINK_RATE_RATE_2 = 0x08,	// Rate_2		- 2.16 Gbps/Lane
-	LINK_RATE_RATE_3 = 0x09,	// Rate_3		- 2.43 Gbps/Lane
-	LINK_RATE_HIGH = 0x0A,		// Rate_4 (HBR)	- 2.70 Gbps/Lane
-	LINK_RATE_RBR2 = 0x0C,		// Rate_5 (RBR2)- 3.24 Gbps/Lane
-	LINK_RATE_RATE_6 = 0x10,	// Rate_6		- 4.32 Gbps/Lane
-	LINK_RATE_HIGH2 = 0x14,		// Rate_7 (HBR2)- 5.40 Gbps/Lane
-	LINK_RATE_HIGH3 = 0x1E,		// Rate_8 (HBR3)- 8.10 Gbps/Lane
+	LINK_RATE_LOW = 0x06,		// Rate_1 (RBR)  - 1.62 Gbps/Lane
+	LINK_RATE_RATE_2 = 0x08,	// Rate_2        - 2.16 Gbps/Lane
+	LINK_RATE_RATE_3 = 0x09,	// Rate_3        - 2.43 Gbps/Lane
+	LINK_RATE_HIGH = 0x0A,		// Rate_4 (HBR)  - 2.70 Gbps/Lane
+	LINK_RATE_RBR2 = 0x0C,		// Rate_5 (RBR2) - 3.24 Gbps/Lane
+	LINK_RATE_RATE_6 = 0x10,	// Rate_6        - 4.32 Gbps/Lane
+	LINK_RATE_HIGH2 = 0x14,		// Rate_7 (HBR2) - 5.40 Gbps/Lane
+	LINK_RATE_RATE_8 = 0x19,	// Rate_8        - 6.75 Gbps/Lane
+	LINK_RATE_HIGH3 = 0x1E,		// Rate_9 (HBR3) - 8.10 Gbps/Lane
 	/* Starting from DP2.0 link rate enum directly represents actual
 	 * link rate value in unit of 10 mbps
 	 */
 	LINK_RATE_UHBR10 = 1000,	// UHBR10 - 10.0 Gbps/Lane
 	LINK_RATE_UHBR13_5 = 1350,	// UHBR13.5 - 13.5 Gbps/Lane
-	LINK_RATE_UHBR20 = 2000,	// UHBR10 - 20.0 Gbps/Lane
+	LINK_RATE_UHBR20 = 2000,	// UHBR20 - 20.0 Gbps/Lane
 };
 
 enum dc_link_spread {
@@ -135,12 +137,18 @@ enum dp_link_encoding {
 
 enum dp_test_link_rate {
 	DP_TEST_LINK_RATE_RBR		= 0x06,
+	DP_TEST_LINK_RATE_RATE_2    = 0x08,	// Rate_2        - 2.16 Gbps/Lane
+	DP_TEST_LINK_RATE_RATE_3    = 0x09,	// Rate_3        - 2.43 Gbps/Lane
 	DP_TEST_LINK_RATE_HBR		= 0x0A,
+	DP_TEST_LINK_RATE_RBR2      = 0x0C,	// Rate_5 (RBR2) - 3.24 Gbps/Lane
+	DP_TEST_LINK_RATE_RATE_6    = 0x10,	// Rate_6        - 4.32 Gbps/Lane
 	DP_TEST_LINK_RATE_HBR2		= 0x14,
+	DP_TEST_LINK_RATE_RATE_8    = 0x19,	// Rate_8        - 6.75 Gbps/Lane
 	DP_TEST_LINK_RATE_HBR3		= 0x1E,
 	DP_TEST_LINK_RATE_UHBR10	= 0x01,
 	DP_TEST_LINK_RATE_UHBR20	= 0x02,
-	DP_TEST_LINK_RATE_UHBR13_5	= 0x03,
+	DP_TEST_LINK_RATE_UHBR13_5_LEGACY	= 0x03, /* For backward compatibility*/
+	DP_TEST_LINK_RATE_UHBR13_5	= 0x04,
 };
 
 struct dc_link_settings {
@@ -149,7 +157,16 @@ struct dc_link_settings {
 	enum dc_link_spread link_spread;
 	bool use_link_rate_set;
 	uint8_t link_rate_set;
-	bool dpcd_source_device_specific_field_support;
+};
+
+struct dc_tunnel_settings {
+	bool should_enable_dp_tunneling;
+	bool should_use_dp_bw_allocation;
+	uint8_t cm_id;
+	uint8_t group_id;
+	uint32_t bw_granularity;
+	uint32_t estimated_bw;
+	uint32_t allocated_bw;
 };
 
 union dc_dp_ffe_preset {
@@ -293,6 +310,19 @@ union lane_align_status_updated {
 	uint8_t raw;
 };
 
+union link_service_irq_vector_esi0 {
+	struct {
+		uint8_t DP_LINK_RX_CAP_CHANGED:1;
+		uint8_t DP_LINK_STATUS_CHANGED:1;
+		uint8_t DP_LINK_STREAM_STATUS_CHANGED:1;
+		uint8_t DP_LINK_HDMI_LINK_STATUS_CHANGED:1;
+		uint8_t DP_LINK_CONNECTED_OFF_ENTRY_REQUESTED:1;
+		uint8_t DP_LINK_TUNNELING_IRQ:1;
+		uint8_t reserved:2;
+	} bits;
+	uint8_t raw;
+};
+
 union lane_adjust {
 	struct {
 		uint8_t VOLTAGE_SWING_LANE:2;
@@ -362,14 +392,10 @@ enum dpcd_downstream_port_detailed_type {
 union dwnstream_port_caps_byte2 {
 	struct {
 		uint8_t MAX_BITS_PER_COLOR_COMPONENT:2;
-#if defined(CONFIG_DRM_AMD_DC_DCN)
 		uint8_t MAX_ENCODED_LINK_BW_SUPPORT:3;
 		uint8_t SOURCE_CONTROL_MODE_SUPPORT:1;
 		uint8_t CONCURRENT_LINK_BRING_UP_SEQ_SUPPORT:1;
 		uint8_t RESERVED:1;
-#else
-		uint8_t RESERVED:6;
-#endif
 	} bits;
 	uint8_t raw;
 };
@@ -407,15 +433,6 @@ union dwnstream_port_caps_byte3_hdmi {
 	uint8_t raw;
 };
 
-#if defined(CONFIG_DRM_AMD_DC_DCN)
-union hdmi_sink_encoded_link_bw_support {
-	struct {
-		uint8_t HDMI_SINK_ENCODED_LINK_BW_SUPPORT:3;
-		uint8_t RESERVED:5;
-	} bits;
-	uint8_t raw;
-};
-
 union hdmi_encoded_link_bw {
 	struct {
 		uint8_t FRL_MODE:1; // Bit 0
@@ -425,11 +442,31 @@ union hdmi_encoded_link_bw {
 		uint8_t BW_32Gbps:1;
 		uint8_t BW_40Gbps:1;
 		uint8_t BW_48Gbps:1;
-		uint8_t RESERVED:1; // Bit 7
+		uint8_t FRL_LINK_TRAINING_FINISHED:1; // Bit 7
 	} bits;
 	uint8_t raw;
 };
-#endif
+
+union hdmi_tx_link_status {
+	struct {
+		uint8_t HDMI_TX_LINK_ACTIVE_STATUS:1;
+		uint8_t HDMI_TX_READY_STATUS:1;
+		uint8_t RESERVED:6;
+	} bits;
+	uint8_t raw;
+};
+
+union autonomous_mode_and_frl_link_status {
+	struct {
+		uint8_t FRL_LT_IN_PROGRESS_STATUS:1;
+		uint8_t FRL_LT_LINK_CONFIG_IN_PROGRESS:3;
+		uint8_t RESERVED:1;
+		uint8_t FALLBACK_POLICY:1;
+		uint8_t FALLBACK_POLICY_VALID:1;
+		uint8_t REGULATED_AUTONOMOUS_MODE_SUPPORTED:1;
+	} bits;
+	uint8_t raw;
+};
 
 /*4-byte structure for detailed capabilities of a down-stream port
 (DP-to-TMDS converter).*/
@@ -469,8 +506,10 @@ union sink_status {
 	uint8_t raw;
 };
 
-/*6-byte structure corresponding to 6 registers (200h-205h)
-read during handling of HPD-IRQ*/
+/* 7-byte structure corresponding to 6 registers (200h-205h)
+ * and LINK_SERVICE_IRQ_ESI0 (2005h) for tunneling IRQ
+ * read during handling of HPD-IRQ
+ */
 union hpd_irq_data {
 	struct {
 		union sink_count sink_cnt;/* 200h */
@@ -478,9 +517,10 @@ union hpd_irq_data {
 		union lane_status lane01_status;/* 202h */
 		union lane_status lane23_status;/* 203h */
 		union lane_align_status_updated lane_status_updated;/* 204h */
-		union sink_status sink_status;
+		union sink_status sink_status;/* 205h */
+		union link_service_irq_vector_esi0 link_service_irq_esi0;/* 2005h */
 	} bytes;
-	uint8_t raw[6];
+	uint8_t raw[7];
 };
 
 union down_stream_port_count {
@@ -509,7 +549,11 @@ union down_spread_ctrl {
 	1 = Main link signal is downspread <= 0.5%
 	with frequency in the range of 30kHz ~ 33kHz*/
 		uint8_t SPREAD_AMP:1;
-		uint8_t RESERVED2:2;/*Bit 6:5 = RESERVED. Read all 0s*/
+		uint8_t RESERVED2:1;/*Bit 5 = RESERVED. Read all 0s*/
+	/* Bit 6 = FIXED_VTOTAL_AS_SDP_EN_IN_PR_ACTIVE.
+	0 = FIXED_VTOTAL_AS_SDP_EN_IN_PR_ACTIVE is not enabled by the Source device (default)
+	1 = FIXED_VTOTAL_AS_SDP_EN_IN_PR_ACTIVE is enabled by Source device */
+		uint8_t FIXED_VTOTAL_AS_SDP_EN_IN_PR_ACTIVE:1;
 	/*Bit 7 = MSA_TIMING_PAR_IGNORE_EN
 	0 = Source device will send valid data for the MSA Timing Params
 	1 = Source device may send invalid data for these MSA Timing Params*/
@@ -565,6 +609,12 @@ struct dpcd_amd_device_id {
 	uint8_t dce_version;
 	uint8_t dal_version_byte1;
 	uint8_t dal_version_byte2;
+};
+
+struct target_luminance_value {
+	uint8_t byte0;
+	uint8_t byte1;
+	uint8_t byte2;
 };
 
 struct dpcd_source_backlight_set {
@@ -865,6 +915,21 @@ struct psr_caps {
 	unsigned int psr_power_opt_flag;
 };
 
+union dpcd_dprx_feature_enumeration_list_cont_1 {
+	struct {
+		uint8_t ADAPTIVE_SYNC_SDP_SUPPORT:1;
+		uint8_t AS_SDP_FIRST_HALF_LINE_OR_3840_PIXEL_CYCLE_WINDOW_NOT_SUPPORTED: 1;
+		uint8_t RESERVED0: 2;
+		uint8_t VSC_EXT_SDP_VER1_SUPPORT: 1;
+		uint8_t RESERVED1: 3;
+	} bits;
+	uint8_t raw;
+};
+
+struct adaptive_sync_caps {
+	union dpcd_dprx_feature_enumeration_list_cont_1 dp_adap_sync_caps;
+};
+
 /* Length of router topology ID read from DPCD in bytes. */
 #define DPCD_USB4_TOPOLOGY_ID_LEN 5
 
@@ -888,90 +953,33 @@ union dpia_info {
 	uint8_t raw;
 };
 
+/* DPCD[0xE0020] USB4_DRIVER_BW_CAPABILITY register. */
+union usb4_driver_bw_cap {
+	struct {
+		uint8_t rsvd :7;
+		uint8_t driver_bw_alloc_support :1;
+	} bits;
+	uint8_t raw;
+};
+
+/* DPCD[0xE0021] DP_IN_ADAPTER_TUNNEL_INFORMATION register. */
+union dpia_tunnel_info {
+	struct {
+		uint8_t group_id :3;
+		uint8_t rsvd :5;
+	} bits;
+	uint8_t raw;
+};
+
 /* DP Tunneling over USB4 */
 struct dpcd_usb4_dp_tunneling_info {
 	union dp_tun_cap_support dp_tun_cap;
 	union dpia_info dpia_info;
+	union usb4_driver_bw_cap driver_bw_cap;
+	union dpia_tunnel_info dpia_tunnel_info;
 	uint8_t usb4_driver_id;
 	uint8_t usb4_topology_id[DPCD_USB4_TOPOLOGY_ID_LEN];
 };
-
-#ifndef DP_MAIN_LINK_CHANNEL_CODING_CAP
-#define DP_MAIN_LINK_CHANNEL_CODING_CAP			0x006
-#endif
-#ifndef DP_SINK_VIDEO_FALLBACK_FORMATS
-#define DP_SINK_VIDEO_FALLBACK_FORMATS			0x020
-#endif
-#ifndef DP_FEC_CAPABILITY_1
-#define DP_FEC_CAPABILITY_1				0x091
-#endif
-#ifndef DP_DFP_CAPABILITY_EXTENSION_SUPPORT
-#define DP_DFP_CAPABILITY_EXTENSION_SUPPORT		0x0A3
-#endif
-#ifndef DP_LINK_SQUARE_PATTERN
-#define DP_LINK_SQUARE_PATTERN				0x10F
-#endif
-#ifndef DP_CABLE_ATTRIBUTES_UPDATED_BY_DPTX
-#define DP_CABLE_ATTRIBUTES_UPDATED_BY_DPTX		0x110
-#endif
-#ifndef DP_DSC_CONFIGURATION
-#define DP_DSC_CONFIGURATION				0x161
-#endif
-#ifndef DP_PHY_SQUARE_PATTERN
-#define DP_PHY_SQUARE_PATTERN				0x249
-#endif
-#ifndef DP_128b_132b_SUPPORTED_LINK_RATES
-#define DP_128b_132b_SUPPORTED_LINK_RATES		0x2215
-#endif
-#ifndef DP_128b_132b_TRAINING_AUX_RD_INTERVAL
-#define DP_128b_132b_TRAINING_AUX_RD_INTERVAL		0x2216
-#endif
-#ifndef DP_CABLE_ATTRIBUTES_UPDATED_BY_DPRX
-#define DP_CABLE_ATTRIBUTES_UPDATED_BY_DPRX		0x2217
-#endif
-#ifndef DP_TEST_264BIT_CUSTOM_PATTERN_7_0
-#define DP_TEST_264BIT_CUSTOM_PATTERN_7_0		0X2230
-#endif
-#ifndef DP_TEST_264BIT_CUSTOM_PATTERN_263_256
-#define DP_TEST_264BIT_CUSTOM_PATTERN_263_256		0X2250
-#endif
-#ifndef DP_DSC_SUPPORT_AND_DECODER_COUNT
-#define DP_DSC_SUPPORT_AND_DECODER_COUNT		0x2260
-#endif
-#ifndef DP_DSC_MAX_SLICE_COUNT_AND_AGGREGATION_0
-#define DP_DSC_MAX_SLICE_COUNT_AND_AGGREGATION_0	0x2270
-#endif
-#ifndef DP_DSC_DECODER_0_MAXIMUM_SLICE_COUNT_MASK
-#define DP_DSC_DECODER_0_MAXIMUM_SLICE_COUNT_MASK	(1 << 0)
-#endif
-#ifndef DP_DSC_DECODER_0_AGGREGATION_SUPPORT_MASK
-#define DP_DSC_DECODER_0_AGGREGATION_SUPPORT_MASK	(0b111 << 1)
-#endif
-#ifndef DP_DSC_DECODER_0_AGGREGATION_SUPPORT_SHIFT
-#define DP_DSC_DECODER_0_AGGREGATION_SUPPORT_SHIFT	1
-#endif
-#ifndef DP_DSC_DECODER_COUNT_MASK
-#define DP_DSC_DECODER_COUNT_MASK			(0b111 << 5)
-#endif
-#ifndef DP_DSC_DECODER_COUNT_SHIFT
-#define DP_DSC_DECODER_COUNT_SHIFT			5
-#endif
-#ifndef DP_MAIN_LINK_CHANNEL_CODING_SET
-#define DP_MAIN_LINK_CHANNEL_CODING_SET			0x108
-#endif
-#ifndef DP_MAIN_LINK_CHANNEL_CODING_PHY_REPEATER
-#define DP_MAIN_LINK_CHANNEL_CODING_PHY_REPEATER	0xF0006
-#endif
-#ifndef DP_PHY_REPEATER_128b_132b_RATES
-#define DP_PHY_REPEATER_128b_132b_RATES			0xF0007
-#endif
-#ifndef DP_128b_132b_TRAINING_AUX_RD_INTERVAL_PHY_REPEATER1
-#define DP_128b_132b_TRAINING_AUX_RD_INTERVAL_PHY_REPEATER1	0xF0022
-#endif
-#ifndef DP_INTRA_HOP_AUX_REPLY_INDICATION
-#define DP_INTRA_HOP_AUX_REPLY_INDICATION		(1 << 3)
-/* TODO - Use DRM header to replace above once available */
-#endif // DP_INTRA_HOP_AUX_REPLY_INDICATION
 
 union dp_main_line_channel_coding_cap {
 	struct {
@@ -1010,6 +1018,15 @@ union dp_128b_132b_supported_lttpr_link_rates {
 	uint8_t raw;
 };
 
+union dp_alpm_lttpr_cap {
+	struct {
+		uint8_t AUX_LESS_ALPM_SUPPORTED	:1;
+		uint8_t ASSR_SUPPORTED			:1;
+		uint8_t RESERVED			:6;
+	} bits;
+	uint8_t raw;
+};
+
 union dp_sink_video_fallback_formats {
 	struct {
 		uint8_t dp_1024x768_60Hz_24bpp_support	:1;
@@ -1018,6 +1035,29 @@ union dp_sink_video_fallback_formats {
 		uint8_t RESERVED			:5;
 	} bits;
 	uint8_t raw;
+};
+
+union dp_receive_port0_cap {
+	struct {
+		uint8_t RESERVED					:1;
+		uint8_t LOCAL_EDID_PRESENT			:1;
+		uint8_t ASSOCIATED_TO_PRECEDING_PORT:1;
+		uint8_t HBLANK_EXPANSION_CAPABLE	:1;
+		uint8_t BUFFER_SIZE_UNIT			:1;
+		uint8_t BUFFER_SIZE_PER_PORT		:1;
+		uint8_t HBLANK_REDUCTION_CAPABLE	:1;
+		uint8_t RESERVED2:1;
+		uint8_t BUFFER_SIZE:8;
+	} bits;
+	uint8_t raw[2];
+};
+
+union dpcd_max_uncompressed_pixel_rate_cap {
+	struct {
+		uint16_t max_uncompressed_pixel_rate_cap	:15;
+		uint16_t valid			:1;
+	} bits;
+	uint8_t raw[2];
 };
 
 union dp_fec_capability1 {
@@ -1080,10 +1120,11 @@ union dp_128b_132b_training_aux_rd_interval {
 
 union edp_alpm_caps {
 	struct {
-		uint8_t AUX_WAKE_ALPM_CAP       :1;
-		uint8_t PM_STATE_2A_SUPPORT     :1;
-		uint8_t AUX_LESS_ALPM_CAP       :1;
-		uint8_t RESERVED                :5;
+		uint8_t AUX_WAKE_ALPM_CAP                               :1;
+		uint8_t PM_STATE_2A_SUPPORT                             :1;
+		uint8_t AUX_LESS_ALPM_CAP                               :1;
+		uint8_t AUX_LESS_ALPM_ML_PHY_SLEEP_STATUS_SUPPORTED     :1;
+		uint8_t RESERVED                                        :4;
 	} bits;
 	uint8_t raw;
 };
@@ -1106,5 +1147,454 @@ struct edp_psr_info {
 	uint8_t psr2_su_y_granularity_cap;
 	uint8_t force_psrsu_cap;
 };
+
+struct replay_info {
+	uint8_t pixel_deviation_per_line;
+	uint8_t max_deviation_line;
+};
+
+struct dprx_states {
+	bool cable_id_written;
+};
+
+union dpcd_panel_replay_capability_supported {
+	struct {
+		unsigned char PANEL_REPLAY_SUPPORT          :1;
+		unsigned char SELECTIVE_UPDATE_SUPPORT      :1;
+		unsigned char EARLY_TRANSPORT_SUPPORT       :1;
+		unsigned char RESERVED				        :5;
+	} bits;
+	unsigned char raw;
+};
+
+union dpcd_panel_replay_capability {
+	struct {
+		unsigned char RESERVED								:2;
+		unsigned char DSC_DECODE_NOT_SUPPORTED				:1;
+		unsigned char ASYNC_VIDEO_TIMING_NOT_SUPPORTED		:1;
+		unsigned char DSC_CRC_OF_MULTI_SU_SUPPORTED			:1;
+		unsigned char PR_SU_GRANULARITY_NEEDED				:1;
+		unsigned char SU_Y_GRANULARITY_EXT_CAP_SUPPORTED	:1;
+		unsigned char LINK_OFF_SUPPORTED_IN_PR_ACTIVE		:1;
+	} bits;
+	unsigned char raw;
+};
+
+struct dpcd_panel_replay_selective_update_info {
+	uint16_t pr_su_x_granularity;
+	uint8_t pr_su_y_granularity;
+	uint16_t pr_su_y_granularity_extended_caps;
+};
+
+enum dpcd_downstream_port_max_bpc {
+	DOWN_STREAM_MAX_8BPC = 0,
+	DOWN_STREAM_MAX_10BPC,
+	DOWN_STREAM_MAX_12BPC,
+	DOWN_STREAM_MAX_16BPC
+};
+
+enum link_training_offset {
+	DPRX                = 0,
+	LTTPR_PHY_REPEATER1 = 1,
+	LTTPR_PHY_REPEATER2 = 2,
+	LTTPR_PHY_REPEATER3 = 3,
+	LTTPR_PHY_REPEATER4 = 4,
+	LTTPR_PHY_REPEATER5 = 5,
+	LTTPR_PHY_REPEATER6 = 6,
+	LTTPR_PHY_REPEATER7 = 7,
+	LTTPR_PHY_REPEATER8 = 8
+};
+
+#define MAX_REPEATER_CNT 8
+
+struct dc_lttpr_caps {
+	union dpcd_rev revision;
+	uint8_t mode;
+	uint8_t max_lane_count;
+	uint8_t max_link_rate;
+	uint8_t phy_repeater_cnt;
+	uint8_t max_ext_timeout;
+	union dp_main_link_channel_coding_lttpr_cap main_link_channel_coding;
+	union dp_128b_132b_supported_lttpr_link_rates supported_128b_132b_rates;
+	union dp_alpm_lttpr_cap alpm;
+	uint8_t aux_rd_interval[MAX_REPEATER_CNT - 1];
+	uint8_t lttpr_ieee_oui[3]; // Always read from closest LTTPR to host
+	uint8_t lttpr_device_id[6]; // Always read from closest LTTPR to host
+};
+
+struct dc_dongle_dfp_cap_ext {
+	bool supported;
+	uint16_t max_pixel_rate_in_mps;
+	uint16_t max_video_h_active_width;
+	uint16_t max_video_v_active_height;
+	struct dp_encoding_format_caps encoding_format_caps;
+	struct dp_color_depth_caps rgb_color_depth_caps;
+	struct dp_color_depth_caps ycbcr444_color_depth_caps;
+	struct dp_color_depth_caps ycbcr422_color_depth_caps;
+	struct dp_color_depth_caps ycbcr420_color_depth_caps;
+};
+
+struct dc_dongle_caps {
+	/* dongle type (DP converter, CV smart dongle) */
+	enum display_dongle_type dongle_type;
+	bool extendedCapValid;
+	/* If dongle_type == DISPLAY_DONGLE_DP_HDMI_CONVERTER,
+	indicates 'Frame Sequential-to-lllFrame Pack' conversion capability.*/
+	bool is_dp_hdmi_s3d_converter;
+	bool is_dp_hdmi_ycbcr422_pass_through;
+	bool is_dp_hdmi_ycbcr420_pass_through;
+	bool is_dp_hdmi_ycbcr422_converter;
+	bool is_dp_hdmi_ycbcr420_converter;
+	uint32_t dp_hdmi_max_bpc;
+	uint32_t dp_hdmi_max_pixel_clk_in_khz;
+	uint32_t dp_hdmi_frl_max_link_bw_in_kbps;
+	uint32_t dp_hdmi_regulated_autonomous_mode_support;
+	struct dc_dongle_dfp_cap_ext dfp_cap_ext;
+};
+
+struct dpcd_caps {
+	union dpcd_rev dpcd_rev;
+	union max_lane_count max_ln_count;
+	union max_down_spread max_down_spread;
+	union dprx_feature dprx_feature;
+
+	/* valid only for eDP v1.4 or higher*/
+	uint8_t edp_supported_link_rates_count;
+	enum dc_link_rate edp_supported_link_rates[8];
+
+	/* dongle type (DP converter, CV smart dongle) */
+	enum display_dongle_type dongle_type;
+	bool is_dongle_type_one;
+	/* branch device or sink device */
+	bool is_branch_dev;
+	/* Dongle's downstream count. */
+	union sink_count sink_count;
+	bool is_mst_capable;
+	/* If dongle_type == DISPLAY_DONGLE_DP_HDMI_CONVERTER,
+	indicates 'Frame Sequential-to-lllFrame Pack' conversion capability.*/
+	struct dc_dongle_caps dongle_caps;
+
+	uint32_t sink_dev_id;
+	int8_t sink_dev_id_str[6];
+	int8_t sink_hw_revision;
+	int8_t sink_fw_revision[2];
+
+	uint32_t branch_dev_id;
+	int8_t branch_dev_name[6];
+	int8_t branch_hw_revision;
+	int8_t branch_fw_revision[2];
+	int8_t branch_vendor_specific_data[4];
+
+	bool allow_invalid_MSA_timing_param;
+	bool panel_mode_edp;
+	bool dpcd_display_control_capable;
+	bool ext_receiver_cap_field_present;
+	bool set_power_state_capable_edp;
+	bool dynamic_backlight_capable_edp;
+	union dpcd_fec_capability fec_cap;
+	struct dpcd_dsc_capabilities dsc_caps;
+	struct dc_lttpr_caps lttpr_caps;
+	struct adaptive_sync_caps adaptive_sync_caps;
+	struct dpcd_usb4_dp_tunneling_info usb4_dp_tun_info;
+	union dpcd_max_uncompressed_pixel_rate_cap max_uncompressed_pixel_rate_cap;
+
+	union dp_128b_132b_supported_link_rates dp_128b_132b_supported_link_rates;
+	union dp_main_line_channel_coding_cap channel_coding_cap;
+	union dp_sink_video_fallback_formats fallback_formats;
+	union dp_fec_capability1 fec_cap1;
+	bool panel_luminance_control;
+	union dp_cable_id cable_id;
+	uint8_t edp_rev;
+	union edp_alpm_caps alpm_caps;
+	struct edp_psr_info psr_info;
+
+	struct replay_info pr_info;
+	union dpcd_panel_replay_capability_supported vesa_replay_caps_supported;
+	union dpcd_panel_replay_capability vesa_replay_caps;
+	struct dpcd_panel_replay_selective_update_info vesa_replay_su_info;
+	uint16_t edp_oled_emission_rate;
+	union dp_receive_port0_cap receive_port0_cap;
+	/* Indicates the number of SST links supported by MSO (Multi-Stream Output) */
+	uint8_t mso_cap_sst_links_supported;
+	uint8_t dp_edp_general_cap_2;
+	uint16_t drr_granularity;
+};
+
+union dpcd_sink_ext_caps {
+	struct {
+		/* 0 - Sink supports backlight adjust via PWM during SDR/HDR mode
+		 * 1 - Sink supports backlight adjust via AUX during SDR/HDR mode.
+		 */
+		uint8_t sdr_aux_backlight_control : 1;
+		uint8_t hdr_aux_backlight_control : 1;
+		uint8_t reserved_1 : 2;
+		uint8_t oled : 1;
+		uint8_t reserved_2 : 1;
+		uint8_t miniled : 1;
+		uint8_t emission_output : 1;
+	} bits;
+	uint8_t raw;
+};
+
+enum dc_link_fec_state {
+	dc_link_fec_not_ready,
+	dc_link_fec_ready,
+	dc_link_fec_enabled
+};
+
+union dpcd_psr_configuration {
+	struct {
+		unsigned char ENABLE                    : 1;
+		unsigned char TRANSMITTER_ACTIVE_IN_PSR : 1;
+		unsigned char CRC_VERIFICATION          : 1;
+		unsigned char FRAME_CAPTURE_INDICATION  : 1;
+		/* For eDP 1.4, PSR v2*/
+		unsigned char LINE_CAPTURE_INDICATION   : 1;
+		/* For eDP 1.4, PSR v2*/
+		unsigned char IRQ_HPD_WITH_CRC_ERROR    : 1;
+		unsigned char ENABLE_PSR2               : 1;
+		unsigned char EARLY_TRANSPORT_ENABLE    : 1;
+	} bits;
+	unsigned char raw;
+};
+
+union replay_enable_and_configuration {
+	struct {
+		unsigned char FREESYNC_PANEL_REPLAY_MODE              :1;
+		unsigned char TIMING_DESYNC_ERROR_VERIFICATION        :1;
+		unsigned char STATE_TRANSITION_ERROR_DETECTION        :1;
+		unsigned char RESERVED                                :5;
+	} bits;
+	unsigned char raw;
+};
+
+union dpcd_replay_configuration {
+	struct {
+		unsigned char STATE_TRANSITION_ERROR_STATUS    : 1;
+		unsigned char DESYNC_ERROR_STATUS              : 1;
+		unsigned char SINK_DEVICE_REPLAY_STATUS        : 3;
+		unsigned char SINK_FRAME_LOCKED                : 2;
+		unsigned char RESERVED                         : 1;
+	} bits;
+	unsigned char raw;
+};
+
+union panel_replay_enable_and_configuration_1 {
+	struct {
+		unsigned char PANEL_REPLAY_ENABLE                     :1;
+		unsigned char PANEL_REPLAY_CRC_ENABLE                 :1;
+		unsigned char IRQ_HPD_ASSDP_MISSING                   :1;
+		unsigned char IRQ_HPD_VSCSDP_UNCORRECTABLE_ERROR      :1;
+		unsigned char IRQ_HPD_RFB_ERROR                       :1;
+		unsigned char IRQ_HPD_ACTIVE_FRAME_CRC_ERROR          :1;
+		unsigned char PANEL_REPLAY_SELECTIVE_UPDATE_ENABLE    :1;
+		unsigned char PANEL_REPLAY_EARLY_TRANSPORT_ENABLE     :1;
+	} bits;
+	unsigned char raw;
+};
+
+union panel_replay_enable_and_configuration_2 {
+	struct {
+		unsigned char SINK_REFRESH_RATE_UNLOCK_GRANTED        :1;
+		unsigned char RESERVED                                :1;
+		unsigned char SU_Y_GRANULARITY_EXT_VALUE_ENABLED      :1;
+		unsigned char SU_Y_GRANULARITY_EXT_VALUE              :4;
+		unsigned char SU_REGION_SCAN_LINE_CAPTURE_INDICATION  :1;
+	} bits;
+	unsigned char raw;
+};
+
+union dpcd_alpm_configuration {
+	struct {
+		unsigned char ENABLE                    : 1;
+		unsigned char IRQ_HPD_ENABLE            : 1;
+		unsigned char ALPM_MODE_SEL             : 1;
+		unsigned char ACDS_PERIOD_DURATION      : 1;
+		unsigned char RESERVED                  : 4;
+	} bits;
+	unsigned char raw;
+};
+
+union dpcd_sink_active_vtotal_control_mode {
+	struct {
+		unsigned char ENABLE                    : 1;
+		unsigned char RESERVED                  : 7;
+	} bits;
+	unsigned char raw;
+};
+
+union pr_error_status {
+	struct {
+		unsigned char LINK_CRC_ERROR        :1;
+		unsigned char RFB_STORAGE_ERROR     :1;
+		unsigned char VSC_SDP_ERROR         :1;
+		unsigned char ASSDP_MISSING_ERROR   :1;
+		unsigned char RESERVED              :4;
+	} bits;
+	unsigned char raw;
+};
+
+union psr_error_status {
+	struct {
+		unsigned char LINK_CRC_ERROR        :1;
+		unsigned char RFB_STORAGE_ERROR     :1;
+		unsigned char VSC_SDP_ERROR         :1;
+		unsigned char RESERVED              :5;
+	} bits;
+	unsigned char raw;
+};
+
+union psr_sink_psr_status {
+	struct {
+	unsigned char SINK_SELF_REFRESH_STATUS  :3;
+	unsigned char RESERVED                  :5;
+	} bits;
+	unsigned char raw;
+};
+
+struct edp_trace_power_timestamps {
+	uint64_t poweroff;
+	uint64_t poweron;
+};
+
+struct dp_trace_lt_counts {
+	unsigned int total;
+	unsigned int fail;
+};
+
+enum link_training_result {
+	LINK_TRAINING_SUCCESS,
+	LINK_TRAINING_CR_FAIL_LANE0,
+	LINK_TRAINING_CR_FAIL_LANE1,
+	LINK_TRAINING_CR_FAIL_LANE23,
+	/* CR DONE bit is cleared during EQ step */
+	LINK_TRAINING_EQ_FAIL_CR,
+	/* CR DONE bit is cleared but LANE0_CR_DONE is set during EQ step */
+	LINK_TRAINING_EQ_FAIL_CR_PARTIAL,
+	/* other failure during EQ step */
+	LINK_TRAINING_EQ_FAIL_EQ,
+	LINK_TRAINING_LQA_FAIL,
+	/* one of the CR,EQ or symbol lock is dropped */
+	LINK_TRAINING_LINK_LOSS,
+	/* Abort link training (because sink unplugged) */
+	LINK_TRAINING_ABORT,
+	DP_128b_132b_LT_FAILED,
+	DP_128b_132b_MAX_LOOP_COUNT_REACHED,
+	DP_128b_132b_CHANNEL_EQ_DONE_TIMEOUT,
+	DP_128b_132b_CDS_DONE_TIMEOUT,
+};
+
+struct dp_trace_lt {
+	struct dp_trace_lt_counts counts;
+	struct dp_trace_timestamps {
+		unsigned long long start;
+		unsigned long long end;
+	} timestamps;
+	enum link_training_result result;
+	bool is_logged;
+};
+
+struct dp_trace {
+	struct dp_trace_lt detect_lt_trace;
+	struct dp_trace_lt commit_lt_trace;
+	unsigned int link_loss_count;
+	bool is_initialized;
+	struct edp_trace_power_timestamps edp_trace_power_timestamps;
+};
+
+/* TODO - This is a temporary location for any new DPCD definitions.
+ * We should move these to drm_dp header.
+ */
+#ifndef DP_LINK_SQUARE_PATTERN
+#define DP_LINK_SQUARE_PATTERN				0x10F
+#endif
+#ifndef DP_CABLE_ATTRIBUTES_UPDATED_BY_DPRX
+#define DP_CABLE_ATTRIBUTES_UPDATED_BY_DPRX		0x2217
+#endif
+#ifndef DP_CABLE_ATTRIBUTES_UPDATED_BY_DPTX
+#define DP_CABLE_ATTRIBUTES_UPDATED_BY_DPTX		0x110
+#endif
+#ifndef DPCD_MAX_UNCOMPRESSED_PIXEL_RATE_CAP
+#define DPCD_MAX_UNCOMPRESSED_PIXEL_RATE_CAP    0x221c
+#endif
+#ifndef DP_LTTPR_ALPM_CAPABILITIES
+#define DP_LTTPR_ALPM_CAPABILITIES              0xF0009
+#endif
+#ifndef DP_REGULATED_AUTONOMOUS_MODE_SUPPORTED_AND_HDMI_LINK_TRAINING_STATUS
+#define DP_REGULATED_AUTONOMOUS_MODE_SUPPORTED_AND_HDMI_LINK_TRAINING_STATUS	0x303C
+#endif
+#ifndef DP_REPEATER_CONFIGURATION_AND_STATUS_SIZE
+#define DP_REPEATER_CONFIGURATION_AND_STATUS_SIZE	0x50
+#endif
+#ifndef DP_TUNNELING_IRQ
+#define DP_TUNNELING_IRQ				(1 << 5)
+#endif
+#ifndef DP_BRANCH_VENDOR_SPECIFIC_START
+#define DP_BRANCH_VENDOR_SPECIFIC_START     0x50C
+#endif
+#ifndef DP_LTTPR_IEEE_OUI
+#define DP_LTTPR_IEEE_OUI 0xF003D
+#endif
+#ifndef DP_LTTPR_DEVICE_ID
+#define DP_LTTPR_DEVICE_ID 0xF0040
+#endif
+/** USB4 DPCD BW Allocation Registers Chapter 10.7 **/
+#ifndef DP_TUNNELING_CAPABILITIES
+#define DP_TUNNELING_CAPABILITIES			0xE000D /* 1.4a */
+#endif
+#ifndef USB4_DRIVER_ID
+#define USB4_DRIVER_ID					0xE000F /* 1.4a */
+#endif
+#ifndef USB4_DRIVER_BW_CAPABILITY
+#define USB4_DRIVER_BW_CAPABILITY			0xE0020 /* 1.4a */
+#endif
+#ifndef DP_IN_ADAPTER_TUNNEL_INFO
+#define DP_IN_ADAPTER_TUNNEL_INFO			0xE0021 /* 1.4a */
+#endif
+#ifndef DP_BW_GRANULALITY
+#define DP_BW_GRANULALITY				0xE0022 /* 1.4a */
+#endif
+#ifndef ESTIMATED_BW
+#define ESTIMATED_BW					0xE0023 /* 1.4a */
+#endif
+#ifndef ALLOCATED_BW
+#define ALLOCATED_BW					0xE0024 /* 1.4a */
+#endif
+#ifndef DP_TUNNELING_STATUS
+#define DP_TUNNELING_STATUS				0xE0025 /* 1.4a */
+#endif
+#ifndef DP_TUNNELING_MAX_LINK_RATE
+#define DP_TUNNELING_MAX_LINK_RATE			0xE0028 /* 1.4a */
+#endif
+#ifndef DP_TUNNELING_MAX_LANE_COUNT
+#define DP_TUNNELING_MAX_LANE_COUNT			0xE0029 /* 1.4a */
+#endif
+#ifndef DPTX_BW_ALLOCATION_MODE_CONTROL
+#define DPTX_BW_ALLOCATION_MODE_CONTROL			0xE0030 /* 1.4a */
+#endif
+#ifndef REQUESTED_BW
+#define REQUESTED_BW					0xE0031 /* 1.4a */
+#endif
+# ifndef DP_TUNNELING_BW_ALLOC_BITS_MASK
+# define DP_TUNNELING_BW_ALLOC_BITS_MASK		(0x0F << 0)
+# endif
+# ifndef DP_TUNNELING_BW_REQUEST_FAILED
+# define DP_TUNNELING_BW_REQUEST_FAILED			(1 << 0)
+# endif
+# ifndef DP_TUNNELING_BW_REQUEST_SUCCEEDED
+# define DP_TUNNELING_BW_REQUEST_SUCCEEDED		(1 << 1)
+# endif
+# ifndef DP_TUNNELING_ESTIMATED_BW_CHANGED
+# define DP_TUNNELING_ESTIMATED_BW_CHANGED		(1 << 2)
+# endif
+# ifndef DP_TUNNELING_BW_ALLOC_CAP_CHANGED
+# define DP_TUNNELING_BW_ALLOC_CAP_CHANGED		(1 << 3)
+# endif
+# ifndef DPTX_BW_ALLOC_UNMASK_IRQ
+# define DPTX_BW_ALLOC_UNMASK_IRQ			(1 << 6)
+# endif
+# ifndef DPTX_BW_ALLOC_MODE_ENABLE
+# define DPTX_BW_ALLOC_MODE_ENABLE			(1 << 7)
+# endif
 
 #endif /* DC_DP_TYPES_H */

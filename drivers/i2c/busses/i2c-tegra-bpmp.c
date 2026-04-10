@@ -12,7 +12,7 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 
@@ -275,8 +275,8 @@ static u32 tegra_bpmp_i2c_func(struct i2c_adapter *adapter)
 }
 
 static const struct i2c_algorithm tegra_bpmp_i2c_algo = {
-	.master_xfer = tegra_bpmp_i2c_xfer,
-	.master_xfer_atomic = tegra_bpmp_i2c_xfer_atomic,
+	.xfer = tegra_bpmp_i2c_xfer,
+	.xfer_atomic = tegra_bpmp_i2c_xfer_atomic,
 	.functionality = tegra_bpmp_i2c_func,
 };
 
@@ -305,7 +305,7 @@ static int tegra_bpmp_i2c_probe(struct platform_device *pdev)
 
 	i2c_set_adapdata(&i2c->adapter, i2c);
 	i2c->adapter.owner = THIS_MODULE;
-	strlcpy(i2c->adapter.name, "Tegra BPMP I2C adapter",
+	strscpy(i2c->adapter.name, "Tegra BPMP I2C adapter",
 		sizeof(i2c->adapter.name));
 	i2c->adapter.algo = &tegra_bpmp_i2c_algo;
 	i2c->adapter.dev.parent = &pdev->dev;
@@ -316,13 +316,11 @@ static int tegra_bpmp_i2c_probe(struct platform_device *pdev)
 	return i2c_add_adapter(&i2c->adapter);
 }
 
-static int tegra_bpmp_i2c_remove(struct platform_device *pdev)
+static void tegra_bpmp_i2c_remove(struct platform_device *pdev)
 {
 	struct tegra_bpmp_i2c *i2c = platform_get_drvdata(pdev);
 
 	i2c_del_adapter(&i2c->adapter);
-
-	return 0;
 }
 
 static const struct of_device_id tegra_bpmp_i2c_of_match[] = {

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <internal/lib.h>
+#include <inttypes.h>
 #include <subcmd/parse-options.h>
 #include <api/fd/array.h>
 #include <api/fs/fs.h>
@@ -90,7 +91,7 @@ struct daemon {
 	char			*base;
 	struct list_head	 sessions;
 	FILE			*out;
-	char			 perf[PATH_MAX];
+	char			*perf;
 	int			 signal_fd;
 	time_t			 start;
 };
@@ -100,12 +101,12 @@ static struct daemon __daemon = {
 };
 
 static const char * const daemon_usage[] = {
-	"perf daemon start [<options>]",
+	"perf daemon {start|signal|stop|ping} [<options>]",
 	"perf daemon [<options>]",
 	NULL
 };
 
-static bool done;
+static volatile sig_atomic_t done;
 
 static void sig_handler(int sig __maybe_unused)
 {
@@ -193,7 +194,7 @@ static int session_config(struct daemon *daemon, const char *var, const char *va
 
 		if (!same) {
 			if (session->run) {
-				free(session->run);
+				zfree(&session->run);
 				pr_debug("reconfig: session %s is changed\n", name);
 			}
 
@@ -264,8 +265,7 @@ static int check_base(struct daemon *daemon)
 			       daemon->base);
 			return -EACCES;
 		default:
-			pr_err("failed: can't access base '%s': %s\n",
-			       daemon->base, strerror(errno));
+			pr_err("failed: can't access base '%s': %m\n", daemon->base);
 			return -errno;
 		}
 	}
@@ -523,7 +523,7 @@ static int daemon_session__control(struct daemon_session *session,
 		  session->base, SESSION_CONTROL);
 
 	control = open(control_path, O_WRONLY|O_NONBLOCK);
-	if (!control)
+	if (control < 0)
 		return -1;
 
 	if (do_ack) {
@@ -532,7 +532,7 @@ static int daemon_session__control(struct daemon_session *session,
 			  session->base, SESSION_ACK);
 
 		ack = open(ack_path, O_RDONLY, O_NONBLOCK);
-		if (!ack) {
+		if (ack < 0) {
 			close(control);
 			return -1;
 		}
@@ -543,8 +543,7 @@ static int daemon_session__control(struct daemon_session *session,
 
 	err = writen(control, msg, len);
 	if (err != len) {
-		pr_err("failed: write to control pipe: %d (%s)\n",
-		       errno, control_path);
+		pr_err("failed: write to control pipe: %m (%s)\n", control_path);
 		goto out;
 	}
 
@@ -585,7 +584,7 @@ static int setup_server_socket(struct daemon *daemon)
 	int fd = socket(AF_UNIX, SOCK_STREAM, 0);
 
 	if (fd < 0) {
-		fprintf(stderr, "socket: %s\n", strerror(errno));
+		fprintf(stderr, "socket: %m\n");
 		return -1;
 	}
 
@@ -688,9 +687,9 @@ static int cmd_session_list(struct daemon *daemon, union cmd *cmd, FILE *out)
 			/* lock */
 			csv_sep, daemon->base, "lock");
 
-		fprintf(out, "%c%lu",
+		fprintf(out, "%c%" PRIu64,
 			/* session up time */
-			csv_sep, (curr - daemon->start) / 60);
+			csv_sep, (uint64_t)((curr - daemon->start) / 60));
 
 		fprintf(out, "\n");
 	} else {
@@ -700,8 +699,8 @@ static int cmd_session_list(struct daemon *daemon, union cmd *cmd, FILE *out)
 				daemon->base, SESSION_OUTPUT);
 			fprintf(out, "  lock:    %s/lock\n",
 				daemon->base);
-			fprintf(out, "  up:      %lu minutes\n",
-				(curr - daemon->start) / 60);
+			fprintf(out, "  up:      %" PRIu64 " minutes\n",
+				(uint64_t)((curr - daemon->start) / 60));
 		}
 	}
 
@@ -727,9 +726,9 @@ static int cmd_session_list(struct daemon *daemon, union cmd *cmd, FILE *out)
 				/* session ack */
 				csv_sep, session->base, SESSION_ACK);
 
-			fprintf(out, "%c%lu",
+			fprintf(out, "%c%" PRIu64,
 				/* session up time */
-				csv_sep, (curr - session->start) / 60);
+				csv_sep, (uint64_t)((curr - session->start) / 60));
 
 			fprintf(out, "\n");
 		} else {
@@ -745,8 +744,8 @@ static int cmd_session_list(struct daemon *daemon, union cmd *cmd, FILE *out)
 				session->base, SESSION_CONTROL);
 			fprintf(out, "  ack:     %s/%s\n",
 				session->base, SESSION_ACK);
-			fprintf(out, "  up:      %lu minutes\n",
-				(curr - session->start) / 60);
+			fprintf(out, "  up:      %" PRIu64 " minutes\n",
+				(uint64_t)((curr - session->start) / 60));
 		}
 	}
 
@@ -924,9 +923,9 @@ static void daemon__signal(struct daemon *daemon, int sig)
 
 static void daemon_session__delete(struct daemon_session *session)
 {
-	free(session->base);
-	free(session->name);
-	free(session->run);
+	zfree(&session->base);
+	zfree(&session->name);
+	zfree(&session->run);
 	free(session);
 }
 
@@ -975,9 +974,9 @@ static void daemon__exit(struct daemon *daemon)
 	list_for_each_entry_safe(session, h, &daemon->sessions, list)
 		daemon_session__remove(session);
 
-	free(daemon->config_real);
-	free(daemon->config_base);
-	free(daemon->base);
+	zfree(&daemon->config_real);
+	zfree(&daemon->config_base);
+	zfree(&daemon->base);
 }
 
 static int daemon__reconfig(struct daemon *daemon)
@@ -1433,7 +1432,7 @@ static int __cmd_signal(struct daemon *daemon, struct option parent_options[],
 	}
 
 	memset(&cmd, 0, sizeof(cmd));
-	cmd.signal.cmd = CMD_SIGNAL,
+	cmd.signal.cmd = CMD_SIGNAL;
 	cmd.signal.sig = SIGUSR2;
 	strncpy(cmd.signal.name, name, sizeof(cmd.signal.name) - 1);
 
@@ -1490,6 +1489,14 @@ static int __cmd_ping(struct daemon *daemon, struct option parent_options[],
 	return send_cmd(daemon, &cmd);
 }
 
+static char *alloc_perf_exe_path(void)
+{
+	char path[PATH_MAX];
+
+	perf_exe(path, sizeof(path));
+	return strdup(path);
+}
+
 int cmd_daemon(int argc, const char **argv)
 {
 	struct option daemon_options[] = {
@@ -1502,8 +1509,12 @@ int cmd_daemon(int argc, const char **argv)
 			"field separator", "print counts with custom separator", ","),
 		OPT_END()
 	};
+	int ret = -1;
 
-	perf_exe(__daemon.perf, sizeof(__daemon.perf));
+	__daemon.perf = alloc_perf_exe_path();
+	if (!__daemon.perf)
+		return -ENOMEM;
+
 	__daemon.out = stdout;
 
 	argc = parse_options(argc, argv, daemon_options, daemon_usage,
@@ -1511,22 +1522,22 @@ int cmd_daemon(int argc, const char **argv)
 
 	if (argc) {
 		if (!strcmp(argv[0], "start"))
-			return __cmd_start(&__daemon, daemon_options, argc, argv);
-		if (!strcmp(argv[0], "signal"))
-			return __cmd_signal(&__daemon, daemon_options, argc, argv);
+			ret = __cmd_start(&__daemon, daemon_options, argc, argv);
+		else if (!strcmp(argv[0], "signal"))
+			ret = __cmd_signal(&__daemon, daemon_options, argc, argv);
 		else if (!strcmp(argv[0], "stop"))
-			return __cmd_stop(&__daemon, daemon_options, argc, argv);
+			ret = __cmd_stop(&__daemon, daemon_options, argc, argv);
 		else if (!strcmp(argv[0], "ping"))
-			return __cmd_ping(&__daemon, daemon_options, argc, argv);
-
-		pr_err("failed: unknown command '%s'\n", argv[0]);
-		return -1;
+			ret = __cmd_ping(&__daemon, daemon_options, argc, argv);
+		else
+			pr_err("failed: unknown command '%s'\n", argv[0]);
+	} else {
+		ret = setup_config(&__daemon);
+		if (ret)
+			pr_err("failed: config not found\n");
+		else
+			ret = send_cmd_list(&__daemon);
 	}
-
-	if (setup_config(&__daemon)) {
-		pr_err("failed: config not found\n");
-		return -1;
-	}
-
-	return send_cmd_list(&__daemon);
+	zfree(&__daemon.perf);
+	return ret;
 }

@@ -339,7 +339,7 @@ struct dvb_frontend *horus3a_attach(struct dvb_frontend *fe,
 	u8 buf[3], val;
 	struct horus3a_priv *priv = NULL;
 
-	priv = kzalloc(sizeof(struct horus3a_priv), GFP_KERNEL);
+	priv = kzalloc_obj(struct horus3a_priv);
 	if (priv == NULL)
 		return NULL;
 	priv->i2c_address = (config->i2c_address >> 1);
@@ -395,7 +395,7 @@ struct dvb_frontend *horus3a_attach(struct dvb_frontend *fe,
 		priv->i2c_address, priv->i2c);
 	return fe;
 }
-EXPORT_SYMBOL(horus3a_attach);
+EXPORT_SYMBOL_GPL(horus3a_attach);
 
 MODULE_DESCRIPTION("Sony HORUS3A satellite tuner driver");
 MODULE_AUTHOR("Sergey Kozlov <serjk@netup.ru>");

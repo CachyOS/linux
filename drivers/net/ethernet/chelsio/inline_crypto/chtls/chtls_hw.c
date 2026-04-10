@@ -106,15 +106,6 @@ void chtls_set_tcb_field_rpl_skb(struct sock *sk, u16 word,
 	send_or_defer(sk, tcp_sk(sk), skb, through_l2t);
 }
 
-/*
- * Set one of the t_flags bits in the TCB.
- */
-int chtls_set_tcb_tflag(struct sock *sk, unsigned int bit_pos, int val)
-{
-	return chtls_set_tcb_field(sk, 1, 1ULL << bit_pos,
-				   (u64)val << bit_pos);
-}
-
 static int chtls_set_tcb_keyid(struct sock *sk, int keyid)
 {
 	return chtls_set_tcb_field(sk, 31, 0xFFFFFFFFULL, keyid);
@@ -256,7 +247,7 @@ static int chtls_key_info(struct chtls_sock *csk,
 	unsigned char *key_p, *salt;
 	unsigned char ghash_h[AEAD_H_SIZE];
 	int ck_size, key_ctx_size, kctx_mackey_size, salt_size;
-	struct crypto_aes_ctx aes;
+	struct aes_enckey aes;
 	int ret;
 
 	key_ctx_size = sizeof(struct _key_ctx) +
@@ -300,7 +291,7 @@ static int chtls_key_info(struct chtls_sock *csk,
 	/* Calculate the H = CIPH(K, 0 repeated 16 times).
 	 * It will go in key context
 	 */
-	ret = aes_expandkey(&aes, key, keylen);
+	ret = aes_prepareenckey(&aes, key, keylen);
 	if (ret)
 		return ret;
 

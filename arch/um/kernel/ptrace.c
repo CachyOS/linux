@@ -9,10 +9,12 @@
 #include <linux/uaccess.h>
 #include <asm/ptrace-abi.h>
 
+#define CREATE_TRACE_POINTS
+#include <trace/events/syscalls.h>
+
 void user_enable_single_step(struct task_struct *child)
 {
 	set_tsk_thread_flag(child, TIF_SINGLESTEP);
-	child->thread.singlestep_syscall = 0;
 
 #ifdef SUBARCH_SET_SINGLESTEPPING
 	SUBARCH_SET_SINGLESTEPPING(child, 1);
@@ -22,7 +24,6 @@ void user_enable_single_step(struct task_struct *child)
 void user_disable_single_step(struct task_struct *child)
 {
 	clear_tsk_thread_flag(child, TIF_SINGLESTEP);
-	child->thread.singlestep_syscall = 0;
 
 #ifdef SUBARCH_SET_SINGLESTEPPING
 	SUBARCH_SET_SINGLESTEPPING(child, 0);
@@ -36,9 +37,6 @@ void ptrace_disable(struct task_struct *child)
 {
 	user_disable_single_step(child);
 }
-
-extern int peek_user(struct task_struct * child, long addr, long data);
-extern int poke_user(struct task_struct * child, long addr, long data);
 
 long arch_ptrace(struct task_struct *child, long request,
 		 unsigned long addr, unsigned long data)
@@ -131,6 +129,9 @@ int syscall_trace_enter(struct pt_regs *regs)
 			    UPT_SYSCALL_ARG3(&regs->regs),
 			    UPT_SYSCALL_ARG4(&regs->regs));
 
+	if (test_thread_flag(TIF_SYSCALL_TRACEPOINT))
+		trace_sys_enter(regs, UPT_SYSCALL_NR(&regs->regs));
+
 	if (!test_thread_flag(TIF_SYSCALL_TRACE))
 		return 0;
 
@@ -146,6 +147,9 @@ void syscall_trace_leave(struct pt_regs *regs)
 	/* Fake a debug trap */
 	if (test_thread_flag(TIF_SINGLESTEP))
 		send_sigtrap(&regs->regs, 0);
+
+	if (test_thread_flag(TIF_SYSCALL_TRACEPOINT))
+		trace_sys_exit(regs, PT_REGS_SYSCALL_RET(regs));
 
 	if (!test_thread_flag(TIF_SYSCALL_TRACE))
 		return;

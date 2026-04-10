@@ -51,10 +51,10 @@ struct amdgpu_gart {
 	uint64_t			gart_pte_flags;
 };
 
+int amdgpu_gart_table_ram_alloc(struct amdgpu_device *adev);
+void amdgpu_gart_table_ram_free(struct amdgpu_device *adev);
 int amdgpu_gart_table_vram_alloc(struct amdgpu_device *adev);
 void amdgpu_gart_table_vram_free(struct amdgpu_device *adev);
-int amdgpu_gart_table_vram_pin(struct amdgpu_device *adev);
-void amdgpu_gart_table_vram_unpin(struct amdgpu_device *adev);
 int amdgpu_gart_init(struct amdgpu_device *adev);
 void amdgpu_gart_dummy_page_fini(struct amdgpu_device *adev);
 void amdgpu_gart_unbind(struct amdgpu_device *adev, uint64_t offset,
@@ -62,7 +62,12 @@ void amdgpu_gart_unbind(struct amdgpu_device *adev, uint64_t offset,
 void amdgpu_gart_map(struct amdgpu_device *adev, uint64_t offset,
 		     int pages, dma_addr_t *dma_addr, uint64_t flags,
 		     void *dst);
+void amdgpu_gart_map_gfx9_mqd(struct amdgpu_device *adev, uint64_t offset,
+			int pages, dma_addr_t *dma_addr, uint64_t flags);
 void amdgpu_gart_bind(struct amdgpu_device *adev, uint64_t offset,
 		      int pages, dma_addr_t *dma_addr, uint64_t flags);
+void amdgpu_gart_map_vram_range(struct amdgpu_device *adev, uint64_t pa,
+				uint64_t start_page, uint64_t num_pages,
+				uint64_t flags, void *dst);
 void amdgpu_gart_invalidate_tlb(struct amdgpu_device *adev);
 #endif

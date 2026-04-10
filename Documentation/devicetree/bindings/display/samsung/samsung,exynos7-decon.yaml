@@ -8,7 +8,6 @@ title: Samsung Exynos7 SoC Display and Enhancement Controller (DECON)
 
 maintainers:
   - Inki Dae <inki.dae@samsung.com>
-  - Joonyoung Shim <jy0922.shim@samsung.com>
   - Seung-Woo Kim <sw0312.kim@samsung.com>
   - Kyungmin Park <kyungmin.park@samsung.com>
   - Krzysztof Kozlowski <krzk@kernel.org>
@@ -20,10 +19,11 @@ description: |
 
 properties:
   compatible:
-    const: samsung,exynos7-decon
+    enum:
+      - samsung,exynos7-decon
+      - samsung,exynos7870-decon
 
   clocks:
-    minItems: 4
     maxItems: 4
 
   clock-names:
@@ -38,6 +38,7 @@ properties:
 
   i80-if-timings:
     type: object
+    additionalProperties: false
     description: timing configuration for lcd i80 interface support
     properties:
       cs-setup:
@@ -79,6 +80,21 @@ properties:
       - const: vsync
       - const: lcd_sys
 
+  iommus:
+    maxItems: 1
+
+  memory-region:
+    maxItems: 1
+    description:
+      A phandle to a node describing a reserved framebuffer memory region.
+      For example, the splash memory region set up by the bootloader.
+
+  port:
+    $ref: /schemas/graph.yaml#/properties/port
+    description:
+      Output port which is connected to either a Mobile Image Compressor
+      (MIC) or a DSI Master device.
+
   power-domains:
     maxItems: 1
 
@@ -91,6 +107,7 @@ required:
   - clock-names
   - interrupts
   - interrupt-names
+  - port
   - reg
 
 additionalProperties: false
@@ -117,4 +134,9 @@ examples:
                       "decon0_vclk";
         pinctrl-0 = <&lcd_clk &pwm1_out>;
         pinctrl-names = "default";
+        port {
+            decon_to_dsi: endpoint {
+                remote-endpoint = <&dsi_to_decon>;
+            };
+        };
     };

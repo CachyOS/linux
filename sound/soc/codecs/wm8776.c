@@ -9,13 +9,13 @@
  * TODO: Input ALC/limiter support
  */
 
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/pm.h>
 #include <linux/i2c.h>
-#include <linux/of_device.h>
 #include <linux/regmap.h>
 #include <linux/spi/spi.h>
 #include <linux/slab.h>
@@ -182,9 +182,9 @@ static int wm8776_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	iface = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		master = 0;
 		break;
 	default:
@@ -334,6 +334,7 @@ static int wm8776_set_bias_level(struct snd_soc_component *component,
 				 enum snd_soc_bias_level level)
 {
 	struct wm8776_priv *wm8776 = snd_soc_component_get_drvdata(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
@@ -341,7 +342,7 @@ static int wm8776_set_bias_level(struct snd_soc_component *component,
 	case SND_SOC_BIAS_PREPARE:
 		break;
 	case SND_SOC_BIAS_STANDBY:
-		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
+		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
 			regcache_sync(wm8776->regmap);
 
 			/* Disable the global powerdown; DAPM does the rest */
@@ -436,7 +437,6 @@ static const struct snd_soc_component_driver soc_component_dev_wm8776 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct of_device_id wm8776_of_match[] = {
@@ -452,7 +452,7 @@ static const struct regmap_config wm8776_regmap = {
 
 	.reg_defaults = wm8776_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm8776_reg_defaults),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 
 	.volatile_reg = wm8776_volatile,
 };
@@ -524,7 +524,7 @@ static struct i2c_driver wm8776_i2c_driver = {
 		.name = "wm8776",
 		.of_match_table = wm8776_of_match,
 	},
-	.probe_new = wm8776_i2c_probe,
+	.probe = wm8776_i2c_probe,
 	.id_table = wm8776_i2c_id,
 };
 #endif

@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: GPL-2.0-only
-if PCI && MMU
+menu "VFIO support for PCI devices"
+	depends on PCI
+
 config VFIO_PCI_CORE
 	tristate
 	select VFIO_VIRQFD
 	select IRQ_BYPASS_MANAGER
 
-config VFIO_PCI_MMAP
-	def_bool y if !S390
-
 config VFIO_PCI_INTX
 	def_bool y if !S390
+	depends on VFIO_PCI_CORE
 
 config VFIO_PCI
 	tristate "Generic VFIO support for any PCI device"
@@ -44,8 +44,32 @@ config VFIO_PCI_IGD
 	  To enable Intel IGD assignment through vfio-pci, say Y.
 endif
 
+config VFIO_PCI_ZDEV_KVM
+	bool "VFIO PCI extensions for s390x KVM passthrough"
+	depends on S390 && KVM
+	default y
+	help
+	  Support s390x-specific extensions to enable support for enhancements
+	  to KVM passthrough capabilities, such as interpretive execution of
+	  zPCI instructions.
+
+	  To enable s390x KVM vfio-pci extensions, say Y.
+
+config VFIO_PCI_DMABUF
+	def_bool y if VFIO_PCI_CORE && PCI_P2PDMA && DMA_SHARED_BUFFER
+
 source "drivers/vfio/pci/mlx5/Kconfig"
 
 source "drivers/vfio/pci/hisilicon/Kconfig"
 
-endif
+source "drivers/vfio/pci/pds/Kconfig"
+
+source "drivers/vfio/pci/virtio/Kconfig"
+
+source "drivers/vfio/pci/nvgrace-gpu/Kconfig"
+
+source "drivers/vfio/pci/qat/Kconfig"
+
+source "drivers/vfio/pci/xe/Kconfig"
+
+endmenu

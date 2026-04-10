@@ -30,20 +30,9 @@ config ARM_PL172_MPMC
 	  If you have an embedded system with an AMBA bus and a PL172
 	  controller, say Y or M here.
 
-config ATMEL_SDRAMC
-	bool "Atmel (Multi-port DDR-)SDRAM Controller"
-	default y if ARCH_AT91
-	depends on ARCH_AT91 || COMPILE_TEST
-	depends on OF
-	help
-	  This driver is for Atmel SDRAM Controller or Atmel Multi-port
-	  DDR-SDRAM Controller available on Atmel AT91SAM9 and SAMA5 SoCs.
-	  Starting with the at91sam9g45, this controller supports SDR, DDR and
-	  LP-DDR memories.
-
 config ATMEL_EBI
 	bool "Atmel EBI driver"
-	default y if ARCH_AT91
+	default ARCH_AT91
 	depends on ARCH_AT91 || COMPILE_TEST
 	depends on OF
 	select MFD_SYSCON
@@ -65,6 +54,15 @@ config BRCMSTB_DPFE
 	  the DRAM refresh rate. This can be used as an indirect indicator
 	  for the DRAM's temperature. Slower refresh rate means cooler RAM,
 	  higher refresh rate means hotter RAM.
+
+config BRCMSTB_MEMC
+	tristate "Broadcom STB MEMC driver"
+	default ARCH_BRCMSTB
+	depends on ARCH_BRCMSTB || COMPILE_TEST
+	help
+	  This driver provides a way to configure the Broadcom STB memory
+	  controller and specifically control the Self Refresh Power Down
+	  (SRPD) inactivity timeout.
 
 config BT1_L2_CTL
 	bool "Baikal-T1 CM2 L2-RAM Cache Control Block"
@@ -105,6 +103,7 @@ config TI_EMIF
 config OMAP_GPMC
 	tristate "Texas Instruments OMAP SoC GPMC driver"
 	depends on OF_ADDRESS
+	depends on ARCH_OMAP2PLUS || ARCH_KEYSTONE || ARCH_K3 || COMPILE_TEST
 	select GPIOLIB
 	help
 	  This driver is for the General Purpose Memory Controller (GPMC)
@@ -148,7 +147,7 @@ config FPGA_DFL_EMIF
 
 config MVEBU_DEVBUS
 	bool "Marvell EBU Device Bus Controller"
-	default y if PLAT_ORION
+	default PLAT_ORION
 	depends on PLAT_ORION || COMPILE_TEST
 	depends on OF
 	help
@@ -168,7 +167,7 @@ config FSL_CORENET_CF
 	  represents a coherency violation.
 
 config FSL_IFC
-	bool "Freescale IFC driver" if COMPILE_TEST
+	bool "Freescale IFC driver"
 	depends on FSL_SOC || ARCH_LAYERSCAPE || SOC_LS1021A || COMPILE_TEST
 	depends on HAS_IOMEM
 
@@ -199,7 +198,7 @@ config DA8XX_DDRCTL
 
 config PL353_SMC
 	tristate "ARM PL35X Static Memory Controller(SMC) driver"
-	default y if ARM
+	default ARM
 	depends on ARM || COMPILE_TEST
 	depends on ARM_AMBA
 	help
@@ -218,13 +217,30 @@ config RENESAS_RPCIF
 
 config STM32_FMC2_EBI
 	tristate "Support for FMC2 External Bus Interface on STM32MP SoCs"
-	depends on MACH_STM32MP157 || COMPILE_TEST
+	depends on ARCH_STM32 || COMPILE_TEST
 	select MFD_SYSCON
 	help
 	  Select this option to enable the STM32 FMC2 External Bus Interface
 	  controller. This driver configures the transactions with external
 	  devices (like SRAM, ethernet adapters, FPGAs, LCD displays, ...) on
 	  SOCs containing the FMC2 External Bus Interface.
+
+config STM32_OMM
+	tristate "STM32 Octo Memory Manager"
+	depends on SPI_STM32_OSPI || COMPILE_TEST
+	help
+	  This driver manages the muxing between the 2 OSPI busses and
+	  the 2 output ports. There are 4 possible muxing configurations:
+	  - direct mode (no multiplexing): OSPI1 output is on port 1 and OSPI2
+	       output is on port 2
+	  - OSPI1 and OSPI2 are multiplexed over the same output port 1
+	  - swapped mode (no multiplexing), OSPI1 output is on port 2,
+	       OSPI2 output is on port 1
+	  - OSPI1 and OSPI2 are multiplexed over the same output port 2
+	  It also manages :
+	    - the split of the memory area shared between the 2 OSPI instances.
+	    - chip select selection override.
+	    - the time between 2 transactions in multiplexed mode.
 
 source "drivers/memory/samsung/Kconfig"
 source "drivers/memory/tegra/Kconfig"

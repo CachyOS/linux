@@ -1,7 +1,6 @@
 [
     {
         "BriefDescription": "ITLB misses",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0x81",
         "EventName": "ITLB.MISS",
@@ -11,7 +10,6 @@
     },
     {
         "BriefDescription": "Memory uops retired that missed the DTLB (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "Data_LA": "1",
         "EventCode": "0xD0",
@@ -23,7 +21,6 @@
     },
     {
         "BriefDescription": "Load uops retired that missed the DTLB (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "Data_LA": "1",
         "EventCode": "0xD0",
@@ -35,7 +32,6 @@
     },
     {
         "BriefDescription": "Store uops retired that missed the DTLB (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "Data_LA": "1",
         "EventCode": "0xD0",
@@ -47,7 +43,6 @@
     },
     {
         "BriefDescription": "Duration of page-walks in cycles",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0x05",
         "EventName": "PAGE_WALKS.CYCLES",
@@ -57,7 +52,6 @@
     },
     {
         "BriefDescription": "Duration of D-side page-walks in cycles",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0x05",
         "EventName": "PAGE_WALKS.D_SIDE_CYCLES",
@@ -67,7 +61,6 @@
     },
     {
         "BriefDescription": "Duration of I-side pagewalks in cycles",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0x05",
         "EventName": "PAGE_WALKS.I_SIDE_CYCLES",

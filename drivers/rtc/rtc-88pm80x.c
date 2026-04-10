@@ -308,7 +308,7 @@ static int pm80x_rtc_probe(struct platform_device *pdev)
 	/* remember whether this power up is caused by PMIC RTC or not */
 	info->rtc_dev->dev.platform_data = &pdata->rtc_wakeup;
 
-	device_init_wakeup(&pdev->dev, 1);
+	device_init_wakeup(&pdev->dev, true);
 
 	return 0;
 out_rtc:
@@ -317,11 +317,10 @@ out:
 	return ret;
 }
 
-static int pm80x_rtc_remove(struct platform_device *pdev)
+static void pm80x_rtc_remove(struct platform_device *pdev)
 {
 	struct pm80x_rtc_info *info = platform_get_drvdata(pdev);
 	pm80x_free_irq(info->chip, info->irq, info);
-	return 0;
 }
 
 static struct platform_driver pm80x_rtc_driver = {

@@ -27,6 +27,8 @@ properties:
       - description: APB interface clock source
       - description: GPIO debounce reference clock source
 
+  gpio-ranges: true
+
   gpio-controller: true
 
   gpio-line-names: true
@@ -38,6 +40,16 @@ properties:
 
   "#interrupt-cells":
     const: 2
+
+  power-domains:
+    maxItems: 1
+
+patternProperties:
+  "^.+-hog(-[0-9]+)?$":
+    type: object
+
+    required:
+      - gpio-hog
 
 required:
   - compatible

@@ -220,7 +220,7 @@ static void pdev_save_srm_config(struct pci_dev *dev)
 		printed = 1;
 	}
 
-	tmp = kmalloc(sizeof(*tmp), GFP_KERNEL);
+	tmp = kmalloc_obj(*tmp);
 	if (!tmp) {
 		printk(KERN_ERR "%s: kmalloc() failed!\n", __func__);
 		return;
@@ -288,11 +288,10 @@ pcibios_claim_one_bus(struct pci_bus *b)
 	struct pci_bus *child_bus;
 
 	list_for_each_entry(dev, &b->devices, bus_list) {
+		struct resource *r;
 		int i;
 
-		for (i = 0; i < PCI_NUM_RESOURCES; i++) {
-			struct resource *r = &dev->resource[i];
-
+		pci_dev_for_each_resource(dev, r, i) {
 			if (r->parent || !r->start || !r->flags)
 				continue;
 			if (pci_has_flag(PCI_PROBE_ONLY) ||
@@ -392,10 +391,7 @@ alloc_pci_controller(void)
 {
 	struct pci_controller *hose;
 
-	hose = memblock_alloc(sizeof(*hose), SMP_CACHE_BYTES);
-	if (!hose)
-		panic("%s: Failed to allocate %zu bytes\n", __func__,
-		      sizeof(*hose));
+	hose = memblock_alloc_or_panic(sizeof(*hose), SMP_CACHE_BYTES);
 
 	*hose_tail = hose;
 	hose_tail = &hose->next;
@@ -406,13 +402,7 @@ alloc_pci_controller(void)
 struct resource * __init
 alloc_resource(void)
 {
-	void *ptr = memblock_alloc(sizeof(struct resource), SMP_CACHE_BYTES);
-
-	if (!ptr)
-		panic("%s: Failed to allocate %zu bytes\n", __func__,
-		      sizeof(struct resource));
-
-	return ptr;
+	return memblock_alloc_or_panic(sizeof(struct resource), SMP_CACHE_BYTES);
 }
 
 

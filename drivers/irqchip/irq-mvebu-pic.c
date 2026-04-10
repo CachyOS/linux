@@ -71,7 +71,7 @@ static void mvebu_pic_print_chip(struct irq_data *d, struct seq_file *p)
 {
 	struct mvebu_pic *pic = irq_data_get_irq_chip_data(d);
 
-	seq_printf(p, dev_name(&pic->pdev->dev));
+	seq_puts(p, dev_name(&pic->pdev->dev));
 }
 
 static const struct irq_chip mvebu_pic_chip = {
@@ -150,8 +150,8 @@ static int mvebu_pic_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	pic->domain = irq_domain_add_linear(node, PIC_MAX_IRQS,
-					    &mvebu_pic_domain_ops, pic);
+	pic->domain = irq_domain_create_linear(dev_fwnode(&pdev->dev), PIC_MAX_IRQS,
+					       &mvebu_pic_domain_ops, pic);
 	if (!pic->domain) {
 		dev_err(&pdev->dev, "Failed to allocate irq domain\n");
 		return -ENOMEM;
@@ -167,14 +167,12 @@ static int mvebu_pic_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int mvebu_pic_remove(struct platform_device *pdev)
+static void mvebu_pic_remove(struct platform_device *pdev)
 {
 	struct mvebu_pic *pic = platform_get_drvdata(pdev);
 
 	on_each_cpu(mvebu_pic_disable_percpu_irq, pic, 1);
 	irq_domain_remove(pic->domain);
-
-	return 0;
 }
 
 static const struct of_device_id mvebu_pic_of_match[] = {
@@ -184,17 +182,16 @@ static const struct of_device_id mvebu_pic_of_match[] = {
 MODULE_DEVICE_TABLE(of, mvebu_pic_of_match);
 
 static struct platform_driver mvebu_pic_driver = {
-	.probe  = mvebu_pic_probe,
-	.remove = mvebu_pic_remove,
+	.probe		= mvebu_pic_probe,
+	.remove		= mvebu_pic_remove,
 	.driver = {
-		.name = "mvebu-pic",
-		.of_match_table = mvebu_pic_of_match,
+		.name		= "mvebu-pic",
+		.of_match_table	= mvebu_pic_of_match,
 	},
 };
 module_platform_driver(mvebu_pic_driver);
 
 MODULE_AUTHOR("Yehuda Yitschak <yehuday@marvell.com>");
 MODULE_AUTHOR("Thomas Petazzoni <thomas.petazzoni@free-electrons.com>");
+MODULE_DESCRIPTION("Marvell Armada 7K/8K PIC driver");
 MODULE_LICENSE("GPL v2");
-MODULE_ALIAS("platform:mvebu_pic");
-

@@ -4,7 +4,8 @@
 #include "otx2_cpt_devlink.h"
 
 static int otx2_cpt_dl_egrp_create(struct devlink *dl, u32 id,
-				   struct devlink_param_gset_ctx *ctx)
+				   struct devlink_param_gset_ctx *ctx,
+				   struct netlink_ext_ack *extack)
 {
 	struct otx2_cpt_devlink *cpt_dl = devlink_priv(dl);
 	struct otx2_cptpf_dev *cptpf = cpt_dl->cptpf;
@@ -13,7 +14,8 @@ static int otx2_cpt_dl_egrp_create(struct devlink *dl, u32 id,
 }
 
 static int otx2_cpt_dl_egrp_delete(struct devlink *dl, u32 id,
-				   struct devlink_param_gset_ctx *ctx)
+				   struct devlink_param_gset_ctx *ctx,
+				   struct netlink_ext_ack *extack)
 {
 	struct otx2_cpt_devlink *cpt_dl = devlink_priv(dl);
 	struct otx2_cptpf_dev *cptpf = cpt_dl->cptpf;
@@ -22,12 +24,50 @@ static int otx2_cpt_dl_egrp_delete(struct devlink *dl, u32 id,
 }
 
 static int otx2_cpt_dl_uc_info(struct devlink *dl, u32 id,
-			       struct devlink_param_gset_ctx *ctx)
+			       struct devlink_param_gset_ctx *ctx,
+			       struct netlink_ext_ack *extack)
+{
+	ctx->val.vstr[0] = '\0';
+
+	return 0;
+}
+
+static int otx2_cpt_dl_t106_mode_get(struct devlink *dl, u32 id,
+				     struct devlink_param_gset_ctx *ctx,
+				     struct netlink_ext_ack *extack)
 {
 	struct otx2_cpt_devlink *cpt_dl = devlink_priv(dl);
 	struct otx2_cptpf_dev *cptpf = cpt_dl->cptpf;
+	struct pci_dev *pdev = cptpf->pdev;
+	u64 reg_val = 0;
 
-	otx2_cpt_print_uc_dbg_info(cptpf);
+	otx2_cpt_read_af_reg(&cptpf->afpf_mbox, pdev, CPT_AF_CTL, &reg_val,
+			     BLKADDR_CPT0);
+	ctx->val.vu8 = (reg_val >> 18) & 0x1;
+
+	return 0;
+}
+
+static int otx2_cpt_dl_t106_mode_set(struct devlink *dl, u32 id,
+				     struct devlink_param_gset_ctx *ctx,
+				     struct netlink_ext_ack *extack)
+{
+	struct otx2_cpt_devlink *cpt_dl = devlink_priv(dl);
+	struct otx2_cptpf_dev *cptpf = cpt_dl->cptpf;
+	struct pci_dev *pdev = cptpf->pdev;
+	u64 reg_val = 0;
+
+	if (cptpf->enabled_vfs != 0 || cptpf->eng_grps.is_grps_created)
+		return -EPERM;
+
+	if (cpt_feature_sgv2(pdev)) {
+		otx2_cpt_read_af_reg(&cptpf->afpf_mbox, pdev, CPT_AF_CTL,
+				     &reg_val, BLKADDR_CPT0);
+		reg_val &= ~(0x1ULL << 18);
+		reg_val |= ((u64)ctx->val.vu8 & 0x1) << 18;
+		return otx2_cpt_write_af_reg(&cptpf->afpf_mbox, pdev,
+					     CPT_AF_CTL, reg_val, BLKADDR_CPT0);
+	}
 
 	return 0;
 }
@@ -36,6 +76,7 @@ enum otx2_cpt_dl_param_id {
 	OTX2_CPT_DEVLINK_PARAM_ID_BASE = DEVLINK_PARAM_GENERIC_ID_MAX,
 	OTX2_CPT_DEVLINK_PARAM_ID_EGRP_CREATE,
 	OTX2_CPT_DEVLINK_PARAM_ID_EGRP_DELETE,
+	OTX2_CPT_DEVLINK_PARAM_ID_T106_MODE,
 };
 
 static const struct devlink_param otx2_cpt_dl_params[] = {
@@ -49,13 +90,50 @@ static const struct devlink_param otx2_cpt_dl_params[] = {
 			     BIT(DEVLINK_PARAM_CMODE_RUNTIME),
 			     otx2_cpt_dl_uc_info, otx2_cpt_dl_egrp_delete,
 			     NULL),
+	DEVLINK_PARAM_DRIVER(OTX2_CPT_DEVLINK_PARAM_ID_T106_MODE,
+			     "t106_mode", DEVLINK_PARAM_TYPE_U8,
+			     BIT(DEVLINK_PARAM_CMODE_RUNTIME),
+			     otx2_cpt_dl_t106_mode_get, otx2_cpt_dl_t106_mode_set,
+			     NULL),
 };
 
-static int otx2_cpt_devlink_info_get(struct devlink *devlink,
+static int otx2_cpt_dl_info_firmware_version_put(struct devlink_info_req *req,
+						 struct otx2_cpt_eng_grp_info grp[],
+						 const char *ver_name, int eng_type)
+{
+	struct otx2_cpt_engs_rsvd *eng;
+	int i;
+
+	for (i = 0; i < OTX2_CPT_MAX_ENGINE_GROUPS; i++) {
+		eng = find_engines_by_type(&grp[i], eng_type);
+		if (eng)
+			return devlink_info_version_running_put(req, ver_name,
+								eng->ucode->ver_str);
+	}
+
+	return 0;
+}
+
+static int otx2_cpt_devlink_info_get(struct devlink *dl,
 				     struct devlink_info_req *req,
 				     struct netlink_ext_ack *extack)
 {
-	return devlink_info_driver_name_put(req, "rvu_cptpf");
+	struct otx2_cpt_devlink *cpt_dl = devlink_priv(dl);
+	struct otx2_cptpf_dev *cptpf = cpt_dl->cptpf;
+	int err;
+
+	err = otx2_cpt_dl_info_firmware_version_put(req, cptpf->eng_grps.grp,
+						    "fw.ae", OTX2_CPT_AE_TYPES);
+	if (err)
+		return err;
+
+	err = otx2_cpt_dl_info_firmware_version_put(req, cptpf->eng_grps.grp,
+						    "fw.se", OTX2_CPT_SE_TYPES);
+	if (err)
+		return err;
+
+	return otx2_cpt_dl_info_firmware_version_put(req, cptpf->eng_grps.grp,
+						    "fw.ie", OTX2_CPT_IE_TYPES);
 }
 
 static const struct devlink_ops otx2_cpt_devlink_ops = {
@@ -88,7 +166,6 @@ int otx2_cpt_register_dl(struct otx2_cptpf_dev *cptpf)
 		devlink_free(dl);
 		return ret;
 	}
-
 	devlink_register(dl);
 
 	return 0;

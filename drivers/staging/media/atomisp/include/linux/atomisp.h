@@ -3,24 +3,12 @@
  * Support for Medifield PNW Camera Imaging ISP subsystem.
  *
  * Copyright (c) 2010 Intel Corporation. All Rights Reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version
- * 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- *
  */
 
 #ifndef _ATOM_ISP_H
 #define _ATOM_ISP_H
 
 #include <linux/types.h>
-#include <linux/version.h>
 
 /* struct media_device_info.hw_revision */
 #define ATOMISP_HW_REVISION_MASK	0x0000ff00
@@ -38,7 +26,6 @@
 #define CI_MODE_PREVIEW		0x8000
 #define CI_MODE_VIDEO		0x4000
 #define CI_MODE_STILL_CAPTURE	0x2000
-#define CI_MODE_CONTINUOUS	0x1000
 #define CI_MODE_NONE		0x0000
 
 #define OUTPUT_MODE_FILE 0x0100
@@ -150,12 +137,6 @@ enum atomisp_calibration_type {
 	calibration_type3
 };
 
-struct atomisp_calibration_group {
-	unsigned int size;
-	unsigned int type;
-	unsigned short *calb_grp_values;
-};
-
 struct atomisp_gc_config {
 	__u16 gain_k1;
 	__u16 gain_k2;
@@ -208,7 +189,7 @@ struct atomisp_dis_vector {
 };
 
 /* DVS 2.0 Coefficient types. This structure contains 4 pointers to
- *  arrays that contain the coeffients for each type.
+ *  arrays that contain the coefficients for each type.
  */
 struct atomisp_dvs2_coef_types {
 	short __user *odd_real; /** real part of the odd coefficients*/
@@ -266,26 +247,6 @@ enum atomisp_metadata_type {
 	ATOMISP_METADATA_TYPE_NUM,
 };
 
-struct atomisp_metadata_with_type {
-	/* to specify which type of metadata to get */
-	enum atomisp_metadata_type type;
-	void __user *data;
-	u32 width;
-	u32 height;
-	u32 stride; /* in bytes */
-	u32 exp_id; /* exposure ID */
-	u32 *effective_width; /* mipi packets valid data size */
-};
-
-struct atomisp_metadata {
-	void __user *data;
-	u32 width;
-	u32 height;
-	u32 stride; /* in bytes */
-	u32 exp_id; /* exposure ID */
-	u32 *effective_width; /* mipi packets valid data size */
-};
-
 struct atomisp_ext_isp_ctrl {
 	u32 id;
 	u32 data;
@@ -297,34 +258,6 @@ struct atomisp_3a_statistics {
 	struct atomisp_3a_rgby_output __user *rgby_data;
 	u32 exp_id; /* exposure ID */
 	u32 isp_config_id; /* isp config ID */
-};
-
-/**
- * struct atomisp_cont_capture_conf - continuous capture parameters
- * @num_captures: number of still images to capture
- * @skip_frames: number of frames to skip between 2 captures
- * @offset: offset in ring buffer to start capture
- *
- * For example, to capture 1 frame from past, current, and 1 from future
- * and skip one frame between each capture, parameters would be:
- * num_captures:3
- * skip_frames:1
- * offset:-2
- */
-
-struct atomisp_cont_capture_conf {
-	int num_captures;
-	unsigned int skip_frames;
-	int offset;
-	__u32 reserved[5];
-};
-
-struct atomisp_ae_window {
-	int x_left;
-	int x_right;
-	int y_top;
-	int y_bottom;
-	int weight;
 };
 
 /* White Balance (Gain Adjust) */
@@ -586,20 +519,6 @@ struct atomisp_shading_table {
 	__u16 *data[ATOMISP_NUM_SC_COLORS];
 };
 
-struct atomisp_makernote_info {
-	/* bits 31-16: numerator, bits 15-0: denominator */
-	unsigned int focal_length;
-	/* bits 31-16: numerator, bits 15-0: denominator*/
-	unsigned int f_number_curr;
-	/*
-	* bits 31-24: max f-number numerator
-	* bits 23-16: max f-number denominator
-	* bits 15-8: min f-number numerator
-	* bits 7-0: min f-number denominator
-	*/
-	unsigned int f_number_range;
-};
-
 /* parameter for MACC */
 #define ATOMISP_NUM_MACC_AXES           16
 struct atomisp_macc_table {
@@ -650,28 +569,6 @@ struct atomisp_overlay {
 	unsigned int overlay_start_y;
 };
 
-/* Sensor resolution specific data for AE calculation.*/
-struct atomisp_sensor_mode_data {
-	unsigned int coarse_integration_time_min;
-	unsigned int coarse_integration_time_max_margin;
-	unsigned int fine_integration_time_min;
-	unsigned int fine_integration_time_max_margin;
-	unsigned int fine_integration_time_def;
-	unsigned int frame_length_lines;
-	unsigned int line_length_pck;
-	unsigned int read_mode;
-	unsigned int vt_pix_clk_freq_mhz;
-	unsigned int crop_horizontal_start; /* Sensor crop start cord. (x0,y0)*/
-	unsigned int crop_vertical_start;
-	unsigned int crop_horizontal_end; /* Sensor crop end cord. (x1,y1)*/
-	unsigned int crop_vertical_end;
-	unsigned int output_width; /* input size to ISP after binning/scaling */
-	unsigned int output_height;
-	u8 binning_factor_x; /* horizontal binning factor used */
-	u8 binning_factor_y; /* vertical binning factor used */
-	u16 hts;
-};
-
 struct atomisp_exposure {
 	unsigned int integration_time[8];
 	unsigned int shutter_speed[8];
@@ -705,73 +602,6 @@ enum atomisp_camera_port {
 	ATOMISP_CAMERA_NR_PORTS
 };
 
-/* Flash modes. Default is off.
- * Setting a flash to TORCH or INDICATOR mode will automatically
- * turn it on. Setting it to FLASH mode will not turn on the flash
- * until the FLASH_STROBE command is sent. */
-enum atomisp_flash_mode {
-	ATOMISP_FLASH_MODE_OFF,
-	ATOMISP_FLASH_MODE_FLASH,
-	ATOMISP_FLASH_MODE_TORCH,
-	ATOMISP_FLASH_MODE_INDICATOR,
-};
-
-/* Flash statuses, used by atomisp driver to check before starting
- * flash and after having started flash. */
-enum atomisp_flash_status {
-	ATOMISP_FLASH_STATUS_OK,
-	ATOMISP_FLASH_STATUS_HW_ERROR,
-	ATOMISP_FLASH_STATUS_INTERRUPTED,
-	ATOMISP_FLASH_STATUS_TIMEOUT,
-};
-
-/* Frame status. This is used to detect corrupted frames and flash
- * exposed frames. Usually, the first 2 frames coming out of the sensor
- * are corrupted. When using flash, the frame before and the frame after
- * the flash exposed frame may be partially exposed by flash. The ISP
- * statistics for these frames should not be used by the 3A library.
- * The frame status value can be found in the "reserved" field in the
- * v4l2_buffer struct. */
-enum atomisp_frame_status {
-	ATOMISP_FRAME_STATUS_OK,
-	ATOMISP_FRAME_STATUS_CORRUPTED,
-	ATOMISP_FRAME_STATUS_FLASH_EXPOSED,
-	ATOMISP_FRAME_STATUS_FLASH_PARTIAL,
-	ATOMISP_FRAME_STATUS_FLASH_FAILED,
-};
-
-enum atomisp_acc_type {
-	ATOMISP_ACC_STANDALONE,	/* Stand-alone acceleration */
-	ATOMISP_ACC_OUTPUT,	/* Accelerator stage on output frame */
-	ATOMISP_ACC_VIEWFINDER	/* Accelerator stage on viewfinder frame */
-};
-
-enum atomisp_acc_arg_type {
-	ATOMISP_ACC_ARG_SCALAR_IN,    /* Scalar input argument */
-	ATOMISP_ACC_ARG_SCALAR_OUT,   /* Scalar output argument */
-	ATOMISP_ACC_ARG_SCALAR_IO,    /* Scalar in/output argument */
-	ATOMISP_ACC_ARG_PTR_IN,	     /* Pointer input argument */
-	ATOMISP_ACC_ARG_PTR_OUT,	     /* Pointer output argument */
-	ATOMISP_ACC_ARG_PTR_IO,	     /* Pointer in/output argument */
-	ATOMISP_ARG_PTR_NOFLUSH,  /* Pointer argument will not be flushed */
-	ATOMISP_ARG_PTR_STABLE,   /* Pointer input argument that is stable */
-	ATOMISP_ACC_ARG_FRAME	     /* Frame argument */
-};
-
-/* ISP memories, isp2400 */
-enum atomisp_acc_memory {
-	ATOMISP_ACC_MEMORY_PMEM0 = 0,
-	ATOMISP_ACC_MEMORY_DMEM0,
-	/* for backward compatibility */
-	ATOMISP_ACC_MEMORY_DMEM = ATOMISP_ACC_MEMORY_DMEM0,
-	ATOMISP_ACC_MEMORY_VMEM0,
-	ATOMISP_ACC_MEMORY_VAMEM0,
-	ATOMISP_ACC_MEMORY_VAMEM1,
-	ATOMISP_ACC_MEMORY_VAMEM2,
-	ATOMISP_ACC_MEMORY_HMEM0,
-	ATOMISP_ACC_NR_MEMORY
-};
-
 enum atomisp_ext_isp_id {
 	EXT_ISP_CID_ISO = 0,
 	EXT_ISP_CID_CAPTURE_HDR,
@@ -784,7 +614,6 @@ enum atomisp_ext_isp_id {
 	EXT_ISP_CID_AF_STATUS,
 	EXT_ISP_CID_GET_AF_MODE,
 	EXT_ISP_CID_CAPTURE_BURST,
-	EXT_ISP_CID_FLASH_MODE,
 	EXT_ISP_CID_ZOOM,
 	EXT_ISP_CID_SHOT_MODE
 };
@@ -817,12 +646,6 @@ enum atomisp_burst_capture_options {
 	EXT_ISP_BURST_CAPTURE_CTRL_STOP
 };
 
-#define EXT_ISP_FLASH_MODE_OFF		0
-#define EXT_ISP_FLASH_MODE_ON		1
-#define EXT_ISP_FLASH_MODE_AUTO		2
-#define EXT_ISP_LED_TORCH_OFF		3
-#define EXT_ISP_LED_TORCH_ON		4
-
 #define EXT_ISP_SHOT_MODE_AUTO		0
 #define EXT_ISP_SHOT_MODE_BEAUTY_FACE	1
 #define EXT_ISP_SHOT_MODE_BEST_PHOTO	2
@@ -835,141 +658,6 @@ enum atomisp_burst_capture_options {
 #define EXT_ISP_SHOT_MODE_SOUND_SHOT	9
 #define EXT_ISP_SHOT_MODE_ANIMATED_PHOTO	10
 #define EXT_ISP_SHOT_MODE_SPORTS	11
-
-struct atomisp_sp_arg {
-	enum atomisp_acc_arg_type type;	/* Type  of SP argument */
-	void                    *value;	/* Value of SP argument */
-	unsigned int             size;	/* Size  of SP argument */
-};
-
-/* Acceleration API */
-
-/* For CSS 1.0 only */
-struct atomisp_acc_fw_arg {
-	unsigned int fw_handle;
-	unsigned int index;
-	void __user *value;
-	size_t size;
-};
-
-/*
- * Set arguments after first mapping with ATOMISP_IOC_ACC_S_MAPPED_ARG.
- */
-struct atomisp_acc_s_mapped_arg {
-	unsigned int fw_handle;
-	__u32 memory;			/* one of enum atomisp_acc_memory */
-	size_t length;
-	unsigned long css_ptr;
-};
-
-struct atomisp_acc_fw_abort {
-	unsigned int fw_handle;
-	/* Timeout in us */
-	unsigned int timeout;
-};
-
-struct atomisp_acc_fw_load {
-	unsigned int size;
-	unsigned int fw_handle;
-	void __user *data;
-};
-
-/*
- * Load firmware to specified pipeline.
- */
-struct atomisp_acc_fw_load_to_pipe {
-	__u32 flags;			/* Flags, see below for valid values */
-	unsigned int fw_handle;		/* Handle, filled by kernel. */
-	__u32 size;			/* Firmware binary size */
-	void __user *data;		/* Pointer to firmware */
-	__u32 type;			/* Binary type */
-	__u32 reserved[3];		/* Set to zero */
-};
-
-/*
- * Set Senor run mode
- */
-struct atomisp_s_runmode {
-	__u32 mode;
-};
-
-#define ATOMISP_ACC_FW_LOAD_FL_PREVIEW		BIT(0)
-#define ATOMISP_ACC_FW_LOAD_FL_COPY		BIT(1)
-#define ATOMISP_ACC_FW_LOAD_FL_VIDEO		BIT(2)
-#define ATOMISP_ACC_FW_LOAD_FL_CAPTURE		BIT(3)
-#define ATOMISP_ACC_FW_LOAD_FL_ACC		BIT(4)
-#define ATOMISP_ACC_FW_LOAD_FL_ENABLE		BIT(16)
-
-#define ATOMISP_ACC_FW_LOAD_TYPE_NONE		0 /* Normal binary: don't use */
-#define ATOMISP_ACC_FW_LOAD_TYPE_OUTPUT		1 /* Stage on output */
-#define ATOMISP_ACC_FW_LOAD_TYPE_VIEWFINDER	2 /* Stage on viewfinder */
-#define ATOMISP_ACC_FW_LOAD_TYPE_STANDALONE	3 /* Stand-alone acceleration */
-
-struct atomisp_acc_map {
-	__u32 flags;			/* Flags, see list below */
-	__u32 length;			/* Length of data in bytes */
-	void __user *user_ptr;		/* Pointer into user space */
-	unsigned long css_ptr;		/* Pointer into CSS address space */
-	__u32 reserved[4];		/* Set to zero */
-};
-
-#define ATOMISP_MAP_FLAG_NOFLUSH	0x0001	/* Do not flush cache */
-#define ATOMISP_MAP_FLAG_CACHED		0x0002	/* Enable cache */
-#define ATOMISP_MAP_FLAG_CONTIGUOUS	0x0004
-#define ATOMISP_MAP_FLAG_CLEARED	0x0008
-
-struct atomisp_acc_state {
-	__u32 flags;			/* Flags, see list below */
-#define ATOMISP_STATE_FLAG_ENABLE	ATOMISP_ACC_FW_LOAD_FL_ENABLE
-	unsigned int fw_handle;
-};
-
-struct atomisp_update_exposure {
-	unsigned int gain;
-	unsigned int digi_gain;
-	unsigned int update_gain;
-	unsigned int update_digi_gain;
-};
-
-/*
- * V4L2 private internal data interface.
- * -----------------------------------------------------------------------------
- * struct v4l2_private_int_data - request private data stored in video device
- * internal memory.
- * @size: sanity check to ensure userspace's buffer fits whole private data.
- *	  If not, kernel will make partial copy (or nothing if @size == 0).
- *	  @size is always corrected for the minimum necessary if IOCTL returns
- *	  no error.
- * @data: pointer to userspace buffer.
- */
-struct v4l2_private_int_data {
-	__u32 size;
-	void __user *data;
-	__u32 reserved[2];
-};
-
-enum atomisp_sensor_ae_bracketing_mode {
-	SENSOR_AE_BRACKETING_MODE_OFF = 0,
-	SENSOR_AE_BRACKETING_MODE_SINGLE, /* back to SW standby after bracketing */
-	SENSOR_AE_BRACKETING_MODE_SINGLE_TO_STREAMING, /* back to normal streaming after bracketing */
-	SENSOR_AE_BRACKETING_MODE_LOOP, /* continue AE bracketing in loop mode */
-};
-
-struct atomisp_sensor_ae_bracketing_info {
-	unsigned int modes; /* bit mask to indicate supported modes  */
-	unsigned int lut_depth;
-};
-
-struct atomisp_sensor_ae_bracketing_lut_entry {
-	__u16 coarse_integration_time;
-	__u16 analog_gain;
-	__u16 digital_gain;
-};
-
-struct atomisp_sensor_ae_bracketing_lut {
-	struct atomisp_sensor_ae_bracketing_lut_entry *lut;
-	unsigned int lut_size;
-};
 
 /*Private IOCTLs for ISP */
 #define ATOMISP_IOC_G_XNR \
@@ -999,7 +687,7 @@ struct atomisp_sensor_ae_bracketing_lut {
 /* Digital Image Stabilization:
  * 1. get dis statistics: reads DIS statistics from ISP (every frame)
  * 2. set dis coefficients: set DIS filter coefficients (one time)
- * 3. set dis motion vecotr: set motion vector (result of DIS, every frame)
+ * 3. set dis motion vector: set motion vector (result of DIS, every frame)
  */
 #define ATOMISP_IOC_G_DIS_STAT \
 	_IOWR('v', BASE_VIDIOC_PRIVATE + 6, struct atomisp_dis_statistics)
@@ -1027,8 +715,6 @@ struct atomisp_sensor_ae_bracketing_lut {
 	_IOR('v', BASE_VIDIOC_PRIVATE + 10, struct atomisp_morph_table)
 #define ATOMISP_IOC_S_ISP_GDC_TAB \
 	_IOW('v', BASE_VIDIOC_PRIVATE + 10, struct atomisp_morph_table)
-#define ATOMISP_IOC_ISP_MAKERNOTE \
-	_IOWR('v', BASE_VIDIOC_PRIVATE + 11, struct atomisp_makernote_info)
 
 /* macc parameter control*/
 #define ATOMISP_IOC_G_ISP_MACC \
@@ -1074,49 +760,14 @@ struct atomisp_sensor_ae_bracketing_lut {
 #define ATOMISP_IOC_CAMERA_BRIDGE \
 	_IOWR('v', BASE_VIDIOC_PRIVATE + 19, struct atomisp_bc_video_package)
 
-/* Sensor resolution specific info for AE */
-#define ATOMISP_IOC_G_SENSOR_MODE_DATA \
-	_IOR('v', BASE_VIDIOC_PRIVATE + 20, struct atomisp_sensor_mode_data)
-
 #define ATOMISP_IOC_S_EXPOSURE \
 	_IOW('v', BASE_VIDIOC_PRIVATE + 21, struct atomisp_exposure)
-
-/* sensor calibration registers group */
-#define ATOMISP_IOC_G_SENSOR_CALIBRATION_GROUP \
-	_IOWR('v', BASE_VIDIOC_PRIVATE + 22, struct atomisp_calibration_group)
 
 /* white balance Correction */
 #define ATOMISP_IOC_G_3A_CONFIG \
 	_IOR('v', BASE_VIDIOC_PRIVATE + 23, struct atomisp_3a_config)
 #define ATOMISP_IOC_S_3A_CONFIG \
 	_IOW('v', BASE_VIDIOC_PRIVATE + 23, struct atomisp_3a_config)
-
-/* Accelerate ioctls */
-#define ATOMISP_IOC_ACC_LOAD \
-	_IOWR('v', BASE_VIDIOC_PRIVATE + 24, struct atomisp_acc_fw_load)
-
-#define ATOMISP_IOC_ACC_UNLOAD \
-	_IOWR('v', BASE_VIDIOC_PRIVATE + 24, unsigned int)
-
-/* For CSS 1.0 only */
-#define ATOMISP_IOC_ACC_S_ARG \
-	_IOW('v', BASE_VIDIOC_PRIVATE + 24, struct atomisp_acc_fw_arg)
-
-#define ATOMISP_IOC_ACC_START \
-	_IOW('v', BASE_VIDIOC_PRIVATE + 24, unsigned int)
-
-#define ATOMISP_IOC_ACC_WAIT \
-	_IOW('v', BASE_VIDIOC_PRIVATE + 25, unsigned int)
-
-#define ATOMISP_IOC_ACC_ABORT \
-	_IOW('v', BASE_VIDIOC_PRIVATE + 25, struct atomisp_acc_fw_abort)
-
-#define ATOMISP_IOC_ACC_DESTAB \
-	_IOW('v', BASE_VIDIOC_PRIVATE + 25, struct atomisp_acc_fw_arg)
-
-/* sensor OTP memory read */
-#define ATOMISP_IOC_G_SENSOR_PRIV_INT_DATA \
-	_IOWR('v', BASE_VIDIOC_PRIVATE + 26, struct v4l2_private_int_data)
 
 /* LCS (shading) table write */
 #define ATOMISP_IOC_S_ISP_SHD_TAB \
@@ -1129,42 +780,8 @@ struct atomisp_sensor_ae_bracketing_lut {
 #define ATOMISP_IOC_S_ISP_GAMMA_CORRECTION \
 	_IOW('v', BASE_VIDIOC_PRIVATE + 28, struct atomisp_gc_config)
 
-/* motor internal memory read */
-#define ATOMISP_IOC_G_MOTOR_PRIV_INT_DATA \
-	_IOWR('v', BASE_VIDIOC_PRIVATE + 29, struct v4l2_private_int_data)
-
-/*
- * Ioctls to map and unmap user buffers to CSS address space for acceleration.
- * User fills fields length and user_ptr and sets other fields to zero,
- * kernel may modify the flags and sets css_ptr.
- */
-#define ATOMISP_IOC_ACC_MAP \
-	_IOWR('v', BASE_VIDIOC_PRIVATE + 30, struct atomisp_acc_map)
-
-/* User fills fields length, user_ptr, and css_ptr and zeroes other fields. */
-#define ATOMISP_IOC_ACC_UNMAP \
-	_IOW('v', BASE_VIDIOC_PRIVATE + 30, struct atomisp_acc_map)
-
-#define ATOMISP_IOC_ACC_S_MAPPED_ARG \
-	_IOW('v', BASE_VIDIOC_PRIVATE + 30, struct atomisp_acc_s_mapped_arg)
-
-#define ATOMISP_IOC_ACC_LOAD_TO_PIPE \
-	_IOWR('v', BASE_VIDIOC_PRIVATE + 31, struct atomisp_acc_fw_load_to_pipe)
-
 #define ATOMISP_IOC_S_PARAMETERS \
 	_IOW('v', BASE_VIDIOC_PRIVATE + 32, struct atomisp_parameters)
-
-#define ATOMISP_IOC_S_CONT_CAPTURE_CONFIG \
-	_IOWR('v', BASE_VIDIOC_PRIVATE + 33, struct atomisp_cont_capture_conf)
-
-#define ATOMISP_IOC_G_METADATA \
-	_IOWR('v', BASE_VIDIOC_PRIVATE + 34, struct atomisp_metadata)
-
-#define ATOMISP_IOC_G_METADATA_BY_TYPE \
-	_IOWR('v', BASE_VIDIOC_PRIVATE + 34, struct atomisp_metadata_with_type)
-
-#define ATOMISP_IOC_EXT_ISP_CTRL \
-	_IOWR('v', BASE_VIDIOC_PRIVATE + 35, struct atomisp_ext_isp_ctrl)
 
 #define ATOMISP_IOC_EXP_ID_UNLOCK \
 	_IOW('v', BASE_VIDIOC_PRIVATE + 36, int)
@@ -1181,32 +798,8 @@ struct atomisp_sensor_ae_bracketing_lut {
 #define ATOMISP_IOC_S_FORMATS_CONFIG \
 	_IOW('v', BASE_VIDIOC_PRIVATE + 39, struct atomisp_formats_config)
 
-#define ATOMISP_IOC_S_EXPOSURE_WINDOW \
-	_IOW('v', BASE_VIDIOC_PRIVATE + 40, struct atomisp_ae_window)
-
-#define ATOMISP_IOC_S_ACC_STATE \
-	_IOW('v', BASE_VIDIOC_PRIVATE + 41, struct atomisp_acc_state)
-
-#define ATOMISP_IOC_G_ACC_STATE \
-	_IOR('v', BASE_VIDIOC_PRIVATE + 41, struct atomisp_acc_state)
-
 #define ATOMISP_IOC_INJECT_A_FAKE_EVENT \
 	_IOW('v', BASE_VIDIOC_PRIVATE + 42, int)
-
-#define ATOMISP_IOC_G_SENSOR_AE_BRACKETING_INFO \
-	_IOR('v', BASE_VIDIOC_PRIVATE + 43, struct atomisp_sensor_ae_bracketing_info)
-
-#define ATOMISP_IOC_S_SENSOR_AE_BRACKETING_MODE \
-	_IOW('v', BASE_VIDIOC_PRIVATE + 43, unsigned int)
-
-#define ATOMISP_IOC_G_SENSOR_AE_BRACKETING_MODE \
-	_IOR('v', BASE_VIDIOC_PRIVATE + 43, unsigned int)
-
-#define ATOMISP_IOC_S_SENSOR_AE_BRACKETING_LUT \
-	_IOW('v', BASE_VIDIOC_PRIVATE + 43, struct atomisp_sensor_ae_bracketing_lut)
-
-#define ATOMISP_IOC_G_INVALID_FRAME_NUM \
-	_IOR('v', BASE_VIDIOC_PRIVATE + 44, unsigned int)
 
 #define ATOMISP_IOC_S_ARRAY_RESOLUTION \
 	_IOW('v', BASE_VIDIOC_PRIVATE + 45, struct atomisp_resolution)
@@ -1217,12 +810,6 @@ struct atomisp_sensor_ae_bracketing_lut {
 
 #define ATOMISP_IOC_S_SENSOR_EE_CONFIG \
 	_IOW('v', BASE_VIDIOC_PRIVATE + 47, unsigned int)
-
-#define ATOMISP_IOC_S_SENSOR_RUNMODE \
-	_IOW('v', BASE_VIDIOC_PRIVATE + 48, struct atomisp_s_runmode)
-
-#define ATOMISP_IOC_G_UPDATE_EXPOSURE \
-	_IOWR('v', BASE_VIDIOC_PRIVATE + 49, struct atomisp_update_exposure)
 
 /*
  * Reserved ioctls. We have customer implementing it internally.
@@ -1253,50 +840,12 @@ struct atomisp_sensor_ae_bracketing_lut {
  * Exposure, Flash and privacy (indicator) light controls, to be upstreamed */
 #define V4L2_CID_CAMERA_LASTP1             (V4L2_CID_CAMERA_CLASS_BASE + 1024)
 
-#define V4L2_CID_FOCAL_ABSOLUTE            (V4L2_CID_CAMERA_LASTP1 + 0)
-#define V4L2_CID_FNUMBER_ABSOLUTE          (V4L2_CID_CAMERA_LASTP1 + 1)
-#define V4L2_CID_FNUMBER_RANGE             (V4L2_CID_CAMERA_LASTP1 + 2)
-
-/* Flash related CIDs, see also:
- * http://linuxtv.org/downloads/v4l-dvb-apis/extended-controls.html\
- * #flash-controls */
-
-/* Request a number of flash-exposed frames. The frame status can be
- * found in the reserved field in the v4l2_buffer struct. */
-#define V4L2_CID_REQUEST_FLASH             (V4L2_CID_CAMERA_LASTP1 + 3)
-/* Query flash driver status. See enum atomisp_flash_status above. */
-#define V4L2_CID_FLASH_STATUS              (V4L2_CID_CAMERA_LASTP1 + 5)
-/* Set the flash mode (see enum atomisp_flash_mode) */
-#define V4L2_CID_FLASH_MODE                (V4L2_CID_CAMERA_LASTP1 + 10)
-
-/* VCM slew control */
-#define V4L2_CID_VCM_SLEW                  (V4L2_CID_CAMERA_LASTP1 + 11)
-/* VCM step time */
-#define V4L2_CID_VCM_TIMING                (V4L2_CID_CAMERA_LASTP1 + 12)
-
-/* Query Focus Status */
-#define V4L2_CID_FOCUS_STATUS              (V4L2_CID_CAMERA_LASTP1 + 14)
-
-/* Query sensor's binning factor */
-#define V4L2_CID_BIN_FACTOR_HORZ	   (V4L2_CID_CAMERA_LASTP1 + 15)
-#define V4L2_CID_BIN_FACTOR_VERT	   (V4L2_CID_CAMERA_LASTP1 + 16)
-
-/* number of frames to skip at stream start */
-#define V4L2_CID_G_SKIP_FRAMES		   (V4L2_CID_CAMERA_LASTP1 + 17)
-
-/* Query sensor's 2A status */
-#define V4L2_CID_2A_STATUS                 (V4L2_CID_CAMERA_LASTP1 + 18)
-#define V4L2_2A_STATUS_AE_READY            BIT(0)
-#define V4L2_2A_STATUS_AWB_READY           BIT(1)
-
-#define V4L2_CID_FMT_AUTO			(V4L2_CID_CAMERA_LASTP1 + 19)
-
 #define V4L2_CID_RUN_MODE			(V4L2_CID_CAMERA_LASTP1 + 20)
 #define ATOMISP_RUN_MODE_VIDEO			1
 #define ATOMISP_RUN_MODE_STILL_CAPTURE		2
-#define ATOMISP_RUN_MODE_CONTINUOUS_CAPTURE	3
-#define ATOMISP_RUN_MODE_PREVIEW		4
-#define ATOMISP_RUN_MODE_SDV			5
+#define ATOMISP_RUN_MODE_PREVIEW		3
+#define ATOMISP_RUN_MODE_MIN			1
+#define ATOMISP_RUN_MODE_MAX			3
 
 #define V4L2_CID_ENABLE_VFPP			(V4L2_CID_CAMERA_LASTP1 + 21)
 #define V4L2_CID_ATOMISP_CONTINUOUS_MODE	(V4L2_CID_CAMERA_LASTP1 + 22)
@@ -1310,23 +859,13 @@ struct atomisp_sensor_ae_bracketing_lut {
 #define ATOMISP_VFPP_DISABLE_SCALER		1
 #define ATOMISP_VFPP_DISABLE_LOWLAT		2
 
-/* Query real flash status register value */
-#define V4L2_CID_FLASH_STATUS_REGISTER  (V4L2_CID_CAMERA_LASTP1 + 26)
-
 #define V4L2_CID_START_ZSL_CAPTURE	(V4L2_CID_CAMERA_LASTP1 + 28)
 /* Lock and unlock raw buffer */
 #define V4L2_CID_ENABLE_RAW_BUFFER_LOCK (V4L2_CID_CAMERA_LASTP1 + 29)
 
-#define V4L2_CID_DEPTH_MODE		(V4L2_CID_CAMERA_LASTP1 + 30)
-
 #define V4L2_CID_EXPOSURE_ZONE_NUM	(V4L2_CID_CAMERA_LASTP1 + 31)
 /* Disable digital zoom */
 #define V4L2_CID_DISABLE_DZ		(V4L2_CID_CAMERA_LASTP1 + 32)
-
-#define V4L2_CID_TEST_PATTERN_COLOR_R	(V4L2_CID_CAMERA_LASTP1 + 33)
-#define V4L2_CID_TEST_PATTERN_COLOR_GR	(V4L2_CID_CAMERA_LASTP1 + 34)
-#define V4L2_CID_TEST_PATTERN_COLOR_GB	(V4L2_CID_CAMERA_LASTP1 + 35)
-#define V4L2_CID_TEST_PATTERN_COLOR_B	(V4L2_CID_CAMERA_LASTP1 + 36)
 
 #define V4L2_CID_ATOMISP_SELECT_ISP_VERSION	(V4L2_CID_CAMERA_LASTP1 + 38)
 
@@ -1337,7 +876,6 @@ struct atomisp_sensor_ae_bracketing_lut {
 
 #define V4L2_EVENT_ATOMISP_3A_STATS_READY   (V4L2_EVENT_PRIVATE_START + 1)
 #define V4L2_EVENT_ATOMISP_METADATA_READY   (V4L2_EVENT_PRIVATE_START + 2)
-#define V4L2_EVENT_ATOMISP_RAW_BUFFERS_ALLOC_DONE   (V4L2_EVENT_PRIVATE_START + 3)
 #define V4L2_EVENT_ATOMISP_ACC_COMPLETE     (V4L2_EVENT_PRIVATE_START + 4)
 #define V4L2_EVENT_ATOMISP_PAUSE_BUFFER	    (V4L2_EVENT_PRIVATE_START + 5)
 #define V4L2_EVENT_ATOMISP_CSS_RESET	    (V4L2_EVENT_PRIVATE_START + 6)

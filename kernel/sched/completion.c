@@ -13,6 +13,28 @@
  * Waiting for completion is a typically sync point, but not an exclusion point.
  */
 
+#include <linux/linkage.h>
+#include <linux/sched/debug.h>
+#include <linux/completion.h>
+#include "sched.h"
+
+static void complete_with_flags(struct completion *x, int wake_flags)
+{
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&x->wait.lock, flags);
+
+	if (x->done != UINT_MAX)
+		x->done++;
+	swake_up_locked(&x->wait, wake_flags);
+	raw_spin_unlock_irqrestore(&x->wait.lock, flags);
+}
+
+void complete_on_current_cpu(struct completion *x)
+{
+	return complete_with_flags(x, WF_CURRENT_CPU);
+}
+
 /**
  * complete: - signals a single thread waiting on this completion
  * @x:  holds the state of this particular completion
@@ -27,14 +49,7 @@
  */
 void complete(struct completion *x)
 {
-	unsigned long flags;
-
-	raw_spin_lock_irqsave(&x->wait.lock, flags);
-
-	if (x->done != UINT_MAX)
-		x->done++;
-	swake_up_locked(&x->wait);
-	raw_spin_unlock_irqrestore(&x->wait.lock, flags);
+	complete_with_flags(x, 0);
 }
 EXPORT_SYMBOL(complete);
 
@@ -204,6 +219,7 @@ EXPORT_SYMBOL(wait_for_completion_io_timeout);
 int __sched wait_for_completion_interruptible(struct completion *x)
 {
 	long t = wait_for_common(x, MAX_SCHEDULE_TIMEOUT, TASK_INTERRUPTIBLE);
+
 	if (t == -ERESTARTSYS)
 		return t;
 	return 0;
@@ -241,11 +257,22 @@ EXPORT_SYMBOL(wait_for_completion_interruptible_timeout);
 int __sched wait_for_completion_killable(struct completion *x)
 {
 	long t = wait_for_common(x, MAX_SCHEDULE_TIMEOUT, TASK_KILLABLE);
+
 	if (t == -ERESTARTSYS)
 		return t;
 	return 0;
 }
 EXPORT_SYMBOL(wait_for_completion_killable);
+
+int __sched wait_for_completion_state(struct completion *x, unsigned int state)
+{
+	long t = wait_for_common(x, MAX_SCHEDULE_TIMEOUT, state);
+
+	if (t == -ERESTARTSYS)
+		return t;
+	return 0;
+}
+EXPORT_SYMBOL(wait_for_completion_state);
 
 /**
  * wait_for_completion_killable_timeout: - waits for completion of a task (w/(to,killable))

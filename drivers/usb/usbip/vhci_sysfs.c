@@ -283,6 +283,7 @@ static int valid_args(__u32 *pdev_nr, __u32 *rhport,
 	case USB_SPEED_HIGH:
 	case USB_SPEED_WIRELESS:
 	case USB_SPEED_SUPER:
+	case USB_SPEED_SUPER_PLUS:
 		break;
 	default:
 		pr_err("Failed attach request for unsupported USB speed: %s\n",
@@ -349,7 +350,7 @@ static ssize_t attach_store(struct device *dev, struct device_attribute *attr,
 	vhci_hcd = hcd_to_vhci_hcd(hcd);
 	vhci = vhci_hcd->vhci;
 
-	if (speed == USB_SPEED_SUPER)
+	if (speed >= USB_SPEED_SUPER)
 		vdev = &vhci->vhci_hcd_ss->vdev[rhport];
 	else
 		vdev = &vhci->vhci_hcd_hs->vdev[rhport];
@@ -475,8 +476,7 @@ static int init_status_attrs(void)
 {
 	int id;
 
-	status_attrs = kcalloc(vhci_num_controllers, sizeof(struct status_attr),
-			       GFP_KERNEL);
+	status_attrs = kzalloc_objs(struct status_attr, vhci_num_controllers);
 	if (status_attrs == NULL)
 		return -ENOMEM;
 
@@ -500,8 +500,7 @@ int vhci_init_attr_group(void)
 	struct attribute **attrs;
 	int ret, i;
 
-	attrs = kcalloc((vhci_num_controllers + 5), sizeof(struct attribute *),
-			GFP_KERNEL);
+	attrs = kzalloc_objs(struct attribute *, (vhci_num_controllers + 5));
 	if (attrs == NULL)
 		return -ENOMEM;
 

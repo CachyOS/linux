@@ -2,7 +2,7 @@
 
 .. include:: ../disclaimer-zh_CN.rst
 
-:Original: Documentation/dev-tools/gdb-kernel-debugging.rst
+:Original: Documentation/process/debugging/gdb-kernel-debugging.rst
 :Translator: 高超 gao chao <gaochao49@huawei.com>
 
 通过gdb调试内核和模块
@@ -33,6 +33,10 @@ Kgdb内核调试器、QEMU等虚拟机管理程序或基于JTAG的硬件接口�
   此外，QEMU允许通过-kernel、-append、-initrd这些命令行选项直接启动内核。
   但这通常仅在不依赖内核模块时才有效。有关此模式的更多详细信息，请参阅QEMU文档。
   在这种情况下，如果架构支持KASLR，应该在禁用CONFIG_RANDOMIZE_BASE的情况下构建内核。
+
+- 构建gdb脚本（适用于内核v5.1版本及以上）
+
+    make scripts_gdb
 
 - 启用QEMU/KVM的gdb stub，可以通过如下方式实现
 
@@ -116,35 +120,31 @@ Kgdb内核调试器、QEMU等虚拟机管理程序或基于JTAG的硬件接口�
 
 - 对当前或指定的CPU使用per-cpu函数::
 
-    (gdb) p $lx_per_cpu("runqueues").nr_running
+    (gdb) p $lx_per_cpu(runqueues).nr_running
     $3 = 1
-    (gdb) p $lx_per_cpu("runqueues", 2).nr_running
+    (gdb) p $lx_per_cpu(runqueues, 2).nr_running
     $4 = 0
 
 - 使用container_of查看更多hrtimers信息::
 
-    (gdb) set $next = $lx_per_cpu("hrtimer_bases").clock_base[0].active.next
-    (gdb) p *$container_of($next, "struct hrtimer", "node")
+    (gdb) set $leftmost = $lx_per_cpu(hrtimer_bases).clock_base[0].active.rb_root.rb_leftmost
+    (gdb) p *$container_of($leftmost, "struct hrtimer", "node")
     $5 = {
       node = {
         node = {
-          __rb_parent_color = 18446612133355256072,
-          rb_right = 0x0 <irq_stack_union>,
-          rb_left = 0x0 <irq_stack_union>
+          __rb_parent_color = 18446612686384860673,
+          rb_right = 0xffff888231da8b00,
+          rb_left = 0x0
         },
-        expires = {
-          tv64 = 1835268000000
-        }
+        expires = 1228461000000
       },
-      _softexpires = {
-        tv64 = 1835268000000
-      },
-      function = 0xffffffff81078232 <tick_sched_timer>,
-      base = 0xffff88003fd0d6f0,
-      state = 1,
-      start_pid = 0,
-      start_site = 0xffffffff81055c1f <hrtimer_start_range_ns+20>,
-      start_comm = "swapper/2\000\000\000\000\000\000"
+      _softexpires = 1228461000000,
+      function = 0xffffffff8137ab20 <tick_nohz_handler>,
+      base = 0xffff888231d9b4c0,
+      state = 1 '\001',
+      is_rel = 0 '\000',
+      is_soft = 0 '\000',
+      is_hard = 1 '\001'
     }
 
 

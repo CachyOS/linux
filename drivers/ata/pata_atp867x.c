@@ -259,7 +259,7 @@ static int atp867x_cable_detect(struct ata_port *ap)
 	return ATA_CBL_PATA_UNK;
 }
 
-static struct scsi_host_template atp867x_sht = {
+static const struct scsi_host_template atp867x_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -525,7 +525,7 @@ static int atp867x_reinit_one(struct pci_dev *pdev)
 }
 #endif
 
-static struct pci_device_id atp867x_pci_tbl[] = {
+static const struct pci_device_id atp867x_pci_tbl[] = {
 	{ PCI_VDEVICE(ARTOP, PCI_DEVICE_ID_ARTOP_ATP867A),	0 },
 	{ PCI_VDEVICE(ARTOP, PCI_DEVICE_ID_ARTOP_ATP867B),	0 },
 	{ },

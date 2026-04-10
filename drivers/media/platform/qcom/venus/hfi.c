@@ -138,29 +138,6 @@ int hfi_core_trigger_ssr(struct venus_core *core, u32 type)
 	return core->ops->core_trigger_ssr(core, type);
 }
 
-int hfi_core_ping(struct venus_core *core)
-{
-	int ret;
-
-	mutex_lock(&core->lock);
-
-	ret = core->ops->core_ping(core, 0xbeef);
-	if (ret)
-		goto unlock;
-
-	ret = wait_for_completion_timeout(&core->done, TIMEOUT);
-	if (!ret) {
-		ret = -ETIMEDOUT;
-		goto unlock;
-	}
-	ret = 0;
-	if (core->error != HFI_ERR_NONE)
-		ret = -ENODEV;
-unlock:
-	mutex_unlock(&core->lock);
-	return ret;
-}
-
 static int wait_session_msg(struct venus_inst *inst)
 {
 	int ret;
@@ -569,8 +546,6 @@ irqreturn_t hfi_isr(int irq, void *dev)
 
 int hfi_create(struct venus_core *core, const struct hfi_core_ops *ops)
 {
-	int ret;
-
 	if (!ops)
 		return -EINVAL;
 
@@ -579,9 +554,8 @@ int hfi_create(struct venus_core *core, const struct hfi_core_ops *ops)
 	core->state = CORE_UNINIT;
 	init_completion(&core->done);
 	pkt_set_version(core->res->hfi_version);
-	ret = venus_hfi_create(core);
 
-	return ret;
+	return venus_hfi_create(core);
 }
 
 void hfi_destroy(struct venus_core *core)

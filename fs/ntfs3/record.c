@@ -31,7 +31,7 @@ static inline int compare_attr(const struct ATTRIB *left, enum ATTR_TYPE type,
  *
  * Return: Unused attribute id that is less than mrec->next_attr_id.
  */
-static __le16 mi_new_attt_id(struct mft_inode *mi)
+static __le16 mi_new_attt_id(struct ntfs_inode *ni, struct mft_inode *mi)
 {
 	u16 free_id, max_id, t16;
 	struct MFT_REC *rec = mi->mrec;
@@ -52,7 +52,7 @@ static __le16 mi_new_attt_id(struct mft_inode *mi)
 	attr = NULL;
 
 	for (;;) {
-		attr = mi_enum_attr(mi, attr);
+		attr = mi_enum_attr(ni, mi, attr);
 		if (!attr) {
 			rec->next_attr_id = cpu_to_le16(max_id + 1);
 			mi->dirty = true;
@@ -71,7 +71,7 @@ static __le16 mi_new_attt_id(struct mft_inode *mi)
 int mi_get(struct ntfs_sb_info *sbi, CLST rno, struct mft_inode **mi)
 {
 	int err;
-	struct mft_inode *m = kzalloc(sizeof(struct mft_inode), GFP_NOFS);
+	struct mft_inode *m = kzalloc_obj(struct mft_inode, GFP_NOFS);
 
 	if (!m)
 		return -ENOMEM;
@@ -124,7 +124,7 @@ int mi_read(struct mft_inode *mi, bool is_mft)
 	struct rw_semaphore *rw_lock = NULL;
 
 	if (is_mounted(sbi)) {
-		if (!is_mft) {
+		if (!is_mft && mft_ni) {
 			rw_lock = &mft_ni->file.run_lock;
 			down_read(rw_lock);
 		}
@@ -148,7 +148,7 @@ int mi_read(struct mft_inode *mi, bool is_mft)
 		ni_lock(mft_ni);
 		down_write(rw_lock);
 	}
-	err = attr_load_runs_vcn(mft_ni, ATTR_DATA, NULL, 0, &mft_ni->file.run,
+	err = attr_load_runs_vcn(mft_ni, ATTR_DATA, NULL, 0, run,
 				 vbo >> sbi->cluster_bits);
 	if (rw_lock) {
 		up_write(rw_lock);
@@ -180,15 +180,29 @@ ok:
 	return 0;
 
 out:
+	if (err == -E_NTFS_CORRUPT) {
+		ntfs_err(sbi->sb, "mft corrupted");
+		ntfs_set_state(sbi, NTFS_DIRTY_ERROR);
+		err = -EINVAL;
+	}
+
 	return err;
 }
 
-struct ATTRIB *mi_enum_attr(struct mft_inode *mi, struct ATTRIB *attr)
+/*
+ * mi_enum_attr - start/continue attributes enumeration in record.
+ *
+ * NOTE: mi->mrec - memory of size sbi->record_size
+ * here we sure that mi->mrec->total == sbi->record_size (see mi_read)
+ */
+struct ATTRIB *mi_enum_attr(struct ntfs_inode *ni, struct mft_inode *mi,
+			    struct ATTRIB *attr)
 {
 	const struct MFT_REC *rec = mi->mrec;
 	u32 used = le32_to_cpu(rec->used);
-	u32 t32, off, asize;
+	u32 t32, off, asize, prev_type;
 	u16 t16;
+	u64 data_size, alloc_size, tot_size;
 
 	if (!attr) {
 		u32 total = le32_to_cpu(rec->total);
@@ -196,40 +210,41 @@ struct ATTRIB *mi_enum_attr(struct mft_inode *mi, struct ATTRIB *attr)
 		off = le16_to_cpu(rec->attr_off);
 
 		if (used > total)
-			return NULL;
+			goto out;
 
 		if (off >= used || off < MFTRECORD_FIXUP_OFFSET_1 ||
-		    !IS_ALIGNED(off, 4)) {
-			return NULL;
+		    !IS_ALIGNED(off, 8)) {
+			goto out;
 		}
 
 		/* Skip non-resident records. */
 		if (!is_rec_inuse(rec))
 			return NULL;
 
+		prev_type = 0;
 		attr = Add2Ptr(rec, off);
 	} else {
-		/* Check if input attr inside record. */
+		/*
+		 * We don't need to check previous attr here. There is
+		 * a bounds checking in the previous round.
+		 */
 		off = PtrOffset(rec, attr);
-		if (off >= used)
-			return NULL;
 
 		asize = le32_to_cpu(attr->size);
-		if (asize < SIZEOF_RESIDENT) {
-			/* Impossible 'cause we should not return such attribute. */
-			return NULL;
-		}
 
+		prev_type = le32_to_cpu(attr->type);
 		attr = Add2Ptr(attr, asize);
 		off += asize;
 	}
 
-	asize = le32_to_cpu(attr->size);
-
-	/* Can we use the first field (attr->type). */
+	/*
+	 * Can we use the first fields:
+	 * attr->type,
+	 * attr->size
+	 */
 	if (off + 8 > used) {
 		static_assert(ALIGN(sizeof(enum ATTR_TYPE), 8) == 8);
-		return NULL;
+		goto out;
 	}
 
 	if (attr->type == ATTR_END) {
@@ -239,61 +254,117 @@ struct ATTRIB *mi_enum_attr(struct mft_inode *mi, struct ATTRIB *attr)
 
 	/* 0x100 is last known attribute for now. */
 	t32 = le32_to_cpu(attr->type);
-	if ((t32 & 0xf) || (t32 > 0x100))
-		return NULL;
+	if (!t32 || (t32 & 0xf) || (t32 > 0x100))
+		goto out;
 
-	/* Check boundary. */
-	if (off + asize > used)
-		return NULL;
+	/* attributes in record must be ordered by type */
+	if (t32 < prev_type)
+		goto out;
+
+	asize = le32_to_cpu(attr->size);
+
+	if (!IS_ALIGNED(asize, 8))
+		goto out;
+
+	/* Check overflow and boundary. */
+	if (off + asize < off || off + asize > used)
+		goto out;
+
+	/* Can we use the field attr->non_res. */
+	if (off + 9 > used)
+		goto out;
 
 	/* Check size of attribute. */
 	if (!attr->non_res) {
+		/* Check resident fields. */
 		if (asize < SIZEOF_RESIDENT)
-			return NULL;
+			goto out;
 
 		t16 = le16_to_cpu(attr->res.data_off);
-
 		if (t16 > asize)
-			return NULL;
+			goto out;
 
-		t32 = le32_to_cpu(attr->res.data_size);
-		if (t16 + t32 > asize)
-			return NULL;
+		if (le32_to_cpu(attr->res.data_size) > asize - t16)
+			goto out;
+
+		t32 = sizeof(short) * attr->name_len;
+		if (t32 && le16_to_cpu(attr->name_off) + t32 > t16)
+			goto out;
 
 		return attr;
 	}
 
-	/* Check some nonresident fields. */
-	if (attr->name_len &&
-	    le16_to_cpu(attr->name_off) + sizeof(short) * attr->name_len >
-		    le16_to_cpu(attr->nres.run_off)) {
-		return NULL;
+	/* Check nonresident fields. */
+	if (attr->non_res != 1)
+		goto out;
+
+	/* Can we use memory including attr->nres.valid_size? */
+	if (asize < SIZEOF_NONRESIDENT)
+		goto out;
+
+	t16 = le16_to_cpu(attr->nres.run_off);
+	if (t16 > asize)
+		goto out;
+
+	t32 = sizeof(short) * attr->name_len;
+	if (t32 && le16_to_cpu(attr->name_off) + t32 > t16)
+		goto out;
+
+	/* Check start/end vcn. */
+	if (le64_to_cpu(attr->nres.svcn) > le64_to_cpu(attr->nres.evcn) + 1)
+		goto out;
+
+	data_size = le64_to_cpu(attr->nres.data_size);
+	if (le64_to_cpu(attr->nres.valid_size) > data_size)
+		goto out;
+
+	alloc_size = le64_to_cpu(attr->nres.alloc_size);
+	if (data_size > alloc_size)
+		goto out;
+
+	t32 = mi->sbi->cluster_mask;
+	if (alloc_size & t32)
+		goto out;
+
+	if (!attr->nres.svcn && is_attr_ext(attr)) {
+		/* First segment of sparse/compressed attribute */
+		/* Can we use memory including attr->nres.total_size? */
+		if (asize < SIZEOF_NONRESIDENT_EX)
+			goto out;
+
+		tot_size = le64_to_cpu(attr->nres.total_size);
+		if (tot_size & t32)
+			goto out;
+
+		if (tot_size > alloc_size)
+			goto out;
+	} else {
+		if (attr->nres.c_unit)
+			goto out;
+
+		if (alloc_size > mi->sbi->volume.size)
+			goto out;
 	}
 
-	if (attr->nres.svcn || !is_attr_ext(attr)) {
-		if (asize + 8 < SIZEOF_NONRESIDENT)
-			return NULL;
-
-		if (attr->nres.c_unit)
-			return NULL;
-	} else if (asize + 8 < SIZEOF_NONRESIDENT_EX)
-		return NULL;
-
 	return attr;
+
+out:
+	_ntfs_bad_inode(&ni->vfs_inode);
+	return NULL;
 }
 
 /*
  * mi_find_attr - Find the attribute by type and name and id.
  */
-struct ATTRIB *mi_find_attr(struct mft_inode *mi, struct ATTRIB *attr,
-			    enum ATTR_TYPE type, const __le16 *name,
-			    size_t name_len, const __le16 *id)
+struct ATTRIB *mi_find_attr(struct ntfs_inode *ni, struct mft_inode *mi,
+			    struct ATTRIB *attr, enum ATTR_TYPE type,
+			    const __le16 *name, u8 name_len, const __le16 *id)
 {
 	u32 type_in = le32_to_cpu(type);
 	u32 atype;
 
 next_attr:
-	attr = mi_enum_attr(mi, attr);
+	attr = mi_enum_attr(ni, mi, attr);
 	if (!attr)
 		return NULL;
 
@@ -373,6 +444,8 @@ int mi_format_new(struct mft_inode *mi, struct ntfs_sb_info *sbi, CLST rno,
 
 	rec->seq = cpu_to_le16(seq);
 	rec->flags = RECORD_FLAG_IN_USE | flags;
+	if (MFTRECORD_FIXUP_OFFSET == MFTRECORD_FIXUP_OFFSET_3)
+		rec->mft_record = cpu_to_le32(rno);
 
 	mi->dirty = true;
 
@@ -395,35 +468,13 @@ int mi_format_new(struct mft_inode *mi, struct ntfs_sb_info *sbi, CLST rno,
 }
 
 /*
- * mi_mark_free - Mark record as unused and marks it as free in bitmap.
- */
-void mi_mark_free(struct mft_inode *mi)
-{
-	CLST rno = mi->rno;
-	struct ntfs_sb_info *sbi = mi->sbi;
-
-	if (rno >= MFT_REC_RESERVED && rno < MFT_REC_FREE) {
-		ntfs_clear_mft_tail(sbi, rno, rno + 1);
-		mi->dirty = false;
-		return;
-	}
-
-	if (mi->mrec) {
-		clear_rec_inuse(mi->mrec);
-		mi->dirty = true;
-		mi_write(mi, 0);
-	}
-	ntfs_mark_rec_free(sbi, rno);
-}
-
-/*
  * mi_insert_attr - Reserve space for new attribute.
  *
  * Return: Not full constructed attribute or NULL if not possible to create.
  */
-struct ATTRIB *mi_insert_attr(struct mft_inode *mi, enum ATTR_TYPE type,
-			      const __le16 *name, u8 name_len, u32 asize,
-			      u16 name_off)
+struct ATTRIB *mi_insert_attr(struct ntfs_inode *ni, struct mft_inode *mi,
+			      enum ATTR_TYPE type, const __le16 *name,
+			      u8 name_len, u32 asize, u16 name_off)
 {
 	size_t tail;
 	struct ATTRIB *attr;
@@ -432,10 +483,9 @@ struct ATTRIB *mi_insert_attr(struct mft_inode *mi, enum ATTR_TYPE type,
 	struct ntfs_sb_info *sbi = mi->sbi;
 	u32 used = le32_to_cpu(rec->used);
 	const u16 *upcase = sbi->upcase;
-	int diff;
 
 	/* Can we insert mi attribute? */
-	if (used + asize > mi->sbi->record_size)
+	if (used + asize > sbi->record_size)
 		return NULL;
 
 	/*
@@ -443,26 +493,27 @@ struct ATTRIB *mi_insert_attr(struct mft_inode *mi, enum ATTR_TYPE type,
 	 * at which we should insert it.
 	 */
 	attr = NULL;
-	while ((attr = mi_enum_attr(mi, attr))) {
-		diff = compare_attr(attr, type, name, name_len, upcase);
-		if (diff > 0)
-			break;
+	while ((attr = mi_enum_attr(ni, mi, attr))) {
+		int diff = compare_attr(attr, type, name, name_len, upcase);
+
 		if (diff < 0)
 			continue;
 
-		if (!is_attr_indexed(attr))
+		if (!diff && !is_attr_indexed(attr))
 			return NULL;
 		break;
 	}
 
 	if (!attr) {
-		tail = 8; /* Not used, just to suppress warning. */
+		/* Append. */
+		tail = 8;
 		attr = Add2Ptr(rec, used - 8);
 	} else {
+		/* Insert before 'attr'. */
 		tail = used - PtrOffset(rec, attr);
 	}
 
-	id = mi_new_attt_id(mi);
+	id = mi_new_attt_id(ni, mi);
 
 	memmove(Add2Ptr(attr, asize), attr, tail);
 	memset(attr, 0, asize);
@@ -497,9 +548,14 @@ bool mi_remove_attr(struct ntfs_inode *ni, struct mft_inode *mi,
 	if (aoff + asize > used)
 		return false;
 
-	if (ni && is_attr_indexed(attr)) {
-		le16_add_cpu(&ni->mi.mrec->hard_links, -1);
-		ni->mi.dirty = true;
+	if (ni && is_attr_indexed(attr) && attr->type == ATTR_NAME) {
+		u16 links = le16_to_cpu(ni->mi.mrec->hard_links);
+		if (!links) {
+			/* minor error. Not critical. */
+		} else {
+			ni->mi.mrec->hard_links = cpu_to_le16(links - 1);
+			ni->mi.dirty = true;
+		}
 	}
 
 	used -= asize;
@@ -560,8 +616,12 @@ bool mi_resize_attr(struct mft_inode *mi, struct ATTRIB *attr, int bytes)
 	return true;
 }
 
+/*
+ * Pack runs in MFT record.
+ * If failed record is not changed.
+ */
 int mi_pack_runs(struct mft_inode *mi, struct ATTRIB *attr,
-		 struct runs_tree *run, CLST len)
+		 const struct runs_tree *run, CLST len)
 {
 	int err = 0;
 	struct ntfs_sb_info *sbi = mi->sbi;

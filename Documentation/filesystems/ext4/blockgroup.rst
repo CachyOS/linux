@@ -1,7 +1,10 @@
 .. SPDX-License-Identifier: GPL-2.0
 
+Block Groups
+------------
+
 Layout
-------
+~~~~~~
 
 The layout of a standard block group is approximately as follows (each
 of these fields is discussed in a separate section below):
@@ -60,7 +63,7 @@ groups (flex_bg). Leftover space is used for file data blocks, indirect
 block maps, extent tree blocks, and extended attributes.
 
 Flexible Block Groups
----------------------
+~~~~~~~~~~~~~~~~~~~~~
 
 Starting in ext4, there is a new feature called flexible block groups
 (flex_bg). In a flex_bg, several block groups are tied together as one
@@ -78,7 +81,7 @@ if flex_bg is enabled. The number of block groups that make up a
 flex_bg is given by 2 ^ ``sb.s_log_groups_per_flex``.
 
 Meta Block Groups
------------------
+~~~~~~~~~~~~~~~~~
 
 Without the option META_BG, for safety concerns, all block group
 descriptors copies are kept in the first block group. Given the default
@@ -105,9 +108,9 @@ descriptors. Instead, the superblock and a single block group descriptor
 block is placed at the beginning of the first, second, and last block
 groups in a meta-block group. A meta-block group is a collection of
 block groups which can be described by a single block group descriptor
-block. Since the size of the block group descriptor structure is 32
-bytes, a meta-block group contains 32 block groups for filesystems with
-a 1KB block size, and 128 block groups for filesystems with a 4KB
+block. Since the size of the block group descriptor structure is 64
+bytes, a meta-block group contains 16 block groups for filesystems with
+a 1KB block size, and 64 block groups for filesystems with a 4KB
 blocksize. Filesystems can either be created using this new block group
 descriptor layout, or existing filesystems can be resized on-line, and
 the field s_first_meta_bg in the superblock will indicate the first
@@ -117,7 +120,7 @@ Please see an important note about ``BLOCK_UNINIT`` in the section about
 block and inode bitmaps.
 
 Lazy Block Group Initialization
--------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 A new feature for ext4 are three block group descriptor flags that
 enable mkfs to skip initializing other parts of the block group

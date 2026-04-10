@@ -31,21 +31,21 @@ is treated as one entity. The load of a group is defined as the sum of the
 load of each of its member CPUs, and only when the load of a group becomes
 out of balance are tasks moved between groups.
 
-In kernel/sched/core.c, trigger_load_balance() is run periodically on each CPU
-through scheduler_tick(). It raises a softirq after the next regularly scheduled
+In kernel/sched/core.c, sched_balance_trigger() is run periodically on each CPU
+through sched_tick(). It raises a softirq after the next regularly scheduled
 rebalancing event for the current runqueue has arrived. The actual load
-balancing workhorse, run_rebalance_domains()->rebalance_domains(), is then run
+balancing workhorse, sched_balance_softirq()->sched_balance_domains(), is then run
 in softirq context (SCHED_SOFTIRQ).
 
 The latter function takes two arguments: the runqueue of current CPU and whether
-the CPU was idle at the time the scheduler_tick() happened and iterates over all
+the CPU was idle at the time the sched_tick() happened and iterates over all
 sched domains our CPU is on, starting from its base domain and going up the ->parent
 chain. While doing that, it checks to see if the current domain has exhausted its
-rebalance interval. If so, it runs load_balance() on that domain. It then checks
+rebalance interval. If so, it runs sched_balance_rq() on that domain. It then checks
 the parent sched_domain (if it exists), and the parent of the parent and so
 forth.
 
-Initially, load_balance() finds the busiest group in the current sched domain.
+Initially, sched_balance_rq() finds the busiest group in the current sched domain.
 If it succeeds, it looks for the busiest runqueue of all the CPUs' runqueues in
 that group. If it manages to find such a runqueue, it locks both our initial
 CPU's runqueue and the newly found busiest one and starts moving tasks from it
@@ -73,9 +73,8 @@ Architectures may override the generic domain builder and the default SD flags
 for a given topology level by creating a sched_domain_topology_level array and
 calling set_sched_topology() with this array as the parameter.
 
-The sched-domains debugging infrastructure can be enabled by enabling
-CONFIG_SCHED_DEBUG and adding 'sched_verbose' to your cmdline. If you
-forgot to tweak your cmdline, you can also flip the
+The sched-domains debugging infrastructure can be enabled by 'sched_verbose'
+to your cmdline. If you forgot to tweak your cmdline, you can also flip the
 /sys/kernel/debug/sched/verbose knob. This enables an error checking parse of
 the sched domains which should catch most possible errors (described above). It
 also prints out the domain structure in a visual format.

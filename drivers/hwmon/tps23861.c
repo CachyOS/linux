@@ -14,7 +14,7 @@
 #include <linux/hwmon.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/regmap.h>
 
 #define TEMPERATURE			0x2c
@@ -114,10 +114,9 @@ struct tps23861_data {
 	struct regmap *regmap;
 	u32 shunt_resistor;
 	struct i2c_client *client;
-	struct dentry *debugfs_dir;
 };
 
-static struct regmap_config tps23861_regmap_config = {
+static const struct regmap_config tps23861_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = 0x6f,
@@ -132,7 +131,7 @@ static int tps23861_read_temp(struct tps23861_data *data, long *val)
 	if (err < 0)
 		return err;
 
-	*val = (regval * TEMPERATURE_LSB) - 20000;
+	*val = ((long)regval * TEMPERATURE_LSB) - 20000;
 
 	return 0;
 }
@@ -140,7 +139,8 @@ static int tps23861_read_temp(struct tps23861_data *data, long *val)
 static int tps23861_read_voltage(struct tps23861_data *data, int channel,
 				 long *val)
 {
-	unsigned int regval;
+	__le16 regval;
+	long raw_val;
 	int err;
 
 	if (channel < TPS23861_NUM_PORTS) {
@@ -155,7 +155,8 @@ static int tps23861_read_voltage(struct tps23861_data *data, int channel,
 	if (err < 0)
 		return err;
 
-	*val = (FIELD_GET(VOLTAGE_CURRENT_MASK, regval) * VOLTAGE_LSB) / 1000;
+	raw_val = le16_to_cpu(regval);
+	*val = (FIELD_GET(VOLTAGE_CURRENT_MASK, raw_val) * VOLTAGE_LSB) / 1000;
 
 	return 0;
 }
@@ -163,8 +164,9 @@ static int tps23861_read_voltage(struct tps23861_data *data, int channel,
 static int tps23861_read_current(struct tps23861_data *data, int channel,
 				 long *val)
 {
-	unsigned int current_lsb;
-	unsigned int regval;
+	long raw_val, current_lsb;
+	__le16 regval;
+
 	int err;
 
 	if (data->shunt_resistor == SHUNT_RESISTOR_DEFAULT)
@@ -178,7 +180,8 @@ static int tps23861_read_current(struct tps23861_data *data, int channel,
 	if (err < 0)
 		return err;
 
-	*val = (FIELD_GET(VOLTAGE_CURRENT_MASK, regval) * current_lsb) / 1000000;
+	raw_val = le16_to_cpu(regval);
+	*val = (FIELD_GET(VOLTAGE_CURRENT_MASK, raw_val) * current_lsb) / 1000000;
 
 	return 0;
 }
@@ -337,7 +340,7 @@ static int tps23861_read_string(struct device *dev,
 	return 0;
 }
 
-static const struct hwmon_channel_info *tps23861_info[] = {
+static const struct hwmon_channel_info * const tps23861_info[] = {
 	HWMON_CHANNEL_INFO(chip,
 			   HWMON_C_REGISTER_TZ),
 	HWMON_CHANNEL_INFO(temp,
@@ -368,29 +371,12 @@ static const struct hwmon_chip_info tps23861_chip_info = {
 	.info = tps23861_info,
 };
 
-static char *tps23861_port_operating_mode(struct tps23861_data *data, int port)
+static char *port_operating_mode_string(uint8_t mode_reg, unsigned int port)
 {
-	unsigned int regval;
-	int mode;
+	unsigned int mode = ~0;
 
-	regmap_read(data->regmap, OPERATING_MODE, &regval);
-
-	switch (port) {
-	case 1:
-		mode = FIELD_GET(OPERATING_MODE_PORT_1_MASK, regval);
-		break;
-	case 2:
-		mode = FIELD_GET(OPERATING_MODE_PORT_2_MASK, regval);
-		break;
-	case 3:
-		mode = FIELD_GET(OPERATING_MODE_PORT_3_MASK, regval);
-		break;
-	case 4:
-		mode = FIELD_GET(OPERATING_MODE_PORT_4_MASK, regval);
-		break;
-	default:
-		mode = -EINVAL;
-	}
+	if (port < TPS23861_NUM_PORTS)
+		mode = (mode_reg >> (2 * port)) & OPERATING_MODE_PORT_1_MASK;
 
 	switch (mode) {
 	case OPERATING_MODE_OFF:
@@ -406,15 +392,9 @@ static char *tps23861_port_operating_mode(struct tps23861_data *data, int port)
 	}
 }
 
-static char *tps23861_port_detect_status(struct tps23861_data *data, int port)
+static char *port_detect_status_string(uint8_t status_reg)
 {
-	unsigned int regval;
-
-	regmap_read(data->regmap,
-		    PORT_1_STATUS + (port - 1),
-		    &regval);
-
-	switch (FIELD_GET(PORT_STATUS_DETECT_MASK, regval)) {
+	switch (FIELD_GET(PORT_STATUS_DETECT_MASK, status_reg)) {
 	case PORT_DETECT_UNKNOWN:
 		return "Unknown device";
 	case PORT_DETECT_SHORT:
@@ -444,15 +424,9 @@ static char *tps23861_port_detect_status(struct tps23861_data *data, int port)
 	}
 }
 
-static char *tps23861_port_class_status(struct tps23861_data *data, int port)
+static char *port_class_status_string(uint8_t status_reg)
 {
-	unsigned int regval;
-
-	regmap_read(data->regmap,
-		    PORT_1_STATUS + (port - 1),
-		    &regval);
-
-	switch (FIELD_GET(PORT_STATUS_CLASS_MASK, regval)) {
+	switch (FIELD_GET(PORT_STATUS_CLASS_MASK, status_reg)) {
 	case PORT_CLASS_UNKNOWN:
 		return "Unknown";
 	case PORT_CLASS_RESERVED:
@@ -475,32 +449,27 @@ static char *tps23861_port_class_status(struct tps23861_data *data, int port)
 	}
 }
 
-static char *tps23861_port_poe_plus_status(struct tps23861_data *data, int port)
+static char *port_poe_plus_status_string(uint8_t poe_plus, unsigned int port)
 {
-	unsigned int regval;
-
-	regmap_read(data->regmap, POE_PLUS, &regval);
-
-	if (BIT(port + 3) & regval)
-		return "Yes";
-	else
-		return "No";
+	return (BIT(port + 4) & poe_plus) ? "Yes" : "No";
 }
 
 static int tps23861_port_resistance(struct tps23861_data *data, int port)
 {
-	u16 regval;
+	unsigned int raw_val;
+	__le16 regval;
 
 	regmap_bulk_read(data->regmap,
-			 PORT_1_RESISTANCE_LSB + PORT_N_RESISTANCE_LSB_OFFSET * (port - 1),
+			 PORT_1_RESISTANCE_LSB + PORT_N_RESISTANCE_LSB_OFFSET * port,
 			 &regval,
 			 2);
 
-	switch (FIELD_GET(PORT_RESISTANCE_RSN_MASK, regval)) {
+	raw_val = le16_to_cpu(regval);
+	switch (FIELD_GET(PORT_RESISTANCE_RSN_MASK, raw_val)) {
 	case PORT_RESISTANCE_RSN_OTHER:
-		return (FIELD_GET(PORT_RESISTANCE_MASK, regval) * RESISTANCE_LSB) / 10000;
+		return (FIELD_GET(PORT_RESISTANCE_MASK, raw_val) * RESISTANCE_LSB) / 10000;
 	case PORT_RESISTANCE_RSN_LOW:
-		return (FIELD_GET(PORT_RESISTANCE_MASK, regval) * RESISTANCE_LSB_LOW) / 10000;
+		return (FIELD_GET(PORT_RESISTANCE_MASK, raw_val) * RESISTANCE_LSB_LOW) / 10000;
 	case PORT_RESISTANCE_RSN_SHORT:
 	case PORT_RESISTANCE_RSN_OPEN:
 	default:
@@ -511,14 +480,19 @@ static int tps23861_port_resistance(struct tps23861_data *data, int port)
 static int tps23861_port_status_show(struct seq_file *s, void *data)
 {
 	struct tps23861_data *priv = s->private;
-	int i;
+	unsigned int i, mode, poe_plus, status;
 
-	for (i = 1; i < TPS23861_NUM_PORTS + 1; i++) {
-		seq_printf(s, "Port: \t\t%d\n", i);
-		seq_printf(s, "Operating mode: %s\n", tps23861_port_operating_mode(priv, i));
-		seq_printf(s, "Detected: \t%s\n", tps23861_port_detect_status(priv, i));
-		seq_printf(s, "Class: \t\t%s\n", tps23861_port_class_status(priv, i));
-		seq_printf(s, "PoE Plus: \t%s\n", tps23861_port_poe_plus_status(priv, i));
+	regmap_read(priv->regmap, OPERATING_MODE, &mode);
+	regmap_read(priv->regmap, POE_PLUS, &poe_plus);
+
+	for (i = 0; i < TPS23861_NUM_PORTS; i++) {
+		regmap_read(priv->regmap, PORT_1_STATUS + i, &status);
+
+		seq_printf(s, "Port: \t\t%d\n", i + 1);
+		seq_printf(s, "Operating mode: %s\n", port_operating_mode_string(mode, i));
+		seq_printf(s, "Detected: \t%s\n", port_detect_status_string(status));
+		seq_printf(s, "Class: \t\t%s\n", port_class_status_string(status));
+		seq_printf(s, "PoE Plus: \t%s\n", port_poe_plus_status_string(poe_plus, i));
 		seq_printf(s, "Resistance: \t%d\n", tps23861_port_resistance(priv, i));
 		seq_putc(s, '\n');
 	}
@@ -527,17 +501,6 @@ static int tps23861_port_status_show(struct seq_file *s, void *data)
 }
 
 DEFINE_SHOW_ATTRIBUTE(tps23861_port_status);
-
-static void tps23861_init_debugfs(struct tps23861_data *data)
-{
-	data->debugfs_dir = debugfs_create_dir(data->client->name, NULL);
-
-	debugfs_create_file("port_status",
-			    0400,
-			    data->debugfs_dir,
-			    data,
-			    &tps23861_port_status_fops);
-}
 
 static int tps23861_probe(struct i2c_client *client)
 {
@@ -579,16 +542,8 @@ static int tps23861_probe(struct i2c_client *client)
 	if (IS_ERR(hwmon_dev))
 		return PTR_ERR(hwmon_dev);
 
-	tps23861_init_debugfs(data);
-
-	return 0;
-}
-
-static int tps23861_remove(struct i2c_client *client)
-{
-	struct tps23861_data *data = i2c_get_clientdata(client);
-
-	debugfs_remove_recursive(data->debugfs_dir);
+	debugfs_create_file("port_status", 0400, client->debugfs, data,
+			    &tps23861_port_status_fops);
 
 	return 0;
 }
@@ -600,8 +555,7 @@ static const struct of_device_id __maybe_unused tps23861_of_match[] = {
 MODULE_DEVICE_TABLE(of, tps23861_of_match);
 
 static struct i2c_driver tps23861_driver = {
-	.probe_new		= tps23861_probe,
-	.remove			= tps23861_remove,
+	.probe			= tps23861_probe,
 	.driver = {
 		.name		= "tps23861",
 		.of_match_table	= of_match_ptr(tps23861_of_match),

@@ -13,18 +13,13 @@
 #include <asm/irq_vectors.h>
 #include <asm/apic.h>
 
-/* APIC flat 64 */
-void flat_init_apic_ldr(void);
-
 /* X2APIC */
-int x2apic_apic_id_valid(u32 apicid);
-int x2apic_apic_id_registered(void);
-void __x2apic_send_IPI_dest(unsigned int apicid, int vector, unsigned int dest);
-unsigned int x2apic_get_apic_id(unsigned long id);
-u32 x2apic_set_apic_id(unsigned int id);
-int x2apic_phys_pkg_id(int initial_apicid, int index_msb);
+u32 x2apic_get_apic_id(u32 id);
+
+void x2apic_send_IPI_all(int vector);
+void x2apic_send_IPI_allbutself(int vector);
 void x2apic_send_IPI_self(int vector);
-void __x2apic_send_IPI_shorthand(int vector, u32 which);
+extern u32 x2apic_max_apicid;
 
 /* IPI */
 
@@ -46,7 +41,19 @@ static inline unsigned int __prepare_ICR(unsigned int shortcut, int vector,
 	return icr;
 }
 
-void __default_send_IPI_shortcut(unsigned int shortcut, int vector);
+#ifdef CONFIG_X86_X2APIC
+static inline void __x2apic_send_IPI_dest(unsigned int apicid, int vector, unsigned int dest)
+{
+	unsigned long cfg = __prepare_ICR(0, vector, dest);
+
+	native_x2apic_icr_write(cfg, apicid);
+}
+#endif
+
+void default_init_apic_ldr(void);
+
+void apic_mem_wait_icr_idle(void);
+u32 apic_mem_wait_icr_idle_timeout(void);
 
 /*
  * This is used to send an IPI with no shorthand notation (the destination is

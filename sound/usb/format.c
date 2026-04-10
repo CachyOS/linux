@@ -34,13 +34,18 @@ static u64 parse_audio_format_i_type(struct snd_usb_audio *chip,
 {
 	int sample_width, sample_bytes;
 	u64 pcm_formats = 0;
+	u64 dsd_formats = 0;
 
 	switch (fp->protocol) {
 	case UAC_VERSION_1:
 	default: {
 		struct uac_format_type_i_discrete_descriptor *fmt = _fmt;
-		if (format >= 64)
-			return 0; /* invalid format */
+		if (format >= 64) {
+			usb_audio_info(chip,
+				       "%u:%d: invalid format type 0x%llx is detected, processed as PCM\n",
+				       fp->iface, fp->altsetting, format);
+			format = UAC_FORMAT_TYPE_I_PCM;
+		}
 		sample_width = fmt->bBitResolution;
 		sample_bytes = fmt->bSubframeSize;
 		format = 1ULL << format;
@@ -56,6 +61,8 @@ static u64 parse_audio_format_i_type(struct snd_usb_audio *chip,
 			pcm_formats |= SNDRV_PCM_FMTBIT_SPECIAL;
 			/* flag potentially raw DSD capable altsettings */
 			fp->dsd_raw = true;
+			/* clear special format bit to avoid "unsupported format" msg below */
+			format &= ~UAC2_FORMAT_TYPE_I_RAW_DATA;
 		}
 
 		format <<= 1;
@@ -67,8 +74,11 @@ static u64 parse_audio_format_i_type(struct snd_usb_audio *chip,
 		sample_width = as->bBitResolution;
 		sample_bytes = as->bSubslotSize;
 
-		if (format & UAC3_FORMAT_TYPE_I_RAW_DATA)
+		if (format & UAC3_FORMAT_TYPE_I_RAW_DATA) {
 			pcm_formats |= SNDRV_PCM_FMTBIT_SPECIAL;
+			/* clear special format bit to avoid "unsupported format" msg below */
+			format &= ~UAC3_FORMAT_TYPE_I_RAW_DATA;
+		}
 
 		format <<= 1;
 		break;
@@ -76,15 +86,16 @@ static u64 parse_audio_format_i_type(struct snd_usb_audio *chip,
 	}
 
 	fp->fmt_bits = sample_width;
+	fp->fmt_sz = sample_bytes;
 
 	if ((pcm_formats == 0) &&
-	    (format == 0 || format == (1 << UAC_FORMAT_TYPE_I_UNDEFINED))) {
+	    (format == 0 || format == BIT(UAC_FORMAT_TYPE_I_UNDEFINED))) {
 		/* some devices don't define this correctly... */
 		usb_audio_info(chip, "%u:%d : format type 0 is detected, processed as PCM\n",
 			fp->iface, fp->altsetting);
-		format = 1 << UAC_FORMAT_TYPE_I_PCM;
+		format = BIT(UAC_FORMAT_TYPE_I_PCM);
 	}
-	if (format & (1 << UAC_FORMAT_TYPE_I_PCM)) {
+	if (format & BIT(UAC_FORMAT_TYPE_I_PCM)) {
 		if (((chip->usb_id == USB_ID(0x0582, 0x0016)) ||
 		     /* Edirol SD-90 */
 		     (chip->usb_id == USB_ID(0x0582, 0x000c))) &&
@@ -124,7 +135,7 @@ static u64 parse_audio_format_i_type(struct snd_usb_audio *chip,
 			break;
 		}
 	}
-	if (format & (1 << UAC_FORMAT_TYPE_I_PCM8)) {
+	if (format & BIT(UAC_FORMAT_TYPE_I_PCM8)) {
 		/* Dallas DS4201 workaround: it advertises U8 format, but really
 		   supports S8. */
 		if (chip->usb_id == USB_ID(0x04fa, 0x4201))
@@ -132,22 +143,21 @@ static u64 parse_audio_format_i_type(struct snd_usb_audio *chip,
 		else
 			pcm_formats |= SNDRV_PCM_FMTBIT_U8;
 	}
-	if (format & (1 << UAC_FORMAT_TYPE_I_IEEE_FLOAT)) {
+	if (format & BIT(UAC_FORMAT_TYPE_I_IEEE_FLOAT))
 		pcm_formats |= SNDRV_PCM_FMTBIT_FLOAT_LE;
-	}
-	if (format & (1 << UAC_FORMAT_TYPE_I_ALAW)) {
+	if (format & BIT(UAC_FORMAT_TYPE_I_ALAW))
 		pcm_formats |= SNDRV_PCM_FMTBIT_A_LAW;
-	}
-	if (format & (1 << UAC_FORMAT_TYPE_I_MULAW)) {
+	if (format & BIT(UAC_FORMAT_TYPE_I_MULAW))
 		pcm_formats |= SNDRV_PCM_FMTBIT_MU_LAW;
-	}
 	if (format & ~0x3f) {
 		usb_audio_info(chip,
 			 "%u:%d : unsupported format bits %#llx\n",
 			 fp->iface, fp->altsetting, format);
 	}
 
-	pcm_formats |= snd_usb_interface_dsd_format_quirks(chip, fp, sample_bytes);
+	dsd_formats |= snd_usb_interface_dsd_format_quirks(chip, fp, sample_bytes);
+	if (dsd_formats && !fp->dsd_dop)
+		pcm_formats = dsd_formats;
 
 	return pcm_formats;
 }
@@ -254,7 +264,8 @@ static int parse_audio_format_rates_v1(struct snd_usb_audio *chip, struct audiof
 	}
 
 	/* Jabra Evolve 65 headset */
-	if (chip->usb_id == USB_ID(0x0b0e, 0x030b)) {
+	if (chip->usb_id == USB_ID(0x0b0e, 0x030b) ||
+	    chip->usb_id == USB_ID(0x0b0e, 0x030c)) {
 		/* only 48kHz for playback while keeping 16kHz for capture */
 		if (fp->nr_rates != 1)
 			return set_fixed_rate(fp, 48000, SNDRV_PCM_RATE_48000);
@@ -294,9 +305,37 @@ static bool s1810c_valid_sample_rate(struct audioformat *fp,
 }
 
 /*
- * Many Focusrite devices supports a limited set of sampling rates per
- * altsetting. Maximum rate is exposed in the last 4 bytes of Format Type
- * descriptor which has a non-standard bLength = 10.
+ * Focusrite devices use rate pairs: 44100/48000, 88200/96000, and
+ * 176400/192000. Return true if rate is in the pair for max_rate.
+ */
+static bool focusrite_rate_pair(unsigned int rate,
+				unsigned int max_rate)
+{
+	switch (max_rate) {
+	case 48000:  return rate == 44100 || rate == 48000;
+	case 96000:  return rate == 88200 || rate == 96000;
+	case 192000: return rate == 176400 || rate == 192000;
+	default:     return true;
+	}
+}
+
+/*
+ * Focusrite devices report all supported rates in a single clock
+ * source but only a subset is valid per altsetting.
+ *
+ * Detection uses two descriptor features:
+ *
+ * 1. Format Type descriptor bLength == 10: non-standard extension
+ *    with max sample rate in bytes 6..9.
+ *
+ * 2. bmControls VAL_ALT_SETTINGS readable bit: when set, the device
+ *    only supports the highest rate pair for that altsetting, and when
+ *    clear, all rates up to max_rate are valid.
+ *
+ * For devices without the bLength == 10 extension but with
+ * VAL_ALT_SETTINGS readable and multiple altsettings (only seen in
+ * Scarlett 18i8 3rd Gen playback), fall back to the Focusrite
+ * convention: alt 1 = 48kHz, alt 2 = 96kHz, alt 3 = 192kHz.
  */
 static bool focusrite_valid_sample_rate(struct snd_usb_audio *chip,
 					struct audioformat *fp,
@@ -304,39 +343,73 @@ static bool focusrite_valid_sample_rate(struct snd_usb_audio *chip,
 {
 	struct usb_interface *iface;
 	struct usb_host_interface *alts;
+	struct uac2_as_header_descriptor *as;
 	unsigned char *fmt;
 	unsigned int max_rate;
+	bool val_alt;
 
-	iface = usb_ifnum_to_if(chip->dev, fp->iface);
-	if (!iface)
+	alts = snd_usb_get_host_interface(chip, fp->iface, fp->altsetting);
+	if (!alts)
 		return true;
 
-	alts = &iface->altsetting[fp->altset_idx];
 	fmt = snd_usb_find_csint_desc(alts->extra, alts->extralen,
 				      NULL, UAC_FORMAT_TYPE);
 	if (!fmt)
 		return true;
 
+	as = snd_usb_find_csint_desc(alts->extra, alts->extralen,
+				     NULL, UAC_AS_GENERAL);
+	if (!as)
+		return true;
+
+	val_alt = uac_v2v3_control_is_readable(as->bmControls,
+					       UAC2_AS_VAL_ALT_SETTINGS);
+
 	if (fmt[0] == 10) { /* bLength */
 		max_rate = combine_quad(&fmt[6]);
 
-		/* Validate max rate */
-		if (max_rate != 48000 &&
-		    max_rate != 96000 &&
-		    max_rate != 192000 &&
-		    max_rate != 384000) {
+		if (val_alt)
+			return focusrite_rate_pair(rate, max_rate);
 
+		/* No val_alt: rates fall through from higher */
+		switch (max_rate) {
+		case 192000:
+			if (rate == 176400 || rate == 192000)
+				return true;
+			fallthrough;
+		case 96000:
+			if (rate == 88200 || rate == 96000)
+				return true;
+			fallthrough;
+		case 48000:
+			return (rate == 44100 || rate == 48000);
+		default:
 			usb_audio_info(chip,
 				"%u:%d : unexpected max rate: %u\n",
 				fp->iface, fp->altsetting, max_rate);
-
 			return true;
 		}
-
-		return rate <= max_rate;
 	}
 
-	return true;
+	if (!val_alt)
+		return true;
+
+	/* Multi-altsetting device with val_alt but no max_rate
+	 * in the format descriptor. Use Focusrite convention:
+	 * alt 1 = 48kHz, alt 2 = 96kHz, alt 3 = 192kHz.
+	 */
+	iface = usb_ifnum_to_if(chip->dev, fp->iface);
+	if (!iface || iface->num_altsetting <= 2)
+		return true;
+
+	switch (fp->altsetting) {
+	case 1:		max_rate = 48000; break;
+	case 2:		max_rate = 96000; break;
+	case 3:		max_rate = 192000; break;
+	default:	return true;
+	}
+
+	return focusrite_rate_pair(rate, max_rate);
 }
 
 /*
@@ -376,6 +449,10 @@ static int parse_uac2_sample_rate_range(struct snd_usb_audio *chip,
 
 			/* Filter out invalid rates on Presonus Studio 1810c */
 			if (chip->usb_id == USB_ID(0x194f, 0x010c) &&
+			    !s1810c_valid_sample_rate(fp, rate))
+				goto skip_rate;
+			/* Filter out invalid rates on Presonus Studio 1824c */
+			if (chip->usb_id == USB_ID(0x194f, 0x010d) &&
 			    !s1810c_valid_sample_rate(fp, rate))
 				goto skip_rate;
 
@@ -419,6 +496,7 @@ static int line6_parse_audio_format_rates_quirk(struct snd_usb_audio *chip,
 	case USB_ID(0x0e41, 0x4248): /* Line6 Helix >= fw 2.82 */
 	case USB_ID(0x0e41, 0x4249): /* Line6 Helix Rack >= fw 2.82 */
 	case USB_ID(0x0e41, 0x424a): /* Line6 Helix LT >= fw 2.82 */
+	case USB_ID(0x0e41, 0x424b): /* Line6 Pod Go */
 	case USB_ID(0x19f7, 0x0011): /* Rode Rodecaster Pro */
 		return set_fixed_rate(fp, 48000, SNDRV_PCM_RATE_48000);
 	}
@@ -465,9 +543,11 @@ static int validate_sample_rate_table_v2v3(struct snd_usb_audio *chip,
 					   int clock)
 {
 	struct usb_device *dev = chip->dev;
+	struct usb_host_interface *alts;
 	unsigned int *table;
 	unsigned int nr_rates;
 	int i, err;
+	u32 bmControls;
 
 	/* performing the rate verification may lead to unexpected USB bus
 	 * behavior afterwards by some unknown reason.  Do this only for the
@@ -475,6 +555,24 @@ static int validate_sample_rate_table_v2v3(struct snd_usb_audio *chip,
 	 */
 	if (!(chip->quirk_flags & QUIRK_FLAG_VALIDATE_RATES))
 		return 0; /* don't perform the validation as default */
+
+	alts = snd_usb_get_host_interface(chip, fp->iface, fp->altsetting);
+	if (!alts)
+		return 0;
+
+	if (fp->protocol == UAC_VERSION_3) {
+		struct uac3_as_header_descriptor *as = snd_usb_find_csint_desc(
+				alts->extra, alts->extralen, NULL, UAC_AS_GENERAL);
+		bmControls = le32_to_cpu(as->bmControls);
+	} else {
+		struct uac2_as_header_descriptor *as = snd_usb_find_csint_desc(
+				alts->extra, alts->extralen, NULL, UAC_AS_GENERAL);
+		bmControls = as->bmControls;
+	}
+
+	if (!uac_v2v3_control_is_readable(bmControls,
+				UAC2_AS_VAL_ALT_SETTINGS))
+		return 0;
 
 	table = kcalloc(fp->nr_rates, sizeof(*table), GFP_KERNEL);
 	if (!table)
@@ -523,7 +621,9 @@ static int parse_audio_format_rates_v2v3(struct snd_usb_audio *chip,
 	unsigned char tmp[2], *data;
 	int nr_triplets, data_size, ret = 0, ret_l6;
 	int clock = snd_usb_clock_find_source(chip, fp, false);
+	struct usb_host_interface *ctrl_intf;
 
+	ctrl_intf = snd_usb_find_ctrl_interface(chip, fp->iface);
 	if (clock < 0) {
 		dev_err(&dev->dev,
 			"%s(): unable to find clock source (clock %d)\n",
@@ -535,7 +635,7 @@ static int parse_audio_format_rates_v2v3(struct snd_usb_audio *chip,
 	ret = snd_usb_ctl_msg(dev, usb_rcvctrlpipe(dev, 0), UAC2_CS_RANGE,
 			      USB_TYPE_CLASS | USB_RECIP_INTERFACE | USB_DIR_IN,
 			      UAC2_CS_CONTROL_SAM_FREQ << 8,
-			      snd_usb_ctrl_intf(chip) | (clock << 8),
+			      snd_usb_ctrl_intf(ctrl_intf) | (clock << 8),
 			      tmp, sizeof(tmp));
 
 	if (ret < 0) {
@@ -570,7 +670,7 @@ static int parse_audio_format_rates_v2v3(struct snd_usb_audio *chip,
 	ret = snd_usb_ctl_msg(dev, usb_rcvctrlpipe(dev, 0), UAC2_CS_RANGE,
 			      USB_TYPE_CLASS | USB_RECIP_INTERFACE | USB_DIR_IN,
 			      UAC2_CS_CONTROL_SAM_FREQ << 8,
-			      snd_usb_ctrl_intf(chip) | (clock << 8),
+			      snd_usb_ctrl_intf(ctrl_intf) | (clock << 8),
 			      data, data_size);
 
 	if (ret < 0) {

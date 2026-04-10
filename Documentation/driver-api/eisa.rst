@@ -8,9 +8,9 @@ This document groups random notes about porting EISA drivers to the
 new EISA/sysfs API.
 
 Starting from version 2.5.59, the EISA bus is almost given the same
-status as other much more mainstream busses such as PCI or USB. This
+status as other much more mainstream buses such as PCI or USB. This
 has been possible through sysfs, which defines a nice enough set of
-abstractions to manage busses, devices and drivers.
+abstractions to manage buses, devices and drivers.
 
 Although the new API is quite simple to use, converting existing
 drivers to the new infrastructure is not an easy task (mostly because
@@ -189,15 +189,15 @@ eisa_bus.enable_dev
 	initialize the device in such conditions.
 
 eisa_bus.disable_dev
-	A comma-separated list of slots to be enabled, even if the firmware
+	A comma-separated list of slots to be disabled, even if the firmware
 	set the card as enabled. The driver won't be called to handle this
 	device.
 
 virtual_root.force_probe
 	Force the probing code to probe EISA slots even when it cannot find an
 	EISA compliant mainboard (nothing appears on slot 0). Defaults to 0
-	(don't force), and set to 1 (force probing) when either
-	CONFIG_ALPHA_JENSEN or CONFIG_EISA_VLB_PRIMING are set.
+	(don't force), and set to 1 (force probing) when
+	CONFIG_EISA_VLB_PRIMING is set.
 
 Random notes
 ============
@@ -205,7 +205,7 @@ Random notes
 Converting an EISA driver to the new API mostly involves *deleting*
 code (since probing is now in the core EISA code). Unfortunately, most
 drivers share their probing routine between ISA, and EISA. Special
-care must be taken when ripping out the EISA code, so other busses
+care must be taken when ripping out the EISA code, so other buses
 won't suffer from these surgical strikes...
 
 You *must not* expect any EISA device to be detected when returning

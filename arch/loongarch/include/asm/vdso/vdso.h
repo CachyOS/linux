@@ -4,27 +4,18 @@
  * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
  */
 
-#ifndef __ASSEMBLY__
+#ifndef _ASM_VDSO_VDSO_H
+#define _ASM_VDSO_VDSO_H
+
+#ifndef __ASSEMBLER__
 
 #include <asm/asm.h>
 #include <asm/page.h>
+#include <asm/vdso.h>
+#include <vdso/datapage.h>
 
-static inline unsigned long get_vdso_base(void)
-{
-	unsigned long addr;
+#define VVAR_SIZE (VDSO_NR_PAGES << PAGE_SHIFT)
 
-	__asm__(
-	" la.pcrel %0, _start\n"
-	: "=r" (addr)
-	:
-	:);
+#endif /* __ASSEMBLER__ */
 
-	return addr;
-}
-
-static inline const struct vdso_data *get_vdso_data(void)
-{
-	return (const struct vdso_data *)(get_vdso_base() - PAGE_SIZE);
-}
-
-#endif /* __ASSEMBLY__ */
+#endif

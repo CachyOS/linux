@@ -44,6 +44,16 @@ enum usb_raw_event_type {
 	/* This event is queued when a new control request arrived to ep0. */
 	USB_RAW_EVENT_CONTROL = 2,
 
+	/*
+	 * These events are queued when the gadget driver is suspended,
+	 * resumed, reset, or disconnected. Note that some UDCs (e.g. dwc2)
+	 * report a disconnect event instead of a reset.
+	 */
+	USB_RAW_EVENT_SUSPEND = 3,
+	USB_RAW_EVENT_RESUME = 4,
+	USB_RAW_EVENT_RESET = 5,
+	USB_RAW_EVENT_DISCONNECT = 6,
+
 	/* The list might grow in the future. */
 };
 
@@ -54,13 +64,13 @@ enum usb_raw_event_type {
  *     actual length of the fetched event data.
  * @data: A buffer to store the fetched event data.
  *
- * Currently the fetched data buffer is empty for USB_RAW_EVENT_CONNECT,
- * and contains struct usb_ctrlrequest for USB_RAW_EVENT_CONTROL.
+ * The fetched event data buffer contains struct usb_ctrlrequest for
+ * USB_RAW_EVENT_CONTROL and is empty for other events.
  */
 struct usb_raw_event {
 	__u32		type;
 	__u32		length;
-	__u8		data[0];
+	__u8		data[];
 };
 
 #define USB_RAW_IO_FLAGS_ZERO	0x0001
@@ -90,7 +100,7 @@ struct usb_raw_ep_io {
 	__u16		ep;
 	__u16		flags;
 	__u32		length;
-	__u8		data[0];
+	__u8		data[];
 };
 
 /* Maximum number of non-control endpoints in struct usb_raw_eps_info. */

@@ -15,14 +15,20 @@
 #include <linux/string.h>
 #include <linux/extable.h>
 #include <asm/pgtable.h>
-#include <asm-generic/extable.h>
+#include <asm/extable.h>
+#include <asm/asm-extable.h>
 #include <asm-generic/access_ok.h>
+
+#define __LSW	0
+#define __MSW	1
 
 extern u64 __ua_limit;
 
-#define __UA_ADDR	".dword"
-#define __UA_LA		"la.abs"
+#ifdef CONFIG_64BIT
 #define __UA_LIMIT	__ua_limit
+#else
+#define __UA_LIMIT	0x80000000UL
+#endif
 
 /*
  * get_user: - Get a simple variable from user space.
@@ -126,6 +132,7 @@ extern u64 __ua_limit;
  *
  * Returns zero on success, or -EFAULT on error.
  */
+
 #define __put_user(x, ptr) \
 ({									\
 	int __pu_err = 0;						\
@@ -146,7 +153,7 @@ do {									\
 	case 1: __get_data_asm(val, "ld.b", ptr); break;		\
 	case 2: __get_data_asm(val, "ld.h", ptr); break;		\
 	case 4: __get_data_asm(val, "ld.w", ptr); break;		\
-	case 8: __get_data_asm(val, "ld.d", ptr); break;		\
+	case 8: __get_data_asm_8(val, ptr); break;			\
 	default: BUILD_BUG(); break;					\
 	}								\
 } while (0)
@@ -160,19 +167,38 @@ do {									\
 	__asm__ __volatile__(						\
 	"1:	" insn "	%1, %2				\n"	\
 	"2:							\n"	\
-	"	.section .fixup,\"ax\"				\n"	\
-	"3:	li.w	%0, %3					\n"	\
-	"	or	%1, $r0, $r0				\n"	\
-	"	b	2b					\n"	\
-	"	.previous					\n"	\
-	"	.section __ex_table,\"a\"			\n"	\
-	"	"__UA_ADDR "\t1b, 3b				\n"	\
-	"	.previous					\n"	\
+	_ASM_EXTABLE_UACCESS_ERR_ZERO(1b, 2b, %0, %1)			\
 	: "+r" (__gu_err), "=r" (__gu_tmp)				\
-	: "m" (__m(ptr)), "i" (-EFAULT));				\
+	: "m" (__m(ptr)));						\
 									\
 	(val) = (__typeof__(*(ptr))) __gu_tmp;				\
 }
+
+#ifdef CONFIG_64BIT
+#define __get_data_asm_8(val, ptr) \
+	__get_data_asm(val, "ld.d", ptr)
+#else /* !CONFIG_64BIT */
+#define __get_data_asm_8(val, ptr)					\
+{									\
+	u32 __lo, __hi;							\
+	u32 __user *__ptr = (u32 __user *)(ptr);			\
+									\
+	__asm__ __volatile__ (						\
+		"1:\n"							\
+		"	ld.w %1, %3				\n"	\
+		"2:\n"							\
+		"	ld.w %2, %4				\n"	\
+		"3:\n"							\
+		_ASM_EXTABLE_UACCESS_ERR_ZERO(1b, 3b, %0, %1)		\
+		_ASM_EXTABLE_UACCESS_ERR_ZERO(2b, 3b, %0, %1)		\
+		: "+r" (__gu_err), "=&r" (__lo), "=r" (__hi)		\
+		: "m" (__ptr[__LSW]), "m" (__ptr[__MSW]));		\
+	if (__gu_err)							\
+		__hi = 0;						\
+	(val) = (__typeof__(val))((__typeof__((val)-(val)))		\
+		((((u64)__hi << 32) | __lo)));				\
+}
+#endif /* CONFIG_64BIT */
 
 #define __put_user_common(ptr, size)					\
 do {									\
@@ -180,7 +206,7 @@ do {									\
 	case 1: __put_data_asm("st.b", ptr); break;			\
 	case 2: __put_data_asm("st.h", ptr); break;			\
 	case 4: __put_data_asm("st.w", ptr); break;			\
-	case 8: __put_data_asm("st.d", ptr); break;			\
+	case 8: __put_data_asm_8(ptr); break;				\
 	default: BUILD_BUG(); break;					\
 	}								\
 } while (0)
@@ -192,16 +218,34 @@ do {									\
 	__asm__ __volatile__(						\
 	"1:	" insn "	%z2, %1		# __put_user_asm\n"	\
 	"2:							\n"	\
-	"	.section	.fixup,\"ax\"			\n"	\
-	"3:	li.w	%0, %3					\n"	\
-	"	b	2b					\n"	\
-	"	.previous					\n"	\
-	"	.section	__ex_table,\"a\"		\n"	\
-	"	" __UA_ADDR "	1b, 3b				\n"	\
-	"	.previous					\n"	\
+	_ASM_EXTABLE_UACCESS_ERR(1b, 2b, %0)				\
 	: "+r" (__pu_err), "=m" (__m(ptr))				\
-	: "Jr" (__pu_val), "i" (-EFAULT));				\
+	: "Jr" (__pu_val));						\
 }
+
+#ifdef CONFIG_64BIT
+#define __put_data_asm_8(ptr) \
+	__put_data_asm("st.d", ptr)
+#else /* !CONFIG_64BIT */
+#define __put_data_asm_8(ptr)						\
+{									\
+	u32 __user *__ptr = (u32 __user *)(ptr);			\
+	u64 __x = (__typeof__((__pu_val)-(__pu_val)))(__pu_val);	\
+									\
+	__asm__ __volatile__ (						\
+		"1:\n"							\
+		"	st.w %z3, %1				\n"	\
+		"2:\n"							\
+		"	st.w %z4, %2				\n"	\
+		"3:\n"							\
+		_ASM_EXTABLE_UACCESS_ERR(1b, 3b, %0)			\
+		_ASM_EXTABLE_UACCESS_ERR(2b, 3b, %0)			\
+		: "+r" (__pu_err),					\
+			"=m" (__ptr[__LSW]),				\
+			"=m" (__ptr[__MSW])				\
+		: "rJ" (__x), "rJ" (__x >> 32));			\
+}
+#endif /* CONFIG_64BIT */
 
 #define __get_kernel_nofault(dst, src, type, err_label)			\
 do {									\
@@ -209,8 +253,13 @@ do {									\
 									\
 	__get_kernel_common(*((type *)(dst)), sizeof(type),		\
 			    (__force type *)(src));			\
-	if (unlikely(__gu_err))						\
+	if (unlikely(__gu_err))	{					\
+		pr_info("%s: memory access failed, ecode 0x%x\n",	\
+			__func__, read_csr_excode());			\
+		pr_info("%s: the caller is %pS\n",			\
+			__func__, __builtin_return_address(0));		\
 		goto err_label;						\
+	}								\
 } while (0)
 
 #define __put_kernel_nofault(dst, src, type, err_label)			\
@@ -220,8 +269,13 @@ do {									\
 									\
 	__pu_val = *(__force type *)(src);				\
 	__put_kernel_common(((type *)(dst)), sizeof(type));		\
-	if (unlikely(__pu_err))						\
+	if (unlikely(__pu_err))	{					\
+		pr_info("%s: memory access failed, ecode 0x%x\n",	\
+			__func__, read_csr_excode());			\
+		pr_info("%s: the caller is %pS\n",			\
+			__func__, __builtin_return_address(0));		\
 		goto err_label;						\
+	}								\
 } while (0)
 
 extern unsigned long __copy_user(void *to, const void *from, __kernel_size_t n);
@@ -229,13 +283,13 @@ extern unsigned long __copy_user(void *to, const void *from, __kernel_size_t n);
 static inline unsigned long __must_check
 raw_copy_from_user(void *to, const void __user *from, unsigned long n)
 {
-	return __copy_user(to, from, n);
+	return __copy_user(to, (__force const void *)from, n);
 }
 
 static inline unsigned long __must_check
 raw_copy_to_user(void __user *to, const void *from, unsigned long n)
 {
-	return __copy_user(to, from, n);
+	return __copy_user((__force void *)to, from, n);
 }
 
 #define INLINE_COPY_FROM_USER

@@ -48,7 +48,7 @@ DECLARE_EVENT_CLASS(cdnsp_log_ep,
 		__field(u8, drbls_count)
 	),
 	TP_fast_assign(
-		__assign_str(name, pep->name);
+		__assign_str(name);
 		__entry->state = pep->ep_state;
 		__entry->stream_id = stream_id;
 		__entry->enabled = pep->ep_state & EP_HAS_STREAMS;
@@ -138,7 +138,7 @@ DECLARE_EVENT_CLASS(cdnsp_log_simple,
 		__string(text, msg)
 	),
 	TP_fast_assign(
-		__assign_str(text, msg);
+		__assign_str(text);
 	),
 	TP_printk("%s", __get_str(text))
 );
@@ -174,11 +174,6 @@ DEFINE_EVENT(cdnsp_log_simple, cdnsp_ep0_request,
 );
 
 DEFINE_EVENT(cdnsp_log_simple, cdnsp_ep0_set_config,
-	TP_PROTO(char *msg),
-	TP_ARGS(msg)
-);
-
-DEFINE_EVENT(cdnsp_log_simple, cdnsp_ep0_halted,
 	TP_PROTO(char *msg),
 	TP_ARGS(msg)
 );
@@ -271,7 +266,6 @@ DECLARE_EVENT_CLASS(cdnsp_log_ctrl,
 		__field(u16, wValue)
 		__field(u16, wIndex)
 		__field(u16, wLength)
-		__dynamic_array(char, str, CDNSP_MSG_MAX)
 	),
 	TP_fast_assign(
 		__entry->bRequestType = ctrl->bRequestType;
@@ -280,7 +274,7 @@ DECLARE_EVENT_CLASS(cdnsp_log_ctrl,
 		__entry->wIndex = le16_to_cpu(ctrl->wIndex);
 		__entry->wLength = le16_to_cpu(ctrl->wLength);
 	),
-	TP_printk("%s", usb_decode_ctrl(__get_str(str), CDNSP_MSG_MAX,
+	TP_printk("%s", usb_decode_ctrl(__get_buf(CDNSP_MSG_MAX), CDNSP_MSG_MAX,
 					__entry->bRequestType,
 					__entry->bRequest, __entry->wValue,
 					__entry->wIndex, __entry->wLength)
@@ -304,7 +298,7 @@ DECLARE_EVENT_CLASS(cdnsp_log_bounce,
 		__field(unsigned int, unalign)
 	),
 	TP_fast_assign(
-		__assign_str(name, preq->pep->name);
+		__assign_str(name);
 		__entry->new_buf_len = new_buf_len;
 		__entry->offset = offset;
 		__entry->dma = dma;
@@ -345,7 +339,6 @@ DECLARE_EVENT_CLASS(cdnsp_log_trb,
 		__field(u32, field3)
 		__field(union cdnsp_trb *, trb)
 		__field(dma_addr_t, trb_dma)
-		__dynamic_array(char, str, CDNSP_MSG_MAX)
 	),
 	TP_fast_assign(
 		__entry->type = ring->type;
@@ -359,7 +352,7 @@ DECLARE_EVENT_CLASS(cdnsp_log_trb,
 
 	),
 	TP_printk("%s: %s trb: %p(%pad)", cdnsp_ring_type_string(__entry->type),
-		  cdnsp_decode_trb(__get_str(str), CDNSP_MSG_MAX,
+		  cdnsp_decode_trb(__get_buf(CDNSP_MSG_MAX), CDNSP_MSG_MAX,
 				   __entry->field0, __entry->field1,
 				   __entry->field2, __entry->field3),
 				   __entry->trb, &__entry->trb_dma
@@ -401,11 +394,6 @@ DEFINE_EVENT(cdnsp_log_trb, cdnsp_cmd_timeout,
 	TP_ARGS(ring, trb)
 );
 
-DEFINE_EVENT(cdnsp_log_trb, cdnsp_defered_event,
-	TP_PROTO(struct cdnsp_ring *ring, struct cdnsp_generic_trb *trb),
-	TP_ARGS(ring, trb)
-);
-
 DECLARE_EVENT_CLASS(cdnsp_log_pdev,
 	TP_PROTO(struct cdnsp_device *pdev),
 	TP_ARGS(pdev),
@@ -431,16 +419,6 @@ DECLARE_EVENT_CLASS(cdnsp_log_pdev,
 );
 
 DEFINE_EVENT(cdnsp_log_pdev, cdnsp_alloc_priv_device,
-	TP_PROTO(struct cdnsp_device *vdev),
-	TP_ARGS(vdev)
-);
-
-DEFINE_EVENT(cdnsp_log_pdev, cdnsp_free_priv_device,
-	TP_PROTO(struct cdnsp_device *vdev),
-	TP_ARGS(vdev)
-);
-
-DEFINE_EVENT(cdnsp_log_pdev, cdnsp_setup_device,
 	TP_PROTO(struct cdnsp_device *vdev),
 	TP_ARGS(vdev)
 );
@@ -472,7 +450,7 @@ DECLARE_EVENT_CLASS(cdnsp_log_request,
 
 	),
 	TP_fast_assign(
-		__assign_str(name, req->pep->name);
+		__assign_str(name);
 		__entry->request = &req->request;
 		__entry->preq = req;
 		__entry->buf = req->request.buf;
@@ -544,7 +522,6 @@ DECLARE_EVENT_CLASS(cdnsp_log_ep_ctx,
 		__field(u32, info2)
 		__field(u64, deq)
 		__field(u32, tx_info)
-		__dynamic_array(char, str, CDNSP_MSG_MAX)
 	),
 	TP_fast_assign(
 		__entry->info = le32_to_cpu(ctx->ep_info);
@@ -552,7 +529,7 @@ DECLARE_EVENT_CLASS(cdnsp_log_ep_ctx,
 		__entry->deq = le64_to_cpu(ctx->deq);
 		__entry->tx_info = le32_to_cpu(ctx->tx_info);
 	),
-	TP_printk("%s", cdnsp_decode_ep_context(__get_str(str), CDNSP_MSG_MAX,
+	TP_printk("%s", cdnsp_decode_ep_context(__get_buf(CDNSP_MSG_MAX), CDNSP_MSG_MAX,
 						__entry->info, __entry->info2,
 						__entry->deq, __entry->tx_info)
 	)
@@ -574,11 +551,6 @@ DEFINE_EVENT(cdnsp_log_ep_ctx, cdnsp_remove_request,
 );
 
 DEFINE_EVENT(cdnsp_log_ep_ctx, cdnsp_handle_cmd_stop_ep,
-	TP_PROTO(struct cdnsp_ep_ctx *ctx),
-	TP_ARGS(ctx)
-);
-
-DEFINE_EVENT(cdnsp_log_ep_ctx, cdnsp_handle_cmd_flush_ep,
 	TP_PROTO(struct cdnsp_ep_ctx *ctx),
 	TP_ARGS(ctx)
 );
@@ -677,7 +649,7 @@ DECLARE_EVENT_CLASS(cdnsp_log_td_info,
 		__field(dma_addr_t, trb_dma)
 	),
 	TP_fast_assign(
-		__assign_str(name, preq->pep->name);
+		__assign_str(name);
 		__entry->request = &preq->request;
 		__entry->preq = preq;
 		__entry->first_trb = preq->td.first_trb;
@@ -777,7 +749,6 @@ DECLARE_EVENT_CLASS(cdnsp_log_portsc,
 		TP_STRUCT__entry(
 				__field(u32, portnum)
 				__field(u32, portsc)
-				__dynamic_array(char, str, CDNSP_MSG_MAX)
 				),
 		TP_fast_assign(
 				__entry->portnum = portnum;
@@ -785,7 +756,7 @@ DECLARE_EVENT_CLASS(cdnsp_log_portsc,
 				),
 		TP_printk("port-%d: %s",
 			  __entry->portnum,
-			  cdnsp_decode_portsc(__get_str(str), CDNSP_MSG_MAX,
+			  cdnsp_decode_portsc(__get_buf(CDNSP_MSG_MAX), CDNSP_MSG_MAX,
 					      __entry->portsc)
 			)
 );

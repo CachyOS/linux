@@ -1271,7 +1271,7 @@ struct dvb_frontend* tda10045_attach(const struct tda1004x_config* config,
 	int id;
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(struct tda1004x_state), GFP_KERNEL);
+	state = kzalloc_obj(struct tda1004x_state);
 	if (!state) {
 		printk(KERN_ERR "Can't allocate memory for tda10045 state\n");
 		return NULL;
@@ -1341,7 +1341,7 @@ struct dvb_frontend* tda10046_attach(const struct tda1004x_config* config,
 	int id;
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(struct tda1004x_state), GFP_KERNEL);
+	state = kzalloc_obj(struct tda1004x_state);
 	if (!state) {
 		printk(KERN_ERR "Can't allocate memory for tda10046 state\n");
 		return NULL;
@@ -1378,5 +1378,5 @@ MODULE_DESCRIPTION("Philips TDA10045H & TDA10046H DVB-T Demodulator");
 MODULE_AUTHOR("Andrew de Quincey & Robert Schlabbach");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(tda10045_attach);
-EXPORT_SYMBOL(tda10046_attach);
+EXPORT_SYMBOL_GPL(tda10045_attach);
+EXPORT_SYMBOL_GPL(tda10046_attach);

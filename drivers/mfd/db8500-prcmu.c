@@ -798,7 +798,7 @@ void db8500_prcmu_get_abb_event_buffer(void __iomem **buf)
  * @opp: The new ARM operating point to which transition is to be made
  * Returns: 0 on success, non-zero on failure
  *
- * This function sets the the operating point of the ARM.
+ * This function sets the operating point of the ARM.
  */
 int db8500_prcmu_set_arm_opp(u8 opp)
 {
@@ -2607,9 +2607,9 @@ static int db8500_irq_init(struct device_node *np)
 {
 	int i;
 
-	db8500_irq_domain = irq_domain_add_simple(
-		np, NUM_PRCMU_WAKEUPS, 0,
-		&db8500_irq_ops, NULL);
+	db8500_irq_domain = irq_domain_create_simple(of_fwnode_handle(np),
+						     NUM_PRCMU_WAKEUPS, 0,
+						     &db8500_irq_ops, NULL);
 
 	if (!db8500_irq_domain) {
 		pr_err("Failed to create irqdomain\n");
@@ -2639,9 +2639,9 @@ static void dbx500_fw_version_init(struct device_node *np)
 	fw_info.version.api_version = (version >> 8) & 0xFF;
 	fw_info.version.func_version = (version >> 16) & 0xFF;
 	fw_info.version.errata = (version >> 24) & 0xFF;
-	strncpy(fw_info.version.project_name,
+	strscpy(fw_info.version.project_name,
 		fw_project_name(fw_info.version.project),
-		PRCMU_FW_PROJECT_NAME_LEN);
+		sizeof(fw_info.version.project_name));
 	fw_info.valid = true;
 	pr_info("PRCMU firmware: %s(%d), version %d.%d.%d\n",
 		fw_info.version.project_name,

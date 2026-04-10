@@ -7,8 +7,9 @@
 #define _SCSI_SCSI_H
 
 #include <linux/types.h>
-#include <linux/scatterlist.h>
-#include <linux/kernel.h>
+
+#include <asm/param.h>
+
 #include <scsi/scsi_common.h>
 #include <scsi/scsi_proto.h>
 #include <scsi/scsi_status.h>
@@ -69,7 +70,7 @@ static inline int scsi_is_wlun(u64 lun)
  * @status: the status passed up from the driver (including host and
  *          driver components)
  *
- * This returns true if the status code is SAM_STAT_CHECK_CONDITION.
+ * Returns: %true if the status code is SAM_STAT_CHECK_CONDITION.
  */
 static inline int scsi_status_is_check_condition(int status)
 {
@@ -105,12 +106,15 @@ enum scsi_disposition {
 };
 
 /*
- * Midlevel queue return values.
+ * Status values returned by the .queuecommand() callback if a command has not
+ * been queued.
  */
-#define SCSI_MLQUEUE_HOST_BUSY   0x1055
-#define SCSI_MLQUEUE_DEVICE_BUSY 0x1056
-#define SCSI_MLQUEUE_EH_RETRY    0x1057
-#define SCSI_MLQUEUE_TARGET_BUSY 0x1058
+enum scsi_qc_status {
+	SCSI_MLQUEUE_HOST_BUSY   = 0x1055,
+	SCSI_MLQUEUE_DEVICE_BUSY = 0x1056,
+	SCSI_MLQUEUE_EH_RETRY    = 0x1057,
+	SCSI_MLQUEUE_TARGET_BUSY = 0x1058,
+};
 
 /*
  *  Use these to separate status msg and our bytes
@@ -121,6 +125,7 @@ enum scsi_disposition {
  *      msg_byte    (unused)
  *      host_byte   = set by low-level driver to indicate status.
  */
+#define status_byte(result) (result & 0xff)
 #define host_byte(result)   (((result) >> 16) & 0xff)
 
 #define sense_class(sense)  (((sense) >> 4) & 0x7)
@@ -156,6 +161,9 @@ enum scsi_disposition {
 #define SCSI_3          4        /* SPC */
 #define SCSI_SPC_2      5
 #define SCSI_SPC_3      6
+#define SCSI_SPC_4	7
+#define SCSI_SPC_5	8
+#define SCSI_SPC_6	14
 
 /*
  * INQ PERIPHERAL QUALIFIERS
@@ -185,12 +193,13 @@ enum scsi_disposition {
 /* Used to obtain the PCI location of a device */
 #define SCSI_IOCTL_GET_PCI		0x5387
 
-/** scsi_status_is_good - check the status return.
+/**
+ * scsi_status_is_good - check the status return.
  *
  * @status: the status passed up from the driver (including host and
  *          driver components)
  *
- * This returns true for known good conditions that may be treated as
+ * Returns: %true for known good conditions that may be treated as
  * command completed normally
  */
 static inline bool scsi_status_is_good(int status)

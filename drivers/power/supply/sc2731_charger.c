@@ -480,7 +480,7 @@ static int sc2731_charger_probe(struct platform_device *pdev)
 	}
 
 	charger_cfg.drv_data = info;
-	charger_cfg.of_node = np;
+	charger_cfg.fwnode = dev_fwnode(&pdev->dev);
 	info->psy_usb = devm_power_supply_register(&pdev->dev,
 						   &sc2731_charger_desc,
 						   &charger_cfg);
@@ -511,13 +511,11 @@ static int sc2731_charger_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int sc2731_charger_remove(struct platform_device *pdev)
+static void sc2731_charger_remove(struct platform_device *pdev)
 {
 	struct sc2731_charger_info *info = platform_get_drvdata(pdev);
 
 	usb_unregister_notifier(info->usb_phy, &info->usb_notify);
-
-	return 0;
 }
 
 static const struct of_device_id sc2731_charger_of_match[] = {

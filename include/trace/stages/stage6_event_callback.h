@@ -2,6 +2,9 @@
 
 /* Stage 6 definitions for creating trace events */
 
+/* Reuse some of the stage 3 macros */
+#include "stage3_trace_output.h"
+
 #undef __entry
 #define __entry entry
 
@@ -24,16 +27,27 @@
 #undef __string_len
 #define __string_len(item, src, len) __dynamic_array(char, item, -1)
 
-#undef __assign_str
-#define __assign_str(dst, src)						\
-	strcpy(__get_str(dst), (src) ? (const char *)(src) : "(null)");
+#undef __vstring
+#define __vstring(item, fmt, ap) __dynamic_array(char, item, -1)
 
-#undef __assign_str_len
-#define __assign_str_len(dst, src, len)					\
+#undef __assign_str
+#define __assign_str(dst)						\
 	do {								\
-		memcpy(__get_str(dst), (src), (len));			\
-		__get_str(dst)[len] = '\0';				\
-	} while(0)
+		char *__str__ = __get_str(dst);				\
+		int __len__ = __get_dynamic_array_len(dst) - 1;		\
+		memcpy(__str__, __data_offsets.dst##_ptr_ ? :		\
+		       EVENT_NULL_STR, __len__);			\
+		__str__[__len__] = '\0';				\
+	} while (0)
+
+#undef __assign_vstr
+#define __assign_vstr(dst, fmt, va)					\
+	do {								\
+		va_list __cp_va;					\
+		va_copy(__cp_va, *(va));				\
+		vsnprintf(__get_str(dst), TRACE_EVENT_STR_MAX, fmt, __cp_va); \
+		va_end(__cp_va);					\
+	} while (0)
 
 #undef __bitmask
 #define __bitmask(item, nr_bits) __dynamic_array(unsigned long, item, -1)
@@ -44,6 +58,16 @@
 #undef __assign_bitmask
 #define __assign_bitmask(dst, src, nr_bits)					\
 	memcpy(__get_bitmask(dst), (src), __bitmask_size_in_bytes(nr_bits))
+
+#undef __cpumask
+#define __cpumask(item) __dynamic_array(unsigned long, item, -1)
+
+#undef __get_cpumask
+#define __get_cpumask(field) (char *)__get_dynamic_array(field)
+
+#undef __assign_cpumask
+#define __assign_cpumask(dst, src)					\
+	memcpy(__get_cpumask(dst), (src), __bitmask_size_in_bytes(nr_cpumask_bits))
 
 #undef __sockaddr
 #define __sockaddr(field, len) __dynamic_array(u8, field, len)
@@ -66,14 +90,13 @@
 #define __rel_string_len(item, src, len) __rel_dynamic_array(char, item, -1)
 
 #undef __assign_rel_str
-#define __assign_rel_str(dst, src)					\
-	strcpy(__get_rel_str(dst), (src) ? (const char *)(src) : "(null)");
-
-#undef __assign_rel_str_len
-#define __assign_rel_str_len(dst, src, len)				\
+#define __assign_rel_str(dst)						\
 	do {								\
-		memcpy(__get_rel_str(dst), (src), (len));		\
-		__get_rel_str(dst)[len] = '\0';				\
+		char *__str__ = __get_rel_str(dst);			\
+		int __len__ = __get_rel_dynamic_array_len(dst) - 1;	\
+		memcpy(__str__, __data_offsets.dst##_ptr_ ? :		\
+		       EVENT_NULL_STR, __len__);			\
+		__str__[__len__] = '\0';				\
 	} while (0)
 
 #undef __rel_bitmask
@@ -85,6 +108,16 @@
 #undef __assign_rel_bitmask
 #define __assign_rel_bitmask(dst, src, nr_bits)					\
 	memcpy(__get_rel_bitmask(dst), (src), __bitmask_size_in_bytes(nr_bits))
+
+#undef __rel_cpumask
+#define __rel_cpumask(item) __rel_dynamic_array(unsigned long, item, -1)
+
+#undef __get_rel_cpumask
+#define __get_rel_cpumask(field) (char *)__get_rel_dynamic_array(field)
+
+#undef __assign_rel_cpumask
+#define __assign_rel_cpumask(dst, src)					\
+	memcpy(__get_rel_cpumask(dst), (src), __bitmask_size_in_bytes(nr_cpumask_bits))
 
 #undef __rel_sockaddr
 #define __rel_sockaddr(field, len) __rel_dynamic_array(u8, field, len)

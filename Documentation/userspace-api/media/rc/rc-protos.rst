@@ -75,7 +75,7 @@ protocol, or the manchester BPF decoder.
      - Command
 
 There is a variant of rc5 called either rc5x or extended rc5
-where there the second stop bit is the 6th commmand bit, but inverted.
+where there the second stop bit is the 6th command bit, but inverted.
 This is done so it the scancodes and encoding is compatible with existing
 schemes. This bit is stored in bit 6 of the scancode, inverted. This is
 done to keep it compatible with plain rc-5 where there are two start bits.
@@ -449,6 +449,6 @@ the 32 bits.
 xbox-dvd (RC_PROTO_XBOX_DVD)
 ----------------------------
 
-This protocol is used by XBox DVD Remote, which was made for the original
-XBox. There is no in-kernel decoder or encoder for this protocol. The usb
+This protocol is used by Xbox DVD Remote, which was made for the original
+Xbox. There is no in-kernel decoder or encoder for this protocol. The usb
 device decodes the protocol. There is a BPF decoder available in v4l-utils.

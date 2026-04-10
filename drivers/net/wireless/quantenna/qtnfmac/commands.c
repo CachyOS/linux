@@ -241,6 +241,7 @@ int qtnf_cmd_send_start_ap(struct qtnf_vif *vif,
 	struct qlink_auth_encr *aen;
 	int ret;
 	int i;
+	int n;
 
 	if (!qtnf_cmd_start_ap_can_fit(vif, s))
 		return -E2BIG;
@@ -256,7 +257,7 @@ int qtnf_cmd_send_start_ap(struct qtnf_vif *vif,
 	cmd->beacon_interval = cpu_to_le16(s->beacon_interval);
 	cmd->hidden_ssid = qlink_hidden_ssid_nl2q(s->hidden_ssid);
 	cmd->inactivity_timeout = cpu_to_le16(s->inactivity_timeout);
-	cmd->smps_mode = s->smps_mode;
+	cmd->smps_mode = NL80211_SMPS_OFF;
 	cmd->p2p_ctwindow = s->p2p_ctwindow;
 	cmd->p2p_opp_ps = s->p2p_opp_ps;
 	cmd->pbss = s->pbss;
@@ -280,8 +281,9 @@ int qtnf_cmd_send_start_ap(struct qtnf_vif *vif,
 	for (i = 0; i < QLINK_MAX_NR_CIPHER_SUITES; i++)
 		aen->ciphers_pairwise[i] =
 				cpu_to_le32(s->crypto.ciphers_pairwise[i]);
-	aen->n_akm_suites = cpu_to_le32(s->crypto.n_akm_suites);
-	for (i = 0; i < QLINK_MAX_NR_AKM_SUITES; i++)
+	n = min(QLINK_MAX_NR_AKM_SUITES, s->crypto.n_akm_suites);
+	aen->n_akm_suites = cpu_to_le32(n);
+	for (i = 0; i < n; i++)
 		aen->akm_suites[i] = cpu_to_le32(s->crypto.akm_suites[i]);
 	aen->control_port = s->crypto.control_port;
 	aen->control_port_no_encrypt = s->crypto.control_port_no_encrypt;
@@ -965,7 +967,7 @@ qtnf_cmd_resp_proc_hw_info(struct qtnf_bus *bus,
 		hwinfo->total_rx_chain, hwinfo->total_tx_chain,
 		hwinfo->fw_ver);
 
-	strlcpy(hwinfo->fw_version, bld_label, sizeof(hwinfo->fw_version));
+	strscpy(hwinfo->fw_version, bld_label, sizeof(hwinfo->fw_version));
 	hwinfo->hw_version = hw_ver;
 
 	return 0;
@@ -979,7 +981,7 @@ qtnf_parse_wowlan_info(struct qtnf_wmac *mac,
 	const struct qlink_wowlan_support *data1;
 	struct wiphy_wowlan_support *supp;
 
-	supp = kzalloc(sizeof(*supp), GFP_KERNEL);
+	supp = kzalloc_obj(*supp);
 	if (!supp)
 		return;
 
@@ -1029,8 +1031,7 @@ qtnf_parse_variable_mac_info(struct qtnf_wmac *mac,
 	if (WARN_ON(resp->n_reg_rules > NL80211_MAX_SUPP_REG_RULES))
 		return -E2BIG;
 
-	mac->rd = kzalloc(struct_size(mac->rd, reg_rules, resp->n_reg_rules),
-			  GFP_KERNEL);
+	mac->rd = kzalloc_flex(*mac->rd, reg_rules, resp->n_reg_rules);
 	if (!mac->rd)
 		return -ENOMEM;
 
@@ -1082,8 +1083,7 @@ qtnf_parse_variable_mac_info(struct qtnf_wmac *mac,
 				return -EINVAL;
 			}
 
-			limits = kcalloc(rec->n_limits, sizeof(*limits),
-					 GFP_KERNEL);
+			limits = kzalloc_objs(*limits, rec->n_limits);
 			if (!limits)
 				return -ENOMEM;
 
@@ -1252,9 +1252,8 @@ qtnf_cmd_resp_proc_mac_info(struct qtnf_wmac *mac,
 	       sizeof(mac_info->vht_cap_mod_mask));
 
 	mac_info->n_if_comb = resp_info->n_iface_combinations;
-	mac_info->if_comb = kcalloc(mac->macinfo.n_if_comb,
-				    sizeof(*mac->macinfo.if_comb),
-				    GFP_KERNEL);
+	mac_info->if_comb = kzalloc_objs(*mac->macinfo.if_comb,
+					 mac->macinfo.n_if_comb);
 
 	if (!mac->macinfo.if_comb)
 		return -ENOMEM;
@@ -1323,28 +1322,29 @@ static int qtnf_cmd_band_fill_iftype(const u8 *data,
 	struct ieee80211_sband_iftype_data *iftype_data;
 	const struct qlink_tlv_iftype_data *tlv =
 		(const struct qlink_tlv_iftype_data *)data;
-	size_t payload_len = tlv->n_iftype_data * sizeof(*tlv->iftype_data) +
-		sizeof(*tlv) -
-		sizeof(struct qlink_tlv_hdr);
+	size_t payload_len;
+
+	payload_len = struct_size(tlv, iftype_data, tlv->n_iftype_data);
+	payload_len = size_sub(payload_len, sizeof(struct qlink_tlv_hdr));
 
 	if (tlv->hdr.len != cpu_to_le16(payload_len)) {
 		pr_err("bad IFTYPE_DATA TLV len %u\n", tlv->hdr.len);
 		return -EINVAL;
 	}
 
-	kfree(band->iftype_data);
+	kfree((__force void *)band->iftype_data);
 	band->iftype_data = NULL;
 	band->n_iftype_data = tlv->n_iftype_data;
 	if (band->n_iftype_data == 0)
 		return 0;
 
-	iftype_data = kcalloc(band->n_iftype_data, sizeof(*iftype_data),
-			      GFP_KERNEL);
+	iftype_data = kzalloc_objs(*iftype_data, band->n_iftype_data);
 	if (!iftype_data) {
 		band->n_iftype_data = 0;
 		return -ENOMEM;
 	}
-	band->iftype_data = iftype_data;
+
+	_ieee80211_set_sband_iftype_data(band, iftype_data, tlv->n_iftype_data);
 
 	for (i = 0; i < band->n_iftype_data; i++)
 		qtnf_cmd_conv_iftype(iftype_data++, &tlv->iftype_data[i]);
@@ -1385,8 +1385,7 @@ qtnf_cmd_resp_fill_band_info(struct ieee80211_supported_band *band,
 		return 0;
 
 	if (!band->channels)
-		band->channels = kcalloc(band->n_channels, sizeof(*chan),
-					 GFP_KERNEL);
+		band->channels = kzalloc_objs(*chan, band->n_channels);
 	if (!band->channels) {
 		band->n_channels = 0;
 		return -ENOMEM;
@@ -2005,7 +2004,7 @@ int qtnf_cmd_send_scan(struct qtnf_wmac *mac)
 		dwell_active = scan_req->duration;
 		dwell_passive = scan_req->duration;
 	} else if (wdev->iftype == NL80211_IFTYPE_STATION &&
-		   wdev->current_bss) {
+		   wdev->connected) {
 		/* let device select dwell based on traffic conditions */
 		dwell_active = QTNF_SCAN_TIME_AUTO;
 		dwell_passive = QTNF_SCAN_TIME_AUTO;
@@ -2076,6 +2075,7 @@ int qtnf_cmd_send_connect(struct qtnf_vif *vif,
 	struct qlink_auth_encr *aen;
 	int ret;
 	int i;
+	int n;
 	u32 connect_flags = 0;
 
 	cmd_skb = qtnf_cmd_alloc_new_cmdskb(vif->mac->macid, vif->vifid,
@@ -2132,9 +2132,10 @@ int qtnf_cmd_send_connect(struct qtnf_vif *vif,
 		aen->ciphers_pairwise[i] =
 			cpu_to_le32(sme->crypto.ciphers_pairwise[i]);
 
-	aen->n_akm_suites = cpu_to_le32(sme->crypto.n_akm_suites);
+	n = min(QLINK_MAX_NR_AKM_SUITES, sme->crypto.n_akm_suites);
+	aen->n_akm_suites = cpu_to_le32(n);
 
-	for (i = 0; i < QLINK_MAX_NR_AKM_SUITES; i++)
+	for (i = 0; i < n; i++)
 		aen->akm_suites[i] = cpu_to_le32(sme->crypto.akm_suites[i]);
 
 	aen->control_port = sme->crypto.control_port;

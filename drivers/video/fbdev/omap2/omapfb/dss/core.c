@@ -15,6 +15,7 @@
 #include <linux/module.h>
 #include <linux/clk.h>
 #include <linux/err.h>
+#include <linux/export.h>
 #include <linux/platform_device.h>
 #include <linux/seq_file.h>
 #include <linux/debugfs.h>
@@ -171,13 +172,11 @@ static int __init omap_dss_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int omap_dss_remove(struct platform_device *pdev)
+static void omap_dss_remove(struct platform_device *pdev)
 {
 	unregister_pm_notifier(&omap_dss_pm_notif_block);
 
 	dss_uninitialize_debugfs();
-
-	return 0;
 }
 
 static void omap_dss_shutdown(struct platform_device *pdev)
@@ -187,10 +186,10 @@ static void omap_dss_shutdown(struct platform_device *pdev)
 }
 
 static struct platform_driver omap_dss_driver = {
-	.remove         = omap_dss_remove,
+	.remove		= omap_dss_remove,
 	.shutdown	= omap_dss_shutdown,
-	.driver         = {
-		.name   = "omapdss",
+	.driver		= {
+		.name	= "omapdss",
 	},
 };
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  *    driver for Microchip PQI-based storage controllers
- *    Copyright (c) 2019-2021 Microchip Technology Inc. and its subsidiaries
+ *    Copyright (c) 2019-2023 Microchip Technology Inc. and its subsidiaries
  *    Copyright (c) 2016-2018 Microsemi Corporation
  *    Copyright (c) 2016 PMC-Sierra, Inc.
  *
@@ -14,7 +14,7 @@
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_transport_sas.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include "smartpqi.h"
 
 static struct pqi_sas_phy *pqi_alloc_sas_phy(struct pqi_sas_port *pqi_sas_port)
@@ -22,7 +22,7 @@ static struct pqi_sas_phy *pqi_alloc_sas_phy(struct pqi_sas_port *pqi_sas_port)
 	struct pqi_sas_phy *pqi_sas_phy;
 	struct sas_phy *phy;
 
-	pqi_sas_phy = kzalloc(sizeof(*pqi_sas_phy), GFP_KERNEL);
+	pqi_sas_phy = kzalloc_obj(*pqi_sas_phy);
 	if (!pqi_sas_phy)
 		return NULL;
 
@@ -92,25 +92,23 @@ static int pqi_sas_port_add_rphy(struct pqi_sas_port *pqi_sas_port,
 
 	identify = &rphy->identify;
 	identify->sas_address = pqi_sas_port->sas_address;
+	identify->phy_identifier = pqi_sas_port->device->phy_id;
 
 	identify->initiator_port_protocols = SAS_PROTOCOL_ALL;
 	identify->target_port_protocols = SAS_PROTOCOL_STP;
 
-	if (pqi_sas_port->device) {
-		identify->phy_identifier = pqi_sas_port->device->phy_id;
-		switch (pqi_sas_port->device->device_type) {
-		case SA_DEVICE_TYPE_SAS:
-		case SA_DEVICE_TYPE_SES:
-		case SA_DEVICE_TYPE_NVME:
-			identify->target_port_protocols = SAS_PROTOCOL_SSP;
-			break;
-		case SA_DEVICE_TYPE_EXPANDER_SMP:
-			identify->target_port_protocols = SAS_PROTOCOL_SMP;
-			break;
-		case SA_DEVICE_TYPE_SATA:
-		default:
-			break;
-		}
+	switch (pqi_sas_port->device->device_type) {
+	case SA_DEVICE_TYPE_SAS:
+	case SA_DEVICE_TYPE_SES:
+	case SA_DEVICE_TYPE_NVME:
+		identify->target_port_protocols = SAS_PROTOCOL_SSP;
+		break;
+	case SA_DEVICE_TYPE_EXPANDER_SMP:
+		identify->target_port_protocols = SAS_PROTOCOL_SMP;
+		break;
+	case SA_DEVICE_TYPE_SATA:
+	default:
+		break;
 	}
 
 	return sas_rphy_add(rphy);
@@ -133,7 +131,7 @@ static struct pqi_sas_port *pqi_alloc_sas_port(
 	struct pqi_sas_port *pqi_sas_port;
 	struct sas_port *port;
 
-	pqi_sas_port = kzalloc(sizeof(*pqi_sas_port), GFP_KERNEL);
+	pqi_sas_port = kzalloc_obj(*pqi_sas_port);
 	if (!pqi_sas_port)
 		return NULL;
 
@@ -182,7 +180,7 @@ static struct pqi_sas_node *pqi_alloc_sas_node(struct device *parent_dev)
 {
 	struct pqi_sas_node *pqi_sas_node;
 
-	pqi_sas_node = kzalloc(sizeof(*pqi_sas_node), GFP_KERNEL);
+	pqi_sas_node = kzalloc_obj(*pqi_sas_node);
 	if (pqi_sas_node) {
 		pqi_sas_node->parent_dev = parent_dev;
 		INIT_LIST_HEAD(&pqi_sas_node->port_list_head);
@@ -295,10 +293,12 @@ int pqi_add_sas_device(struct pqi_sas_node *pqi_sas_node,
 
 	rc = pqi_sas_port_add_rphy(pqi_sas_port, rphy);
 	if (rc)
-		goto free_sas_port;
+		goto free_sas_rphy;
 
 	return 0;
 
+free_sas_rphy:
+	sas_rphy_free(rphy);
 free_sas_port:
 	pqi_free_sas_port(pqi_sas_port);
 	device->sas_port = NULL;
@@ -463,7 +463,7 @@ pqi_build_csmi_smp_passthru_buffer(struct sas_rphy *rphy,
 	u32 req_size;
 	u32 resp_size;
 
-	smp_buf = kzalloc(sizeof(*smp_buf), GFP_KERNEL);
+	smp_buf = kzalloc_obj(*smp_buf);
 	if (!smp_buf)
 		return NULL;
 

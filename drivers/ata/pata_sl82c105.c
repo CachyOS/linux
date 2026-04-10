@@ -180,8 +180,7 @@ static void sl82c105_bmdma_start(struct ata_queued_cmd *qc)
  *	document.
  *
  *	This function is also called to turn off DMA when a timeout occurs
- *	during DMA operation. In both cases we need to reset the engine,
- *	so no actual eng_timeout handler is required.
+ *	during DMA operation. In both cases we need to reset the engine.
  *
  *	We assume bmdma_stop is always called if bmdma_start as called. If
  *	not then we may need to wrap qc_issue.
@@ -238,7 +237,7 @@ static bool sl82c105_sff_irq_check(struct ata_port *ap)
 	return val & mask;
 }
 
-static struct scsi_host_template sl82c105_sht = {
+static const struct scsi_host_template sl82c105_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -249,7 +248,7 @@ static struct ata_port_operations sl82c105_port_ops = {
 	.bmdma_stop	= sl82c105_bmdma_stop,
 	.cable_detect	= ata_cable_40wire,
 	.set_piomode	= sl82c105_set_piomode,
-	.prereset	= sl82c105_pre_reset,
+	.reset.prereset	= sl82c105_pre_reset,
 	.sff_irq_check	= sl82c105_sff_irq_check,
 };
 

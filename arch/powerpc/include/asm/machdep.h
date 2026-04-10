@@ -3,25 +3,30 @@
 #define _ASM_POWERPC_MACHDEP_H
 #ifdef __KERNEL__
 
-#include <linux/seq_file.h>
+#include <linux/compiler.h>
 #include <linux/init.h>
-#include <linux/dma-mapping.h>
 #include <linux/export.h>
+#include <linux/time64.h>
 
-#include <asm/setup.h>
+#include <asm/page.h>
 
 struct pt_regs;
-struct pci_bus;	
+struct pci_bus;
+struct device;
 struct device_node;
 struct iommu_table;
 struct rtc_time;
 struct file;
+struct pci_dev;
 struct pci_controller;
 struct kimage;
 struct pci_host_bridge;
+struct seq_file;
 
 struct machdep_calls {
-	char		*name;
+	const char	*name;
+	const char	*compatible;
+	const char * const *compatibles;
 #ifdef CONFIG_PPC64
 #ifdef CONFIG_PM
 	void		(*iommu_restore)(void);
@@ -78,8 +83,8 @@ struct machdep_calls {
 	unsigned char 	(*nvram_read_val)(int addr);
 	void		(*nvram_write_val)(int addr, unsigned char val);
 	ssize_t		(*nvram_write)(char *buf, size_t count, loff_t *index);
-	ssize_t		(*nvram_read)(char *buf, size_t count, loff_t *index);	
-	ssize_t		(*nvram_size)(void);		
+	ssize_t		(*nvram_read)(char *buf, size_t count, loff_t *index);
+	ssize_t		(*nvram_size)(void);
 	void		(*nvram_sync)(void);
 
 	/* Exception handlers */
@@ -102,12 +107,11 @@ struct machdep_calls {
 	 */
 	long	 	(*feature_call)(unsigned int feature, ...);
 
-	/* Get legacy PCI/IDE interrupt mapping */ 
+	/* Get legacy PCI/IDE interrupt mapping */
 	int		(*pci_get_legacy_ide_irq)(struct pci_dev *dev, int channel);
-	
+
 	/* Get access protection for /dev/mem */
-	pgprot_t	(*phys_mem_access_prot)(struct file *file,
-						unsigned long pfn,
+	pgprot_t	(*phys_mem_access_prot)(unsigned long pfn,
 						unsigned long size,
 						pgprot_t vma_prot);
 
@@ -200,15 +204,12 @@ struct machdep_calls {
 	ssize_t (*cpu_release)(const char *, size_t);
 #endif
 
-#ifdef CONFIG_ARCH_RANDOM
 	int (*get_random_seed)(unsigned long *v);
-#endif
 };
 
 extern void e500_idle(void);
 extern void power4_idle(void);
 extern void ppc6xx_idle(void);
-extern void book3e_idle(void);
 
 /*
  * ppc_md contains a copy of the machine description structure for the
@@ -225,11 +226,16 @@ extern struct machdep_calls *machine_id;
 	EXPORT_SYMBOL(mach_##name);				\
 	struct machdep_calls mach_##name __machine_desc =
 
-#define machine_is(name) \
-	({ \
-		extern struct machdep_calls mach_##name \
-			__attribute__((weak));		 \
-		machine_id == &mach_##name; \
+static inline bool __machine_is(const struct machdep_calls *md)
+{
+	WARN_ON(!machine_id); // complain if used before probe_machine()
+	return machine_id == md;
+}
+
+#define machine_is(name)                                        \
+	({                                                      \
+		extern struct machdep_calls mach_##name __weak; \
+		__machine_is(&mach_##name);                     \
 	})
 
 static inline void log_error(char *buf, unsigned int err_type, int fatal)

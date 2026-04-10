@@ -119,7 +119,7 @@ static struct i2c_driver ahe50dc_fan_driver = {
 		   .name = "ahe50dc_fan",
 		   .of_match_table = of_match_ptr(ahe50dc_fan_of_match),
 	},
-	.probe_new = ahe50dc_fan_probe,
+	.probe = ahe50dc_fan_probe,
 	.id_table = ahe50dc_fan_id,
 };
 module_i2c_driver(ahe50dc_fan_driver);
@@ -127,4 +127,4 @@ module_i2c_driver(ahe50dc_fan_driver);
 MODULE_AUTHOR("Zev Weiss <zev@bewilderbeest.net>");
 MODULE_DESCRIPTION("Driver for Delta AHE-50DC power shelf fan control module");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(PMBUS);
+MODULE_IMPORT_NS("PMBUS");

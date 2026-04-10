@@ -184,7 +184,7 @@ static int create_cpumask_attr_group(struct nvdimm_pmu *nd_pmu)
 	struct attribute **attrs_group;
 	struct attribute_group *nvdimm_pmu_cpumask_group;
 
-	pmu_events_attr = kzalloc(sizeof(*pmu_events_attr), GFP_KERNEL);
+	pmu_events_attr = kzalloc_obj(*pmu_events_attr);
 	if (!pmu_events_attr)
 		return -ENOMEM;
 
@@ -195,7 +195,7 @@ static int create_cpumask_attr_group(struct nvdimm_pmu *nd_pmu)
 	}
 
 	/* Allocate memory for cpumask attribute group */
-	nvdimm_pmu_cpumask_group = kzalloc(sizeof(*nvdimm_pmu_cpumask_group), GFP_KERNEL);
+	nvdimm_pmu_cpumask_group = kzalloc_obj(*nvdimm_pmu_cpumask_group);
 	if (!nvdimm_pmu_cpumask_group) {
 		kfree(pmu_events_attr);
 		kfree(attrs_group);
@@ -308,8 +308,8 @@ int register_nvdimm_pmu(struct nvdimm_pmu *nd_pmu, struct platform_device *pdev)
 
 	rc = perf_pmu_register(&nd_pmu->pmu, nd_pmu->pmu.name, -1);
 	if (rc) {
-		kfree(nd_pmu->pmu.attr_groups);
 		nvdimm_pmu_free_hotplug_memory(nd_pmu);
+		kfree(nd_pmu->pmu.attr_groups);
 		return rc;
 	}
 
@@ -324,6 +324,7 @@ void unregister_nvdimm_pmu(struct nvdimm_pmu *nd_pmu)
 {
 	perf_pmu_unregister(&nd_pmu->pmu);
 	nvdimm_pmu_free_hotplug_memory(nd_pmu);
+	kfree(nd_pmu->pmu.attr_groups);
 	kfree(nd_pmu);
 }
 EXPORT_SYMBOL_GPL(unregister_nvdimm_pmu);

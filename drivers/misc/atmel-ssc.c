@@ -153,7 +153,7 @@ static int ssc_sound_dai_probe(struct ssc_device *ssc)
 
 	ssc->sound_dai = false;
 
-	if (!of_property_read_bool(np, "#sound-dai-cells"))
+	if (!of_property_present(np, "#sound-dai-cells"))
 		return 0;
 
 	id = of_alias_get_id(np, "ssc");
@@ -176,7 +176,7 @@ static void ssc_sound_dai_remove(struct ssc_device *ssc)
 #else
 static inline int ssc_sound_dai_probe(struct ssc_device *ssc)
 {
-	if (of_property_read_bool(ssc->pdev->dev.of_node, "#sound-dai-cells"))
+	if (of_property_present(ssc->pdev->dev.of_node, "#sound-dai-cells"))
 		return -ENOTSUPP;
 
 	return 0;
@@ -212,8 +212,7 @@ static int ssc_probe(struct platform_device *pdev)
 			of_property_read_bool(np, "atmel,clk-from-rk-pin");
 	}
 
-	regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	ssc->regs = devm_ioremap_resource(&pdev->dev, regs);
+	ssc->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &regs);
 	if (IS_ERR(ssc->regs))
 		return PTR_ERR(ssc->regs);
 
@@ -252,7 +251,7 @@ static int ssc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int ssc_remove(struct platform_device *pdev)
+static void ssc_remove(struct platform_device *pdev)
 {
 	struct ssc_device *ssc = platform_get_drvdata(pdev);
 
@@ -261,8 +260,6 @@ static int ssc_remove(struct platform_device *pdev)
 	mutex_lock(&user_lock);
 	list_del(&ssc->list);
 	mutex_unlock(&user_lock);
-
-	return 0;
 }
 
 static struct platform_driver ssc_driver = {
@@ -276,7 +273,7 @@ static struct platform_driver ssc_driver = {
 };
 module_platform_driver(ssc_driver);
 
-MODULE_AUTHOR("Hans-Christian Egtvedt <hcegtvedt@atmel.com>");
-MODULE_DESCRIPTION("SSC driver for Atmel AVR32 and AT91");
+MODULE_AUTHOR("Hans-Christian Noren Egtvedt <egtvedt@samfundet.no>");
+MODULE_DESCRIPTION("SSC driver for Atmel AT91");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:ssc");

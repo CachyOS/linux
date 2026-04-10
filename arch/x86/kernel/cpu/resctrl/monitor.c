@@ -15,37 +15,15 @@
  * Software Developer Manual June 2016, volume 3, section 17.17.
  */
 
-#include <linux/module.h>
-#include <linux/slab.h>
+#define pr_fmt(fmt)	"resctrl: " fmt
+
+#include <linux/cpu.h>
+#include <linux/resctrl.h>
+
 #include <asm/cpu_device_id.h>
+#include <asm/msr.h>
+
 #include "internal.h"
-
-struct rmid_entry {
-	u32				rmid;
-	int				busy;
-	struct list_head		list;
-};
-
-/**
- * @rmid_free_lru    A least recently used list of free RMIDs
- *     These RMIDs are guaranteed to have an occupancy less than the
- *     threshold occupancy
- */
-static LIST_HEAD(rmid_free_lru);
-
-/**
- * @rmid_limbo_count     count of currently unused but (potentially)
- *     dirty RMIDs.
- *     This counts RMIDs that no one is currently using but that
- *     may have a occupancy value > intel_cqm_threshold. User can change
- *     the threshold occupancy value.
- */
-static unsigned int rmid_limbo_count;
-
-/**
- * @rmid_entry - The entry in the limbo and free lists.
- */
-static struct rmid_entry	*rmid_ptrs;
 
 /*
  * Global boolean for rdt_monitor which is true if any
@@ -53,21 +31,12 @@ static struct rmid_entry	*rmid_ptrs;
  */
 bool rdt_mon_capable;
 
-/*
- * Global to indicate which monitoring events are enabled.
- */
-unsigned int rdt_mon_features;
-
-/*
- * This is the threshold cache occupancy at which we will consider an
- * RMID available for re-allocation.
- */
-unsigned int resctrl_cqm_threshold;
-
 #define CF(cf)	((unsigned long)(1048576 * (cf) + 0.5))
 
+static int snc_nodes_per_l3_cache = 1;
+
 /*
- * The correction factor table is documented in Documentation/x86/resctrl.rst.
+ * The correction factor table is documented in Documentation/filesystems/resctrl.rst.
  * If rmid > rmid threshold, MBM total and local values should be multiplied
  * by the correction factor.
  *
@@ -116,6 +85,7 @@ static const struct mbm_correction_factor_table {
 };
 
 static u32 mbm_cf_rmidthreshold __read_mostly = UINT_MAX;
+
 static u64 mbm_cf __read_mostly;
 
 static inline u64 get_corrected_mbm_count(u32 rmid, unsigned long val)
@@ -127,19 +97,45 @@ static inline u64 get_corrected_mbm_count(u32 rmid, unsigned long val)
 	return val;
 }
 
-static inline struct rmid_entry *__rmid_entry(u32 rmid)
+/*
+ * When Sub-NUMA Cluster (SNC) mode is not enabled (as indicated by
+ * "snc_nodes_per_l3_cache == 1") no translation of the RMID value is
+ * needed. The physical RMID is the same as the logical RMID.
+ *
+ * On a platform with SNC mode enabled, Linux enables RMID sharing mode
+ * via MSR 0xCA0 (see the "RMID Sharing Mode" section in the "Intel
+ * Resource Director Technology Architecture Specification" for a full
+ * description of RMID sharing mode).
+ *
+ * In RMID sharing mode there are fewer "logical RMID" values available
+ * to accumulate data ("physical RMIDs" are divided evenly between SNC
+ * nodes that share an L3 cache). Linux creates an rdt_l3_mon_domain for
+ * each SNC node.
+ *
+ * The value loaded into IA32_PQR_ASSOC is the "logical RMID".
+ *
+ * Data is collected independently on each SNC node and can be retrieved
+ * using the "physical RMID" value computed by this function and loaded
+ * into IA32_QM_EVTSEL. @cpu can be any CPU in the SNC node.
+ *
+ * The scope of the IA32_QM_EVTSEL and IA32_QM_CTR MSRs is at the L3
+ * cache.  So a "physical RMID" may be read from any CPU that shares
+ * the L3 cache with the desired SNC node, not just from a CPU in
+ * the specific SNC node.
+ */
+static int logical_rmid_to_physical_rmid(int cpu, int lrmid)
 {
-	struct rmid_entry *entry;
+	struct rdt_resource *r = &rdt_resources_all[RDT_RESOURCE_L3].r_resctrl;
 
-	entry = &rmid_ptrs[rmid];
-	WARN_ON(entry->rmid != rmid);
+	if (snc_nodes_per_l3_cache == 1)
+		return lrmid;
 
-	return entry;
+	return lrmid + (cpu_to_node(cpu) % snc_nodes_per_l3_cache) * r->mon.num_rmid;
 }
 
-static u64 __rmid_read(u32 rmid, u32 eventid)
+static int __rmid_read_phys(u32 prmid, enum resctrl_event_id eventid, u64 *val)
 {
-	u64 val;
+	u64 msr_val;
 
 	/*
 	 * As per the SDM, when IA32_QM_EVTSEL.EvtID (bits 7:0) is configured
@@ -149,132 +145,68 @@ static u64 __rmid_read(u32 rmid, u32 eventid)
 	 * IA32_QM_CTR.Error (bit 63) and IA32_QM_CTR.Unavailable (bit 62)
 	 * are error bits.
 	 */
-	wrmsr(MSR_IA32_QM_EVTSEL, eventid, rmid);
-	rdmsrl(MSR_IA32_QM_CTR, val);
+	wrmsr(MSR_IA32_QM_EVTSEL, eventid, prmid);
+	rdmsrq(MSR_IA32_QM_CTR, msr_val);
 
-	return val;
+	if (msr_val & RMID_VAL_ERROR)
+		return -EIO;
+	if (msr_val & RMID_VAL_UNAVAIL)
+		return -EINVAL;
+
+	*val = msr_val;
+	return 0;
 }
 
-static bool rmid_dirty(struct rmid_entry *entry)
+static struct arch_mbm_state *get_arch_mbm_state(struct rdt_hw_l3_mon_domain *hw_dom,
+						 u32 rmid,
+						 enum resctrl_event_id eventid)
 {
-	u64 val = __rmid_read(entry->rmid, QOS_L3_OCCUP_EVENT_ID);
+	struct arch_mbm_state *state;
 
-	return val >= resctrl_cqm_threshold;
+	if (!resctrl_is_mbm_event(eventid))
+		return NULL;
+
+	state = hw_dom->arch_mbm_states[MBM_STATE_IDX(eventid)];
+
+	return state ? &state[rmid] : NULL;
 }
 
-/*
- * Check the RMIDs that are marked as busy for this domain. If the
- * reported LLC occupancy is below the threshold clear the busy bit and
- * decrement the count. If the busy count gets to zero on an RMID, we
- * free the RMID
- */
-void __check_limbo(struct rdt_domain *d, bool force_free)
+void resctrl_arch_reset_rmid(struct rdt_resource *r, struct rdt_l3_mon_domain *d,
+			     u32 unused, u32 rmid,
+			     enum resctrl_event_id eventid)
 {
-	struct rmid_entry *entry;
-	struct rdt_resource *r;
-	u32 crmid = 1, nrmid;
+	struct rdt_hw_l3_mon_domain *hw_dom = resctrl_to_arch_mon_dom(d);
+	int cpu = cpumask_any(&d->hdr.cpu_mask);
+	struct arch_mbm_state *am;
+	u32 prmid;
 
-	r = &rdt_resources_all[RDT_RESOURCE_L3].r_resctrl;
+	am = get_arch_mbm_state(hw_dom, rmid, eventid);
+	if (am) {
+		memset(am, 0, sizeof(*am));
 
-	/*
-	 * Skip RMID 0 and start from RMID 1 and check all the RMIDs that
-	 * are marked as busy for occupancy < threshold. If the occupancy
-	 * is less than the threshold decrement the busy counter of the
-	 * RMID and move it to the free list when the counter reaches 0.
-	 */
-	for (;;) {
-		nrmid = find_next_bit(d->rmid_busy_llc, r->num_rmid, crmid);
-		if (nrmid >= r->num_rmid)
-			break;
-
-		entry = __rmid_entry(nrmid);
-		if (force_free || !rmid_dirty(entry)) {
-			clear_bit(entry->rmid, d->rmid_busy_llc);
-			if (!--entry->busy) {
-				rmid_limbo_count--;
-				list_add_tail(&entry->list, &rmid_free_lru);
-			}
-		}
-		crmid = nrmid + 1;
+		prmid = logical_rmid_to_physical_rmid(cpu, rmid);
+		/* Record any initial, non-zero count value. */
+		__rmid_read_phys(prmid, eventid, &am->prev_msr);
 	}
 }
 
-bool has_busy_rmid(struct rdt_resource *r, struct rdt_domain *d)
-{
-	return find_first_bit(d->rmid_busy_llc, r->num_rmid) != r->num_rmid;
-}
-
 /*
- * As of now the RMIDs allocation is global.
- * However we keep track of which packages the RMIDs
- * are used to optimize the limbo list management.
+ * Assumes that hardware counters are also reset and thus that there is
+ * no need to record initial non-zero counts.
  */
-int alloc_rmid(void)
+void resctrl_arch_reset_rmid_all(struct rdt_resource *r, struct rdt_l3_mon_domain *d)
 {
-	struct rmid_entry *entry;
+	struct rdt_hw_l3_mon_domain *hw_dom = resctrl_to_arch_mon_dom(d);
+	enum resctrl_event_id eventid;
+	int idx;
 
-	lockdep_assert_held(&rdtgroup_mutex);
-
-	if (list_empty(&rmid_free_lru))
-		return rmid_limbo_count ? -EBUSY : -ENOSPC;
-
-	entry = list_first_entry(&rmid_free_lru,
-				 struct rmid_entry, list);
-	list_del(&entry->list);
-
-	return entry->rmid;
-}
-
-static void add_rmid_to_limbo(struct rmid_entry *entry)
-{
-	struct rdt_resource *r;
-	struct rdt_domain *d;
-	int cpu;
-	u64 val;
-
-	r = &rdt_resources_all[RDT_RESOURCE_L3].r_resctrl;
-
-	entry->busy = 0;
-	cpu = get_cpu();
-	list_for_each_entry(d, &r->domains, list) {
-		if (cpumask_test_cpu(cpu, &d->cpu_mask)) {
-			val = __rmid_read(entry->rmid, QOS_L3_OCCUP_EVENT_ID);
-			if (val <= resctrl_cqm_threshold)
-				continue;
-		}
-
-		/*
-		 * For the first limbo RMID in the domain,
-		 * setup up the limbo worker.
-		 */
-		if (!has_busy_rmid(r, d))
-			cqm_setup_limbo_handler(d, CQM_LIMBOCHECK_INTERVAL);
-		set_bit(entry->rmid, d->rmid_busy_llc);
-		entry->busy++;
+	for_each_mbm_event_id(eventid) {
+		if (!resctrl_is_mon_event_enabled(eventid))
+			continue;
+		idx = MBM_STATE_IDX(eventid);
+		memset(hw_dom->arch_mbm_states[idx], 0,
+		       sizeof(*hw_dom->arch_mbm_states[0]) * r->mon.num_rmid);
 	}
-	put_cpu();
-
-	if (entry->busy)
-		rmid_limbo_count++;
-	else
-		list_add_tail(&entry->list, &rmid_free_lru);
-}
-
-void free_rmid(u32 rmid)
-{
-	struct rmid_entry *entry;
-
-	if (!rmid)
-		return;
-
-	lockdep_assert_held(&rdtgroup_mutex);
-
-	entry = __rmid_entry(rmid);
-
-	if (is_llc_occupancy_enabled())
-		add_rmid_to_limbo(entry);
-	else
-		list_add_tail(&entry->list, &rmid_free_lru);
 }
 
 static u64 mbm_overflow_count(u64 prev_msr, u64 cur_msr, unsigned int width)
@@ -285,412 +217,203 @@ static u64 mbm_overflow_count(u64 prev_msr, u64 cur_msr, unsigned int width)
 	return chunks >> shift;
 }
 
-static u64 __mon_event_count(u32 rmid, struct rmid_read *rr)
+static u64 get_corrected_val(struct rdt_resource *r, struct rdt_l3_mon_domain *d,
+			     u32 rmid, enum resctrl_event_id eventid, u64 msr_val)
 {
-	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(rr->r);
-	struct mbm_state *m;
-	u64 chunks, tval;
+	struct rdt_hw_l3_mon_domain *hw_dom = resctrl_to_arch_mon_dom(d);
+	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
+	struct arch_mbm_state *am;
+	u64 chunks;
 
-	tval = __rmid_read(rmid, rr->evtid);
-	if (tval & (RMID_VAL_ERROR | RMID_VAL_UNAVAIL)) {
-		return tval;
+	am = get_arch_mbm_state(hw_dom, rmid, eventid);
+	if (am) {
+		am->chunks += mbm_overflow_count(am->prev_msr, msr_val,
+						 hw_res->mbm_width);
+		chunks = get_corrected_mbm_count(rmid, am->chunks);
+		am->prev_msr = msr_val;
+	} else {
+		chunks = msr_val;
 	}
-	switch (rr->evtid) {
-	case QOS_L3_OCCUP_EVENT_ID:
-		rr->val += tval;
-		return 0;
-	case QOS_L3_MBM_TOTAL_EVENT_ID:
-		m = &rr->d->mbm_total[rmid];
+
+	return chunks * hw_res->mon_scale;
+}
+
+int resctrl_arch_rmid_read(struct rdt_resource *r, struct rdt_domain_hdr *hdr,
+			   u32 unused, u32 rmid, enum resctrl_event_id eventid,
+			   void *arch_priv, u64 *val, void *ignored)
+{
+	struct rdt_hw_l3_mon_domain *hw_dom;
+	struct rdt_l3_mon_domain *d;
+	struct arch_mbm_state *am;
+	u64 msr_val;
+	u32 prmid;
+	int cpu;
+	int ret;
+
+	resctrl_arch_rmid_read_context_check();
+
+	if (r->rid == RDT_RESOURCE_PERF_PKG)
+		return intel_aet_read_event(hdr->id, rmid, arch_priv, val);
+
+	if (!domain_header_is_valid(hdr, RESCTRL_MON_DOMAIN, RDT_RESOURCE_L3))
+		return -EINVAL;
+
+	d = container_of(hdr, struct rdt_l3_mon_domain, hdr);
+	hw_dom = resctrl_to_arch_mon_dom(d);
+	cpu = cpumask_any(&hdr->cpu_mask);
+	prmid = logical_rmid_to_physical_rmid(cpu, rmid);
+	ret = __rmid_read_phys(prmid, eventid, &msr_val);
+
+	if (!ret) {
+		*val = get_corrected_val(r, d, rmid, eventid, msr_val);
+	} else if (ret == -EINVAL) {
+		am = get_arch_mbm_state(hw_dom, rmid, eventid);
+		if (am)
+			am->prev_msr = 0;
+	}
+
+	return ret;
+}
+
+static int __cntr_id_read(u32 cntr_id, u64 *val)
+{
+	u64 msr_val;
+
+	/*
+	 * QM_EVTSEL Register definition:
+	 * =======================================================
+	 * Bits    Mnemonic        Description
+	 * =======================================================
+	 * 63:44   --              Reserved
+	 * 43:32   RMID            RMID or counter ID in ABMC mode
+	 *                         when reading an MBM event
+	 * 31      ExtendedEvtID   Extended Event Identifier
+	 * 30:8    --              Reserved
+	 * 7:0     EvtID           Event Identifier
+	 * =======================================================
+	 * The contents of a specific counter can be read by setting the
+	 * following fields in QM_EVTSEL.ExtendedEvtID(=1) and
+	 * QM_EVTSEL.EvtID = L3CacheABMC (=1) and setting QM_EVTSEL.RMID
+	 * to the desired counter ID. Reading the QM_CTR then returns the
+	 * contents of the specified counter. The RMID_VAL_ERROR bit is set
+	 * if the counter configuration is invalid, or if an invalid counter
+	 * ID is set in the QM_EVTSEL.RMID field.  The RMID_VAL_UNAVAIL bit
+	 * is set if the counter data is unavailable.
+	 */
+	wrmsr(MSR_IA32_QM_EVTSEL, ABMC_EXTENDED_EVT_ID | ABMC_EVT_ID, cntr_id);
+	rdmsrl(MSR_IA32_QM_CTR, msr_val);
+
+	if (msr_val & RMID_VAL_ERROR)
+		return -EIO;
+	if (msr_val & RMID_VAL_UNAVAIL)
+		return -EINVAL;
+
+	*val = msr_val;
+	return 0;
+}
+
+void resctrl_arch_reset_cntr(struct rdt_resource *r, struct rdt_l3_mon_domain *d,
+			     u32 unused, u32 rmid, int cntr_id,
+			     enum resctrl_event_id eventid)
+{
+	struct rdt_hw_l3_mon_domain *hw_dom = resctrl_to_arch_mon_dom(d);
+	struct arch_mbm_state *am;
+
+	am = get_arch_mbm_state(hw_dom, rmid, eventid);
+	if (am) {
+		memset(am, 0, sizeof(*am));
+
+		/* Record any initial, non-zero count value. */
+		__cntr_id_read(cntr_id, &am->prev_msr);
+	}
+}
+
+int resctrl_arch_cntr_read(struct rdt_resource *r, struct rdt_l3_mon_domain *d,
+			   u32 unused, u32 rmid, int cntr_id,
+			   enum resctrl_event_id eventid, u64 *val)
+{
+	u64 msr_val;
+	int ret;
+
+	ret = __cntr_id_read(cntr_id, &msr_val);
+	if (ret)
+		return ret;
+
+	*val = get_corrected_val(r, d, rmid, eventid, msr_val);
+
+	return 0;
+}
+
+/*
+ * The power-on reset value of MSR_RMID_SNC_CONFIG is 0x1
+ * which indicates that RMIDs are configured in legacy mode.
+ * This mode is incompatible with Linux resctrl semantics
+ * as RMIDs are partitioned between SNC nodes, which requires
+ * a user to know which RMID is allocated to a task.
+ * Clearing bit 0 reconfigures the RMID counters for use
+ * in RMID sharing mode. This mode is better for Linux.
+ * The RMID space is divided between all SNC nodes with the
+ * RMIDs renumbered to start from zero in each node when
+ * counting operations from tasks. Code to read the counters
+ * must adjust RMID counter numbers based on SNC node. See
+ * logical_rmid_to_physical_rmid() for code that does this.
+ */
+void arch_mon_domain_online(struct rdt_resource *r, struct rdt_l3_mon_domain *d)
+{
+	if (snc_nodes_per_l3_cache > 1)
+		msr_clear_bit(MSR_RMID_SNC_CONFIG, 0);
+}
+
+/* CPU models that support SNC and MSR_RMID_SNC_CONFIG */
+static const struct x86_cpu_id snc_cpu_ids[] __initconst = {
+	X86_MATCH_VFM(INTEL_ICELAKE_X, 0),
+	X86_MATCH_VFM(INTEL_SAPPHIRERAPIDS_X, 0),
+	X86_MATCH_VFM(INTEL_EMERALDRAPIDS_X, 0),
+	X86_MATCH_VFM(INTEL_GRANITERAPIDS_X, 0),
+	X86_MATCH_VFM(INTEL_ATOM_CRESTMONT_X, 0),
+	X86_MATCH_VFM(INTEL_ATOM_DARKMONT_X, 0),
+	{}
+};
+
+static __init int snc_get_config(void)
+{
+	int ret = topology_num_nodes_per_package();
+
+	if (ret > 1 && !x86_match_cpu(snc_cpu_ids)) {
+		pr_warn("CoD enabled system? Resctrl not supported\n");
+		return 1;
+	}
+
+	/* sanity check: Only valid results are 1, 2, 3, 4, 6 */
+	switch (ret) {
+	case 1:
 		break;
-	case QOS_L3_MBM_LOCAL_EVENT_ID:
-		m = &rr->d->mbm_local[rmid];
+	case 2 ... 4:
+	case 6:
+		pr_info("Sub-NUMA Cluster mode detected with %d nodes per L3 cache\n", ret);
+		rdt_resources_all[RDT_RESOURCE_L3].r_resctrl.mon_scope = RESCTRL_L3_NODE;
 		break;
 	default:
-		/*
-		 * Code would never reach here because an invalid
-		 * event id would fail the __rmid_read.
-		 */
-		return RMID_VAL_ERROR;
+		pr_warn("Ignore improbable SNC node count %d\n", ret);
+		ret = 1;
+		break;
 	}
 
-	if (rr->first) {
-		memset(m, 0, sizeof(struct mbm_state));
-		m->prev_bw_msr = m->prev_msr = tval;
-		return 0;
-	}
-
-	chunks = mbm_overflow_count(m->prev_msr, tval, hw_res->mbm_width);
-	m->chunks += chunks;
-	m->prev_msr = tval;
-
-	rr->val += get_corrected_mbm_count(rmid, m->chunks);
-
-	return 0;
+	return ret;
 }
 
-/*
- * Supporting function to calculate the memory bandwidth
- * and delta bandwidth in MBps.
- */
-static void mbm_bw_count(u32 rmid, struct rmid_read *rr)
-{
-	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(rr->r);
-	struct mbm_state *m = &rr->d->mbm_local[rmid];
-	u64 tval, cur_bw, chunks;
-
-	tval = __rmid_read(rmid, rr->evtid);
-	if (tval & (RMID_VAL_ERROR | RMID_VAL_UNAVAIL))
-		return;
-
-	chunks = mbm_overflow_count(m->prev_bw_msr, tval, hw_res->mbm_width);
-	cur_bw = (get_corrected_mbm_count(rmid, chunks) * hw_res->mon_scale) >> 20;
-
-	if (m->delta_comp)
-		m->delta_bw = abs(cur_bw - m->prev_bw);
-	m->delta_comp = false;
-	m->prev_bw = cur_bw;
-	m->prev_bw_msr = tval;
-}
-
-/*
- * This is called via IPI to read the CQM/MBM counters
- * on a domain.
- */
-void mon_event_count(void *info)
-{
-	struct rdtgroup *rdtgrp, *entry;
-	struct rmid_read *rr = info;
-	struct list_head *head;
-	u64 ret_val;
-
-	rdtgrp = rr->rgrp;
-
-	ret_val = __mon_event_count(rdtgrp->mon.rmid, rr);
-
-	/*
-	 * For Ctrl groups read data from child monitor groups and
-	 * add them together. Count events which are read successfully.
-	 * Discard the rmid_read's reporting errors.
-	 */
-	head = &rdtgrp->mon.crdtgrp_list;
-
-	if (rdtgrp->type == RDTCTRL_GROUP) {
-		list_for_each_entry(entry, head, mon.crdtgrp_list) {
-			if (__mon_event_count(entry->mon.rmid, rr) == 0)
-				ret_val = 0;
-		}
-	}
-
-	/* Report error if none of rmid_reads are successful */
-	if (ret_val)
-		rr->val = ret_val;
-}
-
-/*
- * Feedback loop for MBA software controller (mba_sc)
- *
- * mba_sc is a feedback loop where we periodically read MBM counters and
- * adjust the bandwidth percentage values via the IA32_MBA_THRTL_MSRs so
- * that:
- *
- *   current bandwidth(cur_bw) < user specified bandwidth(user_bw)
- *
- * This uses the MBM counters to measure the bandwidth and MBA throttle
- * MSRs to control the bandwidth for a particular rdtgrp. It builds on the
- * fact that resctrl rdtgroups have both monitoring and control.
- *
- * The frequency of the checks is 1s and we just tag along the MBM overflow
- * timer. Having 1s interval makes the calculation of bandwidth simpler.
- *
- * Although MBA's goal is to restrict the bandwidth to a maximum, there may
- * be a need to increase the bandwidth to avoid unnecessarily restricting
- * the L2 <-> L3 traffic.
- *
- * Since MBA controls the L2 external bandwidth where as MBM measures the
- * L3 external bandwidth the following sequence could lead to such a
- * situation.
- *
- * Consider an rdtgroup which had high L3 <-> memory traffic in initial
- * phases -> mba_sc kicks in and reduced bandwidth percentage values -> but
- * after some time rdtgroup has mostly L2 <-> L3 traffic.
- *
- * In this case we may restrict the rdtgroup's L2 <-> L3 traffic as its
- * throttle MSRs already have low percentage values.  To avoid
- * unnecessarily restricting such rdtgroups, we also increase the bandwidth.
- */
-static void update_mba_bw(struct rdtgroup *rgrp, struct rdt_domain *dom_mbm)
-{
-	u32 closid, rmid, cur_msr, cur_msr_val, new_msr_val;
-	struct mbm_state *pmbm_data, *cmbm_data;
-	struct rdt_hw_resource *hw_r_mba;
-	struct rdt_hw_domain *hw_dom_mba;
-	u32 cur_bw, delta_bw, user_bw;
-	struct rdt_resource *r_mba;
-	struct rdt_domain *dom_mba;
-	struct list_head *head;
-	struct rdtgroup *entry;
-
-	if (!is_mbm_local_enabled())
-		return;
-
-	hw_r_mba = &rdt_resources_all[RDT_RESOURCE_MBA];
-	r_mba = &hw_r_mba->r_resctrl;
-	closid = rgrp->closid;
-	rmid = rgrp->mon.rmid;
-	pmbm_data = &dom_mbm->mbm_local[rmid];
-
-	dom_mba = get_domain_from_cpu(smp_processor_id(), r_mba);
-	if (!dom_mba) {
-		pr_warn_once("Failure to get domain for MBA update\n");
-		return;
-	}
-	hw_dom_mba = resctrl_to_arch_dom(dom_mba);
-
-	cur_bw = pmbm_data->prev_bw;
-	user_bw = resctrl_arch_get_config(r_mba, dom_mba, closid, CDP_NONE);
-	delta_bw = pmbm_data->delta_bw;
-	/*
-	 * resctrl_arch_get_config() chooses the mbps/ctrl value to return
-	 * based on is_mba_sc(). For now, reach into the hw_dom.
-	 */
-	cur_msr_val = hw_dom_mba->ctrl_val[closid];
-
-	/*
-	 * For Ctrl groups read data from child monitor groups.
-	 */
-	head = &rgrp->mon.crdtgrp_list;
-	list_for_each_entry(entry, head, mon.crdtgrp_list) {
-		cmbm_data = &dom_mbm->mbm_local[entry->mon.rmid];
-		cur_bw += cmbm_data->prev_bw;
-		delta_bw += cmbm_data->delta_bw;
-	}
-
-	/*
-	 * Scale up/down the bandwidth linearly for the ctrl group.  The
-	 * bandwidth step is the bandwidth granularity specified by the
-	 * hardware.
-	 *
-	 * The delta_bw is used when increasing the bandwidth so that we
-	 * dont alternately increase and decrease the control values
-	 * continuously.
-	 *
-	 * For ex: consider cur_bw = 90MBps, user_bw = 100MBps and if
-	 * bandwidth step is 20MBps(> user_bw - cur_bw), we would keep
-	 * switching between 90 and 110 continuously if we only check
-	 * cur_bw < user_bw.
-	 */
-	if (cur_msr_val > r_mba->membw.min_bw && user_bw < cur_bw) {
-		new_msr_val = cur_msr_val - r_mba->membw.bw_gran;
-	} else if (cur_msr_val < MAX_MBA_BW &&
-		   (user_bw > (cur_bw + delta_bw))) {
-		new_msr_val = cur_msr_val + r_mba->membw.bw_gran;
-	} else {
-		return;
-	}
-
-	cur_msr = hw_r_mba->msr_base + closid;
-	wrmsrl(cur_msr, delay_bw_map(new_msr_val, r_mba));
-	hw_dom_mba->ctrl_val[closid] = new_msr_val;
-
-	/*
-	 * Delta values are updated dynamically package wise for each
-	 * rdtgrp every time the throttle MSR changes value.
-	 *
-	 * This is because (1)the increase in bandwidth is not perfectly
-	 * linear and only "approximately" linear even when the hardware
-	 * says it is linear.(2)Also since MBA is a core specific
-	 * mechanism, the delta values vary based on number of cores used
-	 * by the rdtgrp.
-	 */
-	pmbm_data->delta_comp = true;
-	list_for_each_entry(entry, head, mon.crdtgrp_list) {
-		cmbm_data = &dom_mbm->mbm_local[entry->mon.rmid];
-		cmbm_data->delta_comp = true;
-	}
-}
-
-static void mbm_update(struct rdt_resource *r, struct rdt_domain *d, int rmid)
-{
-	struct rmid_read rr;
-
-	rr.first = false;
-	rr.r = r;
-	rr.d = d;
-
-	/*
-	 * This is protected from concurrent reads from user
-	 * as both the user and we hold the global mutex.
-	 */
-	if (is_mbm_total_enabled()) {
-		rr.evtid = QOS_L3_MBM_TOTAL_EVENT_ID;
-		__mon_event_count(rmid, &rr);
-	}
-	if (is_mbm_local_enabled()) {
-		rr.evtid = QOS_L3_MBM_LOCAL_EVENT_ID;
-		__mon_event_count(rmid, &rr);
-
-		/*
-		 * Call the MBA software controller only for the
-		 * control groups and when user has enabled
-		 * the software controller explicitly.
-		 */
-		if (is_mba_sc(NULL))
-			mbm_bw_count(rmid, &rr);
-	}
-}
-
-/*
- * Handler to scan the limbo list and move the RMIDs
- * to free list whose occupancy < threshold_occupancy.
- */
-void cqm_handle_limbo(struct work_struct *work)
-{
-	unsigned long delay = msecs_to_jiffies(CQM_LIMBOCHECK_INTERVAL);
-	int cpu = smp_processor_id();
-	struct rdt_resource *r;
-	struct rdt_domain *d;
-
-	mutex_lock(&rdtgroup_mutex);
-
-	r = &rdt_resources_all[RDT_RESOURCE_L3].r_resctrl;
-	d = container_of(work, struct rdt_domain, cqm_limbo.work);
-
-	__check_limbo(d, false);
-
-	if (has_busy_rmid(r, d))
-		schedule_delayed_work_on(cpu, &d->cqm_limbo, delay);
-
-	mutex_unlock(&rdtgroup_mutex);
-}
-
-void cqm_setup_limbo_handler(struct rdt_domain *dom, unsigned long delay_ms)
-{
-	unsigned long delay = msecs_to_jiffies(delay_ms);
-	int cpu;
-
-	cpu = cpumask_any(&dom->cpu_mask);
-	dom->cqm_work_cpu = cpu;
-
-	schedule_delayed_work_on(cpu, &dom->cqm_limbo, delay);
-}
-
-void mbm_handle_overflow(struct work_struct *work)
-{
-	unsigned long delay = msecs_to_jiffies(MBM_OVERFLOW_INTERVAL);
-	struct rdtgroup *prgrp, *crgrp;
-	int cpu = smp_processor_id();
-	struct list_head *head;
-	struct rdt_resource *r;
-	struct rdt_domain *d;
-
-	mutex_lock(&rdtgroup_mutex);
-
-	if (!static_branch_likely(&rdt_mon_enable_key))
-		goto out_unlock;
-
-	r = &rdt_resources_all[RDT_RESOURCE_L3].r_resctrl;
-	d = container_of(work, struct rdt_domain, mbm_over.work);
-
-	list_for_each_entry(prgrp, &rdt_all_groups, rdtgroup_list) {
-		mbm_update(r, d, prgrp->mon.rmid);
-
-		head = &prgrp->mon.crdtgrp_list;
-		list_for_each_entry(crgrp, head, mon.crdtgrp_list)
-			mbm_update(r, d, crgrp->mon.rmid);
-
-		if (is_mba_sc(NULL))
-			update_mba_bw(prgrp, d);
-	}
-
-	schedule_delayed_work_on(cpu, &d->mbm_over, delay);
-
-out_unlock:
-	mutex_unlock(&rdtgroup_mutex);
-}
-
-void mbm_setup_overflow_handler(struct rdt_domain *dom, unsigned long delay_ms)
-{
-	unsigned long delay = msecs_to_jiffies(delay_ms);
-	int cpu;
-
-	if (!static_branch_likely(&rdt_mon_enable_key))
-		return;
-	cpu = cpumask_any(&dom->cpu_mask);
-	dom->mbm_work_cpu = cpu;
-	schedule_delayed_work_on(cpu, &dom->mbm_over, delay);
-}
-
-static int dom_data_init(struct rdt_resource *r)
-{
-	struct rmid_entry *entry = NULL;
-	int i, nr_rmids;
-
-	nr_rmids = r->num_rmid;
-	rmid_ptrs = kcalloc(nr_rmids, sizeof(struct rmid_entry), GFP_KERNEL);
-	if (!rmid_ptrs)
-		return -ENOMEM;
-
-	for (i = 0; i < nr_rmids; i++) {
-		entry = &rmid_ptrs[i];
-		INIT_LIST_HEAD(&entry->list);
-
-		entry->rmid = i;
-		list_add_tail(&entry->list, &rmid_free_lru);
-	}
-
-	/*
-	 * RMID 0 is special and is always allocated. It's used for all
-	 * tasks that are not monitored.
-	 */
-	entry = __rmid_entry(0);
-	list_del(&entry->list);
-
-	return 0;
-}
-
-static struct mon_evt llc_occupancy_event = {
-	.name		= "llc_occupancy",
-	.evtid		= QOS_L3_OCCUP_EVENT_ID,
-};
-
-static struct mon_evt mbm_total_event = {
-	.name		= "mbm_total_bytes",
-	.evtid		= QOS_L3_MBM_TOTAL_EVENT_ID,
-};
-
-static struct mon_evt mbm_local_event = {
-	.name		= "mbm_local_bytes",
-	.evtid		= QOS_L3_MBM_LOCAL_EVENT_ID,
-};
-
-/*
- * Initialize the event list for the resource.
- *
- * Note that MBM events are also part of RDT_RESOURCE_L3 resource
- * because as per the SDM the total and local memory bandwidth
- * are enumerated as part of L3 monitoring.
- */
-static void l3_mon_evt_init(struct rdt_resource *r)
-{
-	INIT_LIST_HEAD(&r->evt_list);
-
-	if (is_llc_occupancy_enabled())
-		list_add_tail(&llc_occupancy_event.list, &r->evt_list);
-	if (is_mbm_total_enabled())
-		list_add_tail(&mbm_total_event.list, &r->evt_list);
-	if (is_mbm_local_enabled())
-		list_add_tail(&mbm_local_event.list, &r->evt_list);
-}
-
-int rdt_get_mon_l3_config(struct rdt_resource *r)
+int __init rdt_get_l3_mon_config(struct rdt_resource *r)
 {
 	unsigned int mbm_offset = boot_cpu_data.x86_cache_mbm_width_offset;
 	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
-	unsigned int cl_size = boot_cpu_data.x86_cache_size;
-	int ret;
+	unsigned int threshold;
+	u32 eax, ebx, ecx, edx;
 
-	hw_res->mon_scale = boot_cpu_data.x86_cache_occ_scale;
-	r->num_rmid = boot_cpu_data.x86_cache_max_rmid + 1;
+	snc_nodes_per_l3_cache = snc_get_config();
+
+	resctrl_rmid_realloc_limit = boot_cpu_data.x86_cache_size * 1024;
+	hw_res->mon_scale = boot_cpu_data.x86_cache_occ_scale / snc_nodes_per_l3_cache;
+	r->mon.num_rmid = (boot_cpu_data.x86_cache_max_rmid + 1) / snc_nodes_per_l3_cache;
 	hw_res->mbm_width = MBM_CNTR_WIDTH_BASE;
 
 	if (mbm_offset > 0 && mbm_offset <= MBM_CNTR_WIDTH_OFFSET_MAX)
@@ -705,19 +428,38 @@ int rdt_get_mon_l3_config(struct rdt_resource *r)
 	 *
 	 * For a 35MB LLC and 56 RMIDs, this is ~1.8% of the LLC.
 	 */
-	resctrl_cqm_threshold = cl_size * 1024 / r->num_rmid;
+	threshold = resctrl_rmid_realloc_limit / r->mon.num_rmid;
 
-	/* h/w works in units of "boot_cpu_data.x86_cache_occ_scale" */
-	resctrl_cqm_threshold /= hw_res->mon_scale;
+	/*
+	 * Because num_rmid may not be a power of two, round the value
+	 * to the nearest multiple of hw_res->mon_scale so it matches a
+	 * value the hardware will measure. mon_scale may not be a power of 2.
+	 */
+	resctrl_rmid_realloc_threshold = resctrl_arch_round_mon_val(threshold);
 
-	ret = dom_data_init(r);
-	if (ret)
-		return ret;
+	if (rdt_cpu_has(X86_FEATURE_BMEC) || rdt_cpu_has(X86_FEATURE_ABMC)) {
+		/* Detect list of bandwidth sources that can be tracked */
+		cpuid_count(0x80000020, 3, &eax, &ebx, &ecx, &edx);
+		r->mon.mbm_cfg_mask = ecx & MAX_EVT_CONFIG_BITS;
+	}
 
-	l3_mon_evt_init(r);
+	/*
+	 * resctrl assumes a system that supports assignable counters can
+	 * switch to "default" mode. Ensure that there is a "default" mode
+	 * to switch to. This enforces a dependency between the independent
+	 * X86_FEATURE_ABMC and X86_FEATURE_CQM_MBM_TOTAL/X86_FEATURE_CQM_MBM_LOCAL
+	 * hardware features.
+	 */
+	if (rdt_cpu_has(X86_FEATURE_ABMC) &&
+	    (rdt_cpu_has(X86_FEATURE_CQM_MBM_TOTAL) ||
+	     rdt_cpu_has(X86_FEATURE_CQM_MBM_LOCAL))) {
+		r->mon.mbm_cntr_assignable = true;
+		cpuid_count(0x80000020, 5, &eax, &ebx, &ecx, &edx);
+		r->mon.num_mbm_cntrs = (ebx & GENMASK(15, 0)) + 1;
+		hw_res->mbm_cntr_assign_enabled = true;
+	}
 
 	r->mon_capable = true;
-	r->mon_enabled = true;
 
 	return 0;
 }
@@ -734,4 +476,92 @@ void __init intel_rdt_mbm_apply_quirk(void)
 
 	mbm_cf_rmidthreshold = mbm_cf_table[cf_index].rmidthreshold;
 	mbm_cf = mbm_cf_table[cf_index].cf;
+}
+
+static void resctrl_abmc_set_one_amd(void *arg)
+{
+	bool *enable = arg;
+
+	if (*enable)
+		msr_set_bit(MSR_IA32_L3_QOS_EXT_CFG, ABMC_ENABLE_BIT);
+	else
+		msr_clear_bit(MSR_IA32_L3_QOS_EXT_CFG, ABMC_ENABLE_BIT);
+}
+
+/*
+ * ABMC enable/disable requires update of L3_QOS_EXT_CFG MSR on all the CPUs
+ * associated with all monitor domains.
+ */
+static void _resctrl_abmc_enable(struct rdt_resource *r, bool enable)
+{
+	struct rdt_l3_mon_domain *d;
+
+	lockdep_assert_cpus_held();
+
+	list_for_each_entry(d, &r->mon_domains, hdr.list) {
+		on_each_cpu_mask(&d->hdr.cpu_mask, resctrl_abmc_set_one_amd,
+				 &enable, 1);
+		resctrl_arch_reset_rmid_all(r, d);
+	}
+}
+
+int resctrl_arch_mbm_cntr_assign_set(struct rdt_resource *r, bool enable)
+{
+	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
+
+	if (r->mon.mbm_cntr_assignable &&
+	    hw_res->mbm_cntr_assign_enabled != enable) {
+		_resctrl_abmc_enable(r, enable);
+		hw_res->mbm_cntr_assign_enabled = enable;
+	}
+
+	return 0;
+}
+
+bool resctrl_arch_mbm_cntr_assign_enabled(struct rdt_resource *r)
+{
+	return resctrl_to_arch_res(r)->mbm_cntr_assign_enabled;
+}
+
+static void resctrl_abmc_config_one_amd(void *info)
+{
+	union l3_qos_abmc_cfg *abmc_cfg = info;
+
+	wrmsrl(MSR_IA32_L3_QOS_ABMC_CFG, abmc_cfg->full);
+}
+
+/*
+ * Send an IPI to the domain to assign the counter to RMID, event pair.
+ */
+void resctrl_arch_config_cntr(struct rdt_resource *r, struct rdt_l3_mon_domain *d,
+			      enum resctrl_event_id evtid, u32 rmid, u32 closid,
+			      u32 cntr_id, bool assign)
+{
+	struct rdt_hw_l3_mon_domain *hw_dom = resctrl_to_arch_mon_dom(d);
+	union l3_qos_abmc_cfg abmc_cfg = { 0 };
+	struct arch_mbm_state *am;
+
+	abmc_cfg.split.cfg_en = 1;
+	abmc_cfg.split.cntr_en = assign ? 1 : 0;
+	abmc_cfg.split.cntr_id = cntr_id;
+	abmc_cfg.split.bw_src = rmid;
+	if (assign)
+		abmc_cfg.split.bw_type = resctrl_get_mon_evt_cfg(evtid);
+
+	smp_call_function_any(&d->hdr.cpu_mask, resctrl_abmc_config_one_amd, &abmc_cfg, 1);
+
+	/*
+	 * The hardware counter is reset (because cfg_en == 1) so there is no
+	 * need to record initial non-zero counts.
+	 */
+	am = get_arch_mbm_state(hw_dom, rmid, evtid);
+	if (am)
+		memset(am, 0, sizeof(*am));
+}
+
+void resctrl_arch_mbm_cntr_assign_set_one(struct rdt_resource *r)
+{
+	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
+
+	resctrl_abmc_set_one_amd(&hw_res->mbm_cntr_assign_enabled);
 }

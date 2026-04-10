@@ -257,8 +257,7 @@ static irqreturn_t fsa9480_irq_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static int fsa9480_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int fsa9480_probe(struct i2c_client *client)
 {
 	struct fsa9480_usbsw *info;
 	int ret;
@@ -318,14 +317,9 @@ static int fsa9480_probe(struct i2c_client *client,
 		return ret;
 	}
 
-	device_init_wakeup(info->dev, true);
+	devm_device_init_wakeup(info->dev);
 	fsa9480_detect_dev(info);
 
-	return 0;
-}
-
-static int fsa9480_remove(struct i2c_client *client)
-{
 	return 0;
 }
 
@@ -356,7 +350,7 @@ static const struct dev_pm_ops fsa9480_pm_ops = {
 };
 
 static const struct i2c_device_id fsa9480_id[] = {
-	{ "fsa9480", 0 },
+	{ "fsa9480" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, fsa9480_id);
@@ -376,7 +370,6 @@ static struct i2c_driver fsa9480_i2c_driver = {
 		.of_match_table = fsa9480_of_match,
 	},
 	.probe			= fsa9480_probe,
-	.remove			= fsa9480_remove,
 	.id_table		= fsa9480_id,
 };
 

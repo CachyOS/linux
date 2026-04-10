@@ -16,6 +16,7 @@
 #include <asm/set_memory.h>
 
 #include <drm/drm.h>
+#include <drm/drm_print.h>
 #include <drm/drm_vma_manager.h>
 
 #include "gem.h"
@@ -112,11 +113,11 @@ static void psb_gem_free_object(struct drm_gem_object *obj)
 {
 	struct psb_gem_object *pobj = to_psb_gem_object(obj);
 
-	drm_gem_object_release(obj);
-
 	/* Undo the mmap pin if we are destroying the object */
 	if (pobj->mmapping)
 		psb_gem_unpin(pobj);
+
+	drm_gem_object_release(obj);
 
 	WARN_ON(pobj->in_gart && !pobj->stolen);
 
@@ -145,7 +146,7 @@ psb_gem_create(struct drm_device *dev, u64 size, const char *name, bool stolen, 
 
 	size = roundup(size, PAGE_SIZE);
 
-	pobj = kzalloc(sizeof(*pobj), GFP_KERNEL);
+	pobj = kzalloc_obj(*pobj);
 	if (!pobj)
 		return ERR_PTR(-ENOMEM);
 	obj = &pobj->base;

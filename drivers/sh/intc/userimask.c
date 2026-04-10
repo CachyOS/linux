@@ -32,8 +32,11 @@ store_intc_userimask(struct device *dev,
 		     const char *buf, size_t count)
 {
 	unsigned long level;
+	int ret;
 
-	level = simple_strtoul(buf, NULL, 10);
+	ret = kstrtoul(buf, 10, &level);
+	if (ret != 0)
+		return ret;
 
 	/*
 	 * Minimal acceptable IRQ levels are in the 2 - 16 range, but
@@ -61,10 +64,18 @@ static DEVICE_ATTR(userimask, S_IRUSR | S_IWUSR,
 
 static int __init userimask_sysdev_init(void)
 {
+	struct device *dev_root;
+	int ret = 0;
+
 	if (unlikely(!uimask))
 		return -ENXIO;
 
-	return device_create_file(intc_subsys.dev_root, &dev_attr_userimask);
+	dev_root = bus_get_dev_root(&intc_subsys);
+	if (dev_root) {
+		ret = device_create_file(dev_root, &dev_attr_userimask);
+		put_device(dev_root);
+	}
+	return ret;
 }
 late_initcall(userimask_sysdev_init);
 

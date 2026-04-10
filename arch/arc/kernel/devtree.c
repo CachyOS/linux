@@ -12,6 +12,7 @@
 #include <linux/of.h>
 #include <linux/of_fdt.h>
 #include <asm/mach_desc.h>
+#include <asm/serial.h>
 
 #ifdef CONFIG_SERIAL_EARLYCON
 
@@ -61,7 +62,7 @@ const struct machine_desc * __init setup_machine_fdt(void *dt)
 	const struct machine_desc *mdesc;
 	unsigned long dt_root;
 
-	if (!early_init_dt_scan(dt))
+	if (!early_init_dt_scan(dt, __pa(dt)))
 		return NULL;
 
 	mdesc = of_flat_dt_match_machine(NULL, arch_get_next_mach);

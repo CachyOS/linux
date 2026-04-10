@@ -544,7 +544,7 @@ SYM53C500_info(struct Scsi_Host *SChost)
 	return (info_msg);
 }
 
-static int SYM53C500_queue_lck(struct scsi_cmnd *SCpnt)
+static enum scsi_qc_status SYM53C500_queue_lck(struct scsi_cmnd *SCpnt)
 {
 	struct sym53c500_cmd_priv *scp = scsi_cmd_priv(SCpnt);
 	int i;
@@ -597,7 +597,7 @@ SYM53C500_host_reset(struct scsi_cmnd *SCpnt)
 
 static int 
 SYM53C500_biosparm(struct scsi_device *disk,
-    struct block_device *dev,
+    struct gendisk *unused,
     sector_t capacity, int *info_array)
 {
 	int size;
@@ -668,7 +668,7 @@ ATTRIBUTE_GROUPS(SYM53C500_shost);
 /*
 *  scsi_host_template initializer
 */
-static struct scsi_host_template sym53c500_driver_template = {
+static const struct scsi_host_template sym53c500_driver_template = {
      .module			= THIS_MODULE,
      .name			= "SYM53C500",
      .info			= SYM53C500_info,
@@ -702,7 +702,7 @@ SYM53C500_config(struct pcmcia_device *link)
 	int ret;
 	int irq_level, port_base;
 	struct Scsi_Host *host;
-	struct scsi_host_template *tpnt = &sym53c500_driver_template;
+	const struct scsi_host_template *tpnt = &sym53c500_driver_template;
 	struct sym53c500_data *data;
 
 	dev_dbg(&link->dev, "SYM53C500_config\n");
@@ -849,7 +849,7 @@ SYM53C500_probe(struct pcmcia_device *link)
 	dev_dbg(&link->dev, "SYM53C500_attach()\n");
 
 	/* Create new SCSI device */
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	info = kzalloc_obj(*info);
 	if (!info)
 		return -ENOMEM;
 	info->p_dev = link;

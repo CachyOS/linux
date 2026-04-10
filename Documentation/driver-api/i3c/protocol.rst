@@ -71,8 +71,8 @@ During DAA, each I3C device reports 3 important things:
   related capabilities
 * DCR: Device Characteristic Register. This 8-bit register describes the
   functionalities provided by the device
-* Provisional ID: A 48-bit unique identifier. On a given bus there should be no
-  Provisional ID collision, otherwise the discovery mechanism may fail.
+* Provisioned ID: A 48-bit unique identifier. On a given bus there should be no
+  Provisioned ID collision, otherwise the discovery mechanism may fail.
 
 I3C slave events
 ================
@@ -165,8 +165,8 @@ The first thing attached to an HDR command is the HDR mode. There are currently
 for more details):
 
 * HDR-DDR: Double Data Rate mode
-* HDR-TSP: Ternary Symbol Pure. Only usable on busses with no I2C devices
-* HDR-TSL: Ternary Symbol Legacy. Usable on busses with I2C devices
+* HDR-TSP: Ternary Symbol Pure. Only usable on buses with no I2C devices
+* HDR-TSL: Ternary Symbol Legacy. Usable on buses with I2C devices
 
 When sending an HDR command, the whole bus has to enter HDR mode, which is done
 using a broadcast CCC command.

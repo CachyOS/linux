@@ -21,6 +21,7 @@
  * - Power management is supported
  */
 
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <sound/core.h>
@@ -30,7 +31,6 @@
 #include <linux/delay.h>
 #include <linux/regulator/consumer.h>
 #include <linux/gpio/consumer.h>
-#include <linux/of_device.h>
 
 #define CS4270_FORMATS (SNDRV_PCM_FMTBIT_S8      | SNDRV_PCM_FMTBIT_S16_LE  | \
 			SNDRV_PCM_FMTBIT_S18_3LE | SNDRV_PCM_FMTBIT_S20_3LE | \
@@ -287,10 +287,10 @@ static int cs4270_set_dai_fmt(struct snd_soc_dai *codec_dai,
 
 	/* set master/slave audio interface */
 	switch (format & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		cs4270->slave_mode = 1;
 		break;
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		cs4270->slave_mode = 0;
 		break;
 	default:
@@ -433,7 +433,7 @@ static int cs4270_dai_mute(struct snd_soc_dai *dai, int mute, int direction)
 static int cs4270_soc_put_mute(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct cs4270_private *cs4270 = snd_soc_component_get_drvdata(component);
 	int left = !ucontrol->value.integer.value[0];
 	int right = !ucontrol->value.integer.value[1];
@@ -619,7 +619,6 @@ static const struct snd_soc_component_driver soc_component_device_cs4270 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 /*
@@ -637,7 +636,7 @@ static const struct regmap_config cs4270_regmap = {
 	.max_register =		CS4270_LASTREG,
 	.reg_defaults =		cs4270_reg_defaults,
 	.num_reg_defaults =	ARRAY_SIZE(cs4270_reg_defaults),
-	.cache_type =		REGCACHE_RBTREE,
+	.cache_type =		REGCACHE_MAPLE,
 	.write_flag_mask =	CS4270_I2C_INCR,
 
 	.readable_reg =		cs4270_reg_is_readable,
@@ -651,19 +650,16 @@ static const struct regmap_config cs4270_regmap = {
  * This function puts the chip into low power mode when the i2c device
  * is removed.
  */
-static int cs4270_i2c_remove(struct i2c_client *i2c_client)
+static void cs4270_i2c_remove(struct i2c_client *i2c_client)
 {
 	struct cs4270_private *cs4270 = i2c_get_clientdata(i2c_client);
 
 	gpiod_set_value_cansleep(cs4270->reset_gpio, 0);
-
-	return 0;
 }
 
 /**
  * cs4270_i2c_probe - initialize the I2C interface of the CS4270
  * @i2c_client: the I2C client object
- * @id: the I2C device ID (ignored)
  *
  * This function is called whenever the I2C subsystem finds a device that
  * matches the device ID given via a prior call to i2c_add_driver().
@@ -738,7 +734,7 @@ static int cs4270_i2c_probe(struct i2c_client *i2c_client)
  * cs4270_id - I2C device IDs supported by this driver
  */
 static const struct i2c_device_id cs4270_id[] = {
-	{"cs4270", 0},
+	{"cs4270"},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, cs4270_id);
@@ -755,7 +751,7 @@ static struct i2c_driver cs4270_i2c_driver = {
 		.of_match_table = cs4270_of_match,
 	},
 	.id_table = cs4270_id,
-	.probe_new = cs4270_i2c_probe,
+	.probe = cs4270_i2c_probe,
 	.remove = cs4270_i2c_remove,
 };
 

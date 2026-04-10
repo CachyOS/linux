@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0-only
+menu "Tegra"
+
 config SND_SOC_TEGRA
 	tristate "SoC Audio for the Tegra System-on-Chip"
-	depends on (ARCH_TEGRA && TEGRA20_APB_DMA) || COMPILE_TEST
+	depends on ARCH_TEGRA || COMPILE_TEST
 	depends on COMMON_CLK
 	depends on RESET_CONTROLLER
 	select REGMAP_MMIO
@@ -78,12 +80,22 @@ config SND_SOC_TEGRA210_DMIC
 
 config SND_SOC_TEGRA210_I2S
 	tristate "Tegra210 I2S module"
+	select SND_SIMPLE_CARD_UTILS
 	help
 	  Config to enable the Inter-IC Sound (I2S) Controller which
 	  implements full-duplex and bidirectional and single direction
 	  point-to-point serial interfaces. It can interface with I2S
 	  compatible devices.
 	  Say Y or M if you want to add support for Tegra210 I2S module.
+
+config SND_SOC_TEGRA210_OPE
+	tristate "Tegra210 OPE module"
+	help
+	  Config to enable the Output Processing Engine (OPE) which includes
+	  Parametric Equalizer (PEQ) and Multi Band Dynamic Range Compressor
+	  (MBDRC) sub blocks for data processing. It can support up to 8
+	  channels.
+	  Say Y or M if you want to add support for Tegra210 OPE module.
 
 config SND_SOC_TEGRA186_ASRC
 	tristate "Tegra186 ASRC module"
@@ -135,7 +147,7 @@ config SND_SOC_TEGRA210_SFC
 	  Config to enable the Sampling Frequency Converter (SFC) which
 	  converts the sampling frequency of input signal to another
 	  frequency. It supports sampling frequency conversion of streams
-	  upto 2 channels (stereo).
+	  up to 2 channels (stereo).
 	  Say Y or M if you want to add support for Tegra210 SFC module.
 
 config SND_SOC_TEGRA210_AMX
@@ -162,7 +174,7 @@ config SND_SOC_TEGRA210_MIXER
 	tristate "Tegra210 Mixer module"
 	help
 	  Config to enable the Mixer module which can help to mix multiple
-	  audio streams. It supports mixing of upto 10 input streams,
+	  audio streams. It supports mixing of up to 10 input streams,
 	  where each stream can contain maximum of 8 channels. It supports
 	  5 output each of which can be a mix of any combination of 10
 	  input streams.
@@ -179,6 +191,15 @@ config SND_SOC_TEGRA_AUDIO_GRAPH_CARD
 
 config SND_SOC_TEGRA_MACHINE_DRV
 	tristate
+
+config SND_SOC_TEGRA_RT5631
+	tristate "SoC Audio support for Tegra boards using an RT5631 codec"
+	depends on SND_SOC_TEGRA && I2C && GPIOLIB
+	select SND_SOC_TEGRA_MACHINE_DRV
+	select SND_SOC_RT5631
+	help
+	  Say Y or M here if you want to add support for SoC audio on Tegra
+	  boards using the RT5631 codec, such as Transformer.
 
 config SND_SOC_TEGRA_RT5640
 	tristate "SoC Audio support for Tegra boards using an RT5640 codec"
@@ -245,6 +266,15 @@ config SND_SOC_TEGRA_MAX98090
 	  Say Y or M here if you want to add support for SoC audio on Tegra
 	  boards using the MAX98090 codec, such as Venice2.
 
+config SND_SOC_TEGRA_MAX98088
+	tristate "SoC Audio support for Tegra boards using a MAX9808x codec"
+	depends on I2C && GPIOLIB
+	select SND_SOC_TEGRA_MACHINE_DRV
+	select SND_SOC_MAX98088
+	help
+	  Say Y or M here if you want to add support for SoC audio on Tegra
+	  boards using the MAX98088 codec, such as LG X3.
+
 config SND_SOC_TEGRA_RT5677
 	tristate "SoC Audio support for Tegra boards using a RT5677 codec"
 	depends on I2C && GPIOLIB
@@ -265,3 +295,5 @@ config SND_SOC_TEGRA_SGTL5000
 	  Colibri T30.
 
 endif
+
+endmenu

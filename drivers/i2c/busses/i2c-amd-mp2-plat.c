@@ -97,17 +97,17 @@ static void i2c_amd_cmd_completion(struct amd_i2c_common *i2c_common)
 static int i2c_amd_check_cmd_completion(struct amd_i2c_dev *i2c_dev)
 {
 	struct amd_i2c_common *i2c_common = &i2c_dev->common;
-	unsigned long timeout;
+	unsigned long time_left;
 
-	timeout = wait_for_completion_timeout(&i2c_dev->cmd_complete,
-					      i2c_dev->adap.timeout);
+	time_left = wait_for_completion_timeout(&i2c_dev->cmd_complete,
+						i2c_dev->adap.timeout);
 
 	if ((i2c_common->reqcmd == i2c_read ||
 	     i2c_common->reqcmd == i2c_write) &&
 	    i2c_common->msg->len > 32)
 		i2c_amd_dma_unmap(i2c_common);
 
-	if (timeout == 0) {
+	if (time_left == 0) {
 		amd_mp2_rw_timeout(i2c_common);
 		return -ETIMEDOUT;
 	}
@@ -179,7 +179,7 @@ static u32 i2c_amd_func(struct i2c_adapter *a)
 }
 
 static const struct i2c_algorithm i2c_amd_algorithm = {
-	.master_xfer = i2c_amd_xfer,
+	.xfer = i2c_amd_xfer,
 	.functionality = i2c_amd_func,
 };
 
@@ -244,14 +244,18 @@ static const struct i2c_adapter_quirks amd_i2c_dev_quirks = {
 
 static int i2c_amd_probe(struct platform_device *pdev)
 {
+	struct device *dev = &pdev->dev;
 	int ret;
 	struct amd_i2c_dev *i2c_dev;
-	struct acpi_device *adev = ACPI_COMPANION(&pdev->dev);
 	struct amd_mp2_dev *mp2_dev;
-	const char *uid;
+	u64 uid;
 
-	if (!adev)
-		return -ENODEV;
+	ret = acpi_dev_uid_to_integer(ACPI_COMPANION(dev), &uid);
+	if (ret)
+		return dev_err_probe(dev, ret, "missing UID/bus id!\n");
+	if (uid >= 2)
+		return dev_err_probe(dev, -EINVAL, "incorrect UID/bus id \"%llu\"!\n", uid);
+	dev_dbg(dev, "bus id is %llu\n", uid);
 
 	/* The ACPI namespace doesn't contain information about which MP2 PCI
 	 * device an AMDI0011 ACPI device is related to, so assume that there's
@@ -266,6 +270,7 @@ static int i2c_amd_probe(struct platform_device *pdev)
 	if (!i2c_dev)
 		return -ENOMEM;
 
+	i2c_dev->common.bus_id = uid;
 	i2c_dev->common.mp2_dev = mp2_dev;
 	i2c_dev->pdev = pdev;
 	platform_set_drvdata(pdev, i2c_dev);
@@ -275,20 +280,6 @@ static int i2c_amd_probe(struct platform_device *pdev)
 	i2c_dev->common.suspend = &i2c_amd_suspend;
 	i2c_dev->common.resume = &i2c_amd_resume;
 #endif
-
-	uid = adev->pnp.unique_id;
-	if (!uid) {
-		dev_err(&pdev->dev, "missing UID/bus id!\n");
-		return -EINVAL;
-	} else if (strcmp(uid, "0") == 0) {
-		i2c_dev->common.bus_id = 0;
-	} else if (strcmp(uid, "1") == 0) {
-		i2c_dev->common.bus_id = 1;
-	} else {
-		dev_err(&pdev->dev, "incorrect UID/bus id \"%s\"!\n", uid);
-		return -EINVAL;
-	}
-	dev_dbg(&pdev->dev, "bus id is %u\n", i2c_dev->common.bus_id);
 
 	/* Register the adapter */
 	amd_mp2_pm_runtime_get(mp2_dev);
@@ -331,7 +322,7 @@ static int i2c_amd_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int i2c_amd_remove(struct platform_device *pdev)
+static void i2c_amd_remove(struct platform_device *pdev)
 {
 	struct amd_i2c_dev *i2c_dev = platform_get_drvdata(pdev);
 	struct amd_i2c_common *i2c_common = &i2c_dev->common;
@@ -345,12 +336,11 @@ static int i2c_amd_remove(struct platform_device *pdev)
 	i2c_unlock_bus(&i2c_dev->adap, I2C_LOCK_ROOT_ADAPTER);
 
 	i2c_del_adapter(&i2c_dev->adap);
-	return 0;
 }
 
 static const struct acpi_device_id i2c_amd_acpi_match[] = {
 	{ "AMDI0011" },
-	{ },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, i2c_amd_acpi_match);
 

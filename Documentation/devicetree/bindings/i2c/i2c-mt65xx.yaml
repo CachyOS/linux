@@ -23,10 +23,13 @@ properties:
       - const: mediatek,mt6577-i2c
       - const: mediatek,mt6589-i2c
       - const: mediatek,mt7622-i2c
+      - const: mediatek,mt7981-i2c
+      - const: mediatek,mt7986-i2c
       - const: mediatek,mt8168-i2c
       - const: mediatek,mt8173-i2c
       - const: mediatek,mt8183-i2c
       - const: mediatek,mt8186-i2c
+      - const: mediatek,mt8188-i2c
       - const: mediatek,mt8192-i2c
       - items:
           - enum:
@@ -41,6 +44,22 @@ properties:
           - const: mediatek,mt6577-i2c
       - items:
           - enum:
+              - mediatek,mt8365-i2c
+          - const: mediatek,mt8168-i2c
+      - items:
+          - enum:
+              - mediatek,mt6795-i2c
+          - const: mediatek,mt8173-i2c
+      - items:
+          - enum:
+              - mediatek,mt6878-i2c
+              - mediatek,mt6991-i2c
+              - mediatek,mt8189-i2c
+              - mediatek,mt8196-i2c
+          - const: mediatek,mt8188-i2c
+      - items:
+          - enum:
+              - mediatek,mt6893-i2c
               - mediatek,mt8195-i2c
           - const: mediatek,mt8192-i2c
 

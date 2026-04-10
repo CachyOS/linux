@@ -6,7 +6,7 @@
 #ifndef __UM_PTRACE_GENERIC_H
 #define __UM_PTRACE_GENERIC_H
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #include <sysdep/ptrace.h>
 
@@ -35,6 +35,9 @@ extern long subarch_ptrace(struct task_struct *child, long request,
 	unsigned long addr, unsigned long data);
 extern unsigned long getreg(struct task_struct *child, int regno);
 extern int putreg(struct task_struct *child, int regno, unsigned long value);
+
+extern int poke_user(struct task_struct *child, long addr, long data);
+extern int peek_user(struct task_struct *child, long addr, long data);
 
 extern int arch_set_tls(struct task_struct *new, unsigned long tls);
 extern void clear_flushed_tls(struct task_struct *task);

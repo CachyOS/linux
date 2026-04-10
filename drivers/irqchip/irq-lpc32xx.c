@@ -198,7 +198,7 @@ static int __init lpc32xx_of_ic_init(struct device_node *node,
 	const __be32 *reg = of_get_property(node, "reg", NULL);
 	u32 parent_irq, i, addr = reg ? be32_to_cpu(*reg) : 0;
 
-	irqc = kzalloc(sizeof(*irqc), GFP_KERNEL);
+	irqc = kzalloc_obj(*irqc);
 	if (!irqc)
 		return -ENOMEM;
 
@@ -210,8 +210,8 @@ static int __init lpc32xx_of_ic_init(struct device_node *node,
 		return -EINVAL;
 	}
 
-	irqc->domain = irq_domain_add_linear(node, NR_LPC32XX_IC_IRQS,
-					     &lpc32xx_irq_domain_ops, irqc);
+	irqc->domain = irq_domain_create_linear(of_fwnode_handle(node), NR_LPC32XX_IC_IRQS,
+						&lpc32xx_irq_domain_ops, irqc);
 	if (!irqc->domain) {
 		pr_err("unable to add irq domain\n");
 		iounmap(irqc->base);

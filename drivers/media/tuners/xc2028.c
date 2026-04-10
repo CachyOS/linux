@@ -14,7 +14,7 @@
 #include <media/tuner.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include "tuner-i2c.h"
 #include "xc2028.h"
 #include "xc2028-types.h"
@@ -332,7 +332,7 @@ static int load_all_firmwares(struct dvb_frontend *fe,
 		   n_array, priv->fname, name,
 		   priv->firm_version >> 8, priv->firm_version & 0xff);
 
-	priv->firm = kcalloc(n_array, sizeof(*priv->firm), GFP_KERNEL);
+	priv->firm = kzalloc_objs(*priv->firm, n_array);
 	if (priv->firm == NULL) {
 		tuner_err("Not enough memory to load firmware file.\n");
 		rc = -ENOMEM;
@@ -1512,7 +1512,7 @@ fail:
 	return NULL;
 }
 
-EXPORT_SYMBOL(xc2028_attach);
+EXPORT_SYMBOL_GPL(xc2028_attach);
 
 MODULE_DESCRIPTION("Xceive xc2028/xc3028 tuner driver");
 MODULE_AUTHOR("Michel Ludwig <michel.ludwig@gmail.com>");

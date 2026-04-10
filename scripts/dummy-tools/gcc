@@ -59,7 +59,7 @@ fi
 if arg_contain -E "$@"; then
 	# For scripts/cc-version.sh; This emulates GCC 20.0.0
 	if arg_contain - "$@"; then
-		sed -n '/^GCC/{s/__GNUC__/20/; s/__GNUC_MINOR__/0/; s/__GNUC_PATCHLEVEL__/0/; p;}'
+		sed -n '/^GCC/{s/__GNUC__/20/; s/__GNUC_MINOR__/0/; s/__GNUC_PATCHLEVEL__/0/; p;}; s/__LONG_DOUBLE_128__/1/ p'
 		exit 0
 	else
 		echo "no input files" >&2
@@ -85,23 +85,28 @@ if arg_contain -S "$@"; then
 	fi
 
 	# For arch/powerpc/tools/gcc-check-mprofile-kernel.sh
-	if arg_contain -m64 "$@" && arg_contain -mlittle-endian "$@" &&
-		arg_contain -mprofile-kernel "$@"; then
+	if arg_contain -m64 "$@" && arg_contain -mprofile-kernel "$@"; then
 		if ! test -t 0 && ! grep -q notrace; then
 			echo "_mcount"
 		fi
+		exit 0
+	fi
+
+	# For arch/powerpc/tools/gcc-check-fpatchable-function-entry.sh
+	if arg_contain -m64 "$@" && arg_contain -fpatchable-function-entry=2 "$@"; then
+		echo "func:"
+		echo ".section __patchable_function_entries"
+		echo ".localentry"
+		echo "  nop"
+		echo "  nop"
 		exit 0
 	fi
 fi
 
 # To set GCC_PLUGINS
 if arg_contain -print-file-name=plugin "$@"; then
-	plugin_dir=$(mktemp -d)
-
-	mkdir -p $plugin_dir/include
-	touch $plugin_dir/include/plugin-version.h
-
-	echo $plugin_dir
+	# Use $0 to find the in-tree dummy directory
+	echo "$(dirname "$(readlink -f "$0")")/dummy-plugin-dir"
 	exit 0
 fi
 

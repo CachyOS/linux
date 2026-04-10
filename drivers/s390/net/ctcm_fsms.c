@@ -12,8 +12,7 @@
 #undef DEBUGDATA
 #undef DEBUGCCW
 
-#define KMSG_COMPONENT "ctcm"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "ctcm: " fmt
 
 #include <linux/module.h>
 #include <linux/init.h>
@@ -370,7 +369,7 @@ static void chx_rx(fsm_instance *fi, int event, void *arg)
 					CTCM_FUNTAIL, dev->name, len);
 		priv->stats.rx_dropped++;
 		priv->stats.rx_length_errors++;
-						goto again;
+		goto again;
 	}
 	if (len > ch->max_bufsize) {
 		CTCM_DBF_TEXT_(TRACE, CTC_DBF_NOTICE,
@@ -378,7 +377,7 @@ static void chx_rx(fsm_instance *fi, int event, void *arg)
 				CTCM_FUNTAIL, dev->name, len, ch->max_bufsize);
 		priv->stats.rx_dropped++;
 		priv->stats.rx_length_errors++;
-						goto again;
+		goto again;
 	}
 
 	/*
@@ -403,7 +402,7 @@ static void chx_rx(fsm_instance *fi, int event, void *arg)
 		*((__u16 *)skb->data) = len;
 		priv->stats.rx_dropped++;
 		priv->stats.rx_length_errors++;
-						goto again;
+		goto again;
 	}
 	if (block_len > 2) {
 		*((__u16 *)skb->data) = block_len - 2;
@@ -882,6 +881,13 @@ static void ctcm_chx_rxiniterr(fsm_instance *fi, int event, void *arg)
 			fsm_newstate(fi, CTC_STATE_RXERR);
 			fsm_event(priv->fsm, DEV_EVENT_RXDOWN, dev);
 		}
+	} else if (event == CTC_EVENT_UC_RCRESET) {
+		CTCM_DBF_TEXT_(TRACE, CTC_DBF_NOTICE,
+			       "%s(%s): %s in %s", CTCM_FUNTAIL, ch->id,
+			       ctc_ch_event_names[event], fsm_getstate_str(fi));
+
+		dev_info(&dev->dev,
+			 "Init handshake not received, peer not ready yet\n");
 	} else {
 		CTCM_DBF_TEXT_(ERROR, CTC_DBF_ERROR,
 			"%s(%s): %s in %s", CTCM_FUNTAIL, ch->id,
@@ -967,6 +973,13 @@ static void ctcm_chx_txiniterr(fsm_instance *fi, int event, void *arg)
 			fsm_newstate(fi, CTC_STATE_TXERR);
 			fsm_event(priv->fsm, DEV_EVENT_TXDOWN, dev);
 		}
+	} else if (event == CTC_EVENT_UC_RCRESET) {
+		CTCM_DBF_TEXT_(TRACE, CTC_DBF_NOTICE,
+			       "%s(%s): %s in %s", CTCM_FUNTAIL, ch->id,
+			       ctc_ch_event_names[event], fsm_getstate_str(fi));
+
+		dev_info(&dev->dev,
+			 "Init handshake not sent, peer not ready yet\n");
 	} else {
 		CTCM_DBF_TEXT_(ERROR, CTC_DBF_ERROR,
 			"%s(%s): %s in %s", CTCM_FUNTAIL, ch->id,
@@ -1006,7 +1019,7 @@ static void ctcm_chx_txretry(fsm_instance *fi, int event, void *arg)
 			use gptr as mpc indicator */
 		if (!(gptr && (fsm_getstate(gptr->fsm) != MPCG_STATE_READY)))
 			ctcm_chx_restart(fi, event, arg);
-				goto done;
+		goto done;
 	}
 
 	CTCM_DBF_TEXT_(TRACE, CTC_DBF_DEBUG,
@@ -1024,7 +1037,7 @@ static void ctcm_chx_txretry(fsm_instance *fi, int event, void *arg)
 						CTCM_FUNTAIL, ch->id);
 			fsm_event(priv->fsm, DEV_EVENT_TXDOWN, dev);
 			ctcm_chx_restart(fi, event, arg);
-				goto done;
+			goto done;
 		}
 		fsm_addtimer(&ch->timer, 1000, CTC_EVENT_TIMER, ch);
 		if (event == CTC_EVENT_TIMER) /* for TIMER not yet locked */
@@ -1251,12 +1264,12 @@ static void ctcmpc_chx_txdone(fsm_instance *fi, int event, void *arg)
 	if ((ch->collect_len <= 0) || (grp->in_sweep != 0)) {
 		spin_unlock(&ch->collect_lock);
 		fsm_newstate(fi, CTC_STATE_TXIDLE);
-				goto done;
+		goto done;
 	}
 
 	if (ctcm_checkalloc_buffer(ch)) {
 		spin_unlock(&ch->collect_lock);
-				goto done;
+		goto done;
 	}
 	ch->trans_skb->data = ch->trans_skb_data;
 	skb_reset_tail_pointer(ch->trans_skb);
@@ -1325,7 +1338,7 @@ static void ctcmpc_chx_txdone(fsm_instance *fi, int event, void *arg)
 	clear_normalized_cda(&ch->ccw[1]);
 
 	CTCM_PR_DBGDATA("ccwcda=0x%p data=0x%p\n",
-			(void *)(unsigned long)ch->ccw[1].cda,
+			(void *)(u64)dma32_to_u32(ch->ccw[1].cda),
 			ch->trans_skb->data);
 	ch->ccw[1].count = ch->max_bufsize;
 
@@ -1340,7 +1353,7 @@ static void ctcmpc_chx_txdone(fsm_instance *fi, int event, void *arg)
 	}
 
 	CTCM_PR_DBGDATA("ccwcda=0x%p data=0x%p\n",
-			(void *)(unsigned long)ch->ccw[1].cda,
+			(void *)(u64)dma32_to_u32(ch->ccw[1].cda),
 			ch->trans_skb->data);
 
 	ch->ccw[1].count = ch->trans_skb->len;
@@ -1389,7 +1402,7 @@ static void ctcmpc_chx_rx(fsm_instance *fi, int event, void *arg)
 		CTCM_DBF_TEXT_(MPC_ERROR, CTC_DBF_ERROR,
 			"%s(%s): TRANS_SKB = NULL",
 				CTCM_FUNTAIL, dev->name);
-			goto again;
+		goto again;
 	}
 
 	if (len < TH_HEADER_LENGTH) {
@@ -1409,7 +1422,7 @@ static void ctcmpc_chx_rx(fsm_instance *fi, int event, void *arg)
 				"%s(%s): skb allocation failed",
 						CTCM_FUNTAIL, dev->name);
 			fsm_event(priv->mpcg->fsm, MPCG_EVENT_INOP, dev);
-					goto again;
+			goto again;
 		}
 		switch (fsm_getstate(grp->fsm)) {
 		case MPCG_STATE_RESET:
@@ -1441,9 +1454,9 @@ again:
 		skb_reset_tail_pointer(ch->trans_skb);
 		ch->trans_skb->len = 0;
 		ch->ccw[1].count = ch->max_bufsize;
-			if (do_debug_ccw)
+		if (do_debug_ccw)
 			ctcmpc_dumpit((char *)&ch->ccw[0],
-					sizeof(struct ccw1) * 3);
+				      sizeof(struct ccw1) * 3);
 		dolock = !in_hardirq();
 		if (dolock)
 			spin_lock_irqsave(
@@ -1562,7 +1575,7 @@ void ctcmpc_chx_rxidle(fsm_instance *fi, int event, void *arg)
 		if (rc != 0) {
 			fsm_newstate(fi, CTC_STATE_RXINIT);
 			ctcm_ccw_check_rc(ch, rc, "initial RX");
-				goto done;
+			goto done;
 		}
 		break;
 	default:
@@ -1677,10 +1690,10 @@ static void ctcmpc_chx_attnbusy(fsm_instance *fsm, int event, void *arg)
 		if (fsm_getstate(ch->fsm) == CH_XID0_INPROGRESS) {
 			fsm_newstate(ch->fsm, CH_XID0_PENDING) ;
 			fsm_deltimer(&grp->timer);
-				goto done;
+			goto done;
 		}
 		fsm_event(grp->fsm, MPCG_EVENT_INOP, dev);
-				goto done;
+		goto done;
 	case MPCG_STATE_XID2INITX:
 		/* XID2 was received before ATTN Busy for second
 		   channel.Send yside xid for second channel.
@@ -1768,7 +1781,7 @@ static void ctcmpc_chx_send_sweep(fsm_instance *fsm, int event, void *arg)
 		/* give the previous IO time to complete */
 		fsm_addtimer(&wch->sweep_timer,
 			200, CTC_EVENT_RSWEEP_TIMER, wch);
-				goto done;
+		goto done;
 	}
 
 	skb = skb_dequeue(&wch->sweep_queue);
@@ -1780,7 +1793,7 @@ static void ctcmpc_chx_send_sweep(fsm_instance *fsm, int event, void *arg)
 		ctcm_clear_busy_do(dev);
 		dev_kfree_skb_any(skb);
 		fsm_event(grp->fsm, MPCG_EVENT_INOP, dev);
-				goto done;
+		goto done;
 	} else {
 		refcount_inc(&skb->users);
 		skb_queue_tail(&wch->io_queue, skb);

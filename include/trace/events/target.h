@@ -31,8 +31,8 @@
 		scsi_opcode_name(INQUIRY),			\
 		scsi_opcode_name(RECOVER_BUFFERED_DATA),	\
 		scsi_opcode_name(MODE_SELECT),			\
-		scsi_opcode_name(RESERVE),			\
-		scsi_opcode_name(RELEASE),			\
+		scsi_opcode_name(RESERVE_6),			\
+		scsi_opcode_name(RELEASE_6),			\
 		scsi_opcode_name(COPY),				\
 		scsi_opcode_name(ERASE),			\
 		scsi_opcode_name(MODE_SENSE),			\
@@ -154,7 +154,7 @@ TRACE_EVENT(target_sequencer_start,
 		__entry->task_attribute	= cmd->sam_task_attr;
 		__entry->control	= scsi_command_control(cmd->t_task_cdb);
 		memcpy(__entry->cdb, cmd->t_task_cdb, TCM_MAX_COMMAND_SIZE);
-		__assign_str(initiator, cmd->se_sess->se_node_acl->initiatorname);
+		__assign_str(initiator);
 	),
 
 	TP_printk("%s -> LUN %03u tag %#llx %s data_length %6u  CDB %s  (TA:%s C:%02x)",
@@ -198,7 +198,7 @@ TRACE_EVENT(target_cmd_complete,
 			min(18, ((u8 *) cmd->sense_buffer)[SPC_ADD_SENSE_LEN_OFFSET] + 8) : 0;
 		memcpy(__entry->cdb, cmd->t_task_cdb, TCM_MAX_COMMAND_SIZE);
 		memcpy(__entry->sense_data, cmd->sense_buffer, __entry->sense_length);
-		__assign_str(initiator, cmd->se_sess->se_node_acl->initiatorname);
+		__assign_str(initiator);
 	),
 
 	TP_printk("%s <- LUN %03u tag %#llx status %s (sense len %d%s%s)  %s data_length %6u  CDB %s  (TA:%s C:%02x)",

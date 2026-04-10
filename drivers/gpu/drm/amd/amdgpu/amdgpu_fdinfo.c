@@ -33,6 +33,7 @@
 #include <drm/amdgpu_drm.h>
 #include <drm/drm_debugfs.h>
 #include <drm/drm_drv.h>
+#include <drm/drm_file.h>
 
 #include "amdgpu.h"
 #include "amdgpu_vm.h"
@@ -51,33 +52,29 @@ static const char *amdgpu_ip_name[AMDGPU_HW_IP_NUM] = {
 	[AMDGPU_HW_IP_VCN_DEC]	=	"dec",
 	[AMDGPU_HW_IP_VCN_ENC]	=	"enc",
 	[AMDGPU_HW_IP_VCN_JPEG]	=	"jpeg",
+	[AMDGPU_HW_IP_VPE]	=	"vpe",
 };
 
-void amdgpu_show_fdinfo(struct seq_file *m, struct file *f)
+void amdgpu_show_fdinfo(struct drm_printer *p, struct drm_file *file)
 {
-	struct drm_file *file = f->private_data;
-	struct amdgpu_device *adev = drm_to_adev(file->minor->dev);
 	struct amdgpu_fpriv *fpriv = file->driver_priv;
 	struct amdgpu_vm *vm = &fpriv->vm;
 
-	uint64_t vram_mem = 0, gtt_mem = 0, cpu_mem = 0;
+	struct amdgpu_mem_stats stats[__AMDGPU_PL_NUM];
 	ktime_t usage[AMDGPU_HW_IP_NUM];
-	uint32_t bus, dev, fn, domain;
-	unsigned int hw_ip;
-	int ret;
+	const char *pl_name[] = {
+		[TTM_PL_VRAM] = "vram",
+		[TTM_PL_TT] = "gtt",
+		[TTM_PL_SYSTEM] = "cpu",
+		[AMDGPU_PL_GDS] = "gds",
+		[AMDGPU_PL_GWS] = "gws",
+		[AMDGPU_PL_OA] = "oa",
+		[AMDGPU_PL_DOORBELL] = "doorbell",
+		[AMDGPU_PL_MMIO_REMAP] = "mmioremap",
+	};
+	unsigned int hw_ip, i;
 
-	bus = adev->pdev->bus->number;
-	domain = pci_domain_nr(adev->pdev->bus);
-	dev = PCI_SLOT(adev->pdev->devfn);
-	fn = PCI_FUNC(adev->pdev->devfn);
-
-	ret = amdgpu_bo_reserve(vm->root.bo, false);
-	if (ret)
-		return;
-
-	amdgpu_vm_get_memory(vm, &vram_mem, &gtt_mem, &cpu_mem);
-	amdgpu_bo_unreserve(vm->root.bo);
-
+	amdgpu_vm_get_memory(vm, stats);
 	amdgpu_ctx_mgr_usage(&fpriv->ctx_mgr, usage);
 
 	/*
@@ -86,18 +83,42 @@ void amdgpu_show_fdinfo(struct seq_file *m, struct file *f)
 	 * ******************************************************************
 	 */
 
-	seq_printf(m, "pasid:\t%u\n", fpriv->vm.pasid);
-	seq_printf(m, "drm-driver:\t%s\n", file->minor->dev->driver->name);
-	seq_printf(m, "drm-pdev:\t%04x:%02x:%02x.%d\n", domain, bus, dev, fn);
-	seq_printf(m, "drm-client-id:\t%Lu\n", vm->immediate.fence_context);
-	seq_printf(m, "drm-memory-vram:\t%llu KiB\n", vram_mem/1024UL);
-	seq_printf(m, "drm-memory-gtt: \t%llu KiB\n", gtt_mem/1024UL);
-	seq_printf(m, "drm-memory-cpu: \t%llu KiB\n", cpu_mem/1024UL);
+	drm_printf(p, "pasid:\t%u\n", fpriv->vm.pasid);
+
+	for (i = 0; i < ARRAY_SIZE(pl_name); i++) {
+		if (!pl_name[i])
+			continue;
+
+		drm_print_memory_stats(p,
+				       &stats[i].drm,
+				       DRM_GEM_OBJECT_RESIDENT |
+				       DRM_GEM_OBJECT_PURGEABLE,
+				       pl_name[i]);
+	}
+
+	/* Legacy amdgpu keys, alias to drm-resident-memory-: */
+	drm_printf(p, "drm-memory-vram:\t%llu KiB\n",
+		   stats[TTM_PL_VRAM].drm.resident/1024UL);
+	drm_printf(p, "drm-memory-gtt: \t%llu KiB\n",
+		   stats[TTM_PL_TT].drm.resident/1024UL);
+	drm_printf(p, "drm-memory-cpu: \t%llu KiB\n",
+		   stats[TTM_PL_SYSTEM].drm.resident/1024UL);
+
+	/* Amdgpu specific memory accounting keys: */
+	drm_printf(p, "amd-evicted-vram:\t%llu KiB\n",
+		   stats[TTM_PL_VRAM].evicted/1024UL);
+	drm_printf(p, "amd-requested-vram:\t%llu KiB\n",
+		   (stats[TTM_PL_VRAM].drm.shared +
+		    stats[TTM_PL_VRAM].drm.private) / 1024UL);
+	drm_printf(p, "amd-requested-gtt:\t%llu KiB\n",
+		   (stats[TTM_PL_TT].drm.shared +
+		    stats[TTM_PL_TT].drm.private) / 1024UL);
+
 	for (hw_ip = 0; hw_ip < AMDGPU_HW_IP_NUM; ++hw_ip) {
 		if (!usage[hw_ip])
 			continue;
 
-		seq_printf(m, "drm-engine-%s:\t%Ld ns\n", amdgpu_ip_name[hw_ip],
+		drm_printf(p, "drm-engine-%s:\t%lld ns\n", amdgpu_ip_name[hw_ip],
 			   ktime_to_ns(usage[hw_ip]));
 	}
 }

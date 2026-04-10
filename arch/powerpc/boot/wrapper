@@ -21,7 +21,7 @@
 #		(default ./arch/powerpc/boot)
 # -W dir	specify working directory for temporary files (default .)
 # -z		use gzip (legacy)
-# -Z zsuffix    compression to use (gz, xz or none)
+# -Z zsuffix    compression to use (gz, xz, lzma, lzo or none)
 
 # Stop execution if any command fails
 set -e
@@ -69,7 +69,7 @@ usage() {
     echo 'Usage: wrapper [-o output] [-p platform] [-i initrd]' >&2
     echo '       [-d devtree] [-s tree.dts] [-e esm_blob]' >&2
     echo '       [-c] [-C cross-prefix] [-D datadir] [-W workingdir]' >&2
-    echo '       [-Z (gz|xz|none)] [--no-compression] [vmlinux]' >&2
+    echo '       [-Z (gz|xz|lzma|lzo|none)] [--no-compression] [vmlinux]' >&2
     exit 1
 }
 
@@ -210,17 +210,28 @@ ld_version()
 	gsub(".*version ", "");
 	gsub("-.*", "");
 	split($1,a, ".");
+	if( length(a[3]) == "8" )
+		# a[3] is probably a date of format yyyymmdd used for release snapshots. We
+		# can assume it to be zero as it does not signify a new version as such.
+		a[3] = 0;
 	print a[1]*100000000 + a[2]*1000000 + a[3]*10000;
 	exit
     }'
 }
 
+ld_is_lld()
+{
+	${CROSS}ld -V 2>&1 | grep -q LLD
+}
+
 # Do not include PT_INTERP segment when linking pie. Non-pie linking
 # just ignores this option.
-LD_VERSION=$(${CROSS}ld --version | ld_version)
-LD_NO_DL_MIN_VERSION=$(echo 2.26 | ld_version)
-if [ "$LD_VERSION" -ge "$LD_NO_DL_MIN_VERSION" ] ; then
-	nodl="--no-dynamic-linker"
+nodl="--no-dynamic-linker"
+
+# suppress some warnings in recent ld versions
+nowarn="-z noexecstack"
+if "${CROSS}ld" -v --no-warn-rwx-segments >/dev/null 2>&1; then
+	nowarn="$nowarn --no-warn-rwx-segments"
 fi
 
 platformo=$object/"$platform".o
@@ -252,11 +263,6 @@ pseries)
 	link_address=
 	pie=-pie
     fi
-    make_space=n
-    ;;
-maple)
-    platformo="$object/of.o $object/epapr.o"
-    link_address='0x400000'
     make_space=n
     ;;
 pmac|chrp)
@@ -320,7 +326,7 @@ ps3)
     make_space=n
     pie=
     ;;
-ep88xc|ep405|ep8248e)
+ep88xc|ep8248e)
     platformo="$object/fixed-head.o $object/$platform.o"
     binary=y
     ;;
@@ -433,7 +439,7 @@ fi
 # Extract kernel version information, some platforms want to include
 # it in the image header
 version=`${CROSS}strings "$kernel" | grep '^Linux version [-0-9.]' | \
-    cut -d' ' -f3`
+    head -n1 | cut -d' ' -f3`
 if [ -n "$version" ]; then
     uboot_version="-n Linux-$version"
 fi
@@ -446,26 +452,6 @@ uboot)
     rm -f "$ofile"
     ${MKIMAGE} -A ppc -O linux -T kernel -C $uboot_comp -a $membase -e $membase \
 	$uboot_version -d "$vmz" "$ofile"
-    if [ -z "$cacheit" ]; then
-	rm -f "$vmz"
-    fi
-    exit 0
-    ;;
-uboot-obs600)
-    rm -f "$ofile"
-    # obs600 wants a multi image with an initrd, so we need to put a fake
-    # one in even when building a "normal" image.
-    if [ -n "$initrd" ]; then
-	real_rd="$initrd"
-    else
-	real_rd=`mktemp`
-	echo "\0" >>"$real_rd"
-    fi
-    ${MKIMAGE} -A ppc -O linux -T multi -C gzip -a $membase -e $membase \
-	$uboot_version -d "$vmz":"$real_rd":"$dtb" "$ofile"
-    if [ -z "$initrd" ]; then
-	rm -f "$real_rd"
-    fi
     if [ -z "$cacheit" ]; then
 	rm -f "$vmz"
     fi
@@ -504,7 +490,7 @@ if [ "$platform" != "miboot" ]; then
         text_start="-Ttext $link_address"
     fi
 #link everything
-    ${CROSS}ld -m $format -T $lds $text_start $pie $nodl $rodynamic $notext -o "$ofile" $map \
+    ${CROSS}ld -m $format -T $lds $text_start $pie $nodl $nowarn $rodynamic $notext -o "$ofile" $map \
 	$platformo $tmp $object/wrapper.a
     rm $tmp
 fi
@@ -520,7 +506,7 @@ fi
 
 # post-processing needed for some platforms
 case "$platform" in
-pseries|chrp|maple)
+pseries|chrp)
     $objbin/addnote "$ofile"
     ;;
 coff)
@@ -581,7 +567,7 @@ ps3)
     # reached, then enter the system reset vector of the partially decompressed
     # image.  No warning is issued.
     rm -f "$odir"/{otheros,otheros-too-big}.bld
-    size=$(${CROSS}nm --no-sort --radix=d "$ofile" | egrep ' _end$' | cut -d' ' -f1)
+    size=$(${CROSS}nm --no-sort --radix=d "$ofile" | grep -E ' _end$' | cut -d' ' -f1)
     bld="otheros.bld"
     if [ $size -gt $((0x1000000)) ]; then
         bld="otheros-too-big.bld"

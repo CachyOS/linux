@@ -33,6 +33,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
+#include <linux/hex.h>
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/err.h>
@@ -42,6 +43,7 @@
 #include <linux/jiffies.h>
 #include <linux/lockdep.h>
 #include <linux/inet.h>
+#include <net/net_namespace.h>
 #include <rdma/ib_cache.h>
 
 #include <linux/atomic.h>
@@ -61,11 +63,6 @@
 MODULE_AUTHOR("Roland Dreier");
 MODULE_DESCRIPTION("InfiniBand SCSI RDMA Protocol initiator");
 MODULE_LICENSE("Dual BSD/GPL");
-
-#if !defined(CONFIG_DYNAMIC_DEBUG)
-#define DEFINE_DYNAMIC_DEBUG_METADATA(name, fmt)
-#define DYNAMIC_DEBUG_BRANCH(descriptor) false
-#endif
 
 static unsigned int srp_sg_tablesize;
 static unsigned int cmd_sg_entries;
@@ -229,7 +226,7 @@ static struct srp_iu *srp_alloc_iu(struct srp_host *host, size_t size,
 {
 	struct srp_iu *iu;
 
-	iu = kmalloc(sizeof *iu, gfp_mask);
+	iu = kmalloc_obj(*iu, gfp_mask);
 	if (!iu)
 		goto out;
 
@@ -278,7 +275,7 @@ static int srp_init_ib_qp(struct srp_target_port *target,
 	struct ib_qp_attr *attr;
 	int ret;
 
-	attr = kmalloc(sizeof *attr, GFP_KERNEL);
+	attr = kmalloc_obj(*attr);
 	if (!attr)
 		return -ENOMEM;
 
@@ -422,7 +419,7 @@ static struct srp_fr_pool *srp_create_fr_pool(struct ib_device *device,
 	if (pool_size <= 0)
 		goto err;
 	ret = -ENOMEM;
-	pool = kzalloc(struct_size(pool, desc, pool_size), GFP_KERNEL);
+	pool = kzalloc_flex(*pool, desc, pool_size);
 	if (!pool)
 		goto err;
 	pool->size = pool_size;
@@ -537,7 +534,7 @@ static int srp_create_ch_ib(struct srp_rdma_ch *ch)
 	const int m = 1 + dev->use_fast_reg * target->mr_per_cmd * 2;
 	int ret;
 
-	init_attr = kzalloc(sizeof *init_attr, GFP_KERNEL);
+	init_attr = kzalloc_obj(*init_attr);
 	if (!init_attr)
 		return -ENOMEM;
 
@@ -699,7 +696,7 @@ static void srp_free_ch_ib(struct srp_target_port *target,
 
 static void srp_path_rec_completion(int status,
 				    struct sa_path_rec *pathrec,
-				    void *ch_ptr)
+				    unsigned int num_paths, void *ch_ptr)
 {
 	struct srp_rdma_ch *ch = ch_ptr;
 	struct srp_target_port *target = ch->target;
@@ -810,7 +807,7 @@ static int srp_send_req(struct srp_rdma_ch *ch, uint32_t max_iu_len,
 	char *ipi, *tpi;
 	int status;
 
-	req = kzalloc(sizeof *req, GFP_KERNEL);
+	req = kzalloc_obj(*req);
 	if (!req)
 		return -ENOMEM;
 
@@ -1052,7 +1049,7 @@ static void srp_remove_target(struct srp_target_port *target)
 	scsi_remove_host(target->scsi_host);
 	srp_stop_rport_timers(target->rport);
 	srp_disconnect_target(target);
-	kobj_ns_drop(KOBJ_NS_TYPE_NET, target->net);
+	kobj_ns_drop(KOBJ_NS_TYPE_NET, to_ns_common(target->net));
 	for (i = 0; i < target->ch_count; i++) {
 		ch = &target->ch[i];
 		srp_free_ch_ib(target, ch);
@@ -1282,8 +1279,7 @@ struct srp_terminate_context {
 	int scsi_result;
 };
 
-static bool srp_terminate_cmd(struct scsi_cmnd *scmnd, void *context_ptr,
-			      bool reserved)
+static bool srp_terminate_cmd(struct scsi_cmnd *scmnd, void *context_ptr)
 {
 	struct srp_terminate_context *context = context_ptr;
 	struct srp_target_port *target = context->srp_target;
@@ -1962,7 +1958,8 @@ static void srp_process_rsp(struct srp_rdma_ch *ch, struct srp_rsp *rsp)
 		if (scmnd) {
 			req = scsi_cmd_priv(scmnd);
 			scmnd = srp_claim_req(ch, req, NULL, scmnd);
-		} else {
+		}
+		if (!scmnd) {
 			shost_printk(KERN_ERR, target->scsi_host,
 				     "Null scmnd for RSP w/tag %#016llx received on ch %td / QP %#x\n",
 				     rsp->tag, ch - target->ch, ch->qp->qp_num);
@@ -1984,12 +1981,8 @@ static void srp_process_rsp(struct srp_rdma_ch *ch, struct srp_rsp *rsp)
 
 		if (unlikely(rsp->flags & SRP_RSP_FLAG_DIUNDER))
 			scsi_set_resid(scmnd, be32_to_cpu(rsp->data_in_res_cnt));
-		else if (unlikely(rsp->flags & SRP_RSP_FLAG_DIOVER))
-			scsi_set_resid(scmnd, -be32_to_cpu(rsp->data_in_res_cnt));
 		else if (unlikely(rsp->flags & SRP_RSP_FLAG_DOUNDER))
 			scsi_set_resid(scmnd, be32_to_cpu(rsp->data_out_res_cnt));
-		else if (unlikely(rsp->flags & SRP_RSP_FLAG_DOOVER))
-			scsi_set_resid(scmnd, -be32_to_cpu(rsp->data_out_res_cnt));
 
 		srp_free_req(ch, req, scmnd,
 			     be32_to_cpu(rsp->req_lim_delta));
@@ -2157,7 +2150,8 @@ static void srp_handle_qp_err(struct ib_cq *cq, struct ib_wc *wc,
 	target->qp_in_error = true;
 }
 
-static int srp_queuecommand(struct Scsi_Host *shost, struct scsi_cmnd *scmnd)
+static enum scsi_qc_status srp_queuecommand(struct Scsi_Host *shost,
+					    struct scsi_cmnd *scmnd)
 {
 	struct request *rq = scsi_cmd_to_rq(scmnd);
 	struct srp_target_port *target = host_to_target(shost);
@@ -2264,12 +2258,10 @@ static int srp_alloc_iu_bufs(struct srp_rdma_ch *ch)
 	struct srp_target_port *target = ch->target;
 	int i;
 
-	ch->rx_ring = kcalloc(target->queue_size, sizeof(*ch->rx_ring),
-			      GFP_KERNEL);
+	ch->rx_ring = kzalloc_objs(*ch->rx_ring, target->queue_size);
 	if (!ch->rx_ring)
 		goto err_no_ring;
-	ch->tx_ring = kcalloc(target->queue_size, sizeof(*ch->tx_ring),
-			      GFP_KERNEL);
+	ch->tx_ring = kzalloc_objs(*ch->tx_ring, target->queue_size);
 	if (!ch->tx_ring)
 		goto err_no_ring;
 
@@ -2394,7 +2386,7 @@ static void srp_cm_rep_handler(struct ib_cm_id *cm_id,
 
 	if (!target->using_rdma_cm) {
 		ret = -ENOMEM;
-		qp_attr = kmalloc(sizeof(*qp_attr), GFP_KERNEL);
+		qp_attr = kmalloc_obj(*qp_attr);
 		if (!qp_attr)
 			goto error;
 
@@ -2789,16 +2781,13 @@ static int srp_send_tsk_mgmt(struct srp_rdma_ch *ch, u64 req_tag, u64 lun,
 static int srp_abort(struct scsi_cmnd *scmnd)
 {
 	struct srp_target_port *target = host_to_target(scmnd->device->host);
-	struct srp_request *req = (struct srp_request *) scmnd->host_scribble;
+	struct srp_request *req = scsi_cmd_priv(scmnd);
 	u32 tag;
 	u16 ch_idx;
 	struct srp_rdma_ch *ch;
-	int ret;
 
 	shost_printk(KERN_ERR, target->scsi_host, "SRP abort called\n");
 
-	if (!req)
-		return SUCCESS;
 	tag = blk_mq_unique_tag(scsi_cmd_to_rq(scmnd));
 	ch_idx = blk_mq_unique_tag_to_hwq(tag);
 	if (WARN_ON_ONCE(ch_idx >= target->ch_count))
@@ -2809,19 +2798,14 @@ static int srp_abort(struct scsi_cmnd *scmnd)
 	shost_printk(KERN_ERR, target->scsi_host,
 		     "Sending SRP abort for tag %#x\n", tag);
 	if (srp_send_tsk_mgmt(ch, tag, scmnd->device->lun,
-			      SRP_TSK_ABORT_TASK, NULL) == 0)
-		ret = SUCCESS;
-	else if (target->rport->state == SRP_RPORT_LOST)
-		ret = FAST_IO_FAIL;
-	else
-		ret = FAILED;
-	if (ret == SUCCESS) {
+			      SRP_TSK_ABORT_TASK, NULL) == 0) {
 		srp_free_req(ch, req, scmnd, 0);
-		scmnd->result = DID_ABORT << 16;
-		scsi_done(scmnd);
+		return SUCCESS;
 	}
+	if (target->rport->state == SRP_RPORT_LOST)
+		return FAST_IO_FAIL;
 
-	return ret;
+	return FAILED;
 }
 
 static int srp_reset_device(struct scsi_cmnd *scmnd)
@@ -2861,7 +2845,8 @@ static int srp_target_alloc(struct scsi_target *starget)
 	return 0;
 }
 
-static int srp_slave_configure(struct scsi_device *sdev)
+static int srp_sdev_configure(struct scsi_device *sdev,
+			      struct queue_limits *lim)
 {
 	struct Scsi_Host *shost = sdev->host;
 	struct srp_target_port *target = host_to_target(shost);
@@ -2991,7 +2976,7 @@ static ssize_t local_ib_port_show(struct device *dev,
 {
 	struct srp_target_port *target = host_to_target(class_to_shost(dev));
 
-	return sysfs_emit(buf, "%d\n", target->srp_host->port);
+	return sysfs_emit(buf, "%u\n", target->srp_host->port);
 }
 
 static DEVICE_ATTR_RO(local_ib_port);
@@ -3079,12 +3064,12 @@ static struct attribute *srp_host_attrs[] = {
 
 ATTRIBUTE_GROUPS(srp_host);
 
-static struct scsi_host_template srp_template = {
+static const struct scsi_host_template srp_template = {
 	.module				= THIS_MODULE,
 	.name				= "InfiniBand SRP initiator",
 	.proc_name			= DRV_NAME,
 	.target_alloc			= srp_target_alloc,
-	.slave_configure		= srp_slave_configure,
+	.sdev_configure			= srp_sdev_configure,
 	.info				= srp_target_info,
 	.init_cmd_priv			= srp_init_cmd_priv,
 	.exit_cmd_priv			= srp_exit_cmd_priv,
@@ -3179,11 +3164,16 @@ static void srp_release_dev(struct device *dev)
 	struct srp_host *host =
 		container_of(dev, struct srp_host, dev);
 
-	complete(&host->released);
+	kfree(host);
 }
+
+static struct attribute *srp_class_attrs[];
+
+ATTRIBUTE_GROUPS(srp_class);
 
 static struct class srp_class = {
 	.name    = "infiniband_srp",
+	.dev_groups = srp_class_groups,
 	.dev_release = srp_release_dev
 };
 
@@ -3407,7 +3397,8 @@ static int srp_parse_options(struct net *net, const char *buf,
 			break;
 
 		case SRP_OPT_PKEY:
-			if (match_hex(args, &token)) {
+			ret = match_hex(args, &token);
+			if (ret) {
 				pr_warn("bad P_Key parameter '%s'\n", p);
 				goto out;
 			}
@@ -3467,7 +3458,8 @@ static int srp_parse_options(struct net *net, const char *buf,
 			break;
 
 		case SRP_OPT_MAX_SECT:
-			if (match_int(args, &token)) {
+			ret = match_int(args, &token);
+			if (ret) {
 				pr_warn("bad max sect parameter '%s'\n", p);
 				goto out;
 			}
@@ -3475,8 +3467,15 @@ static int srp_parse_options(struct net *net, const char *buf,
 			break;
 
 		case SRP_OPT_QUEUE_SIZE:
-			if (match_int(args, &token) || token < 1) {
+			ret = match_int(args, &token);
+			if (ret) {
+				pr_warn("match_int() failed for queue_size parameter '%s', Error %d\n",
+					p, ret);
+				goto out;
+			}
+			if (token < 1) {
 				pr_warn("bad queue_size parameter '%s'\n", p);
+				ret = -EINVAL;
 				goto out;
 			}
 			target->scsi_host->can_queue = token;
@@ -3487,25 +3486,40 @@ static int srp_parse_options(struct net *net, const char *buf,
 			break;
 
 		case SRP_OPT_MAX_CMD_PER_LUN:
-			if (match_int(args, &token) || token < 1) {
+			ret = match_int(args, &token);
+			if (ret) {
+				pr_warn("match_int() failed for max cmd_per_lun parameter '%s', Error %d\n",
+					p, ret);
+				goto out;
+			}
+			if (token < 1) {
 				pr_warn("bad max cmd_per_lun parameter '%s'\n",
 					p);
+				ret = -EINVAL;
 				goto out;
 			}
 			target->scsi_host->cmd_per_lun = token;
 			break;
 
 		case SRP_OPT_TARGET_CAN_QUEUE:
-			if (match_int(args, &token) || token < 1) {
+			ret = match_int(args, &token);
+			if (ret) {
+				pr_warn("match_int() failed for max target_can_queue parameter '%s', Error %d\n",
+					p, ret);
+				goto out;
+			}
+			if (token < 1) {
 				pr_warn("bad max target_can_queue parameter '%s'\n",
 					p);
+				ret = -EINVAL;
 				goto out;
 			}
 			target->target_can_queue = token;
 			break;
 
 		case SRP_OPT_IO_CLASS:
-			if (match_hex(args, &token)) {
+			ret = match_hex(args, &token);
+			if (ret) {
 				pr_warn("bad IO class parameter '%s'\n", p);
 				goto out;
 			}
@@ -3514,6 +3528,7 @@ static int srp_parse_options(struct net *net, const char *buf,
 				pr_warn("unknown IO class parameter value %x specified (use %x or %x).\n",
 					token, SRP_REV10_IB_IO_CLASS,
 					SRP_REV16A_IB_IO_CLASS);
+				ret = -EINVAL;
 				goto out;
 			}
 			target->io_class = token;
@@ -3536,16 +3551,24 @@ static int srp_parse_options(struct net *net, const char *buf,
 			break;
 
 		case SRP_OPT_CMD_SG_ENTRIES:
-			if (match_int(args, &token) || token < 1 || token > 255) {
+			ret = match_int(args, &token);
+			if (ret) {
+				pr_warn("match_int() failed for max cmd_sg_entries parameter '%s', Error %d\n",
+					p, ret);
+				goto out;
+			}
+			if (token < 1 || token > 255) {
 				pr_warn("bad max cmd_sg_entries parameter '%s'\n",
 					p);
+				ret = -EINVAL;
 				goto out;
 			}
 			target->cmd_sg_cnt = token;
 			break;
 
 		case SRP_OPT_ALLOW_EXT_SG:
-			if (match_int(args, &token)) {
+			ret = match_int(args, &token);
+			if (ret) {
 				pr_warn("bad allow_ext_sg parameter '%s'\n", p);
 				goto out;
 			}
@@ -3553,43 +3576,77 @@ static int srp_parse_options(struct net *net, const char *buf,
 			break;
 
 		case SRP_OPT_SG_TABLESIZE:
-			if (match_int(args, &token) || token < 1 ||
-					token > SG_MAX_SEGMENTS) {
+			ret = match_int(args, &token);
+			if (ret) {
+				pr_warn("match_int() failed for max sg_tablesize parameter '%s', Error %d\n",
+					p, ret);
+				goto out;
+			}
+			if (token < 1 || token > SG_MAX_SEGMENTS) {
 				pr_warn("bad max sg_tablesize parameter '%s'\n",
 					p);
+				ret = -EINVAL;
 				goto out;
 			}
 			target->sg_tablesize = token;
 			break;
 
 		case SRP_OPT_COMP_VECTOR:
-			if (match_int(args, &token) || token < 0) {
+			ret = match_int(args, &token);
+			if (ret) {
+				pr_warn("match_int() failed for comp_vector parameter '%s', Error %d\n",
+					p, ret);
+				goto out;
+			}
+			if (token < 0) {
 				pr_warn("bad comp_vector parameter '%s'\n", p);
+				ret = -EINVAL;
 				goto out;
 			}
 			target->comp_vector = token;
 			break;
 
 		case SRP_OPT_TL_RETRY_COUNT:
-			if (match_int(args, &token) || token < 2 || token > 7) {
+			ret = match_int(args, &token);
+			if (ret) {
+				pr_warn("match_int() failed for tl_retry_count parameter '%s', Error %d\n",
+					p, ret);
+				goto out;
+			}
+			if (token < 2 || token > 7) {
 				pr_warn("bad tl_retry_count parameter '%s' (must be a number between 2 and 7)\n",
 					p);
+				ret = -EINVAL;
 				goto out;
 			}
 			target->tl_retry_count = token;
 			break;
 
 		case SRP_OPT_MAX_IT_IU_SIZE:
-			if (match_int(args, &token) || token < 0) {
+			ret = match_int(args, &token);
+			if (ret) {
+				pr_warn("match_int() failed for max it_iu_size parameter '%s', Error %d\n",
+					p, ret);
+				goto out;
+			}
+			if (token < 0) {
 				pr_warn("bad maximum initiator to target IU size '%s'\n", p);
+				ret = -EINVAL;
 				goto out;
 			}
 			target->max_it_iu_size = token;
 			break;
 
 		case SRP_OPT_CH_COUNT:
-			if (match_int(args, &token) || token < 1) {
+			ret = match_int(args, &token);
+			if (ret) {
+				pr_warn("match_int() failed for channel count parameter '%s', Error %d\n",
+					p, ret);
+				goto out;
+			}
+			if (token < 1) {
 				pr_warn("bad channel count %s\n", p);
+				ret = -EINVAL;
 				goto out;
 			}
 			target->ch_count = token;
@@ -3598,6 +3655,7 @@ static int srp_parse_options(struct net *net, const char *buf,
 		default:
 			pr_warn("unknown parameter or missing value '%s' in target creation request\n",
 				p);
+			ret = -EINVAL;
 			goto out;
 		}
 	}
@@ -3648,14 +3706,15 @@ static ssize_t add_target_store(struct device *dev,
 	target_host->max_id      = 1;
 	target_host->max_lun     = -1LL;
 	target_host->max_cmd_len = sizeof ((struct srp_cmd *) (void *) 0L)->cdb;
-	target_host->max_segment_size = ib_dma_max_seg_size(ibdev);
 
-	if (!(ibdev->attrs.kernel_cap_flags & IBK_SG_GAPS_REG))
+	if (ibdev->attrs.kernel_cap_flags & IBK_SG_GAPS_REG)
+		target_host->max_segment_size = ib_dma_max_seg_size(ibdev);
+	else
 		target_host->virt_boundary_mask = ~srp_dev->mr_page_mask;
 
 	target = host_to_target(target_host);
 
-	target->net		= kobj_ns_grab_current(KOBJ_NS_TYPE_NET);
+	target->net		= to_net_ns(kobj_ns_grab_current(KOBJ_NS_TYPE_NET));
 	target->io_class	= SRP_REV16A_IB_IO_CLASS;
 	target->scsi_host	= target_host;
 	target->srp_host	= host;
@@ -3764,8 +3823,7 @@ static ssize_t add_target_store(struct device *dev,
 				num_online_cpus());
 	}
 
-	target->ch = kcalloc(target->ch_count, sizeof(*target->ch),
-			     GFP_KERNEL);
+	target->ch = kzalloc_objs(*target->ch, target->ch_count);
 	if (!target->ch)
 		goto out;
 
@@ -3848,7 +3906,7 @@ put:
 		 * earlier in this function.
 		 */
 		if (target->state != SRP_TARGET_REMOVED)
-			kobj_ns_drop(KOBJ_NS_TYPE_NET, target->net);
+			kobj_ns_drop(KOBJ_NS_TYPE_NET, to_ns_common(target->net));
 		scsi_host_put(target->scsi_host);
 	}
 
@@ -3884,48 +3942,45 @@ static ssize_t port_show(struct device *dev, struct device_attribute *attr,
 {
 	struct srp_host *host = container_of(dev, struct srp_host, dev);
 
-	return sysfs_emit(buf, "%d\n", host->port);
+	return sysfs_emit(buf, "%u\n", host->port);
 }
 
 static DEVICE_ATTR_RO(port);
 
-static struct srp_host *srp_add_port(struct srp_device *device, u8 port)
+static struct attribute *srp_class_attrs[] = {
+	&dev_attr_add_target.attr,
+	&dev_attr_ibdev.attr,
+	&dev_attr_port.attr,
+	NULL
+};
+
+static struct srp_host *srp_add_port(struct srp_device *device, u32 port)
 {
 	struct srp_host *host;
 
-	host = kzalloc(sizeof *host, GFP_KERNEL);
+	host = kzalloc_obj(*host);
 	if (!host)
 		return NULL;
 
 	INIT_LIST_HEAD(&host->target_list);
 	spin_lock_init(&host->target_lock);
-	init_completion(&host->released);
 	mutex_init(&host->add_target_mutex);
 	host->srp_dev = device;
 	host->port = port;
 
+	device_initialize(&host->dev);
 	host->dev.class = &srp_class;
 	host->dev.parent = device->dev->dev.parent;
-	dev_set_name(&host->dev, "srp-%s-%d", dev_name(&device->dev->dev),
-		     port);
-
-	if (device_register(&host->dev))
-		goto free_host;
-	if (device_create_file(&host->dev, &dev_attr_add_target))
-		goto err_class;
-	if (device_create_file(&host->dev, &dev_attr_ibdev))
-		goto err_class;
-	if (device_create_file(&host->dev, &dev_attr_port))
-		goto err_class;
+	if (dev_set_name(&host->dev, "srp-%s-%u", dev_name(&device->dev->dev),
+			 port))
+		goto put_host;
+	if (device_add(&host->dev))
+		goto put_host;
 
 	return host;
 
-err_class:
-	device_unregister(&host->dev);
-
-free_host:
-	kfree(host);
-
+put_host:
+	put_device(&host->dev);
 	return NULL;
 }
 
@@ -3937,7 +3992,7 @@ static void srp_rename_dev(struct ib_device *device, void *client_data)
 	list_for_each_entry_safe(host, tmp_host, &srp_dev->dev_list, list) {
 		char name[IB_DEVICE_NAME_MAX + 8];
 
-		snprintf(name, sizeof(name), "srp-%s-%d",
+		snprintf(name, sizeof(name), "srp-%s-%u",
 			 dev_name(&device->dev), host->port);
 		device_rename(&host->dev, name);
 	}
@@ -3949,11 +4004,11 @@ static int srp_add_one(struct ib_device *device)
 	struct ib_device_attr *attr = &device->attrs;
 	struct srp_host *host;
 	int mr_page_shift;
-	unsigned int p;
+	u32 p;
 	u64 max_pages_per_mr;
 	unsigned int flags = 0;
 
-	srp_dev = kzalloc(sizeof(*srp_dev), GFP_KERNEL);
+	srp_dev = kzalloc_obj(*srp_dev);
 	if (!srp_dev)
 		return -ENOMEM;
 
@@ -4031,12 +4086,11 @@ static void srp_remove_one(struct ib_device *device, void *client_data)
 	srp_dev = client_data;
 
 	list_for_each_entry_safe(host, tmp_host, &srp_dev->dev_list, list) {
-		device_unregister(&host->dev);
 		/*
-		 * Wait for the sysfs entry to go away, so that no new
-		 * target ports can be created.
+		 * Remove the add_target sysfs entry so that no new target ports
+		 * can be created.
 		 */
-		wait_for_completion(&host->released);
+		device_del(&host->dev);
 
 		/*
 		 * Remove all target ports.
@@ -4054,7 +4108,7 @@ static void srp_remove_one(struct ib_device *device, void *client_data)
 		 */
 		flush_workqueue(srp_remove_wq);
 
-		kfree(host);
+		put_device(&host->dev);
 	}
 
 	ib_dealloc_pd(srp_dev->pd);

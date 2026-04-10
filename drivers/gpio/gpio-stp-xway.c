@@ -4,11 +4,12 @@
  *  Copyright (C) 2012 John Crispin <john@phrozen.org>
  */
 
+#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/types.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
 #include <linux/mutex.h>
 #include <linux/gpio/driver.h>
 #include <linux/io.h>
@@ -112,7 +113,7 @@ static int xway_stp_get(struct gpio_chip *gc, unsigned int gpio)
  *
  * Set the shadow value and call ltq_ebu_apply.
  */
-static void xway_stp_set(struct gpio_chip *gc, unsigned gpio, int val)
+static int xway_stp_set(struct gpio_chip *gc, unsigned int gpio, int val)
 {
 	struct xway_stp *chip = gpiochip_get_data(gc);
 
@@ -123,6 +124,8 @@ static void xway_stp_set(struct gpio_chip *gc, unsigned gpio, int val)
 	xway_stp_w32(chip->virt, chip->shadow, XWAY_STP_CPU0);
 	if (!chip->reserved)
 		xway_stp_w32_mask(chip->virt, 0, XWAY_STP_CON_SWU, XWAY_STP_CON0);
+
+	return 0;
 }
 
 /**
@@ -135,9 +138,7 @@ static void xway_stp_set(struct gpio_chip *gc, unsigned gpio, int val)
  */
 static int xway_stp_dir_out(struct gpio_chip *gc, unsigned gpio, int val)
 {
-	xway_stp_set(gc, gpio, val);
-
-	return 0;
+	return xway_stp_set(gc, gpio, val);
 }
 
 /**
@@ -292,26 +293,20 @@ static int xway_stp_probe(struct platform_device *pdev)
 	}
 
 	/* check which edge trigger we should use, default to a falling edge */
-	if (!of_find_property(pdev->dev.of_node, "lantiq,rising", NULL))
+	if (!of_property_read_bool(pdev->dev.of_node, "lantiq,rising"))
 		chip->edge = XWAY_STP_FALLING;
 
-	clk = devm_clk_get(&pdev->dev, NULL);
+	clk = devm_clk_get_enabled(&pdev->dev, NULL);
 	if (IS_ERR(clk)) {
 		dev_err(&pdev->dev, "Failed to get clock\n");
 		return PTR_ERR(clk);
 	}
 
-	ret = clk_prepare_enable(clk);
-	if (ret)
-		return ret;
-
 	xway_stp_hw_init(chip);
 
 	ret = devm_gpiochip_add_data(&pdev->dev, &chip->gc, chip);
-	if (ret) {
-		clk_disable_unprepare(clk);
+	if (ret)
 		return ret;
-	}
 
 	dev_info(&pdev->dev, "Init done\n");
 

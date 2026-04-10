@@ -14,6 +14,7 @@
 #include <asm/asm-extable.h>
 #include <asm/pci_io.h>
 #include <asm/pci_debug.h>
+#include <asm/asm.h>
 
 static inline void zpci_err_mmio(u8 cc, u8 status, u64 offset)
 {
@@ -30,20 +31,24 @@ static inline int __pcistb_mio_inuser(
 		void __iomem *ioaddr, const void __user *src,
 		u64 len, u8 *status)
 {
-	int cc = -ENXIO;
+	int cc, exception;
+	bool sacf_flag;
 
-	asm volatile (
-		"       sacf 256\n"
-		"0:     .insn   rsy,0xeb00000000d4,%[len],%[ioaddr],%[src]\n"
-		"1:     ipm     %[cc]\n"
-		"       srl     %[cc],28\n"
-		"2:     sacf 768\n"
+	exception = 1;
+	sacf_flag = enable_sacf_uaccess();
+	asm_inline volatile (
+		"	sacf	256\n"
+		"0:	.insn	rsy,0xeb00000000d4,%[len],%[ioaddr],%[src]\n"
+		"1:	lhi	%[exc],0\n"
+		"2:	sacf	768\n"
+		CC_IPM(cc)
 		EX_TABLE(0b, 2b) EX_TABLE(1b, 2b)
-		: [cc] "+d" (cc), [len] "+d" (len)
+		: CC_OUT(cc, cc), [len] "+d" (len), [exc] "+d" (exception)
 		: [ioaddr] "a" (ioaddr), [src] "Q" (*((u8 __force *)src))
-		: "cc", "memory");
+		: CC_CLOBBER_LIST("memory"));
+	disable_sacf_uaccess(sacf_flag);
 	*status = len >> 24 & 0xff;
-	return cc;
+	return exception ? -ENXIO : CC_TRANSFORM(cc);
 }
 
 static inline int __pcistg_mio_inuser(
@@ -51,7 +56,8 @@ static inline int __pcistg_mio_inuser(
 		u64 ulen, u8 *status)
 {
 	union register_pair ioaddr_len = {.even = (u64 __force)ioaddr, .odd = ulen};
-	int cc = -ENXIO;
+	int cc, exception;
+	bool sacf_flag;
 	u64 val = 0;
 	u64 cnt = ulen;
 	u8 tmp;
@@ -61,25 +67,29 @@ static inline int __pcistg_mio_inuser(
 	 * a register, then store it to PCI at @ioaddr while in secondary
 	 * address space. pcistg then uses the user mappings.
 	 */
-	asm volatile (
-		"       sacf    256\n"
-		"0:     llgc    %[tmp],0(%[src])\n"
-		"       sllg    %[val],%[val],8\n"
-		"       aghi    %[src],1\n"
-		"       ogr     %[val],%[tmp]\n"
-		"       brctg   %[cnt],0b\n"
-		"1:     .insn   rre,0xb9d40000,%[val],%[ioaddr_len]\n"
-		"2:     ipm     %[cc]\n"
-		"       srl     %[cc],28\n"
-		"3:     sacf    768\n"
-		EX_TABLE(0b, 3b) EX_TABLE(1b, 3b) EX_TABLE(2b, 3b)
+	exception = 1;
+	sacf_flag = enable_sacf_uaccess();
+	asm_inline volatile (
+		"	sacf	256\n"
+		"0:	llgc	%[tmp],0(%[src])\n"
+		"4:	sllg	%[val],%[val],8\n"
+		"	aghi	%[src],1\n"
+		"	ogr	%[val],%[tmp]\n"
+		"	brctg	%[cnt],0b\n"
+		"1:	.insn	rre,0xb9d40000,%[val],%[ioaddr_len]\n"
+		"2:	lhi	%[exc],0\n"
+		"3:	sacf	768\n"
+		CC_IPM(cc)
+		EX_TABLE(0b, 3b) EX_TABLE(4b, 3b) EX_TABLE(1b, 3b) EX_TABLE(2b, 3b)
+		: [src] "+a" (src), [cnt] "+d" (cnt),
+		  [val] "+d" (val), [tmp] "=d" (tmp), [exc] "+d" (exception),
+		  CC_OUT(cc, cc), [ioaddr_len] "+&d" (ioaddr_len.pair)
 		:
-		[src] "+a" (src), [cnt] "+d" (cnt),
-		[val] "+d" (val), [tmp] "=d" (tmp),
-		[cc] "+d" (cc), [ioaddr_len] "+&d" (ioaddr_len.pair)
-		:: "cc", "memory");
+		: CC_CLOBBER_LIST("memory"));
+	disable_sacf_uaccess(sacf_flag);
 	*status = ioaddr_len.odd >> 24 & 0xff;
 
+	cc = exception ? -ENXIO : CC_TRANSFORM(cc);
 	/* did we read everything from user memory? */
 	if (!cc && cnt != 0)
 		cc = -EFAULT;
@@ -97,9 +107,9 @@ static inline int __memcpy_toio_inuser(void __iomem *dst,
 		return -EINVAL;
 
 	while (n > 0) {
-		size = zpci_get_max_write_size((u64 __force) dst,
-					       (u64 __force) src, n,
-					       ZPCI_MAX_WRITE_SIZE);
+		size = zpci_get_max_io_size((u64 __force) dst,
+					    (u64 __force) src, n,
+					    ZPCI_MAX_WRITE_SIZE);
 		if (size > 8) /* main path */
 			rc = __pcistb_mio_inuser(dst, src, size, &status);
 		else
@@ -118,12 +128,11 @@ static inline int __memcpy_toio_inuser(void __iomem *dst,
 SYSCALL_DEFINE3(s390_pci_mmio_write, unsigned long, mmio_addr,
 		const void __user *, user_buffer, size_t, length)
 {
+	struct follow_pfnmap_args args = { };
 	u8 local_buf[64];
 	void __iomem *io_addr;
 	void *buf;
 	struct vm_area_struct *vma;
-	pte_t *ptep;
-	spinlock_t *ptl;
 	long ret;
 
 	if (!zpci_is_enabled())
@@ -169,11 +178,17 @@ SYSCALL_DEFINE3(s390_pci_mmio_write, unsigned long, mmio_addr,
 	if (!(vma->vm_flags & VM_WRITE))
 		goto out_unlock_mmap;
 
-	ret = follow_pte(vma->vm_mm, mmio_addr, &ptep, &ptl);
-	if (ret)
-		goto out_unlock_mmap;
+	args.address = mmio_addr;
+	args.vma = vma;
+	ret = follow_pfnmap_start(&args);
+	if (ret) {
+		fixup_user_fault(current->mm, mmio_addr, FAULT_FLAG_WRITE, NULL);
+		ret = follow_pfnmap_start(&args);
+		if (ret)
+			goto out_unlock_mmap;
+	}
 
-	io_addr = (void __iomem *)((pte_pfn(*ptep) << PAGE_SHIFT) |
+	io_addr = (void __iomem *)((args.pfn << PAGE_SHIFT) |
 			(mmio_addr & ~PAGE_MASK));
 
 	if ((unsigned long) io_addr < ZPCI_IOMAP_ADDR_BASE)
@@ -181,7 +196,7 @@ SYSCALL_DEFINE3(s390_pci_mmio_write, unsigned long, mmio_addr,
 
 	ret = zpci_memcpy_toio(io_addr, buf, length);
 out_unlock_pt:
-	pte_unmap_unlock(ptep, ptl);
+	follow_pfnmap_end(&args);
 out_unlock_mmap:
 	mmap_read_unlock(current->mm);
 out_free:
@@ -195,9 +210,10 @@ static inline int __pcilg_mio_inuser(
 		u64 ulen, u8 *status)
 {
 	union register_pair ioaddr_len = {.even = (u64 __force)ioaddr, .odd = ulen};
+	bool sacf_flag;
 	u64 cnt = ulen;
 	int shift = ulen * 8;
-	int cc = -ENXIO;
+	int cc, exception;
 	u64 val, tmp;
 
 	/*
@@ -205,27 +221,34 @@ static inline int __pcilg_mio_inuser(
 	 * user space) into a register using pcilg then store these bytes at
 	 * user address @dst
 	 */
-	asm volatile (
-		"       sacf    256\n"
-		"0:     .insn   rre,0xb9d60000,%[val],%[ioaddr_len]\n"
-		"1:     ipm     %[cc]\n"
-		"       srl     %[cc],28\n"
-		"       ltr     %[cc],%[cc]\n"
-		"       jne     4f\n"
-		"2:     ahi     %[shift],-8\n"
-		"       srlg    %[tmp],%[val],0(%[shift])\n"
-		"3:     stc     %[tmp],0(%[dst])\n"
-		"       aghi    %[dst],1\n"
-		"       brctg   %[cnt],2b\n"
-		"4:     sacf    768\n"
-		EX_TABLE(0b, 4b) EX_TABLE(1b, 4b) EX_TABLE(3b, 4b)
+	exception = 1;
+	sacf_flag = enable_sacf_uaccess();
+	asm_inline volatile (
+		"	sacf	256\n"
+		"0:	.insn	rre,0xb9d60000,%[val],%[ioaddr_len]\n"
+		"1:	lhi	%[exc],0\n"
+		"	jne	4f\n"
+		"2:	ahi	%[shift],-8\n"
+		"	srlg	%[tmp],%[val],0(%[shift])\n"
+		"3:	stc	%[tmp],0(%[dst])\n"
+		"5:	aghi	%[dst],1\n"
+		"	brctg	%[cnt],2b\n"
+		/*
+		 * Use xr to clear exc and set condition code to zero
+		 * to ensure flag output is correct for this branch.
+		 */
+		"	xr	%[exc],%[exc]\n"
+		"4:	sacf	768\n"
+		CC_IPM(cc)
+		EX_TABLE(0b, 4b) EX_TABLE(1b, 4b) EX_TABLE(3b, 4b) EX_TABLE(5b, 4b)
+		: [ioaddr_len] "+&d" (ioaddr_len.pair), [exc] "+d" (exception),
+		  CC_OUT(cc, cc), [val] "=d" (val),
+		  [dst] "+a" (dst), [cnt] "+d" (cnt), [tmp] "=d" (tmp),
+		  [shift] "+a" (shift)
 		:
-		[ioaddr_len] "+&d" (ioaddr_len.pair),
-		[cc] "+d" (cc), [val] "=d" (val),
-		[dst] "+a" (dst), [cnt] "+d" (cnt), [tmp] "=d" (tmp),
-		[shift] "+d" (shift)
-		:: "cc", "memory");
-
+		: CC_CLOBBER_LIST("memory"));
+	disable_sacf_uaccess(sacf_flag);
+	cc = exception ? -ENXIO : CC_TRANSFORM(cc);
 	/* did we write everything to the user space buffer? */
 	if (!cc && cnt != 0)
 		cc = -EFAULT;
@@ -242,9 +265,9 @@ static inline int __memcpy_fromio_inuser(void __user *dst,
 	u8 status;
 
 	while (n > 0) {
-		size = zpci_get_max_write_size((u64 __force) src,
-					       (u64 __force) dst, n,
-					       ZPCI_MAX_READ_SIZE);
+		size = zpci_get_max_io_size((u64 __force) src,
+					    (u64 __force) dst, n,
+					    ZPCI_MAX_READ_SIZE);
 		rc = __pcilg_mio_inuser(dst, src, size, &status);
 		if (rc)
 			break;
@@ -260,12 +283,11 @@ static inline int __memcpy_fromio_inuser(void __user *dst,
 SYSCALL_DEFINE3(s390_pci_mmio_read, unsigned long, mmio_addr,
 		void __user *, user_buffer, size_t, length)
 {
+	struct follow_pfnmap_args args = { };
 	u8 local_buf[64];
 	void __iomem *io_addr;
 	void *buf;
 	struct vm_area_struct *vma;
-	pte_t *ptep;
-	spinlock_t *ptl;
 	long ret;
 
 	if (!zpci_is_enabled())
@@ -305,14 +327,20 @@ SYSCALL_DEFINE3(s390_pci_mmio_read, unsigned long, mmio_addr,
 	if (!(vma->vm_flags & (VM_IO | VM_PFNMAP)))
 		goto out_unlock_mmap;
 	ret = -EACCES;
-	if (!(vma->vm_flags & VM_WRITE))
+	if (!(vma->vm_flags & VM_READ))
 		goto out_unlock_mmap;
 
-	ret = follow_pte(vma->vm_mm, mmio_addr, &ptep, &ptl);
-	if (ret)
-		goto out_unlock_mmap;
+	args.vma = vma;
+	args.address = mmio_addr;
+	ret = follow_pfnmap_start(&args);
+	if (ret) {
+		fixup_user_fault(current->mm, mmio_addr, 0, NULL);
+		ret = follow_pfnmap_start(&args);
+		if (ret)
+			goto out_unlock_mmap;
+	}
 
-	io_addr = (void __iomem *)((pte_pfn(*ptep) << PAGE_SHIFT) |
+	io_addr = (void __iomem *)((args.pfn << PAGE_SHIFT) |
 			(mmio_addr & ~PAGE_MASK));
 
 	if ((unsigned long) io_addr < ZPCI_IOMAP_ADDR_BASE) {
@@ -322,7 +350,7 @@ SYSCALL_DEFINE3(s390_pci_mmio_read, unsigned long, mmio_addr,
 	ret = zpci_memcpy_fromio(buf, io_addr, length);
 
 out_unlock_pt:
-	pte_unmap_unlock(ptep, ptl);
+	follow_pfnmap_end(&args);
 out_unlock_mmap:
 	mmap_read_unlock(current->mm);
 

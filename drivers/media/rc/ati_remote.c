@@ -135,8 +135,6 @@ MODULE_PARM_DESC(mouse, "Enable mouse device, default = yes");
 
 #define dbginfo(dev, format, arg...) \
 	do { if (debug) dev_info(dev , format , ## arg); } while (0)
-#undef err
-#define err(format, arg...) printk(KERN_ERR format , ## arg)
 
 struct ati_receiver_type {
 	/* either default_keymap or get_default_keymap should be set */
@@ -253,7 +251,7 @@ struct ati_remote {
 
 	char rc_name[NAME_BUFSIZE];
 	char rc_phys[NAME_BUFSIZE];
-	char mouse_name[NAME_BUFSIZE];
+	char mouse_name[NAME_BUFSIZE + 6];
 	char mouse_phys[NAME_BUFSIZE];
 
 	wait_queue_head_t wait;
@@ -313,9 +311,9 @@ static void ati_remote_dump(struct device *dev, unsigned char *data,
 		if (data[0] != (unsigned char)0xff && data[0] != 0x00)
 			dev_warn(dev, "Weird byte 0x%02x\n", data[0]);
 	} else if (len == 4)
-		dev_warn(dev, "Weird key %*ph\n", 4, data);
+		dev_warn(dev, "Weird key %4ph\n", data);
 	else
-		dev_warn(dev, "Weird data, len=%d %*ph ...\n", len, 6, data);
+		dev_warn(dev, "Weird data, len=%d %6ph ...\n", len, data);
 }
 
 /*
@@ -504,7 +502,7 @@ static void ati_remote_input_report(struct urb *urb)
 
 	if (data[1] != ((data[2] + data[3] + 0xd5) & 0xff)) {
 		dbginfo(&ati_remote->interface->dev,
-			"wrong checksum in input: %*ph\n", 4, data);
+			"wrong checksum in input: %4ph\n", data);
 		return;
 	}
 
@@ -816,11 +814,12 @@ static int ati_remote_probe(struct usb_interface *interface,
 	struct ati_receiver_type *type = (struct ati_receiver_type *)id->driver_info;
 	struct ati_remote *ati_remote;
 	struct input_dev *input_dev;
+	struct device *device = &interface->dev;
 	struct rc_dev *rc_dev;
 	int err = -ENOMEM;
 
 	if (iface_host->desc.bNumEndpoints != 2) {
-		err("%s: Unexpected desc.bNumEndpoints\n", __func__);
+		dev_err(device, "%s: Unexpected desc.bNumEndpoints\n", __func__);
 		return -ENODEV;
 	}
 
@@ -828,19 +827,19 @@ static int ati_remote_probe(struct usb_interface *interface,
 	endpoint_out = &iface_host->endpoint[1].desc;
 
 	if (!usb_endpoint_is_int_in(endpoint_in)) {
-		err("%s: Unexpected endpoint_in\n", __func__);
+		dev_err(device, "%s: Unexpected endpoint_in\n", __func__);
 		return -ENODEV;
 	}
 	if (le16_to_cpu(endpoint_in->wMaxPacketSize) == 0) {
-		err("%s: endpoint_in message size==0? \n", __func__);
+		dev_err(device, "%s: endpoint_in message size==0?\n", __func__);
 		return -ENODEV;
 	}
 	if (!usb_endpoint_is_int_out(endpoint_out)) {
-		err("%s: Unexpected endpoint_out\n", __func__);
+		dev_err(device, "%s: Unexpected endpoint_out\n", __func__);
 		return -ENODEV;
 	}
 
-	ati_remote = kzalloc(sizeof (struct ati_remote), GFP_KERNEL);
+	ati_remote = kzalloc_obj(struct ati_remote);
 	rc_dev = rc_allocate_device(RC_DRIVER_SCANCODE);
 	if (!ati_remote || !rc_dev)
 		goto exit_free_dev_rdev;

@@ -451,7 +451,7 @@ struct dvb_frontend* tda10021_attach(const struct tda1002x_config* config,
 	u8 id;
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(struct tda10021_state), GFP_KERNEL);
+	state = kzalloc_obj(struct tda10021_state);
 	if (state == NULL) goto error;
 
 	/* setup the state */
@@ -523,4 +523,4 @@ MODULE_DESCRIPTION("Philips TDA10021 DVB-C demodulator driver");
 MODULE_AUTHOR("Ralph Metzler, Holger Waechtler, Markus Schulz");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(tda10021_attach);
+EXPORT_SYMBOL_GPL(tda10021_attach);

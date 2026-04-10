@@ -6,6 +6,7 @@
  */
 #include <linux/bitfield.h>
 #include <linux/bits.h>
+#include <linux/cleanup.h>
 #include <linux/clk.h>
 #include <linux/device.h>
 #include <linux/gpio/consumer.h>
@@ -84,17 +85,16 @@ struct ltc2688_chan {
 struct ltc2688_state {
 	struct spi_device *spi;
 	struct regmap *regmap;
-	struct regulator_bulk_data regulators[2];
 	struct ltc2688_chan channels[LTC2688_DAC_CHANNELS];
 	struct iio_chan_spec *iio_chan;
 	/* lock to protect against multiple access to the device and shared data */
 	struct mutex lock;
 	int vref;
 	/*
-	 * DMA (thus cache coherency maintenance) requires the
+	 * DMA (thus cache coherency maintenance) may require the
 	 * transfer buffers to live in their own cache lines.
 	 */
-	u8 tx_data[6] ____cacheline_aligned;
+	u8 tx_data[6] __aligned(IIO_DMA_MINALIGN);
 	u8 rx_data[3];
 };
 
@@ -105,13 +105,11 @@ static int ltc2688_spi_read(void *context, const void *reg, size_t reg_size,
 	struct spi_transfer xfers[] = {
 		{
 			.tx_buf = st->tx_data,
-			.bits_per_word = 8,
 			.len = reg_size + val_size,
 			.cs_change = 1,
 		}, {
 			.tx_buf = st->tx_data + 3,
 			.rx_buf = st->rx_data,
-			.bits_per_word = 8,
 			.len = reg_size + val_size,
 		},
 	};
@@ -211,12 +209,12 @@ static int ltc2688_dac_code_write(struct ltc2688_state *st, u32 chan, u32 input,
 		code = FIELD_PREP(LTC2688_DITHER_RAW_MASK, code);
 	}
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 	/* select the correct input register to read from */
 	ret = regmap_update_bits(st->regmap, LTC2688_CMD_A_B_SELECT, BIT(chan),
 				 input << chan);
 	if (ret)
-		goto out_unlock;
+		return ret;
 
 	/*
 	 * If in dither/toggle mode the dac should be updated by an
@@ -227,10 +225,7 @@ static int ltc2688_dac_code_write(struct ltc2688_state *st, u32 chan, u32 input,
 	else
 		reg = LTC2688_CMD_CH_CODE(chan);
 
-	ret = regmap_write(st->regmap, reg, code);
-out_unlock:
-	mutex_unlock(&st->lock);
-	return ret;
+	return regmap_write(st->regmap, reg, code);
 }
 
 static int ltc2688_dac_code_read(struct ltc2688_state *st, u32 chan, u32 input,
@@ -239,20 +234,20 @@ static int ltc2688_dac_code_read(struct ltc2688_state *st, u32 chan, u32 input,
 	struct ltc2688_chan *c = &st->channels[chan];
 	int ret;
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 	ret = regmap_update_bits(st->regmap, LTC2688_CMD_A_B_SELECT, BIT(chan),
 				 input << chan);
 	if (ret)
-		goto out_unlock;
+		return ret;
 
 	ret = regmap_read(st->regmap, LTC2688_CMD_CH_CODE(chan), code);
-out_unlock:
-	mutex_unlock(&st->lock);
+	if (ret)
+		return ret;
 
 	if (!c->toggle_chan && input == LTC2688_INPUT_B)
 		*code = FIELD_GET(LTC2688_DITHER_RAW_MASK, *code);
 
-	return ret;
+	return 0;
 }
 
 static const int ltc2688_raw_range[] = {0, 1, U16_MAX};
@@ -362,17 +357,15 @@ static ssize_t ltc2688_dither_toggle_set(struct iio_dev *indio_dev,
 	if (ret)
 		return ret;
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 	ret = regmap_update_bits(st->regmap, LTC2688_CMD_TOGGLE_DITHER_EN,
 				 BIT(chan->channel), en << chan->channel);
 	if (ret)
-		goto out_unlock;
+		return ret;
 
 	c->mode = en ? LTC2688_MODE_DITHER_TOGGLE : LTC2688_MODE_DEFAULT;
-out_unlock:
-	mutex_unlock(&st->lock);
 
-	return ret ?: len;
+	return len;
 }
 
 static ssize_t ltc2688_reg_bool_get(struct iio_dev *indio_dev,
@@ -609,7 +602,7 @@ static const struct iio_chan_spec_ext_info ltc2688_toggle_sym_ext_info[] = {
 			      ltc2688_reg_bool_get, ltc2688_reg_bool_set),
 	LTC2688_CHAN_EXT_INFO("symbol", LTC2688_CMD_SW_TOGGLE, IIO_SEPARATE,
 			      ltc2688_reg_bool_get, ltc2688_reg_bool_set),
-	{}
+	{ }
 };
 
 static const struct iio_chan_spec_ext_info ltc2688_toggle_ext_info[] = {
@@ -622,10 +615,10 @@ static const struct iio_chan_spec_ext_info ltc2688_toggle_ext_info[] = {
 			      ltc2688_dither_toggle_set),
 	LTC2688_CHAN_EXT_INFO("powerdown", LTC2688_CMD_POWERDOWN, IIO_SEPARATE,
 			      ltc2688_reg_bool_get, ltc2688_reg_bool_set),
-	{}
+	{ }
 };
 
-static struct iio_chan_spec_ext_info ltc2688_dither_ext_info[] = {
+static const struct iio_chan_spec_ext_info ltc2688_dither_ext_info[] = {
 	LTC2688_CHAN_EXT_INFO("dither_raw", LTC2688_INPUT_B, IIO_SEPARATE,
 			      ltc2688_dac_input_read, ltc2688_dac_input_write),
 	LTC2688_CHAN_EXT_INFO("dither_raw_available", LTC2688_INPUT_B_AVAIL,
@@ -650,13 +643,13 @@ static struct iio_chan_spec_ext_info ltc2688_dither_ext_info[] = {
 			      ltc2688_dither_toggle_set),
 	LTC2688_CHAN_EXT_INFO("powerdown", LTC2688_CMD_POWERDOWN, IIO_SEPARATE,
 			      ltc2688_reg_bool_get, ltc2688_reg_bool_set),
-	{}
+	{ }
 };
 
 static const struct iio_chan_spec_ext_info ltc2688_ext_info[] = {
 	LTC2688_CHAN_EXT_INFO("powerdown", LTC2688_CMD_POWERDOWN, IIO_SEPARATE,
 			      ltc2688_reg_bool_get, ltc2688_reg_bool_set),
-	{}
+	{ }
 };
 
 #define LTC2688_CHANNEL(_chan) {					\
@@ -747,26 +740,21 @@ static int ltc2688_span_lookup(const struct ltc2688_state *st, int min, int max)
 static int ltc2688_channel_config(struct ltc2688_state *st)
 {
 	struct device *dev = &st->spi->dev;
-	struct fwnode_handle *child;
 	u32 reg, clk_input, val, tmp[2];
 	int ret, span;
 
-	device_for_each_child_node(dev, child) {
+	device_for_each_child_node_scoped(dev, child) {
 		struct ltc2688_chan *chan;
 
 		ret = fwnode_property_read_u32(child, "reg", &reg);
-		if (ret) {
-			fwnode_handle_put(child);
+		if (ret)
 			return dev_err_probe(dev, ret,
 					     "Failed to get reg property\n");
-		}
 
-		if (reg >= LTC2688_DAC_CHANNELS) {
-			fwnode_handle_put(child);
+		if (reg >= LTC2688_DAC_CHANNELS)
 			return dev_err_probe(dev, -EINVAL,
 					     "reg bigger than: %d\n",
 					     LTC2688_DAC_CHANNELS);
-		}
 
 		val = 0;
 		chan = &st->channels[reg];
@@ -787,12 +775,10 @@ static int ltc2688_channel_config(struct ltc2688_state *st)
 		if (!ret) {
 			span = ltc2688_span_lookup(st, (int)tmp[0] / 1000,
 						   tmp[1] / 1000);
-			if (span < 0) {
-				fwnode_handle_put(child);
-				return dev_err_probe(dev, -EINVAL,
+			if (span < 0)
+				return dev_err_probe(dev, span,
 						     "output range not valid:[%d %d]\n",
 						     tmp[0], tmp[1]);
-			}
 
 			val |= FIELD_PREP(LTC2688_CH_SPAN_MSK, span);
 		}
@@ -801,17 +787,14 @@ static int ltc2688_channel_config(struct ltc2688_state *st)
 					       &clk_input);
 		if (!ret) {
 			if (clk_input >= LTC2688_CH_TGP_MAX) {
-				fwnode_handle_put(child);
 				return dev_err_probe(dev, -EINVAL,
 						     "toggle-dither-input inv value(%d)\n",
 						     clk_input);
 			}
 
 			ret = ltc2688_tgp_clk_setup(st, chan, child, clk_input);
-			if (ret) {
-				fwnode_handle_put(child);
+			if (ret)
 				return ret;
-			}
 
 			/*
 			 * 0 means software toggle which is the default mode.
@@ -845,17 +828,15 @@ static int ltc2688_channel_config(struct ltc2688_state *st)
 
 		ret = regmap_write(st->regmap, LTC2688_CMD_CH_SETTING(reg),
 				   val);
-		if (ret) {
-			fwnode_handle_put(child);
-			return dev_err_probe(dev, -EINVAL,
+		if (ret)
+			return dev_err_probe(dev, ret,
 					     "failed to set chan settings\n");
-		}
 	}
 
 	return 0;
 }
 
-static int ltc2688_setup(struct ltc2688_state *st, struct regulator *vref)
+static int ltc2688_setup(struct ltc2688_state *st, bool has_external_vref)
 {
 	struct device *dev = &st->spi->dev;
 	struct gpio_desc *gpio;
@@ -873,9 +854,8 @@ static int ltc2688_setup(struct ltc2688_state *st, struct regulator *vref)
 		/* bring device out of reset */
 		gpiod_set_value_cansleep(gpio, 0);
 	} else {
-		ret = regmap_update_bits(st->regmap, LTC2688_CMD_CONFIG,
-					 LTC2688_CONFIG_RST,
-					 LTC2688_CONFIG_RST);
+		ret = regmap_set_bits(st->regmap, LTC2688_CMD_CONFIG,
+				      LTC2688_CONFIG_RST);
 		if (ret)
 			return ret;
 	}
@@ -895,23 +875,11 @@ static int ltc2688_setup(struct ltc2688_state *st, struct regulator *vref)
 	if (ret)
 		return ret;
 
-	if (!vref)
+	if (!has_external_vref)
 		return 0;
 
 	return regmap_set_bits(st->regmap, LTC2688_CMD_CONFIG,
 			       LTC2688_CONFIG_EXT_REF);
-}
-
-static void ltc2688_disable_regulators(void *data)
-{
-	struct ltc2688_state *st = data;
-
-	regulator_bulk_disable(ARRAY_SIZE(st->regulators), st->regulators);
-}
-
-static void ltc2688_disable_regulator(void *regulator)
-{
-	regulator_disable(regulator);
 }
 
 static bool ltc2688_reg_readable(struct device *dev, unsigned int reg)
@@ -939,7 +907,7 @@ static bool ltc2688_reg_writable(struct device *dev, unsigned int reg)
 	return false;
 }
 
-static struct regmap_bus ltc2688_regmap_bus = {
+static const struct regmap_bus ltc2688_regmap_bus = {
 	.read = ltc2688_spi_read,
 	.write = ltc2688_spi_write,
 	.read_flag_mask = LTC2688_READ_OPERATION,
@@ -965,10 +933,11 @@ static const struct iio_info ltc2688_info = {
 
 static int ltc2688_probe(struct spi_device *spi)
 {
+	static const char * const regulators[] = { "vcc", "iovcc" };
 	struct ltc2688_state *st;
 	struct iio_dev *indio_dev;
-	struct regulator *vref_reg;
 	struct device *dev = &spi->dev;
+	bool has_external_vref;
 	int ret;
 
 	indio_dev = devm_iio_device_alloc(dev, sizeof(*st));
@@ -980,7 +949,9 @@ static int ltc2688_probe(struct spi_device *spi)
 
 	/* Just write this once. No need to do it in every regmap read. */
 	st->tx_data[3] = LTC2688_CMD_NOOP;
-	mutex_init(&st->lock);
+	ret = devm_mutex_init(dev, &st->lock);
+	if (ret)
+		return ret;
 
 	st->regmap = devm_regmap_init(dev, &ltc2688_regmap_bus, st,
 				      &ltc2688_regmap_config);
@@ -988,49 +959,20 @@ static int ltc2688_probe(struct spi_device *spi)
 		return dev_err_probe(dev, PTR_ERR(st->regmap),
 				     "Failed to init regmap");
 
-	st->regulators[0].supply = "vcc";
-	st->regulators[1].supply = "iovcc";
-	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(st->regulators),
-				      st->regulators);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to get regulators\n");
-
-	ret = regulator_bulk_enable(ARRAY_SIZE(st->regulators), st->regulators);
+	ret = devm_regulator_bulk_get_enable(dev, ARRAY_SIZE(regulators),
+					     regulators);
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to enable regulators\n");
 
-	ret = devm_add_action_or_reset(dev, ltc2688_disable_regulators, st);
-	if (ret)
-		return ret;
+	ret = devm_regulator_get_enable_read_voltage(dev, "vref");
+	if (ret < 0 && ret != -ENODEV)
+		return dev_err_probe(dev, ret,
+				     "Failed to get vref regulator voltage\n");
 
-	vref_reg = devm_regulator_get_optional(dev, "vref");
-	if (IS_ERR(vref_reg)) {
-		if (PTR_ERR(vref_reg) != -ENODEV)
-			return dev_err_probe(dev, PTR_ERR(vref_reg),
-					     "Failed to get vref regulator");
+	has_external_vref = ret != -ENODEV;
+	st->vref = has_external_vref ? ret / 1000 : 0;
 
-		vref_reg = NULL;
-		/* internal reference */
-		st->vref = 4096;
-	} else {
-		ret = regulator_enable(vref_reg);
-		if (ret)
-			return dev_err_probe(dev, ret,
-					     "Failed to enable vref regulators\n");
-
-		ret = devm_add_action_or_reset(dev, ltc2688_disable_regulator,
-					       vref_reg);
-		if (ret)
-			return ret;
-
-		ret = regulator_get_voltage(vref_reg);
-		if (ret < 0)
-			return dev_err_probe(dev, ret, "Failed to get vref\n");
-
-		st->vref = ret / 1000;
-	}
-
-	ret = ltc2688_setup(st, vref_reg);
+	ret = ltc2688_setup(st, has_external_vref);
 	if (ret)
 		return ret;
 
@@ -1045,13 +987,13 @@ static int ltc2688_probe(struct spi_device *spi)
 
 static const struct of_device_id ltc2688_of_id[] = {
 	{ .compatible = "adi,ltc2688" },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ltc2688_of_id);
 
 static const struct spi_device_id ltc2688_id[] = {
 	{ "ltc2688" },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, ltc2688_id);
 

@@ -6,7 +6,7 @@
 
 /dts-v1/;
 
-#include "fsl-lx2160a.dtsi"
+#include "fsl-lx2160a-rev2.dtsi"
 
 / {
 	model = "NXP Layerscape LX2160AQDS";
@@ -36,19 +36,29 @@
 		compatible = "mdio-mux-multiplexer";
 		mux-controls = <&mux 0>;
 		mdio-parent-bus = <&emdio1>;
-		#address-cells=<1>;
+		#address-cells = <1>;
 		#size-cells = <0>;
 
 		mdio@0 { /* On-board PHY #1 RGMI1*/
 			reg = <0x00>;
 			#address-cells = <1>;
 			#size-cells = <0>;
+
+			rgmii_phy1: ethernet-phy@1 {
+				compatible = "ethernet-phy-id001c.c916";
+				reg = <0x1>;
+			};
 		};
 
 		mdio@8 { /* On-board PHY #2 RGMI2*/
 			reg = <0x8>;
 			#address-cells = <1>;
 			#size-cells = <0>;
+
+			rgmii_phy2: ethernet-phy@2 {
+				compatible = "ethernet-phy-id001c.c916";
+				reg = <0x2>;
+			};
 		};
 
 		mdio@18 { /* Slot #1 */
@@ -104,7 +114,7 @@
 		compatible = "mdio-mux-multiplexer";
 		mux-controls = <&mux 1>;
 		mdio-parent-bus = <&emdio2>;
-		#address-cells=<1>;
+		#address-cells = <1>;
 		#size-cells = <0>;
 
 		mdio@0 { /* Slot #1 (secondary EMI) */
@@ -167,6 +177,16 @@
 
 &crypto {
 	status = "okay";
+};
+
+&dpmac17 {
+	phy-handle = <&rgmii_phy1>;
+	phy-connection-type = "rgmii-id";
+};
+
+&dpmac18 {
+	phy-handle = <&rgmii_phy2>;
+	phy-connection-type = "rgmii-id";
 };
 
 &dspi0 {

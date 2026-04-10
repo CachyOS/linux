@@ -3,6 +3,7 @@
 #ifndef BTRFS_DISCARD_H
 #define BTRFS_DISCARD_H
 
+#include <linux/types.h>
 #include <linux/sizes.h>
 
 struct btrfs_fs_info;
@@ -24,7 +25,6 @@ void btrfs_discard_queue_work(struct btrfs_discard_ctl *discard_ctl,
 			      struct btrfs_block_group *block_group);
 void btrfs_discard_schedule_work(struct btrfs_discard_ctl *discard_ctl,
 				 bool override);
-bool btrfs_run_discard_work(struct btrfs_discard_ctl *discard_ctl);
 
 /* Update operations */
 void btrfs_discard_calc_delay(struct btrfs_discard_ctl *discard_ctl);

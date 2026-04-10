@@ -4,6 +4,9 @@
  * Copyright (C) 2017-2022 Willy Tarreau <w@1wt.eu>
  */
 
+/* make sure to include all global symbols */
+#include "nolibc.h"
+
 #ifndef _NOLIBC_SIGNAL_H
 #define _NOLIBC_SIGNAL_H
 
@@ -13,6 +16,7 @@
 #include "sys.h"
 
 /* This one is not marked static as it's needed by libgcc for divide by zero */
+int raise(int signal);
 __attribute__((weak,unused,section(".text.nolibc_raise")))
 int raise(int signal)
 {

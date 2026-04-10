@@ -37,7 +37,7 @@ static int uvc_mc_create_links(struct uvc_video_chain *chain,
 			continue;
 
 		remote = uvc_entity_by_id(chain->dev, entity->baSourceID[i]);
-		if (remote == NULL)
+		if (remote == NULL || remote->num_pads == 0)
 			return -EINVAL;
 
 		source = (UVC_ENTITY_TYPE(remote) == UVC_TT_STREAMING)
@@ -140,7 +140,7 @@ int uvc_mc_register_entities(struct uvc_video_chain *chain)
 	list_for_each_entry(entity, &chain->entities, chain) {
 		ret = uvc_mc_init_entity(chain, entity);
 		if (ret < 0) {
-			dev_info(&chain->dev->udev->dev,
+			dev_info(&chain->dev->intf->dev,
 				 "Failed to initialize entity for entity %u\n",
 				 entity->id);
 			return ret;
@@ -150,7 +150,7 @@ int uvc_mc_register_entities(struct uvc_video_chain *chain)
 	list_for_each_entry(entity, &chain->entities, chain) {
 		ret = uvc_mc_create_links(chain, entity);
 		if (ret < 0) {
-			dev_info(&chain->dev->udev->dev,
+			dev_info(&chain->dev->intf->dev,
 				 "Failed to create links for entity %u\n",
 				 entity->id);
 			return ret;

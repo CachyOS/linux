@@ -230,7 +230,6 @@ struct da7280_haptic {
 	struct i2c_client *client;
 	struct pwm_device *pwm_dev;
 
-	bool legacy;
 	struct work_struct work;
 	int val;
 	u16 gain;
@@ -352,7 +351,7 @@ static int da7280_haptic_set_pwm(struct da7280_haptic *haptics, bool enabled)
 		state.duty_cycle = period_mag_multi;
 	}
 
-	error = pwm_apply_state(haptics->pwm_dev, &state);
+	error = pwm_apply_might_sleep(haptics->pwm_dev, &state);
 	if (error)
 		dev_err(haptics->dev, "Failed to apply pwm state: %d\n", error);
 
@@ -1140,8 +1139,7 @@ out_err:
 	return error;
 }
 
-static int da7280_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int da7280_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct da7280_haptic *haptics;
@@ -1176,7 +1174,7 @@ static int da7280_probe(struct i2c_client *client,
 		/* Sync up PWM state and ensure it is off. */
 		pwm_init_state(haptics->pwm_dev, &state);
 		state.enabled = false;
-		error = pwm_apply_state(haptics->pwm_dev, &state);
+		error = pwm_apply_might_sleep(haptics->pwm_dev, &state);
 		if (error) {
 			dev_err(dev, "Failed to apply PWM state: %d\n", error);
 			return error;
@@ -1261,43 +1259,41 @@ static int da7280_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int __maybe_unused da7280_suspend(struct device *dev)
+static int da7280_suspend(struct device *dev)
 {
 	struct da7280_haptic *haptics = dev_get_drvdata(dev);
 
-	mutex_lock(&haptics->input_dev->mutex);
+	guard(mutex)(&haptics->input_dev->mutex);
 
 	/*
 	 * Make sure no new requests will be submitted while device is
 	 * suspended.
 	 */
-	spin_lock_irq(&haptics->input_dev->event_lock);
-	haptics->suspended = true;
-	spin_unlock_irq(&haptics->input_dev->event_lock);
+	scoped_guard(spinlock_irq, &haptics->input_dev->event_lock) {
+		haptics->suspended = true;
+	}
 
 	da7280_haptic_stop(haptics);
-
-	mutex_unlock(&haptics->input_dev->mutex);
 
 	return 0;
 }
 
-static int __maybe_unused da7280_resume(struct device *dev)
+static int da7280_resume(struct device *dev)
 {
 	struct da7280_haptic *haptics = dev_get_drvdata(dev);
-	int retval;
+	int error;
 
-	mutex_lock(&haptics->input_dev->mutex);
+	guard(mutex)(&haptics->input_dev->mutex);
 
-	retval = da7280_haptic_start(haptics);
-	if (!retval) {
-		spin_lock_irq(&haptics->input_dev->event_lock);
+	error = da7280_haptic_start(haptics);
+	if (error)
+		return error;
+
+	scoped_guard(spinlock_irq, &haptics->input_dev->event_lock) {
 		haptics->suspended = false;
-		spin_unlock_irq(&haptics->input_dev->event_lock);
 	}
 
-	mutex_unlock(&haptics->input_dev->mutex);
-	return retval;
+	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -1314,13 +1310,13 @@ static const struct i2c_device_id da7280_i2c_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, da7280_i2c_id);
 
-static SIMPLE_DEV_PM_OPS(da7280_pm_ops, da7280_suspend, da7280_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(da7280_pm_ops, da7280_suspend, da7280_resume);
 
 static struct i2c_driver da7280_driver = {
 	.driver = {
 		.name = "da7280",
 		.of_match_table = of_match_ptr(da7280_of_match),
-		.pm = &da7280_pm_ops,
+		.pm = pm_sleep_ptr(&da7280_pm_ops),
 	},
 	.probe = da7280_probe,
 	.id_table = da7280_i2c_id,

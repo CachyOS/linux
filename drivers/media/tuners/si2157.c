@@ -875,16 +875,16 @@ err:
 	dev_dbg(&client->dev, "failed=%d\n", ret);
 }
 
-static int si2157_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int si2157_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct si2157_config *cfg = client->dev.platform_data;
 	struct dvb_frontend *fe = cfg->fe;
 	struct si2157_dev *dev;
 	struct si2157_cmd cmd;
 	int ret;
 
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	dev = kzalloc_obj(*dev);
 	if (!dev) {
 		ret = -ENOMEM;
 		dev_err(&client->dev, "kzalloc() failed\n");
@@ -951,7 +951,7 @@ err:
 	return ret;
 }
 
-static int si2157_remove(struct i2c_client *client)
+static void si2157_remove(struct i2c_client *client)
 {
 	struct si2157_dev *dev = i2c_get_clientdata(client);
 	struct dvb_frontend *fe = dev->fe;
@@ -969,8 +969,6 @@ static int si2157_remove(struct i2c_client *client)
 	memset(&fe->ops.tuner_ops, 0, sizeof(struct dvb_tuner_ops));
 	fe->tuner_priv = NULL;
 	kfree(dev);
-
-	return 0;
 }
 
 /*

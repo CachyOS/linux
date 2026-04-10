@@ -20,7 +20,7 @@ properties:
 
   firmware-name:
     $ref: /schemas/types.yaml#/definitions/string
-    default: "wlan/prima/WCNSS_qcom_wlan_nv.bin"
+    default: wlan/prima/WCNSS_qcom_wlan_nv.bin
     description:
       Relative firmware image path for the WLAN NV blob.
 
@@ -42,21 +42,19 @@ properties:
   bluetooth:
     type: object
     additionalProperties: false
+    allOf:
+      - $ref: /schemas/net/bluetooth/bluetooth-controller.yaml#
     properties:
       compatible:
         const: qcom,wcnss-bt
 
-      local-bd-address:
-        $ref: /schemas/types.yaml#/definitions/uint8-array
-        maxItems: 6
-        description:
-          See Documentation/devicetree/bindings/net/bluetooth.txt
+      local-bd-address: true
 
     required:
       - compatible
 
   wifi:
-    additionalProperties: false
+    unevaluatedProperties: false
     type: object
     properties:
       compatible:
@@ -77,7 +75,6 @@ properties:
           Should reference the tx-enable and tx-rings-empty SMEM states.
 
       qcom,smem-state-names:
-        $ref: /schemas/types.yaml#/definitions/string-array
         items:
           - const: tx-enable
           - const: tx-rings-empty
@@ -90,6 +87,9 @@ properties:
       - interrupt-names
       - qcom,smem-states
       - qcom,smem-state-names
+
+    allOf:
+      - $ref: /schemas/net/wireless/wireless-controller.yaml#
 
 required:
   - compatible
@@ -119,8 +119,8 @@ examples:
 
             bluetooth {
                 compatible = "qcom,wcnss-bt";
-                /* BD address 00:11:22:33:44:55 */
-                local-bd-address = [ 55 44 33 22 11 00 ];
+                /* Updated by boot firmware (little-endian order) */
+                local-bd-address = [ 00 00 00 00 00 00 ];
             };
 
             wifi {

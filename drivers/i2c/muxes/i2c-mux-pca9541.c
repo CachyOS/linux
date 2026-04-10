@@ -63,10 +63,6 @@
 #define mybus(x)	(!((x) & MYBUS) || ((x) & MYBUS) == MYBUS)
 #define busoff(x)	(!((x) & BUSON) || ((x) & BUSON) == BUSON)
 
-/* arbitration timeouts, in jiffies */
-#define ARB_TIMEOUT	(HZ / 8)	/* 125 ms until forcing bus ownership */
-#define ARB2_TIMEOUT	(HZ / 4)	/* 250 ms until acquisition failure */
-
 /* arbitration retry delays, in us */
 #define SELECT_DELAY_SHORT	50
 #define SELECT_DELAY_LONG	1000
@@ -78,7 +74,7 @@ struct pca9541 {
 };
 
 static const struct i2c_device_id pca9541_id[] = {
-	{"pca9541", 0},
+	{ "pca9541" },
 	{}
 };
 
@@ -229,6 +225,9 @@ static int pca9541_arbitrate(struct i2c_client *client)
 		 */
 		data->select_timeout = SELECT_DELAY_LONG;
 		if (time_is_before_eq_jiffies(data->arb_timeout)) {
+			dev_warn(&client->dev,
+				 "Arbitration timeout on I2C bus, forcing bus ownership\n");
+
 			/* Time is up, take the bus and reset it. */
 			pca9541_reg_write(client,
 					  PCA9541_CONTROL,
@@ -251,10 +250,10 @@ static int pca9541_select_chan(struct i2c_mux_core *muxc, u32 chan)
 	struct pca9541 *data = i2c_mux_priv(muxc);
 	struct i2c_client *client = data->client;
 	int ret;
-	unsigned long timeout = jiffies + ARB2_TIMEOUT;
+	unsigned long timeout = jiffies + (2 * client->adapter->timeout);
 		/* give up after this time */
 
-	data->arb_timeout = jiffies + ARB_TIMEOUT;
+	data->arb_timeout = jiffies + client->adapter->timeout;
 		/* force bus ownership after this time */
 
 	do {
@@ -267,6 +266,7 @@ static int pca9541_select_chan(struct i2c_mux_core *muxc, u32 chan)
 		else
 			msleep(data->select_timeout / 1000);
 	} while (time_is_after_eq_jiffies(timeout));
+	dev_warn(&client->dev, "Failed to acquire I2C bus, timed out\n");
 
 	return -ETIMEDOUT;
 }
@@ -283,8 +283,7 @@ static int pca9541_release_chan(struct i2c_mux_core *muxc, u32 chan)
 /*
  * I2C init/probing/exit functions
  */
-static int pca9541_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int pca9541_probe(struct i2c_client *client)
 {
 	struct i2c_adapter *adap = client->adapter;
 	struct i2c_mux_core *muxc;
@@ -315,7 +314,7 @@ static int pca9541_probe(struct i2c_client *client,
 
 	i2c_set_clientdata(client, muxc);
 
-	ret = i2c_mux_add_adapter(muxc, 0, 0, 0);
+	ret = i2c_mux_add_adapter(muxc, 0, 0);
 	if (ret)
 		return ret;
 
@@ -325,12 +324,11 @@ static int pca9541_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int pca9541_remove(struct i2c_client *client)
+static void pca9541_remove(struct i2c_client *client)
 {
 	struct i2c_mux_core *muxc = i2c_get_clientdata(client);
 
 	i2c_mux_del_adapters(muxc);
-	return 0;
 }
 
 static struct i2c_driver pca9541_driver = {

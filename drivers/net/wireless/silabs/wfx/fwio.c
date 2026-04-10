@@ -6,6 +6,7 @@
  * Copyright (c) 2010, ST-Ericsson
  */
 #include <linux/firmware.h>
+#include <linux/hex.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
 #include <linux/bitfield.h>
@@ -286,8 +287,7 @@ static int load_firmware_secure(struct wfx_dev *wdev)
 
 error:
 	kfree(buf);
-	if (fw)
-		release_firmware(fw);
+	release_firmware(fw);
 	if (ret)
 		print_boot_status(wdev);
 	return ret;

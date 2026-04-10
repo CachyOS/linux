@@ -23,8 +23,6 @@
  *
  */
 
-#include <linux/slab.h>
-
 #include "dm_services.h"
 #include "dm_helpers.h"
 #include "core_types.h"
@@ -78,7 +76,7 @@ void dc_sink_release(struct dc_sink *sink)
 
 struct dc_sink *dc_sink_create(const struct dc_sink_init_data *init_params)
 {
-	struct dc_sink *sink = kzalloc(sizeof(*sink), GFP_KERNEL);
+	struct dc_sink *sink = kzalloc_obj(*sink);
 
 	if (NULL == sink)
 		goto alloc_fail;

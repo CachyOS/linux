@@ -449,7 +449,7 @@ static void sec_skcipher_alg_callback(struct sec_bd_info *sec_resp,
 		 */
 	}
 
-	mutex_lock(&ctx->queue->queuelock);
+	spin_lock_bh(&ctx->queue->queuelock);
 	/* Put the IV in place for chained cases */
 	switch (ctx->cipher_alg) {
 	case SEC_C_AES_CBC_128:
@@ -504,12 +504,12 @@ static void sec_skcipher_alg_callback(struct sec_bd_info *sec_resp,
 		     kfifo_avail(&ctx->queue->softqueue) >
 		     backlog_req->num_elements)) {
 			sec_send_request(backlog_req, ctx->queue);
-			backlog_req->req_base->complete(backlog_req->req_base,
-							-EINPROGRESS);
+			crypto_request_complete(backlog_req->req_base,
+						-EINPROGRESS);
 			list_del(&backlog_req->backlog_head);
 		}
 	}
-	mutex_unlock(&ctx->queue->queuelock);
+	spin_unlock_bh(&ctx->queue->queuelock);
 
 	mutex_lock(&sec_req->lock);
 	list_del(&sec_req_el->head);
@@ -534,7 +534,7 @@ static void sec_skcipher_alg_callback(struct sec_bd_info *sec_resp,
 		if (skreq->src != skreq->dst)
 			dma_unmap_sg(dev, skreq->dst, sec_req->len_out,
 				     DMA_BIDIRECTIONAL);
-		skreq->base.complete(&skreq->base, sec_req->err);
+		skcipher_request_complete(skreq, sec_req->err);
 	}
 }
 
@@ -553,7 +553,7 @@ static int sec_alg_alloc_and_calc_split_sizes(int length, size_t **split_sizes,
 
 	/* Split into suitable sized blocks */
 	*steps = roundup(length, SEC_REQ_LIMIT) / SEC_REQ_LIMIT;
-	sizes = kcalloc(*steps, sizeof(*sizes), gfp);
+	sizes = kzalloc_objs(*sizes, *steps, gfp);
 	if (!sizes)
 		return -ENOMEM;
 
@@ -577,12 +577,12 @@ static int sec_map_and_split_sg(struct scatterlist *sgl, size_t *split_sizes,
 	if (!count)
 		return -EINVAL;
 
-	*splits = kcalloc(steps, sizeof(struct scatterlist *), gfp);
+	*splits = kzalloc_objs(struct scatterlist *, steps, gfp);
 	if (!*splits) {
 		ret = -ENOMEM;
 		goto err_unmap_sg;
 	}
-	*splits_nents = kcalloc(steps, sizeof(int), gfp);
+	*splits_nents = kzalloc_objs(int, steps, gfp);
 	if (!*splits_nents) {
 		ret = -ENOMEM;
 		goto err_free_splits;
@@ -637,7 +637,7 @@ static struct sec_request_el
 	struct sec_bd_info *req;
 	int ret;
 
-	el = kzalloc(sizeof(*el), gfp);
+	el = kzalloc_obj(*el, gfp);
 	if (!el)
 		return ERR_PTR(-ENOMEM);
 	el->el_length = el_size;
@@ -798,7 +798,7 @@ static int sec_alg_skcipher_crypto(struct skcipher_request *skreq,
 	 */
 
 	/* Grab a big lock for a long time to avoid concurrency issues */
-	mutex_lock(&queue->queuelock);
+	spin_lock_bh(&queue->queuelock);
 
 	/*
 	 * Can go on to queue if we have space in either:
@@ -814,15 +814,15 @@ static int sec_alg_skcipher_crypto(struct skcipher_request *skreq,
 		ret = -EBUSY;
 		if ((skreq->base.flags & CRYPTO_TFM_REQ_MAY_BACKLOG)) {
 			list_add_tail(&sec_req->backlog_head, &ctx->backlog);
-			mutex_unlock(&queue->queuelock);
+			spin_unlock_bh(&queue->queuelock);
 			goto out;
 		}
 
-		mutex_unlock(&queue->queuelock);
+		spin_unlock_bh(&queue->queuelock);
 		goto err_free_elements;
 	}
 	ret = sec_send_request(sec_req, queue);
-	mutex_unlock(&queue->queuelock);
+	spin_unlock_bh(&queue->queuelock);
 	if (ret)
 		goto err_free_elements;
 
@@ -881,7 +881,7 @@ static int sec_alg_skcipher_init(struct crypto_skcipher *tfm)
 	if (IS_ERR(ctx->queue))
 		return PTR_ERR(ctx->queue);
 
-	mutex_init(&ctx->queue->queuelock);
+	spin_lock_init(&ctx->queue->queuelock);
 	ctx->queue->havesoftqueue = false;
 
 	return 0;

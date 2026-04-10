@@ -107,7 +107,7 @@
  *
  * BTREE NODES:
  *
- * Our unit of allocation is a bucket, and we we can't arbitrarily allocate and
+ * Our unit of allocation is a bucket, and we can't arbitrarily allocate and
  * free smaller than a bucket - so, that's how big our btree nodes are.
  *
  * (If buckets are really big we'll only use part of the bucket for a btree node
@@ -179,6 +179,7 @@
 #define pr_fmt(fmt) "bcache: %s() " fmt, __func__
 
 #include <linux/bio.h>
+#include <linux/closure.h>
 #include <linux/kobject.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
@@ -192,7 +193,6 @@
 #include "bcache_ondisk.h"
 #include "bset.h"
 #include "util.h"
-#include "closure.h"
 
 struct bucket {
 	atomic_t	pin;
@@ -200,6 +200,7 @@ struct bucket {
 	uint8_t		gen;
 	uint8_t		last_gc; /* Most out of date gen in the btree */
 	uint16_t	gc_mark; /* Bitfield used by GC. See below for field */
+	uint16_t	reclaimable_in_gc:1;
 };
 
 /*
@@ -265,17 +266,20 @@ struct bcache_device {
 #define BCACHE_DEV_WB_RUNNING		3
 #define BCACHE_DEV_RATE_DW_RUNNING	4
 	int			nr_stripes;
+#define BCH_MIN_STRIPE_SZ		((4 << 20) >> SECTOR_SHIFT)
 	unsigned int		stripe_size;
 	atomic_t		*stripe_sectors_dirty;
 	unsigned long		*full_dirty_stripes;
 
 	struct bio_set		bio_split;
 
+	struct bio_set		bio_detached;
+
 	unsigned int		data_csum:1;
 
 	int (*cache_miss)(struct btree *b, struct search *s,
 			  struct bio *bio, unsigned int sectors);
-	int (*ioctl)(struct bcache_device *d, fmode_t mode,
+	int (*ioctl)(struct bcache_device *d, blk_mode_t mode,
 		     unsigned int cmd, unsigned long arg);
 };
 
@@ -299,6 +303,7 @@ struct cached_dev {
 	struct list_head	list;
 	struct bcache_device	disk;
 	struct block_device	*bdev;
+	struct file		*bdev_file;
 
 	struct cache_sb		sb;
 	struct cache_sb_disk	*sb_disk;
@@ -421,6 +426,7 @@ struct cache {
 
 	struct kobject		kobj;
 	struct block_device	*bdev;
+	struct file		*bdev_file;
 
 	struct task_struct	*alloc_thread;
 
@@ -443,8 +449,7 @@ struct cache {
 	 * free_inc: Incoming buckets - these are buckets that currently have
 	 * cached data in them, and we can't reuse them until after we write
 	 * their new gen to disk. After prio_write() finishes writing the new
-	 * gens/prios, they'll be moved to the free list (and possibly discarded
-	 * in the process)
+	 * gens/prios, they'll be moved to the free list.
 	 */
 	DECLARE_FIFO(long, free)[RESERVE_NR];
 	DECLARE_FIFO(long, free_inc);
@@ -462,8 +467,6 @@ struct cache {
 	 * cpu
 	 */
 	unsigned int		invalidate_needs_gc;
-
-	bool			discard; /* Get rid of? */
 
 	struct journal_device	journal;
 
@@ -541,7 +544,7 @@ struct cache_set {
 	struct bio_set		bio_split;
 
 	/* For the btree cache */
-	struct shrinker		shrink;
+	struct shrinker		*shrink;
 
 	/* For the btree cache and anything allocation related */
 	struct mutex		bucket_lock;
@@ -603,6 +606,7 @@ struct cache_set {
 	 */
 	atomic_t		prio_blocked;
 	wait_queue_head_t	bucket_wait;
+	atomic_t		bucket_wait_cnt;
 
 	/*
 	 * For any bio we don't skip we subtract the number of sectors from
@@ -749,6 +753,13 @@ struct bbio {
 		 */
 	};
 	struct bio		bio;
+};
+
+struct detached_dev_io_private {
+	struct bcache_device	*d;
+	unsigned long		start_time;
+	struct bio		*orig_bio;
+	struct bio              bio;
 };
 
 #define BTREE_PRIO		USHRT_MAX
@@ -1004,11 +1015,11 @@ extern struct workqueue_struct *bch_flush_wq;
 extern struct mutex bch_register_lock;
 extern struct list_head bch_cache_sets;
 
-extern struct kobj_type bch_cached_dev_ktype;
-extern struct kobj_type bch_flash_dev_ktype;
-extern struct kobj_type bch_cache_set_ktype;
-extern struct kobj_type bch_cache_set_internal_ktype;
-extern struct kobj_type bch_cache_ktype;
+extern const struct kobj_type bch_cached_dev_ktype;
+extern const struct kobj_type bch_flash_dev_ktype;
+extern const struct kobj_type bch_cache_set_ktype;
+extern const struct kobj_type bch_cache_set_internal_ktype;
+extern const struct kobj_type bch_cache_ktype;
 
 void bch_cached_dev_release(struct kobject *kobj);
 void bch_flash_dev_release(struct kobject *kobj);

@@ -2,7 +2,7 @@
 /*
  * Siemens SIMATIC IPC drivers
  *
- * Copyright (c) Siemens AG, 2018-2021
+ * Copyright (c) Siemens AG, 2018-2023
  *
  * Authors:
  *  Henning Schild <henning.schild@siemens.com>
@@ -19,11 +19,13 @@
 #define SIMATIC_IPC_DEVICE_427E 2
 #define SIMATIC_IPC_DEVICE_127E 3
 #define SIMATIC_IPC_DEVICE_227E 4
+#define SIMATIC_IPC_DEVICE_227G 5
+#define SIMATIC_IPC_DEVICE_BX_21A 6
+#define SIMATIC_IPC_DEVICE_BX_39A 7
+#define SIMATIC_IPC_DEVICE_BX_59A 8
 
 struct simatic_ipc_platform {
 	u8	devmode;
 };
-
-u32 simatic_ipc_get_membase0(unsigned int p2sb);
 
 #endif /* __PLATFORM_DATA_X86_SIMATIC_IPC_BASE_H */

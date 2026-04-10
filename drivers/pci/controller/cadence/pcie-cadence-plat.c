@@ -6,11 +6,10 @@
  * Author: Tom Joseph <tjoseph@cadence.com>
  */
 #include <linux/kernel.h>
-#include <linux/of_address.h>
+#include <linux/of.h>
 #include <linux/of_pci.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
-#include <linux/of_device.h>
 #include "pcie-cadence.h"
 
 #define CDNS_PLAT_CPU_TO_BUS_ADDR	0x0FFFFFFF
@@ -18,16 +17,9 @@
 /**
  * struct cdns_plat_pcie - private data for this PCIe platform driver
  * @pcie: Cadence PCIe controller
- * @is_rc: Set to 1 indicates the PCIe controller mode is Root Complex,
- *         if 0 it is in Endpoint mode.
  */
 struct cdns_plat_pcie {
 	struct cdns_pcie        *pcie;
-	bool is_rc;
-};
-
-struct cdns_plat_pcie_of_data {
-	bool is_rc;
 };
 
 static const struct of_device_id cdns_plat_pcie_of_match[];
@@ -77,7 +69,6 @@ static int cdns_plat_pcie_probe(struct platform_device *pdev)
 		rc->pcie.dev = dev;
 		rc->pcie.ops = &cdns_plat_ops;
 		cdns_plat_pcie->pcie = &rc->pcie;
-		cdns_plat_pcie->is_rc = is_rc;
 
 		ret = cdns_pcie_init_phy(dev, cdns_plat_pcie->pcie);
 		if (ret) {
@@ -105,7 +96,6 @@ static int cdns_plat_pcie_probe(struct platform_device *pdev)
 		ep->pcie.dev = dev;
 		ep->pcie.ops = &cdns_plat_ops;
 		cdns_plat_pcie->pcie = &ep->pcie;
-		cdns_plat_pcie->is_rc = is_rc;
 
 		ret = cdns_pcie_init_phy(dev, cdns_plat_pcie->pcie);
 		if (ret) {
@@ -183,4 +173,7 @@ static struct platform_driver cdns_plat_pcie_driver = {
 	.probe = cdns_plat_pcie_probe,
 	.shutdown = cdns_plat_pcie_shutdown,
 };
-builtin_platform_driver(cdns_plat_pcie_driver);
+module_platform_driver(cdns_plat_pcie_driver);
+
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Cadence PCIe controller platform driver");

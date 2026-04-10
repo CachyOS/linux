@@ -14,15 +14,16 @@
 #include <linux/init.h>
 #include <linux/list.h>
 #include <linux/string.h>
-#include <linux/mount.h>
 #include <linux/seq_file.h>
 #include <linux/ramfs.h>
-#include <linux/parser.h>
+#include <linux/fs_parser.h>
+#include <linux/fs_context.h>
 #include <linux/sched.h>
 #include <linux/magic.h>
 #include <linux/pstore.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
+#include <linux/cleanup.h>
 
 #include "internal.h"
 
@@ -33,6 +34,8 @@ static LIST_HEAD(records_list);
 
 static DEFINE_MUTEX(pstore_sb_lock);
 static struct super_block *pstore_sb;
+
+DEFINE_FREE(pstore_iput, struct inode *, if (_T) iput(_T))
 
 struct pstore_private {
 	struct list_head list;
@@ -54,30 +57,29 @@ static void free_pstore_private(struct pstore_private *private)
 	if (!private)
 		return;
 	if (private->record) {
-		kfree(private->record->buf);
+		kvfree(private->record->buf);
+		kfree(private->record->priv);
 		kfree(private->record);
 	}
 	kfree(private);
 }
+DEFINE_FREE(pstore_private, struct pstore_private *, free_pstore_private(_T));
 
 static void *pstore_ftrace_seq_start(struct seq_file *s, loff_t *pos)
 {
 	struct pstore_private *ps = s->private;
-	struct pstore_ftrace_seq_data *data;
+	struct pstore_ftrace_seq_data *data __free(kfree) = NULL;
 
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = kzalloc_obj(*data);
 	if (!data)
 		return NULL;
 
 	data->off = ps->total_size % REC_SIZE;
 	data->off += *pos * REC_SIZE;
-	if (data->off + REC_SIZE > ps->total_size) {
-		kfree(data);
+	if (data->off + REC_SIZE > ps->total_size)
 		return NULL;
-	}
 
-	return data;
-
+	return_ptr(data);
 }
 
 static void pstore_ftrace_seq_stop(struct seq_file *s, void *v)
@@ -181,25 +183,21 @@ static int pstore_unlink(struct inode *dir, struct dentry *dentry)
 {
 	struct pstore_private *p = d_inode(dentry)->i_private;
 	struct pstore_record *record = p->record;
-	int rc = 0;
 
 	if (!record->psi->erase)
 		return -EPERM;
 
 	/* Make sure we can't race while removing this file. */
-	mutex_lock(&records_list_lock);
-	if (!list_empty(&p->list))
-		list_del_init(&p->list);
-	else
-		rc = -ENOENT;
-	p->dentry = NULL;
-	mutex_unlock(&records_list_lock);
-	if (rc)
-		return rc;
+	scoped_guard(mutex, &records_list_lock) {
+		if (!list_empty(&p->list))
+			list_del_init(&p->list);
+		else
+			return -ENOENT;
+		p->dentry = NULL;
+	}
 
-	mutex_lock(&record->psi->read_mutex);
-	record->psi->erase(record);
-	mutex_unlock(&record->psi->read_mutex);
+	scoped_guard(mutex, &record->psi->read_mutex)
+		record->psi->erase(record);
 
 	return simple_unlink(dir, dentry);
 }
@@ -222,43 +220,44 @@ static struct inode *pstore_get_inode(struct super_block *sb)
 	struct inode *inode = new_inode(sb);
 	if (inode) {
 		inode->i_ino = get_next_ino();
-		inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
+		simple_inode_init_ts(inode);
 	}
 	return inode;
 }
 
 enum {
-	Opt_kmsg_bytes, Opt_err
+	Opt_kmsg_bytes
 };
 
-static const match_table_t tokens = {
-	{Opt_kmsg_bytes, "kmsg_bytes=%u"},
-	{Opt_err, NULL}
+static const struct fs_parameter_spec pstore_param_spec[] = {
+	fsparam_u32	("kmsg_bytes",	Opt_kmsg_bytes),
+	{}
 };
 
-static void parse_options(char *options)
+struct pstore_context {
+	unsigned int kmsg_bytes;
+};
+
+static int pstore_parse_param(struct fs_context *fc, struct fs_parameter *param)
 {
-	char		*p;
-	substring_t	args[MAX_OPT_ARGS];
-	int		option;
+	struct pstore_context *ctx = fc->fs_private;
+	struct fs_parse_result result;
+	int opt;
 
-	if (!options)
-		return;
+	opt = fs_parse(fc, pstore_param_spec, param, &result);
+	/* pstore has historically ignored invalid kmsg_bytes param */
+	if (opt < 0)
+		return 0;
 
-	while ((p = strsep(&options, ",")) != NULL) {
-		int token;
-
-		if (!*p)
-			continue;
-
-		token = match_token(p, tokens, args);
-		switch (token) {
-		case Opt_kmsg_bytes:
-			if (!match_int(&args[0], &option))
-				pstore_set_kmsg_bytes(option);
-			break;
-		}
+	switch (opt) {
+	case Opt_kmsg_bytes:
+		ctx->kmsg_bytes = result.uint_32;
+		break;
+	default:
+		return -EINVAL;
 	}
+
+	return 0;
 }
 
 /*
@@ -267,23 +266,24 @@ static void parse_options(char *options)
 static int pstore_show_options(struct seq_file *m, struct dentry *root)
 {
 	if (kmsg_bytes != CONFIG_PSTORE_DEFAULT_KMSG_BYTES)
-		seq_printf(m, ",kmsg_bytes=%lu", kmsg_bytes);
+		seq_printf(m, ",kmsg_bytes=%u", kmsg_bytes);
 	return 0;
 }
 
-static int pstore_remount(struct super_block *sb, int *flags, char *data)
+static int pstore_reconfigure(struct fs_context *fc)
 {
-	sync_filesystem(sb);
-	parse_options(data);
+	struct pstore_context *ctx = fc->fs_private;
+
+	sync_filesystem(fc->root->d_sb);
+	pstore_set_kmsg_bytes(ctx->kmsg_bytes);
 
 	return 0;
 }
 
 static const struct super_operations pstore_ops = {
 	.statfs		= simple_statfs,
-	.drop_inode	= generic_delete_inode,
+	.drop_inode	= inode_just_drop,
 	.evict_inode	= pstore_evict_inode,
-	.remount_fs	= pstore_remount,
 	.show_options	= pstore_show_options,
 };
 
@@ -291,19 +291,16 @@ static struct dentry *psinfo_lock_root(void)
 {
 	struct dentry *root;
 
-	mutex_lock(&pstore_sb_lock);
+	guard(mutex)(&pstore_sb_lock);
 	/*
 	 * Having no backend is fine -- no records appear.
 	 * Not being mounted is fine -- nothing to do.
 	 */
-	if (!psinfo || !pstore_sb) {
-		mutex_unlock(&pstore_sb_lock);
+	if (!psinfo || !pstore_sb)
 		return NULL;
-	}
 
 	root = pstore_sb->s_root;
-	inode_lock(d_inode(root));
-	mutex_unlock(&pstore_sb_lock);
+	inode_lock_nested(d_inode(root), I_MUTEX_PARENT);
 
 	return root;
 }
@@ -312,29 +309,24 @@ int pstore_put_backend_records(struct pstore_info *psi)
 {
 	struct pstore_private *pos, *tmp;
 	struct dentry *root;
-	int rc = 0;
 
 	root = psinfo_lock_root();
 	if (!root)
 		return 0;
 
-	mutex_lock(&records_list_lock);
-	list_for_each_entry_safe(pos, tmp, &records_list, list) {
-		if (pos->record->psi == psi) {
-			list_del_init(&pos->list);
-			rc = simple_unlink(d_inode(root), pos->dentry);
-			if (WARN_ON(rc))
-				break;
-			d_drop(pos->dentry);
-			dput(pos->dentry);
-			pos->dentry = NULL;
+	scoped_guard(mutex, &records_list_lock) {
+		list_for_each_entry_safe(pos, tmp, &records_list, list) {
+			if (pos->record->psi == psi) {
+				list_del_init(&pos->list);
+				locked_recursive_removal(pos->dentry, NULL);
+				pos->dentry = NULL;
+			}
 		}
 	}
-	mutex_unlock(&records_list_lock);
 
 	inode_unlock(d_inode(root));
 
-	return rc;
+	return 0;
 }
 
 /*
@@ -345,29 +337,27 @@ int pstore_put_backend_records(struct pstore_info *psi)
 int pstore_mkfile(struct dentry *root, struct pstore_record *record)
 {
 	struct dentry		*dentry;
-	struct inode		*inode;
-	int			rc = 0;
+	struct inode		*inode __free(pstore_iput) = NULL;
 	char			name[PSTORE_NAMELEN];
-	struct pstore_private	*private, *pos;
+	struct pstore_private	*private __free(pstore_private) = NULL, *pos;
 	size_t			size = record->size + record->ecc_notice_size;
 
 	if (WARN_ON(!inode_is_locked(d_inode(root))))
 		return -EINVAL;
 
-	rc = -EEXIST;
+	guard(mutex)(&records_list_lock);
+
 	/* Skip records that are already present in the filesystem. */
-	mutex_lock(&records_list_lock);
 	list_for_each_entry(pos, &records_list, list) {
 		if (pos->record->type == record->type &&
 		    pos->record->id == record->id &&
 		    pos->record->psi == record->psi)
-			goto fail;
+			return -EEXIST;
 	}
 
-	rc = -ENOMEM;
 	inode = pstore_get_inode(root->d_sb);
 	if (!inode)
-		goto fail;
+		return -ENOMEM;
 	inode->i_mode = S_IFREG | 0444;
 	inode->i_fop = &pstore_file_operations;
 	scnprintf(name, sizeof(name), "%s-%s-%llu%s",
@@ -375,36 +365,29 @@ int pstore_mkfile(struct dentry *root, struct pstore_record *record)
 			record->psi->name, record->id,
 			record->compressed ? ".enc.z" : "");
 
-	private = kzalloc(sizeof(*private), GFP_KERNEL);
+	private = kzalloc_obj(*private);
 	if (!private)
-		goto fail_inode;
+		return -ENOMEM;
 
 	dentry = d_alloc_name(root, name);
 	if (!dentry)
-		goto fail_private;
+		return -ENOMEM;
 
-	private->dentry = dentry;
+	private->dentry = dentry; // borrowed
 	private->record = record;
 	inode->i_size = private->total_size = size;
 	inode->i_private = private;
 
 	if (record->time.tv_sec)
-		inode->i_mtime = inode->i_ctime = record->time;
+		inode_set_mtime_to_ts(inode,
+				      inode_set_ctime_to_ts(inode, record->time));
 
-	d_add(dentry, inode);
+	d_make_persistent(dentry, no_free_ptr(inode));
+	dput(dentry);
 
-	list_add(&private->list, &records_list);
-	mutex_unlock(&records_list_lock);
+	list_add(&(no_free_ptr(private))->list, &records_list);
 
 	return 0;
-
-fail_private:
-	free_pstore_private(private);
-fail_inode:
-	iput(inode);
-fail:
-	mutex_unlock(&records_list_lock);
-	return rc;
 }
 
 /*
@@ -425,8 +408,9 @@ void pstore_get_records(int quiet)
 	inode_unlock(d_inode(root));
 }
 
-static int pstore_fill_super(struct super_block *sb, void *data, int silent)
+static int pstore_fill_super(struct super_block *sb, struct fs_context *fc)
 {
+	struct pstore_context *ctx = fc->fs_private;
 	struct inode *inode;
 
 	sb->s_maxbytes		= MAX_LFS_FILESIZE;
@@ -436,7 +420,7 @@ static int pstore_fill_super(struct super_block *sb, void *data, int silent)
 	sb->s_op		= &pstore_ops;
 	sb->s_time_gran		= 1;
 
-	parse_options(data);
+	pstore_set_kmsg_bytes(ctx->kmsg_bytes);
 
 	inode = pstore_get_inode(sb);
 	if (inode) {
@@ -449,41 +433,73 @@ static int pstore_fill_super(struct super_block *sb, void *data, int silent)
 	if (!sb->s_root)
 		return -ENOMEM;
 
-	mutex_lock(&pstore_sb_lock);
-	pstore_sb = sb;
-	mutex_unlock(&pstore_sb_lock);
+	scoped_guard(mutex, &pstore_sb_lock)
+		pstore_sb = sb;
 
 	pstore_get_records(0);
 
 	return 0;
 }
 
-static struct dentry *pstore_mount(struct file_system_type *fs_type,
-	int flags, const char *dev_name, void *data)
+static int pstore_get_tree(struct fs_context *fc)
 {
-	return mount_single(fs_type, flags, data, pstore_fill_super);
+	if (fc->root)
+		return pstore_reconfigure(fc);
+
+	return get_tree_single(fc, pstore_fill_super);
 }
+
+static void pstore_free_fc(struct fs_context *fc)
+{
+	kfree(fc->fs_private);
+}
+
+static const struct fs_context_operations pstore_context_ops = {
+	.parse_param	= pstore_parse_param,
+	.get_tree	= pstore_get_tree,
+	.reconfigure	= pstore_reconfigure,
+	.free		= pstore_free_fc,
+};
 
 static void pstore_kill_sb(struct super_block *sb)
 {
-	mutex_lock(&pstore_sb_lock);
+	guard(mutex)(&pstore_sb_lock);
 	WARN_ON(pstore_sb && pstore_sb != sb);
 
-	kill_litter_super(sb);
+	kill_anon_super(sb);
 	pstore_sb = NULL;
 
-	mutex_lock(&records_list_lock);
+	guard(mutex)(&records_list_lock);
 	INIT_LIST_HEAD(&records_list);
-	mutex_unlock(&records_list_lock);
+}
 
-	mutex_unlock(&pstore_sb_lock);
+static int pstore_init_fs_context(struct fs_context *fc)
+{
+	struct pstore_context *ctx;
+
+	ctx = kzalloc_obj(struct pstore_context);
+	if (!ctx)
+		return -ENOMEM;
+
+	/*
+	 * Global kmsg_bytes is initialized to default, and updated
+	 * every time we (re)mount the single-sb filesystem with the
+	 * option specified.
+	 */
+	ctx->kmsg_bytes = kmsg_bytes;
+
+	fc->fs_private = ctx;
+	fc->ops = &pstore_context_ops;
+
+	return 0;
 }
 
 static struct file_system_type pstore_fs_type = {
 	.owner          = THIS_MODULE,
 	.name		= "pstore",
-	.mount		= pstore_mount,
 	.kill_sb	= pstore_kill_sb,
+	.init_fs_context = pstore_init_fs_context,
+	.parameters	= pstore_param_spec,
 };
 
 int __init pstore_init_fs(void)

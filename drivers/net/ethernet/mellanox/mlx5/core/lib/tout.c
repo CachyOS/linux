@@ -24,7 +24,8 @@ static const u32 tout_def_sw_val[MAX_TIMEOUT_TYPES] = {
 	[MLX5_TO_TEARDOWN_MS] = 3000,
 	[MLX5_TO_FSM_REACTIVATE_MS] = 5000,
 	[MLX5_TO_RECLAIM_PAGES_MS] = 5000,
-	[MLX5_TO_RECLAIM_VFS_PAGES_MS] = 120000
+	[MLX5_TO_RECLAIM_VFS_PAGES_MS] = 120000,
+	[MLX5_TO_RESET_UNLOAD_MS] = 300000
 };
 
 static void tout_set(struct mlx5_core_dev *dev, u64 val, enum mlx5_timeouts_types type)
@@ -32,19 +33,16 @@ static void tout_set(struct mlx5_core_dev *dev, u64 val, enum mlx5_timeouts_type
 	dev->timeouts->to[type] = val;
 }
 
-void mlx5_tout_set_def_val(struct mlx5_core_dev *dev)
+int mlx5_tout_init(struct mlx5_core_dev *dev)
 {
 	int i;
 
-	for (i = 0; i < MAX_TIMEOUT_TYPES; i++)
-		tout_set(dev, tout_def_sw_val[i], i);
-}
-
-int mlx5_tout_init(struct mlx5_core_dev *dev)
-{
-	dev->timeouts = kmalloc(sizeof(*dev->timeouts), GFP_KERNEL);
+	dev->timeouts = kmalloc_obj(*dev->timeouts);
 	if (!dev->timeouts)
 		return -ENOMEM;
+
+	for (i = 0; i < MAX_TIMEOUT_TYPES; i++)
+		tout_set(dev, tout_def_sw_val[i], i);
 
 	return 0;
 }
@@ -121,7 +119,8 @@ u64 _mlx5_tout_ms(struct mlx5_core_dev *dev, enum mlx5_timeouts_types type)
 #define MLX5_TIMEOUT_FILL(fld, reg_out, dev, to_type, to_extra) \
 	({ \
 	u64 fw_to = MLX5_TIMEOUT_QUERY(fld, reg_out); \
-	tout_set(dev, fw_to + (to_extra), to_type); \
+	if (fw_to) \
+		tout_set(dev, fw_to + (to_extra), to_type); \
 	fw_to; \
 	})
 
@@ -149,6 +148,7 @@ static int tout_query_dtor(struct mlx5_core_dev *dev)
 	MLX5_TIMEOUT_FILL(fsm_reactivate_to, out, dev, MLX5_TO_FSM_REACTIVATE_MS, 0);
 	MLX5_TIMEOUT_FILL(reclaim_pages_to, out, dev, MLX5_TO_RECLAIM_PAGES_MS, 0);
 	MLX5_TIMEOUT_FILL(reclaim_vfs_pages_to, out, dev, MLX5_TO_RECLAIM_VFS_PAGES_MS, 0);
+	MLX5_TIMEOUT_FILL(reset_unload_to, out, dev, MLX5_TO_RESET_UNLOAD_MS, 0);
 
 	return 0;
 }

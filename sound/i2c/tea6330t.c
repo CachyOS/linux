@@ -56,9 +56,6 @@ int snd_tea6330t_detect(struct snd_i2c_bus *bus, int equalizer)
 static void snd_tea6330t_set(struct tea6330t *tea,
 			     unsigned char addr, unsigned char value)
 {
-#if 0
-	printk(KERN_DEBUG "set - 0x%x/0x%x\n", addr, value);
-#endif
 	snd_i2c_write(tea->bus, TEA6330T_ADDR, addr, value, 1);
 }
 #endif
@@ -288,7 +285,7 @@ int snd_tea6330t_update_mixer(struct snd_card *card,
 	u8 default_treble, default_bass;
 	unsigned char bytes[7];
 
-	tea = kzalloc(sizeof(*tea), GFP_KERNEL);
+	tea = kzalloc_obj(*tea);
 	if (tea == NULL)
 		return -ENOMEM;
 	err = snd_i2c_device_create(bus, "TEA6330T", TEA6330T_ADDR, &device);

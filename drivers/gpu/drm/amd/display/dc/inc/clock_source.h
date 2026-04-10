@@ -96,6 +96,7 @@ struct pixel_clk_params {
 /*> de-spread info, relevant only for on-the-fly tune-up pixel rate*/
 	enum dc_pixel_encoding pixel_encoding;
 	struct pixel_clk_flags flags;
+	uint32_t dio_se_pix_per_cycle;
 };
 
 /**
@@ -160,8 +161,11 @@ struct calc_pll_clock_source {
 struct clock_source_funcs {
 	bool (*cs_power_down)(
 			struct clock_source *);
-	bool (*program_pix_clk)(struct clock_source *,
-			struct pixel_clk_params *, struct pll_settings *);
+	bool (*program_pix_clk)(
+			struct clock_source *,
+			struct pixel_clk_params *,
+			enum dp_link_encoding encoding,
+			struct pll_settings *);
 	uint32_t (*get_pix_clk_dividers)(
 			struct clock_source *,
 			struct pixel_clk_params *,

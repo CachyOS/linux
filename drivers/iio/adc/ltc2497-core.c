@@ -10,6 +10,7 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/driver.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/regulator/consumer.h>
 
 #include "ltc2497.h"
@@ -81,9 +82,9 @@ static int ltc2497core_read_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		mutex_lock(&indio_dev->mlock);
+		mutex_lock(&ddata->lock);
 		ret = ltc2497core_read(ddata, chan->address, val);
-		mutex_unlock(&indio_dev->mlock);
+		mutex_unlock(&ddata->lock);
 		if (ret < 0)
 			return ret;
 
@@ -95,7 +96,7 @@ static int ltc2497core_read_raw(struct iio_dev *indio_dev,
 			return ret;
 
 		*val = ret / 1000;
-		*val2 = 17;
+		*val2 = ddata->chip_info->resolution + 1;
 
 		return IIO_VAL_FRACTIONAL_LOG2;
 
@@ -167,9 +168,18 @@ static const struct iio_info ltc2497core_info = {
 int ltc2497core_probe(struct device *dev, struct iio_dev *indio_dev)
 {
 	struct ltc2497core_driverdata *ddata = iio_priv(indio_dev);
+	struct iio_map *plat_data = dev_get_platdata(dev);
 	int ret;
 
-	indio_dev->name = dev_name(dev);
+	/*
+	 * Keep using dev_name() for the iio_dev's name on some of the parts,
+	 * since updating it would result in a ABI breakage.
+	 */
+	if (ddata->chip_info->name)
+		indio_dev->name = ddata->chip_info->name;
+	else
+		indio_dev->name = dev_name(dev);
+
 	indio_dev->info = &ltc2497core_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels = ltc2497core_channel;
@@ -191,20 +201,16 @@ int ltc2497core_probe(struct device *dev, struct iio_dev *indio_dev)
 		return ret;
 	}
 
-	if (dev->platform_data) {
-		struct iio_map *plat_data;
-
-		plat_data = (struct iio_map *)dev->platform_data;
-
-		ret = iio_map_array_register(indio_dev, plat_data);
-		if (ret) {
-			dev_err(&indio_dev->dev, "iio map err: %d\n", ret);
-			goto err_regulator_disable;
-		}
+	ret = iio_map_array_register(indio_dev, plat_data);
+	if (ret) {
+		dev_err(&indio_dev->dev, "iio map err: %d\n", ret);
+		goto err_regulator_disable;
 	}
 
 	ddata->addr_prev = LTC2497_CONFIG_DEFAULT;
 	ddata->time_prev = ktime_get();
+
+	mutex_init(&ddata->lock);
 
 	ret = iio_device_register(indio_dev);
 	if (ret < 0)
@@ -220,7 +226,7 @@ err_regulator_disable:
 
 	return ret;
 }
-EXPORT_SYMBOL_NS(ltc2497core_probe, LTC2497);
+EXPORT_SYMBOL_NS(ltc2497core_probe, "LTC2497");
 
 void ltc2497core_remove(struct iio_dev *indio_dev)
 {
@@ -232,7 +238,7 @@ void ltc2497core_remove(struct iio_dev *indio_dev)
 
 	regulator_disable(ddata->ref);
 }
-EXPORT_SYMBOL_NS(ltc2497core_remove, LTC2497);
+EXPORT_SYMBOL_NS(ltc2497core_remove, "LTC2497");
 
 MODULE_DESCRIPTION("common code for LTC2496/LTC2497 drivers");
 MODULE_LICENSE("GPL v2");

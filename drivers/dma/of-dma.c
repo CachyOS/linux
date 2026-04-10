@@ -26,10 +26,10 @@ static DEFINE_MUTEX(of_dma_lock);
  *
  * Finds a DMA controller with matching device node and number for dma cells
  * in a list of registered DMA controllers. If a match is found a valid pointer
- * to the DMA data stored is retuned. A NULL pointer is returned if no match is
+ * to the DMA data stored is returned. A NULL pointer is returned if no match is
  * found.
  */
-static struct of_dma *of_dma_find_controller(struct of_phandle_args *dma_spec)
+static struct of_dma *of_dma_find_controller(const struct of_phandle_args *dma_spec)
 {
 	struct of_dma *ofdma;
 
@@ -127,7 +127,7 @@ int of_dma_controller_register(struct device_node *np,
 		return -EINVAL;
 	}
 
-	ofdma = kzalloc(sizeof(*ofdma), GFP_KERNEL);
+	ofdma = kzalloc_obj(*ofdma);
 	if (!ofdma)
 		return -ENOMEM;
 
@@ -194,7 +194,7 @@ int of_dma_router_register(struct device_node *np,
 		return -EINVAL;
 	}
 
-	ofdma = kzalloc(sizeof(*ofdma), GFP_KERNEL);
+	ofdma = kzalloc_obj(*ofdma);
 	if (!ofdma)
 		return -ENOMEM;
 
@@ -264,7 +264,7 @@ struct dma_chan *of_dma_request_slave_channel(struct device_node *np,
 	}
 
 	/* Silently fail if there is not even the "dmas" property */
-	if (!of_find_property(np, "dmas", NULL))
+	if (!of_property_present(np, "dmas"))
 		return ERR_PTR(-ENODEV);
 
 	count = of_property_count_strings(np, "dma-names");
@@ -342,7 +342,7 @@ EXPORT_SYMBOL_GPL(of_dma_simple_xlate);
  *
  * This function can be used as the of xlate callback for DMA driver which wants
  * to match the channel based on the channel id. When using this xlate function
- * the #dma-cells propety of the DMA controller dt node needs to be set to 1.
+ * the #dma-cells property of the DMA controller dt node needs to be set to 1.
  * The data parameter of of_dma_controller_register must be a pointer to the
  * dma_device struct the function should match upon.
  *

@@ -155,8 +155,7 @@ static int alloc_init_cpu_groups(cpumask_var_t **pcpu_groups)
 	if (!alloc_cpumask_var(&tmp, GFP_KERNEL))
 		return -ENOMEM;
 
-	cpu_groups = kcalloc(nb_available_cpus, sizeof(*cpu_groups),
-			     GFP_KERNEL);
+	cpu_groups = kzalloc_objs(*cpu_groups, nb_available_cpus);
 	if (!cpu_groups) {
 		free_cpumask_var(tmp);
 		return -ENOMEM;
@@ -342,8 +341,8 @@ static int suspend_test_thread(void *arg)
 	 * Disable the timer to make sure that the timer will not trigger
 	 * later.
 	 */
-	del_timer(&wakeup_timer);
-	destroy_timer_on_stack(&wakeup_timer);
+	timer_delete(&wakeup_timer);
+	timer_destroy_on_stack(&wakeup_timer);
 
 	if (atomic_dec_return_relaxed(&nb_active_threads) == 0)
 		complete(&suspend_threads_done);
@@ -370,8 +369,7 @@ static int suspend_tests(void)
 	struct task_struct **threads;
 	int nb_threads = 0;
 
-	threads = kmalloc_array(nb_available_cpus, sizeof(*threads),
-				GFP_KERNEL);
+	threads = kmalloc_objs(*threads, nb_available_cpus);
 	if (!threads)
 		return -ENOMEM;
 

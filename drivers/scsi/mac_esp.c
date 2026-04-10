@@ -289,7 +289,7 @@ static struct esp_driver_ops mac_esp_ops = {
 
 static int esp_mac_probe(struct platform_device *dev)
 {
-	struct scsi_host_template *tpnt = &scsi_esp_template;
+	const struct scsi_host_template *tpnt = &scsi_esp_template;
 	struct Scsi_Host *host;
 	struct esp *esp;
 	int err;
@@ -323,7 +323,7 @@ static int esp_mac_probe(struct platform_device *dev)
 	host->this_id = esp->scsi_id;
 	esp->scsi_id_mask = 1 << esp->scsi_id;
 
-	mep = kzalloc(sizeof(struct mac_esp_priv), GFP_KERNEL);
+	mep = kzalloc_obj(struct mac_esp_priv);
 	if (!mep)
 		goto fail_free_command_block;
 	mep->esp = esp;
@@ -407,7 +407,7 @@ fail:
 	return err;
 }
 
-static int esp_mac_remove(struct platform_device *dev)
+static void esp_mac_remove(struct platform_device *dev)
 {
 	struct mac_esp_priv *mep = platform_get_drvdata(dev);
 	struct esp *esp = mep->esp;
@@ -428,8 +428,6 @@ static int esp_mac_remove(struct platform_device *dev)
 	kfree(esp->command_block);
 
 	scsi_host_put(esp->host);
-
-	return 0;
 }
 
 static struct platform_driver esp_mac_driver = {

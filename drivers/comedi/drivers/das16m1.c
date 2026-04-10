@@ -522,22 +522,24 @@ static int das16m1_attach(struct comedi_device *dev,
 	devpriv->extra_iobase = dev->iobase + DAS16M1_8255_IOBASE;
 
 	/* only irqs 2, 3, 4, 5, 6, 7, 10, 11, 12, 14, and 15 are valid */
-	if ((1 << it->options[1]) & 0xdcfc) {
+	if (it->options[1] >= 2 && it->options[1] <= 15 &&
+	    (1 << it->options[1]) & 0xdcfc) {
 		ret = request_irq(it->options[1], das16m1_interrupt, 0,
 				  dev->board_name, dev);
 		if (ret == 0)
 			dev->irq = it->options[1];
 	}
 
-	dev->pacer = comedi_8254_init(dev->iobase + DAS16M1_8254_IOBASE2,
-				      I8254_OSC_BASE_10MHZ, I8254_IO8, 0);
-	if (!dev->pacer)
-		return -ENOMEM;
+	dev->pacer = comedi_8254_io_alloc(dev->iobase + DAS16M1_8254_IOBASE2,
+					  I8254_OSC_BASE_10MHZ, I8254_IO8, 0);
+	if (IS_ERR(dev->pacer))
+		return PTR_ERR(dev->pacer);
 
-	devpriv->counter = comedi_8254_init(dev->iobase + DAS16M1_8254_IOBASE1,
-					    0, I8254_IO8, 0);
-	if (!devpriv->counter)
-		return -ENOMEM;
+	devpriv->counter =
+	    comedi_8254_io_alloc(dev->iobase + DAS16M1_8254_IOBASE1,
+				 0, I8254_IO8, 0);
+	if (IS_ERR(devpriv->counter))
+		return PTR_ERR(devpriv->counter);
 
 	ret = comedi_alloc_subdevices(dev, 4);
 	if (ret)
@@ -582,7 +584,7 @@ static int das16m1_attach(struct comedi_device *dev,
 
 	/* Digital I/O subdevice (8255) */
 	s = &dev->subdevices[3];
-	ret = subdev_8255_init(dev, s, NULL, DAS16M1_8255_IOBASE);
+	ret = subdev_8255_io_init(dev, s, DAS16M1_8255_IOBASE);
 	if (ret)
 		return ret;
 
@@ -603,7 +605,8 @@ static void das16m1_detach(struct comedi_device *dev)
 	if (devpriv) {
 		if (devpriv->extra_iobase)
 			release_region(devpriv->extra_iobase, DAS16M1_SIZE2);
-		kfree(devpriv->counter);
+		if (!IS_ERR(devpriv->counter))
+			kfree(devpriv->counter);
 	}
 	comedi_legacy_detach(dev);
 }

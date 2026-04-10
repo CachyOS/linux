@@ -40,14 +40,6 @@ static inline u8 *ef4_tx_get_copy_buffer(struct ef4_tx_queue *tx_queue,
 	return (u8 *)page_buf->addr + offset;
 }
 
-u8 *ef4_tx_get_copy_buffer_limited(struct ef4_tx_queue *tx_queue,
-				   struct ef4_tx_buffer *buffer, size_t len)
-{
-	if (len > EF4_TX_CB_SIZE)
-		return NULL;
-	return ef4_tx_get_copy_buffer(tx_queue, buffer);
-}
-
 static void ef4_dequeue_buffer(struct ef4_tx_queue *tx_queue,
 			       struct ef4_tx_buffer *buffer,
 			       unsigned int *pkts_compl,
@@ -552,13 +544,12 @@ int ef4_probe_tx_queue(struct ef4_tx_queue *tx_queue)
 		  tx_queue->queue, efx->txq_entries, tx_queue->ptr_mask);
 
 	/* Allocate software ring */
-	tx_queue->buffer = kcalloc(entries, sizeof(*tx_queue->buffer),
-				   GFP_KERNEL);
+	tx_queue->buffer = kzalloc_objs(*tx_queue->buffer, entries);
 	if (!tx_queue->buffer)
 		return -ENOMEM;
 
-	tx_queue->cb_page = kcalloc(ef4_tx_cb_page_count(tx_queue),
-				    sizeof(tx_queue->cb_page[0]), GFP_KERNEL);
+	tx_queue->cb_page = kzalloc_objs(tx_queue->cb_page[0],
+					 ef4_tx_cb_page_count(tx_queue));
 	if (!tx_queue->cb_page) {
 		rc = -ENOMEM;
 		goto fail1;

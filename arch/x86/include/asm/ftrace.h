@@ -2,6 +2,8 @@
 #ifndef _ASM_X86_FTRACE_H
 #define _ASM_X86_FTRACE_H
 
+#include <asm/ptrace.h>
+
 #ifdef CONFIG_FUNCTION_TRACER
 #ifndef CC_USING_FENTRY
 # error Compiler does not support fentry?
@@ -20,10 +22,7 @@
 #define ARCH_SUPPORTS_FTRACE_OPS 1
 #endif
 
-#define HAVE_FUNCTION_GRAPH_RET_ADDR_PTR
-
-#ifndef __ASSEMBLY__
-extern atomic_t modifying_ftrace_code;
+#ifndef __ASSEMBLER__
 extern void __fentry__(void);
 
 static inline unsigned long ftrace_call_adjust(unsigned long addr)
@@ -35,35 +34,49 @@ static inline unsigned long ftrace_call_adjust(unsigned long addr)
 	return addr;
 }
 
-/*
- * When a ftrace registered caller is tracing a function that is
- * also set by a register_ftrace_direct() call, it needs to be
- * differentiated in the ftrace_caller trampoline. To do this, we
- * place the direct caller in the ORIG_AX part of pt_regs. This
- * tells the ftrace_caller that there's a direct caller.
- */
-static inline void arch_ftrace_set_direct_caller(struct pt_regs *regs, unsigned long addr)
+static inline unsigned long arch_ftrace_get_symaddr(unsigned long fentry_ip)
 {
-	/* Emulate a call */
-	regs->orig_ax = addr;
+	if (is_endbr((void*)(fentry_ip - ENDBR_INSN_SIZE)))
+		fentry_ip -= ENDBR_INSN_SIZE;
+
+	return fentry_ip;
 }
+#define ftrace_get_symaddr(fentry_ip)	arch_ftrace_get_symaddr(fentry_ip)
 
 #ifdef CONFIG_HAVE_DYNAMIC_FTRACE_WITH_ARGS
-struct ftrace_regs {
-	struct pt_regs		regs;
-};
+
+#include <linux/ftrace_regs.h>
 
 static __always_inline struct pt_regs *
 arch_ftrace_get_regs(struct ftrace_regs *fregs)
 {
 	/* Only when FL_SAVE_REGS is set, cs will be non zero */
-	if (!fregs->regs.cs)
+	if (!arch_ftrace_regs(fregs)->regs.cs)
 		return NULL;
-	return &fregs->regs;
+	return &arch_ftrace_regs(fregs)->regs;
 }
 
-#define ftrace_instruction_pointer_set(fregs, _ip)	\
-	do { (fregs)->regs.ip = (_ip); } while (0)
+#define arch_ftrace_partial_regs(regs) do {	\
+	regs->flags |= X86_EFLAGS_FIXED;	\
+	regs->cs = __KERNEL_CS;			\
+} while (0)
+
+#define arch_ftrace_fill_perf_regs(fregs, _regs) do {	\
+		(_regs)->ip = arch_ftrace_regs(fregs)->regs.ip;		\
+		(_regs)->sp = arch_ftrace_regs(fregs)->regs.sp;		\
+		(_regs)->cs = __KERNEL_CS;		\
+		(_regs)->flags = 0;			\
+	} while (0)
+
+#define ftrace_regs_set_instruction_pointer(fregs, _ip)	\
+	do { arch_ftrace_regs(fregs)->regs.ip = (_ip); } while (0)
+
+
+static __always_inline unsigned long
+ftrace_regs_get_return_address(struct ftrace_regs *fregs)
+{
+	return *(unsigned long *)ftrace_regs_get_stack_pointer(fregs);
+}
 
 struct ftrace_ops;
 #define ftrace_graph_func ftrace_graph_func
@@ -73,6 +86,24 @@ void ftrace_graph_func(unsigned long ip, unsigned long parent_ip,
 #define FTRACE_GRAPH_TRAMP_ADDR FTRACE_GRAPH_ADDR
 #endif
 
+#ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
+/*
+ * When a ftrace registered caller is tracing a function that is
+ * also set by a register_ftrace_direct() call, it needs to be
+ * differentiated in the ftrace_caller trampoline. To do this, we
+ * place the direct caller in the ORIG_AX part of pt_regs. This
+ * tells the ftrace_caller that there's a direct caller.
+ */
+static inline void
+__arch_ftrace_set_direct_caller(struct pt_regs *regs, unsigned long addr)
+{
+	/* Emulate a call */
+	regs->orig_ax = addr;
+}
+#define arch_ftrace_set_direct_caller(fregs, addr) \
+	__arch_ftrace_set_direct_caller(&arch_ftrace_regs(fregs)->regs, addr)
+#endif /* CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS */
+
 #ifdef CONFIG_DYNAMIC_FTRACE
 
 struct dyn_arch_ftrace {
@@ -80,11 +111,14 @@ struct dyn_arch_ftrace {
 };
 
 #endif /*  CONFIG_DYNAMIC_FTRACE */
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 #endif /* CONFIG_FUNCTION_TRACER */
 
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
+
+void prepare_ftrace_return(unsigned long ip, unsigned long *parent,
+			   unsigned long frame_pointer);
 
 #if defined(CONFIG_FUNCTION_TRACER) && defined(CONFIG_DYNAMIC_FTRACE)
 extern void set_ftrace_ops_ro(void);
@@ -125,6 +159,6 @@ static inline bool arch_trace_is_compat_syscall(struct pt_regs *regs)
 }
 #endif /* CONFIG_FTRACE_SYSCALLS && CONFIG_IA32_EMULATION */
 #endif /* !COMPILE_OFFSETS */
-#endif /* !__ASSEMBLY__ */
+#endif /* !__ASSEMBLER__ */
 
 #endif /* _ASM_X86_FTRACE_H */

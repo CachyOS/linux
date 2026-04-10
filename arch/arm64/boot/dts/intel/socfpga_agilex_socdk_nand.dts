@@ -37,10 +37,10 @@
 		};
 	};
 
-	memory {
+	memory@80000000 {
 		device_type = "memory";
 		/* We expect the bootloader to fill in the reg */
-		reg = <0 0 0 0>;
+		reg = <0 0x80000000 0 0>;
 	};
 };
 
@@ -81,7 +81,7 @@
 &nand {
 	status = "okay";
 
-	flash@0 {
+	nand@0 {
 		#address-cells = <1>;
 		#size-cells = <1>;
 		reg = <0>;

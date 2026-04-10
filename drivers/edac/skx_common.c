@@ -14,11 +14,14 @@
  * Copyright (c) 2018, Intel Corporation.
  */
 
+#include <linux/topology.h>
 #include <linux/acpi.h>
 #include <linux/dmi.h>
 #include <linux/adxl.h>
+#include <linux/overflow.h>
 #include <acpi/nfit.h>
 #include <asm/mce.h>
+#include <asm/uv/uv.h>
 #include "edac_module.h"
 #include "skx_common.h"
 
@@ -27,9 +30,11 @@ static const char * const component_names[] = {
 	[INDEX_MEMCTRL]		= "MemoryControllerId",
 	[INDEX_CHANNEL]		= "ChannelId",
 	[INDEX_DIMM]		= "DimmSlotId",
+	[INDEX_CS]		= "ChipSelect",
 	[INDEX_NM_MEMCTRL]	= "NmMemoryControllerId",
 	[INDEX_NM_CHANNEL]	= "NmChannelId",
 	[INDEX_NM_DIMM]		= "NmDimmSlotId",
+	[INDEX_NM_CS]		= "NmChipSelect",
 };
 
 static int component_indices[ARRAY_SIZE(component_names)];
@@ -40,13 +45,14 @@ static char *adxl_msg;
 static unsigned long adxl_nm_bitmap;
 
 static char skx_msg[MSG_SIZE];
-static skx_decode_f skx_decode;
+static skx_decode_f driver_decode;
 static skx_show_retry_log_f skx_show_retry_rd_err_log;
 static u64 skx_tolm, skx_tohm;
 static LIST_HEAD(dev_edac_list);
 static bool skx_mem_cfg_2lm;
+static struct res_config *skx_res_cfg;
 
-int __init skx_adxl_get(void)
+int skx_adxl_get(void)
 {
 	const char * const *names;
 	int i, j;
@@ -108,17 +114,56 @@ err:
 
 	return -ENODEV;
 }
+EXPORT_SYMBOL_GPL(skx_adxl_get);
 
-void __exit skx_adxl_put(void)
+void skx_adxl_put(void)
 {
+	adxl_component_count = 0;
 	kfree(adxl_values);
 	kfree(adxl_msg);
 }
+EXPORT_SYMBOL_GPL(skx_adxl_put);
 
-static bool skx_adxl_decode(struct decoded_addr *res, bool error_in_1st_level_mem)
+void skx_init_mc_mapping(struct skx_dev *d)
 {
+	/*
+	 * By default, the BIOS presents all memory controllers within each
+	 * socket to the EDAC driver. The physical indices are the same as
+	 * the logical indices of the memory controllers enumerated by the
+	 * EDAC driver.
+	 */
+	for (int i = 0; i < d->num_imc; i++)
+		d->imc[i].mc_mapping = i;
+}
+EXPORT_SYMBOL_GPL(skx_init_mc_mapping);
+
+void skx_set_mc_mapping(struct skx_dev *d, u8 pmc, u8 lmc)
+{
+	edac_dbg(0, "Set the mapping of mc phy idx to logical idx: %02d -> %02d\n",
+		 pmc, lmc);
+
+	d->imc[lmc].mc_mapping = pmc;
+}
+EXPORT_SYMBOL_GPL(skx_set_mc_mapping);
+
+static int skx_get_mc_mapping(struct skx_dev *d, u8 pmc)
+{
+	for (int lmc = 0; lmc < d->num_imc; lmc++) {
+		if (d->imc[lmc].mc_mapping == pmc) {
+			edac_dbg(0, "Get the mapping of mc phy idx to logical idx: %02d -> %02d\n",
+				 pmc, lmc);
+
+			return lmc;
+		}
+	}
+
+	return -1;
+}
+
+static bool skx_adxl_decode(struct decoded_addr *res, enum error_source err_src)
+{
+	int i, lmc, len = 0;
 	struct skx_dev *d;
-	int i, len = 0;
 
 	if (res->addr >= skx_tohm || (res->addr >= skx_tolm &&
 				      res->addr < BIT_ULL(32))) {
@@ -131,21 +176,40 @@ static bool skx_adxl_decode(struct decoded_addr *res, bool error_in_1st_level_me
 		return false;
 	}
 
+	/*
+	 * GNR with a Flat2LM memory configuration may mistakenly classify
+	 * a near-memory error(DDR5) as a far-memory error(CXL), resulting
+	 * in the incorrect selection of decoded ADXL components.
+	 * To address this, prefetch the decoded far-memory controller ID
+	 * and adjust the error source to near-memory if the far-memory
+	 * controller ID is invalid.
+	 */
+	if (skx_res_cfg && skx_res_cfg->type == GNR && err_src == ERR_SRC_2LM_FM) {
+		res->imc = (int)adxl_values[component_indices[INDEX_MEMCTRL]];
+		if (res->imc == -1) {
+			err_src = ERR_SRC_2LM_NM;
+			edac_dbg(0, "Adjust the error source to near-memory.\n");
+		}
+	}
+
 	res->socket  = (int)adxl_values[component_indices[INDEX_SOCKET]];
-	if (error_in_1st_level_mem) {
+	if (err_src == ERR_SRC_2LM_NM) {
 		res->imc     = (adxl_nm_bitmap & BIT_NM_MEMCTRL) ?
 			       (int)adxl_values[component_indices[INDEX_NM_MEMCTRL]] : -1;
 		res->channel = (adxl_nm_bitmap & BIT_NM_CHANNEL) ?
 			       (int)adxl_values[component_indices[INDEX_NM_CHANNEL]] : -1;
 		res->dimm    = (adxl_nm_bitmap & BIT_NM_DIMM) ?
 			       (int)adxl_values[component_indices[INDEX_NM_DIMM]] : -1;
+		res->cs      = (adxl_nm_bitmap & BIT_NM_CS) ?
+			       (int)adxl_values[component_indices[INDEX_NM_CS]] : -1;
 	} else {
 		res->imc     = (int)adxl_values[component_indices[INDEX_MEMCTRL]];
 		res->channel = (int)adxl_values[component_indices[INDEX_CHANNEL]];
 		res->dimm    = (int)adxl_values[component_indices[INDEX_DIMM]];
+		res->cs      = (int)adxl_values[component_indices[INDEX_CS]];
 	}
 
-	if (res->imc > NUM_IMC - 1 || res->imc < 0) {
+	if (res->imc < 0) {
 		skx_printk(KERN_ERR, "Bad imc %d\n", res->imc);
 		return false;
 	}
@@ -163,6 +227,14 @@ static bool skx_adxl_decode(struct decoded_addr *res, bool error_in_1st_level_me
 		return false;
 	}
 
+	lmc = skx_get_mc_mapping(d, res->imc);
+	if (lmc < 0) {
+		skx_printk(KERN_ERR, "No lmc for imc %d\n", res->imc);
+		return false;
+	}
+
+	res->imc = lmc;
+
 	for (i = 0; i < adxl_component_count; i++) {
 		if (adxl_values[i] == ~0x0ull)
 			continue;
@@ -173,6 +245,8 @@ static bool skx_adxl_decode(struct decoded_addr *res, bool error_in_1st_level_me
 			break;
 	}
 
+	res->decoded_by_adxl = true;
+
 	return true;
 }
 
@@ -180,16 +254,56 @@ void skx_set_mem_cfg(bool mem_cfg_2lm)
 {
 	skx_mem_cfg_2lm = mem_cfg_2lm;
 }
+EXPORT_SYMBOL_GPL(skx_set_mem_cfg);
+
+void skx_set_res_cfg(struct res_config *cfg)
+{
+	skx_res_cfg = cfg;
+}
+EXPORT_SYMBOL_GPL(skx_set_res_cfg);
 
 void skx_set_decode(skx_decode_f decode, skx_show_retry_log_f show_retry_log)
 {
-	skx_decode = decode;
+	driver_decode = decode;
 	skx_show_retry_rd_err_log = show_retry_log;
+}
+EXPORT_SYMBOL_GPL(skx_set_decode);
+
+static int skx_get_pkg_id(struct skx_dev *d, u8 *id)
+{
+	int node;
+	int cpu;
+
+	node = pcibus_to_node(d->util_all->bus);
+	if (numa_valid_node(node)) {
+		for_each_cpu(cpu, cpumask_of_pcibus(d->util_all->bus)) {
+			struct cpuinfo_x86 *c = &cpu_data(cpu);
+
+			if (c->initialized && cpu_to_node(cpu) == node) {
+				*id = topology_physical_package_id(cpu);
+				return 0;
+			}
+		}
+	}
+
+	skx_printk(KERN_ERR, "Failed to get package ID from NUMA information\n");
+	return -ENODEV;
 }
 
 int skx_get_src_id(struct skx_dev *d, int off, u8 *id)
 {
 	u32 reg;
+
+	/*
+	 * The 3-bit source IDs in PCI configuration space registers are limited
+	 * to 8 unique IDs, and each ID is local to a UPI/QPI domain.
+	 *
+	 * Source IDs cannot be used to map devices to sockets on UV systems
+	 * because they can exceed 8 sockets and have multiple UPI/QPI domains
+	 * with identical, repeating source IDs.
+	 */
+	if (is_uv_system())
+		return skx_get_pkg_id(d, id);
 
 	if (pci_read_config_dword(d->util_all, off, &reg)) {
 		skx_printk(KERN_ERR, "Failed to read src id\n");
@@ -199,19 +313,7 @@ int skx_get_src_id(struct skx_dev *d, int off, u8 *id)
 	*id = GET_BITFIELD(reg, 12, 14);
 	return 0;
 }
-
-int skx_get_node_id(struct skx_dev *d, u8 *id)
-{
-	u32 reg;
-
-	if (pci_read_config_dword(d->util_all, 0xf4, &reg)) {
-		skx_printk(KERN_ERR, "Failed to read node id\n");
-		return -ENODEV;
-	}
-
-	*id = GET_BITFIELD(reg, 0, 2);
-	return 0;
-}
+EXPORT_SYMBOL_GPL(skx_get_src_id);
 
 static int get_width(u32 mtr)
 {
@@ -233,10 +335,10 @@ static int get_width(u32 mtr)
  */
 int skx_get_all_bus_mappings(struct res_config *cfg, struct list_head **list)
 {
+	int ndev = 0, imc_num = cfg->ddr_imc_num + cfg->hbm_imc_num;
 	struct pci_dev *pdev, *prev;
 	struct skx_dev *d;
 	u32 reg;
-	int ndev = 0;
 
 	prev = NULL;
 	for (;;) {
@@ -244,7 +346,7 @@ int skx_get_all_bus_mappings(struct res_config *cfg, struct list_head **list)
 		if (!pdev)
 			break;
 		ndev++;
-		d = kzalloc(sizeof(*d), GFP_KERNEL);
+		d = kzalloc_flex(*d, imc, imc_num);
 		if (!d) {
 			pci_dev_put(pdev);
 			return -ENOMEM;
@@ -267,16 +369,27 @@ int skx_get_all_bus_mappings(struct res_config *cfg, struct list_head **list)
 			d->seg = GET_BITFIELD(reg, 16, 23);
 		}
 
-		edac_dbg(2, "busses: 0x%x, 0x%x, 0x%x, 0x%x\n",
-			 d->bus[0], d->bus[1], d->bus[2], d->bus[3]);
+		d->num_imc = imc_num;
+
+		edac_dbg(2, "busses: 0x%x, 0x%x, 0x%x, 0x%x, imcs %d\n",
+			 d->bus[0], d->bus[1], d->bus[2], d->bus[3], imc_num);
 		list_add_tail(&d->list, &dev_edac_list);
 		prev = pdev;
+
+		skx_init_mc_mapping(d);
 	}
 
 	if (list)
 		*list = &dev_edac_list;
 	return ndev;
 }
+EXPORT_SYMBOL_GPL(skx_get_all_bus_mappings);
+
+struct list_head *skx_get_edac_list(void)
+{
+	return &dev_edac_list;
+}
+EXPORT_SYMBOL_GPL(skx_get_edac_list);
 
 int skx_get_hi_lo(unsigned int did, int off[], u64 *tolm, u64 *tohm)
 {
@@ -316,6 +429,14 @@ fail:
 	pci_dev_put(pdev);
 	return -ENODEV;
 }
+EXPORT_SYMBOL_GPL(skx_get_hi_lo);
+
+void skx_set_hi_lo(u64 tolm, u64 tohm)
+{
+	skx_tolm = tolm;
+	skx_tohm = tohm;
+}
+EXPORT_SYMBOL_GPL(skx_set_hi_lo);
 
 static int skx_get_dimm_attr(u32 reg, int lobit, int hibit, int add,
 			     int minval, int maxval, const char *name)
@@ -330,7 +451,7 @@ static int skx_get_dimm_attr(u32 reg, int lobit, int hibit, int add,
 }
 
 #define numrank(reg)	skx_get_dimm_attr(reg, 12, 13, 0, 0, 2, "ranks")
-#define numrow(reg)	skx_get_dimm_attr(reg, 2, 4, 12, 1, 6, "rows")
+#define numrow(reg)	skx_get_dimm_attr(reg, 2, 4, 12, 1, 7, "rows")
 #define numcol(reg)	skx_get_dimm_attr(reg, 0, 1, 10, 0, 2, "cols")
 
 int skx_get_dimm_info(u32 mtr, u32 mcmtr, u32 amap, struct dimm_info *dimm,
@@ -348,7 +469,7 @@ int skx_get_dimm_info(u32 mtr, u32 mcmtr, u32 amap, struct dimm_info *dimm,
 	if (imc->hbm_mc) {
 		banks = 32;
 		mtype = MEM_HBM2;
-	} else if (cfg->support_ddr5 && (amap & 0x8)) {
+	} else if (cfg->support_ddr5) {
 		banks = 32;
 		mtype = MEM_DDR5;
 	} else {
@@ -387,6 +508,7 @@ int skx_get_dimm_info(u32 mtr, u32 mcmtr, u32 amap, struct dimm_info *dimm,
 
 	return 1;
 }
+EXPORT_SYMBOL_GPL(skx_get_dimm_info);
 
 int skx_get_nvdimm_info(struct dimm_info *dimm, struct skx_imc *imc,
 			int chan, int dimmno, const char *mod_str)
@@ -435,10 +557,11 @@ unknown_size:
 
 	return (size == 0 || size == ~0ull) ? 0 : 1;
 }
+EXPORT_SYMBOL_GPL(skx_get_nvdimm_info);
 
-int skx_register_mci(struct skx_imc *imc, struct pci_dev *pdev,
-		     const char *ctl_name, const char *mod_str,
-		     get_dimm_config_f get_dimm_config,
+int skx_register_mci(struct skx_imc *imc, struct device *dev,
+		     const char *dev_name, const char *ctl_name,
+		     const char *mod_str, get_dimm_config_f get_dimm_config,
 		     struct res_config *cfg)
 {
 	struct mem_ctl_info *mci;
@@ -448,10 +571,10 @@ int skx_register_mci(struct skx_imc *imc, struct pci_dev *pdev,
 
 	/* Allocate a new MC control structure */
 	layers[0].type = EDAC_MC_LAYER_CHANNEL;
-	layers[0].size = NUM_CHANNELS;
+	layers[0].size = imc->num_channels;
 	layers[0].is_virt_csrow = false;
 	layers[1].type = EDAC_MC_LAYER_SLOT;
-	layers[1].size = NUM_DIMMS;
+	layers[1].size = imc->num_dimms;
 	layers[1].is_virt_csrow = true;
 	mci = edac_mc_alloc(imc->mc, ARRAY_SIZE(layers), layers,
 			    sizeof(struct skx_pvt));
@@ -467,7 +590,7 @@ int skx_register_mci(struct skx_imc *imc, struct pci_dev *pdev,
 	pvt->imc = imc;
 
 	mci->ctl_name = kasprintf(GFP_KERNEL, "%s#%d IMC#%d", ctl_name,
-				  imc->node_id, imc->lmc);
+				  imc->src_id, imc->lmc);
 	if (!mci->ctl_name) {
 		rc = -ENOMEM;
 		goto fail0;
@@ -479,7 +602,7 @@ int skx_register_mci(struct skx_imc *imc, struct pci_dev *pdev,
 	mci->edac_ctl_cap = EDAC_FLAG_NONE;
 	mci->edac_cap = EDAC_FLAG_NONE;
 	mci->mod_name = mod_str;
-	mci->dev_name = pci_name(pdev);
+	mci->dev_name = dev_name;
 	mci->ctl_page_to_phys = NULL;
 
 	rc = get_dimm_config(mci, cfg);
@@ -487,7 +610,7 @@ int skx_register_mci(struct skx_imc *imc, struct pci_dev *pdev,
 		goto fail;
 
 	/* Record ptr to the generic device */
-	mci->pdev = &pdev->dev;
+	mci->pdev = dev;
 
 	/* Add this new MC control structure to EDAC's list of MCs */
 	if (unlikely(edac_mc_add_mc(mci))) {
@@ -505,6 +628,7 @@ fail0:
 	imc->mci = NULL;
 	return rc;
 }
+EXPORT_SYMBOL_GPL(skx_register_mci);
 
 static void skx_unregister_mci(struct skx_imc *imc)
 {
@@ -553,57 +677,41 @@ static void skx_mce_output_error(struct mem_ctl_info *mci,
 		tp_event = HW_EVENT_ERR_CORRECTED;
 	}
 
-	/*
-	 * According to Intel Architecture spec vol 3B,
-	 * Table 15-10 "IA32_MCi_Status [15:0] Compound Error Code Encoding"
-	 * memory errors should fit one of these masks:
-	 *	000f 0000 1mmm cccc (binary)
-	 *	000f 0010 1mmm cccc (binary)	[RAM used as cache]
-	 * where:
-	 *	f = Correction Report Filtering Bit. If 1, subsequent errors
-	 *	    won't be shown
-	 *	mmm = error type
-	 *	cccc = channel
-	 * If the mask doesn't match, report an error to the parsing logic
-	 */
-	if (!((errcode & 0xef80) == 0x80 || (errcode & 0xef80) == 0x280)) {
-		optype = "Can't parse: it is not a mem";
-	} else {
-		switch (optypenum) {
-		case 0:
-			optype = "generic undef request error";
-			break;
-		case 1:
-			optype = "memory read error";
-			break;
-		case 2:
-			optype = "memory write error";
-			break;
-		case 3:
-			optype = "addr/cmd error";
-			break;
-		case 4:
-			optype = "memory scrubbing error";
-			scrub_err = true;
-			break;
-		default:
-			optype = "reserved";
-			break;
-		}
+	switch (optypenum) {
+	case 0:
+		optype = "generic undef request error";
+		break;
+	case 1:
+		optype = "memory read error";
+		break;
+	case 2:
+		optype = "memory write error";
+		break;
+	case 3:
+		optype = "addr/cmd error";
+		break;
+	case 4:
+		optype = "memory scrubbing error";
+		scrub_err = true;
+		break;
+	default:
+		optype = "reserved";
+		break;
 	}
-	if (adxl_component_count) {
-		len = snprintf(skx_msg, MSG_SIZE, "%s%s err_code:0x%04x:0x%04x %s",
+
+	if (res->decoded_by_adxl) {
+		len = scnprintf(skx_msg, MSG_SIZE, "%s%s err_code:0x%04x:0x%04x %s",
 			 overflow ? " OVERFLOW" : "",
 			 (uncorrected_error && recoverable) ? " recoverable" : "",
 			 mscod, errcode, adxl_msg);
 	} else {
-		len = snprintf(skx_msg, MSG_SIZE,
-			 "%s%s err_code:0x%04x:0x%04x socket:%d imc:%d rank:%d bg:%d ba:%d row:0x%x col:0x%x",
+		len = scnprintf(skx_msg, MSG_SIZE,
+			 "%s%s err_code:0x%04x:0x%04x ProcessorSocketId:0x%x MemoryControllerId:0x%x PhysicalRankId:0x%x Row:0x%x Column:0x%x Bank:0x%x BankGroup:0x%x",
 			 overflow ? " OVERFLOW" : "",
 			 (uncorrected_error && recoverable) ? " recoverable" : "",
 			 mscod, errcode,
 			 res->socket, res->imc, res->rank,
-			 res->bank_group, res->bank_address, res->row, res->column);
+			 res->row, res->column, res->bank_address, res->bank_group);
 	}
 
 	if (skx_show_retry_rd_err_log)
@@ -618,25 +726,27 @@ static void skx_mce_output_error(struct mem_ctl_info *mci,
 			     optype, skx_msg);
 }
 
-static bool skx_error_in_1st_level_mem(const struct mce *m)
+static enum error_source skx_error_source(const struct mce *m)
 {
-	u32 errcode;
+	u32 errcode = GET_BITFIELD(m->status, 0, 15) & MCACOD_MEM_ERR_MASK;
+
+	if (errcode != MCACOD_MEM_CTL_ERR && errcode != MCACOD_EXT_MEM_ERR)
+		return ERR_SRC_NOT_MEMORY;
 
 	if (!skx_mem_cfg_2lm)
-		return false;
+		return ERR_SRC_1LM;
 
-	errcode = GET_BITFIELD(m->status, 0, 15);
+	if (errcode == MCACOD_EXT_MEM_ERR)
+		return ERR_SRC_2LM_NM;
 
-	if ((errcode & 0xef80) != 0x280)
-		return false;
-
-	return true;
+	return ERR_SRC_2LM_FM;
 }
 
 int skx_mce_check_error(struct notifier_block *nb, unsigned long val,
 			void *data)
 {
 	struct mce *mce = (struct mce *)data;
+	enum error_source err_src;
 	struct decoded_addr res;
 	struct mem_ctl_info *mci;
 	char *type;
@@ -644,18 +754,25 @@ int skx_mce_check_error(struct notifier_block *nb, unsigned long val,
 	if (mce->kflags & MCE_HANDLED_CEC)
 		return NOTIFY_DONE;
 
-	/* ignore unless this is memory related with an address */
-	if ((mce->status & 0xefff) >> 7 != 1 || !(mce->status & MCI_STATUS_ADDRV))
+	err_src = skx_error_source(mce);
+
+	/* Ignore unless this is memory related with an address */
+	if (err_src == ERR_SRC_NOT_MEMORY || !(mce->status & MCI_STATUS_ADDRV))
 		return NOTIFY_DONE;
 
 	memset(&res, 0, sizeof(res));
-	res.addr = mce->addr;
-
-	if (adxl_component_count) {
-		if (!skx_adxl_decode(&res, skx_error_in_1st_level_mem(mce)))
-			return NOTIFY_DONE;
-	} else if (!skx_decode || !skx_decode(&res)) {
+	res.mce  = mce;
+	res.addr = mce->addr & MCI_ADDR_PHYSADDR;
+	if (!pfn_to_online_page(res.addr >> PAGE_SHIFT) && !arch_is_platform_page(res.addr)) {
+		pr_err("Invalid address 0x%llx in IA32_MC%d_ADDR\n", mce->addr, mce->bank);
 		return NOTIFY_DONE;
+	}
+
+	/* Try driver decoder first */
+	if (!(driver_decode && driver_decode(&res))) {
+		/* Then try firmware decoder (ACPI DSM methods) */
+		if (!(adxl_component_count && skx_adxl_decode(&res, err_src)))
+			return NOTIFY_DONE;
 	}
 
 	mci = res.dev->imc[res.imc].mci;
@@ -686,6 +803,7 @@ int skx_mce_check_error(struct notifier_block *nb, unsigned long val,
 	mce->kflags |= MCE_HANDLED_EDAC;
 	return NOTIFY_DONE;
 }
+EXPORT_SYMBOL_GPL(skx_mce_check_error);
 
 void skx_remove(void)
 {
@@ -696,7 +814,7 @@ void skx_remove(void)
 
 	list_for_each_entry_safe(d, tmp, &dev_edac_list, list) {
 		list_del(&d->list);
-		for (i = 0; i < NUM_IMC; i++) {
+		for (i = 0; i < d->num_imc; i++) {
 			if (d->imc[i].mci)
 				skx_unregister_mci(&d->imc[i]);
 
@@ -706,7 +824,10 @@ void skx_remove(void)
 			if (d->imc[i].mbase)
 				iounmap(d->imc[i].mbase);
 
-			for (j = 0; j < NUM_CHANNELS; j++) {
+			if (d->imc[i].dev)
+				put_device(d->imc[i].dev);
+
+			for (j = 0; j < d->imc[i].num_channels; j++) {
 				if (d->imc[i].chan[j].cdev)
 					pci_dev_put(d->imc[i].chan[j].cdev);
 			}
@@ -723,3 +844,55 @@ void skx_remove(void)
 		kfree(d);
 	}
 }
+EXPORT_SYMBOL_GPL(skx_remove);
+
+#ifdef CONFIG_EDAC_DEBUG
+/*
+ * Debug feature.
+ * Exercise the address decode logic by writing an address to
+ * /sys/kernel/debug/edac/{skx,i10nm,imh}_test/addr.
+ */
+static struct dentry *skx_test;
+
+static int debugfs_u64_set(void *data, u64 val)
+{
+	struct mce m;
+
+	pr_warn_once("Fake error to 0x%llx injected via debugfs\n", val);
+
+	memset(&m, 0, sizeof(m));
+	/* ADDRV + MemRd + Unknown channel */
+	m.status = MCI_STATUS_ADDRV + 0x90;
+	/* One corrected error */
+	m.status |= BIT_ULL(MCI_STATUS_CEC_SHIFT);
+	m.addr = val;
+	skx_mce_check_error(NULL, 0, &m);
+
+	return 0;
+}
+DEFINE_SIMPLE_ATTRIBUTE(fops_u64_wo, NULL, debugfs_u64_set, "%llu\n");
+
+void skx_setup_debug(const char *name)
+{
+	skx_test = edac_debugfs_create_dir(name);
+	if (!skx_test)
+		return;
+
+	if (!edac_debugfs_create_file("addr", 0200, skx_test,
+				      NULL, &fops_u64_wo)) {
+		debugfs_remove(skx_test);
+		skx_test = NULL;
+	}
+}
+EXPORT_SYMBOL_GPL(skx_setup_debug);
+
+void skx_teardown_debug(void)
+{
+	debugfs_remove_recursive(skx_test);
+}
+EXPORT_SYMBOL_GPL(skx_teardown_debug);
+#endif /*CONFIG_EDAC_DEBUG*/
+
+MODULE_LICENSE("GPL v2");
+MODULE_AUTHOR("Tony Luck");
+MODULE_DESCRIPTION("MC Driver for Intel server processors");

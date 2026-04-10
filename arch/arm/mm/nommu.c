@@ -21,10 +21,18 @@
 #include <asm/cputype.h>
 #include <asm/mpu.h>
 #include <asm/procinfo.h>
+#include <asm/idmap.h>
 
 #include "mm.h"
 
 unsigned long vectors_base;
+
+/*
+ * empty_zero_page is a special page that is used for
+ * zero-initialized data and COW.
+ */
+unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)] __page_aligned_bss;
+EXPORT_SYMBOL(empty_zero_page);
 
 #ifdef CONFIG_ARM_MPU
 struct mpu_rgn_info mpu_rgn_info;
@@ -150,6 +158,7 @@ void __init paging_init(const struct machine_desc *mdesc)
 {
 	early_trap_init((void *)vectors_base);
 	mpu_setup();
+
 	bootmem_init();
 }
 
@@ -159,6 +168,12 @@ void __init paging_init(const struct machine_desc *mdesc)
 void setup_mm_for_reboot(void)
 {
 }
+
+void flush_dcache_folio(struct folio *folio)
+{
+	__cpuc_flush_dcache_area(folio_address(folio), folio_size(folio));
+}
+EXPORT_SYMBOL(flush_dcache_folio);
 
 void flush_dcache_page(struct page *page)
 {
@@ -225,19 +240,12 @@ void __iomem *pci_remap_cfgspace(resource_size_t res_cookie, size_t size)
 EXPORT_SYMBOL_GPL(pci_remap_cfgspace);
 #endif
 
-void *arch_memremap_wb(phys_addr_t phys_addr, size_t size)
+void *arch_memremap_wb(phys_addr_t phys_addr, size_t size, unsigned long flags)
 {
 	return (void *)phys_addr;
 }
 
-void __iounmap(volatile void __iomem *addr)
-{
-}
-EXPORT_SYMBOL(__iounmap);
-
-void (*arch_iounmap)(volatile void __iomem *);
-
-void iounmap(volatile void __iomem *addr)
+void iounmap(volatile void __iomem *io_addr)
 {
 }
 EXPORT_SYMBOL(iounmap);

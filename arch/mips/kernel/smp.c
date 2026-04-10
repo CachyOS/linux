@@ -10,6 +10,7 @@
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/profile.h>
 #include <linux/smp.h>
 #include <linux/spinlock.h>
 #include <linux/threads.h>
@@ -55,8 +56,10 @@ EXPORT_SYMBOL(cpu_sibling_map);
 cpumask_t cpu_core_map[NR_CPUS] __read_mostly;
 EXPORT_SYMBOL(cpu_core_map);
 
+#ifndef CONFIG_HOTPLUG_PARALLEL
 static DECLARE_COMPLETION(cpu_starting);
 static DECLARE_COMPLETION(cpu_running);
+#endif
 
 /*
  * A logical cpu mask containing only one VPE per core to
@@ -72,6 +75,26 @@ static cpumask_t cpu_sibling_setup_map;
 static cpumask_t cpu_core_setup_map;
 
 cpumask_t cpu_coherent_mask;
+
+struct cpumask __cpu_primary_thread_mask __read_mostly;
+
+unsigned int smp_max_threads __initdata = UINT_MAX;
+
+static int __init early_nosmt(char *s)
+{
+	smp_max_threads = 1;
+	return 0;
+}
+early_param("nosmt", early_nosmt);
+
+static int __init early_smt(char *s)
+{
+	get_option(&s, &smp_max_threads);
+	/* Ensure at least one thread is available */
+	smp_max_threads = clamp_val(smp_max_threads, 1U, UINT_MAX);
+	return 0;
+}
+early_param("smt", early_smt);
 
 #ifdef CONFIG_GENERIC_IRQ_IPI
 static struct irq_desc *call_desc;
@@ -333,10 +356,11 @@ early_initcall(mips_smp_ipi_init);
  */
 asmlinkage void start_secondary(void)
 {
-	unsigned int cpu;
+	unsigned int cpu = raw_smp_processor_id();
 
 	cpu_probe();
 	per_cpu_trap_init(false);
+	rcutree_report_cpu_starting(cpu);
 	mips_clockevent_init();
 	mp_ops->init_secondary();
 	cpu_report();
@@ -347,8 +371,10 @@ asmlinkage void start_secondary(void)
 	 * to an option instead of something based on .cputype
 	 */
 
+#ifdef CONFIG_HOTPLUG_PARALLEL
+	cpuhp_ap_sync_alive();
+#endif
 	calibrate_delay();
-	cpu = smp_processor_id();
 	cpu_data[cpu].udelay_val = loops_per_jiffy;
 
 	set_cpu_sibling_map(cpu);
@@ -357,8 +383,10 @@ asmlinkage void start_secondary(void)
 	cpumask_set_cpu(cpu, &cpu_coherent_mask);
 	notify_cpu_starting(cpu);
 
+#ifndef CONFIG_HOTPLUG_PARALLEL
 	/* Notify boot CPU that we're starting & ready to sync counters */
 	complete(&cpu_starting);
+#endif
 
 	synchronise_count_slave(cpu);
 
@@ -367,11 +395,13 @@ asmlinkage void start_secondary(void)
 
 	calculate_cpu_foreign_map();
 
+#ifndef CONFIG_HOTPLUG_PARALLEL
 	/*
 	 * Notify boot CPU that we're up & online and it can safely return
 	 * from __cpu_up
 	 */
 	complete(&cpu_running);
+#endif
 
 	/*
 	 * irq will be enabled in ->smp_finish(), enabling it too early
@@ -420,7 +450,7 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 }
 
 /* preload SMP state for boot cpu */
-void smp_prepare_boot_cpu(void)
+void __init smp_prepare_boot_cpu(void)
 {
 	if (mp_ops->prepare_boot_cpu)
 		mp_ops->prepare_boot_cpu();
@@ -428,6 +458,12 @@ void smp_prepare_boot_cpu(void)
 	set_cpu_online(0, true);
 }
 
+#ifdef CONFIG_HOTPLUG_PARALLEL
+int arch_cpuhp_kick_ap_alive(unsigned int cpu, struct task_struct *tidle)
+{
+	return mp_ops->boot_secondary(cpu, tidle);
+}
+#else
 int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 {
 	int err;
@@ -443,18 +479,19 @@ int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 		return -EIO;
 	}
 
-	synchronise_count_master(cpu);
-
 	/* Wait for CPU to finish startup & mark itself online before return */
 	wait_for_completion(&cpu_running);
 	return 0;
 }
+#endif
 
+#ifdef CONFIG_PROFILING
 /* Not really SMP stuff ... */
 int setup_profiling_timer(unsigned int multiplier)
 {
 	return 0;
 }
+#endif
 
 static void flush_tlb_all_ipi(void *info)
 {
@@ -689,6 +726,14 @@ void flush_tlb_one(unsigned long vaddr)
 
 EXPORT_SYMBOL(flush_tlb_page);
 EXPORT_SYMBOL(flush_tlb_one);
+
+#ifdef CONFIG_HOTPLUG_CORE_SYNC_DEAD
+void arch_cpuhp_cleanup_dead_cpu(unsigned int cpu)
+{
+	if (mp_ops->cleanup_dead_cpu)
+		mp_ops->cleanup_dead_cpu(cpu);
+}
+#endif
 
 #ifdef CONFIG_GENERIC_CLOCKEVENTS_BROADCAST
 

@@ -63,20 +63,14 @@ struct vb2_v4l2_buffer {
 	container_of(vb, struct vb2_v4l2_buffer, vb2_buf)
 
 /**
- * vb2_find_timestamp() - Find buffer with given timestamp in the queue
+ * vb2_find_buffer() - Find a buffer with given timestamp
  *
  * @q:		pointer to &struct vb2_queue with videobuf2 queue.
  * @timestamp:	the timestamp to find.
- * @start_idx:	the start index (usually 0) in the buffer array to start
- *		searching from. Note that there may be multiple buffers
- *		with the same timestamp value, so you can restart the search
- *		by setting @start_idx to the previously found index + 1.
  *
- * Returns the buffer index of the buffer with the given @timestamp, or
- * -1 if no buffer with @timestamp was found.
+ * Returns the buffer with the given @timestamp, or NULL if not found.
  */
-int vb2_find_timestamp(const struct vb2_queue *q, u64 timestamp,
-		       unsigned int start_idx);
+struct vb2_buffer *vb2_find_buffer(struct vb2_queue *q, u64 timestamp);
 
 int vb2_querybuf(struct vb2_queue *q, struct v4l2_buffer *b);
 
@@ -340,6 +334,8 @@ int vb2_ioctl_streamon(struct file *file, void *priv, enum v4l2_buf_type i);
 int vb2_ioctl_streamoff(struct file *file, void *priv, enum v4l2_buf_type i);
 int vb2_ioctl_expbuf(struct file *file, void *priv,
 	struct v4l2_exportbuffer *p);
+int vb2_ioctl_remove_bufs(struct file *file, void *priv,
+			  struct v4l2_remove_buffers *p);
 
 /* struct v4l2_file_operations helpers */
 
@@ -370,24 +366,6 @@ unsigned long vb2_fop_get_unmapped_area(struct file *file, unsigned long addr,
  * will have stopped streaming as well.
  */
 void vb2_video_unregister_device(struct video_device *vdev);
-
-/**
- * vb2_ops_wait_prepare - helper function to lock a struct &vb2_queue
- *
- * @vq: pointer to &struct vb2_queue
- *
- * ..note:: only use if vq->lock is non-NULL.
- */
-void vb2_ops_wait_prepare(struct vb2_queue *vq);
-
-/**
- * vb2_ops_wait_finish - helper function to unlock a struct &vb2_queue
- *
- * @vq: pointer to &struct vb2_queue
- *
- * ..note:: only use if vq->lock is non-NULL.
- */
-void vb2_ops_wait_finish(struct vb2_queue *vq);
 
 struct media_request;
 int vb2_request_validate(struct media_request *req);

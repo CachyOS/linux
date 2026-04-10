@@ -3,6 +3,7 @@
  *
  * Copyright(c) 2008 - 2014 Intel Corporation. All rights reserved.
  * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2023, 2025 Intel Corporation
  *****************************************************************************/
 
 #include <linux/kernel.h>
@@ -231,6 +232,8 @@ static void iwlagn_tx_cmd_build_hwcrypto(struct iwl_priv *priv,
  * that may be %NULL, for example during TX or key setup. In
  * that case, we need to use the broadcast station, so this
  * inline wraps that pattern.
+ *
+ * Return: station ID for mac80211 station (or broadcast if %NULL)
  */
 static int iwl_sta_id_or_broadcast(struct iwl_rxon_context *context,
 				   struct ieee80211_sta *sta)
@@ -462,7 +465,7 @@ static int iwlagn_alloc_agg_txq(struct iwl_priv *priv, int mq)
 	int q;
 
 	for (q = IWLAGN_FIRST_AMPDU_QUEUE;
-	     q < priv->trans->trans_cfg->base_params->num_of_queues; q++) {
+	     q < priv->trans->mac_cfg->base->num_of_queues; q++) {
 		if (!test_and_set_bit(q, priv->agg_q_alloc)) {
 			priv->queue_to_mac80211[q] = mq;
 			return q;
@@ -1169,7 +1172,7 @@ void iwlagn_rx_reply_tx(struct iwl_priv *priv, struct iwl_rx_cmd_buffer *rxb)
 			iwlagn_check_ratid_empty(priv, sta_id, tid);
 		}
 
-		iwl_trans_reclaim(priv->trans, txq_id, ssn, &skbs);
+		iwl_trans_reclaim(priv->trans, txq_id, ssn, &skbs, false);
 
 		freed = 0;
 
@@ -1247,7 +1250,7 @@ void iwlagn_rx_reply_tx(struct iwl_priv *priv, struct iwl_rx_cmd_buffer *rxb)
 
 	while (!skb_queue_empty(&skbs)) {
 		skb = __skb_dequeue(&skbs);
-		ieee80211_tx_status(priv->hw, skb);
+		ieee80211_tx_status_skb(priv->hw, skb);
 	}
 }
 
@@ -1276,7 +1279,7 @@ void iwlagn_rx_reply_compressed_ba(struct iwl_priv *priv,
 	 * (in Tx queue's circular buffer) of first TFD/frame in window */
 	u16 ba_resp_scd_ssn = le16_to_cpu(ba_resp->scd_ssn);
 
-	if (scd_flow >= priv->trans->trans_cfg->base_params->num_of_queues) {
+	if (scd_flow >= priv->trans->mac_cfg->base->num_of_queues) {
 		IWL_ERR(priv,
 			"BUG_ON scd_flow is bigger than number of queues\n");
 		return;
@@ -1315,7 +1318,7 @@ void iwlagn_rx_reply_compressed_ba(struct iwl_priv *priv,
 	 * block-ack window (we assume that they've been successfully
 	 * transmitted ... if not, it's too late anyway). */
 	iwl_trans_reclaim(priv->trans, scd_flow, ba_resp_scd_ssn,
-			  &reclaimed_skbs);
+			  &reclaimed_skbs, false);
 
 	IWL_DEBUG_TX_REPLY(priv, "REPLY_COMPRESSED_BA [%d] Received from %pM, "
 			   "sta_id = %d\n",
@@ -1384,6 +1387,6 @@ void iwlagn_rx_reply_compressed_ba(struct iwl_priv *priv,
 
 	while (!skb_queue_empty(&reclaimed_skbs)) {
 		skb = __skb_dequeue(&reclaimed_skbs);
-		ieee80211_tx_status(priv->hw, skb);
+		ieee80211_tx_status_skb(priv->hw, skb);
 	}
 }

@@ -69,7 +69,7 @@ static int daca_set_volume(struct pmac_daca *mix)
 	data[1] |= mix->deemphasis ? 0x40 : 0;
 	if (i2c_smbus_write_block_data(mix->i2c.client, DACA_REG_AVOL,
 				       2, data) < 0) {
-		snd_printk(KERN_ERR "failed to set volume \n");
+		dev_err(&mix->i2c.client->dev, "failed to set volume\n");
 		return -EINVAL;
 	}
 	return 0;
@@ -244,7 +244,7 @@ int snd_pmac_daca_init(struct snd_pmac *chip)
 
 	request_module("i2c-powermac");
 
-	mix = kzalloc(sizeof(*mix), GFP_KERNEL);
+	mix = kzalloc_obj(*mix);
 	if (! mix)
 		return -ENOMEM;
 	chip->mixer_data = mix;
@@ -261,7 +261,7 @@ int snd_pmac_daca_init(struct snd_pmac *chip)
 	/*
 	 * build mixers
 	 */
-	strcpy(chip->card->mixername, "PowerMac DACA");
+	strscpy(chip->card->mixername, "PowerMac DACA");
 
 	for (i = 0; i < ARRAY_SIZE(daca_mixers); i++) {
 		err = snd_ctl_add(chip->card, snd_ctl_new1(&daca_mixers[i], chip));

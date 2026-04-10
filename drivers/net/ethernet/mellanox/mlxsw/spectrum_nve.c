@@ -216,7 +216,7 @@ mlxsw_sp_nve_mc_list_create(struct mlxsw_sp *mlxsw_sp,
 	struct mlxsw_sp_nve_mc_list *mc_list;
 	int err;
 
-	mc_list = kmalloc(sizeof(*mc_list), GFP_KERNEL);
+	mc_list = kmalloc_obj(*mc_list);
 	if (!mc_list)
 		return ERR_PTR(-ENOMEM);
 
@@ -277,8 +277,7 @@ mlxsw_sp_nve_mc_record_create(struct mlxsw_sp *mlxsw_sp,
 	struct mlxsw_sp_nve_mc_record *mc_record;
 	int err;
 
-	mc_record = kzalloc(struct_size(mc_record, entries, num_max_entries),
-			    GFP_KERNEL);
+	mc_record = kzalloc_flex(*mc_record, entries, num_max_entries);
 	if (!mc_record)
 		return ERR_PTR(-ENOMEM);
 
@@ -848,7 +847,7 @@ static int mlxsw_sp_nve_ipv6_ht_insert(struct mlxsw_sp *mlxsw_sp,
 	struct mlxsw_sp_nve *nve = mlxsw_sp->nve;
 	int err;
 
-	ipv6_ht_node = kzalloc(sizeof(*ipv6_ht_node), GFP_KERNEL);
+	ipv6_ht_node = kzalloc_obj(*ipv6_ht_node);
 	if (!ipv6_ht_node)
 		return -ENOMEM;
 
@@ -989,6 +988,9 @@ void mlxsw_sp_nve_fid_disable(struct mlxsw_sp *mlxsw_sp,
 	int nve_ifindex;
 	__be32 vni;
 
+	/* Necessary for __dev_get_by_index() below. */
+	ASSERT_RTNL();
+
 	mlxsw_sp_nve_flood_ip_flush(mlxsw_sp, fid);
 	mlxsw_sp_nve_fdb_flush_by_fid(mlxsw_sp, fid_index);
 	mlxsw_sp_nve_ipv6_addr_flush_by_fid(mlxsw_sp, fid_index);
@@ -997,14 +999,12 @@ void mlxsw_sp_nve_fid_disable(struct mlxsw_sp *mlxsw_sp,
 		    mlxsw_sp_fid_vni(fid, &vni)))
 		goto out;
 
-	nve_dev = dev_get_by_index(mlxsw_sp_net(mlxsw_sp), nve_ifindex);
+	nve_dev = __dev_get_by_index(mlxsw_sp_net(mlxsw_sp), nve_ifindex);
 	if (!nve_dev)
 		goto out;
 
 	mlxsw_sp_nve_fdb_clear_offload(mlxsw_sp, fid, nve_dev, vni);
 	mlxsw_sp_fid_fdb_clear_offload(fid, nve_dev);
-
-	dev_put(nve_dev);
 
 out:
 	mlxsw_sp_fid_vni_clear(fid);
@@ -1118,7 +1118,7 @@ int mlxsw_sp_nve_init(struct mlxsw_sp *mlxsw_sp)
 	struct mlxsw_sp_nve *nve;
 	int err;
 
-	nve = kzalloc(sizeof(*mlxsw_sp->nve), GFP_KERNEL);
+	nve = kzalloc_obj(*mlxsw_sp->nve);
 	if (!nve)
 		return -ENOMEM;
 	mlxsw_sp->nve = nve;

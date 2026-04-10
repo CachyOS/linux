@@ -55,11 +55,11 @@ static int snap_rcv(struct sk_buff *skb, struct net_device *dev,
 		goto drop;
 
 	rcu_read_lock();
-	proto = find_snap_client(skb_transport_header(skb));
+	proto = find_snap_client(skb->data);
 	if (proto) {
 		/* Pass the frame on. */
-		skb->transport_header += 5;
 		skb_pull_rcsum(skb, 5);
+		skb_reset_transport_header(skb);
 		rc = proto->rcvfunc(skb, dev, &snap_packet_type, orig_dev);
 	}
 	rcu_read_unlock();
@@ -132,7 +132,7 @@ struct datalink_proto *register_snap_client(const unsigned char *desc,
 	if (find_snap_client(desc))
 		goto out;
 
-	proto = kmalloc(sizeof(*proto), GFP_ATOMIC);
+	proto = kmalloc_obj(*proto, GFP_ATOMIC);
 	if (proto) {
 		memcpy(proto->type, desc, 5);
 		proto->rcvfunc		= rcvfunc;
@@ -160,4 +160,5 @@ void unregister_snap_client(struct datalink_proto *proto)
 	kfree(proto);
 }
 
+MODULE_DESCRIPTION("SNAP data link layer. Derived from 802.2");
 MODULE_LICENSE("GPL");

@@ -8,7 +8,9 @@
 #ifndef _ROSE_H
 #define _ROSE_H 
 
+#include <linux/refcount.h>
 #include <linux/rose.h>
+#include <net/ax25.h>
 #include <net/sock.h>
 
 #define	ROSE_ADDR_LEN			5
@@ -95,7 +97,7 @@ struct rose_neigh {
 	ax25_cb			*ax25;
 	struct net_device		*dev;
 	unsigned short		count;
-	unsigned short		use;
+	refcount_t		use;
 	unsigned int		number;
 	char			restarted;
 	char			dce_mode;
@@ -131,7 +133,8 @@ struct rose_sock {
 	ax25_address		source_digis[ROSE_MAX_DIGIS];
 	ax25_address		dest_digis[ROSE_MAX_DIGIS];
 	struct rose_neigh	*neighbour;
-	struct net_device		*device;
+	struct net_device	*device;
+	netdevice_tracker	dev_tracker;
 	unsigned int		lci, rand;
 	unsigned char		state, condition, qbitincl, defer;
 	unsigned char		cause, diagnostic;
@@ -148,6 +151,21 @@ struct rose_sock {
 };
 
 #define rose_sk(sk) ((struct rose_sock *)(sk))
+
+static inline void rose_neigh_hold(struct rose_neigh *rose_neigh)
+{
+	refcount_inc(&rose_neigh->use);
+}
+
+static inline void rose_neigh_put(struct rose_neigh *rose_neigh)
+{
+	if (refcount_dec_and_test(&rose_neigh->use)) {
+		if (rose_neigh->ax25)
+			ax25_cb_put(rose_neigh->ax25);
+		kfree(rose_neigh->digipeat);
+		kfree(rose_neigh);
+	}
+}
 
 /* af_rose.c */
 extern ax25_address rose_callsign;

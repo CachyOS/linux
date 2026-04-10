@@ -11,10 +11,11 @@
 
 #include <linux/types.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
+#include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/acpi.h>
 #include "ipmi_si.h"
 #include "ipmi_dmi.h"
@@ -162,9 +163,13 @@ static int platform_ipmi_probe(struct platform_device *pdev)
 
 	switch (type) {
 	case SI_KCS:
+		io.si_info = &ipmi_kcs_si_info;
+		break;
 	case SI_SMIC:
+		io.si_info = &ipmi_smic_si_info;
+		break;
 	case SI_BT:
-		io.si_type = type;
+		io.si_info = &ipmi_bt_si_info;
 		break;
 	case SI_TYPE_INVALID: /* User disabled this in hardcode. */
 		return -ENODEV;
@@ -212,19 +217,15 @@ static int platform_ipmi_probe(struct platform_device *pdev)
 
 #ifdef CONFIG_OF
 static const struct of_device_id of_ipmi_match[] = {
-	{ .type = "ipmi", .compatible = "ipmi-kcs",
-	  .data = (void *)(unsigned long) SI_KCS },
-	{ .type = "ipmi", .compatible = "ipmi-smic",
-	  .data = (void *)(unsigned long) SI_SMIC },
-	{ .type = "ipmi", .compatible = "ipmi-bt",
-	  .data = (void *)(unsigned long) SI_BT },
-	{},
+	{ .type = "ipmi", .compatible = "ipmi-kcs", .data = &ipmi_kcs_si_info },
+	{ .type = "ipmi", .compatible = "ipmi-smic", .data = &ipmi_smic_si_info },
+	{ .type = "ipmi", .compatible = "ipmi-bt", .data = &ipmi_bt_si_info },
+	{}
 };
 MODULE_DEVICE_TABLE(of, of_ipmi_match);
 
 static int of_ipmi_probe(struct platform_device *pdev)
 {
-	const struct of_device_id *match;
 	struct si_sm_io io;
 	struct resource resource;
 	const __be32 *regsize, *regspacing, *regshift;
@@ -236,10 +237,6 @@ static int of_ipmi_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	dev_info(&pdev->dev, "probing via device tree\n");
-
-	match = of_match_device(of_ipmi_match, &pdev->dev);
-	if (!match)
-		return -ENODEV;
 
 	if (!of_device_is_available(np))
 		return -EINVAL;
@@ -269,7 +266,7 @@ static int of_ipmi_probe(struct platform_device *pdev)
 	}
 
 	memset(&io, 0, sizeof(io));
-	io.si_type	= (enum si_type) match->data;
+	io.si_info	= device_get_match_data(&pdev->dev);
 	io.addr_source	= SI_DEVICETREE;
 	io.irq_setup	= ipmi_std_irq_setup;
 
@@ -300,7 +297,7 @@ static int find_slave_address(struct si_sm_io *io, int slave_addr)
 {
 #ifdef CONFIG_IPMI_DMI_DECODE
 	if (!slave_addr)
-		slave_addr = ipmi_dmi_get_slave_addr(io->si_type,
+		slave_addr = ipmi_dmi_get_slave_addr(io->si_info->type,
 						     io->addr_space,
 						     io->addr_data);
 #endif
@@ -339,13 +336,13 @@ static int acpi_ipmi_probe(struct platform_device *pdev)
 
 	switch (tmp) {
 	case 1:
-		io.si_type = SI_KCS;
+		io.si_info = &ipmi_kcs_si_info;
 		break;
 	case 2:
-		io.si_type = SI_SMIC;
+		io.si_info = &ipmi_smic_si_info;
 		break;
 	case 3:
-		io.si_type = SI_BT;
+		io.si_info = &ipmi_bt_si_info;
 		break;
 	case 4: /* SSIF, just ignore */
 		return -ENODEV;
@@ -381,7 +378,7 @@ static int acpi_ipmi_probe(struct platform_device *pdev)
 	dev_info(dev, "%pR regsize %d spacing %d irq %d\n",
 		 res, io.regsize, io.regspacing, io.irq);
 
-	request_module("acpi_ipmi");
+	request_module_nowait("acpi_ipmi");
 
 	return ipmi_si_add_smi(&io);
 }
@@ -409,11 +406,9 @@ static int ipmi_probe(struct platform_device *pdev)
 	return platform_ipmi_probe(pdev);
 }
 
-static int ipmi_remove(struct platform_device *pdev)
+static void ipmi_remove(struct platform_device *pdev)
 {
 	ipmi_si_remove_by_dev(&pdev->dev);
-
-	return 0;
 }
 
 static int pdev_match_name(struct device *dev, const void *data)

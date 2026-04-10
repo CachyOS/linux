@@ -15,7 +15,6 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
-#include <linux/of_device.h>
 #include <linux/of.h>
 #include <linux/clk.h>
 #include <linux/of_dma.h>
@@ -472,7 +471,7 @@ static struct k3_dma_desc_sw *k3_dma_alloc_desc_resource(int num,
 		return NULL;
 	}
 
-	ds = kzalloc(sizeof(*ds), GFP_NOWAIT);
+	ds = kzalloc_obj(*ds, GFP_NOWAIT);
 	if (!ds)
 		return NULL;
 
@@ -537,19 +536,14 @@ static struct dma_async_tx_descriptor *k3_dma_prep_slave_sg(
 	size_t len, avail, total = 0;
 	struct scatterlist *sg;
 	dma_addr_t addr, src = 0, dst = 0;
-	int num = sglen, i;
+	int num, i;
 
 	if (sgl == NULL)
 		return NULL;
 
 	c->cyclic = 0;
 
-	for_each_sg(sgl, sg, sglen, i) {
-		avail = sg_dma_len(sg);
-		if (avail > DMA_MAX_SIZE)
-			num += DIV_ROUND_UP(avail, DMA_MAX_SIZE) - 1;
-	}
-
+	num = sg_nents_for_dma(sgl, sglen, DMA_MAX_SIZE);
 	ds = k3_dma_alloc_desc_resource(num, chan);
 	if (!ds)
 		return NULL;
@@ -839,7 +833,6 @@ static int k3_dma_probe(struct platform_device *op)
 {
 	const struct k3dma_soc_data *soc_data;
 	struct k3_dma_dev *d;
-	const struct of_device_id *of_id;
 	int i, ret, irq = 0;
 
 	d = devm_kzalloc(&op->dev, sizeof(*d), GFP_KERNEL);
@@ -854,19 +847,16 @@ static int k3_dma_probe(struct platform_device *op)
 	if (IS_ERR(d->base))
 		return PTR_ERR(d->base);
 
-	of_id = of_match_device(k3_pdma_dt_ids, &op->dev);
-	if (of_id) {
-		of_property_read_u32((&op->dev)->of_node,
-				"dma-channels", &d->dma_channels);
-		of_property_read_u32((&op->dev)->of_node,
-				"dma-requests", &d->dma_requests);
-		ret = of_property_read_u32((&op->dev)->of_node,
-				"dma-channel-mask", &d->dma_channel_mask);
-		if (ret) {
-			dev_warn(&op->dev,
-				 "dma-channel-mask doesn't exist, considering all as available.\n");
-			d->dma_channel_mask = (u32)~0UL;
-		}
+	of_property_read_u32((&op->dev)->of_node,
+			"dma-channels", &d->dma_channels);
+	of_property_read_u32((&op->dev)->of_node,
+			"dma-requests", &d->dma_requests);
+	ret = of_property_read_u32((&op->dev)->of_node,
+			"dma-channel-mask", &d->dma_channel_mask);
+	if (ret) {
+		dev_warn(&op->dev,
+			 "dma-channel-mask doesn't exist, considering all as available.\n");
+		d->dma_channel_mask = (u32)~0UL;
 	}
 
 	if (!(soc_data->flags & K3_FLAG_NOCLK)) {
@@ -974,7 +964,7 @@ dma_async_register_fail:
 	return ret;
 }
 
-static int k3_dma_remove(struct platform_device *op)
+static void k3_dma_remove(struct platform_device *op)
 {
 	struct k3_dma_chan *c, *cn;
 	struct k3_dma_dev *d = platform_get_drvdata(op);
@@ -990,7 +980,6 @@ static int k3_dma_remove(struct platform_device *op)
 	}
 	tasklet_kill(&d->task);
 	clk_disable_unprepare(d->clk);
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -1040,5 +1029,4 @@ static struct platform_driver k3_pdma_driver = {
 module_platform_driver(k3_pdma_driver);
 
 MODULE_DESCRIPTION("HiSilicon k3 DMA Driver");
-MODULE_ALIAS("platform:k3dma");
 MODULE_LICENSE("GPL v2");

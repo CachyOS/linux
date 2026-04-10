@@ -57,8 +57,8 @@ is larger than the driver minor, the DRM_IOCTL_SET_VERSION call will
 return an error. Otherwise the driver's set_version() method will be
 called with the requested version.
 
-Name, Description and Date
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+Name and Description
+~~~~~~~~~~~~~~~~~~~~
 
 char \*name; char \*desc; char \*date;
 The driver name is printed to the kernel log at initialization time,
@@ -69,29 +69,11 @@ The driver description is a purely informative string passed to
 userspace through the DRM_IOCTL_VERSION ioctl and otherwise unused by
 the kernel.
 
-The driver date, formatted as YYYYMMDD, is meant to identify the date of
-the latest modification to the driver. However, as most drivers fail to
-update it, its value is mostly useless. The DRM core prints it to the
-kernel log at initialization time and passes it to userspace through the
-DRM_IOCTL_VERSION ioctl.
-
 Module Initialization
 ---------------------
 
 .. kernel-doc:: include/drm/drm_module.h
    :doc: overview
-
-Managing Ownership of the Framebuffer Aperture
-----------------------------------------------
-
-.. kernel-doc:: drivers/gpu/drm/drm_aperture.c
-   :doc: overview
-
-.. kernel-doc:: include/drm/drm_aperture.h
-   :internal:
-
-.. kernel-doc:: drivers/gpu/drm/drm_aperture.c
-   :export:
 
 Device Instance and Driver Handling
 -----------------------------------
@@ -153,18 +135,6 @@ Managed Resources
 .. kernel-doc:: include/drm/drm_managed.h
    :internal:
 
-Bus-specific Device Registration and PCI Support
-------------------------------------------------
-
-A number of functions are provided to help with device registration. The
-functions deal with PCI and platform devices respectively and are only
-provided for historical reasons. These are all deprecated and shouldn't
-be used in new drivers. Besides that there's a few helpers for pci
-drivers.
-
-.. kernel-doc:: drivers/gpu/drm/drm_pci.c
-   :export:
-
 Open/Close, File Operations and IOCTLs
 ======================================
 
@@ -206,6 +176,45 @@ Utilities
 .. kernel-doc:: include/drm/drm_util.h
    :internal:
 
+
+Unit testing
+============
+
+KUnit
+-----
+
+KUnit (Kernel unit testing framework) provides a common framework for unit tests
+within the Linux kernel.
+
+This section covers the specifics for the DRM subsystem. For general information
+about KUnit, please refer to Documentation/dev-tools/kunit/start.rst.
+
+How to run the tests?
+~~~~~~~~~~~~~~~~~~~~~
+
+In order to facilitate running the test suite, a configuration file is present
+in ``drivers/gpu/drm/tests/.kunitconfig``. It can be used by ``kunit.py`` as
+follows:
+
+.. code-block:: bash
+
+	$ ./tools/testing/kunit/kunit.py run --kunitconfig=drivers/gpu/drm/tests \
+		--kconfig_add CONFIG_VIRTIO_UML=y \
+		--kconfig_add CONFIG_UML_PCI_OVER_VIRTIO=y
+
+.. note::
+	The configuration included in ``.kunitconfig`` should be as generic as
+	possible.
+	``CONFIG_VIRTIO_UML`` and ``CONFIG_UML_PCI_OVER_VIRTIO`` are not
+	included in it because they are only required for User Mode Linux.
+
+KUnit Coverage Rules
+~~~~~~~~~~~~~~~~~~~~
+
+KUnit support is gradually added to the DRM framework and helpers. There's no
+general requirement for the framework and helpers to have KUnit tests at the
+moment. However, patches that are affecting a function or helper already
+covered by KUnit tests must provide tests if the change calls for one.
 
 Legacy Support Code
 ===================

@@ -1,7 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Routines common to all CFI-type probes.
  * (C) 2001-2003 Red Hat, Inc.
- * GPL'd
  */
 
 #include <linux/kernel.h>
@@ -134,7 +134,7 @@ static struct cfi_private *genprobe_ident_chips(struct map_info *map, struct chi
 	 * our caller, and copy the appropriate data into them.
 	 */
 
-	retcfi = kmalloc(struct_size(retcfi, chips, cfi.numchips), GFP_KERNEL);
+	retcfi = kmalloc_flex(*retcfi, chips, cfi.numchips);
 
 	if (!retcfi) {
 		kfree(cfi.cfiq);

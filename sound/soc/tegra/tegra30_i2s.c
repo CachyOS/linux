@@ -19,7 +19,6 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -36,7 +35,7 @@
 
 #define DRV_NAME "tegra30-i2s"
 
-static __maybe_unused int tegra30_i2s_runtime_suspend(struct device *dev)
+static int tegra30_i2s_runtime_suspend(struct device *dev)
 {
 	struct tegra30_i2s *i2s = dev_get_drvdata(dev);
 
@@ -47,7 +46,7 @@ static __maybe_unused int tegra30_i2s_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static __maybe_unused int tegra30_i2s_runtime_resume(struct device *dev)
+static int tegra30_i2s_runtime_resume(struct device *dev)
 {
 	struct tegra30_i2s *i2s = dev_get_drvdata(dev);
 	int ret;
@@ -87,11 +86,11 @@ static int tegra30_i2s_set_fmt(struct snd_soc_dai *dai,
 	}
 
 	mask |= TEGRA30_I2S_CTRL_MASTER_ENABLE;
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBS_CFS:
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_BP_FP:
 		val |= TEGRA30_I2S_CTRL_MASTER_ENABLE;
 		break;
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_BC_FC:
 		break;
 	default:
 		return -EINVAL;
@@ -297,13 +296,14 @@ static int tegra30_i2s_probe(struct snd_soc_dai *dai)
 {
 	struct tegra30_i2s *i2s = snd_soc_dai_get_drvdata(dai);
 
-	dai->capture_dma_data = &i2s->capture_dma_data;
-	dai->playback_dma_data = &i2s->playback_dma_data;
+	snd_soc_dai_init_dma_data(dai,	&i2s->playback_dma_data,
+					&i2s->capture_dma_data);
 
 	return 0;
 }
 
 static const struct snd_soc_dai_ops tegra30_i2s_dai_ops = {
+	.probe		= tegra30_i2s_probe,
 	.set_fmt	= tegra30_i2s_set_fmt,
 	.hw_params	= tegra30_i2s_hw_params,
 	.trigger	= tegra30_i2s_trigger,
@@ -311,7 +311,6 @@ static const struct snd_soc_dai_ops tegra30_i2s_dai_ops = {
 };
 
 static const struct snd_soc_dai_driver tegra30_i2s_dai_template = {
-	.probe = tegra30_i2s_probe,
 	.playback = {
 		.stream_name = "Playback",
 		.channels_min = 2,
@@ -331,7 +330,8 @@ static const struct snd_soc_dai_driver tegra30_i2s_dai_template = {
 };
 
 static const struct snd_soc_component_driver tegra30_i2s_component = {
-	.name		= DRV_NAME,
+	.name			= DRV_NAME,
+	.legacy_dai_naming	= 1,
 };
 
 static bool tegra30_i2s_wr_rd_reg(struct device *dev, unsigned int reg)
@@ -530,7 +530,7 @@ err:
 	return ret;
 }
 
-static int tegra30_i2s_platform_remove(struct platform_device *pdev)
+static void tegra30_i2s_platform_remove(struct platform_device *pdev)
 {
 	struct tegra30_i2s *i2s = dev_get_drvdata(&pdev->dev);
 
@@ -544,22 +544,19 @@ static int tegra30_i2s_platform_remove(struct platform_device *pdev)
 	tegra30_ahub_free_tx_fifo(i2s->playback_fifo_cif);
 
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static const struct dev_pm_ops tegra30_i2s_pm_ops = {
-	SET_RUNTIME_PM_OPS(tegra30_i2s_runtime_suspend,
-			   tegra30_i2s_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
+	RUNTIME_PM_OPS(tegra30_i2s_runtime_suspend,
+		       tegra30_i2s_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 };
 
 static struct platform_driver tegra30_i2s_driver = {
 	.driver = {
 		.name = DRV_NAME,
 		.of_match_table = tegra30_i2s_of_match,
-		.pm = &tegra30_i2s_pm_ops,
+		.pm = pm_ptr(&tegra30_i2s_pm_ops),
 	},
 	.probe = tegra30_i2s_platform_probe,
 	.remove = tegra30_i2s_platform_remove,

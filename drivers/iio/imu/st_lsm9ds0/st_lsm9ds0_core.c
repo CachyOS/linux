@@ -7,68 +7,16 @@
  * Author: Andy Shevchenko <andriy.shevchenko@linux.intel.com>
  */
 
-#include <linux/device.h>
+#include <linux/array_size.h>
+#include <linux/dev_printk.h>
 #include <linux/err.h>
 #include <linux/module.h>
-#include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 
 #include <linux/iio/common/st_sensors.h>
 #include <linux/iio/iio.h>
 
 #include "st_lsm9ds0.h"
-
-static int st_lsm9ds0_power_enable(struct device *dev, struct st_lsm9ds0 *lsm9ds0)
-{
-	int ret;
-
-	/* Regulators not mandatory, but if requested we should enable them. */
-	lsm9ds0->vdd = devm_regulator_get(dev, "vdd");
-	if (IS_ERR(lsm9ds0->vdd))
-		return dev_err_probe(dev, PTR_ERR(lsm9ds0->vdd),
-				     "unable to get Vdd supply\n");
-
-	ret = regulator_enable(lsm9ds0->vdd);
-	if (ret) {
-		dev_warn(dev, "Failed to enable specified Vdd supply\n");
-		return ret;
-	}
-
-	lsm9ds0->vdd_io = devm_regulator_get(dev, "vddio");
-	if (IS_ERR(lsm9ds0->vdd_io)) {
-		regulator_disable(lsm9ds0->vdd);
-		return dev_err_probe(dev, PTR_ERR(lsm9ds0->vdd_io),
-				     "unable to get Vdd_IO supply\n");
-	}
-	ret = regulator_enable(lsm9ds0->vdd_io);
-	if (ret) {
-		dev_warn(dev, "Failed to enable specified Vdd_IO supply\n");
-		regulator_disable(lsm9ds0->vdd);
-		return ret;
-	}
-
-	return 0;
-}
-
-static void st_lsm9ds0_power_disable(void *data)
-{
-	struct st_lsm9ds0 *lsm9ds0 = data;
-
-	regulator_disable(lsm9ds0->vdd_io);
-	regulator_disable(lsm9ds0->vdd);
-}
-
-static int devm_st_lsm9ds0_power_enable(struct st_lsm9ds0 *lsm9ds0)
-{
-	struct device *dev = lsm9ds0->dev;
-	int ret;
-
-	ret = st_lsm9ds0_power_enable(dev, lsm9ds0);
-	if (ret)
-		return ret;
-
-	return devm_add_action_or_reset(dev, st_lsm9ds0_power_disable, lsm9ds0);
-}
 
 static int st_lsm9ds0_probe_accel(struct st_lsm9ds0 *lsm9ds0, struct regmap *regmap)
 {
@@ -77,10 +25,9 @@ static int st_lsm9ds0_probe_accel(struct st_lsm9ds0 *lsm9ds0, struct regmap *reg
 	struct st_sensor_data *data;
 
 	settings = st_accel_get_settings(lsm9ds0->name);
-	if (!settings) {
-		dev_err(dev, "device name %s not recognized.\n", lsm9ds0->name);
-		return -ENODEV;
-	}
+	if (!settings)
+		return dev_err_probe(dev, -ENODEV, "device name %s not recognized.\n",
+				     lsm9ds0->name);
 
 	lsm9ds0->accel = devm_iio_device_alloc(dev, sizeof(*data));
 	if (!lsm9ds0->accel)
@@ -92,8 +39,6 @@ static int st_lsm9ds0_probe_accel(struct st_lsm9ds0 *lsm9ds0, struct regmap *reg
 	data->sensor_settings = (struct st_sensor_settings *)settings;
 	data->irq = lsm9ds0->irq;
 	data->regmap = regmap;
-	data->vdd = lsm9ds0->vdd;
-	data->vdd_io = lsm9ds0->vdd_io;
 
 	return st_accel_common_probe(lsm9ds0->accel);
 }
@@ -105,10 +50,9 @@ static int st_lsm9ds0_probe_magn(struct st_lsm9ds0 *lsm9ds0, struct regmap *regm
 	struct st_sensor_data *data;
 
 	settings = st_magn_get_settings(lsm9ds0->name);
-	if (!settings) {
-		dev_err(dev, "device name %s not recognized.\n", lsm9ds0->name);
-		return -ENODEV;
-	}
+	if (!settings)
+		return dev_err_probe(dev, -ENODEV, "device name %s not recognized.\n",
+				     lsm9ds0->name);
 
 	lsm9ds0->magn = devm_iio_device_alloc(dev, sizeof(*data));
 	if (!lsm9ds0->magn)
@@ -120,19 +64,21 @@ static int st_lsm9ds0_probe_magn(struct st_lsm9ds0 *lsm9ds0, struct regmap *regm
 	data->sensor_settings = (struct st_sensor_settings *)settings;
 	data->irq = lsm9ds0->irq;
 	data->regmap = regmap;
-	data->vdd = lsm9ds0->vdd;
-	data->vdd_io = lsm9ds0->vdd_io;
 
 	return st_magn_common_probe(lsm9ds0->magn);
 }
 
 int st_lsm9ds0_probe(struct st_lsm9ds0 *lsm9ds0, struct regmap *regmap)
 {
+	struct device *dev = lsm9ds0->dev;
+	static const char * const regulator_names[] = { "vdd", "vddio" };
 	int ret;
 
-	ret = devm_st_lsm9ds0_power_enable(lsm9ds0);
+	/* Regulators not mandatory, but if requested we should enable them. */
+	ret = devm_regulator_bulk_get_enable(dev, ARRAY_SIZE(regulator_names),
+					     regulator_names);
 	if (ret)
-		return ret;
+		return dev_err_probe(dev, ret, "unable to enable Vdd supply\n");
 
 	/* Setup accelerometer device */
 	ret = st_lsm9ds0_probe_accel(lsm9ds0, regmap);
@@ -142,9 +88,9 @@ int st_lsm9ds0_probe(struct st_lsm9ds0 *lsm9ds0, struct regmap *regmap)
 	/* Setup magnetometer device */
 	return st_lsm9ds0_probe_magn(lsm9ds0, regmap);
 }
-EXPORT_SYMBOL_NS_GPL(st_lsm9ds0_probe, IIO_ST_SENSORS);
+EXPORT_SYMBOL_NS_GPL(st_lsm9ds0_probe, "IIO_ST_SENSORS");
 
 MODULE_AUTHOR("Andy Shevchenko <andriy.shevchenko@linux.intel.com>");
 MODULE_DESCRIPTION("STMicroelectronics LSM9DS0 IMU core driver");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS(IIO_ST_SENSORS);
+MODULE_IMPORT_NS("IIO_ST_SENSORS");

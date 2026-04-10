@@ -36,6 +36,7 @@
 
 #define	EDOTDOT		66	/* RFS specific error */
 #define	EBADMSG		67	/* Not a data message */
+#define	EFSBADCRC	EBADMSG	/* Bad CRC detected */
 #define	EUSERS		68	/* Too many users */
 #define	EDQUOT		69	/* Quota exceeded */
 #define	ESTALE		70	/* Stale file handle */
@@ -62,6 +63,7 @@
 #define	ERESTART	175	/* Interrupted system call should be restarted */
 #define	ESTRPIPE	176	/* Streams pipe error */
 #define	EUCLEAN		177	/* Structure needs cleaning */
+#define	EFSCORRUPTED	EUCLEAN	/* Filesystem is corrupted */
 #define	ENOTNAM		178	/* Not a XENIX named type file */
 #define	ENAVAIL		179	/* No XENIX semaphores available */
 #define	EISNAM		180	/* Is a named type file */
@@ -75,7 +77,6 @@
 
 /* We now return you to your regularly scheduled HPUX. */
 
-#define ENOSYM		215	/* symbol does not exist in executable */
 #define	ENOTSOCK	216	/* Socket operation on non-socket */
 #define	EDESTADDRREQ	217	/* Destination address required */
 #define	EMSGSIZE	218	/* Message too long */
@@ -101,7 +102,6 @@
 #define	ETIMEDOUT	238	/* Connection timed out */
 #define	ECONNREFUSED	239	/* Connection refused */
 #define	EREFUSED	ECONNREFUSED	/* for HP's NFS apparently */
-#define	EREMOTERELEASE	240	/* Remote peer released connection */
 #define	EHOSTDOWN	241	/* Host is down */
 #define	EHOSTUNREACH	242	/* No route to host */
 

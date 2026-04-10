@@ -450,7 +450,7 @@ static int vpif_probe(struct platform_device *pdev)
 	if (IS_ERR(vpif_base))
 		return PTR_ERR(vpif_base);
 
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = kzalloc_obj(*data);
 	if (!data)
 		return -ENOMEM;
 
@@ -465,10 +465,10 @@ static int vpif_probe(struct platform_device *pdev)
 	 * so their devices need to be registered manually here
 	 * for their legacy platform_drivers to work.
 	 */
-	endpoint = of_graph_get_next_endpoint(pdev->dev.of_node,
-					      endpoint);
+	endpoint = of_graph_get_endpoint_by_regs(pdev->dev.of_node, 0, -1);
 	if (!endpoint)
 		return 0;
+	of_node_put(endpoint);
 
 	/*
 	 * For DT platforms, manually create platform_devices for
@@ -479,10 +479,10 @@ static int vpif_probe(struct platform_device *pdev)
 		ret = irq;
 		goto err_put_rpm;
 	}
-	res_irq = (struct resource)DEFINE_RES_IRQ_NAMED(irq, of_node_full_name(pdev->dev.of_node));
+	res_irq = DEFINE_RES_IRQ_NAMED(irq, of_node_full_name(pdev->dev.of_node));
 	res_irq.flags |= irq_get_trigger_type(irq);
 
-	pdev_capture = kzalloc(sizeof(*pdev_capture), GFP_KERNEL);
+	pdev_capture = kzalloc_obj(*pdev_capture);
 	if (!pdev_capture) {
 		ret = -ENOMEM;
 		goto err_put_rpm;
@@ -501,10 +501,10 @@ static int vpif_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_put_pdev_capture;
 
-	pdev_display = kzalloc(sizeof(*pdev_display), GFP_KERNEL);
+	pdev_display = kzalloc_obj(*pdev_display);
 	if (!pdev_display) {
 		ret = -ENOMEM;
-		goto err_put_pdev_capture;
+		goto err_del_pdev_capture;
 	}
 
 	pdev_display->name = "vpif_display";
@@ -527,6 +527,8 @@ static int vpif_probe(struct platform_device *pdev)
 
 err_put_pdev_display:
 	platform_device_put(pdev_display);
+err_del_pdev_capture:
+	platform_device_del(pdev_capture);
 err_put_pdev_capture:
 	platform_device_put(pdev_capture);
 err_put_rpm:
@@ -537,7 +539,7 @@ err_put_rpm:
 	return ret;
 }
 
-static int vpif_remove(struct platform_device *pdev)
+static void vpif_remove(struct platform_device *pdev)
 {
 	struct vpif_data *data = platform_get_drvdata(pdev);
 
@@ -550,8 +552,6 @@ static int vpif_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 
 	kfree(data);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM

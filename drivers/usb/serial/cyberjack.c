@@ -67,7 +67,6 @@ MODULE_DEVICE_TABLE(usb, id_table);
 
 static struct usb_serial_driver cyberjack_device = {
 	.driver = {
-		.owner =	THIS_MODULE,
 		.name =		"cyberjack",
 	},
 	.description =		"Reiner SCT Cyberjack USB card reader",
@@ -102,7 +101,7 @@ static int cyberjack_port_probe(struct usb_serial_port *port)
 	struct cyberjack_private *priv;
 	int result;
 
-	priv = kmalloc(sizeof(struct cyberjack_private), GFP_KERNEL);
+	priv = kmalloc_obj(struct cyberjack_private);
 	if (!priv)
 		return -ENOMEM;
 

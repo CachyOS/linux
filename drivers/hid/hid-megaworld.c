@@ -57,7 +57,7 @@ static int mwctrl_init(struct hid_device *hid)
 			return -ENODEV;
 	}
 
-	mwctrl = kzalloc(sizeof(struct mwctrl_device), GFP_KERNEL);
+	mwctrl = kzalloc_obj(struct mwctrl_device);
 	if (!mwctrl)
 		return -ENOMEM;
 
@@ -122,4 +122,5 @@ static struct hid_driver mwctrl_driver = {
 };
 module_hid_driver(mwctrl_driver);
 
+MODULE_DESCRIPTION("Vibration support for Mega World controllers");
 MODULE_LICENSE("GPL");

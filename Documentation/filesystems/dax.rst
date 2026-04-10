@@ -206,8 +206,6 @@ stall the CPU for an extended period, you should also not attempt to
 implement direct_access.
 
 These block devices may be used for inspiration:
-- brd: RAM backed block device driver
-- dcssblk: s390 dcss block device driver
 - pmem: NVDIMM persistent memory driver
 
 
@@ -291,7 +289,7 @@ The DAX code does not work correctly on architectures which have virtually
 mapped caches such as ARM, MIPS and SPARC.
 
 Calling :c:func:`get_user_pages()` on a range of user memory that has been
-mmaped from a `DAX` file will fail when there are no 'struct page' to describe
+mmapped from a `DAX` file will fail when there are no 'struct page' to describe
 those pages.  This problem has been addressed in some device drivers
 by adding optional struct page support for pages under the control of
 the driver (see `CONFIG_NVDIMM_PFN` in ``drivers/nvdimm`` for an example of

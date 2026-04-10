@@ -11,7 +11,6 @@
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
@@ -19,6 +18,7 @@
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_file.h>
 #include <drm/drm_gem.h>
+#include <drm/drm_print.h>
 
 #include <xen/platform_pci.h>
 #include <xen/xen.h>
@@ -171,7 +171,7 @@ int xen_drm_front_dbuf_create(struct xen_drm_front_info *front_info,
 	if (unlikely(!evtchnl))
 		return -EIO;
 
-	dbuf = kzalloc(sizeof(*dbuf), GFP_KERNEL);
+	dbuf = kzalloc_obj(*dbuf);
 	if (!dbuf)
 		return -ENOMEM;
 
@@ -474,15 +474,11 @@ DEFINE_DRM_GEM_FOPS(xen_drm_dev_fops);
 static const struct drm_driver xen_drm_driver = {
 	.driver_features           = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.release                   = xen_drm_drv_release,
-	.prime_handle_to_fd        = drm_gem_prime_handle_to_fd,
-	.prime_fd_to_handle        = drm_gem_prime_fd_to_handle,
 	.gem_prime_import_sg_table = xen_drm_front_gem_import_sg_table,
-	.gem_prime_mmap            = drm_gem_prime_mmap,
 	.dumb_create               = xen_drm_drv_dumb_create,
 	.fops                      = &xen_drm_dev_fops,
 	.name                      = "xendrm-du",
 	.desc                      = "Xen PV DRM Display Unit",
-	.date                      = "20180221",
 	.major                     = 1,
 	.minor                     = 0,
 
@@ -500,7 +496,7 @@ static int xen_drm_drv_init(struct xen_drm_front_info *front_info)
 
 	DRM_INFO("Creating %s\n", xen_drm_driver.desc);
 
-	drm_info = kzalloc(sizeof(*drm_info), GFP_KERNEL);
+	drm_info = kzalloc_obj(*drm_info);
 	if (!drm_info) {
 		ret = -ENOMEM;
 		goto fail;
@@ -528,11 +524,6 @@ static int xen_drm_drv_init(struct xen_drm_front_info *front_info)
 	ret = drm_dev_register(drm_dev, 0);
 	if (ret)
 		goto fail_register;
-
-	DRM_INFO("Initialized %s %d.%d.%d %s on minor %d\n",
-		 xen_drm_driver.name, xen_drm_driver.major,
-		 xen_drm_driver.minor, xen_drm_driver.patchlevel,
-		 xen_drm_driver.date, drm_dev->primary->index);
 
 	return 0;
 
@@ -717,7 +708,7 @@ static int xen_drv_probe(struct xenbus_device *xb_dev,
 	return xenbus_switch_state(xb_dev, XenbusStateInitialising);
 }
 
-static int xen_drv_remove(struct xenbus_device *dev)
+static void xen_drv_remove(struct xenbus_device *dev)
 {
 	struct xen_drm_front_info *front_info = dev_get_drvdata(&dev->dev);
 	int to = 100;
@@ -751,7 +742,6 @@ static int xen_drv_remove(struct xenbus_device *dev)
 
 	xen_drm_drv_fini(front_info);
 	xenbus_frontend_closed(dev);
-	return 0;
 }
 
 static const struct xenbus_device_id xen_driver_ids[] = {

@@ -8,6 +8,7 @@
 #ifndef _CRYPTO_AEAD_H
 #define _CRYPTO_AEAD_H
 
+#include <linux/atomic.h>
 #include <linux/container_of.h>
 #include <linux/crypto.h>
 #include <linux/slab.h>
@@ -27,15 +28,12 @@
  *
  * For example: authenc(hmac(sha256), cbc(aes))
  *
- * The example code provided for the symmetric key cipher operation
- * applies here as well. Naturally all *skcipher* symbols must be exchanged
- * the *aead* pendants discussed in the following. In addition, for the AEAD
- * operation, the aead_request_set_ad function must be used to set the
- * pointer to the associated data memory location before performing the
- * encryption or decryption operation. In case of an encryption, the associated
- * data memory is filled during the encryption operation. For decryption, the
- * associated data memory must contain data that is used to verify the integrity
- * of the decrypted data. Another deviation from the asynchronous block cipher
+ * The example code provided for the symmetric key cipher operation applies
+ * here as well. Naturally all *skcipher* symbols must be exchanged the *aead*
+ * pendants discussed in the following. In addition, for the AEAD operation,
+ * the aead_request_set_ad function must be used to set the pointer to the
+ * associated data memory location before performing the encryption or
+ * decryption operation. Another deviation from the asynchronous block cipher
  * operation is that the caller should explicitly check for -EBADMSG of the
  * crypto_aead_decrypt. That error indicates an authentication error, i.e.
  * a breach in the integrity of the message. In essence, that -EBADMSG error
@@ -49,7 +47,10 @@
  *
  * The destination scatterlist has the same layout, except that the plaintext
  * (resp. ciphertext) will grow (resp. shrink) by the authentication tag size
- * during encryption (resp. decryption).
+ * during encryption (resp. decryption). The authentication tag is generated
+ * during the encryption operation and appended to the ciphertext. During
+ * decryption, the authentication tag is consumed along with the ciphertext and
+ * used to verify the integrity of the plaintext and the associated data.
  *
  * In-place encryption/decryption is enabled by using the same scatterlist
  * pointer for both the source and destination.
@@ -158,6 +159,21 @@ struct crypto_aead {
 	struct crypto_tfm base;
 };
 
+struct crypto_sync_aead {
+	struct crypto_aead base;
+};
+
+#define MAX_SYNC_AEAD_REQSIZE		384
+
+#define SYNC_AEAD_REQUEST_ON_STACK(name, _tfm)		\
+	char __##name##_desc[sizeof(struct aead_request) +	\
+			     MAX_SYNC_AEAD_REQSIZE		\
+			    ] CRYPTO_MINALIGN_ATTR;		\
+	struct aead_request *name =				\
+		(((struct aead_request *)__##name##_desc)->base.tfm = \
+			crypto_sync_aead_tfm((_tfm)),		\
+		 (void *)__##name##_desc)
+
 static inline struct crypto_aead *__crypto_aead_cast(struct crypto_tfm *tfm)
 {
 	return container_of(tfm, struct crypto_aead, base);
@@ -179,9 +195,16 @@ static inline struct crypto_aead *__crypto_aead_cast(struct crypto_tfm *tfm)
  */
 struct crypto_aead *crypto_alloc_aead(const char *alg_name, u32 type, u32 mask);
 
+struct crypto_sync_aead *crypto_alloc_sync_aead(const char *alg_name, u32 type, u32 mask);
+
 static inline struct crypto_tfm *crypto_aead_tfm(struct crypto_aead *tfm)
 {
 	return &tfm->base;
+}
+
+static inline struct crypto_tfm *crypto_sync_aead_tfm(struct crypto_sync_aead *tfm)
+{
+	return crypto_aead_tfm(&tfm->base);
 }
 
 /**
@@ -194,6 +217,23 @@ static inline void crypto_free_aead(struct crypto_aead *tfm)
 {
 	crypto_destroy_tfm(tfm, crypto_aead_tfm(tfm));
 }
+
+static inline void crypto_free_sync_aead(struct crypto_sync_aead *tfm)
+{
+	crypto_free_aead(&tfm->base);
+}
+
+/**
+ * crypto_has_aead() - Search for the availability of an aead.
+ * @alg_name: is the cra_name / name or cra_driver_name / driver name of the
+ *	      aead
+ * @type: specifies the type of the aead
+ * @mask: specifies the mask for the aead
+ *
+ * Return: true when the aead is known to the kernel crypto API; false
+ *	   otherwise
+ */
+int crypto_has_aead(const char *alg_name, u32 type, u32 mask);
 
 static inline const char *crypto_aead_driver_name(struct crypto_aead *tfm)
 {
@@ -225,6 +265,11 @@ static inline unsigned int crypto_aead_ivsize(struct crypto_aead *tfm)
 	return crypto_aead_alg_ivsize(crypto_aead_alg(tfm));
 }
 
+static inline unsigned int crypto_sync_aead_ivsize(struct crypto_sync_aead *tfm)
+{
+	return crypto_aead_ivsize(&tfm->base);
+}
+
 /**
  * crypto_aead_authsize() - obtain maximum authentication data size
  * @tfm: cipher handle
@@ -242,6 +287,11 @@ static inline unsigned int crypto_aead_authsize(struct crypto_aead *tfm)
 	return tfm->authsize;
 }
 
+static inline unsigned int crypto_sync_aead_authsize(struct crypto_sync_aead *tfm)
+{
+	return crypto_aead_authsize(&tfm->base);
+}
+
 static inline unsigned int crypto_aead_alg_maxauthsize(struct aead_alg *alg)
 {
 	return alg->maxauthsize;
@@ -250,6 +300,11 @@ static inline unsigned int crypto_aead_alg_maxauthsize(struct aead_alg *alg)
 static inline unsigned int crypto_aead_maxauthsize(struct crypto_aead *aead)
 {
 	return crypto_aead_alg_maxauthsize(crypto_aead_alg(aead));
+}
+
+static inline unsigned int crypto_sync_aead_maxauthsize(struct crypto_sync_aead *tfm)
+{
+	return crypto_aead_maxauthsize(&tfm->base);
 }
 
 /**
@@ -265,6 +320,11 @@ static inline unsigned int crypto_aead_maxauthsize(struct crypto_aead *aead)
 static inline unsigned int crypto_aead_blocksize(struct crypto_aead *tfm)
 {
 	return crypto_tfm_alg_blocksize(crypto_aead_tfm(tfm));
+}
+
+static inline unsigned int crypto_sync_aead_blocksize(struct crypto_sync_aead *tfm)
+{
+	return crypto_aead_blocksize(&tfm->base);
 }
 
 static inline unsigned int crypto_aead_alignmask(struct crypto_aead *tfm)
@@ -287,6 +347,21 @@ static inline void crypto_aead_clear_flags(struct crypto_aead *tfm, u32 flags)
 	crypto_tfm_clear_flags(crypto_aead_tfm(tfm), flags);
 }
 
+static inline u32 crypto_sync_aead_get_flags(struct crypto_sync_aead *tfm)
+{
+	return crypto_aead_get_flags(&tfm->base);
+}
+
+static inline void crypto_sync_aead_set_flags(struct crypto_sync_aead *tfm, u32 flags)
+{
+	crypto_aead_set_flags(&tfm->base, flags);
+}
+
+static inline void crypto_sync_aead_clear_flags(struct crypto_sync_aead *tfm, u32 flags)
+{
+	crypto_aead_clear_flags(&tfm->base, flags);
+}
+
 /**
  * crypto_aead_setkey() - set key for cipher
  * @tfm: cipher handle
@@ -306,6 +381,12 @@ static inline void crypto_aead_clear_flags(struct crypto_aead *tfm, u32 flags)
 int crypto_aead_setkey(struct crypto_aead *tfm,
 		       const u8 *key, unsigned int keylen);
 
+static inline int crypto_sync_aead_setkey(struct crypto_sync_aead *tfm,
+					 const u8 *key, unsigned int keylen)
+{
+	return crypto_aead_setkey(&tfm->base, key, keylen);
+}
+
 /**
  * crypto_aead_setauthsize() - set authentication data size
  * @tfm: cipher handle
@@ -318,9 +399,22 @@ int crypto_aead_setkey(struct crypto_aead *tfm,
  */
 int crypto_aead_setauthsize(struct crypto_aead *tfm, unsigned int authsize);
 
+static inline int crypto_sync_aead_setauthsize(struct crypto_sync_aead *tfm,
+					       unsigned int authsize)
+{
+	return crypto_aead_setauthsize(&tfm->base, authsize);
+}
+
 static inline struct crypto_aead *crypto_aead_reqtfm(struct aead_request *req)
 {
 	return __crypto_aead_cast(req->base.tfm);
+}
+
+static inline struct crypto_sync_aead *crypto_sync_aead_reqtfm(struct aead_request *req)
+{
+	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
+
+	return container_of(tfm, struct crypto_sync_aead, base);
 }
 
 /**
@@ -402,6 +496,12 @@ static inline void aead_request_set_tfm(struct aead_request *req,
 					struct crypto_aead *tfm)
 {
 	req->base.tfm = crypto_aead_tfm(tfm);
+}
+
+static inline void aead_request_set_sync_tfm(struct aead_request *req,
+					     struct crypto_sync_aead *tfm)
+{
+	aead_request_set_tfm(req, &tfm->base);
 }
 
 /**

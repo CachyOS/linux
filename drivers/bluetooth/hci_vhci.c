@@ -9,8 +9,9 @@
  */
 
 #include <linux/module.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
+#include <linux/atomic.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -44,6 +45,7 @@ struct vhci_data {
 	bool wakeup;
 	__u16 msft_opcode;
 	bool aosp_capable;
+	atomic_t initialized;
 };
 
 static int vhci_open_dev(struct hci_dev *hdev)
@@ -74,9 +76,11 @@ static int vhci_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 	struct vhci_data *data = hci_get_drvdata(hdev);
 
 	memcpy(skb_push(skb, 1), &hci_skb_pkt_type(skb), 1);
+
 	skb_queue_tail(&data->readq, skb);
 
-	wake_up_interruptible(&data->read_wait);
+	if (atomic_read(&data->initialized))
+		wake_up_interruptible(&data->read_wait);
 	return 0;
 }
 
@@ -278,20 +282,133 @@ static int vhci_setup(struct hci_dev *hdev)
 	return 0;
 }
 
+static void vhci_coredump(struct hci_dev *hdev)
+{
+	/* No need to do anything */
+}
+
+static void vhci_coredump_hdr(struct hci_dev *hdev, struct sk_buff *skb)
+{
+	const char *buf;
+
+	buf = "Controller Name: vhci_ctrl\n";
+	skb_put_data(skb, buf, strlen(buf));
+
+	buf = "Firmware Version: vhci_fw\n";
+	skb_put_data(skb, buf, strlen(buf));
+
+	buf = "Driver: vhci_drv\n";
+	skb_put_data(skb, buf, strlen(buf));
+
+	buf = "Vendor: vhci\n";
+	skb_put_data(skb, buf, strlen(buf));
+}
+
+#define MAX_COREDUMP_LINE_LEN	40
+
+struct devcoredump_test_data {
+	enum devcoredump_state state;
+	unsigned int timeout;
+	char data[MAX_COREDUMP_LINE_LEN];
+};
+
+static inline void force_devcd_timeout(struct hci_dev *hdev,
+				       unsigned int timeout)
+{
+#ifdef CONFIG_DEV_COREDUMP
+	hdev->dump.timeout = secs_to_jiffies(timeout);
+#endif
+}
+
+static ssize_t force_devcd_write(struct file *file, const char __user *user_buf,
+				 size_t count, loff_t *ppos)
+{
+	struct vhci_data *data = file->private_data;
+	struct hci_dev *hdev = data->hdev;
+	struct sk_buff *skb = NULL;
+	struct devcoredump_test_data dump_data;
+	size_t data_size;
+	int ret;
+
+	if (count < offsetof(struct devcoredump_test_data, data) ||
+	    count > sizeof(dump_data))
+		return -EINVAL;
+
+	if (copy_from_user(&dump_data, user_buf, count))
+		return -EFAULT;
+
+	data_size = count - offsetof(struct devcoredump_test_data, data);
+	skb = alloc_skb(data_size, GFP_ATOMIC);
+	if (!skb)
+		return -ENOMEM;
+	skb_put_data(skb, &dump_data.data, data_size);
+
+	hci_devcd_register(hdev, vhci_coredump, vhci_coredump_hdr, NULL);
+
+	/* Force the devcoredump timeout */
+	if (dump_data.timeout)
+		force_devcd_timeout(hdev, dump_data.timeout);
+
+	ret = hci_devcd_init(hdev, skb->len);
+	if (ret) {
+		BT_ERR("Failed to generate devcoredump");
+		kfree_skb(skb);
+		return ret;
+	}
+
+	hci_devcd_append(hdev, skb);
+
+	switch (dump_data.state) {
+	case HCI_DEVCOREDUMP_DONE:
+		hci_devcd_complete(hdev);
+		break;
+	case HCI_DEVCOREDUMP_ABORT:
+		hci_devcd_abort(hdev);
+		break;
+	case HCI_DEVCOREDUMP_TIMEOUT:
+		/* Do nothing */
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return count;
+}
+
+static const struct file_operations force_devcoredump_fops = {
+	.open		= simple_open,
+	.write		= force_devcd_write,
+};
+
+static void vhci_debugfs_init(struct vhci_data *data)
+{
+	struct hci_dev *hdev = data->hdev;
+
+	debugfs_create_file("force_suspend", 0644, hdev->debugfs, data,
+			    &force_suspend_fops);
+
+	debugfs_create_file("force_wakeup", 0644, hdev->debugfs, data,
+			    &force_wakeup_fops);
+
+	if (IS_ENABLED(CONFIG_BT_MSFTEXT))
+		debugfs_create_file("msft_opcode", 0644, hdev->debugfs, data,
+				    &msft_opcode_fops);
+
+	if (IS_ENABLED(CONFIG_BT_AOSPEXT))
+		debugfs_create_file("aosp_capable", 0644, hdev->debugfs, data,
+				    &aosp_capable_fops);
+
+	debugfs_create_file("force_devcoredump", 0644, hdev->debugfs, data,
+			    &force_devcoredump_fops);
+}
+
 static int __vhci_create_device(struct vhci_data *data, __u8 opcode)
 {
 	struct hci_dev *hdev;
 	struct sk_buff *skb;
-	__u8 dev_type;
 
 	if (data->hdev)
 		return -EBADFD;
-
-	/* bits 0-1 are dev_type (Primary or AMP) */
-	dev_type = opcode & 0x03;
-
-	if (dev_type != HCI_PRIMARY && dev_type != HCI_AMP)
-		return -EINVAL;
 
 	/* bits 2-5 are reserved (must be zero) */
 	if (opcode & 0x3c)
@@ -310,7 +427,6 @@ static int __vhci_create_device(struct vhci_data *data, __u8 opcode)
 	data->hdev = hdev;
 
 	hdev->bus = HCI_VIRTUAL;
-	hdev->dev_type = dev_type;
 	hci_set_drvdata(hdev, data);
 
 	hdev->open  = vhci_open_dev;
@@ -321,17 +437,16 @@ static int __vhci_create_device(struct vhci_data *data, __u8 opcode)
 	hdev->get_codec_config_data = vhci_get_codec_config_data;
 	hdev->wakeup = vhci_wakeup;
 	hdev->setup = vhci_setup;
-	set_bit(HCI_QUIRK_NON_PERSISTENT_SETUP, &hdev->quirks);
+	hci_set_quirk(hdev, HCI_QUIRK_NON_PERSISTENT_SETUP);
+	hci_set_quirk(hdev, HCI_QUIRK_SYNC_FLOWCTL_SUPPORTED);
 
 	/* bit 6 is for external configuration */
 	if (opcode & 0x40)
-		set_bit(HCI_QUIRK_EXTERNAL_CONFIG, &hdev->quirks);
+		hci_set_quirk(hdev, HCI_QUIRK_EXTERNAL_CONFIG);
 
 	/* bit 7 is for raw device */
 	if (opcode & 0x80)
-		set_bit(HCI_QUIRK_RAW_DEVICE, &hdev->quirks);
-
-	set_bit(HCI_QUIRK_VALID_LE_STATES, &hdev->quirks);
+		hci_set_quirk(hdev, HCI_QUIRK_RAW_DEVICE);
 
 	if (hci_register_dev(hdev) < 0) {
 		BT_ERR("Can't register HCI device");
@@ -341,26 +456,16 @@ static int __vhci_create_device(struct vhci_data *data, __u8 opcode)
 		return -EBUSY;
 	}
 
-	debugfs_create_file("force_suspend", 0644, hdev->debugfs, data,
-			    &force_suspend_fops);
-
-	debugfs_create_file("force_wakeup", 0644, hdev->debugfs, data,
-			    &force_wakeup_fops);
-
-	if (IS_ENABLED(CONFIG_BT_MSFTEXT))
-		debugfs_create_file("msft_opcode", 0644, hdev->debugfs, data,
-				    &msft_opcode_fops);
-
-	if (IS_ENABLED(CONFIG_BT_AOSPEXT))
-		debugfs_create_file("aosp_capable", 0644, hdev->debugfs, data,
-				    &aosp_capable_fops);
+	if (!IS_ERR_OR_NULL(hdev->debugfs))
+		vhci_debugfs_init(data);
 
 	hci_skb_pkt_type(skb) = HCI_VENDOR_PKT;
 
 	skb_put_u8(skb, 0xff);
 	skb_put_u8(skb, opcode);
 	put_unaligned_le16(hdev->id, skb_put(skb, 2));
-	skb_queue_tail(&data->readq, skb);
+	skb_queue_head(&data->readq, skb);
+	atomic_inc(&data->initialized);
 
 	wake_up_interruptible(&data->read_wait);
 	return 0;
@@ -528,14 +633,14 @@ static void vhci_open_timeout(struct work_struct *work)
 	struct vhci_data *data = container_of(work, struct vhci_data,
 					      open_timeout.work);
 
-	vhci_create_device(data, amp ? HCI_AMP : HCI_PRIMARY);
+	vhci_create_device(data, 0x00);
 }
 
 static int vhci_open(struct inode *inode, struct file *file)
 {
 	struct vhci_data *data;
 
-	data = kzalloc(sizeof(struct vhci_data), GFP_KERNEL);
+	data = kzalloc_obj(*data);
 	if (!data)
 		return -ENOMEM;
 
@@ -549,9 +654,24 @@ static int vhci_open(struct inode *inode, struct file *file)
 	file->private_data = data;
 	nonseekable_open(inode, file);
 
-	schedule_delayed_work(&data->open_timeout, msecs_to_jiffies(1000));
+	schedule_delayed_work(&data->open_timeout, secs_to_jiffies(1));
 
 	return 0;
+}
+
+static void vhci_debugfs_remove(struct hci_dev *hdev)
+{
+	debugfs_lookup_and_remove("force_suspend", hdev->debugfs);
+
+	debugfs_lookup_and_remove("force_wakeup", hdev->debugfs);
+
+	if (IS_ENABLED(CONFIG_BT_MSFTEXT))
+		debugfs_lookup_and_remove("msft_opcode", hdev->debugfs);
+
+	if (IS_ENABLED(CONFIG_BT_AOSPEXT))
+		debugfs_lookup_and_remove("aosp_capable", hdev->debugfs);
+
+	debugfs_lookup_and_remove("force_devcoredump", hdev->debugfs);
 }
 
 static int vhci_release(struct inode *inode, struct file *file)
@@ -565,6 +685,8 @@ static int vhci_release(struct inode *inode, struct file *file)
 	hdev = data->hdev;
 
 	if (hdev) {
+		if (!IS_ERR_OR_NULL(hdev->debugfs))
+			vhci_debugfs_remove(hdev);
 		hci_unregister_dev(hdev);
 		hci_free_dev(hdev);
 	}
@@ -583,7 +705,6 @@ static const struct file_operations vhci_fops = {
 	.poll		= vhci_poll,
 	.open		= vhci_open,
 	.release	= vhci_release,
-	.llseek		= no_llseek,
 };
 
 static struct miscdevice vhci_miscdev = {

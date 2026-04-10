@@ -109,6 +109,7 @@ MODULE_PARM_DESC(dma2, "2nd dma # for opti9xx driver.");
 #endif /* OPTi93X */
 
 struct snd_opti9xx {
+	struct snd_card *card;
 	unsigned short hardware;
 	unsigned char password;
 	char name[7];
@@ -170,7 +171,7 @@ static int snd_opti9xx_init(struct snd_opti9xx *chip,
 	static const int opti9xx_mc_size[] = {7, 7, 10, 10, 2, 2, 2};
 
 	chip->hardware = hardware;
-	strcpy(chip->name, snd_opti9xx_names[hardware]);
+	strscpy(chip->name, snd_opti9xx_names[hardware]);
 
 	spin_lock_init(&chip->lock);
 
@@ -218,7 +219,7 @@ static int snd_opti9xx_init(struct snd_opti9xx *chip,
 #endif	/* OPTi93X */
 
 	default:
-		snd_printk(KERN_ERR "chip %d not supported\n", hardware);
+		dev_err(chip->card->dev, "chip %d not supported\n", hardware);
 		return -ENODEV;
 	}
 	return 0;
@@ -227,10 +228,9 @@ static int snd_opti9xx_init(struct snd_opti9xx *chip,
 static unsigned char snd_opti9xx_read(struct snd_opti9xx *chip,
 				      unsigned char reg)
 {
-	unsigned long flags;
 	unsigned char retval = 0xff;
 
-	spin_lock_irqsave(&chip->lock, flags);
+	guard(spinlock_irqsave)(&chip->lock);
 	outb(chip->password, chip->mc_base + chip->pwd_reg);
 
 	switch (chip->hardware) {
@@ -261,19 +261,16 @@ static unsigned char snd_opti9xx_read(struct snd_opti9xx *chip,
 #endif	/* OPTi93X */
 
 	default:
-		snd_printk(KERN_ERR "chip %d not supported\n", chip->hardware);
+		dev_err(chip->card->dev, "chip %d not supported\n", chip->hardware);
 	}
 
-	spin_unlock_irqrestore(&chip->lock, flags);
 	return retval;
 }
 
 static void snd_opti9xx_write(struct snd_opti9xx *chip, unsigned char reg,
 			      unsigned char value)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&chip->lock, flags);
+	guard(spinlock_irqsave)(&chip->lock);
 	outb(chip->password, chip->mc_base + chip->pwd_reg);
 
 	switch (chip->hardware) {
@@ -304,10 +301,8 @@ static void snd_opti9xx_write(struct snd_opti9xx *chip, unsigned char reg,
 #endif	/* OPTi93X */
 
 	default:
-		snd_printk(KERN_ERR "chip %d not supported\n", chip->hardware);
+		dev_err(chip->card->dev, "chip %d not supported\n", chip->hardware);
 	}
-
-	spin_unlock_irqrestore(&chip->lock, flags);
 }
 
 
@@ -400,7 +395,7 @@ static int snd_opti9xx_configure(struct snd_opti9xx *chip,
 #endif	/* OPTi93X */
 
 	default:
-		snd_printk(KERN_ERR "chip %d not supported\n", chip->hardware);
+		dev_err(chip->card->dev, "chip %d not supported\n", chip->hardware);
 		return -EINVAL;
 	}
 
@@ -423,7 +418,7 @@ static int snd_opti9xx_configure(struct snd_opti9xx *chip,
 		wss_base_bits = 0x02;
 		break;
 	default:
-		snd_printk(KERN_WARNING "WSS port 0x%lx not valid\n", port);
+		dev_warn(chip->card->dev, "WSS port 0x%lx not valid\n", port);
 		goto __skip_base;
 	}
 	snd_opti9xx_write_mask(chip, OPTi9XX_MC_REG(1), wss_base_bits << 4, 0x30);
@@ -448,7 +443,7 @@ __skip_base:
 		irq_bits = 0x04;
 		break;
 	default:
-		snd_printk(KERN_WARNING "WSS irq # %d not valid\n", irq);
+		dev_warn(chip->card->dev, "WSS irq # %d not valid\n", irq);
 		goto __skip_resources;
 	}
 
@@ -463,13 +458,13 @@ __skip_base:
 		dma_bits = 0x03;
 		break;
 	default:
-		snd_printk(KERN_WARNING "WSS dma1 # %d not valid\n", dma1);
+		dev_warn(chip->card->dev, "WSS dma1 # %d not valid\n", dma1);
 		goto __skip_resources;
 	}
 
 #if defined(CS4231) || defined(OPTi93X)
 	if (dma1 == dma2) {
-		snd_printk(KERN_ERR "don't want to share dmas\n");
+		dev_err(chip->card->dev, "don't want to share dmas\n");
 		return -EBUSY;
 	}
 
@@ -478,14 +473,14 @@ __skip_base:
 	case 1:
 		break;
 	default:
-		snd_printk(KERN_WARNING "WSS dma2 # %d not valid\n", dma2);
+		dev_warn(chip->card->dev, "WSS dma2 # %d not valid\n", dma2);
 		goto __skip_resources;
 	}
 	dma_bits |= 0x04;
 #endif	/* CS4231 || OPTi93X */
 
 #ifndef OPTi93X
-	 outb(irq_bits << 3 | dma_bits, chip->wss_base);
+	outb(irq_bits << 3 | dma_bits, chip->wss_base);
 #else /* OPTi93X */
 	snd_opti9xx_write(chip, OPTi9XX_MC_REG(3), (irq_bits << 3 | dma_bits));
 #endif /* OPTi93X */
@@ -509,8 +504,8 @@ __skip_resources:
 			mpu_port_bits = 0x00;
 			break;
 		default:
-			snd_printk(KERN_WARNING
-				   "MPU-401 port 0x%lx not valid\n", mpu_port);
+			dev_warn(chip->card->dev,
+				 "MPU-401 port 0x%lx not valid\n", mpu_port);
 			goto __skip_mpu;
 		}
 
@@ -528,8 +523,8 @@ __skip_resources:
 			mpu_irq_bits = 0x01;
 			break;
 		default:
-			snd_printk(KERN_WARNING "MPU-401 irq # %d not valid\n",
-				mpu_irq);
+			dev_warn(chip->card->dev, "MPU-401 irq # %d not valid\n",
+				 mpu_irq);
 			goto __skip_mpu;
 		}
 
@@ -593,35 +588,35 @@ static int snd_opti93x_mixer(struct snd_wss *chip)
 
 	card = chip->card;
 
-	strcpy(card->mixername, chip->pcm->name);
+	strscpy(card->mixername, chip->pcm->name);
 
 	memset(&id1, 0, sizeof(id1));
 	memset(&id2, 0, sizeof(id2));
 	id1.iface = id2.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
 	/* reassign AUX0 switch to CD */
-	strcpy(id1.name, "Aux Playback Switch");
-	strcpy(id2.name, "CD Playback Switch");
+	strscpy(id1.name, "Aux Playback Switch");
+	strscpy(id2.name, "CD Playback Switch");
 	err = snd_ctl_rename_id(card, &id1, &id2);
 	if (err < 0) {
-		snd_printk(KERN_ERR "Cannot rename opti93x control\n");
+		dev_err(card->dev, "Cannot rename opti93x control\n");
 		return err;
 	}
 	/* reassign AUX1 switch to FM */
-	strcpy(id1.name, "Aux Playback Switch"); id1.index = 1;
-	strcpy(id2.name, "FM Playback Switch");
+	strscpy(id1.name, "Aux Playback Switch"); id1.index = 1;
+	strscpy(id2.name, "FM Playback Switch");
 	err = snd_ctl_rename_id(card, &id1, &id2);
 	if (err < 0) {
-		snd_printk(KERN_ERR "Cannot rename opti93x control\n");
+		dev_err(card->dev, "Cannot rename opti93x control\n");
 		return err;
 	}
 	/* remove AUX1 volume */
-	strcpy(id1.name, "Aux Playback Volume"); id1.index = 1;
+	strscpy(id1.name, "Aux Playback Volume"); id1.index = 1;
 	snd_ctl_remove_id(card, &id1);
 
 	/* Replace WSS volume controls with OPTi93x volume controls */
 	id1.index = 0;
 	for (idx = 0; idx < ARRAY_SIZE(snd_opti93x_controls); idx++) {
-		strcpy(id1.name, snd_opti93x_controls[idx].name);
+		strscpy(id1.name, snd_opti93x_controls[idx].name);
 		snd_ctl_remove_id(card, &id1);
 
 		err = snd_ctl_add(card,
@@ -658,9 +653,6 @@ static int snd_opti9xx_read_check(struct snd_card *card,
 				  struct snd_opti9xx *chip)
 {
 	unsigned char value;
-#ifdef OPTi93X
-	unsigned long flags;
-#endif
 
 	chip->res_mc_base =
 		devm_request_region(card->dev, chip->mc_base,
@@ -679,10 +671,10 @@ static int snd_opti9xx_read_check(struct snd_card *card,
 	if (!chip->res_mc_indir)
 		return -EBUSY;
 
-	spin_lock_irqsave(&chip->lock, flags);
-	outb(chip->password, chip->mc_base + chip->pwd_reg);
-	outb(((chip->mc_indir_index & 0x1f0) >> 4), chip->mc_base);
-	spin_unlock_irqrestore(&chip->lock, flags);
+	scoped_guard(spinlock_irqsave, &chip->lock) {
+		outb(chip->password, chip->mc_base + chip->pwd_reg);
+		outb(((chip->mc_indir_index & 0x1f0) >> 4), chip->mc_base);
+	}
 
 	value = snd_opti9xx_read(chip, OPTi9XX_MC_REG(7));
 	snd_opti9xx_write(chip, OPTi9XX_MC_REG(7), 0xff - value);
@@ -740,7 +732,7 @@ static int snd_card_opti9xx_pnp(struct snd_opti9xx *chip,
 
 	err = pnp_activate_dev(pdev);
 	if (err < 0) {
-		snd_printk(KERN_ERR "AUDIO pnp configure failure: %d\n", err);
+		dev_err(chip->card->dev, "AUDIO pnp configure failure: %d\n", err);
 		return err;
 	}
 
@@ -757,7 +749,7 @@ static int snd_card_opti9xx_pnp(struct snd_opti9xx *chip,
 
 	err = pnp_activate_dev(devmc);
 	if (err < 0) {
-		snd_printk(KERN_ERR "MC pnp configure failure: %d\n", err);
+		dev_err(chip->card->dev, "MC pnp configure failure: %d\n", err);
 		return err;
 	}
 
@@ -781,7 +773,7 @@ static int snd_card_opti9xx_pnp(struct snd_opti9xx *chip,
 	if (devmpu && mpu_port > 0) {
 		err = pnp_activate_dev(devmpu);
 		if (err < 0) {
-			snd_printk(KERN_ERR "MPU401 pnp configure failure\n");
+			dev_err(chip->card->dev, "MPU401 pnp configure failure\n");
 			mpu_port = -1;
 		} else {
 			mpu_port = pnp_port_start(devmpu, 0);
@@ -811,7 +803,7 @@ static int snd_opti9xx_probe(struct snd_card *card)
 	if (port == SNDRV_AUTO_PORT) {
 		port = snd_legacy_find_free_ioport(possible_ports, 4);
 		if (port < 0) {
-			snd_printk(KERN_ERR "unable to find a free WSS port\n");
+			dev_err(card->dev, "unable to find a free WSS port\n");
 			return -EBUSY;
 		}
 	}
@@ -850,24 +842,24 @@ static int snd_opti9xx_probe(struct snd_card *card)
 	error = devm_request_irq(card->dev, irq, snd_opti93x_interrupt,
 				 0, DEV_NAME" - WSS", chip);
 	if (error < 0) {
-		snd_printk(KERN_ERR "opti9xx: can't grab IRQ %d\n", irq);
+		dev_err(card->dev, "opti9xx: can't grab IRQ %d\n", irq);
 		return error;
 	}
 #endif
 	chip->irq = irq;
 	card->sync_irq = chip->irq;
-	strcpy(card->driver, chip->name);
+	strscpy(card->driver, chip->name);
 	sprintf(card->shortname, "OPTi %s", card->driver);
 #if defined(CS4231) || defined(OPTi93X)
-	snprintf(card->longname, sizeof(card->longname),
-		 "%s, %s at 0x%lx, irq %d, dma %d&%d",
-		 card->shortname, codec->pcm->name,
-		 chip->wss_base + 4, irq, dma1, xdma2);
+	scnprintf(card->longname, sizeof(card->longname),
+		  "%s, %s at 0x%lx, irq %d, dma %d&%d",
+		  card->shortname, codec->pcm->name,
+		  chip->wss_base + 4, irq, dma1, xdma2);
 #else
-	snprintf(card->longname, sizeof(card->longname),
-		 "%s, %s at 0x%lx, irq %d, dma %d",
-		 card->shortname, codec->pcm->name, chip->wss_base + 4, irq,
-		 dma1);
+	scnprintf(card->longname, sizeof(card->longname),
+		  "%s, %s at 0x%lx, irq %d, dma %d",
+		  card->shortname, codec->pcm->name, chip->wss_base + 4, irq,
+		  dma1);
 #endif	/* CS4231 || OPTi93X */
 
 	if (mpu_port <= 0 || mpu_port == SNDRV_AUTO_PORT)
@@ -876,8 +868,8 @@ static int snd_opti9xx_probe(struct snd_card *card)
 		error = snd_mpu401_uart_new(card, 0, MPU401_HW_MPU401,
 				mpu_port, 0, mpu_irq, &rmidi);
 		if (error)
-			snd_printk(KERN_WARNING "no MPU-401 device at 0x%lx?\n",
-				   mpu_port);
+			dev_warn(card->dev, "no MPU-401 device at 0x%lx?\n",
+				 mpu_port);
 	}
 
 	if (fm_port > 0 && fm_port != SNDRV_AUTO_PORT) {
@@ -900,8 +892,8 @@ static int snd_opti9xx_probe(struct snd_card *card)
 #endif	/* !OPTi93X */
 		if (!opl3 && snd_opl3_create(card, fm_port, fm_port + 2,
 					     OPL3_HW_AUTO, 0, &opl3) < 0) {
-			snd_printk(KERN_WARNING "no OPL device at 0x%lx-0x%lx\n",
-				   fm_port, fm_port + 4 - 1);
+			dev_warn(card->dev, "no OPL device at 0x%lx-0x%lx\n",
+				 fm_port, fm_port + 4 - 1);
 		}
 		if (opl3) {
 			error = snd_opl3_hwdep_new(opl3, 0, 1, &synth);
@@ -958,28 +950,28 @@ static int snd_opti9xx_isa_probe(struct device *devptr,
 	if (mpu_port == SNDRV_AUTO_PORT) {
 		mpu_port = snd_legacy_find_free_ioport(possible_mpu_ports, 2);
 		if (mpu_port < 0) {
-			snd_printk(KERN_ERR "unable to find a free MPU401 port\n");
+			dev_err(devptr, "unable to find a free MPU401 port\n");
 			return -EBUSY;
 		}
 	}
 	if (irq == SNDRV_AUTO_IRQ) {
 		irq = snd_legacy_find_free_irq(possible_irqs);
 		if (irq < 0) {
-			snd_printk(KERN_ERR "unable to find a free IRQ\n");
+			dev_err(devptr, "unable to find a free IRQ\n");
 			return -EBUSY;
 		}
 	}
 	if (mpu_irq == SNDRV_AUTO_IRQ) {
 		mpu_irq = snd_legacy_find_free_irq(possible_mpu_irqs);
 		if (mpu_irq < 0) {
-			snd_printk(KERN_ERR "unable to find a free MPU401 IRQ\n");
+			dev_err(devptr, "unable to find a free MPU401 IRQ\n");
 			return -EBUSY;
 		}
 	}
 	if (dma1 == SNDRV_AUTO_DMA) {
 		dma1 = snd_legacy_find_free_dma(possible_dma1s);
 		if (dma1 < 0) {
-			snd_printk(KERN_ERR "unable to find a free DMA1\n");
+			dev_err(devptr, "unable to find a free DMA1\n");
 			return -EBUSY;
 		}
 	}
@@ -987,7 +979,7 @@ static int snd_opti9xx_isa_probe(struct device *devptr,
 	if (dma2 == SNDRV_AUTO_DMA) {
 		dma2 = snd_legacy_find_free_dma(possible_dma2s[dma1 % 4]);
 		if (dma2 < 0) {
-			snd_printk(KERN_ERR "unable to find a free DMA2\n");
+			dev_err(devptr, "unable to find a free DMA2\n");
 			return -EBUSY;
 		}
 	}
@@ -1076,6 +1068,7 @@ static int snd_opti9xx_pnp_probe(struct pnp_card_link *pcard,
 	if (error < 0)
 		return error;
 	chip = card->private_data;
+	chip->card = card;
 
 	hw = snd_card_opti9xx_pnp(chip, pcard, pid);
 	switch (hw) {
@@ -1097,7 +1090,7 @@ static int snd_opti9xx_pnp_probe(struct pnp_card_link *pcard,
 		return error;
 	error = snd_opti9xx_read_check(card, chip);
 	if (error) {
-		snd_printk(KERN_ERR "OPTI chip not found\n");
+		dev_err(card->dev, "OPTI chip not found\n");
 		return error;
 	}
 	error = snd_opti9xx_probe(card);

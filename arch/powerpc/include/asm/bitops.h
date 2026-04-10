@@ -163,7 +163,7 @@ static inline unsigned long fn(			\
 	"bne- 1b\n"					\
 	postfix						\
 	: "=&r" (old), "=&r" (t)			\
-	: "rK" (mask), "r" (p), "i" (IS_ENABLED(CONFIG_PPC64) ? eh : 0)	\
+	: "rK" (mask), "r" (p), "n" (eh)		\
 	: "cc", "memory");				\
 	return (old & mask);				\
 }
@@ -171,7 +171,7 @@ static inline unsigned long fn(			\
 DEFINE_TESTOP(test_and_set_bits, or, PPC_ATOMIC_ENTRY_BARRIER,
 	      PPC_ATOMIC_EXIT_BARRIER, 0)
 DEFINE_TESTOP(test_and_set_bits_lock, or, "",
-	      PPC_ACQUIRE_BARRIER, 1)
+	      PPC_ACQUIRE_BARRIER, IS_ENABLED(CONFIG_PPC64))
 DEFINE_TESTOP(test_and_change_bits, xor, PPC_ATOMIC_ENTRY_BARRIER,
 	      PPC_ATOMIC_EXIT_BARRIER, 0)
 
@@ -233,35 +233,24 @@ static inline int arch_test_and_change_bit(unsigned long nr,
 	return test_and_change_bits(BIT_MASK(nr), addr + BIT_WORD(nr)) != 0;
 }
 
-#ifdef CONFIG_PPC64
-static inline unsigned long
-clear_bit_unlock_return_word(int nr, volatile unsigned long *addr)
+static inline bool arch_xor_unlock_is_negative_byte(unsigned long mask,
+		volatile unsigned long *p)
 {
 	unsigned long old, t;
-	unsigned long *p = (unsigned long *)addr + BIT_WORD(nr);
-	unsigned long mask = BIT_MASK(nr);
 
 	__asm__ __volatile__ (
 	PPC_RELEASE_BARRIER
 "1:"	PPC_LLARX "%0,0,%3,0\n"
-	"andc %1,%0,%2\n"
+	"xor %1,%0,%2\n"
 	PPC_STLCX "%1,0,%3\n"
 	"bne- 1b\n"
 	: "=&r" (old), "=&r" (t)
 	: "r" (mask), "r" (p)
 	: "cc", "memory");
 
-	return old;
+	return (old & BIT_MASK(7)) != 0;
 }
-
-/*
- * This is a special function for mm/filemap.c
- * Bit 7 corresponds to PG_waiters.
- */
-#define arch_clear_bit_unlock_is_negative_byte(nr, addr)		\
-	(clear_bit_unlock_return_word(nr, addr) & BIT_MASK(7))
-
-#endif /* CONFIG_PPC64 */
+#define arch_xor_unlock_is_negative_byte arch_xor_unlock_is_negative_byte
 
 #include <asm-generic/bitops/non-atomic.h>
 
@@ -287,7 +276,7 @@ static inline void arch___clear_bit_unlock(int nr, volatile unsigned long *addr)
  * fls: find last (most-significant) bit set.
  * Note fls(0) = 0, fls(1) = 1, fls(0x80000000) = 32.
  */
-static __always_inline int fls(unsigned int x)
+static __always_inline __attribute_const__ int fls(unsigned int x)
 {
 	int lz;
 
@@ -305,7 +294,7 @@ static __always_inline int fls(unsigned int x)
  * 32-bit fls calls.
  */
 #ifdef CONFIG_PPC64
-static __always_inline int fls64(__u64 x)
+static __always_inline __attribute_const__ int fls64(__u64 x)
 {
 	int lz;
 

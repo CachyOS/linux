@@ -15,7 +15,8 @@
 #include <linux/dmapool.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 
@@ -86,7 +87,6 @@ struct sa_match_data {
 	u8 priv;
 	u8 priv_id;
 	u32 supported_algos;
-	bool skip_engine_control;
 };
 
 static struct device *sa_k3_dev;
@@ -574,7 +574,7 @@ static int sa_format_cmdl_gen(struct sa_cmdl_cfg *cfg, u8 *cmdl,
 	/* Clear the command label */
 	memzero_explicit(cmdl, (SA_MAX_CMDL_WORDS * sizeof(u32)));
 
-	/* Iniialize the command update structure */
+	/* Initialize the command update structure */
 	memzero_explicit(upd_info, sizeof(*upd_info));
 
 	if (cfg->enc_eng_id && cfg->auth_eng_id) {
@@ -1038,7 +1038,7 @@ static void sa_free_sa_rx_data(struct sa_rx_data *rxd)
 
 static void sa_aes_dma_in_callback(void *data)
 {
-	struct sa_rx_data *rxd = (struct sa_rx_data *)data;
+	struct sa_rx_data *rxd = data;
 	struct skcipher_request *req;
 	u32 *result;
 	__be32 *mdptr;
@@ -1099,7 +1099,7 @@ static int sa_run(struct sa_req *req)
 	gfp_flags = req->base->flags & CRYPTO_TFM_REQ_MAY_SLEEP ?
 		GFP_KERNEL : GFP_ATOMIC;
 
-	rxd = kzalloc(sizeof(*rxd), gfp_flags);
+	rxd = kzalloc_obj(*rxd, gfp_flags);
 	if (!rxd)
 		return -ENOMEM;
 
@@ -1352,7 +1352,7 @@ static int sa_decrypt(struct skcipher_request *req)
 
 static void sa_sha_dma_in_callback(void *data)
 {
-	struct sa_rx_data *rxd = (struct sa_rx_data *)data;
+	struct sa_rx_data *rxd = data;
 	struct ahash_request *req;
 	struct crypto_ahash *tfm;
 	unsigned int authsize;
@@ -1415,22 +1415,13 @@ static int sa_sha_run(struct ahash_request *req)
 	    (auth_len >= SA_UNSAFE_DATA_SZ_MIN &&
 	     auth_len <= SA_UNSAFE_DATA_SZ_MAX)) {
 		struct ahash_request *subreq = &rctx->fallback_req;
-		int ret = 0;
+		int ret;
 
 		ahash_request_set_tfm(subreq, ctx->fallback.ahash);
-		subreq->base.flags = req->base.flags & CRYPTO_TFM_REQ_MAY_SLEEP;
+		ahash_request_set_callback(subreq, req->base.flags & CRYPTO_TFM_REQ_MAY_SLEEP, NULL, NULL);
+		ahash_request_set_crypt(subreq, req->src, req->result, auth_len);
 
-		crypto_ahash_init(subreq);
-
-		subreq->nbytes = auth_len;
-		subreq->src = req->src;
-		subreq->result = req->result;
-
-		ret |= crypto_ahash_update(subreq);
-
-		subreq->nbytes = 0;
-
-		ret |= crypto_ahash_final(subreq);
+		ret = crypto_ahash_digest(subreq);
 
 		return ret;
 	}
@@ -1502,8 +1493,7 @@ static int sa_sha_cra_init_alg(struct crypto_tfm *tfm, const char *alg_base)
 		return ret;
 
 	if (alg_base) {
-		ctx->shash = crypto_alloc_shash(alg_base, 0,
-						CRYPTO_ALG_NEED_FALLBACK);
+		ctx->shash = crypto_alloc_shash(alg_base, 0, 0);
 		if (IS_ERR(ctx->shash)) {
 			dev_err(sa_k3_dev, "base driver %s couldn't be loaded\n",
 				alg_base);
@@ -1511,8 +1501,7 @@ static int sa_sha_cra_init_alg(struct crypto_tfm *tfm, const char *alg_base)
 		}
 		/* for fallback */
 		ctx->fallback.ahash =
-			crypto_alloc_ahash(alg_base, 0,
-					   CRYPTO_ALG_NEED_FALLBACK);
+			crypto_alloc_ahash(alg_base, 0, CRYPTO_ALG_ASYNC);
 		if (IS_ERR(ctx->fallback.ahash)) {
 			dev_err(ctx->dev_data->dev,
 				"Could not load fallback driver\n");
@@ -1546,54 +1535,38 @@ static int sa_sha_init(struct ahash_request *req)
 		crypto_ahash_digestsize(tfm), rctx);
 
 	ahash_request_set_tfm(&rctx->fallback_req, ctx->fallback.ahash);
-	rctx->fallback_req.base.flags =
-		req->base.flags & CRYPTO_TFM_REQ_MAY_SLEEP;
+	ahash_request_set_callback(&rctx->fallback_req, req->base.flags & CRYPTO_TFM_REQ_MAY_SLEEP, NULL, NULL);
+	ahash_request_set_crypt(&rctx->fallback_req, NULL, NULL, 0);
 
 	return crypto_ahash_init(&rctx->fallback_req);
 }
 
 static int sa_sha_update(struct ahash_request *req)
 {
-	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
 	struct sa_sha_req_ctx *rctx = ahash_request_ctx(req);
-	struct sa_tfm_ctx *ctx = crypto_ahash_ctx(tfm);
 
-	ahash_request_set_tfm(&rctx->fallback_req, ctx->fallback.ahash);
-	rctx->fallback_req.base.flags =
-		req->base.flags & CRYPTO_TFM_REQ_MAY_SLEEP;
-	rctx->fallback_req.nbytes = req->nbytes;
-	rctx->fallback_req.src = req->src;
+	ahash_request_set_callback(&rctx->fallback_req, req->base.flags & CRYPTO_TFM_REQ_MAY_SLEEP, NULL, NULL);
+	ahash_request_set_crypt(&rctx->fallback_req, req->src, NULL, req->nbytes);
 
 	return crypto_ahash_update(&rctx->fallback_req);
 }
 
 static int sa_sha_final(struct ahash_request *req)
 {
-	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
 	struct sa_sha_req_ctx *rctx = ahash_request_ctx(req);
-	struct sa_tfm_ctx *ctx = crypto_ahash_ctx(tfm);
 
-	ahash_request_set_tfm(&rctx->fallback_req, ctx->fallback.ahash);
-	rctx->fallback_req.base.flags =
-		req->base.flags & CRYPTO_TFM_REQ_MAY_SLEEP;
-	rctx->fallback_req.result = req->result;
+	ahash_request_set_callback(&rctx->fallback_req, req->base.flags & CRYPTO_TFM_REQ_MAY_SLEEP, NULL, NULL);
+	ahash_request_set_crypt(&rctx->fallback_req, NULL, req->result, 0);
 
 	return crypto_ahash_final(&rctx->fallback_req);
 }
 
 static int sa_sha_finup(struct ahash_request *req)
 {
-	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
 	struct sa_sha_req_ctx *rctx = ahash_request_ctx(req);
-	struct sa_tfm_ctx *ctx = crypto_ahash_ctx(tfm);
 
-	ahash_request_set_tfm(&rctx->fallback_req, ctx->fallback.ahash);
-	rctx->fallback_req.base.flags =
-		req->base.flags & CRYPTO_TFM_REQ_MAY_SLEEP;
-
-	rctx->fallback_req.nbytes = req->nbytes;
-	rctx->fallback_req.src = req->src;
-	rctx->fallback_req.result = req->result;
+	ahash_request_set_callback(&rctx->fallback_req, req->base.flags & CRYPTO_TFM_REQ_MAY_SLEEP, NULL, NULL);
+	ahash_request_set_crypt(&rctx->fallback_req, req->src, req->result, req->nbytes);
 
 	return crypto_ahash_finup(&rctx->fallback_req);
 }
@@ -1605,8 +1578,7 @@ static int sa_sha_import(struct ahash_request *req, const void *in)
 	struct sa_tfm_ctx *ctx = crypto_ahash_ctx(tfm);
 
 	ahash_request_set_tfm(&rctx->fallback_req, ctx->fallback.ahash);
-	rctx->fallback_req.base.flags = req->base.flags &
-		CRYPTO_TFM_REQ_MAY_SLEEP;
+	ahash_request_set_callback(&rctx->fallback_req, req->base.flags & CRYPTO_TFM_REQ_MAY_SLEEP, NULL, NULL);
 
 	return crypto_ahash_import(&rctx->fallback_req, in);
 }
@@ -1614,12 +1586,9 @@ static int sa_sha_import(struct ahash_request *req, const void *in)
 static int sa_sha_export(struct ahash_request *req, void *out)
 {
 	struct sa_sha_req_ctx *rctx = ahash_request_ctx(req);
-	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
-	struct sa_tfm_ctx *ctx = crypto_ahash_ctx(tfm);
 	struct ahash_request *subreq = &rctx->fallback_req;
 
-	ahash_request_set_tfm(subreq, ctx->fallback.ahash);
-	subreq->base.flags = req->base.flags & CRYPTO_TFM_REQ_MAY_SLEEP;
+	ahash_request_set_callback(subreq, req->base.flags & CRYPTO_TFM_REQ_MAY_SLEEP, NULL, NULL);
 
 	return crypto_ahash_export(subreq, out);
 }
@@ -1690,7 +1659,7 @@ static void sa_sha_cra_exit(struct crypto_tfm *tfm)
 
 static void sa_aead_dma_in_callback(void *data)
 {
-	struct sa_rx_data *rxd = (struct sa_rx_data *)data;
+	struct sa_rx_data *rxd = data;
 	struct aead_request *req;
 	struct crypto_aead *tfm;
 	unsigned int start;
@@ -1869,9 +1838,8 @@ static int sa_aead_setkey(struct crypto_aead *authenc,
 	crypto_aead_set_flags(ctx->fallback.aead,
 			      crypto_aead_get_flags(authenc) &
 			      CRYPTO_TFM_REQ_MASK);
-	crypto_aead_setkey(ctx->fallback.aead, key, keylen);
 
-	return 0;
+	return crypto_aead_setkey(ctx->fallback.aead, key, keylen);
 }
 
 static int sa_aead_setauthsize(struct crypto_aead *tfm, unsigned int authsize)
@@ -2361,7 +2329,15 @@ static int sa_link_child(struct device *dev, void *data)
 static struct sa_match_data am654_match_data = {
 	.priv = 1,
 	.priv_id = 1,
-	.supported_algos = GENMASK(SA_ALG_AUTHENC_SHA256_AES, 0),
+	.supported_algos = BIT(SA_ALG_CBC_AES) |
+			   BIT(SA_ALG_EBC_AES) |
+			   BIT(SA_ALG_CBC_DES3) |
+			   BIT(SA_ALG_ECB_DES3) |
+			   BIT(SA_ALG_SHA1) |
+			   BIT(SA_ALG_SHA256) |
+			   BIT(SA_ALG_SHA512) |
+			   BIT(SA_ALG_AUTHENC_SHA1_AES) |
+			   BIT(SA_ALG_AUTHENC_SHA256_AES),
 };
 
 static struct sa_match_data am64_match_data = {
@@ -2372,7 +2348,6 @@ static struct sa_match_data am64_match_data = {
 			   BIT(SA_ALG_SHA256) |
 			   BIT(SA_ALG_SHA512) |
 			   BIT(SA_ALG_AUTHENC_SHA256_AES),
-	.skip_engine_control = true,
 };
 
 static const struct of_device_id of_match[] = {
@@ -2390,6 +2365,7 @@ static int sa_ul_probe(struct platform_device *pdev)
 	struct device_node *node = dev->of_node;
 	static void __iomem *saul_base;
 	struct sa_crypto_data *dev_data;
+	u32 status, val;
 	int ret;
 
 	dev_data = devm_kzalloc(dev, sizeof(*dev_data), GFP_KERNEL);
@@ -2426,13 +2402,13 @@ static int sa_ul_probe(struct platform_device *pdev)
 
 	spin_lock_init(&dev_data->scid_lock);
 
-	if (!dev_data->match_data->skip_engine_control) {
-		u32 val = SA_EEC_ENCSS_EN | SA_EEC_AUTHSS_EN | SA_EEC_CTXCACH_EN |
-			  SA_EEC_CPPI_PORT_IN_EN | SA_EEC_CPPI_PORT_OUT_EN |
-			  SA_EEC_TRNG_EN;
-
+	val = SA_EEC_ENCSS_EN | SA_EEC_AUTHSS_EN | SA_EEC_CTXCACH_EN |
+	      SA_EEC_CPPI_PORT_IN_EN | SA_EEC_CPPI_PORT_OUT_EN |
+	      SA_EEC_TRNG_EN;
+	status = readl_relaxed(saul_base + SA_ENGINE_STATUS);
+	/* Only enable engines if all are not already enabled */
+	if (val & ~status)
 		writel_relaxed(val, saul_base + SA_ENGINE_ENABLE_CONTROL);
-	}
 
 	sa_register_algos(dev_data);
 
@@ -2460,7 +2436,7 @@ destroy_dma_pool:
 	return ret;
 }
 
-static int sa_ul_remove(struct platform_device *pdev)
+static void sa_ul_remove(struct platform_device *pdev)
 {
 	struct sa_crypto_data *dev_data = platform_get_drvdata(pdev);
 
@@ -2478,8 +2454,6 @@ static int sa_ul_remove(struct platform_device *pdev)
 
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static struct platform_driver sa_ul_driver = {
@@ -2491,4 +2465,5 @@ static struct platform_driver sa_ul_driver = {
 		   },
 };
 module_platform_driver(sa_ul_driver);
+MODULE_DESCRIPTION("K3 SA2UL crypto accelerator driver");
 MODULE_LICENSE("GPL v2");

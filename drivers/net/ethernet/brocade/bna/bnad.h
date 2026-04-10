@@ -19,7 +19,6 @@
 #include <linux/firmware.h>
 #include <linux/if_vlan.h>
 
-/* Fix for IA64 */
 #include <asm/checksum.h>
 #include <net/ip6_checksum.h>
 
@@ -352,7 +351,6 @@ struct bnad {
 	/* debugfs specific data */
 	char	*regdata;
 	u32	reglen;
-	struct dentry *bnad_dentry_files[5];
 	struct dentry *port_debugfs_root;
 };
 

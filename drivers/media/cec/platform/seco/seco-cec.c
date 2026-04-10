@@ -668,7 +668,7 @@ err:
 	return ret;
 }
 
-static int secocec_remove(struct platform_device *pdev)
+static void secocec_remove(struct platform_device *pdev)
 {
 	struct secocec_data *secocec = platform_get_drvdata(pdev);
 	u16 val;
@@ -686,8 +686,6 @@ static int secocec_remove(struct platform_device *pdev)
 	release_region(BRA_SMB_BASE_ADDR, 7);
 
 	dev_dbg(&pdev->dev, "CEC device removed\n");
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

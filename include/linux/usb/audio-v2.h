@@ -2,9 +2,6 @@
 /*
  * Copyright (c) 2010 Daniel Mack <daniel@caiaq.de>
  *
- * This software is distributed under the terms of the GNU General Public
- * License ("GPL") version 2, as published by the Free Software Foundation.
- *
  * This file holds USB constants and structures defined
  * by the USB Device Class Definition for Audio Devices in version 2.0.
  * Comments below reference relevant sections of the documents contained
@@ -85,7 +82,7 @@ struct uac_clock_source_descriptor {
 #define UAC_CLOCK_SOURCE_TYPE_INT_PROG	0x3
 #define UAC_CLOCK_SOURCE_SYNCED_TO_SOF	(1 << 2)
 
-/* 4.7.2.2 Clock Source Descriptor */
+/* 4.7.2.2 Clock Selector Descriptor */
 
 struct uac_clock_selector_descriptor {
 	__u8 bLength;
@@ -94,7 +91,7 @@ struct uac_clock_selector_descriptor {
 	__u8 bClockID;
 	__u8 bNrInPins;
 	__u8 baCSourceID[];
-	/* bmControls and iClockSource omitted */
+	/* bmControls and iClockSelector omitted */
 } __attribute__((packed));
 
 /* 4.7.2.3 Clock Multiplier Descriptor */

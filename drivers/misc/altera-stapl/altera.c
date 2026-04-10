@@ -9,7 +9,7 @@
  * Copyright (C) 2010,2011 Igor M. Liplianin <liplianin@netup.ru>
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/ctype.h>
 #include <linux/string.h>
 #include <linux/firmware.h>
@@ -290,13 +290,13 @@ static int altera_execute(struct altera_state *astate,
 	if (sym_count <= 0)
 		goto exit_done;
 
-	vars = kcalloc(sym_count, sizeof(long), GFP_KERNEL);
+	vars = kzalloc_objs(long, sym_count);
 
 	if (vars == NULL)
 		status = -ENOMEM;
 
 	if (status == 0) {
-		var_size = kcalloc(sym_count, sizeof(s32), GFP_KERNEL);
+		var_size = kzalloc_objs(s32, sym_count);
 
 		if (var_size == NULL)
 			status = -ENOMEM;
@@ -1014,7 +1014,7 @@ exit_done:
 			 * ...argument 0 is string ID
 			 */
 			count = strlen(msg_buff);
-			strlcpy(&msg_buff[count],
+			strscpy(&msg_buff[count],
 				&p[str_table + args[0]],
 				ALTERA_MESSAGE_LENGTH - count);
 			break;
@@ -1098,8 +1098,7 @@ exit_done:
 				/* Allocate a writable buffer for this array */
 				count = var_size[variable_id];
 				long_tmp = vars[variable_id];
-				longptr_tmp = kcalloc(count, sizeof(long),
-								GFP_KERNEL);
+				longptr_tmp = kzalloc_objs(long, count);
 				vars[variable_id] = (long)longptr_tmp;
 
 				if (vars[variable_id] == 0) {
@@ -2146,7 +2145,7 @@ static int altera_get_note(u8 *p, s32 program_size, s32 *offset,
 						&p[note_table + (8 * i) + 4])];
 
 				if (value != NULL)
-					strlcpy(value, value_ptr, vallen);
+					strscpy(value, value_ptr, vallen);
 
 			}
 		}
@@ -2162,13 +2161,13 @@ static int altera_get_note(u8 *p, s32 program_size, s32 *offset,
 			status = 0;
 
 			if (key != NULL)
-				strlcpy(key, &p[note_strings +
+				strscpy(key, &p[note_strings +
 						get_unaligned_be32(
 						&p[note_table + (8 * i)])],
 					keylen);
 
 			if (value != NULL)
-				strlcpy(value, &p[note_strings +
+				strscpy(value, &p[note_strings +
 						get_unaligned_be32(
 						&p[note_table + (8 * i) + 4])],
 					vallen);
@@ -2342,8 +2341,7 @@ static int altera_get_act_info(u8 *p,
 			(p[proc_table + (13 * act_proc_id) + 8] & 0x03);
 
 		procptr =
-				kzalloc(sizeof(struct altera_procinfo),
-								GFP_KERNEL);
+				kzalloc_obj(struct altera_procinfo);
 
 		if (procptr == NULL)
 			status = -ENOMEM;
@@ -2399,7 +2397,7 @@ int altera_init(struct altera_config *config, const struct firmware *fw)
 		retval = -ENOMEM;
 		goto free_key;
 	}
-	astate = kzalloc(sizeof(struct altera_state), GFP_KERNEL);
+	astate = kzalloc_obj(struct altera_state);
 	if (!astate) {
 		retval = -ENOMEM;
 		goto free_value;
@@ -2407,6 +2405,10 @@ int altera_init(struct altera_config *config, const struct firmware *fw)
 
 	astate->config = config;
 	if (!astate->config->jtag_io) {
+		if (!IS_ENABLED(CONFIG_HAS_IOPORT)) {
+			retval = -ENODEV;
+			goto free_state;
+		}
 		dprintk("%s: using byteblaster!\n", __func__);
 		astate->config->jtag_io = netup_jtag_io_lpt;
 	}
@@ -2481,7 +2483,7 @@ int altera_init(struct altera_config *config, const struct firmware *fw)
 
 	} else if (exec_result)
 		printk(KERN_ERR "%s: error %d\n", __func__, exec_result);
-
+free_state:
 	kfree(astate);
 free_value:
 	kfree(value);

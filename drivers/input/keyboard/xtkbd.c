@@ -7,9 +7,6 @@
  * XT keyboard driver for Linux
  */
 
-/*
- */
-
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/input.h>
@@ -73,7 +70,7 @@ static int xtkbd_connect(struct serio *serio, struct serio_driver *drv)
 	int err = -ENOMEM;
 	int i;
 
-	xtkbd = kmalloc(sizeof(struct xtkbd), GFP_KERNEL);
+	xtkbd = kmalloc_obj(*xtkbd);
 	input_dev = input_allocate_device();
 	if (!xtkbd || !input_dev)
 		goto fail1;

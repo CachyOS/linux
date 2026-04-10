@@ -6,7 +6,7 @@
  * Copyright (C) 2019-2021 Maximilian Luz <luzmaximilian@gmail.com>
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -667,7 +667,7 @@ out:
 
 static ssize_t alarm_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 	struct spwr_battery_device *bat = power_supply_get_drvdata(psy);
 	int status;
 
@@ -681,7 +681,7 @@ static ssize_t alarm_show(struct device *dev, struct device_attribute *attr, cha
 static ssize_t alarm_store(struct device *dev, struct device_attribute *attr, const char *buf,
 			   size_t count)
 {
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 	struct spwr_battery_device *bat = power_supply_get_drvdata(psy);
 	unsigned long value;
 	int status;
@@ -722,7 +722,7 @@ static void spwr_battery_init(struct spwr_battery_device *bat, struct ssam_devic
 			      struct ssam_event_registry registry, const char *name)
 {
 	mutex_init(&bat->lock);
-	strncpy(bat->name, name, ARRAY_SIZE(bat->name) - 1);
+	strscpy(bat->name, name, sizeof(bat->name));
 
 	bat->sdev = sdev;
 
@@ -802,7 +802,7 @@ static int spwr_battery_register(struct spwr_battery_device *bat)
 	if (IS_ERR(bat->psy))
 		return PTR_ERR(bat->psy);
 
-	return ssam_notifier_register(bat->sdev->ctrl, &bat->notif);
+	return ssam_device_notifier_register(bat->sdev, &bat->notif);
 }
 
 
@@ -837,7 +837,7 @@ static void surface_battery_remove(struct ssam_device *sdev)
 {
 	struct spwr_battery_device *bat = ssam_device_get_drvdata(sdev);
 
-	ssam_notifier_unregister(sdev->ctrl, &bat->notif);
+	ssam_device_notifier_unregister(sdev, &bat->notif);
 	cancel_delayed_work_sync(&bat->update_work);
 }
 
@@ -852,8 +852,8 @@ static const struct spwr_psy_properties spwr_psy_props_bat2_sb3 = {
 };
 
 static const struct ssam_device_id surface_battery_match[] = {
-	{ SSAM_SDEV(BAT, 0x01, 0x01, 0x00), (unsigned long)&spwr_psy_props_bat1     },
-	{ SSAM_SDEV(BAT, 0x02, 0x01, 0x00), (unsigned long)&spwr_psy_props_bat2_sb3 },
+	{ SSAM_SDEV(BAT, SAM, 0x01, 0x00), (unsigned long)&spwr_psy_props_bat1     },
+	{ SSAM_SDEV(BAT, KIP, 0x01, 0x00), (unsigned long)&spwr_psy_props_bat2_sb3 },
 	{ },
 };
 MODULE_DEVICE_TABLE(ssam, surface_battery_match);

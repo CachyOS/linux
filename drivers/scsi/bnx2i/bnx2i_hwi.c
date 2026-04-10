@@ -685,7 +685,7 @@ void bnx2i_update_iscsi_conn(struct iscsi_conn *conn)
  */
 void bnx2i_ep_ofld_timer(struct timer_list *t)
 {
-	struct bnx2i_endpoint *ep = from_timer(ep, t, ofld_timer);
+	struct bnx2i_endpoint *ep = timer_container_of(ep, t, ofld_timer);
 
 	if (ep->state == EP_STATE_OFLD_START) {
 		printk(KERN_ALERT "ofld_timer: CONN_OFLD timeout\n");
@@ -1925,7 +1925,7 @@ static int bnx2i_queue_scsi_cmd_resp(struct iscsi_session *session,
 		goto err;
 	}
 	/* Alloc and copy to the cqe */
-	bnx2i_work = kzalloc(sizeof(struct bnx2i_work), GFP_ATOMIC);
+	bnx2i_work = kzalloc_obj(struct bnx2i_work, GFP_ATOMIC);
 	if (bnx2i_work) {
 		INIT_LIST_HEAD(&bnx2i_work->list);
 		bnx2i_work->session = session;

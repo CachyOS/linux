@@ -39,6 +39,8 @@
 #include "sdrc.h"
 #include "sram.h"
 
+static u16 cpu_mask;
+
 const struct prcm_config *curr_prcm_set;
 const struct prcm_config *rate_table;
 
@@ -55,7 +57,7 @@ static unsigned long sys_ck_rate;
  *
  * Set virt_prcm_set's rate to the mpu_speed field of the current PRCM set.
  */
-unsigned long omap2_table_mpu_recalc(struct clk_hw *clk,
+static unsigned long omap2_table_mpu_recalc(struct clk_hw *clk,
 				     unsigned long parent_rate)
 {
 	return curr_prcm_set->mpu_speed;
@@ -68,8 +70,8 @@ unsigned long omap2_table_mpu_recalc(struct clk_hw *clk,
  * Some might argue L3-DDR, others ARM, others IVA. This code is simple and
  * just uses the ARM rates.
  */
-long omap2_round_to_table_rate(struct clk_hw *hw, unsigned long rate,
-			       unsigned long *parent_rate)
+static int omap2_determine_rate_to_table(struct clk_hw *hw,
+					 struct clk_rate_request *req)
 {
 	const struct prcm_config *ptr;
 	long highest_rate;
@@ -85,15 +87,17 @@ long omap2_round_to_table_rate(struct clk_hw *hw, unsigned long rate,
 		highest_rate = ptr->mpu_speed;
 
 		/* Can check only after xtal frequency check */
-		if (ptr->mpu_speed <= rate)
+		if (ptr->mpu_speed <= req->rate)
 			break;
 	}
-	return highest_rate;
+	req->rate = highest_rate;
+
+	return 0;
 }
 
 /* Sets basic clocks based on the specified rate */
-int omap2_select_table_rate(struct clk_hw *hw, unsigned long rate,
-			    unsigned long parent_rate)
+static int omap2_select_table_rate(struct clk_hw *hw, unsigned long rate,
+				   unsigned long parent_rate)
 {
 	u32 cur_rate, done_rate, bypass = 0;
 	const struct prcm_config *prcm;
@@ -160,14 +164,14 @@ int omap2_select_table_rate(struct clk_hw *hw, unsigned long rate,
 }
 
 /**
- * omap2xxx_clkt_vps_check_bootloader_rate - determine which of the rate
+ * omap2xxx_clkt_vps_check_bootloader_rates - determine which of the rate
  * table sets matches the current CORE DPLL hardware rate
  *
  * Check the MPU rate set by bootloader.  Sets the 'curr_prcm_set'
  * global to point to the active rate set when found; otherwise, sets
  * it to NULL.  No return value;
  */
-void omap2xxx_clkt_vps_check_bootloader_rates(void)
+static void omap2xxx_clkt_vps_check_bootloader_rates(void)
 {
 	const struct prcm_config *prcm = NULL;
 	unsigned long rate;
@@ -193,7 +197,7 @@ void omap2xxx_clkt_vps_check_bootloader_rates(void)
  * sys_ck rate, but before the virt_prcm_set clock rate is
  * recalculated.  No return value.
  */
-void omap2xxx_clkt_vps_late_init(void)
+static void omap2xxx_clkt_vps_late_init(void)
 {
 	struct clk *c;
 
@@ -213,7 +217,7 @@ void omap2xxx_clkt_vps_late_init(void)
 static const struct clk_ops virt_prcm_set_ops = {
 	.recalc_rate	= &omap2_table_mpu_recalc,
 	.set_rate	= &omap2_select_table_rate,
-	.round_rate	= &omap2_round_to_table_rate,
+	.determine_rate = &omap2_determine_rate_to_table,
 };
 
 /**
@@ -233,7 +237,7 @@ void omap2xxx_clkt_vps_init(void)
 	omap2xxx_clkt_vps_late_init();
 	omap2xxx_clkt_vps_check_bootloader_rates();
 
-	hw = kzalloc(sizeof(*hw), GFP_KERNEL);
+	hw = kzalloc_obj(*hw);
 	if (!hw)
 		return;
 	init.name = "virt_prcm_set";

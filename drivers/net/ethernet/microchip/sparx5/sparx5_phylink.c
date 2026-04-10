@@ -32,7 +32,19 @@ sparx5_phylink_mac_select_pcs(struct phylink_config *config,
 {
 	struct sparx5_port *port = netdev_priv(to_net_dev(config->dev));
 
-	return &port->phylink_pcs;
+	/* Return the PCS for all the modes that require it. */
+	switch (interface) {
+	case PHY_INTERFACE_MODE_SGMII:
+	case PHY_INTERFACE_MODE_QSGMII:
+	case PHY_INTERFACE_MODE_1000BASEX:
+	case PHY_INTERFACE_MODE_2500BASEX:
+	case PHY_INTERFACE_MODE_5GBASER:
+	case PHY_INTERFACE_MODE_10GBASER:
+	case PHY_INTERFACE_MODE_25GBASER:
+		return &port->phylink_pcs;
+	default:
+		return NULL;
+	}
 }
 
 static void sparx5_phylink_mac_config(struct phylink_config *config,
@@ -77,7 +89,7 @@ static struct sparx5_port *sparx5_pcs_to_port(struct phylink_pcs *pcs)
 	return container_of(pcs, struct sparx5_port, phylink_pcs);
 }
 
-static void sparx5_pcs_get_state(struct phylink_pcs *pcs,
+static void sparx5_pcs_get_state(struct phylink_pcs *pcs, unsigned int neg_mode,
 				 struct phylink_link_state *state)
 {
 	struct sparx5_port *port = sparx5_pcs_to_port(pcs);
@@ -91,8 +103,7 @@ static void sparx5_pcs_get_state(struct phylink_pcs *pcs,
 	state->pause = status.pause;
 }
 
-static int sparx5_pcs_config(struct phylink_pcs *pcs,
-			     unsigned int mode,
+static int sparx5_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
 			     phy_interface_t interface,
 			     const unsigned long *advertising,
 			     bool permit_pause_to_mac)
@@ -104,8 +115,9 @@ static int sparx5_pcs_config(struct phylink_pcs *pcs,
 	conf = port->conf;
 	conf.power_down = false;
 	conf.portmode = interface;
-	conf.inband = phylink_autoneg_inband(mode);
-	conf.autoneg = phylink_test(advertising, Autoneg);
+	conf.inband = neg_mode == PHYLINK_PCS_NEG_INBAND_DISABLED ||
+		      neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED;
+	conf.autoneg = neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED;
 	conf.pause_adv = 0;
 	if (phylink_test(advertising, Pause))
 		conf.pause_adv |= ADVERTISE_1000XPAUSE;
@@ -138,7 +150,6 @@ const struct phylink_pcs_ops sparx5_phylink_pcs_ops = {
 };
 
 const struct phylink_mac_ops sparx5_phylink_mac_ops = {
-	.validate = phylink_generic_validate,
 	.mac_select_pcs = sparx5_phylink_mac_select_pcs,
 	.mac_config = sparx5_phylink_mac_config,
 	.mac_link_down = sparx5_phylink_mac_link_down,

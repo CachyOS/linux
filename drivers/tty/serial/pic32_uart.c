@@ -8,12 +8,11 @@
  *   Sorin-Andrei Pistirica <andrei.pistirica@microchip.com>
  */
 
+#include <linux/gpio/consumer.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_irq.h>
-#include <linux/of_gpio.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -23,8 +22,7 @@
 #include <linux/tty_flip.h>
 #include <linux/serial_core.h>
 #include <linux/delay.h>
-
-#include <asm/mach-pic32/pic32.h>
+#include <linux/platform_data/pic32.h>
 
 /* UART name and device definitions */
 #define PIC32_DEV_NAME		"pic32-uart"
@@ -50,7 +48,7 @@
  * @irq_rx_name: irq rx name
  * @irq_tx: virtual tx interrupt number
  * @irq_tx_name: irq tx name
- * @cts_gpio: clear to send gpio
+ * @cts_gpiod: clear to send GPIO
  * @dev: device descriptor
  **/
 struct pic32_sport {
@@ -65,8 +63,7 @@ struct pic32_sport {
 	const char *irq_tx_name;
 	bool enable_tx_irq;
 
-	bool hw_flow_ctrl;
-	int cts_gpio;
+	struct gpio_desc *cts_gpiod;
 
 	struct clk *clk;
 
@@ -158,25 +155,16 @@ static void pic32_uart_set_mctrl(struct uart_port *port, unsigned int mctrl)
 					PIC32_UART_MODE_LPBK);
 }
 
-/* get the state of CTS input pin for this port */
-static unsigned int get_cts_state(struct pic32_sport *sport)
-{
-	/* read and invert UxCTS */
-	if (gpio_is_valid(sport->cts_gpio))
-		return !gpio_get_value(sport->cts_gpio);
-
-	return 1;
-}
-
 /* serial core request to return the state of misc UART input pins */
 static unsigned int pic32_uart_get_mctrl(struct uart_port *port)
 {
 	struct pic32_sport *sport = to_pic32_sport(port);
 	unsigned int mctrl = 0;
 
-	if (!sport->hw_flow_ctrl)
+	/* get the state of CTS input pin for this port */
+	if (!sport->cts_gpiod)
 		mctrl |= TIOCM_CTS;
-	else if (get_cts_state(sport))
+	else if (gpiod_get_value(sport->cts_gpiod))
 		mctrl |= TIOCM_CTS;
 
 	/* DSR and CD are not supported in PIC32, so return 1
@@ -254,7 +242,7 @@ static void pic32_uart_break_ctl(struct uart_port *port, int ctl)
 	struct pic32_sport *sport = to_pic32_sport(port);
 	unsigned long flags;
 
-	spin_lock_irqsave(&port->lock, flags);
+	uart_port_lock_irqsave(port, &flags);
 
 	if (ctl)
 		pic32_uart_writel(sport, PIC32_SET(PIC32_UART_STA),
@@ -263,7 +251,7 @@ static void pic32_uart_break_ctl(struct uart_port *port, int ctl)
 		pic32_uart_writel(sport, PIC32_CLR(PIC32_UART_STA),
 					PIC32_UART_STA_UTXBRK);
 
-	spin_unlock_irqrestore(&port->lock, flags);
+	uart_port_unlock_irqrestore(port, flags);
 }
 
 /* get port type in string format */
@@ -285,7 +273,7 @@ static void pic32_uart_do_rx(struct uart_port *port)
 	 */
 	max_count = PIC32_UART_RX_FIFO_DEPTH;
 
-	spin_lock(&port->lock);
+	uart_port_lock(port);
 
 	tty = &port->state->port;
 
@@ -342,7 +330,7 @@ static void pic32_uart_do_rx(struct uart_port *port)
 
 	} while (--max_count);
 
-	spin_unlock(&port->lock);
+	uart_port_unlock(port);
 
 	tty_flip_buffer_push(tty);
 }
@@ -353,7 +341,7 @@ static void pic32_uart_do_rx(struct uart_port *port)
 static void pic32_uart_do_tx(struct uart_port *port)
 {
 	struct pic32_sport *sport = to_pic32_sport(port);
-	struct circ_buf *xmit = &port->state->xmit;
+	struct tty_port *tport = &port->state->port;
 	unsigned int max_count = PIC32_UART_TX_FIFO_DEPTH;
 
 	if (port->x_char) {
@@ -368,7 +356,7 @@ static void pic32_uart_do_tx(struct uart_port *port)
 		return;
 	}
 
-	if (uart_circ_empty(xmit))
+	if (kfifo_is_empty(&tport->xmit_fifo))
 		goto txq_empty;
 
 	/* keep stuffing chars into uart tx buffer
@@ -382,22 +370,20 @@ static void pic32_uart_do_tx(struct uart_port *port)
 	 */
 	while (!(PIC32_UART_STA_UTXBF &
 		pic32_uart_readl(sport, PIC32_UART_STA))) {
-		unsigned int c = xmit->buf[xmit->tail];
+		unsigned char c;
 
+		if (!uart_fifo_get(port, &c))
+			break;
 		pic32_uart_writel(sport, PIC32_UART_TX, c);
 
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-		port->icount.tx++;
-		if (uart_circ_empty(xmit))
-			break;
 		if (--max_count == 0)
 			break;
 	}
 
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
+	if (kfifo_len(&tport->xmit_fifo) < WAKEUP_CHARS)
 		uart_write_wakeup(port);
 
-	if (uart_circ_empty(xmit))
+	if (kfifo_is_empty(&tport->xmit_fifo))
 		goto txq_empty;
 
 	return;
@@ -422,9 +408,9 @@ static irqreturn_t pic32_uart_tx_interrupt(int irq, void *dev_id)
 	struct uart_port *port = dev_id;
 	unsigned long flags;
 
-	spin_lock_irqsave(&port->lock, flags);
+	uart_port_lock_irqsave(port, &flags);
 	pic32_uart_do_tx(port);
-	spin_unlock_irqrestore(&port->lock, flags);
+	uart_port_unlock_irqrestore(port, flags);
 
 	return IRQ_HANDLED;
 }
@@ -503,7 +489,7 @@ static int pic32_uart_startup(struct uart_port *port)
 	if (!sport->irq_fault_name) {
 		dev_err(port->dev, "%s: kasprintf err!", __func__);
 		ret = -ENOMEM;
-		goto out_done;
+		goto out_disable_clk;
 	}
 	irq_set_status_flags(sport->irq_fault, IRQ_NOAUTOEN);
 	ret = request_irq(sport->irq_fault, pic32_uart_fault_interrupt,
@@ -579,6 +565,8 @@ out_r:
 out_f:
 	free_irq(sport->irq_fault, port);
 	kfree(sport->irq_fault_name);
+out_disable_clk:
+	clk_disable_unprepare(sport->clk);
 out_done:
 	return ret;
 }
@@ -590,9 +578,9 @@ static void pic32_uart_shutdown(struct uart_port *port)
 	unsigned long flags;
 
 	/* disable uart */
-	spin_lock_irqsave(&port->lock, flags);
+	uart_port_lock_irqsave(port, &flags);
 	pic32_uart_dsbl_and_mask(port);
-	spin_unlock_irqrestore(&port->lock, flags);
+	uart_port_unlock_irqrestore(port, flags);
 	clk_disable_unprepare(sport->clk);
 
 	/* free all 3 interrupts for this UART */
@@ -607,14 +595,14 @@ static void pic32_uart_shutdown(struct uart_port *port)
 /* serial core request to change current uart setting */
 static void pic32_uart_set_termios(struct uart_port *port,
 				   struct ktermios *new,
-				   struct ktermios *old)
+				   const struct ktermios *old)
 {
 	struct pic32_sport *sport = to_pic32_sport(port);
 	unsigned int baud;
 	unsigned int quot;
 	unsigned long flags;
 
-	spin_lock_irqsave(&port->lock, flags);
+	uart_port_lock_irqsave(port, &flags);
 
 	/* disable uart and mask all interrupts while changing speed */
 	pic32_uart_dsbl_and_mask(port);
@@ -646,7 +634,7 @@ static void pic32_uart_set_termios(struct uart_port *port,
 					PIC32_UART_MODE_PDSEL0);
 	}
 	/* if hw flow ctrl, then the pins must be specified in device tree */
-	if ((new->c_cflag & CRTSCTS) && sport->hw_flow_ctrl) {
+	if ((new->c_cflag & CRTSCTS) && sport->cts_gpiod) {
 		/* enable hardware flow control */
 		pic32_uart_writel(sport, PIC32_SET(PIC32_UART_MODE),
 					PIC32_UART_MODE_UEN1);
@@ -682,7 +670,7 @@ static void pic32_uart_set_termios(struct uart_port *port,
 	/* enable uart */
 	pic32_uart_en_and_unmask(port);
 
-	spin_unlock_irqrestore(&port->lock, flags);
+	uart_port_unlock_irqrestore(port, flags);
 }
 
 /* serial core request to claim uart iomem */
@@ -851,7 +839,7 @@ console_initcall(pic32_console_init);
  */
 static int __init pic32_late_console_init(void)
 {
-	if (!(pic32_console.flags & CON_ENABLED))
+	if (!console_is_registered(&pic32_console))
 		register_console(&pic32_console);
 
 	return 0;
@@ -873,7 +861,8 @@ static struct uart_driver pic32_uart_driver = {
 
 static int pic32_uart_probe(struct platform_device *pdev)
 {
-	struct device_node *np = pdev->dev.of_node;
+	struct device *dev = &pdev->dev;
+	struct device_node *np = dev->of_node;
 	struct pic32_sport *sport;
 	int uart_idx = 0;
 	struct resource *res_mem;
@@ -897,30 +886,17 @@ static int pic32_uart_probe(struct platform_device *pdev)
 	sport->irq_rx		= irq_of_parse_and_map(np, 1);
 	sport->irq_tx		= irq_of_parse_and_map(np, 2);
 	sport->clk		= devm_clk_get(&pdev->dev, NULL);
+	if (IS_ERR(sport->clk))
+		return PTR_ERR(sport->clk);
 	sport->dev		= &pdev->dev;
 
 	/* Hardware flow control: gpios
 	 * !Note: Basically, CTS is needed for reading the status.
 	 */
-	sport->hw_flow_ctrl = false;
-	sport->cts_gpio = of_get_named_gpio(np, "cts-gpios", 0);
-	if (gpio_is_valid(sport->cts_gpio)) {
-		sport->hw_flow_ctrl = true;
-
-		ret = devm_gpio_request(sport->dev,
-					sport->cts_gpio, "CTS");
-		if (ret) {
-			dev_err(&pdev->dev,
-				"error requesting CTS GPIO\n");
-			goto err;
-		}
-
-		ret = gpio_direction_input(sport->cts_gpio);
-		if (ret) {
-			dev_err(&pdev->dev, "error setting CTS GPIO\n");
-			goto err;
-		}
-	}
+	sport->cts_gpiod = devm_gpiod_get_optional(dev, "cts", GPIOD_IN);
+	if (IS_ERR(sport->cts_gpiod))
+		return dev_err_probe(dev, PTR_ERR(sport->cts_gpiod), "error requesting CTS GPIO\n");
+	gpiod_set_consumer_name(sport->cts_gpiod, "CTS");
 
 	pic32_sports[uart_idx] = sport;
 	port = &sport->port;
@@ -941,7 +917,7 @@ static int pic32_uart_probe(struct platform_device *pdev)
 	}
 
 #ifdef CONFIG_SERIAL_PIC32_CONSOLE
-	if (uart_console(port) && (pic32_console.flags & CON_ENABLED)) {
+	if (uart_console_registered(port)) {
 		/* The peripheral clock has been enabled by console_setup,
 		 * so disable it till the port is used.
 		 */
@@ -960,7 +936,7 @@ err:
 	return ret;
 }
 
-static int pic32_uart_remove(struct platform_device *pdev)
+static void pic32_uart_remove(struct platform_device *pdev)
 {
 	struct uart_port *port = platform_get_drvdata(pdev);
 	struct pic32_sport *sport = to_pic32_sport(port);
@@ -969,9 +945,6 @@ static int pic32_uart_remove(struct platform_device *pdev)
 	clk_disable_unprepare(sport->clk);
 	platform_set_drvdata(pdev, NULL);
 	pic32_sports[sport->idx] = NULL;
-
-	/* automatic unroll of sport and gpios */
-	return 0;
 }
 
 static const struct of_device_id pic32_serial_dt_ids[] = {

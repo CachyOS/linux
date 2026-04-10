@@ -243,8 +243,6 @@ struct vb2_ops cx231xx_vbi_qops = {
 	.buf_queue = vbi_buf_queue,
 	.start_streaming = vbi_start_streaming,
 	.stop_streaming = vbi_stop_streaming,
-	.wait_prepare = vb2_ops_wait_prepare,
-	.wait_finish = vb2_ops_wait_finish,
 };
 
 /* ------------------------------------------------------------------
@@ -558,7 +556,7 @@ u32 cx231xx_copy_vbi_line(struct cx231xx *dev, struct cx231xx_dmaqueue *dma_q,
 }
 
 /*
- * video-buf generic routine to get the next available buffer
+ * generic routine to get the next available buffer
  */
 static inline void get_next_vbi_buf(struct cx231xx_dmaqueue *dma_q,
 				    struct cx231xx_buffer **buf)

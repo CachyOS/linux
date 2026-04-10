@@ -7,9 +7,6 @@
  *  Serial mouse driver for Linux
  */
 
-/*
- */
-
 #include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -234,7 +231,7 @@ static int sermouse_connect(struct serio *serio, struct serio_driver *drv)
 	unsigned char c = serio->id.extra;
 	int err = -ENOMEM;
 
-	sermouse = kzalloc(sizeof(struct sermouse), GFP_KERNEL);
+	sermouse = kzalloc_obj(*sermouse);
 	input_dev = input_allocate_device();
 	if (!sermouse || !input_dev)
 		goto fail1;

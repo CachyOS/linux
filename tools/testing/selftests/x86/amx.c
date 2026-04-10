@@ -3,7 +3,6 @@
 #define _GNU_SOURCE
 #include <err.h>
 #include <errno.h>
-#include <pthread.h>
 #include <setjmp.h>
 #include <stdio.h>
 #include <string.h>
@@ -17,194 +16,23 @@
 #include <sys/syscall.h>
 #include <sys/wait.h>
 
-#include "../kselftest.h" /* For __cpuid_count() */
+#include "helpers.h"
+#include "xstate.h"
 
 #ifndef __x86_64__
 # error This test is 64-bit only
 #endif
 
-#define XSAVE_HDR_OFFSET	512
-#define XSAVE_HDR_SIZE		64
-
-struct xsave_buffer {
-	union {
-		struct {
-			char legacy[XSAVE_HDR_OFFSET];
-			char header[XSAVE_HDR_SIZE];
-			char extended[0];
-		};
-		char bytes[0];
-	};
-};
-
-static inline uint64_t xgetbv(uint32_t index)
-{
-	uint32_t eax, edx;
-
-	asm volatile("xgetbv;"
-		     : "=a" (eax), "=d" (edx)
-		     : "c" (index));
-	return eax + ((uint64_t)edx << 32);
-}
-
-static inline void xsave(struct xsave_buffer *xbuf, uint64_t rfbm)
-{
-	uint32_t rfbm_lo = rfbm;
-	uint32_t rfbm_hi = rfbm >> 32;
-
-	asm volatile("xsave (%%rdi)"
-		     : : "D" (xbuf), "a" (rfbm_lo), "d" (rfbm_hi)
-		     : "memory");
-}
-
-static inline void xrstor(struct xsave_buffer *xbuf, uint64_t rfbm)
-{
-	uint32_t rfbm_lo = rfbm;
-	uint32_t rfbm_hi = rfbm >> 32;
-
-	asm volatile("xrstor (%%rdi)"
-		     : : "D" (xbuf), "a" (rfbm_lo), "d" (rfbm_hi));
-}
-
 /* err() exits and will not return */
 #define fatal_error(msg, ...)	err(1, "[FAIL]\t" msg, ##__VA_ARGS__)
 
-static void sethandler(int sig, void (*handler)(int, siginfo_t *, void *),
-		       int flags)
-{
-	struct sigaction sa;
-
-	memset(&sa, 0, sizeof(sa));
-	sa.sa_sigaction = handler;
-	sa.sa_flags = SA_SIGINFO | flags;
-	sigemptyset(&sa.sa_mask);
-	if (sigaction(sig, &sa, 0))
-		fatal_error("sigaction");
-}
-
-static void clearhandler(int sig)
-{
-	struct sigaction sa;
-
-	memset(&sa, 0, sizeof(sa));
-	sa.sa_handler = SIG_DFL;
-	sigemptyset(&sa.sa_mask);
-	if (sigaction(sig, &sa, 0))
-		fatal_error("sigaction");
-}
-
-#define XFEATURE_XTILECFG	17
-#define XFEATURE_XTILEDATA	18
 #define XFEATURE_MASK_XTILECFG	(1 << XFEATURE_XTILECFG)
 #define XFEATURE_MASK_XTILEDATA	(1 << XFEATURE_XTILEDATA)
 #define XFEATURE_MASK_XTILE	(XFEATURE_MASK_XTILECFG | XFEATURE_MASK_XTILEDATA)
 
-#define CPUID_LEAF1_ECX_XSAVE_MASK	(1 << 26)
-#define CPUID_LEAF1_ECX_OSXSAVE_MASK	(1 << 27)
-static inline void check_cpuid_xsave(void)
-{
-	uint32_t eax, ebx, ecx, edx;
-
-	/*
-	 * CPUID.1:ECX.XSAVE[bit 26] enumerates general
-	 * support for the XSAVE feature set, including
-	 * XGETBV.
-	 */
-	__cpuid_count(1, 0, eax, ebx, ecx, edx);
-	if (!(ecx & CPUID_LEAF1_ECX_XSAVE_MASK))
-		fatal_error("cpuid: no CPU xsave support");
-	if (!(ecx & CPUID_LEAF1_ECX_OSXSAVE_MASK))
-		fatal_error("cpuid: no OS xsave support");
-}
-
-static uint32_t xbuf_size;
-
-static struct {
-	uint32_t xbuf_offset;
-	uint32_t size;
-} xtiledata;
-
-#define CPUID_LEAF_XSTATE		0xd
-#define CPUID_SUBLEAF_XSTATE_USER	0x0
-#define TILE_CPUID			0x1d
-#define TILE_PALETTE_ID			0x1
-
-static void check_cpuid_xtiledata(void)
-{
-	uint32_t eax, ebx, ecx, edx;
-
-	__cpuid_count(CPUID_LEAF_XSTATE, CPUID_SUBLEAF_XSTATE_USER,
-		      eax, ebx, ecx, edx);
-
-	/*
-	 * EBX enumerates the size (in bytes) required by the XSAVE
-	 * instruction for an XSAVE area containing all the user state
-	 * components corresponding to bits currently set in XCR0.
-	 *
-	 * Stash that off so it can be used to allocate buffers later.
-	 */
-	xbuf_size = ebx;
-
-	__cpuid_count(CPUID_LEAF_XSTATE, XFEATURE_XTILEDATA,
-		      eax, ebx, ecx, edx);
-	/*
-	 * eax: XTILEDATA state component size
-	 * ebx: XTILEDATA state component offset in user buffer
-	 */
-	if (!eax || !ebx)
-		fatal_error("xstate cpuid: invalid tile data size/offset: %d/%d",
-				eax, ebx);
-
-	xtiledata.size	      = eax;
-	xtiledata.xbuf_offset = ebx;
-}
+struct xstate_info xtiledata;
 
 /* The helpers for managing XSAVE buffer and tile states: */
-
-struct xsave_buffer *alloc_xbuf(void)
-{
-	struct xsave_buffer *xbuf;
-
-	/* XSAVE buffer should be 64B-aligned. */
-	xbuf = aligned_alloc(64, xbuf_size);
-	if (!xbuf)
-		fatal_error("aligned_alloc()");
-	return xbuf;
-}
-
-static inline void clear_xstate_header(struct xsave_buffer *buffer)
-{
-	memset(&buffer->header, 0, sizeof(buffer->header));
-}
-
-static inline uint64_t get_xstatebv(struct xsave_buffer *buffer)
-{
-	/* XSTATE_BV is at the beginning of the header: */
-	return *(uint64_t *)&buffer->header;
-}
-
-static inline void set_xstatebv(struct xsave_buffer *buffer, uint64_t bv)
-{
-	/* XSTATE_BV is at the beginning of the header: */
-	*(uint64_t *)(&buffer->header) = bv;
-}
-
-static void set_rand_tiledata(struct xsave_buffer *xbuf)
-{
-	int *ptr = (int *)&xbuf->bytes[xtiledata.xbuf_offset];
-	int data;
-	int i;
-
-	/*
-	 * Ensure that 'data' is never 0.  This ensures that
-	 * the registers are never in their initial configuration
-	 * and thus never tracked as being in the init state.
-	 */
-	data = rand() | 1;
-
-	for (i = 0; i < xtiledata.size / sizeof(int); i++, ptr++)
-		*ptr = data;
-}
 
 struct xsave_buffer *stashed_xsave;
 
@@ -219,21 +47,6 @@ static void init_stashed_xsave(void)
 static void free_stashed_xsave(void)
 {
 	free(stashed_xsave);
-}
-
-/* See 'struct _fpx_sw_bytes' at sigcontext.h */
-#define SW_BYTES_OFFSET		464
-/* N.B. The struct's field name varies so read from the offset. */
-#define SW_BYTES_BV_OFFSET	(SW_BYTES_OFFSET + 8)
-
-static inline struct _fpx_sw_bytes *get_fpx_sw_bytes(void *buffer)
-{
-	return (struct _fpx_sw_bytes *)(buffer + SW_BYTES_OFFSET);
-}
-
-static inline uint64_t get_fpx_sw_bytes_features(void *buffer)
-{
-	return *(uint64_t *)(buffer + SW_BYTES_BV_OFFSET);
 }
 
 /* Work around printf() being unsafe in signals: */
@@ -333,21 +146,15 @@ static inline bool load_rand_tiledata(struct xsave_buffer *xbuf)
 {
 	clear_xstate_header(xbuf);
 	set_xstatebv(xbuf, XFEATURE_MASK_XTILEDATA);
-	set_rand_tiledata(xbuf);
+	set_rand_data(&xtiledata, xbuf);
 	return xrstor_safe(xbuf, XFEATURE_MASK_XTILEDATA);
-}
-
-/* Return XTILEDATA to its initial configuration. */
-static inline void init_xtiledata(void)
-{
-	clear_xstate_header(stashed_xsave);
-	xrstor_safe(stashed_xsave, XFEATURE_MASK_XTILEDATA);
 }
 
 enum expected_result { FAIL_EXPECTED, SUCCESS_EXPECTED };
 
 /* arch_prctl() and sigaltstack() test */
 
+#define ARCH_GET_XCOMP_SUPP	0x1021
 #define ARCH_GET_XCOMP_PERM	0x1022
 #define ARCH_REQ_XCOMP_PERM	0x1023
 
@@ -583,6 +390,13 @@ static void test_dynamic_state(void)
 	_exit(0);
 }
 
+static inline int __compare_tiledata_state(struct xsave_buffer *xbuf1, struct xsave_buffer *xbuf2)
+{
+	return memcmp(&xbuf1->bytes[xtiledata.xbuf_offset],
+		      &xbuf2->bytes[xtiledata.xbuf_offset],
+		      xtiledata.size);
+}
+
 /*
  * Save current register state and compare it to @xbuf1.'
  *
@@ -599,23 +413,13 @@ static inline bool __validate_tiledata_regs(struct xsave_buffer *xbuf1)
 		fatal_error("failed to allocate XSAVE buffer\n");
 
 	xsave(xbuf2, XFEATURE_MASK_XTILEDATA);
-	ret = memcmp(&xbuf1->bytes[xtiledata.xbuf_offset],
-		     &xbuf2->bytes[xtiledata.xbuf_offset],
-		     xtiledata.size);
+	ret = __compare_tiledata_state(xbuf1, xbuf2);
 
 	free(xbuf2);
 
 	if (ret == 0)
 		return false;
 	return true;
-}
-
-static inline void validate_tiledata_regs_same(struct xsave_buffer *xbuf)
-{
-	int ret = __validate_tiledata_regs(xbuf);
-
-	if (ret != 0)
-		fatal_error("TILEDATA registers changed");
 }
 
 static inline void validate_tiledata_regs_changed(struct xsave_buffer *xbuf)
@@ -674,163 +478,22 @@ static void test_fork(void)
 	_exit(0);
 }
 
-/* Context switching test */
-
-static struct _ctxtswtest_cfg {
-	unsigned int iterations;
-	unsigned int num_threads;
-} ctxtswtest_config;
-
-struct futex_info {
-	pthread_t thread;
-	int nr;
-	pthread_mutex_t mutex;
-	struct futex_info *next;
-};
-
-static void *check_tiledata(void *info)
-{
-	struct futex_info *finfo = (struct futex_info *)info;
-	struct xsave_buffer *xbuf;
-	int i;
-
-	xbuf = alloc_xbuf();
-	if (!xbuf)
-		fatal_error("unable to allocate XSAVE buffer");
-
-	/*
-	 * Load random data into 'xbuf' and then restore
-	 * it to the tile registers themselves.
-	 */
-	load_rand_tiledata(xbuf);
-	for (i = 0; i < ctxtswtest_config.iterations; i++) {
-		pthread_mutex_lock(&finfo->mutex);
-
-		/*
-		 * Ensure the register values have not
-		 * diverged from those recorded in 'xbuf'.
-		 */
-		validate_tiledata_regs_same(xbuf);
-
-		/* Load new, random values into xbuf and registers */
-		load_rand_tiledata(xbuf);
-
-		/*
-		 * The last thread's last unlock will be for
-		 * thread 0's mutex.  However, thread 0 will
-		 * have already exited the loop and the mutex
-		 * will already be unlocked.
-		 *
-		 * Because this is not an ERRORCHECK mutex,
-		 * that inconsistency will be silently ignored.
-		 */
-		pthread_mutex_unlock(&finfo->next->mutex);
-	}
-
-	free(xbuf);
-	/*
-	 * Return this thread's finfo, which is
-	 * a unique value for this thread.
-	 */
-	return finfo;
-}
-
-static int create_threads(int num, struct futex_info *finfo)
-{
-	int i;
-
-	for (i = 0; i < num; i++) {
-		int next_nr;
-
-		finfo[i].nr = i;
-		/*
-		 * Thread 'i' will wait on this mutex to
-		 * be unlocked.  Lock it immediately after
-		 * initialization:
-		 */
-		pthread_mutex_init(&finfo[i].mutex, NULL);
-		pthread_mutex_lock(&finfo[i].mutex);
-
-		next_nr = (i + 1) % num;
-		finfo[i].next = &finfo[next_nr];
-
-		if (pthread_create(&finfo[i].thread, NULL, check_tiledata, &finfo[i]))
-			fatal_error("pthread_create()");
-	}
-	return 0;
-}
-
-static void affinitize_cpu0(void)
-{
-	cpu_set_t cpuset;
-
-	CPU_ZERO(&cpuset);
-	CPU_SET(0, &cpuset);
-
-	if (sched_setaffinity(0, sizeof(cpuset), &cpuset) != 0)
-		fatal_error("sched_setaffinity to CPU 0");
-}
-
-static void test_context_switch(void)
-{
-	struct futex_info *finfo;
-	int i;
-
-	/* Affinitize to one CPU to force context switches */
-	affinitize_cpu0();
-
-	req_xtiledata_perm();
-
-	printf("[RUN]\tCheck tiledata context switches, %d iterations, %d threads.\n",
-	       ctxtswtest_config.iterations,
-	       ctxtswtest_config.num_threads);
-
-
-	finfo = malloc(sizeof(*finfo) * ctxtswtest_config.num_threads);
-	if (!finfo)
-		fatal_error("malloc()");
-
-	create_threads(ctxtswtest_config.num_threads, finfo);
-
-	/*
-	 * This thread wakes up thread 0
-	 * Thread 0 will wake up 1
-	 * Thread 1 will wake up 2
-	 * ...
-	 * the last thread will wake up 0
-	 *
-	 * ... this will repeat for the configured
-	 * number of iterations.
-	 */
-	pthread_mutex_unlock(&finfo[0].mutex);
-
-	/* Wait for all the threads to finish: */
-	for (i = 0; i < ctxtswtest_config.num_threads; i++) {
-		void *thread_retval;
-		int rc;
-
-		rc = pthread_join(finfo[i].thread, &thread_retval);
-
-		if (rc)
-			fatal_error("pthread_join() failed for thread %d err: %d\n",
-					i, rc);
-
-		if (thread_retval != &finfo[i])
-			fatal_error("unexpected thread retval for thread %d: %p\n",
-					i, thread_retval);
-
-	}
-
-	printf("[OK]\tNo incorrect case was found.\n");
-
-	free(finfo);
-}
-
 int main(void)
 {
-	/* Check hardware availability at first */
-	check_cpuid_xsave();
-	check_cpuid_xtiledata();
+	unsigned long features;
+	long rc;
+
+	rc = syscall(SYS_arch_prctl, ARCH_GET_XCOMP_SUPP, &features);
+	if (rc || (features & XFEATURE_MASK_XTILE) != XFEATURE_MASK_XTILE) {
+		ksft_print_msg("no AMX support\n");
+		return KSFT_SKIP;
+	}
+
+	xtiledata = get_xstate_info(XFEATURE_XTILEDATA);
+	if (!xtiledata.size || !xtiledata.xbuf_offset) {
+		fatal_error("xstate cpuid: invalid tile data size/offset: %d/%d",
+			    xtiledata.size, xtiledata.xbuf_offset);
+	}
 
 	init_stashed_xsave();
 	sethandler(SIGILL, handle_noperm, 0);
@@ -842,9 +505,11 @@ int main(void)
 
 	test_fork();
 
-	ctxtswtest_config.iterations = 10;
-	ctxtswtest_config.num_threads = 5;
-	test_context_switch();
+	/*
+	 * Perform generic xstate tests for context switching, ptrace,
+	 * and signal.
+	 */
+	test_xstate(XFEATURE_XTILEDATA);
 
 	clearhandler(SIGILL);
 	free_stashed_xsave();

@@ -15,8 +15,7 @@
 #include <linux/clk.h>
 #include <linux/rtc.h>
 #include <linux/bcd.h>
-
-#include <asm/mach-pic32/pic32.h>
+#include <linux/platform_data/pic32.h>
 
 #define PIC32_RTCCON		0x00
 #define PIC32_RTCCON_ON		BIT(15)
@@ -284,15 +283,13 @@ static void pic32_rtc_enable(struct pic32_rtc_dev *pdata, int en)
 	clk_disable(pdata->clk);
 }
 
-static int pic32_rtc_remove(struct platform_device *pdev)
+static void pic32_rtc_remove(struct platform_device *pdev)
 {
 	struct pic32_rtc_dev *pdata = platform_get_drvdata(pdev);
 
 	pic32_rtc_setaie(&pdev->dev, 0);
 	clk_unprepare(pdata->clk);
 	pdata->clk = NULL;
-
-	return 0;
 }
 
 static int pic32_rtc_probe(struct platform_device *pdev)
@@ -324,15 +321,15 @@ static int pic32_rtc_probe(struct platform_device *pdev)
 
 	spin_lock_init(&pdata->alarm_lock);
 
+	pdata->rtc = devm_rtc_allocate_device(&pdev->dev);
+	if (IS_ERR(pdata->rtc))
+		return PTR_ERR(pdata->rtc);
+
 	clk_prepare_enable(pdata->clk);
 
 	pic32_rtc_enable(pdata, 1);
 
-	device_init_wakeup(&pdev->dev, 1);
-
-	pdata->rtc = devm_rtc_allocate_device(&pdev->dev);
-	if (IS_ERR(pdata->rtc))
-		return PTR_ERR(pdata->rtc);
+	device_init_wakeup(&pdev->dev, true);
 
 	pdata->rtc->ops = &pic32_rtcops;
 	pdata->rtc->range_min = RTC_TIMESTAMP_BEGIN_2000;
@@ -341,8 +338,6 @@ static int pic32_rtc_probe(struct platform_device *pdev)
 	ret = devm_rtc_register_device(pdata->rtc);
 	if (ret)
 		goto err_nortc;
-
-	pdata->rtc->max_user_freq = 128;
 
 	pic32_rtc_setfreq(&pdev->dev, 1);
 	ret = devm_request_irq(&pdev->dev, pdata->alarm_irq,

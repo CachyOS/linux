@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+#define _GNU_SOURCE
 #include <test_progs.h>
 #include "cgroup_helpers.h"
 #include "network_helpers.h"
@@ -10,14 +11,16 @@ struct tcp_rtt_storage {
 	__u32 delivered;
 	__u32 delivered_ce;
 	__u32 icsk_retransmits;
+
+	__u32 mrtt_us;	/* args[0] */
+	__u32 srtt;	/* args[1] */
 };
 
 static void send_byte(int fd)
 {
 	char b = 0x55;
 
-	if (CHECK_FAIL(write(fd, &b, sizeof(b)) != 1))
-		perror("Failed to send single byte");
+	ASSERT_EQ(write(fd, &b, sizeof(b)), 1, "send single byte");
 }
 
 static int wait_for_ack(int fd, int retries)
@@ -51,10 +54,8 @@ static int verify_sk(int map_fd, int client_fd, const char *msg, __u32 invoked,
 	int err = 0;
 	struct tcp_rtt_storage val;
 
-	if (CHECK_FAIL(bpf_map_lookup_elem(map_fd, &client_fd, &val) < 0)) {
-		perror("Failed to read socket storage");
+	if (!ASSERT_GE(bpf_map_lookup_elem(map_fd, &client_fd, &val), 0, "read socket storage"))
 		return -1;
-	}
 
 	if (val.invoked != invoked) {
 		log_err("%s: unexpected bpf_tcp_sock.invoked %d != %d",
@@ -83,6 +84,17 @@ static int verify_sk(int map_fd, int client_fd, const char *msg, __u32 invoked,
 	if (val.icsk_retransmits != icsk_retransmits) {
 		log_err("%s: unexpected bpf_tcp_sock.icsk_retransmits %d != %d",
 			msg, val.icsk_retransmits, icsk_retransmits);
+		err++;
+	}
+
+	/* Precise values of mrtt and srtt are unavailable, just make sure they are nonzero */
+	if (val.mrtt_us == 0) {
+		log_err("%s: unexpected bpf_tcp_sock.args[0] (mrtt_us) %u == 0", msg, val.mrtt_us);
+		err++;
+	}
+
+	if (val.srtt == 0) {
+		log_err("%s: unexpected bpf_tcp_sock.args[1] (srtt) %u == 0", msg, val.srtt);
 		err++;
 	}
 
@@ -151,14 +163,14 @@ void test_tcp_rtt(void)
 	int server_fd, cgroup_fd;
 
 	cgroup_fd = test__join_cgroup("/tcp_rtt");
-	if (CHECK_FAIL(cgroup_fd < 0))
+	if (!ASSERT_GE(cgroup_fd, 0, "join_cgroup /tcp_rtt"))
 		return;
 
 	server_fd = start_server(AF_INET, SOCK_STREAM, NULL, 0, 0);
-	if (CHECK_FAIL(server_fd < 0))
+	if (!ASSERT_GE(server_fd, 0, "start_server"))
 		goto close_cgroup_fd;
 
-	CHECK_FAIL(run_test(cgroup_fd, server_fd));
+	ASSERT_OK(run_test(cgroup_fd, server_fd), "run_test");
 
 	close(server_fd);
 

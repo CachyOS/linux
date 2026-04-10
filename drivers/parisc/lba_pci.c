@@ -404,7 +404,7 @@ static int elroy_cfg_read(struct pci_bus *bus, unsigned int devfn, int pos, int 
 static void
 lba_wr_cfg(struct lba_device *d, u32 tok, u8 reg, u32 data, u32 size)
 {
-	int error = 0;
+	int error __maybe_unused = 0;
 	u32 arb_mask = 0;
 	u32 error_config = 0;
 	u32 status_control = 0;
@@ -1018,18 +1018,18 @@ static void
 lba_pat_resources(struct parisc_device *pa_dev, struct lba_device *lba_dev)
 {
 	unsigned long bytecnt;
-	long io_count;
+	long io_count __maybe_unused;
 	long status;	/* PDC return status */
 	long pa_count;
 	pdc_pat_cell_mod_maddr_block_t *pa_pdc_cell;	/* PA_VIEW */
 	pdc_pat_cell_mod_maddr_block_t *io_pdc_cell;	/* IO_VIEW */
 	int i;
 
-	pa_pdc_cell = kzalloc(sizeof(pdc_pat_cell_mod_maddr_block_t), GFP_KERNEL);
+	pa_pdc_cell = kzalloc_obj(pdc_pat_cell_mod_maddr_block_t);
 	if (!pa_pdc_cell)
 		return;
 
-	io_pdc_cell = kzalloc(sizeof(pdc_pat_cell_mod_maddr_block_t), GFP_KERNEL);
+	io_pdc_cell = kzalloc_obj(pdc_pat_cell_mod_maddr_block_t);
 	if (!io_pdc_cell) {
 		kfree(pa_pdc_cell);
 		return;
@@ -1066,6 +1066,10 @@ lba_pat_resources(struct parisc_device *pa_dev, struct lba_device *lba_dev)
 
 		p = (void *) &(pa_pdc_cell->mod[2+i*3]);
 		io = (void *) &(io_pdc_cell->mod[2+i*3]);
+		DBG_PAT("PA #%d : TYPE 0x%08lx,  start 0x%08lx, end 0x%08lx\n",
+			i, p->type, p->start, p->end);
+		DBG_PAT("IO #%d : TYPE 0x%08lx,  start 0x%08lx, end 0x%08lx\n",
+			i, io->type, io->start, io->end);
 
 		/* Convert the PAT range data to PCI "struct resource" */
 		switch(p->type & 0xff) {
@@ -1162,10 +1166,6 @@ lba_pat_resources(struct parisc_device *pa_dev, struct lba_device *lba_dev)
 #define lba_pat_port_ops lba_astro_port_ops
 #define lba_pat_resources(pa_dev, lba_dev)
 #endif	/* CONFIG_64BIT */
-
-
-extern void sba_distributed_lmmio(struct parisc_device *, struct resource *);
-extern void sba_directed_lmmio(struct parisc_device *, struct resource *);
 
 
 static void
@@ -1476,8 +1476,12 @@ lba_driver_probe(struct parisc_device *dev)
 	u32 func_class;
 	void *tmp_obj;
 	char *version;
-	void __iomem *addr = ioremap(dev->hpa.start, 4096);
+	void __iomem *addr;
 	int max;
+
+	addr = ioremap(dev->hpa.start, 4096);
+	if (addr == NULL)
+		return -ENOMEM;
 
 	/* Read HW Rev First */
 	func_class = READ_REG32(addr + LBA_FCLASS);
@@ -1535,13 +1539,14 @@ lba_driver_probe(struct parisc_device *dev)
 	}
 
 	/* Tell I/O SAPIC driver we have a IRQ handler/region. */
-	tmp_obj = iosapic_register(dev->hpa.start + LBA_IOSAPIC_BASE);
+	tmp_obj = iosapic_register(dev->hpa.start + LBA_IOSAPIC_BASE,
+						addr + LBA_IOSAPIC_BASE);
 
 	/* NOTE: PCI devices (e.g. 103c:1005 graphics card) which don't
 	**	have an IRT entry will get NULL back from iosapic code.
 	*/
 	
-	lba_dev = kzalloc(sizeof(struct lba_device), GFP_KERNEL);
+	lba_dev = kzalloc_obj(struct lba_device);
 	if (!lba_dev) {
 		printk(KERN_ERR "lba_init_chip - couldn't alloc lba_device\n");
 		return(1);
@@ -1681,10 +1686,11 @@ static struct parisc_driver lba_driver __refdata = {
 ** One time initialization to let the world know the LBA was found.
 ** Must be called exactly once before pci_init().
 */
-void __init lba_init(void)
+static int __init lba_init(void)
 {
-	register_parisc_driver(&lba_driver);
+	return register_parisc_driver(&lba_driver);
 }
+arch_initcall(lba_init);
 
 /*
 ** Initialize the IBASE/IMASK registers for LBA (Elroy).

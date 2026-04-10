@@ -100,8 +100,8 @@ struct gb_loopback {
 
 static struct class loopback_class = {
 	.name		= "gb_loopback",
-	.owner		= THIS_MODULE,
 };
+
 static DEFINE_IDA(loopback_ida);
 
 /* Min/max values in jiffies */
@@ -471,7 +471,7 @@ static int gb_loopback_async_operation(struct gb_loopback *gb, int type,
 	struct gb_operation *operation;
 	int ret;
 
-	op_async = kzalloc(sizeof(*op_async), GFP_KERNEL);
+	op_async = kzalloc_obj(*op_async);
 	if (!op_async)
 		return -ENOMEM;
 
@@ -870,7 +870,7 @@ static int gb_loopback_fn(void *data)
 		if (gb->send_count == gb->iteration_max) {
 			mutex_unlock(&gb->mutex);
 
-			/* Wait for synchronous and asynchronus completion */
+			/* Wait for synchronous and asynchronous completion */
 			gb_loopback_async_wait_all(gb);
 
 			/* Mark complete unless user-space has poked us */
@@ -989,7 +989,7 @@ static int gb_loopback_probe(struct gb_bundle *bundle,
 	if (cport_desc->protocol_id != GREYBUS_PROTOCOL_LOOPBACK)
 		return -ENODEV;
 
-	gb = kzalloc(sizeof(*gb), GFP_KERNEL);
+	gb = kzalloc_obj(*gb);
 	if (!gb)
 		return -ENOMEM;
 
@@ -1029,7 +1029,7 @@ static int gb_loopback_probe(struct gb_bundle *bundle,
 	gb->file = debugfs_create_file(name, S_IFREG | 0444, gb_dev.root, gb,
 				       &gb_loopback_dbgfs_latency_fops);
 
-	gb->id = ida_simple_get(&loopback_ida, 0, 0, GFP_KERNEL);
+	gb->id = ida_alloc(&loopback_ida, GFP_KERNEL);
 	if (gb->id < 0) {
 		retval = gb->id;
 		goto out_debugfs_remove;
@@ -1080,7 +1080,7 @@ out_conn:
 out_connection_disable:
 	gb_connection_disable(connection);
 out_ida_remove:
-	ida_simple_remove(&loopback_ida, gb->id);
+	ida_free(&loopback_ida, gb->id);
 out_debugfs_remove:
 	debugfs_remove(gb->file);
 out_connection_destroy:
@@ -1122,7 +1122,7 @@ static void gb_loopback_disconnect(struct gb_bundle *bundle)
 	spin_unlock_irqrestore(&gb_dev.lock, flags);
 
 	device_unregister(gb->dev);
-	ida_simple_remove(&loopback_ida, gb->id);
+	ida_free(&loopback_ida, gb->id);
 
 	gb_connection_destroy(gb->connection);
 	kfree(gb);
@@ -1175,4 +1175,5 @@ static void __exit loopback_exit(void)
 }
 module_exit(loopback_exit);
 
+MODULE_DESCRIPTION("Loopback bridge driver for the Greybus loopback module");
 MODULE_LICENSE("GPL v2");

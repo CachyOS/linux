@@ -163,7 +163,7 @@ static int tx_params[MAX_UNITS] = {-1, -1, -1, -1, -1, -1, -1, -1};
 #include <linux/uaccess.h>
 #include <asm/processor.h>	/* Processor type for cache alignment. */
 #include <asm/io.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <asm/cache.h>
 
 static const char version[] =
@@ -1025,7 +1025,7 @@ static inline int hamachi_tx(struct net_device *dev)
 
 static void hamachi_timer(struct timer_list *t)
 {
-	struct hamachi_private *hmp = from_timer(hmp, t, timer);
+	struct hamachi_private *hmp = timer_container_of(hmp, t, timer);
 	struct net_device *dev = hmp->mii_if.dev;
 	void __iomem *ioaddr = hmp->base;
 	int next_tick = 10*HZ;
@@ -1712,7 +1712,7 @@ static int hamachi_close(struct net_device *dev)
 
 	free_irq(hmp->pci_dev->irq, dev);
 
-	del_timer_sync(&hmp->timer);
+	timer_delete_sync(&hmp->timer);
 
 	/* Free all the skbuffs in the Rx queue. */
 	for (i = 0; i < RX_RING_SIZE; i++) {
@@ -1819,9 +1819,9 @@ static void hamachi_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *
 {
 	struct hamachi_private *np = netdev_priv(dev);
 
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, pci_name(np->pci_dev), sizeof(info->bus_info));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, pci_name(np->pci_dev), sizeof(info->bus_info));
 }
 
 static int hamachi_get_link_ksettings(struct net_device *dev,

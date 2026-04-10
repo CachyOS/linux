@@ -52,14 +52,14 @@ line is usually required to identify and handle the bug. Along this chapter,
 we'll refer to "Oops" for all kinds of stack traces that need to be analyzed.
 
 If the kernel is compiled with ``CONFIG_DEBUG_INFO``, you can enhance the
-quality of the stack trace by using file:`scripts/decode_stacktrace.sh`.
+quality of the stack trace by using ``scripts/decode_stacktrace.sh``.
 
 Modules linked in
 -----------------
 
 Modules that are tainted or are being loaded or unloaded are marked with
 "(...)", where the taint flags are described in
-file:`Documentation/admin-guide/tainted-kernels.rst`, "being loaded" is
+Documentation/admin-guide/tainted-kernels.rst, "being loaded" is
 annotated with "+", and "being unloaded" is annotated with "-".
 
 
@@ -196,7 +196,7 @@ will see the assembler code for the routine shown, but if your kernel has
 debug symbols the C code will also be available. (Debug symbols can be enabled
 in the kernel hacking menu of the menu configuration.) For example::
 
-    $ objdump -r -S -l --disassemble net/dccp/ipv4.o
+    $ objdump -r -S -l --disassemble net/ipv4/tcp.o
 
 .. note::
 
@@ -235,7 +235,7 @@ Dave Miller)::
          mov        0x8(%ebp), %ebx         ! %ebx = skb->sk
          mov        0x13c(%ebx), %eax       ! %eax = inet_sk(sk)->opt
 
-file:`scripts/decodecode` can be used to automate most of this, depending
+``scripts/decodecode`` can be used to automate most of this, depending
 on what CPU architecture is being debugged.
 
 Reporting the bug
@@ -244,15 +244,15 @@ Reporting the bug
 Once you find where the bug happened, by inspecting its location,
 you could either try to fix it yourself or report it upstream.
 
-In order to report it upstream, you should identify the mailing list
-used for the development of the affected code. This can be done by using
-the ``get_maintainer.pl`` script.
+In order to report it upstream, you should identify the bug tracker, if any, or
+mailing list used for the development of the affected code. This can be done by
+using the ``get_maintainer.pl`` script.
 
 For example, if you find a bug at the gspca's sonixj.c file, you can get
 its maintainers with::
 
-	$ ./scripts/get_maintainer.pl -f drivers/media/usb/gspca/sonixj.c
-	Hans Verkuil <hverkuil@xs4all.nl> (odd fixer:GSPCA USB WEBCAM DRIVER,commit_signer:1/1=100%)
+	$ ./scripts/get_maintainer.pl --bug -f drivers/media/usb/gspca/sonixj.c
+	Hans Verkuil <hverkuil@kernel.org> (odd fixer:GSPCA USB WEBCAM DRIVER,commit_signer:1/1=100%)
 	Mauro Carvalho Chehab <mchehab@kernel.org> (maintainer:MEDIA INPUT INFRASTRUCTURE (V4L/DVB),commit_signer:1/1=100%)
 	Tejun Heo <tj@kernel.org> (commit_signer:1/1=100%)
 	Bhaktipriya Shridhar <bhaktipriya96@gmail.com> (commit_signer:1/1=100%,authored:1/1=100%,added_lines:4/4=100%,removed_lines:9/9=100%)
@@ -267,11 +267,12 @@ Please notice that it will point to:
 - The driver maintainer (Hans Verkuil);
 - The subsystem maintainer (Mauro Carvalho Chehab);
 - The driver and/or subsystem mailing list (linux-media@vger.kernel.org);
-- the Linux Kernel mailing list (linux-kernel@vger.kernel.org).
+- The Linux Kernel mailing list (linux-kernel@vger.kernel.org);
+- The bug reporting URIs for the driver/subsystem (none in the above example).
 
-Usually, the fastest way to have your bug fixed is to report it to mailing
-list used for the development of the code (linux-media ML) copying the
-driver maintainer (Hans).
+If the listing contains bug reporting URIs at the end, please prefer them over
+email. Otherwise, please report bugs to the mailing list used for the
+development of the code (linux-media ML) copying the driver maintainer (Hans).
 
 If you are totally stumped as to whom to send the report, and
 ``get_maintainer.pl`` didn't provide you anything useful, send it to
@@ -367,12 +368,3 @@ processed by ``klogd``::
 	Aug 29 09:51:01 blizard kernel: Call Trace: [oops:_oops_ioctl+48/80] [_sys_ioctl+254/272] [_system_call+82/128]
 	Aug 29 09:51:01 blizard kernel: Code: c7 00 05 00 00 00 eb 08 90 90 90 90 90 90 90 90 89 ec 5d c3
 
----------------------------------------------------------------------------
-
-::
-
-  Dr. G.W. Wettstein           Oncology Research Div. Computing Facility
-  Roger Maris Cancer Center    INTERNET: greg@wind.rmcc.com
-  820 4th St. N.
-  Fargo, ND  58122
-  Phone: 701-234-7556

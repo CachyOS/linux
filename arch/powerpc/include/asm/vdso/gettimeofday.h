@@ -2,9 +2,8 @@
 #ifndef _ASM_POWERPC_VDSO_GETTIMEOFDAY_H
 #define _ASM_POWERPC_VDSO_GETTIMEOFDAY_H
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
-#include <asm/page.h>
 #include <asm/vdso/timebase.h>
 #include <asm/barrier.h>
 #include <asm/unistd.h>
@@ -13,6 +12,17 @@
 #define VDSO_HAS_CLOCK_GETRES		1
 
 #define VDSO_HAS_TIME			1
+
+/*
+ * powerpc specific delta calculation.
+ *
+ * This variant removes the masking of the subtraction because the
+ * clocksource mask of all VDSO capable clocksources on powerpc is U64_MAX
+ * which would result in a pointless operation. The compiler cannot
+ * optimize it away as the mask comes from the vdso data and is not compile
+ * time constant.
+ */
+#define VDSO_DELTA_NOMASK		1
 
 static __always_inline int do_syscall_2(const unsigned long _r0, const unsigned long _r3,
 					const unsigned long _r4)
@@ -84,41 +94,16 @@ int clock_getres32_fallback(clockid_t _clkid, struct old_timespec32 *_ts)
 #endif
 
 static __always_inline u64 __arch_get_hw_counter(s32 clock_mode,
-						 const struct vdso_data *vd)
+						 const struct vdso_time_data *vd)
 {
 	return get_tb();
 }
 
-const struct vdso_data *__arch_get_vdso_data(void);
-
-#ifdef CONFIG_TIME_NS
-static __always_inline
-const struct vdso_data *__arch_get_timens_vdso_data(const struct vdso_data *vd)
-{
-	return (void *)vd + PAGE_SIZE;
-}
-#endif
-
-static inline bool vdso_clocksource_ok(const struct vdso_data *vd)
+static inline bool vdso_clocksource_ok(const struct vdso_clock *vc)
 {
 	return true;
 }
 #define vdso_clocksource_ok vdso_clocksource_ok
-
-/*
- * powerpc specific delta calculation.
- *
- * This variant removes the masking of the subtraction because the
- * clocksource mask of all VDSO capable clocksources on powerpc is U64_MAX
- * which would result in a pointless operation. The compiler cannot
- * optimize it away as the mask comes from the vdso data and is not compile
- * time constant.
- */
-static __always_inline u64 vdso_calc_delta(u64 cycles, u64 last, u64 mask, u32 mult)
-{
-	return (cycles - last) * mult;
-}
-#define vdso_calc_delta vdso_calc_delta
 
 #ifndef __powerpc64__
 static __always_inline u64 vdso_shift_ns(u64 ns, unsigned long shift)
@@ -140,21 +125,24 @@ static __always_inline u64 vdso_shift_ns(u64 ns, unsigned long shift)
 
 #ifdef __powerpc64__
 int __c_kernel_clock_gettime(clockid_t clock, struct __kernel_timespec *ts,
-			     const struct vdso_data *vd);
+			     const struct vdso_time_data *vd);
 int __c_kernel_clock_getres(clockid_t clock_id, struct __kernel_timespec *res,
-			    const struct vdso_data *vd);
+			    const struct vdso_time_data *vd);
 #else
 int __c_kernel_clock_gettime(clockid_t clock, struct old_timespec32 *ts,
-			     const struct vdso_data *vd);
+			     const struct vdso_time_data *vd);
 int __c_kernel_clock_gettime64(clockid_t clock, struct __kernel_timespec *ts,
-			       const struct vdso_data *vd);
+			       const struct vdso_time_data *vd);
 int __c_kernel_clock_getres(clockid_t clock_id, struct old_timespec32 *res,
-			    const struct vdso_data *vd);
+			    const struct vdso_time_data *vd);
+int __c_kernel_clock_getres_time64(clockid_t clock_id, struct __kernel_timespec *res,
+				   const struct vdso_time_data *vd);
 #endif
 int __c_kernel_gettimeofday(struct __kernel_old_timeval *tv, struct timezone *tz,
-			    const struct vdso_data *vd);
+			    const struct vdso_time_data *vd);
 __kernel_old_time_t __c_kernel_time(__kernel_old_time_t *time,
-				    const struct vdso_data *vd);
-#endif /* __ASSEMBLY__ */
+				    const struct vdso_time_data *vd);
+
+#endif /* __ASSEMBLER__ */
 
 #endif /* _ASM_POWERPC_VDSO_GETTIMEOFDAY_H */

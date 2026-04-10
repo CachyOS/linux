@@ -553,7 +553,7 @@ fail:
 	return err;
 }
 
-static int mxic_nfc_remove(struct platform_device *pdev)
+static void mxic_nfc_remove(struct platform_device *pdev)
 {
 	struct mxic_nand_ctlr *nfc = platform_get_drvdata(pdev);
 	struct nand_chip *chip = &nfc->chip;
@@ -564,7 +564,6 @@ static int mxic_nfc_remove(struct platform_device *pdev)
 	nand_cleanup(chip);
 
 	mxic_nfc_clk_disable(nfc);
-	return 0;
 }
 
 static const struct of_device_id mxic_nfc_of_ids[] = {

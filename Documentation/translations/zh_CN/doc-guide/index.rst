@@ -18,8 +18,9 @@
    parse-headers
    contributing
    maintainer-profile
+   checktransupdate
 
-.. only::  子项目与HTML
+.. only::  subproject and html
 
    目录
    ====

@@ -455,7 +455,7 @@ static void __init kvm_check_ins(u32 *inst, u32 features)
 		kvm_patch_ins_lwz(inst, magic_var(dsisr), inst_rt);
 		break;
 
-#ifdef CONFIG_PPC_BOOK3E_MMU
+#ifdef CONFIG_PPC_E500
 	case KVM_INST_MFSPR(SPRN_MAS0):
 		if (features & KVM_MAGIC_FEAT_MAS0_TO_SPRG7)
 			kvm_patch_ins_lwz(inst, magic_var(mas0), inst_rt);
@@ -484,7 +484,7 @@ static void __init kvm_check_ins(u32 *inst, u32 features)
 		if (features & KVM_MAGIC_FEAT_MAS0_TO_SPRG7)
 			kvm_patch_ins_lwz(inst, magic_var(mas7_3), inst_rt);
 		break;
-#endif /* CONFIG_PPC_BOOK3E_MMU */
+#endif /* CONFIG_PPC_E500 */
 
 	case KVM_INST_MFSPR(SPRN_SPRG4):
 #ifdef CONFIG_BOOKE
@@ -557,7 +557,7 @@ static void __init kvm_check_ins(u32 *inst, u32 features)
 	case KVM_INST_MTSPR(SPRN_DSISR):
 		kvm_patch_ins_stw(inst, magic_var(dsisr), inst_rt);
 		break;
-#ifdef CONFIG_PPC_BOOK3E_MMU
+#ifdef CONFIG_PPC_E500
 	case KVM_INST_MTSPR(SPRN_MAS0):
 		if (features & KVM_MAGIC_FEAT_MAS0_TO_SPRG7)
 			kvm_patch_ins_stw(inst, magic_var(mas0), inst_rt);
@@ -586,7 +586,7 @@ static void __init kvm_check_ins(u32 *inst, u32 features)
 		if (features & KVM_MAGIC_FEAT_MAS0_TO_SPRG7)
 			kvm_patch_ins_stw(inst, magic_var(mas7_3), inst_rt);
 		break;
-#endif /* CONFIG_PPC_BOOK3E_MMU */
+#endif /* CONFIG_PPC_E500 */
 
 	case KVM_INST_MTSPR(SPRN_SPRG4):
 		if (features & KVM_MAGIC_FEAT_MAS0_TO_SPRG7)
@@ -632,19 +632,19 @@ static void __init kvm_check_ins(u32 *inst, u32 features)
 #endif
 	}
 
-	switch (inst_no_rt & ~KVM_MASK_RB) {
 #ifdef CONFIG_PPC_BOOK3S_32
+	switch (inst_no_rt & ~KVM_MASK_RB) {
 	case KVM_INST_MTSRIN:
 		if (features & KVM_MAGIC_FEAT_SR) {
 			u32 inst_rb = _inst & KVM_MASK_RB;
 			kvm_patch_ins_mtsrin(inst, inst_rt, inst_rb);
 		}
 		break;
-#endif
 	}
+#endif
 
-	switch (_inst) {
 #ifdef CONFIG_BOOKE
+	switch (_inst) {
 	case KVM_INST_WRTEEI_0:
 		kvm_patch_ins_wrteei_0(inst);
 		break;
@@ -652,8 +652,8 @@ static void __init kvm_check_ins(u32 *inst, u32 features)
 	case KVM_INST_WRTEEI_1:
 		kvm_patch_ins_wrtee(inst, 0, 1);
 		break;
-#endif
 	}
+#endif
 }
 
 extern u32 kvm_template_start[];

@@ -34,20 +34,9 @@ static inline unsigned char reg_read(struct ak4117 *ak4117, unsigned char reg)
 	return ak4117->read(ak4117->private_data, reg);
 }
 
-#if 0
-static void reg_dump(struct ak4117 *ak4117)
-{
-	int i;
-
-	printk(KERN_DEBUG "AK4117 REG DUMP:\n");
-	for (i = 0; i < 0x1b; i++)
-		printk(KERN_DEBUG "reg[%02x] = %02x (%02x)\n", i, reg_read(ak4117, i), i < sizeof(ak4117->regmap) ? ak4117->regmap[i] : 0);
-}
-#endif
-
 static void snd_ak4117_free(struct ak4117 *chip)
 {
-	del_timer_sync(&chip->timer);
+	timer_shutdown_sync(&chip->timer);
 	kfree(chip);
 }
 
@@ -68,7 +57,7 @@ int snd_ak4117_create(struct snd_card *card, ak4117_read_t *read, ak4117_write_t
 		.dev_free =     snd_ak4117_dev_free,
 	};
 
-	chip = kzalloc(sizeof(*chip), GFP_KERNEL);
+	chip = kzalloc_obj(*chip);
 	if (chip == NULL)
 		return -ENOMEM;
 	spin_lock_init(&chip->lock);
@@ -110,7 +99,7 @@ void snd_ak4117_reinit(struct ak4117 *chip)
 {
 	unsigned char old = chip->regmap[AK4117_REG_PWRDN], reg;
 
-	del_timer(&chip->timer);
+	timer_delete(&chip->timer);
 	chip->init = 1;
 	/* bring the chip to reset state and powerdown state */
 	reg_write(chip, AK4117_REG_PWRDN, 0);
@@ -155,11 +144,10 @@ static int snd_ak4117_in_error_get(struct snd_kcontrol *kcontrol,
 {
 	struct ak4117 *chip = snd_kcontrol_chip(kcontrol);
 
-	spin_lock_irq(&chip->lock);
+	guard(spinlock_irq)(&chip->lock);
 	ucontrol->value.integer.value[0] =
 		       chip->errors[kcontrol->private_value];
 	chip->errors[kcontrol->private_value] = 0;
-	spin_unlock_irq(&chip->lock);
 	return 0;
 }
 
@@ -203,12 +191,11 @@ static int snd_ak4117_rx_put(struct snd_kcontrol *kcontrol,
 	int change;
 	u8 old_val;
 	
-	spin_lock_irq(&chip->lock);
+	guard(spinlock_irq)(&chip->lock);
 	old_val = chip->regmap[AK4117_REG_IO];
 	change = !!ucontrol->value.integer.value[0] != ((old_val & AK4117_IPS) ? 1 : 0);
 	if (change)
 		reg_write(chip, AK4117_REG_IO, (old_val & ~AK4117_IPS) | (ucontrol->value.integer.value[0] ? AK4117_IPS : 0));
-	spin_unlock_irq(&chip->lock);
 	return change;
 }
 
@@ -452,24 +439,23 @@ int snd_ak4117_check_rate_and_errors(struct ak4117 *ak4117, unsigned int flags)
 		goto __rate;
 	rcs0 = reg_read(ak4117, AK4117_REG_RCS0);
 	rcs2 = reg_read(ak4117, AK4117_REG_RCS2);
-	// printk(KERN_DEBUG "AK IRQ: rcs0 = 0x%x, rcs1 = 0x%x, rcs2 = 0x%x\n", rcs0, rcs1, rcs2);
-	spin_lock_irqsave(&ak4117->lock, _flags);
-	if (rcs0 & AK4117_PAR)
-		ak4117->errors[AK4117_PARITY_ERRORS]++;
-	if (rcs0 & AK4117_V)
-		ak4117->errors[AK4117_V_BIT_ERRORS]++;
-	if (rcs2 & AK4117_CCRC)
-		ak4117->errors[AK4117_CCRC_ERRORS]++;
-	if (rcs2 & AK4117_QCRC)
-		ak4117->errors[AK4117_QCRC_ERRORS]++;
-	c0 = (ak4117->rcs0 & (AK4117_QINT | AK4117_CINT | AK4117_STC | AK4117_AUDION | AK4117_AUTO | AK4117_UNLCK)) ^
-                     (rcs0 & (AK4117_QINT | AK4117_CINT | AK4117_STC | AK4117_AUDION | AK4117_AUTO | AK4117_UNLCK));
-	c1 = (ak4117->rcs1 & (AK4117_DTSCD | AK4117_NPCM | AK4117_PEM | 0x0f)) ^
-	             (rcs1 & (AK4117_DTSCD | AK4117_NPCM | AK4117_PEM | 0x0f));
-	ak4117->rcs0 = rcs0 & ~(AK4117_QINT | AK4117_CINT | AK4117_STC);
-	ak4117->rcs1 = rcs1;
-	ak4117->rcs2 = rcs2;
-	spin_unlock_irqrestore(&ak4117->lock, _flags);
+	scoped_guard(spinlock_irqsave, &ak4117->lock) {
+		if (rcs0 & AK4117_PAR)
+			ak4117->errors[AK4117_PARITY_ERRORS]++;
+		if (rcs0 & AK4117_V)
+			ak4117->errors[AK4117_V_BIT_ERRORS]++;
+		if (rcs2 & AK4117_CCRC)
+			ak4117->errors[AK4117_CCRC_ERRORS]++;
+		if (rcs2 & AK4117_QCRC)
+			ak4117->errors[AK4117_QCRC_ERRORS]++;
+		c0 = (ak4117->rcs0 & (AK4117_QINT | AK4117_CINT | AK4117_STC | AK4117_AUDION | AK4117_AUTO | AK4117_UNLCK)) ^
+			(rcs0 & (AK4117_QINT | AK4117_CINT | AK4117_STC | AK4117_AUDION | AK4117_AUTO | AK4117_UNLCK));
+		c1 = (ak4117->rcs1 & (AK4117_DTSCD | AK4117_NPCM | AK4117_PEM | 0x0f)) ^
+			(rcs1 & (AK4117_DTSCD | AK4117_NPCM | AK4117_PEM | 0x0f));
+		ak4117->rcs0 = rcs0 & ~(AK4117_QINT | AK4117_CINT | AK4117_STC);
+		ak4117->rcs1 = rcs1;
+		ak4117->rcs2 = rcs2;
+	}
 
 	if (rcs0 & AK4117_PAR)
 		snd_ctl_notify(ak4117->card, SNDRV_CTL_EVENT_MASK_VALUE, &ak4117->kctls[0]->id);
@@ -505,7 +491,6 @@ int snd_ak4117_check_rate_and_errors(struct ak4117 *ak4117, unsigned int flags)
 	if (!(flags & AK4117_CHECK_NO_RATE) && runtime && runtime->rate != res) {
 		snd_pcm_stream_lock_irqsave(ak4117->substream, _flags);
 		if (snd_pcm_running(ak4117->substream)) {
-			// printk(KERN_DEBUG "rate changed (%i <- %i)\n", runtime->rate, res);
 			snd_pcm_stop(ak4117->substream, SNDRV_PCM_STATE_DRAINING);
 			wake_up(&runtime->sleep);
 			res = 1;
@@ -517,7 +502,7 @@ int snd_ak4117_check_rate_and_errors(struct ak4117 *ak4117, unsigned int flags)
 
 static void snd_ak4117_timer(struct timer_list *t)
 {
-	struct ak4117 *chip = from_timer(chip, t, timer);
+	struct ak4117 *chip = timer_container_of(chip, t, timer);
 
 	if (chip->init)
 		return;

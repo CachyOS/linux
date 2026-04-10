@@ -13,52 +13,9 @@
 #include <linux/console.h>
 
 #include <acpi/reboot.h>
-#include <asm/compiler.h>
 #include <asm/idle.h>
 #include <asm/loongarch.h>
-#include <asm/reboot.h>
-
-static void default_halt(void)
-{
-	local_irq_disable();
-	clear_csr_ecfg(ECFG0_IM);
-
-	pr_notice("\n\n** You can safely turn off the power now **\n\n");
-	console_flush_on_panic(CONSOLE_FLUSH_PENDING);
-
-	while (true) {
-		__arch_cpu_idle();
-	}
-}
-
-static void default_poweroff(void)
-{
-#ifdef CONFIG_EFI
-	efi.reset_system(EFI_RESET_SHUTDOWN, EFI_SUCCESS, 0, NULL);
-#endif
-	while (true) {
-		__arch_cpu_idle();
-	}
-}
-
-static void default_restart(void)
-{
-#ifdef CONFIG_EFI
-	if (efi_capsule_pending(NULL))
-		efi_reboot(REBOOT_WARM, NULL);
-	else
-		efi_reboot(REBOOT_COLD, NULL);
-#endif
-	if (!acpi_disabled)
-		acpi_reboot();
-
-	while (true) {
-		__arch_cpu_idle();
-	}
-}
-
-void (*pm_restart)(void);
-EXPORT_SYMBOL(pm_restart);
+#include <asm/loongson.h>
 
 void (*pm_power_off)(void);
 EXPORT_SYMBOL(pm_power_off);
@@ -69,7 +26,15 @@ void machine_halt(void)
 	preempt_disable();
 	smp_send_stop();
 #endif
-	default_halt();
+	local_irq_disable();
+	clear_csr_ecfg(ECFG0_IM);
+
+	pr_notice("\n\n** You can safely turn off the power now **\n\n");
+	console_flush_on_panic(CONSOLE_FLUSH_PENDING);
+
+	while (true) {
+		__asm__ __volatile__("idle 0" : : : "memory");
+	}
 }
 
 void machine_power_off(void)
@@ -78,7 +43,18 @@ void machine_power_off(void)
 	preempt_disable();
 	smp_send_stop();
 #endif
-	pm_power_off();
+#ifdef CONFIG_PM
+	if (!acpi_disabled)
+		enable_pci_wakeup();
+#endif
+	do_kernel_power_off();
+#ifdef CONFIG_EFI
+	efi.reset_system(EFI_RESET_SHUTDOWN, EFI_SUCCESS, 0, NULL);
+#endif
+
+	while (true) {
+		__asm__ __volatile__("idle 0" : : : "memory");
+	}
 }
 
 void machine_restart(char *command)
@@ -88,15 +64,16 @@ void machine_restart(char *command)
 	smp_send_stop();
 #endif
 	do_kernel_restart(command);
-	pm_restart();
+#ifdef CONFIG_EFI
+	if (efi_capsule_pending(NULL))
+		efi_reboot(REBOOT_WARM, NULL);
+	else
+		efi_reboot(REBOOT_COLD, NULL);
+#endif
+	if (!acpi_disabled)
+		acpi_reboot();
+
+	while (true) {
+		__asm__ __volatile__("idle 0" : : : "memory");
+	}
 }
-
-static int __init loongarch_reboot_setup(void)
-{
-	pm_restart = default_restart;
-	pm_power_off = default_poweroff;
-
-	return 0;
-}
-
-arch_initcall(loongarch_reboot_setup);

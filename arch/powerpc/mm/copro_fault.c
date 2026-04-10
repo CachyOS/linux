@@ -12,8 +12,6 @@
 #include <linux/export.h>
 #include <asm/reg.h>
 #include <asm/copro.h>
-#include <asm/spu.h>
-#include <misc/cxl-base.h>
 
 /*
  * This ought to be kept in sync with the powerpc specific do_page_fault
@@ -33,19 +31,11 @@ int copro_handle_mm_fault(struct mm_struct *mm, unsigned long ea,
 	if (mm->pgd == NULL)
 		return -EFAULT;
 
-	mmap_read_lock(mm);
-	ret = -EFAULT;
-	vma = find_vma(mm, ea);
+	vma = lock_mm_and_find_vma(mm, ea, NULL);
 	if (!vma)
-		goto out_unlock;
+		return -EFAULT;
 
-	if (ea < vma->vm_start) {
-		if (!(vma->vm_flags & VM_GROWSDOWN))
-			goto out_unlock;
-		if (expand_stack(vma, ea))
-			goto out_unlock;
-	}
-
+	ret = -EFAULT;
 	is_write = dsisr & DSISR_ISSTORE;
 	if (is_write) {
 		if (!(vma->vm_flags & VM_WRITE))
@@ -65,6 +55,11 @@ int copro_handle_mm_fault(struct mm_struct *mm, unsigned long ea,
 
 	ret = 0;
 	*flt = handle_mm_fault(vma, ea, is_write ? FAULT_FLAG_WRITE : 0, NULL);
+
+	/* The fault is fully completed (including releasing mmap lock) */
+	if (*flt & VM_FAULT_COMPLETED)
+		return 0;
+
 	if (unlikely(*flt & VM_FAULT_ERROR)) {
 		if (*flt & VM_FAULT_OOM) {
 			ret = -ENOMEM;
@@ -138,13 +133,4 @@ int copro_calculate_slb(struct mm_struct *mm, u64 ea, struct copro_slb *slb)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(copro_calculate_slb);
-
-void copro_flush_all_slbs(struct mm_struct *mm)
-{
-#ifdef CONFIG_SPU_BASE
-	spu_flush_all_slbs(mm);
-#endif
-	cxl_slbia(mm);
-}
-EXPORT_SYMBOL_GPL(copro_flush_all_slbs);
 #endif

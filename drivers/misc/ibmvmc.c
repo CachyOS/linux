@@ -830,7 +830,7 @@ static int ibmvmc_open(struct inode *inode, struct file *file)
 		 (unsigned long)inode, (unsigned long)file,
 		 ibmvmc.state);
 
-	session = kzalloc(sizeof(*session), GFP_KERNEL);
+	session = kzalloc_obj(*session);
 	if (!session)
 		return -ENOMEM;
 
@@ -1039,6 +1039,7 @@ static unsigned int ibmvmc_poll(struct file *file, poll_table *wait)
 static ssize_t ibmvmc_write(struct file *file, const char *buffer,
 			    size_t count, loff_t *ppos)
 {
+	struct inode *inode;
 	struct ibmvmc_buffer *vmc_buffer;
 	struct ibmvmc_file_session *session;
 	struct crq_server_adapter *adapter;
@@ -1122,8 +1123,9 @@ static ssize_t ibmvmc_write(struct file *file, const char *buffer,
 	if (p == buffer)
 		goto out;
 
-	file->f_path.dentry->d_inode->i_mtime = current_time(file_inode(file));
-	mark_inode_dirty(file->f_path.dentry->d_inode);
+	inode = file_inode(file);
+	inode_set_mtime_to_ts(inode, inode_set_ctime_current(inode));
+	mark_inode_dirty(inode);
 
 	dev_dbg(adapter->dev, "write: file = 0x%lx, count = 0x%lx\n",
 		(unsigned long)file, (unsigned long)count);
@@ -1247,9 +1249,7 @@ static long ibmvmc_ioctl_sethmcid(struct ibmvmc_file_session *session,
 		return -EIO;
 	}
 
-	/* Make sure buffer is NULL terminated before trying to print it */
-	memset(print_buffer, 0, HMC_ID_LEN + 1);
-	strncpy(print_buffer, hmc->hmc_id, HMC_ID_LEN);
+	strscpy(print_buffer, hmc->hmc_id, sizeof(print_buffer));
 	pr_info("ibmvmc: sethmcid: Set HMC ID: \"%s\"\n", print_buffer);
 
 	memcpy(buffer->real_addr_local, hmc->hmc_id, HMC_ID_LEN);

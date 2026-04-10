@@ -4,9 +4,12 @@
  */
 
 #include <kunit/test.h>
+#include <kunit/visibility.h>
 
 #include "include/policy.h"
 #include "include/policy_unpack.h"
+
+#include <linux/unaligned.h>
 
 #define TEST_STRING_NAME "TEST_STRING"
 #define TEST_STRING_DATA "testing"
@@ -43,13 +46,15 @@
 #define TEST_ARRAY_BUF_OFFSET \
 	(TEST_NAMED_ARRAY_BUF_OFFSET + 3 + strlen(TEST_ARRAY_NAME) + 1)
 
+MODULE_IMPORT_NS("EXPORTED_FOR_KUNIT_TESTING");
+
 struct policy_unpack_fixture {
 	struct aa_ext *e;
 	size_t e_size;
 };
 
-struct aa_ext *build_aa_ext_struct(struct policy_unpack_fixture *puf,
-				   struct kunit *test, size_t buf_size)
+static struct aa_ext *build_aa_ext_struct(struct policy_unpack_fixture *puf,
+					  struct kunit *test, size_t buf_size)
 {
 	char *buf;
 	struct aa_ext *e;
@@ -66,31 +71,30 @@ struct aa_ext *build_aa_ext_struct(struct policy_unpack_fixture *puf,
 
 	*buf = AA_NAME;
 	*(buf + 1) = strlen(TEST_STRING_NAME) + 1;
-	strcpy(buf + 3, TEST_STRING_NAME);
+	strscpy(buf + 3, TEST_STRING_NAME, e->end - (void *)(buf + 3));
 
 	buf = e->start + TEST_STRING_BUF_OFFSET;
 	*buf = AA_STRING;
 	*(buf + 1) = strlen(TEST_STRING_DATA) + 1;
-	strcpy(buf + 3, TEST_STRING_DATA);
-
+	strscpy(buf + 3, TEST_STRING_DATA, e->end - (void *)(buf + 3));
 	buf = e->start + TEST_NAMED_U32_BUF_OFFSET;
 	*buf = AA_NAME;
 	*(buf + 1) = strlen(TEST_U32_NAME) + 1;
-	strcpy(buf + 3, TEST_U32_NAME);
+	strscpy(buf + 3, TEST_U32_NAME, e->end - (void *)(buf + 3));
 	*(buf + 3 + strlen(TEST_U32_NAME) + 1) = AA_U32;
-	*((u32 *)(buf + 3 + strlen(TEST_U32_NAME) + 2)) = TEST_U32_DATA;
+	put_unaligned_le32(TEST_U32_DATA, buf + 3 + strlen(TEST_U32_NAME) + 2);
 
 	buf = e->start + TEST_NAMED_U64_BUF_OFFSET;
 	*buf = AA_NAME;
 	*(buf + 1) = strlen(TEST_U64_NAME) + 1;
-	strcpy(buf + 3, TEST_U64_NAME);
+	strscpy(buf + 3, TEST_U64_NAME, e->end - (void *)(buf + 3));
 	*(buf + 3 + strlen(TEST_U64_NAME) + 1) = AA_U64;
-	*((u64 *)(buf + 3 + strlen(TEST_U64_NAME) + 2)) = TEST_U64_DATA;
+	*((__le64 *)(buf + 3 + strlen(TEST_U64_NAME) + 2)) = cpu_to_le64(TEST_U64_DATA);
 
 	buf = e->start + TEST_NAMED_BLOB_BUF_OFFSET;
 	*buf = AA_NAME;
 	*(buf + 1) = strlen(TEST_BLOB_NAME) + 1;
-	strcpy(buf + 3, TEST_BLOB_NAME);
+	strscpy(buf + 3, TEST_BLOB_NAME, e->end - (void *)(buf + 3));
 	*(buf + 3 + strlen(TEST_BLOB_NAME) + 1) = AA_BLOB;
 	*(buf + 3 + strlen(TEST_BLOB_NAME) + 2) = TEST_BLOB_DATA_SIZE;
 	memcpy(buf + 3 + strlen(TEST_BLOB_NAME) + 6,
@@ -99,9 +103,9 @@ struct aa_ext *build_aa_ext_struct(struct policy_unpack_fixture *puf,
 	buf = e->start + TEST_NAMED_ARRAY_BUF_OFFSET;
 	*buf = AA_NAME;
 	*(buf + 1) = strlen(TEST_ARRAY_NAME) + 1;
-	strcpy(buf + 3, TEST_ARRAY_NAME);
+	strscpy(buf + 3, TEST_ARRAY_NAME, e->end - (void *)(buf + 3));
 	*(buf + 3 + strlen(TEST_ARRAY_NAME) + 1) = AA_ARRAY;
-	*((u16 *)(buf + 3 + strlen(TEST_ARRAY_NAME) + 2)) = TEST_ARRAY_SIZE;
+	put_unaligned_le16(TEST_ARRAY_SIZE, buf + 3 + strlen(TEST_ARRAY_NAME) + 2);
 
 	return e;
 }
@@ -125,27 +129,26 @@ static void policy_unpack_test_inbounds_when_inbounds(struct kunit *test)
 {
 	struct policy_unpack_fixture *puf = test->priv;
 
-	KUNIT_EXPECT_TRUE(test, inbounds(puf->e, 0));
-	KUNIT_EXPECT_TRUE(test, inbounds(puf->e, puf->e_size / 2));
-	KUNIT_EXPECT_TRUE(test, inbounds(puf->e, puf->e_size));
+	KUNIT_EXPECT_TRUE(test, aa_inbounds(puf->e, 0));
+	KUNIT_EXPECT_TRUE(test, aa_inbounds(puf->e, puf->e_size / 2));
+	KUNIT_EXPECT_TRUE(test, aa_inbounds(puf->e, puf->e_size));
 }
 
 static void policy_unpack_test_inbounds_when_out_of_bounds(struct kunit *test)
 {
 	struct policy_unpack_fixture *puf = test->priv;
 
-	KUNIT_EXPECT_FALSE(test, inbounds(puf->e, puf->e_size + 1));
+	KUNIT_EXPECT_FALSE(test, aa_inbounds(puf->e, puf->e_size + 1));
 }
 
 static void policy_unpack_test_unpack_array_with_null_name(struct kunit *test)
 {
 	struct policy_unpack_fixture *puf = test->priv;
-	u16 array_size;
+	u16 array_size = 0;
 
 	puf->e->pos += TEST_ARRAY_BUF_OFFSET;
 
-	array_size = unpack_array(puf->e, NULL);
-
+	KUNIT_EXPECT_TRUE(test, aa_unpack_array(puf->e, NULL, &array_size));
 	KUNIT_EXPECT_EQ(test, array_size, (u16)TEST_ARRAY_SIZE);
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos,
 		puf->e->start + TEST_ARRAY_BUF_OFFSET + sizeof(u16) + 1);
@@ -155,12 +158,11 @@ static void policy_unpack_test_unpack_array_with_name(struct kunit *test)
 {
 	struct policy_unpack_fixture *puf = test->priv;
 	const char name[] = TEST_ARRAY_NAME;
-	u16 array_size;
+	u16 array_size = 0;
 
 	puf->e->pos += TEST_NAMED_ARRAY_BUF_OFFSET;
 
-	array_size = unpack_array(puf->e, name);
-
+	KUNIT_EXPECT_TRUE(test, aa_unpack_array(puf->e, name, &array_size));
 	KUNIT_EXPECT_EQ(test, array_size, (u16)TEST_ARRAY_SIZE);
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos,
 		puf->e->start + TEST_ARRAY_BUF_OFFSET + sizeof(u16) + 1);
@@ -175,9 +177,7 @@ static void policy_unpack_test_unpack_array_out_of_bounds(struct kunit *test)
 	puf->e->pos += TEST_NAMED_ARRAY_BUF_OFFSET;
 	puf->e->end = puf->e->start + TEST_ARRAY_BUF_OFFSET + sizeof(u16);
 
-	array_size = unpack_array(puf->e, name);
-
-	KUNIT_EXPECT_EQ(test, array_size, (u16)0);
+	KUNIT_EXPECT_FALSE(test, aa_unpack_array(puf->e, name, &array_size));
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos,
 		puf->e->start + TEST_NAMED_ARRAY_BUF_OFFSET);
 }
@@ -189,7 +189,7 @@ static void policy_unpack_test_unpack_blob_with_null_name(struct kunit *test)
 	size_t size;
 
 	puf->e->pos += TEST_BLOB_BUF_OFFSET;
-	size = unpack_blob(puf->e, &blob, NULL);
+	size = aa_unpack_blob(puf->e, &blob, NULL);
 
 	KUNIT_ASSERT_EQ(test, size, TEST_BLOB_DATA_SIZE);
 	KUNIT_EXPECT_TRUE(test,
@@ -203,7 +203,7 @@ static void policy_unpack_test_unpack_blob_with_name(struct kunit *test)
 	size_t size;
 
 	puf->e->pos += TEST_NAMED_BLOB_BUF_OFFSET;
-	size = unpack_blob(puf->e, &blob, TEST_BLOB_NAME);
+	size = aa_unpack_blob(puf->e, &blob, TEST_BLOB_NAME);
 
 	KUNIT_ASSERT_EQ(test, size, TEST_BLOB_DATA_SIZE);
 	KUNIT_EXPECT_TRUE(test,
@@ -222,7 +222,7 @@ static void policy_unpack_test_unpack_blob_out_of_bounds(struct kunit *test)
 	puf->e->end = puf->e->start + TEST_BLOB_BUF_OFFSET
 		+ TEST_BLOB_DATA_SIZE - 1;
 
-	size = unpack_blob(puf->e, &blob, TEST_BLOB_NAME);
+	size = aa_unpack_blob(puf->e, &blob, TEST_BLOB_NAME);
 
 	KUNIT_EXPECT_EQ(test, size, 0);
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos, start);
@@ -235,7 +235,7 @@ static void policy_unpack_test_unpack_str_with_null_name(struct kunit *test)
 	size_t size;
 
 	puf->e->pos += TEST_STRING_BUF_OFFSET;
-	size = unpack_str(puf->e, &string, NULL);
+	size = aa_unpack_str(puf->e, &string, NULL);
 
 	KUNIT_EXPECT_EQ(test, size, strlen(TEST_STRING_DATA) + 1);
 	KUNIT_EXPECT_STREQ(test, string, TEST_STRING_DATA);
@@ -247,7 +247,7 @@ static void policy_unpack_test_unpack_str_with_name(struct kunit *test)
 	const char *string = NULL;
 	size_t size;
 
-	size = unpack_str(puf->e, &string, TEST_STRING_NAME);
+	size = aa_unpack_str(puf->e, &string, TEST_STRING_NAME);
 
 	KUNIT_EXPECT_EQ(test, size, strlen(TEST_STRING_DATA) + 1);
 	KUNIT_EXPECT_STREQ(test, string, TEST_STRING_DATA);
@@ -263,7 +263,7 @@ static void policy_unpack_test_unpack_str_out_of_bounds(struct kunit *test)
 	puf->e->end = puf->e->pos + TEST_STRING_BUF_OFFSET
 		+ strlen(TEST_STRING_DATA) - 1;
 
-	size = unpack_str(puf->e, &string, TEST_STRING_NAME);
+	size = aa_unpack_str(puf->e, &string, TEST_STRING_NAME);
 
 	KUNIT_EXPECT_EQ(test, size, 0);
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos, start);
@@ -276,13 +276,15 @@ static void policy_unpack_test_unpack_strdup_with_null_name(struct kunit *test)
 	size_t size;
 
 	puf->e->pos += TEST_STRING_BUF_OFFSET;
-	size = unpack_strdup(puf->e, &string, NULL);
+	size = aa_unpack_strdup(puf->e, &string, NULL);
 
 	KUNIT_EXPECT_EQ(test, size, strlen(TEST_STRING_DATA) + 1);
 	KUNIT_EXPECT_FALSE(test,
 			   ((uintptr_t)puf->e->start <= (uintptr_t)string)
 			   && ((uintptr_t)string <= (uintptr_t)puf->e->end));
 	KUNIT_EXPECT_STREQ(test, string, TEST_STRING_DATA);
+
+	kfree(string);
 }
 
 static void policy_unpack_test_unpack_strdup_with_name(struct kunit *test)
@@ -291,13 +293,15 @@ static void policy_unpack_test_unpack_strdup_with_name(struct kunit *test)
 	char *string = NULL;
 	size_t size;
 
-	size = unpack_strdup(puf->e, &string, TEST_STRING_NAME);
+	size = aa_unpack_strdup(puf->e, &string, TEST_STRING_NAME);
 
 	KUNIT_EXPECT_EQ(test, size, strlen(TEST_STRING_DATA) + 1);
 	KUNIT_EXPECT_FALSE(test,
 			   ((uintptr_t)puf->e->start <= (uintptr_t)string)
 			   && ((uintptr_t)string <= (uintptr_t)puf->e->end));
 	KUNIT_EXPECT_STREQ(test, string, TEST_STRING_DATA);
+
+	kfree(string);
 }
 
 static void policy_unpack_test_unpack_strdup_out_of_bounds(struct kunit *test)
@@ -310,11 +314,13 @@ static void policy_unpack_test_unpack_strdup_out_of_bounds(struct kunit *test)
 	puf->e->end = puf->e->pos + TEST_STRING_BUF_OFFSET
 		+ strlen(TEST_STRING_DATA) - 1;
 
-	size = unpack_strdup(puf->e, &string, TEST_STRING_NAME);
+	size = aa_unpack_strdup(puf->e, &string, TEST_STRING_NAME);
 
 	KUNIT_EXPECT_EQ(test, size, 0);
 	KUNIT_EXPECT_NULL(test, string);
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos, start);
+
+	kfree(string);
 }
 
 static void policy_unpack_test_unpack_nameX_with_null_name(struct kunit *test)
@@ -324,7 +330,7 @@ static void policy_unpack_test_unpack_nameX_with_null_name(struct kunit *test)
 
 	puf->e->pos += TEST_U32_BUF_OFFSET;
 
-	success = unpack_nameX(puf->e, AA_U32, NULL);
+	success = aa_unpack_nameX(puf->e, AA_U32, NULL);
 
 	KUNIT_EXPECT_TRUE(test, success);
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos,
@@ -338,7 +344,7 @@ static void policy_unpack_test_unpack_nameX_with_wrong_code(struct kunit *test)
 
 	puf->e->pos += TEST_U32_BUF_OFFSET;
 
-	success = unpack_nameX(puf->e, AA_BLOB, NULL);
+	success = aa_unpack_nameX(puf->e, AA_BLOB, NULL);
 
 	KUNIT_EXPECT_FALSE(test, success);
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos,
@@ -353,7 +359,7 @@ static void policy_unpack_test_unpack_nameX_with_name(struct kunit *test)
 
 	puf->e->pos += TEST_NAMED_U32_BUF_OFFSET;
 
-	success = unpack_nameX(puf->e, AA_U32, name);
+	success = aa_unpack_nameX(puf->e, AA_U32, name);
 
 	KUNIT_EXPECT_TRUE(test, success);
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos,
@@ -368,7 +374,7 @@ static void policy_unpack_test_unpack_nameX_with_wrong_name(struct kunit *test)
 
 	puf->e->pos += TEST_NAMED_U32_BUF_OFFSET;
 
-	success = unpack_nameX(puf->e, AA_U32, name);
+	success = aa_unpack_nameX(puf->e, AA_U32, name);
 
 	KUNIT_EXPECT_FALSE(test, success);
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos,
@@ -389,12 +395,12 @@ static void policy_unpack_test_unpack_u16_chunk_basic(struct kunit *test)
 	 */
 	puf->e->end += TEST_U16_DATA;
 
-	size = unpack_u16_chunk(puf->e, &chunk);
+	size = aa_unpack_u16_chunk(puf->e, &chunk);
 
-	KUNIT_EXPECT_PTR_EQ(test, (void *)chunk,
+	KUNIT_EXPECT_PTR_EQ(test, chunk,
 			    puf->e->start + TEST_U16_OFFSET + 2);
-	KUNIT_EXPECT_EQ(test, size, (size_t)TEST_U16_DATA);
-	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos, (void *)(chunk + TEST_U16_DATA));
+	KUNIT_EXPECT_EQ(test, size, TEST_U16_DATA);
+	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos, (chunk + TEST_U16_DATA));
 }
 
 static void policy_unpack_test_unpack_u16_chunk_out_of_bounds_1(
@@ -406,9 +412,9 @@ static void policy_unpack_test_unpack_u16_chunk_out_of_bounds_1(
 
 	puf->e->pos = puf->e->end - 1;
 
-	size = unpack_u16_chunk(puf->e, &chunk);
+	size = aa_unpack_u16_chunk(puf->e, &chunk);
 
-	KUNIT_EXPECT_EQ(test, size, (size_t)0);
+	KUNIT_EXPECT_EQ(test, size, 0);
 	KUNIT_EXPECT_NULL(test, chunk);
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos, puf->e->end - 1);
 }
@@ -428,9 +434,9 @@ static void policy_unpack_test_unpack_u16_chunk_out_of_bounds_2(
 	 */
 	puf->e->end = puf->e->pos + TEST_U16_DATA - 1;
 
-	size = unpack_u16_chunk(puf->e, &chunk);
+	size = aa_unpack_u16_chunk(puf->e, &chunk);
 
-	KUNIT_EXPECT_EQ(test, size, (size_t)0);
+	KUNIT_EXPECT_EQ(test, size, 0);
 	KUNIT_EXPECT_NULL(test, chunk);
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos, puf->e->start + TEST_U16_OFFSET);
 }
@@ -439,11 +445,11 @@ static void policy_unpack_test_unpack_u32_with_null_name(struct kunit *test)
 {
 	struct policy_unpack_fixture *puf = test->priv;
 	bool success;
-	u32 data;
+	u32 data = 0;
 
 	puf->e->pos += TEST_U32_BUF_OFFSET;
 
-	success = unpack_u32(puf->e, &data, NULL);
+	success = aa_unpack_u32(puf->e, &data, NULL);
 
 	KUNIT_EXPECT_TRUE(test, success);
 	KUNIT_EXPECT_EQ(test, data, TEST_U32_DATA);
@@ -456,11 +462,11 @@ static void policy_unpack_test_unpack_u32_with_name(struct kunit *test)
 	struct policy_unpack_fixture *puf = test->priv;
 	const char name[] = TEST_U32_NAME;
 	bool success;
-	u32 data;
+	u32 data = 0;
 
 	puf->e->pos += TEST_NAMED_U32_BUF_OFFSET;
 
-	success = unpack_u32(puf->e, &data, name);
+	success = aa_unpack_u32(puf->e, &data, name);
 
 	KUNIT_EXPECT_TRUE(test, success);
 	KUNIT_EXPECT_EQ(test, data, TEST_U32_DATA);
@@ -473,12 +479,12 @@ static void policy_unpack_test_unpack_u32_out_of_bounds(struct kunit *test)
 	struct policy_unpack_fixture *puf = test->priv;
 	const char name[] = TEST_U32_NAME;
 	bool success;
-	u32 data;
+	u32 data = 0;
 
 	puf->e->pos += TEST_NAMED_U32_BUF_OFFSET;
 	puf->e->end = puf->e->start + TEST_U32_BUF_OFFSET + sizeof(u32);
 
-	success = unpack_u32(puf->e, &data, name);
+	success = aa_unpack_u32(puf->e, &data, name);
 
 	KUNIT_EXPECT_FALSE(test, success);
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos,
@@ -489,11 +495,11 @@ static void policy_unpack_test_unpack_u64_with_null_name(struct kunit *test)
 {
 	struct policy_unpack_fixture *puf = test->priv;
 	bool success;
-	u64 data;
+	u64 data = 0;
 
 	puf->e->pos += TEST_U64_BUF_OFFSET;
 
-	success = unpack_u64(puf->e, &data, NULL);
+	success = aa_unpack_u64(puf->e, &data, NULL);
 
 	KUNIT_EXPECT_TRUE(test, success);
 	KUNIT_EXPECT_EQ(test, data, TEST_U64_DATA);
@@ -506,11 +512,11 @@ static void policy_unpack_test_unpack_u64_with_name(struct kunit *test)
 	struct policy_unpack_fixture *puf = test->priv;
 	const char name[] = TEST_U64_NAME;
 	bool success;
-	u64 data;
+	u64 data = 0;
 
 	puf->e->pos += TEST_NAMED_U64_BUF_OFFSET;
 
-	success = unpack_u64(puf->e, &data, name);
+	success = aa_unpack_u64(puf->e, &data, name);
 
 	KUNIT_EXPECT_TRUE(test, success);
 	KUNIT_EXPECT_EQ(test, data, TEST_U64_DATA);
@@ -523,12 +529,12 @@ static void policy_unpack_test_unpack_u64_out_of_bounds(struct kunit *test)
 	struct policy_unpack_fixture *puf = test->priv;
 	const char name[] = TEST_U64_NAME;
 	bool success;
-	u64 data;
+	u64 data = 0;
 
 	puf->e->pos += TEST_NAMED_U64_BUF_OFFSET;
 	puf->e->end = puf->e->start + TEST_U64_BUF_OFFSET + sizeof(u64);
 
-	success = unpack_u64(puf->e, &data, name);
+	success = aa_unpack_u64(puf->e, &data, name);
 
 	KUNIT_EXPECT_FALSE(test, success);
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos,
@@ -538,7 +544,7 @@ static void policy_unpack_test_unpack_u64_out_of_bounds(struct kunit *test)
 static void policy_unpack_test_unpack_X_code_match(struct kunit *test)
 {
 	struct policy_unpack_fixture *puf = test->priv;
-	bool success = unpack_X(puf->e, AA_NAME);
+	bool success = aa_unpack_X(puf->e, AA_NAME);
 
 	KUNIT_EXPECT_TRUE(test, success);
 	KUNIT_EXPECT_TRUE(test, puf->e->pos == puf->e->start + 1);
@@ -547,7 +553,7 @@ static void policy_unpack_test_unpack_X_code_match(struct kunit *test)
 static void policy_unpack_test_unpack_X_code_mismatch(struct kunit *test)
 {
 	struct policy_unpack_fixture *puf = test->priv;
-	bool success = unpack_X(puf->e, AA_STRING);
+	bool success = aa_unpack_X(puf->e, AA_STRING);
 
 	KUNIT_EXPECT_FALSE(test, success);
 	KUNIT_EXPECT_TRUE(test, puf->e->pos == puf->e->start);
@@ -559,7 +565,7 @@ static void policy_unpack_test_unpack_X_out_of_bounds(struct kunit *test)
 	bool success;
 
 	puf->e->pos = puf->e->end;
-	success = unpack_X(puf->e, AA_NAME);
+	success = aa_unpack_X(puf->e, AA_NAME);
 
 	KUNIT_EXPECT_FALSE(test, success);
 }
@@ -605,3 +611,6 @@ static struct kunit_suite apparmor_policy_unpack_test_module = {
 };
 
 kunit_test_suite(apparmor_policy_unpack_test_module);
+
+MODULE_DESCRIPTION("KUnit tests for AppArmor's policy unpack");
+MODULE_LICENSE("GPL");

@@ -9,13 +9,14 @@
 
 #include <linux/coresight.h>
 #include <linux/device.h>
-#include <linux/fwnode.h>
 #include <linux/list.h>
 #include <linux/spinlock.h>
 #include <linux/sysfs.h>
 #include <linux/types.h>
 
 #include "coresight-priv.h"
+
+struct fwnode_handle;
 
 /*
  * Device registers
@@ -141,7 +142,7 @@ struct cti_config {
 	int nr_trig_max;
 
 	/* cti enable control */
-	atomic_t enable_req_count;
+	int enable_req_count;
 	bool hw_enabled;
 	bool hw_powered;
 
@@ -175,7 +176,7 @@ struct cti_drvdata {
 	void __iomem *base;
 	struct coresight_device	*csdev;
 	struct cti_device ctidev;
-	spinlock_t spinlock;
+	raw_spinlock_t spinlock;
 	struct cti_config config;
 	struct list_head node;
 	void (*csdev_release)(struct device *dev);
@@ -215,8 +216,9 @@ int cti_add_connection_entry(struct device *dev, struct cti_drvdata *drvdata,
 			     const char *assoc_dev_name);
 struct cti_trig_con *cti_allocate_trig_con(struct device *dev, int in_sigs,
 					   int out_sigs);
-int cti_enable(struct coresight_device *csdev);
-int cti_disable(struct coresight_device *csdev);
+int cti_enable(struct coresight_device *csdev, enum cs_mode mode,
+	       struct coresight_path *path);
+int cti_disable(struct coresight_device *csdev, struct coresight_path *path);
 void cti_write_all_hw_regs(struct cti_drvdata *drvdata);
 void cti_write_intack(struct device *dev, u32 ackval);
 void cti_write_single_reg(struct cti_drvdata *drvdata, int offset, u32 value);

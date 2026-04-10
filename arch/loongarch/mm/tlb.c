@@ -9,8 +9,9 @@
 #include <linux/hugetlb.h>
 #include <linux/export.h>
 
-#include <asm/cpu.h>
 #include <asm/bootinfo.h>
+#include <asm/cpu.h>
+#include <asm/exception.h>
 #include <asm/mmu_context.h>
 #include <asm/pgtable.h>
 #include <asm/tlb.h>
@@ -167,6 +168,9 @@ void __update_tlb(struct vm_area_struct *vma, unsigned long address, pte_t *ptep
 	int idx;
 	unsigned long flags;
 
+	if (cpu_has_ptw)
+		return;
+
 	/*
 	 * Handle debugger faulting in for debugee.
 	 */
@@ -198,7 +202,7 @@ void __update_tlb(struct vm_area_struct *vma, unsigned long address, pte_t *ptep
 	local_irq_restore(flags);
 }
 
-static void setup_ptwalker(void)
+static void __no_sanitize_address setup_ptwalker(void)
 {
 	unsigned long pwctl0, pwctl1;
 	unsigned long pgd_i = 0, pgd_w = 0;
@@ -222,11 +226,14 @@ static void setup_ptwalker(void)
 	pwctl0 = pte_i | pte_w << 5 | pmd_i << 10 | pmd_w << 15 | pud_i << 20 | pud_w << 25;
 	pwctl1 = pgd_i | pgd_w << 6;
 
-	csr_write64(pwctl0, LOONGARCH_CSR_PWCTL0);
-	csr_write64(pwctl1, LOONGARCH_CSR_PWCTL1);
-	csr_write64((long)swapper_pg_dir, LOONGARCH_CSR_PGDH);
-	csr_write64((long)invalid_pg_dir, LOONGARCH_CSR_PGDL);
-	csr_write64((long)smp_processor_id(), LOONGARCH_CSR_TMID);
+	if (cpu_has_ptw)
+		pwctl1 |= CSR_PWCTL1_PTW;
+
+	csr_write(pwctl0, LOONGARCH_CSR_PWCTL0);
+	csr_write(pwctl1, LOONGARCH_CSR_PWCTL1);
+	csr_write((long)swapper_pg_dir, LOONGARCH_CSR_PGDH);
+	csr_write((long)invalid_pg_dir, LOONGARCH_CSR_PGDL);
+	csr_write((long)smp_processor_id(), LOONGARCH_CSR_TMID);
 }
 
 static void output_pgtable_bits_defines(void)
@@ -244,55 +251,64 @@ static void output_pgtable_bits_defines(void)
 	pr_define("_PAGE_GLOBAL_SHIFT %d\n", _PAGE_GLOBAL_SHIFT);
 	pr_define("_PAGE_PRESENT_SHIFT %d\n", _PAGE_PRESENT_SHIFT);
 	pr_define("_PAGE_WRITE_SHIFT %d\n", _PAGE_WRITE_SHIFT);
+#ifdef CONFIG_64BIT
 	pr_define("_PAGE_NO_READ_SHIFT %d\n", _PAGE_NO_READ_SHIFT);
 	pr_define("_PAGE_NO_EXEC_SHIFT %d\n", _PAGE_NO_EXEC_SHIFT);
-	pr_define("_PFN_SHIFT %d\n", _PFN_SHIFT);
+#endif
+	pr_define("PFN_PTE_SHIFT %d\n", PFN_PTE_SHIFT);
 	pr_debug("\n");
 }
 
 #ifdef CONFIG_NUMA
-static unsigned long pcpu_handlers[NR_CPUS];
+unsigned long pcpu_handlers[NR_CPUS];
 #endif
-extern long exception_handlers[VECSIZE * 128 / sizeof(long)];
 
-void setup_tlb_handler(int cpu)
+static void setup_tlb_handler(int cpu)
 {
 	setup_ptwalker();
-	output_pgtable_bits_defines();
+	local_flush_tlb_all();
+
+	if (cpu_has_ptw) {
+		exception_table[EXCCODE_TLBI] = handle_tlb_load_ptw;
+		exception_table[EXCCODE_TLBL] = handle_tlb_load_ptw;
+		exception_table[EXCCODE_TLBS] = handle_tlb_store_ptw;
+		exception_table[EXCCODE_TLBM] = handle_tlb_modify_ptw;
+	}
 
 	/* The tlb handlers are generated only once */
 	if (cpu == 0) {
 		memcpy((void *)tlbrentry, handle_tlb_refill, 0x80);
 		local_flush_icache_range(tlbrentry, tlbrentry + 0x80);
-		set_handler(EXCCODE_TLBI * VECSIZE, handle_tlb_load, VECSIZE);
-		set_handler(EXCCODE_TLBL * VECSIZE, handle_tlb_load, VECSIZE);
-		set_handler(EXCCODE_TLBS * VECSIZE, handle_tlb_store, VECSIZE);
-		set_handler(EXCCODE_TLBM * VECSIZE, handle_tlb_modify, VECSIZE);
-		set_handler(EXCCODE_TLBNR * VECSIZE, handle_tlb_protect, VECSIZE);
-		set_handler(EXCCODE_TLBNX * VECSIZE, handle_tlb_protect, VECSIZE);
-		set_handler(EXCCODE_TLBPE * VECSIZE, handle_tlb_protect, VECSIZE);
-	}
-#ifdef CONFIG_NUMA
-	else {
-		void *addr;
-		struct page *page;
-		const int vec_sz = sizeof(exception_handlers);
+
+		for (int i = EXCCODE_TLBL; i <= EXCCODE_TLBPE; i++)
+			set_handler(i * VECSIZE, exception_table[i], VECSIZE);
+	} else {
+		int vec_sz __maybe_unused;
+		void *addr __maybe_unused;
+		struct page *page __maybe_unused;
+
+		/* Avoid lockdep warning */
+		rcutree_report_cpu_starting(cpu);
+
+#if defined(CONFIG_NUMA) && !defined(CONFIG_PREEMPT_RT)
+		vec_sz = sizeof(exception_handlers);
 
 		if (pcpu_handlers[cpu])
 			return;
 
-		page = alloc_pages_node(cpu_to_node(cpu), GFP_KERNEL, get_order(vec_sz));
+		page = alloc_pages_node(cpu_to_node(cpu), GFP_ATOMIC, get_order(vec_sz));
 		if (!page)
 			return;
 
 		addr = page_address(page);
-		pcpu_handlers[cpu] = virt_to_phys(addr);
+		pcpu_handlers[cpu] = (unsigned long)addr;
 		memcpy((void *)addr, (void *)eentry, vec_sz);
 		local_flush_icache_range((unsigned long)addr, (unsigned long)addr + vec_sz);
-		csr_write64(pcpu_handlers[cpu], LOONGARCH_CSR_TLBRENTRY);
+		csr_write64(pcpu_handlers[cpu], LOONGARCH_CSR_EENTRY);
+		csr_write64(pcpu_handlers[cpu], LOONGARCH_CSR_MERRENTRY);
 		csr_write64(pcpu_handlers[cpu] + 80*VECSIZE, LOONGARCH_CSR_TLBRENTRY);
-	}
 #endif
+	}
 }
 
 void tlb_init(int cpu)
@@ -300,6 +316,7 @@ void tlb_init(int cpu)
 	write_csr_pagesize(PS_DEFAULT_SIZE);
 	write_csr_stlbpgsize(PS_DEFAULT_SIZE);
 	write_csr_tlbrefill_pagesize(PS_DEFAULT_SIZE);
+
 	setup_tlb_handler(cpu);
-	local_flush_tlb_all();
+	output_pgtable_bits_defines();
 }

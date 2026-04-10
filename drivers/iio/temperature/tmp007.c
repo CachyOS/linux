@@ -216,7 +216,7 @@ static irqreturn_t tmp007_interrupt_handler(int irq, void *private)
 
 static int tmp007_write_event_config(struct iio_dev *indio_dev,
 		const struct iio_chan_spec *chan, enum iio_event_type type,
-		enum iio_event_direction dir, int state)
+		enum iio_event_direction dir, bool state)
 {
 	struct tmp007_data *data = iio_priv(indio_dev);
 	unsigned int status_mask;
@@ -446,9 +446,9 @@ static void tmp007_powerdown_action_cb(void *priv)
 	tmp007_powerdown(data);
 }
 
-static int tmp007_probe(struct i2c_client *client,
-			const struct i2c_device_id *tmp007_id)
+static int tmp007_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *tmp007_id = i2c_client_get_device_id(client);
 	struct tmp007_data *data;
 	struct iio_dev *indio_dev;
 	int ret;
@@ -558,12 +558,12 @@ static DEFINE_SIMPLE_DEV_PM_OPS(tmp007_pm_ops, tmp007_suspend, tmp007_resume);
 
 static const struct of_device_id tmp007_of_match[] = {
 	{ .compatible = "ti,tmp007", },
-	{ },
+	{ }
 };
 MODULE_DEVICE_TABLE(of, tmp007_of_match);
 
 static const struct i2c_device_id tmp007_id[] = {
-	{ "tmp007", 0 },
+	{ "tmp007" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tmp007_id);

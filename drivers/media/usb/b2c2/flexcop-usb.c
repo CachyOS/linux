@@ -179,7 +179,7 @@ static int flexcop_usb_memory_req(struct flexcop_usb *fc_usb,
 		flexcop_usb_request_t req, flexcop_usb_mem_page_t page_start,
 		u32 addr, int extended, u8 *buf, u32 len)
 {
-	int i, ret = 0;
+	int ret = 0;
 	u16 wMax;
 	u32 pagechunk = 0;
 
@@ -196,11 +196,8 @@ static int flexcop_usb_memory_req(struct flexcop_usb *fc_usb,
 	default:
 		return -EINVAL;
 	}
-	for (i = 0; i < len;) {
-		pagechunk =
-			wMax < bytes_left_to_read_on_page(addr, len) ?
-				wMax :
-				bytes_left_to_read_on_page(addr, len);
+	while (len) {
+		pagechunk = min(wMax, bytes_left_to_read_on_page(addr, len));
 		deb_info("%x\n",
 			(addr & V8_MEMORY_PAGE_MASK) |
 				(V8_MEMORY_EXTENDED*extended));
@@ -209,11 +206,12 @@ static int flexcop_usb_memory_req(struct flexcop_usb *fc_usb,
 			page_start + (addr / V8_MEMORY_PAGE_SIZE),
 			(addr & V8_MEMORY_PAGE_MASK) |
 				(V8_MEMORY_EXTENDED*extended),
-			&buf[i], pagechunk);
+			buf, pagechunk);
 
 		if (ret < 0)
 			return ret;
 		addr += pagechunk;
+		buf += pagechunk;
 		len -= pagechunk;
 	}
 	return 0;
@@ -425,11 +423,13 @@ static void flexcop_usb_transfer_exit(struct flexcop_usb *fc_usb)
 
 static int flexcop_usb_transfer_init(struct flexcop_usb *fc_usb)
 {
-	u16 frame_size = le16_to_cpu(
-		fc_usb->uintf->cur_altsetting->endpoint[0].desc.wMaxPacketSize);
-	int bufsize = B2C2_USB_NUM_ISO_URB * B2C2_USB_FRAMES_PER_ISO *
-		frame_size, i, j, ret;
+	struct usb_host_interface *alt = fc_usb->uintf->cur_altsetting;
+	u16 frame_size;
+	int bufsize, i, j, ret;
 	int buffer_offset = 0;
+
+	frame_size = usb_endpoint_maxp(&alt->endpoint[0].desc);
+	bufsize = B2C2_USB_NUM_ISO_URB * B2C2_USB_FRAMES_PER_ISO * frame_size;
 
 	deb_ts("creating %d iso-urbs with %d frames each of %d bytes size = %d.\n",
 	       B2C2_USB_NUM_ISO_URB,
@@ -446,7 +446,7 @@ static int flexcop_usb_transfer_init(struct flexcop_usb *fc_usb)
 	/* creating iso urbs */
 	for (i = 0; i < B2C2_USB_NUM_ISO_URB; i++) {
 		fc_usb->iso_urb[i] = usb_alloc_urb(B2C2_USB_FRAMES_PER_ISO,
-			GFP_ATOMIC);
+			GFP_KERNEL);
 		if (fc_usb->iso_urb[i] == NULL) {
 			ret = -ENOMEM;
 			goto urb_error;
@@ -479,7 +479,7 @@ static int flexcop_usb_transfer_init(struct flexcop_usb *fc_usb)
 			frame_offset += frame_size;
 		}
 
-		if ((ret = usb_submit_urb(fc_usb->iso_urb[i],GFP_ATOMIC))) {
+		if ((ret = usb_submit_urb(fc_usb->iso_urb[i],GFP_KERNEL))) {
 			err("submitting urb %d failed with %d.", i, ret);
 			goto urb_error;
 		}
@@ -501,17 +501,21 @@ urb_error:
 
 static int flexcop_usb_init(struct flexcop_usb *fc_usb)
 {
-	/* use the alternate setting with the larges buffer */
-	int ret = usb_set_interface(fc_usb->udev, 0, 1);
+	struct usb_host_interface *alt;
+	int ret;
 
+	/* use the alternate setting with the largest buffer */
+	ret = usb_set_interface(fc_usb->udev, 0, 1);
 	if (ret) {
 		err("set interface failed.");
 		return ret;
 	}
 
-	if (fc_usb->uintf->cur_altsetting->desc.bNumEndpoints < 1)
+	alt = fc_usb->uintf->cur_altsetting;
+
+	if (alt->desc.bNumEndpoints < 2)
 		return -ENODEV;
-	if (!usb_endpoint_is_isoc_in(&fc_usb->uintf->cur_altsetting->endpoint[1].desc))
+	if (!usb_endpoint_is_isoc_in(&alt->endpoint[0].desc))
 		return -ENODEV;
 
 	switch (fc_usb->udev->speed) {
@@ -524,6 +528,12 @@ static int flexcop_usb_init(struct flexcop_usb *fc_usb)
 		break;
 	case USB_SPEED_HIGH:
 		info("running at HIGH speed.");
+		break;
+	case USB_SPEED_SUPER:
+		info("running at SUPER speed.");
+		break;
+	case USB_SPEED_SUPER_PLUS:
+		info("running at SUPER+ speed.");
 		break;
 	case USB_SPEED_UNKNOWN:
 	default:

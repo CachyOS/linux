@@ -8,13 +8,14 @@
 #include <linux/export.h>
 #include <linux/uts.h>
 #include <linux/utsname.h>
+#include <linux/random.h>
 #include <linux/sysctl.h>
 #include <linux/wait.h>
 #include <linux/rwsem.h>
 
 #ifdef CONFIG_PROC_SYSCTL
 
-static void *get_uts(struct ctl_table *table)
+static void *get_uts(const struct ctl_table *table)
 {
 	char *which = table->data;
 	struct uts_namespace *uts_ns;
@@ -29,7 +30,7 @@ static void *get_uts(struct ctl_table *table)
  *	Special case of dostring for the UTS structure. This has locks
  *	to observe. Should this be in kernel/sys.c ????
  */
-static int proc_do_uts_string(struct ctl_table *table, int write,
+static int proc_do_uts_string(const struct ctl_table *table, int write,
 		  void *buffer, size_t *lenp, loff_t *ppos)
 {
 	struct ctl_table uts_table;
@@ -57,6 +58,7 @@ static int proc_do_uts_string(struct ctl_table *table, int write,
 		 * theoretically be incorrect if there are two parallel writes
 		 * at non-zero offsets to the same sysctl.
 		 */
+		add_device_randomness(tmp_data, sizeof(tmp_data));
 		down_write(&uts_sem);
 		memcpy(get_uts(table), tmp_data, sizeof(tmp_data));
 		up_write(&uts_sem);
@@ -72,7 +74,15 @@ static int proc_do_uts_string(struct ctl_table *table, int write,
 static DEFINE_CTL_TABLE_POLL(hostname_poll);
 static DEFINE_CTL_TABLE_POLL(domainname_poll);
 
-static struct ctl_table uts_kern_table[] = {
+// Note: update 'enum uts_proc' to match any changes to this table
+static const struct ctl_table uts_kern_table[] = {
+	{
+		.procname	= "arch",
+		.data		= init_uts_ns.name.machine,
+		.maxlen		= sizeof(init_uts_ns.name.machine),
+		.mode		= 0444,
+		.proc_handler	= proc_do_uts_string,
+	},
 	{
 		.procname	= "ostype",
 		.data		= init_uts_ns.name.sysname,
@@ -110,16 +120,6 @@ static struct ctl_table uts_kern_table[] = {
 		.proc_handler	= proc_do_uts_string,
 		.poll		= &domainname_poll,
 	},
-	{}
-};
-
-static struct ctl_table uts_root_table[] = {
-	{
-		.procname	= "kernel",
-		.mode		= 0555,
-		.child		= uts_kern_table,
-	},
-	{}
 };
 
 #ifdef CONFIG_PROC_SYSCTL
@@ -129,7 +129,7 @@ static struct ctl_table uts_root_table[] = {
  */
 void uts_proc_notify(enum uts_proc proc)
 {
-	struct ctl_table *table = &uts_kern_table[proc];
+	const struct ctl_table *table = &uts_kern_table[proc];
 
 	proc_sys_poll_notify(table->poll);
 }
@@ -137,7 +137,7 @@ void uts_proc_notify(enum uts_proc proc)
 
 static int __init utsname_sysctl_init(void)
 {
-	register_sysctl_table(uts_root_table);
+	register_sysctl("kernel", uts_kern_table);
 	return 0;
 }
 

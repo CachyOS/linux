@@ -161,8 +161,7 @@ static void isp_stat_buf_sync_for_device(struct ispstat *stat,
 	if (ISP_STAT_USES_DMAENGINE(stat))
 		return;
 
-	dma_sync_sg_for_device(stat->isp->dev, buf->sgt.sgl,
-			       buf->sgt.nents, DMA_FROM_DEVICE);
+	dma_sync_sgtable_for_device(stat->isp->dev, &buf->sgt, DMA_FROM_DEVICE);
 }
 
 static void isp_stat_buf_sync_for_cpu(struct ispstat *stat,
@@ -171,8 +170,7 @@ static void isp_stat_buf_sync_for_cpu(struct ispstat *stat,
 	if (ISP_STAT_USES_DMAENGINE(stat))
 		return;
 
-	dma_sync_sg_for_cpu(stat->isp->dev, buf->sgt.sgl,
-			    buf->sgt.nents, DMA_FROM_DEVICE);
+	dma_sync_sgtable_for_cpu(stat->isp->dev, &buf->sgt, DMA_FROM_DEVICE);
 }
 
 static void isp_stat_buf_clear(struct ispstat *stat)
@@ -1012,13 +1010,6 @@ int omap3isp_stat_subscribe_event(struct v4l2_subdev *subdev,
 	return v4l2_event_subscribe(fh, sub, STAT_NEVENTS, NULL);
 }
 
-int omap3isp_stat_unsubscribe_event(struct v4l2_subdev *subdev,
-				    struct v4l2_fh *fh,
-				    struct v4l2_event_subscription *sub)
-{
-	return v4l2_event_unsubscribe(fh, sub);
-}
-
 void omap3isp_stat_unregister_entities(struct ispstat *stat)
 {
 	v4l2_device_unregister_subdev(&stat->subdev);
@@ -1039,13 +1030,14 @@ static int isp_stat_init_entities(struct ispstat *stat, const char *name,
 	struct media_entity *me = &subdev->entity;
 
 	v4l2_subdev_init(subdev, sd_ops);
-	snprintf(subdev->name, V4L2_SUBDEV_NAME_SIZE, "OMAP3 ISP %s", name);
+	snprintf(subdev->name, sizeof(subdev->name), "OMAP3 ISP %s", name);
 	subdev->grp_id = BIT(16);	/* group ID for isp subdevs */
 	subdev->flags |= V4L2_SUBDEV_FL_HAS_EVENTS | V4L2_SUBDEV_FL_HAS_DEVNODE;
 	v4l2_set_subdevdata(subdev, stat);
 
 	stat->pad.flags = MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_MUST_CONNECT;
 	me->ops = NULL;
+	me->function = MEDIA_ENT_F_PROC_VIDEO_STATISTICS;
 
 	return media_entity_pads_init(me, 1, &stat->pad);
 }
@@ -1055,7 +1047,7 @@ int omap3isp_stat_init(struct ispstat *stat, const char *name,
 {
 	int ret;
 
-	stat->buf = kcalloc(STAT_MAX_BUFS, sizeof(*stat->buf), GFP_KERNEL);
+	stat->buf = kzalloc_objs(*stat->buf, STAT_MAX_BUFS);
 	if (!stat->buf)
 		return -ENOMEM;
 

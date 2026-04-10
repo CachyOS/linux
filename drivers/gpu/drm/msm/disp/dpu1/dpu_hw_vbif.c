@@ -2,6 +2,8 @@
 /* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
  */
 
+#include <drm/drm_managed.h>
+
 #include "dpu_hwio.h"
 #include "dpu_hw_catalog.h"
 #include "dpu_hw_vbif.h"
@@ -30,7 +32,7 @@
 #define VBIF_XIN_HALT_CTRL0		0x0200
 #define VBIF_XIN_HALT_CTRL1		0x0204
 #define VBIF_XINL_QOS_RP_REMAP_000	0x0550
-#define VBIF_XINL_QOS_LVL_REMAP_000(v)	(v < DPU_HW_VER_400 ? 0x570 : 0x0590)
+#define VBIF_XINL_QOS_LVL_REMAP_000(vbif)	(VBIF_XINL_QOS_RP_REMAP_000 + (vbif)->cap->qos_rp_remap_size)
 
 static void dpu_hw_clear_errors(struct dpu_hw_vbif *vbif,
 		u32 *pnd_errors, u32 *src_errors)
@@ -163,7 +165,7 @@ static void dpu_hw_set_qos_remap(struct dpu_hw_vbif *vbif,
 
 	c = &vbif->hw;
 
-	reg_lvl = VBIF_XINL_QOS_LVL_REMAP_000(c->hwversion);
+	reg_lvl = VBIF_XINL_QOS_LVL_REMAP_000(vbif);
 	reg_high = ((xin_id & 0x8) >> 3) * 4 + (level * 8);
 	reg_shift = (xin_id & 0x7) * 4;
 
@@ -211,57 +213,34 @@ static void _setup_vbif_ops(struct dpu_hw_vbif_ops *ops,
 	ops->set_write_gather_en = dpu_hw_set_write_gather_en;
 }
 
-static const struct dpu_vbif_cfg *_top_offset(enum dpu_vbif vbif,
-		const struct dpu_mdss_cfg *m,
-		void __iomem *addr,
-		struct dpu_hw_blk_reg_map *b)
-{
-	int i;
-
-	for (i = 0; i < m->vbif_count; i++) {
-		if (vbif == m->vbif[i].id) {
-			b->base_off = addr;
-			b->blk_off = m->vbif[i].base;
-			b->length = m->vbif[i].len;
-			b->hwversion = m->hwversion;
-			b->log_mask = DPU_DBG_MASK_VBIF;
-			return &m->vbif[i];
-		}
-	}
-
-	return ERR_PTR(-EINVAL);
-}
-
-struct dpu_hw_vbif *dpu_hw_vbif_init(enum dpu_vbif idx,
-		void __iomem *addr,
-		const struct dpu_mdss_cfg *m)
+/**
+ * dpu_hw_vbif_init() - Initializes the VBIF driver for the passed
+ * VBIF catalog entry.
+ * @dev:  Corresponding device for devres management
+ * @cfg:  VBIF catalog entry for which driver object is required
+ * @addr: Mapped register io address of MDSS
+ */
+struct dpu_hw_vbif *dpu_hw_vbif_init(struct drm_device *dev,
+				     const struct dpu_vbif_cfg *cfg,
+				     void __iomem *addr)
 {
 	struct dpu_hw_vbif *c;
-	const struct dpu_vbif_cfg *cfg;
 
-	c = kzalloc(sizeof(*c), GFP_KERNEL);
+	c = drmm_kzalloc(dev, sizeof(*c), GFP_KERNEL);
 	if (!c)
 		return ERR_PTR(-ENOMEM);
 
-	cfg = _top_offset(idx, m, addr, &c->hw);
-	if (IS_ERR_OR_NULL(cfg)) {
-		kfree(c);
-		return ERR_PTR(-EINVAL);
-	}
+	c->hw.blk_addr = addr + cfg->base;
+	c->hw.log_mask = DPU_DBG_MASK_VBIF;
 
 	/*
 	 * Assign ops
 	 */
-	c->idx = idx;
+	c->idx = cfg->id;
 	c->cap = cfg;
 	_setup_vbif_ops(&c->ops, c->cap->features);
 
 	/* no need to register sub-range in dpu dbg, dump entire vbif io base */
 
 	return c;
-}
-
-void dpu_hw_vbif_destroy(struct dpu_hw_vbif *vbif)
-{
-	kfree(vbif);
 }

@@ -620,7 +620,6 @@ __mptctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	mpt_ioctl_header __user *uhdr = (void __user *) arg;
 	mpt_ioctl_header	 khdr;
-	int iocnum;
 	unsigned iocnumX;
 	int nonblock = (file->f_flags & O_NONBLOCK);
 	int ret;
@@ -634,12 +633,11 @@ __mptctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	}
 	ret = -ENXIO;				/* (-6) No such device or address */
 
-	/* Verify intended MPT adapter - set iocnum and the adapter
+	/* Verify intended MPT adapter - set iocnumX and the adapter
 	 * pointer (iocp)
 	 */
 	iocnumX = khdr.iocnum & 0xFF;
-	if (((iocnum = mpt_verify_adapter(iocnumX, &iocp)) < 0) ||
-	    (iocp == NULL))
+	if ((mpt_verify_adapter(iocnumX, &iocp) < 0) || (iocp == NULL))
 		return -ENODEV;
 
 	if (!iocp->active) {
@@ -1330,8 +1328,8 @@ mptctl_getiocinfo (MPT_ADAPTER *ioc, unsigned long arg, unsigned int data_size)
 
 	/* Set the Version Strings.
 	 */
-	strncpy (karg->driverVersion, MPT_LINUX_PACKAGE_NAME, MPT_IOCTL_VERSION_LENGTH);
-	karg->driverVersion[MPT_IOCTL_VERSION_LENGTH-1]='\0';
+	strscpy_pad(karg->driverVersion, MPT_LINUX_PACKAGE_NAME,
+		    sizeof(karg->driverVersion));
 
 	karg->busChangeEvent = 0;
 	karg->hostId = ioc->pfacts[port].PortSCSIID;
@@ -1495,10 +1493,8 @@ mptctl_readtest (MPT_ADAPTER *ioc, unsigned long arg)
 #else
 	karg.chip_type = ioc->pcidev->device;
 #endif
-	strncpy (karg.name, ioc->name, MPT_MAX_NAME);
-	karg.name[MPT_MAX_NAME-1]='\0';
-	strncpy (karg.product, ioc->prod_name, MPT_PRODUCT_LENGTH);
-	karg.product[MPT_PRODUCT_LENGTH-1]='\0';
+	strscpy_pad(karg.name, ioc->name, sizeof(karg.name));
+	strscpy_pad(karg.product, ioc->prod_name, sizeof(karg.product));
 
 	/* Copy the data from kernel memory to user memory
 	 */
@@ -1613,7 +1609,7 @@ mptctl_eventreport (MPT_ADAPTER *ioc, unsigned long arg)
 	maxEvents = numBytes/sizeof(MPT_IOCTL_EVENTS);
 
 
-	max = MPTCTL_EVENT_LOG_SIZE < maxEvents ? MPTCTL_EVENT_LOG_SIZE : maxEvents;
+	max = min(maxEvents, MPTCTL_EVENT_LOG_SIZE);
 
 	/* If fewer than 1 event is requested, there must have
 	 * been some type of error.
@@ -2396,7 +2392,7 @@ mptctl_hp_hostinfo(MPT_ADAPTER *ioc, unsigned long arg, unsigned int data_size)
 	cfg.dir = 0;	/* read */
 	cfg.timeout = 10;
 
-	strncpy(karg.serial_number, " ", 24);
+	strscpy_pad(karg.serial_number, " ", sizeof(karg.serial_number));
 	if (mpt_config(ioc, &cfg) == 0) {
 		if (cfg.cfghdr.hdr->PageLength > 0) {
 			/* Issue the second config page request */
@@ -2410,8 +2406,9 @@ mptctl_hp_hostinfo(MPT_ADAPTER *ioc, unsigned long arg, unsigned int data_size)
 				if (mpt_config(ioc, &cfg) == 0) {
 					ManufacturingPage0_t *pdata = (ManufacturingPage0_t *) pbuf;
 					if (strlen(pdata->BoardTracerNumber) > 1) {
-						strlcpy(karg.serial_number,
-							pdata->BoardTracerNumber, 24);
+						strscpy_pad(karg.serial_number,
+							pdata->BoardTracerNumber,
+							sizeof(karg.serial_number));
 					}
 				}
 				dma_free_coherent(&ioc->pcidev->dev,
@@ -2458,7 +2455,7 @@ mptctl_hp_hostinfo(MPT_ADAPTER *ioc, unsigned long arg, unsigned int data_size)
 		}
 	}
 
-	/* 
+	/*
 	 * Gather ISTWI(Industry Standard Two Wire Interface) Data
 	 */
 	if ((mf = mpt_get_msg_frame(mptctl_id, ioc)) == NULL) {
@@ -2694,7 +2691,6 @@ mptctl_hp_targetinfo(MPT_ADAPTER *ioc, unsigned long arg)
 
 static const struct file_operations mptctl_fops = {
 	.owner =	THIS_MODULE,
-	.llseek =	no_llseek,
 	.fasync = 	mptctl_fasync,
 	.unlocked_ioctl = mptctl_ioctl,
 #ifdef CONFIG_COMPAT
@@ -2881,7 +2877,6 @@ static struct mpt_pci_driver mptctl_driver = {
 static int __init mptctl_init(void)
 {
 	int err;
-	int where = 1;
 
 	show_mptmod_ver(my_NAME, my_VERSION);
 
@@ -2900,7 +2895,6 @@ static int __init mptctl_init(void)
 	/*
 	 *  Install our handler
 	 */
-	++where;
 	mptctl_id = mpt_register(mptctl_reply, MPTCTL_DRIVER,
 	    "mptctl_reply");
 	if (!mptctl_id || mptctl_id >= MPT_MAX_PROTOCOL_DRIVERS) {

@@ -31,7 +31,7 @@ vxfs_put_page(struct page *pp)
 
 /**
  * vxfs_get_page - read a page into memory.
- * @ip:		inode to read from
+ * @mapping:	mapping to read from
  * @n:		page number
  *
  * Description:
@@ -51,15 +51,9 @@ vxfs_get_page(struct address_space *mapping, u_long n)
 		kmap(pp);
 		/** if (!PageChecked(pp)) **/
 			/** vxfs_check_page(pp); **/
-		if (PageError(pp))
-			goto fail;
 	}
 	
 	return (pp);
-		 
-fail:
-	vxfs_put_page(pp);
-	return ERR_PTR(-EIO);
 }
 
 /**
@@ -87,14 +81,14 @@ vxfs_bread(struct inode *ip, int block)
 }
 
 /**
- * vxfs_get_block - locate buffer for given inode,block tuple 
+ * vxfs_getblk - locate buffer for given inode,block tuple
  * @ip:		inode
  * @iblock:	logical block
  * @bp:		buffer skeleton
  * @create:	%TRUE if blocks may be newly allocated.
  *
  * Description:
- *   The vxfs_get_block function fills @bp with the right physical
+ *   The vxfs_getblk function fills @bp with the right physical
  *   block and device number to perform a lowlevel read/write on
  *   it.
  *

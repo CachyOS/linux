@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * CPU idle Marvell Kirkwood SoCs
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  *
  * The cpu idle uses wait-for-interrupt and DDR self refresh in order
  * to implement two idle states -
@@ -62,10 +59,9 @@ static int kirkwood_cpuidle_probe(struct platform_device *pdev)
 	return cpuidle_register(&kirkwood_idle_driver, NULL);
 }
 
-static int kirkwood_cpuidle_remove(struct platform_device *pdev)
+static void kirkwood_cpuidle_remove(struct platform_device *pdev)
 {
 	cpuidle_unregister(&kirkwood_idle_driver);
-	return 0;
 }
 
 static struct platform_driver kirkwood_cpuidle_driver = {

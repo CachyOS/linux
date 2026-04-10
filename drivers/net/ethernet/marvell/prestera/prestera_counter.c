@@ -147,7 +147,7 @@ prestera_counter_block_get(struct prestera_counter *counter, u32 client)
 	if (block)
 		return block;
 
-	block = kzalloc(sizeof(*block), GFP_KERNEL);
+	block = kzalloc_obj(*block);
 	if (!block)
 		return ERR_PTR(-ENOMEM);
 
@@ -157,8 +157,7 @@ prestera_counter_block_get(struct prestera_counter *counter, u32 client)
 	if (err)
 		goto err_block;
 
-	block->stats = kcalloc(block->num_counters,
-			       sizeof(*block->stats), GFP_KERNEL);
+	block->stats = kzalloc_objs(*block->stats, block->num_counters);
 	if (!block->stats) {
 		err = -ENOMEM;
 		goto err_stats;
@@ -336,8 +335,7 @@ prestera_counter_block_get_by_idx(struct prestera_counter *counter, u32 idx)
 
 static void prestera_counter_stats_work(struct work_struct *work)
 {
-	struct delayed_work *dl_work =
-		container_of(work, struct delayed_work, work);
+	struct delayed_work *dl_work = to_delayed_work(work);
 	struct prestera_counter *counter =
 		container_of(dl_work, struct prestera_counter, stats_dw);
 	struct prestera_counter_block *block;
@@ -438,11 +436,11 @@ int prestera_counter_init(struct prestera_switch *sw)
 {
 	struct prestera_counter *counter;
 
-	counter = kzalloc(sizeof(*counter), GFP_KERNEL);
+	counter = kzalloc_obj(*counter);
 	if (!counter)
 		return -ENOMEM;
 
-	counter->block_list = kzalloc(sizeof(*counter->block_list), GFP_KERNEL);
+	counter->block_list = kzalloc_obj(*counter->block_list);
 	if (!counter->block_list) {
 		kfree(counter);
 		return -ENOMEM;

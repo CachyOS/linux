@@ -7,8 +7,7 @@
  *  Author(s): Stefan Weinhuber <wein@de.ibm.com>
  */
 
-#define KMSG_COMPONENT "dasd-eckd"
-
+#include <linux/export.h>
 #include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/kernel.h>
@@ -27,11 +26,6 @@
 
 #include "dasd_int.h"
 #include "dasd_eckd.h"
-
-#ifdef PRINTK_HEADER
-#undef PRINTK_HEADER
-#endif				/* PRINTK_HEADER */
-#define PRINTK_HEADER "dasd(eer):"
 
 /*
  * SECTION: the internal buffer
@@ -313,7 +307,7 @@ static void dasd_eer_write_standard_trigger(struct dasd_device *device,
 	ktime_get_real_ts64(&ts);
 	header.tv_sec = ts.tv_sec;
 	header.tv_usec = ts.tv_nsec / NSEC_PER_USEC;
-	strlcpy(header.busid, dev_name(&device->cdev->dev),
+	strscpy(header.busid, dev_name(&device->cdev->dev),
 		DASD_EER_BUSID_SIZE);
 
 	spin_lock_irqsave(&bufferlock, flags);
@@ -356,7 +350,7 @@ static void dasd_eer_write_snss_trigger(struct dasd_device *device,
 	ktime_get_real_ts64(&ts);
 	header.tv_sec = ts.tv_sec;
 	header.tv_usec = ts.tv_nsec / NSEC_PER_USEC;
-	strlcpy(header.busid, dev_name(&device->cdev->dev),
+	strscpy(header.busid, dev_name(&device->cdev->dev),
 		DASD_EER_BUSID_SIZE);
 
 	spin_lock_irqsave(&bufferlock, flags);
@@ -387,6 +381,7 @@ void dasd_eer_write(struct dasd_device *device, struct dasd_ccw_req *cqr,
 		break;
 	case DASD_EER_NOPATH:
 	case DASD_EER_NOSPC:
+	case DASD_EER_AUTOQUIESCE:
 		dasd_eer_write_standard_trigger(device, NULL, id);
 		break;
 	case DASD_EER_STATECHANGE:
@@ -491,7 +486,7 @@ int dasd_eer_enable(struct dasd_device *device)
 	ccw->cmd_code = DASD_ECKD_CCW_SNSS;
 	ccw->count = SNSS_DATA_SIZE;
 	ccw->flags = 0;
-	ccw->cda = (__u32)(addr_t) cqr->data;
+	ccw->cda = virt_to_dma32(cqr->data);
 
 	cqr->buildclk = get_tod_clock();
 	cqr->status = DASD_CQR_FILLED;
@@ -549,7 +544,7 @@ static int dasd_eer_open(struct inode *inp, struct file *filp)
 	struct eerbuffer *eerb;
 	unsigned long flags;
 
-	eerb = kzalloc(sizeof(struct eerbuffer), GFP_KERNEL);
+	eerb = kzalloc_obj(struct eerbuffer);
 	if (!eerb)
 		return -ENOMEM;
 	eerb->buffer_page_count = eer_pages;
@@ -694,7 +689,7 @@ int __init dasd_eer_init(void)
 {
 	int rc;
 
-	dasd_eer_dev = kzalloc(sizeof(*dasd_eer_dev), GFP_KERNEL);
+	dasd_eer_dev = kzalloc_obj(*dasd_eer_dev);
 	if (!dasd_eer_dev)
 		return -ENOMEM;
 

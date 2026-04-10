@@ -168,7 +168,7 @@ label##5:							\
 #define ALT_FW_FTR_SECTION_END_IFCLR(msk)	\
 	ALT_FW_FTR_SECTION_END_NESTED_IFCLR(msk, 97)
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #define ASM_FTR_IF(section_if, section_else, msk, val)	\
 	stringify_in_c(BEGIN_FTR_SECTION)			\
@@ -196,7 +196,7 @@ label##5:							\
 #define ASM_MMU_FTR_IFCLR(section_if, section_else, msk)	\
 	ASM_MMU_FTR_IF(section_if, section_else, (msk), 0)
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 /* LWSYNC feature sections */
 #define START_LWSYNC_SECTION(label)	label##1:
@@ -276,7 +276,7 @@ label##3:					       	\
 	FTR_ENTRY_OFFSET 956b-957b;			\
 	.popsection;
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #include <linux/types.h>
 
 extern long stf_barrier_fallback;
@@ -291,7 +291,10 @@ extern long __start___rfi_flush_fixup, __stop___rfi_flush_fixup;
 extern long __start___barrier_nospec_fixup, __stop___barrier_nospec_fixup;
 extern long __start__btb_flush_fixup, __stop__btb_flush_fixup;
 
+extern bool static_key_feature_checks_initialized;
+
 void apply_feature_fixups(void);
+void update_mmu_feature_fixups(unsigned long mask);
 void setup_feature_keys(void);
 #endif
 

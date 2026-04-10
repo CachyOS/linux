@@ -31,13 +31,15 @@
 #include <linux/iosys-map.h>
 #include <linux/dma-fence.h>
 
-#include <drm/drm_print.h>
 #include <drm/ttm/ttm_caching.h>
 #include <drm/ttm/ttm_kmap_iter.h>
 
 #define TTM_MAX_BO_PRIORITY	4U
-#define TTM_NUM_MEM_TYPES 8
+#define TTM_NUM_MEM_TYPES 9
 
+struct dentry;
+struct dmem_cgroup_device;
+struct drm_printer;
 struct ttm_device;
 struct ttm_resource_manager;
 struct ttm_resource;
@@ -48,6 +50,52 @@ struct iosys_map;
 struct io_mapping;
 struct sg_table;
 struct scatterlist;
+
+/**
+ * define TTM_NUM_MOVE_FENCES - How many entities can be used for evictions
+ *
+ * Pipelined evictions can be spread on multiple entities. This
+ * is the max number of entities that can be used by the driver
+ * for that purpose.
+ */
+#define TTM_NUM_MOVE_FENCES 8
+
+/**
+ * enum ttm_lru_item_type - enumerate ttm_lru_item subclasses
+ */
+enum ttm_lru_item_type {
+	/** @TTM_LRU_RESOURCE: The resource subclass */
+	TTM_LRU_RESOURCE,
+	/** @TTM_LRU_HITCH: The iterator hitch subclass */
+	TTM_LRU_HITCH
+};
+
+/**
+ * struct ttm_lru_item - The TTM lru list node base class
+ * @link: The list link
+ * @type: The subclass type
+ */
+struct ttm_lru_item {
+	struct list_head link;
+	enum ttm_lru_item_type type;
+};
+
+/**
+ * ttm_lru_item_init() - initialize a struct ttm_lru_item
+ * @item: The item to initialize
+ * @type: The subclass type
+ */
+static inline void ttm_lru_item_init(struct ttm_lru_item *item,
+				     enum ttm_lru_item_type type)
+{
+	item->type = type;
+	INIT_LIST_HEAD(&item->link);
+}
+
+static inline bool ttm_lru_item_is_res(const struct ttm_lru_item *item)
+{
+	return item->type == TTM_LRU_RESOURCE;
+}
 
 struct ttm_resource_manager_func {
 	/**
@@ -89,6 +137,38 @@ struct ttm_resource_manager_func {
 		     struct ttm_resource *res);
 
 	/**
+	 * struct ttm_resource_manager_func member intersects
+	 *
+	 * @man: Pointer to a memory type manager.
+	 * @res: Pointer to a struct ttm_resource to be checked.
+	 * @place: Placement to check against.
+	 * @size: Size of the check.
+	 *
+	 * Test if @res intersects with @place + @size. Used to judge if
+	 * evictions are valueable or not.
+	 */
+	bool (*intersects)(struct ttm_resource_manager *man,
+			   struct ttm_resource *res,
+			   const struct ttm_place *place,
+			   size_t size);
+
+	/**
+	 * struct ttm_resource_manager_func member compatible
+	 *
+	 * @man: Pointer to a memory type manager.
+	 * @res: Pointer to a struct ttm_resource to be checked.
+	 * @place: Placement to check against.
+	 * @size: Size of the check.
+	 *
+	 * Test if @res compatible with @place + @size. Used to check of
+	 * the need to move the backing store or not.
+	 */
+	bool (*compatible)(struct ttm_resource_manager *man,
+			   struct ttm_resource *res,
+			   const struct ttm_place *place,
+			   size_t size);
+
+	/**
 	 * struct ttm_resource_manager_func member debug
 	 *
 	 * @man: Pointer to a memory type manager.
@@ -110,8 +190,8 @@ struct ttm_resource_manager_func {
  * @size: Size of the managed region.
  * @bdev: ttm device this manager belongs to
  * @func: structure pointer implementing the range manager. See above
- * @move_lock: lock for move fence
- * @move: The fence of the last pipelined move operation.
+ * @eviction_lock: lock for eviction fences
+ * @eviction_fences: The fences of the last pipelined move operation.
  * @lru: The lru list for this memory type.
  *
  * This structure is used to identify and manage memory types for a device.
@@ -125,12 +205,12 @@ struct ttm_resource_manager {
 	struct ttm_device *bdev;
 	uint64_t size;
 	const struct ttm_resource_manager_func *func;
-	spinlock_t move_lock;
 
-	/*
-	 * Protected by @move_lock.
+	/* This is very similar to a dma_resv object, but locking rules make
+	 * it difficult to use one in this context.
 	 */
-	struct dma_fence *move;
+	spinlock_t eviction_lock;
+	struct dma_fence *eviction_fences[TTM_NUM_MOVE_FENCES];
 
 	/*
 	 * Protected by the bdev->lru_lock.
@@ -142,6 +222,11 @@ struct ttm_resource_manager {
 	 * bdev->lru_lock.
 	 */
 	uint64_t usage;
+
+	/**
+	 * @cg: &dmem_cgroup_region used for memory accounting, if not NULL.
+	 */
+	struct dmem_cgroup_region *cg;
 };
 
 /**
@@ -165,39 +250,43 @@ struct ttm_bus_placement {
  * struct ttm_resource
  *
  * @start: Start of the allocation.
- * @num_pages: Actual size of resource in pages.
+ * @size: Actual size of resource in bytes.
  * @mem_type: Resource type of the allocation.
  * @placement: Placement flags.
  * @bus: Placement on io bus accessible to the CPU
  * @bo: weak reference to the BO, protected by ttm_device::lru_lock
+ * @css: cgroup state this resource is charged to
  *
  * Structure indicating the placement and space resources used by a
  * buffer object.
  */
 struct ttm_resource {
 	unsigned long start;
-	unsigned long num_pages;
+	size_t size;
 	uint32_t mem_type;
 	uint32_t placement;
 	struct ttm_bus_placement bus;
 	struct ttm_buffer_object *bo;
 
+	struct dmem_cgroup_pool_state *css;
+
 	/**
 	 * @lru: Least recently used list, see &ttm_resource_manager.lru
 	 */
-	struct list_head lru;
+	struct ttm_lru_item lru;
 };
 
 /**
- * struct ttm_resource_cursor
+ * ttm_lru_item_to_res() - Downcast a struct ttm_lru_item to a struct ttm_resource
+ * @item: The struct ttm_lru_item to downcast
  *
- * @priority: the current priority
- *
- * Cursor to iterate over the resources in a manager.
+ * Return: Pointer to the embedding struct ttm_resource
  */
-struct ttm_resource_cursor {
-	unsigned int priority;
-};
+static inline struct ttm_resource *
+ttm_lru_item_to_res(struct ttm_lru_item *item)
+{
+	return container_of(item, struct ttm_resource, lru);
+}
 
 /**
  * struct ttm_lru_bulk_move_pos
@@ -214,15 +303,51 @@ struct ttm_lru_bulk_move_pos {
 
 /**
  * struct ttm_lru_bulk_move
- *
  * @pos: first/last lru entry for resources in the each domain/priority
+ * @cursor_list: The list of cursors currently traversing any of
+ * the sublists of @pos. Protected by the ttm device's lru_lock.
  *
  * Container for the current bulk move state. Should be used with
  * ttm_lru_bulk_move_init() and ttm_bo_set_bulk_move().
+ * All BOs in a bulk_move structure need to share the same reservation object to
+ * ensure that the bulk as a whole is locked for eviction even if only one BO of
+ * the bulk is evicted.
  */
 struct ttm_lru_bulk_move {
 	struct ttm_lru_bulk_move_pos pos[TTM_NUM_MEM_TYPES][TTM_MAX_BO_PRIORITY];
+	struct list_head cursor_list;
 };
+
+/**
+ * struct ttm_resource_cursor
+ * @man: The resource manager currently being iterated over
+ * @hitch: A hitch list node inserted before the next resource
+ * to iterate over.
+ * @bulk_link: A list link for the list of cursors traversing the
+ * bulk sublist of @bulk. Protected by the ttm device's lru_lock.
+ * @bulk: Pointer to struct ttm_lru_bulk_move whose subrange @hitch is
+ * inserted to. NULL if none. Never dereference this pointer since
+ * the struct ttm_lru_bulk_move object pointed to might have been
+ * freed. The pointer is only for comparison.
+ * @mem_type: The memory type of the LRU list being traversed.
+ * This field is valid iff @bulk != NULL.
+ * @priority: the current priority
+ *
+ * Cursor to iterate over the resources in a manager.
+ */
+struct ttm_resource_cursor {
+	struct ttm_resource_manager *man;
+	struct ttm_lru_item hitch;
+	struct list_head bulk_link;
+	struct ttm_lru_bulk_move *bulk;
+	unsigned int mem_type;
+	unsigned int priority;
+};
+
+void ttm_resource_cursor_init(struct ttm_resource_cursor *cursor,
+			      struct ttm_resource_manager *man);
+
+void ttm_resource_cursor_fini(struct ttm_resource_cursor *cursor);
 
 /**
  * struct ttm_kmap_iter_iomap - Specialization for a struct io_mapping +
@@ -306,12 +431,18 @@ static inline bool ttm_resource_manager_used(struct ttm_resource_manager *man)
 static inline void
 ttm_resource_manager_cleanup(struct ttm_resource_manager *man)
 {
-	dma_fence_put(man->move);
-	man->move = NULL;
+	int i;
+
+	for (i = 0; i < TTM_NUM_MOVE_FENCES; i++) {
+		dma_fence_put(man->eviction_fences[i]);
+		man->eviction_fences[i] = NULL;
+	}
 }
 
 void ttm_lru_bulk_move_init(struct ttm_lru_bulk_move *bulk);
 void ttm_lru_bulk_move_tail(struct ttm_lru_bulk_move *bulk);
+void ttm_lru_bulk_move_fini(struct ttm_device *bdev,
+			    struct ttm_lru_bulk_move *bulk);
 
 void ttm_resource_add_bulk_move(struct ttm_resource *res,
 				struct ttm_buffer_object *bo);
@@ -327,10 +458,16 @@ void ttm_resource_fini(struct ttm_resource_manager *man,
 
 int ttm_resource_alloc(struct ttm_buffer_object *bo,
 		       const struct ttm_place *place,
-		       struct ttm_resource **res);
+		       struct ttm_resource **res,
+		       struct dmem_cgroup_pool_state **ret_limit_pool);
 void ttm_resource_free(struct ttm_buffer_object *bo, struct ttm_resource **res);
-bool ttm_resource_compat(struct ttm_resource *res,
-			 struct ttm_placement *placement);
+bool ttm_resource_intersects(struct ttm_device *bdev,
+			     struct ttm_resource *res,
+			     const struct ttm_place *place,
+			     size_t size);
+bool ttm_resource_compatible(struct ttm_resource *res,
+			     struct ttm_placement *placement,
+			     bool evicting);
 void ttm_resource_set_bo(struct ttm_resource *res,
 			 struct ttm_buffer_object *bo);
 
@@ -346,24 +483,23 @@ void ttm_resource_manager_debug(struct ttm_resource_manager *man,
 				struct drm_printer *p);
 
 struct ttm_resource *
-ttm_resource_manager_first(struct ttm_resource_manager *man,
-			   struct ttm_resource_cursor *cursor);
+ttm_resource_manager_first(struct ttm_resource_cursor *cursor);
 struct ttm_resource *
-ttm_resource_manager_next(struct ttm_resource_manager *man,
-			  struct ttm_resource_cursor *cursor,
-			  struct ttm_resource *res);
+ttm_resource_manager_next(struct ttm_resource_cursor *cursor);
+
+struct ttm_resource *
+ttm_lru_first_res_or_null(struct list_head *head);
 
 /**
  * ttm_resource_manager_for_each_res - iterate over all resources
- * @man: the resource manager
  * @cursor: struct ttm_resource_cursor for the current position
  * @res: the current resource
  *
  * Iterate over all the evictable resources in a resource manager.
  */
-#define ttm_resource_manager_for_each_res(man, cursor, res)		\
-	for (res = ttm_resource_manager_first(man, cursor); res;	\
-	     res = ttm_resource_manager_next(man, cursor, res))
+#define ttm_resource_manager_for_each_res(cursor, res)	\
+	for (res = ttm_resource_manager_first(cursor); res;	\
+	     res = ttm_resource_manager_next(cursor))
 
 struct ttm_kmap_iter *
 ttm_kmap_iter_iomap_init(struct ttm_kmap_iter_iomap *iter_io,

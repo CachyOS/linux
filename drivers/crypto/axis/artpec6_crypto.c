@@ -252,7 +252,7 @@ struct artpec6_crypto_dma_descriptors {
 };
 
 enum artpec6_crypto_variant {
-	ARTPEC6_CRYPTO,
+	ARTPEC6_CRYPTO = 1,
 	ARTPEC7_CRYPTO,
 };
 
@@ -1535,7 +1535,8 @@ static int artpec6_crypto_aes_ecb_init(struct crypto_skcipher *tfm)
 {
 	struct artpec6_cryptotfm_context *ctx = crypto_skcipher_ctx(tfm);
 
-	tfm->reqsize = sizeof(struct artpec6_crypto_request_context);
+	crypto_skcipher_set_reqsize(tfm,
+				    sizeof(struct artpec6_crypto_request_context));
 	ctx->crypto_type = ARTPEC6_CRYPTO_CIPHER_AES_ECB;
 
 	return 0;
@@ -1551,7 +1552,8 @@ static int artpec6_crypto_aes_ctr_init(struct crypto_skcipher *tfm)
 	if (IS_ERR(ctx->fallback))
 		return PTR_ERR(ctx->fallback);
 
-	tfm->reqsize = sizeof(struct artpec6_crypto_request_context);
+	crypto_skcipher_set_reqsize(tfm,
+				    sizeof(struct artpec6_crypto_request_context));
 	ctx->crypto_type = ARTPEC6_CRYPTO_CIPHER_AES_CTR;
 
 	return 0;
@@ -1561,7 +1563,8 @@ static int artpec6_crypto_aes_cbc_init(struct crypto_skcipher *tfm)
 {
 	struct artpec6_cryptotfm_context *ctx = crypto_skcipher_ctx(tfm);
 
-	tfm->reqsize = sizeof(struct artpec6_crypto_request_context);
+	crypto_skcipher_set_reqsize(tfm,
+				    sizeof(struct artpec6_crypto_request_context));
 	ctx->crypto_type = ARTPEC6_CRYPTO_CIPHER_AES_CBC;
 
 	return 0;
@@ -1571,7 +1574,8 @@ static int artpec6_crypto_aes_xts_init(struct crypto_skcipher *tfm)
 {
 	struct artpec6_cryptotfm_context *ctx = crypto_skcipher_ctx(tfm);
 
-	tfm->reqsize = sizeof(struct artpec6_crypto_request_context);
+	crypto_skcipher_set_reqsize(tfm,
+				    sizeof(struct artpec6_crypto_request_context));
 	ctx->crypto_type = ARTPEC6_CRYPTO_CIPHER_AES_XTS;
 
 	return 0;
@@ -1621,7 +1625,7 @@ artpec6_crypto_xts_set_key(struct crypto_skcipher *cipher, const u8 *key,
 		crypto_skcipher_ctx(cipher);
 	int ret;
 
-	ret = xts_check_key(&cipher->base, key, keylen);
+	ret = xts_verify_key(cipher, key, keylen);
 	if (ret)
 		return ret;
 
@@ -1712,7 +1716,7 @@ static int artpec6_crypto_prepare_crypto(struct skcipher_request *areq)
 		cipher_len = regk_crypto_key_256;
 		break;
 	default:
-		pr_err("%s: Invalid key length %d!\n",
+		pr_err("%s: Invalid key length %zu!\n",
 			MODULE_NAME, ctx->key_length);
 		return -EINVAL;
 	}
@@ -2063,12 +2067,12 @@ static void artpec6_crypto_process_queue(struct artpec6_crypto *ac,
 	if (ac->pending_count)
 		mod_timer(&ac->timer, jiffies + msecs_to_jiffies(100));
 	else
-		del_timer(&ac->timer);
+		timer_delete(&ac->timer);
 }
 
 static void artpec6_crypto_timeout(struct timer_list *t)
 {
-	struct artpec6_crypto *ac = from_timer(ac, t, timer);
+	struct artpec6_crypto *ac = timer_container_of(ac, t, timer);
 
 	dev_info_ratelimited(artpec6_crypto_dev, "timeout\n");
 
@@ -2091,7 +2095,7 @@ static void artpec6_crypto_task(unsigned long data)
 		return;
 	}
 
-	spin_lock_bh(&ac->queue_lock);
+	spin_lock(&ac->queue_lock);
 
 	list_for_each_entry_safe(req, n, &ac->pending, list) {
 		struct artpec6_crypto_dma_descriptors *dma = req->dma;
@@ -2128,7 +2132,7 @@ static void artpec6_crypto_task(unsigned long data)
 
 	artpec6_crypto_process_queue(ac, &complete_in_progress);
 
-	spin_unlock_bh(&ac->queue_lock);
+	spin_unlock(&ac->queue_lock);
 
 	/* Perform the completion callbacks without holding the queue lock
 	 * to allow new request submissions from the callbacks.
@@ -2143,13 +2147,13 @@ static void artpec6_crypto_task(unsigned long data)
 
 	list_for_each_entry_safe(req, n, &complete_in_progress,
 				 complete_in_progress) {
-		req->req->complete(req->req, -EINPROGRESS);
+		crypto_request_complete(req->req, -EINPROGRESS);
 	}
 }
 
 static void artpec6_crypto_complete_crypto(struct crypto_async_request *req)
 {
-	req->complete(req, 0);
+	crypto_request_complete(req, 0);
 }
 
 static void
@@ -2161,7 +2165,7 @@ artpec6_crypto_complete_cbc_decrypt(struct crypto_async_request *req)
 	scatterwalk_map_and_copy(cipher_req->iv, cipher_req->src,
 				 cipher_req->cryptlen - AES_BLOCK_SIZE,
 				 AES_BLOCK_SIZE, 0);
-	req->complete(req, 0);
+	skcipher_request_complete(cipher_req, 0);
 }
 
 static void
@@ -2173,7 +2177,7 @@ artpec6_crypto_complete_cbc_encrypt(struct crypto_async_request *req)
 	scatterwalk_map_and_copy(cipher_req->iv, cipher_req->dst,
 				 cipher_req->cryptlen - AES_BLOCK_SIZE,
 				 AES_BLOCK_SIZE, 0);
-	req->complete(req, 0);
+	skcipher_request_complete(cipher_req, 0);
 }
 
 static void artpec6_crypto_complete_aead(struct crypto_async_request *req)
@@ -2211,12 +2215,12 @@ static void artpec6_crypto_complete_aead(struct crypto_async_request *req)
 		}
 	}
 
-	req->complete(req, result);
+	aead_request_complete(areq, result);
 }
 
 static void artpec6_crypto_complete_hash(struct crypto_async_request *req)
 {
-	req->complete(req, 0);
+	crypto_request_complete(req, 0);
 }
 
 
@@ -2635,7 +2639,6 @@ static struct ahash_alg hash_algos[] = {
 				     CRYPTO_ALG_ALLOCATES_MEMORY,
 			.cra_blocksize = SHA1_BLOCK_SIZE,
 			.cra_ctxsize = sizeof(struct artpec6_hashalg_context),
-			.cra_alignmask = 3,
 			.cra_module = THIS_MODULE,
 			.cra_init = artpec6_crypto_ahash_init,
 			.cra_exit = artpec6_crypto_ahash_exit,
@@ -2659,7 +2662,6 @@ static struct ahash_alg hash_algos[] = {
 				     CRYPTO_ALG_ALLOCATES_MEMORY,
 			.cra_blocksize = SHA256_BLOCK_SIZE,
 			.cra_ctxsize = sizeof(struct artpec6_hashalg_context),
-			.cra_alignmask = 3,
 			.cra_module = THIS_MODULE,
 			.cra_init = artpec6_crypto_ahash_init,
 			.cra_exit = artpec6_crypto_ahash_exit,
@@ -2684,7 +2686,6 @@ static struct ahash_alg hash_algos[] = {
 				     CRYPTO_ALG_ALLOCATES_MEMORY,
 			.cra_blocksize = SHA256_BLOCK_SIZE,
 			.cra_ctxsize = sizeof(struct artpec6_hashalg_context),
-			.cra_alignmask = 3,
 			.cra_module = THIS_MODULE,
 			.cra_init = artpec6_crypto_ahash_init_hmac_sha256,
 			.cra_exit = artpec6_crypto_ahash_exit,
@@ -2810,13 +2811,6 @@ static struct aead_alg aead_algos[] = {
 
 #ifdef CONFIG_DEBUG_FS
 
-struct dbgfs_u32 {
-	char *name;
-	mode_t mode;
-	u32 *flag;
-	char *desc;
-};
-
 static struct dentry *dbgfs_root;
 
 static void artpec6_crypto_init_debugfs(void)
@@ -2848,7 +2842,6 @@ MODULE_DEVICE_TABLE(of, artpec6_crypto_of_match);
 
 static int artpec6_crypto_probe(struct platform_device *pdev)
 {
-	const struct of_device_id *match;
 	enum artpec6_crypto_variant variant;
 	struct artpec6_crypto *ac;
 	struct device *dev = &pdev->dev;
@@ -2859,11 +2852,9 @@ static int artpec6_crypto_probe(struct platform_device *pdev)
 	if (artpec6_crypto_dev)
 		return -ENODEV;
 
-	match = of_match_node(artpec6_crypto_of_match, dev->of_node);
-	if (!match)
+	variant = (enum artpec6_crypto_variant)of_device_get_match_data(dev);
+	if (!variant)
 		return -EINVAL;
-
-	variant = (enum artpec6_crypto_variant)match->data;
 
 	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base))
@@ -2903,13 +2894,13 @@ static int artpec6_crypto_probe(struct platform_device *pdev)
 	tasklet_init(&ac->task, artpec6_crypto_task,
 		     (unsigned long)ac);
 
-	ac->pad_buffer = devm_kzalloc(&pdev->dev, 2 * ARTPEC_CACHE_LINE_MAX,
+	ac->pad_buffer = devm_kcalloc(&pdev->dev, 2, ARTPEC_CACHE_LINE_MAX,
 				      GFP_KERNEL);
 	if (!ac->pad_buffer)
 		return -ENOMEM;
 	ac->pad_buffer = PTR_ALIGN(ac->pad_buffer, ARTPEC_CACHE_LINE_MAX);
 
-	ac->zero_buffer = devm_kzalloc(&pdev->dev, 2 * ARTPEC_CACHE_LINE_MAX,
+	ac->zero_buffer = devm_kcalloc(&pdev->dev, 2, ARTPEC_CACHE_LINE_MAX,
 				      GFP_KERNEL);
 	if (!ac->zero_buffer)
 		return -ENOMEM;
@@ -2957,7 +2948,7 @@ free_cache:
 	return err;
 }
 
-static int artpec6_crypto_remove(struct platform_device *pdev)
+static void artpec6_crypto_remove(struct platform_device *pdev)
 {
 	struct artpec6_crypto *ac = platform_get_drvdata(pdev);
 	int irq = platform_get_irq(pdev, 0);
@@ -2969,7 +2960,7 @@ static int artpec6_crypto_remove(struct platform_device *pdev)
 	tasklet_disable(&ac->task);
 	devm_free_irq(&pdev->dev, irq, ac);
 	tasklet_kill(&ac->task);
-	del_timer_sync(&ac->timer);
+	timer_delete_sync(&ac->timer);
 
 	artpec6_crypto_disable_hw(ac);
 
@@ -2977,12 +2968,11 @@ static int artpec6_crypto_remove(struct platform_device *pdev)
 #ifdef CONFIG_DEBUG_FS
 	artpec6_crypto_free_debugfs();
 #endif
-	return 0;
 }
 
 static struct platform_driver artpec6_crypto_driver = {
 	.probe   = artpec6_crypto_probe,
-	.remove  = artpec6_crypto_remove,
+	.remove = artpec6_crypto_remove,
 	.driver  = {
 		.name  = "artpec6-crypto",
 		.of_match_table = artpec6_crypto_of_match,

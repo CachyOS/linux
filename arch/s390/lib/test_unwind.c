@@ -47,7 +47,7 @@ static void print_backtrace(char *bt)
 static noinline int test_unwind(struct task_struct *task, struct pt_regs *regs,
 				unsigned long sp)
 {
-	int frame_count, prev_is_func2, seen_func2_func1, seen_kretprobe_trampoline;
+	int frame_count, prev_is_func2, seen_func2_func1, seen_arch_rethook_trampoline;
 	const int max_frames = 128;
 	struct unwind_state state;
 	size_t bt_pos = 0;
@@ -63,7 +63,7 @@ static noinline int test_unwind(struct task_struct *task, struct pt_regs *regs,
 	frame_count = 0;
 	prev_is_func2 = 0;
 	seen_func2_func1 = 0;
-	seen_kretprobe_trampoline = 0;
+	seen_arch_rethook_trampoline = 0;
 	unwind_for_each_frame(&state, task, regs, sp) {
 		unsigned long addr = unwind_get_return_address(&state);
 		char sym[KSYM_SYMBOL_LEN];
@@ -89,8 +89,8 @@ static noinline int test_unwind(struct task_struct *task, struct pt_regs *regs,
 		if (prev_is_func2 && str_has_prefix(sym, "unwindme_func1"))
 			seen_func2_func1 = 1;
 		prev_is_func2 = str_has_prefix(sym, "unwindme_func2");
-		if (str_has_prefix(sym, "__kretprobe_trampoline+0x0/"))
-			seen_kretprobe_trampoline = 1;
+		if (str_has_prefix(sym, "arch_rethook_trampoline+0x0/"))
+			seen_arch_rethook_trampoline = 1;
 	}
 
 	/* Check the results. */
@@ -106,8 +106,8 @@ static noinline int test_unwind(struct task_struct *task, struct pt_regs *regs,
 		kunit_err(current_test, "Maximum number of frames exceeded\n");
 		ret = -EINVAL;
 	}
-	if (seen_kretprobe_trampoline) {
-		kunit_err(current_test, "__kretprobe_trampoline+0x0 in unwinding results\n");
+	if (seen_arch_rethook_trampoline) {
+		kunit_err(current_test, "arch_rethook_trampoline+0x0 in unwinding results\n");
 		ret = -EINVAL;
 	}
 	if (ret || force_bt)
@@ -150,7 +150,7 @@ static __always_inline struct pt_regs fake_pt_regs(void)
 	regs.gprs[15] = current_stack_pointer;
 
 	asm volatile(
-		"basr	%[psw_addr],0\n"
+		"basr	%[psw_addr],0"
 		: [psw_addr] "=d" (regs.psw.addr));
 	return regs;
 }
@@ -232,7 +232,7 @@ static noinline void test_unwind_kprobed_func(void)
 	asm volatile(
 		"	nopr	%%r7\n"
 		"test_unwind_kprobed_insn:\n"
-		"	nopr	%%r7\n"
+		"	nopr	%%r7"
 		:);
 }
 
@@ -270,9 +270,9 @@ static void notrace __used test_unwind_ftrace_handler(unsigned long ip,
 						      struct ftrace_ops *fops,
 						      struct ftrace_regs *fregs)
 {
-	struct unwindme *u = (struct unwindme *)fregs->regs.gprs[2];
+	struct unwindme *u = (struct unwindme *)arch_ftrace_regs(fregs)->regs.gprs[2];
 
-	u->ret = test_unwind(NULL, (u->flags & UWM_REGS) ? &fregs->regs : NULL,
+	u->ret = test_unwind(NULL, (u->flags & UWM_REGS) ? &arch_ftrace_regs(fregs)->regs : NULL,
 			     (u->flags & UWM_SP) ? u->sp : 0);
 }
 
@@ -350,15 +350,15 @@ static noinline int unwindme_func3(struct unwindme *u)
 /* This function must appear in the backtrace. */
 static noinline int unwindme_func2(struct unwindme *u)
 {
-	unsigned long flags;
+	unsigned long flags, mflags;
 	int rc;
 
 	if (u->flags & UWM_SWITCH_STACK) {
 		local_irq_save(flags);
-		local_mcck_disable();
-		rc = call_on_stack(1, S390_lowcore.nodat_stack,
+		local_mcck_save(mflags);
+		rc = call_on_stack(1, get_lowcore()->nodat_stack,
 				   int, unwindme_func3, struct unwindme *, u);
-		local_mcck_enable();
+		local_mcck_restore(mflags);
 		local_irq_restore(flags);
 		return rc;
 	} else {
@@ -519,4 +519,5 @@ static struct kunit_suite test_unwind_suite = {
 
 kunit_test_suites(&test_unwind_suite);
 
+MODULE_DESCRIPTION("KUnit test for unwind_for_each_frame");
 MODULE_LICENSE("GPL");

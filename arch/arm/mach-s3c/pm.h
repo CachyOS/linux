@@ -48,8 +48,6 @@ extern unsigned long s3c_pm_flags;
 
 /* from sleep.S */
 
-extern int s3c2410_cpu_suspend(unsigned long);
-
 #ifdef CONFIG_PM_SLEEP
 extern int s3c_irq_wake(struct irq_data *data, unsigned int state);
 extern void s3c_cpu_resume(void);
@@ -63,18 +61,6 @@ extern int s3c_irqext_wake(struct irq_data *data, unsigned int state);
 #else
 #define s3c_irqext_wake NULL
 #endif
-
-#ifdef CONFIG_S3C_PM_DEBUG_LED_SMDK
-/**
- * s3c_pm_debug_smdkled() - Debug PM suspend/resume via SMDK Board LEDs
- * @set: set bits for the state of the LEDs
- * @clear: clear bits for the state of the LEDs.
- */
-extern void s3c_pm_debug_smdkled(u32 set, u32 clear);
-
-#else
-static inline void s3c_pm_debug_smdkled(u32 set, u32 clear) { }
-#endif /* CONFIG_S3C_PM_DEBUG_LED_SMDK */
 
 /**
  * s3c_pm_configure_extint() - ensure pins are correctly set for IRQ

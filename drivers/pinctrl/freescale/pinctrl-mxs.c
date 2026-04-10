@@ -7,12 +7,15 @@
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/platform_device.h>
+#include <linux/seq_file.h>
+#include <linux/slab.h>
+
 #include <linux/pinctrl/machine.h>
 #include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
-#include <linux/platform_device.h>
-#include <linux/slab.h>
+
 #include "../core.h"
 #include "pinctrl-mxs.h"
 
@@ -89,7 +92,7 @@ static int mxs_dt_node_to_map(struct pinctrl_dev *pctldev,
 	if (!purecfg && config)
 		new_num = 2;
 
-	new_map = kcalloc(new_num, sizeof(*new_map), GFP_KERNEL);
+	new_map = kzalloc_objs(*new_map, new_num);
 	if (!new_map)
 		return -ENOMEM;
 
@@ -266,9 +269,9 @@ static int mxs_pinconf_group_set(struct pinctrl_dev *pctldev,
 	for (n = 0; n < num_configs; n++) {
 		config = configs[n];
 
-		ma = CONFIG_TO_MA(config);
-		vol = CONFIG_TO_VOL(config);
-		pull = CONFIG_TO_PULL(config);
+		ma = PIN_CONFIG_TO_MA(config);
+		vol = PIN_CONFIG_TO_VOL(config);
+		pull = PIN_CONFIG_TO_PULL(config);
 
 		for (i = 0; i < g->npins; i++) {
 			bank = PINID_TO_BANK(g->pins[i]);
@@ -392,6 +395,12 @@ static int mxs_pinctrl_parse_group(struct platform_device *pdev,
 	return 0;
 }
 
+static bool is_mxs_gpio(struct device_node *child)
+{
+	return of_device_is_compatible(child, "fsl,imx23-gpio") ||
+	       of_device_is_compatible(child, "fsl,imx28-gpio");
+}
+
 static int mxs_pinctrl_probe_dt(struct platform_device *pdev,
 				struct mxs_pinctrl_data *d)
 {
@@ -399,14 +408,13 @@ static int mxs_pinctrl_probe_dt(struct platform_device *pdev,
 	struct device_node *np = pdev->dev.of_node;
 	struct device_node *child;
 	struct mxs_function *f;
-	const char *gpio_compat = "fsl,mxs-gpio";
 	const char *fn, *fnull = "";
 	int i = 0, idxf = 0, idxg = 0;
 	int ret;
 	u32 val;
 
-	child = of_get_next_child(np, NULL);
-	if (!child) {
+	val = of_get_child_count(np);
+	if (val == 0) {
 		dev_err(&pdev->dev, "no group is defined\n");
 		return -ENOENT;
 	}
@@ -414,7 +422,7 @@ static int mxs_pinctrl_probe_dt(struct platform_device *pdev,
 	/* Count total functions and groups */
 	fn = fnull;
 	for_each_child_of_node(np, child) {
-		if (of_device_is_compatible(child, gpio_compat))
+		if (is_mxs_gpio(child))
 			continue;
 		soc->ngroups++;
 		/* Skip pure pinconf node */
@@ -443,7 +451,7 @@ static int mxs_pinctrl_probe_dt(struct platform_device *pdev,
 	fn = fnull;
 	f = &soc->functions[idxf];
 	for_each_child_of_node(np, child) {
-		if (of_device_is_compatible(child, gpio_compat))
+		if (is_mxs_gpio(child))
 			continue;
 		if (of_property_read_u32(child, "reg", &val))
 			continue;
@@ -482,16 +490,14 @@ static int mxs_pinctrl_probe_dt(struct platform_device *pdev,
 	/* Get groups for each function */
 	idxf = 0;
 	fn = fnull;
-	for_each_child_of_node(np, child) {
-		if (of_device_is_compatible(child, gpio_compat))
+	for_each_child_of_node_scoped(np, child) {
+		if (is_mxs_gpio(child))
 			continue;
 		if (of_property_read_u32(child, "reg", &val)) {
 			ret = mxs_pinctrl_parse_group(pdev, child,
 						      idxg++, NULL);
-			if (ret) {
-				of_node_put(child);
+			if (ret)
 				return ret;
-			}
 			continue;
 		}
 
@@ -501,19 +507,15 @@ static int mxs_pinctrl_probe_dt(struct platform_device *pdev,
 						 f->ngroups,
 						 sizeof(*f->groups),
 						 GFP_KERNEL);
-			if (!f->groups) {
-				of_node_put(child);
+			if (!f->groups)
 				return -ENOMEM;
-			}
 			fn = child->name;
 			i = 0;
 		}
 		ret = mxs_pinctrl_parse_group(pdev, child, idxg++,
 					      &f->groups[i++]);
-		if (ret) {
-			of_node_put(child);
+		if (ret)
 			return ret;
-		}
 	}
 
 	return 0;

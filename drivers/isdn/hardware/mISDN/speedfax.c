@@ -97,6 +97,7 @@ set_debug(const char *val, const struct kernel_param *kp)
 }
 
 MODULE_AUTHOR("Karsten Keil");
+MODULE_DESCRIPTION("mISDN driver for Sedlbauer Speedfax+ cards");
 MODULE_LICENSE("GPL v2");
 MODULE_VERSION(SPEEDFAX_REV);
 MODULE_FIRMWARE("isdn/ISAR.BIN");
@@ -442,7 +443,7 @@ static int
 sfaxpci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	int err = -ENOMEM;
-	struct sfax_hw *card = kzalloc(sizeof(struct sfax_hw), GFP_KERNEL);
+	struct sfax_hw *card = kzalloc_obj(struct sfax_hw);
 
 	if (!card) {
 		pr_info("No memory for Speedfax+ PCI\n");

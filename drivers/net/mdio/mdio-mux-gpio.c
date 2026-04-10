@@ -30,8 +30,7 @@ static int mdio_mux_gpio_switch_fn(int current_child, int desired_child,
 
 	values[0] = desired_child;
 
-	gpiod_set_array_value_cansleep(s->gpios->ndescs, s->gpios->desc,
-				       s->gpios->info, values);
+	gpiod_multi_set_value_cansleep(s->gpios, values);
 
 	return 0;
 }
@@ -62,11 +61,10 @@ static int mdio_mux_gpio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int mdio_mux_gpio_remove(struct platform_device *pdev)
+static void mdio_mux_gpio_remove(struct platform_device *pdev)
 {
 	struct mdio_mux_gpio_state *s = dev_get_platdata(&pdev->dev);
 	mdio_mux_uninit(s->mux_handle);
-	return 0;
 }
 
 static const struct of_device_id mdio_mux_gpio_match[] = {

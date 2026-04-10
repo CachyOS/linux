@@ -17,8 +17,8 @@ description: |+
 
   Supported number of devices and endpoints vary depending on hardware
   revisions. AST2400 and AST2500 Virtual Hub supports 5 downstream devices
-  and 15 generic endpoints, while AST2600 Virtual Hub supports 7 downstream
-  devices and 21 generic endpoints.
+  and 15 generic endpoints, while AST2600 and AST2700 Virtual Hub supports
+  7 downstream devices and 21 generic endpoints.
 
 properties:
   compatible:
@@ -26,11 +26,15 @@ properties:
       - aspeed,ast2400-usb-vhub
       - aspeed,ast2500-usb-vhub
       - aspeed,ast2600-usb-vhub
+      - aspeed,ast2700-usb-vhub
 
   reg:
     maxItems: 1
 
   clocks:
+    maxItems: 1
+
+  resets:
     maxItems: 1
 
   interrupts:
@@ -67,6 +71,7 @@ properties:
 
   vhub-strings:
     type: object
+    additionalProperties: false
 
     properties:
       '#address-cells':
@@ -78,6 +83,7 @@ properties:
     patternProperties:
       '^string@[0-9a-f]+$':
         type: object
+        additionalProperties: false
         description: string descriptors of the specific language
 
         properties:
@@ -105,33 +111,47 @@ required:
   - aspeed,vhub-downstream-ports
   - aspeed,vhub-generic-endpoints
 
+if:
+  properties:
+    compatible:
+      contains:
+        const: aspeed,ast2700-usb-vhub
+
+then:
+  required:
+    - resets
+
+else:
+  properties:
+    resets: false
+
 additionalProperties: false
 
 examples:
   - |
     #include <dt-bindings/clock/aspeed-clock.h>
     vhub: usb-vhub@1e6a0000 {
-            compatible = "aspeed,ast2500-usb-vhub";
-            reg = <0x1e6a0000 0x300>;
-            interrupts = <5>;
-            clocks = <&syscon ASPEED_CLK_GATE_USBPORT1CLK>;
-            aspeed,vhub-downstream-ports = <5>;
-            aspeed,vhub-generic-endpoints = <15>;
-            pinctrl-names = "default";
-            pinctrl-0 = <&pinctrl_usb2ad_default>;
+        compatible = "aspeed,ast2500-usb-vhub";
+        reg = <0x1e6a0000 0x300>;
+        interrupts = <5>;
+        clocks = <&syscon ASPEED_CLK_GATE_USBPORT1CLK>;
+        aspeed,vhub-downstream-ports = <5>;
+        aspeed,vhub-generic-endpoints = <15>;
+        pinctrl-names = "default";
+        pinctrl-0 = <&pinctrl_usb2ad_default>;
 
-            vhub-vendor-id = <0x1d6b>;
-            vhub-product-id = <0x0107>;
-            vhub-device-revision = <0x0100>;
-            vhub-strings {
-                #address-cells = <1>;
-                #size-cells = <0>;
+        vhub-vendor-id = <0x1d6b>;
+        vhub-product-id = <0x0107>;
+        vhub-device-revision = <0x0100>;
+        vhub-strings {
+            #address-cells = <1>;
+            #size-cells = <0>;
 
-                string@409 {
-                        reg = <0x409>;
-                        manufacturer = "ASPEED";
-                        product = "USB Virtual Hub";
-                        serial-number = "0000";
-                };
+            string@409 {
+                reg = <0x409>;
+                manufacturer = "ASPEED";
+                product = "USB Virtual Hub";
+                serial-number = "0000";
             };
+        };
     };

@@ -105,9 +105,13 @@
 
 #define MAX_SG 8
 
-#define CE_MAX_CLOCKS 3
+#define CE_MAX_CLOCKS 4
+#define CE_DMA_TIMEOUT_MS	3000
 
 #define MAXFLOW 4
+
+#define CE_MAX_HASH_DIGEST_SIZE		SHA512_DIGEST_SIZE
+#define CE_MAX_HASH_BLOCK_SIZE		SHA512_BLOCK_SIZE
 
 /*
  * struct ce_clock - Describe clocks used by sun8i-ce
@@ -149,6 +153,7 @@ struct ce_variant {
 	bool hash_t_dlen_in_bits;
 	bool prng_t_dlen_in_bytes;
 	bool trng_t_dlen_in_bytes;
+	bool needs_word_addresses;
 	struct ce_clock ce_clks[CE_MAX_CLOCKS];
 	int esr;
 	unsigned char prng;
@@ -186,8 +191,6 @@ struct ce_task {
  * @status:	set to 1 by interrupt if task is done
  * @t_phy:	Physical address of task
  * @tl:		pointer to the current ce_task for this flow
- * @backup_iv:		buffer which contain the next IV to store
- * @bounce_iv:		buffer which contain the IV
  * @stat_req:	number of request done by this flow
  */
 struct sun8i_ce_flow {
@@ -195,10 +198,7 @@ struct sun8i_ce_flow {
 	struct completion complete;
 	int status;
 	dma_addr_t t_phy;
-	int timeout;
 	struct ce_task *tl;
-	void *backup_iv;
-	void *bounce_iv;
 #ifdef CONFIG_CRYPTO_DEV_SUN8I_CE_DEBUG
 	unsigned long stat_req;
 #endif
@@ -241,38 +241,52 @@ struct sun8i_ce_dev {
 #endif
 };
 
+static inline u32 desc_addr_val(struct sun8i_ce_dev *dev, dma_addr_t addr)
+{
+	if (dev->variant->needs_word_addresses)
+		return addr / 4;
+
+	return addr;
+}
+
+static inline __le32 desc_addr_val_le32(struct sun8i_ce_dev *dev,
+					dma_addr_t addr)
+{
+	return cpu_to_le32(desc_addr_val(dev, addr));
+}
+
 /*
  * struct sun8i_cipher_req_ctx - context for a skcipher request
  * @op_dir:		direction (encrypt vs decrypt) for this request
  * @flow:		the flow to use for this request
- * @ivlen:		size of bounce_iv
  * @nr_sgs:		The number of source SG (as given by dma_map_sg())
  * @nr_sgd:		The number of destination SG (as given by dma_map_sg())
  * @addr_iv:		The IV addr returned by dma_map_single, need to unmap later
  * @addr_key:		The key addr returned by dma_map_single, need to unmap later
+ * @bounce_iv:		Current IV buffer
+ * @backup_iv:		Next IV buffer
  * @fallback_req:	request struct for invoking the fallback skcipher TFM
  */
 struct sun8i_cipher_req_ctx {
 	u32 op_dir;
 	int flow;
-	unsigned int ivlen;
 	int nr_sgs;
 	int nr_sgd;
 	dma_addr_t addr_iv;
 	dma_addr_t addr_key;
+	u8 bounce_iv[AES_BLOCK_SIZE] __aligned(sizeof(u32));
+	u8 backup_iv[AES_BLOCK_SIZE];
 	struct skcipher_request fallback_req;   // keep at the end
 };
 
 /*
  * struct sun8i_cipher_tfm_ctx - context for a skcipher TFM
- * @enginectx:		crypto_engine used by this TFM
  * @key:		pointer to key data
  * @keylen:		len of the key
  * @ce:			pointer to the private data of driver handling this TFM
  * @fallback_tfm:	pointer to the fallback TFM
  */
 struct sun8i_cipher_tfm_ctx {
-	struct crypto_engine_ctx enginectx;
 	u32 *key;
 	u32 keylen;
 	struct sun8i_ce_dev *ce;
@@ -281,12 +295,10 @@ struct sun8i_cipher_tfm_ctx {
 
 /*
  * struct sun8i_ce_hash_tfm_ctx - context for an ahash TFM
- * @enginectx:		crypto_engine used by this TFM
  * @ce:			pointer to the private data of driver handling this TFM
  * @fallback_tfm:	pointer to the fallback TFM
  */
 struct sun8i_ce_hash_tfm_ctx {
-	struct crypto_engine_ctx enginectx;
 	struct sun8i_ce_dev *ce;
 	struct crypto_ahash *fallback_tfm;
 };
@@ -295,10 +307,24 @@ struct sun8i_ce_hash_tfm_ctx {
  * struct sun8i_ce_hash_reqctx - context for an ahash request
  * @fallback_req:	pre-allocated fallback request
  * @flow:	the flow to use for this request
+ * @nr_sgs: number of entries in the source scatterlist
+ * @result_len: result length in bytes
+ * @pad_len: padding length in bytes
+ * @addr_res: DMA address of the result buffer, returned by dma_map_single()
+ * @addr_pad: DMA address of the padding buffer, returned by dma_map_single()
+ * @result: per-request result buffer
+ * @pad: per-request padding buffer (up to 2 blocks)
  */
 struct sun8i_ce_hash_reqctx {
-	struct ahash_request fallback_req;
 	int flow;
+	int nr_sgs;
+	size_t result_len;
+	size_t pad_len;
+	dma_addr_t addr_res;
+	dma_addr_t addr_pad;
+	u8 result[CE_MAX_HASH_DIGEST_SIZE] __aligned(CRYPTO_DMA_ALIGN);
+	u8 pad[2 * CE_MAX_HASH_BLOCK_SIZE];
+	struct ahash_request fallback_req; // keep at the end
 };
 
 /*
@@ -329,8 +355,8 @@ struct sun8i_ce_alg_template {
 	u32 ce_blockmode;
 	struct sun8i_ce_dev *ce;
 	union {
-		struct skcipher_alg skcipher;
-		struct ahash_alg hash;
+		struct skcipher_engine_alg skcipher;
+		struct ahash_engine_alg hash;
 		struct rng_alg rng;
 	} alg;
 	unsigned long stat_req;
@@ -347,14 +373,13 @@ struct sun8i_ce_alg_template {
 	char fbname[CRYPTO_MAX_ALG_NAME];
 };
 
-int sun8i_ce_enqueue(struct crypto_async_request *areq, u32 type);
-
 int sun8i_ce_aes_setkey(struct crypto_skcipher *tfm, const u8 *key,
 			unsigned int keylen);
 int sun8i_ce_des3_setkey(struct crypto_skcipher *tfm, const u8 *key,
 			 unsigned int keylen);
 int sun8i_ce_cipher_init(struct crypto_tfm *tfm);
 void sun8i_ce_cipher_exit(struct crypto_tfm *tfm);
+int sun8i_ce_cipher_do_one(struct crypto_engine *engine, void *areq);
 int sun8i_ce_skdecrypt(struct skcipher_request *areq);
 int sun8i_ce_skencrypt(struct skcipher_request *areq);
 
@@ -362,12 +387,11 @@ int sun8i_ce_get_engine_number(struct sun8i_ce_dev *ce);
 
 int sun8i_ce_run_task(struct sun8i_ce_dev *ce, int flow, const char *name);
 
-int sun8i_ce_hash_crainit(struct crypto_tfm *tfm);
-void sun8i_ce_hash_craexit(struct crypto_tfm *tfm);
+int sun8i_ce_hash_init_tfm(struct crypto_ahash *tfm);
+void sun8i_ce_hash_exit_tfm(struct crypto_ahash *tfm);
 int sun8i_ce_hash_init(struct ahash_request *areq);
 int sun8i_ce_hash_export(struct ahash_request *areq, void *out);
 int sun8i_ce_hash_import(struct ahash_request *areq, const void *in);
-int sun8i_ce_hash(struct ahash_request *areq);
 int sun8i_ce_hash_final(struct ahash_request *areq);
 int sun8i_ce_hash_update(struct ahash_request *areq);
 int sun8i_ce_hash_finup(struct ahash_request *areq);

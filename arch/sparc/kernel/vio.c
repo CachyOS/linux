@@ -12,6 +12,7 @@
 
 #include <linux/kernel.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 #include <linux/irq.h>
 #include <linux/export.h>
 #include <linux/init.h>
@@ -46,7 +47,7 @@ static const struct vio_device_id *vio_match_device(
 	return NULL;
 }
 
-static int vio_hotplug(struct device *dev, struct kobj_uevent_env *env)
+static int vio_hotplug(const struct device *dev, struct kobj_uevent_env *env)
 {
 	const struct vio_dev *vio_dev = to_vio_dev(dev);
 
@@ -54,10 +55,10 @@ static int vio_hotplug(struct device *dev, struct kobj_uevent_env *env)
 	return 0;
 }
 
-static int vio_bus_match(struct device *dev, struct device_driver *drv)
+static int vio_bus_match(struct device *dev, const struct device_driver *drv)
 {
 	struct vio_dev *vio_dev = to_vio_dev(dev);
-	struct vio_driver *vio_drv = to_vio_driver(drv);
+	const struct vio_driver *vio_drv = to_vio_driver(drv);
 	const struct vio_device_id *matches = vio_drv->id_table;
 
 	if (!matches)
@@ -149,7 +150,7 @@ static struct attribute *vio_dev_attrs[] = {
  };
 ATTRIBUTE_GROUPS(vio_dev);
 
-static struct bus_type vio_bus_type = {
+static const struct bus_type vio_bus_type = {
 	.name		= "vio",
 	.dev_groups	= vio_dev_groups,
 	.uevent         = vio_hotplug,
@@ -324,7 +325,7 @@ static struct vio_dev *vio_create_one(struct mdesc_handle *hp, u64 mp,
 		return NULL;
 	}
 
-	vdev = kzalloc(sizeof(*vdev), GFP_KERNEL);
+	vdev = kzalloc_obj(*vdev);
 	if (!vdev) {
 		printk(KERN_ERR "VIO: Could not allocate vio_dev\n");
 		return NULL;
@@ -378,8 +379,7 @@ static struct vio_dev *vio_create_one(struct mdesc_handle *hp, u64 mp,
 	 * the parent doesn't require the MD node info.
 	 */
 	if (node_name != NULL) {
-		(void) snprintf(vdev->node_name, VIO_MAX_NAME_LEN, "%s",
-				node_name);
+		strscpy(vdev->node_name, node_name);
 
 		err = mdesc_get_node_info(hp, mp, node_name,
 					  &vdev->md_node_info);
@@ -419,13 +419,13 @@ struct vio_remove_node_data {
 	u64 node;
 };
 
-static int vio_md_node_match(struct device *dev, void *arg)
+static int vio_md_node_match(struct device *dev, const void *arg)
 {
 	struct vio_dev *vdev = to_vio_dev(dev);
-	struct vio_remove_node_data *node_data;
+	const struct vio_remove_node_data *node_data;
 	u64 node;
 
-	node_data = (struct vio_remove_node_data *)arg;
+	node_data = (const struct vio_remove_node_data *)arg;
 
 	node = vio_vdev_node(node_data->hp, vdev);
 

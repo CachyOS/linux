@@ -28,8 +28,8 @@ static int inv_icm42600_i2c_bus_setup(struct inv_icm42600_state *st)
 			   INV_ICM42600_INTF_CONFIG6_MASK,
 			   INV_ICM42600_INTF_CONFIG6_I3C_EN);
 
-	ret = regmap_update_bits(st->map, INV_ICM42600_REG_INTF_CONFIG4,
-				 INV_ICM42600_INTF_CONFIG4_I3C_BUS_ONLY, 0);
+	ret = regmap_clear_bits(st->map, INV_ICM42600_REG_INTF_CONFIG4,
+				INV_ICM42600_INTF_CONFIG4_I3C_BUS_ONLY);
 	if (ret)
 		return ret;
 
@@ -67,9 +67,24 @@ static int inv_icm42600_probe(struct i2c_client *client)
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
-	return inv_icm42600_core_probe(regmap, chip, client->irq,
-				       inv_icm42600_i2c_bus_setup);
+	return inv_icm42600_core_probe(regmap, chip, inv_icm42600_i2c_bus_setup);
 }
+
+/*
+ * device id table is used to identify what device can be
+ * supported by this driver
+ */
+static const struct i2c_device_id inv_icm42600_id[] = {
+	{ "icm42600", INV_CHIP_ICM42600 },
+	{ "icm42602", INV_CHIP_ICM42602 },
+	{ "icm42605", INV_CHIP_ICM42605 },
+	{ "icm42686", INV_CHIP_ICM42686 },
+	{ "icm42622", INV_CHIP_ICM42622 },
+	{ "icm42688", INV_CHIP_ICM42688 },
+	{ "icm42631", INV_CHIP_ICM42631 },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, inv_icm42600_id);
 
 static const struct of_device_id inv_icm42600_of_matches[] = {
 	{
@@ -82,10 +97,19 @@ static const struct of_device_id inv_icm42600_of_matches[] = {
 		.compatible = "invensense,icm42605",
 		.data = (void *)INV_CHIP_ICM42605,
 	}, {
+		.compatible = "invensense,icm42686",
+		.data = (void *)INV_CHIP_ICM42686,
+	}, {
 		.compatible = "invensense,icm42622",
 		.data = (void *)INV_CHIP_ICM42622,
+	}, {
+		.compatible = "invensense,icm42688",
+		.data = (void *)INV_CHIP_ICM42688,
+	}, {
+		.compatible = "invensense,icm42631",
+		.data = (void *)INV_CHIP_ICM42631,
 	},
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, inv_icm42600_of_matches);
 
@@ -93,12 +117,14 @@ static struct i2c_driver inv_icm42600_driver = {
 	.driver = {
 		.name = "inv-icm42600-i2c",
 		.of_match_table = inv_icm42600_of_matches,
-		.pm = &inv_icm42600_pm_ops,
+		.pm = pm_ptr(&inv_icm42600_pm_ops),
 	},
-	.probe_new = inv_icm42600_probe,
+	.id_table = inv_icm42600_id,
+	.probe = inv_icm42600_probe,
 };
 module_i2c_driver(inv_icm42600_driver);
 
 MODULE_AUTHOR("InvenSense, Inc.");
 MODULE_DESCRIPTION("InvenSense ICM-426xx I2C driver");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS("IIO_ICM42600");

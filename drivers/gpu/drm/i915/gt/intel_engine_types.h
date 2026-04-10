@@ -35,7 +35,7 @@
 #define OTHER_CLASS		4
 #define COMPUTE_CLASS		5
 #define MAX_ENGINE_CLASS	5
-#define MAX_ENGINE_INSTANCE	7
+#define MAX_ENGINE_INSTANCE	8
 
 #define I915_MAX_SLICES	3
 #define I915_MAX_SUBSLICES 8
@@ -53,9 +53,12 @@ struct intel_gt;
 struct intel_ring;
 struct intel_uncore;
 struct intel_breadcrumbs;
+struct intel_engine_cs;
+struct i915_perf_group;
 
 typedef u32 intel_engine_mask_t;
 #define ALL_ENGINES ((intel_engine_mask_t)~0ul)
+#define VIRTUAL_ENGINES BIT(BITS_PER_TYPE(intel_engine_mask_t) - 1)
 
 struct intel_hw_status_page {
 	struct list_head timelines;
@@ -99,6 +102,7 @@ struct i915_ctx_workarounds {
 #define I915_MAX_SFC	(I915_MAX_VCS / 2)
 #define I915_MAX_CCS	4
 #define I915_MAX_RCS	1
+#define I915_MAX_BCS	9
 
 /*
  * Engine IDs definitions.
@@ -107,6 +111,15 @@ struct i915_ctx_workarounds {
 enum intel_engine_id {
 	RCS0 = 0,
 	BCS0,
+	BCS1,
+	BCS2,
+	BCS3,
+	BCS4,
+	BCS5,
+	BCS6,
+	BCS7,
+	BCS8,
+#define _BCS(n) (BCS0 + (n))
 	VCS0,
 	VCS1,
 	VCS2,
@@ -126,6 +139,7 @@ enum intel_engine_id {
 	CCS2,
 	CCS3,
 #define _CCS(n) (CCS0 + (n))
+	GSC0,
 	I915_NUM_ENGINES
 #define INVALID_ENGINE ((enum intel_engine_id)-1)
 };
@@ -154,6 +168,21 @@ struct intel_engine_execlists {
 	 * @preempt: reset the current context if it fails to give way
 	 */
 	struct timer_list preempt;
+
+	/**
+	 * @preempt_target: active request at the time of the preemption request
+	 *
+	 * We force a preemption to occur if the pending contexts have not
+	 * been promoted to active upon receipt of the CS ack event within
+	 * the timeout. This timeout maybe chosen based on the target,
+	 * using a very short timeout if the context is no longer schedulable.
+	 * That short timeout may not be applicable to other contexts, so
+	 * if a context switch should happen within before the preemption
+	 * timeout, we may shoot early at an innocent context. To prevent this,
+	 * we record which context was active at the time of the preemption
+	 * request and only reset that context upon the timeout.
+	 */
+	const struct i915_request *preempt_target;
 
 	/**
 	 * @ccid: identifier for contexts submitted to this engine
@@ -208,7 +237,7 @@ struct intel_engine_execlists {
 	 */
 	struct i915_request * const *active;
 	/**
-	 * @inflight: the set of contexts submitted and acknowleged by HW
+	 * @inflight: the set of contexts submitted and acknowledged by HW
 	 *
 	 * The set of inflight contexts is managed by reading CS events
 	 * from the HW. On a context-switch event (not preemption), we
@@ -231,7 +260,7 @@ struct intel_engine_execlists {
 	unsigned int port_mask;
 
 	/**
-	 * @virtual: Queue of requets on a virtual engine, sorted by priority.
+	 * @virtual: Queue of requests on a virtual engine, sorted by priority.
 	 * Each RB entry is a struct i915_priolist containing a list of requests
 	 * of the same priority.
 	 */
@@ -261,6 +290,7 @@ struct intel_engine_execlists {
 	 */
 	u8 csb_head;
 
+	/* private: selftest */
 	I915_SELFTEST_DECLARE(struct st_preempt_hang preempt_hang;)
 };
 
@@ -313,6 +343,23 @@ struct intel_engine_guc_stats {
 	 * @start_gt_clk: GT clock time of last idle to active transition.
 	 */
 	u64 start_gt_clk;
+
+	/**
+	 * @total: The last value of total returned
+	 */
+	u64 total;
+};
+
+union intel_engine_tlb_inv_reg {
+	i915_reg_t	reg;
+	i915_mcr_reg_t	mcr_reg;
+};
+
+struct intel_engine_tlb_inv {
+	bool mcr;
+	union intel_engine_tlb_inv_reg reg;
+	u32 request;
+	u32 done;
 };
 
 struct intel_engine_cs {
@@ -346,6 +393,8 @@ struct intel_engine_cs {
 	u32 context_size;
 	u32 mmio_base;
 
+	struct intel_engine_tlb_inv tlb_inv;
+
 	/*
 	 * Some w/a require forcewake to be held (which prevents RC6) while
 	 * a particular engine is active. If so, we set fw_domain to which
@@ -358,7 +407,15 @@ struct intel_engine_cs {
 
 	unsigned long context_tag;
 
-	struct rb_node uabi_node;
+	/*
+	 * The type evolves during initialization, see related comment for
+	 * struct drm_i915_private's uabi_engines member.
+	 */
+	union {
+		struct llist_node uabi_llist;
+		struct list_head uabi_list;
+		struct rb_node uabi_node;
+	};
 
 	struct intel_sseu sseu;
 
@@ -372,6 +429,9 @@ struct intel_engine_cs {
 	struct llist_head barrier_tasks;
 
 	struct intel_context *kernel_context; /* pinned */
+	struct intel_context *bind_context; /* pinned, only for BCS0 */
+	/* mark the bind context's availability status */
+	bool bind_context_ready;
 
 	/**
 	 * pinned_contexts_list: List of pinned contexts. This list is only
@@ -391,7 +451,9 @@ struct intel_engine_cs {
 	unsigned long serial;
 
 	unsigned long wakeref_serial;
+	intel_wakeref_t wakeref_track;
 	struct intel_wakeref wakeref;
+
 	struct file *default_state;
 
 	struct {
@@ -529,7 +591,7 @@ struct intel_engine_cs {
 #define I915_ENGINE_HAS_RCS_REG_STATE  BIT(9)
 #define I915_ENGINE_HAS_EU_PRIORITY    BIT(10)
 #define I915_ENGINE_FIRST_RENDER_COMPUTE BIT(11)
-#define I915_ENGINE_USES_WA_HOLD_CCS_SWITCHOUT BIT(12)
+#define I915_ENGINE_USES_WA_HOLD_SWITCHOUT BIT(12)
 	unsigned int flags;
 
 	/*
@@ -577,6 +639,14 @@ struct intel_engine_cs {
 	} props, defaults;
 
 	I915_SELFTEST_DECLARE(struct fault_attr reset_timeout);
+
+	/*
+	 * The perf group maps to one OA unit which controls one OA buffer. All
+	 * reports corresponding to this engine will be reported to this OA
+	 * buffer. An engine will map to a single OA unit, but a single OA unit
+	 * can generate reports for multiple engines.
+	 */
+	struct i915_perf_group *oa_group;
 };
 
 static inline bool
@@ -631,32 +701,12 @@ intel_engine_has_relative_mmio(const struct intel_engine_cs * const engine)
 }
 
 /* Wa_14014475959:dg2 */
+/* Wa_16019325821 */
+/* Wa_14019159160 */
 static inline bool
-intel_engine_uses_wa_hold_ccs_switchout(struct intel_engine_cs *engine)
+intel_engine_uses_wa_hold_switchout(struct intel_engine_cs *engine)
 {
-	return engine->flags & I915_ENGINE_USES_WA_HOLD_CCS_SWITCHOUT;
+	return engine->flags & I915_ENGINE_USES_WA_HOLD_SWITCHOUT;
 }
-
-#define instdone_has_slice(dev_priv___, sseu___, slice___) \
-	((GRAPHICS_VER(dev_priv___) == 7 ? 1 : ((sseu___)->slice_mask)) & BIT(slice___))
-
-#define instdone_has_subslice(dev_priv__, sseu__, slice__, subslice__) \
-	(GRAPHICS_VER(dev_priv__) == 7 ? (1 & BIT(subslice__)) : \
-	 intel_sseu_has_subslice(sseu__, 0, subslice__))
-
-#define for_each_instdone_slice_subslice(dev_priv_, sseu_, slice_, subslice_) \
-	for ((slice_) = 0, (subslice_) = 0; (slice_) < I915_MAX_SLICES; \
-	     (subslice_) = ((subslice_) + 1) % I915_MAX_SUBSLICES, \
-	     (slice_) += ((subslice_) == 0)) \
-		for_each_if((instdone_has_slice(dev_priv_, sseu_, slice_)) && \
-			    (instdone_has_subslice(dev_priv_, sseu_, slice_, \
-						    subslice_)))
-
-#define for_each_instdone_gslice_dss_xehp(dev_priv_, sseu_, iter_, gslice_, dss_) \
-	for ((iter_) = 0, (gslice_) = 0, (dss_) = 0; \
-	     (iter_) < GEN_SS_MASK_SIZE; \
-	     (iter_)++, (gslice_) = (iter_) / GEN_DSS_PER_GSLICE, \
-	     (dss_) = (iter_) % GEN_DSS_PER_GSLICE) \
-		for_each_if(intel_sseu_has_subslice((sseu_), 0, (iter_)))
 
 #endif /* __INTEL_ENGINE_TYPES_H__ */

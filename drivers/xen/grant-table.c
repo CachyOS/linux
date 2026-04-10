@@ -427,16 +427,14 @@ EXPORT_SYMBOL_GPL(gnttab_grant_foreign_access);
 
 static int gnttab_end_foreign_access_ref_v1(grant_ref_t ref)
 {
-	u16 flags, nflags;
-	u16 *pflags;
+	u16 *pflags = &gnttab_shared.v1[ref].flags;
+	u16 flags;
 
-	pflags = &gnttab_shared.v1[ref].flags;
-	nflags = *pflags;
+	flags = *pflags;
 	do {
-		flags = nflags;
 		if (flags & (GTF_reading|GTF_writing))
 			return 0;
-	} while ((nflags = sync_cmpxchg(pflags, flags, 0)) != flags);
+	} while (!sync_try_cmpxchg(pflags, &flags, 0));
 
 	return 1;
 }
@@ -498,14 +496,21 @@ static LIST_HEAD(deferred_list);
 static void gnttab_handle_deferred(struct timer_list *);
 static DEFINE_TIMER(deferred_timer, gnttab_handle_deferred);
 
+static atomic64_t deferred_count;
+static atomic64_t leaked_count;
+static unsigned int free_per_iteration = 10;
+module_param(free_per_iteration, uint, 0600);
+
 static void gnttab_handle_deferred(struct timer_list *unused)
 {
-	unsigned int nr = 10;
+	unsigned int nr = READ_ONCE(free_per_iteration);
+	const bool ignore_limit = nr == 0;
 	struct deferred_entry *first = NULL;
 	unsigned long flags;
+	size_t freed = 0;
 
 	spin_lock_irqsave(&gnttab_list_lock, flags);
-	while (nr--) {
+	while ((ignore_limit || nr--) && !list_empty(&deferred_list)) {
 		struct deferred_entry *entry
 			= list_first_entry(&deferred_list,
 					   struct deferred_entry, list);
@@ -515,10 +520,14 @@ static void gnttab_handle_deferred(struct timer_list *unused)
 		list_del(&entry->list);
 		spin_unlock_irqrestore(&gnttab_list_lock, flags);
 		if (_gnttab_end_foreign_access_ref(entry->ref)) {
+			uint64_t ret = atomic64_dec_return(&deferred_count);
+
 			put_free_entry(entry->ref);
-			pr_debug("freeing g.e. %#x (pfn %#lx)\n",
-				 entry->ref, page_to_pfn(entry->page));
+			pr_debug("freeing g.e. %#x (pfn %#lx), %llu remaining\n",
+				 entry->ref, page_to_pfn(entry->page),
+				 (unsigned long long)ret);
 			put_page(entry->page);
+			freed++;
 			kfree(entry);
 			entry = NULL;
 		} else {
@@ -530,23 +539,24 @@ static void gnttab_handle_deferred(struct timer_list *unused)
 		spin_lock_irqsave(&gnttab_list_lock, flags);
 		if (entry)
 			list_add_tail(&entry->list, &deferred_list);
-		else if (list_empty(&deferred_list))
-			break;
 	}
-	if (!list_empty(&deferred_list) && !timer_pending(&deferred_timer)) {
+	if (list_empty(&deferred_list))
+		WARN_ON(atomic64_read(&deferred_count));
+	else if (!timer_pending(&deferred_timer)) {
 		deferred_timer.expires = jiffies + HZ;
 		add_timer(&deferred_timer);
 	}
 	spin_unlock_irqrestore(&gnttab_list_lock, flags);
+	pr_debug("Freed %zu references", freed);
 }
 
 static void gnttab_add_deferred(grant_ref_t ref, struct page *page)
 {
 	struct deferred_entry *entry;
 	gfp_t gfp = (in_atomic() || irqs_disabled()) ? GFP_ATOMIC : GFP_KERNEL;
-	const char *what = KERN_WARNING "leaking";
+	uint64_t leaked, deferred;
 
-	entry = kmalloc(sizeof(*entry), gfp);
+	entry = kmalloc_obj(*entry, gfp);
 	if (!page) {
 		unsigned long gfn = gnttab_interface->read_frame(ref);
 
@@ -567,10 +577,16 @@ static void gnttab_add_deferred(grant_ref_t ref, struct page *page)
 			add_timer(&deferred_timer);
 		}
 		spin_unlock_irqrestore(&gnttab_list_lock, flags);
-		what = KERN_DEBUG "deferring";
+		deferred = atomic64_inc_return(&deferred_count);
+		leaked = atomic64_read(&leaked_count);
+		pr_debug("deferring g.e. %#x (pfn %#lx) (total deferred %llu, total leaked %llu)\n",
+			 ref, page ? page_to_pfn(page) : -1, deferred, leaked);
+	} else {
+		deferred = atomic64_read(&deferred_count);
+		leaked = atomic64_inc_return(&leaked_count);
+		pr_warn("leaking g.e. %#x (pfn %#lx) (total deferred %llu, total leaked %llu)\n",
+			ref, page ? page_to_pfn(page) : -1, deferred, leaked);
 	}
-	printk("%s g.e. %#x (pfn %#lx)\n",
-	       what, ref, page ? page_to_pfn(page) : -1);
 }
 
 int gnttab_try_end_foreign_access(grant_ref_t ref)
@@ -815,7 +831,7 @@ int gnttab_setup_auto_xlat_frames(phys_addr_t addr)
 			&addr);
 		return -ENOMEM;
 	}
-	pfn = kcalloc(max_nr_gframes, sizeof(pfn[0]), GFP_KERNEL);
+	pfn = kzalloc_objs(pfn[0], max_nr_gframes);
 	if (!pfn) {
 		memunmap(vaddr);
 		return -ENOMEM;
@@ -852,7 +868,7 @@ int gnttab_pages_set_private(int nr_pages, struct page **pages)
 #if BITS_PER_LONG < 64
 		struct xen_page_foreign *foreign;
 
-		foreign = kzalloc(sizeof(*foreign), GFP_KERNEL);
+		foreign = kzalloc_obj(*foreign);
 		if (!foreign)
 			return -ENOMEM;
 
@@ -1026,7 +1042,7 @@ EXPORT_SYMBOL_GPL(gnttab_pages_clear_private);
 
 /**
  * gnttab_free_pages - free pages allocated by gnttab_alloc_pages()
- * @nr_pages; number of pages to free
+ * @nr_pages: number of pages to free
  * @pages: the pages
  */
 void gnttab_free_pages(int nr_pages, struct page **pages)
@@ -1046,6 +1062,9 @@ int gnttab_dma_alloc_pages(struct gnttab_dma_alloc_args *args)
 	unsigned long pfn, start_pfn;
 	size_t size;
 	int i, ret;
+
+	if (args->nr_pages < 0 || args->nr_pages > (INT_MAX >> PAGE_SHIFT))
+		return -ENOMEM;
 
 	size = args->nr_pages << PAGE_SHIFT;
 	if (args->coherent)
@@ -1185,7 +1204,7 @@ void gnttab_foreach_grant_in_range(struct page *page,
 	unsigned int glen;
 	unsigned long xen_pfn;
 
-	len = min_t(unsigned int, PAGE_SIZE - offset, len);
+	len = min(PAGE_SIZE - offset, len);
 	goffset = xen_offset_in_page(offset);
 
 	xen_pfn = page_to_xen_pfn(page) + XEN_PFN_DOWN(offset);
@@ -1430,7 +1449,7 @@ static int gnttab_map(unsigned int start_idx, unsigned int end_idx)
 	unsigned int nr_gframes = end_idx + 1;
 	int rc;
 
-	if (xen_feature(XENFEAT_auto_translated_physmap)) {
+	if (!xen_pv_domain()) {
 		struct xen_add_to_physmap xatp;
 		unsigned int i = end_idx;
 		rc = 0;
@@ -1551,7 +1570,7 @@ static int gnttab_setup(void)
 	if (max_nr_gframes < nr_grant_frames)
 		return -ENOSYS;
 
-	if (xen_feature(XENFEAT_auto_translated_physmap) && gnttab_shared.addr == NULL) {
+	if (!xen_pv_domain() && gnttab_shared.addr == NULL) {
 		gnttab_shared.addr = xen_auto_xlat_grant_frames.vaddr;
 		if (gnttab_shared.addr == NULL) {
 			pr_warn("gnttab share frames is not mapped!\n");
@@ -1569,7 +1588,7 @@ int gnttab_resume(void)
 
 int gnttab_suspend(void)
 {
-	if (!xen_feature(XENFEAT_auto_translated_physmap))
+	if (xen_pv_domain())
 		gnttab_interface->unmap_frames();
 	return 0;
 }
@@ -1616,9 +1635,7 @@ int gnttab_init(void)
 	 */
 	max_nr_glist_frames = max_nr_grefs / RPP;
 
-	gnttab_list = kmalloc_array(max_nr_glist_frames,
-				    sizeof(grant_ref_t *),
-				    GFP_KERNEL);
+	gnttab_list = kmalloc_objs(grant_ref_t *, max_nr_glist_frames);
 	if (gnttab_list == NULL)
 		return -ENOMEM;
 

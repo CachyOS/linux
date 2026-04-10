@@ -28,7 +28,7 @@ struct ads8344 {
 	 */
 	struct mutex lock;
 
-	u8 tx_buf ____cacheline_aligned;
+	u8 tx_buf __aligned(IIO_DMA_MINALIGN);
 	u8 rx_buf[3];
 };
 
@@ -175,7 +175,7 @@ static int ads8344_probe(struct spi_device *spi)
 
 static const struct of_device_id ads8344_of_match[] = {
 	{ .compatible = "ti,ads8344", },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ads8344_of_match);
 

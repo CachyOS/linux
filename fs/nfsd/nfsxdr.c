@@ -336,12 +336,10 @@ nfssvc_decode_writeargs(struct svc_rqst *rqstp, struct xdr_stream *xdr)
 	/* opaque data */
 	if (xdr_stream_decode_u32(xdr, &args->len) < 0)
 		return false;
-	if (args->len > NFSSVC_MAXBLKSIZE_V2)
-		return false;
-	if (!xdr_stream_subsegment(xdr, &args->payload, args->len))
+	if (args->len > NFS_MAXDATA)
 		return false;
 
-	return true;
+	return xdr_stream_subsegment(xdr, &args->payload, args->len);
 }
 
 bool
@@ -470,7 +468,8 @@ nfssvc_encode_readlinkres(struct svc_rqst *rqstp, struct xdr_stream *xdr)
 	case nfs_ok:
 		if (xdr_stream_encode_u32(xdr, resp->len) < 0)
 			return false;
-		xdr_write_pages(xdr, &resp->page, 0, resp->len);
+		svcxdr_encode_opaque_pages(rqstp, xdr, &resp->page, 0,
+					   resp->len);
 		if (svc_encode_result_payload(rqstp, head->iov_len, resp->len) < 0)
 			return false;
 		break;
@@ -493,8 +492,9 @@ nfssvc_encode_readres(struct svc_rqst *rqstp, struct xdr_stream *xdr)
 			return false;
 		if (xdr_stream_encode_u32(xdr, resp->count) < 0)
 			return false;
-		xdr_write_pages(xdr, resp->pages, rqstp->rq_res.page_base,
-				resp->count);
+		svcxdr_encode_opaque_pages(rqstp, xdr, resp->pages,
+					   rqstp->rq_res.page_base,
+					   resp->count);
 		if (svc_encode_result_payload(rqstp, head->iov_len, resp->count) < 0)
 			return false;
 		break;
@@ -513,7 +513,8 @@ nfssvc_encode_readdirres(struct svc_rqst *rqstp, struct xdr_stream *xdr)
 		return false;
 	switch (resp->status) {
 	case nfs_ok:
-		xdr_write_pages(xdr, dirlist->pages, 0, dirlist->len);
+		svcxdr_encode_opaque_pages(rqstp, xdr, dirlist->pages, 0,
+					   dirlist->len);
 		/* no more entries */
 		if (xdr_stream_encode_item_absent(xdr) < 0)
 			return false;
@@ -539,7 +540,7 @@ nfssvc_encode_statfsres(struct svc_rqst *rqstp, struct xdr_stream *xdr)
 		p = xdr_reserve_space(xdr, XDR_UNIT * 5);
 		if (!p)
 			return false;
-		*p++ = cpu_to_be32(NFSSVC_MAXBLKSIZE_V2);
+		*p++ = cpu_to_be32(NFS_MAXDATA);
 		*p++ = cpu_to_be32(stat->f_bsize);
 		*p++ = cpu_to_be32(stat->f_blocks);
 		*p++ = cpu_to_be32(stat->f_bfree);

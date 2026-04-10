@@ -208,7 +208,7 @@ static int opticon_write(struct tty_struct *tty, struct usb_serial_port *port,
 	priv->outstanding_bytes += count;
 	spin_unlock_irqrestore(&priv->lock, flags);
 
-	buffer = kmalloc(count, GFP_ATOMIC);
+	buffer = kmemdup(buf, count, GFP_ATOMIC);
 	if (!buffer)
 		goto error_no_buffer;
 
@@ -216,13 +216,11 @@ static int opticon_write(struct tty_struct *tty, struct usb_serial_port *port,
 	if (!urb)
 		goto error_no_urb;
 
-	memcpy(buffer, buf, count);
-
 	usb_serial_debug_data(&port->dev, __func__, count, buffer);
 
 	/* The connected devices do not have a bulk write endpoint,
 	 * to transmit data to de barcode device the control endpoint is used */
-	dr = kmalloc(sizeof(struct usb_ctrlrequest), GFP_ATOMIC);
+	dr = kmalloc_obj(struct usb_ctrlrequest, GFP_ATOMIC);
 	if (!dr)
 		goto error_no_dr;
 
@@ -356,7 +354,7 @@ static int opticon_port_probe(struct usb_serial_port *port)
 {
 	struct opticon_private *priv;
 
-	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+	priv = kzalloc_obj(*priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -377,7 +375,6 @@ static void opticon_port_remove(struct usb_serial_port *port)
 
 static struct usb_serial_driver opticon_device = {
 	.driver = {
-		.owner =	THIS_MODULE,
 		.name =		"opticon",
 	},
 	.id_table =		id_table,

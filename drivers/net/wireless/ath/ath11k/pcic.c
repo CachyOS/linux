@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: BSD-3-Clause-Clear
 /*
  * Copyright (c) 2019-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2022, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
+#include <linux/export.h>
 #include "core.h"
 #include "pcic.h"
 #include "debug.h"
@@ -115,6 +117,28 @@ static const struct ath11k_msi_config ath11k_msi_config[] = {
 		},
 		.hw_rev = ATH11K_HW_WCN6750_HW10,
 	},
+	{
+		.total_vectors = 32,
+		.total_users = 4,
+		.users = (struct ath11k_msi_user[]) {
+			{ .name = "MHI", .num_vectors = 3, .base_vector = 0 },
+			{ .name = "CE", .num_vectors = 10, .base_vector = 3 },
+			{ .name = "WAKE", .num_vectors = 1, .base_vector = 13 },
+			{ .name = "DP", .num_vectors = 18, .base_vector = 14 },
+		},
+		.hw_rev = ATH11K_HW_QCA2066_HW21,
+	},
+	{
+		.total_vectors = 32,
+		.total_users = 4,
+		.users = (struct ath11k_msi_user[]) {
+			{ .name = "MHI", .num_vectors = 3, .base_vector = 0 },
+			{ .name = "CE", .num_vectors = 10, .base_vector = 3 },
+			{ .name = "WAKE", .num_vectors = 1, .base_vector = 13 },
+			{ .name = "DP", .num_vectors = 18, .base_vector = 14 },
+		},
+		.hw_rev = ATH11K_HW_QCA6698AQ_HW21,
+	},
 };
 
 int ath11k_pcic_init_msi_config(struct ath11k_base *ab)
@@ -140,80 +164,106 @@ int ath11k_pcic_init_msi_config(struct ath11k_base *ab)
 }
 EXPORT_SYMBOL(ath11k_pcic_init_msi_config);
 
-static inline u32 ath11k_pcic_get_window_start(struct ath11k_base *ab,
-					       u32 offset)
+static void __ath11k_pcic_write32(struct ath11k_base *ab, u32 offset, u32 value)
 {
-	u32 window_start = 0;
-
-	if ((offset ^ HAL_SEQ_WCSS_UMAC_OFFSET) < ATH11K_PCI_WINDOW_RANGE_MASK)
-		window_start = ab->hw_params.dp_window_idx * ATH11K_PCI_WINDOW_START;
-	else if ((offset ^ HAL_SEQ_WCSS_UMAC_CE0_SRC_REG(ab)) <
-		 ATH11K_PCI_WINDOW_RANGE_MASK)
-		window_start = ab->hw_params.ce_window_idx * ATH11K_PCI_WINDOW_START;
-
-	return window_start;
+	if (offset < ATH11K_PCI_WINDOW_START)
+		iowrite32(value, ab->mem  + offset);
+	else
+		ab->pci.ops->window_write32(ab, offset, value);
 }
 
 void ath11k_pcic_write32(struct ath11k_base *ab, u32 offset, u32 value)
 {
-	u32 window_start;
 	int ret = 0;
+	bool wakeup_required;
 
 	/* for offset beyond BAR + 4K - 32, may
 	 * need to wakeup the device to access.
 	 */
-	if (test_bit(ATH11K_FLAG_DEVICE_INIT_DONE, &ab->dev_flags) &&
-	    offset >= ATH11K_PCI_ACCESS_ALWAYS_OFF && ab->pci.ops->wakeup)
+	wakeup_required = test_bit(ATH11K_FLAG_DEVICE_INIT_DONE, &ab->dev_flags) &&
+			  offset >= ATH11K_PCI_ACCESS_ALWAYS_OFF;
+	if (wakeup_required && ab->pci.ops->wakeup)
 		ret = ab->pci.ops->wakeup(ab);
 
-	if (offset < ATH11K_PCI_WINDOW_START) {
-		iowrite32(value, ab->mem  + offset);
-	} else if (ab->hw_params.static_window_map) {
-		window_start = ath11k_pcic_get_window_start(ab, offset);
-		iowrite32(value, ab->mem + window_start +
-			  (offset & ATH11K_PCI_WINDOW_RANGE_MASK));
-	} else if (ab->pci.ops->window_write32) {
-		ab->pci.ops->window_write32(ab, offset, value);
-	}
+	__ath11k_pcic_write32(ab, offset, value);
 
-	if (test_bit(ATH11K_FLAG_DEVICE_INIT_DONE, &ab->dev_flags) &&
-	    offset >= ATH11K_PCI_ACCESS_ALWAYS_OFF && ab->pci.ops->release &&
-	    !ret)
+	if (wakeup_required && !ret && ab->pci.ops->release)
 		ab->pci.ops->release(ab);
 }
 EXPORT_SYMBOL(ath11k_pcic_write32);
 
+static u32 __ath11k_pcic_read32(struct ath11k_base *ab, u32 offset)
+{
+	u32 val;
+
+	if (offset < ATH11K_PCI_WINDOW_START)
+		val = ioread32(ab->mem + offset);
+	else
+		val = ab->pci.ops->window_read32(ab, offset);
+
+	return val;
+}
+
 u32 ath11k_pcic_read32(struct ath11k_base *ab, u32 offset)
 {
-	u32 val = 0;
-	u32 window_start;
 	int ret = 0;
+	u32 val;
+	bool wakeup_required;
 
 	/* for offset beyond BAR + 4K - 32, may
 	 * need to wakeup the device to access.
 	 */
-	if (test_bit(ATH11K_FLAG_DEVICE_INIT_DONE, &ab->dev_flags) &&
-	    offset >= ATH11K_PCI_ACCESS_ALWAYS_OFF && ab->pci.ops->wakeup)
+	wakeup_required = test_bit(ATH11K_FLAG_DEVICE_INIT_DONE, &ab->dev_flags) &&
+			  offset >= ATH11K_PCI_ACCESS_ALWAYS_OFF;
+	if (wakeup_required && ab->pci.ops->wakeup)
 		ret = ab->pci.ops->wakeup(ab);
 
-	if (offset < ATH11K_PCI_WINDOW_START) {
-		val = ioread32(ab->mem + offset);
-	} else if (ab->hw_params.static_window_map) {
-		window_start = ath11k_pcic_get_window_start(ab, offset);
-		val = ioread32(ab->mem + window_start +
-			       (offset & ATH11K_PCI_WINDOW_RANGE_MASK));
-	} else if (ab->pci.ops->window_read32) {
-		val = ab->pci.ops->window_read32(ab, offset);
-	}
+	val = __ath11k_pcic_read32(ab, offset);
 
-	if (test_bit(ATH11K_FLAG_DEVICE_INIT_DONE, &ab->dev_flags) &&
-	    offset >= ATH11K_PCI_ACCESS_ALWAYS_OFF && ab->pci.ops->release &&
-	    !ret)
+	if (wakeup_required && !ret && ab->pci.ops->release)
 		ab->pci.ops->release(ab);
 
 	return val;
 }
 EXPORT_SYMBOL(ath11k_pcic_read32);
+
+int ath11k_pcic_read(struct ath11k_base *ab, void *buf, u32 start, u32 end)
+{
+	int ret = 0;
+	bool wakeup_required;
+	u32 *data = buf;
+	u32 i;
+
+	/* for offset beyond BAR + 4K - 32, may
+	 * need to wakeup the device to access.
+	 */
+	wakeup_required = test_bit(ATH11K_FLAG_DEVICE_INIT_DONE, &ab->dev_flags) &&
+			  end >= ATH11K_PCI_ACCESS_ALWAYS_OFF;
+	if (wakeup_required && ab->pci.ops->wakeup) {
+		ret = ab->pci.ops->wakeup(ab);
+		if (ret) {
+			ath11k_warn(ab,
+				    "wakeup failed, data may be invalid: %d",
+				    ret);
+			/* Even though wakeup() failed, continue processing rather
+			 * than returning because some parts of the data may still
+			 * be valid and useful in some cases, e.g. could give us
+			 * some clues on firmware crash.
+			 * Mislead due to invalid data could be avoided because we
+			 * are aware of the wakeup failure.
+			 */
+		}
+	}
+
+	for (i = start; i < end + 1; i += 4)
+		*data++ = __ath11k_pcic_read32(ab, i);
+
+	if (wakeup_required && ab->pci.ops->release)
+		ab->pci.ops->release(ab);
+
+	return 0;
+}
+EXPORT_SYMBOL(ath11k_pcic_read);
 
 void ath11k_pcic_get_msi_address(struct ath11k_base *ab, u32 *msi_addr_lo,
 				 u32 *msi_addr_hi)
@@ -237,7 +287,7 @@ int ath11k_pcic_get_user_msi_assignment(struct ath11k_base *ab, char *user_name,
 			*user_base_data = *base_vector + ab->pci.msi.ep_base_data;
 
 			ath11k_dbg(ab, ATH11K_DBG_PCI,
-				   "Assign MSI to user: %s, num_vectors: %d, user_base_data: %u, base_vector: %u\n",
+				   "msi assignment %s num_vectors %d user_base_data %u base_vector %u\n",
 				   user_name, *num_vectors, *user_base_data,
 				   *base_vector);
 
@@ -279,6 +329,7 @@ static void ath11k_pcic_free_ext_irq(struct ath11k_base *ab)
 			free_irq(ab->irq_num[irq_grp->irqs[j]], irq_grp);
 
 		netif_napi_del(&irq_grp->napi);
+		free_netdev(irq_grp->napi_ndev);
 	}
 }
 
@@ -396,14 +447,14 @@ static void ath11k_pcic_ext_grp_disable(struct ath11k_ext_irq_grp *irq_grp)
 		disable_irq_nosync(irq_grp->ab->irq_num[irq_grp->irqs[i]]);
 }
 
-static void __ath11k_pcic_ext_irq_disable(struct ath11k_base *sc)
+static void __ath11k_pcic_ext_irq_disable(struct ath11k_base *ab)
 {
 	int i;
 
-	clear_bit(ATH11K_FLAG_EXT_IRQ_ENABLED, &sc->dev_flags);
+	clear_bit(ATH11K_FLAG_EXT_IRQ_ENABLED, &ab->dev_flags);
 
 	for (i = 0; i < ATH11K_EXT_IRQ_GRP_NUM_MAX; i++) {
-		struct ath11k_ext_irq_grp *irq_grp = &sc->ext_irq_grp[i];
+		struct ath11k_ext_irq_grp *irq_grp = &ab->ext_irq_grp[i];
 
 		ath11k_pcic_ext_grp_disable(irq_grp);
 
@@ -434,8 +485,6 @@ void ath11k_pcic_ext_irq_enable(struct ath11k_base *ab)
 {
 	int i;
 
-	set_bit(ATH11K_FLAG_EXT_IRQ_ENABLED, &ab->dev_flags);
-
 	for (i = 0; i < ATH11K_EXT_IRQ_GRP_NUM_MAX; i++) {
 		struct ath11k_ext_irq_grp *irq_grp = &ab->ext_irq_grp[i];
 
@@ -445,6 +494,8 @@ void ath11k_pcic_ext_irq_enable(struct ath11k_base *ab)
 		}
 		ath11k_pcic_ext_grp_enable(irq_grp);
 	}
+
+	set_bit(ATH11K_FLAG_EXT_IRQ_ENABLED, &ab->dev_flags);
 }
 EXPORT_SYMBOL(ath11k_pcic_ext_irq_enable);
 
@@ -500,7 +551,7 @@ static irqreturn_t ath11k_pcic_ext_interrupt_handler(int irq, void *arg)
 	if (!test_bit(ATH11K_FLAG_EXT_IRQ_ENABLED, &ab->dev_flags))
 		return IRQ_HANDLED;
 
-	ath11k_dbg(irq_grp->ab, ATH11K_DBG_PCI, "ext irq:%d\n", irq);
+	ath11k_dbg(irq_grp->ab, ATH11K_DBG_PCI, "ext irq %d\n", irq);
 
 	/* last interrupt received for this group */
 	irq_grp->timestamp = jiffies;
@@ -516,18 +567,14 @@ static irqreturn_t ath11k_pcic_ext_interrupt_handler(int irq, void *arg)
 static int
 ath11k_pcic_get_msi_irq(struct ath11k_base *ab, unsigned int vector)
 {
-	if (!ab->pci.ops->get_msi_irq) {
-		WARN_ONCE(1, "get_msi_irq pci op not defined");
-		return -EOPNOTSUPP;
-	}
-
 	return ab->pci.ops->get_msi_irq(ab, vector);
 }
 
 static int ath11k_pcic_ext_irq_config(struct ath11k_base *ab)
 {
-	int i, j, ret, num_vectors = 0;
+	int i, j, n, ret, num_vectors = 0;
 	u32 user_base_data = 0, base_vector = 0;
+	struct ath11k_ext_irq_grp *irq_grp;
 	unsigned long irq_flags;
 
 	ret = ath11k_pcic_get_user_msi_assignment(ab, "DP", &num_vectors,
@@ -541,14 +588,19 @@ static int ath11k_pcic_ext_irq_config(struct ath11k_base *ab)
 		irq_flags |= IRQF_NOBALANCING;
 
 	for (i = 0; i < ATH11K_EXT_IRQ_GRP_NUM_MAX; i++) {
-		struct ath11k_ext_irq_grp *irq_grp = &ab->ext_irq_grp[i];
+		irq_grp = &ab->ext_irq_grp[i];
 		u32 num_irq = 0;
 
 		irq_grp->ab = ab;
 		irq_grp->grp_id = i;
-		init_dummy_netdev(&irq_grp->napi_ndev);
-		netif_napi_add(&irq_grp->napi_ndev, &irq_grp->napi,
-			       ath11k_pcic_ext_grp_napi_poll, NAPI_POLL_WEIGHT);
+		irq_grp->napi_ndev = alloc_netdev_dummy(0);
+		if (!irq_grp->napi_ndev) {
+			ret = -ENOMEM;
+			goto fail_allocate;
+		}
+
+		netif_napi_add(irq_grp->napi_ndev, &irq_grp->napi,
+			       ath11k_pcic_ext_grp_napi_poll);
 
 		if (ab->hw_params.ring_mask->tx[i] ||
 		    ab->hw_params.ring_mask->rx[i] ||
@@ -569,13 +621,15 @@ static int ath11k_pcic_ext_irq_config(struct ath11k_base *ab)
 			int vector = (i % num_vectors) + base_vector;
 			int irq = ath11k_pcic_get_msi_irq(ab, vector);
 
-			if (irq < 0)
-				return irq;
+			if (irq < 0) {
+				ret = irq;
+				goto fail_irq;
+			}
 
 			ab->irq_num[irq_idx] = irq;
 
 			ath11k_dbg(ab, ATH11K_DBG_PCI,
-				   "irq:%d group:%d\n", irq, i);
+				   "irq %d group %d\n", irq, i);
 
 			irq_set_status_flags(irq, IRQ_DISABLE_UNLAZY);
 			ret = request_irq(irq, ath11k_pcic_ext_interrupt_handler,
@@ -583,6 +637,10 @@ static int ath11k_pcic_ext_irq_config(struct ath11k_base *ab)
 			if (ret) {
 				ath11k_err(ab, "failed request irq %d: %d\n",
 					   vector, ret);
+				for (n = 0; n <= i; n++) {
+					irq_grp = &ab->ext_irq_grp[n];
+					free_netdev(irq_grp->napi_ndev);
+				}
 				return ret;
 			}
 		}
@@ -590,6 +648,15 @@ static int ath11k_pcic_ext_irq_config(struct ath11k_base *ab)
 	}
 
 	return 0;
+fail_irq:
+	/* i ->napi_ndev was properly allocated. Free it also */
+	i += 1;
+fail_allocate:
+	for (n = 0; n < i; n++) {
+		irq_grp = &ab->ext_irq_grp[n];
+		free_netdev(irq_grp->napi_ndev);
+	}
+	return ret;
 }
 
 int ath11k_pcic_config_irq(struct ath11k_base *ab)
@@ -746,3 +813,53 @@ int ath11k_pcic_map_service_to_pipe(struct ath11k_base *ab, u16 service_id,
 	return 0;
 }
 EXPORT_SYMBOL(ath11k_pcic_map_service_to_pipe);
+
+int ath11k_pcic_register_pci_ops(struct ath11k_base *ab,
+				 const struct ath11k_pci_ops *pci_ops)
+{
+	if (!pci_ops)
+		return 0;
+
+	/* Return error if mandatory pci_ops callbacks are missing */
+	if (!pci_ops->get_msi_irq || !pci_ops->window_write32 ||
+	    !pci_ops->window_read32)
+		return -EINVAL;
+
+	ab->pci.ops = pci_ops;
+	return 0;
+}
+EXPORT_SYMBOL(ath11k_pcic_register_pci_ops);
+
+void ath11k_pci_enable_ce_irqs_except_wake_irq(struct ath11k_base *ab)
+{
+	int i;
+
+	for (i = 0; i < ab->hw_params.ce_count; i++) {
+		if (ath11k_ce_get_attr_flags(ab, i) & CE_ATTR_DIS_INTR ||
+		    i == ATH11K_PCI_CE_WAKE_IRQ)
+			continue;
+		ath11k_pcic_ce_irq_enable(ab, i);
+	}
+}
+EXPORT_SYMBOL(ath11k_pci_enable_ce_irqs_except_wake_irq);
+
+void ath11k_pci_disable_ce_irqs_except_wake_irq(struct ath11k_base *ab)
+{
+	int i;
+	int irq_idx;
+	struct ath11k_ce_pipe *ce_pipe;
+
+	for (i = 0; i < ab->hw_params.ce_count; i++) {
+		ce_pipe = &ab->ce.ce_pipe[i];
+		irq_idx = ATH11K_PCI_IRQ_CE0_OFFSET + i;
+
+		if (ath11k_ce_get_attr_flags(ab, i) & CE_ATTR_DIS_INTR ||
+		    i == ATH11K_PCI_CE_WAKE_IRQ)
+			continue;
+
+		disable_irq_nosync(ab->irq_num[irq_idx]);
+		synchronize_irq(ab->irq_num[irq_idx]);
+		tasklet_kill(&ce_pipe->intr_tq);
+	}
+}
+EXPORT_SYMBOL(ath11k_pci_disable_ce_irqs_except_wake_irq);

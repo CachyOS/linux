@@ -7,6 +7,8 @@
 #include <linux/kref.h>
 #include <linux/string_helpers.h>
 
+#include <drm/drm_print.h>
+
 #include "gem/i915_gem_pm.h"
 #include "gt/intel_gt.h"
 
@@ -64,7 +66,7 @@ static struct live_active *__live_alloc(struct drm_i915_private *i915)
 {
 	struct live_active *active;
 
-	active = kzalloc(sizeof(*active), GFP_KERNEL);
+	active = kzalloc_obj(*active);
 	if (!active)
 		return NULL;
 
@@ -156,9 +158,9 @@ static int live_active_wait(void *arg)
 
 	__i915_active_wait(&active->base, TASK_UNINTERRUPTIBLE);
 	if (!READ_ONCE(active->retired)) {
-		struct drm_printer p = drm_err_printer(__func__);
+		struct drm_printer p = drm_err_printer(&i915->drm, __func__);
 
-		pr_err("i915_active not retired after waiting!\n");
+		drm_printf(&p, "i915_active not retired after waiting!\n");
 		i915_active_print(&active->base, &p);
 
 		err = -EINVAL;
@@ -189,9 +191,9 @@ static int live_active_retire(void *arg)
 		err = -EIO;
 
 	if (!READ_ONCE(active->retired)) {
-		struct drm_printer p = drm_err_printer(__func__);
+		struct drm_printer p = drm_err_printer(&i915->drm, __func__);
 
-		pr_err("i915_active not retired after flushing!\n");
+		drm_printf(&p, "i915_active not retired after flushing!\n");
 		i915_active_print(&active->base, &p);
 
 		err = -EINVAL;

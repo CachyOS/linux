@@ -17,11 +17,19 @@ properties:
   compatible:
     oneOf:
       - enum:
-          - samsung,s3c2443-spi # for S3C2443, S3C2416 and S3C2450
+          - google,gs101-spi
           - samsung,s3c6410-spi
           - samsung,s5pv210-spi # for S5PV210 and S5PC110
+          - samsung,exynos4210-spi
           - samsung,exynos5433-spi
+          - samsung,exynos850-spi
+          - samsung,exynosautov9-spi
           - tesla,fsd-spi
+      - items:
+          - enum:
+              - samsung,exynos8895-spi
+              - samsung,exynosautov920-spi
+          - const: samsung,exynos850-spi
       - const: samsung,exynos7-spi
         deprecated: true
 
@@ -32,8 +40,6 @@ properties:
   clock-names:
     minItems: 2
     maxItems: 3
-
-  cs-gpios: true
 
   dmas:
     minItems: 2
@@ -74,8 +80,6 @@ required:
   - compatible
   - clocks
   - clock-names
-  - dmas
-  - dma-names
   - interrupts
   - reg
 
@@ -85,7 +89,9 @@ allOf:
       properties:
         compatible:
           contains:
-            const: samsung,exynos5433-spi
+            enum:
+              - samsung,exynos5433-spi
+              - samsung,exynosautov9-spi
     then:
       properties:
         clocks:

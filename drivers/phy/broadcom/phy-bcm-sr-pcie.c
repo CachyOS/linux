@@ -195,7 +195,7 @@ static const struct phy_ops sr_paxc_phy_ops = {
 };
 
 static struct phy *sr_pcie_phy_xlate(struct device *dev,
-				     struct of_phandle_args *args)
+				     const struct of_phandle_args *args)
 {
 	struct sr_pcie_phy_core *core;
 	int phy_idx;
@@ -276,8 +276,6 @@ static int sr_pcie_phy_probe(struct platform_device *pdev)
 		dev_err(dev, "failed to register PHY provider\n");
 		return PTR_ERR(provider);
 	}
-
-	dev_info(dev, "Stingray PCIe PHY driver initialized\n");
 
 	return 0;
 }

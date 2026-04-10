@@ -27,7 +27,7 @@ static int ltc2947_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id ltc2947_id[] = {
-	{"ltc2947", 0},
+	{"ltc2947"},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, ltc2947_id);
@@ -36,9 +36,9 @@ static struct i2c_driver ltc2947_driver = {
 	.driver = {
 		.name = "ltc2947",
 		.of_match_table = ltc2947_of_match,
-		.pm = &ltc2947_pm_ops,
+		.pm = pm_sleep_ptr(&ltc2947_pm_ops),
 	},
-	.probe_new = ltc2947_probe,
+	.probe = ltc2947_probe,
 	.id_table = ltc2947_id,
 };
 module_i2c_driver(ltc2947_driver);

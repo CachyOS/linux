@@ -63,7 +63,8 @@ static void __scoop_gpio_set(struct scoop_dev *sdev,
 	iowrite16(gpwr, sdev->base + SCOOP_GPWR);
 }
 
-static void scoop_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
+static int scoop_gpio_set(struct gpio_chip *chip, unsigned int offset,
+			  int value)
 {
 	struct scoop_dev *sdev = gpiochip_get_data(chip);
 	unsigned long flags;
@@ -73,6 +74,8 @@ static void scoop_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 	__scoop_gpio_set(sdev, offset, value);
 
 	spin_unlock_irqrestore(&sdev->scoop_lock, flags);
+
+	return 0;
 }
 
 static int scoop_gpio_get(struct gpio_chip *chip, unsigned offset)
@@ -182,7 +185,7 @@ static int scoop_probe(struct platform_device *pdev)
 	if (!mem)
 		return -EINVAL;
 
-	devptr = kzalloc(sizeof(struct scoop_dev), GFP_KERNEL);
+	devptr = kzalloc_obj(struct scoop_dev);
 	if (!devptr)
 		return -ENOMEM;
 
@@ -236,7 +239,7 @@ err_ioremap:
 	return ret;
 }
 
-static int scoop_remove(struct platform_device *pdev)
+static void scoop_remove(struct platform_device *pdev)
 {
 	struct scoop_dev *sdev = platform_get_drvdata(pdev);
 
@@ -246,8 +249,6 @@ static int scoop_remove(struct platform_device *pdev)
 	platform_set_drvdata(pdev, NULL);
 	iounmap(sdev->base);
 	kfree(sdev);
-
-	return 0;
 }
 
 static struct platform_driver scoop_driver = {

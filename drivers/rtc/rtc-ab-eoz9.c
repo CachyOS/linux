@@ -64,7 +64,7 @@
 #define ABEOZ9_BIT_ALARM_MIN		GENMASK(6, 0)
 #define ABEOZ9_REG_ALARM_HOURS		0x12
 #define ABEOZ9_BIT_ALARM_HOURS_PM	BIT(5)
-#define ABEOZ9_BIT_ALARM_HOURS		GENMASK(4, 0)
+#define ABEOZ9_BIT_ALARM_HOURS		GENMASK(5, 0)
 #define ABEOZ9_REG_ALARM_DAYS		0x13
 #define ABEOZ9_BIT_ALARM_DAYS		GENMASK(5, 0)
 #define ABEOZ9_REG_ALARM_WEEKDAYS	0x14
@@ -231,8 +231,6 @@ static int abeoz9_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alarm)
 	alarm->time.tm_sec = bcd2bin(FIELD_GET(ABEOZ9_BIT_ALARM_SEC, regs[0]));
 	alarm->time.tm_min = bcd2bin(FIELD_GET(ABEOZ9_BIT_ALARM_MIN, regs[1]));
 	alarm->time.tm_hour = bcd2bin(FIELD_GET(ABEOZ9_BIT_ALARM_HOURS, regs[2]));
-	if (FIELD_GET(ABEOZ9_BIT_ALARM_HOURS_PM, regs[2]))
-		alarm->time.tm_hour += 12;
 
 	alarm->time.tm_mday = bcd2bin(FIELD_GET(ABEOZ9_BIT_ALARM_DAYS, regs[3]));
 
@@ -396,13 +394,6 @@ static int abeoz9z3_temp_read(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	if ((val & ABEOZ9_REG_CTRL_STATUS_V1F) ||
-	    (val & ABEOZ9_REG_CTRL_STATUS_V2F)) {
-		dev_err(dev,
-			"thermometer might be disabled due to low voltage\n");
-		return -EINVAL;
-	}
-
 	switch (attr) {
 	case hwmon_temp_input:
 		ret = regmap_read(regmap, ABEOZ9_REG_REG_TEMP, &val);
@@ -435,29 +426,9 @@ static umode_t abeoz9_is_visible(const void *data,
 	}
 }
 
-static const u32 abeoz9_chip_config[] = {
-	HWMON_C_REGISTER_TZ,
-	0
-};
-
-static const struct hwmon_channel_info abeoz9_chip = {
-	.type = hwmon_chip,
-	.config = abeoz9_chip_config,
-};
-
-static const u32 abeoz9_temp_config[] = {
-	HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_MIN,
-	0
-};
-
-static const struct hwmon_channel_info abeoz9_temp = {
-	.type = hwmon_temp,
-	.config = abeoz9_temp_config,
-};
-
-static const struct hwmon_channel_info *abeoz9_info[] = {
-	&abeoz9_chip,
-	&abeoz9_temp,
+static const struct hwmon_channel_info * const abeoz9_info[] = {
+	HWMON_CHANNEL_INFO(chip, HWMON_C_REGISTER_TZ),
+	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_MIN),
 	NULL
 };
 
@@ -495,8 +466,7 @@ static void abeoz9_hwmon_register(struct device *dev,
 
 #endif
 
-static int abeoz9_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int abeoz9_probe(struct i2c_client *client)
 {
 	struct abeoz9_rtc_data *data = NULL;
 	struct device *dev = &client->dev;
@@ -537,9 +507,14 @@ static int abeoz9_probe(struct i2c_client *client,
 	clear_bit(RTC_FEATURE_ALARM, data->rtc->features);
 
 	if (client->irq > 0) {
+		unsigned long irqflags = IRQF_TRIGGER_LOW;
+
+		if (dev_fwnode(&client->dev))
+			irqflags = 0;
+
 		ret = devm_request_threaded_irq(dev, client->irq, NULL,
 						abeoz9_rtc_irq,
-						IRQF_TRIGGER_LOW | IRQF_ONESHOT,
+						irqflags | IRQF_ONESHOT,
 						dev_name(dev), dev);
 		if (ret) {
 			dev_err(dev, "failed to request alarm irq\n");
@@ -571,7 +546,7 @@ MODULE_DEVICE_TABLE(of, abeoz9_dt_match);
 #endif
 
 static const struct i2c_device_id abeoz9_id[] = {
-	{ "abeoz9", 0 },
+	{ "abeoz9" },
 	{ }
 };
 
@@ -580,7 +555,7 @@ static struct i2c_driver abeoz9_driver = {
 		.name = "rtc-ab-eoz9",
 		.of_match_table = of_match_ptr(abeoz9_dt_match),
 	},
-	.probe	  = abeoz9_probe,
+	.probe = abeoz9_probe,
 	.id_table = abeoz9_id,
 };
 

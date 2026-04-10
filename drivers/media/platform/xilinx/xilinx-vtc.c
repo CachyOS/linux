@@ -254,7 +254,7 @@ struct xvtc_device *xvtc_of_get(struct device_node *np)
 	struct xvtc_device *found = NULL;
 	struct xvtc_device *xvtc;
 
-	if (!of_find_property(np, "xlnx,vtc", NULL))
+	if (!of_property_present(np, "xlnx,vtc"))
 		return NULL;
 
 	xvtc_node = of_parse_phandle(np, "xlnx,vtc", 0);
@@ -344,15 +344,13 @@ static int xvtc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int xvtc_remove(struct platform_device *pdev)
+static void xvtc_remove(struct platform_device *pdev)
 {
 	struct xvtc_device *xvtc = platform_get_drvdata(pdev);
 
 	xvtc_unregister_device(xvtc);
 
 	xvip_cleanup_resources(&xvtc->xvip);
-
-	return 0;
 }
 
 static const struct of_device_id xvtc_of_id_table[] = {

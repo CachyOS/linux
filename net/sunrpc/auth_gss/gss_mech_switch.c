@@ -13,7 +13,6 @@
 #include <linux/module.h>
 #include <linux/oid_registry.h>
 #include <linux/sunrpc/msg_prot.h>
-#include <linux/sunrpc/gss_asn1.h>
 #include <linux/sunrpc/auth_gss.h>
 #include <linux/sunrpc/svcauth_gss.h>
 #include <linux/sunrpc/gss_err.h>
@@ -356,7 +355,7 @@ gss_import_sec_context(const void *input_token, size_t bufsize,
 		       time64_t			*endtime,
 		       gfp_t gfp_mask)
 {
-	if (!(*ctx_id = kzalloc(sizeof(**ctx_id), gfp_mask)))
+	if (!(*ctx_id = kzalloc_obj(**ctx_id, gfp_mask)))
 		return -ENOMEM;
 	(*ctx_id)->mech_type = gss_mech_get(mech);
 

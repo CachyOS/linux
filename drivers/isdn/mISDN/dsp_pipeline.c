@@ -31,7 +31,9 @@ struct dsp_element_entry {
 static LIST_HEAD(dsp_elements);
 
 /* sysfs */
-static struct class *elements_class;
+static const struct class elements_class = {
+	.name = "dsp_pipeline",
+};
 
 static ssize_t
 attr_show_args(struct device *dev, struct device_attribute *attr, char *buf)
@@ -73,13 +75,14 @@ int mISDN_dsp_element_register(struct mISDN_dsp_element *elem)
 	if (!elem)
 		return -EINVAL;
 
-	entry = kzalloc(sizeof(struct dsp_element_entry), GFP_ATOMIC);
+	entry = kzalloc_obj(struct dsp_element_entry, GFP_ATOMIC);
 	if (!entry)
 		return -ENOMEM;
 
+	INIT_LIST_HEAD(&entry->list);
 	entry->elem = elem;
 
-	entry->dev.class = elements_class;
+	entry->dev.class = &elements_class;
 	entry->dev.release = mISDN_dsp_dev_release;
 	dev_set_drvdata(&entry->dev, elem);
 	dev_set_name(&entry->dev, "%s", elem->name);
@@ -107,7 +110,7 @@ err2:
 	device_unregister(&entry->dev);
 	return ret;
 err1:
-	kfree(entry);
+	put_device(&entry->dev);
 	return ret;
 }
 EXPORT_SYMBOL(mISDN_dsp_element_register);
@@ -130,9 +133,11 @@ EXPORT_SYMBOL(mISDN_dsp_element_unregister);
 
 int dsp_pipeline_module_init(void)
 {
-	elements_class = class_create(THIS_MODULE, "dsp_pipeline");
-	if (IS_ERR(elements_class))
-		return PTR_ERR(elements_class);
+	int err;
+
+	err = class_register(&elements_class);
+	if (err)
+		return err;
 
 	dsp_hwec_init();
 
@@ -145,7 +150,7 @@ void dsp_pipeline_module_exit(void)
 
 	dsp_hwec_exit();
 
-	class_destroy(elements_class);
+	class_unregister(&elements_class);
 
 	list_for_each_entry_safe(entry, n, &dsp_elements, list) {
 		list_del(&entry->list);
@@ -218,8 +223,8 @@ int dsp_pipeline_build(struct dsp_pipeline *pipeline, const char *cfg)
 			if (!strcmp(entry->elem->name, name)) {
 				elem = entry->elem;
 
-				pipeline_entry = kmalloc(sizeof(struct
-								dsp_pipeline_entry), GFP_ATOMIC);
+				pipeline_entry = kmalloc_obj(struct dsp_pipeline_entry,
+							     GFP_ATOMIC);
 				if (!pipeline_entry) {
 					printk(KERN_ERR "%s: failed to add "
 					       "entry to pipeline: %s (out of "

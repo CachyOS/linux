@@ -10,13 +10,14 @@
 #include <linux/platform_device.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
+#include <linux/seq_file.h>
 #include <linux/slab.h>
 
 #include <linux/pinctrl/machine.h>
+#include <linux/pinctrl/pinconf-generic.h>
+#include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
-#include <linux/pinctrl/pinconf.h>
-#include <linux/pinctrl/pinconf-generic.h>
 
 #include <linux/mfd/madera/core.h>
 #include <linux/mfd/madera/registers.h>
@@ -803,7 +804,7 @@ static int madera_pin_conf_get(struct pinctrl_dev *pctldev, unsigned int pin,
 		if (conf[0] & MADERA_GP1_IP_CFG_MASK)
 			result = 1;
 		break;
-	case PIN_CONFIG_OUTPUT:
+	case PIN_CONFIG_LEVEL:
 		if ((conf[1] & MADERA_GP1_DIR_MASK) &&
 		    (conf[0] & MADERA_GP1_LVL_MASK))
 			result = 1;
@@ -901,7 +902,7 @@ static int madera_pin_conf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 			mask[1] |= MADERA_GP1_DIR_MASK;
 			conf[1] |= MADERA_GP1_DIR;
 			break;
-		case PIN_CONFIG_OUTPUT:
+		case PIN_CONFIG_LEVEL:
 			val = pinconf_to_config_argument(*configs);
 			mask[0] |= MADERA_GP1_LVL_MASK;
 			if (val)
@@ -1060,14 +1061,12 @@ static int madera_pin_probe(struct platform_device *pdev)
 
 	/* if the configuration is provided through pdata, apply it */
 	if (pdata->gpio_configs) {
-		ret = pinctrl_register_mappings(pdata->gpio_configs,
-						pdata->n_gpio_configs);
-		if (ret) {
-			dev_err(priv->dev,
-				"Failed to register pdata mappings (%d)\n",
-				ret);
-			return ret;
-		}
+		ret = devm_pinctrl_register_mappings(priv->dev,
+						     pdata->gpio_configs,
+						     pdata->n_gpio_configs);
+		if (ret)
+			return dev_err_probe(priv->dev, ret,
+						"Failed to register pdata mappings\n");
 	}
 
 	ret = pinctrl_enable(priv->pctl);
@@ -1083,19 +1082,8 @@ static int madera_pin_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int madera_pin_remove(struct platform_device *pdev)
-{
-	struct madera_pin_private *priv = platform_get_drvdata(pdev);
-
-	if (priv->madera->pdata.gpio_configs)
-		pinctrl_unregister_mappings(priv->madera->pdata.gpio_configs);
-
-	return 0;
-}
-
 static struct platform_driver madera_pin_driver = {
 	.probe = madera_pin_probe,
-	.remove = madera_pin_remove,
 	.driver = {
 		.name = "madera-pinctrl",
 	},

@@ -5,6 +5,8 @@
 #ifndef _LINUX_IF_RMNET_H_
 #define _LINUX_IF_RMNET_H_
 
+#include <linux/types.h>
+
 struct rmnet_map_header {
 	u8 flags;			/* MAP_CMD_FLAG, MAP_PAD_LEN_MASK */
 	u8 mux_id;
@@ -40,7 +42,7 @@ struct rmnet_map_ul_csum_header {
 
 /* csum_info field:
  *  OFFSET:	where (offset in bytes) to insert computed checksum
- *  UDP:	1 = UDP checksum (zero checkum means no checksum)
+ *  UDP:	1 = UDP checksum (zero checksum means no checksum)
  *  ENABLED:	1 = checksum computation requested
  */
 #define MAP_CSUM_UL_OFFSET_MASK		GENMASK(13, 0)

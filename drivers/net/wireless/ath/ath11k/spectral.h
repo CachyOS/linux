@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause-Clear */
 /*
  * Copyright (c) 2019-2020 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef ATH11K_SPECTRAL_H
@@ -35,6 +36,7 @@ struct ath11k_spectral {
 	u16 count;
 	u8 fft_size;
 	bool enabled;
+	bool is_primary;
 };
 
 #ifdef CONFIG_ATH11K_SPECTRAL

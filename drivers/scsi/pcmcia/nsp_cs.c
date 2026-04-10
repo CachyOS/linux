@@ -186,7 +186,7 @@ static void nsp_scsi_done(struct scsi_cmnd *SCpnt)
 	scsi_done(SCpnt);
 }
 
-static int nsp_queuecommand_lck(struct scsi_cmnd *const SCpnt)
+static enum scsi_qc_status nsp_queuecommand_lck(struct scsi_cmnd *const SCpnt)
 {
 	struct scsi_pointer *scsi_pointer = nsp_priv(SCpnt);
 #ifdef NSP_DEBUG
@@ -450,8 +450,6 @@ static int nsp_analyze_sdtr(struct scsi_cmnd *SCpnt)
 	sync_data	      *sync   = &(data->Sync[target]);
 	struct nsp_sync_table *sync_table;
 	unsigned int	       period, offset;
-	int		       i;
-
 
 	nsp_dbg(NSP_DEBUG_SYNC, "in");
 
@@ -466,7 +464,7 @@ static int nsp_analyze_sdtr(struct scsi_cmnd *SCpnt)
 		sync_table = nsp_sync_table_40M;
 	}
 
-	for ( i = 0; sync_table->max_period != 0; i++, sync_table++) {
+	for (; sync_table->max_period != 0; sync_table++) {
 		if ( period >= sync_table->min_period &&
 		     period <= sync_table->max_period	 ) {
 			break;
@@ -1522,7 +1520,7 @@ static int nsp_cs_probe(struct pcmcia_device *link)
 	nsp_dbg(NSP_DEBUG_INIT, "in");
 
 	/* Create new SCSI device */
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	info = kzalloc_obj(*info);
 	if (info == NULL) { return -ENOMEM; }
 	info->p_dev = link;
 	link->priv = info;

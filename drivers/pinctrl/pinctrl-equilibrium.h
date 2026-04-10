@@ -68,18 +68,6 @@ struct gpio_irq_type {
 };
 
 /**
- * struct eqbr_pmx_func: represent a pin function.
- * @name: name of the pin function, used to lookup the function.
- * @groups: one or more names of pin groups that provide this function.
- * @nr_groups: number of groups included in @groups.
- */
-struct eqbr_pmx_func {
-	const char		*name;
-	const char		**groups;
-	unsigned int		nr_groups;
-};
-
-/**
  * struct eqbr_pin_bank: represent a pin bank.
  * @membase: base address of the pin bank register.
  * @id: bank id, to idenify the unique bank.
@@ -103,17 +91,15 @@ struct fwnode_handle;
  * @fwnode: firmware node of gpio controller.
  * @bank: pointer to corresponding pin bank.
  * @membase: base address of the gpio controller.
- * @ic:   irq chip.
  * @name: gpio chip name.
  * @virq: irq number of the gpio chip to parent's irq domain.
  * @lock: spin lock to protect gpio register write.
  */
 struct eqbr_gpio_ctrl {
-	struct gpio_chip	chip;
+	struct gpio_generic_chip chip;
 	struct fwnode_handle	*fwnode;
 	struct eqbr_pin_bank	*bank;
 	void __iomem		*membase;
-	struct irq_chip		ic;
 	const char		*name;
 	unsigned int		virq;
 	raw_spinlock_t		lock; /* protect gpio register */

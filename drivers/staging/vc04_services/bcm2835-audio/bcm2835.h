@@ -5,8 +5,8 @@
 #define __SOUND_ARM_BCM2835_H
 
 #include <linux/device.h>
-#include <linux/wait.h>
 #include <linux/raspberrypi/vchiq.h>
+#include <linux/wait.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm-indirect.h>
@@ -83,7 +83,6 @@ struct bcm2835_alsa_stream {
 	int idx;
 };
 
-int snd_bcm2835_new_ctl(struct bcm2835_chip *chip);
 int snd_bcm2835_new_pcm(struct bcm2835_chip *chip, const char *name,
 			int idx, enum snd_bcm2835_route route,
 			u32 numchannels, bool spdif);

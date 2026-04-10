@@ -5,7 +5,6 @@
  * Common part of most Semtech SAR sensor.
  */
 
-#include <linux/acpi.h>
 #include <linux/bitops.h>
 #include <linux/byteorder/generic.h>
 #include <linux/delay.h>
@@ -54,7 +53,7 @@ const struct iio_event_spec sx_common_events[3] = {
 				 BIT(IIO_EV_INFO_VALUE),
 	},
 };
-EXPORT_SYMBOL_NS_GPL(sx_common_events, SEMTECH_PROX);
+EXPORT_SYMBOL_NS_GPL(sx_common_events, "SEMTECH_PROX");
 
 static irqreturn_t sx_common_irq_handler(int irq, void *private)
 {
@@ -112,17 +111,16 @@ static int sx_common_enable_irq(struct sx_common_data *data, unsigned int irq)
 {
 	if (!data->client->irq)
 		return 0;
-	return regmap_update_bits(data->regmap, data->chip_info->reg_irq_msk,
-				  irq << data->chip_info->irq_msk_offset,
-				  irq << data->chip_info->irq_msk_offset);
+	return regmap_set_bits(data->regmap, data->chip_info->reg_irq_msk,
+			       irq << data->chip_info->irq_msk_offset);
 }
 
 static int sx_common_disable_irq(struct sx_common_data *data, unsigned int irq)
 {
 	if (!data->client->irq)
 		return 0;
-	return regmap_update_bits(data->regmap, data->chip_info->reg_irq_msk,
-				  irq << data->chip_info->irq_msk_offset, 0);
+	return regmap_clear_bits(data->regmap, data->chip_info->reg_irq_msk,
+				 irq << data->chip_info->irq_msk_offset);
 }
 
 static int sx_common_update_chan_en(struct sx_common_data *data,
@@ -235,7 +233,7 @@ out:
 
 	return ret;
 }
-EXPORT_SYMBOL_NS_GPL(sx_common_read_proximity, SEMTECH_PROX);
+EXPORT_SYMBOL_NS_GPL(sx_common_read_proximity, "SEMTECH_PROX");
 
 /**
  * sx_common_read_event_config() - Configure event setting.
@@ -255,7 +253,7 @@ int sx_common_read_event_config(struct iio_dev *indio_dev,
 
 	return !!(data->chan_event & BIT(chan->channel));
 }
-EXPORT_SYMBOL_NS_GPL(sx_common_read_event_config, SEMTECH_PROX);
+EXPORT_SYMBOL_NS_GPL(sx_common_read_event_config, "SEMTECH_PROX");
 
 /**
  * sx_common_write_event_config() - Configure event setting.
@@ -270,7 +268,7 @@ EXPORT_SYMBOL_NS_GPL(sx_common_read_event_config, SEMTECH_PROX);
 int sx_common_write_event_config(struct iio_dev *indio_dev,
 				 const struct iio_chan_spec *chan,
 				 enum iio_event_type type,
-				 enum iio_event_direction dir, int state)
+				 enum iio_event_direction dir, bool state)
 {
 	struct sx_common_data *data = iio_priv(indio_dev);
 	unsigned int eventirq = SX_COMMON_FAR_IRQ | SX_COMMON_CLOSE_IRQ;
@@ -305,7 +303,7 @@ out_unlock:
 	mutex_unlock(&data->mutex);
 	return ret;
 }
-EXPORT_SYMBOL_NS_GPL(sx_common_write_event_config, SEMTECH_PROX);
+EXPORT_SYMBOL_NS_GPL(sx_common_write_event_config, "SEMTECH_PROX");
 
 static int sx_common_set_trigger_state(struct iio_trigger *trig, bool state)
 {
@@ -371,8 +369,7 @@ static irqreturn_t sx_common_trigger_handler(int irq, void *private)
 
 	mutex_lock(&data->mutex);
 
-	for_each_set_bit(bit, indio_dev->active_scan_mask,
-			 indio_dev->masklength) {
+	iio_for_each_active_channel(indio_dev, bit) {
 		ret = data->chip_info->ops.read_prox_data(data,
 						     &indio_dev->channels[bit],
 						     &val);
@@ -382,8 +379,8 @@ static irqreturn_t sx_common_trigger_handler(int irq, void *private)
 		data->buffer.channels[i++] = val;
 	}
 
-	iio_push_to_buffers_with_timestamp(indio_dev, &data->buffer,
-					   pf->timestamp);
+	iio_push_to_buffers_with_ts(indio_dev, &data->buffer,
+				    sizeof(data->buffer), pf->timestamp);
 
 out:
 	mutex_unlock(&data->mutex);
@@ -400,8 +397,7 @@ static int sx_common_buffer_preenable(struct iio_dev *indio_dev)
 	int bit, ret;
 
 	mutex_lock(&data->mutex);
-	for_each_set_bit(bit, indio_dev->active_scan_mask,
-			 indio_dev->masklength)
+	iio_for_each_active_channel(indio_dev, bit)
 		__set_bit(indio_dev->channels[bit].channel, &channels);
 
 	ret = sx_common_update_chan_en(data, channels, data->chan_event);
@@ -425,16 +421,9 @@ static const struct iio_buffer_setup_ops sx_common_buffer_setup_ops = {
 	.postdisable = sx_common_buffer_postdisable,
 };
 
-static void sx_common_regulator_disable(void *_data)
-{
-	struct sx_common_data *data = _data;
-
-	regulator_bulk_disable(ARRAY_SIZE(data->supplies), data->supplies);
-}
-
 #define SX_COMMON_SOFT_RESET				0xde
 
-static int sx_common_init_device(struct iio_dev *indio_dev)
+static int sx_common_init_device(struct device *dev, struct iio_dev *indio_dev)
 {
 	struct sx_common_data *data = iio_priv(indio_dev);
 	struct sx_common_reg_default tmp;
@@ -456,8 +445,7 @@ static int sx_common_init_device(struct iio_dev *indio_dev)
 
 	/* Program defaults from constant or BIOS. */
 	for (i = 0; i < data->chip_info->num_default_regs; i++) {
-		initval = data->chip_info->ops.get_default_reg(&indio_dev->dev,
-							       i, &tmp);
+		initval = data->chip_info->ops.get_default_reg(dev, i, &tmp);
 		ret = regmap_write(data->regmap, initval->reg, initval->def);
 		if (ret)
 			return ret;
@@ -476,6 +464,7 @@ int sx_common_probe(struct i2c_client *client,
 		    const struct sx_common_chip_info *chip_info,
 		    const struct regmap_config *regmap_config)
 {
+	static const char * const regulator_names[] = { "vdd", "svdd" };
 	struct device *dev = &client->dev;
 	struct iio_dev *indio_dev;
 	struct sx_common_data *data;
@@ -489,8 +478,6 @@ int sx_common_probe(struct i2c_client *client,
 
 	data->chip_info = chip_info;
 	data->client = client;
-	data->supplies[0].supply = "vdd";
-	data->supplies[1].supply = "svdd";
 	mutex_init(&data->mutex);
 	init_completion(&data->completion);
 
@@ -499,29 +486,18 @@ int sx_common_probe(struct i2c_client *client,
 		return dev_err_probe(dev, PTR_ERR(data->regmap),
 				     "Could init register map\n");
 
-	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(data->supplies),
-				      data->supplies);
+	ret = devm_regulator_bulk_get_enable(dev, ARRAY_SIZE(regulator_names),
+					     regulator_names);
 	if (ret)
 		return dev_err_probe(dev, ret, "Unable to get regulators\n");
 
-	ret = regulator_bulk_enable(ARRAY_SIZE(data->supplies), data->supplies);
-	if (ret)
-		return dev_err_probe(dev, ret, "Unable to enable regulators\n");
-
 	/* Must wait for Tpor time after initial power up */
 	usleep_range(1000, 1100);
-
-	ret = devm_add_action_or_reset(dev, sx_common_regulator_disable, data);
-	if (ret)
-		return dev_err_probe(dev, ret,
-				     "Unable to register regulators deleter\n");
 
 	ret = data->chip_info->ops.check_whoami(dev, indio_dev);
 	if (ret)
 		return dev_err_probe(dev, ret, "error reading WHOAMI\n");
 
-	ACPI_COMPANION_SET(&indio_dev->dev, ACPI_COMPANION(dev));
-	indio_dev->dev.of_node = client->dev.of_node;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
 	indio_dev->channels =  data->chip_info->iio_channels;
@@ -530,7 +506,7 @@ int sx_common_probe(struct i2c_client *client,
 
 	i2c_set_clientdata(client, indio_dev);
 
-	ret = sx_common_init_device(indio_dev);
+	ret = sx_common_init_device(dev, indio_dev);
 	if (ret)
 		return dev_err_probe(dev, ret, "Unable to initialize sensor\n");
 
@@ -566,7 +542,7 @@ int sx_common_probe(struct i2c_client *client,
 
 	return devm_iio_device_register(dev, indio_dev);
 }
-EXPORT_SYMBOL_NS_GPL(sx_common_probe, SEMTECH_PROX);
+EXPORT_SYMBOL_NS_GPL(sx_common_probe, "SEMTECH_PROX");
 
 MODULE_AUTHOR("Gwendal Grignou <gwendal@chromium.org>");
 MODULE_DESCRIPTION("Common functions and structures for Semtech sensor");

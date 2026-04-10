@@ -9,61 +9,15 @@
 #include <linux/linkage.h>
 #include <linux/types.h>
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #include <larchintrin.h>
 
-/*
- * parse_r var, r - Helper assembler macro for parsing register names.
- *
- * This converts the register name in $n form provided in \r to the
- * corresponding register number, which is assigned to the variable \var. It is
- * needed to allow explicit encoding of instructions in inline assembly where
- * registers are chosen by the compiler in $n form, allowing us to avoid using
- * fixed register numbers.
- *
- * It also allows newer instructions (not implemented by the assembler) to be
- * transparently implemented using assembler macros, instead of needing separate
- * cases depending on toolchain support.
- *
- * Simple usage example:
- * __asm__ __volatile__("parse_r addr, %0\n\t"
- *			"#invtlb op, 0, %0\n\t"
- *			".word ((0x6498000) | (addr << 10) | (0 << 5) | op)"
- *			: "=r" (status);
- */
-
-/* Match an individual register number and assign to \var */
-#define _IFC_REG(n)				\
-	".ifc	\\r, $r" #n "\n\t"		\
-	"\\var	= " #n "\n\t"			\
-	".endif\n\t"
-
-__asm__(".macro	parse_r var r\n\t"
-	"\\var	= -1\n\t"
-	_IFC_REG(0)  _IFC_REG(1)  _IFC_REG(2)  _IFC_REG(3)
-	_IFC_REG(4)  _IFC_REG(5)  _IFC_REG(6)  _IFC_REG(7)
-	_IFC_REG(8)  _IFC_REG(9)  _IFC_REG(10) _IFC_REG(11)
-	_IFC_REG(12) _IFC_REG(13) _IFC_REG(14) _IFC_REG(15)
-	_IFC_REG(16) _IFC_REG(17) _IFC_REG(18) _IFC_REG(19)
-	_IFC_REG(20) _IFC_REG(21) _IFC_REG(22) _IFC_REG(23)
-	_IFC_REG(24) _IFC_REG(25) _IFC_REG(26) _IFC_REG(27)
-	_IFC_REG(28) _IFC_REG(29) _IFC_REG(30) _IFC_REG(31)
-	".iflt	\\var\n\t"
-	".error	\"Unable to parse register name \\r\"\n\t"
-	".endif\n\t"
-	".endm");
-
-#undef _IFC_REG
-
 /* CPUCFG */
-static inline u32 read_cpucfg(u32 reg)
-{
-	return __cpucfg(reg);
-}
+#define read_cpucfg(reg) __cpucfg(reg)
 
-#endif /* !__ASSEMBLY__ */
+#endif /* !__ASSEMBLER__ */
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 
 /* LoongArch Registers */
 #define REG_ZERO	0x0
@@ -99,7 +53,7 @@ static inline u32 read_cpucfg(u32 reg)
 #define REG_S7		0x1e
 #define REG_S8		0x1f
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 /* Bit fields for CPUCFG registers */
 #define LOONGARCH_CPUCFG0		0x0
@@ -108,6 +62,7 @@ static inline u32 read_cpucfg(u32 reg)
 #define LOONGARCH_CPUCFG1		0x1
 #define  CPUCFG1_ISGR32			BIT(0)
 #define  CPUCFG1_ISGR64			BIT(1)
+#define  CPUCFG1_ISA			GENMASK(1, 0)
 #define  CPUCFG1_PAGING			BIT(2)
 #define  CPUCFG1_IOCSR			BIT(3)
 #define  CPUCFG1_PABITS			GENMASK(11, 4)
@@ -117,7 +72,7 @@ static inline u32 read_cpucfg(u32 reg)
 #define  CPUCFG1_EP			BIT(22)
 #define  CPUCFG1_RPLV			BIT(23)
 #define  CPUCFG1_HUGEPG			BIT(24)
-#define  CPUCFG1_IOCSRBRD		BIT(25)
+#define  CPUCFG1_CRC32			BIT(25)
 #define  CPUCFG1_MSGINT			BIT(26)
 
 #define LOONGARCH_CPUCFG2		0x2
@@ -138,6 +93,13 @@ static inline u32 read_cpucfg(u32 reg)
 #define  CPUCFG2_MIPSBT			BIT(20)
 #define  CPUCFG2_LSPW			BIT(21)
 #define  CPUCFG2_LAM			BIT(22)
+#define  CPUCFG2_PTW			BIT(24)
+#define  CPUCFG2_FRECIPE		BIT(25)
+#define  CPUCFG2_DIV32			BIT(26)
+#define  CPUCFG2_LAM_BH			BIT(27)
+#define  CPUCFG2_LAMCAS			BIT(28)
+#define  CPUCFG2_LLACQ_SCREL		BIT(29)
+#define  CPUCFG2_SCQ			BIT(30)
 
 #define LOONGARCH_CPUCFG3		0x3
 #define  CPUCFG3_CCDMA			BIT(0)
@@ -152,6 +114,13 @@ static inline u32 read_cpucfg(u32 reg)
 #define  CPUCFG3_SPW_HG_HF		BIT(11)
 #define  CPUCFG3_RVA			BIT(12)
 #define  CPUCFG3_RVAMAX			GENMASK(16, 13)
+#define  CPUCFG3_DBAR_HINTS		BIT(17)
+#define  CPUCFG3_ALDORDER_CAP		BIT(18) /* All address load ordered, capability */
+#define  CPUCFG3_ASTORDER_CAP		BIT(19) /* All address store ordered, capability */
+#define  CPUCFG3_ALDORDER_STA		BIT(20) /* All address load ordered, status */
+#define  CPUCFG3_ASTORDER_STA		BIT(21) /* All address store ordered, status */
+#define  CPUCFG3_SLDORDER_CAP		BIT(22) /* Same address load ordered, capability */
+#define  CPUCFG3_SLDORDER_STA		BIT(23) /* Same address load ordered, status */
 
 #define LOONGARCH_CPUCFG4		0x4
 #define  CPUCFG4_CCFREQ			GENMASK(31, 0)
@@ -164,7 +133,9 @@ static inline u32 read_cpucfg(u32 reg)
 #define  CPUCFG6_PMP			BIT(0)
 #define  CPUCFG6_PAMVER			GENMASK(3, 1)
 #define  CPUCFG6_PMNUM			GENMASK(7, 4)
+#define  CPUCFG6_PMNUM_SHIFT		4
 #define  CPUCFG6_PMBITS			GENMASK(13, 8)
+#define  CPUCFG6_PMBITS_SHIFT		8
 #define  CPUCFG6_UPM			BIT(14)
 
 #define LOONGARCH_CPUCFG16		0x10
@@ -187,36 +158,15 @@ static inline u32 read_cpucfg(u32 reg)
 #define  CPUCFG16_L3_DINCL		BIT(16)
 
 #define LOONGARCH_CPUCFG17		0x11
-#define  CPUCFG17_L1I_WAYS_M		GENMASK(15, 0)
-#define  CPUCFG17_L1I_SETS_M		GENMASK(23, 16)
-#define  CPUCFG17_L1I_SIZE_M		GENMASK(30, 24)
-#define  CPUCFG17_L1I_WAYS		0
-#define  CPUCFG17_L1I_SETS		16
-#define  CPUCFG17_L1I_SIZE		24
-
 #define LOONGARCH_CPUCFG18		0x12
-#define  CPUCFG18_L1D_WAYS_M		GENMASK(15, 0)
-#define  CPUCFG18_L1D_SETS_M		GENMASK(23, 16)
-#define  CPUCFG18_L1D_SIZE_M		GENMASK(30, 24)
-#define  CPUCFG18_L1D_WAYS		0
-#define  CPUCFG18_L1D_SETS		16
-#define  CPUCFG18_L1D_SIZE		24
-
 #define LOONGARCH_CPUCFG19		0x13
-#define  CPUCFG19_L2_WAYS_M		GENMASK(15, 0)
-#define  CPUCFG19_L2_SETS_M		GENMASK(23, 16)
-#define  CPUCFG19_L2_SIZE_M		GENMASK(30, 24)
-#define  CPUCFG19_L2_WAYS		0
-#define  CPUCFG19_L2_SETS		16
-#define  CPUCFG19_L2_SIZE		24
-
 #define LOONGARCH_CPUCFG20		0x14
-#define  CPUCFG20_L3_WAYS_M		GENMASK(15, 0)
-#define  CPUCFG20_L3_SETS_M		GENMASK(23, 16)
-#define  CPUCFG20_L3_SIZE_M		GENMASK(30, 24)
-#define  CPUCFG20_L3_WAYS		0
-#define  CPUCFG20_L3_SETS		16
-#define  CPUCFG20_L3_SIZE		24
+#define  CPUCFG_CACHE_WAYS_M		GENMASK(15, 0)
+#define  CPUCFG_CACHE_SETS_M		GENMASK(23, 16)
+#define  CPUCFG_CACHE_LSIZE_M		GENMASK(30, 24)
+#define  CPUCFG_CACHE_WAYS	 	0
+#define  CPUCFG_CACHE_SETS		16
+#define  CPUCFG_CACHE_LSIZE		24
 
 #define LOONGARCH_CPUCFG48		0x30
 #define  CPUCFG48_MCSR_LCK		BIT(0)
@@ -224,61 +174,38 @@ static inline u32 read_cpucfg(u32 reg)
 #define  CPUCFG48_VFPU_CG		BIT(2)
 #define  CPUCFG48_RAM_CG		BIT(3)
 
-#ifndef __ASSEMBLY__
+/*
+ * CPUCFG index area: 0x40000000 -- 0x400000ff
+ * SW emulation for KVM hypervirsor, see arch/loongarch/include/uapi/asm/kvm_para.h
+ */
+
+#ifndef __ASSEMBLER__
 
 /* CSR */
-static __always_inline u32 csr_read32(u32 reg)
-{
-	return __csrrd_w(reg);
-}
+#define csr_read32(reg) __csrrd_w(reg)
+#define csr_read64(reg) __csrrd_d(reg)
+#define csr_write32(val, reg) __csrwr_w(val, reg)
+#define csr_write64(val, reg) __csrwr_d(val, reg)
+#define csr_xchg32(val, mask, reg) __csrxchg_w(val, mask, reg)
+#define csr_xchg64(val, mask, reg) __csrxchg_d(val, mask, reg)
 
-static __always_inline u64 csr_read64(u32 reg)
-{
-	return __csrrd_d(reg);
-}
-
-static __always_inline void csr_write32(u32 val, u32 reg)
-{
-	__csrwr_w(val, reg);
-}
-
-static __always_inline void csr_write64(u64 val, u32 reg)
-{
-	__csrwr_d(val, reg);
-}
-
-static __always_inline u32 csr_xchg32(u32 val, u32 mask, u32 reg)
-{
-	return __csrxchg_w(val, mask, reg);
-}
-
-static __always_inline u64 csr_xchg64(u64 val, u64 mask, u32 reg)
-{
-	return __csrxchg_d(val, mask, reg);
-}
+#ifdef CONFIG_32BIT
+#define csr_read(reg) csr_read32(reg)
+#define csr_write(val, reg) csr_write32(val, reg)
+#define csr_xchg(val, mask, reg) csr_xchg32(val, mask, reg)
+#else
+#define csr_read(reg) csr_read64(reg)
+#define csr_write(val, reg) csr_write64(val, reg)
+#define csr_xchg(val, mask, reg) csr_xchg64(val, mask, reg)
+#endif
 
 /* IOCSR */
-static __always_inline u32 iocsr_read32(u32 reg)
-{
-	return __iocsrrd_w(reg);
-}
+#define iocsr_read32(reg) __iocsrrd_w(reg)
+#define iocsr_read64(reg) __iocsrrd_d(reg)
+#define iocsr_write32(val, reg) __iocsrwr_w(val, reg)
+#define iocsr_write64(val, reg) __iocsrwr_d(val, reg)
 
-static __always_inline u64 iocsr_read64(u32 reg)
-{
-	return __iocsrrd_d(reg);
-}
-
-static __always_inline void iocsr_write32(u32 val, u32 reg)
-{
-	__iocsrwr_w(val, reg);
-}
-
-static __always_inline void iocsr_write64(u64 val, u32 reg)
-{
-	__iocsrwr_d(val, reg);
-}
-
-#endif /* !__ASSEMBLY__ */
+#endif /* !__ASSEMBLER__ */
 
 /* CSR register number */
 
@@ -330,10 +257,11 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 #define LOONGARCH_CSR_ECFG		0x4	/* Exception config */
 #define  CSR_ECFG_VS_SHIFT		16
 #define  CSR_ECFG_VS_WIDTH		3
+#define  CSR_ECFG_VS_SHIFT_END		(CSR_ECFG_VS_SHIFT + CSR_ECFG_VS_WIDTH - 1)
 #define  CSR_ECFG_VS			(_ULCAST_(0x7) << CSR_ECFG_VS_SHIFT)
 #define  CSR_ECFG_IM_SHIFT		0
-#define  CSR_ECFG_IM_WIDTH		13
-#define  CSR_ECFG_IM			(_ULCAST_(0x1fff) << CSR_ECFG_IM_SHIFT)
+#define  CSR_ECFG_IM_WIDTH		14
+#define  CSR_ECFG_IM			(_ULCAST_(0x3fff) << CSR_ECFG_IM_SHIFT)
 
 #define LOONGARCH_CSR_ESTAT		0x5	/* Exception status */
 #define  CSR_ESTAT_ESUBCODE_SHIFT	22
@@ -346,7 +274,7 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 #define  CSR_ESTAT_IS_WIDTH		15
 #define  CSR_ESTAT_IS			(_ULCAST_(0x7fff) << CSR_ESTAT_IS_SHIFT)
 
-#define LOONGARCH_CSR_ERA		0x6	/* ERA */
+#define LOONGARCH_CSR_ERA		0x6	/* Exception return address */
 
 #define LOONGARCH_CSR_BADV		0x7	/* Bad virtual address */
 
@@ -418,13 +346,14 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 #define  CSR_TLBLO1_V			(_ULCAST_(0x1) << CSR_TLBLO1_V_SHIFT)
 
 #define LOONGARCH_CSR_GTLBC		0x15	/* Guest TLB control */
-#define  CSR_GTLBC_RID_SHIFT		16
-#define  CSR_GTLBC_RID_WIDTH		8
-#define  CSR_GTLBC_RID			(_ULCAST_(0xff) << CSR_GTLBC_RID_SHIFT)
+#define  CSR_GTLBC_TGID_SHIFT		16
+#define  CSR_GTLBC_TGID_WIDTH		8
+#define  CSR_GTLBC_TGID_SHIFT_END	(CSR_GTLBC_TGID_SHIFT + CSR_GTLBC_TGID_WIDTH - 1)
+#define  CSR_GTLBC_TGID			(_ULCAST_(0xff) << CSR_GTLBC_TGID_SHIFT)
 #define  CSR_GTLBC_TOTI_SHIFT		13
 #define  CSR_GTLBC_TOTI			(_ULCAST_(0x1) << CSR_GTLBC_TOTI_SHIFT)
-#define  CSR_GTLBC_USERID_SHIFT		12
-#define  CSR_GTLBC_USERID		(_ULCAST_(0x1) << CSR_GTLBC_USERID_SHIFT)
+#define  CSR_GTLBC_USETGID_SHIFT	12
+#define  CSR_GTLBC_USETGID		(_ULCAST_(0x1) << CSR_GTLBC_USETGID_SHIFT)
 #define  CSR_GTLBC_GMTLBSZ_SHIFT	0
 #define  CSR_GTLBC_GMTLBSZ_WIDTH	6
 #define  CSR_GTLBC_GMTLBSZ		(_ULCAST_(0x3f) << CSR_GTLBC_GMTLBSZ_SHIFT)
@@ -444,9 +373,9 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 #define  CSR_ASID_ASID_WIDTH		10
 #define  CSR_ASID_ASID			(_ULCAST_(0x3ff) << CSR_ASID_ASID_SHIFT)
 
-#define LOONGARCH_CSR_PGDL		0x19	/* Page table base address when VA[47] = 0 */
+#define LOONGARCH_CSR_PGDL		0x19	/* Page table base address when VA[VALEN-1] = 0 */
 
-#define LOONGARCH_CSR_PGDH		0x1a	/* Page table base address when VA[47] = 1 */
+#define LOONGARCH_CSR_PGDH		0x1a	/* Page table base address when VA[VALEN-1] = 1 */
 
 #define LOONGARCH_CSR_PGD		0x1b	/* Page table base */
 
@@ -474,6 +403,9 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 #define  CSR_PWCTL0_PTBASE		(_ULCAST_(0x1f) << CSR_PWCTL0_PTBASE_SHIFT)
 
 #define LOONGARCH_CSR_PWCTL1		0x1d	/* PWCtl1 */
+#define  CSR_PWCTL1_PTW_SHIFT		24
+#define  CSR_PWCTL1_PTW_WIDTH		1
+#define  CSR_PWCTL1_PTW			(_ULCAST_(0x1) << CSR_PWCTL1_PTW_SHIFT)
 #define  CSR_PWCTL1_DIR3WIDTH_SHIFT	18
 #define  CSR_PWCTL1_DIR3WIDTH_WIDTH	5
 #define  CSR_PWCTL1_DIR3WIDTH		(_ULCAST_(0x1f) << CSR_PWCTL1_DIR3WIDTH_SHIFT)
@@ -497,8 +429,8 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 
 /* Config CSR registers */
 #define LOONGARCH_CSR_CPUID		0x20	/* CPU core id */
-#define  CSR_CPUID_COREID_WIDTH		9
-#define  CSR_CPUID_COREID		_ULCAST_(0x1ff)
+#define  CSR_CPUID_COREID_WIDTH		11
+#define  CSR_CPUID_COREID		_ULCAST_(0x7ff)
 
 #define LOONGARCH_CSR_PRCFG1		0x21	/* Config1 */
 #define  CSR_CONF1_VSMAX_SHIFT		12
@@ -537,6 +469,13 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 #define LOONGARCH_CSR_KS6		0x36
 #define LOONGARCH_CSR_KS7		0x37
 #define LOONGARCH_CSR_KS8		0x38
+#define LOONGARCH_CSR_KS9		0x39
+#define LOONGARCH_CSR_KS10		0x3a
+#define LOONGARCH_CSR_KS11		0x3b
+#define LOONGARCH_CSR_KS12		0x3c
+#define LOONGARCH_CSR_KS13		0x3d
+#define LOONGARCH_CSR_KS14		0x3e
+#define LOONGARCH_CSR_KS15		0x3f
 
 /* Exception allocated KS0, KS1 and KS2 statically */
 #define EXCEPTION_KS0			LOONGARCH_CSR_KS0
@@ -558,7 +497,6 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 
 #define LOONGARCH_CSR_TCFG		0x41	/* Timer config */
 #define  CSR_TCFG_VAL_SHIFT		2
-#define	 CSR_TCFG_VAL_WIDTH		48
 #define  CSR_TCFG_VAL			(_ULCAST_(0x3fffffffffff) << CSR_TCFG_VAL_SHIFT)
 #define  CSR_TCFG_PERIOD_SHIFT		1
 #define  CSR_TCFG_PERIOD		(_ULCAST_(0x1) << CSR_TCFG_PERIOD_SHIFT)
@@ -576,6 +514,7 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 #define LOONGARCH_CSR_GSTAT		0x50	/* Guest status */
 #define  CSR_GSTAT_GID_SHIFT		16
 #define  CSR_GSTAT_GID_WIDTH		8
+#define  CSR_GSTAT_GID_SHIFT_END	(CSR_GSTAT_GID_SHIFT + CSR_GSTAT_GID_WIDTH - 1)
 #define  CSR_GSTAT_GID			(_ULCAST_(0xff) << CSR_GSTAT_GID_SHIFT)
 #define  CSR_GSTAT_GIDBIT_SHIFT		4
 #define  CSR_GSTAT_GIDBIT_WIDTH		6
@@ -589,6 +528,8 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 #define  CSR_GCFG_GPERF_SHIFT		24
 #define  CSR_GCFG_GPERF_WIDTH		3
 #define  CSR_GCFG_GPERF			(_ULCAST_(0x7) << CSR_GCFG_GPERF_SHIFT)
+#define  CSR_GCFG_GPMP_SHIFT		23
+#define  CSR_GCFG_GPMP			(_ULCAST_(0x1) << CSR_GCFG_GPMP_SHIFT)
 #define  CSR_GCFG_GCI_SHIFT		20
 #define  CSR_GCFG_GCI_WIDTH		2
 #define  CSR_GCFG_GCI			(_ULCAST_(0x3) << CSR_GCFG_GCI_SHIFT)
@@ -626,6 +567,12 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 #define  CSR_GCFG_MATC_GUEST		(_ULCAST_(0x0) << CSR_GCFG_MATC_SHITF)
 #define  CSR_GCFG_MATC_ROOT		(_ULCAST_(0x1) << CSR_GCFG_MATC_SHITF)
 #define  CSR_GCFG_MATC_NEST		(_ULCAST_(0x2) << CSR_GCFG_MATC_SHITF)
+#define  CSR_GCFG_MATP_NEST_SHIFT	2
+#define  CSR_GCFG_MATP_NEST		(_ULCAST_(0x1) << CSR_GCFG_MATP_NEST_SHIFT)
+#define  CSR_GCFG_MATP_ROOT_SHIFT	1
+#define  CSR_GCFG_MATP_ROOT		(_ULCAST_(0x1) << CSR_GCFG_MATP_ROOT_SHIFT)
+#define  CSR_GCFG_MATP_GUEST_SHIFT	0
+#define  CSR_GCFG_MATP_GUEST		(_ULCAST_(0x1) << CSR_GCFG_MATP_GUEST_SHIFT)
 
 #define LOONGARCH_CSR_GINTC		0x52	/* Guest interrupt control */
 #define  CSR_GINTC_HC_SHIFT		16
@@ -651,6 +598,15 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 
 /* Implement dependent */
 #define LOONGARCH_CSR_IMPCTL1		0x80	/* Loongson config1 */
+#define  CSR_LDSTORDER_SHIFT		28
+#define  CSR_LDSTORDER_WIDTH		3
+#define  CSR_LDSTORDER_MASK		(_ULCAST_(0x7) << CSR_LDSTORDER_SHIFT)
+#define  CSR_LDSTORDER_NLD_NST		(_ULCAST_(0x0) << CSR_LDSTORDER_SHIFT) /* 000 = No Load No Store */
+#define  CSR_LDSTORDER_ALD_NST		(_ULCAST_(0x1) << CSR_LDSTORDER_SHIFT) /* 001 = All Load No Store */
+#define  CSR_LDSTORDER_SLD_NST		(_ULCAST_(0x3) << CSR_LDSTORDER_SHIFT) /* 011 = Same Load No Store */
+#define  CSR_LDSTORDER_NLD_AST		(_ULCAST_(0x4) << CSR_LDSTORDER_SHIFT) /* 100 = No Load All Store */
+#define  CSR_LDSTORDER_ALD_AST		(_ULCAST_(0x5) << CSR_LDSTORDER_SHIFT) /* 101 = All Load All Store */
+#define  CSR_LDSTORDER_SLD_AST		(_ULCAST_(0x7) << CSR_LDSTORDER_SHIFT) /* 111 = Same Load All Store */
 #define  CSR_MISPEC_SHIFT		20
 #define  CSR_MISPEC_WIDTH		8
 #define  CSR_MISPEC			(_ULCAST_(0xff) << CSR_MISPEC_SHIFT)
@@ -727,6 +683,14 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 #define LOONGARCH_CSR_MERRSAVE		0x95	/* KSave for machine error exception */
 
 #define LOONGARCH_CSR_CTAG		0x98	/* TagLo + TagHi */
+
+#define LOONGARCH_CSR_ISR0		0xa0
+#define LOONGARCH_CSR_ISR1		0xa1
+#define LOONGARCH_CSR_ISR2		0xa2
+#define LOONGARCH_CSR_ISR3		0xa3
+
+#define LOONGARCH_CSR_IRR		0xa4
+#define LOONGARCH_CSR_IPR		0xa5
 
 #define LOONGARCH_CSR_PRID		0xc0
 
@@ -957,7 +921,27 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 #define LOONGARCH_CSR_DMWIN2		0x182	/* 64 direct map win2: MEM */
 #define LOONGARCH_CSR_DMWIN3		0x183	/* 64 direct map win3: MEM */
 
-/* Direct Map window 0/1 */
+/* Direct Map window 0/1/2/3 */
+
+#ifdef CONFIG_32BIT
+
+#define CSR_DMW0_PLV0		(1 << 0)
+#define CSR_DMW0_VSEG		(0x4)
+#define CSR_DMW0_BASE		(CSR_DMW0_VSEG << DMW_PABITS)
+#define CSR_DMW0_INIT		(CSR_DMW0_BASE | CSR_DMW0_PLV0)
+
+#define CSR_DMW1_PLV0		(1 << 0)
+#define CSR_DMW1_MAT		(1 << 4)
+#define CSR_DMW1_VSEG		(0x5)
+#define CSR_DMW1_BASE		(CSR_DMW1_VSEG << DMW_PABITS)
+#define CSR_DMW1_INIT		(CSR_DMW1_BASE | CSR_DMW1_MAT | CSR_DMW1_PLV0)
+
+#define CSR_DMW2_INIT		0x0
+
+#define CSR_DMW3_INIT		0x0
+
+#else
+
 #define CSR_DMW0_PLV0		_CONST64_(1 << 0)
 #define CSR_DMW0_VSEG		_CONST64_(0x8000)
 #define CSR_DMW0_BASE		(CSR_DMW0_VSEG << DMW_PABITS)
@@ -968,6 +952,16 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 #define CSR_DMW1_VSEG		_CONST64_(0x9000)
 #define CSR_DMW1_BASE		(CSR_DMW1_VSEG << DMW_PABITS)
 #define CSR_DMW1_INIT		(CSR_DMW1_BASE | CSR_DMW1_MAT | CSR_DMW1_PLV0)
+
+#define CSR_DMW2_PLV0		_CONST64_(1 << 0)
+#define CSR_DMW2_MAT		_CONST64_(2 << 4)
+#define CSR_DMW2_VSEG		_CONST64_(0xa000)
+#define CSR_DMW2_BASE		(CSR_DMW2_VSEG << DMW_PABITS)
+#define CSR_DMW2_INIT		(CSR_DMW2_BASE | CSR_DMW2_MAT | CSR_DMW2_PLV0)
+
+#define CSR_DMW3_INIT		0x0
+
+#endif
 
 /* Performance Counter registers */
 #define LOONGARCH_CSR_PERFCTRL0		0x200	/* 32 perf event 0 config */
@@ -991,95 +985,158 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 
 #define LOONGARCH_CSR_DB0ADDR		0x310	/* data breakpoint 0 address */
 #define LOONGARCH_CSR_DB0MASK		0x311	/* data breakpoint 0 mask */
-#define LOONGARCH_CSR_DB0CTL		0x312	/* data breakpoint 0 control */
+#define LOONGARCH_CSR_DB0CTRL		0x312	/* data breakpoint 0 control */
 #define LOONGARCH_CSR_DB0ASID		0x313	/* data breakpoint 0 asid */
 
 #define LOONGARCH_CSR_DB1ADDR		0x318	/* data breakpoint 1 address */
 #define LOONGARCH_CSR_DB1MASK		0x319	/* data breakpoint 1 mask */
-#define LOONGARCH_CSR_DB1CTL		0x31a	/* data breakpoint 1 control */
+#define LOONGARCH_CSR_DB1CTRL		0x31a	/* data breakpoint 1 control */
 #define LOONGARCH_CSR_DB1ASID		0x31b	/* data breakpoint 1 asid */
 
 #define LOONGARCH_CSR_DB2ADDR		0x320	/* data breakpoint 2 address */
 #define LOONGARCH_CSR_DB2MASK		0x321	/* data breakpoint 2 mask */
-#define LOONGARCH_CSR_DB2CTL		0x322	/* data breakpoint 2 control */
+#define LOONGARCH_CSR_DB2CTRL		0x322	/* data breakpoint 2 control */
 #define LOONGARCH_CSR_DB2ASID		0x323	/* data breakpoint 2 asid */
 
 #define LOONGARCH_CSR_DB3ADDR		0x328	/* data breakpoint 3 address */
 #define LOONGARCH_CSR_DB3MASK		0x329	/* data breakpoint 3 mask */
-#define LOONGARCH_CSR_DB3CTL		0x32a	/* data breakpoint 3 control */
+#define LOONGARCH_CSR_DB3CTRL		0x32a	/* data breakpoint 3 control */
 #define LOONGARCH_CSR_DB3ASID		0x32b	/* data breakpoint 3 asid */
 
 #define LOONGARCH_CSR_DB4ADDR		0x330	/* data breakpoint 4 address */
 #define LOONGARCH_CSR_DB4MASK		0x331	/* data breakpoint 4 maks */
-#define LOONGARCH_CSR_DB4CTL		0x332	/* data breakpoint 4 control */
+#define LOONGARCH_CSR_DB4CTRL		0x332	/* data breakpoint 4 control */
 #define LOONGARCH_CSR_DB4ASID		0x333	/* data breakpoint 4 asid */
 
 #define LOONGARCH_CSR_DB5ADDR		0x338	/* data breakpoint 5 address */
 #define LOONGARCH_CSR_DB5MASK		0x339	/* data breakpoint 5 mask */
-#define LOONGARCH_CSR_DB5CTL		0x33a	/* data breakpoint 5 control */
+#define LOONGARCH_CSR_DB5CTRL		0x33a	/* data breakpoint 5 control */
 #define LOONGARCH_CSR_DB5ASID		0x33b	/* data breakpoint 5 asid */
 
 #define LOONGARCH_CSR_DB6ADDR		0x340	/* data breakpoint 6 address */
 #define LOONGARCH_CSR_DB6MASK		0x341	/* data breakpoint 6 mask */
-#define LOONGARCH_CSR_DB6CTL		0x342	/* data breakpoint 6 control */
+#define LOONGARCH_CSR_DB6CTRL		0x342	/* data breakpoint 6 control */
 #define LOONGARCH_CSR_DB6ASID		0x343	/* data breakpoint 6 asid */
 
 #define LOONGARCH_CSR_DB7ADDR		0x348	/* data breakpoint 7 address */
 #define LOONGARCH_CSR_DB7MASK		0x349	/* data breakpoint 7 mask */
-#define LOONGARCH_CSR_DB7CTL		0x34a	/* data breakpoint 7 control */
+#define LOONGARCH_CSR_DB7CTRL		0x34a	/* data breakpoint 7 control */
 #define LOONGARCH_CSR_DB7ASID		0x34b	/* data breakpoint 7 asid */
+
+#define LOONGARCH_CSR_DB8ADDR		0x350	/* data breakpoint 8 address */
+#define LOONGARCH_CSR_DB8MASK		0x351	/* data breakpoint 8 mask */
+#define LOONGARCH_CSR_DB8CTRL		0x352	/* data breakpoint 8 control */
+#define LOONGARCH_CSR_DB8ASID		0x353	/* data breakpoint 8 asid */
+
+#define LOONGARCH_CSR_DB9ADDR		0x358	/* data breakpoint 9 address */
+#define LOONGARCH_CSR_DB9MASK		0x359	/* data breakpoint 9 mask */
+#define LOONGARCH_CSR_DB9CTRL		0x35a	/* data breakpoint 9 control */
+#define LOONGARCH_CSR_DB9ASID		0x35b	/* data breakpoint 9 asid */
+
+#define LOONGARCH_CSR_DB10ADDR		0x360	/* data breakpoint 10 address */
+#define LOONGARCH_CSR_DB10MASK		0x361	/* data breakpoint 10 mask */
+#define LOONGARCH_CSR_DB10CTRL		0x362	/* data breakpoint 10 control */
+#define LOONGARCH_CSR_DB10ASID		0x363	/* data breakpoint 10 asid */
+
+#define LOONGARCH_CSR_DB11ADDR		0x368	/* data breakpoint 11 address */
+#define LOONGARCH_CSR_DB11MASK		0x369	/* data breakpoint 11 mask */
+#define LOONGARCH_CSR_DB11CTRL		0x36a	/* data breakpoint 11 control */
+#define LOONGARCH_CSR_DB11ASID		0x36b	/* data breakpoint 11 asid */
+
+#define LOONGARCH_CSR_DB12ADDR		0x370	/* data breakpoint 12 address */
+#define LOONGARCH_CSR_DB12MASK		0x371	/* data breakpoint 12 mask */
+#define LOONGARCH_CSR_DB12CTRL		0x372	/* data breakpoint 12 control */
+#define LOONGARCH_CSR_DB12ASID		0x373	/* data breakpoint 12 asid */
+
+#define LOONGARCH_CSR_DB13ADDR		0x378	/* data breakpoint 13 address */
+#define LOONGARCH_CSR_DB13MASK		0x379	/* data breakpoint 13 mask */
+#define LOONGARCH_CSR_DB13CTRL		0x37a	/* data breakpoint 13 control */
+#define LOONGARCH_CSR_DB13ASID		0x37b	/* data breakpoint 13 asid */
 
 #define LOONGARCH_CSR_FWPC		0x380	/* instruction breakpoint config */
 #define LOONGARCH_CSR_FWPS		0x381	/* instruction breakpoint status */
 
 #define LOONGARCH_CSR_IB0ADDR		0x390	/* inst breakpoint 0 address */
 #define LOONGARCH_CSR_IB0MASK		0x391	/* inst breakpoint 0 mask */
-#define LOONGARCH_CSR_IB0CTL		0x392	/* inst breakpoint 0 control */
+#define LOONGARCH_CSR_IB0CTRL		0x392	/* inst breakpoint 0 control */
 #define LOONGARCH_CSR_IB0ASID		0x393	/* inst breakpoint 0 asid */
 
 #define LOONGARCH_CSR_IB1ADDR		0x398	/* inst breakpoint 1 address */
 #define LOONGARCH_CSR_IB1MASK		0x399	/* inst breakpoint 1 mask */
-#define LOONGARCH_CSR_IB1CTL		0x39a	/* inst breakpoint 1 control */
+#define LOONGARCH_CSR_IB1CTRL		0x39a	/* inst breakpoint 1 control */
 #define LOONGARCH_CSR_IB1ASID		0x39b	/* inst breakpoint 1 asid */
 
 #define LOONGARCH_CSR_IB2ADDR		0x3a0	/* inst breakpoint 2 address */
 #define LOONGARCH_CSR_IB2MASK		0x3a1	/* inst breakpoint 2 mask */
-#define LOONGARCH_CSR_IB2CTL		0x3a2	/* inst breakpoint 2 control */
+#define LOONGARCH_CSR_IB2CTRL		0x3a2	/* inst breakpoint 2 control */
 #define LOONGARCH_CSR_IB2ASID		0x3a3	/* inst breakpoint 2 asid */
 
 #define LOONGARCH_CSR_IB3ADDR		0x3a8	/* inst breakpoint 3 address */
 #define LOONGARCH_CSR_IB3MASK		0x3a9	/* breakpoint 3 mask */
-#define LOONGARCH_CSR_IB3CTL		0x3aa	/* inst breakpoint 3 control */
+#define LOONGARCH_CSR_IB3CTRL		0x3aa	/* inst breakpoint 3 control */
 #define LOONGARCH_CSR_IB3ASID		0x3ab	/* inst breakpoint 3 asid */
 
 #define LOONGARCH_CSR_IB4ADDR		0x3b0	/* inst breakpoint 4 address */
 #define LOONGARCH_CSR_IB4MASK		0x3b1	/* inst breakpoint 4 mask */
-#define LOONGARCH_CSR_IB4CTL		0x3b2	/* inst breakpoint 4 control */
+#define LOONGARCH_CSR_IB4CTRL		0x3b2	/* inst breakpoint 4 control */
 #define LOONGARCH_CSR_IB4ASID		0x3b3	/* inst breakpoint 4 asid */
 
 #define LOONGARCH_CSR_IB5ADDR		0x3b8	/* inst breakpoint 5 address */
 #define LOONGARCH_CSR_IB5MASK		0x3b9	/* inst breakpoint 5 mask */
-#define LOONGARCH_CSR_IB5CTL		0x3ba	/* inst breakpoint 5 control */
+#define LOONGARCH_CSR_IB5CTRL		0x3ba	/* inst breakpoint 5 control */
 #define LOONGARCH_CSR_IB5ASID		0x3bb	/* inst breakpoint 5 asid */
 
 #define LOONGARCH_CSR_IB6ADDR		0x3c0	/* inst breakpoint 6 address */
 #define LOONGARCH_CSR_IB6MASK		0x3c1	/* inst breakpoint 6 mask */
-#define LOONGARCH_CSR_IB6CTL		0x3c2	/* inst breakpoint 6 control */
+#define LOONGARCH_CSR_IB6CTRL		0x3c2	/* inst breakpoint 6 control */
 #define LOONGARCH_CSR_IB6ASID		0x3c3	/* inst breakpoint 6 asid */
 
 #define LOONGARCH_CSR_IB7ADDR		0x3c8	/* inst breakpoint 7 address */
 #define LOONGARCH_CSR_IB7MASK		0x3c9	/* inst breakpoint 7 mask */
-#define LOONGARCH_CSR_IB7CTL		0x3ca	/* inst breakpoint 7 control */
+#define LOONGARCH_CSR_IB7CTRL		0x3ca	/* inst breakpoint 7 control */
 #define LOONGARCH_CSR_IB7ASID		0x3cb	/* inst breakpoint 7 asid */
+
+#define LOONGARCH_CSR_IB8ADDR		0x3d0	/* inst breakpoint 8 address */
+#define LOONGARCH_CSR_IB8MASK		0x3d1	/* inst breakpoint 8 mask */
+#define LOONGARCH_CSR_IB8CTRL		0x3d2	/* inst breakpoint 8 control */
+#define LOONGARCH_CSR_IB8ASID		0x3d3	/* inst breakpoint 8 asid */
+
+#define LOONGARCH_CSR_IB9ADDR		0x3d8	/* inst breakpoint 9 address */
+#define LOONGARCH_CSR_IB9MASK		0x3d9	/* inst breakpoint 9 mask */
+#define LOONGARCH_CSR_IB9CTRL		0x3da	/* inst breakpoint 9 control */
+#define LOONGARCH_CSR_IB9ASID		0x3db	/* inst breakpoint 9 asid */
+
+#define LOONGARCH_CSR_IB10ADDR		0x3e0	/* inst breakpoint 10 address */
+#define LOONGARCH_CSR_IB10MASK		0x3e1	/* inst breakpoint 10 mask */
+#define LOONGARCH_CSR_IB10CTRL		0x3e2	/* inst breakpoint 10 control */
+#define LOONGARCH_CSR_IB10ASID		0x3e3	/* inst breakpoint 10 asid */
+
+#define LOONGARCH_CSR_IB11ADDR		0x3e8	/* inst breakpoint 11 address */
+#define LOONGARCH_CSR_IB11MASK		0x3e9	/* inst breakpoint 11 mask */
+#define LOONGARCH_CSR_IB11CTRL		0x3ea	/* inst breakpoint 11 control */
+#define LOONGARCH_CSR_IB11ASID		0x3eb	/* inst breakpoint 11 asid */
+
+#define LOONGARCH_CSR_IB12ADDR		0x3f0	/* inst breakpoint 12 address */
+#define LOONGARCH_CSR_IB12MASK		0x3f1	/* inst breakpoint 12 mask */
+#define LOONGARCH_CSR_IB12CTRL		0x3f2	/* inst breakpoint 12 control */
+#define LOONGARCH_CSR_IB12ASID		0x3f3	/* inst breakpoint 12 asid */
+
+#define LOONGARCH_CSR_IB13ADDR		0x3f8	/* inst breakpoint 13 address */
+#define LOONGARCH_CSR_IB13MASK		0x3f9	/* inst breakpoint 13 mask */
+#define LOONGARCH_CSR_IB13CTRL		0x3fa	/* inst breakpoint 13 control */
+#define LOONGARCH_CSR_IB13ASID		0x3fb	/* inst breakpoint 13 asid */
 
 #define LOONGARCH_CSR_DEBUG		0x500	/* debug config */
 #define LOONGARCH_CSR_DERA		0x501	/* debug era */
 #define LOONGARCH_CSR_DESAVE		0x502	/* debug save */
 
+#define CSR_FWPC_SKIP_SHIFT		16
+#define CSR_FWPC_SKIP			(_ULCAST_(1) << CSR_FWPC_SKIP_SHIFT)
+
 /*
  * CSR_ECFG IM
  */
-#define ECFG0_IM		0x00001fff
+#define ECFG0_IM		0x00005fff
 #define ECFGB_SIP0		0
 #define ECFGF_SIP0		(_ULCAST_(1) << ECFGB_SIP0)
 #define ECFGB_SIP1		1
@@ -1108,7 +1165,7 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 #define ECFGF_IPI		(_ULCAST_(1) << ECFGB_IPI)
 #define ECFGF(hwirq)		(_ULCAST_(1) << hwirq)
 
-#define ESTATF_IP		0x00001fff
+#define ESTATF_IP		0x00003fff
 
 #define LOONGARCH_IOCSR_FEATURES	0x8
 #define  IOCSRF_TEMP			BIT_ULL(0)
@@ -1122,6 +1179,8 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 #define  IOCSRF_EIODECODE		BIT_ULL(9)
 #define  IOCSRF_FLATMODE		BIT_ULL(10)
 #define  IOCSRF_VM			BIT_ULL(11)
+#define  IOCSRF_AVEC			BIT_ULL(15)
+#define  IOCSRF_REDIRECT		BIT_ULL(16)
 
 #define LOONGARCH_IOCSR_VENDOR		0x10
 
@@ -1130,10 +1189,14 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 #define LOONGARCH_IOCSR_NODECNT		0x408
 
 #define LOONGARCH_IOCSR_MISC_FUNC	0x420
+#define  IOCSR_MISC_FUNC_SOFT_INT	BIT_ULL(10)
 #define  IOCSR_MISC_FUNC_TIMER_RESET	BIT_ULL(21)
 #define  IOCSR_MISC_FUNC_EXT_IOI_EN	BIT_ULL(48)
+#define  IOCSR_MISC_FUNC_AVEC_EN	BIT_ULL(51)
 
 #define LOONGARCH_IOCSR_CPUTEMP		0x428
+
+#define LOONGARCH_IOCSR_SMCMBX		0x51c
 
 /* PerCore CSR, only accessible by local cores */
 #define LOONGARCH_IOCSR_IPI_STATUS	0x1000
@@ -1183,26 +1246,56 @@ static __always_inline void iocsr_write64(u64 val, u32 reg)
 #define LOONGARCH_IOCSR_EXTIOI_ROUTE_BASE	0x1c00
 #define IOCSR_EXTIOI_VECTOR_NUM			256
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
-static inline u64 drdtime(void)
+#ifdef CONFIG_32BIT
+
+static __always_inline u32 rdtime_h(void)
 {
-	int rID = 0;
-	u64 val = 0;
+	u32 val = 0;
 
 	__asm__ __volatile__(
-		"rdtime.d %0, %1 \n\t"
-		: "=r"(val), "=r"(rID)
+		"rdtimeh.w %0, $zero\n\t"
+		: "=r"(val)
 		:
 		);
 	return val;
 }
+
+static __always_inline u32 rdtime_l(void)
+{
+	u32 val = 0;
+
+	__asm__ __volatile__(
+		"rdtimel.w %0, $zero\n\t"
+		: "=r"(val)
+		:
+		);
+	return val;
+}
+
+#else
+
+static __always_inline u64 rdtime_d(void)
+{
+	u64 val = 0;
+
+	__asm__ __volatile__(
+		"rdtime.d %0, $zero\n\t"
+		: "=r"(val)
+		:
+		);
+	return val;
+}
+
+#endif
 
 static inline unsigned int get_csr_cpuid(void)
 {
 	return csr_read32(LOONGARCH_CSR_CPUID);
 }
 
+#ifdef CONFIG_64BIT
 static inline void csr_any_send(unsigned int addr, unsigned int data,
 				unsigned int data_mask, unsigned int cpu)
 {
@@ -1214,6 +1307,7 @@ static inline void csr_any_send(unsigned int addr, unsigned int data,
 	val |= ((uint64_t)data << IOCSR_ANY_SEND_BUF_SHIFT);
 	iocsr_write64(val, LOONGARCH_IOCSR_ANY_SEND);
 }
+#endif
 
 static inline unsigned int read_csr_excode(void)
 {
@@ -1237,22 +1331,22 @@ static inline void write_csr_pagesize(unsigned int size)
 
 static inline unsigned int read_csr_tlbrefill_pagesize(void)
 {
-	return (csr_read64(LOONGARCH_CSR_TLBREHI) & CSR_TLBREHI_PS) >> CSR_TLBREHI_PS_SHIFT;
+	return (csr_read(LOONGARCH_CSR_TLBREHI) & CSR_TLBREHI_PS) >> CSR_TLBREHI_PS_SHIFT;
 }
 
 static inline void write_csr_tlbrefill_pagesize(unsigned int size)
 {
-	csr_xchg64(size << CSR_TLBREHI_PS_SHIFT, CSR_TLBREHI_PS, LOONGARCH_CSR_TLBREHI);
+	csr_xchg(size << CSR_TLBREHI_PS_SHIFT, CSR_TLBREHI_PS, LOONGARCH_CSR_TLBREHI);
 }
 
 #define read_csr_asid()			csr_read32(LOONGARCH_CSR_ASID)
 #define write_csr_asid(val)		csr_write32(val, LOONGARCH_CSR_ASID)
-#define read_csr_entryhi()		csr_read64(LOONGARCH_CSR_TLBEHI)
-#define write_csr_entryhi(val)		csr_write64(val, LOONGARCH_CSR_TLBEHI)
-#define read_csr_entrylo0()		csr_read64(LOONGARCH_CSR_TLBELO0)
-#define write_csr_entrylo0(val)		csr_write64(val, LOONGARCH_CSR_TLBELO0)
-#define read_csr_entrylo1()		csr_read64(LOONGARCH_CSR_TLBELO1)
-#define write_csr_entrylo1(val)		csr_write64(val, LOONGARCH_CSR_TLBELO1)
+#define read_csr_entryhi()		csr_read(LOONGARCH_CSR_TLBEHI)
+#define write_csr_entryhi(val)		csr_write(val, LOONGARCH_CSR_TLBEHI)
+#define read_csr_entrylo0()		csr_read(LOONGARCH_CSR_TLBELO0)
+#define write_csr_entrylo0(val)		csr_write(val, LOONGARCH_CSR_TLBELO0)
+#define read_csr_entrylo1()		csr_read(LOONGARCH_CSR_TLBELO1)
+#define write_csr_entrylo1(val)		csr_write(val, LOONGARCH_CSR_TLBELO1)
 #define read_csr_ecfg()			csr_read32(LOONGARCH_CSR_ECFG)
 #define write_csr_ecfg(val)		csr_write32(val, LOONGARCH_CSR_ECFG)
 #define read_csr_estat()		csr_read32(LOONGARCH_CSR_ESTAT)
@@ -1262,20 +1356,20 @@ static inline void write_csr_tlbrefill_pagesize(unsigned int size)
 #define read_csr_euen()			csr_read32(LOONGARCH_CSR_EUEN)
 #define write_csr_euen(val)		csr_write32(val, LOONGARCH_CSR_EUEN)
 #define read_csr_cpuid()		csr_read32(LOONGARCH_CSR_CPUID)
-#define read_csr_prcfg1()		csr_read64(LOONGARCH_CSR_PRCFG1)
-#define write_csr_prcfg1(val)		csr_write64(val, LOONGARCH_CSR_PRCFG1)
-#define read_csr_prcfg2()		csr_read64(LOONGARCH_CSR_PRCFG2)
-#define write_csr_prcfg2(val)		csr_write64(val, LOONGARCH_CSR_PRCFG2)
-#define read_csr_prcfg3()		csr_read64(LOONGARCH_CSR_PRCFG3)
-#define write_csr_prcfg3(val)		csr_write64(val, LOONGARCH_CSR_PRCFG3)
+#define read_csr_prcfg1()		csr_read(LOONGARCH_CSR_PRCFG1)
+#define write_csr_prcfg1(val)		csr_write(val, LOONGARCH_CSR_PRCFG1)
+#define read_csr_prcfg2()		csr_read(LOONGARCH_CSR_PRCFG2)
+#define write_csr_prcfg2(val)		csr_write(val, LOONGARCH_CSR_PRCFG2)
+#define read_csr_prcfg3()		csr_read(LOONGARCH_CSR_PRCFG3)
+#define write_csr_prcfg3(val)		csr_write(val, LOONGARCH_CSR_PRCFG3)
 #define read_csr_stlbpgsize()		csr_read32(LOONGARCH_CSR_STLBPGSIZE)
 #define write_csr_stlbpgsize(val)	csr_write32(val, LOONGARCH_CSR_STLBPGSIZE)
 #define read_csr_rvacfg()		csr_read32(LOONGARCH_CSR_RVACFG)
 #define write_csr_rvacfg(val)		csr_write32(val, LOONGARCH_CSR_RVACFG)
 #define write_csr_tintclear(val)	csr_write32(val, LOONGARCH_CSR_TINTCLR)
-#define read_csr_impctl1()		csr_read64(LOONGARCH_CSR_IMPCTL1)
-#define write_csr_impctl1(val)		csr_write64(val, LOONGARCH_CSR_IMPCTL1)
-#define write_csr_impctl2(val)		csr_write64(val, LOONGARCH_CSR_IMPCTL2)
+#define read_csr_impctl1()		csr_read(LOONGARCH_CSR_IMPCTL1)
+#define write_csr_impctl1(val)		csr_write(val, LOONGARCH_CSR_IMPCTL1)
+#define write_csr_impctl2(val)		csr_write(val, LOONGARCH_CSR_IMPCTL2)
 
 #define read_csr_perfctrl0()		csr_read64(LOONGARCH_CSR_PERFCTRL0)
 #define read_csr_perfcntr0()		csr_read64(LOONGARCH_CSR_PERFCNTR0)
@@ -1346,7 +1440,7 @@ __BUILD_CSR_OP(tlbidx)
 #define clear_csr_estat(val)	\
 	csr_xchg32(~(val), val, LOONGARCH_CSR_ESTAT)
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 /* Generic EntryLo bit definitions */
 #define ENTRYLO_V		(_ULCAST_(1) << 0)
@@ -1356,8 +1450,10 @@ __BUILD_CSR_OP(tlbidx)
 #define ENTRYLO_C_SHIFT		4
 #define ENTRYLO_C		(_ULCAST_(3) << ENTRYLO_C_SHIFT)
 #define ENTRYLO_G		(_ULCAST_(1) << 6)
+#ifdef CONFIG_64BIT
 #define ENTRYLO_NR		(_ULCAST_(1) << 61)
 #define ENTRYLO_NX		(_ULCAST_(1) << 62)
+#endif
 
 /* Values for PageSize register */
 #define PS_4K		0x0000000c
@@ -1415,7 +1511,7 @@ __BUILD_CSR_OP(tlbidx)
 	#define EXSUBCODE_ADEF		0	/* Fetch Instruction */
 	#define EXSUBCODE_ADEM		1	/* Access Memory*/
 #define EXCCODE_ALE		9	/* Unalign Access */
-#define EXCCODE_OOB		10	/* Out of bounds */
+#define EXCCODE_BCE		10	/* Bounds Check Error */
 #define EXCCODE_SYS		11	/* System call */
 #define EXCCODE_BP		12	/* Breakpoint */
 #define EXCCODE_INE		13	/* Inst. Not Exist */
@@ -1426,39 +1522,52 @@ __BUILD_CSR_OP(tlbidx)
 #define EXCCODE_FPE		18	/* Floating Point Exception */
 	#define EXCSUBCODE_FPE		0	/* Floating Point Exception */
 	#define EXCSUBCODE_VFPE		1	/* Vector Exception */
-#define EXCCODE_WATCH		19	/* Watch address reference */
+#define EXCCODE_WATCH		19	/* WatchPoint Exception */
+	#define EXCSUBCODE_WPEF		0	/* ... on Instruction Fetch */
+	#define EXCSUBCODE_WPEM		1	/* ... on Memory Accesses */
 #define EXCCODE_BTDIS		20	/* Binary Trans. Disabled */
 #define EXCCODE_BTE		21	/* Binary Trans. Exception */
-#define EXCCODE_PSI		22	/* Guest Privileged Error */
-#define EXCCODE_HYP		23	/* Hypercall */
+#define EXCCODE_GSPR		22	/* Guest Privileged Error */
+#define EXCCODE_HVC		23	/* Hypercall */
 #define EXCCODE_GCM		24	/* Guest CSR modified */
 	#define EXCSUBCODE_GCSC		0	/* Software caused */
 	#define EXCSUBCODE_GCHC		1	/* Hardware caused */
 #define EXCCODE_SE		25	/* Security */
 
-#define EXCCODE_INT_START   64
-#define EXCCODE_SIP0        64
-#define EXCCODE_SIP1        65
-#define EXCCODE_IP0         66
-#define EXCCODE_IP1         67
-#define EXCCODE_IP2         68
-#define EXCCODE_IP3         69
-#define EXCCODE_IP4         70
-#define EXCCODE_IP5         71
-#define EXCCODE_IP6         72
-#define EXCCODE_IP7         73
-#define EXCCODE_PMC         74 /* Performance Counter */
-#define EXCCODE_TIMER       75
-#define EXCCODE_IPI         76
-#define EXCCODE_NMI         77
-#define EXCCODE_INT_END     78
-#define EXCCODE_INT_NUM	    (EXCCODE_INT_END - EXCCODE_INT_START)
+/* Interrupt numbers */
+#define INT_SWI0	0	/* Software Interrupts */
+#define INT_SWI1	1
+#define INT_HWI0	2	/* Hardware Interrupts */
+#define INT_HWI1	3
+#define INT_HWI2	4
+#define INT_HWI3	5
+#define INT_HWI4	6
+#define INT_HWI5	7
+#define INT_HWI6	8
+#define INT_HWI7	9
+#define INT_PCOV	10	/* Performance Counter Overflow */
+#define INT_TI		11	/* Timer */
+#define INT_IPI		12
+#define INT_NMI		13
+#define INT_AVEC	14
 
-/* FPU register names */
+/* ExcCodes corresponding to interrupts */
+#define EXCCODE_INT_NUM		(INT_AVEC + 1)
+#define EXCCODE_INT_START	64
+#define EXCCODE_INT_END		(EXCCODE_INT_START + EXCCODE_INT_NUM - 1)
+
+/* FPU Status Register Names */
+#ifndef CONFIG_AS_HAS_FCSR_CLASS
 #define LOONGARCH_FCSR0	$r0
 #define LOONGARCH_FCSR1	$r1
 #define LOONGARCH_FCSR2	$r2
 #define LOONGARCH_FCSR3	$r3
+#else
+#define LOONGARCH_FCSR0	$fcsr0
+#define LOONGARCH_FCSR1	$fcsr1
+#define LOONGARCH_FCSR2	$fcsr2
+#define LOONGARCH_FCSR3	$fcsr3
+#endif
 
 /* FPU Status Register Values */
 #define FPU_CSR_RSVD	0xe0e0fce0
@@ -1496,6 +1605,10 @@ __BUILD_CSR_OP(tlbidx)
 #define FPU_CSR_RU	0x200	/* towards +Infinity */
 #define FPU_CSR_RD	0x300	/* towards -Infinity */
 
+/* Bit 6 of FPU Status Register specify the LBT TOP simulation mode */
+#define FPU_CSR_TM_SHIFT	0x6
+#define FPU_CSR_TM		(_ULCAST_(1) << FPU_CSR_TM_SHIFT)
+
 #define read_fcsr(source)	\
 ({	\
 	unsigned int __res;	\
@@ -1509,7 +1622,7 @@ __BUILD_CSR_OP(tlbidx)
 #define write_fcsr(dest, val) \
 do {	\
 	__asm__ __volatile__(	\
-	"	movgr2fcsr	%0, "__stringify(dest)"	\n"	\
+	"	movgr2fcsr	"__stringify(dest)", %0	\n"	\
 	: : "r" (val));	\
 } while (0)
 

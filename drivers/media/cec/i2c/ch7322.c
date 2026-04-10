@@ -565,7 +565,7 @@ err_mutex:
 	return ret;
 }
 
-static int ch7322_remove(struct i2c_client *client)
+static void ch7322_remove(struct i2c_client *client)
 {
 	struct ch7322 *ch7322 = i2c_get_clientdata(client);
 
@@ -578,8 +578,6 @@ static int ch7322_remove(struct i2c_client *client)
 	mutex_destroy(&ch7322->mutex);
 
 	dev_info(&client->dev, "device unregistered\n");
-
-	return 0;
 }
 
 static const struct of_device_id ch7322_of_match[] = {
@@ -591,9 +589,9 @@ MODULE_DEVICE_TABLE(of, ch7322_of_match);
 static struct i2c_driver ch7322_i2c_driver = {
 	.driver = {
 		.name = "ch7322",
-		.of_match_table = of_match_ptr(ch7322_of_match),
+		.of_match_table = ch7322_of_match,
 	},
-	.probe_new	= ch7322_probe,
+	.probe		= ch7322_probe,
 	.remove		= ch7322_remove,
 };
 

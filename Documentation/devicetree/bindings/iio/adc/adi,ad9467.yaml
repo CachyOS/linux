@@ -8,7 +8,6 @@ title: Analog Devices AD9467 and similar High-Speed ADCs
 
 maintainers:
   - Michael Hennerich <michael.hennerich@analog.com>
-  - Alexandru Ardelean <alexandru.ardelean@analog.com>
 
 description: |
   The AD9467 and the parts similar with it, are high-speed analog-to-digital
@@ -19,6 +18,7 @@ description: |
   All the parts support the register map described by Application Note AN-877
    https://www.analog.com/media/en/technical-documentation/application-notes/AN-877.pdf
 
+  https://www.analog.com/media/en/technical-documentation/data-sheets/AD9211.pdf
   https://www.analog.com/media/en/technical-documentation/data-sheets/AD9265.pdf
   https://www.analog.com/media/en/technical-documentation/data-sheets/AD9434.pdf
   https://www.analog.com/media/en/technical-documentation/data-sheets/AD9467.pdf
@@ -26,9 +26,13 @@ description: |
 properties:
   compatible:
     enum:
+      - adi,ad9211
       - adi,ad9265
       - adi,ad9434
       - adi,ad9467
+      - adi,ad9643
+      - adi,ad9649
+      - adi,ad9652
 
   reg:
     maxItems: 1
@@ -43,6 +47,9 @@ properties:
   powerdown-gpios:
     description:
       Pin that controls the powerdown mode of the device.
+    maxItems: 1
+
+  io-backends:
     maxItems: 1
 
   reset-gpios:
@@ -65,10 +72,11 @@ examples:
         #size-cells = <0>;
 
         adc@0 {
-          compatible = "adi,ad9467";
-          reg = <0>;
-          clocks = <&adc_clk>;
-          clock-names = "adc-clk";
+            compatible = "adi,ad9467";
+            reg = <0>;
+            clocks = <&adc_clk>;
+            clock-names = "adc-clk";
+            io-backends = <&iio_backend>;
         };
     };
 ...

@@ -292,17 +292,15 @@ static int rwdt_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int rwdt_remove(struct platform_device *pdev)
+static void rwdt_remove(struct platform_device *pdev)
 {
 	struct rwdt_priv *priv = platform_get_drvdata(pdev);
 
 	watchdog_unregister_device(&priv->wdev);
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
-static int __maybe_unused rwdt_suspend(struct device *dev)
+static int rwdt_suspend(struct device *dev)
 {
 	struct rwdt_priv *priv = dev_get_drvdata(dev);
 
@@ -312,7 +310,7 @@ static int __maybe_unused rwdt_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused rwdt_resume(struct device *dev)
+static int rwdt_resume(struct device *dev)
 {
 	struct rwdt_priv *priv = dev_get_drvdata(dev);
 
@@ -322,7 +320,7 @@ static int __maybe_unused rwdt_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(rwdt_pm_ops, rwdt_suspend, rwdt_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(rwdt_pm_ops, rwdt_suspend, rwdt_resume);
 
 static const struct of_device_id rwdt_ids[] = {
 	{ .compatible = "renesas,rcar-gen2-wdt", },
@@ -336,7 +334,7 @@ static struct platform_driver rwdt_driver = {
 	.driver = {
 		.name = "renesas_wdt",
 		.of_match_table = rwdt_ids,
-		.pm = &rwdt_pm_ops,
+		.pm = pm_sleep_ptr(&rwdt_pm_ops),
 	},
 	.probe = rwdt_probe,
 	.remove = rwdt_remove,

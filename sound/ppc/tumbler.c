@@ -29,7 +29,7 @@
 #undef DEBUG
 
 #ifdef DEBUG
-#define DBG(fmt...) printk(KERN_DEBUG fmt)
+#define DBG(fmt...) pr_debug(fmt)
 #else
 #define DBG(fmt...)
 #endif
@@ -230,7 +230,7 @@ static int tumbler_set_master_volume(struct pmac_tumbler *mix)
   
 	if (i2c_smbus_write_i2c_block_data(mix->i2c.client, TAS_REG_VOL, 6,
 					   block) < 0) {
-		snd_printk(KERN_ERR "failed to set volume \n");
+		dev_err(&mix->i2c.client->dev, "failed to set volume\n");
 		return -EINVAL;
 	}
 	DBG("(I) succeeded to set volume (%u, %u)\n", left_vol, right_vol);
@@ -341,7 +341,7 @@ static int tumbler_set_drc(struct pmac_tumbler *mix)
 
 	if (i2c_smbus_write_i2c_block_data(mix->i2c.client, TAS_REG_DRC,
 					   2, val) < 0) {
-		snd_printk(KERN_ERR "failed to set DRC\n");
+		dev_err(&mix->i2c.client->dev, "failed to set DRC\n");
 		return -EINVAL;
 	}
 	DBG("(I) succeeded to set DRC (%u, %u)\n", val[0], val[1]);
@@ -378,7 +378,7 @@ static int snapper_set_drc(struct pmac_tumbler *mix)
 
 	if (i2c_smbus_write_i2c_block_data(mix->i2c.client, TAS_REG_DRC,
 					   6, val) < 0) {
-		snd_printk(KERN_ERR "failed to set DRC\n");
+		dev_err(&mix->i2c.client->dev, "failed to set DRC\n");
 		return -EINVAL;
 	}
 	DBG("(I) succeeded to set DRC (%u, %u)\n", val[0], val[1]);
@@ -503,8 +503,8 @@ static int tumbler_set_mono_volume(struct pmac_tumbler *mix,
 		block[i] = (vol >> ((info->bytes - i - 1) * 8)) & 0xff;
 	if (i2c_smbus_write_i2c_block_data(mix->i2c.client, info->reg,
 					   info->bytes, block) < 0) {
-		snd_printk(KERN_ERR "failed to set mono volume %d\n",
-			   info->index);
+		dev_err(&mix->i2c.client->dev, "failed to set mono volume %d\n",
+			info->index);
 		return -EINVAL;
 	}
 	return 0;
@@ -643,7 +643,8 @@ static int snapper_set_mix_vol1(struct pmac_tumbler *mix, int idx, int ch, int r
 	}
 	if (i2c_smbus_write_i2c_block_data(mix->i2c.client, reg,
 					   9, block) < 0) {
-		snd_printk(KERN_ERR "failed to set mono volume %d\n", reg);
+		dev_err(&mix->i2c.client->dev,
+			"failed to set mono volume %d\n", reg);
 		return -EINVAL;
 	}
 	return 0;
@@ -1060,8 +1061,7 @@ static struct device_node *find_audio_device(const char *name)
 	if (! gpiop)
 		return NULL;
   
-	for (np = of_get_next_child(gpiop, NULL); np;
-			np = of_get_next_child(gpiop, np)) {
+	for_each_child_of_node(gpiop, np) {
 		const char *property = of_get_property(np, "audio-gpio", NULL);
 		if (property && strcmp(property, name) == 0)
 			break;
@@ -1080,8 +1080,7 @@ static struct device_node *find_compatible_audio_device(const char *name)
 	if (!gpiop)
 		return NULL;
   
-	for (np = of_get_next_child(gpiop, NULL); np;
-			np = of_get_next_child(gpiop, np)) {
+	for_each_child_of_node(gpiop, np) {
 		if (of_device_is_compatible(np, name))
 			break;
 	}  
@@ -1104,7 +1103,6 @@ static long tumbler_find_device(const char *device, const char *platform,
 		node = find_audio_device(device);
 	if (! node) {
 		DBG("(W) cannot find audio device %s !\n", device);
-		snd_printdd("cannot find device %s\n", device);
 		return -ENODEV;
 	}
 
@@ -1113,7 +1111,6 @@ static long tumbler_find_device(const char *device, const char *platform,
 		base = of_get_property(node, "reg", NULL);
 		if (!base) {
 			DBG("(E) cannot find address for device %s !\n", device);
-			snd_printd("cannot find address for device %s\n", device);
 			of_node_put(node);
 			return -ENODEV;
 		}
@@ -1234,9 +1231,9 @@ static void tumbler_resume(struct snd_pmac *chip)
 	tumbler_reset_audio(chip);
 	if (mix->i2c.client && mix->i2c.init_client) {
 		if (mix->i2c.init_client(&mix->i2c) < 0)
-			printk(KERN_ERR "tumbler_init_client error\n");
+			dev_err(chip->card->dev, "tumbler_init_client error\n");
 	} else
-		printk(KERN_ERR "tumbler: i2c is not initialized\n");
+		dev_err(chip->card->dev, "tumbler: i2c is not initialized\n");
 	if (chip->model == PMAC_TUMBLER) {
 		tumbler_set_mono_volume(mix, &tumbler_pcm_vol_info);
 		tumbler_set_mono_volume(mix, &tumbler_bass_vol_info);
@@ -1351,7 +1348,7 @@ int snd_pmac_tumbler_init(struct snd_pmac *chip)
 
 	request_module("i2c-powermac");
 
-	mix = kzalloc(sizeof(*mix), GFP_KERNEL);
+	mix = kzalloc_obj(*mix);
 	if (! mix)
 		return -ENOMEM;
 	mix->headphone_irq = -1;
@@ -1363,9 +1360,9 @@ int snd_pmac_tumbler_init(struct snd_pmac *chip)
 
 	for_each_child_of_node(chip->node, np) {
 		if (of_node_name_eq(np, "sound")) {
-			if (of_get_property(np, "has-anded-reset", NULL))
+			if (of_property_read_bool(np, "has-anded-reset"))
 				mix->anded_reset = 1;
-			if (of_get_property(np, "layout-id", NULL))
+			if (of_property_present(np, "layout-id"))
 				mix->reset_on_sleep = 0;
 			of_node_put(np);
 			break;

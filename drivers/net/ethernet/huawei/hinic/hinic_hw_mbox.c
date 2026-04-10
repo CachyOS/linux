@@ -117,7 +117,6 @@ enum hinic_mbox_tx_status {
 #define MBOX_WB_STATUS_MASK			0xFF
 #define MBOX_WB_ERROR_CODE_MASK			0xFF00
 #define MBOX_WB_STATUS_FINISHED_SUCCESS		0xFF
-#define MBOX_WB_STATUS_FINISHED_WITH_ERR	0xFE
 #define MBOX_WB_STATUS_NOT_FINISHED		0x00
 
 #define MBOX_STATUS_FINISHED(wb)	\
@@ -130,11 +129,8 @@ enum hinic_mbox_tx_status {
 #define SEQ_ID_START_VAL			0
 #define SEQ_ID_MAX_VAL				42
 
-#define DST_AEQ_IDX_DEFAULT_VAL			0
-#define SRC_AEQ_IDX_DEFAULT_VAL			0
 #define NO_DMA_ATTRIBUTE_VAL			0
 
-#define HINIC_MGMT_RSP_AEQN			0
 #define HINIC_MBOX_RSP_AEQN			2
 #define HINIC_MBOX_RECV_AEQN			0
 
@@ -146,7 +142,6 @@ enum hinic_mbox_tx_status {
 
 #define IS_PF_OR_PPF_SRC(src_func_idx)	((src_func_idx) < HINIC_MAX_PF_FUNCS)
 
-#define MBOX_RESPONSE_ERROR		0x1
 #define MBOX_MSG_ID_MASK		0xFF
 #define MBOX_MSG_ID(func_to_func)	((func_to_func)->send_msg_id)
 #define MBOX_MSG_ID_INC(func_to_func_mbox) (MBOX_MSG_ID(func_to_func_mbox) = \
@@ -492,7 +487,7 @@ static void recv_mbox_handler(struct hinic_mbox_func_to_func *func_to_func,
 	if (!rcv_mbox_temp->buf_out)
 		goto err_alloc_rcv_mbox_buf;
 
-	mbox_work = kzalloc(sizeof(*mbox_work), GFP_KERNEL);
+	mbox_work = kzalloc_obj(*mbox_work);
 	if (!mbox_work)
 		goto err_alloc_mbox_work;
 
@@ -608,7 +603,7 @@ static bool check_vf_mbox_random_id(struct hinic_mbox_func_to_func *func_to_func
 		 "The mailbox random id(0x%x) of func_id(0x%x) doesn't match with pf reservation(0x%x)\n",
 		 random_id, src, func_to_func->vf_mbx_rand_id[src]);
 
-	mbox_work = kzalloc(sizeof(*mbox_work), GFP_KERNEL);
+	mbox_work = kzalloc_obj(*mbox_work);
 	if (!mbox_work)
 		return false;
 
@@ -621,7 +616,7 @@ static bool check_vf_mbox_random_id(struct hinic_mbox_func_to_func *func_to_func
 	return false;
 }
 
-void hinic_mbox_func_aeqe_handler(void *handle, void *header, u8 size)
+static void hinic_mbox_func_aeqe_handler(void *handle, void *header, u8 size)
 {
 	struct hinic_mbox_func_to_func *func_to_func;
 	u64 mbox_header = *((u64 *)header);
@@ -649,7 +644,7 @@ void hinic_mbox_func_aeqe_handler(void *handle, void *header, u8 size)
 	recv_mbox_handler(func_to_func, (u64 *)header, recv_mbox);
 }
 
-void hinic_mbox_self_aeqe_handler(void *handle, void *header, u8 size)
+static void hinic_mbox_self_aeqe_handler(void *handle, void *header, u8 size)
 {
 	struct hinic_mbox_func_to_func *func_to_func;
 	struct hinic_send_mbox *send_mbox;
@@ -866,7 +861,7 @@ static int send_mbox_to_func(struct hinic_mbox_func_to_func *func_to_func,
 		 HINIC_MBOX_HEADER_SET(NOT_LAST_SEG, LAST) |
 		 HINIC_MBOX_HEADER_SET(direction, DIRECTION) |
 		 HINIC_MBOX_HEADER_SET(cmd, CMD) |
-		 /* The vf's offset to it's associated pf */
+		 /* The vf's offset to its associated pf */
 		 HINIC_MBOX_HEADER_SET(msg_info->msg_id, MSG_ID) |
 		 HINIC_MBOX_HEADER_SET(msg_info->status, STATUS) |
 		 HINIC_MBOX_HEADER_SET(hinic_global_func_id_hw(hwdev->hwif),
@@ -1407,7 +1402,7 @@ int hinic_func_to_func_init(struct hinic_hwdev *hwdev)
 	int err;
 
 	pfhwdev =  container_of(hwdev, struct hinic_pfhwdev, hwdev);
-	func_to_func = kzalloc(sizeof(*func_to_func), GFP_KERNEL);
+	func_to_func = kzalloc_obj(*func_to_func);
 	if (!func_to_func)
 		return -ENOMEM;
 

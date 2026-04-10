@@ -8,7 +8,9 @@
 #include <linux/types.h>
 #include <linux/bitops.h>
 #include <linux/log2.h>
+#include <linux/string.h>
 #include <linux/zalloc.h>
+#include <errno.h>
 #include <time.h>
 
 #include "../../../util/cpumap.h"
@@ -22,8 +24,11 @@
 #include "../../../util/debug.h"
 #include "../../../util/auxtrace.h"
 #include "../../../util/record.h"
+#include "../../../util/header.h"
 #include "../../../util/arm-spe.h"
 #include <tools/libc_compat.h> // reallocarray
+
+#define ARM_SPE_CPU_MAGIC		0x1010101010101010ULL
 
 #define KiB(x) ((x) * 1024)
 #define MiB(x) ((x) * 1024 * 1024)
@@ -36,34 +41,102 @@ struct arm_spe_recording {
 	bool			*wrapped;
 };
 
-static void arm_spe_set_timestamp(struct auxtrace_record *itr,
-				  struct evsel *evsel)
+/* Iterate config list to detect if the "freq" parameter is set */
+static bool arm_spe_is_set_freq(struct evsel *evsel)
 {
-	struct arm_spe_recording *ptr;
-	struct perf_pmu *arm_spe_pmu;
-	struct evsel_config_term *term = evsel__get_config_term(evsel, CFG_CHG);
-	u64 user_bits = 0, bit;
+	struct evsel_config_term *term;
 
-	ptr = container_of(itr, struct arm_spe_recording, itr);
-	arm_spe_pmu = ptr->arm_spe_pmu;
+	list_for_each_entry(term, &evsel->config_terms, list) {
+		if (term->type == EVSEL__CONFIG_TERM_FREQ)
+			return true;
+	}
 
-	if (term)
-		user_bits = term->val.cfg_chg;
+	return false;
+}
 
-	bit = perf_pmu__format_bits(&arm_spe_pmu->format, "ts_enable");
+/*
+ * arm_spe_find_cpus() returns a new cpu map, and the caller should invoke
+ * perf_cpu_map__put() to release the map after use.
+ */
+static struct perf_cpu_map *arm_spe_find_cpus(struct evlist *evlist)
+{
+	struct perf_cpu_map *event_cpus = evlist->core.user_requested_cpus;
+	struct perf_cpu_map *online_cpus = perf_cpu_map__new_online_cpus();
+	struct perf_cpu_map *intersect_cpus;
 
-	/* Skip if user has set it */
-	if (bit & user_bits)
-		return;
+	/* cpu map is not "any" CPU , we have specific CPUs to work with */
+	if (!perf_cpu_map__has_any_cpu(event_cpus)) {
+		intersect_cpus = perf_cpu_map__intersect(event_cpus, online_cpus);
+		perf_cpu_map__put(online_cpus);
+	/* Event can be "any" CPU so count all CPUs. */
+	} else {
+		intersect_cpus = online_cpus;
+	}
 
-	evsel->core.attr.config |= bit;
+	return intersect_cpus;
 }
 
 static size_t
 arm_spe_info_priv_size(struct auxtrace_record *itr __maybe_unused,
-		       struct evlist *evlist __maybe_unused)
+		       struct evlist *evlist)
 {
-	return ARM_SPE_AUXTRACE_PRIV_SIZE;
+	struct perf_cpu_map *cpu_map = arm_spe_find_cpus(evlist);
+	size_t size;
+
+	if (!cpu_map)
+		return 0;
+
+	size = ARM_SPE_AUXTRACE_PRIV_MAX +
+	       ARM_SPE_CPU_PRIV_MAX * perf_cpu_map__nr(cpu_map);
+	size *= sizeof(u64);
+
+	perf_cpu_map__put(cpu_map);
+	return size;
+}
+
+static int arm_spe_save_cpu_header(struct auxtrace_record *itr,
+				   struct perf_cpu cpu, __u64 data[])
+{
+	struct arm_spe_recording *sper =
+			container_of(itr, struct arm_spe_recording, itr);
+	struct perf_pmu *pmu = NULL;
+	char *cpuid = NULL;
+	u64 val;
+
+	/* Read CPU MIDR */
+	cpuid = get_cpuid_allow_env_override(cpu);
+	if (!cpuid)
+		return -ENOMEM;
+	val = strtol(cpuid, NULL, 16);
+
+	data[ARM_SPE_MAGIC] = ARM_SPE_CPU_MAGIC;
+	data[ARM_SPE_CPU] = cpu.cpu;
+	data[ARM_SPE_CPU_NR_PARAMS] = ARM_SPE_CPU_PRIV_MAX - ARM_SPE_CPU_MIDR;
+	data[ARM_SPE_CPU_MIDR] = val;
+
+	/* Find the associate Arm SPE PMU for the CPU */
+	if (perf_cpu_map__has(sper->arm_spe_pmu->cpus, cpu))
+		pmu = sper->arm_spe_pmu;
+
+	if (!pmu) {
+		/* No Arm SPE PMU is found */
+		data[ARM_SPE_CPU_PMU_TYPE] = ULLONG_MAX;
+		data[ARM_SPE_CAP_MIN_IVAL] = 0;
+		data[ARM_SPE_CAP_EVENT_FILTER] = 0;
+	} else {
+		data[ARM_SPE_CPU_PMU_TYPE] = pmu->type;
+
+		if (perf_pmu__scan_file(pmu, "caps/min_interval", "%lu", &val) != 1)
+			val = 0;
+		data[ARM_SPE_CAP_MIN_IVAL] = val;
+
+		if (perf_pmu__scan_file(pmu, "caps/event_filter", "%lx", &val) != 1)
+			val = 0;
+		data[ARM_SPE_CAP_EVENT_FILTER] = val;
+	}
+
+	free(cpuid);
+	return ARM_SPE_CPU_PRIV_MAX;
 }
 
 static int arm_spe_info_fill(struct auxtrace_record *itr,
@@ -71,20 +144,46 @@ static int arm_spe_info_fill(struct auxtrace_record *itr,
 			     struct perf_record_auxtrace_info *auxtrace_info,
 			     size_t priv_size)
 {
+	int i, ret;
+	size_t offset;
 	struct arm_spe_recording *sper =
 			container_of(itr, struct arm_spe_recording, itr);
 	struct perf_pmu *arm_spe_pmu = sper->arm_spe_pmu;
+	struct perf_cpu_map *cpu_map;
+	struct perf_cpu cpu;
+	__u64 *data;
 
-	if (priv_size != ARM_SPE_AUXTRACE_PRIV_SIZE)
+	if (priv_size != arm_spe_info_priv_size(itr, session->evlist))
 		return -EINVAL;
 
 	if (!session->evlist->core.nr_mmaps)
 		return -EINVAL;
 
-	auxtrace_info->type = PERF_AUXTRACE_ARM_SPE;
-	auxtrace_info->priv[ARM_SPE_PMU_TYPE] = arm_spe_pmu->type;
+	cpu_map = arm_spe_find_cpus(session->evlist);
+	if (!cpu_map)
+		return -EINVAL;
 
-	return 0;
+	auxtrace_info->type = PERF_AUXTRACE_ARM_SPE;
+	auxtrace_info->priv[ARM_SPE_HEADER_VERSION] = ARM_SPE_HEADER_CURRENT_VERSION;
+	auxtrace_info->priv[ARM_SPE_HEADER_SIZE] =
+		ARM_SPE_AUXTRACE_PRIV_MAX - ARM_SPE_HEADER_VERSION;
+	auxtrace_info->priv[ARM_SPE_PMU_TYPE_V2] = arm_spe_pmu->type;
+	auxtrace_info->priv[ARM_SPE_CPUS_NUM] = perf_cpu_map__nr(cpu_map);
+
+	offset = ARM_SPE_AUXTRACE_PRIV_MAX;
+	perf_cpu_map__for_each_cpu(cpu, i, cpu_map) {
+		assert(offset < priv_size);
+		data = &auxtrace_info->priv[offset];
+		ret = arm_spe_save_cpu_header(itr, cpu, data);
+		if (ret < 0)
+			goto out;
+		offset += ret;
+	}
+
+	ret = 0;
+out:
+	perf_cpu_map__put(cpu_map);
+	return ret;
 }
 
 static void
@@ -136,38 +235,68 @@ arm_spe_snapshot_resolve_auxtrace_defaults(struct record_opts *opts,
 	}
 }
 
-static int arm_spe_recording_options(struct auxtrace_record *itr,
-				     struct evlist *evlist,
-				     struct record_opts *opts)
+static __u64 arm_spe_pmu__sample_period(const struct perf_pmu *arm_spe_pmu)
 {
-	struct arm_spe_recording *sper =
-			container_of(itr, struct arm_spe_recording, itr);
-	struct perf_pmu *arm_spe_pmu = sper->arm_spe_pmu;
-	struct evsel *evsel, *arm_spe_evsel = NULL;
-	struct perf_cpu_map *cpus = evlist->core.user_requested_cpus;
-	bool privileged = perf_event_paranoid_check(-1);
-	struct evsel *tracking_evsel;
-	int err;
-	u64 bit;
+	static __u64 sample_period;
 
-	sper->evlist = evlist;
+	if (sample_period)
+		return sample_period;
 
-	evlist__for_each_entry(evlist, evsel) {
-		if (evsel->core.attr.type == arm_spe_pmu->type) {
-			if (arm_spe_evsel) {
-				pr_err("There may be only one " ARM_SPE_PMU_NAME "x event\n");
-				return -EINVAL;
-			}
-			evsel->core.attr.freq = 0;
-			evsel->core.attr.sample_period = arm_spe_pmu->default_config->sample_period;
-			evsel->needs_auxtrace_mmap = true;
-			arm_spe_evsel = evsel;
-			opts->full_auxtrace = true;
-		}
+	/*
+	 * If kernel driver doesn't advertise a minimum,
+	 * use max allowable by PMSIDR_EL1.INTERVAL
+	 */
+	if (perf_pmu__scan_file(arm_spe_pmu, "caps/min_interval", "%llu",
+				&sample_period) != 1) {
+		pr_debug("arm_spe driver doesn't advertise a min. interval. Using 4096\n");
+		sample_period = 4096;
+	}
+	return sample_period;
+}
+
+static void arm_spe_setup_evsel(struct evsel *evsel, struct perf_cpu_map *cpus)
+{
+	u64 pa_enable_bit;
+
+	evsel->core.attr.freq = 0;
+	evsel->core.attr.sample_period = arm_spe_pmu__sample_period(evsel->pmu);
+	evsel->needs_auxtrace_mmap = true;
+
+	/*
+	 * To obtain the auxtrace buffer file descriptor, the auxtrace event
+	 * must come first.
+	 */
+	evlist__to_front(evsel->evlist, evsel);
+
+	/*
+	 * In the case of per-cpu mmaps, sample CPU for AUX event;
+	 * also enable the timestamp tracing for samples correlation.
+	 */
+	if (!perf_cpu_map__is_any_cpu_or_is_empty(cpus)) {
+		evsel__set_sample_bit(evsel, CPU);
+		evsel__set_config_if_unset(evsel, "ts_enable", 1);
 	}
 
-	if (!opts->full_auxtrace)
-		return 0;
+	/*
+	 * Set this only so that perf report knows that SPE generates memory info. It has no effect
+	 * on the opening of the event or the SPE data produced.
+	 */
+	evsel__set_sample_bit(evsel, DATA_SRC);
+
+	/*
+	 * The PHYS_ADDR flag does not affect the driver behaviour, it is used to
+	 * inform that the resulting output's SPE samples contain physical addresses
+	 * where applicable.
+	 */
+
+	if (!evsel__get_config_val(evsel, "pa_enable", &pa_enable_bit))
+		if (pa_enable_bit)
+			evsel__set_sample_bit(evsel, PHYS_ADDR);
+}
+
+static int arm_spe_setup_aux_buffer(struct record_opts *opts)
+{
+	bool privileged = perf_event_paranoid_check(-1);
 
 	/*
 	 * we are in snapshot mode.
@@ -197,6 +326,9 @@ static int arm_spe_recording_options(struct auxtrace_record *itr,
 			pr_err("Failed to calculate default snapshot size and/or AUX area tracing mmap pages\n");
 			return -EINVAL;
 		}
+
+		pr_debug2("%sx snapshot size: %zu\n", ARM_SPE_PMU_NAME,
+			  opts->auxtrace_snapshot_size);
 	}
 
 	/* We are in full trace mode but '-m,xyz' wasn't specified */
@@ -222,42 +354,18 @@ static int arm_spe_recording_options(struct auxtrace_record *itr,
 		}
 	}
 
-	if (opts->auxtrace_snapshot_mode)
-		pr_debug2("%sx snapshot size: %zu\n", ARM_SPE_PMU_NAME,
-			  opts->auxtrace_snapshot_size);
+	return 0;
+}
 
-	/*
-	 * To obtain the auxtrace buffer file descriptor, the auxtrace event
-	 * must come first.
-	 */
-	evlist__to_front(evlist, arm_spe_evsel);
-
-	/*
-	 * In the case of per-cpu mmaps, sample CPU for AUX event;
-	 * also enable the timestamp tracing for samples correlation.
-	 */
-	if (!perf_cpu_map__empty(cpus)) {
-		evsel__set_sample_bit(arm_spe_evsel, CPU);
-		arm_spe_set_timestamp(itr, arm_spe_evsel);
-	}
-
-	/*
-	 * Set this only so that perf report knows that SPE generates memory info. It has no effect
-	 * on the opening of the event or the SPE data produced.
-	 */
-	evsel__set_sample_bit(arm_spe_evsel, DATA_SRC);
-
-	/*
-	 * The PHYS_ADDR flag does not affect the driver behaviour, it is used to
-	 * inform that the resulting output's SPE samples contain physical addresses
-	 * where applicable.
-	 */
-	bit = perf_pmu__format_bits(&arm_spe_pmu->format, "pa_enable");
-	if (arm_spe_evsel->core.attr.config & bit)
-		evsel__set_sample_bit(arm_spe_evsel, PHYS_ADDR);
+static int arm_spe_setup_tracking_event(struct evlist *evlist,
+					struct record_opts *opts)
+{
+	int err;
+	struct evsel *tracking_evsel;
+	struct perf_cpu_map *cpus = evlist->core.user_requested_cpus;
 
 	/* Add dummy event to keep tracking */
-	err = parse_events(evlist, "dummy:u", NULL);
+	err = parse_event(evlist, "dummy:u");
 	if (err)
 		return err;
 
@@ -268,7 +376,7 @@ static int arm_spe_recording_options(struct auxtrace_record *itr,
 	tracking_evsel->core.attr.sample_period = 1;
 
 	/* In per-cpu case, always need the time of mmap events etc */
-	if (!perf_cpu_map__empty(cpus)) {
+	if (!perf_cpu_map__is_any_cpu_or_is_empty(cpus)) {
 		evsel__set_sample_bit(tracking_evsel, TIME);
 		evsel__set_sample_bit(tracking_evsel, CPU);
 
@@ -278,6 +386,60 @@ static int arm_spe_recording_options(struct auxtrace_record *itr,
 	}
 
 	return 0;
+}
+
+static int arm_spe_recording_options(struct auxtrace_record *itr,
+				     struct evlist *evlist,
+				     struct record_opts *opts)
+{
+	struct arm_spe_recording *sper =
+			container_of(itr, struct arm_spe_recording, itr);
+	struct evsel *evsel, *tmp;
+	struct perf_cpu_map *cpus = evlist->core.user_requested_cpus;
+	bool discard = false;
+	int err;
+	u64 discard_bit;
+
+	sper->evlist = evlist;
+
+	evlist__for_each_entry(evlist, evsel) {
+		if (evsel__is_aux_event(evsel)) {
+			if (!strstarts(evsel->pmu->name, ARM_SPE_PMU_NAME)) {
+				pr_err("Found unexpected auxtrace event: %s\n",
+				       evsel->pmu->name);
+				return -EINVAL;
+			}
+			opts->full_auxtrace = true;
+
+			if (opts->user_freq != UINT_MAX ||
+			    arm_spe_is_set_freq(evsel)) {
+				pr_err("Arm SPE: Frequency is not supported. "
+				       "Set period with -c option or PMU parameter (-e %s/period=NUM/).\n",
+				       evsel->pmu->name);
+				return -EINVAL;
+			}
+		}
+	}
+
+	if (!opts->full_auxtrace)
+		return 0;
+
+	evlist__for_each_entry_safe(evlist, tmp, evsel) {
+		if (evsel__is_aux_event(evsel)) {
+			arm_spe_setup_evsel(evsel, cpus);
+			if (!evsel__get_config_val(evsel, "discard", &discard_bit))
+				discard = !!discard_bit;
+		}
+	}
+
+	if (discard)
+		return 0;
+
+	err = arm_spe_setup_aux_buffer(opts);
+	if (err)
+		return err;
+
+	return arm_spe_setup_tracking_event(evlist, opts);
 }
 
 static int arm_spe_parse_snapshot_options(struct auxtrace_record *itr __maybe_unused,
@@ -304,12 +466,16 @@ static int arm_spe_snapshot_start(struct auxtrace_record *itr)
 	struct arm_spe_recording *ptr =
 			container_of(itr, struct arm_spe_recording, itr);
 	struct evsel *evsel;
+	int ret = -EINVAL;
 
 	evlist__for_each_entry(ptr->evlist, evsel) {
-		if (evsel->core.attr.type == ptr->arm_spe_pmu->type)
-			return evsel__disable(evsel);
+		if (evsel__is_aux_event(evsel)) {
+			ret = evsel__disable(evsel);
+			if (ret < 0)
+				return ret;
+		}
 	}
-	return -EINVAL;
+	return ret;
 }
 
 static int arm_spe_snapshot_finish(struct auxtrace_record *itr)
@@ -317,12 +483,16 @@ static int arm_spe_snapshot_finish(struct auxtrace_record *itr)
 	struct arm_spe_recording *ptr =
 			container_of(itr, struct arm_spe_recording, itr);
 	struct evsel *evsel;
+	int ret = -EINVAL;
 
 	evlist__for_each_entry(ptr->evlist, evsel) {
-		if (evsel->core.attr.type == ptr->arm_spe_pmu->type)
-			return evsel__enable(evsel);
+		if (evsel__is_aux_event(evsel)) {
+			ret = evsel__enable(evsel);
+			if (ret < 0)
+				return ret;
+		}
 	}
-	return -EINVAL;
+	return ret;
 }
 
 static int arm_spe_alloc_wrapped_array(struct arm_spe_recording *ptr, int idx)
@@ -479,7 +649,7 @@ static void arm_spe_recording_free(struct auxtrace_record *itr)
 	struct arm_spe_recording *sper =
 			container_of(itr, struct arm_spe_recording, itr);
 
-	free(sper->wrapped);
+	zfree(&sper->wrapped);
 	free(sper);
 }
 
@@ -500,7 +670,6 @@ struct auxtrace_record *arm_spe_recording_init(int *err,
 	}
 
 	sper->arm_spe_pmu = arm_spe_pmu;
-	sper->itr.pmu = arm_spe_pmu;
 	sper->itr.snapshot_start = arm_spe_snapshot_start;
 	sper->itr.snapshot_finish = arm_spe_snapshot_finish;
 	sper->itr.find_snapshot = arm_spe_find_snapshot;
@@ -517,29 +686,8 @@ struct auxtrace_record *arm_spe_recording_init(int *err,
 	return &sper->itr;
 }
 
-struct perf_event_attr
-*arm_spe_pmu_default_config(struct perf_pmu *arm_spe_pmu)
+void
+arm_spe_pmu_default_config(const struct perf_pmu *arm_spe_pmu, struct perf_event_attr *attr)
 {
-	struct perf_event_attr *attr;
-
-	attr = zalloc(sizeof(struct perf_event_attr));
-	if (!attr) {
-		pr_err("arm_spe default config cannot allocate a perf_event_attr\n");
-		return NULL;
-	}
-
-	/*
-	 * If kernel driver doesn't advertise a minimum,
-	 * use max allowable by PMSIDR_EL1.INTERVAL
-	 */
-	if (perf_pmu__scan_file(arm_spe_pmu, "caps/min_interval", "%llu",
-				  &attr->sample_period) != 1) {
-		pr_debug("arm_spe driver doesn't advertise a min. interval. Using 4096\n");
-		attr->sample_period = 4096;
-	}
-
-	arm_spe_pmu->selectable = true;
-	arm_spe_pmu->is_uncore = false;
-
-	return attr;
+	attr->sample_period = arm_spe_pmu__sample_period(arm_spe_pmu);
 }

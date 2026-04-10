@@ -513,7 +513,7 @@ static int set_guid_rec(struct ib_device *ibdev,
 		goto new_schedule;
 	}
 
-	callback_context = kmalloc(sizeof *callback_context, GFP_KERNEL);
+	callback_context = kmalloc_obj(*callback_context);
 	if (!callback_context) {
 		err = -ENOMEM;
 		resched_delay = HZ * 5;
@@ -754,7 +754,7 @@ static void alias_guid_work(struct work_struct *work)
 						alias_guid);
 	struct mlx4_ib_dev *dev = container_of(ib_sriov, struct mlx4_ib_dev, sriov);
 
-	rec = kzalloc(sizeof *rec, GFP_KERNEL);
+	rec = kzalloc_obj(*rec);
 	if (!rec)
 		return;
 
@@ -829,15 +829,13 @@ void mlx4_ib_destroy_alias_guid_service(struct mlx4_ib_dev *dev)
 
 int mlx4_ib_init_alias_guid_service(struct mlx4_ib_dev *dev)
 {
-	char alias_wq_name[15];
 	int ret = 0;
 	int i, j;
 	union ib_gid gid;
 
 	if (!mlx4_is_master(dev->dev))
 		return 0;
-	dev->sriov.alias_guid.sa_client =
-		kzalloc(sizeof *dev->sriov.alias_guid.sa_client, GFP_KERNEL);
+	dev->sriov.alias_guid.sa_client = kzalloc_obj(*dev->sriov.alias_guid.sa_client);
 	if (!dev->sriov.alias_guid.sa_client)
 		return -ENOMEM;
 
@@ -875,9 +873,8 @@ int mlx4_ib_init_alias_guid_service(struct mlx4_ib_dev *dev)
 		dev->sriov.alias_guid.ports_guid[i].parent = &dev->sriov.alias_guid;
 		dev->sriov.alias_guid.ports_guid[i].port  = i;
 
-		snprintf(alias_wq_name, sizeof alias_wq_name, "alias_guid%d", i);
 		dev->sriov.alias_guid.ports_guid[i].wq =
-			alloc_ordered_workqueue(alias_wq_name, WQ_MEM_RECLAIM);
+			alloc_ordered_workqueue("alias_guid%d", WQ_MEM_RECLAIM, i);
 		if (!dev->sriov.alias_guid.ports_guid[i].wq) {
 			ret = -ENOMEM;
 			goto err_thread;

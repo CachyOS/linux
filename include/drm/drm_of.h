@@ -2,8 +2,10 @@
 #ifndef __DRM_OF_H__
 #define __DRM_OF_H__
 
+#include <linux/err.h>
 #include <linux/of_graph.h>
 #if IS_ENABLED(CONFIG_OF) && IS_ENABLED(CONFIG_DRM_PANEL_BRIDGE)
+#include <linux/of.h>
 #include <drm/drm_bridge.h>
 #endif
 
@@ -15,6 +17,8 @@ struct drm_encoder;
 struct drm_panel;
 struct drm_bridge;
 struct device_node;
+struct mipi_dsi_device_info;
+struct mipi_dsi_host;
 
 /**
  * enum drm_lvds_dual_link_pixels - Pixel order of an LVDS dual-link connection
@@ -49,7 +53,15 @@ int drm_of_find_panel_or_bridge(const struct device_node *np,
 				struct drm_bridge **bridge);
 int drm_of_lvds_get_dual_link_pixel_order(const struct device_node *port1,
 					  const struct device_node *port2);
+int drm_of_lvds_get_dual_link_pixel_order_sink(struct device_node *port1,
+					       struct device_node *port2);
 int drm_of_lvds_get_data_mapping(const struct device_node *port);
+int drm_of_get_data_lanes_count(const struct device_node *endpoint,
+				const unsigned int min, const unsigned int max);
+int drm_of_get_data_lanes_count_ep(const struct device_node *port,
+				   int port_reg, int reg,
+				   const unsigned int min,
+				   const unsigned int max);
 #else
 static inline uint32_t drm_of_crtc_port_mask(struct drm_device *dev,
 					  struct device_node *port)
@@ -101,11 +113,44 @@ drm_of_lvds_get_dual_link_pixel_order(const struct device_node *port1,
 }
 
 static inline int
+drm_of_lvds_get_dual_link_pixel_order_sink(struct device_node *port1,
+					   struct device_node *port2)
+{
+	return -EINVAL;
+}
+
+static inline int
 drm_of_lvds_get_data_mapping(const struct device_node *port)
 {
 	return -EINVAL;
 }
+
+static inline int
+drm_of_get_data_lanes_count(const struct device_node *endpoint,
+			    const unsigned int min, const unsigned int max)
+{
+	return -EINVAL;
+}
+
+static inline int
+drm_of_get_data_lanes_count_ep(const struct device_node *port,
+			       int port_reg, int reg,
+			       const unsigned int min,
+			       const unsigned int max)
+{
+	return -EINVAL;
+}
 #endif
+
+#if IS_ENABLED(CONFIG_OF) && IS_ENABLED(CONFIG_DRM_MIPI_DSI)
+struct mipi_dsi_host *drm_of_get_dsi_bus(struct device *dev);
+#else
+static inline struct
+mipi_dsi_host *drm_of_get_dsi_bus(struct device *dev)
+{
+	return ERR_PTR(-EINVAL);
+}
+#endif /* CONFIG_OF && CONFIG_DRM_MIPI_DSI */
 
 /*
  * drm_of_panel_bridge_remove - remove panel bridge
@@ -126,8 +171,11 @@ static inline int drm_of_panel_bridge_remove(const struct device_node *np,
 	if (!remote)
 		return -ENODEV;
 
-	bridge = of_drm_find_bridge(remote);
+	bridge = of_drm_find_and_get_bridge(remote);
 	drm_panel_bridge_remove(bridge);
+
+	drm_bridge_put(bridge);
+	of_node_put(remote);
 
 	return 0;
 #else

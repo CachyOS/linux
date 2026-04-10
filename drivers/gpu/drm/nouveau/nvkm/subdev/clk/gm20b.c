@@ -27,6 +27,7 @@
 #include <core/tegra.h>
 
 #include "priv.h"
+#include "gk20a_devfreq.h"
 #include "gk20a.h"
 
 #define GPCPLL_CFG_SYNC_MODE	BIT(2)
@@ -581,7 +582,7 @@ gm20b_clk_prog(struct nvkm_clk *base)
 
 	/*
 	 * Interim step for changing DVFS detection settings: low enough
-	 * frequency to be safe at at DVFS coeff = 0.
+	 * frequency to be safe at DVFS coeff = 0.
 	 *
 	 * 1. If voltage is increasing:
 	 * - safe frequency target matches the lowest - old - frequency
@@ -869,6 +870,10 @@ gm20b_clk_init(struct nvkm_clk *base)
 		return ret;
 	}
 
+	ret = gk20a_devfreq_init(base, &clk->devfreq);
+	if (ret)
+		return ret;
+
 	return 0;
 }
 
@@ -914,7 +919,7 @@ gm20b_clk_new_speedo0(struct nvkm_device *device, enum nvkm_subdev_type type, in
 	struct gk20a_clk *clk;
 	int ret;
 
-	clk = kzalloc(sizeof(*clk), GFP_KERNEL);
+	clk = kzalloc_obj(*clk);
 	if (!clk)
 		return -ENOMEM;
 	*pclk = &clk->base;

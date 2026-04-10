@@ -148,7 +148,7 @@ struct dvb_frontend *lnbh25_attach(struct dvb_frontend *fe,
 	struct lnbh25_priv *priv;
 
 	dev_dbg(&i2c->dev, "%s()\n", __func__);
-	priv = kzalloc(sizeof(struct lnbh25_priv), GFP_KERNEL);
+	priv = kzalloc_obj(struct lnbh25_priv);
 	if (!priv)
 		return NULL;
 	priv->i2c_address = (cfg->i2c_address >> 1);
@@ -173,7 +173,7 @@ struct dvb_frontend *lnbh25_attach(struct dvb_frontend *fe,
 		__func__, priv->i2c_address);
 	return fe;
 }
-EXPORT_SYMBOL(lnbh25_attach);
+EXPORT_SYMBOL_GPL(lnbh25_attach);
 
 MODULE_DESCRIPTION("ST LNBH25 driver");
 MODULE_AUTHOR("info@netup.ru");

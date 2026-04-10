@@ -12,7 +12,6 @@
 #include <linux/dmapool.h>
 #include <linux/dsa/ocelot.h>
 #include <linux/netdevice.h>
-#include <linux/of_platform.h>
 #include <linux/skbuff.h>
 
 #include "ocelot_fdma.h"
@@ -94,19 +93,18 @@ static void ocelot_fdma_activate_chan(struct ocelot *ocelot, dma_addr_t dma,
 	ocelot_fdma_writel(ocelot, MSCC_FDMA_CH_ACTIVATE, BIT(chan));
 }
 
+static u32 ocelot_fdma_read_ch_safe(struct ocelot *ocelot)
+{
+	return ocelot_fdma_readl(ocelot, MSCC_FDMA_CH_SAFE);
+}
+
 static int ocelot_fdma_wait_chan_safe(struct ocelot *ocelot, int chan)
 {
-	unsigned long timeout;
 	u32 safe;
 
-	timeout = jiffies + usecs_to_jiffies(OCELOT_FDMA_CH_SAFE_TIMEOUT_US);
-	do {
-		safe = ocelot_fdma_readl(ocelot, MSCC_FDMA_CH_SAFE);
-		if (safe & BIT(chan))
-			return 0;
-	} while (time_after(jiffies, timeout));
-
-	return -ETIMEDOUT;
+	return readx_poll_timeout_atomic(ocelot_fdma_read_ch_safe, ocelot, safe,
+					 safe & BIT(chan), 0,
+					 OCELOT_FDMA_CH_SAFE_TIMEOUT_US);
 }
 
 static void ocelot_fdma_dcb_set_data(struct ocelot_fdma_dcb *dcb,
@@ -369,7 +367,8 @@ static bool ocelot_fdma_receive_skb(struct ocelot *ocelot, struct sk_buff *skb)
 	if (unlikely(!ndev))
 		return false;
 
-	pskb_trim(skb, skb->len - ETH_FCS_LEN);
+	if (pskb_trim(skb, skb->len - ETH_FCS_LEN))
+		return false;
 
 	skb->dev = ndev;
 	skb->protocol = eth_type_trans(skb, skb->dev);
@@ -666,8 +665,7 @@ static int ocelot_fdma_prepare_skb(struct ocelot *ocelot, int port, u32 rew_op,
 
 	ifh = skb_push(skb, OCELOT_TAG_LEN);
 	skb_put(skb, ETH_FCS_LEN);
-	memset(ifh, 0, OCELOT_TAG_LEN);
-	ocelot_ifh_port_set(ifh, port, rew_op, skb_vlan_tag_get(skb));
+	ocelot_ifh_set_basic(ifh, ocelot, port, rew_op, skb);
 
 	return 0;
 }

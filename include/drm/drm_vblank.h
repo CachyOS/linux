@@ -25,6 +25,7 @@
 #define _DRM_VBLANK_H_
 
 #include <linux/seqlock.h>
+#include <linux/hrtimer.h>
 #include <linux/idr.h>
 #include <linux/poll.h>
 #include <linux/kthread.h>
@@ -79,6 +80,53 @@ struct drm_pending_vblank_event {
 };
 
 /**
+ * struct drm_vblank_crtc_config - vblank configuration for a CRTC
+ */
+struct drm_vblank_crtc_config {
+	/**
+	 * @offdelay_ms: Vblank off delay in ms, used to determine how long
+	 * &drm_vblank_crtc.disable_timer waits before disabling.
+	 *
+	 * Defaults to the value of drm_vblank_offdelay in drm_crtc_vblank_on().
+	 */
+	int offdelay_ms;
+
+	/**
+	 * @disable_immediate: See &drm_device.vblank_disable_immediate
+	 * for the exact semantics of immediate vblank disabling.
+	 *
+	 * Additionally, this tracks the disable immediate value per crtc, just
+	 * in case it needs to differ from the default value for a given device.
+	 *
+	 * Defaults to the value of &drm_device.vblank_disable_immediate in
+	 * drm_crtc_vblank_on().
+	 */
+	bool disable_immediate;
+};
+
+/**
+ * struct drm_vblank_crtc_timer - vblank timer for a CRTC
+ */
+struct drm_vblank_crtc_timer {
+	/**
+	 * @timer: The vblank's high-resolution timer
+	 */
+	struct hrtimer timer;
+	/**
+	 * @interval_lock: Protects @interval
+	 */
+	spinlock_t interval_lock;
+	/**
+	 * @interval: Duration between two vblanks
+	 */
+	ktime_t interval;
+	/**
+	 * @crtc: The timer's CRTC
+	 */
+	struct drm_crtc *crtc;
+};
+
+/**
  * struct drm_vblank_crtc - vblank tracking for a CRTC
  *
  * This structure tracks the vblank state for one CRTC.
@@ -99,8 +147,8 @@ struct drm_vblank_crtc {
 	wait_queue_head_t queue;
 	/**
 	 * @disable_timer: Disable timer for the delayed vblank disabling
-	 * hysteresis logic. Vblank disabling is controlled through the
-	 * drm_vblank_offdelay module option and the setting of the
+	 * hysteresis logic. Vblank disabling is controlled through
+	 * &drm_vblank_crtc_config.offdelay_ms and the setting of the
 	 * &drm_device.max_vblank_count value.
 	 */
 	struct timer_list disable_timer;
@@ -199,6 +247,12 @@ struct drm_vblank_crtc {
 	struct drm_display_mode hwmode;
 
 	/**
+	 * @config: Stores vblank configuration values for a given CRTC.
+	 * Also, see drm_crtc_vblank_on_config().
+	 */
+	struct drm_vblank_crtc_config config;
+
+	/**
 	 * @enabled: Tracks the enabling state of the corresponding &drm_crtc to
 	 * avoid double-disabling and hence corrupting saved state. Needed by
 	 * drivers not using atomic KMS, since those might go through their CRTC
@@ -223,13 +277,20 @@ struct drm_vblank_crtc {
 	 * cancelled.
 	 */
 	wait_queue_head_t work_wait_queue;
+
+	/**
+	 * @vblank_timer: Holds the state of the vblank timer
+	 */
+	struct drm_vblank_crtc_timer vblank_timer;
 };
 
+struct drm_vblank_crtc *drm_crtc_vblank_crtc(struct drm_crtc *crtc);
 int drm_vblank_init(struct drm_device *dev, unsigned int num_crtcs);
 bool drm_dev_has_vblank(const struct drm_device *dev);
 u64 drm_crtc_vblank_count(struct drm_crtc *crtc);
 u64 drm_crtc_vblank_count_and_time(struct drm_crtc *crtc,
 				   ktime_t *vblanktime);
+int drm_crtc_next_vblank_start(struct drm_crtc *crtc, ktime_t *vblanktime);
 void drm_crtc_send_vblank_event(struct drm_crtc *crtc,
 			       struct drm_pending_vblank_event *e);
 void drm_crtc_arm_vblank_event(struct drm_crtc *crtc,
@@ -241,10 +302,11 @@ bool drm_handle_vblank(struct drm_device *dev, unsigned int pipe);
 bool drm_crtc_handle_vblank(struct drm_crtc *crtc);
 int drm_crtc_vblank_get(struct drm_crtc *crtc);
 void drm_crtc_vblank_put(struct drm_crtc *crtc);
-void drm_wait_one_vblank(struct drm_device *dev, unsigned int pipe);
-void drm_crtc_wait_one_vblank(struct drm_crtc *crtc);
+int drm_crtc_wait_one_vblank(struct drm_crtc *crtc);
 void drm_crtc_vblank_off(struct drm_crtc *crtc);
 void drm_crtc_vblank_reset(struct drm_crtc *crtc);
+void drm_crtc_vblank_on_config(struct drm_crtc *crtc,
+			       const struct drm_vblank_crtc_config *config);
 void drm_crtc_vblank_on(struct drm_crtc *crtc);
 u64 drm_crtc_accurate_vblank_count(struct drm_crtc *crtc);
 void drm_crtc_vblank_restore(struct drm_crtc *crtc);
@@ -254,6 +316,10 @@ void drm_calc_timestamping_constants(struct drm_crtc *crtc,
 wait_queue_head_t *drm_crtc_vblank_waitqueue(struct drm_crtc *crtc);
 void drm_crtc_set_max_vblank_count(struct drm_crtc *crtc,
 				   u32 max_vblank_count);
+
+int drm_crtc_vblank_start_timer(struct drm_crtc *crtc);
+void drm_crtc_vblank_cancel_timer(struct drm_crtc *crtc);
+void drm_crtc_vblank_get_vblank_timeout(struct drm_crtc *crtc, ktime_t *vblank_time);
 
 /*
  * Helpers for struct drm_crtc_funcs

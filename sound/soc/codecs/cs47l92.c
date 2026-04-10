@@ -52,10 +52,8 @@ static const char * const cs47l92_outdemux_texts[] = {
 static int cs47l92_put_demux(struct snd_kcontrol *kcontrol,
 			     struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component =
-		snd_soc_dapm_kcontrol_component(kcontrol);
-	struct snd_soc_dapm_context *dapm =
-		snd_soc_component_get_dapm(component);
+	struct snd_soc_component *component = snd_soc_dapm_kcontrol_to_component(kcontrol);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct cs47l92 *cs47l92 = snd_soc_component_get_drvdata(component);
 	struct madera_priv *priv = &cs47l92->core;
 	struct madera *madera = priv->madera;
@@ -119,7 +117,13 @@ static int cs47l92_put_demux(struct snd_kcontrol *kcontrol,
 end:
 	snd_soc_dapm_mutex_unlock(dapm);
 
-	return snd_soc_dapm_mux_update_power(dapm, kcontrol, mux, e, NULL);
+	ret = snd_soc_dapm_mux_update_power(dapm, kcontrol, mux, e, NULL);
+	if (ret < 0) {
+		dev_err(madera->dev, "Failed to update demux power state: %d\n", ret);
+		return ret;
+	}
+
+	return change;
 }
 
 static SOC_ENUM_SINGLE_DECL(cs47l92_outdemux_enum,
@@ -1684,6 +1688,10 @@ static int cs47l92_set_fll(struct snd_soc_component *component, int fll_id,
 	}
 }
 
+static const struct snd_soc_dai_ops cs47l92_dai_ops = {
+	.compress_new = snd_soc_new_compress,
+};
+
 static struct snd_soc_dai_driver cs47l92_dai[] = {
 	{
 		.name = "cs47l92-aif1",
@@ -1817,7 +1825,7 @@ static struct snd_soc_dai_driver cs47l92_dai[] = {
 			.rates = MADERA_RATES,
 			.formats = MADERA_FORMATS,
 		},
-		.compress_new = snd_soc_new_compress,
+		.ops = &cs47l92_dai_ops,
 	},
 	{
 		.name = "cs47l92-dsp-trace",
@@ -1840,12 +1848,12 @@ static int cs47l92_open(struct snd_soc_component *component,
 	struct madera *madera = priv->madera;
 	int n_adsp;
 
-	if (strcmp(asoc_rtd_to_codec(rtd, 0)->name, "cs47l92-dsp-trace") == 0) {
+	if (strcmp(snd_soc_rtd_to_codec(rtd, 0)->name, "cs47l92-dsp-trace") == 0) {
 		n_adsp = 0;
 	} else {
 		dev_err(madera->dev,
 			"No suitable compressed stream for DAI '%s'\n",
-			asoc_rtd_to_codec(rtd, 0)->name);
+			snd_soc_rtd_to_codec(rtd, 0)->name);
 		return -EINVAL;
 	}
 
@@ -1877,6 +1885,7 @@ static const struct snd_soc_dapm_route cs47l92_mono_routes[] = {
 
 static int cs47l92_component_probe(struct snd_soc_component *component)
 {
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct cs47l92 *cs47l92 = snd_soc_component_get_drvdata(component);
 	struct madera *madera = cs47l92->core.madera;
 	int ret;
@@ -1884,7 +1893,7 @@ static int cs47l92_component_probe(struct snd_soc_component *component)
 	snd_soc_component_init_regmap(component, madera->regmap);
 
 	mutex_lock(&madera->dapm_ptr_lock);
-	madera->dapm = snd_soc_component_get_dapm(component);
+	madera->dapm = snd_soc_component_to_dapm(component);
 	mutex_unlock(&madera->dapm_ptr_lock);
 
 	ret = madera_init_inputs(component);
@@ -1897,7 +1906,7 @@ static int cs47l92_component_probe(struct snd_soc_component *component)
 	if (ret)
 		return ret;
 
-	snd_soc_component_disable_pin(component, "HAPTICS");
+	snd_soc_dapm_disable_pin(dapm, "HAPTICS");
 
 	ret = snd_soc_add_component_controls(component,
 					     madera_adsp_rate_controls,
@@ -1958,7 +1967,6 @@ static const struct snd_soc_component_driver soc_component_dev_cs47l92 = {
 	.num_dapm_routes	= ARRAY_SIZE(cs47l92_dapm_routes),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static int cs47l92_probe(struct platform_device *pdev)
@@ -2063,7 +2071,7 @@ error_core:
 	return ret;
 }
 
-static int cs47l92_remove(struct platform_device *pdev)
+static void cs47l92_remove(struct platform_device *pdev)
 {
 	struct cs47l92 *cs47l92 = platform_get_drvdata(pdev);
 
@@ -2076,8 +2084,6 @@ static int cs47l92_remove(struct platform_device *pdev)
 	madera_free_irq(cs47l92->core.madera, MADERA_IRQ_DSP_IRQ1, cs47l92);
 
 	madera_core_free(&cs47l92->core);
-
-	return 0;
 }
 
 static struct platform_driver cs47l92_codec_driver = {
@@ -2085,7 +2091,7 @@ static struct platform_driver cs47l92_codec_driver = {
 		.name = "cs47l92-codec",
 	},
 	.probe = &cs47l92_probe,
-	.remove = &cs47l92_remove,
+	.remove = cs47l92_remove,
 };
 
 module_platform_driver(cs47l92_codec_driver);

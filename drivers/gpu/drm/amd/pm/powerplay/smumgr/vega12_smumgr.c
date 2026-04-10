@@ -68,7 +68,7 @@ static int vega12_copy_table_from_smc(struct pp_hwmgr *hwmgr,
 			"[CopyTableFromSMC] Attempt to Transfer Table From SMU Failed!",
 			return -EINVAL);
 
-	amdgpu_asic_invalidate_hdp(adev, NULL);
+	amdgpu_hdp_invalidate(adev, NULL);
 
 	memcpy(table, priv->smu_tables.entry[table_id].table,
 			priv->smu_tables.entry[table_id].size);
@@ -98,7 +98,7 @@ static int vega12_copy_table_to_smc(struct pp_hwmgr *hwmgr,
 	memcpy(priv->smu_tables.entry[table_id].table, table,
 			priv->smu_tables.entry[table_id].size);
 
-	amdgpu_asic_flush_hdp(adev, NULL);
+	amdgpu_hdp_flush(adev, NULL);
 
 	PP_ASSERT_WITH_CODE(smum_send_msg_to_smc_with_parameter(hwmgr,
 			PPSMC_MSG_SetDriverDramAddrHigh,
@@ -221,7 +221,7 @@ static int vega12_smu_init(struct pp_hwmgr *hwmgr)
 	if (ret || !info.kptr)
 		return -EINVAL;
 
-	priv = kzalloc(sizeof(struct vega12_smumgr), GFP_KERNEL);
+	priv = kzalloc_obj(struct vega12_smumgr);
 	if (!priv)
 		return -ENOMEM;
 
@@ -257,20 +257,18 @@ static int vega12_smu_init(struct pp_hwmgr *hwmgr)
 	priv->smu_tables.entry[TABLE_WATERMARKS].size = sizeof(Watermarks_t);
 
 	tools_size = 0x19000;
-	if (tools_size) {
-		ret = amdgpu_bo_create_kernel((struct amdgpu_device *)hwmgr->adev,
-					      tools_size,
-					      PAGE_SIZE,
-					      AMDGPU_GEM_DOMAIN_VRAM,
-					      &priv->smu_tables.entry[TABLE_PMSTATUSLOG].handle,
-					      &priv->smu_tables.entry[TABLE_PMSTATUSLOG].mc_addr,
-					      &priv->smu_tables.entry[TABLE_PMSTATUSLOG].table);
-		if (ret)
-			goto err1;
+	ret = amdgpu_bo_create_kernel((struct amdgpu_device *)hwmgr->adev,
+				      tools_size,
+				      PAGE_SIZE,
+				      AMDGPU_GEM_DOMAIN_VRAM,
+				      &priv->smu_tables.entry[TABLE_PMSTATUSLOG].handle,
+				      &priv->smu_tables.entry[TABLE_PMSTATUSLOG].mc_addr,
+				      &priv->smu_tables.entry[TABLE_PMSTATUSLOG].table);
+	if (ret)
+		goto err1;
 
-		priv->smu_tables.entry[TABLE_PMSTATUSLOG].version = 0x01;
-		priv->smu_tables.entry[TABLE_PMSTATUSLOG].size = tools_size;
-	}
+	priv->smu_tables.entry[TABLE_PMSTATUSLOG].version = 0x01;
+	priv->smu_tables.entry[TABLE_PMSTATUSLOG].size = tools_size;
 
 	/* allocate space for AVFS Fuse table */
 	ret = amdgpu_bo_create_kernel((struct amdgpu_device *)hwmgr->adev,

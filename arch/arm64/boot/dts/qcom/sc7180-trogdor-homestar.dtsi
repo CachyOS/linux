@@ -5,27 +5,28 @@
  * Copyright 2021 Google LLC.
  */
 
-#include "sc7180-trogdor.dtsi"
+#include "sc7180-trogdor-rt5682i-sku.dtsi"
+#include "sc7180-trogdor-detachable.dtsi"
 
 / {
 	/* BOARD-SPECIFIC TOP LEVEL NODES */
 
-	max98360a_1: max98360a_1 {
+	max98360a_1: amplifier-1 {
 		compatible = "maxim,max98360a";
 		#sound-dai-cells = <0>;
 	};
 
-	max98360a_2: max98360a_2 {
+	max98360a_2: amplifier-2 {
 		compatible = "maxim,max98360a";
 		#sound-dai-cells = <0>;
 	};
 
-	max98360a_3: max98360a_3 {
+	max98360a_3: amplifier-3 {
 		compatible = "maxim,max98360a";
 		#sound-dai-cells = <0>;
 	};
 
-	pp3300_touch: pp3300-touch {
+	pp3300_touch: pp3300-touch-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "pp3300_touch";
 
@@ -43,7 +44,6 @@
 	thermal-zones {
 		skin_temp_thermal: skin-temp-thermal {
 			polling-delay-passive = <250>;
-			polling-delay = <0>;
 
 			thermal-sensors = <&pm6150_adc_tm 1>;
 			sustainable-power = <965>;
@@ -71,19 +71,37 @@
 			cooling-maps {
 				map0 {
 					trip = <&skin_temp_alert0>;
-					cooling-device = <&CPU6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-							 <&CPU7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+					cooling-device = <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
 				};
 
 				map1 {
 					trip = <&skin_temp_alert1>;
-					cooling-device = <&CPU6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-							 <&CPU7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+					cooling-device = <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
 				};
 			};
 		};
 	};
 };
+
+/*
+ * ADDITIONS TO FIXED REGULATORS DEFINED IN PARENT DEVICE TREE FILES
+ *
+ * Sort order matches the order in the parent files (parents before children).
+ */
+
+&pp3300_dx_edp {
+	/*
+	 * The atna33xc20 really likes to be power cycled to keep it from
+	 * getting in a bad state. This is the reason that the touchscreen
+	 * rail and eDP rails are separate from each other on homestar (but
+	 * not other trogdor devices) Make sure it starts "off" at bootup.
+	 */
+	/delete-property/ regulator-boot-on;
+};
+
+/* ADDITIONS TO NODES DEFINED IN PARENT DEVICE TREE FILES */
 
 ap_ts_pen_1v8: &i2c4 {
 	status = "okay";
@@ -98,6 +116,7 @@ ap_ts_pen_1v8: &i2c4 {
 		interrupt-parent = <&tlmm>;
 		interrupts = <9 IRQ_TYPE_LEVEL_LOW>;
 
+		panel = <&panel>;
 		reset-gpios = <&tlmm 8 GPIO_ACTIVE_LOW>;
 
 		vdd-supply = <&pp3300_touch>;
@@ -121,10 +140,11 @@ ap_ts_pen_1v8: &i2c4 {
 };
 
 &pm6150_adc {
-	skin-temp-thermistor@4d {
+	channel@4d {
 		reg = <ADC5_AMUX_THM1_100K_PU>;
 		qcom,ratiometric;
 		qcom,hw-settle-time = <200>;
+		label = "skin_therm";
 	};
 };
 
@@ -168,36 +188,25 @@ ap_ts_pen_1v8: &i2c4 {
 };
 
 &wifi {
-	qcom,ath10k-calibration-variant = "GO_HOMESTAR";
+	qcom,calibration-variant = "GO_HOMESTAR";
 };
 
 /* PINCTRL - modifications to sc7180-trogdor.dtsi */
 
 &en_pp3300_dx_edp {
-	pinmux {
-		pins = "gpio67";
-	};
-
-	pinconf {
-		pins = "gpio67";
-	};
+	pins = "gpio67";
 };
 
-&sec_mi2s_active{
-	pinmux {
-		pins = "gpio49", "gpio50", "gpio51", "gpio52";
-		function = "mi2s_1";
-	};
+&sec_mi2s_active {
+	pins = "gpio49", "gpio50", "gpio51", "gpio52";
 };
 
 &ts_reset_l {
-	pinconf {
-		/*
-		 * We want reset state by default and it will be up to the
-		 * driver to disable this when it's ready.
-		 */
-		output-low;
-	};
+	/*
+	 * We want reset state by default and it will be up to the
+	 * driver to disable this when it's ready.
+	 */
+	output-low;
 };
 
 /* PINCTRL - board-specific pinctrl */
@@ -327,16 +336,10 @@ ap_ts_pen_1v8: &i2c4 {
 			  "DP_HOT_PLUG_DET",
 			  "EC_IN_RW_ODL";
 
-	en_pp3300_touch: en-pp3300-touch {
-		pinmux {
-			pins = "gpio87";
-			function = "gpio";
-		};
-
-		pinconf {
-			pins = "gpio87";
-			drive-strength = <2>;
-			bias-disable;
-		};
+	en_pp3300_touch: en-pp3300-touch-state {
+		pins = "gpio87";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
 	};
 };

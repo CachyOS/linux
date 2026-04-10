@@ -60,7 +60,6 @@
 #include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/of_address.h>
-#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/smp.h>
@@ -82,6 +81,7 @@ struct bcm6345_l1_chip {
 };
 
 struct bcm6345_l1_cpu {
+	struct bcm6345_l1_chip	*intc;
 	void __iomem		*map_base;
 	unsigned int		parent_irq;
 	u32			enable_cache[];
@@ -115,16 +115,10 @@ static inline unsigned int cpu_for_irq(struct bcm6345_l1_chip *intc,
 
 static void bcm6345_l1_irq_handle(struct irq_desc *desc)
 {
-	struct bcm6345_l1_chip *intc = irq_desc_get_handler_data(desc);
-	struct bcm6345_l1_cpu *cpu;
+	struct bcm6345_l1_cpu *cpu = irq_desc_get_handler_data(desc);
+	struct bcm6345_l1_chip *intc = cpu->intc;
 	struct irq_chip *chip = irq_desc_get_chip(desc);
 	unsigned int idx;
-
-#ifdef CONFIG_SMP
-	cpu = intc->cpus[cpu_logical_map(smp_processor_id())];
-#else
-	cpu = intc->cpus[0];
-#endif
 
 	chained_irq_enter(chip, desc);
 
@@ -198,14 +192,10 @@ static int bcm6345_l1_set_affinity(struct irq_data *d,
 	u32 mask = BIT(d->hwirq % IRQS_PER_WORD);
 	unsigned int old_cpu = cpu_for_irq(intc, d);
 	unsigned int new_cpu;
-	struct cpumask valid;
 	unsigned long flags;
 	bool enabled;
 
-	if (!cpumask_and(&valid, &intc->cpumask, dest))
-		return -EINVAL;
-
-	new_cpu = cpumask_any_and(&valid, cpu_online_mask);
+	new_cpu = cpumask_first_and_and(&intc->cpumask, dest, cpu_online_mask);
 	if (new_cpu >= nr_cpu_ids)
 		return -EINVAL;
 
@@ -216,11 +206,11 @@ static int bcm6345_l1_set_affinity(struct irq_data *d,
 		enabled = intc->cpus[old_cpu]->enable_cache[word] & mask;
 		if (enabled)
 			__bcm6345_l1_mask(d);
-		cpumask_copy(irq_data_get_affinity_mask(d), dest);
+		irq_data_update_affinity(d, dest);
 		if (enabled)
 			__bcm6345_l1_unmask(d);
 	} else {
-		cpumask_copy(irq_data_get_affinity_mask(d), dest);
+		irq_data_update_affinity(d, dest);
 	}
 	raw_spin_unlock_irqrestore(&intc->lock, flags);
 
@@ -248,14 +238,17 @@ static int __init bcm6345_l1_init_one(struct device_node *dn,
 	else if (intc->n_words != n_words)
 		return -EINVAL;
 
-	cpu = intc->cpus[idx] = kzalloc(sizeof(*cpu) + n_words * sizeof(u32),
-					GFP_KERNEL);
+	cpu = intc->cpus[idx] = kzalloc_flex(*cpu, enable_cache, n_words);
 	if (!cpu)
 		return -ENOMEM;
 
+	cpu->intc = intc;
 	cpu->map_base = ioremap(res.start, sz);
 	if (!cpu->map_base)
 		return -ENOMEM;
+
+	if (!request_mem_region(res.start, sz, res.name))
+		pr_err("failed to request intc memory");
 
 	for (i = 0; i < n_words; i++) {
 		cpu->enable_cache[i] = 0;
@@ -268,7 +261,7 @@ static int __init bcm6345_l1_init_one(struct device_node *dn,
 		return -EINVAL;
 	}
 	irq_set_chained_handler_and_data(cpu->parent_irq,
-						bcm6345_l1_irq_handle, intc);
+						bcm6345_l1_irq_handle, cpu);
 
 	return 0;
 }
@@ -302,7 +295,7 @@ static int __init bcm6345_l1_of_init(struct device_node *dn,
 	unsigned int idx;
 	int ret;
 
-	intc = kzalloc(sizeof(*intc), GFP_KERNEL);
+	intc = kzalloc_obj(*intc);
 	if (!intc)
 		return -ENOMEM;
 
@@ -322,7 +315,7 @@ static int __init bcm6345_l1_of_init(struct device_node *dn,
 
 	raw_spin_lock_init(&intc->lock);
 
-	intc->domain = irq_domain_add_linear(dn, IRQS_PER_WORD * intc->n_words,
+	intc->domain = irq_domain_create_linear(of_fwnode_handle(dn), IRQS_PER_WORD * intc->n_words,
 					     &bcm6345_l1_domain_ops,
 					     intc);
 	if (!intc->domain) {
@@ -335,8 +328,7 @@ static int __init bcm6345_l1_of_init(struct device_node *dn,
 	for_each_cpu(idx, &intc->cpumask) {
 		struct bcm6345_l1_cpu *cpu = intc->cpus[idx];
 
-		pr_info("  CPU%u at MMIO 0x%p (irq = %d)\n", idx,
-				cpu->map_base, cpu->parent_irq);
+		pr_info("  CPU%u (irq = %d)\n", idx, cpu->parent_irq);
 	}
 
 	return 0;

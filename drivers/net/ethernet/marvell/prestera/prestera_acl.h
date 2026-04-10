@@ -185,8 +185,8 @@ struct prestera_acl_ruleset *
 prestera_acl_ruleset_lookup(struct prestera_acl *acl,
 			    struct prestera_flow_block *block,
 			    u32 chain_index);
-void prestera_acl_ruleset_keymask_set(struct prestera_acl_ruleset *ruleset,
-				      void *keymask);
+int prestera_acl_ruleset_keymask_set(struct prestera_acl_ruleset *ruleset,
+				     void *keymask);
 bool prestera_acl_ruleset_is_offload(struct prestera_acl_ruleset *ruleset);
 int prestera_acl_ruleset_offload(struct prestera_acl_ruleset *ruleset);
 void prestera_acl_ruleset_put(struct prestera_acl_ruleset *ruleset);
@@ -195,13 +195,15 @@ int prestera_acl_ruleset_bind(struct prestera_acl_ruleset *ruleset,
 int prestera_acl_ruleset_unbind(struct prestera_acl_ruleset *ruleset,
 				struct prestera_port *port);
 u32 prestera_acl_ruleset_index_get(const struct prestera_acl_ruleset *ruleset);
+void prestera_acl_ruleset_prio_get(struct prestera_acl_ruleset *ruleset,
+				   u32 *prio_min, u32 *prio_max);
 void
 prestera_acl_rule_keymask_pcl_id_set(struct prestera_acl_rule *rule,
 				     u16 pcl_id);
 
-int prestera_acl_vtcam_id_get(struct prestera_acl *acl, u8 lookup,
+int prestera_acl_vtcam_id_get(struct prestera_acl *acl, u8 lookup, u8 dir,
 			      void *keymask, u32 *vtcam_id);
 int prestera_acl_vtcam_id_put(struct prestera_acl *acl, u32 vtcam_id);
-int prestera_acl_chain_to_client(u32 chain_index, u32 *client);
+int prestera_acl_chain_to_client(u32 chain_index, bool ingress, u32 *client);
 
 #endif /* _PRESTERA_ACL_H_ */

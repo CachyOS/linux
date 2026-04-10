@@ -66,17 +66,22 @@ ip6frag_expire_frag_queue(struct net *net, struct frag_queue *fq)
 {
 	struct net_device *dev = NULL;
 	struct sk_buff *head;
+	int refs = 1;
 
 	rcu_read_lock();
-	/* Paired with the WRITE_ONCE() in fqdir_pre_exit(). */
-	if (READ_ONCE(fq->q.fqdir->dead))
-		goto out_rcu_unlock;
 	spin_lock(&fq->q.lock);
 
 	if (fq->q.flags & INET_FRAG_COMPLETE)
 		goto out;
 
-	inet_frag_kill(&fq->q);
+	fq->q.flags |= INET_FRAG_DROP;
+	inet_frag_kill(&fq->q, &refs);
+
+	/* Paired with the WRITE_ONCE() in fqdir_pre_exit(). */
+	if (READ_ONCE(fq->q.fqdir->dead)) {
+		inet_frag_queue_flush(&fq->q, 0);
+		goto out;
+	}
 
 	dev = dev_get_by_index_rcu(net, fq->iif);
 	if (!dev)
@@ -101,14 +106,14 @@ ip6frag_expire_frag_queue(struct net *net, struct frag_queue *fq)
 	spin_unlock(&fq->q.lock);
 
 	icmpv6_send(head, ICMPV6_TIME_EXCEED, ICMPV6_EXC_FRAGTIME, 0);
-	kfree_skb(head);
+	kfree_skb_reason(head, SKB_DROP_REASON_FRAG_REASM_TIMEOUT);
 	goto out_rcu_unlock;
 
 out:
 	spin_unlock(&fq->q.lock);
 out_rcu_unlock:
 	rcu_read_unlock();
-	inet_frag_put(&fq->q);
+	inet_frag_putn(&fq->q, refs);
 }
 
 /* Check if the upper layer header is truncated in the first fragment. */

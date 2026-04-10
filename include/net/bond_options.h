@@ -7,6 +7,14 @@
 #ifndef _NET_BOND_OPTIONS_H
 #define _NET_BOND_OPTIONS_H
 
+#include <linux/bits.h>
+#include <linux/limits.h>
+#include <linux/types.h>
+#include <linux/string.h>
+
+struct netlink_ext_ack;
+struct nlattr;
+
 #define BOND_OPT_MAX_NAMELEN 32
 #define BOND_OPT_VALID(opt) ((opt) < BOND_OPT_LAST)
 #define BOND_MODE_ALL_EX(x) (~(x))
@@ -67,6 +75,10 @@ enum {
 	BOND_OPT_LACP_ACTIVE,
 	BOND_OPT_MISSED_MAX,
 	BOND_OPT_NS_TARGETS,
+	BOND_OPT_PRIO,
+	BOND_OPT_COUPLED_CONTROL,
+	BOND_OPT_BROADCAST_NEIGH,
+	BOND_OPT_ACTOR_PORT_PRIO,
 	BOND_OPT_LAST
 };
 
@@ -83,7 +95,10 @@ struct bond_opt_value {
 	char *string;
 	u64 value;
 	u32 flags;
-	char extra[BOND_OPT_EXTRA_MAXLEN];
+	union {
+		char extra[BOND_OPT_EXTRA_MAXLEN];
+		struct net_device *slave_dev;
+	};
 };
 
 struct bonding;
@@ -107,7 +122,8 @@ struct bond_option {
 };
 
 int __bond_opt_set(struct bonding *bond, unsigned int option,
-		   struct bond_opt_value *val);
+		   struct bond_opt_value *val,
+		   struct nlattr *bad_attr, struct netlink_ext_ack *extack);
 int __bond_opt_set_notify(struct bonding *bond, unsigned int option,
 			  struct bond_opt_value *val);
 int bond_opt_tryset_rtnl(struct bonding *bond, unsigned int option, char *buf);
@@ -132,17 +148,22 @@ static inline void __bond_opt_init(struct bond_opt_value *optval,
 		optval->value = value;
 	else if (string)
 		optval->string = string;
-	else if (extra_len <= BOND_OPT_EXTRA_MAXLEN)
+
+	if (extra && extra_len <= BOND_OPT_EXTRA_MAXLEN)
 		memcpy(optval->extra, extra, extra_len);
 }
 #define bond_opt_initval(optval, value) __bond_opt_init(optval, NULL, value, NULL, 0)
 #define bond_opt_initstr(optval, str) __bond_opt_init(optval, str, ULLONG_MAX, NULL, 0)
 #define bond_opt_initextra(optval, extra, extra_len) \
 	__bond_opt_init(optval, NULL, ULLONG_MAX, extra, extra_len)
+#define bond_opt_slave_initval(optval, slave_dev, value) \
+	__bond_opt_init(optval, NULL, value, slave_dev, sizeof(struct net_device *))
 
 void bond_option_arp_ip_targets_clear(struct bonding *bond);
 #if IS_ENABLED(CONFIG_IPV6)
 void bond_option_ns_ip6_targets_clear(struct bonding *bond);
 #endif
+void bond_slave_ns_maddrs_add(struct bonding *bond, struct slave *slave);
+void bond_slave_ns_maddrs_del(struct bonding *bond, struct slave *slave);
 
 #endif /* _NET_BOND_OPTIONS_H */

@@ -32,6 +32,9 @@ struct vringh {
 	/* Can we get away with weak barriers? */
 	bool weak_barriers;
 
+	/* Use user's VA */
+	bool use_va;
+
 	/* Last available index we saw (ie. where we're up to). */
 	u16 last_avail_idx;
 
@@ -54,6 +57,9 @@ struct vringh {
 	void (*notify)(struct vringh *);
 };
 
+struct virtio_device;
+typedef void vrh_callback_t(struct virtio_device *, struct vringh *);
+
 /**
  * struct vringh_config_ops - ops for creating a host vring from a virtio driver
  * @find_vrhs: find the host vrings and instantiate them
@@ -65,8 +71,6 @@ struct vringh {
  *	Returns 0 on success or error status
  * @del_vrhs: free the host vrings found by find_vrhs().
  */
-struct virtio_device;
-typedef void vrh_callback_t(struct virtio_device *, struct vringh *);
 struct vringh_config_ops {
 	int (*find_vrhs)(struct virtio_device *vdev, unsigned nhvrs,
 			 struct vringh *vrhs[], vrh_callback_t *callbacks[]);
@@ -81,6 +85,12 @@ struct vringh_range {
 
 /**
  * struct vringh_iov - iovec mangler.
+ * @iov: array of iovecs to operate on
+ * @consumed: number of bytes consumed within iov[i]
+ * @i: index of current iovec
+ * @used: number of iovecs present in @iov
+ * @max_num: maximum number of iovecs.
+ *           corresponds to allocated memory of @iov
  *
  * Mangles iovec in place, and restores it.
  * Remaining data is iov + i, of used - i elements.
@@ -92,7 +102,13 @@ struct vringh_iov {
 };
 
 /**
- * struct vringh_iov - kvec mangler.
+ * struct vringh_kiov - kvec mangler.
+ * @iov: array of iovecs to operate on
+ * @consumed: number of bytes consumed within iov[i]
+ * @i: index of current iovec
+ * @used: number of iovecs present in @iov
+ * @max_num: maximum number of iovecs.
+ *           corresponds to allocated memory of @iov
  *
  * Mangles kvec in place, and restores it.
  * Remaining data is iov + i, of used - i elements.
@@ -159,9 +175,6 @@ int vringh_complete_multi_user(struct vringh *vrh,
 			       const struct vring_used_elem used[],
 			       unsigned num_used);
 
-/* Pretend we've never seen descriptor (for easy error handling). */
-void vringh_abandon_user(struct vringh *vrh, unsigned int num);
-
 /* Do we need to fire the eventfd to notify the other side? */
 int vringh_need_notify_user(struct vringh *vrh);
 
@@ -219,10 +232,6 @@ int vringh_getdesc_kern(struct vringh *vrh,
 			u16 *head,
 			gfp_t gfp);
 
-ssize_t vringh_iov_pull_kern(struct vringh_kiov *riov, void *dst, size_t len);
-ssize_t vringh_iov_push_kern(struct vringh_kiov *wiov,
-			     const void *src, size_t len);
-void vringh_abandon_kern(struct vringh *vrh, unsigned int num);
 int vringh_complete_kern(struct vringh *vrh, u16 head, u32 len);
 
 bool vringh_notify_enable_kern(struct vringh *vrh);
@@ -284,6 +293,12 @@ int vringh_init_iotlb(struct vringh *vrh, u64 features,
 		      struct vring_avail *avail,
 		      struct vring_used *used);
 
+int vringh_init_iotlb_va(struct vringh *vrh, u64 features,
+			 unsigned int num, bool weak_barriers,
+			 struct vring_desc *desc,
+			 struct vring_avail *avail,
+			 struct vring_used *used);
+
 int vringh_getdesc_iotlb(struct vringh *vrh,
 			 struct vringh_kiov *riov,
 			 struct vringh_kiov *wiov,
@@ -297,12 +312,7 @@ ssize_t vringh_iov_push_iotlb(struct vringh *vrh,
 			      struct vringh_kiov *wiov,
 			      const void *src, size_t len);
 
-void vringh_abandon_iotlb(struct vringh *vrh, unsigned int num);
-
 int vringh_complete_iotlb(struct vringh *vrh, u16 head, u32 len);
-
-bool vringh_notify_enable_iotlb(struct vringh *vrh);
-void vringh_notify_disable_iotlb(struct vringh *vrh);
 
 int vringh_need_notify_iotlb(struct vringh *vrh);
 

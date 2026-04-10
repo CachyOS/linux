@@ -11,10 +11,5 @@ more additions are needed here:
    :maxdepth: 1
 
    rtla/index
-
-.. only::  subproject and html
-
-   Indices
-   =======
-
-   * :ref:`genindex`
+   rv/index
+   python

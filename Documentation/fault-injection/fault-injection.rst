@@ -2,7 +2,7 @@
 Fault injection capabilities infrastructure
 ===========================================
 
-See also drivers/md/md-faulty.c and "every_nth" module option for scsi_debug.
+See also "every_nth" module option for scsi_debug.
 
 
 Available fault injection capabilities
@@ -45,6 +45,32 @@ Available fault injection capabilities
   ALLOW_ERROR_INJECTION() macro, by setting debugfs entries
   under /sys/kernel/debug/fail_function. No boot option supported.
 
+- fail_skb_realloc
+
+  inject skb (socket buffer) reallocation events into the network path. The
+  primary goal is to identify and prevent issues related to pointer
+  mismanagement in the network subsystem.  By forcing skb reallocation at
+  strategic points, this feature creates scenarios where existing pointers to
+  skb headers become invalid.
+
+  When the fault is injected and the reallocation is triggered, cached pointers
+  to skb headers and data no longer reference valid memory locations. This
+  deliberate invalidation helps expose code paths where proper pointer updating
+  is neglected after a reallocation event.
+
+  By creating these controlled fault scenarios, the system can catch instances
+  where stale pointers are used, potentially leading to memory corruption or
+  system instability.
+
+  To select the interface to act on, write the network name to
+  /sys/kernel/debug/fail_skb_realloc/devname.
+  If this field is left empty (which is the default value), skb reallocation
+  will be forced on all network interfaces.
+
+  The effectiveness of this fault detection is enhanced when KASAN is
+  enabled, as it helps identify invalid memory references and use-after-free
+  (UAF) issues.
+
 - NVMe fault injection
 
   inject NVMe status code and retry flag on devices permitted by setting
@@ -52,6 +78,14 @@ Available fault injection capabilities
   status code is NVME_SC_INVALID_OPCODE with no retry. The status code and
   retry flag can be set via the debugfs.
 
+- Null test block driver fault injection
+
+  inject IO timeouts by setting config items under
+  /sys/kernel/config/nullb/<disk>/timeout_inject,
+  inject requeue requests by setting config items under
+  /sys/kernel/config/nullb/<disk>/requeue_inject, and
+  inject init_hctx() errors by setting config items under
+  /sys/kernel/config/nullb/<disk>/init_hctx_fault_inject.
 
 Configure fault-injection capabilities behavior
 -----------------------------------------------
@@ -83,9 +117,7 @@ configuration of fault-injection capabilities.
 - /sys/kernel/debug/fail*/times:
 
 	specifies how many times failures may happen at most. A value of -1
-	means "no limit". Note, though, that this file only accepts unsigned
-	values. So, if you want to specify -1, you better use 'printf' instead
-	of 'echo', e.g.: $ printf %#x -1 > times
+	means "no limit".
 
 - /sys/kernel/debug/fail*/space:
 
@@ -135,6 +167,14 @@ configuration of fault-injection capabilities.
 	default is 'Y', setting it to 'N' will also inject failures into
 	highmem/user allocations (__GFP_HIGHMEM allocations).
 
+- /sys/kernel/debug/failslab/cache-filter
+	Format: { 'Y' | 'N' }
+
+        default is 'N', setting it to 'Y' will only inject failures when
+        objects are requests from certain caches.
+
+        Select the cache by writing '1' to /sys/kernel/slab/<cache>/failslab:
+
 - /sys/kernel/debug/failslab/ignore-gfp-wait:
 - /sys/kernel/debug/fail_page_alloc/ignore-gfp-wait:
 
@@ -169,6 +209,13 @@ configuration of fault-injection capabilities.
 	default is 'N', setting it to 'Y' will disable disconnect
 	injection on the RPC server.
 
+- /sys/kernel/debug/fail_sunrpc/ignore-cache-wait:
+
+	Format: { 'Y' | 'N' }
+
+	default is 'N', setting it to 'Y' will disable cache wait
+	injection on the RPC server.
+
 - /sys/kernel/debug/fail_function/inject:
 
 	Format: { 'function-name' | '!function-name' | '' }
@@ -195,6 +242,19 @@ configuration of fault-injection capabilities.
 	use a negative errno, you better use 'printf' instead of 'echo', e.g.:
 	$ printf %#x -12 > retval
 
+- /sys/kernel/debug/fail_skb_realloc/devname:
+
+        Specifies the network interface on which to force SKB reallocation.  If
+        left empty, SKB reallocation will be applied to all network interfaces.
+
+        Example usage::
+
+          # Force skb reallocation on eth0
+          echo "eth0" > /sys/kernel/debug/fail_skb_realloc/devname
+
+          # Clear the selection and force skb reallocation on all interfaces
+          echo "" > /sys/kernel/debug/fail_skb_realloc/devname
+
 Boot option
 ^^^^^^^^^^^
 
@@ -206,6 +266,7 @@ use the boot option::
 	fail_usercopy=
 	fail_make_request=
 	fail_futex=
+	fail_skb_realloc=
 	mmc_core.fail_request=<interval>,<probability>,<space>,<times>
 
 proc entries
@@ -225,6 +286,71 @@ proc entries
 
 	This feature is intended for systematic testing of faults in a single
 	system call. See an example below.
+
+
+Error Injectable Functions
+--------------------------
+
+This part is for the kernel developers considering to add a function to
+ALLOW_ERROR_INJECTION() macro.
+
+Requirements for the Error Injectable Functions
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Since the function-level error injection forcibly changes the code path
+and returns an error even if the input and conditions are proper, this can
+cause unexpected kernel crash if you allow error injection on the function
+which is NOT error injectable. Thus, you (and reviewers) must ensure;
+
+- The function returns an error code if it fails, and the callers must check
+  it correctly (need to recover from it).
+
+- The function does not execute any code which can change any state before
+  the first error return. The state includes global or local, or input
+  variable. For example, clear output address storage (e.g. `*ret = NULL`),
+  increments/decrements counter, set a flag, preempt/irq disable or get
+  a lock (if those are recovered before returning error, that will be OK.)
+
+The first requirement is important, and it will result in that the release
+(free objects) functions are usually harder to inject errors than allocate
+functions. If errors of such release functions are not correctly handled
+it will cause a memory leak easily (the caller will confuse that the object
+has been released or corrupted.)
+
+The second one is for the caller which expects the function should always
+does something. Thus if the function error injection skips whole of the
+function, the expectation is betrayed and causes an unexpected error.
+
+Type of the Error Injectable Functions
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Each error injectable functions will have the error type specified by the
+ALLOW_ERROR_INJECTION() macro. You have to choose it carefully if you add
+a new error injectable function. If the wrong error type is chosen, the
+kernel may crash because it may not be able to handle the error.
+There are 4 types of errors defined in include/asm-generic/error-injection.h
+
+EI_ETYPE_NULL
+  This function will return `NULL` if it fails. e.g. return an allocated
+  object address.
+
+EI_ETYPE_ERRNO
+  This function will return an `-errno` error code if it fails. e.g. return
+  -EINVAL if the input is wrong. This will include the functions which will
+  return an address which encodes `-errno` by ERR_PTR() macro.
+
+EI_ETYPE_ERRNO_NULL
+  This function will return an `-errno` or `NULL` if it fails. If the caller
+  of this function checks the return value with IS_ERR_OR_NULL() macro, this
+  type will be appropriate.
+
+EI_ETYPE_TRUE
+  This function will return `true` (non-zero positive value) if it fails.
+
+If you specifies a wrong type, for example, EI_TYPE_ERRNO for the function
+which returns an allocated object, it may cause a problem because the returned
+value is not an object address and the caller can not access to the address.
+
 
 How to add new fault injection capability
 -----------------------------------------
@@ -277,7 +403,7 @@ Application Examples
     echo Y > /sys/kernel/debug/$FAILTYPE/task-filter
     echo 10 > /sys/kernel/debug/$FAILTYPE/probability
     echo 100 > /sys/kernel/debug/$FAILTYPE/interval
-    printf %#x -1 > /sys/kernel/debug/$FAILTYPE/times
+    echo -1 > /sys/kernel/debug/$FAILTYPE/times
     echo 0 > /sys/kernel/debug/$FAILTYPE/space
     echo 2 > /sys/kernel/debug/$FAILTYPE/verbose
     echo Y > /sys/kernel/debug/$FAILTYPE/ignore-gfp-wait
@@ -331,7 +457,7 @@ Application Examples
     echo N > /sys/kernel/debug/$FAILTYPE/task-filter
     echo 10 > /sys/kernel/debug/$FAILTYPE/probability
     echo 100 > /sys/kernel/debug/$FAILTYPE/interval
-    printf %#x -1 > /sys/kernel/debug/$FAILTYPE/times
+    echo -1 > /sys/kernel/debug/$FAILTYPE/times
     echo 0 > /sys/kernel/debug/$FAILTYPE/space
     echo 2 > /sys/kernel/debug/$FAILTYPE/verbose
     echo Y > /sys/kernel/debug/$FAILTYPE/ignore-gfp-wait
@@ -362,7 +488,7 @@ Application Examples
     echo N > /sys/kernel/debug/$FAILTYPE/task-filter
     echo 100 > /sys/kernel/debug/$FAILTYPE/probability
     echo 0 > /sys/kernel/debug/$FAILTYPE/interval
-    printf %#x -1 > /sys/kernel/debug/$FAILTYPE/times
+    echo -1 > /sys/kernel/debug/$FAILTYPE/times
     echo 0 > /sys/kernel/debug/$FAILTYPE/space
     echo 1 > /sys/kernel/debug/$FAILTYPE/verbose
 
@@ -380,6 +506,18 @@ Application Examples
     rmdir tmpmnt
     losetup -d $DEVICE
     rm testfile.img
+
+------------------------------------------------------------------------------
+
+- Inject only skbuff allocation failures ::
+
+    # mark skbuff_head_cache as faulty
+    echo 1 > /sys/kernel/slab/skbuff_head_cache/failslab
+    # Turn on cache filter (off by default)
+    echo 1 > /sys/kernel/debug/failslab/cache-filter
+    # Turn on fault injection
+    echo 1 > /sys/kernel/debug/failslab/times
+    echo 1 > /sys/kernel/debug/failslab/probability
 
 
 Tool to run command with failslab or fail_page_alloc

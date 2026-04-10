@@ -87,7 +87,7 @@ static int rt4831_probe(struct i2c_client *client)
 				    ARRAY_SIZE(rt4831_subdevs), NULL, 0, NULL);
 }
 
-static int rt4831_remove(struct i2c_client *client)
+static void rt4831_remove(struct i2c_client *client)
 {
 	struct regmap *regmap = dev_get_regmap(&client->dev, NULL);
 	int ret;
@@ -96,8 +96,6 @@ static int rt4831_remove(struct i2c_client *client)
 	ret = regmap_update_bits(regmap, RT4831_REG_ENABLE, RT4831_RESET_MASK, RT4831_RESET_MASK);
 	if (ret)
 		dev_warn(&client->dev, "Failed to disable outputs (%pe)\n", ERR_PTR(ret));
-
-	return 0;
 }
 
 static const struct of_device_id __maybe_unused rt4831_of_match[] = {
@@ -111,10 +109,11 @@ static struct i2c_driver rt4831_driver = {
 		.name = "rt4831",
 		.of_match_table = rt4831_of_match,
 	},
-	.probe_new = rt4831_probe,
+	.probe = rt4831_probe,
 	.remove = rt4831_remove,
 };
 module_i2c_driver(rt4831_driver);
 
 MODULE_AUTHOR("ChiYuan Huang <cy_huang@richtek.com>");
+MODULE_DESCRIPTION("Richtek RT4831 core driver");
 MODULE_LICENSE("GPL v2");

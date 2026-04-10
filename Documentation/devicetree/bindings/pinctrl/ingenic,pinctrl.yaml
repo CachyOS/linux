@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/pinctrl/ingenic,pinctrl.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Ingenic SoCs pin controller devicetree bindings
+title: Ingenic SoCs pin controller
 
 description: >
   Please refer to pinctrl-bindings.txt in this directory for details of the
@@ -42,6 +42,7 @@ properties:
           - ingenic,jz4780-pinctrl
           - ingenic,x1000-pinctrl
           - ingenic,x1500-pinctrl
+          - ingenic,x1600-pinctrl
           - ingenic,x1830-pinctrl
           - ingenic,x2000-pinctrl
           - ingenic,x2100-pinctrl
@@ -81,6 +82,7 @@ patternProperties:
           - ingenic,jz4780-gpio
           - ingenic,x1000-gpio
           - ingenic,x1500-gpio
+          - ingenic,x1600-gpio
           - ingenic,x1830-gpio
           - ingenic,x2000-gpio
           - ingenic,x2100-gpio
@@ -119,7 +121,7 @@ patternProperties:
     additionalProperties: false
 
 allOf:
-  - $ref: "pinctrl.yaml#"
+  - $ref: pinctrl.yaml#
 
 required:
   - compatible
@@ -135,7 +137,6 @@ additionalProperties:
         - $ref: pinmux-node.yaml#
 
       properties:
-        phandle: true
         function: true
         groups: true
         pins: true
@@ -147,8 +148,6 @@ additionalProperties:
       additionalProperties: false
 
     - type: object
-      properties:
-        phandle: true
       additionalProperties:
         type: object
         allOf:
@@ -156,7 +155,6 @@ additionalProperties:
           - $ref: pinmux-node.yaml#
 
         properties:
-          phandle: true
           function: true
           groups: true
           pins: true

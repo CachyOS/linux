@@ -396,7 +396,7 @@ static void reg_write(struct snd_ice1712 *ice, unsigned int reg,
 {
 	unsigned int tmp;
 
-	mutex_lock(&ice->gpio_mutex);
+	guard(mutex)(&ice->gpio_mutex);
 	/* set direction of used GPIOs*/
 	/* all outputs */
 	tmp = 0x00ffff;
@@ -429,7 +429,6 @@ static void reg_write(struct snd_ice1712 *ice, unsigned int reg,
 	ice->gpio.set_mask(ice, 0xffffff);
 	/* outputs only 8-15 */
 	ice->gpio.set_dir(ice, 0x00ff00);
-	mutex_unlock(&ice->gpio_mutex);
 }
 
 static unsigned int get_scr(struct snd_ice1712 *ice)
@@ -566,7 +565,7 @@ static int qtet_ain12_sw_put(struct snd_kcontrol *kcontrol,
 {
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
 	unsigned int old, new, tmp, masked_old;
-	old = new = get_scr(ice);
+	old = get_scr(ice);
 	masked_old = old & (SCR_AIN12_SEL1 | SCR_AIN12_SEL0);
 	tmp = ucontrol->value.integer.value[0];
 	if (tmp == 2)
@@ -766,26 +765,6 @@ static const char * const follower_vols[] = {
 static
 DECLARE_TLV_DB_SCALE(qtet_master_db_scale, -6350, 50, 1);
 
-static struct snd_kcontrol *ctl_find(struct snd_card *card,
-				     const char *name)
-{
-	struct snd_ctl_elem_id sid = {0};
-
-	strscpy(sid.name, name, sizeof(sid.name));
-	sid.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
-	return snd_ctl_find_id(card, &sid);
-}
-
-static void add_followers(struct snd_card *card,
-			  struct snd_kcontrol *master, const char * const *list)
-{
-	for (; *list; list++) {
-		struct snd_kcontrol *follower = ctl_find(card, *list);
-		if (follower)
-			snd_ctl_add_follower(master, follower);
-	}
-}
-
 static int qtet_add_controls(struct snd_ice1712 *ice)
 {
 	struct qtet_spec *spec = ice->spec;
@@ -806,8 +785,10 @@ static int qtet_add_controls(struct snd_ice1712 *ice)
 			qtet_master_db_scale);
 	if (!vmaster)
 		return -ENOMEM;
-	add_followers(ice->card, vmaster, follower_vols);
 	err = snd_ctl_add(ice->card, vmaster);
+	if (err < 0)
+		return err;
+	err = snd_ctl_add_followers(ice->card, vmaster, follower_vols);
 	if (err < 0)
 		return err;
 	/* only capture SPDIF over AK4113 */
@@ -988,7 +969,7 @@ static int qtet_init(struct snd_ice1712 *ice)
 	val = inb(ICEMT1724(ice, RATE));
 	outb(val | VT1724_SPDIF_MASTER, ICEMT1724(ice, RATE));
 
-	spec = kzalloc(sizeof(*spec), GFP_KERNEL);
+	spec = kzalloc_obj(*spec);
 	if (!spec)
 		return -ENOMEM;
 	/* qtet is clocked by Xilinx array */
@@ -1024,7 +1005,7 @@ static int qtet_init(struct snd_ice1712 *ice)
 	ice->num_total_dacs = 2;
 	ice->num_total_adcs = 2;
 
-	ice->akm = kcalloc(2, sizeof(struct snd_akm4xxx), GFP_KERNEL);
+	ice->akm = kzalloc_objs(struct snd_akm4xxx, 2);
 	ak = ice->akm;
 	if (!ak)
 		return -ENOMEM;

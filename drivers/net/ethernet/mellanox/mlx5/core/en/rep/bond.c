@@ -92,7 +92,7 @@ int mlx5e_rep_bond_enslave(struct mlx5_eswitch *esw, struct net_device *netdev,
 	mdata = mlx5e_lookup_rep_bond_metadata(&rpriv->uplink_priv, lag_dev);
 	if (!mdata) {
 		/* First netdev becomes slave, no metadata presents the lag_dev. Create one */
-		mdata = kzalloc(sizeof(*mdata), GFP_KERNEL);
+		mdata = kzalloc_obj(*mdata);
 		if (!mdata)
 			return -ENOMEM;
 
@@ -110,7 +110,7 @@ int mlx5e_rep_bond_enslave(struct mlx5_eswitch *esw, struct net_device *netdev,
 			   mdata->metadata_reg_c_0);
 	}
 
-	s_entry = kzalloc(sizeof(*s_entry), GFP_KERNEL);
+	s_entry = kzalloc_obj(*s_entry);
 	if (!s_entry) {
 		err = -ENOMEM;
 		goto entry_alloc_err;
@@ -120,8 +120,8 @@ int mlx5e_rep_bond_enslave(struct mlx5_eswitch *esw, struct net_device *netdev,
 	priv = netdev_priv(netdev);
 	rpriv = priv->ppriv;
 
-	err = mlx5_esw_acl_ingress_vport_bond_update(esw, rpriv->rep->vport,
-						     mdata->metadata_reg_c_0);
+	err = mlx5_esw_acl_ingress_vport_metadata_update(esw, rpriv->rep->vport,
+							 mdata->metadata_reg_c_0);
 	if (err)
 		goto ingress_err;
 
@@ -167,7 +167,7 @@ void mlx5e_rep_bond_unslave(struct mlx5_eswitch *esw,
 	/* Reset bond_metadata to zero first then reset all ingress/egress
 	 * acls and rx rules of unslave representor's vport
 	 */
-	mlx5_esw_acl_ingress_vport_bond_update(esw, rpriv->rep->vport, 0);
+	mlx5_esw_acl_ingress_vport_metadata_update(esw, rpriv->rep->vport, 0);
 	mlx5_esw_acl_egress_vport_unbond(esw, rpriv->rep->vport);
 	mlx5e_rep_bond_update(priv, false);
 
@@ -315,7 +315,7 @@ int mlx5e_rep_bond_init(struct mlx5e_rep_priv *rpriv)
 	if (!mlx5_esw_acl_egress_fwd2vport_supported(priv->mdev->priv.eswitch))
 		goto out;
 
-	uplink_priv->bond = kvzalloc(sizeof(*uplink_priv->bond), GFP_KERNEL);
+	uplink_priv->bond = kvzalloc_obj(*uplink_priv->bond);
 	if (!uplink_priv->bond) {
 		ret = -ENOMEM;
 		goto out;

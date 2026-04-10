@@ -5,6 +5,7 @@
 :翻译:
 
  司延腾 Yanteng Si <siyanteng@loongson.cn>
+ 周彬彬 Binbin Zhou <zhoubinbin@loongson.cn>
 
 .. _cn_printk-formats.rst:
 
@@ -522,9 +523,8 @@ clk结构体
 ::
 
 	%pC	pll1
-	%pCn	pll1
 
-用于打印clk结构。%pC 和 %pCn 打印时钟的名称（通用时钟框架）或唯一的32位
+用于打印clk结构。%pC 打印时钟的名称（通用时钟框架）或唯一的32位
 ID（传统时钟框架）。
 
 通过引用传递。
@@ -548,7 +548,7 @@ nodemask_pr_args()来方便打印cpumask和nodemask。
 
 ::
 
-	%pGp	referenced|uptodate|lru|active|private|node=0|zone=2|lastcpupid=0x1fffff
+	%pGp	0x17ffffc0002036(referenced|uptodate|lru|active|private|node=0|zone=2|lastcpupid=0x1fffff)
 	%pGg	GFP_USER|GFP_DMA32|GFP_NOWARN
 	%pGv	read|exec|mayread|maywrite|mayexec|denywrite
 

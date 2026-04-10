@@ -36,15 +36,17 @@
 struct gpio_desc;
 
 enum sec_device_type {
-	S5M8751X,
-	S5M8763X,
 	S5M8767X,
+	S2DOS05,
 	S2MPA01,
+	S2MPG10,
+	S2MPG11,
 	S2MPS11X,
 	S2MPS13X,
 	S2MPS14X,
 	S2MPS15X,
 	S2MPU02,
+	S2MPU05,
 };
 
 /**
@@ -66,14 +68,9 @@ struct sec_pmic_dev {
 	struct regmap *regmap_pmic;
 	struct i2c_client *i2c;
 
-	unsigned long device_type;
+	int device_type;
 	int irq;
-	struct regmap_irq_chip_data *irq_data;
 };
-
-int sec_irq_init(struct sec_pmic_dev *sec_pmic);
-void sec_irq_exit(struct sec_pmic_dev *sec_pmic);
-int sec_irq_resume(struct sec_pmic_dev *sec_pmic);
 
 struct sec_platform_data {
 	struct sec_regulator_data	*regulators;

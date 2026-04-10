@@ -24,7 +24,7 @@
 #define THREAD_SIZE_ORDER	1
 #define THREAD_SIZE		8192 /* 2 * PAGE_SIZE */
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 /*
  * low level task data that entry.S needs immediate access to
@@ -61,7 +61,7 @@ static inline struct thread_info *current_thread_info(void)
 
 	return (struct thread_info *)(sp & ~(THREAD_SIZE - 1));
 }
-#endif /* !__ASSEMBLY__ */
+#endif /* !__ASSEMBLER__ */
 
 /*
  * thread information flags
@@ -95,9 +95,6 @@ static inline struct thread_info *current_thread_info(void)
 
 /* work to do on interrupt/exception return */
 #define _TIF_WORK_MASK		0x0000FFFE
-
-/* work to do on any return to u-space */
-# define _TIF_ALLWORK_MASK	0x0000FFFF
 
 #endif /* __KERNEL__ */
 

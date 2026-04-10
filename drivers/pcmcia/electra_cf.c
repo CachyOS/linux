@@ -68,7 +68,7 @@ static int electra_cf_ss_init(struct pcmcia_socket *s)
 /* the timer is primarily to kick this socket's pccardd */
 static void electra_cf_timer(struct timer_list *t)
 {
-	struct electra_cf_socket *cf = from_timer(cf, t, timer);
+	struct electra_cf_socket *cf = timer_container_of(cf, t, timer);
 	int present = electra_cf_present(cf);
 
 	if (present != cf->present) {
@@ -190,7 +190,7 @@ static int electra_cf_probe(struct platform_device *ofdev)
 	if (err)
 		return -EINVAL;
 
-	cf = kzalloc(sizeof(*cf), GFP_KERNEL);
+	cf = kzalloc_obj(*cf);
 	if (!cf)
 		return -ENOMEM;
 
@@ -307,7 +307,7 @@ out_free_cf:
 
 }
 
-static int electra_cf_remove(struct platform_device *ofdev)
+static void electra_cf_remove(struct platform_device *ofdev)
 {
 	struct device *device = &ofdev->dev;
 	struct electra_cf_socket *cf;
@@ -317,7 +317,7 @@ static int electra_cf_remove(struct platform_device *ofdev)
 	cf->active = 0;
 	pcmcia_unregister_socket(&cf->socket);
 	free_irq(cf->irq, cf);
-	del_timer_sync(&cf->timer);
+	timer_shutdown_sync(&cf->timer);
 
 	iounmap(cf->io_virt);
 	iounmap(cf->mem_base);
@@ -326,8 +326,6 @@ static int electra_cf_remove(struct platform_device *ofdev)
 	release_region(cf->io_base, cf->io_size);
 
 	kfree(cf);
-
-	return 0;
 }
 
 static const struct of_device_id electra_cf_match[] = {

@@ -23,8 +23,6 @@
 #include "hid-roccat-common.h"
 #include "hid-roccat-arvo.h"
 
-static struct class *arvo_class;
-
 static ssize_t arvo_sysfs_show_mode_key(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -226,24 +224,24 @@ static ssize_t arvo_sysfs_read(struct file *fp,
 }
 
 static ssize_t arvo_sysfs_write_button(struct file *fp,
-		struct kobject *kobj, struct bin_attribute *attr, char *buf,
-		loff_t off, size_t count)
+		struct kobject *kobj, const struct bin_attribute *attr,
+		char *buf, loff_t off, size_t count)
 {
 	return arvo_sysfs_write(fp, kobj, buf, off, count,
 			sizeof(struct arvo_button), ARVO_COMMAND_BUTTON);
 }
-static BIN_ATTR(button, 0220, NULL, arvo_sysfs_write_button,
-		sizeof(struct arvo_button));
+static const BIN_ATTR(button, 0220, NULL, arvo_sysfs_write_button,
+		      sizeof(struct arvo_button));
 
 static ssize_t arvo_sysfs_read_info(struct file *fp,
-		struct kobject *kobj, struct bin_attribute *attr, char *buf,
-		loff_t off, size_t count)
+		struct kobject *kobj, const struct bin_attribute *attr,
+		char *buf, loff_t off, size_t count)
 {
 	return arvo_sysfs_read(fp, kobj, buf, off, count,
 			sizeof(struct arvo_info), ARVO_COMMAND_INFO);
 }
-static BIN_ATTR(info, 0440, arvo_sysfs_read_info, NULL,
-		sizeof(struct arvo_info));
+static const BIN_ATTR(info, 0440, arvo_sysfs_read_info, NULL,
+		      sizeof(struct arvo_info));
 
 static struct attribute *arvo_attrs[] = {
 	&dev_attr_mode_key.attr,
@@ -252,7 +250,7 @@ static struct attribute *arvo_attrs[] = {
 	NULL,
 };
 
-static struct bin_attribute *arvo_bin_attributes[] = {
+static const struct bin_attribute *const arvo_bin_attributes[] = {
 	&bin_attr_button,
 	&bin_attr_info,
 	NULL,
@@ -266,6 +264,11 @@ static const struct attribute_group arvo_group = {
 static const struct attribute_group *arvo_groups[] = {
 	&arvo_group,
 	NULL,
+};
+
+static const struct class arvo_class = {
+	.name = "arvo",
+	.dev_groups = arvo_groups,
 };
 
 static int arvo_init_arvo_device_struct(struct usb_device *usb_dev,
@@ -296,7 +299,7 @@ static int arvo_init_specials(struct hid_device *hdev)
 		return 0;
 	}
 
-	arvo = kzalloc(sizeof(*arvo), GFP_KERNEL);
+	arvo = kzalloc_obj(*arvo);
 	if (!arvo) {
 		hid_err(hdev, "can't alloc device descriptor\n");
 		return -ENOMEM;
@@ -309,7 +312,7 @@ static int arvo_init_specials(struct hid_device *hdev)
 		goto exit_free;
 	}
 
-	retval = roccat_connect(arvo_class, hdev,
+	retval = roccat_connect(&arvo_class, hdev,
 			sizeof(struct arvo_roccat_report));
 	if (retval < 0) {
 		hid_err(hdev, "couldn't init char dev\n");
@@ -433,21 +436,20 @@ static int __init arvo_init(void)
 {
 	int retval;
 
-	arvo_class = class_create(THIS_MODULE, "arvo");
-	if (IS_ERR(arvo_class))
-		return PTR_ERR(arvo_class);
-	arvo_class->dev_groups = arvo_groups;
+	retval = class_register(&arvo_class);
+	if (retval)
+		return retval;
 
 	retval = hid_register_driver(&arvo_driver);
 	if (retval)
-		class_destroy(arvo_class);
+		class_unregister(&arvo_class);
 	return retval;
 }
 
 static void __exit arvo_exit(void)
 {
 	hid_unregister_driver(&arvo_driver);
-	class_destroy(arvo_class);
+	class_unregister(&arvo_class);
 }
 
 module_init(arvo_init);

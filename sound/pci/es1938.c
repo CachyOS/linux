@@ -216,9 +216,7 @@ struct es1938 {
 #ifdef SUPPORT_JOYSTICK
 	struct gameport *gameport;
 #endif
-#ifdef CONFIG_PM_SLEEP
 	unsigned char saved_regs[SAVED_REG_SIZE];
-#endif
 };
 
 static irqreturn_t snd_es1938_interrupt(int irq, void *dev_id);
@@ -239,11 +237,9 @@ MODULE_DEVICE_TABLE(pci, snd_es1938_ids);
  * -----------------------------------------------------------------*/
 static void snd_es1938_mixer_write(struct es1938 *chip, unsigned char reg, unsigned char val)
 {
-	unsigned long flags;
-	spin_lock_irqsave(&chip->mixer_lock, flags);
+	guard(spinlock_irqsave)(&chip->mixer_lock);
 	outb(reg, SLSB_REG(chip, MIXERADDR));
 	outb(val, SLSB_REG(chip, MIXERDATA));
-	spin_unlock_irqrestore(&chip->mixer_lock, flags);
 	dev_dbg(chip->card->dev, "Mixer reg %02x set to %02x\n", reg, val);
 }
 
@@ -253,11 +249,10 @@ static void snd_es1938_mixer_write(struct es1938 *chip, unsigned char reg, unsig
 static int snd_es1938_mixer_read(struct es1938 *chip, unsigned char reg)
 {
 	int data;
-	unsigned long flags;
-	spin_lock_irqsave(&chip->mixer_lock, flags);
+
+	guard(spinlock_irqsave)(&chip->mixer_lock);
 	outb(reg, SLSB_REG(chip, MIXERADDR));
 	data = inb(SLSB_REG(chip, MIXERDATA));
-	spin_unlock_irqrestore(&chip->mixer_lock, flags);
 	dev_dbg(chip->card->dev, "Mixer reg %02x now is %02x\n", reg, data);
 	return data;
 }
@@ -268,9 +263,9 @@ static int snd_es1938_mixer_read(struct es1938 *chip, unsigned char reg)
 static int snd_es1938_mixer_bits(struct es1938 *chip, unsigned char reg,
 				 unsigned char mask, unsigned char val)
 {
-	unsigned long flags;
 	unsigned char old, new, oval;
-	spin_lock_irqsave(&chip->mixer_lock, flags);
+
+	guard(spinlock_irqsave)(&chip->mixer_lock);
 	outb(reg, SLSB_REG(chip, MIXERADDR));
 	old = inb(SLSB_REG(chip, MIXERDATA));
 	oval = old & mask;
@@ -281,7 +276,6 @@ static int snd_es1938_mixer_bits(struct es1938 *chip, unsigned char reg,
 			"Mixer reg %02x was %02x, set to %02x\n",
 			   reg, old, new);
 	}
-	spin_unlock_irqrestore(&chip->mixer_lock, flags);
 	return oval;
 }
 
@@ -324,11 +318,9 @@ static int snd_es1938_get_byte(struct es1938 *chip)
  * -----------------------------------------------------------------*/
 static void snd_es1938_write(struct es1938 *chip, unsigned char reg, unsigned char val)
 {
-	unsigned long flags;
-	spin_lock_irqsave(&chip->reg_lock, flags);
+	guard(spinlock_irqsave)(&chip->reg_lock);
 	snd_es1938_write_cmd(chip, reg);
 	snd_es1938_write_cmd(chip, val);
-	spin_unlock_irqrestore(&chip->reg_lock, flags);
 	dev_dbg(chip->card->dev, "Reg %02x set to %02x\n", reg, val);
 }
 
@@ -338,12 +330,11 @@ static void snd_es1938_write(struct es1938 *chip, unsigned char reg, unsigned ch
 static unsigned char snd_es1938_read(struct es1938 *chip, unsigned char reg)
 {
 	unsigned char val;
-	unsigned long flags;
-	spin_lock_irqsave(&chip->reg_lock, flags);
+
+	guard(spinlock_irqsave)(&chip->reg_lock);
 	snd_es1938_write_cmd(chip, ESS_CMD_READREG);
 	snd_es1938_write_cmd(chip, reg);
 	val = snd_es1938_get_byte(chip);
-	spin_unlock_irqrestore(&chip->reg_lock, flags);
 	dev_dbg(chip->card->dev, "Reg %02x now is %02x\n", reg, val);
 	return val;
 }
@@ -354,9 +345,9 @@ static unsigned char snd_es1938_read(struct es1938 *chip, unsigned char reg)
 static int snd_es1938_bits(struct es1938 *chip, unsigned char reg, unsigned char mask,
 			   unsigned char val)
 {
-	unsigned long flags;
 	unsigned char old, new, oval;
-	spin_lock_irqsave(&chip->reg_lock, flags);
+
+	guard(spinlock_irqsave)(&chip->reg_lock);
 	snd_es1938_write_cmd(chip, ESS_CMD_READREG);
 	snd_es1938_write_cmd(chip, reg);
 	old = snd_es1938_get_byte(chip);
@@ -368,7 +359,6 @@ static int snd_es1938_bits(struct es1938 *chip, unsigned char reg, unsigned char
 		dev_dbg(chip->card->dev, "Reg %02x was %02x, set to %02x\n",
 			   reg, old, new);
 	}
-	spin_unlock_irqrestore(&chip->reg_lock, flags);
 	return oval;
 }
 
@@ -824,7 +814,7 @@ static snd_pcm_uframes_t snd_es1938_playback_pointer(struct snd_pcm_substream *s
 
 static int snd_es1938_capture_copy(struct snd_pcm_substream *substream,
 				   int channel, unsigned long pos,
-				   void __user *dst, unsigned long count)
+				   struct iov_iter *dst, unsigned long count)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct es1938 *chip = snd_pcm_substream_chip(substream);
@@ -832,32 +822,13 @@ static int snd_es1938_capture_copy(struct snd_pcm_substream *substream,
 	if (snd_BUG_ON(pos + count > chip->dma1_size))
 		return -EINVAL;
 	if (pos + count < chip->dma1_size) {
-		if (copy_to_user(dst, runtime->dma_area + pos + 1, count))
+		if (copy_to_iter(runtime->dma_area + pos + 1, count, dst) != count)
 			return -EFAULT;
 	} else {
-		if (copy_to_user(dst, runtime->dma_area + pos + 1, count - 1))
+		if (copy_to_iter(runtime->dma_area + pos + 1, count - 1, dst) != count - 1)
 			return -EFAULT;
-		if (put_user(runtime->dma_area[0],
-			     ((unsigned char __user *)dst) + count - 1))
+		if (copy_to_iter(runtime->dma_area, 1, dst) != 1)
 			return -EFAULT;
-	}
-	return 0;
-}
-
-static int snd_es1938_capture_copy_kernel(struct snd_pcm_substream *substream,
-					  int channel, unsigned long pos,
-					  void *dst, unsigned long count)
-{
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct es1938 *chip = snd_pcm_substream_chip(substream);
-
-	if (snd_BUG_ON(pos + count > chip->dma1_size))
-		return -EINVAL;
-	if (pos + count < chip->dma1_size) {
-		memcpy(dst, runtime->dma_area + pos + 1, count);
-	} else {
-		memcpy(dst, runtime->dma_area + pos + 1, count - 1);
-		runtime->dma_area[0] = *((unsigned char *)dst + count - 1);
 	}
 	return 0;
 }
@@ -987,8 +958,7 @@ static const struct snd_pcm_ops snd_es1938_capture_ops = {
 	.prepare =	snd_es1938_capture_prepare,
 	.trigger =	snd_es1938_capture_trigger,
 	.pointer =	snd_es1938_capture_pointer,
-	.copy_user =	snd_es1938_capture_copy,
-	.copy_kernel =	snd_es1938_capture_copy_kernel,
+	.copy =		snd_es1938_capture_copy,
 };
 
 static int snd_es1938_new_pcm(struct es1938 *chip, int device)
@@ -1004,7 +974,7 @@ static int snd_es1938_new_pcm(struct es1938 *chip, int device)
 	
 	pcm->private_data = chip;
 	pcm->info_flags = 0;
-	strcpy(pcm->name, "ESS Solo-1");
+	strscpy(pcm->name, "ESS Solo-1");
 
 	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV,
 				       &chip->pci->dev, 64*1024, 64*1024);
@@ -1415,7 +1385,6 @@ static void snd_es1938_chip_init(struct es1938 *chip)
 	outb(0, SLDM_REG(chip, DMACLEAR));
 }
 
-#ifdef CONFIG_PM_SLEEP
 /*
  * PM support
  */
@@ -1481,11 +1450,7 @@ static int es1938_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(es1938_pm, es1938_suspend, es1938_resume);
-#define ES1938_PM_OPS	&es1938_pm
-#else
-#define ES1938_PM_OPS	NULL
-#endif /* CONFIG_PM_SLEEP */
+static DEFINE_SIMPLE_DEV_PM_OPS(es1938_pm, es1938_suspend, es1938_resume);
 
 #ifdef SUPPORT_JOYSTICK
 static int snd_es1938_create_gameport(struct es1938 *chip)
@@ -1558,7 +1523,7 @@ static int snd_es1938_create(struct snd_card *card,
 	chip->card = card;
 	chip->pci = pci;
 	chip->irq = -1;
-	err = pci_request_regions(pci, "ESS Solo-1");
+	err = pcim_request_all_regions(pci, "ESS Solo-1");
 	if (err < 0)
 		return err;
 	chip->io_port = pci_resource_start(pci, 0);
@@ -1685,7 +1650,7 @@ static int snd_es1938_mixer(struct es1938 *chip)
 
 	card = chip->card;
 
-	strcpy(card->mixername, "ESS Solo-1");
+	strscpy(card->mixername, "ESS Solo-1");
 
 	for (idx = 0; idx < ARRAY_SIZE(snd_es1938_controls); idx++) {
 		struct snd_kcontrol *kctl;
@@ -1747,8 +1712,8 @@ static int __snd_es1938_probe(struct pci_dev *pci,
 	if (err < 0)
 		return err;
 
-	strcpy(card->driver, "ES1938");
-	strcpy(card->shortname, "ESS ES1938 (Solo-1)");
+	strscpy(card->driver, "ES1938");
+	strscpy(card->shortname, "ESS ES1938 (Solo-1)");
 	sprintf(card->longname, "%s rev %i, irq %i",
 		card->shortname,
 		chip->revision,
@@ -1807,7 +1772,7 @@ static struct pci_driver es1938_driver = {
 	.id_table = snd_es1938_ids,
 	.probe = snd_es1938_probe,
 	.driver = {
-		.pm = ES1938_PM_OPS,
+		.pm = &es1938_pm,
 	},
 };
 

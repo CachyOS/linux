@@ -3,7 +3,7 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2018-2021 Intel Corporation. All rights reserved.
+// Copyright(c) 2018-2021 Intel Corporation
 //
 // Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
 //
@@ -78,23 +78,23 @@ void atom_dump(struct snd_sof_dev *sdev, u32 flags)
 	imrd = snd_sof_dsp_read64(sdev, DSP_BAR, SHIM_IMRD);
 	dev_err(sdev->dev,
 		"error: ipc host -> DSP: pending %s complete %s raw 0x%llx\n",
-		(panic & SHIM_IPCX_BUSY) ? "yes" : "no",
-		(panic & SHIM_IPCX_DONE) ? "yes" : "no", panic);
+		str_yes_no(panic & SHIM_IPCX_BUSY),
+		str_yes_no(panic & SHIM_IPCX_DONE), panic);
 	dev_err(sdev->dev,
 		"error: mask host: pending %s complete %s raw 0x%llx\n",
-		(imrx & SHIM_IMRX_BUSY) ? "yes" : "no",
-		(imrx & SHIM_IMRX_DONE) ? "yes" : "no", imrx);
+		str_yes_no(imrx & SHIM_IMRX_BUSY),
+		str_yes_no(imrx & SHIM_IMRX_DONE), imrx);
 	dev_err(sdev->dev,
 		"error: ipc DSP -> host: pending %s complete %s raw 0x%llx\n",
-		(status & SHIM_IPCD_BUSY) ? "yes" : "no",
-		(status & SHIM_IPCD_DONE) ? "yes" : "no", status);
+		str_yes_no(status & SHIM_IPCD_BUSY),
+		str_yes_no(status & SHIM_IPCD_DONE), status);
 	dev_err(sdev->dev,
 		"error: mask DSP: pending %s complete %s raw 0x%llx\n",
-		(imrd & SHIM_IMRD_BUSY) ? "yes" : "no",
-		(imrd & SHIM_IMRD_DONE) ? "yes" : "no", imrd);
+		str_yes_no(imrd & SHIM_IMRD_BUSY),
+		str_yes_no(imrd & SHIM_IMRD_DONE), imrd);
 
 }
-EXPORT_SYMBOL_NS(atom_dump, SND_SOC_SOF_INTEL_ATOM_HIFI_EP);
+EXPORT_SYMBOL_NS(atom_dump, "SND_SOC_SOF_INTEL_ATOM_HIFI_EP");
 
 /*
  * IPC Doorbell IRQ handler and thread.
@@ -131,7 +131,7 @@ irqreturn_t atom_irq_handler(int irq, void *context)
 
 	return ret;
 }
-EXPORT_SYMBOL_NS(atom_irq_handler, SND_SOC_SOF_INTEL_ATOM_HIFI_EP);
+EXPORT_SYMBOL_NS(atom_irq_handler, "SND_SOC_SOF_INTEL_ATOM_HIFI_EP");
 
 irqreturn_t atom_irq_thread(int irq, void *context)
 {
@@ -143,9 +143,6 @@ irqreturn_t atom_irq_thread(int irq, void *context)
 
 	/* reply message from DSP */
 	if (ipcx & SHIM_BYT_IPCX_DONE) {
-
-		spin_lock_irq(&sdev->ipc_lock);
-
 		/*
 		 * handle immediate reply from DSP core. If the msg is
 		 * found, set done bit in cmd_done which is called at the
@@ -153,11 +150,9 @@ irqreturn_t atom_irq_thread(int irq, void *context)
 		 * because the done bit can't be set in cmd_done function
 		 * which is triggered by msg
 		 */
+		guard(spinlock_irq)(&sdev->ipc_lock);
 		snd_sof_ipc_process_reply(sdev, ipcx);
-
 		atom_dsp_done(sdev);
-
-		spin_unlock_irq(&sdev->ipc_lock);
 	}
 
 	/* new message from DSP */
@@ -176,7 +171,7 @@ irqreturn_t atom_irq_thread(int irq, void *context)
 
 	return IRQ_HANDLED;
 }
-EXPORT_SYMBOL_NS(atom_irq_thread, SND_SOC_SOF_INTEL_ATOM_HIFI_EP);
+EXPORT_SYMBOL_NS(atom_irq_thread, "SND_SOC_SOF_INTEL_ATOM_HIFI_EP");
 
 int atom_send_msg(struct snd_sof_dev *sdev, struct snd_sof_ipc_msg *msg)
 {
@@ -191,19 +186,19 @@ int atom_send_msg(struct snd_sof_dev *sdev, struct snd_sof_ipc_msg *msg)
 
 	return 0;
 }
-EXPORT_SYMBOL_NS(atom_send_msg, SND_SOC_SOF_INTEL_ATOM_HIFI_EP);
+EXPORT_SYMBOL_NS(atom_send_msg, "SND_SOC_SOF_INTEL_ATOM_HIFI_EP");
 
 int atom_get_mailbox_offset(struct snd_sof_dev *sdev)
 {
 	return MBOX_OFFSET;
 }
-EXPORT_SYMBOL_NS(atom_get_mailbox_offset, SND_SOC_SOF_INTEL_ATOM_HIFI_EP);
+EXPORT_SYMBOL_NS(atom_get_mailbox_offset, "SND_SOC_SOF_INTEL_ATOM_HIFI_EP");
 
 int atom_get_window_offset(struct snd_sof_dev *sdev, u32 id)
 {
 	return MBOX_OFFSET;
 }
-EXPORT_SYMBOL_NS(atom_get_window_offset, SND_SOC_SOF_INTEL_ATOM_HIFI_EP);
+EXPORT_SYMBOL_NS(atom_get_window_offset, "SND_SOC_SOF_INTEL_ATOM_HIFI_EP");
 
 static void atom_host_done(struct snd_sof_dev *sdev)
 {
@@ -248,7 +243,7 @@ int atom_run(struct snd_sof_dev *sdev)
 	/* return init core mask */
 	return 1;
 }
-EXPORT_SYMBOL_NS(atom_run, SND_SOC_SOF_INTEL_ATOM_HIFI_EP);
+EXPORT_SYMBOL_NS(atom_run, "SND_SOC_SOF_INTEL_ATOM_HIFI_EP");
 
 int atom_reset(struct snd_sof_dev *sdev)
 {
@@ -267,29 +262,29 @@ int atom_reset(struct snd_sof_dev *sdev)
 
 	return 0;
 }
-EXPORT_SYMBOL_NS(atom_reset, SND_SOC_SOF_INTEL_ATOM_HIFI_EP);
+EXPORT_SYMBOL_NS(atom_reset, "SND_SOC_SOF_INTEL_ATOM_HIFI_EP");
 
 static const char *fixup_tplg_name(struct snd_sof_dev *sdev,
 				   const char *sof_tplg_filename,
 				   const char *ssp_str)
 {
 	const char *tplg_filename = NULL;
-	char *filename;
-	char *split_ext;
+	const char *split_ext;
+	char *filename, *tmp;
 
-	filename = devm_kstrdup(sdev->dev, sof_tplg_filename, GFP_KERNEL);
+	filename = kstrdup(sof_tplg_filename, GFP_KERNEL);
 	if (!filename)
 		return NULL;
 
 	/* this assumes a .tplg extension */
-	split_ext = strsep(&filename, ".");
-	if (split_ext) {
+	tmp = filename;
+	split_ext = strsep(&tmp, ".");
+	if (split_ext)
 		tplg_filename = devm_kasprintf(sdev->dev, GFP_KERNEL,
 					       "%s-%s.tplg",
 					       split_ext, ssp_str);
-		if (!tplg_filename)
-			return NULL;
-	}
+	kfree(filename);
+
 	return tplg_filename;
 }
 
@@ -330,7 +325,7 @@ struct snd_soc_acpi_mach *atom_machine_select(struct snd_sof_dev *sdev)
 
 	return mach;
 }
-EXPORT_SYMBOL_NS(atom_machine_select, SND_SOC_SOF_INTEL_ATOM_HIFI_EP);
+EXPORT_SYMBOL_NS(atom_machine_select, "SND_SOC_SOF_INTEL_ATOM_HIFI_EP");
 
 /* Atom DAIs */
 struct snd_soc_dai_driver atom_dai[] = {
@@ -401,7 +396,7 @@ struct snd_soc_dai_driver atom_dai[] = {
 	},
 },
 };
-EXPORT_SYMBOL_NS(atom_dai, SND_SOC_SOF_INTEL_ATOM_HIFI_EP);
+EXPORT_SYMBOL_NS(atom_dai, "SND_SOC_SOF_INTEL_ATOM_HIFI_EP");
 
 void atom_set_mach_params(struct snd_soc_acpi_mach *mach,
 			  struct snd_sof_dev *sdev)
@@ -415,6 +410,7 @@ void atom_set_mach_params(struct snd_soc_acpi_mach *mach,
 	mach_params->num_dai_drivers = desc->ops->num_drv;
 	mach_params->dai_drivers = desc->ops->drv;
 }
-EXPORT_SYMBOL_NS(atom_set_mach_params, SND_SOC_SOF_INTEL_ATOM_HIFI_EP);
+EXPORT_SYMBOL_NS(atom_set_mach_params, "SND_SOC_SOF_INTEL_ATOM_HIFI_EP");
 
 MODULE_LICENSE("Dual BSD/GPL");
+MODULE_DESCRIPTION("SOF support for Atom platforms");

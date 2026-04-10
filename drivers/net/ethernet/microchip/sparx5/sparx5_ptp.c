@@ -11,8 +11,6 @@
 #include "sparx5_main_regs.h"
 #include "sparx5_main.h"
 
-#define SPARX5_MAX_PTP_ID	512
-
 #define TOD_ACC_PIN		0x4
 
 enum {
@@ -38,6 +36,9 @@ static u64 sparx5_ptp_get_1ppm(struct sparx5 *sparx5)
 	case SPX5_CORE_CLOCK_250MHZ:
 		res = 2301339409586;
 		break;
+	case SPX5_CORE_CLOCK_328MHZ:
+		res = 1756832768924;
+		break;
 	case SPX5_CORE_CLOCK_500MHZ:
 		res = 1150669704793;
 		break;
@@ -60,6 +61,9 @@ static u64 sparx5_ptp_get_nominal_value(struct sparx5 *sparx5)
 	case SPX5_CORE_CLOCK_250MHZ:
 		res = 0x1FF0000000000000;
 		break;
+	case SPX5_CORE_CLOCK_328MHZ:
+		res = 0x18604697DD0F9B5B;
+		break;
 	case SPX5_CORE_CLOCK_500MHZ:
 		res = 0x0FF8000000000000;
 		break;
@@ -74,10 +78,11 @@ static u64 sparx5_ptp_get_nominal_value(struct sparx5 *sparx5)
 	return res;
 }
 
-int sparx5_ptp_hwtstamp_set(struct sparx5_port *port, struct ifreq *ifr)
+int sparx5_ptp_hwtstamp_set(struct sparx5_port *port,
+			    struct kernel_hwtstamp_config *cfg,
+			    struct netlink_ext_ack *extack)
 {
 	struct sparx5 *sparx5 = port->sparx5;
-	struct hwtstamp_config cfg;
 	struct sparx5_phc *phc;
 
 	/* For now don't allow to run ptp on ports that are part of a bridge,
@@ -88,10 +93,7 @@ int sparx5_ptp_hwtstamp_set(struct sparx5_port *port, struct ifreq *ifr)
 	if (test_bit(port->portno, sparx5->bridge_mask))
 		return -EINVAL;
 
-	if (copy_from_user(&cfg, ifr->ifr_data, sizeof(cfg)))
-		return -EFAULT;
-
-	switch (cfg.tx_type) {
+	switch (cfg->tx_type) {
 	case HWTSTAMP_TX_ON:
 		port->ptp_cmd = IFH_REW_OP_TWO_STEP_PTP;
 		break;
@@ -105,7 +107,7 @@ int sparx5_ptp_hwtstamp_set(struct sparx5_port *port, struct ifreq *ifr)
 		return -ERANGE;
 	}
 
-	switch (cfg.rx_filter) {
+	switch (cfg->rx_filter) {
 	case HWTSTAMP_FILTER_NONE:
 		break;
 	case HWTSTAMP_FILTER_ALL:
@@ -122,7 +124,7 @@ int sparx5_ptp_hwtstamp_set(struct sparx5_port *port, struct ifreq *ifr)
 	case HWTSTAMP_FILTER_PTP_V2_SYNC:
 	case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
 	case HWTSTAMP_FILTER_NTP_ALL:
-		cfg.rx_filter = HWTSTAMP_FILTER_ALL;
+		cfg->rx_filter = HWTSTAMP_FILTER_ALL;
 		break;
 	default:
 		return -ERANGE;
@@ -131,20 +133,20 @@ int sparx5_ptp_hwtstamp_set(struct sparx5_port *port, struct ifreq *ifr)
 	/* Commit back the result & save it */
 	mutex_lock(&sparx5->ptp_lock);
 	phc = &sparx5->phc[SPARX5_PHC_PORT];
-	memcpy(&phc->hwtstamp_config, &cfg, sizeof(cfg));
+	phc->hwtstamp_config = *cfg;
 	mutex_unlock(&sparx5->ptp_lock);
 
-	return copy_to_user(ifr->ifr_data, &cfg, sizeof(cfg)) ? -EFAULT : 0;
+	return 0;
 }
 
-int sparx5_ptp_hwtstamp_get(struct sparx5_port *port, struct ifreq *ifr)
+void sparx5_ptp_hwtstamp_get(struct sparx5_port *port,
+			     struct kernel_hwtstamp_config *cfg)
 {
 	struct sparx5 *sparx5 = port->sparx5;
 	struct sparx5_phc *phc;
 
 	phc = &sparx5->phc[SPARX5_PHC_PORT];
-	return copy_to_user(ifr->ifr_data, &phc->hwtstamp_config,
-			    sizeof(phc->hwtstamp_config)) ? -EFAULT : 0;
+	*cfg = phc->hwtstamp_config;
 }
 
 static void sparx5_ptp_classify(struct sparx5_port *port, struct sk_buff *skb,
@@ -271,11 +273,12 @@ void sparx5_ptp_txtstamp_release(struct sparx5_port *port,
 	spin_unlock_irqrestore(&sparx5->ptp_ts_id_lock, flags);
 }
 
-static void sparx5_get_hwtimestamp(struct sparx5 *sparx5,
-				   struct timespec64 *ts,
-				   u32 nsec)
+void sparx5_get_hwtimestamp(struct sparx5 *sparx5,
+			    struct timespec64 *ts,
+			    u32 nsec)
 {
 	/* Read current PTP time to get seconds */
+	const struct sparx5_consts *consts = sparx5->data->consts;
 	unsigned long flags;
 	u32 curr_nsec;
 
@@ -287,10 +290,10 @@ static void sparx5_get_hwtimestamp(struct sparx5 *sparx5,
 		 PTP_PTP_PIN_CFG_PTP_PIN_ACTION |
 		 PTP_PTP_PIN_CFG_PTP_PIN_DOM |
 		 PTP_PTP_PIN_CFG_PTP_PIN_SYNC,
-		 sparx5, PTP_PTP_PIN_CFG(TOD_ACC_PIN));
+		 sparx5, PTP_PTP_PIN_CFG(consts->tod_pin));
 
-	ts->tv_sec = spx5_rd(sparx5, PTP_PTP_TOD_SEC_LSB(TOD_ACC_PIN));
-	curr_nsec = spx5_rd(sparx5, PTP_PTP_TOD_NSEC(TOD_ACC_PIN));
+	ts->tv_sec = spx5_rd(sparx5, PTP_PTP_TOD_SEC_LSB(consts->tod_pin));
+	curr_nsec = spx5_rd(sparx5, PTP_PTP_TOD_NSEC(consts->tod_pin));
 
 	ts->tv_nsec = nsec;
 
@@ -442,7 +445,10 @@ static int sparx5_ptp_settime64(struct ptp_clock_info *ptp,
 {
 	struct sparx5_phc *phc = container_of(ptp, struct sparx5_phc, info);
 	struct sparx5 *sparx5 = phc->sparx5;
+	const struct sparx5_consts *consts;
 	unsigned long flags;
+
+	consts = sparx5->data->consts;
 
 	spin_lock_irqsave(&sparx5->ptp_clock_lock, flags);
 
@@ -453,14 +459,14 @@ static int sparx5_ptp_settime64(struct ptp_clock_info *ptp,
 		 PTP_PTP_PIN_CFG_PTP_PIN_ACTION |
 		 PTP_PTP_PIN_CFG_PTP_PIN_DOM |
 		 PTP_PTP_PIN_CFG_PTP_PIN_SYNC,
-		 sparx5, PTP_PTP_PIN_CFG(TOD_ACC_PIN));
+		 sparx5, PTP_PTP_PIN_CFG(consts->tod_pin));
 
 	/* Set new value */
 	spx5_wr(PTP_PTP_TOD_SEC_MSB_PTP_TOD_SEC_MSB_SET(upper_32_bits(ts->tv_sec)),
-		sparx5, PTP_PTP_TOD_SEC_MSB(TOD_ACC_PIN));
+		sparx5, PTP_PTP_TOD_SEC_MSB(consts->tod_pin));
 	spx5_wr(lower_32_bits(ts->tv_sec),
-		sparx5, PTP_PTP_TOD_SEC_LSB(TOD_ACC_PIN));
-	spx5_wr(ts->tv_nsec, sparx5, PTP_PTP_TOD_NSEC(TOD_ACC_PIN));
+		sparx5, PTP_PTP_TOD_SEC_LSB(consts->tod_pin));
+	spx5_wr(ts->tv_nsec, sparx5, PTP_PTP_TOD_NSEC(consts->tod_pin));
 
 	/* Apply new values */
 	spx5_rmw(PTP_PTP_PIN_CFG_PTP_PIN_ACTION_SET(PTP_PIN_ACTION_LOAD) |
@@ -469,21 +475,23 @@ static int sparx5_ptp_settime64(struct ptp_clock_info *ptp,
 		 PTP_PTP_PIN_CFG_PTP_PIN_ACTION |
 		 PTP_PTP_PIN_CFG_PTP_PIN_DOM |
 		 PTP_PTP_PIN_CFG_PTP_PIN_SYNC,
-		 sparx5, PTP_PTP_PIN_CFG(TOD_ACC_PIN));
+		 sparx5, PTP_PTP_PIN_CFG(consts->tod_pin));
 
 	spin_unlock_irqrestore(&sparx5->ptp_clock_lock, flags);
 
 	return 0;
 }
 
-static int sparx5_ptp_gettime64(struct ptp_clock_info *ptp,
-				struct timespec64 *ts)
+int sparx5_ptp_gettime64(struct ptp_clock_info *ptp, struct timespec64 *ts)
 {
 	struct sparx5_phc *phc = container_of(ptp, struct sparx5_phc, info);
 	struct sparx5 *sparx5 = phc->sparx5;
+	const struct sparx5_consts *consts;
 	unsigned long flags;
 	time64_t s;
 	s64 ns;
+
+	consts = sparx5->data->consts;
 
 	spin_lock_irqsave(&sparx5->ptp_clock_lock, flags);
 
@@ -493,12 +501,12 @@ static int sparx5_ptp_gettime64(struct ptp_clock_info *ptp,
 		 PTP_PTP_PIN_CFG_PTP_PIN_ACTION |
 		 PTP_PTP_PIN_CFG_PTP_PIN_DOM |
 		 PTP_PTP_PIN_CFG_PTP_PIN_SYNC,
-		 sparx5, PTP_PTP_PIN_CFG(TOD_ACC_PIN));
+		 sparx5, PTP_PTP_PIN_CFG(consts->tod_pin));
 
-	s = spx5_rd(sparx5, PTP_PTP_TOD_SEC_MSB(TOD_ACC_PIN));
+	s = spx5_rd(sparx5, PTP_PTP_TOD_SEC_MSB(consts->tod_pin));
 	s <<= 32;
-	s |= spx5_rd(sparx5, PTP_PTP_TOD_SEC_LSB(TOD_ACC_PIN));
-	ns = spx5_rd(sparx5, PTP_PTP_TOD_NSEC(TOD_ACC_PIN));
+	s |= spx5_rd(sparx5, PTP_PTP_TOD_SEC_LSB(consts->tod_pin));
+	ns = spx5_rd(sparx5, PTP_PTP_TOD_NSEC(consts->tod_pin));
 	ns &= PTP_PTP_TOD_NSEC_PTP_TOD_NSEC;
 
 	spin_unlock_irqrestore(&sparx5->ptp_clock_lock, flags);
@@ -518,6 +526,9 @@ static int sparx5_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 {
 	struct sparx5_phc *phc = container_of(ptp, struct sparx5_phc, info);
 	struct sparx5 *sparx5 = phc->sparx5;
+	const struct sparx5_consts *consts;
+
+	consts = sparx5->data->consts;
 
 	if (delta > -(NSEC_PER_SEC / 2) && delta < (NSEC_PER_SEC / 2)) {
 		unsigned long flags;
@@ -531,10 +542,10 @@ static int sparx5_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 			 PTP_PTP_PIN_CFG_PTP_PIN_ACTION |
 			 PTP_PTP_PIN_CFG_PTP_PIN_DOM |
 			 PTP_PTP_PIN_CFG_PTP_PIN_SYNC,
-			 sparx5, PTP_PTP_PIN_CFG(TOD_ACC_PIN));
+			 sparx5, PTP_PTP_PIN_CFG(consts->tod_pin));
 
 		spx5_wr(PTP_PTP_TOD_NSEC_PTP_TOD_NSEC_SET(delta),
-			sparx5, PTP_PTP_TOD_NSEC(TOD_ACC_PIN));
+			sparx5, PTP_PTP_TOD_NSEC(consts->tod_pin));
 
 		/* Adjust time with the value of PTP_TOD_NSEC */
 		spx5_rmw(PTP_PTP_PIN_CFG_PTP_PIN_ACTION_SET(PTP_PIN_ACTION_DELTA) |
@@ -543,7 +554,7 @@ static int sparx5_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 			 PTP_PTP_PIN_CFG_PTP_PIN_ACTION |
 			 PTP_PTP_PIN_CFG_PTP_PIN_DOM |
 			 PTP_PTP_PIN_CFG_PTP_PIN_SYNC,
-			 sparx5, PTP_PTP_PIN_CFG(TOD_ACC_PIN));
+			 sparx5, PTP_PTP_PIN_CFG(consts->tod_pin));
 
 		spin_unlock_irqrestore(&sparx5->ptp_clock_lock, flags);
 	} else {
@@ -565,7 +576,7 @@ static int sparx5_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 static struct ptp_clock_info sparx5_ptp_clock_info = {
 	.owner		= THIS_MODULE,
 	.name		= "sparx5 ptp",
-	.max_adj	= 200000,
+	.max_adj	= 10000000,
 	.gettime64	= sparx5_ptp_gettime64,
 	.settime64	= sparx5_ptp_settime64,
 	.adjtime	= sparx5_ptp_adjtime,
@@ -633,7 +644,7 @@ int sparx5_ptp_init(struct sparx5 *sparx5)
 	/* Enable master counters */
 	spx5_wr(PTP_PTP_DOM_CFG_PTP_ENA_SET(0x7), sparx5, PTP_PTP_DOM_CFG);
 
-	for (i = 0; i < sparx5->port_count; i++) {
+	for (i = 0; i < sparx5->data->consts->n_ports; i++) {
 		port = sparx5->ports[i];
 		if (!port)
 			continue;
@@ -649,7 +660,7 @@ void sparx5_ptp_deinit(struct sparx5 *sparx5)
 	struct sparx5_port *port;
 	int i;
 
-	for (i = 0; i < sparx5->port_count; i++) {
+	for (i = 0; i < sparx5->data->consts->n_ports; i++) {
 		port = sparx5->ports[i];
 		if (!port)
 			continue;

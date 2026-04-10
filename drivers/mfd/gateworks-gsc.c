@@ -20,7 +20,7 @@
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 /*
  * The GSC suffers from an errata where occasionally during
@@ -160,7 +160,7 @@ static const struct of_device_id gsc_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, gsc_of_match);
 
-static struct regmap_bus gsc_regmap_bus = {
+static const struct regmap_bus gsc_regmap_bus = {
 	.reg_read = gsc_read,
 	.reg_write = gsc_write,
 };
@@ -189,8 +189,7 @@ static const struct regmap_irq_chip gsc_irq_chip = {
 	.num_irqs = ARRAY_SIZE(gsc_irqs),
 	.num_regs = 1,
 	.status_base = GSC_IRQ_STATUS,
-	.mask_base = GSC_IRQ_ENABLE,
-	.mask_invert = true,
+	.unmask_base = GSC_IRQ_ENABLE,
 	.ack_base = GSC_IRQ_STATUS,
 	.ack_invert = true,
 };
@@ -255,11 +254,9 @@ static int gsc_probe(struct i2c_client *client)
 	return 0;
 }
 
-static int gsc_remove(struct i2c_client *client)
+static void gsc_remove(struct i2c_client *client)
 {
 	sysfs_remove_group(&client->dev.kobj, &attr_group);
-
-	return 0;
 }
 
 static struct i2c_driver gsc_driver = {
@@ -267,7 +264,7 @@ static struct i2c_driver gsc_driver = {
 		.name	= "gateworks-gsc",
 		.of_match_table = gsc_of_match,
 	},
-	.probe_new	= gsc_probe,
+	.probe		= gsc_probe,
 	.remove		= gsc_remove,
 };
 module_i2c_driver(gsc_driver);

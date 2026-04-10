@@ -226,7 +226,7 @@ static irqreturn_t ti_bandgap_talert_irq_handler(int irq, void *data)
 		/*
 		 * One TALERT interrupt: Two sources
 		 * If the interrupt is due to t_hot then mask t_hot and
-		 * and unmask t_cold else mask t_cold and unmask t_hot
+		 * unmask t_cold else mask t_cold and unmask t_hot
 		 */
 		if (t_hot) {
 			ctrl &= ~tsr->mask_hot_mask;
@@ -314,7 +314,7 @@ int ti_bandgap_adc_to_mcelsius(struct ti_bandgap *bgp, int adc_val, int *t)
  */
 static inline int ti_bandgap_validate(struct ti_bandgap *bgp, int id)
 {
-	if (!bgp || IS_ERR(bgp)) {
+	if (IS_ERR_OR_NULL(bgp)) {
 		pr_err("%s: invalid bandgap pointer\n", __func__);
 		return -EINVAL;
 	}
@@ -878,7 +878,7 @@ static struct ti_bandgap *ti_bandgap_build(struct platform_device *pdev)
  */
 static const struct soc_device_attribute soc_no_cpu_notifier[] = {
 	{ .machine = "OMAP4430" },
-	{ /* sentinel */ },
+	{ /* sentinel */ }
 };
 
 /***   Device driver call backs   ***/
@@ -1069,7 +1069,7 @@ free_irqs:
 }
 
 static
-int ti_bandgap_remove(struct platform_device *pdev)
+void ti_bandgap_remove(struct platform_device *pdev)
 {
 	struct ti_bandgap *bgp = platform_get_drvdata(pdev);
 	int i;
@@ -1098,8 +1098,6 @@ int ti_bandgap_remove(struct platform_device *pdev)
 
 	if (TI_BANDGAP_HAS(bgp, TSHUT))
 		free_irq(gpiod_to_irq(bgp->tshut_gpiod), NULL);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

@@ -439,7 +439,7 @@ static void carl9170_cancel_worker(struct ar9170 *ar)
 	cancel_work_sync(&ar->ampdu_work);
 }
 
-static void carl9170_op_stop(struct ieee80211_hw *hw)
+static void carl9170_op_stop(struct ieee80211_hw *hw, bool suspend)
 {
 	struct ar9170 *ar = hw->priv;
 
@@ -890,7 +890,7 @@ static void carl9170_stat_work(struct work_struct *work)
 		round_jiffies(msecs_to_jiffies(CARL9170_STAT_WORK)));
 }
 
-static int carl9170_op_config(struct ieee80211_hw *hw, u32 changed)
+static int carl9170_op_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
 {
 	struct ar9170 *ar = hw->priv;
 	int err = 0;
@@ -1032,7 +1032,7 @@ static void carl9170_op_configure_filter(struct ieee80211_hw *hw,
 static void carl9170_op_bss_info_changed(struct ieee80211_hw *hw,
 					 struct ieee80211_vif *vif,
 					 struct ieee80211_bss_conf *bss_conf,
-					 u32 changed)
+					 u64 changed)
 {
 	struct ar9170 *ar = hw->priv;
 	struct ath_common *common = &ar->common;
@@ -1115,7 +1115,7 @@ static void carl9170_op_bss_info_changed(struct ieee80211_hw *hw,
 	}
 
 	if (changed & BSS_CHANGED_ASSOC) {
-		ar->common.curaid = bss_conf->aid;
+		ar->common.curaid = vif->cfg.aid;
 		err = carl9170_set_beacon_timers(ar);
 		if (err)
 			goto out;
@@ -1365,7 +1365,8 @@ static int carl9170_op_sta_remove(struct ieee80211_hw *hw,
 }
 
 static int carl9170_op_conf_tx(struct ieee80211_hw *hw,
-			       struct ieee80211_vif *vif, u16 queue,
+			       struct ieee80211_vif *vif,
+			       unsigned int link_id, u16 queue,
 			       const struct ieee80211_tx_queue_params *param)
 {
 	struct ar9170 *ar = hw->priv;
@@ -1411,8 +1412,7 @@ static int carl9170_op_ampdu_action(struct ieee80211_hw *hw,
 		if (!sta_info->ht_sta)
 			return -EOPNOTSUPP;
 
-		tid_info = kzalloc(sizeof(struct carl9170_sta_tid),
-				   GFP_KERNEL);
+		tid_info = kzalloc_obj(struct carl9170_sta_tid);
 		if (!tid_info)
 			return -ENOMEM;
 
@@ -1711,9 +1711,14 @@ static bool carl9170_tx_frames_pending(struct ieee80211_hw *hw)
 }
 
 static const struct ieee80211_ops carl9170_ops = {
+	.add_chanctx = ieee80211_emulate_add_chanctx,
+	.remove_chanctx = ieee80211_emulate_remove_chanctx,
+	.change_chanctx = ieee80211_emulate_change_chanctx,
+	.switch_vif_chanctx = ieee80211_emulate_switch_vif_chanctx,
 	.start			= carl9170_op_start,
 	.stop			= carl9170_op_stop,
 	.tx			= carl9170_op_tx,
+	.wake_tx_queue		= ieee80211_handle_wake_tx_queue,
 	.flush			= carl9170_op_flush,
 	.add_interface		= carl9170_op_add_interface,
 	.remove_interface	= carl9170_op_remove_interface,

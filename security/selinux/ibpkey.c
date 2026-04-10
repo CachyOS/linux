@@ -23,6 +23,7 @@
 #include <linux/list.h>
 #include <linux/spinlock.h>
 
+#include "initcalls.h"
 #include "ibpkey.h"
 #include "objsec.h"
 
@@ -130,7 +131,7 @@ static int sel_ib_pkey_sid_slow(u64 subnet_prefix, u16 pkey_num, u32 *sid)
 {
 	int ret;
 	struct sel_ib_pkey *pkey;
-	struct sel_ib_pkey *new = NULL;
+	struct sel_ib_pkey *new;
 	unsigned long flags;
 
 	spin_lock_irqsave(&sel_ib_pkey_lock, flags);
@@ -141,17 +142,16 @@ static int sel_ib_pkey_sid_slow(u64 subnet_prefix, u16 pkey_num, u32 *sid)
 		return 0;
 	}
 
-	ret = security_ib_pkey_sid(&selinux_state, subnet_prefix, pkey_num,
+	ret = security_ib_pkey_sid(subnet_prefix, pkey_num,
 				   sid);
 	if (ret)
 		goto out;
 
-	/* If this memory allocation fails still return 0. The SID
-	 * is valid, it just won't be added to the cache.
-	 */
-	new = kzalloc(sizeof(*new), GFP_ATOMIC);
+	new = kmalloc_obj(*new, GFP_ATOMIC);
 	if (!new) {
-		ret = -ENOMEM;
+		/* If this memory allocation fails still return 0. The SID
+		 * is valid, it just won't be added to the cache.
+		 */
 		goto out;
 	}
 
@@ -184,7 +184,7 @@ int sel_ib_pkey_sid(u64 subnet_prefix, u16 pkey_num, u32 *sid)
 
 	rcu_read_lock();
 	pkey = sel_ib_pkey_find(subnet_prefix, pkey_num);
-	if (pkey) {
+	if (likely(pkey)) {
 		*sid = pkey->psec.sid;
 		rcu_read_unlock();
 		return 0;
@@ -219,7 +219,7 @@ void sel_ib_pkey_flush(void)
 	spin_unlock_irqrestore(&sel_ib_pkey_lock, flags);
 }
 
-static __init int sel_ib_pkey_init(void)
+int __init sel_ib_pkey_init(void)
 {
 	int iter;
 
@@ -233,5 +233,3 @@ static __init int sel_ib_pkey_init(void)
 
 	return 0;
 }
-
-subsys_initcall(sel_ib_pkey_init);

@@ -289,8 +289,7 @@ static struct attribute *lm3642_torch_attrs[] = {
 };
 ATTRIBUTE_GROUPS(lm3642_torch);
 
-static int lm3642_probe(struct i2c_client *client,
-				  const struct i2c_device_id *id)
+static int lm3642_probe(struct i2c_client *client)
 {
 	struct lm3642_platform_data *pdata = dev_get_platdata(&client->dev);
 	struct lm3642_chip_data *chip;
@@ -380,7 +379,7 @@ err_out:
 	return err;
 }
 
-static int lm3642_remove(struct i2c_client *client)
+static void lm3642_remove(struct i2c_client *client)
 {
 	struct lm3642_chip_data *chip = i2c_get_clientdata(client);
 
@@ -388,11 +387,10 @@ static int lm3642_remove(struct i2c_client *client)
 	led_classdev_unregister(&chip->cdev_torch);
 	led_classdev_unregister(&chip->cdev_flash);
 	regmap_write(chip->regmap, REG_ENABLE, 0);
-	return 0;
 }
 
 static const struct i2c_device_id lm3642_id[] = {
-	{LM3642_NAME, 0},
+	{ LM3642_NAME },
 	{}
 };
 

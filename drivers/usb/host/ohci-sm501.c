@@ -153,7 +153,7 @@ static int ohci_hcd_sm501_drv_probe(struct platform_device *pdev)
 	 * fine. This is however not always the case - buffers may be allocated
 	 * using kmalloc() - so the usb core needs to be told that it must copy
 	 * data into our local memory if the buffers happen to be placed in
-	 * regular memory. A non-null hcd->localmem_pool initialized by the
+	 * regular memory. A non-null hcd->localmem_pool initialized by
 	 * the call to usb_hcd_setup_local_mem() below does just that.
 	 */
 
@@ -185,7 +185,7 @@ err0:
 	return retval;
 }
 
-static int ohci_hcd_sm501_drv_remove(struct platform_device *pdev)
+static void ohci_hcd_sm501_drv_remove(struct platform_device *pdev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(pdev);
 	struct resource	*mem;
@@ -195,15 +195,12 @@ static int ohci_hcd_sm501_drv_remove(struct platform_device *pdev)
 	release_mem_region(hcd->rsrc_start, hcd->rsrc_len);
 	usb_put_hcd(hcd);
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-	if (mem)
-		release_mem_region(mem->start, resource_size(mem));
+	release_mem_region(mem->start, resource_size(mem));
 
 	/* mask interrupts and disable power */
 
 	sm501_modify_reg(pdev->dev.parent, SM501_IRQ_MASK, 0, 1 << 6);
 	sm501_unit_power(pdev->dev.parent, SM501_GATE_USB_HOST, 0);
-
-	return 0;
 }
 
 /*-------------------------------------------------------------------------*/

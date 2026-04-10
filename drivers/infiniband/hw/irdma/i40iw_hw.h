@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB */
+/* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
 /* Copyright (c) 2015 - 2021 Intel Corporation */
 #ifndef I40IW_HW_H
 #define I40IW_HW_H
@@ -123,6 +123,8 @@
 #define I40E_CQPSQ_CQ_CQID GENMASK_ULL(15, 0)
 #define I40E_COMMIT_FPM_CQCNT_S 0
 #define I40E_COMMIT_FPM_CQCNT GENMASK_ULL(17, 0)
+#define I40E_CQPSQ_UPESD_HMCFNID_S 0
+#define I40E_CQPSQ_UPESD_HMCFNID GENMASK_ULL(5, 0)
 
 #define I40E_VSIQF_CTL(_VSI)             (0x0020D800 + ((_VSI) * 4))
 
@@ -140,11 +142,11 @@ enum i40iw_device_caps_const {
 	I40IW_MAX_CQ_SIZE			= 1048575,
 	I40IW_MAX_OUTBOUND_MSG_SIZE		= 2147483647,
 	I40IW_MAX_INBOUND_MSG_SIZE		= 2147483647,
+	I40IW_MIN_WQ_SIZE                       = 4 /* WQEs */,
 };
 
 #define I40IW_QP_WQE_MIN_SIZE   32
 #define I40IW_QP_WQE_MAX_SIZE   128
-#define I40IW_QP_SW_MIN_WQSIZE  4
 #define I40IW_MAX_RQ_WQE_SHIFT  2
 #define I40IW_MAX_QUANTA_PER_WR 2
 

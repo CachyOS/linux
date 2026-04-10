@@ -30,8 +30,7 @@
  *
  */
 
-#define KMSG_COMPONENT "IPVS"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "IPVS: " fmt
 
 #include <linux/ip.h>
 #include <linux/slab.h>
@@ -154,7 +153,7 @@ static int ip_vs_dh_init_svc(struct ip_vs_service *svc)
 	struct ip_vs_dh_state *s;
 
 	/* allocate the DH table for this service */
-	s = kzalloc(sizeof(struct ip_vs_dh_state), GFP_KERNEL);
+	s = kzalloc_obj(struct ip_vs_dh_state);
 	if (s == NULL)
 		return -ENOMEM;
 
@@ -270,3 +269,4 @@ static void __exit ip_vs_dh_cleanup(void)
 module_init(ip_vs_dh_init);
 module_exit(ip_vs_dh_cleanup);
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("ipvs destination hashing scheduler");

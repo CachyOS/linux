@@ -5,10 +5,10 @@
 $id: http://devicetree.org/schemas/thermal/thermal-zones.yaml#
 $schema: http://devicetree.org/meta-schemas/base.yaml#
 
-title: Thermal zone binding
+title: Thermal zone
 
 maintainers:
-  - Amit Kucheria <amitk@kernel.org>
+  - Daniel Lezcano <daniel.lezcano@linaro.org>
 
 description: |
   Thermal management is achieved in devicetree by describing the sensor hardware
@@ -49,7 +49,10 @@ properties:
       to take when the temperature crosses those thresholds.
 
 patternProperties:
-  "^[a-zA-Z][a-zA-Z0-9\\-]{1,12}-thermal$":
+  # Node name is limited in size due to Linux kernel requirements - 19
+  # characters in total (see THERMAL_NAME_LENGTH, including terminating NUL
+  # byte):
+  "^[a-zA-Z][a-zA-Z0-9\\-]{1,10}-thermal$":
     type: object
     description:
       Each thermal zone node contains information about how frequently it
@@ -74,6 +77,21 @@ patternProperties:
           this to 0 disables the polling timers setup by the thermal
           framework and assumes that the thermal sensors in this zone
           support interrupts.
+
+      critical-action:
+        $ref: /schemas/types.yaml#/definitions/string
+        description: |
+          The action the OS should perform after the critical temperature is reached.
+          If the property is not set, it is up to the system to select the correct
+          action. The recommended and preferred default is shutdown.
+          Choose 'reboot' with care, as the hardware may be in thermal stress,
+          thus leading to infinite reboots that may cause damage to the hardware.
+          Make sure the firmware/bootloader will act as the last resort and take
+          over the thermal control.
+
+        enum:
+          - shutdown
+          - reboot
 
       thermal-sensors:
         $ref: /schemas/types.yaml#/definitions/phandle-array
@@ -171,6 +189,7 @@ patternProperties:
 
       cooling-maps:
         type: object
+        additionalProperties: false
         description:
           This node describes the action to be taken when a thermal zone
           crosses one of the temperature thresholds described in the trips
@@ -211,8 +230,6 @@ patternProperties:
             additionalProperties: false
 
     required:
-      - polling-delay
-      - polling-delay-passive
       - thermal-sensors
 
     additionalProperties: false

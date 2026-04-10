@@ -7,9 +7,6 @@
  * Microsoft SideWinder joystick family driver for Linux
  */
 
-/*
- */
-
 #include <linux/delay.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -17,6 +14,7 @@
 #include <linux/input.h>
 #include <linux/gameport.h>
 #include <linux/jiffies.h>
+#include <linux/string_choices.h>
 
 #define DRIVER_DESC	"Microsoft SideWinder joystick family driver"
 
@@ -580,7 +578,7 @@ static int sw_connect(struct gameport *gameport, struct gameport_driver *drv)
 
 	comment[0] = 0;
 
-	sw = kzalloc(sizeof(struct sw), GFP_KERNEL);
+	sw = kzalloc_obj(*sw);
 	buf = kmalloc(SW_LENGTH, GFP_KERNEL);
 	idbuf = kmalloc(SW_LENGTH, GFP_KERNEL);
 	if (!sw || !buf || !idbuf) {
@@ -680,7 +678,7 @@ static int sw_connect(struct gameport *gameport, struct gameport_driver *drv)
 				case 48:				/* Ambiguous */
 					if (j == 14) {			/* ID length 14*3 -> FFP */
 						sw->type = SW_ID_FFP;
-						sprintf(comment, " [AC %s]", sw_get_bits(idbuf,38,1,3) ? "off" : "on");
+						sprintf(comment, " [AC %s]", str_off_on(sw_get_bits(idbuf,38,1,3)));
 					} else
 						sw->type = SW_ID_PP;
 					break;

@@ -106,7 +106,7 @@ static const struct tty_operations ssl_ops = {
 /* Changed by ssl_init and referenced by ssl_exit, which are both serialized
  * by being an initcall and exitcall, respectively.
  */
-static int ssl_init_done = 0;
+static int ssl_init_done;
 
 static void ssl_console_write(struct console *c, const char *string,
 			      unsigned len)
@@ -199,4 +199,7 @@ static int ssl_non_raw_setup(char *str)
 	return 1;
 }
 __setup("ssl-non-raw", ssl_non_raw_setup);
-__channel_help(ssl_non_raw_setup, "set serial lines to non-raw mode");
+__uml_help(ssl_non_raw_setup,
+"ssl-non-raw\n"
+"    Set serial lines to non-raw mode.\n\n"
+);

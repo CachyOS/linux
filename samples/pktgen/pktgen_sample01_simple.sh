@@ -13,6 +13,10 @@ root_check_run_with_sudo "$@"
 # - go look in parameters.sh to see which setting are avail
 # - required param is the interface "-i" stored in $DEV
 source ${basedir}/parameters.sh
+
+# Trap EXIT first
+trap_exit
+
 #
 # Set some default params, if they didn't get set
 if [ -z "$DEST_IP" ]; then
@@ -72,7 +76,7 @@ if [ -n "$DST_PORT" ]; then
     pg_set $DEV "udp_dst_max $UDP_DST_MAX"
 fi
 
-[ ! -z "$UDP_CSUM" ] && pg_set $dev "flag UDPCSUM"
+[ ! -z "$UDP_CSUM" ] && pg_set $DEV "flag UDPCSUM"
 
 # Setup random UDP port src range
 pg_set $DEV "flag UDPSRC_RND"

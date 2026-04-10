@@ -7,6 +7,8 @@ config PPC_PSERIES
 	select OF_DYNAMIC
 	select FORCE_PCI
 	select PCI_MSI
+	select IRQ_MSI_LIB
+	select GENERIC_ALLOCATOR
 	select PPC_XICS
 	select PPC_XIVE_SPAPR
 	select PPC_ICP_NATIVE
@@ -19,18 +21,27 @@ config PPC_PSERIES
 	select PPC_UDBG_16550
 	select PPC_DOORBELL
 	select HOTPLUG_CPU
-	select ARCH_RANDOM
 	select FORCE_SMP
 	select SWIOTLB
+	select ARCH_SUPPORTS_PER_VMA_LOCK
+	select PPC_RADIX_BROADCAST_TLBIE if PPC_RADIX_MMU
 	default y
 
+config PARAVIRT
+	bool
+
 config PARAVIRT_SPINLOCKS
+	bool
+
+config PARAVIRT_TIME_ACCOUNTING
+	select PARAVIRT
 	bool
 
 config PPC_SPLPAR
 	bool "Support for shared-processor logical partitions"
 	depends on PPC_PSERIES
 	select PARAVIRT_SPINLOCKS if PPC_QUEUED_SPINLOCKS
+	select PARAVIRT_TIME_ACCOUNTING if VIRT_CPU_ACCOUNTING_GEN
 	default y
 	help
 	  Enabling this option will make the kernel run more efficiently
@@ -109,7 +120,7 @@ config PPC_SMLPAR
 config CMM
 	tristate "Collaborative memory management"
 	depends on PPC_SMLPAR
-	select MEMORY_BALLOON
+	select BALLOON
 	default y
 	help
 	  Select this option, if you want to enable the kernel interface
@@ -118,6 +129,15 @@ config CMM
 	  makes sense for a system running in an LPAR where the unused pages
 	  will be reused for other LPARs. The interface allows firmware to
 	  balance memory across many LPARs.
+
+config HTMDUMP
+	tristate "PowerVM data dumper"
+	depends on PPC_PSERIES && DEBUG_FS
+	default m
+	help
+	  Select this option, if you want to enable the kernel debugfs
+	  interface to dump the Hardware Trace Macro (HTM) function data
+	  in the LPAR.
 
 config HV_PERF_CTRS
 	bool "Hypervisor supplied PMU events (24x7 & GPCI)"
@@ -131,6 +151,20 @@ config HV_PERF_CTRS
 
 	  If unsure, select Y.
 
+config VPA_PMU
+	tristate "VPA PMU events"
+	depends on KVM_BOOK3S_64_HV && HV_PERF_CTRS
+	help
+	  Enable access to the VPA PMU counters via perf. This enables
+	  code that support measurement for KVM on PowerVM(KoP) feature.
+	  PAPR hypervisor has introduced three new counters in the VPA area
+	  of LPAR CPUs for KVM L2 guest observability. Two for context switches
+	  from host to guest and vice versa, and one counter for getting
+	  the total time spent inside the KVM guest. This config enables code
+	  that access these software counters via perf.
+
+	  If unsure, Select N.
+
 config IBMVIO
 	depends on PPC_PSERIES
 	bool
@@ -141,6 +175,25 @@ config IBMEBUS
 	bool "Support for GX bus based adapters"
 	help
 	  Bus device driver for GX bus based adapters.
+
+config PSERIES_PLPKS
+	depends on PPC_PSERIES
+	select NLS
+	bool
+	# PowerVM provides an isolated Platform Keystore (PKS) storage
+	# allocation for each LPAR with individually managed access
+	# controls to store sensitive information securely. It can be
+	# used to store asymmetric public keys or secrets as required
+	# by different usecases.
+	#
+	# This option is selected by in-kernel consumers that require
+	# access to the PKS.
+
+config PSERIES_PLPKS_SED
+	depends on PPC_PSERIES
+	bool
+	# This option is selected by in-kernel consumers that require
+	# access to the SED PKS keystore.
 
 config PAPR_SCM
 	depends on PPC_PSERIES && MEMORY_HOTPLUG && LIBNVDIMM

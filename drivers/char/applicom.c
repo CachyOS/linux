@@ -111,7 +111,6 @@ static irqreturn_t ac_interrupt(int, void *);
 
 static const struct file_operations ac_fops = {
 	.owner = THIS_MODULE,
-	.llseek = no_llseek,
 	.read = ac_read,
 	.write = ac_write,
 	.unlocked_ioctl = ac_ioctl,
@@ -197,8 +196,10 @@ static int __init applicom_init(void)
 		if (!pci_match_id(applicom_pci_tbl, dev))
 			continue;
 		
-		if (pci_enable_device(dev))
+		if (pci_enable_device(dev)) {
+			pci_dev_put(dev);
 			return -EIO;
+		}
 
 		RamIO = ioremap(pci_resource_start(dev, 0), LEN_RAM_IO);
 
@@ -207,6 +208,7 @@ static int __init applicom_init(void)
 				"space at 0x%llx\n",
 				(unsigned long long)pci_resource_start(dev, 0));
 			pci_disable_device(dev);
+			pci_dev_put(dev);
 			return -EIO;
 		}
 
@@ -833,7 +835,10 @@ static long ac_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		ret = -ENOTTY;
 		break;
 	}
-	Dummy = readb(apbs[IndexCard].RamIO + VERS);
+
+	if (cmd != 6)
+		Dummy = readb(apbs[IndexCard].RamIO + VERS);
+
 	kfree(adgl);
 	mutex_unlock(&ac_mutex);
 	return ret;

@@ -11,6 +11,13 @@
 #include "opl3_voice.h"
 #include <sound/asoundef.h>
 
+#ifdef DEBUG_MIDI
+#define opl3_dbg(opl3, fmt, ...) \
+	dev_dbg(((struct snd_opl3 *)(opl3))->card->dev, fmt, ##__VA_ARGS__)
+#else
+#define opl3_dbg(opl3, fmt, ...) do {} while (0)
+#endif
+
 static void snd_opl3_note_off_unsafe(void *p, int note, int vel,
 				     struct snd_midi_channel *chan);
 /*
@@ -107,14 +114,17 @@ static void snd_opl3_calc_pitch(unsigned char *fnum, unsigned char *blocknum,
 
 
 #ifdef DEBUG_ALLOC
-static void debug_alloc(struct snd_opl3 *opl3, char *s, int voice) {
+static void debug_alloc(struct snd_opl3 *opl3, char *s, int voice)
+{
 	int i;
-	char *str = "x.24";
+	const char *str = "x.24";
+	char buf[MAX_OPL3_VOICES + 1];
 
-	printk(KERN_DEBUG "time %.5i: %s [%.2i]: ", opl3->use_time, s, voice);
 	for (i = 0; i < opl3->max_voices; i++)
-		printk(KERN_CONT "%c", *(str + opl3->voices[i].state + 1));
-	printk(KERN_CONT "\n");
+		buf[i] = str[opl3->voices[i].state + 1];
+	buf[i] = 0;
+	dev_dbg(opl3->card->dev, "time %.5i: %s [%.2i]: %s\n",
+		opl3->use_time, s, voice, buf);
 }
 #endif
 
@@ -203,9 +213,10 @@ static int opl3_get_voice(struct snd_opl3 *opl3, int instr_4op,
 	for (i = 0; i < END; i++) {
 		if (best[i].voice >= 0) {
 #ifdef DEBUG_ALLOC
-			printk(KERN_DEBUG "%s %iop allocation on voice %i\n",
-			       alloc_type[i], instr_4op ? 4 : 2,
-			       best[i].voice);
+			dev_dbg(opl3->card->dev,
+				"%s %iop allocation on voice %i\n",
+				alloc_type[i], instr_4op ? 4 : 2,
+				best[i].voice);
 #endif
 			return best[i].voice;
 		}
@@ -222,30 +233,28 @@ static int opl3_get_voice(struct snd_opl3 *opl3, int instr_4op,
 void snd_opl3_timer_func(struct timer_list *t)
 {
 
-	struct snd_opl3 *opl3 = from_timer(opl3, t, tlist);
-	unsigned long flags;
+	struct snd_opl3 *opl3 = timer_container_of(opl3, t, tlist);
 	int again = 0;
 	int i;
 
-	spin_lock_irqsave(&opl3->voice_lock, flags);
-	for (i = 0; i < opl3->max_voices; i++) {
-		struct snd_opl3_voice *vp = &opl3->voices[i];
-		if (vp->state > 0 && vp->note_off_check) {
-			if (vp->note_off == jiffies)
-				snd_opl3_note_off_unsafe(opl3, vp->note, 0,
-							 vp->chan);
-			else
-				again++;
+	scoped_guard(spinlock_irqsave, &opl3->voice_lock) {
+		for (i = 0; i < opl3->max_voices; i++) {
+			struct snd_opl3_voice *vp = &opl3->voices[i];
+			if (vp->state > 0 && vp->note_off_check) {
+				if (vp->note_off == jiffies)
+					snd_opl3_note_off_unsafe(opl3, vp->note, 0,
+								 vp->chan);
+				else
+					again++;
+			}
 		}
 	}
-	spin_unlock_irqrestore(&opl3->voice_lock, flags);
 
-	spin_lock_irqsave(&opl3->sys_timer_lock, flags);
+	guard(spinlock_irqsave)(&opl3->sys_timer_lock);
 	if (again)
 		mod_timer(&opl3->tlist, jiffies + 1);	/* invoke again */
 	else
 		opl3->sys_timer_status = 0;
-	spin_unlock_irqrestore(&opl3->sys_timer_lock, flags);
 }
 
 /*
@@ -253,13 +262,11 @@ void snd_opl3_timer_func(struct timer_list *t)
  */
 static void snd_opl3_start_timer(struct snd_opl3 *opl3)
 {
-	unsigned long flags;
-	spin_lock_irqsave(&opl3->sys_timer_lock, flags);
+	guard(spinlock_irqsave)(&opl3->sys_timer_lock);
 	if (! opl3->sys_timer_status) {
 		mod_timer(&opl3->tlist, jiffies + 1);
 		opl3->sys_timer_status = 1;
 	}
-	spin_unlock_irqrestore(&opl3->sys_timer_lock, flags);
 }
 
 /* ------------------------------ */
@@ -298,14 +305,11 @@ void snd_opl3_note_on(void *p, int note, int vel, struct snd_midi_channel *chan)
 
 	struct fm_patch *patch;
 	struct fm_instrument *fm;
-	unsigned long flags;
 
 	opl3 = p;
 
-#ifdef DEBUG_MIDI
-	snd_printk(KERN_DEBUG "Note on, ch %i, inst %i, note %i, vel %i\n",
-		   chan->number, chan->midi_program, note, vel);
-#endif
+	opl3_dbg(opl3, "Note on, ch %i, inst %i, note %i, vel %i\n",
+		 chan->number, chan->midi_program, note, vel);
 
 	/* in SYNTH mode, application takes care of voices */
 	/* in SEQ mode, drum voice numbers are notes on drum channel */
@@ -328,20 +332,17 @@ void snd_opl3_note_on(void *p, int note, int vel, struct snd_midi_channel *chan)
 		prg = chan->midi_program;
 	}
 
-	spin_lock_irqsave(&opl3->voice_lock, flags);
+	guard(spinlock_irqsave)(&opl3->voice_lock);
 
 	if (use_internal_drums) {
 		snd_opl3_drum_switch(opl3, note, vel, 1, chan);
-		spin_unlock_irqrestore(&opl3->voice_lock, flags);
 		return;
 	}
 
  __extra_prg:
 	patch = snd_opl3_find_patch(opl3, prg, bank, 0);
-	if (!patch) {
-		spin_unlock_irqrestore(&opl3->voice_lock, flags);
+	if (!patch)
 		return;
-	}
 
 	fm = &patch->inst;
 	switch (patch->type) {
@@ -355,13 +356,10 @@ void snd_opl3_note_on(void *p, int note, int vel, struct snd_midi_channel *chan)
 		}
 		fallthrough;
 	default:
-		spin_unlock_irqrestore(&opl3->voice_lock, flags);
 		return;
 	}
-#ifdef DEBUG_MIDI
-	snd_printk(KERN_DEBUG "  --> OPL%i instrument: %s\n",
-		   instr_4op ? 3 : 2, patch->name);
-#endif
+	opl3_dbg(opl3, "  --> OPL%i instrument: %s\n",
+		 instr_4op ? 3 : 2, patch->name);
 	/* in SYNTH mode, application takes care of voices */
 	/* in SEQ mode, allocate voice on free OPL3 channel */
 	if (opl3->synth_mode == SNDRV_OPL3_MODE_SEQ) {
@@ -371,10 +369,8 @@ void snd_opl3_note_on(void *p, int note, int vel, struct snd_midi_channel *chan)
 		voice = snd_opl3_oss_map[chan->number];		
 	}
 
-	if (voice < 0) {
-		spin_unlock_irqrestore(&opl3->voice_lock, flags);
+	if (voice < 0)
 		return;
-	}
 
 	if (voice < MAX_OPL2_VOICES) {
 		/* Left register block for voices 0 .. 8 */
@@ -422,10 +418,8 @@ void snd_opl3_note_on(void *p, int note, int vel, struct snd_midi_channel *chan)
 		}
 	}
 
-#ifdef DEBUG_MIDI
-	snd_printk(KERN_DEBUG "  --> setting OPL3 connection: 0x%x\n",
-		   opl3->connection_reg);
-#endif
+	opl3_dbg(opl3, "  --> setting OPL3 connection: 0x%x\n",
+		opl3->connection_reg);
 	/*
 	 * calculate volume depending on connection
 	 * between FM operators (see include/opl3.h)
@@ -457,9 +451,7 @@ void snd_opl3_note_on(void *p, int note, int vel, struct snd_midi_channel *chan)
 
 	/* Program the FM voice characteristics */
 	for (i = 0; i < (instr_4op ? 4 : 2); i++) {
-#ifdef DEBUG_MIDI
-		snd_printk(KERN_DEBUG "  --> programming operator %i\n", i);
-#endif
+		opl3_dbg(opl3, "  --> programming operator %i\n", i);
 		op_offset = snd_opl3_regmap[voice_offset][i];
 
 		/* Set OPL3 AM_VIB register of requested voice/operator */ 
@@ -537,9 +529,7 @@ void snd_opl3_note_on(void *p, int note, int vel, struct snd_midi_channel *chan)
 	/* Set output sound flag */
 	blocknum |= OPL3_KEYON_BIT;
 
-#ifdef DEBUG_MIDI
-	snd_printk(KERN_DEBUG "  --> trigger voice %i\n", voice);
-#endif
+	opl3_dbg(opl3, "  --> trigger voice %i\n", voice);
 	/* Set OPL3 KEYON_BLOCK register of requested voice */ 
 	opl3_reg = reg_side | (OPL3_REG_KEYON_BLOCK + voice_offset);
 	opl3->command(opl3, opl3_reg, blocknum);
@@ -593,12 +583,9 @@ void snd_opl3_note_on(void *p, int note, int vel, struct snd_midi_channel *chan)
 			bank = 0;
 			prg = extra_prg - 1;
 		}
-#ifdef DEBUG_MIDI
-		snd_printk(KERN_DEBUG " *** allocating extra program\n");
-#endif
+		opl3_dbg(opl3, " *** allocating extra program\n");
 		goto __extra_prg;
 	}
-	spin_unlock_irqrestore(&opl3->voice_lock, flags);
 }
 
 static void snd_opl3_kill_voice(struct snd_opl3 *opl3, int voice)
@@ -624,9 +611,7 @@ static void snd_opl3_kill_voice(struct snd_opl3 *opl3, int voice)
 	}
 
 	/* kill voice */
-#ifdef DEBUG_MIDI
-	snd_printk(KERN_DEBUG "  --> kill voice %i\n", voice);
-#endif
+	opl3_dbg(opl3, "  --> kill voice %i\n", voice);
 	opl3_reg = reg_side | (OPL3_REG_KEYON_BLOCK + voice_offset);
 	/* clear Key ON bit */
 	opl3->command(opl3, opl3_reg, vp->keyon_reg);
@@ -660,10 +645,8 @@ static void snd_opl3_note_off_unsafe(void *p, int note, int vel,
 
 	opl3 = p;
 
-#ifdef DEBUG_MIDI
-	snd_printk(KERN_DEBUG "Note off, ch %i, inst %i, note %i\n",
-		   chan->number, chan->midi_program, note);
-#endif
+	opl3_dbg(opl3, "Note off, ch %i, inst %i, note %i\n",
+		 chan->number, chan->midi_program, note);
 
 	if (opl3->synth_mode == SNDRV_OPL3_MODE_SEQ) {
 		if (chan->drum_channel && use_internal_drums) {
@@ -691,11 +674,9 @@ void snd_opl3_note_off(void *p, int note, int vel,
 		       struct snd_midi_channel *chan)
 {
 	struct snd_opl3 *opl3 = p;
-	unsigned long flags;
 
-	spin_lock_irqsave(&opl3->voice_lock, flags);
+	guard(spinlock_irqsave)(&opl3->voice_lock);
 	snd_opl3_note_off_unsafe(p, note, vel, chan);
-	spin_unlock_irqrestore(&opl3->voice_lock, flags);
 }
 
 /*
@@ -703,10 +684,8 @@ void snd_opl3_note_off(void *p, int note, int vel,
  */
 void snd_opl3_key_press(void *p, int note, int vel, struct snd_midi_channel *chan)
 {
-#ifdef DEBUG_MIDI
-	snd_printk(KERN_DEBUG "Key pressure, ch#: %i, inst#: %i\n",
-		   chan->number, chan->midi_program);
-#endif
+	opl3_dbg(p, "Key pressure, ch#: %i, inst#: %i\n",
+		 chan->number, chan->midi_program);
 }
 
 /*
@@ -714,10 +693,8 @@ void snd_opl3_key_press(void *p, int note, int vel, struct snd_midi_channel *cha
  */
 void snd_opl3_terminate_note(void *p, int note, struct snd_midi_channel *chan)
 {
-#ifdef DEBUG_MIDI
-	snd_printk(KERN_DEBUG "Terminate note, ch#: %i, inst#: %i\n",
-		   chan->number, chan->midi_program);
-#endif
+	opl3_dbg(p, "Terminate note, ch#: %i, inst#: %i\n",
+		 chan->number, chan->midi_program);
 }
 
 static void snd_opl3_update_pitch(struct snd_opl3 *opl3, int voice)
@@ -773,9 +750,7 @@ static void snd_opl3_pitch_ctrl(struct snd_opl3 *opl3, struct snd_midi_channel *
 	int voice;
 	struct snd_opl3_voice *vp;
 
-	unsigned long flags;
-
-	spin_lock_irqsave(&opl3->voice_lock, flags);
+	guard(spinlock_irqsave)(&opl3->voice_lock);
 
 	if (opl3->synth_mode == SNDRV_OPL3_MODE_SEQ) {
 		for (voice = 0; voice < opl3->max_voices; voice++) {
@@ -791,7 +766,6 @@ static void snd_opl3_pitch_ctrl(struct snd_opl3 *opl3, struct snd_midi_channel *
 			snd_opl3_update_pitch(opl3, voice);
 		}
 	}
-	spin_unlock_irqrestore(&opl3->voice_lock, flags);
 }
 
 /*
@@ -803,10 +777,8 @@ void snd_opl3_control(void *p, int type, struct snd_midi_channel *chan)
   	struct snd_opl3 *opl3;
 
 	opl3 = p;
-#ifdef DEBUG_MIDI
-	snd_printk(KERN_DEBUG "Controller, TYPE = %i, ch#: %i, inst#: %i\n",
-		   type, chan->number, chan->midi_program);
-#endif
+	opl3_dbg(opl3, "Controller, TYPE = %i, ch#: %i, inst#: %i\n",
+		 type, chan->number, chan->midi_program);
 
 	switch (type) {
 	case MIDI_CTL_MSB_MODWHEEL:
@@ -837,10 +809,8 @@ void snd_opl3_control(void *p, int type, struct snd_midi_channel *chan)
 void snd_opl3_nrpn(void *p, struct snd_midi_channel *chan,
 		   struct snd_midi_channel_set *chset)
 {
-#ifdef DEBUG_MIDI
-	snd_printk(KERN_DEBUG "NRPN, ch#: %i, inst#: %i\n",
-		   chan->number, chan->midi_program);
-#endif
+	opl3_dbg(p, "NRPN, ch#: %i, inst#: %i\n",
+		 chan->number, chan->midi_program);
 }
 
 /*
@@ -849,7 +819,5 @@ void snd_opl3_nrpn(void *p, struct snd_midi_channel *chan,
 void snd_opl3_sysex(void *p, unsigned char *buf, int len,
 		    int parsed, struct snd_midi_channel_set *chset)
 {
-#ifdef DEBUG_MIDI
-	snd_printk(KERN_DEBUG "SYSEX\n");
-#endif
+	opl3_dbg(p, "SYSEX\n");
 }

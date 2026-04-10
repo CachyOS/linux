@@ -444,7 +444,7 @@ static int __pn533_send_async(struct pn533 *dev, u8 cmd_code,
 
 	dev_dbg(dev->dev, "Sending command 0x%x\n", cmd_code);
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd)
 		return -ENOMEM;
 
@@ -518,7 +518,7 @@ static int pn533_send_cmd_direct_async(struct pn533 *dev, u8 cmd_code,
 	struct pn533_cmd *cmd;
 	int rc;
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd)
 		return -ENOMEM;
 
@@ -1233,7 +1233,7 @@ static int pn533_init_target_complete(struct pn533 *dev, struct sk_buff *resp)
 
 static void pn533_listen_mode_timer(struct timer_list *t)
 {
-	struct pn533 *dev = from_timer(dev, t, listen_timer);
+	struct pn533 *dev = timer_container_of(dev, t, listen_timer);
 
 	dev->cancel_listen = 1;
 
@@ -1294,6 +1294,8 @@ static int pn533_poll_dep_complete(struct pn533 *dev, void *arg,
 
 	if (IS_ERR(resp))
 		return PTR_ERR(resp);
+
+	memset(&nfc_target, 0, sizeof(struct nfc_target));
 
 	rsp = (struct pn533_cmd_jump_dep_response *)resp->data;
 
@@ -1410,11 +1412,9 @@ static int pn533_autopoll_complete(struct pn533 *dev, void *arg,
 			if (dev->poll_mod_count != 0)
 				return rc;
 			goto stop_poll;
-		} else if (rc < 0) {
-			nfc_err(dev->dev,
-				"Error %d when running autopoll\n", rc);
-			goto stop_poll;
 		}
+		nfc_err(dev->dev, "Error %d when running autopoll\n", rc);
+		goto stop_poll;
 	}
 
 	nbtg = resp->data[0];
@@ -1503,17 +1503,15 @@ static int pn533_poll_complete(struct pn533 *dev, void *arg,
 			if (dev->poll_mod_count != 0)
 				return rc;
 			goto stop_poll;
-		} else if (rc < 0) {
-			nfc_err(dev->dev,
-				"Error %d when running poll\n", rc);
-			goto stop_poll;
 		}
+		nfc_err(dev->dev, "Error %d when running poll\n", rc);
+		goto stop_poll;
 	}
 
 	cur_mod = dev->poll_mod_active[dev->poll_mod_curr];
 
 	if (cur_mod->len == 0) { /* Target mode */
-		del_timer(&dev->listen_timer);
+		timer_delete(&dev->listen_timer);
 		rc = pn533_init_target_complete(dev, resp);
 		goto done;
 	}
@@ -1721,6 +1719,11 @@ static int pn533_start_poll(struct nfc_dev *nfc_dev,
 	}
 
 	pn533_poll_create_mod_list(dev, im_protocols, tm_protocols);
+	if (!dev->poll_mod_count) {
+		nfc_err(dev->dev,
+			"Poll mod list is empty\n");
+		return -EINVAL;
+	}
 
 	/* Do not always start polling from the same modulation */
 	get_random_bytes(&rand_mod, sizeof(rand_mod));
@@ -1742,7 +1745,7 @@ static void pn533_stop_poll(struct nfc_dev *nfc_dev)
 {
 	struct pn533 *dev = nfc_get_drvdata(nfc_dev);
 
-	del_timer(&dev->listen_timer);
+	timer_delete(&dev->listen_timer);
 
 	if (!dev->poll_mod_count) {
 		dev_dbg(dev->dev,
@@ -1926,6 +1929,8 @@ static int pn533_in_dep_link_up_complete(struct pn533 *dev, void *arg,
 
 		dev_dbg(dev->dev, "Creating new target\n");
 
+		memset(&nfc_target, 0, sizeof(struct nfc_target));
+
 		nfc_target.supported_protocols = NFC_PROTO_NFC_DEP_MASK;
 		nfc_target.nfcid1_len = 10;
 		memcpy(nfc_target.nfcid1, rsp->nfcid3t, nfc_target.nfcid1_len);
@@ -2014,7 +2019,7 @@ static int pn533_dep_link_up(struct nfc_dev *nfc_dev, struct nfc_target *target,
 		*next = 0;
 	}
 
-	arg = kmalloc(sizeof(*arg), GFP_KERNEL);
+	arg = kmalloc_obj(*arg);
 	if (!arg) {
 		dev_kfree_skb(skb);
 		return -ENOMEM;
@@ -2261,7 +2266,7 @@ static int pn533_transceive(struct nfc_dev *nfc_dev,
 		goto error;
 	}
 
-	arg = kmalloc(sizeof(*arg), GFP_KERNEL);
+	arg = kmalloc_obj(*arg);
 	if (!arg) {
 		rc = -ENOMEM;
 		goto error;
@@ -2739,7 +2744,7 @@ struct pn533 *pn53x_common_init(u32 device_type,
 {
 	struct pn533 *priv;
 
-	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+	priv = kzalloc_obj(*priv);
 	if (!priv)
 		return ERR_PTR(-ENOMEM);
 
@@ -2788,7 +2793,7 @@ void pn53x_common_clean(struct pn533 *priv)
 	struct pn533_cmd *cmd, *n;
 
 	/* delete the timer before cleanup the worker */
-	del_timer_sync(&priv->listen_timer);
+	timer_shutdown_sync(&priv->listen_timer);
 
 	flush_delayed_work(&priv->poll_work);
 	destroy_workqueue(priv->wq);

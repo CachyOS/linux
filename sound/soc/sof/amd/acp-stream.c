@@ -26,6 +26,7 @@
 
 int acp_dsp_stream_config(struct snd_sof_dev *sdev, struct acp_dsp_stream *stream)
 {
+	const struct sof_amd_acp_desc *desc = get_chip_info(sdev->pdata);
 	unsigned int pte_reg, pte_size, phy_addr_offset, index;
 	int stream_tag = stream->stream_tag;
 	u32 low, high, offset, reg_val;
@@ -88,7 +89,8 @@ int acp_dsp_stream_config(struct snd_sof_dev *sdev, struct acp_dsp_stream *strea
 
 	/* write phy_addr in scratch memory */
 
-	phy_addr_offset = offsetof(struct scratch_reg_conf, reg_offset);
+	phy_addr_offset = sdev->debug_box.offset +
+			  offsetof(struct scratch_reg_conf, reg_offset);
 	index = stream_tag - 1;
 	phy_addr_offset = phy_addr_offset + index * 4;
 
@@ -96,7 +98,8 @@ int acp_dsp_stream_config(struct snd_sof_dev *sdev, struct acp_dsp_stream *strea
 			  phy_addr_offset, stream->reg_offset);
 
 	/* Group Enable */
-	reg_val = ACP_SRAM_PTE_OFFSET + offset;
+	offset = offset + sdev->debug_box.offset;
+	reg_val = desc->sram_pte_offset + offset;
 	snd_sof_dsp_write(sdev, ACP_DSP_BAR, pte_reg, reg_val | BIT(31));
 	snd_sof_dsp_write(sdev, ACP_DSP_BAR, pte_size, PAGE_SIZE_4K_ENABLE);
 
@@ -147,7 +150,7 @@ struct acp_dsp_stream *acp_dsp_stream_get(struct snd_sof_dev *sdev, int tag)
 	dev_err(sdev->dev, "stream %d active or no inactive stream\n", tag);
 	return NULL;
 }
-EXPORT_SYMBOL_NS(acp_dsp_stream_get, SND_SOC_SOF_AMD_COMMON);
+EXPORT_SYMBOL_NS(acp_dsp_stream_get, "SND_SOC_SOF_AMD_COMMON");
 
 int acp_dsp_stream_put(struct snd_sof_dev *sdev,
 		       struct acp_dsp_stream *acp_stream)
@@ -167,7 +170,7 @@ int acp_dsp_stream_put(struct snd_sof_dev *sdev,
 	dev_err(sdev->dev, "Cannot find active stream tag %d\n", acp_stream->stream_tag);
 	return -EINVAL;
 }
-EXPORT_SYMBOL_NS(acp_dsp_stream_put, SND_SOC_SOF_AMD_COMMON);
+EXPORT_SYMBOL_NS(acp_dsp_stream_put, "SND_SOC_SOF_AMD_COMMON");
 
 int acp_dsp_stream_init(struct snd_sof_dev *sdev)
 {
@@ -181,4 +184,4 @@ int acp_dsp_stream_init(struct snd_sof_dev *sdev)
 	}
 	return 0;
 }
-EXPORT_SYMBOL_NS(acp_dsp_stream_init, SND_SOC_SOF_AMD_COMMON);
+EXPORT_SYMBOL_NS(acp_dsp_stream_init, "SND_SOC_SOF_AMD_COMMON");

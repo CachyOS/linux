@@ -6,7 +6,7 @@
  *
  * Core file which registers crypto algorithms supported by the SS.
  *
- * You could find a link for the datasheet in Documentation/arm/sunxi.rst
+ * You could find a link for the datasheet in Documentation/arch/arm/sunxi.rst
  */
 #include <linux/clk.h>
 #include <linux/crypto.h>
@@ -14,7 +14,6 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <crypto/scatterwalk.h>
 #include <linux/scatterlist.h>
@@ -50,7 +49,6 @@ static struct sun4i_ss_alg_template ss_algs[] = {
 				.cra_name = "md5",
 				.cra_driver_name = "md5-sun4i-ss",
 				.cra_priority = 300,
-				.cra_alignmask = 3,
 				.cra_blocksize = MD5_HMAC_BLOCK_SIZE,
 				.cra_ctxsize = sizeof(struct sun4i_req_ctx),
 				.cra_module = THIS_MODULE,
@@ -77,7 +75,6 @@ static struct sun4i_ss_alg_template ss_algs[] = {
 				.cra_name = "sha1",
 				.cra_driver_name = "sha1-sun4i-ss",
 				.cra_priority = 300,
-				.cra_alignmask = 3,
 				.cra_blocksize = SHA1_BLOCK_SIZE,
 				.cra_ctxsize = sizeof(struct sun4i_req_ctx),
 				.cra_module = THIS_MODULE,
@@ -235,7 +232,7 @@ static struct sun4i_ss_alg_template ss_algs[] = {
 #endif
 };
 
-static int sun4i_ss_dbgfs_read(struct seq_file *seq, void *v)
+static int sun4i_ss_debugfs_show(struct seq_file *seq, void *v)
 {
 	unsigned int i;
 
@@ -266,19 +263,7 @@ static int sun4i_ss_dbgfs_read(struct seq_file *seq, void *v)
 	}
 	return 0;
 }
-
-static int sun4i_ss_dbgfs_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, sun4i_ss_dbgfs_read, inode->i_private);
-}
-
-static const struct file_operations sun4i_ss_debugfs_fops = {
-	.owner = THIS_MODULE,
-	.open = sun4i_ss_dbgfs_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(sun4i_ss_debugfs);
 
 /*
  * Power management strategy: The device is suspended unless a TFM exists for
@@ -522,7 +507,7 @@ error_pm:
 	return err;
 }
 
-static int sun4i_ss_remove(struct platform_device *pdev)
+static void sun4i_ss_remove(struct platform_device *pdev)
 {
 	int i;
 	struct sun4i_ss_ctx *ss = platform_get_drvdata(pdev);
@@ -542,7 +527,6 @@ static int sun4i_ss_remove(struct platform_device *pdev)
 	}
 
 	sun4i_ss_pm_exit(ss);
-	return 0;
 }
 
 static const struct of_device_id a20ss_crypto_of_match_table[] = {

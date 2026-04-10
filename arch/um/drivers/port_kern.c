@@ -45,15 +45,17 @@ struct connection {
 static irqreturn_t pipe_interrupt(int irq, void *data)
 {
 	struct connection *conn = data;
-	int fd;
+	int n_fds = 1, fd = -1;
+	ssize_t ret;
 
-	fd = os_rcv_fd(conn->socket[0], &conn->helper_pid);
-	if (fd < 0) {
-		if (fd == -EAGAIN)
+	ret = os_rcv_fd_msg(conn->socket[0], &fd, n_fds, &conn->helper_pid,
+			    sizeof(conn->helper_pid));
+	if (ret != sizeof(conn->helper_pid)) {
+		if (ret == -EAGAIN)
 			return IRQ_NONE;
 
-		printk(KERN_ERR "pipe_interrupt : os_rcv_fd returned %d\n",
-		       -fd);
+		printk(KERN_ERR "pipe_interrupt : os_rcv_fd_msg returned %zd\n",
+		       ret);
 		os_close_file(conn->fd);
 	}
 
@@ -86,7 +88,7 @@ static int port_accept(struct port_list *port)
 		goto out;
 	}
 
-	conn = kmalloc(sizeof(*conn), GFP_ATOMIC);
+	conn = kmalloc_obj(*conn, GFP_ATOMIC);
 	if (conn == NULL) {
 		printk(KERN_ERR "port_accept : failed to allocate "
 		       "connection\n");
@@ -144,7 +146,7 @@ static void port_work_proc(struct work_struct *unused)
 	local_irq_restore(flags);
 }
 
-DECLARE_WORK(port_work, port_work_proc);
+static DECLARE_WORK(port_work, port_work_proc);
 
 static irqreturn_t port_interrupt(int irq, void *data)
 {
@@ -168,7 +170,7 @@ void *port_data(int port_num)
 		if (port->port == port_num)
 			goto found;
 	}
-	port = kmalloc(sizeof(struct port_list), GFP_KERNEL);
+	port = kmalloc_obj(struct port_list);
 	if (port == NULL) {
 		printk(KERN_ERR "Allocation of port list failed\n");
 		goto out;
@@ -200,7 +202,7 @@ void *port_data(int port_num)
 	list_add(&port->list, &ports);
 
  found:
-	dev = kmalloc(sizeof(struct port_dev), GFP_KERNEL);
+	dev = kmalloc_obj(struct port_dev);
 	if (dev == NULL) {
 		printk(KERN_ERR "Allocation of port device entry failed\n");
 		goto out;

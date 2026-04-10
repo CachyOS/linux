@@ -228,8 +228,8 @@ int ddk750_init_hw(struct initchip_param *p_init_param)
 		reg = peek32(VGA_CONFIGURATION);
 		reg |= (VGA_CONFIGURATION_PLL | VGA_CONFIGURATION_MODE);
 		poke32(VGA_CONFIGURATION, reg);
+#ifdef CONFIG_X86
 	} else {
-#if defined(__i386__) || defined(__x86_64__)
 		/* set graphic mode via IO method */
 		outb_p(0x88, 0x3d4);
 		outb_p(0x06, 0x3d5);
@@ -249,7 +249,7 @@ int ddk750_init_hw(struct initchip_param *p_init_param)
 	 * Reset the memory controller.
 	 * If the memory controller is not reset in SM750,
 	 * the system might hang when sw accesses the memory.
-	 * The memory should be resetted after changing the MXCLK.
+	 * The memory should be reset after changing the MXCLK.
 	 */
 	if (p_init_param->reset_memory == 1) {
 		reg = peek32(MISC_CTRL);

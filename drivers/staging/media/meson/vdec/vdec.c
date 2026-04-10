@@ -4,7 +4,7 @@
  * Author: Maxime Jourdan <mjourdan@baylibre.com>
  */
 
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/module.h>
@@ -132,7 +132,7 @@ vdec_queue_recycle(struct amvdec_session *sess, struct vb2_buffer *vb)
 {
 	struct amvdec_buffer *new_buf;
 
-	new_buf = kmalloc(sizeof(*new_buf), GFP_KERNEL);
+	new_buf = kmalloc_obj(*new_buf);
 	if (!new_buf)
 		return;
 	new_buf->vb = vb;
@@ -167,23 +167,24 @@ static void process_num_buffers(struct vb2_queue *q,
 				bool is_reqbufs)
 {
 	const struct amvdec_format *fmt_out = sess->fmt_out;
-	unsigned int buffers_total = q->num_buffers + *num_buffers;
+	unsigned int q_num_bufs = vb2_get_num_buffers(q);
+	unsigned int buffers_total = q_num_bufs + *num_buffers;
 	u32 min_buf_capture = v4l2_ctrl_g_ctrl(sess->ctrl_min_buf_capture);
 
-	if (q->num_buffers + *num_buffers < min_buf_capture)
-		*num_buffers = min_buf_capture - q->num_buffers;
+	if (q_num_bufs + *num_buffers < min_buf_capture)
+		*num_buffers = min_buf_capture - q_num_bufs;
 	if (is_reqbufs && buffers_total < fmt_out->min_buffers)
-		*num_buffers = fmt_out->min_buffers - q->num_buffers;
+		*num_buffers = fmt_out->min_buffers - q_num_bufs;
 	if (buffers_total > fmt_out->max_buffers)
-		*num_buffers = fmt_out->max_buffers - q->num_buffers;
+		*num_buffers = fmt_out->max_buffers - q_num_bufs;
 
 	/* We need to program the complete CAPTURE buffer list
 	 * in registers during start_streaming, and the firmwares
 	 * are free to choose any of them to write frames to. As such,
 	 * we need all of them to be queued into the driver
 	 */
-	sess->num_dst_bufs = q->num_buffers + *num_buffers;
-	q->min_buffers_needed = max(fmt_out->min_buffers, sess->num_dst_bufs);
+	sess->num_dst_bufs = q_num_bufs + *num_buffers;
+	q->min_queued_buffers = max(fmt_out->min_buffers, sess->num_dst_bufs);
 }
 
 static int vdec_queue_setup(struct vb2_queue *q, unsigned int *num_buffers,
@@ -449,8 +450,6 @@ static const struct vb2_ops vdec_vb2_ops = {
 	.stop_streaming = vdec_stop_streaming,
 	.buf_queue = vdec_vb2_buf_queue,
 	.buf_prepare = vdec_vb2_buf_prepare,
-	.wait_prepare = vb2_ops_wait_prepare,
-	.wait_finish = vb2_ops_wait_finish,
 };
 
 static int
@@ -559,8 +558,7 @@ vdec_try_fmt_common(struct amvdec_session *sess, u32 size,
 
 static int vdec_try_fmt(struct file *file, void *fh, struct v4l2_format *f)
 {
-	struct amvdec_session *sess =
-		container_of(file->private_data, struct amvdec_session, fh);
+	struct amvdec_session *sess = file_to_amvdec_session(file);
 
 	vdec_try_fmt_common(sess, sess->core->platform->num_formats, f);
 
@@ -569,8 +567,7 @@ static int vdec_try_fmt(struct file *file, void *fh, struct v4l2_format *f)
 
 static int vdec_g_fmt(struct file *file, void *fh, struct v4l2_format *f)
 {
-	struct amvdec_session *sess =
-		container_of(file->private_data, struct amvdec_session, fh);
+	struct amvdec_session *sess = file_to_amvdec_session(file);
 	struct v4l2_pix_format_mplane *pixmp = &f->fmt.pix_mp;
 
 	if (f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE)
@@ -597,8 +594,7 @@ static int vdec_g_fmt(struct file *file, void *fh, struct v4l2_format *f)
 
 static int vdec_s_fmt(struct file *file, void *fh, struct v4l2_format *f)
 {
-	struct amvdec_session *sess =
-		container_of(file->private_data, struct amvdec_session, fh);
+	struct amvdec_session *sess = file_to_amvdec_session(file);
 	struct v4l2_pix_format_mplane *pixmp = &f->fmt.pix_mp;
 	u32 num_formats = sess->core->platform->num_formats;
 	const struct amvdec_format *fmt_out;
@@ -659,8 +655,7 @@ static int vdec_s_fmt(struct file *file, void *fh, struct v4l2_format *f)
 
 static int vdec_enum_fmt(struct file *file, void *fh, struct v4l2_fmtdesc *f)
 {
-	struct amvdec_session *sess =
-		container_of(file->private_data, struct amvdec_session, fh);
+	struct amvdec_session *sess = file_to_amvdec_session(file);
 	const struct vdec_platform *platform = sess->core->platform;
 	const struct amvdec_format *fmt_out;
 
@@ -689,8 +684,7 @@ static int vdec_enum_fmt(struct file *file, void *fh, struct v4l2_fmtdesc *f)
 static int vdec_enum_framesizes(struct file *file, void *fh,
 				struct v4l2_frmsizeenum *fsize)
 {
-	struct amvdec_session *sess =
-		container_of(file->private_data, struct amvdec_session, fh);
+	struct amvdec_session *sess = file_to_amvdec_session(file);
 	const struct amvdec_format *formats = sess->core->platform->formats;
 	const struct amvdec_format *fmt;
 	u32 num_formats = sess->core->platform->num_formats;
@@ -714,8 +708,7 @@ static int vdec_enum_framesizes(struct file *file, void *fh,
 static int
 vdec_decoder_cmd(struct file *file, void *fh, struct v4l2_decoder_cmd *cmd)
 {
-	struct amvdec_session *sess =
-		container_of(file->private_data, struct amvdec_session, fh);
+	struct amvdec_session *sess = file_to_amvdec_session(file);
 	struct amvdec_codec_ops *codec_ops = sess->fmt_out->codec_ops;
 	struct device *dev = sess->core->dev;
 	int ret;
@@ -774,8 +767,7 @@ static int vdec_subscribe_event(struct v4l2_fh *fh,
 static int vdec_g_pixelaspect(struct file *file, void *fh, int type,
 			      struct v4l2_fract *f)
 {
-	struct amvdec_session *sess =
-		container_of(file->private_data, struct amvdec_session, fh);
+	struct amvdec_session *sess = file_to_amvdec_session(file);
 
 	if (type != V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE)
 		return -EINVAL;
@@ -824,7 +816,7 @@ static int m2m_queue_init(void *priv, struct vb2_queue *src_vq,
 	src_vq->mem_ops = &vb2_dma_contig_memops;
 	src_vq->drv_priv = sess;
 	src_vq->buf_struct_size = sizeof(struct dummy_buf);
-	src_vq->min_buffers_needed = 1;
+	src_vq->min_queued_buffers = 1;
 	src_vq->dev = sess->core->dev;
 	src_vq->lock = &sess->lock;
 	ret = vb2_queue_init(src_vq);
@@ -838,7 +830,7 @@ static int m2m_queue_init(void *priv, struct vb2_queue *src_vq,
 	dst_vq->mem_ops = &vb2_dma_contig_memops;
 	dst_vq->drv_priv = sess;
 	dst_vq->buf_struct_size = sizeof(struct dummy_buf);
-	dst_vq->min_buffers_needed = 1;
+	dst_vq->min_queued_buffers = 1;
 	dst_vq->dev = sess->core->dev;
 	dst_vq->lock = &sess->lock;
 	return vb2_queue_init(dst_vq);
@@ -875,7 +867,7 @@ static int vdec_open(struct file *file)
 	struct amvdec_session *sess;
 	int ret;
 
-	sess = kzalloc(sizeof(*sess), GFP_KERNEL);
+	sess = kzalloc_obj(*sess);
 	if (!sess)
 		return -ENOMEM;
 
@@ -916,9 +908,8 @@ static int vdec_open(struct file *file)
 
 	v4l2_fh_init(&sess->fh, core->vdev_dec);
 	sess->fh.ctrl_handler = &sess->ctrl_handler;
-	v4l2_fh_add(&sess->fh);
+	v4l2_fh_add(&sess->fh, file);
 	sess->fh.m2m_ctx = sess->m2m_ctx;
-	file->private_data = &sess->fh;
 
 	return 0;
 
@@ -931,12 +922,11 @@ err_free_sess:
 
 static int vdec_close(struct file *file)
 {
-	struct amvdec_session *sess =
-		container_of(file->private_data, struct amvdec_session, fh);
+	struct amvdec_session *sess = file_to_amvdec_session(file);
 
 	v4l2_m2m_ctx_release(sess->m2m_ctx);
 	v4l2_m2m_release(sess->m2m_dev);
-	v4l2_fh_del(&sess->fh);
+	v4l2_fh_del(&sess->fh, file);
 	v4l2_fh_exit(&sess->fh);
 
 	mutex_destroy(&sess->lock);
@@ -981,6 +971,8 @@ static const struct of_device_id vdec_dt_match[] = {
 	  .data = &vdec_platform_gxm },
 	{ .compatible = "amlogic,gxl-vdec",
 	  .data = &vdec_platform_gxl },
+	{ .compatible = "amlogic,gxlx-vdec",
+	  .data = &vdec_platform_gxlx },
 	{ .compatible = "amlogic,g12a-vdec",
 	  .data = &vdec_platform_g12a },
 	{ .compatible = "amlogic,sm1-vdec",
@@ -1102,16 +1094,16 @@ static int vdec_probe(struct platform_device *pdev)
 
 err_vdev_release:
 	video_device_release(vdev);
+	v4l2_device_unregister(&core->v4l2_dev);
 	return ret;
 }
 
-static int vdec_remove(struct platform_device *pdev)
+static void vdec_remove(struct platform_device *pdev)
 {
 	struct amvdec_core *core = platform_get_drvdata(pdev);
 
 	video_unregister_device(core->vdev_dec);
-
-	return 0;
+	v4l2_device_unregister(&core->v4l2_dev);
 }
 
 static struct platform_driver meson_vdec_driver = {

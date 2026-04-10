@@ -728,30 +728,22 @@ static const int adt7470_freq_map[] = {
 static int pwm1_freq_get(struct device *dev)
 {
 	struct adt7470_data *data = dev_get_drvdata(dev);
-	unsigned int cfg_reg_1, cfg_reg_2;
+	unsigned int regs[2] = {ADT7470_REG_CFG, ADT7470_REG_CFG_2};
+	u8 cfg_reg[2];
 	int index;
 	int err;
 
-	mutex_lock(&data->lock);
-	err = regmap_read(data->regmap, ADT7470_REG_CFG, &cfg_reg_1);
-	if (err < 0)
-		goto out;
-	err = regmap_read(data->regmap, ADT7470_REG_CFG_2, &cfg_reg_2);
-	if (err < 0)
-		goto out;
-	mutex_unlock(&data->lock);
+	err = regmap_multi_reg_read(data->regmap, regs, cfg_reg, 2);
+	if (err)
+		return err;
 
-	index = (cfg_reg_2 & ADT7470_FREQ_MASK) >> ADT7470_FREQ_SHIFT;
-	if (!(cfg_reg_1 & ADT7470_CFG_LF))
+	index = (cfg_reg[1] & ADT7470_FREQ_MASK) >> ADT7470_FREQ_SHIFT;
+	if (!(cfg_reg[0] & ADT7470_CFG_LF))
 		index += 8;
 	if (index >= ARRAY_SIZE(adt7470_freq_map))
 		index = ARRAY_SIZE(adt7470_freq_map) - 1;
 
 	return adt7470_freq_map[index];
-
-out:
-	mutex_unlock(&data->lock);
-	return err;
 }
 
 static int adt7470_pwm_read(struct device *dev, u32 attr, int channel, long *val)
@@ -1187,7 +1179,7 @@ static const struct hwmon_ops adt7470_hwmon_ops = {
 	.write = adt7470_write,
 };
 
-static const struct hwmon_channel_info *adt7470_info[] = {
+static const struct hwmon_channel_info * const adt7470_info[] = {
 	HWMON_CHANNEL_INFO(temp,
 			   HWMON_T_INPUT | HWMON_T_MIN | HWMON_T_MAX | HWMON_T_ALARM,
 			   HWMON_T_INPUT | HWMON_T_MIN | HWMON_T_MAX | HWMON_T_ALARM,
@@ -1296,16 +1288,15 @@ static int adt7470_probe(struct i2c_client *client)
 	return 0;
 }
 
-static int adt7470_remove(struct i2c_client *client)
+static void adt7470_remove(struct i2c_client *client)
 {
 	struct adt7470_data *data = i2c_get_clientdata(client);
 
 	kthread_stop(data->auto_update);
-	return 0;
 }
 
 static const struct i2c_device_id adt7470_id[] = {
-	{ "adt7470", 0 },
+	{ "adt7470" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adt7470_id);
@@ -1315,7 +1306,7 @@ static struct i2c_driver adt7470_driver = {
 	.driver = {
 		.name	= "adt7470",
 	},
-	.probe_new	= adt7470_probe,
+	.probe		= adt7470_probe,
 	.remove		= adt7470_remove,
 	.id_table	= adt7470_id,
 	.detect		= adt7470_detect,

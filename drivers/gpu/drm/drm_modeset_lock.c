@@ -21,6 +21,8 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include <linux/export.h>
+
 #include <drm/drm_atomic.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_device.h>
@@ -91,7 +93,7 @@ static noinline depot_stack_handle_t __drm_stack_depot_save(void)
 
 static void __drm_stack_depot_print(depot_stack_handle_t stack_depot)
 {
-	struct drm_printer p = drm_debug_printer("drm_modeset_lock");
+	struct drm_printer p = drm_dbg_printer(NULL, DRM_UT_KMS, "drm_modeset_lock");
 	unsigned long *entries;
 	unsigned int nr_entries;
 	char *buf;
@@ -146,7 +148,7 @@ void drm_modeset_lock_all(struct drm_device *dev)
 	struct drm_modeset_acquire_ctx *ctx;
 	int ret;
 
-	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL | __GFP_NOFAIL);
+	ctx = kzalloc_obj(*ctx, GFP_KERNEL | __GFP_NOFAIL);
 	if (WARN_ON(!ctx))
 		return;
 

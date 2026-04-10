@@ -13,11 +13,10 @@
  * Syscalls are split into 3 levels:
  *   - The lower level is the arch-specific syscall() definition, consisting in
  *     assembly code in compound expressions. These are called my_syscall0() to
- *     my_syscall6() depending on the number of arguments. The MIPS
- *     implementation is limited to 5 arguments. All input arguments are cast
- *     to a long stored in a register. These expressions always return the
- *     syscall's return value as a signed long value which is often either a
- *     pointer or the negated errno value.
+ *     my_syscall6() depending on the number of arguments. All input arguments
+ *     are castto a long stored in a register. These expressions always return
+ *     the syscall's return value as a signed long value which is often either
+ *     a pointer or the negated errno value.
  *
  *   - The second level is mostly architecture-independent. It is made of
  *     static functions called sys_<name>() which rely on my_syscallN()
@@ -32,8 +31,7 @@
  *   - The third level is the libc call definition. It exposes the lower raw
  *     sys_<name>() calls in a way that looks like what a libc usually does,
  *     takes care of specific input values, and of setting errno upon error.
- *     There can be minor variations compared to standard libc calls. For
- *     example the open() call always takes 3 args here.
+ *     There can be minor variations compared to standard libc calls.
  *
  * The errno variable is declared static and unused. This way it can be
  * optimized away if not used. However this means that a program made of
@@ -75,10 +73,11 @@
  *            -I../nolibc -o hello hello.c -lgcc
  *
  * The available standard (but limited) include files are:
- *   ctype.h, errno.h, signal.h, stdio.h, stdlib.h, string.h, time.h
+ *   ctype.h, errno.h, signal.h, stdarg.h, stdbool.h stdio.h, stdlib.h,
+ *   string.h, time.h
  *
  * In addition, the following ones are expected to be provided by the compiler:
- *   float.h, stdarg.h, stddef.h
+ *   float.h, stddef.h
  *
  * The following ones which are part to the C standard are not provided:
  *   assert.h, locale.h, math.h, setjmp.h, limits.h
@@ -97,13 +96,40 @@
 #include "arch.h"
 #include "types.h"
 #include "sys.h"
+#include "sys/auxv.h"
+#include "sys/ioctl.h"
+#include "sys/mman.h"
+#include "sys/mount.h"
+#include "sys/prctl.h"
+#include "sys/ptrace.h"
+#include "sys/random.h"
+#include "sys/reboot.h"
+#include "sys/resource.h"
+#include "sys/select.h"
+#include "sys/stat.h"
+#include "sys/syscall.h"
+#include "sys/sysmacros.h"
+#include "sys/time.h"
+#include "sys/timerfd.h"
+#include "sys/uio.h"
+#include "sys/utsname.h"
+#include "sys/wait.h"
 #include "ctype.h"
+#include "elf.h"
+#include "sched.h"
 #include "signal.h"
+#include "unistd.h"
+#include "stdbool.h"
 #include "stdio.h"
 #include "stdlib.h"
 #include "string.h"
 #include "time.h"
-#include "unistd.h"
+#include "stackprotector.h"
+#include "dirent.h"
+#include "fcntl.h"
+#include "getopt.h"
+#include "poll.h"
+#include "math.h"
 
 /* Used by programs to avoid std includes */
 #define NOLIBC

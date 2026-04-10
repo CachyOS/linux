@@ -28,6 +28,7 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include <linux/export.h>
 #include <linux/slab.h>
 
 #include <drm/drm_auth.h>
@@ -37,13 +38,12 @@
 #include <drm/drm_print.h>
 
 #include "drm_internal.h"
-#include "drm_legacy.h"
 
 /**
  * DOC: master and authentication
  *
  * &struct drm_master is used to track groups of clients with open
- * primary/legacy device nodes. For every &struct drm_file which has had at
+ * primary device nodes. For every &struct drm_file which has had at
  * least once successfully became the device master (either through the
  * SET_MASTER IOCTL, or implicitly through opening the primary device node when
  * no one else is the current master that time) there exists one &drm_master.
@@ -96,7 +96,7 @@ int drm_getmagic(struct drm_device *dev, void *data, struct drm_file *file_priv)
 	struct drm_auth *auth = data;
 	int ret = 0;
 
-	mutex_lock(&dev->master_mutex);
+	guard(mutex)(&dev->master_mutex);
 	if (!file_priv->magic) {
 		ret = idr_alloc(&file_priv->master->magic_map, file_priv,
 				1, 0, GFP_KERNEL);
@@ -104,7 +104,6 @@ int drm_getmagic(struct drm_device *dev, void *data, struct drm_file *file_priv)
 			file_priv->magic = ret;
 	}
 	auth->magic = file_priv->magic;
-	mutex_unlock(&dev->master_mutex);
 
 	drm_dbg_core(dev, "%u\n", auth->magic);
 
@@ -119,13 +118,12 @@ int drm_authmagic(struct drm_device *dev, void *data,
 
 	drm_dbg_core(dev, "%u\n", auth->magic);
 
-	mutex_lock(&dev->master_mutex);
+	guard(mutex)(&dev->master_mutex);
 	file = idr_find(&file_priv->master->magic_map, auth->magic);
 	if (file) {
 		file->authenticated = 1;
 		idr_replace(&file_priv->master->magic_map, NULL, auth->magic);
 	}
-	mutex_unlock(&dev->master_mutex);
 
 	return file ? 0 : -EINVAL;
 }
@@ -134,20 +132,19 @@ struct drm_master *drm_master_create(struct drm_device *dev)
 {
 	struct drm_master *master;
 
-	master = kzalloc(sizeof(*master), GFP_KERNEL);
+	master = kzalloc_obj(*master);
 	if (!master)
 		return NULL;
 
 	kref_init(&master->refcount);
-	drm_master_legacy_init(master);
-	idr_init(&master->magic_map);
+	idr_init_base(&master->magic_map, 1);
 	master->dev = dev;
 
 	/* initialize the tree of output resource lessees */
 	INIT_LIST_HEAD(&master->lessees);
 	INIT_LIST_HEAD(&master->lessee_list);
 	idr_init(&master->leases);
-	idr_init(&master->lessee_idr);
+	idr_init_base(&master->lessee_idr, 1);
 
 	return master;
 }
@@ -235,7 +232,8 @@ static int drm_new_set_master(struct drm_device *dev, struct drm_file *fpriv)
 static int
 drm_master_check_perm(struct drm_device *dev, struct drm_file *file_priv)
 {
-	if (file_priv->pid == task_pid(current) && file_priv->was_master)
+	if (file_priv->was_master &&
+	    rcu_access_pointer(file_priv->pid) == task_tgid(current))
 		return 0;
 
 	if (!capable(CAP_SYS_ADMIN))
@@ -249,41 +247,33 @@ int drm_setmaster_ioctl(struct drm_device *dev, void *data,
 {
 	int ret;
 
-	mutex_lock(&dev->master_mutex);
+	guard(mutex)(&dev->master_mutex);
 
 	ret = drm_master_check_perm(dev, file_priv);
 	if (ret)
-		goto out_unlock;
+		return ret;
 
 	if (drm_is_current_master_locked(file_priv))
-		goto out_unlock;
+		return ret;
 
-	if (dev->master) {
-		ret = -EBUSY;
-		goto out_unlock;
-	}
+	if (dev->master)
+		return -EBUSY;
 
-	if (!file_priv->master) {
-		ret = -EINVAL;
-		goto out_unlock;
-	}
+	if (!file_priv->master)
+		return -EINVAL;
 
-	if (!file_priv->is_master) {
-		ret = drm_new_set_master(dev, file_priv);
-		goto out_unlock;
-	}
+	if (!file_priv->is_master)
+		return drm_new_set_master(dev, file_priv);
 
 	if (file_priv->master->lessor != NULL) {
 		drm_dbg_lease(dev,
 			      "Attempt to set lessee %d as master\n",
 			      file_priv->master->lessee_id);
-		ret = -EINVAL;
-		goto out_unlock;
+		return -EINVAL;
 	}
 
 	drm_set_master(dev, file_priv, false);
-out_unlock:
-	mutex_unlock(&dev->master_mutex);
+
 	return ret;
 }
 
@@ -300,33 +290,27 @@ int drm_dropmaster_ioctl(struct drm_device *dev, void *data,
 {
 	int ret;
 
-	mutex_lock(&dev->master_mutex);
+	guard(mutex)(&dev->master_mutex);
 
 	ret = drm_master_check_perm(dev, file_priv);
 	if (ret)
-		goto out_unlock;
+		return ret;
 
-	if (!drm_is_current_master_locked(file_priv)) {
-		ret = -EINVAL;
-		goto out_unlock;
-	}
+	if (!drm_is_current_master_locked(file_priv))
+		return -EINVAL;
 
-	if (!dev->master) {
-		ret = -EINVAL;
-		goto out_unlock;
-	}
+	if (!dev->master)
+		return -EINVAL;
 
 	if (file_priv->master->lessor != NULL) {
 		drm_dbg_lease(dev,
 			      "Attempt to drop lessee %d as master\n",
 			      file_priv->master->lessee_id);
-		ret = -EINVAL;
-		goto out_unlock;
+		return -EINVAL;
 	}
 
 	drm_drop_master(dev, file_priv);
-out_unlock:
-	mutex_unlock(&dev->master_mutex);
+
 	return ret;
 }
 
@@ -338,7 +322,7 @@ int drm_master_open(struct drm_file *file_priv)
 	/* if there is no current master make this fd it, but do not create
 	 * any master object for render clients
 	 */
-	mutex_lock(&dev->master_mutex);
+	guard(mutex)(&dev->master_mutex);
 	if (!dev->master) {
 		ret = drm_new_set_master(dev, file_priv);
 	} else {
@@ -346,7 +330,6 @@ int drm_master_open(struct drm_file *file_priv)
 		file_priv->master = drm_master_get(dev->master);
 		spin_unlock(&file_priv->master_lookup_lock);
 	}
-	mutex_unlock(&dev->master_mutex);
 
 	return ret;
 }
@@ -356,15 +339,13 @@ void drm_master_release(struct drm_file *file_priv)
 	struct drm_device *dev = file_priv->minor->dev;
 	struct drm_master *master;
 
-	mutex_lock(&dev->master_mutex);
+	guard(mutex)(&dev->master_mutex);
 	master = file_priv->master;
 	if (file_priv->magic)
 		idr_remove(&file_priv->master->magic_map, file_priv->magic);
 
 	if (!drm_is_current_master_locked(file_priv))
 		goto out;
-
-	drm_legacy_lock_master_cleanup(dev, master);
 
 	if (dev->master == file_priv->master)
 		drm_drop_master(dev, file_priv);
@@ -379,7 +360,6 @@ out:
 	/* drop the master reference held by the file priv */
 	if (file_priv->master)
 		drm_master_put(&file_priv->master);
-	mutex_unlock(&dev->master_mutex);
 }
 
 /**
@@ -427,8 +407,6 @@ static void drm_master_destroy(struct kref *kref)
 
 	if (drm_core_check_feature(dev, DRIVER_MODESET))
 		drm_lease_destroy(master);
-
-	drm_legacy_master_rmmaps(dev, master);
 
 	idr_destroy(&master->magic_map);
 	idr_destroy(&master->leases);

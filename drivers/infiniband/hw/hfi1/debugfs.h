@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause */
+/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
  * Copyright(c) 2015, 2016, 2018 Intel Corporation.
  */
@@ -33,15 +33,10 @@ static int _##name##_open(struct inode *inode, struct file *s) \
 static const struct file_operations _##name##_file_ops = { \
 	.owner   = THIS_MODULE, \
 	.open    = _##name##_open, \
-	.read    = hfi1_seq_read, \
-	.llseek  = hfi1_seq_lseek, \
+	.read    = seq_read, \
+	.llseek  = seq_lseek, \
 	.release = seq_release \
 }
-
-
-ssize_t hfi1_seq_read(struct file *file, char __user *buf, size_t size,
-		      loff_t *ppos);
-loff_t hfi1_seq_lseek(struct file *file, loff_t offset, int whence);
 
 #ifdef CONFIG_DEBUG_FS
 void hfi1_dbg_ibdev_init(struct hfi1_ibdev *ibd);

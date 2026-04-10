@@ -17,9 +17,9 @@
 /* SDP PF number */
 static int sdp_pf_num[MAX_SDP] = {-1, -1};
 
-bool is_sdp_pfvf(u16 pcifunc)
+bool is_sdp_pfvf(struct rvu *rvu, u16 pcifunc)
 {
-	u16 pf = rvu_get_pf(pcifunc);
+	u16 pf = rvu_get_pf(rvu->pdev, pcifunc);
 	u32 found = 0, i = 0;
 
 	while (i < MAX_SDP) {
@@ -34,15 +34,19 @@ bool is_sdp_pfvf(u16 pcifunc)
 	return true;
 }
 
-bool is_sdp_pf(u16 pcifunc)
+bool is_sdp_pf(struct rvu *rvu, u16 pcifunc)
 {
-	return (is_sdp_pfvf(pcifunc) &&
+	return (is_sdp_pfvf(rvu, pcifunc) &&
 		!(pcifunc & RVU_PFVF_FUNC_MASK));
 }
 
-bool is_sdp_vf(u16 pcifunc)
+#define	RVU_SDP_VF_DEVID	0xA0F7
+bool is_sdp_vf(struct rvu *rvu, u16 pcifunc)
 {
-	return (is_sdp_pfvf(pcifunc) &&
+	if (!(pcifunc & ~RVU_PFVF_FUNC_MASK))
+		return (rvu->vf_devid == RVU_SDP_VF_DEVID);
+
+	return (is_sdp_pfvf(rvu, pcifunc) &&
 		!!(pcifunc & RVU_PFVF_FUNC_MASK));
 }
 
@@ -51,6 +55,14 @@ int rvu_sdp_init(struct rvu *rvu)
 	struct pci_dev *pdev = NULL;
 	struct rvu_pfvf *pfvf;
 	u32 i = 0;
+
+	if (rvu->fwdata && rvu->fwdata->channel_data.valid) {
+		sdp_pf_num[0] = 0;
+		pfvf = &rvu->pf[sdp_pf_num[0]];
+		pfvf->sdp_info = &rvu->fwdata->channel_data.info;
+
+		return 0;
+	}
 
 	while ((i < MAX_SDP) && (pdev = pci_get_device(PCI_VENDOR_ID_CAVIUM,
 						       PCI_DEVID_OTX2_SDP_PF,
@@ -62,14 +74,17 @@ int rvu_sdp_init(struct rvu *rvu)
 		pfvf->sdp_info = devm_kzalloc(rvu->dev,
 					      sizeof(struct sdp_node_info),
 					      GFP_KERNEL);
-		if (!pfvf->sdp_info)
+		if (!pfvf->sdp_info) {
+			pci_dev_put(pdev);
 			return -ENOMEM;
+		}
 
 		dev_info(rvu->dev, "SDP PF number:%d\n", sdp_pf_num[i]);
 
-		put_device(&pdev->dev);
 		i++;
 	}
+
+	pci_dev_put(pdev);
 
 	return 0;
 }

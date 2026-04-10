@@ -22,6 +22,7 @@
 #include <linux/mfd/core.h>
 #include <linux/mfd/ipaq-micro.h>
 #include <linux/string.h>
+#include <linux/string_choices.h>
 #include <linux/random.h>
 #include <linux/slab.h>
 #include <linux/list.h>
@@ -78,8 +79,6 @@ EXPORT_SYMBOL(ipaq_micro_tx_msg);
 
 static void micro_rx_msg(struct ipaq_micro *micro, u8 id, int len, u8 *data)
 {
-	int i;
-
 	dev_dbg(micro->dev, "RX msg: %02x, %d bytes\n", id, len);
 
 	spin_lock(&micro->lock);
@@ -131,10 +130,8 @@ static void micro_rx_msg(struct ipaq_micro *micro, u8 id, int len, u8 *data)
 		break;
 	default:
 		dev_err(micro->dev,
-			"unknown msg %d [%d] ", id, len);
-		for (i = 0; i < len; ++i)
-			pr_cont("0x%02x ", data[i]);
-		pr_cont("\n");
+			"unknown msg %d [%d] %*ph\n", id, len, len, data);
+		break;
 	}
 	spin_unlock(&micro->lock);
 }
@@ -271,7 +268,7 @@ static void __init ipaq_micro_eeprom_dump(struct ipaq_micro *micro)
 	dev_info(micro->dev, "page mode: %u\n", ipaq_micro_to_u16(dump+84));
 	dev_info(micro->dev, "country ID: %u\n", ipaq_micro_to_u16(dump+86));
 	dev_info(micro->dev, "color display: %s\n",
-		 ipaq_micro_to_u16(dump+88) ? "yes" : "no");
+		 str_yes_no(ipaq_micro_to_u16(dump + 88)));
 	dev_info(micro->dev, "ROM size: %u MiB\n", ipaq_micro_to_u16(dump+90));
 	dev_info(micro->dev, "RAM size: %u KiB\n", ipaq_micro_to_u16(dump+92));
 	dev_info(micro->dev, "screen: %u x %u\n",
@@ -381,7 +378,6 @@ static int __maybe_unused micro_resume(struct device *dev)
 static int __init micro_probe(struct platform_device *pdev)
 {
 	struct ipaq_micro *micro;
-	struct resource *res;
 	int ret;
 	int irq;
 
@@ -391,8 +387,7 @@ static int __init micro_probe(struct platform_device *pdev)
 
 	micro->dev = &pdev->dev;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	micro->base = devm_ioremap_resource(&pdev->dev, res);
+	micro->base = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
 	if (IS_ERR(micro->base))
 		return PTR_ERR(micro->base);
 

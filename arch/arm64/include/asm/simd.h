@@ -6,13 +6,14 @@
 #ifndef __ASM_SIMD_H
 #define __ASM_SIMD_H
 
+#include <linux/cleanup.h>
 #include <linux/compiler.h>
 #include <linux/irqflags.h>
 #include <linux/percpu.h>
 #include <linux/preempt.h>
 #include <linux/types.h>
 
-DECLARE_PER_CPU(bool, fpsimd_context_busy);
+#include <asm/neon.h>
 
 #ifdef CONFIG_KERNEL_MODE_NEON
 
@@ -28,17 +29,10 @@ static __must_check inline bool may_use_simd(void)
 	/*
 	 * We must make sure that the SVE has been initialized properly
 	 * before using the SIMD in kernel.
-	 * fpsimd_context_busy is only set while preemption is disabled,
-	 * and is clear whenever preemption is enabled. Since
-	 * this_cpu_read() is atomic w.r.t. preemption, fpsimd_context_busy
-	 * cannot change under our feet -- if it's set we cannot be
-	 * migrated, and if it's clear we cannot be migrated to a CPU
-	 * where it is set.
 	 */
 	return !WARN_ON(!system_capabilities_finalized()) &&
 	       system_supports_fpsimd() &&
-	       !in_hardirq() && !irqs_disabled() && !in_nmi() &&
-	       !this_cpu_read(fpsimd_context_busy);
+	       !in_hardirq() && !in_nmi();
 }
 
 #else /* ! CONFIG_KERNEL_MODE_NEON */
@@ -48,5 +42,19 @@ static __must_check inline bool may_use_simd(void) {
 }
 
 #endif /* ! CONFIG_KERNEL_MODE_NEON */
+
+DEFINE_LOCK_GUARD_1(ksimd,
+		    struct user_fpsimd_state,
+		    kernel_neon_begin(_T->lock),
+		    kernel_neon_end(_T->lock))
+
+#define __scoped_ksimd(_label)					\
+	for (struct user_fpsimd_state __uninitialized __st;	\
+	     true; ({ goto _label; }))				\
+		if (0) {					\
+_label:			break;					\
+		} else scoped_guard(ksimd, &__st)
+
+#define scoped_ksimd()	__scoped_ksimd(__UNIQUE_ID(label))
 
 #endif

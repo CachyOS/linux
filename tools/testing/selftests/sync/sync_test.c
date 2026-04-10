@@ -34,7 +34,7 @@
 #include <errno.h>
 #include <string.h>
 
-#include "../kselftest.h"
+#include "kselftest.h"
 #include "synctest.h"
 
 static int run_test(int (*test)(void), char *name)
@@ -109,6 +109,5 @@ int main(void)
 		ksft_exit_fail_msg("%d out of %d sync tests failed\n",
 					err, ksft_test_num());
 
-	/* need this return to keep gcc happy */
-	return ksft_exit_pass();
+	ksft_exit_pass();
 }

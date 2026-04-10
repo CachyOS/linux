@@ -21,10 +21,6 @@ Kernel Build System
     reproducible-builds
     gcc-plugins
     llvm
+    gendwarfksyms
 
-.. only::  subproject and html
-
-   Indices
-   =======
-
-   * :ref:`genindex`
+    bash-completion

@@ -87,43 +87,13 @@ static int adxl34x_spi_probe(struct spi_device *spi)
 	return 0;
 }
 
-static void adxl34x_spi_remove(struct spi_device *spi)
-{
-	struct adxl34x *ac = spi_get_drvdata(spi);
-
-	adxl34x_remove(ac);
-}
-
-static int __maybe_unused adxl34x_spi_suspend(struct device *dev)
-{
-	struct spi_device *spi = to_spi_device(dev);
-	struct adxl34x *ac = spi_get_drvdata(spi);
-
-	adxl34x_suspend(ac);
-
-	return 0;
-}
-
-static int __maybe_unused adxl34x_spi_resume(struct device *dev)
-{
-	struct spi_device *spi = to_spi_device(dev);
-	struct adxl34x *ac = spi_get_drvdata(spi);
-
-	adxl34x_resume(ac);
-
-	return 0;
-}
-
-static SIMPLE_DEV_PM_OPS(adxl34x_spi_pm, adxl34x_spi_suspend,
-			 adxl34x_spi_resume);
-
 static struct spi_driver adxl34x_driver = {
 	.driver = {
 		.name = "adxl34x",
-		.pm = &adxl34x_spi_pm,
+		.dev_groups = adxl34x_groups,
+		.pm = pm_sleep_ptr(&adxl34x_pm),
 	},
 	.probe   = adxl34x_spi_probe,
-	.remove  = adxl34x_spi_remove,
 };
 
 module_spi_driver(adxl34x_driver);

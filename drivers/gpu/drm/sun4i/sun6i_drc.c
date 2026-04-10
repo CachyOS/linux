@@ -95,11 +95,9 @@ static int sun6i_drc_probe(struct platform_device *pdev)
 	return component_add(&pdev->dev, &sun6i_drc_ops);
 }
 
-static int sun6i_drc_remove(struct platform_device *pdev)
+static void sun6i_drc_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &sun6i_drc_ops);
-
-	return 0;
 }
 
 static const struct of_device_id sun6i_drc_of_table[] = {

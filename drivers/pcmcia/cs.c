@@ -229,23 +229,6 @@ void pcmcia_unregister_socket(struct pcmcia_socket *socket)
 EXPORT_SYMBOL(pcmcia_unregister_socket);
 
 
-struct pcmcia_socket *pcmcia_get_socket_by_nr(unsigned int nr)
-{
-	struct pcmcia_socket *s;
-
-	down_read(&pcmcia_socket_list_rwsem);
-	list_for_each_entry(s, &pcmcia_socket_list, socket_list)
-		if (s->sock == nr) {
-			up_read(&pcmcia_socket_list_rwsem);
-			return s;
-		}
-	up_read(&pcmcia_socket_list_rwsem);
-
-	return NULL;
-
-}
-EXPORT_SYMBOL(pcmcia_get_socket_by_nr);
-
 static int socket_reset(struct pcmcia_socket *skt)
 {
 	int status, i;
@@ -605,6 +588,7 @@ static int pccardd(void *__skt)
 		dev_warn(&skt->dev, "PCMCIA: unable to register socket\n");
 		skt->thread = NULL;
 		complete(&skt->thread_done);
+		put_device(&skt->dev);
 		return 0;
 	}
 	ret = pccard_sysfs_add_socket(&skt->dev);
@@ -810,10 +794,10 @@ int pcmcia_reset_card(struct pcmcia_socket *skt)
 EXPORT_SYMBOL(pcmcia_reset_card);
 
 
-static int pcmcia_socket_uevent(struct device *dev,
+static int pcmcia_socket_uevent(const struct device *dev,
 				struct kobj_uevent_env *env)
 {
-	struct pcmcia_socket *s = container_of(dev, struct pcmcia_socket, dev);
+	const struct pcmcia_socket *s = container_of(dev, struct pcmcia_socket, dev);
 
 	if (add_uevent_var(env, "SOCKET_NO=%u", s->sock))
 		return -ENOMEM;
@@ -824,7 +808,7 @@ static int pcmcia_socket_uevent(struct device *dev,
 
 static struct completion pcmcia_unload;
 
-static void pcmcia_release_socket_class(struct class *data)
+static void pcmcia_release_socket_class(const struct class *data)
 {
 	complete(&pcmcia_unload);
 }
@@ -891,7 +875,7 @@ static const struct dev_pm_ops pcmcia_socket_pm_ops = {
 
 #endif /* CONFIG_PM */
 
-struct class pcmcia_socket_class = {
+const struct class pcmcia_socket_class = {
 	.name = "pcmcia_socket",
 	.dev_uevent = pcmcia_socket_uevent,
 	.dev_release = pcmcia_release_socket,

@@ -17,7 +17,7 @@
  * VPU interfaces with other blocks by share memory and interrupt.
  */
 
-typedef void (*ipi_handler_t) (const void *data,
+typedef void (*ipi_handler_t) (void *data,
 			       unsigned int len,
 			       void *priv);
 
@@ -119,8 +119,7 @@ int vpu_ipi_send(struct platform_device *pdev,
  * @pdev:	the platform device of the module requesting VPU platform
  *		device for using VPU API.
  *
- * Return: Return NULL if it is failed.
- * otherwise it is VPU's platform device
+ * Return: a reference to the VPU's platform device, or NULL on failure.
  **/
 struct platform_device *vpu_get_plat_device(struct platform_device *pdev);
 

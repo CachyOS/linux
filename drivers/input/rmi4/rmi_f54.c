@@ -372,8 +372,6 @@ static const struct vb2_ops rmi_f54_queue_ops = {
 	.queue_setup            = rmi_f54_queue_setup,
 	.buf_queue              = rmi_f54_buffer_queue,
 	.stop_streaming		= rmi_f54_stop_streaming,
-	.wait_prepare           = vb2_ops_wait_prepare,
-	.wait_finish            = vb2_ops_wait_finish,
 };
 
 static const struct vb2_queue rmi_f54_queue = {
@@ -390,8 +388,8 @@ static int rmi_f54_vidioc_querycap(struct file *file, void *priv,
 {
 	struct f54_data *f54 = video_drvdata(file);
 
-	strlcpy(cap->driver, F54_NAME, sizeof(cap->driver));
-	strlcpy(cap->card, SYNAPTICS_INPUT_DEVICE_NAME, sizeof(cap->card));
+	strscpy(cap->driver, F54_NAME, sizeof(cap->driver));
+	strscpy(cap->card, SYNAPTICS_INPUT_DEVICE_NAME, sizeof(cap->card));
 	snprintf(cap->bus_info, sizeof(cap->bus_info),
 		"rmi4:%s", dev_name(&f54->fn->dev));
 
@@ -410,7 +408,7 @@ static int rmi_f54_vidioc_enum_input(struct file *file, void *priv,
 
 	i->type = V4L2_INPUT_TYPE_TOUCH;
 
-	strlcpy(i->name, rmi_f54_report_type_names[reptype], sizeof(i->name));
+	strscpy(i->name, rmi_f54_report_type_names[reptype], sizeof(i->name));
 	return 0;
 }
 
@@ -540,6 +538,8 @@ static void rmi_f54_work(struct work_struct *work)
 	int error;
 	int i;
 
+	mutex_lock(&f54->data_mutex);
+
 	report_size = rmi_f54_get_report_size(f54);
 	if (report_size == 0) {
 		dev_err(&fn->dev, "Bad report size, report type=%d\n",
@@ -547,8 +547,6 @@ static void rmi_f54_work(struct work_struct *work)
 		error = -EINVAL;
 		goto error;     /* retry won't help */
 	}
-
-	mutex_lock(&f54->data_mutex);
 
 	/*
 	 * Need to check if command has completed.
@@ -696,7 +694,7 @@ static int rmi_f54_probe(struct rmi_function *fn)
 	rmi_f54_set_input(f54, 0);
 
 	/* register video device */
-	strlcpy(f54->v4l2.name, F54_NAME, sizeof(f54->v4l2.name));
+	strscpy(f54->v4l2.name, F54_NAME, sizeof(f54->v4l2.name));
 	ret = v4l2_device_register(&fn->dev, &f54->v4l2);
 	if (ret) {
 		dev_err(&fn->dev, "Unable to register video dev.\n");

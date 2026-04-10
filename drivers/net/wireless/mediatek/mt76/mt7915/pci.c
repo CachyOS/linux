@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: ISC
+// SPDX-License-Identifier: BSD-3-Clause-Clear
 /* Copyright (C) 2020 MediaTek Inc.
  *
  * Author: Ryder Lee <ryder.lee@mediatek.com>
@@ -11,9 +11,6 @@
 #include "mt7915.h"
 #include "mac.h"
 #include "../trace.h"
-
-static bool wed_enable = false;
-module_param(wed_enable, bool, 0644);
 
 static LIST_HEAD(hif_list);
 static DEFINE_SPINLOCK(hif_lock);
@@ -45,6 +42,7 @@ static struct mt7915_hif *mt7915_pci_get_hif2(u32 idx)
 			continue;
 
 		get_device(hif->dev);
+		hif->index = idx;
 		goto out;
 	}
 	hif = NULL;
@@ -65,10 +63,17 @@ static void mt7915_put_hif2(struct mt7915_hif *hif)
 
 static struct mt7915_hif *mt7915_pci_init_hif2(struct pci_dev *pdev)
 {
+	struct pci_dev *tmp_pdev;
+
 	hif_idx++;
-	if (!pci_get_device(PCI_VENDOR_ID_MEDIATEK, 0x7916, NULL) &&
-	    !pci_get_device(PCI_VENDOR_ID_MEDIATEK, 0x790a, NULL))
-		return NULL;
+
+	tmp_pdev = pci_get_device(PCI_VENDOR_ID_MEDIATEK, 0x7916, NULL);
+	if (!tmp_pdev) {
+		tmp_pdev = pci_get_device(PCI_VENDOR_ID_MEDIATEK, 0x790a, NULL);
+		if (!tmp_pdev)
+			return NULL;
+	}
+	pci_dev_put(tmp_pdev);
 
 	writel(hif_idx | MT_PCIE_RECOG_ID_SEM,
 	       pcim_iomap_table(pdev)[0] + MT_PCIE_RECOG_ID);
@@ -93,73 +98,6 @@ static int mt7915_pci_hif2_probe(struct pci_dev *pdev)
 	pci_set_drvdata(pdev, hif);
 
 	return 0;
-}
-
-#ifdef CONFIG_NET_MEDIATEK_SOC_WED
-static int mt7915_wed_offload_enable(struct mtk_wed_device *wed)
-{
-	struct mt7915_dev *dev;
-	int ret;
-
-	dev = container_of(wed, struct mt7915_dev, mt76.mmio.wed);
-
-	spin_lock_bh(&dev->mt76.token_lock);
-	dev->mt76.token_size = wed->wlan.token_start;
-	spin_unlock_bh(&dev->mt76.token_lock);
-
-	ret = wait_event_timeout(dev->mt76.tx_wait,
-				 !dev->mt76.wed_token_count, HZ);
-	if (!ret)
-		return -EAGAIN;
-
-	return 0;
-}
-
-static void mt7915_wed_offload_disable(struct mtk_wed_device *wed)
-{
-	struct mt7915_dev *dev;
-
-	dev = container_of(wed, struct mt7915_dev, mt76.mmio.wed);
-
-	spin_lock_bh(&dev->mt76.token_lock);
-	dev->mt76.token_size = MT7915_TOKEN_SIZE;
-	spin_unlock_bh(&dev->mt76.token_lock);
-}
-#endif
-
-static int
-mt7915_pci_wed_init(struct mt7915_dev *dev, struct pci_dev *pdev, int *irq)
-{
-#ifdef CONFIG_NET_MEDIATEK_SOC_WED
-	struct mtk_wed_device *wed = &dev->mt76.mmio.wed;
-	int ret;
-
-	if (!wed_enable)
-		return 0;
-
-	wed->wlan.pci_dev = pdev;
-	wed->wlan.wpdma_phys = pci_resource_start(pdev, 0) +
-			       MT_WFDMA_EXT_CSR_BASE;
-	wed->wlan.nbuf = 4096;
-	wed->wlan.token_start = MT7915_TOKEN_SIZE - wed->wlan.nbuf;
-	wed->wlan.init_buf = mt7915_wed_init_buf;
-	wed->wlan.offload_enable = mt7915_wed_offload_enable;
-	wed->wlan.offload_disable = mt7915_wed_offload_disable;
-
-	if (mtk_wed_device_attach(wed) != 0)
-		return 0;
-
-	*irq = wed->irq;
-	dev->mt76.dma_dev = wed->dev;
-
-	ret = dma_set_mask(wed->dev, DMA_BIT_MASK(32));
-	if (ret)
-		return ret;
-
-	return 1;
-#else
-	return 0;
-#endif
 }
 
 static int mt7915_pci_probe(struct pci_dev *pdev,
@@ -199,7 +137,7 @@ static int mt7915_pci_probe(struct pci_dev *pdev,
 	mt7915_wfsys_reset(dev);
 	hif2 = mt7915_pci_init_hif2(pdev);
 
-	ret = mt7915_pci_wed_init(dev, pdev, &irq);
+	ret = mt7915_mmio_wed_init(dev, pdev, true, &irq);
 	if (ret < 0)
 		goto free_wed_or_irq_vector;
 

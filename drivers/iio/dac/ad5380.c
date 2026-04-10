@@ -36,8 +36,7 @@
  * @channel_template:	channel specification template
  * @num_channels:	number of channels
  * @int_vref:		internal vref in uV
-*/
-
+ */
 struct ad5380_chip_info {
 	struct iio_chan_spec	channel_template;
 	unsigned int		num_channels;
@@ -48,16 +47,13 @@ struct ad5380_chip_info {
  * struct ad5380_state - driver instance specific data
  * @regmap:		regmap instance used by the device
  * @chip_info:		chip model specific constants, available modes etc
- * @vref_reg:		vref supply regulator
  * @vref:		actual reference voltage used in uA
  * @pwr_down:		whether the chip is currently in power down mode
  * @lock:		lock to protect the data buffer during regmap ops
  */
-
 struct ad5380_state {
 	struct regmap			*regmap;
 	const struct ad5380_chip_info	*chip_info;
-	struct regulator		*vref_reg;
 	int				vref;
 	bool				pwr_down;
 	struct mutex			lock;
@@ -250,7 +246,7 @@ static const struct iio_chan_spec_ext_info ad5380_ext_info[] = {
 	IIO_ENUM("powerdown_mode", IIO_SHARED_BY_TYPE,
 		 &ad5380_powerdown_mode_enum),
 	IIO_ENUM_AVAILABLE("powerdown_mode", IIO_SHARED_BY_TYPE, &ad5380_powerdown_mode_enum),
-	{ },
+	{ }
 };
 
 #define AD5380_CHANNEL(_bits) {					\
@@ -343,14 +339,14 @@ static const struct ad5380_chip_info ad5380_chip_info_tbl[] = {
 	},
 };
 
-static int ad5380_alloc_channels(struct iio_dev *indio_dev)
+static int ad5380_alloc_channels(struct device *dev, struct iio_dev *indio_dev)
 {
 	struct ad5380_state *st = iio_priv(indio_dev);
 	struct iio_chan_spec *channels;
 	unsigned int i;
 
-	channels = kcalloc(st->chip_info->num_channels,
-			   sizeof(struct iio_chan_spec), GFP_KERNEL);
+	channels = devm_kcalloc(dev, st->chip_info->num_channels,
+				sizeof(struct iio_chan_spec), GFP_KERNEL);
 
 	if (!channels)
 		return -ENOMEM;
@@ -375,13 +371,10 @@ static int ad5380_probe(struct device *dev, struct regmap *regmap,
 	int ret;
 
 	indio_dev = devm_iio_device_alloc(dev, sizeof(*st));
-	if (indio_dev == NULL) {
-		dev_err(dev, "Failed to allocate iio device\n");
+	if (indio_dev == NULL)
 		return -ENOMEM;
-	}
 
 	st = iio_priv(indio_dev);
-	dev_set_drvdata(dev, indio_dev);
 
 	st->chip_info = &ad5380_chip_info_tbl[type];
 	st->regmap = regmap;
@@ -393,68 +386,32 @@ static int ad5380_probe(struct device *dev, struct regmap *regmap,
 
 	mutex_init(&st->lock);
 
-	ret = ad5380_alloc_channels(indio_dev);
-	if (ret) {
-		dev_err(dev, "Failed to allocate channel spec: %d\n", ret);
-		return ret;
-	}
+	ret = ad5380_alloc_channels(dev, indio_dev);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to allocate channel spec\n");
 
 	if (st->chip_info->int_vref == 2500)
 		ctrl |= AD5380_CTRL_INT_VREF_2V5;
 
-	st->vref_reg = devm_regulator_get(dev, "vref");
-	if (!IS_ERR(st->vref_reg)) {
-		ret = regulator_enable(st->vref_reg);
-		if (ret) {
-			dev_err(dev, "Failed to enable vref regulators: %d\n",
-				ret);
-			goto error_free_reg;
-		}
-
-		ret = regulator_get_voltage(st->vref_reg);
-		if (ret < 0)
-			goto error_disable_reg;
-
-		st->vref = ret / 1000;
-	} else {
+	ret = devm_regulator_get_enable_read_voltage(dev, "vref");
+	if (ret < 0 && ret != -ENODEV)
+		return dev_err_probe(dev, ret, "Failed to get vref voltage\n");
+	if (ret == -ENODEV) {
 		st->vref = st->chip_info->int_vref;
 		ctrl |= AD5380_CTRL_INT_VREF_EN;
+	} else {
+		st->vref = ret / 1000;
 	}
 
 	ret = regmap_write(st->regmap, AD5380_REG_SF_CTRL, ctrl);
-	if (ret) {
-		dev_err(dev, "Failed to write to device: %d\n", ret);
-		goto error_disable_reg;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to write to device\n");
 
-	ret = iio_device_register(indio_dev);
-	if (ret) {
-		dev_err(dev, "Failed to register iio device: %d\n", ret);
-		goto error_disable_reg;
-	}
+	ret = devm_iio_device_register(dev, indio_dev);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to register iio device\n");
 
 	return 0;
-
-error_disable_reg:
-	if (!IS_ERR(st->vref_reg))
-		regulator_disable(st->vref_reg);
-error_free_reg:
-	kfree(indio_dev->channels);
-
-	return ret;
-}
-
-static void ad5380_remove(struct device *dev)
-{
-	struct iio_dev *indio_dev = dev_get_drvdata(dev);
-	struct ad5380_state *st = iio_priv(indio_dev);
-
-	iio_device_unregister(indio_dev);
-
-	kfree(indio_dev->channels);
-
-	if (!IS_ERR(st->vref_reg))
-		regulator_disable(st->vref_reg);
 }
 
 static bool ad5380_reg_false(struct device *dev, unsigned int reg)
@@ -467,7 +424,7 @@ static const struct regmap_config ad5380_regmap_config = {
 	.val_bits = 14,
 
 	.max_register = AD5380_REG_DATA(40),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 
 	.volatile_reg = ad5380_reg_false,
 	.readable_reg = ad5380_reg_false,
@@ -486,11 +443,6 @@ static int ad5380_spi_probe(struct spi_device *spi)
 		return PTR_ERR(regmap);
 
 	return ad5380_probe(&spi->dev, regmap, id->driver_data, id->name);
-}
-
-static void ad5380_spi_remove(struct spi_device *spi)
-{
-	ad5380_remove(&spi->dev);
 }
 
 static const struct spi_device_id ad5380_spi_ids[] = {
@@ -519,7 +471,6 @@ static struct spi_driver ad5380_spi_driver = {
 		   .name = "ad5380",
 	},
 	.probe = ad5380_spi_probe,
-	.remove = ad5380_spi_remove,
 	.id_table = ad5380_spi_ids,
 };
 
@@ -548,9 +499,9 @@ static inline void ad5380_spi_unregister_driver(void)
 
 #if IS_ENABLED(CONFIG_I2C)
 
-static int ad5380_i2c_probe(struct i2c_client *i2c,
-			    const struct i2c_device_id *id)
+static int ad5380_i2c_probe(struct i2c_client *i2c)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(i2c);
 	struct regmap *regmap;
 
 	regmap = devm_regmap_init_i2c(i2c, &ad5380_regmap_config);
@@ -559,13 +510,6 @@ static int ad5380_i2c_probe(struct i2c_client *i2c,
 		return PTR_ERR(regmap);
 
 	return ad5380_probe(&i2c->dev, regmap, id->driver_data, id->name);
-}
-
-static int ad5380_i2c_remove(struct i2c_client *i2c)
-{
-	ad5380_remove(&i2c->dev);
-
-	return 0;
 }
 
 static const struct i2c_device_id ad5380_i2c_ids[] = {
@@ -594,7 +538,6 @@ static struct i2c_driver ad5380_i2c_driver = {
 		   .name = "ad5380",
 	},
 	.probe = ad5380_i2c_probe,
-	.remove = ad5380_i2c_remove,
 	.id_table = ad5380_i2c_ids,
 };
 

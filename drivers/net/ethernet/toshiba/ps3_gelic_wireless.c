@@ -209,7 +209,7 @@ static struct gelic_eurus_cmd *gelic_eurus_sync_cmd(struct gelic_wl_info *wl,
 	struct gelic_eurus_cmd *cmd;
 
 	/* allocate cmd */
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd)
 		return NULL;
 
@@ -1217,7 +1217,7 @@ static int gelic_wl_set_encodeext(struct net_device *netdev,
 		key_index = wl->current_key;
 
 	if (!enc->length && (ext->ext_flags & IW_ENCODE_EXT_SET_TX_KEY)) {
-		/* reques to change default key index */
+		/* request to change default key index */
 		pr_debug("%s: request to change default key to %d\n",
 			 __func__, key_index);
 		wl->current_key = key_index;
@@ -2305,9 +2305,8 @@ static struct net_device *gelic_wl_alloc(struct gelic_card *card)
 	pr_debug("%s: wl=%p port=%p\n", __func__, wl, port);
 
 	/* allocate scan list */
-	wl->networks = kcalloc(GELIC_WL_BSS_MAX_ENT,
-			       sizeof(struct gelic_wl_scan_info),
-			       GFP_KERNEL);
+	wl->networks = kzalloc_objs(struct gelic_wl_scan_info,
+				    GELIC_WL_BSS_MAX_ENT);
 
 	if (!wl->networks)
 		goto fail_bss;
@@ -2566,7 +2565,6 @@ static void gelic_wl_setup_netdev_ops(struct net_device *netdev)
 
 	netdev->ethtool_ops = &gelic_wl_ethtool_ops;
 	netdev->netdev_ops = &gelic_wl_netdevice_ops;
-	netdev->wireless_data = &wl->wireless_data;
 	netdev->wireless_handlers = &gelic_wl_wext_handler_def;
 }
 

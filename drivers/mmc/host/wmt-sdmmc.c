@@ -21,7 +21,6 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/of_device.h>
 
 #include <linux/mmc/host.h>
 #include <linux/mmc/mmc.h>
@@ -775,7 +774,7 @@ static int wmt_mci_probe(struct platform_device *pdev)
 		goto fail1;
 	}
 
-	mmc = mmc_alloc_host(sizeof(struct wmt_mci_priv), &pdev->dev);
+	mmc = devm_mmc_alloc_host(&pdev->dev, sizeof(*priv));
 	if (!mmc) {
 		dev_err(&pdev->dev, "Failed to allocate mmc_host\n");
 		ret = -ENOMEM;
@@ -802,16 +801,14 @@ static int wmt_mci_probe(struct platform_device *pdev)
 	priv->power_inverted = 0;
 	priv->cd_inverted = 0;
 
-	if (of_get_property(np, "sdon-inverted", NULL))
-		priv->power_inverted = 1;
-	if (of_get_property(np, "cd-inverted", NULL))
-		priv->cd_inverted = 1;
+	priv->power_inverted = of_property_read_bool(np, "sdon-inverted");
+	priv->cd_inverted = of_property_read_bool(np, "cd-inverted");
 
 	priv->sdmmc_base = of_iomap(np, 0);
 	if (!priv->sdmmc_base) {
 		dev_err(&pdev->dev, "Failed to map IO space\n");
 		ret = -ENOMEM;
-		goto fail2;
+		goto fail1;
 	}
 
 	priv->irq_regular = regular_irq;
@@ -846,7 +843,7 @@ static int wmt_mci_probe(struct platform_device *pdev)
 	if (IS_ERR(priv->clk_sdmmc)) {
 		dev_err(&pdev->dev, "Error getting clock\n");
 		ret = PTR_ERR(priv->clk_sdmmc);
-		goto fail5;
+		goto fail5_and_a_half;
 	}
 
 	ret = clk_prepare_enable(priv->clk_sdmmc);
@@ -856,30 +853,34 @@ static int wmt_mci_probe(struct platform_device *pdev)
 	/* configure the controller to a known 'ready' state */
 	wmt_reset_hardware(mmc);
 
-	mmc_add_host(mmc);
+	ret = mmc_add_host(mmc);
+	if (ret)
+		goto fail7;
 
 	dev_info(&pdev->dev, "WMT SDHC Controller initialized\n");
 
 	return 0;
+fail7:
+	clk_disable_unprepare(priv->clk_sdmmc);
 fail6:
 	clk_put(priv->clk_sdmmc);
+fail5_and_a_half:
+	dma_free_coherent(&pdev->dev, mmc->max_blk_count * 16,
+			  priv->dma_desc_buffer, priv->dma_desc_device_addr);
 fail5:
 	free_irq(dma_irq, priv);
 fail4:
 	free_irq(regular_irq, priv);
 fail3:
 	iounmap(priv->sdmmc_base);
-fail2:
-	mmc_free_host(mmc);
 fail1:
 	return ret;
 }
 
-static int wmt_mci_remove(struct platform_device *pdev)
+static void wmt_mci_remove(struct platform_device *pdev)
 {
 	struct mmc_host *mmc;
 	struct wmt_mci_priv *priv;
-	struct resource *res;
 	u32 reg_tmp;
 
 	mmc = platform_get_drvdata(pdev);
@@ -907,17 +908,9 @@ static int wmt_mci_remove(struct platform_device *pdev)
 	clk_disable_unprepare(priv->clk_sdmmc);
 	clk_put(priv->clk_sdmmc);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	release_mem_region(res->start, resource_size(res));
-
-	mmc_free_host(mmc);
-
 	dev_info(&pdev->dev, "WMT MCI device removed\n");
-
-	return 0;
 }
 
-#ifdef CONFIG_PM
 static int wmt_mci_suspend(struct device *dev)
 {
 	u32 reg_tmp;
@@ -969,18 +962,7 @@ static int wmt_mci_resume(struct device *dev)
 	return 0;
 }
 
-static const struct dev_pm_ops wmt_mci_pm = {
-	.suspend        = wmt_mci_suspend,
-	.resume         = wmt_mci_resume,
-};
-
-#define wmt_mci_pm_ops (&wmt_mci_pm)
-
-#else	/* !CONFIG_PM */
-
-#define wmt_mci_pm_ops NULL
-
-#endif
+static DEFINE_SIMPLE_DEV_PM_OPS(wmt_mci_pm_ops, wmt_mci_suspend, wmt_mci_resume);
 
 static struct platform_driver wmt_mci_driver = {
 	.probe = wmt_mci_probe,
@@ -988,7 +970,7 @@ static struct platform_driver wmt_mci_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
-		.pm = wmt_mci_pm_ops,
+		.pm = pm_sleep_ptr(&wmt_mci_pm_ops),
 		.of_match_table = wmt_mci_dt_ids,
 	},
 };

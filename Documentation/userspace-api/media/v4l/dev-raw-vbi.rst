@@ -41,7 +41,7 @@ Devices supporting the raw VBI capturing or output API set the
 in the ``capabilities`` field of struct
 :c:type:`v4l2_capability` returned by the
 :ref:`VIDIOC_QUERYCAP` ioctl. At least one of the
-read/write, streaming or asynchronous I/O methods must be supported. VBI
+read/write or streaming I/O methods must be supported. VBI
 devices may or may not have a tuner or modulator.
 
 Supplemental Functions
@@ -221,7 +221,7 @@ and always returns default parameters as :ref:`VIDIOC_G_FMT <VIDIOC_G_FMT>` does
     :alt:   vbi_hsync.svg
     :align: center
 
-    **Figure 4.1. Line synchronization**
+    Line synchronization
 
 .. _vbi-525:
 
@@ -229,7 +229,7 @@ and always returns default parameters as :ref:`VIDIOC_G_FMT <VIDIOC_G_FMT>` does
     :alt:   vbi_525.svg
     :align: center
 
-    **Figure 4.2. ITU-R 525 line numbering (M/NTSC and M/PAL)**
+    ITU-R 525 line numbering (M/NTSC and M/PAL)
 
 .. _vbi-625:
 
@@ -237,7 +237,7 @@ and always returns default parameters as :ref:`VIDIOC_G_FMT <VIDIOC_G_FMT>` does
     :alt:   vbi_625.svg
     :align: center
 
-    **Figure 4.3. ITU-R 625 line numbering**
+    ITU-R 625 line numbering
 
 Remember the VBI image format depends on the selected video standard,
 therefore the application must choose a new standard or query the

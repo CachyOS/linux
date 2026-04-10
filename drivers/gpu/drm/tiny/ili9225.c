@@ -16,16 +16,20 @@
 #include <linux/spi/spi.h>
 #include <video/mipi_display.h>
 
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fb_cma_helper.h>
-#include <drm/drm_fb_helper.h>
+#include <drm/drm_fb_dma_helper.h>
+#include <drm/drm_fbdev_dma.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
-#include <drm/drm_gem_cma_helper.h>
+#include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_mipi_dbi.h>
+#include <drm/drm_print.h>
 #include <drm/drm_rect.h>
 
 #define ILI9225_DRIVER_READ_CODE	0x00
@@ -75,9 +79,9 @@ static inline int ili9225_command(struct mipi_dbi *dbi, u8 cmd, u16 data)
 	return mipi_dbi_command_buf(dbi, cmd, par, 2);
 }
 
-static void ili9225_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect)
+static void ili9225_fb_dirty(struct iosys_map *src, struct drm_framebuffer *fb,
+			     struct drm_rect *rect, struct drm_format_conv_state *fmtcnv_state)
 {
-	struct drm_gem_cma_object *cma_obj = drm_fb_cma_get_gem_obj(fb, 0);
 	struct mipi_dbi_dev *dbidev = drm_to_mipi_dbi_dev(fb->dev);
 	unsigned int height = rect->y2 - rect->y1;
 	unsigned int width = rect->x2 - rect->x1;
@@ -85,12 +89,9 @@ static void ili9225_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect)
 	bool swap = dbi->swap_bytes;
 	u16 x_start, y_start;
 	u16 x1, x2, y1, y2;
-	int idx, ret = 0;
+	int ret = 0;
 	bool full;
 	void *tr;
-
-	if (!drm_dev_enter(fb->dev, &idx))
-		return;
 
 	full = width == fb->width && height == fb->height;
 
@@ -99,11 +100,11 @@ static void ili9225_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect)
 	if (!dbi->dc || !full || swap ||
 	    fb->format->format == DRM_FORMAT_XRGB8888) {
 		tr = dbidev->tx_buf;
-		ret = mipi_dbi_buf_copy(dbidev->tx_buf, fb, rect, swap);
+		ret = mipi_dbi_buf_copy(tr, src, fb, rect, swap, fmtcnv_state);
 		if (ret)
 			goto err_msg;
 	} else {
-		tr = cma_obj->vaddr;
+		tr = src->vaddr; /* TODO: Use mapping abstraction properly */
 	}
 
 	switch (dbidev->rotation) {
@@ -154,21 +155,28 @@ static void ili9225_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect)
 err_msg:
 	if (ret)
 		dev_err_once(fb->dev->dev, "Failed to update display %d\n", ret);
-
-	drm_dev_exit(idx);
 }
 
 static void ili9225_pipe_update(struct drm_simple_display_pipe *pipe,
 				struct drm_plane_state *old_state)
 {
 	struct drm_plane_state *state = pipe->plane.state;
+	struct drm_shadow_plane_state *shadow_plane_state = to_drm_shadow_plane_state(state);
+	struct drm_framebuffer *fb = state->fb;
 	struct drm_rect rect;
+	int idx;
 
 	if (!pipe->crtc.state->active)
 		return;
 
+	if (!drm_dev_enter(fb->dev, &idx))
+		return;
+
 	if (drm_atomic_helper_damage_merged(old_state, state, &rect))
-		ili9225_fb_dirty(state->fb, &rect);
+		ili9225_fb_dirty(&shadow_plane_state->data[0], fb, &rect,
+				 &shadow_plane_state->fmtcnv_state);
+
+	drm_dev_exit(idx);
 }
 
 static void ili9225_pipe_enable(struct drm_simple_display_pipe *pipe,
@@ -176,6 +184,7 @@ static void ili9225_pipe_enable(struct drm_simple_display_pipe *pipe,
 				struct drm_plane_state *plane_state)
 {
 	struct mipi_dbi_dev *dbidev = drm_to_mipi_dbi_dev(pipe->crtc.dev);
+	struct drm_shadow_plane_state *shadow_plane_state = to_drm_shadow_plane_state(plane_state);
 	struct drm_framebuffer *fb = plane_state->fb;
 	struct device *dev = pipe->crtc.dev->dev;
 	struct mipi_dbi *dbi = &dbidev->dbi;
@@ -275,7 +284,9 @@ static void ili9225_pipe_enable(struct drm_simple_display_pipe *pipe,
 
 	ili9225_command(dbi, ILI9225_DISPLAY_CONTROL_1, 0x1017);
 
-	ili9225_fb_dirty(fb, &rect);
+	ili9225_fb_dirty(&shadow_plane_state->data[0], fb, &rect,
+			 &shadow_plane_state->fmtcnv_state);
+
 out_exit:
 	drm_dev_exit(idx);
 }
@@ -309,40 +320,51 @@ static int ili9225_dbi_command(struct mipi_dbi *dbi, u8 *cmd, u8 *par,
 	u32 speed_hz;
 	int ret;
 
+	spi_bus_lock(spi->controller);
 	gpiod_set_value_cansleep(dbi->dc, 0);
 	speed_hz = mipi_dbi_spi_cmd_max_speed(spi, 1);
 	ret = mipi_dbi_spi_transfer(spi, speed_hz, 8, cmd, 1);
+	spi_bus_unlock(spi->controller);
 	if (ret || !num)
 		return ret;
 
 	if (*cmd == ILI9225_WRITE_DATA_TO_GRAM && !dbi->swap_bytes)
 		bpw = 16;
 
+	spi_bus_lock(spi->controller);
 	gpiod_set_value_cansleep(dbi->dc, 1);
 	speed_hz = mipi_dbi_spi_cmd_max_speed(spi, num);
+	ret = mipi_dbi_spi_transfer(spi, speed_hz, bpw, par, num);
+	spi_bus_unlock(spi->controller);
 
-	return mipi_dbi_spi_transfer(spi, speed_hz, bpw, par, num);
+	return ret;
 }
 
 static const struct drm_simple_display_pipe_funcs ili9225_pipe_funcs = {
+	.mode_valid	= mipi_dbi_pipe_mode_valid,
 	.enable		= ili9225_pipe_enable,
 	.disable	= ili9225_pipe_disable,
 	.update		= ili9225_pipe_update,
+	.begin_fb_access = mipi_dbi_pipe_begin_fb_access,
+	.end_fb_access	= mipi_dbi_pipe_end_fb_access,
+	.reset_plane	= mipi_dbi_pipe_reset_plane,
+	.duplicate_plane_state = mipi_dbi_pipe_duplicate_plane_state,
+	.destroy_plane_state = mipi_dbi_pipe_destroy_plane_state,
 };
 
 static const struct drm_display_mode ili9225_mode = {
 	DRM_SIMPLE_MODE(176, 220, 35, 44),
 };
 
-DEFINE_DRM_GEM_CMA_FOPS(ili9225_fops);
+DEFINE_DRM_GEM_DMA_FOPS(ili9225_fops);
 
 static const struct drm_driver ili9225_driver = {
 	.driver_features	= DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops			= &ili9225_fops,
-	DRM_GEM_CMA_DRIVER_OPS_VMAP,
+	DRM_GEM_DMA_DRIVER_OPS_VMAP,
+	DRM_FBDEV_DMA_DRIVER_OPS,
 	.name			= "ili9225",
 	.desc			= "Ilitek ILI9225",
-	.date			= "20171106",
 	.major			= 1,
 	.minor			= 0,
 };
@@ -406,7 +428,7 @@ static int ili9225_probe(struct spi_device *spi)
 
 	spi_set_drvdata(spi, drm);
 
-	drm_fbdev_generic_setup(drm, 0);
+	drm_client_setup(drm, NULL);
 
 	return 0;
 }
@@ -427,7 +449,6 @@ static void ili9225_shutdown(struct spi_device *spi)
 static struct spi_driver ili9225_spi_driver = {
 	.driver = {
 		.name = "ili9225",
-		.owner = THIS_MODULE,
 		.of_match_table = ili9225_of_match,
 	},
 	.id_table = ili9225_id,

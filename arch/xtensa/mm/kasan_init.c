@@ -14,7 +14,6 @@
 #include <linux/kernel.h>
 #include <asm/initialize_mmu.h>
 #include <asm/tlbflush.h>
-#include <asm/traps.h>
 
 void __init kasan_early_init(void)
 {
@@ -31,7 +30,6 @@ void __init kasan_early_init(void)
 		BUG_ON(!pmd_none(*pmd));
 		set_pmd(pmd, __pmd((unsigned long)kasan_early_shadow_pte));
 	}
-	early_trap_init();
 }
 
 static void __init populate(void *start, void *end)
@@ -41,11 +39,7 @@ static void __init populate(void *start, void *end)
 	unsigned long i, j;
 	unsigned long vaddr = (unsigned long)start;
 	pmd_t *pmd = pmd_off_k(vaddr);
-	pte_t *pte = memblock_alloc(n_pages * sizeof(pte_t), PAGE_SIZE);
-
-	if (!pte)
-		panic("%s: Failed to allocate %lu bytes align=0x%lx\n",
-		      __func__, n_pages * sizeof(pte_t), PAGE_SIZE);
+	pte_t *pte = memblock_alloc_or_panic(n_pages * sizeof(pte_t), PAGE_SIZE);
 
 	pr_debug("%s: %p - %p\n", __func__, start, end);
 
@@ -100,5 +94,5 @@ void __init kasan_init(void)
 
 	/* At this point kasan is fully initialized. Enable error messages. */
 	current->kasan_depth = 0;
-	pr_info("KernelAddressSanitizer initialized\n");
+	kasan_init_generic();
 }

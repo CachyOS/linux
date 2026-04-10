@@ -19,13 +19,13 @@ struct linux_binprm {
 #ifdef CONFIG_MMU
 	struct vm_area_struct *vma;
 	unsigned long vma_pages;
+	unsigned long argmin; /* rlimit marker for copy_strings() */
 #else
 # define MAX_ARG_PAGES	32
 	struct page *page[MAX_ARG_PAGES];
 #endif
 	struct mm_struct *mm;
 	unsigned long p; /* current top of mem */
-	unsigned long argmin; /* rlimit marker for copy_strings() */
 	unsigned int
 		/* Should an execfd be passed to userspace? */
 		have_execfd:1,
@@ -42,10 +42,14 @@ struct linux_binprm {
 		 * Set when errors can no longer be returned to the
 		 * original userspace.
 		 */
-		point_of_no_return:1;
-#ifdef __alpha__
-	unsigned int taso:1;
-#endif
+		point_of_no_return:1,
+		/* Set when "comm" must come from the dentry. */
+		comm_from_dentry:1,
+		/*
+		 * Set by user space to check executability according to the
+		 * caller's environment.
+		 */
+		is_check:1;
 	struct file *executable; /* Executable to pass to the interpreter */
 	struct file *interpreter;
 	struct file *file;
@@ -60,7 +64,7 @@ struct linux_binprm {
 	const char *fdpath;	/* generated filename for execveat */
 	unsigned interp_flags;
 	int execfd;		/* File descriptor of the executable */
-	unsigned long loader, exec;
+	unsigned long exec;
 
 	struct rlimit rlim_stack; /* Saved RLIMIT_STACK used during exec. */
 
@@ -86,12 +90,21 @@ struct linux_binfmt {
 	struct list_head lh;
 	struct module *module;
 	int (*load_binary)(struct linux_binprm *);
-	int (*load_shlib)(struct file *);
 #ifdef CONFIG_COREDUMP
 	int (*core_dump)(struct coredump_params *cprm);
 	unsigned long min_coredump;	/* minimal dump size */
 #endif
 } __randomize_layout;
+
+#if IS_ENABLED(CONFIG_BINFMT_MISC)
+struct binfmt_misc {
+	struct list_head entries;
+	rwlock_t entries_lock;
+	bool enabled;
+} __randomize_layout;
+
+extern struct binfmt_misc init_binfmt_misc;
+#endif
 
 extern void __register_binfmt(struct linux_binfmt *fmt, int insert);
 

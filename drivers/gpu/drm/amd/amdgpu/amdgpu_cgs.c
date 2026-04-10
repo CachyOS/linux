@@ -41,13 +41,13 @@ struct amdgpu_cgs_device {
 		((struct amdgpu_cgs_device *)cgs_device)->adev
 
 
-static uint32_t amdgpu_cgs_read_register(struct cgs_device *cgs_device, unsigned offset)
+static uint32_t amdgpu_cgs_read_register(struct cgs_device *cgs_device, unsigned int offset)
 {
 	CGS_FUNC_ADEV;
 	return RREG32(offset);
 }
 
-static void amdgpu_cgs_write_register(struct cgs_device *cgs_device, unsigned offset,
+static void amdgpu_cgs_write_register(struct cgs_device *cgs_device, unsigned int offset,
 				      uint32_t value)
 {
 	CGS_FUNC_ADEV;
@@ -56,7 +56,7 @@ static void amdgpu_cgs_write_register(struct cgs_device *cgs_device, unsigned of
 
 static uint32_t amdgpu_cgs_read_ind_register(struct cgs_device *cgs_device,
 					     enum cgs_ind_reg space,
-					     unsigned index)
+					     unsigned int index)
 {
 	CGS_FUNC_ADEV;
 	switch (space) {
@@ -84,7 +84,7 @@ static uint32_t amdgpu_cgs_read_ind_register(struct cgs_device *cgs_device,
 
 static void amdgpu_cgs_write_ind_register(struct cgs_device *cgs_device,
 					  enum cgs_ind_reg space,
-					  unsigned index, uint32_t value)
+					  unsigned int index, uint32_t value)
 {
 	CGS_FUNC_ADEV;
 	switch (space) {
@@ -163,38 +163,38 @@ static uint16_t amdgpu_get_firmware_version(struct cgs_device *cgs_device,
 	uint16_t fw_version = 0;
 
 	switch (type) {
-		case CGS_UCODE_ID_SDMA0:
-			fw_version = adev->sdma.instance[0].fw_version;
-			break;
-		case CGS_UCODE_ID_SDMA1:
-			fw_version = adev->sdma.instance[1].fw_version;
-			break;
-		case CGS_UCODE_ID_CP_CE:
-			fw_version = adev->gfx.ce_fw_version;
-			break;
-		case CGS_UCODE_ID_CP_PFP:
-			fw_version = adev->gfx.pfp_fw_version;
-			break;
-		case CGS_UCODE_ID_CP_ME:
-			fw_version = adev->gfx.me_fw_version;
-			break;
-		case CGS_UCODE_ID_CP_MEC:
-			fw_version = adev->gfx.mec_fw_version;
-			break;
-		case CGS_UCODE_ID_CP_MEC_JT1:
-			fw_version = adev->gfx.mec_fw_version;
-			break;
-		case CGS_UCODE_ID_CP_MEC_JT2:
-			fw_version = adev->gfx.mec_fw_version;
-			break;
-		case CGS_UCODE_ID_RLC_G:
-			fw_version = adev->gfx.rlc_fw_version;
-			break;
-		case CGS_UCODE_ID_STORAGE:
-			break;
-		default:
-			DRM_ERROR("firmware type %d do not have version\n", type);
-			break;
+	case CGS_UCODE_ID_SDMA0:
+		fw_version = adev->sdma.instance[0].fw_version;
+		break;
+	case CGS_UCODE_ID_SDMA1:
+		fw_version = adev->sdma.instance[1].fw_version;
+		break;
+	case CGS_UCODE_ID_CP_CE:
+		fw_version = adev->gfx.ce_fw_version;
+		break;
+	case CGS_UCODE_ID_CP_PFP:
+		fw_version = adev->gfx.pfp_fw_version;
+		break;
+	case CGS_UCODE_ID_CP_ME:
+		fw_version = adev->gfx.me_fw_version;
+		break;
+	case CGS_UCODE_ID_CP_MEC:
+		fw_version = adev->gfx.mec_fw_version;
+		break;
+	case CGS_UCODE_ID_CP_MEC_JT1:
+		fw_version = adev->gfx.mec_fw_version;
+		break;
+	case CGS_UCODE_ID_CP_MEC_JT2:
+		fw_version = adev->gfx.mec_fw_version;
+		break;
+	case CGS_UCODE_ID_RLC_G:
+		fw_version = adev->gfx.rlc_fw_version;
+		break;
+	case CGS_UCODE_ID_STORAGE:
+		break;
+	default:
+		DRM_ERROR("firmware type %d do not have version\n", type);
+		break;
 	}
 	return fw_version;
 }
@@ -205,7 +205,7 @@ static int amdgpu_cgs_get_firmware_info(struct cgs_device *cgs_device,
 {
 	CGS_FUNC_ADEV;
 
-	if ((CGS_UCODE_ID_SMU != type) && (CGS_UCODE_ID_SMU_SK != type)) {
+	if (type != CGS_UCODE_ID_SMU && type != CGS_UCODE_ID_SMU_SK) {
 		uint64_t gpu_addr;
 		uint32_t data_size;
 		const struct gfx_firmware_header_v1_0 *header;
@@ -213,6 +213,9 @@ static int amdgpu_cgs_get_firmware_info(struct cgs_device *cgs_device,
 		struct amdgpu_firmware_info *ucode;
 
 		id = fw_type_convert(cgs_device, type);
+		if (id >= AMDGPU_UCODE_ID_MAXIMUM)
+			return -EINVAL;
+
 		ucode = &adev->firmware.ucode[id];
 		if (ucode->fw == NULL)
 			return -EINVAL;
@@ -232,7 +235,7 @@ static int amdgpu_cgs_get_firmware_info(struct cgs_device *cgs_device,
 		info->mc_addr = gpu_addr;
 		info->version = (uint16_t)le32_to_cpu(header->header.ucode_version);
 
-		if (CGS_UCODE_ID_CP_MEC == type)
+		if (type == CGS_UCODE_ID_CP_MEC)
 			info->image_size = le32_to_cpu(header->jt_offset) << 2;
 
 		info->fw_version = amdgpu_get_firmware_version(cgs_device, type);
@@ -249,83 +252,22 @@ static int amdgpu_cgs_get_firmware_info(struct cgs_device *cgs_device,
 
 		if (!adev->pm.fw) {
 			switch (adev->asic_type) {
-			case CHIP_TAHITI:
-				strcpy(fw_name, "radeon/tahiti_smc.bin");
-				break;
-			case CHIP_PITCAIRN:
-				if ((adev->pdev->revision == 0x81) &&
-				    ((adev->pdev->device == 0x6810) ||
-				    (adev->pdev->device == 0x6811))) {
-					info->is_kicker = true;
-					strcpy(fw_name, "radeon/pitcairn_k_smc.bin");
-				} else {
-					strcpy(fw_name, "radeon/pitcairn_smc.bin");
-				}
-				break;
-			case CHIP_VERDE:
-				if (((adev->pdev->device == 0x6820) &&
-					((adev->pdev->revision == 0x81) ||
-					(adev->pdev->revision == 0x83))) ||
-				    ((adev->pdev->device == 0x6821) &&
-					((adev->pdev->revision == 0x83) ||
-					(adev->pdev->revision == 0x87))) ||
-				    ((adev->pdev->revision == 0x87) &&
-					((adev->pdev->device == 0x6823) ||
-					(adev->pdev->device == 0x682b)))) {
-					info->is_kicker = true;
-					strcpy(fw_name, "radeon/verde_k_smc.bin");
-				} else {
-					strcpy(fw_name, "radeon/verde_smc.bin");
-				}
-				break;
-			case CHIP_OLAND:
-				if (((adev->pdev->revision == 0x81) &&
-					((adev->pdev->device == 0x6600) ||
-					(adev->pdev->device == 0x6604) ||
-					(adev->pdev->device == 0x6605) ||
-					(adev->pdev->device == 0x6610))) ||
-				    ((adev->pdev->revision == 0x83) &&
-					(adev->pdev->device == 0x6610))) {
-					info->is_kicker = true;
-					strcpy(fw_name, "radeon/oland_k_smc.bin");
-				} else {
-					strcpy(fw_name, "radeon/oland_smc.bin");
-				}
-				break;
-			case CHIP_HAINAN:
-				if (((adev->pdev->revision == 0x81) &&
-					(adev->pdev->device == 0x6660)) ||
-				    ((adev->pdev->revision == 0x83) &&
-					((adev->pdev->device == 0x6660) ||
-					(adev->pdev->device == 0x6663) ||
-					(adev->pdev->device == 0x6665) ||
-					 (adev->pdev->device == 0x6667)))) {
-					info->is_kicker = true;
-					strcpy(fw_name, "radeon/hainan_k_smc.bin");
-				} else if ((adev->pdev->revision == 0xc3) &&
-					 (adev->pdev->device == 0x6665)) {
-					info->is_kicker = true;
-					strcpy(fw_name, "radeon/banks_k_2_smc.bin");
-				} else {
-					strcpy(fw_name, "radeon/hainan_smc.bin");
-				}
-				break;
 			case CHIP_BONAIRE:
 				if ((adev->pdev->revision == 0x80) ||
 					(adev->pdev->revision == 0x81) ||
 					(adev->pdev->device == 0x665f)) {
 					info->is_kicker = true;
-					strcpy(fw_name, "amdgpu/bonaire_k_smc.bin");
+					strscpy(fw_name, "amdgpu/bonaire_k_smc.bin");
 				} else {
-					strcpy(fw_name, "amdgpu/bonaire_smc.bin");
+					strscpy(fw_name, "amdgpu/bonaire_smc.bin");
 				}
 				break;
 			case CHIP_HAWAII:
 				if (adev->pdev->revision == 0x80) {
 					info->is_kicker = true;
-					strcpy(fw_name, "amdgpu/hawaii_k_smc.bin");
+					strscpy(fw_name, "amdgpu/hawaii_k_smc.bin");
 				} else {
-					strcpy(fw_name, "amdgpu/hawaii_smc.bin");
+					strscpy(fw_name, "amdgpu/hawaii_smc.bin");
 				}
 				break;
 			case CHIP_TOPAZ:
@@ -335,93 +277,89 @@ static int amdgpu_cgs_get_firmware_info(struct cgs_device *cgs_device,
 				    ((adev->pdev->device == 0x6900) && (adev->pdev->revision == 0xD1)) ||
 				    ((adev->pdev->device == 0x6900) && (adev->pdev->revision == 0xD3))) {
 					info->is_kicker = true;
-					strcpy(fw_name, "amdgpu/topaz_k_smc.bin");
+					strscpy(fw_name, "amdgpu/topaz_k_smc.bin");
 				} else
-					strcpy(fw_name, "amdgpu/topaz_smc.bin");
+					strscpy(fw_name, "amdgpu/topaz_smc.bin");
 				break;
 			case CHIP_TONGA:
 				if (((adev->pdev->device == 0x6939) && (adev->pdev->revision == 0xf1)) ||
 				    ((adev->pdev->device == 0x6938) && (adev->pdev->revision == 0xf1))) {
 					info->is_kicker = true;
-					strcpy(fw_name, "amdgpu/tonga_k_smc.bin");
+					strscpy(fw_name, "amdgpu/tonga_k_smc.bin");
 				} else
-					strcpy(fw_name, "amdgpu/tonga_smc.bin");
+					strscpy(fw_name, "amdgpu/tonga_smc.bin");
 				break;
 			case CHIP_FIJI:
-				strcpy(fw_name, "amdgpu/fiji_smc.bin");
+				strscpy(fw_name, "amdgpu/fiji_smc.bin");
 				break;
 			case CHIP_POLARIS11:
 				if (type == CGS_UCODE_ID_SMU) {
 					if (ASICID_IS_P21(adev->pdev->device, adev->pdev->revision)) {
 						info->is_kicker = true;
-						strcpy(fw_name, "amdgpu/polaris11_k_smc.bin");
+						strscpy(fw_name, "amdgpu/polaris11_k_smc.bin");
 					} else if (ASICID_IS_P31(adev->pdev->device, adev->pdev->revision)) {
 						info->is_kicker = true;
-						strcpy(fw_name, "amdgpu/polaris11_k2_smc.bin");
+						strscpy(fw_name, "amdgpu/polaris11_k2_smc.bin");
 					} else {
-						strcpy(fw_name, "amdgpu/polaris11_smc.bin");
+						strscpy(fw_name, "amdgpu/polaris11_smc.bin");
 					}
 				} else if (type == CGS_UCODE_ID_SMU_SK) {
-					strcpy(fw_name, "amdgpu/polaris11_smc_sk.bin");
+					strscpy(fw_name, "amdgpu/polaris11_smc_sk.bin");
 				}
 				break;
 			case CHIP_POLARIS10:
 				if (type == CGS_UCODE_ID_SMU) {
 					if (ASICID_IS_P20(adev->pdev->device, adev->pdev->revision)) {
 						info->is_kicker = true;
-						strcpy(fw_name, "amdgpu/polaris10_k_smc.bin");
+						strscpy(fw_name, "amdgpu/polaris10_k_smc.bin");
 					} else if (ASICID_IS_P30(adev->pdev->device, adev->pdev->revision)) {
 						info->is_kicker = true;
-						strcpy(fw_name, "amdgpu/polaris10_k2_smc.bin");
+						strscpy(fw_name, "amdgpu/polaris10_k2_smc.bin");
 					} else {
-						strcpy(fw_name, "amdgpu/polaris10_smc.bin");
+						strscpy(fw_name, "amdgpu/polaris10_smc.bin");
 					}
 				} else if (type == CGS_UCODE_ID_SMU_SK) {
-					strcpy(fw_name, "amdgpu/polaris10_smc_sk.bin");
+					strscpy(fw_name, "amdgpu/polaris10_smc_sk.bin");
 				}
 				break;
 			case CHIP_POLARIS12:
 				if (ASICID_IS_P23(adev->pdev->device, adev->pdev->revision)) {
 					info->is_kicker = true;
-					strcpy(fw_name, "amdgpu/polaris12_k_smc.bin");
+					strscpy(fw_name, "amdgpu/polaris12_k_smc.bin");
 				} else {
-					strcpy(fw_name, "amdgpu/polaris12_smc.bin");
+					strscpy(fw_name, "amdgpu/polaris12_smc.bin");
 				}
 				break;
 			case CHIP_VEGAM:
-				strcpy(fw_name, "amdgpu/vegam_smc.bin");
+				strscpy(fw_name, "amdgpu/vegam_smc.bin");
 				break;
 			case CHIP_VEGA10:
 				if ((adev->pdev->device == 0x687f) &&
 					((adev->pdev->revision == 0xc0) ||
 					(adev->pdev->revision == 0xc1) ||
 					(adev->pdev->revision == 0xc3)))
-					strcpy(fw_name, "amdgpu/vega10_acg_smc.bin");
+					strscpy(fw_name, "amdgpu/vega10_acg_smc.bin");
 				else
-					strcpy(fw_name, "amdgpu/vega10_smc.bin");
+					strscpy(fw_name, "amdgpu/vega10_smc.bin");
 				break;
 			case CHIP_VEGA12:
-				strcpy(fw_name, "amdgpu/vega12_smc.bin");
+				strscpy(fw_name, "amdgpu/vega12_smc.bin");
 				break;
 			case CHIP_VEGA20:
-				strcpy(fw_name, "amdgpu/vega20_smc.bin");
+				strscpy(fw_name, "amdgpu/vega20_smc.bin");
 				break;
 			default:
-				DRM_ERROR("SMC firmware not supported\n");
+				drm_err(adev_to_drm(adev), "SMC firmware not supported\n");
 				return -EINVAL;
 			}
 
-			err = request_firmware(&adev->pm.fw, fw_name, adev->dev);
+			err = amdgpu_ucode_request(adev, &adev->pm.fw,
+						   AMDGPU_UCODE_REQUIRED,
+						   "%s", fw_name);
 			if (err) {
-				DRM_ERROR("Failed to request firmware\n");
-				return err;
-			}
-
-			err = amdgpu_ucode_validate(adev->pm.fw);
-			if (err) {
-				DRM_ERROR("Failed to load firmware \"%s\"", fw_name);
-				release_firmware(adev->pm.fw);
-				adev->pm.fw = NULL;
+				drm_err(adev_to_drm(adev),
+					"Failed to load firmware \"%s\"\n", fw_name);
+				amdgpu_ucode_release(&adev->pm.fw);
 				return err;
 			}
 
@@ -461,11 +399,10 @@ static const struct cgs_ops amdgpu_cgs_ops = {
 
 struct cgs_device *amdgpu_cgs_create_device(struct amdgpu_device *adev)
 {
-	struct amdgpu_cgs_device *cgs_device =
-		kmalloc(sizeof(*cgs_device), GFP_KERNEL);
+	struct amdgpu_cgs_device *cgs_device = kmalloc_obj(*cgs_device);
 
 	if (!cgs_device) {
-		DRM_ERROR("Couldn't allocate CGS device structure\n");
+		drm_err(adev_to_drm(adev), "Couldn't allocate CGS device structure\n");
 		return NULL;
 	}
 

@@ -4,7 +4,7 @@
 
 #include <asm/page.h>
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 /*
  * Page size definition
  *
@@ -26,12 +26,12 @@ struct mmu_psize_def {
 	};
 };
 extern struct mmu_psize_def mmu_psize_defs[MMU_PAGE_COUNT];
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 /* 64-bit classic hash table MMU */
 #include <asm/book3s/64/mmu-hash.h>
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 /*
  * ISA 3.0 partition and process table entry format
  */
@@ -71,10 +71,7 @@ extern unsigned int mmu_pid_bits;
 /* Base PID to allocate from */
 extern unsigned int mmu_base_pid;
 
-/*
- * memory block size used with radix translation.
- */
-extern unsigned long __ro_after_init radix_mem_block_size;
+extern unsigned long __ro_after_init memory_block_size;
 
 #define PRTB_SIZE_SHIFT	(mmu_pid_bits + 4)
 #define PRTB_ENTRIES	(1ul << mmu_pid_bits)
@@ -261,7 +258,7 @@ static inline void radix_init_pseries(void) { }
 #define arch_clear_mm_cpumask_cpu(cpu, mm)				\
 	do {								\
 		if (cpumask_test_cpu(cpu, mm_cpumask(mm))) {		\
-			atomic_dec(&(mm)->context.active_cpus);		\
+			dec_mm_active_cpus(mm);				\
 			cpumask_clear_cpu(cpu, mm_cpumask(mm));		\
 		}							\
 	} while (0)
@@ -291,5 +288,5 @@ static inline unsigned long get_user_vsid(mm_context_t *ctx,
 }
 #endif
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 #endif /* _ASM_POWERPC_BOOK3S_64_MMU_H_ */

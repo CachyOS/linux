@@ -3,6 +3,7 @@
 #define _TOOLS_MMZONE_H
 
 #include <linux/atomic.h>
+#include <linux/memory_hotplug.h>
 
 struct pglist_data *first_online_pgdat(void);
 struct pglist_data *next_online_pgdat(struct pglist_data *pgdat);
@@ -17,11 +18,13 @@ enum zone_type {
 };
 
 #define MAX_NR_ZONES __MAX_NR_ZONES
-#define MAX_ORDER 11
-#define MAX_ORDER_NR_PAGES (1 << (MAX_ORDER - 1))
+#define MAX_PAGE_ORDER 10
+#define MAX_ORDER_NR_PAGES (1 << MAX_PAGE_ORDER)
 
-#define pageblock_order		(MAX_ORDER - 1)
+#define pageblock_order		MAX_PAGE_ORDER
 #define pageblock_nr_pages	BIT(pageblock_order)
+#define pageblock_align(pfn)	ALIGN((pfn), pageblock_nr_pages)
+#define pageblock_start_pfn(pfn)	ALIGN_DOWN((pfn), pageblock_nr_pages)
 
 struct zone {
 	atomic_long_t		managed_pages;

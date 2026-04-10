@@ -3,34 +3,52 @@
 #define _LINUX_VIRTIO_PCI_MODERN_H
 
 #include <linux/pci.h>
+#include <linux/virtio_config.h>
 #include <linux/virtio_pci.h>
 
+/**
+ * struct virtio_pci_modern_device - info for modern PCI virtio
+ * @pci_dev:	    Ptr to the PCI device struct
+ * @common:	    Position of the common capability in the PCI config
+ * @device:	    Device-specific data (non-legacy mode)
+ * @notify_base:    Base of vq notifications (non-legacy mode)
+ * @notify_pa:	    Physical base of vq notifications
+ * @isr:	    Where to read and clear interrupt
+ * @notify_len:	    So we can sanity-check accesses
+ * @device_len:	    So we can sanity-check accesses
+ * @notify_map_cap: Capability for when we need to map notifications per-vq
+ * @notify_offset_multiplier: Multiply queue_notify_off by this value
+ *                            (non-legacy mode).
+ * @modern_bars:    Bitmask of BARs
+ * @id:		    Device and vendor id
+ * @device_id_check: Callback defined before vp_modern_probe() to be used to
+ *		    verify the PCI device is a vendor's expected device rather
+ *		    than the standard virtio PCI device
+ *		    Returns the found device id or ERRNO
+ * @dma_mask:	    Optional mask instead of the traditional DMA_BIT_MASK(64),
+ *		    for vendor devices with DMA space address limitations
+ */
 struct virtio_pci_modern_device {
 	struct pci_dev *pci_dev;
 
 	struct virtio_pci_common_cfg __iomem *common;
-	/* Device-specific data (non-legacy mode)  */
 	void __iomem *device;
-	/* Base of vq notifications (non-legacy mode). */
 	void __iomem *notify_base;
-	/* Physical base of vq notifications */
 	resource_size_t notify_pa;
-	/* Where to read and clear interrupt */
 	u8 __iomem *isr;
 
-	/* So we can sanity-check accesses. */
 	size_t notify_len;
 	size_t device_len;
+	size_t common_len;
 
-	/* Capability for when we need to map notifications per-vq. */
 	int notify_map_cap;
 
-	/* Multiply queue_notify_off by this value. (non-legacy mode). */
 	u32 notify_offset_multiplier;
-
 	int modern_bars;
-
 	struct virtio_device_id id;
+
+	int (*device_id_check)(struct pci_dev *pdev);
+	u64 dma_mask;
 };
 
 /*
@@ -78,10 +96,44 @@ static inline void vp_iowrite64_twopart(u64 val,
 	vp_iowrite32(val >> 32, hi);
 }
 
-u64 vp_modern_get_features(struct virtio_pci_modern_device *mdev);
-u64 vp_modern_get_driver_features(struct virtio_pci_modern_device *mdev);
-void vp_modern_set_features(struct virtio_pci_modern_device *mdev,
-		     u64 features);
+void
+vp_modern_get_driver_extended_features(struct virtio_pci_modern_device *mdev,
+				       u64 *features);
+void vp_modern_get_extended_features(struct virtio_pci_modern_device *mdev,
+				     u64 *features);
+void vp_modern_set_extended_features(struct virtio_pci_modern_device *mdev,
+				     const u64 *features);
+
+static inline u64
+vp_modern_get_features(struct virtio_pci_modern_device *mdev)
+{
+	u64 features_array[VIRTIO_FEATURES_U64S];
+
+	vp_modern_get_extended_features(mdev, features_array);
+	return features_array[0];
+}
+
+static inline u64
+vp_modern_get_driver_features(struct virtio_pci_modern_device *mdev)
+{
+	u64 features_array[VIRTIO_FEATURES_U64S];
+	int i;
+
+	vp_modern_get_driver_extended_features(mdev, features_array);
+	for (i = 1; i < VIRTIO_FEATURES_U64S; ++i)
+		WARN_ON_ONCE(features_array[i]);
+	return features_array[0];
+}
+
+static inline void
+vp_modern_set_features(struct virtio_pci_modern_device *mdev, u64 features)
+{
+	u64 features_array[VIRTIO_FEATURES_U64S];
+
+	virtio_features_from_u64(features_array, features);
+	vp_modern_set_extended_features(mdev, features_array);
+}
+
 u32 vp_modern_generation(struct virtio_pci_modern_device *mdev);
 u8 vp_modern_get_status(struct virtio_pci_modern_device *mdev);
 void vp_modern_set_status(struct virtio_pci_modern_device *mdev,
@@ -106,4 +158,8 @@ void __iomem * vp_modern_map_vq_notify(struct virtio_pci_modern_device *mdev,
 				       u16 index, resource_size_t *pa);
 int vp_modern_probe(struct virtio_pci_modern_device *mdev);
 void vp_modern_remove(struct virtio_pci_modern_device *mdev);
+int vp_modern_get_queue_reset(struct virtio_pci_modern_device *mdev, u16 index);
+void vp_modern_set_queue_reset(struct virtio_pci_modern_device *mdev, u16 index);
+u16 vp_modern_avq_num(struct virtio_pci_modern_device *mdev);
+u16 vp_modern_avq_index(struct virtio_pci_modern_device *mdev);
 #endif

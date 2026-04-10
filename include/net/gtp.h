@@ -2,6 +2,10 @@
 #ifndef _GTP_H_
 #define _GTP_H_
 
+#include <linux/netdevice.h>
+#include <linux/types.h>
+#include <net/rtnetlink.h>
+
 /* General GTP protocol related definitions. */
 
 #define GTP0_PORT	3386
@@ -73,5 +77,10 @@ static inline bool netif_is_gtp(const struct net_device *dev)
 #define GTP1_F_SEQ	0x02
 #define GTP1_F_EXTHDR	0x04
 #define GTP1_F_MASK	0x07
+
+struct gtp_ext_hdr {
+	__u8	len;
+	__u8	data[];
+};
 
 #endif

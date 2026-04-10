@@ -44,14 +44,6 @@
 #include <linux/module.h>
 #include <linux/err.h>
 
-/* debug macro */
-#if 0
-#define dbg(x) do { printk("DEBUG-CMDLINE-PART: "); printk x; } while(0)
-#else
-#define dbg(x)
-#endif
-
-
 /* special size referring to all the remaining space in a partition */
 #define SIZE_REMAINING ULLONG_MAX
 #define OFFSET_CONTINUOUS ULLONG_MAX
@@ -193,15 +185,15 @@ static struct mtd_partition * newpart(char *s,
 	parts[this_part].mask_flags = mask_flags;
 	parts[this_part].add_flags = add_flags;
 	if (name)
-		strlcpy(extra_mem, name, name_len + 1);
+		strscpy(extra_mem, name, name_len + 1);
 	else
 		sprintf(extra_mem, "Partition_%03d", this_part);
 	parts[this_part].name = extra_mem;
 	extra_mem += name_len + 1;
 
-	dbg(("partition %d: name <%s>, offset %llx, size %llx, mask flags %x\n",
+	pr_debug("partition %d: name <%s>, offset %llx, size %llx, mask flags %x\n",
 	     this_part, parts[this_part].name, parts[this_part].offset,
-	     parts[this_part].size, parts[this_part].mask_flags));
+	     parts[this_part].size, parts[this_part].mask_flags);
 
 	/* return (updated) pointer to extra_mem memory */
 	if (extra_mem_ptr)
@@ -267,7 +259,7 @@ static int mtdpart_setup_real(char *s)
 		}
 		mtd_id_len = p - mtd_id;
 
-		dbg(("parsing <%s>\n", p+1));
+		pr_debug("parsing <%s>\n", p+1);
 
 		/*
 		 * parse one mtd. have it reserve memory for the
@@ -298,14 +290,14 @@ static int mtdpart_setup_real(char *s)
 		this_mtd->parts = parts;
 		this_mtd->num_parts = num_parts;
 		this_mtd->mtd_id = (char*)(this_mtd + 1);
-		strlcpy(this_mtd->mtd_id, mtd_id, mtd_id_len + 1);
+		strscpy(this_mtd->mtd_id, mtd_id, mtd_id_len + 1);
 
 		/* link into chain */
 		this_mtd->next = partitions;
 		partitions = this_mtd;
 
-		dbg(("mtdid=<%s> num_parts=<%d>\n",
-		     this_mtd->mtd_id, this_mtd->num_parts));
+		pr_debug("mtdid=<%s> num_parts=<%d>\n",
+		     this_mtd->mtd_id, this_mtd->num_parts);
 
 
 		/* EOS - we're done */

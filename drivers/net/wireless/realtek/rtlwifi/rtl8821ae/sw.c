@@ -23,9 +23,6 @@ static void rtl8821ae_init_aspm_vars(struct ieee80211_hw *hw)
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_pci *rtlpci = rtl_pcidev(rtl_pcipriv(hw));
 
-	/*close ASPM for AMD defaultly */
-	rtlpci->const_amdpci_aspm = 0;
-
 	/**
 	 * ASPM PS mode.
 	 * 0 - Disable ASPM,
@@ -33,7 +30,7 @@ static void rtl8821ae_init_aspm_vars(struct ieee80211_hw *hw)
 	 * 2 - Enable ASPM with Clock Req,
 	 * 3 - Alwyas Enable ASPM with Clock Req,
 	 * 4 - Always Enable ASPM without Clock Req.
-	 * set defult to RTL8192CE:3 RTL8192E:2
+	 * set default to RTL8192CE:3 RTL8192E:2
 	 */
 	rtlpci->const_pci_aspm = 3;
 
@@ -232,7 +229,7 @@ static bool rtl8821ae_get_btc_status(void)
 	return true;
 }
 
-static struct rtl_hal_ops rtl8821ae_hal_ops = {
+static const struct rtl_hal_ops rtl8821ae_hal_ops = {
 	.init_sw_vars = rtl8821ae_init_sw_vars,
 	.deinit_sw_vars = rtl8821ae_deinit_sw_vars,
 	.read_eeprom_info = rtl8821ae_read_eeprom_info,
@@ -269,7 +266,6 @@ static struct rtl_hal_ops rtl8821ae_hal_ops = {
 	.tx_polling = rtl8821ae_tx_polling,
 	.enable_hw_sec = rtl8821ae_enable_hw_security_config,
 	.set_key = rtl8821ae_set_key,
-	.init_sw_leds = rtl8821ae_init_sw_leds,
 	.get_bbreg = rtl8821ae_phy_query_bb_reg,
 	.set_bbreg = rtl8821ae_phy_set_bb_reg,
 	.get_rfreg = rtl8821ae_phy_query_rf_reg,
@@ -411,6 +407,9 @@ MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Realtek 8821ae 802.11ac PCI wireless");
 MODULE_FIRMWARE("rtlwifi/rtl8821aefw.bin");
 MODULE_FIRMWARE("rtlwifi/rtl8821aefw_29.bin");
+MODULE_FIRMWARE("rtlwifi/rtl8821aefw_wowlan.bin");
+MODULE_FIRMWARE("rtlwifi/rtl8812aefw.bin");
+MODULE_FIRMWARE("rtlwifi/rtl8812aefw_wowlan.bin");
 
 module_param_named(swenc, rtl8821ae_mod_params.sw_crypto, bool, 0444);
 module_param_named(debug_level, rtl8821ae_mod_params.debug_level, int, 0644);

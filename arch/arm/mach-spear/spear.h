@@ -1,19 +1,16 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * SPEAr3xx/6xx Machine family specific definition
  *
  * Copyright (C) 2009,2012 ST Microelectronics
  * Rajeev Kumar<rajeev-dlh.kumar@st.com>
  * Viresh Kumar <vireshk@kernel.org>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #ifndef __MACH_SPEAR_H
 #define __MACH_SPEAR_H
 
-#include <asm/memory.h>
+#include <asm/page.h>
 
 #if defined(CONFIG_ARCH_SPEAR3XX) || defined (CONFIG_ARCH_SPEAR6XX)
 

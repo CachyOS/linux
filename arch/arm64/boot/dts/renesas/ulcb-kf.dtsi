@@ -4,18 +4,29 @@
  *
  * Copyright (C) 2017 Renesas Electronics Corp.
  * Copyright (C) 2017 Cogent Embedded, Inc.
+ *
+ * Sample Audio settings:
+ *
+ *	> amixer set "DVC Out" 1%
+ *	> amixer set "DVC In"  20%
+ *
+ *	// if you use xxxx-mix+split.dtsi
+ *	> amixer -D hw:1 set "pcm3168a DAC1" 50%
+ *	> amixer -D hw:1 set "pcm3168a DAC2" 50%
+ *	> amixer -D hw:1 set "pcm3168a DAC3" 50%
+ *	> amixer -D hw:1 set "pcm3168a DAC4" 50%
+ *
+ *	// else
+ *	> amixer -D hw:1 set "DAC1" 50%
+ *	> amixer -D hw:1 set "DAC2" 50%
+ *	> amixer -D hw:1 set "DAC3" 50%
+ *	> amixer -D hw:1 set "DAC4" 50%
  */
-
-/*
- * SSI-PCM3168A
- *	aplay   -D plughw:0,2 xxx.wav
- *	arecord -D plughw:0,3 xxx.wav
- */
-
 / {
 	aliases {
 		serial1 = &hscif0;
 		serial2 = &scif1;
+		serial3 = &hscif1;
 		mmc2 = &sdhi3;
 	};
 
@@ -37,39 +48,40 @@
 		};
 	};
 
-	accel_3v3: regulator-acc-3v3 {
+	reg_t1p8v: regulator-t1p8v {
 		compatible = "regulator-fixed";
-		regulator-name = "accel-3v3";
-		regulator-min-microvolt = <3300000>;
-		regulator-max-microvolt = <3300000>;
-	};
-
-	hdmi_1v8: regulator-hdmi-1v8 {
-		compatible = "regulator-fixed";
-		regulator-name = "hdmi-1v8";
+		regulator-name = "T1.8V";
 		regulator-min-microvolt = <1800000>;
 		regulator-max-microvolt = <1800000>;
+		regulator-boot-on;
+		regulator-always-on;
 	};
 
-	hdmi_3v3: regulator-hdmi-3v3 {
+	pcie_1v5: regulator-pcie-1v5 {
 		compatible = "regulator-fixed";
-		regulator-name = "hdmi-3v3";
+		regulator-name = "pcie-1v5";
+		regulator-min-microvolt = <1500000>;
+		regulator-max-microvolt = <1500000>;
+		gpio = <&gpio_exp_77 15 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	pcie_3v3: regulator-pcie-3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "pcie-3v3";
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
+		gpio = <&gpio_exp_77 14 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
 	};
 
-	snd_3p3v: regulator-snd_3p3v {
+	reg_5v: regulator-5v {
 		compatible = "regulator-fixed";
-		regulator-name = "snd-3.3v";
-		regulator-min-microvolt = <3300000>;
-		regulator-max-microvolt = <3300000>;
-	};
-
-	snd_vcc5v: regulator-snd_vcc5v {
-		compatible = "regulator-fixed";
-		regulator-name = "snd-vcc5v";
+		regulator-name = "fixed-5V";
 		regulator-min-microvolt = <5000000>;
 		regulator-max-microvolt = <5000000>;
+		regulator-boot-on;
+		regulator-always-on;
 	};
 
 	wlan_en: regulator-wlan_en {
@@ -120,13 +132,21 @@
 	status = "okay";
 };
 
+&hscif1 {
+	pinctrl-0 = <&hscif1_pins>;
+	pinctrl-names = "default";
+	uart-has-rtscts;
+
+	status = "okay";
+};
+
 &hsusb {
 	dr_mode = "otg";
 	status = "okay";
 };
 
 &i2c2 {
-	i2cswitch2: i2c-switch@71 {
+	i2cmux2: i2c-mux@71 {
 		compatible = "nxp,pca9548";
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -146,19 +166,18 @@
 				pinctrl-0 = <&hdmi1_pins>;
 				pinctrl-names = "default";
 
-				interrupt-parent = <&gpio2>;
-				interrupts = <14 IRQ_TYPE_LEVEL_LOW>;
+				interrupts-extended = <&gpio2 14 IRQ_TYPE_LEVEL_LOW>;
 
 				clocks = <&cs2000>;
 				clock-names = "cec";
 
 				pd-gpios = <&gpio_exp_75 5 GPIO_ACTIVE_LOW>;
 
-				avdd-supply = <&hdmi_1v8>;
-				dvdd-supply = <&hdmi_1v8>;
-				pvdd-supply = <&hdmi_1v8>;
-				dvdd-3v-supply = <&hdmi_3v3>;
-				bgvdd-supply = <&hdmi_1v8>;
+				avdd-supply = <&reg_t1p8v>;
+				dvdd-supply = <&reg_t1p8v>;
+				pvdd-supply = <&reg_t1p8v>;
+				dvdd-3v-supply = <&reg_3p3v>;
+				bgvdd-supply = <&reg_t1p8v>;
 
 				adi,input-depth = <8>;
 				adi,input-colorspace = "rgb";
@@ -195,8 +214,8 @@
 				compatible = "st,lsm9ds0-imu";
 				reg = <0x1d>;
 
-				vdd-supply = <&accel_3v3>;
-				vddio-supply = <&accel_3v3>;
+				vdd-supply = <&reg_3p3v>;
+				vddio-supply = <&reg_3p3v>;
 			};
 
 			pcm3168a: audio-codec@44 {
@@ -206,40 +225,20 @@
 				clocks = <&clksndsel>;
 				clock-names = "scki";
 
-				VDD1-supply	= <&snd_3p3v>;
-				VDD2-supply	= <&snd_3p3v>;
-				VCCAD1-supply	= <&snd_vcc5v>;
-				VCCAD2-supply	= <&snd_vcc5v>;
-				VCCDA1-supply	= <&snd_vcc5v>;
-				VCCDA2-supply	= <&snd_vcc5v>;
-
-				ports {
-					#address-cells = <1>;
-					#size-cells = <0>;
-					mclk-fs = <512>;
-					port@0 {
-						reg = <0>;
-						pcm3168a_endpoint_p: endpoint {
-							remote-endpoint = <&rsnd_for_pcm3168a_play>;
-							clocks = <&clksndsel>;
-						};
-					};
-					port@1 {
-						reg = <1>;
-						pcm3168a_endpoint_c: endpoint {
-							remote-endpoint = <&rsnd_for_pcm3168a_capture>;
-							clocks = <&clksndsel>;
-						};
-					};
-				};
+				VDD1-supply = <&reg_3p3v>;
+				VDD2-supply = <&reg_3p3v>;
+				VCCAD1-supply = <&reg_5v>;
+				VCCAD2-supply = <&reg_5v>;
+				VCCDA1-supply = <&reg_5v>;
+				VCCDA2-supply = <&reg_5v>;
 			};
 
 			gyroscope@6b {
 				compatible = "st,lsm9ds0-gyro";
 				reg = <0x6b>;
 
-				vdd-supply = <&accel_3v3>;
-				vddio-supply = <&accel_3v3>;
+				vdd-supply = <&reg_3p3v>;
+				vddio-supply = <&reg_3p3v>;
 			};
 		};
 	};
@@ -251,8 +250,8 @@
 		gpio-controller;
 		#gpio-cells = <2>;
 		interrupt-controller;
-		interrupt-parent = <&gpio6>;
-		interrupts = <8 IRQ_TYPE_EDGE_FALLING>;
+		#interrupt-cells = <2>;
+		interrupts-extended = <&gpio6 8 IRQ_TYPE_EDGE_FALLING>;
 
 		audio-out-off-hog {
 			gpio-hog;
@@ -311,13 +310,13 @@
 		gpio-controller;
 		#gpio-cells = <2>;
 		interrupt-controller;
-		interrupt-parent = <&gpio6>;
-		interrupts = <4 IRQ_TYPE_EDGE_FALLING>;
+		#interrupt-cells = <2>;
+		interrupts-extended = <&gpio6 4 IRQ_TYPE_EDGE_FALLING>;
 	};
 };
 
 &i2c4 {
-	i2cswitch4: i2c-switch@71 {
+	i2cmux4: i2c-mux@71 {
 		compatible = "nxp,pca9548";
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -331,8 +330,8 @@
 		gpio-controller;
 		#gpio-cells = <2>;
 		interrupt-controller;
-		interrupt-parent = <&gpio7>;
-		interrupts = <3 IRQ_TYPE_EDGE_FALLING>;
+		#interrupt-cells = <2>;
+		interrupts-extended = <&gpio7 3 IRQ_TYPE_EDGE_FALLING>;
 	};
 
 	gpio_exp_77: gpio@77 {
@@ -341,8 +340,8 @@
 		gpio-controller;
 		#gpio-cells = <2>;
 		interrupt-controller;
-		interrupt-parent = <&gpio5>;
-		interrupts = <9 IRQ_TYPE_EDGE_FALLING>;
+		#interrupt-cells = <2>;
+		interrupts-extended = <&gpio5 9 IRQ_TYPE_EDGE_FALLING>;
 	};
 };
 
@@ -361,6 +360,9 @@
 
 &pciec1 {
 	status = "okay";
+
+	vpcie1v5-supply = <&pcie_1v5>;
+	vpcie3v3-supply = <&pcie_3v3>;
 };
 
 &pfc {
@@ -392,8 +394,13 @@
 		function = "hscif0";
 	};
 
+	hscif1_pins: hscif1 {
+		groups = "hscif1_data_a", "hscif1_ctrl_a";
+		function = "hscif1";
+	};
+
 	scif1_pins: scif1 {
-		groups = "scif1_data_b", "scif1_ctrl";
+		groups = "scif1_data_b";
 		function = "scif1";
 	};
 
@@ -418,38 +425,20 @@
 	pinctrl-0 = <&sound_pins
 		     &sound_clk_pins
 		     &sound_pcm_pins>;
-
-	ports {
-		/* rsnd_port0/1 are defined in ulcb.dtsi */
-		rsnd_port2: port@2 {
-			reg = <2>;
-			rsnd_for_pcm3168a_play: endpoint {
-				remote-endpoint = <&pcm3168a_endpoint_p>;
-				bitclock-master;
-				frame-master;
-				dai-tdm-slot-num = <8>;
-				playback = <&ssi3>;
-			};
-		};
-		rsnd_port3: port@3 {
-			reg = <3>;
-			rsnd_for_pcm3168a_capture: endpoint {
-				remote-endpoint = <&pcm3168a_endpoint_c>;
-				bitclock-master;
-				frame-master;
-				dai-tdm-slot-num = <6>;
-				capture  = <&ssi4>;
-			};
-		};
-	};
 };
 
 &scif1 {
 	pinctrl-0 = <&scif1_pins>;
 	pinctrl-names = "default";
-	uart-has-rtscts;
 
 	status = "okay";
+
+	gnss {
+		compatible = "u-blox,neo-m8";
+		reset-gpios = <&gpio_exp_75 6 GPIO_ACTIVE_LOW>;
+		vcc-supply = <&reg_3p3v>;
+		current-speed = <9600>;
+	};
 };
 
 &sdhi3 {
@@ -471,17 +460,8 @@
 	wlcore: wlcore@2 {
 		compatible = "ti,wl1837";
 		reg = <2>;
-		interrupt-parent = <&gpio1>;
-		interrupts = <25 IRQ_TYPE_EDGE_FALLING>;
+		interrupts-extended = <&gpio1 25 IRQ_TYPE_EDGE_FALLING>;
 	};
-};
-
-&sound_card {
-	links = <&rsnd_port0	/* ak4613 */
-		 &rsnd_port1	/* HDMI0  */
-		 &rsnd_port2	/* pcm3168a playback */
-		 &rsnd_port3	/* pcm3168a capture  */
-		>;
 };
 
 &ssi4 {
@@ -498,3 +478,17 @@
 &xhci0 {
 	status = "okay";
 };
+
+/*
+ * For sound-test.
+ *
+ * We can switch Audio Card for testing
+ * see also ulcb.dtsi
+ *
+ * #include "ulcb-kf-simple-audio-card.dtsi"
+ * #include "ulcb-kf-simple-audio-card-mix+split.dtsi"
+ * #include "ulcb-kf-audio-graph-card.dtsi"
+ * #include "ulcb-kf-audio-graph-card-mix+split.dtsi"
+ * #include "ulcb-kf-audio-graph-card2-mix+split.dtsi"
+ */
+#include "ulcb-kf-audio-graph-card2.dtsi"

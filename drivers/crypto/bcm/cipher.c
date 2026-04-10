@@ -15,8 +15,8 @@
 #include <linux/kthread.h>
 #include <linux/rtnetlink.h>
 #include <linux/sched.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
+#include <linux/string_choices.h>
+#include <linux/of.h>
 #include <linux/io.h>
 #include <linux/bitops.h>
 
@@ -141,8 +141,7 @@ spu_skcipher_rx_sg_create(struct brcm_message *mssg,
 	struct iproc_ctx_s *ctx = rctx->ctx;
 	u32 datalen;		/* Number of bytes of response data expected */
 
-	mssg->spu.dst = kcalloc(rx_frag_num, sizeof(struct scatterlist),
-				rctx->gfp);
+	mssg->spu.dst = kmalloc_objs(struct scatterlist, rx_frag_num, rctx->gfp);
 	if (!mssg->spu.dst)
 		return -ENOMEM;
 
@@ -205,8 +204,7 @@ spu_skcipher_tx_sg_create(struct brcm_message *mssg,
 	u32 datalen;		/* Number of bytes of response data expected */
 	u32 stat_len;
 
-	mssg->spu.src = kcalloc(tx_frag_num, sizeof(struct scatterlist),
-				rctx->gfp);
+	mssg->spu.src = kmalloc_objs(struct scatterlist, tx_frag_num, rctx->gfp);
 	if (unlikely(!mssg->spu.src))
 		return -ENOMEM;
 
@@ -532,8 +530,7 @@ spu_ahash_rx_sg_create(struct brcm_message *mssg,
 	struct scatterlist *sg;	/* used to build sgs in mbox message */
 	struct iproc_ctx_s *ctx = rctx->ctx;
 
-	mssg->spu.dst = kcalloc(rx_frag_num, sizeof(struct scatterlist),
-				rctx->gfp);
+	mssg->spu.dst = kmalloc_objs(struct scatterlist, rx_frag_num, rctx->gfp);
 	if (!mssg->spu.dst)
 		return -ENOMEM;
 
@@ -587,8 +584,7 @@ spu_ahash_tx_sg_create(struct brcm_message *mssg,
 	u32 datalen;		/* Number of bytes of response data expected */
 	u32 stat_len;
 
-	mssg->spu.src = kcalloc(tx_frag_num, sizeof(struct scatterlist),
-				rctx->gfp);
+	mssg->spu.src = kmalloc_objs(struct scatterlist, tx_frag_num, rctx->gfp);
 	if (!mssg->spu.src)
 		return -ENOMEM;
 
@@ -1077,8 +1073,7 @@ static int spu_aead_rx_sg_create(struct brcm_message *mssg,
 		/* have to catch gcm pad in separate buffer */
 		rx_frag_num++;
 
-	mssg->spu.dst = kcalloc(rx_frag_num, sizeof(struct scatterlist),
-				rctx->gfp);
+	mssg->spu.dst = kmalloc_objs(struct scatterlist, rx_frag_num, rctx->gfp);
 	if (!mssg->spu.dst)
 		return -ENOMEM;
 
@@ -1179,8 +1174,7 @@ static int spu_aead_tx_sg_create(struct brcm_message *mssg,
 	u32 assoc_offset = 0;
 	u32 stat_len;
 
-	mssg->spu.src = kcalloc(tx_frag_num, sizeof(struct scatterlist),
-				rctx->gfp);
+	mssg->spu.src = kmalloc_objs(struct scatterlist, tx_frag_num, rctx->gfp);
 	if (!mssg->spu.src)
 		return -ENOMEM;
 
@@ -1614,7 +1608,7 @@ static void finish_req(struct iproc_reqctx_s *rctx, int err)
 	spu_chunk_cleanup(rctx);
 
 	if (areq)
-		areq->complete(areq, err);
+		crypto_request_complete(areq, err);
 }
 
 /**
@@ -1928,7 +1922,7 @@ static int ahash_enqueue(struct ahash_request *req)
 	/* SPU2 hardware does not compute hash of zero length data */
 	if ((rctx->is_final == 1) && (rctx->total_todo == 0) &&
 	    (iproc_priv.spu.spu_type == SPU_TYPE_SPU2)) {
-		alg_name = crypto_tfm_alg_name(crypto_ahash_tfm(tfm));
+		alg_name = crypto_ahash_alg_name(tfm);
 		flow_log("Doing %sfinal %s zero-len hash request in software\n",
 			 rctx->is_final ? "" : "non-", alg_name);
 		err = do_shash((unsigned char *)alg_name, req->result,
@@ -2029,7 +2023,7 @@ static int ahash_init(struct ahash_request *req)
 		 * supported by the hardware, we need to handle it in software
 		 * by calling synchronous hash functions.
 		 */
-		alg_name = crypto_tfm_alg_name(crypto_ahash_tfm(tfm));
+		alg_name = crypto_ahash_alg_name(tfm);
 		hash = crypto_alloc_shash(alg_name, 0, 0);
 		if (IS_ERR(hash)) {
 			ret = PTR_ERR(hash);
@@ -2397,7 +2391,8 @@ static int ahash_hmac_setkey(struct crypto_ahash *ahash, const u8 *key,
 		memset(ctx->ipad + ctx->authkeylen, 0,
 		       blocksize - ctx->authkeylen);
 		ctx->authkeylen = 0;
-		memcpy(ctx->opad, ctx->ipad, blocksize);
+		unsafe_memcpy(ctx->opad, ctx->ipad, blocksize,
+			      "fortified memcpy causes -Wrestrict warning");
 
 		for (index = 0; index < blocksize; index++) {
 			ctx->ipad[index] ^= HMAC_IPAD_VALUE;
@@ -2415,6 +2410,7 @@ static int ahash_hmac_setkey(struct crypto_ahash *ahash, const u8 *key,
 
 static int ahash_hmac_init(struct ahash_request *req)
 {
+	int ret;
 	struct iproc_reqctx_s *rctx = ahash_request_ctx(req);
 	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
 	struct iproc_ctx_s *ctx = crypto_ahash_ctx(tfm);
@@ -2424,7 +2420,9 @@ static int ahash_hmac_init(struct ahash_request *req)
 	flow_log("ahash_hmac_init()\n");
 
 	/* init the context as a hash */
-	ahash_init(req);
+	ret = ahash_init(req);
+	if (ret)
+		return ret;
 
 	if (!spu_no_incr_hash(ctx)) {
 		/* SPU-M can do incr hashing but needs sw for outer HMAC */
@@ -2570,66 +2568,29 @@ static int aead_need_fallback(struct aead_request *req)
 		return payload_len > ctx->max_payload;
 }
 
-static void aead_complete(struct crypto_async_request *areq, int err)
-{
-	struct aead_request *req =
-	    container_of(areq, struct aead_request, base);
-	struct iproc_reqctx_s *rctx = aead_request_ctx(req);
-	struct crypto_aead *aead = crypto_aead_reqtfm(req);
-
-	flow_log("%s() err:%d\n", __func__, err);
-
-	areq->tfm = crypto_aead_tfm(aead);
-
-	areq->complete = rctx->old_complete;
-	areq->data = rctx->old_data;
-
-	areq->complete(areq, err);
-}
-
 static int aead_do_fallback(struct aead_request *req, bool is_encrypt)
 {
 	struct crypto_aead *aead = crypto_aead_reqtfm(req);
 	struct crypto_tfm *tfm = crypto_aead_tfm(aead);
 	struct iproc_reqctx_s *rctx = aead_request_ctx(req);
 	struct iproc_ctx_s *ctx = crypto_tfm_ctx(tfm);
-	int err;
-	u32 req_flags;
+	struct aead_request *subreq;
 
 	flow_log("%s() enc:%u\n", __func__, is_encrypt);
 
-	if (ctx->fallback_cipher) {
-		/* Store the cipher tfm and then use the fallback tfm */
-		rctx->old_tfm = tfm;
-		aead_request_set_tfm(req, ctx->fallback_cipher);
-		/*
-		 * Save the callback and chain ourselves in, so we can restore
-		 * the tfm
-		 */
-		rctx->old_complete = req->base.complete;
-		rctx->old_data = req->base.data;
-		req_flags = aead_request_flags(req);
-		aead_request_set_callback(req, req_flags, aead_complete, req);
-		err = is_encrypt ? crypto_aead_encrypt(req) :
-		    crypto_aead_decrypt(req);
+	if (!ctx->fallback_cipher)
+		return -EINVAL;
 
-		if (err == 0) {
-			/*
-			 * fallback was synchronous (did not return
-			 * -EINPROGRESS). So restore request state here.
-			 */
-			aead_request_set_callback(req, req_flags,
-						  rctx->old_complete, req);
-			req->base.data = rctx->old_data;
-			aead_request_set_tfm(req, aead);
-			flow_log("%s() fallback completed successfully\n\n",
-				 __func__);
-		}
-	} else {
-		err = -EINVAL;
-	}
+	subreq = &rctx->req;
+	aead_request_set_tfm(subreq, ctx->fallback_cipher);
+	aead_request_set_callback(subreq, aead_request_flags(req),
+				  req->base.complete, req->base.data);
+	aead_request_set_crypt(subreq, req->src, req->dst, req->cryptlen,
+			       req->iv);
+	aead_request_set_ad(subreq, req->assoclen);
 
-	return err;
+	return is_encrypt ? crypto_aead_encrypt(req) :
+			    crypto_aead_decrypt(req);
 }
 
 static int aead_enqueue(struct aead_request *req, bool is_encrypt)
@@ -2721,7 +2682,7 @@ static int aead_enqueue(struct aead_request *req, bool is_encrypt)
 	flow_log("  iv_ctr_len:%u\n", rctx->iv_ctr_len);
 	flow_dump("  iv: ", req->iv, rctx->iv_ctr_len);
 	flow_log("  authkeylen:%u\n", ctx->authkeylen);
-	flow_log("  is_esp: %s\n", ctx->is_esp ? "yes" : "no");
+	flow_log("  is_esp: %s\n", str_yes_no(ctx->is_esp));
 
 	if (ctx->max_payload == SPU_MAX_PAYLOAD_INF)
 		flow_log("  max_payload infinite");
@@ -3554,25 +3515,6 @@ static struct iproc_alg_s driver_algs[] = {
 	{
 	 .type = CRYPTO_ALG_TYPE_SKCIPHER,
 	 .alg.skcipher = {
-			.base.cra_name = "ofb(des)",
-			.base.cra_driver_name = "ofb-des-iproc",
-			.base.cra_blocksize = DES_BLOCK_SIZE,
-			.min_keysize = DES_KEY_SIZE,
-			.max_keysize = DES_KEY_SIZE,
-			.ivsize = DES_BLOCK_SIZE,
-			},
-	 .cipher_info = {
-			 .alg = CIPHER_ALG_DES,
-			 .mode = CIPHER_MODE_OFB,
-			 },
-	 .auth_info = {
-		       .alg = HASH_ALG_NONE,
-		       .mode = HASH_MODE_NONE,
-		       },
-	 },
-	{
-	 .type = CRYPTO_ALG_TYPE_SKCIPHER,
-	 .alg.skcipher = {
 			.base.cra_name = "cbc(des)",
 			.base.cra_driver_name = "cbc-des-iproc",
 			.base.cra_blocksize = DES_BLOCK_SIZE,
@@ -3611,25 +3553,6 @@ static struct iproc_alg_s driver_algs[] = {
 	{
 	 .type = CRYPTO_ALG_TYPE_SKCIPHER,
 	 .alg.skcipher = {
-			.base.cra_name = "ofb(des3_ede)",
-			.base.cra_driver_name = "ofb-des3-iproc",
-			.base.cra_blocksize = DES3_EDE_BLOCK_SIZE,
-			.min_keysize = DES3_EDE_KEY_SIZE,
-			.max_keysize = DES3_EDE_KEY_SIZE,
-			.ivsize = DES3_EDE_BLOCK_SIZE,
-			},
-	 .cipher_info = {
-			 .alg = CIPHER_ALG_3DES,
-			 .mode = CIPHER_MODE_OFB,
-			 },
-	 .auth_info = {
-		       .alg = HASH_ALG_NONE,
-		       .mode = HASH_MODE_NONE,
-		       },
-	 },
-	{
-	 .type = CRYPTO_ALG_TYPE_SKCIPHER,
-	 .alg.skcipher = {
 			.base.cra_name = "cbc(des3_ede)",
 			.base.cra_driver_name = "cbc-des3-iproc",
 			.base.cra_blocksize = DES3_EDE_BLOCK_SIZE,
@@ -3659,25 +3582,6 @@ static struct iproc_alg_s driver_algs[] = {
 	 .cipher_info = {
 			 .alg = CIPHER_ALG_3DES,
 			 .mode = CIPHER_MODE_ECB,
-			 },
-	 .auth_info = {
-		       .alg = HASH_ALG_NONE,
-		       .mode = HASH_MODE_NONE,
-		       },
-	 },
-	{
-	 .type = CRYPTO_ALG_TYPE_SKCIPHER,
-	 .alg.skcipher = {
-			.base.cra_name = "ofb(aes)",
-			.base.cra_driver_name = "ofb-aes-iproc",
-			.base.cra_blocksize = AES_BLOCK_SIZE,
-			.min_keysize = AES_MIN_KEY_SIZE,
-			.max_keysize = AES_MAX_KEY_SIZE,
-			.ivsize = AES_BLOCK_SIZE,
-			},
-	 .cipher_info = {
-			 .alg = CIPHER_ALG_AES,
-			 .mode = CIPHER_MODE_OFB,
 			 },
 	 .auth_info = {
 		       .alg = HASH_ALG_NONE,
@@ -4243,6 +4147,7 @@ static int ahash_cra_init(struct crypto_tfm *tfm)
 
 static int aead_cra_init(struct crypto_aead *aead)
 {
+	unsigned int reqsize = sizeof(struct iproc_reqctx_s);
 	struct crypto_tfm *tfm = crypto_aead_tfm(aead);
 	struct iproc_ctx_s *ctx = crypto_tfm_ctx(tfm);
 	struct crypto_alg *alg = tfm->__crt_alg;
@@ -4254,7 +4159,6 @@ static int aead_cra_init(struct crypto_aead *aead)
 
 	flow_log("%s()\n", __func__);
 
-	crypto_aead_set_reqsize(aead, sizeof(struct iproc_reqctx_s));
 	ctx->is_esp = false;
 	ctx->salt_len = 0;
 	ctx->salt_offset = 0;
@@ -4263,22 +4167,29 @@ static int aead_cra_init(struct crypto_aead *aead)
 	get_random_bytes(ctx->iv, MAX_IV_SIZE);
 	flow_dump("  iv: ", ctx->iv, MAX_IV_SIZE);
 
-	if (!err) {
-		if (alg->cra_flags & CRYPTO_ALG_NEED_FALLBACK) {
-			flow_log("%s() creating fallback cipher\n", __func__);
+	if (err)
+		goto out;
 
-			ctx->fallback_cipher =
-			    crypto_alloc_aead(alg->cra_name, 0,
-					      CRYPTO_ALG_ASYNC |
-					      CRYPTO_ALG_NEED_FALLBACK);
-			if (IS_ERR(ctx->fallback_cipher)) {
-				pr_err("%s() Error: failed to allocate fallback for %s\n",
-				       __func__, alg->cra_name);
-				return PTR_ERR(ctx->fallback_cipher);
-			}
-		}
+	if (!(alg->cra_flags & CRYPTO_ALG_NEED_FALLBACK))
+		goto reqsize;
+
+	flow_log("%s() creating fallback cipher\n", __func__);
+
+	ctx->fallback_cipher = crypto_alloc_aead(alg->cra_name, 0,
+						 CRYPTO_ALG_ASYNC |
+						 CRYPTO_ALG_NEED_FALLBACK);
+	if (IS_ERR(ctx->fallback_cipher)) {
+		pr_err("%s() Error: failed to allocate fallback for %s\n",
+		       __func__, alg->cra_name);
+		return PTR_ERR(ctx->fallback_cipher);
 	}
 
+	reqsize += crypto_aead_reqsize(ctx->fallback_cipher);
+
+reqsize:
+	crypto_aead_set_reqsize(aead, reqsize);
+
+out:
 	return err;
 }
 
@@ -4743,7 +4654,7 @@ failure:
 	return err;
 }
 
-static int bcm_spu_remove(struct platform_device *pdev)
+static void bcm_spu_remove(struct platform_device *pdev)
 {
 	int i;
 	struct device *dev = &pdev->dev;
@@ -4781,7 +4692,6 @@ static int bcm_spu_remove(struct platform_device *pdev)
 	}
 	spu_free_debugfs();
 	spu_mb_release(pdev);
-	return 0;
 }
 
 /* ===== Kernel Module API ===== */

@@ -24,7 +24,7 @@
 struct ad2s90_state {
 	struct mutex lock; /* lock to protect rx buffer */
 	struct spi_device *sdev;
-	u8 rx[2] ____cacheline_aligned;
+	u8 rx[2] __aligned(IIO_DMA_MINALIGN);
 };
 
 static int ad2s90_read_raw(struct iio_dev *indio_dev,
@@ -105,13 +105,13 @@ static int ad2s90_probe(struct spi_device *spi)
 
 static const struct of_device_id ad2s90_of_match[] = {
 	{ .compatible = "adi,ad2s90", },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ad2s90_of_match);
 
 static const struct spi_device_id ad2s90_id[] = {
 	{ "ad2s90" },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad2s90_id);
 

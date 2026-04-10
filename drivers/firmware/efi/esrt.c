@@ -75,8 +75,6 @@ static LIST_HEAD(entry_list);
 struct esre_attribute {
 	struct attribute attr;
 	ssize_t (*show)(struct esre_entry *entry, char *buf);
-	ssize_t (*store)(struct esre_entry *entry,
-			 const char *buf, size_t count);
 };
 
 static struct esre_entry *to_entry(struct kobject *kobj)
@@ -94,10 +92,6 @@ static ssize_t esre_attr_show(struct kobject *kobj,
 {
 	struct esre_entry *entry = to_entry(kobj);
 	struct esre_attribute *attr = to_attr(_attr);
-
-	/* Don't tell normal users what firmware versions we've got... */
-	if (!capable(CAP_SYS_ADMIN))
-		return -EACCES;
 
 	return attr->show(entry, buf);
 }
@@ -156,7 +150,7 @@ static void esre_release(struct kobject *kobj)
 	kfree(entry);
 }
 
-static struct kobj_type esre1_ktype = {
+static const struct kobj_type esre1_ktype = {
 	.release = esre_release,
 	.sysfs_ops = &esre_attr_ops,
 	.default_groups = esre1_groups,
@@ -170,7 +164,7 @@ static int esre_create_sysfs_entry(void *esre, int entry_num)
 {
 	struct esre_entry *entry;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (!entry)
 		return -ENOMEM;
 
@@ -247,7 +241,7 @@ void __init efi_esrt_init(void)
 	int rc;
 	phys_addr_t end;
 
-	if (!efi_enabled(EFI_MEMMAP))
+	if (!efi_enabled(EFI_MEMMAP) && !efi_enabled(EFI_PARAVIRT))
 		return;
 
 	pr_debug("esrt-init: loading.\n");
@@ -258,20 +252,15 @@ void __init efi_esrt_init(void)
 	if (rc < 0 ||
 	    (!(md.attribute & EFI_MEMORY_RUNTIME) &&
 	     md.type != EFI_BOOT_SERVICES_DATA &&
-	     md.type != EFI_RUNTIME_SERVICES_DATA)) {
+	     md.type != EFI_RUNTIME_SERVICES_DATA &&
+	     md.type != EFI_ACPI_RECLAIM_MEMORY &&
+	     md.type != EFI_ACPI_MEMORY_NVS)) {
 		pr_warn("ESRT header is not in the memory map.\n");
 		return;
 	}
 
-	max = efi_mem_desc_end(&md);
-	if (max < efi.esrt) {
-		pr_err("EFI memory descriptor is invalid. (esrt: %p max: %p)\n",
-		       (void *)efi.esrt, (void *)max);
-		return;
-	}
-
+	max = efi_mem_desc_end(&md) - efi.esrt;
 	size = sizeof(*esrt);
-	max -= efi.esrt;
 
 	if (max < size) {
 		pr_err("ESRT header doesn't fit on single memory map entry. (size: %zu max: %zu)\n",

@@ -37,9 +37,6 @@ struct cdns3_wrap {
 #define PCI_DRIVER_NAME		"cdns3-pci-usbss"
 #define PLAT_DRIVER_NAME	"cdns-usb3"
 
-#define CDNS_VENDOR_ID		0x17cd
-#define CDNS_DEVICE_ID		0x0100
-
 static struct pci_dev *cdns3_get_second_fun(struct pci_dev *pdev)
 {
 	struct pci_dev *func;
@@ -58,6 +55,11 @@ static struct pci_dev *cdns3_get_second_fun(struct pci_dev *pdev)
 		func = pci_get_device(pdev->vendor, pdev->device, func);
 		if (unlikely(!func))
 			return NULL;
+	}
+
+	if (func->devfn != PCI_DEV_FN_HOST_DEVICE &&
+	    func->devfn != PCI_DEV_FN_OTG) {
+		return NULL;
 	}
 
 	return func;
@@ -95,11 +97,9 @@ static int cdns3_pci_probe(struct pci_dev *pdev,
 	if (pci_is_enabled(func)) {
 		wrap = pci_get_drvdata(func);
 	} else {
-		wrap = kzalloc(sizeof(*wrap), GFP_KERNEL);
-		if (!wrap) {
-			pci_disable_device(pdev);
+		wrap = kzalloc_obj(*wrap);
+		if (!wrap)
 			return -ENOMEM;
-		}
 	}
 
 	res = wrap->dev_res;
@@ -158,7 +158,6 @@ static int cdns3_pci_probe(struct pci_dev *pdev,
 		/* register platform device */
 		wrap->plat_dev = platform_device_register_full(&plat_info);
 		if (IS_ERR(wrap->plat_dev)) {
-			pci_disable_device(pdev);
 			err = PTR_ERR(wrap->plat_dev);
 			kfree(wrap);
 			return err;
@@ -185,7 +184,7 @@ static void cdns3_pci_remove(struct pci_dev *pdev)
 }
 
 static const struct pci_device_id cdns3_pci_ids[] = {
-	{ PCI_DEVICE(CDNS_VENDOR_ID, CDNS_DEVICE_ID), },
+	{ PCI_VDEVICE(CDNS, PCI_DEVICE_ID_CDNS_USBSS) },
 	{ 0, }
 };
 

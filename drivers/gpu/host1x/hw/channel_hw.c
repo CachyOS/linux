@@ -47,9 +47,10 @@ static void trace_write_gather(struct host1x_cdma *cdma, struct host1x_bo *bo,
 	}
 }
 
-static void submit_wait(struct host1x_cdma *cdma, u32 id, u32 threshold,
-			u32 next_class)
+static void submit_wait(struct host1x_job *job, u32 id, u32 threshold)
 {
+	struct host1x_cdma *cdma = &job->channel->cdma;
+
 #if HOST1X_HW >= 2
 	host1x_cdma_push_wide(cdma,
 		host1x_opcode_setclass(
@@ -60,7 +61,7 @@ static void submit_wait(struct host1x_cdma *cdma, u32 id, u32 threshold,
 		),
 		threshold,
 		id,
-		host1x_opcode_setclass(next_class, 0, 0)
+		HOST1X_OPCODE_NOP
 	);
 #else
 	/* TODO add waitchk or use waitbases or other mitigation */
@@ -72,6 +73,32 @@ static void submit_wait(struct host1x_cdma *cdma, u32 id, u32 threshold,
 		),
 		host1x_class_host_wait_syncpt(id, threshold)
 	);
+#endif
+}
+
+static void submit_setclass(struct host1x_job *job, u32 next_class)
+{
+	struct host1x_cdma *cdma = &job->channel->cdma;
+
+#if HOST1X_HW >= 6
+	u32 stream_id;
+
+	/*
+	 * If a memory context has been set, use it. Otherwise
+	 * (if context isolation is disabled) use the engine's
+	 * firmware stream ID.
+	 */
+	if (job->memory_context)
+		stream_id = job->memory_context->stream_id;
+	else
+		stream_id = job->engine_fallback_streamid;
+
+	host1x_cdma_push_wide(cdma,
+		host1x_opcode_setclass(next_class, 0, 0),
+		host1x_opcode_setpayload(stream_id),
+		host1x_opcode_setstreamid(job->engine_streamid_offset / 4),
+		HOST1X_OPCODE_NOP);
+#else
 	host1x_cdma_push(cdma,
 		host1x_opcode_setclass(next_class, 0, 0),
 		HOST1X_OPCODE_NOP
@@ -79,7 +106,8 @@ static void submit_wait(struct host1x_cdma *cdma, u32 id, u32 threshold,
 #endif
 }
 
-static void submit_gathers(struct host1x_job *job, u32 job_syncpt_base)
+static void submit_gathers(struct host1x_job *job, struct host1x_job_cmd *cmds, u32 num_cmds,
+			   u32 job_syncpt_base)
 {
 	struct host1x_cdma *cdma = &job->channel->cdma;
 #if HOST1X_HW < 6
@@ -88,8 +116,8 @@ static void submit_gathers(struct host1x_job *job, u32 job_syncpt_base)
 	unsigned int i;
 	u32 threshold;
 
-	for (i = 0; i < job->num_cmds; i++) {
-		struct host1x_job_cmd *cmd = &job->cmds[i];
+	for (i = 0; i < num_cmds; i++) {
+		struct host1x_job_cmd *cmd = &cmds[i];
 
 		if (cmd->is_wait) {
 			if (cmd->wait.relative)
@@ -97,7 +125,8 @@ static void submit_gathers(struct host1x_job *job, u32 job_syncpt_base)
 			else
 				threshold = cmd->wait.threshold;
 
-			submit_wait(cdma, cmd->wait.id, threshold, cmd->wait.next_class);
+			submit_wait(job, cmd->wait.id, threshold);
+			submit_setclass(job, cmd->wait.next_class);
 		} else {
 			struct host1x_job_gather *g = &cmd->gather;
 
@@ -148,14 +177,12 @@ static inline void synchronize_syncpt_base(struct host1x_job *job)
 static void host1x_channel_set_streamid(struct host1x_channel *channel)
 {
 #if HOST1X_HW >= 6
-	u32 sid = 0x7f;
-#ifdef CONFIG_IOMMU_API
-	struct iommu_fwspec *spec = dev_iommu_fwspec_get(channel->dev->parent);
-	if (spec)
-		sid = spec->ids[0] & 0xffff;
-#endif
+	u32 stream_id;
 
-	host1x_ch_writel(channel, sid, HOST1X_CHANNEL_SMMU_STREAMID);
+	if (!tegra_dev_iommu_get_stream_id(channel->dev->parent, &stream_id))
+		stream_id = TEGRA_STREAM_ID_BYPASS;
+
+	host1x_ch_writel(channel, stream_id, HOST1X_CHANNEL_SMMU_STREAMID);
 #endif
 }
 
@@ -180,15 +207,116 @@ static void host1x_enable_gather_filter(struct host1x_channel *ch)
 #endif
 }
 
+static void channel_program_cdma(struct host1x_job *job)
+{
+	struct host1x_cdma *cdma = &job->channel->cdma;
+	struct host1x_syncpt *sp = job->syncpt;
+
+#if HOST1X_HW >= 6
+	u32 fence;
+	int i = 0;
+
+	if (job->num_cmds == 0)
+		goto prefences_done;
+	if (!job->cmds[0].is_wait || job->cmds[0].wait.relative)
+		goto prefences_done;
+
+	/* Enter host1x class with invalid stream ID for prefence waits. */
+	host1x_cdma_push_wide(cdma,
+		host1x_opcode_acquire_mlock(1),
+		host1x_opcode_setclass(1, 0, 0),
+		host1x_opcode_setpayload(0),
+		host1x_opcode_setstreamid(0x1fffff));
+
+	for (i = 0; i < job->num_cmds; i++) {
+		struct host1x_job_cmd *cmd = &job->cmds[i];
+
+		if (!cmd->is_wait || cmd->wait.relative)
+			break;
+
+		submit_wait(job, cmd->wait.id, cmd->wait.threshold);
+	}
+
+	host1x_cdma_push(cdma,
+		HOST1X_OPCODE_NOP,
+		host1x_opcode_release_mlock(1));
+
+prefences_done:
+	/* Enter engine class with invalid stream ID. */
+	host1x_cdma_push_wide(cdma,
+		host1x_opcode_acquire_mlock(job->class),
+		host1x_opcode_setclass(job->class, 0, 0),
+		host1x_opcode_setpayload(0),
+		host1x_opcode_setstreamid(job->engine_streamid_offset / 4));
+
+	/* Before switching stream ID to real stream ID, ensure engine is idle. */
+	fence = host1x_syncpt_incr_max(sp, 1);
+	host1x_cdma_push(&job->channel->cdma,
+		host1x_opcode_nonincr(HOST1X_UCLASS_INCR_SYNCPT, 1),
+		HOST1X_UCLASS_INCR_SYNCPT_INDX_F(job->syncpt->id) |
+			HOST1X_UCLASS_INCR_SYNCPT_COND_F(4));
+	submit_wait(job, job->syncpt->id, fence);
+	submit_setclass(job, job->class);
+
+	/* Submit work. */
+	job->syncpt_end = host1x_syncpt_incr_max(sp, job->syncpt_incrs);
+	submit_gathers(job, job->cmds + i, job->num_cmds - i, job->syncpt_end - job->syncpt_incrs);
+
+	/* Before releasing MLOCK, ensure engine is idle again. */
+	fence = host1x_syncpt_incr_max(sp, 1);
+	host1x_cdma_push(&job->channel->cdma,
+		host1x_opcode_nonincr(HOST1X_UCLASS_INCR_SYNCPT, 1),
+		HOST1X_UCLASS_INCR_SYNCPT_INDX_F(job->syncpt->id) |
+			HOST1X_UCLASS_INCR_SYNCPT_COND_F(4));
+	submit_wait(job, job->syncpt->id, fence);
+
+	/* Release MLOCK. */
+	host1x_cdma_push(cdma,
+		HOST1X_OPCODE_NOP, host1x_opcode_release_mlock(job->class));
+#else
+	if (job->serialize) {
+		/*
+		 * Force serialization by inserting a host wait for the
+		 * previous job to finish before this one can commence.
+		 */
+		host1x_cdma_push(cdma,
+				 host1x_opcode_setclass(HOST1X_CLASS_HOST1X,
+					host1x_uclass_wait_syncpt_r(), 1),
+				 host1x_class_host_wait_syncpt(job->syncpt->id,
+					host1x_syncpt_read_max(sp)));
+	}
+
+	/* Synchronize base register to allow using it for relative waiting */
+	if (sp->base)
+		synchronize_syncpt_base(job);
+
+	/* add a setclass for modules that require it */
+	if (job->class)
+		host1x_cdma_push(cdma,
+				 host1x_opcode_setclass(job->class, 0, 0),
+				 HOST1X_OPCODE_NOP);
+
+	job->syncpt_end = host1x_syncpt_incr_max(sp, job->syncpt_incrs);
+
+	submit_gathers(job, job->cmds, job->num_cmds, job->syncpt_end - job->syncpt_incrs);
+#endif
+}
+
+static void job_complete_callback(struct dma_fence *fence, struct dma_fence_cb *cb)
+{
+	struct host1x_job *job = container_of(cb, struct host1x_job, fence_cb);
+
+	/* Schedules CDMA update. */
+	host1x_cdma_update(&job->channel->cdma);
+}
+
 static int channel_submit(struct host1x_job *job)
 {
 	struct host1x_channel *ch = job->channel;
 	struct host1x_syncpt *sp = job->syncpt;
-	u32 user_syncpt_incrs = job->syncpt_incrs;
 	u32 prev_max = 0;
 	u32 syncval;
 	int err;
-	struct host1x_waitlist *completed_waiter = NULL;
 	struct host1x *host = dev_get_drvdata(ch->dev->parent);
 
 	trace_host1x_channel_submit(dev_name(ch->dev),
@@ -201,74 +329,47 @@ static int channel_submit(struct host1x_job *job)
 	/* get submit lock */
 	err = mutex_lock_interruptible(&ch->submitlock);
 	if (err)
-		goto error;
-
-	completed_waiter = kzalloc(sizeof(*completed_waiter), GFP_KERNEL);
-	if (!completed_waiter) {
-		mutex_unlock(&ch->submitlock);
-		err = -ENOMEM;
-		goto error;
-	}
+		return err;
 
 	host1x_channel_set_streamid(ch);
 	host1x_enable_gather_filter(ch);
+	host1x_hw_syncpt_assign_to_channel(host, sp, ch);
 
 	/* begin a CDMA submit */
 	err = host1x_cdma_begin(&ch->cdma, job);
 	if (err) {
 		mutex_unlock(&ch->submitlock);
-		goto error;
+		return err;
 	}
 
-	if (job->serialize) {
-		/*
-		 * Force serialization by inserting a host wait for the
-		 * previous job to finish before this one can commence.
-		 */
-		host1x_cdma_push(&ch->cdma,
-				 host1x_opcode_setclass(HOST1X_CLASS_HOST1X,
-					host1x_uclass_wait_syncpt_r(), 1),
-				 host1x_class_host_wait_syncpt(job->syncpt->id,
-					host1x_syncpt_read_max(sp)));
+	channel_program_cdma(job);
+	syncval = host1x_syncpt_read_max(sp);
+
+	/*
+	 * Create fence before submitting job to HW to avoid job completing
+	 * before the fence is set up.
+	 */
+	job->fence = host1x_fence_create(sp, syncval, true);
+	if (WARN(IS_ERR(job->fence), "Failed to create submit complete fence")) {
+		job->fence = NULL;
+	} else {
+		err = dma_fence_add_callback(job->fence, &job->fence_cb,
+					     job_complete_callback);
 	}
-
-	/* Synchronize base register to allow using it for relative waiting */
-	if (sp->base)
-		synchronize_syncpt_base(job);
-
-	syncval = host1x_syncpt_incr_max(sp, user_syncpt_incrs);
-
-	host1x_hw_syncpt_assign_to_channel(host, sp, ch);
-
-	job->syncpt_end = syncval;
-
-	/* add a setclass for modules that require it */
-	if (job->class)
-		host1x_cdma_push(&ch->cdma,
-				 host1x_opcode_setclass(job->class, 0, 0),
-				 HOST1X_OPCODE_NOP);
-
-	submit_gathers(job, syncval - user_syncpt_incrs);
 
 	/* end CDMA submit & stash pinned hMems into sync queue */
 	host1x_cdma_end(&ch->cdma, job);
 
 	trace_host1x_channel_submitted(dev_name(ch->dev), prev_max, syncval);
 
-	/* schedule a submit complete interrupt */
-	err = host1x_intr_add_action(host, sp, syncval,
-				     HOST1X_INTR_ACTION_SUBMIT_COMPLETE, ch,
-				     completed_waiter, &job->waiter);
-	completed_waiter = NULL;
-	WARN(err, "Failed to set submit complete interrupt");
-
 	mutex_unlock(&ch->submitlock);
 
-	return 0;
+	if (err == -ENOENT)
+		host1x_cdma_update(&ch->cdma);
+	else
+		WARN(err, "Failed to set submit complete interrupt");
 
-error:
-	kfree(completed_waiter);
-	return err;
+	return 0;
 }
 
 static int host1x_channel_init(struct host1x_channel *ch, struct host1x *dev,

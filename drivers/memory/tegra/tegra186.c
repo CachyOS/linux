@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (C) 2017-2021 NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (C) 2017-2025 NVIDIA CORPORATION.  All rights reserved.
  */
 
 #include <linux/io.h>
 #include <linux/iommu.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 
 #include <soc/tegra/mc.h>
@@ -22,40 +23,27 @@
 #define MC_SID_STREAMID_SECURITY_WRITE_ACCESS_DISABLED BIT(16)
 #define MC_SID_STREAMID_SECURITY_OVERRIDE BIT(8)
 
-static void tegra186_mc_program_sid(struct tegra_mc *mc)
-{
-	unsigned int i;
-
-	for (i = 0; i < mc->soc->num_clients; i++) {
-		const struct tegra_mc_client *client = &mc->soc->clients[i];
-		u32 override, security;
-
-		override = readl(mc->regs + client->regs.sid.override);
-		security = readl(mc->regs + client->regs.sid.security);
-
-		dev_dbg(mc->dev, "client %s: override: %x security: %x\n",
-			client->name, override, security);
-
-		dev_dbg(mc->dev, "setting SID %u for %s\n", client->sid,
-			client->name);
-		writel(client->sid, mc->regs + client->regs.sid.override);
-
-		override = readl(mc->regs + client->regs.sid.override);
-		security = readl(mc->regs + client->regs.sid.security);
-
-		dev_dbg(mc->dev, "client %s: override: %x security: %x\n",
-			client->name, override, security);
-	}
-}
-
 static int tegra186_mc_probe(struct tegra_mc *mc)
 {
 	struct platform_device *pdev = to_platform_device(mc->dev);
+	struct resource *res;
 	unsigned int i;
 	char name[8];
 	int err;
 
-	mc->bcast_ch_regs = devm_platform_ioremap_resource_byname(pdev, "broadcast");
+	/*
+	 * From Tegra264, the SID region is not present in MC node and BROADCAST is first.
+	 * The common function 'tegra_mc_probe()' already maps first region entry from DT.
+	 * Check if the SID region is present in DT then map BROADCAST. Otherwise, consider
+	 * the first entry mapped in mc probe as the BROADCAST region. This is done to avoid
+	 * mapping the region twice when SID is not present and keep backward compatibility.
+	 */
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "sid");
+	if (res)
+		mc->bcast_ch_regs = devm_platform_ioremap_resource_byname(pdev, "broadcast");
+	else
+		mc->bcast_ch_regs = mc->regs;
+
 	if (IS_ERR(mc->bcast_ch_regs)) {
 		if (PTR_ERR(mc->bcast_ch_regs) == -EINVAL) {
 			dev_warn(&pdev->dev,
@@ -85,8 +73,6 @@ populate:
 	if (err < 0)
 		return err;
 
-	tegra186_mc_program_sid(mc);
-
 	return 0;
 }
 
@@ -95,19 +81,15 @@ static void tegra186_mc_remove(struct tegra_mc *mc)
 	of_platform_depopulate(mc->dev);
 }
 
-static int tegra186_mc_resume(struct tegra_mc *mc)
-{
-	tegra186_mc_program_sid(mc);
-
-	return 0;
-}
-
 #if IS_ENABLED(CONFIG_IOMMU_API)
 static void tegra186_mc_client_sid_override(struct tegra_mc *mc,
 					    const struct tegra_mc_client *client,
 					    unsigned int sid)
 {
 	u32 value, old;
+
+	if (client->regs.sid.security == 0 && client->regs.sid.override == 0)
+		return;
 
 	value = readl(mc->regs + client->regs.sid.security);
 	if ((value & MC_SID_STREAMID_SECURITY_OVERRIDE) == 0) {
@@ -145,9 +127,12 @@ static void tegra186_mc_client_sid_override(struct tegra_mc *mc,
 static int tegra186_mc_probe_device(struct tegra_mc *mc, struct device *dev)
 {
 #if IS_ENABLED(CONFIG_IOMMU_API)
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 	struct of_phandle_args args;
 	unsigned int i, index = 0;
+	u32 sid;
+
+	if (!tegra_dev_iommu_get_stream_id(dev, &sid))
+		return 0;
 
 	while (!of_parse_phandle_with_args(dev->of_node, "interconnects", "#interconnect-cells",
 					   index, &args)) {
@@ -155,15 +140,29 @@ static int tegra186_mc_probe_device(struct tegra_mc *mc, struct device *dev)
 			for (i = 0; i < mc->soc->num_clients; i++) {
 				const struct tegra_mc_client *client = &mc->soc->clients[i];
 
-				if (client->id == args.args[0]) {
-					u32 sid = fwspec->ids[0] & MC_SID_STREAMID_OVERRIDE_MASK;
-
-					tegra186_mc_client_sid_override(mc, client, sid);
-				}
+				if (client->id == args.args[0])
+					tegra186_mc_client_sid_override(
+						mc, client,
+						sid & MC_SID_STREAMID_OVERRIDE_MASK);
 			}
 		}
 
 		index++;
+	}
+#endif
+
+	return 0;
+}
+
+static int tegra186_mc_resume(struct tegra_mc *mc)
+{
+#if IS_ENABLED(CONFIG_IOMMU_API)
+	unsigned int i;
+
+	for (i = 0; i < mc->soc->num_clients; i++) {
+		const struct tegra_mc_client *client = &mc->soc->clients[i];
+
+		tegra186_mc_client_sid_override(mc, client, client->sid);
 	}
 #endif
 

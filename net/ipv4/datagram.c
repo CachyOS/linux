@@ -16,7 +16,7 @@
 #include <net/tcp_states.h>
 #include <net/sock_reuseport.h>
 
-int __ip4_datagram_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
+int __ip4_datagram_connect(struct sock *sk, struct sockaddr_unsized *uaddr, int addr_len)
 {
 	struct inet_sock *inet = inet_sk(sk);
 	struct sockaddr_in *usin = (struct sockaddr_in *) uaddr;
@@ -39,9 +39,11 @@ int __ip4_datagram_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len
 	saddr = inet->inet_saddr;
 	if (ipv4_is_multicast(usin->sin_addr.s_addr)) {
 		if (!oif || netif_index_is_l3_master(sock_net(sk), oif))
-			oif = inet->mc_index;
+			oif = READ_ONCE(inet->mc_index);
 		if (!saddr)
-			saddr = inet->mc_addr;
+			saddr = READ_ONCE(inet->mc_addr);
+	} else if (!oif) {
+		oif = READ_ONCE(inet->uc_index);
 	}
 	fl4 = &inet->cork.fl.u.ip4;
 	rt = ip_route_connect(fl4, usin->sin_addr.s_addr, saddr, oif,
@@ -59,19 +61,21 @@ int __ip4_datagram_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len
 		err = -EACCES;
 		goto out;
 	}
+
+	/* Update addresses before rehashing */
+	inet->inet_daddr = fl4->daddr;
+	inet->inet_dport = usin->sin_port;
 	if (!inet->inet_saddr)
-		inet->inet_saddr = fl4->saddr;	/* Update source address */
+		inet->inet_saddr = fl4->saddr;
 	if (!inet->inet_rcv_saddr) {
 		inet->inet_rcv_saddr = fl4->saddr;
 		if (sk->sk_prot->rehash)
 			sk->sk_prot->rehash(sk);
 	}
-	inet->inet_daddr = fl4->daddr;
-	inet->inet_dport = usin->sin_port;
-	reuseport_has_conns(sk, true);
+	reuseport_has_conns_set(sk);
 	sk->sk_state = TCP_ESTABLISHED;
 	sk_set_txhash(sk);
-	inet->inet_id = prandom_u32();
+	atomic_set(&inet->inet_id, get_random_u16());
 
 	sk_dst_set(sk, &rt->dst);
 	err = 0;
@@ -80,7 +84,7 @@ out:
 }
 EXPORT_SYMBOL(__ip4_datagram_connect);
 
-int ip4_datagram_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
+int ip4_datagram_connect(struct sock *sk, struct sockaddr_unsized *uaddr, int addr_len)
 {
 	int res;
 
@@ -98,8 +102,6 @@ EXPORT_SYMBOL(ip4_datagram_connect);
 void ip4_datagram_release_cb(struct sock *sk)
 {
 	const struct inet_sock *inet = inet_sk(sk);
-	const struct ip_options_rcu *inet_opt;
-	__be32 daddr = inet->inet_daddr;
 	struct dst_entry *dst;
 	struct flowi4 fl4;
 	struct rtable *rt;
@@ -107,18 +109,13 @@ void ip4_datagram_release_cb(struct sock *sk)
 	rcu_read_lock();
 
 	dst = __sk_dst_get(sk);
-	if (!dst || !dst->obsolete || dst->ops->check(dst, 0)) {
+	if (!dst || !READ_ONCE(dst->obsolete) || dst->ops->check(dst, 0)) {
 		rcu_read_unlock();
 		return;
 	}
-	inet_opt = rcu_dereference(inet->inet_opt);
-	if (inet_opt && inet_opt->opt.srr)
-		daddr = inet_opt->opt.faddr;
-	rt = ip_route_output_ports(sock_net(sk), &fl4, sk, daddr,
-				   inet->inet_saddr, inet->inet_dport,
-				   inet->inet_sport, sk->sk_protocol,
-				   RT_CONN_FLAGS(sk), sk->sk_bound_dev_if);
 
+	inet_sk_init_flowi4(inet, &fl4);
+	rt = ip_route_output_flow(sock_net(sk), &fl4, sk);
 	dst = !IS_ERR(rt) ? &rt->dst : NULL;
 	sk_dst_set(sk, dst);
 

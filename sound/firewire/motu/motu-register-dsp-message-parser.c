@@ -142,22 +142,24 @@ static void queue_event(struct snd_motu *motu, u8 msg_type, u8 identifier0, u8 i
 	parser->push_pos = pos;
 }
 
-void snd_motu_register_dsp_message_parser_parse(struct snd_motu *motu, const struct pkt_desc *descs,
-					unsigned int desc_count, unsigned int data_block_quadlets)
+void snd_motu_register_dsp_message_parser_parse(const struct amdtp_stream *s,
+						const struct pkt_desc *desc, unsigned int count)
 {
+	struct snd_motu *motu = container_of(s, struct snd_motu, tx_stream);
+	unsigned int data_block_quadlets = s->data_block_quadlets;
 	struct msg_parser *parser = motu->message_parser;
 	bool meter_pos_quirk = parser->meter_pos_quirk;
 	unsigned int pos = parser->push_pos;
-	unsigned long flags;
 	int i;
 
-	spin_lock_irqsave(&parser->lock, flags);
+	guard(spinlock_irqsave)(&parser->lock);
 
-	for (i = 0; i < desc_count; ++i) {
-		const struct pkt_desc *desc = descs + i;
+	for (i = 0; i < count; ++i) {
 		__be32 *buffer = desc->ctx_payload;
 		unsigned int data_blocks = desc->data_blocks;
 		int j;
+
+		desc = amdtp_stream_next_packet_desc(s, desc);
 
 		for (j = 0; j < data_blocks; ++j) {
 			u8 *b = (u8 *)buffer;
@@ -360,30 +362,24 @@ void snd_motu_register_dsp_message_parser_parse(struct snd_motu *motu, const str
 
 	if (pos != parser->push_pos)
 		wake_up(&motu->hwdep_wait);
-
-	spin_unlock_irqrestore(&parser->lock, flags);
 }
 
 void snd_motu_register_dsp_message_parser_copy_meter(struct snd_motu *motu,
 						struct snd_firewire_motu_register_dsp_meter *meter)
 {
 	struct msg_parser *parser = motu->message_parser;
-	unsigned long flags;
 
-	spin_lock_irqsave(&parser->lock, flags);
+	guard(spinlock_irqsave)(&parser->lock);
 	memcpy(meter, &parser->meter, sizeof(*meter));
-	spin_unlock_irqrestore(&parser->lock, flags);
 }
 
 void snd_motu_register_dsp_message_parser_copy_parameter(struct snd_motu *motu,
 					struct snd_firewire_motu_register_dsp_parameter *param)
 {
 	struct msg_parser *parser = motu->message_parser;
-	unsigned long flags;
 
-	spin_lock_irqsave(&parser->lock, flags);
+	guard(spinlock_irqsave)(&parser->lock);
 	memcpy(param, &parser->param, sizeof(*param));
-	spin_unlock_irqrestore(&parser->lock, flags);
 }
 
 unsigned int snd_motu_register_dsp_message_parser_count_event(struct snd_motu *motu)
@@ -400,12 +396,11 @@ bool snd_motu_register_dsp_message_parser_copy_event(struct snd_motu *motu, u32 
 {
 	struct msg_parser *parser = motu->message_parser;
 	unsigned int pos = parser->pull_pos;
-	unsigned long flags;
 
 	if (pos == parser->push_pos)
 		return false;
 
-	spin_lock_irqsave(&parser->lock, flags);
+	guard(spinlock_irqsave)(&parser->lock);
 
 	*event = parser->event_queue[pos];
 
@@ -413,8 +408,6 @@ bool snd_motu_register_dsp_message_parser_copy_event(struct snd_motu *motu, u32 
 	if (pos >= EVENT_QUEUE_SIZE)
 		pos = 0;
 	parser->pull_pos = pos;
-
-	spin_unlock_irqrestore(&parser->lock, flags);
 
 	return true;
 }

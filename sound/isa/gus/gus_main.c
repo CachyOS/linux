@@ -22,18 +22,6 @@ MODULE_LICENSE("GPL");
 
 static int snd_gus_init_dma_irq(struct snd_gus_card * gus, int latches);
 
-int snd_gus_use_inc(struct snd_gus_card * gus)
-{
-	if (!try_module_get(gus->card->module))
-		return 0;
-	return 1;
-}
-
-void snd_gus_use_dec(struct snd_gus_card * gus)
-{
-	module_put(gus->card->module);
-}
-
 static int snd_gus_joystick_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_info *uinfo)
 {
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
@@ -54,16 +42,14 @@ static int snd_gus_joystick_get(struct snd_kcontrol *kcontrol, struct snd_ctl_el
 static int snd_gus_joystick_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_gus_card *gus = snd_kcontrol_chip(kcontrol);
-	unsigned long flags;
 	int change;
 	unsigned char nval;
 	
 	nval = ucontrol->value.integer.value[0] & 31;
-	spin_lock_irqsave(&gus->reg_lock, flags);
+	guard(spinlock_irqsave)(&gus->reg_lock);
 	change = gus->joystick_dac != nval;
 	gus->joystick_dac = nval;
 	snd_gf1_write8(gus, SNDRV_GF1_GB_JOYSTICK_DAC_LEVEL, gus->joystick_dac);
-	spin_unlock_irqrestore(&gus->reg_lock, flags);
 	return change;
 }
 
@@ -130,7 +116,7 @@ int snd_gus_create(struct snd_card *card,
 	};
 
 	*rgus = NULL;
-	gus = kzalloc(sizeof(*gus), GFP_KERNEL);
+	gus = kzalloc_obj(*gus);
 	if (gus == NULL)
 		return -ENOMEM;
 	spin_lock_init(&gus->reg_lock);
@@ -158,32 +144,32 @@ int snd_gus_create(struct snd_card *card,
 	/* allocate resources */
 	gus->gf1.res_port1 = request_region(port, 16, "GUS GF1 (Adlib/SB)");
 	if (!gus->gf1.res_port1) {
-		snd_printk(KERN_ERR "gus: can't grab SB port 0x%lx\n", port);
+		dev_err(card->dev, "gus: can't grab SB port 0x%lx\n", port);
 		snd_gus_free(gus);
 		return -EBUSY;
 	}
 	gus->gf1.res_port2 = request_region(port + 0x100, 12, "GUS GF1 (Synth)");
 	if (!gus->gf1.res_port2) {
-		snd_printk(KERN_ERR "gus: can't grab synth port 0x%lx\n", port + 0x100);
+		dev_err(card->dev, "gus: can't grab synth port 0x%lx\n", port + 0x100);
 		snd_gus_free(gus);
 		return -EBUSY;
 	}
 	if (irq >= 0 && request_irq(irq, snd_gus_interrupt, 0, "GUS GF1", (void *) gus)) {
-		snd_printk(KERN_ERR "gus: can't grab irq %d\n", irq);
+		dev_err(card->dev, "gus: can't grab irq %d\n", irq);
 		snd_gus_free(gus);
 		return -EBUSY;
 	}
 	gus->gf1.irq = irq;
 	card->sync_irq = irq;
 	if (request_dma(dma1, "GUS - 1")) {
-		snd_printk(KERN_ERR "gus: can't grab DMA1 %d\n", dma1);
+		dev_err(card->dev, "gus: can't grab DMA1 %d\n", dma1);
 		snd_gus_free(gus);
 		return -EBUSY;
 	}
 	gus->gf1.dma1 = dma1;
 	if (dma2 >= 0 && dma1 != dma2) {
 		if (request_dma(dma2, "GUS - 2")) {
-			snd_printk(KERN_ERR "gus: can't grab DMA2 %d\n", dma2);
+			dev_err(card->dev, "gus: can't grab DMA2 %d\n", dma2);
 			snd_gus_free(gus);
 			return -EBUSY;
 		}
@@ -229,7 +215,9 @@ static int snd_gus_detect_memory(struct snd_gus_card * gus)
 	snd_gf1_poke(gus, 0L, 0xaa);
 	snd_gf1_poke(gus, 1L, 0x55);
 	if (snd_gf1_peek(gus, 0L) != 0xaa || snd_gf1_peek(gus, 1L) != 0x55) {
-		snd_printk(KERN_ERR "plain GF1 card at 0x%lx without onboard DRAM?\n", gus->gf1.port);
+		dev_err(gus->card->dev,
+			"plain GF1 card at 0x%lx without onboard DRAM?\n",
+			gus->gf1.port);
 		return -ENOMEM;
 	}
 	for (idx = 1, d = 0xab; idx < 4; idx++, d++) {
@@ -259,7 +247,6 @@ static int snd_gus_detect_memory(struct snd_gus_card * gus)
 static int snd_gus_init_dma_irq(struct snd_gus_card * gus, int latches)
 {
 	struct snd_card *card;
-	unsigned long flags;
 	int irq, dma1, dma2;
 	static const unsigned char irqs[16] =
 		{0, 0, 1, 3, 0, 2, 0, 4, 0, 1, 0, 5, 6, 0, 0, 7};
@@ -287,14 +274,14 @@ static int snd_gus_init_dma_irq(struct snd_gus_card * gus, int latches)
 	dma1 |= gus->equal_dma ? 0x40 : (dma2 << 3);
 
 	if ((dma1 & 7) == 0 || (dma2 & 7) == 0) {
-		snd_printk(KERN_ERR "Error! DMA isn't defined.\n");
+		dev_err(gus->card->dev, "Error! DMA isn't defined.\n");
 		return -EINVAL;
 	}
 	irq = gus->gf1.irq;
 	irq = abs(irq);
 	irq = irqs[irq & 0x0f];
 	if (irq == 0) {
-		snd_printk(KERN_ERR "Error! IRQ isn't defined.\n");
+		dev_err(gus->card->dev, "Error! IRQ isn't defined.\n");
 		return -EINVAL;
 	}
 	irq |= 0x40;
@@ -302,34 +289,34 @@ static int snd_gus_init_dma_irq(struct snd_gus_card * gus, int latches)
 	card->mixer.mix_ctrl_reg |= 0x10;
 #endif
 
-	spin_lock_irqsave(&gus->reg_lock, flags);
-	outb(5, GUSP(gus, REGCNTRLS));
-	outb(gus->mix_cntrl_reg, GUSP(gus, MIXCNTRLREG));
-	outb(0x00, GUSP(gus, IRQDMACNTRLREG));
-	outb(0, GUSP(gus, REGCNTRLS));
-	spin_unlock_irqrestore(&gus->reg_lock, flags);
+	scoped_guard(spinlock_irqsave, &gus->reg_lock) {
+		outb(5, GUSP(gus, REGCNTRLS));
+		outb(gus->mix_cntrl_reg, GUSP(gus, MIXCNTRLREG));
+		outb(0x00, GUSP(gus, IRQDMACNTRLREG));
+		outb(0, GUSP(gus, REGCNTRLS));
+	}
 
 	udelay(100);
 
-	spin_lock_irqsave(&gus->reg_lock, flags);
-	outb(0x00 | gus->mix_cntrl_reg, GUSP(gus, MIXCNTRLREG));
-	outb(dma1, GUSP(gus, IRQDMACNTRLREG));
-	if (latches) {
-		outb(0x40 | gus->mix_cntrl_reg, GUSP(gus, MIXCNTRLREG));
-		outb(irq, GUSP(gus, IRQDMACNTRLREG));
+	scoped_guard(spinlock_irqsave, &gus->reg_lock) {
+		outb(0x00 | gus->mix_cntrl_reg, GUSP(gus, MIXCNTRLREG));
+		outb(dma1, GUSP(gus, IRQDMACNTRLREG));
+		if (latches) {
+			outb(0x40 | gus->mix_cntrl_reg, GUSP(gus, MIXCNTRLREG));
+			outb(irq, GUSP(gus, IRQDMACNTRLREG));
+		}
 	}
-	spin_unlock_irqrestore(&gus->reg_lock, flags);
 
 	udelay(100);
 
-	spin_lock_irqsave(&gus->reg_lock, flags);
-	outb(0x00 | gus->mix_cntrl_reg, GUSP(gus, MIXCNTRLREG));
-	outb(dma1, GUSP(gus, IRQDMACNTRLREG));
-	if (latches) {
-		outb(0x40 | gus->mix_cntrl_reg, GUSP(gus, MIXCNTRLREG));
-		outb(irq, GUSP(gus, IRQDMACNTRLREG));
+	scoped_guard(spinlock_irqsave, &gus->reg_lock) {
+		outb(0x00 | gus->mix_cntrl_reg, GUSP(gus, MIXCNTRLREG));
+		outb(dma1, GUSP(gus, IRQDMACNTRLREG));
+		if (latches) {
+			outb(0x40 | gus->mix_cntrl_reg, GUSP(gus, MIXCNTRLREG));
+			outb(irq, GUSP(gus, IRQDMACNTRLREG));
+		}
 	}
-	spin_unlock_irqrestore(&gus->reg_lock, flags);
 
 	snd_gf1_delay(gus);
 
@@ -337,29 +324,28 @@ static int snd_gus_init_dma_irq(struct snd_gus_card * gus, int latches)
 		gus->mix_cntrl_reg |= 0x08;	/* enable latches */
 	else
 		gus->mix_cntrl_reg &= ~0x08;	/* disable latches */
-	spin_lock_irqsave(&gus->reg_lock, flags);
-	outb(gus->mix_cntrl_reg, GUSP(gus, MIXCNTRLREG));
-	outb(0, GUSP(gus, GF1PAGE));
-	spin_unlock_irqrestore(&gus->reg_lock, flags);
+	scoped_guard(spinlock_irqsave, &gus->reg_lock) {
+		outb(gus->mix_cntrl_reg, GUSP(gus, MIXCNTRLREG));
+		outb(0, GUSP(gus, GF1PAGE));
+	}
 
 	return 0;
 }
 
 static int snd_gus_check_version(struct snd_gus_card * gus)
 {
-	unsigned long flags;
 	unsigned char val, rev;
 	struct snd_card *card;
 
 	card = gus->card;
-	spin_lock_irqsave(&gus->reg_lock, flags);
-	outb(0x20, GUSP(gus, REGCNTRLS));
-	val = inb(GUSP(gus, REGCNTRLS));
-	rev = inb(GUSP(gus, BOARDVERSION));
-	spin_unlock_irqrestore(&gus->reg_lock, flags);
-	snd_printdd("GF1 [0x%lx] init - val = 0x%x, rev = 0x%x\n", gus->gf1.port, val, rev);
-	strcpy(card->driver, "GUS");
-	strcpy(card->longname, "Gravis UltraSound Classic (2.4)");
+	scoped_guard(spinlock_irqsave, &gus->reg_lock) {
+		outb(0x20, GUSP(gus, REGCNTRLS));
+		val = inb(GUSP(gus, REGCNTRLS));
+		rev = inb(GUSP(gus, BOARDVERSION));
+	}
+	dev_dbg(card->dev, "GF1 [0x%lx] init - val = 0x%x, rev = 0x%x\n", gus->gf1.port, val, rev);
+	strscpy(card->driver, "GUS");
+	strscpy(card->longname, "Gravis UltraSound Classic (2.4)");
 	if ((val != 255 && (val & 0x06)) || (rev >= 5 && rev != 255)) {
 		if (rev >= 5 && rev <= 9) {
 			gus->ics_flag = 1;
@@ -370,20 +356,23 @@ static int snd_gus_check_version(struct snd_gus_card * gus)
 		}
 		if (rev >= 10 && rev != 255) {
 			if (rev >= 10 && rev <= 11) {
-				strcpy(card->driver, "GUS MAX");
-				strcpy(card->longname, "Gravis UltraSound MAX");
+				strscpy(card->driver, "GUS MAX");
+				strscpy(card->longname, "Gravis UltraSound MAX");
 				gus->max_flag = 1;
 			} else if (rev == 0x30) {
-				strcpy(card->driver, "GUS ACE");
-				strcpy(card->longname, "Gravis UltraSound Ace");
+				strscpy(card->driver, "GUS ACE");
+				strscpy(card->longname, "Gravis UltraSound Ace");
 				gus->ace_flag = 1;
 			} else if (rev == 0x50) {
-				strcpy(card->driver, "GUS Extreme");
-				strcpy(card->longname, "Gravis UltraSound Extreme");
+				strscpy(card->driver, "GUS Extreme");
+				strscpy(card->longname, "Gravis UltraSound Extreme");
 				gus->ess_flag = 1;
 			} else {
-				snd_printk(KERN_ERR "unknown GF1 revision number at 0x%lx - 0x%x (0x%x)\n", gus->gf1.port, rev, val);
-				snd_printk(KERN_ERR "  please - report to <perex@perex.cz>\n");
+				dev_err(card->dev,
+					"unknown GF1 revision number at 0x%lx - 0x%x (0x%x)\n",
+					gus->gf1.port, rev, val);
+				dev_err(card->dev,
+					"  please - report to <perex@perex.cz>\n");
 			}
 		}
 	}
@@ -400,7 +389,7 @@ int snd_gus_initialize(struct snd_gus_card *gus)
 	if (!gus->interwave) {
 		err = snd_gus_check_version(gus);
 		if (err < 0) {
-			snd_printk(KERN_ERR "version check failed\n");
+			dev_err(gus->card->dev, "version check failed\n");
 			return err;
 		}
 		err = snd_gus_detect_memory(gus);
@@ -438,8 +427,6 @@ EXPORT_SYMBOL(snd_gf1_new_mixer);
   /* gus_pcm.c */
 EXPORT_SYMBOL(snd_gf1_pcm_new);
   /* gus.c */
-EXPORT_SYMBOL(snd_gus_use_inc);
-EXPORT_SYMBOL(snd_gus_use_dec);
 EXPORT_SYMBOL(snd_gus_create);
 EXPORT_SYMBOL(snd_gus_initialize);
   /* gus_irq.c */
@@ -456,4 +443,3 @@ EXPORT_SYMBOL(snd_gf1_translate_freq);
 EXPORT_SYMBOL(snd_gf1_mem_alloc);
 EXPORT_SYMBOL(snd_gf1_mem_xfree);
 EXPORT_SYMBOL(snd_gf1_mem_free);
-EXPORT_SYMBOL(snd_gf1_mem_lock);

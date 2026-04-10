@@ -6,8 +6,7 @@
  *               Christian Borntraeger (cborntra@de.ibm.com),
  */
 
-#define KMSG_COMPONENT "cpcmd"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "cpcmd: " fmt
 
 #include <linux/kernel.h>
 #include <linux/export.h>
@@ -16,10 +15,11 @@
 #include <linux/stddef.h>
 #include <linux/string.h>
 #include <linux/mm.h>
+#include <linux/io.h>
 #include <asm/diag.h>
 #include <asm/ebcdic.h>
 #include <asm/cpcmd.h>
-#include <asm/io.h>
+#include <asm/asm.h>
 
 static DEFINE_SPINLOCK(cpcmd_lock);
 static char cpcmd_buf[241];
@@ -45,12 +45,11 @@ static int diag8_response(int cmdlen, char *response, int *rlen)
 	ry.odd	= *rlen;
 	asm volatile(
 		"	diag	%[rx],%[ry],0x8\n"
-		"	ipm	%[cc]\n"
-		"	srl	%[cc],28\n"
-		: [cc] "=&d" (cc), [ry] "+&d" (ry.pair)
+		CC_IPM(cc)
+		: CC_OUT(cc, cc), [ry] "+d" (ry.pair)
 		: [rx] "d" (rx.pair)
-		: "cc");
-	if (cc)
+		: CC_CLOBBER);
+	if (CC_TRANSFORM(cc))
 		*rlen += ry.odd;
 	else
 		*rlen = ry.odd;

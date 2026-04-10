@@ -136,7 +136,7 @@ static void siena_ptp_write_host_time(struct efx_nic *efx, u32 host_time)
 }
 
 static int siena_ptp_set_ts_config(struct efx_nic *efx,
-				   struct hwtstamp_config *init)
+				   struct kernel_hwtstamp_config *init)
 {
 	int rc;
 
@@ -266,7 +266,7 @@ static int siena_probe_nic(struct efx_nic *efx)
 	int rc;
 
 	/* Allocate storage for hardware specific data */
-	nic_data = kzalloc(sizeof(struct siena_nic_data), GFP_KERNEL);
+	nic_data = kzalloc_obj(struct siena_nic_data);
 	if (!nic_data)
 		return -ENOMEM;
 	nic_data->efx = efx;
@@ -545,7 +545,7 @@ static const unsigned long siena_stat_mask[] = {
 	[0 ... BITS_TO_LONGS(SIENA_STAT_COUNT) - 1] = ~0UL,
 };
 
-static size_t siena_describe_nic_stats(struct efx_nic *efx, u8 *names)
+static size_t siena_describe_nic_stats(struct efx_nic *efx, u8 **names)
 {
 	return efx_siena_describe_stats(siena_stat_desc, SIENA_STAT_COUNT,
 					siena_stat_mask, names);
@@ -923,7 +923,7 @@ static int siena_mtd_probe(struct efx_nic *efx)
 	if (rc)
 		return rc;
 
-	parts = kcalloc(hweight32(nvram_types), sizeof(*parts), GFP_KERNEL);
+	parts = kzalloc_objs(*parts, hweight32(nvram_types));
 	if (!parts)
 		return -ENOMEM;
 

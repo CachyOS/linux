@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB */
+/* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
 /* Copyright (c) 2017 - 2021 Intel Corporation */
 #ifndef ICRDMA_HW_H
 #define ICRDMA_HW_H
@@ -58,13 +58,15 @@
 #define ICRDMA_CQPSQ_CQ_CQID GENMASK_ULL(18, 0)
 #define ICRDMA_COMMIT_FPM_CQCNT_S 0
 #define ICRDMA_COMMIT_FPM_CQCNT GENMASK_ULL(19, 0)
-
+#define ICRDMA_CQPSQ_UPESD_HMCFNID_S 0
+#define ICRDMA_CQPSQ_UPESD_HMCFNID GENMASK_ULL(5, 0)
 enum icrdma_device_caps_const {
 	ICRDMA_MAX_STATS_COUNT = 128,
 
 	ICRDMA_MAX_IRD_SIZE			= 127,
 	ICRDMA_MAX_ORD_SIZE			= 255,
-
+	ICRDMA_MIN_WQ_SIZE                      = 8 /* WQEs */,
+	ICRDMA_MAX_PUSH_PAGE_COUNT		= 256,
 };
 
 void icrdma_init_hw(struct irdma_sc_dev *dev);

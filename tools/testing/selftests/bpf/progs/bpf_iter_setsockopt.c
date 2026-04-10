@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2021 Facebook */
-#include "bpf_iter.h"
+#include <vmlinux.h>
 #include "bpf_tracing_net.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
@@ -18,23 +18,10 @@
 
 unsigned short reuse_listen_hport = 0;
 unsigned short listen_hport = 0;
-char cubic_cc[TCP_CA_NAME_MAX] = "bpf_cubic";
+const char cubic_cc[] = "bpf_cubic";
 char dctcp_cc[TCP_CA_NAME_MAX] = "bpf_dctcp";
 bool random_retry = false;
 
-static bool tcp_cc_eq(const char *a, const char *b)
-{
-	int i;
-
-	for (i = 0; i < TCP_CA_NAME_MAX; i++) {
-		if (a[i] != b[i])
-			return false;
-		if (!a[i])
-			break;
-	}
-
-	return true;
-}
 
 SEC("iter/tcp")
 int change_tcp_cc(struct bpf_iter__tcp *ctx)
@@ -42,7 +29,6 @@ int change_tcp_cc(struct bpf_iter__tcp *ctx)
 	char cur_cc[TCP_CA_NAME_MAX];
 	struct tcp_sock *tp;
 	struct sock *sk;
-	int ret;
 
 	if (!bpf_tcp_sk(ctx->sk_common))
 		return 0;
@@ -59,7 +45,7 @@ int change_tcp_cc(struct bpf_iter__tcp *ctx)
 			   cur_cc, sizeof(cur_cc)))
 		return 0;
 
-	if (!tcp_cc_eq(cur_cc, cubic_cc))
+	if (bpf_strncmp(cur_cc, TCP_CA_NAME_MAX, cubic_cc))
 		return 0;
 
 	if (random_retry && bpf_get_prandom_u32() % 4 == 1)

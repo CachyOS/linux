@@ -7,6 +7,7 @@
 #include <perf/cpumap.h>
 #include "color.h"
 #include "counts.h"
+#include "debug.h"
 #include "evlist.h"
 #include "evsel.h"
 #include "stat.h"
@@ -19,39 +20,200 @@
 #include <api/fs/fs.h>
 #include "util.h"
 #include "iostat.h"
-#include "pmu-hybrid.h"
-#include "evlist-hybrid.h"
+#include "pmu.h"
+#include "pmus.h"
+#include "tool_pmu.h"
 
 #define CNTR_NOT_SUPPORTED	"<not supported>"
 #define CNTR_NOT_COUNTED	"<not counted>"
 
-static void print_running(struct perf_stat_config *config,
-			  u64 run, u64 ena)
+#define MGROUP_LEN   50
+#define METRIC_LEN   38
+#define EVNAME_LEN   32
+#define COUNTS_LEN   18
+#define INTERVAL_LEN 16
+#define CGROUP_LEN   16
+#define COMM_LEN     16
+#define PID_LEN       7
+#define CPUS_LEN      4
+
+static int aggr_header_lens[] = {
+	[AGGR_CORE] 	= 18,
+	[AGGR_CACHE]	= 22,
+	[AGGR_CLUSTER]	= 20,
+	[AGGR_DIE] 	= 12,
+	[AGGR_SOCKET] 	= 6,
+	[AGGR_NODE] 	= 6,
+	[AGGR_NONE] 	= 6,
+	[AGGR_THREAD] 	= 16,
+	[AGGR_GLOBAL] 	= 0,
+};
+
+static const char *aggr_header_csv[] = {
+	[AGGR_CORE]	=	"core,ctrs,",
+	[AGGR_CACHE]	=	"cache,ctrs,",
+	[AGGR_CLUSTER]	=	"cluster,ctrs,",
+	[AGGR_DIE]	=	"die,ctrs,",
+	[AGGR_SOCKET]	=	"socket,ctrs,",
+	[AGGR_NONE]	=	"cpu,",
+	[AGGR_THREAD]	=	"comm-pid,",
+	[AGGR_NODE]	=	"node,",
+	[AGGR_GLOBAL]	=	""
+};
+
+static const char *aggr_header_std[] = {
+	[AGGR_CORE] 	= 	"core",
+	[AGGR_CACHE] 	= 	"cache",
+	[AGGR_CLUSTER]	= 	"cluster",
+	[AGGR_DIE] 	= 	"die",
+	[AGGR_SOCKET] 	= 	"socket",
+	[AGGR_NONE] 	= 	"cpu",
+	[AGGR_THREAD] 	= 	"comm-pid",
+	[AGGR_NODE] 	= 	"node",
+	[AGGR_GLOBAL] 	=	""
+};
+
+const char *metric_threshold_classify__color(enum metric_threshold_classify thresh)
 {
-	if (config->csv_output) {
-		fprintf(config->output, "%s%" PRIu64 "%s%.2f",
-					config->csv_sep,
-					run,
-					config->csv_sep,
-					ena ? 100.0 * run / ena : 100.0);
-	} else if (run != ena) {
+	const char * const colors[] = {
+		"", /* unknown */
+		PERF_COLOR_RED,     /* bad */
+		PERF_COLOR_MAGENTA, /* nearly bad */
+		PERF_COLOR_YELLOW,  /* less good */
+		PERF_COLOR_GREEN,   /* good */
+	};
+	static_assert(ARRAY_SIZE(colors) - 1  == METRIC_THRESHOLD_GOOD, "missing enum value");
+	return colors[thresh];
+}
+
+static const char *metric_threshold_classify__str(enum metric_threshold_classify thresh)
+{
+	const char * const strs[] = {
+		"unknown",
+		"bad",
+		"nearly bad",
+		"less good",
+		"good",
+	};
+	static_assert(ARRAY_SIZE(strs) - 1  == METRIC_THRESHOLD_GOOD, "missing enum value");
+	return strs[thresh];
+}
+
+static void print_running_std(struct perf_stat_config *config, u64 run, u64 ena)
+{
+	if (run != ena)
 		fprintf(config->output, "  (%.2f%%)", 100.0 * run / ena);
+}
+
+static void print_running_csv(struct perf_stat_config *config, u64 run, u64 ena)
+{
+	double enabled_percent = 100;
+
+	if (run != ena)
+		enabled_percent = 100 * run / ena;
+	fprintf(config->output, "%s%" PRIu64 "%s%.2f",
+		config->csv_sep, run, config->csv_sep, enabled_percent);
+}
+struct outstate {
+	/* Std mode: insert a newline before the next metric */
+	bool newline;
+	/* JSON mode: track need for comma for a previous field or not */
+	bool first;
+	/* Num CSV separators remaining to pad out when not all fields are printed */
+	int  csv_col_pad;
+
+	/*
+	 * The following don't track state across fields, but are here as a shortcut to
+	 * pass data to the print functions. The alternative would be to update the
+	 * function signatures of the entire print stack to pass them through.
+	 */
+	/* Place to output to */
+	FILE * const fh;
+	/* Lines are timestamped in --interval-print mode */
+	char timestamp[64];
+	/* Num items aggregated in current line. See struct perf_stat_aggr.nr */
+	int aggr_nr;
+	/* Core/socket/die etc ID for the current line */
+	struct aggr_cpu_id id;
+	/* Event for current line */
+	struct evsel *evsel;
+	/* Cgroup for current line */
+	struct cgroup *cgrp;
+};
+
+static const char *json_sep(struct outstate *os)
+{
+	const char *sep = os->first ? "" : ", ";
+
+	os->first = false;
+	return sep;
+}
+
+#define json_out(os, format, ...) fprintf((os)->fh, "%s" format, json_sep(os), ##__VA_ARGS__)
+
+static void print_running_json(struct outstate *os, u64 run, u64 ena)
+{
+	double enabled_percent = 100;
+
+	if (run != ena)
+		enabled_percent = 100 * run / ena;
+	json_out(os, "\"event-runtime\" : %" PRIu64 ", \"pcnt-running\" : %.2f",
+		 run, enabled_percent);
+}
+
+static void print_running(struct perf_stat_config *config, struct outstate *os,
+			  u64 run, u64 ena, bool before_metric)
+{
+	if (config->json_output) {
+		if (before_metric)
+			print_running_json(os, run, ena);
+	} else if (config->csv_output) {
+		if (before_metric)
+			print_running_csv(config, run, ena);
+	} else {
+		if (!before_metric)
+			print_running_std(config, run, ena);
 	}
 }
 
-static void print_noise_pct(struct perf_stat_config *config,
-			    double total, double avg)
+static void print_noise_pct_std(struct perf_stat_config *config,
+				double pct)
 {
-	double pct = rel_stddev_stats(total, avg);
-
-	if (config->csv_output)
-		fprintf(config->output, "%s%.2f%%", config->csv_sep, pct);
-	else if (pct)
+	if (pct)
 		fprintf(config->output, "  ( +-%6.2f%% )", pct);
 }
 
-static void print_noise(struct perf_stat_config *config,
-			struct evsel *evsel, double avg)
+static void print_noise_pct_csv(struct perf_stat_config *config,
+				double pct)
+{
+	fprintf(config->output, "%s%.2f%%", config->csv_sep, pct);
+}
+
+static void print_noise_pct_json(struct outstate *os,
+				 double pct)
+{
+	json_out(os, "\"variance\" : %.2f", pct);
+}
+
+static void print_noise_pct(struct perf_stat_config *config, struct outstate *os,
+			    double total, double avg, bool before_metric)
+{
+	double pct = rel_stddev_stats(total, avg);
+
+	if (config->json_output) {
+		if (before_metric)
+			print_noise_pct_json(os, pct);
+	} else if (config->csv_output) {
+		if (before_metric)
+			print_noise_pct_csv(config, pct);
+	} else {
+		if (!before_metric)
+			print_noise_pct_std(config, pct);
+	}
+}
+
+static void print_noise(struct perf_stat_config *config, struct outstate *os,
+			struct evsel *evsel, double avg, bool before_metric)
 {
 	struct perf_stat_evsel *ps;
 
@@ -59,100 +221,206 @@ static void print_noise(struct perf_stat_config *config,
 		return;
 
 	ps = evsel->stats;
-	print_noise_pct(config, stddev_stats(&ps->res_stats[0]), avg);
+	print_noise_pct(config, os, stddev_stats(&ps->res_stats), avg, before_metric);
 }
 
-static void print_cgroup(struct perf_stat_config *config, struct evsel *evsel)
+static void print_cgroup_std(struct perf_stat_config *config, const char *cgrp_name)
 {
-	if (nr_cgroups) {
-		const char *cgrp_name = evsel->cgrp ? evsel->cgrp->name  : "";
-		fprintf(config->output, "%s%s", config->csv_sep, cgrp_name);
+	fprintf(config->output, " %-*s", CGROUP_LEN, cgrp_name);
+}
+
+static void print_cgroup_csv(struct perf_stat_config *config, const char *cgrp_name)
+{
+	fprintf(config->output, "%s%s", config->csv_sep, cgrp_name);
+}
+
+static void print_cgroup_json(struct outstate *os, const char *cgrp_name)
+{
+	json_out(os, "\"cgroup\" : \"%s\"", cgrp_name);
+}
+
+static void print_cgroup(struct perf_stat_config *config, struct outstate *os,
+			 struct cgroup *cgrp)
+{
+	if (nr_cgroups || config->cgroup_list) {
+		const char *cgrp_name = cgrp ? cgrp->name  : "";
+
+		if (config->json_output)
+			print_cgroup_json(os, cgrp_name);
+		else if (config->csv_output)
+			print_cgroup_csv(config, cgrp_name);
+		else
+			print_cgroup_std(config, cgrp_name);
 	}
 }
 
-
-static void aggr_printout(struct perf_stat_config *config,
-			  struct evsel *evsel, struct aggr_cpu_id id, int nr)
+static void print_aggr_id_std(struct perf_stat_config *config,
+			      struct evsel *evsel, struct aggr_cpu_id id, int aggr_nr)
 {
+	FILE *output = config->output;
+	int idx = config->aggr_mode;
+	char buf[128];
+
 	switch (config->aggr_mode) {
 	case AGGR_CORE:
-		fprintf(config->output, "S%d-D%d-C%*d%s%*d%s",
-			id.socket,
-			id.die,
-			config->csv_output ? 0 : -8,
-			id.core,
-			config->csv_sep,
-			config->csv_output ? 0 : 4,
-			nr,
-			config->csv_sep);
+		snprintf(buf, sizeof(buf), "S%d-D%d-C%d", id.socket, id.die, id.core);
+		break;
+	case AGGR_CACHE:
+		snprintf(buf, sizeof(buf), "S%d-D%d-L%d-ID%d",
+			 id.socket, id.die, id.cache_lvl, id.cache);
+		break;
+	case AGGR_CLUSTER:
+		snprintf(buf, sizeof(buf), "S%d-D%d-CLS%d", id.socket, id.die, id.cluster);
 		break;
 	case AGGR_DIE:
-		fprintf(config->output, "S%d-D%*d%s%*d%s",
-			id.socket,
-			config->csv_output ? 0 : -8,
-			id.die,
-			config->csv_sep,
-			config->csv_output ? 0 : 4,
-			nr,
-			config->csv_sep);
+		snprintf(buf, sizeof(buf), "S%d-D%d", id.socket, id.die);
 		break;
 	case AGGR_SOCKET:
-		fprintf(config->output, "S%*d%s%*d%s",
-			config->csv_output ? 0 : -5,
-			id.socket,
-			config->csv_sep,
-			config->csv_output ? 0 : 4,
-			nr,
-			config->csv_sep);
-			break;
+		snprintf(buf, sizeof(buf), "S%d", id.socket);
+		break;
 	case AGGR_NODE:
-		fprintf(config->output, "N%*d%s%*d%s",
-			config->csv_output ? 0 : -5,
-			id.node,
-			config->csv_sep,
-			config->csv_output ? 0 : 4,
-			nr,
-			config->csv_sep);
-			break;
+		snprintf(buf, sizeof(buf), "N%d", id.node);
+		break;
 	case AGGR_NONE:
 		if (evsel->percore && !config->percore_show_thread) {
-			fprintf(config->output, "S%d-D%d-C%*d%s",
-				id.socket,
-				id.die,
-				config->csv_output ? 0 : -3,
-				id.core, config->csv_sep);
+			snprintf(buf, sizeof(buf), "S%d-D%d-C%d ",
+				id.socket, id.die, id.core);
+			fprintf(output, "%-*s ",
+				aggr_header_lens[AGGR_CORE], buf);
 		} else if (id.cpu.cpu > -1) {
-			fprintf(config->output, "CPU%*d%s",
-				config->csv_output ? 0 : -7,
-				id.cpu.cpu, config->csv_sep);
+			fprintf(output, "CPU%-*d ",
+				aggr_header_lens[AGGR_NONE] - 3, id.cpu.cpu);
+		}
+		return;
+	case AGGR_THREAD:
+		fprintf(output, "%*s-%-*d ",
+			COMM_LEN, perf_thread_map__comm(evsel->core.threads, id.thread_idx),
+			PID_LEN, perf_thread_map__pid(evsel->core.threads, id.thread_idx));
+		return;
+	case AGGR_GLOBAL:
+	case AGGR_UNSET:
+	case AGGR_MAX:
+	default:
+		return;
+	}
+
+	fprintf(output, "%-*s %*d ", aggr_header_lens[idx], buf, /*strlen("ctrs")*/ 4, aggr_nr);
+}
+
+static void print_aggr_id_csv(struct perf_stat_config *config,
+			      struct evsel *evsel, struct aggr_cpu_id id, int aggr_nr)
+{
+	FILE *output = config->output;
+	const char *sep = config->csv_sep;
+
+	switch (config->aggr_mode) {
+	case AGGR_CORE:
+		fprintf(output, "S%d-D%d-C%d%s%d%s",
+			id.socket, id.die, id.core, sep, aggr_nr, sep);
+		break;
+	case AGGR_CACHE:
+		fprintf(config->output, "S%d-D%d-L%d-ID%d%s%d%s",
+			id.socket, id.die, id.cache_lvl, id.cache, sep, aggr_nr, sep);
+		break;
+	case AGGR_CLUSTER:
+		fprintf(config->output, "S%d-D%d-CLS%d%s%d%s",
+			id.socket, id.die, id.cluster, sep, aggr_nr, sep);
+		break;
+	case AGGR_DIE:
+		fprintf(output, "S%d-D%d%s%d%s",
+			id.socket, id.die, sep, aggr_nr, sep);
+		break;
+	case AGGR_SOCKET:
+		fprintf(output, "S%d%s%d%s",
+			id.socket, sep, aggr_nr, sep);
+		break;
+	case AGGR_NODE:
+		fprintf(output, "N%d%s%d%s",
+			id.node, sep, aggr_nr, sep);
+		break;
+	case AGGR_NONE:
+		if (evsel->percore && !config->percore_show_thread) {
+			fprintf(output, "S%d-D%d-C%d%s",
+				id.socket, id.die, id.core, sep);
+		} else if (id.cpu.cpu > -1) {
+			fprintf(output, "CPU%d%s",
+				id.cpu.cpu, sep);
 		}
 		break;
 	case AGGR_THREAD:
-		fprintf(config->output, "%*s-%*d%s",
-			config->csv_output ? 0 : 16,
-			perf_thread_map__comm(evsel->core.threads, id.thread),
-			config->csv_output ? 0 : -8,
-			perf_thread_map__pid(evsel->core.threads, id.thread),
-			config->csv_sep);
+		fprintf(output, "%s-%d%s",
+			perf_thread_map__comm(evsel->core.threads, id.thread_idx),
+			perf_thread_map__pid(evsel->core.threads, id.thread_idx),
+			sep);
 		break;
 	case AGGR_GLOBAL:
 	case AGGR_UNSET:
+	case AGGR_MAX:
 	default:
 		break;
 	}
 }
 
-struct outstate {
-	FILE *fh;
-	bool newline;
-	const char *prefix;
-	int  nfields;
-	int  nr;
-	struct aggr_cpu_id id;
-	struct evsel *evsel;
-};
+static void print_aggr_id_json(struct perf_stat_config *config, struct outstate *os,
+			       struct evsel *evsel, struct aggr_cpu_id id, int aggr_nr)
+{
+	switch (config->aggr_mode) {
+	case AGGR_CORE:
+		json_out(os, "\"core\" : \"S%d-D%d-C%d\", \"counters\" : %d",
+			id.socket, id.die, id.core, aggr_nr);
+		break;
+	case AGGR_CACHE:
+		json_out(os, "\"cache\" : \"S%d-D%d-L%d-ID%d\", \"counters\" : %d",
+			id.socket, id.die, id.cache_lvl, id.cache, aggr_nr);
+		break;
+	case AGGR_CLUSTER:
+		json_out(os, "\"cluster\" : \"S%d-D%d-CLS%d\", \"counters\" : %d",
+			id.socket, id.die, id.cluster, aggr_nr);
+		break;
+	case AGGR_DIE:
+		json_out(os, "\"die\" : \"S%d-D%d\", \"counters\" : %d",
+			id.socket, id.die, aggr_nr);
+		break;
+	case AGGR_SOCKET:
+		json_out(os, "\"socket\" : \"S%d\", \"counters\" : %d",
+			id.socket, aggr_nr);
+		break;
+	case AGGR_NODE:
+		json_out(os, "\"node\" : \"N%d\", \"counters\" : %d",
+			id.node, aggr_nr);
+		break;
+	case AGGR_NONE:
+		if (evsel->percore && !config->percore_show_thread) {
+			json_out(os, "\"core\" : \"S%d-D%d-C%d\"",
+				id.socket, id.die, id.core);
+		} else if (id.cpu.cpu > -1) {
+			json_out(os, "\"cpu\" : \"%d\"",
+				id.cpu.cpu);
+		}
+		break;
+	case AGGR_THREAD:
+		json_out(os, "\"thread\" : \"%s-%d\"",
+			perf_thread_map__comm(evsel->core.threads, id.thread_idx),
+			perf_thread_map__pid(evsel->core.threads, id.thread_idx));
+		break;
+	case AGGR_GLOBAL:
+	case AGGR_UNSET:
+	case AGGR_MAX:
+	default:
+		break;
+	}
+}
 
-#define METRIC_LEN  35
+static void aggr_printout(struct perf_stat_config *config, struct outstate *os,
+			  struct evsel *evsel, struct aggr_cpu_id id, int aggr_nr)
+{
+	if (config->json_output)
+		print_aggr_id_json(config, os, evsel, id, aggr_nr);
+	else if (config->csv_output)
+		print_aggr_id_csv(config, evsel, id, aggr_nr);
+	else
+		print_aggr_id_std(config, evsel, id, aggr_nr);
+}
 
 static void new_line_std(struct perf_stat_config *config __maybe_unused,
 			 void *ctx)
@@ -162,25 +430,38 @@ static void new_line_std(struct perf_stat_config *config __maybe_unused,
 	os->newline = true;
 }
 
+static inline void __new_line_std_csv(struct perf_stat_config *config,
+				      struct outstate *os)
+{
+	fputc('\n', os->fh);
+	if (config->interval)
+		fputs(os->timestamp, os->fh);
+	aggr_printout(config, os, os->evsel, os->id, os->aggr_nr);
+}
+
+static inline void __new_line_std(struct perf_stat_config *config, struct outstate *os)
+{
+	fprintf(os->fh, "%*s", COUNTS_LEN + EVNAME_LEN + config->unit_width + 2, "");
+}
+
 static void do_new_line_std(struct perf_stat_config *config,
 			    struct outstate *os)
 {
-	fputc('\n', os->fh);
-	fputs(os->prefix, os->fh);
-	aggr_printout(config, os->evsel, os->id, os->nr);
+	__new_line_std_csv(config, os);
 	if (config->aggr_mode == AGGR_NONE)
 		fprintf(os->fh, "        ");
-	fprintf(os->fh, "                                                 ");
+	__new_line_std(config, os);
 }
 
 static void print_metric_std(struct perf_stat_config *config,
-			     void *ctx, const char *color, const char *fmt,
-			     const char *unit, double val)
+			     void *ctx, enum metric_threshold_classify thresh,
+			     const char *fmt, const char *unit, double val)
 {
 	struct outstate *os = ctx;
 	FILE *out = os->fh;
 	int n;
 	bool newline = os->newline;
+	const char *color = metric_threshold_classify__color(thresh);
 
 	os->newline = false;
 
@@ -205,17 +486,14 @@ static void new_line_csv(struct perf_stat_config *config, void *ctx)
 	struct outstate *os = ctx;
 	int i;
 
-	fputc('\n', os->fh);
-	if (os->prefix)
-		fprintf(os->fh, "%s%s", os->prefix, config->csv_sep);
-	aggr_printout(config, os->evsel, os->id, os->nr);
-	for (i = 0; i < os->nfields; i++)
+	__new_line_std_csv(config, os);
+	for (i = 0; i < os->csv_col_pad; i++)
 		fputs(config->csv_sep, os->fh);
 }
 
 static void print_metric_csv(struct perf_stat_config *config __maybe_unused,
 			     void *ctx,
-			     const char *color __maybe_unused,
+			     enum metric_threshold_classify thresh __maybe_unused,
 			     const char *fmt, const char *unit, double val)
 {
 	struct outstate *os = ctx;
@@ -234,712 +512,618 @@ static void print_metric_csv(struct perf_stat_config *config __maybe_unused,
 	fprintf(out, "%s%s%s%s", config->csv_sep, vals, config->csv_sep, skip_spaces(unit));
 }
 
-/* Filter out some columns that don't work well in metrics only mode */
-
-static bool valid_only_metric(const char *unit)
-{
-	if (!unit)
-		return false;
-	if (strstr(unit, "/sec") ||
-	    strstr(unit, "CPUs utilized"))
-		return false;
-	return true;
-}
-
-static const char *fixunit(char *buf, struct evsel *evsel,
-			   const char *unit)
-{
-	if (!strncmp(unit, "of all", 6)) {
-		snprintf(buf, 1024, "%s %s", evsel__name(evsel),
-			 unit);
-		return buf;
-	}
-	return unit;
-}
-
-static void print_metric_only(struct perf_stat_config *config,
-			      void *ctx, const char *color, const char *fmt,
-			      const char *unit, double val)
+static void print_metric_json(struct perf_stat_config *config __maybe_unused,
+			     void *ctx,
+			     enum metric_threshold_classify thresh,
+			     const char *fmt __maybe_unused,
+			     const char *unit, double val)
 {
 	struct outstate *os = ctx;
 	FILE *out = os->fh;
-	char buf[1024], str[1024];
-	unsigned mlen = config->metric_only_len;
 
-	if (!valid_only_metric(unit))
+	if (unit) {
+		json_out(os, "\"metric-value\" : \"%f\", \"metric-unit\" : \"%s\"", val, unit);
+		if (thresh != METRIC_THRESHOLD_UNKNOWN) {
+			json_out(os, "\"metric-threshold\" : \"%s\"",
+				metric_threshold_classify__str(thresh));
+		}
+	}
+	if (!config->metric_only)
+		fprintf(out, "}");
+}
+
+static void new_line_json(struct perf_stat_config *config, void *ctx)
+{
+	struct outstate *os = ctx;
+
+	fputs("\n{", os->fh);
+	os->first = true;
+	if (config->interval)
+		json_out(os, "%s", os->timestamp);
+
+	aggr_printout(config, os, os->evsel, os->id, os->aggr_nr);
+}
+
+static void print_metricgroup_header_json(struct perf_stat_config *config,
+					  void *ctx,
+					  const char *metricgroup_name)
+{
+	if (!metricgroup_name)
 		return;
-	unit = fixunit(buf, os->evsel, unit);
+
+	json_out((struct outstate *) ctx, "\"metricgroup\" : \"%s\"}", metricgroup_name);
+	new_line_json(config, ctx);
+}
+
+static void print_metricgroup_header_csv(struct perf_stat_config *config,
+					 void *ctx,
+					 const char *metricgroup_name)
+{
+	struct outstate *os = ctx;
+	int i;
+
+	if (!metricgroup_name) {
+		/* Leave space for running and enabling */
+		for (i = 0; i < os->csv_col_pad - 2; i++)
+			fputs(config->csv_sep, os->fh);
+		return;
+	}
+
+	for (i = 0; i < os->csv_col_pad; i++)
+		fputs(config->csv_sep, os->fh);
+	fprintf(config->output, "%s", metricgroup_name);
+	new_line_csv(config, ctx);
+}
+
+static void print_metricgroup_header_std(struct perf_stat_config *config,
+					 void *ctx,
+					 const char *metricgroup_name)
+{
+	struct outstate *os = ctx;
+	int n;
+
+	if (!metricgroup_name) {
+		__new_line_std(config, os);
+		return;
+	}
+
+	n = fprintf(config->output, " %*s", EVNAME_LEN, metricgroup_name);
+
+	fprintf(config->output, "%*s", MGROUP_LEN + config->unit_width + 2 - n, "");
+}
+
+static void print_metric_only(struct perf_stat_config *config,
+			      void *ctx, enum metric_threshold_classify thresh,
+			      const char *fmt, const char *unit, double val)
+{
+	struct outstate *os = ctx;
+	FILE *out = os->fh;
+	char str[1024];
+	unsigned mlen = config->metric_only_len;
+	const char *color = metric_threshold_classify__color(thresh);
+
+	if (!unit)
+		unit = "";
 	if (mlen < strlen(unit))
 		mlen = strlen(unit) + 1;
 
 	if (color)
 		mlen += strlen(color) + sizeof(PERF_COLOR_RESET) - 1;
 
-	color_snprintf(str, sizeof(str), color ?: "", fmt, val);
+	color_snprintf(str, sizeof(str), color ?: "", fmt ?: "", val);
 	fprintf(out, "%*s ", mlen, str);
+	os->first = false;
 }
 
 static void print_metric_only_csv(struct perf_stat_config *config __maybe_unused,
-				  void *ctx, const char *color __maybe_unused,
+				  void *ctx,
+				  enum metric_threshold_classify thresh __maybe_unused,
 				  const char *fmt,
-				  const char *unit, double val)
+				  const char *unit __maybe_unused, double val)
 {
 	struct outstate *os = ctx;
 	FILE *out = os->fh;
 	char buf[64], *vals, *ends;
-	char tbuf[1024];
 
-	if (!valid_only_metric(unit))
+	if (!unit)
 		return;
-	unit = fixunit(tbuf, os->evsel, unit);
-	snprintf(buf, sizeof buf, fmt, val);
+
+	snprintf(buf, sizeof(buf), fmt ?: "", val);
 	ends = vals = skip_spaces(buf);
 	while (isdigit(*ends) || *ends == '.')
 		ends++;
 	*ends = 0;
 	fprintf(out, "%s%s", vals, config->csv_sep);
+	os->first = false;
 }
 
-static void new_line_metric(struct perf_stat_config *config __maybe_unused,
-			    void *ctx __maybe_unused)
+static void print_metric_only_json(struct perf_stat_config *config __maybe_unused,
+				  void *ctx,
+				  enum metric_threshold_classify thresh __maybe_unused,
+				  const char *fmt,
+				  const char *unit, double val)
 {
+	struct outstate *os = ctx;
+	char buf[64], *ends;
+	const char *vals;
+
+	if (!unit || !unit[0])
+		return;
+	snprintf(buf, sizeof(buf), fmt ?: "", val);
+	vals = ends = skip_spaces(buf);
+	while (isdigit(*ends) || *ends == '.')
+		ends++;
+	*ends = 0;
+	if (!vals[0])
+		vals = "none";
+	json_out(os, "\"%s\" : \"%s\"", unit, vals);
 }
 
 static void print_metric_header(struct perf_stat_config *config,
-				void *ctx, const char *color __maybe_unused,
+				void *ctx,
+				enum metric_threshold_classify thresh __maybe_unused,
 				const char *fmt __maybe_unused,
 				const char *unit, double val __maybe_unused)
 {
 	struct outstate *os = ctx;
-	char tbuf[1024];
 
 	/* In case of iostat, print metric header for first root port only */
 	if (config->iostat_run &&
 	    os->evsel->priv != os->evsel->evlist->selected->priv)
 		return;
 
-	if (!valid_only_metric(unit))
+	if (os->evsel->cgrp != os->cgrp)
 		return;
-	unit = fixunit(tbuf, os->evsel, unit);
-	if (config->csv_output)
+
+	if (!unit)
+		return;
+
+	if (config->json_output)
+		return;
+	else if (config->csv_output)
 		fprintf(os->fh, "%s%s", unit, config->csv_sep);
 	else
 		fprintf(os->fh, "%*s ", config->metric_only_len, unit);
 }
 
-static int first_shadow_cpu_map_idx(struct perf_stat_config *config,
-				struct evsel *evsel, const struct aggr_cpu_id *id)
-{
-	struct perf_cpu_map *cpus = evsel__cpus(evsel);
-	struct perf_cpu cpu;
-	int idx;
-
-	if (config->aggr_mode == AGGR_NONE)
-		return perf_cpu_map__idx(cpus, id->cpu);
-
-	if (!config->aggr_get_id)
-		return 0;
-
-	perf_cpu_map__for_each_cpu(cpu, idx, cpus) {
-		struct aggr_cpu_id cpu_id = config->aggr_get_id(config, cpu);
-
-		if (aggr_cpu_id__equal(&cpu_id, id))
-			return idx;
-	}
-	return 0;
-}
-
-static void abs_printout(struct perf_stat_config *config,
-			 struct aggr_cpu_id id, int nr, struct evsel *evsel, double avg)
+static void print_counter_value_std(struct perf_stat_config *config,
+				    struct evsel *evsel, double avg, bool ok)
 {
 	FILE *output = config->output;
 	double sc =  evsel->scale;
 	const char *fmt;
+	const char *bad_count = evsel->supported ? CNTR_NOT_COUNTED : CNTR_NOT_SUPPORTED;
 
-	if (config->csv_output) {
-		fmt = floor(sc) != sc ?  "%.2f%s" : "%.0f%s";
-	} else {
-		if (config->big_num)
-			fmt = floor(sc) != sc ? "%'18.2f%s" : "%'18.0f%s";
-		else
-			fmt = floor(sc) != sc ? "%18.2f%s" : "%18.0f%s";
-	}
+	if (config->big_num)
+		fmt = floor(sc) != sc ? "%'*.2f " : "%'*.0f ";
+	else
+		fmt = floor(sc) != sc ? "%*.2f " : "%*.0f ";
 
-	aggr_printout(config, evsel, id, nr);
-
-	fprintf(output, fmt, avg, config->csv_sep);
+	if (ok)
+		fprintf(output, fmt, COUNTS_LEN, avg);
+	else
+		fprintf(output, "%*s ", COUNTS_LEN, bad_count);
 
 	if (evsel->unit)
-		fprintf(output, "%-*s%s",
-			config->csv_output ? 0 : config->unit_width,
-			evsel->unit, config->csv_sep);
+		fprintf(output, "%-*s ", config->unit_width, evsel->unit);
 
-	fprintf(output, "%-*s", config->csv_output ? 0 : 25, evsel__name(evsel));
-
-	print_cgroup(config, evsel);
+	fprintf(output, "%-*s", EVNAME_LEN, evsel__name(evsel));
 }
 
-static bool is_mixed_hw_group(struct evsel *counter)
+static void print_counter_value_csv(struct perf_stat_config *config,
+				    struct evsel *evsel, double avg, bool ok)
 {
-	struct evlist *evlist = counter->evlist;
-	u32 pmu_type = counter->core.attr.type;
-	struct evsel *pos;
+	FILE *output = config->output;
+	double sc =  evsel->scale;
+	const char *sep = config->csv_sep;
+	const char *fmt = floor(sc) != sc ? "%.2f%s" : "%.0f%s";
+	const char *bad_count = evsel->supported ? CNTR_NOT_COUNTED : CNTR_NOT_SUPPORTED;
 
-	if (counter->core.nr_members < 2)
+	if (ok)
+		fprintf(output, fmt, avg, sep);
+	else
+		fprintf(output, "%s%s", bad_count, sep);
+
+	if (evsel->unit)
+		fprintf(output, "%s%s", evsel->unit, sep);
+
+	fprintf(output, "%s", evsel__name(evsel));
+}
+
+static void print_counter_value_json(struct outstate *os,
+				     struct evsel *evsel, double avg, bool ok)
+{
+	const char *bad_count = evsel->supported ? CNTR_NOT_COUNTED : CNTR_NOT_SUPPORTED;
+
+	if (ok)
+		json_out(os, "\"counter-value\" : \"%f\"", avg);
+	else
+		json_out(os, "\"counter-value\" : \"%s\"", bad_count);
+
+	if (evsel->unit)
+		json_out(os, "\"unit\" : \"%s\"", evsel->unit);
+
+	json_out(os, "\"event\" : \"%s\"", evsel__name(evsel));
+}
+
+static void print_counter_value(struct perf_stat_config *config, struct outstate *os,
+				struct evsel *evsel, double avg, bool ok)
+{
+	if (config->json_output)
+		print_counter_value_json(os, evsel, avg, ok);
+	else if (config->csv_output)
+		print_counter_value_csv(config, evsel, avg, ok);
+	else
+		print_counter_value_std(config, evsel, avg, ok);
+}
+
+static void abs_printout(struct perf_stat_config *config,
+			 struct outstate *os,
+			 struct aggr_cpu_id id, int aggr_nr,
+			 struct evsel *evsel, double avg, bool ok)
+{
+	aggr_printout(config, os, evsel, id, aggr_nr);
+	print_counter_value(config, os, evsel, avg, ok);
+	print_cgroup(config, os, evsel->cgrp);
+}
+
+static bool evlist__has_hybrid_pmus(struct evlist *evlist)
+{
+	struct evsel *evsel;
+	struct perf_pmu *last_core_pmu = NULL;
+
+	if (perf_pmus__num_core_pmus() == 1)
 		return false;
 
-	evlist__for_each_entry(evlist, pos) {
-		/* software events can be part of any hardware group */
-		if (pos->core.attr.type == PERF_TYPE_SOFTWARE)
-			continue;
-		if (pmu_type == PERF_TYPE_SOFTWARE) {
-			pmu_type = pos->core.attr.type;
-			continue;
-		}
-		if (pmu_type != pos->core.attr.type)
+	evlist__for_each_entry(evlist, evsel) {
+		if (evsel->core.is_pmu_core) {
+			struct perf_pmu *pmu = evsel__find_pmu(evsel);
+
+			if (pmu == last_core_pmu)
+				continue;
+
+			if (last_core_pmu == NULL) {
+				last_core_pmu = pmu;
+				continue;
+			}
+			/* A distinct core PMU. */
 			return true;
+		}
 	}
 
 	return false;
 }
 
-static void printout(struct perf_stat_config *config, struct aggr_cpu_id id, int nr,
-		     struct evsel *counter, double uval,
-		     char *prefix, u64 run, u64 ena, double noise,
-		     struct runtime_stat *st)
+static void printout(struct perf_stat_config *config, struct outstate *os,
+		     double uval, u64 run, u64 ena, double noise, int aggr_idx)
 {
 	struct perf_stat_output_ctx out;
-	struct outstate os = {
-		.fh = config->output,
-		.prefix = prefix ? prefix : "",
-		.id = id,
-		.nr = nr,
-		.evsel = counter,
-	};
-	print_metric_t pm = print_metric_std;
+	print_metric_t pm;
 	new_line_t nl;
+	print_metricgroup_header_t pmh;
+	bool ok = true;
+	struct evsel *counter = os->evsel;
 
-	if (config->metric_only) {
-		nl = new_line_metric;
-		if (config->csv_output)
-			pm = print_metric_only_csv;
-		else
-			pm = print_metric_only;
-	} else
-		nl = new_line_std;
-
-	if (config->csv_output && !config->metric_only) {
-		static int aggr_fields[] = {
-			[AGGR_GLOBAL] = 0,
-			[AGGR_THREAD] = 1,
-			[AGGR_NONE] = 1,
-			[AGGR_SOCKET] = 2,
-			[AGGR_DIE] = 2,
-			[AGGR_CORE] = 2,
-		};
-
-		pm = print_metric_csv;
-		nl = new_line_csv;
-		os.nfields = 3;
-		os.nfields += aggr_fields[config->aggr_mode];
-		if (counter->cgrp)
-			os.nfields++;
-	}
-
-	if (!config->no_csv_summary && config->csv_output &&
-	    config->summary && !config->interval) {
-		fprintf(config->output, "%16s%s", "summary", config->csv_sep);
+	if (config->csv_output) {
+		pm = config->metric_only ? print_metric_only_csv : print_metric_csv;
+		nl = config->metric_only ? NULL : new_line_csv;
+		pmh = print_metricgroup_header_csv;
+		os->csv_col_pad = 4 + (counter->cgrp ? 1 : 0);
+	} else if (config->json_output) {
+		pm = config->metric_only ? print_metric_only_json : print_metric_json;
+		nl = config->metric_only ? NULL : new_line_json;
+		pmh = print_metricgroup_header_json;
+	} else {
+		pm = config->metric_only ? print_metric_only : print_metric_std;
+		nl = config->metric_only ? NULL : new_line_std;
+		pmh = print_metricgroup_header_std;
 	}
 
 	if (run == 0 || ena == 0 || counter->counts->scaled == -1) {
-		if (config->metric_only) {
-			pm(config, &os, NULL, "", "", 0);
-			return;
-		}
-		aggr_printout(config, counter, id, nr);
-
-		fprintf(config->output, "%*s%s",
-			config->csv_output ? 0 : 18,
-			counter->supported ? CNTR_NOT_COUNTED : CNTR_NOT_SUPPORTED,
-			config->csv_sep);
+		ok = false;
 
 		if (counter->supported) {
-			if (!evlist__has_hybrid(counter->evlist)) {
+			if (!evlist__has_hybrid_pmus(counter->evlist)) {
 				config->print_free_counters_hint = 1;
-				if (is_mixed_hw_group(counter))
-					config->print_mixed_hw_group_error = 1;
 			}
 		}
-
-		fprintf(config->output, "%-*s%s",
-			config->csv_output ? 0 : config->unit_width,
-			counter->unit, config->csv_sep);
-
-		fprintf(config->output, "%*s",
-			config->csv_output ? 0 : -25, evsel__name(counter));
-
-		print_cgroup(config, counter);
-
-		if (!config->csv_output)
-			pm(config, &os, NULL, NULL, "", 0);
-		print_noise(config, counter, noise);
-		print_running(config, run, ena);
-		if (config->csv_output)
-			pm(config, &os, NULL, NULL, "", 0);
-		return;
 	}
-
-	if (!config->metric_only)
-		abs_printout(config, id, nr, counter, uval);
 
 	out.print_metric = pm;
 	out.new_line = nl;
-	out.ctx = &os;
+	out.print_metricgroup_header = pmh;
+	out.ctx = os;
 	out.force_header = false;
 
-	if (config->csv_output && !config->metric_only) {
-		print_noise(config, counter, noise);
-		print_running(config, run, ena);
+	if (!config->metric_only && (!counter->default_metricgroup || counter->default_show_events)) {
+		abs_printout(config, os, os->id, os->aggr_nr, counter, uval, ok);
+
+		print_noise(config, os, counter, noise, /*before_metric=*/true);
+		print_running(config, os, run, ena, /*before_metric=*/true);
 	}
 
-	perf_stat__print_shadow_stats(config, counter, uval,
-				first_shadow_cpu_map_idx(config, counter, &id),
-				&out, &config->metric_events, st);
-	if (!config->csv_output && !config->metric_only) {
-		print_noise(config, counter, noise);
-		print_running(config, run, ena);
-	}
-}
+	if (!config->metric_only && counter->default_metricgroup &&
+	    !counter->default_show_events) {
+		void *from = NULL;
 
-static void aggr_update_shadow(struct perf_stat_config *config,
-			       struct evlist *evlist)
-{
-	int idx, s;
-	struct perf_cpu cpu;
-	struct aggr_cpu_id s2, id;
-	u64 val;
-	struct evsel *counter;
-	struct perf_cpu_map *cpus;
+		aggr_printout(config, os, os->evsel, os->id, os->aggr_nr);
+		/* Print out all the metricgroup with the same metric event. */
+		do {
+			int num = 0;
 
-	for (s = 0; s < config->aggr_map->nr; s++) {
-		id = config->aggr_map->map[s];
-		evlist__for_each_entry(evlist, counter) {
-			cpus = evsel__cpus(counter);
-			val = 0;
-			perf_cpu_map__for_each_cpu(cpu, idx, cpus) {
-				s2 = config->aggr_get_id(config, cpu);
-				if (!aggr_cpu_id__equal(&s2, &id))
-					continue;
-				val += perf_counts(counter->counts, idx, 0)->val;
+			/* Print out the new line for the next new metricgroup. */
+			if (from) {
+				if (config->json_output)
+					new_line_json(config, (void *)os);
+				else
+					__new_line_std_csv(config, os);
 			}
-			perf_stat__update_shadow_stats(counter, val,
-					first_shadow_cpu_map_idx(config, counter, &id),
-					&rt_stat);
-		}
-	}
-}
 
-static void uniquify_event_name(struct evsel *counter)
-{
-	char *new_name;
-	char *config;
-	int ret = 0;
-
-	if (counter->uniquified_name || counter->use_config_name ||
-	    !counter->pmu_name || !strncmp(counter->name, counter->pmu_name,
-					   strlen(counter->pmu_name)))
-		return;
-
-	config = strchr(counter->name, '/');
-	if (config) {
-		if (asprintf(&new_name,
-			     "%s%s", counter->pmu_name, config) > 0) {
-			free(counter->name);
-			counter->name = new_name;
-		}
+			print_noise(config, os, counter, noise,
+				    /*before_metric=*/true);
+			print_running(config, os, run, ena,
+				      /*before_metric=*/true);
+			from = perf_stat__print_shadow_stats_metricgroup(
+				config, counter, aggr_idx, &num, from, &out);
+		} while (from != NULL);
 	} else {
-		if (perf_pmu__has_hybrid()) {
-			ret = asprintf(&new_name, "%s/%s/",
-				       counter->pmu_name, counter->name);
-		} else {
-			ret = asprintf(&new_name, "%s [%s]",
-				       counter->name, counter->pmu_name);
-		}
-
-		if (ret) {
-			free(counter->name);
-			counter->name = new_name;
-		}
+		perf_stat__print_shadow_stats(config, counter, aggr_idx, &out);
 	}
 
-	counter->uniquified_name = true;
-}
-
-static void collect_all_aliases(struct perf_stat_config *config, struct evsel *counter,
-			    void (*cb)(struct perf_stat_config *config, struct evsel *counter, void *data,
-				       bool first),
-			    void *data)
-{
-	struct evlist *evlist = counter->evlist;
-	struct evsel *alias;
-
-	alias = list_prepare_entry(counter, &(evlist->core.entries), core.node);
-	list_for_each_entry_continue (alias, &evlist->core.entries, core.node) {
-		/* Merge events with the same name, etc. but on different PMUs. */
-		if (!strcmp(evsel__name(alias), evsel__name(counter)) &&
-			alias->scale == counter->scale &&
-			alias->cgrp == counter->cgrp &&
-			!strcmp(alias->unit, counter->unit) &&
-			evsel__is_clock(alias) == evsel__is_clock(counter) &&
-			strcmp(alias->pmu_name, counter->pmu_name)) {
-			alias->merged_stat = true;
-			cb(config, alias, data, false);
-		}
+	if (!config->metric_only) {
+		print_noise(config, os, counter, noise, /*before_metric=*/false);
+		print_running(config, os, run, ena, /*before_metric=*/false);
 	}
 }
 
-static bool is_uncore(struct evsel *evsel)
+/**
+ * should_skip_zero_count() - Check if the event should print 0 values.
+ * @config: The perf stat configuration (including aggregation mode).
+ * @counter: The evsel with its associated cpumap.
+ * @id: The aggregation id that is being queried.
+ *
+ * Due to mismatch between the event cpumap or thread-map and the
+ * aggregation mode, sometimes it'd iterate the counter with the map
+ * which does not contain any values.
+ *
+ * For example, uncore events have dedicated CPUs to manage them,
+ * result for other CPUs should be zero and skipped.
+ *
+ * Return: %true if the value should NOT be printed, %false if the value
+ * needs to be printed like "<not counted>" or "<not supported>".
+ */
+static bool should_skip_zero_counter(struct perf_stat_config *config,
+				     struct evsel *counter,
+				     const struct aggr_cpu_id *id)
 {
-	struct perf_pmu *pmu = evsel__find_pmu(evsel);
+	struct perf_cpu cpu;
+	int idx;
 
-	return pmu && pmu->is_uncore;
-}
+	/*
+	 * Skip unsupported default events when not verbose. (default events
+	 * are all marked 'skippable').
+	 */
+	if (verbose == 0 && counter->skippable && !counter->supported)
+		return true;
 
-static bool hybrid_uniquify(struct evsel *evsel)
-{
-	return perf_pmu__has_hybrid() && !is_uncore(evsel);
-}
-
-static bool hybrid_merge(struct evsel *counter, struct perf_stat_config *config,
-			 bool check)
-{
-	if (hybrid_uniquify(counter)) {
-		if (check)
-			return config && config->hybrid_merge;
-		else
-			return config && !config->hybrid_merge;
-	}
-
-	return false;
-}
-
-static bool collect_data(struct perf_stat_config *config, struct evsel *counter,
-			    void (*cb)(struct perf_stat_config *config, struct evsel *counter, void *data,
-				       bool first),
-			    void *data)
-{
-	if (counter->merged_stat)
+	/* Metric only counts won't be displayed but the metric wants to be computed. */
+	if (config->metric_only)
 		return false;
-	cb(config, counter, data, true);
-	if (config->no_merge || hybrid_merge(counter, config, false))
-		uniquify_event_name(counter);
-	else if (counter->auto_merge_stats || hybrid_merge(counter, config, true))
-		collect_all_aliases(config, counter, cb, data);
+	/*
+	 * Skip value 0 when enabling --per-thread globally,
+	 * otherwise it will have too many 0 output.
+	 */
+	if (config->aggr_mode == AGGR_THREAD && config->system_wide)
+		return true;
+
+	/*
+	 * In per-thread mode the aggr_map and aggr_get_id functions may be
+	 * NULL, assume all 0 values should be output in that case.
+	 */
+	if (!config->aggr_map || !config->aggr_get_id)
+		return false;
+
+	/*
+	 * Tool events may be gathered on all logical CPUs, for example
+	 * system_time, but for many the first index is the only one used, for
+	 * example num_cores. Don't skip for the first index.
+	 */
+	if (evsel__is_tool(counter)) {
+		struct aggr_cpu_id own_id =
+			config->aggr_get_id(config, (struct perf_cpu){ .cpu = 0 });
+
+		return !aggr_cpu_id__equal(id, &own_id);
+	}
+	/*
+	 * Skip value 0 when the counter's cpumask doesn't match the given aggr
+	 * id.
+	 */
+
+	perf_cpu_map__for_each_cpu(cpu, idx, counter->core.cpus) {
+		struct aggr_cpu_id own_id = config->aggr_get_id(config, cpu);
+
+		if (aggr_cpu_id__equal(id, &own_id))
+			return false;
+	}
 	return true;
 }
 
-struct aggr_data {
-	u64 ena, run, val;
-	struct aggr_cpu_id id;
-	int nr;
-	int cpu_map_idx;
-};
-
-static void aggr_cb(struct perf_stat_config *config,
-		    struct evsel *counter, void *data, bool first)
-{
-	struct aggr_data *ad = data;
-	int idx;
-	struct perf_cpu cpu;
-	struct perf_cpu_map *cpus;
-	struct aggr_cpu_id s2;
-
-	cpus = evsel__cpus(counter);
-	perf_cpu_map__for_each_cpu(cpu, idx, cpus) {
-		struct perf_counts_values *counts;
-
-		s2 = config->aggr_get_id(config, cpu);
-		if (!aggr_cpu_id__equal(&s2, &ad->id))
-			continue;
-		if (first)
-			ad->nr++;
-		counts = perf_counts(counter->counts, idx, 0);
-		/*
-		 * When any result is bad, make them all to give
-		 * consistent output in interval mode.
-		 */
-		if (counts->ena == 0 || counts->run == 0 ||
-		    counter->counts->scaled == -1) {
-			ad->ena = 0;
-			ad->run = 0;
-			break;
-		}
-		ad->val += counts->val;
-		ad->ena += counts->ena;
-		ad->run += counts->run;
-	}
-}
-
 static void print_counter_aggrdata(struct perf_stat_config *config,
-				   struct evsel *counter, int s,
-				   char *prefix, bool metric_only,
-				   bool *first, struct perf_cpu cpu)
+				   struct evsel *counter, int aggr_idx,
+				   struct outstate *os)
 {
-	struct aggr_data ad;
 	FILE *output = config->output;
 	u64 ena, run, val;
-	int nr;
-	struct aggr_cpu_id id;
 	double uval;
+	struct perf_stat_evsel *ps = counter->stats;
+	struct perf_stat_aggr *aggr = &ps->aggr[aggr_idx];
+	struct aggr_cpu_id id = config->aggr_map->map[aggr_idx];
+	double avg = aggr->counts.val;
+	bool metric_only = config->metric_only;
 
-	ad.id = id = config->aggr_map->map[s];
-	ad.val = ad.ena = ad.run = 0;
-	ad.nr = 0;
-	if (!collect_data(config, counter, aggr_cb, &ad))
-		return;
+	os->id = id;
+	os->aggr_nr = aggr->nr;
+	os->evsel = counter;
 
-	if (perf_pmu__has_hybrid() && ad.ena == 0)
-		return;
-
-	nr = ad.nr;
-	ena = ad.ena;
-	run = ad.run;
-	val = ad.val;
-	if (*first && metric_only) {
-		*first = false;
-		aggr_printout(config, counter, id, nr);
+	/* Skip already merged uncore/hybrid events */
+	if (config->aggr_mode != AGGR_NONE) {
+		if (evsel__is_hybrid(counter)) {
+			if (config->hybrid_merge && counter->first_wildcard_match != NULL)
+				return;
+		} else {
+			if (counter->first_wildcard_match != NULL)
+				return;
+		}
 	}
-	if (prefix && !metric_only)
-		fprintf(output, "%s", prefix);
+
+	val = aggr->counts.val;
+	ena = aggr->counts.ena;
+	run = aggr->counts.run;
+
+	if (perf_stat__skip_metric_event(counter))
+		return;
+
+	if (val == 0 && should_skip_zero_counter(config, counter, &id))
+		return;
+
+	if (!metric_only) {
+		if (config->json_output) {
+			os->first = true;
+			fputc('{', output);
+		}
+		if (config->interval) {
+			if (config->json_output)
+				json_out(os, "%s", os->timestamp);
+			else
+				fprintf(output, "%s", os->timestamp);
+		} else if (config->summary && config->csv_output &&
+			   !config->no_csv_summary)
+			fprintf(output, "%s%s", "summary", config->csv_sep);
+	}
 
 	uval = val * counter->scale;
-	if (cpu.cpu != -1)
-		id = aggr_cpu_id__cpu(cpu, /*data=*/NULL);
 
-	printout(config, id, nr, counter, uval,
-		 prefix, run, ena, 1.0, &rt_stat);
+	printout(config, os, uval, run, ena, avg, aggr_idx);
+
 	if (!metric_only)
 		fputc('\n', output);
 }
 
+static void print_metric_begin(struct perf_stat_config *config,
+			       struct evlist *evlist,
+			       struct outstate *os, int aggr_idx)
+{
+	struct perf_stat_aggr *aggr;
+	struct aggr_cpu_id id;
+	struct evsel *evsel;
+
+	os->first = true;
+	if (!config->metric_only)
+		return;
+
+	if (config->json_output)
+		fputc('{', config->output);
+
+	if (config->interval) {
+		if (config->json_output)
+			json_out(os, "%s", os->timestamp);
+		else
+			fprintf(config->output, "%s", os->timestamp);
+	}
+	evsel = evlist__first(evlist);
+	id = config->aggr_map->map[aggr_idx];
+	aggr = &evsel->stats->aggr[aggr_idx];
+	aggr_printout(config, os, evsel, id, aggr->nr);
+
+	print_cgroup(config, os, os->cgrp ? : evsel->cgrp);
+}
+
+static void print_metric_end(struct perf_stat_config *config, struct outstate *os)
+{
+	FILE *output = config->output;
+
+	if (!config->metric_only)
+		return;
+
+	if (config->json_output) {
+		if (os->first)
+			fputs("\"metric-value\" : \"none\"", output);
+		fputc('}', output);
+	}
+	fputc('\n', output);
+}
+
 static void print_aggr(struct perf_stat_config *config,
 		       struct evlist *evlist,
-		       char *prefix)
+		       struct outstate *os)
 {
-	bool metric_only = config->metric_only;
-	FILE *output = config->output;
 	struct evsel *counter;
-	int s;
-	bool first;
+	int aggr_idx;
 
 	if (!config->aggr_map || !config->aggr_get_id)
 		return;
-
-	aggr_update_shadow(config, evlist);
 
 	/*
 	 * With metric_only everything is on a single line.
 	 * Without each counter has its own line.
 	 */
-	for (s = 0; s < config->aggr_map->nr; s++) {
-		if (prefix && metric_only)
-			fprintf(output, "%s", prefix);
+	cpu_aggr_map__for_each_idx(aggr_idx, config->aggr_map) {
+		print_metric_begin(config, evlist, os, aggr_idx);
 
-		first = true;
 		evlist__for_each_entry(evlist, counter) {
-			print_counter_aggrdata(config, counter, s,
-					prefix, metric_only,
-					&first, (struct perf_cpu){ .cpu = -1 });
+			print_counter_aggrdata(config, counter, aggr_idx, os);
 		}
-		if (metric_only)
-			fputc('\n', output);
+		print_metric_end(config, os);
 	}
 }
 
-static int cmp_val(const void *a, const void *b)
+static void print_aggr_cgroup(struct perf_stat_config *config,
+			      struct evlist *evlist,
+			      struct outstate *os)
 {
-	return ((struct perf_aggr_thread_value *)b)->val -
-		((struct perf_aggr_thread_value *)a)->val;
-}
+	struct evsel *counter, *evsel;
+	int aggr_idx;
 
-static struct perf_aggr_thread_value *sort_aggr_thread(
-					struct evsel *counter,
-					int *ret,
-					struct target *_target)
-{
-	int nthreads = perf_thread_map__nr(counter->core.threads);
-	int i = 0;
-	double uval;
-	struct perf_aggr_thread_value *buf;
+	if (!config->aggr_map || !config->aggr_get_id)
+		return;
 
-	buf = calloc(nthreads, sizeof(struct perf_aggr_thread_value));
-	if (!buf)
-		return NULL;
-
-	for (int thread = 0; thread < nthreads; thread++) {
-		int idx;
-		u64 ena = 0, run = 0, val = 0;
-
-		perf_cpu_map__for_each_idx(idx, evsel__cpus(counter)) {
-			struct perf_counts_values *counts =
-				perf_counts(counter->counts, idx, thread);
-
-			val += counts->val;
-			ena += counts->ena;
-			run += counts->run;
-		}
-
-		uval = val * counter->scale;
-
-		/*
-		 * Skip value 0 when enabling --per-thread globally,
-		 * otherwise too many 0 output.
-		 */
-		if (uval == 0.0 && target__has_per_thread(_target))
+	evlist__for_each_entry(evlist, evsel) {
+		if (os->cgrp == evsel->cgrp)
 			continue;
 
-		buf[i].counter = counter;
-		buf[i].id = aggr_cpu_id__empty();
-		buf[i].id.thread = thread;
-		buf[i].uval = uval;
-		buf[i].val = val;
-		buf[i].run = run;
-		buf[i].ena = ena;
-		i++;
+		os->cgrp = evsel->cgrp;
+
+		cpu_aggr_map__for_each_idx(aggr_idx, config->aggr_map) {
+			print_metric_begin(config, evlist, os, aggr_idx);
+
+			evlist__for_each_entry(evlist, counter) {
+				if (counter->cgrp != os->cgrp)
+					continue;
+
+				print_counter_aggrdata(config, counter, aggr_idx, os);
+			}
+			print_metric_end(config, os);
+		}
 	}
-
-	qsort(buf, i, sizeof(struct perf_aggr_thread_value), cmp_val);
-
-	if (ret)
-		*ret = i;
-
-	return buf;
 }
 
-static void print_aggr_thread(struct perf_stat_config *config,
-			      struct target *_target,
-			      struct evsel *counter, char *prefix)
-{
-	FILE *output = config->output;
-	int thread, sorted_threads;
-	struct aggr_cpu_id id;
-	struct perf_aggr_thread_value *buf;
-
-	buf = sort_aggr_thread(counter, &sorted_threads, _target);
-	if (!buf) {
-		perror("cannot sort aggr thread");
-		return;
-	}
-
-	for (thread = 0; thread < sorted_threads; thread++) {
-		if (prefix)
-			fprintf(output, "%s", prefix);
-
-		id = buf[thread].id;
-		if (config->stats)
-			printout(config, id, 0, buf[thread].counter, buf[thread].uval,
-				 prefix, buf[thread].run, buf[thread].ena, 1.0,
-				 &config->stats[id.thread]);
-		else
-			printout(config, id, 0, buf[thread].counter, buf[thread].uval,
-				 prefix, buf[thread].run, buf[thread].ena, 1.0,
-				 &rt_stat);
-		fputc('\n', output);
-	}
-
-	free(buf);
-}
-
-struct caggr_data {
-	double avg, avg_enabled, avg_running;
-};
-
-static void counter_aggr_cb(struct perf_stat_config *config __maybe_unused,
-			    struct evsel *counter, void *data,
-			    bool first __maybe_unused)
-{
-	struct caggr_data *cd = data;
-	struct perf_counts_values *aggr = &counter->counts->aggr;
-
-	cd->avg += aggr->val;
-	cd->avg_enabled += aggr->ena;
-	cd->avg_running += aggr->run;
-}
-
-/*
- * Print out the results of a single counter:
- * aggregated counts in system-wide mode
- */
-static void print_counter_aggr(struct perf_stat_config *config,
-			       struct evsel *counter, char *prefix)
-{
-	bool metric_only = config->metric_only;
-	FILE *output = config->output;
-	double uval;
-	struct caggr_data cd = { .avg = 0.0 };
-
-	if (!collect_data(config, counter, counter_aggr_cb, &cd))
-		return;
-
-	if (prefix && !metric_only)
-		fprintf(output, "%s", prefix);
-
-	uval = cd.avg * counter->scale;
-	printout(config, aggr_cpu_id__empty(), 0, counter, uval, prefix, cd.avg_running,
-		 cd.avg_enabled, cd.avg, &rt_stat);
-	if (!metric_only)
-		fprintf(output, "\n");
-}
-
-static void counter_cb(struct perf_stat_config *config __maybe_unused,
-		       struct evsel *counter, void *data,
-		       bool first __maybe_unused)
-{
-	struct aggr_data *ad = data;
-
-	ad->val += perf_counts(counter->counts, ad->cpu_map_idx, 0)->val;
-	ad->ena += perf_counts(counter->counts, ad->cpu_map_idx, 0)->ena;
-	ad->run += perf_counts(counter->counts, ad->cpu_map_idx, 0)->run;
-}
-
-/*
- * Print out the results of a single counter:
- * does not use aggregated count in system-wide
- */
 static void print_counter(struct perf_stat_config *config,
-			  struct evsel *counter, char *prefix)
+			  struct evsel *counter, struct outstate *os)
 {
-	FILE *output = config->output;
-	u64 ena, run, val;
-	double uval;
-	int idx;
-	struct perf_cpu cpu;
-	struct aggr_cpu_id id;
+	int aggr_idx;
 
-	perf_cpu_map__for_each_cpu(cpu, idx, evsel__cpus(counter)) {
-		struct aggr_data ad = { .cpu_map_idx = idx };
+	/* AGGR_THREAD doesn't have config->aggr_get_id */
+	if (!config->aggr_map)
+		return;
 
-		if (!collect_data(config, counter, counter_cb, &ad))
-			return;
-		val = ad.val;
-		ena = ad.ena;
-		run = ad.run;
-
-		if (prefix)
-			fprintf(output, "%s", prefix);
-
-		uval = val * counter->scale;
-		id = aggr_cpu_id__cpu(cpu, /*data=*/NULL);
-		printout(config, id, 0, counter, uval, prefix,
-			 run, ena, 1.0, &rt_stat);
-
-		fputc('\n', output);
+	cpu_aggr_map__for_each_idx(aggr_idx, config->aggr_map) {
+		print_counter_aggrdata(config, counter, aggr_idx, os);
 	}
 }
 
 static void print_no_aggr_metric(struct perf_stat_config *config,
 				 struct evlist *evlist,
-				 char *prefix)
+				 struct outstate *os)
 {
 	int all_idx;
 	struct perf_cpu cpu;
@@ -951,205 +1135,267 @@ static void print_no_aggr_metric(struct perf_stat_config *config,
 		evlist__for_each_entry(evlist, counter) {
 			u64 ena, run, val;
 			double uval;
-			struct aggr_cpu_id id;
-			int counter_idx = perf_cpu_map__idx(evsel__cpus(counter), cpu);
+			struct perf_stat_evsel *ps = counter->stats;
+			int aggr_idx = 0;
 
-			if (counter_idx < 0)
+			if (!perf_cpu_map__has(evsel__cpus(counter), cpu))
 				continue;
 
-			id = aggr_cpu_id__cpu(cpu, /*data=*/NULL);
+			cpu_aggr_map__for_each_idx(aggr_idx, config->aggr_map) {
+				if (config->aggr_map->map[aggr_idx].cpu.cpu == cpu.cpu)
+					break;
+			}
+
+			os->evsel = counter;
+			os->id = aggr_cpu_id__cpu(cpu, /*data=*/NULL);
 			if (first) {
-				if (prefix)
-					fputs(prefix, config->output);
-				aggr_printout(config, counter, id, 0);
+				print_metric_begin(config, evlist, os, aggr_idx);
 				first = false;
 			}
-			val = perf_counts(counter->counts, counter_idx, 0)->val;
-			ena = perf_counts(counter->counts, counter_idx, 0)->ena;
-			run = perf_counts(counter->counts, counter_idx, 0)->run;
+			val = ps->aggr[aggr_idx].counts.val;
+			ena = ps->aggr[aggr_idx].counts.ena;
+			run = ps->aggr[aggr_idx].counts.run;
 
 			uval = val * counter->scale;
-			printout(config, id, 0, counter, uval, prefix,
-				 run, ena, 1.0, &rt_stat);
+			printout(config, os, uval, run, ena, 1.0, aggr_idx);
 		}
 		if (!first)
-			fputc('\n', config->output);
+			print_metric_end(config, os);
 	}
 }
 
-static int aggr_header_lens[] = {
-	[AGGR_CORE] = 24,
-	[AGGR_DIE] = 18,
-	[AGGR_SOCKET] = 12,
-	[AGGR_NONE] = 6,
-	[AGGR_THREAD] = 24,
-	[AGGR_GLOBAL] = 0,
-};
+static void print_metric_headers_std(struct perf_stat_config *config,
+				     bool no_indent)
+{
+	fputc(' ', config->output);
 
-static const char *aggr_header_csv[] = {
-	[AGGR_CORE] 	= 	"core,cpus,",
-	[AGGR_DIE] 	= 	"die,cpus",
-	[AGGR_SOCKET] 	= 	"socket,cpus",
-	[AGGR_NONE] 	= 	"cpu,",
-	[AGGR_THREAD] 	= 	"comm-pid,",
-	[AGGR_GLOBAL] 	=	""
-};
+	if (!no_indent) {
+		int len = aggr_header_lens[config->aggr_mode];
+
+		if (nr_cgroups || config->cgroup_list)
+			len += CGROUP_LEN + 1;
+
+		fprintf(config->output, "%*s", len, "");
+	}
+}
+
+static void print_metric_headers_csv(struct perf_stat_config *config,
+				     bool no_indent __maybe_unused)
+{
+	const char *p;
+
+	if (config->interval)
+		fprintf(config->output, "time%s", config->csv_sep);
+	if (config->iostat_run)
+		return;
+
+	p = aggr_header_csv[config->aggr_mode];
+	while (*p) {
+		if (*p == ',')
+			fputs(config->csv_sep, config->output);
+		else
+			fputc(*p, config->output);
+		p++;
+	}
+}
+
+static void print_metric_headers_json(struct perf_stat_config *config __maybe_unused,
+				      bool no_indent __maybe_unused)
+{
+}
 
 static void print_metric_headers(struct perf_stat_config *config,
-				 struct evlist *evlist,
-				 const char *prefix, bool no_indent)
+				 struct evlist *evlist, bool no_indent)
 {
-	struct perf_stat_output_ctx out;
 	struct evsel *counter;
 	struct outstate os = {
 		.fh = config->output
 	};
+	struct perf_stat_output_ctx out = {
+		.ctx = &os,
+		.print_metric = print_metric_header,
+		.new_line = NULL,
+		.force_header = true,
+	};
 
-	if (prefix)
-		fprintf(config->output, "%s", prefix);
+	if (config->json_output)
+		print_metric_headers_json(config, no_indent);
+	else if (config->csv_output)
+		print_metric_headers_csv(config, no_indent);
+	else
+		print_metric_headers_std(config, no_indent);
 
-	if (!config->csv_output && !no_indent)
-		fprintf(config->output, "%*s",
-			aggr_header_lens[config->aggr_mode], "");
-	if (config->csv_output) {
-		if (config->interval)
-			fputs("time,", config->output);
-		if (!config->iostat_run)
-			fputs(aggr_header_csv[config->aggr_mode], config->output);
-	}
 	if (config->iostat_run)
 		iostat_print_header_prefix(config);
 
+	if (config->cgroup_list)
+		os.cgrp = evlist__first(evlist)->cgrp;
+
 	/* Print metrics headers only */
 	evlist__for_each_entry(evlist, counter) {
+		if (!config->iostat_run &&
+		    config->aggr_mode != AGGR_NONE && counter->metric_leader != counter)
+			continue;
+
 		os.evsel = counter;
-		out.ctx = &os;
-		out.print_metric = print_metric_header;
-		out.new_line = new_line_metric;
-		out.force_header = true;
-		perf_stat__print_shadow_stats(config, counter, 0,
-					      0,
-					      &out,
-					      &config->metric_events,
-					      &rt_stat);
+
+		perf_stat__print_shadow_stats(config, counter, /*aggr_idx=*/0, &out);
 	}
-	fputc('\n', config->output);
+
+	if (!config->json_output)
+		fputc('\n', config->output);
 }
 
-static void print_interval(struct perf_stat_config *config,
-			   struct evlist *evlist,
-			   char *prefix, struct timespec *ts)
+static void prepare_timestamp(struct perf_stat_config *config,
+			      struct outstate *os, struct timespec *ts)
 {
-	bool metric_only = config->metric_only;
-	unsigned int unit_width = config->unit_width;
-	FILE *output = config->output;
-	static int num_print_interval;
+	if (config->iostat_run)
+		return;
 
-	if (config->interval_clear)
-		puts(CONSOLE_CLEAR);
-
-	if (!config->iostat_run)
-		sprintf(prefix, "%6lu.%09lu%s", (unsigned long) ts->tv_sec, ts->tv_nsec, config->csv_sep);
-
-	if ((num_print_interval == 0 && !config->csv_output) || config->interval_clear) {
-		switch (config->aggr_mode) {
-		case AGGR_NODE:
-			fprintf(output, "#           time node   cpus");
-			if (!metric_only)
-				fprintf(output, "             counts %*s events\n", unit_width, "unit");
-			break;
-		case AGGR_SOCKET:
-			fprintf(output, "#           time socket cpus");
-			if (!metric_only)
-				fprintf(output, "             counts %*s events\n", unit_width, "unit");
-			break;
-		case AGGR_DIE:
-			fprintf(output, "#           time die          cpus");
-			if (!metric_only)
-				fprintf(output, "             counts %*s events\n", unit_width, "unit");
-			break;
-		case AGGR_CORE:
-			fprintf(output, "#           time core            cpus");
-			if (!metric_only)
-				fprintf(output, "             counts %*s events\n", unit_width, "unit");
-			break;
-		case AGGR_NONE:
-			fprintf(output, "#           time CPU    ");
-			if (!metric_only)
-				fprintf(output, "                counts %*s events\n", unit_width, "unit");
-			break;
-		case AGGR_THREAD:
-			fprintf(output, "#           time             comm-pid");
-			if (!metric_only)
-				fprintf(output, "                  counts %*s events\n", unit_width, "unit");
-			break;
-		case AGGR_GLOBAL:
-		default:
-			if (!config->iostat_run) {
-				fprintf(output, "#           time");
-				if (!metric_only)
-					fprintf(output, "             counts %*s events\n", unit_width, "unit");
-			}
-		case AGGR_UNSET:
-			break;
-		}
-	}
-
-	if ((num_print_interval == 0 || config->interval_clear) && metric_only)
-		print_metric_headers(config, evlist, " ", true);
-	if (++num_print_interval == 25)
-		num_print_interval = 0;
+	if (config->json_output)
+		scnprintf(os->timestamp, sizeof(os->timestamp), "\"interval\" : %lu.%09lu",
+			  (unsigned long) ts->tv_sec, ts->tv_nsec);
+	else if (config->csv_output)
+		scnprintf(os->timestamp, sizeof(os->timestamp), "%lu.%09lu%s",
+			  (unsigned long) ts->tv_sec, ts->tv_nsec, config->csv_sep);
+	else
+		scnprintf(os->timestamp, sizeof(os->timestamp), "%6lu.%09lu ",
+			  (unsigned long) ts->tv_sec, ts->tv_nsec);
 }
 
-static void print_header(struct perf_stat_config *config,
-			 struct target *_target,
-			 int argc, const char **argv)
+static void print_header_interval_std(struct perf_stat_config *config,
+				      struct target *_target __maybe_unused,
+				      struct evlist *evlist,
+				      int argc __maybe_unused,
+				      const char **argv __maybe_unused)
+{
+	FILE *output = config->output;
+
+	switch (config->aggr_mode) {
+	case AGGR_NODE:
+	case AGGR_SOCKET:
+	case AGGR_DIE:
+	case AGGR_CLUSTER:
+	case AGGR_CACHE:
+	case AGGR_CORE:
+		fprintf(output, "#%*s %-*s ctrs",
+			INTERVAL_LEN - 1, "time",
+			aggr_header_lens[config->aggr_mode],
+			aggr_header_std[config->aggr_mode]);
+		break;
+	case AGGR_NONE:
+		fprintf(output, "#%*s %-*s",
+			INTERVAL_LEN - 1, "time",
+			aggr_header_lens[config->aggr_mode],
+			aggr_header_std[config->aggr_mode]);
+		break;
+	case AGGR_THREAD:
+		fprintf(output, "#%*s %*s-%-*s",
+			INTERVAL_LEN - 1, "time",
+			COMM_LEN, "comm", PID_LEN, "pid");
+		break;
+	case AGGR_GLOBAL:
+	default:
+		if (!config->iostat_run)
+			fprintf(output, "#%*s",
+				INTERVAL_LEN - 1, "time");
+	case AGGR_UNSET:
+	case AGGR_MAX:
+		break;
+	}
+
+	if (config->metric_only)
+		print_metric_headers(config, evlist, true);
+	else
+		fprintf(output, " %*s %*s events\n",
+			COUNTS_LEN, "counts", config->unit_width, "unit");
+}
+
+static void print_header_std(struct perf_stat_config *config,
+			     struct target *_target, struct evlist *evlist,
+			     int argc, const char **argv)
 {
 	FILE *output = config->output;
 	int i;
 
+	fprintf(output, "\n");
+	fprintf(output, " Performance counter stats for ");
+	if (_target->bpf_str)
+		fprintf(output, "\'BPF program(s) %s", _target->bpf_str);
+	else if (_target->system_wide)
+		fprintf(output, "\'system wide");
+	else if (_target->cpu_list)
+		fprintf(output, "\'CPU(s) %s", _target->cpu_list);
+	else if (!target__has_task(_target)) {
+		fprintf(output, "\'%s", argv ? argv[0] : "pipe");
+		for (i = 1; argv && (i < argc); i++)
+			fprintf(output, " %s", argv[i]);
+	} else if (_target->pid)
+		fprintf(output, "process id \'%s", _target->pid);
+	else
+		fprintf(output, "thread id \'%s", _target->tid);
+
+	fprintf(output, "\'");
+	if (config->run_count > 1)
+		fprintf(output, " (%d runs)", config->run_count);
+	fprintf(output, ":\n\n");
+
+	if (config->metric_only)
+		print_metric_headers(config, evlist, false);
+}
+
+static void print_header_csv(struct perf_stat_config *config,
+			     struct target *_target __maybe_unused,
+			     struct evlist *evlist,
+			     int argc __maybe_unused,
+			     const char **argv __maybe_unused)
+{
+	if (config->metric_only)
+		print_metric_headers(config, evlist, true);
+}
+static void print_header_json(struct perf_stat_config *config,
+			      struct target *_target __maybe_unused,
+			      struct evlist *evlist,
+			      int argc __maybe_unused,
+			      const char **argv __maybe_unused)
+{
+	if (config->metric_only)
+		print_metric_headers(config, evlist, true);
+}
+
+static void print_header(struct perf_stat_config *config,
+			 struct target *_target,
+			 struct evlist *evlist,
+			 int argc, const char **argv)
+{
+	static int num_print_iv;
+
 	fflush(stdout);
 
-	if (!config->csv_output) {
-		fprintf(output, "\n");
-		fprintf(output, " Performance counter stats for ");
-		if (_target->bpf_str)
-			fprintf(output, "\'BPF program(s) %s", _target->bpf_str);
-		else if (_target->system_wide)
-			fprintf(output, "\'system wide");
-		else if (_target->cpu_list)
-			fprintf(output, "\'CPU(s) %s", _target->cpu_list);
-		else if (!target__has_task(_target)) {
-			fprintf(output, "\'%s", argv ? argv[0] : "pipe");
-			for (i = 1; argv && (i < argc); i++)
-				fprintf(output, " %s", argv[i]);
-		} else if (_target->pid)
-			fprintf(output, "process id \'%s", _target->pid);
+	if (config->interval_clear)
+		puts(CONSOLE_CLEAR);
+
+	if (num_print_iv == 0 || config->interval_clear) {
+		if (config->json_output)
+			print_header_json(config, _target, evlist, argc, argv);
+		else if (config->csv_output)
+			print_header_csv(config, _target, evlist, argc, argv);
+		else if (config->interval)
+			print_header_interval_std(config, _target, evlist, argc, argv);
 		else
-			fprintf(output, "thread id \'%s", _target->tid);
-
-		fprintf(output, "\'");
-		if (config->run_count > 1)
-			fprintf(output, " (%d runs)", config->run_count);
-		fprintf(output, ":\n\n");
+			print_header_std(config, _target, evlist, argc, argv);
 	}
+
+	if (num_print_iv++ == 25)
+		num_print_iv = 0;
 }
 
-static int get_precision(double num)
-{
-	if (num > 1)
-		return 0;
-
-	return lround(ceil(-log10(num)));
-}
-
-static void print_table(struct perf_stat_config *config,
-			FILE *output, int precision, double avg)
+static void print_table(struct perf_stat_config *config, FILE *output, double avg)
 {
 	char tmp[64];
 	int idx, indent = 0;
 
-	scnprintf(tmp, 64, " %17.*f", precision, avg);
+	scnprintf(tmp, 64, " %17.9f", avg);
 	while (tmp[indent] == ' ')
 		indent++;
 
@@ -1159,8 +1405,7 @@ static void print_table(struct perf_stat_config *config,
 		double run = (double) config->walltime_run[idx] / NSEC_PER_SEC;
 		int h, n = 1 + abs((int) (100.0 * (run - avg)/run) / 5);
 
-		fprintf(output, " %17.*f (%+.*f) ",
-			precision, run, precision, run - avg);
+		fprintf(output, " %17.9f (%+.9f) ", run, run - avg);
 
 		for (h = 0; h < n; h++)
 			fprintf(output, "#");
@@ -1181,6 +1426,9 @@ static void print_footer(struct perf_stat_config *config)
 	double avg = avg_stats(config->walltime_nsecs_stats) / NSEC_PER_SEC;
 	FILE *output = config->output;
 
+	if (config->interval || config->csv_output || config->json_output)
+		return;
+
 	if (!config->null_run)
 		fprintf(output, "\n");
 
@@ -1197,19 +1445,13 @@ static void print_footer(struct perf_stat_config *config)
 		}
 	} else {
 		double sd = stddev_stats(config->walltime_nsecs_stats) / NSEC_PER_SEC;
-		/*
-		 * Display at most 2 more significant
-		 * digits than the stddev inaccuracy.
-		 */
-		int precision = get_precision(sd) + 2;
 
 		if (config->walltime_run_table)
-			print_table(config, output, precision, avg);
+			print_table(config, output, avg);
 
-		fprintf(output, " %17.*f +- %.*f seconds time elapsed",
-			precision, avg, precision, sd);
+		fprintf(output, " %17.9f +- %.9f seconds time elapsed", avg, sd);
 
-		print_noise_pct(config, sd, avg);
+		print_noise_pct(config, NULL, sd, avg, /*before_metric=*/false);
 	}
 	fprintf(output, "\n\n");
 
@@ -1219,135 +1461,143 @@ static void print_footer(struct perf_stat_config *config)
 "	echo 0 > /proc/sys/kernel/nmi_watchdog\n"
 "	perf stat ...\n"
 "	echo 1 > /proc/sys/kernel/nmi_watchdog\n");
-
-	if (config->print_mixed_hw_group_error)
-		fprintf(output,
-			"The events in group usually have to be from "
-			"the same PMU. Try reorganizing the group.\n");
-}
-
-static void print_percore_thread(struct perf_stat_config *config,
-				 struct evsel *counter, char *prefix)
-{
-	int s;
-	struct aggr_cpu_id s2, id;
-	struct perf_cpu_map *cpus;
-	bool first = true;
-	int idx;
-	struct perf_cpu cpu;
-
-	cpus = evsel__cpus(counter);
-	perf_cpu_map__for_each_cpu(cpu, idx, cpus) {
-		s2 = config->aggr_get_id(config, cpu);
-		for (s = 0; s < config->aggr_map->nr; s++) {
-			id = config->aggr_map->map[s];
-			if (aggr_cpu_id__equal(&s2, &id))
-				break;
-		}
-
-		print_counter_aggrdata(config, counter, s,
-				       prefix, false,
-				       &first, cpu);
-	}
 }
 
 static void print_percore(struct perf_stat_config *config,
-			  struct evsel *counter, char *prefix)
+			  struct evsel *counter, struct outstate *os)
 {
 	bool metric_only = config->metric_only;
 	FILE *output = config->output;
-	int s;
-	bool first = true;
+	struct cpu_aggr_map *core_map;
+	int aggr_idx, core_map_len = 0;
 
 	if (!config->aggr_map || !config->aggr_get_id)
 		return;
 
 	if (config->percore_show_thread)
-		return print_percore_thread(config, counter, prefix);
+		return print_counter(config, counter, os);
 
-	for (s = 0; s < config->aggr_map->nr; s++) {
-		if (prefix && metric_only)
-			fprintf(output, "%s", prefix);
-
-		print_counter_aggrdata(config, counter, s,
-				prefix, metric_only,
-				&first, (struct perf_cpu){ .cpu = -1 });
+	/*
+	 * core_map will hold the aggr_cpu_id for the cores that have been
+	 * printed so that each core is printed just once.
+	 */
+	core_map = cpu_aggr_map__empty_new(config->aggr_map->nr);
+	if (core_map == NULL) {
+		fprintf(output, "Cannot allocate per-core aggr map for display\n");
+		return;
 	}
+
+	cpu_aggr_map__for_each_idx(aggr_idx, config->aggr_map) {
+		struct perf_cpu curr_cpu = config->aggr_map->map[aggr_idx].cpu;
+		struct aggr_cpu_id core_id = aggr_cpu_id__core(curr_cpu, NULL);
+		bool found = false;
+
+		for (int i = 0; i < core_map_len; i++) {
+			if (aggr_cpu_id__equal(&core_map->map[i], &core_id)) {
+				found = true;
+				break;
+			}
+		}
+		if (found)
+			continue;
+
+		print_counter_aggrdata(config, counter, aggr_idx, os);
+
+		core_map->map[core_map_len++] = core_id;
+	}
+	free(core_map);
 
 	if (metric_only)
 		fputc('\n', output);
 }
 
+static void print_cgroup_counter(struct perf_stat_config *config, struct evlist *evlist,
+				 struct outstate *os)
+{
+	struct evsel *counter;
+
+	evlist__for_each_entry(evlist, counter) {
+		if (os->cgrp != counter->cgrp) {
+			if (os->cgrp != NULL)
+				print_metric_end(config, os);
+
+			os->cgrp = counter->cgrp;
+			print_metric_begin(config, evlist, os, /*aggr_idx=*/0);
+		}
+
+		print_counter(config, counter, os);
+	}
+	if (os->cgrp)
+		print_metric_end(config, os);
+}
+
 void evlist__print_counters(struct evlist *evlist, struct perf_stat_config *config,
-			    struct target *_target, struct timespec *ts, int argc, const char **argv)
+			    struct target *_target, struct timespec *ts,
+			    int argc, const char **argv)
 {
 	bool metric_only = config->metric_only;
-	int interval = config->interval;
 	struct evsel *counter;
-	char buf[64], *prefix = NULL;
+	struct outstate os = {
+		.fh = config->output,
+		.first = true,
+	};
+
+	evlist__uniquify_evsel_names(evlist, config);
 
 	if (config->iostat_run)
 		evlist->selected = evlist__first(evlist);
 
-	if (interval)
-		print_interval(config, evlist, prefix = buf, ts);
-	else
-		print_header(config, _target, argc, argv);
+	if (config->interval)
+		prepare_timestamp(config, &os, ts);
 
-	if (metric_only) {
-		static int num_print_iv;
-
-		if (num_print_iv == 0 && !interval)
-			print_metric_headers(config, evlist, prefix, false);
-		if (num_print_iv++ == 25)
-			num_print_iv = 0;
-		if (config->aggr_mode == AGGR_GLOBAL && prefix && !config->iostat_run)
-			fprintf(config->output, "%s", prefix);
-	}
+	print_header(config, _target, evlist, argc, argv);
 
 	switch (config->aggr_mode) {
 	case AGGR_CORE:
+	case AGGR_CACHE:
+	case AGGR_CLUSTER:
 	case AGGR_DIE:
 	case AGGR_SOCKET:
 	case AGGR_NODE:
-		print_aggr(config, evlist, prefix);
+		if (config->cgroup_list)
+			print_aggr_cgroup(config, evlist, &os);
+		else
+			print_aggr(config, evlist, &os);
 		break;
 	case AGGR_THREAD:
-		evlist__for_each_entry(evlist, counter) {
-			print_aggr_thread(config, _target, counter, prefix);
-		}
-		break;
 	case AGGR_GLOBAL:
-		if (config->iostat_run)
-			iostat_print_counters(evlist, config, ts, prefix = buf,
-					      print_counter_aggr);
-		else {
+		if (config->iostat_run) {
+			iostat_print_counters(evlist, config, ts, os.timestamp,
+					      (iostat_print_counter_t)print_counter, &os);
+		} else if (config->cgroup_list) {
+			print_cgroup_counter(config, evlist, &os);
+		} else {
+			print_metric_begin(config, evlist, &os, /*aggr_idx=*/0);
 			evlist__for_each_entry(evlist, counter) {
-				print_counter_aggr(config, counter, prefix);
+				print_counter(config, counter, &os);
 			}
-			if (metric_only)
-				fputc('\n', config->output);
+			print_metric_end(config, &os);
 		}
 		break;
 	case AGGR_NONE:
 		if (metric_only)
-			print_no_aggr_metric(config, evlist, prefix);
+			print_no_aggr_metric(config, evlist, &os);
 		else {
 			evlist__for_each_entry(evlist, counter) {
 				if (counter->percore)
-					print_percore(config, counter, prefix);
+					print_percore(config, counter, &os);
 				else
-					print_counter(config, counter, prefix);
+					print_counter(config, counter, &os);
 			}
 		}
 		break;
+	case AGGR_MAX:
 	case AGGR_UNSET:
 	default:
 		break;
 	}
 
-	if (!interval && !config->csv_output)
-		print_footer(config);
+	print_footer(config);
 
 	fflush(config->output);
 }

@@ -195,6 +195,7 @@ static int tc589_probe(struct pcmcia_device *link)
 {
 	struct el3_private *lp;
 	struct net_device *dev;
+	int ret;
 
 	dev_dbg(&link->dev, "3c589_attach()\n");
 
@@ -218,7 +219,15 @@ static int tc589_probe(struct pcmcia_device *link)
 
 	dev->ethtool_ops = &netdev_ethtool_ops;
 
-	return tc589_config(link);
+	ret = tc589_config(link);
+	if (ret)
+		goto err_free_netdev;
+
+	return 0;
+
+err_free_netdev:
+	free_netdev(dev);
+	return ret;
 }
 
 static void tc589_detach(struct pcmcia_device *link)
@@ -480,7 +489,7 @@ static void tc589_reset(struct net_device *dev)
 static void netdev_get_drvinfo(struct net_device *dev,
 			       struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
 	snprintf(info->bus_info, sizeof(info->bus_info),
 		"PCMCIA 0x%lx", dev->base_addr);
 }
@@ -493,7 +502,7 @@ static int el3_config(struct net_device *dev, struct ifmap *map)
 {
 	if ((map->port != (u_char)(-1)) && (map->port != dev->if_port)) {
 		if (map->port <= 3) {
-			dev->if_port = map->port;
+			WRITE_ONCE(dev->if_port, map->port);
 			netdev_info(dev, "switched to %s port\n", if_names[dev->if_port]);
 			tc589_set_xcvr(dev, dev->if_port);
 		} else {
@@ -676,7 +685,7 @@ static irqreturn_t el3_interrupt(int irq, void *dev_id)
 
 static void media_check(struct timer_list *t)
 {
-	struct el3_private *lp = from_timer(lp, t, media);
+	struct el3_private *lp = timer_container_of(lp, t, media);
 	struct net_device *dev = lp->p_dev->priv;
 	unsigned int ioaddr = dev->base_addr;
 	u16 media, errs;
@@ -937,7 +946,7 @@ static int el3_close(struct net_device *dev)
 
 	link->open--;
 	netif_stop_queue(dev);
-	del_timer_sync(&lp->media);
+	timer_delete_sync(&lp->media);
 
 	return 0;
 }

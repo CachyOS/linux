@@ -82,7 +82,7 @@ struct read_buffer {
 	struct list_head list;
 	unsigned int cons;
 	unsigned int len;
-	char msg[];
+	char msg[] __counted_by(len);
 };
 
 struct xenbus_file_priv {
@@ -128,7 +128,7 @@ static ssize_t xenbus_file_read(struct file *filp,
 {
 	struct xenbus_file_priv *u = filp->private_data;
 	struct read_buffer *rb;
-	unsigned i;
+	ssize_t i;
 	int ret;
 
 	mutex_lock(&u->reply_mutex);
@@ -148,7 +148,7 @@ again:
 	rb = list_entry(u->read_buffers.next, struct read_buffer, list);
 	i = 0;
 	while (i < len) {
-		unsigned sz = min((unsigned)len - i, rb->len - rb->cons);
+		size_t sz = min_t(size_t, len - i, rb->len - rb->cons);
 
 		ret = copy_to_user(ubuf + i, &rb->msg[rb->cons], sz);
 
@@ -195,7 +195,7 @@ static int queue_reply(struct list_head *queue, const void *data, size_t len)
 	if (len > XENSTORE_PAYLOAD_MAX)
 		return -EINVAL;
 
-	rb = kmalloc(sizeof(*rb) + len, GFP_KERNEL);
+	rb = kmalloc_flex(*rb, msg, len);
 	if (rb == NULL)
 		return -ENOMEM;
 
@@ -242,7 +242,7 @@ static struct watch_adapter *alloc_watch_adapter(const char *path,
 {
 	struct watch_adapter *watch;
 
-	watch = kzalloc(sizeof(*watch), GFP_KERNEL);
+	watch = kzalloc_obj(*watch);
 	if (watch == NULL)
 		goto out_fail;
 
@@ -406,7 +406,7 @@ void xenbus_dev_queue_reply(struct xb_req_data *req)
 	mutex_unlock(&u->reply_mutex);
 
 	kfree(req->body);
-	kfree(req);
+	kref_put(&req->kref, xs_free_req);
 
 	kref_put(&u->kref, xenbus_file_free);
 
@@ -454,7 +454,7 @@ static int xenbus_write_transaction(unsigned msg_type,
 	} *msg = (void *)u->u.buffer;
 
 	if (msg_type == XS_TRANSACTION_START) {
-		trans = kzalloc(sizeof(*trans), GFP_KERNEL);
+		trans = kzalloc_obj(*trans);
 		if (!trans) {
 			rc = -ENOMEM;
 			goto out;
@@ -655,7 +655,7 @@ static int xenbus_file_open(struct inode *inode, struct file *filp)
 
 	stream_open(inode, filp);
 
-	u = kzalloc(sizeof(*u), GFP_KERNEL);
+	u = kzalloc_obj(*u);
 	if (u == NULL)
 		return -ENOMEM;
 
@@ -700,7 +700,6 @@ const struct file_operations xen_xenbus_fops = {
 	.open = xenbus_file_open,
 	.release = xenbus_file_release,
 	.poll = xenbus_file_poll,
-	.llseek = no_llseek,
 };
 EXPORT_SYMBOL_GPL(xen_xenbus_fops);
 

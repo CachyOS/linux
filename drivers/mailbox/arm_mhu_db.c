@@ -15,7 +15,6 @@
 #include <linux/mailbox_controller.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 
 #define INTR_STAT_OFS	0x0
 #define INTR_SET_OFS	0x8
@@ -329,7 +328,7 @@ static int mhu_db_probe(struct amba_device *adev, const struct amba_id *id)
 	return 0;
 }
 
-static struct amba_id mhu_ids[] = {
+static const struct amba_id mhu_ids[] = {
 	{
 		.id	= 0x1bb098,
 		.mask	= 0xffffff,

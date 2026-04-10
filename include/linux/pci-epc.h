@@ -19,13 +19,6 @@ enum pci_epc_interface_type {
 	SECONDARY_INTERFACE,
 };
 
-enum pci_epc_irq_type {
-	PCI_EPC_IRQ_UNKNOWN,
-	PCI_EPC_IRQ_LEGACY,
-	PCI_EPC_IRQ_MSI,
-	PCI_EPC_IRQ_MSIX,
-};
-
 static inline const char *
 pci_epc_interface_string(enum pci_epc_interface_type type)
 {
@@ -40,10 +33,42 @@ pci_epc_interface_string(enum pci_epc_interface_type type)
 }
 
 /**
+ * struct pci_epc_map - information about EPC memory for mapping a RC PCI
+ *                      address range
+ * @pci_addr: start address of the RC PCI address range to map
+ * @pci_size: size of the RC PCI address range mapped from @pci_addr
+ * @map_pci_addr: RC PCI address used as the first address mapped (may be lower
+ *                than @pci_addr)
+ * @map_size: size of the controller memory needed for mapping the RC PCI address
+ *            range @map_pci_addr..@pci_addr+@pci_size
+ * @phys_base: base physical address of the allocated EPC memory for mapping the
+ *             RC PCI address range
+ * @phys_addr: physical address at which @pci_addr is mapped
+ * @virt_base: base virtual address of the allocated EPC memory for mapping the
+ *             RC PCI address range
+ * @virt_addr: virtual address at which @pci_addr is mapped
+ */
+struct pci_epc_map {
+	u64		pci_addr;
+	size_t		pci_size;
+
+	u64		map_pci_addr;
+	size_t		map_size;
+
+	phys_addr_t	phys_base;
+	phys_addr_t	phys_addr;
+	void __iomem	*virt_base;
+	void __iomem	*virt_addr;
+};
+
+/**
  * struct pci_epc_ops - set of function pointers for performing EPC operations
  * @write_header: ops to populate configuration space header
  * @set_bar: ops to configure the BAR
  * @clear_bar: ops to reset the BAR
+ * @align_addr: operation to get the mapping address, mapping size and offset
+ *		into a controller memory window needed to map an RC PCI address
+ *		region
  * @map_addr: ops to map CPU address to PCI address
  * @unmap_addr: ops to unmap CPU address and PCI address
  * @set_msi: ops to set the requested number of MSI interrupts in the MSI
@@ -68,18 +93,20 @@ struct pci_epc_ops {
 			   struct pci_epf_bar *epf_bar);
 	void	(*clear_bar)(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
 			     struct pci_epf_bar *epf_bar);
+	u64	(*align_addr)(struct pci_epc *epc, u64 pci_addr, size_t *size,
+			      size_t *offset);
 	int	(*map_addr)(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
 			    phys_addr_t addr, u64 pci_addr, size_t size);
 	void	(*unmap_addr)(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
 			      phys_addr_t addr);
 	int	(*set_msi)(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
-			   u8 interrupts);
+			   u8 nr_irqs);
 	int	(*get_msi)(struct pci_epc *epc, u8 func_no, u8 vfunc_no);
 	int	(*set_msix)(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
-			    u16 interrupts, enum pci_barno, u32 offset);
+			    u16 nr_irqs, enum pci_barno, u32 offset);
 	int	(*get_msix)(struct pci_epc *epc, u8 func_no, u8 vfunc_no);
 	int	(*raise_irq)(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
-			     enum pci_epc_irq_type type, u16 interrupt_num);
+			     unsigned int type, u16 interrupt_num);
 	int	(*map_msi_irq)(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
 			       phys_addr_t phys_addr, u8 interrupt_num,
 			       u32 entry_size, u32 *msi_data,
@@ -122,6 +149,7 @@ struct pci_epc_mem {
  * struct pci_epc - represents the PCI EPC device
  * @dev: PCI EPC device
  * @pci_epf: list of endpoint functions present in this EPC device
+ * @list_lock: Mutex for protecting pci_epf list
  * @ops: function pointers for performing endpoint operations
  * @windows: array of address space of the endpoint controller
  * @mem: first window of the endpoint controller, which corresponds to
@@ -134,11 +162,14 @@ struct pci_epc_mem {
  * @group: configfs group representing the PCI EPC device
  * @lock: mutex to protect pci_epc ops
  * @function_num_map: bitmap to manage physical function number
- * @notifier: used to notify EPF of any EPC events (like linkup)
+ * @domain_nr: PCI domain number of the endpoint controller
+ * @init_complete: flag to indicate whether the EPC initialization is complete
+ *                 or not
  */
 struct pci_epc {
 	struct device			dev;
 	struct list_head		pci_epf;
+	struct mutex			list_lock;
 	const struct pci_epc_ops	*ops;
 	struct pci_epc_mem		**windows;
 	struct pci_epc_mem		*mem;
@@ -149,33 +180,76 @@ struct pci_epc {
 	/* mutex to protect against concurrent access of EP controller */
 	struct mutex			lock;
 	unsigned long			function_num_map;
-	struct atomic_notifier_head	notifier;
+	int				domain_nr;
+	bool				init_complete;
+};
+
+/**
+ * enum pci_epc_bar_type - configurability of endpoint BAR
+ * @BAR_PROGRAMMABLE: The BAR mask can be configured by the EPC.
+ * @BAR_FIXED: The BAR mask is fixed by the hardware.
+ * @BAR_RESIZABLE: The BAR implements the PCI-SIG Resizable BAR Capability.
+ *		   NOTE: An EPC driver can currently only set a single supported
+ *		   size.
+ * @BAR_RESERVED: The BAR should not be touched by an EPF driver.
+ */
+enum pci_epc_bar_type {
+	BAR_PROGRAMMABLE = 0,
+	BAR_FIXED,
+	BAR_RESIZABLE,
+	BAR_RESERVED,
+};
+
+/**
+ * struct pci_epc_bar_desc - hardware description for a BAR
+ * @type: the type of the BAR
+ * @fixed_size: the fixed size, only applicable if type is BAR_FIXED_MASK.
+ * @only_64bit: if true, an EPF driver is not allowed to choose if this BAR
+ *		should be configured as 32-bit or 64-bit, the EPF driver must
+ *		configure this BAR as 64-bit. Additionally, the BAR succeeding
+ *		this BAR must be set to type BAR_RESERVED.
+ *
+ *		only_64bit should not be set on a BAR of type BAR_RESERVED.
+ *		(If BARx is a 64-bit BAR that an EPF driver is not allowed to
+ *		touch, then both BARx and BARx+1 must be set to type
+ *		BAR_RESERVED.)
+ */
+struct pci_epc_bar_desc {
+	enum pci_epc_bar_type type;
+	u64 fixed_size;
+	bool only_64bit;
 };
 
 /**
  * struct pci_epc_features - features supported by a EPC device per function
  * @linkup_notifier: indicate if the EPC device can notify EPF driver on link up
- * @core_init_notifier: indicate cores that can notify about their availability
- *			for initialization
+ * @dynamic_inbound_mapping: indicate if the EPC device supports updating
+ *                           inbound mappings for an already configured BAR
+ *                           (i.e. allow calling pci_epc_set_bar() again
+ *                           without first calling pci_epc_clear_bar())
+ * @subrange_mapping: indicate if the EPC device can map inbound subranges for a
+ *                    BAR. This feature depends on @dynamic_inbound_mapping
+ *                    feature.
  * @msi_capable: indicate if the endpoint function has MSI capability
  * @msix_capable: indicate if the endpoint function has MSI-X capability
- * @reserved_bar: bitmap to indicate reserved BAR unavailable to function driver
- * @bar_fixed_64bit: bitmap to indicate fixed 64bit BARs
- * @bar_fixed_size: Array specifying the size supported by each BAR
+ * @intx_capable: indicate if the endpoint can raise INTx interrupts
+ * @bar: array specifying the hardware description for each BAR
  * @align: alignment size required for BAR buffer allocation
  */
 struct pci_epc_features {
 	unsigned int	linkup_notifier : 1;
-	unsigned int	core_init_notifier : 1;
+	unsigned int	dynamic_inbound_mapping : 1;
+	unsigned int	subrange_mapping : 1;
 	unsigned int	msi_capable : 1;
 	unsigned int	msix_capable : 1;
-	u8	reserved_bar;
-	u8	bar_fixed_64bit;
-	u64	bar_fixed_size[PCI_STD_NUM_BARS];
+	unsigned int	intx_capable : 1;
+	struct	pci_epc_bar_desc bar[PCI_STD_NUM_BARS];
 	size_t	align;
 };
 
 #define to_pci_epc(device) container_of((device), struct pci_epc, dev)
+
+#ifdef CONFIG_PCI_ENDPOINT
 
 #define pci_epc_create(dev, ops)    \
 		__pci_epc_create((dev), (ops), THIS_MODULE)
@@ -192,28 +266,26 @@ static inline void *epc_get_drvdata(struct pci_epc *epc)
 	return dev_get_drvdata(&epc->dev);
 }
 
-static inline int
-pci_epc_register_notifier(struct pci_epc *epc, struct notifier_block *nb)
-{
-	return atomic_notifier_chain_register(&epc->notifier, nb);
-}
-
 struct pci_epc *
 __devm_pci_epc_create(struct device *dev, const struct pci_epc_ops *ops,
 		      struct module *owner);
 struct pci_epc *
 __pci_epc_create(struct device *dev, const struct pci_epc_ops *ops,
 		 struct module *owner);
-void devm_pci_epc_destroy(struct device *dev, struct pci_epc *epc);
 void pci_epc_destroy(struct pci_epc *epc);
 int pci_epc_add_epf(struct pci_epc *epc, struct pci_epf *epf,
 		    enum pci_epc_interface_type type);
 void pci_epc_linkup(struct pci_epc *epc);
+void pci_epc_linkdown(struct pci_epc *epc);
 void pci_epc_init_notify(struct pci_epc *epc);
+void pci_epc_notify_pending_init(struct pci_epc *epc, struct pci_epf *epf);
+void pci_epc_deinit_notify(struct pci_epc *epc);
+void pci_epc_bus_master_enable_notify(struct pci_epc *epc);
 void pci_epc_remove_epf(struct pci_epc *epc, struct pci_epf *epf,
 			enum pci_epc_interface_type type);
 int pci_epc_write_header(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
 			 struct pci_epf_header *hdr);
+int pci_epc_bar_size_to_rebar_cap(size_t size, u32 *cap);
 int pci_epc_set_bar(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
 		    struct pci_epf_bar *epf_bar);
 void pci_epc_clear_bar(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
@@ -223,17 +295,16 @@ int pci_epc_map_addr(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
 		     u64 pci_addr, size_t size);
 void pci_epc_unmap_addr(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
 			phys_addr_t phys_addr);
-int pci_epc_set_msi(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
-		    u8 interrupts);
+int pci_epc_set_msi(struct pci_epc *epc, u8 func_no, u8 vfunc_no, u8 nr_irqs);
 int pci_epc_get_msi(struct pci_epc *epc, u8 func_no, u8 vfunc_no);
-int pci_epc_set_msix(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
-		     u16 interrupts, enum pci_barno, u32 offset);
+int pci_epc_set_msix(struct pci_epc *epc, u8 func_no, u8 vfunc_no, u16 nr_irqs,
+		     enum pci_barno, u32 offset);
 int pci_epc_get_msix(struct pci_epc *epc, u8 func_no, u8 vfunc_no);
 int pci_epc_map_msi_irq(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
 			phys_addr_t phys_addr, u8 interrupt_num,
 			u32 entry_size, u32 *msi_data, u32 *msi_addr_offset);
 int pci_epc_raise_irq(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
-		      enum pci_epc_irq_type type, u16 interrupt_num);
+		      unsigned int type, u16 interrupt_num);
 int pci_epc_start(struct pci_epc *epc);
 void pci_epc_stop(struct pci_epc *epc);
 const struct pci_epc_features *pci_epc_get_features(struct pci_epc *epc,
@@ -255,4 +326,18 @@ void __iomem *pci_epc_mem_alloc_addr(struct pci_epc *epc,
 				     phys_addr_t *phys_addr, size_t size);
 void pci_epc_mem_free_addr(struct pci_epc *epc, phys_addr_t phys_addr,
 			   void __iomem *virt_addr, size_t size);
+int pci_epc_mem_map(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
+		    u64 pci_addr, size_t pci_size, struct pci_epc_map *map);
+void pci_epc_mem_unmap(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
+		       struct pci_epc_map *map);
+
+#else
+static inline void pci_epc_init_notify(struct pci_epc *epc)
+{
+}
+
+static inline void pci_epc_deinit_notify(struct pci_epc *epc)
+{
+}
+#endif /* CONFIG_PCI_ENDPOINT */
 #endif /* __LINUX_PCI_EPC_H */

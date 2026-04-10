@@ -256,12 +256,7 @@ static struct ibmpex_bmc_data *get_bmc_data(int iface)
 	return NULL;
 }
 
-static ssize_t name_show(struct device *dev, struct device_attribute *devattr,
-			 char *buf)
-{
-	return sprintf(buf, "%s\n", DRVNAME);
-}
-static SENSOR_DEVICE_ATTR_RO(name, name, 0);
+static DEVICE_STRING_ATTR_RO(name, 0444, DRVNAME);
 
 static ssize_t ibmpex_show_sensor(struct device *dev,
 				  struct device_attribute *devattr,
@@ -372,8 +367,7 @@ static int ibmpex_find_sensors(struct ibmpex_bmc_data *data)
 		return -ENOENT;
 	data->num_sensors = err;
 
-	data->sensors = kcalloc(data->num_sensors, sizeof(*data->sensors),
-				GFP_KERNEL);
+	data->sensors = kzalloc_objs(*data->sensors, data->num_sensors);
 	if (!data->sensors)
 		return -ENOMEM;
 
@@ -415,8 +409,7 @@ static int ibmpex_find_sensors(struct ibmpex_bmc_data *data)
 	if (err)
 		goto exit_remove;
 
-	err = device_create_file(data->bmc_device,
-			&sensor_dev_attr_name.dev_attr);
+	err = device_create_file(data->bmc_device, &dev_attr_name.attr);
 	if (err)
 		goto exit_remove;
 
@@ -425,7 +418,7 @@ static int ibmpex_find_sensors(struct ibmpex_bmc_data *data)
 exit_remove:
 	device_remove_file(data->bmc_device,
 			   &sensor_dev_attr_reset_high_low.dev_attr);
-	device_remove_file(data->bmc_device, &sensor_dev_attr_name.dev_attr);
+	device_remove_file(data->bmc_device, &dev_attr_name.attr);
 	for (i = 0; i < data->num_sensors; i++)
 		for (j = 0; j < PEX_NUM_SENSOR_FUNCS; j++) {
 			if (!data->sensors[i].attr[j].dev_attr.attr.name)
@@ -444,7 +437,7 @@ static void ibmpex_register_bmc(int iface, struct device *dev)
 	struct ibmpex_bmc_data *data;
 	int err;
 
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = kzalloc_obj(*data);
 	if (!data)
 		return;
 
@@ -502,6 +495,7 @@ static void ibmpex_register_bmc(int iface, struct device *dev)
 	return;
 
 out_register:
+	list_del(&data->list);
 	hwmon_device_unregister(data->hwmon_dev);
 out_user:
 	ipmi_destroy_user(data->user);
@@ -515,7 +509,7 @@ static void ibmpex_bmc_delete(struct ibmpex_bmc_data *data)
 
 	device_remove_file(data->bmc_device,
 			   &sensor_dev_attr_reset_high_low.dev_attr);
-	device_remove_file(data->bmc_device, &sensor_dev_attr_name.dev_attr);
+	device_remove_file(data->bmc_device, &dev_attr_name.attr);
 	for (i = 0; i < data->num_sensors; i++)
 		for (j = 0; j < PEX_NUM_SENSOR_FUNCS; j++) {
 			if (!data->sensors[i].attr[j].dev_attr.attr.name)
@@ -545,7 +539,7 @@ static void ibmpex_bmc_gone(int iface)
 
 static void ibmpex_msg_handler(struct ipmi_recv_msg *msg, void *user_msg_data)
 {
-	struct ibmpex_bmc_data *data = (struct ibmpex_bmc_data *)user_msg_data;
+	struct ibmpex_bmc_data *data = user_msg_data;
 
 	if (msg->msgid != data->tx_msgid) {
 		dev_err(data->bmc_device,

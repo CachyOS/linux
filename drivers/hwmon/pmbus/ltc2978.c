@@ -23,10 +23,11 @@ enum chips {
 	/* Managers */
 	ltc2972, ltc2974, ltc2975, ltc2977, ltc2978, ltc2979, ltc2980,
 	/* Controllers */
-	ltc3880, ltc3882, ltc3883, ltc3884, ltc3886, ltc3887, ltc3889, ltc7880,
+	lt7170, lt7171, ltc3880, ltc3882, ltc3883, ltc3884, ltc3886, ltc3887,
+	ltc3889, ltc7132, ltc7841, ltc7880,
 	/* Modules */
-	ltm2987, ltm4664, ltm4675, ltm4676, ltm4677, ltm4678, ltm4680, ltm4686,
-	ltm4700,
+	ltm2987, ltm4664, ltm4673, ltm4675, ltm4676, ltm4677, ltm4678, ltm4680,
+	ltm4686, ltm4700,
 };
 
 /* Common for all chips */
@@ -45,14 +46,13 @@ enum chips {
 #define LTC2974_MFR_IOUT_PEAK		0xd7
 #define LTC2974_MFR_IOUT_MIN		0xd8
 
-/* LTC3880, LTC3882, LTC3883, LTC3887, LTM4675, and LTM4676 */
+/* LTC3880, LTC3882, LTC3883, LTC3887, LTM4675, LTM4676, LTC7132 */
 #define LTC3880_MFR_IOUT_PEAK		0xd7
 #define LTC3880_MFR_CLEAR_PEAKS		0xe3
 #define LTC3880_MFR_TEMPERATURE2_PEAK	0xf4
 
-/* LTC3883, LTC3884, LTC3886, LTC3889 and LTC7880 only */
+/* LTC3883, LTC3884, LTC3886, LTC3889, LTC7132, LTC7841 and LTC7880 only */
 #define LTC3883_MFR_IIN_PEAK		0xe1
-
 
 /* LTC2975 only */
 #define LTC2975_MFR_IIN_PEAK		0xc4
@@ -62,6 +62,7 @@ enum chips {
 
 #define LTC2978_ID_MASK			0xfff0
 
+#define LT7170_ID			0x1C10
 #define LTC2972_ID			0x0310
 #define LTC2974_ID			0x0210
 #define LTC2975_ID			0x0220
@@ -79,11 +80,15 @@ enum chips {
 #define LTC3884_ID			0x4C00
 #define LTC3886_ID			0x4600
 #define LTC3887_ID			0x4700
+#define LTC3889_ID			0x4900
+#define LTC7132_ID			0x4CE0
+#define LTC7841_ID			0x40D0
+#define LTC7880_ID			0x49E0
 #define LTM2987_ID_A			0x8010	/* A/B for two die IDs */
 #define LTM2987_ID_B			0x8020
-#define LTC3889_ID			0x4900
-#define LTC7880_ID			0x49E0
 #define LTM4664_ID			0x4120
+#define LTM4673_ID_REV1			0x0230
+#define LTM4673_ID			0x4480
 #define LTM4675_ID			0x47a0
 #define LTM4676_ID_REV1			0x4400
 #define LTM4676_ID_REV2			0x4480
@@ -533,6 +538,8 @@ static int ltc2978_write_word_data(struct i2c_client *client, int page,
 }
 
 static const struct i2c_device_id ltc2978_id[] = {
+	{"lt7170", lt7170},
+	{"lt7171", lt7171},
 	{"ltc2972", ltc2972},
 	{"ltc2974", ltc2974},
 	{"ltc2975", ltc2975},
@@ -547,9 +554,12 @@ static const struct i2c_device_id ltc2978_id[] = {
 	{"ltc3886", ltc3886},
 	{"ltc3887", ltc3887},
 	{"ltc3889", ltc3889},
+	{"ltc7132", ltc7132},
+	{"ltc7841", ltc7841},
 	{"ltc7880", ltc7880},
 	{"ltm2987", ltm2987},
 	{"ltm4664", ltm4664},
+	{"ltm4673", ltm4673},
 	{"ltm4675", ltm4675},
 	{"ltm4676", ltm4676},
 	{"ltm4677", ltm4677},
@@ -562,7 +572,24 @@ static const struct i2c_device_id ltc2978_id[] = {
 MODULE_DEVICE_TABLE(i2c, ltc2978_id);
 
 #if IS_ENABLED(CONFIG_SENSORS_LTC2978_REGULATOR)
+#define LTC2978_ADC_RES	0xFFFF
+#define LTC2978_N_ADC	122
+#define LTC2978_MAX_UV	(LTC2978_ADC_RES * LTC2978_N_ADC)
+#define LTC2978_UV_STEP	1000
+#define LTC2978_N_VOLTAGES	((LTC2978_MAX_UV / LTC2978_UV_STEP) + 1)
+
 static const struct regulator_desc ltc2978_reg_desc[] = {
+	PMBUS_REGULATOR_STEP("vout", 0, LTC2978_N_VOLTAGES, LTC2978_UV_STEP, 0),
+	PMBUS_REGULATOR_STEP("vout", 1, LTC2978_N_VOLTAGES, LTC2978_UV_STEP, 0),
+	PMBUS_REGULATOR_STEP("vout", 2, LTC2978_N_VOLTAGES, LTC2978_UV_STEP, 0),
+	PMBUS_REGULATOR_STEP("vout", 3, LTC2978_N_VOLTAGES, LTC2978_UV_STEP, 0),
+	PMBUS_REGULATOR_STEP("vout", 4, LTC2978_N_VOLTAGES, LTC2978_UV_STEP, 0),
+	PMBUS_REGULATOR_STEP("vout", 5, LTC2978_N_VOLTAGES, LTC2978_UV_STEP, 0),
+	PMBUS_REGULATOR_STEP("vout", 6, LTC2978_N_VOLTAGES, LTC2978_UV_STEP, 0),
+	PMBUS_REGULATOR_STEP("vout", 7, LTC2978_N_VOLTAGES, LTC2978_UV_STEP, 0),
+};
+
+static const struct regulator_desc ltc2978_reg_desc_default[] = {
 	PMBUS_REGULATOR("vout", 0),
 	PMBUS_REGULATOR("vout", 1),
 	PMBUS_REGULATOR("vout", 2),
@@ -591,7 +618,7 @@ static int ltc2978_get_id(struct i2c_client *client)
 		ret = i2c_smbus_read_block_data(client, PMBUS_MFR_ID, buf);
 		if (ret < 0)
 			return ret;
-		if (ret < 3 || strncmp(buf, "LTC", 3))
+		if (ret < 3 || (strncmp(buf, "LTC", 3) && strncmp(buf, "ADI", 3)))
 			return -ENODEV;
 
 		ret = i2c_smbus_read_block_data(client, PMBUS_MFR_MODEL, buf);
@@ -605,6 +632,25 @@ static int ltc2978_get_id(struct i2c_client *client)
 	}
 
 	chip_id &= LTC2978_ID_MASK;
+
+	if (chip_id == LT7170_ID) {
+		u8 buf[I2C_SMBUS_BLOCK_MAX];
+		int ret;
+
+		ret = i2c_smbus_read_i2c_block_data(client, PMBUS_IC_DEVICE_ID,
+						    sizeof(buf), buf);
+		if (ret < 0)
+			return ret;
+
+		if (!strncmp(buf + 1, "LT7170", 6) ||
+		    !strncmp(buf + 1, "LT7170-1", 8))
+			return lt7170;
+		if (!strncmp(buf + 1, "LT7171", 6) ||
+		    !strncmp(buf + 1, "LT7171-1", 8))
+			return lt7171;
+
+		return -ENODEV;
+	}
 
 	if (chip_id == LTC2972_ID)
 		return ltc2972;
@@ -634,12 +680,18 @@ static int ltc2978_get_id(struct i2c_client *client)
 		return ltc3887;
 	else if (chip_id == LTC3889_ID)
 		return ltc3889;
+	else if (chip_id == LTC7132_ID)
+		return ltc7132;
+	else if (chip_id == LTC7841_ID)
+		return ltc7841;
 	else if (chip_id == LTC7880_ID)
 		return ltc7880;
 	else if (chip_id == LTM2987_ID_A || chip_id == LTM2987_ID_B)
 		return ltm2987;
 	else if (chip_id == LTM4664_ID)
 		return ltm4664;
+	else if (chip_id == LTM4673_ID || chip_id == LTM4673_ID_REV1)
+		return ltm4673;
 	else if (chip_id == LTM4675_ID)
 		return ltm4675;
 	else if (chip_id == LTM4676_ID_REV1 || chip_id == LTM4676_ID_REV2 ||
@@ -711,6 +763,20 @@ static int ltc2978_probe(struct i2c_client *client)
 	data->temp2_max = 0x7c00;
 
 	switch (data->id) {
+	case lt7170:
+	case lt7171:
+		data->features |= FEAT_CLEAR_PEAKS | FEAT_NEEDS_POLLING;
+		info->read_word_data = ltc3883_read_word_data;
+		info->pages = LTC3883_NUM_PAGES;
+		info->format[PSC_VOLTAGE_IN] = ieee754;
+		info->format[PSC_VOLTAGE_OUT] = ieee754;
+		info->format[PSC_CURRENT_OUT] = ieee754;
+		info->format[PSC_TEMPERATURE] = ieee754;
+		info->func[0] = PMBUS_HAVE_VIN | PMBUS_HAVE_STATUS_INPUT
+		  | PMBUS_HAVE_VOUT | PMBUS_HAVE_STATUS_VOUT
+		  | PMBUS_HAVE_IOUT | PMBUS_HAVE_STATUS_IOUT
+		  | PMBUS_HAVE_TEMP | PMBUS_HAVE_STATUS_TEMP;
+		break;
 	case ltc2972:
 		info->read_word_data = ltc2975_read_word_data;
 		info->pages = LTC2972_NUM_PAGES;
@@ -814,6 +880,7 @@ static int ltc2978_probe(struct i2c_client *client)
 	case ltc3884:
 	case ltc3886:
 	case ltc3889:
+	case ltc7132:
 	case ltc7880:
 	case ltm4664:
 	case ltm4678:
@@ -833,16 +900,60 @@ static int ltc2978_probe(struct i2c_client *client)
 		  | PMBUS_HAVE_POUT
 		  | PMBUS_HAVE_TEMP | PMBUS_HAVE_STATUS_TEMP;
 		break;
+	case ltc7841:
+		data->features |= FEAT_CLEAR_PEAKS;
+		info->read_word_data = ltc3883_read_word_data;
+		info->pages = LTC3883_NUM_PAGES;
+		info->func[0] = PMBUS_HAVE_VIN | PMBUS_HAVE_IIN
+		  | PMBUS_HAVE_STATUS_INPUT
+		  | PMBUS_HAVE_VOUT | PMBUS_HAVE_STATUS_VOUT
+		  | PMBUS_HAVE_IOUT
+		  | PMBUS_HAVE_TEMP | PMBUS_HAVE_STATUS_TEMP;
+		break;
+	case ltm4673:
+		data->features |= FEAT_NEEDS_POLLING;
+		info->read_word_data = ltc2975_read_word_data;
+		info->pages = LTC2974_NUM_PAGES;
+		info->func[0] = PMBUS_HAVE_VIN | PMBUS_HAVE_STATUS_INPUT
+		  | PMBUS_HAVE_TEMP2;
+		for (i = 0; i < info->pages; i++) {
+			info->func[i] |= PMBUS_HAVE_IIN
+			  | PMBUS_HAVE_VOUT | PMBUS_HAVE_STATUS_VOUT
+			  | PMBUS_HAVE_IOUT | PMBUS_HAVE_STATUS_IOUT
+			  | PMBUS_HAVE_PIN
+			  | PMBUS_HAVE_POUT
+			  | PMBUS_HAVE_TEMP | PMBUS_HAVE_STATUS_TEMP;
+		}
+		break;
 	default:
 		return -ENODEV;
 	}
 
 #if IS_ENABLED(CONFIG_SENSORS_LTC2978_REGULATOR)
 	info->num_regulators = info->pages;
-	info->reg_desc = ltc2978_reg_desc;
-	if (info->num_regulators > ARRAY_SIZE(ltc2978_reg_desc)) {
-		dev_err(&client->dev, "num_regulators too large!");
-		info->num_regulators = ARRAY_SIZE(ltc2978_reg_desc);
+	switch (data->id) {
+	case ltc2972:
+	case ltc2974:
+	case ltc2975:
+	case ltc2977:
+	case ltc2978:
+	case ltc2979:
+	case ltc2980:
+	case ltm2987:
+		info->reg_desc = ltc2978_reg_desc;
+		if (info->num_regulators > ARRAY_SIZE(ltc2978_reg_desc)) {
+			dev_warn(&client->dev, "num_regulators too large!");
+			info->num_regulators = ARRAY_SIZE(ltc2978_reg_desc);
+		}
+		break;
+	default:
+		info->reg_desc = ltc2978_reg_desc_default;
+		if (info->num_regulators > ARRAY_SIZE(ltc2978_reg_desc_default)) {
+			dev_warn(&client->dev, "num_regulators too large!");
+			info->num_regulators =
+			    ARRAY_SIZE(ltc2978_reg_desc_default);
+		}
+		break;
 	}
 #endif
 
@@ -852,6 +963,8 @@ static int ltc2978_probe(struct i2c_client *client)
 
 #ifdef CONFIG_OF
 static const struct of_device_id ltc2978_of_match[] = {
+	{ .compatible = "lltc,lt7170" },
+	{ .compatible = "lltc,lt7171" },
 	{ .compatible = "lltc,ltc2972" },
 	{ .compatible = "lltc,ltc2974" },
 	{ .compatible = "lltc,ltc2975" },
@@ -866,9 +979,12 @@ static const struct of_device_id ltc2978_of_match[] = {
 	{ .compatible = "lltc,ltc3886" },
 	{ .compatible = "lltc,ltc3887" },
 	{ .compatible = "lltc,ltc3889" },
+	{ .compatible = "lltc,ltc7132" },
+	{ .compatible = "lltc,ltc7841" },
 	{ .compatible = "lltc,ltc7880" },
 	{ .compatible = "lltc,ltm2987" },
 	{ .compatible = "lltc,ltm4664" },
+	{ .compatible = "lltc,ltm4673" },
 	{ .compatible = "lltc,ltm4675" },
 	{ .compatible = "lltc,ltm4676" },
 	{ .compatible = "lltc,ltm4677" },
@@ -886,7 +1002,7 @@ static struct i2c_driver ltc2978_driver = {
 		   .name = "ltc2978",
 		   .of_match_table = of_match_ptr(ltc2978_of_match),
 		   },
-	.probe_new = ltc2978_probe,
+	.probe = ltc2978_probe,
 	.id_table = ltc2978_id,
 };
 
@@ -895,4 +1011,4 @@ module_i2c_driver(ltc2978_driver);
 MODULE_AUTHOR("Guenter Roeck");
 MODULE_DESCRIPTION("PMBus driver for LTC2978 and compatible chips");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(PMBUS);
+MODULE_IMPORT_NS("PMBUS");

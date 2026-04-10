@@ -443,10 +443,10 @@ static void rionet_get_drvinfo(struct net_device *ndev,
 {
 	struct rionet_private *rnet = netdev_priv(ndev);
 
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->fw_version, "n/a", sizeof(info->fw_version));
-	strlcpy(info->bus_info, rnet->mport->name, sizeof(info->bus_info));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_VERSION, sizeof(info->version));
+	strscpy(info->fw_version, "n/a", sizeof(info->fw_version));
+	strscpy(info->bus_info, rnet->mport->name, sizeof(info->bus_info));
 }
 
 static u32 rionet_get_msglevel(struct net_device *ndev)
@@ -515,7 +515,7 @@ static int rionet_setup_netdev(struct rio_mport *mport, struct net_device *ndev)
 	/* MTU range: 68 - 4082 */
 	ndev->min_mtu = ETH_MIN_MTU;
 	ndev->max_mtu = RIONET_MAX_MTU;
-	ndev->features = NETIF_F_LLTX;
+	ndev->lltx = true;
 	SET_NETDEV_DEV(ndev, &mport->dev);
 	ndev->ethtool_ops = &rionet_ethtool_ops;
 
@@ -603,7 +603,7 @@ static int rionet_add_dev(struct device *dev, struct subsys_interface *sif)
 
 		rnet = netdev_priv(nets[netid].ndev);
 
-		peer = kzalloc(sizeof(*peer), GFP_KERNEL);
+		peer = kzalloc_obj(*peer);
 		if (!peer) {
 			rc = -ENOMEM;
 			goto out;
@@ -662,8 +662,7 @@ static int rionet_shutdown(struct notifier_block *nb, unsigned long code,
 	return NOTIFY_DONE;
 }
 
-static void rionet_remove_mport(struct device *dev,
-				struct class_interface *class_intf)
+static void rionet_remove_mport(struct device *dev)
 {
 	struct rio_mport *mport = to_rio_mport(dev);
 	struct net_device *ndev;

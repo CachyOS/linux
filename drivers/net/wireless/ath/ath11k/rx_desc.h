@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause-Clear */
 /*
  * Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #ifndef ATH11K_RX_DESC_H
 #define ATH11K_RX_DESC_H
@@ -877,7 +878,7 @@ struct rx_msdu_start_wcn6855 {
  *
  * l4_offset
  *		Depending upon mode bit, this field either indicates the
- *		L4 offset nin bytes from the start of RX_HEADER (only valid
+ *		L4 offset in bytes from the start of RX_HEADER (only valid
  *		if either ipv4_proto or ipv6_proto is set to 1) or indicates
  *		the offset in bytes to the start of TCP or UDP header from
  *		the start of the IP header after decapsulation (Only valid if

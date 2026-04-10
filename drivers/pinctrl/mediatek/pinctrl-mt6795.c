@@ -475,6 +475,7 @@ static const struct mtk_eint_hw mt6795_eint_hw = {
 	.ports     = 7,
 	.ap_num    = 224,
 	.db_cnt    = 32,
+	.db_time   = debounce_time_mt6795,
 };
 
 static const unsigned int mt6795_pull_type[] = {
@@ -611,7 +612,7 @@ static struct platform_driver mt6795_pinctrl_driver = {
 	.driver = {
 		.name = "mt6795-pinctrl",
 		.of_match_table = mt6795_pctrl_match,
-		.pm = &mtk_paris_pinctrl_pm_ops,
+		.pm = pm_sleep_ptr(&mtk_paris_pinctrl_pm_ops),
 	},
 	.probe = mtk_paris_pinctrl_probe,
 };

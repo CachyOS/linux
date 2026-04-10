@@ -57,8 +57,6 @@
 #define CHECK_Q_STOP_TIMEOUT_US		1000000
 #define CHECK_Q_STOP_STEP_US		10000
 
-#define CLDMA_JUMBO_BUFF_SZ		(63 * 1024 + sizeof(struct ccci_header))
-
 static void md_cd_queue_struct_reset(struct cldma_queue *queue, struct cldma_ctrl *md_ctrl,
 				     enum mtk_txrx tx_rx, unsigned int index)
 {
@@ -139,8 +137,9 @@ static int t7xx_cldma_gpd_rx_from_q(struct cldma_queue *queue, int budget, bool 
 				return -ENODEV;
 			}
 
-			gpd_addr = ioread64(hw_info->ap_pdn_base + REG_CLDMA_DL_CURRENT_ADDRL_0 +
-					    queue->index * sizeof(u64));
+			gpd_addr = ioread64_lo_hi(hw_info->ap_pdn_base +
+						  REG_CLDMA_DL_CURRENT_ADDRL_0 +
+						  queue->index * sizeof(u64));
 			if (req->gpd_addr == gpd_addr || hwo_polling_count++ >= 100)
 				return 0;
 
@@ -161,7 +160,7 @@ static int t7xx_cldma_gpd_rx_from_q(struct cldma_queue *queue, int budget, bool 
 		skb_reset_tail_pointer(skb);
 		skb_put(skb, le16_to_cpu(gpd->data_buff_len));
 
-		ret = md_ctrl->recv_skb(queue, skb);
+		ret = queue->recv_skb(queue, skb);
 		/* Break processing, will try again later */
 		if (ret < 0)
 			return ret;
@@ -251,7 +250,6 @@ static void t7xx_cldma_rx_done(struct work_struct *work)
 	t7xx_cldma_clear_ip_busy(&md_ctrl->hw_info);
 	t7xx_cldma_hw_irq_en_txrx(&md_ctrl->hw_info, queue->index, MTK_RX);
 	t7xx_cldma_hw_irq_en_eq(&md_ctrl->hw_info, queue->index, MTK_RX);
-	pm_runtime_mark_last_busy(md_ctrl->dev);
 	pm_runtime_put_autosuspend(md_ctrl->dev);
 }
 
@@ -318,8 +316,8 @@ static void t7xx_cldma_txq_empty_hndl(struct cldma_queue *queue)
 		struct t7xx_cldma_hw *hw_info = &md_ctrl->hw_info;
 
 		/* Check current processing TGPD, 64-bit address is in a table by Q index */
-		ul_curr_addr = ioread64(hw_info->ap_pdn_base + REG_CLDMA_UL_CURRENT_ADDRL_0 +
-					queue->index * sizeof(u64));
+		ul_curr_addr = ioread64_lo_hi(hw_info->ap_pdn_base + REG_CLDMA_UL_CURRENT_ADDRL_0 +
+					      queue->index * sizeof(u64));
 		if (req->gpd_addr != ul_curr_addr) {
 			spin_unlock_irqrestore(&md_ctrl->cldma_lock, flags);
 			dev_err(md_ctrl->dev, "CLDMA%d queue %d is not empty\n",
@@ -363,7 +361,6 @@ static void t7xx_cldma_tx_done(struct work_struct *work)
 	}
 	spin_unlock_irqrestore(&md_ctrl->cldma_lock, flags);
 
-	pm_runtime_mark_last_busy(md_ctrl->dev);
 	pm_runtime_put_autosuspend(md_ctrl->dev);
 }
 
@@ -394,7 +391,7 @@ static struct cldma_request *t7xx_alloc_rx_request(struct cldma_ctrl *md_ctrl, s
 	struct cldma_request *req;
 	int val;
 
-	req = kzalloc(sizeof(*req), GFP_KERNEL);
+	req = kzalloc_obj(*req);
 	if (!req)
 		return NULL;
 
@@ -454,7 +451,7 @@ static struct cldma_request *t7xx_alloc_tx_request(struct cldma_ctrl *md_ctrl)
 {
 	struct cldma_request *req;
 
-	req = kzalloc(sizeof(*req), GFP_KERNEL);
+	req = kzalloc_obj(*req);
 	if (!req)
 		return NULL;
 
@@ -897,13 +894,13 @@ static void t7xx_cldma_hw_start_send(struct cldma_ctrl *md_ctrl, int qno,
 
 /**
  * t7xx_cldma_set_recv_skb() - Set the callback to handle RX packets.
- * @md_ctrl: CLDMA context structure.
+ * @queue: CLDMA queue.
  * @recv_skb: Receiving skb callback.
  */
-void t7xx_cldma_set_recv_skb(struct cldma_ctrl *md_ctrl,
+static void t7xx_cldma_set_recv_skb(struct cldma_queue *queue,
 			     int (*recv_skb)(struct cldma_queue *queue, struct sk_buff *skb))
 {
-	md_ctrl->recv_skb = recv_skb;
+	queue->recv_skb = recv_skb;
 }
 
 /**
@@ -988,9 +985,30 @@ int t7xx_cldma_send_skb(struct cldma_ctrl *md_ctrl, int qno, struct sk_buff *skb
 
 allow_sleep:
 	t7xx_pci_enable_sleep(md_ctrl->t7xx_dev);
-	pm_runtime_mark_last_busy(md_ctrl->dev);
 	pm_runtime_put_autosuspend(md_ctrl->dev);
 	return ret;
+}
+
+static void t7xx_cldma_adjust_config(struct cldma_ctrl *md_ctrl, enum cldma_cfg cfg_id)
+{
+	int qno;
+
+	for (qno = 0; qno < CLDMA_RXQ_NUM; qno++) {
+		md_ctrl->rx_ring[qno].pkt_size = CLDMA_SHARED_Q_BUFF_SZ;
+		t7xx_cldma_set_recv_skb(&md_ctrl->rxq[qno], t7xx_port_proxy_recv_skb);
+	}
+
+	md_ctrl->rx_ring[CLDMA_RXQ_NUM - 1].pkt_size = CLDMA_JUMBO_BUFF_SZ;
+
+	for (qno = 0; qno < CLDMA_TXQ_NUM; qno++)
+		md_ctrl->tx_ring[qno].pkt_size = CLDMA_SHARED_Q_BUFF_SZ;
+
+	if (cfg_id == CLDMA_DEDICATED_Q_CFG) {
+		md_ctrl->tx_ring[CLDMA_Q_IDX_DUMP].pkt_size = CLDMA_DEDICATED_Q_BUFF_SZ;
+		md_ctrl->rx_ring[CLDMA_Q_IDX_DUMP].pkt_size = CLDMA_DEDICATED_Q_BUFF_SZ;
+		t7xx_cldma_set_recv_skb(&md_ctrl->rxq[CLDMA_Q_IDX_DUMP],
+					t7xx_port_proxy_recv_skb_from_dedicated_queue);
+	}
 }
 
 static int t7xx_cldma_late_init(struct cldma_ctrl *md_ctrl)
@@ -1021,11 +1039,6 @@ static int t7xx_cldma_late_init(struct cldma_ctrl *md_ctrl)
 	}
 
 	for (j = 0; j < CLDMA_RXQ_NUM; j++) {
-		md_ctrl->rx_ring[j].pkt_size = CLDMA_MTU;
-
-		if (j == CLDMA_RXQ_NUM - 1)
-			md_ctrl->rx_ring[j].pkt_size = CLDMA_JUMBO_BUFF_SZ;
-
 		ret = t7xx_cldma_rx_ring_init(md_ctrl, &md_ctrl->rx_ring[j]);
 		if (ret) {
 			dev_err(md_ctrl->dev, "Control RX ring init fail\n");
@@ -1064,13 +1077,18 @@ static void t7xx_hw_info_init(struct cldma_ctrl *md_ctrl)
 	struct t7xx_cldma_hw *hw_info = &md_ctrl->hw_info;
 	u32 phy_ao_base, phy_pd_base;
 
-	if (md_ctrl->hif_id != CLDMA_ID_MD)
-		return;
-
-	phy_ao_base = CLDMA1_AO_BASE;
-	phy_pd_base = CLDMA1_PD_BASE;
-	hw_info->phy_interrupt_id = CLDMA1_INT;
 	hw_info->hw_mode = MODE_BIT_64;
+
+	if (md_ctrl->hif_id == CLDMA_ID_MD) {
+		phy_ao_base = CLDMA1_AO_BASE;
+		phy_pd_base = CLDMA1_PD_BASE;
+		hw_info->phy_interrupt_id = CLDMA1_INT;
+	} else {
+		phy_ao_base = CLDMA0_AO_BASE;
+		phy_pd_base = CLDMA0_PD_BASE;
+		hw_info->phy_interrupt_id = CLDMA0_INT;
+	}
+
 	hw_info->ap_ao_base = t7xx_pcie_addr_transfer(pbase->pcie_ext_reg_base,
 						      pbase->pcie_dev_reg_trsl_addr, phy_ao_base);
 	hw_info->ap_pdn_base = t7xx_pcie_addr_transfer(pbase->pcie_ext_reg_base,
@@ -1087,6 +1105,7 @@ int t7xx_cldma_alloc(enum cldma_id hif_id, struct t7xx_pci_dev *t7xx_dev)
 {
 	struct device *dev = &t7xx_dev->pdev->dev;
 	struct cldma_ctrl *md_ctrl;
+	int qno;
 
 	md_ctrl = devm_kzalloc(dev, sizeof(*md_ctrl), GFP_KERNEL);
 	if (!md_ctrl)
@@ -1095,7 +1114,9 @@ int t7xx_cldma_alloc(enum cldma_id hif_id, struct t7xx_pci_dev *t7xx_dev)
 	md_ctrl->t7xx_dev = t7xx_dev;
 	md_ctrl->dev = dev;
 	md_ctrl->hif_id = hif_id;
-	md_ctrl->recv_skb = t7xx_cldma_default_recv_skb;
+	for (qno = 0; qno < CLDMA_RXQ_NUM; qno++)
+		md_ctrl->rxq[qno].recv_skb = t7xx_cldma_default_recv_skb;
+
 	t7xx_hw_info_init(md_ctrl);
 	t7xx_dev->md->md_ctrl[hif_id] = md_ctrl;
 	return 0;
@@ -1185,7 +1206,7 @@ static int t7xx_cldma_suspend(struct t7xx_pci_dev *t7xx_dev, void *entity_param)
 
 static int t7xx_cldma_pm_init(struct cldma_ctrl *md_ctrl)
 {
-	md_ctrl->pm_entity = kzalloc(sizeof(*md_ctrl->pm_entity), GFP_KERNEL);
+	md_ctrl->pm_entity = kzalloc_obj(*md_ctrl->pm_entity);
 	if (!md_ctrl->pm_entity)
 		return -ENOMEM;
 
@@ -1291,9 +1312,9 @@ int t7xx_cldma_init(struct cldma_ctrl *md_ctrl)
 	for (i = 0; i < CLDMA_TXQ_NUM; i++) {
 		md_cd_queue_struct_init(&md_ctrl->txq[i], md_ctrl, MTK_TX, i);
 		md_ctrl->txq[i].worker =
-			alloc_workqueue("md_hif%d_tx%d_worker",
-					WQ_UNBOUND | WQ_MEM_RECLAIM | (i ? 0 : WQ_HIGHPRI),
-					1, md_ctrl->hif_id, i);
+			alloc_ordered_workqueue("md_hif%d_tx%d_worker",
+					WQ_MEM_RECLAIM | (i ? 0 : WQ_HIGHPRI),
+					md_ctrl->hif_id, i);
 		if (!md_ctrl->txq[i].worker)
 			goto err_workqueue;
 
@@ -1304,9 +1325,10 @@ int t7xx_cldma_init(struct cldma_ctrl *md_ctrl)
 		md_cd_queue_struct_init(&md_ctrl->rxq[i], md_ctrl, MTK_RX, i);
 		INIT_WORK(&md_ctrl->rxq[i].cldma_work, t7xx_cldma_rx_done);
 
-		md_ctrl->rxq[i].worker = alloc_workqueue("md_hif%d_rx%d_worker",
-							 WQ_UNBOUND | WQ_MEM_RECLAIM,
-							 1, md_ctrl->hif_id, i);
+		md_ctrl->rxq[i].worker =
+			alloc_ordered_workqueue("md_hif%d_rx%d_worker",
+						WQ_MEM_RECLAIM,
+						md_ctrl->hif_id, i);
 		if (!md_ctrl->rxq[i].worker)
 			goto err_workqueue;
 	}
@@ -1324,9 +1346,10 @@ err_workqueue:
 	return -ENOMEM;
 }
 
-void t7xx_cldma_switch_cfg(struct cldma_ctrl *md_ctrl)
+void t7xx_cldma_switch_cfg(struct cldma_ctrl *md_ctrl, enum cldma_cfg cfg_id)
 {
 	t7xx_cldma_late_release(md_ctrl);
+	t7xx_cldma_adjust_config(md_ctrl, cfg_id);
 	t7xx_cldma_late_init(md_ctrl);
 }
 

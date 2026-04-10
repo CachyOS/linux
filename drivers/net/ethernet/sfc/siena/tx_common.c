@@ -12,6 +12,7 @@
 #include "efx.h"
 #include "nic_common.h"
 #include "tx_common.h"
+#include <net/gso.h>
 
 static unsigned int efx_tx_cb_page_count(struct efx_tx_queue *tx_queue)
 {
@@ -35,13 +36,12 @@ int efx_siena_probe_tx_queue(struct efx_tx_queue *tx_queue)
 		  tx_queue->queue, efx->txq_entries, tx_queue->ptr_mask);
 
 	/* Allocate software ring */
-	tx_queue->buffer = kcalloc(entries, sizeof(*tx_queue->buffer),
-				   GFP_KERNEL);
+	tx_queue->buffer = kzalloc_objs(*tx_queue->buffer, entries);
 	if (!tx_queue->buffer)
 		return -ENOMEM;
 
-	tx_queue->cb_page = kcalloc(efx_tx_cb_page_count(tx_queue),
-				    sizeof(tx_queue->cb_page[0]), GFP_KERNEL);
+	tx_queue->cb_page = kzalloc_objs(tx_queue->cb_page[0],
+					 efx_tx_cb_page_count(tx_queue));
 	if (!tx_queue->cb_page) {
 		rc = -ENOMEM;
 		goto fail1;
@@ -316,11 +316,10 @@ static int efx_tx_tso_header_length(struct sk_buff *skb)
 	size_t header_len;
 
 	if (skb->encapsulation)
-		header_len = skb_inner_transport_header(skb) -
-				skb->data +
+		header_len = skb_inner_transport_offset(skb) +
 				(inner_tcp_hdr(skb)->doff << 2u);
 	else
-		header_len = skb_transport_header(skb) - skb->data +
+		header_len = skb_transport_offset(skb) +
 				(tcp_hdr(skb)->doff << 2u);
 	return header_len;
 }

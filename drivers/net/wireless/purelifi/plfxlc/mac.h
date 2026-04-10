@@ -168,7 +168,7 @@ static inline u8 *plfxlc_mac_get_perm_addr(struct plfxlc_mac *mac)
 }
 
 struct ieee80211_hw *plfxlc_mac_alloc_hw(struct usb_interface *intf);
-void plfxlc_mac_release(struct plfxlc_mac *mac);
+void plfxlc_mac_release_hw(struct ieee80211_hw *hw);
 
 int plfxlc_mac_preinit_hw(struct ieee80211_hw *hw, const u8 *hw_address);
 int plfxlc_mac_init_hw(struct ieee80211_hw *hw);
@@ -178,7 +178,7 @@ int plfxlc_mac_rx(struct ieee80211_hw *hw, const u8 *buffer,
 void plfxlc_mac_tx_failed(struct urb *urb);
 void plfxlc_mac_tx_to_dev(struct sk_buff *skb, int error);
 int plfxlc_op_start(struct ieee80211_hw *hw);
-void plfxlc_op_stop(struct ieee80211_hw *hw);
+void plfxlc_op_stop(struct ieee80211_hw *hw, bool suspend);
 int plfxlc_restore_settings(struct plfxlc_mac *mac);
 
 #endif /* PLFXLC_MAC_H */

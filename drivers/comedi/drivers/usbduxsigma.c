@@ -39,7 +39,7 @@
 #include <linux/input.h>
 #include <linux/fcntl.h>
 #include <linux/compiler.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/comedi/comedi_usb.h>
 
 /* timeout for the USB-transfer in ms*/
@@ -1336,8 +1336,8 @@ static int usbduxsigma_alloc_usb_buffers(struct comedi_device *dev)
 	devpriv->dux_commands = kzalloc(SIZEOFDUXBUFFER, GFP_KERNEL);
 	devpriv->in_buf = kzalloc(SIZEINBUF, GFP_KERNEL);
 	devpriv->insn_buf = kzalloc(SIZEINSNBUF, GFP_KERNEL);
-	devpriv->ai_urbs = kcalloc(devpriv->n_ai_urbs, sizeof(urb), GFP_KERNEL);
-	devpriv->ao_urbs = kcalloc(devpriv->n_ao_urbs, sizeof(urb), GFP_KERNEL);
+	devpriv->ai_urbs = kzalloc_objs(urb, devpriv->n_ai_urbs);
+	devpriv->ao_urbs = kzalloc_objs(urb, devpriv->n_ao_urbs);
 	if (!devpriv->dux_commands || !devpriv->in_buf || !devpriv->insn_buf ||
 	    !devpriv->ai_urbs || !devpriv->ao_urbs)
 		return -ENOMEM;

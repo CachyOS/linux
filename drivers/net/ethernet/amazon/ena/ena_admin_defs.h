@@ -7,6 +7,21 @@
 
 #define ENA_ADMIN_RSS_KEY_PARTS              10
 
+#define ENA_ADMIN_CUSTOMER_METRICS_SUPPORT_MASK 0x3F
+#define ENA_ADMIN_CUSTOMER_METRICS_MIN_SUPPORT_MASK 0x1F
+
+ /* customer metrics - in correlation with
+  * ENA_ADMIN_CUSTOMER_METRICS_SUPPORT_MASK
+  */
+enum ena_admin_customer_metrics_id {
+	ENA_ADMIN_BW_IN_ALLOWANCE_EXCEEDED         = 0,
+	ENA_ADMIN_BW_OUT_ALLOWANCE_EXCEEDED        = 1,
+	ENA_ADMIN_PPS_ALLOWANCE_EXCEEDED           = 2,
+	ENA_ADMIN_CONNTRACK_ALLOWANCE_EXCEEDED     = 3,
+	ENA_ADMIN_LINKLOCAL_ALLOWANCE_EXCEEDED     = 4,
+	ENA_ADMIN_CONNTRACK_ALLOWANCE_AVAILABLE    = 5,
+};
+
 enum ena_admin_aq_opcode {
 	ENA_ADMIN_CREATE_SQ                         = 1,
 	ENA_ADMIN_DESTROY_SQ                        = 2,
@@ -45,12 +60,16 @@ enum ena_admin_aq_feature_id {
 	ENA_ADMIN_AENQ_CONFIG                       = 26,
 	ENA_ADMIN_LINK_CONFIG                       = 27,
 	ENA_ADMIN_HOST_ATTR_CONFIG                  = 28,
+	ENA_ADMIN_PHC_CONFIG                        = 29,
 	ENA_ADMIN_FEATURES_OPCODE_NUM               = 32,
 };
 
 /* device capabilities */
 enum ena_admin_aq_caps_id {
 	ENA_ADMIN_ENI_STATS                         = 0,
+	/* ENA SRD customer metrics */
+	ENA_ADMIN_ENA_SRD_INFO                      = 1,
+	ENA_ADMIN_CUSTOMER_METRICS                  = 2,
 };
 
 enum ena_admin_placement_policy_type {
@@ -99,11 +118,32 @@ enum ena_admin_get_stats_type {
 	ENA_ADMIN_GET_STATS_TYPE_EXTENDED           = 1,
 	/* extra HW stats for specific network interface */
 	ENA_ADMIN_GET_STATS_TYPE_ENI                = 2,
+	/* extra HW stats for ENA SRD */
+	ENA_ADMIN_GET_STATS_TYPE_ENA_SRD            = 3,
+	ENA_ADMIN_GET_STATS_TYPE_CUSTOMER_METRICS   = 4,
 };
 
 enum ena_admin_get_stats_scope {
 	ENA_ADMIN_SPECIFIC_QUEUE                    = 0,
 	ENA_ADMIN_ETH_TRAFFIC                       = 1,
+};
+
+enum ena_admin_phc_type {
+	ENA_ADMIN_PHC_TYPE_READLESS                 = 0,
+};
+
+enum ena_admin_phc_error_flags {
+	ENA_ADMIN_PHC_ERROR_FLAG_TIMESTAMP   = BIT(0),
+};
+
+/* ENA SRD configuration for ENI */
+enum ena_admin_ena_srd_flags {
+	/* Feature enabled */
+	ENA_ADMIN_ENA_SRD_ENABLED                   = BIT(0),
+	/* UDP support enabled */
+	ENA_ADMIN_ENA_SRD_UDP_ENABLED               = BIT(1),
+	/* Bypass Rx UDP ordering */
+	ENA_ADMIN_ENA_SRD_UDP_ORDERING_BYPASS_ENABLED = BIT(2),
 };
 
 struct ena_admin_aq_common_desc {
@@ -363,6 +403,9 @@ struct ena_admin_aq_get_stats_cmd {
 	 * stats of other device
 	 */
 	u16 device_id;
+
+	/* a bitmap representing the requested metric values */
+	u64 requested_metrics;
 };
 
 /* Basic Statistics Command. */
@@ -419,6 +462,40 @@ struct ena_admin_eni_stats {
 	u64 linklocal_allowance_exceeded;
 };
 
+struct ena_admin_ena_srd_stats {
+	/* Number of packets transmitted over ENA SRD */
+	u64 ena_srd_tx_pkts;
+
+	/* Number of packets transmitted or could have been
+	 * transmitted over ENA SRD
+	 */
+	u64 ena_srd_eligible_tx_pkts;
+
+	/* Number of packets received over ENA SRD */
+	u64 ena_srd_rx_pkts;
+
+	/* Percentage of the ENA SRD resources that is in use */
+	u64 ena_srd_resource_utilization;
+};
+
+/* ENA SRD Statistics Command */
+struct ena_admin_ena_srd_info {
+	/* ENA SRD configuration bitmap. See ena_admin_ena_srd_flags for
+	 * details
+	 */
+	u64 flags;
+
+	struct ena_admin_ena_srd_stats ena_srd_stats;
+};
+
+/* Customer Metrics Command. */
+struct ena_admin_customer_metrics {
+	/* A bitmap representing the reported customer metrics according to
+	 * the order they are reported
+	 */
+	u64 reported_metrics;
+};
+
 struct ena_admin_acq_get_stats_resp {
 	struct ena_admin_acq_common_desc acq_common_desc;
 
@@ -428,6 +505,10 @@ struct ena_admin_acq_get_stats_resp {
 		struct ena_admin_basic_stats basic_stats;
 
 		struct ena_admin_eni_stats eni_stats;
+
+		struct ena_admin_ena_srd_info ena_srd_info;
+
+		struct ena_admin_customer_metrics customer_metrics;
 	} u;
 };
 
@@ -869,7 +950,11 @@ struct ena_admin_host_info {
 	 * 2 : interrupt_moderation
 	 * 3 : rx_buf_mirroring
 	 * 4 : rss_configurable_function_key
-	 * 31:5 : reserved
+	 * 5 : reserved
+	 * 6 : rx_page_reuse
+	 * 7 : reserved
+	 * 8 : phc
+	 * 31:9 : reserved
 	 */
 	u32 driver_supported_features;
 };
@@ -901,7 +986,7 @@ struct ena_admin_feature_rss_ind_table {
 	struct ena_admin_rss_ind_table_entry inline_entry;
 };
 
-/* When hint value is 0, driver should use it's own predefined value */
+/* When hint value is 0, driver should use its own predefined value */
 struct ena_admin_ena_hw_hints {
 	/* value in ms */
 	u16 mmio_read_timeout;
@@ -949,6 +1034,43 @@ struct ena_admin_queue_ext_feature_desc {
 	};
 };
 
+struct ena_admin_feature_phc_desc {
+	/* PHC type as defined in enum ena_admin_get_phc_type,
+	 * used only for GET command.
+	 */
+	u8 type;
+
+	/* Reserved - MBZ */
+	u8 reserved1[3];
+
+	/* PHC doorbell address as an offset to PCIe MMIO REG BAR,
+	 * used only for GET command.
+	 */
+	u32 doorbell_offset;
+
+	/* Max time for valid PHC retrieval, passing this threshold will
+	 * fail the get-time request and block PHC requests for
+	 * block_timeout_usec, used only for GET command.
+	 */
+	u32 expire_timeout_usec;
+
+	/* PHC requests block period, blocking starts if PHC request expired
+	 * in order to prevent floods on busy device,
+	 * used only for GET command.
+	 */
+	u32 block_timeout_usec;
+
+	/* Shared PHC physical address (ena_admin_phc_resp),
+	 * used only for SET command.
+	 */
+	struct ena_common_mem_addr output_address;
+
+	/* Shared PHC Size (ena_admin_phc_resp),
+	 * used only for SET command.
+	 */
+	u32 output_length;
+};
+
 struct ena_admin_get_feat_resp {
 	struct ena_admin_acq_common_desc acq_common_desc;
 
@@ -978,6 +1100,8 @@ struct ena_admin_get_feat_resp {
 		struct ena_admin_feature_intr_moder_desc intr_moderation;
 
 		struct ena_admin_ena_hw_hints hw_hints;
+
+		struct ena_admin_feature_phc_desc phc;
 	} u;
 };
 
@@ -1011,6 +1135,9 @@ struct ena_admin_set_feat_cmd {
 
 		/* LLQ configuration */
 		struct ena_admin_feature_llq_desc llq;
+
+		/* PHC configuration */
+		struct ena_admin_feature_phc_desc phc;
 	} u;
 };
 
@@ -1086,6 +1213,23 @@ struct ena_admin_ena_mmio_req_read_less_resp {
 
 	/* value is valid when poll is cleared */
 	u32 reg_val;
+};
+
+struct ena_admin_phc_resp {
+	/* Request Id, received from DB register */
+	u16 req_id;
+
+	u8 reserved1[6];
+
+	/* PHC timestamp (nsec) */
+	u64 timestamp;
+
+	u8 reserved2[12];
+
+	/* Bit field of enum ena_admin_phc_error_flags */
+	u32 error_flags;
+
+	u8 reserved3[32];
 };
 
 /* aq_common_desc */
@@ -1184,6 +1328,10 @@ struct ena_admin_ena_mmio_req_read_less_resp {
 #define ENA_ADMIN_HOST_INFO_RX_BUF_MIRRORING_MASK           BIT(3)
 #define ENA_ADMIN_HOST_INFO_RSS_CONFIGURABLE_FUNCTION_KEY_SHIFT 4
 #define ENA_ADMIN_HOST_INFO_RSS_CONFIGURABLE_FUNCTION_KEY_MASK BIT(4)
+#define ENA_ADMIN_HOST_INFO_RX_PAGE_REUSE_SHIFT             6
+#define ENA_ADMIN_HOST_INFO_RX_PAGE_REUSE_MASK              BIT(6)
+#define ENA_ADMIN_HOST_INFO_PHC_SHIFT                       8
+#define ENA_ADMIN_HOST_INFO_PHC_MASK                        BIT(8)
 
 /* aenq_common_desc */
 #define ENA_ADMIN_AENQ_COMMON_DESC_PHASE_MASK               BIT(0)

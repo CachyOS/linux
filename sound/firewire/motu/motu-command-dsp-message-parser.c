@@ -80,21 +80,23 @@ int snd_motu_command_dsp_message_parser_init(struct snd_motu *motu, enum cip_sfc
 #define FRAGMENTS_PER_VALUE		4
 #define VALUES_AT_IMAGE_END		0xffffffffffffffff
 
-void snd_motu_command_dsp_message_parser_parse(struct snd_motu *motu, const struct pkt_desc *descs,
-					unsigned int desc_count, unsigned int data_block_quadlets)
+void snd_motu_command_dsp_message_parser_parse(const struct amdtp_stream *s,
+					const struct pkt_desc *desc, unsigned int count)
 {
+	struct snd_motu *motu = container_of(s, struct snd_motu, tx_stream);
+	unsigned int data_block_quadlets = s->data_block_quadlets;
 	struct msg_parser *parser = motu->message_parser;
 	unsigned int interval = parser->interval;
-	unsigned long flags;
 	int i;
 
-	spin_lock_irqsave(&parser->lock, flags);
+	guard(spinlock_irqsave)(&parser->lock);
 
-	for (i = 0; i < desc_count; ++i) {
-		const struct pkt_desc *desc = descs + i;
+	for (i = 0; i < count; ++i) {
 		__be32 *buffer = desc->ctx_payload;
 		unsigned int data_blocks = desc->data_blocks;
 		int j;
+
+		desc = amdtp_stream_next_packet_desc(s, desc);
 
 		for (j = 0; j < data_blocks; ++j) {
 			u8 *b = (u8 *)buffer;
@@ -165,17 +167,13 @@ void snd_motu_command_dsp_message_parser_parse(struct snd_motu *motu, const stru
 			}
 		}
 	}
-
-	spin_unlock_irqrestore(&parser->lock, flags);
 }
 
 void snd_motu_command_dsp_message_parser_copy_meter(struct snd_motu *motu,
 					struct snd_firewire_motu_command_dsp_meter *meter)
 {
 	struct msg_parser *parser = motu->message_parser;
-	unsigned long flags;
 
-	spin_lock_irqsave(&parser->lock, flags);
+	guard(spinlock_irqsave)(&parser->lock);
 	memcpy(meter, &parser->meter, sizeof(*meter));
-	spin_unlock_irqrestore(&parser->lock, flags);
 }

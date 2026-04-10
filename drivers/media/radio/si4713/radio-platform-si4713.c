@@ -75,35 +75,35 @@ static inline struct v4l2_device *get_v4l2_dev(struct file *file)
 	return &((struct radio_si4713_device *)video_drvdata(file))->v4l2_dev;
 }
 
-static int radio_si4713_g_modulator(struct file *file, void *p,
+static int radio_si4713_g_modulator(struct file *file, void *priv,
 				    struct v4l2_modulator *vm)
 {
 	return v4l2_device_call_until_err(get_v4l2_dev(file), 0, tuner,
 					  g_modulator, vm);
 }
 
-static int radio_si4713_s_modulator(struct file *file, void *p,
+static int radio_si4713_s_modulator(struct file *file, void *priv,
 				    const struct v4l2_modulator *vm)
 {
 	return v4l2_device_call_until_err(get_v4l2_dev(file), 0, tuner,
 					  s_modulator, vm);
 }
 
-static int radio_si4713_g_frequency(struct file *file, void *p,
+static int radio_si4713_g_frequency(struct file *file, void *priv,
 				    struct v4l2_frequency *vf)
 {
 	return v4l2_device_call_until_err(get_v4l2_dev(file), 0, tuner,
 					  g_frequency, vf);
 }
 
-static int radio_si4713_s_frequency(struct file *file, void *p,
+static int radio_si4713_s_frequency(struct file *file, void *priv,
 				    const struct v4l2_frequency *vf)
 {
 	return v4l2_device_call_until_err(get_v4l2_dev(file), 0, tuner,
 					  s_frequency, vf);
 }
 
-static long radio_si4713_default(struct file *file, void *p,
+static long radio_si4713_default(struct file *file, void *priv,
 				 bool valid_prio, unsigned int cmd, void *arg)
 {
 	return v4l2_device_call_until_err(get_v4l2_dev(file), 0, core,
@@ -190,7 +190,7 @@ exit:
 }
 
 /* radio_si4713_pdriver_remove - remove the device */
-static int radio_si4713_pdriver_remove(struct platform_device *pdev)
+static void radio_si4713_pdriver_remove(struct platform_device *pdev)
 {
 	struct v4l2_device *v4l2_dev = platform_get_drvdata(pdev);
 	struct radio_si4713_device *rsdev;
@@ -198,8 +198,6 @@ static int radio_si4713_pdriver_remove(struct platform_device *pdev)
 	rsdev = container_of(v4l2_dev, struct radio_si4713_device, v4l2_dev);
 	video_unregister_device(&rsdev->radio_dev);
 	v4l2_device_unregister(&rsdev->v4l2_dev);
-
-	return 0;
 }
 
 static struct platform_driver radio_si4713_pdriver = {

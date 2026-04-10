@@ -401,23 +401,23 @@ data_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 }
 
 static int data_sock_setsockopt(struct socket *sock, int level, int optname,
-				sockptr_t optval, unsigned int len)
+				sockptr_t optval, unsigned int optlen)
 {
 	struct sock *sk = sock->sk;
 	int err = 0, opt = 0;
 
 	if (*debug & DEBUG_SOCKET)
 		printk(KERN_DEBUG "%s(%p, %d, %x, optval, %d)\n", __func__, sock,
-		       level, optname, len);
+		       level, optname, optlen);
 
 	lock_sock(sk);
 
 	switch (optname) {
 	case MISDN_TIME_STAMP:
-		if (copy_from_sockptr(&opt, optval, sizeof(int))) {
-			err = -EFAULT;
+		err = copy_safe_from_sockptr(&opt, sizeof(opt),
+					     optval, optlen);
+		if (err)
 			break;
-		}
 
 		if (opt)
 			_pms(sk)->cmask |= MISDN_TIME_STAMP;
@@ -462,7 +462,7 @@ static int data_sock_getsockopt(struct socket *sock, int level, int optname,
 }
 
 static int
-data_sock_bind(struct socket *sock, struct sockaddr *addr, int addr_len)
+data_sock_bind(struct socket *sock, struct sockaddr_unsized *addr, int addr_len)
 {
 	struct sockaddr_mISDN *maddr = (struct sockaddr_mISDN *) addr;
 	struct sock *sk = sock->sk;
@@ -696,7 +696,7 @@ base_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 }
 
 static int
-base_sock_bind(struct socket *sock, struct sockaddr *addr, int addr_len)
+base_sock_bind(struct socket *sock, struct sockaddr_unsized *addr, int addr_len)
 {
 	struct sockaddr_mISDN *maddr = (struct sockaddr_mISDN *) addr;
 	struct sock *sk = sock->sk;

@@ -354,17 +354,15 @@ err_disable_pclk:
 	return ret;
 }
 
-static int cdns_rtc_remove(struct platform_device *pdev)
+static void cdns_rtc_remove(struct platform_device *pdev)
 {
 	struct cdns_rtc *crtc = platform_get_drvdata(pdev);
 
 	cdns_rtc_alarm_irq_enable(&pdev->dev, 0);
-	device_init_wakeup(&pdev->dev, 0);
+	device_init_wakeup(&pdev->dev, false);
 
 	clk_disable_unprepare(crtc->pclk);
 	clk_disable_unprepare(crtc->ref_clk);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

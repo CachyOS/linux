@@ -22,6 +22,7 @@
  *
  */
 
+#include <linux/aperture.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -1202,6 +1203,7 @@ static int pm3fb_blank(int blank_mode, struct fb_info *info)
 
 static const struct fb_ops pm3fb_ops = {
 	.owner		= THIS_MODULE,
+	__FB_DEFAULT_IOMEM_OPS_RDWR,
 	.fb_check_var	= pm3fb_check_var,
 	.fb_set_par	= pm3fb_set_par,
 	.fb_setcolreg	= pm3fb_setcolreg,
@@ -1212,6 +1214,7 @@ static const struct fb_ops pm3fb_ops = {
 	.fb_blank	= pm3fb_blank,
 	.fb_sync	= pm3fb_sync,
 	.fb_cursor	= pm3fb_cursor,
+	__FB_DEFAULT_IOMEM_OPS_MMAP,
 };
 
 /* ------------------------------------------------------------------------- */
@@ -1315,6 +1318,10 @@ static int pm3fb_probe(struct pci_dev *dev, const struct pci_device_id *ent)
 	int err;
 	int retval = -ENXIO;
 
+	err = aperture_remove_conflicting_pci_devices(dev, "pm3fb");
+	if (err)
+		return err;
+
 	err = pci_enable_device(dev);
 	if (err) {
 		printk(KERN_WARNING "pm3fb: Can't enable PCI dev: %d\n", err);
@@ -1385,8 +1392,7 @@ static int pm3fb_probe(struct pci_dev *dev, const struct pci_device_id *ent)
 
 	info->fix = pm3fb_fix;
 	info->pseudo_palette = par->palette;
-	info->flags = FBINFO_DEFAULT |
-			FBINFO_HWACCEL_XPAN |
+	info->flags = FBINFO_HWACCEL_XPAN |
 			FBINFO_HWACCEL_YPAN |
 			FBINFO_HWACCEL_COPYAREA |
 			FBINFO_HWACCEL_IMAGEBLIT |
@@ -1535,7 +1541,12 @@ static int __init pm3fb_init(void)
 	 */
 #ifndef MODULE
 	char *option = NULL;
+#endif
 
+	if (fb_modesetting_disabled("pm3fb"))
+		return -ENODEV;
+
+#ifndef MODULE
 	if (fb_get_options("pm3fb", &option))
 		return -ENODEV;
 	pm3fb_setup(option);

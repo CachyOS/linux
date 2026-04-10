@@ -26,6 +26,7 @@
 #include <linux/mfd/syscon.h>
 #include <linux/regmap.h>
 #include <linux/of.h>
+#include <linux/of_graph.h>
 #include <linux/regulator/consumer.h>
 #include <linux/suspend.h>
 #include <linux/component.h>
@@ -767,11 +768,9 @@ int dss_runtime_get(void)
 
 	DSSDBG("dss_runtime_get\n");
 
-	r = pm_runtime_get_sync(&dss.pdev->dev);
-	if (WARN_ON(r < 0)) {
-		pm_runtime_put_sync(&dss.pdev->dev);
+	r = pm_runtime_resume_and_get(&dss.pdev->dev);
+	if (WARN_ON(r < 0))
 		return r;
-	}
 	return 0;
 }
 
@@ -921,10 +920,7 @@ static int dss_init_ports(struct platform_device *pdev)
 	struct device_node *port;
 	int r, ret = 0;
 
-	if (parent == NULL)
-		return 0;
-
-	port = omapdss_of_get_next_port(parent, NULL);
+	port = of_graph_get_next_port(parent, NULL);
 	if (!port)
 		return 0;
 
@@ -954,8 +950,9 @@ static int dss_init_ports(struct platform_device *pdev)
 		default:
 			break;
 		}
-	} while (!ret &&
-		 (port = omapdss_of_get_next_port(parent, port)) != NULL);
+
+		port = of_graph_get_next_port(parent, port);
+	} while (!ret && port);
 
 	if (ret)
 		dss_uninit_ports(pdev);
@@ -968,10 +965,7 @@ static void dss_uninit_ports(struct platform_device *pdev)
 	struct device_node *parent = pdev->dev.of_node;
 	struct device_node *port;
 
-	if (parent == NULL)
-		return;
-
-	port = omapdss_of_get_next_port(parent, NULL);
+	port = of_graph_get_next_port(parent, NULL);
 	if (!port)
 		return;
 
@@ -1002,7 +996,9 @@ static void dss_uninit_ports(struct platform_device *pdev)
 		default:
 			break;
 		}
-	} while ((port = omapdss_of_get_next_port(parent, port)) != NULL);
+
+		port = of_graph_get_next_port(parent, port);
+	} while (port);
 }
 
 static int dss_video_pll_probe(struct platform_device *pdev)
@@ -1226,10 +1222,9 @@ static int dss_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int dss_remove(struct platform_device *pdev)
+static void dss_remove(struct platform_device *pdev)
 {
 	component_master_del(&pdev->dev, &dss_component_ops);
-	return 0;
 }
 
 static int dss_runtime_suspend(struct device *dev)

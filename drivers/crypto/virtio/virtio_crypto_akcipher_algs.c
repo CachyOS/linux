@@ -7,26 +7,25 @@
   * Copyright 2022 Bytedance CO., LTD.
   */
 
-#include <linux/mpi.h>
-#include <linux/scatterlist.h>
-#include <crypto/algapi.h>
+#include <crypto/engine.h>
 #include <crypto/internal/akcipher.h>
 #include <crypto/internal/rsa.h>
-#include <linux/err.h>
 #include <crypto/scatterwalk.h>
-#include <linux/atomic.h>
-
+#include <linux/err.h>
+#include <linux/kernel.h>
+#include <linux/mpi.h>
+#include <linux/scatterlist.h>
+#include <linux/slab.h>
+#include <linux/string.h>
 #include <uapi/linux/virtio_crypto.h>
 #include "virtio_crypto_common.h"
 
 struct virtio_crypto_rsa_ctx {
-	MPI n;
+	unsigned int key_size;
 };
 
 struct virtio_crypto_akcipher_ctx {
-	struct crypto_engine_ctx enginectx;
 	struct virtio_crypto *vcrypto;
-	struct crypto_akcipher *tfm;
 	bool session_valid;
 	__u64 session_id;
 	union {
@@ -36,8 +35,6 @@ struct virtio_crypto_akcipher_ctx {
 
 struct virtio_crypto_akcipher_request {
 	struct virtio_crypto_request base;
-	struct virtio_crypto_akcipher_ctx *akcipher_ctx;
-	struct akcipher_request *akcipher_req;
 	void *src_buf;
 	void *dst_buf;
 	uint32_t opcode;
@@ -47,7 +44,7 @@ struct virtio_crypto_akcipher_algo {
 	uint32_t algonum;
 	uint32_t service;
 	unsigned int active_devs;
-	struct akcipher_alg algo;
+	struct akcipher_engine_alg algo;
 };
 
 static DEFINE_MUTEX(algs_lock);
@@ -56,6 +53,10 @@ static void virtio_crypto_akcipher_finalize_req(
 	struct virtio_crypto_akcipher_request *vc_akcipher_req,
 	struct akcipher_request *req, int err)
 {
+	kfree(vc_akcipher_req->src_buf);
+	kfree(vc_akcipher_req->dst_buf);
+	vc_akcipher_req->src_buf = NULL;
+	vc_akcipher_req->dst_buf = NULL;
 	virtcrypto_clear_request(&vc_akcipher_req->base);
 
 	crypto_finalize_akcipher_request(vc_akcipher_req->base.dataq->engine, req, err);
@@ -65,7 +66,9 @@ static void virtio_crypto_dataq_akcipher_callback(struct virtio_crypto_request *
 {
 	struct virtio_crypto_akcipher_request *vc_akcipher_req =
 		container_of(vc_req, struct virtio_crypto_akcipher_request, base);
-	struct akcipher_request *akcipher_req;
+	struct akcipher_request *akcipher_req =
+		container_of((void *)vc_akcipher_req, struct akcipher_request,
+			     __ctx);
 	int error;
 
 	switch (vc_req->status) {
@@ -79,28 +82,21 @@ static void virtio_crypto_dataq_akcipher_callback(struct virtio_crypto_request *
 	case VIRTIO_CRYPTO_BADMSG:
 		error = -EBADMSG;
 		break;
-
-	case VIRTIO_CRYPTO_KEY_REJECTED:
-		error = -EKEYREJECTED;
-		break;
-
 	default:
 		error = -EIO;
 		break;
 	}
 
-	akcipher_req = vc_akcipher_req->akcipher_req;
-	if (vc_akcipher_req->opcode != VIRTIO_CRYPTO_AKCIPHER_VERIFY) {
-		/* actuall length maybe less than dst buffer */
-		akcipher_req->dst_len = len - sizeof(vc_req->status);
-		sg_copy_from_buffer(akcipher_req->dst, sg_nents(akcipher_req->dst),
-				    vc_akcipher_req->dst_buf, akcipher_req->dst_len);
-	}
+	/* actual length may be less than dst buffer */
+	akcipher_req->dst_len = len - sizeof(vc_req->status);
+	sg_copy_from_buffer(akcipher_req->dst, sg_nents(akcipher_req->dst),
+			    vc_akcipher_req->dst_buf, akcipher_req->dst_len);
 	virtio_crypto_akcipher_finalize_req(vc_akcipher_req, akcipher_req, error);
 }
 
 static int virtio_crypto_alg_akcipher_init_session(struct virtio_crypto_akcipher_ctx *ctx,
-		struct virtio_crypto_ctrl_header *header, void *para,
+		struct virtio_crypto_ctrl_header *header,
+		struct virtio_crypto_akcipher_session_para *para,
 		const uint8_t *key, unsigned int keylen)
 {
 	struct scatterlist outhdr_sg, key_sg, inhdr_sg, *sgs[3];
@@ -112,11 +108,11 @@ static int virtio_crypto_alg_akcipher_init_session(struct virtio_crypto_akcipher
 	struct virtio_crypto_session_input *input;
 	struct virtio_crypto_ctrl_request *vc_ctrl_req;
 
-	pkey = kmemdup(key, keylen, GFP_ATOMIC);
+	pkey = kmemdup(key, keylen, GFP_KERNEL);
 	if (!pkey)
 		return -ENOMEM;
 
-	vc_ctrl_req = kzalloc(sizeof(*vc_ctrl_req), GFP_KERNEL);
+	vc_ctrl_req = kzalloc_obj(*vc_ctrl_req);
 	if (!vc_ctrl_req) {
 		err = -ENOMEM;
 		goto out;
@@ -124,7 +120,7 @@ static int virtio_crypto_alg_akcipher_init_session(struct virtio_crypto_akcipher
 
 	ctrl = &vc_ctrl_req->ctrl;
 	memcpy(&ctrl->header, header, sizeof(ctrl->header));
-	memcpy(&ctrl->u, para, sizeof(ctrl->u));
+	memcpy(&ctrl->u.akcipher_create_session.para, para, sizeof(*para));
 	input = &vc_ctrl_req->input;
 	input->status = cpu_to_le32(VIRTIO_CRYPTO_ERR);
 
@@ -173,7 +169,7 @@ static int virtio_crypto_alg_akcipher_close_session(struct virtio_crypto_akciphe
 	if (!ctx->session_valid)
 		return 0;
 
-	vc_ctrl_req = kzalloc(sizeof(*vc_ctrl_req), GFP_KERNEL);
+	vc_ctrl_req = kzalloc_obj(*vc_ctrl_req);
 	if (!vc_ctrl_req)
 		return -ENOMEM;
 
@@ -215,46 +211,38 @@ out:
 static int __virtio_crypto_akcipher_do_req(struct virtio_crypto_akcipher_request *vc_akcipher_req,
 		struct akcipher_request *req, struct data_queue *data_vq)
 {
-	struct virtio_crypto_akcipher_ctx *ctx = vc_akcipher_req->akcipher_ctx;
+	struct crypto_akcipher *atfm = crypto_akcipher_reqtfm(req);
+	struct virtio_crypto_akcipher_ctx *ctx = akcipher_tfm_ctx(atfm);
 	struct virtio_crypto_request *vc_req = &vc_akcipher_req->base;
 	struct virtio_crypto *vcrypto = ctx->vcrypto;
 	struct virtio_crypto_op_data_req *req_data = vc_req->req_data;
 	struct scatterlist *sgs[4], outhdr_sg, inhdr_sg, srcdata_sg, dstdata_sg;
-	void *src_buf = NULL, *dst_buf = NULL;
+	void *src_buf, *dst_buf = NULL;
 	unsigned int num_out = 0, num_in = 0;
 	int node = dev_to_node(&vcrypto->vdev->dev);
 	unsigned long flags;
-	int ret = -ENOMEM;
-	bool verify = vc_akcipher_req->opcode == VIRTIO_CRYPTO_AKCIPHER_VERIFY;
-	unsigned int src_len = verify ? req->src_len + req->dst_len : req->src_len;
+	int ret;
 
 	/* out header */
 	sg_init_one(&outhdr_sg, req_data, sizeof(*req_data));
 	sgs[num_out++] = &outhdr_sg;
 
 	/* src data */
-	src_buf = kcalloc_node(src_len, 1, GFP_KERNEL, node);
+	src_buf = kcalloc_node(req->src_len, 1, GFP_KERNEL, node);
 	if (!src_buf)
-		goto err;
+		return -ENOMEM;
 
-	if (verify) {
-		/* for verify operation, both src and dst data work as OUT direction */
-		sg_copy_to_buffer(req->src, sg_nents(req->src), src_buf, src_len);
-		sg_init_one(&srcdata_sg, src_buf, src_len);
-		sgs[num_out++] = &srcdata_sg;
-	} else {
-		sg_copy_to_buffer(req->src, sg_nents(req->src), src_buf, src_len);
-		sg_init_one(&srcdata_sg, src_buf, src_len);
-		sgs[num_out++] = &srcdata_sg;
+	sg_copy_to_buffer(req->src, sg_nents(req->src), src_buf, req->src_len);
+	sg_init_one(&srcdata_sg, src_buf, req->src_len);
+	sgs[num_out++] = &srcdata_sg;
 
-		/* dst data */
-		dst_buf = kcalloc_node(req->dst_len, 1, GFP_KERNEL, node);
-		if (!dst_buf)
-			goto err;
+	/* dst data */
+	dst_buf = kcalloc_node(req->dst_len, 1, GFP_KERNEL, node);
+	if (!dst_buf)
+		goto free_src;
 
-		sg_init_one(&dstdata_sg, dst_buf, req->dst_len);
-		sgs[num_out + num_in++] = &dstdata_sg;
-	}
+	sg_init_one(&dstdata_sg, dst_buf, req->dst_len);
+	sgs[num_out + num_in++] = &dstdata_sg;
 
 	vc_akcipher_req->src_buf = src_buf;
 	vc_akcipher_req->dst_buf = dst_buf;
@@ -273,9 +261,9 @@ static int __virtio_crypto_akcipher_do_req(struct virtio_crypto_akcipher_request
 	return 0;
 
 err:
-	kfree(src_buf);
 	kfree(dst_buf);
-
+free_src:
+	kfree(src_buf);
 	return -ENOMEM;
 }
 
@@ -284,7 +272,8 @@ static int virtio_crypto_rsa_do_req(struct crypto_engine *engine, void *vreq)
 	struct akcipher_request *req = container_of(vreq, struct akcipher_request, base);
 	struct virtio_crypto_akcipher_request *vc_akcipher_req = akcipher_request_ctx(req);
 	struct virtio_crypto_request *vc_req = &vc_akcipher_req->base;
-	struct virtio_crypto_akcipher_ctx *ctx = vc_akcipher_req->akcipher_ctx;
+	struct crypto_akcipher *atfm = crypto_akcipher_reqtfm(req);
+	struct virtio_crypto_akcipher_ctx *ctx = akcipher_tfm_ctx(atfm);
 	struct virtio_crypto *vcrypto = ctx->vcrypto;
 	struct data_queue *data_vq = vc_req->dataq;
 	struct virtio_crypto_op_header *header;
@@ -330,8 +319,6 @@ static int virtio_crypto_rsa_req(struct akcipher_request *req, uint32_t opcode)
 
 	vc_req->dataq = data_vq;
 	vc_req->alg_cb = virtio_crypto_dataq_akcipher_callback;
-	vc_akcipher_req->akcipher_ctx = ctx;
-	vc_akcipher_req->akcipher_req = req;
 	vc_akcipher_req->opcode = opcode;
 
 	return crypto_transfer_akcipher_request_to_engine(data_vq->engine, req);
@@ -345,16 +332,6 @@ static int virtio_crypto_rsa_encrypt(struct akcipher_request *req)
 static int virtio_crypto_rsa_decrypt(struct akcipher_request *req)
 {
 	return virtio_crypto_rsa_req(req, VIRTIO_CRYPTO_AKCIPHER_DECRYPT);
-}
-
-static int virtio_crypto_rsa_sign(struct akcipher_request *req)
-{
-	return virtio_crypto_rsa_req(req, VIRTIO_CRYPTO_AKCIPHER_SIGN);
-}
-
-static int virtio_crypto_rsa_verify(struct akcipher_request *req)
-{
-	return virtio_crypto_rsa_req(req, VIRTIO_CRYPTO_AKCIPHER_VERIFY);
 }
 
 static int virtio_crypto_rsa_set_key(struct crypto_akcipher *tfm,
@@ -373,10 +350,7 @@ static int virtio_crypto_rsa_set_key(struct crypto_akcipher *tfm,
 	int node = virtio_crypto_get_current_node();
 	uint32_t keytype;
 	int ret;
-
-	/* mpi_free will test n, just free it. */
-	mpi_free(rsa_ctx->n);
-	rsa_ctx->n = NULL;
+	MPI n;
 
 	if (private) {
 		keytype = VIRTIO_CRYPTO_AKCIPHER_KEY_TYPE_PRIVATE;
@@ -389,9 +363,12 @@ static int virtio_crypto_rsa_set_key(struct crypto_akcipher *tfm,
 	if (ret)
 		return ret;
 
-	rsa_ctx->n = mpi_read_raw_data(rsa_key.n, rsa_key.n_sz);
-	if (!rsa_ctx->n)
+	n = mpi_read_raw_data(rsa_key.n, rsa_key.n_sz);
+	if (!n)
 		return -ENOMEM;
+
+	rsa_ctx->key_size = mpi_get_size(n);
+	mpi_free(n);
 
 	if (!ctx->vcrypto) {
 		vcrypto = virtcrypto_get_dev_node(node, VIRTIO_CRYPTO_SERVICE_AKCIPHER,
@@ -463,17 +440,13 @@ static unsigned int virtio_crypto_rsa_max_size(struct crypto_akcipher *tfm)
 	struct virtio_crypto_akcipher_ctx *ctx = akcipher_tfm_ctx(tfm);
 	struct virtio_crypto_rsa_ctx *rsa_ctx = &ctx->rsa_ctx;
 
-	return mpi_get_size(rsa_ctx->n);
+	return rsa_ctx->key_size;
 }
 
 static int virtio_crypto_rsa_init_tfm(struct crypto_akcipher *tfm)
 {
-	struct virtio_crypto_akcipher_ctx *ctx = akcipher_tfm_ctx(tfm);
-
-	ctx->tfm = tfm;
-	ctx->enginectx.op.do_one_request = virtio_crypto_rsa_do_req;
-	ctx->enginectx.op.prepare_request = NULL;
-	ctx->enginectx.op.unprepare_request = NULL;
+	akcipher_set_reqsize(tfm,
+			     sizeof(struct virtio_crypto_akcipher_request));
 
 	return 0;
 }
@@ -481,19 +454,16 @@ static int virtio_crypto_rsa_init_tfm(struct crypto_akcipher *tfm)
 static void virtio_crypto_rsa_exit_tfm(struct crypto_akcipher *tfm)
 {
 	struct virtio_crypto_akcipher_ctx *ctx = akcipher_tfm_ctx(tfm);
-	struct virtio_crypto_rsa_ctx *rsa_ctx = &ctx->rsa_ctx;
 
 	virtio_crypto_alg_akcipher_close_session(ctx);
 	virtcrypto_dev_put(ctx->vcrypto);
-	mpi_free(rsa_ctx->n);
-	rsa_ctx->n = NULL;
 }
 
 static struct virtio_crypto_akcipher_algo virtio_crypto_akcipher_algs[] = {
 	{
 		.algonum = VIRTIO_CRYPTO_AKCIPHER_RSA,
 		.service = VIRTIO_CRYPTO_SERVICE_AKCIPHER,
-		.algo = {
+		.algo.base = {
 			.encrypt = virtio_crypto_rsa_encrypt,
 			.decrypt = virtio_crypto_rsa_decrypt,
 			.set_pub_key = virtio_crypto_rsa_raw_set_pub_key,
@@ -501,7 +471,6 @@ static struct virtio_crypto_akcipher_algo virtio_crypto_akcipher_algs[] = {
 			.max_size = virtio_crypto_rsa_max_size,
 			.init = virtio_crypto_rsa_init_tfm,
 			.exit = virtio_crypto_rsa_exit_tfm,
-			.reqsize = sizeof(struct virtio_crypto_akcipher_request),
 			.base = {
 				.cra_name = "rsa",
 				.cra_driver_name = "virtio-crypto-rsa",
@@ -510,28 +479,36 @@ static struct virtio_crypto_akcipher_algo virtio_crypto_akcipher_algs[] = {
 				.cra_ctxsize = sizeof(struct virtio_crypto_akcipher_ctx),
 			},
 		},
+		.algo.op = {
+			.do_one_request = virtio_crypto_rsa_do_req,
+		},
 	},
 	{
 		.algonum = VIRTIO_CRYPTO_AKCIPHER_RSA,
 		.service = VIRTIO_CRYPTO_SERVICE_AKCIPHER,
-		.algo = {
+		.algo.base = {
 			.encrypt = virtio_crypto_rsa_encrypt,
 			.decrypt = virtio_crypto_rsa_decrypt,
-			.sign = virtio_crypto_rsa_sign,
-			.verify = virtio_crypto_rsa_verify,
+			/*
+			 * Must specify an arbitrary hash algorithm upon
+			 * set_{pub,priv}_key (even though it's not used
+			 * by encrypt/decrypt) because qemu checks for it.
+			 */
 			.set_pub_key = virtio_crypto_p1pad_rsa_sha1_set_pub_key,
 			.set_priv_key = virtio_crypto_p1pad_rsa_sha1_set_priv_key,
 			.max_size = virtio_crypto_rsa_max_size,
 			.init = virtio_crypto_rsa_init_tfm,
 			.exit = virtio_crypto_rsa_exit_tfm,
-			.reqsize = sizeof(struct virtio_crypto_akcipher_request),
 			.base = {
-				.cra_name = "pkcs1pad(rsa,sha1)",
-				.cra_driver_name = "virtio-pkcs1-rsa-with-sha1",
+				.cra_name = "pkcs1pad(rsa)",
+				.cra_driver_name = "virtio-pkcs1-rsa",
 				.cra_priority = 150,
 				.cra_module = THIS_MODULE,
 				.cra_ctxsize = sizeof(struct virtio_crypto_akcipher_ctx),
 			},
+		},
+		.algo.op = {
+			.do_one_request = virtio_crypto_rsa_do_req,
 		},
 	},
 };
@@ -551,14 +528,14 @@ int virtio_crypto_akcipher_algs_register(struct virtio_crypto *vcrypto)
 			continue;
 
 		if (virtio_crypto_akcipher_algs[i].active_devs == 0) {
-			ret = crypto_register_akcipher(&virtio_crypto_akcipher_algs[i].algo);
+			ret = crypto_engine_register_akcipher(&virtio_crypto_akcipher_algs[i].algo);
 			if (ret)
 				goto unlock;
 		}
 
 		virtio_crypto_akcipher_algs[i].active_devs++;
 		dev_info(&vcrypto->vdev->dev, "Registered akcipher algo %s\n",
-			 virtio_crypto_akcipher_algs[i].algo.base.cra_name);
+			 virtio_crypto_akcipher_algs[i].algo.base.base.cra_name);
 	}
 
 unlock:
@@ -581,7 +558,7 @@ void virtio_crypto_akcipher_algs_unregister(struct virtio_crypto *vcrypto)
 			continue;
 
 		if (virtio_crypto_akcipher_algs[i].active_devs == 1)
-			crypto_unregister_akcipher(&virtio_crypto_akcipher_algs[i].algo);
+			crypto_engine_unregister_akcipher(&virtio_crypto_akcipher_algs[i].algo);
 
 		virtio_crypto_akcipher_algs[i].active_devs--;
 	}

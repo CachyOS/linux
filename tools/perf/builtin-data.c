@@ -3,10 +3,10 @@
 #include <stdio.h>
 #include <string.h>
 #include "builtin.h"
-#include "perf.h"
 #include "debug.h"
 #include <subcmd/parse-options.h>
 #include "data-convert.h"
+#include "util/util.h"
 
 typedef int (*data_cmd_fn_t)(int argc, const char **argv);
 
@@ -33,6 +33,7 @@ const char *to_ctf;
 struct perf_data_convert_opts opts = {
 	.force = false,
 	.all = false,
+	.time_str = NULL,
 };
 
 const struct option data_options[] = {
@@ -45,6 +46,8 @@ const struct option data_options[] = {
 #endif
 		OPT_BOOLEAN('f', "force", &opts.force, "don't complain, do it"),
 		OPT_BOOLEAN(0, "all", &opts.all, "Convert all events"),
+		OPT_STRING(0, "time", &opts.time_str, "str",
+			   "Time span of interest (start,stop)"),
 		OPT_END()
 	};
 
@@ -78,12 +81,13 @@ static int cmd_data_convert(int argc, const char **argv)
 		return bt_convert__perf2json(input_name, to_json, &opts);
 
 	if (to_ctf) {
-#ifdef HAVE_LIBBABELTRACE_SUPPORT
+#if defined(HAVE_LIBBABELTRACE_SUPPORT) && defined(HAVE_LIBTRACEEVENT)
 		return bt_convert__perf2ctf(input_name, to_ctf, &opts);
 #else
 		pr_err("The libbabeltrace support is not compiled in. perf should be "
 		       "compiled with environment variables LIBBABELTRACE=1 and "
-		       "LIBBABELTRACE_DIR=/path/to/libbabeltrace/\n");
+		       "LIBBABELTRACE_DIR=/path/to/libbabeltrace/.\n"
+		       "Check also if libbtraceevent devel files are available.\n");
 		return -1;
 #endif
 	}

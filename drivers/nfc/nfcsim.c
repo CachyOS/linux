@@ -66,7 +66,7 @@ static struct nfcsim_link *nfcsim_link_new(void)
 {
 	struct nfcsim_link *link;
 
-	link = kzalloc(sizeof(struct nfcsim_link), GFP_KERNEL);
+	link = kzalloc_obj(struct nfcsim_link);
 	if (!link)
 		return NULL;
 
@@ -336,10 +336,6 @@ static struct dentry *nfcsim_debugfs_root;
 static void nfcsim_debugfs_init(void)
 {
 	nfcsim_debugfs_root = debugfs_create_dir("nfcsim", NULL);
-
-	if (!nfcsim_debugfs_root)
-		pr_err("Could not create debugfs entry\n");
-
 }
 
 static void nfcsim_debugfs_remove(void)
@@ -367,11 +363,6 @@ static void nfcsim_debugfs_init_dev(struct nfcsim *dev)
 	}
 
 	dev_dir = debugfs_create_dir(devname, nfcsim_debugfs_root);
-	if (!dev_dir) {
-		NFCSIM_ERR(dev, "Could not create debugfs entries for nfc%d\n",
-			   idx);
-		return;
-	}
 
 	debugfs_create_u8("dropframe", 0664, dev_dir, &dev->dropframe);
 }
@@ -382,7 +373,7 @@ static struct nfcsim *nfcsim_device_new(struct nfcsim_link *link_in,
 	struct nfcsim *dev;
 	int rc;
 
-	dev = kzalloc(sizeof(struct nfcsim), GFP_KERNEL);
+	dev = kzalloc_obj(struct nfcsim);
 	if (!dev)
 		return ERR_PTR(-ENOMEM);
 

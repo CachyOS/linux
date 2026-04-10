@@ -25,7 +25,7 @@ void __fw_load_abort(struct fw_priv *fw_priv)
 }
 
 #ifdef CONFIG_FW_LOADER_USER_HELPER
-static ssize_t timeout_show(struct class *class, struct class_attribute *attr,
+static ssize_t timeout_show(const struct class *class, const struct class_attribute *attr,
 			    char *buf)
 {
 	return sysfs_emit(buf, "%d\n", __firmware_loading_timeout());
@@ -44,10 +44,13 @@ static ssize_t timeout_show(struct class *class, struct class_attribute *attr,
  *
  *	Note: zero means 'wait forever'.
  **/
-static ssize_t timeout_store(struct class *class, struct class_attribute *attr,
+static ssize_t timeout_store(const struct class *class, const struct class_attribute *attr,
 			     const char *buf, size_t count)
 {
-	int tmp_loading_timeout = simple_strtol(buf, NULL, 10);
+	int tmp_loading_timeout;
+
+	if (kstrtoint(buf, 10, &tmp_loading_timeout))
+		return -EINVAL;
 
 	if (tmp_loading_timeout < 0)
 		tmp_loading_timeout = 0;
@@ -64,7 +67,7 @@ static struct attribute *firmware_class_attrs[] = {
 };
 ATTRIBUTE_GROUPS(firmware_class);
 
-static int do_firmware_uevent(struct fw_sysfs *fw_sysfs, struct kobj_uevent_env *env)
+static int do_firmware_uevent(const struct fw_sysfs *fw_sysfs, struct kobj_uevent_env *env)
 {
 	if (add_uevent_var(env, "FIRMWARE=%s", fw_sysfs->fw_priv->fw_name))
 		return -ENOMEM;
@@ -76,9 +79,9 @@ static int do_firmware_uevent(struct fw_sysfs *fw_sysfs, struct kobj_uevent_env 
 	return 0;
 }
 
-static int firmware_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int firmware_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct fw_sysfs *fw_sysfs = to_fw_sysfs(dev);
+	const struct fw_sysfs *fw_sysfs = to_fw_sysfs(dev);
 	int err = 0;
 
 	mutex_lock(&fw_lock);
@@ -93,10 +96,9 @@ static void fw_dev_release(struct device *dev)
 {
 	struct fw_sysfs *fw_sysfs = to_fw_sysfs(dev);
 
-	if (fw_sysfs->fw_upload_priv) {
-		free_fw_priv(fw_sysfs->fw_priv);
-		kfree(fw_sysfs->fw_upload_priv);
-	}
+	if (fw_sysfs->fw_upload_priv)
+		fw_upload_free(fw_sysfs);
+
 	kfree(fw_sysfs);
 }
 
@@ -158,7 +160,10 @@ static ssize_t firmware_loading_store(struct device *dev,
 	struct fw_sysfs *fw_sysfs = to_fw_sysfs(dev);
 	struct fw_priv *fw_priv;
 	ssize_t written = count;
-	int loading = simple_strtol(buf, NULL, 10);
+	int loading;
+
+	if (kstrtoint(buf, 10, &loading))
+		return -EINVAL;
 
 	mutex_lock(&fw_lock);
 	fw_priv = fw_sysfs->fw_priv;
@@ -242,19 +247,17 @@ static void firmware_rw(struct fw_priv *fw_priv, char *buffer,
 			loff_t offset, size_t count, bool read)
 {
 	while (count) {
-		void *page_data;
 		int page_nr = offset >> PAGE_SHIFT;
 		int page_ofs = offset & (PAGE_SIZE - 1);
 		int page_cnt = min_t(size_t, PAGE_SIZE - page_ofs, count);
 
-		page_data = kmap(fw_priv->pages[page_nr]);
-
 		if (read)
-			memcpy(buffer, page_data + page_ofs, page_cnt);
+			memcpy_from_page(buffer, fw_priv->pages[page_nr],
+					 page_ofs, page_cnt);
 		else
-			memcpy(page_data + page_ofs, buffer, page_cnt);
+			memcpy_to_page(fw_priv->pages[page_nr], page_ofs,
+				       buffer, page_cnt);
 
-		kunmap(fw_priv->pages[page_nr]);
 		buffer += page_cnt;
 		offset += page_cnt;
 		count -= page_cnt;
@@ -262,7 +265,7 @@ static void firmware_rw(struct fw_priv *fw_priv, char *buffer,
 }
 
 static ssize_t firmware_data_read(struct file *filp, struct kobject *kobj,
-				  struct bin_attribute *bin_attr,
+				  const struct bin_attribute *bin_attr,
 				  char *buffer, loff_t offset, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -319,7 +322,7 @@ static int fw_realloc_pages(struct fw_sysfs *fw_sysfs, int min_size)
  *	the driver as a firmware image.
  **/
 static ssize_t firmware_data_write(struct file *filp, struct kobject *kobj,
-				   struct bin_attribute *bin_attr,
+				   const struct bin_attribute *bin_attr,
 				   char *buffer, loff_t offset, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -359,7 +362,7 @@ out:
 	return retval;
 }
 
-static struct bin_attribute firmware_attr_data = {
+static const struct bin_attribute firmware_attr_data = {
 	.attr = { .name = "data", .mode = 0644 },
 	.size = 0,
 	.read = firmware_data_read,
@@ -377,7 +380,7 @@ static struct attribute *fw_dev_attrs[] = {
 	NULL
 };
 
-static struct bin_attribute *fw_dev_bin_attrs[] = {
+static const struct bin_attribute *const fw_dev_bin_attrs[] = {
 	&firmware_attr_data,
 	NULL
 };
@@ -402,7 +405,7 @@ fw_create_instance(struct firmware *firmware, const char *fw_name,
 	struct fw_sysfs *fw_sysfs;
 	struct device *f_dev;
 
-	fw_sysfs = kzalloc(sizeof(*fw_sysfs), GFP_KERNEL);
+	fw_sysfs = kzalloc_obj(*fw_sysfs);
 	if (!fw_sysfs) {
 		fw_sysfs = ERR_PTR(-ENOMEM);
 		goto exit;

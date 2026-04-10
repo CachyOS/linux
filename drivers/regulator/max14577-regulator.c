@@ -40,11 +40,14 @@ static int max14577_reg_get_current_limit(struct regulator_dev *rdev)
 	struct max14577 *max14577 = rdev_get_drvdata(rdev);
 	const struct maxim_charger_current *limits =
 		&maxim_charger_currents[max14577->dev_type];
+	int ret;
 
 	if (rdev_get_id(rdev) != MAX14577_CHARGER)
 		return -EINVAL;
 
-	max14577_read_reg(rmap, MAX14577_CHG_REG_CHG_CTRL4, &reg_data);
+	ret = max14577_read_reg(rmap, MAX14577_CHG_REG_CHG_CTRL4, &reg_data);
+	if (ret < 0)
+		return ret;
 
 	if ((reg_data & CHGCTRL4_MBCICHWRCL_MASK) == 0)
 		return limits->min;
@@ -241,6 +244,7 @@ MODULE_DEVICE_TABLE(platform, max14577_regulator_id);
 static struct platform_driver max14577_regulator_driver = {
 	.driver = {
 		   .name = "max14577-regulator",
+		   .probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		   },
 	.probe		= max14577_regulator_probe,
 	.id_table	= max14577_regulator_id,

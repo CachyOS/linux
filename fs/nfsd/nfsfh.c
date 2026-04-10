@@ -40,7 +40,7 @@ static int nfsd_acceptable(void *expv, struct dentry *dentry)
 		/* make sure parents give x permission to user */
 		int err;
 		parent = dget_parent(tdentry);
-		err = inode_permission(&init_user_ns,
+		err = inode_permission(&nop_mnt_idmap,
 				       d_inode(parent), MAY_EXEC);
 		if (err < 0) {
 			dput(parent);
@@ -62,8 +62,7 @@ static int nfsd_acceptable(void *expv, struct dentry *dentry)
  * the write call).
  */
 static inline __be32
-nfsd_mode_check(struct svc_rqst *rqstp, struct dentry *dentry,
-		umode_t requested)
+nfsd_mode_check(struct dentry *dentry, umode_t requested)
 {
 	umode_t mode = d_inode(dentry)->i_mode & S_IFMT;
 
@@ -76,36 +75,36 @@ nfsd_mode_check(struct svc_rqst *rqstp, struct dentry *dentry,
 		}
 		return nfs_ok;
 	}
-	/*
-	 * v4 has an error more specific than err_notdir which we should
-	 * return in preference to err_notdir:
-	 */
-	if (rqstp->rq_vers == 4 && mode == S_IFLNK)
+	if (mode == S_IFLNK) {
+		if (requested == S_IFDIR)
+			return nfserr_symlink_not_dir;
 		return nfserr_symlink;
+	}
 	if (requested == S_IFDIR)
 		return nfserr_notdir;
 	if (mode == S_IFDIR)
 		return nfserr_isdir;
-	return nfserr_inval;
+	return nfserr_wrong_type;
 }
 
-static bool nfsd_originating_port_ok(struct svc_rqst *rqstp, int flags)
+static bool nfsd_originating_port_ok(struct svc_rqst *rqstp,
+				     struct svc_cred *cred,
+				     struct svc_export *exp)
 {
-	if (flags & NFSEXP_INSECURE_PORT)
+	if (nfsexp_flags(cred, exp) & NFSEXP_INSECURE_PORT)
 		return true;
 	/* We don't require gss requests to use low ports: */
-	if (rqstp->rq_cred.cr_flavor >= RPC_AUTH_GSS)
+	if (cred->cr_flavor >= RPC_AUTH_GSS)
 		return true;
 	return test_bit(RQ_SECURE, &rqstp->rq_flags);
 }
 
 static __be32 nfsd_setuser_and_check_port(struct svc_rqst *rqstp,
+					  struct svc_cred *cred,
 					  struct svc_export *exp)
 {
-	int flags = nfsexp_flags(rqstp, exp);
-
 	/* Check if the request originated from a secure port. */
-	if (!nfsd_originating_port_ok(rqstp, flags)) {
+	if (rqstp && !nfsd_originating_port_ok(rqstp, cred, exp)) {
 		RPC_IFDEBUG(char buf[RPC_MAX_ADDRBUFLEN]);
 		dprintk("nfsd: request from insecure port %s!\n",
 		        svc_print_addr(rqstp, buf, sizeof(buf)));
@@ -113,22 +112,14 @@ static __be32 nfsd_setuser_and_check_port(struct svc_rqst *rqstp,
 	}
 
 	/* Set user creds for this exportpoint */
-	return nfserrno(nfsd_setuser(rqstp, exp));
+	return nfserrno(nfsd_setuser(cred, exp));
 }
 
-static inline __be32 check_pseudo_root(struct svc_rqst *rqstp,
-	struct dentry *dentry, struct svc_export *exp)
+static inline __be32 check_pseudo_root(struct dentry *dentry,
+				       struct svc_export *exp)
 {
 	if (!(exp->ex_flags & NFSEXP_V4ROOT))
 		return nfs_ok;
-	/*
-	 * v2/v3 clients have no need for the V4ROOT export--they use
-	 * the mount protocl instead; also, further V4ROOT checks may be
-	 * in v4-specific code, in which case v2/v3 clients could bypass
-	 * them.
-	 */
-	if (!nfsd_v4client(rqstp))
-		return nfserr_stale;
 	/*
 	 * We're exposing only the directories and symlinks that have to be
 	 * traversed on the way to real exports:
@@ -151,7 +142,11 @@ static inline __be32 check_pseudo_root(struct svc_rqst *rqstp,
  * dentry.  On success, the results are used to set fh_export and
  * fh_dentry.
  */
-static __be32 nfsd_set_fh_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp)
+static __be32 nfsd_set_fh_dentry(struct svc_rqst *rqstp, struct net *net,
+				 struct svc_cred *cred,
+				 struct auth_domain *client,
+				 struct auth_domain *gssclient,
+				 struct svc_fh *fhp)
 {
 	struct knfsd_fh	*fh = &fhp->fh_handle;
 	struct fid *fid = NULL;
@@ -162,10 +157,8 @@ static __be32 nfsd_set_fh_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp)
 	int len;
 	__be32 error;
 
-	error = nfserr_stale;
-	if (rqstp->rq_vers > 2)
-		error = nfserr_badhandle;
-	if (rqstp->rq_vers == 4 && fh->fh_size == 0)
+	error = nfserr_badhandle;
+	if (fh->fh_size == 0)
 		return nfserr_nofilehandle;
 
 	if (fh->fh_version != 1)
@@ -179,6 +172,8 @@ static __be32 nfsd_set_fh_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp)
 	if (len == 0)
 		return error;
 	if (fh->fh_fsid_type == FSID_MAJOR_MINOR) {
+		u32 *fsid = fh_fsid(fh);
+
 		/* deprecated, convert to type 3 */
 		len = key_len(FSID_ENCODE_DEV)/4;
 		fh->fh_fsid_type = FSID_ENCODE_DEV;
@@ -188,15 +183,17 @@ static __be32 nfsd_set_fh_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp)
 		 * confuses sparse, so we must use __force here to
 		 * keep it from complaining.
 		 */
-		fh->fh_fsid[0] = new_encode_dev(MKDEV(ntohl((__force __be32)fh->fh_fsid[0]),
-						      ntohl((__force __be32)fh->fh_fsid[1])));
-		fh->fh_fsid[1] = fh->fh_fsid[2];
+		fsid[0] = new_encode_dev(MKDEV(ntohl((__force __be32)fsid[0]),
+					       ntohl((__force __be32)fsid[1])));
+		fsid[1] = fsid[2];
 	}
 	data_left -= len;
 	if (data_left < 0)
 		return error;
-	exp = rqst_exp_find(rqstp, fh->fh_fsid_type, fh->fh_fsid);
-	fid = (struct fid *)(fh->fh_fsid + len);
+	exp = rqst_exp_find(rqstp ? &rqstp->rq_chandle : NULL,
+			    net, client, gssclient,
+			    fh->fh_fsid_type, fh_fsid(fh));
+	fid = (struct fid *)(fh_fsid(fh) + len);
 
 	error = nfserr_stale;
 	if (IS_ERR(exp)) {
@@ -227,9 +224,8 @@ static __be32 nfsd_set_fh_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp)
 			cap_raise_nfsd_set(new->cap_effective,
 					   new->cap_permitted);
 		put_cred(override_creds(new));
-		put_cred(new);
 	} else {
-		error = nfsd_setuser_and_check_port(rqstp, exp);
+		error = nfsd_setuser_and_check_port(rqstp, cred, exp);
 		if (error)
 			goto out;
 	}
@@ -237,9 +233,7 @@ static __be32 nfsd_set_fh_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp)
 	/*
 	 * Look up the dentry using the NFS file handle.
 	 */
-	error = nfserr_stale;
-	if (rqstp->rq_vers > 2)
-		error = nfserr_badhandle;
+	error = nfserr_badhandle;
 
 	fileid_type = fh->fh_fileid_type;
 
@@ -247,7 +241,7 @@ static __be32 nfsd_set_fh_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp)
 		dentry = dget(exp->ex_path.dentry);
 	else {
 		dentry = exportfs_decode_fh_raw(exp->ex_path.mnt, fid,
-						data_left, fileid_type,
+						data_left, fileid_type, 0,
 						nfsd_acceptable, exp);
 		if (IS_ERR_OR_NULL(dentry)) {
 			trace_nfsd_set_fh_dentry_badhandle(rqstp, fhp,
@@ -275,26 +269,173 @@ static __be32 nfsd_set_fh_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp)
 				dentry);
 	}
 
-	fhp->fh_dentry = dentry;
-	fhp->fh_export = exp;
-
-	switch (rqstp->rq_vers) {
-	case 4:
+	switch (fhp->fh_maxsize) {
+	case NFS4_FHSIZE:
 		if (dentry->d_sb->s_export_op->flags & EXPORT_OP_NOATOMIC_ATTR)
 			fhp->fh_no_atomic_attr = true;
+		fhp->fh_64bit_cookies = true;
 		break;
-	case 3:
+	case NFS3_FHSIZE:
 		if (dentry->d_sb->s_export_op->flags & EXPORT_OP_NOWCC)
 			fhp->fh_no_wcc = true;
+		fhp->fh_64bit_cookies = true;
+		if (exp->ex_flags & NFSEXP_V4ROOT)
+			goto out;
 		break;
-	case 2:
+	case NFS_FHSIZE:
 		fhp->fh_no_wcc = true;
+		if (EX_WGATHER(exp))
+			fhp->fh_use_wgather = true;
+		if (exp->ex_flags & NFSEXP_V4ROOT)
+			goto out;
 	}
+
+	fhp->fh_dentry = dentry;
+	fhp->fh_export = exp;
 
 	return 0;
 out:
 	exp_put(exp);
 	return error;
+}
+
+/**
+ * __fh_verify - filehandle lookup and access checking
+ * @rqstp: RPC transaction context, or NULL
+ * @net: net namespace in which to perform the export lookup
+ * @cred: RPC user credential
+ * @client: RPC auth domain
+ * @gssclient: RPC GSS auth domain, or NULL
+ * @fhp: filehandle to be verified
+ * @type: expected type of object pointed to by filehandle
+ * @access: type of access needed to object
+ *
+ * See fh_verify() for further descriptions of @fhp, @type, and @access.
+ */
+static __be32
+__fh_verify(struct svc_rqst *rqstp,
+	    struct net *net, struct svc_cred *cred,
+	    struct auth_domain *client,
+	    struct auth_domain *gssclient,
+	    struct svc_fh *fhp, umode_t type, int access)
+{
+	struct nfsd_net *nn = net_generic(net, nfsd_net_id);
+	struct svc_export *exp = NULL;
+	bool may_bypass_gss = false;
+	struct dentry	*dentry;
+	__be32		error;
+
+	if (!fhp->fh_dentry) {
+		error = nfsd_set_fh_dentry(rqstp, net, cred, client,
+					   gssclient, fhp);
+		if (error)
+			goto out;
+	}
+	dentry = fhp->fh_dentry;
+	exp = fhp->fh_export;
+
+	trace_nfsd_fh_verify(rqstp, fhp, type, access);
+
+	/*
+	 * We still have to do all these permission checks, even when
+	 * fh_dentry is already set:
+	 * 	- fh_verify may be called multiple times with different
+	 * 	  "access" arguments (e.g. nfsd_proc_create calls
+	 * 	  fh_verify(...,NFSD_MAY_EXEC) first, then later (in
+	 * 	  nfsd_create) calls fh_verify(...,NFSD_MAY_CREATE).
+	 *	- in the NFSv4 case, the filehandle may have been filled
+	 *	  in by fh_compose, and given a dentry, but further
+	 *	  compound operations performed with that filehandle
+	 *	  still need permissions checks.  In the worst case, a
+	 *	  mountpoint crossing may have changed the export
+	 *	  options, and we may now need to use a different uid
+	 *	  (for example, if different id-squashing options are in
+	 *	  effect on the new filesystem).
+	 */
+	error = check_pseudo_root(dentry, exp);
+	if (error)
+		goto out;
+
+	error = nfsd_setuser_and_check_port(rqstp, cred, exp);
+	if (error)
+		goto out;
+
+	error = nfsd_mode_check(dentry, type);
+	if (error)
+		goto out;
+
+	/*
+	 * If rqstp is NULL, this is a LOCALIO request which will only
+	 * ever use a filehandle/credential pair for which access has
+	 * been affirmed (by ACCESS or OPEN NFS requests) over the
+	 * wire.  Skip both the xprtsec policy and the security flavor
+	 * checks.
+	 */
+	if (!rqstp)
+		goto check_permissions;
+
+	if ((access & NFSD_MAY_NLM) && (exp->ex_flags & NFSEXP_NOAUTHNLM))
+		/* NLM is allowed to fully bypass authentication */
+		goto out;
+
+	/*
+	 * NLM is allowed to bypass the xprtsec policy check because lockd
+	 * doesn't support xprtsec.
+	 */
+	if (!(access & NFSD_MAY_NLM)) {
+		error = check_xprtsec_policy(exp, rqstp);
+		if (error)
+			goto out;
+	}
+
+	if (access & NFSD_MAY_BYPASS_GSS)
+		may_bypass_gss = true;
+	/*
+	 * Clients may expect to be able to use auth_sys during mount,
+	 * even if they use gss for everything else; see section 2.3.2
+	 * of rfc 2623.
+	 */
+	if (access & NFSD_MAY_BYPASS_GSS_ON_ROOT
+			&& exp->ex_path.dentry == dentry)
+		may_bypass_gss = true;
+
+	error = check_security_flavor(exp, rqstp, may_bypass_gss);
+	if (error)
+		goto out;
+
+	svc_xprt_set_valid(rqstp->rq_xprt);
+
+check_permissions:
+	/* Finally, check access permissions. */
+	error = nfsd_permission(cred, exp, dentry, access);
+out:
+	trace_nfsd_fh_verify_err(rqstp, fhp, type, access, error);
+	if (error == nfserr_stale)
+		nfsd_stats_fh_stale_inc(nn, exp);
+	return error;
+}
+
+/**
+ * fh_verify_local - filehandle lookup and access checking
+ * @net: net namespace in which to perform the export lookup
+ * @cred: RPC user credential
+ * @client: RPC auth domain
+ * @fhp: filehandle to be verified
+ * @type: expected type of object pointed to by filehandle
+ * @access: type of access needed to object
+ *
+ * This API can be used by callers who do not have an RPC
+ * transaction context (ie are not running in an nfsd thread).
+ *
+ * See fh_verify() for further descriptions of @fhp, @type, and @access.
+ */
+__be32
+fh_verify_local(struct net *net, struct svc_cred *cred,
+		struct auth_domain *client, struct svc_fh *fhp,
+		umode_t type, int access)
+{
+	return __fh_verify(NULL, net, cred, client, NULL,
+			   fhp, type, access);
 }
 
 /**
@@ -327,83 +468,10 @@ out:
 __be32
 fh_verify(struct svc_rqst *rqstp, struct svc_fh *fhp, umode_t type, int access)
 {
-	struct svc_export *exp = NULL;
-	struct dentry	*dentry;
-	__be32		error;
-
-	dprintk("nfsd: fh_verify(%s)\n", SVCFH_fmt(fhp));
-
-	if (!fhp->fh_dentry) {
-		error = nfsd_set_fh_dentry(rqstp, fhp);
-		if (error)
-			goto out;
-	}
-	dentry = fhp->fh_dentry;
-	exp = fhp->fh_export;
-	/*
-	 * We still have to do all these permission checks, even when
-	 * fh_dentry is already set:
-	 * 	- fh_verify may be called multiple times with different
-	 * 	  "access" arguments (e.g. nfsd_proc_create calls
-	 * 	  fh_verify(...,NFSD_MAY_EXEC) first, then later (in
-	 * 	  nfsd_create) calls fh_verify(...,NFSD_MAY_CREATE).
-	 *	- in the NFSv4 case, the filehandle may have been filled
-	 *	  in by fh_compose, and given a dentry, but further
-	 *	  compound operations performed with that filehandle
-	 *	  still need permissions checks.  In the worst case, a
-	 *	  mountpoint crossing may have changed the export
-	 *	  options, and we may now need to use a different uid
-	 *	  (for example, if different id-squashing options are in
-	 *	  effect on the new filesystem).
-	 */
-	error = check_pseudo_root(rqstp, dentry, exp);
-	if (error)
-		goto out;
-
-	error = nfsd_setuser_and_check_port(rqstp, exp);
-	if (error)
-		goto out;
-
-	error = nfsd_mode_check(rqstp, dentry, type);
-	if (error)
-		goto out;
-
-	/*
-	 * pseudoflavor restrictions are not enforced on NLM,
-	 * which clients virtually always use auth_sys for,
-	 * even while using RPCSEC_GSS for NFS.
-	 */
-	if (access & NFSD_MAY_LOCK || access & NFSD_MAY_BYPASS_GSS)
-		goto skip_pseudoflavor_check;
-	/*
-	 * Clients may expect to be able to use auth_sys during mount,
-	 * even if they use gss for everything else; see section 2.3.2
-	 * of rfc 2623.
-	 */
-	if (access & NFSD_MAY_BYPASS_GSS_ON_ROOT
-			&& exp->ex_path.dentry == dentry)
-		goto skip_pseudoflavor_check;
-
-	error = check_nfsd_access(exp, rqstp);
-	if (error)
-		goto out;
-
-skip_pseudoflavor_check:
-	/* Finally, check access permissions. */
-	error = nfsd_permission(rqstp, exp, dentry, access);
-
-	if (error) {
-		dprintk("fh_verify: %pd2 permission failure, "
-			"acc=%x, error=%d\n",
-			dentry,
-			access, ntohl(error));
-	}
-out:
-	if (error == nfserr_stale)
-		nfsd_stats_fh_stale_inc(exp);
-	return error;
+	return __fh_verify(rqstp, SVC_NET(rqstp), &rqstp->rq_cred,
+			   rqstp->rq_client, rqstp->rq_gssclient,
+			   fhp, type, access);
 }
-
 
 /*
  * Compose a file handle for an NFS reply.
@@ -417,12 +485,15 @@ static void _fh_update(struct svc_fh *fhp, struct svc_export *exp,
 {
 	if (dentry != exp->ex_path.dentry) {
 		struct fid *fid = (struct fid *)
-			(fhp->fh_handle.fh_fsid + fhp->fh_handle.fh_size/4 - 1);
+			(fh_fsid(&fhp->fh_handle) + fhp->fh_handle.fh_size/4 - 1);
 		int maxsize = (fhp->fh_maxsize - fhp->fh_handle.fh_size)/4;
-		int subtreecheck = !(exp->ex_flags & NFSEXP_NOSUBTREECHECK);
+		int fh_flags = (exp->ex_flags & NFSEXP_NOSUBTREECHECK) ? 0 :
+				EXPORT_FH_CONNECTABLE;
+		int fileid_type =
+			exportfs_encode_fh(dentry, fid, &maxsize, fh_flags);
 
 		fhp->fh_handle.fh_fileid_type =
-			exportfs_encode_fh(dentry, fid, &maxsize, subtreecheck);
+			fileid_type > 0 ? fileid_type : FILEID_INVALID;
 		fhp->fh_handle.fh_size += maxsize * 4;
 	} else {
 		fhp->fh_handle.fh_fileid_type = FILEID_ROOT;
@@ -548,7 +619,7 @@ fh_compose(struct svc_fh *fhp, struct svc_export *exp, struct dentry *dentry,
 	if (ref_fh == fhp)
 		fh_put(ref_fh);
 
-	if (fhp->fh_locked || fhp->fh_dentry) {
+	if (fhp->fh_dentry) {
 		printk(KERN_ERR "fh_compose: fh %pd2 not initialized!\n",
 		       dentry);
 	}
@@ -565,7 +636,7 @@ fh_compose(struct svc_fh *fhp, struct svc_export *exp, struct dentry *dentry,
 	fhp->fh_handle.fh_auth_type = 0;
 
 	mk_fsid(fhp->fh_handle.fh_fsid_type,
-		fhp->fh_handle.fh_fsid,
+		fh_fsid(&fhp->fh_handle),
 		ex_dev,
 		d_inode(exp->ex_path.dentry)->i_ino,
 		exp->ex_fsid, exp->ex_uuid);
@@ -574,7 +645,7 @@ fh_compose(struct svc_fh *fhp, struct svc_export *exp, struct dentry *dentry,
 		_fh_update(fhp, exp, dentry);
 	if (fhp->fh_handle.fh_fileid_type == FILEID_INVALID) {
 		fh_put(fhp);
-		return nfserr_opnotsupp;
+		return nfserr_stale;
 	}
 
 	return 0;
@@ -600,7 +671,7 @@ fh_update(struct svc_fh *fhp)
 
 	_fh_update(fhp, fhp->fh_export, dentry);
 	if (fhp->fh_handle.fh_fileid_type == FILEID_INVALID)
-		return nfserr_opnotsupp;
+		return nfserr_stale;
 	return 0;
 out_bad:
 	printk(KERN_ERR "fh_update: fh not verified!\n");
@@ -612,35 +683,58 @@ out_negative:
 }
 
 /**
+ * fh_getattr - Retrieve attributes on a local file
+ * @fhp: File handle of target file
+ * @stat: Caller-supplied kstat buffer to be filled in
+ *
+ * Returns nfs_ok on success, otherwise an NFS status code is
+ * returned.
+ */
+__be32 fh_getattr(const struct svc_fh *fhp, struct kstat *stat)
+{
+	struct path p = {
+		.mnt		= fhp->fh_export->ex_path.mnt,
+		.dentry		= fhp->fh_dentry,
+	};
+	struct inode *inode = d_inode(p.dentry);
+	u32 request_mask = STATX_BASIC_STATS;
+
+	if (S_ISREG(inode->i_mode))
+		request_mask |= (STATX_DIOALIGN | STATX_DIO_READ_ALIGN);
+
+	if (fhp->fh_maxsize == NFS4_FHSIZE)
+		request_mask |= (STATX_BTIME | STATX_CHANGE_COOKIE);
+
+	return nfserrno(vfs_getattr(&p, stat, request_mask,
+				    AT_STATX_SYNC_AS_STAT));
+}
+
+/**
  * fh_fill_pre_attrs - Fill in pre-op attributes
  * @fhp: file handle to be updated
  *
  */
-void fh_fill_pre_attrs(struct svc_fh *fhp)
+__be32 __must_check fh_fill_pre_attrs(struct svc_fh *fhp)
 {
 	bool v4 = (fhp->fh_maxsize == NFS4_FHSIZE);
-	struct inode *inode;
 	struct kstat stat;
 	__be32 err;
 
 	if (fhp->fh_no_wcc || fhp->fh_pre_saved)
-		return;
+		return nfs_ok;
 
-	inode = d_inode(fhp->fh_dentry);
 	err = fh_getattr(fhp, &stat);
-	if (err) {
-		/* Grab the times from inode anyway */
-		stat.mtime = inode->i_mtime;
-		stat.ctime = inode->i_ctime;
-		stat.size  = inode->i_size;
-	}
+	if (err)
+		return err;
+
 	if (v4)
-		fhp->fh_pre_change = nfsd4_change_attribute(&stat, inode);
+		fhp->fh_pre_change = nfsd4_change_attribute(&stat);
 
 	fhp->fh_pre_mtime = stat.mtime;
 	fhp->fh_pre_ctime = stat.ctime;
 	fhp->fh_pre_size  = stat.size;
 	fhp->fh_pre_saved = true;
+	return nfs_ok;
 }
 
 /**
@@ -648,27 +742,49 @@ void fh_fill_pre_attrs(struct svc_fh *fhp)
  * @fhp: file handle to be updated
  *
  */
-void fh_fill_post_attrs(struct svc_fh *fhp)
+__be32 fh_fill_post_attrs(struct svc_fh *fhp)
 {
 	bool v4 = (fhp->fh_maxsize == NFS4_FHSIZE);
-	struct inode *inode = d_inode(fhp->fh_dentry);
 	__be32 err;
 
 	if (fhp->fh_no_wcc)
-		return;
+		return nfs_ok;
 
 	if (fhp->fh_post_saved)
 		printk("nfsd: inode locked twice during operation.\n");
 
 	err = fh_getattr(fhp, &fhp->fh_post_attr);
-	if (err) {
-		fhp->fh_post_saved = false;
-		fhp->fh_post_attr.ctime = inode->i_ctime;
-	} else
-		fhp->fh_post_saved = true;
+	if (err)
+		return err;
+
+	fhp->fh_post_saved = true;
 	if (v4)
 		fhp->fh_post_change =
-			nfsd4_change_attribute(&fhp->fh_post_attr, inode);
+			nfsd4_change_attribute(&fhp->fh_post_attr);
+	return nfs_ok;
+}
+
+/**
+ * fh_fill_both_attrs - Fill pre-op and post-op attributes
+ * @fhp: file handle to be updated
+ *
+ * This is used when the directory wasn't changed, but wcc attributes
+ * are needed anyway.
+ */
+__be32 __must_check fh_fill_both_attrs(struct svc_fh *fhp)
+{
+	__be32 err;
+
+	err = fh_fill_post_attrs(fhp);
+	if (err)
+		return err;
+
+	fhp->fh_pre_change = fhp->fh_post_change;
+	fhp->fh_pre_mtime = fhp->fh_post_attr.mtime;
+	fhp->fh_pre_ctime = fhp->fh_post_attr.ctime;
+	fhp->fh_pre_size = fhp->fh_post_attr.size;
+	fhp->fh_pre_saved = true;
+	return nfs_ok;
 }
 
 /*
@@ -680,7 +796,6 @@ fh_put(struct svc_fh *fhp)
 	struct dentry * dentry = fhp->fh_dentry;
 	struct svc_export * exp = fhp->fh_export;
 	if (dentry) {
-		fh_unlock(fhp);
 		fhp->fh_dentry = NULL;
 		dput(dentry);
 		fh_clear_pre_post_attrs(fhp);
@@ -702,7 +817,7 @@ char * SVCFH_fmt(struct svc_fh *fhp)
 	struct knfsd_fh *fh = &fhp->fh_handle;
 	static char buf[2+1+1+64*3+1];
 
-	if (fh->fh_size < 0 || fh->fh_size> 64)
+	if (fh->fh_size > 64)
 		return "bad-fh";
 	sprintf(buf, "%d: %*ph", fh->fh_size, fh->fh_size, fh->fh_raw);
 	return buf;
@@ -734,4 +849,45 @@ enum fsid_source fsid_source(const struct svc_fh *fhp)
 	if (fhp->fh_export->ex_uuid)
 		return FSIDSOURCE_UUID;
 	return FSIDSOURCE_DEV;
+}
+
+/**
+ * nfsd4_change_attribute - Generate an NFSv4 change_attribute value
+ * @stat: inode attributes
+ *
+ * Caller must fill in @stat before calling, typically by invoking
+ * vfs_getattr() with STATX_MODE, STATX_CTIME, and STATX_CHANGE_COOKIE.
+ * Returns an unsigned 64-bit changeid4 value (RFC 8881 Section 3.2).
+ *
+ * We could use i_version alone as the change attribute.  However, i_version
+ * can go backwards on a regular file after an unclean shutdown.  On its own
+ * that doesn't necessarily cause a problem, but if i_version goes backwards
+ * and then is incremented again it could reuse a value that was previously
+ * used before boot, and a client who queried the two values might incorrectly
+ * assume nothing changed.
+ *
+ * By using both ctime and the i_version counter we guarantee that as long as
+ * time doesn't go backwards we never reuse an old value. If the filesystem
+ * advertises STATX_ATTR_CHANGE_MONOTONIC, then this mitigation is not
+ * needed.
+ *
+ * We only need to do this for regular files as well. For directories, we
+ * assume that the new change attr is always logged to stable storage in some
+ * fashion before the results can be seen.
+ */
+u64 nfsd4_change_attribute(const struct kstat *stat)
+{
+	u64 chattr;
+
+	if (stat->result_mask & STATX_CHANGE_COOKIE) {
+		chattr = stat->change_cookie;
+		if (S_ISREG(stat->mode) &&
+		    !(stat->attributes & STATX_ATTR_CHANGE_MONOTONIC)) {
+			chattr += (u64)stat->ctime.tv_sec << 30;
+			chattr += stat->ctime.tv_nsec;
+		}
+	} else {
+		chattr = time_to_chattr(&stat->ctime);
+	}
+	return chattr;
 }

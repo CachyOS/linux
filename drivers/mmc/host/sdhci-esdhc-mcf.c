@@ -299,9 +299,8 @@ static void esdhc_mcf_pltfm_set_bus_width(struct sdhci_host *host, int width)
 static void esdhc_mcf_request_done(struct sdhci_host *host,
 				   struct mmc_request *mrq)
 {
-	struct scatterlist *sg;
+	struct sg_mapping_iter sgm;
 	u32 *buffer;
-	int i;
 
 	if (!mrq->data || !mrq->data->bytes_xfered)
 		goto exit_done;
@@ -313,10 +312,13 @@ static void esdhc_mcf_request_done(struct sdhci_host *host,
 	 * On mcf5441x there is no hw sdma option/flag to select the dma
 	 * transfer endiannes. A swap after the transfer is needed.
 	 */
-	for_each_sg(mrq->data->sg, sg, mrq->data->sg_len, i) {
-		buffer = (u32 *)sg_virt(sg);
-		esdhc_mcf_buffer_swap32(buffer, sg->length);
+	sg_miter_start(&sgm, mrq->data->sg, mrq->data->sg_len,
+		       SG_MITER_ATOMIC | SG_MITER_TO_SG | SG_MITER_FROM_SG);
+	while (sg_miter_next(&sgm)) {
+		buffer = sgm.addr;
+		esdhc_mcf_buffer_swap32(buffer, sgm.length);
 	}
+	sg_miter_stop(&sgm);
 
 exit_done:
 	mmc_request_done(host->mmc, mrq);
@@ -333,7 +335,7 @@ static void esdhc_mcf_copy_to_bounce_buffer(struct sdhci_host *host,
 				data->blksz * data->blocks);
 }
 
-static struct sdhci_ops sdhci_esdhc_ops = {
+static const struct sdhci_ops sdhci_esdhc_ops = {
 	.reset = esdhc_mcf_reset,
 	.set_clock = esdhc_mcf_pltfm_set_clock,
 	.get_max_clock = esdhc_mcf_pltfm_get_max_clock,
@@ -424,28 +426,22 @@ static int sdhci_esdhc_mcf_probe(struct platform_device *pdev)
 	host->flags |= SDHCI_AUTO_CMD12;
 
 	mcf_data->clk_ipg = devm_clk_get(&pdev->dev, "ipg");
-	if (IS_ERR(mcf_data->clk_ipg)) {
-		err = PTR_ERR(mcf_data->clk_ipg);
-		goto err_exit;
-	}
+	if (IS_ERR(mcf_data->clk_ipg))
+		return PTR_ERR(mcf_data->clk_ipg);
 
 	mcf_data->clk_ahb = devm_clk_get(&pdev->dev, "ahb");
-	if (IS_ERR(mcf_data->clk_ahb)) {
-		err = PTR_ERR(mcf_data->clk_ahb);
-		goto err_exit;
-	}
+	if (IS_ERR(mcf_data->clk_ahb))
+		return PTR_ERR(mcf_data->clk_ahb);
 
 	mcf_data->clk_per = devm_clk_get(&pdev->dev, "per");
-	if (IS_ERR(mcf_data->clk_per)) {
-		err = PTR_ERR(mcf_data->clk_per);
-		goto err_exit;
-	}
+	if (IS_ERR(mcf_data->clk_per))
+		return PTR_ERR(mcf_data->clk_per);
 
 	pltfm_host->clk = mcf_data->clk_per;
 	pltfm_host->clock = clk_get_rate(pltfm_host->clk);
 	err = clk_prepare_enable(mcf_data->clk_per);
 	if (err)
-		goto err_exit;
+		return err;
 
 	err = clk_prepare_enable(mcf_data->clk_ipg);
 	if (err)
@@ -483,13 +479,10 @@ unprep_ipg:
 	clk_disable_unprepare(mcf_data->clk_ipg);
 unprep_per:
 	clk_disable_unprepare(mcf_data->clk_per);
-err_exit:
-	sdhci_pltfm_free(pdev);
-
 	return err;
 }
 
-static int sdhci_esdhc_mcf_remove(struct platform_device *pdev)
+static void sdhci_esdhc_mcf_remove(struct platform_device *pdev)
 {
 	struct sdhci_host *host = platform_get_drvdata(pdev);
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
@@ -500,10 +493,6 @@ static int sdhci_esdhc_mcf_remove(struct platform_device *pdev)
 	clk_disable_unprepare(mcf_data->clk_ipg);
 	clk_disable_unprepare(mcf_data->clk_ahb);
 	clk_disable_unprepare(mcf_data->clk_per);
-
-	sdhci_pltfm_free(pdev);
-
-	return 0;
 }
 
 static struct platform_driver sdhci_esdhc_mcf_driver = {

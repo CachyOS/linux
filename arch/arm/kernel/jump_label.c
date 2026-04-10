@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/kernel.h>
 #include <linux/jump_label.h>
-#include <asm/patch.h>
+#include <asm/text-patching.h>
 #include <asm/insn.h>
 
 static void __arch_jump_label_transform(struct jump_entry *entry,
@@ -26,10 +26,4 @@ void arch_jump_label_transform(struct jump_entry *entry,
 			       enum jump_label_type type)
 {
 	__arch_jump_label_transform(entry, type, false);
-}
-
-void arch_jump_label_transform_static(struct jump_entry *entry,
-				      enum jump_label_type type)
-{
-	__arch_jump_label_transform(entry, type, true);
 }

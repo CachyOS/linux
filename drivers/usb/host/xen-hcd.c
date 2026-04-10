@@ -327,7 +327,7 @@ static int xenhcd_bus_suspend(struct usb_hcd *hcd)
 	}
 	spin_unlock_irq(&info->lock);
 
-	del_timer_sync(&info->watchdog);
+	timer_delete_sync(&info->watchdog);
 
 	return ret;
 }
@@ -1258,7 +1258,7 @@ static void xenhcd_disconnect(struct xenbus_device *dev)
 
 static void xenhcd_watchdog(struct timer_list *timer)
 {
-	struct xenhcd_info *info = from_timer(info, timer, watchdog);
+	struct xenhcd_info *info = timer_container_of(info, timer, watchdog);
 	unsigned long flags;
 
 	spin_lock_irqsave(&info->lock, flags);
@@ -1307,7 +1307,7 @@ static void xenhcd_stop(struct usb_hcd *hcd)
 {
 	struct xenhcd_info *info = xenhcd_hcd_to_info(hcd);
 
-	del_timer_sync(&info->watchdog);
+	timer_delete_sync(&info->watchdog);
 	spin_lock_irq(&info->lock);
 	/* cancel all urbs */
 	hcd->state = HC_STATE_HALT;
@@ -1388,7 +1388,7 @@ static int xenhcd_get_frame(struct usb_hcd *hcd)
 	return 0;
 }
 
-static struct hc_driver xenhcd_usb20_hc_driver = {
+static const struct hc_driver xenhcd_usb20_hc_driver = {
 	.description = "xen-hcd",
 	.product_desc = "Xen USB2.0 Virtual Host Controller",
 	.hcd_priv_size = sizeof(struct xenhcd_info),
@@ -1413,7 +1413,7 @@ static struct hc_driver xenhcd_usb20_hc_driver = {
 #endif
 };
 
-static struct hc_driver xenhcd_usb11_hc_driver = {
+static const struct hc_driver xenhcd_usb11_hc_driver = {
 	.description = "xen-hcd",
 	.product_desc = "Xen USB1.1 Virtual Host Controller",
 	.hcd_priv_size = sizeof(struct xenhcd_info),
@@ -1530,15 +1530,13 @@ static void xenhcd_backend_changed(struct xenbus_device *dev,
 	}
 }
 
-static int xenhcd_remove(struct xenbus_device *dev)
+static void xenhcd_remove(struct xenbus_device *dev)
 {
 	struct xenhcd_info *info = dev_get_drvdata(&dev->dev);
 	struct usb_hcd *hcd = xenhcd_info_to_hcd(info);
 
 	xenhcd_destroy_rings(info);
 	usb_put_hcd(hcd);
-
-	return 0;
 }
 
 static int xenhcd_probe(struct xenbus_device *dev,

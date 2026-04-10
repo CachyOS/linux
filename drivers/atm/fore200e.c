@@ -36,7 +36,7 @@
 
 #ifdef CONFIG_SBUS
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <asm/idprom.h>
 #include <asm/openprom.h>
 #include <asm/oplib.h>
@@ -93,9 +93,6 @@
 
 
 static const struct atmdev_ops   fore200e_ops;
-
-static LIST_HEAD(fore200e_boards);
-
 
 MODULE_AUTHOR("Christophe Lizzi - credits to Uwe Dannowski and Heikki Vatiainen");
 MODULE_DESCRIPTION("FORE Systems 200E-series ATM driver - version " FORE200E_VERSION);
@@ -376,6 +373,10 @@ fore200e_shutdown(struct fore200e* fore200e)
 	fallthrough;
     case FORE200E_STATE_IRQ:
 	free_irq(fore200e->irq, fore200e->atm_dev);
+#ifdef FORE200E_USE_TASKLET
+	tasklet_kill(&fore200e->tx_tasklet);
+	tasklet_kill(&fore200e->rx_tasklet);
+#endif
 
 	fallthrough;
     case FORE200E_STATE_ALLOC_BUF:
@@ -1330,7 +1331,7 @@ fore200e_open(struct atm_vcc *vcc)
 
     spin_unlock_irqrestore(&fore200e->q_lock, flags);
 
-    fore200e_vcc = kzalloc(sizeof(struct fore200e_vcc), GFP_ATOMIC);
+    fore200e_vcc = kzalloc_obj(struct fore200e_vcc, GFP_ATOMIC);
     if (fore200e_vcc == NULL) {
 	vc_map->vcc = NULL;
 	return -ENOMEM;
@@ -1377,7 +1378,9 @@ fore200e_open(struct atm_vcc *vcc)
 
 	vcc->dev_data = NULL;
 
+	mutex_lock(&fore200e->rate_mtx);
 	fore200e->available_cell_rate += vcc->qos.txtp.max_pcr;
+	mutex_unlock(&fore200e->rate_mtx);
 
 	kfree(fore200e_vcc);
 	return -EINVAL;
@@ -1673,7 +1676,7 @@ fore200e_getstats(struct fore200e* fore200e)
     u32                     stats_dma_addr;
 
     if (fore200e->stats == NULL) {
-	fore200e->stats = kzalloc(sizeof(struct stats), GFP_KERNEL);
+	fore200e->stats = kzalloc_obj(struct stats);
 	if (fore200e->stats == NULL)
 	    return -ENOMEM;
     }
@@ -1952,7 +1955,7 @@ static int fore200e_irq_request(struct fore200e *fore200e)
 
 static int fore200e_get_esi(struct fore200e *fore200e)
 {
-    struct prom_data* prom = kzalloc(sizeof(struct prom_data), GFP_KERNEL);
+    struct prom_data* prom = kzalloc_obj(struct prom_data);
     int ok, i;
 
     if (!prom)
@@ -1997,8 +2000,7 @@ static int fore200e_alloc_rx_buf(struct fore200e *fore200e)
 	    DPRINTK(2, "rx buffers %d / %d are being allocated\n", scheme, magn);
 
 	    /* allocate the array of receive buffers */
-	    buffer = bsq->buffer = kcalloc(nbr, sizeof(struct buffer),
-                                           GFP_KERNEL);
+	    buffer = bsq->buffer = kzalloc_objs(struct buffer, nbr);
 
 	    if (buffer == NULL)
 		return -ENOMEM;
@@ -2520,19 +2522,13 @@ static int fore200e_init(struct fore200e *fore200e, struct device *parent)
 }
 
 #ifdef CONFIG_SBUS
-static const struct of_device_id fore200e_sba_match[];
 static int fore200e_sba_probe(struct platform_device *op)
 {
-	const struct of_device_id *match;
 	struct fore200e *fore200e;
 	static int index = 0;
 	int err;
 
-	match = of_match_device(fore200e_sba_match, &op->dev);
-	if (!match)
-		return -EINVAL;
-
-	fore200e = kzalloc(sizeof(struct fore200e), GFP_KERNEL);
+	fore200e = kzalloc_obj(struct fore200e);
 	if (!fore200e)
 		return -ENOMEM;
 
@@ -2556,14 +2552,12 @@ static int fore200e_sba_probe(struct platform_device *op)
 	return 0;
 }
 
-static int fore200e_sba_remove(struct platform_device *op)
+static void fore200e_sba_remove(struct platform_device *op)
 {
 	struct fore200e *fore200e = dev_get_drvdata(&op->dev);
 
 	fore200e_shutdown(fore200e);
 	kfree(fore200e);
-
-	return 0;
 }
 
 static const struct of_device_id fore200e_sba_match[] = {
@@ -2602,7 +2596,7 @@ static int fore200e_pca_detect(struct pci_dev *pci_dev,
 	goto out;
     }
     
-    fore200e = kzalloc(sizeof(struct fore200e), GFP_KERNEL);
+    fore200e = kzalloc_obj(struct fore200e);
     if (fore200e == NULL) {
 	err = -ENOMEM;
 	goto out_disable;

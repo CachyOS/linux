@@ -103,8 +103,8 @@ struct rcar_dmac_desc_page {
 	struct list_head node;
 
 	union {
-		struct rcar_dmac_desc descs[0];
-		struct rcar_dmac_xfer_chunk chunks[0];
+		DECLARE_FLEX_ARRAY(struct rcar_dmac_desc, descs);
+		DECLARE_FLEX_ARRAY(struct rcar_dmac_xfer_chunk, chunks);
 	};
 };
 
@@ -1254,7 +1254,7 @@ rcar_dmac_prep_dma_cyclic(struct dma_chan *chan, dma_addr_t buf_addr,
 	 * Allocate the sg list dynamically as it would consume too much stack
 	 * space.
 	 */
-	sgl = kmalloc_array(sg_len, sizeof(*sgl), GFP_NOWAIT);
+	sgl = kmalloc_objs(*sgl, sg_len, GFP_NOWAIT);
 	if (!sgl)
 		return NULL;
 
@@ -1728,19 +1728,12 @@ static struct dma_chan *rcar_dmac_of_xlate(struct of_phandle_args *dma_spec,
  * Power management
  */
 
-#ifdef CONFIG_PM
-static int rcar_dmac_runtime_suspend(struct device *dev)
-{
-	return 0;
-}
-
 static int rcar_dmac_runtime_resume(struct device *dev)
 {
 	struct rcar_dmac *dmac = dev_get_drvdata(dev);
 
 	return rcar_dmac_init(dmac);
 }
-#endif
 
 static const struct dev_pm_ops rcar_dmac_pm = {
 	/*
@@ -1748,10 +1741,9 @@ static const struct dev_pm_ops rcar_dmac_pm = {
 	 *   - Wait for the current transfer to complete and stop the device,
 	 *   - Resume transfers, if any.
 	 */
-	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				      pm_runtime_force_resume)
-	SET_RUNTIME_PM_OPS(rcar_dmac_runtime_suspend, rcar_dmac_runtime_resume,
-			   NULL)
+	NOIRQ_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				  pm_runtime_force_resume)
+	RUNTIME_PM_OPS(NULL, rcar_dmac_runtime_resume, NULL)
 };
 
 /* -----------------------------------------------------------------------------
@@ -1868,9 +1860,7 @@ static int rcar_dmac_probe(struct platform_device *pdev)
 
 	dmac->dev = &pdev->dev;
 	platform_set_drvdata(pdev, dmac);
-	ret = dma_set_max_seg_size(dmac->dev, RCAR_DMATCR_MASK);
-	if (ret)
-		return ret;
+	dma_set_max_seg_size(dmac->dev, RCAR_DMATCR_MASK);
 
 	ret = dma_set_mask_and_coherent(dmac->dev, DMA_BIT_MASK(40));
 	if (ret)
@@ -1990,7 +1980,7 @@ err_pm_disable:
 	return ret;
 }
 
-static int rcar_dmac_remove(struct platform_device *pdev)
+static void rcar_dmac_remove(struct platform_device *pdev)
 {
 	struct rcar_dmac *dmac = platform_get_drvdata(pdev);
 
@@ -1998,8 +1988,6 @@ static int rcar_dmac_remove(struct platform_device *pdev)
 	dma_async_device_unregister(&dmac->engine);
 
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static void rcar_dmac_shutdown(struct platform_device *pdev)
@@ -2027,6 +2015,10 @@ static const struct of_device_id rcar_dmac_of_ids[] = {
 		.compatible = "renesas,rcar-gen4-dmac",
 		.data = &rcar_gen4_dmac_data,
 	}, {
+		/*
+		 * Backward compatibility for between v5.12 - v5.19
+		 * which didn't combined with "renesas,rcar-gen4-dmac"
+		 */
 		.compatible = "renesas,dmac-r8a779a0",
 		.data = &rcar_gen4_dmac_data,
 	},
@@ -2036,7 +2028,7 @@ MODULE_DEVICE_TABLE(of, rcar_dmac_of_ids);
 
 static struct platform_driver rcar_dmac_driver = {
 	.driver		= {
-		.pm	= &rcar_dmac_pm,
+		.pm	= pm_ptr(&rcar_dmac_pm),
 		.name	= "rcar-dmac",
 		.of_match_table = rcar_dmac_of_ids,
 	},

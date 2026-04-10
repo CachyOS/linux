@@ -197,7 +197,6 @@ static ssize_t rdc321x_wdt_write(struct file *file, const char __user *buf,
 
 static const struct file_operations rdc321x_wdt_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.unlocked_ioctl	= rdc321x_wdt_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
 	.open		= rdc321x_wdt_open,
@@ -257,7 +256,7 @@ static int rdc321x_wdt_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int rdc321x_wdt_remove(struct platform_device *pdev)
+static void rdc321x_wdt_remove(struct platform_device *pdev)
 {
 	if (rdc321x_wdt_device.queue) {
 		rdc321x_wdt_device.queue = 0;
@@ -265,8 +264,6 @@ static int rdc321x_wdt_remove(struct platform_device *pdev)
 	}
 
 	misc_deregister(&rdc321x_wdt_misc);
-
-	return 0;
 }
 
 static struct platform_driver rdc321x_wdt_driver = {

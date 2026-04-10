@@ -25,28 +25,41 @@
 
 int fsl8250_handle_irq(struct uart_port *port)
 {
-	unsigned char lsr, orig_lsr;
 	unsigned long flags;
+	u16 lsr, orig_lsr;
 	unsigned int iir;
 	struct uart_8250_port *up = up_to_u8250p(port);
 
-	spin_lock_irqsave(&up->port.lock, flags);
+	uart_port_lock_irqsave(&up->port, &flags);
 
-	iir = port->serial_in(port, UART_IIR);
+	iir = serial_port_in(port, UART_IIR);
 	if (iir & UART_IIR_NO_INT) {
-		spin_unlock(&up->port.lock);
+		uart_port_unlock_irqrestore(&up->port, flags);
 		return 0;
 	}
 
-	/* This is the WAR; if last event was BRK, then read and return */
-	if (unlikely(up->lsr_saved_flags & UART_LSR_BI)) {
+	/*
+	 * For a single break the hardware reports LSR.BI for each character
+	 * time. This is described in the MPC8313E chip errata as "General17".
+	 * A typical break has a duration of 0.3s, with a 115200n8 configuration
+	 * that (theoretically) corresponds to ~3500 interrupts in these 0.3s.
+	 * In practise it's less (around 500) because of hardware
+	 * and software latencies. The workaround recommended by the vendor is
+	 * to read the RX register (to clear LSR.DR and thus prevent a FIFO
+	 * aging interrupt). To prevent the irq from retriggering LSR must not be
+	 * read. (This would clear LSR.BI, hardware would reassert the BI event
+	 * immediately and interrupt the CPU again. The hardware clears LSR.BI
+	 * when the next valid char is read.)
+	 */
+	if (unlikely((iir & UART_IIR_ID) == UART_IIR_RLSI &&
+		     (up->lsr_saved_flags & UART_LSR_BI))) {
 		up->lsr_saved_flags &= ~UART_LSR_BI;
-		port->serial_in(port, UART_RX);
-		spin_unlock(&up->port.lock);
+		serial_port_in(port, UART_RX);
+		uart_port_unlock_irqrestore(&up->port, flags);
 		return 1;
 	}
 
-	lsr = orig_lsr = up->port.serial_in(&up->port, UART_LSR);
+	lsr = orig_lsr = serial_port_in(port, UART_LSR);
 
 	/* Process incoming characters first */
 	if ((lsr & (UART_LSR_DR | UART_LSR_BI)) &&
@@ -58,7 +71,7 @@ int fsl8250_handle_irq(struct uart_port *port)
 	if ((orig_lsr & UART_LSR_OE) && (up->overrun_backoff_time_ms > 0)) {
 		unsigned long delay;
 
-		up->ier = port->serial_in(port, UART_IER);
+		up->ier = serial_port_in(port, UART_IER);
 		if (up->ier & (UART_IER_RLSI | UART_IER_RDI)) {
 			port->ops->stop_rx(port);
 		} else {
@@ -77,7 +90,7 @@ int fsl8250_handle_irq(struct uart_port *port)
 	if ((lsr & UART_LSR_THRE) && (up->ier & UART_IER_THRI))
 		serial8250_tx_chars(up);
 
-	up->lsr_saved_flags = orig_lsr;
+	up->lsr_saved_flags |= orig_lsr & UART_LSR_BI;
 
 	uart_unlock_and_check_sysrq_irqrestore(&up->port, flags);
 
@@ -147,12 +160,11 @@ static int fsl8250_acpi_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int fsl8250_acpi_remove(struct platform_device *pdev)
+static void fsl8250_acpi_remove(struct platform_device *pdev)
 {
 	struct fsl8250_data *data = platform_get_drvdata(pdev);
 
 	serial8250_unregister_port(data->line);
-	return 0;
 }
 
 static const struct acpi_device_id fsl_8250_acpi_id[] = {
@@ -172,3 +184,6 @@ static struct platform_driver fsl8250_platform_driver = {
 
 module_platform_driver(fsl8250_platform_driver);
 #endif
+
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Handling of Freescale specific 8250 variants");

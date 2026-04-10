@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+#include "perf.h"
 #include "util.h"
 #include "debug.h"
 #include "event.h"
@@ -18,6 +19,7 @@
 #include <linux/kernel.h>
 #include <linux/log2.h>
 #include <linux/time64.h>
+#include <linux/overflow.h>
 #include <unistd.h>
 #include "cap.h"
 #include "strlist.h"
@@ -26,6 +28,8 @@
 /*
  * XXX We need to find a better place for these things...
  */
+
+const char *input_name;
 
 bool perf_singlethreaded = true;
 
@@ -75,17 +79,23 @@ bool sysctl__nmi_watchdog_enabled(void)
 
 bool test_attr__enabled;
 
+bool exclude_GH_default;
+
 bool perf_host  = true;
 bool perf_guest = false;
 
 void event_attr_init(struct perf_event_attr *attr)
 {
+	/* to capture ABI version */
+	attr->size = sizeof(*attr);
+
+	if (!exclude_GH_default)
+		return;
+
 	if (!perf_host)
 		attr->exclude_host  = 1;
 	if (!perf_guest)
 		attr->exclude_guest = 1;
-	/* to capture ABI version */
-	attr->size = sizeof(*attr);
 }
 
 int mkdir_p(char *path, mode_t mode)
@@ -200,7 +210,7 @@ static int rm_rf_depth_pat(const char *path, int depth, const char **pat)
 	return rmdir(path);
 }
 
-static int rm_rf_kcore_dir(const char *path)
+static int rm_rf_a_kcore_dir(const char *path, const char *name)
 {
 	char kcore_dir_path[PATH_MAX];
 	const char *pat[] = {
@@ -210,9 +220,90 @@ static int rm_rf_kcore_dir(const char *path)
 		NULL,
 	};
 
-	snprintf(kcore_dir_path, sizeof(kcore_dir_path), "%s/kcore_dir", path);
+	snprintf(kcore_dir_path, sizeof(kcore_dir_path), "%s/%s", path, name);
 
 	return rm_rf_depth_pat(kcore_dir_path, 0, pat);
+}
+
+static bool kcore_dir_filter(const char *name __maybe_unused, struct dirent *d)
+{
+	const char *pat[] = {
+		"kcore_dir",
+		"kcore_dir__[1-9]*",
+		NULL,
+	};
+
+	return match_pat(d->d_name, pat);
+}
+
+static int rm_rf_kcore_dir(const char *path)
+{
+	struct strlist *kcore_dirs;
+	struct str_node *nd;
+	int ret;
+
+	kcore_dirs = lsdir(path, kcore_dir_filter);
+
+	if (!kcore_dirs)
+		return 0;
+
+	strlist__for_each_entry(nd, kcore_dirs) {
+		ret = rm_rf_a_kcore_dir(path, nd->s);
+		if (ret)
+			return ret;
+	}
+
+	strlist__delete(kcore_dirs);
+
+	return 0;
+}
+
+void cpumask_to_cpulist(char *cpumask, char *cpulist)
+{
+	int i, j, bm_size, nbits;
+	int len = strlen(cpumask);
+	unsigned long *bm;
+	char cpus[MAX_NR_CPUS];
+
+	for (i = 0; i < len; i++) {
+		if (cpumask[i] == ',') {
+			for (j = i; j < len; j++)
+				cpumask[j] = cpumask[j + 1];
+		}
+	}
+
+	len = strlen(cpumask);
+	bm_size = (len + 15) / 16;
+	nbits = bm_size * 64;
+	if (nbits <= 0)
+		return;
+
+	bm = calloc(bm_size, sizeof(unsigned long));
+	if (!bm)
+		goto free_bm;
+
+	for (i = 0; i < bm_size; i++) {
+		char blk[17];
+		int blklen = len > 16 ? 16 : len;
+
+		strncpy(blk, cpumask + len - blklen, blklen);
+		blk[blklen] = '\0';
+		bm[i] = strtoul(blk, NULL, 16);
+		cpumask[len - blklen] = '\0';
+		len = strlen(cpumask);
+	}
+
+	bitmap_scnprintf(bm, nbits, cpus, sizeof(cpus));
+	strcpy(cpulist, cpus);
+
+free_bm:
+	free(bm);
+}
+
+void print_separator2(int pre_dash_cnt, const char *s, int post_dash_cnt)
+{
+	printf("%.*s%s%.*s\n", pre_dash_cnt, graph_dotted_line, s, post_dash_cnt,
+	       graph_dotted_line);
 }
 
 int rm_rf_perf_data(const char *path)
@@ -289,94 +380,15 @@ int perf_event_paranoid(void)
 
 bool perf_event_paranoid_check(int max_level)
 {
-	return perf_cap__capable(CAP_SYS_ADMIN) ||
-			perf_cap__capable(CAP_PERFMON) ||
-			perf_event_paranoid() <= max_level;
-}
+	bool used_root;
 
-static int
-fetch_ubuntu_kernel_version(unsigned int *puint)
-{
-	ssize_t len;
-	size_t line_len = 0;
-	char *ptr, *line = NULL;
-	int version, patchlevel, sublevel, err;
-	FILE *vsig;
+	if (perf_cap__capable(CAP_SYS_ADMIN, &used_root))
+		return true;
 
-	if (!puint)
-		return 0;
+	if (!used_root && perf_cap__capable(CAP_PERFMON, &used_root))
+		return true;
 
-	vsig = fopen("/proc/version_signature", "r");
-	if (!vsig) {
-		pr_debug("Open /proc/version_signature failed: %s\n",
-			 strerror(errno));
-		return -1;
-	}
-
-	len = getline(&line, &line_len, vsig);
-	fclose(vsig);
-	err = -1;
-	if (len <= 0) {
-		pr_debug("Reading from /proc/version_signature failed: %s\n",
-			 strerror(errno));
-		goto errout;
-	}
-
-	ptr = strrchr(line, ' ');
-	if (!ptr) {
-		pr_debug("Parsing /proc/version_signature failed: %s\n", line);
-		goto errout;
-	}
-
-	err = sscanf(ptr + 1, "%d.%d.%d",
-		     &version, &patchlevel, &sublevel);
-	if (err != 3) {
-		pr_debug("Unable to get kernel version from /proc/version_signature '%s'\n",
-			 line);
-		goto errout;
-	}
-
-	*puint = (version << 16) + (patchlevel << 8) + sublevel;
-	err = 0;
-errout:
-	free(line);
-	return err;
-}
-
-int
-fetch_kernel_version(unsigned int *puint, char *str,
-		     size_t str_size)
-{
-	struct utsname utsname;
-	int version, patchlevel, sublevel, err;
-	bool int_ver_ready = false;
-
-	if (access("/proc/version_signature", R_OK) == 0)
-		if (!fetch_ubuntu_kernel_version(puint))
-			int_ver_ready = true;
-
-	if (uname(&utsname))
-		return -1;
-
-	if (str && str_size) {
-		strncpy(str, utsname.release, str_size);
-		str[str_size - 1] = '\0';
-	}
-
-	if (!puint || int_ver_ready)
-		return 0;
-
-	err = sscanf(utsname.release, "%d.%d.%d",
-		     &version, &patchlevel, &sublevel);
-
-	if (err != 3) {
-		pr_debug("Unable to get kernel version from uname '%s'\n",
-			 utsname.release);
-		return -1;
-	}
-
-	*puint = (version << 16) + (patchlevel << 8) + sublevel;
-	return 0;
+	return perf_event_paranoid() <= max_level;
 }
 
 int perf_tip(char **strp, const char *dirpath)
@@ -467,3 +479,71 @@ char *filename_with_chroot(int pid, const char *filename)
 
 	return new_name;
 }
+
+/*
+ * Reallocate an array *arr of size *arr_sz so that it is big enough to contain
+ * x elements of size msz, initializing new entries to *init_val or zero if
+ * init_val is NULL
+ */
+int do_realloc_array_as_needed(void **arr, size_t *arr_sz, size_t x, size_t msz, const void *init_val)
+{
+	size_t new_sz = *arr_sz;
+	void *new_arr;
+	size_t i;
+
+	if (!new_sz)
+		new_sz = msz >= 64 ? 1 : roundup(64, msz); /* Start with at least 64 bytes */
+	while (x >= new_sz) {
+		if (check_mul_overflow(new_sz, (size_t)2, &new_sz))
+			return -ENOMEM;
+	}
+	if (new_sz == *arr_sz)
+		return 0;
+	new_arr = calloc(new_sz, msz);
+	if (!new_arr)
+		return -ENOMEM;
+	if (*arr_sz)
+		memcpy(new_arr, *arr, *arr_sz * msz);
+	if (init_val) {
+		for (i = *arr_sz; i < new_sz; i++)
+			memcpy(new_arr + (i * msz), init_val, msz);
+	}
+	*arr = new_arr;
+	*arr_sz = new_sz;
+	return 0;
+}
+
+#ifndef HAVE_SCHED_GETCPU_SUPPORT
+int sched_getcpu(void)
+{
+#ifdef __NR_getcpu
+	unsigned int cpu;
+	int err = syscall(__NR_getcpu, &cpu, NULL, NULL);
+
+	if (!err)
+		return cpu;
+#else
+	errno = ENOSYS;
+#endif
+	return -1;
+}
+#endif
+
+#ifndef HAVE_SCANDIRAT_SUPPORT
+int scandirat(int dirfd, const char *dirp,
+	      struct dirent ***namelist,
+	      int (*filter)(const struct dirent *),
+	      int (*compar)(const struct dirent **, const struct dirent **))
+{
+	char path[PATH_MAX];
+	int err, fd = openat(dirfd, dirp, O_PATH);
+
+	if (fd < 0)
+		return fd;
+
+	snprintf(path, sizeof(path), "/proc/%d/fd/%d", getpid(), fd);
+	err = scandir(path, namelist, filter, compar);
+	close(fd);
+	return err;
+}
+#endif

@@ -23,7 +23,7 @@
 #include <linux/mfd/core.h>
 #include <linux/mfd/tps6105x.h>
 
-static struct regmap_config tps6105x_regmap_config = {
+static const struct regmap_config tps6105x_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = TPS6105X_REG_3,
@@ -117,8 +117,7 @@ static struct tps6105x_platform_data *tps6105x_parse_dt(struct device *dev)
 	return pdata;
 }
 
-static int tps6105x_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int tps6105x_probe(struct i2c_client *client)
 {
 	struct tps6105x			*tps6105x;
 	struct tps6105x_platform_data	*pdata;
@@ -179,7 +178,7 @@ static int tps6105x_probe(struct i2c_client *client,
 	return ret;
 }
 
-static int tps6105x_remove(struct i2c_client *client)
+static void tps6105x_remove(struct i2c_client *client)
 {
 	struct tps6105x *tps6105x = i2c_get_clientdata(client);
 
@@ -189,13 +188,11 @@ static int tps6105x_remove(struct i2c_client *client)
 	regmap_update_bits(tps6105x->regmap, TPS6105X_REG_0,
 		TPS6105X_REG0_MODE_MASK,
 		TPS6105X_MODE_SHUTDOWN << TPS6105X_REG0_MODE_SHIFT);
-
-	return 0;
 }
 
 static const struct i2c_device_id tps6105x_id[] = {
-	{ "tps61050", 0 },
-	{ "tps61052", 0 },
+	{ "tps61050" },
+	{ "tps61052" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tps6105x_id);

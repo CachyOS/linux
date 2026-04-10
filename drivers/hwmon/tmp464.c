@@ -13,8 +13,7 @@
 #include <linux/i2c.h>
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 
@@ -92,7 +91,6 @@ struct tmp464_channel {
 
 struct tmp464_data {
 	struct regmap *regmap;
-	struct mutex update_lock;
 	int channels;
 	s16 config_orig;
 	u16 open_reg;
@@ -147,10 +145,10 @@ static int tmp464_temp_read(struct device *dev, u32 attr, int channel, long *val
 {
 	struct tmp464_data *data = dev_get_drvdata(dev);
 	struct regmap *regmap = data->regmap;
-	unsigned int regval, regval2;
+	unsigned int regs[2];
+	unsigned int regval;
+	u16 regvals[2];
 	int err = 0;
-
-	mutex_lock(&data->update_lock);
 
 	switch (attr) {
 	case hwmon_temp_max_alarm:
@@ -184,14 +182,12 @@ static int tmp464_temp_read(struct device *dev, u32 attr, int channel, long *val
 		*val = !!(data->open_reg & BIT(channel + 7));
 		break;
 	case hwmon_temp_max_hyst:
-		err = regmap_read(regmap, TMP464_THERM_LIMIT[channel], &regval);
+		regs[0] = TMP464_THERM_LIMIT[channel];
+		regs[1] = TMP464_TEMP_HYST_REG;
+		err = regmap_multi_reg_read(regmap, regs, regvals, 2);
 		if (err < 0)
 			break;
-		err = regmap_read(regmap, TMP464_TEMP_HYST_REG, &regval2);
-		if (err < 0)
-			break;
-		regval -= regval2;
-		*val = temp_from_reg(regval);
+		*val = temp_from_reg(regvals[0] - regvals[1]);
 		break;
 	case hwmon_temp_max:
 		err = regmap_read(regmap, TMP464_THERM_LIMIT[channel], &regval);
@@ -200,14 +196,12 @@ static int tmp464_temp_read(struct device *dev, u32 attr, int channel, long *val
 		*val = temp_from_reg(regval);
 		break;
 	case hwmon_temp_crit_hyst:
-		err = regmap_read(regmap, TMP464_THERM2_LIMIT[channel], &regval);
+		regs[0] = TMP464_THERM2_LIMIT[channel];
+		regs[1] = TMP464_TEMP_HYST_REG;
+		err = regmap_multi_reg_read(regmap, regs, regvals, 2);
 		if (err < 0)
 			break;
-		err = regmap_read(regmap, TMP464_TEMP_HYST_REG, &regval2);
-		if (err < 0)
-			break;
-		regval -= regval2;
-		*val = temp_from_reg(regval);
+		*val = temp_from_reg(regvals[0] - regvals[1]);
 		break;
 	case hwmon_temp_crit:
 		err = regmap_read(regmap, TMP464_THERM2_LIMIT[channel], &regval);
@@ -238,8 +232,6 @@ static int tmp464_temp_read(struct device *dev, u32 attr, int channel, long *val
 		err = -EOPNOTSUPP;
 		break;
 	}
-
-	mutex_unlock(&data->update_lock);
 
 	return err;
 }
@@ -348,8 +340,6 @@ static int tmp464_write(struct device *dev, enum hwmon_sensor_types type,
 	struct tmp464_data *data = dev_get_drvdata(dev);
 	int err;
 
-	mutex_lock(&data->update_lock);
-
 	switch (type) {
 	case hwmon_chip:
 		err = tmp464_chip_write(data, attr, channel, val);
@@ -361,8 +351,6 @@ static int tmp464_write(struct device *dev, enum hwmon_sensor_types type,
 		err = -EOPNOTSUPP;
 		break;
 	}
-
-	mutex_unlock(&data->update_lock);
 
 	return err;
 }
@@ -565,18 +553,15 @@ static int tmp464_probe_child_from_dt(struct device *dev,
 static int tmp464_probe_from_dt(struct device *dev, struct tmp464_data *data)
 {
 	const struct device_node *np = dev->of_node;
-	struct device_node *child;
 	int err;
 
-	for_each_child_of_node(np, child) {
+	for_each_child_of_node_scoped(np, child) {
 		if (strcmp(child->name, "channel"))
 			continue;
 
 		err = tmp464_probe_child_from_dt(dev, child, data);
-		if (err) {
-			of_node_put(child);
+		if (err)
 			return err;
-		}
 	}
 
 	return 0;
@@ -589,7 +574,7 @@ static const struct hwmon_ops tmp464_ops = {
 	.write = tmp464_write,
 };
 
-static const struct hwmon_channel_info *tmp464_info[] = {
+static const struct hwmon_channel_info * const tmp464_info[] = {
 	HWMON_CHANNEL_INFO(chip,
 			   HWMON_C_UPDATE_INTERVAL),
 	HWMON_CHANNEL_INFO(temp,
@@ -644,7 +629,7 @@ static const struct regmap_config tmp464_regmap_config = {
 	.max_register = TMP464_DEVICE_ID_REG,
 	.volatile_reg = tmp464_is_volatile_reg,
 	.val_format_endian = REGMAP_ENDIAN_BIG,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.use_single_read = true,
 	.use_single_write = true,
 };
@@ -664,12 +649,7 @@ static int tmp464_probe(struct i2c_client *client)
 	if (!data)
 		return -ENOMEM;
 
-	mutex_init(&data->update_lock);
-
-	if (dev->of_node)
-		data->channels = (int)(unsigned long)of_device_get_match_data(&client->dev);
-	else
-		data->channels = i2c_match_id(tmp464_id, client)->driver_data;
+	data->channels = (int)(unsigned long)i2c_get_match_data(client);
 
 	data->regmap = devm_regmap_init_i2c(client, &tmp464_regmap_config);
 	if (IS_ERR(data->regmap))
@@ -699,7 +679,7 @@ static struct i2c_driver tmp464_driver = {
 		.name	= "tmp464",
 		.of_match_table = of_match_ptr(tmp464_of_match),
 	},
-	.probe_new = tmp464_probe,
+	.probe = tmp464_probe,
 	.id_table = tmp464_id,
 	.detect = tmp464_detect,
 	.address_list = normal_i2c,

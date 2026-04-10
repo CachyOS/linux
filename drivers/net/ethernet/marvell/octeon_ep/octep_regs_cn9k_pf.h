@@ -5,6 +5,8 @@
  *
  */
 
+#include <linux/bitfield.h>
+
 #ifndef _OCTEP_REGS_CN9K_PF_H_
 #define _OCTEP_REGS_CN9K_PF_H_
 
@@ -52,7 +54,7 @@
 
 #define    CN93_SDP_EPF_RINFO_SRN(val)           ((val) & 0xFF)
 #define    CN93_SDP_EPF_RINFO_RPVF(val)          (((val) >> 32) & 0xF)
-#define    CN93_SDP_EPF_RINFO_NVFS(val)          (((val) >> 48) && 0xFF)
+#define    CN93_SDP_EPF_RINFO_NVFS(val)          (((val) >> 48) & 0xFF)
 
 /* SDP Function select */
 #define    CN93_SDP_FUNC_SEL_EPF_BIT_POS         8
@@ -208,6 +210,9 @@
 #define    CN93_SDP_R_MBOX_PF_VF_INT_START        0x10220
 #define    CN93_SDP_R_MBOX_VF_PF_DATA_START       0x10230
 
+#define    CN93_SDP_MBOX_VF_PF_DATA_START       0x24000
+#define    CN93_SDP_MBOX_PF_VF_DATA_START       0x22000
+
 #define    CN93_SDP_R_MBOX_PF_VF_DATA(ring)		\
 	(CN93_SDP_R_MBOX_PF_VF_DATA_START + ((ring) * CN93_RING_OFFSET))
 
@@ -216,6 +221,12 @@
 
 #define    CN93_SDP_R_MBOX_VF_PF_DATA(ring)		\
 	(CN93_SDP_R_MBOX_VF_PF_DATA_START + ((ring) * CN93_RING_OFFSET))
+
+#define    CN93_SDP_MBOX_VF_PF_DATA(ring)          \
+	(CN93_SDP_MBOX_VF_PF_DATA_START + ((ring) * CN93_EPVF_RING_OFFSET))
+
+#define    CN93_SDP_MBOX_PF_VF_DATA(ring)      \
+	(CN93_SDP_MBOX_PF_VF_DATA_START + ((ring) * CN93_EPVF_RING_OFFSET))
 
 /* ##################### Interrupt Registers ########################## */
 #define	   CN93_SDP_R_ERR_TYPE_START	          0x10400
@@ -362,6 +373,49 @@
 #define    CN93_SDP_MAC_PF_RING_CTL_SRN(val)   (((val) >> 8) & 0xFF)
 #define    CN93_SDP_MAC_PF_RING_CTL_RPPF(val)  (((val) >> 16) & 0x3F)
 
+#define    CN98_SDP_MAC_PF_RING_CTL_NPFS(val)  (((val) >> 48) & 0xF)
+#define    CN98_SDP_MAC_PF_RING_CTL_SRN(val)   ((val) & 0xFF)
+#define    CN98_SDP_MAC_PF_RING_CTL_RPPF(val)  (((val) >> 32) & 0x3F)
+
 /* Number of non-queue interrupts in CN93xx */
 #define    CN93_NUM_NON_IOQ_INTR    16
+
+/* bit 0 for control mbox interrupt */
+#define CN93_SDP_EPF_OEI_RINT_DATA_BIT_MBOX	BIT_ULL(0)
+/* bit 1 for firmware heartbeat interrupt */
+#define CN93_SDP_EPF_OEI_RINT_DATA_BIT_HBEAT	BIT_ULL(1)
+
+#define FW_STATUS_DOWNING      0ULL
+#define FW_STATUS_RUNNING      2ULL
+
+#define CN9K_PEM_GENMASK BIT_ULL(36)
+#define CN9K_PF_GENMASK GENMASK_ULL(21, 18)
+#define CN9K_PFX_CSX_PFCFGX_SHADOW_BIT BIT_ULL(16)
+#define CN9K_PFX_CSX_PFCFGX_BASE_ADDR (0x8e0000008000ULL)
+#define CN9K_4BYTE_ALIGNED_ADDRESS_OFFSET(offset) ((offset) & BIT_ULL(2))
+#define CN9K_PEMX_PFX_CSX_PFCFGX cn9k_pemx_pfx_csx_pfcfgx
+
+static inline u64 cn9k_pemx_pfx_csx_pfcfgx(u64 pem, u32 pf, u32 offset)
+{
+	u32 shadow_addr_bit, pf_addr_bits, aligned_offset;
+	u64 pem_addr_bits;
+
+	pem_addr_bits = FIELD_PREP(CN9K_PEM_GENMASK, pem);
+	pf_addr_bits = FIELD_PREP(CN9K_PF_GENMASK, pf);
+	shadow_addr_bit = CN9K_PFX_CSX_PFCFGX_SHADOW_BIT & (offset);
+	aligned_offset = rounddown((offset), 8);
+
+	return (CN9K_PFX_CSX_PFCFGX_BASE_ADDR | pem_addr_bits
+		| pf_addr_bits | shadow_addr_bit | aligned_offset)
+		+ CN9K_4BYTE_ALIGNED_ADDRESS_OFFSET(offset);
+}
+
+/* Register defines for use with CN9K_PEMX_PFX_CSX_PFCFGX */
+#define CN9K_PCIEEP_VSECST_CTL  0x4D0
+
+#define CN93_PEM_BAR4_INDEX            7
+#define CN93_PEM_BAR4_INDEX_SIZE       0x400000ULL
+#define CN93_PEM_BAR4_INDEX_OFFSET     (CN93_PEM_BAR4_INDEX * CN93_PEM_BAR4_INDEX_SIZE)
+#define CN93_INT_ENA_BIT	BIT_ULL(62)
+
 #endif /* _OCTEP_REGS_CN9K_PF_H_ */

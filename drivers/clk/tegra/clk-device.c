@@ -2,8 +2,8 @@
 
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
+#include <linux/mod_devicetable.h>
 #include <linux/mutex.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_opp.h>
@@ -174,8 +174,19 @@ unreg_clk:
  * problem. In practice this makes no difference from a power management
  * perspective since voltage is kept at a nominal level during suspend anyways.
  */
+static inline int tegra_clock_suspend(struct device *dev)
+{
+	int ret;
+
+	ret = pm_runtime_resume(dev);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
 static const struct dev_pm_ops tegra_clock_pm = {
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_resume_and_get, pm_runtime_put)
+	SET_SYSTEM_SLEEP_PM_OPS(tegra_clock_suspend, NULL)
 };
 
 static const struct of_device_id tegra_clock_match[] = {

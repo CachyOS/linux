@@ -4,6 +4,8 @@
  *
  * Copyright 2016 Red Hat, Inc. and/or its affiliates.
  */
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/kvm_host.h>
 #include <linux/debugfs.h>
 #include "lapic.h"
@@ -48,7 +50,7 @@ DEFINE_SIMPLE_ATTRIBUTE(vcpu_tsc_scaling_fops, vcpu_get_tsc_scaling_ratio, NULL,
 
 static int vcpu_get_tsc_scaling_frac_bits(void *data, u64 *val)
 {
-	*val = kvm_tsc_scaling_ratio_frac_bits;
+	*val = kvm_caps.tsc_scaling_ratio_frac_bits;
 	return 0;
 }
 
@@ -66,7 +68,7 @@ void kvm_arch_create_vcpu_debugfs(struct kvm_vcpu *vcpu, struct dentry *debugfs_
 				    debugfs_dentry, vcpu,
 				    &vcpu_timer_advance_ns_fops);
 
-	if (kvm_has_tsc_control) {
+	if (kvm_caps.has_tsc_control) {
 		debugfs_create_file("tsc-scaling-ratio", 0444,
 				    debugfs_dentry, vcpu,
 				    &vcpu_tsc_scaling_fops);
@@ -109,7 +111,7 @@ static int kvm_mmu_rmaps_stat_show(struct seq_file *m, void *v)
 	mutex_lock(&kvm->slots_lock);
 	write_lock(&kvm->mmu_lock);
 
-	for (i = 0; i < KVM_ADDRESS_SPACE_NUM; i++) {
+	for (i = 0; i < kvm_arch_nr_memslot_as_ids(kvm); i++) {
 		int bkt;
 
 		slots = __kvm_memslots(kvm, i);
@@ -158,11 +160,16 @@ out:
 static int kvm_mmu_rmaps_stat_open(struct inode *inode, struct file *file)
 {
 	struct kvm *kvm = inode->i_private;
+	int r;
 
 	if (!kvm_get_kvm_safe(kvm))
 		return -ENOENT;
 
-	return single_open(file, kvm_mmu_rmaps_stat_show, kvm);
+	r = single_open(file, kvm_mmu_rmaps_stat_show, kvm);
+	if (r < 0)
+		kvm_put_kvm(kvm);
+
+	return r;
 }
 
 static int kvm_mmu_rmaps_stat_release(struct inode *inode, struct file *file)
@@ -175,15 +182,15 @@ static int kvm_mmu_rmaps_stat_release(struct inode *inode, struct file *file)
 }
 
 static const struct file_operations mmu_rmaps_stat_fops = {
+	.owner		= THIS_MODULE,
 	.open		= kvm_mmu_rmaps_stat_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= kvm_mmu_rmaps_stat_release,
 };
 
-int kvm_arch_create_vm_debugfs(struct kvm *kvm)
+void kvm_arch_create_vm_debugfs(struct kvm *kvm)
 {
 	debugfs_create_file("mmu_rmaps_stat", 0644, kvm->debugfs_dentry, kvm,
 			    &mmu_rmaps_stat_fops);
-	return 0;
 }

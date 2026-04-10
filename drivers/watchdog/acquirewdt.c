@@ -218,7 +218,6 @@ static int acq_close(struct inode *inode, struct file *file)
 
 static const struct file_operations acq_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.write		= acq_write,
 	.unlocked_ioctl	= acq_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
@@ -271,14 +270,12 @@ out:
 	return ret;
 }
 
-static int acq_remove(struct platform_device *dev)
+static void acq_remove(struct platform_device *dev)
 {
 	misc_deregister(&acq_miscdev);
 	release_region(wdt_start, 1);
 	if (wdt_stop != wdt_start)
 		release_region(wdt_stop, 1);
-
-	return 0;
 }
 
 static void acq_shutdown(struct platform_device *dev)

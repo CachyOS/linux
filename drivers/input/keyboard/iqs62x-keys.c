@@ -45,7 +45,6 @@ struct iqs62x_keys_private {
 static int iqs62x_keys_parse_prop(struct platform_device *pdev,
 				  struct iqs62x_keys_private *iqs62x_keys)
 {
-	struct fwnode_handle *child;
 	unsigned int val;
 	int ret, i;
 
@@ -68,7 +67,8 @@ static int iqs62x_keys_parse_prop(struct platform_device *pdev,
 	}
 
 	for (i = 0; i < ARRAY_SIZE(iqs62x_keys->switches); i++) {
-		child = device_get_named_child_node(&pdev->dev,
+		struct fwnode_handle *child __free(fwnode_handle) =
+			device_get_named_child_node(&pdev->dev,
 						    iqs62x_switch_names[i]);
 		if (!child)
 			continue;
@@ -307,7 +307,7 @@ static int iqs62x_keys_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int iqs62x_keys_remove(struct platform_device *pdev)
+static void iqs62x_keys_remove(struct platform_device *pdev)
 {
 	struct iqs62x_keys_private *iqs62x_keys = platform_get_drvdata(pdev);
 	int ret;
@@ -316,8 +316,6 @@ static int iqs62x_keys_remove(struct platform_device *pdev)
 						 &iqs62x_keys->notifier);
 	if (ret)
 		dev_err(&pdev->dev, "Failed to unregister notifier: %d\n", ret);
-
-	return ret;
 }
 
 static struct platform_driver iqs62x_keys_platform_driver = {

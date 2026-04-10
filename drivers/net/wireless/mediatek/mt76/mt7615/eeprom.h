@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: ISC */
+/* SPDX-License-Identifier: BSD-3-Clause-Clear */
 /* Copyright (C) 2019 MediaTek Inc. */
 
 #ifndef __MT7615_EEPROM_H
@@ -46,7 +46,7 @@ enum mt7615_eeprom_field {
 
 	MT7615_EE_MAX =				0x3bf,
 	MT7622_EE_MAX =				0x3db,
-	MT7663_EE_MAX =				0x400,
+	MT7663_EE_MAX =				0x600,
 };
 
 #define MT_EE_RATE_POWER_MASK			GENMASK(5, 0)

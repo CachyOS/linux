@@ -53,6 +53,8 @@ static ssize_t link_show(struct device *dev, struct device_attribute *attr,
 		link = port->sw->link_usb4 ? "usb4" : "tbt";
 	else if (tb_port_has_remote(port))
 		link = port->remote->sw->link_usb4 ? "usb4" : "tbt";
+	else if (port->xdomain)
+		link = port->xdomain->link_usb4 ? "usb4" : "tbt";
 	else
 		link = "none";
 
@@ -102,6 +104,49 @@ static void usb4_port_online(struct usb4_port *usb4)
 	usb4_port_router_online(port);
 	tb_acpi_power_off_retimers(port);
 }
+
+/**
+ * usb4_usb3_port_match() - Matches USB4 port device with USB 3.x port device
+ * @usb4_port_dev: USB4 port device
+ * @usb3_port_fwnode: USB 3.x port firmware node
+ *
+ * Checks if USB 3.x port @usb3_port_fwnode is tunneled through USB4 port @usb4_port_dev.
+ * Returns true if match is found, false otherwise.
+ *
+ * Function is designed to be used with component framework (component_match_add).
+ */
+bool usb4_usb3_port_match(struct device *usb4_port_dev,
+			  const struct fwnode_handle *usb3_port_fwnode)
+{
+	struct fwnode_handle *nhi_fwnode __free(fwnode_handle) = NULL;
+	struct usb4_port *usb4;
+	struct tb_switch *sw;
+	struct tb_nhi *nhi;
+	u8 usb4_port_num;
+	struct tb *tb;
+
+	usb4 = tb_to_usb4_port_device(usb4_port_dev);
+	if (!usb4)
+		return false;
+
+	sw = usb4->port->sw;
+	tb = sw->tb;
+	nhi = tb->nhi;
+
+	nhi_fwnode = fwnode_find_reference(usb3_port_fwnode, "usb4-host-interface", 0);
+	if (IS_ERR(nhi_fwnode))
+		return false;
+
+	/* Check if USB3 fwnode references same NHI where USB4 port resides */
+	if (!device_match_fwnode(&nhi->pdev->dev, nhi_fwnode))
+		return false;
+
+	if (fwnode_property_read_u8(usb3_port_fwnode, "usb4-port-number", &usb4_port_num))
+		return false;
+
+	return usb4_port_index(sw, usb4->port) == usb4_port_num;
+}
+EXPORT_SYMBOL_GPL(usb4_usb3_port_match);
 
 static ssize_t offline_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
@@ -241,7 +286,7 @@ static void usb4_port_device_release(struct device *dev)
 	kfree(usb4);
 }
 
-struct device_type usb4_port_device_type = {
+const struct device_type usb4_port_device_type = {
 	.name = "usb4_port",
 	.groups = usb4_port_device_groups,
 	.release = usb4_port_device_release,
@@ -251,15 +296,16 @@ struct device_type usb4_port_device_type = {
  * usb4_port_device_add() - Add USB4 port device
  * @port: Lane 0 adapter port to add the USB4 port
  *
- * Creates and registers a USB4 port device for @port. Returns the new
- * USB4 port device pointer or ERR_PTR() in case of error.
+ * Creates and registers a USB4 port device for @port.
+ *
+ * Return: Pointer to &struct usb4_port or ERR_PTR() in case of an error.
  */
 struct usb4_port *usb4_port_device_add(struct tb_port *port)
 {
 	struct usb4_port *usb4;
 	int ret;
 
-	usb4 = kzalloc(sizeof(*usb4), GFP_KERNEL);
+	usb4 = kzalloc_obj(*usb4);
 	if (!usb4)
 		return ERR_PTR(-ENOMEM);
 
@@ -274,13 +320,14 @@ struct usb4_port *usb4_port_device_add(struct tb_port *port)
 		return ERR_PTR(ret);
 	}
 
-	if (dev_fwnode(&usb4->dev)) {
-		ret = component_add(&usb4->dev, &connector_ops);
-		if (ret) {
-			dev_err(&usb4->dev, "failed to add component\n");
-			device_unregister(&usb4->dev);
-		}
+	ret = component_add(&usb4->dev, &connector_ops);
+	if (ret) {
+		dev_err(&usb4->dev, "failed to add component\n");
+		device_unregister(&usb4->dev);
 	}
+
+	if (!tb_is_upstream_port(port))
+		device_set_wakeup_capable(&usb4->dev, true);
 
 	pm_runtime_no_callbacks(&usb4->dev);
 	pm_runtime_set_active(&usb4->dev);
@@ -301,8 +348,7 @@ struct usb4_port *usb4_port_device_add(struct tb_port *port)
  */
 void usb4_port_device_remove(struct usb4_port *usb4)
 {
-	if (dev_fwnode(&usb4->dev))
-		component_del(&usb4->dev, &connector_ops);
+	component_del(&usb4->dev, &connector_ops);
 	device_unregister(&usb4->dev);
 }
 
@@ -311,6 +357,8 @@ void usb4_port_device_remove(struct usb4_port *usb4)
  * @usb4: USB4 port device
  *
  * Used to resume USB4 port device after sleep state.
+ *
+ * Return: %0 on success, negative errno otherwise.
  */
 int usb4_port_device_resume(struct usb4_port *usb4)
 {

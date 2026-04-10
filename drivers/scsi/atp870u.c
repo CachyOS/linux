@@ -40,7 +40,7 @@
 
 #include "atp870u.h"
 
-static struct scsi_host_template atp870u_template;
+static const struct scsi_host_template atp870u_template;
 static void send_s870(struct atp_unit *dev,unsigned char c);
 static void atp_is(struct atp_unit *dev, unsigned char c, bool wide_chip,
 		   unsigned char lvdmode);
@@ -617,7 +617,7 @@ static irqreturn_t atp870u_intr_handle(int irq, void *dev_id)
  *
  *	Queue a command to the ATP queue. Called with the host lock held.
  */
-static int atp870u_queuecommand_lck(struct scsi_cmnd *req_p)
+static enum scsi_qc_status atp870u_queuecommand_lck(struct scsi_cmnd *req_p)
 {
 	void (*done)(struct scsi_cmnd *) = scsi_done;
 	unsigned char c;
@@ -1692,7 +1692,7 @@ static int atp870u_show_info(struct seq_file *m, struct Scsi_Host *HBAptr)
 }
 
 
-static int atp870u_biosparam(struct scsi_device *disk, struct block_device *dev,
+static int atp870u_biosparam(struct scsi_device *disk, struct gendisk *unused,
 			sector_t capacity, int *ip)
 {
 	int heads, sectors, cylinders;
@@ -1724,9 +1724,11 @@ static void atp870u_remove (struct pci_dev *pdev)
 	atp870u_free_tables(pshost);
 	scsi_host_put(pshost);
 }
+
+MODULE_DESCRIPTION("ACARD SCSI host adapter driver");
 MODULE_LICENSE("GPL");
 
-static struct scsi_host_template atp870u_template = {
+static const struct scsi_host_template atp870u_template = {
      .module			= THIS_MODULE,
      .name			= "atp870u"		/* name */,
      .proc_name			= "atp870u",
@@ -1741,7 +1743,7 @@ static struct scsi_host_template atp870u_template = {
      .max_sectors		= ATP870U_MAX_SECTORS,
 };
 
-static struct pci_device_id atp870u_id_table[] = {
+static const struct pci_device_id atp870u_id_table[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_ARTOP, ATP885_DEVID)			  },
 	{ PCI_DEVICE(PCI_VENDOR_ID_ARTOP, ATP880_DEVID1)		  },
 	{ PCI_DEVICE(PCI_VENDOR_ID_ARTOP, ATP880_DEVID2)		  },

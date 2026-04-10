@@ -56,8 +56,9 @@ static bool assert_storage_noexist(struct bpf_map *map, const void *key)
 
 static bool connect_send(const char *cgroup_path)
 {
-	bool res = true;
 	int server_fd = -1, client_fd = -1;
+	char message[] = "message";
+	bool res = true;
 
 	if (join_cgroup(cgroup_path))
 		goto out_clean;
@@ -70,7 +71,10 @@ static bool connect_send(const char *cgroup_path)
 	if (client_fd < 0)
 		goto out_clean;
 
-	if (send(client_fd, "message", strlen("message"), 0) < 0)
+	if (send(client_fd, &message, sizeof(message), 0) < 0)
+		goto out_clean;
+
+	if (read(server_fd, &message, sizeof(message)) < 0)
 		goto out_clean;
 
 	res = false;
@@ -210,7 +214,7 @@ static void test_isolated(int parent_cgroup_fd, int child_cgroup_fd)
 	/* Attach to parent and child cgroup, trigger packet from child.
 	 * Assert that there is six additional runs, parent cgroup egresses and
 	 * ingress, child cgroup egresses and ingress.
-	 * Assert that egree and ingress storages are separate.
+	 * Assert that egress and ingress storages are separate.
 	 */
 	child_egress1_link = bpf_program__attach_cgroup(obj->progs.egress1,
 							child_cgroup_fd);

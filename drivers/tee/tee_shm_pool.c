@@ -6,7 +6,7 @@
 #include <linux/dma-buf.h>
 #include <linux/genalloc.h>
 #include <linux/slab.h>
-#include <linux/tee_drv.h>
+#include <linux/tee_core.h>
 #include "tee_private.h"
 
 static int pool_op_gen_alloc(struct tee_shm_pool *pool, struct tee_shm *shm,
@@ -65,7 +65,7 @@ struct tee_shm_pool *tee_shm_pool_alloc_res_mem(unsigned long vaddr,
 	if (vaddr & page_mask || paddr & page_mask || size & page_mask)
 		return ERR_PTR(-EINVAL);
 
-	pool = kzalloc(sizeof(*pool), GFP_KERNEL);
+	pool = kzalloc_obj(*pool);
 	if (!pool)
 		return ERR_PTR(-ENOMEM);
 

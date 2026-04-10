@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2017 Intel Corporation.
  *
@@ -47,7 +48,7 @@ static int unstripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		return -EINVAL;
 	}
 
-	uc = kzalloc(sizeof(*uc), GFP_KERNEL);
+	uc = kzalloc_obj(*uc);
 	if (!uc) {
 		ti->error = "Memory allocation for unstriped context failed";
 		return -ENOMEM;
@@ -84,8 +85,8 @@ static int unstripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 	uc->physical_start = start;
 
-	uc->unstripe_offset = uc->unstripe * uc->chunk_size;
-	uc->unstripe_width = (uc->stripes - 1) * uc->chunk_size;
+	uc->unstripe_offset = (sector_t)uc->unstripe * uc->chunk_size;
+	uc->unstripe_width = (sector_t)(uc->stripes - 1) * uc->chunk_size;
 	uc->chunk_shift = is_power_of_2(uc->chunk_size) ? fls(uc->chunk_size) - 1 : 0;
 
 	tmp_len = ti->len;
@@ -116,7 +117,7 @@ static void unstripe_dtr(struct dm_target *ti)
 static sector_t map_to_core(struct dm_target *ti, struct bio *bio)
 {
 	struct unstripe_c *uc = ti->private;
-	sector_t sector = bio->bi_iter.bi_sector;
+	sector_t sector = dm_target_offset(ti, bio->bi_iter.bi_sector);
 	sector_t tmp_sector = sector;
 
 	/* Shift us up to the right "row" on the stripe */
@@ -191,19 +192,7 @@ static struct target_type unstripe_target = {
 	.iterate_devices = unstripe_iterate_devices,
 	.io_hints = unstripe_io_hints,
 };
-
-static int __init dm_unstripe_init(void)
-{
-	return dm_register_target(&unstripe_target);
-}
-
-static void __exit dm_unstripe_exit(void)
-{
-	dm_unregister_target(&unstripe_target);
-}
-
-module_init(dm_unstripe_init);
-module_exit(dm_unstripe_exit);
+module_dm(unstripe);
 
 MODULE_DESCRIPTION(DM_NAME " unstriped target");
 MODULE_ALIAS("dm-unstriped");

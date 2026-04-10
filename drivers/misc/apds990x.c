@@ -625,15 +625,15 @@ static ssize_t apds990x_lux_show(struct device *dev,
 	struct apds990x_chip *chip = dev_get_drvdata(dev);
 	ssize_t ret;
 	u32 result;
-	long timeout;
+	long time_left;
 
 	if (pm_runtime_suspended(dev))
 		return -EIO;
 
-	timeout = wait_event_interruptible_timeout(chip->wait,
-						!chip->lux_wait_fresh_res,
-						msecs_to_jiffies(APDS_TIMEOUT));
-	if (!timeout)
+	time_left = wait_event_interruptible_timeout(chip->wait,
+						     !chip->lux_wait_fresh_res,
+						     msecs_to_jiffies(APDS_TIMEOUT));
+	if (!time_left)
 		return -EIO;
 
 	mutex_lock(&chip->mutex);
@@ -984,7 +984,6 @@ static ssize_t apds990x_power_state_show(struct device *dev,
 				   struct device_attribute *attr, char *buf)
 {
 	return sprintf(buf, "%d\n", !pm_runtime_suspended(dev));
-	return 0;
 }
 
 static ssize_t apds990x_power_state_store(struct device *dev,
@@ -1051,13 +1050,12 @@ static const struct attribute_group apds990x_attribute_group[] = {
 	{.attrs = sysfs_attrs_ctrl },
 };
 
-static int apds990x_probe(struct i2c_client *client,
-				const struct i2c_device_id *id)
+static int apds990x_probe(struct i2c_client *client)
 {
 	struct apds990x_chip *chip;
 	int err;
 
-	chip = kzalloc(sizeof *chip, GFP_KERNEL);
+	chip = kzalloc_obj(*chip);
 	if (!chip)
 		return -ENOMEM;
 
@@ -1148,7 +1146,7 @@ static int apds990x_probe(struct i2c_client *client,
 		err = chip->pdata->setup_resources();
 		if (err) {
 			err = -EINVAL;
-			goto fail3;
+			goto fail4;
 		}
 	}
 
@@ -1156,7 +1154,7 @@ static int apds990x_probe(struct i2c_client *client,
 				apds990x_attribute_group);
 	if (err < 0) {
 		dev_err(&chip->client->dev, "Sysfs registration failed\n");
-		goto fail4;
+		goto fail5;
 	}
 
 	err = request_threaded_irq(client->irq, NULL,
@@ -1167,15 +1165,17 @@ static int apds990x_probe(struct i2c_client *client,
 	if (err) {
 		dev_err(&client->dev, "could not get IRQ %d\n",
 			client->irq);
-		goto fail5;
+		goto fail6;
 	}
 	return err;
-fail5:
+fail6:
 	sysfs_remove_group(&chip->client->dev.kobj,
 			&apds990x_attribute_group[0]);
-fail4:
+fail5:
 	if (chip->pdata && chip->pdata->release_resources)
 		chip->pdata->release_resources();
+fail4:
+	pm_runtime_disable(&client->dev);
 fail3:
 	regulator_bulk_disable(ARRAY_SIZE(chip->regs), chip->regs);
 fail2:
@@ -1185,7 +1185,7 @@ fail1:
 	return err;
 }
 
-static int apds990x_remove(struct i2c_client *client)
+static void apds990x_remove(struct i2c_client *client)
 {
 	struct apds990x_chip *chip = i2c_get_clientdata(client);
 
@@ -1205,7 +1205,6 @@ static int apds990x_remove(struct i2c_client *client)
 	regulator_bulk_free(ARRAY_SIZE(chip->regs), chip->regs);
 
 	kfree(chip);
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -1255,7 +1254,7 @@ static int apds990x_runtime_resume(struct device *dev)
 #endif
 
 static const struct i2c_device_id apds990x_id[] = {
-	{"apds990x", 0 },
+	{ "apds990x" },
 	{}
 };
 
@@ -1269,11 +1268,11 @@ static const struct dev_pm_ops apds990x_pm_ops = {
 };
 
 static struct i2c_driver apds990x_driver = {
-	.driver	 = {
+	.driver	  = {
 		.name	= "apds990x",
 		.pm	= &apds990x_pm_ops,
 	},
-	.probe	  = apds990x_probe,
+	.probe    = apds990x_probe,
 	.remove	  = apds990x_remove,
 	.id_table = apds990x_id,
 };

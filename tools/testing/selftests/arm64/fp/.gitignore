@@ -1,5 +1,8 @@
 fp-pidbench
+fp-ptrace
+fp-stress
 fpsimd-test
+kernel-test
 rdvl-sme
 rdvl-sve
 sve-probe-vls
@@ -11,3 +14,5 @@ vlset
 za-fork
 za-ptrace
 za-test
+zt-ptrace
+zt-test

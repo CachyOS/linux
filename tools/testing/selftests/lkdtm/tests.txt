@@ -1,5 +1,8 @@
 #PANIC
+#PANIC_STOP_IRQOFF Crashes entire system
+#PANIC_IN_HARDIRQ Crashes entire system
 BUG kernel BUG at
+#BUG_IN_HARDIRQ Crashes entire system
 WARNING WARNING:
 WARNING_MESSAGE message trigger
 EXCEPTION
@@ -7,7 +10,9 @@ EXCEPTION
 #EXHAUST_STACK Corrupts memory on failure
 #CORRUPT_STACK Crashes entire system on success
 #CORRUPT_STACK_STRONG Crashes entire system on success
-ARRAY_BOUNDS
+ARRAY_BOUNDS call trace:|UBSAN: array-index-out-of-bounds
+FAM_BOUNDS call trace:|UBSAN: array-index-out-of-bounds
+PTR_BOUNDS call trace:|UBSAN: array-index-out-of-bounds
 CORRUPT_LIST_ADD list_add corruption
 CORRUPT_LIST_DEL list_del corruption
 STACK_GUARD_PAGE_LEADING
@@ -30,6 +35,7 @@ SLAB_FREE_CROSS
 SLAB_FREE_PAGE
 #SOFTLOCKUP Hangs the system
 #HARDLOCKUP Hangs the system
+#SMP_CALL_LOCKUP Hangs the system
 #SPINLOCKUP Hangs the system
 #HUNG_TASK Hangs the system
 EXEC_DATA
@@ -75,7 +81,9 @@ USERCOPY_KERNEL
 STACKLEAK_ERASING OK: the rest of the thread stack is properly erased
 CFI_FORWARD_PROTO
 CFI_BACKWARD call trace:|ok: control flow unchanged
-FORTIFIED_STRSCPY
-FORTIFIED_OBJECT
-FORTIFIED_SUBOBJECT
+FORTIFY_STRSCPY detected buffer overflow
+FORTIFY_STR_OBJECT detected buffer overflow
+FORTIFY_STR_MEMBER detected buffer overflow
+FORTIFY_MEM_OBJECT detected buffer overflow
+FORTIFY_MEM_MEMBER detected field-spanning write
 PPC_SLB_MULTIHIT Recovered

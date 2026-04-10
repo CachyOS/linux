@@ -1055,7 +1055,7 @@ static struct snd_soc_dai_driver wm8997_dai[] = {
 
 static int wm8997_component_probe(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct wm8997_priv *priv = snd_soc_component_get_drvdata(component);
 	struct arizona *arizona = priv->core.arizona;
 	int ret;
@@ -1066,7 +1066,7 @@ static int wm8997_component_probe(struct snd_soc_component *component)
 	if (ret < 0)
 		return ret;
 
-	snd_soc_component_disable_pin(component, "HAPTICS");
+	snd_soc_dapm_disable_pin(dapm, "HAPTICS");
 
 	priv->core.arizona->dapm = dapm;
 
@@ -1105,7 +1105,6 @@ static const struct snd_soc_component_driver soc_component_dev_wm8997 = {
 	.num_dapm_routes	= ARRAY_SIZE(wm8997_dapm_routes),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static int wm8997_probe(struct platform_device *pdev)
@@ -1188,12 +1187,13 @@ static int wm8997_probe(struct platform_device *pdev)
 err_spk_irqs:
 	arizona_free_spk_irqs(arizona);
 err_jack_codec_dev:
+	pm_runtime_disable(&pdev->dev);
 	arizona_jack_codec_dev_remove(&wm8997->core);
 
 	return ret;
 }
 
-static int wm8997_remove(struct platform_device *pdev)
+static void wm8997_remove(struct platform_device *pdev)
 {
 	struct wm8997_priv *wm8997 = platform_get_drvdata(pdev);
 	struct arizona *arizona = wm8997->core.arizona;
@@ -1203,8 +1203,6 @@ static int wm8997_remove(struct platform_device *pdev)
 	arizona_free_spk_irqs(arizona);
 
 	arizona_jack_codec_dev_remove(&wm8997->core);
-
-	return 0;
 }
 
 static struct platform_driver wm8997_codec_driver = {

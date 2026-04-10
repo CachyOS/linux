@@ -40,6 +40,8 @@ enum sdma_peripheral_type {
 	IMX_DMATYPE_ASRC_SP,	/* Shared ASRC */
 	IMX_DMATYPE_SAI,	/* SAI */
 	IMX_DMATYPE_MULTI_SAI,	/* MULTI FIFOs For Audio */
+	IMX_DMATYPE_HDMI,       /* HDMI Audio */
+	IMX_DMATYPE_I2C,	/* I2C */
 };
 
 enum imx_dma_prio {
@@ -70,6 +72,16 @@ static inline int imx_dma_is_general_purpose(struct dma_chan *chan)
  * struct sdma_peripheral_config - SDMA config for audio
  * @n_fifos_src: Number of FIFOs for recording
  * @n_fifos_dst: Number of FIFOs for playback
+ * @stride_fifos_src: FIFO address stride for recording, 0 means all FIFOs are
+ *                    continuous, 1 means 1 word stride between FIFOs. All stride
+ *                    between FIFOs should be same.
+ * @stride_fifos_dst: FIFO address stride for playback
+ * @words_per_fifo: numbers of words per FIFO fetch/fill, 1 means
+ *                  one channel per FIFO, 2 means 2 channels per FIFO..
+ *                  If 'n_fifos_src =  4' and 'words_per_fifo = 2', it
+ *                  means the first two words(channels) fetch from FIFO0
+ *                  and then jump to FIFO1 for next two words, and so on
+ *                  after the last FIFO3 fetched, roll back to FIFO0.
  * @sw_done: Use software done. Needed for PDM (micfil)
  *
  * Some i.MX Audio devices (SAI, micfil) have multiple successive FIFO
@@ -82,6 +94,9 @@ static inline int imx_dma_is_general_purpose(struct dma_chan *chan)
 struct sdma_peripheral_config {
 	int n_fifos_src;
 	int n_fifos_dst;
+	int stride_fifos_src;
+	int stride_fifos_dst;
+	int words_per_fifo;
 	bool sw_done;
 };
 

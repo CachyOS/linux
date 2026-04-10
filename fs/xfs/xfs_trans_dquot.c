@@ -3,7 +3,7 @@
  * Copyright (c) 2000-2002 Silicon Graphics, Inc.
  * All Rights Reserved.
  */
-#include "xfs.h"
+#include "xfs_platform.h"
 #include "xfs_fs.h"
 #include "xfs_shared.h"
 #include "xfs_format.h"
@@ -17,6 +17,7 @@
 #include "xfs_qm.h"
 #include "xfs_trace.h"
 #include "xfs_error.h"
+#include "xfs_health.h"
 
 STATIC void	xfs_trans_alloc_dqinfo(xfs_trans_t *);
 
@@ -120,6 +121,119 @@ xfs_trans_dup_dqinfo(
 	}
 }
 
+#ifdef CONFIG_XFS_LIVE_HOOKS
+/*
+ * Use a static key here to reduce the overhead of quota live updates.  If the
+ * compiler supports jump labels, the static branch will be replaced by a nop
+ * sled when there are no hook users.  Online fsck is currently the only
+ * caller, so this is a reasonable tradeoff.
+ *
+ * Note: Patching the kernel code requires taking the cpu hotplug lock.  Other
+ * parts of the kernel allocate memory with that lock held, which means that
+ * XFS callers cannot hold any locks that might be used by memory reclaim or
+ * writeback when calling the static_branch_{inc,dec} functions.
+ */
+DEFINE_STATIC_XFS_HOOK_SWITCH(xfs_dqtrx_hooks_switch);
+
+void
+xfs_dqtrx_hook_disable(void)
+{
+	xfs_hooks_switch_off(&xfs_dqtrx_hooks_switch);
+}
+
+void
+xfs_dqtrx_hook_enable(void)
+{
+	xfs_hooks_switch_on(&xfs_dqtrx_hooks_switch);
+}
+
+/* Schedule a transactional dquot update on behalf of an inode. */
+void
+xfs_trans_mod_ino_dquot(
+	struct xfs_trans		*tp,
+	struct xfs_inode		*ip,
+	struct xfs_dquot		*dqp,
+	unsigned int			field,
+	int64_t				delta)
+{
+	if (xfs_is_metadir_inode(ip))
+		return;
+
+	xfs_trans_mod_dquot(tp, dqp, field, delta);
+
+	if (xfs_hooks_switched_on(&xfs_dqtrx_hooks_switch)) {
+		struct xfs_mod_ino_dqtrx_params	p = {
+			.tx_id		= (uintptr_t)tp,
+			.ino		= ip->i_ino,
+			.q_type		= xfs_dquot_type(dqp),
+			.q_id		= dqp->q_id,
+			.delta		= delta
+		};
+		struct xfs_quotainfo	*qi = tp->t_mountp->m_quotainfo;
+
+		xfs_hooks_call(&qi->qi_mod_ino_dqtrx_hooks, field, &p);
+	}
+}
+
+/* Call the specified functions during a dquot counter update. */
+int
+xfs_dqtrx_hook_add(
+	struct xfs_quotainfo	*qi,
+	struct xfs_dqtrx_hook	*hook)
+{
+	int			error;
+
+	/*
+	 * Transactional dquot updates first call the mod hook when changes
+	 * are attached to the transaction and then call the apply hook when
+	 * those changes are committed (or canceled).
+	 *
+	 * The apply hook must be installed before the mod hook so that we
+	 * never fail to catch the end of a quota update sequence.
+	 */
+	error = xfs_hooks_add(&qi->qi_apply_dqtrx_hooks, &hook->apply_hook);
+	if (error)
+		goto out;
+
+	error = xfs_hooks_add(&qi->qi_mod_ino_dqtrx_hooks, &hook->mod_hook);
+	if (error)
+		goto out_apply;
+
+	return 0;
+
+out_apply:
+	xfs_hooks_del(&qi->qi_apply_dqtrx_hooks, &hook->apply_hook);
+out:
+	return error;
+}
+
+/* Stop calling the specified function during a dquot counter update. */
+void
+xfs_dqtrx_hook_del(
+	struct xfs_quotainfo	*qi,
+	struct xfs_dqtrx_hook	*hook)
+{
+	/*
+	 * The mod hook must be removed before apply hook to avoid giving the
+	 * hook consumer with an incomplete update.  No hooks should be running
+	 * after these functions return.
+	 */
+	xfs_hooks_del(&qi->qi_mod_ino_dqtrx_hooks, &hook->mod_hook);
+	xfs_hooks_del(&qi->qi_apply_dqtrx_hooks, &hook->apply_hook);
+}
+
+/* Configure dquot update hook functions. */
+void
+xfs_dqtrx_hook_setup(
+	struct xfs_dqtrx_hook	*hook,
+	notifier_fn_t		mod_fn,
+	notifier_fn_t		apply_fn)
+{
+	xfs_hook_setup(&hook->mod_hook, mod_fn);
+	xfs_hook_setup(&hook->apply_hook, apply_fn);
+}
+#endif /* CONFIG_XFS_LIVE_HOOKS */
+
 /*
  * Wrap around mod_dquot to account for both user and group quotas.
  */
@@ -133,15 +247,16 @@ xfs_trans_mod_dquot_byino(
 	xfs_mount_t	*mp = tp->t_mountp;
 
 	if (!XFS_IS_QUOTA_ON(mp) ||
-	    xfs_is_quota_inode(&mp->m_sb, ip->i_ino))
+	    xfs_is_quota_inode(&mp->m_sb, ip->i_ino) ||
+	    xfs_is_metadir_inode(ip))
 		return;
 
 	if (XFS_IS_UQUOTA_ON(mp) && ip->i_udquot)
-		(void) xfs_trans_mod_dquot(tp, ip->i_udquot, field, delta);
+		xfs_trans_mod_ino_dquot(tp, ip, ip->i_udquot, field, delta);
 	if (XFS_IS_GQUOTA_ON(mp) && ip->i_gdquot)
-		(void) xfs_trans_mod_dquot(tp, ip->i_gdquot, field, delta);
+		xfs_trans_mod_ino_dquot(tp, ip, ip->i_gdquot, field, delta);
 	if (XFS_IS_PQUOTA_ON(mp) && ip->i_pdquot)
-		(void) xfs_trans_mod_dquot(tp, ip->i_pdquot, field, delta);
+		xfs_trans_mod_ino_dquot(tp, ip, ip->i_pdquot, field, delta);
 }
 
 STATIC struct xfs_dqtrx *
@@ -268,24 +383,29 @@ xfs_trans_mod_dquot(
 
 /*
  * Given an array of dqtrx structures, lock all the dquots associated and join
- * them to the transaction, provided they have been modified.  We know that the
- * highest number of dquots of one type - usr, grp and prj - involved in a
- * transaction is 3 so we don't need to make this very generic.
+ * them to the transaction, provided they have been modified.
  */
 STATIC void
 xfs_trans_dqlockedjoin(
 	struct xfs_trans	*tp,
 	struct xfs_dqtrx	*q)
 {
+	unsigned int		i;
 	ASSERT(q[0].qt_dquot != NULL);
 	if (q[1].qt_dquot == NULL) {
-		xfs_dqlock(q[0].qt_dquot);
+		mutex_lock(&q[0].qt_dquot->q_qlock);
 		xfs_trans_dqjoin(tp, q[0].qt_dquot);
-	} else {
-		ASSERT(XFS_QM_TRANS_MAXDQS == 2);
+	} else if (q[2].qt_dquot == NULL) {
 		xfs_dqlock2(q[0].qt_dquot, q[1].qt_dquot);
 		xfs_trans_dqjoin(tp, q[0].qt_dquot);
 		xfs_trans_dqjoin(tp, q[1].qt_dquot);
+	} else {
+		xfs_dqlockn(q);
+		for (i = 0; i < XFS_QM_TRANS_MAXDQS; i++) {
+			if (q[i].qt_dquot == NULL)
+				break;
+			xfs_trans_dqjoin(tp, q[i].qt_dquot);
+		}
 	}
 }
 
@@ -320,6 +440,29 @@ xfs_apply_quota_reservation_deltas(
 		res->reserved += count_delta;
 	}
 }
+
+#ifdef CONFIG_XFS_LIVE_HOOKS
+/* Call downstream hooks now that it's time to apply dquot deltas. */
+static inline void
+xfs_trans_apply_dquot_deltas_hook(
+	struct xfs_trans		*tp,
+	struct xfs_dquot		*dqp)
+{
+	if (xfs_hooks_switched_on(&xfs_dqtrx_hooks_switch)) {
+		struct xfs_apply_dqtrx_params	p = {
+			.tx_id		= (uintptr_t)tp,
+			.q_type		= xfs_dquot_type(dqp),
+			.q_id		= dqp->q_id,
+		};
+		struct xfs_quotainfo	*qi = tp->t_mountp->m_quotainfo;
+
+		xfs_hooks_call(&qi->qi_apply_dqtrx_hooks,
+				XFS_APPLY_DQTRX_COMMIT, &p);
+	}
+}
+#else
+# define xfs_trans_apply_dquot_deltas_hook(tp, dqp)	((void)0)
+#endif /* CONFIG_XFS_LIVE_HOOKS */
 
 /*
  * Called by xfs_trans_commit() and similar in spirit to
@@ -365,6 +508,8 @@ xfs_trans_apply_dquot_deltas(
 				break;
 
 			ASSERT(XFS_DQ_IS_LOCKED(dqp));
+
+			xfs_trans_apply_dquot_deltas_hook(tp, dqp);
 
 			/*
 			 * adjust the actual number of blocks used
@@ -461,9 +606,50 @@ xfs_trans_apply_dquot_deltas(
 			ASSERT(dqp->q_blk.reserved >= dqp->q_blk.count);
 			ASSERT(dqp->q_ino.reserved >= dqp->q_ino.count);
 			ASSERT(dqp->q_rtb.reserved >= dqp->q_rtb.count);
+
+			/*
+			 * We've applied the count changes and given back
+			 * whatever reservation we didn't use.  Zero out the
+			 * dqtrx fields.
+			 */
+			qtrx->qt_blk_res = 0;
+			qtrx->qt_bcount_delta = 0;
+			qtrx->qt_delbcnt_delta = 0;
+
+			qtrx->qt_rtblk_res = 0;
+			qtrx->qt_rtblk_res_used = 0;
+			qtrx->qt_rtbcount_delta = 0;
+			qtrx->qt_delrtb_delta = 0;
+
+			qtrx->qt_ino_res = 0;
+			qtrx->qt_ino_res_used = 0;
+			qtrx->qt_icount_delta = 0;
 		}
 	}
 }
+
+#ifdef CONFIG_XFS_LIVE_HOOKS
+/* Call downstream hooks now that it's time to cancel dquot deltas. */
+static inline void
+xfs_trans_unreserve_and_mod_dquots_hook(
+	struct xfs_trans		*tp,
+	struct xfs_dquot		*dqp)
+{
+	if (xfs_hooks_switched_on(&xfs_dqtrx_hooks_switch)) {
+		struct xfs_apply_dqtrx_params	p = {
+			.tx_id		= (uintptr_t)tp,
+			.q_type		= xfs_dquot_type(dqp),
+			.q_id		= dqp->q_id,
+		};
+		struct xfs_quotainfo	*qi = tp->t_mountp->m_quotainfo;
+
+		xfs_hooks_call(&qi->qi_apply_dqtrx_hooks,
+				XFS_APPLY_DQTRX_UNRESERVE, &p);
+	}
+}
+#else
+# define xfs_trans_unreserve_and_mod_dquots_hook(tp, dqp)	((void)0)
+#endif /* CONFIG_XFS_LIVE_HOOKS */
 
 /*
  * Release the reservations, and adjust the dquots accordingly.
@@ -474,7 +660,8 @@ xfs_trans_apply_dquot_deltas(
  */
 void
 xfs_trans_unreserve_and_mod_dquots(
-	struct xfs_trans	*tp)
+	struct xfs_trans	*tp,
+	bool			already_locked)
 {
 	int			i, j;
 	struct xfs_dquot	*dqp;
@@ -495,21 +682,26 @@ xfs_trans_unreserve_and_mod_dquots(
 			 */
 			if ((dqp = qtrx->qt_dquot) == NULL)
 				break;
+
+			xfs_trans_unreserve_and_mod_dquots_hook(tp, dqp);
+
 			/*
 			 * Unreserve the original reservation. We don't care
 			 * about the number of blocks used field, or deltas.
 			 * Also we don't bother to zero the fields.
 			 */
-			locked = false;
+			locked = already_locked;
 			if (qtrx->qt_blk_res) {
-				xfs_dqlock(dqp);
-				locked = true;
+				if (!locked) {
+					mutex_lock(&dqp->q_qlock);
+					locked = true;
+				}
 				dqp->q_blk.reserved -=
 					(xfs_qcnt_t)qtrx->qt_blk_res;
 			}
 			if (qtrx->qt_ino_res) {
 				if (!locked) {
-					xfs_dqlock(dqp);
+					mutex_lock(&dqp->q_qlock);
 					locked = true;
 				}
 				dqp->q_ino.reserved -=
@@ -518,14 +710,14 @@ xfs_trans_unreserve_and_mod_dquots(
 
 			if (qtrx->qt_rtblk_res) {
 				if (!locked) {
-					xfs_dqlock(dqp);
+					mutex_lock(&dqp->q_qlock);
 					locked = true;
 				}
 				dqp->q_rtb.reserved -=
 					(xfs_qcnt_t)qtrx->qt_rtblk_res;
 			}
-			if (locked)
-				xfs_dqunlock(dqp);
+			if (locked && !already_locked)
+				mutex_unlock(&dqp->q_qlock);
 
 		}
 	}
@@ -628,7 +820,7 @@ xfs_trans_dqresv(
 	struct xfs_dquot_res	*blkres;
 	struct xfs_quota_limits	*qlim;
 
-	xfs_dqlock(dqp);
+	mutex_lock(&dqp->q_qlock);
 
 	defq = xfs_get_defquota(q, xfs_dquot_type(dqp));
 
@@ -695,17 +887,18 @@ xfs_trans_dqresv(
 	    XFS_IS_CORRUPT(mp, dqp->q_ino.reserved < dqp->q_ino.count))
 		goto error_corrupt;
 
-	xfs_dqunlock(dqp);
+	mutex_unlock(&dqp->q_qlock);
 	return 0;
 
 error_return:
-	xfs_dqunlock(dqp);
+	mutex_unlock(&dqp->q_qlock);
 	if (xfs_dquot_type(dqp) == XFS_DQTYPE_PROJ)
 		return -ENOSPC;
 	return -EDQUOT;
 error_corrupt:
-	xfs_dqunlock(dqp);
+	mutex_unlock(&dqp->q_qlock);
 	xfs_force_shutdown(mp, SHUTDOWN_CORRUPT_INCORE);
+	xfs_fs_mark_sick(mp, XFS_SICK_FS_QUOTACHECK);
 	return -EFSCORRUPTED;
 }
 
@@ -794,9 +987,11 @@ xfs_trans_reserve_quota_nblks(
 
 	if (!XFS_IS_QUOTA_ON(mp))
 		return 0;
+	if (xfs_is_metadir_inode(ip))
+		return 0;
 
 	ASSERT(!xfs_is_quota_inode(&mp->m_sb, ip->i_ino));
-	ASSERT(xfs_isilocked(ip, XFS_ILOCK_EXCL));
+	xfs_assert_ilocked(ip, XFS_ILOCK_EXCL);
 
 	if (force)
 		qflags |= XFS_QMOPT_FORCE_RES;
@@ -856,4 +1051,15 @@ xfs_trans_free_dqinfo(
 		return;
 	kmem_cache_free(xfs_dqtrx_cache, tp->t_dqinfo);
 	tp->t_dqinfo = NULL;
+}
+
+int
+xfs_quota_reserve_blkres(
+	struct xfs_inode	*ip,
+	int64_t			blocks)
+{
+	if (XFS_IS_REALTIME_INODE(ip))
+		return xfs_trans_reserve_quota_nblks(NULL, ip, 0, blocks,
+				false);
+	return xfs_trans_reserve_quota_nblks(NULL, ip, blocks, 0, false);
 }

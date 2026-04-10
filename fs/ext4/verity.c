@@ -42,18 +42,16 @@ static int pagecache_read(struct inode *inode, void *buf, size_t count,
 			  loff_t pos)
 {
 	while (count) {
-		size_t n = min_t(size_t, count,
-				 PAGE_SIZE - offset_in_page(pos));
-		struct page *page;
+		struct folio *folio;
+		size_t n;
 
-		page = read_mapping_page(inode->i_mapping, pos >> PAGE_SHIFT,
+		folio = read_mapping_folio(inode->i_mapping, pos >> PAGE_SHIFT,
 					 NULL);
-		if (IS_ERR(page))
-			return PTR_ERR(page);
+		if (IS_ERR(folio))
+			return PTR_ERR(folio);
 
-		memcpy_from_page(buf, page, offset_in_page(pos), n);
-
-		put_page(page);
+		n = memcpy_from_file_folio(buf, folio, pos, count);
+		folio_put(folio);
 
 		buf += n;
 		pos += n;
@@ -78,17 +76,17 @@ static int pagecache_write(struct inode *inode, const void *buf, size_t count,
 	while (count) {
 		size_t n = min_t(size_t, count,
 				 PAGE_SIZE - offset_in_page(pos));
-		struct page *page;
-		void *fsdata;
+		struct folio *folio;
+		void *fsdata = NULL;
 		int res;
 
-		res = aops->write_begin(NULL, mapping, pos, n, &page, &fsdata);
+		res = aops->write_begin(NULL, mapping, pos, n, &folio, &fsdata);
 		if (res)
 			return res;
 
-		memcpy_to_page(page, offset_in_page(pos), buf, n);
+		memcpy_to_folio(folio, offset_in_folio(folio, pos), buf, n);
 
-		res = aops->write_end(NULL, mapping, pos, n, n, page, fsdata);
+		res = aops->write_end(NULL, mapping, pos, n, n, folio, fsdata);
 		if (res < 0)
 			return res;
 		if (res != n)
@@ -233,6 +231,8 @@ static int ext4_end_enable_verity(struct file *filp, const void *desc,
 		goto cleanup;
 	}
 
+	ext4_fc_mark_ineligible(inode->i_sb, EXT4_FC_REASON_VERITY, handle);
+
 	err = ext4_orphan_del(handle, inode);
 	if (err)
 		goto stop_and_cleanup;
@@ -298,16 +298,14 @@ static int ext4_get_verity_descriptor_location(struct inode *inode,
 	last_extent = path[path->p_depth].p_ext;
 	if (!last_extent) {
 		EXT4_ERROR_INODE(inode, "verity file has no extents");
-		ext4_ext_drop_refs(path);
-		kfree(path);
+		ext4_free_ext_path(path);
 		return -EFSCORRUPTED;
 	}
 
 	end_lblk = le32_to_cpu(last_extent->ee_block) +
 		   ext4_ext_get_actual_len(last_extent);
-	desc_size_pos = (u64)end_lblk << inode->i_blkbits;
-	ext4_ext_drop_refs(path);
-	kfree(path);
+	desc_size_pos = EXT4_LBLK_TO_B(inode, end_lblk);
+	ext4_free_ext_path(path);
 
 	if (desc_size_pos < sizeof(desc_size_disk))
 		goto bad;
@@ -362,31 +360,25 @@ static int ext4_get_verity_descriptor(struct inode *inode, void *buf,
 }
 
 static struct page *ext4_read_merkle_tree_page(struct inode *inode,
-					       pgoff_t index,
-					       unsigned long num_ra_pages)
+					       pgoff_t index)
 {
-	DEFINE_READAHEAD(ractl, NULL, NULL, inode->i_mapping, index);
-	struct page *page;
-
 	index += ext4_verity_metadata_pos(inode) >> PAGE_SHIFT;
-
-	page = find_get_page_flags(inode->i_mapping, index, FGP_ACCESSED);
-	if (!page || !PageUptodate(page)) {
-		if (page)
-			put_page(page);
-		else if (num_ra_pages > 1)
-			page_cache_ra_unbounded(&ractl, num_ra_pages, 0);
-		page = read_mapping_page(inode->i_mapping, index, NULL);
-	}
-	return page;
+	return generic_read_merkle_tree_page(inode, index);
 }
 
-static int ext4_write_merkle_tree_block(struct inode *inode, const void *buf,
-					u64 index, int log_blocksize)
+static void ext4_readahead_merkle_tree(struct inode *inode, pgoff_t index,
+				       unsigned long nr_pages)
 {
-	loff_t pos = ext4_verity_metadata_pos(inode) + (index << log_blocksize);
+	index += ext4_verity_metadata_pos(inode) >> PAGE_SHIFT;
+	generic_readahead_merkle_tree(inode, index, nr_pages);
+}
 
-	return pagecache_write(inode, buf, 1 << log_blocksize, pos);
+static int ext4_write_merkle_tree_block(struct file *file, const void *buf,
+					u64 pos, unsigned int size)
+{
+	pos += ext4_verity_metadata_pos(file_inode(file));
+
+	return pagecache_write(file_inode(file), buf, size, pos);
 }
 
 const struct fsverity_operations ext4_verityops = {
@@ -394,5 +386,6 @@ const struct fsverity_operations ext4_verityops = {
 	.end_enable_verity	= ext4_end_enable_verity,
 	.get_verity_descriptor	= ext4_get_verity_descriptor,
 	.read_merkle_tree_page	= ext4_read_merkle_tree_page,
+	.readahead_merkle_tree	= ext4_readahead_merkle_tree,
 	.write_merkle_tree_block = ext4_write_merkle_tree_block,
 };

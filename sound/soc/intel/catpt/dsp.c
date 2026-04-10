@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2020 Intel Corporation. All rights reserved.
+// Copyright(c) 2020 Intel Corporation
 //
 // Author: Cezary Rojewski <cezary.rojewski@intel.com>
 //
@@ -125,9 +125,6 @@ int catpt_dmac_probe(struct catpt_dev *cdev)
 	dmac->dev = cdev->dev;
 	dmac->irq = cdev->irq;
 
-	ret = dma_coerce_mask_and_coherent(cdev->dev, DMA_BIT_MASK(31));
-	if (ret)
-		return ret;
 	/*
 	 * Caller is responsible for putting device in D0 to allow
 	 * for I/O and memory access before probing DW.
@@ -156,7 +153,7 @@ static void catpt_dsp_set_srampge(struct catpt_dev *cdev, struct resource *sram,
 {
 	unsigned long old;
 	u32 off = sram->start;
-	u32 b = __ffs(mask);
+	unsigned long b = __ffs(mask);
 
 	old = catpt_readl_pci(cdev, VDRTCTL0) & mask;
 	dev_dbg(cdev->dev, "SRAMPGE [0x%08lx] 0x%08lx -> 0x%08lx",
@@ -387,7 +384,7 @@ int catpt_dsp_power_down(struct catpt_dev *cdev)
 	mask = cdev->spec->d3srampgd_bit | cdev->spec->d3pgd_bit;
 	catpt_updatel_pci(cdev, VDRTCTL0, mask, cdev->spec->d3pgd_bit);
 
-	catpt_updatel_pci(cdev, PMCS, PCI_PM_CTRL_STATE_MASK, PCI_D3hot);
+	catpt_updatel_pci(cdev, PMCS, PCI_PM_CTRL_STATE_MASK, (__force u32)PCI_D3hot);
 	/* give hw time to drop off */
 	udelay(50);
 
@@ -411,7 +408,7 @@ int catpt_dsp_power_up(struct catpt_dev *cdev)
 	val = mask & (~CATPT_VDRTCTL2_DTCGE);
 	catpt_updatel_pci(cdev, VDRTCTL2, mask, val);
 
-	catpt_updatel_pci(cdev, PMCS, PCI_PM_CTRL_STATE_MASK, PCI_D0);
+	catpt_updatel_pci(cdev, PMCS, PCI_PM_CTRL_STATE_MASK, (__force u32)PCI_D0);
 
 	/* SRAM power gating none */
 	mask = cdev->spec->d3srampgd_bit | cdev->spec->d3pgd_bit;

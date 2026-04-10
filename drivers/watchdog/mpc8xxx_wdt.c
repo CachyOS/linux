@@ -16,8 +16,8 @@
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/of_address.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 #include <linux/module.h>
 #include <linux/watchdog.h>
 #include <linux/io.h>
@@ -99,6 +99,8 @@ static int mpc8xxx_wdt_start(struct watchdog_device *w)
 
 	ddata->swtc = tmp >> 16;
 	set_bit(WDOG_HW_RUNNING, &ddata->wdd.status);
+
+	mpc8xxx_wdt_keepalive(ddata);
 
 	return 0;
 }

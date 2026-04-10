@@ -19,20 +19,11 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/static_call.h>
+#include <linux/sched/cputime.h>
 
 #include <asm/paravirt.h>
 #include <asm/pvclock-abi.h>
 #include <asm/smp_plat.h>
-
-struct static_key paravirt_steal_enabled;
-struct static_key paravirt_steal_rq_enabled;
-
-static u64 native_steal_clock(int cpu)
-{
-	return 0;
-}
-
-DEFINE_STATIC_CALL(pv_steal_clock, native_steal_clock);
 
 struct pv_time_stolen_time_region {
 	struct pvclock_vcpu_stolen_time __rcu *kaddr;
@@ -140,10 +131,6 @@ static int __init pv_time_init_stolen_time(void)
 static bool __init has_pv_steal_clock(void)
 {
 	struct arm_smccc_res res;
-
-	/* To detect the presence of PV time support we require SMCCC 1.1+ */
-	if (arm_smccc_1_1_get_conduit() == SMCCC_CONDUIT_NONE)
-		return false;
 
 	arm_smccc_1_1_invoke(ARM_SMCCC_ARCH_FEATURES_FUNC_ID,
 			     ARM_SMCCC_HV_PV_TIME_FEATURES, &res);

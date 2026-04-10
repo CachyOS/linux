@@ -6,7 +6,6 @@
  * Copyright (c) 2006-2009, Intel Corporation
  */
 
-#include <linux/intel-iommu.h>
 #include <linux/init_task.h>
 #include <linux/spinlock.h>
 #include <linux/export.h>
@@ -96,7 +95,7 @@ void __init tboot_probe(void)
 
 static pgd_t *tboot_pg_dir;
 static struct mm_struct tboot_mm = {
-	.mm_rb          = RB_ROOT,
+	.mm_mt          = MTREE_INIT_EXT(mm_mt, MM_MT_FLAGS, tboot_mm.mmap_lock),
 	.pgd            = swapper_pg_dir,
 	.mm_users       = ATOMIC_INIT(2),
 	.mm_count       = ATOMIC_INIT(1),
@@ -201,8 +200,7 @@ static int tboot_setup_sleep(void)
 	tboot->num_mac_regions = 0;
 
 	for (i = 0; i < e820_table->nr_entries; i++) {
-		if ((e820_table->entries[i].type != E820_TYPE_RAM)
-		 && (e820_table->entries[i].type != E820_TYPE_RESERVED_KERN))
+		if (e820_table->entries[i].type != E820_TYPE_RAM)
 			continue;
 
 		add_mac_region(e820_table->entries[i].addr, e820_table->entries[i].size);
@@ -515,18 +513,4 @@ struct acpi_table_header *tboot_get_dmar_table(struct acpi_table_header *dmar_tb
 	/* don't unmap heap because dmar.c needs access to this */
 
 	return dmar_tbl;
-}
-
-int tboot_force_iommu(void)
-{
-	if (!tboot_enabled())
-		return 0;
-
-	if (no_iommu || dmar_disabled)
-		pr_warn("Forcing Intel-IOMMU to enabled\n");
-
-	dmar_disabled = 0;
-	no_iommu = 0;
-
-	return 1;
 }

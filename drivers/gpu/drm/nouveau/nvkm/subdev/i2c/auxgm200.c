@@ -22,7 +22,7 @@
  * Authors: Ben Skeggs <bskeggs@redhat.com>
  */
 #define gm200_i2c_aux(p) container_of((p), struct gm200_i2c_aux, base)
-#include "aux.h"
+#include "auxch.h"
 
 struct gm200_i2c_aux {
 	struct nvkm_i2c_aux base;
@@ -177,7 +177,7 @@ gm200_i2c_aux_new(struct nvkm_i2c_pad *pad, int index, u8 drive,
 {
 	struct gm200_i2c_aux *aux;
 
-	if (!(aux = kzalloc(sizeof(*aux), GFP_KERNEL)))
+	if (!(aux = kzalloc_obj(*aux)))
 		return -ENOMEM;
 	*paux = &aux->base;
 

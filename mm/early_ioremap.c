@@ -30,6 +30,14 @@ static int __init early_ioremap_debug_setup(char *str)
 }
 early_param("early_ioremap_debug", early_ioremap_debug_setup);
 
+#define early_ioremap_dbg(fmt, args...)			\
+	do {						\
+		if (unlikely(early_ioremap_debug)) {	\
+			pr_warn(fmt, ##args);		\
+			dump_stack();			\
+		}					\
+	} while (0)
+
 static int after_paging_init __initdata;
 
 pgprot_t __init __weak early_memremap_pgprot_adjust(resource_size_t phys_addr,
@@ -72,12 +80,10 @@ void __init early_ioremap_setup(void)
 {
 	int i;
 
-	for (i = 0; i < FIX_BTMAPS_SLOTS; i++)
-		if (WARN_ON(prev_map[i]))
-			break;
-
-	for (i = 0; i < FIX_BTMAPS_SLOTS; i++)
+	for (i = 0; i < FIX_BTMAPS_SLOTS; i++) {
+		WARN_ON_ONCE(prev_map[i]);
 		slot_virt[i] = __fix_to_virt(FIX_BTMAP_BEGIN - NR_FIX_BTMAPS*i);
+	}
 }
 
 static int __init check_early_ioremap_leak(void)
@@ -141,6 +147,9 @@ __early_ioremap(resource_size_t phys_addr, unsigned long size, pgprot_t prot)
 	if (WARN_ON(nrpages > NR_FIX_BTMAPS))
 		return NULL;
 
+	early_ioremap_dbg("%s(%pa, %08lx) [%d] => %08lx + %08lx\n",
+			  __func__, &phys_addr, size, slot, slot_virt[slot], offset);
+
 	/*
 	 * Ok, go for it..
 	 */
@@ -154,8 +163,6 @@ __early_ioremap(resource_size_t phys_addr, unsigned long size, pgprot_t prot)
 		--idx;
 		--nrpages;
 	}
-	WARN(early_ioremap_debug, "%s(%pa, %08lx) [%d] => %08lx + %08lx\n",
-	     __func__, &phys_addr, size, slot, offset, slot_virt[slot]);
 
 	prev_map[slot] = (void __iomem *)(offset + slot_virt[slot]);
 	return prev_map[slot];
@@ -186,8 +193,7 @@ void __init early_iounmap(void __iomem *addr, unsigned long size)
 		  __func__, addr, size, slot, prev_size[slot]))
 		return;
 
-	WARN(early_ioremap_debug, "%s(%p, %08lx) [%d]\n",
-	      __func__, addr, size, slot);
+	early_ioremap_dbg("%s(%p, %08lx) [%d]\n", __func__, addr, size, slot);
 
 	virt_addr = (unsigned long)addr;
 	if (WARN_ON(virt_addr < fix_to_virt(FIX_BTMAP_BEGIN)))
@@ -247,7 +253,10 @@ early_memremap_prot(resource_size_t phys_addr, unsigned long size,
 
 #define MAX_MAP_CHUNK	(NR_FIX_BTMAPS << PAGE_SHIFT)
 
-void __init copy_from_early_mem(void *dest, phys_addr_t src, unsigned long size)
+/*
+ * If no empty slot, handle that and return -ENOMEM.
+ */
+int __init copy_from_early_mem(void *dest, phys_addr_t src, unsigned long size)
 {
 	unsigned long slop, clen;
 	char *p;
@@ -258,12 +267,15 @@ void __init copy_from_early_mem(void *dest, phys_addr_t src, unsigned long size)
 		if (clen > MAX_MAP_CHUNK - slop)
 			clen = MAX_MAP_CHUNK - slop;
 		p = early_memremap(src & PAGE_MASK, clen + slop);
+		if (!p)
+			return -ENOMEM;
 		memcpy(dest, p + slop, clen);
 		early_memunmap(p, clen + slop);
 		dest += clen;
 		src += clen;
 		size -= clen;
 	}
+	return 0;
 }
 
 #else /* CONFIG_MMU */

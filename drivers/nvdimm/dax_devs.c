@@ -18,7 +18,7 @@ static void nd_dax_release(struct device *dev)
 
 	dev_dbg(dev, "trace\n");
 	nd_detach_ndns(dev, &nd_pfn->ndns);
-	ida_simple_remove(&nd_region->dax_ida, nd_pfn->id);
+	ida_free(&nd_region->dax_ida, nd_pfn->id);
 	kfree(nd_pfn->uuid);
 	kfree(nd_dax);
 }
@@ -38,7 +38,7 @@ static const struct device_type nd_dax_device_type = {
 	.groups = nd_pfn_attribute_groups,
 };
 
-bool is_nd_dax(struct device *dev)
+bool is_nd_dax(const struct device *dev)
 {
 	return dev ? dev->type == &nd_dax_device_type : false;
 }
@@ -50,12 +50,12 @@ static struct nd_dax *nd_dax_alloc(struct nd_region *nd_region)
 	struct nd_dax *nd_dax;
 	struct device *dev;
 
-	nd_dax = kzalloc(sizeof(*nd_dax), GFP_KERNEL);
+	nd_dax = kzalloc_obj(*nd_dax);
 	if (!nd_dax)
 		return NULL;
 
 	nd_pfn = &nd_dax->nd_pfn;
-	nd_pfn->id = ida_simple_get(&nd_region->dax_ida, 0, 0, GFP_KERNEL);
+	nd_pfn->id = ida_alloc(&nd_region->dax_ida, GFP_KERNEL);
 	if (nd_pfn->id < 0) {
 		kfree(nd_dax);
 		return NULL;
@@ -104,14 +104,14 @@ int nd_dax_probe(struct device *dev, struct nd_namespace_common *ndns)
 		return -ENODEV;
 	}
 
-	nvdimm_bus_lock(&ndns->dev);
-	nd_dax = nd_dax_alloc(nd_region);
-	nd_pfn = &nd_dax->nd_pfn;
-	dax_dev = nd_pfn_devinit(nd_pfn, ndns);
-	nvdimm_bus_unlock(&ndns->dev);
-	if (!dax_dev)
-		return -ENOMEM;
+	scoped_guard(nvdimm_bus, &ndns->dev) {
+		nd_dax = nd_dax_alloc(nd_region);
+		dax_dev = nd_dax_devinit(nd_dax, ndns);
+		if (!dax_dev)
+			return -ENOMEM;
+	}
 	pfn_sb = devm_kmalloc(dev, sizeof(*pfn_sb), GFP_KERNEL);
+	nd_pfn = &nd_dax->nd_pfn;
 	nd_pfn->pfn_sb = pfn_sb;
 	rc = nd_pfn_validate(nd_pfn, DAX_SIG);
 	dev_dbg(dev, "dax: %s\n", rc == 0 ? dev_name(dax_dev) : "<none>");

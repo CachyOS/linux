@@ -6,6 +6,7 @@
 #ifndef _INTEL_UC_FW_H_
 #define _INTEL_UC_FW_H_
 
+#include <linux/sizes.h>
 #include <linux/types.h>
 #include "intel_uc_fw_abi.h"
 #include "intel_device_info.h"
@@ -60,9 +61,27 @@ enum intel_uc_fw_status {
 
 enum intel_uc_fw_type {
 	INTEL_UC_FW_TYPE_GUC = 0,
-	INTEL_UC_FW_TYPE_HUC
+	INTEL_UC_FW_TYPE_HUC,
+	INTEL_UC_FW_TYPE_GSC,
 };
-#define INTEL_UC_FW_NUM_TYPES 2
+#define INTEL_UC_FW_NUM_TYPES 3
+
+struct intel_uc_fw_ver {
+	u32 major;
+	u32 minor;
+	u32 patch;
+	u32 build;
+};
+
+/*
+ * The firmware build process will generate a version header file with major and
+ * minor version defined. The versions are built into CSS header of firmware.
+ * i915 kernel driver set the minimal firmware version required per platform.
+ */
+struct intel_uc_fw_file {
+	const char *path;
+	struct intel_uc_fw_ver ver;
+};
 
 /*
  * This structure encapsulates all the data needed during the process
@@ -74,35 +93,49 @@ struct intel_uc_fw {
 		const enum intel_uc_fw_status status;
 		enum intel_uc_fw_status __status; /* no accidental overwrites */
 	};
-	const char *path;
+	struct intel_uc_fw_file file_wanted;
+	struct intel_uc_fw_file file_selected;
 	bool user_overridden;
 	size_t size;
 	struct drm_i915_gem_object *obj;
-	/**
-	 * @dummy: A vma used in binding the uc fw to ggtt. We can't define this
-	 * vma on the stack as it can lead to a stack overflow, so we define it
-	 * here. Safe to have 1 copy per uc fw because the binding is single
-	 * threaded as it done during driver load (inherently single threaded)
-	 * or during a GT reset (mutex guarantees single threaded).
-	 */
-	struct i915_vma_resource dummy;
-	struct i915_vma *rsa_data;
 
-	/*
-	 * The firmware build process will generate a version header file with major and
-	 * minor version defined. The versions are built into CSS header of firmware.
-	 * i915 kernel driver set the minimal firmware version required per platform.
+	/**
+	 * @needs_ggtt_mapping: indicates whether the fw object needs to be
+	 * pinned to ggtt. If true, the fw is pinned at init time and unpinned
+	 * during driver unload.
 	 */
-	u16 major_ver_wanted;
-	u16 minor_ver_wanted;
-	u16 major_ver_found;
-	u16 minor_ver_found;
+	bool needs_ggtt_mapping;
+
+	/**
+	 * @vma_res: A vma resource used in binding the uc fw to ggtt. The fw is
+	 * pinned in a reserved area of the ggtt (above the maximum address
+	 * usable by GuC); therefore, we can't use the normal vma functions to
+	 * do the pinning and we instead use this resource to do so.
+	 */
+	struct i915_vma_resource vma_res;
+	struct i915_vma *rsa_data;
 
 	u32 rsa_size;
 	u32 ucode_size;
-
 	u32 private_data_size;
+
+	u32 dma_start_offset;
+
+	bool has_gsc_headers;
 };
+
+/*
+ * When we load the uC binaries, we pin them in a reserved section at the top of
+ * the GGTT, which is ~18 MBs. On multi-GT systems where the GTs share the GGTT,
+ * we also need to make sure that each binary is pinned to a unique location
+ * during load, because the different GT can go through the FW load at the same
+ * time (see uc_fw_ggtt_offset() for details).
+ * Given that the available space is much greater than what is required by the
+ * binaries, to keep things simple instead of dynamically partitioning the
+ * reserved section to make space for all the blobs we can just reserve a static
+ * chunk for each binary.
+ */
+#define INTEL_UC_RSVD_GGTT_PER_FW SZ_2M
 
 #ifdef CONFIG_DRM_I915_DEBUG_GUC
 void intel_uc_fw_change_status(struct intel_uc_fw *uc_fw,
@@ -181,6 +214,8 @@ static inline const char *intel_uc_fw_type_repr(enum intel_uc_fw_type type)
 		return "GuC";
 	case INTEL_UC_FW_TYPE_HUC:
 		return "HuC";
+	case INTEL_UC_FW_TYPE_GSC:
+		return "GSC";
 	}
 	return "uC";
 }
@@ -223,6 +258,11 @@ static inline bool intel_uc_fw_is_running(struct intel_uc_fw *uc_fw)
 	return __intel_uc_fw_status(uc_fw) == INTEL_UC_FIRMWARE_RUNNING;
 }
 
+static inline bool intel_uc_fw_is_in_error(struct intel_uc_fw *uc_fw)
+{
+	return intel_uc_fw_status_to_error(__intel_uc_fw_status(uc_fw)) != 0;
+}
+
 static inline bool intel_uc_fw_is_overridden(const struct intel_uc_fw *uc_fw)
 {
 	return uc_fw->user_overridden;
@@ -255,14 +295,20 @@ static inline u32 intel_uc_fw_get_upload_size(struct intel_uc_fw *uc_fw)
 	return __intel_uc_fw_get_upload_size(uc_fw);
 }
 
+void intel_uc_fw_version_from_gsc_manifest(struct intel_uc_fw_ver *ver,
+					   const void *data);
+int intel_uc_check_file_version(struct intel_uc_fw *uc_fw, bool *old_ver);
 void intel_uc_fw_init_early(struct intel_uc_fw *uc_fw,
-			    enum intel_uc_fw_type type);
+			    enum intel_uc_fw_type type,
+			    bool needs_ggtt_mapping);
 int intel_uc_fw_fetch(struct intel_uc_fw *uc_fw);
 void intel_uc_fw_cleanup_fetch(struct intel_uc_fw *uc_fw);
 int intel_uc_fw_upload(struct intel_uc_fw *uc_fw, u32 offset, u32 dma_flags);
 int intel_uc_fw_init(struct intel_uc_fw *uc_fw);
 void intel_uc_fw_fini(struct intel_uc_fw *uc_fw);
+void intel_uc_fw_resume_mapping(struct intel_uc_fw *uc_fw);
 size_t intel_uc_fw_copy_rsa(struct intel_uc_fw *uc_fw, void *dst, u32 max_len);
+int intel_uc_fw_mark_load_failed(struct intel_uc_fw *uc_fw, int err);
 void intel_uc_fw_dump(const struct intel_uc_fw *uc_fw, struct drm_printer *p);
 
 #endif

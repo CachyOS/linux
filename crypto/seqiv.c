@@ -23,7 +23,7 @@ static void seqiv_aead_encrypt_complete2(struct aead_request *req, int err)
 	struct aead_request *subreq = aead_request_ctx(req);
 	struct crypto_aead *geniv;
 
-	if (err == -EINPROGRESS)
+	if (err == -EINPROGRESS || err == -EBUSY)
 		return;
 
 	if (err)
@@ -36,10 +36,9 @@ out:
 	kfree_sensitive(subreq->iv);
 }
 
-static void seqiv_aead_encrypt_complete(struct crypto_async_request *base,
-					int err)
+static void seqiv_aead_encrypt_complete(void *data, int err)
 {
-	struct aead_request *req = base->data;
+	struct aead_request *req = data;
 
 	seqiv_aead_encrypt_complete2(req, err);
 	aead_request_complete(req, err);
@@ -51,6 +50,7 @@ static int seqiv_aead_encrypt(struct aead_request *req)
 	struct aead_geniv_ctx *ctx = crypto_aead_ctx(geniv);
 	struct aead_request *subreq = aead_request_ctx(req);
 	crypto_completion_t compl;
+	bool unaligned_info;
 	void *data;
 	u8 *info;
 	unsigned int ivsize = 8;
@@ -65,23 +65,13 @@ static int seqiv_aead_encrypt(struct aead_request *req)
 	data = req->base.data;
 	info = req->iv;
 
-	if (req->src != req->dst) {
-		SYNC_SKCIPHER_REQUEST_ON_STACK(nreq, ctx->sknull);
+	if (req->src != req->dst)
+		memcpy_sglist(req->dst, req->src,
+			      req->assoclen + req->cryptlen);
 
-		skcipher_request_set_sync_tfm(nreq, ctx->sknull);
-		skcipher_request_set_callback(nreq, req->base.flags,
-					      NULL, NULL);
-		skcipher_request_set_crypt(nreq, req->src, req->dst,
-					   req->assoclen + req->cryptlen,
-					   NULL);
-
-		err = crypto_skcipher_encrypt(nreq);
-		if (err)
-			return err;
-	}
-
-	if (unlikely(!IS_ALIGNED((unsigned long)info,
-				 crypto_aead_alignmask(geniv) + 1))) {
+	unaligned_info = !IS_ALIGNED((unsigned long)info,
+				     crypto_aead_alignmask(geniv) + 1);
+	if (unlikely(unaligned_info)) {
 		info = kmemdup(req->iv, ivsize, req->base.flags &
 			       CRYPTO_TFM_REQ_MAY_SLEEP ? GFP_KERNEL :
 			       GFP_ATOMIC);
@@ -101,7 +91,7 @@ static int seqiv_aead_encrypt(struct aead_request *req)
 	scatterwalk_map_and_copy(info, req->dst, req->assoclen, ivsize, 1);
 
 	err = crypto_aead_encrypt(subreq);
-	if (unlikely(info != req->iv))
+	if (unlikely(unaligned_info))
 		seqiv_aead_encrypt_complete2(req, err);
 	return err;
 }
@@ -180,7 +170,7 @@ static void __exit seqiv_module_exit(void)
 	crypto_unregister_template(&seqiv_tmpl);
 }
 
-subsys_initcall(seqiv_module_init);
+module_init(seqiv_module_init);
 module_exit(seqiv_module_exit);
 
 MODULE_LICENSE("GPL");

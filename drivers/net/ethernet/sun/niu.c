@@ -31,7 +31,7 @@
 #include <linux/slab.h>
 
 #include <linux/io.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 
 #include "niu.h"
 
@@ -61,7 +61,7 @@ union niu_page {
 static char version[] =
 	DRV_MODULE_NAME ".c:v" DRV_MODULE_VERSION " (" DRV_MODULE_RELDATE ")\n";
 
-MODULE_AUTHOR("David S. Miller (davem@davemloft.net)");
+MODULE_AUTHOR("David S. Miller <davem@davemloft.net>");
 MODULE_DESCRIPTION("NIU ethernet driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_MODULE_VERSION);
@@ -2225,7 +2225,7 @@ static int niu_link_status(struct niu *np, int *link_up_p)
 
 static void niu_timer(struct timer_list *t)
 {
-	struct niu *np = from_timer(np, t, timer);
+	struct niu *np = timer_container_of(np, t, timer);
 	unsigned long off;
 	int err, link_up;
 
@@ -3303,7 +3303,7 @@ static struct page *niu_find_rxpage(struct rx_ring_info *rp, u64 addr,
 	addr &= PAGE_MASK;
 	pp = &rp->rxhash[h];
 	for (; (p = *pp) != NULL; pp = &niu_next_page(p)) {
-		if (p->index == addr) {
+		if (p->private == addr) {
 			*link = pp;
 			goto found;
 		}
@@ -3318,7 +3318,7 @@ static void niu_hash_page(struct rx_ring_info *rp, struct page *page, u64 base)
 {
 	unsigned int h = niu_hash_rxaddr(rp, base);
 
-	page->index = base;
+	page->private = base;
 	niu_next_page(page) = rp->rxhash[h];
 	rp->rxhash[h] = page;
 }
@@ -3336,7 +3336,7 @@ static int niu_rbr_add_page(struct niu *np, struct rx_ring_info *rp,
 
 	addr = np->ops->map_page(np->device, page, 0,
 				 PAGE_SIZE, DMA_FROM_DEVICE);
-	if (!addr) {
+	if (np->ops->mapping_error(np->device, addr)) {
 		__free_page(page);
 		return -ENOMEM;
 	}
@@ -3400,11 +3400,11 @@ static int niu_rx_pkt_ignore(struct niu *np, struct rx_ring_info *rp)
 
 		rcr_size = rp->rbr_sizes[(val & RCR_ENTRY_PKTBUFSZ) >>
 					 RCR_ENTRY_PKTBUFSZ_SHIFT];
-		if ((page->index + PAGE_SIZE) - rcr_size == addr) {
+		if ((page->private + PAGE_SIZE) - rcr_size == addr) {
 			*link = niu_next_page(page);
-			np->ops->unmap_page(np->device, page->index,
+			np->ops->unmap_page(np->device, page->private,
 					    PAGE_SIZE, DMA_FROM_DEVICE);
-			page->index = 0;
+			page->private = 0;
 			niu_next_page(page) = NULL;
 			__free_page(page);
 			rp->rbr_refill_pending++;
@@ -3469,11 +3469,11 @@ static int niu_process_rx_pkt(struct napi_struct *napi, struct niu *np,
 			append_size = append_size - skb->len;
 
 		niu_rx_skb_append(skb, page, off, append_size, rcr_size);
-		if ((page->index + rp->rbr_block_size) - rcr_size == addr) {
+		if ((page->private + rp->rbr_block_size) - rcr_size == addr) {
 			*link = niu_next_page(page);
-			np->ops->unmap_page(np->device, page->index,
+			np->ops->unmap_page(np->device, page->private,
 					    PAGE_SIZE, DMA_FROM_DEVICE);
-			page->index = 0;
+			page->private = 0;
 			niu_next_page(page) = NULL;
 			rp->rbr_refill_pending++;
 		} else
@@ -3538,11 +3538,11 @@ static void niu_rbr_free(struct niu *np, struct rx_ring_info *rp)
 		page = rp->rxhash[i];
 		while (page) {
 			struct page *next = niu_next_page(page);
-			u64 base = page->index;
+			u64 base = page->private;
 
 			np->ops->unmap_page(np->device, base, PAGE_SIZE,
 					    DMA_FROM_DEVICE);
-			page->index = 0;
+			page->private = 0;
 			niu_next_page(page) = NULL;
 
 			__free_page(page);
@@ -4341,8 +4341,7 @@ static int niu_alloc_rx_ring_info(struct niu *np,
 {
 	BUILD_BUG_ON(sizeof(struct rxdma_mailbox) != 64);
 
-	rp->rxhash = kcalloc(MAX_RBR_RING_SIZE, sizeof(struct page *),
-			     GFP_KERNEL);
+	rp->rxhash = kzalloc_objs(struct page *, MAX_RBR_RING_SIZE);
 	if (!rp->rxhash)
 		return -ENOMEM;
 
@@ -4485,8 +4484,7 @@ static int niu_alloc_channels(struct niu *np)
 	num_rx_rings = parent->rxchan_per_port[port];
 	num_tx_rings = parent->txchan_per_port[port];
 
-	rx_rings = kcalloc(num_rx_rings, sizeof(struct rx_ring_info),
-			   GFP_KERNEL);
+	rx_rings = kzalloc_objs(struct rx_ring_info, num_rx_rings);
 	err = -ENOMEM;
 	if (!rx_rings)
 		goto out_err;
@@ -4522,11 +4520,10 @@ static int niu_alloc_channels(struct niu *np)
 
 		err = niu_rbr_fill(np, rp, GFP_KERNEL);
 		if (err)
-			return err;
+			goto out_err;
 	}
 
-	tx_rings = kcalloc(num_tx_rings, sizeof(struct tx_ring_info),
-			   GFP_KERNEL);
+	tx_rings = kzalloc_objs(struct tx_ring_info, num_tx_rings);
 	err = -ENOMEM;
 	if (!tx_rings)
 		goto out_err;
@@ -5825,7 +5822,7 @@ static int niu_init_mac(struct niu *np)
 	/* This looks hookey but the RX MAC reset we just did will
 	 * undo some of the state we setup in niu_init_tx_mac() so we
 	 * have to call it again.  In particular, the RX MAC reset will
-	 * set the XMAC_MAX register back to it's default value.
+	 * set the XMAC_MAX register back to its default value.
 	 */
 	niu_init_tx_mac(np);
 	niu_enable_tx_mac(np, 1);
@@ -6086,7 +6083,7 @@ static void niu_enable_napi(struct niu *np)
 	int i;
 
 	for (i = 0; i < np->num_ldg; i++)
-		napi_enable(&np->ldg[i].napi);
+		napi_enable_locked(&np->ldg[i].napi);
 }
 
 static void niu_disable_napi(struct niu *np)
@@ -6116,7 +6113,9 @@ static int niu_open(struct net_device *dev)
 	if (err)
 		goto out_free_channels;
 
+	netdev_lock(dev);
 	niu_enable_napi(np);
+	netdev_unlock(dev);
 
 	spin_lock_irq(&np->lock);
 
@@ -6163,7 +6162,7 @@ static void niu_full_shutdown(struct niu *np, struct net_device *dev)
 	niu_disable_napi(np);
 	netif_tx_stop_all_queues(dev);
 
-	del_timer_sync(&np->timer);
+	timer_delete_sync(&np->timer);
 
 	spin_lock_irq(&np->lock);
 
@@ -6460,7 +6459,7 @@ static void niu_reset_buffers(struct niu *np)
 				page = rp->rxhash[j];
 				while (page) {
 					struct page *next = niu_next_page(page);
-					u64 base = page->index;
+					u64 base = page->private;
 					base = base >> RBR_DESCR_ADDR_SHIFT;
 					rp->rbr[k++] = cpu_to_le32(base);
 					page = next;
@@ -6509,7 +6508,7 @@ static void niu_reset_task(struct work_struct *work)
 
 	spin_unlock_irqrestore(&np->lock, flags);
 
-	del_timer_sync(&np->timer);
+	timer_delete_sync(&np->timer);
 
 	niu_netif_stop(np);
 
@@ -6521,6 +6520,7 @@ static void niu_reset_task(struct work_struct *work)
 
 	niu_reset_buffers(np);
 
+	netdev_lock(np->dev);
 	spin_lock_irqsave(&np->lock, flags);
 
 	err = niu_init_hw(np);
@@ -6531,6 +6531,7 @@ static void niu_reset_task(struct work_struct *work)
 	}
 
 	spin_unlock_irqrestore(&np->lock, flags);
+	netdev_unlock(np->dev);
 }
 
 static void niu_tx_timeout(struct net_device *dev, unsigned int txqueue)
@@ -6672,6 +6673,8 @@ static netdev_tx_t niu_start_xmit(struct sk_buff *skb,
 	len = skb_headlen(skb);
 	mapping = np->ops->map_single(np->device, skb->data,
 				      len, DMA_TO_DEVICE);
+	if (np->ops->mapping_error(np->device, mapping))
+		goto out_drop;
 
 	prod = rp->prod;
 
@@ -6713,6 +6716,8 @@ static netdev_tx_t niu_start_xmit(struct sk_buff *skb,
 		mapping = np->ops->map_page(np->device, skb_frag_page(frag),
 					    skb_frag_off(frag), len,
 					    DMA_TO_DEVICE);
+		if (np->ops->mapping_error(np->device, mapping))
+			goto out_unmap;
 
 		rp->tx_buffs[prod].skb = NULL;
 		rp->tx_buffs[prod].mapping = mapping;
@@ -6737,6 +6742,19 @@ static netdev_tx_t niu_start_xmit(struct sk_buff *skb,
 out:
 	return NETDEV_TX_OK;
 
+out_unmap:
+	while (i--) {
+		const skb_frag_t *frag;
+
+		prod = PREVIOUS_TX(rp, prod);
+		frag = &skb_shinfo(skb)->frags[i];
+		np->ops->unmap_page(np->device, rp->tx_buffs[prod].mapping,
+				    skb_frag_size(frag), DMA_TO_DEVICE);
+	}
+
+	np->ops->unmap_single(np->device, rp->tx_buffs[rp->prod].mapping,
+			      skb_headlen(skb), DMA_TO_DEVICE);
+
 out_drop:
 	rp->tx_errors++;
 	kfree_skb(skb);
@@ -6751,7 +6769,7 @@ static int niu_change_mtu(struct net_device *dev, int new_mtu)
 	orig_jumbo = (dev->mtu > ETH_DATA_LEN);
 	new_jumbo = (new_mtu > ETH_DATA_LEN);
 
-	dev->mtu = new_mtu;
+	WRITE_ONCE(dev->mtu, new_mtu);
 
 	if (!netif_running(dev) ||
 	    (orig_jumbo == new_jumbo))
@@ -6761,7 +6779,9 @@ static int niu_change_mtu(struct net_device *dev, int new_mtu)
 
 	niu_free_channels(np);
 
+	netdev_lock(dev);
 	niu_enable_napi(np);
+	netdev_unlock(dev);
 
 	err = niu_alloc_channels(np);
 	if (err)
@@ -6798,12 +6818,12 @@ static void niu_get_drvinfo(struct net_device *dev,
 	struct niu *np = netdev_priv(dev);
 	struct niu_vpd *vpd = &np->vpd;
 
-	strlcpy(info->driver, DRV_MODULE_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_MODULE_VERSION, sizeof(info->version));
+	strscpy(info->driver, DRV_MODULE_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_MODULE_VERSION, sizeof(info->version));
 	snprintf(info->fw_version, sizeof(info->fw_version), "%d.%d",
 		vpd->fcode_major, vpd->fcode_minor);
 	if (np->parent->plat_type != PLAT_TYPE_NIU)
-		strlcpy(info->bus_info, pci_name(np->pdev),
+		strscpy(info->bus_info, pci_name(np->pdev),
 			sizeof(info->bus_info));
 }
 
@@ -7071,8 +7091,10 @@ static int niu_ethflow_to_flowkey(u64 ethflow, u64 *flow_key)
 
 }
 
-static int niu_get_hash_opts(struct niu *np, struct ethtool_rxnfc *nfc)
+static int niu_get_rxfh_fields(struct net_device *dev,
+			       struct ethtool_rxfh_fields *nfc)
 {
+	struct niu *np = netdev_priv(dev);
 	u64 class;
 
 	nfc->data = 0;
@@ -7277,6 +7299,13 @@ static int niu_get_ethtool_tcam_all(struct niu *np,
 	return ret;
 }
 
+static u32 niu_get_rx_ring_count(struct net_device *dev)
+{
+	struct niu *np = netdev_priv(dev);
+
+	return np->num_rx_rings;
+}
+
 static int niu_get_nfc(struct net_device *dev, struct ethtool_rxnfc *cmd,
 		       u32 *rule_locs)
 {
@@ -7284,12 +7313,6 @@ static int niu_get_nfc(struct net_device *dev, struct ethtool_rxnfc *cmd,
 	int ret = 0;
 
 	switch (cmd->cmd) {
-	case ETHTOOL_GRXFH:
-		ret = niu_get_hash_opts(np, cmd);
-		break;
-	case ETHTOOL_GRXRINGS:
-		cmd->data = np->num_rx_rings;
-		break;
 	case ETHTOOL_GRXCLSRLCNT:
 		cmd->rule_cnt = tcam_get_valid_entry_cnt(np);
 		break;
@@ -7307,8 +7330,11 @@ static int niu_get_nfc(struct net_device *dev, struct ethtool_rxnfc *cmd,
 	return ret;
 }
 
-static int niu_set_hash_opts(struct niu *np, struct ethtool_rxnfc *nfc)
+static int niu_set_rxfh_fields(struct net_device *dev,
+			       const struct ethtool_rxfh_fields *nfc,
+			       struct netlink_ext_ack *extack)
 {
+	struct niu *np = netdev_priv(dev);
 	u64 class;
 	u64 flow_key = 0;
 	unsigned long flags;
@@ -7650,9 +7676,6 @@ static int niu_set_nfc(struct net_device *dev, struct ethtool_rxnfc *cmd)
 	int ret = 0;
 
 	switch (cmd->cmd) {
-	case ETHTOOL_SRXFH:
-		ret = niu_set_hash_opts(np, cmd);
-		break;
 	case ETHTOOL_SRXCLSRLINS:
 		ret = niu_add_ethtool_tcam_entry(np, cmd);
 		break;
@@ -7906,6 +7929,9 @@ static const struct ethtool_ops niu_ethtool_ops = {
 	.set_phys_id		= niu_set_phys_id,
 	.get_rxnfc		= niu_get_nfc,
 	.set_rxnfc		= niu_set_nfc,
+	.get_rx_ring_count	= niu_get_rx_ring_count,
+	.get_rxfh_fields	= niu_get_rxfh_fields,
+	.set_rxfh_fields	= niu_set_rxfh_fields,
 	.get_link_ksettings	= niu_get_link_ksettings,
 	.set_link_ksettings	= niu_set_link_ksettings,
 };
@@ -9058,6 +9084,8 @@ static void niu_try_msix(struct niu *np, u8 *ldg_num_map)
 		msi_vec[i].entry = i;
 	}
 
+	pdev->dev_flags |= PCI_DEV_FLAGS_MSIX_TOUCH_ENTRY_DATA_FIRST;
+
 	num_irqs = pci_enable_msix_range(pdev, msi_vec, 1, num_irqs);
 	if (num_irqs < 0) {
 		np->flags &= ~NIU_FLAGS_MSIX;
@@ -9115,7 +9143,7 @@ static int niu_ldg_init(struct niu *np)
 	for (i = 0; i < np->num_ldg; i++) {
 		struct niu_ldg *lp = &np->ldg[i];
 
-		netif_napi_add(np->dev, &lp->napi, niu_poll, 64);
+		netif_napi_add(np->dev, &lp->napi, niu_poll);
 
 		lp->np = np;
 		lp->ldg_num = ldg_num_map[i];
@@ -9271,7 +9299,7 @@ static int niu_get_of_props(struct niu *np)
 	if (model)
 		strcpy(np->vpd.model, model);
 
-	if (of_find_property(dp, "hot-swappable-phy", NULL)) {
+	if (of_property_read_bool(dp, "hot-swappable-phy")) {
 		np->flags |= (NIU_FLAGS_10G | NIU_FLAGS_FIBER |
 			NIU_FLAGS_HOTPLUG_PHY);
 	}
@@ -9483,7 +9511,7 @@ static struct niu_parent *niu_new_parent(struct niu *np,
 			goto fail_unregister;
 	}
 
-	p = kzalloc(sizeof(*p), GFP_KERNEL);
+	p = kzalloc_obj(*p);
 	if (!p)
 		goto fail_unregister;
 
@@ -9636,6 +9664,11 @@ static void niu_pci_unmap_single(struct device *dev, u64 dma_address,
 	dma_unmap_single(dev, dma_address, size, direction);
 }
 
+static int niu_pci_mapping_error(struct device *dev, u64 addr)
+{
+	return dma_mapping_error(dev, addr);
+}
+
 static const struct niu_ops niu_pci_ops = {
 	.alloc_coherent	= niu_pci_alloc_coherent,
 	.free_coherent	= niu_pci_free_coherent,
@@ -9643,6 +9676,7 @@ static const struct niu_ops niu_pci_ops = {
 	.unmap_page	= niu_pci_unmap_page,
 	.map_single	= niu_pci_map_single,
 	.unmap_single	= niu_pci_unmap_single,
+	.mapping_error	= niu_pci_mapping_error,
 };
 
 static void niu_driver_version(void)
@@ -9908,7 +9942,7 @@ static int __maybe_unused niu_suspend(struct device *dev_d)
 	flush_work(&np->reset_task);
 	niu_netif_stop(np);
 
-	del_timer_sync(&np->timer);
+	timer_delete_sync(&np->timer);
 
 	spin_lock_irqsave(&np->lock, flags);
 	niu_enable_interrupts(np, 0);
@@ -9937,6 +9971,7 @@ static int __maybe_unused niu_resume(struct device *dev_d)
 
 	spin_lock_irqsave(&np->lock, flags);
 
+	netdev_lock(dev);
 	err = niu_init_hw(np);
 	if (!err) {
 		np->timer.expires = jiffies + HZ;
@@ -9945,6 +9980,7 @@ static int __maybe_unused niu_resume(struct device *dev_d)
 	}
 
 	spin_unlock_irqrestore(&np->lock, flags);
+	netdev_unlock(dev);
 
 	return err;
 }
@@ -10009,6 +10045,11 @@ static void niu_phys_unmap_single(struct device *dev, u64 dma_address,
 	/* Nothing to do.  */
 }
 
+static int niu_phys_mapping_error(struct device *dev, u64 dma_address)
+{
+	return false;
+}
+
 static const struct niu_ops niu_phys_ops = {
 	.alloc_coherent	= niu_phys_alloc_coherent,
 	.free_coherent	= niu_phys_free_coherent,
@@ -10016,6 +10057,7 @@ static const struct niu_ops niu_phys_ops = {
 	.unmap_page	= niu_phys_unmap_page,
 	.map_single	= niu_phys_map_single,
 	.unmap_single	= niu_phys_unmap_single,
+	.mapping_error	= niu_phys_mapping_error,
 };
 
 static int niu_of_probe(struct platform_device *op)
@@ -10132,7 +10174,7 @@ err_out:
 	return err;
 }
 
-static int niu_of_remove(struct platform_device *op)
+static void niu_of_remove(struct platform_device *op)
 {
 	struct net_device *dev = platform_get_drvdata(op);
 
@@ -10165,7 +10207,6 @@ static int niu_of_remove(struct platform_device *op)
 
 		free_netdev(dev);
 	}
-	return 0;
 }
 
 static const struct of_device_id niu_match[] = {

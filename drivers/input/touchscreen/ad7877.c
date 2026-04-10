@@ -201,7 +201,7 @@ static int ad7877_read(struct spi_device *spi, u16 reg)
 	struct ser_req *req;
 	int status, ret;
 
-	req = kzalloc(sizeof *req, GFP_KERNEL);
+	req = kzalloc_obj(*req);
 	if (!req)
 		return -ENOMEM;
 
@@ -232,7 +232,7 @@ static int ad7877_write(struct spi_device *spi, u16 reg, u16 val)
 	struct ser_req *req;
 	int status;
 
-	req = kzalloc(sizeof *req, GFP_KERNEL);
+	req = kzalloc_obj(*req);
 	if (!req)
 		return -ENOMEM;
 
@@ -259,7 +259,7 @@ static int ad7877_read_adc(struct spi_device *spi, unsigned command)
 	int sample;
 	int i;
 
-	req = kzalloc(sizeof *req, GFP_KERNEL);
+	req = kzalloc_obj(*req);
 	if (!req)
 		return -ENOMEM;
 
@@ -375,7 +375,7 @@ static inline void ad7877_ts_event_release(struct ad7877 *ts)
 
 static void ad7877_timer(struct timer_list *t)
 {
-	struct ad7877 *ts = from_timer(ts, t, timer);
+	struct ad7877 *ts = timer_container_of(ts, t, timer);
 	unsigned long flags;
 
 	spin_lock_irqsave(&ts->lock, flags);
@@ -415,7 +415,7 @@ static void ad7877_disable(void *data)
 		ts->disabled = true;
 		disable_irq(ts->spi->irq);
 
-		if (del_timer_sync(&ts->timer))
+		if (timer_delete_sync(&ts->timer))
 			ad7877_ts_event_release(ts);
 	}
 
@@ -612,10 +612,11 @@ static umode_t ad7877_attr_is_visible(struct kobject *kobj,
 	return mode;
 }
 
-static const struct attribute_group ad7877_attr_group = {
+static const struct attribute_group ad7877_group = {
 	.is_visible	= ad7877_attr_is_visible,
 	.attrs		= ad7877_attributes,
 };
+__ATTRIBUTE_GROUPS(ad7877);
 
 static void ad7877_setup_ts_def_msg(struct spi_device *spi, struct ad7877 *ts)
 {
@@ -777,10 +778,6 @@ static int ad7877_probe(struct spi_device *spi)
 		return err;
 	}
 
-	err = devm_device_add_group(&spi->dev, &ad7877_attr_group);
-	if (err)
-		return err;
-
 	err = input_register_device(input_dev);
 	if (err)
 		return err;
@@ -788,7 +785,7 @@ static int ad7877_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int __maybe_unused ad7877_suspend(struct device *dev)
+static int ad7877_suspend(struct device *dev)
 {
 	struct ad7877 *ts = dev_get_drvdata(dev);
 
@@ -797,7 +794,7 @@ static int __maybe_unused ad7877_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused ad7877_resume(struct device *dev)
+static int ad7877_resume(struct device *dev)
 {
 	struct ad7877 *ts = dev_get_drvdata(dev);
 
@@ -806,12 +803,13 @@ static int __maybe_unused ad7877_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(ad7877_pm, ad7877_suspend, ad7877_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(ad7877_pm, ad7877_suspend, ad7877_resume);
 
 static struct spi_driver ad7877_driver = {
 	.driver = {
-		.name	= "ad7877",
-		.pm	= &ad7877_pm,
+		.name		= "ad7877",
+		.dev_groups	= ad7877_groups,
+		.pm		= pm_sleep_ptr(&ad7877_pm),
 	},
 	.probe		= ad7877_probe,
 };

@@ -2,7 +2,7 @@
 /*
  * Line 6 Linux USB driver
  *
- * Copyright (C) 2004-2010 Markus Grabner (grabner@icg.tugraz.at)
+ * Copyright (C) 2004-2010 Markus Grabner (line6@grabner-graz.at)
  */
 
 #include <linux/kernel.h>
@@ -20,7 +20,7 @@
 #include "midi.h"
 #include "playback.h"
 
-#define DRIVER_AUTHOR  "Markus Grabner <grabner@icg.tugraz.at>"
+#define DRIVER_AUTHOR  "Markus Grabner <line6@grabner-graz.at>"
 #define DRIVER_DESC    "Line 6 USB Driver"
 
 /*
@@ -202,7 +202,7 @@ int line6_send_raw_message_async(struct usb_line6 *line6, const char *buffer,
 	struct urb *urb;
 
 	/* create message: */
-	msg = kmalloc(sizeof(struct message), GFP_ATOMIC);
+	msg = kzalloc_obj(struct message, GFP_ATOMIC);
 	if (msg == NULL)
 		return -ENOMEM;
 
@@ -292,19 +292,24 @@ static void line6_data_received(struct urb *urb)
 		return;
 
 	if (line6->properties->capabilities & LINE6_CAP_CONTROL_MIDI) {
-		done =
-			line6_midibuf_write(mb, urb->transfer_buffer, urb->actual_length);
+		scoped_guard(spinlock_irqsave, &line6->line6midi->lock) {
+			done =
+				line6_midibuf_write(mb, urb->transfer_buffer, urb->actual_length);
 
-		if (done < urb->actual_length) {
-			line6_midibuf_ignore(mb, done);
-			dev_dbg(line6->ifcdev, "%d %d buffer overflow - message skipped\n",
-				done, urb->actual_length);
+			if (done < urb->actual_length) {
+				line6_midibuf_ignore(mb, done);
+				dev_dbg(line6->ifcdev, "%d %d buffer overflow - message skipped\n",
+					done, urb->actual_length);
+			}
 		}
 
 		for (;;) {
-			done =
-				line6_midibuf_read(mb, line6->buffer_message,
-						LINE6_MIDI_MESSAGE_MAXLEN);
+			scoped_guard(spinlock_irqsave, &line6->line6midi->lock) {
+				done =
+					line6_midibuf_read(mb, line6->buffer_message,
+							   LINE6_MIDI_MESSAGE_MAXLEN,
+							   LINE6_MIDIBUF_READ_RX);
+			}
 
 			if (done <= 0)
 				break;
@@ -622,16 +627,12 @@ line6_hwdep_write(struct snd_hwdep *hwdep, const char __user *data, long count,
 static __poll_t
 line6_hwdep_poll(struct snd_hwdep *hwdep, struct file *file, poll_table *wait)
 {
-	__poll_t rv;
 	struct usb_line6 *line6 = hwdep->private_data;
 
 	poll_wait(file, &line6->messages.wait_queue, wait);
 
-	mutex_lock(&line6->messages.read_lock);
-	rv = kfifo_len(&line6->messages.fifo) == 0 ? 0 : EPOLLIN | EPOLLRDNORM;
-	mutex_unlock(&line6->messages.read_lock);
-
-	return rv;
+	guard(mutex)(&line6->messages.read_lock);
+	return kfifo_len(&line6->messages.fifo) == 0 ? 0 : EPOLLIN | EPOLLRDNORM;
 }
 
 static const struct snd_hwdep_ops hwdep_ops = {
@@ -672,7 +673,7 @@ static int line6_hwdep_init(struct usb_line6 *line6)
 	err = snd_hwdep_new(line6->card, "config", 0, &hwdep);
 	if (err < 0)
 		goto end;
-	strcpy(hwdep->name, "config");
+	strscpy(hwdep->name, "config");
 	hwdep->iface = SNDRV_HWDEP_IFACE_LINE6;
 	hwdep->ops = hwdep_ops;
 	hwdep->private_data = line6;
@@ -687,7 +688,7 @@ static int line6_init_cap_control(struct usb_line6 *line6)
 	int ret;
 
 	/* initialize USB buffers: */
-	line6->buffer_listen = kmalloc(LINE6_BUFSIZE_LISTEN, GFP_KERNEL);
+	line6->buffer_listen = kzalloc(LINE6_BUFSIZE_LISTEN, GFP_KERNEL);
 	if (!line6->buffer_listen)
 		return -ENOMEM;
 
@@ -696,7 +697,7 @@ static int line6_init_cap_control(struct usb_line6 *line6)
 		return -ENOMEM;
 
 	if (line6->properties->capabilities & LINE6_CAP_CONTROL_MIDI) {
-		line6->buffer_message = kmalloc(LINE6_MIDI_MESSAGE_MAXLEN, GFP_KERNEL);
+		line6->buffer_message = kzalloc(LINE6_MIDI_MESSAGE_MAXLEN, GFP_KERNEL);
 		if (!line6->buffer_message)
 			return -ENOMEM;
 
@@ -764,9 +765,9 @@ int line6_probe(struct usb_interface *interface,
 	line6->ifcdev = &interface->dev;
 	INIT_DELAYED_WORK(&line6->startup_work, line6_startup_work);
 
-	strcpy(card->id, properties->id);
-	strcpy(card->driver, driver_name);
-	strcpy(card->shortname, properties->name);
+	strscpy(card->id, properties->id);
+	strscpy(card->driver, driver_name);
+	strscpy(card->shortname, properties->name);
 	sprintf(card->longname, "Line 6 %s at USB %s", properties->name,
 		dev_name(line6->ifcdev));
 	card->private_free = line6_destruct;

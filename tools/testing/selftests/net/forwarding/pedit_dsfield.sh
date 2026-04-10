@@ -60,7 +60,9 @@ h2_destroy()
 
 switch_create()
 {
-	ip link add name br1 up type bridge vlan_filtering 1
+	ip link add name br1 type bridge vlan_filtering 1
+	ip link set dev br1 addrgenmode none
+	ip link set dev br1 up
 	ip link set dev $swp1 master br1
 	ip link set dev $swp1 up
 	ip link set dev $swp2 master br1
@@ -96,11 +98,19 @@ setup_prepare()
 	h1_create
 	h2_create
 	switch_create
+
+	if [ -f /proc/sys/net/bridge/bridge-nf-call-iptables ]; then
+		sysctl_set net.bridge.bridge-nf-call-iptables 0
+	fi
 }
 
 cleanup()
 {
 	pre_cleanup
+
+	if [ -f /proc/sys/net/bridge/bridge-nf-call-iptables ]; then
+		sysctl_restore net.bridge.bridge-nf-call-iptables
+	fi
 
 	switch_destroy
 	h2_destroy

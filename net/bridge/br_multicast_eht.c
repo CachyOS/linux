@@ -142,7 +142,7 @@ static void br_multicast_destroy_eht_set_entry(struct net_bridge_mcast_gc *gc)
 	set_h = container_of(gc, struct net_bridge_group_eht_set_entry, mcast_gc);
 	WARN_ON(!RB_EMPTY_NODE(&set_h->rb_node));
 
-	del_timer_sync(&set_h->timer);
+	timer_shutdown_sync(&set_h->timer);
 	kfree(set_h);
 }
 
@@ -154,7 +154,7 @@ static void br_multicast_destroy_eht_set(struct net_bridge_mcast_gc *gc)
 	WARN_ON(!RB_EMPTY_NODE(&eht_set->rb_node));
 	WARN_ON(!RB_EMPTY_ROOT(&eht_set->entry_tree));
 
-	del_timer_sync(&eht_set->timer);
+	timer_shutdown_sync(&eht_set->timer);
 	kfree(eht_set);
 }
 
@@ -207,7 +207,9 @@ void br_multicast_eht_clean_sets(struct net_bridge_port_group *pg)
 
 static void br_multicast_eht_set_entry_expired(struct timer_list *t)
 {
-	struct net_bridge_group_eht_set_entry *set_h = from_timer(set_h, t, timer);
+	struct net_bridge_group_eht_set_entry *set_h = timer_container_of(set_h,
+									  t,
+									  timer);
 	struct net_bridge *br = set_h->br;
 
 	spin_lock(&br->multicast_lock);
@@ -223,8 +225,9 @@ out:
 
 static void br_multicast_eht_set_expired(struct timer_list *t)
 {
-	struct net_bridge_group_eht_set *eht_set = from_timer(eht_set, t,
-							      timer);
+	struct net_bridge_group_eht_set *eht_set = timer_container_of(eht_set,
+								      t,
+								      timer);
 	struct net_bridge *br = eht_set->br;
 
 	spin_lock(&br->multicast_lock);
@@ -263,7 +266,7 @@ __eht_lookup_create_host(struct net_bridge_port_group *pg,
 	if (br_multicast_eht_hosts_over_limit(pg))
 		return NULL;
 
-	eht_host = kzalloc(sizeof(*eht_host), GFP_ATOMIC);
+	eht_host = kzalloc_obj(*eht_host, GFP_ATOMIC);
 	if (!eht_host)
 		return NULL;
 
@@ -310,7 +313,7 @@ __eht_lookup_create_set_entry(struct net_bridge *br,
 	if (!allow_zero_src && eht_host->num_entries >= PG_SRC_ENT_LIMIT)
 		return NULL;
 
-	set_h = kzalloc(sizeof(*set_h), GFP_ATOMIC);
+	set_h = kzalloc_obj(*set_h, GFP_ATOMIC);
 	if (!set_h)
 		return NULL;
 
@@ -357,7 +360,7 @@ __eht_lookup_create_set(struct net_bridge_port_group *pg,
 			return this;
 	}
 
-	eht_set = kzalloc(sizeof(*eht_set), GFP_ATOMIC);
+	eht_set = kzalloc_obj(*eht_set, GFP_ATOMIC);
 	if (!eht_set)
 		return NULL;
 

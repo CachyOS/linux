@@ -32,9 +32,11 @@
 #include <drm/ttm/ttm_caching.h>
 
 struct device;
-struct ttm_tt;
-struct ttm_pool;
+struct seq_file;
+struct ttm_backup_flags;
 struct ttm_operation_ctx;
+struct ttm_pool;
+struct ttm_tt;
 
 /**
  * struct ttm_pool_type - Pool for a certain memory type
@@ -61,18 +63,18 @@ struct ttm_pool_type {
  * struct ttm_pool - Pool for all caching and orders
  *
  * @dev: the device we allocate pages for
- * @use_dma_alloc: if coherent DMA allocations should be used
- * @use_dma32: if GFP_DMA32 should be used
+ * @nid: which numa node to use
+ * @alloc_flags: TTM_ALLOCATION_POOL_* flags
  * @caching: pools for each caching/order
  */
 struct ttm_pool {
 	struct device *dev;
+	int nid;
 
-	bool use_dma_alloc;
-	bool use_dma32;
+	unsigned int alloc_flags;
 
 	struct {
-		struct ttm_pool_type orders[MAX_ORDER];
+		struct ttm_pool_type orders[NR_PAGE_ORDERS];
 	} caching[TTM_NUM_CACHING_TYPES];
 };
 
@@ -81,10 +83,17 @@ int ttm_pool_alloc(struct ttm_pool *pool, struct ttm_tt *tt,
 void ttm_pool_free(struct ttm_pool *pool, struct ttm_tt *tt);
 
 void ttm_pool_init(struct ttm_pool *pool, struct device *dev,
-		   bool use_dma_alloc, bool use_dma32);
+		   int nid, unsigned int alloc_flags);
 void ttm_pool_fini(struct ttm_pool *pool);
 
 int ttm_pool_debugfs(struct ttm_pool *pool, struct seq_file *m);
+
+void ttm_pool_drop_backed_up(struct ttm_tt *tt);
+
+long ttm_pool_backup(struct ttm_pool *pool, struct ttm_tt *ttm,
+		     const struct ttm_backup_flags *flags);
+int ttm_pool_restore_and_alloc(struct ttm_pool *pool, struct ttm_tt *tt,
+			       const struct ttm_operation_ctx *ctx);
 
 int ttm_pool_mgr_init(unsigned long num_pages);
 void ttm_pool_mgr_fini(void);

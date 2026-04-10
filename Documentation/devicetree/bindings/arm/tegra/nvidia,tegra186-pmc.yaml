@@ -16,18 +16,19 @@ properties:
       - nvidia,tegra186-pmc
       - nvidia,tegra194-pmc
       - nvidia,tegra234-pmc
+      - nvidia,tegra264-pmc
 
   reg:
-    minItems: 4
+    minItems: 3
     maxItems: 5
 
   reg-names:
-    minItems: 4
+    minItems: 3
     items:
       - const: pmc
       - const: wake
-      - const: aotag
-      - const: scratch
+      - enum: [ aotag, scratch, misc ]
+      - enum: [ scratch, misc ]
       - const: misc
 
   interrupt-controller: true
@@ -41,25 +42,46 @@ properties:
     description: If present, inverts the PMU interrupt signal.
     $ref: /schemas/types.yaml#/definitions/flag
 
-if:
-  properties:
-    compatible:
-      contains:
-        const: nvidia,tegra186-pmc
-then:
-  properties:
-    reg:
-      maxItems: 4
+allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: nvidia,tegra186-pmc
+    then:
+      properties:
+        reg:
+          minItems: 4
+          maxItems: 4
+        reg-names:
+          maxItems: 4
+          contains:
+            const: scratch
 
-    reg-names:
-      maxItems: 4
-else:
-  properties:
-    reg:
-      minItems: 5
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: nvidia,tegra194-pmc
+    then:
+      properties:
+        reg:
+          minItems: 5
+        reg-names:
+          minItems: 5
 
-    reg-names:
-      minItems: 5
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - nvidia,tegra234-pmc
+              - nvidia,tegra264-pmc
+    then:
+      properties:
+        reg-names:
+          contains:
+            const: misc
 
 patternProperties:
   "^[a-z0-9]+-[a-z0-9]+$":

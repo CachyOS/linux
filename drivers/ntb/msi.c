@@ -106,10 +106,10 @@ int ntb_msi_setup_mws(struct ntb_dev *ntb)
 	if (!ntb->msi)
 		return -EINVAL;
 
-	msi_lock_descs(&ntb->pdev->dev);
-	desc = msi_first_desc(&ntb->pdev->dev, MSI_DESC_ASSOCIATED);
-	addr = desc->msg.address_lo + ((uint64_t)desc->msg.address_hi << 32);
-	msi_unlock_descs(&ntb->pdev->dev);
+	scoped_guard (msi_descs_lock, &ntb->pdev->dev) {
+		desc = msi_first_desc(&ntb->pdev->dev, MSI_DESC_ASSOCIATED);
+		addr = desc->msg.address_lo + ((uint64_t)desc->msg.address_hi << 32);
+	}
 
 	for (peer = 0; peer < ntb_peer_port_count(ntb); peer++) {
 		peer_widx = ntb_peer_highest_mw_idx(ntb, peer);
@@ -289,7 +289,7 @@ int ntbm_msi_request_threaded_irq(struct ntb_dev *ntb, irq_handler_t handler,
 	if (!ntb->msi)
 		return -EINVAL;
 
-	msi_lock_descs(dev);
+	guard(msi_descs_lock)(dev);
 	msi_for_each_desc(entry, dev, MSI_DESC_ASSOCIATED) {
 		if (irq_has_action(entry->irq))
 			continue;
@@ -307,50 +307,13 @@ int ntbm_msi_request_threaded_irq(struct ntb_dev *ntb, irq_handler_t handler,
 		ret = ntbm_msi_setup_callback(ntb, entry, msi_desc);
 		if (ret) {
 			devm_free_irq(&ntb->dev, entry->irq, dev_id);
-			goto unlock;
+			return ret;
 		}
-
-		ret = entry->irq;
-		goto unlock;
+		return entry->irq;
 	}
-	ret = -ENODEV;
-
-unlock:
-	msi_unlock_descs(dev);
-	return ret;
+	return -ENODEV;
 }
 EXPORT_SYMBOL(ntbm_msi_request_threaded_irq);
-
-static int ntbm_msi_callback_match(struct device *dev, void *res, void *data)
-{
-	struct ntb_dev *ntb = dev_ntb(dev);
-	struct ntb_msi_devres *dr = res;
-
-	return dr->ntb == ntb && dr->entry == data;
-}
-
-/**
- * ntbm_msi_free_irq() - free an interrupt
- * @ntb:	NTB device context
- * @irq:	Interrupt line to free
- * @dev_id:	Device identity to free
- *
- * This function should be used to manually free IRQs allocated with
- * ntbm_request_[threaded_]irq().
- */
-void ntbm_msi_free_irq(struct ntb_dev *ntb, unsigned int irq, void *dev_id)
-{
-	struct msi_desc *entry = irq_get_msi_desc(irq);
-
-	entry->write_msi_msg = NULL;
-	entry->write_msi_msg_data = NULL;
-
-	WARN_ON(devres_destroy(&ntb->dev, ntbm_msi_callback_release,
-			       ntbm_msi_callback_match, entry));
-
-	devm_free_irq(&ntb->dev, irq, dev_id);
-}
-EXPORT_SYMBOL(ntbm_msi_free_irq);
 
 /**
  * ntb_msi_peer_trigger() - Trigger an interrupt handler on a peer
@@ -379,36 +342,3 @@ int ntb_msi_peer_trigger(struct ntb_dev *ntb, int peer,
 	return 0;
 }
 EXPORT_SYMBOL(ntb_msi_peer_trigger);
-
-/**
- * ntb_msi_peer_addr() - Get the DMA address to trigger a peer's MSI interrupt
- * @ntb:	NTB device context
- * @peer:	Peer index
- * @desc:	MSI descriptor data which triggers the interrupt
- * @msi_addr:   Physical address to trigger the interrupt
- *
- * This function allows using DMA engines to trigger an interrupt
- * (for example, trigger an interrupt to process the data after
- * sending it). To trigger the interrupt, write @desc.data to the address
- * returned in @msi_addr
- *
- * Return: Zero on success, otherwise a negative error number.
- */
-int ntb_msi_peer_addr(struct ntb_dev *ntb, int peer,
-		      struct ntb_msi_desc *desc,
-		      phys_addr_t *msi_addr)
-{
-	int peer_widx = ntb_peer_mw_count(ntb) - 1 - peer;
-	phys_addr_t mw_phys_addr;
-	int ret;
-
-	ret = ntb_peer_mw_get_addr(ntb, peer_widx, &mw_phys_addr, NULL);
-	if (ret)
-		return ret;
-
-	if (msi_addr)
-		*msi_addr = mw_phys_addr + desc->addr_offset;
-
-	return 0;
-}
-EXPORT_SYMBOL(ntb_msi_peer_addr);

@@ -251,7 +251,7 @@ static inline struct bnx2x_exeq_elem *bnx2x_exe_queue_alloc_elem(
 	struct bnx2x *bp)
 {
 	DP(BNX2X_MSG_SP, "Allocating a new exe_queue element\n");
-	return kzalloc(sizeof(struct bnx2x_exeq_elem), GFP_ATOMIC);
+	return kzalloc_obj(struct bnx2x_exeq_elem, GFP_ATOMIC);
 }
 
 /************************ raw_obj functions ***********************************/
@@ -890,7 +890,7 @@ static void bnx2x_set_one_mac_e2(struct bnx2x *bp,
 		(struct eth_classify_rules_ramrod_data *)(raw->rdata);
 	int rule_cnt = rule_idx + 1, cmd = elem->cmd_data.vlan_mac.cmd;
 	union eth_classify_rule_cmd *rule_entry = &data->rules[rule_idx];
-	bool add = (cmd == BNX2X_VLAN_MAC_ADD) ? true : false;
+	bool add = cmd == BNX2X_VLAN_MAC_ADD;
 	unsigned long *vlan_mac_flags = &elem->cmd_data.vlan_mac.vlan_mac_flags;
 	u8 *mac = elem->cmd_data.vlan_mac.u.mac.mac;
 
@@ -1075,7 +1075,7 @@ static void bnx2x_set_one_vlan_e2(struct bnx2x *bp,
 	int rule_cnt = rule_idx + 1;
 	union eth_classify_rule_cmd *rule_entry = &data->rules[rule_idx];
 	enum bnx2x_vlan_mac_cmd cmd = elem->cmd_data.vlan_mac.cmd;
-	bool add = (cmd == BNX2X_VLAN_MAC_ADD) ? true : false;
+	bool add = cmd == BNX2X_VLAN_MAC_ADD;
 	u16 vlan = elem->cmd_data.vlan_mac.u.vlan.vlan;
 
 	/* Reset the ramrod data buffer for the first rule */
@@ -1125,7 +1125,7 @@ static void bnx2x_set_one_vlan_mac_e2(struct bnx2x *bp,
 	int rule_cnt = rule_idx + 1;
 	union eth_classify_rule_cmd *rule_entry = &data->rules[rule_idx];
 	enum bnx2x_vlan_mac_cmd cmd = elem->cmd_data.vlan_mac.cmd;
-	bool add = (cmd == BNX2X_VLAN_MAC_ADD) ? true : false;
+	bool add = cmd == BNX2X_VLAN_MAC_ADD;
 	u16 vlan = elem->cmd_data.vlan_mac.u.vlan_mac.vlan;
 	u8 *mac = elem->cmd_data.vlan_mac.u.vlan_mac.mac;
 	u16 inner_mac;
@@ -1736,7 +1736,7 @@ static inline int bnx2x_vlan_mac_get_registry_elem(
 	/* Allocate a new registry element if needed. */
 	if (!restore &&
 	    ((cmd == BNX2X_VLAN_MAC_ADD) || (cmd == BNX2X_VLAN_MAC_MOVE))) {
-		reg_elem = kzalloc(sizeof(*reg_elem), GFP_ATOMIC);
+		reg_elem = kzalloc_obj(*reg_elem, GFP_ATOMIC);
 		if (!reg_elem)
 			return -ENOMEM;
 
@@ -2593,7 +2593,7 @@ void bnx2x_init_rx_mode_obj(struct bnx2x *bp,
 /********************* Multicast verbs: SET, CLEAR ****************************/
 static inline u8 bnx2x_mcast_bin_from_mac(u8 *mac)
 {
-	return (crc32c_le(0, mac, ETH_ALEN) >> 24) & 0xff;
+	return (crc32c(0, mac, ETH_ALEN) >> 24) & 0xff;
 }
 
 struct bnx2x_mcast_mac_elem {
@@ -2688,7 +2688,7 @@ static int bnx2x_mcast_enqueue_cmd(struct bnx2x *bp,
 		return 0;
 
 	/* Add mcast is called under spin_lock, thus calling with GFP_ATOMIC */
-	new_cmd = kzalloc(sizeof(*new_cmd), GFP_ATOMIC);
+	new_cmd = kzalloc_obj(*new_cmd, GFP_ATOMIC);
 	if (!new_cmd)
 		return -ENOMEM;
 
@@ -3846,7 +3846,7 @@ static inline int bnx2x_mcast_refresh_registry_e1(struct bnx2x *bp,
 		if (!list_empty(&o->registry.exact_match.macs))
 			return 0;
 
-		elem = kcalloc(len, sizeof(*elem), GFP_ATOMIC);
+		elem = kzalloc_objs(*elem, len, GFP_ATOMIC);
 		if (!elem) {
 			BNX2X_ERR("Failed to allocate registry memory\n");
 			return -ENOMEM;

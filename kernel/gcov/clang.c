@@ -81,7 +81,7 @@ static LIST_HEAD(clang_gcov_list);
 
 void llvm_gcov_init(llvm_gcov_callback writeout, llvm_gcov_callback flush)
 {
-	struct gcov_info *info = kzalloc(sizeof(*info), GFP_KERNEL);
+	struct gcov_info *info = kzalloc_obj(*info);
 
 	if (!info)
 		return;
@@ -112,7 +112,7 @@ EXPORT_SYMBOL(llvm_gcda_start_file);
 
 void llvm_gcda_emit_function(u32 ident, u32 func_checksum, u32 cfg_checksum)
 {
-	struct gcov_fn_info *info = kzalloc(sizeof(*info), GFP_KERNEL);
+	struct gcov_fn_info *info = kzalloc_obj(*info);
 
 	if (!info)
 		return;
@@ -264,10 +264,10 @@ int gcov_info_is_compatible(struct gcov_info *info1, struct gcov_info *info2)
 
 /**
  * gcov_info_add - add up profiling data
- * @dest: profiling data set to which data is added
- * @source: profiling data set which is added
+ * @dst: profiling data set to which data is added
+ * @src: profiling data set which is added
  *
- * Adds profiling counts of @source to @dest.
+ * Adds profiling counts of @src to @dst.
  */
 void gcov_info_add(struct gcov_info *dst, struct gcov_info *src)
 {
@@ -280,6 +280,8 @@ void gcov_info_add(struct gcov_info *dst, struct gcov_info *src)
 
 		for (i = 0; i < sfn_ptr->num_counters; i++)
 			dfn_ptr->counters[i] += sfn_ptr->counters[i];
+
+		sfn_ptr = list_next_entry(sfn_ptr, head);
 	}
 }
 

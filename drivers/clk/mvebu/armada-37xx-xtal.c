@@ -65,11 +65,9 @@ static int armada_3700_xtal_clock_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int armada_3700_xtal_clock_remove(struct platform_device *pdev)
+static void armada_3700_xtal_clock_remove(struct platform_device *pdev)
 {
 	of_clk_del_provider(pdev->dev.of_node);
-
-	return 0;
 }
 
 static const struct of_device_id armada_3700_xtal_clock_of_match[] = {

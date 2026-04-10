@@ -9,12 +9,7 @@
 #define __ASM_TLB_H
 
 #include <linux/pagemap.h>
-#include <linux/swap.h>
 
-static inline void __tlb_remove_table(void *_table)
-{
-	free_page_and_swap_cache((struct page *)_table);
-}
 
 #define tlb_flush tlb_flush
 static void tlb_flush(struct mmu_gather *tlb);
@@ -22,15 +17,15 @@ static void tlb_flush(struct mmu_gather *tlb);
 #include <asm-generic/tlb.h>
 
 /*
- * get the tlbi levels in arm64.  Default value is 0 if more than one
- * of cleared_* is set or neither is set.
- * Arm64 doesn't support p4ds now.
+ * get the tlbi levels in arm64.  Default value is TLBI_TTL_UNKNOWN if more than
+ * one of cleared_* is set or neither is set - this elides the level hinting to
+ * the hardware.
  */
 static inline int tlb_get_level(struct mmu_gather *tlb)
 {
 	/* The TTL field is only valid for the leaf entry. */
 	if (tlb->freed_tables)
-		return 0;
+		return TLBI_TTL_UNKNOWN;
 
 	if (tlb->cleared_ptes && !(tlb->cleared_pmds ||
 				   tlb->cleared_puds ||
@@ -47,7 +42,12 @@ static inline int tlb_get_level(struct mmu_gather *tlb)
 				   tlb->cleared_p4ds))
 		return 1;
 
-	return 0;
+	if (tlb->cleared_p4ds && !(tlb->cleared_ptes ||
+				   tlb->cleared_pmds ||
+				   tlb->cleared_puds))
+		return 0;
+
+	return TLBI_TTL_UNKNOWN;
 }
 
 static inline void tlb_flush(struct mmu_gather *tlb)
@@ -75,18 +75,18 @@ static inline void tlb_flush(struct mmu_gather *tlb)
 static inline void __pte_free_tlb(struct mmu_gather *tlb, pgtable_t pte,
 				  unsigned long addr)
 {
-	pgtable_pte_page_dtor(pte);
-	tlb_remove_table(tlb, pte);
+	struct ptdesc *ptdesc = page_ptdesc(pte);
+
+	tlb_remove_ptdesc(tlb, ptdesc);
 }
 
 #if CONFIG_PGTABLE_LEVELS > 2
 static inline void __pmd_free_tlb(struct mmu_gather *tlb, pmd_t *pmdp,
 				  unsigned long addr)
 {
-	struct page *page = virt_to_page(pmdp);
+	struct ptdesc *ptdesc = virt_to_ptdesc(pmdp);
 
-	pgtable_pmd_page_dtor(page);
-	tlb_remove_table(tlb, page);
+	tlb_remove_ptdesc(tlb, ptdesc);
 }
 #endif
 
@@ -94,7 +94,25 @@ static inline void __pmd_free_tlb(struct mmu_gather *tlb, pmd_t *pmdp,
 static inline void __pud_free_tlb(struct mmu_gather *tlb, pud_t *pudp,
 				  unsigned long addr)
 {
-	tlb_remove_table(tlb, virt_to_page(pudp));
+	struct ptdesc *ptdesc = virt_to_ptdesc(pudp);
+
+	if (!pgtable_l4_enabled())
+		return;
+
+	tlb_remove_ptdesc(tlb, ptdesc);
+}
+#endif
+
+#if CONFIG_PGTABLE_LEVELS > 4
+static inline void __p4d_free_tlb(struct mmu_gather *tlb, p4d_t *p4dp,
+				  unsigned long addr)
+{
+	struct ptdesc *ptdesc = virt_to_ptdesc(p4dp);
+
+	if (!pgtable_l5_enabled())
+		return;
+
+	tlb_remove_ptdesc(tlb, ptdesc);
 }
 #endif
 

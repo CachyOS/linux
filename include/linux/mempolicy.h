@@ -11,11 +11,14 @@
 #include <linux/slab.h>
 #include <linux/rbtree.h>
 #include <linux/spinlock.h>
+#include <linux/node.h>
 #include <linux/nodemask.h>
 #include <linux/pagemap.h>
 #include <uapi/linux/mempolicy.h>
 
 struct mm_struct;
+
+#define NO_INTERLEAVE_INDEX (-1UL)	/* use task il_prev for interleaving */
 
 #ifdef CONFIG_NUMA
 
@@ -45,13 +48,14 @@ struct mempolicy {
 	atomic_t refcnt;
 	unsigned short mode; 	/* See MPOL_* above */
 	unsigned short flags;	/* See set_mempolicy() MPOL_F_* above */
-	nodemask_t nodes;	/* interleave/bind/perfer */
+	nodemask_t nodes;	/* interleave/bind/preferred/etc */
 	int home_node;		/* Home node to use for MPOL_BIND and MPOL_PREFERRED_MANY */
 
 	union {
 		nodemask_t cpuset_mems_allowed;	/* relative to these nodes */
 		nodemask_t user_nodemask;	/* nodemask passed by user */
 	} w;
+	struct rcu_head rcu;
 };
 
 /*
@@ -89,8 +93,6 @@ static inline struct mempolicy *mpol_dup(struct mempolicy *pol)
 	return pol;
 }
 
-#define vma_policy(vma) ((vma)->vm_policy)
-
 static inline void mpol_get(struct mempolicy *pol)
 {
 	if (pol)
@@ -107,35 +109,30 @@ static inline bool mpol_equal(struct mempolicy *a, struct mempolicy *b)
 
 /*
  * Tree of shared policies for a shared memory region.
- * Maintain the policies in a pseudo mm that contains vmas. The vmas
- * carry the policy. As a special twist the pseudo mm is indexed in pages, not
- * bytes, so that we can work with shared memory segments bigger than
- * unsigned long.
  */
-
-struct sp_node {
-	struct rb_node nd;
-	unsigned long start, end;
-	struct mempolicy *policy;
-};
-
 struct shared_policy {
 	struct rb_root root;
 	rwlock_t lock;
 };
+struct sp_node {
+	struct rb_node nd;
+	pgoff_t start, end;
+	struct mempolicy *policy;
+};
 
 int vma_dup_policy(struct vm_area_struct *src, struct vm_area_struct *dst);
 void mpol_shared_policy_init(struct shared_policy *sp, struct mempolicy *mpol);
-int mpol_set_shared_policy(struct shared_policy *info,
-				struct vm_area_struct *vma,
-				struct mempolicy *new);
-void mpol_free_shared_policy(struct shared_policy *p);
+int mpol_set_shared_policy(struct shared_policy *sp,
+			   struct vm_area_struct *vma, struct mempolicy *mpol);
+void mpol_free_shared_policy(struct shared_policy *sp);
 struct mempolicy *mpol_shared_policy_lookup(struct shared_policy *sp,
-					    unsigned long idx);
+					    pgoff_t idx);
 
 struct mempolicy *get_task_policy(struct task_struct *p);
 struct mempolicy *__get_vma_policy(struct vm_area_struct *vma,
-		unsigned long addr);
+		unsigned long addr, pgoff_t *ilx);
+struct mempolicy *get_vma_policy(struct vm_area_struct *vma,
+		unsigned long addr, int order, pgoff_t *ilx);
 bool vma_policy_mof(struct vm_area_struct *vma);
 
 extern void numa_default_policy(void);
@@ -149,15 +146,6 @@ extern int huge_node(struct vm_area_struct *vma,
 extern bool init_nodemask_of_mempolicy(nodemask_t *mask);
 extern bool mempolicy_in_oom_domain(struct task_struct *tsk,
 				const nodemask_t *mask);
-extern nodemask_t *policy_nodemask(gfp_t gfp, struct mempolicy *policy);
-
-static inline nodemask_t *policy_nodemask_current(gfp_t gfp)
-{
-	struct mempolicy *mpol = get_task_policy(current);
-
-	return policy_nodemask(gfp, mpol);
-}
-
 extern unsigned int mempolicy_slab_node(void);
 
 extern enum zone_type policy_zone;
@@ -181,7 +169,8 @@ extern void mpol_to_str(char *buffer, int maxlen, struct mempolicy *pol);
 /* Check if a vma is migratable */
 extern bool vma_migratable(struct vm_area_struct *vma);
 
-extern int mpol_misplaced(struct page *, struct vm_area_struct *, unsigned long);
+int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
+					unsigned long addr);
 extern void mpol_put_task_policy(struct task_struct *);
 
 static inline bool mpol_is_preferred_many(struct mempolicy *pol)
@@ -189,17 +178,26 @@ static inline bool mpol_is_preferred_many(struct mempolicy *pol)
 	return  (pol->mode == MPOL_PREFERRED_MANY);
 }
 
+extern bool apply_policy_zone(struct mempolicy *policy, enum zone_type zone);
+
+extern int mempolicy_set_node_perf(unsigned int node,
+				   struct access_coordinate *coords);
 
 #else
 
 struct mempolicy {};
+
+static inline struct mempolicy *get_task_policy(struct task_struct *p)
+{
+	return NULL;
+}
 
 static inline bool mpol_equal(struct mempolicy *a, struct mempolicy *b)
 {
 	return true;
 }
 
-static inline void mpol_put(struct mempolicy *p)
+static inline void mpol_put(struct mempolicy *pol)
 {
 }
 
@@ -218,17 +216,22 @@ static inline void mpol_shared_policy_init(struct shared_policy *sp,
 {
 }
 
-static inline void mpol_free_shared_policy(struct shared_policy *p)
+static inline void mpol_free_shared_policy(struct shared_policy *sp)
 {
 }
 
 static inline struct mempolicy *
-mpol_shared_policy_lookup(struct shared_policy *sp, unsigned long idx)
+mpol_shared_policy_lookup(struct shared_policy *sp, pgoff_t idx)
 {
 	return NULL;
 }
 
-#define vma_policy(vma) NULL
+static inline struct mempolicy *get_vma_policy(struct vm_area_struct *vma,
+				unsigned long addr, int order, pgoff_t *ilx)
+{
+	*ilx = 0;
+	return NULL;
+}
 
 static inline int
 vma_dup_policy(struct vm_area_struct *src, struct vm_area_struct *dst)
@@ -284,7 +287,8 @@ static inline int mpol_parse_str(char *str, struct mempolicy **mpol)
 }
 #endif
 
-static inline int mpol_misplaced(struct page *page, struct vm_area_struct *vma,
+static inline int mpol_misplaced(struct folio *folio,
+				 struct vm_fault *vmf,
 				 unsigned long address)
 {
 	return -1; /* no node preference */
@@ -292,11 +296,6 @@ static inline int mpol_misplaced(struct page *page, struct vm_area_struct *vma,
 
 static inline void mpol_put_task_policy(struct task_struct *task)
 {
-}
-
-static inline nodemask_t *policy_nodemask_current(gfp_t gfp)
-{
-	return NULL;
 }
 
 static inline bool mpol_is_preferred_many(struct mempolicy *pol)

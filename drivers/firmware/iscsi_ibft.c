@@ -310,7 +310,10 @@ static ssize_t ibft_attr_show_nic(void *data, int type, char *buf)
 		str += sprintf_ipaddr(str, nic->ip_addr);
 		break;
 	case ISCSI_BOOT_ETH_SUBNET_MASK:
-		val = cpu_to_be32(~((1 << (32-nic->subnet_mask_prefix))-1));
+		if (nic->subnet_mask_prefix > 32)
+			val = cpu_to_be32(~0);
+		else
+			val = cpu_to_be32(~((1 << (32-nic->subnet_mask_prefix))-1));
 		str += sprintf(str, "%pI4", &val);
 		break;
 	case ISCSI_BOOT_ETH_PREFIX_LEN:
@@ -631,7 +634,7 @@ static int __init ibft_create_kobject(struct acpi_table_ibft *header,
 	struct pci_dev *pci_dev;
 	int rc = 0;
 
-	ibft_kobj = kzalloc(sizeof(*ibft_kobj), GFP_KERNEL);
+	ibft_kobj = kzalloc_obj(*ibft_kobj);
 	if (!ibft_kobj)
 		return -ENOMEM;
 
@@ -770,7 +773,7 @@ static int __init ibft_register_kobjects(struct acpi_table_ibft *header)
 	if (rc)
 		return rc;
 
-	ibft_kobj = kzalloc(sizeof(*ibft_kobj), GFP_KERNEL);
+	ibft_kobj = kzalloc_obj(*ibft_kobj);
 	if (!ibft_kobj)
 		return -ENOMEM;
 

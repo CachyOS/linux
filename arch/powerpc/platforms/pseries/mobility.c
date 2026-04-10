@@ -24,9 +24,11 @@
 #include <linux/stringify.h>
 
 #include <asm/machdep.h>
+#include <asm/nmi.h>
 #include <asm/rtas.h>
 #include "pseries.h"
 #include "vas.h"	/* vas_migration_handler() */
+#include "papr-hvpipe.h"	/* hvpipe_migration_handler() */
 #include "../../kernel/cacheinfo.h"
 
 static struct kobject *mobility_kobj;
@@ -47,6 +49,30 @@ struct update_props_workarea {
 
 #define MIGRATION_SCOPE	(1)
 #define PRRN_SCOPE -2
+
+#ifdef CONFIG_PPC_WATCHDOG
+static unsigned int nmi_wd_lpm_factor = 200;
+
+#ifdef CONFIG_SYSCTL
+static const struct ctl_table nmi_wd_lpm_factor_ctl_table[] = {
+	{
+		.procname	= "nmi_wd_lpm_factor",
+		.data		= &nmi_wd_lpm_factor,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_douintvec_minmax,
+	},
+};
+
+static int __init register_nmi_wd_lpm_factor_sysctl(void)
+{
+	register_sysctl("kernel", nmi_wd_lpm_factor_ctl_table);
+
+	return 0;
+}
+device_initcall(register_nmi_wd_lpm_factor_sysctl);
+#endif /* CONFIG_SYSCTL */
+#endif /* CONFIG_PPC_WATCHDOG */
 
 static int mobility_rtas_call(int token, char *buf, s32 scope)
 {
@@ -120,7 +146,7 @@ static int update_dt_property(struct device_node *dn, struct property **prop,
 		new_prop->value = new_data;
 		new_prop->length += vd;
 	} else {
-		new_prop = kzalloc(sizeof(*new_prop), GFP_KERNEL);
+		new_prop = kzalloc_obj(*new_prop);
 		if (!new_prop)
 			return -ENOMEM;
 
@@ -162,7 +188,7 @@ static int update_dt_node(struct device_node *dn, s32 scope)
 	u32 nprops;
 	u32 vd;
 
-	update_properties_token = rtas_token("ibm,update-properties");
+	update_properties_token = rtas_function_token(RTAS_FN_IBM_UPDATE_PROPERTIES);
 	if (update_properties_token == RTAS_UNKNOWN_SERVICE)
 		return -EINVAL;
 
@@ -183,7 +209,7 @@ static int update_dt_node(struct device_node *dn, s32 scope)
 		nprops = be32_to_cpu(upwa->nprops);
 
 		/* On the first call to ibm,update-properties for a node the
-		 * the first property value descriptor contains an empty
+		 * first property value descriptor contains an empty
 		 * property name, the property value length encoded as u32,
 		 * and the property value is the node path being updated.
 		 */
@@ -273,7 +299,7 @@ static int pseries_devicetree_update(s32 scope)
 	int update_nodes_token;
 	int rc;
 
-	update_nodes_token = rtas_token("ibm,update-nodes");
+	update_nodes_token = rtas_function_token(RTAS_FN_IBM_UPDATE_NODES);
 	if (update_nodes_token == RTAS_UNKNOWN_SERVICE)
 		return 0;
 
@@ -427,6 +453,43 @@ static int wait_for_vasi_session_suspending(u64 handle)
 	return ret;
 }
 
+static void wait_for_vasi_session_completed(u64 handle)
+{
+	unsigned long state = 0;
+	int ret;
+
+	pr_info("waiting for memory transfer to complete...\n");
+
+	/*
+	 * Wait for transition from H_VASI_RESUMED to H_VASI_COMPLETED.
+	 */
+	while (true) {
+		ret = poll_vasi_state(handle, &state);
+
+		/*
+		 * If the memory transfer is already complete and the migration
+		 * has been cleaned up by the hypervisor, H_PARAMETER is return,
+		 * which is translate in EINVAL by poll_vasi_state().
+		 */
+		if (ret == -EINVAL || (!ret && state == H_VASI_COMPLETED)) {
+			pr_info("memory transfer completed.\n");
+			break;
+		}
+
+		if (ret) {
+			pr_err("H_VASI_STATE return error (%d)\n", ret);
+			break;
+		}
+
+		if (state != H_VASI_RESUMED) {
+			pr_err("unexpected H_VASI_STATE result %lu\n", state);
+			break;
+		}
+
+		msleep(500);
+	}
+}
+
 static void prod_single(unsigned int target_cpu)
 {
 	long hvrc;
@@ -565,10 +628,13 @@ retry:
 		prod_others();
 	}
 	/*
-	 * Execution may have been suspended for several seconds, so
-	 * reset the watchdog.
+	 * Execution may have been suspended for several seconds, so reset
+	 * the watchdogs. touch_nmi_watchdog() also touches the soft lockup
+	 * watchdog.
 	 */
+	rcu_cpu_stall_reset();
 	touch_nmi_watchdog();
+
 	return ret;
 }
 
@@ -665,20 +731,48 @@ static int pseries_suspend(u64 handle)
 static int pseries_migrate_partition(u64 handle)
 {
 	int ret;
+	unsigned int factor = 0;
+
+#ifdef CONFIG_PPC_WATCHDOG
+	factor = nmi_wd_lpm_factor;
+#endif
+	/*
+	 * When the migration is initiated, the hypervisor changes VAS
+	 * mappings to prepare before OS gets the notification and
+	 * closes all VAS windows. NX generates continuous faults during
+	 * this time and the user space can not differentiate these
+	 * faults from the migration event. So reduce this time window
+	 * by closing VAS windows at the beginning of this function.
+	 */
+	vas_migration_handler(VAS_SUSPEND);
+	hvpipe_migration_handler(HVPIPE_SUSPEND);
 
 	ret = wait_for_vasi_session_suspending(handle);
 	if (ret)
-		return ret;
+		goto out;
 
-	vas_migration_handler(VAS_SUSPEND);
+	if (factor)
+		watchdog_hardlockup_set_timeout_pct(factor);
 
 	ret = pseries_suspend(handle);
-	if (ret == 0)
+	if (ret == 0) {
 		post_mobility_fixup();
-	else
+		/*
+		 * Wait until the memory transfer is complete, so that the user
+		 * space process returns from the syscall after the transfer is
+		 * complete. This allows the user hooks to be executed at the
+		 * right time.
+		 */
+		wait_for_vasi_session_completed(handle);
+	} else
 		pseries_cancel_migration(handle, ret);
 
+	if (factor)
+		watchdog_hardlockup_set_timeout_pct(0);
+
+out:
 	vas_migration_handler(VAS_RESUME);
+	hvpipe_migration_handler(HVPIPE_RESUME);
 
 	return ret;
 }
@@ -688,8 +782,8 @@ int rtas_syscall_dispatch_ibm_suspend_me(u64 handle)
 	return pseries_migrate_partition(handle);
 }
 
-static ssize_t migration_store(struct class *class,
-			       struct class_attribute *attr, const char *buf,
+static ssize_t migration_store(const struct class *class,
+			       const struct class_attribute *attr, const char *buf,
 			       size_t count)
 {
 	u64 streamid;

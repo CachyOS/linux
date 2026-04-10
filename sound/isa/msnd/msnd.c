@@ -76,17 +76,13 @@ static int snd_msnd_wait_HC0(struct snd_msnd *dev)
 
 int snd_msnd_send_dsp_cmd(struct snd_msnd *dev, u8 cmd)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&dev->lock, flags);
+	guard(spinlock_irqsave)(&dev->lock);
 	if (snd_msnd_wait_HC0(dev) == 0) {
 		outb(cmd, dev->io + HP_CVR);
-		spin_unlock_irqrestore(&dev->lock, flags);
 		return 0;
 	}
-	spin_unlock_irqrestore(&dev->lock, flags);
 
-	snd_printd(KERN_ERR LOGNAME ": Send DSP command timeout\n");
+	dev_dbg(dev->card->dev, LOGNAME ": Send DSP command timeout\n");
 
 	return -EIO;
 }
@@ -104,7 +100,7 @@ int snd_msnd_send_word(struct snd_msnd *dev, unsigned char high,
 		return 0;
 	}
 
-	snd_printd(KERN_ERR LOGNAME ": Send host word timeout\n");
+	dev_dbg(dev->card->dev, LOGNAME ": Send host word timeout\n");
 
 	return -EIO;
 }
@@ -115,7 +111,7 @@ int snd_msnd_upload_host(struct snd_msnd *dev, const u8 *bin, int len)
 	int i;
 
 	if (len % 3 != 0) {
-		snd_printk(KERN_ERR LOGNAME
+		dev_err(dev->card->dev, LOGNAME
 			   ": Upload host data not multiple of 3!\n");
 		return -EINVAL;
 	}
@@ -133,14 +129,12 @@ EXPORT_SYMBOL(snd_msnd_upload_host);
 
 int snd_msnd_enable_irq(struct snd_msnd *dev)
 {
-	unsigned long flags;
-
 	if (dev->irq_ref++)
 		return 0;
 
-	snd_printdd(LOGNAME ": Enabling IRQ\n");
+	dev_dbg(dev->card->dev, LOGNAME ": Enabling IRQ\n");
 
-	spin_lock_irqsave(&dev->lock, flags);
+	guard(spinlock_irqsave)(&dev->lock);
 	if (snd_msnd_wait_TXDE(dev) == 0) {
 		outb(inb(dev->io + HP_ICR) | HPICR_TREQ, dev->io + HP_ICR);
 		if (dev->type == msndClassic)
@@ -151,12 +145,10 @@ int snd_msnd_enable_irq(struct snd_msnd *dev)
 		enable_irq(dev->irq);
 		snd_msnd_init_queue(dev->DSPQ, dev->dspq_data_buff,
 				    dev->dspq_buff_size);
-		spin_unlock_irqrestore(&dev->lock, flags);
 		return 0;
 	}
-	spin_unlock_irqrestore(&dev->lock, flags);
 
-	snd_printd(KERN_ERR LOGNAME ": Enable IRQ failed\n");
+	dev_dbg(dev->card->dev, LOGNAME ": Enable IRQ failed\n");
 
 	return -EIO;
 }
@@ -164,29 +156,25 @@ EXPORT_SYMBOL(snd_msnd_enable_irq);
 
 int snd_msnd_disable_irq(struct snd_msnd *dev)
 {
-	unsigned long flags;
-
 	if (--dev->irq_ref > 0)
 		return 0;
 
 	if (dev->irq_ref < 0)
-		snd_printd(KERN_WARNING LOGNAME ": IRQ ref count is %d\n",
-			   dev->irq_ref);
+		dev_dbg(dev->card->dev, LOGNAME ": IRQ ref count is %d\n",
+			dev->irq_ref);
 
-	snd_printdd(LOGNAME ": Disabling IRQ\n");
+	dev_dbg(dev->card->dev, LOGNAME ": Disabling IRQ\n");
 
-	spin_lock_irqsave(&dev->lock, flags);
+	guard(spinlock_irqsave)(&dev->lock);
 	if (snd_msnd_wait_TXDE(dev) == 0) {
 		outb(inb(dev->io + HP_ICR) & ~HPICR_RREQ, dev->io + HP_ICR);
 		if (dev->type == msndClassic)
 			outb(HPIRQ_NONE, dev->io + HP_IRQM);
 		disable_irq(dev->irq);
-		spin_unlock_irqrestore(&dev->lock, flags);
 		return 0;
 	}
-	spin_unlock_irqrestore(&dev->lock, flags);
 
-	snd_printd(KERN_ERR LOGNAME ": Disable IRQ failed\n");
+	dev_dbg(dev->card->dev, LOGNAME ": Disable IRQ failed\n");
 
 	return -EIO;
 }
@@ -220,8 +208,8 @@ void snd_msnd_dsp_halt(struct snd_msnd *chip, struct file *file)
 		snd_msnd_send_dsp_cmd(chip, HDEX_RECORD_STOP);
 		snd_msnd_disable_irq(chip);
 		if (file) {
-			snd_printd(KERN_INFO LOGNAME
-				   ": Stopping read for %p\n", file);
+			dev_dbg(chip->card->dev, LOGNAME
+				": Stopping read for %p\n", file);
 			chip->mode &= ~FMODE_READ;
 		}
 		clear_bit(F_AUDIO_READ_INUSE, &chip->flags);
@@ -233,8 +221,8 @@ void snd_msnd_dsp_halt(struct snd_msnd *chip, struct file *file)
 		}
 		snd_msnd_disable_irq(chip);
 		if (file) {
-			snd_printd(KERN_INFO
-				   LOGNAME ": Stopping write for %p\n", file);
+			dev_dbg(chip->card->dev,
+				LOGNAME ": Stopping write for %p\n", file);
 			chip->mode &= ~FMODE_WRITE;
 		}
 		clear_bit(F_AUDIO_WRITE_INUSE, &chip->flags);
@@ -329,12 +317,6 @@ int snd_msnd_DAPQ(struct snd_msnd *chip, int start)
 		++nbanks;
 
 		/* Then advance the tail */
-		/*
-		if (protect)
-			snd_printd(KERN_INFO "B %X %lX\n",
-				   bank_num, xtime.tv_usec);
-		*/
-
 		DAPQ_tail = (++bank_num % 3) * PCTODSP_OFFSET(DAQDS__size);
 		writew(DAPQ_tail, chip->DAPQ + JQS_wTail);
 		/* Tell the DSP to play the bank */
@@ -343,10 +325,6 @@ int snd_msnd_DAPQ(struct snd_msnd *chip, int start)
 			if (2 == bank_num)
 				break;
 	}
-	/*
-	if (protect)
-		snd_printd(KERN_INFO "%lX\n", xtime.tv_usec);
-	*/
 	/* spin_unlock_irqrestore(&chip->lock, flags); not necessary */
 	return nbanks;
 }
@@ -386,7 +364,6 @@ static void snd_msnd_capture_reset_queue(struct snd_msnd *chip,
 {
 	int		n;
 	void		__iomem *pDAQ;
-	/* unsigned long	flags; */
 
 	/* snd_msnd_init_queue(chip->DARQ, DARQ_DATA_BUFF, DARQ_BUFF_SIZE); */
 
@@ -398,15 +375,15 @@ static void snd_msnd_capture_reset_queue(struct snd_msnd *chip,
 		chip->DARQ + JQS_wTail);
 
 #if 0 /* Critical section: bank 1 access. this is how the OSS driver does it:*/
-	spin_lock_irqsave(&chip->lock, flags);
-	outb(HPBLKSEL_1, chip->io + HP_BLKS);
-	memset_io(chip->mappedbase, 0, DAR_BUFF_SIZE * 3);
-	outb(HPBLKSEL_0, chip->io + HP_BLKS);
-	spin_unlock_irqrestore(&chip->lock, flags);
+	scoped_guard(spinlock_irqsave, &chip->lock) {
+		outb(HPBLKSEL_1, chip->io + HP_BLKS);
+		memset_io(chip->mappedbase, 0, DAR_BUFF_SIZE * 3);
+		outb(HPBLKSEL_0, chip->io + HP_BLKS);
+	}
 #endif
 
 	chip->capturePeriodBytes = pcm_count;
-	snd_printdd("snd_msnd_capture_reset_queue() %i\n", pcm_count);
+	dev_dbg(chip->card->dev, "%s() %i\n", __func__, pcm_count);
 
 	pDAQ = chip->mappedbase + DARQ_DATA_BUFF;
 
@@ -533,21 +510,21 @@ static int snd_msnd_playback_trigger(struct snd_pcm_substream *substream,
 	int	result = 0;
 
 	if (cmd == SNDRV_PCM_TRIGGER_START) {
-		snd_printdd("snd_msnd_playback_trigger(START)\n");
+		dev_dbg(chip->card->dev, "%s(START)\n", __func__);
 		chip->banksPlayed = 0;
 		set_bit(F_WRITING, &chip->flags);
 		snd_msnd_DAPQ(chip, 1);
 	} else if (cmd == SNDRV_PCM_TRIGGER_STOP) {
-		snd_printdd("snd_msnd_playback_trigger(STop)\n");
+		dev_dbg(chip->card->dev, "%s(STOP)\n", __func__);
 		/* interrupt diagnostic, comment this out later */
 		clear_bit(F_WRITING, &chip->flags);
 		snd_msnd_send_dsp_cmd(chip, HDEX_PLAY_STOP);
 	} else {
-		snd_printd(KERN_ERR "snd_msnd_playback_trigger(?????)\n");
+		dev_dbg(chip->card->dev, "%s(?????)\n", __func__);
 		result = -EINVAL;
 	}
 
-	snd_printdd("snd_msnd_playback_trigger() ENDE\n");
+	dev_dbg(chip->card->dev, "%s() ENDE\n", __func__);
 	return result;
 }
 
@@ -683,7 +660,7 @@ int snd_msnd_pcm(struct snd_card *card, int device)
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &snd_msnd_capture_ops);
 
 	pcm->private_data = chip;
-	strcpy(pcm->name, "Hurricane");
+	strscpy(pcm->name, "Hurricane");
 
 	return 0;
 }

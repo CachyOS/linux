@@ -17,7 +17,7 @@
 #include <asm/fhc.h>
 #include <asm/upa.h>
 
-MODULE_AUTHOR("David S. Miller (davem@davemloft.net)");
+MODULE_AUTHOR("David S. Miller <davem@davemloft.net>");
 MODULE_DESCRIPTION("Sun Fire LED driver");
 MODULE_LICENSE("GPL");
 
@@ -163,15 +163,13 @@ static int sunfire_led_generic_probe(struct platform_device *pdev,
 	return 0;
 }
 
-static int sunfire_led_generic_remove(struct platform_device *pdev)
+static void sunfire_led_generic_remove(struct platform_device *pdev)
 {
 	struct sunfire_drvdata *p = platform_get_drvdata(pdev);
 	int i;
 
 	for (i = 0; i < NUM_LEDS_PER_BOARD; i++)
 		led_classdev_unregister(&p->leds[i].led_cdev);
-
-	return 0;
 }
 
 static struct led_type clockboard_led_types[NUM_LEDS_PER_BOARD] = {

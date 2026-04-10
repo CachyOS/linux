@@ -4,9 +4,9 @@
 #define __ASM_CSKY_CMPXCHG_H
 
 #ifdef CONFIG_SMP
+#include <linux/bug.h>
 #include <asm/barrier.h>
-
-extern void __bad_xchg(void);
+#include <linux/cmpxchg-emu.h>
 
 #define __xchg_relaxed(new, ptr, size)				\
 ({								\
@@ -15,6 +15,26 @@ extern void __bad_xchg(void);
 	__typeof__(*(ptr)) __ret;				\
 	unsigned long tmp;					\
 	switch (size) {						\
+	case 2: {						\
+		u32 ret;					\
+		u32 shif = ((ulong)__ptr & 2) ? 16 : 0;		\
+		u32 mask = 0xffff << shif;			\
+		__ptr = (__typeof__(ptr))((ulong)__ptr & ~2);	\
+		__asm__ __volatile__ (				\
+			"1:	ldex.w %0, (%4)\n"		\
+			"	and    %1, %0, %2\n"		\
+			"	or     %1, %1, %3\n"		\
+			"	stex.w %1, (%4)\n"		\
+			"	bez    %1, 1b\n"		\
+			: "=&r" (ret), "=&r" (tmp)		\
+			: "r" (~mask),				\
+			  "r" ((u32)__new << shif),		\
+			  "r" (__ptr)				\
+			: "memory");				\
+		__ret = (__typeof__(*(ptr)))			\
+			((ret & mask) >> shif);			\
+		break;						\
+	}							\
 	case 4:							\
 		asm volatile (					\
 		"1:	ldex.w		%0, (%3) \n"		\
@@ -26,7 +46,7 @@ extern void __bad_xchg(void);
 			:);					\
 		break;						\
 	default:						\
-		__bad_xchg();					\
+		BUILD_BUG();					\
 	}							\
 	__ret;							\
 })
@@ -42,6 +62,9 @@ extern void __bad_xchg(void);
 	__typeof__(old) __old = (old);				\
 	__typeof__(*(ptr)) __ret;				\
 	switch (size) {						\
+	case 1:							\
+		__ret = (__typeof__(*(ptr)))cmpxchg_emu_u8((volatile u8 *)__ptr, (uintptr_t)__old, (uintptr_t)__new); \
+		break;						\
 	case 4:							\
 		asm volatile (					\
 		"1:	ldex.w		%0, (%3) \n"		\
@@ -56,7 +79,7 @@ extern void __bad_xchg(void);
 			:);					\
 		break;						\
 	default:						\
-		__bad_xchg();					\
+		BUILD_BUG();					\
 	}							\
 	__ret;							\
 })
@@ -72,6 +95,9 @@ extern void __bad_xchg(void);
 	__typeof__(old) __old = (old);				\
 	__typeof__(*(ptr)) __ret;				\
 	switch (size) {						\
+	case 1:							\
+		__ret = (__typeof__(*(ptr)))cmpxchg_emu_u8((volatile u8 *)__ptr, (uintptr_t)__old, (uintptr_t)__new); \
+		break;						\
 	case 4:							\
 		asm volatile (					\
 		"1:	ldex.w		%0, (%3) \n"		\
@@ -87,7 +113,7 @@ extern void __bad_xchg(void);
 			:);					\
 		break;						\
 	default:						\
-		__bad_xchg();					\
+		BUILD_BUG();					\
 	}							\
 	__ret;							\
 })
@@ -103,6 +129,9 @@ extern void __bad_xchg(void);
 	__typeof__(old) __old = (old);				\
 	__typeof__(*(ptr)) __ret;				\
 	switch (size) {						\
+	case 1:							\
+		__ret = (__typeof__(*(ptr)))cmpxchg_emu_u8((volatile u8 *)__ptr, (uintptr_t)__old, (uintptr_t)__new); \
+		break;						\
 	case 4:							\
 		asm volatile (					\
 		RELEASE_FENCE					\
@@ -119,7 +148,7 @@ extern void __bad_xchg(void);
 			:);					\
 		break;						\
 	default:						\
-		__bad_xchg();					\
+		BUILD_BUG();					\
 	}							\
 	__ret;							\
 })

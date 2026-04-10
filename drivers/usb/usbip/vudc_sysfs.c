@@ -67,7 +67,7 @@ out:
  * Exposes device descriptor from the gadget driver.
  */
 static ssize_t dev_desc_read(struct file *file, struct kobject *kobj,
-			     struct bin_attribute *attr, char *out,
+			     const struct bin_attribute *attr, char *out,
 			     loff_t off, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -88,7 +88,7 @@ unlock:
 	spin_unlock_irqrestore(&udc->lock, flags);
 	return ret;
 }
-static BIN_ATTR_RO(dev_desc, sizeof(struct usb_device_descriptor));
+static const BIN_ATTR_RO(dev_desc, sizeof(struct usb_device_descriptor));
 
 static ssize_t usbip_sockfd_store(struct device *dev,
 				  struct device_attribute *attr,
@@ -128,7 +128,7 @@ static ssize_t usbip_sockfd_store(struct device *dev,
 			goto unlock;
 		}
 
-		spin_lock_irq(&udc->ud.lock);
+		spin_lock(&udc->ud.lock);
 
 		if (udc->ud.status != SDEV_ST_AVAILABLE) {
 			ret = -EINVAL;
@@ -150,7 +150,7 @@ static ssize_t usbip_sockfd_store(struct device *dev,
 		}
 
 		/* unlock and create threads and get tasks */
-		spin_unlock_irq(&udc->ud.lock);
+		spin_unlock(&udc->ud.lock);
 		spin_unlock_irqrestore(&udc->lock, flags);
 
 		tcp_rx = kthread_create(&v_rx_loop, &udc->ud, "vudc_rx");
@@ -173,14 +173,14 @@ static ssize_t usbip_sockfd_store(struct device *dev,
 
 		/* lock and update udc->ud state */
 		spin_lock_irqsave(&udc->lock, flags);
-		spin_lock_irq(&udc->ud.lock);
+		spin_lock(&udc->ud.lock);
 
 		udc->ud.tcp_socket = socket;
 		udc->ud.tcp_rx = tcp_rx;
 		udc->ud.tcp_tx = tcp_tx;
 		udc->ud.status = SDEV_ST_USED;
 
-		spin_unlock_irq(&udc->ud.lock);
+		spin_unlock(&udc->ud.lock);
 
 		ktime_get_ts64(&udc->start_time);
 		v_start_timer(udc);
@@ -201,12 +201,12 @@ static ssize_t usbip_sockfd_store(struct device *dev,
 			goto unlock;
 		}
 
-		spin_lock_irq(&udc->ud.lock);
+		spin_lock(&udc->ud.lock);
 		if (udc->ud.status != SDEV_ST_USED) {
 			ret = -EINVAL;
 			goto unlock_ud;
 		}
-		spin_unlock_irq(&udc->ud.lock);
+		spin_unlock(&udc->ud.lock);
 
 		usbip_event_add(&udc->ud, VUDC_EVENT_DOWN);
 	}
@@ -219,7 +219,7 @@ static ssize_t usbip_sockfd_store(struct device *dev,
 sock_err:
 	sockfd_put(socket);
 unlock_ud:
-	spin_unlock_irq(&udc->ud.lock);
+	spin_unlock(&udc->ud.lock);
 unlock:
 	spin_unlock_irqrestore(&udc->lock, flags);
 	mutex_unlock(&udc->ud.sysfs_lock);
@@ -242,7 +242,7 @@ static ssize_t usbip_status_show(struct device *dev,
 	status = udc->ud.status;
 	spin_unlock_irq(&udc->ud.lock);
 
-	return snprintf(out, PAGE_SIZE, "%d\n", status);
+	return sysfs_emit(out, "%d\n", status);
 }
 static DEVICE_ATTR_RO(usbip_status);
 
@@ -252,7 +252,7 @@ static struct attribute *dev_attrs[] = {
 	NULL,
 };
 
-static struct bin_attribute *dev_bin_attrs[] = {
+static const struct bin_attribute *const dev_bin_attrs[] = {
 	&bin_attr_dev_desc,
 	NULL,
 };

@@ -489,7 +489,7 @@ static void hwa742_update_window_auto(struct timer_list *unused)
 	__hwa742_update_window_auto(false);
 }
 
-int hwa742_update_window_async(struct fb_info *fbi,
+static int hwa742_update_window_async(struct fb_info *fbi,
 				 struct omapfb_update_window *win,
 				 void (*complete_callback)(void *arg),
 				 void *complete_callback_data)
@@ -522,7 +522,6 @@ int hwa742_update_window_async(struct fb_info *fbi,
 out:
 	return r;
 }
-EXPORT_SYMBOL(hwa742_update_window_async);
 
 static int hwa742_setup_plane(int plane, int channel_out,
 				  unsigned long offset, int screen_width,
@@ -598,7 +597,7 @@ static int hwa742_set_update_mode(enum omapfb_update_mode mode)
 		break;
 	case OMAPFB_AUTO_UPDATE:
 		hwa742.stop_auto_update = 1;
-		del_timer_sync(&hwa742.auto_update_timer);
+		timer_delete_sync(&hwa742.auto_update_timer);
 		break;
 	case OMAPFB_UPDATE_DISABLED:
 		break;

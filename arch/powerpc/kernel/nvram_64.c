@@ -73,7 +73,7 @@ static const char *nvram_os_partitions[] = {
 };
 
 static void oops_to_nvram(struct kmsg_dumper *dumper,
-			  enum kmsg_dump_reason reason);
+			  struct kmsg_dump_detail *detail);
 
 static struct kmsg_dumper nvram_kmsg_dumper = {
 	.dump = oops_to_nvram
@@ -643,7 +643,7 @@ void __init nvram_init_oops_partition(int rtas_partition_exists)
  * partition.  If that's too much, go back and capture uncompressed text.
  */
 static void oops_to_nvram(struct kmsg_dumper *dumper,
-			  enum kmsg_dump_reason reason)
+			  struct kmsg_dump_detail *detail)
 {
 	struct oops_log_info *oops_hdr = (struct oops_log_info *)oops_buf;
 	static unsigned int oops_count = 0;
@@ -655,7 +655,7 @@ static void oops_to_nvram(struct kmsg_dumper *dumper,
 	unsigned int err_type = ERR_TYPE_KERNEL_PANIC_GZ;
 	int rc = -1;
 
-	switch (reason) {
+	switch (detail->reason) {
 	case KMSG_DUMP_SHUTDOWN:
 		/* These are almost always orderly shutdowns. */
 		return;
@@ -671,7 +671,7 @@ static void oops_to_nvram(struct kmsg_dumper *dumper,
 		break;
 	default:
 		pr_err("%s: ignoring unrecognized KMSG_DUMP_* reason %d\n",
-		       __func__, (int) reason);
+		       __func__, (int) detail->reason);
 		return;
 	}
 
@@ -890,7 +890,7 @@ loff_t __init nvram_create_partition(const char *name, int sig,
 		return -ENOSPC;
 	
 	/* Create our OS partition */
-	new_part = kzalloc(sizeof(*new_part), GFP_KERNEL);
+	new_part = kzalloc_obj(*new_part);
 	if (!new_part) {
 		pr_err("%s: kmalloc failed\n", __func__);
 		return -ENOMEM;
@@ -1030,7 +1030,7 @@ int __init nvram_scan_partitions(void)
 			       "detected: 0-length partition\n");
 			goto out;
 		}
-		tmp_part = kmalloc(sizeof(*tmp_part), GFP_KERNEL);
+		tmp_part = kmalloc_obj(*tmp_part);
 		err = -ENOMEM;
 		if (!tmp_part) {
 			printk(KERN_ERR "nvram_scan_partitions: kmalloc failed\n");

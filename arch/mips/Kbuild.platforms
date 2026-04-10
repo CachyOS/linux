@@ -2,15 +2,16 @@
 # All platforms listed in alphabetic order
 
 platform-$(CONFIG_MIPS_ALCHEMY)		+= alchemy/
-platform-$(CONFIG_AR7)			+= ar7/
 platform-$(CONFIG_ATH25)		+= ath25/
 platform-$(CONFIG_ATH79)		+= ath79/
 platform-$(CONFIG_BCM47XX)		+= bcm47xx/
 platform-$(CONFIG_BCM63XX)		+= bcm63xx/
 platform-$(CONFIG_BMIPS_GENERIC)	+= bmips/
 platform-$(CONFIG_CAVIUM_OCTEON_SOC)	+= cavium-octeon/
+platform-$(CONFIG_EYEQ)			+= mobileye/
 platform-$(CONFIG_MIPS_COBALT)		+= cobalt/
 platform-$(CONFIG_MACH_DECSTATION)	+= dec/
+platform-$(CONFIG_ECONET)		+= econet/
 platform-$(CONFIG_MIPS_GENERIC)		+= generic/
 platform-$(CONFIG_MACH_JAZZ)		+= jazz/
 platform-$(CONFIG_LANTIQ)		+= lantiq/
@@ -29,11 +30,9 @@ platform-$(CONFIG_SGI_IP30)		+= sgi-ip30/
 platform-$(CONFIG_SGI_IP32)		+= sgi-ip32/
 platform-$(CONFIG_SIBYTE_BCM112X)	+= sibyte/
 platform-$(CONFIG_SIBYTE_SB1250)	+= sibyte/
-platform-$(CONFIG_SIBYTE_BCM1x55)	+= sibyte/
 platform-$(CONFIG_SIBYTE_BCM1x80)	+= sibyte/
 platform-$(CONFIG_SNI_RM)		+= sni/
 platform-$(CONFIG_MACH_TX49XX)		+= txx9/
-platform-$(CONFIG_MACH_VR41XX)		+= vr41xx/
 
 # include the platform specific files
 include $(patsubst %/, $(srctree)/arch/mips/%/Platform, $(platform-y))

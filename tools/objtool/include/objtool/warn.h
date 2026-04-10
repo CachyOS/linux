@@ -11,6 +11,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <objtool/builtin.h>
 #include <objtool/elf.h>
 
@@ -41,27 +42,120 @@ static inline char *offstr(struct section *sec, unsigned long offset)
 	return str;
 }
 
-#define WARN(format, ...)				\
-	fprintf(stderr,					\
-		"%s: warning: objtool: " format "\n",	\
-		objname, ##__VA_ARGS__)
+#define ___WARN(severity, extra, format, ...)				\
+	fprintf(stderr,							\
+		"%s%s%s: objtool" extra ": " format "\n",		\
+		objname ?: "",						\
+		objname ? ": " : "",					\
+		severity,						\
+		##__VA_ARGS__)
 
-#define WARN_FUNC(format, sec, offset, ...)		\
-({							\
-	char *_str = offstr(sec, offset);		\
-	WARN("%s: " format, _str, ##__VA_ARGS__);	\
-	free(_str);					\
+#define __WARN(severity, format, ...)					\
+	___WARN(severity, "", format, ##__VA_ARGS__)
+
+#define __WARN_LINE(severity, format, ...)				\
+	___WARN(severity, " [%s:%d]", format, __FILE__, __LINE__, ##__VA_ARGS__)
+
+#define __WARN_ELF(severity, format, ...)				\
+	__WARN_LINE(severity, "%s: " format " failed: %s", __func__, ##__VA_ARGS__, elf_errmsg(-1))
+
+#define __WARN_GLIBC(severity, format, ...)				\
+	__WARN_LINE(severity, "%s: " format " failed: %s", __func__, ##__VA_ARGS__, strerror(errno))
+
+#define __WARN_FUNC(severity, sec, offset, format, ...)			\
+({									\
+	char *_str = offstr(sec, offset);				\
+	__WARN(severity, "%s: " format, _str, ##__VA_ARGS__);		\
+	free(_str);							\
 })
 
-#define BT_FUNC(format, insn, ...)			\
-({							\
-	struct instruction *_insn = (insn);		\
-	char *_str = offstr(_insn->sec, _insn->offset); \
-	WARN("  %s: " format, _str, ##__VA_ARGS__);	\
-	free(_str);					\
+#define WARN_STR (opts.werror ? "error" : "warning")
+
+#define WARN(format, ...) __WARN(WARN_STR, format, ##__VA_ARGS__)
+#define WARN_FUNC(sec, offset, format, ...) __WARN_FUNC(WARN_STR, sec, offset, format, ##__VA_ARGS__)
+
+#define WARN_INSN(insn, format, ...)					\
+({									\
+	struct instruction *_insn = (insn);				\
+	if (!_insn->sym || !_insn->sym->warned)	{			\
+		WARN_FUNC(_insn->sec, _insn->offset, format,		\
+			  ##__VA_ARGS__);				\
+		BT_INSN(_insn, "");					\
+	}								\
+	if (_insn->sym)							\
+		_insn->sym->warned = 1;					\
 })
 
-#define WARN_ELF(format, ...)				\
-	WARN(format ": %s", ##__VA_ARGS__, elf_errmsg(-1))
+#define BT_INSN(insn, format, ...)				\
+({								\
+	if (opts.verbose || opts.backtrace) {			\
+		struct instruction *__insn = (insn);		\
+		char *_str = offstr(__insn->sec, __insn->offset); \
+		const char *_istr = objtool_disas_insn(__insn);	\
+		int _len;					\
+		_len = snprintf(NULL, 0, "  %s: " format,  _str, ##__VA_ARGS__);	\
+		_len = (_len < 50) ? 50 - _len : 0;		\
+		WARN("  %s: " format "  %*s%s", _str, ##__VA_ARGS__, _len, "", _istr); \
+		free(_str);						\
+		__insn->trace = 1;				\
+	}							\
+})
+
+#define ERROR_STR "error"
+
+#define ERROR(format, ...) __WARN(ERROR_STR, format, ##__VA_ARGS__)
+#define ERROR_ELF(format, ...) __WARN_ELF(ERROR_STR, format, ##__VA_ARGS__)
+#define ERROR_GLIBC(format, ...) __WARN_GLIBC(ERROR_STR, format, ##__VA_ARGS__)
+#define ERROR_FUNC(sec, offset, format, ...) __WARN_FUNC(ERROR_STR, sec, offset, format, ##__VA_ARGS__)
+#define ERROR_INSN(insn, format, ...) ERROR_FUNC(insn->sec, insn->offset, format, ##__VA_ARGS__)
+
+extern bool debug;
+extern int indent;
+
+static inline void unindent(int *unused) { indent--; }
+
+/*
+ * Clang prior to 17 is being silly and considers many __cleanup() variables
+ * as unused (because they are, their sole purpose is to go out of scope).
+ *
+ * https://github.com/llvm/llvm-project/commit/877210faa447f4cc7db87812f8ed80e398fedd61
+ */
+#undef __cleanup
+#define __cleanup(func) __maybe_unused __attribute__((__cleanup__(func)))
+
+#define __dbg(format, ...)						\
+	fprintf(stderr,							\
+		"DEBUG: %s%s" format "\n",				\
+		objname ?: "",						\
+		objname ? ": " : "",					\
+		##__VA_ARGS__)
+
+#define dbg(args...)							\
+({									\
+	if (unlikely(debug))						\
+		__dbg(args);						\
+})
+
+#define __dbg_indent(format, ...)					\
+({									\
+	if (unlikely(debug))						\
+		__dbg("%*s" format, indent * 8, "", ##__VA_ARGS__);	\
+})
+
+#define dbg_indent(args...)						\
+	int __cleanup(unindent) __dummy_##__COUNTER__;			\
+	__dbg_indent(args);						\
+	indent++
+
+#define dbg_checksum(func, insn, checksum)				\
+({									\
+	if (unlikely(insn->sym && insn->sym->pfunc &&			\
+		     insn->sym->pfunc->debug_checksum)) {		\
+		char *insn_off = offstr(insn->sec, insn->offset);	\
+		__dbg("checksum: %s %s %016llx",			\
+		      func->name, insn_off, (unsigned long long)checksum);\
+		free(insn_off);						\
+	}								\
+})
 
 #endif /* _WARN_H */

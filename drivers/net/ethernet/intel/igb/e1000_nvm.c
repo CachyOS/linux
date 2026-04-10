@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright(c) 2007 - 2018 Intel Corporation. */
 
-#include <linux/if_ether.h>
+#include <linux/bitfield.h>
 #include <linux/delay.h>
-
+#include <linux/if_ether.h>
 #include "e1000_mac.h"
 #include "e1000_nvm.h"
 
@@ -636,7 +636,7 @@ s32 igb_validate_nvm_checksum(struct e1000_hw *hw)
 		checksum += nvm_data;
 	}
 
-	if (checksum != (u16) NVM_SUM) {
+	if (checksum != NVM_SUM) {
 		hw_dbg("NVM Checksum Invalid\n");
 		ret_val = -E1000_ERR_NVM;
 		goto out;
@@ -668,7 +668,7 @@ s32 igb_update_nvm_checksum(struct e1000_hw *hw)
 		}
 		checksum += nvm_data;
 	}
-	checksum = (u16) NVM_SUM - checksum;
+	checksum = NVM_SUM - checksum;
 	ret_val = hw->nvm.ops.write(hw, NVM_CHECKSUM_REG, 1, &checksum);
 	if (ret_val)
 		hw_dbg("NVM Write Error while updating checksum.\n");
@@ -708,10 +708,10 @@ void igb_get_fw_version(struct e1000_hw *hw, struct e1000_fw_version *fw_vers)
 		 */
 		if ((etrack_test &  NVM_MAJOR_MASK) != NVM_ETRACK_VALID) {
 			hw->nvm.ops.read(hw, NVM_VERSION, 1, &fw_version);
-			fw_vers->eep_major = (fw_version & NVM_MAJOR_MASK)
-					      >> NVM_MAJOR_SHIFT;
-			fw_vers->eep_minor = (fw_version & NVM_MINOR_MASK)
-					      >> NVM_MINOR_SHIFT;
+			fw_vers->eep_major = FIELD_GET(NVM_MAJOR_MASK,
+						       fw_version);
+			fw_vers->eep_minor = FIELD_GET(NVM_MINOR_MASK,
+						       fw_version);
 			fw_vers->eep_build = (fw_version & NVM_IMAGE_ID_MASK);
 			goto etrack_id;
 		}
@@ -753,15 +753,13 @@ void igb_get_fw_version(struct e1000_hw *hw, struct e1000_fw_version *fw_vers)
 		return;
 	}
 	hw->nvm.ops.read(hw, NVM_VERSION, 1, &fw_version);
-	fw_vers->eep_major = (fw_version & NVM_MAJOR_MASK)
-			      >> NVM_MAJOR_SHIFT;
+	fw_vers->eep_major = FIELD_GET(NVM_MAJOR_MASK, fw_version);
 
 	/* check for old style version format in newer images*/
 	if ((fw_version & NVM_NEW_DEC_MASK) == 0x0) {
 		eeprom_verl = (fw_version & NVM_COMB_VER_MASK);
 	} else {
-		eeprom_verl = (fw_version & NVM_MINOR_MASK)
-				>> NVM_MINOR_SHIFT;
+		eeprom_verl = FIELD_GET(NVM_MINOR_MASK, fw_version);
 	}
 	/* Convert minor value to hex before assigning to output struct
 	 * Val to be converted will not be higher than 99, per tool output

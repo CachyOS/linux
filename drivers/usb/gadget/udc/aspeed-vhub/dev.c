@@ -21,7 +21,6 @@
 #include <linux/clk.h>
 #include <linux/usb/gadget.h>
 #include <linux/of.h>
-#include <linux/of_gpio.h>
 #include <linux/regmap.h>
 #include <linux/dma-mapping.h>
 #include <linux/usb.h>
@@ -549,6 +548,9 @@ int ast_vhub_init_dev(struct ast_vhub *vhub, unsigned int idx)
 	d->vhub = vhub;
 	d->index = idx;
 	d->name = devm_kasprintf(parent, GFP_KERNEL, "port%d", idx+1);
+	if (!d->name)
+		return -ENOMEM;
+
 	d->regs = vhub->regs + 0x100 + 0x10 * idx;
 
 	ast_vhub_init_ep0(vhub, &d->ep0, d);
@@ -558,7 +560,7 @@ int ast_vhub_init_dev(struct ast_vhub *vhub, unsigned int idx)
 	 * endpoint 0.
 	 */
 	d->max_epns = min_t(u32, vhub->max_epns, 30);
-	d->epns = kcalloc(d->max_epns, sizeof(*d->epns), GFP_KERNEL);
+	d->epns = kzalloc_objs(*d->epns, d->max_epns);
 	if (!d->epns)
 		return -ENOMEM;
 
@@ -567,7 +569,7 @@ int ast_vhub_init_dev(struct ast_vhub *vhub, unsigned int idx)
 	 * named "parent" devices for each port so we create a sub device
 	 * here for that purpose
 	 */
-	d->port_dev = kzalloc(sizeof(struct device), GFP_KERNEL);
+	d->port_dev = kzalloc_obj(struct device);
 	if (!d->port_dev) {
 		rc = -ENOMEM;
 		goto fail_alloc;
@@ -591,6 +593,7 @@ int ast_vhub_init_dev(struct ast_vhub *vhub, unsigned int idx)
 		d->gadget.max_speed = USB_SPEED_HIGH;
 	d->gadget.speed = USB_SPEED_UNKNOWN;
 	d->gadget.dev.of_node = vhub->pdev->dev.of_node;
+	d->gadget.dev.of_node_reused = true;
 
 	rc = usb_add_gadget_udc(d->port_dev, &d->gadget);
 	if (rc != 0)

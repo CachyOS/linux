@@ -360,8 +360,6 @@ static const struct vb2_ops sh_vou_qops = {
 	.buf_queue		= sh_vou_buf_queue,
 	.start_streaming	= sh_vou_start_streaming,
 	.stop_streaming		= sh_vou_stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 /* Video IOCTLs */
@@ -1223,18 +1221,18 @@ static int sh_vou_probe(struct platform_device *pdev)
 	struct i2c_adapter *i2c_adap;
 	struct video_device *vdev;
 	struct sh_vou_device *vou_dev;
-	struct resource *reg_res;
 	struct v4l2_subdev *subdev;
 	struct vb2_queue *q;
 	int irq, ret;
 
-	reg_res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	irq = platform_get_irq(pdev, 0);
-
-	if (!vou_pdata || !reg_res || irq <= 0) {
+	if (!vou_pdata) {
 		dev_err(&pdev->dev, "Insufficient VOU platform information.\n");
 		return -ENODEV;
 	}
+
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0)
+		return irq;
 
 	vou_dev = devm_kzalloc(&pdev->dev, sizeof(*vou_dev), GFP_KERNEL);
 	if (!vou_dev)
@@ -1264,7 +1262,7 @@ static int sh_vou_probe(struct platform_device *pdev)
 	pix->sizeimage		= VOU_MAX_IMAGE_WIDTH * 2 * 480;
 	pix->colorspace		= V4L2_COLORSPACE_SMPTE170M;
 
-	vou_dev->base = devm_ioremap_resource(&pdev->dev, reg_res);
+	vou_dev->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(vou_dev->base))
 		return PTR_ERR(vou_dev->base);
 
@@ -1297,7 +1295,7 @@ static int sh_vou_probe(struct platform_device *pdev)
 	q->ops = &sh_vou_qops;
 	q->mem_ops = &vb2_dma_contig_memops;
 	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
-	q->min_buffers_needed = 2;
+	q->min_queued_buffers = 2;
 	q->lock = &vou_dev->fop_lock;
 	q->dev = &pdev->dev;
 	ret = vb2_queue_init(q);
@@ -1343,7 +1341,7 @@ ei2cgadap:
 	return ret;
 }
 
-static int sh_vou_remove(struct platform_device *pdev)
+static void sh_vou_remove(struct platform_device *pdev)
 {
 	struct v4l2_device *v4l2_dev = platform_get_drvdata(pdev);
 	struct sh_vou_device *vou_dev = container_of(v4l2_dev,
@@ -1356,11 +1354,10 @@ static int sh_vou_remove(struct platform_device *pdev)
 	video_unregister_device(&vou_dev->vdev);
 	i2c_put_adapter(client->adapter);
 	v4l2_device_unregister(&vou_dev->v4l2_dev);
-	return 0;
 }
 
 static struct platform_driver sh_vou = {
-	.remove  = sh_vou_remove,
+	.remove = sh_vou_remove,
 	.driver  = {
 		.name	= "sh-vou",
 	},

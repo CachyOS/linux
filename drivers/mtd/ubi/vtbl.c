@@ -531,7 +531,7 @@ static int init_volumes(struct ubi_device *ubi,
 		if (be32_to_cpu(vtbl[i].reserved_pebs) == 0)
 			continue; /* Empty record */
 
-		vol = kzalloc(sizeof(struct ubi_volume), GFP_KERNEL);
+		vol = kzalloc_obj(struct ubi_volume);
 		if (!vol)
 			return -ENOMEM;
 
@@ -623,7 +623,7 @@ static int init_volumes(struct ubi_device *ubi,
 	}
 
 	/* And add the layout volume */
-	vol = kzalloc(sizeof(struct ubi_volume), GFP_KERNEL);
+	vol = kzalloc_obj(struct ubi_volume);
 	if (!vol)
 		return -ENOMEM;
 
@@ -791,6 +791,12 @@ int ubi_read_volume_table(struct ubi_device *ubi, struct ubi_attach_info *ai)
 	 * The number of supported volumes is limited by the eraseblock size
 	 * and by the UBI_MAX_VOLUMES constant.
 	 */
+
+	if (ubi->leb_size < UBI_VTBL_RECORD_SIZE) {
+		ubi_err(ubi, "LEB size too small for a volume record");
+		return -EINVAL;
+	}
+
 	ubi->vtbl_slots = ubi->leb_size / UBI_VTBL_RECORD_SIZE;
 	if (ubi->vtbl_slots > UBI_MAX_VOLUMES)
 		ubi->vtbl_slots = UBI_MAX_VOLUMES;

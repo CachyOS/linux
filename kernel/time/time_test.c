@@ -4,7 +4,9 @@
 #include <linux/time.h>
 
 /*
- * Traditional implementation of leap year evaluation.
+ * Traditional implementation of leap year evaluation, but note that long
+ * is a signed type and the tests do cover negative year values. So this
+ * can't use the is_leap_year() helper from rtc.h.
  */
 static bool is_leap(long year)
 {
@@ -73,7 +75,7 @@ static void time64_to_tm_test_date_range(struct kunit *test)
 
 		days = div_s64(secs, 86400);
 
-		#define FAIL_MSG "%05ld/%02d/%02d (%2d) : %ld", \
+		#define FAIL_MSG "%05ld/%02d/%02d (%2d) : %lld", \
 			year, month, mdday, yday, days
 
 		KUNIT_ASSERT_EQ_MSG(test, year - 1900, result.tm_year, FAIL_MSG);
@@ -86,7 +88,7 @@ static void time64_to_tm_test_date_range(struct kunit *test)
 }
 
 static struct kunit_case time_test_cases[] = {
-	KUNIT_CASE(time64_to_tm_test_date_range),
+	KUNIT_CASE_SLOW(time64_to_tm_test_date_range),
 	{}
 };
 
@@ -96,4 +98,5 @@ static struct kunit_suite time_test_suite = {
 };
 
 kunit_test_suite(time_test_suite);
+MODULE_DESCRIPTION("time unit test suite");
 MODULE_LICENSE("GPL");

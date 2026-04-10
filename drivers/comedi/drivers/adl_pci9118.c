@@ -32,7 +32,7 @@
  * ranges).
  *
  * There are some hardware limitations:
- * a) You cann't use mixture of unipolar/bipoar ranges or differencial/single
+ * a) You can't use mixture of unipolar/bipolar ranges or differential/single
  *  ended inputs.
  * b) DMA transfers must have the length aligned to two samples (32 bit),
  *  so there is some problems if cmd->chanlist_len is odd. This driver tries
@@ -227,7 +227,7 @@ struct pci9118_private {
 	struct pci9118_dmabuf dmabuf[2];
 	int softsshdelay;		/*
 					 * >0 use software S&H,
-					 * numer is requested delay in ns
+					 * number is requested delay in ns
 					 */
 	unsigned char softsshsample;	/*
 					 * polarity of S&H signal
@@ -1524,10 +1524,10 @@ static int pci9118_common_attach(struct comedi_device *dev,
 	devpriv->iobase_a = pci_resource_start(pcidev, 0);
 	dev->iobase = pci_resource_start(pcidev, 2);
 
-	dev->pacer = comedi_8254_init(dev->iobase + PCI9118_TIMER_BASE,
-				      I8254_OSC_BASE_4MHZ, I8254_IO32, 0);
-	if (!dev->pacer)
-		return -ENOMEM;
+	dev->pacer = comedi_8254_io_alloc(dev->iobase + PCI9118_TIMER_BASE,
+					  I8254_OSC_BASE_4MHZ, I8254_IO32, 0);
+	if (IS_ERR(dev->pacer))
+		return PTR_ERR(dev->pacer);
 
 	pci9118_reset(dev);
 

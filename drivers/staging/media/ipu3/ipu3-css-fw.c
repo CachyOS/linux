@@ -117,7 +117,9 @@ int imgu_css_fw_init(struct imgu_css *css)
 	unsigned int i, j, binary_nr;
 	int r;
 
-	r = request_firmware(&css->fw, IMGU_FW_NAME_20161208, css->dev);
+	r = request_firmware(&css->fw, IMGU_FW_NAME_IPU_20161208, css->dev);
+	if (r == -ENOENT)
+		r = request_firmware(&css->fw, IMGU_FW_NAME_20161208, css->dev);
 	if (r == -ENOENT)
 		r = request_firmware(&css->fw, IMGU_FW_NAME, css->dev);
 	if (r)
@@ -234,7 +236,7 @@ int imgu_css_fw_init(struct imgu_css *css)
 
 	/* Allocate and map fw binaries into IMGU */
 
-	css->binary = kcalloc(binary_nr, sizeof(*css->binary), GFP_KERNEL);
+	css->binary = kzalloc_objs(*css->binary, binary_nr);
 	if (!css->binary) {
 		r = -ENOMEM;
 		goto error_out;

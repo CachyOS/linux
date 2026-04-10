@@ -235,8 +235,8 @@ static u32 ec_i2c_functionality(struct i2c_adapter *adap)
 }
 
 static const struct i2c_algorithm ec_i2c_algorithm = {
-	.master_xfer	= ec_i2c_xfer,
-	.functionality	= ec_i2c_functionality,
+	.xfer = ec_i2c_xfer,
+	.functionality = ec_i2c_functionality,
 };
 
 static int ec_i2c_probe(struct platform_device *pdev)
@@ -246,6 +246,9 @@ static int ec_i2c_probe(struct platform_device *pdev)
 	struct ec_i2c_device *bus = NULL;
 	u32 remote_bus;
 	int err;
+
+	if (!ec)
+		return dev_err_probe(dev, -EPROBE_DEFER, "couldn't find parent EC device\n");
 
 	if (!ec->cmd_xfer) {
 		dev_err(dev, "Missing sendrecv\n");
@@ -267,7 +270,7 @@ static int ec_i2c_probe(struct platform_device *pdev)
 	bus->dev = dev;
 
 	bus->adap.owner = THIS_MODULE;
-	strlcpy(bus->adap.name, "cros-ec-i2c-tunnel", sizeof(bus->adap.name));
+	strscpy(bus->adap.name, "cros-ec-i2c-tunnel", sizeof(bus->adap.name));
 	bus->adap.algo = &ec_i2c_algorithm;
 	bus->adap.algo_data = bus;
 	bus->adap.dev.parent = &pdev->dev;
@@ -283,22 +286,20 @@ static int ec_i2c_probe(struct platform_device *pdev)
 	return err;
 }
 
-static int ec_i2c_remove(struct platform_device *dev)
+static void ec_i2c_remove(struct platform_device *dev)
 {
 	struct ec_i2c_device *bus = platform_get_drvdata(dev);
 
 	i2c_del_adapter(&bus->adap);
-
-	return 0;
 }
 
-static const struct of_device_id cros_ec_i2c_of_match[] = {
+static const struct of_device_id cros_ec_i2c_of_match[] __maybe_unused = {
 	{ .compatible = "google,cros-ec-i2c-tunnel" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, cros_ec_i2c_of_match);
 
-static const struct acpi_device_id cros_ec_i2c_tunnel_acpi_id[] = {
+static const struct acpi_device_id cros_ec_i2c_tunnel_acpi_id[] __maybe_unused = {
 	{ "GOOG0012", 0 },
 	{ }
 };

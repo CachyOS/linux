@@ -72,12 +72,22 @@ static void dw_spi_dma_maxburst_init(struct dw_spi *dws)
 	dw_writel(dws, DW_SPI_DMATDLR, dws->txburst);
 }
 
-static void dw_spi_dma_sg_burst_init(struct dw_spi *dws)
+static int dw_spi_dma_caps_init(struct dw_spi *dws)
 {
-	struct dma_slave_caps tx = {0}, rx = {0};
+	struct dma_slave_caps tx, rx;
+	int ret;
 
-	dma_get_slave_caps(dws->txchan, &tx);
-	dma_get_slave_caps(dws->rxchan, &rx);
+	ret = dma_get_slave_caps(dws->txchan, &tx);
+	if (ret)
+		return ret;
+
+	ret = dma_get_slave_caps(dws->rxchan, &rx);
+	if (ret)
+		return ret;
+
+	if (!(tx.directions & BIT(DMA_MEM_TO_DEV) &&
+	      rx.directions & BIT(DMA_DEV_TO_MEM)))
+		return -ENXIO;
 
 	if (tx.max_sg_burst > 0 && rx.max_sg_burst > 0)
 		dws->dma_sg_burst = min(tx.max_sg_burst, rx.max_sg_burst);
@@ -87,6 +97,15 @@ static void dw_spi_dma_sg_burst_init(struct dw_spi *dws)
 		dws->dma_sg_burst = rx.max_sg_burst;
 	else
 		dws->dma_sg_burst = 0;
+
+	/*
+	 * Assuming both channels belong to the same DMA controller hence the
+	 * peripheral side address width capabilities most likely would be
+	 * the same.
+	 */
+	dws->dma_addr_widths = tx.dst_addr_widths & rx.src_addr_widths;
+
+	return 0;
 }
 
 static int dw_spi_dma_init_mfld(struct device *dev, struct dw_spi *dws)
@@ -95,6 +114,7 @@ static int dw_spi_dma_init_mfld(struct device *dev, struct dw_spi *dws)
 	struct dw_dma_slave dma_rx = { .src_id = 0 }, *rx = &dma_rx;
 	struct pci_dev *dma_dev;
 	dma_cap_mask_t mask;
+	int ret = -EBUSY;
 
 	/*
 	 * Get pci device for DMA controller, currently it could only
@@ -119,47 +139,71 @@ static int dw_spi_dma_init_mfld(struct device *dev, struct dw_spi *dws)
 	if (!dws->txchan)
 		goto free_rxchan;
 
-	dws->master->dma_rx = dws->rxchan;
-	dws->master->dma_tx = dws->txchan;
+	dws->ctlr->dma_rx = dws->rxchan;
+	dws->ctlr->dma_tx = dws->txchan;
 
 	init_completion(&dws->dma_completion);
 
+	ret = dw_spi_dma_caps_init(dws);
+	if (ret)
+		goto free_txchan;
+
 	dw_spi_dma_maxburst_init(dws);
 
-	dw_spi_dma_sg_burst_init(dws);
+	pci_dev_put(dma_dev);
 
 	return 0;
 
+free_txchan:
+	dma_release_channel(dws->txchan);
+	dws->txchan = NULL;
 free_rxchan:
 	dma_release_channel(dws->rxchan);
 	dws->rxchan = NULL;
 err_exit:
-	return -EBUSY;
+	pci_dev_put(dma_dev);
+	return ret;
 }
 
 static int dw_spi_dma_init_generic(struct device *dev, struct dw_spi *dws)
 {
-	dws->rxchan = dma_request_slave_channel(dev, "rx");
-	if (!dws->rxchan)
-		return -ENODEV;
+	int ret;
 
-	dws->txchan = dma_request_slave_channel(dev, "tx");
-	if (!dws->txchan) {
-		dma_release_channel(dws->rxchan);
+	dws->rxchan = dma_request_chan(dev, "rx");
+	if (IS_ERR(dws->rxchan)) {
+		ret = PTR_ERR(dws->rxchan);
 		dws->rxchan = NULL;
-		return -ENODEV;
+		goto err_exit;
 	}
 
-	dws->master->dma_rx = dws->rxchan;
-	dws->master->dma_tx = dws->txchan;
+	dws->txchan = dma_request_chan(dev, "tx");
+	if (IS_ERR(dws->txchan)) {
+		ret = PTR_ERR(dws->txchan);
+		dws->txchan = NULL;
+		goto free_rxchan;
+	}
+
+	dws->ctlr->dma_rx = dws->rxchan;
+	dws->ctlr->dma_tx = dws->txchan;
 
 	init_completion(&dws->dma_completion);
 
+	ret = dw_spi_dma_caps_init(dws);
+	if (ret)
+		goto free_txchan;
+
 	dw_spi_dma_maxburst_init(dws);
 
-	dw_spi_dma_sg_burst_init(dws);
-
 	return 0;
+
+free_txchan:
+	dma_release_channel(dws->txchan);
+	dws->txchan = NULL;
+free_rxchan:
+	dma_release_channel(dws->rxchan);
+	dws->rxchan = NULL;
+err_exit:
+	return ret;
 }
 
 static void dw_spi_dma_exit(struct dw_spi *dws)
@@ -184,22 +228,32 @@ static irqreturn_t dw_spi_dma_transfer_handler(struct dw_spi *dws)
 	return IRQ_HANDLED;
 }
 
-static bool dw_spi_can_dma(struct spi_controller *master,
-			   struct spi_device *spi, struct spi_transfer *xfer)
-{
-	struct dw_spi *dws = spi_controller_get_devdata(master);
-
-	return xfer->len > dws->fifo_len;
-}
-
 static enum dma_slave_buswidth dw_spi_dma_convert_width(u8 n_bytes)
 {
-	if (n_bytes == 1)
+	switch (n_bytes) {
+	case 1:
 		return DMA_SLAVE_BUSWIDTH_1_BYTE;
-	else if (n_bytes == 2)
+	case 2:
 		return DMA_SLAVE_BUSWIDTH_2_BYTES;
+	case 4:
+		return DMA_SLAVE_BUSWIDTH_4_BYTES;
+	default:
+		return DMA_SLAVE_BUSWIDTH_UNDEFINED;
+	}
+}
 
-	return DMA_SLAVE_BUSWIDTH_UNDEFINED;
+static bool dw_spi_can_dma(struct spi_controller *ctlr,
+			   struct spi_device *spi, struct spi_transfer *xfer)
+{
+	struct dw_spi *dws = spi_controller_get_devdata(ctlr);
+	enum dma_slave_buswidth dma_bus_width;
+
+	if (xfer->len <= dws->fifo_len)
+		return false;
+
+	dma_bus_width = dw_spi_dma_convert_width(dws->n_bytes);
+
+	return dws->dma_addr_widths & BIT(dma_bus_width);
 }
 
 static int dw_spi_dma_wait(struct dw_spi *dws, unsigned int len, u32 speed)
@@ -217,7 +271,7 @@ static int dw_spi_dma_wait(struct dw_spi *dws, unsigned int len, u32 speed)
 					 msecs_to_jiffies(ms));
 
 	if (ms == 0) {
-		dev_err(&dws->master->cur_msg->spi->dev,
+		dev_err(&dws->ctlr->dev,
 			"DMA transaction timed out\n");
 		return -ETIMEDOUT;
 	}
@@ -245,7 +299,7 @@ static int dw_spi_dma_wait_tx_done(struct dw_spi *dws,
 		spi_delay_exec(&delay, xfer);
 
 	if (retry < 0) {
-		dev_err(&dws->master->dev, "Tx hanged up\n");
+		dev_err(&dws->ctlr->dev, "Tx hanged up\n");
 		return -EIO;
 	}
 
@@ -346,7 +400,7 @@ static int dw_spi_dma_wait_rx_done(struct dw_spi *dws)
 		spi_delay_exec(&delay, NULL);
 
 	if (retry < 0) {
-		dev_err(&dws->master->dev, "Rx hanged up\n");
+		dev_err(&dws->ctlr->dev, "Rx hanged up\n");
 		return -EIO;
 	}
 
@@ -523,7 +577,7 @@ static int dw_spi_dma_transfer_one(struct dw_spi *dws,
 	sg_init_table(&tx_tmp, 1);
 	sg_init_table(&rx_tmp, 1);
 
-	for (base = 0, len = 0; base < xfer->len; base += len) {
+	for (base = 0; base < xfer->len; base += len) {
 		/* Fetch next Tx DMA data chunk */
 		if (!tx_len) {
 			tx_sg = !tx_sg ? &xfer->tx_sg.sgl[0] : sg_next(tx_sg);
@@ -602,13 +656,13 @@ static int dw_spi_dma_transfer(struct dw_spi *dws, struct spi_transfer *xfer)
 	if (ret)
 		return ret;
 
-	if (dws->master->cur_msg->status == -EINPROGRESS) {
+	if (dws->ctlr->cur_msg->status == -EINPROGRESS) {
 		ret = dw_spi_dma_wait_tx_done(dws, xfer);
 		if (ret)
 			return ret;
 	}
 
-	if (xfer->rx_buf && dws->master->cur_msg->status == -EINPROGRESS)
+	if (xfer->rx_buf && dws->ctlr->cur_msg->status == -EINPROGRESS)
 		ret = dw_spi_dma_wait_rx_done(dws);
 
 	return ret;
@@ -639,7 +693,7 @@ void dw_spi_dma_setup_mfld(struct dw_spi *dws)
 {
 	dws->dma_ops = &dw_spi_dma_mfld_ops;
 }
-EXPORT_SYMBOL_NS_GPL(dw_spi_dma_setup_mfld, SPI_DW_CORE);
+EXPORT_SYMBOL_NS_GPL(dw_spi_dma_setup_mfld, "SPI_DW_CORE");
 
 static const struct dw_spi_dma_ops dw_spi_dma_generic_ops = {
 	.dma_init	= dw_spi_dma_init_generic,
@@ -654,4 +708,4 @@ void dw_spi_dma_setup_generic(struct dw_spi *dws)
 {
 	dws->dma_ops = &dw_spi_dma_generic_ops;
 }
-EXPORT_SYMBOL_NS_GPL(dw_spi_dma_setup_generic, SPI_DW_CORE);
+EXPORT_SYMBOL_NS_GPL(dw_spi_dma_setup_generic, "SPI_DW_CORE");

@@ -8,120 +8,143 @@
 #include <linux/ftrace.h>
 #include <linux/uaccess.h>
 #include <linux/memory.h>
+#include <linux/irqflags.h>
+#include <linux/stop_machine.h>
 #include <asm/cacheflush.h>
-#include <asm/patch.h>
+#include <asm/text-patching.h>
 
 #ifdef CONFIG_DYNAMIC_FTRACE
-void ftrace_arch_code_modify_prepare(void) __acquires(&text_mutex)
+void ftrace_arch_code_modify_prepare(void)
+	__acquires(&text_mutex)
 {
 	mutex_lock(&text_mutex);
 }
 
-void ftrace_arch_code_modify_post_process(void) __releases(&text_mutex)
+void ftrace_arch_code_modify_post_process(void)
+	__releases(&text_mutex)
 {
 	mutex_unlock(&text_mutex);
 }
 
-static int ftrace_check_current_call(unsigned long hook_pos,
-				     unsigned int *expected)
+unsigned long ftrace_call_adjust(unsigned long addr)
 {
-	unsigned int replaced[2];
-	unsigned int nops[2] = {NOP4, NOP4};
+	if (IS_ENABLED(CONFIG_DYNAMIC_FTRACE_WITH_CALL_OPS))
+		return addr + 8 + MCOUNT_AUIPC_SIZE;
 
-	/* we expect nops at the hook position */
-	if (!expected)
-		expected = nops;
-
-	/*
-	 * Read the text we want to modify;
-	 * return must be -EFAULT on read error
-	 */
-	if (copy_from_kernel_nofault(replaced, (void *)hook_pos,
-			MCOUNT_INSN_SIZE))
-		return -EFAULT;
-
-	/*
-	 * Make sure it is what we expect it to be;
-	 * return must be -EINVAL on failed comparison
-	 */
-	if (memcmp(expected, replaced, sizeof(replaced))) {
-		pr_err("%p: expected (%08x %08x) but got (%08x %08x)\n",
-		       (void *)hook_pos, expected[0], expected[1], replaced[0],
-		       replaced[1]);
-		return -EINVAL;
-	}
-
-	return 0;
+	return addr + MCOUNT_AUIPC_SIZE;
 }
 
-static int __ftrace_modify_call(unsigned long hook_pos, unsigned long target,
-				bool enable)
+unsigned long arch_ftrace_get_symaddr(unsigned long fentry_ip)
 {
-	unsigned int call[2];
-	unsigned int nops[2] = {NOP4, NOP4};
+	return fentry_ip - MCOUNT_AUIPC_SIZE;
+}
 
-	make_call(hook_pos, target, call);
+void arch_ftrace_update_code(int command)
+{
+	command |= FTRACE_MAY_SLEEP;
+	ftrace_modify_all_code(command);
+	flush_icache_all();
+}
 
-	/* Replace the auipc-jalr pair at once. Return -EPERM on write error. */
-	if (patch_text_nosync
-	    ((void *)hook_pos, enable ? call : nops, MCOUNT_INSN_SIZE))
+static int __ftrace_modify_call(unsigned long source, unsigned long target, bool validate)
+{
+	unsigned int call[2], offset;
+	unsigned int replaced[2];
+
+	offset = target - source;
+	call[1] = to_jalr_t0(offset);
+
+	if (validate) {
+		call[0] = to_auipc_t0(offset);
+		/*
+		 * Read the text we want to modify;
+		 * return must be -EFAULT on read error
+		 */
+		if (copy_from_kernel_nofault(replaced, (void *)source, 2 * MCOUNT_INSN_SIZE))
+			return -EFAULT;
+
+		if (replaced[0] != call[0]) {
+			pr_err("%p: expected (%08x) but got (%08x)\n",
+			       (void *)source, call[0], replaced[0]);
+			return -EINVAL;
+		}
+	}
+
+	/* Replace the jalr at once. Return -EPERM on write error. */
+	if (patch_insn_write((void *)(source + MCOUNT_AUIPC_SIZE), call + 1, MCOUNT_JALR_SIZE))
 		return -EPERM;
 
 	return 0;
 }
 
-/*
- * Put 5 instructions with 16 bytes at the front of function within
- * patchable function entry nops' area.
- *
- * 0: REG_S  ra, -SZREG(sp)
- * 1: auipc  ra, 0x?
- * 2: jalr   -?(ra)
- * 3: REG_L  ra, -SZREG(sp)
- *
- * So the opcodes is:
- * 0: 0xfe113c23 (sd)/0xfe112e23 (sw)
- * 1: 0x???????? -> auipc
- * 2: 0x???????? -> jalr
- * 3: 0xff813083 (ld)/0xffc12083 (lw)
- */
-#if __riscv_xlen == 64
-#define INSN0	0xfe113c23
-#define INSN3	0xff813083
-#elif __riscv_xlen == 32
-#define INSN0	0xfe112e23
-#define INSN3	0xffc12083
-#endif
+#ifdef CONFIG_DYNAMIC_FTRACE_WITH_CALL_OPS
+static const struct ftrace_ops *riscv64_rec_get_ops(struct dyn_ftrace *rec)
+{
+	const struct ftrace_ops *ops = NULL;
 
-#define FUNC_ENTRY_SIZE	16
-#define FUNC_ENTRY_JMP	4
+	if (rec->flags & FTRACE_FL_CALL_OPS_EN) {
+		ops = ftrace_find_unique_ops(rec);
+		WARN_ON_ONCE(!ops);
+	}
+
+	if (!ops)
+		ops = &ftrace_list_ops;
+
+	return ops;
+}
+
+static int ftrace_rec_set_ops(const struct dyn_ftrace *rec, const struct ftrace_ops *ops)
+{
+	unsigned long literal = ALIGN_DOWN(rec->ip - 12, 8);
+
+	return patch_text_nosync((void *)literal, &ops, sizeof(ops));
+}
+
+static int ftrace_rec_set_nop_ops(struct dyn_ftrace *rec)
+{
+	return ftrace_rec_set_ops(rec, &ftrace_nop_ops);
+}
+
+static int ftrace_rec_update_ops(struct dyn_ftrace *rec)
+{
+	return ftrace_rec_set_ops(rec, riscv64_rec_get_ops(rec));
+}
+#else
+static int ftrace_rec_set_nop_ops(struct dyn_ftrace *rec) { return 0; }
+static int ftrace_rec_update_ops(struct dyn_ftrace *rec) { return 0; }
+#endif
 
 int ftrace_make_call(struct dyn_ftrace *rec, unsigned long addr)
 {
-	unsigned int call[4] = {INSN0, 0, 0, INSN3};
-	unsigned long target = addr;
-	unsigned long caller = rec->ip + FUNC_ENTRY_JMP;
+	unsigned long distance, orig_addr, pc = rec->ip - MCOUNT_AUIPC_SIZE;
+	int ret;
 
-	call[1] = to_auipc_insn((unsigned int)(target - caller));
-	call[2] = to_jalr_insn((unsigned int)(target - caller));
+	ret = ftrace_rec_update_ops(rec);
+	if (ret)
+		return ret;
 
-	if (patch_text_nosync((void *)rec->ip, call, FUNC_ENTRY_SIZE))
-		return -EPERM;
+	orig_addr = (unsigned long)&ftrace_caller;
+	distance = addr > orig_addr ? addr - orig_addr : orig_addr - addr;
+	if (distance > JALR_RANGE)
+		addr = FTRACE_ADDR;
 
-	return 0;
+	return __ftrace_modify_call(pc, addr, false);
 }
 
-int ftrace_make_nop(struct module *mod, struct dyn_ftrace *rec,
-		    unsigned long addr)
+int ftrace_make_nop(struct module *mod, struct dyn_ftrace *rec, unsigned long addr)
 {
-	unsigned int nops[4] = {NOP4, NOP4, NOP4, NOP4};
+	u32 nop4 = RISCV_INSN_NOP4;
+	int ret;
 
-	if (patch_text_nosync((void *)rec->ip, nops, FUNC_ENTRY_SIZE))
+	ret = ftrace_rec_set_nop_ops(rec);
+	if (ret)
+		return ret;
+
+	if (patch_insn_write((void *)rec->ip, &nop4, MCOUNT_NOP4_SIZE))
 		return -EPERM;
 
 	return 0;
 }
-
 
 /*
  * This is called early on, and isn't wrapped by
@@ -132,43 +155,71 @@ int ftrace_make_nop(struct module *mod, struct dyn_ftrace *rec,
  */
 int ftrace_init_nop(struct module *mod, struct dyn_ftrace *rec)
 {
-	int out;
-
-	ftrace_arch_code_modify_prepare();
-	out = ftrace_make_nop(mod, rec, MCOUNT_ADDR);
-	ftrace_arch_code_modify_post_process();
-
-	return out;
-}
-
-int ftrace_update_ftrace_func(ftrace_func_t func)
-{
-	int ret = __ftrace_modify_call((unsigned long)&ftrace_call,
-				       (unsigned long)func, true);
-	if (!ret) {
-		ret = __ftrace_modify_call((unsigned long)&ftrace_regs_call,
-					   (unsigned long)func, true);
-	}
-
-	return ret;
-}
-#endif
-
-#ifdef CONFIG_DYNAMIC_FTRACE_WITH_REGS
-int ftrace_modify_call(struct dyn_ftrace *rec, unsigned long old_addr,
-		       unsigned long addr)
-{
-	unsigned int call[2];
-	unsigned long caller = rec->ip + FUNC_ENTRY_JMP;
+	unsigned long pc = rec->ip - MCOUNT_AUIPC_SIZE;
+	unsigned int nops[2], offset;
 	int ret;
 
-	make_call(caller, old_addr, call);
-	ret = ftrace_check_current_call(caller, call);
+	guard(mutex)(&text_mutex);
 
+	ret = ftrace_rec_set_nop_ops(rec);
 	if (ret)
 		return ret;
 
-	return __ftrace_modify_call(caller, addr, true);
+	offset = (unsigned long) &ftrace_caller - pc;
+	nops[0] = to_auipc_t0(offset);
+	nops[1] = RISCV_INSN_NOP4;
+
+	ret = patch_insn_write((void *)pc, nops, 2 * MCOUNT_INSN_SIZE);
+
+	return ret;
+}
+
+ftrace_func_t ftrace_call_dest = ftrace_stub;
+int ftrace_update_ftrace_func(ftrace_func_t func)
+{
+	/*
+	 * When using CALL_OPS, the function to call is associated with the
+	 * call site, and we don't have a global function pointer to update.
+	 */
+	if (IS_ENABLED(CONFIG_DYNAMIC_FTRACE_WITH_CALL_OPS))
+		return 0;
+
+	WRITE_ONCE(ftrace_call_dest, func);
+	/*
+	 * The data fence ensure that the update to ftrace_call_dest happens
+	 * before the write to function_trace_op later in the generic ftrace.
+	 * If the sequence is not enforced, then an old ftrace_call_dest may
+	 * race loading a new function_trace_op set in ftrace_modify_all_code
+	 */
+	smp_wmb();
+	/*
+	 * Updating ftrace dpes not take stop_machine path, so irqs should not
+	 * be disabled.
+	 */
+	WARN_ON(irqs_disabled());
+	smp_call_function(ftrace_sync_ipi, NULL, 1);
+	return 0;
+}
+
+#else /* CONFIG_DYNAMIC_FTRACE */
+unsigned long ftrace_call_adjust(unsigned long addr)
+{
+	return addr;
+}
+#endif /* CONFIG_DYNAMIC_FTRACE */
+
+#ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
+int ftrace_modify_call(struct dyn_ftrace *rec, unsigned long old_addr,
+		       unsigned long addr)
+{
+	unsigned long caller = rec->ip - MCOUNT_AUIPC_SIZE;
+	int ret;
+
+	ret = ftrace_rec_update_ops(rec);
+	if (ret)
+		return ret;
+
+	return __ftrace_modify_call(caller, FTRACE_ADDR, true);
 }
 #endif
 
@@ -196,32 +247,25 @@ void prepare_ftrace_return(unsigned long *parent, unsigned long self_addr,
 }
 
 #ifdef CONFIG_DYNAMIC_FTRACE
-extern void ftrace_graph_call(void);
-extern void ftrace_graph_regs_call(void);
-int ftrace_enable_ftrace_graph_caller(void)
+void ftrace_graph_func(unsigned long ip, unsigned long parent_ip,
+		       struct ftrace_ops *op, struct ftrace_regs *fregs)
 {
-	int ret;
+	unsigned long return_hooker = (unsigned long)&return_to_handler;
+	unsigned long frame_pointer = arch_ftrace_regs(fregs)->s0;
+	unsigned long *parent = &arch_ftrace_regs(fregs)->ra;
+	unsigned long old;
 
-	ret = __ftrace_modify_call((unsigned long)&ftrace_graph_call,
-				    (unsigned long)&prepare_ftrace_return, true);
-	if (ret)
-		return ret;
+	if (unlikely(atomic_read(&current->tracing_graph_pause)))
+		return;
 
-	return __ftrace_modify_call((unsigned long)&ftrace_graph_regs_call,
-				    (unsigned long)&prepare_ftrace_return, true);
-}
+	/*
+	 * We don't suffer access faults, so no extra fault-recovery assembly
+	 * is needed here.
+	 */
+	old = *parent;
 
-int ftrace_disable_ftrace_graph_caller(void)
-{
-	int ret;
-
-	ret = __ftrace_modify_call((unsigned long)&ftrace_graph_call,
-				    (unsigned long)&prepare_ftrace_return, false);
-	if (ret)
-		return ret;
-
-	return __ftrace_modify_call((unsigned long)&ftrace_graph_regs_call,
-				    (unsigned long)&prepare_ftrace_return, false);
+	if (!function_graph_enter_regs(old, ip, frame_pointer, parent, fregs))
+		*parent = return_hooker;
 }
 #endif /* CONFIG_DYNAMIC_FTRACE */
 #endif /* CONFIG_FUNCTION_GRAPH_TRACER */

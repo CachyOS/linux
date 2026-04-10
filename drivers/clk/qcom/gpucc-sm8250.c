@@ -4,6 +4,7 @@
  */
 
 #include <linux/clk-provider.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
@@ -32,7 +33,7 @@ enum {
 	P_GPU_CC_PLL1_OUT_MAIN,
 };
 
-static struct pll_vco lucid_vco[] = {
+static const struct pll_vco lucid_vco[] = {
 	{ 249600000, 2000000000, 0 },
 };
 
@@ -55,7 +56,7 @@ static struct clk_alpha_pll gpu_cc_pll1 = {
 	.clkr = {
 		.hw.init = &(struct clk_init_data){
 			.name = "gpu_cc_pll1",
-			.parent_data =  &(const struct clk_parent_data){
+			.parent_data = &(const struct clk_parent_data){
 				.fw_name = "bi_tcxo",
 			},
 			.num_parents = 1,
@@ -320,7 +321,7 @@ static int gpu_cc_sm8250_probe(struct platform_device *pdev)
 	value = 0xf << CX_GMU_CBCR_WAKE_SHIFT | 0xf << CX_GMU_CBCR_SLEEP_SHIFT;
 	regmap_update_bits(regmap, 0x1098, mask, value);
 
-	return qcom_cc_really_probe(pdev, &gpu_cc_sm8250_desc, regmap);
+	return qcom_cc_really_probe(&pdev->dev, &gpu_cc_sm8250_desc, regmap);
 }
 
 static struct platform_driver gpu_cc_sm8250_driver = {
@@ -331,17 +332,7 @@ static struct platform_driver gpu_cc_sm8250_driver = {
 	},
 };
 
-static int __init gpu_cc_sm8250_init(void)
-{
-	return platform_driver_register(&gpu_cc_sm8250_driver);
-}
-subsys_initcall(gpu_cc_sm8250_init);
-
-static void __exit gpu_cc_sm8250_exit(void)
-{
-	platform_driver_unregister(&gpu_cc_sm8250_driver);
-}
-module_exit(gpu_cc_sm8250_exit);
+module_platform_driver(gpu_cc_sm8250_driver);
 
 MODULE_DESCRIPTION("QTI GPU_CC SM8250 Driver");
 MODULE_LICENSE("GPL v2");

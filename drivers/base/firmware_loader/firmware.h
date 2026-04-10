@@ -9,8 +9,6 @@
 #include <linux/list.h>
 #include <linux/completion.h>
 
-#include <generated/utsrelease.h>
-
 /**
  * enum fw_opt - options to control firmware loading behaviour
  *
@@ -88,6 +86,7 @@ struct fw_priv {
 
 extern struct mutex fw_lock;
 extern struct firmware_cache fw_cache;
+extern bool fw_load_abort_all;
 
 static inline bool __fw_state_check(struct fw_priv *fw_priv,
 				    enum fw_status status)

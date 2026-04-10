@@ -8,12 +8,14 @@
  * Based on sh_keysc.c, copyright 2008 Magnus Damm
  */
 
-#include <linux/module.h>
-#include <linux/interrupt.h>
-#include <linux/platform_device.h>
 #include <linux/clk.h>
-#include <linux/io.h>
+#include <linux/input.h>
 #include <linux/input/matrix_keypad.h>
+#include <linux/io.h>
+#include <linux/interrupt.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 
 #define ST_KEYSCAN_MAXKEYS 16
 
@@ -123,7 +125,6 @@ static int keyscan_probe(struct platform_device *pdev)
 {
 	struct st_keyscan *keypad_data;
 	struct input_dev *input_dev;
-	struct resource *res;
 	int error;
 
 	if (!pdev->dev.of_node) {
@@ -167,8 +168,7 @@ static int keyscan_probe(struct platform_device *pdev)
 
 	input_set_drvdata(input_dev, keypad_data);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	keypad_data->base = devm_ioremap_resource(&pdev->dev, res);
+	keypad_data->base = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
 	if (IS_ERR(keypad_data->base))
 		return PTR_ERR(keypad_data->base);
 
@@ -210,21 +210,19 @@ static int keyscan_probe(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int keyscan_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct st_keyscan *keypad = platform_get_drvdata(pdev);
 	struct input_dev *input = keypad->input_dev;
 
-	mutex_lock(&input->mutex);
+	guard(mutex)(&input->mutex);
 
 	if (device_may_wakeup(dev))
 		enable_irq_wake(keypad->irq);
 	else if (input_device_enabled(input))
 		keyscan_stop(keypad);
 
-	mutex_unlock(&input->mutex);
 	return 0;
 }
 
@@ -233,21 +231,23 @@ static int keyscan_resume(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct st_keyscan *keypad = platform_get_drvdata(pdev);
 	struct input_dev *input = keypad->input_dev;
-	int retval = 0;
+	int error;
 
-	mutex_lock(&input->mutex);
+	guard(mutex)(&input->mutex);
 
-	if (device_may_wakeup(dev))
+	if (device_may_wakeup(dev)) {
 		disable_irq_wake(keypad->irq);
-	else if (input_device_enabled(input))
-		retval = keyscan_start(keypad);
+	} else if (input_device_enabled(input)) {
+		error = keyscan_start(keypad);
+		if (error)
+			return error;
+	}
 
-	mutex_unlock(&input->mutex);
-	return retval;
+	return 0;
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(keyscan_dev_pm_ops, keyscan_suspend, keyscan_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(keyscan_dev_pm_ops,
+				keyscan_suspend, keyscan_resume);
 
 static const struct of_device_id keyscan_of_match[] = {
 	{ .compatible = "st,sti-keyscan" },
@@ -259,8 +259,8 @@ static struct platform_driver keyscan_device_driver = {
 	.probe		= keyscan_probe,
 	.driver		= {
 		.name	= "st-keyscan",
-		.pm	= &keyscan_dev_pm_ops,
-		.of_match_table = of_match_ptr(keyscan_of_match),
+		.pm	= pm_sleep_ptr(&keyscan_dev_pm_ops),
+		.of_match_table = keyscan_of_match,
 	}
 };
 

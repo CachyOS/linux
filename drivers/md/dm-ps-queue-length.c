@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2004-2005 IBM Corp.  All Rights Reserved.
  * Copyright (C) 2006-2009 NEC Corporation.
@@ -35,13 +36,13 @@ struct selector {
 struct path_info {
 	struct list_head	list;
 	struct dm_path		*path;
-	unsigned		repeat_count;
+	unsigned int		repeat_count;
 	atomic_t		qlen;	/* the number of in-flight I/Os */
 };
 
 static struct selector *alloc_selector(void)
 {
-	struct selector *s = kmalloc(sizeof(*s), GFP_KERNEL);
+	struct selector *s = kmalloc_obj(*s);
 
 	if (s) {
 		INIT_LIST_HEAD(&s->valid_paths);
@@ -52,7 +53,7 @@ static struct selector *alloc_selector(void)
 	return s;
 }
 
-static int ql_create(struct path_selector *ps, unsigned argc, char **argv)
+static int ql_create(struct path_selector *ps, unsigned int argc, char **argv)
 {
 	struct selector *s = alloc_selector();
 
@@ -84,9 +85,9 @@ static void ql_destroy(struct path_selector *ps)
 }
 
 static int ql_status(struct path_selector *ps, struct dm_path *path,
-		     status_type_t type, char *result, unsigned maxlen)
+		     status_type_t type, char *result, unsigned int maxlen)
 {
-	unsigned sz = 0;
+	unsigned int sz = 0;
 	struct path_info *pi;
 
 	/* When called with NULL path, return selector status/args. */
@@ -116,14 +117,14 @@ static int ql_add_path(struct path_selector *ps, struct dm_path *path,
 {
 	struct selector *s = ps->context;
 	struct path_info *pi;
-	unsigned repeat_count = QL_MIN_IO;
+	unsigned int repeat_count = QL_MIN_IO;
 	char dummy;
 	unsigned long flags;
 
 	/*
 	 * Arguments: [<repeat_count>]
-	 * 	<repeat_count>: The number of I/Os before switching path.
-	 * 			If not given, default (QL_MIN_IO) is used.
+	 *	<repeat_count>: The number of I/Os before switching path.
+	 *			If not given, default (QL_MIN_IO) is used.
 	 */
 	if (argc > 1) {
 		*error = "queue-length ps: incorrect number of arguments";
@@ -141,7 +142,7 @@ static int ql_add_path(struct path_selector *ps, struct dm_path *path,
 	}
 
 	/* Allocate the path information structure */
-	pi = kmalloc(sizeof(*pi), GFP_KERNEL);
+	pi = kmalloc_obj(*pi);
 	if (!pi) {
 		*error = "queue-length ps: Error allocating path information";
 		return -ENOMEM;
@@ -259,8 +260,10 @@ static int __init dm_ql_init(void)
 {
 	int r = dm_register_path_selector(&ql_ps);
 
-	if (r < 0)
+	if (r < 0) {
 		DMERR("register failed %d", r);
+		return r;
+	}
 
 	DMINFO("version " QL_VERSION " loaded");
 
@@ -269,10 +272,7 @@ static int __init dm_ql_init(void)
 
 static void __exit dm_ql_exit(void)
 {
-	int r = dm_unregister_path_selector(&ql_ps);
-
-	if (r < 0)
-		DMERR("unregister failed %d", r);
+	dm_unregister_path_selector(&ql_ps);
 }
 
 module_init(dm_ql_init);

@@ -3,7 +3,7 @@
  * Ingenic SoCs pinctrl driver
  *
  * Copyright (c) 2017 Paul Cercueil <paul@crapouillou.net>
- * Copyright (c) 2017, 2019 Paul Boddie <paul@boddie.org.uk>
+ * Copyright (c) 2017, 2019, 2020, 2023 Paul Boddie <paul@boddie.org.uk>
  * Copyright (c) 2019, 2020 周琰杰 (Zhou Yanjie) <zhouyanjie@wanyeetech.com>
  */
 
@@ -12,16 +12,19 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
-#include <linux/of_device.h>
-#include <linux/of_irq.h>
-#include <linux/of_platform.h>
+#include <linux/mod_devicetable.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
+#include <linux/property.h>
+#include <linux/regmap.h>
+#include <linux/seq_file.h>
+#include <linux/slab.h>
+
+#include <linux/pinctrl/consumer.h>
+#include <linux/pinctrl/pinconf-generic.h>
+#include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
-#include <linux/pinctrl/pinconf.h>
-#include <linux/pinctrl/pinconf-generic.h>
-#include <linux/platform_device.h>
-#include <linux/regmap.h>
-#include <linux/slab.h>
 
 #include "core.h"
 #include "pinconf.h"
@@ -55,6 +58,8 @@
 #define JZ4770_GPIO_FLAG			0x50
 #define JZ4770_GPIO_PEN				0x70
 
+#define X1600_GPIO_PU				0x80
+
 #define X1830_GPIO_PEL				0x110
 #define X1830_GPIO_PEH				0x120
 #define X1830_GPIO_SR				0x150
@@ -79,16 +84,20 @@
 #define PINS_PER_GPIO_CHIP			32
 #define JZ4730_PINS_PER_PAIRED_REG	16
 
-#define INGENIC_PIN_GROUP_FUNCS(name, id, funcs)		\
-	{						\
-		name,					\
-		id##_pins,				\
-		ARRAY_SIZE(id##_pins),			\
-		funcs,					\
+#define INGENIC_PIN_GROUP_FUNCS(_name_, id, funcs)					\
+	{										\
+		.grp = PINCTRL_PINGROUP(_name_, id##_pins, ARRAY_SIZE(id##_pins)),	\
+		.data = funcs,								\
 	}
 
-#define INGENIC_PIN_GROUP(name, id, func)		\
-	INGENIC_PIN_GROUP_FUNCS(name, id, (void *)(func))
+#define INGENIC_PIN_GROUP(_name_, id, func)						\
+	{										\
+		.grp = PINCTRL_PINGROUP(_name_, id##_pins, ARRAY_SIZE(id##_pins)),	\
+		.data = (void *)func,							\
+	}
+
+#define INGENIC_PIN_FUNCTION(_name_, id)						\
+	PINCTRL_PINFUNCTION(_name_, id##_groups, ARRAY_SIZE(id##_groups))
 
 enum jz_version {
 	ID_JZ4730,
@@ -102,6 +111,7 @@ enum jz_version {
 	ID_JZ4780,
 	ID_X1000,
 	ID_X1500,
+	ID_X1600,
 	ID_X1830,
 	ID_X2000,
 	ID_X2100,
@@ -115,7 +125,7 @@ struct ingenic_chip_info {
 	const struct group_desc *groups;
 	unsigned int num_groups;
 
-	const struct function_desc *functions;
+	const struct pinfunction *functions;
 	unsigned int num_functions;
 
 	const u32 *pull_ups, *pull_downs;
@@ -130,12 +140,13 @@ struct ingenic_pinctrl {
 	struct pinctrl_pin_desc *pdesc;
 
 	const struct ingenic_chip_info *info;
+
+	struct gpio_chip *gc;
 };
 
 struct ingenic_gpio_chip {
 	struct ingenic_pinctrl *jzpc;
 	struct gpio_chip gc;
-	struct irq_chip irq_chip;
 	unsigned int irq, reg_base;
 };
 
@@ -151,6 +162,7 @@ static const unsigned long enabled_socs =
 	IS_ENABLED(CONFIG_MACH_JZ4780) << ID_JZ4780 |
 	IS_ENABLED(CONFIG_MACH_X1000) << ID_X1000 |
 	IS_ENABLED(CONFIG_MACH_X1500) << ID_X1500 |
+	IS_ENABLED(CONFIG_MACH_X1600) << ID_X1600 |
 	IS_ENABLED(CONFIG_MACH_X1830) << ID_X1830 |
 	IS_ENABLED(CONFIG_MACH_X2000) << ID_X2000 |
 	IS_ENABLED(CONFIG_MACH_X2100) << ID_X2100;
@@ -195,6 +207,14 @@ static int jz4730_nand_cs5_pins[] = { 0x57, };
 static int jz4730_pwm_pwm0_pins[] = { 0x5e, };
 static int jz4730_pwm_pwm1_pins[] = { 0x5f, };
 
+static int jz4730_mii_pins[] = { 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76,
+				 0x77, 0x78, 0x19, 0x7a, 0x1b, 0x7c, };
+
+static int jz4730_i2s_mclk_pins[] = { 0x44, };
+static int jz4730_i2s_acreset_pins[] = { 0x45, };
+static int jz4730_i2s_data_pins[] = { 0x46, 0x47, };
+static int jz4730_i2s_clock_pins[] = { 0x4d, 0x4e, };
+
 static u8 jz4730_lcd_8bit_funcs[] = { 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, };
 
 static const struct group_desc jz4730_groups[] = {
@@ -216,6 +236,12 @@ static const struct group_desc jz4730_groups[] = {
 	INGENIC_PIN_GROUP("nand-cs5", jz4730_nand_cs5, 1),
 	INGENIC_PIN_GROUP("pwm0", jz4730_pwm_pwm0, 1),
 	INGENIC_PIN_GROUP("pwm1", jz4730_pwm_pwm1, 1),
+	INGENIC_PIN_GROUP("mii", jz4730_mii, 1),
+	INGENIC_PIN_GROUP("i2s-mclk-out", jz4730_i2s_mclk, 1),
+	INGENIC_PIN_GROUP("i2s-acreset", jz4730_i2s_acreset, 1),
+	INGENIC_PIN_GROUP("i2s-data", jz4730_i2s_data, 1),
+	INGENIC_PIN_GROUP("i2s-master", jz4730_i2s_clock, 1),
+	INGENIC_PIN_GROUP("i2s-slave", jz4730_i2s_clock, 2),
 };
 
 static const char *jz4730_mmc_groups[] = { "mmc-1bit", "mmc-4bit", };
@@ -231,17 +257,21 @@ static const char *jz4730_nand_groups[] = {
 };
 static const char *jz4730_pwm0_groups[] = { "pwm0", };
 static const char *jz4730_pwm1_groups[] = { "pwm1", };
+static const char *jz4730_mii_groups[] = { "mii", };
+static const char *jz4730_i2s_groups[] = { "i2s-data", "i2s-master", "i2s-slave", };
 
-static const struct function_desc jz4730_functions[] = {
-	{ "mmc", jz4730_mmc_groups, ARRAY_SIZE(jz4730_mmc_groups), },
-	{ "uart0", jz4730_uart0_groups, ARRAY_SIZE(jz4730_uart0_groups), },
-	{ "uart1", jz4730_uart1_groups, ARRAY_SIZE(jz4730_uart1_groups), },
-	{ "uart2", jz4730_uart2_groups, ARRAY_SIZE(jz4730_uart2_groups), },
-	{ "uart3", jz4730_uart3_groups, ARRAY_SIZE(jz4730_uart3_groups), },
-	{ "lcd", jz4730_lcd_groups, ARRAY_SIZE(jz4730_lcd_groups), },
-	{ "nand", jz4730_nand_groups, ARRAY_SIZE(jz4730_nand_groups), },
-	{ "pwm0", jz4730_pwm0_groups, ARRAY_SIZE(jz4730_pwm0_groups), },
-	{ "pwm1", jz4730_pwm1_groups, ARRAY_SIZE(jz4730_pwm1_groups), },
+static const struct pinfunction jz4730_functions[] = {
+	INGENIC_PIN_FUNCTION("mmc", jz4730_mmc),
+	INGENIC_PIN_FUNCTION("uart0", jz4730_uart0),
+	INGENIC_PIN_FUNCTION("uart1", jz4730_uart1),
+	INGENIC_PIN_FUNCTION("uart2", jz4730_uart2),
+	INGENIC_PIN_FUNCTION("uart3", jz4730_uart3),
+	INGENIC_PIN_FUNCTION("lcd", jz4730_lcd),
+	INGENIC_PIN_FUNCTION("nand", jz4730_nand),
+	INGENIC_PIN_FUNCTION("pwm0", jz4730_pwm0),
+	INGENIC_PIN_FUNCTION("pwm1", jz4730_pwm1),
+	INGENIC_PIN_FUNCTION("mii", jz4730_mii),
+	INGENIC_PIN_FUNCTION("i2s", jz4730_i2s),
 };
 
 static const struct ingenic_chip_info jz4730_chip_info = {
@@ -337,20 +367,20 @@ static const char *jz4740_pwm5_groups[] = { "pwm5", };
 static const char *jz4740_pwm6_groups[] = { "pwm6", };
 static const char *jz4740_pwm7_groups[] = { "pwm7", };
 
-static const struct function_desc jz4740_functions[] = {
-	{ "mmc", jz4740_mmc_groups, ARRAY_SIZE(jz4740_mmc_groups), },
-	{ "uart0", jz4740_uart0_groups, ARRAY_SIZE(jz4740_uart0_groups), },
-	{ "uart1", jz4740_uart1_groups, ARRAY_SIZE(jz4740_uart1_groups), },
-	{ "lcd", jz4740_lcd_groups, ARRAY_SIZE(jz4740_lcd_groups), },
-	{ "nand", jz4740_nand_groups, ARRAY_SIZE(jz4740_nand_groups), },
-	{ "pwm0", jz4740_pwm0_groups, ARRAY_SIZE(jz4740_pwm0_groups), },
-	{ "pwm1", jz4740_pwm1_groups, ARRAY_SIZE(jz4740_pwm1_groups), },
-	{ "pwm2", jz4740_pwm2_groups, ARRAY_SIZE(jz4740_pwm2_groups), },
-	{ "pwm3", jz4740_pwm3_groups, ARRAY_SIZE(jz4740_pwm3_groups), },
-	{ "pwm4", jz4740_pwm4_groups, ARRAY_SIZE(jz4740_pwm4_groups), },
-	{ "pwm5", jz4740_pwm5_groups, ARRAY_SIZE(jz4740_pwm5_groups), },
-	{ "pwm6", jz4740_pwm6_groups, ARRAY_SIZE(jz4740_pwm6_groups), },
-	{ "pwm7", jz4740_pwm7_groups, ARRAY_SIZE(jz4740_pwm7_groups), },
+static const struct pinfunction jz4740_functions[] = {
+	INGENIC_PIN_FUNCTION("mmc", jz4740_mmc),
+	INGENIC_PIN_FUNCTION("uart0", jz4740_uart0),
+	INGENIC_PIN_FUNCTION("uart1", jz4740_uart1),
+	INGENIC_PIN_FUNCTION("lcd", jz4740_lcd),
+	INGENIC_PIN_FUNCTION("nand", jz4740_nand),
+	INGENIC_PIN_FUNCTION("pwm0", jz4740_pwm0),
+	INGENIC_PIN_FUNCTION("pwm1", jz4740_pwm1),
+	INGENIC_PIN_FUNCTION("pwm2", jz4740_pwm2),
+	INGENIC_PIN_FUNCTION("pwm3", jz4740_pwm3),
+	INGENIC_PIN_FUNCTION("pwm4", jz4740_pwm4),
+	INGENIC_PIN_FUNCTION("pwm5", jz4740_pwm5),
+	INGENIC_PIN_FUNCTION("pwm6", jz4740_pwm6),
+	INGENIC_PIN_FUNCTION("pwm7", jz4740_pwm7),
 };
 
 static const struct ingenic_chip_info jz4740_chip_info = {
@@ -441,18 +471,18 @@ static const char *jz4725b_pwm3_groups[] = { "pwm3", };
 static const char *jz4725b_pwm4_groups[] = { "pwm4", };
 static const char *jz4725b_pwm5_groups[] = { "pwm5", };
 
-static const struct function_desc jz4725b_functions[] = {
-	{ "mmc0", jz4725b_mmc0_groups, ARRAY_SIZE(jz4725b_mmc0_groups), },
-	{ "mmc1", jz4725b_mmc1_groups, ARRAY_SIZE(jz4725b_mmc1_groups), },
-	{ "uart", jz4725b_uart_groups, ARRAY_SIZE(jz4725b_uart_groups), },
-	{ "nand", jz4725b_nand_groups, ARRAY_SIZE(jz4725b_nand_groups), },
-	{ "pwm0", jz4725b_pwm0_groups, ARRAY_SIZE(jz4725b_pwm0_groups), },
-	{ "pwm1", jz4725b_pwm1_groups, ARRAY_SIZE(jz4725b_pwm1_groups), },
-	{ "pwm2", jz4725b_pwm2_groups, ARRAY_SIZE(jz4725b_pwm2_groups), },
-	{ "pwm3", jz4725b_pwm3_groups, ARRAY_SIZE(jz4725b_pwm3_groups), },
-	{ "pwm4", jz4725b_pwm4_groups, ARRAY_SIZE(jz4725b_pwm4_groups), },
-	{ "pwm5", jz4725b_pwm5_groups, ARRAY_SIZE(jz4725b_pwm5_groups), },
-	{ "lcd", jz4725b_lcd_groups, ARRAY_SIZE(jz4725b_lcd_groups), },
+static const struct pinfunction jz4725b_functions[] = {
+	INGENIC_PIN_FUNCTION("mmc0", jz4725b_mmc0),
+	INGENIC_PIN_FUNCTION("mmc1", jz4725b_mmc1),
+	INGENIC_PIN_FUNCTION("uart", jz4725b_uart),
+	INGENIC_PIN_FUNCTION("nand", jz4725b_nand),
+	INGENIC_PIN_FUNCTION("pwm0", jz4725b_pwm0),
+	INGENIC_PIN_FUNCTION("pwm1", jz4725b_pwm1),
+	INGENIC_PIN_FUNCTION("pwm2", jz4725b_pwm2),
+	INGENIC_PIN_FUNCTION("pwm3", jz4725b_pwm3),
+	INGENIC_PIN_FUNCTION("pwm4", jz4725b_pwm4),
+	INGENIC_PIN_FUNCTION("pwm5", jz4725b_pwm5),
+	INGENIC_PIN_FUNCTION("lcd", jz4725b_lcd),
 };
 
 static const struct ingenic_chip_info jz4725b_chip_info = {
@@ -573,23 +603,23 @@ static const char *jz4750_pwm3_groups[] = { "pwm3", };
 static const char *jz4750_pwm4_groups[] = { "pwm4", };
 static const char *jz4750_pwm5_groups[] = { "pwm5", };
 
-static const struct function_desc jz4750_functions[] = {
-	{ "uart0", jz4750_uart0_groups, ARRAY_SIZE(jz4750_uart0_groups), },
-	{ "uart1", jz4750_uart1_groups, ARRAY_SIZE(jz4750_uart1_groups), },
-	{ "uart2", jz4750_uart2_groups, ARRAY_SIZE(jz4750_uart2_groups), },
-	{ "uart3", jz4750_uart3_groups, ARRAY_SIZE(jz4750_uart3_groups), },
-	{ "mmc0", jz4750_mmc0_groups, ARRAY_SIZE(jz4750_mmc0_groups), },
-	{ "mmc1", jz4750_mmc1_groups, ARRAY_SIZE(jz4750_mmc1_groups), },
-	{ "i2c", jz4750_i2c_groups, ARRAY_SIZE(jz4750_i2c_groups), },
-	{ "cim", jz4750_cim_groups, ARRAY_SIZE(jz4750_cim_groups), },
-	{ "lcd", jz4750_lcd_groups, ARRAY_SIZE(jz4750_lcd_groups), },
-	{ "nand", jz4750_nand_groups, ARRAY_SIZE(jz4750_nand_groups), },
-	{ "pwm0", jz4750_pwm0_groups, ARRAY_SIZE(jz4750_pwm0_groups), },
-	{ "pwm1", jz4750_pwm1_groups, ARRAY_SIZE(jz4750_pwm1_groups), },
-	{ "pwm2", jz4750_pwm2_groups, ARRAY_SIZE(jz4750_pwm2_groups), },
-	{ "pwm3", jz4750_pwm3_groups, ARRAY_SIZE(jz4750_pwm3_groups), },
-	{ "pwm4", jz4750_pwm4_groups, ARRAY_SIZE(jz4750_pwm4_groups), },
-	{ "pwm5", jz4750_pwm5_groups, ARRAY_SIZE(jz4750_pwm5_groups), },
+static const struct pinfunction jz4750_functions[] = {
+	INGENIC_PIN_FUNCTION("uart0", jz4750_uart0),
+	INGENIC_PIN_FUNCTION("uart1", jz4750_uart1),
+	INGENIC_PIN_FUNCTION("uart2", jz4750_uart2),
+	INGENIC_PIN_FUNCTION("uart3", jz4750_uart3),
+	INGENIC_PIN_FUNCTION("mmc0", jz4750_mmc0),
+	INGENIC_PIN_FUNCTION("mmc1", jz4750_mmc1),
+	INGENIC_PIN_FUNCTION("i2c", jz4750_i2c),
+	INGENIC_PIN_FUNCTION("cim", jz4750_cim),
+	INGENIC_PIN_FUNCTION("lcd", jz4750_lcd),
+	INGENIC_PIN_FUNCTION("nand", jz4750_nand),
+	INGENIC_PIN_FUNCTION("pwm0", jz4750_pwm0),
+	INGENIC_PIN_FUNCTION("pwm1", jz4750_pwm1),
+	INGENIC_PIN_FUNCTION("pwm2", jz4750_pwm2),
+	INGENIC_PIN_FUNCTION("pwm3", jz4750_pwm3),
+	INGENIC_PIN_FUNCTION("pwm4", jz4750_pwm4),
+	INGENIC_PIN_FUNCTION("pwm5", jz4750_pwm5),
 };
 
 static const struct ingenic_chip_info jz4750_chip_info = {
@@ -667,7 +697,7 @@ static u8 jz4755_lcd_24bit_funcs[] = { 1, 1, 1, 1, 0, 0, };
 static const struct group_desc jz4755_groups[] = {
 	INGENIC_PIN_GROUP("uart0-data", jz4755_uart0_data, 0),
 	INGENIC_PIN_GROUP("uart0-hwflow", jz4755_uart0_hwflow, 0),
-	INGENIC_PIN_GROUP("uart1-data", jz4755_uart1_data, 0),
+	INGENIC_PIN_GROUP("uart1-data", jz4755_uart1_data, 1),
 	INGENIC_PIN_GROUP("uart2-data", jz4755_uart2_data, 1),
 	INGENIC_PIN_GROUP("ssi-dt-b", jz4755_ssi_dt_b, 0),
 	INGENIC_PIN_GROUP("ssi-dt-f", jz4755_ssi_dt_f, 0),
@@ -721,7 +751,7 @@ static const char *jz4755_ssi_groups[] = {
 	"ssi-ce1-b", "ssi-ce1-f",
 };
 static const char *jz4755_mmc0_groups[] = { "mmc0-1bit", "mmc0-4bit", };
-static const char *jz4755_mmc1_groups[] = { "mmc0-1bit", "mmc0-4bit", };
+static const char *jz4755_mmc1_groups[] = { "mmc1-1bit", "mmc1-4bit", };
 static const char *jz4755_i2c_groups[] = { "i2c-data", };
 static const char *jz4755_cim_groups[] = { "cim-data", };
 static const char *jz4755_lcd_groups[] = {
@@ -738,23 +768,23 @@ static const char *jz4755_pwm3_groups[] = { "pwm3", };
 static const char *jz4755_pwm4_groups[] = { "pwm4", };
 static const char *jz4755_pwm5_groups[] = { "pwm5", };
 
-static const struct function_desc jz4755_functions[] = {
-	{ "uart0", jz4755_uart0_groups, ARRAY_SIZE(jz4755_uart0_groups), },
-	{ "uart1", jz4755_uart1_groups, ARRAY_SIZE(jz4755_uart1_groups), },
-	{ "uart2", jz4755_uart2_groups, ARRAY_SIZE(jz4755_uart2_groups), },
-	{ "ssi", jz4755_ssi_groups, ARRAY_SIZE(jz4755_ssi_groups), },
-	{ "mmc0", jz4755_mmc0_groups, ARRAY_SIZE(jz4755_mmc0_groups), },
-	{ "mmc1", jz4755_mmc1_groups, ARRAY_SIZE(jz4755_mmc1_groups), },
-	{ "i2c", jz4755_i2c_groups, ARRAY_SIZE(jz4755_i2c_groups), },
-	{ "cim", jz4755_cim_groups, ARRAY_SIZE(jz4755_cim_groups), },
-	{ "lcd", jz4755_lcd_groups, ARRAY_SIZE(jz4755_lcd_groups), },
-	{ "nand", jz4755_nand_groups, ARRAY_SIZE(jz4755_nand_groups), },
-	{ "pwm0", jz4755_pwm0_groups, ARRAY_SIZE(jz4755_pwm0_groups), },
-	{ "pwm1", jz4755_pwm1_groups, ARRAY_SIZE(jz4755_pwm1_groups), },
-	{ "pwm2", jz4755_pwm2_groups, ARRAY_SIZE(jz4755_pwm2_groups), },
-	{ "pwm3", jz4755_pwm3_groups, ARRAY_SIZE(jz4755_pwm3_groups), },
-	{ "pwm4", jz4755_pwm4_groups, ARRAY_SIZE(jz4755_pwm4_groups), },
-	{ "pwm5", jz4755_pwm5_groups, ARRAY_SIZE(jz4755_pwm5_groups), },
+static const struct pinfunction jz4755_functions[] = {
+	INGENIC_PIN_FUNCTION("uart0", jz4755_uart0),
+	INGENIC_PIN_FUNCTION("uart1", jz4755_uart1),
+	INGENIC_PIN_FUNCTION("uart2", jz4755_uart2),
+	INGENIC_PIN_FUNCTION("ssi", jz4755_ssi),
+	INGENIC_PIN_FUNCTION("mmc0", jz4755_mmc0),
+	INGENIC_PIN_FUNCTION("mmc1", jz4755_mmc1),
+	INGENIC_PIN_FUNCTION("i2c", jz4755_i2c),
+	INGENIC_PIN_FUNCTION("cim", jz4755_cim),
+	INGENIC_PIN_FUNCTION("lcd", jz4755_lcd),
+	INGENIC_PIN_FUNCTION("nand", jz4755_nand),
+	INGENIC_PIN_FUNCTION("pwm0", jz4755_pwm0),
+	INGENIC_PIN_FUNCTION("pwm1", jz4755_pwm1),
+	INGENIC_PIN_FUNCTION("pwm2", jz4755_pwm2),
+	INGENIC_PIN_FUNCTION("pwm3", jz4755_pwm3),
+	INGENIC_PIN_FUNCTION("pwm4", jz4755_pwm4),
+	INGENIC_PIN_FUNCTION("pwm5", jz4755_pwm5),
 };
 
 static const struct ingenic_chip_info jz4755_chip_info = {
@@ -1073,36 +1103,36 @@ static const char *jz4760_pwm6_groups[] = { "pwm6", };
 static const char *jz4760_pwm7_groups[] = { "pwm7", };
 static const char *jz4760_otg_groups[] = { "otg-vbus", };
 
-static const struct function_desc jz4760_functions[] = {
-	{ "uart0", jz4760_uart0_groups, ARRAY_SIZE(jz4760_uart0_groups), },
-	{ "uart1", jz4760_uart1_groups, ARRAY_SIZE(jz4760_uart1_groups), },
-	{ "uart2", jz4760_uart2_groups, ARRAY_SIZE(jz4760_uart2_groups), },
-	{ "uart3", jz4760_uart3_groups, ARRAY_SIZE(jz4760_uart3_groups), },
-	{ "ssi0", jz4760_ssi0_groups, ARRAY_SIZE(jz4760_ssi0_groups), },
-	{ "ssi1", jz4760_ssi1_groups, ARRAY_SIZE(jz4760_ssi1_groups), },
-	{ "mmc0", jz4760_mmc0_groups, ARRAY_SIZE(jz4760_mmc0_groups), },
-	{ "mmc1", jz4760_mmc1_groups, ARRAY_SIZE(jz4760_mmc1_groups), },
-	{ "mmc2", jz4760_mmc2_groups, ARRAY_SIZE(jz4760_mmc2_groups), },
-	{ "nemc", jz4760_nemc_groups, ARRAY_SIZE(jz4760_nemc_groups), },
-	{ "nemc-cs1", jz4760_cs1_groups, ARRAY_SIZE(jz4760_cs1_groups), },
-	{ "nemc-cs2", jz4760_cs2_groups, ARRAY_SIZE(jz4760_cs2_groups), },
-	{ "nemc-cs3", jz4760_cs3_groups, ARRAY_SIZE(jz4760_cs3_groups), },
-	{ "nemc-cs4", jz4760_cs4_groups, ARRAY_SIZE(jz4760_cs4_groups), },
-	{ "nemc-cs5", jz4760_cs5_groups, ARRAY_SIZE(jz4760_cs5_groups), },
-	{ "nemc-cs6", jz4760_cs6_groups, ARRAY_SIZE(jz4760_cs6_groups), },
-	{ "i2c0", jz4760_i2c0_groups, ARRAY_SIZE(jz4760_i2c0_groups), },
-	{ "i2c1", jz4760_i2c1_groups, ARRAY_SIZE(jz4760_i2c1_groups), },
-	{ "cim", jz4760_cim_groups, ARRAY_SIZE(jz4760_cim_groups), },
-	{ "lcd", jz4760_lcd_groups, ARRAY_SIZE(jz4760_lcd_groups), },
-	{ "pwm0", jz4760_pwm0_groups, ARRAY_SIZE(jz4760_pwm0_groups), },
-	{ "pwm1", jz4760_pwm1_groups, ARRAY_SIZE(jz4760_pwm1_groups), },
-	{ "pwm2", jz4760_pwm2_groups, ARRAY_SIZE(jz4760_pwm2_groups), },
-	{ "pwm3", jz4760_pwm3_groups, ARRAY_SIZE(jz4760_pwm3_groups), },
-	{ "pwm4", jz4760_pwm4_groups, ARRAY_SIZE(jz4760_pwm4_groups), },
-	{ "pwm5", jz4760_pwm5_groups, ARRAY_SIZE(jz4760_pwm5_groups), },
-	{ "pwm6", jz4760_pwm6_groups, ARRAY_SIZE(jz4760_pwm6_groups), },
-	{ "pwm7", jz4760_pwm7_groups, ARRAY_SIZE(jz4760_pwm7_groups), },
-	{ "otg", jz4760_otg_groups, ARRAY_SIZE(jz4760_otg_groups), },
+static const struct pinfunction jz4760_functions[] = {
+	INGENIC_PIN_FUNCTION("uart0", jz4760_uart0),
+	INGENIC_PIN_FUNCTION("uart1", jz4760_uart1),
+	INGENIC_PIN_FUNCTION("uart2", jz4760_uart2),
+	INGENIC_PIN_FUNCTION("uart3", jz4760_uart3),
+	INGENIC_PIN_FUNCTION("ssi0", jz4760_ssi0),
+	INGENIC_PIN_FUNCTION("ssi1", jz4760_ssi1),
+	INGENIC_PIN_FUNCTION("mmc0", jz4760_mmc0),
+	INGENIC_PIN_FUNCTION("mmc1", jz4760_mmc1),
+	INGENIC_PIN_FUNCTION("mmc2", jz4760_mmc2),
+	INGENIC_PIN_FUNCTION("nemc", jz4760_nemc),
+	INGENIC_PIN_FUNCTION("nemc-cs1", jz4760_cs1),
+	INGENIC_PIN_FUNCTION("nemc-cs2", jz4760_cs2),
+	INGENIC_PIN_FUNCTION("nemc-cs3", jz4760_cs3),
+	INGENIC_PIN_FUNCTION("nemc-cs4", jz4760_cs4),
+	INGENIC_PIN_FUNCTION("nemc-cs5", jz4760_cs5),
+	INGENIC_PIN_FUNCTION("nemc-cs6", jz4760_cs6),
+	INGENIC_PIN_FUNCTION("i2c0", jz4760_i2c0),
+	INGENIC_PIN_FUNCTION("i2c1", jz4760_i2c1),
+	INGENIC_PIN_FUNCTION("cim", jz4760_cim),
+	INGENIC_PIN_FUNCTION("lcd", jz4760_lcd),
+	INGENIC_PIN_FUNCTION("pwm0", jz4760_pwm0),
+	INGENIC_PIN_FUNCTION("pwm1", jz4760_pwm1),
+	INGENIC_PIN_FUNCTION("pwm2", jz4760_pwm2),
+	INGENIC_PIN_FUNCTION("pwm3", jz4760_pwm3),
+	INGENIC_PIN_FUNCTION("pwm4", jz4760_pwm4),
+	INGENIC_PIN_FUNCTION("pwm5", jz4760_pwm5),
+	INGENIC_PIN_FUNCTION("pwm6", jz4760_pwm6),
+	INGENIC_PIN_FUNCTION("pwm7", jz4760_pwm7),
+	INGENIC_PIN_FUNCTION("otg", jz4760_otg),
 };
 
 static const struct ingenic_chip_info jz4760_chip_info = {
@@ -1411,38 +1441,38 @@ static const char *jz4770_pwm6_groups[] = { "pwm6", };
 static const char *jz4770_pwm7_groups[] = { "pwm7", };
 static const char *jz4770_mac_groups[] = { "mac-rmii", "mac-mii", };
 
-static const struct function_desc jz4770_functions[] = {
-	{ "uart0", jz4770_uart0_groups, ARRAY_SIZE(jz4770_uart0_groups), },
-	{ "uart1", jz4770_uart1_groups, ARRAY_SIZE(jz4770_uart1_groups), },
-	{ "uart2", jz4770_uart2_groups, ARRAY_SIZE(jz4770_uart2_groups), },
-	{ "uart3", jz4770_uart3_groups, ARRAY_SIZE(jz4770_uart3_groups), },
-	{ "ssi0", jz4770_ssi0_groups, ARRAY_SIZE(jz4770_ssi0_groups), },
-	{ "ssi1", jz4770_ssi1_groups, ARRAY_SIZE(jz4770_ssi1_groups), },
-	{ "mmc0", jz4770_mmc0_groups, ARRAY_SIZE(jz4770_mmc0_groups), },
-	{ "mmc1", jz4770_mmc1_groups, ARRAY_SIZE(jz4770_mmc1_groups), },
-	{ "mmc2", jz4770_mmc2_groups, ARRAY_SIZE(jz4770_mmc2_groups), },
-	{ "nemc", jz4770_nemc_groups, ARRAY_SIZE(jz4770_nemc_groups), },
-	{ "nemc-cs1", jz4770_cs1_groups, ARRAY_SIZE(jz4770_cs1_groups), },
-	{ "nemc-cs2", jz4770_cs2_groups, ARRAY_SIZE(jz4770_cs2_groups), },
-	{ "nemc-cs3", jz4770_cs3_groups, ARRAY_SIZE(jz4770_cs3_groups), },
-	{ "nemc-cs4", jz4770_cs4_groups, ARRAY_SIZE(jz4770_cs4_groups), },
-	{ "nemc-cs5", jz4770_cs5_groups, ARRAY_SIZE(jz4770_cs5_groups), },
-	{ "nemc-cs6", jz4770_cs6_groups, ARRAY_SIZE(jz4770_cs6_groups), },
-	{ "i2c0", jz4770_i2c0_groups, ARRAY_SIZE(jz4770_i2c0_groups), },
-	{ "i2c1", jz4770_i2c1_groups, ARRAY_SIZE(jz4770_i2c1_groups), },
-	{ "i2c2", jz4770_i2c2_groups, ARRAY_SIZE(jz4770_i2c2_groups), },
-	{ "cim", jz4770_cim_groups, ARRAY_SIZE(jz4770_cim_groups), },
-	{ "lcd", jz4770_lcd_groups, ARRAY_SIZE(jz4770_lcd_groups), },
-	{ "pwm0", jz4770_pwm0_groups, ARRAY_SIZE(jz4770_pwm0_groups), },
-	{ "pwm1", jz4770_pwm1_groups, ARRAY_SIZE(jz4770_pwm1_groups), },
-	{ "pwm2", jz4770_pwm2_groups, ARRAY_SIZE(jz4770_pwm2_groups), },
-	{ "pwm3", jz4770_pwm3_groups, ARRAY_SIZE(jz4770_pwm3_groups), },
-	{ "pwm4", jz4770_pwm4_groups, ARRAY_SIZE(jz4770_pwm4_groups), },
-	{ "pwm5", jz4770_pwm5_groups, ARRAY_SIZE(jz4770_pwm5_groups), },
-	{ "pwm6", jz4770_pwm6_groups, ARRAY_SIZE(jz4770_pwm6_groups), },
-	{ "pwm7", jz4770_pwm7_groups, ARRAY_SIZE(jz4770_pwm7_groups), },
-	{ "mac", jz4770_mac_groups, ARRAY_SIZE(jz4770_mac_groups), },
-	{ "otg", jz4760_otg_groups, ARRAY_SIZE(jz4760_otg_groups), },
+static const struct pinfunction jz4770_functions[] = {
+	INGENIC_PIN_FUNCTION("uart0", jz4770_uart0),
+	INGENIC_PIN_FUNCTION("uart1", jz4770_uart1),
+	INGENIC_PIN_FUNCTION("uart2", jz4770_uart2),
+	INGENIC_PIN_FUNCTION("uart3", jz4770_uart3),
+	INGENIC_PIN_FUNCTION("ssi0", jz4770_ssi0),
+	INGENIC_PIN_FUNCTION("ssi1", jz4770_ssi1),
+	INGENIC_PIN_FUNCTION("mmc0", jz4770_mmc0),
+	INGENIC_PIN_FUNCTION("mmc1", jz4770_mmc1),
+	INGENIC_PIN_FUNCTION("mmc2", jz4770_mmc2),
+	INGENIC_PIN_FUNCTION("nemc", jz4770_nemc),
+	INGENIC_PIN_FUNCTION("nemc-cs1", jz4770_cs1),
+	INGENIC_PIN_FUNCTION("nemc-cs2", jz4770_cs2),
+	INGENIC_PIN_FUNCTION("nemc-cs3", jz4770_cs3),
+	INGENIC_PIN_FUNCTION("nemc-cs4", jz4770_cs4),
+	INGENIC_PIN_FUNCTION("nemc-cs5", jz4770_cs5),
+	INGENIC_PIN_FUNCTION("nemc-cs6", jz4770_cs6),
+	INGENIC_PIN_FUNCTION("i2c0", jz4770_i2c0),
+	INGENIC_PIN_FUNCTION("i2c1", jz4770_i2c1),
+	INGENIC_PIN_FUNCTION("i2c2", jz4770_i2c2),
+	INGENIC_PIN_FUNCTION("cim", jz4770_cim),
+	INGENIC_PIN_FUNCTION("lcd", jz4770_lcd),
+	INGENIC_PIN_FUNCTION("pwm0", jz4770_pwm0),
+	INGENIC_PIN_FUNCTION("pwm1", jz4770_pwm1),
+	INGENIC_PIN_FUNCTION("pwm2", jz4770_pwm2),
+	INGENIC_PIN_FUNCTION("pwm3", jz4770_pwm3),
+	INGENIC_PIN_FUNCTION("pwm4", jz4770_pwm4),
+	INGENIC_PIN_FUNCTION("pwm5", jz4770_pwm5),
+	INGENIC_PIN_FUNCTION("pwm6", jz4770_pwm6),
+	INGENIC_PIN_FUNCTION("pwm7", jz4770_pwm7),
+	INGENIC_PIN_FUNCTION("mac", jz4770_mac),
+	INGENIC_PIN_FUNCTION("otg", jz4760_otg),
 };
 
 static const struct ingenic_chip_info jz4770_chip_info = {
@@ -1690,32 +1720,32 @@ static const char *jz4775_mac_groups[] = {
 };
 static const char *jz4775_otg_groups[] = { "otg-vbus", };
 
-static const struct function_desc jz4775_functions[] = {
-	{ "uart0", jz4775_uart0_groups, ARRAY_SIZE(jz4775_uart0_groups), },
-	{ "uart1", jz4775_uart1_groups, ARRAY_SIZE(jz4775_uart1_groups), },
-	{ "uart2", jz4775_uart2_groups, ARRAY_SIZE(jz4775_uart2_groups), },
-	{ "uart3", jz4775_uart3_groups, ARRAY_SIZE(jz4775_uart3_groups), },
-	{ "ssi", jz4775_ssi_groups, ARRAY_SIZE(jz4775_ssi_groups), },
-	{ "mmc0", jz4775_mmc0_groups, ARRAY_SIZE(jz4775_mmc0_groups), },
-	{ "mmc1", jz4775_mmc1_groups, ARRAY_SIZE(jz4775_mmc1_groups), },
-	{ "mmc2", jz4775_mmc2_groups, ARRAY_SIZE(jz4775_mmc2_groups), },
-	{ "nemc", jz4775_nemc_groups, ARRAY_SIZE(jz4775_nemc_groups), },
-	{ "nemc-cs1", jz4775_cs1_groups, ARRAY_SIZE(jz4775_cs1_groups), },
-	{ "nemc-cs2", jz4775_cs2_groups, ARRAY_SIZE(jz4775_cs2_groups), },
-	{ "nemc-cs3", jz4775_cs3_groups, ARRAY_SIZE(jz4775_cs3_groups), },
-	{ "i2c0", jz4775_i2c0_groups, ARRAY_SIZE(jz4775_i2c0_groups), },
-	{ "i2c1", jz4775_i2c1_groups, ARRAY_SIZE(jz4775_i2c1_groups), },
-	{ "i2c2", jz4775_i2c2_groups, ARRAY_SIZE(jz4775_i2c2_groups), },
-	{ "i2s", jz4775_i2s_groups, ARRAY_SIZE(jz4775_i2s_groups), },
-	{ "dmic", jz4775_dmic_groups, ARRAY_SIZE(jz4775_dmic_groups), },
-	{ "cim", jz4775_cim_groups, ARRAY_SIZE(jz4775_cim_groups), },
-	{ "lcd", jz4775_lcd_groups, ARRAY_SIZE(jz4775_lcd_groups), },
-	{ "pwm0", jz4775_pwm0_groups, ARRAY_SIZE(jz4775_pwm0_groups), },
-	{ "pwm1", jz4775_pwm1_groups, ARRAY_SIZE(jz4775_pwm1_groups), },
-	{ "pwm2", jz4775_pwm2_groups, ARRAY_SIZE(jz4775_pwm2_groups), },
-	{ "pwm3", jz4775_pwm3_groups, ARRAY_SIZE(jz4775_pwm3_groups), },
-	{ "mac", jz4775_mac_groups, ARRAY_SIZE(jz4775_mac_groups), },
-	{ "otg", jz4775_otg_groups, ARRAY_SIZE(jz4775_otg_groups), },
+static const struct pinfunction jz4775_functions[] = {
+	INGENIC_PIN_FUNCTION("uart0", jz4775_uart0),
+	INGENIC_PIN_FUNCTION("uart1", jz4775_uart1),
+	INGENIC_PIN_FUNCTION("uart2", jz4775_uart2),
+	INGENIC_PIN_FUNCTION("uart3", jz4775_uart3),
+	INGENIC_PIN_FUNCTION("ssi", jz4775_ssi),
+	INGENIC_PIN_FUNCTION("mmc0", jz4775_mmc0),
+	INGENIC_PIN_FUNCTION("mmc1", jz4775_mmc1),
+	INGENIC_PIN_FUNCTION("mmc2", jz4775_mmc2),
+	INGENIC_PIN_FUNCTION("nemc", jz4775_nemc),
+	INGENIC_PIN_FUNCTION("nemc-cs1", jz4775_cs1),
+	INGENIC_PIN_FUNCTION("nemc-cs2", jz4775_cs2),
+	INGENIC_PIN_FUNCTION("nemc-cs3", jz4775_cs3),
+	INGENIC_PIN_FUNCTION("i2c0", jz4775_i2c0),
+	INGENIC_PIN_FUNCTION("i2c1", jz4775_i2c1),
+	INGENIC_PIN_FUNCTION("i2c2", jz4775_i2c2),
+	INGENIC_PIN_FUNCTION("i2s", jz4775_i2s),
+	INGENIC_PIN_FUNCTION("dmic", jz4775_dmic),
+	INGENIC_PIN_FUNCTION("cim", jz4775_cim),
+	INGENIC_PIN_FUNCTION("lcd", jz4775_lcd),
+	INGENIC_PIN_FUNCTION("pwm0", jz4775_pwm0),
+	INGENIC_PIN_FUNCTION("pwm1", jz4775_pwm1),
+	INGENIC_PIN_FUNCTION("pwm2", jz4775_pwm2),
+	INGENIC_PIN_FUNCTION("pwm3", jz4775_pwm3),
+	INGENIC_PIN_FUNCTION("mac", jz4775_mac),
+	INGENIC_PIN_FUNCTION("otg", jz4775_otg),
 };
 
 static const struct ingenic_chip_info jz4775_chip_info = {
@@ -1943,43 +1973,42 @@ static const char *jz4780_dmic_groups[] = { "dmic", };
 static const char *jz4780_cim_groups[] = { "cim-data", };
 static const char *jz4780_hdmi_ddc_groups[] = { "hdmi-ddc", };
 
-static const struct function_desc jz4780_functions[] = {
-	{ "uart0", jz4770_uart0_groups, ARRAY_SIZE(jz4770_uart0_groups), },
-	{ "uart1", jz4770_uart1_groups, ARRAY_SIZE(jz4770_uart1_groups), },
-	{ "uart2", jz4780_uart2_groups, ARRAY_SIZE(jz4780_uart2_groups), },
-	{ "uart3", jz4770_uart3_groups, ARRAY_SIZE(jz4770_uart3_groups), },
-	{ "uart4", jz4780_uart4_groups, ARRAY_SIZE(jz4780_uart4_groups), },
-	{ "ssi0", jz4780_ssi0_groups, ARRAY_SIZE(jz4780_ssi0_groups), },
-	{ "ssi1", jz4780_ssi1_groups, ARRAY_SIZE(jz4780_ssi1_groups), },
-	{ "mmc0", jz4780_mmc0_groups, ARRAY_SIZE(jz4780_mmc0_groups), },
-	{ "mmc1", jz4780_mmc1_groups, ARRAY_SIZE(jz4780_mmc1_groups), },
-	{ "mmc2", jz4780_mmc2_groups, ARRAY_SIZE(jz4780_mmc2_groups), },
-	{ "nemc", jz4780_nemc_groups, ARRAY_SIZE(jz4780_nemc_groups), },
-	{ "nemc-cs1", jz4770_cs1_groups, ARRAY_SIZE(jz4770_cs1_groups), },
-	{ "nemc-cs2", jz4770_cs2_groups, ARRAY_SIZE(jz4770_cs2_groups), },
-	{ "nemc-cs3", jz4770_cs3_groups, ARRAY_SIZE(jz4770_cs3_groups), },
-	{ "nemc-cs4", jz4770_cs4_groups, ARRAY_SIZE(jz4770_cs4_groups), },
-	{ "nemc-cs5", jz4770_cs5_groups, ARRAY_SIZE(jz4770_cs5_groups), },
-	{ "nemc-cs6", jz4770_cs6_groups, ARRAY_SIZE(jz4770_cs6_groups), },
-	{ "i2c0", jz4770_i2c0_groups, ARRAY_SIZE(jz4770_i2c0_groups), },
-	{ "i2c1", jz4770_i2c1_groups, ARRAY_SIZE(jz4770_i2c1_groups), },
-	{ "i2c2", jz4770_i2c2_groups, ARRAY_SIZE(jz4770_i2c2_groups), },
-	{ "i2c3", jz4780_i2c3_groups, ARRAY_SIZE(jz4780_i2c3_groups), },
-	{ "i2c4", jz4780_i2c4_groups, ARRAY_SIZE(jz4780_i2c4_groups), },
-	{ "i2s", jz4780_i2s_groups, ARRAY_SIZE(jz4780_i2s_groups), },
-	{ "dmic", jz4780_dmic_groups, ARRAY_SIZE(jz4780_dmic_groups), },
-	{ "cim", jz4780_cim_groups, ARRAY_SIZE(jz4780_cim_groups), },
-	{ "lcd", jz4770_lcd_groups, ARRAY_SIZE(jz4770_lcd_groups), },
-	{ "pwm0", jz4770_pwm0_groups, ARRAY_SIZE(jz4770_pwm0_groups), },
-	{ "pwm1", jz4770_pwm1_groups, ARRAY_SIZE(jz4770_pwm1_groups), },
-	{ "pwm2", jz4770_pwm2_groups, ARRAY_SIZE(jz4770_pwm2_groups), },
-	{ "pwm3", jz4770_pwm3_groups, ARRAY_SIZE(jz4770_pwm3_groups), },
-	{ "pwm4", jz4770_pwm4_groups, ARRAY_SIZE(jz4770_pwm4_groups), },
-	{ "pwm5", jz4770_pwm5_groups, ARRAY_SIZE(jz4770_pwm5_groups), },
-	{ "pwm6", jz4770_pwm6_groups, ARRAY_SIZE(jz4770_pwm6_groups), },
-	{ "pwm7", jz4770_pwm7_groups, ARRAY_SIZE(jz4770_pwm7_groups), },
-	{ "hdmi-ddc", jz4780_hdmi_ddc_groups,
-		      ARRAY_SIZE(jz4780_hdmi_ddc_groups), },
+static const struct pinfunction jz4780_functions[] = {
+	INGENIC_PIN_FUNCTION("uart0", jz4770_uart0),
+	INGENIC_PIN_FUNCTION("uart1", jz4770_uart1),
+	INGENIC_PIN_FUNCTION("uart2", jz4780_uart2),
+	INGENIC_PIN_FUNCTION("uart3", jz4770_uart3),
+	INGENIC_PIN_FUNCTION("uart4", jz4780_uart4),
+	INGENIC_PIN_FUNCTION("ssi0", jz4780_ssi0),
+	INGENIC_PIN_FUNCTION("ssi1", jz4780_ssi1),
+	INGENIC_PIN_FUNCTION("mmc0", jz4780_mmc0),
+	INGENIC_PIN_FUNCTION("mmc1", jz4780_mmc1),
+	INGENIC_PIN_FUNCTION("mmc2", jz4780_mmc2),
+	INGENIC_PIN_FUNCTION("nemc", jz4780_nemc),
+	INGENIC_PIN_FUNCTION("nemc-cs1", jz4770_cs1),
+	INGENIC_PIN_FUNCTION("nemc-cs2", jz4770_cs2),
+	INGENIC_PIN_FUNCTION("nemc-cs3", jz4770_cs3),
+	INGENIC_PIN_FUNCTION("nemc-cs4", jz4770_cs4),
+	INGENIC_PIN_FUNCTION("nemc-cs5", jz4770_cs5),
+	INGENIC_PIN_FUNCTION("nemc-cs6", jz4770_cs6),
+	INGENIC_PIN_FUNCTION("i2c0", jz4770_i2c0),
+	INGENIC_PIN_FUNCTION("i2c1", jz4770_i2c1),
+	INGENIC_PIN_FUNCTION("i2c2", jz4770_i2c2),
+	INGENIC_PIN_FUNCTION("i2c3", jz4780_i2c3),
+	INGENIC_PIN_FUNCTION("i2c4", jz4780_i2c4),
+	INGENIC_PIN_FUNCTION("i2s", jz4780_i2s),
+	INGENIC_PIN_FUNCTION("dmic", jz4780_dmic),
+	INGENIC_PIN_FUNCTION("cim", jz4780_cim),
+	INGENIC_PIN_FUNCTION("lcd", jz4770_lcd),
+	INGENIC_PIN_FUNCTION("pwm0", jz4770_pwm0),
+	INGENIC_PIN_FUNCTION("pwm1", jz4770_pwm1),
+	INGENIC_PIN_FUNCTION("pwm2", jz4770_pwm2),
+	INGENIC_PIN_FUNCTION("pwm3", jz4770_pwm3),
+	INGENIC_PIN_FUNCTION("pwm4", jz4770_pwm4),
+	INGENIC_PIN_FUNCTION("pwm5", jz4770_pwm5),
+	INGENIC_PIN_FUNCTION("pwm6", jz4770_pwm6),
+	INGENIC_PIN_FUNCTION("pwm7", jz4770_pwm7),
+	INGENIC_PIN_FUNCTION("hdmi-ddc", jz4780_hdmi_ddc),
 };
 
 static const struct ingenic_chip_info jz4780_chip_info = {
@@ -2179,30 +2208,30 @@ static const char *x1000_pwm3_groups[] = { "pwm3", };
 static const char *x1000_pwm4_groups[] = { "pwm4", };
 static const char *x1000_mac_groups[] = { "mac", };
 
-static const struct function_desc x1000_functions[] = {
-	{ "uart0", x1000_uart0_groups, ARRAY_SIZE(x1000_uart0_groups), },
-	{ "uart1", x1000_uart1_groups, ARRAY_SIZE(x1000_uart1_groups), },
-	{ "uart2", x1000_uart2_groups, ARRAY_SIZE(x1000_uart2_groups), },
-	{ "sfc", x1000_sfc_groups, ARRAY_SIZE(x1000_sfc_groups), },
-	{ "ssi", x1000_ssi_groups, ARRAY_SIZE(x1000_ssi_groups), },
-	{ "mmc0", x1000_mmc0_groups, ARRAY_SIZE(x1000_mmc0_groups), },
-	{ "mmc1", x1000_mmc1_groups, ARRAY_SIZE(x1000_mmc1_groups), },
-	{ "emc", x1000_emc_groups, ARRAY_SIZE(x1000_emc_groups), },
-	{ "emc-cs1", x1000_cs1_groups, ARRAY_SIZE(x1000_cs1_groups), },
-	{ "emc-cs2", x1000_cs2_groups, ARRAY_SIZE(x1000_cs2_groups), },
-	{ "i2c0", x1000_i2c0_groups, ARRAY_SIZE(x1000_i2c0_groups), },
-	{ "i2c1", x1000_i2c1_groups, ARRAY_SIZE(x1000_i2c1_groups), },
-	{ "i2c2", x1000_i2c2_groups, ARRAY_SIZE(x1000_i2c2_groups), },
-	{ "i2s", x1000_i2s_groups, ARRAY_SIZE(x1000_i2s_groups), },
-	{ "dmic", x1000_dmic_groups, ARRAY_SIZE(x1000_dmic_groups), },
-	{ "cim", x1000_cim_groups, ARRAY_SIZE(x1000_cim_groups), },
-	{ "lcd", x1000_lcd_groups, ARRAY_SIZE(x1000_lcd_groups), },
-	{ "pwm0", x1000_pwm0_groups, ARRAY_SIZE(x1000_pwm0_groups), },
-	{ "pwm1", x1000_pwm1_groups, ARRAY_SIZE(x1000_pwm1_groups), },
-	{ "pwm2", x1000_pwm2_groups, ARRAY_SIZE(x1000_pwm2_groups), },
-	{ "pwm3", x1000_pwm3_groups, ARRAY_SIZE(x1000_pwm3_groups), },
-	{ "pwm4", x1000_pwm4_groups, ARRAY_SIZE(x1000_pwm4_groups), },
-	{ "mac", x1000_mac_groups, ARRAY_SIZE(x1000_mac_groups), },
+static const struct pinfunction x1000_functions[] = {
+	INGENIC_PIN_FUNCTION("uart0", x1000_uart0),
+	INGENIC_PIN_FUNCTION("uart1", x1000_uart1),
+	INGENIC_PIN_FUNCTION("uart2", x1000_uart2),
+	INGENIC_PIN_FUNCTION("sfc", x1000_sfc),
+	INGENIC_PIN_FUNCTION("ssi", x1000_ssi),
+	INGENIC_PIN_FUNCTION("mmc0", x1000_mmc0),
+	INGENIC_PIN_FUNCTION("mmc1", x1000_mmc1),
+	INGENIC_PIN_FUNCTION("emc", x1000_emc),
+	INGENIC_PIN_FUNCTION("emc-cs1", x1000_cs1),
+	INGENIC_PIN_FUNCTION("emc-cs2", x1000_cs2),
+	INGENIC_PIN_FUNCTION("i2c0", x1000_i2c0),
+	INGENIC_PIN_FUNCTION("i2c1", x1000_i2c1),
+	INGENIC_PIN_FUNCTION("i2c2", x1000_i2c2),
+	INGENIC_PIN_FUNCTION("i2s", x1000_i2s),
+	INGENIC_PIN_FUNCTION("dmic", x1000_dmic),
+	INGENIC_PIN_FUNCTION("cim", x1000_cim),
+	INGENIC_PIN_FUNCTION("lcd", x1000_lcd),
+	INGENIC_PIN_FUNCTION("pwm0", x1000_pwm0),
+	INGENIC_PIN_FUNCTION("pwm1", x1000_pwm1),
+	INGENIC_PIN_FUNCTION("pwm2", x1000_pwm2),
+	INGENIC_PIN_FUNCTION("pwm3", x1000_pwm3),
+	INGENIC_PIN_FUNCTION("pwm4", x1000_pwm4),
+	INGENIC_PIN_FUNCTION("mac", x1000_mac),
 };
 
 static const struct regmap_range x1000_access_ranges[] = {
@@ -2309,23 +2338,23 @@ static const char *x1500_pwm2_groups[] = { "pwm2", };
 static const char *x1500_pwm3_groups[] = { "pwm3", };
 static const char *x1500_pwm4_groups[] = { "pwm4", };
 
-static const struct function_desc x1500_functions[] = {
-	{ "uart0", x1500_uart0_groups, ARRAY_SIZE(x1500_uart0_groups), },
-	{ "uart1", x1500_uart1_groups, ARRAY_SIZE(x1500_uart1_groups), },
-	{ "uart2", x1500_uart2_groups, ARRAY_SIZE(x1500_uart2_groups), },
-	{ "sfc", x1000_sfc_groups, ARRAY_SIZE(x1000_sfc_groups), },
-	{ "mmc", x1500_mmc_groups, ARRAY_SIZE(x1500_mmc_groups), },
-	{ "i2c0", x1500_i2c0_groups, ARRAY_SIZE(x1500_i2c0_groups), },
-	{ "i2c1", x1500_i2c1_groups, ARRAY_SIZE(x1500_i2c1_groups), },
-	{ "i2c2", x1500_i2c2_groups, ARRAY_SIZE(x1500_i2c2_groups), },
-	{ "i2s", x1500_i2s_groups, ARRAY_SIZE(x1500_i2s_groups), },
-	{ "dmic", x1500_dmic_groups, ARRAY_SIZE(x1500_dmic_groups), },
-	{ "cim", x1500_cim_groups, ARRAY_SIZE(x1500_cim_groups), },
-	{ "pwm0", x1500_pwm0_groups, ARRAY_SIZE(x1500_pwm0_groups), },
-	{ "pwm1", x1500_pwm1_groups, ARRAY_SIZE(x1500_pwm1_groups), },
-	{ "pwm2", x1500_pwm2_groups, ARRAY_SIZE(x1500_pwm2_groups), },
-	{ "pwm3", x1500_pwm3_groups, ARRAY_SIZE(x1500_pwm3_groups), },
-	{ "pwm4", x1500_pwm4_groups, ARRAY_SIZE(x1500_pwm4_groups), },
+static const struct pinfunction x1500_functions[] = {
+	INGENIC_PIN_FUNCTION("uart0", x1500_uart0),
+	INGENIC_PIN_FUNCTION("uart1", x1500_uart1),
+	INGENIC_PIN_FUNCTION("uart2", x1500_uart2),
+	INGENIC_PIN_FUNCTION("sfc", x1000_sfc),
+	INGENIC_PIN_FUNCTION("mmc", x1500_mmc),
+	INGENIC_PIN_FUNCTION("i2c0", x1500_i2c0),
+	INGENIC_PIN_FUNCTION("i2c1", x1500_i2c1),
+	INGENIC_PIN_FUNCTION("i2c2", x1500_i2c2),
+	INGENIC_PIN_FUNCTION("i2s", x1500_i2s),
+	INGENIC_PIN_FUNCTION("dmic", x1500_dmic),
+	INGENIC_PIN_FUNCTION("cim", x1500_cim),
+	INGENIC_PIN_FUNCTION("pwm0", x1500_pwm0),
+	INGENIC_PIN_FUNCTION("pwm1", x1500_pwm1),
+	INGENIC_PIN_FUNCTION("pwm2", x1500_pwm2),
+	INGENIC_PIN_FUNCTION("pwm3", x1500_pwm3),
+	INGENIC_PIN_FUNCTION("pwm4", x1500_pwm4),
 };
 
 static const struct ingenic_chip_info x1500_chip_info = {
@@ -2338,6 +2367,233 @@ static const struct ingenic_chip_info x1500_chip_info = {
 	.num_functions = ARRAY_SIZE(x1500_functions),
 	.pull_ups = x1000_pull_ups,
 	.pull_downs = x1000_pull_downs,
+	.access_table = &x1000_access_table,
+};
+
+static const u32 x1600_pull_ups[4] = {
+	0xffffffff, 0xdffbf7bf, 0x987e0000, 0x0000003f,
+};
+
+static const u32 x1600_pull_downs[4] = {
+	0x00000000, 0x00000000, 0x07000007, 0x00000000,
+};
+
+static int x1600_uart0_data_pins[] = { 0x27, 0x28, };
+static int x1600_uart0_hwflow_pins[] = { 0x29, 0x2a, };
+static int x1600_uart1_data_pins[] = { 0x23, 0x22, };
+static int x1600_uart1_hwflow_pins[] = { 0x25, 0x24, };
+static int x1600_uart2_data_a_pins[] = { 0x1f, 0x1e, };
+static int x1600_uart2_data_b_pins[] = { 0x21, 0x20, };
+static int x1600_uart3_data_b_pins[] = { 0x25, 0x24, };
+static int x1600_uart3_data_d_pins[] = { 0x65, 0x64, };
+static int x1600_sfc_pins[] = { 0x53, 0x54, 0x55, 0x56, 0x51, 0x52, 0x24, };
+static int x1600_ssi_dt_a_pins[] = { 0x1e, };
+static int x1600_ssi_dt_b_pins[] = { 0x2d, };
+static int x1600_ssi_dr_a_pins[] = { 0x1d, };
+static int x1600_ssi_dr_b_pins[] = { 0x2e, };
+static int x1600_ssi_clk_a_pins[] = { 0x1f, };
+static int x1600_ssi_clk_b_pins[] = { 0x2c, };
+static int x1600_ssi_ce0_a_pins[] = { 0x1c, };
+static int x1600_ssi_ce0_b_pins[] = { 0x31, };
+static int x1600_ssi_ce1_a_pins[] = { 0x22, };
+static int x1600_ssi_ce1_b_pins[] = { 0x30, };
+static int x1600_mmc0_1bit_b_pins[] = { 0x2c, 0x2d, 0x2e, };
+static int x1600_mmc0_4bit_b_pins[] = { 0x2f, 0x30, 0x31, };
+static int x1600_mmc0_1bit_c_pins[] = { 0x51, 0x53, 0x54, };
+static int x1600_mmc0_4bit_c_pins[] = { 0x56, 0x55, 0x52, };
+static int x1600_mmc1_1bit_pins[] = { 0x60, 0x61, 0x62, };
+static int x1600_mmc1_4bit_pins[] = { 0x63, 0x64, 0x65, };
+static int x1600_i2c0_a_pins[] = { 0x1d, 0x1c, };
+static int x1600_i2c0_b_pins[] = { 0x3f, 0x3e, };
+static int x1600_i2c1_b_15_pins[] = { 0x30, 0x2f, };
+static int x1600_i2c1_b_19_pins[] = { 0x34, 0x33, };
+static int x1600_i2s_data_tx_pins[] = { 0x39, };
+static int x1600_i2s_data_rx_pins[] = { 0x35, };
+static int x1600_i2s_clk_rx_pins[] = { 0x37, 0x38, };
+static int x1600_i2s_clk_tx_pins[] = { 0x3b, 0x3c, };
+static int x1600_i2s_sysclk_pins[] = { 0x36, 0x3a, };
+
+static int x1600_cim_pins[] = {
+	0x14, 0x16, 0x15, 0x18, 0x13,
+	0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+};
+
+static int x1600_slcd_8bit_pins[] = {
+	0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+	0x17, 0x19, 0x1a, 0x1b,
+};
+
+static int x1600_slcd_16bit_pins[] = {
+	0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+};
+
+static int x1600_lcd_16bit_pins[] = {
+	0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+	0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+	0x18, 0x19, 0x1a, 0x1b,
+};
+
+static int x1600_lcd_18bit_pins[] = {
+	0x10, 0x11,
+};
+
+static int x1600_lcd_24bit_pins[] = {
+	0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+};
+
+static int x1600_pwm_pwm0_pins[] = { 0x40, };
+static int x1600_pwm_pwm1_pins[] = { 0x41, };
+static int x1600_pwm_pwm2_pins[] = { 0x42, };
+static int x1600_pwm_pwm3_pins[] = { 0x58, };
+static int x1600_pwm_pwm4_pins[] = { 0x59, };
+static int x1600_pwm_pwm5_b_pins[] = { 0x33, };
+static int x1600_pwm_pwm5_c_pins[] = { 0x5a, };
+static int x1600_pwm_pwm6_b9_pins[] = { 0x29, };
+static int x1600_pwm_pwm6_b20_pins[] = { 0x34, };
+static int x1600_pwm_pwm7_b10_pins[] = { 0x2a, };
+static int x1600_pwm_pwm7_b21_pins[] = { 0x35, };
+
+static int x1600_mac_pins[] = {
+	0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c,
+};
+
+static int x1600_sfc_funcs[] = { 0, 0, 0, 0, 0, 0, 2, };
+
+static const struct group_desc x1600_groups[] = {
+	INGENIC_PIN_GROUP("uart0-data", x1600_uart0_data, 0),
+	INGENIC_PIN_GROUP("uart0-hwflow", x1600_uart0_hwflow, 0),
+	INGENIC_PIN_GROUP("uart1-data", x1600_uart1_data, 1),
+	INGENIC_PIN_GROUP("uart1-hwflow", x1600_uart1_hwflow, 1),
+	INGENIC_PIN_GROUP("uart2-data-a", x1600_uart2_data_a, 2),
+	INGENIC_PIN_GROUP("uart2-data-b", x1600_uart2_data_b, 1),
+	INGENIC_PIN_GROUP("uart3-data-b", x1600_uart3_data_b, 0),
+	INGENIC_PIN_GROUP("uart3-data-d", x1600_uart3_data_d, 2),
+	INGENIC_PIN_GROUP_FUNCS("sfc", x1600_sfc, x1600_sfc_funcs),
+	INGENIC_PIN_GROUP("ssi-dt-a", x1600_ssi_dt_a, 0),
+	INGENIC_PIN_GROUP("ssi-dt-b", x1600_ssi_dt_b, 1),
+	INGENIC_PIN_GROUP("ssi-dr-a", x1600_ssi_dr_a, 0),
+	INGENIC_PIN_GROUP("ssi-dr-b", x1600_ssi_dr_b, 1),
+	INGENIC_PIN_GROUP("ssi-clk-a", x1600_ssi_clk_a, 0),
+	INGENIC_PIN_GROUP("ssi-clk-b", x1600_ssi_clk_b, 1),
+	INGENIC_PIN_GROUP("ssi-ce0-a", x1600_ssi_ce0_a, 0),
+	INGENIC_PIN_GROUP("ssi-ce0-b", x1600_ssi_ce0_b, 1),
+	INGENIC_PIN_GROUP("ssi-ce1-a", x1600_ssi_ce1_a, 2),
+	INGENIC_PIN_GROUP("ssi-ce1-b", x1600_ssi_ce1_b, 1),
+	INGENIC_PIN_GROUP("mmc0-1bit-b", x1600_mmc0_1bit_b, 0),
+	INGENIC_PIN_GROUP("mmc0-4bit-b", x1600_mmc0_4bit_b, 0),
+	INGENIC_PIN_GROUP("mmc0-1bit-c", x1600_mmc0_1bit_c, 1),
+	INGENIC_PIN_GROUP("mmc0-4bit-c", x1600_mmc0_4bit_c, 1),
+	INGENIC_PIN_GROUP("mmc1-1bit", x1600_mmc1_1bit, 0),
+	INGENIC_PIN_GROUP("mmc1-4bit", x1600_mmc1_4bit, 0),
+	INGENIC_PIN_GROUP("i2c0-data-a", x1600_i2c0_a, 2),
+	INGENIC_PIN_GROUP("i2c0-data-b", x1600_i2c0_b, 0),
+	INGENIC_PIN_GROUP("i2c1-data-b-15", x1600_i2c1_b_15, 2),
+	INGENIC_PIN_GROUP("i2c1-data-b-19", x1600_i2c1_b_19, 0),
+	INGENIC_PIN_GROUP("i2s-data-tx", x1600_i2s_data_tx, 0),
+	INGENIC_PIN_GROUP("i2s-data-rx", x1600_i2s_data_rx, 0),
+	INGENIC_PIN_GROUP("i2s-clk-rx", x1600_i2s_clk_rx, 0),
+	INGENIC_PIN_GROUP("i2s-clk-tx", x1600_i2s_clk_tx, 0),
+	INGENIC_PIN_GROUP("i2s-sysclk", x1600_i2s_sysclk, 0),
+	INGENIC_PIN_GROUP("cim-data", x1600_cim, 2),
+	INGENIC_PIN_GROUP("slcd-8bit", x1600_slcd_8bit, 1),
+	INGENIC_PIN_GROUP("slcd-16bit", x1600_slcd_16bit, 1),
+	INGENIC_PIN_GROUP("lcd-16bit", x1600_lcd_16bit, 0),
+	INGENIC_PIN_GROUP("lcd-18bit", x1600_lcd_18bit, 0),
+	INGENIC_PIN_GROUP("lcd-24bit", x1600_lcd_24bit, 0),
+	INGENIC_PIN_GROUP("pwm0", x1600_pwm_pwm0, 0),
+	INGENIC_PIN_GROUP("pwm1", x1600_pwm_pwm1, 0),
+	INGENIC_PIN_GROUP("pwm2", x1600_pwm_pwm2, 0),
+	INGENIC_PIN_GROUP("pwm3", x1600_pwm_pwm3, 1),
+	INGENIC_PIN_GROUP("pwm4", x1600_pwm_pwm4, 1),
+	INGENIC_PIN_GROUP("pwm5-b", x1600_pwm_pwm5_b, 2),
+	INGENIC_PIN_GROUP("pwm5-c", x1600_pwm_pwm5_c, 1),
+	INGENIC_PIN_GROUP("pwm6-b9", x1600_pwm_pwm6_b9, 1),
+	INGENIC_PIN_GROUP("pwm6-b20", x1600_pwm_pwm6_b20, 2),
+	INGENIC_PIN_GROUP("pwm7-b10", x1600_pwm_pwm7_b10, 1),
+	INGENIC_PIN_GROUP("pwm7-b21", x1600_pwm_pwm7_b21, 2),
+	INGENIC_PIN_GROUP("mac", x1600_mac, 1),
+};
+
+static const char * const x1600_uart0_groups[] = { "uart0-data", "uart0-hwflow", };
+static const char * const x1600_uart1_groups[] = { "uart1-data", "uart1-hwflow", };
+static const char * const x1600_uart2_groups[] = { "uart2-data-a", "uart2-data-b", };
+static const char * const x1600_uart3_groups[] = { "uart3-data-b", "uart3-data-d", };
+
+static const char * const x1600_sfc_groups[] = { "sfc", };
+
+static const char * const x1600_ssi_groups[] = {
+	"ssi-dt-a", "ssi-dt-b",
+	"ssi-dr-a", "ssi-dr-b",
+	"ssi-clk-a", "ssi-clk-b",
+	"ssi-ce0-a", "ssi-ce0-b",
+	"ssi-ce1-a", "ssi-ce1-b",
+};
+
+static const char * const x1600_mmc0_groups[] = { "mmc0-1bit-b", "mmc0-4bit-b",
+	"mmc0-1bit-c", "mmc0-4bit-c",
+};
+
+static const char * const x1600_mmc1_groups[] = { "mmc1-1bit", "mmc1-4bit", };
+
+static const char * const x1600_i2c0_groups[] = { "i2c0-data-a", "i2c0-data-b", };
+static const char * const x1600_i2c1_groups[] = { "i2c1-data-b-15", "i2c1-data-b-19", };
+
+static const char * const x1600_i2s_groups[] = {
+	"i2s-data-tx", "i2s-data-rx", "i2s-clk-rx", "i2s-clk-tx", "i2s-sysclk",
+};
+
+static const char * const x1600_cim_groups[] = { "cim-data", };
+
+static const char * const x1600_lcd_groups[] = { "slcd-8bit", "slcd-16bit",
+	"lcd-16bit", "lcd-18bit", "lcd-24bit", "lcd-no-pins",
+};
+
+static const char * const x1600_pwm0_groups[] = { "pwm0", };
+static const char * const x1600_pwm1_groups[] = { "pwm1", };
+static const char * const x1600_pwm2_groups[] = { "pwm2", };
+static const char * const x1600_pwm3_groups[] = { "pwm3", };
+static const char * const x1600_pwm4_groups[] = { "pwm4", };
+static const char * const x1600_pwm5_groups[] = { "pwm5-b", "pwm5-c", };
+static const char * const x1600_pwm6_groups[] = { "pwm6-b9", "pwm6-b20", };
+static const char * const x1600_pwm7_groups[] = { "pwm7-b10", "pwm7-b21", };
+
+static const char * const x1600_mac_groups[] = { "mac", };
+
+static const struct pinfunction x1600_functions[] = {
+	INGENIC_PIN_FUNCTION("uart0", x1600_uart0),
+	INGENIC_PIN_FUNCTION("uart1", x1600_uart1),
+	INGENIC_PIN_FUNCTION("uart2", x1600_uart2),
+	INGENIC_PIN_FUNCTION("uart3", x1600_uart3),
+	INGENIC_PIN_FUNCTION("sfc", x1600_sfc),
+	INGENIC_PIN_FUNCTION("ssi", x1600_ssi),
+	INGENIC_PIN_FUNCTION("mmc0", x1600_mmc0),
+	INGENIC_PIN_FUNCTION("mmc1", x1600_mmc1),
+	INGENIC_PIN_FUNCTION("i2c0", x1600_i2c0),
+	INGENIC_PIN_FUNCTION("i2c1", x1600_i2c1),
+	INGENIC_PIN_FUNCTION("i2s", x1600_i2s),
+	INGENIC_PIN_FUNCTION("cim", x1600_cim),
+	INGENIC_PIN_FUNCTION("lcd", x1600_lcd),
+	INGENIC_PIN_FUNCTION("pwm0", x1600_pwm0),
+	INGENIC_PIN_FUNCTION("pwm1", x1600_pwm1),
+	INGENIC_PIN_FUNCTION("pwm2", x1600_pwm2),
+	INGENIC_PIN_FUNCTION("pwm3", x1600_pwm3),
+	INGENIC_PIN_FUNCTION("pwm4", x1600_pwm4),
+	INGENIC_PIN_FUNCTION("pwm5", x1600_pwm5),
+	INGENIC_PIN_FUNCTION("pwm6", x1600_pwm6),
+	INGENIC_PIN_FUNCTION("pwm7", x1600_pwm7),
+	INGENIC_PIN_FUNCTION("mac", x1600_mac),
+};
+
+static const struct ingenic_chip_info x1600_chip_info = {
+	.num_chips = 4,
+	.reg_offset = 0x100,
+	.version = ID_X1600,
+	.groups = x1600_groups,
+	.num_groups = ARRAY_SIZE(x1600_groups),
+	.functions = x1600_functions,
+	.num_functions = ARRAY_SIZE(x1600_functions),
+	.pull_ups = x1600_pull_ups,
+	.pull_downs = x1600_pull_downs,
 	.access_table = &x1000_access_table,
 };
 
@@ -2520,29 +2776,29 @@ static const char *x1830_pwm6_groups[] = { "pwm6-c-17", "pwm6-c-27", };
 static const char *x1830_pwm7_groups[] = { "pwm7-c-18", "pwm7-c-28", };
 static const char *x1830_mac_groups[] = { "mac", };
 
-static const struct function_desc x1830_functions[] = {
-	{ "uart0", x1830_uart0_groups, ARRAY_SIZE(x1830_uart0_groups), },
-	{ "uart1", x1830_uart1_groups, ARRAY_SIZE(x1830_uart1_groups), },
-	{ "sfc", x1830_sfc_groups, ARRAY_SIZE(x1830_sfc_groups), },
-	{ "ssi0", x1830_ssi0_groups, ARRAY_SIZE(x1830_ssi0_groups), },
-	{ "ssi1", x1830_ssi1_groups, ARRAY_SIZE(x1830_ssi1_groups), },
-	{ "mmc0", x1830_mmc0_groups, ARRAY_SIZE(x1830_mmc0_groups), },
-	{ "mmc1", x1830_mmc1_groups, ARRAY_SIZE(x1830_mmc1_groups), },
-	{ "i2c0", x1830_i2c0_groups, ARRAY_SIZE(x1830_i2c0_groups), },
-	{ "i2c1", x1830_i2c1_groups, ARRAY_SIZE(x1830_i2c1_groups), },
-	{ "i2c2", x1830_i2c2_groups, ARRAY_SIZE(x1830_i2c2_groups), },
-	{ "i2s", x1830_i2s_groups, ARRAY_SIZE(x1830_i2s_groups), },
-	{ "dmic", x1830_dmic_groups, ARRAY_SIZE(x1830_dmic_groups), },
-	{ "lcd", x1830_lcd_groups, ARRAY_SIZE(x1830_lcd_groups), },
-	{ "pwm0", x1830_pwm0_groups, ARRAY_SIZE(x1830_pwm0_groups), },
-	{ "pwm1", x1830_pwm1_groups, ARRAY_SIZE(x1830_pwm1_groups), },
-	{ "pwm2", x1830_pwm2_groups, ARRAY_SIZE(x1830_pwm2_groups), },
-	{ "pwm3", x1830_pwm3_groups, ARRAY_SIZE(x1830_pwm3_groups), },
-	{ "pwm4", x1830_pwm4_groups, ARRAY_SIZE(x1830_pwm4_groups), },
-	{ "pwm5", x1830_pwm5_groups, ARRAY_SIZE(x1830_pwm4_groups), },
-	{ "pwm6", x1830_pwm6_groups, ARRAY_SIZE(x1830_pwm4_groups), },
-	{ "pwm7", x1830_pwm7_groups, ARRAY_SIZE(x1830_pwm4_groups), },
-	{ "mac", x1830_mac_groups, ARRAY_SIZE(x1830_mac_groups), },
+static const struct pinfunction x1830_functions[] = {
+	INGENIC_PIN_FUNCTION("uart0", x1830_uart0),
+	INGENIC_PIN_FUNCTION("uart1", x1830_uart1),
+	INGENIC_PIN_FUNCTION("sfc", x1830_sfc),
+	INGENIC_PIN_FUNCTION("ssi0", x1830_ssi0),
+	INGENIC_PIN_FUNCTION("ssi1", x1830_ssi1),
+	INGENIC_PIN_FUNCTION("mmc0", x1830_mmc0),
+	INGENIC_PIN_FUNCTION("mmc1", x1830_mmc1),
+	INGENIC_PIN_FUNCTION("i2c0", x1830_i2c0),
+	INGENIC_PIN_FUNCTION("i2c1", x1830_i2c1),
+	INGENIC_PIN_FUNCTION("i2c2", x1830_i2c2),
+	INGENIC_PIN_FUNCTION("i2s", x1830_i2s),
+	INGENIC_PIN_FUNCTION("dmic", x1830_dmic),
+	INGENIC_PIN_FUNCTION("lcd", x1830_lcd),
+	INGENIC_PIN_FUNCTION("pwm0", x1830_pwm0),
+	INGENIC_PIN_FUNCTION("pwm1", x1830_pwm1),
+	INGENIC_PIN_FUNCTION("pwm2", x1830_pwm2),
+	INGENIC_PIN_FUNCTION("pwm3", x1830_pwm3),
+	INGENIC_PIN_FUNCTION("pwm4", x1830_pwm4),
+	INGENIC_PIN_FUNCTION("pwm5", x1830_pwm5),
+	INGENIC_PIN_FUNCTION("pwm6", x1830_pwm6),
+	INGENIC_PIN_FUNCTION("pwm7", x1830_pwm7),
+	INGENIC_PIN_FUNCTION("mac", x1830_mac),
 };
 
 static const struct regmap_range x1830_access_ranges[] = {
@@ -2966,57 +3222,57 @@ static const char *x2000_mac0_groups[] = { "mac0-rmii", "mac0-rgmii", };
 static const char *x2000_mac1_groups[] = { "mac1-rmii", "mac1-rgmii", };
 static const char *x2000_otg_groups[] = { "otg-vbus", };
 
-static const struct function_desc x2000_functions[] = {
-	{ "uart0", x2000_uart0_groups, ARRAY_SIZE(x2000_uart0_groups), },
-	{ "uart1", x2000_uart1_groups, ARRAY_SIZE(x2000_uart1_groups), },
-	{ "uart2", x2000_uart2_groups, ARRAY_SIZE(x2000_uart2_groups), },
-	{ "uart3", x2000_uart3_groups, ARRAY_SIZE(x2000_uart3_groups), },
-	{ "uart4", x2000_uart4_groups, ARRAY_SIZE(x2000_uart4_groups), },
-	{ "uart5", x2000_uart5_groups, ARRAY_SIZE(x2000_uart5_groups), },
-	{ "uart6", x2000_uart6_groups, ARRAY_SIZE(x2000_uart6_groups), },
-	{ "uart7", x2000_uart7_groups, ARRAY_SIZE(x2000_uart7_groups), },
-	{ "uart8", x2000_uart8_groups, ARRAY_SIZE(x2000_uart8_groups), },
-	{ "uart9", x2000_uart9_groups, ARRAY_SIZE(x2000_uart9_groups), },
-	{ "sfc", x2000_sfc_groups, ARRAY_SIZE(x2000_sfc_groups), },
-	{ "ssi0", x2000_ssi0_groups, ARRAY_SIZE(x2000_ssi0_groups), },
-	{ "ssi1", x2000_ssi1_groups, ARRAY_SIZE(x2000_ssi1_groups), },
-	{ "mmc0", x2000_mmc0_groups, ARRAY_SIZE(x2000_mmc0_groups), },
-	{ "mmc1", x2000_mmc1_groups, ARRAY_SIZE(x2000_mmc1_groups), },
-	{ "mmc2", x2000_mmc2_groups, ARRAY_SIZE(x2000_mmc2_groups), },
-	{ "emc", x2000_emc_groups, ARRAY_SIZE(x2000_emc_groups), },
-	{ "emc-cs1", x2000_cs1_groups, ARRAY_SIZE(x2000_cs1_groups), },
-	{ "emc-cs2", x2000_cs2_groups, ARRAY_SIZE(x2000_cs2_groups), },
-	{ "i2c0", x2000_i2c0_groups, ARRAY_SIZE(x2000_i2c0_groups), },
-	{ "i2c1", x2000_i2c1_groups, ARRAY_SIZE(x2000_i2c1_groups), },
-	{ "i2c2", x2000_i2c2_groups, ARRAY_SIZE(x2000_i2c2_groups), },
-	{ "i2c3", x2000_i2c3_groups, ARRAY_SIZE(x2000_i2c3_groups), },
-	{ "i2c4", x2000_i2c4_groups, ARRAY_SIZE(x2000_i2c4_groups), },
-	{ "i2c5", x2000_i2c5_groups, ARRAY_SIZE(x2000_i2c5_groups), },
-	{ "i2s1", x2000_i2s1_groups, ARRAY_SIZE(x2000_i2s1_groups), },
-	{ "i2s2", x2000_i2s2_groups, ARRAY_SIZE(x2000_i2s2_groups), },
-	{ "i2s3", x2000_i2s3_groups, ARRAY_SIZE(x2000_i2s3_groups), },
-	{ "dmic", x2000_dmic_groups, ARRAY_SIZE(x2000_dmic_groups), },
-	{ "cim", x2000_cim_groups, ARRAY_SIZE(x2000_cim_groups), },
-	{ "lcd", x2000_lcd_groups, ARRAY_SIZE(x2000_lcd_groups), },
-	{ "pwm0", x2000_pwm0_groups, ARRAY_SIZE(x2000_pwm0_groups), },
-	{ "pwm1", x2000_pwm1_groups, ARRAY_SIZE(x2000_pwm1_groups), },
-	{ "pwm2", x2000_pwm2_groups, ARRAY_SIZE(x2000_pwm2_groups), },
-	{ "pwm3", x2000_pwm3_groups, ARRAY_SIZE(x2000_pwm3_groups), },
-	{ "pwm4", x2000_pwm4_groups, ARRAY_SIZE(x2000_pwm4_groups), },
-	{ "pwm5", x2000_pwm5_groups, ARRAY_SIZE(x2000_pwm5_groups), },
-	{ "pwm6", x2000_pwm6_groups, ARRAY_SIZE(x2000_pwm6_groups), },
-	{ "pwm7", x2000_pwm7_groups, ARRAY_SIZE(x2000_pwm7_groups), },
-	{ "pwm8", x2000_pwm8_groups, ARRAY_SIZE(x2000_pwm8_groups), },
-	{ "pwm9", x2000_pwm9_groups, ARRAY_SIZE(x2000_pwm9_groups), },
-	{ "pwm10", x2000_pwm10_groups, ARRAY_SIZE(x2000_pwm10_groups), },
-	{ "pwm11", x2000_pwm11_groups, ARRAY_SIZE(x2000_pwm11_groups), },
-	{ "pwm12", x2000_pwm12_groups, ARRAY_SIZE(x2000_pwm12_groups), },
-	{ "pwm13", x2000_pwm13_groups, ARRAY_SIZE(x2000_pwm13_groups), },
-	{ "pwm14", x2000_pwm14_groups, ARRAY_SIZE(x2000_pwm14_groups), },
-	{ "pwm15", x2000_pwm15_groups, ARRAY_SIZE(x2000_pwm15_groups), },
-	{ "mac0", x2000_mac0_groups, ARRAY_SIZE(x2000_mac0_groups), },
-	{ "mac1", x2000_mac1_groups, ARRAY_SIZE(x2000_mac1_groups), },
-	{ "otg", x2000_otg_groups, ARRAY_SIZE(x2000_otg_groups), },
+static const struct pinfunction x2000_functions[] = {
+	INGENIC_PIN_FUNCTION("uart0", x2000_uart0),
+	INGENIC_PIN_FUNCTION("uart1", x2000_uart1),
+	INGENIC_PIN_FUNCTION("uart2", x2000_uart2),
+	INGENIC_PIN_FUNCTION("uart3", x2000_uart3),
+	INGENIC_PIN_FUNCTION("uart4", x2000_uart4),
+	INGENIC_PIN_FUNCTION("uart5", x2000_uart5),
+	INGENIC_PIN_FUNCTION("uart6", x2000_uart6),
+	INGENIC_PIN_FUNCTION("uart7", x2000_uart7),
+	INGENIC_PIN_FUNCTION("uart8", x2000_uart8),
+	INGENIC_PIN_FUNCTION("uart9", x2000_uart9),
+	INGENIC_PIN_FUNCTION("sfc", x2000_sfc),
+	INGENIC_PIN_FUNCTION("ssi0", x2000_ssi0),
+	INGENIC_PIN_FUNCTION("ssi1", x2000_ssi1),
+	INGENIC_PIN_FUNCTION("mmc0", x2000_mmc0),
+	INGENIC_PIN_FUNCTION("mmc1", x2000_mmc1),
+	INGENIC_PIN_FUNCTION("mmc2", x2000_mmc2),
+	INGENIC_PIN_FUNCTION("emc", x2000_emc),
+	INGENIC_PIN_FUNCTION("emc-cs1", x2000_cs1),
+	INGENIC_PIN_FUNCTION("emc-cs2", x2000_cs2),
+	INGENIC_PIN_FUNCTION("i2c0", x2000_i2c0),
+	INGENIC_PIN_FUNCTION("i2c1", x2000_i2c1),
+	INGENIC_PIN_FUNCTION("i2c2", x2000_i2c2),
+	INGENIC_PIN_FUNCTION("i2c3", x2000_i2c3),
+	INGENIC_PIN_FUNCTION("i2c4", x2000_i2c4),
+	INGENIC_PIN_FUNCTION("i2c5", x2000_i2c5),
+	INGENIC_PIN_FUNCTION("i2s1", x2000_i2s1),
+	INGENIC_PIN_FUNCTION("i2s2", x2000_i2s2),
+	INGENIC_PIN_FUNCTION("i2s3", x2000_i2s3),
+	INGENIC_PIN_FUNCTION("dmic", x2000_dmic),
+	INGENIC_PIN_FUNCTION("cim", x2000_cim),
+	INGENIC_PIN_FUNCTION("lcd", x2000_lcd),
+	INGENIC_PIN_FUNCTION("pwm0", x2000_pwm0),
+	INGENIC_PIN_FUNCTION("pwm1", x2000_pwm1),
+	INGENIC_PIN_FUNCTION("pwm2", x2000_pwm2),
+	INGENIC_PIN_FUNCTION("pwm3", x2000_pwm3),
+	INGENIC_PIN_FUNCTION("pwm4", x2000_pwm4),
+	INGENIC_PIN_FUNCTION("pwm5", x2000_pwm5),
+	INGENIC_PIN_FUNCTION("pwm6", x2000_pwm6),
+	INGENIC_PIN_FUNCTION("pwm7", x2000_pwm7),
+	INGENIC_PIN_FUNCTION("pwm8", x2000_pwm8),
+	INGENIC_PIN_FUNCTION("pwm9", x2000_pwm9),
+	INGENIC_PIN_FUNCTION("pwm10", x2000_pwm10),
+	INGENIC_PIN_FUNCTION("pwm11", x2000_pwm11),
+	INGENIC_PIN_FUNCTION("pwm12", x2000_pwm12),
+	INGENIC_PIN_FUNCTION("pwm13", x2000_pwm13),
+	INGENIC_PIN_FUNCTION("pwm14", x2000_pwm14),
+	INGENIC_PIN_FUNCTION("pwm15", x2000_pwm15),
+	INGENIC_PIN_FUNCTION("mac0", x2000_mac0),
+	INGENIC_PIN_FUNCTION("mac1", x2000_mac1),
+	INGENIC_PIN_FUNCTION("otg", x2000_otg),
 };
 
 static const struct regmap_range x2000_access_ranges[] = {
@@ -3190,55 +3446,55 @@ static const struct group_desc x2100_groups[] = {
 
 static const char *x2100_mac_groups[] = { "mac", };
 
-static const struct function_desc x2100_functions[] = {
-	{ "uart0", x2000_uart0_groups, ARRAY_SIZE(x2000_uart0_groups), },
-	{ "uart1", x2000_uart1_groups, ARRAY_SIZE(x2000_uart1_groups), },
-	{ "uart2", x2000_uart2_groups, ARRAY_SIZE(x2000_uart2_groups), },
-	{ "uart3", x2000_uart3_groups, ARRAY_SIZE(x2000_uart3_groups), },
-	{ "uart4", x2000_uart4_groups, ARRAY_SIZE(x2000_uart4_groups), },
-	{ "uart5", x2000_uart5_groups, ARRAY_SIZE(x2000_uart5_groups), },
-	{ "uart6", x2000_uart6_groups, ARRAY_SIZE(x2000_uart6_groups), },
-	{ "uart7", x2000_uart7_groups, ARRAY_SIZE(x2000_uart7_groups), },
-	{ "uart8", x2000_uart8_groups, ARRAY_SIZE(x2000_uart8_groups), },
-	{ "uart9", x2000_uart9_groups, ARRAY_SIZE(x2000_uart9_groups), },
-	{ "sfc", x2000_sfc_groups, ARRAY_SIZE(x2000_sfc_groups), },
-	{ "ssi0", x2000_ssi0_groups, ARRAY_SIZE(x2000_ssi0_groups), },
-	{ "ssi1", x2000_ssi1_groups, ARRAY_SIZE(x2000_ssi1_groups), },
-	{ "mmc0", x2000_mmc0_groups, ARRAY_SIZE(x2000_mmc0_groups), },
-	{ "mmc1", x2000_mmc1_groups, ARRAY_SIZE(x2000_mmc1_groups), },
-	{ "mmc2", x2000_mmc2_groups, ARRAY_SIZE(x2000_mmc2_groups), },
-	{ "emc", x2000_emc_groups, ARRAY_SIZE(x2000_emc_groups), },
-	{ "emc-cs1", x2000_cs1_groups, ARRAY_SIZE(x2000_cs1_groups), },
-	{ "emc-cs2", x2000_cs2_groups, ARRAY_SIZE(x2000_cs2_groups), },
-	{ "i2c0", x2000_i2c0_groups, ARRAY_SIZE(x2000_i2c0_groups), },
-	{ "i2c1", x2000_i2c1_groups, ARRAY_SIZE(x2000_i2c1_groups), },
-	{ "i2c2", x2000_i2c2_groups, ARRAY_SIZE(x2000_i2c2_groups), },
-	{ "i2c3", x2000_i2c3_groups, ARRAY_SIZE(x2000_i2c3_groups), },
-	{ "i2c4", x2000_i2c4_groups, ARRAY_SIZE(x2000_i2c4_groups), },
-	{ "i2c5", x2000_i2c5_groups, ARRAY_SIZE(x2000_i2c5_groups), },
-	{ "i2s1", x2000_i2s1_groups, ARRAY_SIZE(x2000_i2s1_groups), },
-	{ "i2s2", x2000_i2s2_groups, ARRAY_SIZE(x2000_i2s2_groups), },
-	{ "i2s3", x2000_i2s3_groups, ARRAY_SIZE(x2000_i2s3_groups), },
-	{ "dmic", x2000_dmic_groups, ARRAY_SIZE(x2000_dmic_groups), },
-	{ "cim", x2000_cim_groups, ARRAY_SIZE(x2000_cim_groups), },
-	{ "lcd", x2000_lcd_groups, ARRAY_SIZE(x2000_lcd_groups), },
-	{ "pwm0", x2000_pwm0_groups, ARRAY_SIZE(x2000_pwm0_groups), },
-	{ "pwm1", x2000_pwm1_groups, ARRAY_SIZE(x2000_pwm1_groups), },
-	{ "pwm2", x2000_pwm2_groups, ARRAY_SIZE(x2000_pwm2_groups), },
-	{ "pwm3", x2000_pwm3_groups, ARRAY_SIZE(x2000_pwm3_groups), },
-	{ "pwm4", x2000_pwm4_groups, ARRAY_SIZE(x2000_pwm4_groups), },
-	{ "pwm5", x2000_pwm5_groups, ARRAY_SIZE(x2000_pwm5_groups), },
-	{ "pwm6", x2000_pwm6_groups, ARRAY_SIZE(x2000_pwm6_groups), },
-	{ "pwm7", x2000_pwm7_groups, ARRAY_SIZE(x2000_pwm7_groups), },
-	{ "pwm8", x2000_pwm8_groups, ARRAY_SIZE(x2000_pwm8_groups), },
-	{ "pwm9", x2000_pwm9_groups, ARRAY_SIZE(x2000_pwm9_groups), },
-	{ "pwm10", x2000_pwm10_groups, ARRAY_SIZE(x2000_pwm10_groups), },
-	{ "pwm11", x2000_pwm11_groups, ARRAY_SIZE(x2000_pwm11_groups), },
-	{ "pwm12", x2000_pwm12_groups, ARRAY_SIZE(x2000_pwm12_groups), },
-	{ "pwm13", x2000_pwm13_groups, ARRAY_SIZE(x2000_pwm13_groups), },
-	{ "pwm14", x2000_pwm14_groups, ARRAY_SIZE(x2000_pwm14_groups), },
-	{ "pwm15", x2000_pwm15_groups, ARRAY_SIZE(x2000_pwm15_groups), },
-	{ "mac", x2100_mac_groups, ARRAY_SIZE(x2100_mac_groups), },
+static const struct pinfunction x2100_functions[] = {
+	INGENIC_PIN_FUNCTION("uart0", x2000_uart0),
+	INGENIC_PIN_FUNCTION("uart1", x2000_uart1),
+	INGENIC_PIN_FUNCTION("uart2", x2000_uart2),
+	INGENIC_PIN_FUNCTION("uart3", x2000_uart3),
+	INGENIC_PIN_FUNCTION("uart4", x2000_uart4),
+	INGENIC_PIN_FUNCTION("uart5", x2000_uart5),
+	INGENIC_PIN_FUNCTION("uart6", x2000_uart6),
+	INGENIC_PIN_FUNCTION("uart7", x2000_uart7),
+	INGENIC_PIN_FUNCTION("uart8", x2000_uart8),
+	INGENIC_PIN_FUNCTION("uart9", x2000_uart9),
+	INGENIC_PIN_FUNCTION("sfc", x2000_sfc),
+	INGENIC_PIN_FUNCTION("ssi0", x2000_ssi0),
+	INGENIC_PIN_FUNCTION("ssi1", x2000_ssi1),
+	INGENIC_PIN_FUNCTION("mmc0", x2000_mmc0),
+	INGENIC_PIN_FUNCTION("mmc1", x2000_mmc1),
+	INGENIC_PIN_FUNCTION("mmc2", x2000_mmc2),
+	INGENIC_PIN_FUNCTION("emc", x2000_emc),
+	INGENIC_PIN_FUNCTION("emc-cs1", x2000_cs1),
+	INGENIC_PIN_FUNCTION("emc-cs2", x2000_cs2),
+	INGENIC_PIN_FUNCTION("i2c0", x2000_i2c0),
+	INGENIC_PIN_FUNCTION("i2c1", x2000_i2c1),
+	INGENIC_PIN_FUNCTION("i2c2", x2000_i2c2),
+	INGENIC_PIN_FUNCTION("i2c3", x2000_i2c3),
+	INGENIC_PIN_FUNCTION("i2c4", x2000_i2c4),
+	INGENIC_PIN_FUNCTION("i2c5", x2000_i2c5),
+	INGENIC_PIN_FUNCTION("i2s1", x2000_i2s1),
+	INGENIC_PIN_FUNCTION("i2s2", x2000_i2s2),
+	INGENIC_PIN_FUNCTION("i2s3", x2000_i2s3),
+	INGENIC_PIN_FUNCTION("dmic", x2000_dmic),
+	INGENIC_PIN_FUNCTION("cim", x2000_cim),
+	INGENIC_PIN_FUNCTION("lcd", x2000_lcd),
+	INGENIC_PIN_FUNCTION("pwm0", x2000_pwm0),
+	INGENIC_PIN_FUNCTION("pwm1", x2000_pwm1),
+	INGENIC_PIN_FUNCTION("pwm2", x2000_pwm2),
+	INGENIC_PIN_FUNCTION("pwm3", x2000_pwm3),
+	INGENIC_PIN_FUNCTION("pwm4", x2000_pwm4),
+	INGENIC_PIN_FUNCTION("pwm5", x2000_pwm5),
+	INGENIC_PIN_FUNCTION("pwm6", x2000_pwm6),
+	INGENIC_PIN_FUNCTION("pwm7", x2000_pwm7),
+	INGENIC_PIN_FUNCTION("pwm8", x2000_pwm8),
+	INGENIC_PIN_FUNCTION("pwm9", x2000_pwm9),
+	INGENIC_PIN_FUNCTION("pwm10", x2000_pwm10),
+	INGENIC_PIN_FUNCTION("pwm11", x2000_pwm11),
+	INGENIC_PIN_FUNCTION("pwm12", x2000_pwm12),
+	INGENIC_PIN_FUNCTION("pwm13", x2000_pwm13),
+	INGENIC_PIN_FUNCTION("pwm14", x2000_pwm14),
+	INGENIC_PIN_FUNCTION("pwm15", x2000_pwm15),
+	INGENIC_PIN_FUNCTION("mac", x2100_mac),
 };
 
 static const struct ingenic_chip_info x2100_chip_info = {
@@ -3393,7 +3649,7 @@ static void ingenic_gpio_irq_mask(struct irq_data *irqd)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(irqd);
 	struct ingenic_gpio_chip *jzgc = gpiochip_get_data(gc);
-	int irq = irqd->hwirq;
+	irq_hw_number_t irq = irqd_to_hwirq(irqd);
 
 	if (is_soc_or_above(jzgc->jzpc, ID_JZ4740))
 		ingenic_gpio_set_bit(jzgc, GPIO_MSK, irq, true);
@@ -3405,7 +3661,7 @@ static void ingenic_gpio_irq_unmask(struct irq_data *irqd)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(irqd);
 	struct ingenic_gpio_chip *jzgc = gpiochip_get_data(gc);
-	int irq = irqd->hwirq;
+	irq_hw_number_t irq = irqd_to_hwirq(irqd);
 
 	if (is_soc_or_above(jzgc->jzpc, ID_JZ4740))
 		ingenic_gpio_set_bit(jzgc, GPIO_MSK, irq, false);
@@ -3417,7 +3673,9 @@ static void ingenic_gpio_irq_enable(struct irq_data *irqd)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(irqd);
 	struct ingenic_gpio_chip *jzgc = gpiochip_get_data(gc);
-	int irq = irqd->hwirq;
+	irq_hw_number_t irq = irqd_to_hwirq(irqd);
+
+	gpiochip_enable_irq(gc, irq);
 
 	if (is_soc_or_above(jzgc->jzpc, ID_JZ4770))
 		ingenic_gpio_set_bit(jzgc, JZ4770_GPIO_INT, irq, true);
@@ -3433,7 +3691,7 @@ static void ingenic_gpio_irq_disable(struct irq_data *irqd)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(irqd);
 	struct ingenic_gpio_chip *jzgc = gpiochip_get_data(gc);
-	int irq = irqd->hwirq;
+	irq_hw_number_t irq = irqd_to_hwirq(irqd);
 
 	ingenic_gpio_irq_mask(irqd);
 
@@ -3443,13 +3701,15 @@ static void ingenic_gpio_irq_disable(struct irq_data *irqd)
 		ingenic_gpio_set_bit(jzgc, JZ4740_GPIO_SELECT, irq, false);
 	else
 		ingenic_gpio_set_bit(jzgc, JZ4730_GPIO_GPIER, irq, false);
+
+	gpiochip_disable_irq(gc, irq);
 }
 
 static void ingenic_gpio_irq_ack(struct irq_data *irqd)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(irqd);
 	struct ingenic_gpio_chip *jzgc = gpiochip_get_data(gc);
-	int irq = irqd->hwirq;
+	irq_hw_number_t irq = irqd_to_hwirq(irqd);
 	bool high;
 
 	if ((irqd_get_trigger_type(irqd) == IRQ_TYPE_EDGE_BOTH) &&
@@ -3477,6 +3737,7 @@ static int ingenic_gpio_irq_set_type(struct irq_data *irqd, unsigned int type)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(irqd);
 	struct ingenic_gpio_chip *jzgc = gpiochip_get_data(gc);
+	irq_hw_number_t irq = irqd_to_hwirq(irqd);
 
 	switch (type) {
 	case IRQ_TYPE_EDGE_BOTH:
@@ -3498,12 +3759,12 @@ static int ingenic_gpio_irq_set_type(struct irq_data *irqd, unsigned int type)
 		 * best we can do is to set up a single-edge interrupt and then
 		 * switch to the opposing edge when ACKing the interrupt.
 		 */
-		bool high = ingenic_gpio_get_value(jzgc, irqd->hwirq);
+		bool high = ingenic_gpio_get_value(jzgc, irq);
 
 		type = high ? IRQ_TYPE_LEVEL_LOW : IRQ_TYPE_LEVEL_HIGH;
 	}
 
-	irq_set_type(jzgc, irqd->hwirq, type);
+	irq_set_type(jzgc, irq, type);
 	return 0;
 }
 
@@ -3536,12 +3797,14 @@ static void ingenic_gpio_irq_handler(struct irq_desc *desc)
 	chained_irq_exit(irq_chip, desc);
 }
 
-static void ingenic_gpio_set(struct gpio_chip *gc,
-		unsigned int offset, int value)
+static int ingenic_gpio_set(struct gpio_chip *gc, unsigned int offset,
+			    int value)
 {
 	struct ingenic_gpio_chip *jzgc = gpiochip_get_data(gc);
 
 	ingenic_gpio_set_value(jzgc, offset, value);
+
+	return 0;
 }
 
 static int ingenic_gpio_get(struct gpio_chip *gc, unsigned int offset)
@@ -3551,17 +3814,11 @@ static int ingenic_gpio_get(struct gpio_chip *gc, unsigned int offset)
 	return (int) ingenic_gpio_get_value(jzgc, offset);
 }
 
-static int ingenic_gpio_direction_input(struct gpio_chip *gc,
-		unsigned int offset)
-{
-	return pinctrl_gpio_direction_input(gc->base + offset);
-}
-
 static int ingenic_gpio_direction_output(struct gpio_chip *gc,
 		unsigned int offset, int value)
 {
 	ingenic_gpio_set(gc, offset, value);
-	return pinctrl_gpio_direction_output(gc->base + offset);
+	return pinctrl_gpio_direction_output(gc, offset);
 }
 
 static inline void ingenic_config_pin(struct ingenic_pinctrl *jzpc,
@@ -3668,21 +3925,44 @@ static const struct pinctrl_ops ingenic_pctlops = {
 static int ingenic_gpio_irq_request(struct irq_data *data)
 {
 	struct gpio_chip *gpio_chip = irq_data_get_irq_chip_data(data);
+	irq_hw_number_t irq = irqd_to_hwirq(data);
 	int ret;
 
-	ret = ingenic_gpio_direction_input(gpio_chip, data->hwirq);
+	ret = pinctrl_gpio_direction_input(gpio_chip, irq);
 	if (ret)
 		return ret;
 
-	return gpiochip_reqres_irq(gpio_chip, data->hwirq);
+	return gpiochip_reqres_irq(gpio_chip, irq);
 }
 
 static void ingenic_gpio_irq_release(struct irq_data *data)
 {
 	struct gpio_chip *gpio_chip = irq_data_get_irq_chip_data(data);
+	irq_hw_number_t irq = irqd_to_hwirq(data);
 
-	return gpiochip_relres_irq(gpio_chip, data->hwirq);
+	return gpiochip_relres_irq(gpio_chip, irq);
 }
+
+static void ingenic_gpio_irq_print_chip(struct irq_data *data, struct seq_file *p)
+{
+	struct gpio_chip *gpio_chip = irq_data_get_irq_chip_data(data);
+
+	seq_puts(p, gpio_chip->label);
+}
+
+static const struct irq_chip ingenic_gpio_irqchip = {
+	.irq_enable		= ingenic_gpio_irq_enable,
+	.irq_disable		= ingenic_gpio_irq_disable,
+	.irq_unmask		= ingenic_gpio_irq_unmask,
+	.irq_mask		= ingenic_gpio_irq_mask,
+	.irq_ack		= ingenic_gpio_irq_ack,
+	.irq_set_type		= ingenic_gpio_irq_set_type,
+	.irq_set_wake		= ingenic_gpio_irq_set_wake,
+	.irq_request_resources	= ingenic_gpio_irq_request,
+	.irq_release_resources	= ingenic_gpio_irq_release,
+	.irq_print_chip		= ingenic_gpio_irq_print_chip,
+	.flags			= IRQCHIP_MASK_ON_SUSPEND | IRQCHIP_IMMUTABLE,
+};
 
 static int ingenic_pinmux_set_pin_fn(struct ingenic_pinctrl *jzpc,
 		int pin, int func)
@@ -3720,7 +4000,7 @@ static int ingenic_pinmux_set_mux(struct pinctrl_dev *pctldev,
 		unsigned int selector, unsigned int group)
 {
 	struct ingenic_pinctrl *jzpc = pinctrl_dev_get_drvdata(pctldev);
-	struct function_desc *func;
+	const struct function_desc *func;
 	struct group_desc *grp;
 	unsigned int i;
 	uintptr_t mode;
@@ -3735,17 +4015,17 @@ static int ingenic_pinmux_set_mux(struct pinctrl_dev *pctldev,
 		return -EINVAL;
 
 	dev_dbg(pctldev->dev, "enable function %s group %s\n",
-		func->name, grp->name);
+		func->func->name, grp->grp.name);
 
 	mode = (uintptr_t)grp->data;
 	if (mode <= 3) {
-		for (i = 0; i < grp->num_pins; i++)
-			ingenic_pinmux_set_pin_fn(jzpc, grp->pins[i], mode);
+		for (i = 0; i < grp->grp.npins; i++)
+			ingenic_pinmux_set_pin_fn(jzpc, grp->grp.pins[i], mode);
 	} else {
 		pin_modes = grp->data;
 
-		for (i = 0; i < grp->num_pins; i++)
-			ingenic_pinmux_set_pin_fn(jzpc, grp->pins[i], pin_modes[i]);
+		for (i = 0; i < grp->grp.npins; i++)
+			ingenic_pinmux_set_pin_fn(jzpc, grp->grp.pins[i], pin_modes[i]);
 	}
 
 	return 0;
@@ -3828,7 +4108,9 @@ static int ingenic_pinconf_get(struct pinctrl_dev *pctldev,
 		pulldown = (bias == GPIO_PULL_DOWN) && (jzpc->info->pull_downs[offt] & BIT(idx));
 
 	} else {
-		if (is_soc_or_above(jzpc, ID_JZ4770))
+		if (is_soc_or_above(jzpc, ID_X1600))
+			pull = ingenic_get_pin_config(jzpc, pin, X1600_GPIO_PU);
+		else if (is_soc_or_above(jzpc, ID_JZ4770))
 			pull = !ingenic_get_pin_config(jzpc, pin, JZ4770_GPIO_PEN);
 		else if (is_soc_or_above(jzpc, ID_JZ4740))
 			pull = !ingenic_get_pin_config(jzpc, pin, JZ4740_GPIO_PULL_DIS);
@@ -3927,6 +4209,8 @@ static void ingenic_set_bias(struct ingenic_pinctrl *jzpc,
 					REG_SET(X1830_GPIO_PEH), bias << idxh);
 		}
 
+	} else if (is_soc_or_above(jzpc, ID_X1600)) {
+		ingenic_config_pin(jzpc, pin, X1600_GPIO_PU, bias);
 	} else if (is_soc_or_above(jzpc, ID_JZ4770)) {
 		ingenic_config_pin(jzpc, pin, JZ4770_GPIO_PEN, !bias);
 	} else if (is_soc_or_above(jzpc, ID_JZ4740)) {
@@ -3980,7 +4264,7 @@ static int ingenic_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 		case PIN_CONFIG_BIAS_PULL_UP:
 		case PIN_CONFIG_BIAS_PULL_DOWN:
 		case PIN_CONFIG_INPUT_SCHMITT_ENABLE:
-		case PIN_CONFIG_OUTPUT:
+		case PIN_CONFIG_LEVEL:
 		case PIN_CONFIG_SLEW_RATE:
 			continue;
 		default:
@@ -4021,8 +4305,9 @@ static int ingenic_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 			ingenic_set_schmitt_trigger(jzpc, pin, arg);
 			break;
 
-		case PIN_CONFIG_OUTPUT:
-			ret = pinctrl_gpio_direction_output(pin);
+		case PIN_CONFIG_LEVEL:
+			ret = pinctrl_gpio_direction_output(jzpc->gc,
+							pin - jzpc->gc->base);
 			if (ret)
 				return ret;
 
@@ -4117,6 +4402,7 @@ static const struct of_device_id ingenic_gpio_of_matches[] __initconst = {
 	{ .compatible = "ingenic,jz4775-gpio" },
 	{ .compatible = "ingenic,jz4780-gpio" },
 	{ .compatible = "ingenic,x1000-gpio" },
+	{ .compatible = "ingenic,x1600-gpio" },
 	{ .compatible = "ingenic,x1830-gpio" },
 	{ .compatible = "ingenic,x2000-gpio" },
 	{ .compatible = "ingenic,x2100-gpio" },
@@ -4124,7 +4410,7 @@ static const struct of_device_id ingenic_gpio_of_matches[] __initconst = {
 };
 
 static int __init ingenic_gpio_probe(struct ingenic_pinctrl *jzpc,
-				     struct device_node *node)
+				     struct fwnode_handle *fwnode)
 {
 	struct ingenic_gpio_chip *jzgc;
 	struct device *dev = jzpc->dev;
@@ -4132,7 +4418,7 @@ static int __init ingenic_gpio_probe(struct ingenic_pinctrl *jzpc,
 	unsigned int bank;
 	int err;
 
-	err = of_property_read_u32(node, "reg", &bank);
+	err = fwnode_property_read_u32(fwnode, "reg", &bank);
 	if (err) {
 		dev_err(dev, "Cannot read \"reg\" property: %i\n", err);
 		return err;
@@ -4141,6 +4427,8 @@ static int __init ingenic_gpio_probe(struct ingenic_pinctrl *jzpc,
 	jzgc = devm_kzalloc(dev, sizeof(*jzgc), GFP_KERNEL);
 	if (!jzgc)
 		return -ENOMEM;
+
+	jzpc->gc = &jzgc->gc;
 
 	jzgc->jzpc = jzpc;
 	jzgc->reg_base = bank * jzpc->info->reg_offset;
@@ -4157,35 +4445,26 @@ static int __init ingenic_gpio_probe(struct ingenic_pinctrl *jzpc,
 
 	jzgc->gc.ngpio = 32;
 	jzgc->gc.parent = dev;
-	jzgc->gc.of_node = node;
+	jzgc->gc.fwnode = fwnode;
 	jzgc->gc.owner = THIS_MODULE;
 
 	jzgc->gc.set = ingenic_gpio_set;
 	jzgc->gc.get = ingenic_gpio_get;
-	jzgc->gc.direction_input = ingenic_gpio_direction_input;
+	jzgc->gc.direction_input = pinctrl_gpio_direction_input;
 	jzgc->gc.direction_output = ingenic_gpio_direction_output;
 	jzgc->gc.get_direction = ingenic_gpio_get_direction;
 	jzgc->gc.request = gpiochip_generic_request;
 	jzgc->gc.free = gpiochip_generic_free;
 
-	jzgc->irq = irq_of_parse_and_map(node, 0);
-	if (!jzgc->irq)
+	err = fwnode_irq_get(fwnode, 0);
+	if (err < 0)
+		return err;
+	if (!err)
 		return -EINVAL;
-
-	jzgc->irq_chip.name = jzgc->gc.label;
-	jzgc->irq_chip.irq_enable = ingenic_gpio_irq_enable;
-	jzgc->irq_chip.irq_disable = ingenic_gpio_irq_disable;
-	jzgc->irq_chip.irq_unmask = ingenic_gpio_irq_unmask;
-	jzgc->irq_chip.irq_mask = ingenic_gpio_irq_mask;
-	jzgc->irq_chip.irq_ack = ingenic_gpio_irq_ack;
-	jzgc->irq_chip.irq_set_type = ingenic_gpio_irq_set_type;
-	jzgc->irq_chip.irq_set_wake = ingenic_gpio_irq_set_wake;
-	jzgc->irq_chip.irq_request_resources = ingenic_gpio_irq_request;
-	jzgc->irq_chip.irq_release_resources = ingenic_gpio_irq_release;
-	jzgc->irq_chip.flags = IRQCHIP_MASK_ON_SUSPEND;
+	jzgc->irq = err;
 
 	girq = &jzgc->gc.irq;
-	girq->chip = &jzgc->irq_chip;
+	gpio_irq_chip_set_chip(girq, &ingenic_gpio_irqchip);
 	girq->parent_handler = ingenic_gpio_irq_handler;
 	girq->num_parents = 1;
 	girq->parents = devm_kcalloc(dev, 1, sizeof(*girq->parents),
@@ -4211,12 +4490,12 @@ static int __init ingenic_pinctrl_probe(struct platform_device *pdev)
 	struct pinctrl_desc *pctl_desc;
 	void __iomem *base;
 	const struct ingenic_chip_info *chip_info;
-	struct device_node *node;
 	struct regmap_config regmap_config;
+	struct fwnode_handle *fwnode;
 	unsigned int i;
 	int err;
 
-	chip_info = of_device_get_match_data(dev);
+	chip_info = device_get_match_data(dev);
 	if (!chip_info) {
 		dev_err(dev, "Unsupported SoC\n");
 		return -EINVAL;
@@ -4278,36 +4557,33 @@ static int __init ingenic_pinctrl_probe(struct platform_device *pdev)
 
 	for (i = 0; i < chip_info->num_groups; i++) {
 		const struct group_desc *group = &chip_info->groups[i];
+		const struct pingroup *grp = &group->grp;
 
-		err = pinctrl_generic_add_group(jzpc->pctl, group->name,
-				group->pins, group->num_pins, group->data);
+		err = pinctrl_generic_add_group(jzpc->pctl, grp->name, grp->pins, grp->npins,
+						group->data);
 		if (err < 0) {
-			dev_err(dev, "Failed to register group %s\n",
-					group->name);
+			dev_err(dev, "Failed to register group %s\n", grp->name);
 			return err;
 		}
 	}
 
 	for (i = 0; i < chip_info->num_functions; i++) {
-		const struct function_desc *func = &chip_info->functions[i];
+		const struct pinfunction *func = &chip_info->functions[i];
 
-		err = pinmux_generic_add_function(jzpc->pctl, func->name,
-				func->group_names, func->num_group_names,
-				func->data);
+		err = pinmux_generic_add_pinfunction(jzpc->pctl, func, NULL);
 		if (err < 0) {
-			dev_err(dev, "Failed to register function %s\n",
-					func->name);
+			dev_err(dev, "Failed to register function %s\n", func->name);
 			return err;
 		}
 	}
 
 	dev_set_drvdata(dev, jzpc->map);
 
-	for_each_child_of_node(dev->of_node, node) {
-		if (of_match_node(ingenic_gpio_of_matches, node)) {
-			err = ingenic_gpio_probe(jzpc, node);
+	device_for_each_child_node(dev, fwnode) {
+		if (of_match_node(ingenic_gpio_of_matches, to_of_node(fwnode))) {
+			err = ingenic_gpio_probe(jzpc, fwnode);
 			if (err) {
-				of_node_put(node);
+				fwnode_handle_put(fwnode);
 				return err;
 			}
 		}
@@ -4370,6 +4646,10 @@ static const struct of_device_id ingenic_pinctrl_of_matches[] = {
 	{
 		.compatible = "ingenic,x1500-pinctrl",
 		.data = IF_ENABLED(CONFIG_MACH_X1500, &x1500_chip_info)
+	},
+	{
+		.compatible = "ingenic,x1600-pinctrl",
+		.data = IF_ENABLED(CONFIG_MACH_X1600, &x1600_chip_info)
 	},
 	{
 		.compatible = "ingenic,x1830-pinctrl",

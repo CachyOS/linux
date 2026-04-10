@@ -5,6 +5,14 @@
 
 #include "mt8173-elm.dtsi"
 
+&hdmi_mux_pins {
+	pins-mux {
+		pinmux = <MT8173_PIN_98_URTS1__FUNC_GPIO98>;
+		bias-pull-up;
+		output-high;
+	};
+};
+
 &i2c0 {
 	clock-frequency = <200000>;
 };
@@ -13,8 +21,8 @@
 	touchscreen2: touchscreen@34 {
 		compatible = "melfas,mip4_ts";
 		reg = <0x34>;
-		interrupt-parent = <&pio>;
-		interrupts = <88 IRQ_TYPE_LEVEL_LOW>;
+		interrupts-extended = <&pio 88 IRQ_TYPE_LEVEL_LOW>;
+		status = "fail-needs-probe";
 	};
 
 	/*
@@ -26,8 +34,18 @@
 		compatible = "hid-over-i2c";
 		reg = <0x20>;
 		hid-descr-addr = <0x0020>;
+		interrupts-extended = <&pio 88 IRQ_TYPE_LEVEL_LOW>;
+		status = "fail-needs-probe";
+	};
+
+	/* Lenovo Ideapad C330 uses G2Touch touchscreen as a 2nd source touchscreen */
+	touchscreen@40 {
+		compatible = "hid-over-i2c";
+		reg = <0x40>;
+		hid-descr-addr = <0x0001>;
 		interrupt-parent = <&pio>;
 		interrupts = <88 IRQ_TYPE_LEVEL_LOW>;
+		status = "fail-needs-probe";
 	};
 };
 
@@ -39,11 +57,29 @@
 	 */
 	trackpad2: trackpad@2c {
 		compatible = "hid-over-i2c";
-		interrupt-parent = <&pio>;
-		interrupts = <117 IRQ_TYPE_LEVEL_LOW>;
+		interrupts-extended = <&pio 117 IRQ_TYPE_LEVEL_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&trackpad_irq>;
 		reg = <0x2c>;
 		hid-descr-addr = <0x0020>;
+		/*
+		 * The trackpad needs a post-power-on delay of 100ms,
+		 * but at time of writing, the power supply for it on
+		 * this board is always on. The delay is therefore not
+		 * added to avoid impacting the readiness of the
+		 * trackpad.
+		 */
+		vdd-supply = <&mt6397_vgp6_reg>;
 		wakeup-source;
+		status = "fail-needs-probe";
+	};
+};
+
+&mmc1_pins_default {
+	pins-wp {
+		pinmux = <MT8173_PIN_42_DSI_TE__FUNC_GPIO42>;
+		input-enable;
+		bias-pull-up;
 	};
 };
 
@@ -51,20 +87,10 @@
 	wp-gpios = <&pio 42 GPIO_ACTIVE_HIGH>;
 };
 
-&pio {
-	hdmi_mux_pins: hdmi_mux_pins {
-		pins2 {
-			pinmux = <MT8173_PIN_98_URTS1__FUNC_GPIO98>;
-			bias-pull-up;
-			output-high;
-		};
-	};
+&touchscreen {
+	status = "fail-needs-probe";
+};
 
-	mmc1_pins_default: mmc1default {
-		pins_wp {
-			pinmux = <MT8173_PIN_42_DSI_TE__FUNC_GPIO42>;
-			input-enable;
-			bias-pull-up;
-		};
-	};
+&trackpad {
+	status = "fail-needs-probe";
 };

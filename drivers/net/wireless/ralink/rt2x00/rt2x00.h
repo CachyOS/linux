@@ -232,7 +232,7 @@ struct link_qual {
 	 * VGC levels
 	 * Hardware driver will tune the VGC level during each call
 	 * to the link_tuner() callback function. This vgc_level is
-	 * is determined based on the link quality statistics like
+	 * determined based on the link quality statistics like
 	 * average RSSI and the false CCA count.
 	 *
 	 * In some cases the drivers need to differentiate between
@@ -334,17 +334,7 @@ struct link {
 	 */
 	struct delayed_work watchdog_work;
 	unsigned int watchdog_interval;
-	bool watchdog_disabled;
-
-	/*
-	 * Work structure for scheduling periodic AGC adjustments.
-	 */
-	struct delayed_work agc_work;
-
-	/*
-	 * Work structure for scheduling periodic VCO calibration.
-	 */
-	struct delayed_work vco_work;
+	unsigned int watchdog;
 };
 
 enum rt2x00_delayed_flags {
@@ -926,6 +916,9 @@ struct rt2x00_dev {
 	 */
 	u16 beacon_int;
 
+	/* Rx/Tx DMA busy watchdog counter */
+	u16 rxdma_busy, txdma_busy;
+
 	/**
 	 * Timestamp of last received beacon
 	 */
@@ -1263,6 +1256,12 @@ rt2x00_has_cap_external_lna_bg(struct rt2x00_dev *rt2x00dev)
 }
 
 static inline bool
+rt2x00_has_cap_external_pa(struct rt2x00_dev *rt2x00dev)
+{
+	return rt2x00_has_cap_flag(rt2x00dev, CAPABILITY_EXTERNAL_PA_TX0);
+}
+
+static inline bool
 rt2x00_has_cap_double_antenna(struct rt2x00_dev *rt2x00dev)
 {
 	return rt2x00_has_cap_flag(rt2x00dev, CAPABILITY_DOUBLE_ANTENNA);
@@ -1309,8 +1308,11 @@ void rt2x00queue_unmap_skb(struct queue_entry *entry);
  */
 static inline struct data_queue *
 rt2x00queue_get_tx_queue(struct rt2x00_dev *rt2x00dev,
-			 const enum data_queue_qid queue)
+			 enum data_queue_qid queue)
 {
+	if (queue >= rt2x00dev->ops->tx_queues && queue < IEEE80211_NUM_ACS)
+		queue = rt2x00dev->ops->tx_queues - 1;
+
 	if (queue < rt2x00dev->ops->tx_queues && rt2x00dev->tx)
 		return &rt2x00dev->tx[queue];
 
@@ -1425,7 +1427,7 @@ static inline void rt2x00debug_dump_frame(struct rt2x00_dev *rt2x00dev,
  */
 u32 rt2x00lib_get_bssidx(struct rt2x00_dev *rt2x00dev,
 			 struct ieee80211_vif *vif);
-void rt2x00lib_set_mac_address(struct rt2x00_dev *rt2x00dev, u8 *eeprom_mac_addr);
+int rt2x00lib_set_mac_address(struct rt2x00_dev *rt2x00dev, u8 *eeprom_mac_addr);
 
 /*
  * Interrupt context handlers.
@@ -1448,14 +1450,14 @@ void rt2x00mac_tx(struct ieee80211_hw *hw,
 		  struct ieee80211_tx_control *control,
 		  struct sk_buff *skb);
 int rt2x00mac_start(struct ieee80211_hw *hw);
-void rt2x00mac_stop(struct ieee80211_hw *hw);
+void rt2x00mac_stop(struct ieee80211_hw *hw, bool suspend);
 void rt2x00mac_reconfig_complete(struct ieee80211_hw *hw,
 				 enum ieee80211_reconfig_type reconfig_type);
 int rt2x00mac_add_interface(struct ieee80211_hw *hw,
 			    struct ieee80211_vif *vif);
 void rt2x00mac_remove_interface(struct ieee80211_hw *hw,
 				struct ieee80211_vif *vif);
-int rt2x00mac_config(struct ieee80211_hw *hw, u32 changed);
+int rt2x00mac_config(struct ieee80211_hw *hw, int radio_idx, u32 changed);
 void rt2x00mac_configure_filter(struct ieee80211_hw *hw,
 				unsigned int changed_flags,
 				unsigned int *total_flags,
@@ -1479,15 +1481,18 @@ int rt2x00mac_get_stats(struct ieee80211_hw *hw,
 void rt2x00mac_bss_info_changed(struct ieee80211_hw *hw,
 				struct ieee80211_vif *vif,
 				struct ieee80211_bss_conf *bss_conf,
-				u32 changes);
+				u64 changes);
 int rt2x00mac_conf_tx(struct ieee80211_hw *hw,
-		      struct ieee80211_vif *vif, u16 queue,
+		      struct ieee80211_vif *vif,
+		      unsigned int link_id, u16 queue,
 		      const struct ieee80211_tx_queue_params *params);
 void rt2x00mac_rfkill_poll(struct ieee80211_hw *hw);
 void rt2x00mac_flush(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 		     u32 queues, bool drop);
-int rt2x00mac_set_antenna(struct ieee80211_hw *hw, u32 tx_ant, u32 rx_ant);
-int rt2x00mac_get_antenna(struct ieee80211_hw *hw, u32 *tx_ant, u32 *rx_ant);
+int rt2x00mac_set_antenna(struct ieee80211_hw *hw, int radio_idx,
+			  u32 tx_ant, u32 rx_ant);
+int rt2x00mac_get_antenna(struct ieee80211_hw *hw, int radio_idx,
+			  u32 *tx_ant, u32 *rx_ant);
 void rt2x00mac_get_ringparam(struct ieee80211_hw *hw,
 			     u32 *tx, u32 *tx_max, u32 *rx, u32 *rx_max);
 bool rt2x00mac_tx_frames_pending(struct ieee80211_hw *hw);

@@ -81,7 +81,7 @@ static int xlgmac_prep_tso(struct sk_buff *skb,
 	if (ret)
 		return ret;
 
-	pkt_info->header_len = skb_transport_offset(skb) + tcp_hdrlen(skb);
+	pkt_info->header_len = skb_tcp_all_headers(skb);
 	pkt_info->tcp_header_len = tcp_hdrlen(skb);
 	pkt_info->tcp_payload_len = skb->len - pkt_info->header_len;
 	pkt_info->mss = skb_shinfo(skb)->gso_size;
@@ -360,7 +360,8 @@ static irqreturn_t xlgmac_dma_isr(int irq, void *data)
 
 static void xlgmac_tx_timer(struct timer_list *t)
 {
-	struct xlgmac_channel *channel = from_timer(channel, t, tx_timer);
+	struct xlgmac_channel *channel = timer_container_of(channel, t,
+							    tx_timer);
 	struct xlgmac_pdata *pdata = channel->pdata;
 	struct napi_struct *napi;
 
@@ -405,7 +406,7 @@ static void xlgmac_stop_timers(struct xlgmac_pdata *pdata)
 		if (!channel->tx_ring)
 			break;
 
-		del_timer_sync(&channel->tx_timer);
+		timer_delete_sync(&channel->tx_timer);
 	}
 }
 
@@ -419,15 +420,14 @@ static void xlgmac_napi_enable(struct xlgmac_pdata *pdata, unsigned int add)
 		for (i = 0; i < pdata->channel_count; i++, channel++) {
 			if (add)
 				netif_napi_add(pdata->netdev, &channel->napi,
-					       xlgmac_one_poll,
-					       NAPI_POLL_WEIGHT);
+					       xlgmac_one_poll);
 
 			napi_enable(&channel->napi);
 		}
 	} else {
 		if (add)
 			netif_napi_add(pdata->netdev, &pdata->napi,
-				       xlgmac_all_poll, NAPI_POLL_WEIGHT);
+				       xlgmac_all_poll);
 
 		napi_enable(&pdata->napi);
 	}
@@ -824,7 +824,7 @@ static int xlgmac_change_mtu(struct net_device *netdev, int mtu)
 		return ret;
 
 	pdata->rx_buf_size = ret;
-	netdev->mtu = mtu;
+	WRITE_ONCE(netdev->mtu, mtu);
 
 	xlgmac_restart_dev(pdata);
 

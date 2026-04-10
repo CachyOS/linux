@@ -134,7 +134,7 @@ static int ds1390_read_time(struct device *dev, struct rtc_time *dt)
 	chip->txrx_buf[0] = DS1390_REG_SECONDS;
 
 	/* do the i/o */
-	status = spi_write_then_read(spi, chip->txrx_buf, 1, chip->txrx_buf, 8);
+	status = spi_write_then_read(spi, chip->txrx_buf, 1, chip->txrx_buf, 7);
 	if (status != 0)
 		return status;
 
@@ -213,7 +213,7 @@ static int ds1390_probe(struct spi_device *spi)
 	return res;
 }
 
-static const struct of_device_id ds1390_of_match[] = {
+static const struct of_device_id ds1390_of_match[] __maybe_unused = {
 	{ .compatible = "dallas,ds1390" },
 	{}
 };

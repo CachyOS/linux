@@ -45,7 +45,7 @@ struct sk_buff *rt2x00queue_alloc_rxskb(struct queue_entry *entry, gfp_t gfp)
 
 	/*
 	 * For IV/EIV/ICV assembly we must make sure there is
-	 * at least 8 bytes bytes available in headroom for IV/EIV
+	 * at least 8 bytes available in headroom for IV/EIV
 	 * and 8 bytes for ICV data as tailroon.
 	 */
 	if (rt2x00_has_cap_hw_crypto(rt2x00dev)) {
@@ -318,7 +318,7 @@ static void rt2x00queue_create_tx_descriptor_ht(struct rt2x00_dev *rt2x00dev,
 		 * when using more then one tx stream (>MCS7).
 		 */
 		if (sta && txdesc->u.ht.mcs > 7 &&
-		    sta->smps_mode == IEEE80211_SMPS_DYNAMIC)
+		    sta->deflink.smps_mode == IEEE80211_SMPS_DYNAMIC)
 			__set_bit(ENTRY_TXD_HT_MIMO_PS, &txdesc->flags);
 	} else {
 		txdesc->u.ht.mcs = rt2x00_get_rate_mcs(hwrate->mcs);
@@ -416,9 +416,6 @@ static void rt2x00queue_create_tx_descriptor(struct rt2x00_dev *rt2x00dev,
 			__set_bit(ENTRY_TXD_RTS_FRAME, &txdesc->flags);
 		else
 			__set_bit(ENTRY_TXD_CTS_FRAME, &txdesc->flags);
-		if (tx_info->control.rts_cts_rate_idx >= 0)
-			rate =
-			    ieee80211_get_rts_cts_rate(rt2x00dev->hw, tx_info);
 	}
 
 	/*
@@ -567,7 +564,7 @@ static void rt2x00queue_bar_check(struct queue_entry *entry)
 	if (likely(!ieee80211_is_back_req(bar->frame_control)))
 		return;
 
-	bar_entry = kmalloc(sizeof(*bar_entry), GFP_ATOMIC);
+	bar_entry = kmalloc_obj(*bar_entry, GFP_ATOMIC);
 
 	/*
 	 * If the alloc fails we still send the BAR out but just don't track
@@ -758,7 +755,7 @@ int rt2x00queue_update_beacon(struct rt2x00_dev *rt2x00dev,
 	 */
 	rt2x00queue_free_skb(intf->beacon);
 
-	intf->beacon->skb = ieee80211_beacon_get(rt2x00dev->hw, vif);
+	intf->beacon->skb = ieee80211_beacon_get(rt2x00dev->hw, vif, 0);
 	if (!intf->beacon->skb)
 		return -ENOMEM;
 
@@ -1247,7 +1244,7 @@ int rt2x00queue_allocate(struct rt2x00_dev *rt2x00dev)
 	 */
 	rt2x00dev->data_queues = 2 + rt2x00dev->ops->tx_queues + req_atim;
 
-	queue = kcalloc(rt2x00dev->data_queues, sizeof(*queue), GFP_KERNEL);
+	queue = kzalloc_objs(*queue, rt2x00dev->data_queues);
 	if (!queue)
 		return -ENOMEM;
 

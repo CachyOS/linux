@@ -29,11 +29,14 @@
 #include <linux/types.h>
 
 #include "amdgpu_irq.h"
+#include "amdgpu_xgmi.h"
 #include "amdgpu_ras.h"
 
-/* VA hole for 48bit addresses on Vega10 */
-#define AMDGPU_GMC_HOLE_START	0x0000800000000000ULL
-#define AMDGPU_GMC_HOLE_END	0xffff800000000000ULL
+/* VA hole for 48bit and 57bit addresses */
+#define AMDGPU_GMC_HOLE_START	(adev->vm_manager.max_level == 4 ?\
+				0x0100000000000000ULL : 0x0000800000000000ULL)
+#define AMDGPU_GMC_HOLE_END	(adev->vm_manager.max_level == 4 ?\
+				0xff00000000000000ULL : 0xffff800000000000ULL)
 
 /*
  * Hardware is programmed as if the hole doesn't exists with start and end
@@ -42,7 +45,8 @@
  * This mask is used to remove the upper 16bits of the VA and so come up with
  * the linear addr value.
  */
-#define AMDGPU_GMC_HOLE_MASK	0x0000ffffffffffffULL
+#define AMDGPU_GMC_HOLE_MASK	(adev->vm_manager.max_level == 4 ?\
+				0x01ffffffffffffffULL : 0x0000ffffffffffffULL)
 
 /*
  * Ring size as power of two for the log of recent faults.
@@ -61,7 +65,34 @@
  */
 #define AMDGPU_GMC_FAULT_TIMEOUT	5000ULL
 
+/* XNACK flags */
+#define AMDGPU_GMC_XNACK_FLAG_CHAIN BIT(0)
+
 struct firmware;
+
+enum amdgpu_memory_partition {
+	UNKNOWN_MEMORY_PARTITION_MODE = 0,
+	AMDGPU_NPS1_PARTITION_MODE = 1,
+	AMDGPU_NPS2_PARTITION_MODE = 2,
+	AMDGPU_NPS3_PARTITION_MODE = 3,
+	AMDGPU_NPS4_PARTITION_MODE = 4,
+	AMDGPU_NPS6_PARTITION_MODE = 6,
+	AMDGPU_NPS8_PARTITION_MODE = 8,
+};
+
+#define AMDGPU_ALL_NPS_MASK                                                  \
+	(BIT(AMDGPU_NPS1_PARTITION_MODE) | BIT(AMDGPU_NPS2_PARTITION_MODE) | \
+	 BIT(AMDGPU_NPS3_PARTITION_MODE) | BIT(AMDGPU_NPS4_PARTITION_MODE) | \
+	 BIT(AMDGPU_NPS6_PARTITION_MODE) | BIT(AMDGPU_NPS8_PARTITION_MODE))
+
+#define AMDGPU_GMC_INIT_RESET_NPS  BIT(0)
+
+#define AMDGPU_MAX_MEM_RANGES 8
+
+#define AMDGPU_GMC9_FAULT_SOURCE_DATA_RETRY 0x80
+#define AMDGPU_GMC9_FAULT_SOURCE_DATA_READ  0x40
+#define AMDGPU_GMC9_FAULT_SOURCE_DATA_WRITE 0x20
+#define AMDGPU_GMC9_FAULT_SOURCE_DATA_EXE   0x10
 
 /*
  * GMC page fault information
@@ -70,6 +101,7 @@ struct amdgpu_gmc_fault {
 	uint64_t	timestamp:48;
 	uint64_t	next:AMDGPU_GMC_FAULT_RING_ORDER;
 	atomic64_t	key;
+	uint64_t	timestamp_expiry:48;
 };
 
 /*
@@ -104,6 +136,10 @@ struct amdgpu_vmhub {
 	uint32_t	vm_cntx_cntl_vm_fault;
 	uint32_t	vm_l2_bank_select_reserved_cid2;
 
+	uint32_t	vm_contexts_disable;
+
+	bool		sdma_invalidation_workaround;
+
 	const struct amdgpu_vmhub_funcs *vmhub_funcs;
 };
 
@@ -115,8 +151,9 @@ struct amdgpu_gmc_funcs {
 	void (*flush_gpu_tlb)(struct amdgpu_device *adev, uint32_t vmid,
 				uint32_t vmhub, uint32_t flush_type);
 	/* flush the vm tlb via pasid */
-	int (*flush_gpu_tlb_pasid)(struct amdgpu_device *adev, uint16_t pasid,
-					uint32_t flush_type, bool all_hub);
+	void (*flush_gpu_tlb_pasid)(struct amdgpu_device *adev, uint16_t pasid,
+				    uint32_t flush_type, bool all_hub,
+				    uint32_t inst);
 	/* flush the vm tlb via ring */
 	uint64_t (*emit_flush_gpu_tlb)(struct amdgpu_ring *ring, unsigned vmid,
 				       uint64_t pd_addr);
@@ -125,40 +162,58 @@ struct amdgpu_gmc_funcs {
 				   unsigned pasid);
 	/* enable/disable PRT support */
 	void (*set_prt)(struct amdgpu_device *adev, bool enable);
-	/* map mtype to hardware flags */
-	uint64_t (*map_mtype)(struct amdgpu_device *adev, uint32_t flags);
 	/* get the pde for a given mc addr */
 	void (*get_vm_pde)(struct amdgpu_device *adev, int level,
 			   u64 *dst, u64 *flags);
-	/* get the pte flags to use for a BO VA mapping */
+	/* get the pte flags to use for PTEs */
 	void (*get_vm_pte)(struct amdgpu_device *adev,
-			   struct amdgpu_bo_va_mapping *mapping,
-			   uint64_t *flags);
+			   struct amdgpu_vm *vm,
+			   struct amdgpu_bo *bo,
+			   uint32_t vm_flags,
+			   uint64_t *pte_flags);
+	/* override per-page pte flags */
+	void (*override_vm_pte_flags)(struct amdgpu_device *dev,
+				      struct amdgpu_vm *vm,
+				      uint64_t addr, uint64_t *flags);
 	/* get the amount of memory used by the vbios for pre-OS console */
 	unsigned int (*get_vbios_fb_size)(struct amdgpu_device *adev);
+	/* get the DCC buffer alignment */
+	unsigned int (*get_dcc_alignment)(struct amdgpu_device *adev);
+
+	enum amdgpu_memory_partition (*query_mem_partition_mode)(
+		struct amdgpu_device *adev);
+	/* Request NPS mode */
+	int (*request_mem_partition_mode)(struct amdgpu_device *adev,
+					  int nps_mode);
+	bool (*need_reset_on_init)(struct amdgpu_device *adev);
 };
 
-struct amdgpu_xgmi_ras {
-	struct amdgpu_ras_block_object ras_block;
+struct amdgpu_mem_partition_info {
+	union {
+		struct {
+			uint32_t fpfn;
+			uint32_t lpfn;
+		} range;
+		struct {
+			int node;
+		} numa;
+	};
+	uint64_t size;
 };
 
-struct amdgpu_xgmi {
-	/* from psp */
-	u64 node_id;
-	u64 hive_id;
-	/* fixed per family */
-	u64 node_segment_size;
-	/* physical node (0-3) */
-	unsigned physical_node_id;
-	/* number of nodes (0-4) */
-	unsigned num_physical_nodes;
-	/* gpu list in the same hive */
-	struct list_head head;
-	bool supported;
-	struct ras_common_if *ras_if;
-	bool connected_to_cpu;
-	bool pending_reset;
-	struct amdgpu_xgmi_ras *ras;
+#define INVALID_PFN    -1
+
+struct amdgpu_gmc_memrange {
+	uint64_t base_address;
+	uint64_t limit_address;
+	uint32_t flags;
+	int nid_mask;
+};
+
+enum amdgpu_gart_placement {
+	AMDGPU_GART_PLACEMENT_BEST_FIT = 0,
+	AMDGPU_GART_PLACEMENT_HIGH,
+	AMDGPU_GART_PLACEMENT_LOW,
 };
 
 struct amdgpu_gmc {
@@ -247,12 +302,19 @@ struct amdgpu_gmc {
 	uint64_t		last_fault:AMDGPU_GMC_FAULT_RING_ORDER;
 
 	bool tmz_enabled;
+	bool is_app_apu;
 
+	struct amdgpu_mem_partition_info *mem_partitions;
+	uint8_t num_mem_partitions;
 	const struct amdgpu_gmc_funcs	*gmc_funcs;
+	enum amdgpu_memory_partition	requested_nps_mode;
+	uint32_t supported_nps_modes;
+	uint32_t reset_flags;
 
 	struct amdgpu_xgmi xgmi;
 	struct amdgpu_irq_src	ecc_irq;
 	int noretry;
+	uint32_t xnack_flags;
 
 	uint32_t	vmid0_page_table_block_size;
 	uint32_t	vmid0_page_table_depth;
@@ -262,20 +324,59 @@ struct amdgpu_gmc {
 
 	/* MALL size */
 	u64 mall_size;
+	uint32_t m_half_use;
+
 	/* number of UMC instances */
 	int num_umc;
+	/* mode2 save restore */
+	u64 VM_L2_CNTL;
+	u64 VM_L2_CNTL2;
+	u64 VM_DUMMY_PAGE_FAULT_CNTL;
+	u64 VM_DUMMY_PAGE_FAULT_ADDR_LO32;
+	u64 VM_DUMMY_PAGE_FAULT_ADDR_HI32;
+	u64 VM_L2_PROTECTION_FAULT_CNTL;
+	u64 VM_L2_PROTECTION_FAULT_CNTL2;
+	u64 VM_L2_PROTECTION_FAULT_MM_CNTL3;
+	u64 VM_L2_PROTECTION_FAULT_MM_CNTL4;
+	u64 VM_L2_PROTECTION_FAULT_ADDR_LO32;
+	u64 VM_L2_PROTECTION_FAULT_ADDR_HI32;
+	u64 VM_DEBUG;
+	u64 VM_L2_MM_GROUP_RT_CLASSES;
+	u64 VM_L2_BANK_SELECT_RESERVED_CID;
+	u64 VM_L2_BANK_SELECT_RESERVED_CID2;
+	u64 VM_L2_CACHE_PARITY_CNTL;
+	u64 VM_L2_IH_LOG_CNTL;
+	u64 VM_CONTEXT_CNTL[16];
+	u64 VM_CONTEXT_PAGE_TABLE_BASE_ADDR_LO32[16];
+	u64 VM_CONTEXT_PAGE_TABLE_BASE_ADDR_HI32[16];
+	u64 VM_CONTEXT_PAGE_TABLE_START_ADDR_LO32[16];
+	u64 VM_CONTEXT_PAGE_TABLE_START_ADDR_HI32[16];
+	u64 VM_CONTEXT_PAGE_TABLE_END_ADDR_LO32[16];
+	u64 VM_CONTEXT_PAGE_TABLE_END_ADDR_HI32[16];
+	u64 MC_VM_MX_L1_TLB_CNTL;
+
+	u64 noretry_flags;
+	u64 init_pte_flags;
+
+	bool flush_tlb_needs_extra_type_0;
+	bool flush_tlb_needs_extra_type_2;
+	bool flush_pasid_uses_kiq;
 };
 
-#define amdgpu_gmc_flush_gpu_tlb(adev, vmid, vmhub, type) ((adev)->gmc.gmc_funcs->flush_gpu_tlb((adev), (vmid), (vmhub), (type)))
-#define amdgpu_gmc_flush_gpu_tlb_pasid(adev, pasid, type, allhub) \
-	((adev)->gmc.gmc_funcs->flush_gpu_tlb_pasid \
-	((adev), (pasid), (type), (allhub)))
 #define amdgpu_gmc_emit_flush_gpu_tlb(r, vmid, addr) (r)->adev->gmc.gmc_funcs->emit_flush_gpu_tlb((r), (vmid), (addr))
 #define amdgpu_gmc_emit_pasid_mapping(r, vmid, pasid) (r)->adev->gmc.gmc_funcs->emit_pasid_mapping((r), (vmid), (pasid))
-#define amdgpu_gmc_map_mtype(adev, flags) (adev)->gmc.gmc_funcs->map_mtype((adev),(flags))
 #define amdgpu_gmc_get_vm_pde(adev, level, dst, flags) (adev)->gmc.gmc_funcs->get_vm_pde((adev), (level), (dst), (flags))
-#define amdgpu_gmc_get_vm_pte(adev, mapping, flags) (adev)->gmc.gmc_funcs->get_vm_pte((adev), (mapping), (flags))
+#define amdgpu_gmc_get_vm_pte(adev, vm, bo, vm_flags, pte_flags) \
+	((adev)->gmc.gmc_funcs->get_vm_pte((adev), (vm), (bo), (vm_flags), \
+					   (pte_flags)))
+#define amdgpu_gmc_override_vm_pte_flags(adev, vm, addr, pte_flags)	\
+	(adev)->gmc.gmc_funcs->override_vm_pte_flags			\
+		((adev), (vm), (addr), (pte_flags))
 #define amdgpu_gmc_get_vbios_fb_size(adev) (adev)->gmc.gmc_funcs->get_vbios_fb_size((adev))
+#define amdgpu_gmc_get_dcc_alignment(adev) ({			\
+	typeof(adev) _adev = (adev);				\
+	_adev->gmc.gmc_funcs->get_dcc_alignment(_adev);		\
+})
 
 /**
  * amdgpu_gmc_vram_full_visible - Check if full VRAM is visible through the BAR
@@ -297,14 +398,10 @@ static inline bool amdgpu_gmc_vram_full_visible(struct amdgpu_gmc *gmc)
  *
  * @addr: address to extend
  */
-static inline uint64_t amdgpu_gmc_sign_extend(uint64_t addr)
-{
-	if (addr >= AMDGPU_GMC_HOLE_START)
-		addr |= AMDGPU_GMC_HOLE_END;
+#define amdgpu_gmc_sign_extend(addr)	((addr) >= AMDGPU_GMC_HOLE_START ?\
+					((addr) | AMDGPU_GMC_HOLE_END) : (addr))
 
-	return addr;
-}
-
+bool amdgpu_gmc_is_pdb0_enabled(struct amdgpu_device *adev);
 int amdgpu_gmc_pdb0_alloc(struct amdgpu_device *adev);
 void amdgpu_gmc_get_pde_for_bo(struct amdgpu_bo *bo, int level,
 			       uint64_t *addr, uint64_t *flags);
@@ -317,18 +414,36 @@ void amdgpu_gmc_sysvm_location(struct amdgpu_device *adev, struct amdgpu_gmc *mc
 void amdgpu_gmc_vram_location(struct amdgpu_device *adev, struct amdgpu_gmc *mc,
 			      u64 base);
 void amdgpu_gmc_gart_location(struct amdgpu_device *adev,
-			      struct amdgpu_gmc *mc);
+			      struct amdgpu_gmc *mc,
+			      enum amdgpu_gart_placement gart_placement);
 void amdgpu_gmc_agp_location(struct amdgpu_device *adev,
 			     struct amdgpu_gmc *mc);
+void amdgpu_gmc_set_agp_default(struct amdgpu_device *adev,
+				struct amdgpu_gmc *mc);
 bool amdgpu_gmc_filter_faults(struct amdgpu_device *adev,
 			      struct amdgpu_ih_ring *ih, uint64_t addr,
 			      uint16_t pasid, uint64_t timestamp);
 void amdgpu_gmc_filter_faults_remove(struct amdgpu_device *adev, uint64_t addr,
 				     uint16_t pasid);
-int amdgpu_gmc_ras_early_init(struct amdgpu_device *adev);
+int amdgpu_gmc_handle_retry_fault(struct amdgpu_device *adev,
+				  struct amdgpu_iv_entry *entry,
+				  u64 addr,
+				  u32 cam_index,
+				  u32 node_id,
+				  bool write_fault);
+int amdgpu_gmc_ras_sw_init(struct amdgpu_device *adev);
 int amdgpu_gmc_ras_late_init(struct amdgpu_device *adev);
 void amdgpu_gmc_ras_fini(struct amdgpu_device *adev);
 int amdgpu_gmc_allocate_vm_inv_eng(struct amdgpu_device *adev);
+void amdgpu_gmc_flush_gpu_tlb(struct amdgpu_device *adev, uint32_t vmid,
+			      uint32_t vmhub, uint32_t flush_type);
+int amdgpu_gmc_flush_gpu_tlb_pasid(struct amdgpu_device *adev, uint16_t pasid,
+				   uint32_t flush_type, bool all_hub,
+				   uint32_t inst);
+void amdgpu_gmc_fw_reg_write_reg_wait(struct amdgpu_device *adev,
+				      uint32_t reg0, uint32_t reg1,
+				      uint32_t ref, uint32_t mask,
+				      uint32_t xcc_inst);
 
 extern void amdgpu_gmc_tmz_set(struct amdgpu_device *adev);
 extern void amdgpu_gmc_noretry_set(struct amdgpu_device *adev);
@@ -342,6 +457,25 @@ void amdgpu_gmc_get_vbios_allocations(struct amdgpu_device *adev);
 void amdgpu_gmc_init_pdb0(struct amdgpu_device *adev);
 uint64_t amdgpu_gmc_vram_mc2pa(struct amdgpu_device *adev, uint64_t mc_addr);
 uint64_t amdgpu_gmc_vram_pa(struct amdgpu_device *adev, struct amdgpu_bo *bo);
-uint64_t amdgpu_gmc_vram_cpu_pa(struct amdgpu_device *adev, struct amdgpu_bo *bo);
 int amdgpu_gmc_vram_checking(struct amdgpu_device *adev);
+int amdgpu_gmc_sysfs_init(struct amdgpu_device *adev);
+void amdgpu_gmc_sysfs_fini(struct amdgpu_device *adev);
+
+int amdgpu_gmc_get_nps_memranges(struct amdgpu_device *adev,
+				 struct amdgpu_mem_partition_info *mem_ranges,
+				 uint8_t *exp_ranges);
+
+int amdgpu_gmc_request_memory_partition(struct amdgpu_device *adev,
+					int nps_mode);
+void amdgpu_gmc_prepare_nps_mode_change(struct amdgpu_device *adev);
+bool amdgpu_gmc_need_reset_on_init(struct amdgpu_device *adev);
+enum amdgpu_memory_partition
+amdgpu_gmc_get_vf_memory_partition(struct amdgpu_device *adev);
+enum amdgpu_memory_partition
+amdgpu_gmc_get_memory_partition(struct amdgpu_device *adev, u32 *supp_modes);
+enum amdgpu_memory_partition
+amdgpu_gmc_query_memory_partition(struct amdgpu_device *adev);
+int amdgpu_gmc_init_mem_ranges(struct amdgpu_device *adev);
+void amdgpu_gmc_init_sw_mem_ranges(struct amdgpu_device *adev,
+				   struct amdgpu_mem_partition_info *mem_ranges);
 #endif

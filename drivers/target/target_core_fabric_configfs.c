@@ -11,6 +11,7 @@
 *
  ****************************************************************************/
 
+#include <linux/kstrtox.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/utsname.h>
@@ -58,7 +59,7 @@ static void target_fabric_setup_##_name##_cit(struct target_fabric_configfs *tf)
 	pr_debug("Setup generic %s\n", __stringify(_name));		\
 }
 
-static struct configfs_item_operations target_fabric_port_item_ops;
+static const struct configfs_item_operations target_fabric_port_item_ops;
 
 /* Start of tfc_tpg_mappedlun_cit */
 
@@ -218,7 +219,7 @@ static void target_fabric_mappedlun_release(struct config_item *item)
 	core_dev_free_initiator_node_lun_acl(se_tpg, lacl);
 }
 
-static struct configfs_item_operations target_fabric_mappedlun_item_ops = {
+static const struct configfs_item_operations target_fabric_mappedlun_item_ops = {
 	.release		= target_fabric_mappedlun_release,
 	.allow_link		= target_fabric_mappedlun_link,
 	.drop_link		= target_fabric_mappedlun_unlink,
@@ -245,7 +246,7 @@ static void target_core_mappedlun_stat_rmdir(
 	return;
 }
 
-static struct configfs_group_operations target_fabric_mappedlun_stat_group_ops = {
+static const struct configfs_group_operations target_fabric_mappedlun_stat_group_ops = {
 	.make_group		= target_core_mappedlun_stat_mkdir,
 	.drop_item		= target_core_mappedlun_stat_rmdir,
 };
@@ -344,11 +345,11 @@ static void target_fabric_nacl_base_release(struct config_item *item)
 	core_tpg_del_initiator_node_acl(se_nacl);
 }
 
-static struct configfs_item_operations target_fabric_nacl_base_item_ops = {
+static const struct configfs_item_operations target_fabric_nacl_base_item_ops = {
 	.release		= target_fabric_nacl_base_release,
 };
 
-static struct configfs_group_operations target_fabric_nacl_base_group_ops = {
+static const struct configfs_group_operations target_fabric_nacl_base_group_ops = {
 	.make_group		= target_fabric_make_mappedlun,
 	.drop_item		= target_fabric_drop_mappedlun,
 };
@@ -432,7 +433,7 @@ static void target_fabric_drop_nodeacl(
 	config_item_put(item);
 }
 
-static struct configfs_group_operations target_fabric_nacl_group_ops = {
+static const struct configfs_group_operations target_fabric_nacl_group_ops = {
 	.make_group	= target_fabric_make_nodeacl,
 	.drop_item	= target_fabric_drop_nodeacl,
 };
@@ -453,7 +454,7 @@ static void target_fabric_np_base_release(struct config_item *item)
 	tf->tf_ops->fabric_drop_np(se_tpg_np);
 }
 
-static struct configfs_item_operations target_fabric_np_base_item_ops = {
+static const struct configfs_item_operations target_fabric_np_base_item_ops = {
 	.release		= target_fabric_np_base_release,
 };
 
@@ -498,7 +499,7 @@ static void target_fabric_drop_np(
 	config_item_put(item);
 }
 
-static struct configfs_group_operations target_fabric_np_group_ops = {
+static const struct configfs_group_operations target_fabric_np_group_ops = {
 	.make_group	= &target_fabric_make_np,
 	.drop_item	= &target_fabric_drop_np,
 };
@@ -696,10 +697,10 @@ static void target_fabric_port_release(struct config_item *item)
 	struct se_lun *lun = container_of(to_config_group(item),
 					  struct se_lun, lun_group);
 
-	kfree_rcu(lun, rcu_head);
+	call_rcu(&lun->rcu_head, target_tpg_free_lun);
 }
 
-static struct configfs_item_operations target_fabric_port_item_ops = {
+static const struct configfs_item_operations target_fabric_port_item_ops = {
 	.release		= target_fabric_port_release,
 	.allow_link		= target_fabric_port_link,
 	.drop_link		= target_fabric_port_unlink,
@@ -725,7 +726,7 @@ static void target_core_port_stat_rmdir(
 	return;
 }
 
-static struct configfs_group_operations target_fabric_port_stat_group_ops = {
+static const struct configfs_group_operations target_fabric_port_stat_group_ops = {
 	.make_group		= target_core_port_stat_mkdir,
 	.drop_item		= target_core_port_stat_rmdir,
 };
@@ -786,7 +787,7 @@ static void target_fabric_drop_lun(
 	config_item_put(item);
 }
 
-static struct configfs_group_operations target_fabric_lun_group_ops = {
+static const struct configfs_group_operations target_fabric_lun_group_ops = {
 	.make_group	= &target_fabric_make_lun,
 	.drop_item	= &target_fabric_drop_lun,
 };
@@ -811,7 +812,7 @@ static void target_fabric_tpg_release(struct config_item *item)
 	tf->tf_ops->fabric_drop_tpg(se_tpg);
 }
 
-static struct configfs_item_operations target_fabric_tpg_base_item_ops = {
+static const struct configfs_item_operations target_fabric_tpg_base_item_ops = {
 	.release		= target_fabric_tpg_release,
 };
 
@@ -829,23 +830,55 @@ static ssize_t target_fabric_tpg_base_enable_store(struct config_item *item,
 	int ret;
 	bool op;
 
-	ret = strtobool(page, &op);
+	ret = kstrtobool(page, &op);
 	if (ret)
 		return ret;
 
 	if (se_tpg->enabled == op)
 		return count;
-
-	ret = se_tpg->se_tpg_tfo->fabric_enable_tpg(se_tpg, op);
+	if (op)
+		ret = target_tpg_enable(se_tpg);
+	else
+		ret = target_tpg_disable(se_tpg);
 	if (ret)
 		return ret;
+	return count;
+}
+static ssize_t target_fabric_tpg_base_rtpi_show(struct config_item *item, char *page)
+{
+	struct se_portal_group *se_tpg = to_tpg(item);
 
-	se_tpg->enabled = op;
+	return sysfs_emit(page, "%#x\n", se_tpg->tpg_rtpi);
+}
+
+static ssize_t target_fabric_tpg_base_rtpi_store(struct config_item *item,
+				   const char *page, size_t count)
+{
+	struct se_portal_group *se_tpg = to_tpg(item);
+	u16 val;
+	int ret;
+
+	ret = kstrtou16(page, 0, &val);
+	if (ret < 0)
+		return ret;
+	if (val == 0)
+		return -EINVAL;
+
+	if (se_tpg->enabled) {
+		pr_info("%s_TPG[%hu] - Can not change RTPI on enabled TPG",
+			se_tpg->se_tpg_tfo->fabric_name,
+			se_tpg->se_tpg_tfo->tpg_get_tag(se_tpg));
+		return -EINVAL;
+	}
+
+	se_tpg->tpg_rtpi = val;
+	se_tpg->rtpi_manual = true;
 
 	return count;
 }
 
 CONFIGFS_ATTR(target_fabric_tpg_base_, enable);
+CONFIGFS_ATTR(target_fabric_tpg_base_, rtpi);
 
 static int
 target_fabric_setup_tpg_base_cit(struct target_fabric_configfs *tf)
@@ -862,11 +895,11 @@ target_fabric_setup_tpg_base_cit(struct target_fabric_configfs *tf)
 	if (tf->tf_ops->fabric_enable_tpg)
 		nr_attrs++;
 
-	if (nr_attrs == 0)
-		goto done;
+	/* + 1 for target_fabric_tpg_base_attr_rtpi */
+	nr_attrs++;
 
 	/* + 1 for final NULL in the array */
-	attrs = kcalloc(nr_attrs + 1, sizeof(*attrs), GFP_KERNEL);
+	attrs = kzalloc_objs(*attrs, nr_attrs + 1);
 	if (!attrs)
 		return -ENOMEM;
 
@@ -875,9 +908,10 @@ target_fabric_setup_tpg_base_cit(struct target_fabric_configfs *tf)
 			attrs[i] = tf->tf_ops->tfc_tpg_base_attrs[i];
 
 	if (tf->tf_ops->fabric_enable_tpg)
-		attrs[i] = &target_fabric_tpg_base_attr_enable;
+		attrs[i++] = &target_fabric_tpg_base_attr_enable;
 
-done:
+	attrs[i++] = &target_fabric_tpg_base_attr_rtpi;
+
 	cit->ct_item_ops = &target_fabric_tpg_base_item_ops;
 	cit->ct_attrs = attrs;
 	cit->ct_owner = tf->tf_ops->module;
@@ -964,11 +998,11 @@ static void target_fabric_release_wwn(struct config_item *item)
 	tf->tf_ops->fabric_drop_wwn(wwn);
 }
 
-static struct configfs_item_operations target_fabric_tpg_item_ops = {
+static const struct configfs_item_operations target_fabric_tpg_item_ops = {
 	.release	= target_fabric_release_wwn,
 };
 
-static struct configfs_group_operations target_fabric_tpg_group_ops = {
+static const struct configfs_group_operations target_fabric_tpg_group_ops = {
 	.make_group	= target_fabric_make_tpg,
 	.drop_item	= target_fabric_drop_tpg,
 };
@@ -1031,8 +1065,32 @@ target_fabric_wwn_cmd_completion_affinity_store(struct config_item *item,
 }
 CONFIGFS_ATTR(target_fabric_wwn_, cmd_completion_affinity);
 
+static ssize_t
+target_fabric_wwn_default_submit_type_show(struct config_item *item,
+					   char *page)
+{
+	struct se_wwn *wwn = container_of(to_config_group(item), struct se_wwn,
+					  param_group);
+	return sysfs_emit(page, "%u\n",
+			  wwn->wwn_tf->tf_ops->default_submit_type);
+}
+CONFIGFS_ATTR_RO(target_fabric_wwn_, default_submit_type);
+
+static ssize_t
+target_fabric_wwn_direct_submit_supported_show(struct config_item *item,
+					       char *page)
+{
+	struct se_wwn *wwn = container_of(to_config_group(item), struct se_wwn,
+					  param_group);
+	return sysfs_emit(page, "%u\n",
+			  wwn->wwn_tf->tf_ops->direct_submit_supp);
+}
+CONFIGFS_ATTR_RO(target_fabric_wwn_, direct_submit_supported);
+
 static struct configfs_attribute *target_fabric_wwn_param_attrs[] = {
 	&target_fabric_wwn_attr_cmd_completion_affinity,
+	&target_fabric_wwn_attr_default_submit_type,
+	&target_fabric_wwn_attr_direct_submit_supported,
 	NULL,
 };
 
@@ -1086,7 +1144,7 @@ static void target_fabric_drop_wwn(
 	config_item_put(item);
 }
 
-static struct configfs_group_operations target_fabric_wwn_group_ops = {
+static const struct configfs_group_operations target_fabric_wwn_group_ops = {
 	.make_group	= target_fabric_make_wwn,
 	.drop_item	= target_fabric_drop_wwn,
 };

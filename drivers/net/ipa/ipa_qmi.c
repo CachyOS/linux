@@ -1,19 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
 
 /* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
- * Copyright (C) 2018-2020 Linaro Ltd.
+ * Copyright (C) 2018-2024 Linaro Ltd.
  */
 
-#include <linux/types.h>
-#include <linux/string.h>
-#include <linux/slab.h>
 #include <linux/qrtr.h>
-#include <linux/soc/qcom/qmi.h>
+#include <linux/string.h>
+#include <linux/types.h>
 
 #include "ipa.h"
-#include "ipa_endpoint.h"
 #include "ipa_mem.h"
-#include "ipa_table.h"
 #include "ipa_modem.h"
 #include "ipa_qmi_msg.h"
 
@@ -96,7 +92,7 @@ static void ipa_server_init_complete(struct ipa_qmi *ipa_qmi)
 				   IPA_QMI_INIT_COMPLETE_IND_SZ,
 				   ipa_init_complete_ind_ei, &ind);
 	if (ret)
-		dev_err(&ipa->pdev->dev,
+		dev_err(ipa->dev,
 			"error %d sending init complete indication\n", ret);
 	else
 		ipa_qmi->indication_sent = true;
@@ -148,7 +144,7 @@ static void ipa_qmi_ready(struct ipa_qmi *ipa_qmi)
 	ipa = container_of(ipa_qmi, struct ipa, qmi);
 	ret = ipa_modem_start(ipa);
 	if (ret)
-		dev_err(&ipa->pdev->dev, "error %d starting modem\n", ret);
+		dev_err(ipa->dev, "error %d starting modem\n", ret);
 }
 
 /* All QMI clients from the modem node are gone (modem shut down or crashed). */
@@ -199,7 +195,7 @@ static void ipa_server_indication_register(struct qmi_handle *qmi,
 		ipa_qmi->indication_requested = true;
 		ipa_qmi_ready(ipa_qmi);		/* We might be ready now */
 	} else {
-		dev_err(&ipa->pdev->dev,
+		dev_err(ipa->dev,
 			"error %d sending register indication response\n", ret);
 	}
 }
@@ -228,7 +224,7 @@ static void ipa_server_driver_init_complete(struct qmi_handle *qmi,
 		ipa_qmi->uc_ready = true;
 		ipa_qmi_ready(ipa_qmi);		/* We might be ready now */
 	} else {
-		dev_err(&ipa->pdev->dev,
+		dev_err(ipa->dev,
 			"error %d sending init complete response\n", ret);
 	}
 }
@@ -284,6 +280,7 @@ static const struct ipa_init_modem_driver_req *
 init_modem_driver_req(struct ipa_qmi *ipa_qmi)
 {
 	struct ipa *ipa = container_of(ipa_qmi, struct ipa, qmi);
+	u32 modem_route_count = ipa->modem_route_count;
 	static struct ipa_init_modem_driver_req req;
 	const struct ipa_mem *mem;
 
@@ -308,12 +305,12 @@ init_modem_driver_req(struct ipa_qmi *ipa_qmi)
 	mem = ipa_mem_find(ipa, IPA_MEM_V4_ROUTE);
 	req.v4_route_tbl_info_valid = 1;
 	req.v4_route_tbl_info.start = ipa->mem_offset + mem->offset;
-	req.v4_route_tbl_info.count = mem->size / sizeof(__le64);
+	req.v4_route_tbl_info.end = modem_route_count - 1;
 
 	mem = ipa_mem_find(ipa, IPA_MEM_V6_ROUTE);
 	req.v6_route_tbl_info_valid = 1;
 	req.v6_route_tbl_info.start = ipa->mem_offset + mem->offset;
-	req.v6_route_tbl_info.count = mem->size / sizeof(__le64);
+	req.v6_route_tbl_info.end = modem_route_count - 1;
 
 	mem = ipa_mem_find(ipa, IPA_MEM_V4_FILTER);
 	req.v4_filter_tbl_start_valid = 1;
@@ -352,7 +349,7 @@ init_modem_driver_req(struct ipa_qmi *ipa_qmi)
 		req.v4_hash_route_tbl_info_valid = 1;
 		req.v4_hash_route_tbl_info.start =
 				ipa->mem_offset + mem->offset;
-		req.v4_hash_route_tbl_info.count = mem->size / sizeof(__le64);
+		req.v4_hash_route_tbl_info.end = modem_route_count - 1;
 	}
 
 	mem = ipa_mem_find(ipa, IPA_MEM_V6_ROUTE_HASHED);
@@ -360,7 +357,7 @@ init_modem_driver_req(struct ipa_qmi *ipa_qmi)
 		req.v6_hash_route_tbl_info_valid = 1;
 		req.v6_hash_route_tbl_info.start =
 			ipa->mem_offset + mem->offset;
-		req.v6_hash_route_tbl_info.count = mem->size / sizeof(__le64);
+		req.v6_hash_route_tbl_info.end = modem_route_count - 1;
 	}
 
 	mem = ipa_mem_find(ipa, IPA_MEM_V4_FILTER_HASHED);
@@ -416,7 +413,7 @@ static void ipa_client_init_driver_work(struct work_struct *work)
 	qmi = &ipa_qmi->client_handle;
 
 	ipa = container_of(ipa_qmi, struct ipa, qmi);
-	dev = &ipa->pdev->dev;
+	dev = ipa->dev;
 
 	ret = qmi_txn_init(qmi, &txn, NULL, NULL);
 	if (ret < 0) {

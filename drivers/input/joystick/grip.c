@@ -7,9 +7,6 @@
  * Gravis/Kensington GrIP protocol joystick and gamepad driver for Linux
  */
 
-/*
- */
-
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -287,7 +284,8 @@ static int grip_connect(struct gameport *gameport, struct gameport_driver *drv)
 	int i, j, t;
 	int err;
 
-	if (!(grip = kzalloc(sizeof(struct grip), GFP_KERNEL)))
+	grip = kzalloc_obj(*grip);
+	if (!grip)
 		return -ENOMEM;
 
 	grip->gameport = gameport;

@@ -47,9 +47,8 @@
 
 /**
  * struct vic_device - VIC PM device
- * @parent_irq: The parent IRQ number of the VIC if cascaded, or 0.
- * @irq: The IRQ number for the base of the VIC.
  * @base: The register base for the VIC.
+ * @irq: The IRQ number for the base of the VIC.
  * @valid_sources: A bitmask of valid interrupts
  * @resume_sources: A bitmask of interrupts for resume.
  * @resume_irqs: The IRQs enabled for resume.
@@ -121,7 +120,7 @@ static void resume_one_vic(struct vic_device *vic)
 	writel(~vic->soft_int, base + VIC_INT_SOFT_CLEAR);
 }
 
-static void vic_resume(void)
+static void vic_resume(void *data)
 {
 	int id;
 
@@ -147,7 +146,7 @@ static void suspend_one_vic(struct vic_device *vic)
 	writel(~vic->resume_irqs, base + VIC_INT_ENABLE_CLEAR);
 }
 
-static int vic_suspend(void)
+static int vic_suspend(void *data)
 {
 	int id;
 
@@ -157,9 +156,13 @@ static int vic_suspend(void)
 	return 0;
 }
 
-static struct syscore_ops vic_syscore_ops = {
+static const struct syscore_ops vic_syscore_ops = {
 	.suspend	= vic_suspend,
 	.resume		= vic_resume,
+};
+
+static struct syscore vic_syscore = {
+	.ops = &vic_syscore_ops,
 };
 
 /**
@@ -172,7 +175,7 @@ static struct syscore_ops vic_syscore_ops = {
 static int __init vic_pm_init(void)
 {
 	if (vic_id > 0)
-		register_syscore_ops(&vic_syscore_ops);
+		register_syscore(&vic_syscore);
 
 	return 0;
 }
@@ -290,8 +293,9 @@ static void __init vic_register(void __iomem *base, unsigned int parent_irq,
 						 vic_handle_irq_cascaded, v);
 	}
 
-	v->domain = irq_domain_add_simple(node, fls(valid_sources), irq,
-					  &vic_irqdomain_ops, v);
+	v->domain = irq_domain_create_simple(of_fwnode_handle(node),
+					     fls(valid_sources), irq,
+					     &vic_irqdomain_ops, v);
 	/* create an IRQ mapping for each valid IRQ */
 	for (i = 0; i < fls(valid_sources); i++)
 		if (valid_sources & (1 << i))

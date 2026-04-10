@@ -73,6 +73,12 @@ int sctp_bind_addr_copy(struct net *net, struct sctp_bind_addr *dest,
 		}
 	}
 
+	/* If somehow no addresses were found that can be used with this
+	 * scope, it's an error.
+	 */
+	if (list_empty(&dest->address_list))
+		error = -ENETUNREACH;
+
 out:
 	if (error)
 		sctp_bind_addr_clean(dest);
@@ -141,7 +147,7 @@ int sctp_add_bind_addr(struct sctp_bind_addr *bp, union sctp_addr *new,
 	struct sctp_sockaddr_entry *addr;
 
 	/* Add the address to the bind address list.  */
-	addr = kzalloc(sizeof(*addr), gfp);
+	addr = kzalloc_obj(*addr, gfp);
 	if (!addr)
 		return -ENOMEM;
 

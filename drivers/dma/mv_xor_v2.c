@@ -175,7 +175,7 @@ struct mv_xor_v2_device {
  * struct mv_xor_v2_sw_desc - implements a xor SW descriptor
  * @idx: descriptor index
  * @async_tx: support for the async_tx api
- * @hw_desc: assosiated HW descriptor
+ * @hw_desc: associated HW descriptor
  * @free_list: node of the free SW descriprots list
 */
 struct mv_xor_v2_sw_desc {
@@ -313,7 +313,7 @@ mv_xor_v2_tx_submit(struct dma_async_tx_descriptor *tx)
 		"%s sw_desc %p: async_tx %p\n",
 		__func__, sw_desc, &sw_desc->async_tx);
 
-	/* assign coookie */
+	/* assign cookie */
 	spin_lock_bh(&xor_dev->lock);
 	cookie = dma_cookie_assign(tx);
 
@@ -635,7 +635,7 @@ static int mv_xor_v2_descq_init(struct mv_xor_v2_device *xor_dev)
 	writel(MV_XOR_V2_DESC_NUM,
 	       xor_dev->dma_base + MV_XOR_V2_DMA_DESQ_SIZE_OFF);
 
-	/* write the DESQ address to the DMA enngine*/
+	/* write the DESQ address to the DMA engine*/
 	writel(lower_32_bits(xor_dev->hw_desq),
 	       xor_dev->dma_base + MV_XOR_V2_DMA_DESQ_BALR_OFF);
 	writel(upper_32_bits(xor_dev->hw_desq),
@@ -714,7 +714,6 @@ static int mv_xor_v2_resume(struct platform_device *dev)
 static int mv_xor_v2_probe(struct platform_device *pdev)
 {
 	struct mv_xor_v2_device *xor_dev;
-	struct resource *res;
 	int i, ret = 0;
 	struct dma_device *dma_dev;
 	struct mv_xor_v2_sw_desc *sw_desc;
@@ -726,13 +725,11 @@ static int mv_xor_v2_probe(struct platform_device *pdev)
 	if (!xor_dev)
 		return -ENOMEM;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	xor_dev->dma_base = devm_ioremap_resource(&pdev->dev, res);
+	xor_dev->dma_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(xor_dev->dma_base))
 		return PTR_ERR(xor_dev->dma_base);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-	xor_dev->glob_base = devm_ioremap_resource(&pdev->dev, res);
+	xor_dev->glob_base = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(xor_dev->glob_base))
 		return PTR_ERR(xor_dev->glob_base);
 
@@ -742,32 +739,18 @@ static int mv_xor_v2_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	xor_dev->reg_clk = devm_clk_get(&pdev->dev, "reg");
-	if (PTR_ERR(xor_dev->reg_clk) != -ENOENT) {
-		if (!IS_ERR(xor_dev->reg_clk)) {
-			ret = clk_prepare_enable(xor_dev->reg_clk);
-			if (ret)
-				return ret;
-		} else {
-			return PTR_ERR(xor_dev->reg_clk);
-		}
-	}
+	xor_dev->reg_clk = devm_clk_get_optional_enabled(&pdev->dev, "reg");
+	if (IS_ERR(xor_dev->reg_clk))
+		return PTR_ERR(xor_dev->reg_clk);
 
-	xor_dev->clk = devm_clk_get(&pdev->dev, NULL);
-	if (PTR_ERR(xor_dev->clk) == -EPROBE_DEFER) {
-		ret = EPROBE_DEFER;
-		goto disable_reg_clk;
-	}
-	if (!IS_ERR(xor_dev->clk)) {
-		ret = clk_prepare_enable(xor_dev->clk);
-		if (ret)
-			goto disable_reg_clk;
-	}
+	xor_dev->clk = devm_clk_get_enabled(&pdev->dev, NULL);
+	if (IS_ERR(xor_dev->clk))
+		return PTR_ERR(xor_dev->clk);
 
-	ret = platform_msi_domain_alloc_irqs(&pdev->dev, 1,
-					     mv_xor_v2_set_msi_msg);
+	ret = platform_device_msi_init_and_alloc_irqs(&pdev->dev, 1,
+						      mv_xor_v2_set_msi_msg);
 	if (ret)
-		goto disable_clk;
+		return ret;
 
 	xor_dev->irq = msi_get_virq(&pdev->dev, 0);
 
@@ -868,15 +851,11 @@ free_hw_desq:
 			  xor_dev->desc_size * MV_XOR_V2_DESC_NUM,
 			  xor_dev->hw_desq_virt, xor_dev->hw_desq);
 free_msi_irqs:
-	platform_msi_domain_free_irqs(&pdev->dev);
-disable_clk:
-	clk_disable_unprepare(xor_dev->clk);
-disable_reg_clk:
-	clk_disable_unprepare(xor_dev->reg_clk);
+	platform_device_msi_free_irqs_all(&pdev->dev);
 	return ret;
 }
 
-static int mv_xor_v2_remove(struct platform_device *pdev)
+static void mv_xor_v2_remove(struct platform_device *pdev)
 {
 	struct mv_xor_v2_device *xor_dev = platform_get_drvdata(pdev);
 
@@ -888,13 +867,9 @@ static int mv_xor_v2_remove(struct platform_device *pdev)
 
 	devm_free_irq(&pdev->dev, xor_dev->irq, xor_dev);
 
-	platform_msi_domain_free_irqs(&pdev->dev);
+	platform_device_msi_free_irqs_all(&pdev->dev);
 
 	tasklet_kill(&xor_dev->irq_tasklet);
-
-	clk_disable_unprepare(xor_dev->clk);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -919,4 +894,3 @@ static struct platform_driver mv_xor_v2_driver = {
 module_platform_driver(mv_xor_v2_driver);
 
 MODULE_DESCRIPTION("DMA engine driver for Marvell's Version 2 of XOR engine");
-MODULE_LICENSE("GPL");

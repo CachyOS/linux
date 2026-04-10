@@ -8,7 +8,11 @@
 
 #include <asm/dwarf.h>
 
-#ifdef __ASSEMBLY__
+#define ASM_NL		 `	/* use '`' to mark new line in macro */
+#define __ALIGN		.align 4
+#define __ALIGN_STR	__stringify(__ALIGN)
+
+#ifdef __ASSEMBLER__
 
 .macro ST2 e, o, off
 #ifdef CONFIG_ARC_HAS_LL64
@@ -27,10 +31,6 @@
 	ld	\o, [sp, \off+4]
 #endif
 .endm
-
-#define ASM_NL		 `	/* use '`' to mark new line in macro */
-#define __ALIGN		.align 4
-#define __ALIGN_STR	__stringify(__ALIGN)
 
 /* annotation for data we want in DCCM - if enabled in .config */
 .macro ARCFP_DATA nm
@@ -61,7 +61,7 @@
 	CFI_ENDPROC ASM_NL	\
 	.size name, .-name
 
-#else	/* !__ASSEMBLY__ */
+#else	/* !__ASSEMBLER__ */
 
 #ifdef CONFIG_ARC_HAS_ICCM
 #define __arcfp_code __section(".text.arcfp")
@@ -75,6 +75,6 @@
 #define __arcfp_data __section(".data")
 #endif
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 #endif

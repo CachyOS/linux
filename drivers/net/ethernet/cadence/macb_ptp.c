@@ -28,14 +28,16 @@
 static struct macb_dma_desc_ptp *macb_ptp_desc(struct macb *bp,
 					       struct macb_dma_desc *desc)
 {
-	if (bp->hw_dma_cap == HW_DMA_CAP_PTP)
-		return (struct macb_dma_desc_ptp *)
-				((u8 *)desc + sizeof(struct macb_dma_desc));
-	if (bp->hw_dma_cap == HW_DMA_CAP_64B_PTP)
+	if (!macb_dma_ptp(bp))
+		return NULL;
+
+	if (macb_dma64(bp))
 		return (struct macb_dma_desc_ptp *)
 				((u8 *)desc + sizeof(struct macb_dma_desc)
 				+ sizeof(struct macb_dma_desc_64));
-	return NULL;
+	else
+		return (struct macb_dma_desc_ptp *)
+				((u8 *)desc + sizeof(struct macb_dma_desc));
 }
 
 static int gem_tsu_get_time(struct ptp_clock_info *ptp, struct timespec64 *ts,
@@ -258,6 +260,8 @@ static int gem_hw_timestamp(struct macb *bp, u32 dma_desc_ts_1,
 	 */
 	gem_tsu_get_time(&bp->ptp_clock_info, &tsu, NULL);
 
+	ts->tv_sec |= ((~GEM_DMA_SEC_MASK) & tsu.tv_sec);
+
 	/* If the top bit is set in the timestamp,
 	 * but not in 1588 timer, it has rolled over,
 	 * so subtract max size
@@ -265,8 +269,6 @@ static int gem_hw_timestamp(struct macb *bp, u32 dma_desc_ts_1,
 	if ((ts->tv_sec & (GEM_DMA_SEC_TOP >> 1)) &&
 	    !(tsu.tv_sec & (GEM_DMA_SEC_TOP >> 1)))
 		ts->tv_sec -= GEM_DMA_SEC_TOP;
-
-	ts->tv_sec += ((~GEM_DMA_SEC_MASK) & tsu.tv_sec);
 
 	return 0;
 }
@@ -292,79 +294,39 @@ void gem_ptp_rxstamp(struct macb *bp, struct sk_buff *skb,
 	}
 }
 
-static void gem_tstamp_tx(struct macb *bp, struct sk_buff *skb,
-			  struct macb_dma_desc_ptp *desc_ptp)
+void gem_ptp_txstamp(struct macb *bp, struct sk_buff *skb,
+		     struct macb_dma_desc *desc)
 {
 	struct skb_shared_hwtstamps shhwtstamps;
+	struct macb_dma_desc_ptp *desc_ptp;
 	struct timespec64 ts;
 
+	if (!GEM_BFEXT(DMA_TXVALID, desc->ctrl)) {
+		dev_warn_ratelimited(&bp->pdev->dev,
+				     "Timestamp not set in TX BD as expected\n");
+		return;
+	}
+
+	desc_ptp = macb_ptp_desc(bp, desc);
+	/* Unlikely but check */
+	if (!desc_ptp) {
+		dev_warn_ratelimited(&bp->pdev->dev,
+				     "Timestamp not supported in BD\n");
+		return;
+	}
+
+	/* ensure ts_1/ts_2 is loaded after ctrl (TX_USED check) */
+	dma_rmb();
 	gem_hw_timestamp(bp, desc_ptp->ts_1, desc_ptp->ts_2, &ts);
+
 	memset(&shhwtstamps, 0, sizeof(shhwtstamps));
 	shhwtstamps.hwtstamp = ktime_set(ts.tv_sec, ts.tv_nsec);
 	skb_tstamp_tx(skb, &shhwtstamps);
 }
 
-int gem_ptp_txstamp(struct macb_queue *queue, struct sk_buff *skb,
-		    struct macb_dma_desc *desc)
-{
-	unsigned long tail = READ_ONCE(queue->tx_ts_tail);
-	unsigned long head = queue->tx_ts_head;
-	struct macb_dma_desc_ptp *desc_ptp;
-	struct gem_tx_ts *tx_timestamp;
-
-	if (!GEM_BFEXT(DMA_TXVALID, desc->ctrl))
-		return -EINVAL;
-
-	if (CIRC_SPACE(head, tail, PTP_TS_BUFFER_SIZE) == 0)
-		return -ENOMEM;
-
-	desc_ptp = macb_ptp_desc(queue->bp, desc);
-	/* Unlikely but check */
-	if (!desc_ptp)
-		return -EINVAL;
-	skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;
-	tx_timestamp = &queue->tx_timestamps[head];
-	tx_timestamp->skb = skb;
-	/* ensure ts_1/ts_2 is loaded after ctrl (TX_USED check) */
-	dma_rmb();
-	tx_timestamp->desc_ptp.ts_1 = desc_ptp->ts_1;
-	tx_timestamp->desc_ptp.ts_2 = desc_ptp->ts_2;
-	/* move head */
-	smp_store_release(&queue->tx_ts_head,
-			  (head + 1) & (PTP_TS_BUFFER_SIZE - 1));
-
-	schedule_work(&queue->tx_ts_task);
-	return 0;
-}
-
-static void gem_tx_timestamp_flush(struct work_struct *work)
-{
-	struct macb_queue *queue =
-			container_of(work, struct macb_queue, tx_ts_task);
-	unsigned long head, tail;
-	struct gem_tx_ts *tx_ts;
-
-	/* take current head */
-	head = smp_load_acquire(&queue->tx_ts_head);
-	tail = queue->tx_ts_tail;
-
-	while (CIRC_CNT(head, tail, PTP_TS_BUFFER_SIZE)) {
-		tx_ts = &queue->tx_timestamps[tail];
-		gem_tstamp_tx(queue->bp, tx_ts->skb, &tx_ts->desc_ptp);
-		/* cleanup */
-		dev_kfree_skb_any(tx_ts->skb);
-		/* remove old tail */
-		smp_store_release(&queue->tx_ts_tail,
-				  (tail + 1) & (PTP_TS_BUFFER_SIZE - 1));
-		tail = queue->tx_ts_tail;
-	}
-}
-
 void gem_ptp_init(struct net_device *dev)
 {
 	struct macb *bp = netdev_priv(dev);
-	struct macb_queue *queue;
-	unsigned int q;
 
 	bp->ptp_clock_info = gem_ptp_caps_template;
 
@@ -384,11 +346,6 @@ void gem_ptp_init(struct net_device *dev)
 	}
 
 	spin_lock_init(&bp->tsu_clk_lock);
-	for (q = 0, queue = bp->queues; q < bp->num_queues; ++q, ++queue) {
-		queue->tx_ts_head = 0;
-		queue->tx_ts_tail = 0;
-		INIT_WORK(&queue->tx_ts_task, gem_tx_timestamp_flush);
-	}
 
 	gem_ptp_init_tsu(bp);
 
@@ -400,8 +357,10 @@ void gem_ptp_remove(struct net_device *ndev)
 {
 	struct macb *bp = netdev_priv(ndev);
 
-	if (bp->ptp_clock)
+	if (bp->ptp_clock) {
 		ptp_clock_unregister(bp->ptp_clock);
+		bp->ptp_clock = NULL;
+	}
 
 	gem_ptp_clear_timer(bp);
 
@@ -419,22 +378,19 @@ static int gem_ptp_set_ts_mode(struct macb *bp,
 	return 0;
 }
 
-int gem_get_hwtst(struct net_device *dev, struct ifreq *rq)
+int gem_get_hwtst(struct net_device *dev,
+		  struct kernel_hwtstamp_config *tstamp_config)
 {
-	struct hwtstamp_config *tstamp_config;
 	struct macb *bp = netdev_priv(dev);
 
-	tstamp_config = &bp->tstamp_config;
-	if ((bp->hw_dma_cap & HW_DMA_CAP_PTP) == 0)
+	*tstamp_config = bp->tstamp_config;
+	if (!macb_dma_ptp(bp))
 		return -EOPNOTSUPP;
 
-	if (copy_to_user(rq->ifr_data, tstamp_config, sizeof(*tstamp_config)))
-		return -EFAULT;
-	else
-		return 0;
+	return 0;
 }
 
-static int gem_ptp_set_one_step_sync(struct macb *bp, u8 enable)
+static void gem_ptp_set_one_step_sync(struct macb *bp, u8 enable)
 {
 	u32 reg_val;
 
@@ -444,32 +400,25 @@ static int gem_ptp_set_one_step_sync(struct macb *bp, u8 enable)
 		macb_writel(bp, NCR, reg_val | MACB_BIT(OSSMODE));
 	else
 		macb_writel(bp, NCR, reg_val & ~MACB_BIT(OSSMODE));
-
-	return 0;
 }
 
-int gem_set_hwtst(struct net_device *dev, struct ifreq *ifr, int cmd)
+int gem_set_hwtst(struct net_device *dev,
+		  struct kernel_hwtstamp_config *tstamp_config,
+		  struct netlink_ext_ack *extack)
 {
 	enum macb_bd_control tx_bd_control = TSTAMP_DISABLED;
 	enum macb_bd_control rx_bd_control = TSTAMP_DISABLED;
-	struct hwtstamp_config *tstamp_config;
 	struct macb *bp = netdev_priv(dev);
 	u32 regval;
 
-	tstamp_config = &bp->tstamp_config;
-	if ((bp->hw_dma_cap & HW_DMA_CAP_PTP) == 0)
+	if (!macb_dma_ptp(bp))
 		return -EOPNOTSUPP;
-
-	if (copy_from_user(tstamp_config, ifr->ifr_data,
-			   sizeof(*tstamp_config)))
-		return -EFAULT;
 
 	switch (tstamp_config->tx_type) {
 	case HWTSTAMP_TX_OFF:
 		break;
 	case HWTSTAMP_TX_ONESTEP_SYNC:
-		if (gem_ptp_set_one_step_sync(bp, 1) != 0)
-			return -ERANGE;
+		gem_ptp_set_one_step_sync(bp, 1);
 		tx_bd_control = TSTAMP_ALL_FRAMES;
 		break;
 	case HWTSTAMP_TX_ON:
@@ -511,12 +460,11 @@ int gem_set_hwtst(struct net_device *dev, struct ifreq *ifr, int cmd)
 		return -ERANGE;
 	}
 
+	bp->tstamp_config = *tstamp_config;
+
 	if (gem_ptp_set_ts_mode(bp, tx_bd_control, rx_bd_control) != 0)
 		return -ERANGE;
 
-	if (copy_to_user(ifr->ifr_data, tstamp_config, sizeof(*tstamp_config)))
-		return -EFAULT;
-	else
-		return 0;
+	return 0;
 }
 

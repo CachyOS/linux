@@ -20,17 +20,25 @@ Config File Syntax
 
 The boot config syntax is a simple structured key-value. Each key consists
 of dot-connected-words, and key and value are connected by ``=``. The value
-has to be terminated by semi-colon (``;``) or newline (``\n``).
-For array value, array entries are separated by comma (``,``). ::
-
-  KEY[.WORD[...]] = VALUE[, VALUE2[...]][;]
-
-Unlike the kernel command line syntax, spaces are OK around the comma and ``=``.
+string has to be terminated by the following delimiters described below.
 
 Each key word must contain only alphabets, numbers, dash (``-``) or underscore
 (``_``). And each value only contains printable characters or spaces except
 for delimiters such as semi-colon (``;``), new-line (``\n``), comma (``,``),
 hash (``#``) and closing brace (``}``).
+
+If the ``=`` is followed by whitespace up to one of these delimiters, the
+key is assigned an empty value.
+
+For arrays, the array values are comma (``,``) separated, and comments and
+line breaks with newline (``\n``) are allowed between array values for
+readability. Thus the first entry of the array must be on the same line as
+the key.::
+
+  KEY[.WORD[...]] = VALUE[, VALUE2[...]][;]
+
+Unlike the kernel command line syntax, white spaces (including tabs) are
+ignored around the comma and ``=``.
 
 If you want to use those delimiters in a value, you can use either double-
 quotes (``"VALUE"``) or single-quotes (``'VALUE'``) to quote it. Note that
@@ -138,8 +146,8 @@ This is parsed as below::
  foo = value
  bar = 1, 2, 3
 
-Note that you can not put a comment between value and delimiter(``,`` or
-``;``). This means following config has a syntax error ::
+Note that you can NOT put a comment or a newline between value and delimiter
+(``,`` or ``;``). This means following config has a syntax error ::
 
  key = 1 # comment
        ,2
@@ -201,6 +209,8 @@ To remove the config from the image, you can use -d option as below::
 
 Then add "bootconfig" on the normal kernel command line to tell the
 kernel to look for the bootconfig at the end of the initrd file.
+Alternatively, build your kernel with the ``CONFIG_BOOT_CONFIG_FORCE``
+Kconfig option selected.
 
 Embedding a Boot Config into Kernel
 -----------------------------------
@@ -217,7 +227,9 @@ path to the bootconfig file from source tree or object tree.
 The kernel will embed it as the default bootconfig.
 
 Just as when attaching the bootconfig to the initrd, you need ``bootconfig``
-option on the kernel command line to enable the embedded bootconfig.
+option on the kernel command line to enable the embedded bootconfig, or,
+alternatively, build your kernel with the ``CONFIG_BOOT_CONFIG_FORCE``
+Kconfig option selected.
 
 Note that even if you set this option, you can override the embedded
 bootconfig by another bootconfig which attached to the initrd.
@@ -229,7 +241,7 @@ In addition to the kernel command line, the boot config can be used for
 passing the kernel parameters. All the key-value pairs under ``kernel``
 key will be passed to kernel cmdline directly. Moreover, the key-value
 pairs under ``init`` will be passed to init process via the cmdline.
-The parameters are concatinated with user-given kernel cmdline string
+The parameters are concatenated with user-given kernel cmdline string
 as the following order, so that the command line parameter can override
 bootconfig parameters (this depends on how the subsystem handles parameters
 but in general, earlier parameter will be overwritten by later one.)::
@@ -261,7 +273,7 @@ The final kernel cmdline will be the following::
 Config File Limitation
 ======================
 
-Currently the maximum config size size is 32KB and the total key-words (not
+Currently the maximum config size is 32KB and the total key-words (not
 key-value entries) must be under 1024 nodes.
 Note: this is not the number of entries but nodes, an entry must consume
 more than 2 nodes (a key-word and a value). So theoretically, it will be

@@ -1,4 +1,5 @@
 .. SPDX-License-Identifier: GFDL-1.1-no-invariants-or-later
+.. c:namespace:: V4L
 .. include:: <isonum.txt>
 
 .. _v4l2spec:
@@ -11,13 +12,8 @@ This part describes the Video for Linux API version 2 (V4L2 API) specification.
 
 **Revision 4.5**
 
-.. only:: html
-
-   .. class:: toc-title
-
-        Table of Contents
-
 .. toctree::
+    :caption: Table of Contents
     :numbered:
     :maxdepth: 5
 
@@ -91,7 +87,7 @@ Authors, in alphabetical order:
 
   - Documented the fielded V4L2_MPEG_STREAM_VBI_FMT_IVTV MPEG stream embedded, sliced VBI data format in this specification.
 
-- Verkuil, Hans <hverkuil@xs4all.nl>
+- Verkuil, Hans <hverkuil@kernel.org>
 
   - Designed and documented the VIDIOC_LOG_STATUS ioctl, the extended control ioctls, major parts of the sliced VBI API, the MPEG encoder and decoder APIs and the DV Timings API.
 

@@ -210,7 +210,7 @@ implemented (simplified excerpt)::
         }
     }
 
-    noop(struct irq_data *data))
+    noop(struct irq_data *data)
     {
     }
 
@@ -264,7 +264,7 @@ The following control flow is implemented (simplified excerpt)::
             desc->irq_data.chip->irq_unmask();
         desc->status &= ~pending;
         handle_irq_event(desc->action);
-    } while (status & pending);
+    } while (desc->status & pending);
     desc->status &= ~running;
 
 
@@ -439,6 +439,6 @@ Credits
 
 The following people have contributed to this document:
 
-1. Thomas Gleixner tglx@linutronix.de
+1. Thomas Gleixner tglx@kernel.org
 
 2. Ingo Molnar mingo@elte.hu

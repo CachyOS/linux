@@ -10,14 +10,15 @@
 #include <linux/of_net.h>
 #include <linux/netdevice.h>
 #include <linux/phylink.h>
+#include <linux/of.h>
 #include <linux/of_mdio.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/mfd/syscon.h>
 #include <linux/skbuff.h>
 #include <net/switchdev.h>
 
+#include <soc/mscc/ocelot.h>
 #include <soc/mscc/ocelot_vcap.h>
-#include <soc/mscc/ocelot_hsio.h>
 #include <soc/mscc/vsc7514_regs.h>
 #include "ocelot_fdma.h"
 #include "ocelot.h"
@@ -25,213 +26,15 @@
 #define VSC7514_VCAP_POLICER_BASE			128
 #define VSC7514_VCAP_POLICER_MAX			191
 
-static const u32 *ocelot_regmap[TARGET_MAX] = {
-	[ANA] = vsc7514_ana_regmap,
-	[QS] = vsc7514_qs_regmap,
-	[QSYS] = vsc7514_qsys_regmap,
-	[REW] = vsc7514_rew_regmap,
-	[SYS] = vsc7514_sys_regmap,
-	[S0] = vsc7514_vcap_regmap,
-	[S1] = vsc7514_vcap_regmap,
-	[S2] = vsc7514_vcap_regmap,
-	[PTP] = vsc7514_ptp_regmap,
-	[DEV_GMII] = vsc7514_dev_gmii_regmap,
-};
-
-static const struct reg_field ocelot_regfields[REGFIELD_MAX] = {
-	[ANA_ADVLEARN_VLAN_CHK] = REG_FIELD(ANA_ADVLEARN, 11, 11),
-	[ANA_ADVLEARN_LEARN_MIRROR] = REG_FIELD(ANA_ADVLEARN, 0, 10),
-	[ANA_ANEVENTS_MSTI_DROP] = REG_FIELD(ANA_ANEVENTS, 27, 27),
-	[ANA_ANEVENTS_ACLKILL] = REG_FIELD(ANA_ANEVENTS, 26, 26),
-	[ANA_ANEVENTS_ACLUSED] = REG_FIELD(ANA_ANEVENTS, 25, 25),
-	[ANA_ANEVENTS_AUTOAGE] = REG_FIELD(ANA_ANEVENTS, 24, 24),
-	[ANA_ANEVENTS_VS2TTL1] = REG_FIELD(ANA_ANEVENTS, 23, 23),
-	[ANA_ANEVENTS_STORM_DROP] = REG_FIELD(ANA_ANEVENTS, 22, 22),
-	[ANA_ANEVENTS_LEARN_DROP] = REG_FIELD(ANA_ANEVENTS, 21, 21),
-	[ANA_ANEVENTS_AGED_ENTRY] = REG_FIELD(ANA_ANEVENTS, 20, 20),
-	[ANA_ANEVENTS_CPU_LEARN_FAILED] = REG_FIELD(ANA_ANEVENTS, 19, 19),
-	[ANA_ANEVENTS_AUTO_LEARN_FAILED] = REG_FIELD(ANA_ANEVENTS, 18, 18),
-	[ANA_ANEVENTS_LEARN_REMOVE] = REG_FIELD(ANA_ANEVENTS, 17, 17),
-	[ANA_ANEVENTS_AUTO_LEARNED] = REG_FIELD(ANA_ANEVENTS, 16, 16),
-	[ANA_ANEVENTS_AUTO_MOVED] = REG_FIELD(ANA_ANEVENTS, 15, 15),
-	[ANA_ANEVENTS_DROPPED] = REG_FIELD(ANA_ANEVENTS, 14, 14),
-	[ANA_ANEVENTS_CLASSIFIED_DROP] = REG_FIELD(ANA_ANEVENTS, 13, 13),
-	[ANA_ANEVENTS_CLASSIFIED_COPY] = REG_FIELD(ANA_ANEVENTS, 12, 12),
-	[ANA_ANEVENTS_VLAN_DISCARD] = REG_FIELD(ANA_ANEVENTS, 11, 11),
-	[ANA_ANEVENTS_FWD_DISCARD] = REG_FIELD(ANA_ANEVENTS, 10, 10),
-	[ANA_ANEVENTS_MULTICAST_FLOOD] = REG_FIELD(ANA_ANEVENTS, 9, 9),
-	[ANA_ANEVENTS_UNICAST_FLOOD] = REG_FIELD(ANA_ANEVENTS, 8, 8),
-	[ANA_ANEVENTS_DEST_KNOWN] = REG_FIELD(ANA_ANEVENTS, 7, 7),
-	[ANA_ANEVENTS_BUCKET3_MATCH] = REG_FIELD(ANA_ANEVENTS, 6, 6),
-	[ANA_ANEVENTS_BUCKET2_MATCH] = REG_FIELD(ANA_ANEVENTS, 5, 5),
-	[ANA_ANEVENTS_BUCKET1_MATCH] = REG_FIELD(ANA_ANEVENTS, 4, 4),
-	[ANA_ANEVENTS_BUCKET0_MATCH] = REG_FIELD(ANA_ANEVENTS, 3, 3),
-	[ANA_ANEVENTS_CPU_OPERATION] = REG_FIELD(ANA_ANEVENTS, 2, 2),
-	[ANA_ANEVENTS_DMAC_LOOKUP] = REG_FIELD(ANA_ANEVENTS, 1, 1),
-	[ANA_ANEVENTS_SMAC_LOOKUP] = REG_FIELD(ANA_ANEVENTS, 0, 0),
-	[ANA_TABLES_MACACCESS_B_DOM] = REG_FIELD(ANA_TABLES_MACACCESS, 18, 18),
-	[ANA_TABLES_MACTINDX_BUCKET] = REG_FIELD(ANA_TABLES_MACTINDX, 10, 11),
-	[ANA_TABLES_MACTINDX_M_INDEX] = REG_FIELD(ANA_TABLES_MACTINDX, 0, 9),
-	[QSYS_TIMED_FRAME_ENTRY_TFRM_VLD] = REG_FIELD(QSYS_TIMED_FRAME_ENTRY, 20, 20),
-	[QSYS_TIMED_FRAME_ENTRY_TFRM_FP] = REG_FIELD(QSYS_TIMED_FRAME_ENTRY, 8, 19),
-	[QSYS_TIMED_FRAME_ENTRY_TFRM_PORTNO] = REG_FIELD(QSYS_TIMED_FRAME_ENTRY, 4, 7),
-	[QSYS_TIMED_FRAME_ENTRY_TFRM_TM_SEL] = REG_FIELD(QSYS_TIMED_FRAME_ENTRY, 1, 3),
-	[QSYS_TIMED_FRAME_ENTRY_TFRM_TM_T] = REG_FIELD(QSYS_TIMED_FRAME_ENTRY, 0, 0),
-	[SYS_RESET_CFG_CORE_ENA] = REG_FIELD(SYS_RESET_CFG, 2, 2),
-	[SYS_RESET_CFG_MEM_ENA] = REG_FIELD(SYS_RESET_CFG, 1, 1),
-	[SYS_RESET_CFG_MEM_INIT] = REG_FIELD(SYS_RESET_CFG, 0, 0),
-	/* Replicated per number of ports (12), register size 4 per port */
-	[QSYS_SWITCH_PORT_MODE_PORT_ENA] = REG_FIELD_ID(QSYS_SWITCH_PORT_MODE, 14, 14, 12, 4),
-	[QSYS_SWITCH_PORT_MODE_SCH_NEXT_CFG] = REG_FIELD_ID(QSYS_SWITCH_PORT_MODE, 11, 13, 12, 4),
-	[QSYS_SWITCH_PORT_MODE_YEL_RSRVD] = REG_FIELD_ID(QSYS_SWITCH_PORT_MODE, 10, 10, 12, 4),
-	[QSYS_SWITCH_PORT_MODE_INGRESS_DROP_MODE] = REG_FIELD_ID(QSYS_SWITCH_PORT_MODE, 9, 9, 12, 4),
-	[QSYS_SWITCH_PORT_MODE_TX_PFC_ENA] = REG_FIELD_ID(QSYS_SWITCH_PORT_MODE, 1, 8, 12, 4),
-	[QSYS_SWITCH_PORT_MODE_TX_PFC_MODE] = REG_FIELD_ID(QSYS_SWITCH_PORT_MODE, 0, 0, 12, 4),
-	[SYS_PORT_MODE_DATA_WO_TS] = REG_FIELD_ID(SYS_PORT_MODE, 5, 6, 12, 4),
-	[SYS_PORT_MODE_INCL_INJ_HDR] = REG_FIELD_ID(SYS_PORT_MODE, 3, 4, 12, 4),
-	[SYS_PORT_MODE_INCL_XTR_HDR] = REG_FIELD_ID(SYS_PORT_MODE, 1, 2, 12, 4),
-	[SYS_PORT_MODE_INCL_HDR_ERR] = REG_FIELD_ID(SYS_PORT_MODE, 0, 0, 12, 4),
-	[SYS_PAUSE_CFG_PAUSE_START] = REG_FIELD_ID(SYS_PAUSE_CFG, 10, 18, 12, 4),
-	[SYS_PAUSE_CFG_PAUSE_STOP] = REG_FIELD_ID(SYS_PAUSE_CFG, 1, 9, 12, 4),
-	[SYS_PAUSE_CFG_PAUSE_ENA] = REG_FIELD_ID(SYS_PAUSE_CFG, 0, 1, 12, 4),
-};
-
-static const struct ocelot_stat_layout ocelot_stats_layout[] = {
-	{ .name = "rx_octets", .offset = 0x00, },
-	{ .name = "rx_unicast", .offset = 0x01, },
-	{ .name = "rx_multicast", .offset = 0x02, },
-	{ .name = "rx_broadcast", .offset = 0x03, },
-	{ .name = "rx_shorts", .offset = 0x04, },
-	{ .name = "rx_fragments", .offset = 0x05, },
-	{ .name = "rx_jabbers", .offset = 0x06, },
-	{ .name = "rx_crc_align_errs", .offset = 0x07, },
-	{ .name = "rx_sym_errs", .offset = 0x08, },
-	{ .name = "rx_frames_below_65_octets", .offset = 0x09, },
-	{ .name = "rx_frames_65_to_127_octets", .offset = 0x0A, },
-	{ .name = "rx_frames_128_to_255_octets", .offset = 0x0B, },
-	{ .name = "rx_frames_256_to_511_octets", .offset = 0x0C, },
-	{ .name = "rx_frames_512_to_1023_octets", .offset = 0x0D, },
-	{ .name = "rx_frames_1024_to_1526_octets", .offset = 0x0E, },
-	{ .name = "rx_frames_over_1526_octets", .offset = 0x0F, },
-	{ .name = "rx_pause", .offset = 0x10, },
-	{ .name = "rx_control", .offset = 0x11, },
-	{ .name = "rx_longs", .offset = 0x12, },
-	{ .name = "rx_classified_drops", .offset = 0x13, },
-	{ .name = "rx_red_prio_0", .offset = 0x14, },
-	{ .name = "rx_red_prio_1", .offset = 0x15, },
-	{ .name = "rx_red_prio_2", .offset = 0x16, },
-	{ .name = "rx_red_prio_3", .offset = 0x17, },
-	{ .name = "rx_red_prio_4", .offset = 0x18, },
-	{ .name = "rx_red_prio_5", .offset = 0x19, },
-	{ .name = "rx_red_prio_6", .offset = 0x1A, },
-	{ .name = "rx_red_prio_7", .offset = 0x1B, },
-	{ .name = "rx_yellow_prio_0", .offset = 0x1C, },
-	{ .name = "rx_yellow_prio_1", .offset = 0x1D, },
-	{ .name = "rx_yellow_prio_2", .offset = 0x1E, },
-	{ .name = "rx_yellow_prio_3", .offset = 0x1F, },
-	{ .name = "rx_yellow_prio_4", .offset = 0x20, },
-	{ .name = "rx_yellow_prio_5", .offset = 0x21, },
-	{ .name = "rx_yellow_prio_6", .offset = 0x22, },
-	{ .name = "rx_yellow_prio_7", .offset = 0x23, },
-	{ .name = "rx_green_prio_0", .offset = 0x24, },
-	{ .name = "rx_green_prio_1", .offset = 0x25, },
-	{ .name = "rx_green_prio_2", .offset = 0x26, },
-	{ .name = "rx_green_prio_3", .offset = 0x27, },
-	{ .name = "rx_green_prio_4", .offset = 0x28, },
-	{ .name = "rx_green_prio_5", .offset = 0x29, },
-	{ .name = "rx_green_prio_6", .offset = 0x2A, },
-	{ .name = "rx_green_prio_7", .offset = 0x2B, },
-	{ .name = "tx_octets", .offset = 0x40, },
-	{ .name = "tx_unicast", .offset = 0x41, },
-	{ .name = "tx_multicast", .offset = 0x42, },
-	{ .name = "tx_broadcast", .offset = 0x43, },
-	{ .name = "tx_collision", .offset = 0x44, },
-	{ .name = "tx_drops", .offset = 0x45, },
-	{ .name = "tx_pause", .offset = 0x46, },
-	{ .name = "tx_frames_below_65_octets", .offset = 0x47, },
-	{ .name = "tx_frames_65_to_127_octets", .offset = 0x48, },
-	{ .name = "tx_frames_128_255_octets", .offset = 0x49, },
-	{ .name = "tx_frames_256_511_octets", .offset = 0x4A, },
-	{ .name = "tx_frames_512_1023_octets", .offset = 0x4B, },
-	{ .name = "tx_frames_1024_1526_octets", .offset = 0x4C, },
-	{ .name = "tx_frames_over_1526_octets", .offset = 0x4D, },
-	{ .name = "tx_yellow_prio_0", .offset = 0x4E, },
-	{ .name = "tx_yellow_prio_1", .offset = 0x4F, },
-	{ .name = "tx_yellow_prio_2", .offset = 0x50, },
-	{ .name = "tx_yellow_prio_3", .offset = 0x51, },
-	{ .name = "tx_yellow_prio_4", .offset = 0x52, },
-	{ .name = "tx_yellow_prio_5", .offset = 0x53, },
-	{ .name = "tx_yellow_prio_6", .offset = 0x54, },
-	{ .name = "tx_yellow_prio_7", .offset = 0x55, },
-	{ .name = "tx_green_prio_0", .offset = 0x56, },
-	{ .name = "tx_green_prio_1", .offset = 0x57, },
-	{ .name = "tx_green_prio_2", .offset = 0x58, },
-	{ .name = "tx_green_prio_3", .offset = 0x59, },
-	{ .name = "tx_green_prio_4", .offset = 0x5A, },
-	{ .name = "tx_green_prio_5", .offset = 0x5B, },
-	{ .name = "tx_green_prio_6", .offset = 0x5C, },
-	{ .name = "tx_green_prio_7", .offset = 0x5D, },
-	{ .name = "tx_aged", .offset = 0x5E, },
-	{ .name = "drop_local", .offset = 0x80, },
-	{ .name = "drop_tail", .offset = 0x81, },
-	{ .name = "drop_yellow_prio_0", .offset = 0x82, },
-	{ .name = "drop_yellow_prio_1", .offset = 0x83, },
-	{ .name = "drop_yellow_prio_2", .offset = 0x84, },
-	{ .name = "drop_yellow_prio_3", .offset = 0x85, },
-	{ .name = "drop_yellow_prio_4", .offset = 0x86, },
-	{ .name = "drop_yellow_prio_5", .offset = 0x87, },
-	{ .name = "drop_yellow_prio_6", .offset = 0x88, },
-	{ .name = "drop_yellow_prio_7", .offset = 0x89, },
-	{ .name = "drop_green_prio_0", .offset = 0x8A, },
-	{ .name = "drop_green_prio_1", .offset = 0x8B, },
-	{ .name = "drop_green_prio_2", .offset = 0x8C, },
-	{ .name = "drop_green_prio_3", .offset = 0x8D, },
-	{ .name = "drop_green_prio_4", .offset = 0x8E, },
-	{ .name = "drop_green_prio_5", .offset = 0x8F, },
-	{ .name = "drop_green_prio_6", .offset = 0x90, },
-	{ .name = "drop_green_prio_7", .offset = 0x91, },
-	OCELOT_STAT_END
-};
-
-static void ocelot_pll5_init(struct ocelot *ocelot)
-{
-	/* Configure PLL5. This will need a proper CCF driver
-	 * The values are coming from the VTSS API for Ocelot
-	 */
-	regmap_write(ocelot->targets[HSIO], HSIO_PLL5G_CFG4,
-		     HSIO_PLL5G_CFG4_IB_CTRL(0x7600) |
-		     HSIO_PLL5G_CFG4_IB_BIAS_CTRL(0x8));
-	regmap_write(ocelot->targets[HSIO], HSIO_PLL5G_CFG0,
-		     HSIO_PLL5G_CFG0_CORE_CLK_DIV(0x11) |
-		     HSIO_PLL5G_CFG0_CPU_CLK_DIV(2) |
-		     HSIO_PLL5G_CFG0_ENA_BIAS |
-		     HSIO_PLL5G_CFG0_ENA_VCO_BUF |
-		     HSIO_PLL5G_CFG0_ENA_CP1 |
-		     HSIO_PLL5G_CFG0_SELCPI(2) |
-		     HSIO_PLL5G_CFG0_LOOP_BW_RES(0xe) |
-		     HSIO_PLL5G_CFG0_SELBGV820(4) |
-		     HSIO_PLL5G_CFG0_DIV4 |
-		     HSIO_PLL5G_CFG0_ENA_CLKTREE |
-		     HSIO_PLL5G_CFG0_ENA_LANE);
-	regmap_write(ocelot->targets[HSIO], HSIO_PLL5G_CFG2,
-		     HSIO_PLL5G_CFG2_EN_RESET_FRQ_DET |
-		     HSIO_PLL5G_CFG2_EN_RESET_OVERRUN |
-		     HSIO_PLL5G_CFG2_GAIN_TEST(0x8) |
-		     HSIO_PLL5G_CFG2_ENA_AMPCTRL |
-		     HSIO_PLL5G_CFG2_PWD_AMPCTRL_N |
-		     HSIO_PLL5G_CFG2_AMPC_SEL(0x10));
-}
-
 static int ocelot_chip_init(struct ocelot *ocelot, const struct ocelot_ops *ops)
 {
 	int ret;
 
-	ocelot->map = ocelot_regmap;
-	ocelot->stats_layout = ocelot_stats_layout;
+	ocelot->map = vsc7514_regmap;
 	ocelot->num_mact_rows = 1024;
 	ocelot->ops = ops;
 
-	ret = ocelot_regfields_init(ocelot, ocelot_regfields);
+	ret = ocelot_regfields_init(ocelot, vsc7514_regfields);
 	if (ret)
 		return ret;
 
@@ -247,6 +50,8 @@ static irqreturn_t ocelot_xtr_irq_handler(int irq, void *arg)
 {
 	struct ocelot *ocelot = arg;
 	int grp = 0, err;
+
+	ocelot_lock_xtr_grp(ocelot, grp);
 
 	while (ocelot_read(ocelot, QS_XTR_DATA_PRESENT) & BIT(grp)) {
 		struct sk_buff *skb;
@@ -266,6 +71,8 @@ out:
 	if (err < 0)
 		ocelot_drain_cpu_queue(ocelot, 0);
 
+	ocelot_unlock_xtr_grp(ocelot, grp);
+
 	return IRQ_HANDLED;
 }
 
@@ -284,57 +91,6 @@ static const struct of_device_id mscc_ocelot_match[] = {
 };
 MODULE_DEVICE_TABLE(of, mscc_ocelot_match);
 
-static int ocelot_reset(struct ocelot *ocelot)
-{
-	int retries = 100;
-	u32 val;
-
-	regmap_field_write(ocelot->regfields[SYS_RESET_CFG_MEM_INIT], 1);
-	regmap_field_write(ocelot->regfields[SYS_RESET_CFG_MEM_ENA], 1);
-
-	do {
-		msleep(1);
-		regmap_field_read(ocelot->regfields[SYS_RESET_CFG_MEM_INIT],
-				  &val);
-	} while (val && --retries);
-
-	if (!retries)
-		return -ETIMEDOUT;
-
-	regmap_field_write(ocelot->regfields[SYS_RESET_CFG_MEM_ENA], 1);
-	regmap_field_write(ocelot->regfields[SYS_RESET_CFG_CORE_ENA], 1);
-
-	return 0;
-}
-
-/* Watermark encode
- * Bit 8:   Unit; 0:1, 1:16
- * Bit 7-0: Value to be multiplied with unit
- */
-static u16 ocelot_wm_enc(u16 value)
-{
-	WARN_ON(value >= 16 * BIT(8));
-
-	if (value >= BIT(8))
-		return BIT(8) | (value / 16);
-
-	return value;
-}
-
-static u16 ocelot_wm_dec(u16 wm)
-{
-	if (wm & BIT(8))
-		return (wm & GENMASK(7, 0)) * 16;
-
-	return wm;
-}
-
-static void ocelot_wm_stat(u32 val, u32 *inuse, u32 *maxuse)
-{
-	*inuse = (val & GENMASK(23, 12)) >> 12;
-	*maxuse = val & GENMASK(11, 0);
-}
-
 static const struct ocelot_ops ocelot_ops = {
 	.reset			= ocelot_reset,
 	.wm_enc			= ocelot_wm_enc,
@@ -342,49 +98,6 @@ static const struct ocelot_ops ocelot_ops = {
 	.wm_stat		= ocelot_wm_stat,
 	.port_to_netdev		= ocelot_port_to_netdev,
 	.netdev_to_port		= ocelot_netdev_to_port,
-};
-
-static struct vcap_props vsc7514_vcap_props[] = {
-	[VCAP_ES0] = {
-		.action_type_width = 0,
-		.action_table = {
-			[ES0_ACTION_TYPE_NORMAL] = {
-				.width = 73, /* HIT_STICKY not included */
-				.count = 1,
-			},
-		},
-		.target = S0,
-		.keys = vsc7514_vcap_es0_keys,
-		.actions = vsc7514_vcap_es0_actions,
-	},
-	[VCAP_IS1] = {
-		.action_type_width = 0,
-		.action_table = {
-			[IS1_ACTION_TYPE_NORMAL] = {
-				.width = 78, /* HIT_STICKY not included */
-				.count = 4,
-			},
-		},
-		.target = S1,
-		.keys = vsc7514_vcap_is1_keys,
-		.actions = vsc7514_vcap_is1_actions,
-	},
-	[VCAP_IS2] = {
-		.action_type_width = 1,
-		.action_table = {
-			[IS2_ACTION_TYPE_NORMAL] = {
-				.width = 49,
-				.count = 2
-			},
-			[IS2_ACTION_TYPE_SMAC_SIP] = {
-				.width = 6,
-				.count = 4
-			},
-		},
-		.target = S2,
-		.keys = vsc7514_vcap_is2_keys,
-		.actions = vsc7514_vcap_is2_actions,
-	},
 };
 
 static struct ptp_clock_info ocelot_ptp_clock_info = {
@@ -395,6 +108,8 @@ static struct ptp_clock_info ocelot_ptp_clock_info = {
 	.n_ext_ts	= 0,
 	.n_per_out	= OCELOT_PTP_PINS_NUM,
 	.n_pins		= OCELOT_PTP_PINS_NUM,
+	.supported_perout_flags = PTP_PEROUT_DUTY_CYCLE |
+				  PTP_PEROUT_PHASE,
 	.pps		= 0,
 	.gettime64	= ocelot_ptp_gettime64,
 	.settime64	= ocelot_ptp_settime64,
@@ -450,9 +165,6 @@ static int mscc_ocelot_init_ports(struct platform_device *pdev,
 		return -ENOMEM;
 
 	for_each_available_child_of_node(ports, portnp) {
-		struct ocelot_port_private *priv;
-		struct ocelot_port *ocelot_port;
-		struct devlink_port *dlp;
 		struct regmap *target;
 		struct resource *res;
 		char res_name[8];
@@ -493,12 +205,6 @@ static int mscc_ocelot_init_ports(struct platform_device *pdev,
 		}
 
 		devlink_ports_registered |= BIT(port);
-
-		ocelot_port = ocelot->ports[port];
-		priv = container_of(ocelot_port, struct ocelot_port_private,
-				    port);
-		dlp = &ocelot->devlink_ports[port];
-		devlink_port_type_eth_set(dlp, priv->dev);
 	}
 
 	/* Initialize unused devlink ports at the end */
@@ -692,7 +398,7 @@ out_free_devlink:
 	return err;
 }
 
-static int mscc_ocelot_remove(struct platform_device *pdev)
+static void mscc_ocelot_remove(struct platform_device *pdev)
 {
 	struct ocelot *ocelot = platform_get_drvdata(pdev);
 
@@ -708,8 +414,6 @@ static int mscc_ocelot_remove(struct platform_device *pdev)
 	unregister_switchdev_notifier(&ocelot_switchdev_nb);
 	unregister_netdevice_notifier(&ocelot_netdevice_nb);
 	devlink_free(ocelot->devlink);
-
-	return 0;
 }
 
 static struct platform_driver mscc_ocelot_driver = {

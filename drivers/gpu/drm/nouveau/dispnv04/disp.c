@@ -61,14 +61,14 @@ nv04_display_fini(struct drm_device *dev, bool runtime, bool suspend)
 	struct drm_crtc *crtc;
 
 	/* Disable flip completion events. */
-	nvif_notify_put(&disp->flip);
+	nvif_event_block(&disp->flip);
 
 	/* Disable vblank interrupts. */
 	NVWriteCRTC(dev, 0, NV_PCRTC_INTR_EN_0, 0);
 	if (nv_two_heads(dev))
 		NVWriteCRTC(dev, 1, NV_PCRTC_INTR_EN_0, 0);
 
-	if (!runtime)
+	if (!runtime && !drm->headless)
 		cancel_work_sync(&drm->hpd_work);
 
 	if (!suspend)
@@ -121,7 +121,7 @@ nv04_display_init(struct drm_device *dev, bool resume, bool runtime)
 		encoder->enc_save(&encoder->base.base);
 
 	/* Enable flip completion events. */
-	nvif_notify_get(&disp->flip);
+	nvif_event_allow(&disp->flip);
 
 	if (!resume)
 		return 0;
@@ -189,7 +189,6 @@ static void
 nv04_display_destroy(struct drm_device *dev)
 {
 	struct nv04_display *disp = nv04_display(dev);
-	struct nouveau_drm *drm = nouveau_drm(dev);
 	struct nouveau_encoder *encoder;
 	struct nouveau_crtc *nv_crtc;
 
@@ -202,19 +201,17 @@ nv04_display_destroy(struct drm_device *dev)
 
 	nouveau_hw_save_vga_fonts(dev, 0);
 
-	nvif_notify_dtor(&disp->flip);
+	nvif_event_dtor(&disp->flip);
 
 	nouveau_display(dev)->priv = NULL;
 	vfree(disp);
-
-	nvif_object_unmap(&drm->client.device.object);
 }
 
 int
 nv04_display_create(struct drm_device *dev)
 {
 	struct nouveau_drm *drm = nouveau_drm(dev);
-	struct nvkm_i2c *i2c = nvxx_i2c(&drm->client.device);
+	struct nvkm_i2c *i2c = nvxx_i2c(drm);
 	struct dcb_table *dcb = &drm->vbios.dcb;
 	struct drm_connector *connector, *ct;
 	struct drm_encoder *encoder;
@@ -227,7 +224,7 @@ nv04_display_create(struct drm_device *dev)
 	if (!disp)
 		return -ENOMEM;
 
-	nvif_object_map(&drm->client.device.object, NULL, 0);
+	disp->drm = drm;
 
 	nouveau_display(dev)->priv = disp;
 	nouveau_display(dev)->dtor = nv04_display_destroy;
@@ -239,9 +236,10 @@ nv04_display_create(struct drm_device *dev)
 
 	/* Request page flip completion event. */
 	if (drm->channel) {
-		nvif_notify_ctor(&drm->channel->nvsw, "kmsFlip", nv04_flip_complete,
-				 false, NV04_NVSW_NTFY_UEVENT,
-				 NULL, 0, 0, &disp->flip);
+		ret = nvif_event_ctor(&drm->channel->nvsw, "kmsFlip", 0, nv04_flip_complete,
+				      true, NULL, 0, &disp->flip);
+		if (ret)
+			return ret;
 	}
 
 	nouveau_hw_save_vga_fonts(dev, 1);
@@ -253,7 +251,7 @@ nv04_display_create(struct drm_device *dev)
 	for (i = 0; i < dcb->entries; i++) {
 		struct dcb_output *dcbent = &dcb->entry[i];
 
-		connector = nouveau_connector_create(dev, dcbent);
+		connector = nouveau_connector_create(dev, dcbent->connector);
 		if (IS_ERR(connector))
 			continue;
 

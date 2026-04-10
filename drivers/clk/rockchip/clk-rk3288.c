@@ -418,7 +418,7 @@ static struct rockchip_clk_branch rk3288_clk_branches[] __initdata = {
 			RK3288_CLKSEL_CON(32), 14, 2, MFLAGS, 8, 5, DFLAGS,
 			RK3288_CLKGATE_CON(3), 11, GFLAGS),
 	MUXGRF(0, "aclk_vcodec_pre", mux_aclk_vcodec_pre_p, CLK_SET_RATE_PARENT,
-			RK3288_GRF_SOC_CON(0), 7, 1, MFLAGS),
+			RK3288_GRF_SOC_CON(0), 7, 1, MFLAGS, grf_type_sys),
 	GATE(ACLK_VCODEC, "aclk_vcodec", "aclk_vcodec_pre", 0,
 		RK3288_CLKGATE_CON(9), 0, GFLAGS),
 
@@ -871,7 +871,7 @@ static const int rk3288_saved_cru_reg_ids[] = {
 
 static u32 rk3288_saved_cru_regs[ARRAY_SIZE(rk3288_saved_cru_reg_ids)];
 
-static int rk3288_clk_suspend(void)
+static int rk3288_clk_suspend(void *data)
 {
 	int i, reg_id;
 
@@ -906,7 +906,7 @@ static int rk3288_clk_suspend(void)
 	return 0;
 }
 
-static void rk3288_clk_resume(void)
+static void rk3288_clk_resume(void *data)
 {
 	int i, reg_id;
 
@@ -923,15 +923,20 @@ static void rk3288_clk_shutdown(void)
 	writel_relaxed(0xf3030000, rk3288_cru_base + RK3288_MODE_CON);
 }
 
-static struct syscore_ops rk3288_clk_syscore_ops = {
+static const struct syscore_ops rk3288_clk_syscore_ops = {
 	.suspend = rk3288_clk_suspend,
 	.resume = rk3288_clk_resume,
+};
+
+static struct syscore rk3288_clk_syscore = {
+	.ops = &rk3288_clk_syscore_ops,
 };
 
 static void __init rk3288_common_init(struct device_node *np,
 				      enum rk3288_variant soc)
 {
 	struct rockchip_clk_provider *ctx;
+	unsigned long clk_nr_clks;
 
 	rk3288_cru_base = of_iomap(np, 0);
 	if (!rk3288_cru_base) {
@@ -939,7 +944,9 @@ static void __init rk3288_common_init(struct device_node *np,
 		return;
 	}
 
-	ctx = rockchip_clk_init(np, rk3288_cru_base, CLK_NR_CLKS);
+	clk_nr_clks = rockchip_clk_find_max_clk_id(rk3288_clk_branches,
+						   ARRAY_SIZE(rk3288_clk_branches)) + 1;
+	ctx = rockchip_clk_init(np, rk3288_cru_base, clk_nr_clks);
 	if (IS_ERR(ctx)) {
 		pr_err("%s: rockchip clk init failed\n", __func__);
 		iounmap(rk3288_cru_base);
@@ -973,7 +980,7 @@ static void __init rk3288_common_init(struct device_node *np,
 
 	rockchip_register_restart_notifier(ctx, RK3288_GLB_SRST_FST,
 					   rk3288_clk_shutdown);
-	register_syscore_ops(&rk3288_clk_syscore_ops);
+	register_syscore(&rk3288_clk_syscore);
 
 	rockchip_clk_of_add_provider(np, ctx);
 }

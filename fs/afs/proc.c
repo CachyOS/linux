@@ -47,7 +47,7 @@ static int afs_proc_cells_show(struct seq_file *m, void *v)
 
 	/* display one cell per line on subsequent lines */
 	seq_printf(m, "%3u %3u %6lld %2u %2u %s\n",
-		   atomic_read(&cell->ref),
+		   refcount_read(&cell->ref),
 		   atomic_read(&cell->active),
 		   cell->dns_expiry - ktime_get_real_seconds(),
 		   vllist ? vllist->nr_servers : 0,
@@ -122,14 +122,16 @@ static int afs_proc_cells_write(struct file *file, char *buf, size_t size)
 	if (strcmp(buf, "add") == 0) {
 		struct afs_cell *cell;
 
-		cell = afs_lookup_cell(net, name, strlen(name), args, true);
+		cell = afs_lookup_cell(net, name, strlen(name), args,
+				       AFS_LOOKUP_CELL_PRELOAD,
+				       afs_cell_trace_use_lookup_add);
 		if (IS_ERR(cell)) {
 			ret = PTR_ERR(cell);
 			goto done;
 		}
 
 		if (test_and_set_bit(AFS_CELL_FL_NO_GC, &cell->flags))
-			afs_unuse_cell(net, cell, afs_cell_trace_unuse_no_pin);
+			afs_unuse_cell(cell, afs_cell_trace_unuse_no_pin);
 	} else {
 		goto inval;
 	}
@@ -147,6 +149,56 @@ inval:
 }
 
 /*
+ * Display the list of addr_prefs known to the namespace.
+ */
+static int afs_proc_addr_prefs_show(struct seq_file *m, void *v)
+{
+	struct afs_addr_preference_list *preflist;
+	struct afs_addr_preference *pref;
+	struct afs_net *net = afs_seq2net_single(m);
+	union {
+		struct sockaddr_in sin;
+		struct sockaddr_in6 sin6;
+	} addr;
+	unsigned int i;
+	char buf[44]; /* Maximum ipv6 + max subnet is 43 */
+
+	rcu_read_lock();
+	preflist = rcu_dereference(net->address_prefs);
+
+	if (!preflist) {
+		seq_puts(m, "NO PREFS\n");
+		goto out;
+	}
+
+	seq_printf(m, "PROT SUBNET                                      PRIOR (v=%u n=%u/%u/%u)\n",
+		   preflist->version, preflist->ipv6_off, preflist->nr, preflist->max_prefs);
+
+	memset(&addr, 0, sizeof(addr));
+
+	for (i = 0; i < preflist->nr; i++) {
+		pref = &preflist->prefs[i];
+
+		addr.sin.sin_family = pref->family;
+		if (pref->family == AF_INET) {
+			memcpy(&addr.sin.sin_addr, &pref->ipv4_addr,
+			       sizeof(addr.sin.sin_addr));
+			snprintf(buf, sizeof(buf), "%pISc/%u", &addr.sin, pref->subnet_mask);
+			seq_printf(m, "UDP  %-43.43s %5u\n", buf, pref->prio);
+		} else {
+			memcpy(&addr.sin6.sin6_addr, &pref->ipv6_addr,
+			       sizeof(addr.sin6.sin6_addr));
+			snprintf(buf, sizeof(buf), "%pISc/%u", &addr.sin6, pref->subnet_mask);
+			seq_printf(m, "UDP  %-43.43s %5u\n", buf, pref->prio);
+		}
+	}
+
+out:
+	rcu_read_unlock();
+	return 0;
+}
+
+/*
  * Display the name of the current workstation cell.
  */
 static int afs_proc_rootcell_show(struct seq_file *m, void *v)
@@ -156,7 +208,7 @@ static int afs_proc_rootcell_show(struct seq_file *m, void *v)
 
 	net = afs_seq2net_single(m);
 	down_read(&net->cells_lock);
-	cell = net->ws_cell;
+	cell = rcu_dereference_protected(net->ws_cell, lockdep_is_held(&net->cells_lock));
 	if (cell)
 		seq_printf(m, "%s\n", cell->name);
 	up_read(&net->cells_lock);
@@ -190,7 +242,13 @@ static int afs_proc_rootcell_write(struct file *file, char *buf, size_t size)
 	/* determine command to perform */
 	_debug("rootcell=%s", buf);
 
-	ret = afs_cell_init(net, buf);
+	ret = -EEXIST;
+	inode_lock(file_inode(file));
+	if (!rcu_access_pointer(net->ws_cell))
+		ret = afs_cell_init(net, buf);
+	else
+		printk("busy\n");
+	inode_unlock(file_inode(file));
 
 out:
 	_leave(" = %d", ret);
@@ -217,7 +275,7 @@ static int afs_proc_cell_volumes_show(struct seq_file *m, void *v)
 	}
 
 	seq_printf(m, "%3d %08llx %s %s\n",
-		   atomic_read(&vol->usage), vol->vid,
+		   refcount_read(&vol->ref), vol->vid,
 		   afs_vol_types[vol->type],
 		   vol->name);
 
@@ -307,7 +365,7 @@ static int afs_proc_cell_vlservers_show(struct seq_file *m, void *v)
 		for (i = 0; i < alist->nr_addrs; i++)
 			seq_printf(m, " %c %pISpc\n",
 				   alist->preferred == i ? '>' : '-',
-				   &alist->addrs[i].transport);
+				   rxrpc_kernel_remote_addr(alist->addrs[i].peer));
 	}
 	seq_printf(m, " info: fl=%lx rtt=%d\n", vlserver->flags, vlserver->rtt);
 	seq_printf(m, " probe: fl=%x e=%d ac=%d out=%d\n",
@@ -375,32 +433,51 @@ static const struct seq_operations afs_proc_cell_vlservers_ops = {
  */
 static int afs_proc_servers_show(struct seq_file *m, void *v)
 {
-	struct afs_server *server;
+	struct afs_endpoint_state *estate;
 	struct afs_addr_list *alist;
+	struct afs_server *server;
+	unsigned long failed;
 	int i;
 
 	if (v == SEQ_START_TOKEN) {
-		seq_puts(m, "UUID                                 REF ACT\n");
+		seq_puts(m, "UUID                                 REF ACT CELL\n");
 		return 0;
 	}
 
 	server = list_entry(v, struct afs_server, proc_link);
-	alist = rcu_dereference(server->addresses);
-	seq_printf(m, "%pU %3d %3d\n",
+	seq_printf(m, "%pU %3d %3d %s\n",
 		   &server->uuid,
-		   atomic_read(&server->ref),
-		   atomic_read(&server->active));
-	seq_printf(m, "  - info: fl=%lx rtt=%u brk=%x\n",
-		   server->flags, server->rtt, server->cb_s_break);
-	seq_printf(m, "  - probe: last=%d out=%d\n",
-		   (int)(jiffies - server->probed_at) / HZ,
-		   atomic_read(&server->probe_outstanding));
-	seq_printf(m, "  - ALIST v=%u rsp=%lx f=%lx\n",
-		   alist->version, alist->responded, alist->failed);
-	for (i = 0; i < alist->nr_addrs; i++)
-		seq_printf(m, "    [%x] %pISpc%s\n",
-			   i, &alist->addrs[i].transport,
-			   alist->preferred == i ? "*" : "");
+		   refcount_read(&server->ref),
+		   atomic_read(&server->active),
+		   server->cell->name);
+	seq_printf(m, "  - info: fl=%lx rtt=%u\n",
+		   server->flags, server->rtt);
+	seq_printf(m, "  - probe: last=%d\n",
+		   (int)(jiffies - server->probed_at) / HZ);
+
+	estate = rcu_dereference(server->endpoint_state);
+	if (!estate)
+		goto out;
+	failed = estate->failed_set;
+	seq_printf(m, "  - ESTATE pq=%x np=%u rsp=%lx f=%lx\n",
+		   estate->probe_seq, atomic_read(&estate->nr_probing),
+		   estate->responsive_set, estate->failed_set);
+
+	alist = estate->addresses;
+	seq_printf(m, "  - ALIST v=%u ap=%u\n",
+		   alist->version, alist->addr_pref_version);
+	for (i = 0; i < alist->nr_addrs; i++) {
+		const struct afs_address *addr = &alist->addrs[i];
+
+		seq_printf(m, "    [%x] %pISpc%s rtt=%d err=%d p=%u\n",
+			   i, rxrpc_kernel_remote_addr(addr->peer),
+			   alist->preferred == i ? "*" :
+			   test_bit(i, &failed) ? "!" : "",
+			   rxrpc_kernel_get_srtt(addr->peer),
+			   addr->last_error, addr->prio);
+	}
+
+out:
 	return 0;
 }
 
@@ -495,7 +572,7 @@ static int afs_proc_sysname_write(struct file *file, char *buf, size_t size)
 	char *s, *p, *sub;
 	int ret, len;
 
-	sysnames = kzalloc(sizeof(*sysnames), GFP_KERNEL);
+	sysnames = kzalloc_obj(*sysnames);
 	if (!sysnames)
 		return -ENOMEM;
 	refcount_set(&sysnames->usage, 1);
@@ -681,7 +758,11 @@ int afs_proc_init(struct afs_net *net)
 					&afs_proc_sysname_ops,
 					afs_proc_sysname_write,
 					sizeof(struct seq_net_private),
-					NULL))
+					NULL) ||
+	    !proc_create_net_single_write("addr_prefs", 0644, p,
+					  afs_proc_addr_prefs_show,
+					  afs_proc_addr_prefs_write,
+					  NULL))
 		goto error_tree;
 
 	net->proc_afs = p;

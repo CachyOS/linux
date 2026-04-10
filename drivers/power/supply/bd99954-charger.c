@@ -56,7 +56,6 @@
  */
 
 #include <linux/delay.h>
-#include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/i2c.h>
 #include <linux/kernel.h>
@@ -69,13 +68,6 @@
 #include <linux/types.h>
 
 #include "bd99954-charger.h"
-
-struct battery_data {
-	u16 precharge_current;	/* Trickle-charge Current */
-	u16 fc_reg_voltage;	/* Fast Charging Regulation Voltage */
-	u16 voltage_min;
-	u16 voltage_max;
-};
 
 /* Initial field values, converted to initial register values */
 struct bd9995x_init_data {
@@ -163,7 +155,7 @@ static const struct regmap_config bd9995x_regmap_config = {
 	.reg_stride = 1,
 
 	.max_register = 3 * 0x100,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 
 	.ranges = regmap_range_cfg,
 	.num_ranges = ARRAY_SIZE(regmap_range_cfg),
@@ -536,7 +528,7 @@ static irqreturn_t bd9995x_irq_handler_thread(int irq, void *private)
 
 	for_each_set_bit(i, &tmp, 7) {
 		int sub_status, sub_mask;
-		int sub_status_reg[] = {
+		static const int sub_status_reg[] = {
 			INT1_STATUS, INT2_STATUS, INT3_STATUS, INT4_STATUS,
 			INT5_STATUS, INT6_STATUS, INT7_STATUS,
 		};
@@ -768,27 +760,13 @@ static const struct power_supply_desc bd9995x_power_supply_desc = {
  * Describe the setting in linear_range table.
  */
 static const struct linear_range input_current_limit_ranges[] = {
-	{
-		.min = 0,
-		.step = 32000,
-		.min_sel = 0x0,
-		.max_sel = 0x1ff,
-	},
+	LINEAR_RANGE(0, 0x0, 0x1ff, 32000),
 };
 
 /* Possible trickle, pre-charging and termination current values */
 static const struct linear_range charging_current_ranges[] = {
-	{
-		.min = 0,
-		.step = 64000,
-		.min_sel = 0x0,
-		.max_sel = 0x10,
-	}, {
-		.min = 1024000,
-		.step = 0,
-		.min_sel = 0x11,
-		.max_sel = 0x1f,
-	},
+	LINEAR_RANGE(0, 0x0, 0x10, 64000),
+	LINEAR_RANGE(1024000, 0x11, 0x1f, 0),
 };
 
 /*
@@ -796,72 +774,28 @@ static const struct linear_range charging_current_ranges[] = {
  * and battery over voltage protection have same possible values
  */
 static const struct linear_range charge_voltage_regulation_ranges[] = {
-	{
-		.min = 2560000,
-		.step = 0,
-		.min_sel = 0,
-		.max_sel = 0xA0,
-	}, {
-		.min = 2560000,
-		.step = 16000,
-		.min_sel = 0xA0,
-		.max_sel = 0x4B0,
-	}, {
-		.min = 19200000,
-		.step = 0,
-		.min_sel = 0x4B0,
-		.max_sel = 0x7FF,
-	},
+	LINEAR_RANGE(2560000, 0, 0xA0, 0),
+	LINEAR_RANGE(2560000, 0xA0, 0x4B0, 16000),
+	LINEAR_RANGE(19200000, 0x4B0, 0x7FF, 0),
 };
 
 /* Possible VSYS voltage regulation values */
 static const struct linear_range vsys_voltage_regulation_ranges[] = {
-	{
-		.min = 2560000,
-		.step = 0,
-		.min_sel = 0,
-		.max_sel = 0x28,
-	}, {
-		.min = 2560000,
-		.step = 64000,
-		.min_sel = 0x28,
-		.max_sel = 0x12C,
-	}, {
-		.min = 19200000,
-		.step = 0,
-		.min_sel = 0x12C,
-		.max_sel = 0x1FF,
-	},
+	LINEAR_RANGE(2560000, 0, 0x28, 0),
+	LINEAR_RANGE(2560000, 0x28, 0x12C, 64000),
+	LINEAR_RANGE(19200000, 0x12C, 0x1FF, 0),
 };
 
 /* Possible settings for switching from trickle to pre-charging limits */
 static const struct linear_range trickle_to_pre_threshold_ranges[] = {
-	{
-		.min = 2048000,
-		.step = 0,
-		.min_sel = 0,
-		.max_sel = 0x20,
-	}, {
-		.min = 2048000,
-		.step = 64000,
-		.min_sel = 0x20,
-		.max_sel = 0x12C,
-	}, {
-		.min = 19200000,
-		.step = 0,
-		.min_sel = 0x12C,
-		.max_sel = 0x1FF
-	}
+	LINEAR_RANGE(2048000, 0, 0x20, 0),
+	LINEAR_RANGE(2048000, 0x20, 0x12C, 64000),
+	LINEAR_RANGE(19200000, 0x12C, 0x1FF, 0),
 };
 
 /* Possible current values for fast-charging constant current phase */
 static const struct linear_range fast_charge_current_ranges[] = {
-	{
-		.min = 0,
-		.step = 64000,
-		.min_sel = 0,
-		.max_sel = 0xFF,
-	}
+	LINEAR_RANGE(0, 0, 0xFF, 64000),
 };
 
 struct battery_init {
@@ -1047,7 +981,7 @@ static int bd9995x_probe(struct i2c_client *client)
 	bd->client = client;
 	bd->dev = dev;
 	psy_cfg.drv_data = bd;
-	psy_cfg.of_node = dev->of_node;
+	psy_cfg.fwnode = dev_fwnode(dev);
 
 	mutex_init(&bd->lock);
 
@@ -1135,7 +1069,7 @@ static struct i2c_driver bd9995x_driver = {
 		.name = "bd9995x-charger",
 		.of_match_table = bd9995x_of_match,
 	},
-	.probe_new = bd9995x_probe,
+	.probe = bd9995x_probe,
 };
 module_i2c_driver(bd9995x_driver);
 

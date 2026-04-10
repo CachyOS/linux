@@ -10,11 +10,12 @@
 #include <crypto/internal/hash.h>
 #include <crypto/internal/skcipher.h>
 #include <crypto/scatterwalk.h>
+#include <crypto/utils.h>
 #include <linux/err.h>
-#include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 
 struct ccm_instance_ctx {
 	struct crypto_skcipher_spawn ctr;
@@ -52,10 +53,6 @@ struct crypto_ccm_req_priv_ctx {
 
 struct cbcmac_tfm_ctx {
 	struct crypto_cipher *child;
-};
-
-struct cbcmac_desc_ctx {
-	unsigned int len;
 };
 
 static inline struct crypto_ccm_req_priv_ctx *crypto_ccm_reqctx(
@@ -218,15 +215,15 @@ static int crypto_ccm_auth(struct aead_request *req, struct scatterlist *plain,
 		cryptlen += ilen;
 	}
 
-	ahash_request_set_crypt(ahreq, plain, pctx->odata, cryptlen);
+	ahash_request_set_crypt(ahreq, plain, odata, cryptlen);
 	err = crypto_ahash_finup(ahreq);
 out:
 	return err;
 }
 
-static void crypto_ccm_encrypt_done(struct crypto_async_request *areq, int err)
+static void crypto_ccm_encrypt_done(void *data, int err)
 {
-	struct aead_request *req = areq->data;
+	struct aead_request *req = data;
 	struct crypto_aead *aead = crypto_aead_reqtfm(req);
 	struct crypto_ccm_req_priv_ctx *pctx = crypto_ccm_reqctx(req);
 	u8 *odata = pctx->odata;
@@ -320,10 +317,9 @@ static int crypto_ccm_encrypt(struct aead_request *req)
 	return err;
 }
 
-static void crypto_ccm_decrypt_done(struct crypto_async_request *areq,
-				   int err)
+static void crypto_ccm_decrypt_done(void *data, int err)
 {
-	struct aead_request *req = areq->data;
+	struct aead_request *req = data;
 	struct crypto_ccm_req_priv_ctx *pctx = crypto_ccm_reqctx(req);
 	struct crypto_aead *aead = crypto_aead_reqtfm(req);
 	unsigned int authsize = crypto_aead_authsize(aead);
@@ -448,10 +444,10 @@ static int crypto_ccm_create_common(struct crypto_template *tmpl,
 				    const char *ctr_name,
 				    const char *mac_name)
 {
+	struct skcipher_alg_common *ctr;
 	u32 mask;
 	struct aead_instance *inst;
 	struct ccm_instance_ctx *ictx;
-	struct skcipher_alg *ctr;
 	struct hash_alg_common *mac;
 	int err;
 
@@ -479,13 +475,12 @@ static int crypto_ccm_create_common(struct crypto_template *tmpl,
 				   ctr_name, 0, mask);
 	if (err)
 		goto err_free_inst;
-	ctr = crypto_spawn_skcipher_alg(&ictx->ctr);
+	ctr = crypto_spawn_skcipher_alg_common(&ictx->ctr);
 
 	/* The skcipher algorithm must be CTR mode, using 16-byte blocks. */
 	err = -EINVAL;
 	if (strncmp(ctr->base.cra_name, "ctr(", 4) != 0 ||
-	    crypto_skcipher_alg_ivsize(ctr) != 16 ||
-	    ctr->base.cra_blocksize != 1)
+	    ctr->ivsize != 16 || ctr->base.cra_blocksize != 1)
 		goto err_free_inst;
 
 	/* ctr and cbcmac must use the same underlying block cipher. */
@@ -505,10 +500,9 @@ static int crypto_ccm_create_common(struct crypto_template *tmpl,
 	inst->alg.base.cra_priority = (mac->base.cra_priority +
 				       ctr->base.cra_priority) / 2;
 	inst->alg.base.cra_blocksize = 1;
-	inst->alg.base.cra_alignmask = mac->base.cra_alignmask |
-				       ctr->base.cra_alignmask;
+	inst->alg.base.cra_alignmask = ctr->base.cra_alignmask;
 	inst->alg.ivsize = 16;
-	inst->alg.chunksize = crypto_skcipher_alg_chunksize(ctr);
+	inst->alg.chunksize = ctr->chunksize;
 	inst->alg.maxauthsize = 16;
 	inst->alg.base.cra_ctxsize = sizeof(struct crypto_ccm_ctx);
 	inst->alg.init = crypto_ccm_init_tfm;
@@ -785,13 +779,10 @@ static int crypto_cbcmac_digest_setkey(struct crypto_shash *parent,
 
 static int crypto_cbcmac_digest_init(struct shash_desc *pdesc)
 {
-	struct cbcmac_desc_ctx *ctx = shash_desc_ctx(pdesc);
 	int bs = crypto_shash_digestsize(pdesc->tfm);
-	u8 *dg = (u8 *)ctx + crypto_shash_descsize(pdesc->tfm) - bs;
+	u8 *dg = shash_desc_ctx(pdesc);
 
-	ctx->len = 0;
 	memset(dg, 0, bs);
-
 	return 0;
 }
 
@@ -800,40 +791,33 @@ static int crypto_cbcmac_digest_update(struct shash_desc *pdesc, const u8 *p,
 {
 	struct crypto_shash *parent = pdesc->tfm;
 	struct cbcmac_tfm_ctx *tctx = crypto_shash_ctx(parent);
-	struct cbcmac_desc_ctx *ctx = shash_desc_ctx(pdesc);
 	struct crypto_cipher *tfm = tctx->child;
 	int bs = crypto_shash_digestsize(parent);
-	u8 *dg = (u8 *)ctx + crypto_shash_descsize(parent) - bs;
+	u8 *dg = shash_desc_ctx(pdesc);
 
-	while (len > 0) {
-		unsigned int l = min(len, bs - ctx->len);
-
-		crypto_xor(dg + ctx->len, p, l);
-		ctx->len +=l;
-		len -= l;
-		p += l;
-
-		if (ctx->len == bs) {
-			crypto_cipher_encrypt_one(tfm, dg, dg);
-			ctx->len = 0;
-		}
-	}
-
-	return 0;
+	do {
+		crypto_xor(dg, p, bs);
+		crypto_cipher_encrypt_one(tfm, dg, dg);
+		p += bs;
+		len -= bs;
+	} while (len >= bs);
+	return len;
 }
 
-static int crypto_cbcmac_digest_final(struct shash_desc *pdesc, u8 *out)
+static int crypto_cbcmac_digest_finup(struct shash_desc *pdesc, const u8 *src,
+				      unsigned int len, u8 *out)
 {
 	struct crypto_shash *parent = pdesc->tfm;
 	struct cbcmac_tfm_ctx *tctx = crypto_shash_ctx(parent);
-	struct cbcmac_desc_ctx *ctx = shash_desc_ctx(pdesc);
 	struct crypto_cipher *tfm = tctx->child;
 	int bs = crypto_shash_digestsize(parent);
-	u8 *dg = (u8 *)ctx + crypto_shash_descsize(parent) - bs;
+	u8 *dg = shash_desc_ctx(pdesc);
 
-	if (ctx->len)
-		crypto_cipher_encrypt_one(tfm, dg, dg);
-
+	if (len) {
+		crypto_xor(dg, src, len);
+		crypto_cipher_encrypt_one(tfm, out, dg);
+		return 0;
+	}
 	memcpy(out, dg, bs);
 	return 0;
 }
@@ -888,20 +872,19 @@ static int cbcmac_create(struct crypto_template *tmpl, struct rtattr **tb)
 		goto err_free_inst;
 
 	inst->alg.base.cra_priority = alg->cra_priority;
-	inst->alg.base.cra_blocksize = 1;
+	inst->alg.base.cra_blocksize = alg->cra_blocksize;
 
 	inst->alg.digestsize = alg->cra_blocksize;
-	inst->alg.descsize = ALIGN(sizeof(struct cbcmac_desc_ctx),
-				   alg->cra_alignmask + 1) +
-			     alg->cra_blocksize;
+	inst->alg.descsize = alg->cra_blocksize;
 
+	inst->alg.base.cra_flags = CRYPTO_AHASH_ALG_BLOCK_ONLY;
 	inst->alg.base.cra_ctxsize = sizeof(struct cbcmac_tfm_ctx);
 	inst->alg.base.cra_init = cbcmac_init_tfm;
 	inst->alg.base.cra_exit = cbcmac_exit_tfm;
 
 	inst->alg.init = crypto_cbcmac_digest_init;
 	inst->alg.update = crypto_cbcmac_digest_update;
-	inst->alg.final = crypto_cbcmac_digest_final;
+	inst->alg.finup = crypto_cbcmac_digest_finup;
 	inst->alg.setkey = crypto_cbcmac_digest_setkey;
 
 	inst->free = shash_free_singlespawn_instance;
@@ -946,7 +929,7 @@ static void __exit crypto_ccm_module_exit(void)
 				    ARRAY_SIZE(crypto_ccm_tmpls));
 }
 
-subsys_initcall(crypto_ccm_module_init);
+module_init(crypto_ccm_module_init);
 module_exit(crypto_ccm_module_exit);
 
 MODULE_LICENSE("GPL");
@@ -955,4 +938,4 @@ MODULE_ALIAS_CRYPTO("ccm_base");
 MODULE_ALIAS_CRYPTO("rfc4309");
 MODULE_ALIAS_CRYPTO("ccm");
 MODULE_ALIAS_CRYPTO("cbcmac");
-MODULE_IMPORT_NS(CRYPTO_INTERNAL);
+MODULE_IMPORT_NS("CRYPTO_INTERNAL");

@@ -7,6 +7,8 @@
  *  Author(s): Arnd Bergmann (arndb@de.ibm.com)
  *	       Cornelia Huck (cornelia.huck@de.ibm.com)
  */
+
+#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/slab.h>
@@ -31,7 +33,7 @@
  * to devices that use multiple subchannels.
  */
 
-static struct bus_type ccwgroup_bus_type;
+static const struct bus_type ccwgroup_bus_type;
 
 static void __ccwgroup_remove_symlinks(struct ccwgroup_device *gdev)
 {
@@ -39,7 +41,7 @@ static void __ccwgroup_remove_symlinks(struct ccwgroup_device *gdev)
 	char str[16];
 
 	for (i = 0; i < gdev->count; i++) {
-		sprintf(str, "cdev%d", i);
+		scnprintf(str, sizeof(str), "cdev%d", i);
 		sysfs_remove_link(&gdev->dev.kobj, str);
 		sysfs_remove_link(&gdev->cdev[i]->dev.kobj, "group_device");
 	}
@@ -147,12 +149,12 @@ static ssize_t ccwgroup_online_show(struct device *dev,
 
 	online = (gdev->state == CCWGROUP_ONLINE) ? 1 : 0;
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", online);
+	return sysfs_emit(buf, "%d\n", online);
 }
 
 /*
  * Provide an 'ungroup' attribute so the user can remove group devices no
- * longer needed or accidentially created. Saves memory :)
+ * longer needed or accidentally created. Saves memory :)
  */
 static void ccwgroup_ungroup(struct ccwgroup_device *gdev)
 {
@@ -240,19 +242,19 @@ static int __ccwgroup_create_symlinks(struct ccwgroup_device *gdev)
 		rc = sysfs_create_link(&gdev->cdev[i]->dev.kobj,
 				       &gdev->dev.kobj, "group_device");
 		if (rc) {
-			for (--i; i >= 0; i--)
+			while (i--)
 				sysfs_remove_link(&gdev->cdev[i]->dev.kobj,
 						  "group_device");
 			return rc;
 		}
 	}
 	for (i = 0; i < gdev->count; i++) {
-		sprintf(str, "cdev%d", i);
+		scnprintf(str, sizeof(str), "cdev%d", i);
 		rc = sysfs_create_link(&gdev->dev.kobj,
 				       &gdev->cdev[i]->dev.kobj, str);
 		if (rc) {
-			for (--i; i >= 0; i--) {
-				sprintf(str, "cdev%d", i);
+			while (i--) {
+				scnprintf(str, sizeof(str), "cdev%d", i);
 				sysfs_remove_link(&gdev->dev.kobj, str);
 			}
 			for (i = 0; i < gdev->count; i++)
@@ -320,7 +322,7 @@ int ccwgroup_create_dev(struct device *parent, struct ccwgroup_driver *gdrv,
 	if (num_devices < 1)
 		return -EINVAL;
 
-	gdev = kzalloc(struct_size(gdev, cdev, num_devices), GFP_KERNEL);
+	gdev = kzalloc_flex(*gdev, cdev, num_devices);
 	if (!gdev)
 		return -ENOMEM;
 
@@ -465,7 +467,7 @@ static void ccwgroup_shutdown(struct device *dev)
 		gdrv->shutdown(gdev);
 }
 
-static struct bus_type ccwgroup_bus_type = {
+static const struct bus_type ccwgroup_bus_type = {
 	.name   = "ccwgroup",
 	.dev_groups = ccwgroup_dev_groups,
 	.remove = ccwgroup_remove,
@@ -550,4 +552,5 @@ void ccwgroup_remove_ccwdev(struct ccw_device *cdev)
 	put_device(&gdev->dev);
 }
 EXPORT_SYMBOL(ccwgroup_remove_ccwdev);
+MODULE_DESCRIPTION("ccwgroup bus driver");
 MODULE_LICENSE("GPL");

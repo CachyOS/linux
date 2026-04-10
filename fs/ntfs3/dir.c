@@ -8,6 +8,7 @@
  */
 
 #include <linux/fs.h>
+#include <linux/filelock.h>
 #include <linux/nls.h>
 
 #include "debug.h"
@@ -26,8 +27,8 @@ int ntfs_utf16_to_nls(struct ntfs_sb_info *sbi, const __le16 *name, u32 len,
 
 	if (!nls) {
 		/* UTF-16 -> UTF-8 */
-		ret = utf16s_to_utf8s(name, len, UTF16_LITTLE_ENDIAN, buf,
-				      buf_len);
+		ret = utf16s_to_utf8s((wchar_t *)name, len, UTF16_LITTLE_ENDIAN,
+				      buf, buf_len);
 		buf[ret] = '\0';
 		return ret;
 	}
@@ -272,9 +273,12 @@ out:
 	return err == -ENOENT ? NULL : err ? ERR_PTR(err) : inode;
 }
 
-static inline int ntfs_filldir(struct ntfs_sb_info *sbi, struct ntfs_inode *ni,
-			       const struct NTFS_DE *e, u8 *name,
-			       struct dir_context *ctx)
+/*
+ * returns false if 'ctx' if full
+ */
+static inline bool ntfs_dir_emit(struct ntfs_sb_info *sbi,
+				 struct ntfs_inode *ni, const struct NTFS_DE *e,
+				 u8 *name, struct dir_context *ctx)
 {
 	const struct ATTR_FILE_NAME *fname;
 	unsigned long ino;
@@ -284,44 +288,73 @@ static inline int ntfs_filldir(struct ntfs_sb_info *sbi, struct ntfs_inode *ni,
 	fname = Add2Ptr(e, sizeof(struct NTFS_DE));
 
 	if (fname->type == FILE_NAME_DOS)
-		return 0;
+		return true;
 
 	if (!mi_is_ref(&ni->mi, &fname->home))
-		return 0;
+		return true;
 
 	ino = ino_get(&e->ref);
 
 	if (ino == MFT_REC_ROOT)
-		return 0;
+		return true;
 
 	/* Skip meta files. Unless option to show metafiles is set. */
 	if (!sbi->options->showmeta && ntfs_is_meta_file(sbi, ino))
-		return 0;
+		return true;
 
 	if (sbi->options->nohidden && (fname->dup.fa & FILE_ATTRIBUTE_HIDDEN))
-		return 0;
+		return true;
+
+	if (fname->name_len + sizeof(struct NTFS_DE) > le16_to_cpu(e->size))
+		return true;
 
 	name_len = ntfs_utf16_to_nls(sbi, fname->name, fname->name_len, name,
 				     PATH_MAX);
 	if (name_len <= 0) {
 		ntfs_warn(sbi->sb, "failed to convert name for inode %lx.",
 			  ino);
-		return 0;
+		return true;
 	}
 
+	/*
+	 * NTFS: symlinks are "dir + reparse" or "file + reparse"
+	 * Unfortunately reparse attribute is used for many purposes (several dozens).
+	 * It is not possible here to know is this name symlink or not.
+	 * To get exactly the type of name we should to open inode (read mft).
+	 * getattr for opened file (fstat) correctly returns symlink.
+	 */
 	dt_type = (fname->dup.fa & FILE_ATTRIBUTE_DIRECTORY) ? DT_DIR : DT_REG;
 
-	return !dir_emit(ctx, (s8 *)name, name_len, ino, dt_type);
+	/*
+	 * It is not reliable to detect the type of name using duplicated information
+	 * stored in parent directory.
+	 * The only correct way to get the type of name - read MFT record and find ATTR_STD.
+	 * The code below is not good idea.
+	 * It does additional locks/reads just to get the type of name.
+	 * Should we use additional mount option to enable branch below?
+	 */
+	if (fname->dup.extend_data && ino != ni->mi.rno) {
+		struct inode *inode = ntfs_iget5(sbi->sb, &e->ref, NULL);
+		if (!IS_ERR_OR_NULL(inode)) {
+			dt_type = fs_umode_to_dtype(inode->i_mode);
+			iput(inode);
+		}
+	}
+
+	return dir_emit(ctx, (s8 *)name, name_len, ino, dt_type);
 }
 
 /*
  * ntfs_read_hdr - Helper function for ntfs_readdir().
+ *
+ * returns 0 if ok.
+ * returns -EINVAL if directory is corrupted.
+ * returns +1 if 'ctx' is full.
  */
 static int ntfs_read_hdr(struct ntfs_sb_info *sbi, struct ntfs_inode *ni,
 			 const struct INDEX_HDR *hdr, u64 vbo, u64 pos,
 			 u8 *name, struct dir_context *ctx)
 {
-	int err;
 	const struct NTFS_DE *e;
 	u32 e_size;
 	u32 end = le32_to_cpu(hdr->used);
@@ -329,12 +362,12 @@ static int ntfs_read_hdr(struct ntfs_sb_info *sbi, struct ntfs_inode *ni,
 
 	for (;; off += e_size) {
 		if (off + sizeof(struct NTFS_DE) > end)
-			return -1;
+			return -EINVAL;
 
 		e = Add2Ptr(hdr, off);
 		e_size = le16_to_cpu(e->size);
 		if (e_size < sizeof(struct NTFS_DE) || off + e_size > end)
-			return -1;
+			return -EINVAL;
 
 		if (de_is_last(e))
 			return 0;
@@ -344,14 +377,15 @@ static int ntfs_read_hdr(struct ntfs_sb_info *sbi, struct ntfs_inode *ni,
 			continue;
 
 		if (le16_to_cpu(e->key_size) < SIZEOF_ATTRIBUTE_FILENAME)
-			return -1;
+			return -EINVAL;
 
 		ctx->pos = vbo + off;
 
 		/* Submit the name to the filldir callback. */
-		err = ntfs_filldir(sbi, ni, e, name, ctx);
-		if (err)
-			return err;
+		if (!ntfs_dir_emit(sbi, ni, e, name, ctx)) {
+			/* ctx is full. */
+			return +1;
+		}
 	}
 }
 
@@ -359,39 +393,82 @@ static int ntfs_read_hdr(struct ntfs_sb_info *sbi, struct ntfs_inode *ni,
  * ntfs_readdir - file_operations::iterate_shared
  *
  * Use non sorted enumeration.
- * We have an example of broken volume where sorted enumeration
- * counts each name twice.
+ * Sorted enumeration may result infinite loop if names tree contains loop.
  */
 static int ntfs_readdir(struct file *file, struct dir_context *ctx)
 {
 	const struct INDEX_ROOT *root;
-	u64 vbo;
 	size_t bit;
-	loff_t eod;
 	int err = 0;
 	struct inode *dir = file_inode(file);
 	struct ntfs_inode *ni = ntfs_i(dir);
 	struct super_block *sb = dir->i_sb;
 	struct ntfs_sb_info *sbi = sb->s_fs_info;
 	loff_t i_size = i_size_read(dir);
-	u32 pos = ctx->pos;
+	u64 pos = ctx->pos;
 	u8 *name = NULL;
 	struct indx_node *node = NULL;
 	u8 index_bits = ni->dir.index_bits;
+	size_t max_bit = i_size >> ni->dir.index_bits;
+	loff_t eod = i_size + sbi->record_size;
 
 	/* Name is a buffer of PATH_MAX length. */
 	static_assert(NTFS_NAME_LEN * 4 < PATH_MAX);
 
-	eod = i_size + sbi->record_size;
+	if (!pos) {
+		/*
+		 * ni->dir.version increments each directory change.
+		 * Save the initial value of ni->dir.version.
+		 */
+		file->private_data = (void *)ni->dir.version;
+	}
 
-	if (pos >= eod)
-		return 0;
+	if (pos >= eod) {
+		if (file->private_data == (void *)ni->dir.version) {
+			/* No changes since first readdir. */
+			return 0;
+		}
+
+		/*
+		 * Handle directories that changed after the initial readdir().
+		 *
+		 * Some user space code implements recursive removal like this instead
+		 * of calling rmdir(2) directly:
+		 *
+		 *      fd = opendir(path);
+		 *      while ((dent = readdir(fd)))
+		 *              unlinkat(dirfd(fd), dent->d_name, 0);
+		 *      closedir(fd);
+		 *
+		 * POSIX leaves unspecified what readdir() should return once the
+		 * directory has been modified after opendir()/rewinddir(), so this
+		 * pattern is not guaranteed to work on all filesystems or platforms.
+		 *
+		 * In ntfs3 the internal name tree may be reshaped while entries are
+		 * being removed, so there is no stable anchor for continuing a
+		 * single-pass walk based on the original readdir() order.
+		 *
+		 * In practice some widely used tools (for example certain rm(1)
+		 * implementations) have used this readdir()/unlink() loop, and some
+		 * filesystems behave in a way that effectively makes it work in the
+		 * common case.
+		 *
+		 * The code below follows that practice and tries to provide
+		 * "rmdir-like" behaviour for such callers on ntfs3, even though the
+		 * situation is not strictly defined by the APIs.
+		 *
+		 * Apple documents the same readdir()/unlink() issue and a workaround
+		 * for HFS file systems in:
+		 * https://web.archive.org/web/20220122122948/https:/support.apple.com/kb/TA21420?locale=en_US
+		 */
+		ctx->pos = pos = 3;
+		file->private_data = (void *)ni->dir.version;
+	}
 
 	if (!dir_emit_dots(file, ctx))
 		return 0;
 
-	/* Allocate PATH_MAX bytes. */
-	name = __getname();
+	name = kmalloc(PATH_MAX, GFP_KERNEL);
 	if (!name)
 		return -ENOMEM;
 
@@ -421,61 +498,67 @@ static int ntfs_readdir(struct file *file, struct dir_context *ctx)
 	if (pos >= sbi->record_size) {
 		bit = (pos - sbi->record_size) >> index_bits;
 	} else {
+		/*
+		 * Add each name from root in 'ctx'.
+		 */
 		err = ntfs_read_hdr(sbi, ni, &root->ihdr, 0, pos, name, ctx);
 		if (err)
 			goto out;
 		bit = 0;
 	}
 
-	if (!i_size) {
-		ctx->pos = eod;
-		goto out;
-	}
-
-	for (;;) {
-		vbo = (u64)bit << index_bits;
-		if (vbo >= i_size) {
-			ctx->pos = eod;
-			goto out;
-		}
-
+	/*
+	 * Enumerate indexes until the end of dir.
+	 */
+	for (; bit < max_bit; bit += 1) {
+		/* Get the next used index. */
 		err = indx_used_bit(&ni->dir, ni, &bit);
 		if (err)
 			goto out;
 
 		if (bit == MINUS_ONE_T) {
-			ctx->pos = eod;
-			goto out;
+			/* no more used indexes. end of dir. */
+			break;
 		}
 
-		vbo = (u64)bit << index_bits;
-		if (vbo >= i_size) {
-			ntfs_inode_err(dir, "Looks like your dir is corrupt");
+		if (bit >= max_bit) {
+			/* Corrupted directory. */
 			err = -EINVAL;
 			goto out;
 		}
 
-		err = indx_read(&ni->dir, ni, bit << ni->dir.idx2vbn_bits,
-				&node);
+		err = indx_read_ra(&ni->dir, ni, bit << ni->dir.idx2vbn_bits,
+				   &node, &file->f_ra);
 		if (err)
 			goto out;
 
+		/*
+		 * Add each name from index in 'ctx'.
+		 */
 		err = ntfs_read_hdr(sbi, ni, &node->index->ihdr,
-				    vbo + sbi->record_size, pos, name, ctx);
+				    ((u64)bit << index_bits) + sbi->record_size,
+				    pos, name, ctx);
 		if (err)
 			goto out;
-
-		bit += 1;
 	}
 
 out:
-
-	__putname(name);
+	kfree(name);
 	put_indx_node(node);
 
-	if (err == -ENOENT) {
+	if (!err) {
+		/* End of directory. */
+		ctx->pos = eod;
+	} else if (err == 1) {
+		/* 'ctx' is full. */
+		err = 0;
+	} else if (err == -ENOENT) {
 		err = 0;
 		ctx->pos = pos;
+	} else if (err < 0) {
+		if (err == -EINVAL)
+			_ntfs_bad_inode(dir);
+		ctx->pos = eod;
 	}
 
 	return err;
@@ -491,11 +574,9 @@ static int ntfs_dir_count(struct inode *dir, bool *is_empty, size_t *dirs,
 	struct INDEX_HDR *hdr;
 	const struct ATTR_FILE_NAME *fname;
 	u32 e_size, off, end;
-	u64 vbo = 0;
 	size_t drs = 0, fles = 0, bit = 0;
-	loff_t i_size = ni->vfs_inode.i_size;
 	struct indx_node *node = NULL;
-	u8 index_bits = ni->dir.index_bits;
+	size_t max_indx = i_size_read(&ni->vfs_inode) >> ni->dir.index_bits;
 
 	if (is_empty)
 		*is_empty = true;
@@ -514,8 +595,10 @@ static int ntfs_dir_count(struct inode *dir, bool *is_empty, size_t *dirs,
 			e = Add2Ptr(hdr, off);
 			e_size = le16_to_cpu(e->size);
 			if (e_size < sizeof(struct NTFS_DE) ||
-			    off + e_size > end)
+			    off + e_size > end) {
+				/* Looks like corruption. */
 				break;
+			}
 
 			if (de_is_last(e))
 				break;
@@ -539,7 +622,7 @@ static int ntfs_dir_count(struct inode *dir, bool *is_empty, size_t *dirs,
 				fles += 1;
 		}
 
-		if (vbo >= i_size)
+		if (bit >= max_indx)
 			goto out;
 
 		err = indx_used_bit(&ni->dir, ni, &bit);
@@ -549,8 +632,7 @@ static int ntfs_dir_count(struct inode *dir, bool *is_empty, size_t *dirs,
 		if (bit == MINUS_ONE_T)
 			goto out;
 
-		vbo = (u64)bit << index_bits;
-		if (vbo >= i_size)
+		if (bit >= max_indx)
 			goto out;
 
 		err = indx_read(&ni->dir, ni, bit << ni->dir.idx2vbn_bits,
@@ -560,7 +642,6 @@ static int ntfs_dir_count(struct inode *dir, bool *is_empty, size_t *dirs,
 
 		hdr = &node->index->ihdr;
 		bit += 1;
-		vbo = (u64)bit << ni->dir.idx2vbn_bits;
 	}
 
 out:
@@ -587,7 +668,22 @@ const struct file_operations ntfs_dir_operations = {
 	.llseek		= generic_file_llseek,
 	.read		= generic_read_dir,
 	.iterate_shared	= ntfs_readdir,
-	.fsync		= generic_file_fsync,
+	.fsync		= ntfs_file_fsync,
 	.open		= ntfs_file_open,
+	.unlocked_ioctl = ntfs_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl   = ntfs_compat_ioctl,
+#endif
+	.setlease	= generic_setlease,
 };
+
+#if IS_ENABLED(CONFIG_NTFS_FS)
+const struct file_operations ntfs_legacy_dir_operations = {
+	.llseek		= generic_file_llseek,
+	.read		= generic_read_dir,
+	.iterate_shared	= ntfs_readdir,
+	.open		= ntfs_file_open,
+	.setlease	= generic_setlease,
+};
+#endif
 // clang-format on

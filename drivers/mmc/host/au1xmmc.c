@@ -42,6 +42,7 @@
 #include <linux/leds.h>
 #include <linux/mmc/host.h>
 #include <linux/slab.h>
+#include <linux/workqueue.h>
 
 #include <asm/io.h>
 #include <asm/mach-au1x00/au1000.h>
@@ -113,8 +114,8 @@ struct au1xmmc_host {
 
 	int irq;
 
-	struct tasklet_struct finish_task;
-	struct tasklet_struct data_task;
+	struct work_struct finish_bh_work;
+	struct work_struct data_bh_work;
 	struct au1xmmc_platform_data *platdata;
 	struct platform_device *pdev;
 	struct resource *ioarea;
@@ -253,9 +254,9 @@ static void au1xmmc_finish_request(struct au1xmmc_host *host)
 	mmc_request_done(host->mmc, mrq);
 }
 
-static void au1xmmc_tasklet_finish(struct tasklet_struct *t)
+static void au1xmmc_finish_bh_work(struct work_struct *t)
 {
-	struct au1xmmc_host *host = from_tasklet(host, t, finish_task);
+	struct au1xmmc_host *host = from_work(host, t, finish_bh_work);
 	au1xmmc_finish_request(host);
 }
 
@@ -363,9 +364,9 @@ static void au1xmmc_data_complete(struct au1xmmc_host *host, u32 status)
 	au1xmmc_finish_request(host);
 }
 
-static void au1xmmc_tasklet_data(struct tasklet_struct *t)
+static void au1xmmc_data_bh_work(struct work_struct *t)
 {
-	struct au1xmmc_host *host = from_tasklet(host, t, data_task);
+	struct au1xmmc_host *host = from_work(host, t, data_bh_work);
 
 	u32 status = __raw_readl(HOST_STATUS(host));
 	au1xmmc_data_complete(host, status);
@@ -388,7 +389,7 @@ static void au1xmmc_send_pio(struct au1xmmc_host *host)
 
 	/* This is the pointer to the data buffer */
 	sg = &data->sg[host->pio.index];
-	sg_ptr = kmap_atomic(sg_page(sg)) + sg->offset + host->pio.offset;
+	sg_ptr = kmap_local_page(sg_page(sg)) + sg->offset + host->pio.offset;
 
 	/* This is the space left inside the buffer */
 	sg_len = data->sg[host->pio.index].length - host->pio.offset;
@@ -409,7 +410,7 @@ static void au1xmmc_send_pio(struct au1xmmc_host *host)
 		__raw_writel((unsigned long)val, HOST_TXPORT(host));
 		wmb(); /* drain writebuffer */
 	}
-	kunmap_atomic(sg_ptr);
+	kunmap_local(sg_ptr);
 
 	host->pio.len -= count;
 	host->pio.offset += count;
@@ -425,7 +426,7 @@ static void au1xmmc_send_pio(struct au1xmmc_host *host)
 		if (host->flags & HOST_F_STOP)
 			SEND_STOP(host);
 
-		tasklet_schedule(&host->data_task);
+		queue_work(system_bh_wq, &host->data_bh_work);
 	}
 }
 
@@ -446,7 +447,7 @@ static void au1xmmc_receive_pio(struct au1xmmc_host *host)
 
 	if (host->pio.index < host->dma.len) {
 		sg = &data->sg[host->pio.index];
-		sg_ptr = kmap_atomic(sg_page(sg)) + sg->offset + host->pio.offset;
+		sg_ptr = kmap_local_page(sg_page(sg)) + sg->offset + host->pio.offset;
 
 		/* This is the space left inside the buffer */
 		sg_len = sg_dma_len(&data->sg[host->pio.index]) - host->pio.offset;
@@ -488,7 +489,7 @@ static void au1xmmc_receive_pio(struct au1xmmc_host *host)
 			sg_ptr[count] = (unsigned char)(val & 0xFF);
 	}
 	if (sg_ptr)
-		kunmap_atomic(sg_ptr);
+		kunmap_local(sg_ptr);
 
 	host->pio.len -= count;
 	host->pio.offset += count;
@@ -505,7 +506,7 @@ static void au1xmmc_receive_pio(struct au1xmmc_host *host)
 		if (host->flags & HOST_F_STOP)
 			SEND_STOP(host);
 
-		tasklet_schedule(&host->data_task);
+		queue_work(system_bh_wq, &host->data_bh_work);
 	}
 }
 
@@ -542,7 +543,7 @@ static void au1xmmc_cmd_complete(struct au1xmmc_host *host, u32 status)
 					cmd->resp[i] |= (r[i + 1] & 0xFF000000) >> 24;
 			}
 		} else {
-			/* Techincally, we should be getting all 48 bits of
+			/* Technically, we should be getting all 48 bits of
 			 * the response (SD_RESP1 + SD_RESP2), but because
 			 * our response omits the CRC, our data ends up
 			 * being shifted 8 bits to the right.  In this case,
@@ -561,7 +562,7 @@ static void au1xmmc_cmd_complete(struct au1xmmc_host *host, u32 status)
 
 	if (!trans || cmd->error) {
 		IRQ_OFF(host, SD_CONFIG_TH | SD_CONFIG_RA | SD_CONFIG_RF);
-		tasklet_schedule(&host->finish_task);
+		queue_work(system_bh_wq, &host->finish_bh_work);
 		return;
 	}
 
@@ -797,7 +798,7 @@ static irqreturn_t au1xmmc_irq(int irq, void *dev_id)
 		IRQ_OFF(host, SD_CONFIG_NE | SD_CONFIG_TH);
 
 		/* IRQ_OFF(host, SD_CONFIG_TH | SD_CONFIG_RA | SD_CONFIG_RF); */
-		tasklet_schedule(&host->finish_task);
+		queue_work(system_bh_wq, &host->finish_bh_work);
 	}
 #if 0
 	else if (status & SD_STATUS_DD) {
@@ -806,7 +807,7 @@ static irqreturn_t au1xmmc_irq(int irq, void *dev_id)
 			au1xmmc_receive_pio(host);
 		else {
 			au1xmmc_data_complete(host, status);
-			/* tasklet_schedule(&host->data_task); */
+			/* queue_work(system_bh_wq, &host->data_bh_work); */
 		}
 	}
 #endif
@@ -854,7 +855,7 @@ static void au1xmmc_dbdma_callback(int irq, void *dev_id)
 	if (host->flags & HOST_F_STOP)
 		SEND_STOP(host);
 
-	tasklet_schedule(&host->data_task);
+	queue_work(system_bh_wq, &host->data_bh_work);
 }
 
 static int au1xmmc_dbdma_init(struct au1xmmc_host *host)
@@ -936,11 +937,10 @@ static int au1xmmc_probe(struct platform_device *pdev)
 	struct resource *r;
 	int ret, iflag;
 
-	mmc = mmc_alloc_host(sizeof(struct au1xmmc_host), &pdev->dev);
+	mmc = devm_mmc_alloc_host(&pdev->dev, sizeof(*host));
 	if (!mmc) {
 		dev_err(&pdev->dev, "no memory for mmc_host\n");
-		ret = -ENOMEM;
-		goto out0;
+		return -ENOMEM;
 	}
 
 	host = mmc_priv(mmc);
@@ -952,14 +952,14 @@ static int au1xmmc_probe(struct platform_device *pdev)
 	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!r) {
 		dev_err(&pdev->dev, "no mmio defined\n");
-		goto out1;
+		return ret;
 	}
 
 	host->ioarea = request_mem_region(r->start, resource_size(r),
 					   pdev->name);
 	if (!host->ioarea) {
 		dev_err(&pdev->dev, "mmio already in use\n");
-		goto out1;
+		return ret;
 	}
 
 	host->iobase = ioremap(r->start, 0x3c);
@@ -1039,9 +1039,9 @@ static int au1xmmc_probe(struct platform_device *pdev)
 	if (host->platdata)
 		mmc->caps &= ~(host->platdata->mask_host_caps);
 
-	tasklet_setup(&host->data_task, au1xmmc_tasklet_data);
+	INIT_WORK(&host->data_bh_work, au1xmmc_data_bh_work);
 
-	tasklet_setup(&host->finish_task, au1xmmc_tasklet_finish);
+	INIT_WORK(&host->finish_bh_work, au1xmmc_finish_bh_work);
 
 	if (has_dbdma()) {
 		ret = au1xmmc_dbdma_init(host);
@@ -1091,14 +1091,15 @@ out5:
 	if (host->flags & HOST_F_DBDMA)
 		au1xmmc_dbdma_shutdown(host);
 
-	tasklet_kill(&host->data_task);
-	tasklet_kill(&host->finish_task);
+	cancel_work_sync(&host->data_bh_work);
+	cancel_work_sync(&host->finish_bh_work);
 
 	if (host->platdata && host->platdata->cd_setup &&
 	    !(mmc->caps & MMC_CAP_NEEDS_POLL))
 		host->platdata->cd_setup(mmc, 0);
-out_clk:
+
 	clk_disable_unprepare(host->clk);
+out_clk:
 	clk_put(host->clk);
 out_irq:
 	free_irq(host->irq, host);
@@ -1107,13 +1108,10 @@ out3:
 out2:
 	release_resource(host->ioarea);
 	kfree(host->ioarea);
-out1:
-	mmc_free_host(mmc);
-out0:
 	return ret;
 }
 
-static int au1xmmc_remove(struct platform_device *pdev)
+static void au1xmmc_remove(struct platform_device *pdev)
 {
 	struct au1xmmc_host *host = platform_get_drvdata(pdev);
 
@@ -1134,8 +1132,8 @@ static int au1xmmc_remove(struct platform_device *pdev)
 		__raw_writel(0, HOST_CONFIG2(host));
 		wmb(); /* drain writebuffer */
 
-		tasklet_kill(&host->data_task);
-		tasklet_kill(&host->finish_task);
+		cancel_work_sync(&host->data_bh_work);
+		cancel_work_sync(&host->finish_bh_work);
 
 		if (host->flags & HOST_F_DBDMA)
 			au1xmmc_dbdma_shutdown(host);
@@ -1149,16 +1147,12 @@ static int au1xmmc_remove(struct platform_device *pdev)
 		iounmap((void *)host->iobase);
 		release_resource(host->ioarea);
 		kfree(host->ioarea);
-
-		mmc_free_host(host->mmc);
 	}
-	return 0;
 }
 
-#ifdef CONFIG_PM
-static int au1xmmc_suspend(struct platform_device *pdev, pm_message_t state)
+static int au1xmmc_suspend(struct device *dev)
 {
-	struct au1xmmc_host *host = platform_get_drvdata(pdev);
+	struct au1xmmc_host *host = dev_get_drvdata(dev);
 
 	__raw_writel(0, HOST_CONFIG2(host));
 	__raw_writel(0, HOST_CONFIG(host));
@@ -1169,27 +1163,24 @@ static int au1xmmc_suspend(struct platform_device *pdev, pm_message_t state)
 	return 0;
 }
 
-static int au1xmmc_resume(struct platform_device *pdev)
+static int au1xmmc_resume(struct device *dev)
 {
-	struct au1xmmc_host *host = platform_get_drvdata(pdev);
+	struct au1xmmc_host *host = dev_get_drvdata(dev);
 
 	au1xmmc_reset_controller(host);
 
 	return 0;
 }
-#else
-#define au1xmmc_suspend NULL
-#define au1xmmc_resume NULL
-#endif
+
+static DEFINE_SIMPLE_DEV_PM_OPS(au1xmmc_pmops, au1xmmc_suspend, au1xmmc_resume);
 
 static struct platform_driver au1xmmc_driver = {
 	.probe         = au1xmmc_probe,
 	.remove        = au1xmmc_remove,
-	.suspend       = au1xmmc_suspend,
-	.resume        = au1xmmc_resume,
 	.driver        = {
 		.name  = DRIVER_NAME,
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
+		.pm = pm_sleep_ptr(&au1xmmc_pmops),
 	},
 };
 

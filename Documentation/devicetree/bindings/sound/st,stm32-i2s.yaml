@@ -17,6 +17,7 @@ properties:
   compatible:
     enum:
       - st,stm32h7-i2s
+      - st,stm32mp25-i2s
 
   "#sound-dai-cells":
     const: 0
@@ -30,6 +31,7 @@ properties:
       - description: clock feeding the internal clock generator.
       - description: I2S parent clock for sampling rates multiple of 8kHz.
       - description: I2S parent clock for sampling rates multiple of 11.025kHz.
+    minItems: 2
 
   clock-names:
     items:
@@ -37,6 +39,7 @@ properties:
       - const: i2sclk
       - const: x8k
       - const: x11k
+    minItems: 2
 
   interrupts:
     maxItems: 1
@@ -58,6 +61,14 @@ properties:
     description: Configure the I2S device as MCLK clock provider.
     const: 0
 
+  port:
+    $ref: audio-graph-port.yaml#
+    unevaluatedProperties: false
+
+  access-controllers:
+    minItems: 1
+    maxItems: 2
+
 required:
   - compatible
   - "#sound-dai-cells"
@@ -68,7 +79,37 @@ required:
   - dmas
   - dma-names
 
-additionalProperties: false
+allOf:
+  - $ref: dai-common.yaml#
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: st,stm32h7-i2s
+
+    then:
+      properties:
+        clocks:
+          minItems: 4
+
+        clock-names:
+          minItems: 4
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: st,stm32mp25-i2s
+
+    then:
+      properties:
+        clocks:
+          maxItems: 2
+
+        clock-names:
+          maxItems: 2
+
+unevaluatedProperties: false
 
 examples:
   - |
@@ -86,6 +127,13 @@ examples:
         dma-names = "rx", "tx";
         pinctrl-names = "default";
         pinctrl-0 = <&i2s2_pins_a>;
+
+        /* assume audio-graph */
+        port {
+            codec_endpoint: endpoint {
+                remote-endpoint = <&codec_endpoint>;
+            };
+        };
     };
 
 ...

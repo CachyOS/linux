@@ -22,19 +22,22 @@
 #include <linux/spinlock.h>
 #include <linux/types.h>
 
-#include <asm/unaligned.h>
-
-#define SCMI_SHORT_NAME_MAX_SIZE	16
+#include <linux/unaligned.h>
 
 #define PROTOCOL_REV_MINOR_MASK	GENMASK(15, 0)
 #define PROTOCOL_REV_MAJOR_MASK	GENMASK(31, 16)
 #define PROTOCOL_REV_MAJOR(x)	((u16)(FIELD_GET(PROTOCOL_REV_MAJOR_MASK, (x))))
 #define PROTOCOL_REV_MINOR(x)	((u16)(FIELD_GET(PROTOCOL_REV_MINOR_MASK, (x))))
 
+#define SCMI_PROTOCOL_VENDOR_BASE	0x80
+
+#define MSG_SUPPORTS_FASTCHANNEL(x)	((x) & BIT(0))
+
 enum scmi_common_cmd {
 	PROTOCOL_VERSION = 0x0,
 	PROTOCOL_ATTRIBUTES = 0x1,
 	PROTOCOL_MESSAGE_ATTRIBUTES = 0x2,
+	NEGOTIATE_PROTOCOL_VERSION = 0x10,
 };
 
 /**
@@ -117,6 +120,7 @@ struct scmi_msg_hdr {
  *	    - SCMI_XFER_SENT_OK -> SCMI_XFER_RESP_OK [ -> SCMI_XFER_DRESP_OK ]
  *	    - SCMI_XFER_SENT_OK -> SCMI_XFER_DRESP_OK
  *	      (Missing synchronous response is assumed OK and ignored)
+ * @flags: Optional flags associated to this xfer.
  * @lock: A spinlock to protect state and busy fields.
  * @priv: A pointer for transport private usage.
  */
@@ -137,6 +141,12 @@ struct scmi_xfer {
 #define SCMI_XFER_RESP_OK	1
 #define SCMI_XFER_DRESP_OK	2
 	int state;
+#define SCMI_XFER_FLAG_IS_RAW	BIT(0)
+#define SCMI_XFER_IS_RAW(x)	((x)->flags & SCMI_XFER_FLAG_IS_RAW)
+#define SCMI_XFER_FLAG_CHAN_SET	BIT(1)
+#define SCMI_XFER_IS_CHAN_SET(x)	\
+	((x)->flags & SCMI_XFER_FLAG_CHAN_SET)
+	int flags;
 	/* A lock to protect state and busy fields */
 	spinlock_t lock;
 	void *priv;
@@ -149,6 +159,9 @@ struct scmi_proto_helpers_ops;
  * struct scmi_protocol_handle  - Reference to an initialized protocol instance
  *
  * @dev: A reference to the associated SCMI instance device (handle->dev).
+ * @version: The protocol version currently effectively in use by this
+ *	     initialized instance of the protocol as determined at the end of
+ *	     any possibly needed negotiations performed by the core.
  * @xops: A reference to a struct holding refs to the core xfer operations that
  *	  can be used by the protocol implementation to generate SCMI messages.
  * @set_priv: A method to set protocol private data for this instance.
@@ -167,6 +180,7 @@ struct scmi_proto_helpers_ops;
  */
 struct scmi_protocol_handle {
 	struct device *dev;
+	unsigned int version;
 	const struct scmi_xfer_ops *xops;
 	const struct scmi_proto_helpers_ops *hops;
 	int (*set_priv)(const struct scmi_protocol_handle *ph, void *priv);
@@ -175,12 +189,14 @@ struct scmi_protocol_handle {
 
 /**
  * struct scmi_iterator_state  - Iterator current state descriptor
- * @desc_index: Starting index for the current mulit-part request.
+ * @desc_index: Starting index for the current multi-part request.
  * @num_returned: Number of returned items in the last multi-part reply.
  * @num_remaining: Number of remaining items in the multi-part message.
  * @max_resources: Maximum acceptable number of items, configured by the caller
  *		   depending on the underlying resources that it is querying.
  * @loop_idx: The iterator loop index in the current multi-part reply.
+ * @rx_len: Size in bytes of the currently processed message; it can be used by
+ *	    the user of the iterator to verify a reply size.
  * @priv: Optional pointer to some additional state-related private data setup
  *	  by the caller during the iterations.
  */
@@ -190,6 +206,7 @@ struct scmi_iterator_state {
 	unsigned int num_remaining;
 	unsigned int max_resources;
 	unsigned int loop_idx;
+	size_t rx_len;
 	void *priv;
 };
 
@@ -214,6 +231,20 @@ struct scmi_iterator_ops {
 				struct scmi_iterator_state *st, void *priv);
 };
 
+struct scmi_fc_db_info {
+	int width;
+	u64 set;
+	u64 mask;
+	void __iomem *addr;
+};
+
+struct scmi_fc_info {
+	void __iomem *set_addr;
+	void __iomem *get_addr;
+	struct scmi_fc_db_info *set_db;
+	u32 rate_limit;
+};
+
 /**
  * struct scmi_proto_helpers_ops  - References to common protocol helpers
  * @extended_name_get: A common helper function to retrieve extended naming
@@ -229,20 +260,36 @@ struct scmi_iterator_ops {
  *			provided in @ops.
  * @iter_response_run: A common helper to trigger the run of a previously
  *		       initialized iterator.
+ * @protocol_msg_check: A common helper to check is a specific protocol message
+ *			is supported.
+ * @fastchannel_init: A common helper used to initialize FC descriptors by
+ *		      gathering FC descriptions from the SCMI platform server.
+ * @fastchannel_db_ring: A common helper to ring a FC doorbell.
+ * @get_max_msg_size: A common helper to get the maximum message size.
  */
 struct scmi_proto_helpers_ops {
 	int (*extended_name_get)(const struct scmi_protocol_handle *ph,
-				 u8 cmd_id, u32 res_id, char *name, size_t len);
+				 u8 cmd_id, u32 res_id, u32 *flags, char *name,
+				 size_t len);
 	void *(*iter_response_init)(const struct scmi_protocol_handle *ph,
 				    struct scmi_iterator_ops *ops,
 				    unsigned int max_resources, u8 msg_id,
 				    size_t tx_size, void *priv);
 	int (*iter_response_run)(void *iter);
+	int (*protocol_msg_check)(const struct scmi_protocol_handle *ph,
+				  u32 message_id, u32 *attributes);
+	void (*fastchannel_init)(const struct scmi_protocol_handle *ph,
+				 u8 describe_id, u32 message_id,
+				 u32 valid_size, u32 domain,
+				 void __iomem **p_addr,
+				 struct scmi_fc_db_info **p_db,
+				 u32 *rate_limit);
+	void (*fastchannel_db_ring)(struct scmi_fc_db_info *db);
+	int (*get_max_msg_size)(const struct scmi_protocol_handle *ph);
 };
 
 /**
  * struct scmi_xfer_ops  - References to the core SCMI xfer operations.
- * @version_get: Get this version protocol.
  * @xfer_get_init: Initialize one struct xfer if any xfer slot is free.
  * @reset_rx_to_maxsz: Reset rx size to max transport size.
  * @do_xfer: Do the SCMI transfer.
@@ -255,7 +302,6 @@ struct scmi_proto_helpers_ops {
  * another protocol.
  */
 struct scmi_xfer_ops {
-	int (*version_get)(const struct scmi_protocol_handle *ph, u32 *version);
 	int (*xfer_get_init)(const struct scmi_protocol_handle *ph, u8 msg_id,
 			     size_t tx_size, size_t rx_size,
 			     struct scmi_xfer **p);
@@ -280,6 +326,20 @@ typedef int (*scmi_prot_init_ph_fn_t)(const struct scmi_protocol_handle *);
  * @ops: Optional reference to the operations provided by the protocol and
  *	 exposed in scmi_protocol.h.
  * @events: An optional reference to the events supported by this protocol.
+ * @supported_version: The highest version currently supported for this
+ *		       protocol by the agent. Each protocol implementation
+ *		       in the agent is supposed to downgrade to match the
+ *		       protocol version supported by the platform.
+ * @vendor_id: A firmware vendor string for vendor protocols matching.
+ *	       Ignored when @id identifies a standard protocol, cannot be NULL
+ *	       otherwise.
+ * @sub_vendor_id: A firmware sub_vendor string for vendor protocols matching.
+ *		   Ignored if NULL or when @id identifies a standard protocol.
+ * @impl_ver: A firmware implementation version for vendor protocols matching.
+ *	      Ignored if zero or if @id identifies a standard protocol.
+ *
+ * Note that vendor protocols matching at load time is performed by attempting
+ * the closest match first against the tuple (vendor, sub_vendor, impl_ver)
  */
 struct scmi_protocol {
 	const u8				id;
@@ -288,6 +348,10 @@ struct scmi_protocol {
 	const scmi_prot_init_ph_fn_t		instance_deinit;
 	const void				*ops;
 	const struct scmi_protocol_events	*events;
+	unsigned int				supported_version;
+	char					*vendor_id;
+	char					*sub_vendor_id;
+	u32					impl_ver;
 };
 
 #define DEFINE_SCMI_PROTOCOL_REGISTER_UNREGISTER(name, proto)	\
@@ -309,10 +373,12 @@ void __exit scmi_##name##_unregister(void)			\
 DECLARE_SCMI_REGISTER_UNREGISTER(base);
 DECLARE_SCMI_REGISTER_UNREGISTER(clock);
 DECLARE_SCMI_REGISTER_UNREGISTER(perf);
+DECLARE_SCMI_REGISTER_UNREGISTER(pinctrl);
 DECLARE_SCMI_REGISTER_UNREGISTER(power);
 DECLARE_SCMI_REGISTER_UNREGISTER(reset);
 DECLARE_SCMI_REGISTER_UNREGISTER(sensors);
 DECLARE_SCMI_REGISTER_UNREGISTER(voltage);
 DECLARE_SCMI_REGISTER_UNREGISTER(system);
+DECLARE_SCMI_REGISTER_UNREGISTER(powercap);
 
 #endif /* _SCMI_PROTOCOLS_H */

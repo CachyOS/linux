@@ -150,10 +150,9 @@ void __init opal_powercap_init(void)
 		return;
 	}
 
-	pcaps = kcalloc(of_get_child_count(powercap), sizeof(*pcaps),
-			GFP_KERNEL);
+	pcaps = kzalloc_objs(*pcaps, of_get_child_count(powercap));
 	if (!pcaps)
-		return;
+		goto out_put_powercap;
 
 	powercap_kobj = kobject_create_and_add("powercap", opal_kobj);
 	if (!powercap_kobj) {
@@ -182,13 +181,11 @@ void __init opal_powercap_init(void)
 			has_cur = true;
 		}
 
-		pcaps[i].pattrs = kcalloc(j, sizeof(struct powercap_attr),
-					  GFP_KERNEL);
+		pcaps[i].pattrs = kzalloc_objs(struct powercap_attr, j);
 		if (!pcaps[i].pattrs)
 			goto out_pcaps_pattrs;
 
-		pcaps[i].pg.attrs = kcalloc(j + 1, sizeof(struct attribute *),
-					    GFP_KERNEL);
+		pcaps[i].pg.attrs = kzalloc_objs(struct attribute *, j + 1);
 		if (!pcaps[i].pg.attrs) {
 			kfree(pcaps[i].pattrs);
 			goto out_pcaps_pattrs;
@@ -196,6 +193,12 @@ void __init opal_powercap_init(void)
 
 		j = 0;
 		pcaps[i].pg.name = kasprintf(GFP_KERNEL, "%pOFn", node);
+		if (!pcaps[i].pg.name) {
+			kfree(pcaps[i].pattrs);
+			kfree(pcaps[i].pg.attrs);
+			goto out_pcaps_pattrs;
+		}
+
 		if (has_min) {
 			powercap_add_attr(min, "powercap-min",
 					  &pcaps[i].pattrs[j]);
@@ -226,6 +229,7 @@ void __init opal_powercap_init(void)
 		}
 		i++;
 	}
+	of_node_put(powercap);
 
 	return;
 
@@ -236,6 +240,9 @@ out_pcaps_pattrs:
 		kfree(pcaps[i].pg.name);
 	}
 	kobject_put(powercap_kobj);
+	of_node_put(node);
 out_pcaps:
 	kfree(pcaps);
+out_put_powercap:
+	of_node_put(powercap);
 }

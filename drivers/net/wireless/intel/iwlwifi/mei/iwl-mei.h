@@ -1,6 +1,6 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (C) 2021 Intel Corporation
+ * Copyright (C) 2021-2024 Intel Corporation
  */
 
 #ifndef __iwl_mei_h__
@@ -13,7 +13,7 @@
 /**
  * DOC: Introduction
  *
- * iwlmei is the kernel module that is in charge of the commnunication between
+ * iwlmei is the kernel module that is in charge of the communication between
  * the iwlwifi driver and the CSME firmware's WLAN driver. This communication
  * uses the SAP protocol defined in another file.
  * iwlwifi can request or release ownership on the WiFi device through iwlmei.
@@ -220,6 +220,7 @@ struct iwl_mei_nvm {
 /**
  * enum iwl_mei_pairwise_cipher - cipher for UCAST key
  * @IWL_MEI_CIPHER_NONE: none
+ * @IWL_MEI_CIPHER_TKIP: tkip
  * @IWL_MEI_CIPHER_CCMP: ccmp
  * @IWL_MEI_CIPHER_GCMP: gcmp
  * @IWL_MEI_CIPHER_GCMP_256: gcmp 256
@@ -228,6 +229,7 @@ struct iwl_mei_nvm {
  */
 enum iwl_mei_pairwise_cipher {
 	IWL_MEI_CIPHER_NONE	= 0,
+	IWL_MEI_CIPHER_TKIP	= 2,
 	IWL_MEI_CIPHER_CCMP	= 4,
 	IWL_MEI_CIPHER_GCMP	= 8,
 	IWL_MEI_CIPHER_GCMP_256 = 9,
@@ -281,6 +283,16 @@ struct iwl_mei_colloc_info {
 	u8 bssid[ETH_ALEN];
 };
 
+/**
+ * enum iwl_mei_sap_version - SAP version
+ * @IWL_MEI_SAP_VERSION_3: SAP version 3
+ * @IWL_MEI_SAP_VERSION_4: SAP version 4
+ */
+enum iwl_mei_sap_version {
+	IWL_MEI_SAP_VERSION_3 = 3,
+	IWL_MEI_SAP_VERSION_4 = 4,
+};
+
 /*
  * struct iwl_mei_ops - driver's operations called by iwlmei
  * Operations will not be called more than once concurrently.
@@ -299,7 +311,7 @@ struct iwl_mei_colloc_info {
 struct iwl_mei_ops {
 	void (*me_conn_status)(void *priv,
 			       const struct iwl_mei_conn_info *conn_info);
-	void (*rfkill)(void *priv, bool blocked);
+	void (*rfkill)(void *priv, bool blocked, bool csme_taking_ownership);
 	void (*roaming_forbidden)(void *priv, bool forbidden);
 	void (*sap_connected)(void *priv);
 	void (*nic_stolen)(void *priv);
@@ -346,7 +358,7 @@ void iwl_mei_set_rfkill_state(bool hw_rfkill, bool sw_rfkill);
 /**
  * iwl_mei_set_nic_info() - set mac address
  * @mac_address: mac address to set
- * @nvm_address: NVM mac adsress to set
+ * @nvm_address: NVM mac address to set
  *
  * This function must be called upon mac address change.
  */
@@ -446,9 +458,28 @@ void iwl_mei_host_associated(const struct iwl_mei_conn_info *conn_info,
 void iwl_mei_host_disassociated(void);
 
 /**
- * iwl_mei_device_down() - must be called when the device is down
+ * iwl_mei_device_state() - must be called when the device changes up/down state
+ * @up: true if the device is up, false otherwise.
  */
-void iwl_mei_device_down(void);
+void iwl_mei_device_state(bool up);
+
+/**
+ * iwl_mei_pldr_req() - must be called before loading the fw
+ *
+ * Requests from the ME that it releases its potential bus access to
+ * the WiFi NIC so that the device can safely undergo product reset.
+ *
+ * Return: 0 if the request was successful and the device can be
+ *	reset, a negative error value otherwise
+ */
+int iwl_mei_pldr_req(void);
+
+/**
+ * iwl_mei_alive_notif() - must be called when alive notificaiton is received
+ * @success: true if received alive notification, false if waiting for the
+ *	notificaiton timed out.
+ */
+void iwl_mei_alive_notif(bool success);
 
 #else
 
@@ -470,12 +501,12 @@ static inline void iwl_mei_set_nic_info(const u8 *mac_address, const u8 *nvm_add
 static inline void iwl_mei_set_country_code(u16 mcc)
 {}
 
-static inline void iwl_mei_set_power_limit(__le16 *power_limit)
+static inline void iwl_mei_set_power_limit(const __le16 *power_limit)
 {}
 
 static inline int iwl_mei_register(void *priv,
 				   const struct iwl_mei_ops *ops)
-{ return 0; }
+{ return -EOPNOTSUPP; }
 
 static inline void iwl_mei_start_unregister(void)
 {}
@@ -497,7 +528,13 @@ static inline void iwl_mei_host_associated(const struct iwl_mei_conn_info *conn_
 static inline void iwl_mei_host_disassociated(void)
 {}
 
-static inline void iwl_mei_device_down(void)
+static inline void iwl_mei_device_state(bool up)
+{}
+
+static inline int iwl_mei_pldr_req(void)
+{ return 0; }
+
+static inline void iwl_mei_alive_notif(bool success)
 {}
 
 #endif /* CONFIG_IWLMEI */

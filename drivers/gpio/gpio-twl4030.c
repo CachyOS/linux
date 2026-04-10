@@ -17,7 +17,9 @@
 #include <linux/interrupt.h>
 #include <linux/kthread.h>
 #include <linux/irq.h>
+#include <linux/gpio/machine.h>
 #include <linux/gpio/driver.h>
+#include <linux/gpio/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
 #include <linux/irqdomain.h>
@@ -118,7 +120,7 @@ static u8 cached_leden;
  * external pullup is needed.  We could also expose the integrated PWM
  * as a LED brightness control; we initialize it as "always on".
  */
-static void twl4030_led_set_value(int led, int value)
+static int twl4030_led_set_value(int led, int value)
 {
 	u8 mask = LEDEN_LEDAON | LEDEN_LEDAPWM;
 
@@ -130,8 +132,8 @@ static void twl4030_led_set_value(int led, int value)
 	else
 		cached_leden |= mask;
 
-	WARN_ON_ONCE(twl_i2c_write_u8(TWL4030_MODULE_LED, cached_leden,
-				      TWL4030_LED_LEDEN_REG));
+	return twl_i2c_write_u8(TWL4030_MODULE_LED, cached_leden,
+				TWL4030_LED_LEDEN_REG);
 }
 
 static int twl4030_set_gpio_direction(int gpio, int is_input)
@@ -276,7 +278,7 @@ static void twl_free(struct gpio_chip *chip, unsigned offset)
 
 	mutex_lock(&priv->mutex);
 	if (offset >= TWL4030_GPIO_MAX) {
-		twl4030_led_set_value(offset - TWL4030_GPIO_MAX, 1);
+		WARN_ON_ONCE(twl4030_led_set_value(offset - TWL4030_GPIO_MAX, 1));
 		goto out;
 	}
 
@@ -332,15 +334,16 @@ out:
 	return ret;
 }
 
-static void twl_set(struct gpio_chip *chip, unsigned offset, int value)
+static int twl_set(struct gpio_chip *chip, unsigned int offset, int value)
 {
 	struct gpio_twl4030_priv *priv = gpiochip_get_data(chip);
+	int ret;
 
 	mutex_lock(&priv->mutex);
 	if (offset < TWL4030_GPIO_MAX)
-		twl4030_set_gpio_dataout(offset, value);
+		ret = twl4030_set_gpio_dataout(offset, value);
 	else
-		twl4030_led_set_value(offset - TWL4030_GPIO_MAX, value);
+		ret = twl4030_led_set_value(offset - TWL4030_GPIO_MAX, value);
 
 	if (value)
 		priv->out_state |= BIT(offset);
@@ -348,6 +351,8 @@ static void twl_set(struct gpio_chip *chip, unsigned offset, int value)
 		priv->out_state &= ~BIT(offset);
 
 	mutex_unlock(&priv->mutex);
+
+	return ret;
 }
 
 static int twl_direction_out(struct gpio_chip *chip, unsigned offset, int value)
@@ -371,9 +376,7 @@ static int twl_direction_out(struct gpio_chip *chip, unsigned offset, int value)
 	priv->direction |= BIT(offset);
 	mutex_unlock(&priv->mutex);
 
-	twl_set(chip, offset, value);
-
-	return ret;
+	return twl_set(chip, offset, value);
 }
 
 static int twl_get_direction(struct gpio_chip *chip, unsigned offset)
@@ -465,19 +468,13 @@ static int gpio_twl4030_debounce(u32 debounce, u8 mmc_cd)
 				REG_GPIO_DEBEN1, 3);
 }
 
-static int gpio_twl4030_remove(struct platform_device *pdev);
-
-static struct twl4030_gpio_platform_data *of_gpio_twl4030(struct device *dev,
-				struct twl4030_gpio_platform_data *pdata)
+static struct twl4030_gpio_platform_data *of_gpio_twl4030(struct device *dev)
 {
 	struct twl4030_gpio_platform_data *omap_twl_info;
 
 	omap_twl_info = devm_kzalloc(dev, sizeof(*omap_twl_info), GFP_KERNEL);
 	if (!omap_twl_info)
 		return NULL;
-
-	if (pdata)
-		*omap_twl_info = *pdata;
 
 	omap_twl_info->use_leds = of_property_read_bool(dev->of_node,
 			"ti,use-leds");
@@ -494,10 +491,18 @@ static struct twl4030_gpio_platform_data *of_gpio_twl4030(struct device *dev,
 	return omap_twl_info;
 }
 
+/* Called from the registered devm action */
+static void gpio_twl4030_power_off_action(void *data)
+{
+	struct gpio_desc *d = data;
+
+	gpiod_unexport(d);
+	gpiochip_free_own_desc(d);
+}
+
 static int gpio_twl4030_probe(struct platform_device *pdev)
 {
-	struct twl4030_gpio_platform_data *pdata = dev_get_platdata(&pdev->dev);
-	struct device_node *node = pdev->dev.of_node;
+	struct twl4030_gpio_platform_data *pdata;
 	struct gpio_twl4030_priv *priv;
 	int ret, irq_base;
 
@@ -519,8 +524,8 @@ static int gpio_twl4030_probe(struct platform_device *pdev)
 		return irq_base;
 	}
 
-	irq_domain_add_legacy(node, TWL4030_GPIO_MAX, irq_base, 0,
-			      &irq_domain_simple_ops, NULL);
+	irq_domain_create_legacy(dev_fwnode(&pdev->dev), TWL4030_GPIO_MAX, irq_base, 0,
+				 &irq_domain_simple_ops, NULL);
 
 	ret = twl4030_sih_setup(&pdev->dev, TWL4030_MODULE_GPIO, irq_base);
 	if (ret < 0)
@@ -536,9 +541,7 @@ no_irqs:
 
 	mutex_init(&priv->mutex);
 
-	if (node)
-		pdata = of_gpio_twl4030(&pdev->dev, pdata);
-
+	pdata = of_gpio_twl4030(&pdev->dev);
 	if (pdata == NULL) {
 		dev_err(&pdev->dev, "Platform data is missing\n");
 		return -ENXIO;
@@ -567,53 +570,37 @@ no_irqs:
 	if (pdata->use_leds)
 		priv->gpio_chip.ngpio += 2;
 
-	ret = gpiochip_add_data(&priv->gpio_chip, priv);
+	ret = devm_gpiochip_add_data(&pdev->dev, &priv->gpio_chip, priv);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "could not register gpiochip, %d\n", ret);
 		priv->gpio_chip.ngpio = 0;
-		gpio_twl4030_remove(pdev);
-		goto out;
+		return ret;
 	}
 
-	platform_set_drvdata(pdev, priv);
+	/*
+	 * Special quirk for the OMAP3 to hog and export a WLAN power
+	 * GPIO.
+	 */
+	if (IS_ENABLED(CONFIG_ARCH_OMAP3) &&
+	    of_machine_is_compatible("compulab,omap3-sbc-t3730")) {
+		struct gpio_desc *d;
 
-	if (pdata->setup) {
-		int status;
+		d = gpiochip_request_own_desc(&priv->gpio_chip,
+						 2, "wlan pwr",
+						 GPIO_ACTIVE_HIGH,
+						 GPIOD_OUT_HIGH);
+		if (IS_ERR(d))
+			return dev_err_probe(&pdev->dev, PTR_ERR(d),
+					     "unable to hog wlan pwr GPIO\n");
 
-		status = pdata->setup(&pdev->dev, priv->gpio_chip.base,
-				      TWL4030_GPIO_MAX);
-		if (status)
-			dev_dbg(&pdev->dev, "setup --> %d\n", status);
+		gpiod_export(d, 0);
+
+		ret = devm_add_action_or_reset(&pdev->dev, gpio_twl4030_power_off_action, d);
+		if (ret)
+			return ret;
 	}
 
-out:
-	return ret;
-}
-
-/* Cannot use as gpio_twl4030_probe() calls us */
-static int gpio_twl4030_remove(struct platform_device *pdev)
-{
-	struct twl4030_gpio_platform_data *pdata = dev_get_platdata(&pdev->dev);
-	struct gpio_twl4030_priv *priv = platform_get_drvdata(pdev);
-	int status;
-
-	if (pdata && pdata->teardown) {
-		status = pdata->teardown(&pdev->dev, priv->gpio_chip.base,
-					 TWL4030_GPIO_MAX);
-		if (status) {
-			dev_dbg(&pdev->dev, "teardown --> %d\n", status);
-			return status;
-		}
-	}
-
-	gpiochip_remove(&priv->gpio_chip);
-
-	if (is_module())
-		return 0;
-
-	/* REVISIT no support yet for deregistering all the IRQs */
-	WARN_ON(1);
-	return -EIO;
+	return 0;
 }
 
 static const struct of_device_id twl_gpio_match[] = {
@@ -631,7 +618,6 @@ static struct platform_driver gpio_twl4030_driver = {
 		.of_match_table = twl_gpio_match,
 	},
 	.probe		= gpio_twl4030_probe,
-	.remove		= gpio_twl4030_remove,
 };
 
 static int __init gpio_twl4030_init(void)

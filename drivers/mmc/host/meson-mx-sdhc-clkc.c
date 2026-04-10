@@ -71,12 +71,21 @@ static int meson_mx_sdhc_clk_hw_register(struct device *dev,
 static int meson_mx_sdhc_gate_clk_hw_register(struct device *dev,
 					      const char *name_suffix,
 					      struct clk_hw *parent,
-					      struct clk_hw *hw)
+					      struct clk_hw *hw,
+					      struct clk_bulk_data *clk_bulk_data,
+					      u8 bulk_index)
 {
 	struct clk_parent_data parent_data = { .hw = parent };
+	int ret;
 
-	return meson_mx_sdhc_clk_hw_register(dev, name_suffix, &parent_data, 1,
-					     &clk_gate_ops, hw);
+	ret = meson_mx_sdhc_clk_hw_register(dev, name_suffix, &parent_data, 1,
+					    &clk_gate_ops, hw);
+	if (ret)
+		return ret;
+
+	clk_bulk_data[bulk_index].clk = devm_clk_hw_get_clk(dev, hw, name_suffix);
+
+	return PTR_ERR_OR_ZERO(clk_bulk_data[bulk_index].clk);
 }
 
 int meson_mx_sdhc_register_clkc(struct device *dev, void __iomem *base,
@@ -115,7 +124,8 @@ int meson_mx_sdhc_register_clkc(struct device *dev, void __iomem *base,
 	clkc_data->mod_clk_en.bit_idx = 15;
 	ret = meson_mx_sdhc_gate_clk_hw_register(dev, "mod_clk_on",
 						 &clkc_data->div.hw,
-						 &clkc_data->mod_clk_en.hw);
+						 &clkc_data->mod_clk_en.hw,
+						 clk_bulk_data, 0);
 	if (ret)
 		return ret;
 
@@ -123,7 +133,8 @@ int meson_mx_sdhc_register_clkc(struct device *dev, void __iomem *base,
 	clkc_data->tx_clk_en.bit_idx = 14;
 	ret = meson_mx_sdhc_gate_clk_hw_register(dev, "tx_clk_on",
 						 &clkc_data->div.hw,
-						 &clkc_data->tx_clk_en.hw);
+						 &clkc_data->tx_clk_en.hw,
+						 clk_bulk_data, 1);
 	if (ret)
 		return ret;
 
@@ -131,7 +142,8 @@ int meson_mx_sdhc_register_clkc(struct device *dev, void __iomem *base,
 	clkc_data->rx_clk_en.bit_idx = 13;
 	ret = meson_mx_sdhc_gate_clk_hw_register(dev, "rx_clk_on",
 						 &clkc_data->div.hw,
-						 &clkc_data->rx_clk_en.hw);
+						 &clkc_data->rx_clk_en.hw,
+						 clk_bulk_data, 2);
 	if (ret)
 		return ret;
 
@@ -139,18 +151,7 @@ int meson_mx_sdhc_register_clkc(struct device *dev, void __iomem *base,
 	clkc_data->sd_clk_en.bit_idx = 12;
 	ret = meson_mx_sdhc_gate_clk_hw_register(dev, "sd_clk_on",
 						 &clkc_data->div.hw,
-						 &clkc_data->sd_clk_en.hw);
-	if (ret)
-		return ret;
-
-	/*
-	 * TODO: Replace clk_hw.clk with devm_clk_hw_get_clk() once that is
-	 * available.
-	 */
-	clk_bulk_data[0].clk = clkc_data->mod_clk_en.hw.clk;
-	clk_bulk_data[1].clk = clkc_data->sd_clk_en.hw.clk;
-	clk_bulk_data[2].clk = clkc_data->tx_clk_en.hw.clk;
-	clk_bulk_data[3].clk = clkc_data->rx_clk_en.hw.clk;
-
-	return 0;
+						 &clkc_data->sd_clk_en.hw,
+						 clk_bulk_data, 3);
+	return ret;
 }

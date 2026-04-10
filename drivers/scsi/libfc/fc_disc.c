@@ -24,9 +24,9 @@
 #include <linux/slab.h>
 #include <linux/err.h>
 #include <linux/export.h>
-#include <linux/rculist.h>
+#include <linux/list.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <scsi/fc/fc_gs.h>
 
@@ -75,7 +75,6 @@ static void fc_disc_recv_rscn_req(struct fc_disc *disc, struct fc_frame *fp)
 	struct fc_seq_els_data rjt_data;
 	unsigned int len;
 	int redisc = 0;
-	enum fc_els_rscn_ev_qual ev_qual;
 	enum fc_els_rscn_addr_fmt fmt;
 	LIST_HEAD(disc_ports);
 	struct fc_disc_port *dp, *next;
@@ -107,8 +106,6 @@ static void fc_disc_recv_rscn_req(struct fc_disc *disc, struct fc_frame *fp)
 		goto reject;
 
 	for (pp = (void *)(rp + 1); len > 0; len -= sizeof(*pp), pp++) {
-		ev_qual = pp->rscn_page_flags >> ELS_RSCN_EV_QUAL_BIT;
-		ev_qual &= ELS_RSCN_EV_QUAL_MASK;
 		fmt = pp->rscn_page_flags >> ELS_RSCN_ADDR_FMT_BIT;
 		fmt &= ELS_RSCN_ADDR_FMT_MASK;
 		/*
@@ -119,7 +116,7 @@ static void fc_disc_recv_rscn_req(struct fc_disc *disc, struct fc_frame *fp)
 		case ELS_ADDR_FMT_PORT:
 			FC_DISC_DBG(disc, "Port address format for port "
 				    "(%6.6x)\n", ntoh24(pp->rscn_fid));
-			dp = kzalloc(sizeof(*dp), GFP_KERNEL);
+			dp = kzalloc_obj(*dp);
 			if (!dp) {
 				redisc = 1;
 				break;

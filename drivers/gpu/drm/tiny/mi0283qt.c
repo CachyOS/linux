@@ -13,14 +13,16 @@
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
 
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fb_helper.h>
+#include <drm/drm_fbdev_dma.h>
 #include <drm/drm_gem_atomic_helper.h>
-#include <drm/drm_gem_cma_helper.h>
+#include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_mipi_dbi.h>
 #include <drm/drm_modeset_helper.h>
+#include <drm/drm_print.h>
 #include <video/mipi_display.h>
 
 #define ILI9341_FRMCTR1		0xb1
@@ -141,25 +143,23 @@ out_exit:
 }
 
 static const struct drm_simple_display_pipe_funcs mi0283qt_pipe_funcs = {
-	.enable = mi0283qt_enable,
-	.disable = mipi_dbi_pipe_disable,
-	.update = mipi_dbi_pipe_update,
+	DRM_MIPI_DBI_SIMPLE_DISPLAY_PIPE_FUNCS(mi0283qt_enable),
 };
 
 static const struct drm_display_mode mi0283qt_mode = {
 	DRM_SIMPLE_MODE(320, 240, 58, 43),
 };
 
-DEFINE_DRM_GEM_CMA_FOPS(mi0283qt_fops);
+DEFINE_DRM_GEM_DMA_FOPS(mi0283qt_fops);
 
 static const struct drm_driver mi0283qt_driver = {
 	.driver_features	= DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops			= &mi0283qt_fops,
-	DRM_GEM_CMA_DRIVER_OPS_VMAP,
+	DRM_GEM_DMA_DRIVER_OPS_VMAP,
+	DRM_FBDEV_DMA_DRIVER_OPS,
 	.debugfs_init		= mipi_dbi_debugfs_init,
 	.name			= "mi0283qt",
 	.desc			= "Multi-Inno MI0283QT",
-	.date			= "20160614",
 	.major			= 1,
 	.minor			= 0,
 };
@@ -228,7 +228,7 @@ static int mi0283qt_probe(struct spi_device *spi)
 
 	spi_set_drvdata(spi, drm);
 
-	drm_fbdev_generic_setup(drm, 0);
+	drm_client_setup(drm, NULL);
 
 	return 0;
 }
@@ -265,7 +265,6 @@ static const struct dev_pm_ops mi0283qt_pm_ops = {
 static struct spi_driver mi0283qt_spi_driver = {
 	.driver = {
 		.name = "mi0283qt",
-		.owner = THIS_MODULE,
 		.of_match_table = mi0283qt_of_match,
 		.pm = &mi0283qt_pm_ops,
 	},

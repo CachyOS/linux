@@ -7,10 +7,10 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: NVIDIA Tegra ACONNECT Bus
 
 description: |
-  The Tegra ACONNECT bus is an AXI switch which is used to connnect various
+  The Tegra ACONNECT bus is an AXI switch which is used to connect various
   components inside the Audio Processing Engine (APE). All CPU accesses to
   the APE subsystem go through the ACONNECT via an APB to AXI wrapper. All
-  devices accessed via the ACONNNECT are described by child-nodes.
+  devices accessed via the ACONNECT are described by child-nodes.
 
 maintainers:
   - Jon Hunter <jonathanh@nvidia.com>
@@ -21,6 +21,7 @@ properties:
       - const: nvidia,tegra210-aconnect
       - items:
           - enum:
+              - nvidia,tegra264-aconnect
               - nvidia,tegra234-aconnect
               - nvidia,tegra186-aconnect
               - nvidia,tegra194-aconnect
@@ -40,10 +41,10 @@ properties:
     maxItems: 1
 
   "#address-cells":
-    const: 1
+    enum: [ 1, 2 ]
 
   "#size-cells":
-    const: 1
+    enum: [ 1, 2 ]
 
   ranges: true
 

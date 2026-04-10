@@ -149,16 +149,6 @@ int phm_apply_clock_adjust_rules(struct pp_hwmgr *hwmgr)
 	return 0;
 }
 
-int phm_powerdown_uvd(struct pp_hwmgr *hwmgr)
-{
-	PHM_FUNC_CHECK(hwmgr);
-
-	if (hwmgr->hwmgr_func->powerdown_uvd != NULL)
-		return hwmgr->hwmgr_func->powerdown_uvd(hwmgr);
-	return 0;
-}
-
-
 int phm_disable_clock_power_gatings(struct pp_hwmgr *hwmgr)
 {
 	PHM_FUNC_CHECK(hwmgr);
@@ -241,7 +231,8 @@ int phm_start_thermal_controller(struct pp_hwmgr *hwmgr)
 		TEMP_RANGE_MAX,
 		TEMP_RANGE_MIN,
 		TEMP_RANGE_MAX,
-		TEMP_RANGE_MAX};
+		TEMP_RANGE_MAX,
+		0};
 	struct amdgpu_device *adev = hwmgr->adev;
 
 	if (!hwmgr->not_vf)
@@ -265,6 +256,7 @@ int phm_start_thermal_controller(struct pp_hwmgr *hwmgr)
 	adev->pm.dpm.thermal.min_mem_temp = range.mem_min;
 	adev->pm.dpm.thermal.max_mem_crit_temp = range.mem_crit_max;
 	adev->pm.dpm.thermal.max_mem_emergency_temp = range.mem_emergency_max;
+	adev->pm.dpm.thermal.sw_ctf_threshold = range.sw_ctf_threshold;
 
 	return ret;
 }

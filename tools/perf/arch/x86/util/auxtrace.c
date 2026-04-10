@@ -10,6 +10,7 @@
 #include "../../../util/header.h"
 #include "../../../util/debug.h"
 #include "../../../util/pmu.h"
+#include "../../../util/pmus.h"
 #include "../../../util/auxtrace.h"
 #include "../../../util/intel-pt.h"
 #include "../../../util/intel-bts.h"
@@ -25,12 +26,8 @@ struct auxtrace_record *auxtrace_record__init_intel(struct evlist *evlist,
 	bool found_pt = false;
 	bool found_bts = false;
 
-	intel_pt_pmu = perf_pmu__find(INTEL_PT_PMU_NAME);
-	if (intel_pt_pmu)
-		intel_pt_pmu->auxtrace = true;
-	intel_bts_pmu = perf_pmu__find(INTEL_BTS_PMU_NAME);
-	if (intel_bts_pmu)
-		intel_bts_pmu->auxtrace = true;
+	intel_pt_pmu = perf_pmus__find(INTEL_PT_PMU_NAME);
+	intel_bts_pmu = perf_pmus__find(INTEL_BTS_PMU_NAME);
 
 	evlist__for_each_entry(evlist, evsel) {
 		if (intel_pt_pmu && evsel->core.attr.type == intel_pt_pmu->type)
@@ -58,11 +55,12 @@ struct auxtrace_record *auxtrace_record__init(struct evlist *evlist,
 					      int *err)
 {
 	char buffer[64];
+	struct perf_cpu cpu = perf_cpu_map__min(evlist->core.all_cpus);
 	int ret;
 
 	*err = 0;
 
-	ret = get_cpuid(buffer, sizeof(buffer));
+	ret = get_cpuid(buffer, sizeof(buffer), cpu);
 	if (ret) {
 		*err = ret;
 		return NULL;

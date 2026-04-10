@@ -10,8 +10,8 @@ KVM for x86 systems
    amd-memory-encryption
    cpuid
    errata
-   halt-polling
    hypercalls
+   intel-tdx
    mmu
    msr
    nested-vmx

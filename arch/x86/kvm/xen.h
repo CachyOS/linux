@@ -9,6 +9,9 @@
 #ifndef __ARCH_X86_KVM_XEN_H__
 #define __ARCH_X86_KVM_XEN_H__
 
+#include <asm/xen/cpuid.h>
+#include <asm/xen/hypervisor.h>
+
 #ifdef CONFIG_KVM_XEN
 #include <linux/jump_label_ratelimit.h>
 
@@ -16,6 +19,7 @@ extern struct static_key_false_deferred kvm_xen_enabled;
 
 int __kvm_xen_has_interrupt(struct kvm_vcpu *vcpu);
 void kvm_xen_inject_pending_events(struct kvm_vcpu *vcpu);
+void kvm_xen_inject_vcpu_vector(struct kvm_vcpu *vcpu);
 int kvm_xen_vcpu_set_attr(struct kvm_vcpu *vcpu, struct kvm_xen_vcpu_attr *data);
 int kvm_xen_vcpu_get_attr(struct kvm_vcpu *vcpu, struct kvm_xen_vcpu_attr *data);
 int kvm_xen_hvm_set_attr(struct kvm *kvm, struct kvm_xen_hvm_attr *data);
@@ -33,16 +37,45 @@ int kvm_xen_setup_evtchn(struct kvm *kvm,
 			 struct kvm_kernel_irq_routing_entry *e,
 			 const struct kvm_irq_routing_entry *ue);
 
+static inline void kvm_xen_sw_enable_lapic(struct kvm_vcpu *vcpu)
+{
+	/*
+	 * The local APIC is being enabled. If the per-vCPU upcall vector is
+	 * set and the vCPU's evtchn_upcall_pending flag is set, inject the
+	 * interrupt.
+	 */
+	if (static_branch_unlikely(&kvm_xen_enabled.key) &&
+	    vcpu->arch.xen.vcpu_info_cache.active &&
+	    vcpu->arch.xen.upcall_vector && __kvm_xen_has_interrupt(vcpu))
+		kvm_xen_inject_vcpu_vector(vcpu);
+}
+
+static inline bool kvm_xen_is_tsc_leaf(struct kvm_vcpu *vcpu, u32 function)
+{
+	return static_branch_unlikely(&kvm_xen_enabled.key) &&
+	       vcpu->arch.xen.cpuid.base &&
+	       function <= vcpu->arch.xen.cpuid.limit &&
+	       function == (vcpu->arch.xen.cpuid.base | XEN_CPUID_LEAF(3));
+}
+
 static inline bool kvm_xen_msr_enabled(struct kvm *kvm)
 {
 	return static_branch_unlikely(&kvm_xen_enabled.key) &&
-		kvm->arch.xen_hvm_config.msr;
+		kvm->arch.xen.hvm_config.msr;
+}
+
+static inline bool kvm_xen_is_hypercall_page_msr(struct kvm *kvm, u32 msr)
+{
+	if (!static_branch_unlikely(&kvm_xen_enabled.key))
+		return false;
+
+	return msr && msr == kvm->arch.xen.hvm_config.msr;
 }
 
 static inline bool kvm_xen_hypercall_enabled(struct kvm *kvm)
 {
 	return static_branch_unlikely(&kvm_xen_enabled.key) &&
-		(kvm->arch.xen_hvm_config.flags &
+		(kvm->arch.xen.hvm_config.flags &
 		 KVM_XEN_HVM_CONFIG_INTERCEPT_HCALL);
 }
 
@@ -98,7 +131,16 @@ static inline void kvm_xen_destroy_vcpu(struct kvm_vcpu *vcpu)
 {
 }
 
+static inline void kvm_xen_sw_enable_lapic(struct kvm_vcpu *vcpu)
+{
+}
+
 static inline bool kvm_xen_msr_enabled(struct kvm *kvm)
+{
+	return false;
+}
+
+static inline bool kvm_xen_is_hypercall_page_msr(struct kvm *kvm, u32 msr)
 {
 	return false;
 }
@@ -135,6 +177,11 @@ static inline bool kvm_xen_timer_enabled(struct kvm_vcpu *vcpu)
 {
 	return false;
 }
+
+static inline bool kvm_xen_is_tsc_leaf(struct kvm_vcpu *vcpu, u32 function)
+{
+	return false;
+}
 #endif
 
 int kvm_xen_hypercall(struct kvm_vcpu *vcpu);
@@ -143,11 +190,11 @@ int kvm_xen_hypercall(struct kvm_vcpu *vcpu);
 #include <asm/xen/interface.h>
 #include <xen/interface/vcpu.h>
 
-void kvm_xen_update_runstate_guest(struct kvm_vcpu *vcpu, int state);
+void kvm_xen_update_runstate(struct kvm_vcpu *vcpu, int state);
 
 static inline void kvm_xen_runstate_set_running(struct kvm_vcpu *vcpu)
 {
-	kvm_xen_update_runstate_guest(vcpu, RUNSTATE_running);
+	kvm_xen_update_runstate(vcpu, RUNSTATE_running);
 }
 
 static inline void kvm_xen_runstate_set_preempted(struct kvm_vcpu *vcpu)
@@ -162,7 +209,7 @@ static inline void kvm_xen_runstate_set_preempted(struct kvm_vcpu *vcpu)
 	if (WARN_ON_ONCE(!vcpu->preempted))
 		return;
 
-	kvm_xen_update_runstate_guest(vcpu, RUNSTATE_runnable);
+	kvm_xen_update_runstate(vcpu, RUNSTATE_runnable);
 }
 
 /* 32-bit compatibility definitions, also used natively in 32-bit build */
@@ -206,5 +253,12 @@ struct compat_vcpu_runstate_info {
     uint64_t state_entry_time;
     uint64_t time[4];
 } __attribute__((packed));
+
+struct compat_sched_poll {
+	/* This is actually a guest virtual address which points to ports. */
+	uint32_t ports;
+	unsigned int nr_ports;
+	uint64_t timeout;
+};
 
 #endif /* __ARCH_X86_KVM_XEN_H__ */

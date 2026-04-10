@@ -4,24 +4,12 @@
 
 #include <uapi/asm/signal.h>
 
-#define _NSIG		64
-/* bits-per-word, where word apparently means 'long' not 'int' */
-#define _NSIG_BPW	BITS_PER_LONG
-#define _NSIG_WORDS	(_NSIG / _NSIG_BPW)
-
-# ifndef __ASSEMBLY__
+# ifndef __ASSEMBLER__
 
 /* Most things should be clean enough to redefine this at will, if care
    is taken to make libc match.  */
 
-typedef unsigned long old_sigset_t;		/* at least 32 bits */
-
-typedef struct {
-	/* next_signal() assumes this is a long - no choice */
-	unsigned long sig[_NSIG_WORDS];
-} sigset_t;
-
 #include <asm/sigcontext.h>
 
-#endif /* !__ASSEMBLY */
+#endif /* !__ASSEMBLER__ */
 #endif /* _ASM_PARISC_SIGNAL_H */

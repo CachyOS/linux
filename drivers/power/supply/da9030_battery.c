@@ -15,6 +15,7 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
+#include <linux/string_choices.h>
 #include <linux/mfd/da903x.h>
 
 #include <linux/debugfs.h>
@@ -138,7 +139,7 @@ static int bat_debug_show(struct seq_file *s, void *data)
 {
 	struct da9030_charger *charger = s->private;
 
-	seq_printf(s, "charger is %s\n", charger->is_on ? "on" : "off");
+	seq_printf(s, "charger is %s\n", str_on_off(charger->is_on));
 	if (charger->chdet) {
 		seq_printf(s, "iset = %dmA, vset = %dmV\n",
 			   charger->mA, charger->mV);
@@ -269,7 +270,7 @@ static void da9030_charger_check_state(struct da9030_charger *charger)
 		}
 		if (charger->adc.vchmax_res > charger->thresholds.vcharge_max ||
 		    charger->adc.vchmin_res < charger->thresholds.vcharge_min ||
-		    /* Tempreture readings are negative */
+		    /* Temperature readings are negative */
 		    charger->adc.tbat_res < charger->thresholds.tbat_high ||
 		    charger->adc.tbat_res > charger->thresholds.tbat_low) {
 			/* disable charger */
@@ -470,7 +471,7 @@ static int da9030_battery_charger_init(struct da9030_charger *charger)
 	if (ret)
 		return ret;
 
-	/* enable auto ADC measuremnts */
+	/* enable auto ADC measurements */
 	return da903x_write(charger->master, DA9030_ADC_AUTO_CONTROL,
 			    DA9030_ADC_TBAT_ENABLE | DA9030_ADC_VBAT_IN_TXON |
 			    DA9030_ADC_VCH_ENABLE | DA9030_ADC_ICH_ENABLE |
@@ -501,8 +502,7 @@ static int da9030_battery_probe(struct platform_device *pdev)
 
 	/* 10 seconds between monitor runs unless platform defines other
 	   interval */
-	charger->interval = msecs_to_jiffies(
-		(pdata->batmon_interval ? : 10) * 1000);
+	charger->interval = secs_to_jiffies(pdata->batmon_interval ? : 10);
 
 	charger->charge_milliamp = pdata->charge_milliamp;
 	charger->charge_millivolt = pdata->charge_millivolt;
@@ -530,8 +530,9 @@ static int da9030_battery_probe(struct platform_device *pdev)
 
 	da9030_battery_setup_psy(charger);
 	psy_cfg.drv_data = charger;
-	charger->psy = power_supply_register(&pdev->dev, &charger->psy_desc,
-					     &psy_cfg);
+	charger->psy = devm_power_supply_register(&pdev->dev,
+						  &charger->psy_desc,
+						  &psy_cfg);
 	if (IS_ERR(charger->psy)) {
 		ret = PTR_ERR(charger->psy);
 		goto err_ps_register;
@@ -552,7 +553,7 @@ err_charger_init:
 	return ret;
 }
 
-static int da9030_battery_remove(struct platform_device *dev)
+static void da9030_battery_remove(struct platform_device *dev)
 {
 	struct da9030_charger *charger = platform_get_drvdata(dev);
 
@@ -563,9 +564,6 @@ static int da9030_battery_remove(struct platform_device *dev)
 				   DA9030_EVENT_CHIOVER | DA9030_EVENT_TBAT);
 	cancel_delayed_work_sync(&charger->work);
 	da9030_set_charge(charger, 0);
-	power_supply_unregister(charger->psy);
-
-	return 0;
 }
 
 static struct platform_driver da903x_battery_driver = {

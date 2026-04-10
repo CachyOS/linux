@@ -27,7 +27,6 @@
 #define __DAL_TYPES_H__
 
 #include "signal_types.h"
-#include "dc_types.h"
 
 struct dal_logger;
 struct dc_bios;
@@ -57,8 +56,15 @@ enum dce_version {
 	DCN_VERSION_3_02,
 	DCN_VERSION_3_03,
 	DCN_VERSION_3_1,
+	DCN_VERSION_3_14,
 	DCN_VERSION_3_15,
 	DCN_VERSION_3_16,
+	DCN_VERSION_3_2,
+	DCN_VERSION_3_21,
+	DCN_VERSION_3_5,
+	DCN_VERSION_3_51,
+	DCN_VERSION_3_6,
+	DCN_VERSION_4_01,
 	DCN_VERSION_MAX
 };
 

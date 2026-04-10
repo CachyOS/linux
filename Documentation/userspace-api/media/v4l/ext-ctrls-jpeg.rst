@@ -1,4 +1,5 @@
 .. SPDX-License-Identifier: GFDL-1.1-no-invariants-or-later
+.. c:namespace:: V4L
 
 .. _jpeg-controls:
 
@@ -8,7 +9,7 @@ JPEG Control Reference
 
 The JPEG class includes controls for common features of JPEG encoders
 and decoders. Currently it includes features for codecs implementing
-progressive baseline DCT compression process with Huffman entrophy
+progressive baseline DCT compression process with Huffman entropy
 coding.
 
 

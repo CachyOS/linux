@@ -8,9 +8,9 @@
 
 / {
 	thermal-zones {
-		pmr735a_thermal: pmr735a-thermal {
+		pmr735b_thermal: pmr735b-thermal {
 			polling-delay-passive = <100>;
-			polling-delay = <0>;
+
 			thermal-sensors = <&pmr735b_temp_alarm>;
 
 			trips {
@@ -45,9 +45,10 @@
 		};
 
 		pmr735b_gpios: gpio@8800 {
-			compatible = "qcom,pmr735b-gpio";
+			compatible = "qcom,pmr735b-gpio", "qcom,spmi-gpio";
 			reg = <0x8800>;
 			gpio-controller;
+			gpio-ranges = <&pmr735b_gpios 0 0 4>;
 			#gpio-cells = <2>;
 			interrupt-controller;
 			#interrupt-cells = <2>;

@@ -7,6 +7,7 @@
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/err.h>
+#include <linux/kstrtox.h>
 #include <linux/slab.h>
 #include <linux/powercap.h>
 
@@ -26,7 +27,7 @@ static ssize_t _attr##_show(struct device *dev, \
 	\
 	if (power_zone->ops->get_##_attr) { \
 		if (!power_zone->ops->get_##_attr(power_zone, &value)) \
-			len = sprintf(buf, "%lld\n", value); \
+			len = sysfs_emit(buf, "%lld\n", value); \
 	} \
 	\
 	return len; \
@@ -67,14 +68,14 @@ static ssize_t show_constraint_##_attr(struct device *dev, \
 	int id; \
 	struct powercap_zone_constraint *pconst;\
 	\
-	if (!sscanf(dev_attr->attr.name, "constraint_%d_", &id)) \
+	if (sscanf(dev_attr->attr.name, "constraint_%d_", &id) != 1) \
 		return -EINVAL; \
 	if (id >= power_zone->const_id_cnt)	\
 		return -EINVAL; \
 	pconst = &power_zone->constraints[id]; \
 	if (pconst && pconst->ops && pconst->ops->get_##_attr) { \
 		if (!pconst->ops->get_##_attr(power_zone, id, &value)) \
-			len = sprintf(buf, "%lld\n", value); \
+			len = sysfs_emit(buf, "%lld\n", value); \
 	} \
 	\
 	return len; \
@@ -92,7 +93,7 @@ static ssize_t store_constraint_##_attr(struct device *dev,\
 	int id; \
 	struct powercap_zone_constraint *pconst;\
 	\
-	if (!sscanf(dev_attr->attr.name, "constraint_%d_", &id)) \
+	if (sscanf(dev_attr->attr.name, "constraint_%d_", &id) != 1) \
 		return -EINVAL; \
 	if (id >= power_zone->const_id_cnt)	\
 		return -EINVAL; \
@@ -161,7 +162,7 @@ static ssize_t show_constraint_name(struct device *dev,
 	ssize_t len = -ENODATA;
 	struct powercap_zone_constraint *pconst;
 
-	if (!sscanf(dev_attr->attr.name, "constraint_%d_", &id))
+	if (sscanf(dev_attr->attr.name, "constraint_%d_", &id) != 1)
 		return -EINVAL;
 	if (id >= power_zone->const_id_cnt)
 		return -EINVAL;
@@ -170,9 +171,8 @@ static ssize_t show_constraint_name(struct device *dev,
 	if (pconst && pconst->ops && pconst->ops->get_name) {
 		name = pconst->ops->get_name(power_zone, id);
 		if (name) {
-			sprintf(buf, "%.*s\n", POWERCAP_CONSTRAINT_NAME_LEN - 1,
-				name);
-			len = strlen(buf);
+			len = sysfs_emit(buf, "%.*s\n",
+					 POWERCAP_CONSTRAINT_NAME_LEN - 1, name);
 		}
 	}
 
@@ -349,7 +349,7 @@ static ssize_t name_show(struct device *dev,
 {
 	struct powercap_zone *power_zone = to_powercap_zone(dev);
 
-	return sprintf(buf, "%s\n", power_zone->name);
+	return sysfs_emit(buf, "%s\n", power_zone->name);
 }
 
 static DEVICE_ATTR_RO(name);
@@ -437,7 +437,7 @@ static ssize_t enabled_show(struct device *dev,
 				mode = false;
 	}
 
-	return sprintf(buf, "%d\n", mode);
+	return sysfs_emit(buf, "%d\n", mode);
 }
 
 static ssize_t enabled_store(struct device *dev,
@@ -446,7 +446,7 @@ static ssize_t enabled_store(struct device *dev,
 {
 	bool mode;
 
-	if (strtobool(buf, &mode))
+	if (kstrtobool(buf, &mode))
 		return -EINVAL;
 	if (dev->parent) {
 		struct powercap_zone *power_zone = to_powercap_zone(dev);
@@ -501,7 +501,7 @@ struct powercap_zone *powercap_register_zone(
 			return ERR_PTR(-EINVAL);
 		memset(power_zone, 0, sizeof(*power_zone));
 	} else {
-		power_zone = kzalloc(sizeof(*power_zone), GFP_KERNEL);
+		power_zone = kzalloc_obj(*power_zone);
 		if (!power_zone)
 			return ERR_PTR(-ENOMEM);
 		power_zone->allocated = true;
@@ -529,12 +529,8 @@ struct powercap_zone *powercap_register_zone(
 	power_zone->name = kstrdup(name, GFP_KERNEL);
 	if (!power_zone->name)
 		goto err_name_alloc;
-	dev_set_name(&power_zone->dev, "%s:%x",
-					dev_name(power_zone->dev.parent),
-					power_zone->id);
-	power_zone->constraints = kcalloc(nr_constraints,
-					  sizeof(*power_zone->constraints),
-					  GFP_KERNEL);
+	power_zone->constraints = kzalloc_objs(*power_zone->constraints,
+					       nr_constraints);
 	if (!power_zone->constraints)
 		goto err_const_alloc;
 
@@ -554,9 +550,16 @@ struct powercap_zone *powercap_register_zone(
 	power_zone->dev_attr_groups[0] = &power_zone->dev_zone_attr_group;
 	power_zone->dev_attr_groups[1] = NULL;
 	power_zone->dev.groups = power_zone->dev_attr_groups;
+	dev_set_name(&power_zone->dev, "%s:%x",
+					dev_name(power_zone->dev.parent),
+					power_zone->id);
 	result = device_register(&power_zone->dev);
-	if (result)
-		goto err_dev_ret;
+	if (result) {
+		put_device(&power_zone->dev);
+		mutex_unlock(&control_type->lock);
+
+		return ERR_PTR(result);
+	}
 
 	control_type->nr_zones++;
 	mutex_unlock(&control_type->lock);
@@ -610,7 +613,7 @@ struct powercap_control_type *powercap_register_control_type(
 			return ERR_PTR(-EINVAL);
 		memset(control_type, 0, sizeof(*control_type));
 	} else {
-		control_type = kzalloc(sizeof(*control_type), GFP_KERNEL);
+		control_type = kzalloc_obj(*control_type);
 		if (!control_type)
 			return ERR_PTR(-ENOMEM);
 		control_type->allocated = true;
@@ -620,17 +623,22 @@ struct powercap_control_type *powercap_register_control_type(
 	INIT_LIST_HEAD(&control_type->node);
 	control_type->dev.class = &powercap_class;
 	dev_set_name(&control_type->dev, "%s", name);
-	result = device_register(&control_type->dev);
-	if (result) {
-		if (control_type->allocated)
-			kfree(control_type);
-		return ERR_PTR(result);
-	}
 	idr_init(&control_type->idr);
 
 	mutex_lock(&powercap_cntrl_list_lock);
 	list_add_tail(&control_type->node, &powercap_cntrl_list);
 	mutex_unlock(&powercap_cntrl_list_lock);
+
+	result = device_register(&control_type->dev);
+	if (result) {
+		mutex_lock(&powercap_cntrl_list_lock);
+		list_del(&control_type->node);
+		mutex_unlock(&powercap_cntrl_list_lock);
+
+		idr_destroy(&control_type->idr);
+		put_device(&control_type->dev);
+		return ERR_PTR(result);
+	}
 
 	return control_type;
 }
@@ -674,4 +682,3 @@ fs_initcall(powercap_init);
 
 MODULE_DESCRIPTION("PowerCap sysfs Driver");
 MODULE_AUTHOR("Srinivas Pandruvada <srinivas.pandruvada@linux.intel.com>");
-MODULE_LICENSE("GPL v2");

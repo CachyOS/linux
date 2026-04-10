@@ -17,6 +17,7 @@
 #include <linux/vmalloc.h>
 #include <linux/mc146818rtc.h>
 #include <linux/rtc.h>
+#include <linux/string.h>
 #include <linux/module.h>
 #include <linux/memblock.h>
 
@@ -79,13 +80,12 @@ mk_resource_name(int pe, int port, char *str)
 {
 	char tmp[80];
 	char *name;
-	
-	sprintf(tmp, "PCI %s PE %d PORT %d", str, pe, port);
-	name = memblock_alloc(strlen(tmp) + 1, SMP_CACHE_BYTES);
-	if (!name)
-		panic("%s: Failed to allocate %zu bytes\n", __func__,
-		      strlen(tmp) + 1);
-	strcpy(name, tmp);
+	size_t sz;
+
+	sz = scnprintf(tmp, sizeof(tmp), "PCI %s PE %d PORT %d", str, pe, port);
+	sz += 1; /* NUL terminator */
+	name = memblock_alloc_or_panic(sz, SMP_CACHE_BYTES);
+	strscpy(name, tmp, sz);
 
 	return name;
 }
@@ -119,10 +119,7 @@ alloc_io7(unsigned int pe)
 		return NULL;
 	}
 
-	io7 = memblock_alloc(sizeof(*io7), SMP_CACHE_BYTES);
-	if (!io7)
-		panic("%s: Failed to allocate %zu bytes\n", __func__,
-		      sizeof(*io7));
+	io7 = memblock_alloc_or_panic(sizeof(*io7), SMP_CACHE_BYTES);
 	io7->pe = pe;
 	raw_spin_lock_init(&io7->irq_lock);
 
@@ -355,7 +352,7 @@ marvel_init_io7(struct io7 *io7)
 	}
 }
 
-void __init
+static void __init
 marvel_io7_present(gct6_node *node)
 {
 	int pe;
@@ -803,7 +800,7 @@ void __iomem *marvel_ioportmap (unsigned long addr)
 	return (void __iomem *)addr;
 }
 
-unsigned int
+u8
 marvel_ioread8(const void __iomem *xaddr)
 {
 	unsigned long addr = (unsigned long) xaddr;
@@ -864,7 +861,7 @@ marvel_agp_setup(alpha_agp_info *agp)
 	if (!alpha_agpgart_size)
 		return -ENOMEM;
 
-	aper = kmalloc(sizeof(*aper), GFP_KERNEL);
+	aper = kmalloc_obj(*aper);
 	if (aper == NULL) return -ENOMEM;
 
 	aper->arena = agp->hose->sg_pci;
@@ -1062,7 +1059,7 @@ marvel_agp_info(void)
 	/*
 	 * Allocate the info structure.
 	 */
-	agp = kmalloc(sizeof(*agp), GFP_KERNEL);
+	agp = kmalloc_obj(*agp);
 	if (!agp)
 		return NULL;
 

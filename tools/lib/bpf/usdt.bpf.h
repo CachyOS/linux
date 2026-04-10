@@ -4,9 +4,8 @@
 #define __USDT_BPF_H__
 
 #include <linux/errno.h>
-#include <bpf/bpf_helpers.h>
-#include <bpf/bpf_tracing.h>
-#include <bpf/bpf_core_read.h>
+#include "bpf_helpers.h"
+#include "bpf_tracing.h"
 
 /* Below types and maps are internal implementation details of libbpf's USDT
  * support and are subjects to change. Also, bpf_usdt_xxx() API helpers should
@@ -30,26 +29,37 @@
 #ifndef BPF_USDT_MAX_IP_CNT
 #define BPF_USDT_MAX_IP_CNT (4 * BPF_USDT_MAX_SPEC_CNT)
 #endif
-/* We use BPF CO-RE to detect support for BPF cookie from BPF side. This is
- * the only dependency on CO-RE, so if it's undesirable, user can override
- * BPF_USDT_HAS_BPF_COOKIE to specify whether to BPF cookie is supported or not.
- */
-#ifndef BPF_USDT_HAS_BPF_COOKIE
-#define BPF_USDT_HAS_BPF_COOKIE \
-	bpf_core_enum_value_exists(enum bpf_func_id___usdt, BPF_FUNC_get_attach_cookie___usdt)
-#endif
 
 enum __bpf_usdt_arg_type {
 	BPF_USDT_ARG_CONST,
 	BPF_USDT_ARG_REG,
 	BPF_USDT_ARG_REG_DEREF,
+	BPF_USDT_ARG_SIB,
 };
 
+/*
+ * This struct layout is designed specifically to be backwards/forward
+ * compatible between libbpf versions for ARG_CONST, ARG_REG, and
+ * ARG_REG_DEREF modes. ARG_SIB requires libbpf v1.7+.
+ */
 struct __bpf_usdt_arg_spec {
 	/* u64 scalar interpreted depending on arg_type, see below */
 	__u64 val_off;
-	/* arg location case, see bpf_udst_arg() for details */
-	enum __bpf_usdt_arg_type arg_type;
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	/* arg location case, see bpf_usdt_arg() for details */
+	enum __bpf_usdt_arg_type arg_type: 8;
+	/* index register offset within struct pt_regs */
+	__u16 idx_reg_off: 12;
+	/* scale factor for index register (1, 2, 4, or 8) */
+	__u16 scale_bitshift: 4;
+	/* reserved for future use, keeps reg_off offset stable */
+	__u8 __reserved: 8;
+#else
+	__u8 __reserved: 8;
+	__u16 idx_reg_off: 12;
+	__u16 scale_bitshift: 4;
+	enum __bpf_usdt_arg_type arg_type: 8;
+#endif
 	/* offset of referenced register within struct pt_regs */
 	short reg_off;
 	/* whether arg should be interpreted as signed value */
@@ -83,15 +93,12 @@ struct {
 	__type(value, __u32);
 } __bpf_usdt_ip_to_spec_id SEC(".maps") __weak;
 
-/* don't rely on user's BPF code to have latest definition of bpf_func_id */
-enum bpf_func_id___usdt {
-	BPF_FUNC_get_attach_cookie___usdt = 0xBAD, /* value doesn't matter */
-};
+extern const _Bool LINUX_HAS_BPF_COOKIE __kconfig;
 
 static __always_inline
 int __bpf_usdt_spec_id(struct pt_regs *ctx)
 {
-	if (!BPF_USDT_HAS_BPF_COOKIE) {
+	if (!LINUX_HAS_BPF_COOKIE) {
 		long ip = PT_REGS_IP(ctx);
 		int *spec_id_ptr;
 
@@ -120,6 +127,38 @@ int bpf_usdt_arg_cnt(struct pt_regs *ctx)
 	return spec->arg_cnt;
 }
 
+/* Returns the size in bytes of the #*arg_num* (zero-indexed) USDT argument.
+ * Returns negative error if argument is not found or arg_num is invalid.
+ */
+static __always_inline
+int bpf_usdt_arg_size(struct pt_regs *ctx, __u64 arg_num)
+{
+	struct __bpf_usdt_arg_spec *arg_spec;
+	struct __bpf_usdt_spec *spec;
+	int spec_id;
+
+	spec_id = __bpf_usdt_spec_id(ctx);
+	if (spec_id < 0)
+		return -ESRCH;
+
+	spec = bpf_map_lookup_elem(&__bpf_usdt_specs, &spec_id);
+	if (!spec)
+		return -ESRCH;
+
+	if (arg_num >= BPF_USDT_MAX_ARG_CNT)
+		return -ENOENT;
+	barrier_var(arg_num);
+	if (arg_num >= spec->arg_cnt)
+		return -ENOENT;
+
+	arg_spec = &spec->args[arg_num];
+
+	/* arg_spec->arg_bitshift = 64 - arg_sz * 8
+	 * so: arg_sz = (64 - arg_spec->arg_bitshift) / 8
+	 */
+	return (unsigned int)(64 - arg_spec->arg_bitshift) / 8;
+}
+
 /* Fetch USDT argument #*arg_num* (zero-indexed) and put its value into *res.
  * Returns 0 on success; negative error, otherwise.
  * On error *res is guaranteed to be set to zero.
@@ -129,7 +168,7 @@ int bpf_usdt_arg(struct pt_regs *ctx, __u64 arg_num, long *res)
 {
 	struct __bpf_usdt_spec *spec;
 	struct __bpf_usdt_arg_spec *arg_spec;
-	unsigned long val;
+	unsigned long val, idx;
 	int err, spec_id;
 
 	*res = 0;
@@ -142,7 +181,10 @@ int bpf_usdt_arg(struct pt_regs *ctx, __u64 arg_num, long *res)
 	if (!spec)
 		return -ESRCH;
 
-	if (arg_num >= BPF_USDT_MAX_ARG_CNT || arg_num >= spec->arg_cnt)
+	if (arg_num >= BPF_USDT_MAX_ARG_CNT)
+		return -ENOENT;
+	barrier_var(arg_num);
+	if (arg_num >= spec->arg_cnt)
 		return -ENOENT;
 
 	arg_spec = &spec->args[arg_num];
@@ -175,6 +217,27 @@ int bpf_usdt_arg(struct pt_regs *ctx, __u64 arg_num, long *res)
 		if (err)
 			return err;
 		err = bpf_probe_read_user(&val, sizeof(val), (void *)val + arg_spec->val_off);
+		if (err)
+			return err;
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+		val >>= arg_spec->arg_bitshift;
+#endif
+		break;
+	case BPF_USDT_ARG_SIB:
+		/* Arg is in memory addressed by SIB (Scale-Index-Base) mode
+		 * (e.g., "-1@-96(%rbp,%rax,8)" in USDT arg spec). We first
+		 * fetch the base register contents and the index register
+		 * contents from pt_regs. Then we calculate the final address
+		 * as base + (index * scale) + offset, and do a user-space
+		 * probe read to fetch the argument value.
+		 */
+		err = bpf_probe_read_kernel(&val, sizeof(val), (void *)ctx + arg_spec->reg_off);
+		if (err)
+			return err;
+		err = bpf_probe_read_kernel(&idx, sizeof(idx), (void *)ctx + arg_spec->idx_reg_off);
+		if (err)
+			return err;
+		err = bpf_probe_read_user(&val, sizeof(val), (void *)(val + (idx << arg_spec->scale_bitshift) + arg_spec->val_off));
 		if (err)
 			return err;
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -223,18 +286,18 @@ long bpf_usdt_cookie(struct pt_regs *ctx)
 
 /* we rely on ___bpf_apply() and ___bpf_narg() macros already defined in bpf_tracing.h */
 #define ___bpf_usdt_args0() ctx
-#define ___bpf_usdt_args1(x) ___bpf_usdt_args0(), ({ long _x; bpf_usdt_arg(ctx, 0, &_x); (void *)_x; })
-#define ___bpf_usdt_args2(x, args...) ___bpf_usdt_args1(args), ({ long _x; bpf_usdt_arg(ctx, 1, &_x); (void *)_x; })
-#define ___bpf_usdt_args3(x, args...) ___bpf_usdt_args2(args), ({ long _x; bpf_usdt_arg(ctx, 2, &_x); (void *)_x; })
-#define ___bpf_usdt_args4(x, args...) ___bpf_usdt_args3(args), ({ long _x; bpf_usdt_arg(ctx, 3, &_x); (void *)_x; })
-#define ___bpf_usdt_args5(x, args...) ___bpf_usdt_args4(args), ({ long _x; bpf_usdt_arg(ctx, 4, &_x); (void *)_x; })
-#define ___bpf_usdt_args6(x, args...) ___bpf_usdt_args5(args), ({ long _x; bpf_usdt_arg(ctx, 5, &_x); (void *)_x; })
-#define ___bpf_usdt_args7(x, args...) ___bpf_usdt_args6(args), ({ long _x; bpf_usdt_arg(ctx, 6, &_x); (void *)_x; })
-#define ___bpf_usdt_args8(x, args...) ___bpf_usdt_args7(args), ({ long _x; bpf_usdt_arg(ctx, 7, &_x); (void *)_x; })
-#define ___bpf_usdt_args9(x, args...) ___bpf_usdt_args8(args), ({ long _x; bpf_usdt_arg(ctx, 8, &_x); (void *)_x; })
-#define ___bpf_usdt_args10(x, args...) ___bpf_usdt_args9(args), ({ long _x; bpf_usdt_arg(ctx, 9, &_x); (void *)_x; })
-#define ___bpf_usdt_args11(x, args...) ___bpf_usdt_args10(args), ({ long _x; bpf_usdt_arg(ctx, 10, &_x); (void *)_x; })
-#define ___bpf_usdt_args12(x, args...) ___bpf_usdt_args11(args), ({ long _x; bpf_usdt_arg(ctx, 11, &_x); (void *)_x; })
+#define ___bpf_usdt_args1(x) ___bpf_usdt_args0(), ({ long _x; bpf_usdt_arg(ctx, 0, &_x); _x; })
+#define ___bpf_usdt_args2(x, args...) ___bpf_usdt_args1(args), ({ long _x; bpf_usdt_arg(ctx, 1, &_x); _x; })
+#define ___bpf_usdt_args3(x, args...) ___bpf_usdt_args2(args), ({ long _x; bpf_usdt_arg(ctx, 2, &_x); _x; })
+#define ___bpf_usdt_args4(x, args...) ___bpf_usdt_args3(args), ({ long _x; bpf_usdt_arg(ctx, 3, &_x); _x; })
+#define ___bpf_usdt_args5(x, args...) ___bpf_usdt_args4(args), ({ long _x; bpf_usdt_arg(ctx, 4, &_x); _x; })
+#define ___bpf_usdt_args6(x, args...) ___bpf_usdt_args5(args), ({ long _x; bpf_usdt_arg(ctx, 5, &_x); _x; })
+#define ___bpf_usdt_args7(x, args...) ___bpf_usdt_args6(args), ({ long _x; bpf_usdt_arg(ctx, 6, &_x); _x; })
+#define ___bpf_usdt_args8(x, args...) ___bpf_usdt_args7(args), ({ long _x; bpf_usdt_arg(ctx, 7, &_x); _x; })
+#define ___bpf_usdt_args9(x, args...) ___bpf_usdt_args8(args), ({ long _x; bpf_usdt_arg(ctx, 8, &_x); _x; })
+#define ___bpf_usdt_args10(x, args...) ___bpf_usdt_args9(args), ({ long _x; bpf_usdt_arg(ctx, 9, &_x); _x; })
+#define ___bpf_usdt_args11(x, args...) ___bpf_usdt_args10(args), ({ long _x; bpf_usdt_arg(ctx, 10, &_x); _x; })
+#define ___bpf_usdt_args12(x, args...) ___bpf_usdt_args11(args), ({ long _x; bpf_usdt_arg(ctx, 11, &_x); _x; })
 #define ___bpf_usdt_args(args...) ___bpf_apply(___bpf_usdt_args, ___bpf_narg(args))(args)
 
 /*
@@ -244,7 +307,7 @@ long bpf_usdt_cookie(struct pt_regs *ctx)
  */
 #define BPF_USDT(name, args...)						    \
 name(struct pt_regs *ctx);						    \
-static __attribute__((always_inline)) typeof(name(0))			    \
+static __always_inline typeof(name(0))					    \
 ____##name(struct pt_regs *ctx, ##args);				    \
 typeof(name(0)) name(struct pt_regs *ctx)				    \
 {									    \
@@ -253,7 +316,7 @@ typeof(name(0)) name(struct pt_regs *ctx)				    \
         return ____##name(___bpf_usdt_args(args));			    \
         _Pragma("GCC diagnostic pop")					    \
 }									    \
-static __attribute__((always_inline)) typeof(name(0))			    \
+static __always_inline typeof(name(0))					    \
 ____##name(struct pt_regs *ctx, ##args)
 
 #endif /* __USDT_BPF_H__ */

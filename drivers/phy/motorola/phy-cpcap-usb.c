@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Motorola CPCAP PMIC USB PHY driver
  * Copyright (C) 2017 Tony Lindgren <tony@atomide.com>
@@ -5,15 +6,6 @@
  * Some parts based on earlier Motorola Linux kernel tree code in
  * board-mapphone-usb.c and cpcap-usb-det.c:
  * Copyright (C) 2007 - 2011 Motorola, Inc.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 #include <linux/atomic.h>
@@ -23,7 +15,6 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_platform.h>
 #include <linux/iio/consumer.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
@@ -620,13 +611,7 @@ static int cpcap_usb_phy_probe(struct platform_device *pdev)
 	struct phy *generic_phy;
 	struct phy_provider *phy_provider;
 	struct usb_otg *otg;
-	const struct of_device_id *of_id;
 	int error;
-
-	of_id = of_match_device(of_match_ptr(cpcap_usb_phy_id_table),
-				&pdev->dev);
-	if (!of_id)
-		return -EINVAL;
 
 	ddata = devm_kzalloc(&pdev->dev, sizeof(*ddata), GFP_KERNEL);
 	if (!ddata)
@@ -700,7 +685,7 @@ out_reg_disable:
 	return error;
 }
 
-static int cpcap_usb_phy_remove(struct platform_device *pdev)
+static void cpcap_usb_phy_remove(struct platform_device *pdev)
 {
 	struct cpcap_phy_ddata *ddata = platform_get_drvdata(pdev);
 	int error;
@@ -715,8 +700,6 @@ static int cpcap_usb_phy_remove(struct platform_device *pdev)
 	usb_remove_phy(&ddata->phy);
 	cancel_delayed_work_sync(&ddata->detect_work);
 	regulator_disable(ddata->vusb);
-
-	return 0;
 }
 
 static struct platform_driver cpcap_usb_phy_driver = {

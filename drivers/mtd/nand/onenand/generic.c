@@ -37,7 +37,7 @@ static int generic_onenand_probe(struct platform_device *pdev)
 	unsigned long size = resource_size(res);
 	int err;
 
-	info = kzalloc(sizeof(struct onenand_info), GFP_KERNEL);
+	info = kzalloc_obj(struct onenand_info);
 	if (!info)
 		return -ENOMEM;
 
@@ -85,7 +85,7 @@ out_free_info:
 	return err;
 }
 
-static int generic_onenand_remove(struct platform_device *pdev)
+static void generic_onenand_remove(struct platform_device *pdev)
 {
 	struct onenand_info *info = platform_get_drvdata(pdev);
 	struct resource *res = pdev->resource;
@@ -97,8 +97,6 @@ static int generic_onenand_remove(struct platform_device *pdev)
 		iounmap(info->onenand.base);
 		kfree(info);
 	}
-
-	return 0;
 }
 
 static struct platform_driver generic_onenand_driver = {

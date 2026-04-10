@@ -23,6 +23,8 @@
 #ifndef __AMDGPU_DISPLAY_H__
 #define __AMDGPU_DISPLAY_H__
 
+#include <drm/drm_panic.h>
+
 #define amdgpu_display_vblank_get_counter(adev, crtc) (adev)->mode_info.funcs->vblank_get_counter((adev), (crtc))
 #define amdgpu_display_backlight_set_level(adev, e, l) (adev)->mode_info.funcs->backlight_set_level((e), (l))
 #define amdgpu_display_backlight_get_level(adev, e) (adev)->mode_info.funcs->backlight_get_level((e))
@@ -35,19 +37,29 @@
 #define amdgpu_display_add_encoder(adev, e, s, c) (adev)->mode_info.funcs->add_encoder((adev), (e), (s), (c))
 #define amdgpu_display_add_connector(adev, ci, sd, ct, ib, coi, h, r) (adev)->mode_info.funcs->add_connector((adev), (ci), (sd), (ct), (ib), (coi), (h), (r))
 
-int amdgpu_display_freesync_ioctl(struct drm_device *dev, void *data,
-				  struct drm_file *filp);
+void amdgpu_display_hotplug_work_func(struct work_struct *work);
 void amdgpu_display_update_priority(struct amdgpu_device *adev);
 uint32_t amdgpu_display_supported_domains(struct amdgpu_device *adev,
 					  uint64_t bo_flags);
 struct drm_framebuffer *
 amdgpu_display_user_framebuffer_create(struct drm_device *dev,
 				       struct drm_file *file_priv,
+				       const struct drm_format_info *info,
 				       const struct drm_mode_fb_cmd2 *mode_cmd);
 const struct drm_format_info *
 amdgpu_lookup_format_info(u32 format, uint64_t modifier);
 
 int amdgpu_display_suspend_helper(struct amdgpu_device *adev);
 int amdgpu_display_resume_helper(struct amdgpu_device *adev);
+
+int amdgpu_display_get_scanout_buffer(struct drm_plane *plane,
+				      struct drm_scanout_buffer *sb);
+
+#define ABM_SYSFS_CONTROL	-1
+#define ABM_LEVEL_OFF		0
+#define ABM_LEVEL_MIN		1
+#define ABM_LEVEL_BIAS_MIN	2
+#define ABM_LEVEL_BIAS_MAX	3
+#define ABM_LEVEL_MAX		4
 
 #endif

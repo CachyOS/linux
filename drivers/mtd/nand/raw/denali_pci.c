@@ -68,7 +68,7 @@ static int denali_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	denali->clk_rate = 50000000;		/* 50 MHz */
 	denali->clk_x_rate = 200000000;		/* 200 MHz */
 
-	ret = pci_request_regions(dev, DENALI_NAND_NAME);
+	ret = pcim_request_all_regions(dev, DENALI_NAND_NAME);
 	if (ret) {
 		dev_err(&dev->dev, "Spectra: Unable to request memory regions\n");
 		return ret;

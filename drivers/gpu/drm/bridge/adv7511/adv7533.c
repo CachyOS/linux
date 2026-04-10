@@ -24,7 +24,7 @@ static const struct reg_sequence adv7533_cec_fixed_registers[] = {
 	{ 0x05, 0xc8 },
 };
 
-static void adv7511_dsi_config_timing_gen(struct adv7511 *adv)
+void adv7533_dsi_config_timing_gen(struct adv7511 *adv)
 {
 	struct mipi_dsi_device *dsi = adv->dsi;
 	struct drm_display_mode *mode = &adv->curr_mode;
@@ -67,9 +67,6 @@ void adv7533_dsi_power_on(struct adv7511 *adv)
 {
 	struct mipi_dsi_device *dsi = adv->dsi;
 
-	if (adv->use_timing_gen)
-		adv7511_dsi_config_timing_gen(adv);
-
 	/* set number of dsi lanes */
 	regmap_write(adv->regmap_cec, 0x1c, dsi->lanes << 4);
 
@@ -100,26 +97,17 @@ void adv7533_dsi_power_off(struct adv7511 *adv)
 	regmap_write(adv->regmap_cec, 0x27, 0x0b);
 }
 
-void adv7533_mode_set(struct adv7511 *adv, const struct drm_display_mode *mode)
+enum drm_mode_status adv7533_mode_valid(struct adv7511 *adv,
+					const struct drm_display_mode *mode)
 {
 	struct mipi_dsi_device *dsi = adv->dsi;
-	int lanes, ret;
+	u8 bpp = mipi_dsi_pixel_format_to_bpp(dsi->format);
 
-	if (adv->num_dsi_lanes != 4)
-		return;
+	/* Check max clock for each lane */
+	if (mode->clock * bpp > adv->info->max_lane_freq_khz * adv->num_dsi_lanes)
+		return MODE_CLOCK_HIGH;
 
-	if (mode->clock > 80000)
-		lanes = 4;
-	else
-		lanes = 3;
-
-	if (lanes != dsi->lanes) {
-		mipi_dsi_detach(dsi);
-		dsi->lanes = lanes;
-		ret = mipi_dsi_attach(dsi);
-		if (ret)
-			dev_err(&dsi->dev, "failed to change host lanes\n");
-	}
+	return MODE_OK;
 }
 
 int adv7533_patch_registers(struct adv7511 *adv)
@@ -148,16 +136,14 @@ int adv7533_attach_dsi(struct adv7511 *adv)
 						 };
 
 	host = of_find_mipi_dsi_host_by_node(adv->host_node);
-	if (!host) {
-		dev_err(dev, "failed to find dsi host\n");
-		return -EPROBE_DEFER;
-	}
+	if (!host)
+		return dev_err_probe(dev, -EPROBE_DEFER,
+				     "failed to find dsi host\n");
 
 	dsi = devm_mipi_dsi_device_register_full(dev, host, &info);
-	if (IS_ERR(dsi)) {
-		dev_err(dev, "failed to create dsi device\n");
-		return PTR_ERR(dsi);
-	}
+	if (IS_ERR(dsi))
+		return dev_err_probe(dev, PTR_ERR(dsi),
+				     "failed to create dsi device\n");
 
 	adv->dsi = dsi;
 
@@ -167,10 +153,8 @@ int adv7533_attach_dsi(struct adv7511 *adv)
 			  MIPI_DSI_MODE_NO_EOT_PACKET | MIPI_DSI_MODE_VIDEO_HSE;
 
 	ret = devm_mipi_dsi_attach(dev, dsi);
-	if (ret < 0) {
-		dev_err(dev, "failed to attach dsi to host\n");
-		return ret;
-	}
+	if (ret < 0)
+		return dev_err_probe(dev, ret, "failed to attach dsi to host\n");
 
 	return 0;
 }
@@ -181,7 +165,7 @@ int adv7533_parse_dt(struct device_node *np, struct adv7511 *adv)
 
 	of_property_read_u32(np, "adi,dsi-lanes", &num_lanes);
 
-	if (num_lanes < 1 || num_lanes > 4)
+	if (num_lanes < 2 || num_lanes > 4)
 		return -EINVAL;
 
 	adv->num_dsi_lanes = num_lanes;
@@ -189,8 +173,6 @@ int adv7533_parse_dt(struct device_node *np, struct adv7511 *adv)
 	adv->host_node = of_graph_get_remote_node(np, 0, 0);
 	if (!adv->host_node)
 		return -ENODEV;
-
-	of_node_put(adv->host_node);
 
 	adv->use_timing_gen = !of_property_read_bool(np,
 						"adi,disable-timing-generator");

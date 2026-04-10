@@ -67,7 +67,7 @@ ipl_start:
 	jz	.Lagain1		# skip dataset header
 	larl	%r13,.L_eof
 	clc	0(3,%r4),0(%r13)	# if it is EOFx
-	jz	.Lagain1		# skip dateset trailer
+	jz	.Lagain1		# skip data set trailer
 	lgr	%r5,%r2
 	la	%r6,COMMAND_LINE-PARMAREA(%r12)
 	lgr	%r7,%r2
@@ -185,19 +185,19 @@ ipl_start:
 	larl	%r13,.Lcrash
 	lpsw	0(%r13)
 
-	.align	8
+	.balign	8
 .Lwaitpsw:
 	.quad	0x0202000180000000,.Lioint
 .Lnewpswmask:
 	.quad	0x0000000180000000
-	.align	8
+	.balign	8
 .Lorb:	.long	0x00000000,0x0080ff00,.Lccws
 .Lirb:	.long	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-	.align	8
+	.balign	8
 .Lcr6:	.quad	0x00000000ff000000
-	.align	8
+	.balign	8
 .Lcrash:.long	0x000a0000,0x00000000
-	.align	8
+	.balign	8
 .Lccws: .rept	19
 	.long	0x02600050,0x00000000
 	.endr
@@ -207,7 +207,7 @@ ipl_start:
 	.byte	0xc8,0xd6,0xd3,0xc4	# "change rdr all keep nohold"
 .L_eof: .long	0xc5d6c600	 /* C'EOF' */
 .L_hdr: .long	0xc8c4d900	 /* C'HDR' */
-	.align	8
+	.balign	8
 .Lcpuid:.fill	8,1,0
 
 #
@@ -254,8 +254,9 @@ SYM_CODE_START_LOCAL(startup_normal)
 	xc	0xf00(256),0xf00
 	larl	%r13,.Lctl
 	lctlg	%c0,%c15,0(%r13)	# load control registers
-	stcke	__LC_BOOT_CLOCK
-	mvc	__LC_LAST_UPDATE_CLOCK(8),__LC_BOOT_CLOCK+1
+	larl	%r13,tod_clock_base
+	stcke	0(%r13)
+	mvc	__LC_LAST_UPDATE_CLOCK(8),1(%r13)
 	larl	%r13,6f
 	spt	0(%r13)
 	mvc	__LC_LAST_UPDATE_TIMER(8),0(%r13)
@@ -265,7 +266,7 @@ SYM_CODE_START_LOCAL(startup_normal)
 	brasl	%r14,startup_kernel
 SYM_CODE_END(startup_normal)
 
-	.align	8
+	.balign	8
 6:	.long	0x7fffffff,0xffffffff
 .Lext_new_psw:
 	.quad	0x0002000180000000,0x1b0	# disabled wait
@@ -292,18 +293,12 @@ SYM_CODE_END(startup_normal)
 
 #include "head_kdump.S"
 
-#
-# This program check is active immediately after kernel start
-# and until early_pgm_check_handler is set in kernel/early.c
-# It simply saves general/control registers and psw in
-# the save area and does disabled wait with a faulty address.
-#
 SYM_CODE_START_LOCAL(startup_pgm_check_handler)
-	stmg	%r8,%r15,__LC_SAVE_AREA_SYNC
+	stmg	%r8,%r15,__LC_SAVE_AREA
 	la	%r8,4095
 	stctg	%c0,%c15,__LC_CREGS_SAVE_AREA-4095(%r8)
 	stmg	%r0,%r7,__LC_GPREGS_SAVE_AREA-4095(%r8)
-	mvc	__LC_GPREGS_SAVE_AREA-4095+64(64,%r8),__LC_SAVE_AREA_SYNC
+	mvc	__LC_GPREGS_SAVE_AREA-4095+64(64,%r8),__LC_SAVE_AREA
 	mvc	__LC_PSW_SAVE_AREA-4095(16,%r8),__LC_PGM_OLD_PSW
 	mvc	__LC_RETURN_PSW(16),__LC_PGM_OLD_PSW
 	ni	__LC_RETURN_PSW,0xfc	# remove IO and EX bits
@@ -311,8 +306,18 @@ SYM_CODE_START_LOCAL(startup_pgm_check_handler)
 	oi	__LC_RETURN_PSW+1,0x2	# set wait state bit
 	larl	%r9,.Lold_psw_disabled_wait
 	stg	%r9,__LC_PGM_NEW_PSW+8
-	larl	%r15,_dump_info_stack_end-STACK_FRAME_OVERHEAD
-	brasl	%r14,print_pgm_check_info
+	larl	%r15,_dump_info_stack_end-(STACK_FRAME_OVERHEAD+__PT_SIZE)
+	la	%r2,STACK_FRAME_OVERHEAD(%r15)
+	mvc	__PT_PSW(16,%r2),__LC_PSW_SAVE_AREA-4095(%r8)
+	mvc	__PT_R0(128,%r2),__LC_GPREGS_SAVE_AREA-4095(%r8)
+	mvc	__PT_LAST_BREAK(8,%r2),__LC_PGM_LAST_BREAK
+	mvc	__PT_INT_CODE(4,%r2),__LC_PGM_INT_CODE
+	brasl	%r14,do_pgm_check
+	larl	%r9,startup_pgm_check_handler
+	stg	%r9,__LC_PGM_NEW_PSW+8
+	mvc	__LC_RETURN_PSW(16),STACK_FRAME_OVERHEAD+__PT_PSW(%r15)
+	lmg	%r0,%r15,STACK_FRAME_OVERHEAD+__PT_R0(%r15)
+	lpswe	__LC_RETURN_PSW
 .Lold_psw_disabled_wait:
 	la	%r8,4095
 	lmg	%r0,%r15,__LC_GPREGS_SAVE_AREA-4095(%r8)

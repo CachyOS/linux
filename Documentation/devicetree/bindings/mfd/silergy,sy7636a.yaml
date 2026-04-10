@@ -32,6 +32,17 @@ properties:
       Specifying the power good GPIOs.
     maxItems: 1
 
+  enable-gpios:
+    maxItems: 1
+
+  vcom-en-gpios:
+    maxItems: 1
+
+  vin-supply:
+    description:
+      Supply for the whole chip. Some vendor kernels and devicetrees
+      declare this as a non-existing GPIO named "pwrall".
+
   regulators:
     type: object
 
@@ -42,6 +53,7 @@ properties:
       vcom:
         type: object
         $ref: /schemas/regulator/regulator.yaml#
+        unevaluatedProperties: false
         description:
           The regulator for the compenstation voltage. Enabling/disabling this
           enables/disables the entire device.

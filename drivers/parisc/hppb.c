@@ -54,7 +54,7 @@ static int __init hppb_probe(struct parisc_device *dev)
 	}
 
 	if(card->hpa) {
-		card->next = kzalloc(sizeof(struct hppb_card), GFP_KERNEL);
+		card->next = kzalloc_obj(struct hppb_card);
 		if(!card->next) {
 			printk(KERN_ERR "HP-PB: Unable to allocate memory.\n");
 			return 1;
@@ -96,9 +96,10 @@ static struct parisc_driver hppb_driver __refdata = {
 /**
  * hppb_init - HP-PB bus initialization procedure.
  *
- * Register this driver.   
+ * Register this driver.
  */
-void __init hppb_init(void)
+static int __init hppb_init(void)
 {
-        register_parisc_driver(&hppb_driver);
+        return register_parisc_driver(&hppb_driver);
 }
+arch_initcall(hppb_init);

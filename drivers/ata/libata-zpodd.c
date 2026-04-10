@@ -112,7 +112,7 @@ static bool zpready(struct ata_device *dev)
 	if (!ret || sense_key != NOT_READY)
 		return false;
 
-	sense_buf = dev->link->ap->sector_buf;
+	sense_buf = dev->sector_buf;
 	ret = atapi_eh_request_sense(dev, sense_buf, sense_key);
 	if (ret)
 		return false;
@@ -160,8 +160,7 @@ void zpodd_on_suspend(struct ata_device *dev)
 		return;
 	}
 
-	expires = zpodd->last_ready +
-		  msecs_to_jiffies(zpodd_poweroff_delay * 1000);
+	expires = zpodd->last_ready + secs_to_jiffies(zpodd_poweroff_delay);
 	if (time_before(jiffies, expires))
 		return;
 
@@ -275,7 +274,7 @@ void zpodd_init(struct ata_device *dev)
 	if (mech_type == ODD_MECH_TYPE_UNSUPPORTED)
 		return;
 
-	zpodd = kzalloc(sizeof(struct zpodd), GFP_KERNEL);
+	zpodd = kzalloc_obj(struct zpodd);
 	if (!zpodd)
 		return;
 

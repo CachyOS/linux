@@ -82,7 +82,7 @@
  *  - has multiple clocks.
  *  - has no usable clock due to jitter or packet loss (VoIP).
  * In this case the system's clock is used. The clock resolution depends on
- * the jiffie resolution.
+ * the jiffy resolution.
  *
  * If a member joins a conference:
  *
@@ -140,17 +140,6 @@
 /*#define CMX_DEBUG * massive read/write pointer output */
 /*#define CMX_DELAY_DEBUG * gives rx-buffer delay overview */
 /*#define CMX_TX_DEBUG * massive read/write on tx-buffer with content */
-
-static inline int
-count_list_member(struct list_head *head)
-{
-	int			cnt = 0;
-	struct list_head	*m;
-
-	list_for_each(m, head)
-		cnt++;
-	return cnt;
-}
 
 /*
  * debug cmx memory structure
@@ -237,7 +226,7 @@ dsp_cmx_add_conf_member(struct dsp *dsp, struct dsp_conf *conf)
 		return -EINVAL;
 	}
 
-	member = kzalloc(sizeof(struct dsp_conf_member), GFP_ATOMIC);
+	member = kzalloc_obj(struct dsp_conf_member, GFP_ATOMIC);
 	if (!member) {
 		printk(KERN_ERR "kzalloc struct dsp_conf_member failed\n");
 		return -ENOMEM;
@@ -316,7 +305,7 @@ static struct dsp_conf
 		return NULL;
 	}
 
-	conf = kzalloc(sizeof(struct dsp_conf), GFP_ATOMIC);
+	conf = kzalloc_obj(struct dsp_conf, GFP_ATOMIC);
 	if (!conf) {
 		printk(KERN_ERR "kzalloc struct dsp_conf failed\n");
 		return NULL;
@@ -1625,7 +1614,7 @@ static u16	dsp_count; /* last sample count */
 static int	dsp_count_valid; /* if we have last sample count */
 
 void
-dsp_cmx_send(void *arg)
+dsp_cmx_send(struct timer_list *arg)
 {
 	struct dsp_conf *conf;
 	struct dsp_conf_member *member;
@@ -1672,7 +1661,7 @@ dsp_cmx_send(void *arg)
 		mustmix = 0;
 		members = 0;
 		if (conf) {
-			members = count_list_member(&conf->mlist);
+			members = list_count_nodes(&conf->mlist);
 #ifdef CMX_CONF_DEBUG
 			if (conf->software && members > 1)
 #else
@@ -1695,7 +1684,7 @@ dsp_cmx_send(void *arg)
 	/* loop all members that require conference mixing */
 	list_for_each_entry(conf, &conf_ilist, list) {
 		/* count members and check hardware */
-		members = count_list_member(&conf->mlist);
+		members = list_count_nodes(&conf->mlist);
 #ifdef CMX_CONF_DEBUG
 		if (conf->software && members > 1) {
 #else

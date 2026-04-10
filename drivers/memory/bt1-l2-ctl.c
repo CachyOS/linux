@@ -222,7 +222,7 @@ static ssize_t l2_ctl_latency_show(struct device *dev,
 	if (ret)
 		return ret;
 
-	return scnprintf(buf, PAGE_SIZE, "%u\n", data);
+	return sysfs_emit(buf, "%u\n", data);
 }
 
 static ssize_t l2_ctl_latency_store(struct device *dev,
@@ -321,4 +321,3 @@ module_platform_driver(l2_ctl_driver);
 
 MODULE_AUTHOR("Serge Semin <Sergey.Semin@baikalelectronics.ru>");
 MODULE_DESCRIPTION("Baikal-T1 L2-cache driver");
-MODULE_LICENSE("GPL v2");

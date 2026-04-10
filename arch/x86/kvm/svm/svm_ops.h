@@ -8,7 +8,7 @@
 
 #define svm_asm(insn, clobber...)				\
 do {								\
-	asm_volatile_goto("1: " __stringify(insn) "\n\t"	\
+	asm goto("1: " __stringify(insn) "\n\t"	\
 			  _ASM_EXTABLE(1b, %l[fault])		\
 			  ::: clobber : fault);			\
 	return;							\
@@ -18,7 +18,7 @@ fault:								\
 
 #define svm_asm1(insn, op1, clobber...)				\
 do {								\
-	asm_volatile_goto("1: "  __stringify(insn) " %0\n\t"	\
+	asm goto("1: "  __stringify(insn) " %0\n\t"	\
 			  _ASM_EXTABLE(1b, %l[fault])		\
 			  :: op1 : clobber : fault);		\
 	return;							\
@@ -28,7 +28,7 @@ fault:								\
 
 #define svm_asm2(insn, op1, op2, clobber...)				\
 do {									\
-	asm_volatile_goto("1: "  __stringify(insn) " %1, %0\n\t"	\
+	asm goto("1: "  __stringify(insn) " %1, %0\n\t"	\
 			  _ASM_EXTABLE(1b, %l[fault])			\
 			  :: op1, op2 : clobber : fault);		\
 	return;								\
@@ -59,11 +59,6 @@ static inline void invlpga(unsigned long addr, u32 asid)
 static __always_inline void vmsave(unsigned long pa)
 {
 	svm_asm1(vmsave, "a" (pa), "memory");
-}
-
-static __always_inline void vmload(unsigned long pa)
-{
-	svm_asm1(vmload, "a" (pa), "memory");
 }
 
 #endif /* __KVM_X86_SVM_OPS_H */

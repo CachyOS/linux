@@ -21,6 +21,7 @@
 #define CHIP_ID_F81866 0x1010
 #define CHIP_ID_F81966 0x0215
 #define CHIP_ID_F81216AD 0x1602
+#define CHIP_ID_F81216E 0x1617
 #define CHIP_ID_F81216H 0x0501
 #define CHIP_ID_F81216 0x0802
 #define VENDOR_ID1 0x23
@@ -125,7 +126,7 @@ static int fintek_8250_enter_key(u16 base_port, u8 key)
 	if (!request_muxed_region(base_port, 2, "8250_fintek"))
 		return -EBUSY;
 
-	/* Force to deactive all SuperIO in this base_port */
+	/* Force to deactivate all SuperIO in this base_port */
 	outb(EXIT_KEY, base_port + ADDR_PORT);
 
 	outb(key, base_port + ADDR_PORT);
@@ -158,6 +159,7 @@ static int fintek_8250_check_id(struct fintek_8250 *pdata)
 	case CHIP_ID_F81866:
 	case CHIP_ID_F81966:
 	case CHIP_ID_F81216AD:
+	case CHIP_ID_F81216E:
 	case CHIP_ID_F81216H:
 	case CHIP_ID_F81216:
 		break;
@@ -181,6 +183,7 @@ static int fintek_8250_get_ldn_range(struct fintek_8250 *pdata, int *min,
 		return 0;
 
 	case CHIP_ID_F81216AD:
+	case CHIP_ID_F81216E:
 	case CHIP_ID_F81216H:
 	case CHIP_ID_F81216:
 		*min = F81216_LDN_LOW;
@@ -191,7 +194,7 @@ static int fintek_8250_get_ldn_range(struct fintek_8250 *pdata, int *min,
 	return -ENODEV;
 }
 
-static int fintek_8250_rs485_config(struct uart_port *port,
+static int fintek_8250_rs485_config(struct uart_port *port, struct ktermios *termios,
 			      struct serial_rs485 *rs485)
 {
 	uint8_t config = 0;
@@ -206,19 +209,7 @@ static int fintek_8250_rs485_config(struct uart_port *port,
 		if (!(rs485->flags & SER_RS485_RTS_ON_SEND) ==
 		    !(rs485->flags & SER_RS485_RTS_AFTER_SEND))
 			return -EINVAL;
-		memset(rs485->padding, 0, sizeof(rs485->padding));
 		config |= RS485_URA;
-	} else {
-		memset(rs485, 0, sizeof(*rs485));
-	}
-
-	rs485->flags &= SER_RS485_ENABLED | SER_RS485_RTS_ON_SEND |
-			SER_RS485_RTS_AFTER_SEND;
-
-	/* Only the first port supports delays */
-	if (pdata->index) {
-		rs485->delay_rts_before_send = 0;
-		rs485->delay_rts_after_send = 0;
 	}
 
 	if (rs485->delay_rts_before_send) {
@@ -241,8 +232,6 @@ static int fintek_8250_rs485_config(struct uart_port *port,
 	sio_write_reg(pdata, RS485, config);
 	fintek_8250_exit_key(pdata->base_port);
 
-	port->rs485 = *rs485;
-
 	return 0;
 }
 
@@ -264,6 +253,7 @@ static void fintek_8250_set_irq_mode(struct fintek_8250 *pdata, bool is_level)
 		break;
 
 	case CHIP_ID_F81216AD:
+	case CHIP_ID_F81216E:
 	case CHIP_ID_F81216H:
 	case CHIP_ID_F81216:
 		sio_write_mask_reg(pdata, FINTEK_IRQ_MODE, IRQ_SHARE,
@@ -277,7 +267,8 @@ static void fintek_8250_set_irq_mode(struct fintek_8250 *pdata, bool is_level)
 static void fintek_8250_set_max_fifo(struct fintek_8250 *pdata)
 {
 	switch (pdata->pid) {
-	case CHIP_ID_F81216H: /* 128Bytes FIFO */
+	case CHIP_ID_F81216E: /* 128Bytes FIFO */
+	case CHIP_ID_F81216H:
 	case CHIP_ID_F81966:
 	case CHIP_ID_F81866:
 		sio_write_mask_reg(pdata, FIFO_CTRL,
@@ -292,7 +283,7 @@ static void fintek_8250_set_max_fifo(struct fintek_8250 *pdata)
 
 static void fintek_8250_set_termios(struct uart_port *port,
 				    struct ktermios *termios,
-				    struct ktermios *old)
+				    const struct ktermios *old)
 {
 	struct fintek_8250 *pdata = port->private_data;
 	unsigned int baud = tty_termios_baud_rate(termios);
@@ -311,6 +302,7 @@ static void fintek_8250_set_termios(struct uart_port *port,
 		goto exit;
 
 	switch (pdata->pid) {
+	case CHIP_ID_F81216E:
 	case CHIP_ID_F81216H:
 		reg = RS485;
 		break;
@@ -360,6 +352,7 @@ static void fintek_8250_set_termios_handler(struct uart_8250_port *uart)
 	struct fintek_8250 *pdata = uart->port.private_data;
 
 	switch (pdata->pid) {
+	case CHIP_ID_F81216E:
 	case CHIP_ID_F81216H:
 	case CHIP_ID_F81966:
 	case CHIP_ID_F81866:
@@ -424,6 +417,17 @@ static int probe_setup_port(struct fintek_8250 *pdata,
 	return -ENODEV;
 }
 
+/* Only the first port supports delays */
+static const struct serial_rs485 fintek_8250_rs485_supported_port0 = {
+	.flags = SER_RS485_ENABLED | SER_RS485_RTS_ON_SEND | SER_RS485_RTS_AFTER_SEND,
+	.delay_rts_before_send = 1,
+	.delay_rts_after_send = 1,
+};
+
+static const struct serial_rs485 fintek_8250_rs485_supported = {
+	.flags = SER_RS485_ENABLED | SER_RS485_RTS_ON_SEND | SER_RS485_RTS_AFTER_SEND,
+};
+
 static void fintek_8250_set_rs485_handler(struct uart_8250_port *uart)
 {
 	struct fintek_8250 *pdata = uart->port.private_data;
@@ -435,6 +439,15 @@ static void fintek_8250_set_rs485_handler(struct uart_8250_port *uart)
 	case CHIP_ID_F81866:
 	case CHIP_ID_F81865:
 		uart->port.rs485_config = fintek_8250_rs485_config;
+		if (!pdata->index)
+			uart->port.rs485_supported = fintek_8250_rs485_supported_port0;
+		else
+			uart->port.rs485_supported = fintek_8250_rs485_supported;
+		break;
+
+	case CHIP_ID_F81216E: /* F81216E does not support RS485 delays */
+		uart->port.rs485_config = fintek_8250_rs485_config;
+		uart->port.rs485_supported = fintek_8250_rs485_supported;
 		break;
 
 	default: /* No RS485 Auto direction functional */

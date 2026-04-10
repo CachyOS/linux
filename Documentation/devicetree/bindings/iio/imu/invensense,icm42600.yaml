@@ -7,7 +7,7 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: InvenSense ICM-426xx Inertial Measurement Unit
 
 maintainers:
-  - Jean-Baptiste Maneyrol <jmaneyrol@invensense.com>
+  - Jean-Baptiste Maneyrol <jean-baptiste.maneyrol@tdk.com>
 
 description: |
   6-axis MotionTracking device that combines a 3-axis gyroscope and a 3-axis
@@ -31,12 +31,24 @@ properties:
       - invensense,icm42602
       - invensense,icm42605
       - invensense,icm42622
+      - invensense,icm42631
+      - invensense,icm42686
+      - invensense,icm42688
 
   reg:
     maxItems: 1
 
   interrupts:
-    maxItems: 1
+    minItems: 1
+    maxItems: 2
+
+  interrupt-names:
+    minItems: 1
+    maxItems: 2
+    items:
+      enum:
+        - INT1
+        - INT2
 
   drive-open-drain:
     type: boolean
@@ -47,7 +59,6 @@ properties:
   vddio-supply:
     description: Regulator that provides power to the bus
 
-  spi-max-frequency: true
   spi-cpha: true
   spi-cpol: true
 
@@ -56,41 +67,44 @@ required:
   - reg
   - interrupts
 
-additionalProperties: false
+allOf:
+  - $ref: /schemas/spi/spi-peripheral-props.yaml#
+
+unevaluatedProperties: false
 
 examples:
   - |
-    #include <dt-bindings/gpio/gpio.h>
     #include <dt-bindings/interrupt-controller/irq.h>
-    i2c0 {
+    i2c {
         #address-cells = <1>;
         #size-cells = <0>;
 
         icm42605@68 {
-          compatible = "invensense,icm42605";
-          reg = <0x68>;
-          interrupt-parent = <&gpio2>;
-          interrupts = <7 IRQ_TYPE_EDGE_FALLING>;
-          vdd-supply = <&vdd>;
-          vddio-supply = <&vddio>;
+            compatible = "invensense,icm42605";
+            reg = <0x68>;
+            interrupt-parent = <&gpio2>;
+            interrupts = <7 IRQ_TYPE_EDGE_FALLING>;
+            interrupt-names = "INT1";
+            vdd-supply = <&vdd>;
+            vddio-supply = <&vddio>;
         };
     };
   - |
-    #include <dt-bindings/gpio/gpio.h>
     #include <dt-bindings/interrupt-controller/irq.h>
-    spi0 {
+    spi {
         #address-cells = <1>;
         #size-cells = <0>;
 
         icm42602@0 {
-          compatible = "invensense,icm42602";
-          reg = <0>;
-          spi-max-frequency = <24000000>;
-          spi-cpha;
-          spi-cpol;
-          interrupt-parent = <&gpio1>;
-          interrupts = <2 IRQ_TYPE_EDGE_FALLING>;
-          vdd-supply = <&vdd>;
-          vddio-supply = <&vddio>;
+            compatible = "invensense,icm42602";
+            reg = <0>;
+            spi-max-frequency = <24000000>;
+            spi-cpha;
+            spi-cpol;
+            interrupt-parent = <&gpio1>;
+            interrupts = <2 IRQ_TYPE_EDGE_FALLING>;
+            interrupt-names = "INT1";
+            vdd-supply = <&vdd>;
+            vddio-supply = <&vddio>;
         };
     };

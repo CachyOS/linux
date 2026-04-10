@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * max8973-regulator.c -- Maxim max8973A
  *
@@ -6,20 +7,6 @@
  * Copyright (c) 2012, NVIDIA Corporation.
  *
  * Author: Laxman Dewangan <ldewangan@nvidia.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any kind,
- * whether express or implied; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
- * 02111-1307, USA
  */
 
 #include <linux/kernel.h>
@@ -33,9 +20,7 @@
 #include <linux/regulator/machine.h>
 #include <linux/regulator/max8973-regulator.h>
 #include <linux/regulator/of_regulator.h>
-#include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
-#include <linux/of_gpio.h>
 #include <linux/i2c.h>
 #include <linux/slab.h>
 #include <linux/regmap.h>
@@ -115,7 +100,7 @@ struct max8973_chip {
 	struct regulator_desc desc;
 	struct regmap *regmap;
 	bool enable_external_control;
-	int dvs_gpio;
+	struct gpio_desc *dvs_gpiod;
 	int lru_index[MAX8973_MAX_VOUT_REG];
 	int curr_vout_val[MAX8973_MAX_VOUT_REG];
 	int curr_vout_reg;
@@ -197,7 +182,7 @@ static int max8973_dcdc_set_voltage_sel(struct regulator_dev *rdev,
 	 * If gpios are available to select the VOUT register then least
 	 * recently used register for new configuration.
 	 */
-	if (gpio_is_valid(max->dvs_gpio))
+	if (max->dvs_gpiod)
 		found = find_voltage_set_register(max, vsel,
 					&vout_reg, &gpio_val);
 
@@ -214,8 +199,8 @@ static int max8973_dcdc_set_voltage_sel(struct regulator_dev *rdev,
 	}
 
 	/* Select proper VOUT register vio gpios */
-	if (gpio_is_valid(max->dvs_gpio)) {
-		gpio_set_value_cansleep(max->dvs_gpio, gpio_val & 0x1);
+	if (max->dvs_gpiod) {
+		gpiod_set_value_cansleep(max->dvs_gpiod, gpio_val & 0x1);
 		max->curr_gpio_val = gpio_val;
 	}
 	return 0;
@@ -447,9 +432,9 @@ static int max8973_init_dcdc(struct max8973_chip *max,
 	return ret;
 }
 
-static int max8973_thermal_read_temp(void *data, int *temp)
+static int max8973_thermal_read_temp(struct thermal_zone_device *tz, int *temp)
 {
-	struct max8973_chip *mchip = data;
+	struct max8973_chip *mchip = thermal_zone_device_priv(tz);
 	unsigned int val;
 	int ret;
 
@@ -478,22 +463,21 @@ static irqreturn_t max8973_thermal_irq(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static const struct thermal_zone_of_device_ops max77621_tz_ops = {
+static const struct thermal_zone_device_ops max77621_tz_ops = {
 	.get_temp = max8973_thermal_read_temp,
 };
 
 static int max8973_thermal_init(struct max8973_chip *mchip)
 {
 	struct thermal_zone_device *tzd;
-	struct irq_data *irq_data;
-	unsigned long irq_flags = 0;
+	unsigned long irq_flags;
 	int ret;
 
 	if (mchip->id != MAX77621)
 		return 0;
 
-	tzd = devm_thermal_zone_of_sensor_register(mchip->dev, 0, mchip,
-						   &max77621_tz_ops);
+	tzd = devm_thermal_of_zone_register(mchip->dev, 0, mchip,
+					    &max77621_tz_ops);
 	if (IS_ERR(tzd)) {
 		ret = PTR_ERR(tzd);
 		dev_err(mchip->dev, "Failed to register thermal sensor: %d\n",
@@ -504,9 +488,7 @@ static int max8973_thermal_init(struct max8973_chip *mchip)
 	if (mchip->irq <= 0)
 		return 0;
 
-	irq_data = irq_get_irq_data(mchip->irq);
-	if (irq_data)
-		irq_flags = irqd_get_trigger_type(irq_data);
+	irq_flags = irq_get_trigger_type(mchip->irq);
 
 	ret = devm_request_threaded_irq(mchip->dev, mchip->irq, NULL,
 					max8973_thermal_irq,
@@ -525,7 +507,7 @@ static const struct regmap_config max8973_regmap_config = {
 	.reg_bits		= 8,
 	.val_bits		= 8,
 	.max_register		= MAX8973_CHIPID2,
-	.cache_type		= REGCACHE_RBTREE,
+	.cache_type		= REGCACHE_MAPLE,
 };
 
 static struct max8973_regulator_platform_data *max8973_parse_dt(
@@ -544,7 +526,6 @@ static struct max8973_regulator_platform_data *max8973_parse_dt(
 
 	pdata->enable_ext_control = of_property_read_bool(np,
 						"maxim,externally-enable");
-	pdata->dvs_gpio = of_get_named_gpio(np, "maxim,dvs-gpio", 0);
 
 	ret = of_property_read_u32(np, "maxim,dvs-default-state", &pval);
 	if (!ret)
@@ -599,9 +580,9 @@ static const struct of_device_id of_max8973_match_tbl[] = {
 };
 MODULE_DEVICE_TABLE(of, of_max8973_match_tbl);
 
-static int max8973_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int max8973_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct max8973_regulator_platform_data *pdata;
 	struct regulator_init_data *ridata;
 	struct regulator_config config = { };
@@ -625,12 +606,16 @@ static int max8973_probe(struct i2c_client *client,
 		return -EIO;
 	}
 
-	if (pdata->dvs_gpio == -EPROBE_DEFER)
-		return -EPROBE_DEFER;
-
 	max = devm_kzalloc(&client->dev, sizeof(*max), GFP_KERNEL);
 	if (!max)
 		return -ENOMEM;
+
+	max->dvs_gpiod = devm_gpiod_get_optional(&client->dev, "maxim,dvs",
+			 (pdata->dvs_def_state) ? GPIOD_OUT_HIGH : GPIOD_OUT_LOW);
+	if (IS_ERR(max->dvs_gpiod))
+		return dev_err_probe(&client->dev, PTR_ERR(max->dvs_gpiod),
+				     "failed to obtain dvs gpio\n");
+	gpiod_set_consumer_name(max->dvs_gpiod, "max8973-dvs");
 
 	max->regmap = devm_regmap_init_i2c(client, &max8973_regmap_config);
 	if (IS_ERR(max->regmap)) {
@@ -676,7 +661,6 @@ static int max8973_probe(struct i2c_client *client,
 	max->desc.ramp_delay_table = max8973_buck_ramp_table;
 	max->desc.n_ramp_values = ARRAY_SIZE(max8973_buck_ramp_table);
 
-	max->dvs_gpio = (pdata->dvs_gpio) ? pdata->dvs_gpio : -EINVAL;
 	max->enable_external_control = pdata->enable_ext_control;
 	max->curr_gpio_val = pdata->dvs_def_state;
 	max->curr_vout_reg = MAX8973_VOUT + pdata->dvs_def_state;
@@ -684,20 +668,8 @@ static int max8973_probe(struct i2c_client *client,
 
 	max->lru_index[0] = max->curr_vout_reg;
 
-	if (gpio_is_valid(max->dvs_gpio)) {
-		int gpio_flags;
+	if (max->dvs_gpiod) {
 		int i;
-
-		gpio_flags = (pdata->dvs_def_state) ?
-				GPIOF_OUT_INIT_HIGH : GPIOF_OUT_INIT_LOW;
-		ret = devm_gpio_request_one(&client->dev, max->dvs_gpio,
-				gpio_flags, "max8973-dvs");
-		if (ret) {
-			dev_err(&client->dev,
-				"gpio_request for gpio %d failed, err = %d\n",
-				max->dvs_gpio, ret);
-			return ret;
-		}
 
 		/*
 		 * Initialize the lru index with vout_reg id
@@ -817,6 +789,7 @@ MODULE_DEVICE_TABLE(i2c, max8973_id);
 static struct i2c_driver max8973_i2c_driver = {
 	.driver = {
 		.name = "max8973",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = of_max8973_match_tbl,
 	},
 	.probe = max8973_probe,

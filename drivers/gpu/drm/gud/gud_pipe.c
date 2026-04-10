@@ -5,6 +5,7 @@
 
 #include <linux/lz4.h>
 #include <linux/usb.h>
+#include <linux/vmalloc.h>
 #include <linux/workqueue.h>
 
 #include <drm/drm_atomic.h>
@@ -15,26 +16,22 @@
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem.h>
+#include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_print.h>
 #include <drm/drm_rect.h>
-#include <drm/drm_simple_kms_helper.h>
 #include <drm/gud.h>
 
 #include "gud_internal.h"
 
 /*
- * Some userspace rendering loops runs all displays in the same loop.
+ * Some userspace rendering loops run all displays in the same loop.
  * This means that a fast display will have to wait for a slow one.
- * For this reason gud does flushing asynchronous by default.
- * The down side is that in e.g. a single display setup userspace thinks
- * the display is insanely fast since the driver reports back immediately
- * that the flush/pageflip is done. This wastes CPU and power.
- * Such users might want to set this module parameter to false.
+ * Such users might want to enable this module parameter.
  */
-static bool gud_async_flush = true;
+static bool gud_async_flush;
 module_param_named(async_flush, gud_async_flush, bool, 0644);
-MODULE_PARM_DESC(async_flush, "Enable asynchronous flushing [default=true]");
+MODULE_PARM_DESC(async_flush, "Enable asynchronous flushing [default=0]");
 
 /*
  * FIXME: The driver is probably broken on Big Endian machines.
@@ -53,16 +50,18 @@ static bool gud_is_big_endian(void)
 
 static size_t gud_xrgb8888_to_r124(u8 *dst, const struct drm_format_info *format,
 				   void *src, struct drm_framebuffer *fb,
-				   struct drm_rect *rect)
+				   struct drm_rect *rect,
+				   struct drm_format_conv_state *fmtcnv_state)
 {
 	unsigned int block_width = drm_format_info_block_width(format, 0);
 	unsigned int bits_per_pixel = 8 / block_width;
 	unsigned int x, y, width, height;
 	u8 pix, *pix8, *block = dst; /* Assign to silence compiler warning */
+	struct iosys_map dst_map, vmap;
 	size_t len;
 	void *buf;
 
-	WARN_ON_ONCE(format->char_per_block[0] != 1);
+	drm_WARN_ON_ONCE(fb->dev, format->char_per_block[0] != 1);
 
 	/* Start on a byte boundary */
 	rect->x1 = ALIGN_DOWN(rect->x1, block_width);
@@ -70,11 +69,13 @@ static size_t gud_xrgb8888_to_r124(u8 *dst, const struct drm_format_info *format
 	height = drm_rect_height(rect);
 	len = drm_format_info_min_pitch(format, 0, width) * height;
 
-	buf = kmalloc(width * height, GFP_KERNEL);
+	buf = kmalloc_array(height, width, GFP_KERNEL);
 	if (!buf)
 		return 0;
 
-	drm_fb_xrgb8888_to_gray8(buf, 0, src, fb, rect);
+	iosys_map_set_vaddr(&dst_map, buf);
+	iosys_map_set_vaddr(&vmap, src);
+	drm_fb_xrgb8888_to_gray8(&dst_map, NULL, &vmap, fb, rect, fmtcnv_state);
 	pix8 = buf;
 
 	for (y = 0; y < height; y++) {
@@ -105,7 +106,8 @@ static size_t gud_xrgb8888_to_color(u8 *dst, const struct drm_format_info *forma
 	unsigned int bits_per_pixel = 8 / block_width;
 	u8 r, g, b, pix, *block = dst; /* Assign to silence compiler warning */
 	unsigned int x, y, width;
-	u32 *pix32;
+	__le32 *sbuf32;
+	u32 pix32;
 	size_t len;
 
 	/* Start on a byte boundary */
@@ -114,8 +116,8 @@ static size_t gud_xrgb8888_to_color(u8 *dst, const struct drm_format_info *forma
 	len = drm_format_info_min_pitch(format, 0, width) * drm_rect_height(rect);
 
 	for (y = rect->y1; y < rect->y2; y++) {
-		pix32 = src + (y * fb->pitches[0]);
-		pix32 += rect->x1;
+		sbuf32 = src + (y * fb->pitches[0]);
+		sbuf32 += rect->x1;
 
 		for (x = 0; x < width; x++) {
 			unsigned int pixpos = x % block_width; /* within byte from the left */
@@ -126,16 +128,17 @@ static size_t gud_xrgb8888_to_color(u8 *dst, const struct drm_format_info *forma
 				*block = 0;
 			}
 
-			r = *pix32 >> 16;
-			g = *pix32 >> 8;
-			b = *pix32++;
+			pix32 = le32_to_cpu(*sbuf32++);
+			r = pix32 >> 16;
+			g = pix32 >> 8;
+			b = pix32;
 
 			switch (format->format) {
 			case GUD_DRM_FORMAT_XRGB1111:
 				pix = ((r >> 7) << 2) | ((g >> 7) << 1) | (b >> 7);
 				break;
 			default:
-				WARN_ON_ONCE(1);
+				drm_WARN_ON_ONCE(fb->dev, 1);
 				return len;
 			}
 
@@ -147,36 +150,28 @@ static size_t gud_xrgb8888_to_color(u8 *dst, const struct drm_format_info *forma
 }
 
 static int gud_prep_flush(struct gud_device *gdrm, struct drm_framebuffer *fb,
+			  const struct iosys_map *src, bool cached_reads,
 			  const struct drm_format_info *format, struct drm_rect *rect,
-			  struct gud_set_buffer_req *req)
+			  struct gud_set_buffer_req *req,
+			  struct drm_format_conv_state *fmtcnv_state)
 {
-	struct dma_buf_attachment *import_attach = fb->obj[0]->import_attach;
 	u8 compression = gdrm->compression;
-	struct iosys_map map[DRM_FORMAT_MAX_PLANES];
-	struct iosys_map map_data[DRM_FORMAT_MAX_PLANES];
+	struct iosys_map dst;
 	void *vaddr, *buf;
 	size_t pitch, len;
-	int ret = 0;
 
 	pitch = drm_format_info_min_pitch(format, 0, drm_rect_width(rect));
 	len = pitch * drm_rect_height(rect);
 	if (len > gdrm->bulk_len)
 		return -E2BIG;
 
-	ret = drm_gem_fb_vmap(fb, map, map_data);
-	if (ret)
-		return ret;
-
-	vaddr = map_data[0].vaddr;
-
-	ret = drm_gem_fb_begin_cpu_access(fb, DMA_FROM_DEVICE);
-	if (ret)
-		goto vunmap;
+	vaddr = src[0].vaddr;
 retry:
 	if (compression)
 		buf = gdrm->compress_buf;
 	else
 		buf = gdrm->bulk_buf;
+	iosys_map_set_vaddr(&dst, buf);
 
 	/*
 	 * Imported buffers are assumed to be write-combined and thus uncached
@@ -184,29 +179,33 @@ retry:
 	 */
 	if (format != fb->format) {
 		if (format->format == GUD_DRM_FORMAT_R1) {
-			len = gud_xrgb8888_to_r124(buf, format, vaddr, fb, rect);
-			if (!len) {
-				ret = -ENOMEM;
-				goto end_cpu_access;
-			}
+			len = gud_xrgb8888_to_r124(buf, format, vaddr, fb, rect, fmtcnv_state);
+			if (!len)
+				return -ENOMEM;
 		} else if (format->format == DRM_FORMAT_R8) {
-			drm_fb_xrgb8888_to_gray8(buf, 0, vaddr, fb, rect);
+			drm_fb_xrgb8888_to_gray8(&dst, NULL, src, fb, rect, fmtcnv_state);
 		} else if (format->format == DRM_FORMAT_RGB332) {
-			drm_fb_xrgb8888_to_rgb332(buf, 0, vaddr, fb, rect);
+			drm_fb_xrgb8888_to_rgb332(&dst, NULL, src, fb, rect, fmtcnv_state);
 		} else if (format->format == DRM_FORMAT_RGB565) {
-			drm_fb_xrgb8888_to_rgb565(buf, 0, vaddr, fb, rect, gud_is_big_endian());
+			if (gud_is_big_endian()) {
+				drm_fb_xrgb8888_to_rgb565be(&dst, NULL, src, fb, rect,
+							    fmtcnv_state);
+			} else {
+				drm_fb_xrgb8888_to_rgb565(&dst, NULL, src, fb, rect,
+							  fmtcnv_state);
+			}
 		} else if (format->format == DRM_FORMAT_RGB888) {
-			drm_fb_xrgb8888_to_rgb888(buf, 0, vaddr, fb, rect);
+			drm_fb_xrgb8888_to_rgb888(&dst, NULL, src, fb, rect, fmtcnv_state);
 		} else {
 			len = gud_xrgb8888_to_color(buf, format, vaddr, fb, rect);
 		}
 	} else if (gud_is_big_endian() && format->cpp[0] > 1) {
-		drm_fb_swab(buf, 0, vaddr, fb, rect, !import_attach);
-	} else if (compression && !import_attach && pitch == fb->pitches[0]) {
+		drm_fb_swab(&dst, NULL, src, fb, rect, cached_reads, fmtcnv_state);
+	} else if (compression && cached_reads && pitch == fb->pitches[0]) {
 		/* can compress directly from the framebuffer */
 		buf = vaddr + rect->y1 * pitch;
 	} else {
-		drm_fb_memcpy(buf, 0, vaddr, fb, rect);
+		drm_fb_memcpy(&dst, NULL, src, fb, rect);
 	}
 
 	memset(req, 0, sizeof(*req));
@@ -229,12 +228,7 @@ retry:
 		req->compressed_length = cpu_to_le32(complen);
 	}
 
-end_cpu_access:
-	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
-vunmap:
-	drm_gem_fb_vunmap(fb, map);
-
-	return ret;
+	return 0;
 }
 
 struct gud_usb_bulk_context {
@@ -244,7 +238,7 @@ struct gud_usb_bulk_context {
 
 static void gud_usb_bulk_timeout(struct timer_list *t)
 {
-	struct gud_usb_bulk_context *ctx = from_timer(ctx, t, timer);
+	struct gud_usb_bulk_context *ctx = timer_container_of(ctx, t, timer);
 
 	usb_sg_cancel(&ctx->sgr);
 }
@@ -264,20 +258,22 @@ static int gud_usb_bulk(struct gud_device *gdrm, size_t len)
 
 	usb_sg_wait(&ctx.sgr);
 
-	if (!del_timer_sync(&ctx.timer))
+	if (!timer_delete_sync(&ctx.timer))
 		ret = -ETIMEDOUT;
 	else if (ctx.sgr.status < 0)
 		ret = ctx.sgr.status;
 	else if (ctx.sgr.bytes != len)
 		ret = -EIO;
 
-	destroy_timer_on_stack(&ctx.timer);
+	timer_destroy_on_stack(&ctx.timer);
 
 	return ret;
 }
 
 static int gud_flush_rect(struct gud_device *gdrm, struct drm_framebuffer *fb,
-			  const struct drm_format_info *format, struct drm_rect *rect)
+			  const struct iosys_map *src, bool cached_reads,
+			  const struct drm_format_info *format, struct drm_rect *rect,
+			  struct drm_format_conv_state *fmtcnv_state)
 {
 	struct gud_set_buffer_req req;
 	size_t len, trlen;
@@ -285,7 +281,7 @@ static int gud_flush_rect(struct gud_device *gdrm, struct drm_framebuffer *fb,
 
 	drm_dbg(&gdrm->drm, "Flushing [FB:%d] " DRM_RECT_FMT "\n", fb->base.id, DRM_RECT_ARG(rect));
 
-	ret = gud_prep_flush(gdrm, fb, format, rect, &req);
+	ret = gud_prep_flush(gdrm, fb, src, cached_reads, format, rect, &req, fmtcnv_state);
 	if (ret)
 		return ret;
 
@@ -325,46 +321,54 @@ void gud_clear_damage(struct gud_device *gdrm)
 	gdrm->damage.y2 = 0;
 }
 
-static void gud_add_damage(struct gud_device *gdrm, struct drm_rect *damage)
+static void gud_flush_damage(struct gud_device *gdrm, struct drm_framebuffer *fb,
+			     const struct iosys_map *src, bool cached_reads,
+			     struct drm_rect *damage)
 {
-	gdrm->damage.x1 = min(gdrm->damage.x1, damage->x1);
-	gdrm->damage.y1 = min(gdrm->damage.y1, damage->y1);
-	gdrm->damage.x2 = max(gdrm->damage.x2, damage->x2);
-	gdrm->damage.y2 = max(gdrm->damage.y2, damage->y2);
-}
+	struct drm_format_conv_state fmtcnv_state = DRM_FORMAT_CONV_STATE_INIT;
+	const struct drm_format_info *format;
+	unsigned int i, lines;
+	size_t pitch;
+	int ret;
 
-static void gud_retry_failed_flush(struct gud_device *gdrm, struct drm_framebuffer *fb,
-				   struct drm_rect *damage)
-{
-	/*
-	 * pipe_update waits for the worker when the display mode is going to change.
-	 * This ensures that the width and height is still the same making it safe to
-	 * add back the damage.
-	 */
+	format = fb->format;
+	if (format->format == DRM_FORMAT_XRGB8888 && gdrm->xrgb8888_emulation_format)
+		format = gdrm->xrgb8888_emulation_format;
 
-	mutex_lock(&gdrm->damage_lock);
-	if (!gdrm->fb) {
-		drm_framebuffer_get(fb);
-		gdrm->fb = fb;
+	/* Split update if it's too big */
+	pitch = drm_format_info_min_pitch(format, 0, drm_rect_width(damage));
+	lines = drm_rect_height(damage);
+
+	if (gdrm->bulk_len < lines * pitch)
+		lines = gdrm->bulk_len / pitch;
+
+	for (i = 0; i < DIV_ROUND_UP(drm_rect_height(damage), lines); i++) {
+		struct drm_rect rect = *damage;
+
+		rect.y1 += i * lines;
+		rect.y2 = min_t(u32, rect.y1 + lines, damage->y2);
+
+		ret = gud_flush_rect(gdrm, fb, src, cached_reads, format, &rect, &fmtcnv_state);
+		if (ret) {
+			if (ret != -ENODEV && ret != -ECONNRESET &&
+			    ret != -ESHUTDOWN && ret != -EPROTO)
+				dev_err_ratelimited(fb->dev->dev,
+						    "Failed to flush framebuffer: error=%d\n", ret);
+			gdrm->prev_flush_failed = true;
+			break;
+		}
 	}
-	gud_add_damage(gdrm, damage);
-	mutex_unlock(&gdrm->damage_lock);
 
-	/* Retry only once to avoid a possible storm in case of continues errors. */
-	if (!gdrm->prev_flush_failed)
-		queue_work(system_long_wq, &gdrm->work);
-	gdrm->prev_flush_failed = true;
+	drm_format_conv_state_release(&fmtcnv_state);
 }
 
 void gud_flush_work(struct work_struct *work)
 {
 	struct gud_device *gdrm = container_of(work, struct gud_device, work);
-	const struct drm_format_info *format;
+	struct iosys_map shadow_map;
 	struct drm_framebuffer *fb;
 	struct drm_rect damage;
-	unsigned int i, lines;
-	int idx, ret = 0;
-	size_t pitch;
+	int idx;
 
 	if (!drm_dev_enter(&gdrm->drm, &idx))
 		return;
@@ -372,6 +376,7 @@ void gud_flush_work(struct work_struct *work)
 	mutex_lock(&gdrm->damage_lock);
 	fb = gdrm->fb;
 	gdrm->fb = NULL;
+	iosys_map_set_vaddr(&shadow_map, gdrm->shadow_buf);
 	damage = gdrm->damage;
 	gud_clear_damage(gdrm);
 	mutex_unlock(&gdrm->damage_lock);
@@ -379,51 +384,32 @@ void gud_flush_work(struct work_struct *work)
 	if (!fb)
 		goto out;
 
-	format = fb->format;
-	if (format->format == DRM_FORMAT_XRGB8888 && gdrm->xrgb8888_emulation_format)
-		format = gdrm->xrgb8888_emulation_format;
-
-	/* Split update if it's too big */
-	pitch = drm_format_info_min_pitch(format, 0, drm_rect_width(&damage));
-	lines = drm_rect_height(&damage);
-
-	if (gdrm->bulk_len < lines * pitch)
-		lines = gdrm->bulk_len / pitch;
-
-	for (i = 0; i < DIV_ROUND_UP(drm_rect_height(&damage), lines); i++) {
-		struct drm_rect rect = damage;
-
-		rect.y1 += i * lines;
-		rect.y2 = min_t(u32, rect.y1 + lines, damage.y2);
-
-		ret = gud_flush_rect(gdrm, fb, format, &rect);
-		if (ret) {
-			if (ret != -ENODEV && ret != -ECONNRESET &&
-			    ret != -ESHUTDOWN && ret != -EPROTO) {
-				bool prev_flush_failed = gdrm->prev_flush_failed;
-
-				gud_retry_failed_flush(gdrm, fb, &damage);
-				if (!prev_flush_failed)
-					dev_err_ratelimited(fb->dev->dev,
-							    "Failed to flush framebuffer: error=%d\n", ret);
-			}
-			break;
-		}
-
-		gdrm->prev_flush_failed = false;
-	}
+	gud_flush_damage(gdrm, fb, &shadow_map, true, &damage);
 
 	drm_framebuffer_put(fb);
 out:
 	drm_dev_exit(idx);
 }
 
-static void gud_fb_queue_damage(struct gud_device *gdrm, struct drm_framebuffer *fb,
-				struct drm_rect *damage)
+static int gud_fb_queue_damage(struct gud_device *gdrm, struct drm_framebuffer *fb,
+			       const struct iosys_map *src, struct drm_rect *damage)
 {
 	struct drm_framebuffer *old_fb = NULL;
+	struct iosys_map shadow_map;
 
 	mutex_lock(&gdrm->damage_lock);
+
+	if (!gdrm->shadow_buf) {
+		gdrm->shadow_buf = vcalloc(fb->pitches[0], fb->height);
+		if (!gdrm->shadow_buf) {
+			mutex_unlock(&gdrm->damage_lock);
+			return -ENOMEM;
+		}
+	}
+
+	iosys_map_set_vaddr(&shadow_map, gdrm->shadow_buf);
+	iosys_map_incr(&shadow_map, drm_fb_clip_offset(fb->pitches[0], fb->format, damage));
+	drm_fb_memcpy(&shadow_map, fb->pitches, src, fb, damage);
 
 	if (fb != gdrm->fb) {
 		old_fb = gdrm->fb;
@@ -431,7 +417,10 @@ static void gud_fb_queue_damage(struct gud_device *gdrm, struct drm_framebuffer 
 		gdrm->fb = fb;
 	}
 
-	gud_add_damage(gdrm, damage);
+	gdrm->damage.x1 = min(gdrm->damage.x1, damage->x1);
+	gdrm->damage.y1 = min(gdrm->damage.y1, damage->y1);
+	gdrm->damage.x2 = max(gdrm->damage.x2, damage->x2);
+	gdrm->damage.y2 = max(gdrm->damage.y2, damage->y2);
 
 	mutex_unlock(&gdrm->damage_lock);
 
@@ -439,40 +428,74 @@ static void gud_fb_queue_damage(struct gud_device *gdrm, struct drm_framebuffer 
 
 	if (old_fb)
 		drm_framebuffer_put(old_fb);
+
+	return 0;
 }
 
-int gud_pipe_check(struct drm_simple_display_pipe *pipe,
-		   struct drm_plane_state *new_plane_state,
-		   struct drm_crtc_state *new_crtc_state)
+static void gud_fb_handle_damage(struct gud_device *gdrm, struct drm_framebuffer *fb,
+				 const struct iosys_map *src, struct drm_rect *damage)
 {
-	struct gud_device *gdrm = to_gud_device(pipe->crtc.dev);
-	struct drm_plane_state *old_plane_state = pipe->plane.state;
-	const struct drm_display_mode *mode = &new_crtc_state->mode;
-	struct drm_atomic_state *state = new_plane_state->state;
+	int ret;
+
+	if (gdrm->flags & GUD_DISPLAY_FLAG_FULL_UPDATE)
+		drm_rect_init(damage, 0, 0, fb->width, fb->height);
+
+	if (gud_async_flush) {
+		ret = gud_fb_queue_damage(gdrm, fb, src, damage);
+		if (ret != -ENOMEM)
+			return;
+	}
+
+	/* Imported buffers are assumed to be WriteCombined with uncached reads */
+	gud_flush_damage(gdrm, fb, src, !fb->obj[0]->import_attach, damage);
+}
+
+int gud_plane_atomic_check(struct drm_plane *plane,
+			   struct drm_atomic_state *state)
+{
+	struct gud_device *gdrm = to_gud_device(plane->dev);
+	struct drm_plane_state *old_plane_state = drm_atomic_get_old_plane_state(state, plane);
+	struct drm_plane_state *new_plane_state = drm_atomic_get_new_plane_state(state, plane);
+	struct drm_crtc *crtc = new_plane_state->crtc;
+	struct drm_crtc_state *crtc_state = NULL;
+	const struct drm_display_mode *mode;
 	struct drm_framebuffer *old_fb = old_plane_state->fb;
 	struct drm_connector_state *connector_state = NULL;
 	struct drm_framebuffer *fb = new_plane_state->fb;
-	const struct drm_format_info *format = fb->format;
+	const struct drm_format_info *format;
 	struct drm_connector *connector;
 	unsigned int i, num_properties;
 	struct gud_state_req *req;
 	int idx, ret;
 	size_t len;
 
-	if (WARN_ON_ONCE(!fb))
-		return -EINVAL;
+	if (crtc)
+		crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
+
+	ret = drm_atomic_helper_check_plane_state(new_plane_state, crtc_state,
+						  DRM_PLANE_NO_SCALING,
+						  DRM_PLANE_NO_SCALING,
+						  false, false);
+	if (ret)
+		return ret;
+
+	if (!new_plane_state->visible)
+		return 0;
 
 	if (old_plane_state->rotation != new_plane_state->rotation)
-		new_crtc_state->mode_changed = true;
+		crtc_state->mode_changed = true;
+
+	mode = &crtc_state->mode;
+	format = fb->format;
 
 	if (old_fb && old_fb->format != format)
-		new_crtc_state->mode_changed = true;
+		crtc_state->mode_changed = true;
 
-	if (!new_crtc_state->mode_changed && !new_crtc_state->connectors_changed)
+	if (!crtc_state->mode_changed && !crtc_state->connectors_changed)
 		return 0;
 
 	/* Only one connector is supported */
-	if (hweight32(new_crtc_state->connector_mask) != 1)
+	if (hweight32(crtc_state->connector_mask) != 1)
 		return -EINVAL;
 
 	if (format->format == DRM_FORMAT_XRGB8888 && gdrm->xrgb8888_emulation_format)
@@ -490,7 +513,7 @@ int gud_pipe_check(struct drm_simple_display_pipe *pipe,
 	if (!connector_state) {
 		struct drm_connector_list_iter conn_iter;
 
-		drm_connector_list_iter_begin(pipe->crtc.dev, &conn_iter);
+		drm_connector_list_iter_begin(plane->dev, &conn_iter);
 		drm_for_each_connector_iter(connector, &conn_iter) {
 			if (connector->state->crtc) {
 				connector_state = connector->state;
@@ -500,11 +523,11 @@ int gud_pipe_check(struct drm_simple_display_pipe *pipe,
 		drm_connector_list_iter_end(&conn_iter);
 	}
 
-	if (WARN_ON_ONCE(!connector_state))
+	if (drm_WARN_ON_ONCE(plane->dev, !connector_state))
 		return -ENOENT;
 
 	len = struct_size(req, properties,
-			  GUD_PROPERTIES_MAX_NUM + GUD_CONNECTOR_PROPERTIES_MAX_NUM);
+			  size_add(GUD_PROPERTIES_MAX_NUM, GUD_CONNECTOR_PROPERTIES_MAX_NUM));
 	req = kzalloc(len, GFP_KERNEL);
 	if (!req)
 		return -ENOMEM;
@@ -512,7 +535,7 @@ int gud_pipe_check(struct drm_simple_display_pipe *pipe,
 	gud_from_display_mode(&req->mode, mode);
 
 	req->format = gud_from_fourcc(format->format);
-	if (WARN_ON_ONCE(!req->format)) {
+	if (drm_WARN_ON_ONCE(plane->dev, !req->format)) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -534,7 +557,7 @@ int gud_pipe_check(struct drm_simple_display_pipe *pipe,
 			val = new_plane_state->rotation;
 			break;
 		default:
-			WARN_ON_ONCE(1);
+			drm_WARN_ON_ONCE(plane->dev, 1);
 			ret = -EINVAL;
 			goto out;
 		}
@@ -557,18 +580,54 @@ out:
 	return ret;
 }
 
-void gud_pipe_update(struct drm_simple_display_pipe *pipe,
-		     struct drm_plane_state *old_state)
+void gud_crtc_atomic_enable(struct drm_crtc *crtc,
+			    struct drm_atomic_state *state)
 {
-	struct drm_device *drm = pipe->crtc.dev;
+	struct drm_device *drm = crtc->dev;
 	struct gud_device *gdrm = to_gud_device(drm);
-	struct drm_plane_state *state = pipe->plane.state;
-	struct drm_framebuffer *fb = state->fb;
-	struct drm_crtc *crtc = &pipe->crtc;
-	struct drm_rect damage;
 	int idx;
 
-	if (crtc->state->mode_changed || !crtc->state->enable) {
+	if (!drm_dev_enter(drm, &idx))
+		return;
+
+	gud_usb_set_u8(gdrm, GUD_REQ_SET_CONTROLLER_ENABLE, 1);
+	gud_usb_set(gdrm, GUD_REQ_SET_STATE_COMMIT, 0, NULL, 0);
+	gud_usb_set_u8(gdrm, GUD_REQ_SET_DISPLAY_ENABLE, 1);
+
+	drm_dev_exit(idx);
+}
+
+void gud_crtc_atomic_disable(struct drm_crtc *crtc,
+			     struct drm_atomic_state *state)
+{
+	struct drm_device *drm = crtc->dev;
+	struct gud_device *gdrm = to_gud_device(drm);
+	int idx;
+
+	if (!drm_dev_enter(drm, &idx))
+		return;
+
+	gud_usb_set_u8(gdrm, GUD_REQ_SET_DISPLAY_ENABLE, 0);
+	gud_usb_set_u8(gdrm, GUD_REQ_SET_CONTROLLER_ENABLE, 0);
+
+	drm_dev_exit(idx);
+}
+
+void gud_plane_atomic_update(struct drm_plane *plane,
+			     struct drm_atomic_state *atomic_state)
+{
+	struct drm_device *drm = plane->dev;
+	struct gud_device *gdrm = to_gud_device(drm);
+	struct drm_plane_state *old_state = drm_atomic_get_old_plane_state(atomic_state, plane);
+	struct drm_plane_state *new_state = drm_atomic_get_new_plane_state(atomic_state, plane);
+	struct drm_shadow_plane_state *shadow_plane_state = to_drm_shadow_plane_state(new_state);
+	struct drm_framebuffer *fb = new_state->fb;
+	struct drm_crtc *crtc = new_state->crtc;
+	struct drm_rect damage;
+	struct drm_atomic_helper_damage_iter iter;
+	int ret, idx;
+
+	if (!crtc || crtc->state->mode_changed || !crtc->state->enable) {
 		cancel_work_sync(&gdrm->work);
 		mutex_lock(&gdrm->damage_lock);
 		if (gdrm->fb) {
@@ -576,31 +635,24 @@ void gud_pipe_update(struct drm_simple_display_pipe *pipe,
 			gdrm->fb = NULL;
 		}
 		gud_clear_damage(gdrm);
+		vfree(gdrm->shadow_buf);
+		gdrm->shadow_buf = NULL;
 		mutex_unlock(&gdrm->damage_lock);
 	}
 
-	if (!drm_dev_enter(drm, &idx))
+	if (!crtc || !drm_dev_enter(drm, &idx))
 		return;
 
-	if (!old_state->fb)
-		gud_usb_set_u8(gdrm, GUD_REQ_SET_CONTROLLER_ENABLE, 1);
+	ret = drm_gem_fb_begin_cpu_access(fb, DMA_FROM_DEVICE);
+	if (ret)
+		goto out;
 
-	if (fb && (crtc->state->mode_changed || crtc->state->connectors_changed))
-		gud_usb_set(gdrm, GUD_REQ_SET_STATE_COMMIT, 0, NULL, 0);
+	drm_atomic_helper_damage_iter_init(&iter, old_state, new_state);
+	drm_atomic_for_each_plane_damage(&iter, &damage)
+		gud_fb_handle_damage(gdrm, fb, &shadow_plane_state->data[0], &damage);
 
-	if (crtc->state->active_changed)
-		gud_usb_set_u8(gdrm, GUD_REQ_SET_DISPLAY_ENABLE, crtc->state->active);
+	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
 
-	if (drm_atomic_helper_damage_merged(old_state, state, &damage)) {
-		if (gdrm->flags & GUD_DISPLAY_FLAG_FULL_UPDATE)
-			drm_rect_init(&damage, 0, 0, fb->width, fb->height);
-		gud_fb_queue_damage(gdrm, fb, &damage);
-		if (!gud_async_flush)
-			flush_work(&gdrm->work);
-	}
-
-	if (!crtc->state->enable)
-		gud_usb_set_u8(gdrm, GUD_REQ_SET_CONTROLLER_ENABLE, 0);
-
+out:
 	drm_dev_exit(idx);
 }

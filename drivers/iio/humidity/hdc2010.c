@@ -169,13 +169,12 @@ static int hdc2010_read_raw(struct iio_dev *indio_dev,
 			*val = hdc2010_get_heater_status(data);
 			return IIO_VAL_INT;
 		}
-		ret = iio_device_claim_direct_mode(indio_dev);
-		if (ret)
-			return ret;
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
 		mutex_lock(&data->lock);
 		ret = hdc2010_get_prim_measurement_word(data, chan);
 		mutex_unlock(&data->lock);
-		iio_device_release_direct_mode(indio_dev);
+		iio_device_release_direct(indio_dev);
 		if (ret < 0)
 			return ret;
 		*val = ret;
@@ -184,13 +183,12 @@ static int hdc2010_read_raw(struct iio_dev *indio_dev,
 	case IIO_CHAN_INFO_PEAK: {
 		int ret;
 
-		ret = iio_device_claim_direct_mode(indio_dev);
-		if (ret)
-			return ret;
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
 		mutex_lock(&data->lock);
 		ret = hdc2010_get_peak_measurement_byte(data, chan);
 		mutex_unlock(&data->lock);
-		iio_device_release_direct_mode(indio_dev);
+		iio_device_release_direct(indio_dev);
 		if (ret < 0)
 			return ret;
 		/* Scaling up the value so we can use same offset as RAW */
@@ -251,8 +249,7 @@ static const struct iio_info hdc2010_info = {
 	.attrs = &hdc2010_attribute_group,
 };
 
-static int hdc2010_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int hdc2010_probe(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev;
 	struct hdc2010_data *data;
@@ -308,7 +305,7 @@ static int hdc2010_probe(struct i2c_client *client,
 	return iio_device_register(indio_dev);
 }
 
-static int hdc2010_remove(struct i2c_client *client)
+static void hdc2010_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct hdc2010_data *data = iio_priv(indio_dev);
@@ -318,8 +315,6 @@ static int hdc2010_remove(struct i2c_client *client)
 	/* Disable Automatic Measurement Mode */
 	if (hdc2010_update_drdy_config(data, HDC2010_AMM, 0))
 		dev_warn(&client->dev, "Unable to restore default AMM\n");
-
-	return 0;
 }
 
 static const struct i2c_device_id hdc2010_id[] = {

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause */
+/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
  * Copyright(c) 2015 - 2018 Intel Corporation.
  */
@@ -390,9 +390,6 @@ void hfi1_modify_qp(struct rvt_qp *qp, struct ib_qp_attr *attr,
 void hfi1_restart_rc(struct rvt_qp *qp, u32 psn, int wait);
 int hfi1_setup_wqe(struct rvt_qp *qp, struct rvt_swqe *wqe,
 		   bool *call_send);
-
-extern const u32 rc_only_opcode;
-extern const u32 uc_only_opcode;
 
 int hfi1_ruc_check_hdr(struct hfi1_ibport *ibp, struct hfi1_packet *packet);
 

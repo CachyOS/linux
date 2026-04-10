@@ -729,8 +729,7 @@ static int xgmac_dma_desc_rings_init(struct net_device *dev)
 
 	netdev_dbg(priv->dev, "mtu [%d] bfsize [%d]\n", dev->mtu, bfsize);
 
-	priv->rx_skbuff = kcalloc(DMA_RX_RING_SZ, sizeof(struct sk_buff *),
-				  GFP_KERNEL);
+	priv->rx_skbuff = kzalloc_objs(struct sk_buff *, DMA_RX_RING_SZ);
 	if (!priv->rx_skbuff)
 		return -ENOMEM;
 
@@ -742,8 +741,7 @@ static int xgmac_dma_desc_rings_init(struct net_device *dev)
 	if (!priv->dma_rx)
 		goto err_dma_rx;
 
-	priv->tx_skbuff = kcalloc(DMA_TX_RING_SZ, sizeof(struct sk_buff *),
-				  GFP_KERNEL);
+	priv->tx_skbuff = kzalloc_objs(struct sk_buff *, DMA_TX_RING_SZ);
 	if (!priv->tx_skbuff)
 		goto err_tx_skb;
 
@@ -1358,7 +1356,7 @@ static int xgmac_change_mtu(struct net_device *dev, int new_mtu)
 
 	/* Bring interface down, change mtu and bring interface back up */
 	xgmac_stop(dev);
-	dev->mtu = new_mtu;
+	WRITE_ONCE(dev->mtu, new_mtu);
 	return xgmac_open(dev);
 }
 
@@ -1792,7 +1790,7 @@ static int xgmac_probe(struct platform_device *pdev)
 		netdev_warn(ndev, "MAC address %pM not valid",
 			 ndev->dev_addr);
 
-	netif_napi_add(ndev, &priv->napi, xgmac_poll, 64);
+	netif_napi_add(ndev, &priv->napi, xgmac_poll);
 	ret = register_netdev(ndev);
 	if (ret)
 		goto err_reg;
@@ -1820,7 +1818,7 @@ err_alloc:
  * changes the link status, releases the DMA descriptor rings,
  * unregisters the MDIO bus and unmaps the allocated memory.
  */
-static int xgmac_remove(struct platform_device *pdev)
+static void xgmac_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct xgmac_priv *priv = netdev_priv(ndev);
@@ -1840,8 +1838,6 @@ static int xgmac_remove(struct platform_device *pdev)
 	release_mem_region(res->start, resource_size(res));
 
 	free_netdev(ndev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

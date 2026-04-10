@@ -59,7 +59,6 @@ void arch_cpu_idle(void)
 {
 	if (tlb_type != hypervisor) {
 		touch_nmi_watchdog();
-		raw_local_irq_enable();
 	} else {
 		unsigned long pstate;
 
@@ -90,11 +89,13 @@ void arch_cpu_idle(void)
 			"wrpr %0, %%g0, %%pstate"
 			: "=&r" (pstate)
 			: "i" (PSTATE_IE));
+
+		raw_local_irq_disable();
 	}
 }
 
 #ifdef CONFIG_HOTPLUG_CPU
-void arch_cpu_idle_dead(void)
+void __noreturn arch_cpu_idle_dead(void)
 {
 	sched_preempt_enable_no_resched();
 	cpu_play_dead();
@@ -235,7 +236,7 @@ static void __global_reg_poll(struct global_reg_snapshot *gp)
 	}
 }
 
-void arch_trigger_cpumask_backtrace(const cpumask_t *mask, bool exclude_self)
+void arch_trigger_cpumask_backtrace(const cpumask_t *mask, int exclude_cpu)
 {
 	struct thread_info *tp = current_thread_info();
 	struct pt_regs *regs = get_irq_regs();
@@ -251,7 +252,7 @@ void arch_trigger_cpumask_backtrace(const cpumask_t *mask, bool exclude_self)
 
 	memset(global_cpu_snapshot, 0, sizeof(global_cpu_snapshot));
 
-	if (cpumask_test_cpu(this_cpu, mask) && !exclude_self)
+	if (cpumask_test_cpu(this_cpu, mask) && this_cpu != exclude_cpu)
 		__global_reg_self(tp, regs, this_cpu);
 
 	smp_fetch_global_regs();
@@ -259,7 +260,7 @@ void arch_trigger_cpumask_backtrace(const cpumask_t *mask, bool exclude_self)
 	for_each_cpu(cpu, mask) {
 		struct global_reg_snapshot *gp;
 
-		if (exclude_self && cpu == this_cpu)
+		if (cpu == exclude_cpu)
 			continue;
 
 		gp = &global_cpu_snapshot[cpu].reg;
@@ -294,7 +295,7 @@ void arch_trigger_cpumask_backtrace(const cpumask_t *mask, bool exclude_self)
 
 #ifdef CONFIG_MAGIC_SYSRQ
 
-static void sysrq_handle_globreg(int key)
+static void sysrq_handle_globreg(u8 key)
 {
 	trigger_all_cpu_backtrace();
 }
@@ -369,7 +370,7 @@ static void pmu_snapshot_all_cpus(void)
 	spin_unlock_irqrestore(&global_cpu_snapshot_lock, flags);
 }
 
-static void sysrq_handle_globpmu(int key)
+static void sysrq_handle_globpmu(u8 key)
 {
 	pmu_snapshot_all_cpus();
 }
@@ -563,17 +564,19 @@ barf:
  * under SunOS are nothing short of bletcherous:
  * Parent -->  %o0 == childs  pid, %o1 == 0
  * Child  -->  %o0 == parents pid, %o1 == 1
+ *
+ * clone3() - Uses regular kernel return value conventions
  */
 int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 {
-	unsigned long clone_flags = args->flags;
-	unsigned long sp = args->stack;
+	u64 clone_flags = args->flags;
 	unsigned long tls = args->tls;
 	struct thread_info *t = task_thread_info(p);
 	struct pt_regs *regs = current_pt_regs();
 	struct sparc_stackf *parent_sf;
 	unsigned long child_stack_sz;
 	char *child_trap_frame;
+	unsigned long sp = args->stack ? args->stack : regs->u_regs[UREG_FP];
 
 	/* Calculate offset to stack_frame & pt_regs */
 	child_stack_sz = (STACKFRAME_SZ + TRACEREG_SZ);
@@ -615,12 +618,25 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 	if (t->utraps)
 		t->utraps[0]++;
 
-	/* Set the return value for the child. */
-	t->kregs->u_regs[UREG_I0] = current->pid;
-	t->kregs->u_regs[UREG_I1] = 1;
+	/* Handle return value conventions */
+	if (regs->u_regs[UREG_G1] == __NR_clone3) {
+		/* clone3() - use regular kernel return value convention */
 
-	/* Set the second return value for the parent. */
-	regs->u_regs[UREG_I1] = 0;
+		/* Set the return value for the child. */
+		t->kregs->u_regs[UREG_I0] = 0;
+
+		/* Clear g1 to indicate user thread */
+		t->kregs->u_regs[UREG_G1] = 0;
+	} else {
+		/* clone()/fork() - use SunOS return value convention */
+
+		/* Set the return value for the child. */
+		t->kregs->u_regs[UREG_I0] = current->pid;
+		t->kregs->u_regs[UREG_I1] = 1;
+
+		/* Set the second return value for the parent. */
+		regs->u_regs[UREG_I1] = 0;
+	}
 
 	if (clone_flags & CLONE_SETTLS)
 		t->kregs->u_regs[UREG_G7] = tls;

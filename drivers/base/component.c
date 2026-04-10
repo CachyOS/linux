@@ -87,17 +87,17 @@ static int component_devices_show(struct seq_file *s, void *data)
 	size_t i;
 
 	mutex_lock(&component_mutex);
-	seq_printf(s, "%-40s %20s\n", "aggregate_device name", "status");
-	seq_puts(s, "-------------------------------------------------------------\n");
-	seq_printf(s, "%-40s %20s\n\n",
+	seq_printf(s, "%-50s %20s\n", "aggregate_device name", "status");
+	seq_puts(s, "-----------------------------------------------------------------------\n");
+	seq_printf(s, "%-50s %20s\n\n",
 		   dev_name(m->parent), m->bound ? "bound" : "not bound");
 
-	seq_printf(s, "%-40s %20s\n", "device name", "status");
-	seq_puts(s, "-------------------------------------------------------------\n");
+	seq_printf(s, "%-50s %20s\n", "device name", "status");
+	seq_puts(s, "-----------------------------------------------------------------------\n");
 	for (i = 0; i < match->num; i++) {
 		struct component *component = match->compare[i].component;
 
-		seq_printf(s, "%-40s %20s\n",
+		seq_printf(s, "%-50s %20s\n",
 			   component ? dev_name(component->dev) : "(unknown)",
 			   component ? (component->bound ? "bound" : "not bound") : "not registered");
 	}
@@ -125,7 +125,7 @@ static void component_debugfs_add(struct aggregate_device *m)
 
 static void component_debugfs_del(struct aggregate_device *m)
 {
-	debugfs_remove(debugfs_lookup(dev_name(m->parent), component_debugfs_dir));
+	debugfs_lookup_and_remove(dev_name(m->parent), component_debugfs_dir);
 }
 
 #else
@@ -363,7 +363,7 @@ static int component_match_realloc(struct component_match *match, size_t num)
 	if (match->alloc == num)
 		return 0;
 
-	new = kmalloc_array(num, sizeof(*new), GFP_KERNEL);
+	new = kmalloc_objs(*new, num);
 	if (!new)
 		return -ENOMEM;
 
@@ -521,7 +521,7 @@ int component_master_add_with_match(struct device *parent,
 	if (ret)
 		return ret;
 
-	adev = kzalloc(sizeof(*adev), GFP_KERNEL);
+	adev = kzalloc_obj(*adev);
 	if (!adev)
 		return -ENOMEM;
 
@@ -569,10 +569,28 @@ void component_master_del(struct device *parent,
 }
 EXPORT_SYMBOL_GPL(component_master_del);
 
+bool component_master_is_bound(struct device *parent,
+	const struct component_master_ops *ops)
+{
+	struct aggregate_device *adev;
+
+	guard(mutex)(&component_mutex);
+	adev = __aggregate_find(parent, ops);
+	if (!adev)
+		return 0;
+
+	return adev->bound;
+}
+EXPORT_SYMBOL_GPL(component_master_is_bound);
+
 static void component_unbind(struct component *component,
 	struct aggregate_device *adev, void *data)
 {
-	WARN_ON(!component->bound);
+	if (WARN_ON(!component->bound))
+		return;
+
+	dev_dbg(adev->parent, "unbinding %s component %p (ops %ps)\n",
+		dev_name(component->dev), component, component->ops);
 
 	if (component->ops && component->ops->unbind)
 		component->ops->unbind(component->dev, adev->parent, data);
@@ -714,7 +732,7 @@ static int __component_add(struct device *dev, const struct component_ops *ops,
 	struct component *component;
 	int ret;
 
-	component = kzalloc(sizeof(*component), GFP_KERNEL);
+	component = kzalloc_obj(*component);
 	if (!component)
 		return -ENOMEM;
 
@@ -751,7 +769,7 @@ static int __component_add(struct device *dev, const struct component_ops *ops,
  * component_bind_all(). See also &struct component_ops.
  *
  * @subcomponent must be nonzero and is used to differentiate between multiple
- * components registerd on the same device @dev. These components are match
+ * components registered on the same device @dev. These components are match
  * using component_match_add_typed().
  *
  * The component needs to be unregistered at driver unload/disconnect by
@@ -781,7 +799,7 @@ EXPORT_SYMBOL_GPL(component_add_typed);
  * The component needs to be unregistered at driver unload/disconnect by
  * calling component_del().
  *
- * See also component_add_typed() for a variant that allows multipled different
+ * See also component_add_typed() for a variant that allows multiple different
  * components on the same device.
  */
 int component_add(struct device *dev, const struct component_ops *ops)

@@ -59,19 +59,6 @@ static struct omap_dma_dev_attr *d;
 static int enable_1510_mode;
 static u32 errata;
 
-struct dma_link_info {
-	int *linked_dmach_q;
-	int no_of_lchs_linked;
-
-	int q_count;
-	int q_tail;
-	int q_head;
-
-	int chain_state;
-	int chain_mode;
-
-};
-
 static int dma_lch_count;
 static int dma_chan_count;
 static int omap_dma_reserve_channels;
@@ -833,7 +820,7 @@ exit_dma_irq_fail:
 	return ret;
 }
 
-static int omap_system_dma_remove(struct platform_device *pdev)
+static void omap_system_dma_remove(struct platform_device *pdev)
 {
 	int dma_irq, irq_rel = 0;
 
@@ -841,8 +828,6 @@ static int omap_system_dma_remove(struct platform_device *pdev)
 		dma_irq = platform_get_irq(pdev, irq_rel);
 		free_irq(dma_irq, (void *)(irq_rel + 1));
 	}
-
-	return 0;
 }
 
 static struct platform_driver omap_system_dma_driver = {

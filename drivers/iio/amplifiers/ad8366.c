@@ -5,6 +5,7 @@
  *   AD8366 Dual-Digital Variable Gain Amplifier (VGA)
  *   ADA4961 BiCMOS RF Digital Gain Amplifier (DGA)
  *   ADL5240 Digitally controlled variable gain amplifier (VGA)
+ *   HMC792A 0.25 dB LSB GaAs MMIC 6-Bit Digital Attenuator
  *   HMC1119 0.25 dB LSB, 7-Bit, Silicon Digital Attenuator
  *
  * Copyright 2012-2019 Analog Devices Inc.
@@ -28,6 +29,7 @@ enum ad8366_type {
 	ID_AD8366,
 	ID_ADA4961,
 	ID_ADL5240,
+	ID_HMC792,
 	ID_HMC1119,
 };
 
@@ -43,15 +45,15 @@ struct ad8366_state {
 	struct gpio_desc	*reset_gpio;
 	unsigned char		ch[2];
 	enum ad8366_type	type;
-	struct ad8366_info	*info;
+	const struct ad8366_info *info;
 	/*
-	 * DMA (thus cache coherency maintenance) requires the
+	 * DMA (thus cache coherency maintenance) may require the
 	 * transfer buffers to live in their own cache lines.
 	 */
-	unsigned char		data[2] ____cacheline_aligned;
+	unsigned char		data[2] __aligned(IIO_DMA_MINALIGN);
 };
 
-static struct ad8366_info ad8366_infos[] = {
+static const struct ad8366_info ad8366_infos[] = {
 	[ID_AD8366] = {
 		.gain_min = 4500,
 		.gain_max = 20500,
@@ -63,6 +65,10 @@ static struct ad8366_info ad8366_infos[] = {
 	[ID_ADL5240] = {
 		.gain_min = -11500,
 		.gain_max = 20000,
+	},
+	[ID_HMC792] = {
+		.gain_min = -15750,
+		.gain_max = 0,
 	},
 	[ID_HMC1119] = {
 		.gain_min = -31750,
@@ -90,6 +96,7 @@ static int ad8366_write(struct iio_dev *indio_dev,
 	case ID_ADL5240:
 		st->data[0] = (ch_a & 0x3F);
 		break;
+	case ID_HMC792:
 	case ID_HMC1119:
 		st->data[0] = ch_a;
 		break;
@@ -127,6 +134,9 @@ static int ad8366_read_raw(struct iio_dev *indio_dev,
 		case ID_ADL5240:
 			gain = 20000 - 31500 + code * 500;
 			break;
+		case ID_HMC792:
+			gain = -1 * code * 500;
+			break;
 		case ID_HMC1119:
 			gain = -1 * code * 250;
 			break;
@@ -153,7 +163,7 @@ static int ad8366_write_raw(struct iio_dev *indio_dev,
 			    long mask)
 {
 	struct ad8366_state *st = iio_priv(indio_dev);
-	struct ad8366_info *inf = st->info;
+	const struct ad8366_info *inf = st->info;
 	int code = 0, gain;
 	int ret;
 
@@ -175,6 +185,9 @@ static int ad8366_write_raw(struct iio_dev *indio_dev,
 		break;
 	case ID_ADL5240:
 		code = ((gain - 500 - 20000) / 500) & 0x3F;
+		break;
+	case ID_HMC792:
+		code = (abs(gain) / 500) & 0x3F;
 		break;
 	case ID_HMC1119:
 		code = (abs(gain) / 250) & 0x7F;
@@ -261,6 +274,7 @@ static int ad8366_probe(struct spi_device *spi)
 		break;
 	case ID_ADA4961:
 	case ID_ADL5240:
+	case ID_HMC792:
 	case ID_HMC1119:
 		st->reset_gpio = devm_gpiod_get_optional(&spi->dev, "reset", GPIOD_OUT_HIGH);
 		if (IS_ERR(st->reset_gpio)) {
@@ -281,7 +295,7 @@ static int ad8366_probe(struct spi_device *spi)
 	indio_dev->info = &ad8366_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
-	ret = ad8366_write(indio_dev, 0 , 0);
+	ret = ad8366_write(indio_dev, 0, 0);
 	if (ret < 0)
 		goto error_disable_reg;
 
@@ -314,8 +328,9 @@ static const struct spi_device_id ad8366_id[] = {
 	{"ad8366",  ID_AD8366},
 	{"ada4961", ID_ADA4961},
 	{"adl5240", ID_ADL5240},
+	{"hmc792a", ID_HMC792},
 	{"hmc1119", ID_HMC1119},
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad8366_id);
 

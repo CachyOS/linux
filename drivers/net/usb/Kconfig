@@ -99,10 +99,9 @@ config USB_RTL8150
 config USB_RTL8152
 	tristate "Realtek RTL8152/RTL8153 Based USB Ethernet Adapters"
 	select MII
+	select PHYLIB
 	select CRC32
-	select CRYPTO
-	select CRYPTO_HASH
-	select CRYPTO_SHA256
+	select CRYPTO_LIB_SHA256
 	help
 	  This option adds support for Realtek RTL8152 based USB 2.0
 	  10/100 Ethernet adapters and RTL8153 based USB 3.0 10/100/1000
@@ -114,10 +113,10 @@ config USB_RTL8152
 config USB_LAN78XX
 	tristate "Microchip LAN78XX Based USB Ethernet Adapters"
 	select MII
-	select PHYLIB
+	select PHYLINK
 	select MICROCHIP_PHY
-	select FIXED_PHY
 	select CRC32
+	imply NET_SELFTESTS
 	help
 	  This option adds support for Microchip LAN78XX based USB 2
 	  & USB 3 10/100/1000 Ethernet adapters.
@@ -168,7 +167,7 @@ config USB_NET_AX8817X
 	tristate "ASIX AX88xxx Based USB 2.0 Ethernet Adapters"
 	depends on USB_USBNET
 	select CRC32
-	select PHYLIB
+	select PHYLINK
 	select AX88796B_PHY
 	imply NET_SELFTESTS
 	default y
@@ -320,7 +319,6 @@ config USB_NET_DM9601
 config USB_NET_SR9700
 	tristate "CoreChip-sz SR9700 based USB 1.1 10/100 ethernet devices"
 	depends on USB_USBNET
-	select CRC32
 	help
 	  This option adds support for CoreChip-sz SR9700 based USB 1.1
 	  10/100 Ethernet adapters.
@@ -565,6 +563,7 @@ config USB_HSO
 config USB_NET_INT51X1
 	tristate "Intellon PLC based usb adapter"
 	depends on USB_USBNET
+	select USB_NET_CDCETHER
 	help
 	  Choose this option if you're using a 14Mb USB-based PLC
 	  (Powerline Communications) solution with an Intellon
@@ -583,12 +582,10 @@ config USB_IPHETH
 	default n
 	help
 	  Module used to share Internet connection (tethering) from your
-	  iPhone (Original, 3G and 3GS) to your system.
-	  Note that you need userspace libraries and programs that are needed
-	  to pair your device with your system and that understand the iPhone
-	  protocol.
-
-	  For more information: http://giagio.com/wiki/moin.cgi/iPhoneEthernetDriver
+	  iPhone to your system.
+	  Note that you need a corresponding userspace library/program
+	  to pair your device with your system, for example usbmuxd
+	  <https://github.com/libimobiledevice/usbmuxd>.
 
 config USB_SIERRA_NET
 	tristate "USB-to-WWAN Driver for Sierra Wireless modems"
@@ -637,8 +634,9 @@ config USB_NET_AQC111
 	  * Aquantia AQtion USB to 5GbE
 
 config USB_RTL8153_ECM
-	tristate "RTL8153 ECM support"
+	tristate
 	depends on USB_NET_CDCETHER && (USB_RTL8152 || USB_RTL8152=n)
+	default y
 	help
 	  This option supports ECM mode for RTL8153 ethernet adapter, when
 	  CONFIG_USB_RTL8152 is not set, or the RTL8153 device is not

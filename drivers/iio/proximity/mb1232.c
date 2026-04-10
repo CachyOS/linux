@@ -42,11 +42,6 @@ struct mb1232_data {
 	 */
 	struct completion	ranging;
 	int			irqnr;
-	/* Ensure correct alignment of data to push to IIO buffer */
-	struct {
-		s16 distance;
-		s64 ts __aligned(8);
-	} scan;
 };
 
 static irqreturn_t mb1232_handle_irq(int irq, void *dev_id)
@@ -76,7 +71,7 @@ static s16 mb1232_read_distance(struct mb1232_data *data)
 		goto error_unlock;
 	}
 
-	if (data->irqnr >= 0) {
+	if (data->irqnr > 0) {
 		/* it cannot take more than 100 ms */
 		ret = wait_for_completion_killable_timeout(&data->ranging,
 									HZ/10);
@@ -120,13 +115,17 @@ static irqreturn_t mb1232_trigger_handler(int irq, void *p)
 	struct iio_poll_func *pf = p;
 	struct iio_dev *indio_dev = pf->indio_dev;
 	struct mb1232_data *data = iio_priv(indio_dev);
+	struct {
+		s16 distance;
+		aligned_s64 ts;
+	} scan = { };
 
-	data->scan.distance = mb1232_read_distance(data);
-	if (data->scan.distance < 0)
+	scan.distance = mb1232_read_distance(data);
+	if (scan.distance < 0)
 		goto err;
 
-	iio_push_to_buffers_with_timestamp(indio_dev, &data->scan,
-					   pf->timestamp);
+	iio_push_to_buffers_with_ts(indio_dev, &scan, sizeof(scan),
+				    pf->timestamp);
 
 err:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -180,9 +179,9 @@ static const struct iio_info mb1232_info = {
 	.read_raw = mb1232_read_raw,
 };
 
-static int mb1232_probe(struct i2c_client *client,
-					 const struct i2c_device_id *id)
+static int mb1232_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct iio_dev *indio_dev;
 	struct mb1232_data *data;
 	int ret;
@@ -212,10 +211,7 @@ static int mb1232_probe(struct i2c_client *client,
 	init_completion(&data->ranging);
 
 	data->irqnr = fwnode_irq_get(dev_fwnode(&client->dev), 0);
-	if (data->irqnr <= 0) {
-		/* usage of interrupt is optional */
-		data->irqnr = -1;
-	} else {
+	if (data->irqnr > 0) {
 		ret = devm_request_irq(dev, data->irqnr, mb1232_handle_irq,
 				IRQF_TRIGGER_FALLING, id->name, indio_dev);
 		if (ret < 0) {
@@ -242,7 +238,7 @@ static const struct of_device_id of_mb1232_match[] = {
 	{ .compatible = "maxbotix,mb1242", },
 	{ .compatible = "maxbotix,mb7040", },
 	{ .compatible = "maxbotix,mb7137", },
-	{},
+	{ }
 };
 
 MODULE_DEVICE_TABLE(of, of_mb1232_match);

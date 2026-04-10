@@ -43,6 +43,8 @@ struct strparser;
 struct strp_callbacks {
 	int (*parse_msg)(struct strparser *strp, struct sk_buff *skb);
 	void (*rcv_msg)(struct strparser *strp, struct sk_buff *skb);
+	int (*read_sock)(struct strparser *strp, read_descriptor_t *desc,
+			 sk_read_actor_t recv_actor);
 	int (*read_sock_done)(struct strparser *strp, int err);
 	void (*abort_parser)(struct strparser *strp, int err);
 	void (*lock)(struct strparser *strp);
@@ -65,15 +67,18 @@ struct _strp_msg {
 struct sk_skb_cb {
 #define SK_SKB_CB_PRIV_LEN 20
 	unsigned char data[SK_SKB_CB_PRIV_LEN];
+	/* align strp on cache line boundary within skb->cb[] */
+	unsigned char pad[4];
 	struct _strp_msg strp;
+
+	/* strp users' data follows */
+	struct tls_msg {
+		u8 control;
+	} tls;
 	/* temp_reg is a temporary register used for bpf_convert_data_end_access
 	 * when dst_reg == src_reg.
 	 */
 	u64 temp_reg;
-	struct tls_msg {
-		u8 control;
-		u8 decrypted;
-	} tls;
 };
 
 static inline struct strp_msg *strp_msg(struct sk_buff *skb)
@@ -109,8 +114,6 @@ static inline void strp_pause(struct strparser *strp)
 
 /* May be called without holding lock for attached socket */
 void strp_unpause(struct strparser *strp);
-/* Must be called with process lock held (lock_sock) */
-void __strp_unpause(struct strparser *strp);
 
 static inline void save_strp_stats(struct strparser *strp,
 				   struct strp_aggr_stats *agg_stats)

@@ -325,7 +325,7 @@ static struct timb_dma_desc *td_alloc_init_desc(struct timb_dma_chan *td_chan)
 	struct timb_dma_desc *td_desc;
 	int err;
 
-	td_desc = kzalloc(sizeof(struct timb_dma_desc), GFP_KERNEL);
+	td_desc = kzalloc_obj(struct timb_dma_desc);
 	if (!td_desc)
 		goto out;
 
@@ -635,8 +635,7 @@ static int td_probe(struct platform_device *pdev)
 		DRIVER_NAME))
 		return -EBUSY;
 
-	td  = kzalloc(struct_size(td, channels, pdata->nr_channels),
-		      GFP_KERNEL);
+	td  = kzalloc_flex(*td, channels, pdata->nr_channels);
 	if (!td) {
 		err = -ENOMEM;
 		goto err_release_region;
@@ -740,7 +739,7 @@ err_release_region:
 
 }
 
-static int td_remove(struct platform_device *pdev)
+static void td_remove(struct platform_device *pdev)
 {
 	struct timb_dma *td = platform_get_drvdata(pdev);
 	struct resource *iomem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -754,7 +753,6 @@ static int td_remove(struct platform_device *pdev)
 	release_mem_region(iomem->start, resource_size(iomem));
 
 	dev_dbg(&pdev->dev, "Removed...\n");
-	return 0;
 }
 
 static struct platform_driver td_driver = {
@@ -762,7 +760,7 @@ static struct platform_driver td_driver = {
 		.name	= DRIVER_NAME,
 	},
 	.probe	= td_probe,
-	.remove	= td_remove,
+	.remove = td_remove,
 };
 
 module_platform_driver(td_driver);

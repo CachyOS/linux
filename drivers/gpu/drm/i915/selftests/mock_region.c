@@ -33,14 +33,15 @@ static int mock_region_get_pages(struct drm_i915_gem_object *obj)
 		return PTR_ERR(obj->mm.res);
 
 	obj->mm.rsgt = intel_region_ttm_resource_to_rsgt(obj->mm.region,
-							 obj->mm.res);
+							 obj->mm.res,
+							 obj->mm.region->min_page_size);
 	if (IS_ERR(obj->mm.rsgt)) {
 		err = PTR_ERR(obj->mm.rsgt);
 		goto err_free_resource;
 	}
 
 	pages = &obj->mm.rsgt->table;
-	__i915_gem_object_set_pages(obj, pages, i915_sg_dma_sizes(pages->sgl));
+	__i915_gem_object_set_pages(obj, pages);
 
 	return 0;
 

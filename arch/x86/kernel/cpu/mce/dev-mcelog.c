@@ -105,8 +105,7 @@ static ssize_t set_trigger(struct device *s, struct device_attribute *attr,
 {
 	char *p;
 
-	strncpy(mce_helper, buf, sizeof(mce_helper));
-	mce_helper[sizeof(mce_helper)-1] = 0;
+	strscpy(mce_helper, buf, sizeof(mce_helper));
 	p = strchr(mce_helper, '\n');
 
 	if (p)
@@ -265,15 +264,8 @@ static long mce_chrdev_ioctl(struct file *f, unsigned int cmd,
 		return put_user(sizeof(struct mce), p);
 	case MCE_GET_LOG_LEN:
 		return put_user(mcelog->len, p);
-	case MCE_GETCLEAR_FLAGS: {
-		unsigned flags;
-
-		do {
-			flags = mcelog->flags;
-		} while (cmpxchg(&mcelog->flags, flags, 0) != flags);
-
-		return put_user(flags, p);
-	}
+	case MCE_GETCLEAR_FLAGS:
+		return put_user(xchg(&mcelog->flags, 0), p);
 	default:
 		return -ENOTTY;
 	}
@@ -315,7 +307,7 @@ static ssize_t mce_chrdev_write(struct file *filp, const char __user *ubuf,
 
 	/*
 	 * Need to give user space some time to set everything up,
-	 * so do it a jiffie or two later everywhere.
+	 * so do it a jiffy or two later everywhere.
 	 */
 	schedule_timeout(2);
 
@@ -332,7 +324,6 @@ static const struct file_operations mce_chrdev_ops = {
 	.poll			= mce_chrdev_poll,
 	.unlocked_ioctl		= mce_chrdev_ioctl,
 	.compat_ioctl		= compat_ptr_ioctl,
-	.llseek			= no_llseek,
 };
 
 static struct miscdevice mce_chrdev_device = {
@@ -347,7 +338,7 @@ static __init int dev_mcelog_init_device(void)
 	int err;
 
 	mce_log_len = max(MCE_LOG_MIN_LEN, num_online_cpus());
-	mcelog = kzalloc(struct_size(mcelog, entry, mce_log_len), GFP_KERNEL);
+	mcelog = kzalloc_flex(*mcelog, entry, mce_log_len);
 	if (!mcelog)
 		return -ENOMEM;
 

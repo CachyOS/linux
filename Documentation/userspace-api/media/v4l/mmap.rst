@@ -188,7 +188,7 @@ Example: Mapping buffers in the multi-planar API
 	    buffers[i].start[j] = mmap(NULL, buffer.m.planes[j].length,
 		     PROT_READ | PROT_WRITE, /* recommended */
 		     MAP_SHARED,             /* recommended */
-		     fd, buffer.m.planes[j].m.offset);
+		     fd, buffer.m.planes[j].m.mem_offset);
 
 	    if (MAP_FAILED == buffers[i].start[j]) {
 		/* If you do not exit here you should unmap() and free()
@@ -232,7 +232,7 @@ In the write loop, when the application runs out of free buffers, it
 must wait until an empty buffer can be dequeued and reused.
 
 To enqueue and dequeue a buffer applications use the
-:ref:`VIVIOC_QBUF <VIDIOC_QBUF>` and :ref:`VIDIOC_DQBUF <VIDIOC_QBUF>`
+:ref:`VIDIOC_QBUF <VIDIOC_QBUF>` and :ref:`VIDIOC_DQBUF <VIDIOC_QBUF>`
 ioctl. The status of a buffer being mapped, enqueued, full or empty can
 be determined at any time using the :ref:`VIDIOC_QUERYBUF` ioctl. Two
 methods exist to suspend execution of the application until one or more

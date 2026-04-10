@@ -1501,7 +1501,7 @@ static int ql_finish_auto_neg(struct ql3_adapter *qdev)
 				     "Remote error detected. Calling ql_port_start()\n");
 			/*
 			 * ql_port_start() is shared code and needs
-			 * to lock the PHY on it's own.
+			 * to lock the PHY on its own.
 			 */
 			ql_sem_unlock(qdev, QL_PHY_GIO_SEM_MASK);
 			if (ql_port_start(qdev))	/* Restart port */
@@ -1736,10 +1736,10 @@ static void ql_get_drvinfo(struct net_device *ndev,
 			   struct ethtool_drvinfo *drvinfo)
 {
 	struct ql3_adapter *qdev = netdev_priv(ndev);
-	strlcpy(drvinfo->driver, ql3xxx_driver_name, sizeof(drvinfo->driver));
-	strlcpy(drvinfo->version, ql3xxx_driver_version,
+	strscpy(drvinfo->driver, ql3xxx_driver_name, sizeof(drvinfo->driver));
+	strscpy(drvinfo->version, ql3xxx_driver_version,
 		sizeof(drvinfo->version));
-	strlcpy(drvinfo->bus_info, pci_name(qdev->pdev),
+	strscpy(drvinfo->bus_info, pci_name(qdev->pdev),
 		sizeof(drvinfo->bus_info));
 }
 
@@ -2471,6 +2471,7 @@ static netdev_tx_t ql3xxx_send(struct sk_buff *skb,
 					     skb_shinfo(skb)->nr_frags);
 	if (tx_cb->seg_count == -1) {
 		netdev_err(ndev, "%s: invalid segment count!\n", __func__);
+		dev_kfree_skb_any(skb);
 		return NETDEV_TX_OK;
 	}
 
@@ -2577,9 +2578,8 @@ static int ql_alloc_buffer_queues(struct ql3_adapter *qdev)
 	else
 		qdev->lrg_buf_q_alloc_size = qdev->lrg_buf_q_size * 2;
 
-	qdev->lrg_buf = kmalloc_array(qdev->num_large_buffers,
-				      sizeof(struct ql_rcv_buf_cb),
-				      GFP_KERNEL);
+	qdev->lrg_buf = kmalloc_objs(struct ql_rcv_buf_cb,
+				     qdev->num_large_buffers);
 	if (qdev->lrg_buf == NULL)
 		return -ENOMEM;
 
@@ -2590,6 +2590,7 @@ static int ql_alloc_buffer_queues(struct ql3_adapter *qdev)
 
 	if (qdev->lrg_buf_q_alloc_virt_addr == NULL) {
 		netdev_err(qdev->ndev, "lBufQ failed\n");
+		kfree(qdev->lrg_buf);
 		return -ENOMEM;
 	}
 	qdev->lrg_buf_q_virt_addr = qdev->lrg_buf_q_alloc_virt_addr;
@@ -2614,6 +2615,7 @@ static int ql_alloc_buffer_queues(struct ql3_adapter *qdev)
 				  qdev->lrg_buf_q_alloc_size,
 				  qdev->lrg_buf_q_alloc_virt_addr,
 				  qdev->lrg_buf_q_alloc_phy_addr);
+		kfree(qdev->lrg_buf);
 		return -ENOMEM;
 	}
 
@@ -3417,7 +3419,7 @@ static int ql_adapter_down(struct ql3_adapter *qdev, int do_reset)
 		pci_disable_msi(qdev->pdev);
 	}
 
-	del_timer_sync(&qdev->adapter_timer);
+	timer_delete_sync(&qdev->adapter_timer);
 
 	napi_disable(&qdev->napi);
 
@@ -3732,7 +3734,7 @@ static void ql_get_board_info(struct ql3_adapter *qdev)
 
 static void ql3xxx_timer(struct timer_list *t)
 {
-	struct ql3_adapter *qdev = from_timer(qdev, t, adapter_timer);
+	struct ql3_adapter *qdev = timer_container_of(qdev, t, adapter_timer);
 	queue_delayed_work(qdev->workqueue, &qdev->link_state_work, 0);
 }
 
@@ -3813,7 +3815,7 @@ static int ql3xxx_probe(struct pci_dev *pdev,
 	ndev->ethtool_ops = &ql3xxx_ethtool_ops;
 	ndev->watchdog_timeo = 5 * HZ;
 
-	netif_napi_add(ndev, &qdev->napi, ql_poll, 64);
+	netif_napi_add(ndev, &qdev->napi, ql_poll);
 
 	ndev->irq = pdev->irq;
 

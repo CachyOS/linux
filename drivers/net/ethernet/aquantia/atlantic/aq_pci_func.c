@@ -162,8 +162,8 @@ int aq_pci_func_alloc_irq(struct aq_nic_s *self, unsigned int i,
 		self->msix_entry_mask |= (1 << i);
 
 		if (pdev->msix_enabled && affinity_mask)
-			irq_set_affinity_hint(pci_irq_vector(pdev, i),
-					      affinity_mask);
+			irq_update_affinity_hint(pci_irq_vector(pdev, i),
+						 affinity_mask);
 	}
 
 	return err;
@@ -187,7 +187,7 @@ void aq_pci_func_free_irqs(struct aq_nic_s *self)
 			continue;
 
 		if (pdev->msix_enabled)
-			irq_set_affinity_hint(pci_irq_vector(pdev, i), NULL);
+			irq_update_affinity_hint(pci_irq_vector(pdev, i), NULL);
 		free_irq(pci_irq_vector(pdev, i), irq_data);
 		self->msix_entry_mask &= ~(1U << i);
 	}
@@ -200,7 +200,7 @@ unsigned int aq_pci_func_get_irq_type(struct aq_nic_s *self)
 	if (self->pdev->msi_enabled)
 		return AQ_HW_IRQ_MSI;
 
-	return AQ_HW_IRQ_LEGACY;
+	return AQ_HW_IRQ_INTX;
 }
 
 static void aq_pci_free_irq_vectors(struct aq_nic_s *self)
@@ -244,7 +244,7 @@ static int aq_pci_probe(struct pci_dev *pdev,
 	if (err)
 		goto err_ioremap;
 
-	self->aq_hw = kzalloc(sizeof(*self->aq_hw), GFP_KERNEL);
+	self->aq_hw = kzalloc_obj(*self->aq_hw);
 	if (!self->aq_hw) {
 		err = -ENOMEM;
 		goto err_ioremap;
@@ -298,11 +298,8 @@ static int aq_pci_probe(struct pci_dev *pdev,
 
 	numvecs += AQ_HW_SERVICE_IRQS;
 	/*enable interrupts */
-#if !AQ_CFG_FORCE_LEGACY_INT
-	err = pci_alloc_irq_vectors(self->pdev, 1, numvecs,
-				    PCI_IRQ_MSIX | PCI_IRQ_MSI |
-				    PCI_IRQ_LEGACY);
-
+#if !AQ_CFG_FORCE_INTX
+	err = pci_alloc_irq_vectors(self->pdev, 1, numvecs, PCI_IRQ_ALL_TYPES);
 	if (err < 0)
 		goto err_hwinit;
 	numvecs = err;
@@ -379,7 +376,8 @@ static void aq_pci_shutdown(struct pci_dev *pdev)
 	}
 }
 
-static int aq_suspend_common(struct device *dev, bool deep)
+#ifdef CONFIG_PM
+static int aq_suspend_common(struct device *dev)
 {
 	struct aq_nic_s *nic = pci_get_drvdata(to_pci_dev(dev));
 
@@ -392,17 +390,15 @@ static int aq_suspend_common(struct device *dev, bool deep)
 	if (netif_running(nic->ndev))
 		aq_nic_stop(nic);
 
-	if (deep) {
-		aq_nic_deinit(nic, !nic->aq_hw->aq_nic_cfg->wol);
-		aq_nic_set_power(nic);
-	}
+	aq_nic_deinit(nic, !nic->aq_hw->aq_nic_cfg->wol);
+	aq_nic_set_power(nic);
 
 	rtnl_unlock();
 
 	return 0;
 }
 
-static int atl_resume_common(struct device *dev, bool deep)
+static int atl_resume_common(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct aq_nic_s *nic;
@@ -414,11 +410,6 @@ static int atl_resume_common(struct device *dev, bool deep)
 
 	pci_set_power_state(pdev, PCI_D0);
 	pci_restore_state(pdev);
-
-	if (deep) {
-		/* Reinitialize Nic/Vecs objects */
-		aq_nic_deinit(nic, !nic->aq_hw->aq_nic_cfg->wol);
-	}
 
 	if (netif_running(nic->ndev)) {
 		ret = aq_nic_init(nic);
@@ -444,22 +435,22 @@ err_exit:
 
 static int aq_pm_freeze(struct device *dev)
 {
-	return aq_suspend_common(dev, true);
+	return aq_suspend_common(dev);
 }
 
 static int aq_pm_suspend_poweroff(struct device *dev)
 {
-	return aq_suspend_common(dev, true);
+	return aq_suspend_common(dev);
 }
 
 static int aq_pm_thaw(struct device *dev)
 {
-	return atl_resume_common(dev, true);
+	return atl_resume_common(dev);
 }
 
 static int aq_pm_resume_restore(struct device *dev)
 {
-	return atl_resume_common(dev, true);
+	return atl_resume_common(dev);
 }
 
 static const struct dev_pm_ops aq_pm_ops = {
@@ -470,8 +461,9 @@ static const struct dev_pm_ops aq_pm_ops = {
 	.restore = aq_pm_resume_restore,
 	.thaw = aq_pm_thaw,
 };
+#endif
 
-static struct pci_driver aq_pci_ops = {
+static struct pci_driver aq_pci_driver = {
 	.name = AQ_CFG_DRV_NAME,
 	.id_table = aq_pci_tbl,
 	.probe = aq_pci_probe,
@@ -484,11 +476,11 @@ static struct pci_driver aq_pci_ops = {
 
 int aq_pci_func_register_driver(void)
 {
-	return pci_register_driver(&aq_pci_ops);
+	return pci_register_driver(&aq_pci_driver);
 }
 
 void aq_pci_func_unregister_driver(void)
 {
-	pci_unregister_driver(&aq_pci_ops);
+	pci_unregister_driver(&aq_pci_driver);
 }
 

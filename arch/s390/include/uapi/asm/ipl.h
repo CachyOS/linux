@@ -15,6 +15,7 @@ struct ipl_pl_hdr {
 #define IPL_PL_FLAG_IPLPS	0x80
 #define IPL_PL_FLAG_SIPL	0x40
 #define IPL_PL_FLAG_IPLSR	0x20
+#define IPL_PL_FLAG_SBP		0x10
 
 /* IPL Parameter Block header */
 struct ipl_pb_hdr {
@@ -27,6 +28,7 @@ enum ipl_pbt {
 	IPL_PBT_FCP = 0,
 	IPL_PBT_SCP_DATA = 1,
 	IPL_PBT_CCW = 2,
+	IPL_PBT_ECKD = 3,
 	IPL_PBT_NVME = 4,
 };
 
@@ -110,6 +112,34 @@ struct ipl_pb0_ccw {
 	__u8  vm_parm[64];
 	__u8  reserved5[8];
 } __packed;
+
+/* IPL Parameter Block 0 for ECKD */
+struct ipl_pb0_eckd {
+	__u32 len;
+	__u8  pbt;
+	__u8  reserved1[3];
+	__u32 reserved2[78];
+	__u8  opt;
+	__u8  reserved4[4];
+	__u8  reserved5:5;
+	__u8  ssid:3;
+	__u16 devno;
+	__u32 reserved6[5];
+	__u32 bootprog;
+	__u8  reserved7[12];
+	struct {
+		__u16 cyl;
+		__u8 head;
+		__u8 record;
+		__u32 reserved;
+	} br_chr __packed;
+	__u32 scp_data_len;
+	__u8  reserved8[260];
+	__u8  scp_data[];
+} __packed;
+
+#define IPL_PB0_ECKD_OPT_IPL	0x10
+#define IPL_PB0_ECKD_OPT_DUMP	0x20
 
 #define IPL_PB0_CCW_VM_FLAG_NSS		0x80
 #define IPL_PB0_CCW_VM_FLAG_VP		0x40

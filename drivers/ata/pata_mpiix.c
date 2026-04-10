@@ -136,7 +136,7 @@ static unsigned int mpiix_qc_issue(struct ata_queued_cmd *qc)
 	return ata_sff_qc_issue(qc);
 }
 
-static struct scsi_host_template mpiix_sht = {
+static const struct scsi_host_template mpiix_sht = {
 	ATA_PIO_SHT(DRV_NAME),
 };
 
@@ -145,7 +145,7 @@ static struct ata_port_operations mpiix_port_ops = {
 	.qc_issue	= mpiix_qc_issue,
 	.cable_detect	= ata_cable_40wire,
 	.set_piomode	= mpiix_set_piomode,
-	.prereset	= mpiix_pre_reset,
+	.reset.prereset	= mpiix_pre_reset,
 	.sff_data_xfer	= ata_sff_data_xfer32,
 };
 

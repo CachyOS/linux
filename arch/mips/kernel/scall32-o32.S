@@ -64,10 +64,10 @@ load_a6: user_lw(t7, 24(t0))		# argument #7 from usp
 load_a7: user_lw(t8, 28(t0))		# argument #8 from usp
 loads_done:
 
-	sw	t5, 16(sp)		# argument #5 to ksp
-	sw	t6, 20(sp)		# argument #6 to ksp
-	sw	t7, 24(sp)		# argument #7 to ksp
-	sw	t8, 28(sp)		# argument #8 to ksp
+	sw	t5, PT_ARG4(sp)		# argument #5 to ksp
+	sw	t6, PT_ARG5(sp)		# argument #6 to ksp
+	sw	t7, PT_ARG6(sp)		# argument #7 to ksp
+	sw	t8, PT_ARG7(sp)		# argument #8 to ksp
 	.set	pop
 
 	.section __ex_table,"a"
@@ -76,6 +76,18 @@ loads_done:
 	PTR_WD	load_a6, bad_stack_a6
 	PTR_WD	load_a7, bad_stack_a7
 	.previous
+
+	/*
+	 * syscall number is in v0 unless we called syscall(__NR_###)
+	 * where the real syscall number is in a0
+	 */
+	subu	t2, v0,  __NR_O32_Linux
+	bnez	t2, 1f /* __NR_syscall at offset 0 */
+	LONG_S	a0, TI_SYSCALL($28)	# Save a0 as syscall number
+	b	2f
+1:
+	LONG_S	v0, TI_SYSCALL($28)	# Save v0 as syscall number
+2:
 
 	lw	t0, TI_FLAGS($28)	# syscall tracing enabled?
 	li	t1, _TIF_WORK_SYSCALL_ENTRY
@@ -114,16 +126,7 @@ syscall_trace_entry:
 	SAVE_STATIC
 	move	a0, sp
 
-	/*
-	 * syscall number is in v0 unless we called syscall(__NR_###)
-	 * where the real syscall number is in a0
-	 */
-	move	a1, v0
-	subu	t2, v0,  __NR_O32_Linux
-	bnez	t2, 1f /* __NR_syscall at offset 0 */
-	lw	a1, PT_R4(sp)
-
-1:	jal	syscall_trace_enter
+	jal	syscall_trace_enter
 
 	bltz	v0, 1f			# seccomp failed? Skip syscall
 

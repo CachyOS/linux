@@ -4,27 +4,32 @@
 $id: http://devicetree.org/schemas/usb/generic-xhci.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: USB xHCI Controller Device Tree Bindings
+title: USB xHCI Controller
 
 maintainers:
   - Mathias Nyman <mathias.nyman@intel.com>
-
-allOf:
-  - $ref: "usb-xhci.yaml#"
 
 properties:
   compatible:
     oneOf:
       - description: Generic xHCI device
         const: generic-xhci
-      - description: Armada 37xx/375/38x/8k SoCs
+      - description: Armada 375/38x SoCs
+        items:
+          - enum:
+              - marvell,armada-375-xhci
+              - marvell,armada-380-xhci
+      - description: Armada 37xx/8k SoCs
         items:
           - enum:
               - marvell,armada3700-xhci
-              - marvell,armada-375-xhci
-              - marvell,armada-380-xhci
               - marvell,armada-8k-xhci
           - const: generic-xhci
+      - description: Broadcom SoCs with power domains
+        items:
+          - enum:
+              - brcm,bcm2711-xhci
+          - const: brcm,xhci-brcm-v2
       - description: Broadcom STB SoCs with xHCI
         enum:
           - brcm,xhci-brcm-v2
@@ -49,12 +54,39 @@ properties:
       - const: core
       - const: reg
 
+  dma-coherent: true
+
+  dr_mode:
+    enum:
+      - host
+      - otg
+
+  iommus:
+    maxItems: 1
+
+  power-domains:
+    maxItems: 1
+
 unevaluatedProperties: false
 
 required:
   - compatible
   - reg
   - interrupts
+
+allOf:
+  - $ref: usb-xhci.yaml#
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: brcm,bcm2711-xhci
+    then:
+      required:
+        - power-domains
+    else:
+      properties:
+        power-domains: false
 
 examples:
   - |

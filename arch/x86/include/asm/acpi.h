@@ -6,7 +6,7 @@
  *  Copyright (C) 2001 Paul Diefenbaugh <paul.s.diefenbaugh@intel.com>
  *  Copyright (C) 2001 Patrick Mochel <mochel@osdl.org>
  */
-#include <acpi/pdc_intel.h>
+#include <acpi/proc_cap_intel.h>
 
 #include <asm/numa.h>
 #include <asm/fixmap.h>
@@ -14,6 +14,11 @@
 #include <asm/mmu.h>
 #include <asm/mpspec.h>
 #include <asm/x86_init.h>
+#include <asm/cpufeature.h>
+#include <asm/irq_vectors.h>
+#include <asm/xen/hypervisor.h>
+
+#include <xen/xen.h>
 
 #ifdef CONFIG_ACPI_APEI
 # include <asm/pgtable_types.h>
@@ -30,6 +35,7 @@ extern int acpi_skip_timer_override;
 extern int acpi_use_timer_override;
 extern int acpi_fix_pin2_polarity;
 extern int acpi_disable_cmcff;
+extern bool acpi_int_src_ovr[NR_IRQS_LEGACY];
 
 extern u8 acpi_sci_flags;
 extern u32 acpi_sci_override_gsi;
@@ -50,6 +56,8 @@ static inline void disable_acpi(void)
 
 extern int acpi_gsi_to_irq(u32 gsi, unsigned int *irq);
 
+extern int acpi_blacklisted(void);
+
 static inline void acpi_noirq_set(void) { acpi_noirq = 1; }
 static inline void acpi_disable_pci(void)
 {
@@ -62,6 +70,20 @@ extern int (*acpi_suspend_lowlevel)(void);
 
 /* Physical address to resume after wakeup */
 unsigned long acpi_get_wakeup_address(void);
+
+static inline bool acpi_skip_set_wakeup_address(void)
+{
+	return cpu_feature_enabled(X86_FEATURE_XENPV);
+}
+
+#define acpi_skip_set_wakeup_address acpi_skip_set_wakeup_address
+
+union acpi_subtable_headers;
+
+int __init acpi_parse_mp_wake(union acpi_subtable_headers *header,
+			      const unsigned long end);
+
+void asm_acpi_mp_play_dead(u64 reset_vector, u64 pgd_pa);
 
 /*
  * Check if the CPU can handle C2 and deeper
@@ -92,23 +114,42 @@ static inline bool arch_has_acpi_pdc(void)
 		c->x86_vendor == X86_VENDOR_CENTAUR);
 }
 
-static inline void arch_acpi_set_pdc_bits(u32 *buf)
+static inline void arch_acpi_set_proc_cap_bits(u32 *cap)
 {
 	struct cpuinfo_x86 *c = &cpu_data(0);
 
-	buf[2] |= ACPI_PDC_C_CAPABILITY_SMP;
+	*cap |= ACPI_PROC_CAP_C_CAPABILITY_SMP;
+
+	/* Enable coordination with firmware's _TSD info */
+	*cap |= ACPI_PROC_CAP_SMP_T_SWCOORD;
 
 	if (cpu_has(c, X86_FEATURE_EST))
-		buf[2] |= ACPI_PDC_EST_CAPABILITY_SWSMP;
+		*cap |= ACPI_PROC_CAP_EST_CAPABILITY_SWSMP;
 
 	if (cpu_has(c, X86_FEATURE_ACPI))
-		buf[2] |= ACPI_PDC_T_FFH;
+		*cap |= ACPI_PROC_CAP_T_FFH;
+
+	if (cpu_has(c, X86_FEATURE_HWP))
+		*cap |= ACPI_PROC_CAP_COLLAB_PROC_PERF;
 
 	/*
-	 * If mwait/monitor is unsupported, C2/C3_FFH will be disabled
+	 * If mwait/monitor is unsupported, C_C1_FFH and
+	 * C2/C3_FFH will be disabled.
 	 */
-	if (!cpu_has(c, X86_FEATURE_MWAIT))
-		buf[2] &= ~(ACPI_PDC_C_C2C3_FFH);
+	if (!cpu_has(c, X86_FEATURE_MWAIT) ||
+	    boot_option_idle_override == IDLE_NOMWAIT)
+		*cap &= ~(ACPI_PROC_CAP_C_C1_FFH | ACPI_PROC_CAP_C_C2C3_FFH);
+
+	if (xen_initial_domain()) {
+		/*
+		 * When Linux is running as Xen dom0, the hypervisor is the
+		 * entity in charge of the processor power management, and so
+		 * Xen needs to check the OS capabilities reported in the
+		 * processor capabilities buffer matches what the hypervisor
+		 * driver supports.
+		 */
+		xen_sanitize_proc_cap_bits(cap);
+	}
 }
 
 static inline bool acpi_has_cpu_in_madt(void)
@@ -117,13 +158,13 @@ static inline bool acpi_has_cpu_in_madt(void)
 }
 
 #define ACPI_HAVE_ARCH_SET_ROOT_POINTER
-static inline void acpi_arch_set_root_pointer(u64 addr)
+static __always_inline void acpi_arch_set_root_pointer(u64 addr)
 {
 	x86_init.acpi.set_root_pointer(addr);
 }
 
 #define ACPI_HAVE_ARCH_GET_ROOT_POINTER
-static inline u64 acpi_arch_get_root_pointer(void)
+static __always_inline u64 acpi_arch_get_root_pointer(void)
 {
 	return x86_init.acpi.get_root_pointer();
 }
@@ -132,6 +173,14 @@ void acpi_generic_reduced_hw_init(void);
 
 void x86_default_set_root_pointer(u64 addr);
 u64 x86_default_get_root_pointer(void);
+
+#ifdef CONFIG_XEN_PV
+/* A Xen PV domain needs a special acpi_os_ioremap() handling. */
+extern void __iomem * (*acpi_os_ioremap)(acpi_physical_address phys,
+					 acpi_size size);
+void __iomem *x86_acpi_os_ioremap(acpi_physical_address phys, acpi_size size);
+#define acpi_os_ioremap acpi_os_ioremap
+#endif
 
 #else /* !CONFIG_ACPI */
 

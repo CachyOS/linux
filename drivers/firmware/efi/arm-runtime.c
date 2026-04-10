@@ -12,27 +12,27 @@
 #include <linux/io.h>
 #include <linux/memblock.h>
 #include <linux/mm_types.h>
+#include <linux/pgalloc.h>
+#include <linux/pgtable.h>
 #include <linux/preempt.h>
 #include <linux/rbtree.h>
 #include <linux/rwsem.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
-#include <linux/pgtable.h>
 
 #include <asm/cacheflush.h>
 #include <asm/efi.h>
 #include <asm/mmu.h>
-#include <asm/pgalloc.h>
 
-#if defined(CONFIG_PTDUMP_DEBUGFS) && defined(CONFIG_ARM64)
+#if defined(CONFIG_PTDUMP_DEBUGFS) || defined(CONFIG_ARM_PTDUMP_DEBUGFS)
 #include <asm/ptdump.h>
 
 static struct ptdump_info efi_ptdump_info = {
 	.mm		= &efi_mm,
 	.markers	= (struct addr_marker[]){
 		{ 0,				"UEFI runtime start" },
-		{ DEFAULT_MAP_WINDOW_64,	"UEFI runtime end" },
+		{ EFI_RUNTIME_MAP_END,		"UEFI runtime end" },
 		{ -1,				NULL }
 	},
 	.base_addr	= 0,
@@ -63,7 +63,7 @@ static bool __init efi_virtmap_init(void)
 
 		if (!(md->attribute & EFI_MEMORY_RUNTIME))
 			continue;
-		if (md->virt_addr == 0)
+		if (md->virt_addr == U64_MAX)
 			return false;
 
 		ret = efi_create_mapping(&efi_mm, md);
@@ -107,13 +107,13 @@ static int __init arm_enable_runtime_services(void)
 		efi_memory_desc_t *md;
 
 		for_each_efi_memory_desc(md) {
-			int md_size = md->num_pages << EFI_PAGE_SHIFT;
+			u64 md_size = md->num_pages << EFI_PAGE_SHIFT;
 			struct resource *res;
 
 			if (!(md->attribute & EFI_MEMORY_SP))
 				continue;
 
-			res = kzalloc(sizeof(*res), GFP_KERNEL);
+			res = kzalloc_obj(*res);
 			if (WARN_ON(!res))
 				break;
 

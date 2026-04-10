@@ -46,23 +46,6 @@ void __exfat_fs_error(struct super_block *sb, int report, const char *fmt, ...)
 	}
 }
 
-/*
- * exfat_msg() - print preformated EXFAT specific messages.
- * All logs except what uses exfat_fs_error() should be written by exfat_msg()
- */
-void exfat_msg(struct super_block *sb, const char *level, const char *fmt, ...)
-{
-	struct va_format vaf;
-	va_list args;
-
-	va_start(args, fmt);
-	vaf.fmt = fmt;
-	vaf.va = &args;
-	/* level means KERN_ pacility level */
-	printk("%sexFAT-fs (%s): %pV\n", level, sb->s_id, &vaf);
-	va_end(args);
-}
-
 #define SECS_PER_MIN    (60)
 #define TIMEZONE_SEC(x)	((x) * 15 * SECS_PER_MIN)
 
@@ -141,6 +124,14 @@ void exfat_truncate_atime(struct timespec64 *ts)
 {
 	ts->tv_sec = round_down(ts->tv_sec, 2);
 	ts->tv_nsec = 0;
+}
+
+void exfat_truncate_inode_atime(struct inode *inode)
+{
+	struct timespec64 atime = inode_get_atime(inode);
+
+	exfat_truncate_atime(&atime);
+	inode_set_atime_to_ts(inode, atime);
 }
 
 u16 exfat_calc_chksum16(void *data, int len, u16 chksum, int type)

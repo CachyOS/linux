@@ -150,7 +150,7 @@ static int ams_delta_serio_init(struct platform_device *pdev)
 		return err;
 	}
 
-	serio = kzalloc(sizeof(*serio), GFP_KERNEL);
+	serio = kzalloc_obj(*serio);
 	if (!serio)
 		return -ENOMEM;
 
@@ -159,8 +159,8 @@ static int ams_delta_serio_init(struct platform_device *pdev)
 	serio->id.type = SERIO_8042;
 	serio->open = ams_delta_serio_open;
 	serio->close = ams_delta_serio_close;
-	strlcpy(serio->name, "AMS DELTA keyboard adapter", sizeof(serio->name));
-	strlcpy(serio->phys, dev_name(&pdev->dev), sizeof(serio->phys));
+	strscpy(serio->name, "AMS DELTA keyboard adapter", sizeof(serio->name));
+	strscpy(serio->phys, dev_name(&pdev->dev), sizeof(serio->phys));
 	serio->dev.parent = &pdev->dev;
 	serio->port_data = priv;
 
@@ -173,13 +173,11 @@ static int ams_delta_serio_init(struct platform_device *pdev)
 	return 0;
 }
 
-static int ams_delta_serio_exit(struct platform_device *pdev)
+static void ams_delta_serio_exit(struct platform_device *pdev)
 {
 	struct ams_delta_serio *priv = platform_get_drvdata(pdev);
 
 	serio_unregister_port(priv->serio);
-
-	return 0;
 }
 
 static struct platform_driver ams_delta_serio_driver = {

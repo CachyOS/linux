@@ -28,23 +28,28 @@ static int ecdh_set_secret(struct crypto_kpp *tfm, const void *buf,
 {
 	struct ecdh_ctx *ctx = ecdh_get_ctx(tfm);
 	struct ecdh params;
+	int ret = 0;
 
 	if (crypto_ecdh_decode_key(buf, len, &params) < 0 ||
 	    params.key_size > sizeof(u64) * ctx->ndigits)
 		return -EINVAL;
 
+	memset(ctx->private_key, 0, sizeof(ctx->private_key));
+
 	if (!params.key || !params.key_size)
 		return ecc_gen_privkey(ctx->curve_id, ctx->ndigits,
 				       ctx->private_key);
 
-	memcpy(ctx->private_key, params.key, params.key_size);
+	ecc_digits_from_bytes(params.key, params.key_size,
+			      ctx->private_key, ctx->ndigits);
 
 	if (ecc_is_key_valid(ctx->curve_id, ctx->ndigits,
 			     ctx->private_key, params.key_size) < 0) {
 		memzero_explicit(ctx->private_key, params.key_size);
-		return -EINVAL;
+		ret = -EINVAL;
 	}
-	return 0;
+
+	return ret;
 }
 
 static int ecdh_compute_value(struct kpp_request *req)
@@ -200,7 +205,7 @@ static struct kpp_alg ecdh_nist_p384 = {
 
 static bool ecdh_nist_p192_registered;
 
-static int ecdh_init(void)
+static int __init ecdh_init(void)
 {
 	int ret;
 
@@ -227,7 +232,7 @@ nist_p256_error:
 	return ret;
 }
 
-static void ecdh_exit(void)
+static void __exit ecdh_exit(void)
 {
 	if (ecdh_nist_p192_registered)
 		crypto_unregister_kpp(&ecdh_nist_p192);
@@ -235,7 +240,7 @@ static void ecdh_exit(void)
 	crypto_unregister_kpp(&ecdh_nist_p384);
 }
 
-subsys_initcall(ecdh_init);
+module_init(ecdh_init);
 module_exit(ecdh_exit);
 MODULE_ALIAS_CRYPTO("ecdh");
 MODULE_LICENSE("GPL");

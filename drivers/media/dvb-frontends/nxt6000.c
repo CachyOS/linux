@@ -560,7 +560,7 @@ struct dvb_frontend* nxt6000_attach(const struct nxt6000_config* config,
 	struct nxt6000_state* state = NULL;
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(struct nxt6000_state), GFP_KERNEL);
+	state = kzalloc_obj(struct nxt6000_state);
 	if (state == NULL) goto error;
 
 	/* setup the state */
@@ -621,4 +621,4 @@ MODULE_DESCRIPTION("NxtWave NXT6000 DVB-T demodulator driver");
 MODULE_AUTHOR("Florian Schirmer");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(nxt6000_attach);
+EXPORT_SYMBOL_GPL(nxt6000_attach);

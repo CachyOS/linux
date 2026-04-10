@@ -40,7 +40,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/clk.h>
 
 #include <asm/mpc52xx.h>
@@ -101,7 +101,7 @@ struct psc_ops {
 	void		(*cw_restore_ints)(struct uart_port *port);
 	unsigned int	(*set_baudrate)(struct uart_port *port,
 					struct ktermios *new,
-					struct ktermios *old);
+					const struct ktermios *old);
 	int		(*clock_alloc)(struct uart_port *port);
 	void		(*clock_relse)(struct uart_port *port);
 	int		(*clock)(struct uart_port *port, int enable);
@@ -287,7 +287,7 @@ static void mpc52xx_psc_cw_restore_ints(struct uart_port *port)
 
 static unsigned int mpc5200_psc_set_baudrate(struct uart_port *port,
 					     struct ktermios *new,
-					     struct ktermios *old)
+					     const struct ktermios *old)
 {
 	unsigned int baud;
 	unsigned int divisor;
@@ -305,7 +305,7 @@ static unsigned int mpc5200_psc_set_baudrate(struct uart_port *port,
 
 static unsigned int mpc5200b_psc_set_baudrate(struct uart_port *port,
 					      struct ktermios *new,
-					      struct ktermios *old)
+					      const struct ktermios *old)
 {
 	unsigned int baud;
 	unsigned int divisor;
@@ -533,7 +533,7 @@ static void mpc512x_psc_cw_restore_ints(struct uart_port *port)
 
 static unsigned int mpc512x_psc_set_baudrate(struct uart_port *port,
 					     struct ktermios *new,
-					     struct ktermios *old)
+					     const struct ktermios *old)
 {
 	unsigned int baud;
 	unsigned int divisor;
@@ -880,7 +880,7 @@ static inline void mpc5125_set_divisor(struct mpc5125_psc __iomem *psc,
 
 static unsigned int mpc5125_psc_set_baudrate(struct uart_port *port,
 					     struct ktermios *new,
-					     struct ktermios *old)
+					     const struct ktermios *old)
 {
 	unsigned int baud;
 	unsigned int divisor;
@@ -1096,14 +1096,14 @@ static void
 mpc52xx_uart_break_ctl(struct uart_port *port, int ctl)
 {
 	unsigned long flags;
-	spin_lock_irqsave(&port->lock, flags);
+	uart_port_lock_irqsave(port, &flags);
 
 	if (ctl == -1)
 		psc_ops->command(port, MPC52xx_PSC_START_BRK);
 	else
 		psc_ops->command(port, MPC52xx_PSC_STOP_BRK);
 
-	spin_unlock_irqrestore(&port->lock, flags);
+	uart_port_unlock_irqrestore(port, flags);
 }
 
 static int
@@ -1167,7 +1167,7 @@ mpc52xx_uart_shutdown(struct uart_port *port)
 
 static void
 mpc52xx_uart_set_termios(struct uart_port *port, struct ktermios *new,
-			 struct ktermios *old)
+			 const struct ktermios *old)
 {
 	unsigned long flags;
 	unsigned char mr1, mr2;
@@ -1214,7 +1214,7 @@ mpc52xx_uart_set_termios(struct uart_port *port, struct ktermios *new,
 	}
 
 	/* Get the lock */
-	spin_lock_irqsave(&port->lock, flags);
+	uart_port_lock_irqsave(port, &flags);
 
 	/* Do our best to flush TX & RX, so we don't lose anything */
 	/* But we don't wait indefinitely ! */
@@ -1250,7 +1250,7 @@ mpc52xx_uart_set_termios(struct uart_port *port, struct ktermios *new,
 	psc_ops->command(port, MPC52xx_PSC_RX_ENABLE);
 
 	/* We're all set, release the lock */
-	spin_unlock_irqrestore(&port->lock, flags);
+	uart_port_unlock_irqrestore(port, flags);
 }
 
 static const char *
@@ -1351,7 +1351,6 @@ static const struct uart_ops mpc52xx_uart_ops = {
 	.startup	= mpc52xx_uart_startup,
 	.shutdown	= mpc52xx_uart_shutdown,
 	.set_termios	= mpc52xx_uart_set_termios,
-/*	.pm		= mpc52xx_uart_pm,		Not supported yet */
 	.type		= mpc52xx_uart_type,
 	.release_port	= mpc52xx_uart_release_port,
 	.request_port	= mpc52xx_uart_request_port,
@@ -1364,7 +1363,7 @@ static const struct uart_ops mpc52xx_uart_ops = {
 /* Interrupt handling                                                       */
 /* ======================================================================== */
 
-static inline unsigned int
+static inline bool
 mpc52xx_uart_int_rx_chars(struct uart_port *port)
 {
 	struct tty_port *tport = &port->state->port;
@@ -1425,58 +1424,27 @@ mpc52xx_uart_int_rx_chars(struct uart_port *port)
 	return psc_ops->raw_rx_rdy(port);
 }
 
-static inline int
+static inline bool
 mpc52xx_uart_int_tx_chars(struct uart_port *port)
 {
-	struct circ_buf *xmit = &port->state->xmit;
+	u8 ch;
 
-	/* Process out of band chars */
-	if (port->x_char) {
-		psc_ops->write_char(port, port->x_char);
-		port->icount.tx++;
-		port->x_char = 0;
-		return 1;
-	}
-
-	/* Nothing to do ? */
-	if (uart_circ_empty(xmit) || uart_tx_stopped(port)) {
-		mpc52xx_uart_stop_tx(port);
-		return 0;
-	}
-
-	/* Send chars */
-	while (psc_ops->raw_tx_rdy(port)) {
-		psc_ops->write_char(port, xmit->buf[xmit->tail]);
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-		port->icount.tx++;
-		if (uart_circ_empty(xmit))
-			break;
-	}
-
-	/* Wake up */
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
-		uart_write_wakeup(port);
-
-	/* Maybe we're done after all */
-	if (uart_circ_empty(xmit)) {
-		mpc52xx_uart_stop_tx(port);
-		return 0;
-	}
-
-	return 1;
+	return uart_port_tx(port, ch,
+		psc_ops->raw_tx_rdy(port),
+		psc_ops->write_char(port, ch));
 }
 
 static irqreturn_t
 mpc5xxx_uart_process_int(struct uart_port *port)
 {
 	unsigned long pass = ISR_PASS_LIMIT;
-	unsigned int keepgoing;
+	bool keepgoing;
 	u8 status;
 
 	/* While we have stuff to do, we continue */
 	do {
 		/* If we don't find anything to do, we stop */
-		keepgoing = 0;
+		keepgoing = false;
 
 		psc_ops->rx_clr_irq(port);
 		if (psc_ops->rx_rdy(port))
@@ -1495,7 +1463,7 @@ mpc5xxx_uart_process_int(struct uart_port *port)
 
 		/* Limit number of iteration */
 		if (!(--pass))
-			keepgoing = 0;
+			keepgoing = false;
 
 	} while (keepgoing);
 
@@ -1508,11 +1476,11 @@ mpc52xx_uart_int(int irq, void *dev_id)
 	struct uart_port *port = dev_id;
 	irqreturn_t ret;
 
-	spin_lock(&port->lock);
+	uart_port_lock(port);
 
 	ret = psc_ops->handle_irq(port);
 
-	spin_unlock(&port->lock);
+	uart_port_unlock(port);
 
 	return ret;
 }
@@ -1630,7 +1598,7 @@ mpc52xx_console_setup(struct console *co, char *options)
 		return ret;
 	}
 
-	uartclk = mpc5xxx_get_bus_frequency(np);
+	uartclk = mpc5xxx_fwnode_get_bus_frequency(of_fwnode_handle(np));
 	if (uartclk == 0) {
 		pr_debug("Could not find uart clock frequency!\n");
 		return -EINVAL;
@@ -1652,7 +1620,7 @@ mpc52xx_console_setup(struct console *co, char *options)
 		 (void *)port->mapbase, port->membase,
 		 port->irq, port->uartclk);
 
-	/* Setup the port parameters accoding to options */
+	/* Setup the port parameters according to options */
 	if (options)
 		uart_parse_options(options, &baud, &parity, &bits, &flow);
 	else
@@ -1747,7 +1715,7 @@ static int mpc52xx_uart_of_probe(struct platform_device *op)
 	/* set the uart clock to the input clock of the psc, the different
 	 * prescalers are taken into account in the set_baudrate() methods
 	 * of the respective chip */
-	uartclk = mpc5xxx_get_bus_frequency(op->dev.of_node);
+	uartclk = mpc5xxx_get_bus_frequency(&op->dev);
 	if (uartclk == 0) {
 		dev_dbg(&op->dev, "Could not find uart clock frequency!\n");
 		return -EINVAL;
@@ -1796,15 +1764,12 @@ static int mpc52xx_uart_of_probe(struct platform_device *op)
 	return 0;
 }
 
-static int
-mpc52xx_uart_of_remove(struct platform_device *op)
+static void mpc52xx_uart_of_remove(struct platform_device *op)
 {
 	struct uart_port *port = platform_get_drvdata(op);
 
 	if (port)
 		uart_remove_one_port(&mpc52xx_uart_driver, port);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM

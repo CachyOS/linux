@@ -52,7 +52,7 @@ int qedr_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata);
 int qedr_alloc_xrcd(struct ib_xrcd *ibxrcd, struct ib_udata *udata);
 int qedr_dealloc_xrcd(struct ib_xrcd *ibxrcd, struct ib_udata *udata);
 int qedr_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
-		   struct ib_udata *udata);
+		   struct uverbs_attr_bundle *attrs);
 int qedr_destroy_cq(struct ib_cq *ibcq, struct ib_udata *udata);
 int qedr_arm_cq(struct ib_cq *ibcq, enum ib_cq_notify_flags flags);
 int qedr_create_qp(struct ib_qp *qp, struct ib_qp_init_attr *attrs,
@@ -79,7 +79,8 @@ int qedr_dereg_mr(struct ib_mr *ib_mr, struct ib_udata *udata);
 struct ib_mr *qedr_get_dma_mr(struct ib_pd *, int acc);
 
 struct ib_mr *qedr_reg_user_mr(struct ib_pd *, u64 start, u64 length,
-			       u64 virt, int acc, struct ib_udata *);
+			       u64 virt, int acc, struct ib_dmah *dmah,
+			       struct ib_udata *);
 
 int qedr_map_mr_sg(struct ib_mr *ibmr, struct scatterlist *sg,
 		   int sg_nents, unsigned int *sg_offset);

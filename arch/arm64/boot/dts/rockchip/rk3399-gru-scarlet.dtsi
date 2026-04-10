@@ -13,7 +13,7 @@
 	/* Power tree */
 
 	/* ppvar_sys children, sorted by name */
-	pp1250_s3: pp1250-s3 {
+	pp1250_s3: regulator-pp1250-s3 {
 		compatible = "regulator-fixed";
 		regulator-name = "pp1250_s3";
 
@@ -26,7 +26,7 @@
 		vin-supply = <&ppvar_sys>;
 	};
 
-	pp1250_cam: pp1250-dvdd {
+	pp1250_cam: regulator-pp1250-dvdd {
 		compatible = "regulator-fixed";
 		regulator-name = "pp1250_dvdd";
 		pinctrl-names = "default";
@@ -42,7 +42,7 @@
 		vin-supply = <&pp1250_s3>;
 	};
 
-	pp900_s0: pp900-s0 {
+	pp900_s0: regulator-pp900-s0 {
 		compatible = "regulator-fixed";
 		regulator-name = "pp900_s0";
 
@@ -55,7 +55,7 @@
 		vin-supply = <&ppvar_sys>;
 	};
 
-	ppvarn_lcd: ppvarn-lcd {
+	ppvarn_lcd: regulator-ppvarn-lcd {
 		compatible = "regulator-fixed";
 		regulator-name = "ppvarn_lcd";
 		pinctrl-names = "default";
@@ -66,7 +66,7 @@
 		vin-supply = <&ppvar_sys>;
 	};
 
-	ppvarp_lcd: ppvarp-lcd {
+	ppvarp_lcd: regulator-ppvarp-lcd {
 		compatible = "regulator-fixed";
 		regulator-name = "ppvarp_lcd";
 		pinctrl-names = "default";
@@ -78,7 +78,7 @@
 	};
 
 	/* pp1800 children, sorted by name */
-	pp900_s3: pp900-s3 {
+	pp900_s3: regulator-pp900-s3 {
 		compatible = "regulator-fixed";
 		regulator-name = "pp900_s3";
 
@@ -92,11 +92,11 @@
 	};
 
 	/* EC turns on pp1800_s3_en */
-	pp1800_s3: pp1800 {
+	pp1800_s3: regulator-pp1800 {
 	};
 
 	/* pp3300 children, sorted by name */
-	pp2800_cam: pp2800-avdd {
+	pp2800_cam: regulator-pp2800-avdd {
 		compatible = "regulator-fixed";
 		regulator-name = "pp2800_avdd";
 		pinctrl-names = "default";
@@ -109,11 +109,11 @@
 	};
 
 	/* EC turns on pp3300_s0_en */
-	pp3300_s0: pp3300 {
+	pp3300_s0: regulator-pp3300 {
 	};
 
 	/* EC turns on pp3300_s3_en */
-	pp3300_s3: pp3300 {
+	pp3300_s3: regulator-pp3300 {
 	};
 
 	/*
@@ -127,7 +127,7 @@
 	 * the boot process it also enables its supply regulator bt_3v3,
 	 * which changes BT_EN to high.
 	 */
-	bt_3v3: bt-3v3 {
+	bt_3v3: regulator-bt-3v3 {
 		compatible = "regulator-fixed";
 		regulator-name = "bt_3v3";
 		pinctrl-names = "default";
@@ -138,7 +138,7 @@
 		vin-supply = <&pp3300_s3>;
 	};
 
-	wlan_3v3: wlan-3v3 {
+	wlan_3v3: regulator-wlan-3v3 {
 		compatible = "regulator-fixed";
 		regulator-name = "wlan_3v3";
 		pinctrl-names = "default";
@@ -167,7 +167,6 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&bl_en>;
 		pwms = <&pwm1 0 1000000 0>;
-		pwm-delay-us = <10000>;
 	};
 
 	dmic: dmic {
@@ -183,7 +182,7 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&pen_eject_odl>;
 
-		pen-insert {
+		switch-pen-insert {
 			label = "Pen Insert";
 			/* Insert = low, eject = high */
 			gpios = <&gpio1 1 GPIO_ACTIVE_LOW>;
@@ -376,7 +375,8 @@ camera: &i2c7 {
 		<&cru ACLK_VIO>,
 		<&cru ACLK_GIC_PRE>,
 		<&cru PCLK_DDR>,
-		<&cru ACLK_HDCP>;
+		<&cru ACLK_HDCP>,
+		<&cru ACLK_VDU>;
 	assigned-clock-rates =
 		<600000000>, <1600000000>,
 		<1000000000>,
@@ -388,6 +388,7 @@ camera: &i2c7 {
 		<400000000>,
 		<200000000>,
 		<200000000>,
+		<400000000>,
 		<400000000>;
 };
 
@@ -626,8 +627,10 @@ camera: &i2c7 {
 };
 
 &mipi_dsi {
-	status = "okay";
 	clock-master;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
 
 	ports {
 		mipi_out: port@1 {
@@ -662,7 +665,7 @@ camera: &i2c7 {
 			port@1 {
 				reg = <1>;
 
-				mipi1_in_panel: endpoint@1 {
+				mipi1_in_panel: endpoint {
 					remote-endpoint = <&mipi1_out_panel>;
 				};
 			};
@@ -688,7 +691,6 @@ camera: &i2c7 {
 	ep-gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
 
 	/* PERST# asserted in S3 */
-	pcie-reset-suspend = <1>;
 
 	vpcie3v3-supply = <&wlan_3v3>;
 	vpcie1v8-supply = <&pp1800_pcie>;
@@ -705,7 +707,7 @@ camera: &i2c7 {
 &spi2 {
 	status = "okay";
 
-	cr50@0 {
+	tpm@0 {
 		compatible = "google,cr50";
 		reg = <0>;
 		interrupt-parent = <&gpio1>;
@@ -732,10 +734,6 @@ camera: &i2c7 {
 };
 
 /* PINCTRL OVERRIDES */
-&ec_ap_int_l {
-	rockchip,pins = <1 RK_PC2 RK_FUNC_GPIO &pcfg_pull_up>;
-};
-
 &ap_fw_wp {
 	rockchip,pins = <0 RK_PB5 RK_FUNC_GPIO &pcfg_pull_none>;
 };
@@ -759,6 +757,16 @@ camera: &i2c7 {
 &i2s0_8ch_bus {
 	rockchip,pins =
 		<3 RK_PD0 1 &pcfg_pull_none_6ma>,
+		<3 RK_PD1 1 &pcfg_pull_none_6ma>,
+		<3 RK_PD2 1 &pcfg_pull_none_6ma>,
+		<3 RK_PD3 1 &pcfg_pull_none_6ma>,
+		<3 RK_PD7 1 &pcfg_pull_none_6ma>,
+		<4 RK_PA0 1 &pcfg_pull_none_6ma>;
+};
+
+&i2s0_8ch_bus_bclk_off {
+	rockchip,pins =
+		<3 RK_PD0 RK_FUNC_GPIO &pcfg_pull_none_6ma>,
 		<3 RK_PD1 1 &pcfg_pull_none_6ma>,
 		<3 RK_PD2 1 &pcfg_pull_none_6ma>,
 		<3 RK_PD3 1 &pcfg_pull_none_6ma>,
@@ -827,7 +835,7 @@ camera: &i2c7 {
 		};
 	};
 
-	discrete-regulators {
+	discretes {
 		display_rst_l: display-rst-l {
 			rockchip,pins = <4 RK_PD1 RK_FUNC_GPIO &pcfg_pull_down>;
 		};

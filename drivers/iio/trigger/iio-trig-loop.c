@@ -46,7 +46,7 @@ static int iio_loop_thread(void *data)
 	set_freezable();
 
 	do {
-		iio_trigger_poll_chained(trig);
+		iio_trigger_poll_nested(trig);
 	} while (likely(!kthread_freezable_should_stop(NULL)));
 
 	return 0;
@@ -80,7 +80,7 @@ static struct iio_sw_trigger *iio_trig_loop_probe(const char *name)
 	struct iio_loop_info *trig_info;
 	int ret;
 
-	trig_info = kzalloc(sizeof(*trig_info), GFP_KERNEL);
+	trig_info = kzalloc_obj(*trig_info);
 	if (!trig_info)
 		return ERR_PTR(-ENOMEM);
 

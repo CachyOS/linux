@@ -25,8 +25,8 @@
 #define W1_F3A_INVALID_PIO_STATE           0xFF
 
 static ssize_t state_read(struct file *filp, struct kobject *kobj,
-			  struct bin_attribute *bin_attr, char *buf, loff_t off,
-			  size_t count)
+			  const struct bin_attribute *bin_attr, char *buf,
+			  loff_t off, size_t count)
 {
 	struct w1_slave *sl = kobj_to_w1_slave(kobj);
 	unsigned int retries = W1_F3A_RETRIES;
@@ -78,10 +78,10 @@ out:
 	return bytes_read;
 }
 
-static BIN_ATTR_RO(state, 1);
+static const BIN_ATTR_RO(state, 1);
 
 static ssize_t output_write(struct file *filp, struct kobject *kobj,
-			    struct bin_attribute *bin_attr, char *buf,
+			    const struct bin_attribute *bin_attr, char *buf,
 			    loff_t off, size_t count)
 {
 	struct w1_slave *sl = kobj_to_w1_slave(kobj);
@@ -99,8 +99,10 @@ static ssize_t output_write(struct file *filp, struct kobject *kobj,
 	if (w1_reset_select_slave(sl))
 		goto out;
 
-	/* according to the DS2413 datasheet the most significant 6 bits
-	   should be set to "1"s, so do it now */
+	/*
+	 * according to the DS2413 datasheet the most significant 6 bits
+	 * should be set to "1"s, so do it now
+	 */
 	*buf = *buf | 0xFC;
 
 	while (retries--) {
@@ -126,9 +128,9 @@ out:
 	return bytes_written;
 }
 
-static BIN_ATTR(output, S_IRUGO | S_IWUSR | S_IWGRP, NULL, output_write, 1);
+static const BIN_ATTR(output, 0664, NULL, output_write, 1);
 
-static struct bin_attribute *w1_f3a_bin_attrs[] = {
+static const struct bin_attribute *const w1_f3a_bin_attrs[] = {
 	&bin_attr_state,
 	&bin_attr_output,
 	NULL,

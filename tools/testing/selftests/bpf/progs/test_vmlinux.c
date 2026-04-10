@@ -16,12 +16,12 @@ bool kprobe_called = false;
 bool fentry_called = false;
 
 SEC("tp/syscalls/sys_enter_nanosleep")
-int handle__tp(struct trace_event_raw_sys_enter *args)
+int handle__tp(struct syscall_trace_enter *args)
 {
 	struct __kernel_timespec *ts;
 	long tv_nsec;
 
-	if (args->id != __NR_nanosleep)
+	if (args->nr != __NR_nanosleep)
 		return 0;
 
 	ts = (void *)args->args[0];
@@ -42,7 +42,7 @@ int BPF_PROG(handle__raw_tp, struct pt_regs *regs, long id)
 	if (id != __NR_nanosleep)
 		return 0;
 
-	ts = (void *)PT_REGS_PARM1_CORE(regs);
+	ts = (void *)PT_REGS_PARM1_CORE_SYSCALL(regs);
 	if (bpf_probe_read_user(&tv_nsec, sizeof(ts->tv_nsec), &ts->tv_nsec) ||
 	    tv_nsec != MY_TV_NSEC)
 		return 0;
@@ -60,7 +60,7 @@ int BPF_PROG(handle__tp_btf, struct pt_regs *regs, long id)
 	if (id != __NR_nanosleep)
 		return 0;
 
-	ts = (void *)PT_REGS_PARM1_CORE(regs);
+	ts = (void *)PT_REGS_PARM1_CORE_SYSCALL(regs);
 	if (bpf_probe_read_user(&tv_nsec, sizeof(ts->tv_nsec), &ts->tv_nsec) ||
 	    tv_nsec != MY_TV_NSEC)
 		return 0;

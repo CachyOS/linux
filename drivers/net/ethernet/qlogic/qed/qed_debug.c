@@ -1832,7 +1832,8 @@ static enum dbg_status qed_find_nvram_image(struct qed_hwfn *p_hwfn,
 					    struct qed_ptt *p_ptt,
 					    u32 image_type,
 					    u32 *nvram_offset_bytes,
-					    u32 *nvram_size_bytes)
+					    u32 *nvram_size_bytes,
+					    bool b_can_sleep)
 {
 	u32 ret_mcp_resp, ret_mcp_param, ret_txn_size;
 	struct mcp_file_att file_att;
@@ -1846,7 +1847,8 @@ static enum dbg_status qed_find_nvram_image(struct qed_hwfn *p_hwfn,
 					&ret_mcp_resp,
 					&ret_mcp_param,
 					&ret_txn_size,
-					(u32 *)&file_att, false);
+					(u32 *)&file_att,
+					b_can_sleep);
 
 	/* Check response */
 	if (nvm_result || (ret_mcp_resp & FW_MSG_CODE_MASK) !=
@@ -1873,7 +1875,9 @@ static enum dbg_status qed_find_nvram_image(struct qed_hwfn *p_hwfn,
 static enum dbg_status qed_nvram_read(struct qed_hwfn *p_hwfn,
 				      struct qed_ptt *p_ptt,
 				      u32 nvram_offset_bytes,
-				      u32 nvram_size_bytes, u32 *ret_buf)
+				      u32 nvram_size_bytes,
+				      u32 *ret_buf,
+				      bool b_can_sleep)
 {
 	u32 ret_mcp_resp, ret_mcp_param, ret_read_size, bytes_to_copy;
 	s32 bytes_left = nvram_size_bytes;
@@ -1899,7 +1903,7 @@ static enum dbg_status qed_nvram_read(struct qed_hwfn *p_hwfn,
 				       &ret_mcp_resp,
 				       &ret_mcp_param, &ret_read_size,
 				       (u32 *)((u8 *)ret_buf + read_offset),
-				       false))
+				       b_can_sleep))
 			return DBG_STATUS_NVRAM_READ_FAILED;
 
 		/* Check response */
@@ -1972,9 +1976,10 @@ static u32 qed_grc_dump_addr_range(struct qed_hwfn *p_hwfn,
 				   u8 split_id)
 {
 	struct dbg_tools_data *dev_data = &p_hwfn->dbg_info;
-	u8 port_id = 0, pf_id = 0, vf_id = 0, fid = 0;
+	u8 port_id = 0, pf_id = 0, vf_id = 0;
 	bool read_using_dmae = false;
 	u32 thresh;
+	u16 fid;
 
 	if (!dump)
 		return len;
@@ -2868,6 +2873,7 @@ static u32 qed_grc_dump_ctx_data(struct qed_hwfn *p_hwfn,
 							  false,
 							  SPLIT_TYPE_NONE, 0);
 		}
+		cond_resched();
 	}
 
 	return offset;
@@ -3199,8 +3205,8 @@ static u32 qed_grc_dump_big_ram(struct qed_hwfn *p_hwfn,
 		     BIT(big_ram->is_256b_bit_offset[dev_data->chip_id]) ? 256
 									 : 128;
 
-	strncpy(type_name, big_ram->instance_name, BIG_RAM_NAME_LEN);
-	strncpy(mem_name, big_ram->instance_name, BIG_RAM_NAME_LEN);
+	memcpy(type_name, big_ram->instance_name, BIG_RAM_NAME_LEN);
+	memcpy(mem_name, big_ram->instance_name, BIG_RAM_NAME_LEN);
 
 	/* Dump memory header */
 	offset += qed_grc_dump_mem_hdr(p_hwfn,
@@ -3379,7 +3385,8 @@ static u32 qed_grc_dump_mcp_hw_dump(struct qed_hwfn *p_hwfn,
 				      p_ptt,
 				      NVM_TYPE_HW_DUMP_OUT,
 				      &hw_dump_offset_bytes,
-				      &hw_dump_size_bytes);
+				      &hw_dump_size_bytes,
+				      false);
 	if (status != DBG_STATUS_OK)
 		return 0;
 
@@ -3396,7 +3403,9 @@ static u32 qed_grc_dump_mcp_hw_dump(struct qed_hwfn *p_hwfn,
 		status = qed_nvram_read(p_hwfn,
 					p_ptt,
 					hw_dump_offset_bytes,
-					hw_dump_size_bytes, dump_buf + offset);
+					hw_dump_size_bytes,
+					dump_buf + offset,
+					false);
 		if (status != DBG_STATUS_OK) {
 			DP_NOTICE(p_hwfn,
 				  "Failed to read MCP HW Dump image from NVRAM\n");
@@ -4122,7 +4131,9 @@ static enum dbg_status qed_mcp_trace_get_meta_info(struct qed_hwfn *p_hwfn,
 	return qed_find_nvram_image(p_hwfn,
 				    p_ptt,
 				    nvram_image_type,
-				    trace_meta_offset, trace_meta_size);
+				    trace_meta_offset,
+				    trace_meta_size,
+				    true);
 }
 
 /* Reads the MCP Trace meta data from NVRAM into the specified buffer */
@@ -4138,7 +4149,10 @@ static enum dbg_status qed_mcp_trace_read_meta(struct qed_hwfn *p_hwfn,
 	/* Read meta data from NVRAM */
 	status = qed_nvram_read(p_hwfn,
 				p_ptt,
-				nvram_offset_in_bytes, size_in_bytes, buf);
+				nvram_offset_in_bytes,
+				size_in_bytes,
+				buf,
+				true);
 	if (status != DBG_STATUS_OK)
 		return status;
 
@@ -4448,10 +4462,11 @@ static enum dbg_status qed_protection_override_dump(struct qed_hwfn *p_hwfn,
 		goto out;
 	}
 
-	/* Add override window info to buffer */
+	/* Add override window info to buffer, preventing buffer overflow */
 	override_window_dwords =
-		qed_rd(p_hwfn, p_ptt, GRC_REG_NUMBER_VALID_OVERRIDE_WINDOW) *
-		PROTECTION_OVERRIDE_ELEMENT_DWORDS;
+		min(qed_rd(p_hwfn, p_ptt, GRC_REG_NUMBER_VALID_OVERRIDE_WINDOW) *
+		PROTECTION_OVERRIDE_ELEMENT_DWORDS,
+		PROTECTION_OVERRIDE_DEPTH_DWORDS);
 	if (override_window_dwords) {
 		addr = BYTES_TO_DWORDS(GRC_REG_PROTECTION_OVERRIDE_WINDOW);
 		offset += qed_grc_dump_addr_range(p_hwfn,
@@ -6346,8 +6361,7 @@ static void qed_read_str_from_buf(void *buf, u32 *offset, u32 size, char *dest)
 {
 	const char *source_str = &((const char *)buf)[*offset];
 
-	strncpy(dest, source_str, size);
-	dest[size - 1] = '\0';
+	strscpy(dest, source_str, size);
 	*offset += size;
 }
 
@@ -6807,9 +6821,7 @@ qed_mcp_trace_alloc_meta_data(struct qed_hwfn *p_hwfn,
 
 	/* Read number of formats and allocate memory for all formats */
 	meta->formats_num = qed_read_dword_from_buf(meta_buf_bytes, &offset);
-	meta->formats = kcalloc(meta->formats_num,
-				sizeof(struct mcp_trace_format),
-				GFP_KERNEL);
+	meta->formats = kzalloc_objs(struct mcp_trace_format, meta->formats_num);
 	if (!meta->formats)
 		return DBG_STATUS_VIRT_MEM_ALLOC_FAILED;
 
@@ -7522,8 +7534,7 @@ enum dbg_status qed_dbg_user_set_bin_ptr(struct qed_hwfn *p_hwfn,
 enum dbg_status qed_dbg_alloc_user_data(struct qed_hwfn *p_hwfn,
 					void **user_data_ptr)
 {
-	*user_data_ptr = kzalloc(sizeof(struct dbg_tools_user_data),
-				 GFP_KERNEL);
+	*user_data_ptr = kzalloc_obj(struct dbg_tools_user_data);
 	if (!(*user_data_ptr))
 		return DBG_STATUS_VIRT_MEM_ALLOC_FAILED;
 
@@ -7599,31 +7610,6 @@ enum dbg_status qed_print_mcp_trace_results(struct qed_hwfn *p_hwfn,
 	return qed_parse_mcp_trace_dump(p_hwfn,
 					dump_buf,
 					results_buf, &parsed_buf_size, true);
-}
-
-enum dbg_status qed_print_mcp_trace_results_cont(struct qed_hwfn *p_hwfn,
-						 u32 *dump_buf,
-						 char *results_buf)
-{
-	u32 parsed_buf_size;
-
-	return qed_parse_mcp_trace_dump(p_hwfn, dump_buf, results_buf,
-					&parsed_buf_size, false);
-}
-
-enum dbg_status qed_print_mcp_trace_line(struct qed_hwfn *p_hwfn,
-					 u8 *dump_buf,
-					 u32 num_dumped_bytes,
-					 char *results_buf)
-{
-	u32 parsed_results_bytes;
-
-	return qed_parse_mcp_trace_buf(p_hwfn,
-				       dump_buf,
-				       num_dumped_bytes,
-				       0,
-				       num_dumped_bytes,
-				       results_buf, &parsed_results_bytes);
 }
 
 /* Frees the specified MCP Trace meta data */

@@ -26,6 +26,8 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 **************************************************************************/
 
+#include <drm/drm_print.h>
+
 #include "intel_display_types.h"
 #include "intel_dvo_dev.h"
 
@@ -58,6 +60,10 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define SIL164_9_MDI (1<<0)
 
 #define SIL164_REGC 0x0c
+#define SIL164_C_SCNT (1<<7)
+#define SIL164_C_PLLF_MASK (0xf<<1)
+#define SIL164_C_PLLF_REC (4<<1)
+#define SIL164_C_PFEN (1<<0)
 
 struct sil164_priv {
 	//I2CDevRec d;
@@ -75,13 +81,13 @@ static bool sil164_readb(struct intel_dvo_device *dvo, int addr, u8 *ch)
 
 	struct i2c_msg msgs[] = {
 		{
-			.addr = dvo->slave_addr,
+			.addr = dvo->target_addr,
 			.flags = 0,
 			.len = 1,
 			.buf = out_buf,
 		},
 		{
-			.addr = dvo->slave_addr,
+			.addr = dvo->target_addr,
 			.flags = I2C_M_RD,
 			.len = 1,
 			.buf = in_buf,
@@ -98,7 +104,7 @@ static bool sil164_readb(struct intel_dvo_device *dvo, int addr, u8 *ch)
 
 	if (!sil->quiet) {
 		DRM_DEBUG_KMS("Unable to read register 0x%02x from %s:%02x.\n",
-			  addr, adapter->name, dvo->slave_addr);
+			  addr, adapter->name, dvo->target_addr);
 	}
 	return false;
 }
@@ -109,7 +115,7 @@ static bool sil164_writeb(struct intel_dvo_device *dvo, int addr, u8 ch)
 	struct i2c_adapter *adapter = dvo->i2c_bus;
 	u8 out_buf[2];
 	struct i2c_msg msg = {
-		.addr = dvo->slave_addr,
+		.addr = dvo->target_addr,
 		.flags = 0,
 		.len = 2,
 		.buf = out_buf,
@@ -123,7 +129,7 @@ static bool sil164_writeb(struct intel_dvo_device *dvo, int addr, u8 ch)
 
 	if (!sil->quiet) {
 		DRM_DEBUG_KMS("Unable to write register 0x%02x to %s:%d.\n",
-			  addr, adapter->name, dvo->slave_addr);
+			  addr, adapter->name, dvo->target_addr);
 	}
 
 	return false;
@@ -137,7 +143,7 @@ static bool sil164_init(struct intel_dvo_device *dvo,
 	struct sil164_priv *sil;
 	unsigned char ch;
 
-	sil = kzalloc(sizeof(struct sil164_priv), GFP_KERNEL);
+	sil = kzalloc_obj(*sil);
 	if (sil == NULL)
 		return false;
 
@@ -149,8 +155,8 @@ static bool sil164_init(struct intel_dvo_device *dvo,
 		goto out;
 
 	if (ch != (SIL164_VID & 0xff)) {
-		DRM_DEBUG_KMS("sil164 not detected got %d: from %s Slave %d.\n",
-			  ch, adapter->name, dvo->slave_addr);
+		DRM_DEBUG_KMS("sil164 not detected got %d: from %s Target %d.\n",
+			  ch, adapter->name, dvo->target_addr);
 		goto out;
 	}
 
@@ -158,8 +164,8 @@ static bool sil164_init(struct intel_dvo_device *dvo,
 		goto out;
 
 	if (ch != (SIL164_DID & 0xff)) {
-		DRM_DEBUG_KMS("sil164 not detected got %d: from %s Slave %d.\n",
-			  ch, adapter->name, dvo->slave_addr);
+		DRM_DEBUG_KMS("sil164 not detected got %d: from %s Target %d.\n",
+			  ch, adapter->name, dvo->target_addr);
 		goto out;
 	}
 	sil->quiet = false;
@@ -185,7 +191,7 @@ static enum drm_connector_status sil164_detect(struct intel_dvo_device *dvo)
 }
 
 static enum drm_mode_status sil164_mode_valid(struct intel_dvo_device *dvo,
-					      struct drm_display_mode *mode)
+					      const struct drm_display_mode *mode)
 {
 	return MODE_OK;
 }
@@ -205,7 +211,13 @@ static void sil164_mode_set(struct intel_dvo_device *dvo,
 	  sil164_writeb(sil, 0x0c, 0x89);
 	  sil164_writeb(sil, 0x08, 0x31);*/
 	/* don't do much */
-	return;
+
+	sil164_writeb(dvo, SIL164_REG8,
+		      SIL164_8_VEN | SIL164_8_HEN);
+	sil164_writeb(dvo, SIL164_REG9,
+		      SIL164_9_TSEL);
+	sil164_writeb(dvo, SIL164_REGC,
+		      SIL164_C_PLLF_REC | SIL164_C_PFEN);
 }
 
 /* set the SIL164 power state */
@@ -224,7 +236,6 @@ static void sil164_dpms(struct intel_dvo_device *dvo, bool enable)
 		ch &= ~SIL164_8_PD;
 
 	sil164_writeb(dvo, SIL164_REG8, ch);
-	return;
 }
 
 static bool sil164_get_hw_state(struct intel_dvo_device *dvo)

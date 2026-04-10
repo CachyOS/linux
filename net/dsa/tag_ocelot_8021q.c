@@ -10,7 +10,11 @@
  */
 #include <linux/dsa/8021q.h>
 #include <linux/dsa/ocelot.h>
-#include "dsa_priv.h"
+
+#include "tag.h"
+#include "tag_8021q.h"
+
+#define OCELOT_8021Q_NAME "ocelot-8021q"
 
 struct ocelot_8021q_tagger_private {
 	struct ocelot_8021q_tagger_data data; /* Must be first */
@@ -33,19 +37,19 @@ static struct sk_buff *ocelot_defer_xmit(struct dsa_port *dp,
 		return NULL;
 
 	/* PTP over IP packets need UDP checksumming. We may have inherited
-	 * NETIF_F_HW_CSUM from the DSA master, but these packets are not sent
-	 * through the DSA master, so calculate the checksum here.
+	 * NETIF_F_HW_CSUM from the DSA conduit, but these packets are not sent
+	 * through the DSA conduit, so calculate the checksum here.
 	 */
 	if (skb->ip_summed == CHECKSUM_PARTIAL && skb_checksum_help(skb))
 		return NULL;
 
-	xmit_work = kzalloc(sizeof(*xmit_work), GFP_ATOMIC);
+	xmit_work = kzalloc_obj(*xmit_work, GFP_ATOMIC);
 	if (!xmit_work)
 		return NULL;
 
 	/* Calls felix_port_deferred_xmit in felix.c */
 	kthread_init_work(&xmit_work->work, xmit_work_fn);
-	/* Increase refcount so the kfree_skb in dsa_slave_xmit
+	/* Increase refcount so the kfree_skb in dsa_user_xmit
 	 * won't really free the packet.
 	 */
 	xmit_work->dp = dp;
@@ -59,7 +63,7 @@ static struct sk_buff *ocelot_defer_xmit(struct dsa_port *dp,
 static struct sk_buff *ocelot_xmit(struct sk_buff *skb,
 				   struct net_device *netdev)
 {
-	struct dsa_port *dp = dsa_slave_to_port(netdev);
+	struct dsa_port *dp = dsa_user_to_port(netdev);
 	u16 queue_mapping = skb_get_queue_mapping(skb);
 	u8 pcp = netdev_txq_to_tc(netdev, queue_mapping);
 	u16 tx_vid = dsa_tag_8021q_standalone_vid(dp);
@@ -75,11 +79,11 @@ static struct sk_buff *ocelot_xmit(struct sk_buff *skb,
 static struct sk_buff *ocelot_rcv(struct sk_buff *skb,
 				  struct net_device *netdev)
 {
-	int src_port, switch_id;
+	int src_port = -1, switch_id = -1;
 
-	dsa_8021q_rcv(skb, &src_port, &switch_id, NULL);
+	dsa_8021q_rcv(skb, &src_port, &switch_id, NULL, NULL);
 
-	skb->dev = dsa_master_find_slave(netdev, switch_id, src_port);
+	skb->dev = dsa_conduit_find_user(netdev, switch_id, src_port);
 	if (!skb->dev)
 		return NULL;
 
@@ -102,11 +106,11 @@ static int ocelot_connect(struct dsa_switch *ds)
 	struct ocelot_8021q_tagger_private *priv;
 	int err;
 
-	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+	priv = kzalloc_obj(*priv);
 	if (!priv)
 		return -ENOMEM;
 
-	priv->xmit_worker = kthread_create_worker(0, "felix_xmit");
+	priv->xmit_worker = kthread_run_worker(0, "felix_xmit");
 	if (IS_ERR(priv->xmit_worker)) {
 		err = PTR_ERR(priv->xmit_worker);
 		kfree(priv);
@@ -119,17 +123,18 @@ static int ocelot_connect(struct dsa_switch *ds)
 }
 
 static const struct dsa_device_ops ocelot_8021q_netdev_ops = {
-	.name			= "ocelot-8021q",
+	.name			= OCELOT_8021Q_NAME,
 	.proto			= DSA_TAG_PROTO_OCELOT_8021Q,
 	.xmit			= ocelot_xmit,
 	.rcv			= ocelot_rcv,
 	.connect		= ocelot_connect,
 	.disconnect		= ocelot_disconnect,
 	.needed_headroom	= VLAN_HLEN,
-	.promisc_on_master	= true,
+	.promisc_on_conduit	= true,
 };
 
+MODULE_DESCRIPTION("DSA tag driver for Ocelot family of switches, using VLAN");
 MODULE_LICENSE("GPL v2");
-MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_OCELOT_8021Q);
+MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_OCELOT_8021Q, OCELOT_8021Q_NAME);
 
 module_dsa_tag_driver(ocelot_8021q_netdev_ops);

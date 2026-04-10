@@ -9,97 +9,30 @@ title: Qualcomm Shared Memory Driver
 maintainers:
   - Andy Gross <agross@kernel.org>
   - Bjorn Andersson <bjorn.andersson@linaro.org>
-  - Krzysztof Kozlowski <krzysztof.kozlowski@linaro.org>
+  - Krzysztof Kozlowski <krzk@kernel.org>
 
 description:
   The Qualcomm Shared Memory Driver is a FIFO based communication channel for
   sending data between the various subsystems in Qualcomm platforms.
+
+  Using the top-level SMD node is deprecated. Instead, the SMD edges are defined
+  directly below the device node representing the respective remote subsystem
+  or remote processor.
+
+deprecated: true
 
 properties:
   compatible:
     const: qcom,smd
 
 patternProperties:
-  "^.*-edge|rpm$":
-    type: object
+  "^smd-edge|rpm$":
+    $ref: /schemas/remoteproc/qcom,smd-edge.yaml#
+    unevaluatedProperties: false
     description:
       Each subnode of the SMD node represents a remote subsystem or a remote
       processor of some sort - or in SMD language an "edge". The name of the
       edges are not important.
-
-    properties:
-      interrupts:
-        maxItems: 1
-
-      label:
-        $ref: /schemas/types.yaml#/definitions/string
-        description:
-          Name of the edge, used for debugging and identification purposes. The
-          node name will be used if this is not present.
-
-      mboxes:
-        maxItems: 1
-        description:
-          Reference to the mailbox representing the outgoing doorbell in APCS for
-          this client.
-
-      qcom,ipc:
-        $ref: /schemas/types.yaml#/definitions/phandle-array
-        items:
-          - items:
-              - description: phandle to a syscon node representing the APCS registers
-              - description: u32 representing offset to the register within the syscon
-              - description: u32 representing the ipc bit within the register
-        description:
-          Three entries specifying the outgoing ipc bit used for signaling the
-          remote processor.
-
-      qcom,smd-edge:
-        $ref: /schemas/types.yaml#/definitions/uint32
-        description:
-          The identifier of the remote processor in the smd channel allocation
-          table.
-
-      qcom,remote-pid:
-        $ref: /schemas/types.yaml#/definitions/uint32
-        description:
-          The identifier for the remote processor as known by the rest of the
-          system.
-
-      rpm-requests:
-        type: object
-        description:
-          In turn, subnodes of the "edges" represent devices tied to SMD
-          channels on that "edge". The names of the devices are not
-          important. The properties of these nodes are defined by the
-          individual bindings for the SMD devices.
-
-        properties:
-          qcom,smd-channels:
-            $ref: /schemas/types.yaml#/definitions/string-array
-            minItems: 1
-            maxItems: 32
-            description:
-              A list of channels tied to this device, used for matching the
-              device to channels.
-
-        required:
-          - compatible
-          - qcom,smd-channels
-
-        additionalProperties: true
-
-    required:
-      - interrupts
-      - qcom,smd-edge
-
-    oneOf:
-      - required:
-          - mboxes
-      - required:
-          - qcom,ipc
-
-    additionalProperties: false
 
 required:
   - compatible
@@ -110,6 +43,7 @@ examples:
   # The following example represents a smd node, with one edge representing the
   # "rpm" subsystem. For the "rpm" subsystem we have a device tied to the
   # "rpm_request" channel.
+  # NOTE: This is deprecated, represent the RPM using "qcom,rpm-proc" instead.
   - |
     #include <dt-bindings/interrupt-controller/arm-gic.h>
 
@@ -122,7 +56,7 @@ examples:
             qcom,smd-edge = <15>;
 
             rpm-requests {
-                compatible = "qcom,rpm-msm8974";
+                compatible = "qcom,rpm-msm8974", "qcom,smd-rpm";
                 qcom,smd-channels = "rpm_requests";
 
                 clock-controller {

@@ -5,8 +5,7 @@
 #include <asm/xen/hypercall.h>
 #include <xen/interface/memory.h>
 
-#include "multicalls.h"
-#include "mmu.h"
+#include "xen-ops.h"
 
 unsigned long arbitrary_virt_to_mfn(void *vaddr)
 {
@@ -42,7 +41,7 @@ EXPORT_SYMBOL_GPL(arbitrary_virt_to_machine);
 int xen_unmap_domain_gfn_range(struct vm_area_struct *vma,
 			       int nr, struct page **pages)
 {
-	if (xen_feature(XENFEAT_auto_translated_physmap))
+	if (!xen_pv_domain())
 		return xen_xlate_unmap_gfn_range(vma, nr, pages);
 
 	if (!pages)

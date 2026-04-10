@@ -5,17 +5,17 @@
 
 #include <linux/device.h>
 #include <linux/tee.h>
-#include <linux/tee_drv.h>
+#include <linux/tee_core.h>
 #include <linux/psp-tee.h>
 #include <linux/slab.h>
-#include <linux/psp-sev.h>
+#include <linux/psp.h>
 #include "amdtee_if.h"
 #include "amdtee_private.h"
 
 static int tee_params_to_amd_params(struct tee_param *tee, u32 count,
 				    struct tee_operation *amd)
 {
-	int i, ret = 0;
+	int i;
 	u32 type;
 
 	if (!count)
@@ -66,13 +66,13 @@ static int tee_params_to_amd_params(struct tee_param *tee, u32 count,
 				 i, amd->params[i].val.b);
 		}
 	}
-	return ret;
+	return 0;
 }
 
 static int amd_params_to_tee_params(struct tee_param *tee, u32 count,
 				    struct tee_operation *amd)
 {
-	int i, ret = 0;
+	int i;
 	u32 type;
 
 	if (!count)
@@ -118,7 +118,7 @@ static int amd_params_to_tee_params(struct tee_param *tee, u32 count,
 				 i, amd->params[i].val.b);
 		}
 	}
-	return ret;
+	return 0;
 }
 
 static DEFINE_MUTEX(ta_refcount_mutex);
@@ -134,7 +134,7 @@ static u32 get_ta_refcount(u32 ta_handle)
 		if (ta_data->ta_handle == ta_handle)
 			return ++ta_data->refcount;
 
-	ta_data = kzalloc(sizeof(*ta_data), GFP_KERNEL);
+	ta_data = kzalloc_obj(*ta_data);
 	if (ta_data) {
 		ta_data->ta_handle = ta_handle;
 		ta_data->refcount = 1;
@@ -293,7 +293,7 @@ int handle_map_shmem(u32 count, struct shmem_desc *start, u32 *buf_id)
 	if (!count || !start || !buf_id)
 		return -EINVAL;
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd)
 		return -ENOMEM;
 
@@ -423,19 +423,23 @@ int handle_load_ta(void *data, u32 size, struct tee_ioctl_open_session_arg *arg)
 	if (ret) {
 		arg->ret_origin = TEEC_ORIGIN_COMMS;
 		arg->ret = TEEC_ERROR_COMMUNICATION;
-	} else if (arg->ret == TEEC_SUCCESS) {
-		ret = get_ta_refcount(load_cmd.ta_handle);
-		if (!ret) {
-			arg->ret_origin = TEEC_ORIGIN_COMMS;
-			arg->ret = TEEC_ERROR_OUT_OF_MEMORY;
+	} else {
+		arg->ret_origin = load_cmd.return_origin;
 
-			/* Unload the TA on error */
-			unload_cmd.ta_handle = load_cmd.ta_handle;
-			psp_tee_process_cmd(TEE_CMD_ID_UNLOAD_TA,
-					    (void *)&unload_cmd,
-					    sizeof(unload_cmd), &ret);
-		} else {
-			set_session_id(load_cmd.ta_handle, 0, &arg->session);
+		if (arg->ret == TEEC_SUCCESS) {
+			ret = get_ta_refcount(load_cmd.ta_handle);
+			if (!ret) {
+				arg->ret_origin = TEEC_ORIGIN_COMMS;
+				arg->ret = TEEC_ERROR_OUT_OF_MEMORY;
+
+				/* Unload the TA on error */
+				unload_cmd.ta_handle = load_cmd.ta_handle;
+				psp_tee_process_cmd(TEE_CMD_ID_UNLOAD_TA,
+						    (void *)&unload_cmd,
+						    sizeof(unload_cmd), &ret);
+			} else {
+				set_session_id(load_cmd.ta_handle, 0, &arg->session);
+			}
 		}
 	}
 	mutex_unlock(&ta_refcount_mutex);

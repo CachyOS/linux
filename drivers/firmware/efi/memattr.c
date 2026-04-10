@@ -19,33 +19,48 @@ unsigned long __ro_after_init efi_mem_attr_table = EFI_INVALID_TABLE_ADDR;
  * Reserve the memory associated with the Memory Attributes configuration
  * table, if it exists.
  */
-int __init efi_memattr_init(void)
+void __init efi_memattr_init(void)
 {
 	efi_memory_attributes_table_t *tbl;
+	unsigned long size;
 
 	if (efi_mem_attr_table == EFI_INVALID_TABLE_ADDR)
-		return 0;
+		return;
 
 	tbl = early_memremap(efi_mem_attr_table, sizeof(*tbl));
 	if (!tbl) {
 		pr_err("Failed to map EFI Memory Attributes table @ 0x%lx\n",
 		       efi_mem_attr_table);
-		return -ENOMEM;
+		return;
 	}
 
-	if (tbl->version > 1) {
+	if (tbl->version > 2) {
 		pr_warn("Unexpected EFI Memory Attributes table version %d\n",
 			tbl->version);
 		goto unmap;
 	}
 
-	tbl_size = sizeof(*tbl) + tbl->num_entries * tbl->desc_size;
+
+	/*
+	 * Sanity check: the Memory Attributes Table contains up to 3 entries
+	 * for each entry of type EfiRuntimeServicesCode in the EFI memory map.
+	 * So if the size of the table exceeds 3x the size of the entire EFI
+	 * memory map, there is clearly something wrong, and the table should
+	 * just be ignored altogether.
+	 */
+	size = tbl->num_entries * tbl->desc_size;
+	if (size > 3 * efi.memmap.nr_map * efi.memmap.desc_size) {
+		pr_warn(FW_BUG "Corrupted EFI Memory Attributes Table detected! (version == %u, desc_size == %u, num_entries == %u)\n",
+			tbl->version, tbl->desc_size, tbl->num_entries);
+		goto unmap;
+	}
+
+	tbl_size = sizeof(*tbl) + size;
 	memblock_reserve(efi_mem_attr_table, tbl_size);
 	set_bit(EFI_MEM_ATTR, &efi.flags);
 
 unmap:
 	early_memunmap(tbl, sizeof(*tbl));
-	return 0;
 }
 
 /*
@@ -129,6 +144,7 @@ int __init efi_memattr_apply_permissions(struct mm_struct *mm,
 					 efi_memattr_perm_setter fn)
 {
 	efi_memory_attributes_table_t *tbl;
+	bool has_bti = false;
 	int i, ret;
 
 	if (tbl_size <= sizeof(*tbl))
@@ -150,6 +166,10 @@ int __init efi_memattr_apply_permissions(struct mm_struct *mm,
 		return -ENOMEM;
 	}
 
+	if (tbl->version > 1 &&
+	    (tbl->flags & EFI_MEMORY_ATTRIBUTES_FLAGS_RT_FORWARD_CONTROL_FLOW_GUARD))
+		has_bti = true;
+
 	if (efi_enabled(EFI_DBG))
 		pr_info("Processing EFI Memory Attributes table:\n");
 
@@ -159,7 +179,7 @@ int __init efi_memattr_apply_permissions(struct mm_struct *mm,
 		bool valid;
 		char buf[64];
 
-		valid = entry_is_valid((void *)tbl->entry + i * tbl->desc_size,
+		valid = entry_is_valid(efi_memdesc_ptr(tbl->entry, tbl->desc_size, i),
 				       &md);
 		size = md.num_pages << EFI_PAGE_SHIFT;
 		if (efi_enabled(EFI_DBG) || !valid)
@@ -169,7 +189,7 @@ int __init efi_memattr_apply_permissions(struct mm_struct *mm,
 				efi_md_typeattr_format(buf, sizeof(buf), &md));
 
 		if (valid) {
-			ret = fn(mm, &md);
+			ret = fn(mm, &md, has_bti);
 			if (ret)
 				pr_err("Error updating mappings, skipping subsequent md's\n");
 		}

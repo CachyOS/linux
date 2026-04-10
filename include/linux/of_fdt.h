@@ -31,6 +31,7 @@ extern void *of_fdt_unflatten_tree(const unsigned long *blob,
 extern int __initdata dt_root_addr_cells;
 extern int __initdata dt_root_size_cells;
 extern void *initial_boot_params;
+extern phys_addr_t initial_boot_params_pa;
 
 extern char __dtb_start[];
 extern char __dtb_end[];
@@ -54,6 +55,15 @@ extern int of_get_flat_dt_subnode_by_name(unsigned long node,
 					  const char *uname);
 extern const void *of_get_flat_dt_prop(unsigned long node, const char *name,
 				       int *size);
+
+extern const __be32 *of_flat_dt_get_addr_size_prop(unsigned long node,
+						   const char *name,
+						   int *entries);
+extern bool of_flat_dt_get_addr_size(unsigned long node, const char *name,
+				     u64 *addr, u64 *size);
+extern void of_flat_dt_read_addr_size(const __be32 *prop, int entry_index,
+				      u64 *addr, u64 *size);
+
 extern int of_flat_dt_is_compatible(unsigned long node, const char *name);
 extern unsigned long of_get_flat_dt_root(void);
 extern uint32_t of_get_flat_dt_phandle(unsigned long node);
@@ -70,8 +80,8 @@ extern u64 dt_mem_next_cell(int s, const __be32 **cellp);
 /* Early flat tree scan hooks */
 extern int early_init_dt_scan_root(void);
 
-extern bool early_init_dt_scan(void *params);
-extern bool early_init_dt_verify(void *params);
+extern bool early_init_dt_scan(void *dt_virt, phys_addr_t dt_phys);
+extern bool early_init_dt_verify(void *dt_virt, phys_addr_t dt_phys);
 extern void early_init_dt_scan_nodes(void);
 
 extern const char *of_flat_dt_get_machine_name(void);

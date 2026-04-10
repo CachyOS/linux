@@ -43,11 +43,10 @@
 
 #include <linux/delay.h>
 #include <linux/err.h>
-#include <linux/fb.h>
 #include <linux/i2c.h>
+#include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_graph.h>
 #include <linux/pm.h>
 
@@ -361,8 +360,7 @@ static const struct drm_panel_funcs rpi_touchscreen_funcs = {
 	.get_modes = rpi_touchscreen_get_modes,
 };
 
-static int rpi_touchscreen_probe(struct i2c_client *i2c,
-				 const struct i2c_device_id *id)
+static int rpi_touchscreen_probe(struct i2c_client *i2c)
 {
 	struct device *dev = &i2c->dev;
 	struct rpi_touchscreen *ts;
@@ -375,9 +373,12 @@ static int rpi_touchscreen_probe(struct i2c_client *i2c,
 		.node = NULL,
 	};
 
-	ts = devm_kzalloc(dev, sizeof(*ts), GFP_KERNEL);
-	if (!ts)
-		return -ENOMEM;
+	ts = devm_drm_panel_alloc(dev, __typeof(*ts), base,
+				  &rpi_touchscreen_funcs,
+				  DRM_MODE_CONNECTOR_DSI);
+
+	if (IS_ERR(ts))
+		return PTR_ERR(ts);
 
 	i2c_set_clientdata(i2c, ts);
 
@@ -402,7 +403,7 @@ static int rpi_touchscreen_probe(struct i2c_client *i2c,
 	rpi_touchscreen_i2c_write(ts, REG_POWERON, 0);
 
 	/* Look up the DSI host.  It needs to probe before we do. */
-	endpoint = of_graph_get_next_endpoint(dev->of_node, NULL);
+	endpoint = of_graph_get_endpoint_by_regs(dev->of_node, 0, -1);
 	if (!endpoint)
 		return -ENODEV;
 
@@ -430,9 +431,6 @@ static int rpi_touchscreen_probe(struct i2c_client *i2c,
 		return PTR_ERR(ts->dsi);
 	}
 
-	drm_panel_init(&ts->base, dev, &rpi_touchscreen_funcs,
-		       DRM_MODE_CONNECTOR_DSI);
-
 	/* This appears last, as it's what will unblock the DSI host
 	 * driver's component bind function.
 	 */
@@ -445,7 +443,7 @@ error:
 	return -ENODEV;
 }
 
-static int rpi_touchscreen_remove(struct i2c_client *i2c)
+static void rpi_touchscreen_remove(struct i2c_client *i2c)
 {
 	struct rpi_touchscreen *ts = i2c_get_clientdata(i2c);
 
@@ -454,8 +452,6 @@ static int rpi_touchscreen_remove(struct i2c_client *i2c)
 	drm_panel_remove(&ts->base);
 
 	mipi_dsi_device_unregister(ts->dsi);
-
-	return 0;
 }
 
 static int rpi_touchscreen_dsi_probe(struct mipi_dsi_device *dsi)

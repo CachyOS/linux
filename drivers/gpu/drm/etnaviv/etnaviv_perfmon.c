@@ -62,6 +62,8 @@ static u32 pipe_perf_reg_read(struct etnaviv_gpu *gpu,
 	u32 value = 0;
 	unsigned i;
 
+	lockdep_assert_held(&gpu->lock);
+
 	for (i = 0; i < gpu->identity.pixel_pipes; i++) {
 		pipe_select(gpu, clock, i);
 		value += perf_reg_read(gpu, domain, signal);
@@ -80,6 +82,8 @@ static u32 pipe_reg_read(struct etnaviv_gpu *gpu,
 	u32 clock = gpu_read(gpu, VIVS_HI_CLOCK_CONTROL);
 	u32 value = 0;
 	unsigned i;
+
+	lockdep_assert_held(&gpu->lock);
 
 	for (i = 0; i < gpu->identity.pixel_pipes; i++) {
 		pipe_select(gpu, clock, i);
@@ -511,7 +515,7 @@ int etnaviv_pm_query_dom(struct etnaviv_gpu *gpu,
 
 	domain->id = domain->iter;
 	domain->nr_signals = dom->nr_signals;
-	strncpy(domain->name, dom->name, sizeof(domain->name));
+	strscpy_pad(domain->name, dom->name, sizeof(domain->name));
 
 	domain->iter++;
 	if (domain->iter == nr_domains)
@@ -540,7 +544,7 @@ int etnaviv_pm_query_sig(struct etnaviv_gpu *gpu,
 	sig = &dom->signal[signal->iter];
 
 	signal->id = signal->iter;
-	strncpy(signal->name, sig->name, sizeof(signal->name));
+	strscpy_pad(signal->name, sig->name, sizeof(signal->name));
 
 	signal->iter++;
 	if (signal->iter == dom->nr_signals)

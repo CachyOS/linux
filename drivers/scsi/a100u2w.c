@@ -909,7 +909,7 @@ static int inia100_build_scb(struct orc_host * host, struct orc_scb * scb, struc
  *	block, build the host specific scb structures and if there is room
  *	queue the command down to the controller
  */
-static int inia100_queue_lck(struct scsi_cmnd *cmd)
+static enum scsi_qc_status inia100_queue_lck(struct scsi_cmnd *cmd)
 {
 	struct orc_scb *scb;
 	struct orc_host *host;		/* Point to Host adapter control block */
@@ -1065,7 +1065,7 @@ static irqreturn_t inia100_intr(int irqno, void *devid)
 	return res;
 }
 
-static struct scsi_host_template inia100_template = {
+static const struct scsi_host_template inia100_template = {
 	.proc_name		= "inia100",
 	.name			= inia100_REVID,
 	.queuecommand		= inia100_queue,
@@ -1206,7 +1206,7 @@ static void inia100_remove_one(struct pci_dev *pdev)
 	scsi_host_put(shost);
 } 
 
-static struct pci_device_id inia100_pci_tbl[] = {
+static const struct pci_device_id inia100_pci_tbl[] = {
 	{PCI_VENDOR_ID_INIT, 0x1060, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{0,}
 };

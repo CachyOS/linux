@@ -6,10 +6,9 @@
 #include <linux/clk-provider.h>
 #include <linux/err.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/pm_clock.h>
 #include <linux/pm_runtime.h>
-#include <linux/of.h>
 #include <linux/regmap.h>
 
 #include <dt-bindings/clock/qcom,lpasscorecc-sc7180.h>
@@ -27,7 +26,7 @@ enum {
 	P_SLEEP_CLK,
 };
 
-static struct pll_vco fabia_vco[] = {
+static const struct pll_vco fabia_vco[] = {
 	{ 249600000, 2000000000, 0 },
 };
 
@@ -43,7 +42,7 @@ static const struct alpha_pll_config lpass_lpaaudio_dig_pll_config = {
 };
 
 static const u8 clk_alpha_pll_regs_offset[][PLL_OFF_MAX_REGS] = {
-	[CLK_ALPHA_PLL_TYPE_FABIA] =  {
+	[CLK_ALPHA_PLL_TYPE_FABIA] = {
 		[PLL_OFF_L_VAL] = 0x04,
 		[PLL_OFF_CAL_L_VAL] = 0x8,
 		[PLL_OFF_USER_CTL] = 0x0c,
@@ -93,8 +92,8 @@ static struct clk_alpha_pll_postdiv lpass_lpaaudio_dig_pll_out_odd = {
 	.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_FABIA],
 	.clkr.hw.init = &(struct clk_init_data){
 		.name = "lpass_lpaaudio_dig_pll_out_odd",
-		.parent_data = &(const struct clk_parent_data){
-			.hw = &lpass_lpaaudio_dig_pll.clkr.hw,
+		.parent_hws = (const struct clk_hw*[]) {
+			&lpass_lpaaudio_dig_pll.clkr.hw,
 		},
 		.num_parents = 1,
 		.flags = CLK_SET_RATE_PARENT,
@@ -210,8 +209,8 @@ static struct clk_branch lpass_audio_core_ext_mclk0_clk = {
 		.enable_mask = BIT(0),
 		.hw.init = &(struct clk_init_data){
 			.name = "lpass_audio_core_ext_mclk0_clk",
-			.parent_data = &(const struct clk_parent_data){
-				.hw = &ext_mclk0_clk_src.clkr.hw,
+			.parent_hws = (const struct clk_hw*[]) {
+				&ext_mclk0_clk_src.clkr.hw,
 			},
 			.num_parents = 1,
 			.flags = CLK_SET_RATE_PARENT,
@@ -230,8 +229,8 @@ static struct clk_branch lpass_audio_core_lpaif_pri_ibit_clk = {
 		.enable_mask = BIT(0),
 		.hw.init = &(struct clk_init_data){
 			.name = "lpass_audio_core_lpaif_pri_ibit_clk",
-			.parent_data = &(const struct clk_parent_data){
-				.hw = &lpaif_pri_clk_src.clkr.hw,
+			.parent_hws = (const struct clk_hw*[]) {
+				&lpaif_pri_clk_src.clkr.hw,
 			},
 			.num_parents = 1,
 			.flags = CLK_SET_RATE_PARENT,
@@ -250,8 +249,8 @@ static struct clk_branch lpass_audio_core_lpaif_sec_ibit_clk = {
 		.enable_mask = BIT(0),
 		.hw.init = &(struct clk_init_data){
 			.name = "lpass_audio_core_lpaif_sec_ibit_clk",
-			.parent_data = &(const struct clk_parent_data){
-				.hw = &lpaif_sec_clk_src.clkr.hw,
+			.parent_hws = (const struct clk_hw*[]) {
+				&lpaif_sec_clk_src.clkr.hw,
 			},
 			.num_parents = 1,
 			.flags = CLK_SET_RATE_PARENT,
@@ -270,8 +269,8 @@ static struct clk_branch lpass_audio_core_sysnoc_mport_core_clk = {
 		.enable_mask = BIT(0),
 		.hw.init = &(struct clk_init_data){
 			.name = "lpass_audio_core_sysnoc_mport_core_clk",
-			.parent_data = &(const struct clk_parent_data){
-				.hw = &core_clk_src.clkr.hw,
+			.parent_hws = (const struct clk_hw*[]) {
+				&core_clk_src.clkr.hw,
 			},
 			.num_parents = 1,
 			.flags = CLK_SET_RATE_PARENT,
@@ -356,7 +355,7 @@ static const struct qcom_cc_desc lpass_audio_hm_sc7180_desc = {
 	.num_gdscs = ARRAY_SIZE(lpass_audio_hm_sc7180_gdscs),
 };
 
-static int lpass_create_pm_clks(struct platform_device *pdev)
+static int lpass_setup_runtime_pm(struct platform_device *pdev)
 {
 	int ret;
 
@@ -375,7 +374,7 @@ static int lpass_create_pm_clks(struct platform_device *pdev)
 	if (ret < 0)
 		dev_err(&pdev->dev, "failed to acquire iface clock\n");
 
-	return ret;
+	return pm_runtime_resume_and_get(&pdev->dev);
 }
 
 static int lpass_core_cc_sc7180_probe(struct platform_device *pdev)
@@ -384,7 +383,7 @@ static int lpass_core_cc_sc7180_probe(struct platform_device *pdev)
 	struct regmap *regmap;
 	int ret;
 
-	ret = lpass_create_pm_clks(pdev);
+	ret = lpass_setup_runtime_pm(pdev);
 	if (ret)
 		return ret;
 
@@ -392,18 +391,17 @@ static int lpass_core_cc_sc7180_probe(struct platform_device *pdev)
 	desc = &lpass_audio_hm_sc7180_desc;
 	ret = qcom_cc_probe_by_index(pdev, 1, desc);
 	if (ret)
-		return ret;
+		goto exit;
 
 	lpass_core_cc_sc7180_regmap_config.name = "lpass_core_cc";
 	regmap = qcom_cc_map(pdev, &lpass_core_cc_sc7180_desc);
-	if (IS_ERR(regmap))
-		return PTR_ERR(regmap);
+	if (IS_ERR(regmap)) {
+		ret = PTR_ERR(regmap);
+		goto exit;
+	}
 
-	/*
-	 * Keep the CLK always-ON
-	 * LPASS_AUDIO_CORE_SYSNOC_SWAY_CORE_CLK
-	 */
-	regmap_update_bits(regmap, 0x24000, BIT(0), BIT(0));
+	/* Keep some clocks always-on */
+	qcom_branch_set_clk_en(regmap, 0x24000); /* LPASS_AUDIO_CORE_SYSNOC_SWAY_CORE_CLK */
 
 	/* PLL settings */
 	regmap_write(regmap, 0x1008, 0x20);
@@ -412,9 +410,9 @@ static int lpass_core_cc_sc7180_probe(struct platform_device *pdev)
 	clk_fabia_pll_configure(&lpass_lpaaudio_dig_pll, regmap,
 				&lpass_lpaaudio_dig_pll_config);
 
-	ret = qcom_cc_really_probe(pdev, &lpass_core_cc_sc7180_desc, regmap);
+	ret = qcom_cc_really_probe(&pdev->dev, &lpass_core_cc_sc7180_desc, regmap);
 
-	pm_runtime_mark_last_busy(&pdev->dev);
+exit:
 	pm_runtime_put_autosuspend(&pdev->dev);
 
 	return ret;
@@ -425,14 +423,18 @@ static int lpass_hm_core_probe(struct platform_device *pdev)
 	const struct qcom_cc_desc *desc;
 	int ret;
 
-	ret = lpass_create_pm_clks(pdev);
+	ret = lpass_setup_runtime_pm(pdev);
 	if (ret)
 		return ret;
 
 	lpass_core_cc_sc7180_regmap_config.name = "lpass_hm_core";
 	desc = &lpass_core_hm_sc7180_desc;
 
-	return qcom_cc_probe_by_index(pdev, 0, desc);
+	ret = qcom_cc_probe_by_index(pdev, 0, desc);
+
+	pm_runtime_put_autosuspend(&pdev->dev);
+
+	return ret;
 }
 
 static const struct of_device_id lpass_hm_sc7180_match_table[] = {
@@ -451,7 +453,7 @@ static const struct of_device_id lpass_core_cc_sc7180_match_table[] = {
 };
 MODULE_DEVICE_TABLE(of, lpass_core_cc_sc7180_match_table);
 
-static const struct dev_pm_ops lpass_core_cc_pm_ops = {
+static const struct dev_pm_ops lpass_pm_ops = {
 	SET_RUNTIME_PM_OPS(pm_clk_suspend, pm_clk_resume, NULL)
 };
 
@@ -460,12 +462,8 @@ static struct platform_driver lpass_core_cc_sc7180_driver = {
 	.driver = {
 		.name = "lpass_core_cc-sc7180",
 		.of_match_table = lpass_core_cc_sc7180_match_table,
-		.pm = &lpass_core_cc_pm_ops,
+		.pm = &lpass_pm_ops,
 	},
-};
-
-static const struct dev_pm_ops lpass_hm_pm_ops = {
-	SET_RUNTIME_PM_OPS(pm_clk_suspend, pm_clk_resume, NULL)
 };
 
 static struct platform_driver lpass_hm_sc7180_driver = {
@@ -473,7 +471,7 @@ static struct platform_driver lpass_hm_sc7180_driver = {
 	.driver = {
 		.name = "lpass_hm-sc7180",
 		.of_match_table = lpass_hm_sc7180_match_table,
-		.pm = &lpass_hm_pm_ops,
+		.pm = &lpass_pm_ops,
 	},
 };
 

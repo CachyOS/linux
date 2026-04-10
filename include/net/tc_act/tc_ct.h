@@ -10,9 +10,10 @@
 #include <net/netfilter/nf_conntrack_labels.h>
 
 struct tcf_ct_params {
+	struct nf_conntrack_helper *helper;
 	struct nf_conn *tmpl;
 	u16 zone;
-
+	int action;
 	u32 mark;
 	u32 mark_mask;
 
@@ -21,6 +22,7 @@ struct tcf_ct_params {
 
 	struct nf_nat_range2 range;
 	bool ipv4_range;
+	bool put_labels;
 
 	u16 ct_action;
 
@@ -56,10 +58,19 @@ static inline struct nf_flowtable *tcf_ct_ft(const struct tc_action *a)
 	return to_ct_params(a)->nf_ft;
 }
 
+static inline struct nf_conntrack_helper *tcf_ct_helper(const struct tc_action *a)
+{
+	return to_ct_params(a)->helper;
+}
+
 #else
 static inline uint16_t tcf_ct_zone(const struct tc_action *a) { return 0; }
 static inline int tcf_ct_action(const struct tc_action *a) { return 0; }
 static inline struct nf_flowtable *tcf_ct_ft(const struct tc_action *a)
+{
+	return NULL;
+}
+static inline struct nf_conntrack_helper *tcf_ct_helper(const struct tc_action *a)
 {
 	return NULL;
 }
@@ -80,14 +91,5 @@ tcf_ct_flow_table_restore_skb(struct sk_buff *skb, unsigned long cookie)
 static inline void
 tcf_ct_flow_table_restore_skb(struct sk_buff *skb, unsigned long cookie) { }
 #endif
-
-static inline bool is_tcf_ct(const struct tc_action *a)
-{
-#if defined(CONFIG_NET_CLS_ACT) && IS_ENABLED(CONFIG_NF_CONNTRACK)
-	if (a->ops && a->ops->id == TCA_ID_CT)
-		return true;
-#endif
-	return false;
-}
 
 #endif /* __NET_TC_CT_H */

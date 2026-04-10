@@ -202,10 +202,10 @@ static bool __init dmtimer_is_preferred(struct device_node *np)
 
 	/* Secure gptimer12 is always clocked with a fixed source */
 	if (!of_property_read_bool(np, "ti,timer-secure")) {
-		if (!of_property_read_bool(np, "assigned-clocks"))
+		if (!of_property_present(np, "assigned-clocks"))
 			return false;
 
-		if (!of_property_read_bool(np, "assigned-clock-parents"))
+		if (!of_property_present(np, "assigned-clock-parents"))
 			return false;
 	}
 
@@ -251,24 +251,24 @@ static void __init dmtimer_systimer_assign_alwon(void)
 		counter_32k = -ENODEV;
 
 	for_each_matching_node(np, dmtimer_match_table) {
+		struct resource res;
 		if (!dmtimer_is_preferred(np))
 			continue;
 
-		if (of_property_read_bool(np, "ti,timer-alwon")) {
-			const __be32 *addr;
+		if (!of_property_read_bool(np, "ti,timer-alwon"))
+			continue;
 
-			addr = of_get_address(np, 0, NULL, NULL);
-			pa = of_translate_address(np, addr);
-			if (pa) {
-				/* Quirky omap3 boards must use dmtimer12 */
-				if (quirk_unreliable_oscillator &&
-				    pa == 0x48318000)
-					continue;
+		if (of_address_to_resource(np, 0, &res))
+			continue;
 
-				of_node_put(np);
-				break;
-			}
-		}
+		pa = res.start;
+
+		/* Quirky omap3 boards must use dmtimer12 */
+		if (quirk_unreliable_oscillator && pa == 0x48318000)
+			continue;
+
+		of_node_put(np);
+		break;
 	}
 
 	/* Usually no need for dmtimer clocksource if we have counter32 */
@@ -285,24 +285,22 @@ static void __init dmtimer_systimer_assign_alwon(void)
 static u32 __init dmtimer_systimer_find_first_available(void)
 {
 	struct device_node *np;
-	const __be32 *addr;
 	u32 pa = 0;
 
 	for_each_matching_node(np, dmtimer_match_table) {
+		struct resource res;
 		if (!dmtimer_is_preferred(np))
 			continue;
 
-		addr = of_get_address(np, 0, NULL, NULL);
-		pa = of_translate_address(np, addr);
-		if (pa) {
-			if (pa == clocksource || pa == clockevent) {
-				pa = 0;
-				continue;
-			}
+		if (of_address_to_resource(np, 0, &res))
+			continue;
 
-			of_node_put(np);
-			break;
-		}
+		if (res.start == clocksource || res.start == clockevent)
+			continue;
+
+		pa = res.start;
+		of_node_put(np);
+		break;
 	}
 
 	return pa;
@@ -345,8 +343,10 @@ static int __init dmtimer_systimer_init_clock(struct dmtimer_systimer *t,
 		return error;
 
 	r = clk_get_rate(clock);
-	if (!r)
+	if (!r) {
+		clk_disable_unprepare(clock);
 		return -ENODEV;
+	}
 
 	if (is_ick)
 		t->ick = clock;
@@ -584,7 +584,7 @@ static int __init dmtimer_clkevt_init_common(struct dmtimer_clockevent *clkevt,
 	writel_relaxed(OMAP_TIMER_INT_OVERFLOW, t->base + t->wakeup);
 
 	pr_info("TI gptimer %s: %s%lu Hz at %pOF\n",
-		name, of_find_property(np, "ti,timer-alwon", NULL) ?
+		name, of_property_read_bool(np, "ti,timer-alwon") ?
 		"always-on " : "", t->rate, np->parent);
 
 	return 0;
@@ -600,7 +600,7 @@ static int __init dmtimer_clockevent_init(struct device_node *np)
 	struct dmtimer_clockevent *clkevt;
 	int error;
 
-	clkevt = kzalloc(sizeof(*clkevt), GFP_KERNEL);
+	clkevt = kzalloc_obj(*clkevt);
 	if (!clkevt)
 		return -ENOMEM;
 
@@ -686,9 +686,9 @@ subsys_initcall(dmtimer_percpu_timer_startup);
 
 static int __init dmtimer_percpu_quirk_init(struct device_node *np, u32 pa)
 {
-	struct device_node *arm_timer;
+	struct device_node *arm_timer __free(device_node) =
+		of_find_compatible_node(NULL, NULL, "arm,armv7-timer");
 
-	arm_timer = of_find_compatible_node(NULL, NULL, "arm,armv7-timer");
 	if (of_device_is_available(arm_timer)) {
 		pr_warn_once("ARM architected timer wrap issue i940 detected\n");
 		return 0;
@@ -757,7 +757,7 @@ static int __init dmtimer_clocksource_init(struct device_node *np)
 	struct clocksource *dev;
 	int error;
 
-	clksrc = kzalloc(sizeof(*clksrc), GFP_KERNEL);
+	clksrc = kzalloc_obj(*clksrc);
 	if (!clksrc)
 		return -ENOMEM;
 
@@ -785,7 +785,7 @@ static int __init dmtimer_clocksource_init(struct device_node *np)
 		       t->base + t->ctrl);
 
 	pr_info("TI gptimer clocksource: %s%pOF\n",
-		of_find_property(np, "ti,timer-alwon", NULL) ?
+		of_property_read_bool(np, "ti,timer-alwon") ?
 		"always-on " : "", np->parent);
 
 	if (!dmtimer_sched_clock_counter) {
@@ -810,7 +810,7 @@ err_out_free:
  */
 static int __init dmtimer_systimer_init(struct device_node *np)
 {
-	const __be32 *addr;
+	struct resource res;
 	u32 pa;
 
 	/* One time init for the preferred timer configuration */
@@ -824,8 +824,9 @@ static int __init dmtimer_systimer_init(struct device_node *np)
 		return -EINVAL;
 	}
 
-	addr = of_get_address(np, 0, NULL, NULL);
-	pa = of_translate_address(np, addr);
+
+	of_address_to_resource(np, 0, &res);
+	pa = (u32)res.start;
 	if (!pa)
 		return -EINVAL;
 

@@ -435,7 +435,7 @@ static int __init init_tcic(void)
     }
     
     /* Set up polling */
-    timer_setup(&poll_timer, &tcic_timer, 0);
+    timer_setup(&poll_timer, tcic_timer, 0);
 
     /* Build interrupt mask */
     printk(KERN_CONT ", %d sockets\n", sockets);
@@ -509,7 +509,7 @@ static void __exit exit_tcic(void)
 {
     int i;
 
-    del_timer_sync(&poll_timer);
+    timer_delete_sync(&poll_timer);
     if (cs_irq != 0) {
 	tcic_aux_setw(TCIC_AUX_SYSCFG, TCIC_SYSCFG_AUTOBUSY|0x0a00);
 	free_irq(cs_irq, tcic_interrupt);

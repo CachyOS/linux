@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: ISC
 /*
  * Copyright (c) 2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/completion.h>
@@ -13,7 +14,8 @@
 #include <linux/module.h>
 #include <linux/net.h>
 #include <linux/platform_device.h>
-#include <linux/qcom_scm.h>
+#include <linux/firmware/qcom/qcom_scm.h>
+#include <linux/soc/qcom/smem.h>
 #include <linux/string.h>
 #include <net/sock.h>
 
@@ -22,13 +24,17 @@
 
 #define ATH10K_QMI_CLIENT_ID		0x4b4e454c
 #define ATH10K_QMI_TIMEOUT		30
+#define SMEM_IMAGE_VERSION_TABLE       469
+#define SMEM_IMAGE_TABLE_CNSS_INDEX     13
+#define SMEM_IMAGE_VERSION_ENTRY_SIZE	128
+#define SMEM_IMAGE_VERSION_NAME_SIZE	75
 
 static int ath10k_qmi_map_msa_permission(struct ath10k_qmi *qmi,
 					 struct ath10k_msa_mem_info *mem_info)
 {
 	struct qcom_scm_vmperm dst_perms[3];
 	struct ath10k *ar = qmi->ar;
-	unsigned int src_perms;
+	u64 src_perms;
 	u32 perm_count;
 	int ret;
 
@@ -60,7 +66,7 @@ static int ath10k_qmi_unmap_msa_permission(struct ath10k_qmi *qmi,
 {
 	struct qcom_scm_vmperm dst_perms;
 	struct ath10k *ar = qmi->ar;
-	unsigned int src_perms;
+	u64 src_perms;
 	int ret;
 
 	src_perms = BIT(QCOM_SCM_VMID_MSS_MSA) | BIT(QCOM_SCM_VMID_WLAN);
@@ -239,7 +245,7 @@ static int ath10k_qmi_bdf_dnld_send_sync(struct ath10k_qmi *qmi)
 	const u8 *temp;
 	int ret;
 
-	req = kzalloc(sizeof(*req), GFP_KERNEL);
+	req = kzalloc_obj(*req);
 	if (!req)
 		return -ENOMEM;
 
@@ -431,7 +437,7 @@ ath10k_qmi_cfg_send_sync_msg(struct ath10k *ar,
 	int ret;
 	u32 i;
 
-	req = kzalloc(sizeof(*req), GFP_KERNEL);
+	req = kzalloc_obj(*req);
 	if (!req)
 		return -ENOMEM;
 
@@ -536,6 +542,33 @@ int ath10k_qmi_wlan_disable(struct ath10k *ar)
 	return ath10k_qmi_mode_send_sync_msg(ar, QMI_WLFW_OFF_V01);
 }
 
+static void ath10k_qmi_add_wlan_ver_smem(struct ath10k *ar, const char *fw_build_id)
+{
+	u8 *table_ptr;
+	size_t smem_item_size;
+	const u32 smem_img_idx_wlan = SMEM_IMAGE_TABLE_CNSS_INDEX *
+				      SMEM_IMAGE_VERSION_ENTRY_SIZE;
+
+	table_ptr = qcom_smem_get(QCOM_SMEM_HOST_ANY,
+				  SMEM_IMAGE_VERSION_TABLE,
+				  &smem_item_size);
+
+	if (IS_ERR(table_ptr)) {
+		ath10k_err(ar, "smem image version table not found\n");
+		return;
+	}
+
+	if (smem_img_idx_wlan + SMEM_IMAGE_VERSION_ENTRY_SIZE >
+	    smem_item_size) {
+		ath10k_err(ar, "smem block size too small: %zu\n",
+			   smem_item_size);
+		return;
+	}
+
+	strscpy(table_ptr + smem_img_idx_wlan, fw_build_id,
+		SMEM_IMAGE_VERSION_NAME_SIZE);
+}
+
 static int ath10k_qmi_cap_send_sync_msg(struct ath10k_qmi *qmi)
 {
 	struct wlfw_cap_resp_msg_v01 *resp;
@@ -545,7 +578,7 @@ static int ath10k_qmi_cap_send_sync_msg(struct ath10k_qmi *qmi)
 	struct qmi_txn txn;
 	int ret;
 
-	resp = kzalloc(sizeof(*resp), GFP_KERNEL);
+	resp = kzalloc_obj(*resp);
 	if (!resp)
 		return -ENOMEM;
 
@@ -590,12 +623,12 @@ static int ath10k_qmi_cap_send_sync_msg(struct ath10k_qmi *qmi)
 
 	if (resp->fw_version_info_valid) {
 		qmi->fw_version = resp->fw_version_info.fw_version;
-		strlcpy(qmi->fw_build_timestamp, resp->fw_version_info.fw_build_timestamp,
+		strscpy(qmi->fw_build_timestamp, resp->fw_version_info.fw_build_timestamp,
 			sizeof(qmi->fw_build_timestamp));
 	}
 
 	if (resp->fw_build_id_valid)
-		strlcpy(qmi->fw_build_id, resp->fw_build_id,
+		strscpy(qmi->fw_build_id, resp->fw_build_id,
 			MAX_BUILD_ID_LEN + 1);
 
 	if (!test_bit(ATH10K_SNOC_FLAG_REGISTERED, &ar_snoc->flags)) {
@@ -605,6 +638,9 @@ static int ath10k_qmi_cap_send_sync_msg(struct ath10k_qmi *qmi)
 		ath10k_info(ar, "qmi fw_version 0x%x fw_build_timestamp %s fw_build_id %s",
 			    qmi->fw_version, qmi->fw_build_timestamp, qmi->fw_build_id);
 	}
+
+	if (resp->fw_build_id_valid)
+		ath10k_qmi_add_wlan_ver_smem(ar, qmi->fw_build_id);
 
 	kfree(resp);
 	return 0;
@@ -618,7 +654,7 @@ static int ath10k_qmi_host_cap_send_sync(struct ath10k_qmi *qmi)
 {
 	struct wlfw_host_cap_resp_msg_v01 resp = {};
 	struct wlfw_host_cap_req_msg_v01 req = {};
-	struct qmi_elem_info *req_ei;
+	const struct qmi_elem_info *req_ei;
 	struct ath10k *ar = qmi->ar;
 	struct ath10k_snoc *ar_snoc = ath10k_snoc_priv(ar);
 	struct qmi_txn txn;
@@ -792,7 +828,7 @@ static void ath10k_qmi_event_server_arrive(struct ath10k_qmi *qmi)
 		return;
 
 	/*
-	 * HACK: sleep for a while inbetween receiving the msa info response
+	 * HACK: sleep for a while between receiving the msa info response
 	 * and the XPU update to prevent SDM845 from crashing due to a security
 	 * violation, when running MPSS.AT.4.0.c2-01184-SDM845_GEN_PACK-1.
 	 */
@@ -841,7 +877,7 @@ ath10k_qmi_driver_event_post(struct ath10k_qmi *qmi,
 {
 	struct ath10k_qmi_driver_event *event;
 
-	event = kzalloc(sizeof(*event), GFP_ATOMIC);
+	event = kzalloc_obj(*event, GFP_ATOMIC);
 	if (!event)
 		return -ENOMEM;
 
@@ -950,7 +986,7 @@ static int ath10k_qmi_new_server(struct qmi_handle *qmi_hdl,
 
 	ath10k_dbg(ar, ATH10K_DBG_QMI, "wifi fw qmi service found\n");
 
-	ret = kernel_connect(qmi_hdl->sock, (struct sockaddr *)&qmi->sq,
+	ret = kernel_connect(qmi_hdl->sock, (struct sockaddr_unsized *)&qmi->sq,
 			     sizeof(qmi->sq), 0);
 	if (ret) {
 		ath10k_err(ar, "failed to connect to a remote QMI service port\n");
@@ -1004,6 +1040,10 @@ static void ath10k_qmi_driver_event_work(struct work_struct *work)
 		switch (event->type) {
 		case ATH10K_QMI_EVENT_SERVER_ARRIVE:
 			ath10k_qmi_event_server_arrive(qmi);
+			if (qmi->no_msa_ready_indicator) {
+				ath10k_info(ar, "qmi not waiting for msa_ready indicator");
+				ath10k_qmi_event_msa_ready(qmi);
+			}
 			break;
 		case ATH10K_QMI_EVENT_SERVER_EXIT:
 			ath10k_qmi_event_server_exit(qmi);
@@ -1012,6 +1052,10 @@ static void ath10k_qmi_driver_event_work(struct work_struct *work)
 			ath10k_qmi_event_fw_ready_ind(qmi);
 			break;
 		case ATH10K_QMI_EVENT_MSA_READY_IND:
+			if (qmi->no_msa_ready_indicator) {
+				ath10k_warn(ar, "qmi unexpected msa_ready indicator");
+				break;
+			}
 			ath10k_qmi_event_msa_ready(qmi);
 			break;
 		default:
@@ -1031,7 +1075,7 @@ int ath10k_qmi_init(struct ath10k *ar, u32 msa_size)
 	struct ath10k_qmi *qmi;
 	int ret;
 
-	qmi = kzalloc(sizeof(*qmi), GFP_KERNEL);
+	qmi = kzalloc_obj(*qmi);
 	if (!qmi)
 		return -ENOMEM;
 
@@ -1041,14 +1085,16 @@ int ath10k_qmi_init(struct ath10k *ar, u32 msa_size)
 	if (of_property_read_bool(dev->of_node, "qcom,msa-fixed-perm"))
 		qmi->msa_fixed_perm = true;
 
+	if (of_property_read_bool(dev->of_node, "qcom,no-msa-ready-indicator"))
+		qmi->no_msa_ready_indicator = true;
+
 	ret = qmi_handle_init(&qmi->qmi_hdl,
 			      WLFW_BDF_DOWNLOAD_REQ_MSG_V01_MAX_MSG_LEN,
 			      &ath10k_qmi_ops, qmi_msg_handler);
 	if (ret)
 		goto err;
 
-	qmi->event_wq = alloc_workqueue("ath10k_qmi_driver_event",
-					WQ_UNBOUND, 1);
+	qmi->event_wq = alloc_ordered_workqueue("ath10k_qmi_driver_event", 0);
 	if (!qmi->event_wq) {
 		ath10k_err(ar, "failed to allocate workqueue\n");
 		ret = -EFAULT;

@@ -12,7 +12,6 @@
 #include <net/ip.h>
 #include <linux/ipv6.h>
 #include <linux/inetdevice.h>
-#include <linux/aer.h>
 #include <linux/log2.h>
 #include <linux/pci.h>
 #include <net/vxlan.h>
@@ -368,7 +367,7 @@ static int qlcnic_set_mac(struct net_device *netdev, void *p)
 
 static int qlcnic_fdb_del(struct ndmsg *ndm, struct nlattr *tb[],
 			struct net_device *netdev,
-			const unsigned char *addr, u16 vid,
+			const unsigned char *addr, u16 vid, bool *notified,
 			struct netlink_ext_ack *extack)
 {
 	struct qlcnic_adapter *adapter = netdev_priv(netdev);
@@ -395,7 +394,7 @@ static int qlcnic_fdb_del(struct ndmsg *ndm, struct nlattr *tb[],
 static int qlcnic_fdb_add(struct ndmsg *ndm, struct nlattr *tb[],
 			struct net_device *netdev,
 			const unsigned char *addr, u16 vid, u16 flags,
-			struct netlink_ext_ack *extack)
+			bool *notified, struct netlink_ext_ack *extack)
 {
 	struct qlcnic_adapter *adapter = netdev_priv(netdev);
 	int err = 0;
@@ -487,7 +486,6 @@ static int qlcnic_udp_tunnel_sync(struct net_device *dev, unsigned int table)
 
 static const struct udp_tunnel_nic_info qlcnic_udp_tunnels = {
 	.sync_table	= qlcnic_udp_tunnel_sync,
-	.flags		= UDP_TUNNEL_NIC_INFO_MAY_SLEEP,
 	.tables		= {
 		{ .n_entries = 1, .tunnel_types = UDP_TUNNEL_TYPE_VXLAN, },
 	},
@@ -681,9 +679,8 @@ int qlcnic_setup_tss_rss_intr(struct qlcnic_adapter *adapter)
 		num_msix += 1;
 
 	if (!adapter->msix_entries) {
-		adapter->msix_entries = kcalloc(num_msix,
-						sizeof(struct msix_entry),
-						GFP_KERNEL);
+		adapter->msix_entries = kzalloc_objs(struct msix_entry,
+						     num_msix);
 		if (!adapter->msix_entries)
 			return -ENOMEM;
 	}
@@ -736,9 +733,8 @@ int qlcnic_enable_msix(struct qlcnic_adapter *adapter, u32 num_msix)
 	int err, vector;
 
 	if (!adapter->msix_entries) {
-		adapter->msix_entries = kcalloc(num_msix,
-						sizeof(struct msix_entry),
-						GFP_KERNEL);
+		adapter->msix_entries = kzalloc_objs(struct msix_entry,
+						     num_msix);
 		if (!adapter->msix_entries)
 			return -ENOMEM;
 	}
@@ -954,7 +950,7 @@ static int qlcnic_get_act_pci_func(struct qlcnic_adapter *adapter)
 	if (ahw->op_mode == QLCNIC_MGMT_FUNC)
 		return 0;
 
-	pci_info = kcalloc(ahw->max_vnic_func, sizeof(*pci_info), GFP_KERNEL);
+	pci_info = kzalloc_objs(*pci_info, ahw->max_vnic_func);
 	if (!pci_info)
 		return -ENOMEM;
 
@@ -988,7 +984,7 @@ int qlcnic_init_pci_info(struct qlcnic_adapter *adapter)
 	u16 act_pci_func;
 	u8 pfn;
 
-	pci_info = kcalloc(ahw->max_vnic_func, sizeof(*pci_info), GFP_KERNEL);
+	pci_info = kzalloc_objs(*pci_info, ahw->max_vnic_func);
 	if (!pci_info)
 		return -ENOMEM;
 
@@ -998,17 +994,14 @@ int qlcnic_init_pci_info(struct qlcnic_adapter *adapter)
 
 	act_pci_func = ahw->total_nic_func;
 
-	adapter->npars = kcalloc(act_pci_func,
-				 sizeof(struct qlcnic_npar_info),
-				 GFP_KERNEL);
+	adapter->npars = kzalloc_objs(struct qlcnic_npar_info, act_pci_func);
 	if (!adapter->npars) {
 		ret = -ENOMEM;
 		goto err_pci_info;
 	}
 
-	adapter->eswitch = kcalloc(QLCNIC_NIU_MAX_XG_PORTS,
-				   sizeof(struct qlcnic_eswitch),
-				   GFP_KERNEL);
+	adapter->eswitch = kzalloc_objs(struct qlcnic_eswitch,
+					QLCNIC_NIU_MAX_XG_PORTS);
 	if (!adapter->eswitch) {
 		ret = -ENOMEM;
 		goto err_npars;
@@ -2061,8 +2054,7 @@ static int qlcnic_alloc_adapter_resources(struct qlcnic_adapter *adapter)
 	struct qlcnic_hardware_context *ahw = adapter->ahw;
 	int err = 0;
 
-	adapter->recv_ctx = kzalloc(sizeof(struct qlcnic_recv_context),
-				GFP_KERNEL);
+	adapter->recv_ctx = kzalloc_obj(struct qlcnic_recv_context);
 	if (!adapter->recv_ctx) {
 		err = -ENOMEM;
 		goto err_out;
@@ -2358,8 +2350,8 @@ int qlcnic_alloc_tx_rings(struct qlcnic_adapter *adapter,
 	struct qlcnic_host_tx_ring *tx_ring;
 	struct qlcnic_cmd_buffer *cmd_buf_arr;
 
-	tx_ring = kcalloc(adapter->drv_tx_rings,
-			  sizeof(struct qlcnic_host_tx_ring), GFP_KERNEL);
+	tx_ring = kzalloc_objs(struct qlcnic_host_tx_ring,
+			       adapter->drv_tx_rings);
 	if (tx_ring == NULL)
 		return -ENOMEM;
 
@@ -2445,9 +2437,8 @@ qlcnic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_out_disable_pdev;
 
 	pci_set_master(pdev);
-	pci_enable_pcie_error_reporting(pdev);
 
-	ahw = kzalloc(sizeof(struct qlcnic_hardware_context), GFP_KERNEL);
+	ahw = kzalloc_obj(struct qlcnic_hardware_context);
 	if (!ahw) {
 		err = -ENOMEM;
 		goto err_out_free_res;
@@ -2599,7 +2590,13 @@ qlcnic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 			 "Device does not support MSI interrupts\n");
 
 	if (qlcnic_82xx_check(adapter)) {
-		qlcnic_dcb_enable(adapter->dcb);
+		err = qlcnic_dcb_enable(adapter->dcb);
+		if (err) {
+			qlcnic_dcb_free(adapter->dcb);
+			dev_err(&pdev->dev, "Failed to enable DCB\n");
+			goto err_out_free_hw;
+		}
+
 		qlcnic_dcb_get_info(adapter->dcb);
 		err = qlcnic_setup_intr(adapter);
 
@@ -2669,7 +2666,6 @@ err_out_free_hw_res:
 	kfree(ahw);
 
 err_out_free_res:
-	pci_disable_pcie_error_reporting(pdev);
 	pci_release_regions(pdev);
 
 err_out_disable_pdev:
@@ -2751,7 +2747,6 @@ static void qlcnic_remove(struct pci_dev *pdev)
 
 	qlcnic_release_firmware(adapter);
 
-	pci_disable_pcie_error_reporting(pdev);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
 
@@ -2850,8 +2845,8 @@ void qlcnic_alloc_lb_filters_mem(struct qlcnic_adapter *adapter)
 		adapter->fhash.fbucket_size = QLC_83XX_LB_BUCKET_SIZE;
 	}
 
-	head = kcalloc(adapter->fhash.fbucket_size,
-		       sizeof(struct hlist_head), GFP_ATOMIC);
+	head = kzalloc_objs(struct hlist_head, adapter->fhash.fbucket_size,
+		            GFP_ATOMIC);
 
 	if (!head)
 		return;
@@ -2867,8 +2862,8 @@ void qlcnic_alloc_lb_filters_mem(struct qlcnic_adapter *adapter)
 
 	adapter->rx_fhash.fbucket_size = adapter->fhash.fbucket_size;
 
-	head = kcalloc(adapter->rx_fhash.fbucket_size,
-		       sizeof(struct hlist_head), GFP_ATOMIC);
+	head = kzalloc_objs(struct hlist_head, adapter->rx_fhash.fbucket_size,
+		            GFP_ATOMIC);
 
 	if (!head)
 		return;
@@ -3765,8 +3760,6 @@ static int qlcnic_attach_func(struct pci_dev *pdev)
 	struct qlcnic_adapter *adapter = pci_get_drvdata(pdev);
 	struct net_device *netdev = adapter->netdev;
 
-	pdev->error_state = pci_channel_io_normal;
-
 	err = pci_enable_device(pdev);
 	if (err)
 		return err;
@@ -4144,7 +4137,7 @@ qlcnic_inetaddr_event(struct notifier_block *this,
 
 	struct in_ifaddr *ifa = (struct in_ifaddr *)ptr;
 
-	dev = ifa->ifa_dev ? ifa->ifa_dev->dev : NULL;
+	dev = ifa->ifa_dev->dev;
 
 recheck:
 	if (dev == NULL)

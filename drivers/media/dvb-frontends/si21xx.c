@@ -902,7 +902,7 @@ struct dvb_frontend *si21xx_attach(const struct si21xx_config *config,
 	dprintk("%s\n", __func__);
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(struct si21xx_state), GFP_KERNEL);
+	state = kzalloc_obj(struct si21xx_state);
 	if (state == NULL)
 		goto error;
 
@@ -937,7 +937,7 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(si21xx_attach);
+EXPORT_SYMBOL_GPL(si21xx_attach);
 
 module_param(debug, int, 0644);
 MODULE_PARM_DESC(debug, "Turn on/off frontend debugging (default:off).");

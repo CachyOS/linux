@@ -11,15 +11,18 @@
 
 struct drm_device;
 struct drm_fb_helper;
+struct drm_fb_helper_surface_size;
 
 #ifdef CONFIG_DRM_FBDEV_EMULATION
-void omap_fbdev_init(struct drm_device *dev);
-void omap_fbdev_fini(struct drm_device *dev);
+int omap_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
+				  struct drm_fb_helper_surface_size *sizes);
+#define OMAP_FBDEV_DRIVER_OPS \
+	.fbdev_probe = omap_fbdev_driver_fbdev_probe
+void omap_fbdev_setup(struct drm_device *dev);
 #else
-static inline void omap_fbdev_init(struct drm_device *dev)
-{
-}
-static inline void omap_fbdev_fini(struct drm_device *dev)
+#define OMAP_FBDEV_DRIVER_OPS \
+	.fbdev_probe = NULL
+static inline void omap_fbdev_setup(struct drm_device *dev)
 {
 }
 #endif

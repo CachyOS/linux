@@ -18,7 +18,6 @@
 #include <linux/device.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_opp.h>
 #include <linux/slab.h>
@@ -253,7 +252,7 @@ static int merge_cluster_tables(void)
 	for (i = 0; i < MAX_CLUSTERS; i++)
 		count += get_table_count(freq_table[i]);
 
-	table = kcalloc(count, sizeof(*table), GFP_KERNEL);
+	table = kzalloc_objs(*table, count);
 	if (!table)
 		return -ENOMEM;
 
@@ -448,7 +447,7 @@ static int ve_spc_cpufreq_init(struct cpufreq_policy *policy)
 	return 0;
 }
 
-static int ve_spc_cpufreq_exit(struct cpufreq_policy *policy)
+static void ve_spc_cpufreq_exit(struct cpufreq_policy *policy)
 {
 	struct device *cpu_dev;
 
@@ -456,11 +455,10 @@ static int ve_spc_cpufreq_exit(struct cpufreq_policy *policy)
 	if (!cpu_dev) {
 		pr_err("%s: failed to get cpu%d device\n", __func__,
 		       policy->cpu);
-		return -ENODEV;
+		return;
 	}
 
 	put_cluster_clk_and_freq_table(cpu_dev, policy->related_cpus);
-	return 0;
 }
 
 static struct cpufreq_driver ve_spc_cpufreq_driver = {
@@ -473,7 +471,6 @@ static struct cpufreq_driver ve_spc_cpufreq_driver = {
 	.init			= ve_spc_cpufreq_init,
 	.exit			= ve_spc_cpufreq_exit,
 	.register_em		= cpufreq_register_em_with_opp,
-	.attr			= cpufreq_generic_attr,
 };
 
 #ifdef CONFIG_BL_SWITCHER
@@ -552,7 +549,7 @@ static int ve_spc_cpufreq_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int ve_spc_cpufreq_remove(struct platform_device *pdev)
+static void ve_spc_cpufreq_remove(struct platform_device *pdev)
 {
 	bL_switcher_get_enabled();
 	__bLs_unregister_notifier();
@@ -560,7 +557,6 @@ static int ve_spc_cpufreq_remove(struct platform_device *pdev)
 	bL_switcher_put_enabled();
 	pr_info("%s: Un-registered platform driver: %s\n", __func__,
 		ve_spc_cpufreq_driver.name);
-	return 0;
 }
 
 static struct platform_driver ve_spc_cpufreq_platdrv = {

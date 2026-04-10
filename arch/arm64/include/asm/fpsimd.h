@@ -6,12 +6,13 @@
 #define __ASM_FP_H
 
 #include <asm/errno.h>
+#include <asm/percpu.h>
 #include <asm/ptrace.h>
 #include <asm/processor.h>
 #include <asm/sigcontext.h>
 #include <asm/sysreg.h>
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #include <linux/bitmap.h>
 #include <linux/build_bug.h>
@@ -21,7 +22,6 @@
 #include <linux/stddef.h>
 #include <linux/types.h>
 
-#ifdef CONFIG_COMPAT
 /* Masks for extracting the FPSR and FPCR from the FPSCR */
 #define VFP_FPSCR_STAT_MASK	0xf800009f
 #define VFP_FPSCR_CTRL_MASK	0x07f79f00
@@ -30,19 +30,44 @@
  * control/status register.
  */
 #define VFP_STATE_SIZE		((32 * 8) + 4)
-#endif
+
+static inline unsigned long cpacr_save_enable_kernel_sve(void)
+{
+	unsigned long old = read_sysreg(cpacr_el1);
+	unsigned long set = CPACR_EL1_FPEN_EL1EN | CPACR_EL1_ZEN_EL1EN;
+
+	write_sysreg(old | set, cpacr_el1);
+	isb();
+	return old;
+}
+
+static inline unsigned long cpacr_save_enable_kernel_sme(void)
+{
+	unsigned long old = read_sysreg(cpacr_el1);
+	unsigned long set = CPACR_EL1_FPEN_EL1EN | CPACR_EL1_SMEN_EL1EN;
+
+	write_sysreg(old | set, cpacr_el1);
+	isb();
+	return old;
+}
+
+static inline void cpacr_restore(unsigned long cpacr)
+{
+	write_sysreg(cpacr, cpacr_el1);
+	isb();
+}
 
 /*
  * When we defined the maximum SVE vector length we defined the ABI so
  * that the maximum vector length included all the reserved for future
  * expansion bits in ZCR rather than those just currently defined by
- * the architecture. While SME follows a similar pattern the fact that
- * it includes a square matrix means that any allocations that attempt
- * to cover the maximum potential vector length (such as happen with
- * the regset used for ptrace) end up being extremely large. Define
- * the much lower actual limit for use in such situations.
+ * the architecture.  Using this length to allocate worst size buffers
+ * results in excessively large allocations, and this effect is even
+ * more pronounced for SME due to ZA.  Define more suitable VLs for
+ * these situations.
  */
-#define SME_VQ_MAX	16
+#define ARCH_SVE_VQ_MAX ((ZCR_ELx_LEN_MASK >> ZCR_ELx_LEN_SHIFT) + 1)
+#define SME_VQ_MAX	((SMCR_ELx_LEN_MASK >> SMCR_ELx_LEN_SHIFT) + 1)
 
 struct task_struct;
 
@@ -52,17 +77,28 @@ extern void fpsimd_load_state(struct user_fpsimd_state *state);
 extern void fpsimd_thread_switch(struct task_struct *next);
 extern void fpsimd_flush_thread(void);
 
-extern void fpsimd_signal_preserve_current_state(void);
 extern void fpsimd_preserve_current_state(void);
 extern void fpsimd_restore_current_state(void);
 extern void fpsimd_update_current_state(struct user_fpsimd_state const *state);
 
-extern void fpsimd_bind_state_to_cpu(struct user_fpsimd_state *state,
-				     void *sve_state, unsigned int sve_vl,
-				     void *za_state, unsigned int sme_vl,
-				     u64 *svcr);
+struct cpu_fp_state {
+	struct user_fpsimd_state *st;
+	void *sve_state;
+	void *sme_state;
+	u64 *svcr;
+	u64 *fpmr;
+	unsigned int sve_vl;
+	unsigned int sme_vl;
+	enum fp_type *fp_type;
+	enum fp_type to_save;
+};
+
+DECLARE_PER_CPU(struct cpu_fp_state, fpsimd_last_state);
+
+extern void fpsimd_bind_state_to_cpu(struct cpu_fp_state *fp_state);
 
 extern void fpsimd_flush_task_state(struct task_struct *target);
+extern void fpsimd_save_and_flush_current_state(void);
 extern void fpsimd_save_and_flush_cpu_state(void);
 
 static inline bool thread_sm_enabled(struct thread_struct *thread)
@@ -74,6 +110,8 @@ static inline bool thread_za_enabled(struct thread_struct *thread)
 {
 	return system_supports_sme() && (thread->svcr & SVCR_ZA_MASK);
 }
+
+extern void task_smstop_sm(struct task_struct *task);
 
 /* Maximum VL that SVE/SME VL-agnostic software can transparently support */
 #define VL_ARCH_MAX 0x100
@@ -96,6 +134,13 @@ static inline void *sve_pffr(struct thread_struct *thread)
 	return (char *)thread->sve_state + sve_ffr_offset(vl);
 }
 
+static inline void *thread_zt_state(struct thread_struct *thread)
+{
+	/* The ZT register state is stored immediately after the ZA state */
+	unsigned int sme_vq = sve_vq_from_vl(thread_get_sme_vl(thread));
+	return thread->sme_state + ZA_SIG_REGS_SIZE(sme_vq);
+}
+
 extern void sve_save_state(void *state, u32 *pfpsr, int save_ffr);
 extern void sve_load_state(void const *state, u32 const *pfpsr,
 			   int restore_ffr);
@@ -103,16 +148,16 @@ extern void sve_flush_live(bool flush_ffr, unsigned long vq_minus_1);
 extern unsigned int sve_get_vl(void);
 extern void sve_set_vq(unsigned long vq_minus_1);
 extern void sme_set_vq(unsigned long vq_minus_1);
-extern void za_save_state(void *state);
-extern void za_load_state(void const *state);
+extern void sme_save_state(void *state, int zt);
+extern void sme_load_state(void const *state, int zt);
 
 struct arm64_cpu_capabilities;
-extern void sve_kernel_enable(const struct arm64_cpu_capabilities *__unused);
-extern void sme_kernel_enable(const struct arm64_cpu_capabilities *__unused);
-extern void fa64_kernel_enable(const struct arm64_cpu_capabilities *__unused);
-
-extern u64 read_zcr_features(void);
-extern u64 read_smcr_features(void);
+extern void cpu_enable_fpsimd(const struct arm64_cpu_capabilities *__unused);
+extern void cpu_enable_sve(const struct arm64_cpu_capabilities *__unused);
+extern void cpu_enable_sme(const struct arm64_cpu_capabilities *__unused);
+extern void cpu_enable_sme2(const struct arm64_cpu_capabilities *__unused);
+extern void cpu_enable_fa64(const struct arm64_cpu_capabilities *__unused);
+extern void cpu_enable_fpmr(const struct arm64_cpu_capabilities *__unused);
 
 /*
  * Helpers to translate bit indices in sve_vq_map to VQ values (and
@@ -153,12 +198,10 @@ struct vl_info {
 
 #ifdef CONFIG_ARM64_SVE
 
-extern void sve_alloc(struct task_struct *task);
+extern void sve_alloc(struct task_struct *task, bool flush);
 extern void fpsimd_release_task(struct task_struct *task);
-extern void fpsimd_sync_to_sve(struct task_struct *task);
-extern void fpsimd_force_sync_to_sve(struct task_struct *task);
-extern void sve_sync_to_fpsimd(struct task_struct *task);
-extern void sve_sync_from_fpsimd_zeropad(struct task_struct *task);
+extern void fpsimd_sync_from_effective_state(struct task_struct *task);
+extern void fpsimd_sync_to_effective_state_zeropad(struct task_struct *task);
 
 extern int vec_set_vector_length(struct task_struct *task, enum vec_type type,
 				 unsigned long vl, unsigned long flags);
@@ -252,14 +295,29 @@ static inline bool sve_vq_available(unsigned int vq)
 	return vq_available(ARM64_VEC_SVE, vq);
 }
 
-size_t sve_state_size(struct task_struct const *task);
+static inline size_t __sve_state_size(unsigned int sve_vl, unsigned int sme_vl)
+{
+	unsigned int vl = max(sve_vl, sme_vl);
+	return SVE_SIG_REGS_SIZE(sve_vq_from_vl(vl));
+}
+
+/*
+ * Return how many bytes of memory are required to store the full SVE
+ * state for task, given task's currently configured vector length.
+ */
+static inline size_t sve_state_size(struct task_struct const *task)
+{
+	unsigned int sve_vl = task_get_sve_vl(task);
+	unsigned int sme_vl = task_get_sme_vl(task);
+	return __sve_state_size(sve_vl, sme_vl);
+}
 
 #else /* ! CONFIG_ARM64_SVE */
 
-static inline void sve_alloc(struct task_struct *task) { }
+static inline void sve_alloc(struct task_struct *task, bool flush) { }
 static inline void fpsimd_release_task(struct task_struct *task) { }
-static inline void sve_sync_to_fpsimd(struct task_struct *task) { }
-static inline void sve_sync_from_fpsimd_zeropad(struct task_struct *task) { }
+static inline void fpsimd_sync_from_effective_state(struct task_struct *task) { }
+static inline void fpsimd_sync_to_effective_state_zeropad(struct task_struct *task) { }
 
 static inline int sve_max_virtualisable_vl(void)
 {
@@ -292,6 +350,11 @@ static inline void vec_init_vq_map(enum vec_type t) { }
 static inline void vec_update_vq_map(enum vec_type t) { }
 static inline int vec_verify_vq_map(enum vec_type t) { return 0; }
 static inline void sve_setup(void) { }
+
+static inline size_t __sve_state_size(unsigned int sve_vl, unsigned int sme_vl)
+{
+	return 0;
+}
 
 static inline size_t sve_state_size(struct task_struct const *task)
 {
@@ -339,21 +402,30 @@ static inline int sme_max_virtualisable_vl(void)
 	return vec_max_virtualisable_vl(ARM64_VEC_SME);
 }
 
-extern void sme_alloc(struct task_struct *task);
+extern void sme_alloc(struct task_struct *task, bool flush);
 extern unsigned int sme_get_vl(void);
 extern int sme_set_current_vl(unsigned long arg);
 extern int sme_get_current_vl(void);
+extern void sme_suspend_exit(void);
+
+static inline size_t __sme_state_size(unsigned int sme_vl)
+{
+	size_t size = ZA_SIG_REGS_SIZE(sve_vq_from_vl(sme_vl));
+
+	if (system_supports_sme2())
+		size += ZT_SIG_REG_SIZE;
+
+	return size;
+}
 
 /*
  * Return how many bytes of memory are required to store the full SME
- * specific state (currently just ZA) for task, given task's currently
- * configured vector length.
+ * specific state for task, given task's currently configured vector
+ * length.
  */
-static inline size_t za_state_size(struct task_struct const *task)
+static inline size_t sme_state_size(struct task_struct const *task)
 {
-	unsigned int vl = task_get_sme_vl(task);
-
-	return ZA_SIG_REGS_SIZE(sve_vq_from_vl(vl));
+	return __sme_state_size(task_get_sme_vl(task));
 }
 
 #else
@@ -365,15 +437,21 @@ static inline void sme_smstart_sm(void) { }
 static inline void sme_smstop_sm(void) { }
 static inline void sme_smstop(void) { }
 
-static inline void sme_alloc(struct task_struct *task) { }
+static inline void sme_alloc(struct task_struct *task, bool flush) { }
 static inline void sme_setup(void) { }
 static inline unsigned int sme_get_vl(void) { return 0; }
 static inline int sme_max_vl(void) { return 0; }
 static inline int sme_max_virtualisable_vl(void) { return 0; }
 static inline int sme_set_current_vl(unsigned long arg) { return -EINVAL; }
 static inline int sme_get_current_vl(void) { return -EINVAL; }
+static inline void sme_suspend_exit(void) { }
 
-static inline size_t za_state_size(struct task_struct const *task)
+static inline size_t __sme_state_size(unsigned int sme_vl)
+{
+	return 0;
+}
+
+static inline size_t sme_state_size(struct task_struct const *task)
 {
 	return 0;
 }

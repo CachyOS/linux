@@ -10,11 +10,12 @@
  */
 
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
+#include <linux/cleanup.h>
 #include <linux/init.h>
 #include <linux/i2c.h>
 #include <linux/regmap.h>
 #include <linux/delay.h>
-#include <linux/acpi.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/buffer.h>
@@ -68,8 +69,6 @@
 #define RPR0521_DEFAULT_MEAS_TIME	0x06 /* ALS - 100ms, PXS - 100ms */
 
 #define RPR0521_DRV_NAME		"RPR0521"
-#define RPR0521_IRQ_NAME		"rpr0521_event"
-#define RPR0521_REGMAP_NAME		"rpr0521_regmap"
 
 #define RPR0521_SLEEP_DELAY_MS	2000
 
@@ -203,7 +202,7 @@ struct rpr0521_data {
 	struct {
 		__le16 channels[3];
 		u8 garbage;
-		s64 ts __aligned(8);
+		aligned_s64 ts;
 	} scan;
 };
 
@@ -359,12 +358,10 @@ static int rpr0521_set_power_state(struct rpr0521_data *data, bool on,
 	 * Note: If either measurement is re-enabled before _suspend(),
 	 * both stay enabled until _suspend().
 	 */
-	if (on) {
+	if (on)
 		ret = pm_runtime_resume_and_get(&data->client->dev);
-	} else {
-		pm_runtime_mark_last_busy(&data->client->dev);
+	else
 		ret = pm_runtime_put_autosuspend(&data->client->dev);
-	}
 	if (ret < 0) {
 		dev_err(&data->client->dev,
 			"Failed: rpr0521_set_power_state for %d, ret %d\n",
@@ -431,23 +428,11 @@ static irqreturn_t rpr0521_drdy_irq_thread(int irq, void *private)
 	struct rpr0521_data *data = iio_priv(indio_dev);
 
 	if (rpr0521_is_triggered(data)) {
-		iio_trigger_poll_chained(data->drdy_trigger0);
+		iio_trigger_poll_nested(data->drdy_trigger0);
 		return IRQ_HANDLED;
 	}
 
 	return IRQ_NONE;
-}
-
-static irqreturn_t rpr0521_trigger_consumer_store_time(int irq, void *p)
-{
-	struct iio_poll_func *pf = p;
-	struct iio_dev *indio_dev = pf->indio_dev;
-
-	/* Other trigger polls store time here. */
-	if (!iio_trigger_using_own(indio_dev))
-		pf->timestamp = iio_get_time_ns(indio_dev);
-
-	return IRQ_WAKE_THREAD;
 }
 
 static irqreturn_t rpr0521_trigger_consumer_handler(int irq, void *p)
@@ -470,8 +455,8 @@ static irqreturn_t rpr0521_trigger_consumer_handler(int irq, void *p)
 		data->scan.channels,
 		(3 * 2) + 1);	/* 3 * 16-bit + (discarded) int clear reg. */
 	if (!err)
-		iio_push_to_buffers_with_timestamp(indio_dev,
-						   &data->scan, pf->timestamp);
+		iio_push_to_buffers_with_ts(indio_dev, &data->scan,
+					    sizeof(data->scan), pf->timestamp);
 	else
 		dev_err(&data->client->dev,
 			"Trigger consumer can't read from sensor.\n");
@@ -716,49 +701,57 @@ static int rpr0521_write_ps_offset(struct rpr0521_data *data, int offset)
 	return ret;
 }
 
+static int rpr0521_read_info_raw(struct rpr0521_data *data,
+				 struct iio_chan_spec const *chan,
+				 int *val)
+{
+	u8 device_mask;
+	__le16 raw_data;
+	int ret;
+
+	device_mask = rpr0521_data_reg[chan->address].device_mask;
+
+	guard(mutex)(&data->lock);
+	ret = rpr0521_set_power_state(data, true, device_mask);
+	if (ret < 0)
+		return ret;
+
+	ret = regmap_bulk_read(data->regmap,
+			       rpr0521_data_reg[chan->address].address,
+			       &raw_data, sizeof(raw_data));
+	if (ret < 0) {
+		rpr0521_set_power_state(data, false, device_mask);
+		return ret;
+	}
+
+	ret = rpr0521_set_power_state(data, false, device_mask);
+	if (ret < 0)
+		return ret;
+
+	*val = le16_to_cpu(raw_data);
+
+	return 0;
+}
+
 static int rpr0521_read_raw(struct iio_dev *indio_dev,
 			    struct iio_chan_spec const *chan, int *val,
 			    int *val2, long mask)
 {
 	struct rpr0521_data *data = iio_priv(indio_dev);
 	int ret;
-	int busy;
-	u8 device_mask;
-	__le16 raw_data;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
 		if (chan->type != IIO_INTENSITY && chan->type != IIO_PROXIMITY)
 			return -EINVAL;
 
-		busy = iio_device_claim_direct_mode(indio_dev);
-		if (busy)
+		if (!iio_device_claim_direct(indio_dev))
 			return -EBUSY;
 
-		device_mask = rpr0521_data_reg[chan->address].device_mask;
-
-		mutex_lock(&data->lock);
-		ret = rpr0521_set_power_state(data, true, device_mask);
-		if (ret < 0)
-			goto rpr0521_read_raw_out;
-
-		ret = regmap_bulk_read(data->regmap,
-				       rpr0521_data_reg[chan->address].address,
-				       &raw_data, sizeof(raw_data));
-		if (ret < 0) {
-			rpr0521_set_power_state(data, false, device_mask);
-			goto rpr0521_read_raw_out;
-		}
-
-		ret = rpr0521_set_power_state(data, false, device_mask);
-
-rpr0521_read_raw_out:
-		mutex_unlock(&data->lock);
-		iio_device_release_direct_mode(indio_dev);
+		ret = rpr0521_read_info_raw(data, chan, val);
+		iio_device_release_direct(indio_dev);
 		if (ret < 0)
 			return ret;
-
-		*val = le16_to_cpu(raw_data);
 
 		return IIO_VAL_INT;
 
@@ -917,7 +910,7 @@ static bool rpr0521_is_volatile_reg(struct device *dev, unsigned int reg)
 }
 
 static const struct regmap_config rpr0521_regmap_config = {
-	.name		= RPR0521_REGMAP_NAME,
+	.name		= "rpr0521_regmap",
 
 	.reg_bits	= 8,
 	.val_bits	= 8,
@@ -927,8 +920,7 @@ static const struct regmap_config rpr0521_regmap_config = {
 	.volatile_reg	= rpr0521_is_volatile_reg,
 };
 
-static int rpr0521_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int rpr0521_probe(struct i2c_client *client)
 {
 	struct rpr0521_data *data;
 	struct iio_dev *indio_dev;
@@ -995,7 +987,7 @@ static int rpr0521_probe(struct i2c_client *client,
 		ret = devm_request_threaded_irq(&client->dev, client->irq,
 			rpr0521_drdy_irq_handler, rpr0521_drdy_irq_thread,
 			IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
-			RPR0521_IRQ_NAME, indio_dev);
+			"rpr0521_event", indio_dev);
 		if (ret < 0) {
 			dev_err(&client->dev, "request irq %d for trigger0 failed\n",
 				client->irq);
@@ -1017,7 +1009,7 @@ static int rpr0521_probe(struct i2c_client *client,
 		/* Trigger consumer setup */
 		ret = devm_iio_triggered_buffer_setup(indio_dev->dev.parent,
 			indio_dev,
-			rpr0521_trigger_consumer_store_time,
+			iio_pollfunc_store_time,
 			rpr0521_trigger_consumer_handler,
 			&rpr0521_buffer_setup_ops);
 		if (ret < 0) {
@@ -1041,7 +1033,7 @@ err_poweroff:
 	return ret;
 }
 
-static int rpr0521_remove(struct i2c_client *client)
+static void rpr0521_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 
@@ -1051,8 +1043,6 @@ static int rpr0521_remove(struct i2c_client *client)
 	pm_runtime_set_suspended(&client->dev);
 
 	rpr0521_poweroff(iio_priv(indio_dev));
-
-	return 0;
 }
 
 static int rpr0521_runtime_suspend(struct device *dev)
@@ -1112,7 +1102,7 @@ static const struct acpi_device_id rpr0521_acpi_match[] = {
 MODULE_DEVICE_TABLE(acpi, rpr0521_acpi_match);
 
 static const struct i2c_device_id rpr0521_id[] = {
-	{"rpr0521", 0},
+	{ "rpr0521" },
 	{ }
 };
 
@@ -1122,7 +1112,7 @@ static struct i2c_driver rpr0521_driver = {
 	.driver = {
 		.name	= RPR0521_DRV_NAME,
 		.pm	= pm_ptr(&rpr0521_pm_ops),
-		.acpi_match_table = ACPI_PTR(rpr0521_acpi_match),
+		.acpi_match_table = rpr0521_acpi_match,
 	},
 	.probe		= rpr0521_probe,
 	.remove		= rpr0521_remove,

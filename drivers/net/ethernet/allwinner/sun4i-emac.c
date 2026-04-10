@@ -223,7 +223,7 @@ emac_alloc_dma_req(struct emac_board_info *db,
 {
 	struct emac_dma_req *req;
 
-	req = kzalloc(sizeof(struct emac_dma_req), GFP_ATOMIC);
+	req = kzalloc_obj(struct emac_dma_req, GFP_ATOMIC);
 	if (!req)
 		return NULL;
 
@@ -331,8 +331,8 @@ prepare_err:
 static void emac_get_drvinfo(struct net_device *dev,
 			      struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->bus_info, dev_name(&dev->dev), sizeof(info->bus_info));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->bus_info, dev_name(&dev->dev), sizeof(info->bus_info));
 }
 
 static u32 emac_get_msglevel(struct net_device *dev)
@@ -1083,7 +1083,7 @@ out:
 	return ret;
 }
 
-static int emac_remove(struct platform_device *pdev)
+static void emac_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct emac_board_info *db = netdev_priv(ndev);
@@ -1101,7 +1101,6 @@ static int emac_remove(struct platform_device *pdev)
 	free_netdev(ndev);
 
 	dev_dbg(&pdev->dev, "released and freed device\n");
-	return 0;
 }
 
 static int emac_suspend(struct platform_device *dev, pm_message_t state)

@@ -15,8 +15,7 @@
 *******************************************************************************/
 
 #include <linux/crc32.h>
-#include <net/dsa.h>
-#include <asm/io.h>
+#include <linux/io.h>
 #include "stmmac.h"
 #include "dwmac100.h"
 
@@ -27,13 +26,6 @@ static void dwmac100_core_init(struct mac_device_info *hw,
 	u32 value = readl(ioaddr + MAC_CONTROL);
 
 	value |= MAC_CORE_INIT;
-
-	/* Clear ASTP bit because Ethernet switch tagging formats such as
-	 * Broadcom tags can look like invalid LLC/SNAP packets and cause the
-	 * hardware to truncate packets on reception.
-	 */
-	if (netdev_uses_dsa(dev))
-		value &= ~MAC_CONTROL_ASTP;
 
 	writel(value, ioaddr + MAC_CONTROL);
 
@@ -61,7 +53,7 @@ static int dwmac100_rx_ipc_enable(struct mac_device_info *hw)
 	return 0;
 }
 
-static int dwmac100_irq_status(struct mac_device_info *hw,
+static int dwmac100_irq_status(struct stmmac_priv *priv,
 			       struct stmmac_extra_stats *x)
 {
 	return 0;
@@ -116,7 +108,7 @@ static void dwmac100_set_filter(struct mac_device_info *hw,
 		memset(mc_filter, 0, sizeof(mc_filter));
 		netdev_for_each_mc_addr(ha, dev) {
 			/* The upper 6 bits of the calculated CRC are used to
-			 * index the contens of the hash table
+			 * index the contents of the hash table
 			 */
 			int bit_nr = ether_crc(ETH_ALEN, ha->addr) >> 26;
 			/* The most significant bit determines the register to
@@ -140,7 +132,7 @@ static void dwmac100_flow_ctrl(struct mac_device_info *hw, unsigned int duplex,
 	unsigned int flow = MAC_FLOW_CTRL_ENABLE;
 
 	if (duplex)
-		flow |= (pause_time << MAC_FLOW_CTRL_PT_SHIFT);
+		flow |= FIELD_PREP(MAC_FLOW_CTRL_PT_MASK, pause_time);
 	writel(flow, ioaddr + MAC_FLOW_CTRL);
 }
 
@@ -183,6 +175,8 @@ int dwmac100_setup(struct stmmac_priv *priv)
 	dev_info(priv->device, "\tDWMAC100\n");
 
 	mac->pcsr = priv->ioaddr;
+	mac->link.caps = MAC_ASYM_PAUSE | MAC_SYM_PAUSE |
+			 MAC_10 | MAC_100;
 	mac->link.duplex = MAC_CONTROL_F;
 	mac->link.speed10 = 0;
 	mac->link.speed100 = 0;

@@ -14,6 +14,7 @@
 # objects. Device reference counts and network namespace cleanup tested
 # by use of network namespace for peer.
 
+source lib.sh
 ret=0
 # Kselftest framework requirement - SKIP code is 4.
 ksft_skip=4
@@ -29,6 +30,7 @@ IPV4_TESTS="
 	ipv4_large_res_grp
 	ipv4_compat_mode
 	ipv4_fdb_grp_fcnal
+	ipv4_mpath_select
 	ipv4_torture
 	ipv4_res_torture
 "
@@ -42,6 +44,7 @@ IPV6_TESTS="
 	ipv6_large_res_grp
 	ipv6_compat_mode
 	ipv6_fdb_grp_fcnal
+	ipv6_mpath_select
 	ipv6_torture
 	ipv6_res_torture
 "
@@ -73,9 +76,16 @@ log_test()
 		printf "TEST: %-60s  [ OK ]\n" "${msg}"
 		nsuccess=$((nsuccess+1))
 	else
-		ret=1
-		nfail=$((nfail+1))
-		printf "TEST: %-60s  [FAIL]\n" "${msg}"
+		if [[ $rc -eq $ksft_skip ]]; then
+			[[ $ret -eq 0 ]] && ret=$ksft_skip
+			nskip=$((nskip+1))
+			printf "TEST: %-60s  [SKIP]\n" "${msg}"
+		else
+			ret=1
+			nfail=$((nfail+1))
+			printf "TEST: %-60s  [FAIL]\n" "${msg}"
+		fi
+
 		if [ "$VERBOSE" = "1" ]; then
 			echo "    rc=$rc, expected $expected"
 		fi
@@ -146,13 +156,7 @@ create_ns()
 {
 	local n=${1}
 
-	ip netns del ${n} 2>/dev/null
-
 	set -e
-	ip netns add ${n}
-	ip netns set ${n} $((nsid++))
-	ip -netns ${n} addr add 127.0.0.1/8 dev lo
-	ip -netns ${n} link set lo up
 
 	ip netns exec ${n} sysctl -qw net.ipv4.ip_forward=1
 	ip netns exec ${n} sysctl -qw net.ipv4.fib_multipath_use_neigh=1
@@ -171,12 +175,13 @@ setup()
 {
 	cleanup
 
-	create_ns me
-	create_ns peer
-	create_ns remote
+	setup_ns me peer remote
+	create_ns $me
+	create_ns $peer
+	create_ns $remote
 
-	IP="ip -netns me"
-	BRIDGE="bridge -netns me"
+	IP="ip -netns $me"
+	BRIDGE="bridge -netns $me"
 	set -e
 	$IP li add veth1 type veth peer name veth2
 	$IP li set veth1 up
@@ -188,24 +193,24 @@ setup()
 	$IP addr add 172.16.2.1/24 dev veth3
 	$IP -6 addr add 2001:db8:92::1/64 dev veth3 nodad
 
-	$IP li set veth2 netns peer up
-	ip -netns peer addr add 172.16.1.2/24 dev veth2
-	ip -netns peer -6 addr add 2001:db8:91::2/64 dev veth2 nodad
+	$IP li set veth2 netns $peer up
+	ip -netns $peer addr add 172.16.1.2/24 dev veth2
+	ip -netns $peer -6 addr add 2001:db8:91::2/64 dev veth2 nodad
 
-	$IP li set veth4 netns peer up
-	ip -netns peer addr add 172.16.2.2/24 dev veth4
-	ip -netns peer -6 addr add 2001:db8:92::2/64 dev veth4 nodad
+	$IP li set veth4 netns $peer up
+	ip -netns $peer addr add 172.16.2.2/24 dev veth4
+	ip -netns $peer -6 addr add 2001:db8:92::2/64 dev veth4 nodad
 
-	ip -netns remote li add veth5 type veth peer name veth6
-	ip -netns remote li set veth5 up
-	ip -netns remote addr add dev veth5 172.16.101.1/24
-	ip -netns remote -6 addr add dev veth5 2001:db8:101::1/64 nodad
-	ip -netns remote ro add 172.16.0.0/22 via 172.16.101.2
-	ip -netns remote -6 ro add 2001:db8:90::/40 via 2001:db8:101::2
+	ip -netns $remote li add veth5 type veth peer name veth6
+	ip -netns $remote li set veth5 up
+	ip -netns $remote addr add dev veth5 172.16.101.1/24
+	ip -netns $remote -6 addr add dev veth5 2001:db8:101::1/64 nodad
+	ip -netns $remote ro add 172.16.0.0/22 via 172.16.101.2
+	ip -netns $remote -6 ro add 2001:db8:90::/40 via 2001:db8:101::2
 
-	ip -netns remote li set veth6 netns peer up
-	ip -netns peer addr add dev veth6 172.16.101.2/24
-	ip -netns peer -6 addr add dev veth6 2001:db8:101::2/64 nodad
+	ip -netns $remote li set veth6 netns $peer up
+	ip -netns $peer addr add dev veth6 172.16.101.2/24
+	ip -netns $peer -6 addr add dev veth6 2001:db8:101::2/64 nodad
 	set +e
 }
 
@@ -213,7 +218,7 @@ cleanup()
 {
 	local ns
 
-	for ns in me peer remote; do
+	for ns in $me $peer $remote; do
 		ip netns del ${ns} 2>/dev/null
 	done
 }
@@ -370,6 +375,27 @@ check_large_res_grp()
 	log_test $? 0 "Dump large (x$buckets) nexthop buckets"
 }
 
+get_route_dev()
+{
+	local pfx="$1"
+	local out
+
+	if out=$($IP -j route get "$pfx" | jq -re ".[0].dev"); then
+		echo "$out"
+	fi
+}
+
+check_route_dev()
+{
+	local pfx="$1"
+	local expected="$2"
+	local out
+
+	out=$(get_route_dev "$pfx")
+
+	check_output "$out" "$expected"
+}
+
 start_ip_monitor()
 {
 	local mtype=$1
@@ -441,8 +467,8 @@ ipv6_fdb_grp_fcnal()
 	log_test $? 0 "Get Fdb nexthop group by id"
 
 	# fdb nexthop group can only contain fdb nexthops
-	run_cmd "$IP nexthop add id 63 via 2001:db8:91::4"
-	run_cmd "$IP nexthop add id 64 via 2001:db8:91::5"
+	run_cmd "$IP nexthop add id 63 via 2001:db8:91::4 dev veth1"
+	run_cmd "$IP nexthop add id 64 via 2001:db8:91::5 dev veth1"
 	run_cmd "$IP nexthop add id 103 group 63/64 fdb"
 	log_test $? 2 "Fdb Nexthop group with non-fdb nexthops"
 
@@ -467,6 +493,26 @@ ipv6_fdb_grp_fcnal()
 	# fdb nexthop with encap
 	run_cmd "$IP nexthop add id 69 encap mpls 101 via 2001:db8:91::8 dev veth1 fdb"
 	log_test $? 2 "Fdb Nexthop with encap"
+
+	# Replace FDB nexthop to non-FDB and vice versa
+	run_cmd "$IP nexthop add id 70 via 2001:db8:91::2 fdb"
+	run_cmd "$IP nexthop replace id 70 via 2001:db8:91::2 dev veth1"
+	log_test $? 0 "Replace FDB nexthop to non-FDB nexthop"
+	run_cmd "$IP nexthop replace id 70 via 2001:db8:91::2 fdb"
+	log_test $? 0 "Replace non-FDB nexthop to FDB nexthop"
+
+	# Replace FDB nexthop address while in a group
+	run_cmd "$IP nexthop add id 71 group 70 fdb"
+	run_cmd "$IP nexthop replace id 70 via 2001:db8:91::3 fdb"
+	log_test $? 0 "Replace FDB nexthop address while in a group"
+
+	# Cannot replace FDB nexthop to non-FDB and vice versa while in a group
+	run_cmd "$IP nexthop replace id 70 via 2001:db8:91::2 dev veth1"
+	log_test $? 2 "Replace FDB nexthop to non-FDB nexthop while in a group"
+	run_cmd "$IP nexthop add id 72 via 2001:db8:91::2 dev veth1"
+	run_cmd "$IP nexthop add id 73 group 72"
+	run_cmd "$IP nexthop replace id 72 via 2001:db8:91::2 fdb"
+	log_test $? 2 "Replace non-FDB nexthop to FDB nexthop while in a group"
 
 	run_cmd "$IP link add name vx10 type vxlan id 1010 local 2001:db8:91::9 remote 2001:db8:91::10 dstport 4789 nolearning noudpcsum tos inherit ttl 100"
 	run_cmd "$BRIDGE fdb add 02:02:00:00:00:13 dev vx10 nhid 102 self"
@@ -521,15 +567,15 @@ ipv4_fdb_grp_fcnal()
 	log_test $? 0 "Get Fdb nexthop group by id"
 
 	# fdb nexthop group can only contain fdb nexthops
-	run_cmd "$IP nexthop add id 14 via 172.16.1.2"
-	run_cmd "$IP nexthop add id 15 via 172.16.1.3"
+	run_cmd "$IP nexthop add id 14 via 172.16.1.2 dev veth1"
+	run_cmd "$IP nexthop add id 15 via 172.16.1.3 dev veth1"
 	run_cmd "$IP nexthop add id 103 group 14/15 fdb"
 	log_test $? 2 "Fdb Nexthop group with non-fdb nexthops"
 
 	# Non fdb nexthop group can not contain fdb nexthops
 	run_cmd "$IP nexthop add id 16 via 172.16.1.2 fdb"
 	run_cmd "$IP nexthop add id 17 via 172.16.1.3 fdb"
-	run_cmd "$IP nexthop add id 104 group 14/15"
+	run_cmd "$IP nexthop add id 104 group 16/17"
 	log_test $? 2 "Non-Fdb Nexthop group with fdb nexthops"
 
 	# fdb nexthop cannot have blackhole
@@ -548,6 +594,26 @@ ipv4_fdb_grp_fcnal()
 	run_cmd "$IP nexthop add id 17 encap mpls 101 via 172.16.1.2 dev veth1 fdb"
 	log_test $? 2 "Fdb Nexthop with encap"
 
+	# Replace FDB nexthop to non-FDB and vice versa
+	run_cmd "$IP nexthop add id 18 via 172.16.1.2 fdb"
+	run_cmd "$IP nexthop replace id 18 via 172.16.1.2 dev veth1"
+	log_test $? 0 "Replace FDB nexthop to non-FDB nexthop"
+	run_cmd "$IP nexthop replace id 18 via 172.16.1.2 fdb"
+	log_test $? 0 "Replace non-FDB nexthop to FDB nexthop"
+
+	# Replace FDB nexthop address while in a group
+	run_cmd "$IP nexthop add id 19 group 18 fdb"
+	run_cmd "$IP nexthop replace id 18 via 172.16.1.3 fdb"
+	log_test $? 0 "Replace FDB nexthop address while in a group"
+
+	# Cannot replace FDB nexthop to non-FDB and vice versa while in a group
+	run_cmd "$IP nexthop replace id 18 via 172.16.1.2 dev veth1"
+	log_test $? 2 "Replace FDB nexthop to non-FDB nexthop while in a group"
+	run_cmd "$IP nexthop add id 20 via 172.16.1.2 dev veth1"
+	run_cmd "$IP nexthop add id 21 group 20"
+	run_cmd "$IP nexthop replace id 20 via 172.16.1.2 fdb"
+	log_test $? 2 "Replace non-FDB nexthop to FDB nexthop while in a group"
+
 	run_cmd "$IP link add name vx10 type vxlan id 1010 local 10.0.0.1 remote 10.0.0.2 dstport 4789 nolearning noudpcsum tos inherit ttl 100"
 	run_cmd "$BRIDGE fdb add 02:02:00:00:00:13 dev vx10 nhid 102 self"
 	log_test $? 0 "Fdb mac add with nexthop group"
@@ -556,7 +622,7 @@ ipv4_fdb_grp_fcnal()
 	run_cmd "$BRIDGE fdb add 02:02:00:00:00:14 dev vx10 nhid 12 self"
 	log_test $? 255 "Fdb mac add with nexthop"
 
-	run_cmd "$IP ro add 172.16.0.0/22 nhid 15"
+	run_cmd "$IP ro add 172.16.0.0/22 nhid 16"
 	log_test $? 2 "Route add with fdb nexthop"
 
 	run_cmd "$IP ro add 172.16.0.0/22 nhid 103"
@@ -573,6 +639,112 @@ ipv4_fdb_grp_fcnal()
 	log_test $? 254 "Fdb entry after deleting a nexthop group"
 
 	$IP link del dev vx10
+}
+
+ipv4_mpath_select()
+{
+	local rc dev match h addr
+
+	echo
+	echo "IPv4 multipath selection"
+	echo "------------------------"
+	if [ ! -x "$(command -v jq)" ]; then
+		echo "SKIP: Could not run test; need jq tool"
+		return $ksft_skip
+	fi
+
+	# Use status of existing neighbor entry when determining nexthop for
+	# multipath routes.
+	local -A gws
+	gws=([veth1]=172.16.1.2 [veth3]=172.16.2.2)
+	local -A other_dev
+	other_dev=([veth1]=veth3 [veth3]=veth1)
+
+	run_cmd "$IP nexthop add id 1 via ${gws["veth1"]} dev veth1"
+	run_cmd "$IP nexthop add id 2 via ${gws["veth3"]} dev veth3"
+	run_cmd "$IP nexthop add id 1001 group 1/2"
+	run_cmd "$IP ro add 172.16.101.0/24 nhid 1001"
+	rc=0
+	for dev in veth1 veth3; do
+		match=0
+		for h in {1..254}; do
+			addr="172.16.101.$h"
+			if [ "$(get_route_dev "$addr")" = "$dev" ]; then
+				match=1
+				break
+			fi
+		done
+		if (( match == 0 )); then
+			echo "SKIP: Did not find a route using device $dev"
+			return $ksft_skip
+		fi
+		run_cmd "$IP neigh add ${gws[$dev]} dev $dev nud failed"
+		if ! check_route_dev "$addr" "${other_dev[$dev]}"; then
+			rc=1
+			break
+		fi
+		run_cmd "$IP neigh del ${gws[$dev]} dev $dev"
+	done
+	log_test $rc 0 "Use valid neighbor during multipath selection"
+
+	run_cmd "$IP neigh add 172.16.1.2 dev veth1 nud incomplete"
+	run_cmd "$IP neigh add 172.16.2.2 dev veth3 nud incomplete"
+	run_cmd "$IP route get 172.16.101.1"
+	# if we did not crash, success
+	log_test $rc 0 "Multipath selection with no valid neighbor"
+}
+
+ipv6_mpath_select()
+{
+	local rc dev match h addr
+
+	echo
+	echo "IPv6 multipath selection"
+	echo "------------------------"
+	if [ ! -x "$(command -v jq)" ]; then
+		echo "SKIP: Could not run test; need jq tool"
+		return $ksft_skip
+	fi
+
+	# Use status of existing neighbor entry when determining nexthop for
+	# multipath routes.
+	local -A gws
+	gws=([veth1]=2001:db8:91::2 [veth3]=2001:db8:92::2)
+	local -A other_dev
+	other_dev=([veth1]=veth3 [veth3]=veth1)
+
+	run_cmd "$IP nexthop add id 1 via ${gws["veth1"]} dev veth1"
+	run_cmd "$IP nexthop add id 2 via ${gws["veth3"]} dev veth3"
+	run_cmd "$IP nexthop add id 1001 group 1/2"
+	run_cmd "$IP ro add 2001:db8:101::/64 nhid 1001"
+	rc=0
+	for dev in veth1 veth3; do
+		match=0
+		for h in {1..65535}; do
+			addr=$(printf "2001:db8:101::%x" $h)
+			if [ "$(get_route_dev "$addr")" = "$dev" ]; then
+				match=1
+				break
+			fi
+		done
+		if (( match == 0 )); then
+			echo "SKIP: Did not find a route using device $dev"
+			return $ksft_skip
+		fi
+		run_cmd "$IP neigh add ${gws[$dev]} dev $dev nud failed"
+		if ! check_route_dev "$addr" "${other_dev[$dev]}"; then
+			rc=1
+			break
+		fi
+		run_cmd "$IP neigh del ${gws[$dev]} dev $dev"
+	done
+	log_test $rc 0 "Use valid neighbor during multipath selection"
+
+	run_cmd "$IP neigh add 2001:db8:91::2 dev veth1 nud incomplete"
+	run_cmd "$IP neigh add 2001:db8:92::2 dev veth3 nud incomplete"
+	run_cmd "$IP route get 2001:db8:101::1"
+	# if we did not crash, success
+	log_test $rc 0 "Multipath selection with no valid neighbor"
 }
 
 ################################################################################
@@ -611,7 +783,7 @@ ipv6_fcnal()
 	run_cmd "$IP nexthop add id 52 via 2001:db8:92::3"
 	log_test $? 2 "Create nexthop - gw only"
 
-	# gw is not reachable throught given dev
+	# gw is not reachable through given dev
 	run_cmd "$IP nexthop add id 53 via 2001:db8:3::3 dev veth1"
 	log_test $? 2 "Create nexthop - invalid gw+dev combination"
 
@@ -628,6 +800,14 @@ ipv6_fcnal()
 	set +e
 	check_nexthop "dev veth1" ""
 	log_test $? 0 "Nexthops removed on admin down"
+
+	# error routes should be deleted when their nexthop is deleted
+	run_cmd "$IP li set dev veth1 up"
+	run_cmd "$IP -6 nexthop add id 58 dev veth1"
+	run_cmd "$IP ro add blackhole 2001:db8:101::1/128 nhid 58"
+	run_cmd "$IP nexthop del id 58"
+	check_route6 "2001:db8:101::1" ""
+	log_test $? 0 "Error route removed on nexthop deletion"
 }
 
 ipv6_grp_refs()
@@ -650,7 +830,7 @@ ipv6_grp_refs()
 	run_cmd "$IP route add 2001:db8:101::1/128 nhid 102"
 
 	# create per-cpu dsts through nh 100
-	run_cmd "ip netns exec me mausezahn -6 veth1.10 -B 2001:db8:101::1 -A 2001:db8:91::1 -c 5 -t tcp "dp=1-1023, flags=syn" >/dev/null 2>&1"
+	run_cmd "ip netns exec $me mausezahn -6 veth1.10 -B 2001:db8:101::1 -A 2001:db8:91::1 -c 5 -t tcp "dp=1-1023, flags=syn" >/dev/null 2>&1"
 
 	# remove nh 100 from the group to delete the route potentially leaving
 	# a stale per-cpu dst which holds a reference to the nexthop's net
@@ -676,7 +856,7 @@ ipv6_grp_refs()
 
 	# if a reference was lost this command will hang because the net device
 	# cannot be removed
-	timeout -s KILL 5 ip netns exec me ip link del veth1.10 >/dev/null 2>&1
+	timeout -s KILL 5 ip netns exec $me ip link del veth1.10 >/dev/null 2>&1
 
 	# we can't cleanup if the command is hung trying to delete the netdev
 	if [ $? -eq 137 ]; then
@@ -798,6 +978,29 @@ ipv6_grp_fcnal()
 
 	ipv6_grp_refs
 	log_test $? 0 "Nexthop group replace refcounts"
+
+	#
+	# 16-bit weights.
+	#
+	run_cmd "$IP nexthop add id 62 via 2001:db8:91::2 dev veth1"
+	run_cmd "$IP nexthop add id 63 via 2001:db8:91::3 dev veth1"
+	run_cmd "$IP nexthop add id 64 via 2001:db8:91::4 dev veth1"
+	run_cmd "$IP nexthop add id 65 via 2001:db8:91::5 dev veth1"
+	run_cmd "$IP nexthop add id 66 dev veth1"
+
+	run_cmd "$IP nexthop add id 103 group 62,1000"
+	if [[ $? == 0 ]]; then
+		local GRP="id 103 group 62,254/63,255/64,256/65,257/66,65535"
+		run_cmd "$IP nexthop replace $GRP"
+		check_nexthop "id 103" "$GRP"
+		rc=$?
+	else
+		rc=$ksft_skip
+	fi
+
+	$IP nexthop flush >/dev/null 2>&1
+
+	log_test $rc 0 "16-bit weights"
 }
 
 ipv6_res_grp_fcnal()
@@ -862,6 +1065,31 @@ ipv6_res_grp_fcnal()
 	check_nexthop_bucket "list id 102" \
 		"id 102 index 0 nhid 63 id 102 index 1 nhid 62 id 102 index 2 nhid 62 id 102 index 3 nhid 62"
 	log_test $? 0 "Nexthop buckets updated after replace - nECMP"
+
+	#
+	# 16-bit weights.
+	#
+	run_cmd "$IP nexthop add id 62 via 2001:db8:91::2 dev veth1"
+	run_cmd "$IP nexthop add id 63 via 2001:db8:91::3 dev veth1"
+	run_cmd "$IP nexthop add id 64 via 2001:db8:91::4 dev veth1"
+	run_cmd "$IP nexthop add id 65 via 2001:db8:91::5 dev veth1"
+	run_cmd "$IP nexthop add id 66 dev veth1"
+
+	run_cmd "$IP nexthop add id 103 group 62,1000 type resilient buckets 32"
+	if [[ $? == 0 ]]; then
+		local GRP="id 103 group 62,254/63,255/64,256/65,257/66,65535 $(:
+			  )type resilient buckets 32 idle_timer 0 $(:
+			  )unbalanced_timer 0"
+		run_cmd "$IP nexthop replace $GRP"
+		check_nexthop "id 103" "$GRP unbalanced_time 0"
+		rc=$?
+	else
+		rc=$ksft_skip
+	fi
+
+	$IP nexthop flush >/dev/null 2>&1
+
+	log_test $rc 0 "16-bit weights"
 }
 
 ipv6_fcnal_runtime()
@@ -883,13 +1111,13 @@ ipv6_fcnal_runtime()
 	log_test $? 0 "Route delete"
 
 	run_cmd "$IP ro add 2001:db8:101::1/128 nhid 81"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
 	log_test $? 0 "Ping with nexthop"
 
 	run_cmd "$IP nexthop add id 82 via 2001:db8:92::2 dev veth3"
 	run_cmd "$IP nexthop add id 122 group 81/82"
 	run_cmd "$IP ro replace 2001:db8:101::1/128 nhid 122"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
 	log_test $? 0 "Ping - multipath"
 
 	#
@@ -897,26 +1125,26 @@ ipv6_fcnal_runtime()
 	#
 	run_cmd "$IP -6 nexthop add id 83 blackhole"
 	run_cmd "$IP ro replace 2001:db8:101::1/128 nhid 83"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
 	log_test $? 2 "Ping - blackhole"
 
 	run_cmd "$IP nexthop replace id 83 via 2001:db8:91::2 dev veth1"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
 	log_test $? 0 "Ping - blackhole replaced with gateway"
 
 	run_cmd "$IP -6 nexthop replace id 83 blackhole"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
 	log_test $? 2 "Ping - gateway replaced by blackhole"
 
 	run_cmd "$IP ro replace 2001:db8:101::1/128 nhid 122"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
 	if [ $? -eq 0 ]; then
 		run_cmd "$IP nexthop replace id 122 group 83"
-		run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
+		run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
 		log_test $? 2 "Ping - group with blackhole"
 
 		run_cmd "$IP nexthop replace id 122 group 81/82"
-		run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
+		run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
 		log_test $? 0 "Ping - group blackhole replaced with gateways"
 	else
 		log_test 2 0 "Ping - multipath failed"
@@ -999,15 +1227,15 @@ ipv6_fcnal_runtime()
 
 	# rpfilter and default route
 	$IP nexthop flush >/dev/null 2>&1
-	run_cmd "ip netns exec me ip6tables -t mangle -I PREROUTING 1 -m rpfilter --invert -j DROP"
+	run_cmd "ip netns exec $me ip6tables -t mangle -I PREROUTING 1 -m rpfilter --invert -j DROP"
 	run_cmd "$IP nexthop add id 91 via 2001:db8:91::2 dev veth1"
 	run_cmd "$IP nexthop add id 92 via 2001:db8:92::2 dev veth3"
 	run_cmd "$IP nexthop add id 93 group 91/92"
 	run_cmd "$IP -6 ro add default nhid 91"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
 	log_test $? 0 "Nexthop with default route and rpfilter"
 	run_cmd "$IP -6 ro replace default nhid 93"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 2001:db8:101::1"
 	log_test $? 0 "Nexthop with multipath default route and rpfilter"
 
 	# TO-DO:
@@ -1087,11 +1315,11 @@ ipv6_torture()
 	pid1=$!
 	ipv6_grp_replace_loop &
 	pid2=$!
-	ip netns exec me ping -f 2001:db8:101::1 >/dev/null 2>&1 &
+	ip netns exec $me ping -f 2001:db8:101::1 >/dev/null 2>&1 &
 	pid3=$!
-	ip netns exec me ping -f 2001:db8:101::2 >/dev/null 2>&1 &
+	ip netns exec $me ping -f 2001:db8:101::2 >/dev/null 2>&1 &
 	pid4=$!
-	ip netns exec me mausezahn -6 veth1 -B 2001:db8:101::2 -A 2001:db8:91::1 -c 0 -t tcp "dp=1-1023, flags=syn" >/dev/null 2>&1 &
+	ip netns exec $me mausezahn -6 veth1 -B 2001:db8:101::2 -A 2001:db8:91::1 -c 0 -t tcp "dp=1-1023, flags=syn" >/dev/null 2>&1 &
 	pid5=$!
 
 	sleep 300
@@ -1141,11 +1369,11 @@ ipv6_res_torture()
 	pid1=$!
 	ipv6_res_grp_replace_loop &
 	pid2=$!
-	ip netns exec me ping -f 2001:db8:101::1 >/dev/null 2>&1 &
+	ip netns exec $me ping -f 2001:db8:101::1 >/dev/null 2>&1 &
 	pid3=$!
-	ip netns exec me ping -f 2001:db8:101::2 >/dev/null 2>&1 &
+	ip netns exec $me ping -f 2001:db8:101::2 >/dev/null 2>&1 &
 	pid4=$!
-	ip netns exec me mausezahn -6 veth1 \
+	ip netns exec $me mausezahn -6 veth1 \
 			    -B 2001:db8:101::2 -A 2001:db8:91::1 -c 0 \
 			    -t tcp "dp=1-1023, flags=syn" >/dev/null 2>&1 &
 	pid5=$!
@@ -1223,6 +1451,29 @@ ipv4_fcnal()
 	log_test $rc 0 "Delete nexthop route warning"
 	run_cmd "$IP route delete 172.16.101.1/32 nhid 12"
 	run_cmd "$IP nexthop del id 12"
+
+	run_cmd "$IP nexthop add id 21 via 172.16.1.6 dev veth1"
+	run_cmd "$IP ro add 172.16.101.0/24 nhid 21"
+	run_cmd "$IP ro del 172.16.101.0/24 nexthop via 172.16.1.7 dev veth1 nexthop via 172.16.1.8 dev veth1"
+	log_test $? 2 "Delete multipath route with only nh id based entry"
+
+	run_cmd "$IP nexthop add id 22 via 172.16.1.6 dev veth1"
+	run_cmd "$IP ro add 172.16.102.0/24 nhid 22"
+	run_cmd "$IP ro del 172.16.102.0/24 dev veth1"
+	log_test $? 2 "Delete route when specifying only nexthop device"
+
+	run_cmd "$IP ro del 172.16.102.0/24 via 172.16.1.6"
+	log_test $? 2 "Delete route when specifying only gateway"
+
+	run_cmd "$IP ro del 172.16.102.0/24"
+	log_test $? 0 "Delete route when not specifying nexthop attributes"
+
+	# error routes should be deleted when their nexthop is deleted
+	run_cmd "$IP nexthop add id 23 dev veth1"
+	run_cmd "$IP ro add blackhole 172.16.102.100/32 nhid 23"
+	run_cmd "$IP nexthop del id 23"
+	check_route "172.16.102.100" ""
+	log_test $? 0 "Error route removed on nexthop deletion"
 }
 
 ipv4_grp_fcnal()
@@ -1399,7 +1650,7 @@ ipv4_withv6_fcnal()
 	local lladdr
 
 	set -e
-	lladdr=$(get_linklocal veth2 peer)
+	lladdr=$(get_linklocal veth2 $peer)
 	run_cmd "$IP nexthop add id 11 via ${lladdr} dev veth1"
 	set +e
 	run_cmd "$IP ro add 172.16.101.1/32 nhid 11"
@@ -1421,6 +1672,17 @@ ipv4_withv6_fcnal()
 
 	run_cmd "$IP ro replace 172.16.101.1/32 via inet6 2001:db8:50::1 dev veth1"
 	log_test $? 2 "IPv4 route with invalid IPv6 gateway"
+
+	# Test IPv4 route with loopback IPv6 nexthop
+	# Regression test: loopback IPv6 nexthop was misclassified as reject
+	# route, skipping nhc_pcpu_rth_output allocation, causing panic when
+	# an IPv4 route references it and triggers __mkroute_output().
+	run_cmd "$IP -6 nexthop add id 20 dev lo"
+	run_cmd "$IP ro add 172.20.20.0/24 nhid 20"
+	run_cmd "ip netns exec $me ping -c1 -W1 172.20.20.1"
+	log_test $? 1 "IPv4 route with loopback IPv6 nexthop (no crash)"
+	run_cmd "$IP ro del 172.20.20.0/24"
+	run_cmd "$IP nexthop del id 20"
 }
 
 ipv4_fcnal_runtime()
@@ -1461,13 +1723,13 @@ ipv4_fcnal_runtime()
 	#
 	run_cmd "$IP nexthop replace id 21 via 172.16.1.2 dev veth1"
 	run_cmd "$IP ro replace 172.16.101.1/32 nhid 21"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
 	log_test $? 0 "Basic ping"
 
 	run_cmd "$IP nexthop replace id 22 via 172.16.2.2 dev veth3"
 	run_cmd "$IP nexthop add id 122 group 21/22"
 	run_cmd "$IP ro replace 172.16.101.1/32 nhid 122"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
 	log_test $? 0 "Ping - multipath"
 
 	run_cmd "$IP ro delete 172.16.101.1/32 nhid 122"
@@ -1478,7 +1740,7 @@ ipv4_fcnal_runtime()
 	run_cmd "$IP nexthop add id 501 via 172.16.1.2 dev veth1"
 	run_cmd "$IP ro add default nhid 501"
 	run_cmd "$IP ro add default via 172.16.1.3 dev veth1 metric 20"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
 	log_test $? 0 "Ping - multiple default routes, nh first"
 
 	# flip the order
@@ -1487,7 +1749,7 @@ ipv4_fcnal_runtime()
 	run_cmd "$IP ro add default via 172.16.1.2 dev veth1 metric 20"
 	run_cmd "$IP nexthop replace id 501 via 172.16.1.3 dev veth1"
 	run_cmd "$IP ro add default nhid 501 metric 20"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
 	log_test $? 0 "Ping - multiple default routes, nh second"
 
 	run_cmd "$IP nexthop delete nhid 501"
@@ -1498,26 +1760,26 @@ ipv4_fcnal_runtime()
 	#
 	run_cmd "$IP nexthop add id 23 blackhole"
 	run_cmd "$IP ro replace 172.16.101.1/32 nhid 23"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
 	log_test $? 2 "Ping - blackhole"
 
 	run_cmd "$IP nexthop replace id 23 via 172.16.1.2 dev veth1"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
 	log_test $? 0 "Ping - blackhole replaced with gateway"
 
 	run_cmd "$IP nexthop replace id 23 blackhole"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
 	log_test $? 2 "Ping - gateway replaced by blackhole"
 
 	run_cmd "$IP ro replace 172.16.101.1/32 nhid 122"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
 	if [ $? -eq 0 ]; then
 		run_cmd "$IP nexthop replace id 122 group 23"
-		run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
+		run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
 		log_test $? 2 "Ping - group with blackhole"
 
 		run_cmd "$IP nexthop replace id 122 group 21/22"
-		run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
+		run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
 		log_test $? 0 "Ping - group blackhole replaced with gateways"
 	else
 		log_test 2 0 "Ping - multipath failed"
@@ -1540,11 +1802,11 @@ ipv4_fcnal_runtime()
 	# IPv4 with IPv6
 	#
 	set -e
-	lladdr=$(get_linklocal veth2 peer)
+	lladdr=$(get_linklocal veth2 $peer)
 	run_cmd "$IP nexthop add id 24 via ${lladdr} dev veth1"
 	set +e
 	run_cmd "$IP ro replace 172.16.101.1/32 nhid 24"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
 	log_test $? 0 "IPv6 nexthop with IPv4 route"
 
 	$IP neigh sh | grep -q "${lladdr} dev veth1"
@@ -1568,11 +1830,11 @@ ipv4_fcnal_runtime()
 
 	check_route "172.16.101.1" "172.16.101.1 nhid 101 nexthop via inet6 ${lladdr} dev veth1 weight 1 nexthop via 172.16.1.2 dev veth1 weight 1"
 
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
 	log_test $? 0 "IPv6 nexthop with IPv4 route"
 
 	run_cmd "$IP ro replace 172.16.101.1/32 via inet6 ${lladdr} dev veth1"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
 	log_test $? 0 "IPv4 route with IPv6 gateway"
 
 	$IP neigh sh | grep -q "${lladdr} dev veth1"
@@ -1589,7 +1851,7 @@ ipv4_fcnal_runtime()
 
 	run_cmd "$IP ro del 172.16.101.1/32 via inet6 ${lladdr} dev veth1"
 	run_cmd "$IP -4 ro add default via inet6 ${lladdr} dev veth1"
-	run_cmd "ip netns exec me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
+	run_cmd "ip netns exec $me ping -c1 -w$PING_TIMEOUT 172.16.101.1"
 	log_test $? 0 "IPv4 default route with IPv6 gateway"
 
 	#
@@ -1640,7 +1902,7 @@ sysctl_nexthop_compat_mode_check()
 	local sysctlname="net.ipv4.nexthop_compat_mode"
 	local lprefix=$1
 
-	IPE="ip netns exec me"
+	IPE="ip netns exec $me"
 
 	$IPE sysctl -q $sysctlname 2>&1 >/dev/null
 	if [ $? -ne 0 ]; then
@@ -1659,7 +1921,7 @@ sysctl_nexthop_compat_mode_set()
 	local mode=$1
 	local lprefix=$2
 
-	IPE="ip netns exec me"
+	IPE="ip netns exec $me"
 
 	out=$($IPE sysctl -w $sysctlname=$mode)
 	log_test $? 0 "$lprefix set compat mode - $mode"
@@ -1843,11 +2105,11 @@ ipv4_torture()
 	pid1=$!
 	ipv4_grp_replace_loop &
 	pid2=$!
-	ip netns exec me ping -f 172.16.101.1 >/dev/null 2>&1 &
+	ip netns exec $me ping -f 172.16.101.1 >/dev/null 2>&1 &
 	pid3=$!
-	ip netns exec me ping -f 172.16.101.2 >/dev/null 2>&1 &
+	ip netns exec $me ping -f 172.16.101.2 >/dev/null 2>&1 &
 	pid4=$!
-	ip netns exec me mausezahn veth1 -B 172.16.101.2 -A 172.16.1.1 -c 0 -t tcp "dp=1-1023, flags=syn" >/dev/null 2>&1 &
+	ip netns exec $me mausezahn veth1 -B 172.16.101.2 -A 172.16.1.1 -c 0 -t tcp "dp=1-1023, flags=syn" >/dev/null 2>&1 &
 	pid5=$!
 
 	sleep 300
@@ -1897,11 +2159,11 @@ ipv4_res_torture()
 	pid1=$!
 	ipv4_res_grp_replace_loop &
 	pid2=$!
-	ip netns exec me ping -f 172.16.101.1 >/dev/null 2>&1 &
+	ip netns exec $me ping -f 172.16.101.1 >/dev/null 2>&1 &
 	pid3=$!
-	ip netns exec me ping -f 172.16.101.2 >/dev/null 2>&1 &
+	ip netns exec $me ping -f 172.16.101.2 >/dev/null 2>&1 &
 	pid4=$!
-	ip netns exec me mausezahn veth1 \
+	ip netns exec $me mausezahn veth1 \
 				-B 172.16.101.2 -A 172.16.1.1 -c 0 \
 				-t tcp "dp=1-1023, flags=syn" >/dev/null 2>&1 &
 	pid5=$!
@@ -1925,6 +2187,12 @@ basic()
 	run_cmd "$IP nexthop get id 1"
 	log_test $? 2 "Nexthop get on non-existent id"
 
+	run_cmd "$IP nexthop del id 1"
+	log_test $? 2 "Nexthop del with non-existent id"
+
+	run_cmd "$IP nexthop del id 1 group 1/2/3/4/5/6/7/8"
+	log_test $? 2 "Nexthop del with non-existent id and extra attributes"
+
 	# attempt to create nh without a device or gw - fails
 	run_cmd "$IP nexthop add id 1"
 	log_test $? 2 "Nexthop with no device or gateway"
@@ -1936,10 +2204,10 @@ basic()
 
 	# create nh with linkdown device - fails
 	$IP li set veth1 up
-	ip -netns peer li set veth2 down
+	ip -netns $peer li set veth2 down
 	run_cmd "$IP nexthop add id 1 dev veth1"
 	log_test $? 2 "Nexthop with device that is linkdown"
-	ip -netns peer li set veth2 up
+	ip -netns $peer li set veth2 up
 
 	# device only
 	run_cmd "$IP nexthop add id 1 dev veth1"
@@ -1964,6 +2232,11 @@ basic()
 	log_test $? 0 "Blackhole nexthop with loopback device down"
 
 	run_cmd "$IP link set dev lo up"
+
+	# Dump should not loop endlessly when maximum nexthop ID is configured.
+	run_cmd "$IP nexthop add id $((2**32-1)) blackhole"
+	run_cmd "timeout 5 $IP nexthop"
+	log_test $? 0 "Maximum nexthop ID dump"
 
 	#
 	# groups
@@ -2185,6 +2458,11 @@ basic_res()
 	run_cmd "$IP nexthop bucket list fdb"
 	log_test $? 255 "Dump all nexthop buckets with invalid 'fdb' keyword"
 
+	# Dump should not loop endlessly when maximum nexthop ID is configured.
+	run_cmd "$IP nexthop add id $((2**32-1)) group 1/2 type resilient buckets 4"
+	run_cmd "timeout 5 $IP nexthop bucket"
+	log_test $? 0 "Maximum nexthop ID dump"
+
 	#
 	# resilient nexthop buckets get requests
 	#
@@ -2267,7 +2545,7 @@ EOF
 ################################################################################
 # main
 
-while getopts :t:pP46hv:w: o
+while getopts :t:pP46hvw: o
 do
 	case $o in
 		t) TESTS=$OPTARG;;
@@ -2310,7 +2588,7 @@ fi
 for t in $TESTS
 do
 	case $t in
-	none) IP="ip -netns peer"; setup; exit 0;;
+	none) IP="ip -netns $peer"; setup; exit 0;;
 	*) setup; $t; cleanup;;
 	esac
 done
@@ -2318,6 +2596,7 @@ done
 if [ "$TESTS" != "none" ]; then
 	printf "\nTests passed: %3d\n" ${nsuccess}
 	printf "Tests failed: %3d\n"   ${nfail}
+	printf "Tests skipped: %2d\n"  ${nskip}
 fi
 
 exit $ret

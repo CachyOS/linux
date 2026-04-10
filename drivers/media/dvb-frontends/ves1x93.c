@@ -450,7 +450,7 @@ struct dvb_frontend* ves1x93_attach(const struct ves1x93_config* config,
 	u8 identity;
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(struct ves1x93_state), GFP_KERNEL);
+	state = kzalloc_obj(struct ves1x93_state);
 	if (state == NULL) goto error;
 
 	/* setup the state */
@@ -540,4 +540,4 @@ MODULE_DESCRIPTION("VLSI VES1x93 DVB-S Demodulator driver");
 MODULE_AUTHOR("Ralph Metzler");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(ves1x93_attach);
+EXPORT_SYMBOL_GPL(ves1x93_attach);

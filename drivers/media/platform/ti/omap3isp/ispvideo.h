@@ -99,8 +99,15 @@ struct isp_pipeline {
 	unsigned int external_width;
 };
 
-#define to_isp_pipeline(__e) \
-	container_of((__e)->pipe, struct isp_pipeline, pipe)
+static inline struct isp_pipeline *to_isp_pipeline(struct media_entity *entity)
+{
+	struct media_pipeline *pipe = media_entity_pipeline(entity);
+
+	if (!pipe)
+		return NULL;
+
+	return container_of(pipe, struct isp_pipeline, pipe);
+}
 
 static inline int isp_pipeline_ready(struct isp_pipeline *pipe)
 {
@@ -187,7 +194,11 @@ struct isp_video_fh {
 	struct v4l2_fract timeperframe;
 };
 
-#define to_isp_video_fh(fh)	container_of(fh, struct isp_video_fh, vfh)
+static inline struct isp_video_fh *file_to_isp_video_fh(struct file *filp)
+{
+	return container_of(file_to_v4l2_fh(filp), struct isp_video_fh, vfh);
+}
+
 #define isp_video_queue_to_isp_video_fh(q) \
 				container_of(q, struct isp_video_fh, queue)
 

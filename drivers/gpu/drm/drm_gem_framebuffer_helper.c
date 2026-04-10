@@ -5,20 +5,22 @@
  * Copyright (C) 2017 Noralf Trønnes
  */
 
+#include <linux/export.h>
 #include <linux/slab.h>
 #include <linux/module.h>
 
 #include <drm/drm_damage_helper.h>
-#include <drm/drm_fb_helper.h>
+#include <drm/drm_drv.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_modeset_helper.h>
+#include <drm/drm_print.h>
 
 #include "drm_internal.h"
 
-MODULE_IMPORT_NS(DMA_BUF);
+MODULE_IMPORT_NS("DMA_BUF");
 
 #define AFBC_HEADER_SIZE		16
 #define AFBC_TH_LAYOUT_ALIGNMENT	8
@@ -53,7 +55,11 @@ MODULE_IMPORT_NS(DMA_BUF);
 struct drm_gem_object *drm_gem_fb_get_obj(struct drm_framebuffer *fb,
 					  unsigned int plane)
 {
-	if (plane >= ARRAY_SIZE(fb->obj))
+	struct drm_device *dev = fb->dev;
+
+	if (drm_WARN_ON_ONCE(dev, plane >= ARRAY_SIZE(fb->obj)))
+		return NULL;
+	else if (drm_WARN_ON_ONCE(dev, !fb->obj[plane]))
 		return NULL;
 
 	return fb->obj[plane];
@@ -63,6 +69,7 @@ EXPORT_SYMBOL_GPL(drm_gem_fb_get_obj);
 static int
 drm_gem_fb_init(struct drm_device *dev,
 		 struct drm_framebuffer *fb,
+		 const struct drm_format_info *info,
 		 const struct drm_mode_fb_cmd2 *mode_cmd,
 		 struct drm_gem_object **obj, unsigned int num_planes,
 		 const struct drm_framebuffer_funcs *funcs)
@@ -70,7 +77,7 @@ drm_gem_fb_init(struct drm_device *dev,
 	unsigned int i;
 	int ret;
 
-	drm_helper_mode_fill_fb_struct(dev, fb, mode_cmd);
+	drm_helper_mode_fill_fb_struct(dev, fb, info, mode_cmd);
 
 	for (i = 0; i < num_planes; i++)
 		fb->obj[i] = obj[i];
@@ -92,9 +99,9 @@ drm_gem_fb_init(struct drm_device *dev,
  */
 void drm_gem_fb_destroy(struct drm_framebuffer *fb)
 {
-	size_t i;
+	unsigned int i;
 
-	for (i = 0; i < ARRAY_SIZE(fb->obj); i++)
+	for (i = 0; i < fb->format->num_planes; i++)
 		drm_gem_object_put(fb->obj[i]);
 
 	drm_framebuffer_cleanup(fb);
@@ -131,6 +138,7 @@ EXPORT_SYMBOL(drm_gem_fb_create_handle);
  * @dev: DRM device
  * @fb: framebuffer object
  * @file: DRM file that holds the GEM handle(s) backing the framebuffer
+ * @info: pixel format information
  * @mode_cmd: Metadata from the userspace framebuffer creation request
  * @funcs: vtable to be used for the new framebuffer object
  *
@@ -147,17 +155,19 @@ EXPORT_SYMBOL(drm_gem_fb_create_handle);
 int drm_gem_fb_init_with_funcs(struct drm_device *dev,
 			       struct drm_framebuffer *fb,
 			       struct drm_file *file,
+			       const struct drm_format_info *info,
 			       const struct drm_mode_fb_cmd2 *mode_cmd,
 			       const struct drm_framebuffer_funcs *funcs)
 {
-	const struct drm_format_info *info;
 	struct drm_gem_object *objs[DRM_FORMAT_MAX_PLANES];
 	unsigned int i;
 	int ret;
 
-	info = drm_get_format_info(dev, mode_cmd);
-	if (!info) {
-		drm_dbg_kms(dev, "Failed to get FB format info\n");
+	if (drm_drv_uses_atomic_modeset(dev) &&
+	    !drm_any_plane_has_format(dev, mode_cmd->pixel_format,
+				      mode_cmd->modifier[0])) {
+		drm_dbg_kms(dev, "Unsupported pixel format %p4cc / modifier 0x%llx\n",
+			    &mode_cmd->pixel_format, mode_cmd->modifier[0]);
 		return -EINVAL;
 	}
 
@@ -187,7 +197,7 @@ int drm_gem_fb_init_with_funcs(struct drm_device *dev,
 		}
 	}
 
-	ret = drm_gem_fb_init(dev, fb, mode_cmd, objs, i, funcs);
+	ret = drm_gem_fb_init(dev, fb, info, mode_cmd, objs, i, funcs);
 	if (ret)
 		goto err_gem_object_put;
 
@@ -208,6 +218,7 @@ EXPORT_SYMBOL_GPL(drm_gem_fb_init_with_funcs);
  *                                  callback
  * @dev: DRM device
  * @file: DRM file that holds the GEM handle(s) backing the framebuffer
+ * @info: pixel format information
  * @mode_cmd: Metadata from the userspace framebuffer creation request
  * @funcs: vtable to be used for the new framebuffer object
  *
@@ -220,17 +231,18 @@ EXPORT_SYMBOL_GPL(drm_gem_fb_init_with_funcs);
  */
 struct drm_framebuffer *
 drm_gem_fb_create_with_funcs(struct drm_device *dev, struct drm_file *file,
+			     const struct drm_format_info *info,
 			     const struct drm_mode_fb_cmd2 *mode_cmd,
 			     const struct drm_framebuffer_funcs *funcs)
 {
 	struct drm_framebuffer *fb;
 	int ret;
 
-	fb = kzalloc(sizeof(*fb), GFP_KERNEL);
+	fb = kzalloc_obj(*fb);
 	if (!fb)
 		return ERR_PTR(-ENOMEM);
 
-	ret = drm_gem_fb_init_with_funcs(dev, fb, file, mode_cmd, funcs);
+	ret = drm_gem_fb_init_with_funcs(dev, fb, file, info, mode_cmd, funcs);
 	if (ret) {
 		kfree(fb);
 		return ERR_PTR(ret);
@@ -250,6 +262,7 @@ static const struct drm_framebuffer_funcs drm_gem_fb_funcs = {
  *                       &drm_mode_config_funcs.fb_create callback
  * @dev: DRM device
  * @file: DRM file that holds the GEM handle(s) backing the framebuffer
+ * @info: pixel format information
  * @mode_cmd: Metadata from the userspace framebuffer creation request
  *
  * This function creates a new framebuffer object described by
@@ -269,9 +282,10 @@ static const struct drm_framebuffer_funcs drm_gem_fb_funcs = {
  */
 struct drm_framebuffer *
 drm_gem_fb_create(struct drm_device *dev, struct drm_file *file,
+		  const struct drm_format_info *info,
 		  const struct drm_mode_fb_cmd2 *mode_cmd)
 {
-	return drm_gem_fb_create_with_funcs(dev, file, mode_cmd,
+	return drm_gem_fb_create_with_funcs(dev, file, info, mode_cmd,
 					    &drm_gem_fb_funcs);
 }
 EXPORT_SYMBOL_GPL(drm_gem_fb_create);
@@ -287,6 +301,7 @@ static const struct drm_framebuffer_funcs drm_gem_fb_funcs_dirtyfb = {
  *                       &drm_mode_config_funcs.fb_create callback
  * @dev: DRM device
  * @file: DRM file that holds the GEM handle(s) backing the framebuffer
+ * @info: pixel format information
  * @mode_cmd: Metadata from the userspace framebuffer creation request
  *
  * This function creates a new framebuffer object described by
@@ -307,9 +322,10 @@ static const struct drm_framebuffer_funcs drm_gem_fb_funcs_dirtyfb = {
  */
 struct drm_framebuffer *
 drm_gem_fb_create_with_dirty(struct drm_device *dev, struct drm_file *file,
+			     const struct drm_format_info *info,
 			     const struct drm_mode_fb_cmd2 *mode_cmd)
 {
-	return drm_gem_fb_create_with_funcs(dev, file, mode_cmd,
+	return drm_gem_fb_create_with_funcs(dev, file, info, mode_cmd,
 					    &drm_gem_fb_funcs_dirtyfb);
 }
 EXPORT_SYMBOL_GPL(drm_gem_fb_create_with_dirty);
@@ -329,24 +345,26 @@ EXPORT_SYMBOL_GPL(drm_gem_fb_create_with_dirty);
  * The argument returns the addresses of the data stored in each BO. This
  * is different from @map if the framebuffer's offsets field is non-zero.
  *
+ * Both, @map and @data, must each refer to arrays with at least
+ * fb->format->num_planes elements.
+ *
  * See drm_gem_fb_vunmap() for unmapping.
  *
  * Returns:
  * 0 on success, or a negative errno code otherwise.
  */
-int drm_gem_fb_vmap(struct drm_framebuffer *fb,
-		    struct iosys_map map[static DRM_FORMAT_MAX_PLANES],
-		    struct iosys_map data[DRM_FORMAT_MAX_PLANES])
+int drm_gem_fb_vmap(struct drm_framebuffer *fb, struct iosys_map *map,
+		    struct iosys_map *data)
 {
 	struct drm_gem_object *obj;
 	unsigned int i;
 	int ret;
 
-	for (i = 0; i < DRM_FORMAT_MAX_PLANES; ++i) {
+	for (i = 0; i < fb->format->num_planes; ++i) {
 		obj = drm_gem_fb_get_obj(fb, i);
 		if (!obj) {
-			iosys_map_clear(&map[i]);
-			continue;
+			ret = -EINVAL;
+			goto err_drm_gem_vunmap;
 		}
 		ret = drm_gem_vmap(obj, &map[i]);
 		if (ret)
@@ -354,7 +372,7 @@ int drm_gem_fb_vmap(struct drm_framebuffer *fb,
 	}
 
 	if (data) {
-		for (i = 0; i < DRM_FORMAT_MAX_PLANES; ++i) {
+		for (i = 0; i < fb->format->num_planes; ++i) {
 			memcpy(&data[i], &map[i], sizeof(data[i]));
 			if (iosys_map_is_null(&data[i]))
 				continue;
@@ -385,10 +403,9 @@ EXPORT_SYMBOL(drm_gem_fb_vmap);
  *
  * See drm_gem_fb_vmap() for more information.
  */
-void drm_gem_fb_vunmap(struct drm_framebuffer *fb,
-		       struct iosys_map map[static DRM_FORMAT_MAX_PLANES])
+void drm_gem_fb_vunmap(struct drm_framebuffer *fb, struct iosys_map *map)
 {
-	unsigned int i = DRM_FORMAT_MAX_PLANES;
+	unsigned int i = fb->format->num_planes;
 	struct drm_gem_object *obj;
 
 	while (i) {
@@ -402,6 +419,28 @@ void drm_gem_fb_vunmap(struct drm_framebuffer *fb,
 	}
 }
 EXPORT_SYMBOL(drm_gem_fb_vunmap);
+
+static void __drm_gem_fb_end_cpu_access(struct drm_framebuffer *fb, enum dma_data_direction dir,
+					unsigned int num_planes)
+{
+	struct dma_buf_attachment *import_attach;
+	struct drm_gem_object *obj;
+	int ret;
+
+	while (num_planes) {
+		--num_planes;
+		obj = drm_gem_fb_get_obj(fb, num_planes);
+		if (!obj)
+			continue;
+		import_attach = obj->import_attach;
+		if (!drm_gem_is_imported(obj))
+			continue;
+		ret = dma_buf_end_cpu_access(import_attach->dmabuf, dir);
+		if (ret)
+			drm_err(fb->dev, "dma_buf_end_cpu_access(%u, %d) failed: %d\n",
+				ret, num_planes, dir);
+	}
+}
 
 /**
  * drm_gem_fb_begin_cpu_access - prepares GEM buffer objects for CPU access
@@ -421,40 +460,27 @@ int drm_gem_fb_begin_cpu_access(struct drm_framebuffer *fb, enum dma_data_direct
 {
 	struct dma_buf_attachment *import_attach;
 	struct drm_gem_object *obj;
-	size_t i;
-	int ret, ret2;
+	unsigned int i;
+	int ret;
 
-	for (i = 0; i < ARRAY_SIZE(fb->obj); ++i) {
+	for (i = 0; i < fb->format->num_planes; ++i) {
 		obj = drm_gem_fb_get_obj(fb, i);
-		if (!obj)
-			continue;
+		if (!obj) {
+			ret = -EINVAL;
+			goto err___drm_gem_fb_end_cpu_access;
+		}
 		import_attach = obj->import_attach;
-		if (!import_attach)
+		if (!drm_gem_is_imported(obj))
 			continue;
 		ret = dma_buf_begin_cpu_access(import_attach->dmabuf, dir);
 		if (ret)
-			goto err_dma_buf_end_cpu_access;
+			goto err___drm_gem_fb_end_cpu_access;
 	}
 
 	return 0;
 
-err_dma_buf_end_cpu_access:
-	while (i) {
-		--i;
-		obj = drm_gem_fb_get_obj(fb, i);
-		if (!obj)
-			continue;
-		import_attach = obj->import_attach;
-		if (!import_attach)
-			continue;
-		ret2 = dma_buf_end_cpu_access(import_attach->dmabuf, dir);
-		if (ret2) {
-			drm_err(fb->dev,
-				"dma_buf_end_cpu_access() failed during error handling: %d\n",
-				ret2);
-		}
-	}
-
+err___drm_gem_fb_end_cpu_access:
+	__drm_gem_fb_end_cpu_access(fb, dir, i);
 	return ret;
 }
 EXPORT_SYMBOL(drm_gem_fb_begin_cpu_access);
@@ -472,38 +498,16 @@ EXPORT_SYMBOL(drm_gem_fb_begin_cpu_access);
  */
 void drm_gem_fb_end_cpu_access(struct drm_framebuffer *fb, enum dma_data_direction dir)
 {
-	size_t i = ARRAY_SIZE(fb->obj);
-	struct dma_buf_attachment *import_attach;
-	struct drm_gem_object *obj;
-	int ret;
-
-	while (i) {
-		--i;
-		obj = drm_gem_fb_get_obj(fb, i);
-		if (!obj)
-			continue;
-		import_attach = obj->import_attach;
-		if (!import_attach)
-			continue;
-		ret = dma_buf_end_cpu_access(import_attach->dmabuf, dir);
-		if (ret)
-			drm_err(fb->dev, "dma_buf_end_cpu_access() failed: %d\n", ret);
-	}
+	__drm_gem_fb_end_cpu_access(fb, dir, fb->format->num_planes);
 }
 EXPORT_SYMBOL(drm_gem_fb_end_cpu_access);
 
+// TODO Drop this function and replace by drm_format_info_bpp() once all
+// DRM_FORMAT_* provide proper block info in drivers/gpu/drm/drm_fourcc.c
 static __u32 drm_gem_afbc_get_bpp(struct drm_device *dev,
+				  const struct drm_format_info *info,
 				  const struct drm_mode_fb_cmd2 *mode_cmd)
 {
-	const struct drm_format_info *info;
-
-	info = drm_get_format_info(dev, mode_cmd);
-
-	/* use whatever a driver has set */
-	if (info->cpp[0])
-		return info->cpp[0] * 8;
-
-	/* guess otherwise */
 	switch (info->format) {
 	case DRM_FORMAT_YUV420_8BIT:
 		return 12;
@@ -512,14 +516,12 @@ static __u32 drm_gem_afbc_get_bpp(struct drm_device *dev,
 	case DRM_FORMAT_VUY101010:
 		return 30;
 	default:
-		break;
+		return drm_format_info_bpp(info, 0);
 	}
-
-	/* all attempts failed */
-	return 0;
 }
 
 static int drm_gem_afbc_min_size(struct drm_device *dev,
+				 const struct drm_format_info *info,
 				 const struct drm_mode_fb_cmd2 *mode_cmd,
 				 struct drm_afbc_framebuffer *afbc_fb)
 {
@@ -560,7 +562,7 @@ static int drm_gem_afbc_min_size(struct drm_device *dev,
 	afbc_fb->aligned_height = ALIGN(mode_cmd->height, h_alignment);
 	afbc_fb->offset = mode_cmd->offsets[0];
 
-	bpp = drm_gem_afbc_get_bpp(dev, mode_cmd);
+	bpp = drm_gem_afbc_get_bpp(dev, info, mode_cmd);
 	if (!bpp) {
 		drm_dbg_kms(dev, "Invalid AFBC bpp value: %d\n", bpp);
 		return -EINVAL;
@@ -582,6 +584,7 @@ static int drm_gem_afbc_min_size(struct drm_device *dev,
  *
  * @dev: DRM device
  * @afbc_fb: afbc-specific framebuffer
+ * @info: pixel format information
  * @mode_cmd: Metadata from the userspace framebuffer creation request
  * @afbc_fb: afbc framebuffer
  *
@@ -595,24 +598,24 @@ static int drm_gem_afbc_min_size(struct drm_device *dev,
  * Zero on success or a negative error value on failure.
  */
 int drm_gem_fb_afbc_init(struct drm_device *dev,
+			 const struct drm_format_info *info,
 			 const struct drm_mode_fb_cmd2 *mode_cmd,
 			 struct drm_afbc_framebuffer *afbc_fb)
 {
-	const struct drm_format_info *info;
 	struct drm_gem_object **objs;
 	int ret;
 
 	objs = afbc_fb->base.obj;
-	info = drm_get_format_info(dev, mode_cmd);
-	if (!info)
-		return -EINVAL;
 
-	ret = drm_gem_afbc_min_size(dev, mode_cmd, afbc_fb);
+	ret = drm_gem_afbc_min_size(dev, info, mode_cmd, afbc_fb);
 	if (ret < 0)
 		return ret;
 
-	if (objs[0]->size < afbc_fb->afbc_size)
+	if (objs[0]->size < afbc_fb->afbc_size) {
+		drm_dbg_kms(dev, "GEM object size (%zu) smaller than minimum afbc size (%u)\n",
+			    objs[0]->size, afbc_fb->afbc_size);
 		return -EINVAL;
+	}
 
 	return 0;
 }

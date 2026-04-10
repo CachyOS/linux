@@ -60,7 +60,7 @@ static struct acpiphp_context *acpiphp_init_context(struct acpi_device *adev)
 {
 	struct acpiphp_context *context;
 
-	context = kzalloc(sizeof(*context), GFP_KERNEL);
+	context = kzalloc_obj(*context);
 	if (!context)
 		return NULL;
 
@@ -279,7 +279,7 @@ static acpi_status acpiphp_add_context(acpi_handle handle, u32 lvl, void *data,
 		if (slot->device == device)
 			goto slot_found;
 
-	slot = kzalloc(sizeof(struct acpiphp_slot), GFP_KERNEL);
+	slot = kzalloc_obj(struct acpiphp_slot);
 	if (!slot) {
 		acpi_lock_hp_context();
 		acpiphp_put_context(context);
@@ -409,6 +409,14 @@ static void check_hotplug_bridge(struct acpiphp_slot *slot, struct pci_dev *dev)
 
 	/* quirk, or pcie could set it already */
 	if (dev->is_hotplug_bridge)
+		return;
+
+	/*
+	 * In the PCIe case, only Root Ports and Downstream Ports are capable of
+	 * accommodating hotplug devices, so avoid marking Upstream Ports as
+	 * "hotplug bridges".
+	 */
+	if (pci_is_pcie(dev) && pci_pcie_type(dev) == PCI_EXP_TYPE_UPSTREAM)
 		return;
 
 	list_for_each_entry(func, &slot->funcs, sibling) {
@@ -861,7 +869,7 @@ void acpiphp_enumerate_slots(struct pci_bus *bus)
 		return;
 
 	handle = adev->handle;
-	bridge = kzalloc(sizeof(struct acpiphp_bridge), GFP_KERNEL);
+	bridge = kzalloc_obj(struct acpiphp_bridge);
 	if (!bridge)
 		return;
 
@@ -881,7 +889,7 @@ void acpiphp_enumerate_slots(struct pci_bus *bus)
 	if (pci_is_root_bus(bridge->pci_bus)) {
 		struct acpiphp_root_context *root_context;
 
-		root_context = kzalloc(sizeof(*root_context), GFP_KERNEL);
+		root_context = kzalloc_obj(*root_context);
 		if (!root_context)
 			goto err;
 

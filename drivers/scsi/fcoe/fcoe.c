@@ -260,7 +260,7 @@ static struct fc_function_template fcoe_vport_fc_functions = {
 	.bsg_request = fc_lport_bsg_request,
 };
 
-static struct scsi_host_template fcoe_shost_template = {
+static const struct scsi_host_template fcoe_shost_template = {
 	.module = THIS_MODULE,
 	.name = "FCoE Driver",
 	.proc_name = FCOE_NAME,
@@ -269,7 +269,7 @@ static struct scsi_host_template fcoe_shost_template = {
 	.eh_abort_handler = fc_eh_abort,
 	.eh_device_reset_handler = fc_eh_device_reset,
 	.eh_host_reset_handler = fc_eh_host_reset,
-	.slave_alloc = fc_slave_alloc,
+	.sdev_init = fc_sdev_init,
 	.change_queue_depth = scsi_change_queue_depth,
 	.this_id = -1,
 	.cmd_per_lun = 3,
@@ -722,7 +722,7 @@ static int fcoe_netdev_config(struct fc_lport *lport, struct net_device *netdev)
 	 * will return 0, so do this first.
 	 */
 	mfs = netdev->mtu;
-	if (netdev->features & NETIF_F_FCOE_MTU) {
+	if (netdev->fcoe_mtu) {
 		mfs = FCOE_MTU;
 		FCOE_NETDEV_DBG(netdev, "Supports FCOE_MTU of %d bytes\n", mfs);
 	}
@@ -820,7 +820,7 @@ static void fcoe_fdmi_info(struct fc_lport *lport, struct net_device *netdev)
 
 	if (realdev->netdev_ops->ndo_fcoe_get_hbainfo) {
 		struct netdev_fcoe_hbainfo *fdmi;
-		fdmi = kzalloc(sizeof(*fdmi), GFP_KERNEL);
+		fdmi = kzalloc_obj(*fdmi);
 		if (!fdmi)
 			return;
 
@@ -1013,7 +1013,7 @@ static void fcoe_if_destroy(struct fc_lport *lport)
 	fc_lport_destroy(lport);
 
 	/* Stop the transmit retry timer */
-	del_timer_sync(&port->timer);
+	timer_delete_sync(&port->timer);
 
 	/* Free existing transmit skbs */
 	fcoe_clean_pending_queue(lport);
@@ -1300,26 +1300,6 @@ static void fcoe_thread_cleanup_local(unsigned int cpu)
 }
 
 /**
- * fcoe_select_cpu() - Selects CPU to handle post-processing of incoming
- *			command.
- *
- * This routine selects next CPU based on cpumask to distribute
- * incoming requests in round robin.
- *
- * Returns: int CPU number
- */
-static inline unsigned int fcoe_select_cpu(void)
-{
-	static unsigned int selected_cpu;
-
-	selected_cpu = cpumask_next(selected_cpu, cpu_online_mask);
-	if (selected_cpu >= nr_cpu_ids)
-		selected_cpu = cpumask_first(cpu_online_mask);
-
-	return selected_cpu;
-}
-
-/**
  * fcoe_rcv() - Receive packets from a net device
  * @skb:    The received packet
  * @netdev: The net device that the packet was received on
@@ -1405,7 +1385,7 @@ static int fcoe_rcv(struct sk_buff *skb, struct net_device *netdev,
 		cpu = ntohs(fh->fh_ox_id) & fc_cpu_mask;
 	else {
 		if (ntohs(fh->fh_rx_id) == FC_XID_UNKNOWN)
-			cpu = fcoe_select_cpu();
+			cpu = skb->alloc_cpu;
 		else
 			cpu = ntohs(fh->fh_rx_id) & fc_cpu_mask;
 	}
@@ -1488,7 +1468,6 @@ static int fcoe_xmit(struct fc_lport *lport, struct fc_frame *fp)
 
 	fh = fc_frame_header_get(fp);
 	skb = fp_skb(fp);
-	wlen = skb->len / FCOE_WORD_TO_BYTE;
 
 	if (!lport->link_up) {
 		kfree_skb(skb);
@@ -1864,7 +1843,7 @@ static int fcoe_device_notification(struct notifier_block *notifier,
 	case NETDEV_CHANGE:
 		break;
 	case NETDEV_CHANGEMTU:
-		if (netdev->features & NETIF_F_FCOE_MTU)
+		if (netdev->fcoe_mtu)
 			break;
 		mfs = netdev->mtu - (sizeof(struct fcoe_hdr) +
 				     sizeof(struct fcoe_crc_eof));
@@ -2459,7 +2438,7 @@ static int __init fcoe_init(void)
 	unsigned int cpu;
 	int rc = 0;
 
-	fcoe_wq = alloc_workqueue("fcoe", 0, 0);
+	fcoe_wq = alloc_workqueue("fcoe", WQ_PERCPU, 0);
 	if (!fcoe_wq)
 		return -ENOMEM;
 
@@ -2492,6 +2471,7 @@ static int __init fcoe_init(void)
 
 out_free:
 	mutex_unlock(&fcoe_config_mutex);
+	fcoe_transport_detach(&fcoe_sw_transport);
 out_destroy:
 	destroy_workqueue(fcoe_wq);
 	return rc;

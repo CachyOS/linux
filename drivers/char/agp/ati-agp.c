@@ -112,13 +112,12 @@ static int ati_create_gatt_pages(int nr_tables)
 	int retval = 0;
 	int i;
 
-	tables = kcalloc(nr_tables + 1, sizeof(struct ati_page_map *),
-			 GFP_KERNEL);
+	tables = kzalloc_objs(struct ati_page_map *, nr_tables + 1);
 	if (tables == NULL)
 		return -ENOMEM;
 
 	for (i = 0; i < nr_tables; i++) {
-		entry = kzalloc(sizeof(struct ati_page_map), GFP_KERNEL);
+		entry = kzalloc_obj(struct ati_page_map);
 		tables[i] = entry;
 		if (entry == NULL) {
 			retval = -ENOMEM;
@@ -238,23 +237,10 @@ static int ati_configure(void)
 }
 
 
-#ifdef CONFIG_PM
-static int agp_ati_suspend(struct pci_dev *dev, pm_message_t state)
+static int agp_ati_resume(struct device *dev)
 {
-	pci_save_state(dev);
-	pci_set_power_state(dev, PCI_D3hot);
-
-	return 0;
-}
-
-static int agp_ati_resume(struct pci_dev *dev)
-{
-	pci_set_power_state(dev, PCI_D0);
-	pci_restore_state(dev);
-
 	return ati_configure();
 }
-#endif
 
 /*
  *Since we don't need contiguous memory we just try
@@ -559,15 +545,14 @@ static const struct pci_device_id agp_ati_pci_table[] = {
 
 MODULE_DEVICE_TABLE(pci, agp_ati_pci_table);
 
+static DEFINE_SIMPLE_DEV_PM_OPS(agp_ati_pm_ops, NULL, agp_ati_resume);
+
 static struct pci_driver agp_ati_pci_driver = {
 	.name		= "agpgart-ati",
 	.id_table	= agp_ati_pci_table,
 	.probe		= agp_ati_probe,
 	.remove		= agp_ati_remove,
-#ifdef CONFIG_PM
-	.suspend	= agp_ati_suspend,
-	.resume		= agp_ati_resume,
-#endif
+	.driver.pm	= &agp_ati_pm_ops,
 };
 
 static int __init agp_ati_init(void)
@@ -586,5 +571,6 @@ module_init(agp_ati_init);
 module_exit(agp_ati_cleanup);
 
 MODULE_AUTHOR("Dave Jones");
+MODULE_DESCRIPTION("ATi AGPGART routines");
 MODULE_LICENSE("GPL and additional rights");
 

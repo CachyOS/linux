@@ -11,7 +11,6 @@
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
-#include <linux/of_gpio.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 
@@ -494,9 +493,9 @@ static int pcm3168a_hw_params(struct snd_pcm_substream *substream,
 		}
 		break;
 	case 24:
-		if (provider_mode || (format == SND_SOC_DAIFMT_DSP_A) ||
-		    		     (format == SND_SOC_DAIFMT_DSP_B)) {
-			dev_err(component->dev, "24-bit slots not supported in provider mode, or consumer mode using DSP\n");
+		if (!provider_mode && ((format == SND_SOC_DAIFMT_DSP_A) ||
+				       (format == SND_SOC_DAIFMT_DSP_B))) {
+			dev_err(component->dev, "24-bit slots not supported in consumer mode using DSP\n");
 			return -EINVAL;
 		}
 		break;
@@ -563,7 +562,7 @@ static int pcm3168a_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static u64 pcm3168a_dai_formats[] = {
+static const u64 pcm3168a_dai_formats[] = {
 	/*
 	 * Select below from Sound Card, not here
 	 *	SND_SOC_DAIFMT_CBC_CFC
@@ -716,7 +715,6 @@ static const struct snd_soc_component_driver pcm3168a_driver = {
 	.num_dapm_routes	= ARRAY_SIZE(pcm3168a_dapm_routes),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 int pcm3168a_probe(struct device *dev, struct regmap *regmap)
@@ -745,7 +743,7 @@ int pcm3168a_probe(struct device *dev, struct regmap *regmap)
 		return dev_err_probe(dev, PTR_ERR(pcm3168a->gpio_rst),
 				     "failed to acquire RST gpio\n");
 
-	pcm3168a->scki = devm_clk_get(dev, "scki");
+	pcm3168a->scki = devm_clk_get_optional(dev, "scki");
 	if (IS_ERR(pcm3168a->scki))
 		return dev_err_probe(dev, PTR_ERR(pcm3168a->scki),
 				     "failed to acquire clock 'scki'\n");
@@ -757,6 +755,9 @@ int pcm3168a_probe(struct device *dev, struct regmap *regmap)
 	}
 
 	pcm3168a->sysclk = clk_get_rate(pcm3168a->scki);
+	/* Fallback to the default if no clk entry available. */
+	if (!pcm3168a->sysclk)
+		pcm3168a->sysclk = 24576000;
 
 	for (i = 0; i < ARRAY_SIZE(pcm3168a->supplies); i++)
 		pcm3168a->supplies[i].supply = pcm3168a_supply_names[i];
@@ -848,7 +849,6 @@ void pcm3168a_remove(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(pcm3168a_remove);
 
-#ifdef CONFIG_PM
 static int pcm3168a_rt_resume(struct device *dev)
 {
 	struct pcm3168a_priv *pcm3168a = dev_get_drvdata(dev);
@@ -904,12 +904,10 @@ static int pcm3168a_rt_suspend(struct device *dev)
 
 	return 0;
 }
-#endif
 
-const struct dev_pm_ops pcm3168a_pm_ops = {
-	SET_RUNTIME_PM_OPS(pcm3168a_rt_suspend, pcm3168a_rt_resume, NULL)
+EXPORT_GPL_DEV_PM_OPS(pcm3168a_pm_ops) = {
+	RUNTIME_PM_OPS(pcm3168a_rt_suspend, pcm3168a_rt_resume, NULL)
 };
-EXPORT_SYMBOL_GPL(pcm3168a_pm_ops);
 
 MODULE_DESCRIPTION("PCM3168A codec driver");
 MODULE_AUTHOR("Damien Horsley <Damien.Horsley@imgtec.com>");

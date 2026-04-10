@@ -519,7 +519,7 @@ void rtl_swlps_beacon(struct ieee80211_hw *hw, void *data, unsigned int len)
 
 	/* 1. What about buffered unicast traffic for our AID? */
 	u_buffed = ieee80211_check_tim(tim_ie, tim_len,
-				       rtlpriv->mac80211.assoc_id);
+				       rtlpriv->mac80211.assoc_id, false);
 
 	/* 2. Maybe the AP wants to send multicast/broadcast data? */
 	m_buffed = tim_ie->bitmap_ctrl & 0x01;
@@ -681,25 +681,10 @@ void rtl_swlps_wq_callback(struct work_struct *work)
 						  ps_work.work);
 	struct ieee80211_hw *hw = rtlworks->hw;
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
-	bool ps = false;
-
-	ps = (hw->conf.flags & IEEE80211_CONF_PS);
 
 	/* we can sleep after ps null send ok */
-	if (rtlpriv->psc.state_inap) {
+	if (rtlpriv->psc.state_inap)
 		rtl_swlps_rf_sleep(hw);
-
-		if (rtlpriv->psc.state && !ps) {
-			rtlpriv->psc.sleep_ms = jiffies_to_msecs(jiffies -
-						 rtlpriv->psc.last_action);
-		}
-
-		if (ps)
-			rtlpriv->psc.last_slept = jiffies;
-
-		rtlpriv->psc.last_action = jiffies;
-		rtlpriv->psc.state = ps;
-	}
 }
 
 static void rtl_p2p_noa_ie(struct ieee80211_hw *hw, void *data,

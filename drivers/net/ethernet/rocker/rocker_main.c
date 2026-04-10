@@ -32,7 +32,6 @@
 #include <net/fib_rules.h>
 #include <net/fib_notifier.h>
 #include <linux/io-64-nonatomic-lo-hi.h>
-#include <generated/utsrelease.h>
 
 #include "rocker_hw.h"
 #include "rocker.h"
@@ -67,7 +66,7 @@ static struct rocker_wait *rocker_wait_create(void)
 {
 	struct rocker_wait *wait;
 
-	wait = kzalloc(sizeof(*wait), GFP_KERNEL);
+	wait = kzalloc_obj(*wait);
 	if (!wait)
 		return NULL;
 	return wait;
@@ -129,7 +128,7 @@ static int rocker_reg_test(const struct rocker *rocker)
 	u64 test_reg;
 	u64 rnd;
 
-	rnd = prandom_u32();
+	rnd = get_random_u32();
 	rnd >>= 1;
 	rocker_write32(rocker, TEST_REG, rnd);
 	test_reg = rocker_read32(rocker, TEST_REG);
@@ -139,9 +138,9 @@ static int rocker_reg_test(const struct rocker *rocker)
 		return -EIO;
 	}
 
-	rnd = prandom_u32();
+	rnd = get_random_u32();
 	rnd <<= 31;
-	rnd |= prandom_u32();
+	rnd |= get_random_u32();
 	rocker_write64(rocker, TEST_REG64, rnd);
 	test_reg = rocker_read64(rocker, TEST_REG64);
 	if (test_reg != rnd * 2) {
@@ -224,7 +223,7 @@ static int rocker_dma_test_offset(const struct rocker *rocker,
 	if (err)
 		goto unmap;
 
-	prandom_bytes(buf, ROCKER_TEST_DMA_BUF_SIZE);
+	get_random_bytes(buf, ROCKER_TEST_DMA_BUF_SIZE);
 	for (i = 0; i < ROCKER_TEST_DMA_BUF_SIZE; i++)
 		expect[i] = ~buf[i];
 	err = rocker_dma_test_one(rocker, wait, ROCKER_TEST_DMA_CTRL_INVERT,
@@ -436,8 +435,7 @@ static int rocker_dma_ring_create(const struct rocker *rocker,
 	info->type = type;
 	info->head = 0;
 	info->tail = 0;
-	info->desc_info = kcalloc(info->size, sizeof(*info->desc_info),
-				  GFP_KERNEL);
+	info->desc_info = kzalloc_objs(*info->desc_info, info->size);
 	if (!info->desc_info)
 		return -ENOMEM;
 
@@ -1525,9 +1523,8 @@ static void rocker_world_port_post_fini(struct rocker_port *rocker_port)
 {
 	struct rocker_world_ops *wops = rocker_port->rocker->wops;
 
-	if (!wops->port_post_fini)
-		return;
-	wops->port_post_fini(rocker_port);
+	if (wops->port_post_fini)
+		wops->port_post_fini(rocker_port);
 	kfree(rocker_port->wpriv);
 }
 
@@ -1968,7 +1965,7 @@ static int rocker_port_change_mtu(struct net_device *dev, int new_mtu)
 		rocker_port_stop(dev);
 
 	netdev_info(dev, "MTU change from %d to %d\n", dev->mtu, new_mtu);
-	dev->mtu = new_mtu;
+	WRITE_ONCE(dev->mtu, new_mtu);
 
 	err = rocker_cmd_set_port_settings_mtu(rocker_port, new_mtu);
 	if (err)
@@ -2157,7 +2154,7 @@ static int rocker_router_fib_event(struct notifier_block *nb,
 	if (info->family != AF_INET)
 		return NOTIFY_DONE;
 
-	fib_work = kzalloc(sizeof(*fib_work), GFP_ATOMIC);
+	fib_work = kzalloc_obj(*fib_work, GFP_ATOMIC);
 	if (WARN_ON(!fib_work))
 		return NOTIFY_BAD;
 
@@ -2226,8 +2223,7 @@ rocker_port_set_link_ksettings(struct net_device *dev,
 static void rocker_port_get_drvinfo(struct net_device *dev,
 				    struct ethtool_drvinfo *drvinfo)
 {
-	strlcpy(drvinfo->driver, rocker_driver_name, sizeof(drvinfo->driver));
-	strlcpy(drvinfo->version, UTS_RELEASE, sizeof(drvinfo->version));
+	strscpy(drvinfo->driver, rocker_driver_name, sizeof(drvinfo->driver));
 }
 
 static struct rocker_port_stats {
@@ -2504,7 +2500,7 @@ static void rocker_carrier_init(const struct rocker_port *rocker_port)
 	u64 link_status = rocker_read64(rocker, PORT_PHYS_LINK_STATUS);
 	bool link_up;
 
-	link_up = link_status & (1 << rocker_port->pport);
+	link_up = link_status & (1ULL << rocker_port->pport);
 	if (link_up)
 		netif_carrier_on(rocker_port->dev);
 	else
@@ -2574,11 +2570,11 @@ static int rocker_probe_port(struct rocker *rocker, unsigned int port_number)
 	dev->netdev_ops = &rocker_port_netdev_ops;
 	dev->ethtool_ops = &rocker_port_ethtool_ops;
 	netif_napi_add_tx(dev, &rocker_port->napi_tx, rocker_port_poll_tx);
-	netif_napi_add(dev, &rocker_port->napi_rx, rocker_port_poll_rx,
-		       NAPI_POLL_WEIGHT);
+	netif_napi_add(dev, &rocker_port->napi_rx, rocker_port_poll_rx);
 	rocker_carrier_init(rocker_port);
 
-	dev->features |= NETIF_F_NETNS_LOCAL | NETIF_F_SG;
+	dev->features |= NETIF_F_SG;
+	dev->netns_immutable = true;
 
 	/* MTU range: 68 - 9000 */
 	dev->min_mtu = ROCKER_PORT_MIN_MTU;
@@ -2651,9 +2647,7 @@ static int rocker_msix_init(struct rocker *rocker)
 	if (msix_entries != ROCKER_MSIX_VEC_COUNT(rocker->port_count))
 		return -EINVAL;
 
-	rocker->msix_entries = kmalloc_array(msix_entries,
-					     sizeof(struct msix_entry),
-					     GFP_KERNEL);
+	rocker->msix_entries = kmalloc_objs(struct msix_entry, msix_entries);
 	if (!rocker->msix_entries)
 		return -ENOMEM;
 
@@ -2767,7 +2761,7 @@ static int rocker_switchdev_event(struct notifier_block *unused,
 		return rocker_switchdev_port_attr_set_event(dev, ptr);
 
 	rocker_port = netdev_priv(dev);
-	switchdev_work = kzalloc(sizeof(*switchdev_work), GFP_ATOMIC);
+	switchdev_work = kzalloc_obj(*switchdev_work, GFP_ATOMIC);
 	if (WARN_ON(!switchdev_work))
 		return NOTIFY_BAD;
 
@@ -2853,7 +2847,7 @@ static int rocker_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct rocker *rocker;
 	int err;
 
-	rocker = kzalloc(sizeof(*rocker), GFP_KERNEL);
+	rocker = kzalloc_obj(*rocker);
 	if (!rocker)
 		return -ENOMEM;
 

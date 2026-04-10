@@ -1128,7 +1128,7 @@ struct dvb_frontend* nxt200x_attach(const struct nxt200x_config* config,
 	u8 buf [] = {0,0,0,0,0};
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(struct nxt200x_state), GFP_KERNEL);
+	state = kzalloc_obj(struct nxt200x_state);
 	if (state == NULL)
 		goto error;
 
@@ -1216,5 +1216,5 @@ MODULE_DESCRIPTION("NXT200X (ATSC 8VSB & ITU-T J.83 AnnexB 64/256 QAM) Demodulat
 MODULE_AUTHOR("Kirk Lapray, Michael Krufky, Jean-Francois Thibert, and Taylor Jacob");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(nxt200x_attach);
+EXPORT_SYMBOL_GPL(nxt200x_attach);
 

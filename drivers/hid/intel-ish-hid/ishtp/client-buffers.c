@@ -66,7 +66,7 @@ int ishtp_cl_alloc_tx_ring(struct ishtp_cl *cl)
 	for (j = 0; j < cl->tx_ring_size; ++j) {
 		struct ishtp_cl_tx_ring	*tx_buf;
 
-		tx_buf = kzalloc(sizeof(struct ishtp_cl_tx_ring), GFP_KERNEL);
+		tx_buf = kzalloc_obj(struct ishtp_cl_tx_ring);
 		if (!tx_buf)
 			goto	out;
 
@@ -183,7 +183,7 @@ struct ishtp_cl_rb *ishtp_io_rb_init(struct ishtp_cl *cl)
 {
 	struct ishtp_cl_rb *rb;
 
-	rb = kzalloc(sizeof(struct ishtp_cl_rb), GFP_KERNEL);
+	rb = kzalloc_obj(struct ishtp_cl_rb);
 	if (!rb)
 		return NULL;
 
@@ -250,27 +250,6 @@ int ishtp_cl_io_rb_recycle(struct ishtp_cl_rb *rb)
 	return	rets;
 }
 EXPORT_SYMBOL(ishtp_cl_io_rb_recycle);
-
-/**
- * ishtp_cl_tx_empty() -test whether client device tx buffer is empty
- * @cl: Pointer to client device instance
- *
- * Look client device tx buffer list, and check whether this list is empty
- *
- * Return: true if client tx buffer list is empty else false
- */
-bool ishtp_cl_tx_empty(struct ishtp_cl *cl)
-{
-	int tx_list_empty;
-	unsigned long tx_flags;
-
-	spin_lock_irqsave(&cl->tx_list_spinlock, tx_flags);
-	tx_list_empty = list_empty(&cl->tx_list.list);
-	spin_unlock_irqrestore(&cl->tx_list_spinlock, tx_flags);
-
-	return !!tx_list_empty;
-}
-EXPORT_SYMBOL(ishtp_cl_tx_empty);
 
 /**
  * ishtp_cl_rx_get_rb() -Get a rb from client device rx buffer list

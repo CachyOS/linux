@@ -5,61 +5,52 @@
  * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
  */
 #include <linux/acpi.h>
+#include <linux/clk.h>
 #include <linux/efi.h>
 #include <linux/export.h>
 #include <linux/memblock.h>
-#include <linux/of_fdt.h>
+#include <linux/of_clk.h>
 #include <asm/early_ioremap.h>
 #include <asm/bootinfo.h>
 #include <asm/loongson.h>
+#include <asm/setup.h>
+#include <asm/time.h>
 
 u64 efi_system_table;
 struct loongson_system_configuration loongson_sysconf;
 EXPORT_SYMBOL(loongson_sysconf);
 
-u64 loongson_chipcfg[MAX_PACKAGES];
-u64 loongson_chiptemp[MAX_PACKAGES];
-u64 loongson_freqctrl[MAX_PACKAGES];
-unsigned long long smp_group[MAX_PACKAGES];
-
-static void __init register_addrs_set(u64 *registers, const u64 addr, int num)
-{
-	u64 i;
-
-	for (i = 0; i < num; i++) {
-		*registers = (i << 44) | addr;
-		registers++;
-	}
-}
-
 void __init init_environ(void)
 {
 	int efi_boot = fw_arg0;
-	struct efi_memory_map_data data;
-	void *fdt_ptr = early_memremap_ro(fw_arg1, SZ_64K);
+	char *cmdline = early_memremap_ro(fw_arg1, COMMAND_LINE_SIZE);
 
 	if (efi_boot)
 		set_bit(EFI_BOOT, &efi.flags);
 	else
 		clear_bit(EFI_BOOT, &efi.flags);
 
-	early_init_dt_scan(fdt_ptr);
-	early_init_fdt_reserve_self();
-	efi_system_table = efi_get_fdt_params(&data);
+	strscpy(boot_command_line, cmdline, COMMAND_LINE_SIZE);
+	strscpy(init_command_line, cmdline, COMMAND_LINE_SIZE);
+	early_memunmap(cmdline, COMMAND_LINE_SIZE);
 
-	efi_memmap_init_early(&data);
-	memblock_reserve(data.phys_map & PAGE_MASK,
-			 PAGE_ALIGN(data.size + (data.phys_map & ~PAGE_MASK)));
-
-	register_addrs_set(smp_group, TO_UNCACHE(0x1fe01000), 16);
-	register_addrs_set(loongson_chipcfg, TO_UNCACHE(0x1fe00180), 16);
-	register_addrs_set(loongson_chiptemp, TO_UNCACHE(0x1fe0019c), 16);
-	register_addrs_set(loongson_freqctrl, TO_UNCACHE(0x1fe001d0), 16);
+	efi_system_table = fw_arg2;
 }
 
 static int __init init_cpu_fullname(void)
 {
-	int cpu;
+	int cpu, ret;
+	char *cpuname;
+	const char *model;
+
+	/* Parsing cpuname from DTS model property */
+	ret = of_property_read_string(of_root, "model", &model);
+	if (ret == 0) {
+		cpuname = kstrdup(model, GFP_KERNEL);
+		if (!cpuname)
+			return -ENOMEM;
+		loongson_sysconf.cpuname = strsep(&cpuname, " ");
+	}
 
 	if (loongson_sysconf.cpuname && !strncmp(loongson_sysconf.cpuname, "Loongson", 8)) {
 		for (cpu = 0; cpu < NR_CPUS; cpu++)
@@ -69,10 +60,35 @@ static int __init init_cpu_fullname(void)
 }
 arch_initcall(init_cpu_fullname);
 
+static int __init fdt_cpu_clk_init(void)
+{
+	struct clk *clk;
+	struct device_node *np;
+
+	np = of_get_cpu_node(0, NULL);
+	if (!np)
+		return -ENODEV;
+
+	clk = of_clk_get(np, 0);
+	of_node_put(np);
+	cpu_clock_freq = 200 * 1000 * 1000;
+
+	if (IS_ERR(clk)) {
+		pr_warn("No valid CPU clock freq, assume 200MHz.\n");
+		return -ENODEV;
+	}
+
+	cpu_clock_freq = clk_get_rate(clk);
+	clk_put(clk);
+
+	return 0;
+}
+late_initcall(fdt_cpu_clk_init);
+
 static ssize_t boardinfo_show(struct kobject *kobj,
 			      struct kobj_attribute *attr, char *buf)
 {
-	return sprintf(buf,
+	return sysfs_emit(buf,
 		"BIOS Information\n"
 		"Vendor\t\t\t: %s\n"
 		"Version\t\t\t: %s\n"
@@ -95,6 +111,8 @@ static int __init boardinfo_init(void)
 	struct kobject *loongson_kobj;
 
 	loongson_kobj = kobject_create_and_add("loongson", firmware_kobj);
+	if (!loongson_kobj)
+		return -ENOMEM;
 
 	return sysfs_create_file(loongson_kobj, &boardinfo_attr.attr);
 }

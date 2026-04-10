@@ -136,7 +136,7 @@ static void do_longhaul1(unsigned int mults_index)
 {
 	union msr_bcr2 bcr2;
 
-	rdmsrl(MSR_VIA_BCR2, bcr2.val);
+	rdmsrq(MSR_VIA_BCR2, bcr2.val);
 	/* Enable software clock multiplier */
 	bcr2.bits.ESOFTBF = 1;
 	bcr2.bits.CLOCKMUL = mults_index & 0xff;
@@ -144,16 +144,16 @@ static void do_longhaul1(unsigned int mults_index)
 	/* Sync to timer tick */
 	safe_halt();
 	/* Change frequency on next halt or sleep */
-	wrmsrl(MSR_VIA_BCR2, bcr2.val);
+	wrmsrq(MSR_VIA_BCR2, bcr2.val);
 	/* Invoke transition */
 	ACPI_FLUSH_CPU_CACHE();
 	halt();
 
 	/* Disable software clock multiplier */
 	local_irq_disable();
-	rdmsrl(MSR_VIA_BCR2, bcr2.val);
+	rdmsrq(MSR_VIA_BCR2, bcr2.val);
 	bcr2.bits.ESOFTBF = 0;
-	wrmsrl(MSR_VIA_BCR2, bcr2.val);
+	wrmsrq(MSR_VIA_BCR2, bcr2.val);
 }
 
 /* For processor with Longhaul MSR */
@@ -164,7 +164,7 @@ static void do_powersaver(int cx_address, unsigned int mults_index,
 	union msr_longhaul longhaul;
 	u32 t;
 
-	rdmsrl(MSR_VIA_LONGHAUL, longhaul.val);
+	rdmsrq(MSR_VIA_LONGHAUL, longhaul.val);
 	/* Setup new frequency */
 	if (!revid_errata)
 		longhaul.bits.RevisionKey = longhaul.bits.RevisionID;
@@ -180,7 +180,7 @@ static void do_powersaver(int cx_address, unsigned int mults_index,
 	/* Raise voltage if necessary */
 	if (can_scale_voltage && dir) {
 		longhaul.bits.EnableSoftVID = 1;
-		wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
+		wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
 		/* Change voltage */
 		if (!cx_address) {
 			ACPI_FLUSH_CPU_CACHE();
@@ -194,12 +194,12 @@ static void do_powersaver(int cx_address, unsigned int mults_index,
 			t = inl(acpi_gbl_FADT.xpm_timer_block.address);
 		}
 		longhaul.bits.EnableSoftVID = 0;
-		wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
+		wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
 	}
 
 	/* Change frequency on next halt or sleep */
 	longhaul.bits.EnableSoftBusRatio = 1;
-	wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
+	wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
 	if (!cx_address) {
 		ACPI_FLUSH_CPU_CACHE();
 		halt();
@@ -212,12 +212,12 @@ static void do_powersaver(int cx_address, unsigned int mults_index,
 	}
 	/* Disable bus ratio bit */
 	longhaul.bits.EnableSoftBusRatio = 0;
-	wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
+	wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
 
 	/* Reduce voltage if necessary */
 	if (can_scale_voltage && !dir) {
 		longhaul.bits.EnableSoftVID = 1;
-		wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
+		wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
 		/* Change voltage */
 		if (!cx_address) {
 			ACPI_FLUSH_CPU_CACHE();
@@ -231,13 +231,14 @@ static void do_powersaver(int cx_address, unsigned int mults_index,
 			t = inl(acpi_gbl_FADT.xpm_timer_block.address);
 		}
 		longhaul.bits.EnableSoftVID = 0;
-		wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
+		wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
 	}
 }
 
 /**
- * longhaul_set_cpu_frequency()
- * @mults_index : bitpattern of the new multiplier.
+ * longhaul_setstate()
+ * @policy: cpufreq_policy structure containing the current policy.
+ * @table_index: index of the frequency within the cpufreq_frequency_table.
  *
  * Sets a new clock ratio.
  */
@@ -407,10 +408,10 @@ static int guess_fsb(int mult)
 {
 	int speed = cpu_khz / 1000;
 	int i;
-	int speeds[] = { 666, 1000, 1333, 2000 };
+	static const int speeds[] = { 666, 1000, 1333, 2000 };
 	int f_max, f_min;
 
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < ARRAY_SIZE(speeds); i++) {
 		f_max = ((speeds[i] * mult) + 50) / 100;
 		f_max += (ROUNDING / 2);
 		f_min = f_max - ROUNDING;
@@ -474,8 +475,7 @@ static int longhaul_get_ranges(void)
 		return -EINVAL;
 	}
 
-	longhaul_table = kcalloc(numscales + 1, sizeof(*longhaul_table),
-				 GFP_KERNEL);
+	longhaul_table = kzalloc_objs(*longhaul_table, numscales + 1);
 	if (!longhaul_table)
 		return -ENOMEM;
 
@@ -533,7 +533,7 @@ static void longhaul_setup_voltagescaling(void)
 	unsigned int j, speed, pos, kHz_step, numvscales;
 	int min_vid_speed;
 
-	rdmsrl(MSR_VIA_LONGHAUL, longhaul.val);
+	rdmsrq(MSR_VIA_LONGHAUL, longhaul.val);
 	if (!(longhaul.bits.RevisionID & 1)) {
 		pr_info("Voltage scaling not supported by CPU\n");
 		return;
@@ -905,7 +905,6 @@ static struct cpufreq_driver longhaul_driver = {
 	.get	= longhaul_get,
 	.init	= longhaul_cpu_init,
 	.name	= "longhaul",
-	.attr	= cpufreq_generic_attr,
 };
 
 static const struct x86_cpu_id longhaul_id[] = {
@@ -952,6 +951,9 @@ static void __exit longhaul_exit(void)
 {
 	struct cpufreq_policy *policy = cpufreq_cpu_get(0);
 	int i;
+
+	if (unlikely(!policy))
+		return;
 
 	for (i = 0; i < numscales; i++) {
 		if (mults[i] == maxmult) {

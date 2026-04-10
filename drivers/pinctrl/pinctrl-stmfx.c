@@ -10,6 +10,9 @@
 #include <linux/mfd/stmfx.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/seq_file.h>
+#include <linux/string_choices.h>
+
 #include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/pinmux.h>
 
@@ -83,7 +86,6 @@ struct stmfx_pinctrl {
 	struct pinctrl_dev *pctl_dev;
 	struct pinctrl_desc pctl_desc;
 	struct gpio_chip gpio_chip;
-	struct irq_chip irq_chip;
 	struct mutex lock; /* IRQ bus lock */
 	unsigned long gpio_valid_mask;
 	/* Cache of IRQ_GPI_* registers for bus_lock */
@@ -113,14 +115,14 @@ static int stmfx_gpio_get(struct gpio_chip *gc, unsigned int offset)
 	return ret ? ret : !!(value & mask);
 }
 
-static void stmfx_gpio_set(struct gpio_chip *gc, unsigned int offset, int value)
+static int stmfx_gpio_set(struct gpio_chip *gc, unsigned int offset, int value)
 {
 	struct stmfx_pinctrl *pctl = gpiochip_get_data(gc);
 	u32 reg = value ? STMFX_REG_GPO_SET : STMFX_REG_GPO_CLR;
 	u32 mask = get_mask(offset);
 
-	regmap_write_bits(pctl->stmfx->map, reg + get_reg(offset),
-			  mask, mask);
+	return regmap_write_bits(pctl->stmfx->map, reg + get_reg(offset),
+				 mask, mask);
 }
 
 static int stmfx_gpio_get_direction(struct gpio_chip *gc, unsigned int offset)
@@ -159,8 +161,11 @@ static int stmfx_gpio_direction_output(struct gpio_chip *gc,
 	struct stmfx_pinctrl *pctl = gpiochip_get_data(gc);
 	u32 reg = STMFX_REG_GPIO_DIR + get_reg(offset);
 	u32 mask = get_mask(offset);
+	int ret;
 
-	stmfx_gpio_set(gc, offset, value);
+	ret = stmfx_gpio_set(gc, offset, value);
+	if (ret)
+		return ret;
 
 	return regmap_write_bits(pctl->stmfx->map, reg, mask, mask);
 }
@@ -262,7 +267,7 @@ static int stmfx_pinconf_get(struct pinctrl_dev *pctldev,
 		if ((!dir && !type) || (dir && type))
 			arg = 1;
 		break;
-	case PIN_CONFIG_OUTPUT:
+	case PIN_CONFIG_LEVEL:
 		if (dir)
 			return -EINVAL;
 
@@ -329,7 +334,7 @@ static int stmfx_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 			if (ret)
 				return ret;
 			break;
-		case PIN_CONFIG_OUTPUT:
+		case PIN_CONFIG_LEVEL:
 			ret = stmfx_gpio_direction_output(&pctl->gpio_chip,
 							  pin, arg);
 			if (ret)
@@ -368,17 +373,17 @@ static void stmfx_pinconf_dbg_show(struct pinctrl_dev *pctldev,
 		return;
 
 	if (dir == GPIO_LINE_DIRECTION_OUT) {
-		seq_printf(s, "output %s ", val ? "high" : "low");
+		seq_printf(s, "output %s ", str_high_low(val));
 		if (type)
 			seq_printf(s, "open drain %s internal pull-up ",
 				   pupd ? "with" : "without");
 		else
 			seq_puts(s, "push pull no pull ");
 	} else {
-		seq_printf(s, "input %s ", val ? "high" : "low");
+		seq_printf(s, "input %s ", str_high_low(val));
 		if (type)
 			seq_printf(s, "with internal pull-%s ",
-				   pupd ? "up" : "down");
+				   str_up_down(pupd));
 		else
 			seq_printf(s, "%s ", pupd ? "floating" : "analog");
 	}
@@ -425,6 +430,7 @@ static void stmfx_pinctrl_irq_mask(struct irq_data *data)
 	u32 mask = get_mask(data->hwirq);
 
 	pctl->irq_gpi_src[reg] &= ~mask;
+	gpiochip_disable_irq(gpio_chip, irqd_to_hwirq(data));
 }
 
 static void stmfx_pinctrl_irq_unmask(struct irq_data *data)
@@ -434,6 +440,7 @@ static void stmfx_pinctrl_irq_unmask(struct irq_data *data)
 	u32 reg = get_reg(data->hwirq);
 	u32 mask = get_mask(data->hwirq);
 
+	gpiochip_enable_irq(gpio_chip, irqd_to_hwirq(data));
 	pctl->irq_gpi_src[reg] |= mask;
 }
 
@@ -590,6 +597,26 @@ static irqreturn_t stmfx_pinctrl_irq_thread_fn(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+static void stmfx_pinctrl_irq_print_chip(struct irq_data *d, struct seq_file *p)
+{
+	struct gpio_chip *gpio_chip = irq_data_get_irq_chip_data(d);
+	struct stmfx_pinctrl *pctl = gpiochip_get_data(gpio_chip);
+
+	seq_puts(p, dev_name(pctl->dev));
+}
+
+static const struct irq_chip stmfx_pinctrl_irq_chip = {
+	.irq_mask = stmfx_pinctrl_irq_mask,
+	.irq_unmask = stmfx_pinctrl_irq_unmask,
+	.irq_set_type = stmfx_pinctrl_irq_set_type,
+	.irq_bus_lock = stmfx_pinctrl_irq_bus_lock,
+	.irq_bus_sync_unlock = stmfx_pinctrl_irq_bus_sync_unlock,
+	.irq_request_resources = stmfx_gpio_irq_request_resources,
+	.irq_release_resources = stmfx_gpio_irq_release_resources,
+	.irq_print_chip = stmfx_pinctrl_irq_print_chip,
+	.flags = IRQCHIP_IMMUTABLE,
+};
+
 static int stmfx_pinctrl_gpio_function_enable(struct stmfx_pinctrl *pctl)
 {
 	struct pinctrl_gpio_range *gpio_range;
@@ -630,14 +657,14 @@ static int stmfx_pinctrl_probe(struct platform_device *pdev)
 	pctl->dev = &pdev->dev;
 	pctl->stmfx = stmfx;
 
-	if (!of_find_property(np, "gpio-ranges", NULL)) {
+	if (!of_property_present(np, "gpio-ranges")) {
 		dev_err(pctl->dev, "missing required gpio-ranges property\n");
 		return -EINVAL;
 	}
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq <= 0)
-		return -ENXIO;
+	if (irq < 0)
+		return irq;
 
 	mutex_init(&pctl->lock);
 
@@ -676,17 +703,8 @@ static int stmfx_pinctrl_probe(struct platform_device *pdev)
 	pctl->gpio_chip.ngpio = pctl->pctl_desc.npins;
 	pctl->gpio_chip.can_sleep = true;
 
-	pctl->irq_chip.name = dev_name(pctl->dev);
-	pctl->irq_chip.irq_mask = stmfx_pinctrl_irq_mask;
-	pctl->irq_chip.irq_unmask = stmfx_pinctrl_irq_unmask;
-	pctl->irq_chip.irq_set_type = stmfx_pinctrl_irq_set_type;
-	pctl->irq_chip.irq_bus_lock = stmfx_pinctrl_irq_bus_lock;
-	pctl->irq_chip.irq_bus_sync_unlock = stmfx_pinctrl_irq_bus_sync_unlock;
-	pctl->irq_chip.irq_request_resources = stmfx_gpio_irq_request_resources;
-	pctl->irq_chip.irq_release_resources = stmfx_gpio_irq_release_resources;
-
 	girq = &pctl->gpio_chip.irq;
-	girq->chip = &pctl->irq_chip;
+	gpio_irq_chip_set_chip(girq, &stmfx_pinctrl_irq_chip);
 	/* This will let us handle the parent IRQ in the driver */
 	girq->parent_handler = NULL;
 	girq->num_parents = 0;
@@ -708,7 +726,7 @@ static int stmfx_pinctrl_probe(struct platform_device *pdev)
 	ret = devm_request_threaded_irq(pctl->dev, irq, NULL,
 					stmfx_pinctrl_irq_thread_fn,
 					IRQF_ONESHOT,
-					pctl->irq_chip.name, pctl);
+					dev_name(pctl->dev), pctl);
 	if (ret) {
 		dev_err(pctl->dev, "cannot request irq%d\n", irq);
 		return ret;
@@ -720,14 +738,18 @@ static int stmfx_pinctrl_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int stmfx_pinctrl_remove(struct platform_device *pdev)
+static void stmfx_pinctrl_remove(struct platform_device *pdev)
 {
 	struct stmfx *stmfx = dev_get_drvdata(pdev->dev.parent);
+	int ret;
 
-	return stmfx_function_disable(stmfx,
-				      STMFX_FUNC_GPIO |
-				      STMFX_FUNC_ALTGPIO_LOW |
-				      STMFX_FUNC_ALTGPIO_HIGH);
+	ret = stmfx_function_disable(stmfx,
+				     STMFX_FUNC_GPIO |
+				     STMFX_FUNC_ALTGPIO_LOW |
+				     STMFX_FUNC_ALTGPIO_HIGH);
+	if (ret)
+		dev_err(&pdev->dev, "Failed to disable pins (%pe)\n",
+			ERR_PTR(ret));
 }
 
 #ifdef CONFIG_PM_SLEEP

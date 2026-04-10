@@ -116,8 +116,14 @@ static u8 LM87_REG_TEMP_LOW[3] = { 0x3A, 0x38, 0x2C };
 				 (((val) < 0 ? (val) - 500 : \
 				   (val) + 500) / 1000))
 
-#define FAN_FROM_REG(reg, div)	((reg) == 255 || (reg) == 0 ? 0 : \
-				 (1350000 + (reg)*(div) / 2) / ((reg) * (div)))
+static int fan_from_reg(int reg, int div)
+{
+	if (reg == 255 || reg == 0)
+		return 0;
+
+	return (1350000 + reg * div / 2) / (reg * div);
+}
+
 #define FAN_TO_REG(val, div)	((val) * (div) * 255 <= 1350000 ? 255 : \
 				 (1350000 + (val)*(div) / 2) / ((val) * (div)))
 
@@ -465,7 +471,7 @@ static ssize_t fan_input_show(struct device *dev,
 	struct lm87_data *data = lm87_update_device(dev);
 	int nr = to_sensor_dev_attr(attr)->index;
 
-	return sprintf(buf, "%d\n", FAN_FROM_REG(data->fan[nr],
+	return sprintf(buf, "%d\n", fan_from_reg(data->fan[nr],
 		       FAN_DIV_FROM_REG(data->fan_div[nr])));
 }
 
@@ -475,7 +481,7 @@ static ssize_t fan_min_show(struct device *dev, struct device_attribute *attr,
 	struct lm87_data *data = lm87_update_device(dev);
 	int nr = to_sensor_dev_attr(attr)->index;
 
-	return sprintf(buf, "%d\n", FAN_FROM_REG(data->fan_min[nr],
+	return sprintf(buf, "%d\n", fan_from_reg(data->fan_min[nr],
 		       FAN_DIV_FROM_REG(data->fan_div[nr])));
 }
 
@@ -534,7 +540,7 @@ static ssize_t fan_div_store(struct device *dev,
 		return err;
 
 	mutex_lock(&data->update_lock);
-	min = FAN_FROM_REG(data->fan_min[nr],
+	min = fan_from_reg(data->fan_min[nr],
 			   FAN_DIV_FROM_REG(data->fan_div[nr]));
 
 	switch (val) {
@@ -833,7 +839,7 @@ static int lm87_detect(struct i2c_client *client, struct i2c_board_info *info)
 		return -ENODEV;
 	}
 
-	strlcpy(info->type, name, I2C_NAME_SIZE);
+	strscpy(info->type, name, I2C_NAME_SIZE);
 
 	return 0;
 }
@@ -975,8 +981,8 @@ static int lm87_probe(struct i2c_client *client)
  */
 
 static const struct i2c_device_id lm87_id[] = {
-	{ "lm87", 0 },
-	{ "adm1024", 0 },
+	{ "lm87" },
+	{ "adm1024" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, lm87_id);
@@ -994,7 +1000,7 @@ static struct i2c_driver lm87_driver = {
 		.name	= "lm87",
 		.of_match_table = lm87_of_match,
 	},
-	.probe_new	= lm87_probe,
+	.probe		= lm87_probe,
 	.id_table	= lm87_id,
 	.detect		= lm87_detect,
 	.address_list	= normal_i2c,

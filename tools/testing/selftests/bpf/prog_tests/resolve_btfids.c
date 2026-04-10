@@ -44,7 +44,7 @@ BTF_ID(union,   U)
 BTF_ID(func,    func)
 
 extern __u32 test_list_global[];
-BTF_ID_LIST_GLOBAL(test_list_global)
+BTF_ID_LIST_GLOBAL(test_list_global, 1)
 BTF_ID_UNUSED
 BTF_ID(typedef, S)
 BTF_ID(typedef, T)
@@ -101,9 +101,9 @@ static int resolve_symbols(void)
 	int type_id;
 	__u32 nr;
 
-	btf = btf__parse_elf("btf_data.o", NULL);
+	btf = btf__parse_raw("resolve_btfids.test.o.BTF");
 	if (CHECK(libbpf_get_error(btf), "resolve",
-		  "Failed to load BTF from btf_data.o\n"))
+		  "Failed to load BTF from resolve_btfids.test.o.BTF\n"))
 		return -1;
 
 	nr = btf__type_cnt(btf);

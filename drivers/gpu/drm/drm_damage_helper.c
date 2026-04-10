@@ -30,9 +30,12 @@
  *
  **************************************************************************/
 
+#include <linux/export.h>
+
 #include <drm/drm_atomic.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_device.h>
+#include <drm/drm_framebuffer.h>
 
 static void convert_clip_rect_to_rect(const struct drm_clip_rect *src,
 				      struct drm_mode_rect *dest,
@@ -137,7 +140,7 @@ int drm_atomic_helper_dirtyfb(struct drm_framebuffer *fb,
 			num_clips /= 2;
 		}
 
-		rects = kcalloc(num_clips, sizeof(*rects), GFP_KERNEL);
+		rects = kzalloc_objs(*rects, num_clips);
 		if (!rects) {
 			ret = -ENOMEM;
 			goto out;
@@ -223,6 +226,7 @@ drm_atomic_helper_damage_iter_init(struct drm_atomic_helper_damage_iter *iter,
 				   const struct drm_plane_state *old_state,
 				   const struct drm_plane_state *state)
 {
+	struct drm_rect src;
 	memset(iter, 0, sizeof(*iter));
 
 	if (!state || !state->crtc || !state->fb || !state->visible)
@@ -232,12 +236,15 @@ drm_atomic_helper_damage_iter_init(struct drm_atomic_helper_damage_iter *iter,
 	iter->num_clips = drm_plane_get_damage_clips_count(state);
 
 	/* Round down for x1/y1 and round up for x2/y2 to catch all pixels */
-	iter->plane_src.x1 = state->src.x1 >> 16;
-	iter->plane_src.y1 = state->src.y1 >> 16;
-	iter->plane_src.x2 = (state->src.x2 >> 16) + !!(state->src.x2 & 0xFFFF);
-	iter->plane_src.y2 = (state->src.y2 >> 16) + !!(state->src.y2 & 0xFFFF);
+	src = drm_plane_state_src(state);
 
-	if (!iter->clips || !drm_rect_equals(&state->src, &old_state->src)) {
+	iter->plane_src.x1 = src.x1 >> 16;
+	iter->plane_src.y1 = src.y1 >> 16;
+	iter->plane_src.x2 = (src.x2 >> 16) + !!(src.x2 & 0xFFFF);
+	iter->plane_src.y2 = (src.y2 >> 16) + !!(src.y2 & 0xFFFF);
+
+	if (!iter->clips || state->ignore_damage_clips ||
+	    !drm_rect_equals(&state->src, &old_state->src)) {
 		iter->clips = NULL;
 		iter->num_clips = 0;
 		iter->full_update = true;
@@ -303,7 +310,7 @@ EXPORT_SYMBOL(drm_atomic_helper_damage_iter_next);
  * True if there is valid plane damage otherwise false.
  */
 bool drm_atomic_helper_damage_merged(const struct drm_plane_state *old_state,
-				     struct drm_plane_state *state,
+				     const struct drm_plane_state *state,
 				     struct drm_rect *rect)
 {
 	struct drm_atomic_helper_damage_iter iter;

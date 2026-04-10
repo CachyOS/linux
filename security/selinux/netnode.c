@@ -30,6 +30,7 @@
 #include <net/ip.h>
 #include <net/ipv6.h>
 
+#include "initcalls.h"
 #include "netnode.h"
 #include "objsec.h"
 
@@ -187,7 +188,7 @@ static void sel_netnode_insert(struct sel_netnode *node)
  * failure.
  *
  */
-static int sel_netnode_sid_slow(void *addr, u16 family, u32 *sid)
+static int sel_netnode_sid_slow(const void *addr, u16 family, u32 *sid)
 {
 	int ret;
 	struct sel_netnode *node;
@@ -201,19 +202,22 @@ static int sel_netnode_sid_slow(void *addr, u16 family, u32 *sid)
 		return 0;
 	}
 
-	new = kzalloc(sizeof(*new), GFP_ATOMIC);
+	/* If this memory allocation fails still return 0. The SID
+	 * is valid, it just won't be added to the cache.
+	 */
+	new = kmalloc_obj(*new, GFP_ATOMIC);
 	switch (family) {
 	case PF_INET:
-		ret = security_node_sid(&selinux_state, PF_INET,
+		ret = security_node_sid(PF_INET,
 					addr, sizeof(struct in_addr), sid);
 		if (new)
-			new->nsec.addr.ipv4 = *(__be32 *)addr;
+			new->nsec.addr.ipv4 = *(const __be32 *)addr;
 		break;
 	case PF_INET6:
-		ret = security_node_sid(&selinux_state, PF_INET6,
+		ret = security_node_sid(PF_INET6,
 					addr, sizeof(struct in6_addr), sid);
 		if (new)
-			new->nsec.addr.ipv6 = *(struct in6_addr *)addr;
+			new->nsec.addr.ipv6 = *(const struct in6_addr *)addr;
 		break;
 	default:
 		BUG();
@@ -247,13 +251,13 @@ static int sel_netnode_sid_slow(void *addr, u16 family, u32 *sid)
  * on failure.
  *
  */
-int sel_netnode_sid(void *addr, u16 family, u32 *sid)
+int sel_netnode_sid(const void *addr, u16 family, u32 *sid)
 {
 	struct sel_netnode *node;
 
 	rcu_read_lock();
 	node = sel_netnode_find(addr, family);
-	if (node != NULL) {
+	if (likely(node != NULL)) {
 		*sid = node->nsec.sid;
 		rcu_read_unlock();
 		return 0;
@@ -287,7 +291,7 @@ void sel_netnode_flush(void)
 	spin_unlock_bh(&sel_netnode_lock);
 }
 
-static __init int sel_netnode_init(void)
+int __init sel_netnode_init(void)
 {
 	int iter;
 
@@ -301,5 +305,3 @@ static __init int sel_netnode_init(void)
 
 	return 0;
 }
-
-__initcall(sel_netnode_init);

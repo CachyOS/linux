@@ -7,8 +7,7 @@
  * Copyright IBM Corp. 2002, 2020
  */
 
-#define KMSG_COMPONENT "zfcp"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "zfcp: " fmt
 
 #include <linux/module.h>
 #include <linux/types.h>
@@ -37,11 +36,11 @@ static bool allow_lun_scan = true;
 module_param(allow_lun_scan, bool, 0600);
 MODULE_PARM_DESC(allow_lun_scan, "For NPIV, scan and attach all storage LUNs");
 
-static void zfcp_scsi_slave_destroy(struct scsi_device *sdev)
+static void zfcp_scsi_sdev_destroy(struct scsi_device *sdev)
 {
 	struct zfcp_scsi_dev *zfcp_sdev = sdev_to_zfcp(sdev);
 
-	/* if previous slave_alloc returned early, there is nothing to do */
+	/* if previous sdev_init returned early, there is nothing to do */
 	if (!zfcp_sdev->port)
 		return;
 
@@ -49,7 +48,8 @@ static void zfcp_scsi_slave_destroy(struct scsi_device *sdev)
 	put_device(&zfcp_sdev->port->dev);
 }
 
-static int zfcp_scsi_slave_configure(struct scsi_device *sdp)
+static int zfcp_scsi_sdev_configure(struct scsi_device *sdp,
+				    struct queue_limits *lim)
 {
 	if (sdp->tagged_supported)
 		scsi_change_queue_depth(sdp, default_depth);
@@ -63,8 +63,8 @@ static void zfcp_scsi_command_fail(struct scsi_cmnd *scpnt, int result)
 	scsi_done(scpnt);
 }
 
-static
-int zfcp_scsi_queuecommand(struct Scsi_Host *shost, struct scsi_cmnd *scpnt)
+static enum scsi_qc_status zfcp_scsi_queuecommand(struct Scsi_Host *shost,
+						  struct scsi_cmnd *scpnt)
 {
 	struct zfcp_scsi_dev *zfcp_sdev = sdev_to_zfcp(scpnt->device);
 	struct fc_rport *rport = starget_to_rport(scsi_target(scpnt->device));
@@ -110,7 +110,7 @@ int zfcp_scsi_queuecommand(struct Scsi_Host *shost, struct scsi_cmnd *scpnt)
 	return ret;
 }
 
-static int zfcp_scsi_slave_alloc(struct scsi_device *sdev)
+static int zfcp_scsi_sdev_init(struct scsi_device *sdev)
 {
 	struct fc_rport *rport = starget_to_rport(scsi_target(sdev));
 	struct zfcp_adapter *adapter =
@@ -170,7 +170,7 @@ static int zfcp_scsi_eh_abort_handler(struct scsi_cmnd *scpnt)
 		(struct zfcp_adapter *) scsi_host->hostdata[0];
 	struct zfcp_fsf_req *old_req, *abrt_req;
 	unsigned long flags;
-	unsigned long old_reqid = (unsigned long) scpnt->host_scribble;
+	u64 old_reqid = (u64) scpnt->host_scribble;
 	int retval = SUCCESS, ret;
 	int retry = 3;
 	char *dbf_tag;
@@ -418,7 +418,7 @@ static int zfcp_scsi_sysfs_host_reset(struct Scsi_Host *shost, int reset_type)
 
 struct scsi_transport_template *zfcp_scsi_transport_template;
 
-static struct scsi_host_template zfcp_scsi_host_template = {
+static const struct scsi_host_template zfcp_scsi_host_template = {
 	.module			 = THIS_MODULE,
 	.name			 = "zfcp",
 	.queuecommand		 = zfcp_scsi_queuecommand,
@@ -427,9 +427,9 @@ static struct scsi_host_template zfcp_scsi_host_template = {
 	.eh_device_reset_handler = zfcp_scsi_eh_device_reset_handler,
 	.eh_target_reset_handler = zfcp_scsi_eh_target_reset_handler,
 	.eh_host_reset_handler	 = zfcp_scsi_eh_host_reset_handler,
-	.slave_alloc		 = zfcp_scsi_slave_alloc,
-	.slave_configure	 = zfcp_scsi_slave_configure,
-	.slave_destroy		 = zfcp_scsi_slave_destroy,
+	.sdev_init		 = zfcp_scsi_sdev_init,
+	.sdev_configure		 = zfcp_scsi_sdev_configure,
+	.sdev_destroy		 = zfcp_scsi_sdev_destroy,
 	.change_queue_depth	 = scsi_change_queue_depth,
 	.host_reset		 = zfcp_scsi_sysfs_host_reset,
 	.proc_name		 = "zfcp",
@@ -542,7 +542,7 @@ zfcp_scsi_init_fc_host_stats(struct zfcp_adapter *adapter)
 	struct fc_host_statistics *fc_stats;
 
 	if (!adapter->fc_stats) {
-		fc_stats = kmalloc(sizeof(*fc_stats), GFP_KERNEL);
+		fc_stats = kmalloc_obj(*fc_stats);
 		if (!fc_stats)
 			return NULL;
 		adapter->fc_stats = fc_stats; /* freed in adapter_release */
@@ -622,7 +622,7 @@ zfcp_scsi_get_fc_host_stats(struct Scsi_Host *host)
 	if (!fc_stats)
 		return NULL;
 
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = kzalloc_obj(*data);
 	if (!data)
 		return NULL;
 
@@ -651,7 +651,7 @@ static void zfcp_scsi_reset_fc_host_stats(struct Scsi_Host *shost)
 	int ret;
 
 	adapter = (struct zfcp_adapter *)shost->hostdata[0];
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = kzalloc_obj(*data);
 	if (!data)
 		return;
 

@@ -208,12 +208,12 @@ static void asb100_write_value(struct i2c_client *client, u16 reg, u16 val);
 static int asb100_probe(struct i2c_client *client);
 static int asb100_detect(struct i2c_client *client,
 			 struct i2c_board_info *info);
-static int asb100_remove(struct i2c_client *client);
+static void asb100_remove(struct i2c_client *client);
 static struct asb100_data *asb100_update_device(struct device *dev);
 static void asb100_init_client(struct i2c_client *client);
 
 static const struct i2c_device_id asb100_id[] = {
-	{ "asb100", 0 },
+	{ "asb100" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, asb100_id);
@@ -223,7 +223,7 @@ static struct i2c_driver asb100_driver = {
 	.driver = {
 		.name	= "asb100",
 	},
-	.probe_new	= asb100_probe,
+	.probe		= asb100_probe,
 	.remove		= asb100_remove,
 	.id_table	= asb100_id,
 	.detect		= asb100_detect,
@@ -769,7 +769,7 @@ static int asb100_detect(struct i2c_client *client,
 	if (val1 != 0x31 || val2 != 0x06)
 		return -ENODEV;
 
-	strlcpy(info->type, "asb100", I2C_NAME_SIZE);
+	strscpy(info->type, "asb100", I2C_NAME_SIZE);
 
 	return 0;
 }
@@ -822,7 +822,7 @@ ERROR3:
 	return err;
 }
 
-static int asb100_remove(struct i2c_client *client)
+static void asb100_remove(struct i2c_client *client)
 {
 	struct asb100_data *data = i2c_get_clientdata(client);
 
@@ -831,8 +831,6 @@ static int asb100_remove(struct i2c_client *client)
 
 	i2c_unregister_device(data->lm75[1]);
 	i2c_unregister_device(data->lm75[0]);
-
-	return 0;
 }
 
 /*

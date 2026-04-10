@@ -7,31 +7,32 @@
 
 #define PKTS_PER_BATCH 8
 
-#ifdef __clang__
-#define loop_unrolled_for _Pragma("clang loop unroll_count(8)") for
-#elif __GNUC__ >= 8
-#define loop_unrolled_for _Pragma("GCC unroll 8") for
-#else
-#define loop_unrolled_for for
-#endif
-
 struct ice_vsi;
 
 #ifdef CONFIG_XDP_SOCKETS
 int ice_xsk_pool_setup(struct ice_vsi *vsi, struct xsk_buff_pool *pool,
 		       u16 qid);
-int ice_clean_rx_irq_zc(struct ice_rx_ring *rx_ring, int budget);
+int ice_clean_rx_irq_zc(struct ice_rx_ring *rx_ring,
+			struct xsk_buff_pool *xsk_pool,
+			int budget);
 int ice_xsk_wakeup(struct net_device *netdev, u32 queue_id, u32 flags);
-bool ice_alloc_rx_bufs_zc(struct ice_rx_ring *rx_ring, u16 count);
+bool ice_alloc_rx_bufs_zc(struct ice_rx_ring *rx_ring,
+			  struct xsk_buff_pool *xsk_pool, u16 count);
 bool ice_xsk_any_rx_ring_ena(struct ice_vsi *vsi);
 void ice_xsk_clean_rx_ring(struct ice_rx_ring *rx_ring);
 void ice_xsk_clean_xdp_ring(struct ice_tx_ring *xdp_ring);
-bool ice_xmit_zc(struct ice_tx_ring *xdp_ring, u32 budget, int napi_budget);
+bool ice_xmit_zc(struct ice_tx_ring *xdp_ring, struct xsk_buff_pool *xsk_pool);
+int ice_realloc_rx_xdp_bufs(struct ice_rx_ring *rx_ring, bool pool_present);
+void ice_qvec_cfg_msix(struct ice_vsi *vsi, struct ice_q_vector *q_vector,
+		       u16 qid);
+void ice_qvec_toggle_napi(struct ice_vsi *vsi, struct ice_q_vector *q_vector,
+			  bool enable);
+void ice_qvec_ena_irq(struct ice_vsi *vsi, struct ice_q_vector *q_vector);
+void ice_qvec_dis_irq(struct ice_vsi *vsi, struct ice_rx_ring *rx_ring,
+		      struct ice_q_vector *q_vector);
 #else
-static inline bool
-ice_xmit_zc(struct ice_tx_ring __always_unused *xdp_ring,
-	    u32 __always_unused budget,
-	    int __always_unused napi_budget)
+static inline bool ice_xmit_zc(struct ice_tx_ring __always_unused *xdp_ring,
+			       struct xsk_buff_pool __always_unused *xsk_pool)
 {
 	return false;
 }
@@ -46,6 +47,7 @@ ice_xsk_pool_setup(struct ice_vsi __always_unused *vsi,
 
 static inline int
 ice_clean_rx_irq_zc(struct ice_rx_ring __always_unused *rx_ring,
+		    struct xsk_buff_pool __always_unused *xsk_pool,
 		    int __always_unused budget)
 {
 	return 0;
@@ -53,6 +55,7 @@ ice_clean_rx_irq_zc(struct ice_rx_ring __always_unused *rx_ring,
 
 static inline bool
 ice_alloc_rx_bufs_zc(struct ice_rx_ring __always_unused *rx_ring,
+		     struct xsk_buff_pool __always_unused *xsk_pool,
 		     u16 __always_unused count)
 {
 	return false;
@@ -72,5 +75,27 @@ ice_xsk_wakeup(struct net_device __always_unused *netdev,
 
 static inline void ice_xsk_clean_rx_ring(struct ice_rx_ring *rx_ring) { }
 static inline void ice_xsk_clean_xdp_ring(struct ice_tx_ring *xdp_ring) { }
+
+static inline int
+ice_realloc_rx_xdp_bufs(struct ice_rx_ring *rx_ring,
+			bool __always_unused pool_present)
+{
+	return 0;
+}
+
+static inline void
+ice_qvec_cfg_msix(struct ice_vsi *vsi, struct ice_q_vector *q_vector,
+		  u16 qid) { }
+
+static inline void
+ice_qvec_toggle_napi(struct ice_vsi *vsi, struct ice_q_vector *q_vector,
+		     bool enable) { }
+
+static inline void
+ice_qvec_ena_irq(struct ice_vsi *vsi, struct ice_q_vector *q_vector) { }
+
+static inline void
+ice_qvec_dis_irq(struct ice_vsi *vsi, struct ice_rx_ring *rx_ring,
+		 struct ice_q_vector *q_vector) { }
 #endif /* CONFIG_XDP_SOCKETS */
 #endif /* !_ICE_XSK_H_ */

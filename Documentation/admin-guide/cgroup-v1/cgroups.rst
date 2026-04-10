@@ -13,7 +13,7 @@ Portions Copyright (c) 2004-2006 Silicon Graphics, Inc.
 
 Modified by Paul Jackson <pj@sgi.com>
 
-Modified by Christoph Lameter <cl@linux.com>
+Modified by Christoph Lameter <cl@gentwo.org>
 
 .. CONTENTS:
 
@@ -79,6 +79,8 @@ accounting/limiting the resources which processes in a cgroup can
 access. For example, cpusets (see Documentation/admin-guide/cgroup-v1/cpusets.rst) allow
 you to associate a set of CPUs and a set of memory nodes with the
 tasks in each cgroup.
+
+.. _cgroups-why-needed:
 
 1.2 Why are cgroups needed ?
 ----------------------------
@@ -568,7 +570,7 @@ visible to cgroup_for_each_child/descendant_*() iterators. The
 subsystem may choose to fail creation by returning -errno. This
 callback can be used to implement reliable state sharing and
 propagation along the hierarchy. See the comment on
-cgroup_for_each_descendant_pre() for details.
+cgroup_for_each_live_descendant_pre() for details.
 
 ``void css_offline(struct cgroup *cgrp);``
 (cgroup_mutex held by caller)

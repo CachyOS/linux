@@ -5,6 +5,7 @@
 // Author: Stephen Barber <smbarber@chromium.org>
 
 #include <linux/kernel.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_data/cros_ec_commands.h>
 #include <linux/platform_data/cros_ec_proto.h>
@@ -13,6 +14,8 @@
 #include <linux/slab.h>
 
 #define DRV_NAME	"cros-ec-rtc"
+
+#define SECS_PER_DAY	(24 * 60 * 60)
 
 /**
  * struct cros_ec_rtc - Driver data for EC RTC
@@ -32,26 +35,18 @@ struct cros_ec_rtc {
 static int cros_ec_rtc_get(struct cros_ec_device *cros_ec, u32 command,
 			   u32 *response)
 {
+	DEFINE_RAW_FLEX(struct cros_ec_command, msg, data,
+			sizeof(struct ec_response_rtc));
 	int ret;
-	struct {
-		struct cros_ec_command msg;
-		struct ec_response_rtc data;
-	} __packed msg;
 
-	memset(&msg, 0, sizeof(msg));
-	msg.msg.command = command;
-	msg.msg.insize = sizeof(msg.data);
+	msg->command = command;
+	msg->insize = sizeof(struct ec_response_rtc);
 
-	ret = cros_ec_cmd_xfer_status(cros_ec, &msg.msg);
-	if (ret < 0) {
-		dev_err(cros_ec->dev,
-			"error getting %s from EC: %d\n",
-			command == EC_CMD_RTC_GET_VALUE ? "time" : "alarm",
-			ret);
+	ret = cros_ec_cmd_xfer_status(cros_ec, msg);
+	if (ret < 0)
 		return ret;
-	}
 
-	*response = msg.data.time;
+	*response = ((struct ec_response_rtc *)msg->data)->time;
 
 	return 0;
 }
@@ -59,25 +54,17 @@ static int cros_ec_rtc_get(struct cros_ec_device *cros_ec, u32 command,
 static int cros_ec_rtc_set(struct cros_ec_device *cros_ec, u32 command,
 			   u32 param)
 {
-	int ret = 0;
-	struct {
-		struct cros_ec_command msg;
-		struct ec_response_rtc data;
-	} __packed msg;
+	DEFINE_RAW_FLEX(struct cros_ec_command, msg, data,
+			sizeof(struct ec_response_rtc));
+	int ret;
 
-	memset(&msg, 0, sizeof(msg));
-	msg.msg.command = command;
-	msg.msg.outsize = sizeof(msg.data);
-	msg.data.time = param;
+	msg->command = command;
+	msg->outsize = sizeof(struct ec_response_rtc);
+	((struct ec_response_rtc *)msg->data)->time = param;
 
-	ret = cros_ec_cmd_xfer_status(cros_ec, &msg.msg);
-	if (ret < 0) {
-		dev_err(cros_ec->dev, "error setting %s on EC: %d\n",
-			command == EC_CMD_RTC_SET_VALUE ? "time" : "alarm",
-			ret);
+	ret = cros_ec_cmd_xfer_status(cros_ec, msg);
+	if (ret < 0)
 		return ret;
-	}
-
 	return 0;
 }
 
@@ -190,7 +177,14 @@ static int cros_ec_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 
 	ret = cros_ec_rtc_set(cros_ec, EC_CMD_RTC_SET_ALARM, alarm_offset);
 	if (ret < 0) {
-		dev_err(dev, "error setting alarm: %d\n", ret);
+		dev_err(dev, "error setting alarm in %u seconds: %d\n",
+			alarm_offset, ret);
+		/*
+		 * The EC code returns -EINVAL if the alarm time is too
+		 * far in the future. Convert it to the expected error code.
+		 */
+		if (ret == -EINVAL)
+			ret = -ERANGE;
 		return ret;
 	}
 
@@ -337,7 +331,7 @@ static int cros_ec_rtc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	ret = device_init_wakeup(&pdev->dev, 1);
+	ret = device_init_wakeup(&pdev->dev, true);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to initialize wakeup\n");
 		return ret;
@@ -349,6 +343,20 @@ static int cros_ec_rtc_probe(struct platform_device *pdev)
 
 	cros_ec_rtc->rtc->ops = &cros_ec_rtc_ops;
 	cros_ec_rtc->rtc->range_max = U32_MAX;
+
+	/*
+	 * The RTC on some older Chromebooks can only handle alarms less than
+	 * 24 hours in the future. The only way to find out is to try to set an
+	 * alarm further in the future. If that fails, assume that the RTC
+	 * connected to the EC can only handle less than 24 hours of alarm
+	 * window.
+	 */
+	ret = cros_ec_rtc_set(cros_ec, EC_CMD_RTC_SET_ALARM, SECS_PER_DAY * 2);
+	if (ret == -EINVAL)
+		cros_ec_rtc->rtc->alarm_offset_max = SECS_PER_DAY - 1;
+
+	(void)cros_ec_rtc_set(cros_ec, EC_CMD_RTC_SET_ALARM,
+			      EC_RTC_ALARM_CLEAR);
 
 	ret = devm_rtc_register_device(cros_ec_rtc->rtc);
 	if (ret)
@@ -366,7 +374,7 @@ static int cros_ec_rtc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int cros_ec_rtc_remove(struct platform_device *pdev)
+static void cros_ec_rtc_remove(struct platform_device *pdev)
 {
 	struct cros_ec_rtc *cros_ec_rtc = platform_get_drvdata(pdev);
 	struct device *dev = &pdev->dev;
@@ -375,13 +383,15 @@ static int cros_ec_rtc_remove(struct platform_device *pdev)
 	ret = blocking_notifier_chain_unregister(
 				&cros_ec_rtc->cros_ec->event_notifier,
 				&cros_ec_rtc->notifier);
-	if (ret) {
+	if (ret)
 		dev_err(dev, "failed to unregister notifier\n");
-		return ret;
-	}
-
-	return 0;
 }
+
+static const struct platform_device_id cros_ec_rtc_id[] = {
+	{ DRV_NAME, 0 },
+	{}
+};
+MODULE_DEVICE_TABLE(platform, cros_ec_rtc_id);
 
 static struct platform_driver cros_ec_rtc_driver = {
 	.probe = cros_ec_rtc_probe,
@@ -390,6 +400,7 @@ static struct platform_driver cros_ec_rtc_driver = {
 		.name = DRV_NAME,
 		.pm = &cros_ec_rtc_pm_ops,
 	},
+	.id_table = cros_ec_rtc_id,
 };
 
 module_platform_driver(cros_ec_rtc_driver);
@@ -397,4 +408,3 @@ module_platform_driver(cros_ec_rtc_driver);
 MODULE_DESCRIPTION("RTC driver for Chrome OS ECs");
 MODULE_AUTHOR("Stephen Barber <smbarber@chromium.org>");
 MODULE_LICENSE("GPL v2");
-MODULE_ALIAS("platform:" DRV_NAME);

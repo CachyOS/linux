@@ -1,47 +1,107 @@
 // SPDX-License-Identifier: GPL-2.0
-#include <stdio.h>
-#include "util/pmu.h"
-#include "util/evlist.h"
-#include "util/parse-events.h"
+#include <string.h>
+#include "../../../util/evlist.h"
+#include "../../../util/evsel.h"
 #include "topdown.h"
+#include "evsel.h"
 
-#define TOPDOWN_L1_EVENTS	"{slots,topdown-retiring,topdown-bad-spec,topdown-fe-bound,topdown-be-bound}"
-#define TOPDOWN_L2_EVENTS	"{slots,topdown-retiring,topdown-bad-spec,topdown-fe-bound,topdown-be-bound,topdown-heavy-ops,topdown-br-mispredict,topdown-fetch-lat,topdown-mem-bound}"
-
-int arch_evlist__add_default_attrs(struct evlist *evlist)
+int arch_evlist__cmp(const struct evsel *lhs, const struct evsel *rhs)
 {
-	if (!pmu_have_event("cpu", "slots"))
-		return 0;
+	/*
+	 * Currently the following topdown events sequence are supported to
+	 * move and regroup correctly.
+	 *
+	 * a. all events in a group
+	 *    perf stat -e "{instructions,topdown-retiring,slots}" -C0 sleep 1
+	 *    WARNING: events were regrouped to match PMUs
+	 *     Performance counter stats for 'CPU(s) 0':
+	 *          15,066,240     slots
+	 *          1,899,760      instructions
+	 *          2,126,998      topdown-retiring
+	 * b. all events not in a group
+	 *    perf stat -e "instructions,topdown-retiring,slots" -C0 sleep 1
+	 *    WARNING: events were regrouped to match PMUs
+	 *     Performance counter stats for 'CPU(s) 0':
+	 *          2,045,561      instructions
+	 *          17,108,370     slots
+	 *          2,281,116      topdown-retiring
+	 * c. slots event in a group but topdown metrics events outside the group
+	 *    perf stat -e "{instructions,slots},topdown-retiring" -C0 sleep 1
+	 *    WARNING: events were regrouped to match PMUs
+	 *     Performance counter stats for 'CPU(s) 0':
+	 *         20,323,878      slots
+	 *          2,634,884      instructions
+	 *          3,028,656      topdown-retiring
+	 * d. slots event and topdown metrics events in two groups
+	 *    perf stat -e "{instructions,slots},{topdown-retiring}" -C0 sleep 1
+	 *    WARNING: events were regrouped to match PMUs
+	 *     Performance counter stats for 'CPU(s) 0':
+	 *         26,319,024      slots
+	 *          2,427,791      instructions
+	 *          2,683,508      topdown-retiring
+	 * e. slots event and metrics event are not in a group and not adjacent
+	 *    perf stat -e "{instructions,slots},cycles,topdown-retiring" -C0 sleep 1
+	 *    WARNING: events were regrouped to match PMUs
+	 *         68,433,522      slots
+	 *          8,856,102      topdown-retiring
+	 *          7,791,494      instructions
+	 *         11,469,513      cycles
+	 */
+	if (topdown_sys_has_perf_metrics() &&
+	    (arch_evsel__must_be_in_group(lhs) || arch_evsel__must_be_in_group(rhs))) {
+		/* Ensure the topdown slots comes first. */
+		if (arch_is_topdown_slots(lhs))
+			return -1;
+		if (arch_is_topdown_slots(rhs))
+			return 1;
 
-	if (pmu_have_event("cpu", "topdown-heavy-ops"))
-		return parse_events(evlist, TOPDOWN_L2_EVENTS, NULL);
-	else
-		return parse_events(evlist, TOPDOWN_L1_EVENTS, NULL);
-}
+		/*
+		 * Move topdown metrics events forward only when topdown metrics
+		 * events are not in same group with previous slots event. If
+		 * topdown metrics events are already in same group with slots
+		 * event, do nothing.
+		 */
+		if (lhs->core.leader != rhs->core.leader) {
+			bool lhs_topdown = arch_is_topdown_metrics(lhs);
+			bool rhs_topdown = arch_is_topdown_metrics(rhs);
 
-struct evsel *arch_evlist__leader(struct list_head *list)
-{
-	struct evsel *evsel, *first, *slots = NULL;
-	bool has_topdown = false;
-
-	first = list_first_entry(list, struct evsel, core.node);
-
-	if (!topdown_sys_has_perf_metrics())
-		return first;
-
-	/* If there is a slots event and a topdown event then the slots event comes first. */
-	__evlist__for_each_entry(list, evsel) {
-		if (evsel->pmu_name && !strncmp(evsel->pmu_name, "cpu", 3) && evsel->name) {
-			if (strcasestr(evsel->name, "slots")) {
-				slots = evsel;
-				if (slots == first)
-					return first;
-			}
-			if (strcasestr(evsel->name, "topdown"))
-				has_topdown = true;
-			if (slots && has_topdown)
-				return slots;
+			if (lhs_topdown && !rhs_topdown)
+				return -1;
+			if (!lhs_topdown && rhs_topdown)
+				return 1;
 		}
 	}
-	return first;
+
+	/* Retire latency event should not be group leader*/
+	if (lhs->retire_lat && !rhs->retire_lat)
+		return 1;
+	if (!lhs->retire_lat && rhs->retire_lat)
+		return -1;
+
+	/* Default ordering by insertion index. */
+	return lhs->core.idx - rhs->core.idx;
+}
+
+int arch_evlist__add_required_events(struct list_head *list)
+{
+	struct evsel *pos, *metric_event = NULL;
+	int idx = 0;
+
+	if (!topdown_sys_has_perf_metrics())
+		return 0;
+
+	list_for_each_entry(pos, list, core.node) {
+		if (arch_is_topdown_slots(pos)) {
+			/* Slots event already present, nothing to do. */
+			return 0;
+		}
+		if (metric_event == NULL && arch_is_topdown_metrics(pos))
+			metric_event = pos;
+		idx++;
+	}
+	if (metric_event == NULL) {
+		/* No topdown metric events, nothing to do. */
+		return 0;
+	}
+	return topdown_insert_slots_event(list, idx + 1, metric_event);
 }

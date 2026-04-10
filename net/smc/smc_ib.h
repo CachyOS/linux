@@ -96,12 +96,13 @@ void smc_ib_destroy_queue_pair(struct smc_link *lnk);
 int smc_ib_create_queue_pair(struct smc_link *lnk);
 int smc_ib_ready_link(struct smc_link *lnk);
 int smc_ib_modify_qp_rts(struct smc_link *lnk);
-int smc_ib_modify_qp_reset(struct smc_link *lnk);
 int smc_ib_modify_qp_error(struct smc_link *lnk);
 long smc_ib_setup_per_ibdev(struct smc_ib_device *smcibdev);
 int smc_ib_get_memory_region(struct ib_pd *pd, int access_flags,
 			     struct smc_buf_desc *buf_slot, u8 link_idx);
 void smc_ib_put_memory_region(struct ib_mr *mr);
+bool smc_ib_is_sg_need_sync(struct smc_link *lnk,
+			    struct smc_buf_desc *buf_slot);
 void smc_ib_sync_sg_for_cpu(struct smc_link *lnk,
 			    struct smc_buf_desc *buf_slot,
 			    enum dma_data_direction data_direction);
@@ -111,7 +112,7 @@ void smc_ib_sync_sg_for_device(struct smc_link *lnk,
 int smc_ib_determine_gid(struct smc_ib_device *smcibdev, u8 ibport,
 			 unsigned short vlan_id, u8 gid[], u8 *sgid_index,
 			 struct smc_init_info_smcrv2 *smcrv2);
-int smc_ib_find_route(__be32 saddr, __be32 daddr,
+int smc_ib_find_route(struct net *net, __be32 saddr, __be32 daddr,
 		      u8 nexthop_mac[], u8 *uses_gateway);
 bool smc_ib_is_valid_local_systemid(void);
 int smcr_nl_get_device(struct sk_buff *skb, struct netlink_callback *cb);

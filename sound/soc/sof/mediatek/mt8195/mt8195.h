@@ -34,6 +34,7 @@ struct snd_sof_dev;
 #define ADSP_DRESET_SW			BIT(1)
 #define ADSP_RUNSTALL			BIT(3)
 #define STATVECTOR_SEL			BIT(4)
+#define ADSP_PWAIT			BIT(16)
 #define DSP_PFAULTBUS			0x0028
 #define DSP_PFAULTINFO			0x002c
 #define DSP_GPR00			0x0030
@@ -138,8 +139,6 @@ struct snd_sof_dev;
 #define DSP_MBOX1_BAR	6
 #define DSP_MBOX2_BAR	7
 
-#define TOTAL_SIZE_SHARED_SRAM_FROM_TAIL  0x0
-
 #define SIZE_SHARED_DRAM_DL 0x40000 /*Shared buffer for Downlink*/
 #define SIZE_SHARED_DRAM_UL 0x40000 /*Shared buffer for Uplink*/
 
@@ -152,6 +151,10 @@ struct snd_sof_dev;
 /*remap dram between AP and DSP view, 4KB aligned*/
 #define DRAM_REMAP_SHIFT	12
 #define DRAM_REMAP_MASK		(BIT(DRAM_REMAP_SHIFT) - 1)
+
+/* suspend dsp idle check interval and timeout */
+#define SUSPEND_DSP_IDLE_TIMEOUT_US		1000000	/* timeout to wait dsp idle, 1 sec */
+#define SUSPEND_DSP_IDLE_POLL_INTERVAL_US	500	/* 0.5 msec */
 
 void sof_hifixdsp_boot_sequence(struct snd_sof_dev *sdev, u32 boot_addr);
 void sof_hifixdsp_shutdown(struct snd_sof_dev *sdev);

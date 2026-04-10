@@ -19,6 +19,7 @@
 #include <linux/ptrace.h>
 #include <linux/sched/task_stack.h>
 #include <linux/security.h>
+#include <uapi/linux/lsm.h>
 #include "lsm.h"
 
 /* Flag indicating whether initialization completed */
@@ -97,15 +98,9 @@ static int safesetid_security_capable(const struct cred *cred,
 		return 0;
 
 	/*
-	 * If CAP_SET{U/G}ID is currently used for a setid() syscall, we want to
-	 * let it go through here; the real security check happens later, in the
-	 * task_fix_set{u/g}id hook.
-         *
-         * NOTE:
-         * Until we add support for restricting setgroups() calls, GID security
-         * policies offer no meaningful security since we always return 0 here
-         * when called from within the setgroups() syscall and there is no
-         * additional hook later on to enforce security policies for setgroups().
+	 * If CAP_SET{U/G}ID is currently used for a setid or setgroups syscall, we
+	 * want to let it go through here; the real security check happens later, in
+	 * the task_fix_set{u/g}id or task_fix_setgroups hooks.
 	 */
 	if ((opts & CAP_OPT_INSETID) != 0)
 		return 0;
@@ -137,7 +132,7 @@ static int safesetid_security_capable(const struct cred *cred,
 		 * set*gid() (e.g. setting up userns gid mappings).
 		 */
 		pr_warn("Operation requires CAP_SETGID, which is not available to GID %u for operations besides approved set*gid transitions\n",
-			__kuid_val(cred->uid));
+			__kgid_val(cred->gid));
 		return -EPERM;
 	default:
 		/* Error, the only capabilities were checking for is CAP_SETUID/GID */
@@ -241,16 +236,49 @@ static int safesetid_task_fix_setgid(struct cred *new,
 	return -EACCES;
 }
 
+static int safesetid_task_fix_setgroups(struct cred *new, const struct cred *old)
+{
+	int i;
+
+	/* Do nothing if there are no setgid restrictions for our old RGID. */
+	if (setid_policy_lookup((kid_t){.gid = old->gid}, INVALID_ID, GID) == SIDPOL_DEFAULT)
+		return 0;
+
+	get_group_info(new->group_info);
+	for (i = 0; i < new->group_info->ngroups; i++) {
+		if (!id_permitted_for_cred(old, (kid_t){.gid = new->group_info->gid[i]}, GID)) {
+			put_group_info(new->group_info);
+			/*
+			 * Kill this process to avoid potential security vulnerabilities
+			 * that could arise from a missing allowlist entry preventing a
+			 * privileged process from dropping to a lesser-privileged one.
+			 */
+			force_sig(SIGKILL);
+			return -EACCES;
+		}
+	}
+
+	put_group_info(new->group_info);
+	return 0;
+}
+
+static const struct lsm_id safesetid_lsmid = {
+	.name = "safesetid",
+	.id = LSM_ID_SAFESETID,
+};
+
 static struct security_hook_list safesetid_security_hooks[] = {
 	LSM_HOOK_INIT(task_fix_setuid, safesetid_task_fix_setuid),
 	LSM_HOOK_INIT(task_fix_setgid, safesetid_task_fix_setgid),
+	LSM_HOOK_INIT(task_fix_setgroups, safesetid_task_fix_setgroups),
 	LSM_HOOK_INIT(capable, safesetid_security_capable)
 };
 
 static int __init safesetid_security_init(void)
 {
 	security_add_hooks(safesetid_security_hooks,
-			   ARRAY_SIZE(safesetid_security_hooks), "safesetid");
+			   ARRAY_SIZE(safesetid_security_hooks),
+			   &safesetid_lsmid);
 
 	/* Report that SafeSetID successfully initialized */
 	safesetid_initialized = 1;
@@ -259,6 +287,7 @@ static int __init safesetid_security_init(void)
 }
 
 DEFINE_LSM(safesetid_security_init) = {
+	.id = &safesetid_lsmid,
 	.init = safesetid_security_init,
-	.name = "safesetid",
+	.initcall_fs = safesetid_init_securityfs,
 };

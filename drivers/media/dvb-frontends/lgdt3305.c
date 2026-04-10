@@ -10,7 +10,7 @@
 #include <asm/div64.h>
 #include <linux/dvb/frontend.h>
 #include <linux/slab.h>
-#include <media/dvb_math.h>
+#include <linux/int_log.h>
 #include "lgdt3305.h"
 
 static int debug;
@@ -1103,7 +1103,7 @@ struct dvb_frontend *lgdt3305_attach(const struct lgdt3305_config *config,
 	       i2c_adap ? i2c_adapter_id(i2c_adap) : 0,
 	       config ? config->i2c_addr : 0);
 
-	state = kzalloc(sizeof(struct lgdt3305_state), GFP_KERNEL);
+	state = kzalloc_obj(struct lgdt3305_state);
 	if (state == NULL)
 		goto fail;
 
@@ -1148,7 +1148,7 @@ fail:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(lgdt3305_attach);
+EXPORT_SYMBOL_GPL(lgdt3305_attach);
 
 static const struct dvb_frontend_ops lgdt3304_ops = {
 	.delsys = { SYS_ATSC, SYS_DVBC_ANNEX_B },

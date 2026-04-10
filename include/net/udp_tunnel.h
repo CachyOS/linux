@@ -10,6 +10,11 @@
 #include <net/ipv6_stubs.h>
 #endif
 
+#define UDP_TUNNEL_PARTIAL_FEATURES	NETIF_F_GSO_ENCAP_ALL
+#define UDP_TUNNEL_STRIPPED_GSO_TYPES	((UDP_TUNNEL_PARTIAL_FEATURES |	\
+					  NETIF_F_GSO_PARTIAL) >>	\
+					 NETIF_F_GSO_SHIFT)
+
 struct udp_port_cfg {
 	u8			family;
 
@@ -47,7 +52,7 @@ int udp_sock_create6(struct net *net, struct udp_port_cfg *cfg,
 static inline int udp_sock_create6(struct net *net, struct udp_port_cfg *cfg,
 				   struct socket **sockp)
 {
-	return 0;
+	return -EPFNOSUPPORT;
 }
 #endif
 
@@ -67,6 +72,9 @@ static inline int udp_sock_create(struct net *net,
 typedef int (*udp_tunnel_encap_rcv_t)(struct sock *sk, struct sk_buff *skb);
 typedef int (*udp_tunnel_encap_err_lookup_t)(struct sock *sk,
 					     struct sk_buff *skb);
+typedef void (*udp_tunnel_encap_err_rcv_t)(struct sock *sk,
+					   struct sk_buff *skb, int err,
+					   __be16 port, u32 info, u8 *payload);
 typedef void (*udp_tunnel_encap_destroy_t)(struct sock *sk);
 typedef struct sk_buff *(*udp_tunnel_gro_receive_t)(struct sock *sk,
 						    struct list_head *head,
@@ -80,6 +88,7 @@ struct udp_tunnel_sock_cfg {
 	__u8  encap_type;
 	udp_tunnel_encap_rcv_t encap_rcv;
 	udp_tunnel_encap_err_lookup_t encap_err_lookup;
+	udp_tunnel_encap_err_rcv_t encap_err_rcv;
 	udp_tunnel_encap_destroy_t encap_destroy;
 	udp_tunnel_gro_receive_t gro_receive;
 	udp_tunnel_gro_complete_t gro_complete;
@@ -126,40 +135,69 @@ void udp_tunnel_drop_rx_port(struct net_device *dev, struct socket *sock,
 void udp_tunnel_notify_add_rx_port(struct socket *sock, unsigned short type);
 void udp_tunnel_notify_del_rx_port(struct socket *sock, unsigned short type);
 
-static inline void udp_tunnel_get_rx_info(struct net_device *dev)
-{
-	ASSERT_RTNL();
-	if (!(dev->features & NETIF_F_RX_UDP_TUNNEL_PORT))
-		return;
-	call_netdevice_notifiers(NETDEV_UDP_TUNNEL_PUSH_INFO, dev);
-}
-
-static inline void udp_tunnel_drop_rx_info(struct net_device *dev)
-{
-	ASSERT_RTNL();
-	if (!(dev->features & NETIF_F_RX_UDP_TUNNEL_PORT))
-		return;
-	call_netdevice_notifiers(NETDEV_UDP_TUNNEL_DROP_INFO, dev);
-}
-
 /* Transmit the skb using UDP encapsulation. */
 void udp_tunnel_xmit_skb(struct rtable *rt, struct sock *sk, struct sk_buff *skb,
 			 __be32 src, __be32 dst, __u8 tos, __u8 ttl,
 			 __be16 df, __be16 src_port, __be16 dst_port,
-			 bool xnet, bool nocheck);
+			 bool xnet, bool nocheck, u16 ipcb_flags);
 
-int udp_tunnel6_xmit_skb(struct dst_entry *dst, struct sock *sk,
-			 struct sk_buff *skb,
-			 struct net_device *dev, struct in6_addr *saddr,
-			 struct in6_addr *daddr,
-			 __u8 prio, __u8 ttl, __be32 label,
-			 __be16 src_port, __be16 dst_port, bool nocheck);
+void udp_tunnel6_xmit_skb(struct dst_entry *dst, struct sock *sk,
+			  struct sk_buff *skb,
+			  struct net_device *dev,
+			  const struct in6_addr *saddr,
+			  const struct in6_addr *daddr,
+			  __u8 prio, __u8 ttl, __be32 label,
+			  __be16 src_port, __be16 dst_port, bool nocheck,
+			  u16 ip6cb_flags);
+
+static inline bool udp_tunnel_handle_partial(struct sk_buff *skb)
+{
+	bool double_encap = !!(skb_shinfo(skb)->gso_type & SKB_GSO_PARTIAL);
+
+	/*
+	 * If the skb went through partial segmentation, lower devices
+	 * will not need to offload the related features - except for
+	 * UDP_TUNNEL, that will be re-added by the later
+	 * udp_tunnel_handle_offloads().
+	 */
+	if (double_encap)
+		skb_shinfo(skb)->gso_type &= ~UDP_TUNNEL_STRIPPED_GSO_TYPES;
+	return double_encap;
+}
+
+static inline void udp_tunnel_set_inner_protocol(struct sk_buff *skb,
+						 bool double_encap,
+						 __be16 inner_proto)
+{
+	/*
+	 * The inner protocol has been set by the nested tunnel, don't
+	 * overraid it.
+	 */
+	if (!double_encap)
+		skb_set_inner_protocol(skb, inner_proto);
+}
 
 void udp_tunnel_sock_release(struct socket *sock);
 
+struct rtable *udp_tunnel_dst_lookup(struct sk_buff *skb,
+				     struct net_device *dev,
+				     struct net *net, int oif,
+				     __be32 *saddr,
+				     const struct ip_tunnel_key *key,
+				     __be16 sport, __be16 dport, u8 tos,
+				     struct dst_cache *dst_cache);
+struct dst_entry *udp_tunnel6_dst_lookup(struct sk_buff *skb,
+					 struct net_device *dev,
+					 struct net *net,
+					 struct socket *sock, int oif,
+					 struct in6_addr *saddr,
+					 const struct ip_tunnel_key *key,
+					 __be16 sport, __be16 dport, u8 dsfield,
+					 struct dst_cache *dst_cache);
+
 struct metadata_dst *udp_tun_rx_dst(struct sk_buff *skb, unsigned short family,
-				    __be16 flags, __be64 tunnel_id,
-				    int md_size);
+				    const unsigned long *flags,
+				    __be64 tunnel_id, int md_size);
 
 #ifdef CONFIG_INET
 static inline int udp_tunnel_handle_offloads(struct sk_buff *skb, bool udp_csum)
@@ -170,16 +208,28 @@ static inline int udp_tunnel_handle_offloads(struct sk_buff *skb, bool udp_csum)
 }
 #endif
 
-static inline void udp_tunnel_encap_enable(struct socket *sock)
-{
-	struct udp_sock *up = udp_sk(sock->sk);
+#if IS_ENABLED(CONFIG_NET_UDP_TUNNEL)
+void udp_tunnel_update_gro_lookup(struct net *net, struct sock *sk, bool add);
+void udp_tunnel_update_gro_rcv(struct sock *sk, bool add);
+#else
+static inline void udp_tunnel_update_gro_lookup(struct net *net,
+						struct sock *sk, bool add) {}
+static inline void udp_tunnel_update_gro_rcv(struct sock *sk, bool add) {}
+#endif
 
-	if (up->encap_enabled)
+static inline void udp_tunnel_cleanup_gro(struct sock *sk)
+{
+	udp_tunnel_update_gro_rcv(sk, false);
+	udp_tunnel_update_gro_lookup(sock_net(sk), sk, false);
+}
+
+static inline void udp_tunnel_encap_enable(struct sock *sk)
+{
+	if (udp_test_and_set_bit(ENCAP_ENABLED, sk))
 		return;
 
-	up->encap_enabled = 1;
 #if IS_ENABLED(CONFIG_IPV6)
-	if (sock->sk->sk_family == PF_INET6)
+	if (READ_ONCE(sk->sk_family) == PF_INET6)
 		ipv6_stub->udpv6_encap_enable();
 #endif
 	udp_encap_enable();
@@ -188,19 +238,17 @@ static inline void udp_tunnel_encap_enable(struct socket *sock)
 #define UDP_TUNNEL_NIC_MAX_TABLES	4
 
 enum udp_tunnel_nic_info_flags {
-	/* Device callbacks may sleep */
-	UDP_TUNNEL_NIC_INFO_MAY_SLEEP	= BIT(0),
 	/* Device only supports offloads when it's open, all ports
 	 * will be removed before close and re-added after open.
 	 */
-	UDP_TUNNEL_NIC_INFO_OPEN_ONLY	= BIT(1),
+	UDP_TUNNEL_NIC_INFO_OPEN_ONLY	= BIT(0),
 	/* Device supports only IPv4 tunnels */
-	UDP_TUNNEL_NIC_INFO_IPV4_ONLY	= BIT(2),
+	UDP_TUNNEL_NIC_INFO_IPV4_ONLY	= BIT(1),
 	/* Device has hard-coded the IANA VXLAN port (4789) as VXLAN.
 	 * This port must not be counted towards n_entries of any table.
 	 * Driver will not receive any callback associated with port 4789.
 	 */
-	UDP_TUNNEL_NIC_INFO_STATIC_IANA_VXLAN	= BIT(3),
+	UDP_TUNNEL_NIC_INFO_STATIC_IANA_VXLAN	= BIT(2),
 };
 
 struct udp_tunnel_nic;
@@ -291,6 +339,9 @@ struct udp_tunnel_nic_ops {
 	size_t (*dump_size)(struct net_device *dev, unsigned int table);
 	int (*dump_write)(struct net_device *dev, unsigned int table,
 			  struct sk_buff *skb);
+	void (*assert_locked)(struct net_device *dev);
+	void (*lock)(struct net_device *dev);
+	void (*unlock)(struct net_device *dev);
 };
 
 #ifdef CONFIG_INET
@@ -319,8 +370,28 @@ static inline void
 udp_tunnel_nic_set_port_priv(struct net_device *dev, unsigned int table,
 			     unsigned int idx, u8 priv)
 {
-	if (udp_tunnel_nic_ops)
+	if (udp_tunnel_nic_ops) {
+		udp_tunnel_nic_ops->assert_locked(dev);
 		udp_tunnel_nic_ops->set_port_priv(dev, table, idx, priv);
+	}
+}
+
+static inline void udp_tunnel_nic_assert_locked(struct net_device *dev)
+{
+	if (udp_tunnel_nic_ops)
+		udp_tunnel_nic_ops->assert_locked(dev);
+}
+
+static inline void udp_tunnel_nic_lock(struct net_device *dev)
+{
+	if (udp_tunnel_nic_ops)
+		udp_tunnel_nic_ops->lock(dev);
+}
+
+static inline void udp_tunnel_nic_unlock(struct net_device *dev)
+{
+	if (udp_tunnel_nic_ops)
+		udp_tunnel_nic_ops->unlock(dev);
 }
 
 static inline void
@@ -362,17 +433,50 @@ static inline void udp_tunnel_nic_reset_ntf(struct net_device *dev)
 static inline size_t
 udp_tunnel_nic_dump_size(struct net_device *dev, unsigned int table)
 {
+	size_t ret;
+
 	if (!udp_tunnel_nic_ops)
 		return 0;
-	return udp_tunnel_nic_ops->dump_size(dev, table);
+
+	udp_tunnel_nic_ops->lock(dev);
+	ret = udp_tunnel_nic_ops->dump_size(dev, table);
+	udp_tunnel_nic_ops->unlock(dev);
+
+	return ret;
 }
 
 static inline int
 udp_tunnel_nic_dump_write(struct net_device *dev, unsigned int table,
 			  struct sk_buff *skb)
 {
+	int ret;
+
 	if (!udp_tunnel_nic_ops)
 		return 0;
-	return udp_tunnel_nic_ops->dump_write(dev, table, skb);
+
+	udp_tunnel_nic_ops->lock(dev);
+	ret = udp_tunnel_nic_ops->dump_write(dev, table, skb);
+	udp_tunnel_nic_ops->unlock(dev);
+
+	return ret;
 }
+
+static inline void udp_tunnel_get_rx_info(struct net_device *dev)
+{
+	ASSERT_RTNL();
+	if (!(dev->features & NETIF_F_RX_UDP_TUNNEL_PORT))
+		return;
+	udp_tunnel_nic_assert_locked(dev);
+	call_netdevice_notifiers(NETDEV_UDP_TUNNEL_PUSH_INFO, dev);
+}
+
+static inline void udp_tunnel_drop_rx_info(struct net_device *dev)
+{
+	ASSERT_RTNL();
+	if (!(dev->features & NETIF_F_RX_UDP_TUNNEL_PORT))
+		return;
+	udp_tunnel_nic_assert_locked(dev);
+	call_netdevice_notifiers(NETDEV_UDP_TUNNEL_DROP_INFO, dev);
+}
+
 #endif

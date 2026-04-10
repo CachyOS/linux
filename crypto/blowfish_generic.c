@@ -11,11 +11,12 @@
  * Copyright (c) Kyle McMartin <kyle@debian.org>
  * Copyright (c) 2002 James Morris <jmorris@intercode.com.au>
  */
+
+#include <crypto/algapi.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/mm.h>
-#include <asm/unaligned.h>
-#include <linux/crypto.h>
+#include <linux/unaligned.h>
 #include <linux/types.h>
 #include <crypto/blowfish.h>
 
@@ -123,7 +124,7 @@ static void __exit blowfish_mod_fini(void)
 	crypto_unregister_alg(&alg);
 }
 
-subsys_initcall(blowfish_mod_init);
+module_init(blowfish_mod_init);
 module_exit(blowfish_mod_fini);
 
 MODULE_LICENSE("GPL");

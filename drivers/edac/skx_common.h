@@ -10,6 +10,7 @@
 #define _SKX_COMM_EDAC_H
 
 #include <linux/bits.h>
+#include <asm/mce.h>
 
 #define MSG_SIZE		1024
 
@@ -28,29 +29,91 @@
 #define GET_BITFIELD(v, lo, hi) \
 	(((v) & GENMASK_ULL((hi), (lo))) >> (lo))
 
-#define SKX_NUM_IMC		2	/* Memory controllers per socket */
 #define SKX_NUM_CHANNELS	3	/* Channels per memory controller */
 #define SKX_NUM_DIMMS		2	/* Max DIMMS per channel */
 
-#define I10NM_NUM_DDR_IMC	4
 #define I10NM_NUM_DDR_CHANNELS	2
 #define I10NM_NUM_DDR_DIMMS	2
 
-#define I10NM_NUM_HBM_IMC	16
 #define I10NM_NUM_HBM_CHANNELS	2
 #define I10NM_NUM_HBM_DIMMS	1
 
-#define I10NM_NUM_IMC		(I10NM_NUM_DDR_IMC + I10NM_NUM_HBM_IMC)
 #define I10NM_NUM_CHANNELS	MAX(I10NM_NUM_DDR_CHANNELS, I10NM_NUM_HBM_CHANNELS)
 #define I10NM_NUM_DIMMS		MAX(I10NM_NUM_DDR_DIMMS, I10NM_NUM_HBM_DIMMS)
 
-#define MAX(a, b)	((a) > (b) ? (a) : (b))
-#define NUM_IMC		MAX(SKX_NUM_IMC, I10NM_NUM_IMC)
 #define NUM_CHANNELS	MAX(SKX_NUM_CHANNELS, I10NM_NUM_CHANNELS)
 #define NUM_DIMMS	MAX(SKX_NUM_DIMMS, I10NM_NUM_DIMMS)
 
 #define IS_DIMM_PRESENT(r)		GET_BITFIELD(r, 15, 15)
 #define IS_NVDIMM_PRESENT(r, i)		GET_BITFIELD(r, i, i)
+
+#define MCI_MISC_ECC_MODE(m)	(((m) >> 59) & 15)
+#define MCI_MISC_ECC_DDRT	8	/* read from DDRT */
+
+/*
+ * According to Intel Architecture spec vol 3B,
+ * Table 15-10 "IA32_MCi_Status [15:0] Compound Error Code Encoding"
+ * memory errors should fit one of these masks:
+ *	000f 0000 1mmm cccc (binary)
+ *	000f 0010 1mmm cccc (binary)	[RAM used as cache]
+ * where:
+ *	f = Correction Report Filtering Bit. If 1, subsequent errors
+ *	    won't be shown
+ *	mmm = error type
+ *	cccc = channel
+ */
+#define MCACOD_MEM_ERR_MASK	0xef80
+/*
+ * Errors from either the memory of the 1-level memory system or the
+ * 2nd level memory (the slow "far" memory) of the 2-level memory system.
+ */
+#define MCACOD_MEM_CTL_ERR	0x80
+/*
+ * Errors from the 1st level memory (the fast "near" memory as cache)
+ * of the 2-level memory system.
+ */
+#define MCACOD_EXT_MEM_ERR	0x280
+
+/* Max RRL register sets per {,sub-,pseudo-}channel. */
+#define NUM_RRL_SET		4
+/* Max RRL registers per set. */
+#define NUM_RRL_REG		6
+/* Max correctable error count registers. */
+#define NUM_CECNT_REG		8
+
+/* Modes of RRL register set. */
+enum rrl_mode {
+	/* Last read error from patrol scrub. */
+	LRE_SCRUB,
+	/* Last read error from demand. */
+	LRE_DEMAND,
+	/* First read error from patrol scrub. */
+	FRE_SCRUB,
+	/* First read error from demand. */
+	FRE_DEMAND,
+};
+
+/* RRL registers per {,sub-,pseudo-}channel. */
+struct reg_rrl {
+	/* RRL register parts. */
+	int set_num, reg_num;
+	enum rrl_mode modes[NUM_RRL_SET];
+	u32 offsets[NUM_RRL_SET][NUM_RRL_REG];
+	/* RRL register widths in byte per set. */
+	u8 widths[NUM_RRL_REG];
+	/* RRL control bits of the first register per set. */
+	u32 v_mask;
+	u32 uc_mask;
+	u32 over_mask;
+	u32 en_patspr_mask;
+	u32 noover_mask;
+	u32 en_mask;
+
+	/* CORRERRCNT register parts. */
+	int cecnt_num;
+	u32 cecnt_offsets[NUM_CECNT_REG];
+	u8 cecnt_widths[NUM_CECNT_REG];
+};
 
 /*
  * Each cpu socket contains some pci devices that provide global
@@ -58,30 +121,57 @@
  * memory controllers on the die.
  */
 struct skx_dev {
-	struct list_head list;
+	/* {skx,i10nm}_edac */
 	u8 bus[4];
 	int seg;
 	struct pci_dev *sad_all;
 	struct pci_dev *util_all;
-	struct pci_dev *uracu; /* for i10nm CPU */
-	struct pci_dev *pcu_cr3; /* for HBM memory detection */
+	struct pci_dev *uracu;
+	struct pci_dev *pcu_cr3;
 	u32 mcroute;
+
+	/* imh_edac */
+	/* System-view MMIO base physical addresses. */
+	u64 mmio_base_h_north;
+	u64 mmio_base_h_south;
+	int pkg;
+
+	int num_imc;
+	struct list_head list;
 	struct skx_imc {
+		/* i10nm_edac */
+		struct pci_dev *mdev;
+
+		/* imh_edac */
+		struct device *dev;
+
 		struct mem_ctl_info *mci;
-		struct pci_dev *mdev; /* for i10nm CPU */
-		void __iomem *mbase;  /* for i10nm CPU */
-		int chan_mmio_sz;     /* for i10nm CPU */
+		void __iomem *mbase;
+		int chan_mmio_sz;
 		int num_channels; /* channels per memory controller */
 		int num_dimms; /* dimms per channel */
 		bool hbm_mc;
 		u8 mc;	/* system wide mc# */
 		u8 lmc;	/* socket relative mc# */
-		u8 src_id, node_id;
+		u8 src_id;
+		/*
+		 * Some server BIOS may hide certain memory controllers, and the
+		 * EDAC driver skips those hidden memory controllers. However, the
+		 * ADXL still decodes memory error address using physical memory
+		 * controller indices. The mapping table is used to convert the
+		 * physical indices (reported by ADXL) to the logical indices
+		 * (used the EDAC driver) of present memory controllers during the
+		 * error handling process.
+		 */
+		u8 mc_mapping;
 		struct skx_channel {
 			struct pci_dev	*cdev;
 			struct pci_dev	*edev;
-			u32 retry_rd_err_log_s;
-			u32 retry_rd_err_log_d;
+			/*
+			 * Two groups of RRL control registers per channel to save default RRL
+			 * settings of two {sub-,pseudo-}channels in Linux RRL control mode.
+			 */
+			u32 rrl_ctl[2][NUM_RRL_SET];
 			struct skx_dimm {
 				u8 close_pg;
 				u8 bank_xor_enable;
@@ -90,7 +180,7 @@ struct skx_dev {
 				u8 colbits;
 			} dimms[NUM_DIMMS];
 		} chan[NUM_CHANNELS];
-	} imc[NUM_IMC];
+	} imc[];
 };
 
 struct skx_pvt {
@@ -100,7 +190,9 @@ struct skx_pvt {
 enum type {
 	SKX,
 	I10NM,
-	SPR
+	SPR,
+	GNR,
+	DMR,
 };
 
 enum {
@@ -108,18 +200,29 @@ enum {
 	INDEX_MEMCTRL,
 	INDEX_CHANNEL,
 	INDEX_DIMM,
+	INDEX_CS,
 	INDEX_NM_FIRST,
 	INDEX_NM_MEMCTRL = INDEX_NM_FIRST,
 	INDEX_NM_CHANNEL,
 	INDEX_NM_DIMM,
+	INDEX_NM_CS,
 	INDEX_MAX
+};
+
+enum error_source {
+	ERR_SRC_1LM,
+	ERR_SRC_2LM_NM,
+	ERR_SRC_2LM_FM,
+	ERR_SRC_NOT_MEMORY,
 };
 
 #define BIT_NM_MEMCTRL	BIT_ULL(INDEX_NM_MEMCTRL)
 #define BIT_NM_CHANNEL	BIT_ULL(INDEX_NM_CHANNEL)
 #define BIT_NM_DIMM	BIT_ULL(INDEX_NM_DIMM)
+#define BIT_NM_CS	BIT_ULL(INDEX_NM_CS)
 
 struct decoded_addr {
+	struct mce *mce;
 	struct skx_dev *dev;
 	u64	addr;
 	int	socket;
@@ -129,6 +232,7 @@ struct decoded_addr {
 	int	sktways;
 	int	chanways;
 	int	dimm;
+	int	cs;
 	int	rank;
 	int	channel_rank;
 	u64	rank_address;
@@ -136,25 +240,85 @@ struct decoded_addr {
 	int	column;
 	int	bank_address;
 	int	bank_group;
+	bool	decoded_by_adxl;
+};
+
+struct pci_bdf {
+	u32 bus : 8;
+	u32 dev : 5;
+	u32 fun : 3;
 };
 
 struct res_config {
 	enum type type;
-	/* Configuration agent device ID */
-	unsigned int decs_did;
-	/* Default bus number configuration register offset */
-	int busno_cfg_offset;
+	/* DDR memory controllers per socket */
+	int ddr_imc_num;
+	/* DDR channels per DDR memory controller */
+	int ddr_chan_num;
+	/* DDR DIMMs per DDR memory channel */
+	int ddr_dimm_num;
 	/* Per DDR channel memory-mapped I/O size */
 	int ddr_chan_mmio_sz;
+	/* HBM memory controllers per socket */
+	int hbm_imc_num;
+	/* HBM channels per HBM memory controller */
+	int hbm_chan_num;
+	/* HBM DIMMs per HBM memory channel */
+	int hbm_dimm_num;
 	/* Per HBM channel memory-mapped I/O size */
 	int hbm_chan_mmio_sz;
 	bool support_ddr5;
-	/* SAD device number and function number */
-	unsigned int sad_all_devfn;
-	int sad_all_offset;
-	/* Offsets of retry_rd_err_log registers */
-	u32 *offsets_scrub;
-	u32 *offsets_demand;
+	/* RRL register sets per DDR channel */
+	struct reg_rrl *reg_rrl_ddr;
+	/* RRL register sets per HBM channel */
+	struct reg_rrl *reg_rrl_hbm[2];
+	union {
+		/* {skx,i10nm}_edac */
+		struct {
+			/* Configuration agent device ID */
+			unsigned int decs_did;
+			/* Default bus number configuration register offset */
+			int busno_cfg_offset;
+			struct pci_bdf sad_all_bdf;
+			struct pci_bdf pcu_cr3_bdf;
+			struct pci_bdf util_all_bdf;
+			struct pci_bdf uracu_bdf;
+			struct pci_bdf ddr_mdev_bdf;
+			struct pci_bdf hbm_mdev_bdf;
+			int sad_all_offset;
+		};
+		/* imh_edac */
+		struct {
+			/* MMIO base physical address in local package view */
+			u64 mmio_base_l_north;
+			u64 mmio_base_l_south;
+			u64 ddr_imc_base;
+			u64 ddr_reg_mcmtr_offset;
+			u8  ddr_reg_mcmtr_width;
+			u64 ddr_reg_dimmmtr_offset;
+			u8  ddr_reg_dimmmtr_width;
+			u64 ubox_base;
+			u32 ubox_size;
+			u32 ubox_reg_mmio_base_offset;
+			u8  ubox_reg_mmio_base_width;
+			u32 ubox_reg_socket_id_offset;
+			u8  ubox_reg_socket_id_width;
+			u64 pcu_base;
+			u32 pcu_size;
+			u32 pcu_reg_capid3_offset;
+			u8  pcu_reg_capid3_width;
+			u64 sca_base;
+			u32 sca_size;
+			u32 sca_reg_tolm_offset;
+			u8  sca_reg_tolm_width;
+			u32 sca_reg_tohm_offset;
+			u8  sca_reg_tohm_width;
+			u64 ha_base;
+			u32 ha_size;
+			u32 ha_reg_mode_offset;
+			u8  ha_reg_mode_width;
+		};
+	};
 };
 
 typedef int (*get_dimm_config_f)(struct mem_ctl_info *mci,
@@ -162,17 +326,22 @@ typedef int (*get_dimm_config_f)(struct mem_ctl_info *mci,
 typedef bool (*skx_decode_f)(struct decoded_addr *res);
 typedef void (*skx_show_retry_log_f)(struct decoded_addr *res, char *msg, int len, bool scrub_err);
 
-int __init skx_adxl_get(void);
-void __exit skx_adxl_put(void);
+int skx_adxl_get(void);
+void skx_adxl_put(void);
 void skx_set_decode(skx_decode_f decode, skx_show_retry_log_f show_retry_log);
 void skx_set_mem_cfg(bool mem_cfg_2lm);
+void skx_set_res_cfg(struct res_config *cfg);
+void skx_init_mc_mapping(struct skx_dev *d);
+void skx_set_mc_mapping(struct skx_dev *d, u8 pmc, u8 lmc);
 
 int skx_get_src_id(struct skx_dev *d, int off, u8 *id);
-int skx_get_node_id(struct skx_dev *d, u8 *id);
 
 int skx_get_all_bus_mappings(struct res_config *cfg, struct list_head **list);
 
+struct list_head *skx_get_edac_list(void);
+
 int skx_get_hi_lo(unsigned int did, int off[], u64 *tolm, u64 *tohm);
+void skx_set_hi_lo(u64 tolm, u64 tohm);
 
 int skx_get_dimm_info(u32 mtr, u32 mcmtr, u32 amap, struct dimm_info *dimm,
 		      struct skx_imc *imc, int chan, int dimmno,
@@ -181,7 +350,7 @@ int skx_get_dimm_info(u32 mtr, u32 mcmtr, u32 amap, struct dimm_info *dimm,
 int skx_get_nvdimm_info(struct dimm_info *dimm, struct skx_imc *imc,
 			int chan, int dimmno, const char *mod_str);
 
-int skx_register_mci(struct skx_imc *imc, struct pci_dev *pdev,
+int skx_register_mci(struct skx_imc *imc, struct device *dev, const char *dev_name,
 		     const char *ctl_name, const char *mod_str,
 		     get_dimm_config_f get_dimm_config,
 		     struct res_config *cfg);
@@ -190,5 +359,13 @@ int skx_mce_check_error(struct notifier_block *nb, unsigned long val,
 			void *data);
 
 void skx_remove(void);
+
+#ifdef CONFIG_EDAC_DEBUG
+void skx_setup_debug(const char *name);
+void skx_teardown_debug(void);
+#else
+static inline void skx_setup_debug(const char *name) {}
+static inline void skx_teardown_debug(void) {}
+#endif
 
 #endif /* _SKX_COMM_EDAC_H */

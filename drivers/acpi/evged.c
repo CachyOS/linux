@@ -173,10 +173,9 @@ static void ged_shutdown(struct platform_device *pdev)
 	}
 }
 
-static int ged_remove(struct platform_device *pdev)
+static void ged_remove(struct platform_device *pdev)
 {
 	ged_shutdown(pdev);
-	return 0;
 }
 
 static const struct acpi_device_id ged_acpi_ids[] = {

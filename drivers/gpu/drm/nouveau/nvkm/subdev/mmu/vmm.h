@@ -4,6 +4,17 @@
 #include <core/memory.h>
 enum nvkm_memory_target;
 
+union nvkm_pte_tracker {
+	u32 u;
+	struct {
+		u32 sparse:1;
+		u32 spte_valid:1;
+		u32 lpte_valid:1;
+		u32 lptes:13;
+		u32 sptes:16;
+	} s;
+};
+
 struct nvkm_vmm_pt {
 	/* Some GPUs have a mapping level with a dual page tables to
 	 * support large and small pages in the same address-range.
@@ -44,10 +55,7 @@ struct nvkm_vmm_pt {
 	 *
 	 * This information is used to manage LPTE state transitions.
 	 */
-#define NVKM_VMM_PTE_SPARSE 0x80
-#define NVKM_VMM_PTE_VALID  0x40
-#define NVKM_VMM_PTE_SPTES  0x3f
-	u8 pte[];
+	union nvkm_pte_tracker pte[];
 };
 
 typedef void (*nvkm_vmm_pxe_func)(struct nvkm_vmm *,
@@ -143,6 +151,8 @@ struct nvkm_vmm_func {
 	int (*aper)(enum nvkm_memory_target);
 	int (*valid)(struct nvkm_vmm *, void *argv, u32 argc,
 		     struct nvkm_vmm_map *);
+	int (*valid2)(struct nvkm_vmm *, bool ro, bool priv, u8 kind, u8 comp,
+		      struct nvkm_vmm_map *);
 	void (*flush)(struct nvkm_vmm *, int depth);
 
 	int (*mthd)(struct nvkm_vmm *, struct nvkm_client *,
@@ -163,6 +173,7 @@ int nvkm_vmm_new_(const struct nvkm_vmm_func *, struct nvkm_mmu *,
 		  u32 pd_header, bool managed, u64 addr, u64 size,
 		  struct lock_class_key *, const char *name,
 		  struct nvkm_vmm **);
+struct nvkm_vma *nvkm_vma_new(u64 addr, u64 size);
 struct nvkm_vma *nvkm_vmm_node_search(struct nvkm_vmm *, u64 addr);
 struct nvkm_vma *nvkm_vmm_node_split(struct nvkm_vmm *, struct nvkm_vma *,
 				     u64 addr, u64 size);
@@ -172,6 +183,30 @@ int nvkm_vmm_get_locked(struct nvkm_vmm *, bool getref, bool mapref,
 void nvkm_vmm_put_locked(struct nvkm_vmm *, struct nvkm_vma *);
 void nvkm_vmm_unmap_locked(struct nvkm_vmm *, struct nvkm_vma *, bool pfn);
 void nvkm_vmm_unmap_region(struct nvkm_vmm *, struct nvkm_vma *);
+
+int nvkm_vmm_raw_get(struct nvkm_vmm *vmm, u64 addr, u64 size, u8 refd);
+void nvkm_vmm_raw_put(struct nvkm_vmm *vmm, u64 addr, u64 size, u8 refd);
+void nvkm_vmm_raw_unmap(struct nvkm_vmm *vmm, u64 addr, u64 size,
+			bool sparse, u8 refd);
+int nvkm_vmm_raw_sparse(struct nvkm_vmm *, u64 addr, u64 size, bool ref);
+
+static inline bool
+nvkm_vmm_in_managed_range(struct nvkm_vmm *vmm, u64 start, u64 size)
+{
+	u64 p_start = vmm->managed.p.addr;
+	u64 p_end = p_start + vmm->managed.p.size;
+	u64 n_start = vmm->managed.n.addr;
+	u64 n_end = n_start + vmm->managed.n.size;
+	u64 end = start + size;
+
+	if (start >= p_start && end <= p_end)
+		return true;
+
+	if (start >= n_start && end <= n_end)
+		return true;
+
+	return false;
+}
 
 #define NVKM_VMM_PFN_ADDR                                 0xfffffffffffff000ULL
 #define NVKM_VMM_PFN_ADDR_SHIFT                                              12
@@ -229,6 +264,8 @@ void gp100_vmm_invalidate_pdb(struct nvkm_vmm *, u64 addr);
 
 int gv100_vmm_join(struct nvkm_vmm *, struct nvkm_memory *);
 
+void tu102_vmm_flush(struct nvkm_vmm *, int depth);
+
 int nv04_vmm_new(struct nvkm_mmu *, bool, u64, u64, void *, u32,
 		 struct lock_class_key *, const char *, struct nvkm_vmm **);
 int nv41_vmm_new(struct nvkm_mmu *, bool, u64, u64, void *, u32,
@@ -269,6 +306,9 @@ int gv100_vmm_new(struct nvkm_mmu *, bool, u64, u64, void *, u32,
 		  struct lock_class_key *, const char *,
 		  struct nvkm_vmm **);
 int tu102_vmm_new(struct nvkm_mmu *, bool, u64, u64, void *, u32,
+		  struct lock_class_key *, const char *,
+		  struct nvkm_vmm **);
+int gh100_vmm_new(struct nvkm_mmu *, bool, u64, u64, void *, u32,
 		  struct lock_class_key *, const char *,
 		  struct nvkm_vmm **);
 

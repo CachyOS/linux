@@ -16,14 +16,11 @@
 #include <asm/xics.h>
 #include <asm/udbg.h>
 
+#include "microwatt.h"
+
 static void __init microwatt_init_IRQ(void)
 {
 	xics_init();
-}
-
-static int __init microwatt_probe(void)
-{
-	return of_machine_is_compatible("microwatt-soc");
 }
 
 static int __init microwatt_populate(void)
@@ -32,10 +29,33 @@ static int __init microwatt_populate(void)
 }
 machine_arch_initcall(microwatt, microwatt_populate);
 
+static int __init microwatt_probe(void)
+{
+	/* Main reason for having this is to start the other CPU(s) */
+	if (IS_ENABLED(CONFIG_SMP))
+		microwatt_init_smp();
+	return 1;
+}
+
+static void __init microwatt_setup_arch(void)
+{
+	microwatt_rng_init();
+}
+
+static void microwatt_idle(void)
+{
+	if (!prep_irq_for_idle_irqsoff())
+		return;
+
+	__asm__ __volatile__ ("wait");
+}
+
 define_machine(microwatt) {
 	.name			= "microwatt",
+	.compatible		= "microwatt-soc",
 	.probe			= microwatt_probe,
 	.init_IRQ		= microwatt_init_IRQ,
+	.setup_arch		= microwatt_setup_arch,
 	.progress		= udbg_progress,
-	.calibrate_decr		= generic_calibrate_decr,
+	.power_save		= microwatt_idle,
 };

@@ -59,14 +59,15 @@ properties:
                   - nvidia,tegra186-agic
                   - nvidia,tegra194-agic
                   - nvidia,tegra234-agic
+                  - nvidia,tegra264-agic
               - const: nvidia,tegra210-agic
 
   interrupt-controller: true
 
   "#address-cells":
-    enum: [ 0, 1 ]
+    enum: [ 0, 1, 2 ]
   "#size-cells":
-    const: 1
+    enum: [ 1, 2 ]
 
   "#interrupt-cells":
     const: 3
@@ -110,8 +111,8 @@ properties:
 
   interrupts:
     description: Interrupt source of the parent interrupt controller on
-      secondary GICs, or VGIC maintenance interrupt on primary GIC (see
-      below).
+      secondary GICs, or VGIC maintenance interrupt on primary GIC (see "GICv2
+      with virtualization extensions" paragraph in the "reg" property).
     maxItems: 1
 
   cpu-offset:
@@ -133,8 +134,8 @@ properties:
       - items: # for "arm,cortex-a9-gic"
           - const: PERIPHCLK
           - const: PERIPHCLKEN
-      - const: clk # for "arm,gic-400" and "nvidia,tegra210"
-      - const: gclk #for "arm,pl390"
+      - const: clk  # for "arm,gic-400" and "nvidia,tegra210"
+      - const: gclk # for "arm,pl390"
 
   power-domains:
     maxItems: 1

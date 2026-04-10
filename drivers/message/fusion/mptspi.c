@@ -101,7 +101,7 @@ static u8	mptspiInternalCtx = MPT_MAX_PROTOCOL_DRIVERS; /* Used only for interna
  *	@target: per target private data
  *	@sdev: SCSI device
  *
- * 	Update the target negotiation parameters based on the the Inquiry
+ *	Update the target negotiation parameters based on the Inquiry
  *	data, adapter capabilities, and NVRAM settings.
  **/
 static void
@@ -405,7 +405,7 @@ static int mptspi_target_alloc(struct scsi_target *starget)
 		return -ENODEV;
 
 	ioc = hd->ioc;
-	vtarget = kzalloc(sizeof(VirtTarget), GFP_KERNEL);
+	vtarget = kzalloc_obj(VirtTarget);
 	if (!vtarget)
 		return -ENOMEM;
 
@@ -713,7 +713,7 @@ static void mptspi_dv_device(struct _MPT_SCSI_HOST *hd,
 	mptspi_read_parameters(sdev->sdev_target);
 }
 
-static int mptspi_slave_alloc(struct scsi_device *sdev)
+static int mptspi_sdev_init(struct scsi_device *sdev)
 {
 	MPT_SCSI_HOST *hd = shost_priv(sdev->host);
 	VirtTarget		*vtarget;
@@ -725,9 +725,9 @@ static int mptspi_slave_alloc(struct scsi_device *sdev)
 		mptscsih_is_phys_disk(ioc, 0, sdev->id) == 0)
 			return -ENXIO;
 
-	vdevice = kzalloc(sizeof(VirtDevice), GFP_KERNEL);
+	vdevice = kzalloc_obj(VirtDevice);
 	if (!vdevice) {
-		printk(MYIOC_s_ERR_FMT "slave_alloc kmalloc(%zd) FAILED!\n",
+		printk(MYIOC_s_ERR_FMT "sdev_init kmalloc(%zd) FAILED!\n",
 				ioc->name, sizeof(VirtDevice));
 		return -ENOMEM;
 	}
@@ -746,7 +746,8 @@ static int mptspi_slave_alloc(struct scsi_device *sdev)
 	return 0;
 }
 
-static int mptspi_slave_configure(struct scsi_device *sdev)
+static int mptspi_sdev_configure(struct scsi_device *sdev,
+				 struct queue_limits *lim)
 {
 	struct _MPT_SCSI_HOST *hd = shost_priv(sdev->host);
 	VirtTarget *vtarget = scsi_target(sdev)->hostdata;
@@ -754,7 +755,7 @@ static int mptspi_slave_configure(struct scsi_device *sdev)
 
 	mptspi_initTarget(hd, vtarget, sdev);
 
-	ret = mptscsih_slave_configure(sdev);
+	ret = mptscsih_sdev_configure(sdev, lim);
 
 	if (ret)
 		return ret;
@@ -773,8 +774,8 @@ static int mptspi_slave_configure(struct scsi_device *sdev)
 	return 0;
 }
 
-static int
-mptspi_qcmd(struct Scsi_Host *shost, struct scsi_cmnd *SCpnt)
+static enum scsi_qc_status mptspi_qcmd(struct Scsi_Host *shost,
+				       struct scsi_cmnd *SCpnt)
 {
 	struct _MPT_SCSI_HOST *hd = shost_priv(shost);
 	VirtDevice	*vdevice = SCpnt->device->hostdata;
@@ -799,7 +800,7 @@ mptspi_qcmd(struct Scsi_Host *shost, struct scsi_cmnd *SCpnt)
 	return mptscsih_qcmd(SCpnt);
 }
 
-static void mptspi_slave_destroy(struct scsi_device *sdev)
+static void mptspi_sdev_destroy(struct scsi_device *sdev)
 {
 	struct scsi_target *starget = scsi_target(sdev);
 	VirtTarget *vtarget = starget->hostdata;
@@ -817,10 +818,10 @@ static void mptspi_slave_destroy(struct scsi_device *sdev)
 		mptspi_write_spi_device_pg1(starget, &pg1);
 	}
 
-	mptscsih_slave_destroy(sdev);
+	mptscsih_sdev_destroy(sdev);
 }
 
-static struct scsi_host_template mptspi_driver_template = {
+static const struct scsi_host_template mptspi_driver_template = {
 	.module				= THIS_MODULE,
 	.proc_name			= "mptspi",
 	.show_info			= mptscsih_show_info,
@@ -828,10 +829,10 @@ static struct scsi_host_template mptspi_driver_template = {
 	.info				= mptscsih_info,
 	.queuecommand			= mptspi_qcmd,
 	.target_alloc			= mptspi_target_alloc,
-	.slave_alloc			= mptspi_slave_alloc,
-	.slave_configure		= mptspi_slave_configure,
+	.sdev_init			= mptspi_sdev_init,
+	.sdev_configure			= mptspi_sdev_configure,
 	.target_destroy			= mptspi_target_destroy,
-	.slave_destroy			= mptspi_slave_destroy,
+	.sdev_destroy			= mptspi_sdev_destroy,
 	.change_queue_depth 		= mptscsih_change_queue_depth,
 	.eh_abort_handler		= mptscsih_abort,
 	.eh_device_reset_handler	= mptscsih_dev_reset,
@@ -843,6 +844,7 @@ static struct scsi_host_template mptspi_driver_template = {
 	.sg_tablesize			= MPT_SCSI_SG_DEPTH,
 	.max_sectors			= 8192,
 	.cmd_per_lun			= 7,
+	.dma_alignment			= 511,
 	.shost_groups			= mptscsih_host_attr_groups,
 };
 
@@ -1150,7 +1152,7 @@ static void mpt_work_wrapper(struct work_struct *work)
 
 static void mpt_dv_raid(struct _MPT_SCSI_HOST *hd, int disk)
 {
-	struct work_queue_wrapper *wqw = kmalloc(sizeof(*wqw), GFP_ATOMIC);
+	struct work_queue_wrapper *wqw = kmalloc_obj(*wqw, GFP_ATOMIC);
 	MPT_ADAPTER *ioc = hd->ioc;
 
 	if (!wqw) {
@@ -1237,7 +1239,7 @@ static struct spi_function_template mptspi_transport_functions = {
  * Supported hardware
  */
 
-static struct pci_device_id mptspi_pci_table[] = {
+static const struct pci_device_id mptspi_pci_table[] = {
 	{ PCI_VENDOR_ID_LSI_LOGIC, MPI_MANUFACTPAGE_DEVID_53C1030,
 		PCI_ANY_ID, PCI_ANY_ID },
 	{ PCI_VENDOR_ID_ATTO, MPI_MANUFACTPAGE_DEVID_53C1030,
@@ -1286,7 +1288,7 @@ mptspi_dv_renegotiate_work(struct work_struct *work)
 static void
 mptspi_dv_renegotiate(struct _MPT_SCSI_HOST *hd)
 {
-	struct work_queue_wrapper *wqw = kmalloc(sizeof(*wqw), GFP_ATOMIC);
+	struct work_queue_wrapper *wqw = kmalloc_obj(*wqw, GFP_ATOMIC);
 
 	if (!wqw)
 		return;

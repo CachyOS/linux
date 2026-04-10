@@ -333,18 +333,6 @@ static int32_t scsiback_result(int32_t result)
 	case DID_TRANSPORT_FAILFAST:
 		host_status = XEN_VSCSIIF_RSLT_HOST_TRANSPORT_FAILFAST;
 		break;
-	case DID_TARGET_FAILURE:
-		host_status = XEN_VSCSIIF_RSLT_HOST_TARGET_FAILURE;
-		break;
-	case DID_NEXUS_FAILURE:
-		host_status = XEN_VSCSIIF_RSLT_HOST_NEXUS_FAILURE;
-		break;
-	case DID_ALLOC_FAILURE:
-		host_status = XEN_VSCSIIF_RSLT_HOST_ALLOC_FAILURE;
-		break;
-	case DID_MEDIUM_ERROR:
-		host_status = XEN_VSCSIIF_RSLT_HOST_MEDIUM_ERROR;
-		break;
 	case DID_TRANSPORT_MARGINAL:
 		host_status = XEN_VSCSIIF_RSLT_HOST_TRANSPORT_MARGINAL;
 		break;
@@ -555,8 +543,7 @@ static int scsiback_gnttab_data_map(struct vscsiif_request *ring_req,
 	}
 
 	/* free of (sgl) in fast_flush_area() */
-	pending_req->sgl = kmalloc_array(nr_segments,
-					sizeof(struct scatterlist), GFP_KERNEL);
+	pending_req->sgl = kmalloc_objs(struct scatterlist, nr_segments);
 	if (!pending_req->sgl)
 		return -ENOMEM;
 
@@ -986,7 +973,7 @@ static int scsiback_add_translation_entry(struct vscsibk_info *info,
 		return -ENODEV;
 	}
 
-	new = kmalloc(sizeof(struct v2p_entry), GFP_KERNEL);
+	new = kmalloc_obj(struct v2p_entry);
 	if (new == NULL) {
 		err = -ENOMEM;
 		goto out_free;
@@ -1022,12 +1009,6 @@ out_free:
 	return err;
 }
 
-static void __scsiback_del_translation_entry(struct v2p_entry *entry)
-{
-	list_del(&entry->l);
-	kref_put(&entry->kref, scsiback_free_translation_entry);
-}
-
 /*
   Delete the translation entry specified
 */
@@ -1036,18 +1017,20 @@ static int scsiback_del_translation_entry(struct vscsibk_info *info,
 {
 	struct v2p_entry *entry;
 	unsigned long flags;
-	int ret = 0;
 
 	spin_lock_irqsave(&info->v2p_lock, flags);
 	/* Find out the translation entry specified */
 	entry = scsiback_chk_translation_entry(info, v);
 	if (entry)
-		__scsiback_del_translation_entry(entry);
-	else
-		ret = -ENOENT;
+		list_del(&entry->l);
 
 	spin_unlock_irqrestore(&info->v2p_lock, flags);
-	return ret;
+
+	if (!entry)
+		return -ENOENT;
+
+	kref_put(&entry->kref, scsiback_free_translation_entry);
+	return 0;
 }
 
 static void scsiback_do_add_lun(struct vscsibk_info *info, const char *state,
@@ -1121,7 +1104,7 @@ static void scsiback_do_1lun_hotplug(struct vscsibk_info *info, int op,
 				"%s: writing %s", __func__, state);
 		return;
 	}
-	strlcpy(phy, val, VSCSI_NAMELEN);
+	strscpy(phy, val, VSCSI_NAMELEN);
 	kfree(val);
 
 	/* virtual SCSI device */
@@ -1251,17 +1234,22 @@ static void scsiback_release_translation_entry(struct vscsibk_info *info)
 {
 	struct v2p_entry *entry, *tmp;
 	struct list_head *head = &(info->v2p_entry_lists);
+	struct list_head tmp_list;
 	unsigned long flags;
 
 	spin_lock_irqsave(&info->v2p_lock, flags);
 
-	list_for_each_entry_safe(entry, tmp, head, l)
-		__scsiback_del_translation_entry(entry);
+	list_cut_before(&tmp_list, head, head);
 
 	spin_unlock_irqrestore(&info->v2p_lock, flags);
+
+	list_for_each_entry_safe(entry, tmp, &tmp_list, l) {
+		list_del(&entry->l);
+		kref_put(&entry->kref, scsiback_free_translation_entry);
+	}
 }
 
-static int scsiback_remove(struct xenbus_device *dev)
+static void scsiback_remove(struct xenbus_device *dev)
 {
 	struct vscsibk_info *info = dev_get_drvdata(&dev->dev);
 
@@ -1273,8 +1261,7 @@ static int scsiback_remove(struct xenbus_device *dev)
 	gnttab_page_cache_shrink(&info->free_pages, 0);
 
 	dev_set_drvdata(&dev->dev, NULL);
-
-	return 0;
+	kfree(info);
 }
 
 static int scsiback_probe(struct xenbus_device *dev,
@@ -1282,8 +1269,7 @@ static int scsiback_probe(struct xenbus_device *dev,
 {
 	int err;
 
-	struct vscsibk_info *info = kzalloc(sizeof(struct vscsibk_info),
-					    GFP_KERNEL);
+	struct vscsibk_info *info = kzalloc_obj(struct vscsibk_info);
 
 	pr_debug("%s %p %d\n", __func__, dev, dev->otherend_id);
 
@@ -1364,7 +1350,7 @@ scsiback_make_tport(struct target_fabric_configfs *tf,
 	u64 wwpn = 0;
 	int off = 0;
 
-	tport = kzalloc(sizeof(struct scsiback_tport), GFP_KERNEL);
+	tport = kzalloc_obj(struct scsiback_tport);
 	if (!tport)
 		return ERR_PTR(-ENOMEM);
 
@@ -1420,11 +1406,6 @@ static void scsiback_drop_tport(struct se_wwn *wwn)
 	kfree(tport);
 }
 
-static u32 scsiback_tpg_get_inst_index(struct se_portal_group *se_tpg)
-{
-	return 1;
-}
-
 static int scsiback_check_stop_free(struct se_cmd *se_cmd)
 {
 	return transport_generic_free_cmd(se_cmd, 0);
@@ -1435,25 +1416,11 @@ static void scsiback_release_cmd(struct se_cmd *se_cmd)
 	target_free_tag(se_cmd->se_sess, se_cmd);
 }
 
-static u32 scsiback_sess_get_index(struct se_session *se_sess)
-{
-	return 0;
-}
-
 static int scsiback_write_pending(struct se_cmd *se_cmd)
 {
 	/* Go ahead and process the write immediately */
 	target_execute_cmd(se_cmd);
 
-	return 0;
-}
-
-static void scsiback_set_default_node_attrs(struct se_node_acl *nacl)
-{
-}
-
-static int scsiback_get_cmd_state(struct se_cmd *se_cmd)
-{
 	return 0;
 }
 
@@ -1563,7 +1530,7 @@ static int scsiback_make_nexus(struct scsiback_tpg *tpg,
 		goto out_unlock;
 	}
 
-	tv_nexus = kzalloc(sizeof(struct scsiback_nexus), GFP_KERNEL);
+	tv_nexus = kzalloc_obj(struct scsiback_nexus);
 	if (!tv_nexus) {
 		ret = -ENOMEM;
 		goto out_unlock;
@@ -1790,7 +1757,7 @@ scsiback_make_tpg(struct se_wwn *wwn, const char *name)
 	if (ret)
 		return ERR_PTR(ret);
 
-	tpg = kzalloc(sizeof(struct scsiback_tpg), GFP_KERNEL);
+	tpg = kzalloc_obj(struct scsiback_tpg);
 	if (!tpg)
 		return ERR_PTR(-ENOMEM);
 
@@ -1836,11 +1803,6 @@ static int scsiback_check_true(struct se_portal_group *se_tpg)
 	return 1;
 }
 
-static int scsiback_check_false(struct se_portal_group *se_tpg)
-{
-	return 0;
-}
-
 static const struct target_core_fabric_ops scsiback_ops = {
 	.module				= THIS_MODULE,
 	.fabric_name			= "xen-pvscsi",
@@ -1848,16 +1810,10 @@ static const struct target_core_fabric_ops scsiback_ops = {
 	.tpg_get_tag			= scsiback_get_tag,
 	.tpg_check_demo_mode		= scsiback_check_true,
 	.tpg_check_demo_mode_cache	= scsiback_check_true,
-	.tpg_check_demo_mode_write_protect = scsiback_check_false,
-	.tpg_check_prod_mode_write_protect = scsiback_check_false,
-	.tpg_get_inst_index		= scsiback_tpg_get_inst_index,
 	.check_stop_free		= scsiback_check_stop_free,
 	.release_cmd			= scsiback_release_cmd,
-	.sess_get_index			= scsiback_sess_get_index,
 	.sess_get_initiator_sid		= NULL,
 	.write_pending			= scsiback_write_pending,
-	.set_default_node_attributes	= scsiback_set_default_node_attrs,
-	.get_cmd_state			= scsiback_get_cmd_state,
 	.queue_data_in			= scsiback_queue_data_in,
 	.queue_status			= scsiback_queue_status,
 	.queue_tm_rsp			= scsiback_queue_tm_rsp,
@@ -1875,6 +1831,9 @@ static const struct target_core_fabric_ops scsiback_ops = {
 	.tfc_wwn_attrs			= scsiback_wwn_attrs,
 	.tfc_tpg_base_attrs		= scsiback_tpg_attrs,
 	.tfc_tpg_param_attrs		= scsiback_param_attrs,
+
+	.default_submit_type		= TARGET_DIRECT_SUBMIT,
+	.direct_submit_supp		= 1,
 };
 
 static const struct xenbus_device_id scsiback_ids[] = {

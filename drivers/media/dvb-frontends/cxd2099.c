@@ -598,8 +598,7 @@ static const struct dvb_ca_en50221 en_templ = {
 	.write_data          = write_data,
 };
 
-static int cxd2099_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int cxd2099_probe(struct i2c_client *client)
 {
 	struct cxd *ci;
 	struct cxd2099_cfg *cfg = client->dev.platform_data;
@@ -610,7 +609,7 @@ static int cxd2099_probe(struct i2c_client *client,
 	unsigned int val;
 	int ret;
 
-	ci = kzalloc(sizeof(*ci), GFP_KERNEL);
+	ci = kzalloc_obj(*ci);
 	if (!ci) {
 		ret = -ENOMEM;
 		goto err;
@@ -664,18 +663,16 @@ err:
 	return ret;
 }
 
-static int cxd2099_remove(struct i2c_client *client)
+static void cxd2099_remove(struct i2c_client *client)
 {
 	struct cxd *ci = i2c_get_clientdata(client);
 
 	regmap_exit(ci->regmap);
 	kfree(ci);
-
-	return 0;
 }
 
 static const struct i2c_device_id cxd2099_id[] = {
-	{"cxd2099", 0},
+	{ "cxd2099" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, cxd2099_id);

@@ -30,6 +30,9 @@
 #include <linux/bitmap.h>
 #include <linux/compiler.h>
 #include <linux/time64.h>
+#ifdef HAVE_LIBTRACEEVENT
+#include <event-parse.h>
+#endif
 
 #include "../build-id.h"
 #include "../counts.h"
@@ -42,33 +45,20 @@
 #include "../thread.h"
 #include "../comm.h"
 #include "../machine.h"
+#include "../mem-info.h"
 #include "../db-export.h"
 #include "../thread-stack.h"
 #include "../trace-event.h"
 #include "../call-path.h"
+#include "dwarf-regs.h"
 #include "map.h"
 #include "symbol.h"
 #include "thread_map.h"
 #include "print_binary.h"
 #include "stat.h"
 #include "mem-events.h"
+#include "util/perf_regs.h"
 
-#if PY_MAJOR_VERSION < 3
-#define _PyUnicode_FromString(arg) \
-  PyString_FromString(arg)
-#define _PyUnicode_FromStringAndSize(arg1, arg2) \
-  PyString_FromStringAndSize((arg1), (arg2))
-#define _PyBytes_FromStringAndSize(arg1, arg2) \
-  PyString_FromStringAndSize((arg1), (arg2))
-#define _PyLong_FromLong(arg) \
-  PyInt_FromLong(arg)
-#define _PyLong_AsLong(arg) \
-  PyInt_AsLong(arg)
-#define _PyCapsule_New(arg1, arg2, arg3) \
-  PyCObject_FromVoidPtr((arg1), (arg2))
-
-PyMODINIT_FUNC initperf_trace_context(void);
-#else
 #define _PyUnicode_FromString(arg) \
   PyUnicode_FromString(arg)
 #define _PyUnicode_FromStringAndSize(arg1, arg2) \
@@ -83,20 +73,20 @@ PyMODINIT_FUNC initperf_trace_context(void);
   PyCapsule_New((arg1), (arg2), (arg3))
 
 PyMODINIT_FUNC PyInit_perf_trace_context(void);
-#endif
 
+#ifdef HAVE_LIBTRACEEVENT
 #define TRACE_EVENT_TYPE_MAX				\
 	((1 << (sizeof(unsigned short) * 8)) - 1)
 
-static DECLARE_BITMAP(events_defined, TRACE_EVENT_TYPE_MAX);
-
-#define MAX_FIELDS	64
 #define N_COMMON_FIELDS	7
-
-extern struct scripting_context *scripting_context;
 
 static char *cur_field_name;
 static int zero_flag_atom;
+#endif
+
+#define MAX_FIELDS	64
+
+extern struct scripting_context *scripting_context;
 
 static PyObject *main_module, *main_dict;
 
@@ -131,7 +121,7 @@ static void handler_call_die(const char *handler_name)
 }
 
 /*
- * Insert val into into the dictionary and decrement the reference counter.
+ * Insert val into the dictionary and decrement the reference counter.
  * This is necessary for dictionaries since PyDict_SetItemString() does not
  * steal a reference, as opposed to PyTuple_SetItem().
  */
@@ -151,34 +141,6 @@ static PyObject *get_handler(const char *handler_name)
 	return handler;
 }
 
-static int get_argument_count(PyObject *handler)
-{
-	int arg_count = 0;
-
-	/*
-	 * The attribute for the code object is func_code in Python 2,
-	 * whereas it is __code__ in Python 3.0+.
-	 */
-	PyObject *code_obj = PyObject_GetAttrString(handler,
-		"func_code");
-	if (PyErr_Occurred()) {
-		PyErr_Clear();
-		code_obj = PyObject_GetAttrString(handler,
-			"__code__");
-	}
-	PyErr_Clear();
-	if (code_obj) {
-		PyObject *arg_count_obj = PyObject_GetAttrString(code_obj,
-			"co_argcount");
-		if (arg_count_obj) {
-			arg_count = (int) _PyLong_AsLong(arg_count_obj);
-			Py_DECREF(arg_count_obj);
-		}
-		Py_DECREF(code_obj);
-	}
-	return arg_count;
-}
-
 static void call_object(PyObject *handler, PyObject *args, const char *die_msg)
 {
 	PyObject *retval;
@@ -196,6 +158,25 @@ static void try_call_object(const char *handler_name, PyObject *args)
 	handler = get_handler(handler_name);
 	if (handler)
 		call_object(handler, args, handler_name);
+}
+
+#ifdef HAVE_LIBTRACEEVENT
+static int get_argument_count(PyObject *handler)
+{
+	int arg_count = 0;
+
+	PyObject *code_obj = code_obj = PyObject_GetAttrString(handler, "__code__");
+	PyErr_Clear();
+	if (code_obj) {
+		PyObject *arg_count_obj = PyObject_GetAttrString(code_obj,
+			"co_argcount");
+		if (arg_count_obj) {
+			arg_count = (int) _PyLong_AsLong(arg_count_obj);
+			Py_DECREF(arg_count_obj);
+		}
+		Py_DECREF(code_obj);
+	}
+	return arg_count;
 }
 
 static void define_value(enum tep_print_arg_type field_type,
@@ -347,6 +328,8 @@ static PyObject *get_field_numeric_entry(struct tep_event *event,
 
 	if (is_array) {
 		list = PyList_New(field->arraylen);
+		if (!list)
+			Py_FatalError("couldn't create Python list");
 		item_size = field->size / field->arraylen;
 		n_items = field->arraylen;
 	} else {
@@ -377,16 +360,18 @@ static PyObject *get_field_numeric_entry(struct tep_event *event,
 		obj = list;
 	return obj;
 }
+#endif
 
 static const char *get_dsoname(struct map *map)
 {
 	const char *dsoname = "[unknown]";
+	struct dso *dso = map ? map__dso(map) : NULL;
 
-	if (map && map->dso) {
-		if (symbol_conf.show_kernel_path && map->dso->long_name)
-			dsoname = map->dso->long_name;
+	if (dso) {
+		if (symbol_conf.show_kernel_path && dso__long_name(dso))
+			dsoname = dso__long_name(dso);
 		else
-			dsoname = map->dso->name;
+			dsoname = dso__name(dso);
 	}
 
 	return dsoname;
@@ -399,7 +384,7 @@ static unsigned long get_offset(struct symbol *sym, struct addr_location *al)
 	if (al->addr < sym->end)
 		offset = al->addr - sym->start;
 	else
-		offset = al->addr - al->map->start - sym->start;
+		offset = al->addr - map__start(al->map) - sym->start;
 
 	return offset;
 }
@@ -409,6 +394,7 @@ static PyObject *python_process_callchain(struct perf_sample *sample,
 					 struct addr_location *al)
 {
 	PyObject *pylist;
+	struct callchain_cursor *cursor;
 
 	pylist = PyList_New(0);
 	if (!pylist)
@@ -417,19 +403,20 @@ static PyObject *python_process_callchain(struct perf_sample *sample,
 	if (!symbol_conf.use_callchain || !sample->callchain)
 		goto exit;
 
-	if (thread__resolve_callchain(al->thread, &callchain_cursor, evsel,
+	cursor = get_tls_callchain_cursor();
+	if (thread__resolve_callchain(al->thread, cursor, evsel,
 				      sample, NULL, NULL,
 				      scripting_max_stack) != 0) {
 		pr_err("Failed to resolve callchain. Skipping\n");
 		goto exit;
 	}
-	callchain_cursor_commit(&callchain_cursor);
+	callchain_cursor_commit(cursor);
 
 
 	while (1) {
 		PyObject *pyelem;
 		struct callchain_cursor_node *node;
-		node = callchain_cursor_current(&callchain_cursor);
+		node = callchain_cursor_current(cursor);
 		if (!node)
 			break;
 
@@ -461,9 +448,11 @@ static PyObject *python_process_callchain(struct perf_sample *sample,
 				struct addr_location node_al;
 				unsigned long offset;
 
-				node_al.addr = map->map_ip(map, node->ip);
-				node_al.map  = map;
+				addr_location__init(&node_al);
+				node_al.addr = map__map_ip(map, node->ip);
+				node_al.map  = map__get(map);
 				offset = get_offset(node->ms.sym, &node_al);
+				addr_location__exit(&node_al);
 
 				pydict_set_item_string_decref(
 					pyelem, "sym_off",
@@ -483,7 +472,7 @@ static PyObject *python_process_callchain(struct perf_sample *sample,
 					_PyUnicode_FromString(dsoname));
 		}
 
-		callchain_cursor_advance(&callchain_cursor);
+		callchain_cursor_advance(cursor);
 		PyList_Append(pylist, pyelem);
 		Py_DECREF(pyelem);
 	}
@@ -531,6 +520,7 @@ static PyObject *python_process_brstack(struct perf_sample *sample,
 		pydict_set_item_string_decref(pyelem, "cycles",
 		    PyLong_FromUnsignedLongLong(entries[i].flags.cycles));
 
+		addr_location__init(&al);
 		thread__find_map_fb(thread, sample->cpumode,
 				    entries[i].from, &al);
 		dsoname = get_dsoname(al.map);
@@ -543,6 +533,7 @@ static PyObject *python_process_brstack(struct perf_sample *sample,
 		pydict_set_item_string_decref(pyelem, "to_dsoname",
 					      _PyUnicode_FromString(dsoname));
 
+		addr_location__exit(&al);
 		PyList_Append(pylist, pyelem);
 		Py_DECREF(pyelem);
 	}
@@ -586,7 +577,6 @@ static PyObject *python_process_brstacksym(struct perf_sample *sample,
 	PyObject *pylist;
 	u64 i;
 	char bf[512];
-	struct addr_location al;
 
 	pylist = PyList_New(0);
 	if (!pylist)
@@ -597,7 +587,9 @@ static PyObject *python_process_brstacksym(struct perf_sample *sample,
 
 	for (i = 0; i < br->nr; i++) {
 		PyObject *pyelem;
+		struct addr_location al;
 
+		addr_location__init(&al);
 		pyelem = PyDict_New();
 		if (!pyelem)
 			Py_FatalError("couldn't create Python dictionary");
@@ -636,21 +628,26 @@ static PyObject *python_process_brstacksym(struct perf_sample *sample,
 
 		PyList_Append(pylist, pyelem);
 		Py_DECREF(pyelem);
+		addr_location__exit(&al);
 	}
 
 exit:
 	return pylist;
 }
 
-static PyObject *get_sample_value_as_tuple(struct sample_read_value *value)
+static PyObject *get_sample_value_as_tuple(struct sample_read_value *value,
+					   u64 read_format)
 {
 	PyObject *t;
 
-	t = PyTuple_New(2);
+	t = PyTuple_New(3);
 	if (!t)
 		Py_FatalError("couldn't create Python tuple");
 	PyTuple_SetItem(t, 0, PyLong_FromUnsignedLongLong(value->id));
 	PyTuple_SetItem(t, 1, PyLong_FromUnsignedLongLong(value->value));
+	if (read_format & PERF_FORMAT_LOST)
+		PyTuple_SetItem(t, 2, PyLong_FromUnsignedLongLong(value->lost));
+
 	return t;
 }
 
@@ -681,38 +678,52 @@ static void set_sample_read_in_dict(PyObject *dict_sample,
 		Py_FatalError("couldn't create Python list");
 
 	if (read_format & PERF_FORMAT_GROUP) {
-		for (i = 0; i < sample->read.group.nr; i++) {
-			PyObject *t = get_sample_value_as_tuple(&sample->read.group.values[i]);
+		struct sample_read_value *v = sample->read.group.values;
+
+		i = 0;
+		sample_read_group__for_each(v, sample->read.group.nr, read_format) {
+			PyObject *t = get_sample_value_as_tuple(v, read_format);
 			PyList_SET_ITEM(values, i, t);
+			i++;
 		}
 	} else {
-		PyObject *t = get_sample_value_as_tuple(&sample->read.one);
+		PyObject *t = get_sample_value_as_tuple(&sample->read.one,
+							read_format);
 		PyList_SET_ITEM(values, 0, t);
 	}
 	pydict_set_item_string_decref(dict_sample, "values", values);
 }
 
 static void set_sample_datasrc_in_dict(PyObject *dict,
-				       struct perf_sample *sample)
+				      struct perf_sample *sample)
 {
-	struct mem_info mi = { .data_src.val = sample->data_src };
+	struct mem_info *mi = mem_info__new();
 	char decode[100];
+
+	if (!mi)
+		Py_FatalError("couldn't create mem-info");
 
 	pydict_set_item_string_decref(dict, "datasrc",
 			PyLong_FromUnsignedLongLong(sample->data_src));
 
-	perf_script__meminfo_scnprintf(decode, 100, &mi);
+	mem_info__data_src(mi)->val = sample->data_src;
+	perf_script__meminfo_scnprintf(decode, 100, mi);
+	mem_info__put(mi);
 
 	pydict_set_item_string_decref(dict, "datasrc_decode",
 			_PyUnicode_FromString(decode));
 }
 
-static void regs_map(struct regs_dump *regs, uint64_t mask, const char *arch, char *bf, int size)
+static void regs_map(struct regs_dump *regs, uint64_t mask, uint16_t e_machine, uint32_t e_flags,
+		     char *bf, int size)
 {
 	unsigned int i = 0, r;
 	int printed = 0;
 
 	bf[0] = 0;
+
+	if (size <= 0)
+		return;
 
 	if (!regs || !regs->regs)
 		return;
@@ -722,55 +733,71 @@ static void regs_map(struct regs_dump *regs, uint64_t mask, const char *arch, ch
 
 		printed += scnprintf(bf + printed, size - printed,
 				     "%5s:0x%" PRIx64 " ",
-				     perf_reg_name(r, arch), val);
+				     perf_reg_name(r, e_machine, e_flags), val);
 	}
 }
 
-static void set_regs_in_dict(PyObject *dict,
+#define MAX_REG_SIZE 128
+
+static int set_regs_in_dict(PyObject *dict,
 			     struct perf_sample *sample,
-			     struct evsel *evsel)
+			     struct evsel *evsel,
+			     uint16_t e_machine,
+			     uint32_t e_flags)
 {
 	struct perf_event_attr *attr = &evsel->core.attr;
-	const char *arch = perf_env__arch(evsel__env(evsel));
 
-	/*
-	 * Here value 28 is a constant size which can be used to print
-	 * one register value and its corresponds to:
-	 * 16 chars is to specify 64 bit register in hexadecimal.
-	 * 2 chars is for appending "0x" to the hexadecimal value and
-	 * 10 chars is for register name.
-	 */
-	int size = __sw_hweight64(attr->sample_regs_intr) * 28;
-	char bf[size];
+	int size = (__sw_hweight64(attr->sample_regs_intr) * MAX_REG_SIZE) + 1;
+	char *bf = NULL;
 
-	regs_map(&sample->intr_regs, attr->sample_regs_intr, arch, bf, sizeof(bf));
+	if (sample->intr_regs) {
+		bf = malloc(size);
+		if (!bf)
+			return -1;
 
-	pydict_set_item_string_decref(dict, "iregs",
-			_PyUnicode_FromString(bf));
+		regs_map(sample->intr_regs, attr->sample_regs_intr, e_machine, e_flags, bf, size);
 
-	regs_map(&sample->user_regs, attr->sample_regs_user, arch, bf, sizeof(bf));
+		pydict_set_item_string_decref(dict, "iregs",
+					_PyUnicode_FromString(bf));
+	}
 
-	pydict_set_item_string_decref(dict, "uregs",
-			_PyUnicode_FromString(bf));
+	if (sample->user_regs) {
+		if (!bf) {
+			bf = malloc(size);
+			if (!bf)
+				return -1;
+		}
+		regs_map(sample->user_regs, attr->sample_regs_user, e_machine, e_flags, bf, size);
+
+		pydict_set_item_string_decref(dict, "uregs",
+					_PyUnicode_FromString(bf));
+	}
+	free(bf);
+
+	return 0;
 }
 
 static void set_sym_in_dict(PyObject *dict, struct addr_location *al,
 			    const char *dso_field, const char *dso_bid_field,
 			    const char *dso_map_start, const char *dso_map_end,
-			    const char *sym_field, const char *symoff_field)
+			    const char *sym_field, const char *symoff_field,
+			    const char *map_pgoff)
 {
-	char sbuild_id[SBUILD_ID_SIZE];
-
 	if (al->map) {
+		char sbuild_id[SBUILD_ID_SIZE];
+		struct dso *dso = map__dso(al->map);
+
 		pydict_set_item_string_decref(dict, dso_field,
-			_PyUnicode_FromString(al->map->dso->name));
-		build_id__sprintf(&al->map->dso->bid, sbuild_id);
+					      _PyUnicode_FromString(dso__name(dso)));
+		build_id__snprintf(dso__bid(dso), sbuild_id, sizeof(sbuild_id));
 		pydict_set_item_string_decref(dict, dso_bid_field,
 			_PyUnicode_FromString(sbuild_id));
 		pydict_set_item_string_decref(dict, dso_map_start,
-			PyLong_FromUnsignedLong(al->map->start));
+			PyLong_FromUnsignedLong(map__start(al->map)));
 		pydict_set_item_string_decref(dict, dso_map_end,
-			PyLong_FromUnsignedLong(al->map->end));
+			PyLong_FromUnsignedLong(map__end(al->map)));
+		pydict_set_item_string_decref(dict, map_pgoff,
+			PyLong_FromUnsignedLongLong(map__pgoff(al->map)));
 	}
 	if (al->sym) {
 		pydict_set_item_string_decref(dict, sym_field,
@@ -810,6 +837,8 @@ static PyObject *get_perf_sample_dict(struct perf_sample *sample,
 					 PyObject *callchain)
 {
 	PyObject *dict, *dict_sample, *brstack, *brstacksym;
+	uint16_t e_machine = EM_HOST;
+	uint32_t e_flags = EF_HOST;
 
 	dict = PyDict_New();
 	if (!dict)
@@ -822,6 +851,10 @@ static PyObject *get_perf_sample_dict(struct perf_sample *sample,
 	pydict_set_item_string_decref(dict, "ev_name", _PyUnicode_FromString(evsel__name(evsel)));
 	pydict_set_item_string_decref(dict, "attr", _PyBytes_FromStringAndSize((const char *)&evsel->core.attr, sizeof(evsel->core.attr)));
 
+	pydict_set_item_string_decref(dict_sample, "id",
+			PyLong_FromUnsignedLongLong(sample->id));
+	pydict_set_item_string_decref(dict_sample, "stream_id",
+			PyLong_FromUnsignedLongLong(sample->stream_id));
 	pydict_set_item_string_decref(dict_sample, "pid",
 			_PyLong_FromLong(sample->pid));
 	pydict_set_item_string_decref(dict_sample, "tid",
@@ -841,6 +874,8 @@ static PyObject *get_perf_sample_dict(struct perf_sample *sample,
 	set_sample_read_in_dict(dict_sample, sample, evsel);
 	pydict_set_item_string_decref(dict_sample, "weight",
 			PyLong_FromUnsignedLongLong(sample->weight));
+	pydict_set_item_string_decref(dict_sample, "ins_lat",
+			PyLong_FromUnsignedLong(sample->ins_lat));
 	pydict_set_item_string_decref(dict_sample, "transaction",
 			PyLong_FromUnsignedLongLong(sample->transaction));
 	set_sample_datasrc_in_dict(dict_sample, sample);
@@ -851,7 +886,7 @@ static PyObject *get_perf_sample_dict(struct perf_sample *sample,
 	pydict_set_item_string_decref(dict, "comm",
 			_PyUnicode_FromString(thread__comm_str(al->thread)));
 	set_sym_in_dict(dict, al, "dso", "dso_bid", "dso_map_start", "dso_map_end",
-			"symbol", "symoff");
+			"symbol", "symoff", "map_pgoff");
 
 	pydict_set_item_string_decref(dict, "callchain", callchain);
 
@@ -861,6 +896,13 @@ static PyObject *get_perf_sample_dict(struct perf_sample *sample,
 	brstacksym = python_process_brstacksym(sample, al->thread);
 	pydict_set_item_string_decref(dict, "brstacksym", brstacksym);
 
+	if (sample->machine_pid) {
+		pydict_set_item_string_decref(dict_sample, "machine_pid",
+				_PyLong_FromLong(sample->machine_pid));
+		pydict_set_item_string_decref(dict_sample, "vcpu",
+				_PyLong_FromLong(sample->vcpu));
+	}
+
 	pydict_set_item_string_decref(dict_sample, "cpumode",
 			_PyLong_FromLong((unsigned long)sample->cpumode));
 
@@ -869,7 +911,7 @@ static PyObject *get_perf_sample_dict(struct perf_sample *sample,
 			PyBool_FromLong(1));
 		set_sym_in_dict(dict_sample, addr_al, "addr_dso", "addr_dso_bid",
 				"addr_dso_map_start", "addr_dso_map_end",
-				"addr_symbol", "addr_symoff");
+				"addr_symbol", "addr_symoff", "addr_map_pgoff");
 	}
 
 	if (sample->flags)
@@ -883,17 +925,22 @@ static PyObject *get_perf_sample_dict(struct perf_sample *sample,
 			PyLong_FromUnsignedLongLong(sample->cyc_cnt));
 	}
 
-	set_regs_in_dict(dict, sample, evsel);
+	if (al->thread)
+		e_machine = thread__e_machine(al->thread, /*machine=*/NULL, &e_flags);
+
+	if (set_regs_in_dict(dict, sample, evsel, e_machine, e_flags))
+		Py_FatalError("Failed to setting regs in dict");
 
 	return dict;
 }
 
+#ifdef HAVE_LIBTRACEEVENT
 static void python_process_tracepoint(struct perf_sample *sample,
 				      struct evsel *evsel,
 				      struct addr_location *al,
 				      struct addr_location *addr_al)
 {
-	struct tep_event *event = evsel->tp_format;
+	struct tep_event *event;
 	PyObject *handler, *context, *t, *obj = NULL, *callchain;
 	PyObject *dict = NULL, *all_entries_dict = NULL;
 	static char handler_name[256];
@@ -906,7 +953,11 @@ static void python_process_tracepoint(struct perf_sample *sample,
 	unsigned long long nsecs = sample->time;
 	const char *comm = thread__comm_str(al->thread);
 	const char *default_handler_name = "trace_unhandled";
+	DECLARE_BITMAP(events_defined, TRACE_EVENT_TYPE_MAX);
 
+	bitmap_zero(events_defined, TRACE_EVENT_TYPE_MAX);
+
+	event = evsel__tp_format(evsel);
 	if (!event) {
 		snprintf(handler_name, sizeof(handler_name),
 			 "ug! no event found for type %" PRIu64, (u64)evsel->core.attr.config);
@@ -917,7 +968,7 @@ static void python_process_tracepoint(struct perf_sample *sample,
 
 	sprintf(handler_name, "%s__%s", event->system, event->name);
 
-	if (!test_and_set_bit(event->id, events_defined))
+	if (!__test_and_set_bit(event->id, events_defined))
 		define_event_symbols(event, handler_name, event->print_fmt.args);
 
 	handler = get_handler(handler_name);
@@ -976,7 +1027,7 @@ static void python_process_tracepoint(struct perf_sample *sample,
 				offset  = val;
 				len     = offset >> 16;
 				offset &= 0xffff;
-				if (field->flags & TEP_FIELD_IS_RELATIVE)
+				if (tep_field_is_relative(field->flags))
 					offset += field->offset + field->size;
 			}
 			if (field->flags & TEP_FIELD_IS_STRING &&
@@ -1017,6 +1068,16 @@ static void python_process_tracepoint(struct perf_sample *sample,
 
 	Py_DECREF(t);
 }
+#else
+static void python_process_tracepoint(struct perf_sample *sample __maybe_unused,
+				      struct evsel *evsel __maybe_unused,
+				      struct addr_location *al __maybe_unused,
+				      struct addr_location *addr_al __maybe_unused)
+{
+	fprintf(stderr, "Tracepoint events are not supported because "
+			"perf is not linked with libtraceevent.\n");
+}
+#endif
 
 static PyObject *tuple_new(unsigned int sz)
 {
@@ -1124,11 +1185,11 @@ static int python_export_thread(struct db_export *dbe, struct thread *thread,
 
 	t = tuple_new(5);
 
-	tuple_set_d64(t, 0, thread->db_id);
+	tuple_set_d64(t, 0, thread__db_id(thread));
 	tuple_set_d64(t, 1, machine->db_id);
 	tuple_set_d64(t, 2, main_thread_db_id);
-	tuple_set_s32(t, 3, thread->pid_);
-	tuple_set_s32(t, 4, thread->tid);
+	tuple_set_s32(t, 3, thread__pid(thread));
+	tuple_set_s32(t, 4, thread__tid(thread));
 
 	call_object(tables->thread_handler, t, "thread_table");
 
@@ -1147,7 +1208,7 @@ static int python_export_comm(struct db_export *dbe, struct comm *comm,
 
 	tuple_set_d64(t, 0, comm->db_id);
 	tuple_set_string(t, 1, comm__str(comm));
-	tuple_set_d64(t, 2, thread->db_id);
+	tuple_set_d64(t, 2, thread__db_id(thread));
 	tuple_set_d64(t, 3, comm->start);
 	tuple_set_s32(t, 4, comm->exec);
 
@@ -1168,7 +1229,7 @@ static int python_export_comm_thread(struct db_export *dbe, u64 db_id,
 
 	tuple_set_d64(t, 0, db_id);
 	tuple_set_d64(t, 1, comm->db_id);
-	tuple_set_d64(t, 2, thread->db_id);
+	tuple_set_d64(t, 2, thread__db_id(thread));
 
 	call_object(tables->comm_thread_handler, t, "comm_thread_table");
 
@@ -1184,14 +1245,14 @@ static int python_export_dso(struct db_export *dbe, struct dso *dso,
 	char sbuild_id[SBUILD_ID_SIZE];
 	PyObject *t;
 
-	build_id__sprintf(&dso->bid, sbuild_id);
+	build_id__snprintf(dso__bid(dso), sbuild_id, sizeof(sbuild_id));
 
 	t = tuple_new(5);
 
-	tuple_set_d64(t, 0, dso->db_id);
+	tuple_set_d64(t, 0, dso__db_id(dso));
 	tuple_set_d64(t, 1, machine->db_id);
-	tuple_set_string(t, 2, dso->short_name);
-	tuple_set_string(t, 3, dso->long_name);
+	tuple_set_string(t, 2, dso__short_name(dso));
+	tuple_set_string(t, 3, dso__long_name(dso));
 	tuple_set_string(t, 4, sbuild_id);
 
 	call_object(tables->dso_handler, t, "dso_table");
@@ -1211,7 +1272,7 @@ static int python_export_symbol(struct db_export *dbe, struct symbol *sym,
 	t = tuple_new(6);
 
 	tuple_set_d64(t, 0, *sym_db_id);
-	tuple_set_d64(t, 1, dso->db_id);
+	tuple_set_d64(t, 1, dso__db_id(dso));
 	tuple_set_d64(t, 2, sym->start);
 	tuple_set_d64(t, 3, sym->end);
 	tuple_set_s32(t, 4, sym->binding);
@@ -1248,12 +1309,12 @@ static void python_export_sample_table(struct db_export *dbe,
 	struct tables *tables = container_of(dbe, struct tables, dbe);
 	PyObject *t;
 
-	t = tuple_new(25);
+	t = tuple_new(28);
 
 	tuple_set_d64(t, 0, es->db_id);
 	tuple_set_d64(t, 1, es->evsel->db_id);
-	tuple_set_d64(t, 2, es->al->maps->machine->db_id);
-	tuple_set_d64(t, 3, es->al->thread->db_id);
+	tuple_set_d64(t, 2, maps__machine(thread__maps(es->al->thread))->db_id);
+	tuple_set_d64(t, 3, thread__db_id(es->al->thread));
 	tuple_set_d64(t, 4, es->comm_db_id);
 	tuple_set_d64(t, 5, es->dso_db_id);
 	tuple_set_d64(t, 6, es->sym_db_id);
@@ -1275,6 +1336,9 @@ static void python_export_sample_table(struct db_export *dbe,
 	tuple_set_d64(t, 22, es->sample->insn_cnt);
 	tuple_set_d64(t, 23, es->sample->cyc_cnt);
 	tuple_set_s32(t, 24, es->sample->flags);
+	tuple_set_d64(t, 25, es->sample->id);
+	tuple_set_d64(t, 26, es->sample->stream_id);
+	tuple_set_u32(t, 27, es->sample->ins_lat);
 
 	call_object(tables->sample_handler, t, "sample_table");
 
@@ -1343,7 +1407,7 @@ static int python_export_call_return(struct db_export *dbe,
 	t = tuple_new(14);
 
 	tuple_set_d64(t, 0, cr->db_id);
-	tuple_set_d64(t, 1, cr->thread->db_id);
+	tuple_set_d64(t, 1, thread__db_id(cr->thread));
 	tuple_set_d64(t, 2, comm_db_id);
 	tuple_set_d64(t, 3, cr->cp->db_id);
 	tuple_set_d64(t, 4, cr->call_time);
@@ -1509,7 +1573,7 @@ static void python_do_process_switch(union perf_event *event,
 		np_tid = event->context_switch.next_prev_tid;
 	}
 
-	t = tuple_new(9);
+	t = tuple_new(11);
 	if (!t)
 		return;
 
@@ -1522,6 +1586,8 @@ static void python_do_process_switch(union perf_event *event,
 	tuple_set_s32(t, 6, machine->pid);
 	tuple_set_bool(t, 7, out);
 	tuple_set_bool(t, 8, out_preempt);
+	tuple_set_s32(t, 9, sample->machine_pid);
+	tuple_set_s32(t, 10, sample->vcpu);
 
 	call_object(handler, t, handler_name);
 
@@ -1559,7 +1625,7 @@ static void python_process_auxtrace_error(struct perf_session *session __maybe_u
 		msg = (const char *)&e->time;
 	}
 
-	t = tuple_new(9);
+	t = tuple_new(11);
 
 	tuple_set_u32(t, 0, e->type);
 	tuple_set_u32(t, 1, e->code);
@@ -1570,6 +1636,8 @@ static void python_process_auxtrace_error(struct perf_session *session __maybe_u
 	tuple_set_u64(t, 6, tm);
 	tuple_set_string(t, 7, msg);
 	tuple_set_u32(t, 8, cpumode);
+	tuple_set_s32(t, 9, e->machine_pid);
+	tuple_set_s32(t, 10, e->vcpu);
 
 	call_object(handler, t, handler_name);
 
@@ -1631,19 +1699,15 @@ static void python_process_stat(struct perf_stat_config *config,
 {
 	struct perf_thread_map *threads = counter->core.threads;
 	struct perf_cpu_map *cpus = counter->core.cpus;
-	int cpu, thread;
 
-	if (config->aggr_mode == AGGR_GLOBAL) {
-		process_stat(counter, (struct perf_cpu){ .cpu = -1 }, -1, tstamp,
-			     &counter->counts->aggr);
-		return;
-	}
+	for (int thread = 0; thread < perf_thread_map__nr(threads); thread++) {
+		int idx;
+		struct perf_cpu cpu;
 
-	for (thread = 0; thread < threads->nr; thread++) {
-		for (cpu = 0; cpu < perf_cpu_map__nr(cpus); cpu++) {
-			process_stat(counter, perf_cpu_map__cpu(cpus, cpu),
+		perf_cpu_map__for_each_cpu(cpu, idx, cpus) {
+			process_stat(counter, cpu,
 				     perf_thread_map__pid(threads, thread), tstamp,
-				     perf_counts(counter->counts, cpu, thread));
+				     perf_counts(counter->counts, idx, thread));
 		}
 	}
 }
@@ -1830,12 +1894,6 @@ static void set_table_handlers(struct tables *tables)
 	tables->synth_handler = get_handler("synth_data");
 }
 
-#if PY_MAJOR_VERSION < 3
-static void _free_command_line(const char **command_line, int num)
-{
-	free(command_line);
-}
-#else
 static void _free_command_line(wchar_t **command_line, int num)
 {
 	int i;
@@ -1843,7 +1901,6 @@ static void _free_command_line(wchar_t **command_line, int num)
 		PyMem_RawFree(command_line[i]);
 	free(command_line);
 }
-#endif
 
 
 /*
@@ -1853,40 +1910,23 @@ static int python_start_script(const char *script, int argc, const char **argv,
 			       struct perf_session *session)
 {
 	struct tables *tables = &tables_global;
-#if PY_MAJOR_VERSION < 3
-	const char **command_line;
-#else
 	wchar_t **command_line;
-#endif
-	/*
-	 * Use a non-const name variable to cope with python 2.6's
-	 * PyImport_AppendInittab prototype
-	 */
-	char buf[PATH_MAX], name[19] = "perf_trace_context";
+	char buf[PATH_MAX];
 	int i, err = 0;
 	FILE *fp;
 
 	scripting_context->session = session;
-#if PY_MAJOR_VERSION < 3
-	command_line = malloc((argc + 1) * sizeof(const char *));
-	command_line[0] = script;
-	for (i = 1; i < argc + 1; i++)
-		command_line[i] = argv[i - 1];
-	PyImport_AppendInittab(name, initperf_trace_context);
-#else
 	command_line = malloc((argc + 1) * sizeof(wchar_t *));
+	if (!command_line)
+		return -1;
+
 	command_line[0] = Py_DecodeLocale(script, NULL);
 	for (i = 1; i < argc + 1; i++)
 		command_line[i] = Py_DecodeLocale(argv[i - 1], NULL);
-	PyImport_AppendInittab(name, PyInit_perf_trace_context);
-#endif
+	PyImport_AppendInittab("perf_trace_context", PyInit_perf_trace_context);
 	Py_Initialize();
 
-#if PY_MAJOR_VERSION < 3
-	PySys_SetArgv(argc + 1, (char **)command_line);
-#else
 	PySys_SetArgv(argc + 1, command_line);
-#endif
 
 	fp = fopen(script, "r");
 	if (!fp) {
@@ -1949,6 +1989,7 @@ static int python_stop_script(void)
 	return 0;
 }
 
+#ifdef HAVE_LIBTRACEEVENT
 static int python_generate_script(struct tep_handle *pevent, const char *outfile)
 {
 	int i, not_first, count, nr_events;
@@ -2139,6 +2180,18 @@ static int python_generate_script(struct tep_handle *pevent, const char *outfile
 
 	return 0;
 }
+#else
+static int python_generate_script(struct tep_handle *pevent __maybe_unused,
+				  const char *outfile __maybe_unused)
+{
+	fprintf(stderr, "Generating Python perf-script is not supported."
+		"  Install libtraceevent and rebuild perf to enable it.\n"
+		"For example:\n  # apt install libtraceevent-dev (ubuntu)"
+		"\n  # yum install libtraceevent-devel (Fedora)"
+		"\n  etc.\n");
+	return -1;
+}
+#endif
 
 struct scripting_ops python_scripting_ops = {
 	.name			= "Python",

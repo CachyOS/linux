@@ -4,7 +4,7 @@
  *
  * 2003 by T.Adachi (tadachi@tadachi-net.com)
  * 2003 by Takeru KOMORIYA <komoriya@paken.org>
- * 2006 by Hans Verkuil <hverkuil@xs4all.nl>
+ * 2006 by Hans Verkuil <hverkuil@kernel.org>
  */
 
 #include <linux/module.h>
@@ -154,8 +154,7 @@ static const struct v4l2_subdev_ops upd64083_ops = {
 
 /* i2c implementation */
 
-static int upd64083_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int upd64083_probe(struct i2c_client *client)
 {
 	struct upd64083_state *state;
 	struct v4l2_subdev *sd;
@@ -181,18 +180,17 @@ static int upd64083_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int upd64083_remove(struct i2c_client *client)
+static void upd64083_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
-	return 0;
 }
 
 /* ----------------------------------------------------------------------- */
 
 static const struct i2c_device_id upd64083_id[] = {
-	{ "upd64083", 0 },
+	{ "upd64083" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, upd64083_id);

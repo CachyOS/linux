@@ -838,7 +838,7 @@ struct b43_dmaring *b43_setup_dmaring(struct b43_wldev *dev,
 	int i, err;
 	dma_addr_t dma_test;
 
-	ring = kzalloc(sizeof(*ring), GFP_KERNEL);
+	ring = kzalloc_obj(*ring);
 	if (!ring)
 		goto out;
 
@@ -846,8 +846,7 @@ struct b43_dmaring *b43_setup_dmaring(struct b43_wldev *dev,
 	if (for_tx)
 		ring->nr_slots = B43_TXRING_SLOTS;
 
-	ring->meta = kcalloc(ring->nr_slots, sizeof(struct b43_dmadesc_meta),
-			     GFP_KERNEL);
+	ring->meta = kzalloc_objs(struct b43_dmadesc_meta, ring->nr_slots);
 	if (!ring->meta)
 		goto err_kfree_ring;
 	for (i = 0; i < ring->nr_slots; i++)
@@ -1399,7 +1398,7 @@ int b43_dma_tx(struct b43_wldev *dev, struct sk_buff *skb)
 	    should_inject_overflow(ring)) {
 		/* This TX ring is full. */
 		unsigned int skb_mapping = skb_get_queue_mapping(skb);
-		ieee80211_stop_queue(dev->wl->hw, skb_mapping);
+		b43_stop_queue(dev, skb_mapping);
 		dev->wl->tx_queue_stopped[skb_mapping] = true;
 		ring->stopped = true;
 		if (b43_debug(dev, B43_DBG_DMAVERBOSE)) {
@@ -1531,9 +1530,9 @@ void b43_dma_handle_txstatus(struct b43_wldev *dev,
 				ring->nr_failed_tx_packets++;
 			ring->nr_total_packet_tries += status->frame_count;
 #endif /* DEBUG */
-			ieee80211_tx_status(dev->wl->hw, meta->skb);
+			ieee80211_tx_status_skb(dev->wl->hw, meta->skb);
 
-			/* skb will be freed by ieee80211_tx_status().
+			/* skb will be freed by ieee80211_tx_status_skb().
 			 * Poison our pointer. */
 			meta->skb = B43_DMA_PTR_POISON;
 		} else {
@@ -1570,7 +1569,7 @@ void b43_dma_handle_txstatus(struct b43_wldev *dev,
 	} else {
 		/* If the driver queue is running wake the corresponding
 		 * mac80211 queue. */
-		ieee80211_wake_queue(dev->wl->hw, ring->queue_prio);
+		b43_wake_queue(dev, ring->queue_prio);
 		if (b43_debug(dev, B43_DBG_DMAVERBOSE)) {
 			b43dbg(dev->wl, "Woke up TX ring %d\n", ring->index);
 		}

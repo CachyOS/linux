@@ -5,15 +5,18 @@
  */
 
 #include <linux/errno.h>
+#include <linux/of.h>
 #include <linux/percpu.h>
 #include <linux/spinlock.h>
 
 #include <asm/mips-cps.h>
+#include <asm/smp-cps.h>
 #include <asm/mipsregs.h>
 
 void __iomem *mips_gcr_base;
 void __iomem *mips_cm_l2sync_base;
 int mips_cm_is64;
+bool mips_cm_is_l2_hci_broken;
 
 static char *cm2_tr[8] = {
 	"mem",	"gcr",	"gic",	"mmio",
@@ -179,13 +182,18 @@ static char *cm3_causes[32] = {
 static DEFINE_PER_CPU_ALIGNED(spinlock_t, cm_core_lock);
 static DEFINE_PER_CPU_ALIGNED(unsigned long, cm_core_lock_flags);
 
-phys_addr_t __mips_cm_phys_base(void)
+phys_addr_t __weak mips_cm_phys_base(void)
 {
-	u32 config3 = read_c0_config3();
 	unsigned long cmgcr;
 
 	/* Check the CMGCRBase register is implemented */
-	if (!(config3 & MIPS_CONF3_CMGCR))
+	if (!(read_c0_config() & MIPS_CONF_M))
+		return 0;
+
+	if (!(read_c0_config2() & MIPS_CONF_M))
+		return 0;
+
+	if (!(read_c0_config3() & MIPS_CONF3_CMGCR))
 		return 0;
 
 	/* Read the address from CMGCRBase */
@@ -193,10 +201,7 @@ phys_addr_t __mips_cm_phys_base(void)
 	return (cmgcr & MIPS_CMGCRF_BASE) << (36 - 32);
 }
 
-phys_addr_t mips_cm_phys_base(void)
-	__attribute__((weak, alias("__mips_cm_phys_base")));
-
-phys_addr_t __mips_cm_l2sync_phys_base(void)
+phys_addr_t __weak mips_cm_l2sync_phys_base(void)
 {
 	u32 base_reg;
 
@@ -211,9 +216,6 @@ phys_addr_t __mips_cm_l2sync_phys_base(void)
 	/* Default to following the CM */
 	return mips_cm_phys_base() + MIPS_CM_GCR_SIZE;
 }
-
-phys_addr_t mips_cm_l2sync_phys_base(void)
-	__attribute__((weak, alias("__mips_cm_l2sync_phys_base")));
 
 static void mips_cm_probe_l2sync(void)
 {
@@ -236,6 +238,23 @@ static void mips_cm_probe_l2sync(void)
 
 	/* Map the region */
 	mips_cm_l2sync_base = ioremap(addr, MIPS_CM_L2SYNC_SIZE);
+}
+
+void mips_cm_update_property(void)
+{
+	struct device_node *cm_node;
+
+	cm_node = of_find_compatible_node(of_root, NULL, "mobileye,eyeq6-cm");
+	if (!cm_node)
+		return;
+	pr_info("HCI (Hardware Cache Init for the L2 cache) in GCR_L2_RAM_CONFIG from the CM3 is broken");
+	mips_cm_is_l2_hci_broken = true;
+
+	/* Disable MMID only if it was configured */
+	if (cpu_has_mmid)
+		cpu_disable_mmid();
+
+	of_node_put(cm_node);
 }
 
 int mips_cm_probe(void)
@@ -309,7 +328,9 @@ void mips_cm_lock_other(unsigned int cluster, unsigned int core,
 		      FIELD_PREP(CM3_GCR_Cx_OTHER_VP, vp);
 
 		if (cm_rev >= CM_REV_CM3_5) {
-			val |= CM_GCR_Cx_OTHER_CLUSTER_EN;
+			if (cluster != cpu_cluster(&current_cpu_data))
+				val |= CM_GCR_Cx_OTHER_CLUSTER_EN;
+			val |= CM_GCR_Cx_OTHER_GIC_EN;
 			val |= FIELD_PREP(CM_GCR_Cx_OTHER_CLUSTER, cluster);
 			val |= FIELD_PREP(CM_GCR_Cx_OTHER_BLOCK, block);
 		} else {
@@ -512,4 +533,25 @@ void mips_cm_error_report(void)
 
 	/* reprime cause register */
 	write_gcr_error_cause(cm_error);
+}
+
+unsigned int mips_cps_first_online_in_cluster(int *first_cpu)
+{
+	unsigned int local_cl = cpu_cluster(&current_cpu_data);
+	struct cpumask *local_cl_mask;
+
+	/*
+	 * mips_cps_cluster_bootcfg is allocated in cps_prepare_cpus. If it is
+	 * not yet done, then we are so early that only one CPU is running, so
+	 * it is the first online CPU in the cluster.
+	 */
+	if  (IS_ENABLED(CONFIG_MIPS_CPS) && mips_cps_cluster_bootcfg)
+		local_cl_mask = &mips_cps_cluster_bootcfg[local_cl].cpumask;
+	else
+		return true;
+
+	*first_cpu = cpumask_any_and_but(local_cl_mask,
+					 cpu_online_mask,
+					 smp_processor_id());
+	return (*first_cpu >= nr_cpu_ids);
 }

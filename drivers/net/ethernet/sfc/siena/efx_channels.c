@@ -217,8 +217,8 @@ static int efx_allocate_msix_channels(struct efx_nic *efx,
 
 	if (efx_siena_separate_tx_channels) {
 		efx->n_tx_channels =
-			min(max(n_channels / 2, 1U),
-			    efx->max_tx_channels);
+			clamp(n_channels / 2, 1U,
+			      efx->max_tx_channels);
 		efx->tx_channel_offset =
 			n_channels - efx->n_tx_channels;
 		efx->n_rx_channels =
@@ -302,6 +302,7 @@ int efx_siena_probe_interrupts(struct efx_nic *efx)
 		efx->tx_channel_offset = 0;
 		efx->n_xdp_channels = 0;
 		efx->xdp_channel_offset = efx->n_channels;
+		efx->xdp_txq_queues_mode = EFX_XDP_TX_QUEUES_BORROWED;
 		rc = pci_enable_msi(efx->pci_dev);
 		if (rc == 0) {
 			efx_get_channel(efx, 0)->irq = efx->pci_dev->irq;
@@ -320,9 +321,10 @@ int efx_siena_probe_interrupts(struct efx_nic *efx)
 		efx->n_channels = 1 + (efx_siena_separate_tx_channels ? 1 : 0);
 		efx->n_rx_channels = 1;
 		efx->n_tx_channels = 1;
-		efx->tx_channel_offset = 1;
+		efx->tx_channel_offset = efx_siena_separate_tx_channels ? 1 : 0;
 		efx->n_xdp_channels = 0;
 		efx->xdp_channel_offset = efx->n_channels;
+		efx->xdp_txq_queues_mode = EFX_XDP_TX_QUEUES_BORROWED;
 		efx->legacy_irq = efx->pci_dev->irq;
 	}
 
@@ -534,7 +536,7 @@ static struct efx_channel *efx_alloc_channel(struct efx_nic *efx, int i)
 	struct efx_channel *channel;
 	int j;
 
-	channel = kzalloc(sizeof(*channel), GFP_KERNEL);
+	channel = kzalloc_obj(*channel);
 	if (!channel)
 		return NULL;
 
@@ -605,7 +607,7 @@ struct efx_channel *efx_copy_channel(const struct efx_channel *old_channel)
 	struct efx_channel *channel;
 	int j;
 
-	channel = kmalloc(sizeof(*channel), GFP_KERNEL);
+	channel = kmalloc_obj(*channel);
 	if (!channel)
 		return NULL;
 
@@ -964,9 +966,8 @@ int efx_siena_set_channels(struct efx_nic *efx)
 		EFX_WARN_ON_PARANOID(efx->xdp_tx_queues);
 
 		/* Allocate array for XDP TX queue lookup. */
-		efx->xdp_tx_queues = kcalloc(efx->xdp_tx_queue_count,
-					     sizeof(*efx->xdp_tx_queues),
-					     GFP_KERNEL);
+		efx->xdp_tx_queues = kzalloc_objs(*efx->xdp_tx_queues,
+						  efx->xdp_tx_queue_count);
 		if (!efx->xdp_tx_queues)
 			return -ENOMEM;
 	}
@@ -1283,7 +1284,8 @@ static int efx_poll(struct napi_struct *napi, int budget)
 
 	spent = efx_process_channel(channel, budget);
 
-	xdp_do_flush_map();
+	if (budget)
+		xdp_do_flush();
 
 	if (spent < budget) {
 		if (efx_channel_has_rx_queue(channel) &&
@@ -1297,7 +1299,7 @@ static int efx_poll(struct napi_struct *napi, int budget)
 		time = jiffies - channel->rfs_last_expiry;
 		/* Would our quota be >= 20? */
 		if (channel->rfs_filter_count * time >= 600 * HZ)
-			mod_delayed_work(system_wq, &channel->filter_work, 0);
+			mod_delayed_work(system_percpu_wq, &channel->filter_work, 0);
 #endif
 
 		/* There is no race here; although napi_disable() will
@@ -1317,7 +1319,7 @@ static void efx_init_napi_channel(struct efx_channel *channel)
 	struct efx_nic *efx = channel->efx;
 
 	channel->napi_dev = efx->net_dev;
-	netif_napi_add(channel->napi_dev, &channel->napi_str, efx_poll, 64);
+	netif_napi_add(channel->napi_dev, &channel->napi_str, efx_poll);
 }
 
 void efx_siena_init_napi(struct efx_nic *efx)

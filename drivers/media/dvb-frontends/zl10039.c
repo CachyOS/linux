@@ -254,7 +254,7 @@ struct dvb_frontend *zl10039_attach(struct dvb_frontend *fe,
 	struct zl10039_state *state = NULL;
 
 	dprintk("%s\n", __func__);
-	state = kmalloc(sizeof(struct zl10039_state), GFP_KERNEL);
+	state = kmalloc_obj(struct zl10039_state);
 	if (state == NULL)
 		goto error;
 
@@ -295,7 +295,7 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(zl10039_attach);
+EXPORT_SYMBOL_GPL(zl10039_attach);
 
 module_param(debug, int, 0644);
 MODULE_PARM_DESC(debug, "Turn on/off frontend debugging (default:off).");

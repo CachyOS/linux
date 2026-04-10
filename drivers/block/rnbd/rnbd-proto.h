@@ -18,13 +18,13 @@
 #include <rdma/ib.h>
 
 #define RNBD_PROTO_VER_MAJOR 2
-#define RNBD_PROTO_VER_MINOR 0
+#define RNBD_PROTO_VER_MINOR 2
 
 /* The default port number the RTRS server is listening on. */
 #define RTRS_PORT 1234
 
 /**
- * enum rnbd_msg_types - RNBD message types
+ * enum rnbd_msg_type - RNBD message types
  * @RNBD_MSG_SESS_INFO:	initial session info from client to server
  * @RNBD_MSG_SESS_INFO_RSP:	initial session info from server to client
  * @RNBD_MSG_OPEN:		open (map) device request
@@ -47,10 +47,11 @@ enum rnbd_msg_type {
  */
 struct rnbd_msg_hdr {
 	__le16		type;
+	/* private: */
 	__le16		__padding;
 };
 
-/**
+/*
  * We allow to map RO many times and RW only once. We allow to map yet another
  * time RW, if MIGRATION is provided (second RW export can be required for
  * example for VM migration)
@@ -61,6 +62,15 @@ enum rnbd_access_mode {
 	RNBD_ACCESS_MIGRATION,
 };
 
+static const __maybe_unused struct {
+	enum rnbd_access_mode mode;
+	const char *str;
+} rnbd_access_modes[] = {
+	[RNBD_ACCESS_RO] = {RNBD_ACCESS_RO, "ro"},
+	[RNBD_ACCESS_RW] = {RNBD_ACCESS_RW, "rw"},
+	[RNBD_ACCESS_MIGRATION] = {RNBD_ACCESS_MIGRATION, "migration"},
+};
+
 /**
  * struct rnbd_msg_sess_info - initial session info from client to server
  * @hdr:		message header
@@ -69,6 +79,7 @@ enum rnbd_access_mode {
 struct rnbd_msg_sess_info {
 	struct rnbd_msg_hdr hdr;
 	u8		ver;
+	/* private: */
 	u8		reserved[31];
 };
 
@@ -80,6 +91,7 @@ struct rnbd_msg_sess_info {
 struct rnbd_msg_sess_info_rsp {
 	struct rnbd_msg_hdr hdr;
 	u8		ver;
+	/* private: */
 	u8		reserved[31];
 };
 
@@ -88,13 +100,16 @@ struct rnbd_msg_sess_info_rsp {
  * @hdr:		message header
  * @access_mode:	the mode to open remote device, valid values see:
  *			enum rnbd_access_mode
- * @device_name:	device path on remote side
+ * @dev_name:		device path on remote side
  */
 struct rnbd_msg_open {
 	struct rnbd_msg_hdr hdr;
 	u8		access_mode;
+	/* private: */
 	u8		resv1;
+	/* public: */
 	s8		dev_name[NAME_MAX];
+	/* private: */
 	u8		reserved[3];
 };
 
@@ -119,7 +134,7 @@ enum rnbd_cache_policy {
  * @device_id:		device_id on server side to identify the device
  * @nsectors:		number of sectors in the usual 512b unit
  * @max_hw_sectors:	max hardware sectors in the usual 512b unit
- * @max_write_same_sectors: max sectors for WRITE SAME in the 512b unit
+ * @max_write_zeroes_sectors: max sectors for WRITE ZEROES in the 512b unit
  * @max_discard_sectors: max. sectors that can be discarded at once in 512b
  * unit.
  * @discard_granularity: size of the internal discard allocation unit in bytes
@@ -136,7 +151,7 @@ struct rnbd_msg_open_rsp {
 	__le32			device_id;
 	__le64			nsectors;
 	__le32			max_hw_sectors;
-	__le32			max_write_same_sectors;
+	__le32			max_write_zeroes_sectors;
 	__le32			max_discard_sectors;
 	__le32			discard_granularity;
 	__le32			discard_alignment;
@@ -146,6 +161,7 @@ struct rnbd_msg_open_rsp {
 	__le16			secure_discard;
 	u8			obsolete_rotational;
 	u8			cache_policy;
+	/* private: */
 	u8			reserved[10];
 };
 
@@ -177,31 +193,28 @@ struct rnbd_msg_io {
  * @RNBD_OP_FLUSH:	     flush the volatile write cache
  * @RNBD_OP_DISCARD:        discard sectors
  * @RNBD_OP_SECURE_ERASE:   securely erase sectors
- * @RNBD_OP_WRITE_SAME:     write the same sectors many times
-
+ * @RNBD_OP_WRITE_ZEROES:   write zeroes sectors
+ *
  * @RNBD_F_SYNC:	     request is sync (sync write or read)
  * @RNBD_F_FUA:             forced unit access
+ * @RNBD_F_PREFLUSH:	    request for cache flush
+ * @RNBD_F_NOUNMAP:	    do not free blocks when zeroing
  */
 enum rnbd_io_flags {
 
 	/* Operations */
-
 	RNBD_OP_READ		= 0,
 	RNBD_OP_WRITE		= 1,
 	RNBD_OP_FLUSH		= 2,
 	RNBD_OP_DISCARD	= 3,
 	RNBD_OP_SECURE_ERASE	= 4,
-	RNBD_OP_WRITE_SAME	= 5,
-
-	RNBD_OP_LAST,
+	RNBD_OP_WRITE_ZEROES	= 5,
 
 	/* Flags */
-
 	RNBD_F_SYNC  = 1<<(RNBD_OP_BITS + 0),
 	RNBD_F_FUA   = 1<<(RNBD_OP_BITS + 1),
-
-	RNBD_F_ALL   = (RNBD_F_SYNC | RNBD_F_FUA)
-
+	RNBD_F_PREFLUSH = 1<<(RNBD_OP_BITS + 2),
+	RNBD_F_NOUNMAP = 1<<(RNBD_OP_BITS + 3)
 };
 
 static inline u32 rnbd_op(u32 flags)
@@ -214,24 +227,9 @@ static inline u32 rnbd_flags(u32 flags)
 	return flags & ~RNBD_OP_MASK;
 }
 
-static inline bool rnbd_flags_supported(u32 flags)
+static inline blk_opf_t rnbd_to_bio_flags(u32 rnbd_opf)
 {
-	u32 op;
-
-	op = rnbd_op(flags);
-	flags = rnbd_flags(flags);
-
-	if (op >= RNBD_OP_LAST)
-		return false;
-	if (flags & ~RNBD_F_ALL)
-		return false;
-
-	return true;
-}
-
-static inline u32 rnbd_to_bio_flags(u32 rnbd_opf)
-{
-	u32 bio_opf;
+	blk_opf_t bio_opf;
 
 	switch (rnbd_op(rnbd_opf)) {
 	case RNBD_OP_READ:
@@ -241,13 +239,19 @@ static inline u32 rnbd_to_bio_flags(u32 rnbd_opf)
 		bio_opf = REQ_OP_WRITE;
 		break;
 	case RNBD_OP_FLUSH:
-		bio_opf = REQ_OP_FLUSH | REQ_PREFLUSH;
+		bio_opf = REQ_OP_WRITE | REQ_PREFLUSH;
 		break;
 	case RNBD_OP_DISCARD:
 		bio_opf = REQ_OP_DISCARD;
 		break;
 	case RNBD_OP_SECURE_ERASE:
 		bio_opf = REQ_OP_SECURE_ERASE;
+		break;
+	case RNBD_OP_WRITE_ZEROES:
+		bio_opf = REQ_OP_WRITE_ZEROES;
+
+		if (rnbd_opf & RNBD_F_NOUNMAP)
+			bio_opf |= REQ_NOUNMAP;
 		break;
 	default:
 		WARN(1, "Unknown RNBD type: %d (flags %d)\n",
@@ -260,6 +264,9 @@ static inline u32 rnbd_to_bio_flags(u32 rnbd_opf)
 
 	if (rnbd_opf & RNBD_F_FUA)
 		bio_opf |= REQ_FUA;
+
+	if (rnbd_opf & RNBD_F_PREFLUSH)
+		bio_opf |= REQ_PREFLUSH;
 
 	return bio_opf;
 }
@@ -281,12 +288,19 @@ static inline u32 rq_to_rnbd_flags(struct request *rq)
 	case REQ_OP_SECURE_ERASE:
 		rnbd_opf = RNBD_OP_SECURE_ERASE;
 		break;
+	case REQ_OP_WRITE_ZEROES:
+		rnbd_opf = RNBD_OP_WRITE_ZEROES;
+
+		if (rq->cmd_flags & REQ_NOUNMAP)
+			rnbd_opf |= RNBD_F_NOUNMAP;
+		break;
 	case REQ_OP_FLUSH:
 		rnbd_opf = RNBD_OP_FLUSH;
 		break;
 	default:
 		WARN(1, "Unknown request type %d (flags %llu)\n",
-		     req_op(rq), (unsigned long long)rq->cmd_flags);
+		     (__force u32)req_op(rq),
+		     (__force unsigned long long)rq->cmd_flags);
 		rnbd_opf = 0;
 	}
 
@@ -295,6 +309,9 @@ static inline u32 rq_to_rnbd_flags(struct request *rq)
 
 	if (op_is_flush(rq->cmd_flags))
 		rnbd_opf |= RNBD_F_FUA;
+
+	if (rq->cmd_flags & REQ_PREFLUSH)
+		rnbd_opf |= RNBD_F_PREFLUSH;
 
 	return rnbd_opf;
 }

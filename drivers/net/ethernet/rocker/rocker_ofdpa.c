@@ -838,7 +838,7 @@ static int ofdpa_flow_tbl_ig_port(struct ofdpa_port *ofdpa_port, int flags,
 {
 	struct ofdpa_flow_tbl_entry *entry;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (!entry)
 		return -ENOMEM;
 
@@ -860,7 +860,7 @@ static int ofdpa_flow_tbl_vlan(struct ofdpa_port *ofdpa_port,
 {
 	struct ofdpa_flow_tbl_entry *entry;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (!entry)
 		return -ENOMEM;
 
@@ -886,7 +886,7 @@ static int ofdpa_flow_tbl_term_mac(struct ofdpa_port *ofdpa_port,
 {
 	struct ofdpa_flow_tbl_entry *entry;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (!entry)
 		return -ENOMEM;
 
@@ -926,7 +926,7 @@ static int ofdpa_flow_tbl_bridge(struct ofdpa_port *ofdpa_port,
 	bool dflt = !eth_dst || eth_dst_mask;
 	bool wild = false;
 
-	entry = kzalloc(sizeof(*entry), GFP_ATOMIC);
+	entry = kzalloc_obj(*entry, GFP_ATOMIC);
 	if (!entry)
 		return -ENOMEM;
 
@@ -976,7 +976,7 @@ static int ofdpa_flow_tbl_ucast4_routing(struct ofdpa_port *ofdpa_port,
 {
 	struct ofdpa_flow_tbl_entry *entry;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (!entry)
 		return -ENOMEM;
 
@@ -1006,7 +1006,7 @@ static int ofdpa_flow_tbl_acl(struct ofdpa_port *ofdpa_port, int flags,
 	u32 priority;
 	struct ofdpa_flow_tbl_entry *entry;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (!entry)
 		return -ENOMEM;
 
@@ -1150,7 +1150,7 @@ static int ofdpa_group_l2_interface(struct ofdpa_port *ofdpa_port,
 {
 	struct ofdpa_group_tbl_entry *entry;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (!entry)
 		return -ENOMEM;
 
@@ -1166,7 +1166,7 @@ static int ofdpa_group_l2_fan_out(struct ofdpa_port *ofdpa_port,
 {
 	struct ofdpa_group_tbl_entry *entry;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (!entry)
 		return -ENOMEM;
 
@@ -1199,7 +1199,7 @@ static int ofdpa_group_l3_unicast(struct ofdpa_port *ofdpa_port, int flags,
 {
 	struct ofdpa_group_tbl_entry *entry;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (!entry)
 		return -ENOMEM;
 
@@ -1273,7 +1273,7 @@ static int ofdpa_port_ipv4_neigh(struct ofdpa_port *ofdpa_port,
 	bool removing;
 	int err = 0;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry, GFP_ATOMIC);
 	if (!entry)
 		return -ENOMEM;
 
@@ -1386,7 +1386,7 @@ static int ofdpa_port_ipv4_nh(struct ofdpa_port *ofdpa_port,
 	bool resolved = true;
 	int err = 0;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (!entry)
 		return -ENOMEM;
 
@@ -1821,19 +1821,17 @@ static void ofdpa_port_fdb_learn_work(struct work_struct *work)
 	const struct ofdpa_fdb_learn_work *lw =
 		container_of(work, struct ofdpa_fdb_learn_work, work);
 	bool removing = (lw->flags & OFDPA_OP_FLAG_REMOVE);
-	bool learned = (lw->flags & OFDPA_OP_FLAG_LEARNED);
 	struct switchdev_notifier_fdb_info info = {};
+	enum switchdev_notifier_type event;
 
 	info.addr = lw->addr;
 	info.vid = lw->vid;
+	info.offloaded = !removing;
+	event = removing ? SWITCHDEV_FDB_DEL_TO_BRIDGE :
+			   SWITCHDEV_FDB_ADD_TO_BRIDGE;
 
 	rtnl_lock();
-	if (learned && removing)
-		call_switchdev_notifiers(SWITCHDEV_FDB_DEL_TO_BRIDGE,
-					 lw->ofdpa_port->dev, &info.info, NULL);
-	else if (learned && !removing)
-		call_switchdev_notifiers(SWITCHDEV_FDB_ADD_TO_BRIDGE,
-					 lw->ofdpa_port->dev, &info.info, NULL);
+	call_switchdev_notifiers(event, lw->ofdpa_port->dev, &info.info, NULL);
 	rtnl_unlock();
 
 	kfree(work);
@@ -1865,7 +1863,10 @@ static int ofdpa_port_fdb_learn(struct ofdpa_port *ofdpa_port,
 	if (!ofdpa_port_is_bridged(ofdpa_port))
 		return 0;
 
-	lw = kzalloc(sizeof(*lw), GFP_ATOMIC);
+	if (!(flags & OFDPA_OP_FLAG_LEARNED))
+		return 0;
+
+	lw = kzalloc_obj(*lw, GFP_ATOMIC);
 	if (!lw)
 		return -ENOMEM;
 
@@ -1903,7 +1904,7 @@ static int ofdpa_port_fdb(struct ofdpa_port *ofdpa_port,
 	bool removing = (flags & OFDPA_OP_FLAG_REMOVE);
 	unsigned long lock_flags;
 
-	fdb = kzalloc(sizeof(*fdb), GFP_KERNEL);
+	fdb = kzalloc_obj(*fdb);
 	if (!fdb)
 		return -ENOMEM;
 
@@ -1932,7 +1933,7 @@ static int ofdpa_port_fdb(struct ofdpa_port *ofdpa_port,
 	spin_unlock_irqrestore(&ofdpa->fdb_tbl_lock, lock_flags);
 
 	/* Check if adding and already exists, or removing and can't find */
-	if (!found != !removing) {
+	if (!found == removing) {
 		kfree(fdb);
 		if (!found && removing)
 			return 0;
@@ -1981,7 +1982,7 @@ err_out:
 
 static void ofdpa_fdb_cleanup(struct timer_list *t)
 {
-	struct ofdpa *ofdpa = from_timer(ofdpa, t, fdb_cleanup_timer);
+	struct ofdpa *ofdpa = timer_container_of(ofdpa, t, fdb_cleanup_timer);
 	struct ofdpa_port *ofdpa_port;
 	struct ofdpa_fdb_tbl_entry *entry;
 	struct hlist_node *tmp;
@@ -2231,7 +2232,7 @@ static __be16 ofdpa_port_internal_vlan_id_get(struct ofdpa_port *ofdpa_port,
 	unsigned long lock_flags;
 	int i;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (!entry)
 		return 0;
 
@@ -2385,7 +2386,7 @@ static void ofdpa_fini(struct rocker *rocker)
 	struct hlist_node *tmp;
 	int bkt;
 
-	del_timer_sync(&ofdpa->fdb_cleanup_timer);
+	timer_delete_sync(&ofdpa->fdb_cleanup_timer);
 	flush_workqueue(rocker->rocker_owq);
 
 	spin_lock_irqsave(&ofdpa->flow_tbl_lock, flags);

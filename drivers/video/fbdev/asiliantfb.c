@@ -29,6 +29,7 @@
  *  more details.
  */
 
+#include <linux/aperture.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -97,12 +98,10 @@ static int asiliantfb_setcolreg(u_int regno, u_int red, u_int green, u_int blue,
 
 static const struct fb_ops asiliantfb_ops = {
 	.owner		= THIS_MODULE,
+	FB_DEFAULT_IOMEM_OPS,
 	.fb_check_var	= asiliantfb_check_var,
 	.fb_set_par	= asiliantfb_set_par,
 	.fb_setcolreg	= asiliantfb_setcolreg,
-	.fb_fillrect	= cfb_fillrect,
-	.fb_copyarea	= cfb_copyarea,
-	.fb_imageblit	= cfb_imageblit,
 };
 
 /* Calculate the ratios for the dot clocks without using a single long long
@@ -515,7 +514,6 @@ static int init_asiliant(struct fb_info *p, unsigned long addr)
 	p->fix.smem_start	= addr;
 	p->var			= asiliantfb_var;
 	p->fbops		= &asiliantfb_ops;
-	p->flags		= FBINFO_DEFAULT;
 
 	err = fb_alloc_cmap(&p->cmap, 256, 0);
 	if (err) {
@@ -544,6 +542,10 @@ static int asiliantfb_pci_init(struct pci_dev *dp,
 	unsigned long addr, size;
 	struct fb_info *p;
 	int err;
+
+	err = aperture_remove_conflicting_pci_devices(dp, "asiliantfb");
+	if (err)
+		return err;
 
 	if ((dp->resource[0].flags & IORESOURCE_MEM) == 0)
 		return -ENODEV;
@@ -611,6 +613,9 @@ static struct pci_driver asiliantfb_driver = {
 
 static int __init asiliantfb_init(void)
 {
+	if (fb_modesetting_disabled("asiliantfb"))
+		return -ENODEV;
+
 	if (fb_get_options("asiliantfb", NULL))
 		return -ENODEV;
 

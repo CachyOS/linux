@@ -11,6 +11,7 @@
 #ifndef _MEDIA_DEVICE_H
 #define _MEDIA_DEVICE_H
 
+#include <linux/atomic.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/pci.h>
@@ -106,6 +107,9 @@ struct media_device_ops {
  * @ops:	Operation handler callbacks
  * @req_queue_mutex: Serialise the MEDIA_REQUEST_IOC_QUEUE ioctl w.r.t.
  *		     other operations that stop or start streaming.
+ * @num_requests: number of associated requests
+ * @num_request_objects: number of associated request objects
+ * @media_dir:	DebugFS media directory
  * @request_id: Used to generate unique request IDs
  *
  * This structure represents an abstract high-level media device. It allows easy
@@ -179,6 +183,11 @@ struct media_device {
 	const struct media_device_ops *ops;
 
 	struct mutex req_queue_mutex;
+	atomic_t num_requests;
+	atomic_t num_request_objects;
+
+	/* debugfs */
+	struct dentry *media_dir;
 	atomic_t request_id;
 };
 
@@ -190,21 +199,6 @@ struct usb_device;
 /* Supported link_notify @notification values. */
 #define MEDIA_DEV_NOTIFY_PRE_LINK_CH	0
 #define MEDIA_DEV_NOTIFY_POST_LINK_CH	1
-
-/**
- * media_entity_enum_init - Initialise an entity enumeration
- *
- * @ent_enum: Entity enumeration to be initialised
- * @mdev: The related media device
- *
- * Return: zero on success or a negative error code.
- */
-static inline __must_check int media_entity_enum_init(
-	struct media_entity_enum *ent_enum, struct media_device *mdev)
-{
-	return __media_entity_enum_init(ent_enum,
-					mdev->entity_internal_idx_max + 1);
-}
 
 /**
  * media_device_init() - Initializes a media device element
@@ -379,7 +373,7 @@ void media_device_unregister_entity(struct media_entity *entity);
  *    media_entity_notify callbacks are invoked.
  */
 
-int __must_check media_device_register_entity_notify(struct media_device *mdev,
+void media_device_register_entity_notify(struct media_device *mdev,
 					struct media_entity_notify *nptr);
 
 /**
@@ -444,11 +438,17 @@ void __media_device_usb_init(struct media_device *mdev,
 			     const char *driver_name);
 
 #else
+static inline void media_device_init(struct media_device *mdev)
+{
+}
 static inline int media_device_register(struct media_device *mdev)
 {
 	return 0;
 }
 static inline void media_device_unregister(struct media_device *mdev)
+{
+}
+static inline void media_device_cleanup(struct media_device *mdev)
 {
 }
 static inline int media_device_register_entity(struct media_device *mdev,
@@ -459,11 +459,10 @@ static inline int media_device_register_entity(struct media_device *mdev,
 static inline void media_device_unregister_entity(struct media_entity *entity)
 {
 }
-static inline int media_device_register_entity_notify(
+static inline void media_device_register_entity_notify(
 					struct media_device *mdev,
 					struct media_entity_notify *nptr)
 {
-	return 0;
 }
 static inline void media_device_unregister_entity_notify(
 					struct media_device *mdev,

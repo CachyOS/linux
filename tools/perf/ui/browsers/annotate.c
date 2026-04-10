@@ -4,25 +4,24 @@
 #include "../ui.h"
 #include "../../util/annotate.h"
 #include "../../util/debug.h"
+#include "../../util/debuginfo.h"
 #include "../../util/dso.h"
+#include "../../util/hashmap.h"
 #include "../../util/hist.h"
 #include "../../util/sort.h"
 #include "../../util/map.h"
+#include "../../util/mutex.h"
 #include "../../util/symbol.h"
 #include "../../util/evsel.h"
 #include "../../util/evlist.h"
+#include "../../util/thread.h"
 #include <inttypes.h>
-#include <pthread.h>
+#include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/zalloc.h>
 #include <sys/ttydefaults.h>
 #include <asm/bug.h>
-
-struct disasm_line_samples {
-	double		      percent;
-	struct sym_hist_entry he;
-};
 
 struct arch;
 
@@ -31,11 +30,31 @@ struct annotate_browser {
 	struct rb_root		    entries;
 	struct rb_node		   *curr_hot;
 	struct annotation_line	   *selection;
-	struct arch		   *arch;
-	struct annotation_options  *opts;
+	const struct arch	   *arch;
+	/*
+	 * perf top can delete hist_entry anytime.  Callers should make sure
+	 * its lifetime.
+	 */
+	struct hist_entry	   *he;
+	struct debuginfo	   *dbg;
+	struct evsel		   *evsel;
+	struct hashmap		   *type_hash;
 	bool			    searching_backwards;
 	char			    search_bf[128];
 };
+
+/* A copy of target hist_entry for perf top. */
+static struct hist_entry annotate_he;
+
+static size_t type_hash(long key, void *ctx __maybe_unused)
+{
+	return key;
+}
+
+static bool type_equal(long key1, long key2, void *ctx __maybe_unused)
+{
+	return key1 == key2;
+}
 
 static inline struct annotation *browser__annotation(struct ui_browser *browser)
 {
@@ -43,11 +62,10 @@ static inline struct annotation *browser__annotation(struct ui_browser *browser)
 	return symbol__annotation(ms->sym);
 }
 
-static bool disasm_line__filter(struct ui_browser *browser, void *entry)
+static bool disasm_line__filter(struct ui_browser *browser __maybe_unused, void *entry)
 {
-	struct annotation *notes = browser__annotation(browser);
 	struct annotation_line *al = list_entry(entry, struct annotation_line, node);
-	return annotation_line__filter(al, notes);
+	return annotation_line__filter(al);
 }
 
 static int ui_browser__jumps_percent_color(struct ui_browser *browser, int nr, bool current)
@@ -56,7 +74,7 @@ static int ui_browser__jumps_percent_color(struct ui_browser *browser, int nr, b
 
 	if (current && (!browser->use_navkeypressed || browser->navkeypressed))
 		return HE_COLORSET_SELECTED;
-	if (nr == notes->max_jump_sources)
+	if (nr == notes->src->max_jump_sources)
 		return HE_COLORSET_TOP;
 	if (nr > 1)
 		return HE_COLORSET_MEDIUM;
@@ -102,7 +120,7 @@ static void annotate_browser__write(struct ui_browser *browser, void *entry, int
 	struct annotation_write_ops ops = {
 		.first_line		 = row == 0,
 		.current_entry		 = is_current_entry,
-		.change_color		 = (!notes->options->hide_src_code &&
+		.change_color		 = (!annotate_opts.hide_src_code &&
 					    (!is_current_entry ||
 					     (browser->use_navkeypressed &&
 					      !browser->navkeypressed))),
@@ -114,12 +132,21 @@ static void annotate_browser__write(struct ui_browser *browser, void *entry, int
 		.printf			 = annotate_browser__printf,
 		.write_graph		 = annotate_browser__write_graph,
 	};
+	struct annotation_print_data apd = {
+		.he = ab->he,
+		.arch = ab->arch,
+		.evsel = ab->evsel,
+		.dbg = ab->dbg,
+	};
 
 	/* The scroll bar isn't being used */
 	if (!browser->navkeypressed)
 		ops.width += 1;
 
-	annotation_line__write(al, notes, &ops, ab->opts);
+	if (!IS_ERR_OR_NULL(ab->type_hash))
+		apd.type_hash = ab->type_hash;
+
+	annotation_line__write(al, notes, &ops, &apd);
 
 	if (ops.current_entry)
 		ab->selection = al;
@@ -133,7 +160,7 @@ static int is_fused(struct annotate_browser *ab, struct disasm_line *cursor)
 
 	while (pos && pos->al.offset == -1) {
 		pos = list_prev_entry(pos, al.node);
-		if (!ab->opts->hide_src_code)
+		if (!annotate_opts.hide_src_code)
 			diff++;
 	}
 
@@ -163,6 +190,7 @@ static void annotate_browser__draw_current_jump(struct ui_browser *browser)
 	struct symbol *sym = ms->sym;
 	struct annotation *notes = symbol__annotation(sym);
 	u8 pcnt_width = annotation__pcnt_width(notes);
+	u8 cntr_width = annotation__br_cntr_width();
 	int width;
 	int diff = 0;
 
@@ -193,14 +221,14 @@ static void annotate_browser__draw_current_jump(struct ui_browser *browser)
 	 *  name right after the '<' token and probably treating this like a
 	 *  'call' instruction.
 	 */
-	target = notes->offsets[cursor->ops.target.offset];
+	target = annotated_source__get_line(notes->src, cursor->ops.target.offset);
 	if (target == NULL) {
 		ui_helpline__printf("WARN: jump target inconsistency, press 'o', notes->offsets[%#x] = NULL\n",
 				    cursor->ops.target.offset);
 		return;
 	}
 
-	if (notes->options->hide_src_code) {
+	if (annotate_opts.hide_src_code) {
 		from = cursor->al.idx_asm;
 		to = target->idx_asm;
 	} else {
@@ -212,13 +240,13 @@ static void annotate_browser__draw_current_jump(struct ui_browser *browser)
 
 	ui_browser__set_color(browser, HE_COLORSET_JUMP_ARROWS);
 	__ui_browser__line_arrow(browser,
-				 pcnt_width + 2 + notes->widths.addr + width,
+				 pcnt_width + 2 + notes->src->widths.addr + width + cntr_width,
 				 from, to);
 
 	diff = is_fused(ab, cursor);
 	if (diff > 0) {
 		ui_browser__mark_fused(browser,
-				       pcnt_width + 3 + notes->widths.addr + width,
+				       pcnt_width + 3 + notes->src->widths.addr + width + cntr_width,
 				       from - diff, diff, to > from);
 	}
 }
@@ -229,7 +257,7 @@ static unsigned int annotate_browser__refresh(struct ui_browser *browser)
 	int ret = ui_browser__list_head_refresh(browser);
 	int pcnt_width = annotation__pcnt_width(notes);
 
-	if (notes->options->jump_arrows)
+	if (annotate_opts.jump_arrows)
 		annotate_browser__draw_current_jump(browser);
 
 	ui_browser__set_color(browser, HE_COLORSET_NORMAL);
@@ -263,7 +291,7 @@ static void disasm_rb_tree__insert(struct annotate_browser *browser,
 		parent = *p;
 		l = rb_entry(parent, struct annotation_line, rb_node);
 
-		if (disasm__cmp(al, l, browser->opts->percent_type) < 0)
+		if (disasm__cmp(al, l, annotate_opts.percent_type) < 0)
 			p = &(*p)->rb_left;
 		else
 			p = &(*p)->rb_right;
@@ -275,7 +303,6 @@ static void disasm_rb_tree__insert(struct annotate_browser *browser,
 static void annotate_browser__set_top(struct annotate_browser *browser,
 				      struct annotation_line *pos, u32 idx)
 {
-	struct annotation *notes = browser__annotation(&browser->b);
 	unsigned back;
 
 	ui_browser__refresh_dimensions(&browser->b);
@@ -285,7 +312,7 @@ static void annotate_browser__set_top(struct annotate_browser *browser,
 	while (browser->b.top_idx != 0 && back != 0) {
 		pos = list_entry(pos->node.prev, struct annotation_line, node);
 
-		if (annotation_line__filter(pos, notes))
+		if (annotation_line__filter(pos))
 			continue;
 
 		--browser->b.top_idx;
@@ -299,11 +326,10 @@ static void annotate_browser__set_top(struct annotate_browser *browser,
 static void annotate_browser__set_rb_top(struct annotate_browser *browser,
 					 struct rb_node *nd)
 {
-	struct annotation *notes = browser__annotation(&browser->b);
 	struct annotation_line * pos = rb_entry(nd, struct annotation_line, rb_node);
 	u32 idx = pos->idx;
 
-	if (notes->options->hide_src_code)
+	if (annotate_opts.hide_src_code)
 		idx = pos->idx_asm;
 	annotate_browser__set_top(browser, pos, idx);
 	browser->curr_hot = nd;
@@ -319,7 +345,7 @@ static void annotate_browser__calc_percent(struct annotate_browser *browser,
 
 	browser->entries = RB_ROOT;
 
-	pthread_mutex_lock(&notes->lock);
+	annotation__lock(notes);
 
 	symbol__calc_percent(sym, evsel);
 
@@ -336,21 +362,38 @@ static void annotate_browser__calc_percent(struct annotate_browser *browser,
 			double percent;
 
 			percent = annotation_data__percent(&pos->al.data[i],
-							   browser->opts->percent_type);
+							   annotate_opts.percent_type);
 
 			if (max_percent < percent)
 				max_percent = percent;
 		}
 
-		if (max_percent < 0.01 && pos->al.ipc == 0) {
+		if (max_percent < 0.01 && (!pos->al.cycles || pos->al.cycles->ipc == 0)) {
 			RB_CLEAR_NODE(&pos->al.rb_node);
 			continue;
 		}
 		disasm_rb_tree__insert(browser, &pos->al);
 	}
-	pthread_mutex_unlock(&notes->lock);
+	annotation__unlock(notes);
 
 	browser->curr_hot = rb_last(&browser->entries);
+}
+
+static struct annotation_line *annotate_browser__find_new_asm_line(
+					struct annotate_browser *browser,
+					int idx_asm)
+{
+	struct annotation_line *al;
+	struct list_head *head = browser->b.entries;
+
+	/* find an annotation line in the new list with the same idx_asm */
+	list_for_each_entry(al, head, node) {
+		if (al->idx_asm == idx_asm)
+			return al;
+	}
+
+	/* There are no asm lines */
+	return NULL;
 }
 
 static struct annotation_line *annotate_browser__find_next_asm_line(
@@ -376,7 +419,31 @@ static struct annotation_line *annotate_browser__find_next_asm_line(
 	return NULL;
 }
 
-static bool annotate_browser__toggle_source(struct annotate_browser *browser)
+static bool annotation__has_source(struct annotation *notes)
+{
+	struct annotation_line *al;
+	bool found_asm = false;
+
+	/* Let's skip the first non-asm lines which present regardless of source. */
+	list_for_each_entry(al, &notes->src->source, node) {
+		if (al->offset >= 0) {
+			found_asm = true;
+			break;
+		}
+	}
+
+	if (found_asm) {
+		/* After assembly lines, any line without offset means source. */
+		list_for_each_entry_continue(al, &notes->src->source, node) {
+			if (al->offset == -1)
+				return true;
+		}
+	}
+	return false;
+}
+
+static bool annotate_browser__toggle_source(struct annotate_browser *browser,
+					    struct evsel *evsel)
 {
 	struct annotation *notes = browser__annotation(&browser->b);
 	struct annotation_line *al;
@@ -385,12 +452,45 @@ static bool annotate_browser__toggle_source(struct annotate_browser *browser)
 	browser->b.seek(&browser->b, offset, SEEK_CUR);
 	al = list_entry(browser->b.top, struct annotation_line, node);
 
-	if (notes->options->hide_src_code) {
+	if (!annotate_opts.annotate_src)
+		annotate_opts.annotate_src = true;
+
+	/*
+	 * It's about to get source code annotation for the first time.
+	 * Drop the existing annotation_lines and get the new one with source.
+	 * And then move to the original line at the same asm index.
+	 */
+	if (annotate_opts.hide_src_code && !notes->src->tried_source) {
+		struct map_symbol *ms = browser->b.priv;
+		int orig_idx_asm = al->idx_asm;
+
+		/* annotate again with source code info */
+		annotate_opts.hide_src_code = false;
+		annotated_source__purge(notes->src);
+		symbol__annotate2(ms, evsel, &browser->arch);
+		annotate_opts.hide_src_code = true;
+
+		/* should be after annotated_source__purge() */
+		notes->src->tried_source = true;
+
+		if (!annotation__has_source(notes))
+			ui__warning("Annotation has no source code.");
+
+		browser->b.entries = &notes->src->source;
+		al = annotate_browser__find_new_asm_line(browser, orig_idx_asm);
+		if (unlikely(al == NULL)) {
+			al = list_first_entry(&notes->src->source,
+					      struct annotation_line, node);
+		}
+		browser->b.seek(&browser->b, al->idx_asm, SEEK_SET);
+	}
+
+	if (annotate_opts.hide_src_code) {
 		if (al->idx_asm < offset)
 			offset = al->idx;
 
-		browser->b.nr_entries = notes->nr_entries;
-		notes->options->hide_src_code = false;
+		browser->b.nr_entries = notes->src->nr_entries;
+		annotate_opts.hide_src_code = false;
 		browser->b.seek(&browser->b, -offset, SEEK_CUR);
 		browser->b.top_idx = al->idx - offset;
 		browser->b.index = al->idx;
@@ -407,12 +507,15 @@ static bool annotate_browser__toggle_source(struct annotate_browser *browser)
 		if (al->idx_asm < offset)
 			offset = al->idx_asm;
 
-		browser->b.nr_entries = notes->nr_asm_entries;
-		notes->options->hide_src_code = true;
+		browser->b.nr_entries = notes->src->nr_asm_entries;
+		annotate_opts.hide_src_code = true;
 		browser->b.seek(&browser->b, -offset, SEEK_CUR);
 		browser->b.top_idx = al->idx_asm - offset;
 		browser->b.index = al->idx_asm;
 	}
+
+	if (annotate_opts.hide_src_code_on_title)
+		annotate_opts.hide_src_code_on_title = false;
 
 	return true;
 }
@@ -440,14 +543,30 @@ static void ui_browser__init_asm_mode(struct ui_browser *browser)
 {
 	struct annotation *notes = browser__annotation(browser);
 	ui_browser__reset_index(browser);
-	browser->nr_entries = notes->nr_asm_entries;
+	browser->nr_entries = notes->src->nr_asm_entries;
 }
 
 static int sym_title(struct symbol *sym, struct map *map, char *title,
 		     size_t sz, int percent_type)
 {
-	return snprintf(title, sz, "%s  %s [Percent: %s]", sym->name, map->dso->long_name,
-			percent_type_str(percent_type));
+	return snprintf(title, sz, "%s  %s [Percent: %s] %s", sym->name,
+			dso__long_name(map__dso(map)),
+			percent_type_str(percent_type),
+			annotate_opts.code_with_type ? "[Type]" : "");
+}
+
+static void annotate_browser__show_function_title(struct annotate_browser *browser)
+{
+	struct ui_browser *b = &browser->b;
+	struct map_symbol *ms = b->priv;
+	struct symbol *sym = ms->sym;
+	char title[SYM_TITLE_MAX_SIZE];
+
+	sym_title(sym, ms->map, title, sizeof(title), annotate_opts.percent_type);
+
+	ui_browser__gotorc_title(b, 0, 0);
+	ui_browser__set_color(b, HE_COLORSET_ROOT);
+	ui_browser__write_nstring(b, title, b->width + 1);
 }
 
 /*
@@ -466,7 +585,6 @@ static bool annotate_browser__callq(struct annotate_browser *browser,
 	struct map_symbol *ms = browser->b.priv, target_ms;
 	struct disasm_line *dl = disasm_line(browser->selection);
 	struct annotation *notes;
-	char title[SYM_TITLE_MAX_SIZE];
 
 	if (!dl->ops.target.sym) {
 		ui_helpline__puts("The called function was not found.");
@@ -474,22 +592,27 @@ static bool annotate_browser__callq(struct annotate_browser *browser,
 	}
 
 	notes = symbol__annotation(dl->ops.target.sym);
-	pthread_mutex_lock(&notes->lock);
+	annotation__lock(notes);
 
 	if (!symbol__hists(dl->ops.target.sym, evsel->evlist->core.nr_entries)) {
-		pthread_mutex_unlock(&notes->lock);
+		annotation__unlock(notes);
 		ui__warning("Not enough memory for annotating '%s' symbol!\n",
 			    dl->ops.target.sym->name);
 		return true;
 	}
 
-	target_ms.maps = ms->maps;
+	target_ms.thread = ms->thread;
 	target_ms.map = ms->map;
 	target_ms.sym = dl->ops.target.sym;
-	pthread_mutex_unlock(&notes->lock);
-	symbol__tui_annotate(&target_ms, evsel, hbt, browser->opts);
-	sym_title(ms->sym, ms->map, title, sizeof(title), browser->opts->percent_type);
-	ui_browser__show_title(&browser->b, title);
+	annotation__unlock(notes);
+	__hist_entry__tui_annotate(browser->he, &target_ms, evsel, hbt, NO_ADDR);
+
+	/*
+	 * The annotate_browser above changed the title with the target function
+	 * and now it's back to the original function.  Refresh the header line
+	 * for the original function again.
+	 */
+	annotate_browser__show_function_title(browser);
 	return true;
 }
 
@@ -504,7 +627,7 @@ struct disasm_line *annotate_browser__find_offset(struct annotate_browser *brows
 	list_for_each_entry(pos, &notes->src->source, al.node) {
 		if (pos->al.offset == offset)
 			return pos;
-		if (!annotation_line__filter(&pos->al, notes))
+		if (!annotation_line__filter(&pos->al))
 			++*idx;
 	}
 
@@ -548,7 +671,7 @@ struct annotation_line *annotate_browser__find_string(struct annotate_browser *b
 
 	*idx = browser->b.index;
 	list_for_each_entry_continue(al, &notes->src->source, node) {
-		if (annotation_line__filter(al, notes))
+		if (annotation_line__filter(al))
 			continue;
 
 		++*idx;
@@ -585,7 +708,7 @@ struct annotation_line *annotate_browser__find_string_reverse(struct annotate_br
 
 	*idx = browser->b.index;
 	list_for_each_entry_continue_reverse(al, &notes->src->source, node) {
-		if (annotation_line__filter(al, notes))
+		if (annotation_line__filter(al))
 			continue;
 
 		--*idx;
@@ -661,21 +784,12 @@ bool annotate_browser__continue_search_reverse(struct annotate_browser *browser,
 	return __annotate_browser__search_reverse(browser);
 }
 
-static int annotate_browser__show(struct ui_browser *browser, char *title, const char *help)
+static int annotate_browser__show(struct annotate_browser *browser, char *title, const char *help)
 {
-	struct annotate_browser *ab = container_of(browser, struct annotate_browser, b);
-	struct map_symbol *ms = browser->priv;
-	struct symbol *sym = ms->sym;
-	char symbol_dso[SYM_TITLE_MAX_SIZE];
-
-	if (ui_browser__show(browser, title, help) < 0)
+	if (ui_browser__show(&browser->b, title, help) < 0)
 		return -1;
 
-	sym_title(sym, ms->map, symbol_dso, sizeof(symbol_dso), ab->opts->percent_type);
-
-	ui_browser__gotorc_title(browser, 0, 0);
-	ui_browser__set_color(browser, HE_COLORSET_ROOT);
-	ui_browser__write_nstring(browser, symbol_dso, browser->width + 1);
+	annotate_browser__show_function_title(browser);
 	return 0;
 }
 
@@ -712,6 +826,54 @@ switch_percent_type(struct annotation_options *opts, bool base)
 	}
 }
 
+static int annotate__scnprintf_title(struct hists *hists, char *bf, size_t size)
+{
+	int printed = hists__scnprintf_title(hists, bf, size);
+
+	if (!annotate_opts.hide_src_code_on_title) {
+		printed += scnprintf(bf + printed, size - printed, " [source: %s]",
+				     annotate_opts.hide_src_code ? "OFF" : "On");
+	}
+
+	return printed;
+}
+
+static void annotate_browser__debuginfo_warning(struct annotate_browser *browser)
+{
+	struct map_symbol *ms = browser->b.priv;
+	struct dso *dso = map__dso(ms->map);
+
+	if (browser->dbg == NULL && annotate_opts.code_with_type &&
+	    !dso__debuginfo_warned(dso)) {
+		ui__warning("DWARF debuginfo not found.\n\n"
+			    "Data-type in this DSO will not be displayed.\n"
+			    "Please make sure to have debug information.");
+		dso__set_debuginfo_warned(dso);
+	}
+}
+
+static s64 annotate_browser__curr_hot_offset(struct annotate_browser *browser)
+{
+	struct annotation_line *al = NULL;
+
+	if (browser->curr_hot)
+		al = rb_entry(browser->curr_hot, struct annotation_line, rb_node);
+
+	return al ? al->offset : 0;
+}
+
+static void annotate_browser__symbol_annotate_error(struct annotate_browser *browser, int err)
+{
+	struct map_symbol *ms = browser->b.priv;
+	struct symbol *sym = ms->sym;
+	struct dso *dso = map__dso(ms->map);
+	char msg[BUFSIZ];
+
+	dso__set_annotate_warned(dso);
+	symbol__strerror_disassemble(ms, err, msg, sizeof(msg));
+	ui__error("Couldn't annotate %s:\n%s", sym->name, msg);
+}
+
 static int annotate_browser__run(struct annotate_browser *browser,
 				 struct evsel *evsel,
 				 struct hist_browser_timer *hbt)
@@ -723,14 +885,20 @@ static int annotate_browser__run(struct annotate_browser *browser,
 	struct annotation *notes = symbol__annotation(ms->sym);
 	const char *help = "Press 'h' for help on key bindings";
 	int delay_secs = hbt ? hbt->refresh : 0;
+	char *br_cntr_text = NULL;
 	char title[256];
 	int key;
 
-	hists__scnprintf_title(hists, title, sizeof(title));
-	if (annotate_browser__show(&browser->b, title, help) < 0)
+	annotate__scnprintf_title(hists, title, sizeof(title));
+	if (annotate_browser__show(browser, title, help) < 0)
 		return -1;
 
 	annotate_browser__calc_percent(browser, evsel);
+
+	if (browser->selection != NULL) {
+		browser->curr_hot = &browser->selection->rb_node;
+		browser->b.use_navkeypressed = false;
+	}
 
 	if (browser->curr_hot) {
 		annotate_browser__set_rb_top(browser, browser->curr_hot);
@@ -738,6 +906,10 @@ static int annotate_browser__run(struct annotate_browser *browser,
 	}
 
 	nd = browser->curr_hot;
+
+	annotation_br_cntr_abbr_list(&br_cntr_text, evsel, false);
+
+	annotate_browser__debuginfo_warning(browser);
 
 	while (1) {
 		key = ui_browser__run(&browser->b, delay_secs);
@@ -759,9 +931,9 @@ static int annotate_browser__run(struct annotate_browser *browser,
 				hbt->timer(hbt->arg);
 
 			if (delay_secs != 0) {
-				symbol__annotate_decay_histogram(sym, evsel->core.idx);
-				hists__scnprintf_title(hists, title, sizeof(title));
-				annotate_browser__show(&browser->b, title, help);
+				symbol__annotate_decay_histogram(sym, evsel);
+				annotate__scnprintf_title(hists, title, sizeof(title));
+				annotate_browser__show(browser, title, help);
 			}
 			continue;
 		case K_TAB:
@@ -785,9 +957,9 @@ static int annotate_browser__run(struct annotate_browser *browser,
 			ui_browser__help_window(&browser->b,
 		"UP/DOWN/PGUP\n"
 		"PGDN/SPACE    Navigate\n"
+		"</>           Move to prev/next symbol\n"
 		"q/ESC/CTRL+C  Exit\n\n"
 		"ENTER         Go to target\n"
-		"ESC           Exit\n"
 		"H             Go to hottest instruction\n"
 		"TAB/shift+TAB Cycle thru hottest instructions\n"
 		"j             Toggle showing jump to target arrows\n"
@@ -805,14 +977,17 @@ static int annotate_browser__run(struct annotate_browser *browser,
 		"r             Run available scripts\n"
 		"p             Toggle percent type [local/global]\n"
 		"b             Toggle percent base [period/hits]\n"
-		"?             Search string backwards\n");
+		"B             Branch counter abbr list (Optional)\n"
+		"?             Search string backwards\n"
+		"f             Toggle showing offsets to full address\n"
+		"T             Toggle data type display\n");
 			continue;
 		case 'r':
 			script_browse(NULL, NULL);
-			annotate_browser__show(&browser->b, title, help);
+			annotate_browser__show(browser, title, help);
 			continue;
 		case 'k':
-			notes->options->show_linenr = !notes->options->show_linenr;
+			annotate_opts.show_linenr = !annotate_opts.show_linenr;
 			continue;
 		case 'l':
 			annotate_browser__show_full_location (&browser->b);
@@ -820,23 +995,37 @@ static int annotate_browser__run(struct annotate_browser *browser,
 		case 'H':
 			nd = browser->curr_hot;
 			break;
-		case 's':
-			if (annotate_browser__toggle_source(browser))
+		case 's': {
+			struct annotation_line *al = NULL;
+			s64 offset = annotate_browser__curr_hot_offset(browser);
+
+			if (annotate_browser__toggle_source(browser, evsel))
 				ui_helpline__puts(help);
+
+			/* Update the annotation browser's rb_tree, and reset the nd */
+			annotate_browser__calc_percent(browser, evsel);
+			/* Try to find the same asm line as before */
+			al = annotated_source__get_line(notes->src, offset);
+			browser->curr_hot = al ? &al->rb_node : NULL;
+			nd = browser->curr_hot;
+
+			annotate__scnprintf_title(hists, title, sizeof(title));
+			annotate_browser__show(browser, title, help);
 			continue;
+		}
 		case 'o':
-			notes->options->use_offset = !notes->options->use_offset;
+			annotate_opts.use_offset = !annotate_opts.use_offset;
 			annotation__update_column_widths(notes);
 			continue;
 		case 'O':
-			if (++notes->options->offset_level > ANNOTATION__MAX_OFFSET_LEVEL)
-				notes->options->offset_level = ANNOTATION__MIN_OFFSET_LEVEL;
+			if (++annotate_opts.offset_level > ANNOTATION__MAX_OFFSET_LEVEL)
+				annotate_opts.offset_level = ANNOTATION__MIN_OFFSET_LEVEL;
 			continue;
 		case 'j':
-			notes->options->jump_arrows = !notes->options->jump_arrows;
+			annotate_opts.jump_arrows = !annotate_opts.jump_arrows;
 			continue;
 		case 'J':
-			notes->options->show_nr_jumps = !notes->options->show_nr_jumps;
+			annotate_opts.show_nr_jumps = !annotate_opts.show_nr_jumps;
 			annotation__update_column_widths(notes);
 			continue;
 		case '/':
@@ -863,7 +1052,7 @@ show_help:
 					   browser->b.height,
 					   browser->b.index,
 					   browser->b.top_idx,
-					   notes->nr_asm_entries);
+					   notes->src->nr_asm_entries);
 		}
 			continue;
 		case K_ENTER:
@@ -887,7 +1076,7 @@ show_sup_ins:
 			continue;
 		}
 		case 'P':
-			map_symbol__annotation_dump(ms, evsel, browser->opts);
+			map_symbol__annotation_dump(ms, evsel, browser->he);
 			continue;
 		case 't':
 			if (symbol_conf.show_total_period) {
@@ -900,24 +1089,49 @@ show_sup_ins:
 			annotation__update_column_widths(notes);
 			continue;
 		case 'c':
-			if (notes->options->show_minmax_cycle)
-				notes->options->show_minmax_cycle = false;
+			if (annotate_opts.show_minmax_cycle)
+				annotate_opts.show_minmax_cycle = false;
 			else
-				notes->options->show_minmax_cycle = true;
+				annotate_opts.show_minmax_cycle = true;
 			annotation__update_column_widths(notes);
 			continue;
 		case 'p':
 		case 'b':
-			switch_percent_type(browser->opts, key == 'b');
-			hists__scnprintf_title(hists, title, sizeof(title));
-			annotate_browser__show(&browser->b, title, help);
+			switch_percent_type(&annotate_opts, key == 'b');
+			annotate__scnprintf_title(hists, title, sizeof(title));
+			annotate_browser__show(browser, title, help);
+			continue;
+		case 'B':
+			if (br_cntr_text)
+				ui_browser__help_window(&browser->b, br_cntr_text);
+			else {
+				ui_browser__help_window(&browser->b,
+							"\n The branch counter is not available.\n");
+			}
+			continue;
+		case 'f':
+			annotation__toggle_full_addr(notes, ms);
+			continue;
+		case 'T':
+			annotate_opts.code_with_type ^= 1;
+			if (browser->dbg == NULL)
+				browser->dbg = dso__debuginfo(map__dso(ms->map));
+			if (browser->type_hash == NULL) {
+				browser->type_hash = hashmap__new(type_hash, type_equal,
+								  /*ctx=*/NULL);
+			}
+			annotate_browser__show(browser, title, help);
+			annotate_browser__debuginfo_warning(browser);
 			continue;
 		case K_LEFT:
+		case '<':
+		case '>':
 		case K_ESC:
 		case 'q':
 		case CTRL('c'):
 			goto out;
 		default:
+			ui_browser__warn_unhandled_hotkey(&browser->b, key, delay_secs, ", use 'h'/F1 to see actions");
 			continue;
 		}
 
@@ -926,30 +1140,24 @@ show_sup_ins:
 	}
 out:
 	ui_browser__hide(&browser->b);
+	free(br_cntr_text);
 	return key;
 }
 
-int map_symbol__tui_annotate(struct map_symbol *ms, struct evsel *evsel,
-			     struct hist_browser_timer *hbt,
-			     struct annotation_options *opts)
-{
-	return symbol__tui_annotate(ms, evsel, hbt, opts);
-}
-
 int hist_entry__tui_annotate(struct hist_entry *he, struct evsel *evsel,
-			     struct hist_browser_timer *hbt,
-			     struct annotation_options *opts)
+			     struct hist_browser_timer *hbt, u64 al_addr)
 {
 	/* reset abort key so that it can get Ctrl-C as a key */
 	SLang_reset_tty();
 	SLang_init_tty(0, 0, 0);
+	SLtty_set_suspend_state(true);
 
-	return map_symbol__tui_annotate(&he->ms, evsel, hbt, opts);
+	return __hist_entry__tui_annotate(he, &he->ms, evsel, hbt, al_addr);
 }
 
-int symbol__tui_annotate(struct map_symbol *ms, struct evsel *evsel,
-			 struct hist_browser_timer *hbt,
-			 struct annotation_options *opts)
+int __hist_entry__tui_annotate(struct hist_entry *he, struct map_symbol *ms,
+			       struct evsel *evsel,
+			       struct hist_browser_timer *hbt, u64 al_addr)
 {
 	struct symbol *sym = ms->sym;
 	struct annotation *notes = symbol__annotation(sym);
@@ -963,45 +1171,99 @@ int symbol__tui_annotate(struct map_symbol *ms, struct evsel *evsel,
 			.priv	 = ms,
 			.use_navkeypressed = true,
 		},
-		.opts = opts,
+		.he = he,
+		.evsel = evsel,
 	};
+	struct dso *dso;
 	int ret = -1, err;
 	int not_annotated = list_empty(&notes->src->source);
 
 	if (sym == NULL)
 		return -1;
 
-	if (ms->map->dso->annotate_warned)
+	dso = map__dso(ms->map);
+	if (dso__annotate_warned(dso))
 		return -1;
 
-	if (not_annotated) {
-		err = symbol__annotate2(ms, evsel, opts, &browser.arch);
+	if (not_annotated || !sym->annotate2) {
+		err = symbol__annotate2(ms, evsel, &browser.arch);
 		if (err) {
-			char msg[BUFSIZ];
-			ms->map->dso->annotate_warned = true;
-			symbol__strerror_disassemble(ms, err, msg, sizeof(msg));
-			ui__error("Couldn't annotate %s:\n%s", sym->name, msg);
-			goto out_free_offsets;
+			annotate_browser__symbol_annotate_error(&browser, err);
+			return -1;
 		}
+
+		if (!annotate_opts.hide_src_code) {
+			notes->src->tried_source = true;
+			if (!annotation__has_source(notes))
+				ui__warning("Annotation has no source code.");
+		}
+	} else {
+		err = thread__get_arch(ms->thread, &browser.arch);
+		if (err) {
+			annotate_browser__symbol_annotate_error(&browser, err);
+			return -1;
+		}
+	}
+
+	/* Copy necessary information when it's called from perf top */
+	if (hbt != NULL && he != &annotate_he) {
+		annotate_he.hists = he->hists;
+		annotate_he.thread = thread__get(he->thread);
+		annotate_he.cpumode = he->cpumode;
+		map_symbol__copy(&annotate_he.ms, ms);
+
+		browser.he = &annotate_he;
 	}
 
 	ui_helpline__push("Press ESC to exit");
 
-	browser.b.width = notes->max_line_len;
-	browser.b.nr_entries = notes->nr_entries;
-	browser.b.entries = &notes->src->source,
+	if (annotate_opts.code_with_type) {
+		browser.dbg = dso__debuginfo(dso);
+		browser.type_hash = hashmap__new(type_hash, type_equal, /*ctx=*/NULL);
+	}
+
+	browser.b.width = notes->src->widths.max_line_len;
+	browser.b.nr_entries = notes->src->nr_entries;
+	browser.b.entries = &notes->src->source;
 	browser.b.width += 18; /* Percentage */
 
-	if (notes->options->hide_src_code)
+	if (annotate_opts.hide_src_code)
 		ui_browser__init_asm_mode(&browser.b);
+
+	/*
+	 * If al_addr is set, it means that there should be a line
+	 * intentionally selected, not based on the percentages
+	 * which caculated by the event sampling. In this case, we
+	 * convey this information into the browser selection, where
+	 * the selection in other cases should be empty.
+	 */
+	if (al_addr != NO_ADDR) {
+		struct annotation_line *al = annotated_source__get_line(notes->src,
+			al_addr - sym->start);
+
+		browser.selection = al;
+	}
 
 	ret = annotate_browser__run(&browser, evsel, hbt);
 
-	if(not_annotated)
+	debuginfo__delete(browser.dbg);
+
+	if (!IS_ERR_OR_NULL(browser.type_hash)) {
+		struct hashmap_entry *cur;
+		size_t bkt;
+
+		hashmap__for_each_entry(browser.type_hash, cur, bkt)
+			zfree(&cur->pvalue);
+		hashmap__free(browser.type_hash);
+	}
+
+	if (not_annotated && !notes->src->tried_source)
 		annotated_source__purge(notes->src);
 
-out_free_offsets:
-	if(not_annotated)
-		zfree(&notes->offsets);
+	if (hbt != NULL && he != &annotate_he) {
+		thread__zput(annotate_he.thread);
+		map_symbol__exit(&annotate_he.ms);
+	}
+
 	return ret;
 }

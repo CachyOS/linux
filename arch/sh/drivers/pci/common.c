@@ -50,20 +50,21 @@ int __init pci_is_66mhz_capable(struct pci_channel *hose,
 				int top_bus, int current_bus)
 {
 	u32 pci_devfn;
-	unsigned short vid;
+	u16 vid;
 	int cap66 = -1;
 	u16 stat;
+	int ret;
 
 	pr_info("PCI: Checking 66MHz capabilities...\n");
 
 	for (pci_devfn = 0; pci_devfn < 0xff; pci_devfn++) {
 		if (PCI_FUNC(pci_devfn))
 			continue;
-		if (early_read_config_word(hose, top_bus, current_bus,
-					   pci_devfn, PCI_VENDOR_ID, &vid) !=
-		    PCIBIOS_SUCCESSFUL)
+		ret = early_read_config_word(hose, top_bus, current_bus,
+					     pci_devfn, PCI_VENDOR_ID, &vid);
+		if (ret != PCIBIOS_SUCCESSFUL)
 			continue;
-		if (vid == 0xffff)
+		if (PCI_POSSIBLE_ERROR(vid))
 			continue;
 
 		/* check 66MHz capability */
@@ -87,18 +88,18 @@ int __init pci_is_66mhz_capable(struct pci_channel *hose,
 
 static void pcibios_enable_err(struct timer_list *t)
 {
-	struct pci_channel *hose = from_timer(hose, t, err_timer);
+	struct pci_channel *hose = timer_container_of(hose, t, err_timer);
 
-	del_timer(&hose->err_timer);
+	timer_delete(&hose->err_timer);
 	printk(KERN_DEBUG "PCI: re-enabling error IRQ.\n");
 	enable_irq(hose->err_irq);
 }
 
 static void pcibios_enable_serr(struct timer_list *t)
 {
-	struct pci_channel *hose = from_timer(hose, t, serr_timer);
+	struct pci_channel *hose = timer_container_of(hose, t, serr_timer);
 
-	del_timer(&hose->serr_timer);
+	timer_delete(&hose->serr_timer);
 	printk(KERN_DEBUG "PCI: re-enabling system error IRQ.\n");
 	enable_irq(hose->serr_irq);
 }

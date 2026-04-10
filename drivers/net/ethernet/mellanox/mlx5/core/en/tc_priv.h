@@ -11,7 +11,6 @@
 
 #define MLX5E_TC_MAX_SPLITS 1
 
-#define mlx5e_nic_chains(priv) ((priv)->fs.tc.chains)
 
 enum {
 	MLX5E_TC_FLOW_FLAG_INGRESS               = MLX5E_TC_FLAG_INGRESS_BIT,
@@ -26,11 +25,11 @@ enum {
 	MLX5E_TC_FLOW_FLAG_DUP                   = MLX5E_TC_FLOW_BASE + 4,
 	MLX5E_TC_FLOW_FLAG_NOT_READY             = MLX5E_TC_FLOW_BASE + 5,
 	MLX5E_TC_FLOW_FLAG_DELETED               = MLX5E_TC_FLOW_BASE + 6,
-	MLX5E_TC_FLOW_FLAG_CT                    = MLX5E_TC_FLOW_BASE + 7,
-	MLX5E_TC_FLOW_FLAG_L3_TO_L2_DECAP        = MLX5E_TC_FLOW_BASE + 8,
-	MLX5E_TC_FLOW_FLAG_TUN_RX                = MLX5E_TC_FLOW_BASE + 9,
-	MLX5E_TC_FLOW_FLAG_FAILED                = MLX5E_TC_FLOW_BASE + 10,
-	MLX5E_TC_FLOW_FLAG_SAMPLE                = MLX5E_TC_FLOW_BASE + 11,
+	MLX5E_TC_FLOW_FLAG_L3_TO_L2_DECAP        = MLX5E_TC_FLOW_BASE + 7,
+	MLX5E_TC_FLOW_FLAG_TUN_RX                = MLX5E_TC_FLOW_BASE + 8,
+	MLX5E_TC_FLOW_FLAG_FAILED                = MLX5E_TC_FLOW_BASE + 9,
+	MLX5E_TC_FLOW_FLAG_SAMPLE                = MLX5E_TC_FLOW_BASE + 10,
+	MLX5E_TC_FLOW_FLAG_USE_ACT_STATS         = MLX5E_TC_FLOW_BASE + 11,
 };
 
 struct mlx5e_tc_flow_parse_attr {
@@ -43,6 +42,8 @@ struct mlx5e_tc_flow_parse_attr {
 	int mirred_ifindex[MLX5_MAX_FLOW_FWD_VPORTS];
 	struct mlx5e_tc_act_parse_state parse_state;
 };
+
+struct mlx5_fs_chains *mlx5e_nic_chains(struct mlx5e_tc_table *tc);
 
 /* Helper struct for accessing a struct containing list_head array.
  * Containing struct
@@ -93,14 +94,13 @@ struct mlx5e_tc_flow {
 	 * destinations.
 	 */
 	struct encap_flow_item encaps[MLX5_MAX_FLOW_FWD_VPORTS];
-	struct mlx5e_tc_flow *peer_flow;
-	struct mlx5e_mod_hdr_handle *mh; /* attached mod header instance */
 	struct mlx5e_hairpin_entry *hpe; /* attached hairpin instance */
 	struct list_head hairpin; /* flows sharing the same hairpin */
-	struct list_head peer;    /* flows with peer flow */
+	struct list_head peer[MLX5_MAX_PORTS];    /* flows with peer flow */
 	struct list_head unready; /* flows not ready to be offloaded (e.g
 				   * due to missing route)
 				   */
+	struct list_head peer_flows; /* flows on peer */
 	struct net_device *orig_dev; /* netdev adding flow first */
 	int tmp_entry_index;
 	struct list_head tmp_list; /* temporary flow list used by neigh update */
@@ -109,7 +109,9 @@ struct mlx5e_tc_flow {
 	struct completion init_done;
 	struct completion del_hw_done;
 	struct mlx5_flow_attr *attr;
+	struct mlx5_flow_attr *extra_split_attr;
 	struct list_head attrs;
+	u32 chain_mapping;
 };
 
 struct mlx5_flow_handle *
@@ -202,6 +204,8 @@ struct mlx5_fc *mlx5e_tc_get_counter(struct mlx5e_tc_flow *flow);
 
 struct mlx5e_tc_int_port_priv *
 mlx5e_get_int_port_priv(struct mlx5e_priv *priv);
+
+struct mlx5e_flow_meters *mlx5e_get_flow_meters(struct mlx5_core_dev *dev);
 
 void *mlx5e_get_match_headers_value(u32 flags, struct mlx5_flow_spec *spec);
 void *mlx5e_get_match_headers_criteria(u32 flags, struct mlx5_flow_spec *spec);

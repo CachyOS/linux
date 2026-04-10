@@ -4,7 +4,7 @@
  * Portions Copyright (C) 2000-2008 Silicon Graphics, Inc.
  */
 
-#include "xfs.h"
+#include "xfs_platform.h"
 #include "xfs_shared.h"
 #include "xfs_format.h"
 #include "xfs_log_format.h"
@@ -17,15 +17,13 @@
 #include "xfs_acl.h"
 #include "xfs_log.h"
 #include "xfs_xattr.h"
+#include "xfs_quota.h"
 
 #include <linux/posix_acl_xattr.h>
 
 /*
  * Get permission to use log-assisted atomic exchange of file extents.
- *
- * Callers must not be running any transactions or hold any inode locks, and
- * they must release the permission by calling xlog_drop_incompat_feat
- * when they're done.
+ * Callers must not be running any transactions or hold any ILOCKs.
  */
 static inline int
 xfs_attr_grab_log_assist(
@@ -33,39 +31,29 @@ xfs_attr_grab_log_assist(
 {
 	int			error = 0;
 
-	/*
-	 * Protect ourselves from an idle log clearing the logged xattrs log
-	 * incompat feature bit.
-	 */
-	xlog_use_incompat_feat(mp->m_log);
+	/* xattr update log intent items are already enabled */
+	if (xfs_is_using_logged_xattrs(mp))
+		return 0;
 
 	/*
-	 * If log-assisted xattrs are already enabled, the caller can use the
-	 * log assisted swap functions with the log-incompat reference we got.
+	 * Check if the filesystem featureset is new enough to set this log
+	 * incompat feature bit.  Strictly speaking, the minimum requirement is
+	 * a V5 filesystem for the superblock field, but we'll require rmap
+	 * or reflink to avoid having to deal with really old kernels.
 	 */
-	if (xfs_sb_version_haslogxattrs(&mp->m_sb))
-		return 0;
+	if (!xfs_has_reflink(mp) && !xfs_has_rmapbt(mp))
+		return -EOPNOTSUPP;
 
 	/* Enable log-assisted xattrs. */
 	error = xfs_add_incompat_log_feature(mp,
 			XFS_SB_FEAT_INCOMPAT_LOG_XATTRS);
 	if (error)
-		goto drop_incompat;
+		return error;
+	xfs_set_using_logged_xattrs(mp);
 
-	xfs_warn_mount(mp, XFS_OPSTATE_WARNED_LARP,
- "EXPERIMENTAL logged extended attributes feature in use. Use at your own risk!");
+	xfs_warn_experimental(mp, XFS_EXPERIMENTAL_LARP);
 
 	return 0;
-drop_incompat:
-	xlog_drop_incompat_feat(mp->m_log);
-	return error;
-}
-
-static inline void
-xfs_attr_rele_log_assist(
-	struct xfs_mount	*mp)
-{
-	xlog_drop_incompat_feat(mp->m_log);
 }
 
 static inline bool
@@ -82,17 +70,31 @@ xfs_attr_want_log_assist(
 
 /*
  * Set or remove an xattr, having grabbed the appropriate logging resources
- * prior to calling libxfs.
+ * prior to calling libxfs.  Callers of this function are only required to
+ * initialize the inode, attr_filter, name, namelen, value, and valuelen fields
+ * of @args.
  */
 int
 xfs_attr_change(
-	struct xfs_da_args	*args)
+	struct xfs_da_args	*args,
+	enum xfs_attr_update	op)
 {
 	struct xfs_mount	*mp = args->dp->i_mount;
-	bool			use_logging = false;
 	int			error;
 
-	ASSERT(!(args->op_flags & XFS_DA_OP_LOGGED));
+	if (xfs_is_shutdown(mp))
+		return -EIO;
+
+	error = xfs_qm_dqattach(args->dp);
+	if (error)
+		return error;
+
+	/*
+	 * We have no control over the attribute names that userspace passes us
+	 * to remove, so we have to allow the name lookup prior to attribute
+	 * removal to fail as well.
+	 */
+	args->op_flags = XFS_DA_OP_OKNOENT;
 
 	if (xfs_attr_want_log_assist(mp)) {
 		error = xfs_attr_grab_log_assist(mp);
@@ -100,14 +102,31 @@ xfs_attr_change(
 			return error;
 
 		args->op_flags |= XFS_DA_OP_LOGGED;
-		use_logging = true;
 	}
 
-	error = xfs_attr_set(args);
+	args->owner = args->dp->i_ino;
+	args->geo = mp->m_attr_geo;
+	args->whichfork = XFS_ATTR_FORK;
+	xfs_attr_sethash(args);
 
-	if (use_logging)
-		xfs_attr_rele_log_assist(mp);
-	return error;
+	/*
+	 * Some xattrs must be resistant to allocation failure at ENOSPC, e.g.
+	 * creating an inode with ACLs or security attributes requires the
+	 * allocation of the xattr holding that information to succeed. Hence
+	 * we allow xattrs in the VFS TRUSTED, SYSTEM, POSIX_ACL and SECURITY
+	 * (LSM xattr) namespaces to dip into the reserve block pool to allow
+	 * manipulation of these xattrs when at ENOSPC. These VFS xattr
+	 * namespaces translate to the XFS_ATTR_ROOT and XFS_ATTR_SECURE on-disk
+	 * namespaces.
+	 *
+	 * For most of these cases, these special xattrs will fit in the inode
+	 * itself and so consume no extra space or only require temporary extra
+	 * space while an overwrite is being made. Hence the use of the reserved
+	 * pool is largely to avoid the worst case reservation from preventing
+	 * the xattr from being created at ENOSPC.
+	 */
+	return xfs_attr_set(args, op,
+			args->attr_filter & (XFS_ATTR_ROOT | XFS_ATTR_SECURE));
 }
 
 
@@ -125,22 +144,38 @@ xfs_xattr_get(const struct xattr_handler *handler, struct dentry *unused,
 	};
 	int			error;
 
+	if (xfs_ifork_zapped(XFS_I(inode), XFS_ATTR_FORK))
+		return -EIO;
+
 	error = xfs_attr_get(&args);
 	if (error)
 		return error;
 	return args.valuelen;
 }
 
+static inline enum xfs_attr_update
+xfs_xattr_flags_to_op(
+	int		flags,
+	const void	*value)
+{
+	if (!value)
+		return XFS_ATTRUPDATE_REMOVE;
+	if (flags & XATTR_CREATE)
+		return XFS_ATTRUPDATE_CREATE;
+	if (flags & XATTR_REPLACE)
+		return XFS_ATTRUPDATE_REPLACE;
+	return XFS_ATTRUPDATE_UPSERT;
+}
+
 static int
 xfs_xattr_set(const struct xattr_handler *handler,
-	      struct user_namespace *mnt_userns, struct dentry *unused,
+	      struct mnt_idmap *idmap, struct dentry *unused,
 	      struct inode *inode, const char *name, const void *value,
 	      size_t size, int flags)
 {
 	struct xfs_da_args	args = {
 		.dp		= XFS_I(inode),
 		.attr_filter	= handler->flags,
-		.attr_flags	= flags,
 		.name		= name,
 		.namelen	= strlen(name),
 		.value		= (void *)value,
@@ -148,7 +183,7 @@ xfs_xattr_set(const struct xattr_handler *handler,
 	};
 	int			error;
 
-	error = xfs_attr_change(&args);
+	error = xfs_attr_change(&args, xfs_xattr_flags_to_op(flags, value));
 	if (!error && (handler->flags & XFS_ATTR_ROOT))
 		xfs_forget_acl(inode, name);
 	return error;
@@ -175,14 +210,10 @@ static const struct xattr_handler xfs_xattr_security_handler = {
 	.set	= xfs_xattr_set,
 };
 
-const struct xattr_handler *xfs_xattr_handlers[] = {
+const struct xattr_handler * const xfs_xattr_handlers[] = {
 	&xfs_xattr_user_handler,
 	&xfs_xattr_trusted_handler,
 	&xfs_xattr_security_handler,
-#ifdef CONFIG_XFS_POSIX_ACL
-	&posix_acl_access_xattr_handler,
-	&posix_acl_default_xattr_handler,
-#endif
 	NULL
 };
 
@@ -210,9 +241,9 @@ __xfs_xattr_put_listent(
 		return;
 	}
 	offset = context->buffer + context->count;
-	strncpy(offset, prefix, prefix_len);
+	memcpy(offset, prefix, prefix_len);
 	offset += prefix_len;
-	strncpy(offset, (char *)name, namelen);			/* real name */
+	memcpy(offset, (char *)name, namelen);			/* real name */
 	offset += namelen;
 	*offset = '\0';
 
@@ -227,12 +258,17 @@ xfs_xattr_put_listent(
 	int		flags,
 	unsigned char	*name,
 	int		namelen,
+	void		*value,
 	int		valuelen)
 {
 	char *prefix;
 	int prefix_len;
 
 	ASSERT(context->count >= 0);
+
+	/* Don't expose private xattr namespaces. */
+	if (flags & XFS_ATTR_PRIVATE_NSP_MASK)
+		return;
 
 	if (flags & XFS_ATTR_ROOT) {
 #ifdef CONFIG_XFS_POSIX_ACL
@@ -287,14 +323,17 @@ xfs_vn_listxattr(
 	struct inode	*inode = d_inode(dentry);
 	int		error;
 
+	if (xfs_ifork_zapped(XFS_I(inode), XFS_ATTR_FORK))
+		return -EIO;
+
 	/*
 	 * First read the regular on-disk attributes.
 	 */
 	memset(&context, 0, sizeof(context));
 	context.dp = XFS_I(inode);
 	context.resynch = 1;
-	context.buffer = size ? data : NULL;
 	context.bufsize = size;
+	context.buffer = size ? data : NULL;
 	context.firstu = context.bufsize;
 	context.put_listent = xfs_xattr_put_listent;
 

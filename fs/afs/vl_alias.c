@@ -33,55 +33,6 @@ static struct afs_volume *afs_sample_volume(struct afs_cell *cell, struct key *k
 }
 
 /*
- * Compare two addresses.
- */
-static int afs_compare_addrs(const struct sockaddr_rxrpc *srx_a,
-			     const struct sockaddr_rxrpc *srx_b)
-{
-	short port_a, port_b;
-	int addr_a, addr_b, diff;
-
-	diff = (short)srx_a->transport_type - (short)srx_b->transport_type;
-	if (diff)
-		goto out;
-
-	switch (srx_a->transport_type) {
-	case AF_INET: {
-		const struct sockaddr_in *a = &srx_a->transport.sin;
-		const struct sockaddr_in *b = &srx_b->transport.sin;
-		addr_a = ntohl(a->sin_addr.s_addr);
-		addr_b = ntohl(b->sin_addr.s_addr);
-		diff = addr_a - addr_b;
-		if (diff == 0) {
-			port_a = ntohs(a->sin_port);
-			port_b = ntohs(b->sin_port);
-			diff = port_a - port_b;
-		}
-		break;
-	}
-
-	case AF_INET6: {
-		const struct sockaddr_in6 *a = &srx_a->transport.sin6;
-		const struct sockaddr_in6 *b = &srx_b->transport.sin6;
-		diff = memcmp(&a->sin6_addr, &b->sin6_addr, 16);
-		if (diff == 0) {
-			port_a = ntohs(a->sin6_port);
-			port_b = ntohs(b->sin6_port);
-			diff = port_a - port_b;
-		}
-		break;
-	}
-
-	default:
-		WARN_ON(1);
-		diff = 1;
-	}
-
-out:
-	return diff;
-}
-
-/*
  * Compare the address lists of a pair of fileservers.
  */
 static int afs_compare_fs_alists(const struct afs_server *server_a,
@@ -90,13 +41,13 @@ static int afs_compare_fs_alists(const struct afs_server *server_a,
 	const struct afs_addr_list *la, *lb;
 	int a = 0, b = 0, addr_matches = 0;
 
-	la = rcu_dereference(server_a->addresses);
-	lb = rcu_dereference(server_b->addresses);
+	la = rcu_dereference(server_a->endpoint_state)->addresses;
+	lb = rcu_dereference(server_b->endpoint_state)->addresses;
 
 	while (a < la->nr_addrs && b < lb->nr_addrs) {
-		const struct sockaddr_rxrpc *srx_a = &la->addrs[a];
-		const struct sockaddr_rxrpc *srx_b = &lb->addrs[b];
-		int diff = afs_compare_addrs(srx_a, srx_b);
+		unsigned long pa = (unsigned long)la->addrs[a].peer;
+		unsigned long pb = (unsigned long)lb->addrs[b].peer;
+		long diff = pa - pb;
 
 		if (diff < 0) {
 			a++;
@@ -126,7 +77,7 @@ static int afs_compare_volume_slists(const struct afs_volume *vol_a,
 	lb = rcu_dereference(vol_b->servers);
 
 	for (i = 0; i < AFS_MAXTYPES; i++)
-		if (la->vids[i] != lb->vids[i])
+		if (vol_a->vids[i] != vol_b->vids[i])
 			return 0;
 
 	while (a < la->nr_servers && b < lb->nr_servers) {
@@ -205,7 +156,7 @@ static int afs_query_for_alias_one(struct afs_cell *cell, struct key *key,
 	/* And see if it's in the new cell. */
 	volume = afs_sample_volume(cell, key, pvol->name, pvol->name_len);
 	if (IS_ERR(volume)) {
-		afs_put_volume(cell->net, pvol, afs_volume_trace_put_query_alias);
+		afs_put_volume(pvol, afs_volume_trace_put_query_alias);
 		if (PTR_ERR(volume) != -ENOMEDIUM)
 			return PTR_ERR(volume);
 		/* That volume is not in the new cell, so not an alias */
@@ -223,8 +174,8 @@ static int afs_query_for_alias_one(struct afs_cell *cell, struct key *key,
 		rcu_read_unlock();
 	}
 
-	afs_put_volume(cell->net, volume, afs_volume_trace_put_query_alias);
-	afs_put_volume(cell->net, pvol, afs_volume_trace_put_query_alias);
+	afs_put_volume(volume, afs_volume_trace_put_query_alias);
+	afs_put_volume(pvol, afs_volume_trace_put_query_alias);
 	return ret;
 }
 
@@ -254,11 +205,11 @@ static int afs_query_for_alias(struct afs_cell *cell, struct key *key)
 			goto is_alias;
 
 		if (mutex_lock_interruptible(&cell->net->proc_cells_lock) < 0) {
-			afs_unuse_cell(cell->net, p, afs_cell_trace_unuse_check_alias);
+			afs_unuse_cell(p, afs_cell_trace_unuse_check_alias);
 			return -ERESTARTSYS;
 		}
 
-		afs_unuse_cell(cell->net, p, afs_cell_trace_unuse_check_alias);
+		afs_unuse_cell(p, afs_cell_trace_unuse_check_alias);
 	}
 
 	mutex_unlock(&cell->net->proc_cells_lock);
@@ -285,7 +236,7 @@ static char *afs_vl_get_cell_name(struct afs_cell *cell, struct key *key)
 
 	while (afs_select_vlserver(&vc)) {
 		if (!test_bit(AFS_VLSERVER_FL_IS_YFS, &vc.server->flags)) {
-			vc.ac.error = -EOPNOTSUPP;
+			vc.call_error = -EOPNOTSUPP;
 			skipped = true;
 			continue;
 		}
@@ -302,6 +253,7 @@ static char *afs_vl_get_cell_name(struct afs_cell *cell, struct key *key)
 static int yfs_check_canonical_cell_name(struct afs_cell *cell, struct key *key)
 {
 	struct afs_cell *master;
+	size_t name_len;
 	char *cell_name;
 
 	cell_name = afs_vl_get_cell_name(cell, key);
@@ -313,8 +265,13 @@ static int yfs_check_canonical_cell_name(struct afs_cell *cell, struct key *key)
 		return 0;
 	}
 
-	master = afs_lookup_cell(cell->net, cell_name, strlen(cell_name),
-				 NULL, false);
+	name_len = strlen(cell_name);
+	if (!name_len || name_len > AFS_MAXCELLNAME)
+		master = ERR_PTR(-EOPNOTSUPP);
+	else
+		master = afs_lookup_cell(cell->net, cell_name, name_len, NULL,
+					 AFS_LOOKUP_CELL_ALIAS_CHECK,
+					 afs_cell_trace_use_lookup_canonical);
 	kfree(cell_name);
 	if (IS_ERR(master))
 		return PTR_ERR(master);

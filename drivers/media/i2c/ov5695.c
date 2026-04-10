@@ -108,7 +108,6 @@ struct ov5695 {
 	struct v4l2_ctrl	*vblank;
 	struct v4l2_ctrl	*test_pattern;
 	struct mutex		mutex;
-	bool			streaming;
 	const struct ov5695_mode *cur_mode;
 };
 
@@ -821,9 +820,7 @@ static int ov5695_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.height = mode->height;
 	fmt->format.field = V4L2_FIELD_NONE;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-#ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
-#endif
+		*v4l2_subdev_state_get_format(sd_state, fmt->pad) = fmt->format;
 	} else {
 		ov5695->cur_mode = mode;
 		h_blank = mode->hts_def - mode->width;
@@ -849,13 +846,8 @@ static int ov5695_get_fmt(struct v4l2_subdev *sd,
 
 	mutex_lock(&ov5695->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-#ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
-		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state,
-							  fmt->pad);
-#else
-		mutex_unlock(&ov5695->mutex);
-		return -EINVAL;
-#endif
+		fmt->format = *v4l2_subdev_state_get_format(sd_state,
+							    fmt->pad);
 	} else {
 		fmt->format.width = mode->width;
 		fmt->format.height = mode->height;
@@ -942,9 +934,6 @@ static int ov5695_s_stream(struct v4l2_subdev *sd, int on)
 	int ret = 0;
 
 	mutex_lock(&ov5695->mutex);
-	on = !!on;
-	if (on == ov5695->streaming)
-		goto unlock_and_return;
 
 	if (on) {
 		ret = pm_runtime_resume_and_get(&client->dev);
@@ -961,8 +950,6 @@ static int ov5695_s_stream(struct v4l2_subdev *sd, int on)
 		__ov5695_stop_stream(ov5695);
 		pm_runtime_put(&client->dev);
 	}
-
-	ov5695->streaming = on;
 
 unlock_and_return:
 	mutex_unlock(&ov5695->mutex);
@@ -1048,12 +1035,11 @@ static int __maybe_unused ov5695_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-#ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
 static int ov5695_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct ov5695 *ov5695 = to_ov5695(sd);
 	struct v4l2_mbus_framefmt *try_fmt =
-				v4l2_subdev_get_try_format(sd, fh->state, 0);
+				v4l2_subdev_state_get_format(fh->state, 0);
 	const struct ov5695_mode *def_mode = &supported_modes[0];
 
 	mutex_lock(&ov5695->mutex);
@@ -1068,18 +1054,15 @@ static int ov5695_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 
 	return 0;
 }
-#endif
 
 static const struct dev_pm_ops ov5695_pm_ops = {
 	SET_RUNTIME_PM_OPS(ov5695_runtime_suspend,
 			   ov5695_runtime_resume, NULL)
 };
 
-#ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
 static const struct v4l2_subdev_internal_ops ov5695_internal_ops = {
 	.open = ov5695_open,
 };
-#endif
 
 static const struct v4l2_subdev_video_ops ov5695_video_ops = {
 	.s_stream = ov5695_s_stream,
@@ -1267,8 +1250,7 @@ static int ov5695_configure_regulators(struct ov5695 *ov5695)
 				       ov5695->supplies);
 }
 
-static int ov5695_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int ov5695_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct ov5695 *ov5695;
@@ -1282,16 +1264,12 @@ static int ov5695_probe(struct i2c_client *client,
 	ov5695->client = client;
 	ov5695->cur_mode = &supported_modes[0];
 
-	ov5695->xvclk = devm_clk_get(dev, "xvclk");
-	if (IS_ERR(ov5695->xvclk)) {
-		dev_err(dev, "Failed to get xvclk\n");
-		return -EINVAL;
-	}
-	ret = clk_set_rate(ov5695->xvclk, OV5695_XVCLK_FREQ);
-	if (ret < 0) {
-		dev_err(dev, "Failed to set xvclk rate (24MHz)\n");
-		return ret;
-	}
+	ov5695->xvclk = devm_v4l2_sensor_clk_get_legacy(dev, "xvclk", true,
+							OV5695_XVCLK_FREQ);
+	if (IS_ERR(ov5695->xvclk))
+		return dev_err_probe(dev, PTR_ERR(ov5695->xvclk),
+				     "Failed to get xvclk\n");
+
 	if (clk_get_rate(ov5695->xvclk) != OV5695_XVCLK_FREQ)
 		dev_warn(dev, "xvclk mismatched, modes are based on 24MHz\n");
 
@@ -1323,17 +1301,13 @@ static int ov5695_probe(struct i2c_client *client,
 	if (ret)
 		goto err_power_off;
 
-#ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
 	sd->internal_ops = &ov5695_internal_ops;
 	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
-#endif
-#if defined(CONFIG_MEDIA_CONTROLLER)
 	ov5695->pad.flags = MEDIA_PAD_FL_SOURCE;
 	sd->entity.function = MEDIA_ENT_F_CAM_SENSOR;
 	ret = media_entity_pads_init(&sd->entity, 1, &ov5695->pad);
 	if (ret < 0)
 		goto err_power_off;
-#endif
 
 	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
@@ -1348,9 +1322,7 @@ static int ov5695_probe(struct i2c_client *client,
 	return 0;
 
 err_clean_entity:
-#if defined(CONFIG_MEDIA_CONTROLLER)
 	media_entity_cleanup(&sd->entity);
-#endif
 err_power_off:
 	__ov5695_power_off(ov5695);
 err_free_handler:
@@ -1361,15 +1333,13 @@ err_destroy_mutex:
 	return ret;
 }
 
-static int ov5695_remove(struct i2c_client *client)
+static void ov5695_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov5695 *ov5695 = to_ov5695(sd);
 
 	v4l2_async_unregister_subdev(sd);
-#if defined(CONFIG_MEDIA_CONTROLLER)
 	media_entity_cleanup(&sd->entity);
-#endif
 	v4l2_ctrl_handler_free(&ov5695->ctrl_handler);
 	mutex_destroy(&ov5695->mutex);
 
@@ -1377,8 +1347,6 @@ static int ov5695_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		__ov5695_power_off(ov5695);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_OF)
@@ -1395,8 +1363,8 @@ static struct i2c_driver ov5695_i2c_driver = {
 		.pm = &ov5695_pm_ops,
 		.of_match_table = of_match_ptr(ov5695_of_match),
 	},
-	.probe		= &ov5695_probe,
-	.remove		= &ov5695_remove,
+	.probe		= ov5695_probe,
+	.remove		= ov5695_remove,
 };
 
 module_i2c_driver(ov5695_i2c_driver);

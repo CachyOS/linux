@@ -8,60 +8,102 @@
 #include <asm/addrspace.h>
 #include <asm/asm.h>
 #include <asm/asmmacro.h>
+#include <asm/bug.h>
 #include <asm/regdef.h>
 #include <asm/loongarch.h>
 #include <asm/stackframe.h>
 
+#ifdef CONFIG_EFI_STUB
+
+#include "efi-header.S"
+
+	__HEAD
+
+_head:
+	.word	IMAGE_DOS_SIGNATURE	/* "MZ", MS-DOS header */
+	.org	0x8
+	.dword	_kernel_entry		/* Kernel entry point (physical address) */
+	.dword	_kernel_asize		/* Kernel image effective size */
+	.quad	PHYS_LINK_KADDR		/* Kernel image load offset from start of RAM */
+	.org	0x38			/* 0x20 ~ 0x37 reserved */
+	.long	LINUX_PE_MAGIC
+	.long	pe_header - _head	/* Offset to the PE header */
+
+pe_header:
+	__EFI_PE_HEADER
+
+SYM_DATA(kernel_asize, .long _kernel_asize);
+SYM_DATA(kernel_fsize, .long _kernel_fsize);
+
+#endif
+
 	__REF
 
-SYM_ENTRY(_stext, SYM_L_GLOBAL, SYM_A_NONE)
+	.align 12
 
 SYM_CODE_START(kernel_entry)			# kernel entry point
+	UNWIND_HINT_END_OF_STACK
 
-	/* Config direct window and set PG */
-	li.d		t0, CSR_DMW0_INIT	# UC, PLV0, 0x8000 xxxx xxxx xxxx
-	csrwr		t0, LOONGARCH_CSR_DMWIN0
-	li.d		t0, CSR_DMW1_INIT	# CA, PLV0, 0x9000 xxxx xxxx xxxx
-	csrwr		t0, LOONGARCH_CSR_DMWIN1
-	/* Enable PG */
-	li.w		t0, 0xb0		# PLV=0, IE=0, PG=1
-	csrwr		t0, LOONGARCH_CSR_CRMD
-	li.w		t0, 0x04		# PLV=0, PIE=1, PWE=0
-	csrwr		t0, LOONGARCH_CSR_PRMD
-	li.w		t0, 0x00		# FPE=0, SXE=0, ASXE=0, BTE=0
-	csrwr		t0, LOONGARCH_CSR_EUEN
+	SETUP_TWINS
+	SETUP_MODES	t0
+	JUMP_VIRT_ADDR	t0, t1
+	SETUP_DMWINS	t0
 
-	/* We might not get launched at the address the kernel is linked to,
-	   so we jump there.  */
-	la.abs		t0, 0f
-	jirl		zero, t0, 0
-0:
-	la		t0, __bss_start		# clear .bss
-	st.d		zero, t0, 0
-	la		t1, __bss_stop - LONGSIZE
+	la.pcrel	t0, __bss_start		# clear .bss
+	LONG_S		zero, t0, 0
+	la.pcrel	t1, __bss_stop - LONGSIZE
 1:
-	addi.d		t0, t0, LONGSIZE
-	st.d		zero, t0, 0
+	PTR_ADDI	t0, t0, LONGSIZE
+	LONG_S		zero, t0, 0
 	bne		t0, t1, 1b
 
-	la		t0, fw_arg0
-	st.d		a0, t0, 0		# firmware arguments
-	la		t0, fw_arg1
-	st.d		a1, t0, 0
+	la.pcrel	t0, fw_arg0
+	PTR_S		a0, t0, 0		# firmware arguments
+	la.pcrel	t0, fw_arg1
+	PTR_S		a1, t0, 0
+	la.pcrel	t0, fw_arg2
+	PTR_S		a2, t0, 0
 
+#ifdef CONFIG_PAGE_SIZE_4KB
+	LONG_LI		t0, 0
+	LONG_LI		t1, CSR_STFILL
+	csrxchg		t0, t1, LOONGARCH_CSR_IMPCTL1
+#endif
 	/* KSave3 used for percpu base, initialized as 0 */
 	csrwr		zero, PERCPU_BASE_KS
 	/* GPR21 used for percpu base (runtime), initialized as 0 */
-	or		u0, zero, zero
+	move		u0, zero
 
-	la		tp, init_thread_union
+	la.pcrel	tp, init_thread_union
 	/* Set the SP after an empty pt_regs.  */
-	PTR_LI		sp, (_THREAD_SIZE - 32 - PT_SIZE)
+	PTR_LI		sp, (_THREAD_SIZE - PT_SIZE)
 	PTR_ADD		sp, sp, tp
 	set_saved_sp	sp, t0, t1
-	PTR_ADDI	sp, sp, -4 * SZREG	# init stack pointer
+
+#ifdef CONFIG_RELOCATABLE
+
+	bl		relocate_kernel
+
+#ifdef CONFIG_RANDOMIZE_BASE
+	/* Repoint the sp into the new kernel */
+	PTR_LI		sp, (_THREAD_SIZE - PT_SIZE)
+	PTR_ADD		sp, sp, tp
+	set_saved_sp	sp, t0, t1
+
+	/* Jump to the new kernel: new_pc = current_pc + random_offset */
+	pcaddi		t0, 0
+	PTR_ADD		t0, t0, a0
+	jirl		zero, t0, 0xc
+#endif /* CONFIG_RANDOMIZE_BASE */
+
+#endif /* CONFIG_RELOCATABLE */
+
+#ifdef CONFIG_KASAN
+	bl		kasan_early_init
+#endif
 
 	bl		start_kernel
+	ASM_BUG()
 
 SYM_CODE_END(kernel_entry)
 
@@ -72,27 +114,25 @@ SYM_CODE_END(kernel_entry)
  * function after setting up the stack and tp registers.
  */
 SYM_CODE_START(smpboot_entry)
-	li.d		t0, CSR_DMW0_INIT	# UC, PLV0
-	csrwr		t0, LOONGARCH_CSR_DMWIN0
-	li.d		t0, CSR_DMW1_INIT	# CA, PLV0
-	csrwr		t0, LOONGARCH_CSR_DMWIN1
-	li.w		t0, 0xb0		# PLV=0, IE=0, PG=1
-	csrwr		t0, LOONGARCH_CSR_CRMD
-	li.w		t0, 0x04		# PLV=0, PIE=1, PWE=0
-	csrwr		t0, LOONGARCH_CSR_PRMD
-	li.w		t0, 0x00		# FPE=0, SXE=0, ASXE=0, BTE=0
-	csrwr		t0, LOONGARCH_CSR_EUEN
+	UNWIND_HINT_END_OF_STACK
 
-	la.abs		t0, cpuboot_data
+	SETUP_TWINS
+	SETUP_MODES	t0
+	JUMP_VIRT_ADDR	t0, t1
+	SETUP_DMWINS	t0
+
+#ifdef CONFIG_PAGE_SIZE_4KB
+	LONG_LI		t0, 0
+	LONG_LI		t1, CSR_STFILL
+	csrxchg		t0, t1, LOONGARCH_CSR_IMPCTL1
+#endif
+	la.pcrel	t0, cpuboot_data
 	ld.d		sp, t0, CPU_BOOT_STACK
 	ld.d		tp, t0, CPU_BOOT_TINFO
 
-	la.abs	t0, 0f
-	jirl	zero, t0, 0
-0:
 	bl		start_secondary
+	ASM_BUG()
+
 SYM_CODE_END(smpboot_entry)
 
 #endif /* CONFIG_SMP */
-
-SYM_ENTRY(kernel_entry_end, SYM_L_GLOBAL, SYM_A_NONE)

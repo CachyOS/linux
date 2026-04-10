@@ -12,7 +12,8 @@
 #include <net/devlink.h>
 #include <linux/avf/virtchnl.h>
 #include "ice_type.h"
-#include "ice_virtchnl_fdir.h"
+#include "ice_flow.h"
+#include "virt/fdir.h"
 #include "ice_vsi_vlan_ops.h"
 
 #define ICE_MAX_SRIOV_VFS		256
@@ -52,15 +53,75 @@ struct ice_mdd_vf_events {
 	u16 last_printed;
 };
 
+enum ice_hash_ip_ctx_type {
+	ICE_HASH_IP_CTX_IP = 0,
+	ICE_HASH_IP_CTX_IP_ESP,
+	ICE_HASH_IP_CTX_IP_UDP_ESP,
+	ICE_HASH_IP_CTX_IP_AH,
+	ICE_HASH_IP_CTX_IP_PFCP,
+	ICE_HASH_IP_CTX_IP_UDP,
+	ICE_HASH_IP_CTX_IP_TCP,
+	ICE_HASH_IP_CTX_IP_SCTP,
+	ICE_HASH_IP_CTX_MAX,
+};
+
+struct ice_vf_hash_ip_ctx {
+	struct ice_rss_hash_cfg ctx[ICE_HASH_IP_CTX_MAX];
+};
+
+enum ice_hash_gtpu_ctx_type {
+	ICE_HASH_GTPU_CTX_EH_IP = 0,
+	ICE_HASH_GTPU_CTX_EH_IP_UDP,
+	ICE_HASH_GTPU_CTX_EH_IP_TCP,
+	ICE_HASH_GTPU_CTX_UP_IP,
+	ICE_HASH_GTPU_CTX_UP_IP_UDP,
+	ICE_HASH_GTPU_CTX_UP_IP_TCP,
+	ICE_HASH_GTPU_CTX_DW_IP,
+	ICE_HASH_GTPU_CTX_DW_IP_UDP,
+	ICE_HASH_GTPU_CTX_DW_IP_TCP,
+	ICE_HASH_GTPU_CTX_MAX,
+};
+
+struct ice_vf_hash_gtpu_ctx {
+	struct ice_rss_hash_cfg ctx[ICE_HASH_GTPU_CTX_MAX];
+};
+
+struct ice_vf_hash_ctx {
+	struct ice_vf_hash_ip_ctx v4;
+	struct ice_vf_hash_ip_ctx v6;
+	struct ice_vf_hash_gtpu_ctx ipv4;
+	struct ice_vf_hash_gtpu_ctx ipv6;
+};
+
+/* Structure to store fdir fv entry */
+struct ice_fdir_prof_info {
+	struct ice_parser_profile prof;
+	u64 fdir_active_cnt;
+};
+
+struct ice_vf_qs_bw {
+	u32 committed;
+	u32 peak;
+	u16 queue_id;
+	u8 tc;
+};
+
+/* Structure to store RSS field vector entry */
+struct ice_rss_prof_info {
+	struct ice_parser_profile prof;
+	bool symm;
+};
+
 /* VF operations */
 struct ice_vf_ops {
 	enum ice_disq_rst_src reset_type;
 	void (*free)(struct ice_vf *vf);
+	void (*clear_reset_state)(struct ice_vf *vf);
 	void (*clear_mbx_register)(struct ice_vf *vf);
 	void (*trigger_reset_register)(struct ice_vf *vf, bool is_vflr);
 	bool (*poll_reset_status)(struct ice_vf *vf);
 	void (*clear_reset_trigger)(struct ice_vf *vf);
-	int (*vsi_rebuild)(struct ice_vf *vf);
+	void (*irq_close)(struct ice_vf *vf);
 	void (*post_vsi_rebuild)(struct ice_vf *vf);
 };
 
@@ -70,9 +131,8 @@ struct ice_vfs {
 	struct mutex table_lock;	/* Lock for protecting the hash table */
 	u16 num_supported;		/* max supported VFs on this PF */
 	u16 num_qps_per;		/* number of queue pairs per VF */
-	u16 num_msix_per;		/* number of MSI-X vectors per VF */
+	u16 num_msix_per;		/* default MSI-X vectors per VF */
 	unsigned long last_printed_mdd_jiffies;	/* MDD message rate limit */
-	DECLARE_BITMAP(malvfs, ICE_MAX_SRIOV_VFS); /* malicious VF indicator */
 };
 
 /* VF information structure */
@@ -81,7 +141,7 @@ struct ice_vf {
 	struct rcu_head rcu;
 	struct kref refcnt;
 	struct ice_pf *pf;
-
+	struct pci_dev *vfdev;
 	/* Used during virtchnl message handling and NDO ops against the VF
 	 * that will trigger a VFR
 	 */
@@ -91,46 +151,61 @@ struct ice_vf {
 	u16 lan_vsi_idx;		/* index into PF struct */
 	u16 ctrl_vsi_idx;
 	struct ice_vf_fdir fdir;
-	/* first vector index of this VF in the PF space */
-	int first_vector_idx;
+	struct ice_fdir_prof_info fdir_prof_info[ICE_MAX_PTGS];
+	struct ice_rss_prof_info rss_prof_info[ICE_MAX_PTGS];
+	struct ice_vf_hash_ctx hash_ctx;
+	u64 rss_hashcfg;		/* RSS hash configuration */
 	struct ice_sw *vf_sw_id;	/* switch ID the VF VSIs connect to */
 	struct virtchnl_version_info vf_ver;
 	u32 driver_caps;		/* reported by VF driver */
-	struct virtchnl_ether_addr dev_lan_addr;
-	struct virtchnl_ether_addr hw_lan_addr;
+	u8 dev_lan_addr[ETH_ALEN];
+	u8 hw_lan_addr[ETH_ALEN];
 	struct ice_time_mac legacy_last_added_umac;
 	DECLARE_BITMAP(txq_ena, ICE_MAX_RSS_QS_PER_VF);
 	DECLARE_BITMAP(rxq_ena, ICE_MAX_RSS_QS_PER_VF);
 	struct ice_vlan port_vlan_info;	/* Port VLAN ID, QoS, and TPID */
 	struct virtchnl_vlan_caps vlan_v2_caps;
+	struct ice_mbx_vf_info mbx_info;
 	u8 pf_set_mac:1;		/* VF MAC address set by VMM admin */
 	u8 trusted:1;
 	u8 spoofchk:1;
 	u8 link_forced:1;
 	u8 link_up:1;			/* only valid if VF link is forced */
-	/* VSI indices - actual VSI pointers are maintained in the PF structure
-	 * When assigned, these will be non-zero, because VSI 0 is always
-	 * the main LAN VSI for the PF.
-	 */
-	u16 lan_vsi_num;		/* ID as used by firmware */
+	u8 lldp_tx_ena:1;
+
+	u16 num_msix;			/* num of MSI-X configured on this VF */
+
+	u32 ptp_caps;
+
 	unsigned int min_tx_rate;	/* Minimum Tx bandwidth limit in Mbps */
 	unsigned int max_tx_rate;	/* Maximum Tx bandwidth limit in Mbps */
+	/* first vector index of this VF in the PF space */
+	int first_vector_idx;
 	DECLARE_BITMAP(vf_states, ICE_VF_STATES_NBITS);	/* VF runtime states */
 
 	unsigned long vf_caps;		/* VF's adv. capabilities */
 	u8 num_req_qs;			/* num of queue pairs requested by VF */
 	u16 num_mac;
+	u16 num_mac_lldp;
 	u16 num_vf_qs;			/* num of queue configured per VF */
+	u8 vlan_strip_ena;		/* Outer and Inner VLAN strip enable */
+#define ICE_INNER_VLAN_STRIP_ENA	BIT(0)
+#define ICE_OUTER_VLAN_STRIP_ENA	BIT(1)
 	struct ice_mdd_vf_events mdd_rx_events;
 	struct ice_mdd_vf_events mdd_tx_events;
 	DECLARE_BITMAP(opcodes_allowlist, VIRTCHNL_OP_MAX);
 
-	struct ice_repr *repr;
+	unsigned long repr_id;
 	const struct ice_virtchnl_ops *virtchnl_ops;
 	const struct ice_vf_ops *vf_ops;
 
 	/* devlink port data */
 	struct devlink_port devlink_port;
+
+	u16 lldp_recipe_id;
+	u16 lldp_rule_id;
+
+	struct ice_vf_qs_bw qs_bw[ICE_MAX_RSS_QS_PER_VF];
 };
 
 /* Flags for controlling behavior of ice_reset_vf */
@@ -158,6 +233,11 @@ static inline bool ice_vf_is_port_vlan_ena(struct ice_vf *vf)
 static inline u16 ice_vf_get_port_vlan_tpid(struct ice_vf *vf)
 {
 	return vf->port_vlan_info.tpid;
+}
+
+static inline bool ice_vf_is_lldp_ena(struct ice_vf *vf)
+{
+	return vf->num_mac_lldp && vf->trusted;
 }
 
 /* VF Hash Table access functions
@@ -207,22 +287,46 @@ static inline u16 ice_vf_get_port_vlan_tpid(struct ice_vf *vf)
 
 #ifdef CONFIG_PCI_IOV
 struct ice_vf *ice_get_vf_by_id(struct ice_pf *pf, u16 vf_id);
+
+static inline struct ice_vf *ice_get_vf_by_dev(struct ice_pf *pf,
+					       struct pci_dev *vf_dev)
+{
+	int vf_id = pci_iov_vf_id(vf_dev);
+
+	if (vf_id < 0)
+		return NULL;
+
+	return ice_get_vf_by_id(pf, pci_iov_vf_id(vf_dev));
+}
+
 void ice_put_vf(struct ice_vf *vf);
 bool ice_has_vfs(struct ice_pf *pf);
 u16 ice_get_num_vfs(struct ice_pf *pf);
 struct ice_vsi *ice_get_vf_vsi(struct ice_vf *vf);
 bool ice_is_vf_disabled(struct ice_vf *vf);
 int ice_check_vf_ready_for_cfg(struct ice_vf *vf);
-void ice_set_vf_state_qs_dis(struct ice_vf *vf);
-bool ice_is_any_vf_in_promisc(struct ice_pf *pf);
+void ice_set_vf_state_dis(struct ice_vf *vf);
+bool ice_is_any_vf_in_unicast_promisc(struct ice_pf *pf);
+void
+ice_vf_get_promisc_masks(struct ice_vf *vf, struct ice_vsi *vsi,
+			 u8 *ucast_m, u8 *mcast_m);
 int
 ice_vf_set_vsi_promisc(struct ice_vf *vf, struct ice_vsi *vsi, u8 promisc_m);
 int
 ice_vf_clear_vsi_promisc(struct ice_vf *vf, struct ice_vsi *vsi, u8 promisc_m);
 int ice_reset_vf(struct ice_vf *vf, u32 flags);
 void ice_reset_all_vfs(struct ice_pf *pf);
+struct ice_vsi *ice_get_vf_ctrl_vsi(struct ice_pf *pf, struct ice_vsi *vsi);
+void ice_vf_update_mac_lldp_num(struct ice_vf *vf, struct ice_vsi *vsi,
+				bool incr);
 #else /* CONFIG_PCI_IOV */
 static inline struct ice_vf *ice_get_vf_by_id(struct ice_pf *pf, u16 vf_id)
+{
+	return NULL;
+}
+
+static inline struct ice_vf *ice_get_vf_by_dev(struct ice_pf *pf,
+					       struct pci_dev *vf_dev)
 {
 	return NULL;
 }
@@ -256,11 +360,11 @@ static inline int ice_check_vf_ready_for_cfg(struct ice_vf *vf)
 	return -EOPNOTSUPP;
 }
 
-static inline void ice_set_vf_state_qs_dis(struct ice_vf *vf)
+static inline void ice_set_vf_state_dis(struct ice_vf *vf)
 {
 }
 
-static inline bool ice_is_any_vf_in_promisc(struct ice_pf *pf)
+static inline bool ice_is_any_vf_in_unicast_promisc(struct ice_pf *pf)
 {
 	return false;
 }
@@ -284,6 +388,12 @@ static inline int ice_reset_vf(struct ice_vf *vf, u32 flags)
 
 static inline void ice_reset_all_vfs(struct ice_pf *pf)
 {
+}
+
+static inline struct ice_vsi *
+ice_get_vf_ctrl_vsi(struct ice_pf *pf, struct ice_vsi *vsi)
+{
+	return NULL;
 }
 #endif /* !CONFIG_PCI_IOV */
 

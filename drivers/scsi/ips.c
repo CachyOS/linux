@@ -167,6 +167,7 @@
 #include <linux/stddef.h>
 #include <linux/string.h>
 #include <linux/errno.h>
+#include <linux/hex.h>
 #include <linux/kernel.h>
 #include <linux/ioport.h>
 #include <linux/slab.h>
@@ -230,7 +231,7 @@ module_param(ips, charp, 0);
  */
 static int ips_eh_abort(struct scsi_cmnd *);
 static int ips_eh_reset(struct scsi_cmnd *);
-static int ips_queue(struct Scsi_Host *, struct scsi_cmnd *);
+static enum scsi_qc_status ips_queue(struct Scsi_Host *, struct scsi_cmnd *);
 static const char *ips_info(struct Scsi_Host *);
 static irqreturn_t do_ipsintr(int, void *);
 static int ips_hainit(ips_ha_t *);
@@ -364,7 +365,7 @@ static struct scsi_host_template ips_driver_template = {
 	.proc_name		= "ips",
 	.show_info		= ips_show_info,
 	.write_info		= ips_write_info,
-	.slave_configure	= ips_slave_configure,
+	.sdev_configure		= ips_sdev_configure,
 	.bios_param		= ips_biosparam,
 	.this_id		= -1,
 	.sg_tablesize		= IPS_MAX_SG,
@@ -835,7 +836,6 @@ static int __ips_eh_reset(struct scsi_cmnd *SC)
 	int i;
 	ips_ha_t *ha;
 	ips_scb_t *scb;
-	ips_copp_wait_item_t *item;
 
 	METHOD_TRACE("ips_eh_reset", 1);
 
@@ -859,23 +859,6 @@ static int __ips_eh_reset(struct scsi_cmnd *SC)
 
 	if (!ha->active)
 		return (FAILED);
-
-	/* See if the command is on the copp queue */
-	item = ha->copp_waitlist.head;
-	while ((item) && (item->scsi_cmd != SC))
-		item = item->next;
-
-	if (item) {
-		/* Found it */
-		ips_removeq_copp(&ha->copp_waitlist, item);
-		return (SUCCESS);
-	}
-
-	/* See if the command is on the wait queue */
-	if (ips_removeq_wait(&ha->scb_waitlist, SC)) {
-		/* command not sent yet */
-		return (SUCCESS);
-	}
 
 	/* An explanation for the casual observer:                              */
 	/* Part of the function of a RAID controller is automatic error         */
@@ -1035,7 +1018,7 @@ static int ips_eh_reset(struct scsi_cmnd *SC)
 /*    Linux obtains io_request_lock before calling this function            */
 /*                                                                          */
 /****************************************************************************/
-static int ips_queue_lck(struct scsi_cmnd *SC)
+static enum scsi_qc_status ips_queue_lck(struct scsi_cmnd *SC)
 {
 	void (*done)(struct scsi_cmnd *) = scsi_done;
 	ips_ha_t *ha;
@@ -1103,7 +1086,7 @@ static int ips_queue_lck(struct scsi_cmnd *SC)
 		}
 
 		/* allocate space for the scribble */
-		scratch = kmalloc(sizeof (ips_copp_wait_item_t), GFP_ATOMIC);
+		scratch = kmalloc_obj(ips_copp_wait_item_t, GFP_ATOMIC);
 
 		if (!scratch) {
 			SC->result = DID_ERROR << 16;
@@ -1141,7 +1124,7 @@ static DEF_SCSI_QCMD(ips_queue)
 /*   Set bios geometry for the controller                                   */
 /*                                                                          */
 /****************************************************************************/
-static int ips_biosparam(struct scsi_device *sdev, struct block_device *bdev,
+static int ips_biosparam(struct scsi_device *sdev, struct gendisk *unused,
 			 sector_t capacity, int geom[])
 {
 	ips_ha_t *ha = (ips_ha_t *) sdev->host->hostdata;
@@ -1184,7 +1167,7 @@ static int ips_biosparam(struct scsi_device *sdev, struct block_device *bdev,
 
 /****************************************************************************/
 /*                                                                          */
-/* Routine Name: ips_slave_configure                                        */
+/* Routine Name: ips_sdev_configure                                         */
 /*                                                                          */
 /* Routine Description:                                                     */
 /*                                                                          */
@@ -1192,7 +1175,7 @@ static int ips_biosparam(struct scsi_device *sdev, struct block_device *bdev,
 /*                                                                          */
 /****************************************************************************/
 static int
-ips_slave_configure(struct scsi_device * SDptr)
+ips_sdev_configure(struct scsi_device *SDptr, struct queue_limits *lim)
 {
 	ips_ha_t *ha;
 	int min;
@@ -1499,17 +1482,16 @@ static int ips_is_passthru(struct scsi_cmnd *SC)
                 struct scatterlist *sg = scsi_sglist(SC);
                 char  *buffer;
 
-                /* kmap_atomic() ensures addressability of the user buffer.*/
                 /* local_irq_save() protects the KM_IRQ0 address slot.     */
                 local_irq_save(flags);
-                buffer = kmap_atomic(sg_page(sg)) + sg->offset;
-                if (buffer && buffer[0] == 'C' && buffer[1] == 'O' &&
-                    buffer[2] == 'P' && buffer[3] == 'P') {
-                        kunmap_atomic(buffer - sg->offset);
+		buffer = kmap_local_page(sg_page(sg)) + sg->offset;
+		if (buffer && buffer[0] == 'C' && buffer[1] == 'O' &&
+		    buffer[2] == 'P' && buffer[3] == 'P') {
+			kunmap_local(buffer);
                         local_irq_restore(flags);
                         return 1;
                 }
-                kunmap_atomic(buffer - sg->offset);
+		kunmap_local(buffer);
                 local_irq_restore(flags);
 	}
 	return 0;
@@ -3650,8 +3632,8 @@ ips_send_cmd(ips_ha_t * ha, ips_scb_t * scb)
 
 			break;
 
-		case RESERVE:
-		case RELEASE:
+		case RESERVE_6:
+		case RELEASE_6:
 			scb->scsi_cmd->result = DID_OK << 16;
 			break;
 
@@ -3918,8 +3900,8 @@ ips_chkstatus(ips_ha_t * ha, IPS_STATUS * pstatus)
 			case WRITE_6:
 			case READ_10:
 			case WRITE_10:
-			case RESERVE:
-			case RELEASE:
+			case RESERVE_6:
+			case RELEASE_6:
 				break;
 
 			case MODE_SENSE:
@@ -6892,7 +6874,7 @@ ips_init_phase1(struct pci_dev *pci_dev, int *indexPtr)
 	}
 
 	/* found a controller */
-	ha = kzalloc(sizeof (ips_ha_t), GFP_KERNEL);
+	ha = kzalloc_obj(ips_ha_t);
 	if (ha == NULL) {
 		IPS_PRINTK(KERN_WARNING, pci_dev,
 			   "Unable to allocate temporary ha struct\n");
@@ -6965,7 +6947,7 @@ ips_init_phase1(struct pci_dev *pci_dev, int *indexPtr)
 	ha->logical_drive_info_dma_addr = dma_address;
 
 
-	ha->conf = kmalloc(sizeof (IPS_CONF), GFP_KERNEL);
+	ha->conf = kmalloc_obj(IPS_CONF);
 
 	if (!ha->conf) {
 		IPS_PRINTK(KERN_WARNING, pci_dev,
@@ -6973,7 +6955,7 @@ ips_init_phase1(struct pci_dev *pci_dev, int *indexPtr)
 		return ips_abort_init(ha, index);
 	}
 
-	ha->nvram = kmalloc(sizeof (IPS_NVRAM_P5), GFP_KERNEL);
+	ha->nvram = kmalloc_obj(IPS_NVRAM_P5);
 
 	if (!ha->nvram) {
 		IPS_PRINTK(KERN_WARNING, pci_dev,
@@ -6981,7 +6963,7 @@ ips_init_phase1(struct pci_dev *pci_dev, int *indexPtr)
 		return ips_abort_init(ha, index);
 	}
 
-	ha->subsys = kmalloc(sizeof (IPS_SUBSYS), GFP_KERNEL);
+	ha->subsys = kmalloc_obj(IPS_SUBSYS);
 
 	if (!ha->subsys) {
 		IPS_PRINTK(KERN_WARNING, pci_dev,

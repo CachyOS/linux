@@ -45,6 +45,9 @@ static int int3402_thermal_probe(struct platform_device *pdev)
 	struct int3402_thermal_data *d;
 	int ret;
 
+	if (!adev)
+		return -ENODEV;
+
 	if (!acpi_has_method(adev->handle, "_TMP"))
 		return -ENODEV;
 
@@ -71,15 +74,13 @@ static int int3402_thermal_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int int3402_thermal_remove(struct platform_device *pdev)
+static void int3402_thermal_remove(struct platform_device *pdev)
 {
 	struct int3402_thermal_data *d = platform_get_drvdata(pdev);
 
 	acpi_remove_notify_handler(d->handle,
 				   ACPI_DEVICE_NOTIFY, int3402_notify);
 	int340x_thermal_zone_remove(d->int340x_zone);
-
-	return 0;
 }
 
 static const struct acpi_device_id int3402_thermal_match[] = {

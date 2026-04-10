@@ -3,9 +3,41 @@
 #ifndef __KVM_TYPES_H__
 #define __KVM_TYPES_H__
 
+#include <linux/bits.h>
+#include <linux/export.h>
+#include <linux/types.h>
+#include <asm/kvm_types.h>
+
+#ifdef KVM_SUB_MODULES
+#define EXPORT_SYMBOL_FOR_KVM_INTERNAL(symbol) \
+	EXPORT_SYMBOL_FOR_MODULES(symbol, __stringify(KVM_SUB_MODULES))
+#define EXPORT_SYMBOL_FOR_KVM(symbol) \
+	EXPORT_SYMBOL_FOR_MODULES(symbol, "kvm," __stringify(KVM_SUB_MODULES))
+#else
+#define EXPORT_SYMBOL_FOR_KVM_INTERNAL(symbol)
+/*
+ * Allow architectures to provide a custom EXPORT_SYMBOL_FOR_KVM, but only
+ * if there are no submodules, e.g. to allow suppressing exports if KVM=m, but
+ * kvm.ko won't actually be built (due to lack of at least one submodule).
+ */
+#ifndef EXPORT_SYMBOL_FOR_KVM
+#if IS_MODULE(CONFIG_KVM)
+#define EXPORT_SYMBOL_FOR_KVM(symbol) EXPORT_SYMBOL_FOR_MODULES(symbol, "kvm")
+#else
+#define EXPORT_SYMBOL_FOR_KVM(symbol)
+#endif /* IS_MODULE(CONFIG_KVM) */
+#endif /* EXPORT_SYMBOL_FOR_KVM */
+#endif
+
+#ifndef __ASSEMBLER__
+
+#include <linux/mutex.h>
+#include <linux/spinlock_types.h>
+
 struct kvm;
 struct kvm_async_pf;
 struct kvm_device_ops;
+struct kvm_gfn_range;
 struct kvm_interrupt;
 struct kvm_irq_routing_table;
 struct kvm_memory_slot;
@@ -17,12 +49,6 @@ struct kvm_vcpu_init;
 struct kvm_memslots;
 
 enum kvm_mr_change;
-
-#include <linux/bits.h>
-#include <linux/types.h>
-#include <linux/spinlock_types.h>
-
-#include <asm/kvm_types.h>
 
 /*
  * Address types:
@@ -39,19 +65,13 @@ typedef unsigned long  gva_t;
 typedef u64            gpa_t;
 typedef u64            gfn_t;
 
-#define GPA_INVALID	(~(gpa_t)0)
+#define INVALID_GPA	(~(gpa_t)0)
 
 typedef unsigned long  hva_t;
 typedef u64            hpa_t;
 typedef u64            hfn_t;
 
 typedef hfn_t kvm_pfn_t;
-
-enum pfn_cache_usage {
-	KVM_GUEST_USES_PFN = BIT(0),
-	KVM_HOST_USES_PFN  = BIT(1),
-	KVM_GUEST_AND_HOST_USE_PFN = KVM_GUEST_USES_PFN | KVM_HOST_USES_PFN,
-};
 
 struct gfn_to_hva_cache {
 	u64 generation;
@@ -66,12 +86,12 @@ struct gfn_to_pfn_cache {
 	gpa_t gpa;
 	unsigned long uhva;
 	struct kvm_memory_slot *memslot;
-	struct kvm_vcpu *vcpu;
+	struct kvm *kvm;
 	struct list_head list;
 	rwlock_t lock;
+	struct mutex refresh_lock;
 	void *khva;
 	kvm_pfn_t pfn;
-	enum pfn_cache_usage usage;
 	bool active;
 	bool valid;
 };
@@ -83,12 +103,18 @@ struct gfn_to_pfn_cache {
  * MMU flows is problematic, as is triggering reclaim, I/O, etc... while
  * holding MMU locks.  Note, these caches act more like prefetch buffers than
  * classical caches, i.e. objects are not returned to the cache on being freed.
+ *
+ * The @capacity field and @objects array are lazily initialized when the cache
+ * is topped up (__kvm_mmu_topup_memory_cache()).
  */
 struct kvm_mmu_memory_cache {
-	int nobjs;
 	gfp_t gfp_zero;
+	gfp_t gfp_custom;
+	u64 init_value;
 	struct kmem_cache *kmem_cache;
-	void *objects[KVM_ARCH_NR_OBJS_PER_MEMORY_CACHE];
+	int capacity;
+	int nobjs;
+	void **objects;
 };
 #endif
 
@@ -114,5 +140,6 @@ struct kvm_vcpu_stat_generic {
 };
 
 #define KVM_STATS_NAME_SIZE	48
+#endif /* !__ASSEMBLER__ */
 
 #endif /* __KVM_TYPES_H__ */

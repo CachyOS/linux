@@ -295,7 +295,7 @@ CMD_INC_RESID(struct scsi_cmnd *cmd, int inc)
 #else
 #define IRQ_MIN 9
 #if defined(__PPC)
-#define IRQ_MAX (nr_irqs-1)
+#define IRQ_MAX (irq_get_nr_irqs()-1)
 #else
 #define IRQ_MAX 12
 #endif
@@ -400,7 +400,7 @@ MODULE_DEVICE_TABLE(isapnp, id_table);
 
 #endif /* !AHA152X_PCMCIA */
 
-static struct scsi_host_template aha152x_driver_template;
+static const struct scsi_host_template aha152x_driver_template;
 
 /*
  * internal states of the host
@@ -924,7 +924,7 @@ static int setup_expected_interrupts(struct Scsi_Host *shpnt)
 /*
  *  Queue a command and setup interrupts for a free bus.
  */
-static int aha152x_internal_queue(struct scsi_cmnd *SCpnt,
+static enum scsi_qc_status aha152x_internal_queue(struct scsi_cmnd *SCpnt,
 				  struct completion *complete, int phase)
 {
 	struct aha152x_cmd_priv *acp = aha152x_priv(SCpnt);
@@ -939,13 +939,13 @@ static int aha152x_internal_queue(struct scsi_cmnd *SCpnt,
 	if (acp->phase & (resetting | check_condition)) {
 		if (!SCpnt->host_scribble || SCSEM(SCpnt) || SCNEXT(SCpnt)) {
 			scmd_printk(KERN_ERR, SCpnt, "cannot reuse command\n");
-			return FAILED;
+			return SCSI_MLQUEUE_HOST_BUSY;
 		}
 	} else {
 		SCpnt->host_scribble = kmalloc(sizeof(struct aha152x_scdata), GFP_ATOMIC);
 		if(!SCpnt->host_scribble) {
 			scmd_printk(KERN_ERR, SCpnt, "allocation failed\n");
-			return FAILED;
+			return SCSI_MLQUEUE_HOST_BUSY;
 		}
 	}
 
@@ -995,7 +995,7 @@ static int aha152x_internal_queue(struct scsi_cmnd *SCpnt,
  *  queue a command
  *
  */
-static int aha152x_queue_lck(struct scsi_cmnd *SCpnt)
+static enum scsi_qc_status aha152x_queue_lck(struct scsi_cmnd *SCpnt)
 {
 	return aha152x_internal_queue(SCpnt, NULL, 0);
 }
@@ -1071,7 +1071,7 @@ static int aha152x_abort(struct scsi_cmnd *SCpnt)
 static int aha152x_device_reset(struct scsi_cmnd * SCpnt)
 {
 	struct Scsi_Host *shpnt = SCpnt->device->host;
-	DECLARE_COMPLETION(done);
+	DECLARE_COMPLETION_ONSTACK(done);
 	int ret, issued, disconnected;
 	unsigned char old_cmd_len = SCpnt->cmd_len;
 	unsigned long flags;
@@ -1246,7 +1246,7 @@ int aha152x_host_reset_host(struct Scsi_Host *shpnt)
  * Return the "logical geometry"
  *
  */
-static int aha152x_biosparam(struct scsi_device *sdev, struct block_device *bdev,
+static int aha152x_biosparam(struct scsi_device *sdev, struct gendisk *disk,
 		sector_t capacity, int *info_array)
 {
 	struct Scsi_Host *shpnt = sdev->host;
@@ -1261,7 +1261,7 @@ static int aha152x_biosparam(struct scsi_device *sdev, struct block_device *bdev
 		int info[3];
 
 		/* try to figure out the geometry from the partition table */
-		if (scsicam_bios_param(bdev, capacity, info) < 0 ||
+		if (scsicam_bios_param(disk, capacity, info) < 0 ||
 		    !((info[0] == 64 && info[1] == 32) || (info[0] == 255 && info[1] == 63))) {
 			if (EXT_TRANS) {
 				printk(KERN_NOTICE
@@ -2940,13 +2940,7 @@ static int aha152x_show_info(struct seq_file *m, struct Scsi_Host *shpnt)
 	return 0;
 }
 
-static int aha152x_adjust_queue(struct scsi_device *device)
-{
-	blk_queue_bounce_limit(device->request_queue, BLK_BOUNCE_HIGH);
-	return 0;
-}
-
-static struct scsi_host_template aha152x_driver_template = {
+static const struct scsi_host_template aha152x_driver_template = {
 	.module				= THIS_MODULE,
 	.name				= AHA152X_REVID,
 	.proc_name			= "aha152x",
@@ -2961,7 +2955,6 @@ static struct scsi_host_template aha152x_driver_template = {
 	.this_id			= 7,
 	.sg_tablesize			= SG_ALL,
 	.dma_boundary			= PAGE_SIZE - 1,
-	.slave_alloc			= aha152x_adjust_queue,
 	.cmd_size			= sizeof(struct aha152x_cmd_priv),
 };
 

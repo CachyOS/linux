@@ -49,7 +49,7 @@ static int pcap_keys_probe(struct platform_device *pdev)
 	struct pcap_keys *pcap_keys;
 	struct input_dev *input_dev;
 
-	pcap_keys = kmalloc(sizeof(struct pcap_keys), GFP_KERNEL);
+	pcap_keys = kmalloc_obj(*pcap_keys);
 	if (!pcap_keys)
 		return err;
 
@@ -99,7 +99,7 @@ fail:
 	return err;
 }
 
-static int pcap_keys_remove(struct platform_device *pdev)
+static void pcap_keys_remove(struct platform_device *pdev)
 {
 	struct pcap_keys *pcap_keys = platform_get_drvdata(pdev);
 
@@ -108,8 +108,6 @@ static int pcap_keys_remove(struct platform_device *pdev)
 
 	input_unregister_device(pcap_keys->input);
 	kfree(pcap_keys);
-
-	return 0;
 }
 
 static struct platform_driver pcap_keys_device_driver = {

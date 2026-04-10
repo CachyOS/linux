@@ -677,10 +677,13 @@ class CallGraphModelBase(TreeModel):
 			#   sqlite supports GLOB (text only) which uses * and ? and is case sensitive
 			if not self.glb.dbref.is_sqlite3:
 				# Escape % and _
-				s = value.replace("%", "\%")
-				s = s.replace("_", "\_")
+				s = value.replace("%", "\\%")
+				s = s.replace("_", "\\_")
 				# Translate * and ? into SQL LIKE pattern characters % and _
-				trans = string.maketrans("*?", "%_")
+				if sys.version_info[0] == 3:
+					trans = str.maketrans("*?", "%_")
+				else:
+					trans = string.maketrans("*?", "%_")
 				match = " LIKE '" + str(s).translate(trans) + "'"
 			else:
 				match = " GLOB '" + str(value) + "'"

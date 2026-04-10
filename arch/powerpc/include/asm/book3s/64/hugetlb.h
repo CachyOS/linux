@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_POWERPC_BOOK3S_64_HUGETLB_H
 #define _ASM_POWERPC_BOOK3S_64_HUGETLB_H
+
+#include <asm/firmware.h>
+
 /*
  * For radix we want generic code to handle hugetlb. But then if we want
  * both hash and radix to be enabled together we need to workaround the
@@ -46,9 +49,6 @@ static inline bool gigantic_page_runtime_supported(void)
 	return true;
 }
 
-/* hugepd entry valid bit */
-#define HUGEPD_VAL_BITS		(0x8000000000000000UL)
-
 #define huge_ptep_modify_prot_start huge_ptep_modify_prot_start
 extern pte_t huge_ptep_modify_prot_start(struct vm_area_struct *vma,
 					 unsigned long addr, pte_t *ptep);
@@ -57,47 +57,12 @@ extern pte_t huge_ptep_modify_prot_start(struct vm_area_struct *vma,
 extern void huge_ptep_modify_prot_commit(struct vm_area_struct *vma,
 					 unsigned long addr, pte_t *ptep,
 					 pte_t old_pte, pte_t new_pte);
-/*
- * This should work for other subarchs too. But right now we use the
- * new format only for 64bit book3s
- */
-static inline pte_t *hugepd_page(hugepd_t hpd)
-{
-	BUG_ON(!hugepd_ok(hpd));
-	/*
-	 * We have only four bits to encode, MMU page size
-	 */
-	BUILD_BUG_ON((MMU_PAGE_COUNT - 1) > 0xf);
-	return __va(hpd_val(hpd) & HUGEPD_ADDR_MASK);
-}
 
-static inline unsigned int hugepd_mmu_psize(hugepd_t hpd)
-{
-	return (hpd_val(hpd) & HUGEPD_SHIFT_MASK) >> 2;
-}
-
-static inline unsigned int hugepd_shift(hugepd_t hpd)
-{
-	return mmu_psize_to_shift(hugepd_mmu_psize(hpd));
-}
 static inline void flush_hugetlb_page(struct vm_area_struct *vma,
 				      unsigned long vmaddr)
 {
 	if (radix_enabled())
 		return radix__flush_hugetlb_page(vma, vmaddr);
-}
-
-static inline pte_t *hugepte_offset(hugepd_t hpd, unsigned long addr,
-				    unsigned int pdshift)
-{
-	unsigned long idx = (addr & ((1UL << pdshift) - 1)) >> hugepd_shift(hpd);
-
-	return hugepd_page(hpd) + idx;
-}
-
-static inline void hugepd_populate(hugepd_t *hpdp, pte_t *new, unsigned int pshift)
-{
-	*hpdp = __hugepd(__pa(new) | HUGEPD_VAL_BITS | (shift_to_mmu_psize(pshift) << 2));
 }
 
 void flush_hugetlb_page(struct vm_area_struct *vma, unsigned long vmaddr);
@@ -129,4 +94,10 @@ static inline int check_and_get_huge_psize(int shift)
 	return mmu_psize;
 }
 
+#define arch_has_huge_bootmem_alloc arch_has_huge_bootmem_alloc
+
+static inline bool arch_has_huge_bootmem_alloc(void)
+{
+	return (firmware_has_feature(FW_FEATURE_LPAR) && !radix_enabled());
+}
 #endif

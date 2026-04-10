@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2017-2022 Broadcom. All Rights Reserved. The term *
+ * Copyright (C) 2017-2025 Broadcom. All Rights Reserved. The term *
  * “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.     *
  * Copyright (C) 2004-2016 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
@@ -86,8 +86,8 @@ union CtRevisionId {
 union CtCommandResponse {
 	/* Structure is in Big Endian format */
 	struct {
-		uint32_t CmdRsp:16;
-		uint32_t Size:16;
+		__be16 CmdRsp;
+		__be16 Size;
 	} bits;
 	uint32_t word;
 };
@@ -124,7 +124,7 @@ struct lpfc_sli_ct_request {
 #define LPFC_CT_PREAMBLE	20	/* Size of CTReq + 4 up to here */
 
 	union {
-		uint32_t PortID;
+		__be32 PortID;
 		struct gid {
 			uint8_t PortType;	/* for GID_PT requests */
 #define GID_PT_N_PORT	1
@@ -168,6 +168,11 @@ struct lpfc_sli_ct_request {
 			uint8_t len;
 			uint8_t symbname[255];
 		} rspn;
+		struct rspni {	/* For RSPNI_PNI requests */
+			__be64 pni;
+			u8 len;
+			u8 symbname[255];
+		} rspni;
 		struct gff {
 			uint32_t PortId;
 		} gff;
@@ -213,6 +218,8 @@ struct lpfc_sli_ct_request {
 			  sizeof(struct da_id))
 #define  RSPN_REQUEST_SZ  (offsetof(struct lpfc_sli_ct_request, un) + \
 			   sizeof(struct rspn))
+#define  RSPNI_REQUEST_SZ (offsetof(struct lpfc_sli_ct_request, un) + \
+			   sizeof(struct rspni))
 
 /*
  * FsType Definitions
@@ -309,6 +316,7 @@ struct lpfc_sli_ct_request {
 #define  SLI_CTNS_RIP_NN      0x0235
 #define  SLI_CTNS_RIPA_NN     0x0236
 #define  SLI_CTNS_RSNN_NN     0x0239
+#define  SLI_CTNS_RSPNI_PNI   0x0240
 #define  SLI_CTNS_DA_ID       0x0300
 
 /*
@@ -365,7 +373,8 @@ struct lpfc_name {
 			uint8_t IEEE[6];	/* FC IEEE address */
 		} s;
 		uint8_t wwn[8];
-		uint64_t name;
+		uint64_t name __packed __aligned(4);
+		__be64 wwn_be __packed __aligned(4);
 	} u;
 };
 
@@ -511,6 +520,21 @@ struct class_parms {
 	uint8_t word3Reserved2;	/* Fc Word 3, bit  0: 7 */
 };
 
+enum aux_parm_flags {
+	AUX_PARM_PNI_VALID = 0x20,	/* FC Word 0, bit 29 */
+	AUX_PARM_DATA_VALID = 0x40,	/* FC Word 0, bit 30 */
+};
+
+struct aux_parm {
+	u8 flags;	/* FC Word 0, bit 31:24 */
+	u8 ext_feat[3];	/* FC Word 0, bit 23:0 */
+
+	__be64 pni;	/* FC Word 1 and 2, platform name identifier */
+
+	__be16 rsvd;	/* FC Word 3, bit 31:16 */
+	__be16 npiv_cnt;	/* FC Word 3, bit 15:0 */
+} __packed;
+
 struct serv_parm {	/* Structure is in Big Endian format */
 	struct csp cmn;
 	struct lpfc_name portName;
@@ -518,7 +542,7 @@ struct serv_parm {	/* Structure is in Big Endian format */
 	struct class_parms cls1;
 	struct class_parms cls2;
 	struct class_parms cls3;
-	struct class_parms cls4;
+	struct aux_parm aux;
 	union {
 		uint8_t vendorVersion[16];
 		struct {
@@ -560,6 +584,27 @@ struct fc_vft_header {
 };
 
 #include <uapi/scsi/fc/fc_els.h>
+
+/*
+ * Application Header
+ */
+struct fc_app_header {
+	uint32_t dst_app_id;
+	uint32_t src_app_id;
+#define LOOPBACK_SRC_APPID	0x4321
+	uint32_t word2;
+	uint32_t word3;
+};
+
+/*
+ * dfctl optional header definition
+ */
+enum lpfc_fc_dfctl {
+	LPFC_FC_NO_DEVICE_HEADER,
+	LPFC_FC_16B_DEVICE_HEADER,
+	LPFC_FC_32B_DEVICE_HEADER,
+	LPFC_FC_64B_DEVICE_HEADER,
+};
 
 /*
  *  Extended Link Service LS_COMMAND codes (Payload Word 0)
@@ -703,6 +748,8 @@ struct ls_rjt {	/* Structure is in Big Endian format */
 #define LSEXP_OUT_OF_RESOURCE   0x29
 #define LSEXP_CANT_GIVE_DATA    0x2A
 #define LSEXP_REQ_UNSUPPORTED   0x2C
+#define LSEXP_AUTH_REQ          0x48
+#define LSEXP_NO_RSRC_ASSIGN    0x52
 			uint8_t vendorUnique;	/* FC Word 0, bit  0: 7 */
 		} b;
 	} un;
@@ -763,6 +810,8 @@ typedef struct _PRLI {		/* Structure is in Big Endian format */
 #define PRLI_PREDEF_CONFIG    0x5
 #define PRLI_PARTIAL_SUCCESS  0x6
 #define PRLI_INVALID_PAGE_CNT 0x7
+#define PRLI_INV_SRV_PARM     0x8
+
 	uint8_t word0Reserved3;	/* FC Parm Word 0, bit 0:7 */
 
 	uint32_t origProcAssoc;	/* FC Parm Word 1, bit 0:31 */
@@ -849,7 +898,7 @@ typedef struct _ADISC {		/* Structure is in Big Endian format */
 	struct lpfc_name portName;
 	struct lpfc_name nodeName;
 	uint32_t DID;
-} __packed ADISC;
+} ADISC;
 
 typedef struct _FARP {		/* Structure is in Big Endian format */
 	uint32_t Mflags:8;
@@ -879,7 +928,7 @@ typedef struct _FAN {		/* Structure is in Big Endian format */
 	uint32_t Fdid;
 	struct lpfc_name FportName;
 	struct lpfc_name FnodeName;
-} __packed FAN;
+} FAN;
 
 typedef struct _SCR {		/* Structure is in Big Endian format */
 	uint8_t resvd1;
@@ -923,7 +972,7 @@ typedef struct _RNID {		/* Structure is in Big Endian format */
 	union {
 		RNID_TOP_DISC topologyDisc;	/* topology disc (0xdf) */
 	} un;
-} __packed RNID;
+} RNID;
 
 struct RLS {			/* Structure is in Big Endian format */
 	uint32_t rls;
@@ -1407,19 +1456,19 @@ struct entity_id_object {
 };
 
 struct app_id_object {
-	uint32_t port_id;
-	uint32_t app_id;
+	__be32 port_id;
+	__be32 app_id;
 	struct entity_id_object obj;
 };
 
 struct lpfc_vmid_rapp_ident_list {
-	uint32_t no_of_objects;
-	struct entity_id_object obj[1];
+	__be32 no_of_objects;
+	struct entity_id_object obj[];
 };
 
 struct lpfc_vmid_dapp_ident_list {
-	uint32_t no_of_objects;
-	struct entity_id_object obj[1];
+	__be32 no_of_objects;
+	struct entity_id_object obj[];
 };
 
 #define GALLAPPIA_ID_LAST  0x80
@@ -1441,30 +1490,56 @@ struct lpfc_vmid_gallapp_ident_list {
 
 /* Definitions for HBA / Port attribute entries */
 
-/* Attribute Entry */
-struct lpfc_fdmi_attr_entry {
-	union {
-		uint32_t AttrInt;
-		uint8_t  AttrTypes[32];
-		uint8_t  AttrString[256];
-		struct lpfc_name AttrWWN;
-	} un;
+/* Attribute Entry Structures */
+
+struct lpfc_fdmi_attr_u32 {
+	__be16 type;
+	__be16 len;
+	__be32 value_u32;
 };
 
-struct lpfc_fdmi_attr_def { /* Defined in TLV format */
-	/* Structure is in Big Endian format */
-	uint32_t AttrType:16;
-	uint32_t AttrLen:16;
-	/* Marks start of Value (ATTRIBUTE_ENTRY) */
-	struct lpfc_fdmi_attr_entry AttrValue;
-} __packed;
+struct lpfc_fdmi_attr_wwn {
+	__be16 type;
+	__be16 len;
+
+	/* Keep as u8[8] instead of __be64 to avoid accidental zero padding
+	 * by compiler
+	 */
+	u8 name[8];
+};
+
+struct lpfc_fdmi_attr_fullwwn {
+	__be16 type;
+	__be16 len;
+
+	/* Keep as u8[8] instead of __be64 to avoid accidental zero padding
+	 * by compiler
+	 */
+	u8 nname[8];
+	u8 pname[8];
+};
+
+struct lpfc_fdmi_attr_fc4types {
+	__be16 type;
+	__be16 len;
+	u8 value_types[32];
+};
+
+struct lpfc_fdmi_attr_string {
+	__be16 type;
+	__be16 len;
+	char value_string[256];
+};
+
+/* Maximum FDMI attribute length is Type+Len (4 bytes) + 256 byte string */
+#define FDMI_MAX_ATTRLEN	sizeof(struct lpfc_fdmi_attr_string)
 
 /*
  * HBA Attribute Block
  */
 struct lpfc_fdmi_attr_block {
 	uint32_t EntryCnt;		/* Number of HBA attribute entries */
-	struct lpfc_fdmi_attr_entry Entry;	/* Variable-length array */
+	/* Variable Length Attribute Entry TLV's follow */
 };
 
 /*
@@ -1485,9 +1560,9 @@ struct lpfc_fdmi_hba_ident {
  * Registered Port List Format
  */
 struct lpfc_fdmi_reg_port_list {
-	uint32_t EntryCnt;
+	__be32 EntryCnt;
 	struct lpfc_fdmi_port_entry pe;
-} __packed;
+};
 
 /*
  * Register HBA(RHBA)
@@ -1728,7 +1803,6 @@ struct lpfc_fdmi_reg_portattr {
 #define PCI_DEVICE_ID_HELIOS_SCSP   0xfd11
 #define PCI_DEVICE_ID_HELIOS_DCSP   0xfd12
 #define PCI_DEVICE_ID_ZEPHYR        0xfe00
-#define PCI_DEVICE_ID_HORNET        0xfe05
 #define PCI_DEVICE_ID_ZEPHYR_SCSP   0xfe11
 #define PCI_DEVICE_ID_ZEPHYR_DCSP   0xfe12
 #define PCI_VENDOR_ID_SERVERENGINE  0x19a2
@@ -1773,7 +1847,6 @@ struct lpfc_fdmi_reg_portattr {
 #define ZEPHYR_JEDEC_ID             0x0577
 #define VIPER_JEDEC_ID              0x4838
 #define SATURN_JEDEC_ID             0x1004
-#define HORNET_JDEC_ID              0x2057706D
 
 #define JEDEC_ID_MASK               0x0FFFF000
 #define JEDEC_ID_SHIFT              12
@@ -3074,7 +3147,6 @@ struct lpfc_mbx_read_top {
 #define lpfc_mbx_read_top_topology_WORD		word3
 #define LPFC_TOPOLOGY_PT_PT 0x01	/* Topology is pt-pt / pt-fabric */
 #define LPFC_TOPOLOGY_LOOP  0x02	/* Topology is FC-AL */
-#define LPFC_TOPOLOGY_MM    0x05	/* maint mode zephtr to menlo */
 	/* store the LILP AL_PA position map into */
 	struct ulp_bde64 lilpBde64;
 #define LPFC_ALPA_MAP_SIZE	128
@@ -4410,24 +4482,5 @@ lpfc_is_LC_HBA(unsigned short device)
 	else
 		return 0;
 }
-
-/*
- * Determine if failed because of a link event or firmware reset.
- */
-static inline int
-lpfc_error_lost_link(u32 ulp_status, u32 ulp_word4)
-{
-	return (ulp_status == IOSTAT_LOCAL_REJECT &&
-		(ulp_word4 == IOERR_SLI_ABORTED ||
-		 ulp_word4 == IOERR_LINK_DOWN ||
-		 ulp_word4 == IOERR_SLI_DOWN));
-}
-
-#define MENLO_TRANSPORT_TYPE 0xfe
-#define MENLO_CONTEXT 0
-#define MENLO_PU 3
-#define MENLO_TIMEOUT 30
-#define SETVAR_MLOMNT 0x103107
-#define SETVAR_MLORST 0x103007
 
 #define BPL_ALIGN_SZ 8 /* 8 byte alignment for bpl and mbufs */

@@ -22,27 +22,21 @@ struct hsr_frame_info {
 	struct hsr_node *node_src;
 	u16 sequence_nr;
 	bool is_supervision;
+	bool is_proxy_supervision;
 	bool is_vlan;
 	bool is_local_dest;
 	bool is_local_exclusive;
 	bool is_from_san;
 };
 
-#ifdef CONFIG_LOCKDEP
-int lockdep_hsr_is_held(spinlock_t *lock);
-#else
-#define lockdep_hsr_is_held(lock)	1
-#endif
-
-u32 hsr_mac_hash(struct hsr_priv *hsr, const unsigned char *addr);
-struct hsr_node *hsr_node_get_first(struct hlist_head *head, spinlock_t *lock);
 void hsr_del_self_node(struct hsr_priv *hsr);
-void hsr_del_nodes(struct hlist_head *node_db);
-struct hsr_node *hsr_get_node(struct hsr_port *port, struct hlist_head *node_db,
+void hsr_del_nodes(struct list_head *node_db);
+struct hsr_node *hsr_get_node(struct hsr_port *port, struct list_head *node_db,
 			      struct sk_buff *skb, bool is_sup,
 			      enum hsr_port_type rx_port);
 void hsr_handle_sup_frame(struct hsr_frame_info *frame);
 bool hsr_addr_is_self(struct hsr_priv *hsr, unsigned char *addr);
+bool hsr_addr_is_redbox(struct hsr_priv *hsr, unsigned char *addr);
 
 void hsr_addr_subst_source(struct hsr_node *node, struct sk_buff *skb);
 void hsr_addr_subst_dest(struct hsr_node *node_src, struct sk_buff *skb,
@@ -50,10 +44,10 @@ void hsr_addr_subst_dest(struct hsr_node *node_src, struct sk_buff *skb,
 
 void hsr_register_frame_in(struct hsr_node *node, struct hsr_port *port,
 			   u16 sequence_nr);
-int hsr_register_frame_out(struct hsr_port *port, struct hsr_node *node,
-			   u16 sequence_nr);
+int hsr_register_frame_out(struct hsr_port *port, struct hsr_frame_info *frame);
 
 void hsr_prune_nodes(struct timer_list *t);
+void hsr_prune_proxy_nodes(struct timer_list *t);
 
 int hsr_create_self_node(struct hsr_priv *hsr,
 			 const unsigned char addr_a[ETH_ALEN],
@@ -75,20 +69,58 @@ void prp_handle_san_frame(bool san, enum hsr_port_type port,
 			  struct hsr_node *node);
 void prp_update_san_info(struct hsr_node *node, bool is_sup);
 
+bool hsr_is_node_in_db(struct list_head *node_db,
+		       const unsigned char addr[ETH_ALEN]);
+
+int prp_register_frame_out(struct hsr_port *port, struct hsr_frame_info *frame);
+
+#if IS_ENABLED(CONFIG_KUNIT)
+struct hsr_seq_block *hsr_get_seq_block(struct hsr_node *node, u16 block_idx);
+#endif
+
+#define HSR_SEQ_BLOCK_SHIFT 7 /* 128 bits */
+#define HSR_SEQ_BLOCK_SIZE (1 << HSR_SEQ_BLOCK_SHIFT)
+#define HSR_SEQ_BLOCK_MASK (HSR_SEQ_BLOCK_SIZE - 1)
+#define HSR_MAX_SEQ_BLOCKS 64
+
+#define hsr_seq_block_index(sequence_nr) ((sequence_nr) >> HSR_SEQ_BLOCK_SHIFT)
+#define hsr_seq_block_bit(sequence_nr) ((sequence_nr) & HSR_SEQ_BLOCK_MASK)
+
+struct hsr_seq_block {
+	unsigned long		time;
+	u16			block_idx;
+	/* Should be a flexible array member of what DECLARE_BITMAP() would
+	 * produce.
+	 */
+	unsigned long		seq_nrs[][BITS_TO_LONGS(HSR_SEQ_BLOCK_SIZE)];
+};
+
 struct hsr_node {
-	struct hlist_node	mac_list;
+	struct list_head	mac_list;
+	/* Protect R/W access seq_blocks */
+	spinlock_t		seq_out_lock;
 	unsigned char		macaddress_A[ETH_ALEN];
 	unsigned char		macaddress_B[ETH_ALEN];
 	/* Local slave through which AddrB frames are received from this node */
 	enum hsr_port_type	addr_B_port;
 	unsigned long		time_in[HSR_PT_PORTS];
 	bool			time_in_stale[HSR_PT_PORTS];
-	unsigned long		time_out[HSR_PT_PORTS];
 	/* if the node is a SAN */
 	bool			san_a;
 	bool			san_b;
-	u16			seq_out[HSR_PT_PORTS];
+	bool			removed;
+	/* Duplicate detection */
+	struct xarray		seq_blocks;
+	void			*block_buf;
+	unsigned int		next_block;
+	unsigned int		seq_port_cnt;
 	struct rcu_head		rcu_head;
 };
+
+static inline size_t hsr_seq_block_size(struct hsr_node *node)
+{
+	WARN_ON_ONCE(node->seq_port_cnt == 0);
+	return struct_size_t(struct hsr_seq_block, seq_nrs, node->seq_port_cnt);
+}
 
 #endif /* __HSR_FRAMEREG_H */

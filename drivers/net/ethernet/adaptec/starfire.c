@@ -441,14 +441,6 @@ enum rx_desc_bits {
 };
 
 /* Completion queue entry. */
-struct short_rx_done_desc {
-	__le32 status;			/* Low 16 bits is length. */
-};
-struct basic_rx_done_desc {
-	__le32 status;			/* Low 16 bits is length. */
-	__le16 vlanid;
-	__le16 status2;
-};
 struct csum_rx_done_desc {
 	__le32 status;			/* Low 16 bits is length. */
 	__le16 csum;			/* Partial checksum */
@@ -1844,8 +1836,8 @@ static int check_if_running(struct net_device *dev)
 static void get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
 {
 	struct netdev_private *np = netdev_priv(dev);
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->bus_info, pci_name(np->pci_dev), sizeof(info->bus_info));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->bus_info, pci_name(np->pci_dev), sizeof(info->bus_info));
 }
 
 static int get_link_ksettings(struct net_device *dev,

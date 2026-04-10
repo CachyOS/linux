@@ -603,7 +603,7 @@ mptsas_add_device_component(MPT_ADAPTER *ioc, u8 channel, u8 id,
 		}
 	}
 
-	sas_info = kzalloc(sizeof(struct mptsas_device_info), GFP_KERNEL);
+	sas_info = kzalloc_obj(struct mptsas_device_info);
 	if (!sas_info)
 		goto out;
 
@@ -756,7 +756,7 @@ mptsas_add_device_component_starget_ir(MPT_ADAPTER *ioc,
 		}
 	}
 
-	sas_info = kzalloc(sizeof(struct mptsas_device_info), GFP_KERNEL);
+	sas_info = kzalloc_obj(struct mptsas_device_info);
 	if (sas_info) {
 		sas_info->fw.id = starget->id;
 		sas_info->os.id = starget->id;
@@ -907,8 +907,7 @@ mptsas_setup_wide_ports(MPT_ADAPTER *ioc, struct mptsas_portinfo *port_info)
 		 * Forming a port
 		 */
 		if (!port_details) {
-			port_details = kzalloc(sizeof(struct
-				mptsas_portinfo_details), GFP_KERNEL);
+			port_details = kzalloc_obj(struct mptsas_portinfo_details);
 			if (!port_details)
 				goto out;
 			port_details->num_phys = 1;
@@ -1038,7 +1037,7 @@ mptsas_queue_rescan(MPT_ADAPTER *ioc)
 {
 	struct fw_event_work *fw_event;
 
-	fw_event = kzalloc(sizeof(*fw_event), GFP_ATOMIC);
+	fw_event = kzalloc_obj(*fw_event, GFP_ATOMIC);
 	if (!fw_event) {
 		printk(MYIOC_s_WARN_FMT "%s: failed at (line=%d)\n",
 		    ioc->name, __func__, __LINE__);
@@ -1150,8 +1149,8 @@ mptsas_target_reset_queue(MPT_ADAPTER *ioc,
 		vtarget->deleted = 1; /* block IO */
 	}
 
-	target_reset_list = kzalloc(sizeof(struct mptsas_target_reset_event),
-	    GFP_ATOMIC);
+	target_reset_list = kzalloc_obj(struct mptsas_target_reset_event,
+					GFP_ATOMIC);
 	if (!target_reset_list) {
 		dfailprintk(ioc, printk(MYIOC_s_WARN_FMT
 			"%s, failed to allocate mem @%d..!!\n",
@@ -1710,7 +1709,7 @@ mptsas_firmware_event_work(struct work_struct *work)
 
 
 static int
-mptsas_slave_configure(struct scsi_device *sdev)
+mptsas_sdev_configure(struct scsi_device *sdev, struct queue_limits *lim)
 {
 	struct Scsi_Host	*host = sdev->host;
 	MPT_SCSI_HOST	*hd = shost_priv(host);
@@ -1736,7 +1735,7 @@ mptsas_slave_configure(struct scsi_device *sdev)
 	mptsas_add_device_component_starget(ioc, scsi_target(sdev));
 
  out:
-	return mptscsih_slave_configure(sdev);
+	return mptscsih_sdev_configure(sdev, lim);
 }
 
 static int
@@ -1751,7 +1750,7 @@ mptsas_target_alloc(struct scsi_target *starget)
 	int 			 i;
 	MPT_ADAPTER		*ioc = hd->ioc;
 
-	vtarget = kzalloc(sizeof(VirtTarget), GFP_KERNEL);
+	vtarget = kzalloc_obj(VirtTarget);
 	if (!vtarget)
 		return -ENOMEM;
 
@@ -1867,7 +1866,7 @@ mptsas_target_destroy(struct scsi_target *starget)
 
 
 static int
-mptsas_slave_alloc(struct scsi_device *sdev)
+mptsas_sdev_init(struct scsi_device *sdev)
 {
 	struct Scsi_Host	*host = sdev->host;
 	MPT_SCSI_HOST		*hd = shost_priv(host);
@@ -1878,9 +1877,9 @@ mptsas_slave_alloc(struct scsi_device *sdev)
 	int 			i;
 	MPT_ADAPTER *ioc = hd->ioc;
 
-	vdevice = kzalloc(sizeof(VirtDevice), GFP_KERNEL);
+	vdevice = kzalloc_obj(VirtDevice);
 	if (!vdevice) {
-		printk(MYIOC_s_ERR_FMT "slave_alloc kzalloc(%zd) FAILED!\n",
+		printk(MYIOC_s_ERR_FMT "sdev_init kzalloc(%zd) FAILED!\n",
 				ioc->name, sizeof(VirtDevice));
 		return -ENOMEM;
 	}
@@ -1920,8 +1919,8 @@ mptsas_slave_alloc(struct scsi_device *sdev)
 	return 0;
 }
 
-static int
-mptsas_qcmd(struct Scsi_Host *shost, struct scsi_cmnd *SCpnt)
+static enum scsi_qc_status mptsas_qcmd(struct Scsi_Host *shost,
+				       struct scsi_cmnd *SCpnt)
 {
 	MPT_SCSI_HOST	*hd;
 	MPT_ADAPTER	*ioc;
@@ -1952,12 +1951,12 @@ mptsas_qcmd(struct Scsi_Host *shost, struct scsi_cmnd *SCpnt)
  *	@sc: scsi command that the midlayer is about to time out
  *
  **/
-static enum blk_eh_timer_return mptsas_eh_timed_out(struct scsi_cmnd *sc)
+static enum scsi_timeout_action mptsas_eh_timed_out(struct scsi_cmnd *sc)
 {
 	MPT_SCSI_HOST *hd;
 	MPT_ADAPTER   *ioc;
 	VirtDevice    *vdevice;
-	enum blk_eh_timer_return rc = BLK_EH_DONE;
+	enum scsi_timeout_action rc = SCSI_EH_NOT_HANDLED;
 
 	hd = shost_priv(sc->device->host);
 	if (hd == NULL) {
@@ -1980,7 +1979,7 @@ static enum blk_eh_timer_return mptsas_eh_timed_out(struct scsi_cmnd *sc)
 		dtmprintk(ioc, printk(MYIOC_s_WARN_FMT ": %s: ioc is in reset,"
 		    "SML need to reset the timer (sc=%p)\n",
 		    ioc->name, __func__, sc));
-		rc = BLK_EH_RESET_TIMER;
+		rc = SCSI_EH_RESET_TIMER;
 	}
 	vdevice = sc->device->hostdata;
 	if (vdevice && vdevice->vtarget && (vdevice->vtarget->inDMD
@@ -1988,7 +1987,7 @@ static enum blk_eh_timer_return mptsas_eh_timed_out(struct scsi_cmnd *sc)
 		dtmprintk(ioc, printk(MYIOC_s_WARN_FMT ": %s: target removed "
 		    "or in device removal delay (sc=%p)\n",
 		    ioc->name, __func__, sc));
-		rc = BLK_EH_RESET_TIMER;
+		rc = SCSI_EH_RESET_TIMER;
 		goto done;
 	}
 
@@ -1997,7 +1996,7 @@ done:
 }
 
 
-static struct scsi_host_template mptsas_driver_template = {
+static const struct scsi_host_template mptsas_driver_template = {
 	.module				= THIS_MODULE,
 	.proc_name			= "mptsas",
 	.show_info			= mptscsih_show_info,
@@ -2005,10 +2004,10 @@ static struct scsi_host_template mptsas_driver_template = {
 	.info				= mptscsih_info,
 	.queuecommand			= mptsas_qcmd,
 	.target_alloc			= mptsas_target_alloc,
-	.slave_alloc			= mptsas_slave_alloc,
-	.slave_configure		= mptsas_slave_configure,
+	.sdev_init			= mptsas_sdev_init,
+	.sdev_configure			= mptsas_sdev_configure,
 	.target_destroy			= mptsas_target_destroy,
-	.slave_destroy			= mptscsih_slave_destroy,
+	.sdev_destroy			= mptscsih_sdev_destroy,
 	.change_queue_depth 		= mptscsih_change_queue_depth,
 	.eh_timed_out			= mptsas_eh_timed_out,
 	.eh_abort_handler		= mptscsih_abort,
@@ -2020,6 +2019,7 @@ static struct scsi_host_template mptsas_driver_template = {
 	.sg_tablesize			= MPT_SCSI_SG_DEPTH,
 	.max_sectors			= 8192,
 	.cmd_per_lun			= 7,
+	.dma_alignment			= 511,
 	.shost_groups			= mptscsih_host_attr_groups,
 	.no_write_same			= 1,
 };
@@ -2427,8 +2427,8 @@ mptsas_sas_io_unit_pg0(MPT_ADAPTER *ioc, struct mptsas_portinfo *port_info)
 		goto out_free_consistent;
 
 	port_info->num_phys = buffer->NumPhys;
-	port_info->phy_info = kcalloc(port_info->num_phys,
-		sizeof(struct mptsas_phyinfo), GFP_KERNEL);
+	port_info->phy_info = kzalloc_objs(struct mptsas_phyinfo,
+					   port_info->num_phys);
 	if (!port_info->phy_info) {
 		error = -ENOMEM;
 		goto out_free_consistent;
@@ -2718,8 +2718,8 @@ mptsas_sas_expander_pg0(MPT_ADAPTER *ioc, struct mptsas_portinfo *port_info,
 
 	/* save config data */
 	port_info->num_phys = (buffer->NumPhys) ? buffer->NumPhys : 1;
-	port_info->phy_info = kcalloc(port_info->num_phys,
-		sizeof(struct mptsas_phyinfo), GFP_KERNEL);
+	port_info->phy_info = kzalloc_objs(struct mptsas_phyinfo,
+					   port_info->num_phys);
 	if (!port_info->phy_info) {
 		error = -ENOMEM;
 		goto out_free_consistent;
@@ -2833,10 +2833,10 @@ struct rep_manu_reply{
 	u8 sas_format:1;
 	u8 reserved1:7;
 	u8 reserved2[3];
-	u8 vendor_id[SAS_EXPANDER_VENDOR_ID_LEN];
-	u8 product_id[SAS_EXPANDER_PRODUCT_ID_LEN];
-	u8 product_rev[SAS_EXPANDER_PRODUCT_REV_LEN];
-	u8 component_vendor_id[SAS_EXPANDER_COMPONENT_VENDOR_ID_LEN];
+	u8 vendor_id[SAS_EXPANDER_VENDOR_ID_LEN] __nonstring;
+	u8 product_id[SAS_EXPANDER_PRODUCT_ID_LEN] __nonstring;
+	u8 product_rev[SAS_EXPANDER_PRODUCT_REV_LEN] __nonstring;
+	u8 component_vendor_id[SAS_EXPANDER_COMPONENT_VENDOR_ID_LEN] __nonstring;
 	u16 component_id;
 	u8 component_revision_id;
 	u8 reserved3;
@@ -2964,17 +2964,13 @@ mptsas_exp_repmanufacture_info(MPT_ADAPTER *ioc,
 			goto out_free;
 
 		manufacture_reply = data_out + sizeof(struct rep_manu_request);
-		strncpy(edev->vendor_id, manufacture_reply->vendor_id,
-			SAS_EXPANDER_VENDOR_ID_LEN);
-		strncpy(edev->product_id, manufacture_reply->product_id,
-			SAS_EXPANDER_PRODUCT_ID_LEN);
-		strncpy(edev->product_rev, manufacture_reply->product_rev,
-			SAS_EXPANDER_PRODUCT_REV_LEN);
+		memtostr(edev->vendor_id, manufacture_reply->vendor_id);
+		memtostr(edev->product_id, manufacture_reply->product_id);
+		memtostr(edev->product_rev, manufacture_reply->product_rev);
 		edev->level = manufacture_reply->sas_format;
 		if (manufacture_reply->sas_format) {
-			strncpy(edev->component_vendor_id,
-				manufacture_reply->component_vendor_id,
-				SAS_EXPANDER_COMPONENT_VENDOR_ID_LEN);
+			memtostr(edev->component_vendor_id,
+				 manufacture_reply->component_vendor_id);
 			tmp = (u8 *)&manufacture_reply->component_id;
 			edev->component_id = tmp[0] << 8 | tmp[1];
 			edev->component_revision_id =
@@ -3312,7 +3308,7 @@ mptsas_probe_hba_phys(MPT_ADAPTER *ioc)
 	struct mptsas_portinfo *port_info, *hba;
 	int error = -ENOMEM, i;
 
-	hba = kzalloc(sizeof(struct mptsas_portinfo), GFP_KERNEL);
+	hba = kzalloc_obj(struct mptsas_portinfo);
 	if (! hba)
 		goto out;
 
@@ -3447,12 +3443,12 @@ mptsas_expander_event_add(MPT_ADAPTER *ioc,
 	int i;
 	__le64 sas_address;
 
-	port_info = kzalloc(sizeof(struct mptsas_portinfo), GFP_KERNEL);
+	port_info = kzalloc_obj(struct mptsas_portinfo);
 	BUG_ON(!port_info);
 	port_info->num_phys = (expander_data->NumPhys) ?
 	    expander_data->NumPhys : 1;
-	port_info->phy_info = kcalloc(port_info->num_phys,
-	    sizeof(struct mptsas_phyinfo), GFP_KERNEL);
+	port_info->phy_info = kzalloc_objs(struct mptsas_phyinfo,
+					   port_info->num_phys);
 	BUG_ON(!port_info->phy_info);
 	memcpy(&sas_address, &expander_data->SASAddress, sizeof(__le64));
 	for (i = 0; i < port_info->num_phys; i++) {
@@ -3680,7 +3676,7 @@ mptsas_expander_add(MPT_ADAPTER *ioc, u16 handle)
 	    MPI_SAS_EXPAND_PGAD_FORM_SHIFT), handle)))
 		return NULL;
 
-	port_info = kzalloc(sizeof(struct mptsas_portinfo), GFP_KERNEL);
+	port_info = kzalloc_obj(struct mptsas_portinfo);
 	if (!port_info) {
 		dfailprintk(ioc, printk(MYIOC_s_ERR_FMT
 		"%s: exit at line=%d\n", ioc->name,
@@ -3948,7 +3944,7 @@ mptsas_probe_expanders(MPT_ADAPTER *ioc)
 			continue;
 		}
 
-		port_info = kzalloc(sizeof(struct mptsas_portinfo), GFP_KERNEL);
+		port_info = kzalloc_obj(struct mptsas_portinfo);
 		if (!port_info) {
 			dfailprintk(ioc, printk(MYIOC_s_ERR_FMT
 			"%s: exit at line=%d\n", ioc->name,
@@ -4234,10 +4230,8 @@ mptsas_find_phyinfo_by_phys_disk_num(MPT_ADAPTER *ioc, u8 phys_disk_num,
 static void
 mptsas_reprobe_lun(struct scsi_device *sdev, void *data)
 {
-	int rc;
-
 	sdev->no_uld_attach = data ? 1 : 0;
-	rc = scsi_device_reprobe(sdev);
+	WARN_ON(scsi_device_reprobe(sdev));
 }
 
 static void
@@ -5382,7 +5376,7 @@ static void mptsas_remove(struct pci_dev *pdev)
 	mptscsih_remove(pdev);
 }
 
-static struct pci_device_id mptsas_pci_table[] = {
+static const struct pci_device_id mptsas_pci_table[] = {
 	{ PCI_VENDOR_ID_LSI_LOGIC, MPI_MANUFACTPAGE_DEVID_SAS1064,
 		PCI_ANY_ID, PCI_ANY_ID },
 	{ PCI_VENDOR_ID_LSI_LOGIC, MPI_MANUFACTPAGE_DEVID_SAS1068,

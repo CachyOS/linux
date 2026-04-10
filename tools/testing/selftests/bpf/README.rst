@@ -6,18 +6,59 @@ General instructions on running selftests can be found in
 
 __ /Documentation/bpf/bpf_devel_QA.rst#q-how-to-run-bpf-selftests
 
+=============
+BPF CI System
+=============
+
+BPF employs a continuous integration (CI) system to check patch submission in an
+automated fashion. The system runs selftests for each patch in a series. Results
+are propagated to patchwork, where failures are highlighted similar to
+violations of other checks (such as additional warnings being emitted or a
+``scripts/checkpatch.pl`` reported deficiency):
+
+  https://patchwork.kernel.org/project/netdevbpf/list/?delegate=121173
+
+The CI system executes tests on multiple architectures. It uses a kernel
+configuration derived from both the generic and architecture specific config
+file fragments below ``tools/testing/selftests/bpf/`` (e.g., ``config`` and
+``config.x86_64``).
+
+Denylisting Tests
+=================
+
+It is possible for some architectures to not have support for all BPF features.
+In such a case tests in CI may fail. An example of such a shortcoming is BPF
+trampoline support on IBM's s390x architecture. For cases like this, an in-tree
+deny list file, located at ``tools/testing/selftests/bpf/DENYLIST.<arch>``, can
+be used to prevent the test from running on such an architecture.
+
+In addition to that, the generic ``tools/testing/selftests/bpf/DENYLIST`` is
+honored on every architecture running tests.
+
+These files are organized in three columns. The first column lists the test in
+question. This can be the name of a test suite or of an individual test. The
+remaining two columns provide additional meta data that helps identify and
+classify the entry: column two is a copy and paste of the error being reported
+when running the test in the setting in question. The third column, if
+available, summarizes the underlying problem. A value of ``trampoline``, for
+example, indicates that lack of trampoline support is causing the test to fail.
+This last entry helps identify tests that can be re-enabled once such support is
+added.
+
 =========================
 Running Selftests in a VM
 =========================
 
 It's now possible to run the selftests using ``tools/testing/selftests/bpf/vmtest.sh``.
 The script tries to ensure that the tests are run with the same environment as they
-would be run post-submit in the CI used by the Maintainers.
+would be run post-submit in the CI used by the Maintainers, with the exception
+that deny lists are not automatically honored.
 
-This script downloads a suitable Kconfig and VM userspace image from the system used by
-the CI. It builds the kernel (without overwriting your existing Kconfig), recompiles the
-bpf selftests, runs them (by default ``tools/testing/selftests/bpf/test_progs``) and
-saves the resulting output (by default in ``~/.bpf_selftests``).
+This script uses the in-tree kernel configuration and downloads a VM userspace
+image from the system used by the CI. It builds the kernel (without overwriting
+your existing Kconfig), recompiles the bpf selftests, runs them (by default
+``tools/testing/selftests/bpf/test_progs``) and saves the resulting output (by
+default in ``~/.bpf_selftests``).
 
 Script dependencies:
 - clang (preferably built from sources, https://github.com/llvm/llvm-project);
@@ -26,7 +67,7 @@ Script dependencies:
 - docutils (for ``rst2man``);
 - libcap-devel.
 
-For more information on about using the script, run:
+For more information about using the script, run:
 
 .. code-block:: console
 
@@ -36,7 +77,7 @@ In case of linker errors when running selftests, try using static linking:
 
 .. code-block:: console
 
-  $ LDLIBS=-static vmtest.sh
+  $ LDLIBS=-static PKG_CONFIG='pkg-config --static' vmtest.sh
 
 .. note:: Some distros may not support static linking.
 
@@ -44,7 +85,37 @@ In case of linker errors when running selftests, try using static linking:
           If you want to change pahole and llvm, you can change `PATH` environment
           variable in the beginning of script.
 
-.. note:: The script currently only supports x86_64 and s390x architectures.
+Running vmtest on RV64
+======================
+To speed up testing and avoid various dependency issues, it is recommended to
+run vmtest in a Docker container. Before running vmtest, we need to prepare
+Docker container and local rootfs image. The overall steps are as follows:
+
+1. Create Docker container as shown in link [0].
+
+2. Use mkrootfs_debian.sh script [1] to build local rootfs image:
+
+.. code-block:: console
+
+  $ sudo ./mkrootfs_debian.sh --arch riscv64 --distro noble
+
+3. Start Docker container [0] and run vmtest in the container:
+
+.. code-block:: console
+
+  $ PLATFORM=riscv64 CROSS_COMPILE=riscv64-linux-gnu- \
+    tools/testing/selftests/bpf/vmtest.sh \
+    -l <path of local rootfs image> -- \
+    ./test_progs -d \
+        \"$(cat tools/testing/selftests/bpf/DENYLIST.riscv64 \
+            | cut -d'#' -f1 \
+            | sed -e 's/^[[:space:]]*//' \
+                  -e 's/[[:space:]]*$//' \
+            | tr -s '\n' ',' \
+        )\"
+
+Link: https://github.com/pulehui/riscv-bpf-vmtest.git [0]
+Link: https://github.com/libbpf/ci/blob/main/rootfs/mkrootfs_debian.sh [1]
 
 Additional information about selftest failures are
 documented here.
@@ -74,7 +145,7 @@ the insn 20 undoes map_value addition. It is currently impossible for the
 verifier to understand such speculative pointer arithmetic.
 Hence `this patch`__ addresses it on the compiler side. It was committed on llvm 12.
 
-__ https://reviews.llvm.org/D85570
+__ https://github.com/llvm/llvm-project/commit/ddf1864ace484035e3cde5e83b3a31ac81e059c6
 
 The corresponding C code
 
@@ -124,13 +195,13 @@ This is due to a llvm BPF backend bug. `The fix`__
 has been pushed to llvm 10.x release branch and will be
 available in 10.0.1. The patch is available in llvm 11.0.0 trunk.
 
-__  https://reviews.llvm.org/D78466
+__  https://github.com/llvm/llvm-project/commit/3cb7e7bf959dcd3b8080986c62e10a75c7af43f0
 
-bpf_verif_scale/loop6.o test failure with Clang 12
-==================================================
+bpf_verif_scale/loop6.bpf.o test failure with Clang 12
+======================================================
 
 With Clang 12, the following bpf_verif_scale test failed:
-  * ``bpf_verif_scale/loop6.o``
+  * ``bpf_verif_scale/loop6.bpf.o``
 
 The verifier output looks like
 
@@ -163,7 +234,7 @@ r5(w5) is eventually saved on stack at insn #24 for later use.
 This cause later verifier failure. The bug has been `fixed`__ in
 Clang 13.
 
-__  https://reviews.llvm.org/D97479
+__  https://github.com/llvm/llvm-project/commit/1959ead525b8830cc8a345f45e1c3ef9902d3229
 
 BPF CO-RE-based tests and Clang version
 =======================================
@@ -180,11 +251,11 @@ failures:
 - __builtin_btf_type_id() [0_, 1_, 2_];
 - __builtin_preserve_type_info(), __builtin_preserve_enum_value() [3_, 4_].
 
-.. _0: https://reviews.llvm.org/D74572
-.. _1: https://reviews.llvm.org/D74668
-.. _2: https://reviews.llvm.org/D85174
-.. _3: https://reviews.llvm.org/D83878
-.. _4: https://reviews.llvm.org/D83242
+.. _0: https://github.com/llvm/llvm-project/commit/6b01b465388b204d543da3cf49efd6080db094a9
+.. _1: https://github.com/llvm/llvm-project/commit/072cde03aaa13a2c57acf62d79876bf79aa1919f
+.. _2: https://github.com/llvm/llvm-project/commit/00602ee7ef0bf6c68d690a2bd729c12b95c95c99
+.. _3: https://github.com/llvm/llvm-project/commit/6d218b4adb093ff2e9764febbbc89f429412006c
+.. _4: https://github.com/llvm/llvm-project/commit/6d6750696400e7ce988d66a1a00e1d0cb32815f8
 
 Floating-point tests and Clang version
 ======================================
@@ -193,7 +264,7 @@ Certain selftests, e.g. core_reloc, require support for the floating-point
 types, which was introduced in `Clang 13`__. The older Clang versions will
 either crash when compiling these tests, or generate an incorrect BTF.
 
-__  https://reviews.llvm.org/D83289
+__  https://github.com/llvm/llvm-project/commit/a7137b238a07d9399d3ae96c0b461571bd5aa8b2
 
 Kernel function call test and Clang version
 ===========================================
@@ -207,7 +278,7 @@ Without it, the error from compiling bpf selftests looks like:
 
   libbpf: failed to find BTF for extern 'tcp_slow_start' [25] section: -2
 
-__ https://reviews.llvm.org/D93563
+__ https://github.com/llvm/llvm-project/commit/886f9ff53155075bd5f1e994f17b85d1e1b7470c
 
 btf_tag test and Clang version
 ==============================
@@ -223,8 +294,8 @@ Without them, the btf_tag selftest will be skipped and you will observe:
 
   #<test_num> btf_tag:SKIP
 
-.. _0: https://reviews.llvm.org/D111588
-.. _1: https://reviews.llvm.org/D111199
+.. _0: https://github.com/llvm/llvm-project/commit/a162b67c98066218d0d00aa13b99afb95d9bb5e6
+.. _1: https://github.com/llvm/llvm-project/commit/3466e00716e12e32fdb100e3fcfca5c2b3e8d784
 
 Clang dependencies for static linking tests
 ===========================================
@@ -233,7 +304,7 @@ linked_vars, linked_maps, and linked_funcs tests depend on `Clang fix`__ to
 generate valid BTF information for weak variables. Please make sure you use
 Clang that contains the fix.
 
-__ https://reviews.llvm.org/D100362
+__ https://github.com/llvm/llvm-project/commit/968292cb93198442138128d850fd54dc7edc0035
 
 Clang relocation changes
 ========================
@@ -245,13 +316,13 @@ See `kernel llvm reloc`_ for more explanation and some examples.
 Using clang 13 to compile old libbpf which has static linker support,
 there will be a compilation failure::
 
-  libbpf: ELF relo #0 in section #6 has unexpected type 2 in .../bpf_tcp_nogpl.o
+  libbpf: ELF relo #0 in section #6 has unexpected type 2 in .../bpf_tcp_nogpl.bpf.o
 
 Here, ``type 2`` refers to new relocation type ``R_BPF_64_ABS64``.
 To fix this issue, user newer libbpf.
 
 .. Links
-.. _clang reloc patch: https://reviews.llvm.org/D102712
+.. _clang reloc patch: https://github.com/llvm/llvm-project/commit/6a2ea84600ba4bd3b2733bd8f08f5115eb32164b
 .. _kernel llvm reloc: /Documentation/bpf/llvm_reloc.rst
 
 Clang dependencies for the u32 spill test (xdpwall)
@@ -263,6 +334,6 @@ from running test_progs will look like:
 
 .. code-block:: console
 
-  test_xdpwall:FAIL:Does LLVM have https://reviews.llvm.org/D109073? unexpected error: -4007
+  test_xdpwall:FAIL:Does LLVM have https://github.com/llvm/llvm-project/commit/ea72b0319d7b0f0c2fcf41d121afa5d031b319d5? unexpected error: -4007
 
-__ https://reviews.llvm.org/D109073
+__ https://github.com/llvm/llvm-project/commit/ea72b0319d7b0f0c2fcf41d121afa5d031b319d5

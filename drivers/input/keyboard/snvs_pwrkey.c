@@ -20,13 +20,15 @@
 #include <linux/mfd/syscon.h>
 #include <linux/regmap.h>
 
-#define SNVS_HPVIDR1_REG	0xF8
+#define SNVS_HPVIDR1_REG	0xBF8
 #define SNVS_LPSR_REG		0x4C	/* LP Status Register */
 #define SNVS_LPCR_REG		0x38	/* LP Control Register */
 #define SNVS_HPSR_REG		0x14
 #define SNVS_HPSR_BTN		BIT(6)
 #define SNVS_LPSR_SPO		BIT(18)
 #define SNVS_LPCR_DEP_EN	BIT(5)
+#define SNVS_LPCR_BPT_SHIFT	16
+#define SNVS_LPCR_BPT_MASK	(3 << SNVS_LPCR_BPT_SHIFT)
 
 #define DEBOUNCE_TIME		30
 #define REPEAT_INTERVAL		60
@@ -44,7 +46,8 @@ struct pwrkey_drv_data {
 
 static void imx_imx_snvs_check_for_events(struct timer_list *t)
 {
-	struct pwrkey_drv_data *pdata = from_timer(pdata, t, check_timer);
+	struct pwrkey_drv_data *pdata = timer_container_of(pdata, t,
+							   check_timer);
 	struct input_dev *input = pdata->input;
 	u32 state;
 
@@ -100,16 +103,11 @@ static irqreturn_t imx_snvs_pwrkey_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static void imx_snvs_pwrkey_disable_clk(void *data)
-{
-	clk_disable_unprepare(data);
-}
-
 static void imx_snvs_pwrkey_act(void *pdata)
 {
 	struct pwrkey_drv_data *pd = pdata;
 
-	del_timer_sync(&pd->check_timer);
+	timer_delete_sync(&pd->check_timer);
 }
 
 static int imx_snvs_pwrkey_probe(struct platform_device *pdev)
@@ -119,6 +117,8 @@ static int imx_snvs_pwrkey_probe(struct platform_device *pdev)
 	struct device_node *np;
 	struct clk *clk;
 	int error;
+	unsigned int val;
+	unsigned int bpt;
 	u32 vid;
 
 	/* Get SNVS register Page */
@@ -141,26 +141,10 @@ static int imx_snvs_pwrkey_probe(struct platform_device *pdev)
 		dev_warn(&pdev->dev, "KEY_POWER without setting in dts\n");
 	}
 
-	clk = devm_clk_get_optional(&pdev->dev, NULL);
+	clk = devm_clk_get_optional_enabled(&pdev->dev, NULL);
 	if (IS_ERR(clk)) {
 		dev_err(&pdev->dev, "Failed to get snvs clock (%pe)\n", clk);
 		return PTR_ERR(clk);
-	}
-
-	error = clk_prepare_enable(clk);
-	if (error) {
-		dev_err(&pdev->dev, "Failed to enable snvs clock (%pe)\n",
-			ERR_PTR(error));
-		return error;
-	}
-
-	error = devm_add_action_or_reset(&pdev->dev,
-					 imx_snvs_pwrkey_disable_clk, clk);
-	if (error) {
-		dev_err(&pdev->dev,
-			"Failed to register clock cleanup handler (%pe)\n",
-			ERR_PTR(error));
-		return error;
 	}
 
 	pdata->wakeup = of_property_read_bool(np, "wakeup-source");
@@ -168,6 +152,27 @@ static int imx_snvs_pwrkey_probe(struct platform_device *pdev)
 	pdata->irq = platform_get_irq(pdev, 0);
 	if (pdata->irq < 0)
 		return -EINVAL;
+
+	error = of_property_read_u32(np, "power-off-time-sec", &val);
+	if (!error) {
+		switch (val) {
+		case 0:
+			bpt = 0x3;
+			break;
+		case 5:
+		case 10:
+		case 15:
+			bpt = (val / 5) - 1;
+			break;
+		default:
+			dev_err(&pdev->dev,
+				"power-off-time-sec %d out of range\n", val);
+			return -EINVAL;
+		}
+
+		regmap_update_bits(pdata->snvs, SNVS_LPCR_REG, SNVS_LPCR_BPT_MASK,
+				   bpt << SNVS_LPCR_BPT_SHIFT);
+	}
 
 	regmap_read(pdata->snvs, SNVS_HPVIDR1_REG, &vid);
 	pdata->minor_rev = vid & 0xff;
@@ -204,7 +209,6 @@ static int imx_snvs_pwrkey_probe(struct platform_device *pdev)
 	error = devm_request_irq(&pdev->dev, pdata->irq,
 			       imx_snvs_pwrkey_interrupt,
 			       0, pdev->name, pdev);
-
 	if (error) {
 		dev_err(&pdev->dev, "interrupt not available.\n");
 		return error;

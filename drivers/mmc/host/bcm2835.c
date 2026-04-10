@@ -44,6 +44,7 @@
 #include <linux/scatterlist.h>
 #include <linux/time.h>
 #include <linux/workqueue.h>
+#include <linux/string_choices.h>
 
 #include <linux/mmc/host.h>
 #include <linux/mmc/mmc.h>
@@ -148,9 +149,10 @@ struct bcm2835_host {
 	void __iomem		*ioaddr;
 	u32			phys_addr;
 
+	struct clk		*clk;
 	struct platform_device	*pdev;
 
-	int			clock;		/* Current clock speed */
+	unsigned int		clock;		/* Current clock speed */
 	unsigned int		max_clk;	/* Max possible freq */
 	struct work_struct	dma_work;
 	struct delayed_work	timeout_work;	/* Timer for timeouts */
@@ -327,15 +329,12 @@ static void bcm2835_dma_complete(void *param)
 
 static void bcm2835_transfer_block_pio(struct bcm2835_host *host, bool is_read)
 {
-	unsigned long flags;
 	size_t blksize;
 	unsigned long wait_max;
 
 	blksize = host->data->blksz;
 
 	wait_max = jiffies + msecs_to_jiffies(500);
-
-	local_irq_save(flags);
 
 	while (blksize) {
 		int copy_words;
@@ -393,8 +392,7 @@ static void bcm2835_transfer_block_pio(struct bcm2835_host *host, bool is_read)
 
 				if (time_after(jiffies, wait_max)) {
 					dev_err(dev, "PIO %s timeout - EDM %08x\n",
-						is_read ? "read" : "write",
-						edm);
+						str_read_write(is_read), edm);
 					hsts = SDHSTS_REW_TIME_OUT;
 					break;
 				}
@@ -421,8 +419,6 @@ static void bcm2835_transfer_block_pio(struct bcm2835_host *host, bool is_read)
 	}
 
 	sg_miter_stop(&host->sg_miter);
-
-	local_irq_restore(flags);
 }
 
 static void bcm2835_transfer_pio(struct bcm2835_host *host)
@@ -439,12 +435,12 @@ static void bcm2835_transfer_pio(struct bcm2835_host *host)
 		      SDHSTS_CRC7_ERROR |
 		      SDHSTS_FIFO_ERROR)) {
 		dev_err(dev, "%s transfer error - HSTS %08x\n",
-			is_read ? "read" : "write", sdhsts);
+			str_read_write(is_read), sdhsts);
 		host->data->error = -EILSEQ;
 	} else if ((sdhsts & (SDHSTS_CMD_TIME_OUT |
 			      SDHSTS_REW_TIME_OUT))) {
 		dev_err(dev, "%s timeout error - HSTS %08x\n",
-			is_read ? "read" : "write", sdhsts);
+			str_read_write(is_read), sdhsts);
 		host->data->error = -ETIMEDOUT;
 	}
 }
@@ -507,7 +503,8 @@ void bcm2835_prepare_dma(struct bcm2835_host *host, struct mmc_data *data)
 				       DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 
 	if (!desc) {
-		dma_unmap_sg(dma_chan->device->dev, data->sg, sg_len, dir_data);
+		dma_unmap_sg(dma_chan->device->dev, data->sg, data->sg_len,
+			     dir_data);
 		return;
 	}
 
@@ -1068,7 +1065,6 @@ static void bcm2835_dma_complete_work(struct work_struct *work)
 	}
 
 	if (host->drain_words) {
-		unsigned long flags;
 		void *page;
 		u32 *buf;
 
@@ -1076,8 +1072,7 @@ static void bcm2835_dma_complete_work(struct work_struct *work)
 			host->drain_page += host->drain_offset >> PAGE_SHIFT;
 			host->drain_offset &= ~PAGE_MASK;
 		}
-		local_irq_save(flags);
-		page = kmap_atomic(host->drain_page);
+		page = kmap_local_page(host->drain_page);
 		buf = page + host->drain_offset;
 
 		while (host->drain_words) {
@@ -1088,8 +1083,7 @@ static void bcm2835_dma_complete_work(struct work_struct *work)
 			host->drain_words--;
 		}
 
-		kunmap_atomic(page);
-		local_irq_restore(flags);
+		kunmap_local(page);
 	}
 
 	bcm2835_finish_data(host);
@@ -1350,17 +1344,35 @@ static int bcm2835_add_host(struct bcm2835_host *host)
 	return 0;
 }
 
+static int bcm2835_suspend(struct device *dev)
+{
+	struct bcm2835_host *host = dev_get_drvdata(dev);
+
+	clk_disable_unprepare(host->clk);
+
+	return 0;
+}
+
+static int bcm2835_resume(struct device *dev)
+{
+	struct bcm2835_host *host = dev_get_drvdata(dev);
+
+	return clk_prepare_enable(host->clk);
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(bcm2835_pm_ops, bcm2835_suspend,
+				bcm2835_resume);
+
 static int bcm2835_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct clk *clk;
 	struct bcm2835_host *host;
 	struct mmc_host *mmc;
 	const __be32 *regaddr_p;
 	int ret;
 
 	dev_dbg(dev, "%s\n", __func__);
-	mmc = mmc_alloc_host(sizeof(*host), dev);
+	mmc = devm_mmc_alloc_host(dev, sizeof(*host));
 	if (!mmc)
 		return -ENOMEM;
 
@@ -1401,18 +1413,9 @@ static int bcm2835_probe(struct platform_device *pdev)
 		/* Ignore errors to fall back to PIO mode */
 	}
 
-
-	clk = devm_clk_get(dev, NULL);
-	if (IS_ERR(clk)) {
-		ret = dev_err_probe(dev, PTR_ERR(clk), "could not get clk\n");
-		goto err;
-	}
-
-	host->max_clk = clk_get_rate(clk);
-
 	host->irq = platform_get_irq(pdev, 0);
-	if (host->irq <= 0) {
-		ret = -EINVAL;
+	if (host->irq < 0) {
+		ret = host->irq;
 		goto err;
 	}
 
@@ -1420,9 +1423,21 @@ static int bcm2835_probe(struct platform_device *pdev)
 	if (ret)
 		goto err;
 
-	ret = bcm2835_add_host(host);
+	host->clk = devm_clk_get(dev, NULL);
+	if (IS_ERR(host->clk)) {
+		ret = dev_err_probe(dev, PTR_ERR(host->clk), "could not get clk\n");
+		goto err;
+	}
+
+	ret = clk_prepare_enable(host->clk);
 	if (ret)
 		goto err;
+
+	host->max_clk = clk_get_rate(host->clk);
+
+	ret = bcm2835_add_host(host);
+	if (ret)
+		goto err_clk;
 
 	platform_set_drvdata(pdev, host);
 
@@ -1430,16 +1445,17 @@ static int bcm2835_probe(struct platform_device *pdev)
 
 	return 0;
 
+err_clk:
+	clk_disable_unprepare(host->clk);
 err:
 	dev_dbg(dev, "%s -> err %d\n", __func__, ret);
 	if (host->dma_chan_rxtx)
 		dma_release_channel(host->dma_chan_rxtx);
-	mmc_free_host(mmc);
 
 	return ret;
 }
 
-static int bcm2835_remove(struct platform_device *pdev)
+static void bcm2835_remove(struct platform_device *pdev)
 {
 	struct bcm2835_host *host = platform_get_drvdata(pdev);
 	struct mmc_host *mmc = mmc_from_priv(host);
@@ -1453,12 +1469,10 @@ static int bcm2835_remove(struct platform_device *pdev)
 	cancel_work_sync(&host->dma_work);
 	cancel_delayed_work_sync(&host->timeout_work);
 
+	clk_disable_unprepare(host->clk);
+
 	if (host->dma_chan_rxtx)
 		dma_release_channel(host->dma_chan_rxtx);
-
-	mmc_free_host(mmc);
-
-	return 0;
 }
 
 static const struct of_device_id bcm2835_match[] = {
@@ -1474,6 +1488,7 @@ static struct platform_driver bcm2835_driver = {
 		.name		= "sdhost-bcm2835",
 		.probe_type	= PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table	= bcm2835_match,
+		.pm = pm_ptr(&bcm2835_pm_ops),
 	},
 };
 module_platform_driver(bcm2835_driver);

@@ -14,6 +14,7 @@
 static u_int debug;
 
 MODULE_AUTHOR("Karsten Keil");
+MODULE_DESCRIPTION("Modular ISDN core driver");
 MODULE_LICENSE("GPL");
 module_param(debug, uint, S_IRUGO | S_IWUSR);
 
@@ -139,9 +140,9 @@ static struct attribute *mISDN_attrs[] = {
 };
 ATTRIBUTE_GROUPS(mISDN);
 
-static int mISDN_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int mISDN_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct mISDNdevice *mdev = dev_to_mISDN(dev);
+	const struct mISDNdevice *mdev = dev_to_mISDN(dev);
 
 	if (!mdev)
 		return 0;
@@ -152,18 +153,11 @@ static int mISDN_uevent(struct device *dev, struct kobj_uevent_env *env)
 	return 0;
 }
 
-static void mISDN_class_release(struct class *cls)
-{
-	/* do nothing, it's static */
-}
-
 static struct class mISDN_class = {
 	.name = "mISDN",
-	.owner = THIS_MODULE,
 	.dev_uevent = mISDN_uevent,
 	.dev_groups = mISDN_groups,
 	.dev_release = mISDN_dev_release,
-	.class_release = mISDN_class_release,
 };
 
 static int
@@ -222,7 +216,7 @@ mISDN_register_device(struct mISDNdevice *dev,
 
 	err = get_free_devid();
 	if (err < 0)
-		goto error1;
+		return err;
 	dev->id = err;
 
 	device_initialize(&dev->dev);
@@ -233,11 +227,12 @@ mISDN_register_device(struct mISDNdevice *dev,
 	if (debug & DEBUG_CORE)
 		printk(KERN_DEBUG "mISDN_register %s %d\n",
 		       dev_name(&dev->dev), dev->id);
+	dev->dev.class = &mISDN_class;
+
 	err = create_stack(dev);
 	if (err)
 		goto error1;
 
-	dev->dev.class = &mISDN_class;
 	dev->dev.platform_data = dev;
 	dev->dev.parent = parent;
 	dev_set_drvdata(&dev->dev, dev);
@@ -249,8 +244,8 @@ mISDN_register_device(struct mISDNdevice *dev,
 
 error3:
 	delete_stack(dev);
-	return err;
 error1:
+	put_device(&dev->dev);
 	return err;
 
 }
@@ -297,20 +292,6 @@ get_Bprotocol4mask(u_int m)
 		}
 	read_unlock(&bp_lock);
 	return NULL;
-}
-
-struct Bprotocol *
-get_Bprotocol4id(u_int id)
-{
-	u_int	m;
-
-	if (id < ISDN_P_B_START || id > 63) {
-		printk(KERN_WARNING "%s id not in range  %d\n",
-		       __func__, id);
-		return NULL;
-	}
-	m = 1 << (id & ISDN_P_B_MASK);
-	return get_Bprotocol4mask(m);
 }
 
 int

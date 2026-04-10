@@ -15,9 +15,9 @@
 static long __init parse_acpi_path(const struct efi_dev_path *node,
 				   struct device *parent, struct device **child)
 {
-	char hid[ACPI_ID_LEN], uid[11]; /* UINT_MAX + null byte */
 	struct acpi_device *adev;
 	struct device *phys_dev;
+	char hid[ACPI_ID_LEN];
 
 	if (node->header.length != 12)
 		return -EINVAL;
@@ -27,12 +27,11 @@ static long __init parse_acpi_path(const struct efi_dev_path *node,
 		'A' + ((node->acpi.hid >>  5) & 0x1f) - 1,
 		'A' + ((node->acpi.hid >>  0) & 0x1f) - 1,
 			node->acpi.hid >> 16);
-	sprintf(uid, "%u", node->acpi.uid);
 
 	for_each_acpi_dev_match(adev, hid, NULL, -1) {
-		if (adev->pnp.unique_id && !strcmp(adev->pnp.unique_id, uid))
+		if (acpi_dev_uid_match(adev, node->acpi.uid))
 			break;
-		if (!adev->pnp.unique_id && node->acpi.uid == 0)
+		if (!acpi_device_uid(adev) && node->acpi.uid == 0)
 			break;
 	}
 	if (!adev)
@@ -48,9 +47,9 @@ static long __init parse_acpi_path(const struct efi_dev_path *node,
 	return 0;
 }
 
-static int __init match_pci_dev(struct device *dev, void *data)
+static int __init match_pci_dev(struct device *dev, const void *data)
 {
-	unsigned int devfn = *(unsigned int *)data;
+	unsigned int devfn = *(const unsigned int *)data;
 
 	return dev_is_pci(dev) && to_pci_dev(dev)->devfn == devfn;
 }

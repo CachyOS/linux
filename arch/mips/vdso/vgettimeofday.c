@@ -9,6 +9,7 @@
  */
 #include <linux/time.h>
 #include <linux/types.h>
+#include <vdso/gettime.h>
 
 #if _MIPS_SIM != _MIPS_SIM_ABI64
 int __vdso_clock_gettime(clockid_t clock,
@@ -43,6 +44,11 @@ int __vdso_clock_gettime64(clockid_t clock,
 			   struct __kernel_timespec *ts)
 {
 	return __cvdso_clock_gettime(clock, ts);
+}
+
+int __vdso_clock_getres_time64(clockid_t clock, struct __kernel_timespec *ts)
+{
+	return __cvdso_clock_getres(clock, ts);
 }
 
 #else

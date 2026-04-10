@@ -82,12 +82,11 @@ static int am335x_phy_probe(struct platform_device *pdev)
 	return usb_add_phy_dev(&am_phy->usb_phy_gen.phy);
 }
 
-static int am335x_phy_remove(struct platform_device *pdev)
+static void am335x_phy_remove(struct platform_device *pdev)
 {
 	struct am335x_phy *am_phy = platform_get_drvdata(pdev);
 
 	usb_remove_phy(&am_phy->usb_phy_gen.phy);
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -143,4 +142,5 @@ static struct platform_driver am335x_phy_driver = {
 };
 
 module_platform_driver(am335x_phy_driver);
+MODULE_DESCRIPTION("AM335x USB PHY Driver");
 MODULE_LICENSE("GPL v2");

@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Kernel Debugger Architecture Independent Breakpoint Handler
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  *
  * Copyright (c) 1999-2004 Silicon Graphics, Inc.  All Rights Reserved.
  * Copyright (c) 2009 Wind River Systems, Inc.  All Rights Reserved.
@@ -460,13 +457,15 @@ static int kdb_bc(int argc, const char **argv)
 
 			break;
 		case KDBCMD_BE:
+			if (bp->bp_enabled)
+				break;
+
 			bp->bp_enabled = 1;
 
 			kdb_printf("Breakpoint %d at "
-				   kdb_bfd_vma_fmt " enabled",
+				   kdb_bfd_vma_fmt " enabled\n",
 				   i, bp->bp_addr);
 
-			kdb_printf("\n");
 			break;
 		case KDBCMD_BD:
 			if (!bp->bp_enabled)

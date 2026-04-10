@@ -178,13 +178,12 @@ err:
 	return -ENODEV;
 }
 
-static int int3406_thermal_remove(struct platform_device *pdev)
+static void int3406_thermal_remove(struct platform_device *pdev)
 {
 	struct int3406_thermal_data *d = platform_get_drvdata(pdev);
 
 	thermal_cooling_device_unregister(d->cooling_dev);
 	kfree(d->br);
-	return 0;
 }
 
 static const struct acpi_device_id int3406_thermal_match[] = {

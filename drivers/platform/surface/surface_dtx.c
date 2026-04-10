@@ -8,7 +8,7 @@
  * acknowledge (to speed things up), abort (e.g. in case the dGPU is still in
  * use), or request detachment via user-space.
  *
- * Copyright (C) 2019-2021 Maximilian Luz <luzmaximilian@gmail.com>
+ * Copyright (C) 2019-2022 Maximilian Luz <luzmaximilian@gmail.com>
  */
 
 #include <linux/fs.h>
@@ -71,63 +71,63 @@ static_assert(sizeof(struct ssam_bas_base_info) == 2);
 
 SSAM_DEFINE_SYNC_REQUEST_N(ssam_bas_latch_lock, {
 	.target_category = SSAM_SSH_TC_BAS,
-	.target_id       = 0x01,
+	.target_id       = SSAM_SSH_TID_SAM,
 	.command_id      = 0x06,
 	.instance_id     = 0x00,
 });
 
 SSAM_DEFINE_SYNC_REQUEST_N(ssam_bas_latch_unlock, {
 	.target_category = SSAM_SSH_TC_BAS,
-	.target_id       = 0x01,
+	.target_id       = SSAM_SSH_TID_SAM,
 	.command_id      = 0x07,
 	.instance_id     = 0x00,
 });
 
 SSAM_DEFINE_SYNC_REQUEST_N(ssam_bas_latch_request, {
 	.target_category = SSAM_SSH_TC_BAS,
-	.target_id       = 0x01,
+	.target_id       = SSAM_SSH_TID_SAM,
 	.command_id      = 0x08,
 	.instance_id     = 0x00,
 });
 
 SSAM_DEFINE_SYNC_REQUEST_N(ssam_bas_latch_confirm, {
 	.target_category = SSAM_SSH_TC_BAS,
-	.target_id       = 0x01,
+	.target_id       = SSAM_SSH_TID_SAM,
 	.command_id      = 0x09,
 	.instance_id     = 0x00,
 });
 
 SSAM_DEFINE_SYNC_REQUEST_N(ssam_bas_latch_heartbeat, {
 	.target_category = SSAM_SSH_TC_BAS,
-	.target_id       = 0x01,
+	.target_id       = SSAM_SSH_TID_SAM,
 	.command_id      = 0x0a,
 	.instance_id     = 0x00,
 });
 
 SSAM_DEFINE_SYNC_REQUEST_N(ssam_bas_latch_cancel, {
 	.target_category = SSAM_SSH_TC_BAS,
-	.target_id       = 0x01,
+	.target_id       = SSAM_SSH_TID_SAM,
 	.command_id      = 0x0b,
 	.instance_id     = 0x00,
 });
 
 SSAM_DEFINE_SYNC_REQUEST_R(ssam_bas_get_base, struct ssam_bas_base_info, {
 	.target_category = SSAM_SSH_TC_BAS,
-	.target_id       = 0x01,
+	.target_id       = SSAM_SSH_TID_SAM,
 	.command_id      = 0x0c,
 	.instance_id     = 0x00,
 });
 
 SSAM_DEFINE_SYNC_REQUEST_R(ssam_bas_get_device_mode, u8, {
 	.target_category = SSAM_SSH_TC_BAS,
-	.target_id       = 0x01,
+	.target_id       = SSAM_SSH_TID_SAM,
 	.command_id      = 0x0d,
 	.instance_id     = 0x00,
 });
 
 SSAM_DEFINE_SYNC_REQUEST_R(ssam_bas_get_latch_status, u8, {
 	.target_category = SSAM_SSH_TC_BAS,
-	.target_id       = 0x01,
+	.target_id       = SSAM_SSH_TID_SAM,
 	.command_id      = 0x11,
 	.instance_id     = 0x00,
 });
@@ -403,7 +403,7 @@ static int surface_dtx_open(struct inode *inode, struct file *file)
 	struct sdtx_client *client;
 
 	/* Initialize client. */
-	client = kzalloc(sizeof(*client), GFP_KERNEL);
+	client = kzalloc_obj(*client);
 	if (!client)
 		return -ENOMEM;
 
@@ -555,7 +555,6 @@ static const struct file_operations surface_dtx_fops = {
 	.fasync         = surface_dtx_fasync,
 	.unlocked_ioctl = surface_dtx_ioctl,
 	.compat_ioctl   = surface_dtx_ioctl,
-	.llseek         = no_llseek,
 };
 
 
@@ -1045,7 +1044,7 @@ static struct sdtx_device *sdtx_device_create(struct device *dev, struct ssam_co
 	struct sdtx_device *ddev;
 	int status;
 
-	ddev = kzalloc(sizeof(*ddev), GFP_KERNEL);
+	ddev = kzalloc_obj(*ddev);
 	if (!ddev)
 		return ERR_PTR(-ENOMEM);
 
@@ -1168,10 +1167,9 @@ static int surface_dtx_platform_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int surface_dtx_platform_remove(struct platform_device *pdev)
+static void surface_dtx_platform_remove(struct platform_device *pdev)
 {
 	sdtx_device_destroy(platform_get_drvdata(pdev));
-	return 0;
 }
 
 static const struct acpi_device_id surface_dtx_acpi_match[] = {
@@ -1214,7 +1212,7 @@ static void surface_dtx_ssam_remove(struct ssam_device *sdev)
 }
 
 static const struct ssam_device_id surface_dtx_ssam_match[] = {
-	{ SSAM_SDEV(BAS, 0x01, 0x00, 0x00) },
+	{ SSAM_SDEV(BAS, SAM, 0x00, 0x00) },
 	{ },
 };
 MODULE_DEVICE_TABLE(ssam, surface_dtx_ssam_match);

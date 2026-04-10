@@ -12,10 +12,4 @@ How to write kernel documentation
    parse-headers
    contributing
    maintainer-profile
-
-.. only::  subproject and html
-
-   Indices
-   =======
-
-   * :ref:`genindex`
+   checktransupdate

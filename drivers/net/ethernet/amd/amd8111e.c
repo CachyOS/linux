@@ -43,7 +43,7 @@ Revision History:
 	3.0.4 12/09/2003
 	 1. Added set_mac_address routine for bonding driver support.
 	 2. Tested the driver for bonding support
-	 3. Bug fix: Fixed mismach in actual receive buffer lenth and lenth
+	 3. Bug fix: Fixed mismach in actual receive buffer length and length
 	    indicated to the h/w.
 	 4. Modified amd8111e_rx() routine to receive all the received packets
 	    in the first interrupt.
@@ -185,24 +185,23 @@ static void amd8111e_set_ext_phy(struct net_device *dev)
 	advert = amd8111e_mdio_read(dev, lp->ext_phy_addr, MII_ADVERTISE);
 	tmp = advert & ~(ADVERTISE_ALL | ADVERTISE_100BASE4);
 	switch (lp->ext_phy_option) {
-
-		default:
-		case SPEED_AUTONEG: /* advertise all values */
-			tmp |= (ADVERTISE_10HALF | ADVERTISE_10FULL |
-				ADVERTISE_100HALF | ADVERTISE_100FULL);
-			break;
-		case SPEED10_HALF:
-			tmp |= ADVERTISE_10HALF;
-			break;
-		case SPEED10_FULL:
-			tmp |= ADVERTISE_10FULL;
-			break;
-		case SPEED100_HALF:
-			tmp |= ADVERTISE_100HALF;
-			break;
-		case SPEED100_FULL:
-			tmp |= ADVERTISE_100FULL;
-			break;
+	default:
+	case SPEED_AUTONEG: /* advertise all values */
+		tmp |= (ADVERTISE_10HALF | ADVERTISE_10FULL |
+			ADVERTISE_100HALF | ADVERTISE_100FULL);
+		break;
+	case SPEED10_HALF:
+		tmp |= ADVERTISE_10HALF;
+		break;
+	case SPEED10_FULL:
+		tmp |= ADVERTISE_10FULL;
+		break;
+	case SPEED100_HALF:
+		tmp |= ADVERTISE_100HALF;
+		break;
+	case SPEED100_FULL:
+		tmp |= ADVERTISE_100FULL;
+		break;
 	}
 
 	if(advert != tmp)
@@ -237,7 +236,7 @@ static int amd8111e_free_skbs(struct net_device *dev)
 	/* Freeing previously allocated receive buffers */
 	for (i = 0; i < NUM_RX_BUFFERS; i++) {
 		rx_skbuff = lp->rx_skbuff[i];
-		if (rx_skbuff != NULL) {
+		if (rx_skbuff) {
 			dma_unmap_single(&lp->pci_dev->dev,
 					 lp->rx_dma_addr[i],
 					 lp->rx_buff_len - 2, DMA_FROM_DEVICE);
@@ -1084,7 +1083,7 @@ static irqreturn_t amd8111e_interrupt(int irq, void *dev_id)
 	unsigned int intr0, intren0;
 	unsigned int handled = 1;
 
-	if (unlikely(dev == NULL))
+	if (unlikely(!dev))
 		return IRQ_NONE;
 
 	spin_lock(&lp->lock);
@@ -1109,7 +1108,7 @@ static irqreturn_t amd8111e_interrupt(int irq, void *dev_id)
 	/* Check if Receive Interrupt has occurred. */
 	if (intr0 & RINT0) {
 		if (napi_schedule_prep(&lp->napi)) {
-			/* Disable receive interupts */
+			/* Disable receive interrupts */
 			writel(RINTEN0, mmio + INTEN0);
 			/* Schedule a polling routine */
 			__napi_schedule(&lp->napi);
@@ -1174,7 +1173,7 @@ static int amd8111e_close(struct net_device *dev)
 
 	/* Delete ipg timer */
 	if (lp->options & OPTION_DYN_IPG_ENABLE)
-		del_timer_sync(&lp->ipg_data.ipg_timer);
+		timer_delete_sync(&lp->ipg_data.ipg_timer);
 
 	spin_unlock_irq(&lp->lock);
 	free_irq(dev->irq, dev);
@@ -1364,10 +1363,10 @@ static void amd8111e_get_drvinfo(struct net_device *dev,
 {
 	struct amd8111e_priv *lp = netdev_priv(dev);
 	struct pci_dev *pci_dev = lp->pci_dev;
-	strlcpy(info->driver, MODULE_NAME, sizeof(info->driver));
+	strscpy(info->driver, MODULE_NAME, sizeof(info->driver));
 	snprintf(info->fw_version, sizeof(info->fw_version),
 		"%u", chip_version);
-	strlcpy(info->bus_info, pci_name(pci_dev), sizeof(info->bus_info));
+	strscpy(info->bus_info, pci_name(pci_dev), sizeof(info->bus_info));
 }
 
 static int amd8111e_get_regs_len(struct net_device *dev)
@@ -1521,9 +1520,9 @@ static int amd8111e_change_mtu(struct net_device *dev, int new_mtu)
 
 	if (!netif_running(dev)) {
 		/* new_mtu will be used
-		 * when device starts netxt time
+		 * when device starts next time
 		 */
-		dev->mtu = new_mtu;
+		WRITE_ONCE(dev->mtu, new_mtu);
 		return 0;
 	}
 
@@ -1532,7 +1531,7 @@ static int amd8111e_change_mtu(struct net_device *dev, int new_mtu)
 	/* stop the chip */
 	writel(RUN, lp->mmio + CMD0);
 
-	dev->mtu = new_mtu;
+	WRITE_ONCE(dev->mtu, new_mtu);
 
 	err = amd8111e_restart(dev);
 	spin_unlock_irq(&lp->lock);
@@ -1554,7 +1553,7 @@ static int amd8111e_enable_magicpkt(struct amd8111e_priv *lp)
 static int amd8111e_enable_link_change(struct amd8111e_priv *lp)
 {
 
-	/* Adapter is already stoped/suspended/interrupt-disabled */
+	/* Adapter is already stopped/suspended/interrupt-disabled */
 	writel(VAL0 | LCMODE_SW, lp->mmio + CMD7);
 
 	/* To eliminate PCI posting bug */
@@ -1599,7 +1598,7 @@ static int __maybe_unused amd8111e_suspend(struct device *dev_d)
 	/* stop chip */
 	spin_lock_irq(&lp->lock);
 	if (lp->options & OPTION_DYN_IPG_ENABLE)
-		del_timer_sync(&lp->ipg_data.ipg_timer);
+		timer_delete_sync(&lp->ipg_data.ipg_timer);
 	amd8111e_stop_chip(lp);
 	spin_unlock_irq(&lp->lock);
 
@@ -1642,7 +1641,8 @@ static int __maybe_unused amd8111e_resume(struct device *dev_d)
 
 static void amd8111e_config_ipg(struct timer_list *t)
 {
-	struct amd8111e_priv *lp = from_timer(lp, t, ipg_data.ipg_timer);
+	struct amd8111e_priv *lp = timer_container_of(lp, t,
+						      ipg_data.ipg_timer);
 	struct ipg_info *ipg_data = &lp->ipg_data;
 	void __iomem *mmio = lp->mmio;
 	unsigned int prev_col_cnt = ipg_data->col_cnt;
@@ -1797,7 +1797,6 @@ static int amd8111e_probe_one(struct pci_dev *pdev,
 	lp = netdev_priv(dev);
 	lp->pci_dev = pdev;
 	lp->amd8111e_net_dev = dev;
-	lp->pm_cap = pdev->pm_cap;
 
 	spin_lock_init(&lp->lock);
 
@@ -1830,9 +1829,6 @@ static int amd8111e_probe_one(struct pci_dev *pdev,
 	dev->max_mtu = AMD8111E_MAX_MTU;
 	netif_napi_add_weight(dev, &lp->napi, amd8111e_rx_poll, 32);
 
-#if AMD8111E_VLAN_TAG_USED
-	dev->features |= NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX;
-#endif
 	/* Probe the external PHY */
 	amd8111e_probe_ext_phy(dev);
 

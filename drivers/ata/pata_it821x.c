@@ -75,6 +75,7 @@
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 #include <scsi/scsi_host.h>
 #include <linux/libata.h>
 
@@ -519,9 +520,9 @@ static void it821x_dev_config(struct ata_device *adev)
 	}
 	/* This is a controller firmware triggered funny, don't
 	   report the drive faulty! */
-	adev->horkage &= ~ATA_HORKAGE_DIAGNOSTIC;
+	adev->quirks &= ~ATA_QUIRK_DIAGNOSTIC;
 	/* No HPA in 'smart' mode */
-	adev->horkage |= ATA_HORKAGE_BROKEN_HPA;
+	adev->quirks |= ATA_QUIRK_BROKEN_HPA;
 }
 
 /**
@@ -632,9 +633,9 @@ static void it821x_display_disk(struct ata_port *ap, int n, u8 *buf)
 		cbl = "";
 
 	if (mode)
-		snprintf(mbuf, 8, "%5s%d", mtype, mode - 1);
+		snprintf(mbuf, sizeof(mbuf), "%5s%d", mtype, mode - 1);
 	else
-		strcpy(mbuf, "PIO");
+		strscpy(mbuf, "PIO");
 	if (buf[52] == 4)
 		ata_port_info(ap, "%d: %-6s %-8s          %s %s\n",
 				n, mbuf, types[buf[52]], id, cbl);
@@ -800,7 +801,7 @@ static int it821x_rdc_cable(struct ata_port *ap)
 	return ATA_CBL_PATA80;
 }
 
-static struct scsi_host_template it821x_sht = {
+static const struct scsi_host_template it821x_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 

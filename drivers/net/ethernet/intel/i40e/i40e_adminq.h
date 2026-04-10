@@ -4,12 +4,12 @@
 #ifndef _I40E_ADMINQ_H_
 #define _I40E_ADMINQ_H_
 
-#include "i40e_osdep.h"
-#include "i40e_status.h"
+#include <linux/mutex.h>
+#include "i40e_alloc.h"
 #include "i40e_adminq_cmd.h"
 
 #define I40E_ADMINQ_DESC(R, i)   \
-	(&(((struct i40e_aq_desc *)((R).desc_buf.va))[i]))
+	(&(((struct libie_aq_desc *)((R).desc_buf.va))[i]))
 
 #define I40E_ADMINQ_DESC_ALIGNMENT 4096
 
@@ -29,13 +29,6 @@ struct i40e_adminq_ring {
 	/* used for interrupt processing */
 	u16 next_to_use;
 	u16 next_to_clean;
-
-	/* used for queue tracking */
-	u32 head;
-	u32 tail;
-	u32 len;
-	u32 bah;
-	u32 bal;
 };
 
 /* ASQ transaction details */
@@ -46,7 +39,7 @@ struct i40e_asq_cmd_details {
 	u16 flags_dis;
 	bool async;
 	bool postpone;
-	struct i40e_aq_desc *wb_desc;
+	struct libie_aq_desc *wb_desc;
 };
 
 #define I40E_ADMINQ_DETAILS(R, i)   \
@@ -54,7 +47,7 @@ struct i40e_asq_cmd_details {
 
 /* ARQ event information */
 struct i40e_arq_event_info {
-	struct i40e_aq_desc desc;
+	struct libie_aq_desc desc;
 	u16 msg_len;
 	u16 buf_len;
 	u8 *msg_buf;
@@ -79,8 +72,8 @@ struct i40e_adminq_info {
 	struct mutex arq_mutex; /* Receive queue lock */
 
 	/* last status values on send and receive queues */
-	enum i40e_admin_queue_err asq_last_status;
-	enum i40e_admin_queue_err arq_last_status;
+	enum libie_aq_err asq_last_status;
+	enum libie_aq_err arq_last_status;
 };
 
 /**
@@ -116,10 +109,6 @@ static inline int i40e_aq_rc_to_posix(int aq_ret, int aq_rc)
 		-EFBIG,      /* I40E_AQ_RC_EFBIG */
 	};
 
-	/* aq_rc is invalid if AQ timed out */
-	if (aq_ret == I40E_ERR_ADMIN_QUEUE_TIMEOUT)
-		return -EAGAIN;
-
 	if (!((u32)aq_rc < (sizeof(aq_to_posix) / sizeof((aq_to_posix)[0]))))
 		return -ERANGE;
 
@@ -130,7 +119,7 @@ static inline int i40e_aq_rc_to_posix(int aq_ret, int aq_rc)
 #define I40E_AQ_LARGE_BUF	512
 #define I40E_ASQ_CMD_TIMEOUT	250000  /* usecs */
 
-void i40e_fill_default_direct_cmd_desc(struct i40e_aq_desc *desc,
+void i40e_fill_default_direct_cmd_desc(struct libie_aq_desc *desc,
 				       u16 opcode);
 
 #endif /* _I40E_ADMINQ_H_ */

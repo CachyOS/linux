@@ -6,9 +6,9 @@
  * Copyright (C) 2004, 2005 MIPS Technologies, Inc.  All rights reserved.
  * Copyright (C) 2013 Imagination Technologies Ltd.
  *
- * VPE spport module for loading a MIPS SP program into VPE1. The SP
+ * VPE support module for loading a MIPS SP program into VPE1. The SP
  * environment is rather simple since there are no TLBs. It needs
- * to be relocatable (or partiall linked). Initialize your stack in
+ * to be relocatable (or partially linked). Initialize your stack in
  * the startup-code. The loader looks for the symbol __start and sets
  * up the execution to resume from there. To load and run, simply do
  * a cat SP 'binary' to the /dev/vpe1 device.
@@ -22,6 +22,7 @@
 #include <linux/vmalloc.h>
 #include <linux/elf.h>
 #include <linux/seq_file.h>
+#include <linux/string.h>
 #include <linux/syscalls.h>
 #include <linux/moduleloader.h>
 #include <linux/interrupt.h>
@@ -93,7 +94,7 @@ struct vpe *alloc_vpe(int minor)
 {
 	struct vpe *v;
 
-	v = kzalloc(sizeof(struct vpe), GFP_KERNEL);
+	v = kzalloc_obj(struct vpe);
 	if (v == NULL)
 		goto out;
 
@@ -114,7 +115,7 @@ struct tc *alloc_tc(int index)
 {
 	struct tc *tc;
 
-	tc = kzalloc(sizeof(struct tc), GFP_KERNEL);
+	tc = kzalloc_obj(struct tc);
 	if (tc == NULL)
 		goto out;
 
@@ -199,18 +200,17 @@ static void layout_sections(struct module *mod, const Elf_Ehdr *hdr,
 	for (m = 0; m < ARRAY_SIZE(masks); ++m) {
 		for (i = 0; i < hdr->e_shnum; ++i) {
 			Elf_Shdr *s = &sechdrs[i];
+			struct module_memory *mod_mem;
+
+			mod_mem = &mod->mem[MOD_TEXT];
 
 			if ((s->sh_flags & masks[m][0]) != masks[m][0]
 			    || (s->sh_flags & masks[m][1])
 			    || s->sh_entsize != ~0UL)
 				continue;
 			s->sh_entsize =
-				get_offset((unsigned long *)&mod->core_layout.size, s);
+				get_offset((unsigned long *)&mod_mem->size, s);
 		}
-
-		if (m == 0)
-			mod->core_layout.text_size = mod->core_layout.size;
-
 	}
 }
 
@@ -318,7 +318,7 @@ static int apply_r_mips_hi16(struct module *me, uint32_t *location,
 	 * the carry we need to add.  Save the information, and let LO16 do the
 	 * actual relocation.
 	 */
-	n = kmalloc(sizeof(*n), GFP_KERNEL);
+	n = kmalloc_obj(*n);
 	if (!n)
 		return -ENOMEM;
 
@@ -583,7 +583,7 @@ static int vpe_elfload(struct vpe *v)
 	struct module mod; /* so we can re-use the relocations code */
 
 	memset(&mod, 0, sizeof(struct module));
-	strcpy(mod.name, "VPE loader");
+	strscpy(mod.name, "VPE loader");
 
 	hdr = (Elf_Ehdr *) v->pbuffer;
 	len = v->plen;
@@ -641,7 +641,7 @@ static int vpe_elfload(struct vpe *v)
 		layout_sections(&mod, hdr, sechdrs, secstrings);
 	}
 
-	v->load_addr = alloc_progmem(mod.core_layout.size);
+	v->load_addr = alloc_progmem(mod.mem[MOD_TEXT].size);
 	if (!v->load_addr)
 		return -ENOMEM;
 
@@ -795,7 +795,7 @@ static int vpe_open(struct inode *inode, struct file *filp)
 
 static int vpe_release(struct inode *inode, struct file *filp)
 {
-#if defined(CONFIG_MIPS_VPE_LOADER_MT) || defined(CONFIG_MIPS_VPE_LOADER_CMP)
+#ifdef CONFIG_MIPS_VPE_LOADER_MT
 	struct vpe *v;
 	Elf_Ehdr *hdr;
 	int ret = 0;

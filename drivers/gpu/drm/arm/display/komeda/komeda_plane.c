@@ -6,7 +6,7 @@
  */
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
-#include <drm/drm_plane_helper.h>
+#include <drm/drm_blend.h>
 #include <drm/drm_print.h>
 #include "komeda_dev.h"
 #include "komeda_kms.h"
@@ -142,7 +142,7 @@ static void komeda_plane_reset(struct drm_plane *plane)
 	kfree(plane->state);
 	plane->state = NULL;
 
-	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	state = kzalloc_obj(*state);
 	if (state)
 		__drm_atomic_helper_plane_reset(plane, &state->base);
 }
@@ -155,7 +155,7 @@ komeda_plane_atomic_duplicate_state(struct drm_plane *plane)
 	if (WARN_ON(!plane->state))
 		return NULL;
 
-	new = kzalloc(sizeof(*new), GFP_KERNEL);
+	new = kzalloc_obj(*new);
 	if (!new)
 		return NULL;
 
@@ -247,7 +247,7 @@ static int komeda_plane_add(struct komeda_kms_dev *kms,
 	u32 *formats, n_formats = 0;
 	int err;
 
-	kplane = kzalloc(sizeof(*kplane), GFP_KERNEL);
+	kplane = kzalloc_obj(*kplane);
 	if (!kplane)
 		return -ENOMEM;
 

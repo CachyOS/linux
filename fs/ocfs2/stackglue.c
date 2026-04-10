@@ -10,6 +10,7 @@
 
 #include <linux/list.h>
 #include <linux/spinlock.h>
+#include <linux/string.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/kmod.h>
@@ -327,17 +328,16 @@ int ocfs2_cluster_connect(const char *stack_name,
 		goto out;
 	}
 
-	new_conn = kzalloc(sizeof(struct ocfs2_cluster_connection),
-			   GFP_KERNEL);
+	new_conn = kzalloc_obj(struct ocfs2_cluster_connection);
 	if (!new_conn) {
 		rc = -ENOMEM;
 		goto out;
 	}
 
-	strlcpy(new_conn->cc_name, group, GROUP_NAME_MAX + 1);
+	strscpy(new_conn->cc_name, group, GROUP_NAME_MAX + 1);
 	new_conn->cc_namelen = grouplen;
 	if (cluster_name_len)
-		strlcpy(new_conn->cc_cluster_name, cluster_name,
+		strscpy(new_conn->cc_cluster_name, cluster_name,
 			CLUSTER_NAME_MAX + 1);
 	new_conn->cc_cluster_name_len = cluster_name_len;
 	new_conn->cc_recovery_handler = recovery_handler;
@@ -650,7 +650,7 @@ error:
  * and easier to preserve the name.
  */
 
-static struct ctl_table ocfs2_nm_table[] = {
+static const struct ctl_table ocfs2_nm_table[] = {
 	{
 		.procname	= "hb_ctl_path",
 		.data		= ocfs2_hb_ctl_path,
@@ -658,7 +658,6 @@ static struct ctl_table ocfs2_nm_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dostring,
 	},
-	{ }
 };
 
 static struct ctl_table_header *ocfs2_table_header;
@@ -669,7 +668,9 @@ static struct ctl_table_header *ocfs2_table_header;
 
 static int __init ocfs2_stack_glue_init(void)
 {
-	strcpy(cluster_stack_name, OCFS2_STACK_PLUGIN_O2CB);
+	int ret;
+
+	strscpy(cluster_stack_name, OCFS2_STACK_PLUGIN_O2CB);
 
 	ocfs2_table_header = register_sysctl("fs/ocfs2/nm", ocfs2_nm_table);
 	if (!ocfs2_table_header) {
@@ -678,7 +679,11 @@ static int __init ocfs2_stack_glue_init(void)
 		return -ENOMEM; /* or something. */
 	}
 
-	return ocfs2_sysfs_init();
+	ret = ocfs2_sysfs_init();
+	if (ret)
+		unregister_sysctl_table(ocfs2_table_header);
+
+	return ret;
 }
 
 static void __exit ocfs2_stack_glue_exit(void)
@@ -686,8 +691,7 @@ static void __exit ocfs2_stack_glue_exit(void)
 	memset(&locking_max_version, 0,
 	       sizeof(struct ocfs2_protocol_version));
 	ocfs2_sysfs_exit();
-	if (ocfs2_table_header)
-		unregister_sysctl_table(ocfs2_table_header);
+	unregister_sysctl_table(ocfs2_table_header);
 }
 
 MODULE_AUTHOR("Oracle");

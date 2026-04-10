@@ -53,7 +53,7 @@ static int bma400_regmap_spi_write(void *context, const void *data,
 	return spi_write(spi, data, count);
 }
 
-static struct regmap_bus bma400_regmap_bus = {
+static const struct regmap_bus bma400_regmap_bus = {
 	.read = bma400_regmap_spi_read,
 	.write = bma400_regmap_spi_write,
 	.read_flag_mask = BIT(7),
@@ -84,12 +84,7 @@ static int bma400_spi_probe(struct spi_device *spi)
 	if (ret)
 		dev_err(&spi->dev, "Failed to read chip id register\n");
 
-	return bma400_probe(&spi->dev, regmap, id->name);
-}
-
-static void bma400_spi_remove(struct spi_device *spi)
-{
-	bma400_remove(&spi->dev);
+	return bma400_probe(&spi->dev, regmap, spi->irq, id->name);
 }
 
 static const struct spi_device_id bma400_spi_ids[] = {
@@ -110,7 +105,6 @@ static struct spi_driver bma400_spi_driver = {
 		.of_match_table = bma400_of_spi_match,
 	},
 	.probe    = bma400_spi_probe,
-	.remove   = bma400_spi_remove,
 	.id_table = bma400_spi_ids,
 };
 
@@ -118,4 +112,4 @@ module_spi_driver(bma400_spi_driver);
 MODULE_AUTHOR("Dan Robertson <dan@dlrobertson.com>");
 MODULE_DESCRIPTION("Bosch BMA400 triaxial acceleration sensor (SPI)");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(IIO_BMA400);
+MODULE_IMPORT_NS("IIO_BMA400");

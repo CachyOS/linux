@@ -9,50 +9,99 @@
 from __future__ import print_function
 import os
 from os import path
-import sys
 import re
 from subprocess import *
-from optparse import OptionParser, make_option
+import argparse
+import platform
 
-from perf_trace_context import perf_set_itrace_options, \
-	perf_sample_insn, perf_sample_srccode
+from perf_trace_context import perf_sample_srccode, perf_config_get
 
 # Below are some example commands for using this script.
+# Note a --kcore recording is required for accurate decode
+# due to the alternatives patching mechanism. However this
+# script only supports reading vmlinux for disassembly dump,
+# meaning that any patched instructions will appear
+# as unpatched, but the instruction ranges themselves will
+# be correct. In addition to this, source line info comes
+# from Perf, and when using kcore there is no debug info. The
+# following lists the supported features in each mode:
 #
-# Output disassembly with objdump:
-#  perf script -s scripts/python/arm-cs-trace-disasm.py \
-#		-- -d objdump -k path/to/vmlinux
+# +-----------+-----------------+------------------+------------------+
+# | Recording | Accurate decode | Source line dump | Disassembly dump |
+# +-----------+-----------------+------------------+------------------+
+# | --kcore   | yes             | no               | yes              |
+# | normal    | no              | yes              | yes              |
+# +-----------+-----------------+------------------+------------------+
+#
+# Output disassembly with objdump and auto detect vmlinux
+# (when running on same machine.)
+#  perf script -s scripts/python/arm-cs-trace-disasm.py -d
+#
 # Output disassembly with llvm-objdump:
 #  perf script -s scripts/python/arm-cs-trace-disasm.py \
 #		-- -d llvm-objdump-11 -k path/to/vmlinux
+#
 # Output only source line and symbols:
 #  perf script -s scripts/python/arm-cs-trace-disasm.py
 
-# Command line parsing.
-option_list = [
-	# formatting options for the bottom entry of the stack
-	make_option("-k", "--vmlinux", dest="vmlinux_name",
-		    help="Set path to vmlinux file"),
-	make_option("-d", "--objdump", dest="objdump_name",
-		    help="Set path to objdump executable file"),
-	make_option("-v", "--verbose", dest="verbose",
-		    action="store_true", default=False,
-		    help="Enable debugging log")
-]
+def default_objdump():
+	config = perf_config_get("annotate.objdump")
+	return config if config else "objdump"
 
-parser = OptionParser(option_list=option_list)
-(options, args) = parser.parse_args()
+# Command line parsing.
+def int_arg(v):
+	v = int(v)
+	if v < 0:
+		raise argparse.ArgumentTypeError("Argument must be a positive integer")
+	return v
+
+args = argparse.ArgumentParser()
+args.add_argument("-k", "--vmlinux",
+		  help="Set path to vmlinux file. Omit to autodetect if running on same machine")
+args.add_argument("-d", "--objdump", nargs="?", const=default_objdump(),
+		  help="Show disassembly. Can also be used to change the objdump path"),
+args.add_argument("-v", "--verbose", action="store_true", help="Enable debugging log")
+args.add_argument("--start-time", type=int_arg, help="Monotonic clock time of sample to start from. "
+		  "See 'time' field on samples in -v mode.")
+args.add_argument("--stop-time", type=int_arg, help="Monotonic clock time of sample to stop at. "
+		  "See 'time' field on samples in -v mode.")
+args.add_argument("--start-sample", type=int_arg, help="Index of sample to start from. "
+		  "See 'index' field on samples in -v mode.")
+args.add_argument("--stop-sample", type=int_arg, help="Index of sample to stop at. "
+		  "See 'index' field on samples in -v mode.")
+
+options = args.parse_args()
+if (options.start_time and options.stop_time and
+    options.start_time >= options.stop_time):
+	print("--start-time must less than --stop-time")
+	exit(2)
+if (options.start_sample and options.stop_sample and
+    options.start_sample >= options.stop_sample):
+	print("--start-sample must less than --stop-sample")
+	exit(2)
 
 # Initialize global dicts and regular expression
 disasm_cache = dict()
 cpu_data = dict()
-disasm_re = re.compile("^\s*([0-9a-fA-F]+):")
-disasm_func_re = re.compile("^\s*([0-9a-fA-F]+)\s.*:")
+disasm_re = re.compile(r"^\s*([0-9a-fA-F]+):")
+disasm_func_re = re.compile(r"^\s*([0-9a-fA-F]+)\s.*:")
 cache_size = 64*1024
+sample_idx = -1
 
 glb_source_file_name	= None
 glb_line_number		= None
 glb_dso			= None
+
+kver = platform.release()
+vmlinux_paths = [
+	f"/usr/lib/debug/boot/vmlinux-{kver}.debug",
+	f"/usr/lib/debug/lib/modules/{kver}/vmlinux",
+	f"/lib/modules/{kver}/build/vmlinux",
+	f"/usr/lib/debug/boot/vmlinux-{kver}",
+	f"/boot/vmlinux-{kver}",
+	f"/boot/vmlinux",
+	f"vmlinux"
+]
 
 def get_optional(perf_dict, field):
        if field in perf_dict:
@@ -61,22 +110,35 @@ def get_optional(perf_dict, field):
 
 def get_offset(perf_dict, field):
 	if field in perf_dict:
-		return f"+0x{perf_dict[field]:x}"
+		return "+%#x" % perf_dict[field]
 	return ""
+
+def find_vmlinux():
+	if hasattr(find_vmlinux, "path"):
+		return find_vmlinux.path
+
+	for v in vmlinux_paths:
+		if os.access(v, os.R_OK):
+			find_vmlinux.path = v
+			break
+	else:
+		find_vmlinux.path = None
+
+	return find_vmlinux.path
 
 def get_dso_file_path(dso_name, dso_build_id):
 	if (dso_name == "[kernel.kallsyms]" or dso_name == "vmlinux"):
-		if (options.vmlinux_name):
-			return options.vmlinux_name;
+		if (options.vmlinux):
+			return options.vmlinux;
 		else:
-			return dso_name
+			return find_vmlinux() if find_vmlinux() else dso_name
 
 	if (dso_name == "[vdso]") :
 		append = "/vdso"
 	else:
 		append = "/elf"
 
-	dso_path = f"{os.environ['PERF_BUILDID_DIR']}/{dso_name}/{dso_build_id}{append}"
+	dso_path = os.environ['PERF_BUILDID_DIR'] + "/" + dso_name + "/" + dso_build_id + append;
 	# Replace duplicate slash chars to single slash char
 	dso_path = dso_path.replace('//', '/', 1)
 	return dso_path
@@ -93,9 +155,9 @@ def read_disam(dso_fname, dso_start, start_addr, stop_addr):
 	else:
 		start_addr = start_addr - dso_start;
 		stop_addr = stop_addr - dso_start;
-		disasm = [ options.objdump_name, "-d", "-z",
-			   f"--start-address=0x{start_addr:x}",
-			   f"--stop-address=0x{stop_addr:x}" ]
+		disasm = [ options.objdump, "-d", "-z",
+			   "--start-address="+format(start_addr,"#x"),
+			   "--stop-address="+format(stop_addr,"#x") ]
 		disasm += [ dso_fname ]
 		disasm_output = check_output(disasm).decode('utf-8').split('\n')
 		disasm_cache[addr_range] = disasm_output
@@ -109,12 +171,14 @@ def print_disam(dso_fname, dso_start, start_addr, stop_addr):
 			m = disasm_re.search(line)
 			if m is None:
 				continue
-		print(f"\t{line}")
+		print("\t" + line)
 
 def print_sample(sample):
-	print(f"Sample = {{ cpu: {sample['cpu']:04} addr: 0x{sample['addr']:016x} " \
-	      f"phys_addr: 0x{sample['phys_addr']:016x} ip: 0x{sample['ip']:016x} " \
-	      f"pid: {sample['pid']} tid: {sample['tid']} period: {sample['period']} time: {sample['time']} }}")
+	print("Sample = { cpu: %04d addr: 0x%016x phys_addr: 0x%016x ip: 0x%016x " \
+	      "pid: %d tid: %d period: %d time: %d index: %d}" % \
+	      (sample['cpu'], sample['addr'], sample['phys_addr'], \
+	       sample['ip'], sample['pid'], sample['tid'], \
+	       sample['period'], sample['time'], sample_idx))
 
 def trace_begin():
 	print('ARM CoreSight Trace Data Assembler Dump')
@@ -131,7 +195,7 @@ def common_start_str(comm, sample):
 	cpu = sample["cpu"]
 	pid = sample["pid"]
 	tid = sample["tid"]
-	return f"{comm:>16} {pid:>5}/{tid:<5} [{cpu:04}] {sec:9}.{ns:09}  "
+	return "%16s %5u/%-5u [%04u] %9u.%09u  " % (comm, pid, tid, cpu, sec, ns)
 
 # This code is copied from intel-pt-events.py for printing source code
 # line and symbols.
@@ -171,11 +235,12 @@ def print_srccode(comm, param_dict, sample, symbol, dso):
 	glb_line_number = line_number
 	glb_source_file_name = source_file_name
 
-	print(f"{start_str}{src_str}")
+	print(start_str, src_str)
 
 def process_event(param_dict):
 	global cache_size
 	global options
+	global sample_idx
 
 	sample = param_dict["sample"]
 	comm = param_dict["comm"]
@@ -186,10 +251,35 @@ def process_event(param_dict):
 	dso_start = get_optional(param_dict, "dso_map_start")
 	dso_end = get_optional(param_dict, "dso_map_end")
 	symbol = get_optional(param_dict, "symbol")
+	map_pgoff = get_optional(param_dict, "map_pgoff")
+	# check for valid map offset
+	if (str(map_pgoff) == '[unknown]'):
+		map_pgoff = 0
+
+	cpu = sample["cpu"]
+	ip = sample["ip"]
+	addr = sample["addr"]
+
+	sample_idx += 1
+
+	if (options.start_time and sample["time"] < options.start_time):
+		return
+	if (options.stop_time and sample["time"] > options.stop_time):
+		exit(0)
+	if (options.start_sample and sample_idx < options.start_sample):
+		return
+	if (options.stop_sample and sample_idx > options.stop_sample):
+		exit(0)
 
 	if (options.verbose == True):
-		print(f"Event type: {name}")
+		print("Event type: %s" % name)
 		print_sample(sample)
+
+	# Initialize CPU data if it's empty, and directly return back
+	# if this is the first tracing event for this CPU.
+	if (cpu_data.get(str(cpu) + 'addr') == None):
+		cpu_data[str(cpu) + 'addr'] = addr
+		return
 
 	# If cannot find dso so cannot dump assembler, bail out
 	if (dso == '[unknown]'):
@@ -197,7 +287,7 @@ def process_event(param_dict):
 
 	# Validate dso start and end addresses
 	if ((dso_start == '[unknown]') or (dso_end == '[unknown]')):
-		print(f"Failed to find valid dso map for dso {dso}")
+		print("Failed to find valid dso map for dso %s" % dso)
 		return
 
 	if (name[0:12] == "instructions"):
@@ -206,16 +296,6 @@ def process_event(param_dict):
 
 	# Don't proceed if this event is not a branch sample, .
 	if (name[0:8] != "branches"):
-		return
-
-	cpu = sample["cpu"]
-	ip = sample["ip"]
-	addr = sample["addr"]
-
-	# Initialize CPU data if it's empty, and directly return back
-	# if this is the first tracing event for this CPU.
-	if (cpu_data.get(str(cpu) + 'addr') == None):
-		cpu_data[str(cpu) + 'addr'] = addr
 		return
 
 	# The format for packet is:
@@ -242,31 +322,34 @@ def process_event(param_dict):
 	# Record for previous sample packet
 	cpu_data[str(cpu) + 'addr'] = addr
 
-	# Handle CS_ETM_TRACE_ON packet if start_addr=0 and stop_addr=4
-	if (start_addr == 0 and stop_addr == 4):
-		print(f"CPU{cpu}: CS_ETM_TRACE_ON packet is inserted")
+	# Filter out zero start_address. Optionally identify CS_ETM_TRACE_ON packet
+	if (start_addr == 0):
+		if ((stop_addr == 4) and (options.verbose == True)):
+			print("CPU%d: CS_ETM_TRACE_ON packet is inserted" % cpu)
 		return
 
 	if (start_addr < int(dso_start) or start_addr > int(dso_end)):
-		print(f"Start address 0x{start_addr:x} is out of range [ 0x{dso_start:x} .. 0x{dso_end:x} ] for dso {dso}")
+		print("Start address 0x%x is out of range [ 0x%x .. 0x%x ] for dso %s" % (start_addr, int(dso_start), int(dso_end), dso))
 		return
 
 	if (stop_addr < int(dso_start) or stop_addr > int(dso_end)):
-		print(f"Stop address 0x{stop_addr:x} is out of range [ 0x{dso_start:x} .. 0x{dso_end:x} ] for dso {dso}")
+		print("Stop address 0x%x is out of range [ 0x%x .. 0x%x ] for dso %s" % (stop_addr, int(dso_start), int(dso_end), dso))
 		return
 
-	if (options.objdump_name != None):
+	if (options.objdump != None):
 		# It doesn't need to decrease virtual memory offset for disassembly
-		# for kernel dso, so in this case we set vm_start to zero.
-		if (dso == "[kernel.kallsyms]"):
+		# for kernel dso and executable file dso, so in this case we set
+		# vm_start to zero.
+		if (dso == "[kernel.kallsyms]" or dso_start == 0x400000):
 			dso_vm_start = 0
+			map_pgoff = 0
 		else:
 			dso_vm_start = int(dso_start)
 
 		dso_fname = get_dso_file_path(dso, dso_bid)
 		if path.exists(dso_fname):
-			print_disam(dso_fname, dso_vm_start, start_addr, stop_addr)
+			print_disam(dso_fname, dso_vm_start, start_addr + map_pgoff, stop_addr + map_pgoff)
 		else:
-			print(f"Failed to find dso {dso} for address range [ 0x{start_addr:x} .. 0x{stop_addr:x} ]")
+			print("Failed to find dso %s for address range [ 0x%x .. 0x%x ]" % (dso, start_addr + map_pgoff, stop_addr + map_pgoff))
 
 	print_srccode(comm, param_dict, sample, symbol, dso)

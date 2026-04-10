@@ -10,7 +10,6 @@
 #include <linux/slab.h>
 #include <linux/io.h>
 
-#include <asm/prom.h>
 #include <asm/macio.h>
 #include <asm/pmac_feature.h>
 #include <asm/pmac_pfunc.h>
@@ -20,7 +19,7 @@
 
 int i2sbus_control_init(struct macio_dev* dev, struct i2sbus_control **c)
 {
-	*c = kzalloc(sizeof(struct i2sbus_control), GFP_KERNEL);
+	*c = kzalloc_obj(struct i2sbus_control);
 	if (!*c)
 		return -ENOMEM;
 

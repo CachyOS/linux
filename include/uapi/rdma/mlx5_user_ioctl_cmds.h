@@ -174,6 +174,7 @@ enum mlx5_ib_devx_umem_reg_attrs {
 	MLX5_IB_ATTR_DEVX_UMEM_REG_ACCESS,
 	MLX5_IB_ATTR_DEVX_UMEM_REG_OUT_ID,
 	MLX5_IB_ATTR_DEVX_UMEM_REG_PGSZ_BITMAP,
+	MLX5_IB_ATTR_DEVX_UMEM_REG_DMABUF_FD,
 };
 
 enum mlx5_ib_devx_umem_dereg_attrs {
@@ -228,6 +229,7 @@ enum mlx5_ib_objects {
 	MLX5_IB_OBJECT_VAR,
 	MLX5_IB_OBJECT_PP,
 	MLX5_IB_OBJECT_UAR,
+	MLX5_IB_OBJECT_STEERING_ANCHOR,
 };
 
 enum mlx5_ib_flow_matcher_create_attrs {
@@ -237,6 +239,7 @@ enum mlx5_ib_flow_matcher_create_attrs {
 	MLX5_IB_ATTR_FLOW_MATCHER_MATCH_CRITERIA,
 	MLX5_IB_ATTR_FLOW_MATCHER_FLOW_FLAGS,
 	MLX5_IB_ATTR_FLOW_MATCHER_FT_TYPE,
+	MLX5_IB_ATTR_FLOW_MATCHER_IB_PORT,
 };
 
 enum mlx5_ib_flow_matcher_destroy_attrs {
@@ -248,8 +251,32 @@ enum mlx5_ib_flow_matcher_methods {
 	MLX5_IB_METHOD_FLOW_MATCHER_DESTROY,
 };
 
+enum mlx5_ib_flow_steering_anchor_create_attrs {
+	MLX5_IB_ATTR_STEERING_ANCHOR_CREATE_HANDLE = (1U << UVERBS_ID_NS_SHIFT),
+	MLX5_IB_ATTR_STEERING_ANCHOR_FT_TYPE,
+	MLX5_IB_ATTR_STEERING_ANCHOR_PRIORITY,
+	MLX5_IB_ATTR_STEERING_ANCHOR_FT_ID,
+};
+
+enum mlx5_ib_flow_steering_anchor_destroy_attrs {
+	MLX5_IB_ATTR_STEERING_ANCHOR_DESTROY_HANDLE = (1U << UVERBS_ID_NS_SHIFT),
+};
+
+enum mlx5_ib_steering_anchor_methods {
+	MLX5_IB_METHOD_STEERING_ANCHOR_CREATE = (1U << UVERBS_ID_NS_SHIFT),
+	MLX5_IB_METHOD_STEERING_ANCHOR_DESTROY,
+};
+
 enum mlx5_ib_device_query_context_attrs {
 	MLX5_IB_ATTR_QUERY_CONTEXT_RESP_UCTX = (1U << UVERBS_ID_NS_SHIFT),
+};
+
+enum mlx5_ib_create_cq_attrs {
+	MLX5_IB_ATTR_CREATE_CQ_UAR_INDEX = UVERBS_ID_DRIVER_NS_WITH_UHW,
+};
+
+enum mlx5_ib_reg_dmabuf_mr_attrs {
+	MLX5_IB_ATTR_REG_DMABUF_MR_ACCESS_FLAGS = (1U << UVERBS_ID_NS_SHIFT),
 };
 
 #define MLX5_IB_DW_MATCH_PARAM 0xA0
@@ -322,11 +349,16 @@ enum mlx5_ib_pd_methods {
 
 enum mlx5_ib_device_methods {
 	MLX5_IB_METHOD_QUERY_PORT = (1U << UVERBS_ID_NS_SHIFT),
+	MLX5_IB_METHOD_GET_DATA_DIRECT_SYSFS_PATH,
 };
 
 enum mlx5_ib_query_port_attrs {
 	MLX5_IB_ATTR_QUERY_PORT_PORT_NUM = (1U << UVERBS_ID_NS_SHIFT),
 	MLX5_IB_ATTR_QUERY_PORT,
+};
+
+enum mlx5_ib_get_data_direct_sysfs_path_attrs {
+	MLX5_IB_ATTR_GET_DATA_DIRECT_SYSFS_PATH = (1U << UVERBS_ID_NS_SHIFT),
 };
 
 #endif

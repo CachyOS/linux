@@ -9,12 +9,15 @@
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/serial_core.h>
-#include <linux/screen_info.h>
+#include <linux/sysfb.h>
+#include <linux/string.h>
 
 #include <asm/early_ioremap.h>
 
 static const struct console *earlycon_console __initdata;
 static const struct font_desc *font;
+static u16 cur_line_y, max_line_y;
+static u32 efi_x_array[1024];
 static u32 efi_x, efi_y;
 static u64 fb_base;
 static bool fb_wb;
@@ -29,12 +32,13 @@ static void *efi_fb;
  */
 static int __init efi_earlycon_remap_fb(void)
 {
-	/* bail if there is no bootconsole or it has been disabled already */
-	if (!earlycon_console || !(earlycon_console->flags & CON_ENABLED))
+	const struct screen_info *si = &sysfb_primary_display.screen;
+
+	/* bail if there is no bootconsole or it was unregistered already */
+	if (!earlycon_console || !console_is_registered(earlycon_console))
 		return 0;
 
-	efi_fb = memremap(fb_base, screen_info.lfb_size,
-			  fb_wb ? MEMREMAP_WB : MEMREMAP_WC);
+	efi_fb = memremap(fb_base, si->lfb_size, fb_wb ? MEMREMAP_WB : MEMREMAP_WC);
 
 	return efi_fb ? 0 : -ENOMEM;
 }
@@ -42,8 +46,8 @@ early_initcall(efi_earlycon_remap_fb);
 
 static int __init efi_earlycon_unmap_fb(void)
 {
-	/* unmap the bootconsole fb unless keep_bootcon has left it enabled */
-	if (efi_fb && !(earlycon_console->flags & CON_ENABLED))
+	/* unmap the bootconsole fb unless keep_bootcon left it registered */
+	if (efi_fb && !console_is_registered(earlycon_console))
 		memunmap(efi_fb);
 	return 0;
 }
@@ -68,12 +72,12 @@ static __ref void efi_earlycon_unmap(void *addr, unsigned long len)
 	early_memunmap(addr, len);
 }
 
-static void efi_earlycon_clear_scanline(unsigned int y)
+static void efi_earlycon_clear_scanline(unsigned int y, const struct screen_info *si)
 {
 	unsigned long *dst;
 	u16 len;
 
-	len = screen_info.lfb_linelength;
+	len = si->lfb_linelength;
 	dst = efi_earlycon_map(y*len, len);
 	if (!dst)
 		return;
@@ -82,14 +86,22 @@ static void efi_earlycon_clear_scanline(unsigned int y)
 	efi_earlycon_unmap(dst, len);
 }
 
-static void efi_earlycon_scroll_up(void)
+static void efi_earlycon_scroll_up(const struct screen_info *si)
 {
 	unsigned long *dst, *src;
+	u16 maxlen = 0;
 	u16 len;
 	u32 i, height;
 
-	len = screen_info.lfb_linelength;
-	height = screen_info.lfb_height;
+	/* Find the cached maximum x coordinate */
+	for (i = 0; i < max_line_y; i++) {
+		if (efi_x_array[i] > maxlen)
+			maxlen = efi_x_array[i];
+	}
+	maxlen *= 4;
+
+	len = si->lfb_linelength;
+	height = si->lfb_height;
 
 	for (i = 0; i < height - font->height; i++) {
 		dst = efi_earlycon_map(i*len, len);
@@ -102,14 +114,15 @@ static void efi_earlycon_scroll_up(void)
 			return;
 		}
 
-		memmove(dst, src, len);
+		memmove(dst, src, maxlen);
 
 		efi_earlycon_unmap(src, len);
 		efi_earlycon_unmap(dst, len);
 	}
 }
 
-static void efi_earlycon_write_char(u32 *dst, unsigned char c, unsigned int h)
+static void efi_earlycon_write_char(u32 *dst, unsigned char c, unsigned int h,
+				    const struct screen_info *si)
 {
 	const u32 color_black = 0x00000000;
 	const u32 color_white = 0x00ffffff;
@@ -134,25 +147,19 @@ static void efi_earlycon_write_char(u32 *dst, unsigned char c, unsigned int h)
 static void
 efi_earlycon_write(struct console *con, const char *str, unsigned int num)
 {
-	struct screen_info *si;
+	const struct screen_info *si = &sysfb_primary_display.screen;
+	u32 cur_efi_x = efi_x;
 	unsigned int len;
 	const char *s;
 	void *dst;
 
-	si = &screen_info;
 	len = si->lfb_linelength;
 
 	while (num) {
-		unsigned int linemax;
-		unsigned int h, count = 0;
+		unsigned int linemax = (si->lfb_width - efi_x) / font->width;
+		unsigned int h, count;
 
-		for (s = str; *s && *s != '\n'; s++) {
-			if (count == num)
-				break;
-			count++;
-		}
-
-		linemax = (si->lfb_width - efi_x) / font->width;
+		count = strnchrnul(str, num, '\n') - str;
 		if (count > linemax)
 			count = linemax;
 
@@ -168,7 +175,7 @@ efi_earlycon_write(struct console *con, const char *str, unsigned int num)
 			x = efi_x;
 
 			while (n-- > 0) {
-				efi_earlycon_write_char(dst + x*4, *s, h);
+				efi_earlycon_write_char(dst + x * 4, *s, h, si);
 				x += font->width;
 				s++;
 			}
@@ -181,6 +188,7 @@ efi_earlycon_write(struct console *con, const char *str, unsigned int num)
 		str += count;
 
 		if (num > 0 && *s == '\n') {
+			cur_efi_x = efi_x;
 			efi_x = 0;
 			efi_y += font->height;
 			str++;
@@ -188,6 +196,7 @@ efi_earlycon_write(struct console *con, const char *str, unsigned int num)
 		}
 
 		if (efi_x + font->width > si->lfb_width) {
+			cur_efi_x = efi_x;
 			efi_x = 0;
 			efi_y += font->height;
 		}
@@ -195,32 +204,44 @@ efi_earlycon_write(struct console *con, const char *str, unsigned int num)
 		if (efi_y + font->height > si->lfb_height) {
 			u32 i;
 
+			efi_x_array[cur_line_y] = cur_efi_x;
+			cur_line_y = (cur_line_y + 1) % max_line_y;
+
 			efi_y -= font->height;
-			efi_earlycon_scroll_up();
+			efi_earlycon_scroll_up(si);
 
 			for (i = 0; i < font->height; i++)
-				efi_earlycon_clear_scanline(efi_y + i);
+				efi_earlycon_clear_scanline(efi_y + i, si);
 		}
 	}
+}
+
+static bool __initdata fb_probed;
+
+void __init efi_earlycon_reprobe(void)
+{
+	if (fb_probed)
+		setup_earlycon("efifb");
 }
 
 static int __init efi_earlycon_setup(struct earlycon_device *device,
 				     const char *opt)
 {
-	struct screen_info *si;
+	const struct screen_info *si = &sysfb_primary_display.screen;
 	u16 xres, yres;
 	u32 i;
 
-	if (screen_info.orig_video_isVGA != VIDEO_TYPE_EFI)
-		return -ENODEV;
-
-	fb_base = screen_info.lfb_base;
-	if (screen_info.capabilities & VIDEO_CAPABILITY_64BIT_BASE)
-		fb_base |= (u64)screen_info.ext_lfb_base << 32;
-
 	fb_wb = opt && !strcmp(opt, "ram");
 
-	si = &screen_info;
+	if (si->orig_video_isVGA != VIDEO_TYPE_EFI) {
+		fb_probed = true;
+		return -ENODEV;
+	}
+
+	fb_base = si->lfb_base;
+	if (si->capabilities & VIDEO_CAPABILITY_64BIT_BASE)
+		fb_base |= (u64)si->ext_lfb_base << 32;
+
 	xres = si->lfb_width;
 	yres = si->lfb_height;
 
@@ -231,13 +252,21 @@ static int __init efi_earlycon_setup(struct earlycon_device *device,
 	if (si->lfb_depth != 32)
 		return -ENODEV;
 
-	font = get_default_font(xres, yres, -1, -1);
+	font = get_default_font(xres, yres, NULL, NULL);
 	if (!font)
 		return -ENODEV;
 
-	efi_y = rounddown(yres, font->height) - font->height;
+	/* Fill the cache with maximum possible value of x coordinate */
+	memset32(efi_x_array, rounddown(xres, font->width), ARRAY_SIZE(efi_x_array));
+	efi_y = rounddown(yres, font->height);
+
+	/* Make sure we have cache for the x coordinate for the full screen */
+	max_line_y = efi_y / font->height + 1;
+	cur_line_y = 0;
+
+	efi_y -= font->height;
 	for (i = 0; i < (yres - efi_y) / font->height; i++)
-		efi_earlycon_scroll_up();
+		efi_earlycon_scroll_up(si);
 
 	device->con->write = efi_earlycon_write;
 	earlycon_console = device->con;

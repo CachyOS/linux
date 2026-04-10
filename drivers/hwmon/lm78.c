@@ -617,7 +617,7 @@ static int lm78_i2c_detect(struct i2c_client *client,
 	if (isa)
 		mutex_unlock(&isa->update_lock);
 
-	strlcpy(info->type, client_name, I2C_NAME_SIZE);
+	strscpy(info->type, client_name, I2C_NAME_SIZE);
 
 	return 0;
 
@@ -626,8 +626,6 @@ static int lm78_i2c_detect(struct i2c_client *client,
 		mutex_unlock(&isa->update_lock);
 	return -ENODEV;
 }
-
-static const struct i2c_device_id lm78_i2c_id[];
 
 static int lm78_i2c_probe(struct i2c_client *client)
 {
@@ -640,7 +638,7 @@ static int lm78_i2c_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	data->client = client;
-	data->type = i2c_match_id(lm78_i2c_id, client)->driver_data;
+	data->type = (uintptr_t)i2c_get_match_data(client);
 
 	/* Initialize the LM78 chip */
 	lm78_init_device(data);
@@ -662,7 +660,7 @@ static struct i2c_driver lm78_driver = {
 	.driver = {
 		.name	= "lm78",
 	},
-	.probe_new	= lm78_i2c_probe,
+	.probe		= lm78_i2c_probe,
 	.id_table	= lm78_i2c_id,
 	.detect		= lm78_i2c_detect,
 	.address_list	= normal_i2c,
@@ -845,17 +843,18 @@ static int __init lm78_isa_found(unsigned short address)
 		}
 	}
 
-#define REALLY_SLOW_IO
 	/*
 	 * We need the timeouts for at least some LM78-like
 	 * chips. But only if we read 'undefined' registers.
+	 * There used to be a "#define REALLY_SLOW_IO" to enforce that, but
+	 * this has been without any effect since more than a decade, so it
+	 * has been dropped.
 	 */
 	val = inb_p(address + 1);
 	if (inb_p(address + 2) != val
 	 || inb_p(address + 3) != val
 	 || inb_p(address + 7) != val)
 		goto release;
-#undef REALLY_SLOW_IO
 
 	/*
 	 * We should be able to change the 7 LSB of the address port. The

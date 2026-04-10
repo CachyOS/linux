@@ -8,8 +8,8 @@
 #include <linux/percpu.h>
 #include <linux/bitops.h>
 #include <linux/atomic.h>
+#include <asm/asm.h>
 #include <asm/cmpxchg.h>
-#include <asm/compiler.h>
 
 typedef struct {
 	atomic_long_t a;
@@ -28,6 +28,7 @@ typedef struct {
 /*
  * Same as above, but return the result value
  */
+#ifdef CONFIG_CPU_HAS_AMO
 static inline long local_add_return(long i, local_t *l)
 {
 	unsigned long result;
@@ -56,28 +57,77 @@ static inline long local_sub_return(long i, local_t *l)
 
 	return result;
 }
+#else
+static inline long local_add_return(long i, local_t *l)
+{
+        unsigned long result, temp;
 
-#define local_cmpxchg(l, o, n) \
-	((long)cmpxchg_local(&((l)->a.counter), (o), (n)))
+        __asm__ __volatile__(
+        "1:"    __LL    "%1, %2         # local_add_return      \n"
+        __stringify(LONG_ADD) "   %0, %1, %3                    \n"
+                __SC    "%0, %2                                 \n"
+        "       beq     %0, $r0, 1b                             \n"
+        __stringify(LONG_ADD) "   %0, %1, %3                    \n"
+        : "=&r" (result), "=&r" (temp), "=ZC" (l->a.counter)
+        : "r" (i), "ZC" (l->a.counter)
+        : "memory");
+
+        return result;
+}
+
+static inline long local_sub_return(long i, local_t *l)
+{
+        unsigned long result, temp;
+
+        __asm__ __volatile__(
+        "1:"    __LL    "%1, %2         # local_sub_return      \n"
+        __stringify(LONG_SUB) "   %0, %1, %3                    \n"
+                __SC    "%0, %2                                 \n"
+        "       beq     %0, $r0, 1b                             \n"
+	__stringify(LONG_SUB) "   %0, %1, %3                    \n"
+        : "=&r" (result), "=&r" (temp), "=ZC" (l->a.counter)
+        : "r" (i), "ZC" (l->a.counter)
+        : "memory");
+
+        return result;
+}
+#endif
+
+static inline long local_cmpxchg(local_t *l, long old, long new)
+{
+	return cmpxchg_local(&l->a.counter, old, new);
+}
+
+static inline bool local_try_cmpxchg(local_t *l, long *old, long new)
+{
+	return try_cmpxchg_local(&l->a.counter,
+				 (typeof(l->a.counter) *) old, new);
+}
+
 #define local_xchg(l, n) (atomic_long_xchg((&(l)->a), (n)))
 
 /**
- * local_add_unless - add unless the number is a given value
+ * local_add_unless - add unless the number is already a given value
  * @l: pointer of type local_t
  * @a: the amount to add to l...
  * @u: ...unless l is equal to u.
  *
- * Atomically adds @a to @l, so long as it was not @u.
- * Returns non-zero if @l was not @u, and zero otherwise.
+ * Atomically adds @a to @l, if @v was not already @u.
+ * Returns true if the addition was done.
  */
-#define local_add_unless(l, a, u)				\
-({								\
-	long c, old;						\
-	c = local_read(l);					\
-	while (c != (u) && (old = local_cmpxchg((l), c, c + (a))) != c) \
-		c = old;					\
-	c != (u);						\
-})
+static inline bool
+local_add_unless(local_t *l, long a, long u)
+{
+	long c = local_read(l);
+
+	do {
+		if (unlikely(c == u))
+			return false;
+	} while (!local_try_cmpxchg(l, &c, c + a));
+
+	return true;
+}
+
 #define local_inc_not_zero(l) local_add_unless((l), 1, 0)
 
 #define local_dec_return(l) local_sub_return(1, (l))

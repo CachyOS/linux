@@ -12,7 +12,6 @@
 #include <linux/delay.h>
 #include <linux/firmware.h>
 #include <linux/fs.h>
-#include <linux/gpio.h>
 #include <linux/i2c.h>
 #include <linux/init.h>
 #include <linux/module.h>
@@ -428,8 +427,7 @@ static SOC_ENUM_SINGLE_DECL(rt1015_boost_mode_enum, 0, 0,
 static int rt1015_boost_mode_get(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component =
-		snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct rt1015_priv *rt1015 =
 		snd_soc_component_get_drvdata(component);
 
@@ -441,8 +439,7 @@ static int rt1015_boost_mode_get(struct snd_kcontrol *kcontrol,
 static int rt1015_boost_mode_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component =
-		snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct rt1015_priv *rt1015 =
 		snd_soc_component_get_drvdata(component);
 	int boost_mode = ucontrol->value.integer.value[0];
@@ -482,8 +479,7 @@ static int rt1015_boost_mode_put(struct snd_kcontrol *kcontrol,
 static int rt1015_bypass_boost_get(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component =
-		snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct rt1015_priv *rt1015 =
 		snd_soc_component_get_drvdata(component);
 
@@ -495,9 +491,10 @@ static int rt1015_bypass_boost_get(struct snd_kcontrol *kcontrol,
 static void rt1015_calibrate(struct rt1015_priv *rt1015)
 {
 	struct snd_soc_component *component = rt1015->component;
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct regmap *regmap = rt1015->regmap;
 
-	snd_soc_dapm_mutex_lock(&component->dapm);
+	snd_soc_dapm_mutex_lock(dapm);
 	regcache_cache_bypass(regmap, true);
 
 	regmap_write(regmap, RT1015_CLK_DET, 0x0000);
@@ -519,14 +516,13 @@ static void rt1015_calibrate(struct rt1015_priv *rt1015)
 	regcache_cache_bypass(regmap, false);
 	regcache_mark_dirty(regmap);
 	regcache_sync(regmap);
-	snd_soc_dapm_mutex_unlock(&component->dapm);
+	snd_soc_dapm_mutex_unlock(dapm);
 }
 
 static int rt1015_bypass_boost_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component =
-		snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct rt1015_priv *rt1015 =
 		snd_soc_component_get_drvdata(component);
 
@@ -547,6 +543,16 @@ static int rt1015_bypass_boost_put(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+static const char * const rt1015_dac_output_vol_select[] = {
+	"immediate",
+	"zero detection + immediate change",
+	"zero detection + inc/dec change",
+	"zero detection + soft inc/dec change",
+};
+
+static SOC_ENUM_SINGLE_DECL(rt1015_dac_vol_ctl_enum,
+	RT1015_DAC3, 2, rt1015_dac_output_vol_select);
+
 static const struct snd_kcontrol_new rt1015_snd_controls[] = {
 	SOC_SINGLE_TLV("DAC Playback Volume", RT1015_DAC1, RT1015_DAC_VOL_SFT,
 		127, 0, dac_vol_tlv),
@@ -557,6 +563,9 @@ static const struct snd_kcontrol_new rt1015_snd_controls[] = {
 	SOC_ENUM("Mono LR Select", rt1015_mono_lr_sel),
 	SOC_SINGLE_EXT("Bypass Boost", SND_SOC_NOPM, 0, 1, 0,
 		rt1015_bypass_boost_get, rt1015_bypass_boost_put),
+
+	/* DAC Output Volume Control */
+	SOC_ENUM("DAC Output Control", rt1015_dac_vol_ctl_enum),
 };
 
 static int rt1015_is_sys_clk_from_pll(struct snd_soc_dapm_widget *source,
@@ -741,10 +750,10 @@ static int rt1015_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	unsigned int reg_val = 0, reg_val2 = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		reg_val |= RT1015_TCON_TDM_MS_M;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		reg_val |= RT1015_TCON_TDM_MS_S;
 		break;
 	default:
@@ -1071,7 +1080,6 @@ static const struct snd_soc_component_driver soc_component_dev_rt1015 = {
 	.set_pll = rt1015_set_component_pll,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config rt1015_regmap = {
@@ -1086,7 +1094,7 @@ static const struct regmap_config rt1015_regmap = {
 };
 
 static const struct i2c_device_id rt1015_i2c_id[] = {
-	{ "rt1015", 0 },
+	{ "rt1015" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt1015_i2c_id);
@@ -1094,15 +1102,15 @@ MODULE_DEVICE_TABLE(i2c, rt1015_i2c_id);
 #if defined(CONFIG_OF)
 static const struct of_device_id rt1015_of_match[] = {
 	{ .compatible = "realtek,rt1015", },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, rt1015_of_match);
 #endif
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id rt1015_acpi_match[] = {
-	{"10EC1015", 0,},
-	{},
+	{ "10EC1015" },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, rt1015_acpi_match);
 #endif
@@ -1171,7 +1179,7 @@ static struct i2c_driver rt1015_i2c_driver = {
 		.of_match_table = of_match_ptr(rt1015_of_match),
 		.acpi_match_table = ACPI_PTR(rt1015_acpi_match),
 	},
-	.probe_new = rt1015_i2c_probe,
+	.probe = rt1015_i2c_probe,
 	.shutdown = rt1015_i2c_shutdown,
 	.id_table = rt1015_i2c_id,
 };

@@ -10,7 +10,7 @@
 #include <linux/init.h>
 #include <linux/regmap.h>
 #include <linux/spi/spi.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "adt7x10.h"
 
@@ -124,7 +124,7 @@ static int adt7310_reg_write(void *context, unsigned int reg, unsigned int val)
 static const struct regmap_config adt7310_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 16,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.volatile_reg = adt7310_regmap_is_volatile,
 	.reg_read = adt7310_reg_read,
 	.reg_write = adt7310_reg_write,
@@ -152,7 +152,7 @@ MODULE_DEVICE_TABLE(spi, adt7310_id);
 static struct spi_driver adt7310_driver = {
 	.driver = {
 		.name	= "adt7310",
-		.pm	= ADT7X10_DEV_PM_OPS,
+		.pm	= pm_sleep_ptr(&adt7x10_dev_pm_ops),
 	},
 	.probe		= adt7310_spi_probe,
 	.id_table	= adt7310_id,

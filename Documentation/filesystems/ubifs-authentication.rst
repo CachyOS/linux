@@ -130,7 +130,7 @@ marked as dirty are written to the flash to update the persisted index.
 Journal
 ~~~~~~~
 
-To avoid wearing out the flash, the index is only persisted (*commited*) when
+To avoid wearing out the flash, the index is only persisted (*committed*) when
 certain conditions are met (eg. ``fsync(2)``). The journal is used to record
 any changes (in form of inode nodes, data nodes etc.) between commits
 of the index. During mount, the journal is read from the flash and replayed
@@ -443,6 +443,6 @@ References
 
 [DM-VERITY]          https://www.kernel.org/doc/Documentation/device-mapper/verity.rst
 
-[FSCRYPT-POLICY2]    https://www.spinics.net/lists/linux-ext4/msg58710.html
+[FSCRYPT-POLICY2]    https://lore.kernel.org/r/20171023214058.128121-1-ebiggers3@gmail.com/
 
 [UBIFS-WP]           http://www.linux-mtd.infradead.org/doc/ubifs_whitepaper.pdf

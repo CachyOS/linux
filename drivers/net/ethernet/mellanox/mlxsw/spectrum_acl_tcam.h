@@ -6,15 +6,16 @@
 
 #include <linux/list.h>
 #include <linux/parman.h>
+#include <linux/idr.h>
 
 #include "reg.h"
 #include "spectrum.h"
 #include "core_acl_flex_keys.h"
 
 struct mlxsw_sp_acl_tcam {
-	unsigned long *used_regions; /* bit array */
+	struct ida used_regions;
 	unsigned int max_regions;
-	unsigned long *used_groups;  /* bit array */
+	struct ida used_groups;
 	unsigned int max_groups;
 	unsigned int max_group_size;
 	struct mutex lock; /* guards vregion list */
@@ -29,11 +30,6 @@ int mlxsw_sp_acl_tcam_init(struct mlxsw_sp *mlxsw_sp,
 			   struct mlxsw_sp_acl_tcam *tcam);
 void mlxsw_sp_acl_tcam_fini(struct mlxsw_sp *mlxsw_sp,
 			    struct mlxsw_sp_acl_tcam *tcam);
-u32 mlxsw_sp_acl_tcam_vregion_rehash_intrvl_get(struct mlxsw_sp *mlxsw_sp,
-						struct mlxsw_sp_acl_tcam *tcam);
-int mlxsw_sp_acl_tcam_vregion_rehash_intrvl_set(struct mlxsw_sp *mlxsw_sp,
-						struct mlxsw_sp_acl_tcam *tcam,
-						u32 val);
 int mlxsw_sp_acl_tcam_priority_get(struct mlxsw_sp *mlxsw_sp,
 				   struct mlxsw_sp_acl_rule_info *rulei,
 				   u32 *priority, bool fillup_priority);
@@ -171,9 +167,9 @@ struct mlxsw_sp_acl_atcam_region {
 };
 
 struct mlxsw_sp_acl_atcam_entry_ht_key {
-	char full_enc_key[MLXSW_REG_PTCEX_FLEX_KEY_BLOCKS_LEN]; /* Encoded
-								 * key.
-								 */
+	char enc_key[MLXSW_REG_PTCEX_FLEX_KEY_BLOCKS_LEN]; /* Encoded key, minus
+							    * delta bits.
+							    */
 	u8 erp_id;
 };
 
@@ -185,9 +181,6 @@ struct mlxsw_sp_acl_atcam_entry {
 	struct rhash_head ht_node;
 	struct list_head list; /* Member in entries_list */
 	struct mlxsw_sp_acl_atcam_entry_ht_key ht_key;
-	char enc_key[MLXSW_REG_PTCEX_FLEX_KEY_BLOCKS_LEN]; /* Encoded key,
-							    * minus delta bits.
-							    */
 	struct {
 		u16 start;
 		u8 mask;

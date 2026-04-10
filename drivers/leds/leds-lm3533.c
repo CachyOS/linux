@@ -314,7 +314,7 @@ static ssize_t show_id(struct device *dev,
 	struct led_classdev *led_cdev = dev_get_drvdata(dev);
 	struct lm3533_led *led = to_lm3533_led(led_cdev);
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", led->id);
+	return sysfs_emit(buf, "%d\n", led->id);
 }
 
 /*
@@ -344,7 +344,7 @@ static ssize_t show_risefalltime(struct device *dev,
 	if (ret)
 		return ret;
 
-	return scnprintf(buf, PAGE_SIZE, "%x\n", val);
+	return sysfs_emit(buf, "%x\n", val);
 }
 
 static ssize_t show_risetime(struct device *dev,
@@ -415,7 +415,7 @@ static ssize_t show_als_channel(struct device *dev,
 
 	channel = (val & LM3533_REG_CTRLBANK_BCONF_ALS_CHANNEL_MASK) + 1;
 
-	return scnprintf(buf, PAGE_SIZE, "%u\n", channel);
+	return sysfs_emit(buf, "%u\n", channel);
 }
 
 static ssize_t store_als_channel(struct device *dev,
@@ -465,7 +465,7 @@ static ssize_t show_als_en(struct device *dev,
 
 	enable = val & LM3533_REG_CTRLBANK_BCONF_ALS_EN_MASK;
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", enable);
+	return sysfs_emit(buf, "%d\n", enable);
 }
 
 static ssize_t store_als_en(struct device *dev,
@@ -518,7 +518,7 @@ static ssize_t show_linear(struct device *dev,
 	else
 		linear = 0;
 
-	return scnprintf(buf, PAGE_SIZE, "%x\n", linear);
+	return sysfs_emit(buf, "%x\n", linear);
 }
 
 static ssize_t store_linear(struct device *dev,
@@ -564,7 +564,7 @@ static ssize_t show_pwm(struct device *dev,
 	if (ret)
 		return ret;
 
-	return scnprintf(buf, PAGE_SIZE, "%u\n", val);
+	return sysfs_emit(buf, "%u\n", val);
 }
 
 static ssize_t store_pwm(struct device *dev,
@@ -718,7 +718,7 @@ err_deregister:
 	return ret;
 }
 
-static int lm3533_led_remove(struct platform_device *pdev)
+static void lm3533_led_remove(struct platform_device *pdev)
 {
 	struct lm3533_led *led = platform_get_drvdata(pdev);
 
@@ -726,8 +726,6 @@ static int lm3533_led_remove(struct platform_device *pdev)
 
 	lm3533_ctrlbank_disable(&led->cb);
 	led_classdev_unregister(&led->cdev);
-
-	return 0;
 }
 
 static void lm3533_led_shutdown(struct platform_device *pdev)

@@ -14,15 +14,19 @@ description: |
 
 properties:
   compatible:
-    enum:
-      - microchip,sparx5-temp
+    oneOf:
+      - const: microchip,sparx5-temp
+      - items:
+          - enum:
+              - microchip,lan9691-temp
+          - const: microchip,sparx5-temp
 
   reg:
     maxItems: 1
 
   clocks:
     items:
-      - description: AHB reference clock
+      - description: System reference clock
 
   '#thermal-sensor-cells':
     const: 0
@@ -40,5 +44,5 @@ examples:
         compatible = "microchip,sparx5-temp";
         reg = <0x10508110 0xc>;
         #thermal-sensor-cells = <0>;
-        clocks = <&ahb_clk>;
+        clocks = <&sys_clk>;
     };

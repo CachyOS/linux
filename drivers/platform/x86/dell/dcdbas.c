@@ -7,7 +7,7 @@
  *  and Host Control Actions (power cycle or power off after OS shutdown) on
  *  Dell systems.
  *
- *  See Documentation/driver-api/dcdbas.rst for more information.
+ *  See Documentation/userspace-api/dcdbas.rst for more information.
  *
  *  Copyright (C) 1995-2006 Dell Inc.
  */
@@ -29,6 +29,7 @@
 #include <linux/smp.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
+#include <linux/sysfs.h>
 #include <linux/types.h>
 #include <linux/mutex.h>
 
@@ -132,14 +133,14 @@ static ssize_t smi_data_buf_phys_addr_show(struct device *dev,
 					   struct device_attribute *attr,
 					   char *buf)
 {
-	return sprintf(buf, "%x\n", (u32)smi_buf.dma);
+	return sysfs_emit(buf, "%x\n", (u32)smi_buf.dma);
 }
 
 static ssize_t smi_data_buf_size_show(struct device *dev,
 				      struct device_attribute *attr,
 				      char *buf)
 {
-	return sprintf(buf, "%lu\n", smi_buf.size);
+	return sysfs_emit(buf, "%lu\n", smi_buf.size);
 }
 
 static ssize_t smi_data_buf_size_store(struct device *dev,
@@ -162,7 +163,7 @@ static ssize_t smi_data_buf_size_store(struct device *dev,
 }
 
 static ssize_t smi_data_read(struct file *filp, struct kobject *kobj,
-			     struct bin_attribute *bin_attr,
+			     const struct bin_attribute *bin_attr,
 			     char *buf, loff_t pos, size_t count)
 {
 	ssize_t ret;
@@ -175,7 +176,7 @@ static ssize_t smi_data_read(struct file *filp, struct kobject *kobj,
 }
 
 static ssize_t smi_data_write(struct file *filp, struct kobject *kobj,
-			      struct bin_attribute *bin_attr,
+			      const struct bin_attribute *bin_attr,
 			      char *buf, loff_t pos, size_t count)
 {
 	ssize_t ret;
@@ -200,7 +201,7 @@ static ssize_t host_control_action_show(struct device *dev,
 					struct device_attribute *attr,
 					char *buf)
 {
-	return sprintf(buf, "%u\n", host_control_action);
+	return sysfs_emit(buf, "%u\n", host_control_action);
 }
 
 static ssize_t host_control_action_store(struct device *dev,
@@ -224,7 +225,7 @@ static ssize_t host_control_smi_type_show(struct device *dev,
 					  struct device_attribute *attr,
 					  char *buf)
 {
-	return sprintf(buf, "%u\n", host_control_smi_type);
+	return sysfs_emit(buf, "%u\n", host_control_smi_type);
 }
 
 static ssize_t host_control_smi_type_store(struct device *dev,
@@ -239,7 +240,7 @@ static ssize_t host_control_on_shutdown_show(struct device *dev,
 					     struct device_attribute *attr,
 					     char *buf)
 {
-	return sprintf(buf, "%u\n", host_control_on_shutdown);
+	return sysfs_emit(buf, "%u\n", host_control_on_shutdown);
 }
 
 static ssize_t host_control_on_shutdown_store(struct device *dev,
@@ -635,9 +636,9 @@ static struct notifier_block dcdbas_reboot_nb = {
 	.priority = INT_MIN
 };
 
-static DCDBAS_BIN_ATTR_RW(smi_data);
+static const BIN_ATTR_ADMIN_RW(smi_data, 0);
 
-static struct bin_attribute *dcdbas_bin_attrs[] = {
+static const struct bin_attribute *const dcdbas_bin_attrs[] = {
 	&bin_attr_smi_data,
 	NULL
 };
@@ -698,12 +699,10 @@ static int dcdbas_probe(struct platform_device *dev)
 	return 0;
 }
 
-static int dcdbas_remove(struct platform_device *dev)
+static void dcdbas_remove(struct platform_device *dev)
 {
 	unregister_reboot_notifier(&dcdbas_reboot_nb);
 	sysfs_remove_group(&dev->dev.kobj, &dcdbas_attr_group);
-
-	return 0;
 }
 
 static struct platform_driver dcdbas_driver = {
@@ -716,7 +715,7 @@ static struct platform_driver dcdbas_driver = {
 
 static const struct platform_device_info dcdbas_dev_info __initconst = {
 	.name		= DRIVER_NAME,
-	.id		= -1,
+	.id		= PLATFORM_DEVID_NONE,
 	.dma_mask	= DMA_BIT_MASK(32),
 };
 

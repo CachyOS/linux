@@ -22,7 +22,7 @@
 #include <linux/iopoll.h>
 #include <linux/slab.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/of_platform.h>
 
 #include <linux/platform_data/elm.h>
 
@@ -254,6 +254,10 @@ static int omap_prefetch_reset(int cs, struct omap_nand_info *info)
 
 /**
  * omap_nand_data_in_pref - NAND data in using prefetch engine
+ * @chip: NAND chip
+ * @buf: output buffer where NAND data is placed into
+ * @len: length of transfer
+ * @force_8bit: force 8-bit transfers
  */
 static void omap_nand_data_in_pref(struct nand_chip *chip, void *buf,
 				   unsigned int len, bool force_8bit)
@@ -297,6 +301,10 @@ static void omap_nand_data_in_pref(struct nand_chip *chip, void *buf,
 
 /**
  * omap_nand_data_out_pref - NAND data out using Write Posting engine
+ * @chip: NAND chip
+ * @buf: input buffer that is sent to NAND
+ * @len: length of transfer
+ * @force_8bit: force 8-bit transfers
  */
 static void omap_nand_data_out_pref(struct nand_chip *chip,
 				    const void *buf, unsigned int len,
@@ -440,6 +448,10 @@ out_copy:
 
 /**
  * omap_nand_data_in_dma_pref - NAND data in using DMA and Prefetch
+ * @chip: NAND chip
+ * @buf: output buffer where NAND data is placed into
+ * @len: length of transfer
+ * @force_8bit: force 8-bit transfers
  */
 static void omap_nand_data_in_dma_pref(struct nand_chip *chip, void *buf,
 				       unsigned int len, bool force_8bit)
@@ -460,6 +472,10 @@ static void omap_nand_data_in_dma_pref(struct nand_chip *chip, void *buf,
 
 /**
  * omap_nand_data_out_dma_pref - NAND data out using DMA and write posting
+ * @chip: NAND chip
+ * @buf: input buffer that is sent to NAND
+ * @len: length of transfer
+ * @force_8bit: force 8-bit transfers
  */
 static void omap_nand_data_out_dma_pref(struct nand_chip *chip,
 					const void *buf, unsigned int len,
@@ -1881,8 +1897,8 @@ static int omap_nand_attach_chip(struct nand_chip *chip)
 
 	case NAND_OMAP_PREFETCH_IRQ:
 		info->gpmc_irq_fifo = platform_get_irq(info->pdev, 0);
-		if (info->gpmc_irq_fifo <= 0)
-			return -ENODEV;
+		if (info->gpmc_irq_fifo < 0)
+			return info->gpmc_irq_fifo;
 		err = devm_request_irq(dev, info->gpmc_irq_fifo,
 				       omap_nand_irq, IRQF_SHARED,
 				       "gpmc-nand-fifo", info);
@@ -1894,8 +1910,8 @@ static int omap_nand_attach_chip(struct nand_chip *chip)
 		}
 
 		info->gpmc_irq_count = platform_get_irq(info->pdev, 1);
-		if (info->gpmc_irq_count <= 0)
-			return -ENODEV;
+		if (info->gpmc_irq_count < 0)
+			return info->gpmc_irq_count;
 		err = devm_request_irq(dev, info->gpmc_irq_count,
 				       omap_nand_irq, IRQF_SHARED,
 				       "gpmc-nand-count", info);
@@ -1963,7 +1979,7 @@ static int omap_nand_attach_chip(struct nand_chip *chip)
 		err = rawnand_sw_bch_init(chip);
 		if (err) {
 			dev_err(dev, "Unable to use BCH library\n");
-			return err;
+			goto err_put_elm_dev;
 		}
 		break;
 
@@ -2000,7 +2016,7 @@ static int omap_nand_attach_chip(struct nand_chip *chip)
 		err = rawnand_sw_bch_init(chip);
 		if (err) {
 			dev_err(dev, "unable to use BCH library\n");
-			return err;
+			goto err_put_elm_dev;
 		}
 		break;
 
@@ -2038,7 +2054,8 @@ static int omap_nand_attach_chip(struct nand_chip *chip)
 		break;
 	default:
 		dev_err(dev, "Invalid or unsupported ECC scheme\n");
-		return -EINVAL;
+		err = -EINVAL;
+		goto err_put_elm_dev;
 	}
 
 	if (elm_bch_strength >= 0) {
@@ -2057,7 +2074,7 @@ static int omap_nand_attach_chip(struct nand_chip *chip)
 				 info->nsteps_per_eccpg, chip->ecc.size,
 				 chip->ecc.bytes);
 		if (err < 0)
-			return err;
+			goto err_put_elm_dev;
 	}
 
 	/* Check if NAND device's OOB is enough to store ECC signatures */
@@ -2067,10 +2084,24 @@ static int omap_nand_attach_chip(struct nand_chip *chip)
 		dev_err(dev,
 			"Not enough OOB bytes: required = %d, available=%d\n",
 			min_oobbytes, mtd->oobsize);
-		return -EINVAL;
+		err = -EINVAL;
+		goto err_put_elm_dev;
 	}
 
 	return 0;
+
+err_put_elm_dev:
+	put_device(info->elm_dev);
+
+	return err;
+}
+
+static void omap_nand_detach_chip(struct nand_chip *chip)
+{
+	struct mtd_info *mtd = nand_to_mtd(chip);
+	struct omap_nand_info *info = mtd_to_omap(mtd);
+
+	put_device(info->elm_dev);
 }
 
 static void omap_nand_data_in(struct nand_chip *chip, void *buf,
@@ -2171,6 +2202,7 @@ static int omap_nand_exec_op(struct nand_chip *chip,
 
 static const struct nand_controller_ops omap_nand_controller_ops = {
 	.attach_chip = omap_nand_attach_chip,
+	.detach_chip = omap_nand_detach_chip,
 	.exec_op = omap_nand_exec_op,
 };
 
@@ -2219,8 +2251,7 @@ static int omap_nand_probe(struct platform_device *pdev)
 		}
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	vaddr = devm_ioremap_resource(&pdev->dev, res);
+	vaddr = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(vaddr))
 		return PTR_ERR(vaddr);
 
@@ -2273,21 +2304,18 @@ return_error:
 	return err;
 }
 
-static int omap_nand_remove(struct platform_device *pdev)
+static void omap_nand_remove(struct platform_device *pdev)
 {
 	struct mtd_info *mtd = platform_get_drvdata(pdev);
 	struct nand_chip *nand_chip = mtd_to_nand(mtd);
 	struct omap_nand_info *info = mtd_to_omap(mtd);
-	int ret;
 
 	rawnand_sw_bch_cleanup(nand_chip);
 
 	if (info->dma)
 		dma_release_channel(info->dma);
-	ret = mtd_device_unregister(mtd);
-	WARN_ON(ret);
+	WARN_ON(mtd_device_unregister(mtd));
 	nand_cleanup(nand_chip);
-	return ret;
 }
 
 /* omap_nand_ids defined in linux/platform_data/mtd-nand-omap2.h */
@@ -2304,6 +2332,5 @@ static struct platform_driver omap_nand_driver = {
 
 module_platform_driver(omap_nand_driver);
 
-MODULE_ALIAS("platform:" DRIVER_NAME);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Glue layer for NAND flash on TI OMAP boards");

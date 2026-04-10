@@ -44,8 +44,8 @@ static int xdpe152_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id xdpe152_id[] = {
-	{"xdpe152c4", 0},
-	{"xdpe15284", 0},
+	{"xdpe152c4"},
+	{"xdpe15284"},
 	{}
 };
 
@@ -63,7 +63,7 @@ static struct i2c_driver xdpe152_driver = {
 		.name = "xdpe152c4",
 		.of_match_table = of_match_ptr(xdpe152_of_match),
 	},
-	.probe_new = xdpe152_probe,
+	.probe = xdpe152_probe,
 	.id_table = xdpe152_id,
 };
 
@@ -72,4 +72,4 @@ module_i2c_driver(xdpe152_driver);
 MODULE_AUTHOR("Greg Schwendimann <greg.schwendimann@infineon.com>");
 MODULE_DESCRIPTION("PMBus driver for Infineon XDPE152 family");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(PMBUS);
+MODULE_IMPORT_NS("PMBUS");

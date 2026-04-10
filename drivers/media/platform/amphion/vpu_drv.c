@@ -10,8 +10,8 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/dma-map-ops.h>
-#include <linux/of_device.h>
-#include <linux/of_address.h>
+#include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/types.h>
@@ -151,13 +151,13 @@ err_add_decoder:
 	media_device_cleanup(&vpu->mdev);
 	v4l2_device_unregister(&vpu->v4l2_dev);
 err_vpu_deinit:
-	pm_runtime_set_suspended(dev);
 	pm_runtime_disable(dev);
+	pm_runtime_set_suspended(dev);
 
 	return ret;
 }
 
-static int vpu_remove(struct platform_device *pdev)
+static void vpu_remove(struct platform_device *pdev)
 {
 	struct vpu_dev *vpu = platform_get_drvdata(pdev);
 	struct device *dev = &pdev->dev;
@@ -173,34 +173,7 @@ static int vpu_remove(struct platform_device *pdev)
 	media_device_cleanup(&vpu->mdev);
 	v4l2_device_unregister(&vpu->v4l2_dev);
 	mutex_destroy(&vpu->lock);
-
-	return 0;
 }
-
-static int __maybe_unused vpu_runtime_resume(struct device *dev)
-{
-	return 0;
-}
-
-static int __maybe_unused vpu_runtime_suspend(struct device *dev)
-{
-	return 0;
-}
-
-static int __maybe_unused vpu_resume(struct device *dev)
-{
-	return 0;
-}
-
-static int __maybe_unused vpu_suspend(struct device *dev)
-{
-	return 0;
-}
-
-static const struct dev_pm_ops vpu_pm_ops = {
-	SET_RUNTIME_PM_OPS(vpu_runtime_suspend, vpu_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(vpu_suspend, vpu_resume)
-};
 
 static struct vpu_resources imx8qxp_res = {
 	.plat_type = IMX8QXP,
@@ -233,7 +206,6 @@ static struct platform_driver amphion_vpu_driver = {
 	.driver = {
 		.name = "amphion-vpu",
 		.of_match_table = vpu_dt_match,
-		.pm = &vpu_pm_ops,
 	},
 };
 
@@ -245,7 +217,11 @@ static int __init vpu_driver_init(void)
 	if (ret)
 		return ret;
 
-	return vpu_core_driver_init();
+	ret = vpu_core_driver_init();
+	if (ret)
+		platform_driver_unregister(&amphion_vpu_driver);
+
+	return ret;
 }
 
 static void __exit vpu_driver_exit(void)

@@ -7,6 +7,7 @@
 #include "gt/intel_hwconfig.h"
 #include "i915_drv.h"
 #include "i915_memcpy.h"
+#include "intel_guc_print.h"
 
 /*
  * GuC has a blob containing hardware configuration information (HWConfig).
@@ -42,6 +43,8 @@ static int __guc_action_get_hwconfig(struct intel_guc *guc,
 	};
 	int ret;
 
+	guc_dbg(guc, "Querying HW config table: size = %d, offset = 0x%08X\n",
+		ggtt_size, ggtt_offset);
 	ret = intel_guc_send_mmio(guc, action, ARRAY_SIZE(action), NULL, 0);
 	if (ret == -ENXIO)
 		return -ENOENT;
@@ -94,15 +97,15 @@ static int guc_hwconfig_fill_buffer(struct intel_guc *guc, struct intel_hwconfig
 
 static bool has_table(struct drm_i915_private *i915)
 {
-	if (IS_ALDERLAKE_P(i915))
+	if (IS_ALDERLAKE_P(i915) && !IS_ALDERLAKE_P_N(i915))
 		return true;
-	if (IS_DG2(i915))
+	if (GRAPHICS_VER_FULL(i915) >= IP_VER(12, 55))
 		return true;
 
 	return false;
 }
 
-/**
+/*
  * intel_guc_hwconfig_init - Initialize the HWConfig
  *
  * Retrieve the HWConfig table from the GuC and save it locally.
@@ -111,7 +114,7 @@ static bool has_table(struct drm_i915_private *i915)
 static int guc_hwconfig_init(struct intel_gt *gt)
 {
 	struct intel_hwconfig *hwconfig = &gt->info.hwconfig;
-	struct intel_guc *guc = &gt->uc.guc;
+	struct intel_guc *guc = gt_to_guc(gt);
 	int ret;
 
 	if (!has_table(gt->i915))
@@ -136,7 +139,7 @@ static int guc_hwconfig_init(struct intel_gt *gt)
 	return 0;
 }
 
-/**
+/*
  * intel_gt_init_hwconfig - Initialize the HWConfig if available
  *
  * Retrieve the HWConfig table if available on the current platform.
@@ -149,7 +152,7 @@ int intel_gt_init_hwconfig(struct intel_gt *gt)
 	return guc_hwconfig_init(gt);
 }
 
-/**
+/*
  * intel_gt_fini_hwconfig - Finalize the HWConfig
  *
  * Free up the memory allocation holding the table.

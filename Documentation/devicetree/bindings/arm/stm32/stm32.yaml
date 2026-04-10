@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/arm/stm32/stm32.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: STMicroelectronics STM32 Platforms Device Tree Bindings
+title: STMicroelectronics STM32 Platforms
 
 maintainers:
   - Alexandre Torgue <alexandre.torgue@foss.st.com>
@@ -44,6 +44,10 @@ properties:
           - const: st,stm32h743
       - items:
           - enum:
+              - st,stm32h747i-disco
+          - const: st,stm32h747
+      - items:
+          - enum:
               - st,stm32h750i-art-pi
           - const: st,stm32h750
       - items:
@@ -51,18 +55,60 @@ properties:
               - st,stm32mp135f-dk
           - const: st,stm32mp135
 
+      - description: ST STM32MP133 based Boards
+        items:
+          - enum:
+              - pri,prihmb   # Priva E-Measuringbox board
+          - const: st,stm32mp133
+
       - description: ST STM32MP151 based Boards
         items:
           - enum:
+              - ply,plyaqm   # Plymovent AQM board
+              - prt,mecio1r0 # Protonic MECIO1r0
+              - prt,mect1s   # Protonic MECT1S
               - prt,prtt1a   # Protonic PRTT1A
               - prt,prtt1c   # Protonic PRTT1C
               - prt,prtt1s   # Protonic PRTT1S
           - const: st,stm32mp151
 
-      - description: DH STM32MP153 SoM based Boards
+      - description: DH STM32MP135 DHCOR SoM based Boards
+        items:
+          - const: dh,stm32mp135f-dhcor-dhsbc
+          - const: dh,stm32mp135f-dhcor-som
+          - const: st,stm32mp135
+
+      - description: DH STM32MP151 DHCOR SoM based Boards
+        items:
+          - const: dh,stm32mp151a-dhcor-testbench
+          - const: dh,stm32mp151a-dhcor-som
+          - const: st,stm32mp151
+
+      - description: ST STM32MP153 based Boards
+        items:
+          - enum:
+              - prt,mecio1r1   # Protonic MECIO1r1
+          - const: st,stm32mp153
+
+      - description: DH STM32MP153 DHCOM SoM based Boards
         items:
           - const: dh,stm32mp153c-dhcom-drc02
           - const: dh,stm32mp153c-dhcom-som
+          - const: st,stm32mp153
+
+      - description: DH STM32MP153 DHCOR SoM based Boards
+        items:
+          - const: dh,stm32mp153c-dhcor-drc-compact
+          - const: dh,stm32mp153c-dhcor-som
+          - const: st,stm32mp153
+
+      - description: Octavo OSD32MP153 System-in-Package based boards
+        items:
+          - enum:
+              - lxa,stm32mp153c-fairytux2-gen1 # Linux Automation FairyTux 2 (Generation 1)
+              - lxa,stm32mp153c-fairytux2-gen2 # Linux Automation FairyTux 2 (Generation 2)
+              - lxa,stm32mp153c-tac-gen3 # Linux Automation TAC (Generation 3)
+          - const: oct,stm32mp153x-osd32
           - const: st,stm32mp153
 
       - items:
@@ -70,29 +116,20 @@ properties:
               - shiratech,stm32mp157a-iot-box # IoT Box
               - shiratech,stm32mp157a-stinger96 # Stinger96
               - st,stm32mp157c-ed1
+              - st,stm32mp157c-ed1-scmi
               - st,stm32mp157a-dk1
+              - st,stm32mp157a-dk1-scmi
               - st,stm32mp157c-dk2
+              - st,stm32mp157c-dk2-scmi
+              - st,stm32mp157f-dk2
           - const: st,stm32mp157
 
-      - items:
-          - const: st,stm32mp157a-dk1-scmi
-          - const: st,stm32mp157a-dk1
-          - const: st,stm32mp157
-      - items:
-          - const: st,stm32mp157c-dk2-scmi
-          - const: st,stm32mp157c-dk2
-          - const: st,stm32mp157
-      - items:
-          - const: st,stm32mp157c-ed1-scmi
-          - const: st,stm32mp157c-ed1
-          - const: st,stm32mp157
       - items:
           - const: st,stm32mp157c-ev1
           - const: st,stm32mp157c-ed1
           - const: st,stm32mp157
       - items:
           - const: st,stm32mp157c-ev1-scmi
-          - const: st,stm32mp157c-ev1
           - const: st,stm32mp157c-ed1
           - const: st,stm32mp157
 
@@ -131,7 +168,10 @@ properties:
       - description: Octavo OSD32MP15x System-in-Package based boards
         items:
           - enum:
-              - lxa,stm32mp157c-mc1 # Linux Automation MC-1
+              - lxa,stm32mp157c-mc1      # Linux Automation MC-1
+              - lxa,stm32mp157c-tac-gen1 # Linux Automation TAC (Generation 1)
+              - lxa,stm32mp157c-tac-gen2 # Linux Automation TAC (Generation 2)
+              - oct,stm32mp157c-osd32-red # Octavo OSD32MP1 RED board
           - const: oct,stm32mp15xx-osd32
           - enum:
               - st,stm32mp157
@@ -142,6 +182,36 @@ properties:
               - seeed,stm32mp157c-odyssey
           - const: seeed,stm32mp157c-odyssey-som
           - const: st,stm32mp157
+
+      - description: Phytec STM32MP1 SoM based Boards
+        items:
+          - const: phytec,phycore-stm32mp1-3
+          - const: phytec,phycore-stm32mp157c-som
+          - const: st,stm32mp157
+
+      - description: Ultratronik STM32MP1 SBC based Boards
+        items:
+          - const: ultratronik,stm32mp157c-ultra-fly-sbc
+          - const: st,stm32mp157
+
+      - description: ST STM32MP257 based Boards
+        items:
+          - enum:
+              - st,stm32mp257f-dk
+              - st,stm32mp257f-ev1
+          - const: st,stm32mp257
+
+      - description: ST STM32MP235 based Boards
+        items:
+          - enum:
+              - st,stm32mp235f-dk
+          - const: st,stm32mp235
+
+      - description: ST STM32MP215 based Boards
+        items:
+          - enum:
+              - st,stm32mp215f-dk
+          - const: st,stm32mp215
 
 additionalProperties: true
 

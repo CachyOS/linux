@@ -20,7 +20,7 @@ struct intel_reset {
 	 * FENCE registers).
 	 *
 	 * #I915_RESET_ENGINE[num_engines] - Since the driver doesn't need to
-	 * acquire the struct_mutex to reset an engine, we need an explicit
+	 * acquire a global lock to reset an engine, we need an explicit
 	 * flag to prevent two concurrent reset attempts in the same engine.
 	 * As the number of engines continues to grow, allocate the flags from
 	 * the most significant bits.
@@ -41,8 +41,7 @@ struct intel_reset {
 	 */
 	unsigned long flags;
 #define I915_RESET_BACKOFF	0
-#define I915_RESET_MODESET	1
-#define I915_RESET_ENGINE	2
+#define I915_RESET_ENGINE	1
 #define I915_WEDGED_ON_INIT	(BITS_PER_LONG - 3)
 #define I915_WEDGED_ON_FINI	(BITS_PER_LONG - 2)
 #define I915_WEDGED		(BITS_PER_LONG - 1)
@@ -51,7 +50,7 @@ struct intel_reset {
 
 	/**
 	 * Waitqueue to signal when the reset has completed. Used by clients
-	 * that wait for dev_priv->mm.wedged to settle.
+	 * that wait for i915->mm.wedged to settle.
 	 */
 	wait_queue_head_t queue;
 

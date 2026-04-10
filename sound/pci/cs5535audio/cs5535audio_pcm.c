@@ -110,7 +110,7 @@ static int cs5535audio_build_dma_packets(struct cs5535audio *cs5535au,
 					 unsigned int period_bytes)
 {
 	unsigned int i;
-	u32 addr, desc_addr, jmpprd_addr;
+	u32 addr, jmpprd_addr;
 	struct cs5535audio_dma_desc *lastdesc;
 
 	if (periods > CS5535AUDIO_MAX_DESCRIPTORS)
@@ -131,14 +131,12 @@ static int cs5535audio_build_dma_packets(struct cs5535audio *cs5535au,
 	/* the u32 cast is okay because in snd*create we successfully told
 	   pci alloc that we're only 32 bit capable so the upper will be 0 */
 	addr = (u32) substream->runtime->dma_addr;
-	desc_addr = (u32) dma->desc_buf.addr;
 	for (i = 0; i < periods; i++) {
 		struct cs5535audio_dma_desc *desc =
 			&((struct cs5535audio_dma_desc *) dma->desc_buf.area)[i];
 		desc->addr = cpu_to_le32(addr);
 		desc->size = cpu_to_le16(period_bytes);
 		desc->ctlreserved = cpu_to_le16(PRD_EOP);
-		desc_addr += sizeof(struct cs5535audio_dma_desc);
 		addr += period_bytes;
 	}
 	/* we reserved one dummy descriptor at the end to do the PRD jump */
@@ -152,10 +150,9 @@ static int cs5535audio_build_dma_packets(struct cs5535audio *cs5535au,
 	dma->substream = substream;
 	dma->period_bytes = period_bytes;
 	dma->periods = periods;
-	spin_lock_irq(&cs5535au->reg_lock);
+	guard(spinlock_irq)(&cs5535au->reg_lock);
 	dma->ops->disable_dma(cs5535au);
 	dma->ops->setup_prd(cs5535au, jmpprd_addr);
-	spin_unlock_irq(&cs5535au->reg_lock);
 	return 0;
 }
 
@@ -278,9 +275,8 @@ static int snd_cs5535audio_trigger(struct snd_pcm_substream *substream, int cmd)
 {
 	struct cs5535audio *cs5535au = snd_pcm_substream_chip(substream);
 	struct cs5535audio_dma *dma = substream->runtime->private_data;
-	int err = 0;
 
-	spin_lock(&cs5535au->reg_lock);
+	guard(spinlock)(&cs5535au->reg_lock);
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 		dma->ops->pause_dma(cs5535au);
@@ -302,11 +298,9 @@ static int snd_cs5535audio_trigger(struct snd_pcm_substream *substream, int cmd)
 		break;
 	default:
 		dev_err(cs5535au->card->dev, "unhandled trigger\n");
-		err = -EINVAL;
-		break;
+		return -EINVAL;
 	}
-	spin_unlock(&cs5535au->reg_lock);
-	return err;
+	return 0;
 }
 
 static snd_pcm_uframes_t snd_cs5535audio_pcm_pointer(struct snd_pcm_substream
@@ -425,7 +419,7 @@ int snd_cs5535audio_pcm(struct cs5535audio *cs5535au)
 
 	pcm->private_data = cs5535au;
 	pcm->info_flags = 0;
-	strcpy(pcm->name, "CS5535 Audio");
+	strscpy(pcm->name, "CS5535 Audio");
 
 	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV,
 				       &cs5535au->pci->dev,

@@ -18,6 +18,8 @@
 #include <linux/of.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
+#include <linux/mm.h>
+#include <linux/dma-mapping.h>
 
 #include "sdhci-pltfm.h"
 #include "sdhci-xenon.h"
@@ -422,6 +424,7 @@ static int xenon_probe_params(struct platform_device *pdev)
 	struct xenon_priv *priv = sdhci_pltfm_priv(pltfm_host);
 	u32 sdhc_id, nr_sdhc;
 	u32 tuning_count;
+	struct sysinfo si;
 
 	/* Disable HS200 on Armada AP806 */
 	if (priv->hw_version == XENON_AP806)
@@ -449,6 +452,23 @@ static int xenon_probe_params(struct platform_device *pdev)
 		}
 	}
 	priv->tuning_count = tuning_count;
+
+	/*
+	 * AC5/X/IM HW has only 31-bits passed in the crossbar switch.
+	 * If we have more than 2GB of memory, this means we might pass
+	 * memory pointers which are above 2GB and which cannot be properly
+	 * represented. In this case, disable ADMA, 64-bit DMA and allow only SDMA.
+	 * This effectively will enable bounce buffer quirk in the
+	 * generic SDHCI driver, which will make sure DMA is only done
+	 * from supported memory regions:
+	 */
+	if (priv->hw_version == XENON_AC5) {
+		si_meminfo(&si);
+		if (si.totalram * si.mem_unit > SZ_2G) {
+			host->quirks |= SDHCI_QUIRK_BROKEN_ADMA;
+			host->quirks2 |= SDHCI_QUIRK2_BROKEN_64_BIT_DMA;
+		}
+	}
 
 	return xenon_phy_parse_params(dev, host);
 }
@@ -512,14 +532,13 @@ static int xenon_probe(struct platform_device *pdev)
 
 	if (dev->of_node) {
 		pltfm_host->clk = devm_clk_get(&pdev->dev, "core");
-		if (IS_ERR(pltfm_host->clk)) {
-			err = PTR_ERR(pltfm_host->clk);
-			dev_err(&pdev->dev, "Failed to setup input clk: %d\n", err);
-			goto free_pltfm;
-		}
+		if (IS_ERR(pltfm_host->clk))
+			return dev_err_probe(&pdev->dev, PTR_ERR(pltfm_host->clk),
+					     "Failed to setup input clk.\n");
+
 		err = clk_prepare_enable(pltfm_host->clk);
 		if (err)
-			goto free_pltfm;
+			return err;
 
 		priv->axi_clk = devm_clk_get(&pdev->dev, "axi");
 		if (IS_ERR(priv->axi_clk)) {
@@ -562,6 +581,16 @@ static int xenon_probe(struct platform_device *pdev)
 		goto remove_sdhc;
 
 	pm_runtime_put_autosuspend(&pdev->dev);
+	/*
+	 * If we previously detected AC5 with over 2GB of memory,
+	 * then we disable ADMA and 64-bit DMA.
+	 * This means generic SDHCI driver has set the DMA mask to
+	 * 32-bit. Since DDR starts at 0x2_0000_0000, we must use
+	 * 34-bit DMA mask to access this DDR memory:
+	 */
+	if (priv->hw_version == XENON_AC5 &&
+	    host->quirks2 & SDHCI_QUIRK2_BROKEN_64_BIT_DMA)
+		dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(34));
 
 	return 0;
 
@@ -573,12 +602,10 @@ err_clk_axi:
 	clk_disable_unprepare(priv->axi_clk);
 err_clk:
 	clk_disable_unprepare(pltfm_host->clk);
-free_pltfm:
-	sdhci_pltfm_free(pdev);
 	return err;
 }
 
-static int xenon_remove(struct platform_device *pdev)
+static void xenon_remove(struct platform_device *pdev)
 {
 	struct sdhci_host *host = platform_get_drvdata(pdev);
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
@@ -593,13 +620,8 @@ static int xenon_remove(struct platform_device *pdev)
 	xenon_sdhc_unprepare(host);
 	clk_disable_unprepare(priv->axi_clk);
 	clk_disable_unprepare(pltfm_host->clk);
-
-	sdhci_pltfm_free(pdev);
-
-	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int xenon_suspend(struct device *dev)
 {
 	struct sdhci_host *host = dev_get_drvdata(dev);
@@ -612,19 +634,14 @@ static int xenon_suspend(struct device *dev)
 	priv->restore_needed = true;
 	return ret;
 }
-#endif
 
-#ifdef CONFIG_PM
 static int xenon_runtime_suspend(struct device *dev)
 {
 	struct sdhci_host *host = dev_get_drvdata(dev);
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct xenon_priv *priv = sdhci_pltfm_priv(pltfm_host);
-	int ret;
 
-	ret = sdhci_runtime_suspend_host(host);
-	if (ret)
-		return ret;
+	sdhci_runtime_suspend_host(host);
 
 	if (host->tuning_mode != SDHCI_TUNING_MODE_3)
 		mmc_retune_needed(host->mmc);
@@ -659,22 +676,16 @@ static int xenon_runtime_resume(struct device *dev)
 		priv->restore_needed = false;
 	}
 
-	ret = sdhci_runtime_resume_host(host, 0);
-	if (ret)
-		goto out;
+	sdhci_runtime_resume_host(host, 0);
 	return 0;
 out:
 	clk_disable_unprepare(pltfm_host->clk);
 	return ret;
 }
-#endif /* CONFIG_PM */
 
 static const struct dev_pm_ops sdhci_xenon_dev_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(xenon_suspend,
-				pm_runtime_force_resume)
-	SET_RUNTIME_PM_OPS(xenon_runtime_suspend,
-			   xenon_runtime_resume,
-			   NULL)
+	SYSTEM_SLEEP_PM_OPS(xenon_suspend, pm_runtime_force_resume)
+	RUNTIME_PM_OPS(xenon_runtime_suspend, xenon_runtime_resume, NULL)
 };
 
 static const struct of_device_id sdhci_xenon_dt_ids[] = {
@@ -682,6 +693,7 @@ static const struct of_device_id sdhci_xenon_dt_ids[] = {
 	{ .compatible = "marvell,armada-ap807-sdhci", .data = (void *)XENON_AP807},
 	{ .compatible = "marvell,armada-cp110-sdhci", .data =  (void *)XENON_CP110},
 	{ .compatible = "marvell,armada-3700-sdhci", .data =  (void *)XENON_A3700},
+	{ .compatible = "marvell,ac5-sdhci",	     .data =  (void *)XENON_AC5},
 	{}
 };
 MODULE_DEVICE_TABLE(of, sdhci_xenon_dt_ids);
@@ -702,10 +714,10 @@ static struct platform_driver sdhci_xenon_driver = {
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = sdhci_xenon_dt_ids,
 		.acpi_match_table = ACPI_PTR(sdhci_xenon_acpi_ids),
-		.pm = &sdhci_xenon_dev_pm_ops,
+		.pm = pm_ptr(&sdhci_xenon_dev_pm_ops),
 	},
 	.probe	= xenon_probe,
-	.remove	= xenon_remove,
+	.remove = xenon_remove,
 };
 
 module_platform_driver(sdhci_xenon_driver);

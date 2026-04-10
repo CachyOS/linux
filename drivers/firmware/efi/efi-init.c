@@ -12,15 +12,18 @@
 #include <linux/efi.h>
 #include <linux/fwnode.h>
 #include <linux/init.h>
+#include <linux/kexec_handover.h>
 #include <linux/memblock.h>
 #include <linux/mm_types.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_fdt.h>
 #include <linux/platform_device.h>
-#include <linux/screen_info.h>
+#include <linux/sysfb.h>
 
 #include <asm/efi.h>
+
+unsigned long __initdata primary_display_table = EFI_INVALID_TABLE_ADDR;
 
 static int __init is_memory(efi_memory_desc_t *md)
 {
@@ -51,37 +54,38 @@ static phys_addr_t __init efi_to_phys(unsigned long addr)
 	return addr;
 }
 
-static __initdata unsigned long screen_info_table = EFI_INVALID_TABLE_ADDR;
-static __initdata unsigned long cpu_state_table = EFI_INVALID_TABLE_ADDR;
+extern __weak const efi_config_table_type_t efi_arch_tables[];
 
-static const efi_config_table_type_t arch_tables[] __initconst = {
-	{LINUX_EFI_ARM_SCREEN_INFO_TABLE_GUID, &screen_info_table},
-	{LINUX_EFI_ARM_CPU_STATE_TABLE_GUID, &cpu_state_table},
-	{}
-};
+/*
+ * x86 defines its own instance of sysfb_primary_display and uses
+ * it even without EFI, everything else can get them from here.
+ */
+#if !defined(CONFIG_X86) && (defined(CONFIG_SYSFB) || defined(CONFIG_EFI_EARLYCON) || defined(CONFIG_FIRMWARE_EDID))
+struct sysfb_display_info sysfb_primary_display __section(".data");
+EXPORT_SYMBOL_GPL(sysfb_primary_display);
+#endif
 
-static void __init init_screen_info(void)
+static void __init init_primary_display(void)
 {
-	struct screen_info *si;
+	struct sysfb_display_info *dpy;
 
-	if (IS_ENABLED(CONFIG_ARM) &&
-	    screen_info_table != EFI_INVALID_TABLE_ADDR) {
-		si = early_memremap_ro(screen_info_table, sizeof(*si));
-		if (!si) {
-			pr_err("Could not map screen_info config table\n");
+	if (primary_display_table != EFI_INVALID_TABLE_ADDR) {
+		dpy = early_memremap(primary_display_table, sizeof(*dpy));
+		if (!dpy) {
+			pr_err("Could not map primary_display config table\n");
 			return;
 		}
-		screen_info = *si;
-		early_memunmap(si, sizeof(*si));
+		sysfb_primary_display = *dpy;
+		memset(dpy, 0, sizeof(*dpy));
+		early_memunmap(dpy, sizeof(*dpy));
 
-		/* dummycon on ARM needs non-zero values for columns/lines */
-		screen_info.orig_video_cols = 80;
-		screen_info.orig_video_lines = 25;
+		if (memblock_is_map_memory(sysfb_primary_display.screen.lfb_base))
+			memblock_mark_nomap(sysfb_primary_display.screen.lfb_base,
+					    sysfb_primary_display.screen.lfb_size);
+
+		if (IS_ENABLED(CONFIG_EFI_EARLYCON))
+			efi_earlycon_reprobe();
 	}
-
-	if (screen_info.orig_video_isVGA == VIDEO_TYPE_EFI &&
-	    memblock_is_map_memory(screen_info.lfb_base))
-		memblock_mark_nomap(screen_info.lfb_base, screen_info.lfb_size);
 }
 
 static int __init uefi_init(u64 efi_system_table)
@@ -101,7 +105,7 @@ static int __init uefi_init(u64 efi_system_table)
 	if (IS_ENABLED(CONFIG_64BIT))
 		set_bit(EFI_64BIT, &efi.flags);
 
-	retval = efi_systab_check_header(&systab->hdr, 2);
+	retval = efi_systab_check_header(&systab->hdr);
 	if (retval)
 		goto out;
 
@@ -119,8 +123,7 @@ static int __init uefi_init(u64 efi_system_table)
 		goto out;
 	}
 	retval = efi_config_parse_tables(config_tables, systab->nr_tables,
-					 IS_ENABLED(CONFIG_ARM) ? arch_tables
-								: NULL);
+					 efi_arch_tables);
 
 	early_memunmap(config_tables, table_size);
 out:
@@ -142,15 +145,6 @@ static __init int is_usable_memory(efi_memory_desc_t *md)
 	case EFI_CONVENTIONAL_MEMORY:
 	case EFI_PERSISTENT_MEMORY:
 		/*
-		 * Special purpose memory is 'soft reserved', which means it
-		 * is set aside initially, but can be hotplugged back in or
-		 * be assigned to the dax driver after boot.
-		 */
-		if (efi_soft_reserve_enabled() &&
-		    (md->attribute & EFI_MEMORY_SP))
-			return false;
-
-		/*
 		 * According to the spec, these regions are no longer reserved
 		 * after calling ExitBootServices(). However, we can only use
 		 * them as System RAM if they can be mapped writeback cacheable.
@@ -171,12 +165,32 @@ static __init void reserve_regions(void)
 		pr_info("Processing EFI memory map:\n");
 
 	/*
-	 * Discard memblocks discovered so far: if there are any at this
-	 * point, they originate from memory nodes in the DT, and UEFI
-	 * uses its own memory map instead.
+	 * Discard memblocks discovered so far except for KHO scratch
+	 * regions. Most memblocks at this point originate from memory nodes
+	 * in the DT and UEFI uses its own memory map instead. However, if
+	 * KHO is enabled, scratch regions, which are good known memory
+	 * must be preserved.
 	 */
 	memblock_dump_all();
-	memblock_remove(0, PHYS_ADDR_MAX);
+
+	if (is_kho_boot()) {
+		struct memblock_region *r;
+
+		/* Remove all non-KHO regions */
+		for_each_mem_region(r) {
+			if (!memblock_is_kho_scratch(r)) {
+				memblock_remove(r->base, r->size);
+				r--;
+			}
+		}
+	} else {
+		/*
+		 * KHO is disabled. Discard memblocks discovered so far:
+		 * if there are any at this point, they originate from memory
+		 * nodes in the DT, and UEFI uses its own memory map instead.
+		 */
+		memblock_remove(0, PHYS_ADDR_MAX);
+	}
 
 	for_each_efi_memory_desc(md) {
 		paddr = md->phys_addr;
@@ -194,6 +208,16 @@ static __init void reserve_regions(void)
 		size = npages << PAGE_SHIFT;
 
 		if (is_memory(md)) {
+			/*
+			 * Special purpose memory is 'soft reserved', which
+			 * means it is set aside initially. Don't add a memblock
+			 * for it now so that it can be hotplugged back in or
+			 * be assigned to the dax driver after boot.
+			 */
+			if (efi_soft_reserve_enabled() &&
+			    (md->attribute & EFI_MEMORY_SP))
+				continue;
+
 			early_init_dt_add_memory_arch(paddr, size);
 
 			if (!is_usable_memory(md))
@@ -240,43 +264,15 @@ void __init efi_init(void)
 	 * And now, memblock is fully populated, it is time to do capping.
 	 */
 	early_init_dt_check_for_usable_mem_range();
+	efi_find_mirror();
 	efi_esrt_init();
 	efi_mokvar_table_init();
 
 	memblock_reserve(data.phys_map & PAGE_MASK,
 			 PAGE_ALIGN(data.size + (data.phys_map & ~PAGE_MASK)));
 
-	init_screen_info();
-
-#ifdef CONFIG_ARM
-	/* ARM does not permit early mappings to persist across paging_init() */
-	efi_memmap_unmap();
-
-	if (cpu_state_table != EFI_INVALID_TABLE_ADDR) {
-		struct efi_arm_entry_state *state;
-		bool dump_state = true;
-
-		state = early_memremap_ro(cpu_state_table,
-					  sizeof(struct efi_arm_entry_state));
-		if (state == NULL) {
-			pr_warn("Unable to map CPU entry state table.\n");
-			return;
-		}
-
-		if ((state->sctlr_before_ebs & 1) == 0)
-			pr_warn(FW_BUG "EFI stub was entered with MMU and Dcache disabled, please fix your firmware!\n");
-		else if ((state->sctlr_after_ebs & 1) == 0)
-			pr_warn(FW_BUG "ExitBootServices() returned with MMU and Dcache disabled, please fix your firmware!\n");
-		else
-			dump_state = false;
-
-		if (dump_state || efi_enabled(EFI_DBG)) {
-			pr_info("CPSR at EFI stub entry        : 0x%08x\n", state->cpsr_before_ebs);
-			pr_info("SCTLR at EFI stub entry       : 0x%08x\n", state->sctlr_before_ebs);
-			pr_info("CPSR after ExitBootServices() : 0x%08x\n", state->cpsr_after_ebs);
-			pr_info("SCTLR after ExitBootServices(): 0x%08x\n", state->sctlr_after_ebs);
-		}
-		early_memunmap(state, sizeof(struct efi_arm_entry_state));
-	}
-#endif
+	if (IS_ENABLED(CONFIG_X86) ||
+	    IS_ENABLED(CONFIG_SYSFB) ||
+	    IS_ENABLED(CONFIG_EFI_EARLYCON))
+		init_primary_display();
 }

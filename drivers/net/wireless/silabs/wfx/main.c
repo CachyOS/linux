@@ -121,6 +121,12 @@ static const struct ieee80211_iface_combination wfx_iface_combinations[] = {
 	}
 };
 
+#ifdef CONFIG_PM
+static const struct wiphy_wowlan_support wfx_wowlan_support = {
+	.flags = WIPHY_WOWLAN_ANY | WIPHY_WOWLAN_DISCONNECT,
+};
+#endif
+
 static const struct ieee80211_ops wfx_ops = {
 	.start                   = wfx_start,
 	.stop                    = wfx_stop,
@@ -128,6 +134,7 @@ static const struct ieee80211_ops wfx_ops = {
 	.remove_interface        = wfx_remove_interface,
 	.config                  = wfx_config,
 	.tx                      = wfx_tx,
+	.wake_tx_queue           = ieee80211_handle_wake_tx_queue,
 	.join_ibss               = wfx_join_ibss,
 	.leave_ibss              = wfx_leave_ibss,
 	.conf_tx                 = wfx_conf_tx,
@@ -150,6 +157,13 @@ static const struct ieee80211_ops wfx_ops = {
 	.change_chanctx          = wfx_change_chanctx,
 	.assign_vif_chanctx      = wfx_assign_vif_chanctx,
 	.unassign_vif_chanctx    = wfx_unassign_vif_chanctx,
+	.remain_on_channel       = wfx_remain_on_channel,
+	.cancel_remain_on_channel = wfx_cancel_remain_on_channel,
+#ifdef CONFIG_PM
+	.suspend                 = wfx_suspend,
+	.resume                  = wfx_resume,
+	.set_wakeup              = wfx_set_wakeup,
+#endif
 };
 
 bool wfx_api_older_than(struct wfx_dev *wdev, int major, int minor)
@@ -181,7 +195,7 @@ int wfx_send_pds(struct wfx_dev *wdev, u8 *buf, size_t len)
 	while (len > 0) {
 		chunk_type = get_unaligned_le16(buf + 0);
 		chunk_len = get_unaligned_le16(buf + 2);
-		if (chunk_len > len) {
+		if (chunk_len < 4 || chunk_len > len) {
 			dev_err(wdev->dev, "PDS:%d: corrupted file\n", chunk_num);
 			return -EINVAL;
 		}
@@ -245,6 +259,7 @@ static void wfx_free_common(void *data)
 
 	mutex_destroy(&wdev->tx_power_loop_info_lock);
 	mutex_destroy(&wdev->rx_stats_lock);
+	mutex_destroy(&wdev->scan_lock);
 	mutex_destroy(&wdev->conf_mutex);
 	ieee80211_free_hw(wdev->hw);
 }
@@ -285,19 +300,22 @@ struct wfx_dev *wfx_init_common(struct device *dev, const struct wfx_platform_da
 					NL80211_PROBE_RESP_OFFLOAD_SUPPORT_P2P |
 					NL80211_PROBE_RESP_OFFLOAD_SUPPORT_80211U;
 	hw->wiphy->features |= NL80211_FEATURE_AP_SCAN;
+#ifdef CONFIG_PM
+	hw->wiphy->wowlan = &wfx_wowlan_support;
+#endif
 	hw->wiphy->flags |= WIPHY_FLAG_AP_PROBE_RESP_OFFLOAD;
 	hw->wiphy->flags |= WIPHY_FLAG_AP_UAPSD;
+	hw->wiphy->max_remain_on_channel_duration = 5000;
 	hw->wiphy->max_ap_assoc_sta = HIF_LINK_ID_MAX;
 	hw->wiphy->max_scan_ssids = 2;
 	hw->wiphy->max_scan_ie_len = IEEE80211_MAX_DATA_LEN;
 	hw->wiphy->n_iface_combinations = ARRAY_SIZE(wfx_iface_combinations);
 	hw->wiphy->iface_combinations = wfx_iface_combinations;
-	hw->wiphy->bands[NL80211_BAND_2GHZ] = devm_kmalloc(dev, sizeof(wfx_band_2ghz), GFP_KERNEL);
+	/* FIXME: also copy wfx_rates and wfx_2ghz_chantable */
+	hw->wiphy->bands[NL80211_BAND_2GHZ] = devm_kmemdup(dev, &wfx_band_2ghz,
+							   sizeof(wfx_band_2ghz), GFP_KERNEL);
 	if (!hw->wiphy->bands[NL80211_BAND_2GHZ])
 		goto err;
-
-	/* FIXME: also copy wfx_rates and wfx_2ghz_chantable */
-	memcpy(hw->wiphy->bands[NL80211_BAND_2GHZ], &wfx_band_2ghz, sizeof(wfx_band_2ghz));
 
 	wdev = hw->priv;
 	wdev->hw = hw;
@@ -314,6 +332,7 @@ struct wfx_dev *wfx_init_common(struct device *dev, const struct wfx_platform_da
 		gpiod_set_consumer_name(wdev->pdata.gpio_wakeup, "wfx wakeup");
 
 	mutex_init(&wdev->conf_mutex);
+	mutex_init(&wdev->scan_lock);
 	mutex_init(&wdev->rx_stats_lock);
 	mutex_init(&wdev->tx_power_loop_info_lock);
 	init_completion(&wdev->firmware_ready);
@@ -345,7 +364,7 @@ int wfx_probe(struct wfx_dev *wdev)
 	wdev->pdata.gpio_wakeup = NULL;
 	wdev->poll_irq = true;
 
-	wdev->bh_wq = alloc_workqueue("wfx_bh_wq", WQ_HIGHPRI, 0);
+	wdev->bh_wq = alloc_workqueue("wfx_bh_wq", WQ_HIGHPRI | WQ_PERCPU, 0);
 	if (!wdev->bh_wq)
 		return -ENOMEM;
 
@@ -357,13 +376,9 @@ int wfx_probe(struct wfx_dev *wdev)
 
 	wfx_bh_poll_irq(wdev);
 	err = wait_for_completion_timeout(&wdev->firmware_ready, 1 * HZ);
-	if (err <= 0) {
-		if (err == 0) {
-			dev_err(wdev->dev, "timeout while waiting for startup indication\n");
-			err = -ETIMEDOUT;
-		} else if (err == -ERESTARTSYS) {
-			dev_info(wdev->dev, "probe interrupted by user\n");
-		}
+	if (err == 0) {
+		dev_err(wdev->dev, "timeout while waiting for startup indication\n");
+		err = -ETIMEDOUT;
 		goto bh_unregister;
 	}
 
@@ -479,10 +494,23 @@ static int __init wfx_core_init(void)
 {
 	int ret = 0;
 
-	if (IS_ENABLED(CONFIG_SPI))
+	if (IS_ENABLED(CONFIG_SPI)) {
 		ret = spi_register_driver(&wfx_spi_driver);
-	if (IS_ENABLED(CONFIG_MMC) && !ret)
+		if (ret)
+			goto out;
+	}
+	if (IS_ENABLED(CONFIG_MMC)) {
 		ret = sdio_register_driver(&wfx_sdio_driver);
+		if (ret)
+			goto unregister_spi;
+	}
+
+	return 0;
+
+unregister_spi:
+	if (IS_ENABLED(CONFIG_SPI))
+		spi_unregister_driver(&wfx_spi_driver);
+out:
 	return ret;
 }
 module_init(wfx_core_init);

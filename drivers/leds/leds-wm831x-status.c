@@ -280,13 +280,11 @@ static int wm831x_status_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int wm831x_status_remove(struct platform_device *pdev)
+static void wm831x_status_remove(struct platform_device *pdev)
 {
 	struct wm831x_status *drvdata = platform_get_drvdata(pdev);
 
 	led_classdev_unregister(&drvdata->cdev);
-
-	return 0;
 }
 
 static struct platform_driver wm831x_status_driver = {

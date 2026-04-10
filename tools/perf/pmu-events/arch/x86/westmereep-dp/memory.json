@@ -14,7 +14,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x3011",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -25,7 +24,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf811",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -36,7 +34,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x4011",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -47,7 +44,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x2011",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -58,7 +54,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_IFETCH.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x3044",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -69,7 +64,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_IFETCH.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf844",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -80,7 +74,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_IFETCH.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x4044",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -91,7 +84,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_IFETCH.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x2044",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -102,7 +94,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x30ff",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -113,7 +104,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf8ff",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -124,7 +114,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x40ff",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -135,7 +124,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x20ff",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -146,7 +134,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x3022",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -157,7 +144,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf822",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -168,7 +154,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x4022",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -179,7 +164,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x2022",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -190,7 +174,6 @@
         "EventName": "OFFCORE_RESPONSE.COREWB.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x3008",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -201,7 +184,6 @@
         "EventName": "OFFCORE_RESPONSE.COREWB.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf808",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -212,7 +194,6 @@
         "EventName": "OFFCORE_RESPONSE.COREWB.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x4008",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -223,7 +204,6 @@
         "EventName": "OFFCORE_RESPONSE.COREWB.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x2008",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -234,7 +214,6 @@
         "EventName": "OFFCORE_RESPONSE.DATA_IFETCH.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x3077",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -245,7 +224,6 @@
         "EventName": "OFFCORE_RESPONSE.DATA_IFETCH.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf877",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -256,7 +234,6 @@
         "EventName": "OFFCORE_RESPONSE.DATA_IFETCH.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x4077",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -267,7 +244,6 @@
         "EventName": "OFFCORE_RESPONSE.DATA_IFETCH.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x2077",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -278,7 +254,6 @@
         "EventName": "OFFCORE_RESPONSE.DATA_IN.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x3033",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -289,7 +264,6 @@
         "EventName": "OFFCORE_RESPONSE.DATA_IN.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf833",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -300,7 +274,6 @@
         "EventName": "OFFCORE_RESPONSE.DATA_IN.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x4033",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -311,7 +284,6 @@
         "EventName": "OFFCORE_RESPONSE.DATA_IN.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x2033",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -322,7 +294,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x3003",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -333,7 +304,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf803",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -344,7 +314,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x4003",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -355,7 +324,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x2003",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -366,7 +334,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x3001",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -377,7 +344,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf801",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -388,7 +354,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x4001",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -399,7 +364,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x2001",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -410,7 +374,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_IFETCH.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x3004",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -421,7 +384,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_IFETCH.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf804",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -432,7 +394,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_IFETCH.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x4004",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -443,7 +404,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_IFETCH.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x2004",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -454,7 +414,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x3002",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -465,7 +424,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf802",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -476,7 +434,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x4002",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -487,7 +444,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x2002",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -498,7 +454,6 @@
         "EventName": "OFFCORE_RESPONSE.OTHER.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x3080",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -509,7 +464,6 @@
         "EventName": "OFFCORE_RESPONSE.OTHER.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf880",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -520,7 +474,6 @@
         "EventName": "OFFCORE_RESPONSE.OTHER.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x4080",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -531,7 +484,6 @@
         "EventName": "OFFCORE_RESPONSE.OTHER.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x2080",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -542,7 +494,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_DATA.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x3050",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -553,7 +504,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_DATA.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf850",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -564,7 +514,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_DATA.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x4050",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -575,7 +524,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_DATA.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x2050",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -586,7 +534,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_DATA_RD.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x3010",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -597,7 +544,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_DATA_RD.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf810",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -608,7 +554,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_DATA_RD.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x4010",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -619,7 +564,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_DATA_RD.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x2010",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -630,7 +574,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_IFETCH.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x3040",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -641,7 +584,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_IFETCH.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf840",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -652,7 +594,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_IFETCH.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x4040",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -663,7 +604,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_IFETCH.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x2040",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -674,7 +614,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_RFO.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x3020",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -685,7 +624,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_RFO.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf820",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -696,7 +634,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_RFO.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x4020",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -707,7 +644,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_RFO.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x2020",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -718,7 +654,6 @@
         "EventName": "OFFCORE_RESPONSE.PREFETCH.ANY_DRAM_AND_REMOTE_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x3070",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -729,7 +664,6 @@
         "EventName": "OFFCORE_RESPONSE.PREFETCH.ANY_LLC_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0xf870",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -740,7 +674,6 @@
         "EventName": "OFFCORE_RESPONSE.PREFETCH.OTHER_LOCAL_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x4070",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     },
@@ -751,7 +684,6 @@
         "EventName": "OFFCORE_RESPONSE.PREFETCH.REMOTE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x2070",
-        "Offcore": "1",
         "SampleAfterValue": "100000",
         "UMask": "0x1"
     }

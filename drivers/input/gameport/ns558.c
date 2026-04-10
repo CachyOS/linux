@@ -8,9 +8,6 @@
  * NS558 based standard IBM game port driver for Linux
  */
 
-/*
- */
-
 #include <asm/io.h>
 
 #include <linux/module.h>
@@ -123,7 +120,7 @@ static int ns558_isa_probe(int io)
 			return -EBUSY;
 	}
 
-	ns558 = kzalloc(sizeof(struct ns558), GFP_KERNEL);
+	ns558 = kzalloc_obj(*ns558);
 	port = gameport_allocate_port();
 	if (!ns558 || !port) {
 		printk(KERN_ERR "ns558: Memory allocation failed.\n");
@@ -195,7 +192,7 @@ static int ns558_pnp_probe(struct pnp_dev *dev, const struct pnp_device_id *did)
 	if (!request_region(ioport, iolen, "ns558-pnp"))
 		return -EBUSY;
 
-	ns558 = kzalloc(sizeof(struct ns558), GFP_KERNEL);
+	ns558 = kzalloc_obj(*ns558);
 	port = gameport_allocate_port();
 	if (!ns558 || !port) {
 		printk(KERN_ERR "ns558: Memory allocation failed\n");

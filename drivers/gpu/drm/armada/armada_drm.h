@@ -17,6 +17,7 @@ struct armada_gem_object;
 struct clk;
 struct drm_display_mode;
 struct drm_fb_helper;
+struct drm_fb_helper_surface_size;
 
 static inline void
 armada_updatel(uint32_t val, uint32_t mask, void __iomem *ptr)
@@ -55,7 +56,6 @@ extern const struct armada_variant armada510_ops;
 
 struct armada_private {
 	struct drm_device	drm;
-	struct drm_fb_helper	*fbdev;
 	struct armada_crtc	*dcrtc[2];
 	struct drm_mm		linear; /* protected by linear_lock */
 	struct mutex		linear_lock;
@@ -75,8 +75,15 @@ struct armada_private {
 
 #define drm_to_armada_dev(dev) container_of(dev, struct armada_private, drm)
 
-int armada_fbdev_init(struct drm_device *);
-void armada_fbdev_fini(struct drm_device *);
+#if defined(CONFIG_DRM_FBDEV_EMULATION)
+int armada_fbdev_driver_fbdev_probe(struct drm_fb_helper *fbh,
+				    struct drm_fb_helper_surface_size *sizes);
+#define ARMADA_FBDEV_DRIVER_OPS \
+	.fbdev_probe = armada_fbdev_driver_fbdev_probe
+#else
+#define ARMADA_FBDEV_DRIVER_OPS \
+	.fbdev_probe = NULL
+#endif
 
 int armada_overlay_plane_create(struct drm_device *, unsigned long);
 

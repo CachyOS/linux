@@ -3,12 +3,12 @@
 # Generate tags or cscope files
 # Usage tags.sh <mode>
 #
-# mode may be any of: tags, TAGS, cscope
+# mode may be any of: tags, gtags, TAGS, cscope
 #
 # Uses the following environment variables:
 # SUBARCH, SRCARCH, srctree
 
-if [ "$KBUILD_VERBOSE" = "1" ]; then
+if [[ "$KBUILD_VERBOSE" =~ 1 ]]; then
 	set -x
 fi
 
@@ -16,6 +16,13 @@ fi
 ignore="$(echo "$RCS_FIND_IGNORE" | sed 's|\\||g' )"
 # tags and cscope files should also ignore MODVERSION *.mod.c files
 ignore="$ignore ( -name *.mod.c ) -prune -o"
+
+# ignore arbitrary directories
+if [ -n "${IGNORE_DIRS}" ]; then
+	for i in ${IGNORE_DIRS}; do
+		ignore="${ignore} ( -path $i ) -prune -o"
+	done
+fi
 
 # Use make KBUILD_ABS_SRCTREE=1 {tags|cscope}
 # to force full paths for a non-O= build
@@ -25,11 +32,11 @@ else
 	tree=${srctree}/
 fi
 
-# ignore userspace tools
-if [ -n "$COMPILED_SOURCE" ]; then
-	ignore="$ignore ( -path ./tools ) -prune -o"
-else
-	ignore="$ignore ( -path ${tree}tools ) -prune -o"
+# gtags(1) refuses to index any file outside of its current working dir.
+# If gtags indexing is requested and the build output directory is not
+# the kernel source tree, index all files in absolute-path form.
+if [[ "$1" == "gtags" && -n "${tree}" ]]; then
+	tree=$(realpath "$tree")/
 fi
 
 # Detect if ALLSOURCE_ARCHS is set. If not, we assume SRCARCH
@@ -43,7 +50,7 @@ fi
 find_arch_sources()
 {
 	for i in $archincludedir; do
-		prune="$prune -wholename $i -prune -o"
+		local prune="$prune ( -path $i ) -prune -o"
 	done
 	find ${tree}arch/$1 $ignore $prune -name "$2" -not -type l -print;
 }
@@ -51,7 +58,7 @@ find_arch_sources()
 # find sources in arch/$1/include
 find_arch_include_sources()
 {
-	include=$(find ${tree}arch/$1/ -name include -type d -print);
+	local include=$(find ${tree}arch/$1/ -name include -type d -print);
 	if [ -n "$include" ]; then
 		archincludedir="$archincludedir $include"
 		find $include $ignore -name "$2" -not -type l -print;
@@ -74,21 +81,16 @@ find_other_sources()
 	       -name "$1" -not -type l -print;
 }
 
-find_sources()
-{
-	find_arch_sources $1 "$2"
-}
-
 all_sources()
 {
 	find_arch_include_sources ${SRCARCH} '*.[chS]'
-	if [ ! -z "$archinclude" ]; then
+	if [ -n "$archinclude" ]; then
 		find_arch_include_sources $archinclude '*.[chS]'
 	fi
 	find_include_sources '*.[chS]'
 	for arch in $ALLSOURCE_ARCHS
 	do
-		find_sources $arch '*.[chS]'
+		find_arch_sources $arch '*.[chS]'
 	done
 	find_other_sources '*.[chS]'
 }
@@ -98,9 +100,9 @@ all_compiled_sources()
 	{
 		echo include/generated/autoconf.h
 		find $ignore -name "*.cmd" -exec \
-			grep -Poh '(?(?=^source_.* \K).*|(?=^  \K\S).*(?= \\))' {} \+ |
+			grep -Poh '(?<=^  )\S+|(?<== )\S+[^\\](?=$)' {} \+ |
 		awk '!a[$0]++'
-	} | xargs realpath -es $([ -z "$KBUILD_ABS_SRCTREE" ] && echo --relative-to=.) |
+	} | xargs realpath -esq $([ -z "$KBUILD_ABS_SRCTREE" ] && echo --relative-to=.) |
 	sort -u
 }
 
@@ -118,7 +120,7 @@ all_kconfigs()
 	find ${tree}arch/ -maxdepth 1 $ignore \
 	       -name "Kconfig*" -not -type l -print;
 	for arch in $ALLSOURCE_ARCHS; do
-		find_sources $arch 'Kconfig*'
+		find_arch_sources $arch 'Kconfig*'
 	done
 	find_other_sources 'Kconfig*'
 }
@@ -131,7 +133,7 @@ docscope()
 
 dogtags()
 {
-	all_target_sources | gtags -i -f -
+	all_target_sources | gtags -i -C "${tree:-.}" -f - "$PWD"
 }
 
 # Basic regular expressions with an optional /kind-spec/ for ctags and
@@ -144,15 +146,14 @@ dogtags()
 #   a ^[^#] is prepended by setup_regex unless an anchor is already present
 regex_asm=(
 	'/^\(ENTRY\|_GLOBAL\)([[:space:]]*\([[:alnum:]_\\]*\)).*/\2/'
+	'/^SYM_[[:alnum:]_]*START[[:alnum:]_]*([[:space:]]*\([[:alnum:]_\\]*\)).*/\1/'
 )
 regex_c=(
 	'/^SYSCALL_DEFINE[0-9]([[:space:]]*\([[:alnum:]_]*\).*/sys_\1/'
 	'/^BPF_CALL_[0-9]([[:space:]]*\([[:alnum:]_]*\).*/\1/'
 	'/^COMPAT_SYSCALL_DEFINE[0-9]([[:space:]]*\([[:alnum:]_]*\).*/compat_sys_\1/'
 	'/^TRACE_EVENT([[:space:]]*\([[:alnum:]_]*\).*/trace_\1/'
-	'/^TRACE_EVENT([[:space:]]*\([[:alnum:]_]*\).*/trace_\1_rcuidle/'
 	'/^DEFINE_EVENT([^,)]*,[[:space:]]*\([[:alnum:]_]*\).*/trace_\1/'
-	'/^DEFINE_EVENT([^,)]*,[[:space:]]*\([[:alnum:]_]*\).*/trace_\1_rcuidle/'
 	'/^DEFINE_INSN_CACHE_OPS([[:space:]]*\([[:alnum:]_]*\).*/get_\1_slot/'
 	'/^DEFINE_INSN_CACHE_OPS([[:space:]]*\([[:alnum:]_]*\).*/free_\1_slot/'
 	'/^PAGEFLAG([[:space:]]*\([[:alnum:]_]*\).*/Page\1/'
@@ -188,8 +189,9 @@ regex_c=(
 	'/^PCI_OP_WRITE([[:space:]]*\(\w*\).*[1-4])/pci_bus_write_config_\1/'
 	'/\<DEFINE_\(RT_MUTEX\|MUTEX\|SEMAPHORE\|SPINLOCK\)([[:space:]]*\([[:alnum:]_]*\)/\2/v/'
 	'/\<DEFINE_\(RAW_SPINLOCK\|RWLOCK\|SEQLOCK\)([[:space:]]*\([[:alnum:]_]*\)/\2/v/'
+	'/\<DEFINE_TIMER(\([^,)]*\),/\1/'
 	'/\<DECLARE_\(RWSEM\|COMPLETION\)([[:space:]]*\([[:alnum:]_]\+\)/\2/v/'
-	'/\<DECLARE_BITMAP([[:space:]]*\([[:alnum:]_]*\)/\1/v/'
+	'/\<DECLARE_BITMAP([[:space:]]*\([[:alnum:]_]\+\)/\1/v/'
 	'/\(^\|\s\)\(\|L\|H\)LIST_HEAD([[:space:]]*\([[:alnum:]_]*\)/\3/v/'
 	'/\(^\|\s\)RADIX_TREE([[:space:]]*\([[:alnum:]_]*\)/\2/v/'
 	'/\<DEFINE_PER_CPU([^,]*,[[:space:]]*\([[:alnum:]_]*\)/\1/v/'
@@ -210,6 +212,16 @@ regex_c=(
 	'/\<\(DEFINE\|DECLARE\)_STATIC_KEY_\(TRUE\|FALSE\)\(\|_RO\)([[:space:]]*\([[:alnum:]_]\+\)/\4/'
 	'/^SEQCOUNT_LOCKTYPE(\([^,]*\),[[:space:]]*\([^,]*\),[^)]*)/seqcount_\2_t/'
 	'/^SEQCOUNT_LOCKTYPE(\([^,]*\),[[:space:]]*\([^,]*\),[^)]*)/seqcount_\2_init/'
+	'/^\<DECLARE_IDTENTRY[[:alnum:]_]*([^,)]*,[[:space:]]*\([[:alnum:]_]\+\)/\1/'
+	'/^\<DEFINE_IDTENTRY[[:alnum:]_]*([[:space:]]*\([[:alnum:]_]\+\)/\1/'
+	'/^\<DEFINE_FREE(\([[:alnum:]_]\+\)/cleanup_\1/'
+	'/^\<DEFINE_CLASS(\([[:alnum:]_]\+\)/class_\1/'
+	'/^\<EXTEND_CLASS(\([[:alnum:]_]\+\),[[:space:]]*\([[:alnum:]_]\+\)/class_\1\2/'
+	'/^\<DEFINE_GUARD(\([[:alnum:]_]\+\)/class_\1/'
+	'/^\<DEFINE_GUARD_COND(\([[:alnum:]_]\+\),[[:space:]]*\([[:alnum:]_]\+\)/class_\1\2/'
+	'/^\<DEFINE_LOCK_GUARD_[[:digit:]](\([[:alnum:]_]\+\)/class_\1/'
+	'/^\<DEFINE_LOCK_GUARD_[[:digit:]]_COND(\([[:alnum:]_]\+\),[[:space:]]*\([[:alnum:]_]\+\)/class_\1\2/'
+	'/^context_lock_struct(\([^,)]*\)[^)]*)/struct \1/'
 )
 regex_kconfig=(
 	'/^[[:blank:]]*\(menu\|\)config[[:blank:]]\+\([[:alnum:]_]\+\)/\2/'
@@ -255,26 +267,39 @@ exuberant()
 	    CTAGS_EXTRA="extras"
 	fi
 	setup_regex exuberant asm c
-	all_target_sources | xargs $1 -a                        \
-	-I __initdata,__exitdata,__initconst,__ro_after_init	\
-	-I __initdata_memblock					\
-	-I __refdata,__attribute,__maybe_unused,__always_unused \
-	-I __acquires,__releases,__deprecated,__always_inline	\
-	-I __read_mostly,__aligned,____cacheline_aligned        \
-	-I ____cacheline_aligned_in_smp                         \
-	-I __cacheline_aligned,__cacheline_aligned_in_smp	\
-	-I ____cacheline_internodealigned_in_smp                \
-	-I __used,__packed,__packed2__,__must_check,__must_hold	\
-	-I EXPORT_SYMBOL,EXPORT_SYMBOL_GPL,ACPI_EXPORT_SYMBOL   \
-	-I DEFINE_TRACE,EXPORT_TRACEPOINT_SYMBOL,EXPORT_TRACEPOINT_SYMBOL_GPL \
-	-I static,const						\
+	# identifiers to ignore by ctags
+	local ign=(
+		ACPI_EXPORT_SYMBOL
+		DECLARE_BITMAP
+		DEFINE_{TRACE,MUTEX,TIMER}
+		EXPORT_SYMBOL EXPORT_SYMBOL_GPL
+		EXPORT_TRACEPOINT_SYMBOL EXPORT_TRACEPOINT_SYMBOL_GPL
+		____cacheline_aligned ____cacheline_aligned_in_smp
+		____cacheline_internodealigned_in_smp
+		__acquires __aligned __always_inline __always_unused
+		__attribute
+		__cacheline_aligned __cacheline_aligned_in_smp
+		__deprecated
+		__exitdata
+		__initconst __initdata __initdata_memblock
+		__maybe_unused __must_check __must_hold
+		__packed __packed2__
+		__read_mostly __refdata __releases __ro_after_init
+		__used
+		const
+		static
+	)
+	all_target_sources | \
+	xargs $1 -a -I "$(IFS=','; echo "${ign[*]}")" \
 	--$CTAGS_EXTRA=+fq --c-kinds=+px --fields=+iaS --langmap=c:+.h \
 	"${regex[@]}"
 
-	setup_regex exuberant kconfig
-	all_kconfigs | xargs $1 -a                              \
-	--langdef=kconfig --language-force=kconfig "${regex[@]}"
-
+	KCONFIG_ARGS=()
+	if ! $1 --list-languages | grep -iq kconfig; then
+		setup_regex exuberant kconfig
+		KCONFIG_ARGS=(--langdef=kconfig --language-force=kconfig "${regex[@]}")
+	fi
+	all_kconfigs | xargs $1 -a "${KCONFIG_ARGS[@]}"
 }
 
 emacs()
@@ -320,7 +345,7 @@ case "$1" in
 
 	"tags")
 		rm -f tags
-		xtags ctags
+		xtags ${CTAGS:-ctags}
 		remove_structs=y
 		;;
 

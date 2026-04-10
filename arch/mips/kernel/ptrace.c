@@ -31,6 +31,7 @@
 #include <linux/seccomp.h>
 #include <linux/ftrace.h>
 
+#include <asm/branch.h>
 #include <asm/byteorder.h>
 #include <asm/cpu.h>
 #include <asm/cpu-info.h>
@@ -47,6 +48,12 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/syscalls.h>
+
+unsigned long exception_ip(struct pt_regs *regs)
+{
+	return exception_epc(regs);
+}
+EXPORT_SYMBOL(exception_ip);
 
 /*
  * Called by kernel/ptrace.c when detaching..
@@ -531,10 +538,11 @@ static int fpr_set(struct task_struct *target,
 		ptrace_setfcr31(target, fcr31);
 	}
 
-	if (count > 0)
-		err = user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
-						fir_pos,
-						fir_pos + sizeof(u32));
+	if (count > 0) {
+		user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
+					  fir_pos, fir_pos + sizeof(u32));
+		return 0;
+	}
 
 	return err;
 }
@@ -914,58 +922,60 @@ static const struct pt_regs_offset regoffset_table[] = {
  */
 int regs_query_register_offset(const char *name)
 {
-        const struct pt_regs_offset *roff;
-        for (roff = regoffset_table; roff->name != NULL; roff++)
-                if (!strcmp(roff->name, name))
-                        return roff->offset;
-        return -EINVAL;
+	const struct pt_regs_offset *roff;
+
+	for (roff = regoffset_table; roff->name != NULL; roff++)
+		if (!strcmp(roff->name, name))
+			return roff->offset;
+
+	return -EINVAL;
 }
 
 #if defined(CONFIG_32BIT) || defined(CONFIG_MIPS32_O32)
 
 static const struct user_regset mips_regsets[] = {
 	[REGSET_GPR] = {
-		.core_note_type	= NT_PRSTATUS,
+		USER_REGSET_NOTE_TYPE(PRSTATUS),
 		.n		= ELF_NGREG,
 		.size		= sizeof(unsigned int),
 		.align		= sizeof(unsigned int),
-		.regset_get		= gpr32_get,
+		.regset_get	= gpr32_get,
 		.set		= gpr32_set,
 	},
 	[REGSET_DSP] = {
-		.core_note_type	= NT_MIPS_DSP,
+		USER_REGSET_NOTE_TYPE(MIPS_DSP),
 		.n		= NUM_DSP_REGS + 1,
 		.size		= sizeof(u32),
 		.align		= sizeof(u32),
-		.regset_get		= dsp32_get,
+		.regset_get	= dsp32_get,
 		.set		= dsp32_set,
 		.active		= dsp_active,
 	},
 #ifdef CONFIG_MIPS_FP_SUPPORT
 	[REGSET_FPR] = {
-		.core_note_type	= NT_PRFPREG,
+		USER_REGSET_NOTE_TYPE(PRFPREG),
 		.n		= ELF_NFPREG,
 		.size		= sizeof(elf_fpreg_t),
 		.align		= sizeof(elf_fpreg_t),
-		.regset_get		= fpr_get,
+		.regset_get	= fpr_get,
 		.set		= fpr_set,
 	},
 	[REGSET_FP_MODE] = {
-		.core_note_type	= NT_MIPS_FP_MODE,
+		USER_REGSET_NOTE_TYPE(MIPS_FP_MODE),
 		.n		= 1,
 		.size		= sizeof(int),
 		.align		= sizeof(int),
-		.regset_get		= fp_mode_get,
+		.regset_get	= fp_mode_get,
 		.set		= fp_mode_set,
 	},
 #endif
 #ifdef CONFIG_CPU_HAS_MSA
 	[REGSET_MSA] = {
-		.core_note_type	= NT_MIPS_MSA,
+		USER_REGSET_NOTE_TYPE(MIPS_MSA),
 		.n		= NUM_FPU_REGS + 1,
 		.size		= 16,
 		.align		= 16,
-		.regset_get		= msa_get,
+		.regset_get	= msa_get,
 		.set		= msa_set,
 	},
 #endif
@@ -985,47 +995,47 @@ static const struct user_regset_view user_mips_view = {
 
 static const struct user_regset mips64_regsets[] = {
 	[REGSET_GPR] = {
-		.core_note_type	= NT_PRSTATUS,
+		USER_REGSET_NOTE_TYPE(PRSTATUS),
 		.n		= ELF_NGREG,
 		.size		= sizeof(unsigned long),
 		.align		= sizeof(unsigned long),
-		.regset_get		= gpr64_get,
+		.regset_get	= gpr64_get,
 		.set		= gpr64_set,
 	},
 	[REGSET_DSP] = {
-		.core_note_type	= NT_MIPS_DSP,
+		USER_REGSET_NOTE_TYPE(MIPS_DSP),
 		.n		= NUM_DSP_REGS + 1,
 		.size		= sizeof(u64),
 		.align		= sizeof(u64),
-		.regset_get		= dsp64_get,
+		.regset_get	= dsp64_get,
 		.set		= dsp64_set,
 		.active		= dsp_active,
 	},
 #ifdef CONFIG_MIPS_FP_SUPPORT
 	[REGSET_FP_MODE] = {
-		.core_note_type	= NT_MIPS_FP_MODE,
+		USER_REGSET_NOTE_TYPE(MIPS_FP_MODE),
 		.n		= 1,
 		.size		= sizeof(int),
 		.align		= sizeof(int),
-		.regset_get		= fp_mode_get,
+		.regset_get	= fp_mode_get,
 		.set		= fp_mode_set,
 	},
 	[REGSET_FPR] = {
-		.core_note_type	= NT_PRFPREG,
+		USER_REGSET_NOTE_TYPE(PRFPREG),
 		.n		= ELF_NFPREG,
 		.size		= sizeof(elf_fpreg_t),
 		.align		= sizeof(elf_fpreg_t),
-		.regset_get		= fpr_get,
+		.regset_get	= fpr_get,
 		.set		= fpr_set,
 	},
 #endif
 #ifdef CONFIG_CPU_HAS_MSA
 	[REGSET_MSA] = {
-		.core_note_type	= NT_MIPS_MSA,
+		USER_REGSET_NOTE_TYPE(MIPS_MSA),
 		.n		= NUM_FPU_REGS + 1,
 		.size		= 16,
 		.align		= 16,
-		.regset_get		= msa_get,
+		.regset_get	= msa_get,
 		.set		= msa_set,
 	},
 #endif
@@ -1309,51 +1319,32 @@ long arch_ptrace(struct task_struct *child, long request,
  * Notification of system call entry/exit
  * - triggered by current->work.syscall_trace
  */
-asmlinkage long syscall_trace_enter(struct pt_regs *regs, long syscall)
+asmlinkage long syscall_trace_enter(struct pt_regs *regs)
 {
 	user_exit();
-
-	current_thread_info()->syscall = syscall;
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE)) {
 		if (ptrace_report_syscall_entry(regs))
 			return -1;
-		syscall = current_thread_info()->syscall;
 	}
 
-#ifdef CONFIG_SECCOMP
-	if (unlikely(test_thread_flag(TIF_SECCOMP))) {
-		int ret, i;
-		struct seccomp_data sd;
-		unsigned long args[6];
-
-		sd.nr = syscall;
-		sd.arch = syscall_get_arch(current);
-		syscall_get_arguments(current, regs, args);
-		for (i = 0; i < 6; i++)
-			sd.args[i] = args[i];
-		sd.instruction_pointer = KSTK_EIP(current);
-
-		ret = __secure_computing(&sd);
-		if (ret == -1)
-			return ret;
-		syscall = current_thread_info()->syscall;
-	}
-#endif
+	if (secure_computing())
+		return -1;
 
 	if (unlikely(test_thread_flag(TIF_SYSCALL_TRACEPOINT)))
 		trace_sys_enter(regs, regs->regs[2]);
 
-	audit_syscall_entry(syscall, regs->regs[4], regs->regs[5],
+	audit_syscall_entry(current_thread_info()->syscall,
+			    regs->regs[4], regs->regs[5],
 			    regs->regs[6], regs->regs[7]);
 
 	/*
 	 * Negative syscall numbers are mistaken for rejected syscalls, but
 	 * won't have had the return value set appropriately, so we do so now.
 	 */
-	if (syscall < 0)
+	if (current_thread_info()->syscall < 0)
 		syscall_set_return_value(current, regs, -ENOSYS, 0);
-	return syscall;
+	return current_thread_info()->syscall;
 }
 
 /*
@@ -1362,7 +1353,7 @@ asmlinkage long syscall_trace_enter(struct pt_regs *regs, long syscall)
  */
 asmlinkage void syscall_trace_leave(struct pt_regs *regs)
 {
-        /*
+	/*
 	 * We may come here right after calling schedule_user()
 	 * or do_notify_resume(), in which case we can be in RCU
 	 * user mode.

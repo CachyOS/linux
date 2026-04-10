@@ -45,7 +45,7 @@ struct adis16080_state {
 	const struct adis16080_chip_info *info;
 	struct mutex			lock;
 
-	__be16 buf ____cacheline_aligned;
+	__be16 buf __aligned(IIO_DMA_MINALIGN);
 };
 
 static int adis16080_read_sample(struct iio_dev *indio_dev,
@@ -214,7 +214,7 @@ static int adis16080_probe(struct spi_device *spi)
 static const struct spi_device_id adis16080_ids[] = {
 	{ "adis16080", ID_ADIS16080 },
 	{ "adis16100", ID_ADIS16100 },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, adis16080_ids);
 

@@ -43,18 +43,10 @@ static struct ebt_replace_kernel initial_table = {
 	.entries	= (char *)initial_chains,
 };
 
-static int check(const struct ebt_table_info *info, unsigned int valid_hooks)
-{
-	if (valid_hooks & ~FILTER_VALID_HOOKS)
-		return -EINVAL;
-	return 0;
-}
-
 static const struct ebt_table frame_filter = {
 	.name		= "filter",
 	.table		= &initial_table,
 	.valid_hooks	= FILTER_VALID_HOOKS,
-	.check		= check,
 	.me		= THIS_MODULE,
 };
 
@@ -124,3 +116,4 @@ static void __exit ebtable_filter_fini(void)
 module_init(ebtable_filter_init);
 module_exit(ebtable_filter_fini);
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("ebtables legacy filter table");

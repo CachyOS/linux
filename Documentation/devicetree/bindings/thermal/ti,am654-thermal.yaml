@@ -4,10 +4,12 @@
 $id: http://devicetree.org/schemas/thermal/ti,am654-thermal.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Texas Instruments AM654 VTM (DTS) binding
+title: Texas Instruments AM654 VTM (DTS)
 
 maintainers:
   - Keerthy <j-keerthy@ti.com>
+
+$ref: thermal-sensor.yaml#
 
 properties:
   compatible:
@@ -26,9 +28,8 @@ required:
   - compatible
   - reg
   - power-domains
-  - "#thermal-sensor-cells"
 
-additionalProperties: false
+unevaluatedProperties: false
 
 examples:
   - |
@@ -46,11 +47,11 @@ examples:
         thermal-sensors = <&vtm0 0>;
 
         trips {
-                mpu0_crit: mpu0_crit {
-                        temperature = <125000>; /* milliCelsius */
-                        hysteresis = <2000>; /* milliCelsius */
-                        type = "critical";
-                };
+            mpu0_crit: mpu0_crit {
+                temperature = <125000>; /* milliCelsius */
+                hysteresis = <2000>; /* milliCelsius */
+                type = "critical";
+            };
         };
     };
 ...

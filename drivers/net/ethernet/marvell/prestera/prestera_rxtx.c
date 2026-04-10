@@ -5,9 +5,6 @@
 #include <linux/dmapool.h>
 #include <linux/etherdevice.h>
 #include <linux/if_vlan.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
-#include <linux/of.h>
 #include <linux/platform_device.h>
 
 #include "prestera_dsa.h"
@@ -99,7 +96,7 @@ struct prestera_sdma {
 	struct dma_pool *desc_pool;
 	struct work_struct tx_work;
 	struct napi_struct rx_napi;
-	struct net_device napi_dev;
+	struct net_device *napi_dev;
 	u32 map_addr;
 	u64 dma_mask;
 	/* protect SDMA with concurrent access from multiple CPUs */
@@ -382,7 +379,7 @@ static int prestera_sdma_rx_init(struct prestera_sdma *sdma)
 		struct prestera_sdma_buf *head, *tail, *next, *prev;
 		struct prestera_rx_ring *ring = &sdma->rx_ring[q];
 
-		ring->bufs = kmalloc_array(bnum, sizeof(*head), GFP_KERNEL);
+		ring->bufs = kmalloc_objs(*head, bnum);
 		if (!ring->bufs)
 			return -ENOMEM;
 
@@ -532,7 +529,7 @@ static int prestera_sdma_tx_init(struct prestera_sdma *sdma)
 	INIT_WORK(&sdma->tx_work, prestera_sdma_tx_recycle_work_fn);
 	spin_lock_init(&sdma->tx_lock);
 
-	tx_ring->bufs = kmalloc_array(bnum, sizeof(*head), GFP_KERNEL);
+	tx_ring->bufs = kmalloc_objs(*head, bnum);
 	if (!tx_ring->bufs)
 		return -ENOMEM;
 
@@ -657,13 +654,21 @@ static int prestera_sdma_switch_init(struct prestera_switch *sw)
 	if (err)
 		goto err_evt_register;
 
-	init_dummy_netdev(&sdma->napi_dev);
+	sdma->napi_dev = alloc_netdev_dummy(0);
+	if (!sdma->napi_dev) {
+		dev_err(dev, "not able to initialize dummy device\n");
+		err = -ENOMEM;
+		goto err_alloc_dummy;
+	}
 
-	netif_napi_add(&sdma->napi_dev, &sdma->rx_napi, prestera_sdma_rx_poll, 64);
+	netif_napi_add(sdma->napi_dev, &sdma->rx_napi, prestera_sdma_rx_poll);
 	napi_enable(&sdma->rx_napi);
 
 	return 0;
 
+err_alloc_dummy:
+	prestera_hw_event_handler_unregister(sw, PRESTERA_EVENT_TYPE_RXTX,
+					     prestera_rxtx_handle_event);
 err_evt_register:
 err_tx_init:
 	prestera_sdma_tx_fini(sdma);
@@ -680,6 +685,7 @@ static void prestera_sdma_switch_fini(struct prestera_switch *sw)
 
 	napi_disable(&sdma->rx_napi);
 	netif_napi_del(&sdma->rx_napi);
+	free_netdev(sdma->napi_dev);
 	prestera_hw_event_handler_unregister(sw, PRESTERA_EVENT_TYPE_RXTX,
 					     prestera_rxtx_handle_event);
 	prestera_sdma_tx_fini(sdma);
@@ -776,14 +782,19 @@ tx_done:
 int prestera_rxtx_switch_init(struct prestera_switch *sw)
 {
 	struct prestera_rxtx *rxtx;
+	int err;
 
-	rxtx = kzalloc(sizeof(*rxtx), GFP_KERNEL);
+	rxtx = kzalloc_obj(*rxtx);
 	if (!rxtx)
 		return -ENOMEM;
 
 	sw->rxtx = rxtx;
 
-	return prestera_sdma_switch_init(sw);
+	err = prestera_sdma_switch_init(sw);
+	if (err)
+		kfree(rxtx);
+
+	return err;
 }
 
 void prestera_rxtx_switch_fini(struct prestera_switch *sw)

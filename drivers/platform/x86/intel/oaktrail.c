@@ -28,7 +28,6 @@
 #include <linux/backlight.h>
 #include <linux/dmi.h>
 #include <linux/err.h>
-#include <linux/fb.h>
 #include <linux/i2c.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -250,7 +249,7 @@ static int oaktrail_backlight_init(void)
 	oaktrail_bl_device = bd;
 
 	bd->props.brightness = get_backlight_brightness(bd);
-	bd->props.power = FB_BLANK_UNBLANK;
+	bd->props.power = BACKLIGHT_POWER_ON;
 	backlight_update_status(bd);
 
 	return 0;
@@ -266,17 +265,11 @@ static int oaktrail_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int oaktrail_remove(struct platform_device *pdev)
-{
-	return 0;
-}
-
 static struct platform_driver oaktrail_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
 	},
 	.probe	= oaktrail_probe,
-	.remove	= oaktrail_remove,
 };
 
 static int dmi_check_cb(const struct dmi_system_id *id)
@@ -317,7 +310,7 @@ static int __init oaktrail_init(void)
 		goto err_driver_reg;
 	}
 
-	oaktrail_device = platform_device_alloc(DRIVER_NAME, -1);
+	oaktrail_device = platform_device_alloc(DRIVER_NAME, PLATFORM_DEVID_NONE);
 	if (!oaktrail_device) {
 		pr_warn("Unable to allocate platform device\n");
 		ret = -ENOMEM;
@@ -371,7 +364,7 @@ static void __exit oaktrail_cleanup(void)
 module_init(oaktrail_init);
 module_exit(oaktrail_cleanup);
 
-MODULE_AUTHOR("Yin Kangkai (kangkai.yin@intel.com)");
+MODULE_AUTHOR("Yin Kangkai <kangkai.yin@intel.com>");
 MODULE_DESCRIPTION("Intel Oaktrail Platform ACPI Extras");
 MODULE_VERSION(DRIVER_VERSION);
 MODULE_LICENSE("GPL");

@@ -12,10 +12,10 @@
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/regulator/consumer.h>
-#include <linux/export.h>
 #include <linux/platform_device.h>
 #include <linux/string.h>
 #include <linux/of.h>
+#include <linux/of_graph.h>
 #include <linux/component.h>
 
 #include <video/omapfb_dss.h>
@@ -375,17 +375,16 @@ static int sdi_probe(struct platform_device *pdev)
 	return component_add(&pdev->dev, &sdi_component_ops);
 }
 
-static int sdi_remove(struct platform_device *pdev)
+static void sdi_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &sdi_component_ops);
-	return 0;
 }
 
 static struct platform_driver omap_sdi_driver = {
 	.probe		= sdi_probe,
-	.remove         = sdi_remove,
-	.driver         = {
-		.name   = "omapdss_sdi",
+	.remove		= sdi_remove,
+	.driver		= {
+		.name	= "omapdss_sdi",
 		.suppress_bind_attrs = true,
 	},
 };
@@ -406,7 +405,7 @@ int sdi_init_port(struct platform_device *pdev, struct device_node *port)
 	u32 datapairs;
 	int r;
 
-	ep = omapdss_of_get_next_endpoint(port, NULL);
+	ep = of_graph_get_next_port_endpoint(port, NULL);
 	if (!ep)
 		return 0;
 

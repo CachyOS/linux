@@ -31,10 +31,19 @@
 static int rxe_mcast_add(struct rxe_dev *rxe, union ib_gid *mgid)
 {
 	unsigned char ll_addr[ETH_ALEN];
+	struct net_device *ndev;
+	int ret;
+
+	ndev = rxe_ib_device_get_netdev(&rxe->ib_dev);
+	if (!ndev)
+		return -ENODEV;
 
 	ipv6_eth_mc_map((struct in6_addr *)mgid->raw, ll_addr);
 
-	return dev_mc_add(rxe->ndev, ll_addr);
+	ret = dev_mc_add(ndev, ll_addr);
+	dev_put(ndev);
+
+	return ret;
 }
 
 /**
@@ -47,10 +56,19 @@ static int rxe_mcast_add(struct rxe_dev *rxe, union ib_gid *mgid)
 static int rxe_mcast_del(struct rxe_dev *rxe, union ib_gid *mgid)
 {
 	unsigned char ll_addr[ETH_ALEN];
+	struct net_device *ndev;
+	int ret;
+
+	ndev = rxe_ib_device_get_netdev(&rxe->ib_dev);
+	if (!ndev)
+		return -ENODEV;
 
 	ipv6_eth_mc_map((struct in6_addr *)mgid->raw, ll_addr);
 
-	return dev_mc_del(rxe->ndev, ll_addr);
+	ret = dev_mc_del(ndev, ll_addr);
+	dev_put(ndev);
+
+	return ret;
 }
 
 /**
@@ -205,7 +223,7 @@ static struct rxe_mcg *rxe_get_mcg(struct rxe_dev *rxe, union ib_gid *mgid)
 	}
 
 	/* speculative alloc of new mcg */
-	mcg = kzalloc(sizeof(*mcg), GFP_KERNEL);
+	mcg = kzalloc_obj(*mcg);
 	if (!mcg) {
 		err = -ENOMEM;
 		goto err_dec;
@@ -345,7 +363,7 @@ static int rxe_attach_mcg(struct rxe_mcg *mcg, struct rxe_qp *qp)
 	spin_unlock_bh(&rxe->mcg_lock);
 
 	/* speculative alloc new mca without using GFP_ATOMIC */
-	mca = kzalloc(sizeof(*mca), GFP_KERNEL);
+	mca = kzalloc_obj(*mca);
 	if (!mca)
 		return -ENOMEM;
 

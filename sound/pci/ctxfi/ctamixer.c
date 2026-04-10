@@ -205,6 +205,7 @@ static int amixer_rsc_init(struct amixer *amixer,
 
 	/* Set amixer specific operations */
 	amixer->rsc.ops = &amixer_basic_rsc_ops;
+	amixer->rsc.conj = 0;
 	amixer->ops = &amixer_ops;
 	amixer->input = NULL;
 	amixer->sum = NULL;
@@ -231,7 +232,6 @@ static int get_amixer_rsc(struct amixer_mgr *mgr,
 	int err, i;
 	unsigned int idx;
 	struct amixer *amixer;
-	unsigned long flags;
 
 	*ramixer = NULL;
 
@@ -243,15 +243,15 @@ static int get_amixer_rsc(struct amixer_mgr *mgr,
 	/* Check whether there are sufficient
 	 * amixer resources to meet request. */
 	err = 0;
-	spin_lock_irqsave(&mgr->mgr_lock, flags);
-	for (i = 0; i < desc->msr; i++) {
-		err = mgr_get_resource(&mgr->mgr, 1, &idx);
-		if (err)
-			break;
+	scoped_guard(spinlock_irqsave, &mgr->mgr_lock) {
+		for (i = 0; i < desc->msr; i++) {
+			err = mgr_get_resource(&mgr->mgr, 1, &idx);
+			if (err)
+				break;
 
-		amixer->idx[i] = idx;
+			amixer->idx[i] = idx;
+		}
 	}
-	spin_unlock_irqrestore(&mgr->mgr_lock, flags);
 	if (err) {
 		dev_err(mgr->card->dev,
 			"Can't meet AMIXER resource request!\n");
@@ -267,38 +267,36 @@ static int get_amixer_rsc(struct amixer_mgr *mgr,
 	return 0;
 
 error:
-	spin_lock_irqsave(&mgr->mgr_lock, flags);
-	for (i--; i >= 0; i--)
-		mgr_put_resource(&mgr->mgr, 1, amixer->idx[i]);
+	scoped_guard(spinlock_irqsave, &mgr->mgr_lock) {
+		for (i--; i >= 0; i--)
+			mgr_put_resource(&mgr->mgr, 1, amixer->idx[i]);
+	}
 
-	spin_unlock_irqrestore(&mgr->mgr_lock, flags);
 	kfree(amixer);
 	return err;
 }
 
 static int put_amixer_rsc(struct amixer_mgr *mgr, struct amixer *amixer)
 {
-	unsigned long flags;
 	int i;
 
-	spin_lock_irqsave(&mgr->mgr_lock, flags);
-	for (i = 0; i < amixer->rsc.msr; i++)
-		mgr_put_resource(&mgr->mgr, 1, amixer->idx[i]);
-
-	spin_unlock_irqrestore(&mgr->mgr_lock, flags);
+	scoped_guard(spinlock_irqsave, &mgr->mgr_lock) {
+		for (i = 0; i < amixer->rsc.msr; i++)
+			mgr_put_resource(&mgr->mgr, 1, amixer->idx[i]);
+	}
 	amixer_rsc_uninit(amixer);
 	kfree(amixer);
 
 	return 0;
 }
 
-int amixer_mgr_create(struct hw *hw, struct amixer_mgr **ramixer_mgr)
+int amixer_mgr_create(struct hw *hw, void **ramixer_mgr)
 {
 	int err;
 	struct amixer_mgr *amixer_mgr;
 
 	*ramixer_mgr = NULL;
-	amixer_mgr = kzalloc(sizeof(*amixer_mgr), GFP_KERNEL);
+	amixer_mgr = kzalloc_obj(*amixer_mgr);
 	if (!amixer_mgr)
 		return -ENOMEM;
 
@@ -321,8 +319,9 @@ error:
 	return err;
 }
 
-int amixer_mgr_destroy(struct amixer_mgr *amixer_mgr)
+int amixer_mgr_destroy(void *ptr)
 {
+	struct amixer_mgr *amixer_mgr = ptr;
 	rsc_mgr_uninit(&amixer_mgr->mgr);
 	kfree(amixer_mgr);
 	return 0;
@@ -369,6 +368,7 @@ static int sum_rsc_init(struct sum *sum,
 		return err;
 
 	sum->rsc.ops = &sum_basic_rsc_ops;
+	sum->rsc.conj = 0;
 
 	return 0;
 }
@@ -386,7 +386,6 @@ static int get_sum_rsc(struct sum_mgr *mgr,
 	int err, i;
 	unsigned int idx;
 	struct sum *sum;
-	unsigned long flags;
 
 	*rsum = NULL;
 
@@ -397,15 +396,15 @@ static int get_sum_rsc(struct sum_mgr *mgr,
 
 	/* Check whether there are sufficient sum resources to meet request. */
 	err = 0;
-	spin_lock_irqsave(&mgr->mgr_lock, flags);
-	for (i = 0; i < desc->msr; i++) {
-		err = mgr_get_resource(&mgr->mgr, 1, &idx);
-		if (err)
-			break;
+	scoped_guard(spinlock_irqsave, &mgr->mgr_lock) {
+		for (i = 0; i < desc->msr; i++) {
+			err = mgr_get_resource(&mgr->mgr, 1, &idx);
+			if (err)
+				break;
 
-		sum->idx[i] = idx;
+			sum->idx[i] = idx;
+		}
 	}
-	spin_unlock_irqrestore(&mgr->mgr_lock, flags);
 	if (err) {
 		dev_err(mgr->card->dev,
 			"Can't meet SUM resource request!\n");
@@ -421,38 +420,35 @@ static int get_sum_rsc(struct sum_mgr *mgr,
 	return 0;
 
 error:
-	spin_lock_irqsave(&mgr->mgr_lock, flags);
-	for (i--; i >= 0; i--)
-		mgr_put_resource(&mgr->mgr, 1, sum->idx[i]);
-
-	spin_unlock_irqrestore(&mgr->mgr_lock, flags);
+	scoped_guard(spinlock_irqsave, &mgr->mgr_lock) {
+		for (i--; i >= 0; i--)
+			mgr_put_resource(&mgr->mgr, 1, sum->idx[i]);
+	}
 	kfree(sum);
 	return err;
 }
 
 static int put_sum_rsc(struct sum_mgr *mgr, struct sum *sum)
 {
-	unsigned long flags;
 	int i;
 
-	spin_lock_irqsave(&mgr->mgr_lock, flags);
-	for (i = 0; i < sum->rsc.msr; i++)
-		mgr_put_resource(&mgr->mgr, 1, sum->idx[i]);
-
-	spin_unlock_irqrestore(&mgr->mgr_lock, flags);
+	scoped_guard(spinlock_irqsave, &mgr->mgr_lock) {
+		for (i = 0; i < sum->rsc.msr; i++)
+			mgr_put_resource(&mgr->mgr, 1, sum->idx[i]);
+	}
 	sum_rsc_uninit(sum);
 	kfree(sum);
 
 	return 0;
 }
 
-int sum_mgr_create(struct hw *hw, struct sum_mgr **rsum_mgr)
+int sum_mgr_create(struct hw *hw, void **rsum_mgr)
 {
 	int err;
 	struct sum_mgr *sum_mgr;
 
 	*rsum_mgr = NULL;
-	sum_mgr = kzalloc(sizeof(*sum_mgr), GFP_KERNEL);
+	sum_mgr = kzalloc_obj(*sum_mgr);
 	if (!sum_mgr)
 		return -ENOMEM;
 
@@ -475,8 +471,9 @@ error:
 	return err;
 }
 
-int sum_mgr_destroy(struct sum_mgr *sum_mgr)
+int sum_mgr_destroy(void *ptr)
 {
+	struct sum_mgr *sum_mgr = ptr;
 	rsc_mgr_uninit(&sum_mgr->mgr);
 	kfree(sum_mgr);
 	return 0;

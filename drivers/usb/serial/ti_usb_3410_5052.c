@@ -314,11 +314,12 @@ static bool ti_tx_empty(struct usb_serial_port *port);
 static void ti_throttle(struct tty_struct *tty);
 static void ti_unthrottle(struct tty_struct *tty);
 static void ti_set_termios(struct tty_struct *tty,
-		struct usb_serial_port *port, struct ktermios *old_termios);
+			   struct usb_serial_port *port,
+			   const struct ktermios *old_termios);
 static int ti_tiocmget(struct tty_struct *tty);
 static int ti_tiocmset(struct tty_struct *tty,
 		unsigned int set, unsigned int clear);
-static void ti_break(struct tty_struct *tty, int break_state);
+static int ti_break(struct tty_struct *tty, int break_state);
 static void ti_interrupt_callback(struct urb *urb);
 static void ti_bulk_in_callback(struct urb *urb);
 static void ti_bulk_out_callback(struct urb *urb);
@@ -416,7 +417,6 @@ static const struct usb_device_id ti_id_table_combined[] = {
 
 static struct usb_serial_driver ti_1port_device = {
 	.driver = {
-		.owner		= THIS_MODULE,
 		.name		= "ti_usb_3410_5052_1",
 	},
 	.description		= "TI USB 3410 1 port adapter",
@@ -449,7 +449,6 @@ static struct usb_serial_driver ti_1port_device = {
 
 static struct usb_serial_driver ti_2port_device = {
 	.driver = {
-		.owner		= THIS_MODULE,
 		.name		= "ti_usb_3410_5052_2",
 	},
 	.description		= "TI USB 5052 2 port adapter",
@@ -520,7 +519,7 @@ static int ti_startup(struct usb_serial *serial)
 		dev->descriptor.bNumConfigurations,
 		dev->actconfig->desc.bConfigurationValue);
 
-	tdev = kzalloc(sizeof(struct ti_device), GFP_KERNEL);
+	tdev = kzalloc_obj(struct ti_device);
 	if (!tdev)
 		return -ENOMEM;
 
@@ -599,7 +598,7 @@ static int ti_port_probe(struct usb_serial_port *port)
 {
 	struct ti_port *tport;
 
-	tport = kzalloc(sizeof(*tport), GFP_KERNEL);
+	tport = kzalloc_obj(*tport);
 	if (!tport)
 		return -ENOMEM;
 
@@ -730,11 +729,6 @@ static int ti_open(struct tty_struct *tty, struct usb_serial_port *port)
 
 	/* start read urb */
 	urb = port->read_urb;
-	if (!urb) {
-		dev_err(&port->dev, "%s - no read urb\n", __func__);
-		status = -EINVAL;
-		goto unlink_int_urb;
-	}
 	tport->tp_read_urb_state = TI_READ_URB_RUNNING;
 	urb->context = tport;
 	status = usb_submit_urb(urb, GFP_KERNEL);
@@ -892,7 +886,8 @@ static void ti_unthrottle(struct tty_struct *tty)
 }
 
 static void ti_set_termios(struct tty_struct *tty,
-		struct usb_serial_port *port, struct ktermios *old_termios)
+			   struct usb_serial_port *port,
+			   const struct ktermios *old_termios)
 {
 	struct ti_port *tport = usb_get_serial_port_data(port);
 	struct ti_uart_config *config;
@@ -902,7 +897,7 @@ static void ti_set_termios(struct tty_struct *tty,
 	u16 wbaudrate;
 	u16 wflags = 0;
 
-	config = kmalloc(sizeof(*config), GFP_KERNEL);
+	config = kmalloc_obj(*config);
 	if (!config)
 		return;
 
@@ -1069,7 +1064,7 @@ static int ti_tiocmset(struct tty_struct *tty,
 }
 
 
-static void ti_break(struct tty_struct *tty, int break_state)
+static int ti_break(struct tty_struct *tty, int break_state)
 {
 	struct usb_serial_port *port = tty->driver_data;
 	struct ti_port *tport = usb_get_serial_port_data(port);
@@ -1081,8 +1076,12 @@ static void ti_break(struct tty_struct *tty, int break_state)
 		tport->tp_uart_base_addr + TI_UART_OFFSET_LCR,
 		TI_LCR_BREAK, break_state == -1 ? TI_LCR_BREAK : 0);
 
-	if (status)
+	if (status) {
 		dev_dbg(&port->dev, "%s - error setting break, %d\n", __func__, status);
+		return status;
+	}
+
+	return 0;
 }
 
 static int ti_get_port_from_code(unsigned char code)

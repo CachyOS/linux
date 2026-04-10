@@ -142,7 +142,7 @@ static const struct be_ethtool_stat et_rx_stats[] = {
 	 * to HW.
 	 */
 	{DRVSTAT_RX_INFO(rx_post_fail)},
-	/* Recevied packets dropped due to skb allocation failure */
+	/* Received packets dropped due to skb allocation failure */
 	{DRVSTAT_RX_INFO(rx_drops_no_skbs)},
 	/* Received packets dropped due to lack of available fetched buffers
 	 * posted by the driver.
@@ -189,7 +189,7 @@ static const struct be_ethtool_stat et_tx_stats[] = {
 	{DRVSTAT_TX_INFO(tx_bytes)},
 	{DRVSTAT_TX_INFO(tx_pkts)},
 	{DRVSTAT_TX_INFO(tx_vxlan_offload_pkts)},
-	/* Number of skbs queued for trasmission by the driver */
+	/* Number of skbs queued for transmission by the driver */
 	{DRVSTAT_TX_INFO(tx_reqs)},
 	/* Number of times the TX queue was stopped due to lack
 	 * of spaces in the TXQ.
@@ -220,15 +220,15 @@ static void be_get_drvinfo(struct net_device *netdev,
 {
 	struct be_adapter *adapter = netdev_priv(netdev);
 
-	strlcpy(drvinfo->driver, DRV_NAME, sizeof(drvinfo->driver));
+	strscpy(drvinfo->driver, DRV_NAME, sizeof(drvinfo->driver));
 	if (!memcmp(adapter->fw_ver, adapter->fw_on_flash, FW_VER_LEN))
-		strlcpy(drvinfo->fw_version, adapter->fw_ver,
+		strscpy(drvinfo->fw_version, adapter->fw_ver,
 			sizeof(drvinfo->fw_version));
 	else
 		snprintf(drvinfo->fw_version, sizeof(drvinfo->fw_version),
 			 "%s [%s]", adapter->fw_ver, adapter->fw_on_flash);
 
-	strlcpy(drvinfo->bus_info, pci_name(adapter->pdev),
+	strscpy(drvinfo->bus_info, pci_name(adapter->pdev),
 		sizeof(drvinfo->bus_info));
 }
 
@@ -389,10 +389,10 @@ static void be_get_ethtool_stats(struct net_device *netdev,
 		struct be_rx_stats *stats = rx_stats(rxo);
 
 		do {
-			start = u64_stats_fetch_begin_irq(&stats->sync);
+			start = u64_stats_fetch_begin(&stats->sync);
 			data[base] = stats->rx_bytes;
 			data[base + 1] = stats->rx_pkts;
-		} while (u64_stats_fetch_retry_irq(&stats->sync, start));
+		} while (u64_stats_fetch_retry(&stats->sync, start));
 
 		for (i = 2; i < ETHTOOL_RXSTATS_NUM; i++) {
 			p = (u8 *)stats + et_rx_stats[i].offset;
@@ -405,19 +405,19 @@ static void be_get_ethtool_stats(struct net_device *netdev,
 		struct be_tx_stats *stats = tx_stats(txo);
 
 		do {
-			start = u64_stats_fetch_begin_irq(&stats->sync_compl);
+			start = u64_stats_fetch_begin(&stats->sync_compl);
 			data[base] = stats->tx_compl;
-		} while (u64_stats_fetch_retry_irq(&stats->sync_compl, start));
+		} while (u64_stats_fetch_retry(&stats->sync_compl, start));
 
 		do {
-			start = u64_stats_fetch_begin_irq(&stats->sync);
+			start = u64_stats_fetch_begin(&stats->sync);
 			for (i = 1; i < ETHTOOL_TXSTATS_NUM; i++) {
 				p = (u8 *)stats + et_tx_stats[i].offset;
 				data[base + i] =
 					(et_tx_stats[i].size == sizeof(u64)) ?
 						*(u64 *)p : *(u32 *)p;
 			}
-		} while (u64_stats_fetch_retry_irq(&stats->sync, start));
+		} while (u64_stats_fetch_retry(&stats->sync, start));
 		base += ETHTOOL_TXSTATS_NUM;
 	}
 }
@@ -1073,9 +1073,25 @@ static void be_set_msg_level(struct net_device *netdev, u32 level)
 	adapter->msg_enable = level;
 }
 
-static u64 be_get_rss_hash_opts(struct be_adapter *adapter, u64 flow_type)
+static u32 be_get_rx_ring_count(struct net_device *netdev)
 {
+	struct be_adapter *adapter = netdev_priv(netdev);
+
+	return adapter->num_rx_qs;
+}
+
+static int be_get_rxfh_fields(struct net_device *netdev,
+			      struct ethtool_rxfh_fields *cmd)
+{
+	struct be_adapter *adapter = netdev_priv(netdev);
+	u64 flow_type = cmd->flow_type;
 	u64 data = 0;
+
+	if (!be_multi_rxq(adapter)) {
+		dev_info(&adapter->pdev->dev,
+			 "ethtool::get_rxfh: RX flow hashing is disabled\n");
+		return -EINVAL;
+	}
 
 	switch (flow_type) {
 	case TCP_V4_FLOW:
@@ -1104,39 +1120,23 @@ static u64 be_get_rss_hash_opts(struct be_adapter *adapter, u64 flow_type)
 		break;
 	}
 
-	return data;
-}
-
-static int be_get_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *cmd,
-			u32 *rule_locs)
-{
-	struct be_adapter *adapter = netdev_priv(netdev);
-
-	if (!be_multi_rxq(adapter)) {
-		dev_info(&adapter->pdev->dev,
-			 "ethtool::get_rxnfc: RX flow hashing is disabled\n");
-		return -EINVAL;
-	}
-
-	switch (cmd->cmd) {
-	case ETHTOOL_GRXFH:
-		cmd->data = be_get_rss_hash_opts(adapter, cmd->flow_type);
-		break;
-	case ETHTOOL_GRXRINGS:
-		cmd->data = adapter->num_rx_qs;
-		break;
-	default:
-		return -EINVAL;
-	}
-
+	cmd->data = data;
 	return 0;
 }
 
-static int be_set_rss_hash_opts(struct be_adapter *adapter,
-				struct ethtool_rxnfc *cmd)
+static int be_set_rxfh_fields(struct net_device *netdev,
+			      const struct ethtool_rxfh_fields *cmd,
+			      struct netlink_ext_ack *extack)
 {
-	int status;
+	struct be_adapter *adapter = netdev_priv(netdev);
 	u32 rss_flags = adapter->rss_info.rss_flags;
+	int status;
+
+	if (!be_multi_rxq(adapter)) {
+		dev_err(&adapter->pdev->dev,
+			"ethtool::set_rxfh: RX flow hashing is disabled\n");
+		return -EINVAL;
+	}
 
 	if (cmd->data != L3_RSS_FLAGS &&
 	    cmd->data != (L3_RSS_FLAGS | L4_RSS_FLAGS))
@@ -1195,28 +1195,6 @@ static int be_set_rss_hash_opts(struct be_adapter *adapter,
 	return be_cmd_status(status);
 }
 
-static int be_set_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *cmd)
-{
-	struct be_adapter *adapter = netdev_priv(netdev);
-	int status = 0;
-
-	if (!be_multi_rxq(adapter)) {
-		dev_err(&adapter->pdev->dev,
-			"ethtool::set_rxnfc: RX flow hashing is disabled\n");
-		return -EINVAL;
-	}
-
-	switch (cmd->cmd) {
-	case ETHTOOL_SRXFH:
-		status = be_set_rss_hash_opts(adapter, cmd);
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	return status;
-}
-
 static void be_get_channels(struct net_device *netdev,
 			    struct ethtool_channels *ch)
 {
@@ -1229,7 +1207,7 @@ static void be_get_channels(struct net_device *netdev,
 	ch->tx_count = adapter->num_tx_qs - ch->combined_count;
 
 	ch->max_combined = be_max_qp_irqs(adapter);
-	/* The user must create atleast one combined channel */
+	/* The user must create at least one combined channel */
 	ch->max_rx = be_max_rx_irqs(adapter) - 1;
 	ch->max_tx = be_max_tx_irqs(adapter) - 1;
 }
@@ -1271,43 +1249,51 @@ static u32 be_get_rxfh_key_size(struct net_device *netdev)
 	return RSS_HASH_KEY_LEN;
 }
 
-static int be_get_rxfh(struct net_device *netdev, u32 *indir, u8 *hkey,
-		       u8 *hfunc)
+static int be_get_rxfh(struct net_device *netdev,
+		       struct ethtool_rxfh_param *rxfh)
 {
 	struct be_adapter *adapter = netdev_priv(netdev);
 	int i;
 	struct rss_info *rss = &adapter->rss_info;
 
-	if (indir) {
+	if (rxfh->indir) {
 		for (i = 0; i < RSS_INDIR_TABLE_LEN; i++)
-			indir[i] = rss->rss_queue[i];
+			rxfh->indir[i] = rss->rss_queue[i];
 	}
 
-	if (hkey)
-		memcpy(hkey, rss->rss_hkey, RSS_HASH_KEY_LEN);
+	if (rxfh->key)
+		memcpy(rxfh->key, rss->rss_hkey, RSS_HASH_KEY_LEN);
 
-	if (hfunc)
-		*hfunc = ETH_RSS_HASH_TOP;
+	rxfh->hfunc = ETH_RSS_HASH_TOP;
 
 	return 0;
 }
 
-static int be_set_rxfh(struct net_device *netdev, const u32 *indir,
-		       const u8 *hkey, const u8 hfunc)
+static int be_set_rxfh(struct net_device *netdev,
+		       struct ethtool_rxfh_param *rxfh,
+		       struct netlink_ext_ack *extack)
 {
 	int rc = 0, i, j;
 	struct be_adapter *adapter = netdev_priv(netdev);
+	u8 *hkey = rxfh->key;
 	u8 rsstable[RSS_INDIR_TABLE_LEN];
 
+	if (!be_multi_rxq(adapter)) {
+		dev_info(&adapter->pdev->dev,
+			 "ethtool::set_rxfh: RX flow hashing is disabled\n");
+		return -EINVAL;
+	}
+
 	/* We do not allow change in unsupported parameters */
-	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
+	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
+	    rxfh->hfunc != ETH_RSS_HASH_TOP)
 		return -EOPNOTSUPP;
 
-	if (indir) {
+	if (rxfh->indir) {
 		struct be_rx_obj *rxo;
 
 		for (i = 0; i < RSS_INDIR_TABLE_LEN; i++) {
-			j = indir[i];
+			j = rxfh->indir[i];
 			rxo = &adapter->rx_obj[j];
 			rsstable[i] = rxo->rss_id;
 			adapter->rss_info.rss_queue[i] = j;
@@ -1344,7 +1330,7 @@ static int be_get_module_info(struct net_device *netdev,
 		return -EOPNOTSUPP;
 
 	status = be_cmd_read_port_transceiver_data(adapter, TR_PAGE_A0,
-						   page_data);
+						   0, PAGE_DATA_LEN, page_data);
 	if (!status) {
 		if (!page_data[SFP_PLUS_SFF_8472_COMP]) {
 			modinfo->type = ETH_MODULE_SFF_8079;
@@ -1362,25 +1348,32 @@ static int be_get_module_eeprom(struct net_device *netdev,
 {
 	struct be_adapter *adapter = netdev_priv(netdev);
 	int status;
+	u32 begin, end;
 
 	if (!check_privilege(adapter, MAX_PRIVILEGES))
 		return -EOPNOTSUPP;
 
-	status = be_cmd_read_port_transceiver_data(adapter, TR_PAGE_A0,
-						   data);
-	if (status)
-		goto err;
+	begin = eeprom->offset;
+	end = eeprom->offset + eeprom->len;
 
-	if (eeprom->offset + eeprom->len > PAGE_DATA_LEN) {
-		status = be_cmd_read_port_transceiver_data(adapter,
-							   TR_PAGE_A2,
-							   data +
-							   PAGE_DATA_LEN);
+	if (begin < PAGE_DATA_LEN) {
+		status = be_cmd_read_port_transceiver_data(adapter, TR_PAGE_A0, begin,
+							   min_t(u32, end, PAGE_DATA_LEN) - begin,
+							   data);
+		if (status)
+			goto err;
+
+		data += PAGE_DATA_LEN - begin;
+		begin = PAGE_DATA_LEN;
+	}
+
+	if (end > PAGE_DATA_LEN) {
+		status = be_cmd_read_port_transceiver_data(adapter, TR_PAGE_A2,
+							   begin - PAGE_DATA_LEN,
+							   end - begin, data);
 		if (status)
 			goto err;
 	}
-	if (eeprom->offset)
-		memcpy(data, data + eeprom->offset, eeprom->len);
 err:
 	return be_cmd_status(status);
 }
@@ -1439,8 +1432,9 @@ const struct ethtool_ops be_ethtool_ops = {
 	.get_ethtool_stats = be_get_ethtool_stats,
 	.flash_device = be_do_flash,
 	.self_test = be_self_test,
-	.get_rxnfc = be_get_rxnfc,
-	.set_rxnfc = be_set_rxnfc,
+	.get_rx_ring_count = be_get_rx_ring_count,
+	.get_rxfh_fields = be_get_rxfh_fields,
+	.set_rxfh_fields = be_set_rxfh_fields,
 	.get_rxfh_indir_size = be_get_rxfh_indir_size,
 	.get_rxfh_key_size = be_get_rxfh_key_size,
 	.get_rxfh = be_get_rxfh,

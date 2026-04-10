@@ -767,7 +767,7 @@ static int __c4iw_poll_cq_one(struct c4iw_cq *chp, struct c4iw_qp *qhp,
 		goto out;
 
 	wc->wr_id = cookie;
-	wc->qp = qhp ? &qhp->ibqp : NULL;
+	wc->qp = &qhp->ibqp;
 	wc->vendor_err = CQE_STATUS(&cqe);
 	wc->wc_flags = 0;
 
@@ -995,8 +995,9 @@ int c4iw_destroy_cq(struct ib_cq *ib_cq, struct ib_udata *udata)
 }
 
 int c4iw_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
-		   struct ib_udata *udata)
+		   struct uverbs_attr_bundle *attrs)
 {
+	struct ib_udata *udata = &attrs->driver_udata;
 	struct ib_device *ibdev = ibcq->device;
 	int entries = attr->cqe;
 	int vector = attr->comp_vector;
@@ -1094,10 +1095,10 @@ int c4iw_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
 
 	if (ucontext) {
 		ret = -ENOMEM;
-		mm = kmalloc(sizeof(*mm), GFP_KERNEL);
+		mm = kmalloc_obj(*mm);
 		if (!mm)
 			goto err_remove_handle;
-		mm2 = kmalloc(sizeof(*mm2), GFP_KERNEL);
+		mm2 = kmalloc_obj(*mm2);
 		if (!mm2)
 			goto err_free_mm;
 
@@ -1125,13 +1126,19 @@ int c4iw_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
 			goto err_free_mm2;
 
 		mm->key = uresp.key;
-		mm->addr = virt_to_phys(chp->cq.queue);
+		mm->addr = 0;
+		mm->vaddr = chp->cq.queue;
+		mm->dma_addr = chp->cq.dma_addr;
 		mm->len = chp->cq.memsize;
+		insert_flag_to_mmap(&rhp->rdev, mm, mm->addr);
 		insert_mmap(ucontext, mm);
 
 		mm2->key = uresp.gts_key;
 		mm2->addr = chp->cq.bar2_pa;
 		mm2->len = PAGE_SIZE;
+		mm2->vaddr = NULL;
+		mm2->dma_addr = 0;
+		insert_flag_to_mmap(&rhp->rdev, mm2, mm2->addr);
 		insert_mmap(ucontext, mm2);
 	}
 

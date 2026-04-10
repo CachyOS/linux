@@ -14,10 +14,10 @@
 #include <linux/slab.h>
 #include <linux/list.h>
 #include <linux/io.h>
+#include <linux/mod_devicetable.h>
 #include <linux/of_address.h>
-#include <linux/of_device.h>
 #include <linux/of_irq.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 
 #define DRIVER_NAME		"xilinx_ps2"
 
@@ -155,22 +155,17 @@ static irqreturn_t xps2_interrupt(int irq, void *dev_id)
 static int sxps2_write(struct serio *pserio, unsigned char c)
 {
 	struct xps2data *drvdata = pserio->port_data;
-	unsigned long flags;
 	u32 sr;
-	int status = -1;
 
-	spin_lock_irqsave(&drvdata->lock, flags);
+	guard(spinlock_irqsave)(&drvdata->lock);
 
 	/* If the PS/2 transmitter is empty send a byte of data */
 	sr = in_be32(drvdata->base_address + XPS2_STATUS_OFFSET);
-	if (!(sr & XPS2_STATUS_TX_FULL)) {
-		out_be32(drvdata->base_address + XPS2_TX_DATA_OFFSET, c);
-		status = 0;
-	}
+	if (sr & XPS2_STATUS_TX_FULL)
+		return -EAGAIN;
 
-	spin_unlock_irqrestore(&drvdata->lock, flags);
-
-	return status;
+	out_be32(drvdata->base_address + XPS2_TX_DATA_OFFSET, c);
+	return 0;
 }
 
 /**
@@ -219,8 +214,7 @@ static void sxps2_close(struct serio *pserio)
 
 /**
  * xps2_of_probe - probe method for the PS/2 device.
- * @of_dev:	pointer to OF device structure
- * @match:	pointer to the structure used for matching a device
+ * @ofdev:	pointer to OF device structure
  *
  * This function probes the PS/2 device in the device tree.
  * It initializes the driver data structure and the hardware.
@@ -253,8 +247,8 @@ static int xps2_of_probe(struct platform_device *ofdev)
 		return -ENODEV;
 	}
 
-	drvdata = kzalloc(sizeof(struct xps2data), GFP_KERNEL);
-	serio = kzalloc(sizeof(struct serio), GFP_KERNEL);
+	drvdata = kzalloc_obj(*drvdata);
+	serio = kzalloc_obj(*serio);
 	if (!drvdata || !serio) {
 		error = -ENOMEM;
 		goto failed1;
@@ -329,7 +323,7 @@ failed1:
  * if the driver module is being unloaded. It frees any resources allocated to
  * the device.
  */
-static int xps2_of_remove(struct platform_device *of_dev)
+static void xps2_of_remove(struct platform_device *of_dev)
 {
 	struct xps2data *drvdata = platform_get_drvdata(of_dev);
 	struct resource r_mem; /* IO mem resources */
@@ -344,8 +338,6 @@ static int xps2_of_remove(struct platform_device *of_dev)
 		release_mem_region(r_mem.start, resource_size(&r_mem));
 
 	kfree(drvdata);
-
-	return 0;
 }
 
 /* Match table for of_platform binding */

@@ -47,9 +47,9 @@ struct kcm_stats {
 
 struct kcm_tx_msg {
 	unsigned int sent;
-	unsigned int fragidx;
 	unsigned int frag_offset;
 	unsigned int msg_flags;
+	bool started_tx;
 	struct sk_buff *frag_skb;
 	struct sk_buff *last_skb;
 };
@@ -70,7 +70,7 @@ struct kcm_sock {
 	struct work_struct tx_work;
 	struct list_head wait_psock_list;
 	struct sk_buff *seq_skb;
-	u32 tx_stopped : 1;
+	struct mutex tx_mutex;
 
 	/* Don't use bit fields here, these are set under different locks */
 	bool tx_wait;

@@ -197,18 +197,6 @@ int orangefs_bufmap_size_query(void)
 	return size;
 }
 
-int orangefs_bufmap_shift_query(void)
-{
-	struct orangefs_bufmap *bufmap;
-	int shift = 0;
-	spin_lock(&orangefs_bufmap_lock);
-	bufmap = __orangefs_bufmap;
-	if (bufmap)
-		shift = bufmap->desc_shift;
-	spin_unlock(&orangefs_bufmap_lock);
-	return shift;
-}
-
 static DECLARE_WAIT_QUEUE_HEAD(bufmap_waitq);
 static DECLARE_WAIT_QUEUE_HEAD(readdir_waitq);
 
@@ -217,7 +205,7 @@ orangefs_bufmap_alloc(struct ORANGEFS_dev_map_desc *user_desc)
 {
 	struct orangefs_bufmap *bufmap;
 
-	bufmap = kzalloc(sizeof(*bufmap), GFP_KERNEL);
+	bufmap = kzalloc_obj(*bufmap);
 	if (!bufmap)
 		goto out;
 
@@ -231,8 +219,7 @@ orangefs_bufmap_alloc(struct ORANGEFS_dev_map_desc *user_desc)
 		goto out_free_bufmap;
 
 	bufmap->desc_array =
-		kcalloc(bufmap->desc_count, sizeof(struct orangefs_bufmap_desc),
-			GFP_KERNEL);
+		kzalloc_objs(struct orangefs_bufmap_desc, bufmap->desc_count);
 	if (!bufmap->desc_array)
 		goto out_free_index_array;
 
@@ -240,7 +227,7 @@ orangefs_bufmap_alloc(struct ORANGEFS_dev_map_desc *user_desc)
 
 	/* allocate storage to track our page mappings */
 	bufmap->page_array =
-		kcalloc(bufmap->page_count, sizeof(struct page *), GFP_KERNEL);
+		kzalloc_objs(struct page *, bufmap->page_count);
 	if (!bufmap->page_array)
 		goto out_free_desc_array;
 
@@ -274,10 +261,8 @@ orangefs_bufmap_map(struct orangefs_bufmap *bufmap,
 		gossip_err("orangefs error: asked for %d pages, only got %d.\n",
 				bufmap->page_count, ret);
 
-		for (i = 0; i < ret; i++) {
-			SetPageError(bufmap->page_array[i]);
+		for (i = 0; i < ret; i++)
 			unpin_user_page(bufmap->page_array[i]);
-		}
 		return -ENOMEM;
 	}
 
@@ -533,17 +518,4 @@ int orangefs_bufmap_copy_to_iovec(struct iov_iter *iter,
 		size -= n;
 	}
 	return 0;
-}
-
-void orangefs_bufmap_page_fill(void *page_to,
-				int buffer_index,
-				int slot_index)
-{
-	struct orangefs_bufmap_desc *from;
-	void *page_from;
-
-	from = &__orangefs_bufmap->desc_array[buffer_index];
-	page_from = kmap_atomic(from->page_array[slot_index]);
-	memcpy(page_to, page_from, PAGE_SIZE);
-	kunmap_atomic(page_from);
 }

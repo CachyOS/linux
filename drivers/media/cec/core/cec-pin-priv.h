@@ -164,6 +164,9 @@ enum cec_pin_state {
 /* The default for the low/high time of the custom pulse */
 #define CEC_TIM_CUSTOM_DEFAULT				1000
 
+/* The default for the low/high time of the glitch pulse */
+#define CEC_TIM_GLITCH_DEFAULT				1
+
 #define CEC_NUM_PIN_EVENTS				128
 #define CEC_PIN_EVENT_FL_IS_HIGH			(1 << 0)
 #define CEC_PIN_EVENT_FL_DROPPED			(1 << 1)
@@ -183,6 +186,7 @@ struct cec_pin {
 	u16				la_mask;
 	bool				monitor_all;
 	bool				rx_eom;
+	bool				enabled_irq;
 	bool				enable_irq_failed;
 	enum cec_pin_state		state;
 	struct cec_msg			tx_msg;
@@ -224,12 +228,17 @@ struct cec_pin {
 	u32				timer_max_overrun;
 	u32				timer_sum_overrun;
 
+	bool				rx_no_low_drive;
 	u32				tx_custom_low_usecs;
 	u32				tx_custom_high_usecs;
+	u32				tx_glitch_low_usecs;
+	u32				tx_glitch_high_usecs;
 	bool				tx_ignore_nack_until_eom;
 	bool				tx_custom_pulse;
 	bool				tx_generated_poll;
 	bool				tx_post_eom;
+	bool				tx_glitch_falling_edge;
+	bool				tx_glitch_rising_edge;
 	u8				tx_extra_bytes;
 	u32				tx_low_drive_cnt;
 #ifdef CONFIG_CEC_PIN_ERROR_INJ

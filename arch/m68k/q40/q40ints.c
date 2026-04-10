@@ -24,6 +24,8 @@
 #include <asm/q40_master.h>
 #include <asm/q40ints.h>
 
+#include "q40.h"
+
 /*
  * Q40 IRQs are defined as follows:
  *            3,4,5,6,7,10,11,14,15 : ISA dev IRQs
@@ -32,7 +34,7 @@
  *            33   : frame int (50/200 Hz periodic timer)
  *            34   : sample int (10/20 KHz periodic timer)
  *
-*/
+ */
 
 static void q40_irq_handler(unsigned int, struct pt_regs *fp);
 static void q40_irq_enable(struct irq_data *data);
@@ -104,7 +106,7 @@ void __init q40_init_IRQ(void)
  * this stuff doesn't really belong here..
  */
 
-int ql_ticks;              /* 200Hz ticks since last jiffie */
+int ql_ticks;              /* 200Hz ticks since last jiffy */
 static int sound_ticks;
 
 #define SVOL 45
@@ -201,8 +203,8 @@ static int ccleirq=60;    /* ISA dev IRQs*/
 #define DEBUG_Q40INT
 /*#define IP_USE_DISABLE *//* would be nice, but crashes ???? */
 
-static int mext_disabled=0;  /* ext irq disabled by master chip? */
-static int aliased_irq=0;  /* how many times inside handler ?*/
+static int mext_disabled;	/* ext irq disabled by master chip? */
+static int aliased_irq;		/* how many times inside handler ?*/
 
 
 /* got interrupt, dispatch to ISA or keyboard/timer IRQs */

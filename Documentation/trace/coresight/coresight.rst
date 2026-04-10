@@ -130,7 +130,7 @@ Misc:
 Device Tree Bindings
 --------------------
 
-See Documentation/devicetree/bindings/arm/coresight.txt for details.
+See ``Documentation/devicetree/bindings/arm/arm,coresight-*.yaml`` for details.
 
 As of this writing drivers for ITM, STMs and CTIs are not provided but are
 expected to be added as the solution matures.
@@ -339,7 +339,8 @@ Preference is given to the former as using the sysFS interface
 requires a deep understanding of the Coresight HW.  The following sections
 provide details on using both methods.
 
-1) Using the sysFS interface:
+Using the sysFS interface
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Before trace collection can start, a coresight sink needs to be identified.
 There is no limit on the amount of sinks (nor sources) that can be enabled at
@@ -446,7 +447,8 @@ wealth of possibilities that coresight provides.
     Instruction     0       0x8026B588      E8BD8000        true    LDM      sp!,{pc}
     Timestamp                                       Timestamp: 17107041535
 
-2) Using perf framework:
+Using perf framework
+~~~~~~~~~~~~~~~~~~~~
 
 Coresight tracers are represented using the Perf framework's Performance
 Monitoring Unit (PMU) abstraction.  As such the perf framework takes charge of
@@ -460,49 +462,44 @@ queried by the perf command line tool:
 
 		cs_etm//                                    [Kernel PMU event]
 
-	linaro@linaro-nano:~$
-
 Regardless of the number of tracers available in a system (usually equal to the
 amount of processor cores), the "cs_etm" PMU will be listed only once.
 
 A Coresight PMU works the same way as any other PMU, i.e the name of the PMU is
-listed along with configuration options within forward slashes '/'.  Since a
-Coresight system will typically have more than one sink, the name of the sink to
-work with needs to be specified as an event option.
-On newer kernels the available sinks are listed in sysFS under
+provided along with configuration options within forward slashes '/' (see
+`Config option formats`_).
+
+Advanced Perf framework usage
+-----------------------------
+
+Sink selection
+~~~~~~~~~~~~~~
+
+An appropriate sink will be selected automatically for use with Perf, but since
+there will typically be more than one sink, the name of the sink to use may be
+specified as a special config option prefixed with '@'.
+
+The available sinks are listed in sysFS under
 ($SYSFS)/bus/event_source/devices/cs_etm/sinks/::
 
 	root@localhost:/sys/bus/event_source/devices/cs_etm/sinks# ls
 	tmc_etf0  tmc_etr0  tpiu0
 
-On older kernels, this may need to be found from the list of coresight devices,
-available under ($SYSFS)/bus/coresight/devices/::
-
-	root:~# ls /sys/bus/coresight/devices/
-	 etm0     etm1     etm2         etm3  etm4      etm5      funnel0
-	 funnel1  funnel2  replicator0  stm0  tmc_etf0  tmc_etr0  tpiu0
 	root@linaro-nano:~# perf record -e cs_etm/@tmc_etr0/u --per-thread program
-
-As mentioned above in section "Device Naming scheme", the names of the devices could
-look different from what is used in the example above. One must use the device names
-as it appears under the sysFS.
-
-The syntax within the forward slashes '/' is important.  The '@' character
-tells the parser that a sink is about to be specified and that this is the sink
-to use for the trace session.
 
 More information on the above and other example on how to use Coresight with
 the perf tools can be found in the "HOWTO.md" file of the openCSD gitHub
 repository [#third]_.
 
-2.1) AutoFDO analysis using the perf tools:
+AutoFDO analysis using the perf tools
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 perf can be used to record and analyze trace of programs.
 
 Execution can be recorded using 'perf record' with the cs_etm event,
 specifying the name of the sink to record to, e.g::
 
-    perf record -e cs_etm/@tmc_etr0/u --per-thread
+    perf record -e cs_etm//u --per-thread
 
 The 'perf report' and 'perf script' commands can be used to analyze execution,
 synthesizing instruction and branch events from the instruction trace.
@@ -513,7 +510,8 @@ The --itrace option controls the type and frequency of synthesized events
 Note that only 64-bit programs are currently supported - further work is
 required to support instruction decode of 32-bit Arm programs.
 
-2.2) Tracing PID
+Tracing PID
+~~~~~~~~~~~
 
 The kernel can be built to write the PID value into the PE ContextID registers.
 For a kernel running at EL1, the PID is stored in CONTEXTIDR_EL1.  A PE may
@@ -547,7 +545,7 @@ wants to trace PIDs for both host and guest, the two configs "contextid1" and
 
 
 Generating coverage files for Feedback Directed Optimization: AutoFDO
----------------------------------------------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 'perf inject' accepts the --itrace option in which case tracing data is
 removed and replaced with the synthesized events. e.g.
@@ -565,7 +563,7 @@ sort example is from the AutoFDO tutorial (https://gcc.gnu.org/wiki/AutoFDO/Tuto
 	Bubble sorting array of 30000 elements
 	5910 ms
 
-	$ perf record -e cs_etm/@tmc_etr0/u --per-thread taskset -c 2 ./sort
+	$ perf record -e cs_etm//u --per-thread taskset -c 2 ./sort
 	Bubble sorting array of 30000 elements
 	12543 ms
 	[ perf record: Woken up 35 times to write data ]
@@ -578,6 +576,61 @@ sort example is from the AutoFDO tutorial (https://gcc.gnu.org/wiki/AutoFDO/Tuto
 	Bubble sorting array of 30000 elements
 	5806 ms
 
+Config option formats
+~~~~~~~~~~~~~~~~~~~~~
+
+The following strings can be provided between // on the perf command line to enable various options.
+They are also listed in the folder /sys/bus/event_source/devices/cs_etm/format/
+
+.. list-table::
+   :header-rows: 1
+
+   * - Option
+     - Description
+   * - branch_broadcast
+     - Session local version of the system wide setting:
+       :ref:`ETM_MODE_BB <coresight-branch-broadcast>`
+   * - contextid
+     - See `Tracing PID`_
+   * - contextid1
+     - See `Tracing PID`_
+   * - contextid2
+     - See `Tracing PID`_
+   * - configid
+     - Selection for a custom configuration. This is an implementation detail and not used directly,
+       see :ref:`trace/coresight/coresight-config:Using Configurations in perf`
+   * - preset
+     - Override for parameters in a custom configuration, see
+       :ref:`trace/coresight/coresight-config:Using Configurations in perf`
+   * - sinkid
+     - Hashed version of the string to select a sink, automatically set when using the @ notation.
+       This is an internal implementation detail and is not used directly, see `Using perf
+       framework`_.
+   * - cycacc
+     - Session local version of the system wide setting: :ref:`ETMv4_MODE_CYCACC
+       <coresight-cycle-accurate>`
+   * - retstack
+     - Session local version of the system wide setting: :ref:`ETM_MODE_RETURNSTACK
+       <coresight-return-stack>`
+   * - timestamp
+     - Controls generation and interval of timestamps.
+
+       0 = off, 1 = minimum interval .. 15 = maximum interval.
+
+       Values 1 - 14 use a counter that decrements every cycle to generate a
+       timestamp on underflow. The reload value for the counter is 2 ^ (interval
+       - 1). If the value is 1 then the reload value is 1, if the value is 11
+       then the reload value is 1024 etc.
+
+       Setting the maximum interval (15) will disable the counter generated
+       timestamps, freeing the counter resource, leaving only ones emitted when
+       a SYNC packet is generated. The sync interval is controlled with
+       TRCSYNCPR.PERIOD which is every 4096 bytes of trace by default.
+
+   * - cc_threshold
+     - Cycle count threshold value. If nothing is provided here or the provided value is 0, then the
+       default value i.e 0x100 will be used. If provided value is less than minimum cycles threshold
+       value, as indicated via TRCIDR3.CCITMIN, then the minimum value will be used instead.
 
 How to use the STM module
 -------------------------

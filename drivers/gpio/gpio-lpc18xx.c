@@ -14,7 +14,6 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/of_gpio.h>
 #include <linux/of_irq.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
@@ -43,12 +42,12 @@ struct lpc18xx_gpio_pin_ic {
 	void __iomem *base;
 	struct irq_domain *domain;
 	struct raw_spinlock lock;
+	struct gpio_chip *gpio;
 };
 
 struct lpc18xx_gpio_chip {
 	struct gpio_chip gpio;
 	void __iomem *base;
-	struct clk *clk;
 	struct lpc18xx_gpio_pin_ic *pin_ic;
 	spinlock_t lock;
 };
@@ -76,6 +75,7 @@ static void lpc18xx_gpio_pin_ic_mask(struct irq_data *d)
 {
 	struct lpc18xx_gpio_pin_ic *ic = d->chip_data;
 	u32 type = irqd_get_trigger_type(d);
+	irq_hw_number_t hwirq = irqd_to_hwirq(d);
 
 	raw_spin_lock(&ic->lock);
 
@@ -90,12 +90,17 @@ static void lpc18xx_gpio_pin_ic_mask(struct irq_data *d)
 	raw_spin_unlock(&ic->lock);
 
 	irq_chip_mask_parent(d);
+
+	gpiochip_disable_irq(ic->gpio, hwirq);
 }
 
 static void lpc18xx_gpio_pin_ic_unmask(struct irq_data *d)
 {
 	struct lpc18xx_gpio_pin_ic *ic = d->chip_data;
 	u32 type = irqd_get_trigger_type(d);
+	irq_hw_number_t hwirq = irqd_to_hwirq(d);
+
+	gpiochip_enable_irq(ic->gpio, hwirq);
 
 	raw_spin_lock(&ic->lock);
 
@@ -151,13 +156,14 @@ static int lpc18xx_gpio_pin_ic_set_type(struct irq_data *d, unsigned int type)
 	return 0;
 }
 
-static struct irq_chip lpc18xx_gpio_pin_ic = {
+static const struct irq_chip lpc18xx_gpio_pin_ic = {
 	.name		= "LPC18xx GPIO pin",
 	.irq_mask	= lpc18xx_gpio_pin_ic_mask,
 	.irq_unmask	= lpc18xx_gpio_pin_ic_unmask,
 	.irq_eoi	= lpc18xx_gpio_pin_ic_eoi,
 	.irq_set_type	= lpc18xx_gpio_pin_ic_set_type,
-	.flags		= IRQCHIP_SET_TYPE_MASKED,
+	.flags		= IRQCHIP_IMMUTABLE | IRQCHIP_SET_TYPE_MASKED,
+	GPIOCHIP_IRQ_RESOURCE_HELPERS,
 };
 
 static int lpc18xx_gpio_pin_ic_domain_alloc(struct irq_domain *domain,
@@ -242,17 +248,16 @@ static int lpc18xx_gpio_pin_ic_probe(struct lpc18xx_gpio_chip *gc)
 
 	raw_spin_lock_init(&ic->lock);
 
-	ic->domain = irq_domain_add_hierarchy(parent_domain, 0,
-					      NR_LPC18XX_GPIO_PIN_IC_IRQS,
-					      dev->of_node,
-					      &lpc18xx_gpio_pin_ic_domain_ops,
-					      ic);
+	ic->domain = irq_domain_create_hierarchy(parent_domain, 0, NR_LPC18XX_GPIO_PIN_IC_IRQS,
+						 dev_fwnode(dev), &lpc18xx_gpio_pin_ic_domain_ops,
+						 ic);
 	if (!ic->domain) {
 		pr_err("unable to add irq domain\n");
 		ret = -ENODEV;
 		goto free_iomap;
 	}
 
+	ic->gpio = &gc->gpio;
 	gc->pin_ic = ic;
 
 	return 0;
@@ -265,10 +270,14 @@ free_ic:
 	return ret;
 }
 
-static void lpc18xx_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
+static int lpc18xx_gpio_set(struct gpio_chip *chip, unsigned int offset,
+			    int value)
 {
 	struct lpc18xx_gpio_chip *gc = gpiochip_get_data(chip);
+
 	writeb(value ? 1 : 0, gc->base + offset);
+
+	return 0;
 }
 
 static int lpc18xx_gpio_get(struct gpio_chip *chip, unsigned offset)
@@ -329,6 +338,7 @@ static int lpc18xx_gpio_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct lpc18xx_gpio_chip *gc;
 	int index, ret;
+	struct clk *clk;
 
 	gc = devm_kzalloc(dev, sizeof(*gc), GFP_KERNEL);
 	if (!gc)
@@ -353,16 +363,10 @@ static int lpc18xx_gpio_probe(struct platform_device *pdev)
 	if (IS_ERR(gc->base))
 		return PTR_ERR(gc->base);
 
-	gc->clk = devm_clk_get(dev, NULL);
-	if (IS_ERR(gc->clk)) {
+	clk = devm_clk_get_enabled(dev, NULL);
+	if (IS_ERR(clk)) {
 		dev_err(dev, "input clock not found\n");
-		return PTR_ERR(gc->clk);
-	}
-
-	ret = clk_prepare_enable(gc->clk);
-	if (ret) {
-		dev_err(dev, "unable to enable clock\n");
-		return ret;
+		return PTR_ERR(clk);
 	}
 
 	spin_lock_init(&gc->lock);
@@ -370,11 +374,8 @@ static int lpc18xx_gpio_probe(struct platform_device *pdev)
 	gc->gpio.parent = dev;
 
 	ret = devm_gpiochip_add_data(dev, &gc->gpio, gc);
-	if (ret) {
-		dev_err(dev, "failed to add gpio chip\n");
-		clk_disable_unprepare(gc->clk);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to add gpio chip\n");
 
 	/* On error GPIO pin interrupt controller just won't be registered */
 	lpc18xx_gpio_pin_ic_probe(gc);
@@ -382,16 +383,12 @@ static int lpc18xx_gpio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int lpc18xx_gpio_remove(struct platform_device *pdev)
+static void lpc18xx_gpio_remove(struct platform_device *pdev)
 {
 	struct lpc18xx_gpio_chip *gc = platform_get_drvdata(pdev);
 
 	if (gc->pin_ic)
 		irq_domain_remove(gc->pin_ic->domain);
-
-	clk_disable_unprepare(gc->clk);
-
-	return 0;
 }
 
 static const struct of_device_id lpc18xx_gpio_match[] = {

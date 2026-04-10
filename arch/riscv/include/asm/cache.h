@@ -11,6 +11,11 @@
 
 #define L1_CACHE_BYTES		(1 << L1_CACHE_SHIFT)
 
+#ifdef CONFIG_RISCV_DMA_NONCOHERENT
+#define ARCH_DMA_MINALIGN L1_CACHE_BYTES
+#define ARCH_KMALLOC_MINALIGN	(8)
+#endif
+
 /*
  * RISC-V requires the stack pointer to be 16-byte aligned, so ensure that
  * the flat loader aligns it accordingly.
@@ -18,5 +23,18 @@
 #ifndef CONFIG_MMU
 #define ARCH_SLAB_MINALIGN	16
 #endif
+
+#ifndef __ASSEMBLER__
+
+extern int dma_cache_alignment;
+#ifdef CONFIG_RISCV_DMA_NONCOHERENT
+#define dma_get_cache_alignment dma_get_cache_alignment
+static inline int dma_get_cache_alignment(void)
+{
+	return dma_cache_alignment;
+}
+#endif
+
+#endif	/* __ASSEMBLER__ */
 
 #endif /* _ASM_RISCV_CACHE_H */

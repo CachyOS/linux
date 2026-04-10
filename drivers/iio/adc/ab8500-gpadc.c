@@ -607,7 +607,6 @@ static int ab8500_gpadc_read(struct ab8500_gpadc *gpadc,
 	}
 
 	/* This eventually drops the regulator */
-	pm_runtime_mark_last_busy(gpadc->dev);
 	pm_runtime_put_autosuspend(gpadc->dev);
 
 	return (high_data << 8) | low_data;
@@ -925,8 +924,8 @@ static int ab8500_gpadc_read_raw(struct iio_dev *indio_dev,
 	return -EINVAL;
 }
 
-static int ab8500_gpadc_of_xlate(struct iio_dev *indio_dev,
-				 const struct of_phandle_args *iiospec)
+static int ab8500_gpadc_fwnode_xlate(struct iio_dev *indio_dev,
+				     const struct fwnode_reference_args *iiospec)
 {
 	int i;
 
@@ -938,7 +937,7 @@ static int ab8500_gpadc_of_xlate(struct iio_dev *indio_dev,
 }
 
 static const struct iio_info ab8500_gpadc_info = {
-	.of_xlate = ab8500_gpadc_of_xlate,
+	.fwnode_xlate = ab8500_gpadc_fwnode_xlate,
 	.read_raw = ab8500_gpadc_read_raw,
 };
 
@@ -968,7 +967,7 @@ static int ab8500_gpadc_runtime_resume(struct device *dev)
 /**
  * ab8500_gpadc_parse_channel() - process devicetree channel configuration
  * @dev: pointer to containing device
- * @np: device tree node for the channel to configure
+ * @fwnode: fw node for the channel to configure
  * @ch: channel info to fill in
  * @iio_chan: IIO channel specification to fill in
  *
@@ -976,15 +975,15 @@ static int ab8500_gpadc_runtime_resume(struct device *dev)
  * and define usage for things like AUX GPADC inputs more precisely.
  */
 static int ab8500_gpadc_parse_channel(struct device *dev,
-				      struct device_node *np,
+				      struct fwnode_handle *fwnode,
 				      struct ab8500_gpadc_chan_info *ch,
 				      struct iio_chan_spec *iio_chan)
 {
-	const char *name = np->name;
+	const char *name = fwnode_get_name(fwnode);
 	u32 chan;
 	int ret;
 
-	ret = of_property_read_u32(np, "reg", &chan);
+	ret = fwnode_property_read_u32(fwnode, "reg", &chan);
 	if (ret) {
 		dev_err(dev, "invalid channel number %s\n", name);
 		return ret;
@@ -1021,22 +1020,19 @@ static int ab8500_gpadc_parse_channel(struct device *dev,
 /**
  * ab8500_gpadc_parse_channels() - Parse the GPADC channels from DT
  * @gpadc: the GPADC to configure the channels for
- * @np: device tree node containing the channel configurations
- * @chans: the IIO channels we parsed
- * @nchans: the number of IIO channels we parsed
+ * @chans_parsed: the IIO channels we parsed
+ * @nchans_parsed: the number of IIO channels we parsed
  */
 static int ab8500_gpadc_parse_channels(struct ab8500_gpadc *gpadc,
-				       struct device_node *np,
 				       struct iio_chan_spec **chans_parsed,
 				       unsigned int *nchans_parsed)
 {
-	struct device_node *child;
 	struct ab8500_gpadc_chan_info *ch;
 	struct iio_chan_spec *iio_chans;
 	unsigned int nchans;
 	int i;
 
-	nchans = of_get_available_child_count(np);
+	nchans = device_get_child_node_count(gpadc->dev);
 	if (!nchans) {
 		dev_err(gpadc->dev, "no channel children\n");
 		return -ENODEV;
@@ -1054,7 +1050,7 @@ static int ab8500_gpadc_parse_channels(struct ab8500_gpadc *gpadc,
 		return -ENOMEM;
 
 	i = 0;
-	for_each_available_child_of_node(np, child) {
+	device_for_each_child_node_scoped(gpadc->dev, child) {
 		struct iio_chan_spec *iio_chan;
 		int ret;
 
@@ -1064,7 +1060,6 @@ static int ab8500_gpadc_parse_channels(struct ab8500_gpadc *gpadc,
 		ret = ab8500_gpadc_parse_channel(gpadc->dev, child, ch,
 						 iio_chan);
 		if (ret) {
-			of_node_put(child);
 			return ret;
 		}
 		i++;
@@ -1081,7 +1076,6 @@ static int ab8500_gpadc_probe(struct platform_device *pdev)
 	struct ab8500_gpadc *gpadc;
 	struct iio_dev *indio_dev;
 	struct device *dev = &pdev->dev;
-	struct device_node *np = pdev->dev.of_node;
 	struct iio_chan_spec *iio_chans;
 	unsigned int n_iio_chans;
 	int ret;
@@ -1096,20 +1090,18 @@ static int ab8500_gpadc_probe(struct platform_device *pdev)
 	gpadc->dev = dev;
 	gpadc->ab8500 = dev_get_drvdata(dev->parent);
 
-	ret = ab8500_gpadc_parse_channels(gpadc, np, &iio_chans, &n_iio_chans);
+	ret = ab8500_gpadc_parse_channels(gpadc, &iio_chans, &n_iio_chans);
 	if (ret)
 		return ret;
 
 	gpadc->irq_sw = platform_get_irq_byname(pdev, "SW_CONV_END");
 	if (gpadc->irq_sw < 0)
-		return dev_err_probe(dev, gpadc->irq_sw,
-				     "failed to get platform sw_conv_end irq\n");
+		return gpadc->irq_sw;
 
 	if (is_ab8500(gpadc->ab8500)) {
 		gpadc->irq_hw = platform_get_irq_byname(pdev, "HW_CONV_END");
 		if (gpadc->irq_hw < 0)
-			return dev_err_probe(dev, gpadc->irq_hw,
-					     "failed to get platform hw_conv_end irq\n");
+			return gpadc->irq_hw;
 	} else {
 		gpadc->irq_hw = 0;
 	}
@@ -1184,7 +1176,7 @@ out_dis_pm:
 	return ret;
 }
 
-static int ab8500_gpadc_remove(struct platform_device *pdev)
+static void ab8500_gpadc_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct ab8500_gpadc *gpadc = iio_priv(indio_dev);
@@ -1193,8 +1185,6 @@ static int ab8500_gpadc_remove(struct platform_device *pdev)
 	pm_runtime_put_noidle(gpadc->dev);
 	pm_runtime_disable(gpadc->dev);
 	regulator_disable(gpadc->vddadc);
-
-	return 0;
 }
 
 static DEFINE_RUNTIME_DEV_PM_OPS(ab8500_gpadc_pm_ops,

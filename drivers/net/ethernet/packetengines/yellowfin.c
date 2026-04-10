@@ -102,7 +102,7 @@ static int gx_fix;
 #include <linux/bitops.h>
 #include <linux/uaccess.h>
 #include <asm/processor.h>		/* Processor type for cache alignment. */
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <asm/io.h>
 
 /* These identify the driver base version and may not be removed. */
@@ -652,7 +652,7 @@ err_free_irq:
 
 static void yellowfin_timer(struct timer_list *t)
 {
-	struct yellowfin_private *yp = from_timer(yp, t, timer);
+	struct yellowfin_private *yp = timer_container_of(yp, t, timer);
 	struct net_device *dev = pci_get_drvdata(yp->pci_dev);
 	void __iomem *ioaddr = yp->base;
 	int next_tick = 60*HZ;
@@ -1222,7 +1222,7 @@ static int yellowfin_close(struct net_device *dev)
 	iowrite32(0x80000000, ioaddr + RxCtrl);
 	iowrite32(0x80000000, ioaddr + TxCtrl);
 
-	del_timer(&yp->timer);
+	timer_delete(&yp->timer);
 
 #if defined(__i386__)
 	if (yellowfin_debug > 2) {
@@ -1340,9 +1340,9 @@ static void yellowfin_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo
 {
 	struct yellowfin_private *np = netdev_priv(dev);
 
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, pci_name(np->pci_dev), sizeof(info->bus_info));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, pci_name(np->pci_dev), sizeof(info->bus_info));
 }
 
 static const struct ethtool_ops ethtool_ops = {

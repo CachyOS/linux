@@ -235,9 +235,10 @@ int v4l2_event_subscribe(struct v4l2_fh *fh,
 	if (elems < 1)
 		elems = 1;
 
-	sev = kvzalloc(struct_size(sev, events, elems), GFP_KERNEL);
+	sev = kvzalloc_flex(*sev, events, elems);
 	if (!sev)
 		return -ENOMEM;
+	sev->elems = elems;
 	for (i = 0; i < elems; i++)
 		sev->events[i].sev = sev;
 	sev->type = sub->type;
@@ -245,7 +246,6 @@ int v4l2_event_subscribe(struct v4l2_fh *fh,
 	sev->flags = sub->flags;
 	sev->fh = fh;
 	sev->ops = ops;
-	sev->elems = elems;
 
 	mutex_lock(&fh->subscribe_lock);
 

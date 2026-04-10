@@ -4,13 +4,15 @@
  * A simple wrapper around refcount. An allocated sched_core_cookie's
  * address is used to compute the cookie of the task.
  */
+#include "sched.h"
+
 struct sched_core_cookie {
 	refcount_t refcnt;
 };
 
 static unsigned long sched_core_alloc_cookie(void)
 {
-	struct sched_core_cookie *ck = kmalloc(sizeof(*ck), GFP_KERNEL);
+	struct sched_core_cookie *ck = kmalloc_obj(*ck);
 	if (!ck)
 		return 0;
 
@@ -56,7 +58,6 @@ static unsigned long sched_core_update_cookie(struct task_struct *p,
 	unsigned long old_cookie;
 	struct rq_flags rf;
 	struct rq *rq;
-	bool enqueued;
 
 	rq = task_rq_lock(p, &rf);
 
@@ -66,16 +67,18 @@ static unsigned long sched_core_update_cookie(struct task_struct *p,
 	 * a cookie until after we've removed it, we must have core scheduling
 	 * enabled here.
 	 */
-	SCHED_WARN_ON((p->core_cookie || cookie) && !sched_core_enabled(rq));
+	WARN_ON_ONCE((p->core_cookie || cookie) && !sched_core_enabled(rq));
 
-	enqueued = sched_core_enqueued(p);
-	if (enqueued)
+	if (sched_core_enqueued(p))
 		sched_core_dequeue(rq, p, DEQUEUE_SAVE);
 
 	old_cookie = p->core_cookie;
 	p->core_cookie = cookie;
 
-	if (enqueued)
+	/*
+	 * Consider the cases: !prev_cookie and !cookie.
+	 */
+	if (cookie && task_on_rq_queued(p))
 		sched_core_enqueue(rq, p);
 
 	/*
@@ -87,7 +90,7 @@ static unsigned long sched_core_update_cookie(struct task_struct *p,
 	 * core has now entered/left forced idle state. Defer accounting to the
 	 * next scheduling edge, rather than always forcing a reschedule here.
 	 */
-	if (task_running(rq, p))
+	if (task_on_cpu(rq, p))
 		resched_curr(rq);
 
 	task_rq_unlock(rq, p, &rf);
@@ -204,7 +207,7 @@ int sched_core_share_pid(unsigned int cmd, pid_t pid, enum pid_type type,
 	default:
 		err = -EINVAL;
 		goto out;
-	};
+	}
 
 	if (type == PIDTYPE_PID) {
 		__sched_core_set(task, cookie);
@@ -277,7 +280,11 @@ void __sched_core_account_forceidle(struct rq *rq)
 		if (p == rq_i->idle)
 			continue;
 
-		__schedstat_add(p->stats.core_forceidle_sum, delta);
+		/*
+		 * Note: this will account forceidle to the current CPU, even
+		 * if it comes from our SMT sibling.
+		 */
+		__account_forceidle_time(p, delta);
 	}
 }
 

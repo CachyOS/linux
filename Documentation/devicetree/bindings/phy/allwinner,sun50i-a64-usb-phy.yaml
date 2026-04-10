@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/phy/allwinner,sun50i-a64-usb-phy.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Allwinner A64 USB PHY Device Tree Bindings
+title: Allwinner A64 USB PHY
 
 maintainers:
   - Chen-Yu Tsai <wens@csie.org>
@@ -15,9 +15,15 @@ properties:
     const: 1
 
   compatible:
-    enum:
-      - allwinner,sun20i-d1-usb-phy
-      - allwinner,sun50i-a64-usb-phy
+    oneOf:
+      - enum:
+          - allwinner,sun20i-d1-usb-phy
+          - allwinner,sun50i-a64-usb-phy
+      - items:
+          - enum:
+              - allwinner,sun50i-a100-usb-phy
+              - allwinner,sun55i-a523-usb-phy
+          - const: allwinner,sun20i-d1-usb-phy
 
   reg:
     items:

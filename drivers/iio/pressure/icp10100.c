@@ -265,7 +265,6 @@ static int icp10100_get_measures(struct icp10100_state *st,
 			(be16_to_cpu(measures[1]) >> 8);
 	*temperature = be16_to_cpu(measures[2]);
 
-	pm_runtime_mark_last_busy(&st->client->dev);
 error_measure:
 	pm_runtime_put_autosuspend(&st->client->dev);
 	return ret;
@@ -343,9 +342,8 @@ static int icp10100_read_raw_measures(struct iio_dev *indio_dev,
 	uint32_t pressure_mPa;
 	int ret;
 
-	ret = iio_device_claim_direct_mode(indio_dev);
-	if (ret)
-		return ret;
+	if (!iio_device_claim_direct(indio_dev))
+		return -EBUSY;
 
 	ret = icp10100_get_measures(st, &raw_pressure, &raw_temp);
 	if (ret)
@@ -370,7 +368,7 @@ static int icp10100_read_raw_measures(struct iio_dev *indio_dev,
 	}
 
 error_release:
-	iio_device_release_direct_mode(indio_dev);
+	iio_device_release_direct(indio_dev);
 	return ret;
 }
 
@@ -439,7 +437,6 @@ static int icp10100_write_raw(struct iio_dev *indio_dev,
 {
 	struct icp10100_state *st = iio_priv(indio_dev);
 	unsigned int mode;
-	int ret;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_OVERSAMPLING_RATIO:
@@ -449,13 +446,12 @@ static int icp10100_write_raw(struct iio_dev *indio_dev,
 		mode = ilog2(val);
 		if (mode >= ICP10100_MODE_NB)
 			return -EINVAL;
-		ret = iio_device_claim_direct_mode(indio_dev);
-		if (ret)
-			return ret;
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
 		mutex_lock(&st->lock);
 		st->mode = mode;
 		mutex_unlock(&st->lock);
-		iio_device_release_direct_mode(indio_dev);
+		iio_device_release_direct(indio_dev);
 		return 0;
 	default:
 		return -EINVAL;
@@ -530,8 +526,7 @@ static void icp10100_pm_disable(void *data)
 	pm_runtime_disable(dev);
 }
 
-static int icp10100_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int icp10100_probe(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev;
 	struct icp10100_state *st;
@@ -595,7 +590,7 @@ static int icp10100_probe(struct i2c_client *client,
 	return devm_iio_device_register(&client->dev, indio_dev);
 }
 
-static int __maybe_unused icp10100_suspend(struct device *dev)
+static int icp10100_suspend(struct device *dev)
 {
 	struct icp10100_state *st = iio_priv(dev_get_drvdata(dev));
 	int ret;
@@ -607,7 +602,7 @@ static int __maybe_unused icp10100_suspend(struct device *dev)
 	return ret;
 }
 
-static int __maybe_unused icp10100_resume(struct device *dev)
+static int icp10100_resume(struct device *dev)
 {
 	struct icp10100_state *st = iio_priv(dev_get_drvdata(dev));
 	int ret;
@@ -626,8 +621,8 @@ out_unlock:
 	return ret;
 }
 
-static UNIVERSAL_DEV_PM_OPS(icp10100_pm, icp10100_suspend, icp10100_resume,
-			    NULL);
+static DEFINE_RUNTIME_DEV_PM_OPS(icp10100_pm, icp10100_suspend, icp10100_resume,
+				 NULL);
 
 static const struct of_device_id icp10100_of_match[] = {
 	{
@@ -638,7 +633,7 @@ static const struct of_device_id icp10100_of_match[] = {
 MODULE_DEVICE_TABLE(of, icp10100_of_match);
 
 static const struct i2c_device_id icp10100_id[] = {
-	{ "icp10100", 0 },
+	{ "icp10100" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, icp10100_id);
@@ -646,7 +641,7 @@ MODULE_DEVICE_TABLE(i2c, icp10100_id);
 static struct i2c_driver icp10100_driver = {
 	.driver = {
 		.name = "icp10100",
-		.pm = &icp10100_pm,
+		.pm = pm_ptr(&icp10100_pm),
 		.of_match_table = icp10100_of_match,
 	},
 	.probe = icp10100_probe,

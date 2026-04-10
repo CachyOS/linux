@@ -15,7 +15,7 @@ char *get_srcline(struct dso *dso, u64 addr, struct symbol *sym,
 char *__get_srcline(struct dso *dso, u64 addr, struct symbol *sym,
 		  bool show_sym, bool show_addr, bool unwind_inlines,
 		  u64 ip);
-void free_srcline(char *srcline);
+void zfree_srcline(char **srcline);
 char *get_srcline_split(struct dso *dso, u64 addr, unsigned *line);
 
 /* insert the srcline into the DSO, which will take ownership */
@@ -25,7 +25,10 @@ char *srcline__tree_find(struct rb_root_cached *tree, u64 addr);
 /* delete all srclines within the tree */
 void srcline__tree_delete(struct rb_root_cached *tree);
 
-#define SRCLINE_UNKNOWN  ((char *) "??:0")
+extern char *srcline__unknown;
+#define SRCLINE_UNKNOWN srcline__unknown
+
+#define MAX_INLINE_NEST 1024
 
 struct inline_list {
 	struct symbol		*symbol;
@@ -52,5 +55,14 @@ void inlines__tree_insert(struct rb_root_cached *tree,
 struct inline_node *inlines__tree_find(struct rb_root_cached *tree, u64 addr);
 /* delete all nodes within the tree of inline_node s */
 void inlines__tree_delete(struct rb_root_cached *tree);
+
+int inline_list__append(struct symbol *symbol, char *srcline, struct inline_node *node);
+int inline_list__append_tail(struct symbol *symbol, char *srcline, struct inline_node *node);
+char *srcline_from_fileline(const char *file, unsigned int line);
+struct symbol *new_inline_sym(struct dso *dso,
+			      struct symbol *base_sym,
+			      const char *funcname);
+
+int addr2line_configure(const char *var, const char *value, void *cb);
 
 #endif /* PERF_SRCLINE_H */

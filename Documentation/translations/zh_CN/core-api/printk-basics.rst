@@ -6,6 +6,7 @@
 :翻译:
 
  司延腾 Yanteng Si <siyanteng@loongson.cn>
+ 周彬彬 Binbin Zhou <zhoubinbin@loongson.cn>
 
 .. _cn_printk-basics.rst:
 
@@ -99,14 +100,12 @@ printk()的用法通常是这样的::
 
 为了调试，还有两个有条件编译的宏：
 pr_debug()和pr_devel()，除非定义了 ``DEBUG`` (或者在pr_debug()的情况下定义了
-``CONFIG_DYNAMIC_DEBUG`` )，否则它们会被编译。
+``CONFIG_DYNAMIC_DEBUG`` )，否则它们不会被编译。
 
 
 函数接口
 ========
 
 该API在以下内核代码中:
-
-kernel/printk/printk.c
 
 include/linux/printk.h

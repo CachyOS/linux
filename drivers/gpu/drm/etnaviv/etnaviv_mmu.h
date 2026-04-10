@@ -61,7 +61,6 @@ struct etnaviv_iommu_global {
 			/* P(age) T(able) A(rray) */
 			u64 *pta_cpu;
 			dma_addr_t pta_dma;
-			struct spinlock pta_lock;
 			DECLARE_BITMAP(pta_alloc, ETNAVIV_PTA_ENTRIES);
 		} v2;
 	};
@@ -91,6 +90,7 @@ int etnaviv_iommu_map_gem(struct etnaviv_iommu_context *context,
 	struct etnaviv_vram_mapping *mapping, u64 va);
 void etnaviv_iommu_unmap_gem(struct etnaviv_iommu_context *context,
 	struct etnaviv_vram_mapping *mapping);
+void etnaviv_iommu_reap_mapping(struct etnaviv_vram_mapping *mapping);
 
 int etnaviv_iommu_get_suballoc_va(struct etnaviv_iommu_context *ctx,
 				  struct etnaviv_vram_mapping *mapping,

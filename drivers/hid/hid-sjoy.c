@@ -83,7 +83,7 @@ static int sjoyff_init(struct hid_device *hid)
 			return -ENODEV;
 		}
 
-		sjoyff = kzalloc(sizeof(struct sjoyff_device), GFP_KERNEL);
+		sjoyff = kzalloc_obj(struct sjoyff_device);
 		if (!sjoyff)
 			return -ENOMEM;
 
@@ -168,6 +168,7 @@ static struct hid_driver sjoy_driver = {
 };
 module_hid_driver(sjoy_driver);
 
+MODULE_DESCRIPTION("Force feedback support for SmartJoy PLUS PS2->USB adapter");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Jussi Kivilinna");
 

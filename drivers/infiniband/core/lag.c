@@ -7,8 +7,7 @@
 #include <rdma/ib_cache.h>
 #include <rdma/lag.h>
 
-static struct sk_buff *rdma_build_skb(struct ib_device *device,
-				      struct net_device *netdev,
+static struct sk_buff *rdma_build_skb(struct net_device *netdev,
 				      struct rdma_ah_attr *ah_attr,
 				      gfp_t flags)
 {
@@ -86,7 +85,7 @@ static struct net_device *rdma_get_xmit_slave_udp(struct ib_device *device,
 	struct net_device *slave;
 	struct sk_buff *skb;
 
-	skb = rdma_build_skb(device, master, ah_attr, flags);
+	skb = rdma_build_skb(master, ah_attr, flags);
 	if (!skb)
 		return ERR_PTR(-ENOMEM);
 
@@ -94,8 +93,7 @@ static struct net_device *rdma_get_xmit_slave_udp(struct ib_device *device,
 	slave = netdev_get_xmit_slave(master, skb,
 				      !!(device->lag_flags &
 					 RDMA_LAG_FLAGS_HASH_ALL_SLAVES));
-	if (slave)
-		dev_hold(slave);
+	dev_hold(slave);
 	rcu_read_unlock();
 	kfree_skb(skb);
 	return slave;
@@ -103,8 +101,7 @@ static struct net_device *rdma_get_xmit_slave_udp(struct ib_device *device,
 
 void rdma_lag_put_ah_roce_slave(struct net_device *xmit_slave)
 {
-	if (xmit_slave)
-		dev_put(xmit_slave);
+	dev_put(xmit_slave);
 }
 
 struct net_device *rdma_lag_get_ah_roce_slave(struct ib_device *device,

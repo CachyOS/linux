@@ -2,38 +2,27 @@
 #ifndef _ASM_X86_SPECIAL_INSNS_H
 #define _ASM_X86_SPECIAL_INSNS_H
 
-
 #ifdef __KERNEL__
-
 #include <asm/nops.h>
 #include <asm/processor-flags.h>
+
+#include <linux/errno.h>
 #include <linux/irqflags.h>
 #include <linux/jump_label.h>
-
-/*
- * The compiler should not reorder volatile asm statements with respect to each
- * other: they should execute in program order. However GCC 4.9.x and 5.x have
- * a bug (which was fixed in 8.1, 7.3 and 6.5) where they might reorder
- * volatile asm. The write functions are not affected since they have memory
- * clobbers preventing reordering. To prevent reads from being reordered with
- * respect to writes, use a dummy memory operand.
- */
-
-#define __FORCE_ORDER "m"(*(unsigned int *)0x1000UL)
 
 void native_write_cr0(unsigned long val);
 
 static inline unsigned long native_read_cr0(void)
 {
 	unsigned long val;
-	asm volatile("mov %%cr0,%0\n\t" : "=r" (val) : __FORCE_ORDER);
+	asm volatile("mov %%cr0,%0" : "=r" (val));
 	return val;
 }
 
 static __always_inline unsigned long native_read_cr2(void)
 {
 	unsigned long val;
-	asm volatile("mov %%cr2,%0\n\t" : "=r" (val) : __FORCE_ORDER);
+	asm volatile("mov %%cr2,%0" : "=r" (val));
 	return val;
 }
 
@@ -42,14 +31,14 @@ static __always_inline void native_write_cr2(unsigned long val)
 	asm volatile("mov %0,%%cr2": : "r" (val) : "memory");
 }
 
-static inline unsigned long __native_read_cr3(void)
+static __always_inline unsigned long __native_read_cr3(void)
 {
 	unsigned long val;
-	asm volatile("mov %%cr3,%0\n\t" : "=r" (val) : __FORCE_ORDER);
+	asm volatile("mov %%cr3,%0" : "=r" (val));
 	return val;
 }
 
-static inline void native_write_cr3(unsigned long val)
+static __always_inline void native_write_cr3(unsigned long val)
 {
 	asm volatile("mov %0,%%cr3": : "r" (val) : "memory");
 }
@@ -66,10 +55,10 @@ static inline unsigned long native_read_cr4(void)
 	asm volatile("1: mov %%cr4, %0\n"
 		     "2:\n"
 		     _ASM_EXTABLE(1b, 2b)
-		     : "=r" (val) : "0" (0), __FORCE_ORDER);
+		     : "=r" (val) : "0" (0));
 #else
 	/* CR4 always exists on x86_64. */
-	asm volatile("mov %%cr4,%0\n\t" : "=r" (val) : __FORCE_ORDER);
+	asm volatile("mov %%cr4,%0" : "=r" (val));
 #endif
 	return val;
 }
@@ -86,9 +75,7 @@ static inline u32 rdpkru(void)
 	 * "rdpkru" instruction.  Places PKRU contents in to EAX,
 	 * clears EDX and requires that ecx=0.
 	 */
-	asm volatile(".byte 0x0f,0x01,0xee\n\t"
-		     : "=a" (pkru), "=d" (edx)
-		     : "c" (ecx));
+	asm volatile("rdpkru" : "=a" (pkru), "=d" (edx) : "c" (ecx));
 	return pkru;
 }
 
@@ -100,8 +87,7 @@ static inline void wrpkru(u32 pkru)
 	 * "wrpkru" instruction.  Loads contents in EAX to PKRU,
 	 * requires that ecx = edx = 0.
 	 */
-	asm volatile(".byte 0x0f,0x01,0xef\n\t"
-		     : : "a" (pkru), "c"(ecx), "d"(edx));
+	asm volatile("wrpkru" : : "a" (pkru), "c"(ecx), "d"(edx));
 }
 
 #else
@@ -115,20 +101,36 @@ static inline void wrpkru(u32 pkru)
 }
 #endif
 
-static inline void native_wbinvd(void)
+/*
+ * Write back all modified lines in all levels of cache associated with this
+ * logical processor to main memory, and then invalidate all caches.  Depending
+ * on the micro-architecture, WBINVD (and WBNOINVD below) may or may not affect
+ * lower level caches associated with another logical processor that shares any
+ * level of this processor's cache hierarchy.
+ */
+static __always_inline void wbinvd(void)
 {
-	asm volatile("wbinvd": : :"memory");
+	asm volatile("wbinvd" : : : "memory");
 }
 
-extern asmlinkage void asm_load_gs_index(unsigned int selector);
+/* Instruction encoding provided for binutils backwards compatibility. */
+#define ASM_WBNOINVD _ASM_BYTES(0xf3,0x0f,0x09)
 
-static inline void native_load_gs_index(unsigned int selector)
+/*
+ * Write back all modified lines in all levels of cache associated with this
+ * logical processor to main memory, but do NOT explicitly invalidate caches,
+ * i.e. leave all/most cache lines in the hierarchy in non-modified state.
+ */
+static __always_inline void wbnoinvd(void)
 {
-	unsigned long flags;
-
-	local_irq_save(flags);
-	asm_load_gs_index(selector);
-	local_irq_restore(flags);
+	/*
+	 * Explicitly encode WBINVD if X86_FEATURE_WBNOINVD is unavailable even
+	 * though WBNOINVD is backwards compatible (it's simply WBINVD with an
+	 * ignored REP prefix), to guarantee that WBNOINVD isn't used if it
+	 * needs to be avoided for any reason.  For all supported usage in the
+	 * kernel, WBINVD is functionally a superset of WBNOINVD.
+	 */
+	alternative("wbinvd", ASM_WBNOINVD, X86_FEATURE_WBNOINVD);
 }
 
 static inline unsigned long __read_cr4(void)
@@ -178,34 +180,17 @@ static inline void __write_cr4(unsigned long x)
 {
 	native_write_cr4(x);
 }
-
-static inline void wbinvd(void)
-{
-	native_wbinvd();
-}
-
-
-static inline void load_gs_index(unsigned int selector)
-{
-#ifdef CONFIG_X86_64
-	native_load_gs_index(selector);
-#else
-	loadsegment(gs, selector);
-#endif
-}
-
 #endif /* CONFIG_PARAVIRT_XXL */
 
-static inline void clflush(volatile void *__p)
+static __always_inline void clflush(volatile void *__p)
 {
 	asm volatile("clflush %0" : "+m" (*(volatile char __force *)__p));
 }
 
 static inline void clflushopt(volatile void *__p)
 {
-	alternative_io(".byte 0x3e; clflush %P0",
-		       ".byte 0x66; clflush %P0",
-		       X86_FEATURE_CLFLUSHOPT,
+	alternative_io("ds clflush %0",
+		       "clflushopt %0", X86_FEATURE_CLFLUSHOPT,
 		       "+m" (*(volatile char __force *)__p));
 }
 
@@ -213,29 +198,39 @@ static inline void clwb(volatile void *__p)
 {
 	volatile struct { char x[64]; } *p = __p;
 
-	asm volatile(ALTERNATIVE_2(
-		".byte 0x3e; clflush (%[pax])",
-		".byte 0x66; clflush (%[pax])", /* clflushopt (%%rax) */
-		X86_FEATURE_CLFLUSHOPT,
-		".byte 0x66, 0x0f, 0xae, 0x30",  /* clwb (%%rax) */
-		X86_FEATURE_CLWB)
-		: [p] "+m" (*p)
-		: [pax] "a" (p));
+	asm_inline volatile(ALTERNATIVE_2(
+		"ds clflush %0",
+		"clflushopt %0", X86_FEATURE_CLFLUSHOPT,
+		"clwb %0", X86_FEATURE_CLWB)
+		: "+m" (*p));
 }
+
+#ifdef CONFIG_X86_USER_SHADOW_STACK
+static inline int write_user_shstk_64(u64 __user *addr, u64 val)
+{
+	asm goto("1: wrussq %[val], %[addr]\n"
+			  _ASM_EXTABLE(1b, %l[fail])
+			  :: [addr] "m" (*addr), [val] "r" (val)
+			  :: fail);
+	return 0;
+fail:
+	return -EFAULT;
+}
+#endif /* CONFIG_X86_USER_SHADOW_STACK */
 
 #define nop() asm volatile ("nop")
 
-static inline void serialize(void)
+static __always_inline void serialize(void)
 {
 	/* Instruction opcode for SERIALIZE; supported in binutils >= 2.35. */
 	asm volatile(".byte 0xf, 0x1, 0xe8" ::: "memory");
 }
 
 /* The dst parameter must be 64-bytes aligned */
-static inline void movdir64b(void __iomem *dst, const void *src)
+static inline void movdir64b(void *dst, const void *src)
 {
 	const struct { char _[64]; } *__src = src;
-	struct { char _[64]; } __iomem *__dst = dst;
+	struct { char _[64]; } *__dst = dst;
 
 	/*
 	 * MOVDIR64B %(rdx), rax.
@@ -251,6 +246,11 @@ static inline void movdir64b(void __iomem *dst, const void *src)
 	asm volatile(".byte 0x66, 0x0f, 0x38, 0xf8, 0x02"
 		     : "+m" (*__dst)
 		     :  "m" (*__src), "a" (__dst), "d" (__src));
+}
+
+static inline void movdir64b_io(void __iomem *dst, const void *src)
+{
+	movdir64b((void __force *)dst, src);
 }
 
 /**
@@ -284,8 +284,7 @@ static inline int enqcmds(void __iomem *dst, const void *src)
 	 * See movdir64b()'s comment on operand specification.
 	 */
 	asm volatile(".byte 0xf3, 0x0f, 0x38, 0xf8, 0x02, 0x66, 0x90"
-		     CC_SET(z)
-		     : CC_OUT(z) (zf), "+m" (*__dst)
+		     : "=@ccz" (zf), "+m" (*__dst)
 		     : "m" (*__src), "a" (__dst), "d" (__src));
 
 	/* Submission failure is indicated via EFLAGS.ZF=1 */
@@ -293,6 +292,15 @@ static inline int enqcmds(void __iomem *dst, const void *src)
 		return -EAGAIN;
 
 	return 0;
+}
+
+static __always_inline void tile_release(void)
+{
+	/*
+	 * Instruction opcode for TILERELEASE; supported in binutils
+	 * version >= 2.36.
+	 */
+	asm volatile(".byte 0xc4, 0xe2, 0x78, 0x49, 0xc0");
 }
 
 #endif /* __KERNEL__ */

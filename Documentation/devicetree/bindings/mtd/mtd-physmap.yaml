@@ -13,6 +13,10 @@ description: |
   Flash chips (Memory Technology Devices) are often used for solid state
   file systems on embedded devices.
 
+allOf:
+  - $ref: mtd.yaml#
+  - $ref: /schemas/memory-controllers/mc-peripheral-props.yaml#
+
 properties:
   compatible:
     oneOf:
@@ -64,6 +68,16 @@ properties:
       non-identical chips can be described in one node.
     minItems: 1
     maxItems: 8
+
+  clocks:
+    description: |
+      Chips may need clocks to be enabled for themselves or for transparent
+      bridges.
+
+  power-domains:
+    description: |
+      Chips may need power domains to be enabled for themselves or for
+      transparent bridges.
 
   bank-width:
     description: Width (in bytes) of the bank.  Equal to the device width times
@@ -118,12 +132,10 @@ properties:
   '#size-cells':
     const: 1
 
+  ranges: true
+
   big-endian: true
   little-endian: true
-
-patternProperties:
-  '@[0-9a-f]+$':
-    $ref: partitions/partition.yaml
 
 required:
   - compatible
@@ -143,8 +155,7 @@ then:
   required:
     - syscon
 
-# FIXME: A parent bus may define timing properties
-additionalProperties: true
+unevaluatedProperties: false
 
 examples:
   - |
@@ -164,7 +175,7 @@ examples:
             reg = <0 0xf80000>;
         };
         firmware@f80000 {
-            label ="firmware";
+            label = "firmware";
             reg = <0xf80000 0x80000>;
             read-only;
         };

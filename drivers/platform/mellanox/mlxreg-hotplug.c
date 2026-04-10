@@ -12,7 +12,6 @@
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/platform_data/mlxreg.h>
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
@@ -113,7 +112,7 @@ static int mlxreg_hotplug_device_create(struct mlxreg_hotplug_priv_data *priv,
 	 * Return if adapter number is negative. It could be in case hotplug
 	 * event is not associated with hotplug device.
 	 */
-	if (data->hpdev.nr < 0)
+	if (data->hpdev.nr < 0 && data->hpdev.action != MLXREG_HOTPLUG_DEVICE_NO_ACTION)
 		return 0;
 
 	pdata = dev_get_platdata(&priv->pdev->dev);
@@ -233,11 +232,22 @@ static ssize_t mlxreg_hotplug_attr_show(struct device *dev,
 			regval = !!(regval & data->mask);
 	}
 
-	return sprintf(buf, "%u\n", regval);
+	return sysfs_emit(buf, "%u\n", regval);
 }
 
 #define PRIV_ATTR(i) priv->mlxreg_hotplug_attr[i]
 #define PRIV_DEV_ATTR(i) priv->mlxreg_hotplug_dev_attr[i]
+
+static int mlxreg_hotplug_item_label_index_get(u32 mask, u32 bit)
+{
+	int i, j;
+
+	for (i = 0, j = -1; i <= bit; i++) {
+		if (mask & BIT(i))
+			j++;
+	}
+	return j;
+}
 
 static int mlxreg_hotplug_attr_init(struct mlxreg_hotplug_priv_data *priv)
 {
@@ -246,13 +256,13 @@ static int mlxreg_hotplug_attr_init(struct mlxreg_hotplug_priv_data *priv)
 	struct mlxreg_core_data *data;
 	unsigned long mask;
 	u32 regval;
-	int num_attrs = 0, id = 0, i, j, k, ret;
+	int num_attrs = 0, id = 0, i, j, k, count, ret;
 
 	pdata = dev_get_platdata(&priv->pdev->dev);
 	item = pdata->items;
 
 	/* Go over all kinds of items - psu, pwr, fan. */
-	for (i = 0; i < pdata->counter; i++, item++) {
+	for (i = 0; i < pdata->count; i++, item++) {
 		if (item->capability) {
 			/*
 			 * Read group capability register to get actual number
@@ -272,7 +282,8 @@ static int mlxreg_hotplug_attr_init(struct mlxreg_hotplug_priv_data *priv)
 		/* Go over all unmasked units within item. */
 		mask = item->mask;
 		k = 0;
-		for_each_set_bit(j, &mask, item->count) {
+		count = item->ind ? item->ind : item->count;
+		for_each_set_bit(j, &mask, count) {
 			if (data->capability) {
 				/*
 				 * Read capability register and skip non
@@ -282,16 +293,17 @@ static int mlxreg_hotplug_attr_init(struct mlxreg_hotplug_priv_data *priv)
 						  data->capability, &regval);
 				if (ret)
 					return ret;
+
 				if (!(regval & data->bit)) {
 					data++;
 					continue;
 				}
 			}
+
 			PRIV_ATTR(id) = &PRIV_DEV_ATTR(id).dev_attr.attr;
 			PRIV_ATTR(id)->name = devm_kasprintf(&priv->pdev->dev,
 							     GFP_KERNEL,
 							     data->label);
-
 			if (!PRIV_ATTR(id)->name) {
 				dev_err(priv->dev, "Memory allocation failed for attr %d.\n",
 					id);
@@ -336,20 +348,6 @@ mlxreg_hotplug_work_helper(struct mlxreg_hotplug_priv_data *priv,
 	u32 regval, bit;
 	int ret;
 
-	/*
-	 * Validate if item related to received signal type is valid.
-	 * It should never happen, excepted the situation when some
-	 * piece of hardware is broken. In such situation just produce
-	 * error message and return. Caller must continue to handle the
-	 * signals from other devices if any.
-	 */
-	if (unlikely(!item)) {
-		dev_err(priv->dev, "False signal: at offset:mask 0x%02x:0x%02x.\n",
-			item->reg, item->mask);
-
-		return;
-	}
-
 	/* Mask event. */
 	ret = regmap_write(priv->regmap, item->reg + MLXREG_HOTPLUG_MASK_OFF,
 			   0);
@@ -365,9 +363,14 @@ mlxreg_hotplug_work_helper(struct mlxreg_hotplug_priv_data *priv,
 	regval &= item->mask;
 	asserted = item->cache ^ regval;
 	item->cache = regval;
-
 	for_each_set_bit(bit, &asserted, 8) {
-		data = item->data + bit;
+		int pos;
+
+		pos = mlxreg_hotplug_item_label_index_get(item->mask, bit);
+		if (pos < 0)
+			goto out;
+
+		data = item->data + pos;
 		if (regval & BIT(bit)) {
 			if (item->inversed)
 				mlxreg_hotplug_device_destroy(priv, data, item->kind);
@@ -538,7 +541,7 @@ static void mlxreg_hotplug_work_handler(struct work_struct *work)
 		goto unmask_event;
 
 	/* Handle topology and health configuration changes. */
-	for (i = 0; i < pdata->counter; i++, item++) {
+	for (i = 0; i < pdata->count; i++, item++) {
 		if (aggr_asserted & item->aggr_mask) {
 			if (item->health)
 				mlxreg_hotplug_health_work_helper(priv, item);
@@ -587,7 +590,7 @@ static int mlxreg_hotplug_set_irq(struct mlxreg_hotplug_priv_data *priv)
 	pdata = dev_get_platdata(&priv->pdev->dev);
 	item = pdata->items;
 
-	for (i = 0; i < pdata->counter; i++, item++) {
+	for (i = 0; i < pdata->count; i++, item++) {
 		/* Clear group presense event. */
 		ret = regmap_write(priv->regmap, item->reg +
 				   MLXREG_HOTPLUG_EVENT_OFF, 0);
@@ -671,7 +674,7 @@ static void mlxreg_hotplug_unset_irq(struct mlxreg_hotplug_priv_data *priv)
 		     0);
 
 	/* Clear topology configurations. */
-	for (i = 0; i < pdata->counter; i++, item++) {
+	for (i = 0; i < pdata->count; i++, item++) {
 		data = item->data;
 		/* Mask group presense event. */
 		regmap_write(priv->regmap, data->reg + MLXREG_HOTPLUG_MASK_OFF,
@@ -769,15 +772,13 @@ static int mlxreg_hotplug_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int mlxreg_hotplug_remove(struct platform_device *pdev)
+static void mlxreg_hotplug_remove(struct platform_device *pdev)
 {
 	struct mlxreg_hotplug_priv_data *priv = dev_get_drvdata(&pdev->dev);
 
 	/* Clean interrupts setup. */
 	mlxreg_hotplug_unset_irq(priv);
 	devm_free_irq(&pdev->dev, priv->irq, priv);
-
-	return 0;
 }
 
 static struct platform_driver mlxreg_hotplug_driver = {

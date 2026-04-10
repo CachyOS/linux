@@ -27,7 +27,6 @@
  *   others: timeout = 2048 ms * 2^(TWDSCALE-1).
  */
 static const unsigned int wdt_timeout[] = { 0, 2, 4, 8, 16, 32, 65, 131 };
-static bool use_sw_pm;
 
 #define DA9063_TWDSCALE_DISABLE		0
 #define DA9063_TWDSCALE_MIN		1
@@ -174,11 +173,20 @@ static int da9063_wdt_restart(struct watchdog_device *wdd, unsigned long action,
 {
 	struct da9063 *da9063 = watchdog_get_drvdata(wdd);
 	struct i2c_client *client = to_i2c_client(da9063->dev);
+	union i2c_smbus_data msg;
 	int ret;
 
-	/* Don't use regmap because it is not atomic safe */
-	ret = i2c_smbus_write_byte_data(client, DA9063_REG_CONTROL_F,
-					DA9063_SHUTDOWN);
+	/*
+	 * Don't use regmap because it is not atomic safe. Additionally, use
+	 * unlocked flavor of i2c_smbus_xfer to avoid scenario where i2c bus
+	 * might previously be locked by some process unable to release the
+	 * lock due to interrupts already being disabled at this late stage.
+	 */
+	msg.byte = DA9063_SHUTDOWN;
+	ret = __i2c_smbus_xfer(client->adapter, client->addr, client->flags,
+			I2C_SMBUS_WRITE, DA9063_REG_CONTROL_F,
+			I2C_SMBUS_BYTE_DATA, &msg);
+
 	if (ret < 0)
 		dev_alert(da9063->dev, "Failed to shutdown (err = %d)\n",
 			  ret);
@@ -221,7 +229,7 @@ static int da9063_wdt_probe(struct platform_device *pdev)
 	if (!wdd)
 		return -ENOMEM;
 
-	use_sw_pm = device_property_present(dev, "dlg,use-sw-pm");
+	da9063->use_sw_pm = device_property_present(dev, "dlg,use-sw-pm");
 
 	wdd->info = &da9063_watchdog_info;
 	wdd->ops = &da9063_watchdog_ops;
@@ -255,11 +263,12 @@ static int da9063_wdt_probe(struct platform_device *pdev)
 	return devm_watchdog_register_device(dev, wdd);
 }
 
-static int __maybe_unused da9063_wdt_suspend(struct device *dev)
+static int da9063_wdt_suspend(struct device *dev)
 {
 	struct watchdog_device *wdd = dev_get_drvdata(dev);
+	struct da9063 *da9063 = watchdog_get_drvdata(wdd);
 
-	if (!use_sw_pm)
+	if (!da9063->use_sw_pm)
 		return 0;
 
 	if (watchdog_active(wdd))
@@ -268,11 +277,12 @@ static int __maybe_unused da9063_wdt_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused da9063_wdt_resume(struct device *dev)
+static int da9063_wdt_resume(struct device *dev)
 {
 	struct watchdog_device *wdd = dev_get_drvdata(dev);
+	struct da9063 *da9063 = watchdog_get_drvdata(wdd);
 
-	if (!use_sw_pm)
+	if (!da9063->use_sw_pm)
 		return 0;
 
 	if (watchdog_active(wdd))
@@ -281,14 +291,14 @@ static int __maybe_unused da9063_wdt_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(da9063_wdt_pm_ops,
-			da9063_wdt_suspend, da9063_wdt_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(da9063_wdt_pm_ops, da9063_wdt_suspend,
+				da9063_wdt_resume);
 
 static struct platform_driver da9063_wdt_driver = {
 	.probe = da9063_wdt_probe,
 	.driver = {
 		.name = DA9063_DRVNAME_WATCHDOG,
-		.pm = &da9063_wdt_pm_ops,
+		.pm = pm_sleep_ptr(&da9063_wdt_pm_ops),
 	},
 };
 module_platform_driver(da9063_wdt_driver);

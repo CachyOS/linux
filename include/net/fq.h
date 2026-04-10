@@ -7,6 +7,10 @@
 #ifndef __NET_SCHED_FQ_H
 #define __NET_SCHED_FQ_H
 
+#include <linux/skbuff.h>
+#include <linux/spinlock.h>
+#include <linux/types.h>
+
 struct fq_tin;
 
 /**
@@ -93,10 +97,5 @@ typedef bool fq_skb_filter_t(struct fq *,
 			     struct fq_flow *,
 			     struct sk_buff *,
 			     void *);
-
-typedef struct fq_flow *fq_flow_get_default_t(struct fq *,
-					      struct fq_tin *,
-					      int idx,
-					      struct sk_buff *);
 
 #endif

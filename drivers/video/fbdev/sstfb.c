@@ -80,6 +80,7 @@
  * Includes
  */
 
+#include <linux/aperture.h>
 #include <linux/string.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -334,7 +335,7 @@ static int sst_calc_pll(const int freq, int *freq_out, struct pll_timing *t)
 static void sstfb_clear_screen(struct fb_info *info)
 {
 	/* clear screen */
-	fb_memset(info->screen_base, 0, info->fix.smem_len);
+	fb_memset_io(info->screen_base, 0, info->fix.smem_len);
 }
 
 
@@ -364,7 +365,7 @@ static int sstfb_check_var(struct fb_var_screeninfo *var,
 		return -EINVAL;
 	}
 	var->pixclock = KHZ2PICOS(freq);
-	
+
 	if (var->vmode & FB_VMODE_INTERLACED)
 		vBackPorch += (vBackPorch % 2);
 	if (var->vmode & FB_VMODE_DOUBLE) {
@@ -382,7 +383,7 @@ static int sstfb_check_var(struct fb_var_screeninfo *var,
 		printk(KERN_ERR "sstfb: Unsupported bpp %d\n", var->bits_per_pixel);
 		return -EINVAL;
 	}
-	
+
 	/* validity tests */
 	if (var->xres <= 1 || yDim <= 0 || var->hsync_len <= 1  ||
 	    hSyncOff <= 1  || var->left_margin <= 2  || vSyncOn <= 0 ||
@@ -392,7 +393,7 @@ static int sstfb_check_var(struct fb_var_screeninfo *var,
 
 	if (IS_VOODOO2(par)) {
 		/* Voodoo 2 limits */
-		tiles_in_X = (var->xres + 63 ) / 64 * 2;		
+		tiles_in_X = (var->xres + 63 ) / 64 * 2;
 
 		if (var->xres  > POW2(11) || yDim >= POW2(11)) {
 			printk(KERN_ERR "sstfb: Unsupported resolution %dx%d\n",
@@ -631,7 +632,7 @@ static int sstfb_set_par(struct fb_info *info)
 	lfbmode |= ( LFB_WORD_SWIZZLE_WR | LFB_BYTE_SWIZZLE_WR |
 		     LFB_WORD_SWIZZLE_RD | LFB_BYTE_SWIZZLE_RD );
 #endif
-	
+
 	if (clipping) {
 		sst_write(LFBMODE, lfbmode | EN_PXL_PIPELINE);
 	/*
@@ -684,7 +685,7 @@ static int sstfb_setcolreg(u_int regno, u_int red, u_int green, u_int blue,
 	    | (green << info->var.green.offset)
 	    | (blue  << info->var.blue.offset)
 	    | (transp << info->var.transp.offset);
-	
+
 	par->palette[regno] = col;
 
 	return 0;
@@ -715,6 +716,7 @@ static void sstfb_setvgapass( struct fb_info *info, int enable )
 	pci_write_config_dword(sst_dev, PCI_INIT_ENABLE, tmp);
 }
 
+#ifdef CONFIG_FB_DEVICE
 static ssize_t store_vgapass(struct device *device, struct device_attribute *attr,
 			const char *buf, size_t count)
 {
@@ -738,7 +740,8 @@ static ssize_t show_vgapass(struct device *device, struct device_attribute *attr
 
 static struct device_attribute device_attrs[] = {
 	__ATTR(vgapass, S_IRUGO|S_IWUSR, show_vgapass, store_vgapass)
-	};
+};
+#endif
 
 static int sstfb_ioctl(struct fb_info *info, unsigned int cmd,
 			unsigned long arg)
@@ -773,7 +776,7 @@ static void sstfb_copyarea(struct fb_info *info, const struct fb_copyarea *area)
 {
 	struct sstfb_par *par = info->par;
 	u32 stride = info->fix.line_length;
-   
+
 	if (!IS_VOODOO2(par))
 		return;
 
@@ -795,17 +798,17 @@ static void sstfb_copyarea(struct fb_info *info, const struct fb_copyarea *area)
  * FillRect 2D command (solidfill or invert (via ROP_XOR)) - Voodoo2 only
  */
 #if 0
-static void sstfb_fillrect(struct fb_info *info, const struct fb_fillrect *rect) 
+static void sstfb_fillrect(struct fb_info *info, const struct fb_fillrect *rect)
 {
 	struct sstfb_par *par = info->par;
 	u32 stride = info->fix.line_length;
 
 	if (!IS_VOODOO2(par))
 		return;
-   	
+
 	sst_write(BLTCLIPX, info->var.xres);
 	sst_write(BLTCLIPY, info->var.yres);
-	
+
 	sst_write(BLTDSTBASEADDR, 0);
 	sst_write(BLTCOLOR, rect->color);
 	sst_write(BLTROP, rect->rop == ROP_COPY ? BLTROP_COPY : BLTROP_XOR);
@@ -820,8 +823,8 @@ static void sstfb_fillrect(struct fb_info *info, const struct fb_fillrect *rect)
 
 
 
-/* 
- * get lfb size 
+/*
+ * get lfb size
  */
 static int sst_get_memsize(struct fb_info *info, __u32 *memsize)
 {
@@ -859,8 +862,8 @@ static int sst_get_memsize(struct fb_info *info, __u32 *memsize)
 }
 
 
-/* 
- * DAC detection routines 
+/*
+ * DAC detection routines
  */
 
 /* fbi should be idle, and fifo emty and mem disabled */
@@ -963,7 +966,7 @@ static int sst_detect_ics(struct fb_info *info)
  * see detect_dac
  */
 
-static int sst_set_pll_att_ti(struct fb_info *info, 
+static int sst_set_pll_att_ti(struct fb_info *info,
 		const struct pll_timing *t, const int clock)
 {
 	struct sstfb_par *par = info->par;
@@ -1309,12 +1312,10 @@ static int sstfb_setup(char *options)
 
 static const struct fb_ops sstfb_ops = {
 	.owner		= THIS_MODULE,
+	FB_DEFAULT_IOMEM_OPS,
 	.fb_check_var	= sstfb_check_var,
 	.fb_set_par	= sstfb_set_par,
 	.fb_setcolreg	= sstfb_setcolreg,
-	.fb_fillrect	= cfb_fillrect, /* sstfb_fillrect */
-	.fb_copyarea	= cfb_copyarea, /* sstfb_copyarea */
-	.fb_imageblit	= cfb_imageblit,
 	.fb_ioctl	= sstfb_ioctl,
 };
 
@@ -1325,6 +1326,10 @@ static int sstfb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct sstfb_par *par;
 	struct sst_spec *spec;
 	int err;
+
+	err = aperture_remove_conflicting_pci_devices(pdev, "sstfb");
+	if (err)
+		return err;
 
 	/* Enable device in PCI config. */
 	if ((err=pci_enable_device(pdev))) {
@@ -1338,10 +1343,10 @@ static int sstfb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return -ENOMEM;
 
 	pci_set_drvdata(pdev, info);
-	
+
 	par  = info->par;
 	fix  = &info->fix;
-	
+
 	par->type = id->driver_data;
 	spec = &voodoo_spec[par->type];
 	f_ddprintk("found device : %s\n", spec->name);
@@ -1382,7 +1387,7 @@ static int sstfb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto fail;
 	}
 	sst_get_memsize(info, &fix->smem_len);
-	strlcpy(fix->id, spec->name, sizeof(fix->id));
+	strscpy(fix->id, spec->name, sizeof(fix->id));
 
 	printk(KERN_INFO "%s (revision %d) with %s dac\n",
 		fix->id, par->revision, par->dac_sw.name);
@@ -1394,7 +1399,6 @@ static int sstfb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	f_ddprintk("membase_phys: %#lx\n", fix->smem_start);
 	f_ddprintk("fbbase_virt: %p\n", info->screen_base);
 
-	info->flags	= FBINFO_DEFAULT;
 	info->fbops	= &sstfb_ops;
 	info->pseudo_palette = par->palette;
 
@@ -1407,7 +1411,7 @@ static int sstfb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	 * fact dithered to 16bit).
 	 */
 	fix->line_length = 2048; /* default value, for 24 or 32bit: 4096 */
-	
+
 	fb_find_mode(&info->var, info, mode_option, NULL, 0, NULL, 16);
 
 	if (sstfb_check_var(&info->var, info)) {
@@ -1419,7 +1423,7 @@ static int sstfb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		printk(KERN_ERR "sstfb: can't set default video mode.\n");
 		goto fail;
 	}
-	
+
 	if (fb_alloc_cmap(&info->cmap, 256, 0)) {
 		printk(KERN_ERR "sstfb: can't alloc cmap memory.\n");
 		goto fail;
@@ -1434,9 +1438,10 @@ static int sstfb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	sstfb_clear_screen(info);
 
+#ifdef CONFIG_FB_DEVICE
 	if (device_create_file(info->dev, &device_attrs[0]))
 		printk(KERN_WARNING "sstfb: can't create sysfs entry.\n");
-
+#endif
 
 	fb_info(info, "%s frame buffer device at 0x%p\n",
 		fix->id, info->screen_base);
@@ -1465,8 +1470,10 @@ static void sstfb_remove(struct pci_dev *pdev)
 
 	info = pci_get_drvdata(pdev);
 	par = info->par;
-	
+
+#ifdef CONFIG_FB_DEVICE
 	device_remove_file(info->dev, &device_attrs[0]);
+#endif
 	sst_shutdown(info);
 	iounmap(info->screen_base);
 	iounmap(par->mmio_vbase);
@@ -1497,6 +1504,9 @@ static struct pci_driver sstfb_driver = {
 static int sstfb_init(void)
 {
 	char *option = NULL;
+
+	if (fb_modesetting_disabled("sstfb"))
+		return -ENODEV;
 
 	if (fb_get_options("sstfb", &option))
 		return -ENODEV;

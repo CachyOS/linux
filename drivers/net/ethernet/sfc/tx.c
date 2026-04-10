@@ -49,14 +49,6 @@ static inline u8 *efx_tx_get_copy_buffer(struct efx_tx_queue *tx_queue,
 	return (u8 *)page_buf->addr + offset;
 }
 
-u8 *efx_tx_get_copy_buffer_limited(struct efx_tx_queue *tx_queue,
-				   struct efx_tx_buffer *buffer, size_t len)
-{
-	if (len > EFX_TX_CB_SIZE)
-		return NULL;
-	return efx_tx_get_copy_buffer(tx_queue, buffer);
-}
-
 static void efx_tx_maybe_stop_queue(struct efx_tx_queue *txq1)
 {
 	/* We need to consider all queues that the net core sees as one */
@@ -207,11 +199,11 @@ static void efx_skb_copy_bits_to_pio(struct efx_nic *efx, struct sk_buff *skb,
 		skb_frag_t *f = &skb_shinfo(skb)->frags[i];
 		u8 *vaddr;
 
-		vaddr = kmap_atomic(skb_frag_page(f));
+		vaddr = kmap_local_page(skb_frag_page(f));
 
 		efx_memcpy_toio_aligned_cb(efx, piobuf, vaddr + skb_frag_off(f),
 					   skb_frag_size(f), copy_buf);
-		kunmap_atomic(vaddr);
+		kunmap_local(vaddr);
 	}
 
 	EFX_WARN_ON_ONCE_PARANOID(skb_shinfo(skb)->frag_list);
@@ -512,18 +504,13 @@ unlock:
 netdev_tx_t efx_hard_start_xmit(struct sk_buff *skb,
 				struct net_device *net_dev)
 {
-	struct efx_nic *efx = netdev_priv(net_dev);
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
 	struct efx_tx_queue *tx_queue;
 	unsigned index, type;
 
 	EFX_WARN_ON_PARANOID(!netif_device_present(net_dev));
-
 	index = skb_get_queue_mapping(skb);
 	type = efx_tx_csum_type_skb(skb);
-	if (index >= efx->n_tx_channels) {
-		index -= efx->n_tx_channels;
-		type |= EFX_TXQ_TYPE_HIGHPRI;
-	}
 
 	/* PTP "event" packet */
 	if (unlikely(efx_xmit_with_hwtstamp(skb)) &&
@@ -549,7 +536,7 @@ netdev_tx_t efx_hard_start_xmit(struct sk_buff *skb,
 		 * previous packets out.
 		 */
 		if (!netdev_xmit_more())
-			efx_tx_send_pending(tx_queue->channel);
+			efx_tx_send_pending(efx_get_tx_channel(efx, index));
 		return NETDEV_TX_OK;
 	}
 
@@ -558,7 +545,9 @@ netdev_tx_t efx_hard_start_xmit(struct sk_buff *skb,
 
 void efx_xmit_done_single(struct efx_tx_queue *tx_queue)
 {
+	unsigned int xdp_pkts_compl = 0, xdp_bytes_compl = 0;
 	unsigned int pkts_compl = 0, bytes_compl = 0;
+	unsigned int efv_pkts_compl = 0;
 	unsigned int read_ptr;
 	bool finished = false;
 
@@ -580,7 +569,9 @@ void efx_xmit_done_single(struct efx_tx_queue *tx_queue)
 		/* Need to check the flag before dequeueing. */
 		if (buffer->flags & EFX_TX_BUF_SKB)
 			finished = true;
-		efx_dequeue_buffer(tx_queue, buffer, &pkts_compl, &bytes_compl);
+		efx_dequeue_buffer(tx_queue, buffer, &pkts_compl, &bytes_compl,
+				   &efv_pkts_compl, &xdp_pkts_compl,
+				   &xdp_bytes_compl);
 
 		++tx_queue->read_count;
 		read_ptr = tx_queue->read_count & tx_queue->ptr_mask;
@@ -588,8 +579,10 @@ void efx_xmit_done_single(struct efx_tx_queue *tx_queue)
 
 	tx_queue->pkts_compl += pkts_compl;
 	tx_queue->bytes_compl += bytes_compl;
+	tx_queue->complete_xdp_packets += xdp_pkts_compl;
+	tx_queue->complete_xdp_bytes += xdp_bytes_compl;
 
-	EFX_WARN_ON_PARANOID(pkts_compl != 1);
+	EFX_WARN_ON_PARANOID(pkts_compl + efv_pkts_compl != 1);
 
 	efx_xmit_done_check_empty(tx_queue);
 }
@@ -601,43 +594,5 @@ void efx_init_tx_queue_core_txq(struct efx_tx_queue *tx_queue)
 	/* Must be inverse of queue lookup in efx_hard_start_xmit() */
 	tx_queue->core_txq =
 		netdev_get_tx_queue(efx->net_dev,
-				    tx_queue->channel->channel +
-				    ((tx_queue->type & EFX_TXQ_TYPE_HIGHPRI) ?
-				     efx->n_tx_channels : 0));
-}
-
-int efx_setup_tc(struct net_device *net_dev, enum tc_setup_type type,
-		 void *type_data)
-{
-	struct efx_nic *efx = netdev_priv(net_dev);
-	struct tc_mqprio_qopt *mqprio = type_data;
-	unsigned tc, num_tc;
-
-	if (type != TC_SETUP_QDISC_MQPRIO)
-		return -EOPNOTSUPP;
-
-	/* Only Siena supported highpri queues */
-	if (efx_nic_rev(efx) > EFX_REV_SIENA_A0)
-		return -EOPNOTSUPP;
-
-	num_tc = mqprio->num_tc;
-
-	if (num_tc > EFX_MAX_TX_TC)
-		return -EINVAL;
-
-	mqprio->hw = TC_MQPRIO_HW_OFFLOAD_TCS;
-
-	if (num_tc == net_dev->num_tc)
-		return 0;
-
-	for (tc = 0; tc < num_tc; tc++) {
-		net_dev->tc_to_txq[tc].offset = tc * efx->n_tx_channels;
-		net_dev->tc_to_txq[tc].count = efx->n_tx_channels;
-	}
-
-	net_dev->num_tc = num_tc;
-
-	return netif_set_real_num_tx_queues(net_dev,
-					    max_t(int, num_tc, 1) *
-					    efx->n_tx_channels);
+				    tx_queue->channel->channel);
 }

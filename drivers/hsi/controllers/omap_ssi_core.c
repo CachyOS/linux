@@ -17,6 +17,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/dmaengine.h>
 #include <linux/delay.h>
+#include <linux/hsi/ssi_protocol.h>
 #include <linux/seq_file.h>
 #include <linux/scatterlist.h>
 #include <linux/interrupt.h>
@@ -24,6 +25,7 @@
 #include <linux/debugfs.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/pm_runtime.h>
+#include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/hsi/hsi.h>
 #include <linux/idr.h>
@@ -114,22 +116,13 @@ static int ssi_debug_add_ctrl(struct hsi_controller *ssi)
 
 	/* SSI controller */
 	omap_ssi->dir = debugfs_create_dir(dev_name(&ssi->device), NULL);
-	if (!omap_ssi->dir)
-		return -ENOMEM;
+	debugfs_create_file("regs", S_IRUGO, omap_ssi->dir, ssi, &ssi_regs_fops);
 
-	debugfs_create_file("regs", S_IRUGO, omap_ssi->dir, ssi,
-								&ssi_regs_fops);
 	/* SSI GDD (DMA) */
 	dir = debugfs_create_dir("gdd", omap_ssi->dir);
-	if (!dir)
-		goto rback;
 	debugfs_create_file("regs", S_IRUGO, dir, ssi, &ssi_gdd_regs_fops);
 
 	return 0;
-rback:
-	debugfs_remove_recursive(omap_ssi->dir);
-
-	return -ENOMEM;
 }
 
 static void ssi_debug_remove_ctrl(struct hsi_controller *ssi)
@@ -353,7 +346,7 @@ static int ssi_add_controller(struct hsi_controller *ssi,
 	if (!omap_ssi)
 		return -ENOMEM;
 
-	err = ida_simple_get(&platform_omap_ssi_ida, 0, 0, GFP_KERNEL);
+	err = ida_alloc(&platform_omap_ssi_ida, GFP_KERNEL);
 	if (err < 0)
 		return err;
 	ssi->id = err;
@@ -415,7 +408,7 @@ static int ssi_add_controller(struct hsi_controller *ssi,
 	return 0;
 
 out_err:
-	ida_simple_remove(&platform_omap_ssi_ida, ssi->id);
+	ida_free(&platform_omap_ssi_ida, ssi->id);
 	return err;
 }
 
@@ -449,7 +442,7 @@ static void ssi_remove_controller(struct hsi_controller *ssi)
 	tasklet_kill(&omap_ssi->gdd_tasklet);
 	hsi_unregister_controller(ssi);
 	clk_notifier_unregister(omap_ssi->fck, &omap_ssi->fck_nb);
-	ida_simple_remove(&platform_omap_ssi_ida, id);
+	ida_free(&platform_omap_ssi_ida, id);
 }
 
 static inline int ssi_of_get_available_ports_count(const struct device_node *np)
@@ -502,8 +495,10 @@ static int ssi_probe(struct platform_device *pd)
 	platform_set_drvdata(pd, ssi);
 
 	err = ssi_add_controller(ssi, pd);
-	if (err < 0)
+	if (err < 0) {
+		hsi_put_controller(ssi);
 		goto out1;
+	}
 
 	pm_runtime_enable(&pd->dev);
 
@@ -524,6 +519,7 @@ static int ssi_probe(struct platform_device *pd)
 		if (!childpdev) {
 			err = -ENODEV;
 			dev_err(&pd->dev, "failed to create ssi controller port\n");
+			of_node_put(child);
 			goto out3;
 		}
 	}
@@ -535,14 +531,14 @@ out3:
 	device_for_each_child(&pd->dev, NULL, ssi_remove_ports);
 out2:
 	ssi_remove_controller(ssi);
+	pm_runtime_disable(&pd->dev);
 out1:
 	platform_set_drvdata(pd, NULL);
-	pm_runtime_disable(&pd->dev);
 
 	return err;
 }
 
-static int ssi_remove(struct platform_device *pd)
+static void ssi_remove(struct platform_device *pd)
 {
 	struct hsi_controller *ssi = platform_get_drvdata(pd);
 
@@ -556,8 +552,6 @@ static int ssi_remove(struct platform_device *pd)
 	platform_set_drvdata(pd, NULL);
 
 	pm_runtime_disable(&pd->dev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -613,7 +607,7 @@ MODULE_DEVICE_TABLE(of, omap_ssi_of_match);
 
 static struct platform_driver ssi_pdriver = {
 	.probe = ssi_probe,
-	.remove	= ssi_remove,
+	.remove = ssi_remove,
 	.driver	= {
 		.name	= "omap_ssi",
 		.pm     = DEV_PM_OPS,
@@ -628,7 +622,13 @@ static int __init ssi_init(void) {
 	if (ret)
 		return ret;
 
-	return platform_driver_register(&ssi_port_pdriver);
+	ret = platform_driver_register(&ssi_port_pdriver);
+	if (ret) {
+		platform_driver_unregister(&ssi_pdriver);
+		return ret;
+	}
+
+	return 0;
 }
 module_init(ssi_init);
 

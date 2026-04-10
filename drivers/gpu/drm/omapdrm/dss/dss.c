@@ -22,12 +22,13 @@
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/property.h>
 #include <linux/gfp.h>
 #include <linux/sizes.h>
 #include <linux/mfd/syscon.h>
 #include <linux/regmap.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/of_platform.h>
 #include <linux/of_graph.h>
 #include <linux/regulator/consumer.h>
 #include <linux/suspend.h>
@@ -927,7 +928,7 @@ dss_debugfs_create_file(struct dss_device *dss, const char *name,
 {
 	struct dss_debugfs_entry *entry;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (!entry)
 		return ERR_PTR(-ENOMEM);
 
@@ -1176,6 +1177,7 @@ static void __dss_uninit_ports(struct dss_device *dss, unsigned int num_ports)
 		default:
 			break;
 		}
+		of_node_put(port);
 	}
 }
 
@@ -1208,11 +1210,13 @@ static int dss_init_ports(struct dss_device *dss)
 		default:
 			break;
 		}
+		of_node_put(port);
 	}
 
 	return 0;
 
 error:
+	of_node_put(port);
 	__dss_uninit_ports(dss, i);
 	return r;
 }
@@ -1232,20 +1236,14 @@ static int dss_video_pll_probe(struct dss_device *dss)
 	if (!np)
 		return 0;
 
-	if (of_property_read_bool(np, "syscon-pll-ctrl")) {
-		dss->syscon_pll_ctrl = syscon_regmap_lookup_by_phandle(np,
-			"syscon-pll-ctrl");
+	if (of_property_present(np, "syscon-pll-ctrl")) {
+		dss->syscon_pll_ctrl =
+			syscon_regmap_lookup_by_phandle_args(np, "syscon-pll-ctrl",
+							     1, &dss->syscon_pll_ctrl_offset);
 		if (IS_ERR(dss->syscon_pll_ctrl)) {
 			dev_err(&pdev->dev,
 				"failed to get syscon-pll-ctrl regmap\n");
 			return PTR_ERR(dss->syscon_pll_ctrl);
-		}
-
-		if (of_property_read_u32_index(np, "syscon-pll-ctrl", 1,
-				&dss->syscon_pll_ctrl_offset)) {
-			dev_err(&pdev->dev,
-				"failed to get syscon-pll-ctrl offset\n");
-			return -EINVAL;
 		}
 	}
 
@@ -1421,7 +1419,7 @@ static int dss_probe(struct platform_device *pdev)
 	struct dss_device *dss;
 	int r;
 
-	dss = kzalloc(sizeof(*dss), GFP_KERNEL);
+	dss = kzalloc_obj(*dss);
 	if (!dss)
 		return -ENOMEM;
 
@@ -1442,7 +1440,7 @@ static int dss_probe(struct platform_device *pdev)
 	if (soc)
 		dss->feat = soc->data;
 	else
-		dss->feat = of_match_device(dss_of_match, &pdev->dev)->data;
+		dss->feat = device_get_match_data(&pdev->dev);
 
 	/* Map I/O registers, get and setup clocks. */
 	dss->base = devm_platform_ioremap_resource(pdev, 0);
@@ -1529,7 +1527,7 @@ err_free_dss:
 	return r;
 }
 
-static int dss_remove(struct platform_device *pdev)
+static void dss_remove(struct platform_device *pdev)
 {
 	struct dss_device *dss = platform_get_drvdata(pdev);
 
@@ -1554,8 +1552,6 @@ static int dss_remove(struct platform_device *pdev)
 	dss_put_clocks(dss);
 
 	kfree(dss);
-
-	return 0;
 }
 
 static void dss_shutdown(struct platform_device *pdev)

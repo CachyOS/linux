@@ -6,7 +6,9 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/if_vlan.h>
 #include <linux/interrupt.h>
+#include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/netdevice.h>
@@ -15,6 +17,7 @@
 #include <linux/cache.h>
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
+#include <linux/string_choices.h>
 
 #include <linux/spi/spi.h>
 #include <linux/of_net.h>
@@ -33,7 +36,7 @@
 #define CMD_CTR		(0x2 << CMD_SHIFT)
 
 #define CMD_MASK	GENMASK(15, CMD_SHIFT)
-#define LEN_MASK	GENMASK(CMD_SHIFT - 1, 0)
+#define LEN_MASK	GENMASK(CMD_SHIFT - 2, 0)
 
 #define DET_CMD_LEN	4
 #define DET_SOF_LEN	2
@@ -44,7 +47,6 @@
 
 struct mse102x_stats {
 	u64 xfer_err;
-	u64 invalid_cmd;
 	u64 invalid_ctr;
 	u64 invalid_dft;
 	u64 invalid_len;
@@ -55,7 +57,6 @@ struct mse102x_stats {
 
 static const char mse102x_gstrings_stats[][ETH_GSTRING_LEN] = {
 	"SPI transfer errors",
-	"Invalid command",
 	"Invalid CTR",
 	"Invalid DFT",
 	"Invalid frame length",
@@ -84,6 +85,8 @@ struct mse102x_net_spi {
 	struct spi_message	spi_msg;
 	struct spi_transfer	spi_xfer;
 
+	bool			valid_cmd_received;
+
 #ifdef CONFIG_DEBUG_FS
 	struct dentry		*device_root;
 #endif
@@ -97,16 +100,18 @@ static int mse102x_info_show(struct seq_file *s, void *what)
 {
 	struct mse102x_net_spi *mses = s->private;
 
-	seq_printf(s, "TX ring size        : %u\n",
+	seq_printf(s, "TX ring size            : %u\n",
 		   skb_queue_len(&mses->mse102x.txq));
 
-	seq_printf(s, "IRQ                 : %d\n",
+	seq_printf(s, "IRQ                     : %d\n",
 		   mses->spidev->irq);
 
-	seq_printf(s, "SPI effective speed : %lu\n",
+	seq_printf(s, "SPI effective speed     : %lu\n",
 		   (unsigned long)mses->spi_xfer.effective_speed_hz);
-	seq_printf(s, "SPI mode            : %x\n",
+	seq_printf(s, "SPI mode                : %x\n",
 		   mses->spidev->mode);
+	seq_printf(s, "Received valid CMD once : %s\n",
+		   str_yes_no(mses->valid_cmd_received));
 
 	return 0;
 }
@@ -193,10 +198,10 @@ static int mse102x_rx_cmd_spi(struct mse102x_net *mse, u8 *rxb)
 	} else if (*cmd != cpu_to_be16(DET_CMD)) {
 		net_dbg_ratelimited("%s: Unexpected response (0x%04x)\n",
 				    __func__, *cmd);
-		mse->stats.invalid_cmd++;
 		ret = -EIO;
 	} else {
 		memcpy(rxb, trx + 2, 2);
+		mses->valid_cmd_received = true;
 	}
 
 	return ret;
@@ -222,7 +227,7 @@ static int mse102x_tx_frame_spi(struct mse102x_net *mse, struct sk_buff *txp,
 	struct mse102x_net_spi *mses = to_mse102x_spi(mse);
 	struct spi_transfer *xfer = &mses->spi_xfer;
 	struct spi_message *msg = &mses->spi_msg;
-	struct sk_buff *tskb;
+	struct sk_buff *tskb = NULL;
 	int ret;
 
 	netif_dbg(mse, tx_queued, mse->ndev, "%s: skb %p, %d@%p\n",
@@ -235,7 +240,6 @@ static int mse102x_tx_frame_spi(struct mse102x_net *mse, struct sk_buff *txp,
 		if (!tskb)
 			return -ENOMEM;
 
-		dev_kfree_skb(txp);
 		txp = tskb;
 	}
 
@@ -257,11 +261,13 @@ static int mse102x_tx_frame_spi(struct mse102x_net *mse, struct sk_buff *txp,
 		mse->stats.xfer_err++;
 	}
 
+	dev_kfree_skb(tskb);
+
 	return ret;
 }
 
 static int mse102x_rx_frame_spi(struct mse102x_net *mse, u8 *buff,
-				unsigned int frame_len)
+				unsigned int frame_len, bool drop)
 {
 	struct mse102x_net_spi *mses = to_mse102x_spi(mse);
 	struct spi_transfer *xfer = &mses->spi_xfer;
@@ -279,6 +285,9 @@ static int mse102x_rx_frame_spi(struct mse102x_net *mse, u8 *buff,
 		netdev_err(mse->ndev, "%s: spi_sync() failed: %d\n",
 			   __func__, ret);
 		mse->stats.xfer_err++;
+	} else if (drop) {
+		netdev_dbg(mse->ndev, "%s: Drop frame\n", __func__);
+		ret = -EINVAL;
 	} else if (*sof != cpu_to_be16(DET_SOF)) {
 		netdev_dbg(mse->ndev, "%s: SPI start of frame is invalid (0x%04x)\n",
 			   __func__, *sof);
@@ -301,61 +310,60 @@ static void mse102x_dump_packet(const char *msg, int len, const char *data)
 		       data, len, true);
 }
 
-static void mse102x_rx_pkt_spi(struct mse102x_net *mse)
+static irqreturn_t mse102x_rx_pkt_spi(struct mse102x_net *mse)
 {
 	struct sk_buff *skb;
 	unsigned int rxalign;
 	unsigned int rxlen;
+	bool drop = false;
 	__be16 rx = 0;
 	u16 cmd_resp;
 	u8 *rxpkt;
-	int ret;
 
 	mse102x_tx_cmd_spi(mse, CMD_CTR);
-	ret = mse102x_rx_cmd_spi(mse, (u8 *)&rx);
-	cmd_resp = be16_to_cpu(rx);
-
-	if (ret || ((cmd_resp & CMD_MASK) != CMD_RTS)) {
+	if (mse102x_rx_cmd_spi(mse, (u8 *)&rx)) {
 		usleep_range(50, 100);
+		return IRQ_NONE;
+	}
 
-		mse102x_tx_cmd_spi(mse, CMD_CTR);
-		ret = mse102x_rx_cmd_spi(mse, (u8 *)&rx);
-		if (ret)
-			return;
-
-		cmd_resp = be16_to_cpu(rx);
-		if ((cmd_resp & CMD_MASK) != CMD_RTS) {
-			net_dbg_ratelimited("%s: Unexpected response (0x%04x)\n",
-					    __func__, cmd_resp);
-			mse->stats.invalid_rts++;
-			return;
-		}
-
-		net_dbg_ratelimited("%s: Unexpected response to first CMD\n",
-				    __func__);
+	cmd_resp = be16_to_cpu(rx);
+	if ((cmd_resp & CMD_MASK) != CMD_RTS) {
+		net_dbg_ratelimited("%s: Unexpected response (0x%04x)\n",
+				    __func__, cmd_resp);
+		mse->stats.invalid_rts++;
+		drop = true;
+		goto drop;
 	}
 
 	rxlen = cmd_resp & LEN_MASK;
-	if (!rxlen) {
-		net_dbg_ratelimited("%s: No frame length defined\n", __func__);
+	if (rxlen < ETH_ZLEN || rxlen > VLAN_ETH_FRAME_LEN) {
+		net_dbg_ratelimited("%s: Invalid frame length: %d\n", __func__,
+				    rxlen);
 		mse->stats.invalid_len++;
-		return;
+		drop = true;
 	}
+
+	/* In case of a invalid CMD_RTS, the frame must be consumed anyway.
+	 * So assume the maximum possible frame length.
+	 */
+drop:
+	if (drop)
+		rxlen = VLAN_ETH_FRAME_LEN;
 
 	rxalign = ALIGN(rxlen + DET_SOF_LEN + DET_DFT_LEN, 4);
 	skb = netdev_alloc_skb_ip_align(mse->ndev, rxalign);
 	if (!skb)
-		return;
+		return IRQ_NONE;
 
 	/* 2 bytes Start of frame (before ethernet header)
 	 * 2 bytes Data frame tail (after ethernet frame)
 	 * They are copied, but ignored.
 	 */
 	rxpkt = skb_put(skb, rxlen) - DET_SOF_LEN;
-	if (mse102x_rx_frame_spi(mse, rxpkt, rxlen)) {
+	if (mse102x_rx_frame_spi(mse, rxpkt, rxlen, drop)) {
 		mse->ndev->stats.rx_errors++;
 		dev_kfree_skb(skb);
-		return;
+		return IRQ_HANDLED;
 	}
 
 	if (netif_msg_pktdata(mse))
@@ -366,6 +374,8 @@ static void mse102x_rx_pkt_spi(struct mse102x_net *mse)
 
 	mse->ndev->stats.rx_packets++;
 	mse->ndev->stats.rx_bytes += rxlen;
+
+	return IRQ_HANDLED;
 }
 
 static int mse102x_tx_pkt_spi(struct mse102x_net *mse, struct sk_buff *txb,
@@ -377,8 +387,8 @@ static int mse102x_tx_pkt_spi(struct mse102x_net *mse, struct sk_buff *txb,
 	int ret;
 	bool first = true;
 
-	if (txb->len < 60)
-		pad = 60 - txb->len;
+	if (txb->len < ETH_ZLEN)
+		pad = ETH_ZLEN - txb->len;
 
 	while (1) {
 		mse102x_tx_cmd_spi(mse, CMD_RTS | (txb->len + pad));
@@ -436,13 +446,15 @@ static void mse102x_tx_work(struct work_struct *work)
 	mse = &mses->mse102x;
 
 	while ((txb = skb_dequeue(&mse->txq))) {
+		unsigned int len = max_t(unsigned int, txb->len, ETH_ZLEN);
+
 		mutex_lock(&mses->lock);
 		ret = mse102x_tx_pkt_spi(mse, txb, work_timeout);
 		mutex_unlock(&mses->lock);
 		if (ret) {
 			mse->ndev->stats.tx_dropped++;
 		} else {
-			mse->ndev->stats.tx_bytes += txb->len;
+			mse->ndev->stats.tx_bytes += len;
 			mse->ndev->stats.tx_packets++;
 		}
 
@@ -451,7 +463,7 @@ static void mse102x_tx_work(struct work_struct *work)
 
 	if (ret == -ETIMEDOUT) {
 		if (netif_msg_timer(mse))
-			netdev_err(mse->ndev, "tx work timeout\n");
+			netdev_err_once(mse->ndev, "tx work timeout\n");
 
 		mse->stats.tx_timeout++;
 	}
@@ -485,8 +497,8 @@ static void mse102x_init_mac(struct mse102x_net *mse, struct device_node *np)
 
 	if (ret) {
 		eth_hw_addr_random(ndev);
-		netdev_err(ndev, "Using random MAC address: %pM\n",
-			   ndev->dev_addr);
+		dev_warn(ndev->dev.parent, "Using random MAC address: %pM\n",
+			 ndev->dev_addr);
 	}
 }
 
@@ -495,18 +507,35 @@ static irqreturn_t mse102x_irq(int irq, void *_mse)
 {
 	struct mse102x_net *mse = _mse;
 	struct mse102x_net_spi *mses = to_mse102x_spi(mse);
+	irqreturn_t ret;
 
 	mutex_lock(&mses->lock);
-	mse102x_rx_pkt_spi(mse);
+	ret = mse102x_rx_pkt_spi(mse);
 	mutex_unlock(&mses->lock);
 
-	return IRQ_HANDLED;
+	return ret;
 }
 
 static int mse102x_net_open(struct net_device *ndev)
 {
+	struct irq_data *irq_data = irq_get_irq_data(ndev->irq);
 	struct mse102x_net *mse = netdev_priv(ndev);
+	struct mse102x_net_spi *mses = to_mse102x_spi(mse);
 	int ret;
+
+	if (!irq_data) {
+		netdev_err(ndev, "Invalid IRQ: %d\n", ndev->irq);
+		return -EINVAL;
+	}
+
+	switch (irqd_get_trigger_type(irq_data)) {
+	case IRQ_TYPE_LEVEL_HIGH:
+	case IRQ_TYPE_LEVEL_LOW:
+		break;
+	default:
+		netdev_warn_once(ndev, "Only IRQ type level recommended, please update your device tree firmware.\n");
+		break;
+	}
 
 	ret = request_threaded_irq(ndev->irq, NULL, mse102x_irq, IRQF_ONESHOT,
 				   ndev->name, mse);
@@ -520,6 +549,14 @@ static int mse102x_net_open(struct net_device *ndev)
 	netif_start_queue(ndev);
 
 	netif_carrier_on(ndev);
+
+	/* The SPI interrupt can stuck in case of pending packet(s).
+	 * So poll for possible packet(s) to re-arm the interrupt.
+	 */
+	mutex_lock(&mses->lock);
+	if (mse102x_rx_pkt_spi(mse) == IRQ_NONE)
+		mse102x_rx_pkt_spi(mse);
+	mutex_unlock(&mses->lock);
 
 	netif_dbg(mse, ifup, ndev, "network device up\n");
 
@@ -622,8 +659,6 @@ static const struct ethtool_ops mse102x_ethtool_ops = {
 
 /* driver bus management functions */
 
-#ifdef CONFIG_PM_SLEEP
-
 static int mse102x_suspend(struct device *dev)
 {
 	struct mse102x_net *mse = dev_get_drvdata(dev);
@@ -649,9 +684,8 @@ static int mse102x_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(mse102x_pm_ops, mse102x_suspend, mse102x_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(mse102x_pm_ops, mse102x_suspend, mse102x_resume);
 
 static int mse102x_probe_spi(struct spi_device *spi)
 {
@@ -664,7 +698,7 @@ static int mse102x_probe_spi(struct spi_device *spi)
 	spi->bits_per_word = 8;
 	spi->mode |= SPI_MODE_3;
 	/* enforce minimum speed to ensure device functionality */
-	spi->master->min_speed_hz = MIN_FREQ_HZ;
+	spi->controller->min_speed_hz = MIN_FREQ_HZ;
 
 	if (!spi->max_speed_hz)
 		spi->max_speed_hz = MAX_FREQ_HZ;
@@ -736,9 +770,6 @@ static void mse102x_remove_spi(struct spi_device *spi)
 	struct mse102x_net *mse = dev_get_drvdata(&spi->dev);
 	struct mse102x_net_spi *mses = to_mse102x_spi(mse);
 
-	if (netif_msg_drv(mse))
-		dev_info(&spi->dev, "remove\n");
-
 	mse102x_remove_device_debugfs(mses);
 	unregister_netdev(mse->ndev);
 }
@@ -750,18 +781,26 @@ static const struct of_device_id mse102x_match_table[] = {
 };
 MODULE_DEVICE_TABLE(of, mse102x_match_table);
 
+static const struct spi_device_id mse102x_ids[] = {
+	{ "mse1021" },
+	{ "mse1022" },
+	{ }
+};
+MODULE_DEVICE_TABLE(spi, mse102x_ids);
+
 static struct spi_driver mse102x_driver = {
 	.driver = {
 		.name = DRV_NAME,
 		.of_match_table = mse102x_match_table,
-		.pm = &mse102x_pm_ops,
+		.pm = pm_sleep_ptr(&mse102x_pm_ops),
 	},
 	.probe = mse102x_probe_spi,
 	.remove = mse102x_remove_spi,
+	.id_table = mse102x_ids,
 };
 module_spi_driver(mse102x_driver);
 
 MODULE_DESCRIPTION("MSE102x Network driver");
-MODULE_AUTHOR("Stefan Wahren <stefan.wahren@in-tech.com>");
+MODULE_AUTHOR("Stefan Wahren <stefan.wahren@chargebyte.com>");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("spi:" DRV_NAME);

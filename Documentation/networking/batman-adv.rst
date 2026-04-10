@@ -27,7 +27,7 @@ Load the batman-adv module into your kernel::
   $ insmod batman-adv.ko
 
 The module is now waiting for activation. You must add some interfaces on which
-batman-adv can operate. The batman-adv soft-interface can be created using the
+batman-adv can operate. The batman-adv mesh-interface can be created using the
 iproute2 tool ``ip``::
 
   $ ip link add name bat0 type batadv
@@ -159,10 +159,10 @@ Please send us comments, experiences, questions, anything :)
 IRC:
   #batadv on ircs://irc.hackint.org/
 Mailing-list:
-  b.a.t.m.a.n@open-mesh.org (optional subscription at
+  b.a.t.m.a.n@lists.open-mesh.org (optional subscription at
   https://lists.open-mesh.org/mailman3/postorius/lists/b.a.t.m.a.n.lists.open-mesh.org/)
 
 You can also contact the Authors:
 
-* Marek Lindner <mareklindner@neomailbox.ch>
+* Marek Lindner <marek.lindner@mailbox.org>
 * Simon Wunderlich <sw@simonwunderlich.de>

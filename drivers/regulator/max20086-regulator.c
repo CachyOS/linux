@@ -5,8 +5,8 @@
 // Copyright (C) 2022 Laurent Pinchart <laurent.pinchart@idesonboard.com>
 // Copyright (C) 2018 Avnet, Inc.
 
+#include <linux/cleanup.h>
 #include <linux/err.h>
-#include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
@@ -29,7 +29,7 @@
 #define	MAX20086_REG_ADC4		0x09
 
 /* DEVICE IDs */
-#define MAX20086_DEVICE_ID_MAX20086	0x40
+#define MAX20086_DEVICE_ID_MAX20086	0x30
 #define MAX20086_DEVICE_ID_MAX20087	0x20
 #define MAX20086_DEVICE_ID_MAX20088	0x10
 #define MAX20086_DEVICE_ID_MAX20089	0x00
@@ -133,23 +133,27 @@ static int max20086_regulators_register(struct max20086 *chip)
 
 static int max20086_parse_regulators_dt(struct max20086 *chip, bool *boot_on)
 {
-	struct of_regulator_match matches[MAX20086_MAX_REGULATORS] = { };
-	struct device_node *node;
+	struct of_regulator_match *matches;
 	unsigned int i;
 	int ret;
 
-	node = of_get_child_by_name(chip->dev->of_node, "regulators");
+	struct device_node *node __free(device_node) =
+		of_get_child_by_name(chip->dev->of_node, "regulators");
 	if (!node) {
 		dev_err(chip->dev, "regulators node not found\n");
 		return -ENODEV;
 	}
+
+	matches = devm_kcalloc(chip->dev, chip->info->num_outputs,
+			       sizeof(*matches), GFP_KERNEL);
+	if (!matches)
+		return -ENOMEM;
 
 	for (i = 0; i < chip->info->num_outputs; ++i)
 		matches[i].name = max20086_output_names[i];
 
 	ret = of_regulator_match(chip->dev, node, matches,
 				 chip->info->num_outputs);
-	of_node_put(node);
 	if (ret < 0) {
 		dev_err(chip->dev, "Failed to match regulators\n");
 		return -EINVAL;
@@ -224,7 +228,7 @@ static int max20086_i2c_probe(struct i2c_client *i2c)
 		return -ENOMEM;
 
 	chip->dev = &i2c->dev;
-	chip->info = device_get_match_data(chip->dev);
+	chip->info = i2c_get_match_data(i2c);
 
 	i2c_set_clientdata(i2c, chip);
 
@@ -260,7 +264,7 @@ static int max20086_i2c_probe(struct i2c_client *i2c)
 	 * shutdown.
 	 */
 	flags = boot_on ? GPIOD_OUT_HIGH : GPIOD_OUT_LOW;
-	chip->ena_gpiod = devm_gpiod_get(chip->dev, "enable", flags);
+	chip->ena_gpiod = devm_gpiod_get_optional(chip->dev, "enable", flags);
 	if (IS_ERR(chip->ena_gpiod)) {
 		ret = PTR_ERR(chip->ena_gpiod);
 		dev_err(chip->dev, "Failed to get enable GPIO: %d\n", ret);
@@ -276,53 +280,51 @@ static int max20086_i2c_probe(struct i2c_client *i2c)
 	return 0;
 }
 
-static const struct i2c_device_id max20086_i2c_id[] = {
-	{ "max20086" },
-	{ "max20087" },
-	{ "max20088" },
-	{ "max20089" },
-	{ /* Sentinel */ },
+static const struct max20086_chip_info max20086_chip_info = {
+	.id = MAX20086_DEVICE_ID_MAX20086,
+	.num_outputs = 4,
 };
 
+static const struct max20086_chip_info max20087_chip_info = {
+	.id = MAX20086_DEVICE_ID_MAX20087,
+	.num_outputs = 4,
+};
+
+static const struct max20086_chip_info max20088_chip_info = {
+	.id = MAX20086_DEVICE_ID_MAX20088,
+	.num_outputs = 2,
+};
+
+static const struct max20086_chip_info max20089_chip_info = {
+	.id = MAX20086_DEVICE_ID_MAX20089,
+	.num_outputs = 2,
+};
+
+static const struct i2c_device_id max20086_i2c_id[] = {
+	{ "max20086", (kernel_ulong_t)&max20086_chip_info },
+	{ "max20087", (kernel_ulong_t)&max20087_chip_info },
+	{ "max20088", (kernel_ulong_t)&max20088_chip_info },
+	{ "max20089", (kernel_ulong_t)&max20089_chip_info },
+	{ /* Sentinel */ }
+};
 MODULE_DEVICE_TABLE(i2c, max20086_i2c_id);
 
-static const struct of_device_id max20086_dt_ids[] = {
-	{
-		.compatible = "maxim,max20086",
-		.data = &(const struct max20086_chip_info) {
-			.id = MAX20086_DEVICE_ID_MAX20086,
-			.num_outputs = 4,
-		}
-	}, {
-		.compatible = "maxim,max20087",
-		.data = &(const struct max20086_chip_info) {
-			.id = MAX20086_DEVICE_ID_MAX20087,
-			.num_outputs = 4,
-		}
-	}, {
-		.compatible = "maxim,max20088",
-		.data = &(const struct max20086_chip_info) {
-			.id = MAX20086_DEVICE_ID_MAX20088,
-			.num_outputs = 2,
-		}
-	}, {
-		.compatible = "maxim,max20089",
-		.data = &(const struct max20086_chip_info) {
-			.id = MAX20086_DEVICE_ID_MAX20089,
-			.num_outputs = 2,
-		}
-	},
-	{ /* Sentinel */ },
+static const struct of_device_id max20086_dt_ids[] __maybe_unused = {
+	{ .compatible = "maxim,max20086", .data = &max20086_chip_info },
+	{ .compatible = "maxim,max20087", .data = &max20087_chip_info },
+	{ .compatible = "maxim,max20088", .data = &max20088_chip_info },
+	{ .compatible = "maxim,max20089", .data = &max20089_chip_info },
+	{ /* Sentinel */ }
 };
-
 MODULE_DEVICE_TABLE(of, max20086_dt_ids);
 
 static struct i2c_driver max20086_regulator_driver = {
 	.driver = {
 		.name = "max20086",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = of_match_ptr(max20086_dt_ids),
 	},
-	.probe_new = max20086_i2c_probe,
+	.probe = max20086_i2c_probe,
 	.id_table = max20086_i2c_id,
 };
 

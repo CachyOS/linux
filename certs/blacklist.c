@@ -13,6 +13,7 @@
 #include <linux/sched.h>
 #include <linux/ctype.h>
 #include <linux/err.h>
+#include <linux/hex.h>
 #include <linux/seq_file.h>
 #include <linux/uidgid.h>
 #include <keys/asymmetric-type.h>
@@ -183,16 +184,19 @@ static int mark_raw_hash_blacklisted(const char *hash)
 {
 	key_ref_t key;
 
-	key = key_create_or_update(make_key_ref(blacklist_keyring, true),
-				   "blacklist",
-				   hash,
-				   NULL,
-				   0,
-				   BLACKLIST_KEY_PERM,
-				   KEY_ALLOC_NOT_IN_QUOTA |
-				   KEY_ALLOC_BUILT_IN);
+	key = key_create(make_key_ref(blacklist_keyring, true),
+			 "blacklist",
+			 hash,
+			 NULL,
+			 0,
+			 BLACKLIST_KEY_PERM,
+			 KEY_ALLOC_NOT_IN_QUOTA |
+			 KEY_ALLOC_BUILT_IN);
 	if (IS_ERR(key)) {
-		pr_err("Problem blacklisting hash (%ld)\n", PTR_ERR(key));
+		if (PTR_ERR(key) == -EEXIST)
+			pr_warn("Duplicate blacklisted hash %s\n", hash);
+		else
+			pr_err("Problem blacklisting hash %s: %pe\n", hash, key);
 		return PTR_ERR(key);
 	}
 	return 0;
@@ -324,7 +328,7 @@ static int __init blacklist_init(void)
 	if (register_key_type(&key_type_blacklist) < 0)
 		panic("Can't allocate system blacklist key type\n");
 
-	restriction = kzalloc(sizeof(*restriction), GFP_KERNEL);
+	restriction = kzalloc_obj(*restriction);
 	if (!restriction)
 		panic("Can't allocate blacklist keyring restriction\n");
 	restriction->check = restrict_link_for_blacklist;

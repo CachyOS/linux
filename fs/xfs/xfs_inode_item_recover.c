@@ -3,7 +3,7 @@
  * Copyright (c) 2000-2006 Silicon Graphics, Inc.
  * All Rights Reserved.
  */
-#include "xfs.h"
+#include "xfs_platform.h"
 #include "xfs_fs.h"
 #include "xfs_shared.h"
 #include "xfs_format.h"
@@ -22,19 +22,21 @@
 #include "xfs_log_recover.h"
 #include "xfs_icache.h"
 #include "xfs_bmap_btree.h"
+#include "xfs_rtrmap_btree.h"
+#include "xfs_rtrefcount_btree.h"
 
 STATIC void
 xlog_recover_inode_ra_pass2(
 	struct xlog                     *log,
 	struct xlog_recover_item        *item)
 {
-	if (item->ri_buf[0].i_len == sizeof(struct xfs_inode_log_format)) {
-		struct xfs_inode_log_format	*ilfp = item->ri_buf[0].i_addr;
+	if (item->ri_buf[0].iov_len == sizeof(struct xfs_inode_log_format)) {
+		struct xfs_inode_log_format	*ilfp = item->ri_buf[0].iov_base;
 
 		xlog_buf_readahead(log, ilfp->ilf_blkno, ilfp->ilf_len,
 				   &xfs_inode_buf_ra_ops);
 	} else {
-		struct xfs_inode_log_format_32	*ilfp = item->ri_buf[0].i_addr;
+		struct xfs_inode_log_format_32	*ilfp = item->ri_buf[0].iov_base;
 
 		xlog_buf_readahead(log, ilfp->ilf_blkno, ilfp->ilf_len,
 				   &xfs_inode_buf_ra_ops);
@@ -175,7 +177,7 @@ xfs_log_dinode_to_disk(
 	to->di_mode = cpu_to_be16(from->di_mode);
 	to->di_version = from->di_version;
 	to->di_format = from->di_format;
-	to->di_onlink = 0;
+	to->di_metatype = cpu_to_be16(from->di_metatype);
 	to->di_uid = cpu_to_be32(from->di_uid);
 	to->di_gid = cpu_to_be32(from->di_gid);
 	to->di_nlink = cpu_to_be32(from->di_nlink);
@@ -201,6 +203,7 @@ xfs_log_dinode_to_disk(
 		to->di_crtime = xfs_log_dinode_to_disk_ts(from,
 							  from->di_crtime);
 		to->di_flags2 = cpu_to_be64(from->di_flags2);
+		/* also covers the di_used_blocks union arm: */
 		to->di_cowextsize = cpu_to_be32(from->di_cowextsize);
 		to->di_ino = cpu_to_be64(from->di_ino);
 		to->di_lsn = cpu_to_be64(lsn);
@@ -266,6 +269,41 @@ xlog_dinode_verify_extent_counts(
 	return 0;
 }
 
+static inline int
+xlog_recover_inode_dbroot(
+	struct xfs_mount	*mp,
+	void			*src,
+	unsigned int		len,
+	struct xfs_dinode	*dip)
+{
+	void			*dfork = XFS_DFORK_DPTR(dip);
+	unsigned int		dsize = XFS_DFORK_DSIZE(dip, mp);
+
+	switch (dip->di_format) {
+	case XFS_DINODE_FMT_BTREE:
+		xfs_bmbt_to_bmdr(mp, src, len, dfork, dsize);
+		break;
+	case XFS_DINODE_FMT_META_BTREE:
+		switch (be16_to_cpu(dip->di_metatype)) {
+		case XFS_METAFILE_RTRMAP:
+			xfs_rtrmapbt_to_disk(mp, src, len, dfork, dsize);
+			return 0;
+		case XFS_METAFILE_RTREFCOUNT:
+			xfs_rtrefcountbt_to_disk(mp, src, len, dfork, dsize);
+			return 0;
+		default:
+			ASSERT(0);
+			return -EFSCORRUPTED;
+		}
+		break;
+	default:
+		ASSERT(0);
+		return -EFSCORRUPTED;
+	}
+
+	return 0;
+}
+
 STATIC int
 xlog_recover_inode_commit_pass2(
 	struct xlog			*log,
@@ -286,11 +324,13 @@ xlog_recover_inode_commit_pass2(
 	struct xfs_log_dinode		*ldip;
 	uint				isize;
 	int				need_free = 0;
+	xfs_failaddr_t			fa;
 
-	if (item->ri_buf[0].i_len == sizeof(struct xfs_inode_log_format)) {
-		in_f = item->ri_buf[0].i_addr;
+	if (item->ri_buf[0].iov_len == sizeof(struct xfs_inode_log_format)) {
+		in_f = item->ri_buf[0].iov_base;
 	} else {
-		in_f = kmem_alloc(sizeof(struct xfs_inode_log_format), 0);
+		in_f = kmalloc_obj(struct xfs_inode_log_format,
+				   GFP_KERNEL | __GFP_NOFAIL);
 		need_free = 1;
 		error = xfs_inode_item_format_convert(&item->ri_buf[0], in_f);
 		if (error)
@@ -321,15 +361,15 @@ xlog_recover_inode_commit_pass2(
 	 */
 	if (XFS_IS_CORRUPT(mp, !xfs_verify_magic16(bp, dip->di_magic))) {
 		xfs_alert(mp,
-	"%s: Bad inode magic number, dip = "PTR_FMT", dino bp = "PTR_FMT", ino = %Ld",
+	"%s: Bad inode magic number, dip = "PTR_FMT", dino bp = "PTR_FMT", ino = %lld",
 			__func__, dip, bp, in_f->ilf_ino);
 		error = -EFSCORRUPTED;
 		goto out_release;
 	}
-	ldip = item->ri_buf[1].i_addr;
+	ldip = item->ri_buf[1].iov_base;
 	if (XFS_IS_CORRUPT(mp, ldip->di_magic != XFS_DINODE_MAGIC)) {
 		xfs_alert(mp,
-			"%s: Bad inode log record, rec ptr "PTR_FMT", ino %Ld",
+			"%s: Bad inode log record, rec ptr "PTR_FMT", ino %lld",
 			__func__, item, in_f->ilf_ino);
 		error = -EFSCORRUPTED;
 		goto out_release;
@@ -369,28 +409,31 @@ xlog_recover_inode_commit_pass2(
 	 * superblock flag to determine whether we need to look at di_flushiter
 	 * to skip replay when the on disk inode is newer than the log one
 	 */
-	if (!xfs_has_v3inodes(mp) &&
-	    ldip->di_flushiter < be16_to_cpu(dip->di_flushiter)) {
-		/*
-		 * Deal with the wrap case, DI_MAX_FLUSH is less
-		 * than smaller numbers
-		 */
-		if (be16_to_cpu(dip->di_flushiter) == DI_MAX_FLUSH &&
-		    ldip->di_flushiter < (DI_MAX_FLUSH >> 1)) {
-			/* do nothing */
-		} else {
-			trace_xfs_log_recover_inode_skip(log, in_f);
-			error = 0;
-			goto out_release;
+	if (!xfs_has_v3inodes(mp)) {
+		if (ldip->di_flushiter < be16_to_cpu(dip->di_flushiter)) {
+			/*
+			 * Deal with the wrap case, DI_MAX_FLUSH is less
+			 * than smaller numbers
+			 */
+			if (be16_to_cpu(dip->di_flushiter) == DI_MAX_FLUSH &&
+			    ldip->di_flushiter < (DI_MAX_FLUSH >> 1)) {
+				/* do nothing */
+			} else {
+				trace_xfs_log_recover_inode_skip(log, in_f);
+				error = 0;
+				goto out_release;
+			}
 		}
+
+		/* Take the opportunity to reset the flush iteration count */
+		ldip->di_flushiter = 0;
 	}
 
-	/* Take the opportunity to reset the flush iteration count */
-	ldip->di_flushiter = 0;
 
 	if (unlikely(S_ISREG(ldip->di_mode))) {
-		if ((ldip->di_format != XFS_DINODE_FMT_EXTENTS) &&
-		    (ldip->di_format != XFS_DINODE_FMT_BTREE)) {
+		if (ldip->di_format != XFS_DINODE_FMT_EXTENTS &&
+		    ldip->di_format != XFS_DINODE_FMT_BTREE &&
+		    ldip->di_format != XFS_DINODE_FMT_META_BTREE) {
 			XFS_CORRUPTION_ERROR(
 				"Bad log dinode data fork format for regular file",
 				XFS_ERRLEVEL_LOW, mp, ldip, sizeof(*ldip));
@@ -429,12 +472,12 @@ xlog_recover_inode_commit_pass2(
 		goto out_release;
 	}
 	isize = xfs_log_dinode_size(mp);
-	if (unlikely(item->ri_buf[1].i_len > isize)) {
+	if (unlikely(item->ri_buf[1].iov_len > isize)) {
 		XFS_CORRUPTION_ERROR("Bad log dinode size", XFS_ERRLEVEL_LOW,
 				     mp, ldip, sizeof(*ldip));
 		xfs_alert(mp,
-			"Bad inode 0x%llx log dinode size 0x%x",
-			in_f->ilf_ino, item->ri_buf[1].i_len);
+			"Bad inode 0x%llx log dinode size 0x%zx",
+			in_f->ilf_ino, item->ri_buf[1].iov_len);
 		error = -EFSCORRUPTED;
 		goto out_release;
 	}
@@ -457,8 +500,8 @@ xlog_recover_inode_commit_pass2(
 
 	if (in_f->ilf_size == 2)
 		goto out_owner_change;
-	len = item->ri_buf[2].i_len;
-	src = item->ri_buf[2].i_addr;
+	len = item->ri_buf[2].iov_len;
+	src = item->ri_buf[2].iov_base;
 	ASSERT(in_f->ilf_size <= 4);
 	ASSERT((in_f->ilf_size == 3) || (fields & XFS_ILOG_AFORK));
 	ASSERT(!(fields & XFS_ILOG_DFORK) ||
@@ -471,9 +514,9 @@ xlog_recover_inode_commit_pass2(
 		break;
 
 	case XFS_ILOG_DBROOT:
-		xfs_bmbt_to_bmdr(mp, (struct xfs_btree_block *)src, len,
-				 (struct xfs_bmdr_block *)XFS_DFORK_DPTR(dip),
-				 XFS_DFORK_DSIZE(dip, mp));
+		error = xlog_recover_inode_dbroot(mp, src, len, dip);
+		if (error)
+			goto out_release;
 		break;
 
 	default:
@@ -495,8 +538,8 @@ xlog_recover_inode_commit_pass2(
 		} else {
 			attr_index = 2;
 		}
-		len = item->ri_buf[attr_index].i_len;
-		src = item->ri_buf[attr_index].i_addr;
+		len = item->ri_buf[attr_index].iov_len;
+		src = item->ri_buf[attr_index].iov_base;
 		ASSERT(len == xlog_calc_iovec_len(in_f->ilf_asize));
 
 		switch (in_f->ilf_fields & XFS_ILOG_AFORK) {
@@ -528,8 +571,19 @@ out_owner_change:
 	    (dip->di_mode != 0))
 		error = xfs_recover_inode_owner_change(mp, dip, in_f,
 						       buffer_list);
-	/* re-generate the checksum. */
+	/* re-generate the checksum and validate the recovered inode. */
 	xfs_dinode_calc_crc(log->l_mp, dip);
+	fa = xfs_dinode_verify(log->l_mp, in_f->ilf_ino, dip);
+	if (fa) {
+		XFS_CORRUPTION_ERROR(
+			"Bad dinode after recovery",
+				XFS_ERRLEVEL_LOW, mp, dip, sizeof(*dip));
+		xfs_alert(mp,
+			"Metadata corruption detected at %pS, inode 0x%llx",
+			fa, in_f->ilf_ino);
+		error = -EFSCORRUPTED;
+		goto out_release;
+	}
 
 	ASSERT(bp->b_mount == mp);
 	bp->b_flags |= _XBF_LOGRECOVERY;
@@ -539,7 +593,7 @@ out_release:
 	xfs_buf_relse(bp);
 error:
 	if (need_free)
-		kmem_free(in_f);
+		kfree(in_f);
 	return error;
 }
 

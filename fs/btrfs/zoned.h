@@ -4,11 +4,27 @@
 #define BTRFS_ZONED_H
 
 #include <linux/types.h>
+#include <linux/atomic.h>
 #include <linux/blkdev.h>
+#include <linux/blkzoned.h>
+#include <linux/errno.h>
+#include <linux/spinlock.h>
+#include <linux/mutex.h>
+#include <linux/seq_file.h>
+#include "messages.h"
 #include "volumes.h"
 #include "disk-io.h"
 #include "block-group.h"
 #include "btrfs_inode.h"
+
+struct block_device;
+struct extent_buffer;
+struct btrfs_bio;
+struct btrfs_ordered_extent;
+struct btrfs_fs_info;
+struct btrfs_space_info;
+struct btrfs_eb_write_context;
+struct btrfs_fs_devices;
 
 #define BTRFS_DEFAULT_RECLAIM_THRESH           			(75)
 
@@ -21,6 +37,11 @@ struct btrfs_zoned_device_info {
 	u8  zone_size_shift;
 	u32 nr_zones;
 	unsigned int max_active_zones;
+	/*
+	 * Reserved active zones for one metadata and one system block group.
+	 * It can vary per-device depending on the allocation status.
+	 */
+	int reserved_active_zones;
 	atomic_t active_zones_left;
 	unsigned long *seq_zones;
 	unsigned long *empty_zones;
@@ -29,14 +50,16 @@ struct btrfs_zoned_device_info {
 	struct blk_zone sb_zones[2 * BTRFS_SUPER_MIRROR_MAX];
 };
 
+void btrfs_finish_ordered_zoned(struct btrfs_ordered_extent *ordered);
+
 #ifdef CONFIG_BLK_DEV_ZONED
-int btrfs_get_dev_zone(struct btrfs_device *device, u64 pos,
-		       struct blk_zone *zone);
 int btrfs_get_dev_zone_info_all_devices(struct btrfs_fs_info *fs_info);
 int btrfs_get_dev_zone_info(struct btrfs_device *device, bool populate_cache);
 void btrfs_destroy_dev_zone_info(struct btrfs_device *device);
+struct btrfs_zoned_device_info *btrfs_clone_dev_zone_info(struct btrfs_device *orig_dev);
 int btrfs_check_zoned_mode(struct btrfs_fs_info *fs_info);
-int btrfs_check_mountopts_zoned(struct btrfs_fs_info *info);
+int btrfs_check_mountopts_zoned(const struct btrfs_fs_info *info,
+				unsigned long long *mount_opt);
 int btrfs_sb_log_location_bdev(struct block_device *bdev, int mirror, int rw,
 			       u64 *bytenr_ret);
 int btrfs_sb_log_location(struct btrfs_device *device, int mirror, int rw,
@@ -50,39 +73,42 @@ int btrfs_reset_device_zone(struct btrfs_device *device, u64 physical,
 int btrfs_ensure_empty_zones(struct btrfs_device *device, u64 start, u64 size);
 int btrfs_load_block_group_zone_info(struct btrfs_block_group *cache, bool new);
 void btrfs_calc_zone_unusable(struct btrfs_block_group *cache);
-void btrfs_redirty_list_add(struct btrfs_transaction *trans,
-			    struct extent_buffer *eb);
-void btrfs_free_redirty_list(struct btrfs_transaction *trans);
-bool btrfs_use_zone_append(struct btrfs_inode *inode, u64 start);
-void btrfs_record_physical_zoned(struct inode *inode, u64 file_offset,
-				 struct bio *bio);
-void btrfs_rewrite_logical_zoned(struct btrfs_ordered_extent *ordered);
-bool btrfs_check_meta_write_pointer(struct btrfs_fs_info *fs_info,
-				    struct extent_buffer *eb,
-				    struct btrfs_block_group **cache_ret);
-void btrfs_revert_meta_write_pointer(struct btrfs_block_group *cache,
-				     struct extent_buffer *eb);
+bool btrfs_use_zone_append(struct btrfs_bio *bbio);
+void btrfs_record_physical_zoned(struct btrfs_bio *bbio);
+int btrfs_check_meta_write_pointer(struct btrfs_fs_info *fs_info,
+				   struct btrfs_eb_write_context *ctx);
 int btrfs_zoned_issue_zeroout(struct btrfs_device *device, u64 physical, u64 length);
 int btrfs_sync_zone_write_pointer(struct btrfs_device *tgt_dev, u64 logical,
 				  u64 physical_start, u64 physical_pos);
-struct btrfs_device *btrfs_zoned_get_device(struct btrfs_fs_info *fs_info,
-					    u64 logical, u64 length);
 bool btrfs_zone_activate(struct btrfs_block_group *block_group);
 int btrfs_zone_finish(struct btrfs_block_group *block_group);
 bool btrfs_can_activate_zone(struct btrfs_fs_devices *fs_devices, u64 flags);
-void btrfs_zone_finish_endio(struct btrfs_fs_info *fs_info, u64 logical,
+int btrfs_zone_finish_endio(struct btrfs_fs_info *fs_info, u64 logical,
 			     u64 length);
 void btrfs_schedule_zone_finish_bg(struct btrfs_block_group *bg,
 				   struct extent_buffer *eb);
 void btrfs_clear_data_reloc_bg(struct btrfs_block_group *bg);
+void btrfs_zoned_reserve_data_reloc_bg(struct btrfs_fs_info *fs_info);
 void btrfs_free_zone_cache(struct btrfs_fs_info *fs_info);
-bool btrfs_zoned_should_reclaim(struct btrfs_fs_info *fs_info);
+bool btrfs_zoned_should_reclaim(const struct btrfs_fs_info *fs_info);
+void btrfs_zoned_release_data_reloc_bg(struct btrfs_fs_info *fs_info, u64 logical,
+				       u64 length);
+int btrfs_zone_finish_one_bg(struct btrfs_fs_info *fs_info);
+int btrfs_zoned_activate_one_bg(struct btrfs_space_info *space_info, bool do_finish);
+void btrfs_check_active_zone_reservation(struct btrfs_fs_info *fs_info);
+int btrfs_reset_unused_block_groups(struct btrfs_space_info *space_info, u64 num_bytes);
+void btrfs_show_zoned_stats(struct btrfs_fs_info *fs_info, struct seq_file *seq);
+
+#ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
+struct zone_info;
+
+int btrfs_load_block_group_by_raid_type(struct btrfs_block_group *bg,
+					struct btrfs_chunk_map *map,
+					struct zone_info *zone_info,
+					unsigned long *active, u64 last_alloc);
+#endif
+
 #else /* CONFIG_BLK_DEV_ZONED */
-static inline int btrfs_get_dev_zone(struct btrfs_device *device, u64 pos,
-				     struct blk_zone *zone)
-{
-	return 0;
-}
 
 static inline int btrfs_get_dev_zone_info_all_devices(struct btrfs_fs_info *fs_info)
 {
@@ -97,6 +123,16 @@ static inline int btrfs_get_dev_zone_info(struct btrfs_device *device,
 
 static inline void btrfs_destroy_dev_zone_info(struct btrfs_device *device) { }
 
+/*
+ * In case the kernel is compiled without CONFIG_BLK_DEV_ZONED we'll never call
+ * into btrfs_clone_dev_zone_info() so it's safe to return NULL here.
+ */
+static inline struct btrfs_zoned_device_info *btrfs_clone_dev_zone_info(
+						 struct btrfs_device *orig_dev)
+{
+	return NULL;
+}
+
 static inline int btrfs_check_zoned_mode(const struct btrfs_fs_info *fs_info)
 {
 	if (!btrfs_is_zoned(fs_info))
@@ -106,7 +142,8 @@ static inline int btrfs_check_zoned_mode(const struct btrfs_fs_info *fs_info)
 	return -EOPNOTSUPP;
 }
 
-static inline int btrfs_check_mountopts_zoned(struct btrfs_fs_info *info)
+static inline int btrfs_check_mountopts_zoned(const struct btrfs_fs_info *info,
+					      unsigned long long *mount_opt)
 {
 	return 0;
 }
@@ -163,34 +200,19 @@ static inline int btrfs_load_block_group_zone_info(
 
 static inline void btrfs_calc_zone_unusable(struct btrfs_block_group *cache) { }
 
-static inline void btrfs_redirty_list_add(struct btrfs_transaction *trans,
-					  struct extent_buffer *eb) { }
-static inline void btrfs_free_redirty_list(struct btrfs_transaction *trans) { }
-
-static inline bool btrfs_use_zone_append(struct btrfs_inode *inode, u64 start)
+static inline bool btrfs_use_zone_append(struct btrfs_bio *bbio)
 {
 	return false;
 }
 
-static inline void btrfs_record_physical_zoned(struct inode *inode,
-					       u64 file_offset, struct bio *bio)
+static inline void btrfs_record_physical_zoned(struct btrfs_bio *bbio)
 {
 }
 
-static inline void btrfs_rewrite_logical_zoned(
-				struct btrfs_ordered_extent *ordered) { }
-
-static inline bool btrfs_check_meta_write_pointer(struct btrfs_fs_info *fs_info,
-			       struct extent_buffer *eb,
-			       struct btrfs_block_group **cache_ret)
+static inline int btrfs_check_meta_write_pointer(struct btrfs_fs_info *fs_info,
+						 struct btrfs_eb_write_context *ctx)
 {
-	return true;
-}
-
-static inline void btrfs_revert_meta_write_pointer(
-						struct btrfs_block_group *cache,
-						struct extent_buffer *eb)
-{
+	return 0;
 }
 
 static inline int btrfs_zoned_issue_zeroout(struct btrfs_device *device,
@@ -204,13 +226,6 @@ static inline int btrfs_sync_zone_write_pointer(struct btrfs_device *tgt_dev,
 						u64 physical_pos)
 {
 	return -EOPNOTSUPP;
-}
-
-static inline struct btrfs_device *btrfs_zoned_get_device(
-						  struct btrfs_fs_info *fs_info,
-						  u64 logical, u64 length)
-{
-	return ERR_PTR(-EOPNOTSUPP);
 }
 
 static inline bool btrfs_zone_activate(struct btrfs_block_group *block_group)
@@ -229,20 +244,54 @@ static inline bool btrfs_can_activate_zone(struct btrfs_fs_devices *fs_devices,
 	return true;
 }
 
-static inline void btrfs_zone_finish_endio(struct btrfs_fs_info *fs_info,
-					   u64 logical, u64 length) { }
+static inline int btrfs_zone_finish_endio(struct btrfs_fs_info *fs_info,
+					   u64 logical, u64 length)
+{
+	return 0;
+}
 
 static inline void btrfs_schedule_zone_finish_bg(struct btrfs_block_group *bg,
 						 struct extent_buffer *eb) { }
 
 static inline void btrfs_clear_data_reloc_bg(struct btrfs_block_group *bg) { }
 
+static inline void btrfs_zoned_reserve_data_reloc_bg(struct btrfs_fs_info *fs_info) { }
+
 static inline void btrfs_free_zone_cache(struct btrfs_fs_info *fs_info) { }
 
-static inline bool btrfs_zoned_should_reclaim(struct btrfs_fs_info *fs_info)
+static inline bool btrfs_zoned_should_reclaim(const struct btrfs_fs_info *fs_info)
 {
 	return false;
 }
+
+static inline void btrfs_zoned_release_data_reloc_bg(struct btrfs_fs_info *fs_info,
+						     u64 logical, u64 length) { }
+
+static inline int btrfs_zone_finish_one_bg(struct btrfs_fs_info *fs_info)
+{
+	return 1;
+}
+
+static inline int btrfs_zoned_activate_one_bg(struct btrfs_space_info *space_info,
+					      bool do_finish)
+{
+	/* Consider all the block groups are active */
+	return 0;
+}
+
+static inline void btrfs_check_active_zone_reservation(struct btrfs_fs_info *fs_info) { }
+
+static inline int btrfs_reset_unused_block_groups(struct btrfs_space_info *space_info,
+						  u64 num_bytes)
+{
+	return 0;
+}
+
+static inline int btrfs_show_zoned_stats(struct btrfs_fs_info *fs_info, struct seq_file *seq)
+{
+	return 0;
+}
+
 #endif
 
 static inline bool btrfs_dev_is_sequential(struct btrfs_device *device, u64 pos)
@@ -306,8 +355,8 @@ static inline bool btrfs_check_device_zone_type(const struct btrfs_fs_info *fs_i
 			(bdev_zone_sectors(bdev) << SECTOR_SHIFT);
 	}
 
-	/* Do not allow Host Manged zoned device */
-	return bdev_zoned_model(bdev) != BLK_ZONED_HM;
+	/* Do not allow Host Managed zoned device. */
+	return !bdev_is_zoned(bdev);
 }
 
 static inline bool btrfs_check_super_location(struct btrfs_device *device, u64 pos)

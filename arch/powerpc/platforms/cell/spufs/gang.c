@@ -16,7 +16,7 @@ struct spu_gang *alloc_spu_gang(void)
 {
 	struct spu_gang *gang;
 
-	gang = kzalloc(sizeof *gang, GFP_KERNEL);
+	gang = kzalloc_obj(*gang);
 	if (!gang)
 		goto out;
 
@@ -25,6 +25,7 @@ struct spu_gang *alloc_spu_gang(void)
 	mutex_init(&gang->aff_mutex);
 	INIT_LIST_HEAD(&gang->list);
 	INIT_LIST_HEAD(&gang->aff_list_head);
+	gang->alive = 1;
 
 out:
 	return gang;

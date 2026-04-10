@@ -9,6 +9,7 @@
 
 #include <linux/slab.h>
 #include <linux/cpu.h>
+#include <asm/machine.h>
 #include <asm/diag.h>
 #include <asm/hypfs.h>
 #include "hypfs.h"
@@ -20,8 +21,7 @@
  */
 static void diag0c_fn(void *data)
 {
-	diag_stat_inc(DIAG_STAT_X00C);
-	diag_amode31_ops.diag0c(((void **)data)[smp_processor_id()]);
+	diag0c(((void **)data)[smp_processor_id()]);
 }
 
 /*
@@ -35,13 +35,12 @@ static void *diag0c_store(unsigned int *count)
 
 	cpus_read_lock();
 	cpu_count = num_online_cpus();
-	cpu_vec = kmalloc_array(num_possible_cpus(), sizeof(*cpu_vec),
-				GFP_KERNEL);
+	cpu_vec = kmalloc_objs(*cpu_vec, num_possible_cpus());
 	if (!cpu_vec)
 		goto fail_unlock_cpus;
 	/* Note: Diag 0c needs 8 byte alignment and real storage */
-	diag0c_data = kzalloc(struct_size(diag0c_data, entry, cpu_count),
-			      GFP_KERNEL | GFP_DMA);
+	diag0c_data = kzalloc_flex(*diag0c_data, entry, cpu_count,
+				   GFP_KERNEL | GFP_DMA);
 	if (!diag0c_data)
 		goto fail_kfree_cpu_vec;
 	i = 0;
@@ -108,7 +107,7 @@ static struct hypfs_dbfs_file dbfs_file_0c = {
  */
 int __init hypfs_diag0c_init(void)
 {
-	if (!MACHINE_IS_VM)
+	if (!machine_is_vm())
 		return 0;
 	hypfs_dbfs_create_file(&dbfs_file_0c);
 	return 0;
@@ -119,7 +118,7 @@ int __init hypfs_diag0c_init(void)
  */
 void hypfs_diag0c_exit(void)
 {
-	if (!MACHINE_IS_VM)
+	if (!machine_is_vm())
 		return;
 	hypfs_dbfs_remove_file(&dbfs_file_0c);
 }

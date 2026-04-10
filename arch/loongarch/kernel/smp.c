@@ -8,14 +8,19 @@
  * Copyright (C) 2000, 2001 Silicon Graphics, Inc.
  * Copyright (C) 2000, 2001, 2003 Broadcom Corporation
  */
+#include <linux/acpi.h>
 #include <linux/cpu.h>
 #include <linux/cpumask.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/irq_work.h>
+#include <linux/profile.h>
 #include <linux/seq_file.h>
 #include <linux/smp.h>
 #include <linux/threads.h>
 #include <linux/export.h>
+#include <linux/suspend.h>
+#include <linux/syscore_ops.h>
 #include <linux/time.h>
 #include <linux/tracepoint.h>
 #include <linux/sched/hotplug.h>
@@ -26,6 +31,7 @@
 #include <asm/loongson.h>
 #include <asm/mmu_context.h>
 #include <asm/numa.h>
+#include <asm/paravirt.h>
 #include <asm/processor.h>
 #include <asm/setup.h>
 #include <asm/time.h>
@@ -36,13 +42,13 @@ EXPORT_SYMBOL(__cpu_number_map);
 int __cpu_logical_map[NR_CPUS];		/* Map logical to physical */
 EXPORT_SYMBOL(__cpu_logical_map);
 
-/* Number of threads (siblings) per CPU core */
-int smp_num_siblings = 1;
-EXPORT_SYMBOL(smp_num_siblings);
-
 /* Representing the threads (siblings) of each logical CPU */
 cpumask_t cpu_sibling_map[NR_CPUS] __read_mostly;
 EXPORT_SYMBOL(cpu_sibling_map);
+
+/* Representing the last level cache shared map of each logical CPU */
+cpumask_t cpu_llc_shared_map[NR_CPUS] __read_mostly;
+EXPORT_SYMBOL(cpu_llc_shared_map);
 
 /* Representing the core map of multi-core chips of each logical CPU */
 cpumask_t cpu_core_map[NR_CPUS] __read_mostly;
@@ -61,20 +67,20 @@ EXPORT_SYMBOL(cpu_foreign_map);
 /* representing cpus for which sibling maps can be computed */
 static cpumask_t cpu_sibling_setup_map;
 
+/* representing cpus for which llc shared maps can be computed */
+static cpumask_t cpu_llc_shared_setup_map;
+
 /* representing cpus for which core maps can be computed */
 static cpumask_t cpu_core_setup_map;
 
 struct secondary_data cpuboot_data;
 static DEFINE_PER_CPU(int, cpu_state);
 
-enum ipi_msg_type {
-	IPI_RESCHEDULE,
-	IPI_CALL_FUNCTION,
-};
-
 static const char *ipi_types[NR_IPI] __tracepoint_string = {
 	[IPI_RESCHEDULE] = "Rescheduling interrupts",
 	[IPI_CALL_FUNCTION] = "Function call interrupts",
+	[IPI_IRQ_WORK] = "IRQ work interrupts",
+	[IPI_CLEAR_VECTOR] = "Clear vector interrupts",
 };
 
 void show_ipi_list(struct seq_file *p, int prec)
@@ -84,9 +90,104 @@ void show_ipi_list(struct seq_file *p, int prec)
 	for (i = 0; i < NR_IPI; i++) {
 		seq_printf(p, "%*s%u:%s", prec - 1, "IPI", i, prec >= 4 ? " " : "");
 		for_each_online_cpu(cpu)
-			seq_printf(p, "%10u ", per_cpu(irq_stat, cpu).ipi_irqs[i]);
+			seq_put_decimal_ull_width(p, " ", per_cpu(irq_stat, cpu).ipi_irqs[i], 10);
 		seq_printf(p, " LoongArch  %d  %s\n", i + 1, ipi_types[i]);
 	}
+}
+
+static inline void set_cpu_core_map(int cpu)
+{
+	int i;
+
+	cpumask_set_cpu(cpu, &cpu_core_setup_map);
+
+	for_each_cpu(i, &cpu_core_setup_map) {
+		if (cpu_data[cpu].package == cpu_data[i].package) {
+			cpumask_set_cpu(i, &cpu_core_map[cpu]);
+			cpumask_set_cpu(cpu, &cpu_core_map[i]);
+		}
+	}
+}
+
+static inline void set_cpu_llc_shared_map(int cpu)
+{
+	int i;
+
+	cpumask_set_cpu(cpu, &cpu_llc_shared_setup_map);
+
+	for_each_cpu(i, &cpu_llc_shared_setup_map) {
+		if (cpu_to_node(cpu) == cpu_to_node(i)) {
+			cpumask_set_cpu(i, &cpu_llc_shared_map[cpu]);
+			cpumask_set_cpu(cpu, &cpu_llc_shared_map[i]);
+		}
+	}
+}
+
+static inline void clear_cpu_llc_shared_map(int cpu)
+{
+	int i;
+
+	for_each_cpu(i, &cpu_llc_shared_setup_map) {
+		if (cpu_to_node(cpu) == cpu_to_node(i)) {
+			cpumask_clear_cpu(i, &cpu_llc_shared_map[cpu]);
+			cpumask_clear_cpu(cpu, &cpu_llc_shared_map[i]);
+		}
+	}
+
+	cpumask_clear_cpu(cpu, &cpu_llc_shared_setup_map);
+}
+
+static inline void set_cpu_sibling_map(int cpu)
+{
+	int i;
+
+	cpumask_set_cpu(cpu, &cpu_sibling_setup_map);
+
+	for_each_cpu(i, &cpu_sibling_setup_map) {
+		if (cpus_are_siblings(cpu, i)) {
+			cpumask_set_cpu(i, &cpu_sibling_map[cpu]);
+			cpumask_set_cpu(cpu, &cpu_sibling_map[i]);
+		}
+	}
+}
+
+static inline void clear_cpu_sibling_map(int cpu)
+{
+	int i;
+
+	for_each_cpu(i, &cpu_sibling_setup_map) {
+		if (cpus_are_siblings(cpu, i)) {
+			cpumask_clear_cpu(i, &cpu_sibling_map[cpu]);
+			cpumask_clear_cpu(cpu, &cpu_sibling_map[i]);
+		}
+	}
+
+	cpumask_clear_cpu(cpu, &cpu_sibling_setup_map);
+}
+
+/*
+ * Calculate a new cpu_foreign_map mask whenever a
+ * new cpu appears or disappears.
+ */
+void calculate_cpu_foreign_map(void)
+{
+	int i, k, core_present;
+	cpumask_t temp_foreign_map;
+
+	/* Re-calculate the mask */
+	cpumask_clear(&temp_foreign_map);
+	for_each_online_cpu(i) {
+		core_present = 0;
+		for_each_cpu(k, &temp_foreign_map)
+			if (cpus_are_siblings(i, k))
+				core_present = 1;
+		if (!core_present)
+			cpumask_set_cpu(i, &temp_foreign_map);
+	}
+
+	for_each_online_cpu(i)
+		cpumask_andnot(&cpu_foreign_map[i],
+			       &temp_foreign_map, &cpu_sibling_map[i]);
 }
 
 /* Send mailbox buffer via Mail_Send */
@@ -117,31 +218,26 @@ static u32 ipi_read_clear(int cpu)
 	action = iocsr_read32(LOONGARCH_IOCSR_IPI_STATUS);
 	/* Clear the ipi register to clear the interrupt */
 	iocsr_write32(action, LOONGARCH_IOCSR_IPI_CLEAR);
-	smp_mb();
+	wbflush();
 
 	return action;
 }
 
 static void ipi_write_action(int cpu, u32 action)
 {
-	unsigned int irq = 0;
+	uint32_t val;
 
-	while ((irq = ffs(action))) {
-		uint32_t val = IOCSR_IPI_SEND_BLOCKING;
-
-		val |= (irq - 1);
-		val |= (cpu << IOCSR_IPI_SEND_CPU_SHIFT);
-		iocsr_write32(val, LOONGARCH_IOCSR_IPI_SEND);
-		action &= ~BIT(irq - 1);
-	}
+	val = IOCSR_IPI_SEND_BLOCKING | action;
+	val |= (cpu << IOCSR_IPI_SEND_CPU_SHIFT);
+	iocsr_write32(val, LOONGARCH_IOCSR_IPI_SEND);
 }
 
-void loongson3_send_ipi_single(int cpu, unsigned int action)
+static void loongson_send_ipi_single(int cpu, unsigned int action)
 {
 	ipi_write_action(cpu_logical_map(cpu), (u32)action);
 }
 
-void loongson3_send_ipi_mask(const struct cpumask *mask, unsigned int action)
+static void loongson_send_ipi_mask(const struct cpumask *mask, unsigned int action)
 {
 	unsigned int i;
 
@@ -149,7 +245,25 @@ void loongson3_send_ipi_mask(const struct cpumask *mask, unsigned int action)
 		ipi_write_action(cpu_logical_map(i), (u32)action);
 }
 
-irqreturn_t loongson3_ipi_interrupt(int irq, void *dev)
+/*
+ * This function sends a 'reschedule' IPI to another CPU.
+ * it goes straight through and wastes no time serializing
+ * anything. Worst case is that we lose a reschedule ...
+ */
+void arch_smp_send_reschedule(int cpu)
+{
+	mp_ops.send_ipi_single(cpu, ACTION_RESCHEDULE);
+}
+EXPORT_SYMBOL_GPL(arch_smp_send_reschedule);
+
+#ifdef CONFIG_IRQ_WORK
+void arch_irq_work_raise(void)
+{
+	mp_ops.send_ipi_single(smp_processor_id(), ACTION_IRQ_WORK);
+}
+#endif
+
+static irqreturn_t loongson_ipi_interrupt(int irq, void *dev)
 {
 	unsigned int action;
 	unsigned int cpu = smp_processor_id();
@@ -166,21 +280,106 @@ irqreturn_t loongson3_ipi_interrupt(int irq, void *dev)
 		per_cpu(irq_stat, cpu).ipi_irqs[IPI_CALL_FUNCTION]++;
 	}
 
+	if (action & SMP_IRQ_WORK) {
+		irq_work_run();
+		per_cpu(irq_stat, cpu).ipi_irqs[IPI_IRQ_WORK]++;
+	}
+
+	if (action & SMP_CLEAR_VECTOR) {
+		complete_irq_moving();
+		per_cpu(irq_stat, cpu).ipi_irqs[IPI_CLEAR_VECTOR]++;
+	}
+
 	return IRQ_HANDLED;
 }
 
-void __init loongson3_smp_setup(void)
+static void loongson_init_ipi(void)
 {
+	int r, ipi_irq;
+
+	ipi_irq = get_percpu_irq(INT_IPI);
+	if (ipi_irq < 0)
+		panic("IPI IRQ mapping failed\n");
+
+	irq_set_percpu_devid(ipi_irq);
+	r = request_percpu_irq(ipi_irq, loongson_ipi_interrupt, "IPI", &irq_stat);
+	if (r < 0)
+		panic("IPI IRQ request failed\n");
+}
+
+struct smp_ops mp_ops = {
+	.init_ipi		= loongson_init_ipi,
+	.send_ipi_single	= loongson_send_ipi_single,
+	.send_ipi_mask		= loongson_send_ipi_mask,
+};
+
+static void __init fdt_smp_setup(void)
+{
+#ifdef CONFIG_OF
+	unsigned int cpu, cpuid;
+	struct device_node *node = NULL;
+
+	for_each_of_cpu_node(node) {
+		if (!of_device_is_available(node))
+			continue;
+
+		cpuid = of_get_cpu_hwid(node, 0);
+		if (cpuid >= nr_cpu_ids)
+			continue;
+
+		if (cpuid == loongson_sysconf.boot_cpu_id)
+			cpu = 0;
+		else
+			cpu = find_first_zero_bit(cpumask_bits(cpu_present_mask), NR_CPUS);
+
+		num_processors++;
+		set_cpu_possible(cpu, true);
+		set_cpu_present(cpu, true);
+		__cpu_number_map[cpuid] = cpu;
+		__cpu_logical_map[cpu] = cpuid;
+
+		early_numa_add_cpu(cpuid, 0);
+		set_cpuid_to_node(cpuid, 0);
+	}
+
+	loongson_sysconf.nr_cpus = num_processors;
+	set_bit(0, loongson_sysconf.cores_io_master);
+#endif
+}
+
+void __init loongson_smp_setup(void)
+{
+	fdt_smp_setup();
+
+	if (loongson_sysconf.cores_per_package == 0)
+		loongson_sysconf.cores_per_package = num_processors;
+
 	cpu_data[0].core = cpu_logical_map(0) % loongson_sysconf.cores_per_package;
 	cpu_data[0].package = cpu_logical_map(0) / loongson_sysconf.cores_per_package;
 
+	pv_ipi_init();
 	iocsr_write32(0xffffffff, LOONGARCH_IOCSR_IPI_EN);
 	pr_info("Detected %i available CPU(s)\n", loongson_sysconf.nr_cpus);
 }
 
-void __init loongson3_prepare_cpus(unsigned int max_cpus)
+void __init loongson_prepare_cpus(unsigned int max_cpus)
 {
 	int i = 0;
+	int threads_per_core = 0;
+
+	parse_acpi_topology();
+	cpu_data[0].global_id = cpu_logical_map(0);
+
+	if (!pptt_enabled)
+		threads_per_core = 1;
+	else {
+		for_each_possible_cpu(i) {
+			if (cpu_to_node(i) != 0)
+				continue;
+			if (cpus_are_siblings(0, i))
+				threads_per_core++;
+		}
+	}
 
 	for (i = 0; i < loongson_sysconf.nr_cpus; i++) {
 		set_cpu_present(i, true);
@@ -188,12 +387,13 @@ void __init loongson3_prepare_cpus(unsigned int max_cpus)
 	}
 
 	per_cpu(cpu_state, smp_processor_id()) = CPU_ONLINE;
+	cpu_smt_set_num_threads(threads_per_core, threads_per_core);
 }
 
 /*
  * Setup the PC, SP, and TP of a secondary processor and start it running!
  */
-void loongson3_boot_secondary(int cpu, struct task_struct *idle)
+void loongson_boot_secondary(int cpu, struct task_struct *idle)
 {
 	unsigned long entry;
 
@@ -205,17 +405,17 @@ void loongson3_boot_secondary(int cpu, struct task_struct *idle)
 
 	csr_mail_send(entry, cpu_logical_map(cpu), 0);
 
-	loongson3_send_ipi_single(cpu, SMP_BOOT_CPU);
+	loongson_send_ipi_single(cpu, ACTION_BOOT_CPU);
 }
 
 /*
  * SMP init and finish on secondary CPUs
  */
-void loongson3_init_secondary(void)
+void loongson_init_secondary(void)
 {
 	unsigned int cpu = smp_processor_id();
 	unsigned int imask = ECFGF_IP0 | ECFGF_IP1 | ECFGF_IP2 |
-			     ECFGF_IPI | ECFGF_PMC | ECFGF_TIMER;
+			     ECFGF_IPI | ECFGF_PMC | ECFGF_TIMER | ECFGF_SIP0;
 
 	change_csr_ecfg(ECFG0_IM, imask);
 
@@ -225,13 +425,14 @@ void loongson3_init_secondary(void)
 	numa_add_cpu(cpu);
 #endif
 	per_cpu(cpu_state, cpu) = CPU_ONLINE;
-	cpu_data[cpu].core =
-		     cpu_logical_map(cpu) % loongson_sysconf.cores_per_package;
 	cpu_data[cpu].package =
 		     cpu_logical_map(cpu) / loongson_sysconf.cores_per_package;
+	cpu_data[cpu].core = pptt_enabled ? cpu_data[cpu].core :
+		     cpu_logical_map(cpu) % loongson_sysconf.cores_per_package;
+	cpu_data[cpu].global_id = cpu_logical_map(cpu);
 }
 
-void loongson3_smp_finish(void)
+void loongson_smp_finish(void)
 {
 	local_irq_enable();
 	iocsr_write64(0, LOONGARCH_IOCSR_MBUF0);
@@ -240,15 +441,7 @@ void loongson3_smp_finish(void)
 
 #ifdef CONFIG_HOTPLUG_CPU
 
-static bool io_master(int cpu)
-{
-	if (cpu == 0)
-		return true;
-
-	return false;
-}
-
-int loongson3_cpu_disable(void)
+int loongson_cpu_disable(void)
 {
 	unsigned long flags;
 	unsigned int cpu = smp_processor_id();
@@ -260,6 +453,8 @@ int loongson3_cpu_disable(void)
 	numa_remove_cpu(cpu);
 #endif
 	set_cpu_online(cpu, false);
+	clear_cpu_sibling_map(cpu);
+	clear_cpu_llc_shared_map(cpu);
 	calculate_cpu_foreign_map();
 	local_irq_save(flags);
 	irq_migrate_all_off_this_cpu();
@@ -270,7 +465,7 @@ int loongson3_cpu_disable(void)
 	return 0;
 }
 
-void loongson3_cpu_die(unsigned int cpu)
+void loongson_cpu_die(unsigned int cpu)
 {
 	while (per_cpu(cpu_state, cpu) != CPU_DEAD)
 		cpu_relax();
@@ -278,115 +473,73 @@ void loongson3_cpu_die(unsigned int cpu)
 	mb();
 }
 
-/*
- * The target CPU should go to XKPRANGE (uncached area) and flush
- * ICache/DCache/VCache before the control CPU can safely disable its clock.
- */
-static void loongson3_play_dead(int *state_addr)
+static void __noreturn idle_play_dead(void)
 {
-	register int val;
-	register void *addr;
+	register uint64_t addr;
 	register void (*init_fn)(void);
 
-	__asm__ __volatile__(
-		"   li.d %[addr], 0x8000000000000000\n"
-		"1: cacop 0x8, %[addr], 0           \n" /* flush ICache */
-		"   cacop 0x8, %[addr], 1           \n"
-		"   cacop 0x8, %[addr], 2           \n"
-		"   cacop 0x8, %[addr], 3           \n"
-		"   cacop 0x9, %[addr], 0           \n" /* flush DCache */
-		"   cacop 0x9, %[addr], 1           \n"
-		"   cacop 0x9, %[addr], 2           \n"
-		"   cacop 0x9, %[addr], 3           \n"
-		"   addi.w %[sets], %[sets], -1     \n"
-		"   addi.d %[addr], %[addr], 0x40   \n"
-		"   bnez %[sets], 1b                \n"
-		"   li.d %[addr], 0x8000000000000000\n"
-		"2: cacop 0xa, %[addr], 0           \n" /* flush VCache */
-		"   cacop 0xa, %[addr], 1           \n"
-		"   cacop 0xa, %[addr], 2           \n"
-		"   cacop 0xa, %[addr], 3           \n"
-		"   cacop 0xa, %[addr], 4           \n"
-		"   cacop 0xa, %[addr], 5           \n"
-		"   cacop 0xa, %[addr], 6           \n"
-		"   cacop 0xa, %[addr], 7           \n"
-		"   cacop 0xa, %[addr], 8           \n"
-		"   cacop 0xa, %[addr], 9           \n"
-		"   cacop 0xa, %[addr], 10          \n"
-		"   cacop 0xa, %[addr], 11          \n"
-		"   cacop 0xa, %[addr], 12          \n"
-		"   cacop 0xa, %[addr], 13          \n"
-		"   cacop 0xa, %[addr], 14          \n"
-		"   cacop 0xa, %[addr], 15          \n"
-		"   addi.w %[vsets], %[vsets], -1   \n"
-		"   addi.d %[addr], %[addr], 0x40   \n"
-		"   bnez   %[vsets], 2b             \n"
-		"   li.w   %[val], 0x7              \n" /* *state_addr = CPU_DEAD; */
-		"   st.w   %[val], %[state_addr], 0 \n"
-		"   dbar 0                          \n"
-		"   cacop 0x11, %[state_addr], 0    \n" /* flush entry of *state_addr */
-		: [addr] "=&r" (addr), [val] "=&r" (val)
-		: [state_addr] "r" (state_addr),
-		  [sets] "r" (cpu_data[smp_processor_id()].dcache.sets),
-		  [vsets] "r" (cpu_data[smp_processor_id()].vcache.sets));
-
+	idle_task_exit();
 	local_irq_enable();
-	change_csr_ecfg(ECFG0_IM, ECFGF_IPI);
+	set_csr_ecfg(ECFGF_IPI);
+	__this_cpu_write(cpu_state, CPU_DEAD);
 
-	__asm__ __volatile__(
-		"   idle      0			    \n"
-		"   li.w      $t0, 0x1020	    \n"
-		"   iocsrrd.d %[init_fn], $t0	    \n" /* Get init PC */
-		: [init_fn] "=&r" (addr)
-		: /* No Input */
-		: "a0");
-	init_fn = __va(addr);
+	__smp_mb();
+	do {
+		__asm__ __volatile__("idle 0\n\t");
+		addr = iocsr_read64(LOONGARCH_IOCSR_MBUF0);
+	} while (addr == 0);
+
+	local_irq_disable();
+	init_fn = (void *)TO_CACHE(addr);
+	iocsr_write32(0xffffffff, LOONGARCH_IOCSR_IPI_CLEAR);
 
 	init_fn();
-	unreachable();
+	BUG();
 }
 
-void play_dead(void)
+#ifdef CONFIG_HIBERNATION
+static void __noreturn poll_play_dead(void)
 {
-	int *state_addr;
-	unsigned int cpu = smp_processor_id();
-	void (*play_dead_uncached)(int *s);
+	register uint64_t addr;
+	register void (*init_fn)(void);
 
 	idle_task_exit();
-	play_dead_uncached = (void *)TO_UNCACHE(__pa((unsigned long)loongson3_play_dead));
-	state_addr = &per_cpu(cpu_state, cpu);
-	mb();
-	play_dead_uncached(state_addr);
-}
+	__this_cpu_write(cpu_state, CPU_DEAD);
 
-static int loongson3_enable_clock(unsigned int cpu)
+	__smp_mb();
+	do {
+		__asm__ __volatile__("nop\n\t");
+		addr = iocsr_read64(LOONGARCH_IOCSR_MBUF0);
+	} while (addr == 0);
+
+	init_fn = (void *)TO_CACHE(addr);
+	iocsr_write32(0xffffffff, LOONGARCH_IOCSR_IPI_CLEAR);
+
+	init_fn();
+	BUG();
+}
+#endif
+
+static void (*play_dead)(void) = idle_play_dead;
+
+void __noreturn arch_cpu_idle_dead(void)
 {
-	uint64_t core_id = cpu_data[cpu].core;
-	uint64_t package_id = cpu_data[cpu].package;
-
-	LOONGSON_FREQCTRL(package_id) |= 1 << (core_id * 4 + 3);
-
-	return 0;
+	play_dead();
+	BUG(); /* play_dead() doesn't return */
 }
 
-static int loongson3_disable_clock(unsigned int cpu)
+#ifdef CONFIG_HIBERNATION
+int hibernate_resume_nonboot_cpu_disable(void)
 {
-	uint64_t core_id = cpu_data[cpu].core;
-	uint64_t package_id = cpu_data[cpu].package;
+	int ret;
 
-	LOONGSON_FREQCTRL(package_id) &= ~(1 << (core_id * 4 + 3));
+	play_dead = poll_play_dead;
+	ret = suspend_disable_secondary_cpus();
+	play_dead = idle_play_dead;
 
-	return 0;
+	return ret;
 }
-
-static int register_loongson3_notifier(void)
-{
-	return cpuhp_setup_state_nocalls(CPUHP_LOONGARCH_SOC_PREPARE,
-					 "loongarch/loongson:prepare",
-					 loongson3_enable_clock,
-					 loongson3_disable_clock);
-}
-early_initcall(register_loongson3_notifier);
+#endif
 
 #endif
 
@@ -395,19 +548,23 @@ early_initcall(register_loongson3_notifier);
  */
 #ifdef CONFIG_PM
 
-static int loongson3_ipi_suspend(void)
+static int loongson_ipi_suspend(void *data)
 {
 	return 0;
 }
 
-static void loongson3_ipi_resume(void)
+static void loongson_ipi_resume(void *data)
 {
 	iocsr_write32(0xffffffff, LOONGARCH_IOCSR_IPI_EN);
 }
 
-static struct syscore_ops loongson3_ipi_syscore_ops = {
-	.resume         = loongson3_ipi_resume,
-	.suspend        = loongson3_ipi_suspend,
+static const struct syscore_ops loongson_ipi_syscore_ops = {
+	.resume         = loongson_ipi_resume,
+	.suspend        = loongson_ipi_suspend,
+};
+
+static struct syscore loongson_ipi_syscore = {
+	.ops = &loongson_ipi_syscore_ops,
 };
 
 /*
@@ -416,78 +573,22 @@ static struct syscore_ops loongson3_ipi_syscore_ops = {
  */
 static int __init ipi_pm_init(void)
 {
-	register_syscore_ops(&loongson3_ipi_syscore_ops);
+	register_syscore(&loongson_ipi_syscore);
 	return 0;
 }
 
 core_initcall(ipi_pm_init);
 #endif
 
-static inline void set_cpu_sibling_map(int cpu)
-{
-	int i;
-
-	cpumask_set_cpu(cpu, &cpu_sibling_setup_map);
-
-	if (smp_num_siblings <= 1)
-		cpumask_set_cpu(cpu, &cpu_sibling_map[cpu]);
-	else {
-		for_each_cpu(i, &cpu_sibling_setup_map) {
-			if (cpus_are_siblings(cpu, i)) {
-				cpumask_set_cpu(i, &cpu_sibling_map[cpu]);
-				cpumask_set_cpu(cpu, &cpu_sibling_map[i]);
-			}
-		}
-	}
-}
-
-static inline void set_cpu_core_map(int cpu)
-{
-	int i;
-
-	cpumask_set_cpu(cpu, &cpu_core_setup_map);
-
-	for_each_cpu(i, &cpu_core_setup_map) {
-		if (cpu_data[cpu].package == cpu_data[i].package) {
-			cpumask_set_cpu(i, &cpu_core_map[cpu]);
-			cpumask_set_cpu(cpu, &cpu_core_map[i]);
-		}
-	}
-}
-
-/*
- * Calculate a new cpu_foreign_map mask whenever a
- * new cpu appears or disappears.
- */
-void calculate_cpu_foreign_map(void)
-{
-	int i, k, core_present;
-	cpumask_t temp_foreign_map;
-
-	/* Re-calculate the mask */
-	cpumask_clear(&temp_foreign_map);
-	for_each_online_cpu(i) {
-		core_present = 0;
-		for_each_cpu(k, &temp_foreign_map)
-			if (cpus_are_siblings(i, k))
-				core_present = 1;
-		if (!core_present)
-			cpumask_set_cpu(i, &temp_foreign_map);
-	}
-
-	for_each_online_cpu(i)
-		cpumask_andnot(&cpu_foreign_map[i],
-			       &temp_foreign_map, &cpu_sibling_map[i]);
-}
-
 /* Preload SMP state for boot cpu */
-void smp_prepare_boot_cpu(void)
+void __init smp_prepare_boot_cpu(void)
 {
 	unsigned int cpu, node, rr_node;
 
 	set_cpu_possible(0, true);
 	set_cpu_online(0, true);
 	set_my_cpu_offset(per_cpu_offset(0));
+	numa_add_cpu(0);
 
 	rr_node = first_node(node_online_map);
 	for_each_possible_cpu(cpu) {
@@ -513,6 +614,8 @@ void smp_prepare_boot_cpu(void)
 			rr_node = next_node_in(rr_node, node_online_map);
 		}
 	}
+
+	pv_spinlock_init();
 }
 
 /* called from main before smp_init() */
@@ -520,8 +623,9 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 {
 	init_new_context(current, &init_mm);
 	current_thread_info()->cpu = 0;
-	loongson3_prepare_cpus(max_cpus);
+	loongson_prepare_cpus(max_cpus);
 	set_cpu_sibling_map(0);
+	set_cpu_llc_shared_map(0);
 	set_cpu_core_map(0);
 	calculate_cpu_foreign_map();
 #ifndef CONFIG_HOTPLUG_CPU
@@ -531,7 +635,7 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 
 int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 {
-	loongson3_boot_secondary(cpu, tidle);
+	loongson_boot_secondary(cpu, tidle);
 
 	/* Wait for CPU to start and be ready to sync counters */
 	if (!wait_for_completion_timeout(&cpu_starting,
@@ -555,14 +659,15 @@ asmlinkage void start_secondary(void)
 	unsigned int cpu;
 
 	sync_counter();
-	cpu = smp_processor_id();
+	cpu = raw_smp_processor_id();
 	set_my_cpu_offset(per_cpu_offset(cpu));
 
 	cpu_probe();
 	constant_clockevent_init();
-	loongson3_init_secondary();
+	loongson_init_secondary();
 
 	set_cpu_sibling_map(cpu);
+	set_cpu_llc_shared_map(cpu);
 	set_cpu_core_map(cpu);
 
 	notify_cpu_starting(cpu);
@@ -582,11 +687,11 @@ asmlinkage void start_secondary(void)
 	complete(&cpu_running);
 
 	/*
-	 * irq will be enabled in loongson3_smp_finish(), enabling it too
+	 * irq will be enabled in loongson_smp_finish(), enabling it too
 	 * early is dangerous.
 	 */
 	WARN_ON_ONCE(!irqs_disabled());
-	loongson3_smp_finish();
+	loongson_smp_finish();
 
 	cpu_startup_entry(CPUHP_AP_ONLINE_IDLE);
 }
@@ -608,10 +713,12 @@ void smp_send_stop(void)
 	smp_call_function(stop_this_cpu, NULL, 0);
 }
 
+#ifdef CONFIG_PROFILING
 int setup_profiling_timer(unsigned int multiplier)
 {
 	return 0;
 }
+#endif
 
 static void flush_tlb_all_ipi(void *info)
 {

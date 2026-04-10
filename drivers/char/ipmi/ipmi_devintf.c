@@ -90,7 +90,7 @@ static int ipmi_open(struct inode *inode, struct file *file)
 	int                      rv;
 	struct ipmi_file_private *priv;
 
-	priv = kmalloc(sizeof(*priv), GFP_KERNEL);
+	priv = kmalloc_obj(*priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -122,12 +122,9 @@ out:
 static int ipmi_release(struct inode *inode, struct file *file)
 {
 	struct ipmi_file_private *priv = file->private_data;
-	int                      rv;
 	struct ipmi_recv_msg *msg, *next;
 
-	rv = ipmi_destroy_user(priv->user);
-	if (rv)
-		return rv;
+	ipmi_destroy_user(priv->user);
 
 	list_for_each_entry_safe(msg, next, &priv->recv_msgs, link)
 		ipmi_free_recv_msg(msg);
@@ -807,14 +804,16 @@ struct ipmi_reg_list {
 static LIST_HEAD(reg_list);
 static DEFINE_MUTEX(reg_list_mutex);
 
-static struct class *ipmi_class;
+static const struct class ipmi_class = {
+	.name = "ipmi",
+};
 
 static void ipmi_new_smi(int if_num, struct device *device)
 {
 	dev_t dev = MKDEV(ipmi_major, if_num);
 	struct ipmi_reg_list *entry;
 
-	entry = kmalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kmalloc_obj(*entry);
 	if (!entry) {
 		pr_err("ipmi_devintf: Unable to create the ipmi class device link\n");
 		return;
@@ -822,7 +821,7 @@ static void ipmi_new_smi(int if_num, struct device *device)
 	entry->dev = dev;
 
 	mutex_lock(&reg_list_mutex);
-	device_create(ipmi_class, device, dev, NULL, "ipmi%d", if_num);
+	device_create(&ipmi_class, device, dev, NULL, "ipmi%d", if_num);
 	list_add(&entry->link, &reg_list);
 	mutex_unlock(&reg_list_mutex);
 }
@@ -840,7 +839,7 @@ static void ipmi_smi_gone(int if_num)
 			break;
 		}
 	}
-	device_destroy(ipmi_class, dev);
+	device_destroy(&ipmi_class, dev);
 	mutex_unlock(&reg_list_mutex);
 }
 
@@ -860,15 +859,13 @@ static int __init init_ipmi_devintf(void)
 
 	pr_info("ipmi device interface\n");
 
-	ipmi_class = class_create(THIS_MODULE, "ipmi");
-	if (IS_ERR(ipmi_class)) {
-		pr_err("ipmi: can't register device class\n");
-		return PTR_ERR(ipmi_class);
-	}
+	rv = class_register(&ipmi_class);
+	if (rv)
+		return rv;
 
 	rv = register_chrdev(ipmi_major, DEVICE_NAME, &ipmi_fops);
 	if (rv < 0) {
-		class_destroy(ipmi_class);
+		class_unregister(&ipmi_class);
 		pr_err("ipmi: can't get major %d\n", ipmi_major);
 		return rv;
 	}
@@ -880,7 +877,7 @@ static int __init init_ipmi_devintf(void)
 	rv = ipmi_smi_watcher_register(&smi_watcher);
 	if (rv) {
 		unregister_chrdev(ipmi_major, DEVICE_NAME);
-		class_destroy(ipmi_class);
+		class_unregister(&ipmi_class);
 		pr_warn("ipmi: can't register smi watcher\n");
 		return rv;
 	}
@@ -895,11 +892,11 @@ static void __exit cleanup_ipmi(void)
 	mutex_lock(&reg_list_mutex);
 	list_for_each_entry_safe(entry, entry2, &reg_list, link) {
 		list_del(&entry->link);
-		device_destroy(ipmi_class, entry->dev);
+		device_destroy(&ipmi_class, entry->dev);
 		kfree(entry);
 	}
 	mutex_unlock(&reg_list_mutex);
-	class_destroy(ipmi_class);
+	class_unregister(&ipmi_class);
 	ipmi_smi_watcher_unregister(&smi_watcher);
 	unregister_chrdev(ipmi_major, DEVICE_NAME);
 }

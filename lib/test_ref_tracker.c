@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Referrence tracker self test.
+ * Reference tracker self test.
  *
  * Copyright (c) 2021 Eric Dumazet <edumazet@google.com>
  */
@@ -64,7 +64,7 @@ static int __init test_ref_tracker_init(void)
 {
 	int i;
 
-	ref_tracker_dir_init(&ref_dir, 100);
+	ref_tracker_dir_init(&ref_dir, 100, "selftest");
 
 	timer_setup(&test_ref_tracker_timer, test_ref_tracker_timer_func, 0);
 	mod_timer(&test_ref_tracker_timer, jiffies + 1);
@@ -112,4 +112,5 @@ static void __exit test_ref_tracker_exit(void)
 module_init(test_ref_tracker_init);
 module_exit(test_ref_tracker_exit);
 
+MODULE_DESCRIPTION("Reference tracker self test");
 MODULE_LICENSE("GPL v2");

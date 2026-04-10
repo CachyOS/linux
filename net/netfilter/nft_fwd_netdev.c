@@ -40,7 +40,7 @@ static void nft_fwd_netdev_eval(const struct nft_expr *expr,
 static const struct nla_policy nft_fwd_netdev_policy[NFTA_FWD_MAX + 1] = {
 	[NFTA_FWD_SREG_DEV]	= { .type = NLA_U32 },
 	[NFTA_FWD_SREG_ADDR]	= { .type = NLA_U32 },
-	[NFTA_FWD_NFPROTO]	= { .type = NLA_U32 },
+	[NFTA_FWD_NFPROTO]	= NLA_POLICY_MAX(NLA_BE32, 255),
 };
 
 static int nft_fwd_netdev_init(const struct nft_ctx *ctx,
@@ -52,11 +52,12 @@ static int nft_fwd_netdev_init(const struct nft_ctx *ctx,
 	if (tb[NFTA_FWD_SREG_DEV] == NULL)
 		return -EINVAL;
 
-	return nft_parse_register_load(tb[NFTA_FWD_SREG_DEV], &priv->sreg_dev,
+	return nft_parse_register_load(ctx, tb[NFTA_FWD_SREG_DEV], &priv->sreg_dev,
 				       sizeof(int));
 }
 
-static int nft_fwd_netdev_dump(struct sk_buff *skb, const struct nft_expr *expr)
+static int nft_fwd_netdev_dump(struct sk_buff *skb,
+			       const struct nft_expr *expr, bool reset)
 {
 	struct nft_fwd_netdev *priv = nft_expr_priv(expr);
 
@@ -177,16 +178,17 @@ static int nft_fwd_neigh_init(const struct nft_ctx *ctx,
 		return -EOPNOTSUPP;
 	}
 
-	err = nft_parse_register_load(tb[NFTA_FWD_SREG_DEV], &priv->sreg_dev,
+	err = nft_parse_register_load(ctx, tb[NFTA_FWD_SREG_DEV], &priv->sreg_dev,
 				      sizeof(int));
 	if (err < 0)
 		return err;
 
-	return nft_parse_register_load(tb[NFTA_FWD_SREG_ADDR], &priv->sreg_addr,
+	return nft_parse_register_load(ctx, tb[NFTA_FWD_SREG_ADDR], &priv->sreg_addr,
 				       addr_len);
 }
 
-static int nft_fwd_neigh_dump(struct sk_buff *skb, const struct nft_expr *expr)
+static int nft_fwd_neigh_dump(struct sk_buff *skb,
+			      const struct nft_expr *expr, bool reset)
 {
 	struct nft_fwd_neigh *priv = nft_expr_priv(expr);
 
@@ -202,8 +204,7 @@ nla_put_failure:
 }
 
 static int nft_fwd_validate(const struct nft_ctx *ctx,
-			    const struct nft_expr *expr,
-			    const struct nft_data **data)
+			    const struct nft_expr *expr)
 {
 	return nft_chain_validate_hooks(ctx->chain, (1 << NF_NETDEV_INGRESS) |
 						    (1 << NF_NETDEV_EGRESS));
@@ -268,4 +269,5 @@ module_exit(nft_fwd_netdev_module_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Pablo Neira Ayuso <pablo@netfilter.org>");
+MODULE_DESCRIPTION("nftables netdev packet forwarding support");
 MODULE_ALIAS_NFT_AF_EXPR(5, "fwd");

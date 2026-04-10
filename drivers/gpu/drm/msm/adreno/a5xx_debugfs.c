@@ -69,7 +69,7 @@ static void roq_print(struct msm_gpu *gpu, struct drm_printer *p)
 
 static int show(struct seq_file *m, void *arg)
 {
-	struct drm_info_node *node = (struct drm_info_node *) m->private;
+	struct drm_info_node *node = m->private;
 	struct drm_device *dev = node->minor->dev;
 	struct msm_drm_private *priv = dev->dev_private;
 	struct drm_printer p = drm_seq_file_printer(m);
@@ -116,13 +116,13 @@ reset_set(void *data, u64 val)
 	adreno_gpu->fw[ADRENO_FW_PFP] = NULL;
 
 	if (a5xx_gpu->pm4_bo) {
-		msm_gem_unpin_iova(a5xx_gpu->pm4_bo, gpu->aspace);
+		msm_gem_unpin_iova(a5xx_gpu->pm4_bo, gpu->vm);
 		drm_gem_object_put(a5xx_gpu->pm4_bo);
 		a5xx_gpu->pm4_bo = NULL;
 	}
 
 	if (a5xx_gpu->pfp_bo) {
-		msm_gem_unpin_iova(a5xx_gpu->pfp_bo, gpu->aspace);
+		msm_gem_unpin_iova(a5xx_gpu->pfp_bo, gpu->vm);
 		drm_gem_object_put(a5xx_gpu->pfp_bo);
 		a5xx_gpu->pfp_bo = NULL;
 	}

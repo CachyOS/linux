@@ -13,9 +13,7 @@
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_bridge.h>
-#include <drm/drm_edid.h>
 #include <drm/drm_encoder.h>
-#include <drm/drm_fb_helper.h>
 #include <drm/drm_fixed.h>
 #include <drm/drm_probe_helper.h>
 #include <uapi/drm/tegra_drm.h>
@@ -27,14 +25,11 @@
 /* XXX move to include/uapi/drm/drm_fourcc.h? */
 #define DRM_FORMAT_MOD_NVIDIA_SECTOR_LAYOUT BIT_ULL(22)
 
-struct reset_control;
+struct drm_fb_helper;
+struct drm_fb_helper_surface_size;
 
-#ifdef CONFIG_DRM_FBDEV_EMULATION
-struct tegra_fbdev {
-	struct drm_fb_helper base;
-	struct drm_framebuffer *fb;
-};
-#endif
+struct edid;
+struct reset_control;
 
 struct tegra_drm {
 	struct drm_device *drm;
@@ -52,10 +47,6 @@ struct tegra_drm {
 
 	struct mutex clients_lock;
 	struct list_head clients;
-
-#ifdef CONFIG_DRM_FBDEV_EMULATION
-	struct tegra_fbdev *fbdev;
-#endif
 
 	unsigned int hmask, vmask;
 	unsigned int pitch_align;
@@ -80,6 +71,7 @@ struct tegra_drm_context {
 
 	/* Only used by new UAPI. */
 	struct xarray mappings;
+	struct host1x_memory_context *memory_context;
 };
 
 struct tegra_drm_client_ops {
@@ -91,11 +83,21 @@ struct tegra_drm_client_ops {
 	int (*submit)(struct tegra_drm_context *context,
 		      struct drm_tegra_submit *args, struct drm_device *drm,
 		      struct drm_file *file);
+	int (*get_streamid_offset)(struct tegra_drm_client *client, u32 *offset);
+	int (*can_use_memory_ctx)(struct tegra_drm_client *client, bool *supported);
 };
 
 int tegra_drm_submit(struct tegra_drm_context *context,
 		     struct drm_tegra_submit *args, struct drm_device *drm,
 		     struct drm_file *file);
+
+static inline int
+tegra_drm_get_streamid_offset_thi(struct tegra_drm_client *client, u32 *offset)
+{
+	*offset = 0x30;
+
+	return 0;
+}
 
 struct tegra_drm_client {
 	struct host1x_client base;
@@ -121,9 +123,6 @@ int tegra_drm_unregister_client(struct tegra_drm *tegra,
 int host1x_client_iommu_attach(struct host1x_client *client);
 void host1x_client_iommu_detach(struct host1x_client *client);
 
-int tegra_drm_init(struct tegra_drm *tegra, struct drm_device *drm);
-int tegra_drm_exit(struct tegra_drm *tegra);
-
 void *tegra_drm_alloc(struct tegra_drm *tegra, size_t size, dma_addr_t *iova);
 void tegra_drm_free(struct tegra_drm *tegra, size_t size, void *virt,
 		    dma_addr_t iova);
@@ -137,7 +136,7 @@ struct tegra_output {
 	struct drm_bridge *bridge;
 	struct drm_panel *panel;
 	struct i2c_adapter *ddc;
-	const struct edid *edid;
+	const struct drm_edid *drm_edid;
 	struct cec_notifier *cec;
 	unsigned int hpd_irq;
 	struct gpio_desc *hpd_gpio;
@@ -185,13 +184,25 @@ struct tegra_bo *tegra_fb_get_plane(struct drm_framebuffer *framebuffer,
 bool tegra_fb_is_bottom_up(struct drm_framebuffer *framebuffer);
 int tegra_fb_get_tiling(struct drm_framebuffer *framebuffer,
 			struct tegra_bo_tiling *tiling);
+struct drm_framebuffer *tegra_fb_alloc(struct drm_device *drm,
+				       const struct drm_format_info *info,
+				       const struct drm_mode_fb_cmd2 *mode_cmd,
+				       struct tegra_bo **planes,
+				       unsigned int num_planes);
 struct drm_framebuffer *tegra_fb_create(struct drm_device *drm,
 					struct drm_file *file,
+					const struct drm_format_info *info,
 					const struct drm_mode_fb_cmd2 *cmd);
-int tegra_drm_fb_prepare(struct drm_device *drm);
-void tegra_drm_fb_free(struct drm_device *drm);
-int tegra_drm_fb_init(struct drm_device *drm);
-void tegra_drm_fb_exit(struct drm_device *drm);
+
+#ifdef CONFIG_DRM_FBDEV_EMULATION
+int tegra_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
+				   struct drm_fb_helper_surface_size *sizes);
+#define TEGRA_FBDEV_DRIVER_OPS \
+	.fbdev_probe = tegra_fbdev_driver_fbdev_probe
+#else
+#define TEGRA_FBDEV_DRIVER_OPS \
+	.fbdev_probe = NULL
+#endif
 
 extern struct platform_driver tegra_display_hub_driver;
 extern struct platform_driver tegra_dc_driver;
@@ -203,5 +214,6 @@ extern struct platform_driver tegra_gr2d_driver;
 extern struct platform_driver tegra_gr3d_driver;
 extern struct platform_driver tegra_vic_driver;
 extern struct platform_driver tegra_nvdec_driver;
+extern struct platform_driver tegra_nvjpg_driver;
 
 #endif /* HOST1X_DRM_H */

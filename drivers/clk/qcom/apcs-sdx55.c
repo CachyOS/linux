@@ -111,7 +111,11 @@ static int qcom_apcs_sdx55_clk_probe(struct platform_device *pdev)
 	 * driver, there seems to be no better place to do this. So do it here!
 	 */
 	cpu_dev = get_cpu_device(0);
-	dev_pm_domain_attach(cpu_dev, true);
+	ret = dev_pm_domain_attach(cpu_dev, PD_FLAG_ATTACH_POWER_ON);
+	if (ret) {
+		dev_err_probe(dev, ret, "can't get PM domain: %d\n", ret);
+		goto err;
+	}
 
 	return 0;
 
@@ -120,15 +124,13 @@ err:
 	return ret;
 }
 
-static int qcom_apcs_sdx55_clk_remove(struct platform_device *pdev)
+static void qcom_apcs_sdx55_clk_remove(struct platform_device *pdev)
 {
 	struct device *cpu_dev = get_cpu_device(0);
 	struct clk_regmap_mux_div *a7cc = platform_get_drvdata(pdev);
 
 	clk_notifier_unregister(a7cc->pclk, &a7cc->clk_nb);
 	dev_pm_domain_detach(cpu_dev, true);
-
-	return 0;
 }
 
 static struct platform_driver qcom_apcs_sdx55_clk_driver = {

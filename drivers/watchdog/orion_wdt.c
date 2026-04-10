@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * drivers/watchdog/orion_wdt.c
  *
@@ -5,9 +6,6 @@
  *
  * Author: Sylver Bruneau <sylver.bruneau@googlemail.com>
  *
- * This file is licensed under  the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -649,7 +647,7 @@ disable_clk:
 	return ret;
 }
 
-static int orion_wdt_remove(struct platform_device *pdev)
+static void orion_wdt_remove(struct platform_device *pdev)
 {
 	struct watchdog_device *wdt_dev = platform_get_drvdata(pdev);
 	struct orion_watchdog *dev = watchdog_get_drvdata(wdt_dev);
@@ -657,7 +655,6 @@ static int orion_wdt_remove(struct platform_device *pdev)
 	watchdog_unregister_device(wdt_dev);
 	clk_disable_unprepare(dev->clk);
 	clk_put(dev->clk);
-	return 0;
 }
 
 static void orion_wdt_shutdown(struct platform_device *pdev)

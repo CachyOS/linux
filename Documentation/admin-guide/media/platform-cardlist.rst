@@ -18,8 +18,6 @@ am437x-vpfe        TI AM437x VPFE
 aspeed-video       Aspeed AST2400 and AST2500
 atmel-isc          ATMEL Image Sensor Controller (ISC)
 atmel-isi          ATMEL Image Sensor Interface (ISI)
-c8sectpfe          SDR platform devices
-c8sectpfe          SDR platform devices
 cafe_ccic          Marvell 88ALP01 (Cafe) CMOS Camera Controller
 cdns-csi2rx        Cadence MIPI-CSI2 RX Controller
 cdns-csi2tx        Cadence MIPI-CSI2 TX Controller
@@ -30,7 +28,6 @@ exynos-fimc-is     EXYNOS4x12 FIMC-IS (Imaging Subsystem)
 exynos-fimc-lite   EXYNOS FIMC-LITE camera interface
 exynos-gsc         Samsung Exynos G-Scaler
 exy                Samsung S5P/EXYNOS4 SoC series Camera Subsystem
-fsl-viu            Freescale VIU
 imx-pxp            i.MX Pixel Pipeline (PXP)
 isdf               TI DM365 ISIF video capture
 mmp_camera         Marvell Armada 610 integrated camera controller
@@ -73,7 +70,6 @@ via-camera         VIAFB camera controller
 video-mux          Video Multiplexer
 vpif_display       TI DaVinci VPIF V4L2-Display
 vpif_capture       TI DaVinci VPIF video capture
-vpss               TI DaVinci VPBE V4L2-Display
 vsp1               Renesas VSP1 Video Processing Engine
 xilinx-tpg         Xilinx Video Test Pattern Generator
 xilinx-video       Xilinx Video IP (EXPERIMENTAL)

@@ -185,19 +185,32 @@ enum mod_hdcp_status mod_hdcp_hdcp2_transition(struct mod_hdcp *hdcp,
 		set_state_id(hdcp, output, H2_A2_LOCALITY_CHECK);
 		break;
 	case H2_A2_LOCALITY_CHECK:
+		/* 1A-05: consider disconnection after LC init a failure */
 		if (hdcp->state.stay_count > 10 ||
-				input->lc_init_prepare != PASS ||
-				input->lc_init_write != PASS ||
-				input->l_prime_available_poll != PASS ||
-				input->l_prime_read != PASS) {
-			/*
-			 * 1A-05: consider disconnection after LC init a failure
-			 * 1A-13-1: consider invalid l' a failure
-			 * 1A-13-2: consider l' timeout a failure
-			 */
+				input->lc_init_prepare != PASS) {
+			fail_and_restart_in_ms(0, &status, output);
+			break;
+		} else if (adjust->hdcp2.use_fw_locality_check &&
+				input->l_prime_combo_read != PASS) {
+			/* 1A-13-2: consider l' timeout a failure */
+			if (adjust->hdcp2.use_sw_locality_fallback) {
+				/* switch to software locality check */
+				adjust->hdcp2.use_fw_locality_check = 0;
+				callback_in_ms(0, output);
+				increment_stay_counter(hdcp);
+				break;
+			}
+			fail_and_restart_in_ms(0, &status, output);
+			break;
+		} else if (!adjust->hdcp2.use_fw_locality_check &&
+					(input->lc_init_write != PASS ||
+					input->l_prime_available_poll != PASS ||
+					input->l_prime_read != PASS)) {
+			/* 1A-13-2: consider l' timeout a failure */
 			fail_and_restart_in_ms(0, &status, output);
 			break;
 		} else if (input->l_prime_validation != PASS) {
+			/* 1A-13-1: consider invalid l' a failure */
 			callback_in_ms(0, output);
 			increment_stay_counter(hdcp);
 			break;
@@ -500,13 +513,27 @@ enum mod_hdcp_status mod_hdcp_hdcp2_dp_transition(struct mod_hdcp *hdcp,
 		break;
 	case D2_A2_LOCALITY_CHECK:
 		if (hdcp->state.stay_count > 10 ||
-				input->lc_init_prepare != PASS ||
-				input->lc_init_write != PASS ||
-				input->l_prime_read != PASS) {
-			/* 1A-12: consider invalid l' a failure */
+				input->lc_init_prepare != PASS) {
+			fail_and_restart_in_ms(0, &status, output);
+			break;
+		} else if (adjust->hdcp2.use_fw_locality_check &&
+				input->l_prime_combo_read != PASS) {
+			if (adjust->hdcp2.use_sw_locality_fallback) {
+				/* switch to software locality check */
+				adjust->hdcp2.use_fw_locality_check = 0;
+				callback_in_ms(0, output);
+				increment_stay_counter(hdcp);
+				break;
+			}
+			fail_and_restart_in_ms(0, &status, output);
+			break;
+		} else if (!adjust->hdcp2.use_fw_locality_check &&
+					(input->lc_init_write != PASS ||
+					input->l_prime_read != PASS)) {
 			fail_and_restart_in_ms(0, &status, output);
 			break;
 		} else if (input->l_prime_validation != PASS) {
+			/* 1A-12: consider invalid l' a failure */
 			callback_in_ms(0, output);
 			increment_stay_counter(hdcp);
 			break;
@@ -524,7 +551,7 @@ enum mod_hdcp_status mod_hdcp_hdcp2_dp_transition(struct mod_hdcp *hdcp,
 			set_watchdog_in_ms(hdcp, 3000, output);
 			set_state_id(hdcp, output, D2_A6_WAIT_FOR_RX_ID_LIST);
 		} else {
-			callback_in_ms(0, output);
+			callback_in_ms(1, output);
 			set_state_id(hdcp, output, D2_SEND_CONTENT_STREAM_TYPE);
 		}
 		break;

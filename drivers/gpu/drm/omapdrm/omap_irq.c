@@ -5,6 +5,7 @@
  */
 
 #include <drm/drm_vblank.h>
+#include <drm/drm_print.h>
 
 #include "omap_drv.h"
 
@@ -42,7 +43,7 @@ struct omap_irq_wait * omap_irq_wait_init(struct drm_device *dev,
 		u32 irqmask, int count)
 {
 	struct omap_drm_private *priv = dev->dev_private;
-	struct omap_irq_wait *wait = kzalloc(sizeof(*wait), GFP_KERNEL);
+	struct omap_irq_wait *wait = kzalloc_obj(*wait);
 	unsigned long flags;
 
 	init_waitqueue_head(&wait->wq);
@@ -99,7 +100,7 @@ int omap_irq_enable_framedone(struct drm_crtc *crtc, bool enable)
 }
 
 /**
- * enable_vblank - enable vblank interrupt events
+ * omap_irq_enable_vblank - enable vblank interrupt events
  * @crtc: DRM CRTC
  *
  * Enable vblank interrupts for @crtc.  If the device doesn't have
@@ -129,7 +130,7 @@ int omap_irq_enable_vblank(struct drm_crtc *crtc)
 }
 
 /**
- * disable_vblank - disable vblank interrupt events
+ * omap_irq_disable_vblank - disable vblank interrupt events
  * @crtc: DRM CRTC
  *
  * Disable vblank interrupts for @crtc.  If the device doesn't have

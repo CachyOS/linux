@@ -881,7 +881,7 @@ static struct esp_cmd_entry *esp_get_ent(struct esp *esp)
 	struct esp_cmd_entry *ret;
 
 	if (list_empty(head)) {
-		ret = kzalloc(sizeof(struct esp_cmd_entry), GFP_ATOMIC);
+		ret = kzalloc_obj(struct esp_cmd_entry, GFP_ATOMIC);
 	} else {
 		ret = list_entry(head->next, struct esp_cmd_entry, list);
 		list_del(&ret->list);
@@ -952,7 +952,7 @@ static void esp_event_queue_full(struct esp *esp, struct esp_cmd_entry *ent)
 	scsi_track_queue_full(dev, lp->num_tagged - 1);
 }
 
-static int esp_queuecommand_lck(struct scsi_cmnd *cmd)
+static enum scsi_qc_status esp_queuecommand_lck(struct scsi_cmnd *cmd)
 {
 	struct scsi_device *dev = cmd->device;
 	struct esp *esp = shost_priv(dev->host);
@@ -2261,7 +2261,7 @@ static void esp_init_swstate(struct esp *esp)
 	INIT_LIST_HEAD(&esp->active_cmds);
 	INIT_LIST_HEAD(&esp->esp_cmd_pool);
 
-	/* Start with a clear state, domain validation (via ->slave_configure,
+	/* Start with a clear state, domain validation (via ->sdev_configure,
 	 * spi_dv_device()) will attempt to enable SYNC, WIDE, and tagged
 	 * commands.
 	 */
@@ -2441,13 +2441,13 @@ static void esp_target_destroy(struct scsi_target *starget)
 	tp->starget = NULL;
 }
 
-static int esp_slave_alloc(struct scsi_device *dev)
+static int esp_sdev_init(struct scsi_device *dev)
 {
 	struct esp *esp = shost_priv(dev->host);
 	struct esp_target_data *tp = &esp->target[dev->id];
 	struct esp_lun_data *lp;
 
-	lp = kzalloc(sizeof(*lp), GFP_KERNEL);
+	lp = kzalloc_obj(*lp);
 	if (!lp)
 		return -ENOMEM;
 	dev->hostdata = lp;
@@ -2463,7 +2463,7 @@ static int esp_slave_alloc(struct scsi_device *dev)
 	return 0;
 }
 
-static int esp_slave_configure(struct scsi_device *dev)
+static int esp_sdev_configure(struct scsi_device *dev, struct queue_limits *lim)
 {
 	struct esp *esp = shost_priv(dev->host);
 	struct esp_target_data *tp = &esp->target[dev->id];
@@ -2479,7 +2479,7 @@ static int esp_slave_configure(struct scsi_device *dev)
 	return 0;
 }
 
-static void esp_slave_destroy(struct scsi_device *dev)
+static void esp_sdev_destroy(struct scsi_device *dev)
 {
 	struct esp_lun_data *lp = dev->hostdata;
 
@@ -2660,16 +2660,16 @@ static const char *esp_info(struct Scsi_Host *host)
 	return "esp";
 }
 
-struct scsi_host_template scsi_esp_template = {
+const struct scsi_host_template scsi_esp_template = {
 	.module			= THIS_MODULE,
 	.name			= "esp",
 	.info			= esp_info,
 	.queuecommand		= esp_queuecommand,
 	.target_alloc		= esp_target_alloc,
 	.target_destroy		= esp_target_destroy,
-	.slave_alloc		= esp_slave_alloc,
-	.slave_configure	= esp_slave_configure,
-	.slave_destroy		= esp_slave_destroy,
+	.sdev_init		= esp_sdev_init,
+	.sdev_configure		= esp_sdev_configure,
+	.sdev_destroy		= esp_sdev_destroy,
 	.eh_abort_handler	= esp_eh_abort_handler,
 	.eh_bus_reset_handler	= esp_eh_bus_reset_handler,
 	.eh_host_reset_handler	= esp_eh_host_reset_handler,
@@ -2753,7 +2753,7 @@ static void __exit esp_exit(void)
 }
 
 MODULE_DESCRIPTION("ESP SCSI driver core");
-MODULE_AUTHOR("David S. Miller (davem@davemloft.net)");
+MODULE_AUTHOR("David S. Miller <davem@davemloft.net>");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_VERSION);
 

@@ -10,6 +10,7 @@
 #include <linux/kdev_t.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/cleanup.h>
 
 #include <linux/major.h>
 #include <linux/errno.h>
@@ -25,7 +26,7 @@
 
 #include "internal.h"
 
-static struct kobj_map *cdev_map;
+static struct kobj_map *cdev_map __ro_after_init;
 
 static DEFINE_MUTEX(chrdevs_lock);
 
@@ -97,7 +98,8 @@ static struct char_device_struct *
 __register_chrdev_region(unsigned int major, unsigned int baseminor,
 			   int minorct, const char *name)
 {
-	struct char_device_struct *cd, *curr, *prev = NULL;
+	struct char_device_struct *cd __free(kfree) = NULL;
+	struct char_device_struct *curr, *prev = NULL;
 	int ret;
 	int i;
 
@@ -113,18 +115,18 @@ __register_chrdev_region(unsigned int major, unsigned int baseminor,
 		return ERR_PTR(-EINVAL);
 	}
 
-	cd = kzalloc(sizeof(struct char_device_struct), GFP_KERNEL);
+	cd = kzalloc_obj(struct char_device_struct);
 	if (cd == NULL)
 		return ERR_PTR(-ENOMEM);
 
-	mutex_lock(&chrdevs_lock);
+	guard(mutex)(&chrdevs_lock);
 
 	if (major == 0) {
 		ret = find_dynamic_major();
 		if (ret < 0) {
 			pr_err("CHRDEV \"%s\" dynamic allocation region is full\n",
 			       name);
-			goto out;
+			return ERR_PTR(ret);
 		}
 		major = ret;
 	}
@@ -144,13 +146,13 @@ __register_chrdev_region(unsigned int major, unsigned int baseminor,
 		if (curr->baseminor >= baseminor + minorct)
 			break;
 
-		goto out;
+		return ERR_PTR(ret);
 	}
 
 	cd->major = major;
 	cd->baseminor = baseminor;
 	cd->minorct = minorct;
-	strlcpy(cd->name, name, sizeof(cd->name));
+	strscpy(cd->name, name, sizeof(cd->name));
 
 	if (!prev) {
 		cd->next = curr;
@@ -160,12 +162,7 @@ __register_chrdev_region(unsigned int major, unsigned int baseminor,
 		prev->next = cd;
 	}
 
-	mutex_unlock(&chrdevs_lock);
-	return cd;
-out:
-	mutex_unlock(&chrdevs_lock);
-	kfree(cd);
-	return ERR_PTR(ret);
+	return_ptr(cd);
 }
 
 static struct char_device_struct *
@@ -343,14 +340,14 @@ void __unregister_chrdev(unsigned int major, unsigned int baseminor,
 	kfree(cd);
 }
 
-static DEFINE_SPINLOCK(cdev_lock);
+static __cacheline_aligned_in_smp DEFINE_SPINLOCK(cdev_lock);
 
 static struct kobject *cdev_get(struct cdev *p)
 {
 	struct module *owner = p->owner;
 	struct kobject *kobj;
 
-	if (owner && !try_module_get(owner))
+	if (!try_module_get(owner))
 		return NULL;
 	kobj = kobject_get_unless_zero(&p->kobj);
 	if (!kobj)
@@ -483,17 +480,24 @@ int cdev_add(struct cdev *p, dev_t dev, unsigned count)
 	p->dev = dev;
 	p->count = count;
 
-	if (WARN_ON(dev == WHITEOUT_DEV))
-		return -EBUSY;
+	if (WARN_ON(dev == WHITEOUT_DEV)) {
+		error = -EBUSY;
+		goto err;
+	}
 
 	error = kobj_map(cdev_map, dev, count, NULL,
 			 exact_match, exact_lock, p);
 	if (error)
-		return error;
+		goto err;
 
 	kobject_get(p->kobj.parent);
 
 	return 0;
+
+err:
+	kfree_const(p->kobj.name);
+	p->kobj.name = NULL;
+	return error;
 }
 
 /**
@@ -547,7 +551,7 @@ int cdev_device_add(struct cdev *cdev, struct device *dev)
 	}
 
 	rc = device_add(dev);
-	if (rc)
+	if (rc && dev->devt)
 		cdev_del(cdev);
 
 	return rc;
@@ -555,8 +559,8 @@ int cdev_device_add(struct cdev *cdev, struct device *dev)
 
 /**
  * cdev_device_del() - inverse of cdev_device_add
- * @dev: the device structure
  * @cdev: the cdev structure
+ * @dev: the device structure
  *
  * cdev_device_del() is a helper function to call cdev_del and device_del.
  * It should be used whenever cdev_device_add is used.
@@ -632,7 +636,7 @@ static struct kobj_type ktype_cdev_dynamic = {
  */
 struct cdev *cdev_alloc(void)
 {
-	struct cdev *p = kzalloc(sizeof(struct cdev), GFP_KERNEL);
+	struct cdev *p = kzalloc_obj(struct cdev);
 	if (p) {
 		INIT_LIST_HEAD(&p->list);
 		kobject_init(&p->kobj, &ktype_cdev_dynamic);

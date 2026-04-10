@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause-Clear
 /*
  * Copyright (c) 2020 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/delay.h>
@@ -66,6 +67,13 @@ int ath11k_wow_wakeup(struct ath11k_base *ab)
 {
 	struct ath11k *ar = ath11k_ab_to_ar(ab, 0);
 	int ret;
+
+	/* In the case of WCN6750, WoW wakeup is done
+	 * by sending SMP2P power save exit message
+	 * to the target processor.
+	 */
+	if (ab->hw_params.smp2p_wow_exit)
+		return 0;
 
 	reinit_completion(&ab->wow.wakeup_completed);
 
@@ -140,13 +148,16 @@ static int ath11k_wow_cleanup(struct ath11k *ar)
  * 802.11: |4B|dest mac(6B)| 6B |src mac(6B)|  8B  |type(2B)|  body...  |
  *         +--+------------+----+-----------+---------------+-----------+
  */
-static void ath11k_wow_convert_8023_to_80211(struct cfg80211_pkt_pattern *new,
-					     const struct cfg80211_pkt_pattern *old)
+/* clang stack usage explodes if this is inlined */
+static noinline_for_stack
+void ath11k_wow_convert_8023_to_80211(struct cfg80211_pkt_pattern *new,
+				      const struct cfg80211_pkt_pattern *old)
 {
 	u8 hdr_8023_pattern[ETH_HLEN] = {};
 	u8 hdr_8023_bit_mask[ETH_HLEN] = {};
 	u8 hdr_80211_pattern[WOW_HDR_LEN] = {};
 	u8 hdr_80211_bit_mask[WOW_HDR_LEN] = {};
+	u8 bytemask[WOW_MAX_PATTERN_SIZE] = {};
 
 	int total_len = old->pkt_offset + old->pattern_len;
 	int hdr_80211_end_offset;
@@ -164,11 +175,17 @@ static void ath11k_wow_convert_8023_to_80211(struct cfg80211_pkt_pattern *new,
 	struct rfc1042_hdr *new_rfc_mask =
 		(struct rfc1042_hdr *)(hdr_80211_bit_mask + hdr_len);
 	int rfc_len = sizeof(*new_rfc_pattern);
+	int i;
+
+	/* convert bitmask to bytemask */
+	for (i = 0; i < old->pattern_len; i++)
+		if (old->mask[i / 8] & BIT(i % 8))
+			bytemask[i] = 0xff;
 
 	memcpy(hdr_8023_pattern + old->pkt_offset,
 	       old->pattern, ETH_HLEN - old->pkt_offset);
 	memcpy(hdr_8023_bit_mask + old->pkt_offset,
-	       old->mask, ETH_HLEN - old->pkt_offset);
+	       bytemask, ETH_HLEN - old->pkt_offset);
 
 	/* Copy destination address */
 	memcpy(new_hdr_pattern->addr1, old_hdr_pattern->h_dest, ETH_ALEN);
@@ -224,7 +241,7 @@ static void ath11k_wow_convert_8023_to_80211(struct cfg80211_pkt_pattern *new,
 		       (void *)old->pattern + ETH_HLEN - old->pkt_offset,
 		       total_len - ETH_HLEN);
 		memcpy((u8 *)new->mask + new->pattern_len,
-		       (void *)old->mask + ETH_HLEN - old->pkt_offset,
+		       bytemask + ETH_HLEN - old->pkt_offset,
 		       total_len - ETH_HLEN);
 
 		new->pattern_len += total_len - ETH_HLEN;
@@ -364,7 +381,7 @@ static int ath11k_vif_wow_set_wakeups(struct ath11k_vif *arvif,
 			struct wmi_pno_scan_req *pno;
 			int ret;
 
-			pno = kzalloc(sizeof(*pno), GFP_KERNEL);
+			pno = kzalloc_obj(*pno);
 			if (!pno)
 				return -ENOMEM;
 
@@ -385,35 +402,31 @@ static int ath11k_vif_wow_set_wakeups(struct ath11k_vif *arvif,
 	}
 
 	for (i = 0; i < wowlan->n_patterns; i++) {
-		u8 bitmask[WOW_MAX_PATTERN_SIZE] = {};
 		u8 ath_pattern[WOW_MAX_PATTERN_SIZE] = {};
 		u8 ath_bitmask[WOW_MAX_PATTERN_SIZE] = {};
 		struct cfg80211_pkt_pattern new_pattern = {};
-		struct cfg80211_pkt_pattern old_pattern = patterns[i];
-		int j;
 
 		new_pattern.pattern = ath_pattern;
 		new_pattern.mask = ath_bitmask;
 		if (patterns[i].pattern_len > WOW_MAX_PATTERN_SIZE)
 			continue;
-		/* convert bytemask to bitmask */
-		for (j = 0; j < patterns[i].pattern_len; j++)
-			if (patterns[i].mask[j / 8] & BIT(j % 8))
-				bitmask[j] = 0xff;
-		old_pattern.mask = bitmask;
 
 		if (ar->wmi->wmi_ab->wlan_resource_config.rx_decap_mode ==
 		    ATH11K_HW_TXRX_NATIVE_WIFI) {
 			if (patterns[i].pkt_offset < ETH_HLEN) {
-				u8 pattern_ext[WOW_MAX_PATTERN_SIZE] = {};
-
-				memcpy(pattern_ext, old_pattern.pattern,
-				       old_pattern.pattern_len);
-				old_pattern.pattern = pattern_ext;
 				ath11k_wow_convert_8023_to_80211(&new_pattern,
-								 &old_pattern);
+								 &patterns[i]);
 			} else {
-				new_pattern = old_pattern;
+				int j;
+
+				new_pattern = patterns[i];
+				new_pattern.mask = ath_bitmask;
+
+				/* convert bitmask to bytemask */
+				for (j = 0; j < patterns[i].pattern_len; j++)
+					if (patterns[i].mask[j / 8] & BIT(j % 8))
+						ath_bitmask[j] = 0xff;
+
 				new_pattern.pkt_offset += WOW_HDR_LEN - ETH_HLEN;
 			}
 		}
@@ -482,7 +495,7 @@ static int ath11k_vif_wow_clean_nlo(struct ath11k_vif *arvif)
 		if (ar->nlo_enabled) {
 			struct wmi_pno_scan_req *pno;
 
-			pno = kzalloc(sizeof(*pno), GFP_KERNEL);
+			pno = kzalloc_obj(*pno);
 			if (!pno)
 				return -ENOMEM;
 
@@ -664,6 +677,12 @@ int ath11k_wow_op_suspend(struct ieee80211_hw *hw,
 	struct ath11k *ar = hw->priv;
 	int ret;
 
+	ret = ath11k_mac_wait_tx_complete(ar);
+	if (ret) {
+		ath11k_warn(ar->ab, "failed to wait tx complete: %d\n", ret);
+		return ret;
+	}
+
 	mutex_lock(&ar->conf_mutex);
 
 	ret = ath11k_dp_rx_pktlog_stop(ar->ab, true);
@@ -692,13 +711,6 @@ int ath11k_wow_op_suspend(struct ieee80211_hw *hw,
 	if (ret) {
 		ath11k_warn(ar->ab, "failed to set wow protocol offload events: %d\n",
 			    ret);
-		goto cleanup;
-	}
-
-	ath11k_mac_drain_tx(ar);
-	ret = ath11k_mac_wait_tx_complete(ar);
-	if (ret) {
-		ath11k_warn(ar->ab, "failed to wait tx complete: %d\n", ret);
 		goto cleanup;
 	}
 
@@ -831,6 +843,7 @@ exit:
 		case ATH11K_STATE_RESTARTING:
 		case ATH11K_STATE_RESTARTED:
 		case ATH11K_STATE_WEDGED:
+		case ATH11K_STATE_FTM:
 			ath11k_warn(ar->ab, "encountered unexpected device state %d on resume, cannot recover\n",
 				    ar->state);
 			ret = -EIO;

@@ -33,9 +33,11 @@
 #include <linux/delay.h>
 #include <linux/poll.h>
 #include <linux/mutex.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/sched/signal.h>
 
@@ -470,7 +472,7 @@ EXPORT_SYMBOL(smu_present);
 int __init smu_init (void)
 {
 	struct device_node *np;
-	const u32 *data;
+	u64 data;
 	int ret = 0;
 
         np = of_find_node_by_type(NULL, "smu");
@@ -490,11 +492,7 @@ int __init smu_init (void)
 		goto fail_np;
 	}
 
-	smu = memblock_alloc(sizeof(struct smu_device), SMP_CACHE_BYTES);
-	if (!smu)
-		panic("%s: Failed to allocate %zu bytes\n", __func__,
-		      sizeof(struct smu_device));
-
+	smu = memblock_alloc_or_panic(sizeof(struct smu_device), SMP_CACHE_BYTES);
 	spin_lock_init(&smu->lock);
 	INIT_LIST_HEAD(&smu->cmd_list);
 	INIT_LIST_HEAD(&smu->cmd_i2c_list);
@@ -514,8 +512,7 @@ int __init smu_init (void)
 		ret = -ENXIO;
 		goto fail_bootmem;
 	}
-	data = of_get_property(smu->db_node, "reg", NULL);
-	if (data == NULL) {
+	if (of_property_read_reg(smu->db_node, 0, &data, NULL)) {
 		printk(KERN_ERR "SMU: Can't find doorbell GPIO address !\n");
 		ret = -ENXIO;
 		goto fail_db_node;
@@ -525,7 +522,7 @@ int __init smu_init (void)
 	 * and ack. GPIOs are at 0x50, best would be to find that out
 	 * in the device-tree though.
 	 */
-	smu->doorbell = *data;
+	smu->doorbell = data;
 	if (smu->doorbell < 0x50)
 		smu->doorbell += 0x50;
 
@@ -534,13 +531,12 @@ int __init smu_init (void)
 		smu->msg_node = of_find_node_by_name(NULL, "smu-interrupt");
 		if (smu->msg_node == NULL)
 			break;
-		data = of_get_property(smu->msg_node, "reg", NULL);
-		if (data == NULL) {
+		if (of_property_read_reg(smu->msg_node, 0, &data, NULL)) {
 			of_node_put(smu->msg_node);
 			smu->msg_node = NULL;
 			break;
 		}
-		smu->msg = *data;
+		smu->msg = data;
 		if (smu->msg < 0x50)
 			smu->msg += 0x50;
 	} while(0);
@@ -1085,7 +1081,7 @@ static int smu_open(struct inode *inode, struct file *file)
 	struct smu_private *pp;
 	unsigned long flags;
 
-	pp = kzalloc(sizeof(struct smu_private), GFP_KERNEL);
+	pp = kzalloc_obj(struct smu_private);
 	if (!pp)
 		return -ENOMEM;
 	spin_lock_init(&pp->lock);
@@ -1314,7 +1310,6 @@ static int smu_release(struct inode *inode, struct file *file)
 
 
 static const struct file_operations smu_device_fops = {
-	.llseek		= no_llseek,
 	.read		= smu_read,
 	.write		= smu_write,
 	.poll		= smu_fpoll,

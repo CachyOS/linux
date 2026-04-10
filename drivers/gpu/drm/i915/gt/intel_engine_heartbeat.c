@@ -3,7 +3,10 @@
  * Copyright © 2019 Intel Corporation
  */
 
+#include <drm/drm_print.h>
+
 #include "i915_drv.h"
+#include "i915_jiffies.h"
 #include "i915_request.h"
 
 #include "intel_context.h"
@@ -22,9 +25,37 @@
 
 static bool next_heartbeat(struct intel_engine_cs *engine)
 {
+	struct i915_request *rq;
 	long delay;
 
 	delay = READ_ONCE(engine->props.heartbeat_interval_ms);
+
+	rq = engine->heartbeat.systole;
+
+	/*
+	 * FIXME: The final period extension is disabled if the period has been
+	 * modified from the default. This is to prevent issues with certain
+	 * selftests which override the value and expect specific behaviour.
+	 * Once the selftests have been updated to either cope with variable
+	 * heartbeat periods (or to override the pre-emption timeout as well,
+	 * or just to add a selftest specific override of the extension), the
+	 * generic override can be removed.
+	 */
+	if (rq && rq->sched.attr.priority >= I915_PRIORITY_BARRIER &&
+	    delay == engine->defaults.heartbeat_interval_ms) {
+		long longer;
+
+		/*
+		 * The final try is at the highest priority possible. Up until now
+		 * a pre-emption might not even have been attempted. So make sure
+		 * this last attempt allows enough time for a pre-emption to occur.
+		 */
+		longer = READ_ONCE(engine->props.preempt_timeout_ms) * 2;
+		longer = intel_clamp_heartbeat_interval_ms(engine, longer);
+		if (longer > delay)
+			delay = longer;
+	}
+
 	if (!delay)
 		return false;
 
@@ -68,7 +99,8 @@ static void heartbeat_commit(struct i915_request *rq,
 static void show_heartbeat(const struct i915_request *rq,
 			   struct intel_engine_cs *engine)
 {
-	struct drm_printer p = drm_debug_printer("heartbeat");
+	struct drm_printer p =
+		drm_dbg_printer(&engine->i915->drm, DRM_UT_DRIVER, "heartbeat");
 
 	if (!rq) {
 		intel_engine_dump(engine, &p,
@@ -160,7 +192,7 @@ static void heartbeat(struct work_struct *wrk)
 			 * low latency and no jitter] the chance to naturally
 			 * complete before being preempted.
 			 */
-			attr.priority = 0;
+			attr.priority = I915_PRIORITY_NORMAL;
 			if (rq->sched.attr.priority >= attr.priority)
 				attr.priority = I915_PRIORITY_HEARTBEAT;
 			if (rq->sched.attr.priority >= attr.priority)
@@ -262,6 +294,9 @@ static int __intel_engine_pulse(struct intel_engine_cs *engine)
 	heartbeat_commit(rq, &attr);
 	GEM_BUG_ON(rq->sched.attr.priority < I915_PRIORITY_BARRIER);
 
+	/* Ensure the forced pulse gets a full period to execute */
+	next_heartbeat(engine);
+
 	return 0;
 }
 
@@ -287,6 +322,17 @@ int intel_engine_set_heartbeat(struct intel_engine_cs *engine,
 
 	if (!delay && !intel_engine_has_preempt_reset(engine))
 		return -ENODEV;
+
+	/* FIXME: Remove together with equally marked hack in next_heartbeat. */
+	if (delay != engine->defaults.heartbeat_interval_ms &&
+	    delay < 2 * engine->props.preempt_timeout_ms) {
+		if (intel_engine_uses_guc(engine))
+			drm_notice(&engine->i915->drm, "%s heartbeat interval adjusted to a non-default value which may downgrade individual engine resets to full GPU resets!\n",
+				   engine->name);
+		else
+			drm_notice(&engine->i915->drm, "%s heartbeat interval adjusted to a non-default value which may cause engine resets to target innocent contexts!\n",
+				   engine->name);
+	}
 
 	intel_engine_pm_get(engine);
 

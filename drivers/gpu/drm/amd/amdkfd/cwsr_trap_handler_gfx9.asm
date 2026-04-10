@@ -33,15 +33,31 @@
  * aldebaran:
  *   cpp -DASIC_FAMILY=CHIP_ALDEBARAN cwsr_trap_handler_gfx9.asm -P -o aldebaran.sp3
  *   sp3 aldebaran.sp3 -hex aldebaran.hex
+ *
+ * gc_9_4_3:
+ *   cpp -DASIC_FAMILY=GC_9_4_3 cwsr_trap_handler_gfx9.asm -P -o gc_9_4_3.sp3
+ *   sp3 gc_9_4_3.sp3 -hex gc_9_4_3.hex
+ *
+ * gc_9_5_0:
+ *   cpp -DASIC_FAMILY=GC_9_5_0 cwsr_trap_handler_gfx9.asm -P -o gc_9_5_0.sp3
+ *   sp3 gc_9_5_0.sp3 -hex gc_9_5_0.hex
  */
 
 #define CHIP_VEGAM 18
 #define CHIP_ARCTURUS 23
 #define CHIP_ALDEBARAN 25
+#define CHIP_GC_9_4_3 26
+#define CHIP_GC_9_5_0 27
 
 var ACK_SQC_STORE		    =	1		    //workaround for suspected SQC store bug causing incorrect stores under concurrency
 var SAVE_AFTER_XNACK_ERROR	    =	1		    //workaround for TCP store failure after XNACK error when ALLOW_REPLAY=0, for debugger
-var SINGLE_STEP_MISSED_WORKAROUND   =	1		    //workaround for lost MODE.DEBUG_EN exception when SAVECTX raised
+var SINGLE_STEP_MISSED_WORKAROUND   =	(ASIC_FAMILY <= CHIP_ALDEBARAN)	//workaround for lost MODE.DEBUG_EN exception when SAVECTX raised
+
+#if ASIC_FAMILY < CHIP_GC_9_4_3
+#define VMEM_MODIFIERS slc:1 glc:1
+#else
+#define VMEM_MODIFIERS sc0:1 nt:1
+#endif
 
 /**************************************************************************/
 /*			variables					  */
@@ -57,7 +73,13 @@ var SQ_WAVE_STATUS_ALLOW_REPLAY_MASK    = 0x400000
 var SQ_WAVE_STATUS_ECC_ERR_MASK         = 0x20000
 
 var SQ_WAVE_LDS_ALLOC_LDS_SIZE_SHIFT	= 12
+#if ASIC_FAMILY >= CHIP_GC_9_5_0
+var SQ_WAVE_LDS_ALLOC_LDS_SIZE_SIZE	= 11
+var LDS_RESTORE_GRANULARITY_BYTES	= 1280
+#else
 var SQ_WAVE_LDS_ALLOC_LDS_SIZE_SIZE	= 9
+var LDS_RESTORE_GRANULARITY_BYTES	= 512
+#endif
 var SQ_WAVE_GPR_ALLOC_VGPR_SIZE_SIZE	= 6
 var SQ_WAVE_GPR_ALLOC_SGPR_SIZE_SIZE	= 3			//FIXME	 sq.blk still has 4 bits at this time while SQ programming guide has 3 bits
 var SQ_WAVE_GPR_ALLOC_SGPR_SIZE_SHIFT	= 24
@@ -77,6 +99,10 @@ var SQ_WAVE_TRAPSTS_ADDR_WATCH_MASK =	0x80
 var SQ_WAVE_TRAPSTS_ADDR_WATCH_SHIFT =	7
 var SQ_WAVE_TRAPSTS_MEM_VIOL_MASK   =	0x100
 var SQ_WAVE_TRAPSTS_MEM_VIOL_SHIFT  =	8
+var SQ_WAVE_TRAPSTS_HOST_TRAP_MASK  =	0x400000
+var SQ_WAVE_TRAPSTS_WAVE_BEGIN_MASK =	0x800000
+var SQ_WAVE_TRAPSTS_WAVE_END_MASK   =	0x1000000
+var SQ_WAVE_TRAPSTS_TRAP_AFTER_INST_MASK =  0x2000000
 var SQ_WAVE_TRAPSTS_PRE_SAVECTX_MASK	=   0x3FF
 var SQ_WAVE_TRAPSTS_PRE_SAVECTX_SHIFT	=   0x0
 var SQ_WAVE_TRAPSTS_PRE_SAVECTX_SIZE	=   10
@@ -95,10 +121,10 @@ var SQ_WAVE_IB_STS_RCNT_FIRST_REPLAY_MASK	= 0x1F8000
 
 var SQ_WAVE_MODE_DEBUG_EN_MASK		=   0x800
 
-var TTMP11_SAVE_RCNT_FIRST_REPLAY_SHIFT	=   26			// bits [31:26] unused by SPI debug data
-var TTMP11_SAVE_RCNT_FIRST_REPLAY_MASK	=   0xFC000000
-var TTMP11_DEBUG_TRAP_ENABLED_SHIFT	=   23
-var TTMP11_DEBUG_TRAP_ENABLED_MASK	=   0x800000
+var TTMP_SAVE_RCNT_FIRST_REPLAY_SHIFT	=   26			// bits [31:26] unused by SPI debug data
+var TTMP_SAVE_RCNT_FIRST_REPLAY_MASK	=   0xFC000000
+var TTMP_DEBUG_TRAP_ENABLED_SHIFT	=   23
+var TTMP_DEBUG_TRAP_ENABLED_MASK	=   0x800000
 
 /*	Save	    */
 var S_SAVE_BUF_RSRC_WORD1_STRIDE	=   0x00040000		//stride is 4 bytes
@@ -129,6 +155,11 @@ var s_save_alloc_size	    =	s_save_trapsts		//conflict
 var s_save_m0		    =	ttmp5
 var s_save_ttmps_lo	    =	s_save_tmp		//no conflict
 var s_save_ttmps_hi	    =	s_save_trapsts		//no conflict
+#if ASIC_FAMILY >= CHIP_GC_9_4_3
+var s_save_ib_sts       =	ttmp13
+#else
+var s_save_ib_sts       =	ttmp11
+#endif
 
 /*	Restore	    */
 var S_RESTORE_BUF_RSRC_WORD1_STRIDE	    =	S_SAVE_BUF_RSRC_WORD1_STRIDE
@@ -215,9 +246,15 @@ L_NOT_HALTED:
     // Any concurrent SAVECTX will be handled upon re-entry once halted.
 
     // Check non-maskable exceptions. memory_violation, illegal_instruction
-    // and xnack_error exceptions always cause the wave to enter the trap
-    // handler.
-    s_and_b32       ttmp2, s_save_trapsts, SQ_WAVE_TRAPSTS_MEM_VIOL_MASK|SQ_WAVE_TRAPSTS_ILLEGAL_INST_MASK
+    // and debugger (host trap, wave start/end, trap after instruction)
+    // exceptions always cause the wave to enter the trap handler.
+    s_and_b32       ttmp2, s_save_trapsts,      \
+        SQ_WAVE_TRAPSTS_MEM_VIOL_MASK         | \
+        SQ_WAVE_TRAPSTS_ILLEGAL_INST_MASK     | \
+        SQ_WAVE_TRAPSTS_HOST_TRAP_MASK        | \
+        SQ_WAVE_TRAPSTS_WAVE_BEGIN_MASK       | \
+        SQ_WAVE_TRAPSTS_WAVE_END_MASK         | \
+        SQ_WAVE_TRAPSTS_TRAP_AFTER_INST_MASK
     s_cbranch_scc1  L_FETCH_2ND_TRAP
 
     // Check for maskable exceptions in trapsts.excp and trapsts.excp_hi.
@@ -263,11 +300,16 @@ L_FETCH_2ND_TRAP:
     s_getreg_b32    ttmp15, hwreg(HW_REG_SQ_SHADER_TMA_HI)
     s_lshl_b64      [ttmp14, ttmp15], [ttmp14, ttmp15], 0x8
 
+    s_bitcmp1_b32   ttmp15, 0xF
+    s_cbranch_scc0  L_NO_SIGN_EXTEND_TMA
+    s_or_b32        ttmp15, ttmp15, 0xFFFF0000
+L_NO_SIGN_EXTEND_TMA:
+
     s_load_dword    ttmp2, [ttmp14, ttmp15], 0x10 glc:1 // debug trap enabled flag
     s_waitcnt       lgkmcnt(0)
-    s_lshl_b32      ttmp2, ttmp2, TTMP11_DEBUG_TRAP_ENABLED_SHIFT
-    s_andn2_b32     ttmp11, ttmp11, TTMP11_DEBUG_TRAP_ENABLED_MASK
-    s_or_b32        ttmp11, ttmp11, ttmp2
+    s_lshl_b32      ttmp2, ttmp2, TTMP_DEBUG_TRAP_ENABLED_SHIFT
+    s_andn2_b32     s_save_ib_sts, s_save_ib_sts, TTMP_DEBUG_TRAP_ENABLED_MASK
+    s_or_b32        s_save_ib_sts, s_save_ib_sts, ttmp2
 
     s_load_dwordx2  [ttmp2, ttmp3], [ttmp14, ttmp15], 0x0 glc:1 // second-level TBA
     s_waitcnt       lgkmcnt(0)
@@ -405,7 +447,9 @@ L_SAVE:
     s_getreg_b32    s_save_m0, hwreg(HW_REG_MODE)						    //MODE
     write_hwreg_to_mem(s_save_m0, s_save_buf_rsrc0, s_save_mem_offset)
 
-
+    // Clear VSKIP state now that MODE.VSKIP has been saved.
+    // If user shader set it then vector instructions would be skipped.
+    s_setvskip	0,0
 
     /*	    the first wave in the threadgroup	 */
     s_and_b32	    s_save_tmp, s_save_spi_init_hi, S_SAVE_SPI_INIT_FIRST_WAVE_MASK	// extract fisrt wave bit
@@ -532,12 +576,21 @@ if SAVE_AFTER_XNACK_ERROR
 
 	v_lshlrev_b32 v2, 2, v3
 L_SAVE_LDS_LOOP_SQC:
+#if ASIC_FAMILY < CHIP_GC_9_5_0
 	ds_read2_b32 v[0:1], v2 offset0:0 offset1:0x40
 	s_waitcnt lgkmcnt(0)
-
 	write_vgprs_to_mem_with_sqc(v0, 2, s_save_buf_rsrc0, s_save_mem_offset)
 
 	v_add_u32 v2, 0x200, v2
+#else
+	// gfx950 needs to save in multiple of 256 bytes.
+	ds_read_b32 v0, v2
+	s_waitcnt lgkmcnt(0)
+	write_vgprs_to_mem_with_sqc(v0, 1, s_save_buf_rsrc0, s_save_mem_offset)
+
+	v_add_u32 v2, 0x100, v2
+#endif
+
 	v_cmp_lt_u32 vcc[0:1], v2, s_save_alloc_size
 	s_cbranch_vccnz L_SAVE_LDS_LOOP_SQC
 
@@ -556,11 +609,14 @@ end
 L_SAVE_LDS_LOOP_VECTOR:
       ds_read_b64 v[0:1], v2	//x =LDS[a], byte address
       s_waitcnt lgkmcnt(0)
-      buffer_store_dwordx2  v[0:1], v2, s_save_buf_rsrc0, s_save_mem_offset offen:1  glc:1  slc:1
+      buffer_store_dwordx2  v[0:1], v2, s_save_buf_rsrc0, s_save_mem_offset VMEM_MODIFIERS offen:1
 //	s_waitcnt vmcnt(0)
 //	v_add_u32 v2, vcc[0:1], v2, v3
       v_add_u32 v2, v2, v3
       v_cmp_lt_u32 vcc[0:1], v2, s_save_alloc_size
+#if ASIC_FAMILY >= CHIP_GC_9_5_0
+      s_mov_b64 exec, vcc
+#endif
       s_cbranch_vccnz L_SAVE_LDS_LOOP_VECTOR
 
       // restore rsrc3
@@ -723,8 +779,13 @@ L_RESTORE:
   L_RESTORE_LDS_LOOP:
 	buffer_load_dword   v0, v0, s_restore_buf_rsrc0, s_restore_mem_offset lds:1		       // first 64DW
 	buffer_load_dword   v0, v0, s_restore_buf_rsrc0, s_restore_mem_offset lds:1 offset:256	       // second 64DW
-    s_add_u32	    m0, m0, 256*2						// 128 DW
-    s_add_u32	    s_restore_mem_offset, s_restore_mem_offset, 256*2		//mem offset increased by 128DW
+#if ASIC_FAMILY >= CHIP_GC_9_5_0
+	buffer_load_dword   v0, v0, s_restore_buf_rsrc0, s_restore_mem_offset lds:1 offset:512	// third 64DW
+	buffer_load_dword   v0, v0, s_restore_buf_rsrc0, s_restore_mem_offset lds:1 offset:768	// forth 64DW
+	buffer_load_dword   v0, v0, s_restore_buf_rsrc0, s_restore_mem_offset lds:1 offset:1024	// fifth 64DW
+#endif
+    s_add_u32	    m0, m0, LDS_RESTORE_GRANULARITY_BYTES					// 128/320 DW
+    s_add_u32	    s_restore_mem_offset, s_restore_mem_offset, LDS_RESTORE_GRANULARITY_BYTES	//mem offset increased by 128/320 DW
     s_cmp_lt_u32    m0, s_restore_alloc_size					//scc=(m0 < s_restore_alloc_size) ? 1 : 0
     s_cbranch_scc1  L_RESTORE_LDS_LOOP							    //LDS restore is complete?
 
@@ -896,7 +957,7 @@ L_RESTORE:
 /*			the END						  */
 /**************************************************************************/
 L_END_PGM:
-    s_endpgm
+    s_endpgm_saved
 
 end
 
@@ -954,17 +1015,17 @@ L_TCP_STORE_CHECK_DONE:
 end
 
 function write_4vgprs_to_mem(s_rsrc, s_mem_offset)
-	buffer_store_dword v0, v0, s_rsrc, s_mem_offset slc:1 glc:1
-	buffer_store_dword v1, v0, s_rsrc, s_mem_offset slc:1 glc:1  offset:256
-	buffer_store_dword v2, v0, s_rsrc, s_mem_offset slc:1 glc:1  offset:256*2
-	buffer_store_dword v3, v0, s_rsrc, s_mem_offset slc:1 glc:1  offset:256*3
+	buffer_store_dword v0, v0, s_rsrc, s_mem_offset VMEM_MODIFIERS
+	buffer_store_dword v1, v0, s_rsrc, s_mem_offset VMEM_MODIFIERS offset:256
+	buffer_store_dword v2, v0, s_rsrc, s_mem_offset VMEM_MODIFIERS offset:256*2
+	buffer_store_dword v3, v0, s_rsrc, s_mem_offset VMEM_MODIFIERS offset:256*3
 end
 
 function read_4vgprs_from_mem(s_rsrc, s_mem_offset)
-	buffer_load_dword v0, v0, s_rsrc, s_mem_offset slc:1 glc:1
-	buffer_load_dword v1, v0, s_rsrc, s_mem_offset slc:1 glc:1 offset:256
-	buffer_load_dword v2, v0, s_rsrc, s_mem_offset slc:1 glc:1 offset:256*2
-	buffer_load_dword v3, v0, s_rsrc, s_mem_offset slc:1 glc:1 offset:256*3
+	buffer_load_dword v0, v0, s_rsrc, s_mem_offset VMEM_MODIFIERS
+	buffer_load_dword v1, v0, s_rsrc, s_mem_offset VMEM_MODIFIERS offset:256
+	buffer_load_dword v2, v0, s_rsrc, s_mem_offset VMEM_MODIFIERS offset:256*2
+	buffer_load_dword v3, v0, s_rsrc, s_mem_offset VMEM_MODIFIERS offset:256*3
 	s_waitcnt vmcnt(0)
 end
 
@@ -1058,17 +1119,17 @@ function set_status_without_spi_prio(status, tmp)
 end
 
 function save_and_clear_ib_sts(tmp)
-    // Save IB_STS.FIRST_REPLAY[15] and IB_STS.RCNT[20:16] into unused space ttmp11[31:26].
+    // Save IB_STS.FIRST_REPLAY[15] and IB_STS.RCNT[20:16] into unused space s_save_ib_sts[31:26].
     s_getreg_b32    tmp, hwreg(HW_REG_IB_STS)
     s_and_b32       tmp, tmp, SQ_WAVE_IB_STS_RCNT_FIRST_REPLAY_MASK
-    s_lshl_b32      tmp, tmp, (TTMP11_SAVE_RCNT_FIRST_REPLAY_SHIFT - SQ_WAVE_IB_STS_FIRST_REPLAY_SHIFT)
-    s_andn2_b32     ttmp11, ttmp11, TTMP11_SAVE_RCNT_FIRST_REPLAY_MASK
-    s_or_b32        ttmp11, ttmp11, tmp
+    s_lshl_b32      tmp, tmp, (TTMP_SAVE_RCNT_FIRST_REPLAY_SHIFT - SQ_WAVE_IB_STS_FIRST_REPLAY_SHIFT)
+    s_andn2_b32     s_save_ib_sts, s_save_ib_sts, TTMP_SAVE_RCNT_FIRST_REPLAY_MASK
+    s_or_b32        s_save_ib_sts, s_save_ib_sts, tmp
     s_setreg_imm32_b32 hwreg(HW_REG_IB_STS), 0x0
 end
 
 function restore_ib_sts(tmp)
-    s_lshr_b32      tmp, ttmp11, (TTMP11_SAVE_RCNT_FIRST_REPLAY_SHIFT - SQ_WAVE_IB_STS_FIRST_REPLAY_SHIFT)
+    s_lshr_b32      tmp, s_save_ib_sts, (TTMP_SAVE_RCNT_FIRST_REPLAY_SHIFT - SQ_WAVE_IB_STS_FIRST_REPLAY_SHIFT)
     s_and_b32       tmp, tmp, SQ_WAVE_IB_STS_RCNT_FIRST_REPLAY_MASK
     s_setreg_b32    hwreg(HW_REG_IB_STS), tmp
 end

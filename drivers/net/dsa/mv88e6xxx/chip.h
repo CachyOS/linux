@@ -13,7 +13,9 @@
 #include <linux/irq.h>
 #include <linux/gpio/consumer.h>
 #include <linux/kthread.h>
+#include <linux/leds.h>
 #include <linux/phy.h>
+#include <linux/property.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/timecounter.h>
 #include <net/dsa.h>
@@ -54,6 +56,8 @@ enum mv88e6xxx_frame_mode {
 
 /* List of supported models */
 enum mv88e6xxx_model {
+	MV88E6020,
+	MV88E6071,
 	MV88E6085,
 	MV88E6095,
 	MV88E6097,
@@ -82,6 +86,7 @@ enum mv88e6xxx_model {
 	MV88E6350,
 	MV88E6351,
 	MV88E6352,
+	MV88E6361,
 	MV88E6390,
 	MV88E6390X,
 	MV88E6393X,
@@ -94,13 +99,13 @@ enum mv88e6xxx_family {
 	MV88E6XXX_FAMILY_6097,	/* 6046 6085 6096 6097 */
 	MV88E6XXX_FAMILY_6165,	/* 6123 6161 6165 */
 	MV88E6XXX_FAMILY_6185,	/* 6108 6121 6122 6131 6152 6155 6182 6185 */
-	MV88E6XXX_FAMILY_6250,	/* 6220 6250 */
+	MV88E6XXX_FAMILY_6250,	/* 6220 6250 6020 6071 */
 	MV88E6XXX_FAMILY_6320,	/* 6320 6321 */
 	MV88E6XXX_FAMILY_6341,	/* 6141 6341 */
 	MV88E6XXX_FAMILY_6351,	/* 6171 6175 6350 6351 */
 	MV88E6XXX_FAMILY_6352,	/* 6172 6176 6240 6352 */
 	MV88E6XXX_FAMILY_6390,  /* 6190 6190X 6191 6290 6390 6390X */
-	MV88E6XXX_FAMILY_6393,	/* 6191X 6193X 6393X */
+	MV88E6XXX_FAMILY_6393,	/* 6191X 6193X 6361 6393X */
 };
 
 /**
@@ -139,6 +144,7 @@ struct mv88e6xxx_info {
 	unsigned int age_time_coeff;
 	unsigned int g1_irqs;
 	unsigned int g2_irqs;
+	int stats_type;
 	bool pvt;
 
 	/* Mark certain ports as invalid. This is required for example for the
@@ -167,6 +173,11 @@ struct mv88e6xxx_info {
 
 	/* Supports PTP */
 	bool ptp_support;
+
+	/* Internal PHY start index. 0 means that internal PHYs range starts at
+	 * port 0, 1 means internal PHYs range starts at port 1, etc
+	 */
+	unsigned int internal_phys_offset;
 };
 
 struct mv88e6xxx_atu_entry {
@@ -197,6 +208,8 @@ struct mv88e6xxx_irq_ops;
 struct mv88e6xxx_gpio_ops;
 struct mv88e6xxx_avb_ops;
 struct mv88e6xxx_ptp_ops;
+struct mv88e6xxx_pcs_ops;
+struct mv88e6xxx_cc_coeffs;
 
 struct mv88e6xxx_irq {
 	u16 masked;
@@ -228,7 +241,7 @@ struct mv88e6xxx_port_hwtstamp {
 	u16 tx_seq_id;
 
 	/* Current timestamp configuration */
-	struct hwtstamp_config tstamp_config;
+	struct kernel_hwtstamp_config tstamp_config;
 };
 
 enum mv88e6xxx_policy_mapping {
@@ -266,6 +279,7 @@ struct mv88e6xxx_vlan {
 struct mv88e6xxx_port {
 	struct mv88e6xxx_chip *chip;
 	int port;
+	struct fwnode_handle *fwnode;
 	struct mv88e6xxx_vlan bridge_pvid;
 	u64 serdes_stats[2];
 	u64 atu_member_violation;
@@ -277,9 +291,16 @@ struct mv88e6xxx_port {
 	u8 cmode;
 	bool mirror_ingress;
 	bool mirror_egress;
-	unsigned int serdes_irq;
-	char serdes_irq_name[64];
 	struct devlink_region *region;
+	void *pcs_private;
+
+	/* LED related information */
+	bool fiber;
+	struct led_classdev led0;
+	struct led_classdev led1;
+
+	/* MacAuth Bypass control flag */
+	bool mab;
 };
 
 enum mv88e6xxx_region_id {
@@ -305,6 +326,17 @@ struct mv88e6xxx_mst {
 	u16 msti;
 
 	struct mv88e6xxx_stu_entry stu;
+};
+
+#define STATS_TYPE_PORT		BIT(0)
+#define STATS_TYPE_BANK0	BIT(1)
+#define STATS_TYPE_BANK1	BIT(2)
+
+struct mv88e6xxx_hw_stat {
+	char string[ETH_GSTRING_LEN];
+	size_t size;
+	int reg;
+	int type;
 };
 
 struct mv88e6xxx_chip {
@@ -386,13 +418,12 @@ struct mv88e6xxx_chip {
 	struct cyclecounter	tstamp_cc;
 	struct timecounter	tstamp_tc;
 	struct delayed_work	overflow_work;
+	const struct mv88e6xxx_cc_coeffs *cc_coeffs;
 
 	struct ptp_clock	*ptp_clock;
 	struct ptp_clock_info	ptp_clock_info;
 	struct delayed_work	tai_event_work;
 	struct ptp_pin_desc	pin_config[MV88E6XXX_MAX_GPIO];
-	u16 trig_config;
-	u16 evcap_config;
 	u16 enable_count;
 
 	/* Current ingress and egress monitor ports */
@@ -410,6 +441,9 @@ struct mv88e6xxx_chip {
 
 	/* Bridge MST to SID mappings */
 	struct list_head msts;
+
+	/* FID map */
+	DECLARE_BITMAP(fid_bitmap, MV88E6XXX_N_FID);
 };
 
 struct mv88e6xxx_bus_ops {
@@ -451,12 +485,25 @@ struct mv88e6xxx_ops {
 			 struct mii_bus *bus,
 			 int addr, int reg, u16 val);
 
+	int (*phy_read_c45)(struct mv88e6xxx_chip *chip,
+			    struct mii_bus *bus,
+			    int addr, int devad, int reg, u16 *val);
+	int (*phy_write_c45)(struct mv88e6xxx_chip *chip,
+			     struct mii_bus *bus,
+			     int addr, int devad, int reg, u16 val);
+
 	/* Priority Override Table operations */
 	int (*pot_clear)(struct mv88e6xxx_chip *chip);
 
 	/* PHY Polling Unit (PPU) operations */
 	int (*ppu_enable)(struct mv88e6xxx_chip *chip);
 	int (*ppu_disable)(struct mv88e6xxx_chip *chip);
+
+	/* Additional handlers to run before and after hard reset, to make sure
+	 * that the switch and EEPROM are in a good state.
+	 */
+	int (*hardware_reset_pre)(struct mv88e6xxx_chip *chip);
+	int (*hardware_reset_post)(struct mv88e6xxx_chip *chip);
 
 	/* Switch Software Reset */
 	int (*reset)(struct mv88e6xxx_chip *chip);
@@ -488,14 +535,13 @@ struct mv88e6xxx_ops {
 	int (*port_set_pause)(struct mv88e6xxx_chip *chip, int port,
 			      int pause);
 
-#define SPEED_MAX		INT_MAX
 #define SPEED_UNFORCED		-2
 #define DUPLEX_UNFORCED		-2
 
 	/* Port's MAC speed (in Mbps) and MAC duplex mode
 	 *
 	 * Depending on the chip, 10, 100, 200, 1000, 2500, 10000 are valid.
-	 * Use SPEED_UNFORCED for normal detection, SPEED_MAX for max value.
+	 * Use SPEED_UNFORCED for normal detection.
 	 *
 	 * Use DUPLEX_HALF or DUPLEX_FULL to force half or full duplex,
 	 * or DUPLEX_UNFORCED for normal duplex detection.
@@ -504,7 +550,8 @@ struct mv88e6xxx_ops {
 				     int speed, int duplex);
 
 	/* What interface mode should be used for maximum speed? */
-	phy_interface_t (*port_max_speed_mode)(int port);
+	phy_interface_t (*port_max_speed_mode)(struct mv88e6xxx_chip *chip,
+					       int port);
 
 	int (*port_tag_remap)(struct mv88e6xxx_chip *chip, int port);
 
@@ -537,6 +584,9 @@ struct mv88e6xxx_ops {
 			      phy_interface_t mode);
 	int (*port_get_cmode)(struct mv88e6xxx_chip *chip, int port, u8 *cmode);
 
+	/* LED control */
+	int (*port_setup_leds)(struct mv88e6xxx_chip *chip, int port);
+
 	/* Some devices have a per port register indicating what is
 	 * the upstream port this port should forward to.
 	 */
@@ -555,9 +605,10 @@ struct mv88e6xxx_ops {
 
 	/* Return the number of strings describing statistics */
 	int (*stats_get_sset_count)(struct mv88e6xxx_chip *chip);
-	int (*stats_get_strings)(struct mv88e6xxx_chip *chip,  uint8_t *data);
-	int (*stats_get_stats)(struct mv88e6xxx_chip *chip,  int port,
-			       uint64_t *data);
+	void (*stats_get_strings)(struct mv88e6xxx_chip *chip, uint8_t **data);
+	size_t (*stats_get_stat)(struct mv88e6xxx_chip *chip, int port,
+				 const struct mv88e6xxx_hw_stat *stat,
+				 uint64_t *data);
 	int (*set_cpu_port)(struct mv88e6xxx_chip *chip, int port);
 	int (*set_egress_port)(struct mv88e6xxx_chip *chip,
 			       enum mv88e6xxx_egress_direction direction,
@@ -572,47 +623,24 @@ struct mv88e6xxx_ops {
 
 	int (*mgmt_rsvd2cpu)(struct mv88e6xxx_chip *chip);
 
-	/* Power on/off a SERDES interface */
-	int (*serdes_power)(struct mv88e6xxx_chip *chip, int port, int lane,
-			    bool up);
-
 	/* SERDES lane mapping */
 	int (*serdes_get_lane)(struct mv88e6xxx_chip *chip, int port);
-
-	int (*serdes_pcs_get_state)(struct mv88e6xxx_chip *chip, int port,
-				    int lane, struct phylink_link_state *state);
-	int (*serdes_pcs_config)(struct mv88e6xxx_chip *chip, int port,
-				 int lane, unsigned int mode,
-				 phy_interface_t interface,
-				 const unsigned long *advertise);
-	int (*serdes_pcs_an_restart)(struct mv88e6xxx_chip *chip, int port,
-				     int lane);
-	int (*serdes_pcs_link_up)(struct mv88e6xxx_chip *chip, int port,
-				  int lane, int speed, int duplex);
 
 	/* SERDES interrupt handling */
 	unsigned int (*serdes_irq_mapping)(struct mv88e6xxx_chip *chip,
 					   int port);
-	int (*serdes_irq_enable)(struct mv88e6xxx_chip *chip, int port, int lane,
-				 bool enable);
-	irqreturn_t (*serdes_irq_status)(struct mv88e6xxx_chip *chip, int port,
-					 int lane);
 
 	/* Statistics from the SERDES interface */
 	int (*serdes_get_sset_count)(struct mv88e6xxx_chip *chip, int port);
-	int (*serdes_get_strings)(struct mv88e6xxx_chip *chip,  int port,
-				  uint8_t *data);
-	int (*serdes_get_stats)(struct mv88e6xxx_chip *chip,  int port,
-				uint64_t *data);
+	int (*serdes_get_strings)(struct mv88e6xxx_chip *chip, int port,
+				  uint8_t **data);
+	size_t (*serdes_get_stats)(struct mv88e6xxx_chip *chip, int port,
+				   uint64_t *data);
 
 	/* SERDES registers for ethtool */
 	int (*serdes_get_regs_len)(struct mv88e6xxx_chip *chip,  int port);
 	void (*serdes_get_regs)(struct mv88e6xxx_chip *chip, int port,
 				void *_p);
-
-	/* SERDES SGMII/Fiber Output Amplitude */
-	int (*serdes_set_tx_amplitude)(struct mv88e6xxx_chip *chip, int port,
-				       int val);
 
 	/* Address Translation Unit operations */
 	int (*atu_get_hash)(struct mv88e6xxx_chip *chip, u8 *hash);
@@ -645,6 +673,8 @@ struct mv88e6xxx_ops {
 	/* Phylink */
 	void (*phylink_get_caps)(struct mv88e6xxx_chip *chip, int port,
 				 struct phylink_config *config);
+
+	const struct mv88e6xxx_pcs_ops *pcs_ops;
 
 	/* Max Frame Size */
 	int (*set_max_frame_size)(struct mv88e6xxx_chip *chip, int mtu);
@@ -696,7 +726,7 @@ struct mv88e6xxx_avb_ops {
 };
 
 struct mv88e6xxx_ptp_ops {
-	u64 (*clock_read)(const struct cyclecounter *cc);
+	u64 (*clock_read)(struct cyclecounter *cc);
 	int (*ptp_enable)(struct ptp_clock_info *ptp,
 			  struct ptp_clock_request *rq, int on);
 	int (*ptp_verify)(struct ptp_clock_info *ptp, unsigned int pin,
@@ -706,26 +736,20 @@ struct mv88e6xxx_ptp_ops {
 	int (*port_disable)(struct mv88e6xxx_chip *chip, int port);
 	int (*global_enable)(struct mv88e6xxx_chip *chip);
 	int (*global_disable)(struct mv88e6xxx_chip *chip);
+	int (*set_ptp_cpu_port)(struct mv88e6xxx_chip *chip, int port);
 	int n_ext_ts;
 	int arr0_sts_reg;
 	int arr1_sts_reg;
 	int dep_sts_reg;
 	u32 rx_filters;
-	u32 cc_shift;
-	u32 cc_mult;
-	u32 cc_mult_num;
-	u32 cc_mult_dem;
 };
 
-#define STATS_TYPE_PORT		BIT(0)
-#define STATS_TYPE_BANK0	BIT(1)
-#define STATS_TYPE_BANK1	BIT(2)
+struct mv88e6xxx_pcs_ops {
+	int (*pcs_init)(struct mv88e6xxx_chip *chip, int port);
+	void (*pcs_teardown)(struct mv88e6xxx_chip *chip, int port);
+	struct phylink_pcs *(*pcs_select)(struct mv88e6xxx_chip *chip, int port,
+					  phy_interface_t mode);
 
-struct mv88e6xxx_hw_stat {
-	char string[ETH_GSTRING_LEN];
-	size_t size;
-	int reg;
-	int type;
 };
 
 static inline bool mv88e6xxx_has_stu(struct mv88e6xxx_chip *chip)
@@ -785,6 +809,12 @@ static inline bool mv88e6xxx_is_invalid_port(struct mv88e6xxx_chip *chip, int po
 	return (chip->info->invalid_port_mask & BIT(port)) != 0;
 }
 
+static inline void mv88e6xxx_port_set_mab(struct mv88e6xxx_chip *chip,
+					  int port, bool mab)
+{
+	chip->ports[port].mab = mab;
+}
+
 int mv88e6xxx_read(struct mv88e6xxx_chip *chip, int addr, int reg, u16 *val);
 int mv88e6xxx_write(struct mv88e6xxx_chip *chip, int addr, int reg, u16 val);
 int mv88e6xxx_wait_mask(struct mv88e6xxx_chip *chip, int addr, int reg,
@@ -803,6 +833,10 @@ static inline void mv88e6xxx_reg_unlock(struct mv88e6xxx_chip *chip)
 	mutex_unlock(&chip->reg_lock);
 }
 
-int mv88e6xxx_fid_map(struct mv88e6xxx_chip *chip, unsigned long *bitmap);
+int mv88e6xxx_vtu_walk(struct mv88e6xxx_chip *chip,
+		       int (*cb)(struct mv88e6xxx_chip *chip,
+				 const struct mv88e6xxx_vtu_entry *entry,
+				 void *priv),
+		       void *priv);
 
 #endif /* _MV88E6XXX_CHIP_H */

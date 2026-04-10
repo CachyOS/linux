@@ -6,17 +6,21 @@
  */
 
 #include <linux/acpi.h>
+#include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/interrupt.h>
 #include <linux/i2c.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/string.h>
+#include <linux/string_choices.h>
+#include <linux/units.h>
 
 /* Defines what functionality is present. */
 #define MLXBF_I2C_FUNC_SMBUS_BLOCK \
@@ -30,8 +34,6 @@
 #define MLXBF_I2C_FUNC_ALL \
 	(MLXBF_I2C_FUNC_SMBUS_DEFAULT | MLXBF_I2C_FUNC_SMBUS_BLOCK | \
 	 I2C_FUNC_SMBUS_QUICK | I2C_FUNC_SLAVE)
-
-#define MLXBF_I2C_SMBUS_MAX        3
 
 /* Shared resources info in BlueField platforms. */
 
@@ -47,6 +49,9 @@
 #define MLXBF_I2C_COREPLL_YU_ADDR      0x02800c30
 #define MLXBF_I2C_COREPLL_YU_SIZE      0x00c
 
+#define MLXBF_I2C_COREPLL_RSH_YU_ADDR  0x13409824
+#define MLXBF_I2C_COREPLL_RSH_YU_SIZE  0x00c
+
 #define MLXBF_I2C_SHARED_RES_MAX       3
 
 /*
@@ -61,15 +66,14 @@
  * strongly dependent on the core clock frequency of the SMBus
  * Master. Default value is set to 400MHz.
  */
-#define MLXBF_I2C_TYU_PLL_OUT_FREQ  (400 * 1000 * 1000)
+#define MLXBF_I2C_TYU_PLL_OUT_FREQ  (400 * HZ_PER_MHZ)
 /* Reference clock for Bluefield - 156 MHz. */
-#define MLXBF_I2C_PLL_IN_FREQ       (156 * 1000 * 1000)
+#define MLXBF_I2C_PLL_IN_FREQ       156250000ULL
 
 /* Constant used to determine the PLL frequency. */
-#define MLNXBF_I2C_COREPLL_CONST    16384
+#define MLNXBF_I2C_COREPLL_CONST    16384ULL
 
 /* PLL registers. */
-#define MLXBF_I2C_CORE_PLL_REG0         0x0
 #define MLXBF_I2C_CORE_PLL_REG1         0x4
 #define MLXBF_I2C_CORE_PLL_REG2         0x8
 
@@ -129,14 +133,10 @@
 /* Slave busy bit reset. */
 #define MLXBF_I2C_CAUSE_S_GW_BUSY_FALL        BIT(18)
 
-#define MLXBF_I2C_CAUSE_SLAVE_ARBITER_BITS_MASK     GENMASK(20, 0)
-
 /* Cause coalesce registers. */
 #define MLXBF_I2C_CAUSE_COALESCE_0        0x00
-#define MLXBF_I2C_CAUSE_COALESCE_1        0x04
-#define MLXBF_I2C_CAUSE_COALESCE_2        0x08
 
-#define MLXBF_I2C_CAUSE_TYU_SLAVE_BIT   MLXBF_I2C_SMBUS_MAX
+#define MLXBF_I2C_CAUSE_TYU_SLAVE_BIT   3
 #define MLXBF_I2C_CAUSE_YU_SLAVE_BIT    1
 
 /* Functional enable register. */
@@ -163,15 +163,6 @@
 #define MLXBF_I2C_GPIO_SMBUS_GW_ASSERT_PINS(num, val) \
 	((val) | (0x3 << MLXBF_I2C_GPIO_SMBUS_GW_PINS(num)))
 
-/* SMBus timing parameters. */
-#define MLXBF_I2C_SMBUS_TIMER_SCL_LOW_SCL_HIGH    0x00
-#define MLXBF_I2C_SMBUS_TIMER_FALL_RISE_SPIKE     0x04
-#define MLXBF_I2C_SMBUS_TIMER_THOLD               0x08
-#define MLXBF_I2C_SMBUS_TIMER_TSETUP_START_STOP   0x0c
-#define MLXBF_I2C_SMBUS_TIMER_TSETUP_DATA         0x10
-#define MLXBF_I2C_SMBUS_THIGH_MAX_TBUF            0x14
-#define MLXBF_I2C_SMBUS_SCL_LOW_TIMEOUT           0x18
-
 /*
  * Defines SMBus operating frequency and core clock frequency.
  * According to ADB files, default values are compliant to 100KHz SMBus
@@ -181,42 +172,47 @@
 #define MLXBF_I2C_COREPLL_FREQ          MLXBF_I2C_TYU_PLL_OUT_FREQ
 
 /* Core PLL TYU configuration. */
-#define MLXBF_I2C_COREPLL_CORE_F_TYU_MASK   GENMASK(12, 0)
-#define MLXBF_I2C_COREPLL_CORE_OD_TYU_MASK  GENMASK(3, 0)
-#define MLXBF_I2C_COREPLL_CORE_R_TYU_MASK   GENMASK(5, 0)
-
-#define MLXBF_I2C_COREPLL_CORE_F_TYU_SHIFT  3
-#define MLXBF_I2C_COREPLL_CORE_OD_TYU_SHIFT 16
-#define MLXBF_I2C_COREPLL_CORE_R_TYU_SHIFT  20
+#define MLXBF_I2C_COREPLL_CORE_F_TYU_MASK   GENMASK(15, 3)
+#define MLXBF_I2C_COREPLL_CORE_OD_TYU_MASK  GENMASK(19, 16)
+#define MLXBF_I2C_COREPLL_CORE_R_TYU_MASK   GENMASK(25, 20)
 
 /* Core PLL YU configuration. */
 #define MLXBF_I2C_COREPLL_CORE_F_YU_MASK    GENMASK(25, 0)
 #define MLXBF_I2C_COREPLL_CORE_OD_YU_MASK   GENMASK(3, 0)
-#define MLXBF_I2C_COREPLL_CORE_R_YU_MASK    GENMASK(5, 0)
+#define MLXBF_I2C_COREPLL_CORE_R_YU_MASK    GENMASK(31, 26)
 
-#define MLXBF_I2C_COREPLL_CORE_F_YU_SHIFT   0
-#define MLXBF_I2C_COREPLL_CORE_OD_YU_SHIFT  1
-#define MLXBF_I2C_COREPLL_CORE_R_YU_SHIFT   26
+/* SMBus timing parameters. */
+#define MLXBF_I2C_SMBUS_TIMER_SCL_LOW_SCL_HIGH    0x00
+#define MLXBF_I2C_SMBUS_TIMER_FALL_RISE_SPIKE     0x04
+#define MLXBF_I2C_SMBUS_TIMER_THOLD               0x08
+#define MLXBF_I2C_SMBUS_TIMER_TSETUP_START_STOP   0x0c
+#define MLXBF_I2C_SMBUS_TIMER_TSETUP_DATA         0x10
+#define MLXBF_I2C_SMBUS_THIGH_MAX_TBUF            0x14
+#define MLXBF_I2C_SMBUS_SCL_LOW_TIMEOUT           0x18
 
-/* Core PLL frequency. */
-static u64 mlxbf_i2c_corepll_frequency;
+#define MLXBF_I2C_SHIFT_0   0
+#define MLXBF_I2C_SHIFT_8   8
+#define MLXBF_I2C_SHIFT_16  16
+#define MLXBF_I2C_SHIFT_24  24
+
+#define MLXBF_I2C_MASK_8    GENMASK(7, 0)
+#define MLXBF_I2C_MASK_16   GENMASK(15, 0)
+#define MLXBF_I2C_MASK_32   GENMASK(31, 0)
+
+#define MLXBF_I2C_MST_ADDR_OFFSET         0x200
 
 /* SMBus Master GW. */
-#define MLXBF_I2C_SMBUS_MASTER_GW     0x200
+#define MLXBF_I2C_SMBUS_MASTER_GW         0x0
 /* Number of bytes received and sent. */
-#define MLXBF_I2C_SMBUS_RS_BYTES      0x300
+#define MLXBF_I2C_YU_SMBUS_RS_BYTES       0x100
+#define MLXBF_I2C_RSH_YU_SMBUS_RS_BYTES   0x10c
 /* Packet error check (PEC) value. */
-#define MLXBF_I2C_SMBUS_MASTER_PEC    0x304
+#define MLXBF_I2C_SMBUS_MASTER_PEC        0x104
 /* Status bits (ACK/NACK/FW Timeout). */
-#define MLXBF_I2C_SMBUS_MASTER_STATUS 0x308
+#define MLXBF_I2C_SMBUS_MASTER_STATUS     0x108
 /* SMbus Master Finite State Machine. */
-#define MLXBF_I2C_SMBUS_MASTER_FSM    0x310
-
-/*
- * When enabled, the master will issue a stop condition in case of
- * timeout while waiting for FW response.
- */
-#define MLXBF_I2C_SMBUS_EN_FW_TIMEOUT 0x31c
+#define MLXBF_I2C_YU_SMBUS_MASTER_FSM     0x110
+#define MLXBF_I2C_RSH_YU_SMBUS_MASTER_FSM 0x100
 
 /* SMBus master GW control bits offset in MLXBF_I2C_SMBUS_MASTER_GW[31:3]. */
 #define MLXBF_I2C_MASTER_LOCK_BIT         BIT(31) /* Lock bit. */
@@ -228,7 +224,7 @@ static u64 mlxbf_i2c_corepll_frequency;
 
 #define MLXBF_I2C_MASTER_ENABLE \
 	(MLXBF_I2C_MASTER_LOCK_BIT | MLXBF_I2C_MASTER_BUSY_BIT | \
-	 MLXBF_I2C_MASTER_START_BIT | MLXBF_I2C_MASTER_STOP_BIT)
+	 MLXBF_I2C_MASTER_START_BIT)
 
 #define MLXBF_I2C_MASTER_ENABLE_WRITE \
 	(MLXBF_I2C_MASTER_ENABLE | MLXBF_I2C_MASTER_CTL_WRITE_BIT)
@@ -236,14 +232,14 @@ static u64 mlxbf_i2c_corepll_frequency;
 #define MLXBF_I2C_MASTER_ENABLE_READ \
 	(MLXBF_I2C_MASTER_ENABLE | MLXBF_I2C_MASTER_CTL_READ_BIT)
 
-#define MLXBF_I2C_MASTER_SLV_ADDR_SHIFT   12 /* Slave address shift. */
-#define MLXBF_I2C_MASTER_WRITE_SHIFT      21 /* Control write bytes shift. */
-#define MLXBF_I2C_MASTER_SEND_PEC_SHIFT   20 /* Send PEC byte shift. */
-#define MLXBF_I2C_MASTER_PARSE_EXP_SHIFT  11 /* Parse expected bytes shift. */
-#define MLXBF_I2C_MASTER_READ_SHIFT       4  /* Control read bytes shift. */
+#define MLXBF_I2C_MASTER_WRITE_SHIFT      21 /* Control write bytes */
+#define MLXBF_I2C_MASTER_SEND_PEC_SHIFT   20 /* Send PEC byte when set to 1 */
+#define MLXBF_I2C_MASTER_PARSE_EXP_SHIFT  11 /* Control parse expected bytes */
+#define MLXBF_I2C_MASTER_SLV_ADDR_SHIFT   12 /* Slave address */
+#define MLXBF_I2C_MASTER_READ_SHIFT       4  /* Control read bytes */
 
 /* SMBus master GW Data descriptor. */
-#define MLXBF_I2C_MASTER_DATA_DESC_ADDR   0x280
+#define MLXBF_I2C_MASTER_DATA_DESC_ADDR   0x80
 #define MLXBF_I2C_MASTER_DATA_DESC_SIZE   0x80 /* Size in bytes. */
 
 /* Maximum bytes to read/write per SMBus transaction. */
@@ -269,19 +265,21 @@ static u64 mlxbf_i2c_corepll_frequency;
 #define MLXBF_I2C_SMBUS_MASTER_FSM_STOP_MASK      BIT(31)
 #define MLXBF_I2C_SMBUS_MASTER_FSM_PS_STATE_MASK  BIT(15)
 
+#define MLXBF_I2C_SLV_ADDR_OFFSET             0x400
+
 /* SMBus slave GW. */
-#define MLXBF_I2C_SMBUS_SLAVE_GW              0x400
+#define MLXBF_I2C_SMBUS_SLAVE_GW              0x0
 /* Number of bytes received and sent from/to master. */
-#define MLXBF_I2C_SMBUS_SLAVE_RS_MASTER_BYTES 0x500
+#define MLXBF_I2C_SMBUS_SLAVE_RS_MASTER_BYTES 0x100
 /* Packet error check (PEC) value. */
-#define MLXBF_I2C_SMBUS_SLAVE_PEC             0x504
+#define MLXBF_I2C_SMBUS_SLAVE_PEC             0x104
 /* SMBus slave Finite State Machine (FSM). */
-#define MLXBF_I2C_SMBUS_SLAVE_FSM             0x510
+#define MLXBF_I2C_SMBUS_SLAVE_FSM             0x110
 /*
  * Should be set when all raised causes handled, and cleared by HW on
  * every new cause.
  */
-#define MLXBF_I2C_SMBUS_SLAVE_READY           0x52c
+#define MLXBF_I2C_SMBUS_SLAVE_READY           0x12c
 
 /* SMBus slave GW control bits offset in MLXBF_I2C_SMBUS_SLAVE_GW[31:19]. */
 #define MLXBF_I2C_SLAVE_BUSY_BIT         BIT(30) /* Busy bit. */
@@ -294,23 +292,69 @@ static u64 mlxbf_i2c_corepll_frequency;
 #define MLXBF_I2C_SLAVE_SEND_PEC_SHIFT    21 /* Send PEC byte shift. */
 
 /* SMBus slave GW Data descriptor. */
-#define MLXBF_I2C_SLAVE_DATA_DESC_ADDR   0x480
+#define MLXBF_I2C_SLAVE_DATA_DESC_ADDR   0x80
 #define MLXBF_I2C_SLAVE_DATA_DESC_SIZE   0x80 /* Size in bytes. */
 
 /* SMbus slave configuration registers. */
-#define MLXBF_I2C_SMBUS_SLAVE_ADDR_CFG        0x514
+#define MLXBF_I2C_SMBUS_SLAVE_ADDR_CFG        0x114
 #define MLXBF_I2C_SMBUS_SLAVE_ADDR_CNT        16
-#define MLXBF_I2C_SMBUS_SLAVE_ADDR_EN_BIT     7
+#define MLXBF_I2C_SMBUS_SLAVE_ADDR_EN_BIT     BIT(7)
 #define MLXBF_I2C_SMBUS_SLAVE_ADDR_MASK       GENMASK(6, 0)
-
-#define MLXBF_I2C_SLAVE_ADDR_ENABLED(addr) \
-	((addr) & (1 << MLXBF_I2C_SMBUS_SLAVE_ADDR_EN_BIT))
 
 /*
  * Timeout is given in microsends. Note also that timeout handling is not
  * exact.
  */
 #define MLXBF_I2C_SMBUS_TIMEOUT   (300 * 1000) /* 300ms */
+#define MLXBF_I2C_SMBUS_LOCK_POLL_TIMEOUT (300 * 1000) /* 300ms */
+
+/* Polling frequency in microseconds. */
+#define MLXBF_I2C_POLL_FREQ_IN_USEC        200
+
+#define MLXBF_I2C_SMBUS_OP_CNT_1   1
+#define MLXBF_I2C_SMBUS_OP_CNT_2   2
+#define MLXBF_I2C_SMBUS_OP_CNT_3   3
+#define MLXBF_I2C_SMBUS_MAX_OP_CNT MLXBF_I2C_SMBUS_OP_CNT_3
+
+/* Helper macro to define an I2C resource parameters. */
+#define MLXBF_I2C_RES_PARAMS(addr, size, str) \
+	{ \
+		.start = (addr), \
+		.end = (addr) + (size) - 1, \
+		.name = (str) \
+	}
+
+enum {
+	MLXBF_I2C_F_READ = BIT(0),
+	MLXBF_I2C_F_WRITE = BIT(1),
+	MLXBF_I2C_F_NORESTART = BIT(3),
+	MLXBF_I2C_F_SMBUS_OPERATION = BIT(4),
+	MLXBF_I2C_F_SMBUS_BLOCK = BIT(5),
+	MLXBF_I2C_F_SMBUS_PEC = BIT(6),
+	MLXBF_I2C_F_SMBUS_PROCESS_CALL = BIT(7),
+	MLXBF_I2C_F_WRITE_WITHOUT_STOP = BIT(8),
+};
+
+/* Mellanox BlueField chip type. */
+enum mlxbf_i2c_chip_type {
+	MLXBF_I2C_CHIP_TYPE_1, /* Mellanox BlueField-1 chip. */
+	MLXBF_I2C_CHIP_TYPE_2, /* Mellanox BlueField-2 chip. */
+	MLXBF_I2C_CHIP_TYPE_3 /* Mellanox BlueField-3 chip. */
+};
+
+/* List of chip resources that are being accessed by the driver. */
+enum {
+	MLXBF_I2C_SMBUS_RES,
+	MLXBF_I2C_MST_CAUSE_RES,
+	MLXBF_I2C_SLV_CAUSE_RES,
+	MLXBF_I2C_COALESCE_RES,
+	MLXBF_I2C_SMBUS_TIMER_RES,
+	MLXBF_I2C_SMBUS_MST_RES,
+	MLXBF_I2C_SMBUS_SLV_RES,
+	MLXBF_I2C_COREPLL_RES,
+	MLXBF_I2C_GPIO_RES,
+	MLXBF_I2C_END_RES
+};
 
 /* Encapsulates timing parameters. */
 struct mlxbf_i2c_timings {
@@ -331,26 +375,11 @@ struct mlxbf_i2c_timings {
 	u32 timeout;		/* Detect clock low timeout. */
 };
 
-enum {
-	MLXBF_I2C_F_READ = BIT(0),
-	MLXBF_I2C_F_WRITE = BIT(1),
-	MLXBF_I2C_F_NORESTART = BIT(3),
-	MLXBF_I2C_F_SMBUS_OPERATION = BIT(4),
-	MLXBF_I2C_F_SMBUS_BLOCK = BIT(5),
-	MLXBF_I2C_F_SMBUS_PEC = BIT(6),
-	MLXBF_I2C_F_SMBUS_PROCESS_CALL = BIT(7),
-};
-
 struct mlxbf_i2c_smbus_operation {
 	u32 flags;
 	u32 length; /* Buffer length in bytes. */
 	u8 *buffer;
 };
-
-#define MLXBF_I2C_SMBUS_OP_CNT_1	1
-#define MLXBF_I2C_SMBUS_OP_CNT_2	2
-#define MLXBF_I2C_SMBUS_OP_CNT_3	3
-#define MLXBF_I2C_SMBUS_MAX_OP_CNT	MLXBF_I2C_SMBUS_OP_CNT_3
 
 struct mlxbf_i2c_smbus_request {
 	u8 slave;
@@ -365,24 +394,38 @@ struct mlxbf_i2c_resource {
 	u8 type;
 };
 
-/* List of chip resources that are being accessed by the driver. */
-enum {
-	MLXBF_I2C_SMBUS_RES,
-	MLXBF_I2C_MST_CAUSE_RES,
-	MLXBF_I2C_SLV_CAUSE_RES,
-	MLXBF_I2C_COALESCE_RES,
-	MLXBF_I2C_COREPLL_RES,
-	MLXBF_I2C_GPIO_RES,
-	MLXBF_I2C_END_RES,
+struct mlxbf_i2c_chip_info {
+	enum mlxbf_i2c_chip_type type;
+	/* Chip shared resources that are being used by the I2C controller. */
+	struct mlxbf_i2c_resource *shared_res[MLXBF_I2C_SHARED_RES_MAX];
+
+	/* Callback to calculate the core PLL frequency. */
+	u64 (*calculate_freq)(struct mlxbf_i2c_resource *corepll_res);
+
+	/* Registers' address offset */
+	u32 smbus_master_rs_bytes_off;
+	u32 smbus_master_fsm_off;
 };
 
-/* Helper macro to define an I2C resource parameters. */
-#define MLXBF_I2C_RES_PARAMS(addr, size, str) \
-	{ \
-		.start = (addr), \
-		.end = (addr) + (size) - 1, \
-		.name = (str) \
-	}
+struct mlxbf_i2c_priv {
+	const struct mlxbf_i2c_chip_info *chip;
+	struct i2c_adapter adap;
+	struct mlxbf_i2c_resource *smbus;
+	struct mlxbf_i2c_resource *timer;
+	struct mlxbf_i2c_resource *mst;
+	struct mlxbf_i2c_resource *slv;
+	struct mlxbf_i2c_resource *mst_cause;
+	struct mlxbf_i2c_resource *slv_cause;
+	struct mlxbf_i2c_resource *coalesce;
+	u64 frequency; /* Core frequency in Hz. */
+	int bus; /* Physical bus identifier. */
+	int irq;
+	struct i2c_client *slave[MLXBF_I2C_SMBUS_SLAVE_ADDR_CNT];
+	u32 resource_version;
+};
+
+/* Core PLL frequency. */
+static u64 mlxbf_i2c_corepll_frequency;
 
 static struct resource mlxbf_i2c_coalesce_tyu_params =
 		MLXBF_I2C_RES_PARAMS(MLXBF_I2C_COALESCE_TYU_ADDR,
@@ -396,6 +439,10 @@ static struct resource mlxbf_i2c_corepll_yu_params =
 		MLXBF_I2C_RES_PARAMS(MLXBF_I2C_COREPLL_YU_ADDR,
 				     MLXBF_I2C_COREPLL_YU_SIZE,
 				     "COREPLL_MEM");
+static struct resource mlxbf_i2c_corepll_rsh_yu_params =
+		MLXBF_I2C_RES_PARAMS(MLXBF_I2C_COREPLL_RSH_YU_ADDR,
+				     MLXBF_I2C_COREPLL_RSH_YU_SIZE,
+				     "COREPLL_MEM");
 static struct resource mlxbf_i2c_gpio_tyu_params =
 		MLXBF_I2C_RES_PARAMS(MLXBF_I2C_GPIO_TYU_ADDR,
 				     MLXBF_I2C_GPIO_TYU_SIZE,
@@ -404,34 +451,6 @@ static struct resource mlxbf_i2c_gpio_tyu_params =
 static struct mutex mlxbf_i2c_coalesce_lock;
 static struct mutex mlxbf_i2c_corepll_lock;
 static struct mutex mlxbf_i2c_gpio_lock;
-
-/* Mellanox BlueField chip type. */
-enum mlxbf_i2c_chip_type {
-	MLXBF_I2C_CHIP_TYPE_1, /* Mellanox BlueField-1 chip. */
-	MLXBF_I2C_CHIP_TYPE_2, /* Mallanox BlueField-2 chip. */
-};
-
-struct mlxbf_i2c_chip_info {
-	enum mlxbf_i2c_chip_type type;
-	/* Chip shared resources that are being used by the I2C controller. */
-	struct mlxbf_i2c_resource *shared_res[MLXBF_I2C_SHARED_RES_MAX];
-
-	/* Callback to calculate the core PLL frequency. */
-	u64 (*calculate_freq)(struct mlxbf_i2c_resource *corepll_res);
-};
-
-struct mlxbf_i2c_priv {
-	const struct mlxbf_i2c_chip_info *chip;
-	struct i2c_adapter adap;
-	struct mlxbf_i2c_resource *smbus;
-	struct mlxbf_i2c_resource *mst_cause;
-	struct mlxbf_i2c_resource *slv_cause;
-	struct mlxbf_i2c_resource *coalesce;
-	u64 frequency; /* Core frequency in Hz. */
-	int bus; /* Physical bus identifier. */
-	int irq;
-	struct i2c_client *slave;
-};
 
 static struct mlxbf_i2c_resource mlxbf_i2c_coalesce_res[] = {
 	[MLXBF_I2C_CHIP_TYPE_1] = {
@@ -452,6 +471,11 @@ static struct mlxbf_i2c_resource mlxbf_i2c_corepll_res[] = {
 		.params = &mlxbf_i2c_corepll_yu_params,
 		.lock = &mlxbf_i2c_corepll_lock,
 		.type = MLXBF_I2C_COREPLL_RES,
+	},
+	[MLXBF_I2C_CHIP_TYPE_3] = {
+		.params = &mlxbf_i2c_corepll_rsh_yu_params,
+		.lock = &mlxbf_i2c_corepll_lock,
+		.type = MLXBF_I2C_COREPLL_RES,
 	}
 };
 
@@ -467,59 +491,6 @@ static struct mlxbf_i2c_resource mlxbf_i2c_gpio_res[] = {
 static u8 mlxbf_i2c_bus_count;
 
 static struct mutex mlxbf_i2c_bus_lock;
-
-/* Polling frequency in microseconds. */
-#define MLXBF_I2C_POLL_FREQ_IN_USEC        200
-
-#define MLXBF_I2C_SHIFT_0   0
-#define MLXBF_I2C_SHIFT_8   8
-#define MLXBF_I2C_SHIFT_16  16
-#define MLXBF_I2C_SHIFT_24  24
-
-#define MLXBF_I2C_MASK_8    GENMASK(7, 0)
-#define MLXBF_I2C_MASK_16   GENMASK(15, 0)
-
-#define MLXBF_I2C_FREQUENCY_1GHZ  1000000000
-
-/*
- * Function to poll a set of bits at a specific address; it checks whether
- * the bits are equal to zero when eq_zero is set to 'true', and not equal
- * to zero when eq_zero is set to 'false'.
- * Note that the timeout is given in microseconds.
- */
-static u32 mlxbf_smbus_poll(void __iomem *io, u32 addr, u32 mask,
-			    bool eq_zero, u32  timeout)
-{
-	u32 bits;
-
-	timeout = (timeout / MLXBF_I2C_POLL_FREQ_IN_USEC) + 1;
-
-	do {
-		bits = readl(io + addr) & mask;
-		if (eq_zero ? bits == 0 : bits != 0)
-			return eq_zero ? 1 : bits;
-		udelay(MLXBF_I2C_POLL_FREQ_IN_USEC);
-	} while (timeout-- != 0);
-
-	return 0;
-}
-
-/*
- * SW must make sure that the SMBus Master GW is idle before starting
- * a transaction. Accordingly, this function polls the Master FSM stop
- * bit; it returns false when the bit is asserted, true if not.
- */
-static bool mlxbf_smbus_master_wait_for_idle(struct mlxbf_i2c_priv *priv)
-{
-	u32 mask = MLXBF_I2C_SMBUS_MASTER_FSM_STOP_MASK;
-	u32 addr = MLXBF_I2C_SMBUS_MASTER_FSM;
-	u32 timeout = MLXBF_I2C_SMBUS_TIMEOUT;
-
-	if (mlxbf_smbus_poll(priv->smbus->io, addr, mask, true, timeout))
-		return true;
-
-	return false;
-}
 
 static bool mlxbf_i2c_smbus_transaction_success(u32 master_status,
 						u32 cause_status)
@@ -550,6 +521,7 @@ static int mlxbf_i2c_smbus_check_status(struct mlxbf_i2c_priv *priv)
 {
 	u32 master_status_bits;
 	u32 cause_status_bits;
+	u32 bits;
 
 	/*
 	 * GW busy bit is raised by the driver and cleared by the HW
@@ -558,9 +530,9 @@ static int mlxbf_i2c_smbus_check_status(struct mlxbf_i2c_priv *priv)
 	 * then read the cause and master status bits to determine if
 	 * errors occurred during the transaction.
 	 */
-	mlxbf_smbus_poll(priv->smbus->io, MLXBF_I2C_SMBUS_MASTER_GW,
-			 MLXBF_I2C_MASTER_BUSY_BIT, true,
-			 MLXBF_I2C_SMBUS_TIMEOUT);
+	readl_poll_timeout_atomic(priv->mst->io + MLXBF_I2C_SMBUS_MASTER_GW,
+				  bits, !(bits & MLXBF_I2C_MASTER_BUSY_BIT),
+				  MLXBF_I2C_POLL_FREQ_IN_USEC, MLXBF_I2C_SMBUS_TIMEOUT);
 
 	/* Read cause status bits. */
 	cause_status_bits = readl(priv->mst_cause->io +
@@ -571,7 +543,7 @@ static int mlxbf_i2c_smbus_check_status(struct mlxbf_i2c_priv *priv)
 	 * Parse both Cause and Master GW bits, then return transaction status.
 	 */
 
-	master_status_bits = readl(priv->smbus->io +
+	master_status_bits = readl(priv->mst->io +
 					MLXBF_I2C_SMBUS_MASTER_STATUS);
 	master_status_bits &= MLXBF_I2C_SMBUS_MASTER_STATUS_MASK;
 
@@ -596,7 +568,8 @@ static int mlxbf_i2c_smbus_check_status(struct mlxbf_i2c_priv *priv)
 }
 
 static void mlxbf_i2c_smbus_write_data(struct mlxbf_i2c_priv *priv,
-				       const u8 *data, u8 length, u32 addr)
+				       const u8 *data, u8 length, u32 addr,
+				       bool is_master)
 {
 	u8 offset, aligned_length;
 	u32 data32;
@@ -613,12 +586,16 @@ static void mlxbf_i2c_smbus_write_data(struct mlxbf_i2c_priv *priv,
 	 */
 	for (offset = 0; offset < aligned_length; offset += sizeof(u32)) {
 		data32 = *((u32 *)(data + offset));
-		iowrite32be(data32, priv->smbus->io + addr + offset);
+		if (is_master)
+			iowrite32be(data32, priv->mst->io + addr + offset);
+		else
+			iowrite32be(data32, priv->slv->io + addr + offset);
 	}
 }
 
 static void mlxbf_i2c_smbus_read_data(struct mlxbf_i2c_priv *priv,
-				      u8 *data, u8 length, u32 addr)
+				      u8 *data, u8 length, u32 addr,
+				      bool is_master)
 {
 	u32 data32, mask;
 	u8 byte, offset;
@@ -634,14 +611,20 @@ static void mlxbf_i2c_smbus_read_data(struct mlxbf_i2c_priv *priv,
 	 */
 
 	for (offset = 0; offset < (length & ~mask); offset += sizeof(u32)) {
-		data32 = ioread32be(priv->smbus->io + addr + offset);
+		if (is_master)
+			data32 = ioread32be(priv->mst->io + addr + offset);
+		else
+			data32 = ioread32be(priv->slv->io + addr + offset);
 		*((u32 *)(data + offset)) = data32;
 	}
 
 	if (!(length & mask))
 		return;
 
-	data32 = ioread32be(priv->smbus->io + addr + offset);
+	if (is_master)
+		data32 = ioread32be(priv->mst->io + addr + offset);
+	else
+		data32 = ioread32be(priv->slv->io + addr + offset);
 
 	for (byte = 0; byte < (length & mask); byte++) {
 		data[offset + byte] = data32 & GENMASK(7, 0);
@@ -650,16 +633,19 @@ static void mlxbf_i2c_smbus_read_data(struct mlxbf_i2c_priv *priv,
 }
 
 static int mlxbf_i2c_smbus_enable(struct mlxbf_i2c_priv *priv, u8 slave,
-				  u8 len, u8 block_en, u8 pec_en, bool read)
+				  u8 len, u8 block_en, u8 pec_en, bool read,
+				  bool stop)
 {
-	u32 command;
+	u32 command = 0;
 
 	/* Set Master GW control word. */
+	if (stop)
+		command |= MLXBF_I2C_MASTER_STOP_BIT;
 	if (read) {
-		command = MLXBF_I2C_MASTER_ENABLE_READ;
+		command |= MLXBF_I2C_MASTER_ENABLE_READ;
 		command |= rol32(len, MLXBF_I2C_MASTER_READ_SHIFT);
 	} else {
-		command = MLXBF_I2C_MASTER_ENABLE_WRITE;
+		command |= MLXBF_I2C_MASTER_ENABLE_WRITE;
 		command |= rol32(len, MLXBF_I2C_MASTER_WRITE_SHIFT);
 	}
 	command |= rol32(slave, MLXBF_I2C_MASTER_SLV_ADDR_SHIFT);
@@ -667,16 +653,16 @@ static int mlxbf_i2c_smbus_enable(struct mlxbf_i2c_priv *priv, u8 slave,
 	command |= rol32(pec_en, MLXBF_I2C_MASTER_SEND_PEC_SHIFT);
 
 	/* Clear status bits. */
-	writel(0x0, priv->smbus->io + MLXBF_I2C_SMBUS_MASTER_STATUS);
+	writel(0x0, priv->mst->io + MLXBF_I2C_SMBUS_MASTER_STATUS);
 	/* Set the cause data. */
-	writel(~0x0, priv->smbus->io + MLXBF_I2C_CAUSE_OR_CLEAR);
+	writel(~0x0, priv->mst_cause->io + MLXBF_I2C_CAUSE_OR_CLEAR);
 	/* Zero PEC byte. */
-	writel(0x0, priv->smbus->io + MLXBF_I2C_SMBUS_MASTER_PEC);
+	writel(0x0, priv->mst->io + MLXBF_I2C_SMBUS_MASTER_PEC);
 	/* Zero byte count. */
-	writel(0x0, priv->smbus->io + MLXBF_I2C_SMBUS_RS_BYTES);
+	writel(0x0, priv->mst->io + priv->chip->smbus_master_rs_bytes_off);
 
 	/* GW activation. */
-	writel(command, priv->smbus->io + MLXBF_I2C_SMBUS_MASTER_GW);
+	writel(command, priv->mst->io + MLXBF_I2C_SMBUS_MASTER_GW);
 
 	/*
 	 * Poll master status and check status bits. An ACK is sent when
@@ -694,9 +680,12 @@ mlxbf_i2c_smbus_start_transaction(struct mlxbf_i2c_priv *priv,
 	u8 op_idx, data_idx, data_len, write_len, read_len;
 	struct mlxbf_i2c_smbus_operation *operation;
 	u8 read_en, write_en, block_en, pec_en;
-	u8 slave, flags, addr;
+	bool stop_after_write = true;
+	u8 slave, addr;
 	u8 *read_buf;
-	int ret = 0;
+	u32 flags;
+	u32 bits;
+	int ret;
 
 	if (request->operation_cnt > MLXBF_I2C_SMBUS_MAX_OP_CNT)
 		return -EINVAL;
@@ -712,9 +701,29 @@ mlxbf_i2c_smbus_start_transaction(struct mlxbf_i2c_priv *priv,
 	slave = request->slave & GENMASK(6, 0);
 	addr = slave << 1;
 
-	/* First of all, check whether the HW is idle. */
-	if (WARN_ON(!mlxbf_smbus_master_wait_for_idle(priv)))
+	/*
+	 * Try to acquire the smbus gw lock before any reads of the GW register since
+	 * a read sets the lock.
+	 */
+	ret = readl_poll_timeout_atomic(priv->mst->io + MLXBF_I2C_SMBUS_MASTER_GW,
+					bits, !(bits & MLXBF_I2C_MASTER_LOCK_BIT),
+					MLXBF_I2C_POLL_FREQ_IN_USEC,
+					MLXBF_I2C_SMBUS_LOCK_POLL_TIMEOUT);
+	if (WARN_ON(ret))
 		return -EBUSY;
+
+	/*
+	 * SW must make sure that the SMBus Master GW is idle before starting
+	 * a transaction. Accordingly, this call polls the Master FSM stop bit;
+	 * it returns -ETIMEDOUT when the bit is asserted, 0 if not.
+	 */
+	ret = readl_poll_timeout_atomic(priv->mst->io + priv->chip->smbus_master_fsm_off,
+					bits, !(bits & MLXBF_I2C_SMBUS_MASTER_FSM_STOP_MASK),
+					MLXBF_I2C_POLL_FREQ_IN_USEC, MLXBF_I2C_SMBUS_TIMEOUT);
+	if (WARN_ON(ret)) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
 
 	/* Set first byte. */
 	data_desc[data_idx++] = addr;
@@ -738,10 +747,24 @@ mlxbf_i2c_smbus_start_transaction(struct mlxbf_i2c_priv *priv,
 		if (flags & MLXBF_I2C_F_WRITE) {
 			write_en = 1;
 			write_len += operation->length;
+			if (data_idx + operation->length >
+					MLXBF_I2C_MASTER_DATA_DESC_SIZE) {
+				ret = -ENOBUFS;
+				goto out_unlock;
+			}
 			memcpy(data_desc + data_idx,
 			       operation->buffer, operation->length);
 			data_idx += operation->length;
+
+			/*
+			 * The stop condition can be skipped when writing on the bus
+			 * to implement a repeated start condition on the next read
+			 * as required for several SMBus and I2C operations.
+			 */
+			if (flags & MLXBF_I2C_F_WRITE_WITHOUT_STOP)
+				stop_after_write = false;
 		}
+
 		/*
 		 * We assume that read operations are performed only once per
 		 * SMBus transaction. *TBD* protect this statement so it won't
@@ -763,25 +786,25 @@ mlxbf_i2c_smbus_start_transaction(struct mlxbf_i2c_priv *priv,
 	 * must be written to the data registers.
 	 */
 	mlxbf_i2c_smbus_write_data(priv, (const u8 *)data_desc, data_len,
-				   MLXBF_I2C_MASTER_DATA_DESC_ADDR);
+				   MLXBF_I2C_MASTER_DATA_DESC_ADDR, true);
 
 	if (write_en) {
 		ret = mlxbf_i2c_smbus_enable(priv, slave, write_len, block_en,
-					 pec_en, 0);
+					 pec_en, 0, stop_after_write);
 		if (ret)
-			return ret;
+			goto out_unlock;
 	}
 
 	if (read_en) {
 		/* Write slave address to Master GW data descriptor. */
 		mlxbf_i2c_smbus_write_data(priv, (const u8 *)&addr, 1,
-					   MLXBF_I2C_MASTER_DATA_DESC_ADDR);
+					   MLXBF_I2C_MASTER_DATA_DESC_ADDR, true);
 		ret = mlxbf_i2c_smbus_enable(priv, slave, read_len, block_en,
-					 pec_en, 1);
+					 pec_en, 1, true);
 		if (!ret) {
 			/* Get Master GW data descriptor. */
 			mlxbf_i2c_smbus_read_data(priv, data_desc, read_len + 1,
-					     MLXBF_I2C_MASTER_DATA_DESC_ADDR);
+					     MLXBF_I2C_MASTER_DATA_DESC_ADDR, true);
 
 			/* Get data from Master GW data descriptor. */
 			memcpy(read_buf, data_desc, read_len + 1);
@@ -793,8 +816,12 @@ mlxbf_i2c_smbus_start_transaction(struct mlxbf_i2c_priv *priv,
 		 * next tag integration.
 		 */
 		writel(MLXBF_I2C_SMBUS_MASTER_FSM_PS_STATE_MASK,
-			priv->smbus->io + MLXBF_I2C_SMBUS_MASTER_FSM);
+			priv->mst->io + priv->chip->smbus_master_fsm_off);
 	}
+
+out_unlock:
+	/* Clear the gw to clear the lock */
+	writel(0, priv->mst->io + MLXBF_I2C_SMBUS_MASTER_GW);
 
 	return ret;
 }
@@ -878,6 +905,9 @@ mlxbf_i2c_smbus_i2c_block_func(struct mlxbf_i2c_smbus_request *request,
 			MLXBF_I2C_F_SMBUS_OPERATION | MLXBF_I2C_F_WRITE;
 	request->operation[0].flags |= pec_check ? MLXBF_I2C_F_SMBUS_PEC : 0;
 	request->operation[0].buffer = command;
+
+	if (read)
+		request->operation[0].flags |= MLXBF_I2C_F_WRITE_WITHOUT_STOP;
 
 	/*
 	 * As specified in the standard, the max number of bytes to read/write
@@ -1019,13 +1049,7 @@ static int mlxbf_i2c_init_resource(struct platform_device *pdev,
 	if (!tmp_res)
 		return -ENOMEM;
 
-	tmp_res->params = platform_get_resource(pdev, IORESOURCE_MEM, type);
-	if (!tmp_res->params) {
-		devm_kfree(dev, tmp_res);
-		return -EIO;
-	}
-
-	tmp_res->io = devm_ioremap_resource(dev, tmp_res->params);
+	tmp_res->io = devm_platform_get_and_ioremap_resource(pdev, type, &tmp_res->params);
 	if (IS_ERR(tmp_res->io)) {
 		devm_kfree(dev, tmp_res);
 		return PTR_ERR(tmp_res->io);
@@ -1052,7 +1076,7 @@ static u32 mlxbf_i2c_get_ticks(struct mlxbf_i2c_priv *priv, u64 nanoseconds,
 	 *         Frequency
 	 */
 	frequency = priv->frequency;
-	ticks = (nanoseconds * frequency) / MLXBF_I2C_FREQUENCY_1GHZ;
+	ticks = div_u64(nanoseconds * frequency, HZ_PER_GHZ);
 	/*
 	 * The number of ticks is rounded down and if minimum is equal to 1
 	 * then add one tick.
@@ -1082,7 +1106,7 @@ static void mlxbf_i2c_set_timings(struct mlxbf_i2c_priv *priv,
 	timer |= mlxbf_i2c_set_timer(priv, timings->scl_low,
 				     false, MLXBF_I2C_MASK_16,
 				     MLXBF_I2C_SHIFT_16);
-	writel(timer, priv->smbus->io +
+	writel(timer, priv->timer->io +
 		MLXBF_I2C_SMBUS_TIMER_SCL_LOW_SCL_HIGH);
 
 	timer = mlxbf_i2c_set_timer(priv, timings->sda_rise, false,
@@ -1093,34 +1117,35 @@ static void mlxbf_i2c_set_timings(struct mlxbf_i2c_priv *priv,
 				     MLXBF_I2C_MASK_8, MLXBF_I2C_SHIFT_16);
 	timer |= mlxbf_i2c_set_timer(priv, timings->scl_fall, false,
 				     MLXBF_I2C_MASK_8, MLXBF_I2C_SHIFT_24);
-	writel(timer, priv->smbus->io +
+	writel(timer, priv->timer->io +
 		MLXBF_I2C_SMBUS_TIMER_FALL_RISE_SPIKE);
 
 	timer = mlxbf_i2c_set_timer(priv, timings->hold_start, true,
 				    MLXBF_I2C_MASK_16, MLXBF_I2C_SHIFT_0);
 	timer |= mlxbf_i2c_set_timer(priv, timings->hold_data, true,
 				     MLXBF_I2C_MASK_16, MLXBF_I2C_SHIFT_16);
-	writel(timer, priv->smbus->io + MLXBF_I2C_SMBUS_TIMER_THOLD);
+	writel(timer, priv->timer->io + MLXBF_I2C_SMBUS_TIMER_THOLD);
 
 	timer = mlxbf_i2c_set_timer(priv, timings->setup_start, true,
 				    MLXBF_I2C_MASK_16, MLXBF_I2C_SHIFT_0);
 	timer |= mlxbf_i2c_set_timer(priv, timings->setup_stop, true,
 				     MLXBF_I2C_MASK_16, MLXBF_I2C_SHIFT_16);
-	writel(timer, priv->smbus->io +
+	writel(timer, priv->timer->io +
 		MLXBF_I2C_SMBUS_TIMER_TSETUP_START_STOP);
 
 	timer = mlxbf_i2c_set_timer(priv, timings->setup_data, true,
 				    MLXBF_I2C_MASK_16, MLXBF_I2C_SHIFT_0);
-	writel(timer, priv->smbus->io + MLXBF_I2C_SMBUS_TIMER_TSETUP_DATA);
+	writel(timer, priv->timer->io + MLXBF_I2C_SMBUS_TIMER_TSETUP_DATA);
 
 	timer = mlxbf_i2c_set_timer(priv, timings->buf, false,
 				    MLXBF_I2C_MASK_16, MLXBF_I2C_SHIFT_0);
 	timer |= mlxbf_i2c_set_timer(priv, timings->thigh_max, false,
 				     MLXBF_I2C_MASK_16, MLXBF_I2C_SHIFT_16);
-	writel(timer, priv->smbus->io + MLXBF_I2C_SMBUS_THIGH_MAX_TBUF);
+	writel(timer, priv->timer->io + MLXBF_I2C_SMBUS_THIGH_MAX_TBUF);
 
-	timer = timings->timeout;
-	writel(timer, priv->smbus->io + MLXBF_I2C_SMBUS_SCL_LOW_TIMEOUT);
+	timer = mlxbf_i2c_set_timer(priv, timings->timeout, false,
+				    MLXBF_I2C_MASK_32, MLXBF_I2C_SHIFT_0);
+	writel(timer, priv->timer->io + MLXBF_I2C_SMBUS_SCL_LOW_TIMEOUT);
 }
 
 enum mlxbf_i2c_timings_config {
@@ -1129,11 +1154,7 @@ enum mlxbf_i2c_timings_config {
 	MLXBF_I2C_TIMING_CONFIG_1000KHZ,
 };
 
-/*
- * Note that the mlxbf_i2c_timings->timeout value is not related to the
- * bus frequency, it is impacted by the time it takes the driver to
- * complete data transmission before transaction abort.
- */
+/* Timing values are in nanoseconds */
 static const struct mlxbf_i2c_timings mlxbf_i2c_timings[] = {
 	[MLXBF_I2C_TIMING_CONFIG_100KHZ] = {
 		.scl_high = 4810,
@@ -1148,8 +1169,8 @@ static const struct mlxbf_i2c_timings mlxbf_i2c_timings[] = {
 		.scl_fall = 50,
 		.hold_data = 300,
 		.buf = 20000,
-		.thigh_max = 5000,
-		.timeout = 106500
+		.thigh_max = 50000,
+		.timeout = 35000000
 	},
 	[MLXBF_I2C_TIMING_CONFIG_400KHZ] = {
 		.scl_high = 1011,
@@ -1164,24 +1185,24 @@ static const struct mlxbf_i2c_timings mlxbf_i2c_timings[] = {
 		.scl_fall = 50,
 		.hold_data = 300,
 		.buf = 20000,
-		.thigh_max = 5000,
-		.timeout = 106500
+		.thigh_max = 50000,
+		.timeout = 35000000
 	},
 	[MLXBF_I2C_TIMING_CONFIG_1000KHZ] = {
-		.scl_high = 600,
-		.scl_low = 1300,
+		.scl_high = 383,
+		.scl_low = 460,
 		.hold_start = 600,
-		.setup_start = 600,
-		.setup_stop = 600,
-		.setup_data = 100,
+		.setup_start = 260,
+		.setup_stop = 260,
+		.setup_data = 50,
 		.sda_rise = 50,
 		.sda_fall = 50,
 		.scl_rise = 50,
 		.scl_fall = 50,
 		.hold_data = 300,
-		.buf = 20000,
-		.thigh_max = 5000,
-		.timeout = 106500
+		.buf = 500,
+		.thigh_max = 50000,
+		.timeout = 35000000
 	}
 };
 
@@ -1407,24 +1428,19 @@ static int mlxbf_i2c_init_master(struct platform_device *pdev,
 	return 0;
 }
 
-static u64 mlxbf_calculate_freq_from_tyu(struct mlxbf_i2c_resource *corepll_res)
+static u64 mlxbf_i2c_calculate_freq_from_tyu(struct mlxbf_i2c_resource *corepll_res)
 {
-	u64 core_frequency, pad_frequency;
+	u64 core_frequency;
 	u8 core_od, core_r;
 	u32 corepll_val;
 	u16 core_f;
 
-	pad_frequency = MLXBF_I2C_PLL_IN_FREQ;
-
 	corepll_val = readl(corepll_res->io + MLXBF_I2C_CORE_PLL_REG1);
 
 	/* Get Core PLL configuration bits. */
-	core_f = rol32(corepll_val, MLXBF_I2C_COREPLL_CORE_F_TYU_SHIFT) &
-			MLXBF_I2C_COREPLL_CORE_F_TYU_MASK;
-	core_od = rol32(corepll_val, MLXBF_I2C_COREPLL_CORE_OD_TYU_SHIFT) &
-			MLXBF_I2C_COREPLL_CORE_OD_TYU_MASK;
-	core_r = rol32(corepll_val, MLXBF_I2C_COREPLL_CORE_R_TYU_SHIFT) &
-			MLXBF_I2C_COREPLL_CORE_R_TYU_MASK;
+	core_f = FIELD_GET(MLXBF_I2C_COREPLL_CORE_F_TYU_MASK, corepll_val);
+	core_od = FIELD_GET(MLXBF_I2C_COREPLL_CORE_OD_TYU_MASK, corepll_val);
+	core_r = FIELD_GET(MLXBF_I2C_COREPLL_CORE_R_TYU_MASK, corepll_val);
 
 	/*
 	 * Compute PLL output frequency as follow:
@@ -1436,31 +1452,25 @@ static u64 mlxbf_calculate_freq_from_tyu(struct mlxbf_i2c_resource *corepll_res)
 	 * Where PLL_OUT_FREQ and PLL_IN_FREQ refer to CoreFrequency
 	 * and PadFrequency, respectively.
 	 */
-	core_frequency = pad_frequency * (++core_f);
-	core_frequency /= (++core_r) * (++core_od);
+	core_frequency = MLXBF_I2C_PLL_IN_FREQ * (++core_f);
 
-	return core_frequency;
+	return div_u64(core_frequency, (++core_r) * (++core_od));
 }
 
-static u64 mlxbf_calculate_freq_from_yu(struct mlxbf_i2c_resource *corepll_res)
+static u64 mlxbf_i2c_calculate_freq_from_yu(struct mlxbf_i2c_resource *corepll_res)
 {
 	u32 corepll_reg1_val, corepll_reg2_val;
-	u64 corepll_frequency, pad_frequency;
+	u64 corepll_frequency;
 	u8 core_od, core_r;
 	u32 core_f;
-
-	pad_frequency = MLXBF_I2C_PLL_IN_FREQ;
 
 	corepll_reg1_val = readl(corepll_res->io + MLXBF_I2C_CORE_PLL_REG1);
 	corepll_reg2_val = readl(corepll_res->io + MLXBF_I2C_CORE_PLL_REG2);
 
 	/* Get Core PLL configuration bits */
-	core_f = rol32(corepll_reg1_val, MLXBF_I2C_COREPLL_CORE_F_YU_SHIFT) &
-			MLXBF_I2C_COREPLL_CORE_F_YU_MASK;
-	core_r = rol32(corepll_reg1_val, MLXBF_I2C_COREPLL_CORE_R_YU_SHIFT) &
-			MLXBF_I2C_COREPLL_CORE_R_YU_MASK;
-	core_od = rol32(corepll_reg2_val,  MLXBF_I2C_COREPLL_CORE_OD_YU_SHIFT) &
-			MLXBF_I2C_COREPLL_CORE_OD_YU_MASK;
+	core_f = FIELD_GET(MLXBF_I2C_COREPLL_CORE_F_YU_MASK, corepll_reg1_val);
+	core_r = FIELD_GET(MLXBF_I2C_COREPLL_CORE_R_YU_MASK, corepll_reg1_val);
+	core_od = FIELD_GET(MLXBF_I2C_COREPLL_CORE_OD_YU_MASK, corepll_reg2_val);
 
 	/*
 	 * Compute PLL output frequency as follow:
@@ -1472,10 +1482,9 @@ static u64 mlxbf_calculate_freq_from_yu(struct mlxbf_i2c_resource *corepll_res)
 	 * Where PLL_OUT_FREQ and PLL_IN_FREQ refer to CoreFrequency
 	 * and PadFrequency, respectively.
 	 */
-	corepll_frequency = (pad_frequency * core_f) / MLNXBF_I2C_COREPLL_CONST;
-	corepll_frequency /= (++core_r) * (++core_od);
+	corepll_frequency = (MLXBF_I2C_PLL_IN_FREQ * core_f) / MLNXBF_I2C_COREPLL_CONST;
 
-	return corepll_frequency;
+	return div_u64(corepll_frequency, (++core_r) * (++core_od));
 }
 
 static int mlxbf_i2c_calculate_corepll_freq(struct platform_device *pdev,
@@ -1523,28 +1532,26 @@ static int mlxbf_i2c_calculate_corepll_freq(struct platform_device *pdev,
 	return 0;
 }
 
-static int mlxbf_slave_enable(struct mlxbf_i2c_priv *priv, u8 addr)
+static int mlxbf_i2c_slave_enable(struct mlxbf_i2c_priv *priv,
+			      struct i2c_client *slave)
 {
-	u32 slave_reg, slave_reg_tmp, slave_reg_avail, slave_addr_mask;
-	u8 reg, reg_cnt, byte, addr_tmp, reg_avail, byte_avail;
-	bool avail, disabled;
-
-	disabled = false;
-	avail = false;
+	u8 reg, reg_cnt, byte, addr_tmp;
+	u32 slave_reg, slave_reg_tmp;
 
 	if (!priv)
 		return -EPERM;
 
 	reg_cnt = MLXBF_I2C_SMBUS_SLAVE_ADDR_CNT >> 2;
-	slave_addr_mask = MLXBF_I2C_SMBUS_SLAVE_ADDR_MASK;
 
 	/*
 	 * Read the slave registers. There are 4 * 32-bit slave registers.
-	 * Each slave register can hold up to 4 * 8-bit slave configuration
-	 * (7-bit address, 1 status bit (1 if enabled, 0 if not)).
+	 * Each slave register can hold up to 4 * 8-bit slave configuration:
+	 * 1) A 7-bit address
+	 * 2) And a status bit (1 if enabled, 0 if not).
+	 * Look for the next available slave register slot.
 	 */
 	for (reg = 0; reg < reg_cnt; reg++) {
-		slave_reg = readl(priv->smbus->io +
+		slave_reg = readl(priv->slv->io +
 				MLXBF_I2C_SMBUS_SLAVE_ADDR_CFG + reg * 0x4);
 		/*
 		 * Each register holds 4 slave addresses. So, we have to keep
@@ -1556,121 +1563,87 @@ static int mlxbf_slave_enable(struct mlxbf_i2c_priv *priv, u8 addr)
 			addr_tmp = slave_reg_tmp & GENMASK(7, 0);
 
 			/*
-			 * Mark the first available slave address slot, i.e. its
-			 * enabled bit should be unset. This slot might be used
-			 * later on to register our slave.
+			 * If an enable bit is not set in the
+			 * MLXBF_I2C_SMBUS_SLAVE_ADDR_CFG register, then the
+			 * slave address slot associated with that bit is
+			 * free. So set the enable bit and write the
+			 * slave address bits.
 			 */
-			if (!avail && !MLXBF_I2C_SLAVE_ADDR_ENABLED(addr_tmp)) {
-				avail = true;
-				reg_avail = reg;
-				byte_avail = byte;
-				slave_reg_avail = slave_reg;
-			}
+			if (!(addr_tmp & MLXBF_I2C_SMBUS_SLAVE_ADDR_EN_BIT)) {
+				slave_reg &= ~(MLXBF_I2C_SMBUS_SLAVE_ADDR_MASK << (byte * 8));
+				slave_reg |= (slave->addr << (byte * 8));
+				slave_reg |= MLXBF_I2C_SMBUS_SLAVE_ADDR_EN_BIT << (byte * 8);
+				writel(slave_reg, priv->slv->io +
+					MLXBF_I2C_SMBUS_SLAVE_ADDR_CFG +
+					(reg * 0x4));
 
-			/*
-			 * Parse slave address bytes and check whether the
-			 * slave address already exists and it's enabled,
-			 * i.e. most significant bit is set.
-			 */
-			if ((addr_tmp & slave_addr_mask) == addr) {
-				if (MLXBF_I2C_SLAVE_ADDR_ENABLED(addr_tmp))
-					return 0;
-				disabled = true;
-				break;
+				/*
+				 * Set the slave at the corresponding index.
+				 */
+				priv->slave[(reg * 4) + byte] = slave;
+
+				return 0;
 			}
 
 			/* Parse next byte. */
 			slave_reg_tmp >>= 8;
 		}
-
-		/* Exit the loop if the slave address is found. */
-		if (disabled)
-			break;
 	}
 
-	if (!avail && !disabled)
-		return -EINVAL; /* No room for a new slave address. */
-
-	if (avail && !disabled) {
-		reg = reg_avail;
-		byte = byte_avail;
-		/* Set the slave address. */
-		slave_reg_avail &= ~(slave_addr_mask << (byte * 8));
-		slave_reg_avail |= addr << (byte * 8);
-		slave_reg = slave_reg_avail;
-	}
-
-	/* Enable the slave address and update the register. */
-	slave_reg |= (1 << MLXBF_I2C_SMBUS_SLAVE_ADDR_EN_BIT) << (byte * 8);
-	writel(slave_reg, priv->smbus->io + MLXBF_I2C_SMBUS_SLAVE_ADDR_CFG +
-		reg * 0x4);
-
-	return 0;
+	return -EBUSY;
 }
 
-static int mlxbf_slave_disable(struct mlxbf_i2c_priv *priv)
+static int mlxbf_i2c_slave_disable(struct mlxbf_i2c_priv *priv, u8 addr)
 {
-	u32 slave_reg, slave_reg_tmp, slave_addr_mask;
-	u8 addr, addr_tmp, reg, reg_cnt, slave_byte;
-	struct i2c_client *client = priv->slave;
-	bool exist;
+	u8 addr_tmp, reg, reg_cnt, byte;
+	u32 slave_reg, slave_reg_tmp;
 
-	exist = false;
-
-	addr = client->addr;
 	reg_cnt = MLXBF_I2C_SMBUS_SLAVE_ADDR_CNT >> 2;
-	slave_addr_mask = MLXBF_I2C_SMBUS_SLAVE_ADDR_MASK;
 
 	/*
 	 * Read the slave registers. There are 4 * 32-bit slave registers.
-	 * Each slave register can hold up to 4 * 8-bit slave configuration
-	 * (7-bit address, 1 status bit (1 if enabled, 0 if not)).
+	 * Each slave register can hold up to 4 * 8-bit slave configuration:
+	 * 1) A 7-bit address
+	 * 2) And a status bit (1 if enabled, 0 if not).
+	 * Check if addr is present in the registers.
 	 */
 	for (reg = 0; reg < reg_cnt; reg++) {
-		slave_reg = readl(priv->smbus->io +
+		slave_reg = readl(priv->slv->io +
 				MLXBF_I2C_SMBUS_SLAVE_ADDR_CFG + reg * 0x4);
 
 		/* Check whether the address slots are empty. */
-		if (slave_reg == 0)
+		if (!slave_reg)
 			continue;
 
 		/*
-		 * Each register holds 4 slave addresses. So, we have to keep
-		 * the byte order consistent with the value read in order to
-		 * update the register correctly, if needed.
+		 * Check if addr matches any of the 4 slave addresses
+		 * in the register.
 		 */
 		slave_reg_tmp = slave_reg;
-		slave_byte = 0;
-		while (slave_reg_tmp != 0) {
-			addr_tmp = slave_reg_tmp & slave_addr_mask;
+		for (byte = 0; byte < 4; byte++) {
+			addr_tmp = slave_reg_tmp & MLXBF_I2C_SMBUS_SLAVE_ADDR_MASK;
 			/*
 			 * Parse slave address bytes and check whether the
 			 * slave address already exists.
 			 */
 			if (addr_tmp == addr) {
-				exist = true;
-				break;
+				/* Clear the slave address slot. */
+				slave_reg &= ~(GENMASK(7, 0) << (byte * 8));
+				writel(slave_reg, priv->slv->io +
+					MLXBF_I2C_SMBUS_SLAVE_ADDR_CFG +
+					(reg * 0x4));
+				/* Free slave at the corresponding index */
+				priv->slave[(reg * 4) + byte] = NULL;
+
+				return 0;
 			}
 
 			/* Parse next byte. */
 			slave_reg_tmp >>= 8;
-			slave_byte += 1;
 		}
-
-		/* Exit the loop if the slave address is found. */
-		if (exist)
-			break;
 	}
 
-	if (!exist)
-		return 0; /* Slave is not registered, nothing to do. */
-
-	/* Cleanup the slave address slot. */
-	slave_reg &= ~(GENMASK(7, 0) << (slave_byte * 8));
-	writel(slave_reg, priv->smbus->io + MLXBF_I2C_SMBUS_SLAVE_ADDR_CFG +
-		reg * 0x4);
-
-	return 0;
+	return -ENXIO;
 }
 
 static int mlxbf_i2c_init_coalesce(struct platform_device *pdev,
@@ -1760,7 +1733,7 @@ static int mlxbf_i2c_init_slave(struct platform_device *pdev,
 	int ret;
 
 	/* Reset FSM. */
-	writel(0, priv->smbus->io + MLXBF_I2C_SMBUS_SLAVE_FSM);
+	writel(0, priv->slv->io + MLXBF_I2C_SMBUS_SLAVE_FSM);
 
 	/*
 	 * Enable slave cause interrupt bits. Drive
@@ -1775,7 +1748,7 @@ static int mlxbf_i2c_init_slave(struct platform_device *pdev,
 	writel(int_reg, priv->slv_cause->io + MLXBF_I2C_CAUSE_OR_EVTEN0);
 
 	/* Finally, set the 'ready' bit to start handling transactions. */
-	writel(0x1, priv->smbus->io + MLXBF_I2C_SMBUS_SLAVE_READY);
+	writel(0x1, priv->slv->io + MLXBF_I2C_SMBUS_SLAVE_READY);
 
 	/* Initialize the cause coalesce resource. */
 	ret = mlxbf_i2c_init_coalesce(pdev, priv);
@@ -1820,84 +1793,81 @@ static bool mlxbf_i2c_has_coalesce(struct mlxbf_i2c_priv *priv, bool *read,
 	return true;
 }
 
-static bool mlxbf_smbus_slave_wait_for_idle(struct mlxbf_i2c_priv *priv,
-					    u32 timeout)
+static struct i2c_client *mlxbf_i2c_get_slave_from_addr(
+			struct mlxbf_i2c_priv *priv, u8 addr)
 {
-	u32 mask = MLXBF_I2C_CAUSE_S_GW_BUSY_FALL;
-	u32 addr = MLXBF_I2C_CAUSE_ARBITER;
+	int i;
 
-	if (mlxbf_smbus_poll(priv->slv_cause->io, addr, mask, false, timeout))
-		return true;
+	for (i = 0; i < MLXBF_I2C_SMBUS_SLAVE_ADDR_CNT; i++) {
+		if (!priv->slave[i])
+			continue;
 
-	return false;
+		if (priv->slave[i]->addr == addr)
+			return priv->slave[i];
+	}
+
+	return NULL;
 }
 
-/* Send byte to 'external' smbus master. */
-static int mlxbf_smbus_irq_send(struct mlxbf_i2c_priv *priv, u8 recv_bytes)
+/*
+ * Send byte to 'external' smbus master. This function is executed when
+ * an external smbus master wants to read data from the BlueField.
+ */
+static int mlxbf_i2c_irq_send(struct mlxbf_i2c_priv *priv, u8 recv_bytes)
 {
 	u8 data_desc[MLXBF_I2C_SLAVE_DATA_DESC_SIZE] = { 0 };
-	u8 write_size, pec_en, addr, byte, value, byte_cnt, desc_size;
-	struct i2c_client *slave = priv->slave;
+	u8 write_size, pec_en, addr, value, byte_cnt;
+	struct i2c_client *slave;
 	u32 control32, data32;
-	int ret;
-
-	if (!slave)
-		return -EINVAL;
-
-	addr = 0;
-	byte = 0;
-	desc_size = MLXBF_I2C_SLAVE_DATA_DESC_SIZE;
+	int ret = 0;
 
 	/*
-	 * Read bytes received from the external master. These bytes should
-	 * be located in the first data descriptor register of the slave GW.
-	 * These bytes are the slave address byte and the internal register
-	 * address, if supplied.
+	 * Read the first byte received from the external master to
+	 * determine the slave address. This byte is located in the
+	 * first data descriptor register of the slave GW.
 	 */
-	if (recv_bytes > 0) {
-		data32 = ioread32be(priv->smbus->io +
-					MLXBF_I2C_SLAVE_DATA_DESC_ADDR);
+	data32 = ioread32be(priv->slv->io +
+				MLXBF_I2C_SLAVE_DATA_DESC_ADDR);
+	addr = (data32 & GENMASK(7, 0)) >> 1;
 
-		/* Parse the received bytes. */
-		switch (recv_bytes) {
-		case 2:
-			byte = (data32 >> 8) & GENMASK(7, 0);
-			fallthrough;
-		case 1:
-			addr = (data32 & GENMASK(7, 0)) >> 1;
-		}
-
-		/* Check whether it's our slave address. */
-		if (slave->addr != addr)
-			return -EINVAL;
+	/*
+	 * Check if the slave address received in the data descriptor register
+	 * matches any of the slave addresses registered. If there is a match,
+	 * set the slave.
+	 */
+	slave = mlxbf_i2c_get_slave_from_addr(priv, addr);
+	if (!slave) {
+		ret = -ENXIO;
+		goto clear_csr;
 	}
 
 	/*
-	 * I2C read transactions may start by a WRITE followed by a READ.
-	 * Indeed, most slave devices would expect the internal address
-	 * following the slave address byte. So, write that byte first,
-	 * and then, send the requested data bytes to the master.
+	 * An I2C read can consist of a WRITE bit transaction followed by
+	 * a READ bit transaction. Indeed, slave devices often expect
+	 * the slave address to be followed by the internal address.
+	 * So, write the internal address byte first, and then, send the
+	 * requested data to the master.
 	 */
 	if (recv_bytes > 1) {
 		i2c_slave_event(slave, I2C_SLAVE_WRITE_REQUESTED, &value);
-		value = byte;
+		value = (data32 >> 8) & GENMASK(7, 0);
 		ret = i2c_slave_event(slave, I2C_SLAVE_WRITE_RECEIVED,
 				      &value);
 		i2c_slave_event(slave, I2C_SLAVE_STOP, &value);
 
 		if (ret < 0)
-			return ret;
+			goto clear_csr;
 	}
 
 	/*
-	 * Now, send data to the master; currently, the driver supports
-	 * READ_BYTE, READ_WORD and BLOCK READ protocols. Note that the
-	 * hardware can send up to 128 bytes per transfer. That is the
-	 * size of its data registers.
+	 * Send data to the master. Currently, the driver supports
+	 * READ_BYTE, READ_WORD and BLOCK READ protocols. The
+	 * hardware can send up to 128 bytes per transfer which is
+	 * the total size of the data registers.
 	 */
 	i2c_slave_event(slave, I2C_SLAVE_READ_REQUESTED, &value);
 
-	for (byte_cnt = 0; byte_cnt < desc_size; byte_cnt++) {
+	for (byte_cnt = 0; byte_cnt < MLXBF_I2C_SLAVE_DATA_DESC_SIZE; byte_cnt++) {
 		data_desc[byte_cnt] = value;
 		i2c_slave_event(slave, I2C_SLAVE_READ_PROCESSED, &value);
 	}
@@ -1905,14 +1875,12 @@ static int mlxbf_smbus_irq_send(struct mlxbf_i2c_priv *priv, u8 recv_bytes)
 	/* Send a stop condition to the backend. */
 	i2c_slave_event(slave, I2C_SLAVE_STOP, &value);
 
-	/* Handle the actual transfer. */
-
 	/* Set the number of bytes to write to master. */
 	write_size = (byte_cnt - 1) & 0x7f;
 
 	/* Write data to Slave GW data descriptor. */
 	mlxbf_i2c_smbus_write_data(priv, data_desc, byte_cnt,
-				   MLXBF_I2C_SLAVE_DATA_DESC_ADDR);
+				   MLXBF_I2C_SLAVE_DATA_DESC_ADDR, false);
 
 	pec_en = 0; /* Disable PEC since it is not supported. */
 
@@ -1921,46 +1889,54 @@ static int mlxbf_smbus_irq_send(struct mlxbf_i2c_priv *priv, u8 recv_bytes)
 	control32 |= rol32(write_size, MLXBF_I2C_SLAVE_WRITE_BYTES_SHIFT);
 	control32 |= rol32(pec_en, MLXBF_I2C_SLAVE_SEND_PEC_SHIFT);
 
-	writel(control32, priv->smbus->io + MLXBF_I2C_SMBUS_SLAVE_GW);
+	writel(control32, priv->slv->io + MLXBF_I2C_SMBUS_SLAVE_GW);
 
 	/*
 	 * Wait until the transfer is completed; the driver will wait
 	 * until the GW is idle, a cause will rise on fall of GW busy.
 	 */
-	mlxbf_smbus_slave_wait_for_idle(priv, MLXBF_I2C_SMBUS_TIMEOUT);
+	readl_poll_timeout_atomic(priv->slv_cause->io + MLXBF_I2C_CAUSE_ARBITER,
+				  data32, data32 & MLXBF_I2C_CAUSE_S_GW_BUSY_FALL,
+				  MLXBF_I2C_POLL_FREQ_IN_USEC, MLXBF_I2C_SMBUS_TIMEOUT);
 
+clear_csr:
 	/* Release the Slave GW. */
-	writel(0x0, priv->smbus->io + MLXBF_I2C_SMBUS_SLAVE_RS_MASTER_BYTES);
-	writel(0x0, priv->smbus->io + MLXBF_I2C_SMBUS_SLAVE_PEC);
-	writel(0x1, priv->smbus->io + MLXBF_I2C_SMBUS_SLAVE_READY);
+	writel(0x0, priv->slv->io + MLXBF_I2C_SMBUS_SLAVE_RS_MASTER_BYTES);
+	writel(0x0, priv->slv->io + MLXBF_I2C_SMBUS_SLAVE_PEC);
+	writel(0x1, priv->slv->io + MLXBF_I2C_SMBUS_SLAVE_READY);
 
-	return 0;
+	return ret;
 }
 
-/* Receive bytes from 'external' smbus master. */
-static int mlxbf_smbus_irq_recv(struct mlxbf_i2c_priv *priv, u8 recv_bytes)
+/*
+ * Receive bytes from 'external' smbus master. This function is executed when
+ * an external smbus master wants to write data to the BlueField.
+ */
+static int mlxbf_i2c_irq_recv(struct mlxbf_i2c_priv *priv, u8 recv_bytes)
 {
 	u8 data_desc[MLXBF_I2C_SLAVE_DATA_DESC_SIZE] = { 0 };
-	struct i2c_client *slave = priv->slave;
+	struct i2c_client *slave;
 	u8 value, byte, addr;
 	int ret = 0;
 
-	if (!slave)
-		return -EINVAL;
-
 	/* Read data from Slave GW data descriptor. */
 	mlxbf_i2c_smbus_read_data(priv, data_desc, recv_bytes,
-				  MLXBF_I2C_SLAVE_DATA_DESC_ADDR);
-
-	/* Check whether its our slave address. */
+				  MLXBF_I2C_SLAVE_DATA_DESC_ADDR, false);
 	addr = data_desc[0] >> 1;
-	if (slave->addr != addr)
-		return -EINVAL;
 
 	/*
-	 * Notify the slave backend; another I2C master wants to write data
-	 * to us. This event is sent once the slave address and the write bit
-	 * is detected.
+	 * Check if the slave address received in the data descriptor register
+	 * matches any of the slave addresses registered.
+	 */
+	slave = mlxbf_i2c_get_slave_from_addr(priv, addr);
+	if (!slave) {
+		ret = -EINVAL;
+		goto clear_csr;
+	}
+
+	/*
+	 * Notify the slave backend that an smbus master wants to write data
+	 * to the BlueField.
 	 */
 	i2c_slave_event(slave, I2C_SLAVE_WRITE_REQUESTED, &value);
 
@@ -1973,18 +1949,22 @@ static int mlxbf_smbus_irq_recv(struct mlxbf_i2c_priv *priv, u8 recv_bytes)
 			break;
 	}
 
-	/* Send a stop condition to the backend. */
+	/*
+	 * Send a stop event to the slave backend, to signal
+	 * the end of the write transactions.
+	 */
 	i2c_slave_event(slave, I2C_SLAVE_STOP, &value);
 
+clear_csr:
 	/* Release the Slave GW. */
-	writel(0x0, priv->smbus->io + MLXBF_I2C_SMBUS_SLAVE_RS_MASTER_BYTES);
-	writel(0x0, priv->smbus->io + MLXBF_I2C_SMBUS_SLAVE_PEC);
-	writel(0x1, priv->smbus->io + MLXBF_I2C_SMBUS_SLAVE_READY);
+	writel(0x0, priv->slv->io + MLXBF_I2C_SMBUS_SLAVE_RS_MASTER_BYTES);
+	writel(0x0, priv->slv->io + MLXBF_I2C_SMBUS_SLAVE_PEC);
+	writel(0x1, priv->slv->io + MLXBF_I2C_SMBUS_SLAVE_READY);
 
 	return ret;
 }
 
-static irqreturn_t mlxbf_smbus_irq(int irq, void *ptr)
+static irqreturn_t mlxbf_i2c_irq(int irq, void *ptr)
 {
 	struct mlxbf_i2c_priv *priv = ptr;
 	bool read, write, irq_is_set;
@@ -2014,7 +1994,7 @@ static irqreturn_t mlxbf_smbus_irq(int irq, void *ptr)
 	 * slave, if the higher 8 bits are sent then the slave expect N bytes
 	 * from the master.
 	 */
-	rw_bytes_reg = readl(priv->smbus->io +
+	rw_bytes_reg = readl(priv->slv->io +
 				MLXBF_I2C_SMBUS_SLAVE_RS_MASTER_BYTES);
 	recv_bytes = (rw_bytes_reg >> 8) & GENMASK(7, 0);
 
@@ -2032,9 +2012,9 @@ static irqreturn_t mlxbf_smbus_irq(int irq, void *ptr)
 		MLXBF_I2C_SLAVE_DATA_DESC_SIZE : recv_bytes;
 
 	if (read)
-		mlxbf_smbus_irq_send(priv, recv_bytes);
+		mlxbf_i2c_irq_send(priv, recv_bytes);
 	else
-		mlxbf_smbus_irq_recv(priv, recv_bytes);
+		mlxbf_i2c_irq_recv(priv, recv_bytes);
 
 	return IRQ_HANDLED;
 }
@@ -2066,21 +2046,21 @@ static s32 mlxbf_i2c_smbus_xfer(struct i2c_adapter *adap, u16 addr,
 					  read ? &data->byte : &command, read,
 					  pec);
 		dev_dbg(&adap->dev, "smbus %s byte, slave 0x%02x.\n",
-			read ? "read" : "write", addr);
+			str_read_write(read), addr);
 		break;
 
 	case I2C_SMBUS_BYTE_DATA:
 		mlxbf_i2c_smbus_data_byte_func(&request, &command, &data->byte,
 					       read, pec);
 		dev_dbg(&adap->dev, "smbus %s byte data at 0x%02x, slave 0x%02x.\n",
-			read ? "read" : "write", command, addr);
+			str_read_write(read), command, addr);
 		break;
 
 	case I2C_SMBUS_WORD_DATA:
 		mlxbf_i2c_smbus_data_word_func(&request, &command,
 					       (u8 *)&data->word, read, pec);
 		dev_dbg(&adap->dev, "smbus %s word data at 0x%02x, slave 0x%02x.\n",
-			read ? "read" : "write", command, addr);
+			str_read_write(read), command, addr);
 		break;
 
 	case I2C_SMBUS_I2C_BLOCK_DATA:
@@ -2088,7 +2068,7 @@ static s32 mlxbf_i2c_smbus_xfer(struct i2c_adapter *adap, u16 addr,
 		mlxbf_i2c_smbus_i2c_block_func(&request, &command, data->block,
 					       &byte_cnt, read, pec);
 		dev_dbg(&adap->dev, "i2c %s block data, %d bytes at 0x%02x, slave 0x%02x.\n",
-			read ? "read" : "write", byte_cnt, command, addr);
+			str_read_write(read), byte_cnt, command, addr);
 		break;
 
 	case I2C_SMBUS_BLOCK_DATA:
@@ -2096,7 +2076,7 @@ static s32 mlxbf_i2c_smbus_xfer(struct i2c_adapter *adap, u16 addr,
 		mlxbf_i2c_smbus_block_func(&request, &command, data->block,
 					   &byte_cnt, read, pec);
 		dev_dbg(&adap->dev, "smbus %s block data, %d bytes at 0x%02x, slave 0x%02x.\n",
-			read ? "read" : "write", byte_cnt, command, addr);
+			str_read_write(read), byte_cnt, command, addr);
 		break;
 
 	case I2C_FUNC_SMBUS_PROC_CALL:
@@ -2129,23 +2109,21 @@ static s32 mlxbf_i2c_smbus_xfer(struct i2c_adapter *adap, u16 addr,
 static int mlxbf_i2c_reg_slave(struct i2c_client *slave)
 {
 	struct mlxbf_i2c_priv *priv = i2c_get_adapdata(slave->adapter);
+	struct device *dev = &slave->dev;
 	int ret;
-
-	if (priv->slave)
-		return -EBUSY;
 
 	/*
 	 * Do not support ten bit chip address and do not use Packet Error
 	 * Checking (PEC).
 	 */
-	if (slave->flags & (I2C_CLIENT_TEN | I2C_CLIENT_PEC))
+	if (slave->flags & (I2C_CLIENT_TEN | I2C_CLIENT_PEC)) {
+		dev_err(dev, "SMBus PEC and 10 bit address not supported\n");
 		return -EAFNOSUPPORT;
+	}
 
-	ret = mlxbf_slave_enable(priv, slave->addr);
-	if (ret < 0)
-		return ret;
-
-	priv->slave = slave;
+	ret = mlxbf_i2c_slave_enable(priv, slave);
+	if (ret)
+		dev_err(dev, "Surpassed max number of registered slaves allowed\n");
 
 	return 0;
 }
@@ -2153,18 +2131,19 @@ static int mlxbf_i2c_reg_slave(struct i2c_client *slave)
 static int mlxbf_i2c_unreg_slave(struct i2c_client *slave)
 {
 	struct mlxbf_i2c_priv *priv = i2c_get_adapdata(slave->adapter);
+	struct device *dev = &slave->dev;
 	int ret;
 
-	WARN_ON(!priv->slave);
+	/*
+	 * Unregister slave by:
+	 * 1) Disabling the slave address in hardware
+	 * 2) Freeing priv->slave at the corresponding index
+	 */
+	ret = mlxbf_i2c_slave_disable(priv, slave->addr);
+	if (ret)
+		dev_err(dev, "Unable to find slave 0x%x\n", slave->addr);
 
-	/* Unregister slave, i.e. disable the slave address in hardware. */
-	ret = mlxbf_slave_disable(priv);
-	if (ret < 0)
-		return ret;
-
-	priv->slave = NULL;
-
-	return 0;
+	return ret;
 }
 
 static u32 mlxbf_i2c_functionality(struct i2c_adapter *adap)
@@ -2180,14 +2159,27 @@ static struct mlxbf_i2c_chip_info mlxbf_i2c_chip[] = {
 			[1] = &mlxbf_i2c_corepll_res[MLXBF_I2C_CHIP_TYPE_1],
 			[2] = &mlxbf_i2c_gpio_res[MLXBF_I2C_CHIP_TYPE_1]
 		},
-		.calculate_freq = mlxbf_calculate_freq_from_tyu
+		.calculate_freq = mlxbf_i2c_calculate_freq_from_tyu,
+		.smbus_master_rs_bytes_off = MLXBF_I2C_YU_SMBUS_RS_BYTES,
+		.smbus_master_fsm_off = MLXBF_I2C_YU_SMBUS_MASTER_FSM
 	},
 	[MLXBF_I2C_CHIP_TYPE_2] = {
 		.type = MLXBF_I2C_CHIP_TYPE_2,
 		.shared_res = {
 			[0] = &mlxbf_i2c_corepll_res[MLXBF_I2C_CHIP_TYPE_2]
 		},
-		.calculate_freq = mlxbf_calculate_freq_from_yu
+		.calculate_freq = mlxbf_i2c_calculate_freq_from_yu,
+		.smbus_master_rs_bytes_off = MLXBF_I2C_YU_SMBUS_RS_BYTES,
+		.smbus_master_fsm_off = MLXBF_I2C_YU_SMBUS_MASTER_FSM
+	},
+	[MLXBF_I2C_CHIP_TYPE_3] = {
+		.type = MLXBF_I2C_CHIP_TYPE_3,
+		.shared_res = {
+			[0] = &mlxbf_i2c_corepll_res[MLXBF_I2C_CHIP_TYPE_3]
+		},
+		.calculate_freq = mlxbf_i2c_calculate_freq_from_yu,
+		.smbus_master_rs_bytes_off = MLXBF_I2C_RSH_YU_SMBUS_RS_BYTES,
+		.smbus_master_fsm_off = MLXBF_I2C_RSH_YU_SMBUS_MASTER_FSM
 	}
 };
 
@@ -2203,24 +2195,10 @@ static struct i2c_adapter_quirks mlxbf_i2c_quirks = {
 	.max_write_len = MLXBF_I2C_MASTER_DATA_W_LENGTH,
 };
 
-static const struct of_device_id mlxbf_i2c_dt_ids[] = {
-	{
-		.compatible = "mellanox,i2c-mlxbf1",
-		.data = &mlxbf_i2c_chip[MLXBF_I2C_CHIP_TYPE_1]
-	},
-	{
-		.compatible = "mellanox,i2c-mlxbf2",
-		.data = &mlxbf_i2c_chip[MLXBF_I2C_CHIP_TYPE_2]
-	},
-	{},
-};
-
-MODULE_DEVICE_TABLE(of, mlxbf_i2c_dt_ids);
-
-#ifdef CONFIG_ACPI
 static const struct acpi_device_id mlxbf_i2c_acpi_ids[] = {
 	{ "MLNXBF03", (kernel_ulong_t)&mlxbf_i2c_chip[MLXBF_I2C_CHIP_TYPE_1] },
 	{ "MLNXBF23", (kernel_ulong_t)&mlxbf_i2c_chip[MLXBF_I2C_CHIP_TYPE_2] },
+	{ "MLNXBF31", (kernel_ulong_t)&mlxbf_i2c_chip[MLXBF_I2C_CHIP_TYPE_3] },
 	{},
 };
 
@@ -2229,17 +2207,11 @@ MODULE_DEVICE_TABLE(acpi, mlxbf_i2c_acpi_ids);
 static int mlxbf_i2c_acpi_probe(struct device *dev, struct mlxbf_i2c_priv *priv)
 {
 	const struct acpi_device_id *aid;
-	struct acpi_device *adev;
-	unsigned long bus_id = 0;
-	const char *uid;
+	u64 bus_id;
 	int ret;
 
 	if (acpi_disabled)
 		return -ENOENT;
-
-	adev = ACPI_COMPANION(dev);
-	if (!adev)
-		return -ENXIO;
 
 	aid = acpi_match_device(mlxbf_i2c_acpi_ids, dev);
 	if (!aid)
@@ -2247,46 +2219,13 @@ static int mlxbf_i2c_acpi_probe(struct device *dev, struct mlxbf_i2c_priv *priv)
 
 	priv->chip = (struct mlxbf_i2c_chip_info *)aid->driver_data;
 
-	uid = acpi_device_uid(adev);
-	if (!uid || !(*uid)) {
+	ret = acpi_dev_uid_to_integer(ACPI_COMPANION(dev), &bus_id);
+	if (ret) {
 		dev_err(dev, "Cannot retrieve UID\n");
-		return -ENODEV;
+		return ret;
 	}
 
-	ret = kstrtoul(uid, 0, &bus_id);
-	if (!ret)
-		priv->bus = bus_id;
-
-	return ret;
-}
-#else
-static int mlxbf_i2c_acpi_probe(struct device *dev, struct mlxbf_i2c_priv *priv)
-{
-	return -ENOENT;
-}
-#endif /* CONFIG_ACPI */
-
-static int mlxbf_i2c_of_probe(struct device *dev, struct mlxbf_i2c_priv *priv)
-{
-	const struct of_device_id *oid;
-	int bus_id = -1;
-
-	if (IS_ENABLED(CONFIG_OF) && dev->of_node) {
-		oid = of_match_node(mlxbf_i2c_dt_ids, dev->of_node);
-		if (!oid)
-			return -ENODEV;
-
-		priv->chip = oid->data;
-
-		bus_id = of_alias_get_id(dev->of_node, "i2c");
-		if (bus_id >= 0)
-			priv->bus = bus_id;
-	}
-
-	if (bus_id < 0) {
-		dev_err(dev, "Cannot get bus id");
-		return bus_id;
-	}
+	priv->bus = bus_id;
 
 	return 0;
 }
@@ -2296,6 +2235,7 @@ static int mlxbf_i2c_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct mlxbf_i2c_priv *priv;
 	struct i2c_adapter *adap;
+	u32 resource_version;
 	int irq, ret;
 
 	priv = devm_kzalloc(dev, sizeof(struct mlxbf_i2c_priv), GFP_KERNEL);
@@ -2303,32 +2243,66 @@ static int mlxbf_i2c_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	ret = mlxbf_i2c_acpi_probe(dev, priv);
-	if (ret < 0 && ret != -ENOENT && ret != -ENXIO)
-		ret = mlxbf_i2c_of_probe(dev, priv);
-
 	if (ret < 0)
 		return ret;
 
-	ret = mlxbf_i2c_init_resource(pdev, &priv->smbus,
-				      MLXBF_I2C_SMBUS_RES);
-	if (ret < 0) {
-		dev_err(dev, "Cannot fetch smbus resource info");
-		return ret;
+	/* This property allows the driver to stay backward compatible with older
+	 * ACPI tables.
+	 * Starting BlueField-3 SoC, the "smbus" resource was broken down into 3
+	 * separate resources "timer", "master" and "slave".
+	 */
+	if (device_property_read_u32(dev, "resource_version", &resource_version))
+		resource_version = 0;
+
+	priv->resource_version = resource_version;
+
+	if (priv->chip->type < MLXBF_I2C_CHIP_TYPE_3 && resource_version == 0) {
+		priv->timer = devm_kzalloc(dev, sizeof(struct mlxbf_i2c_resource), GFP_KERNEL);
+		if (!priv->timer)
+			return -ENOMEM;
+
+		priv->mst = devm_kzalloc(dev, sizeof(struct mlxbf_i2c_resource), GFP_KERNEL);
+		if (!priv->mst)
+			return -ENOMEM;
+
+		priv->slv = devm_kzalloc(dev, sizeof(struct mlxbf_i2c_resource), GFP_KERNEL);
+		if (!priv->slv)
+			return -ENOMEM;
+
+		ret = mlxbf_i2c_init_resource(pdev, &priv->smbus,
+					      MLXBF_I2C_SMBUS_RES);
+		if (ret < 0)
+			return dev_err_probe(dev, ret, "Cannot fetch smbus resource info");
+
+		priv->timer->io = priv->smbus->io;
+		priv->mst->io = priv->smbus->io + MLXBF_I2C_MST_ADDR_OFFSET;
+		priv->slv->io = priv->smbus->io + MLXBF_I2C_SLV_ADDR_OFFSET;
+	} else {
+		ret = mlxbf_i2c_init_resource(pdev, &priv->timer,
+					      MLXBF_I2C_SMBUS_TIMER_RES);
+		if (ret < 0)
+			return dev_err_probe(dev, ret, "Cannot fetch timer resource info");
+
+		ret = mlxbf_i2c_init_resource(pdev, &priv->mst,
+					      MLXBF_I2C_SMBUS_MST_RES);
+		if (ret < 0)
+			return dev_err_probe(dev, ret, "Cannot fetch master resource info");
+
+		ret = mlxbf_i2c_init_resource(pdev, &priv->slv,
+					      MLXBF_I2C_SMBUS_SLV_RES);
+		if (ret < 0)
+			return dev_err_probe(dev, ret, "Cannot fetch slave resource info");
 	}
 
 	ret = mlxbf_i2c_init_resource(pdev, &priv->mst_cause,
 				      MLXBF_I2C_MST_CAUSE_RES);
-	if (ret < 0) {
-		dev_err(dev, "Cannot fetch cause master resource info");
-		return ret;
-	}
+	if (ret < 0)
+		return dev_err_probe(dev, ret, "Cannot fetch cause master resource info");
 
 	ret = mlxbf_i2c_init_resource(pdev, &priv->slv_cause,
 				      MLXBF_I2C_SLV_CAUSE_RES);
-	if (ret < 0) {
-		dev_err(dev, "Cannot fetch cause slave resource info");
-		return ret;
-	}
+	if (ret < 0)
+		return dev_err_probe(dev, ret, "Cannot fetch cause slave resource info");
 
 	adap = &priv->adap;
 	adap->owner = THIS_MODULE;
@@ -2359,11 +2333,9 @@ static int mlxbf_i2c_probe(struct platform_device *pdev)
 	 * does not really hurt, then keep the code as is.
 	 */
 	ret = mlxbf_i2c_init_master(pdev, priv);
-	if (ret < 0) {
-		dev_err(dev, "failed to initialize smbus master %d",
-			priv->bus);
-		return ret;
-	}
+	if (ret < 0)
+		return dev_err_probe(dev, ret, "failed to initialize smbus master %d",
+				     priv->bus);
 
 	mlxbf_i2c_init_timings(pdev, priv);
 
@@ -2372,13 +2344,11 @@ static int mlxbf_i2c_probe(struct platform_device *pdev)
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
 		return irq;
-	ret = devm_request_irq(dev, irq, mlxbf_smbus_irq,
-			       IRQF_ONESHOT | IRQF_SHARED | IRQF_PROBE_SHARED,
+	ret = devm_request_irq(dev, irq, mlxbf_i2c_irq,
+			       IRQF_SHARED | IRQF_PROBE_SHARED,
 			       dev_name(dev), priv);
-	if (ret < 0) {
-		dev_err(dev, "Cannot get irq %d\n", irq);
-		return ret;
-	}
+	if (ret < 0)
+		return dev_err_probe(dev, ret, "Cannot get irq %d\n", irq);
 
 	priv->irq = irq;
 
@@ -2395,14 +2365,25 @@ static int mlxbf_i2c_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int mlxbf_i2c_remove(struct platform_device *pdev)
+static void mlxbf_i2c_remove(struct platform_device *pdev)
 {
 	struct mlxbf_i2c_priv *priv = platform_get_drvdata(pdev);
 	struct device *dev = &pdev->dev;
 	struct resource *params;
 
-	params = priv->smbus->params;
-	devm_release_mem_region(dev, params->start, resource_size(params));
+	if (priv->chip->type < MLXBF_I2C_CHIP_TYPE_3 && priv->resource_version == 0) {
+		params = priv->smbus->params;
+		devm_release_mem_region(dev, params->start, resource_size(params));
+	} else {
+		params = priv->timer->params;
+		devm_release_mem_region(dev, params->start, resource_size(params));
+
+		params = priv->mst->params;
+		devm_release_mem_region(dev, params->start, resource_size(params));
+
+		params = priv->slv->params;
+		devm_release_mem_region(dev, params->start, resource_size(params));
+	}
 
 	params = priv->mst_cause->params;
 	devm_release_mem_region(dev, params->start, resource_size(params));
@@ -2425,8 +2406,6 @@ static int mlxbf_i2c_remove(struct platform_device *pdev)
 	devm_free_irq(dev, priv->irq, priv);
 
 	i2c_del_adapter(&priv->adap);
-
-	return 0;
 }
 
 static struct platform_driver mlxbf_i2c_driver = {
@@ -2434,10 +2413,7 @@ static struct platform_driver mlxbf_i2c_driver = {
 	.remove = mlxbf_i2c_remove,
 	.driver = {
 		.name = "i2c-mlxbf",
-		.of_match_table = mlxbf_i2c_dt_ids,
-#ifdef CONFIG_ACPI
 		.acpi_match_table = ACPI_PTR(mlxbf_i2c_acpi_ids),
-#endif /* CONFIG_ACPI  */
 	},
 };
 
@@ -2467,4 +2443,5 @@ module_exit(mlxbf_i2c_exit);
 
 MODULE_DESCRIPTION("Mellanox BlueField I2C bus driver");
 MODULE_AUTHOR("Khalil Blaiech <kblaiech@nvidia.com>");
+MODULE_AUTHOR("Asmaa Mnebhi <asmaa@nvidia.com>");
 MODULE_LICENSE("GPL v2");

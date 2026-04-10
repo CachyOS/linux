@@ -65,12 +65,10 @@ static int vsp1_wpf_set_rotation(struct vsp1_rwpf *wpf, unsigned int rotation)
 		goto done;
 	}
 
-	sink_format = vsp1_entity_get_pad_format(&wpf->entity,
-						 wpf->entity.config,
-						 RWPF_PAD_SINK);
-	source_format = vsp1_entity_get_pad_format(&wpf->entity,
-						   wpf->entity.config,
-						   RWPF_PAD_SOURCE);
+	sink_format = v4l2_subdev_state_get_format(wpf->entity.state,
+						   RWPF_PAD_SINK);
+	source_format = v4l2_subdev_state_get_format(wpf->entity.state,
+						     RWPF_PAD_SOURCE);
 
 	mutex_lock(&wpf->entity.lock);
 
@@ -135,6 +133,7 @@ static int wpf_init_controls(struct vsp1_rwpf *wpf)
 {
 	struct vsp1_device *vsp1 = wpf->entity.vsp1;
 	unsigned int num_flip_ctrls;
+	int ret;
 
 	spin_lock_init(&wpf->flip.lock);
 
@@ -158,7 +157,9 @@ static int wpf_init_controls(struct vsp1_rwpf *wpf)
 		num_flip_ctrls = 0;
 	}
 
-	vsp1_rwpf_init_ctrls(wpf, num_flip_ctrls);
+	ret = vsp1_rwpf_init_ctrls(wpf, num_flip_ctrls);
+	if (ret < 0)
+		return ret;
 
 	if (num_flip_ctrls >= 1) {
 		wpf->flip.ctrls.vflip =
@@ -176,26 +177,19 @@ static int wpf_init_controls(struct vsp1_rwpf *wpf)
 		v4l2_ctrl_cluster(3, &wpf->flip.ctrls.vflip);
 	}
 
-	if (wpf->ctrls.error) {
-		dev_err(vsp1->dev, "wpf%u: failed to initialize controls\n",
-			wpf->entity.index);
+	if (wpf->ctrls.error)
 		return wpf->ctrls.error;
-	}
 
 	return 0;
 }
 
 /* -----------------------------------------------------------------------------
- * V4L2 Subdevice Core Operations
+ * VSP1 Entity Operations
  */
 
-static int wpf_s_stream(struct v4l2_subdev *subdev, int enable)
+void vsp1_wpf_stop(struct vsp1_rwpf *wpf)
 {
-	struct vsp1_rwpf *wpf = to_rwpf(subdev);
 	struct vsp1_device *vsp1 = wpf->entity.vsp1;
-
-	if (enable)
-		return 0;
 
 	/*
 	 * Write to registers directly when stopping the stream as there will be
@@ -204,26 +198,7 @@ static int wpf_s_stream(struct v4l2_subdev *subdev, int enable)
 	vsp1_write(vsp1, VI6_WPF_IRQ_ENB(wpf->entity.index), 0);
 	vsp1_write(vsp1, wpf->entity.index * VI6_WPF_OFFSET +
 		   VI6_WPF_SRCRPF, 0);
-
-	return 0;
 }
-
-/* -----------------------------------------------------------------------------
- * V4L2 Subdevice Operations
- */
-
-static const struct v4l2_subdev_video_ops wpf_video_ops = {
-	.s_stream = wpf_s_stream,
-};
-
-static const struct v4l2_subdev_ops wpf_ops = {
-	.video	= &wpf_video_ops,
-	.pad    = &vsp1_rwpf_pad_ops,
-};
-
-/* -----------------------------------------------------------------------------
- * VSP1 Entity Operations
- */
 
 static void vsp1_wpf_destroy(struct vsp1_entity *entity)
 {
@@ -254,6 +229,7 @@ static int wpf_configure_writeback_chain(struct vsp1_rwpf *wpf,
 }
 
 static void wpf_configure_stream(struct vsp1_entity *entity,
+				 struct v4l2_subdev_state *state,
 				 struct vsp1_pipeline *pipe,
 				 struct vsp1_dl_list *dl,
 				 struct vsp1_dl_body *dlb)
@@ -268,15 +244,14 @@ static void wpf_configure_stream(struct vsp1_entity *entity,
 	u32 srcrpf = 0;
 	int ret;
 
-	sink_format = vsp1_entity_get_pad_format(&wpf->entity,
-						 wpf->entity.config,
-						 RWPF_PAD_SINK);
-	source_format = vsp1_entity_get_pad_format(&wpf->entity,
-						   wpf->entity.config,
-						   RWPF_PAD_SOURCE);
+	sink_format = v4l2_subdev_state_get_format(state, RWPF_PAD_SINK);
+	source_format = v4l2_subdev_state_get_format(state, RWPF_PAD_SOURCE);
 
-	/* Format */
-	if (!pipe->lif || wpf->writeback) {
+	/*
+	 * Format configuration. Skip for IIF (VSPX) or if the pipe doesn't
+	 * write to memory.
+	 */
+	if (!pipe->iif && (!pipe->lif || wpf->writeback)) {
 		const struct v4l2_pix_format_mplane *format = &wpf->format;
 		const struct vsp1_format_info *fmtinfo = wpf->fmtinfo;
 
@@ -307,8 +282,33 @@ static void wpf_configure_stream(struct vsp1_entity *entity,
 				       (256 << VI6_WPF_ROT_CTRL_LMEM_WD_SHIFT));
 	}
 
-	if (sink_format->code != source_format->code)
-		outfmt |= VI6_WPF_OUTFMT_CSC;
+	if (sink_format->code != source_format->code) {
+		u16 ycbcr_enc;
+		u16 quantization;
+		u32 wrtm;
+
+		if (sink_format->code == MEDIA_BUS_FMT_AYUV8_1X32) {
+			ycbcr_enc = sink_format->ycbcr_enc;
+			quantization = sink_format->quantization;
+		} else {
+			ycbcr_enc = source_format->ycbcr_enc;
+			quantization = source_format->quantization;
+		}
+
+		if (ycbcr_enc == V4L2_YCBCR_ENC_601 &&
+		    quantization == V4L2_QUANTIZATION_LIM_RANGE)
+			wrtm = VI6_WPF_OUTFMT_WRTM_BT601;
+		else if (ycbcr_enc == V4L2_YCBCR_ENC_601 &&
+			 quantization == V4L2_QUANTIZATION_FULL_RANGE)
+			wrtm = VI6_WPF_OUTFMT_WRTM_BT601_EXT;
+		else if (ycbcr_enc == V4L2_YCBCR_ENC_709 &&
+			 quantization == V4L2_QUANTIZATION_LIM_RANGE)
+			wrtm = VI6_WPF_OUTFMT_WRTM_BT709;
+		else
+			wrtm = VI6_WPF_OUTFMT_WRTM_BT709_EXT;
+
+		outfmt |= VI6_WPF_OUTFMT_CSC | wrtm;
+	}
 
 	wpf->outfmt = outfmt;
 
@@ -319,7 +319,7 @@ static void wpf_configure_stream(struct vsp1_entity *entity,
 	 * Sources. If the pipeline has a single input and BRx is not used,
 	 * configure it as the master layer. Otherwise configure all
 	 * inputs as sub-layers and select the virtual RPF as the master
-	 * layer.
+	 * layer. For VSPX configure the enabled sources as masters.
 	 */
 	for (i = 0; i < vsp1->info->rpf_count; ++i) {
 		struct vsp1_rwpf *input = pipe->inputs[i];
@@ -327,7 +327,7 @@ static void wpf_configure_stream(struct vsp1_entity *entity,
 		if (!input)
 			continue;
 
-		srcrpf |= (!pipe->brx && pipe->num_inputs == 1)
+		srcrpf |= (pipe->iif || (!pipe->brx && pipe->num_inputs == 1))
 			? VI6_WPF_SRCRPF_RPF_ACT_MST(input->entity.index)
 			: VI6_WPF_SRCRPF_RPF_ACT_SUB(input->entity.index);
 	}
@@ -343,6 +343,9 @@ static void wpf_configure_stream(struct vsp1_entity *entity,
 	vsp1_dl_body_write(dlb, VI6_WPF_IRQ_STA(index), 0);
 	vsp1_dl_body_write(dlb, VI6_WPF_IRQ_ENB(index),
 			   VI6_WPF_IRQ_ENB_DFEE);
+
+	if (pipe->iif)
+		return;
 
 	/*
 	 * Configure writeback for display pipelines (the wpf writeback flag is
@@ -390,13 +393,13 @@ static void wpf_configure_frame(struct vsp1_entity *entity,
 
 static void wpf_configure_partition(struct vsp1_entity *entity,
 				    struct vsp1_pipeline *pipe,
+				    const struct vsp1_partition *partition,
 				    struct vsp1_dl_list *dl,
 				    struct vsp1_dl_body *dlb)
 {
 	struct vsp1_rwpf *wpf = to_rwpf(&entity->subdev);
 	struct vsp1_device *vsp1 = wpf->entity.vsp1;
 	struct vsp1_rwpf_memory mem = wpf->mem;
-	const struct v4l2_mbus_framefmt *sink_format;
 	const struct v4l2_pix_format_mplane *format = &wpf->format;
 	const struct vsp1_format_info *fmtinfo = wpf->fmtinfo;
 	unsigned int width;
@@ -406,21 +409,13 @@ static void wpf_configure_partition(struct vsp1_entity *entity,
 	unsigned int flip;
 	unsigned int i;
 
-	sink_format = vsp1_entity_get_pad_format(&wpf->entity,
-						 wpf->entity.config,
-						 RWPF_PAD_SINK);
-	width = sink_format->width;
-	height = sink_format->height;
-	left = 0;
-
 	/*
-	 * Cropping. The partition algorithm can split the image into
-	 * multiple slices.
+	 * Cropping. The partition algorithm can split the image into multiple
+	 * slices.
 	 */
-	if (pipe->partitions > 1) {
-		width = pipe->partition->wpf.width;
-		left = pipe->partition->wpf.left;
-	}
+	width = partition->wpf.width;
+	left = partition->wpf.left;
+	height = partition->wpf.height;
 
 	vsp1_wpf_write(wpf, dlb, VI6_WPF_HSZCLIP, VI6_WPF_SZCLIP_EN |
 		       (0 << VI6_WPF_SZCLIP_OFST_SHIFT) |
@@ -512,10 +507,10 @@ static void wpf_configure_partition(struct vsp1_entity *entity,
 	}
 
 	/*
-	 * On Gen3 hardware the SPUVS bit has no effect on 3-planar
+	 * On Gen3+ hardware the SPUVS bit has no effect on 3-planar
 	 * formats. Swap the U and V planes manually in that case.
 	 */
-	if (vsp1->info->gen == 3 && format->num_planes == 3 &&
+	if (vsp1->info->gen >= 3 && format->num_planes == 3 &&
 	    fmtinfo->swap_uv)
 		swap(mem.addr[1], mem.addr[2]);
 
@@ -531,6 +526,7 @@ static void wpf_configure_partition(struct vsp1_entity *entity,
 }
 
 static unsigned int wpf_max_width(struct vsp1_entity *entity,
+				  struct v4l2_subdev_state *state,
 				  struct vsp1_pipeline *pipe)
 {
 	struct vsp1_rwpf *wpf = to_rwpf(&entity->subdev);
@@ -539,10 +535,11 @@ static unsigned int wpf_max_width(struct vsp1_entity *entity,
 }
 
 static void wpf_partition(struct vsp1_entity *entity,
+			  struct v4l2_subdev_state *state,
 			  struct vsp1_pipeline *pipe,
 			  struct vsp1_partition *partition,
 			  unsigned int partition_idx,
-			  struct vsp1_partition_window *window)
+			  struct v4l2_rect *window)
 {
 	partition->wpf = *window;
 }
@@ -583,7 +580,7 @@ struct vsp1_rwpf *vsp1_wpf_create(struct vsp1_device *vsp1, unsigned int index)
 	wpf->entity.index = index;
 
 	sprintf(name, "wpf.%u", index);
-	ret = vsp1_entity_init(vsp1, &wpf->entity, name, 2, &wpf_ops,
+	ret = vsp1_entity_init(vsp1, &wpf->entity, name, 2, &vsp1_rwpf_subdev_ops,
 			       MEDIA_ENT_F_PROC_VIDEO_PIXEL_FORMATTER);
 	if (ret < 0)
 		return ERR_PTR(ret);

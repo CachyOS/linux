@@ -77,7 +77,7 @@ struct cfcnfg *cfcnfg_create(void)
 	might_sleep();
 
 	/* Initiate this layer */
-	this = kzalloc(sizeof(struct cfcnfg), GFP_ATOMIC);
+	this = kzalloc_obj(struct cfcnfg, GFP_ATOMIC);
 	if (!this)
 		return NULL;
 	this->mux = cfmuxl_create();
@@ -268,14 +268,14 @@ static int caif_connect_req_to_link_param(struct cfcnfg *cnfg,
 	case CAIFPROTO_RFM:
 		l->linktype = CFCTRL_SRV_RFM;
 		l->u.datagram.connid = s->sockaddr.u.rfm.connection_id;
-		strlcpy(l->u.rfm.volume, s->sockaddr.u.rfm.volume,
+		strscpy(l->u.rfm.volume, s->sockaddr.u.rfm.volume,
 			sizeof(l->u.rfm.volume));
 		break;
 	case CAIFPROTO_UTIL:
 		l->linktype = CFCTRL_SRV_UTIL;
 		l->endpoint = 0x00;
 		l->chtype = 0x00;
-		strlcpy(l->u.utility.name, s->sockaddr.u.util.service,
+		strscpy(l->u.utility.name, s->sockaddr.u.util.service,
 			sizeof(l->u.utility.name));
 		caif_assert(sizeof(l->u.utility.name) > 10);
 		l->u.utility.paramlen = s->param.size;
@@ -477,7 +477,7 @@ cfcnfg_add_phy_layer(struct cfcnfg *cnfg,
 	goto out;
 
 got_phyid:
-	phyinfo = kzalloc(sizeof(struct cfcnfg_phyinfo), GFP_ATOMIC);
+	phyinfo = kzalloc_obj(struct cfcnfg_phyinfo, GFP_ATOMIC);
 	if (!phyinfo) {
 		res = -ENOMEM;
 		goto out;

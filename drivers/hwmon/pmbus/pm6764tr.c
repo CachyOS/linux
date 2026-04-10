@@ -48,7 +48,7 @@ static int pm6764tr_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id pm6764tr_id[] = {
-	{"pm6764tr", 0},
+	{"pm6764tr"},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, pm6764tr_id);
@@ -64,7 +64,7 @@ static struct i2c_driver pm6764tr_driver = {
 		   .name = "pm6764tr",
 		   .of_match_table = of_match_ptr(pm6764tr_of_match),
 		   },
-	.probe_new = pm6764tr_probe,
+	.probe = pm6764tr_probe,
 	.id_table = pm6764tr_id,
 };
 
@@ -73,4 +73,4 @@ module_i2c_driver(pm6764tr_driver);
 MODULE_AUTHOR("Charles Hsu");
 MODULE_DESCRIPTION("PMBus driver for  ST PM6764TR");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(PMBUS);
+MODULE_IMPORT_NS("PMBUS");

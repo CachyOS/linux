@@ -103,8 +103,7 @@ static void esas2r_initmem_free(struct esas2r_adapter *a,
 static bool alloc_vda_req(struct esas2r_adapter *a,
 			  struct esas2r_request *rq)
 {
-	struct esas2r_mem_desc *memdesc = kzalloc(
-		sizeof(struct esas2r_mem_desc), GFP_KERNEL);
+	struct esas2r_mem_desc *memdesc = kzalloc_obj(struct esas2r_mem_desc);
 
 	if (memdesc == NULL) {
 		esas2r_hdebug("could not alloc mem for vda request memdesc\n");
@@ -311,9 +310,8 @@ int esas2r_init_adapter(struct Scsi_Host *host, struct pci_dev *pcid,
 	sema_init(&a->nvram_semaphore, 1);
 
 	esas2r_fw_event_off(a);
-	snprintf(a->fw_event_q_name, ESAS2R_KOBJ_NAME_LEN, "esas2r/%d",
-		 a->index);
-	a->fw_event_q = create_singlethread_workqueue(a->fw_event_q_name);
+	a->fw_event_q =
+		alloc_ordered_workqueue("esas2r/%d", WQ_MEM_RECLAIM, a->index);
 
 	init_waitqueue_head(&a->buffered_ioctl_waiter);
 	init_waitqueue_head(&a->nvram_waiter);
@@ -440,7 +438,7 @@ static void esas2r_adapter_power_down(struct esas2r_adapter *a,
 	if ((test_bit(AF2_INIT_DONE, &a->flags2))
 	    &&  (!test_bit(AF_DEGRADED_MODE, &a->flags))) {
 		if (!power_management) {
-			del_timer_sync(&a->timer);
+			timer_delete_sync(&a->timer);
 			tasklet_kill(&a->tasklet);
 		}
 		esas2r_power_down(a);
@@ -784,8 +782,7 @@ bool esas2r_init_adapter_struct(struct esas2r_adapter *a,
 
 	/* allocate requests for asynchronous events */
 	a->first_ae_req =
-		kcalloc(num_ae_requests, sizeof(struct esas2r_request),
-			GFP_KERNEL);
+		kzalloc_objs(struct esas2r_request, num_ae_requests);
 
 	if (a->first_ae_req == NULL) {
 		esas2r_log(ESAS2R_LOG_CRIT,
@@ -794,8 +791,7 @@ bool esas2r_init_adapter_struct(struct esas2r_adapter *a,
 	}
 
 	/* allocate the S/G list memory descriptors */
-	a->sg_list_mds = kcalloc(num_sg_lists, sizeof(struct esas2r_mem_desc),
-				 GFP_KERNEL);
+	a->sg_list_mds = kzalloc_objs(struct esas2r_mem_desc, num_sg_lists);
 
 	if (a->sg_list_mds == NULL) {
 		esas2r_log(ESAS2R_LOG_CRIT,
@@ -805,9 +801,8 @@ bool esas2r_init_adapter_struct(struct esas2r_adapter *a,
 
 	/* allocate the request table */
 	a->req_table =
-		kcalloc(num_requests + num_ae_requests + 1,
-			sizeof(struct esas2r_request *),
-			GFP_KERNEL);
+		kzalloc_objs(struct esas2r_request *,
+			     num_requests + num_ae_requests + 1);
 
 	if (a->req_table == NULL) {
 		esas2r_log(ESAS2R_LOG_CRIT,

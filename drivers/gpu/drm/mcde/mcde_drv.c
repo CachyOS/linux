@@ -37,7 +37,7 @@
  * (effectively using channels 0..3) for concurrent use.
  *
  * In the current DRM/KMS setup, we use one external source, one overlay,
- * one FIFO and one formatter which we connect to the simple CMA framebuffer
+ * one FIFO and one formatter which we connect to the simple DMA framebuffer
  * helpers. We then provide a bridge to the DSI port, and on the DSI port
  * bridge we connect hang a panel bridge or other bridge. This may be subject
  * to change as we exploit more of the hardware capabilities.
@@ -65,13 +65,14 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fb_cma_helper.h>
-#include <drm/drm_fb_helper.h>
+#include <drm/drm_fb_dma_helper.h>
+#include <drm/drm_fbdev_dma.h>
 #include <drm/drm_gem.h>
-#include <drm/drm_gem_cma_helper.h>
+#include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_of.h>
@@ -94,7 +95,7 @@
 #define MCDE_PID_MAJOR_VERSION_MASK 0xFF000000
 
 static const struct drm_mode_config_funcs mcde_mode_config_funcs = {
-	.fb_create = drm_gem_fb_create_with_dirty,
+	.fb_create = drm_gem_fb_create,
 	.atomic_check = drm_atomic_helper_check,
 	.atomic_commit = drm_atomic_helper_commit,
 };
@@ -198,21 +199,20 @@ static int mcde_modeset_init(struct drm_device *drm)
 	return 0;
 }
 
-DEFINE_DRM_GEM_CMA_FOPS(drm_fops);
+DEFINE_DRM_GEM_DMA_FOPS(drm_fops);
 
 static const struct drm_driver mcde_drm_driver = {
 	.driver_features =
 		DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
-	.lastclose = drm_fb_helper_lastclose,
 	.ioctls = NULL,
 	.fops = &drm_fops,
 	.name = "mcde",
 	.desc = DRIVER_DESC,
-	.date = "20180529",
 	.major = 1,
 	.minor = 0,
 	.patchlevel = 0,
-	DRM_GEM_CMA_DRIVER_OPS,
+	DRM_GEM_DMA_DRIVER_OPS,
+	DRM_FBDEV_DMA_DRIVER_OPS,
 };
 
 static int mcde_drm_bind(struct device *dev)
@@ -238,7 +238,7 @@ static int mcde_drm_bind(struct device *dev)
 	if (ret < 0)
 		goto unbind;
 
-	drm_fbdev_generic_setup(drm, 32);
+	drm_client_setup(drm, NULL);
 
 	return 0;
 
@@ -449,7 +449,7 @@ regulator_epod_off:
 
 }
 
-static int mcde_remove(struct platform_device *pdev)
+static void mcde_remove(struct platform_device *pdev)
 {
 	struct drm_device *drm = platform_get_drvdata(pdev);
 	struct mcde *mcde = to_mcde(drm);
@@ -458,8 +458,14 @@ static int mcde_remove(struct platform_device *pdev)
 	clk_disable_unprepare(mcde->mcde_clk);
 	regulator_disable(mcde->vana);
 	regulator_disable(mcde->epod);
+}
 
-	return 0;
+static void mcde_shutdown(struct platform_device *pdev)
+{
+	struct drm_device *drm = platform_get_drvdata(pdev);
+
+	if (drm->registered)
+		drm_atomic_helper_shutdown(drm);
 }
 
 static const struct of_device_id mcde_of_match[] = {
@@ -468,14 +474,16 @@ static const struct of_device_id mcde_of_match[] = {
 	},
 	{},
 };
+MODULE_DEVICE_TABLE(of, mcde_of_match);
 
 static struct platform_driver mcde_driver = {
 	.driver = {
 		.name           = "mcde",
-		.of_match_table = of_match_ptr(mcde_of_match),
+		.of_match_table = mcde_of_match,
 	},
 	.probe = mcde_probe,
 	.remove = mcde_remove,
+	.shutdown = mcde_shutdown,
 };
 
 static struct platform_driver *const component_drivers[] = {

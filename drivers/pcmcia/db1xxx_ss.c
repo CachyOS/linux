@@ -427,7 +427,7 @@ static int db1x_pcmcia_socket_probe(struct platform_device *pdev)
 	struct resource *r;
 	int ret, bid;
 
-	sock = kzalloc(sizeof(struct db1x_pcmcia_sock), GFP_KERNEL);
+	sock = kzalloc_obj(struct db1x_pcmcia_sock);
 	if (!sock)
 		return -ENOMEM;
 
@@ -577,7 +577,7 @@ out0:
 	return ret;
 }
 
-static int db1x_pcmcia_socket_remove(struct platform_device *pdev)
+static void db1x_pcmcia_socket_remove(struct platform_device *pdev)
 {
 	struct db1x_pcmcia_sock *sock = platform_get_drvdata(pdev);
 
@@ -585,8 +585,6 @@ static int db1x_pcmcia_socket_remove(struct platform_device *pdev)
 	pcmcia_unregister_socket(&sock->socket);
 	iounmap((void *)(sock->virt_io + (u32)mips_io_port_base));
 	kfree(sock);
-
-	return 0;
 }
 
 static struct platform_driver db1x_pcmcia_socket_driver = {

@@ -9,7 +9,7 @@
 #include <linux/vmalloc.h>
 
 #include <asm/page.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <uapi/linux/misc/bcm_vk.h>
 
@@ -60,9 +60,7 @@ static int bcm_vk_dma_alloc(struct device *dev,
 	dma->nr_pages = last - first + 1;
 
 	/* Allocate DMA pages */
-	dma->pages = kmalloc_array(dma->nr_pages,
-				   sizeof(struct page *),
-				   GFP_KERNEL);
+	dma->pages = kmalloc_objs(struct page *, dma->nr_pages);
 	if (!dma->pages)
 		return -ENOMEM;
 

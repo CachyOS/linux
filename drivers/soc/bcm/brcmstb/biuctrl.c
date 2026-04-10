@@ -288,14 +288,17 @@ static int __init setup_hifcpubiuctrl_regs(struct device_node *np)
 	if (BRCM_ID(family_id) == 0x7260 && BRCM_REV(family_id) == 0)
 		cpubiuctrl_regs = b53_cpubiuctrl_no_wb_regs;
 out:
-	of_node_put(np);
+	if (ret && cpubiuctrl_base) {
+		iounmap(cpubiuctrl_base);
+		cpubiuctrl_base = NULL;
+	}
 	return ret;
 }
 
 #ifdef CONFIG_PM_SLEEP
 static u32 cpubiuctrl_reg_save[NUM_CPU_BIUCTRL_REGS];
 
-static int brcmstb_cpu_credit_reg_suspend(void)
+static int brcmstb_cpu_credit_reg_suspend(void *data)
 {
 	unsigned int i;
 
@@ -308,7 +311,7 @@ static int brcmstb_cpu_credit_reg_suspend(void)
 	return 0;
 }
 
-static void brcmstb_cpu_credit_reg_resume(void)
+static void brcmstb_cpu_credit_reg_resume(void *data)
 {
 	unsigned int i;
 
@@ -319,9 +322,13 @@ static void brcmstb_cpu_credit_reg_resume(void)
 		cbc_writel(cpubiuctrl_reg_save[i], i);
 }
 
-static struct syscore_ops brcmstb_cpu_credit_syscore_ops = {
+static const struct syscore_ops brcmstb_cpu_credit_syscore_ops = {
 	.suspend = brcmstb_cpu_credit_reg_suspend,
 	.resume = brcmstb_cpu_credit_reg_resume,
+};
+
+static struct syscore brcmstb_cpu_credit_syscore = {
+	.ops = &brcmstb_cpu_credit_syscore_ops,
 };
 #endif
 
@@ -340,19 +347,22 @@ static int __init brcmstb_biuctrl_init(void)
 
 	ret = setup_hifcpubiuctrl_regs(np);
 	if (ret)
-		return ret;
+		goto out_put;
 
 	ret = mcp_write_pairing_set();
 	if (ret) {
 		pr_err("MCP: Unable to disable write pairing!\n");
-		return ret;
+		goto out_put;
 	}
 
 	a72_b53_rac_enable_all(np);
 	mcp_a72_b53_set();
 #ifdef CONFIG_PM_SLEEP
-	register_syscore_ops(&brcmstb_cpu_credit_syscore_ops);
+	register_syscore(&brcmstb_cpu_credit_syscore);
 #endif
-	return 0;
+	ret = 0;
+out_put:
+	of_node_put(np);
+	return ret;
 }
 early_initcall(brcmstb_biuctrl_init);

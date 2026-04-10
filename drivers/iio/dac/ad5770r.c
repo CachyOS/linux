@@ -17,6 +17,7 @@
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
+#include <linux/unaligned.h>
 
 #define ADI_SPI_IF_CONFIG_A		0x00
 #define ADI_SPI_IF_CONFIG_B		0x01
@@ -121,7 +122,6 @@ struct ad5770r_out_range {
  * struct ad5770r_state - driver instance specific data
  * @spi:		spi_device
  * @regmap:		regmap
- * @vref_reg:		fixed regulator for reference configuration
  * @gpio_reset:		gpio descriptor
  * @output_mode:	array contains channels output ranges
  * @vref:		reference value
@@ -133,14 +133,13 @@ struct ad5770r_out_range {
 struct ad5770r_state {
 	struct spi_device		*spi;
 	struct regmap			*regmap;
-	struct regulator		*vref_reg;
 	struct gpio_desc		*gpio_reset;
 	struct ad5770r_out_range	output_mode[AD5770R_MAX_CHANNELS];
 	int				vref;
 	bool				ch_pwr_down[AD5770R_MAX_CHANNELS];
 	bool				internal_ref;
 	bool				external_res;
-	u8				transf_buf[2] ____cacheline_aligned;
+	u8				transf_buf[2] __aligned(IIO_DMA_MINALIGN);
 };
 
 static const struct regmap_config ad5770r_spi_regmap_config = {
@@ -156,7 +155,7 @@ struct ad5770r_output_modes {
 	int max;
 };
 
-static struct ad5770r_output_modes ad5770r_rng_tbl[] = {
+static const struct ad5770r_output_modes ad5770r_rng_tbl[] = {
 	{ 0, AD5770R_CH0_0_300, 0, 300 },
 	{ 0, AD5770R_CH0_NEG_60_0, -60, 0 },
 	{ 0, AD5770R_CH0_NEG_60_300, -60, 300 },
@@ -323,9 +322,9 @@ static int ad5770r_read_raw(struct iio_dev *indio_dev,
 				       chan->address,
 				       st->transf_buf, 2);
 		if (ret)
-			return 0;
+			return ret;
 
-		buf16 = st->transf_buf[0] + (st->transf_buf[1] << 8);
+		buf16 = get_unaligned_le16(st->transf_buf);
 		*val = buf16 >> 2;
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SCALE:
@@ -515,39 +514,32 @@ static int ad5770r_channel_config(struct ad5770r_state *st)
 {
 	int ret, tmp[2], min, max;
 	unsigned int num;
-	struct fwnode_handle *child;
 
 	num = device_get_child_node_count(&st->spi->dev);
 	if (num != AD5770R_MAX_CHANNELS)
 		return -EINVAL;
 
-	device_for_each_child_node(&st->spi->dev, child) {
+	device_for_each_child_node_scoped(&st->spi->dev, child) {
 		ret = fwnode_property_read_u32(child, "reg", &num);
 		if (ret)
-			goto err_child_out;
-		if (num >= AD5770R_MAX_CHANNELS) {
-			ret = -EINVAL;
-			goto err_child_out;
-		}
+			return ret;
+		if (num >= AD5770R_MAX_CHANNELS)
+			return -EINVAL;
 
 		ret = fwnode_property_read_u32_array(child,
 						     "adi,range-microamp",
 						     tmp, 2);
 		if (ret)
-			goto err_child_out;
+			return ret;
 
 		min = tmp[0] / 1000;
 		max = tmp[1] / 1000;
 		ret = ad5770r_store_output_range(st, min, max, num);
 		if (ret)
-			goto err_child_out;
+			return ret;
 	}
 
 	return 0;
-
-err_child_out:
-	fwnode_handle_put(child);
-	return ret;
 }
 
 static int ad5770r_init(struct ad5770r_state *st)
@@ -597,13 +589,6 @@ static int ad5770r_init(struct ad5770r_state *st)
 	return ret;
 }
 
-static void ad5770r_disable_regulator(void *data)
-{
-	struct ad5770r_state *st = data;
-
-	regulator_disable(st->vref_reg);
-}
-
 static int ad5770r_probe(struct spi_device *spi)
 {
 	struct ad5770r_state *st;
@@ -628,34 +613,12 @@ static int ad5770r_probe(struct spi_device *spi)
 	}
 	st->regmap = regmap;
 
-	st->vref_reg = devm_regulator_get_optional(&spi->dev, "vref");
-	if (!IS_ERR(st->vref_reg)) {
-		ret = regulator_enable(st->vref_reg);
-		if (ret) {
-			dev_err(&spi->dev,
-				"Failed to enable vref regulators: %d\n", ret);
-			return ret;
-		}
+	ret = devm_regulator_get_enable_read_voltage(&spi->dev, "vref");
+	if (ret < 0 && ret != -ENODEV)
+		return dev_err_probe(&spi->dev, ret, "Failed to get vref voltage\n");
 
-		ret = devm_add_action_or_reset(&spi->dev,
-					       ad5770r_disable_regulator,
-					       st);
-		if (ret < 0)
-			return ret;
-
-		ret = regulator_get_voltage(st->vref_reg);
-		if (ret < 0)
-			return ret;
-
-		st->vref = ret / 1000;
-	} else {
-		if (PTR_ERR(st->vref_reg) == -ENODEV) {
-			st->vref = AD5770R_LOW_VREF_mV;
-			st->internal_ref = true;
-		} else {
-			return PTR_ERR(st->vref_reg);
-		}
-	}
+	st->internal_ref = ret == -ENODEV;
+	st->vref = st->internal_ref ? AD5770R_LOW_VREF_mV : ret / 1000;
 
 	indio_dev->name = spi_get_device_id(spi)->name;
 	indio_dev->info = &ad5770r_info;
@@ -674,13 +637,13 @@ static int ad5770r_probe(struct spi_device *spi)
 
 static const struct of_device_id ad5770r_of_id[] = {
 	{ .compatible = "adi,ad5770r", },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ad5770r_of_id);
 
 static const struct spi_device_id ad5770r_id[] = {
 	{ "ad5770r", 0 },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad5770r_id);
 

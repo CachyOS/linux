@@ -8,23 +8,18 @@ Part of events are available on core cpu, part of events are available
 on atom cpu and even part of events are available on both.
 
 Kernel exports two new cpu pmus via sysfs:
-/sys/devices/cpu_core
-/sys/devices/cpu_atom
+/sys/bus/event_source/devices/cpu_core
+/sys/bus/event_source/devices/cpu_atom
 
 The 'cpus' files are created under the directories. For example,
 
-cat /sys/devices/cpu_core/cpus
+cat /sys/bus/event_source/devices/cpu_core/cpus
 0-15
 
-cat /sys/devices/cpu_atom/cpus
+cat /sys/bus/event_source/devices/cpu_atom/cpus
 16-23
 
 It indicates cpu0-cpu15 are core cpus and cpu16-cpu23 are atom cpus.
-
-Quickstart
-
-List hybrid event
------------------
 
 As before, use perf-list to list the symbolic event.
 
@@ -40,7 +35,6 @@ the event is belong to. Same event name but with different pmu can
 be supported.
 
 Enable hybrid event with a specific pmu
----------------------------------------
 
 To enable a core only event or atom only event, following syntax is supported:
 
@@ -53,7 +47,6 @@ For example, count the 'cycles' event on core cpus.
 	perf stat -e cpu_core/cycles/
 
 Create two events for one hardware event automatically
-------------------------------------------------------
 
 When creating one event and the event is available on both atom and core,
 two events are created automatically. One is for atom, the other is for
@@ -67,8 +60,8 @@ can't carry pmu information. So now this type is extended to be PMU aware
 type. The PMU type ID is stored at attr.config[63:32].
 
 PMU type ID is retrieved from sysfs.
-/sys/devices/cpu_atom/type
-/sys/devices/cpu_core/type
+/sys/bus/event_source/devices/cpu_atom/type
+/sys/bus/event_source/devices/cpu_core/type
 
 The new attr.config layout for PERF_TYPE_HARDWARE:
 
@@ -132,7 +125,6 @@ For perf-stat result, it displays two events:
 The first 'cycles' is core event, the second 'cycles' is atom event.
 
 Thread mode example:
---------------------
 
 perf-stat reports the scaled counts for hybrid event and with a percentage
 displayed. The percentage is the event's running time/enabling time.
@@ -176,14 +168,12 @@ perf_event_attr:
        604,097,080      cpu_atom/cycles/                                              (99.57%)
 
 perf-record:
-------------
 
 If there is no '-e' specified in perf record, on hybrid platform,
 it creates two default 'cycles' and adds them to event list. One
 is for core, the other is for atom.
 
 perf-stat:
-----------
 
 If there is no '-e' specified in perf stat, on hybrid platform,
 besides of software events, following events are created and

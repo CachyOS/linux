@@ -21,7 +21,7 @@ struct afs_operation *afs_alloc_operation(struct key *key, struct afs_volume *vo
 
 	_enter("");
 
-	op = kzalloc(sizeof(*op), GFP_KERNEL);
+	op = kzalloc_obj(*op);
 	if (!op)
 		return ERR_PTR(-ENOMEM);
 
@@ -35,16 +35,117 @@ struct afs_operation *afs_alloc_operation(struct key *key, struct afs_volume *vo
 		key_get(key);
 	}
 
-	op->key		= key;
-	op->volume	= afs_get_volume(volume, afs_volume_trace_get_new_op);
-	op->net		= volume->cell->net;
-	op->cb_v_break	= volume->cb_v_break;
-	op->debug_id	= atomic_inc_return(&afs_operation_debug_counter);
-	op->error	= -EDESTADDRREQ;
-	op->ac.error	= SHRT_MAX;
+	op->key			= key;
+	op->volume		= afs_get_volume(volume, afs_volume_trace_get_new_op);
+	op->net			= volume->cell->net;
+	op->cb_v_break		= atomic_read(&volume->cb_v_break);
+	op->pre_volsync.creation = volume->creation_time;
+	op->pre_volsync.update	= volume->update_time;
+	op->debug_id		= atomic_inc_return(&afs_operation_debug_counter);
+	op->nr_iterations	= -1;
+	afs_op_set_error(op, -EDESTADDRREQ);
 
 	_leave(" = [op=%08x]", op->debug_id);
 	return op;
+}
+
+struct afs_io_locker {
+	struct list_head	link;
+	struct task_struct	*task;
+	unsigned long		have_lock;
+};
+
+/*
+ * Unlock the I/O lock on a vnode.
+ */
+static void afs_unlock_for_io(struct afs_vnode *vnode)
+{
+	struct afs_io_locker *locker;
+
+	spin_lock(&vnode->lock);
+	locker = list_first_entry_or_null(&vnode->io_lock_waiters,
+					  struct afs_io_locker, link);
+	if (locker) {
+		list_del(&locker->link);
+		smp_store_release(&locker->have_lock, 1); /* The unlock barrier. */
+		smp_mb__after_atomic(); /* Store have_lock before task state */
+		wake_up_process(locker->task);
+	} else {
+		clear_bit(AFS_VNODE_IO_LOCK, &vnode->flags);
+	}
+	spin_unlock(&vnode->lock);
+}
+
+/*
+ * Lock the I/O lock on a vnode uninterruptibly.  We can't use an ordinary
+ * mutex as lockdep will complain if we unlock it in the wrong thread.
+ */
+static void afs_lock_for_io(struct afs_vnode *vnode)
+{
+	struct afs_io_locker myself = { .task = current, };
+
+	spin_lock(&vnode->lock);
+
+	if (!test_and_set_bit(AFS_VNODE_IO_LOCK, &vnode->flags)) {
+		spin_unlock(&vnode->lock);
+		return;
+	}
+
+	list_add_tail(&myself.link, &vnode->io_lock_waiters);
+	spin_unlock(&vnode->lock);
+
+	for (;;) {
+		set_current_state(TASK_UNINTERRUPTIBLE);
+		if (smp_load_acquire(&myself.have_lock)) /* The lock barrier */
+			break;
+		schedule();
+	}
+	__set_current_state(TASK_RUNNING);
+}
+
+/*
+ * Lock the I/O lock on a vnode interruptibly.  We can't use an ordinary mutex
+ * as lockdep will complain if we unlock it in the wrong thread.
+ */
+static int afs_lock_for_io_interruptible(struct afs_vnode *vnode)
+{
+	struct afs_io_locker myself = { .task = current, };
+	int ret = 0;
+
+	spin_lock(&vnode->lock);
+
+	if (!test_and_set_bit(AFS_VNODE_IO_LOCK, &vnode->flags)) {
+		spin_unlock(&vnode->lock);
+		return 0;
+	}
+
+	list_add_tail(&myself.link, &vnode->io_lock_waiters);
+	spin_unlock(&vnode->lock);
+
+	for (;;) {
+		set_current_state(TASK_INTERRUPTIBLE);
+		if (smp_load_acquire(&myself.have_lock) || /* The lock barrier */
+		    signal_pending(current))
+			break;
+		schedule();
+	}
+	__set_current_state(TASK_RUNNING);
+
+	/* If we got a signal, try to transfer the lock onto the next
+	 * waiter.
+	 */
+	if (unlikely(signal_pending(current))) {
+		spin_lock(&vnode->lock);
+		if (myself.have_lock) {
+			spin_unlock(&vnode->lock);
+			afs_unlock_for_io(vnode);
+		} else {
+			list_del(&myself.link);
+			spin_unlock(&vnode->lock);
+		}
+		ret = -ERESTARTSYS;
+	}
+	return ret;
 }
 
 /*
@@ -58,7 +159,7 @@ static bool afs_get_io_locks(struct afs_operation *op)
 	_enter("");
 
 	if (op->flags & AFS_OPERATION_UNINTR) {
-		mutex_lock(&vnode->io_lock);
+		afs_lock_for_io(vnode);
 		op->flags |= AFS_OPERATION_LOCK_0;
 		_leave(" = t [1]");
 		return true;
@@ -70,8 +171,8 @@ static bool afs_get_io_locks(struct afs_operation *op)
 	if (vnode2 > vnode)
 		swap(vnode, vnode2);
 
-	if (mutex_lock_interruptible(&vnode->io_lock) < 0) {
-		op->error = -ERESTARTSYS;
+	if (afs_lock_for_io_interruptible(vnode) < 0) {
+		afs_op_set_error(op, -ERESTARTSYS);
 		op->flags |= AFS_OPERATION_STOP;
 		_leave(" = f [I 0]");
 		return false;
@@ -79,10 +180,10 @@ static bool afs_get_io_locks(struct afs_operation *op)
 	op->flags |= AFS_OPERATION_LOCK_0;
 
 	if (vnode2) {
-		if (mutex_lock_interruptible_nested(&vnode2->io_lock, 1) < 0) {
-			op->error = -ERESTARTSYS;
+		if (afs_lock_for_io_interruptible(vnode2) < 0) {
+			afs_op_set_error(op, -ERESTARTSYS);
 			op->flags |= AFS_OPERATION_STOP;
-			mutex_unlock(&vnode->io_lock);
+			afs_unlock_for_io(vnode);
 			op->flags &= ~AFS_OPERATION_LOCK_0;
 			_leave(" = f [I 1]");
 			return false;
@@ -102,9 +203,9 @@ static void afs_drop_io_locks(struct afs_operation *op)
 	_enter("");
 
 	if (op->flags & AFS_OPERATION_LOCK_1)
-		mutex_unlock(&vnode2->io_lock);
+		afs_unlock_for_io(vnode2);
 	if (op->flags & AFS_OPERATION_LOCK_0)
-		mutex_unlock(&vnode->io_lock);
+		afs_unlock_for_io(vnode);
 }
 
 static void afs_prepare_vnode(struct afs_operation *op, struct afs_vnode_param *vp,
@@ -147,7 +248,7 @@ bool afs_begin_vnode_operation(struct afs_operation *op)
 
 	afs_prepare_vnode(op, &op->file[0], 0);
 	afs_prepare_vnode(op, &op->file[1], 1);
-	op->cb_v_break = op->volume->cb_v_break;
+	op->cb_v_break = atomic_read(&op->volume->cb_v_break);
 	_leave(" = true");
 	return true;
 }
@@ -155,20 +256,20 @@ bool afs_begin_vnode_operation(struct afs_operation *op)
 /*
  * Tidy up a filesystem cursor and unlock the vnode.
  */
-static void afs_end_vnode_operation(struct afs_operation *op)
+void afs_end_vnode_operation(struct afs_operation *op)
 {
 	_enter("");
 
-	if (op->error == -EDESTADDRREQ ||
-	    op->error == -EADDRNOTAVAIL ||
-	    op->error == -ENETUNREACH ||
-	    op->error == -EHOSTUNREACH)
+	switch (afs_op_error(op)) {
+	case -EDESTADDRREQ:
+	case -EADDRNOTAVAIL:
+	case -ENETUNREACH:
+	case -EHOSTUNREACH:
 		afs_dump_edestaddrreq(op);
+		break;
+	}
 
 	afs_drop_io_locks(op);
-
-	if (op->error == -ECONNABORTED)
-		op->error = afs_abort_to_error(op->ac.abort_code);
 }
 
 /*
@@ -179,37 +280,43 @@ void afs_wait_for_operation(struct afs_operation *op)
 	_enter("");
 
 	while (afs_select_fileserver(op)) {
-		op->cb_s_break = op->server->cb_s_break;
+		op->call_responded = false;
+		op->call_error = 0;
+		op->call_abort_code = 0;
 		if (test_bit(AFS_SERVER_FL_IS_YFS, &op->server->flags) &&
 		    op->ops->issue_yfs_rpc)
 			op->ops->issue_yfs_rpc(op);
 		else if (op->ops->issue_afs_rpc)
 			op->ops->issue_afs_rpc(op);
 		else
-			op->ac.error = -ENOTSUPP;
+			op->call_error = -ENOTSUPP;
 
-		if (op->call)
-			op->error = afs_wait_for_call_to_complete(op->call, &op->ac);
+		if (op->call) {
+			afs_wait_for_call_to_complete(op->call);
+			op->call_abort_code = op->call->abort_code;
+			op->call_error = op->call->error;
+			op->call_responded = op->call->responded;
+			afs_put_call(op->call);
+		}
 	}
 
-	switch (op->error) {
-	case 0:
+	if (op->call_responded && op->server)
+		set_bit(AFS_SERVER_FL_RESPONDING, &op->server->flags);
+
+	if (!afs_op_error(op)) {
 		_debug("success");
 		op->ops->success(op);
-		break;
-	case -ECONNABORTED:
+	} else if (op->cumul_error.aborted) {
 		if (op->ops->aborted)
 			op->ops->aborted(op);
-		fallthrough;
-	default:
+	} else {
 		if (op->ops->failed)
 			op->ops->failed(op);
-		break;
 	}
 
 	afs_end_vnode_operation(op);
 
-	if (op->error == 0 && op->ops->edit_dir) {
+	if (!afs_op_error(op) && op->ops->edit_dir) {
 		_debug("edit_dir");
 		op->ops->edit_dir(op);
 	}
@@ -221,7 +328,8 @@ void afs_wait_for_operation(struct afs_operation *op)
  */
 int afs_put_operation(struct afs_operation *op)
 {
-	int i, ret = op->error;
+	struct afs_addr_list *alist;
+	int i, ret = afs_op_error(op);
 
 	_enter("op=%08x,%d", op->debug_id, ret);
 
@@ -243,9 +351,19 @@ int afs_put_operation(struct afs_operation *op)
 		kfree(op->more_files);
 	}
 
-	afs_end_cursor(&op->ac);
+	if (op->estate) {
+		alist = op->estate->addresses;
+		if (alist) {
+			if (op->call_responded &&
+			    op->addr_index != alist->preferred &&
+			    test_bit(alist->preferred, &op->addr_tried))
+				WRITE_ONCE(alist->preferred, op->addr_index);
+		}
+	}
+
+	afs_clear_server_states(op);
 	afs_put_serverlist(op->net, op->server_list);
-	afs_put_volume(op->net, op->volume, afs_volume_trace_put_put_op);
+	afs_put_volume(op->volume, afs_volume_trace_put_put_op);
 	key_put(op->key);
 	kfree(op);
 	return ret;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2020 Intel Corporation. All rights reserved.
+// Copyright(c) 2020 Intel Corporation
 //
 // Author: Cezary Rojewski <cezary.rojewski@intel.com>
 //
@@ -15,18 +15,19 @@ static ssize_t fw_version_show(struct device *dev,
 	struct catpt_fw_version version;
 	int ret;
 
-	pm_runtime_get_sync(cdev->dev);
+	ret = pm_runtime_resume_and_get(cdev->dev);
+	if (ret)
+		return ret;
 
 	ret = catpt_ipc_get_fw_version(cdev, &version);
 
-	pm_runtime_mark_last_busy(cdev->dev);
 	pm_runtime_put_autosuspend(cdev->dev);
 
 	if (ret)
-		return CATPT_IPC_ERROR(ret);
+		return CATPT_IPC_RET(ret);
 
-	return sprintf(buf, "%d.%d.%d.%d\n", version.type, version.major,
-		       version.minor, version.build);
+	return sysfs_emit(buf, "%d.%d.%d.%d\n", version.type, version.major,
+			  version.minor, version.build);
 }
 static DEVICE_ATTR_RO(fw_version);
 
@@ -35,7 +36,7 @@ static ssize_t fw_info_show(struct device *dev,
 {
 	struct catpt_dev *cdev = dev_get_drvdata(dev);
 
-	return sprintf(buf, "%s\n", cdev->ipc.config.fw_info);
+	return sysfs_emit(buf, "%s\n", cdev->ipc.config.fw_info);
 }
 static DEVICE_ATTR_RO(fw_info);
 

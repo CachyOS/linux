@@ -543,7 +543,7 @@ int qed_iov_alloc(struct qed_hwfn *p_hwfn)
 		return 0;
 	}
 
-	p_sriov = kzalloc(sizeof(*p_sriov), GFP_KERNEL);
+	p_sriov = kzalloc_obj(*p_sriov);
 	if (!p_sriov)
 		return -ENOMEM;
 
@@ -600,7 +600,7 @@ int qed_iov_hw_info(struct qed_hwfn *p_hwfn)
 	}
 
 	/* Allocate a new struct for IOV information */
-	cdev->p_iov_info = kzalloc(sizeof(*cdev->p_iov_info), GFP_KERNEL);
+	cdev->p_iov_info = kzalloc_obj(*cdev->p_iov_info);
 	if (!cdev->p_iov_info)
 		return -ENOMEM;
 
@@ -831,7 +831,7 @@ static int qed_iov_enable_vf_access(struct qed_hwfn *p_hwfn,
  * @p_hwfn: HW device data.
  * @p_ptt: PTT window for writing the registers.
  * @vf: VF info data.
- * @enable: The actual permision for this VF.
+ * @enable: The actual permission for this VF.
  *
  * In E4, queue zone permission table size is 320x9. There
  * are 320 VF queues for single engine device (256 for dual
@@ -3033,7 +3033,7 @@ static void qed_iov_vf_mbx_vport_update(struct qed_hwfn *p_hwfn,
 	u16 length;
 	int rc;
 
-	/* Valiate PF can send such a request */
+	/* Validate PF can send such a request */
 	if (!vf->vport_instance) {
 		DP_VERBOSE(p_hwfn,
 			   QED_MSG_IOV,
@@ -3312,7 +3312,7 @@ static void qed_iov_vf_mbx_ucast_filter(struct qed_hwfn *p_hwfn,
 		goto out;
 	}
 
-	/* Determine if the unicast filtering is acceptible by PF */
+	/* Determine if the unicast filtering is acceptable by PF */
 	if ((p_bulletin->valid_bitmap & BIT(VLAN_ADDR_FORCED)) &&
 	    (params.type == QED_FILTER_VLAN ||
 	     params.type == QED_FILTER_MAC_VLAN)) {
@@ -3729,7 +3729,7 @@ qed_iov_execute_vf_flr_cleanup(struct qed_hwfn *p_hwfn,
 
 		rc = qed_iov_enable_vf_access(p_hwfn, p_ptt, p_vf);
 		if (rc) {
-			DP_ERR(p_hwfn, "Failed to re-enable VF[%d] acces\n",
+			DP_ERR(p_hwfn, "Failed to re-enable VF[%d] access\n",
 			       vfid);
 			return rc;
 		}
@@ -4404,6 +4404,9 @@ qed_iov_configure_min_tx_rate(struct qed_dev *cdev, int vfid, u32 rate)
 	}
 
 	vf = qed_iov_get_vf_info(QED_LEADING_HWFN(cdev), (u16)vfid, true);
+	if (!vf)
+		return -EINVAL;
+
 	vport_id = vf->vport_id;
 
 	return qed_configure_vport_wfq(cdev, vport_id, rate);
@@ -4477,7 +4480,7 @@ int qed_sriov_disable(struct qed_dev *cdev, bool pci_enabled)
 		struct qed_ptt *ptt = qed_ptt_acquire(hwfn);
 
 		/* Failure to acquire the ptt in 100g creates an odd error
-		 * where the first engine has already relased IOV.
+		 * where the first engine has already released IOV.
 		 */
 		if (!ptt) {
 			DP_ERR(hwfn, "Failed to acquire ptt\n");
@@ -5152,7 +5155,7 @@ static void qed_iov_handle_trust_change(struct qed_hwfn *hwfn)
 
 		/* Validate that the VF has a configured vport */
 		vf = qed_iov_get_vf_info(hwfn, i, true);
-		if (!vf->vport_instance)
+		if (!vf || !vf->vport_instance)
 			continue;
 
 		memset(&params, 0, sizeof(params));

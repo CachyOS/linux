@@ -23,7 +23,7 @@ static void *msu_sink_assign(struct device *dev, int *mode)
 {
 	struct msu_sink_private *priv;
 
-	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+	priv = kzalloc_obj(*priv);
 	if (!priv)
 		return NULL;
 
@@ -71,6 +71,9 @@ static int msu_sink_alloc_window(void *data, struct sg_table **sgt, size_t size)
 		block = dma_alloc_coherent(priv->dev->parent->parent,
 					   PAGE_SIZE, &sg_dma_address(sg_ptr),
 					   GFP_KERNEL);
+		if (!block)
+			return -ENOMEM;
+
 		sg_set_buf(sg_ptr, block, PAGE_SIZE);
 	}
 
@@ -113,4 +116,5 @@ static const struct msu_buffer sink_mbuf = {
 
 module_intel_th_msu_buffer(sink_mbuf);
 
+MODULE_DESCRIPTION("example software sink buffer for Intel TH MSU");
 MODULE_LICENSE("GPL v2");

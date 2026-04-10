@@ -25,7 +25,7 @@
 /* CONTROL REGISTER 1 BITS */
 #define PC1_OFF			0x7F
 #define PC1_ON			(1 << 7)
-/* Data ready funtion enable bit: set during probe if using irq mode */
+/* Data ready function enable bit: set during probe if using irq mode */
 #define DRDYE			(1 << 5)
 /* DATA CONTROL REGISTER BITS */
 #define ODR12_5F		0
@@ -314,9 +314,8 @@ static ssize_t kxtj9_set_poll(struct device *dev, struct device_attribute *attr,
 		return error;
 
 	/* Lock the device to prevent races with open/close (and itself) */
-	mutex_lock(&input_dev->mutex);
-
-	disable_irq(client->irq);
+	guard(mutex)(&input_dev->mutex);
+	guard(disable_irq)(&client->irq);
 
 	/*
 	 * Set current interval to the greater of the minimum interval or
@@ -326,22 +325,30 @@ static ssize_t kxtj9_set_poll(struct device *dev, struct device_attribute *attr,
 
 	kxtj9_update_odr(tj9, tj9->last_poll_interval);
 
-	enable_irq(client->irq);
-	mutex_unlock(&input_dev->mutex);
-
 	return count;
 }
 
 static DEVICE_ATTR(poll, S_IRUGO|S_IWUSR, kxtj9_get_poll, kxtj9_set_poll);
 
-static struct attribute *kxtj9_attributes[] = {
+static struct attribute *kxtj9_attrs[] = {
 	&dev_attr_poll.attr,
 	NULL
 };
 
-static struct attribute_group kxtj9_attribute_group = {
-	.attrs = kxtj9_attributes
+static umode_t kxtj9_attr_is_visible(struct kobject *kobj,
+				     struct attribute *attr, int n)
+{
+	struct device *dev = kobj_to_dev(kobj);
+	struct i2c_client *client = to_i2c_client(dev);
+
+	return client->irq ? attr->mode : 0;
+}
+
+static struct attribute_group kxtj9_group = {
+	.attrs = kxtj9_attrs,
+	.is_visible = kxtj9_attr_is_visible,
 };
+__ATTRIBUTE_GROUPS(kxtj9);
 
 static void kxtj9_poll(struct input_dev *input)
 {
@@ -385,8 +392,7 @@ out:
 	return retval;
 }
 
-static int kxtj9_probe(struct i2c_client *client,
-		       const struct i2c_device_id *id)
+static int kxtj9_probe(struct i2c_client *client)
 {
 	const struct kxtj9_platform_data *pdata =
 			dev_get_platdata(&client->dev);
@@ -483,61 +489,53 @@ static int kxtj9_probe(struct i2c_client *client,
 			dev_err(&client->dev, "request irq failed: %d\n", err);
 			return err;
 		}
-
-		err = devm_device_add_group(&client->dev,
-					    &kxtj9_attribute_group);
-		if (err) {
-			dev_err(&client->dev, "sysfs create failed: %d\n", err);
-			return err;
-		}
 	}
 
 	return 0;
 }
 
-static int __maybe_unused kxtj9_suspend(struct device *dev)
+static int kxtj9_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct kxtj9_data *tj9 = i2c_get_clientdata(client);
 	struct input_dev *input_dev = tj9->input_dev;
 
-	mutex_lock(&input_dev->mutex);
+	guard(mutex)(&input_dev->mutex);
 
 	if (input_device_enabled(input_dev))
 		kxtj9_disable(tj9);
 
-	mutex_unlock(&input_dev->mutex);
 	return 0;
 }
 
-static int __maybe_unused kxtj9_resume(struct device *dev)
+static int kxtj9_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct kxtj9_data *tj9 = i2c_get_clientdata(client);
 	struct input_dev *input_dev = tj9->input_dev;
 
-	mutex_lock(&input_dev->mutex);
+	guard(mutex)(&input_dev->mutex);
 
 	if (input_device_enabled(input_dev))
 		kxtj9_enable(tj9);
 
-	mutex_unlock(&input_dev->mutex);
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(kxtj9_pm_ops, kxtj9_suspend, kxtj9_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(kxtj9_pm_ops, kxtj9_suspend, kxtj9_resume);
 
 static const struct i2c_device_id kxtj9_id[] = {
-	{ NAME, 0 },
-	{ },
+	{ NAME },
+	{ }
 };
 
 MODULE_DEVICE_TABLE(i2c, kxtj9_id);
 
 static struct i2c_driver kxtj9_driver = {
 	.driver = {
-		.name	= NAME,
-		.pm	= &kxtj9_pm_ops,
+		.name		= NAME,
+		.dev_groups	= kxtj9_groups,
+		.pm		= pm_sleep_ptr(&kxtj9_pm_ops),
 	},
 	.probe		= kxtj9_probe,
 	.id_table	= kxtj9_id,

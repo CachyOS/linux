@@ -40,6 +40,8 @@
 #include <linux/dmaengine.h>
 #include <linux/hardirq.h>
 #include <linux/spinlock.h>
+#include <linux/of.h>
+#include <linux/property.h>
 #include <linux/percpu.h>
 #include <linux/rcupdate.h>
 #include <linux/mutex.h>
@@ -172,7 +174,7 @@ static ssize_t memcpy_count_show(struct device *dev,
 	if (chan) {
 		for_each_possible_cpu(i)
 			count += per_cpu_ptr(chan->local, i)->memcpy_count;
-		err = sprintf(buf, "%lu\n", count);
+		err = sysfs_emit(buf, "%lu\n", count);
 	} else
 		err = -ENODEV;
 	mutex_unlock(&dma_list_mutex);
@@ -194,7 +196,7 @@ static ssize_t bytes_transferred_show(struct device *dev,
 	if (chan) {
 		for_each_possible_cpu(i)
 			count += per_cpu_ptr(chan->local, i)->bytes_transferred;
-		err = sprintf(buf, "%lu\n", count);
+		err = sysfs_emit(buf, "%lu\n", count);
 	} else
 		err = -ENODEV;
 	mutex_unlock(&dma_list_mutex);
@@ -212,7 +214,7 @@ static ssize_t in_use_show(struct device *dev, struct device_attribute *attr,
 	mutex_lock(&dma_list_mutex);
 	chan = dev_to_dma_chan(dev);
 	if (chan)
-		err = sprintf(buf, "%d\n", chan->client_count);
+		err = sysfs_emit(buf, "%d\n", chan->client_count);
 	else
 		err = -ENODEV;
 	mutex_unlock(&dma_list_mutex);
@@ -451,7 +453,8 @@ static int dma_chan_get(struct dma_chan *chan)
 	/* The channel is already in use, update client count */
 	if (chan->client_count) {
 		__module_get(owner);
-		goto out;
+		chan->client_count++;
+		return 0;
 	}
 
 	if (!try_module_get(owner))
@@ -470,11 +473,11 @@ static int dma_chan_get(struct dma_chan *chan)
 			goto err_out;
 	}
 
+	chan->client_count++;
+
 	if (!dma_has_cap(DMA_PRIVATE, chan->device->cap_mask))
 		balance_ref_count(chan);
 
-out:
-	chan->client_count++;
 	return 0;
 
 err_out:
@@ -811,15 +814,13 @@ static const struct dma_slave_map *dma_filter_match(struct dma_device *device,
  */
 struct dma_chan *dma_request_chan(struct device *dev, const char *name)
 {
+	struct fwnode_handle *fwnode = dev_fwnode(dev);
 	struct dma_device *d, *_d;
 	struct dma_chan *chan = NULL;
 
-	/* If device-tree is present get slave info from here */
-	if (dev->of_node)
-		chan = of_dma_request_slave_channel(dev->of_node, name);
-
-	/* If device was enumerated by ACPI get slave info from here */
-	if (has_acpi_companion(dev) && !chan)
+	if (is_of_node(fwnode))
+		chan = of_dma_request_slave_channel(to_of_node(fwnode), name);
+	else if (is_acpi_device_node(fwnode))
 		chan = acpi_dma_request_slave_chan_by_name(dev, name);
 
 	if (PTR_ERR(chan) == -EPROBE_DEFER)
@@ -853,8 +854,8 @@ struct dma_chan *dma_request_chan(struct device *dev, const char *name)
 
 found:
 #ifdef CONFIG_DEBUG_FS
-	chan->dbg_client_name = kasprintf(GFP_KERNEL, "%s:%s", dev_name(dev),
-					  name);
+	chan->dbg_client_name = kasprintf(GFP_KERNEL, "%s:%s", dev_name(dev), name);
+	/* No functional issue if it fails, users are supposed to test before use */
 #endif
 
 	chan->name = kasprintf(GFP_KERNEL, "dma:%s", name);
@@ -924,6 +925,36 @@ void dma_release_channel(struct dma_chan *chan)
 	mutex_unlock(&dma_list_mutex);
 }
 EXPORT_SYMBOL_GPL(dma_release_channel);
+
+static void dmaenginem_release_channel(void *chan)
+{
+	dma_release_channel(chan);
+}
+
+/**
+ * devm_dma_request_chan - try to allocate an exclusive slave channel
+ * @dev:	pointer to client device structure
+ * @name:	slave channel name
+ *
+ * Returns pointer to appropriate DMA channel on success or an error pointer.
+ *
+ * The operation is managed and will be undone on driver detach.
+ */
+
+struct dma_chan *devm_dma_request_chan(struct device *dev, const char *name)
+{
+	struct dma_chan *chan = dma_request_chan(dev, name);
+	int ret = 0;
+
+	if (!IS_ERR(chan))
+		ret = devm_add_action_or_reset(dev, dmaenginem_release_channel, chan);
+
+	if (ret)
+		return ERR_PTR(ret);
+
+	return chan;
+}
+EXPORT_SYMBOL_GPL(devm_dma_request_chan);
 
 /**
  * dmaengine_get - register interest in dma_channels
@@ -1036,14 +1067,15 @@ static int get_dma_id(struct dma_device *device)
 }
 
 static int __dma_async_device_channel_register(struct dma_device *device,
-					       struct dma_chan *chan)
+					       struct dma_chan *chan,
+					       const char *name)
 {
 	int rc;
 
 	chan->local = alloc_percpu(typeof(*chan->local));
 	if (!chan->local)
 		return -ENOMEM;
-	chan->dev = kzalloc(sizeof(*chan->dev), GFP_KERNEL);
+	chan->dev = kzalloc_obj(*chan->dev);
 	if (!chan->dev) {
 		rc = -ENOMEM;
 		goto err_free_local;
@@ -1065,8 +1097,10 @@ static int __dma_async_device_channel_register(struct dma_device *device,
 	chan->dev->device.parent = device->dev;
 	chan->dev->chan = chan;
 	chan->dev->dev_id = device->dev_id;
-	dev_set_name(&chan->dev->device, "dma%dchan%d",
-		     device->dev_id, chan->chan_id);
+	if (!name)
+		dev_set_name(&chan->dev->device, "dma%dchan%d", device->dev_id, chan->chan_id);
+	else
+		dev_set_name(&chan->dev->device, "%s", name);
 	rc = device_register(&chan->dev->device);
 	if (rc)
 		goto err_out_ida;
@@ -1086,11 +1120,12 @@ static int __dma_async_device_channel_register(struct dma_device *device,
 }
 
 int dma_async_device_channel_register(struct dma_device *device,
-				      struct dma_chan *chan)
+				      struct dma_chan *chan,
+				      const char *name)
 {
 	int rc;
 
-	rc = __dma_async_device_channel_register(device, chan);
+	rc = __dma_async_device_channel_register(device, chan, name);
 	if (rc < 0)
 		return rc;
 
@@ -1102,6 +1137,9 @@ EXPORT_SYMBOL_GPL(dma_async_device_channel_register);
 static void __dma_async_device_channel_unregister(struct dma_device *device,
 						  struct dma_chan *chan)
 {
+	if (chan->local == NULL)
+		return;
+
 	WARN_ONCE(!device->device_release && chan->client_count,
 		  "%s called while %d clients hold a reference\n",
 		  __func__, chan->client_count);
@@ -1146,76 +1184,27 @@ int dma_async_device_register(struct dma_device *device)
 
 	device->owner = device->dev->driver->owner;
 
-	if (dma_has_cap(DMA_MEMCPY, device->cap_mask) && !device->device_prep_dma_memcpy) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_MEMCPY");
-		return -EIO;
-	}
+#define CHECK_CAP(_name, _type)								\
+{											\
+	if (dma_has_cap(_type, device->cap_mask) && !device->device_prep_##_name) {	\
+		dev_err(device->dev,							\
+			"Device claims capability %s, but op is not defined\n",		\
+			__stringify(_type));						\
+		return -EIO;								\
+	}										\
+}
 
-	if (dma_has_cap(DMA_MEMCPY_SG, device->cap_mask) && !device->device_prep_dma_memcpy_sg) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_MEMCPY_SG");
-		return -EIO;
-	}
+	CHECK_CAP(dma_memcpy,      DMA_MEMCPY);
+	CHECK_CAP(dma_xor,         DMA_XOR);
+	CHECK_CAP(dma_xor_val,     DMA_XOR_VAL);
+	CHECK_CAP(dma_pq,          DMA_PQ);
+	CHECK_CAP(dma_pq_val,      DMA_PQ_VAL);
+	CHECK_CAP(dma_memset,      DMA_MEMSET);
+	CHECK_CAP(dma_interrupt,   DMA_INTERRUPT);
+	CHECK_CAP(dma_cyclic,      DMA_CYCLIC);
+	CHECK_CAP(interleaved_dma, DMA_INTERLEAVE);
 
-	if (dma_has_cap(DMA_XOR, device->cap_mask) && !device->device_prep_dma_xor) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_XOR");
-		return -EIO;
-	}
-
-	if (dma_has_cap(DMA_XOR_VAL, device->cap_mask) && !device->device_prep_dma_xor_val) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_XOR_VAL");
-		return -EIO;
-	}
-
-	if (dma_has_cap(DMA_PQ, device->cap_mask) && !device->device_prep_dma_pq) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_PQ");
-		return -EIO;
-	}
-
-	if (dma_has_cap(DMA_PQ_VAL, device->cap_mask) && !device->device_prep_dma_pq_val) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_PQ_VAL");
-		return -EIO;
-	}
-
-	if (dma_has_cap(DMA_MEMSET, device->cap_mask) && !device->device_prep_dma_memset) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_MEMSET");
-		return -EIO;
-	}
-
-	if (dma_has_cap(DMA_INTERRUPT, device->cap_mask) && !device->device_prep_dma_interrupt) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_INTERRUPT");
-		return -EIO;
-	}
-
-	if (dma_has_cap(DMA_CYCLIC, device->cap_mask) && !device->device_prep_dma_cyclic) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_CYCLIC");
-		return -EIO;
-	}
-
-	if (dma_has_cap(DMA_INTERLEAVE, device->cap_mask) && !device->device_prep_interleaved_dma) {
-		dev_err(device->dev,
-			"Device claims capability %s, but op is not defined\n",
-			"DMA_INTERLEAVE");
-		return -EIO;
-	}
-
+#undef CHECK_CAP
 
 	if (!device->device_tx_status) {
 		dev_err(device->dev, "Device tx_status is not defined\n");
@@ -1248,7 +1237,7 @@ int dma_async_device_register(struct dma_device *device)
 
 	/* represent channels in sysfs. Probably want devs too */
 	list_for_each_entry(chan, &device->channels, device_node) {
-		rc = __dma_async_device_channel_register(device, chan);
+		rc = __dma_async_device_channel_register(device, chan, NULL);
 		if (rc < 0)
 			goto err_out;
 	}
@@ -1329,11 +1318,8 @@ void dma_async_device_unregister(struct dma_device *device)
 }
 EXPORT_SYMBOL(dma_async_device_unregister);
 
-static void dmam_device_release(struct device *dev, void *res)
+static void dmaenginem_async_device_unregister(void *device)
 {
-	struct dma_device *device;
-
-	device = *(struct dma_device **)res;
 	dma_async_device_unregister(device);
 }
 
@@ -1345,22 +1331,13 @@ static void dmam_device_release(struct device *dev, void *res)
  */
 int dmaenginem_async_device_register(struct dma_device *device)
 {
-	void *p;
 	int ret;
 
-	p = devres_alloc(dmam_device_release, sizeof(void *), GFP_KERNEL);
-	if (!p)
-		return -ENOMEM;
-
 	ret = dma_async_device_register(device);
-	if (!ret) {
-		*(struct dma_device **)p = device;
-		devres_add(device->dev, p);
-	} else {
-		devres_free(p);
-	}
+	if (ret)
+		return ret;
 
-	return ret;
+	return devm_add_action_or_reset(device->dev, dmaenginem_async_device_unregister, device);
 }
 EXPORT_SYMBOL(dmaenginem_async_device_register);
 

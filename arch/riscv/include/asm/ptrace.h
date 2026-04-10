@@ -10,7 +10,7 @@
 #include <asm/csr.h>
 #include <linux/compiler.h>
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 struct pt_regs {
 	unsigned long epc;
@@ -23,14 +23,16 @@ struct pt_regs {
 	unsigned long t2;
 	unsigned long s0;
 	unsigned long s1;
-	unsigned long a0;
-	unsigned long a1;
-	unsigned long a2;
-	unsigned long a3;
-	unsigned long a4;
-	unsigned long a5;
-	unsigned long a6;
-	unsigned long a7;
+	struct_group(a_regs,
+		unsigned long a0;
+		unsigned long a1;
+		unsigned long a2;
+		unsigned long a3;
+		unsigned long a4;
+		unsigned long a5;
+		unsigned long a6;
+		unsigned long a7;
+	);
 	unsigned long s2;
 	unsigned long s3;
 	unsigned long s4;
@@ -52,6 +54,9 @@ struct pt_regs {
 	/* a0 value before the syscall */
 	unsigned long orig_a0;
 };
+
+#define PTRACE_SYSEMU			0x1f
+#define PTRACE_SYSEMU_SINGLESTEP	0x20
 
 #ifdef CONFIG_64BIT
 #define REG_FMT "%016lx"
@@ -121,8 +126,6 @@ extern unsigned long regs_get_kernel_stack_nth(struct pt_regs *regs,
 
 void prepare_ftrace_return(unsigned long *parent, unsigned long self_addr,
 			   unsigned long frame_pointer);
-int do_syscall_trace_enter(struct pt_regs *regs);
-void do_syscall_trace_exit(struct pt_regs *regs);
 
 /**
  * regs_get_register() - get register value from its offset
@@ -172,6 +175,11 @@ static inline unsigned long regs_get_kernel_argument(struct pt_regs *regs,
 	return 0;
 }
 
-#endif /* __ASSEMBLY__ */
+static __always_inline bool regs_irqs_disabled(struct pt_regs *regs)
+{
+	return !(regs->status & SR_PIE);
+}
+
+#endif /* __ASSEMBLER__ */
 
 #endif /* _ASM_RISCV_PTRACE_H */

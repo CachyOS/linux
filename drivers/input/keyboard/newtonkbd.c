@@ -7,9 +7,6 @@
  * Newton keyboard driver for Linux
  */
 
-/*
- */
-
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/input.h>
@@ -71,7 +68,7 @@ static int nkbd_connect(struct serio *serio, struct serio_driver *drv)
 	int err = -ENOMEM;
 	int i;
 
-	nkbd = kzalloc(sizeof(struct nkbd), GFP_KERNEL);
+	nkbd = kzalloc_obj(*nkbd);
 	input_dev = input_allocate_device();
 	if (!nkbd || !input_dev)
 		goto fail1;

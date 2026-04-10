@@ -5,12 +5,15 @@
 #ifndef __ASM_SPARSEMEM_H
 #define __ASM_SPARSEMEM_H
 
-#define MAX_PHYSMEM_BITS	CONFIG_ARM64_PA_BITS
+#include <asm/pgtable-prot.h>
+
+#define MAX_PHYSMEM_BITS		PHYS_MASK_SHIFT
+#define MAX_POSSIBLE_PHYSMEM_BITS	(52)
 
 /*
  * Section size must be at least 512MB for 64K base
  * page size config. Otherwise it will be less than
- * (MAX_ORDER - 1) and the build process will fail.
+ * MAX_PAGE_ORDER and the build process will fail.
  */
 #ifdef CONFIG_ARM64_64K_PAGES
 #define SECTION_SIZE_BITS 29

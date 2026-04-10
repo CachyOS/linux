@@ -996,7 +996,7 @@ static int msb_verify_block(struct msb_data *msb, u16 pba,
 	return 0;
 }
 
-/* Writes exectly one block + oob */
+/* Writes exactly one block + oob */
 static int msb_write_block(struct msb_data *msb,
 			u16 pba, u32 lba, struct scatterlist *sg, int offset)
 {
@@ -1203,8 +1203,7 @@ static int msb_read_boot_blocks(struct msb_data *msb)
 	dbg_verbose("Start of a scan for the boot blocks");
 
 	if (!msb->boot_page) {
-		page = kmalloc_array(2, sizeof(struct ms_boot_page),
-				     GFP_KERNEL);
+		page = kmalloc_objs(struct ms_boot_page, 2);
 		if (!page)
 			return -ENOMEM;
 
@@ -1341,17 +1340,17 @@ static int msb_ftl_initialize(struct msb_data *msb)
 	msb->zone_count = msb->block_count / MS_BLOCKS_IN_ZONE;
 	msb->logical_block_count = msb->zone_count * 496 - 2;
 
-	msb->used_blocks_bitmap = kzalloc(msb->block_count / 8, GFP_KERNEL);
-	msb->erased_blocks_bitmap = kzalloc(msb->block_count / 8, GFP_KERNEL);
+	msb->used_blocks_bitmap = bitmap_zalloc(msb->block_count, GFP_KERNEL);
+	msb->erased_blocks_bitmap = bitmap_zalloc(msb->block_count, GFP_KERNEL);
 	msb->lba_to_pba_table =
 		kmalloc_array(msb->logical_block_count, sizeof(u16),
 			      GFP_KERNEL);
 
 	if (!msb->used_blocks_bitmap || !msb->lba_to_pba_table ||
 						!msb->erased_blocks_bitmap) {
-		kfree(msb->used_blocks_bitmap);
+		bitmap_free(msb->used_blocks_bitmap);
+		bitmap_free(msb->erased_blocks_bitmap);
 		kfree(msb->lba_to_pba_table);
-		kfree(msb->erased_blocks_bitmap);
 		return -ENOMEM;
 	}
 
@@ -1498,7 +1497,7 @@ static int msb_ftl_scan(struct msb_data *msb)
 
 static void msb_cache_flush_timer(struct timer_list *t)
 {
-	struct msb_data *msb = from_timer(msb, t, cache_flush_timer);
+	struct msb_data *msb = timer_container_of(msb, t, cache_flush_timer);
 
 	msb->need_flush_cache = true;
 	queue_work(msb->io_queue, &msb->io_work);
@@ -1510,7 +1509,7 @@ static void msb_cache_discard(struct msb_data *msb)
 	if (msb->cache_block_lba == MS_BLOCK_INVALID)
 		return;
 
-	del_timer_sync(&msb->cache_flush_timer);
+	timer_delete_sync(&msb->cache_flush_timer);
 
 	dbg_verbose("Discarding the write cache");
 	msb->cache_block_lba = MS_BLOCK_INVALID;
@@ -1684,7 +1683,7 @@ static int msb_cache_read(struct msb_data *msb, int lba,
  */
 
 static const struct chs_entry chs_table[] = {
-/*        size sectors cylynders  heads */
+/*        size sectors cylinders heads */
 	{ 4,    16,    247,       2  },
 	{ 8,    16,    495,       2  },
 	{ 16,   16,    495,       4  },
@@ -1729,7 +1728,7 @@ static int msb_init_card(struct memstick_dev *card)
 
 	boot_block = &msb->boot_page[0];
 
-	/* Save intersting attributes from boot page */
+	/* Save interesting attributes from boot page */
 	msb->block_count = boot_block->attr.number_of_blocks;
 	msb->page_size = boot_block->attr.page_size;
 
@@ -1904,7 +1903,7 @@ static void msb_io_work(struct work_struct *work)
 
 		/* process the request */
 		dbg_verbose("IO: processing new request");
-		blk_rq_map_sg(msb->queue, req, sg);
+		blk_rq_map_sg(req, sg);
 
 		lba = blk_rq_pos(req);
 
@@ -1946,16 +1945,17 @@ static DEFINE_MUTEX(msb_disk_lock); /* protects against races in open/release */
 static void msb_data_clear(struct msb_data *msb)
 {
 	kfree(msb->boot_page);
-	kfree(msb->used_blocks_bitmap);
+	bitmap_free(msb->used_blocks_bitmap);
+	bitmap_free(msb->erased_blocks_bitmap);
 	kfree(msb->lba_to_pba_table);
 	kfree(msb->cache);
 	msb->card = NULL;
 }
 
-static int msb_bd_getgeo(struct block_device *bdev,
+static int msb_bd_getgeo(struct gendisk *disk,
 				 struct hd_geometry *geo)
 {
-	struct msb_data *msb = bdev->bd_disk->private_data;
+	struct msb_data *msb = disk->private_data;
 	*geo = msb->geometry;
 	return 0;
 }
@@ -2026,7 +2026,7 @@ static void msb_stop(struct memstick_dev *card)
 	msb->io_queue_stopped = true;
 	spin_unlock_irqrestore(&msb->q_lock, flags);
 
-	del_timer_sync(&msb->cache_flush_timer);
+	timer_delete_sync(&msb->cache_flush_timer);
 	flush_workqueue(msb->io_queue);
 
 	spin_lock_irqsave(&msb->q_lock, flags);
@@ -2077,6 +2077,12 @@ static const struct blk_mq_ops msb_mq_ops = {
 static int msb_init_disk(struct memstick_dev *card)
 {
 	struct msb_data *msb = memstick_get_drvdata(card);
+	struct queue_limits lim = {
+		.logical_block_size	= msb->page_size,
+		.max_hw_sectors		= MS_BLOCK_MAX_PAGES,
+		.max_segments		= MS_BLOCK_MAX_SEGS,
+		.max_segment_size	= MS_BLOCK_MAX_PAGES * msb->page_size,
+	};
 	int rc;
 	unsigned long capacity;
 
@@ -2087,23 +2093,16 @@ static int msb_init_disk(struct memstick_dev *card)
 	if (msb->disk_id  < 0)
 		return msb->disk_id;
 
-	rc = blk_mq_alloc_sq_tag_set(&msb->tag_set, &msb_mq_ops, 2,
-				     BLK_MQ_F_SHOULD_MERGE);
+	rc = blk_mq_alloc_sq_tag_set(&msb->tag_set, &msb_mq_ops, 2, 0);
 	if (rc)
 		goto out_release_id;
 
-	msb->disk = blk_mq_alloc_disk(&msb->tag_set, card);
+	msb->disk = blk_mq_alloc_disk(&msb->tag_set, &lim, card);
 	if (IS_ERR(msb->disk)) {
 		rc = PTR_ERR(msb->disk);
 		goto out_free_tag_set;
 	}
 	msb->queue = msb->disk->queue;
-
-	blk_queue_max_hw_sectors(msb->queue, MS_BLOCK_MAX_PAGES);
-	blk_queue_max_segments(msb->queue, MS_BLOCK_MAX_SEGS);
-	blk_queue_max_segment_size(msb->queue,
-				   MS_BLOCK_MAX_PAGES * msb->page_size);
-	blk_queue_logical_block_size(msb->queue, msb->page_size);
 
 	sprintf(msb->disk->disk_name, "msblk%d", msb->disk_id);
 	msb->disk->fops = &msb_bdops;
@@ -2115,6 +2114,11 @@ static int msb_init_disk(struct memstick_dev *card)
 	dbg("Set total disk size to %lu sectors", capacity);
 
 	msb->io_queue = alloc_ordered_workqueue("ms_block", WQ_MEM_RECLAIM);
+	if (!msb->io_queue) {
+		rc = -ENOMEM;
+		goto out_cleanup_disk;
+	}
+
 	INIT_WORK(&msb->io_work, msb_io_work);
 	sg_init_table(msb->prealloc_sg, MS_BLOCK_MAX_SEGS+1);
 
@@ -2124,12 +2128,14 @@ static int msb_init_disk(struct memstick_dev *card)
 	msb_start(card);
 	rc = device_add_disk(&card->dev, msb->disk, NULL);
 	if (rc)
-		goto out_cleanup_disk;
+		goto out_destroy_workqueue;
 	dbg("Disk added");
 	return 0;
 
+out_destroy_workqueue:
+	destroy_workqueue(msb->io_queue);
 out_cleanup_disk:
-	blk_cleanup_disk(msb->disk);
+	put_disk(msb->disk);
 out_free_tag_set:
 	blk_mq_free_tag_set(&msb->tag_set);
 out_release_id:
@@ -2144,7 +2150,7 @@ static int msb_probe(struct memstick_dev *card)
 	struct msb_data *msb;
 	int rc = 0;
 
-	msb = kzalloc(sizeof(struct msb_data), GFP_KERNEL);
+	msb = kzalloc_obj(struct msb_data);
 	if (!msb)
 		return -ENOMEM;
 	memstick_set_drvdata(card, msb);
@@ -2187,7 +2193,6 @@ static void msb_remove(struct memstick_dev *card)
 
 	/* Remove the disk */
 	del_gendisk(msb->disk);
-	blk_cleanup_queue(msb->queue);
 	blk_mq_free_tag_set(&msb->tag_set);
 	msb->queue = NULL;
 
@@ -2219,7 +2224,7 @@ static int msb_resume(struct memstick_dev *card)
 #endif
 	mutex_lock(&card->host->lock);
 
-	new_msb = kzalloc(sizeof(struct msb_data), GFP_KERNEL);
+	new_msb = kzalloc_obj(struct msb_data);
 	if (!new_msb)
 		goto out;
 
@@ -2244,8 +2249,8 @@ static int msb_resume(struct memstick_dev *card)
 		goto out;
 
 	if (msb->block_count != new_msb->block_count ||
-		memcmp(msb->used_blocks_bitmap, new_msb->used_blocks_bitmap,
-							msb->block_count / 8))
+	    !bitmap_equal(msb->used_blocks_bitmap, new_msb->used_blocks_bitmap,
+							msb->block_count))
 		goto out;
 
 	card_dead = false;
@@ -2272,7 +2277,7 @@ out:
 
 #endif /* CONFIG_PM */
 
-static struct memstick_device_id msb_id_tbl[] = {
+static const struct memstick_device_id msb_id_tbl[] = {
 	{MEMSTICK_MATCH_ALL, MEMSTICK_TYPE_LEGACY, MEMSTICK_CATEGORY_STORAGE,
 	 MEMSTICK_CLASS_FLASH},
 

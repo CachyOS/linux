@@ -110,6 +110,7 @@ module_param_array(card, int, NULL, 0);
 MODULE_PARM_DESC(card, "card type (0=NCR5380, 1=NCR53C400, 2=NCR53C400A, 3=DTC3181E, 4=HP C2502)");
 
 MODULE_ALIAS("g_NCR5380_mmio");
+MODULE_DESCRIPTION("Generic NCR5380/NCR53C400 SCSI driver");
 MODULE_LICENSE("GPL");
 
 static void g_NCR5380_trigger_irq(struct Scsi_Host *instance)
@@ -219,7 +220,7 @@ static int hp_c2502_irqs[] = {
 	9, 5, 7, 3, 4, -1
 };
 
-static int generic_NCR5380_init_one(struct scsi_host_template *tpnt,
+static int generic_NCR5380_init_one(const struct scsi_host_template *tpnt,
 			struct device *pdev, int base, int irq, int board)
 {
 	bool is_pmio = base <= 0xffff;
@@ -689,7 +690,7 @@ static int generic_NCR5380_dma_residual(struct NCR5380_hostdata *hostdata)
 
 #include "NCR5380.c"
 
-static struct scsi_host_template driver_template = {
+static const struct scsi_host_template driver_template = {
 	.module			= THIS_MODULE,
 	.proc_name		= DRV_MODULE_NAME,
 	.name			= "Generic NCR5380/NCR53C400 SCSI",

@@ -237,8 +237,7 @@ static int rmi_hid_read_block(struct rmi_transport_dev *xport, u16 addr,
 
 			read_input_count = data->readReport[1];
 			memcpy(buf + bytes_read, &data->readReport[2],
-				read_input_count < bytes_needed ?
-					read_input_count : bytes_needed);
+				min(read_input_count, bytes_needed));
 
 			bytes_read += read_input_count;
 			bytes_needed -= read_input_count;
@@ -327,6 +326,8 @@ static int rmi_input_event(struct hid_device *hdev, u8 *data, int size)
 	if (!(test_bit(RMI_STARTED, &hdata->flags)))
 		return 0;
 
+	pm_wakeup_event(hdev->dev.parent, 0);
+
 	local_irq_save(flags);
 
 	rmi_set_attn_data(rmi_dev, data[1], &data[2], size - 2);
@@ -347,8 +348,7 @@ static int rmi_read_data_event(struct hid_device *hdev, u8 *data, int size)
 		return 0;
 	}
 
-	memcpy(hdata->readReport, data, size < hdata->input_report_size ?
-			size : hdata->input_report_size);
+	memcpy(hdata->readReport, data, min((u32)size, hdata->input_report_size));
 	set_bit(RMI_READ_DATA_PENDING, &hdata->flags);
 	wake_up(&hdata->wait);
 
@@ -436,7 +436,6 @@ static void rmi_report(struct hid_device *hid, struct hid_report *report)
 		input_sync(field->hidinput->input);
 }
 
-#ifdef CONFIG_PM
 static int rmi_suspend(struct hid_device *hdev, pm_message_t message)
 {
 	struct rmi_data *data = hid_get_drvdata(hdev);
@@ -483,7 +482,6 @@ out:
 	hid_hw_close(hdev);
 	return ret;
 }
-#endif /* CONFIG_PM */
 
 static int rmi_hid_reset(struct rmi_transport_dev *xport, u16 reset_addr)
 {
@@ -774,11 +772,9 @@ static struct hid_driver rmi_driver = {
 	.report			= rmi_report,
 	.input_mapping		= rmi_input_mapping,
 	.input_configured	= rmi_input_configured,
-#ifdef CONFIG_PM
-	.suspend		= rmi_suspend,
-	.resume			= rmi_post_resume,
-	.reset_resume		= rmi_post_resume,
-#endif
+	.suspend		= pm_ptr(rmi_suspend),
+	.resume			= pm_ptr(rmi_post_resume),
+	.reset_resume		= pm_ptr(rmi_post_resume),
 };
 
 module_hid_driver(rmi_driver);

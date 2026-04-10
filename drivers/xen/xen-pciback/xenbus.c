@@ -31,14 +31,14 @@ MODULE_PARM_DESC(passthrough,
 	"   frontend (for example, a device at 06:01.b will still appear at\n"\
 	"   06:01.b to the frontend). This is similar to how Xen 2.0.x\n"\
 	"   exposed PCI devices to its driver domains. This may be required\n"\
-	"   for drivers which depend on finding their hardward in certain\n"\
+	"   for drivers which depend on finding their hardware in certain\n"\
 	"   bus/slot locations.");
 
 static struct xen_pcibk_device *alloc_pdev(struct xenbus_device *xdev)
 {
 	struct xen_pcibk_device *pdev;
 
-	pdev = kzalloc(sizeof(struct xen_pcibk_device), GFP_KERNEL);
+	pdev = kzalloc_obj(struct xen_pcibk_device);
 	if (pdev == NULL)
 		goto out;
 	dev_dbg(&xdev->dev, "allocated pdev @ 0x%p\n", pdev);
@@ -149,12 +149,12 @@ static int xen_pcibk_attach(struct xen_pcibk_device *pdev)
 
 	mutex_lock(&pdev->dev_lock);
 	/* Make sure we only do this setup once */
-	if (xenbus_read_driver_state(pdev->xdev->nodename) !=
+	if (xenbus_read_driver_state(pdev->xdev, pdev->xdev->nodename) !=
 	    XenbusStateInitialised)
 		goto out;
 
 	/* Wait for frontend to state that it has published the configuration */
-	if (xenbus_read_driver_state(pdev->xdev->otherend) !=
+	if (xenbus_read_driver_state(pdev->xdev, pdev->xdev->otherend) !=
 	    XenbusStateInitialised)
 		goto out;
 
@@ -374,7 +374,7 @@ static int xen_pcibk_reconfigure(struct xen_pcibk_device *pdev,
 	dev_dbg(&pdev->xdev->dev, "Reconfiguring device ...\n");
 
 	mutex_lock(&pdev->dev_lock);
-	if (xenbus_read_driver_state(pdev->xdev->nodename) != state)
+	if (xenbus_read_driver_state(pdev->xdev, pdev->xdev->nodename) != state)
 		goto out;
 
 	err = xenbus_scanf(XBT_NIL, pdev->xdev->nodename, "num_devs", "%d",
@@ -572,7 +572,7 @@ static int xen_pcibk_setup_backend(struct xen_pcibk_device *pdev)
 	/* It's possible we could get the call to setup twice, so make sure
 	 * we're not already connected.
 	 */
-	if (xenbus_read_driver_state(pdev->xdev->nodename) !=
+	if (xenbus_read_driver_state(pdev->xdev, pdev->xdev->nodename) !=
 	    XenbusStateInitWait)
 		goto out;
 
@@ -662,7 +662,7 @@ static void xen_pcibk_be_watch(struct xenbus_watch *watch,
 	struct xen_pcibk_device *pdev =
 	    container_of(watch, struct xen_pcibk_device, be_watch);
 
-	switch (xenbus_read_driver_state(pdev->xdev->nodename)) {
+	switch (xenbus_read_driver_state(pdev->xdev, pdev->xdev->nodename)) {
 	case XenbusStateInitWait:
 		xen_pcibk_setup_backend(pdev);
 		break;
@@ -716,14 +716,12 @@ out:
 	return err;
 }
 
-static int xen_pcibk_xenbus_remove(struct xenbus_device *dev)
+static void xen_pcibk_xenbus_remove(struct xenbus_device *dev)
 {
 	struct xen_pcibk_device *pdev = dev_get_drvdata(&dev->dev);
 
 	if (pdev != NULL)
 		free_pdev(pdev);
-
-	return 0;
 }
 
 static const struct xenbus_device_id xen_pcibk_ids[] = {

@@ -640,7 +640,7 @@ static void dce11_pplib_apply_display_requirements(
 	 * on power saving.
 	 *
 	 */
-	pp_display_cfg->min_dcfclock_khz = (context->stream_count > 4)?
+	pp_display_cfg->min_dcfclock_khz = (context->stream_count > 4) ?
 			pp_display_cfg->min_engine_clock_khz : 0;
 
 	pp_display_cfg->min_engine_clock_deep_sleep_khz
@@ -848,7 +848,7 @@ struct clk_mgr *dce_clk_mgr_create(
 	const struct clk_mgr_shift *clk_shift,
 	const struct clk_mgr_mask *clk_mask)
 {
-	struct dce_clk_mgr *clk_mgr_dce = kzalloc(sizeof(*clk_mgr_dce), GFP_KERNEL);
+	struct dce_clk_mgr *clk_mgr_dce = kzalloc_obj(*clk_mgr_dce);
 
 	if (clk_mgr_dce == NULL) {
 		BREAK_TO_DEBUGGER();
@@ -871,7 +871,7 @@ struct clk_mgr *dce110_clk_mgr_create(
 	const struct clk_mgr_shift *clk_shift,
 	const struct clk_mgr_mask *clk_mask)
 {
-	struct dce_clk_mgr *clk_mgr_dce = kzalloc(sizeof(*clk_mgr_dce), GFP_KERNEL);
+	struct dce_clk_mgr *clk_mgr_dce = kzalloc_obj(*clk_mgr_dce);
 
 	if (clk_mgr_dce == NULL) {
 		BREAK_TO_DEBUGGER();
@@ -896,7 +896,7 @@ struct clk_mgr *dce112_clk_mgr_create(
 	const struct clk_mgr_shift *clk_shift,
 	const struct clk_mgr_mask *clk_mask)
 {
-	struct dce_clk_mgr *clk_mgr_dce = kzalloc(sizeof(*clk_mgr_dce), GFP_KERNEL);
+	struct dce_clk_mgr *clk_mgr_dce = kzalloc_obj(*clk_mgr_dce);
 
 	if (clk_mgr_dce == NULL) {
 		BREAK_TO_DEBUGGER();
@@ -917,7 +917,7 @@ struct clk_mgr *dce112_clk_mgr_create(
 
 struct clk_mgr *dce120_clk_mgr_create(struct dc_context *ctx)
 {
-	struct dce_clk_mgr *clk_mgr_dce = kzalloc(sizeof(*clk_mgr_dce), GFP_KERNEL);
+	struct dce_clk_mgr *clk_mgr_dce = kzalloc_obj(*clk_mgr_dce);
 
 	if (clk_mgr_dce == NULL) {
 		BREAK_TO_DEBUGGER();
@@ -939,8 +939,7 @@ struct clk_mgr *dce120_clk_mgr_create(struct dc_context *ctx)
 
 struct clk_mgr *dce121_clk_mgr_create(struct dc_context *ctx)
 {
-	struct dce_clk_mgr *clk_mgr_dce = kzalloc(sizeof(*clk_mgr_dce),
-						  GFP_KERNEL);
+	struct dce_clk_mgr *clk_mgr_dce = kzalloc_obj(*clk_mgr_dce);
 
 	if (clk_mgr_dce == NULL) {
 		BREAK_TO_DEBUGGER();

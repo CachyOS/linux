@@ -209,7 +209,8 @@ static void bu21029_touch_report(struct bu21029_ts_data *bu21029, const u8 *buf)
 
 static void bu21029_touch_release(struct timer_list *t)
 {
-	struct bu21029_ts_data *bu21029 = from_timer(bu21029, t, timer);
+	struct bu21029_ts_data *bu21029 = timer_container_of(bu21029, t,
+							     timer);
 
 	input_report_abs(bu21029->in_dev, ABS_PRESSURE, 0);
 	input_report_key(bu21029->in_dev, BTN_TOUCH, 0);
@@ -325,15 +326,15 @@ static void bu21029_stop_chip(struct input_dev *dev)
 	struct bu21029_ts_data *bu21029 = input_get_drvdata(dev);
 
 	disable_irq(bu21029->client->irq);
-	del_timer_sync(&bu21029->timer);
+	timer_delete_sync(&bu21029->timer);
 
 	bu21029_put_chip_in_reset(bu21029);
 	regulator_disable(bu21029->vdd);
 }
 
-static int bu21029_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int bu21029_probe(struct i2c_client *client)
 {
+	struct device *dev = &client->dev;
 	struct bu21029_ts_data *bu21029;
 	struct input_dev *in_dev;
 	int error;
@@ -342,45 +343,33 @@ static int bu21029_probe(struct i2c_client *client,
 				     I2C_FUNC_SMBUS_WRITE_BYTE |
 				     I2C_FUNC_SMBUS_WRITE_BYTE_DATA |
 				     I2C_FUNC_SMBUS_READ_I2C_BLOCK)) {
-		dev_err(&client->dev,
-			"i2c functionality support is not sufficient\n");
+		dev_err(dev, "i2c functionality support is not sufficient\n");
 		return -EIO;
 	}
 
-	bu21029 = devm_kzalloc(&client->dev, sizeof(*bu21029), GFP_KERNEL);
+	bu21029 = devm_kzalloc(dev, sizeof(*bu21029), GFP_KERNEL);
 	if (!bu21029)
 		return -ENOMEM;
 
-	error = device_property_read_u32(&client->dev, "rohm,x-plate-ohms",
-					 &bu21029->x_plate_ohms);
+	error = device_property_read_u32(dev, "rohm,x-plate-ohms", &bu21029->x_plate_ohms);
 	if (error) {
-		dev_err(&client->dev,
-			"invalid 'x-plate-ohms' supplied: %d\n", error);
+		dev_err(dev, "invalid 'x-plate-ohms' supplied: %d\n", error);
 		return error;
 	}
 
-	bu21029->vdd = devm_regulator_get(&client->dev, "vdd");
-	if (IS_ERR(bu21029->vdd)) {
-		error = PTR_ERR(bu21029->vdd);
-		if (error != -EPROBE_DEFER)
-			dev_err(&client->dev,
-				"failed to acquire 'vdd' supply: %d\n", error);
-		return error;
-	}
+	bu21029->vdd = devm_regulator_get(dev, "vdd");
+	if (IS_ERR(bu21029->vdd))
+		return dev_err_probe(dev, PTR_ERR(bu21029->vdd),
+				     "failed to acquire 'vdd' supply\n");
 
-	bu21029->reset_gpios = devm_gpiod_get_optional(&client->dev,
-						       "reset", GPIOD_OUT_HIGH);
-	if (IS_ERR(bu21029->reset_gpios)) {
-		error = PTR_ERR(bu21029->reset_gpios);
-		if (error != -EPROBE_DEFER)
-			dev_err(&client->dev,
-				"failed to acquire 'reset' gpio: %d\n", error);
-		return error;
-	}
+	bu21029->reset_gpios = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
+	if (IS_ERR(bu21029->reset_gpios))
+		return dev_err_probe(dev, PTR_ERR(bu21029->reset_gpios),
+				     "failed to acquire 'reset' gpio\n");
 
-	in_dev = devm_input_allocate_device(&client->dev);
+	in_dev = devm_input_allocate_device(dev);
 	if (!in_dev) {
-		dev_err(&client->dev, "unable to allocate input device\n");
+		dev_err(dev, "unable to allocate input device\n");
 		return -ENOMEM;
 	}
 
@@ -401,20 +390,18 @@ static int bu21029_probe(struct i2c_client *client,
 
 	input_set_drvdata(in_dev, bu21029);
 
-	error = devm_request_threaded_irq(&client->dev, client->irq,
-					  NULL, bu21029_touch_soft_irq,
+	error = devm_request_threaded_irq(dev, client->irq, NULL,
+					  bu21029_touch_soft_irq,
 					  IRQF_ONESHOT | IRQF_NO_AUTOEN,
 					  DRIVER_NAME, bu21029);
 	if (error) {
-		dev_err(&client->dev,
-			"unable to request touch irq: %d\n", error);
+		dev_err(dev, "unable to request touch irq: %d\n", error);
 		return error;
 	}
 
 	error = input_register_device(in_dev);
 	if (error) {
-		dev_err(&client->dev,
-			"unable to register input device: %d\n", error);
+		dev_err(dev, "unable to register input device: %d\n", error);
 		return error;
 	}
 
@@ -423,7 +410,7 @@ static int bu21029_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int __maybe_unused bu21029_suspend(struct device *dev)
+static int bu21029_suspend(struct device *dev)
 {
 	struct i2c_client *i2c = to_i2c_client(dev);
 	struct bu21029_ts_data *bu21029 = i2c_get_clientdata(i2c);
@@ -438,7 +425,7 @@ static int __maybe_unused bu21029_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused bu21029_resume(struct device *dev)
+static int bu21029_resume(struct device *dev)
 {
 	struct i2c_client *i2c = to_i2c_client(dev);
 	struct bu21029_ts_data *bu21029 = i2c_get_clientdata(i2c);
@@ -452,10 +439,10 @@ static int __maybe_unused bu21029_resume(struct device *dev)
 
 	return 0;
 }
-static SIMPLE_DEV_PM_OPS(bu21029_pm_ops, bu21029_suspend, bu21029_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(bu21029_pm_ops, bu21029_suspend, bu21029_resume);
 
 static const struct i2c_device_id bu21029_ids[] = {
-	{ DRIVER_NAME, 0 },
+	{ DRIVER_NAME },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(i2c, bu21029_ids);
@@ -472,7 +459,7 @@ static struct i2c_driver bu21029_driver = {
 	.driver	= {
 		.name		= DRIVER_NAME,
 		.of_match_table	= of_match_ptr(bu21029_of_ids),
-		.pm		= &bu21029_pm_ops,
+		.pm		= pm_sleep_ptr(&bu21029_pm_ops),
 	},
 	.id_table	= bu21029_ids,
 	.probe		= bu21029_probe,

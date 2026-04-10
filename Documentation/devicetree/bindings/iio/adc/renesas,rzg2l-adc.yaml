@@ -17,11 +17,15 @@ description: |
 
 properties:
   compatible:
-    items:
-      - enum:
-          - renesas,r9a07g044-adc   # RZ/G2L
-          - renesas,r9a07g054-adc   # RZ/V2L
-      - const: renesas,rzg2l-adc
+    oneOf:
+      - items:
+          - enum:
+              - renesas,r9a07g043-adc   # RZ/G2UL and RZ/Five
+              - renesas,r9a07g044-adc   # RZ/G2L
+              - renesas,r9a07g054-adc   # RZ/V2L
+          - const: renesas,rzg2l-adc
+      - items:
+          - const: renesas,r9a08g045-adc  # RZ/G3S
 
   reg:
     maxItems: 1
@@ -56,6 +60,9 @@ properties:
   '#size-cells':
     const: 0
 
+  "#io-channel-cells":
+    const: 1
+
 required:
   - compatible
   - reg
@@ -67,8 +74,8 @@ required:
   - reset-names
 
 patternProperties:
-  "^channel@[0-7]$":
-    $ref: "adc.yaml"
+  "^channel@[0-8]$":
+    $ref: adc.yaml
     type: object
     description: |
       Represents the external channels which are connected to the ADC.
@@ -76,15 +83,43 @@ patternProperties:
     properties:
       reg:
         description: |
-          The channel number. It can have up to 8 channels numbered from 0 to 7.
-        items:
-          - minimum: 0
-            maximum: 7
+          The channel number.
+        minimum: 0
+        maximum: 8
 
     required:
       - reg
 
     additionalProperties: false
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: renesas,r9a07g043-adc
+    then:
+      patternProperties:
+        "^channel@[2-8]$": false
+        "^channel@[0-1]$":
+          properties:
+            reg:
+              maximum: 1
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - renesas,r9a07g044-adc
+              - renesas,r9a07g054-adc
+    then:
+      patternProperties:
+        "^channel@[8]$": false
+        "^channel@[0-7]$":
+          properties:
+            reg:
+              maximum: 7
 
 additionalProperties: false
 

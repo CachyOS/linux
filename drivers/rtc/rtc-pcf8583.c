@@ -275,8 +275,7 @@ static const struct rtc_class_ops pcf8583_rtc_ops = {
 	.set_time	= pcf8583_rtc_set_time,
 };
 
-static int pcf8583_probe(struct i2c_client *client,
-				const struct i2c_device_id *id)
+static int pcf8583_probe(struct i2c_client *client)
 {
 	struct pcf8583 *pcf8583;
 
@@ -298,7 +297,7 @@ static int pcf8583_probe(struct i2c_client *client,
 }
 
 static const struct i2c_device_id pcf8583_id[] = {
-	{ "pcf8583", 0 },
+	{ "pcf8583" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, pcf8583_id);

@@ -8,7 +8,7 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
-#include <asm/dma.h>
+#include <linux/isa-dma.h>
 #include <linux/comedi/comedidev.h>
 #include <linux/comedi/comedi_isadma.h>
 
@@ -161,11 +161,11 @@ struct comedi_isadma *comedi_isadma_alloc(struct comedi_device *dev,
 	if (n_desc < 1 || n_desc > 2)
 		goto no_dma;
 
-	dma = kzalloc(sizeof(*dma), GFP_KERNEL);
+	dma = kzalloc_obj(*dma);
 	if (!dma)
 		goto no_dma;
 
-	desc = kcalloc(n_desc, sizeof(*desc), GFP_KERNEL);
+	desc = kzalloc_objs(*desc, n_desc);
 	if (!desc)
 		goto no_dma;
 	dma->desc = desc;

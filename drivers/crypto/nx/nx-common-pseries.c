@@ -11,6 +11,7 @@
 #include <asm/vio.h>
 #include <asm/hvcall.h>
 #include <asm/vas.h>
+#include <crypto/internal/scompress.h>
 
 #include "nx-842.h"
 #include "nx_csbcpb.h" /* struct nx_csbcpb */
@@ -123,15 +124,17 @@ struct ibm_nx842_counters {
 	atomic64_t decomp_times[32];
 };
 
-static struct nx842_devdata {
+struct nx842_devdata {
 	struct vio_dev *vdev;
 	struct device *dev;
 	struct ibm_nx842_counters *counters;
 	unsigned int max_sg_len;
 	unsigned int max_sync_size;
 	unsigned int max_sync_sg;
-} __rcu *devdata;
-static DEFINE_SPINLOCK(devdata_mutex);
+};
+
+static struct nx842_devdata __rcu *devdata;
+static DEFINE_SPINLOCK(devdata_spinlock);
 
 #define NX842_COUNTER_INC(_x) \
 static inline void nx842_inc_##_x( \
@@ -744,19 +747,19 @@ static int nx842_OF_upd(struct property *new_prop)
 	int ret = 0;
 	unsigned long flags;
 
-	new_devdata = kzalloc(sizeof(*new_devdata), GFP_NOFS);
+	new_devdata = kzalloc_obj(*new_devdata, GFP_NOFS);
 	if (!new_devdata)
 		return -ENOMEM;
 
-	spin_lock_irqsave(&devdata_mutex, flags);
+	spin_lock_irqsave(&devdata_spinlock, flags);
 	old_devdata = rcu_dereference_check(devdata,
-			lockdep_is_held(&devdata_mutex));
+			lockdep_is_held(&devdata_spinlock));
 	if (old_devdata)
 		of_node = old_devdata->dev->of_node;
 
 	if (!old_devdata || !of_node) {
 		pr_err("%s: device is not available\n", __func__);
-		spin_unlock_irqrestore(&devdata_mutex, flags);
+		spin_unlock_irqrestore(&devdata_spinlock, flags);
 		kfree(new_devdata);
 		return -ENODEV;
 	}
@@ -808,7 +811,7 @@ out:
 			old_devdata->max_sg_len);
 
 	rcu_assign_pointer(devdata, new_devdata);
-	spin_unlock_irqrestore(&devdata_mutex, flags);
+	spin_unlock_irqrestore(&devdata_spinlock, flags);
 	synchronize_rcu();
 	dev_set_drvdata(new_devdata->dev, new_devdata);
 	kfree(old_devdata);
@@ -819,13 +822,13 @@ error_out:
 		dev_info(old_devdata->dev, "%s: device disabled\n", __func__);
 		nx842_OF_set_defaults(new_devdata);
 		rcu_assign_pointer(devdata, new_devdata);
-		spin_unlock_irqrestore(&devdata_mutex, flags);
+		spin_unlock_irqrestore(&devdata_spinlock, flags);
 		synchronize_rcu();
 		dev_set_drvdata(new_devdata->dev, new_devdata);
 		kfree(old_devdata);
 	} else {
 		dev_err(old_devdata->dev, "%s: could not update driver from hardware\n", __func__);
-		spin_unlock_irqrestore(&devdata_mutex, flags);
+		spin_unlock_irqrestore(&devdata_spinlock, flags);
 	}
 
 	if (!ret)
@@ -1006,23 +1009,23 @@ static struct nx842_driver nx842_pseries_driver = {
 	.decompress =	nx842_pseries_decompress,
 };
 
-static int nx842_pseries_crypto_init(struct crypto_tfm *tfm)
+static void *nx842_pseries_crypto_alloc_ctx(void)
 {
-	return nx842_crypto_init(tfm, &nx842_pseries_driver);
+	return nx842_crypto_alloc_ctx(&nx842_pseries_driver);
 }
 
-static struct crypto_alg nx842_pseries_alg = {
-	.cra_name		= "842",
-	.cra_driver_name	= "842-nx",
-	.cra_priority		= 300,
-	.cra_flags		= CRYPTO_ALG_TYPE_COMPRESS,
-	.cra_ctxsize		= sizeof(struct nx842_crypto_ctx),
-	.cra_module		= THIS_MODULE,
-	.cra_init		= nx842_pseries_crypto_init,
-	.cra_exit		= nx842_crypto_exit,
-	.cra_u			= { .compress = {
-	.coa_compress		= nx842_crypto_compress,
-	.coa_decompress		= nx842_crypto_decompress } }
+static struct scomp_alg nx842_pseries_alg = {
+	.base.cra_name		= "842",
+	.base.cra_driver_name	= "842-nx",
+	.base.cra_priority	= 300,
+	.base.cra_module	= THIS_MODULE,
+
+	.streams		= {
+		.alloc_ctx	= nx842_pseries_crypto_alloc_ctx,
+		.free_ctx	= nx842_crypto_free_ctx,
+	},
+	.compress		= nx842_crypto_compress,
+	.decompress		= nx842_crypto_decompress,
 };
 
 static int nx842_probe(struct vio_dev *viodev,
@@ -1032,20 +1035,19 @@ static int nx842_probe(struct vio_dev *viodev,
 	unsigned long flags;
 	int ret = 0;
 
-	new_devdata = kzalloc(sizeof(*new_devdata), GFP_NOFS);
+	new_devdata = kzalloc_obj(*new_devdata, GFP_NOFS);
 	if (!new_devdata)
 		return -ENOMEM;
 
-	new_devdata->counters = kzalloc(sizeof(*new_devdata->counters),
-			GFP_NOFS);
+	new_devdata->counters = kzalloc_obj(*new_devdata->counters, GFP_NOFS);
 	if (!new_devdata->counters) {
 		kfree(new_devdata);
 		return -ENOMEM;
 	}
 
-	spin_lock_irqsave(&devdata_mutex, flags);
+	spin_lock_irqsave(&devdata_spinlock, flags);
 	old_devdata = rcu_dereference_check(devdata,
-			lockdep_is_held(&devdata_mutex));
+			lockdep_is_held(&devdata_spinlock));
 
 	if (old_devdata && old_devdata->vdev != NULL) {
 		dev_err(&viodev->dev, "%s: Attempt to register more than one instance of the hardware\n", __func__);
@@ -1060,7 +1062,7 @@ static int nx842_probe(struct vio_dev *viodev,
 	nx842_OF_set_defaults(new_devdata);
 
 	rcu_assign_pointer(devdata, new_devdata);
-	spin_unlock_irqrestore(&devdata_mutex, flags);
+	spin_unlock_irqrestore(&devdata_spinlock, flags);
 	synchronize_rcu();
 	kfree(old_devdata);
 
@@ -1070,7 +1072,7 @@ static int nx842_probe(struct vio_dev *viodev,
 	if (ret)
 		goto error;
 
-	ret = crypto_register_alg(&nx842_pseries_alg);
+	ret = crypto_register_scomp(&nx842_pseries_alg);
 	if (ret) {
 		dev_err(&viodev->dev, "could not register comp alg: %d\n", ret);
 		goto error;
@@ -1099,7 +1101,7 @@ static int nx842_probe(struct vio_dev *viodev,
 	return 0;
 
 error_unlock:
-	spin_unlock_irqrestore(&devdata_mutex, flags);
+	spin_unlock_irqrestore(&devdata_spinlock, flags);
 	if (new_devdata)
 		kfree(new_devdata->counters);
 	kfree(new_devdata);
@@ -1118,14 +1120,15 @@ static void nx842_remove(struct vio_dev *viodev)
 	if (caps_feat)
 		sysfs_remove_group(&viodev->dev.kobj, &nxcop_caps_attr_group);
 
-	crypto_unregister_alg(&nx842_pseries_alg);
+	crypto_unregister_scomp(&nx842_pseries_alg);
 
-	spin_lock_irqsave(&devdata_mutex, flags);
-	old_devdata = rcu_dereference_check(devdata,
-			lockdep_is_held(&devdata_mutex));
 	of_reconfig_notifier_unregister(&nx842_of_nb);
+
+	spin_lock_irqsave(&devdata_spinlock, flags);
+	old_devdata = rcu_dereference_check(devdata,
+			lockdep_is_held(&devdata_spinlock));
 	RCU_INIT_POINTER(devdata, NULL);
-	spin_unlock_irqrestore(&devdata_mutex, flags);
+	spin_unlock_irqrestore(&devdata_spinlock, flags);
 	synchronize_rcu();
 	dev_set_drvdata(&viodev->dev, NULL);
 	if (old_devdata)
@@ -1142,9 +1145,10 @@ static void __init nxcop_get_capabilities(void)
 {
 	struct hv_vas_all_caps *hv_caps;
 	struct hv_nx_cop_caps *hv_nxc;
+	u64 feat;
 	int rc;
 
-	hv_caps = kmalloc(sizeof(*hv_caps), GFP_KERNEL);
+	hv_caps = kmalloc_obj(*hv_caps);
 	if (!hv_caps)
 		return;
 	/*
@@ -1152,27 +1156,26 @@ static void __init nxcop_get_capabilities(void)
 	 */
 	rc = h_query_vas_capabilities(H_QUERY_NX_CAPABILITIES, 0,
 					  (u64)virt_to_phys(hv_caps));
+	if (!rc)
+		feat = be64_to_cpu(hv_caps->feat_type);
+	kfree(hv_caps);
 	if (rc)
-		goto out;
+		return;
+	if (!(feat & VAS_NX_GZIP_FEAT_BIT))
+		return;
 
-	caps_feat = be64_to_cpu(hv_caps->feat_type);
 	/*
 	 * NX-GZIP feature available
 	 */
-	if (caps_feat & VAS_NX_GZIP_FEAT_BIT) {
-		hv_nxc = kmalloc(sizeof(*hv_nxc), GFP_KERNEL);
-		if (!hv_nxc)
-			goto out;
-		/*
-		 * Get capabilities for NX-GZIP feature
-		 */
-		rc = h_query_vas_capabilities(H_QUERY_NX_CAPABILITIES,
-						  VAS_NX_GZIP_FEAT,
-						  (u64)virt_to_phys(hv_nxc));
-	} else {
-		pr_err("NX-GZIP feature is not available\n");
-		rc = -EINVAL;
-	}
+	hv_nxc = kmalloc_obj(*hv_nxc);
+	if (!hv_nxc)
+		return;
+	/*
+	 * Get capabilities for NX-GZIP feature
+	 */
+	rc = h_query_vas_capabilities(H_QUERY_NX_CAPABILITIES,
+					  VAS_NX_GZIP_FEAT,
+					  (u64)virt_to_phys(hv_nxc));
 
 	if (!rc) {
 		nx_cop_caps.descriptor = be64_to_cpu(hv_nxc->descriptor);
@@ -1182,13 +1185,10 @@ static void __init nxcop_get_capabilities(void)
 				be64_to_cpu(hv_nxc->min_compress_len);
 		nx_cop_caps.min_decompress_len =
 				be64_to_cpu(hv_nxc->min_decompress_len);
-	} else {
-		caps_feat = 0;
+		caps_feat = feat;
 	}
 
 	kfree(hv_nxc);
-out:
-	kfree(hv_caps);
 }
 
 static const struct vio_device_id nx842_vio_driver_ids[] = {
@@ -1208,13 +1208,16 @@ static struct vio_driver nx842_vio_driver = {
 static int __init nx842_pseries_init(void)
 {
 	struct nx842_devdata *new_devdata;
+	struct device_node *np;
 	int ret;
 
-	if (!of_find_compatible_node(NULL, NULL, "ibm,compression"))
+	np = of_find_compatible_node(NULL, NULL, "ibm,compression");
+	if (!np)
 		return -ENODEV;
+	of_node_put(np);
 
 	RCU_INIT_POINTER(devdata, NULL);
-	new_devdata = kzalloc(sizeof(*new_devdata), GFP_KERNEL);
+	new_devdata = kzalloc_obj(*new_devdata);
 	if (!new_devdata)
 		return -ENOMEM;
 
@@ -1250,13 +1253,13 @@ static void __exit nx842_pseries_exit(void)
 
 	vas_unregister_api_pseries();
 
-	crypto_unregister_alg(&nx842_pseries_alg);
+	crypto_unregister_scomp(&nx842_pseries_alg);
 
-	spin_lock_irqsave(&devdata_mutex, flags);
+	spin_lock_irqsave(&devdata_spinlock, flags);
 	old_devdata = rcu_dereference_check(devdata,
-			lockdep_is_held(&devdata_mutex));
+			lockdep_is_held(&devdata_spinlock));
 	RCU_INIT_POINTER(devdata, NULL);
-	spin_unlock_irqrestore(&devdata_mutex, flags);
+	spin_unlock_irqrestore(&devdata_spinlock, flags);
 	synchronize_rcu();
 	if (old_devdata && old_devdata->dev)
 		dev_set_drvdata(old_devdata->dev, NULL);

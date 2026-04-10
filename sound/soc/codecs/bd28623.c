@@ -70,8 +70,7 @@ static void bd28623_power_off(struct bd28623_priv *bd)
 static int bd28623_get_switch_spk(struct snd_kcontrol *kcontrol,
 				  struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component =
-		snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct bd28623_priv *bd = snd_soc_component_get_drvdata(component);
 
 	ucontrol->value.integer.value[0] = bd->switch_spk;
@@ -82,8 +81,7 @@ static int bd28623_get_switch_spk(struct snd_kcontrol *kcontrol,
 static int bd28623_set_switch_spk(struct snd_kcontrol *kcontrol,
 				  struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component =
-		snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct bd28623_priv *bd = snd_soc_component_get_drvdata(component);
 
 	if (bd->switch_spk == ucontrol->value.integer.value[0])
@@ -161,7 +159,6 @@ static const struct snd_soc_component_driver soc_codec_bd = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static struct snd_soc_dai_driver soc_dai_bd = {

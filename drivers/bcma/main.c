@@ -14,6 +14,7 @@
 #include <linux/slab.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
+#include <linux/of_device.h>
 #include <linux/of_platform.h>
 
 MODULE_DESCRIPTION("Broadcom's specific AMBA driver");
@@ -25,10 +26,10 @@ static unsigned int bcma_bus_next_num;
 /* bcma_buses_mutex locks the bcma_bus_next_num */
 static DEFINE_MUTEX(bcma_buses_mutex);
 
-static int bcma_bus_match(struct device *dev, struct device_driver *drv);
+static int bcma_bus_match(struct device *dev, const struct device_driver *drv);
 static int bcma_device_probe(struct device *dev);
 static void bcma_device_remove(struct device *dev);
-static int bcma_device_uevent(struct device *dev, struct kobj_uevent_env *env);
+static int bcma_device_uevent(const struct device *dev, struct kobj_uevent_env *env);
 
 static ssize_t manuf_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -67,7 +68,7 @@ static struct attribute *bcma_device_attrs[] = {
 };
 ATTRIBUTE_GROUPS(bcma_device);
 
-static struct bus_type bcma_bus_type = {
+static const struct bus_type bcma_bus_type = {
 	.name		= "bcma",
 	.match		= bcma_bus_match,
 	.probe		= bcma_device_probe,
@@ -140,17 +141,17 @@ static struct device_node *bcma_of_find_child_device(struct device *parent,
 						     struct bcma_device *core)
 {
 	struct device_node *node;
-	u64 size;
-	const __be32 *reg;
+	int ret;
 
 	if (!parent->of_node)
 		return NULL;
 
 	for_each_child_of_node(parent->of_node, node) {
-		reg = of_get_address(node, 0, &size, NULL);
-		if (!reg)
+		struct resource res;
+		ret = of_address_to_resource(node, 0, &res);
+		if (ret)
 			continue;
-		if (of_translate_address(node, reg) == core->addr)
+		if (res.start == core->addr)
 			return node;
 	}
 	return NULL;
@@ -293,6 +294,8 @@ static int bcma_register_devices(struct bcma_bus *bus)
 	int err;
 
 	list_for_each_entry(core, &bus->cores, list) {
+		struct device_node *np;
+
 		/* We support that core ourselves */
 		switch (core->id.id) {
 		case BCMA_CORE_4706_CHIPCOMMON:
@@ -308,6 +311,10 @@ static int bcma_register_devices(struct bcma_bus *bus)
 
 		/* Early cores were already registered */
 		if (bcma_is_core_needed_early(core->id.id))
+			continue;
+
+		np = core->dev.of_node;
+		if (np && !of_device_is_available(np))
 			continue;
 
 		/* Only first GMAC core on BCM4706 is connected and working */
@@ -344,8 +351,10 @@ static int bcma_register_devices(struct bcma_bus *bus)
 	err = bcma_gpio_init(&bus->drv_cc);
 	if (err == -ENOTSUPP)
 		bcma_debug(bus, "GPIO driver not activated\n");
-	else if (err)
+	else if (err) {
 		bcma_err(bus, "Error registering GPIO driver: %i\n", err);
+		return err;
+	}
 
 	if (bus->hosttype == BCMA_HOSTTYPE_SOC) {
 		err = bcma_chipco_watchdog_register(&bus->drv_cc);
@@ -581,10 +590,10 @@ void bcma_driver_unregister(struct bcma_driver *drv)
 }
 EXPORT_SYMBOL_GPL(bcma_driver_unregister);
 
-static int bcma_bus_match(struct device *dev, struct device_driver *drv)
+static int bcma_bus_match(struct device *dev, const struct device_driver *drv)
 {
 	struct bcma_device *core = container_of(dev, struct bcma_device, dev);
-	struct bcma_driver *adrv = container_of(drv, struct bcma_driver, drv);
+	const struct bcma_driver *adrv = container_of_const(drv, struct bcma_driver, drv);
 	const struct bcma_device_id *cid = &core->id;
 	const struct bcma_device_id *did;
 
@@ -625,9 +634,9 @@ static void bcma_device_remove(struct device *dev)
 	put_device(dev);
 }
 
-static int bcma_device_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int bcma_device_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct bcma_device *core = container_of(dev, struct bcma_device, dev);
+	const struct bcma_device *core = container_of_const(dev, struct bcma_device, dev);
 
 	return add_uevent_var(env,
 			      "MODALIAS=bcma:m%04Xid%04Xrev%02Xcl%02X",

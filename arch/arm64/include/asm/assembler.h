@@ -5,14 +5,14 @@
  * Copyright (C) 1996-2000 Russell King
  * Copyright (C) 2012 ARM Ltd.
  */
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #error "Only include this from assembly code"
 #endif
 
 #ifndef __ASM_ASSEMBLER_H
 #define __ASM_ASSEMBLER_H
 
-#include <asm-generic/export.h>
+#include <linux/export.h>
 
 #include <asm/alternative.h>
 #include <asm/asm-bug.h>
@@ -34,31 +34,18 @@
 	wx\n	.req	w\n
 	.endr
 
-	.macro save_and_disable_daif, flags
-	mrs	\flags, daif
-	msr	daifset, #0xf
-	.endm
-
 	.macro disable_daif
 	msr	daifset, #0xf
-	.endm
-
-	.macro enable_daif
-	msr	daifclr, #0xf
-	.endm
-
-	.macro	restore_daif, flags:req
-	msr	daif, \flags
-	.endm
-
-	/* IRQ/FIQ are the lowest priority flags, unconditionally unmask the rest. */
-	.macro enable_da
-	msr	daifclr, #(8 | 4)
 	.endm
 
 /*
  * Save/restore interrupts.
  */
+	.macro save_and_disable_daif, flags
+	mrs	\flags, daif
+	msr	daifset, #0xf
+	.endm
+
 	.macro	save_and_disable_irq, flags
 	mrs	\flags, daif
 	msr	daifset, #3
@@ -68,16 +55,12 @@
 	msr	daif, \flags
 	.endm
 
-	.macro	enable_dbg
-	msr	daifclr, #8
-	.endm
-
 	.macro	disable_step_tsk, flgs, tmp
 	tbz	\flgs, #TIF_SINGLESTEP, 9990f
 	mrs	\tmp, mdscr_el1
-	bic	\tmp, \tmp, #DBG_MDSCR_SS
+	bic	\tmp, \tmp, #MDSCR_EL1_SS
 	msr	mdscr_el1, \tmp
-	isb	// Synchronise with enable_dbg
+	isb	// Take effect before a subsequent clear of DAIF.D
 9990:
 	.endm
 
@@ -85,7 +68,7 @@
 	.macro	enable_step_tsk, flgs, tmp
 	tbz	\flgs, #TIF_SINGLESTEP, 9990f
 	mrs	\tmp, mdscr_el1
-	orr	\tmp, \tmp, #DBG_MDSCR_SS
+	orr	\tmp, \tmp, #MDSCR_EL1_SS
 	msr	mdscr_el1, \tmp
 9990:
 	.endm
@@ -271,13 +254,6 @@ alternative_endif
 	.endm
 
 /*
- * vma_vm_mm - get mm pointer from vma pointer (vma->vm_mm)
- */
-	.macro	vma_vm_mm, rd, rn
-	ldr	\rd, [\rn, #VMA_VM_MM]
-	.endm
-
-/*
  * read_ctr - read CTR_EL0. If the system has mismatched register fields,
  * provide the system wide safe value from arm64_ftr_reg_ctrel0.sys_val
  */
@@ -293,7 +269,7 @@ alternative_endif
 alternative_if_not ARM64_KVM_PROTECTED_MODE
 	ASM_BUG()
 alternative_else_nop_endif
-alternative_cb kvm_compute_final_ctr_el0
+alternative_cb ARM64_ALWAYS_SYSTEM, kvm_compute_final_ctr_el0
 	movz	\reg, #0
 	movk	\reg, #0, lsl #16
 	movk	\reg, #0, lsl #32
@@ -349,14 +325,14 @@ alternative_cb_end
  * tcr_set_t0sz - update TCR.T0SZ so that we can load the ID map
  */
 	.macro	tcr_set_t0sz, valreg, t0sz
-	bfi	\valreg, \t0sz, #TCR_T0SZ_OFFSET, #TCR_TxSZ_WIDTH
+	bfi	\valreg, \t0sz, #TCR_EL1_T0SZ_SHIFT, #TCR_EL1_T0SZ_WIDTH
 	.endm
 
 /*
  * tcr_set_t1sz - update TCR.T1SZ
  */
 	.macro	tcr_set_t1sz, valreg, t1sz
-	bfi	\valreg, \t1sz, #TCR_T1SZ_OFFSET, #TCR_TxSZ_WIDTH
+	bfi	\valreg, \t1sz, #TCR_EL1_T1SZ_SHIFT, #TCR_EL1_T1SZ_WIDTH
 	.endm
 
 /*
@@ -370,8 +346,13 @@ alternative_cb_end
 	.macro	tcr_compute_pa_size, tcr, pos, tmp0, tmp1
 	mrs	\tmp0, ID_AA64MMFR0_EL1
 	// Narrow PARange to fit the PS field in TCR_ELx
-	ubfx	\tmp0, \tmp0, #ID_AA64MMFR0_PARANGE_SHIFT, #3
-	mov	\tmp1, #ID_AA64MMFR0_PARANGE_MAX
+	ubfx	\tmp0, \tmp0, #ID_AA64MMFR0_EL1_PARANGE_SHIFT, #3
+	mov	\tmp1, #ID_AA64MMFR0_EL1_PARANGE_MAX
+#ifdef CONFIG_ARM64_LPA2
+alternative_if_not ARM64_HAS_VA52
+	mov	\tmp1, #ID_AA64MMFR0_EL1_PARANGE_48
+alternative_else_nop_endif
+#endif
 	cmp	\tmp0, \tmp1
 	csel	\tmp0, \tmp1, \tmp0, hi
 	bfi	\tcr, \tmp0, \pos, #3
@@ -390,7 +371,7 @@ alternative_endif
  * [start, end) with dcache line size explicitly provided.
  *
  * 	op:		operation passed to dc instruction
- * 	domain:		domain used in dsb instruciton
+ * 	domain:		domain used in dsb instruction
  * 	start:          starting virtual address of the region
  * 	end:            end virtual address of the region
  *	linesz:		dcache line size
@@ -400,6 +381,9 @@ alternative_endif
 	.macro dcache_by_myline_op op, domain, start, end, linesz, tmp, fixup
 	sub	\tmp, \linesz, #1
 	bic	\start, \start, \tmp
+alternative_if ARM64_WORKAROUND_4311569
+	mov	\tmp, \start
+alternative_else_nop_endif
 .Ldcache_op\@:
 	.ifc	\op, cvau
 	__dcache_op_workaround_clean_cache \op, \start
@@ -421,9 +405,16 @@ alternative_endif
 	add	\start, \start, \linesz
 	cmp	\start, \end
 	b.lo	.Ldcache_op\@
+alternative_if ARM64_WORKAROUND_4311569
+	.ifnc	\op, cvau
+	mov	\start, \tmp
+	mov	\tmp, xzr
+	cbnz	\start, .Ldcache_op\@
+	.endif
+alternative_else_nop_endif
 	dsb	\domain
 
-	_cond_extable .Ldcache_op\@, \fixup
+	_cond_uaccess_extable .Ldcache_op\@, \fixup
 	.endm
 
 /*
@@ -431,7 +422,7 @@ alternative_endif
  * [start, end)
  *
  * 	op:		operation passed to dc instruction
- * 	domain:		domain used in dsb instruciton
+ * 	domain:		domain used in dsb instruction
  * 	start:          starting virtual address of the region
  * 	end:            end virtual address of the region
  * 	fixup:		optional label to branch to on user fault
@@ -462,7 +453,19 @@ alternative_endif
 	dsb	ish
 	isb
 
-	_cond_extable .Licache_op\@, \fixup
+	_cond_uaccess_extable .Licache_op\@, \fixup
+	.endm
+
+/*
+ * load_ttbr1 - install @pgtbl as a TTBR1 page table
+ * pgtbl preserved
+ * tmp1/tmp2 clobbered, either may overlap with pgtbl
+ */
+	.macro		load_ttbr1, pgtbl, tmp1, tmp2
+	phys_to_ttbr	\tmp1, \pgtbl
+	offset_ttbr1 	\tmp1, \tmp2
+	msr		ttbr1_el1, \tmp1
+	isb
 	.endm
 
 /*
@@ -478,10 +481,7 @@ alternative_endif
 	isb
 	tlbi	vmalle1
 	dsb	nsh
-	phys_to_ttbr \tmp, \page_table
-	offset_ttbr1 \tmp, \tmp2
-	msr	ttbr1_el1, \tmp
-	isb
+	load_ttbr1 \page_table, \tmp, \tmp2
 	.endm
 
 /*
@@ -489,9 +489,10 @@ alternative_endif
  */
 	.macro	reset_pmuserenr_el0, tmpreg
 	mrs	\tmpreg, id_aa64dfr0_el1
-	sbfx	\tmpreg, \tmpreg, #ID_AA64DFR0_PMUVER_SHIFT, #4
-	cmp	\tmpreg, #1			// Skip if no PMU present
-	b.lt	9000f
+	ubfx	\tmpreg, \tmpreg, #ID_AA64DFR0_EL1_PMUVer_SHIFT, #4
+	cmp	\tmpreg, #ID_AA64DFR0_EL1_PMUVer_NI
+	ccmp	\tmpreg, #ID_AA64DFR0_EL1_PMUVer_IMP_DEF, #4, ne
+	b.eq	9000f				// Skip if no PMU present or IMP_DEF
 	msr	pmuserenr_el0, xzr		// Disable PMU access from EL0
 9000:
 	.endm
@@ -501,7 +502,7 @@ alternative_endif
  */
 	.macro	reset_amuserenr_el0, tmpreg
 	mrs	\tmpreg, id_aa64pfr0_el1	// Check ID_AA64PFR0_EL1
-	ubfx	\tmpreg, \tmpreg, #ID_AA64PFR0_AMU_SHIFT, #4
+	ubfx	\tmpreg, \tmpreg, #ID_AA64PFR0_EL1_AMU_SHIFT, #4
 	cbz	\tmpreg, .Lskip_\@		// Skip if no AMU present
 	msr_s	SYS_AMUSERENR_EL0, xzr		// Disable AMU access from EL0
 .Lskip_\@:
@@ -581,29 +582,27 @@ alternative_endif
 	.endm
 
 /*
- * Offset ttbr1 to allow for 48-bit kernel VAs set with 52-bit PTRS_PER_PGD.
+ * If the kernel is built for 52-bit virtual addressing but the hardware only
+ * supports 48 bits, we cannot program the pgdir address into TTBR1 directly,
+ * but we have to add an offset so that the TTBR1 address corresponds with the
+ * pgdir entry that covers the lowest 48-bit addressable VA.
+ *
+ * Note that this trick is only used for LVA/64k pages - LPA2/4k pages uses an
+ * additional paging level, and on LPA2/16k pages, we would end up with a root
+ * level table with only 2 entries, which is suboptimal in terms of TLB
+ * utilization, so there we fall back to 47 bits of translation if LPA2 is not
+ * supported.
+ *
  * orr is used as it can cover the immediate value (and is idempotent).
- * In future this may be nop'ed out when dealing with 52-bit kernel VAs.
  * 	ttbr: Value of ttbr to set, modified.
  */
 	.macro	offset_ttbr1, ttbr, tmp
-#ifdef CONFIG_ARM64_VA_BITS_52
-	mrs_s	\tmp, SYS_ID_AA64MMFR2_EL1
-	and	\tmp, \tmp, #(0xf << ID_AA64MMFR2_LVA_SHIFT)
-	cbnz	\tmp, .Lskipoffs_\@
-	orr	\ttbr, \ttbr, #TTBR1_BADDR_4852_OFFSET
-.Lskipoffs_\@ :
-#endif
-	.endm
-
-/*
- * Perform the reverse of offset_ttbr1.
- * bic is used as it can cover the immediate value and, in future, won't need
- * to be nop'ed out when dealing with 52-bit kernel VAs.
- */
-	.macro	restore_ttbr1, ttbr
-#ifdef CONFIG_ARM64_VA_BITS_52
-	bic	\ttbr, \ttbr, #TTBR1_BADDR_4852_OFFSET
+#if defined(CONFIG_ARM64_VA_BITS_52) && !defined(CONFIG_ARM64_LPA2)
+	mrs	\tmp, tcr_el1
+	and	\tmp, \tmp, #TCR_EL1_T1SZ_MASK
+	cmp	\tmp, #TCR_T1SZ(VA_BITS_MIN)
+	orr	\tmp, \ttbr, #TTBR1_BADDR_4852_OFFSET
+	csel	\ttbr, \tmp, \ttbr, eq
 #endif
 	.endm
 
@@ -625,24 +624,10 @@ alternative_endif
 
 	.macro	phys_to_pte, pte, phys
 #ifdef CONFIG_ARM64_PA_BITS_52
-	/*
-	 * We assume \phys is 64K aligned and this is guaranteed by only
-	 * supporting this configuration with 64K pages.
-	 */
-	orr	\pte, \phys, \phys, lsr #36
-	and	\pte, \pte, #PTE_ADDR_MASK
+	orr	\pte, \phys, \phys, lsr #PTE_ADDR_HIGH_SHIFT
+	and	\pte, \pte, #PHYS_TO_PTE_ADDR_MASK
 #else
 	mov	\pte, \phys
-#endif
-	.endm
-
-	.macro	pte_to_phys, phys, pte
-#ifdef CONFIG_ARM64_PA_BITS_52
-	ubfiz	\phys, \pte, #(48 - 16 - 12), #16
-	bfxil	\phys, \pte, #16, #32
-	lsl	\phys, \phys, #16
-#else
-	and	\phys, \pte, #PTE_ADDR_MASK
 #endif
 	.endm
 
@@ -764,32 +749,25 @@ alternative_endif
 .endm
 
 	/*
-	 * Check whether preempt/bh-disabled asm code should yield as soon as
-	 * it is able. This is the case if we are currently running in task
-	 * context, and either a softirq is pending, or the TIF_NEED_RESCHED
-	 * flag is set and re-enabling preemption a single time would result in
-	 * a preempt count of zero. (Note that the TIF_NEED_RESCHED flag is
-	 * stored negated in the top word of the thread_info::preempt_count
+	 * Check whether asm code should yield as soon as it is able. This is
+	 * the case if we are currently running in task context, and the
+	 * TIF_NEED_RESCHED flag is set. (Note that the TIF_NEED_RESCHED flag
+	 * is stored negated in the top word of the thread_info::preempt_count
 	 * field)
 	 */
-	.macro		cond_yield, lbl:req, tmp:req, tmp2:req
+	.macro		cond_yield, lbl:req, tmp:req, tmp2
+#ifdef CONFIG_PREEMPT_VOLUNTARY
 	get_current_task \tmp
 	ldr		\tmp, [\tmp, #TSK_TI_PREEMPT]
 	/*
 	 * If we are serving a softirq, there is no point in yielding: the
 	 * softirq will not be preempted no matter what we do, so we should
-	 * run to completion as quickly as we can.
+	 * run to completion as quickly as we can. The preempt_count field will
+	 * have BIT(SOFTIRQ_SHIFT) set in this case, so the zero check will
+	 * catch this case too.
 	 */
-	tbnz		\tmp, #SOFTIRQ_SHIFT, .Lnoyield_\@
-#ifdef CONFIG_PREEMPTION
-	sub		\tmp, \tmp, #PREEMPT_DISABLE_OFFSET
 	cbz		\tmp, \lbl
 #endif
-	adr_l		\tmp, irq_stat + IRQ_CPUSTAT_SOFTIRQ_PENDING
-	get_this_cpu_offset	\tmp2
-	ldr		w\tmp, [\tmp, \tmp2]
-	cbnz		w\tmp, \lbl	// yield on pending softirq in task context
-.Lnoyield_\@:
 	.endm
 
 /*
@@ -854,7 +832,7 @@ alternative_endif
 
 	.macro __mitigate_spectre_bhb_loop      tmp
 #ifdef CONFIG_MITIGATE_SPECTRE_BRANCH_HISTORY
-alternative_cb  spectre_bhb_patch_loop_iter
+alternative_cb ARM64_ALWAYS_SYSTEM, spectre_bhb_patch_loop_iter
 	mov	\tmp, #32		// Patched to correct the immediate
 alternative_cb_end
 .Lspectre_bhb_loop\@:
@@ -867,7 +845,7 @@ alternative_cb_end
 
 	.macro mitigate_spectre_bhb_loop	tmp
 #ifdef CONFIG_MITIGATE_SPECTRE_BRANCH_HISTORY
-alternative_cb	spectre_bhb_patch_loop_mitigation_enable
+alternative_cb ARM64_ALWAYS_SYSTEM, spectre_bhb_patch_loop_mitigation_enable
 	b	.L_spectre_bhb_loop_done\@	// Patched to NOP
 alternative_cb_end
 	__mitigate_spectre_bhb_loop	\tmp
@@ -881,7 +859,7 @@ alternative_cb_end
 	stp	x0, x1, [sp, #-16]!
 	stp	x2, x3, [sp, #-16]!
 	mov	w0, #ARM_SMCCC_ARCH_WORKAROUND_3
-alternative_cb	smccc_patch_fw_mitigation_conduit
+alternative_cb ARM64_ALWAYS_SYSTEM, smccc_patch_fw_mitigation_conduit
 	nop					// Patched to SMC/HVC #0
 alternative_cb_end
 	ldp	x2, x3, [sp], #16
@@ -891,7 +869,7 @@ alternative_cb_end
 
 	.macro mitigate_spectre_bhb_clear_insn
 #ifdef CONFIG_MITIGATE_SPECTRE_BRANCH_HISTORY
-alternative_cb	spectre_bhb_patch_clearbhb
+alternative_cb ARM64_ALWAYS_SYSTEM, spectre_bhb_patch_clearbhb
 	/* Patched to NOP when not supported */
 	clearbhb
 	isb

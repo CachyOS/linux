@@ -30,6 +30,7 @@
 #include <linux/platform_device.h>
 #include <linux/of_address.h>
 #include <linux/of.h>
+#include <linux/security.h>
 
 struct phram_mtd_list {
 	struct mtd_info mtd;
@@ -129,7 +130,7 @@ static int register_device(struct platform_device *pdev, const char *name,
 	struct phram_mtd_list *new;
 	int ret = -ENOMEM;
 
-	new = kzalloc(sizeof(*new), GFP_KERNEL);
+	new = kzalloc_obj(*new);
 	if (!new)
 		goto out0;
 
@@ -388,15 +389,13 @@ static int phram_probe(struct platform_device *pdev)
 			       PAGE_SIZE);
 }
 
-static int phram_remove(struct platform_device *pdev)
+static void phram_remove(struct platform_device *pdev)
 {
 	struct phram_mtd_list *phram = platform_get_drvdata(pdev);
 
 	mtd_device_unregister(&phram->mtd);
 	phram_unmap(phram);
 	kfree(phram);
-
-	return 0;
 }
 
 static struct platform_driver phram_driver = {
@@ -412,18 +411,22 @@ static int __init init_phram(void)
 {
 	int ret;
 
+	ret = security_locked_down(LOCKDOWN_DEV_MEM);
+	if (ret)
+		return ret;
+
 	ret = platform_driver_register(&phram_driver);
 	if (ret)
 		return ret;
 
 #ifndef MODULE
-	if (phram_paramline[0])
+	if (phram_paramline[0]) {
 		ret = phram_setup(phram_paramline);
+		if (ret)
+			platform_driver_unregister(&phram_driver);
+	}
 	phram_init_called = 1;
 #endif
-
-	if (ret)
-		platform_driver_unregister(&phram_driver);
 
 	return ret;
 }

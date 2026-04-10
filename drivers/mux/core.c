@@ -19,7 +19,6 @@
 #include <linux/mux/consumer.h>
 #include <linux/mux/driver.h>
 #include <linux/of.h>
-#include <linux/of_platform.h>
 #include <linux/slab.h>
 
 /*
@@ -43,9 +42,8 @@ struct mux_state {
 	unsigned int state;
 };
 
-static struct class mux_class = {
+static const struct class mux_class = {
 	.name = "mux",
-	.owner = THIS_MODULE,
 };
 
 static DEFINE_IDA(mux_ida);
@@ -66,7 +64,7 @@ static void mux_chip_release(struct device *dev)
 {
 	struct mux_chip *mux_chip = to_mux_chip(dev);
 
-	ida_simple_remove(&mux_ida, mux_chip->id);
+	ida_free(&mux_ida, mux_chip->id);
 	kfree(mux_chip);
 }
 
@@ -100,20 +98,19 @@ struct mux_chip *mux_chip_alloc(struct device *dev,
 	if (WARN_ON(!dev || !controllers))
 		return ERR_PTR(-EINVAL);
 
-	mux_chip = kzalloc(sizeof(*mux_chip) +
-			   controllers * sizeof(*mux_chip->mux) +
-			   sizeof_priv, GFP_KERNEL);
+	mux_chip = kzalloc(size_add(struct_size(mux_chip, mux, controllers),
+				    sizeof_priv),
+			   GFP_KERNEL);
 	if (!mux_chip)
 		return ERR_PTR(-ENOMEM);
 
-	mux_chip->mux = (struct mux_control *)(mux_chip + 1);
 	mux_chip->dev.class = &mux_class;
 	mux_chip->dev.type = &mux_type;
 	mux_chip->dev.parent = dev;
 	mux_chip->dev.of_node = dev->of_node;
 	dev_set_drvdata(&mux_chip->dev, mux_chip);
 
-	mux_chip->id = ida_simple_get(&mux_ida, 0, 0, GFP_KERNEL);
+	mux_chip->id = ida_alloc(&mux_ida, GFP_KERNEL);
 	if (mux_chip->id < 0) {
 		int err = mux_chip->id;
 
@@ -684,7 +681,7 @@ static struct mux_state *mux_state_get(struct device *dev, const char *mux_name)
 {
 	struct mux_state *mstate;
 
-	mstate = kzalloc(sizeof(*mstate), GFP_KERNEL);
+	mstate = kzalloc_obj(*mstate);
 	if (!mstate)
 		return ERR_PTR(-ENOMEM);
 

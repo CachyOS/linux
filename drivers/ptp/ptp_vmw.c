@@ -14,7 +14,6 @@
 #include <asm/hypervisor.h>
 #include <asm/vmware.h>
 
-#define VMWARE_MAGIC 0x564D5868
 #define VMWARE_CMD_PCLK(nr) ((nr << 16) | 97)
 #define VMWARE_CMD_PCLK_GETTIME VMWARE_CMD_PCLK(0)
 
@@ -24,15 +23,10 @@ static struct ptp_clock *ptp_vmw_clock;
 
 static int ptp_vmw_pclk_read(u64 *ns)
 {
-	u32 ret, nsec_hi, nsec_lo, unused1, unused2, unused3;
+	u32 ret, nsec_hi, nsec_lo;
 
-	asm volatile (VMWARE_HYPERCALL :
-		"=a"(ret), "=b"(nsec_hi), "=c"(nsec_lo), "=d"(unused1),
-		"=S"(unused2), "=D"(unused3) :
-		"a"(VMWARE_MAGIC), "b"(0),
-		"c"(VMWARE_CMD_PCLK_GETTIME), "d"(0) :
-		"memory");
-
+	ret = vmware_hypercall3(VMWARE_CMD_PCLK_GETTIME, 0,
+				&nsec_hi, &nsec_lo);
 	if (ret == 0)
 		*ns = ((u64)nsec_hi << 32) | nsec_lo;
 	return ret;
@@ -47,7 +41,7 @@ static int ptp_vmw_adjtime(struct ptp_clock_info *info, s64 delta)
 	return -EOPNOTSUPP;
 }
 
-static int ptp_vmw_adjfreq(struct ptp_clock_info *info, s32 delta)
+static int ptp_vmw_adjfine(struct ptp_clock_info *info, long delta)
 {
 	return -EOPNOTSUPP;
 }
@@ -79,7 +73,7 @@ static struct ptp_clock_info ptp_vmw_clock_info = {
 	.name		= "ptp_vmw",
 	.max_adj	= 0,
 	.adjtime	= ptp_vmw_adjtime,
-	.adjfreq	= ptp_vmw_adjfreq,
+	.adjfine	= ptp_vmw_adjfine,
 	.gettime64	= ptp_vmw_gettime,
 	.settime64	= ptp_vmw_settime,
 	.enable		= ptp_vmw_enable,
@@ -101,10 +95,9 @@ static int ptp_vmw_acpi_add(struct acpi_device *device)
 	return 0;
 }
 
-static int ptp_vmw_acpi_remove(struct acpi_device *device)
+static void ptp_vmw_acpi_remove(struct acpi_device *device)
 {
 	ptp_clock_unregister(ptp_vmw_clock);
-	return 0;
 }
 
 static const struct acpi_device_id ptp_vmw_acpi_device_ids[] = {
@@ -121,7 +114,6 @@ static struct acpi_driver ptp_vmw_acpi_driver = {
 		.add = ptp_vmw_acpi_add,
 		.remove	= ptp_vmw_acpi_remove
 	},
-	.owner	= THIS_MODULE
 };
 
 static int __init ptp_vmw_init(void)

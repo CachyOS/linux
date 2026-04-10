@@ -34,11 +34,11 @@ DECLARE_EVENT_CLASS(iocost_iocg_state,
 	),
 
 	TP_fast_assign(
-		__assign_str(devname, ioc_name(iocg->ioc));
-		__assign_str(cgroup, path);
+		__assign_str(devname);
+		__assign_str(cgroup);
 		__entry->now = now->now;
 		__entry->vnow = now->vnow;
-		__entry->vrate = now->vrate;
+		__entry->vrate = iocg->ioc->vtime_base_rate;
 		__entry->last_period = last_period;
 		__entry->cur_period = cur_period;
 		__entry->vtime = vtime;
@@ -93,8 +93,8 @@ DECLARE_EVENT_CLASS(iocg_inuse_update,
 	),
 
 	TP_fast_assign(
-		__assign_str(devname, ioc_name(iocg->ioc));
-		__assign_str(cgroup, path);
+		__assign_str(devname);
+		__assign_str(cgroup);
 		__entry->now = now->now;
 		__entry->old_inuse = old_inuse;
 		__entry->new_inuse = new_inuse;
@@ -159,8 +159,8 @@ TRACE_EVENT(iocost_ioc_vrate_adj,
 	),
 
 	TP_fast_assign(
-		__assign_str(devname, ioc_name(ioc));
-		__entry->old_vrate = atomic64_read(&ioc->vtime_rate);;
+		__assign_str(devname);
+		__entry->old_vrate = ioc->vtime_base_rate;
 		__entry->new_vrate = new_vrate;
 		__entry->busy_level = ioc->busy_level;
 		__entry->read_missed_ppm = missed_ppm[READ];
@@ -200,8 +200,8 @@ TRACE_EVENT(iocost_iocg_forgive_debt,
 	),
 
 	TP_fast_assign(
-		__assign_str(devname, ioc_name(iocg->ioc));
-		__assign_str(cgroup, path);
+		__assign_str(devname);
+		__assign_str(cgroup);
 		__entry->now = now->now;
 		__entry->vnow = now->vnow;
 		__entry->usage_pct = usage_pct;

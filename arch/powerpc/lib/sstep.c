@@ -485,7 +485,7 @@ write_mem_aligned(unsigned long val, unsigned long ea, int nb, struct pt_regs *r
  * Copy from a buffer to userspace, using the largest possible
  * aligned accesses, up to sizeof(long).
  */
-static nokprobe_inline int __copy_mem_out(u8 *dest, unsigned long ea, int nb, struct pt_regs *regs)
+static __always_inline int __copy_mem_out(u8 *dest, unsigned long ea, int nb, struct pt_regs *regs)
 {
 	int c;
 
@@ -586,6 +586,8 @@ static int do_fp_load(struct instruction_op *op, unsigned long ea,
 	} u;
 
 	nb = GETSIZE(op->type);
+	if (nb > sizeof(u))
+		return -EINVAL;
 	if (!address_ok(regs, ea, nb))
 		return -EFAULT;
 	rn = op->reg;
@@ -636,6 +638,8 @@ static int do_fp_store(struct instruction_op *op, unsigned long ea,
 	} u;
 
 	nb = GETSIZE(op->type);
+	if (nb > sizeof(u))
+		return -EINVAL;
 	if (!address_ok(regs, ea, nb))
 		return -EFAULT;
 	rn = op->reg;
@@ -680,6 +684,9 @@ static nokprobe_inline int do_vec_load(int rn, unsigned long ea,
 		u8 b[sizeof(__vector128)];
 	} u = {};
 
+	if (size > sizeof(u))
+		return -EINVAL;
+
 	if (!address_ok(regs, ea & ~0xfUL, 16))
 		return -EFAULT;
 	/* align to multiple of size */
@@ -688,7 +695,7 @@ static nokprobe_inline int do_vec_load(int rn, unsigned long ea,
 	if (err)
 		return err;
 	if (unlikely(cross_endian))
-		do_byte_reverse(&u.b[ea & 0xf], size);
+		do_byte_reverse(&u.b[ea & 0xf], min_t(size_t, size, sizeof(u)));
 	preempt_disable();
 	if (regs->msr & MSR_VEC)
 		put_vr(rn, &u.v);
@@ -707,6 +714,9 @@ static nokprobe_inline int do_vec_store(int rn, unsigned long ea,
 		u8 b[sizeof(__vector128)];
 	} u;
 
+	if (size > sizeof(u))
+		return -EINVAL;
+
 	if (!address_ok(regs, ea & ~0xfUL, 16))
 		return -EFAULT;
 	/* align to multiple of size */
@@ -719,7 +729,7 @@ static nokprobe_inline int do_vec_store(int rn, unsigned long ea,
 		u.v = current->thread.vr_state.vr[rn];
 	preempt_enable();
 	if (unlikely(cross_endian))
-		do_byte_reverse(&u.b[ea & 0xf], size);
+		do_byte_reverse(&u.b[ea & 0xf], min_t(size_t, size, sizeof(u)));
 	return copy_mem_out(&u.b[ea & 0xf], ea, size, regs);
 }
 #endif /* CONFIG_ALTIVEC */
@@ -770,8 +780,8 @@ static nokprobe_inline int emulate_stq(struct pt_regs *regs, unsigned long ea,
 #endif /* __powerpc64 */
 
 #ifdef CONFIG_VSX
-void emulate_vsx_load(struct instruction_op *op, union vsx_reg *reg,
-		      const void *mem, bool rev)
+static nokprobe_inline void emulate_vsx_load(struct instruction_op *op, union vsx_reg *reg,
+					     const void *mem, bool rev)
 {
 	int size, read_size;
 	int i, j;
@@ -853,11 +863,9 @@ void emulate_vsx_load(struct instruction_op *op, union vsx_reg *reg,
 		break;
 	}
 }
-EXPORT_SYMBOL_GPL(emulate_vsx_load);
-NOKPROBE_SYMBOL(emulate_vsx_load);
 
-void emulate_vsx_store(struct instruction_op *op, const union vsx_reg *reg,
-		       void *mem, bool rev)
+static nokprobe_inline void emulate_vsx_store(struct instruction_op *op, const union vsx_reg *reg,
+					      void *mem, bool rev)
 {
 	int size, write_size;
 	int i, j;
@@ -945,8 +953,6 @@ void emulate_vsx_store(struct instruction_op *op, const union vsx_reg *reg,
 		break;
 	}
 }
-EXPORT_SYMBOL_GPL(emulate_vsx_store);
-NOKPROBE_SYMBOL(emulate_vsx_store);
 
 static nokprobe_inline int do_vsx_load(struct instruction_op *op,
 				       unsigned long ea, struct pt_regs *regs,
@@ -1043,7 +1049,7 @@ static nokprobe_inline int do_vsx_store(struct instruction_op *op,
 }
 #endif /* CONFIG_VSX */
 
-static int __emulate_dcbz(unsigned long ea)
+static __always_inline int __emulate_dcbz(unsigned long ea)
 {
 	unsigned long i;
 	unsigned long size = l1_dcache_bytes();
@@ -1419,7 +1425,7 @@ int analyse_instr(struct instruction_op *op, const struct pt_regs *regs,
 			return 1;
 
 		case 18:	/* rfid, scary */
-			if (regs->msr & MSR_PR)
+			if (user_mode(regs))
 				goto priv;
 			op->type = RFI;
 			return 0;
@@ -1732,13 +1738,13 @@ int analyse_instr(struct instruction_op *op, const struct pt_regs *regs,
 			return 1;
 #endif
 		case 83:	/* mfmsr */
-			if (regs->msr & MSR_PR)
+			if (user_mode(regs))
 				goto priv;
 			op->type = MFMSR;
 			op->reg = rd;
 			return 0;
 		case 146:	/* mtmsr */
-			if (regs->msr & MSR_PR)
+			if (user_mode(regs))
 				goto priv;
 			op->type = MTMSR;
 			op->reg = rd;
@@ -1746,7 +1752,7 @@ int analyse_instr(struct instruction_op *op, const struct pt_regs *regs,
 			return 0;
 #ifdef CONFIG_PPC64
 		case 178:	/* mtmsrd */
-			if (regs->msr & MSR_PR)
+			if (user_mode(regs))
 				goto priv;
 			op->type = MTMSR;
 			op->reg = rd;
@@ -2284,15 +2290,7 @@ int analyse_instr(struct instruction_op *op, const struct pt_regs *regs,
 			op->type = MKOP(STCX, 0, 4);
 			break;
 
-#ifdef __powerpc64__
-		case 84:	/* ldarx */
-			op->type = MKOP(LARX, 0, 8);
-			break;
-
-		case 214:	/* stdcx. */
-			op->type = MKOP(STCX, 0, 8);
-			break;
-
+#ifdef CONFIG_PPC_HAS_LBARX_LHARX
 		case 52:	/* lbarx */
 			op->type = MKOP(LARX, 0, 1);
 			break;
@@ -2307,6 +2305,15 @@ int analyse_instr(struct instruction_op *op, const struct pt_regs *regs,
 
 		case 726:	/* sthcx. */
 			op->type = MKOP(STCX, 0, 2);
+			break;
+#endif
+#ifdef __powerpc64__
+		case 84:	/* ldarx */
+			op->type = MKOP(LARX, 0, 8);
+			break;
+
+		case 214:	/* stdcx. */
+			op->type = MKOP(STCX, 0, 8);
 			break;
 
 		case 276:	/* lqarx */
@@ -3334,7 +3341,7 @@ int emulate_loadstore(struct pt_regs *regs, struct instruction_op *op)
 		err = 0;
 		val = 0;
 		switch (size) {
-#ifdef __powerpc64__
+#ifdef CONFIG_PPC_HAS_LBARX_LHARX
 		case 1:
 			__get_user_asmx(val, ea, err, "lbarx");
 			break;
@@ -3426,14 +3433,14 @@ int emulate_loadstore(struct pt_regs *regs, struct instruction_op *op)
 		 * stored in the thread_struct.  If the instruction is in
 		 * the kernel, we must not touch the state in the thread_struct.
 		 */
-		if (!(regs->msr & MSR_PR) && !(regs->msr & MSR_FP))
+		if (!user_mode(regs) && !(regs->msr & MSR_FP))
 			return 0;
 		err = do_fp_load(op, ea, regs, cross_endian);
 		break;
 #endif
 #ifdef CONFIG_ALTIVEC
 	case LOAD_VMX:
-		if (!(regs->msr & MSR_PR) && !(regs->msr & MSR_VEC))
+		if (!user_mode(regs) && !(regs->msr & MSR_VEC))
 			return 0;
 		err = do_vec_load(op->reg, ea, size, regs, cross_endian);
 		break;
@@ -3448,7 +3455,7 @@ int emulate_loadstore(struct pt_regs *regs, struct instruction_op *op)
 		 */
 		if (op->reg >= 32 && (op->vsx_flags & VSX_CHECK_VEC))
 			msrbit = MSR_VEC;
-		if (!(regs->msr & MSR_PR) && !(regs->msr & msrbit))
+		if (!user_mode(regs) && !(regs->msr & msrbit))
 			return 0;
 		err = do_vsx_load(op, ea, regs, cross_endian);
 		break;
@@ -3484,8 +3491,7 @@ int emulate_loadstore(struct pt_regs *regs, struct instruction_op *op)
 		}
 #endif
 		if ((op->type & UPDATE) && size == sizeof(long) &&
-		    op->reg == 1 && op->update_reg == 1 &&
-		    !(regs->msr & MSR_PR) &&
+		    op->reg == 1 && op->update_reg == 1 && !user_mode(regs) &&
 		    ea >= regs->gpr[1] - STACK_INT_FRAME_SIZE) {
 			err = handle_stack_update(ea, regs);
 			break;
@@ -3497,14 +3503,14 @@ int emulate_loadstore(struct pt_regs *regs, struct instruction_op *op)
 
 #ifdef CONFIG_PPC_FPU
 	case STORE_FP:
-		if (!(regs->msr & MSR_PR) && !(regs->msr & MSR_FP))
+		if (!user_mode(regs) && !(regs->msr & MSR_FP))
 			return 0;
 		err = do_fp_store(op, ea, regs, cross_endian);
 		break;
 #endif
 #ifdef CONFIG_ALTIVEC
 	case STORE_VMX:
-		if (!(regs->msr & MSR_PR) && !(regs->msr & MSR_VEC))
+		if (!user_mode(regs) && !(regs->msr & MSR_VEC))
 			return 0;
 		err = do_vec_store(op->reg, ea, size, regs, cross_endian);
 		break;
@@ -3519,7 +3525,7 @@ int emulate_loadstore(struct pt_regs *regs, struct instruction_op *op)
 		 */
 		if (op->reg >= 32 && (op->vsx_flags & VSX_CHECK_VEC))
 			msrbit = MSR_VEC;
-		if (!(regs->msr & MSR_PR) && !(regs->msr & msrbit))
+		if (!user_mode(regs) && !(regs->msr & msrbit))
 			return 0;
 		err = do_vsx_store(op, ea, regs, cross_endian);
 		break;

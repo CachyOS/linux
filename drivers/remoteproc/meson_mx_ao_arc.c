@@ -228,15 +228,13 @@ err_free_genpool:
 	return ret;
 }
 
-static int meson_mx_ao_arc_rproc_remove(struct platform_device *pdev)
+static void meson_mx_ao_arc_rproc_remove(struct platform_device *pdev)
 {
 	struct rproc *rproc = platform_get_drvdata(pdev);
 	struct meson_mx_ao_arc_rproc_priv *priv = rproc->priv;
 
 	rproc_del(rproc);
 	gen_pool_free(priv->sram_pool, priv->sram_va, priv->sram_size);
-
-	return 0;
 }
 
 static const struct of_device_id meson_mx_ao_arc_rproc_match[] = {

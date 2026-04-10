@@ -35,12 +35,9 @@
 #include "cpu.h"
 #include "devs.h"
 #include "sdhci.h"
-#include "adc-core.h"
 #include "iic-core.h"
 
-#include "ata-core-s3c64xx.h"
 #include "s3c64xx.h"
-#include "onenand-core-s3c64xx.h"
 
 void __init s3c6410_map_io(void)
 {
@@ -52,12 +49,6 @@ void __init s3c6410_map_io(void)
 	/* the i2c devices are directly compatible with s3c2440 */
 	s3c_i2c0_setname("s3c2440-i2c");
 	s3c_i2c1_setname("s3c2440-i2c");
-
-	s3c_adc_setname("s3c64xx-adc");
-	s3c_device_nand.name = "s3c6400-nand";
-	s3c_onenand_setname("s3c6410-onenand");
-	s3c64xx_onenand1_setname("s3c6410-onenand");
-	s3c_cfcon_setname("s3c64xx-pata");
 }
 
 void __init s3c6410_init_irq(void)
@@ -66,7 +57,7 @@ void __init s3c6410_init_irq(void)
 	s3c64xx_init_irq(~0 & ~(1 << 7), ~0);
 }
 
-struct bus_type s3c6410_subsys = {
+const struct bus_type s3c6410_subsys = {
 	.name		= "s3c6410-core",
 	.dev_name	= "s3c6410-core",
 };

@@ -7,13 +7,15 @@
  *   Author(s): Martin Schwidefsky <schwidefsky@de.ibm.com>
  */
 
-#include <linux/moduleloader.h>
 #include <linux/hardirq.h>
 #include <linux/uaccess.h>
 #include <linux/ftrace.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
+#include <linux/kmsan-checks.h>
+#include <linux/cpufeature.h>
 #include <linux/kprobes.h>
+#include <linux/execmem.h>
 #include <trace/syscall.h>
 #include <asm/asm-offsets.h>
 #include <asm/text-patching.h>
@@ -49,30 +51,6 @@ struct ftrace_insn {
 	s32 disp;
 } __packed;
 
-asm(
-	"	.align 16\n"
-	"ftrace_shared_hotpatch_trampoline_br:\n"
-	"	lmg	%r0,%r1,2(%r1)\n"
-	"	br	%r1\n"
-	"ftrace_shared_hotpatch_trampoline_br_end:\n"
-);
-
-#ifdef CONFIG_EXPOLINE
-asm(
-	"	.align 16\n"
-	"ftrace_shared_hotpatch_trampoline_exrl:\n"
-	"	lmg	%r0,%r1,2(%r1)\n"
-	"	exrl	%r0,0f\n"
-	"	j	.\n"
-	"0:	br	%r1\n"
-	"ftrace_shared_hotpatch_trampoline_exrl_end:\n"
-);
-#endif /* CONFIG_EXPOLINE */
-
-#ifdef CONFIG_MODULES
-static char *ftrace_plt;
-#endif /* CONFIG_MODULES */
-
 static const char *ftrace_shared_hotpatch_trampoline(const char **end)
 {
 	const char *tstart, *tend;
@@ -92,19 +70,20 @@ static const char *ftrace_shared_hotpatch_trampoline(const char **end)
 
 bool ftrace_need_init_nop(void)
 {
-	return true;
+	return !cpu_has_seq_insn();
 }
 
 int ftrace_init_nop(struct module *mod, struct dyn_ftrace *rec)
 {
 	static struct ftrace_hotpatch_trampoline *next_vmlinux_trampoline =
 		__ftrace_hotpatch_trampolines_start;
-	static const char orig[6] = { 0xc0, 0x04, 0x00, 0x00, 0x00, 0x00 };
+	static const struct ftrace_insn orig = { .opc = 0xc004, .disp = 0 };
 	static struct ftrace_hotpatch_trampoline *trampoline;
 	struct ftrace_hotpatch_trampoline **next_trampoline;
 	struct ftrace_hotpatch_trampoline *trampolines_end;
 	struct ftrace_hotpatch_trampoline tmp;
 	struct ftrace_insn *insn;
+	struct ftrace_insn old;
 	const char *shared;
 	s32 disp;
 
@@ -118,7 +97,6 @@ int ftrace_init_nop(struct module *mod, struct dyn_ftrace *rec)
 	if (mod) {
 		next_trampoline = &mod->arch.next_trampoline;
 		trampolines_end = mod->arch.trampolines_end;
-		shared = ftrace_plt;
 	}
 #endif
 
@@ -126,8 +104,10 @@ int ftrace_init_nop(struct module *mod, struct dyn_ftrace *rec)
 		return -ENOMEM;
 	trampoline = (*next_trampoline)++;
 
+	if (copy_from_kernel_nofault(&old, (void *)rec->ip, sizeof(old)))
+		return -EFAULT;
 	/* Check for the compiler-generated fentry nop (brcl 0, .). */
-	if (WARN_ON_ONCE(memcmp((const void *)rec->ip, &orig, sizeof(orig))))
+	if (WARN_ON_ONCE(memcmp(&orig, &old, sizeof(old))))
 		return -EINVAL;
 
 	/* Generate the trampoline. */
@@ -163,8 +143,35 @@ static struct ftrace_hotpatch_trampoline *ftrace_get_trampoline(struct dyn_ftrac
 	return trampoline;
 }
 
-int ftrace_modify_call(struct dyn_ftrace *rec, unsigned long old_addr,
-		       unsigned long addr)
+static inline struct ftrace_insn
+ftrace_generate_branch_insn(unsigned long ip, unsigned long target)
+{
+	/* brasl r0,target or brcl 0,0 */
+	return (struct ftrace_insn){ .opc = target ? 0xc005 : 0xc004,
+				     .disp = target ? (target - ip) / 2 : 0 };
+}
+
+static int ftrace_patch_branch_insn(unsigned long ip, unsigned long old_target,
+				    unsigned long target)
+{
+	struct ftrace_insn orig = ftrace_generate_branch_insn(ip, old_target);
+	struct ftrace_insn new = ftrace_generate_branch_insn(ip, target);
+	struct ftrace_insn old;
+
+	if (!IS_ALIGNED(ip, 8))
+		return -EINVAL;
+	if (copy_from_kernel_nofault(&old, (void *)ip, sizeof(old)))
+		return -EFAULT;
+	/* Verify that the to be replaced code matches what we expect. */
+	if (memcmp(&orig, &old, sizeof(old)))
+		return -EINVAL;
+	s390_kernel_write((void *)ip, &new, sizeof(new));
+	return 0;
+}
+
+static int ftrace_modify_trampoline_call(struct dyn_ftrace *rec,
+					 unsigned long old_addr,
+					 unsigned long addr)
 {
 	struct ftrace_hotpatch_trampoline *trampoline;
 	u64 old;
@@ -178,6 +185,15 @@ int ftrace_modify_call(struct dyn_ftrace *rec, unsigned long old_addr,
 		return -EINVAL;
 	s390_kernel_write(&trampoline->interceptor, &addr, sizeof(addr));
 	return 0;
+}
+
+int ftrace_modify_call(struct dyn_ftrace *rec, unsigned long old_addr,
+		       unsigned long addr)
+{
+	if (cpu_has_seq_insn())
+		return ftrace_patch_branch_insn(rec->ip, old_addr, addr);
+	else
+		return ftrace_modify_trampoline_call(rec, old_addr, addr);
 }
 
 static int ftrace_patch_branch_mask(void *addr, u16 expected, bool enable)
@@ -198,11 +214,14 @@ static int ftrace_patch_branch_mask(void *addr, u16 expected, bool enable)
 int ftrace_make_nop(struct module *mod, struct dyn_ftrace *rec,
 		    unsigned long addr)
 {
-	/* Expect brcl 0xf,... */
-	return ftrace_patch_branch_mask((void *)rec->ip, 0xc0f4, false);
+	/* Expect brcl 0xf,... for the !cpu_has_seq_insn() case */
+	if (cpu_has_seq_insn())
+		return ftrace_patch_branch_insn(rec->ip, addr, 0);
+	else
+		return ftrace_patch_branch_mask((void *)rec->ip, 0xc0f4, false);
 }
 
-int ftrace_make_call(struct dyn_ftrace *rec, unsigned long addr)
+static int ftrace_make_trampoline_call(struct dyn_ftrace *rec, unsigned long addr)
 {
 	struct ftrace_hotpatch_trampoline *trampoline;
 
@@ -212,6 +231,14 @@ int ftrace_make_call(struct dyn_ftrace *rec, unsigned long addr)
 	s390_kernel_write(&trampoline->interceptor, &addr, sizeof(addr));
 	/* Expect brcl 0x0,... */
 	return ftrace_patch_branch_mask((void *)rec->ip, 0xc004, true);
+}
+
+int ftrace_make_call(struct dyn_ftrace *rec, unsigned long addr)
+{
+	if (cpu_has_seq_insn())
+		return ftrace_patch_branch_insn(rec->ip, 0, addr);
+	else
+		return ftrace_make_trampoline_call(rec, addr);
 }
 
 int ftrace_update_ftrace_func(ftrace_func_t func)
@@ -234,75 +261,20 @@ void ftrace_arch_code_modify_post_process(void)
 	text_poke_sync_lock();
 }
 
-#ifdef CONFIG_MODULES
-
-static int __init ftrace_plt_init(void)
-{
-	const char *start, *end;
-
-	ftrace_plt = module_alloc(PAGE_SIZE);
-	if (!ftrace_plt)
-		panic("cannot allocate ftrace plt\n");
-
-	start = ftrace_shared_hotpatch_trampoline(&end);
-	memcpy(ftrace_plt, start, end - start);
-	set_memory_ro((unsigned long)ftrace_plt, 1);
-	return 0;
-}
-device_initcall(ftrace_plt_init);
-
-#endif /* CONFIG_MODULES */
-
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
-/*
- * Hook the return address and push it in the stack of return addresses
- * in current thread info.
- */
-unsigned long prepare_ftrace_return(unsigned long ra, unsigned long sp,
-				    unsigned long ip)
+
+void ftrace_graph_func(unsigned long ip, unsigned long parent_ip,
+		       struct ftrace_ops *op, struct ftrace_regs *fregs)
 {
+	unsigned long *parent = &arch_ftrace_regs(fregs)->regs.gprs[14];
+	unsigned long sp = arch_ftrace_regs(fregs)->regs.gprs[15];
+
 	if (unlikely(ftrace_graph_is_dead()))
-		goto out;
+		return;
 	if (unlikely(atomic_read(&current->tracing_graph_pause)))
-		goto out;
-	ip -= MCOUNT_INSN_SIZE;
-	if (!function_graph_enter(ra, ip, 0, (void *) sp))
-		ra = (unsigned long) return_to_handler;
-out:
-	return ra;
-}
-NOKPROBE_SYMBOL(prepare_ftrace_return);
-
-/*
- * Patch the kernel code at ftrace_graph_caller location. The instruction
- * there is branch relative on condition. To enable the ftrace graph code
- * block, we simply patch the mask field of the instruction to zero and
- * turn the instruction into a nop.
- * To disable the ftrace graph code the mask field will be patched to
- * all ones, which turns the instruction into an unconditional branch.
- */
-int ftrace_enable_ftrace_graph_caller(void)
-{
-	int rc;
-
-	/* Expect brc 0xf,... */
-	rc = ftrace_patch_branch_mask(ftrace_graph_caller, 0xa7f4, false);
-	if (rc)
-		return rc;
-	text_poke_sync_lock();
-	return 0;
-}
-
-int ftrace_disable_ftrace_graph_caller(void)
-{
-	int rc;
-
-	/* Expect brc 0x0,... */
-	rc = ftrace_patch_branch_mask(ftrace_graph_caller, 0xa704, true);
-	if (rc)
-		return rc;
-	text_poke_sync_lock();
-	return 0;
+		return;
+	if (!function_graph_enter_regs(*parent, ip, 0, (unsigned long *)sp, fregs))
+		*parent = (unsigned long)&return_to_handler;
 }
 
 #endif /* CONFIG_FUNCTION_GRAPH_TRACER */
@@ -316,10 +288,14 @@ void kprobe_ftrace_handler(unsigned long ip, unsigned long parent_ip,
 	struct kprobe *p;
 	int bit;
 
+	if (unlikely(kprobe_ftrace_disabled))
+		return;
+
 	bit = ftrace_test_recursion_trylock(ip, parent_ip);
 	if (bit < 0)
 		return;
 
+	kmsan_unpoison_memory(fregs, ftrace_regs_size());
 	regs = ftrace_get_regs(fregs);
 	p = get_kprobe((kprobe_opcode_t *)ip);
 	if (!regs || unlikely(!p) || kprobe_disabled(p))

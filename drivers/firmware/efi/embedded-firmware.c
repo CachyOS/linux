@@ -16,9 +16,9 @@
 
 /* Exported for use by lib/test_firmware.c only */
 LIST_HEAD(efi_embedded_fw_list);
-EXPORT_SYMBOL_NS_GPL(efi_embedded_fw_list, TEST_FIRMWARE);
+EXPORT_SYMBOL_NS_GPL(efi_embedded_fw_list, "TEST_FIRMWARE");
 bool efi_embedded_fw_checked;
-EXPORT_SYMBOL_NS_GPL(efi_embedded_fw_checked, TEST_FIRMWARE);
+EXPORT_SYMBOL_NS_GPL(efi_embedded_fw_checked, "TEST_FIRMWARE");
 
 static const struct dmi_system_id * const embedded_fw_table[] = {
 #ifdef CONFIG_TOUCHSCREEN_DMI
@@ -64,7 +64,7 @@ static int __init efi_check_md_for_embedded_firmware(
 
 	pr_info("Found EFI embedded fw '%s'\n", desc->name);
 
-	fw = kmalloc(sizeof(*fw), GFP_KERNEL);
+	fw = kmalloc_obj(*fw);
 	if (!fw) {
 		memunmap(map);
 		return -ENOMEM;

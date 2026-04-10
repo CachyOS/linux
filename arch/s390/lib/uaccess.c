@@ -8,172 +8,196 @@
  *		 Gerald Schaefer (gerald.schaefer@de.ibm.com)
  */
 
+#include <linux/kprobes.h>
 #include <linux/uaccess.h>
 #include <linux/export.h>
 #include <linux/mm.h>
 #include <asm/asm-extable.h>
+#include <asm/ctlreg.h>
+#include <asm/skey.h>
 
 #ifdef CONFIG_DEBUG_ENTRY
 void debug_user_asce(int exit)
 {
-	unsigned long cr1, cr7;
+	struct lowcore *lc = get_lowcore();
+	struct ctlreg cr1, cr7;
 
-	__ctl_store(cr1, 1, 1);
-	__ctl_store(cr7, 7, 7);
-	if (cr1 == S390_lowcore.kernel_asce && cr7 == S390_lowcore.user_asce)
+	local_ctl_store(1, &cr1);
+	local_ctl_store(7, &cr7);
+	if (cr1.val == lc->user_asce.val && cr7.val == lc->user_asce.val)
 		return;
 	panic("incorrect ASCE on kernel %s\n"
 	      "cr1:    %016lx cr7:  %016lx\n"
-	      "kernel: %016llx user: %016llx\n",
-	      exit ? "exit" : "entry", cr1, cr7,
-	      S390_lowcore.kernel_asce, S390_lowcore.user_asce);
-
+	      "kernel: %016lx user: %016lx\n",
+	      exit ? "exit" : "entry", cr1.val, cr7.val,
+	      lc->kernel_asce.val, lc->user_asce.val);
 }
 #endif /*CONFIG_DEBUG_ENTRY */
 
-static unsigned long raw_copy_from_user_key(void *to, const void __user *from,
-					    unsigned long size, unsigned long key)
-{
-	unsigned long tmp1, tmp2;
-	union oac spec = {
-		.oac2.key = key,
-		.oac2.as = PSW_BITS_AS_SECONDARY,
-		.oac2.k = 1,
-		.oac2.a = 1,
-	};
+#define CMPXCHG_USER_KEY_MAX_LOOPS 128
 
-	tmp1 = -4096UL;
-	asm volatile(
-		"   lr	  0,%[spec]\n"
-		"0: mvcos 0(%2),0(%1),%0\n"
-		"6: jz    4f\n"
-		"1: algr  %0,%3\n"
-		"   slgr  %1,%3\n"
-		"   slgr  %2,%3\n"
-		"   j     0b\n"
-		"2: la    %4,4095(%1)\n"/* %4 = ptr + 4095 */
-		"   nr    %4,%3\n"	/* %4 = (ptr + 4095) & -4096 */
-		"   slgr  %4,%1\n"
-		"   clgr  %0,%4\n"	/* copy crosses next page boundary? */
-		"   jnh   5f\n"
-		"3: mvcos 0(%2),0(%1),%4\n"
-		"7: slgr  %0,%4\n"
-		"   j     5f\n"
-		"4: slgr  %0,%0\n"
-		"5:\n"
-		EX_TABLE(0b,2b) EX_TABLE(3b,5b) EX_TABLE(6b,2b) EX_TABLE(7b,5b)
-		: "+a" (size), "+a" (from), "+a" (to), "+a" (tmp1), "=a" (tmp2)
-		: [spec] "d" (spec.val)
-		: "cc", "memory", "0");
-	return size;
+static nokprobe_inline int __cmpxchg_key_small(void *address, unsigned int *uval,
+					       unsigned int old, unsigned int new,
+					       unsigned int mask, unsigned long key)
+{
+	unsigned long count;
+	unsigned int prev;
+	int rc = 0;
+
+	skey_regions_initialize();
+	asm_inline volatile(
+		"20:	spka	0(%[key])\n"
+		"	llill	%[count],%[max_loops]\n"
+		"0:	l	%[prev],%[address]\n"
+		"1:	nr	%[prev],%[mask]\n"
+		"	xilf	%[mask],0xffffffff\n"
+		"	or	%[new],%[prev]\n"
+		"	or	%[prev],%[tmp]\n"
+		"2:	lr	%[tmp],%[prev]\n"
+		"3:	cs	%[prev],%[new],%[address]\n"
+		"4:	jnl	5f\n"
+		"	xr	%[tmp],%[prev]\n"
+		"	xr	%[new],%[tmp]\n"
+		"	nr	%[tmp],%[mask]\n"
+		"	jnz	5f\n"
+		"	brct	%[count],2b\n"
+		"5:	spka	%[default_key]\n"
+		"21:\n"
+		EX_TABLE_UA_LOAD_REG(0b, 5b, %[rc], %[prev])
+		EX_TABLE_UA_LOAD_REG(1b, 5b, %[rc], %[prev])
+		EX_TABLE_UA_LOAD_REG(3b, 5b, %[rc], %[prev])
+		EX_TABLE_UA_LOAD_REG(4b, 5b, %[rc], %[prev])
+		SKEY_REGION(20b, 21b)
+		: [rc] "+&d" (rc),
+		[prev] "=&d" (prev),
+		[address] "+Q" (*(int *)address),
+		[tmp] "+&d" (old),
+		[new] "+&d" (new),
+		[mask] "+&d" (mask),
+		[count] "=a" (count)
+		: [key] "%[count]" (key << 4),
+		[default_key] "J" (PAGE_DEFAULT_KEY),
+		[max_loops] "J" (CMPXCHG_USER_KEY_MAX_LOOPS)
+		: "memory", "cc");
+	*uval = prev;
+	if (!count)
+		rc = -EAGAIN;
+	return rc;
 }
 
-unsigned long raw_copy_from_user(void *to, const void __user *from, unsigned long n)
+int __kprobes __cmpxchg_key1(void *addr, unsigned char *uval, unsigned char old,
+			     unsigned char new, unsigned long key)
 {
-	return raw_copy_from_user_key(to, from, n, 0);
-}
-EXPORT_SYMBOL(raw_copy_from_user);
+	unsigned long address = (unsigned long)addr;
+	unsigned int prev, shift, mask, _old, _new;
+	int rc;
 
-unsigned long _copy_from_user_key(void *to, const void __user *from,
-				  unsigned long n, unsigned long key)
+	shift = (3 ^ (address & 3)) << 3;
+	address ^= address & 3;
+	_old = (unsigned int)old << shift;
+	_new = (unsigned int)new << shift;
+	mask = ~(0xff << shift);
+	rc = __cmpxchg_key_small((void *)address, &prev, _old, _new, mask, key);
+	*uval = prev >> shift;
+	return rc;
+}
+EXPORT_SYMBOL(__cmpxchg_key1);
+
+int __kprobes __cmpxchg_key2(void *addr, unsigned short *uval, unsigned short old,
+			     unsigned short new, unsigned long key)
 {
-	unsigned long res = n;
+	unsigned long address = (unsigned long)addr;
+	unsigned int prev, shift, mask, _old, _new;
+	int rc;
 
-	might_fault();
-	if (!should_fail_usercopy()) {
-		instrument_copy_from_user(to, from, n);
-		res = raw_copy_from_user_key(to, from, n, key);
-	}
-	if (unlikely(res))
-		memset(to + (n - res), 0, res);
-	return res;
+	shift = (2 ^ (address & 2)) << 3;
+	address ^= address & 2;
+	_old = (unsigned int)old << shift;
+	_new = (unsigned int)new << shift;
+	mask = ~(0xffff << shift);
+	rc = __cmpxchg_key_small((void *)address, &prev, _old, _new, mask, key);
+	*uval = prev >> shift;
+	return rc;
 }
-EXPORT_SYMBOL(_copy_from_user_key);
+EXPORT_SYMBOL(__cmpxchg_key2);
 
-static unsigned long raw_copy_to_user_key(void __user *to, const void *from,
-					  unsigned long size, unsigned long key)
+int __kprobes __cmpxchg_key4(void *address, unsigned int *uval, unsigned int old,
+			     unsigned int new, unsigned long key)
 {
-	unsigned long tmp1, tmp2;
-	union oac spec = {
-		.oac1.key = key,
-		.oac1.as = PSW_BITS_AS_SECONDARY,
-		.oac1.k = 1,
-		.oac1.a = 1,
-	};
+	unsigned int prev = old;
+	int rc = 0;
 
-	tmp1 = -4096UL;
-	asm volatile(
-		"   lr	  0,%[spec]\n"
-		"0: mvcos 0(%1),0(%2),%0\n"
-		"6: jz    4f\n"
-		"1: algr  %0,%3\n"
-		"   slgr  %1,%3\n"
-		"   slgr  %2,%3\n"
-		"   j     0b\n"
-		"2: la    %4,4095(%1)\n"/* %4 = ptr + 4095 */
-		"   nr    %4,%3\n"	/* %4 = (ptr + 4095) & -4096 */
-		"   slgr  %4,%1\n"
-		"   clgr  %0,%4\n"	/* copy crosses next page boundary? */
-		"   jnh   5f\n"
-		"3: mvcos 0(%1),0(%2),%4\n"
-		"7: slgr  %0,%4\n"
-		"   j     5f\n"
-		"4: slgr  %0,%0\n"
-		"5:\n"
-		EX_TABLE(0b,2b) EX_TABLE(3b,5b) EX_TABLE(6b,2b) EX_TABLE(7b,5b)
-		: "+a" (size), "+a" (to), "+a" (from), "+a" (tmp1), "=a" (tmp2)
-		: [spec] "d" (spec.val)
-		: "cc", "memory", "0");
-	return size;
+	skey_regions_initialize();
+	asm_inline volatile(
+		"20:	spka	0(%[key])\n"
+		"0:	cs	%[prev],%[new],%[address]\n"
+		"1:	spka	%[default_key]\n"
+		"21:\n"
+		EX_TABLE_UA_LOAD_REG(0b, 1b, %[rc], %[prev])
+		EX_TABLE_UA_LOAD_REG(1b, 1b, %[rc], %[prev])
+		SKEY_REGION(20b, 21b)
+		: [rc] "+&d" (rc),
+		[prev] "+&d" (prev),
+		[address] "+Q" (*(int *)address)
+		: [new] "d" (new),
+		[key] "a" (key << 4),
+		[default_key] "J" (PAGE_DEFAULT_KEY)
+		: "memory", "cc");
+	*uval = prev;
+	return rc;
 }
+EXPORT_SYMBOL(__cmpxchg_key4);
 
-unsigned long raw_copy_to_user(void __user *to, const void *from, unsigned long n)
+int __kprobes __cmpxchg_key8(void *address, unsigned long *uval, unsigned long old,
+			     unsigned long new, unsigned long key)
 {
-	return raw_copy_to_user_key(to, from, n, 0);
-}
-EXPORT_SYMBOL(raw_copy_to_user);
+	unsigned long prev = old;
+	int rc = 0;
 
-unsigned long _copy_to_user_key(void __user *to, const void *from,
-				unsigned long n, unsigned long key)
+	skey_regions_initialize();
+	asm_inline volatile(
+		"20:	spka	0(%[key])\n"
+		"0:	csg	%[prev],%[new],%[address]\n"
+		"1:	spka	%[default_key]\n"
+		"21:\n"
+		EX_TABLE_UA_LOAD_REG(0b, 1b, %[rc], %[prev])
+		EX_TABLE_UA_LOAD_REG(1b, 1b, %[rc], %[prev])
+		SKEY_REGION(20b, 21b)
+		: [rc] "+&d" (rc),
+		[prev] "+&d" (prev),
+		[address] "+QS" (*(long *)address)
+		: [new] "d" (new),
+		[key] "a" (key << 4),
+		[default_key] "J" (PAGE_DEFAULT_KEY)
+		: "memory", "cc");
+	*uval = prev;
+	return rc;
+}
+EXPORT_SYMBOL(__cmpxchg_key8);
+
+int __kprobes __cmpxchg_key16(void *address, __uint128_t *uval, __uint128_t old,
+			      __uint128_t new, unsigned long key)
 {
-	might_fault();
-	if (should_fail_usercopy())
-		return n;
-	instrument_copy_to_user(to, from, n);
-	return raw_copy_to_user_key(to, from, n, key);
-}
-EXPORT_SYMBOL(_copy_to_user_key);
+	__uint128_t prev = old;
+	int rc = 0;
 
-unsigned long __clear_user(void __user *to, unsigned long size)
-{
-	unsigned long tmp1, tmp2;
-	union oac spec = {
-		.oac1.as = PSW_BITS_AS_SECONDARY,
-		.oac1.a = 1,
-	};
-
-	tmp1 = -4096UL;
-	asm volatile(
-		"   lr	  0,%[spec]\n"
-		"0: mvcos 0(%1),0(%4),%0\n"
-		"   jz	  4f\n"
-		"1: algr  %0,%2\n"
-		"   slgr  %1,%2\n"
-		"   j	  0b\n"
-		"2: la	  %3,4095(%1)\n"/* %4 = to + 4095 */
-		"   nr	  %3,%2\n"	/* %4 = (to + 4095) & -4096 */
-		"   slgr  %3,%1\n"
-		"   clgr  %0,%3\n"	/* copy crosses next page boundary? */
-		"   jnh	  5f\n"
-		"3: mvcos 0(%1),0(%4),%3\n"
-		"   slgr  %0,%3\n"
-		"   j	  5f\n"
-		"4: slgr  %0,%0\n"
-		"5:\n"
-		EX_TABLE(0b,2b) EX_TABLE(3b,5b)
-		: "+a" (size), "+a" (to), "+a" (tmp1), "=a" (tmp2)
-		: "a" (empty_zero_page), [spec] "d" (spec.val)
-		: "cc", "memory", "0");
-	return size;
+	skey_regions_initialize();
+	asm_inline volatile(
+		"20:	spka	0(%[key])\n"
+		"0:	cdsg	%[prev],%[new],%[address]\n"
+		"1:	spka	%[default_key]\n"
+		"21:\n"
+		EX_TABLE_UA_LOAD_REGPAIR(0b, 1b, %[rc], %[prev])
+		EX_TABLE_UA_LOAD_REGPAIR(1b, 1b, %[rc], %[prev])
+		SKEY_REGION(20b, 21b)
+		: [rc] "+&d" (rc),
+		[prev] "+&d" (prev),
+		[address] "+QS" (*(__int128_t *)address)
+		: [new] "d" (new),
+		[key] "a" (key << 4),
+		[default_key] "J" (PAGE_DEFAULT_KEY)
+		: "memory", "cc");
+	*uval = prev;
+	return rc;
 }
-EXPORT_SYMBOL(__clear_user);
+EXPORT_SYMBOL(__cmpxchg_key16);

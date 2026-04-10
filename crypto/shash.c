@@ -6,59 +6,40 @@
  */
 
 #include <crypto/scatterwalk.h>
-#include <crypto/internal/hash.h>
+#include <linux/cryptouser.h>
 #include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <linux/seq_file.h>
-#include <linux/cryptouser.h>
+#include <linux/string.h>
 #include <net/netlink.h>
-#include <linux/compiler.h>
 
-#include "internal.h"
+#include "hash.h"
 
-static const struct crypto_type crypto_shash_type;
+static inline bool crypto_shash_block_only(struct crypto_shash *tfm)
+{
+	return crypto_shash_alg(tfm)->base.cra_flags &
+	       CRYPTO_AHASH_ALG_BLOCK_ONLY;
+}
 
-static int shash_no_setkey(struct crypto_shash *tfm, const u8 *key,
-			   unsigned int keylen)
+static inline bool crypto_shash_final_nonzero(struct crypto_shash *tfm)
+{
+	return crypto_shash_alg(tfm)->base.cra_flags &
+	       CRYPTO_AHASH_ALG_FINAL_NONZERO;
+}
+
+static inline bool crypto_shash_finup_max(struct crypto_shash *tfm)
+{
+	return crypto_shash_alg(tfm)->base.cra_flags &
+	       CRYPTO_AHASH_ALG_FINUP_MAX;
+}
+
+int shash_no_setkey(struct crypto_shash *tfm, const u8 *key,
+		    unsigned int keylen)
 {
 	return -ENOSYS;
 }
-
-/*
- * Check whether an shash algorithm has a setkey function.
- *
- * For CFI compatibility, this must not be an inline function.  This is because
- * when CFI is enabled, modules won't get the same address for shash_no_setkey
- * (if it were exported, which inlining would require) as the core kernel will.
- */
-bool crypto_shash_alg_has_setkey(struct shash_alg *alg)
-{
-	return alg->setkey != shash_no_setkey;
-}
-EXPORT_SYMBOL_GPL(crypto_shash_alg_has_setkey);
-
-static int shash_setkey_unaligned(struct crypto_shash *tfm, const u8 *key,
-				  unsigned int keylen)
-{
-	struct shash_alg *shash = crypto_shash_alg(tfm);
-	unsigned long alignmask = crypto_shash_alignmask(tfm);
-	unsigned long absize;
-	u8 *buffer, *alignbuffer;
-	int err;
-
-	absize = keylen + (alignmask & ~(crypto_tfm_ctx_alignment() - 1));
-	buffer = kmalloc(absize, GFP_ATOMIC);
-	if (!buffer)
-		return -ENOMEM;
-
-	alignbuffer = (u8 *)ALIGN((unsigned long)buffer, alignmask + 1);
-	memcpy(alignbuffer, key, keylen);
-	err = shash->setkey(tfm, alignbuffer, keylen);
-	kfree_sensitive(buffer);
-	return err;
-}
+EXPORT_SYMBOL_GPL(shash_no_setkey);
 
 static void shash_set_needkey(struct crypto_shash *tfm, struct shash_alg *alg)
 {
@@ -70,14 +51,9 @@ int crypto_shash_setkey(struct crypto_shash *tfm, const u8 *key,
 			unsigned int keylen)
 {
 	struct shash_alg *shash = crypto_shash_alg(tfm);
-	unsigned long alignmask = crypto_shash_alignmask(tfm);
 	int err;
 
-	if ((unsigned long)key & alignmask)
-		err = shash_setkey_unaligned(tfm, key, keylen);
-	else
-		err = shash->setkey(tfm, key, keylen);
-
+	err = shash->setkey(tfm, key, keylen);
 	if (unlikely(err)) {
 		shash_set_needkey(tfm, shash);
 		return err;
@@ -88,116 +64,119 @@ int crypto_shash_setkey(struct crypto_shash *tfm, const u8 *key,
 }
 EXPORT_SYMBOL_GPL(crypto_shash_setkey);
 
-static int shash_update_unaligned(struct shash_desc *desc, const u8 *data,
-				  unsigned int len)
+static int __crypto_shash_init(struct shash_desc *desc)
 {
 	struct crypto_shash *tfm = desc->tfm;
-	struct shash_alg *shash = crypto_shash_alg(tfm);
-	unsigned long alignmask = crypto_shash_alignmask(tfm);
-	unsigned int unaligned_len = alignmask + 1 -
-				     ((unsigned long)data & alignmask);
-	/*
-	 * We cannot count on __aligned() working for large values:
-	 * https://patchwork.kernel.org/patch/9507697/
-	 */
-	u8 ubuf[MAX_ALGAPI_ALIGNMASK * 2];
-	u8 *buf = PTR_ALIGN(&ubuf[0], alignmask + 1);
-	int err;
 
-	if (WARN_ON(buf + unaligned_len > ubuf + sizeof(ubuf)))
-		return -EINVAL;
+	if (crypto_shash_block_only(tfm)) {
+		u8 *buf = shash_desc_ctx(desc);
 
-	if (unaligned_len > len)
-		unaligned_len = len;
+		buf += crypto_shash_descsize(tfm) - 1;
+		*buf = 0;
+	}
 
-	memcpy(buf, data, unaligned_len);
-	err = shash->update(desc, buf, unaligned_len);
-	memset(buf, 0, unaligned_len);
-
-	return err ?:
-	       shash->update(desc, data + unaligned_len, len - unaligned_len);
+	return crypto_shash_alg(tfm)->init(desc);
 }
 
-int crypto_shash_update(struct shash_desc *desc, const u8 *data,
-			unsigned int len)
+int crypto_shash_init(struct shash_desc *desc)
 {
-	struct crypto_shash *tfm = desc->tfm;
-	struct shash_alg *shash = crypto_shash_alg(tfm);
-	unsigned long alignmask = crypto_shash_alignmask(tfm);
-
-	if ((unsigned long)data & alignmask)
-		return shash_update_unaligned(desc, data, len);
-
-	return shash->update(desc, data, len);
+	if (crypto_shash_get_flags(desc->tfm) & CRYPTO_TFM_NEED_KEY)
+		return -ENOKEY;
+	return __crypto_shash_init(desc);
 }
-EXPORT_SYMBOL_GPL(crypto_shash_update);
+EXPORT_SYMBOL_GPL(crypto_shash_init);
 
-static int shash_final_unaligned(struct shash_desc *desc, u8 *out)
+static int shash_default_finup(struct shash_desc *desc, const u8 *data,
+			       unsigned int len, u8 *out)
 {
-	struct crypto_shash *tfm = desc->tfm;
-	unsigned long alignmask = crypto_shash_alignmask(tfm);
-	struct shash_alg *shash = crypto_shash_alg(tfm);
-	unsigned int ds = crypto_shash_digestsize(tfm);
-	/*
-	 * We cannot count on __aligned() working for large values:
-	 * https://patchwork.kernel.org/patch/9507697/
-	 */
-	u8 ubuf[MAX_ALGAPI_ALIGNMASK + HASH_MAX_DIGESTSIZE];
-	u8 *buf = PTR_ALIGN(&ubuf[0], alignmask + 1);
+	struct shash_alg *shash = crypto_shash_alg(desc->tfm);
+
+	return shash->update(desc, data, len) ?:
+	       shash->final(desc, out);
+}
+
+static int crypto_shash_op_and_zero(
+	int (*op)(struct shash_desc *desc, const u8 *data,
+		  unsigned int len, u8 *out),
+	struct shash_desc *desc, const u8 *data, unsigned int len, u8 *out)
+{
 	int err;
 
-	if (WARN_ON(buf + ds > ubuf + sizeof(ubuf)))
-		return -EINVAL;
-
-	err = shash->final(desc, buf);
-	if (err)
-		goto out;
-
-	memcpy(out, buf, ds);
-
-out:
-	memset(buf, 0, ds);
+	err = op(desc, data, len, out);
+	memset(shash_desc_ctx(desc), 0, crypto_shash_descsize(desc->tfm));
 	return err;
 }
 
-int crypto_shash_final(struct shash_desc *desc, u8 *out)
+int crypto_shash_finup(struct shash_desc *restrict desc, const u8 *data,
+		       unsigned int len, u8 *restrict out)
 {
 	struct crypto_shash *tfm = desc->tfm;
-	struct shash_alg *shash = crypto_shash_alg(tfm);
-	unsigned long alignmask = crypto_shash_alignmask(tfm);
+	u8 *blenp = shash_desc_ctx(desc);
+	bool finup_max, nonzero;
+	unsigned int bs;
+	int err;
+	u8 *buf;
 
-	if ((unsigned long)out & alignmask)
-		return shash_final_unaligned(desc, out);
+	if (!crypto_shash_block_only(tfm)) {
+		if (out)
+			goto finup;
+		return crypto_shash_alg(tfm)->update(desc, data, len);
+	}
 
-	return shash->final(desc, out);
-}
-EXPORT_SYMBOL_GPL(crypto_shash_final);
+	finup_max = out && crypto_shash_finup_max(tfm);
 
-static int shash_finup_unaligned(struct shash_desc *desc, const u8 *data,
-				 unsigned int len, u8 *out)
-{
-	return crypto_shash_update(desc, data, len) ?:
-	       crypto_shash_final(desc, out);
-}
+	/* Retain extra block for final nonzero algorithms. */
+	nonzero = crypto_shash_final_nonzero(tfm);
 
-int crypto_shash_finup(struct shash_desc *desc, const u8 *data,
-		       unsigned int len, u8 *out)
-{
-	struct crypto_shash *tfm = desc->tfm;
-	struct shash_alg *shash = crypto_shash_alg(tfm);
-	unsigned long alignmask = crypto_shash_alignmask(tfm);
+	/*
+	 * The partial block buffer follows the algorithm desc context.
+	 * The byte following that contains the length.
+	 */
+	blenp += crypto_shash_descsize(tfm) - 1;
+	bs = crypto_shash_blocksize(tfm);
+	buf = blenp - bs;
 
-	if (((unsigned long)data | (unsigned long)out) & alignmask)
-		return shash_finup_unaligned(desc, data, len, out);
+	if (likely(!*blenp && finup_max))
+		goto finup;
 
-	return shash->finup(desc, data, len, out);
+	while ((*blenp + len) >= bs + nonzero) {
+		unsigned int nbytes = len - nonzero;
+		const u8 *src = data;
+
+		if (*blenp) {
+			memcpy(buf + *blenp, data, bs - *blenp);
+			nbytes = bs;
+			src = buf;
+		}
+
+		err = crypto_shash_alg(tfm)->update(desc, src, nbytes);
+		if (err < 0)
+			return err;
+
+		data += nbytes - err - *blenp;
+		len -= nbytes - err - *blenp;
+		*blenp = 0;
+	}
+
+	if (*blenp || !out) {
+		memcpy(buf + *blenp, data, len);
+		*blenp += len;
+		if (!out)
+			return 0;
+		data = buf;
+		len = *blenp;
+	}
+
+finup:
+	return crypto_shash_op_and_zero(crypto_shash_alg(tfm)->finup, desc,
+					data, len, out);
 }
 EXPORT_SYMBOL_GPL(crypto_shash_finup);
 
-static int shash_digest_unaligned(struct shash_desc *desc, const u8 *data,
-				  unsigned int len, u8 *out)
+static int shash_default_digest(struct shash_desc *desc, const u8 *data,
+				unsigned int len, u8 *out)
 {
-	return crypto_shash_init(desc) ?:
+	return __crypto_shash_init(desc) ?:
 	       crypto_shash_finup(desc, data, len, out);
 }
 
@@ -205,16 +184,12 @@ int crypto_shash_digest(struct shash_desc *desc, const u8 *data,
 			unsigned int len, u8 *out)
 {
 	struct crypto_shash *tfm = desc->tfm;
-	struct shash_alg *shash = crypto_shash_alg(tfm);
-	unsigned long alignmask = crypto_shash_alignmask(tfm);
 
 	if (crypto_shash_get_flags(tfm) & CRYPTO_TFM_NEED_KEY)
 		return -ENOKEY;
 
-	if (((unsigned long)data | (unsigned long)out) & alignmask)
-		return shash_digest_unaligned(desc, data, len, out);
-
-	return shash->digest(desc, data, len, out);
+	return crypto_shash_op_and_zero(crypto_shash_alg(tfm)->digest, desc,
+					data, len, out);
 }
 EXPORT_SYMBOL_GPL(crypto_shash_digest);
 
@@ -222,196 +197,107 @@ int crypto_shash_tfm_digest(struct crypto_shash *tfm, const u8 *data,
 			    unsigned int len, u8 *out)
 {
 	SHASH_DESC_ON_STACK(desc, tfm);
-	int err;
 
 	desc->tfm = tfm;
-
-	err = crypto_shash_digest(desc, data, len, out);
-
-	shash_desc_zero(desc);
-
-	return err;
+	return crypto_shash_digest(desc, data, len, out);
 }
 EXPORT_SYMBOL_GPL(crypto_shash_tfm_digest);
 
-static int shash_default_export(struct shash_desc *desc, void *out)
+static int __crypto_shash_export(struct shash_desc *desc, void *out,
+				 int (*export)(struct shash_desc *desc,
+					       void *out))
 {
-	memcpy(out, shash_desc_ctx(desc), crypto_shash_descsize(desc->tfm));
-	return 0;
-}
+	struct crypto_shash *tfm = desc->tfm;
+	u8 *buf = shash_desc_ctx(desc);
+	unsigned int plen, ss;
 
-static int shash_default_import(struct shash_desc *desc, const void *in)
-{
-	memcpy(shash_desc_ctx(desc), in, crypto_shash_descsize(desc->tfm));
-	return 0;
-}
-
-static int shash_async_setkey(struct crypto_ahash *tfm, const u8 *key,
-			      unsigned int keylen)
-{
-	struct crypto_shash **ctx = crypto_ahash_ctx(tfm);
-
-	return crypto_shash_setkey(*ctx, key, keylen);
-}
-
-static int shash_async_init(struct ahash_request *req)
-{
-	struct crypto_shash **ctx = crypto_ahash_ctx(crypto_ahash_reqtfm(req));
-	struct shash_desc *desc = ahash_request_ctx(req);
-
-	desc->tfm = *ctx;
-
-	return crypto_shash_init(desc);
-}
-
-int shash_ahash_update(struct ahash_request *req, struct shash_desc *desc)
-{
-	struct crypto_hash_walk walk;
-	int nbytes;
-
-	for (nbytes = crypto_hash_walk_first(req, &walk); nbytes > 0;
-	     nbytes = crypto_hash_walk_done(&walk, nbytes))
-		nbytes = crypto_shash_update(desc, walk.data, nbytes);
-
-	return nbytes;
-}
-EXPORT_SYMBOL_GPL(shash_ahash_update);
-
-static int shash_async_update(struct ahash_request *req)
-{
-	return shash_ahash_update(req, ahash_request_ctx(req));
-}
-
-static int shash_async_final(struct ahash_request *req)
-{
-	return crypto_shash_final(ahash_request_ctx(req), req->result);
-}
-
-int shash_ahash_finup(struct ahash_request *req, struct shash_desc *desc)
-{
-	struct crypto_hash_walk walk;
-	int nbytes;
-
-	nbytes = crypto_hash_walk_first(req, &walk);
-	if (!nbytes)
-		return crypto_shash_final(desc, req->result);
-
-	do {
-		nbytes = crypto_hash_walk_last(&walk) ?
-			 crypto_shash_finup(desc, walk.data, nbytes,
-					    req->result) :
-			 crypto_shash_update(desc, walk.data, nbytes);
-		nbytes = crypto_hash_walk_done(&walk, nbytes);
-	} while (nbytes > 0);
-
-	return nbytes;
-}
-EXPORT_SYMBOL_GPL(shash_ahash_finup);
-
-static int shash_async_finup(struct ahash_request *req)
-{
-	struct crypto_shash **ctx = crypto_ahash_ctx(crypto_ahash_reqtfm(req));
-	struct shash_desc *desc = ahash_request_ctx(req);
-
-	desc->tfm = *ctx;
-
-	return shash_ahash_finup(req, desc);
-}
-
-int shash_ahash_digest(struct ahash_request *req, struct shash_desc *desc)
-{
-	unsigned int nbytes = req->nbytes;
-	struct scatterlist *sg;
-	unsigned int offset;
-	int err;
-
-	if (nbytes &&
-	    (sg = req->src, offset = sg->offset,
-	     nbytes <= min(sg->length, ((unsigned int)(PAGE_SIZE)) - offset))) {
-		void *data;
-
-		data = kmap_atomic(sg_page(sg));
-		err = crypto_shash_digest(desc, data + offset, nbytes,
-					  req->result);
-		kunmap_atomic(data);
-	} else
-		err = crypto_shash_init(desc) ?:
-		      shash_ahash_finup(req, desc);
-
-	return err;
-}
-EXPORT_SYMBOL_GPL(shash_ahash_digest);
-
-static int shash_async_digest(struct ahash_request *req)
-{
-	struct crypto_shash **ctx = crypto_ahash_ctx(crypto_ahash_reqtfm(req));
-	struct shash_desc *desc = ahash_request_ctx(req);
-
-	desc->tfm = *ctx;
-
-	return shash_ahash_digest(req, desc);
-}
-
-static int shash_async_export(struct ahash_request *req, void *out)
-{
-	return crypto_shash_export(ahash_request_ctx(req), out);
-}
-
-static int shash_async_import(struct ahash_request *req, const void *in)
-{
-	struct crypto_shash **ctx = crypto_ahash_ctx(crypto_ahash_reqtfm(req));
-	struct shash_desc *desc = ahash_request_ctx(req);
-
-	desc->tfm = *ctx;
-
-	return crypto_shash_import(desc, in);
-}
-
-static void crypto_exit_shash_ops_async(struct crypto_tfm *tfm)
-{
-	struct crypto_shash **ctx = crypto_tfm_ctx(tfm);
-
-	crypto_free_shash(*ctx);
-}
-
-int crypto_init_shash_ops_async(struct crypto_tfm *tfm)
-{
-	struct crypto_alg *calg = tfm->__crt_alg;
-	struct shash_alg *alg = __crypto_shash_alg(calg);
-	struct crypto_ahash *crt = __crypto_ahash_cast(tfm);
-	struct crypto_shash **ctx = crypto_tfm_ctx(tfm);
-	struct crypto_shash *shash;
-
-	if (!crypto_mod_get(calg))
-		return -EAGAIN;
-
-	shash = crypto_create_tfm(calg, &crypto_shash_type);
-	if (IS_ERR(shash)) {
-		crypto_mod_put(calg);
-		return PTR_ERR(shash);
+	plen = crypto_shash_blocksize(tfm) + 1;
+	ss = crypto_shash_statesize(tfm);
+	if (crypto_shash_block_only(tfm))
+		ss -= plen;
+	if (!export) {
+		memcpy(out, buf, ss);
+		return 0;
 	}
 
-	*ctx = shash;
-	tfm->exit = crypto_exit_shash_ops_async;
-
-	crt->init = shash_async_init;
-	crt->update = shash_async_update;
-	crt->final = shash_async_final;
-	crt->finup = shash_async_finup;
-	crt->digest = shash_async_digest;
-	if (crypto_shash_alg_has_setkey(alg))
-		crt->setkey = shash_async_setkey;
-
-	crypto_ahash_set_flags(crt, crypto_shash_get_flags(shash) &
-				    CRYPTO_TFM_NEED_KEY);
-
-	crt->export = shash_async_export;
-	crt->import = shash_async_import;
-
-	crt->reqsize = sizeof(struct shash_desc) + crypto_shash_descsize(shash);
-
-	return 0;
+	return export(desc, out);
 }
+
+int crypto_shash_export_core(struct shash_desc *desc, void *out)
+{
+	return __crypto_shash_export(desc, out,
+				     crypto_shash_alg(desc->tfm)->export_core);
+}
+EXPORT_SYMBOL_GPL(crypto_shash_export_core);
+
+int crypto_shash_export(struct shash_desc *desc, void *out)
+{
+	struct crypto_shash *tfm = desc->tfm;
+
+	if (crypto_shash_block_only(tfm)) {
+		unsigned int plen = crypto_shash_blocksize(tfm) + 1;
+		unsigned int descsize = crypto_shash_descsize(tfm);
+		unsigned int ss = crypto_shash_statesize(tfm);
+		u8 *buf = shash_desc_ctx(desc);
+
+		memcpy(out + ss - plen, buf + descsize - plen, plen);
+	}
+	return __crypto_shash_export(desc, out, crypto_shash_alg(tfm)->export);
+}
+EXPORT_SYMBOL_GPL(crypto_shash_export);
+
+static int __crypto_shash_import(struct shash_desc *desc, const void *in,
+				 int (*import)(struct shash_desc *desc,
+					       const void *in))
+{
+	struct crypto_shash *tfm = desc->tfm;
+	unsigned int descsize, plen, ss;
+	u8 *buf = shash_desc_ctx(desc);
+
+	if (crypto_shash_get_flags(tfm) & CRYPTO_TFM_NEED_KEY)
+		return -ENOKEY;
+
+	ss = crypto_shash_statesize(tfm);
+	if (crypto_shash_block_only(tfm)) {
+		plen = crypto_shash_blocksize(tfm) + 1;
+		ss -= plen;
+		descsize = crypto_shash_descsize(tfm);
+		buf[descsize - 1] = 0;
+	}
+	if (!import) {
+		memcpy(buf, in, ss);
+		return 0;
+	}
+
+	return import(desc, in);
+}
+
+int crypto_shash_import_core(struct shash_desc *desc, const void *in)
+{
+	return __crypto_shash_import(desc, in,
+				     crypto_shash_alg(desc->tfm)->import_core);
+}
+EXPORT_SYMBOL_GPL(crypto_shash_import_core);
+
+int crypto_shash_import(struct shash_desc *desc, const void *in)
+{
+	struct crypto_shash *tfm = desc->tfm;
+	int err;
+
+	err = __crypto_shash_import(desc, in, crypto_shash_alg(tfm)->import);
+	if (crypto_shash_block_only(tfm)) {
+		unsigned int plen = crypto_shash_blocksize(tfm) + 1;
+		unsigned int descsize = crypto_shash_descsize(tfm);
+		unsigned int ss = crypto_shash_statesize(tfm);
+		u8 *buf = shash_desc_ctx(desc);
+
+		memcpy(buf + descsize - plen, in + ss - plen, plen);
+		if (buf[descsize - 1] >= plen)
+			err = -EOVERFLOW;
+	}
+	return err;
+}
+EXPORT_SYMBOL_GPL(crypto_shash_import);
 
 static void crypto_shash_exit_tfm(struct crypto_tfm *tfm)
 {
@@ -425,9 +311,6 @@ static int crypto_shash_init_tfm(struct crypto_tfm *tfm)
 {
 	struct crypto_shash *hash = __crypto_shash_cast(tfm);
 	struct shash_alg *alg = crypto_shash_alg(hash);
-	int err;
-
-	hash->descsize = alg->descsize;
 
 	shash_set_needkey(hash, alg);
 
@@ -437,18 +320,7 @@ static int crypto_shash_init_tfm(struct crypto_tfm *tfm)
 	if (!alg->init_tfm)
 		return 0;
 
-	err = alg->init_tfm(hash);
-	if (err)
-		return err;
-
-	/* ->init_tfm() may have increased the descsize. */
-	if (WARN_ON_ONCE(hash->descsize > HASH_MAX_DESCSIZE)) {
-		if (alg->exit_tfm)
-			alg->exit_tfm(hash);
-		return -EINVAL;
-	}
-
-	return 0;
+	return alg->init_tfm(hash);
 }
 
 static void crypto_shash_free_instance(struct crypto_instance *inst)
@@ -458,8 +330,8 @@ static void crypto_shash_free_instance(struct crypto_instance *inst)
 	shash->free(shash);
 }
 
-#ifdef CONFIG_NET
-static int crypto_shash_report(struct sk_buff *skb, struct crypto_alg *alg)
+static int __maybe_unused crypto_shash_report(
+	struct sk_buff *skb, struct crypto_alg *alg)
 {
 	struct crypto_report_hash rhash;
 	struct shash_alg *salg = __crypto_shash_alg(alg);
@@ -473,16 +345,9 @@ static int crypto_shash_report(struct sk_buff *skb, struct crypto_alg *alg)
 
 	return nla_put(skb, CRYPTOCFGA_REPORT_HASH, sizeof(rhash), &rhash);
 }
-#else
-static int crypto_shash_report(struct sk_buff *skb, struct crypto_alg *alg)
-{
-	return -ENOSYS;
-}
-#endif
 
-static void crypto_shash_show(struct seq_file *m, struct crypto_alg *alg)
-	__maybe_unused;
-static void crypto_shash_show(struct seq_file *m, struct crypto_alg *alg)
+static void __maybe_unused crypto_shash_show(struct seq_file *m,
+					     struct crypto_alg *alg)
 {
 	struct shash_alg *salg = __crypto_shash_alg(alg);
 
@@ -491,18 +356,21 @@ static void crypto_shash_show(struct seq_file *m, struct crypto_alg *alg)
 	seq_printf(m, "digestsize   : %u\n", salg->digestsize);
 }
 
-static const struct crypto_type crypto_shash_type = {
+const struct crypto_type crypto_shash_type = {
 	.extsize = crypto_alg_extsize,
 	.init_tfm = crypto_shash_init_tfm,
 	.free = crypto_shash_free_instance,
 #ifdef CONFIG_PROC_FS
 	.show = crypto_shash_show,
 #endif
+#if IS_ENABLED(CONFIG_CRYPTO_USER)
 	.report = crypto_shash_report,
+#endif
 	.maskclear = ~CRYPTO_ALG_TYPE_MASK,
 	.maskset = CRYPTO_ALG_TYPE_MASK,
 	.type = CRYPTO_ALG_TYPE_SHASH,
 	.tfmsize = offsetof(struct crypto_shash, base),
+	.algsize = offsetof(struct shash_alg, base),
 };
 
 int crypto_grab_shash(struct crypto_shash_spawn *spawn,
@@ -521,33 +389,129 @@ struct crypto_shash *crypto_alloc_shash(const char *alg_name, u32 type,
 }
 EXPORT_SYMBOL_GPL(crypto_alloc_shash);
 
-static int shash_prepare_alg(struct shash_alg *alg)
+int crypto_has_shash(const char *alg_name, u32 type, u32 mask)
+{
+	return crypto_type_has_alg(alg_name, &crypto_shash_type, type, mask);
+}
+EXPORT_SYMBOL_GPL(crypto_has_shash);
+
+struct crypto_shash *crypto_clone_shash(struct crypto_shash *hash)
+{
+	struct crypto_tfm *tfm = crypto_shash_tfm(hash);
+	struct shash_alg *alg = crypto_shash_alg(hash);
+	struct crypto_shash *nhash;
+	int err;
+
+	if (!crypto_shash_alg_has_setkey(alg)) {
+		tfm = crypto_tfm_get(tfm);
+		if (IS_ERR(tfm))
+			return ERR_CAST(tfm);
+
+		return hash;
+	}
+
+	if (!alg->clone_tfm && (alg->init_tfm || alg->base.cra_init))
+		return ERR_PTR(-ENOSYS);
+
+	nhash = crypto_clone_tfm(&crypto_shash_type, tfm);
+	if (IS_ERR(nhash))
+		return nhash;
+
+	if (alg->clone_tfm) {
+		err = alg->clone_tfm(nhash, hash);
+		if (err) {
+			crypto_free_shash(nhash);
+			return ERR_PTR(err);
+		}
+	}
+
+	if (alg->exit_tfm)
+		crypto_shash_tfm(nhash)->exit = crypto_shash_exit_tfm;
+
+	return nhash;
+}
+EXPORT_SYMBOL_GPL(crypto_clone_shash);
+
+int hash_prepare_alg(struct hash_alg_common *alg)
 {
 	struct crypto_alg *base = &alg->base;
 
-	if (alg->digestsize > HASH_MAX_DIGESTSIZE ||
-	    alg->descsize > HASH_MAX_DESCSIZE ||
-	    alg->statesize > HASH_MAX_STATESIZE)
+	if (alg->digestsize > HASH_MAX_DIGESTSIZE)
 		return -EINVAL;
+
+	/* alignmask is not useful for hashes, so it is not supported. */
+	if (base->cra_alignmask)
+		return -EINVAL;
+
+	base->cra_flags &= ~CRYPTO_ALG_TYPE_MASK;
+
+	return 0;
+}
+
+static int shash_default_export_core(struct shash_desc *desc, void *out)
+{
+	return -ENOSYS;
+}
+
+static int shash_default_import_core(struct shash_desc *desc, const void *in)
+{
+	return -ENOSYS;
+}
+
+static int shash_prepare_alg(struct shash_alg *alg)
+{
+	struct crypto_alg *base = &alg->halg.base;
+	int err;
 
 	if ((alg->export && !alg->import) || (alg->import && !alg->export))
 		return -EINVAL;
 
-	base->cra_type = &crypto_shash_type;
-	base->cra_flags &= ~CRYPTO_ALG_TYPE_MASK;
-	base->cra_flags |= CRYPTO_ALG_TYPE_SHASH;
+	err = hash_prepare_alg(&alg->halg);
+	if (err)
+		return err;
 
+	base->cra_type = &crypto_shash_type;
+	base->cra_flags |= CRYPTO_ALG_TYPE_SHASH;
+	base->cra_flags |= CRYPTO_ALG_REQ_VIRT;
+
+	/*
+	 * Handle missing optional functions.  For each one we can either
+	 * install a default here, or we can leave the pointer as NULL and check
+	 * the pointer for NULL in crypto_shash_*(), avoiding an indirect call
+	 * when the default behavior is desired.  For ->finup and ->digest we
+	 * install defaults, since for optimal performance algorithms should
+	 * implement these anyway.  On the other hand, for ->import and
+	 * ->export the common case and best performance comes from the simple
+	 * memcpy of the shash_desc_ctx, so when those pointers are NULL we
+	 * leave them NULL and provide the memcpy with no indirect call.
+	 */
 	if (!alg->finup)
-		alg->finup = shash_finup_unaligned;
+		alg->finup = shash_default_finup;
 	if (!alg->digest)
-		alg->digest = shash_digest_unaligned;
-	if (!alg->export) {
-		alg->export = shash_default_export;
-		alg->import = shash_default_import;
-		alg->statesize = alg->descsize;
-	}
+		alg->digest = shash_default_digest;
+	if (!alg->export && !alg->halg.statesize)
+		alg->halg.statesize = alg->descsize;
 	if (!alg->setkey)
 		alg->setkey = shash_no_setkey;
+
+	if (base->cra_flags & CRYPTO_AHASH_ALG_BLOCK_ONLY) {
+		BUILD_BUG_ON(MAX_ALGAPI_BLOCKSIZE >= 256);
+		alg->descsize += base->cra_blocksize + 1;
+		alg->statesize += base->cra_blocksize + 1;
+		alg->export_core = alg->export;
+		alg->import_core = alg->import;
+	} else if (!alg->export_core || !alg->import_core) {
+		alg->export_core = shash_default_export_core;
+		alg->import_core = shash_default_import_core;
+		base->cra_flags |= CRYPTO_AHASH_ALG_NO_EXPORT_CORE;
+	}
+
+	if (alg->descsize > HASH_MAX_DESCSIZE)
+		return -EINVAL;
+	if (alg->statesize > HASH_MAX_STATESIZE)
+		return -EINVAL;
+
+	base->cra_reqsize = sizeof(struct shash_desc) + alg->descsize;
 
 	return 0;
 }
@@ -577,17 +541,13 @@ int crypto_register_shashes(struct shash_alg *algs, int count)
 
 	for (i = 0; i < count; i++) {
 		ret = crypto_register_shash(&algs[i]);
-		if (ret)
-			goto err;
+		if (ret) {
+			crypto_unregister_shashes(algs, i);
+			return ret;
+		}
 	}
 
 	return 0;
-
-err:
-	for (--i; i >= 0; --i)
-		crypto_unregister_shash(&algs[i]);
-
-	return ret;
 }
 EXPORT_SYMBOL_GPL(crypto_register_shashes);
 

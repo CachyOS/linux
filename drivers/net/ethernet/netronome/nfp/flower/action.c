@@ -149,7 +149,7 @@ nfp_fl_pre_lag(struct nfp_app *app, const struct flow_action_entry *act,
 	}
 
 	/* Pre_lag action must be first on action list.
-	 * If other actions already exist they need pushed forward.
+	 * If other actions already exist they need to be pushed forward.
 	 */
 	if (act_len)
 		memmove(nfp_flow->action_data + act_size,
@@ -396,6 +396,17 @@ nfp_fl_push_geneve_options(struct nfp_fl_payload *nfp_fl, int *list_len,
 	return 0;
 }
 
+#define NFP_FL_CHECK(flag) ({				\
+	IP_TUNNEL_DECLARE_FLAGS(__check) = { };		\
+	__be16 __res;					\
+							\
+	__set_bit(IP_TUNNEL_##flag##_BIT, __check);	\
+	__res = ip_tunnel_flags_to_be16(__check);	\
+							\
+	BUILD_BUG_ON(__builtin_constant_p(__res) &&	\
+		     NFP_FL_TUNNEL_##flag != __res);	\
+})
+
 static int
 nfp_fl_set_tun(struct nfp_app *app, struct nfp_fl_set_tun *set_tun,
 	       const struct flow_action_entry *act,
@@ -410,6 +421,7 @@ nfp_fl_set_tun(struct nfp_app *app, struct nfp_fl_set_tun *set_tun,
 	u32 tmp_set_ip_tun_type_index = 0;
 	/* Currently support one pre-tunnel so index is always 0. */
 	int pretun_idx = 0;
+	__be16 tun_flags;
 
 	if (!IS_ENABLED(CONFIG_IPV6) && ipv6)
 		return -EOPNOTSUPP;
@@ -417,13 +429,22 @@ nfp_fl_set_tun(struct nfp_app *app, struct nfp_fl_set_tun *set_tun,
 	if (ipv6 && !(priv->flower_ext_feats & NFP_FL_FEATS_IPV6_TUN))
 		return -EOPNOTSUPP;
 
-	BUILD_BUG_ON(NFP_FL_TUNNEL_CSUM != TUNNEL_CSUM ||
-		     NFP_FL_TUNNEL_KEY	!= TUNNEL_KEY ||
-		     NFP_FL_TUNNEL_GENEVE_OPT != TUNNEL_GENEVE_OPT);
+	NFP_FL_CHECK(CSUM);
+	NFP_FL_CHECK(KEY);
+	NFP_FL_CHECK(GENEVE_OPT);
+
 	if (ip_tun->options_len &&
 	    (tun_type != NFP_FL_TUNNEL_GENEVE ||
 	    !(priv->flower_ext_feats & NFP_FL_FEATS_GENEVE_OPT))) {
 		NL_SET_ERR_MSG_MOD(extack, "unsupported offload: loaded firmware does not support geneve options offload");
+		return -EOPNOTSUPP;
+	}
+
+	tun_flags = ip_tunnel_flags_to_be16(ip_tun->key.tun_flags);
+	if (!ip_tunnel_flags_is_be16_compat(ip_tun->key.tun_flags) ||
+	    (tun_flags & ~NFP_FL_SUPPORTED_UDP_TUN_FLAGS)) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "unsupported offload: loaded firmware does not support tunnel flag offload");
 		return -EOPNOTSUPP;
 	}
 
@@ -436,7 +457,8 @@ nfp_fl_set_tun(struct nfp_app *app, struct nfp_fl_set_tun *set_tun,
 		FIELD_PREP(NFP_FL_PRE_TUN_INDEX, pretun_idx);
 
 	set_tun->tun_type_index = cpu_to_be32(tmp_set_ip_tun_type_index);
-	set_tun->tun_id = ip_tun->key.tun_id;
+	if (tun_flags & NFP_FL_TUNNEL_KEY)
+		set_tun->tun_id = ip_tun->key.tun_id;
 
 	if (ip_tun->key.ttl) {
 		set_tun->ttl = ip_tun->key.ttl;
@@ -453,7 +475,7 @@ nfp_fl_set_tun(struct nfp_app *app, struct nfp_fl_set_tun *set_tun,
 			set_tun->ttl = ip6_dst_hoplimit(dst);
 			dst_release(dst);
 		} else {
-			set_tun->ttl = net->ipv6.devconf_all->hop_limit;
+			set_tun->ttl = READ_ONCE(net->ipv6.devconf_all->hop_limit);
 		}
 #endif
 	} else {
@@ -474,18 +496,12 @@ nfp_fl_set_tun(struct nfp_app *app, struct nfp_fl_set_tun *set_tun,
 			set_tun->ttl = ip4_dst_hoplimit(&rt->dst);
 			ip_rt_put(rt);
 		} else {
-			set_tun->ttl = net->ipv4.sysctl_ip_default_ttl;
+			set_tun->ttl = READ_ONCE(net->ipv4.sysctl_ip_default_ttl);
 		}
 	}
 
 	set_tun->tos = ip_tun->key.tos;
-
-	if (!(ip_tun->key.tun_flags & NFP_FL_TUNNEL_KEY) ||
-	    ip_tun->key.tun_flags & ~NFP_FL_SUPPORTED_UDP_TUN_FLAGS) {
-		NL_SET_ERR_MSG_MOD(extack, "unsupported offload: loaded firmware does not support tunnel flag offload");
-		return -EOPNOTSUPP;
-	}
-	set_tun->tun_flags = ip_tun->key.tun_flags;
+	set_tun->tun_flags = tun_flags;
 
 	if (tun_type == NFP_FL_TUNNEL_GENEVE) {
 		set_tun->tun_proto = htons(ETH_P_TEB);
@@ -674,9 +690,9 @@ nfp_fl_set_ip6_hop_limit_flow_label(u32 off, __be32 exact, __be32 mask,
 					    fl_hl_mask->hop_limit;
 		break;
 	case round_down(offsetof(struct ipv6hdr, flow_lbl), 4):
-		if (mask & ~IPV6_FLOW_LABEL_MASK ||
-		    exact & ~IPV6_FLOW_LABEL_MASK) {
-			NL_SET_ERR_MSG_MOD(extack, "unsupported offload: invalid pedit IPv6 flow label action");
+		if (mask & ~IPV6_FLOWINFO_MASK ||
+		    exact & ~IPV6_FLOWINFO_MASK) {
+			NL_SET_ERR_MSG_MOD(extack, "unsupported offload: invalid pedit IPv6 flow info action");
 			return -EOPNOTSUPP;
 		}
 

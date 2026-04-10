@@ -196,7 +196,7 @@ static struct i2c_driver bpa_rs600_driver = {
 		.name = "bpa-rs600",
 		.of_match_table = of_match_ptr(bpa_rs600_of_match),
 	},
-	.probe_new = bpa_rs600_probe,
+	.probe = bpa_rs600_probe,
 	.id_table = bpa_rs600_id,
 };
 
@@ -205,4 +205,4 @@ module_i2c_driver(bpa_rs600_driver);
 MODULE_AUTHOR("Chris Packham");
 MODULE_DESCRIPTION("PMBus driver for BluTek BPA-RS600");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(PMBUS);
+MODULE_IMPORT_NS("PMBUS");

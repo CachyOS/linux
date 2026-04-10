@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
- * Copyright (C) 2012-2014, 2018-2021 Intel Corporation
+ * Copyright (C) 2012-2014, 2018-2022, 2024-2025 Intel Corporation
  * Copyright (C) 2017 Intel Deutschland GmbH
  */
 #ifndef __iwl_fw_api_mac_h__
@@ -16,8 +16,8 @@
 #define NUM_MAC_INDEX		(NUM_MAC_INDEX_DRIVER + 1)
 #define NUM_MAC_INDEX_CDB	(NUM_MAC_INDEX_DRIVER + 2)
 
-#define IWL_MVM_STATION_COUNT_MAX	16
-#define IWL_MVM_INVALID_STA		0xFF
+#define IWL_STATION_COUNT_MAX	16
+#define IWL_INVALID_STA		0xFF
 
 enum iwl_ac {
 	AC_BK,
@@ -287,15 +287,15 @@ struct iwl_ac_qos {
 	__le16 cw_min;
 	__le16 cw_max;
 	u8 aifsn;
-	u8 fifos_mask;
+	u8 fifos_mask; /* not in use since _VER_3 */
 	__le16 edca_txop;
-} __packed; /* AC_QOS_API_S_VER_2 */
+} __packed; /* AC_QOS_API_S_VER_2, _VER_3 */
 
 /**
  * struct iwl_mac_ctx_cmd - command structure to configure MAC contexts
  * ( MAC_CONTEXT_CMD = 0x28 )
  * @id_and_color: ID and color of the MAC
- * @action: action to perform, one of FW_CTXT_ACTION_*
+ * @action: action to perform, see &enum iwl_ctxt_action
  * @mac_type: one of &enum iwl_mac_types
  * @tsf_id: TSF HW timer, one of &enum iwl_tsf_id
  * @node_addr: MAC address
@@ -310,6 +310,13 @@ struct iwl_ac_qos {
  * @filter_flags: combination of &enum iwl_mac_filter_flags
  * @qos_flags: from &enum iwl_mac_qos_flags
  * @ac: one iwl_mac_qos configuration for each AC
+ * @ap: AP specific config data, see &struct iwl_mac_data_ap
+ * @go: GO specific config data, see &struct iwl_mac_data_go
+ * @sta: BSS client specific config data, see &struct iwl_mac_data_sta
+ * @p2p_sta: P2P client specific config data, see &struct iwl_mac_data_p2p_sta
+ * @p2p_dev: P2P-device specific config data, see &struct iwl_mac_data_p2p_dev
+ * @pibss: Pseudo-IBSS specific data, unused; see struct iwl_mac_data_pibss
+ * @ibss: IBSS specific config data, see &struct iwl_mac_data_ibss
  */
 struct iwl_mac_ctx_cmd {
 	/* COMMON_INDEX_HDR_API_S_VER_1 */
@@ -353,7 +360,7 @@ struct iwl_nonqos_seq_query_cmd {
 } __packed; /* NON_QOS_TX_COUNTER_GET_SET_API_S_VER_1 */
 
 /**
- * struct iwl_missed_beacons_notif - information on missed beacons
+ * struct iwl_missed_beacons_notif_ver_3 - information on missed beacons
  * ( MISSED_BEACONS_NOTIFICATION = 0xa2 )
  * @mac_id: interface ID
  * @consec_missed_beacons_since_last_rx: number of consecutive missed
@@ -362,13 +369,31 @@ struct iwl_nonqos_seq_query_cmd {
  * @num_expected_beacons: number of expected beacons
  * @num_recvd_beacons: number of received beacons
  */
-struct iwl_missed_beacons_notif {
+struct iwl_missed_beacons_notif_ver_3 {
 	__le32 mac_id;
 	__le32 consec_missed_beacons_since_last_rx;
 	__le32 consec_missed_beacons;
 	__le32 num_expected_beacons;
 	__le32 num_recvd_beacons;
 } __packed; /* MISSED_BEACON_NTFY_API_S_VER_3 */
+
+/**
+ * struct iwl_missed_beacons_notif_v4 - information on missed beacons
+ * ( MISSED_BEACONS_NOTIFICATION = 0xa2 )
+ * @link_id: fw link ID
+ * @consec_missed_beacons_since_last_rx: number of consecutive missed
+ *	beacons since last RX.
+ * @consec_missed_beacons: number of consecutive missed beacons
+ * @num_expected_beacons: number of expected beacons
+ * @num_recvd_beacons: number of received beacons
+ */
+struct iwl_missed_beacons_notif_v4 {
+	__le32 link_id;
+	__le32 consec_missed_beacons_since_last_rx;
+	__le32 consec_missed_beacons;
+	__le32 num_expected_beacons;
+	__le32 num_recvd_beacons;
+} __packed; /* MISSED_BEACON_NTFY_API_S_VER_4 */
 
 /**
  * struct iwl_he_backoff_conf - used for backoff configuration
@@ -398,7 +423,7 @@ struct iwl_he_backoff_conf {
  * @IWL_HE_PKT_EXT_64QAM: 64-QAM
  * @IWL_HE_PKT_EXT_256QAM: 256-QAM
  * @IWL_HE_PKT_EXT_1024QAM: 1024-QAM
- * @IWL_HE_PKT_EXT_RESERVED: reserved value
+ * @IWL_HE_PKT_EXT_4096QAM: 4096-QAM, for EHT only
  * @IWL_HE_PKT_EXT_NONE: not defined
  */
 enum iwl_he_pkt_ext_constellations {
@@ -408,13 +433,13 @@ enum iwl_he_pkt_ext_constellations {
 	IWL_HE_PKT_EXT_64QAM,
 	IWL_HE_PKT_EXT_256QAM,
 	IWL_HE_PKT_EXT_1024QAM,
-	IWL_HE_PKT_EXT_RESERVED,
+	IWL_HE_PKT_EXT_4096QAM,
 	IWL_HE_PKT_EXT_NONE,
 };
 
 #define MAX_HE_SUPP_NSS	2
-#define MAX_CHANNEL_BW_INDX_API_D_VER_2	4
-#define MAX_CHANNEL_BW_INDX_API_D_VER_3	5
+#define MAX_CHANNEL_BW_INDX_API_D_VER_1	4
+#define MAX_CHANNEL_BW_INDX_API_D_VER_2	5
 
 /**
  * struct iwl_he_pkt_ext_v1 - QAM thresholds
@@ -437,7 +462,7 @@ enum iwl_he_pkt_ext_constellations {
  *		(0-low_th, 1-high_th)
  */
 struct iwl_he_pkt_ext_v1 {
-	u8 pkt_ext_qam_th[MAX_HE_SUPP_NSS][MAX_CHANNEL_BW_INDX_API_D_VER_2][2];
+	u8 pkt_ext_qam_th[MAX_HE_SUPP_NSS][MAX_CHANNEL_BW_INDX_API_D_VER_1][2];
 } __packed; /* PKT_EXT_DOT11AX_API_S_VER_1 */
 
 /**
@@ -462,7 +487,7 @@ struct iwl_he_pkt_ext_v1 {
  *	(0-low_th, 1-high_th)
  */
 struct iwl_he_pkt_ext_v2 {
-	u8 pkt_ext_qam_th[MAX_HE_SUPP_NSS][MAX_CHANNEL_BW_INDX_API_D_VER_3][2];
+	u8 pkt_ext_qam_th[MAX_HE_SUPP_NSS][MAX_CHANNEL_BW_INDX_API_D_VER_2][2];
 } __packed; /* PKT_EXT_DOT11AX_API_S_VER_2 */
 
 /**

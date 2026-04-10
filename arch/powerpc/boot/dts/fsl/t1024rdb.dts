@@ -91,7 +91,7 @@
 		board-control@2,0 {
 			#address-cells = <1>;
 			#size-cells = <1>;
-			compatible = "fsl,t1024-cpld";
+			compatible = "fsl,t1024-cpld", "fsl,deepsleep-cpld";
 			reg = <3 0 0x300>;
 			ranges = <0 3 0 0x300>;
 			bank-width = <1>;
@@ -165,7 +165,7 @@
 		};
 
 		i2c@118100 {
-			pca9546@77 {
+			i2c-mux@77 {
 				compatible = "nxp,pca9546";
 				reg = <0x77>;
 				#address-cells = <1>;

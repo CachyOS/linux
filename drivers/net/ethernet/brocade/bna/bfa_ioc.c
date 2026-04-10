@@ -114,7 +114,7 @@ bfa_fsm_state_decl(bfa_ioc, disabling, struct bfa_ioc, enum ioc_event);
 bfa_fsm_state_decl(bfa_ioc, disabled, struct bfa_ioc, enum ioc_event);
 bfa_fsm_state_decl(bfa_ioc, hwfail, struct bfa_ioc, enum ioc_event);
 
-static struct bfa_sm_table ioc_sm_table[] = {
+static struct ioc_sm_table_s ioc_sm_table[] = {
 	{BFA_SM(bfa_ioc_sm_uninit), BFA_IOC_UNINIT},
 	{BFA_SM(bfa_ioc_sm_reset), BFA_IOC_RESET},
 	{BFA_SM(bfa_ioc_sm_enabling), BFA_IOC_ENABLING},
@@ -183,7 +183,7 @@ bfa_fsm_state_decl(bfa_iocpf, disabling_sync, struct bfa_iocpf,
 						enum iocpf_event);
 bfa_fsm_state_decl(bfa_iocpf, disabled, struct bfa_iocpf, enum iocpf_event);
 
-static struct bfa_sm_table iocpf_sm_table[] = {
+static struct iocpf_sm_table_s iocpf_sm_table[] = {
 	{BFA_SM(bfa_iocpf_sm_reset), BFA_IOCPF_RESET},
 	{BFA_SM(bfa_iocpf_sm_fwcheck), BFA_IOCPF_FWMISMATCH},
 	{BFA_SM(bfa_iocpf_sm_mismatch), BFA_IOCPF_FWMISMATCH},
@@ -314,13 +314,13 @@ bfa_ioc_sm_getattr(struct bfa_ioc *ioc, enum ioc_event event)
 {
 	switch (event) {
 	case IOC_E_FWRSP_GETATTR:
-		del_timer(&ioc->ioc_timer);
+		timer_delete(&ioc->ioc_timer);
 		bfa_fsm_set_state(ioc, bfa_ioc_sm_op);
 		break;
 
 	case IOC_E_PFFAILED:
 	case IOC_E_HWERROR:
-		del_timer(&ioc->ioc_timer);
+		timer_delete(&ioc->ioc_timer);
 		fallthrough;
 	case IOC_E_TIMEOUT:
 		ioc->cbfn->enable_cbfn(ioc->bfa, BFA_STATUS_IOC_FAILURE);
@@ -330,7 +330,7 @@ bfa_ioc_sm_getattr(struct bfa_ioc *ioc, enum ioc_event event)
 		break;
 
 	case IOC_E_DISABLE:
-		del_timer(&ioc->ioc_timer);
+		timer_delete(&ioc->ioc_timer);
 		bfa_fsm_set_state(ioc, bfa_ioc_sm_disabling);
 		break;
 
@@ -659,13 +659,13 @@ bfa_iocpf_sm_mismatch(struct bfa_iocpf *iocpf, enum iocpf_event event)
 		break;
 
 	case IOCPF_E_DISABLE:
-		del_timer(&ioc->iocpf_timer);
+		timer_delete(&ioc->iocpf_timer);
 		bfa_fsm_set_state(iocpf, bfa_iocpf_sm_reset);
 		bfa_ioc_pf_disabled(ioc);
 		break;
 
 	case IOCPF_E_STOP:
-		del_timer(&ioc->iocpf_timer);
+		timer_delete(&ioc->iocpf_timer);
 		bfa_fsm_set_state(iocpf, bfa_iocpf_sm_reset);
 		break;
 
@@ -741,7 +741,7 @@ bfa_iocpf_sm_hwinit(struct bfa_iocpf *iocpf, enum iocpf_event event)
 		break;
 
 	case IOCPF_E_DISABLE:
-		del_timer(&ioc->iocpf_timer);
+		timer_delete(&ioc->iocpf_timer);
 		bfa_ioc_sync_leave(ioc);
 		bfa_nw_ioc_hw_sem_release(ioc);
 		bfa_fsm_set_state(iocpf, bfa_iocpf_sm_disabled);
@@ -774,13 +774,13 @@ bfa_iocpf_sm_enabling(struct bfa_iocpf *iocpf, enum iocpf_event event)
 
 	switch (event) {
 	case IOCPF_E_FWRSP_ENABLE:
-		del_timer(&ioc->iocpf_timer);
+		timer_delete(&ioc->iocpf_timer);
 		bfa_nw_ioc_hw_sem_release(ioc);
 		bfa_fsm_set_state(iocpf, bfa_iocpf_sm_ready);
 		break;
 
 	case IOCPF_E_INITFAIL:
-		del_timer(&ioc->iocpf_timer);
+		timer_delete(&ioc->iocpf_timer);
 		fallthrough;
 
 	case IOCPF_E_TIMEOUT:
@@ -791,7 +791,7 @@ bfa_iocpf_sm_enabling(struct bfa_iocpf *iocpf, enum iocpf_event event)
 		break;
 
 	case IOCPF_E_DISABLE:
-		del_timer(&ioc->iocpf_timer);
+		timer_delete(&ioc->iocpf_timer);
 		bfa_nw_ioc_hw_sem_release(ioc);
 		bfa_fsm_set_state(iocpf, bfa_iocpf_sm_disabling);
 		break;
@@ -844,12 +844,12 @@ bfa_iocpf_sm_disabling(struct bfa_iocpf *iocpf, enum iocpf_event event)
 
 	switch (event) {
 	case IOCPF_E_FWRSP_DISABLE:
-		del_timer(&ioc->iocpf_timer);
+		timer_delete(&ioc->iocpf_timer);
 		bfa_fsm_set_state(iocpf, bfa_iocpf_sm_disabling_sync);
 		break;
 
 	case IOCPF_E_FAIL:
-		del_timer(&ioc->iocpf_timer);
+		timer_delete(&ioc->iocpf_timer);
 		fallthrough;
 
 	case IOCPF_E_TIMEOUT:
@@ -1210,7 +1210,7 @@ bfa_nw_ioc_hw_sem_release(struct bfa_ioc *ioc)
 static void
 bfa_ioc_hw_sem_get_cancel(struct bfa_ioc *ioc)
 {
-	del_timer(&ioc->sem_timer);
+	timer_delete(&ioc->sem_timer);
 }
 
 /* Initialize LPU local memory (aka secondary memory / SRAM) */
@@ -1982,7 +1982,7 @@ bfa_ioc_hb_monitor(struct bfa_ioc *ioc)
 static void
 bfa_ioc_hb_stop(struct bfa_ioc *ioc)
 {
-	del_timer(&ioc->hb_timer);
+	timer_delete(&ioc->hb_timer);
 }
 
 /* Initiate a full firmware download. */
@@ -2839,7 +2839,7 @@ bfa_ioc_get_adapter_optrom_ver(struct bfa_ioc *ioc, char *optrom_ver)
 static void
 bfa_ioc_get_adapter_manufacturer(struct bfa_ioc *ioc, char *manufacturer)
 {
-	strncpy(manufacturer, BFA_MFG_NAME, BFA_ADAPTER_MFG_NAME_LEN);
+	strscpy_pad(manufacturer, BFA_MFG_NAME, BFA_ADAPTER_MFG_NAME_LEN);
 }
 
 static void
@@ -2860,12 +2860,12 @@ static enum bfa_ioc_state
 bfa_ioc_get_state(struct bfa_ioc *ioc)
 {
 	enum bfa_iocpf_state iocpf_st;
-	enum bfa_ioc_state ioc_st = bfa_sm_to_state(ioc_sm_table, ioc->fsm);
+	enum bfa_ioc_state ioc_st = ioc_sm_to_state(ioc_sm_table, ioc->fsm);
 
 	if (ioc_st == BFA_IOC_ENABLING ||
 		ioc_st == BFA_IOC_FAIL || ioc_st == BFA_IOC_INITFAIL) {
 
-		iocpf_st = bfa_sm_to_state(iocpf_sm_table, ioc->iocpf.fsm);
+		iocpf_st = iocpf_sm_to_state(iocpf_sm_table, ioc->iocpf.fsm);
 
 		switch (iocpf_st) {
 		case BFA_IOCPF_SEMWAIT:
@@ -2983,7 +2983,7 @@ bfa_nw_iocpf_timeout(struct bfa_ioc *ioc)
 {
 	enum bfa_iocpf_state iocpf_st;
 
-	iocpf_st = bfa_sm_to_state(iocpf_sm_table, ioc->iocpf.fsm);
+	iocpf_st = iocpf_sm_to_state(iocpf_sm_table, ioc->iocpf.fsm);
 
 	if (iocpf_st == BFA_IOCPF_HWINIT)
 		bfa_ioc_poll_fwinit(ioc);

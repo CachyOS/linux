@@ -30,7 +30,6 @@
  * SOFTWARE.
  */
 
-#include <linux/pci.h>
 #include "hns_roce_device.h"
 
 void hns_roce_init_pd_table(struct hns_roce_dev *hr_dev)
@@ -149,14 +148,18 @@ int hns_roce_alloc_xrcd(struct ib_xrcd *ib_xrcd, struct ib_udata *udata)
 	struct hns_roce_xrcd *xrcd = to_hr_xrcd(ib_xrcd);
 	int ret;
 
-	if (!(hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_XRC))
-		return -EINVAL;
+	if (!(hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_XRC)) {
+		ret = -EOPNOTSUPP;
+		goto err_out;
+	}
 
 	ret = hns_roce_xrcd_alloc(hr_dev, &xrcd->xrcdn);
-	if (ret)
-		return ret;
 
-	return 0;
+err_out:
+	if (ret)
+		atomic64_inc(&hr_dev->dfx_cnt[HNS_ROCE_DFX_XRCD_ALLOC_ERR_CNT]);
+
+	return ret;
 }
 
 int hns_roce_dealloc_xrcd(struct ib_xrcd *ib_xrcd, struct ib_udata *udata)

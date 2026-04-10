@@ -21,21 +21,21 @@ more details.
 
 For more details see the file COPYING in the source distribution of Linux.
 
-.. only:: html
-
-   .. class:: toc-title
-
-        Table of Contents
-
 .. toctree::
+	:caption: Table of Contents
 	:maxdepth: 5
 	:numbered:
 
+	aspeed-video
+	camera-sensor
 	ccs
 	cx2341x-uapi
-        hantro
+	dw100
 	imx-uapi
+	mali-c55
 	max2175
-	meye-uapi
+	npcm-video
 	omap3isp-uapi
+	thp7312
 	uvcvideo
+	vgxy61

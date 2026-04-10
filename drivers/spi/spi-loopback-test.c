@@ -14,8 +14,8 @@
 #include <linux/ktime.h>
 #include <linux/list.h>
 #include <linux/list_sort.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/printk.h>
 #include <linux/vmalloc.h>
 #include <linux/spi/spi.h>
@@ -53,6 +53,12 @@ module_param(no_cs, int, 0);
 MODULE_PARM_DESC(no_cs,
 		 "if set Chip Select (CS) will not be used");
 
+/* run tests only for a specific length */
+static int run_only_iter_len = -1;
+module_param(run_only_iter_len, int, 0);
+MODULE_PARM_DESC(run_only_iter_len,
+		 "only run tests for a length of this number in iterate_len list");
+
 /* run only a specific test */
 static int run_only_test = -1;
 module_param(run_only_test, int, 0);
@@ -70,6 +76,11 @@ static int check_ranges = 1;
 module_param(check_ranges, int, 0644);
 MODULE_PARM_DESC(check_ranges,
 		 "checks rx_buffer pattern are valid");
+
+static unsigned int delay_ms = 100;
+module_param(delay_ms, uint, 0644);
+MODULE_PARM_DESC(delay_ms,
+		 "delay between tests, in milliseconds (default: 100)");
 
 /* the actual tests to execute */
 static struct spi_test spi_tests[] = {
@@ -313,6 +324,33 @@ static struct spi_test spi_tests[] = {
 			},
 		},
 	},
+	{
+		.description	= "three tx+rx transfers with overlapping cache lines",
+		.fill_option	= FILL_COUNT_8,
+		/*
+		 * This should be large enough for the controller driver to
+		 * choose to transfer it with DMA.
+		 */
+		.iterate_len    = { 512, -1 },
+		.iterate_transfer_mask = BIT(1),
+		.transfer_count = 3,
+		.transfers		= {
+			{
+				.len = 1,
+				.tx_buf = TX(0),
+				.rx_buf = RX(0),
+			},
+			{
+				.tx_buf = TX(1),
+				.rx_buf = RX(1),
+			},
+			{
+				.len = 1,
+				.tx_buf = TX(513),
+				.rx_buf = RX(513),
+			},
+		},
+	},
 
 	{ /* end of tests sequence */ }
 };
@@ -358,7 +396,6 @@ MODULE_DEVICE_TABLE(of, spi_loopback_test_of_match);
 static struct spi_driver spi_loopback_test_driver = {
 	.driver = {
 		.name = "spi-loopback-test",
-		.owner = THIS_MODULE,
 		.of_match_table = spi_loopback_test_of_match,
 	},
 	.probe = spi_loopback_test_probe,
@@ -383,7 +420,7 @@ MODULE_LICENSE("GPL");
 static void spi_test_print_hex_dump(char *pre, const void *ptr, size_t len)
 {
 	/* limit the hex_dump */
-	if (len < 1024) {
+	if (len <= 1024) {
 		print_hex_dump(KERN_INFO, pre,
 			       DUMP_PREFIX_OFFSET, 16, 1,
 			       ptr, len, 0);
@@ -409,7 +446,7 @@ static void spi_test_dump_message(struct spi_device *spi,
 	int i;
 	u8 b;
 
-	dev_info(&spi->dev, "  spi_msg@%pK\n", msg);
+	dev_info(&spi->dev, "  spi_msg@%p\n", msg);
 	if (msg->status)
 		dev_info(&spi->dev, "    status:        %i\n",
 			 msg->status);
@@ -419,15 +456,15 @@ static void spi_test_dump_message(struct spi_device *spi,
 		 msg->actual_length);
 
 	list_for_each_entry(xfer, &msg->transfers, transfer_list) {
-		dev_info(&spi->dev, "    spi_transfer@%pK\n", xfer);
+		dev_info(&spi->dev, "    spi_transfer@%p\n", xfer);
 		dev_info(&spi->dev, "      len:    %i\n", xfer->len);
-		dev_info(&spi->dev, "      tx_buf: %pK\n", xfer->tx_buf);
+		dev_info(&spi->dev, "      tx_buf: %p\n", xfer->tx_buf);
 		if (dump_data && xfer->tx_buf)
 			spi_test_print_hex_dump("          TX: ",
 						xfer->tx_buf,
 						xfer->len);
 
-		dev_info(&spi->dev, "      rx_buf: %pK\n", xfer->rx_buf);
+		dev_info(&spi->dev, "      rx_buf: %p\n", xfer->rx_buf);
 		if (dump_data && xfer->rx_buf)
 			spi_test_print_hex_dump("          RX: ",
 						xfer->rx_buf,
@@ -457,8 +494,8 @@ struct rx_ranges {
 static int rx_ranges_cmp(void *priv, const struct list_head *a,
 			 const struct list_head *b)
 {
-	struct rx_ranges *rx_a = list_entry(a, struct rx_ranges, list);
-	struct rx_ranges *rx_b = list_entry(b, struct rx_ranges, list);
+	const struct rx_ranges *rx_a = list_entry(a, struct rx_ranges, list);
+	const struct rx_ranges *rx_b = list_entry(b, struct rx_ranges, list);
 
 	if (rx_a->start > rx_b->start)
 		return 1;
@@ -521,7 +558,7 @@ static int spi_check_rx_ranges(struct spi_device *spi,
 		/* if still not found then something has modified too much */
 		/* we could list the "closest" transfer here... */
 		dev_err(&spi->dev,
-			"loopback strangeness - rx changed outside of allowed range at: %pK\n",
+			"loopback strangeness - rx changed outside of allowed range at: %p\n",
 			addr);
 		/* do not return, only set ret,
 		 * so that we list all addresses
@@ -598,8 +635,8 @@ static int spi_test_check_loopback_result(struct spi_device *spi,
 		} else {
 			/* first byte received */
 			txb = ((u8 *)xfer->rx_buf)[0];
-			/* first byte may be 0 or xff */
-			if (!((txb == 0) || (txb == 0xff))) {
+			/* first byte may be 0 or 0xff */
+			if (txb != 0 && txb != 0xff) {
 				dev_err(&spi->dev,
 					"loopback strangeness - we expect 0x00 or 0xff, but not 0x%02x\n",
 					txb);
@@ -659,7 +696,7 @@ static int spi_test_translate(struct spi_device *spi,
 	}
 
 	dev_err(&spi->dev,
-		"PointerRange [%pK:%pK[ not in range [%pK:%pK[ or [%pK:%pK[\n",
+		"PointerRange [%p:%p[ not in range [%p:%p[ or [%p:%p[\n",
 		*ptr, *ptr + len,
 		RX(0), RX(SPI_TEST_MAX_SIZE),
 		TX(0), TX(SPI_TEST_MAX_SIZE));
@@ -993,14 +1030,16 @@ int spi_test_run_test(struct spi_device *spi, const struct spi_test *test,
 #define FOR_EACH_ALIGNMENT(var)						\
 	for (var = 0;							\
 	    var < (test->iterate_##var ?				\
-			(spi->master->dma_alignment ?			\
-			 spi->master->dma_alignment :			\
+			(spi->controller->dma_alignment ?		\
+			 spi->controller->dma_alignment :		\
 			 test->iterate_##var) :				\
 			1);						\
 	    var++)
 
 	for (idx_len = 0; idx_len < SPI_TEST_MAX_ITERATE &&
 	     (len = test->iterate_len[idx_len]) != -1; idx_len++) {
+		if ((run_only_iter_len > -1) && len != run_only_iter_len)
+			continue;
 		FOR_EACH_ALIGNMENT(tx_align) {
 			FOR_EACH_ALIGNMENT(rx_align) {
 				/* and run the iteration */
@@ -1071,7 +1110,8 @@ int spi_test_run_tests(struct spi_device *spi,
 		 * detect the individual tests when using a logic analyzer
 		 * we also add scheduling to avoid potential spi_timeouts...
 		 */
-		mdelay(100);
+		if (delay_ms)
+			mdelay(delay_ms);
 		schedule();
 	}
 

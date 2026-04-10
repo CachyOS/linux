@@ -4,11 +4,11 @@
 $id: http://devicetree.org/schemas/leds/backlight/qcom-wled.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Binding for Qualcomm Technologies, Inc. WLED driver
+title: Qualcomm Technologies, Inc. WLED driver
 
 maintainers:
-  - Bjorn Andersson <bjorn.andersson@linaro.org>
-  - Kiran Gunda <kgunda@codeaurora.org>
+  - Bjorn Andersson <andersson@kernel.org>
+  - Kiran Gunda <quic_kgunda@quicinc.com>
 
 description: |
   WLED (White Light Emitting Diode) driver is used for controlling display
@@ -19,6 +19,7 @@ properties:
   compatible:
     enum:
       - qcom,pm8941-wled
+      - qcom,pmi8950-wled
       - qcom,pmi8994-wled
       - qcom,pmi8998-wled
       - qcom,pm660l-wled
@@ -26,7 +27,8 @@ properties:
       - qcom,pm8150l-wled
 
   reg:
-    maxItems: 1
+    minItems: 1
+    maxItems: 2
 
   default-brightness:
     description: |
@@ -96,8 +98,8 @@ properties:
     description: |
       Over-voltage protection limit. This property is for WLED4 only.
     $ref: /schemas/types.yaml#/definitions/uint32
-    enum: [ 18100, 19600, 29600, 31100 ]
-    default: 29600
+    minimum: 17800
+    maximum: 31100
 
   qcom,num-strings:
     description: |
@@ -171,6 +173,9 @@ allOf:
 
     then:
       properties:
+        reg:
+          maxItems: 1
+
         qcom,current-boost-limit:
           enum: [ 105, 385, 525, 805, 980, 1260, 1400, 1680 ]
           default: 805
@@ -189,6 +194,9 @@ allOf:
 
     else:
       properties:
+        reg:
+          minItems: 2
+
         qcom,current-boost-limit:
           enum: [ 105, 280, 450, 620, 970, 1150, 1300, 1500 ]
           default: 970
@@ -230,6 +238,26 @@ allOf:
         max-brightness:
           minimum: 0
           maximum: 4095
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - qcom,pmi8950-wled
+              - qcom,pmi8994-wled
+
+    then:
+      properties:
+        qcom,ovp-millivolt:
+          enum: [ 17800, 19400, 29500, 31000 ]
+          default: 29500
+
+    else:
+      properties:
+        qcom,ovp-millivolt:
+          enum: [ 18100, 19600, 29600, 31100 ]
+          default: 29600
 
 required:
   - compatible

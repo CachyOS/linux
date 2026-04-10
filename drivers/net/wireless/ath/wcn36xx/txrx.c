@@ -16,6 +16,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/random.h>
 #include "txrx.h"
 
 static inline int get_rssi0(struct wcn36xx_rx_bd *bd)
@@ -278,6 +279,7 @@ static void wcn36xx_update_survey(struct wcn36xx *wcn, int rssi, int snr,
 	struct ieee80211_supported_band *sband;
 	int idx;
 	int i;
+	u8 snr_sample = snr & 0xff;
 
 	idx = 0;
 	if (band == NL80211_BAND_5GHZ)
@@ -297,6 +299,8 @@ static void wcn36xx_update_survey(struct wcn36xx *wcn, int rssi, int snr,
 	wcn->chan_survey[idx].rssi = rssi;
 	wcn->chan_survey[idx].snr = snr;
 	spin_unlock(&wcn->survey_lock);
+
+	add_device_randomness(&snr_sample, sizeof(snr_sample));
 }
 
 int wcn36xx_rx_skb(struct wcn36xx *wcn, struct sk_buff *skb)
@@ -314,7 +318,7 @@ int wcn36xx_rx_skb(struct wcn36xx *wcn, struct sk_buff *skb)
 	memset(&status, 0, sizeof(status));
 
 	bd = (struct wcn36xx_rx_bd *)skb->data;
-	buff_to_be((u32 *)bd, sizeof(*bd)/sizeof(u32));
+	buff_to_be(bd, sizeof(*bd)/sizeof(u32));
 	wcn36xx_dbg_dump(WCN36XX_DBG_RX_DUMP,
 			 "BD   <<< ", (char *)bd,
 			 sizeof(struct wcn36xx_rx_bd));
@@ -688,7 +692,7 @@ int wcn36xx_start_tx(struct wcn36xx *wcn,
 		/* MGMT and CTRL frames are handeld here*/
 		wcn36xx_set_tx_mgmt(&bd, wcn, &vif_priv, skb, bcast);
 
-	buff_to_be((u32 *)&bd, sizeof(bd)/sizeof(u32));
+	buff_to_be(&bd, sizeof(bd)/sizeof(u32));
 	bd.tx_bd_sign = 0xbdbdbdbd;
 
 	ret = wcn36xx_dxe_tx_frame(wcn, vif_priv, &bd, skb, is_low);

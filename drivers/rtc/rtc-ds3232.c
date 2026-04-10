@@ -339,29 +339,9 @@ static int ds3232_hwmon_read(struct device *dev,
 	return err;
 }
 
-static u32 ds3232_hwmon_chip_config[] = {
-	HWMON_C_REGISTER_TZ,
-	0
-};
-
-static const struct hwmon_channel_info ds3232_hwmon_chip = {
-	.type = hwmon_chip,
-	.config = ds3232_hwmon_chip_config,
-};
-
-static u32 ds3232_hwmon_temp_config[] = {
-	HWMON_T_INPUT,
-	0
-};
-
-static const struct hwmon_channel_info ds3232_hwmon_temp = {
-	.type = hwmon_temp,
-	.config = ds3232_hwmon_temp_config,
-};
-
-static const struct hwmon_channel_info *ds3232_hwmon_info[] = {
-	&ds3232_hwmon_chip,
-	&ds3232_hwmon_temp,
+static const struct hwmon_channel_info * const ds3232_hwmon_info[] = {
+	HWMON_CHANNEL_INFO(chip, HWMON_C_REGISTER_TZ),
+	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT),
 	NULL
 };
 
@@ -508,7 +488,7 @@ static int ds3232_probe(struct device *dev, struct regmap *regmap, int irq,
 		return ret;
 
 	if (ds3232->irq > 0)
-		device_init_wakeup(dev, 1);
+		device_init_wakeup(dev, true);
 
 	ds3232_hwmon_register(dev, name);
 
@@ -535,6 +515,8 @@ static int ds3232_probe(struct device *dev, struct regmap *regmap, int irq,
 
 	return 0;
 }
+
+#if IS_ENABLED(CONFIG_I2C)
 
 #ifdef CONFIG_PM_SLEEP
 static int ds3232_suspend(struct device *dev)
@@ -564,10 +546,7 @@ static const struct dev_pm_ops ds3232_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(ds3232_suspend, ds3232_resume)
 };
 
-#if IS_ENABLED(CONFIG_I2C)
-
-static int ds3232_i2c_probe(struct i2c_client *client,
-			    const struct i2c_device_id *id)
+static int ds3232_i2c_probe(struct i2c_client *client)
 {
 	struct regmap *regmap;
 	static const struct regmap_config config = {
@@ -587,7 +566,7 @@ static int ds3232_i2c_probe(struct i2c_client *client,
 }
 
 static const struct i2c_device_id ds3232_id[] = {
-	{ "ds3232", 0 },
+	{ "ds3232" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ds3232_id);

@@ -8,7 +8,7 @@
 #include <linux/processor.h>
 #include <linux/uaccess.h>
 #include <asm/timex.h>
-#include <asm/fpu/api.h>
+#include <asm/fpu.h>
 #include <asm/pai.h>
 
 #define ARCH_EXIT_TO_USER_MODE_WORK (_TIF_GUARDED_STORAGE | _TIF_PER_TRAP)
@@ -41,8 +41,7 @@ static __always_inline void arch_exit_to_user_mode_work(struct pt_regs *regs,
 
 static __always_inline void arch_exit_to_user_mode(void)
 {
-	if (test_cpu_flag(CIF_FPU))
-		__load_fpu_regs();
+	load_user_fpu_regs();
 
 	if (IS_ENABLED(CONFIG_DEBUG_ENTRY))
 		debug_user_asce(1);
@@ -55,14 +54,19 @@ static __always_inline void arch_exit_to_user_mode(void)
 static inline void arch_exit_to_user_mode_prepare(struct pt_regs *regs,
 						  unsigned long ti_work)
 {
-	choose_random_kstack_offset(get_tod_clock_fast() & 0xff);
+	choose_random_kstack_offset(get_tod_clock_fast());
 }
 
 #define arch_exit_to_user_mode_prepare arch_exit_to_user_mode_prepare
 
-static inline bool on_thread_stack(void)
+static __always_inline bool arch_in_rcu_eqs(void)
 {
-	return !(((unsigned long)(current->stack) ^ current_stack_pointer) & ~(THREAD_SIZE - 1));
+	if (IS_ENABLED(CONFIG_KVM))
+		return current->flags & PF_VCPU;
+
+	return false;
 }
+
+#define arch_in_rcu_eqs arch_in_rcu_eqs
 
 #endif

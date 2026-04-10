@@ -24,8 +24,6 @@
 #      -----------     |     ----------
 #      |  vethX  | --------- |  vethY |
 #      -----------   peer    ----------
-#           |          |          |
-#      namespaceX      |     namespaceY
 #
 # AF_XDP is an address family optimized for high performance packet processing,
 # it is XDP’s user-space interface.
@@ -39,15 +37,14 @@
 # Prerequisites setup by script:
 #
 #   Set up veth interfaces as per the topology shown ^^:
-#   * setup two veth interfaces and one namespace
-#   ** veth<xxxx> in root namespace
-#   ** veth<yyyy> in af_xdp<xxxx> namespace
-#   ** namespace af_xdp<xxxx>
+#   * setup two veth interfaces
+#   ** veth<xxxx>
+#   ** veth<yyyy>
 #   *** xxxx and yyyy are randomly generated 4 digit numbers used to avoid
 #       conflict with any existing interface
 #   * tests the veth and xsk layers of the topology
 #
-# See the source xdpxceiver.c for information on each test
+# See the source xskxceiver.c for information on each test
 #
 # Kernel configuration:
 # ---------------------
@@ -71,16 +68,38 @@
 # Run with verbose output:
 #   sudo ./test_xsk.sh -v
 #
-# Run and dump packet contents:
-#   sudo ./test_xsk.sh -D
+# Set up veth interfaces and leave them up so xskxceiver can be launched in a debugger:
+#   sudo ./test_xsk.sh -d
+#
+# Run test suite for physical device in loopback mode
+#   sudo ./test_xsk.sh -i IFACE
+#
+# Run test suite in a specific mode only [skb,drv,zc]
+#   sudo ./test_xsk.sh -m MODE
+#
+# List available tests
+#   ./test_xsk.sh -l
+#
+# Run a specific test from the test suite
+#   sudo ./test_xsk.sh -t TEST_NAME
+#
+# Display the available command line options
+#   ./test_xsk.sh -h
 
 . xsk_prereqs.sh
 
-while getopts "vD" flag
+ETH=""
+
+while getopts "vi:dm:lt:h" flag
 do
 	case "${flag}" in
 		v) verbose=1;;
-		D) dump_pkts=1;;
+		d) debug=1;;
+		i) ETH=${OPTARG};;
+		m) MODE=${OPTARG};;
+		l) list=1;;
+		t) TEST=${OPTARG};;
+		h) help=1;;
 	esac
 done
 
@@ -93,28 +112,26 @@ VETH0_POSTFIX=$(cat ${URANDOM} | tr -dc '0-9' | fold -w 256 | head -n 1 | head -
 VETH0=ve${VETH0_POSTFIX}
 VETH1_POSTFIX=$(cat ${URANDOM} | tr -dc '0-9' | fold -w 256 | head -n 1 | head --bytes 4)
 VETH1=ve${VETH1_POSTFIX}
-NS0=root
-NS1=af_xdp${VETH1_POSTFIX}
 MTU=1500
 
 trap ctrl_c INT
 
 function ctrl_c() {
-        cleanup_exit ${VETH0} ${VETH1} ${NS1}
+        cleanup_exit ${VETH0} ${VETH1}
 	exit 1
 }
 
 setup_vethPairs() {
 	if [[ $verbose -eq 1 ]]; then
-	        echo "setting up ${VETH0}: namespace: ${NS0}"
+	        echo "setting up ${VETH0}"
 	fi
-	ip netns add ${NS1}
 	ip link add ${VETH0} numtxqueues 4 numrxqueues 4 type veth peer name ${VETH1} numtxqueues 4 numrxqueues 4
 	if [ -f /proc/net/if_inet6 ]; then
 		echo 1 > /proc/sys/net/ipv6/conf/${VETH0}/disable_ipv6
+		echo 1 > /proc/sys/net/ipv6/conf/${VETH1}/disable_ipv6
 	fi
 	if [[ $verbose -eq 1 ]]; then
-	        echo "setting up ${VETH1}: namespace: ${NS1}"
+	        echo "setting up ${VETH1}"
 	fi
 
 	if [[ $busy_poll -eq 1 ]]; then
@@ -124,54 +141,93 @@ setup_vethPairs() {
 		echo 200000 > /sys/class/net/${VETH1}/gro_flush_timeout
 	fi
 
-	ip link set ${VETH1} netns ${NS1}
-	ip netns exec ${NS1} ip link set ${VETH1} mtu ${MTU}
+	ip link set ${VETH1} mtu ${MTU}
 	ip link set ${VETH0} mtu ${MTU}
-	ip netns exec ${NS1} ip link set ${VETH1} up
-	ip netns exec ${NS1} ip link set dev lo up
+	ip link set ${VETH1} up
 	ip link set ${VETH0} up
 }
 
-validate_root_exec
-validate_veth_support ${VETH0}
-validate_ip_utility
-setup_vethPairs
-
-retval=$?
-if [ $retval -ne 0 ]; then
-	test_status $retval "${TEST_NAME}"
-	cleanup_exit ${VETH0} ${VETH1} ${NS1}
-	exit $retval
+if [[ $list -eq 1 ]]; then
+        ./${XSKOBJ} -l
+        exit
 fi
+
+if [[ $help -eq 1 ]]; then
+	./${XSKOBJ}
+        exit
+fi
+
+if [ ! -z $ETH ]; then
+	VETH0=${ETH}
+	VETH1=${ETH}
+else
+	validate_root_exec
+	validate_veth_support ${VETH0}
+	validate_ip_utility
+	setup_vethPairs
+
+	retval=$?
+	if [ $retval -ne 0 ]; then
+		test_status $retval "${TEST_NAME}"
+		cleanup_exit ${VETH0} ${VETH1}
+		exit $retval
+	fi
+fi
+
 
 if [[ $verbose -eq 1 ]]; then
 	ARGS+="-v "
 fi
 
-if [[ $dump_pkts -eq 1 ]]; then
-	ARGS="-D "
+if [ -n "$MODE" ]; then
+	ARGS+="-m ${MODE} "
 fi
 
+if [ -n "$TEST" ]; then
+	ARGS+="-t ${TEST} "
+fi
+
+retval=$?
 test_status $retval "${TEST_NAME}"
 
 ## START TESTS
 
 statusList=()
 
-TEST_NAME="XSK_SELFTESTS_SOFTIRQ"
+TEST_NAME="XSK_SELFTESTS_${VETH0}_SOFTIRQ"
 
-execxdpxceiver
+if [[ $debug -eq 1 ]]; then
+    echo "-i" ${VETH0} "-i" ${VETH1}
+    exit
+fi
 
-cleanup_exit ${VETH0} ${VETH1} ${NS1}
-TEST_NAME="XSK_SELFTESTS_BUSY_POLL"
+exec_xskxceiver
+
+if [ -z $ETH ]; then
+	cleanup_exit ${VETH0} ${VETH1}
+else
+	cleanup_iface ${ETH} ${MTU}
+fi
+
+if [[ $list -eq 1 ]]; then
+    exit
+fi
+
+TEST_NAME="XSK_SELFTESTS_${VETH0}_BUSY_POLL"
 busy_poll=1
 
-setup_vethPairs
-execxdpxceiver
+if [ -z $ETH ]; then
+	setup_vethPairs
+fi
+exec_xskxceiver
 
 ## END TESTS
 
-cleanup_exit ${VETH0} ${VETH1} ${NS1}
+if [ -z $ETH ]; then
+	cleanup_exit ${VETH0} ${VETH1}
+else
+	cleanup_iface ${ETH} ${MTU}
+fi
 
 failures=0
 echo -e "\nSummary:"
@@ -185,4 +241,6 @@ done
 
 if [ $failures -eq 0 ]; then
         echo "All tests successful!"
+else
+	exit 1
 fi

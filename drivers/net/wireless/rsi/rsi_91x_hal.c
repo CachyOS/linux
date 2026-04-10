@@ -162,11 +162,15 @@ int rsi_prepare_data_desc(struct rsi_common *common, struct sk_buff *skb)
 	u8 header_size;
 	u8 vap_id = 0;
 	u8 dword_align_bytes;
+	bool tx_eapol;
 	u16 seq_num;
 
 	info = IEEE80211_SKB_CB(skb);
 	vif = info->control.vif;
 	tx_params = (struct skb_info *)info->driver_data;
+
+	tx_eapol = IEEE80211_SKB_CB(skb)->control.flags &
+		   IEEE80211_TX_CTRL_PORT_CTRL_PROTO;
 
 	header_size = FRAME_DESC_SZ + sizeof(struct rsi_xtended_desc);
 	if (header_size > skb_headroom(skb)) {
@@ -231,7 +235,7 @@ int rsi_prepare_data_desc(struct rsi_common *common, struct sk_buff *skb)
 		}
 	}
 
-	if (skb->protocol == cpu_to_be16(ETH_P_PAE)) {
+	if (tx_eapol) {
 		rsi_dbg(INFO_ZONE, "*** Tx EAPOL ***\n");
 
 		data_desc->frame_info = cpu_to_le16(RATE_INFO_ENABLE);
@@ -295,7 +299,6 @@ int rsi_send_data_pkt(struct rsi_common *common, struct sk_buff *skb)
 	struct rsi_hw *adapter = common->priv;
 	struct ieee80211_vif *vif;
 	struct ieee80211_tx_info *info;
-	struct ieee80211_bss_conf *bss;
 	int status = -EINVAL;
 
 	if (!skb)
@@ -307,11 +310,10 @@ int rsi_send_data_pkt(struct rsi_common *common, struct sk_buff *skb)
 	if (!info->control.vif)
 		goto err;
 	vif = info->control.vif;
-	bss = &vif->bss_conf;
 
 	if (((vif->type == NL80211_IFTYPE_STATION) ||
 	     (vif->type == NL80211_IFTYPE_P2P_CLIENT)) &&
-	    (!bss->assoc))
+	    (!vif->cfg.assoc))
 		goto err;
 
 	status = rsi_send_pkt_to_bus(common, skb);
@@ -336,7 +338,6 @@ int rsi_send_mgmt_pkt(struct rsi_common *common,
 		      struct sk_buff *skb)
 {
 	struct rsi_hw *adapter = common->priv;
-	struct ieee80211_bss_conf *bss;
 	struct ieee80211_hdr *wh;
 	struct ieee80211_tx_info *info;
 	struct skb_info *tx_params;
@@ -361,13 +362,13 @@ int rsi_send_mgmt_pkt(struct rsi_common *common,
 		return status;
 	}
 
-	bss = &info->control.vif->bss_conf;
 	wh = (struct ieee80211_hdr *)&skb->data[header_size];
 	mgmt_desc = (struct rsi_mgmt_desc *)skb->data;
 	xtend_desc = (struct rsi_xtended_desc *)&skb->data[FRAME_DESC_SZ];
 
 	/* Indicate to firmware to give cfm for probe */
-	if (ieee80211_is_probe_req(wh->frame_control) && !bss->assoc) {
+	if (ieee80211_is_probe_req(wh->frame_control) &&
+	    !info->control.vif->cfg.assoc) {
 		rsi_dbg(INFO_ZONE,
 			"%s: blocking mgmt queue\n", __func__);
 		mgmt_desc->misc_flags = RSI_DESC_REQUIRE_CFM_TO_HOST;
@@ -423,7 +424,7 @@ out:
 
 int rsi_prepare_beacon(struct rsi_common *common, struct sk_buff *skb)
 {
-	struct rsi_hw *adapter = (struct rsi_hw *)common->priv;
+	struct rsi_hw *adapter = common->priv;
 	struct rsi_data_desc *bcn_frm;
 	struct ieee80211_hw *hw = common->priv->hw;
 	struct ieee80211_conf *conf = &hw->conf;
@@ -444,7 +445,7 @@ int rsi_prepare_beacon(struct rsi_common *common, struct sk_buff *skb)
 		return -EINVAL;
 	mac_bcn = ieee80211_beacon_get_tim(adapter->hw,
 					   vif,
-					   &tim_offset, NULL);
+					   &tim_offset, NULL, 0);
 	if (!mac_bcn) {
 		rsi_dbg(ERR_ZONE, "Failed to get beacon from mac80211\n");
 		return -EINVAL;
@@ -489,10 +490,10 @@ int rsi_prepare_beacon(struct rsi_common *common, struct sk_buff *skb)
 
 static void bl_cmd_timeout(struct timer_list *t)
 {
-	struct rsi_hw *adapter = from_timer(adapter, t, bl_cmd_timer);
+	struct rsi_hw *adapter = timer_container_of(adapter, t, bl_cmd_timer);
 
 	adapter->blcmd_timer_expired = true;
-	del_timer(&adapter->bl_cmd_timer);
+	timer_delete(&adapter->bl_cmd_timer);
 }
 
 static int bl_start_cmd_timer(struct rsi_hw *adapter, u32 timeout)
@@ -510,7 +511,7 @@ static int bl_stop_cmd_timer(struct rsi_hw *adapter)
 {
 	adapter->blcmd_timer_expired = false;
 	if (timer_pending(&adapter->bl_cmd_timer))
-		del_timer(&adapter->bl_cmd_timer);
+		timer_delete(&adapter->bl_cmd_timer);
 
 	return 0;
 }
@@ -646,7 +647,7 @@ static int bl_write_header(struct rsi_hw *adapter, u8 *flash_content,
 	u32 write_addr, write_len;
 	int status;
 
-	bl_hdr = kzalloc(sizeof(*bl_hdr), GFP_KERNEL);
+	bl_hdr = kzalloc_obj(*bl_hdr);
 	if (!bl_hdr)
 		return -ENOMEM;
 
@@ -893,7 +894,7 @@ static int rsi_load_9113_firmware(struct rsi_hw *adapter)
 	struct ta_metadata *metadata_p;
 	int status;
 
-	status = bl_cmd(adapter, CONFIG_AUTO_READ_MODE, CMD_PASS,
+	status = bl_cmd(adapter, AUTO_READ_MODE, CMD_PASS,
 			"AUTO_READ_CMD");
 	if (status < 0)
 		return status;
@@ -983,7 +984,7 @@ fw_upgrade:
 	}
 	rsi_dbg(ERR_ZONE, "Firmware upgrade failed\n");
 
-	status = bl_cmd(adapter, CONFIG_AUTO_READ_MODE, CMD_PASS,
+	status = bl_cmd(adapter, AUTO_READ_MODE, CMD_PASS,
 			"AUTO_READ_MODE");
 	if (status)
 		goto fail;

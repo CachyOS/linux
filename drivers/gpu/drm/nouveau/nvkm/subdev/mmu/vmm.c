@@ -19,7 +19,7 @@
  * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
  * OTHER DEALINGS IN THE SOFTWARE.
  */
-#define NVKM_VMM_LEVELS_MAX 5
+#define NVKM_VMM_LEVELS_MAX 6
 #include "vmm.h"
 
 #include <subdev/fb.h>
@@ -53,13 +53,13 @@ nvkm_vmm_pt_new(const struct nvkm_vmm_desc *desc, bool sparse,
 		}
 	}
 
-	if (!(pgt = kzalloc(sizeof(*pgt) + lpte, GFP_KERNEL)))
+	if (!(pgt = kzalloc(sizeof(*pgt) + (sizeof(pgt->pte[0]) * lpte), GFP_KERNEL)))
 		return NULL;
 	pgt->page = page ? page->shift : 0;
 	pgt->sparse = sparse;
 
 	if (desc->type == PGD) {
-		pgt->pde = kvcalloc(pten, sizeof(*pgt->pde), GFP_KERNEL);
+		pgt->pde = kvzalloc_objs(*pgt->pde, pten);
 		if (!pgt->pde) {
 			kfree(pgt);
 			return NULL;
@@ -208,7 +208,7 @@ nvkm_vmm_unref_sptes(struct nvkm_vmm_iter *it, struct nvkm_vmm_pt *pgt,
 	 */
 	for (lpti = ptei >> sptb; ptes; spti = 0, lpti++) {
 		const u32 pten = min(sptn - spti, ptes);
-		pgt->pte[lpti] -= pten;
+		pgt->pte[lpti].s.sptes -= pten;
 		ptes -= pten;
 	}
 
@@ -218,9 +218,9 @@ nvkm_vmm_unref_sptes(struct nvkm_vmm_iter *it, struct nvkm_vmm_pt *pgt,
 
 	for (ptei = pteb = ptei >> sptb; ptei < lpti; pteb = ptei) {
 		/* Skip over any LPTEs that still have valid SPTEs. */
-		if (pgt->pte[pteb] & NVKM_VMM_PTE_SPTES) {
+		if (pgt->pte[pteb].s.sptes) {
 			for (ptes = 1, ptei++; ptei < lpti; ptes++, ptei++) {
-				if (!(pgt->pte[ptei] & NVKM_VMM_PTE_SPTES))
+				if (!(pgt->pte[ptei].s.sptes))
 					break;
 			}
 			continue;
@@ -232,24 +232,27 @@ nvkm_vmm_unref_sptes(struct nvkm_vmm_iter *it, struct nvkm_vmm_pt *pgt,
 		 *
 		 * Determine how many LPTEs need to transition state.
 		 */
-		pgt->pte[ptei] &= ~NVKM_VMM_PTE_VALID;
+		pgt->pte[ptei].s.spte_valid = false;
 		for (ptes = 1, ptei++; ptei < lpti; ptes++, ptei++) {
-			if (pgt->pte[ptei] & NVKM_VMM_PTE_SPTES)
+			if (pgt->pte[ptei].s.sptes)
 				break;
-			pgt->pte[ptei] &= ~NVKM_VMM_PTE_VALID;
+			pgt->pte[ptei].s.spte_valid = false;
 		}
 
-		if (pgt->pte[pteb] & NVKM_VMM_PTE_SPARSE) {
+		if (pgt->pte[pteb].s.sparse) {
 			TRA(it, "LPTE %05x: U -> S %d PTEs", pteb, ptes);
 			pair->func->sparse(vmm, pgt->pt[0], pteb, ptes);
-		} else
-		if (pair->func->invalid) {
-			/* If the MMU supports it, restore the LPTE to the
-			 * INVALID state to tell the MMU there is no point
-			 * trying to fetch the corresponding SPTEs.
-			 */
-			TRA(it, "LPTE %05x: U -> I %d PTEs", pteb, ptes);
-			pair->func->invalid(vmm, pgt->pt[0], pteb, ptes);
+		} else if (!pgt->pte[pteb].s.lpte_valid) {
+			if (pair->func->invalid) {
+				/* If the MMU supports it, restore the LPTE to the
+				 * INVALID state to tell the MMU there is no point
+				 * trying to fetch the corresponding SPTEs.
+				 */
+				TRA(it, "LPTE %05x: U -> I %d PTEs", pteb, ptes);
+				pair->func->invalid(vmm, pgt->pt[0], pteb, ptes);
+			}
+		} else {
+			TRA(it, "LPTE %05x: V %d PTEs", pteb, ptes);
 		}
 	}
 }
@@ -280,7 +283,16 @@ nvkm_vmm_unref_ptes(struct nvkm_vmm_iter *it, bool pfn, u32 ptei, u32 ptes)
 	if (desc->type == SPT && (pgt->refs[0] || pgt->refs[1]))
 		nvkm_vmm_unref_sptes(it, pgt, desc, ptei, ptes);
 
-	/* PT no longer neeed?  Destroy it. */
+	if (desc->type == LPT && (pgt->refs[0] || pgt->refs[1])) {
+		for (u32 lpti = ptei; ptes; lpti++) {
+			pgt->pte[lpti].s.lptes--;
+			if (pgt->pte[lpti].s.lptes == 0)
+				pgt->pte[lpti].s.lpte_valid = false;
+			ptes--;
+		}
+	}
+
+	/* PT no longer needed? Destroy it. */
 	if (!pgt->refs[type]) {
 		it->lvl++;
 		TRA(it, "%s empty", nvkm_vmm_desc_type(desc));
@@ -307,7 +319,7 @@ nvkm_vmm_ref_sptes(struct nvkm_vmm_iter *it, struct nvkm_vmm_pt *pgt,
 	 */
 	for (lpti = ptei >> sptb; ptes; spti = 0, lpti++) {
 		const u32 pten = min(sptn - spti, ptes);
-		pgt->pte[lpti] += pten;
+		pgt->pte[lpti].s.sptes += pten;
 		ptes -= pten;
 	}
 
@@ -317,9 +329,9 @@ nvkm_vmm_ref_sptes(struct nvkm_vmm_iter *it, struct nvkm_vmm_pt *pgt,
 
 	for (ptei = pteb = ptei >> sptb; ptei < lpti; pteb = ptei) {
 		/* Skip over any LPTEs that already have valid SPTEs. */
-		if (pgt->pte[pteb] & NVKM_VMM_PTE_VALID) {
+		if (pgt->pte[pteb].s.spte_valid) {
 			for (ptes = 1, ptei++; ptei < lpti; ptes++, ptei++) {
-				if (!(pgt->pte[ptei] & NVKM_VMM_PTE_VALID))
+				if (!pgt->pte[ptei].s.spte_valid)
 					break;
 			}
 			continue;
@@ -331,14 +343,16 @@ nvkm_vmm_ref_sptes(struct nvkm_vmm_iter *it, struct nvkm_vmm_pt *pgt,
 		 *
 		 * Determine how many LPTEs need to transition state.
 		 */
-		pgt->pte[ptei] |= NVKM_VMM_PTE_VALID;
+		pgt->pte[ptei].s.spte_valid = true;
+		pgt->pte[ptei].s.lpte_valid = false;
 		for (ptes = 1, ptei++; ptei < lpti; ptes++, ptei++) {
-			if (pgt->pte[ptei] & NVKM_VMM_PTE_VALID)
+			if (pgt->pte[ptei].s.spte_valid)
 				break;
-			pgt->pte[ptei] |= NVKM_VMM_PTE_VALID;
+			pgt->pte[ptei].s.spte_valid = true;
+			pgt->pte[ptei].s.lpte_valid = false;
 		}
 
-		if (pgt->pte[pteb] & NVKM_VMM_PTE_SPARSE) {
+		if (pgt->pte[pteb].s.sparse) {
 			const u32 spti = pteb * sptn;
 			const u32 sptc = ptes * sptn;
 			/* The entire LPTE is marked as sparse, we need
@@ -374,6 +388,15 @@ nvkm_vmm_ref_ptes(struct nvkm_vmm_iter *it, bool pfn, u32 ptei, u32 ptes)
 	if (desc->type == SPT)
 		nvkm_vmm_ref_sptes(it, pgt, desc, ptei, ptes);
 
+	if (desc->type == LPT) {
+		for (u32 lpti = ptei; ptes; lpti++) {
+			pgt->pte[lpti].s.spte_valid = false;
+			pgt->pte[lpti].s.lpte_valid = true;
+			pgt->pte[lpti].s.lptes++;
+			ptes--;
+		}
+	}
+
 	return true;
 }
 
@@ -386,7 +409,8 @@ nvkm_vmm_sparse_ptes(const struct nvkm_vmm_desc *desc,
 			pgt->pde[ptei++] = NVKM_VMM_PDE_SPARSE;
 	} else
 	if (desc->type == LPT) {
-		memset(&pgt->pte[ptei], NVKM_VMM_PTE_SPARSE, ptes);
+		union nvkm_pte_tracker sparse = { .s.sparse = 1 };
+		memset32(&pgt->pte[ptei].u, sparse.u, ptes);
 	}
 }
 
@@ -398,7 +422,7 @@ nvkm_vmm_sparse_unref_ptes(struct nvkm_vmm_iter *it, bool pfn, u32 ptei, u32 pte
 		memset(&pt->pde[ptei], 0x00, sizeof(pt->pde[0]) * ptes);
 	else
 	if (it->desc->type == LPT)
-		memset(&pt->pte[ptei], 0x00, sizeof(pt->pte[0]) * ptes);
+		memset32(&pt->pte[ptei].u, 0x00, ptes);
 	return nvkm_vmm_unref_ptes(it, pfn, ptei, ptes);
 }
 
@@ -445,9 +469,9 @@ nvkm_vmm_ref_hwpt(struct nvkm_vmm_iter *it, struct nvkm_vmm_pt *pgd, u32 pdei)
 		 * the SPTEs on some GPUs.
 		 */
 		for (ptei = pteb = 0; ptei < pten; pteb = ptei) {
-			bool spte = pgt->pte[ptei] & NVKM_VMM_PTE_SPTES;
+			bool spte = !!pgt->pte[ptei].s.sptes;
 			for (ptes = 1, ptei++; ptei < pten; ptes++, ptei++) {
-				bool next = pgt->pte[ptei] & NVKM_VMM_PTE_SPTES;
+				bool next = !!pgt->pte[ptei].s.sptes;
 				if (spte != next)
 					break;
 			}
@@ -457,11 +481,11 @@ nvkm_vmm_ref_hwpt(struct nvkm_vmm_iter *it, struct nvkm_vmm_pt *pgd, u32 pdei)
 					desc->func->sparse(vmm, pt, pteb, ptes);
 				else
 					desc->func->invalid(vmm, pt, pteb, ptes);
-				memset(&pgt->pte[pteb], 0x00, ptes);
+				memset32(&pgt->pte[pteb].u, 0x00, ptes);
 			} else {
 				desc->func->unmap(vmm, pt, pteb, ptes);
 				while (ptes--)
-					pgt->pte[pteb++] |= NVKM_VMM_PTE_VALID;
+					pgt->pte[pteb++].s.spte_valid = true;
 			}
 		}
 	} else {
@@ -677,20 +701,94 @@ nvkm_vmm_ptes_sparse(struct nvkm_vmm *vmm, u64 addr, u64 size, bool ref)
 }
 
 static void
-nvkm_vmm_ptes_unmap_put(struct nvkm_vmm *vmm, const struct nvkm_vmm_page *page,
-			u64 addr, u64 size, bool sparse, bool pfn)
+nvkm_vmm_ptes_unmap(struct nvkm_vmm *vmm, const struct nvkm_vmm_page *page,
+		    u64 addr, u64 size, bool sparse, bool pfn)
 {
 	const struct nvkm_vmm_desc_func *func = page->desc->func;
+
+	mutex_lock(&vmm->mutex.map);
+	nvkm_vmm_iter(vmm, page, addr, size, "unmap", false, pfn,
+		      NULL, NULL, NULL,
+		      sparse ? func->sparse : func->invalid ? func->invalid :
+							      func->unmap);
+	mutex_unlock(&vmm->mutex.map);
+}
+
+static void
+nvkm_vmm_ptes_map(struct nvkm_vmm *vmm, const struct nvkm_vmm_page *page,
+		  u64 addr, u64 size, struct nvkm_vmm_map *map,
+		  nvkm_vmm_pte_func func)
+{
+	mutex_lock(&vmm->mutex.map);
+	nvkm_vmm_iter(vmm, page, addr, size, "map", false, false,
+		      NULL, func, map, NULL);
+	mutex_unlock(&vmm->mutex.map);
+}
+
+static void
+nvkm_vmm_ptes_put_locked(struct nvkm_vmm *vmm, const struct nvkm_vmm_page *page,
+			 u64 addr, u64 size)
+{
+	nvkm_vmm_iter(vmm, page, addr, size, "unref", false, false,
+		      nvkm_vmm_unref_ptes, NULL, NULL, NULL);
+}
+
+static void
+nvkm_vmm_ptes_put(struct nvkm_vmm *vmm, const struct nvkm_vmm_page *page,
+		  u64 addr, u64 size)
+{
+	mutex_lock(&vmm->mutex.ref);
+	nvkm_vmm_ptes_put_locked(vmm, page, addr, size);
+	mutex_unlock(&vmm->mutex.ref);
+}
+
+static int
+nvkm_vmm_ptes_get(struct nvkm_vmm *vmm, const struct nvkm_vmm_page *page,
+		  u64 addr, u64 size)
+{
+	u64 fail;
+
+	mutex_lock(&vmm->mutex.ref);
+	fail = nvkm_vmm_iter(vmm, page, addr, size, "ref", true, false,
+			     nvkm_vmm_ref_ptes, NULL, NULL, NULL);
+	if (fail != ~0ULL) {
+		if (fail != addr)
+			nvkm_vmm_ptes_put_locked(vmm, page, addr, fail - addr);
+		mutex_unlock(&vmm->mutex.ref);
+		return -ENOMEM;
+	}
+	mutex_unlock(&vmm->mutex.ref);
+	return 0;
+}
+
+static void
+__nvkm_vmm_ptes_unmap_put(struct nvkm_vmm *vmm, const struct nvkm_vmm_page *page,
+			  u64 addr, u64 size, bool sparse, bool pfn)
+{
+	const struct nvkm_vmm_desc_func *func = page->desc->func;
+
 	nvkm_vmm_iter(vmm, page, addr, size, "unmap + unref",
 		      false, pfn, nvkm_vmm_unref_ptes, NULL, NULL,
 		      sparse ? func->sparse : func->invalid ? func->invalid :
 							      func->unmap);
 }
 
+static void
+nvkm_vmm_ptes_unmap_put(struct nvkm_vmm *vmm, const struct nvkm_vmm_page *page,
+			u64 addr, u64 size, bool sparse, bool pfn)
+{
+	if (vmm->managed.raw) {
+		nvkm_vmm_ptes_unmap(vmm, page, addr, size, sparse, pfn);
+		nvkm_vmm_ptes_put(vmm, page, addr, size);
+	} else {
+		__nvkm_vmm_ptes_unmap_put(vmm, page, addr, size, sparse, pfn);
+	}
+}
+
 static int
-nvkm_vmm_ptes_get_map(struct nvkm_vmm *vmm, const struct nvkm_vmm_page *page,
-		      u64 addr, u64 size, struct nvkm_vmm_map *map,
-		      nvkm_vmm_pte_func func)
+__nvkm_vmm_ptes_get_map(struct nvkm_vmm *vmm, const struct nvkm_vmm_page *page,
+			u64 addr, u64 size, struct nvkm_vmm_map *map,
+			nvkm_vmm_pte_func func)
 {
 	u64 fail = nvkm_vmm_iter(vmm, page, addr, size, "ref + map", true,
 				 false, nvkm_vmm_ref_ptes, func, map, NULL);
@@ -702,52 +800,30 @@ nvkm_vmm_ptes_get_map(struct nvkm_vmm *vmm, const struct nvkm_vmm_page *page,
 	return 0;
 }
 
-static void
-nvkm_vmm_ptes_unmap(struct nvkm_vmm *vmm, const struct nvkm_vmm_page *page,
-		    u64 addr, u64 size, bool sparse, bool pfn)
-{
-	const struct nvkm_vmm_desc_func *func = page->desc->func;
-	nvkm_vmm_iter(vmm, page, addr, size, "unmap", false, pfn,
-		      NULL, NULL, NULL,
-		      sparse ? func->sparse : func->invalid ? func->invalid :
-							      func->unmap);
-}
-
-static void
-nvkm_vmm_ptes_map(struct nvkm_vmm *vmm, const struct nvkm_vmm_page *page,
-		  u64 addr, u64 size, struct nvkm_vmm_map *map,
-		  nvkm_vmm_pte_func func)
-{
-	nvkm_vmm_iter(vmm, page, addr, size, "map", false, false,
-		      NULL, func, map, NULL);
-}
-
-static void
-nvkm_vmm_ptes_put(struct nvkm_vmm *vmm, const struct nvkm_vmm_page *page,
-		  u64 addr, u64 size)
-{
-	nvkm_vmm_iter(vmm, page, addr, size, "unref", false, false,
-		      nvkm_vmm_unref_ptes, NULL, NULL, NULL);
-}
-
 static int
-nvkm_vmm_ptes_get(struct nvkm_vmm *vmm, const struct nvkm_vmm_page *page,
-		  u64 addr, u64 size)
+nvkm_vmm_ptes_get_map(struct nvkm_vmm *vmm, const struct nvkm_vmm_page *page,
+		      u64 addr, u64 size, struct nvkm_vmm_map *map,
+		      nvkm_vmm_pte_func func)
 {
-	u64 fail = nvkm_vmm_iter(vmm, page, addr, size, "ref", true, false,
-				 nvkm_vmm_ref_ptes, NULL, NULL, NULL);
-	if (fail != ~0ULL) {
-		if (fail != addr)
-			nvkm_vmm_ptes_put(vmm, page, addr, fail - addr);
-		return -ENOMEM;
+	int ret;
+
+	if (vmm->managed.raw) {
+		ret = nvkm_vmm_ptes_get(vmm, page, addr, size);
+		if (ret)
+			return ret;
+
+		nvkm_vmm_ptes_map(vmm, page, addr, size, map, func);
+
+		return 0;
+	} else {
+		return __nvkm_vmm_ptes_get_map(vmm, page, addr, size, map, func);
 	}
-	return 0;
 }
 
-static inline struct nvkm_vma *
+struct nvkm_vma *
 nvkm_vma_new(u64 addr, u64 size)
 {
-	struct nvkm_vma *vma = kzalloc(sizeof(*vma), GFP_KERNEL);
+	struct nvkm_vma *vma = kzalloc_obj(*vma);
 	if (vma) {
 		vma->addr = addr;
 		vma->size = size;
@@ -978,6 +1054,9 @@ nvkm_vmm_dtor(struct nvkm_vmm *vmm)
 	struct nvkm_vma *vma;
 	struct rb_node *node;
 
+	if (vmm->rm.client.gsp)
+		r535_mmu_vaspace_del(vmm);
+
 	if (0)
 		nvkm_vmm_dump(vmm);
 
@@ -1045,10 +1124,12 @@ nvkm_vmm_ctor(const struct nvkm_vmm_func *func, struct nvkm_mmu *mmu,
 	vmm->debug = mmu->subdev.debug;
 	kref_init(&vmm->kref);
 
-	__mutex_init(&vmm->mutex, "&vmm->mutex", key ? key : &_key);
+	__mutex_init(&vmm->mutex.vmm, "&vmm->mutex.vmm", key ? key : &_key);
+	mutex_init(&vmm->mutex.ref);
+	mutex_init(&vmm->mutex.map);
 
 	/* Locate the smallest page size supported by the backend, it will
-	 * have the the deepest nesting of page tables.
+	 * have the deepest nesting of page tables.
 	 */
 	while (page[1].shift)
 		page++;
@@ -1101,6 +1182,9 @@ nvkm_vmm_ctor(const struct nvkm_vmm_func *func, struct nvkm_mmu *mmu,
 		if (addr && (ret = nvkm_vmm_ctor_managed(vmm, 0, addr)))
 			return ret;
 
+		vmm->managed.p.addr = 0;
+		vmm->managed.p.size = addr;
+
 		/* NVKM-managed area. */
 		if (size) {
 			if (!(vma = nvkm_vma_new(addr, size)))
@@ -1114,6 +1198,9 @@ nvkm_vmm_ctor(const struct nvkm_vmm_func *func, struct nvkm_mmu *mmu,
 		size = vmm->limit - addr;
 		if (size && (ret = nvkm_vmm_ctor_managed(vmm, addr, size)))
 			return ret;
+
+		vmm->managed.n.addr = addr;
+		vmm->managed.n.size = size;
 	} else {
 		/* Address-space fully managed by NVKM, requiring calls to
 		 * nvkm_vmm_get()/nvkm_vmm_put() to allocate address-space.
@@ -1139,7 +1226,7 @@ nvkm_vmm_new_(const struct nvkm_vmm_func *func, struct nvkm_mmu *mmu,
 	      struct lock_class_key *key, const char *name,
 	      struct nvkm_vmm **pvmm)
 {
-	if (!(*pvmm = kzalloc(sizeof(**pvmm), GFP_KERNEL)))
+	if (!(*pvmm = kzalloc_obj(**pvmm)))
 		return -ENOMEM;
 	return nvkm_vmm_ctor(func, mmu, hdr, managed, addr, size, key, name, *pvmm);
 }
@@ -1362,9 +1449,9 @@ void
 nvkm_vmm_unmap(struct nvkm_vmm *vmm, struct nvkm_vma *vma)
 {
 	if (vma->memory) {
-		mutex_lock(&vmm->mutex);
+		mutex_lock(&vmm->mutex.vmm);
 		nvkm_vmm_unmap_locked(vmm, vma, false);
-		mutex_unlock(&vmm->mutex);
+		mutex_unlock(&vmm->mutex.vmm);
 	}
 }
 
@@ -1422,6 +1509,8 @@ nvkm_vmm_map_locked(struct nvkm_vmm *vmm, struct nvkm_vma *vma,
 {
 	nvkm_vmm_pte_func func;
 	int ret;
+
+	map->no_comp = vma->no_comp;
 
 	/* Make sure we won't overrun the end of the memory object. */
 	if (unlikely(nvkm_memory_size(map->memory) < map->offset + vma->size)) {
@@ -1507,10 +1596,15 @@ nvkm_vmm_map(struct nvkm_vmm *vmm, struct nvkm_vma *vma, void *argv, u32 argc,
 	     struct nvkm_vmm_map *map)
 {
 	int ret;
-	mutex_lock(&vmm->mutex);
+
+	if (nvkm_vmm_in_managed_range(vmm, vma->addr, vma->size) &&
+	    vmm->managed.raw)
+		return nvkm_vmm_map_locked(vmm, vma, argv, argc, map);
+
+	mutex_lock(&vmm->mutex.vmm);
 	ret = nvkm_vmm_map_locked(vmm, vma, argv, argc, map);
 	vma->busy = false;
-	mutex_unlock(&vmm->mutex);
+	mutex_unlock(&vmm->mutex.vmm);
 	return ret;
 }
 
@@ -1620,9 +1714,9 @@ nvkm_vmm_put(struct nvkm_vmm *vmm, struct nvkm_vma **pvma)
 {
 	struct nvkm_vma *vma = *pvma;
 	if (vma) {
-		mutex_lock(&vmm->mutex);
+		mutex_lock(&vmm->mutex.vmm);
 		nvkm_vmm_put_locked(vmm, vma);
-		mutex_unlock(&vmm->mutex);
+		mutex_unlock(&vmm->mutex.vmm);
 		*pvma = NULL;
 	}
 }
@@ -1769,9 +1863,49 @@ int
 nvkm_vmm_get(struct nvkm_vmm *vmm, u8 page, u64 size, struct nvkm_vma **pvma)
 {
 	int ret;
-	mutex_lock(&vmm->mutex);
+	mutex_lock(&vmm->mutex.vmm);
 	ret = nvkm_vmm_get_locked(vmm, false, true, false, page, 0, size, pvma);
-	mutex_unlock(&vmm->mutex);
+	mutex_unlock(&vmm->mutex.vmm);
+	return ret;
+}
+
+void
+nvkm_vmm_raw_unmap(struct nvkm_vmm *vmm, u64 addr, u64 size,
+		   bool sparse, u8 refd)
+{
+	const struct nvkm_vmm_page *page = &vmm->func->page[refd];
+
+	nvkm_vmm_ptes_unmap(vmm, page, addr, size, sparse, false);
+}
+
+void
+nvkm_vmm_raw_put(struct nvkm_vmm *vmm, u64 addr, u64 size, u8 refd)
+{
+	const struct nvkm_vmm_page *page = vmm->func->page;
+
+	nvkm_vmm_ptes_put(vmm, &page[refd], addr, size);
+}
+
+int
+nvkm_vmm_raw_get(struct nvkm_vmm *vmm, u64 addr, u64 size, u8 refd)
+{
+	const struct nvkm_vmm_page *page = vmm->func->page;
+
+	if (unlikely(!size))
+		return -EINVAL;
+
+	return nvkm_vmm_ptes_get(vmm, &page[refd], addr, size);
+}
+
+int
+nvkm_vmm_raw_sparse(struct nvkm_vmm *vmm, u64 addr, u64 size, bool ref)
+{
+	int ret;
+
+	mutex_lock(&vmm->mutex.ref);
+	ret = nvkm_vmm_ptes_sparse(vmm, addr, size, ref);
+	mutex_unlock(&vmm->mutex.ref);
+
 	return ret;
 }
 
@@ -1779,9 +1913,9 @@ void
 nvkm_vmm_part(struct nvkm_vmm *vmm, struct nvkm_memory *inst)
 {
 	if (inst && vmm && vmm->func->part) {
-		mutex_lock(&vmm->mutex);
+		mutex_lock(&vmm->mutex.vmm);
 		vmm->func->part(vmm, inst);
-		mutex_unlock(&vmm->mutex);
+		mutex_unlock(&vmm->mutex.vmm);
 	}
 }
 
@@ -1790,9 +1924,9 @@ nvkm_vmm_join(struct nvkm_vmm *vmm, struct nvkm_memory *inst)
 {
 	int ret = 0;
 	if (vmm->func->join) {
-		mutex_lock(&vmm->mutex);
+		mutex_lock(&vmm->mutex.vmm);
 		ret = vmm->func->join(vmm, inst);
-		mutex_unlock(&vmm->mutex);
+		mutex_unlock(&vmm->mutex.vmm);
 	}
 	return ret;
 }

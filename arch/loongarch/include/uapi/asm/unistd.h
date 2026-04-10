@@ -1,5 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
-#define __ARCH_WANT_SYS_CLONE
-#define __ARCH_WANT_SYS_CLONE3
 
-#include <asm-generic/unistd.h>
+#include <asm/bitsperlong.h>
+
+#if __BITS_PER_LONG == 32
+#include <asm/unistd_32.h>
+#else
+#include <asm/unistd_64.h>
+#endif

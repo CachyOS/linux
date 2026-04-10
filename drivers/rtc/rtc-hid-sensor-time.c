@@ -296,14 +296,12 @@ err_open:
 	return ret;
 }
 
-static int hid_time_remove(struct platform_device *pdev)
+static void hid_time_remove(struct platform_device *pdev)
 {
 	struct hid_sensor_hub_device *hsdev = dev_get_platdata(&pdev->dev);
 
 	sensor_hub_device_close(hsdev);
 	sensor_hub_remove_callback(hsdev, HID_USAGE_SENSOR_TIME);
-
-	return 0;
 }
 
 static const struct platform_device_id hid_time_ids[] = {
@@ -328,4 +326,4 @@ module_platform_driver(hid_time_platform_driver);
 MODULE_DESCRIPTION("HID Sensor Time");
 MODULE_AUTHOR("Alexander Holler <holler@ahsoftware.de>");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(IIO_HID);
+MODULE_IMPORT_NS("IIO_HID");

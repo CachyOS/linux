@@ -1,15 +1,5 @@
-/*
- * Copyright (C) 2016 Broadcom
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+// SPDX-License-Identifier: GPL-2.0-only
+// Copyright (C) 2016 Broadcom
 
 #include <linux/device.h>
 #include <linux/module.h>
@@ -70,8 +60,6 @@ static int ns2_pci_phy_probe(struct mdio_device *mdiodev)
 		dev_err(dev, "failed to register Phy provider\n");
 		return PTR_ERR(provider);
 	}
-
-	dev_info(dev, "%s PHY registered\n", dev_name(dev));
 
 	return 0;
 }

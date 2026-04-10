@@ -74,7 +74,6 @@ int snd_pcm_plugin_build(struct snd_pcm_substream *handle,
                          size_t extra,
                          struct snd_pcm_plugin **ret);
 int snd_pcm_plugin_free(struct snd_pcm_plugin *plugin);
-int snd_pcm_plugin_clear(struct snd_pcm_plugin **first);
 int snd_pcm_plug_alloc(struct snd_pcm_substream *plug, snd_pcm_uframes_t frames);
 snd_pcm_sframes_t snd_pcm_plug_client_size(struct snd_pcm_substream *handle, snd_pcm_uframes_t drv_size);
 snd_pcm_sframes_t snd_pcm_plug_slave_size(struct snd_pcm_substream *handle, snd_pcm_uframes_t clt_size);
@@ -139,8 +138,14 @@ int snd_pcm_area_copy(const struct snd_pcm_channel_area *src_channel,
 		      size_t dst_offset,
 		      size_t samples, snd_pcm_format_t format);
 
-void *snd_pcm_plug_buf_alloc(struct snd_pcm_substream *plug, snd_pcm_uframes_t size);
-void snd_pcm_plug_buf_unlock(struct snd_pcm_substream *plug, void *ptr);
+#else
+
+static inline snd_pcm_sframes_t snd_pcm_plug_client_size(struct snd_pcm_substream *handle, snd_pcm_uframes_t drv_size) { return drv_size; }
+static inline snd_pcm_sframes_t snd_pcm_plug_slave_size(struct snd_pcm_substream *handle, snd_pcm_uframes_t clt_size) { return clt_size; }
+static inline int snd_pcm_plug_slave_format(int format, const struct snd_mask *format_mask) { return format; }
+
+#endif
+
 snd_pcm_sframes_t snd_pcm_oss_write3(struct snd_pcm_substream *substream,
 				     const char *ptr, snd_pcm_uframes_t size,
 				     int in_kernel);
@@ -151,16 +156,8 @@ snd_pcm_sframes_t snd_pcm_oss_writev3(struct snd_pcm_substream *substream,
 snd_pcm_sframes_t snd_pcm_oss_readv3(struct snd_pcm_substream *substream,
 				     void **bufs, snd_pcm_uframes_t frames);
 
-#else
-
-static inline snd_pcm_sframes_t snd_pcm_plug_client_size(struct snd_pcm_substream *handle, snd_pcm_uframes_t drv_size) { return drv_size; }
-static inline snd_pcm_sframes_t snd_pcm_plug_slave_size(struct snd_pcm_substream *handle, snd_pcm_uframes_t clt_size) { return clt_size; }
-static inline int snd_pcm_plug_slave_format(int format, const struct snd_mask *format_mask) { return format; }
-
-#endif
-
 #ifdef PLUGIN_DEBUG
-#define pdprintf(fmt, args...) printk(KERN_DEBUG "plugin: " fmt, ##args)
+#define pdprintf(fmt, args...) pr_debug("plugin: " fmt, ##args)
 #else
 #define pdprintf(fmt, args...)
 #endif

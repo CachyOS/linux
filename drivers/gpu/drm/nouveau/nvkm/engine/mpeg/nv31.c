@@ -81,8 +81,7 @@ nv31_mpeg_chan = {
 };
 
 int
-nv31_mpeg_chan_new(struct nvkm_fifo_chan *fifoch,
-		   const struct nvkm_oclass *oclass,
+nv31_mpeg_chan_new(struct nvkm_chan *fifoch, const struct nvkm_oclass *oclass,
 		   struct nvkm_object **pobject)
 {
 	struct nv31_mpeg *mpeg = nv31_mpeg(oclass->engine);
@@ -90,7 +89,7 @@ nv31_mpeg_chan_new(struct nvkm_fifo_chan *fifoch,
 	unsigned long flags;
 	int ret = -EBUSY;
 
-	if (!(chan = kzalloc(sizeof(*chan), GFP_KERNEL)))
+	if (!(chan = kzalloc_obj(*chan)))
 		return -ENOMEM;
 	nvkm_object_ctor(&nv31_mpeg_chan, oclass, &chan->object);
 	chan->mpeg = mpeg;
@@ -213,8 +212,8 @@ nv31_mpeg_intr(struct nvkm_engine *engine)
 
 	if (show) {
 		nvkm_error(subdev, "ch %d [%s] %08x %08x %08x %08x\n",
-			   mpeg->chan ? mpeg->chan->fifo->chid : -1,
-			   mpeg->chan ? mpeg->chan->object.client->name :
+			   mpeg->chan ? mpeg->chan->fifo->id : -1,
+			   mpeg->chan ? mpeg->chan->fifo->name :
 			   "unknown", stat, type, mthd, data);
 	}
 
@@ -278,7 +277,7 @@ nv31_mpeg_new_(const struct nv31_mpeg_func *func, struct nvkm_device *device,
 {
 	struct nv31_mpeg *mpeg;
 
-	if (!(mpeg = kzalloc(sizeof(*mpeg), GFP_KERNEL)))
+	if (!(mpeg = kzalloc_obj(*mpeg)))
 		return -ENOMEM;
 	mpeg->func = func;
 	*pmpeg = &mpeg->engine;

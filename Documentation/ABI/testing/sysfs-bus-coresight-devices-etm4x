@@ -329,6 +329,12 @@ Contact:	Mathieu Poirier <mathieu.poirier@linaro.org>
 Description:	(RW) Access the selected single show PE comparator control
 		register.
 
+What:           /sys/bus/coresight/devices/etm<N>/label
+Date:           Aug 2025
+KernelVersion   6.18
+Contact:        Mao Jinlong <quic_jinlmao@quicinc.com>
+Description:    (Read) Show hardware context information of device.
+
 What:		/sys/bus/coresight/devices/etm<N>/mgmt/trcoslsr
 Date:		April 2015
 KernelVersion:	4.01
@@ -446,7 +452,7 @@ Date:		April 2015
 KernelVersion:	4.01
 Contact:	Mathieu Poirier <mathieu.poirier@linaro.org>
 Description:	(Read) Returns the maximum size of the data value, data address,
-		VMID, context ID and instuction address in the trace unit
+		VMID, context ID and instruction address in the trace unit
 		(0x1E8).  The value is taken directly from the HW.
 
 What:		/sys/bus/coresight/devices/etm<N>/trcidr/trcidr3
@@ -516,3 +522,11 @@ Contact:	Mathieu Poirier <mathieu.poirier@linaro.org>
 Description:	(Read) Returns the number of special conditional P1 right-hand keys
 		that the trace unit can use (0x194).  The value is taken
 		directly from the HW.
+
+What:		/sys/bus/coresight/devices/etm<N>/ts_source
+Date:		October 2022
+KernelVersion:	6.1
+Contact:	Mathieu Poirier <mathieu.poirier@linaro.org> or Suzuki K Poulose <suzuki.poulose@arm.com>
+Description:	(Read) When FEAT_TRF is implemented, value of TRFCR_ELx.TS used for
+		trace session. Otherwise -1 indicates an unknown time source. Check
+		trcidr0.tssize to see if a global timestamp is available.

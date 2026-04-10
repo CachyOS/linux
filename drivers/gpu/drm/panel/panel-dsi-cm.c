@@ -11,7 +11,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/jiffies.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/regulator/consumer.h>
 
 #include <drm/drm_connector.h>
@@ -85,17 +85,10 @@ static void dsicm_bl_power(struct panel_drv_data *ddata, bool enable)
 	else
 		return;
 
-	if (enable) {
-		backlight->props.fb_blank = FB_BLANK_UNBLANK;
-		backlight->props.state = ~(BL_CORE_FBBLANK | BL_CORE_SUSPENDED);
-		backlight->props.power = FB_BLANK_UNBLANK;
-	} else {
-		backlight->props.fb_blank = FB_BLANK_NORMAL;
-		backlight->props.power = FB_BLANK_POWERDOWN;
-		backlight->props.state |= BL_CORE_FBBLANK | BL_CORE_SUSPENDED;
-	}
-
-	backlight_update_status(backlight);
+	if (enable)
+		backlight_enable(backlight);
+	else
+		backlight_disable(backlight);
 }
 
 static void hw_guard_start(struct panel_drv_data *ddata, int guard_msec)
@@ -196,13 +189,7 @@ static int dsicm_bl_update_status(struct backlight_device *dev)
 {
 	struct panel_drv_data *ddata = dev_get_drvdata(&dev->dev);
 	int r = 0;
-	int level;
-
-	if (dev->props.fb_blank == FB_BLANK_UNBLANK &&
-			dev->props.power == FB_BLANK_UNBLANK)
-		level = dev->props.brightness;
-	else
-		level = 0;
+	int level = backlight_get_brightness(dev);
 
 	dev_dbg(&ddata->dsi->dev, "update brightness to %d\n", level);
 
@@ -219,11 +206,7 @@ static int dsicm_bl_update_status(struct backlight_device *dev)
 
 static int dsicm_bl_get_intensity(struct backlight_device *dev)
 {
-	if (dev->props.fb_blank == FB_BLANK_UNBLANK &&
-			dev->props.power == FB_BLANK_UNBLANK)
-		return dev->props.brightness;
-
-	return 0;
+	return backlight_get_brightness(dev);
 }
 
 static const struct backlight_ops dsicm_bl_ops = {
@@ -528,9 +511,10 @@ static int dsicm_probe(struct mipi_dsi_device *dsi)
 
 	dev_dbg(dev, "probe\n");
 
-	ddata = devm_kzalloc(dev, sizeof(*ddata), GFP_KERNEL);
-	if (!ddata)
-		return -ENOMEM;
+	ddata = devm_drm_panel_alloc(dev, struct panel_drv_data, panel,
+				     &dsicm_panel_funcs, DRM_MODE_CONNECTOR_DSI);
+	if (IS_ERR(ddata))
+		return PTR_ERR(ddata);
 
 	mipi_dsi_set_drvdata(dsi, ddata);
 	ddata->dsi = dsi;
@@ -546,9 +530,6 @@ static int dsicm_probe(struct mipi_dsi_device *dsi)
 	mutex_init(&ddata->lock);
 
 	dsicm_hw_reset(ddata);
-
-	drm_panel_init(&ddata->panel, dev, &dsicm_panel_funcs,
-		       DRM_MODE_CONNECTOR_DSI);
 
 	if (ddata->use_dsi_backlight) {
 		struct backlight_properties props = { 0 };
@@ -596,7 +577,7 @@ err_bl:
 	return r;
 }
 
-static int dsicm_remove(struct mipi_dsi_device *dsi)
+static void dsicm_remove(struct mipi_dsi_device *dsi)
 {
 	struct panel_drv_data *ddata = mipi_dsi_get_drvdata(dsi);
 
@@ -610,8 +591,6 @@ static int dsicm_remove(struct mipi_dsi_device *dsi)
 
 	if (ddata->extbldev)
 		put_device(&ddata->extbldev->dev);
-
-	return 0;
 }
 
 static const struct dsic_panel_data taal_data = {

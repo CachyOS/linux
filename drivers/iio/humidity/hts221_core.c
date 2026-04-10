@@ -14,6 +14,7 @@
 #include <linux/delay.h>
 #include <linux/pm.h>
 #include <linux/regmap.h>
+#include <linux/regulator/consumer.h>
 #include <linux/bitfield.h>
 
 #include "hts221.h"
@@ -417,31 +418,22 @@ static int hts221_read_oneshot(struct hts221_hw *hw, u8 addr, int *val)
 	return IIO_VAL_INT;
 }
 
-static int hts221_read_raw(struct iio_dev *iio_dev,
-			   struct iio_chan_spec const *ch,
-			   int *val, int *val2, long mask)
+static int __hts221_read_raw(struct iio_dev *iio_dev,
+			     struct iio_chan_spec const *ch,
+			     int *val, int *val2, long mask)
 {
 	struct hts221_hw *hw = iio_priv(iio_dev);
-	int ret;
-
-	ret = iio_device_claim_direct_mode(iio_dev);
-	if (ret)
-		return ret;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		ret = hts221_read_oneshot(hw, ch->address, val);
-		break;
+		return hts221_read_oneshot(hw, ch->address, val);
 	case IIO_CHAN_INFO_SCALE:
-		ret = hts221_get_sensor_scale(hw, ch->type, val, val2);
-		break;
+		return hts221_get_sensor_scale(hw, ch->type, val, val2);
 	case IIO_CHAN_INFO_OFFSET:
-		ret = hts221_get_sensor_offset(hw, ch->type, val, val2);
-		break;
+		return hts221_get_sensor_offset(hw, ch->type, val, val2);
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		*val = hw->odr;
-		ret = IIO_VAL_INT;
-		break;
+		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_OVERSAMPLING_RATIO: {
 		u8 idx;
 		const struct hts221_avg *avg;
@@ -451,64 +443,72 @@ static int hts221_read_raw(struct iio_dev *iio_dev,
 			avg = &hts221_avg_list[HTS221_SENSOR_H];
 			idx = hw->sensors[HTS221_SENSOR_H].cur_avg_idx;
 			*val = avg->avg_avl[idx];
-			ret = IIO_VAL_INT;
-			break;
+			return IIO_VAL_INT;
 		case IIO_TEMP:
 			avg = &hts221_avg_list[HTS221_SENSOR_T];
 			idx = hw->sensors[HTS221_SENSOR_T].cur_avg_idx;
 			*val = avg->avg_avl[idx];
-			ret = IIO_VAL_INT;
-			break;
+			return IIO_VAL_INT;
 		default:
-			ret = -EINVAL;
-			break;
+			return -EINVAL;
 		}
-		break;
 	}
 	default:
-		ret = -EINVAL;
-		break;
+		return -EINVAL;
 	}
+}
 
-	iio_device_release_direct_mode(iio_dev);
+static int hts221_read_raw(struct iio_dev *iio_dev,
+			   struct iio_chan_spec const *ch,
+			   int *val, int *val2, long mask)
+{
+	int ret;
+
+	if (!iio_device_claim_direct(iio_dev))
+		return -EBUSY;
+
+	ret = __hts221_read_raw(iio_dev, ch, val, val2, mask);
+
+	iio_device_release_direct(iio_dev);
 
 	return ret;
+}
+
+static int __hts221_write_raw(struct iio_dev *iio_dev,
+			      struct iio_chan_spec const *chan,
+			      int val, long mask)
+{
+	struct hts221_hw *hw = iio_priv(iio_dev);
+
+	switch (mask) {
+	case IIO_CHAN_INFO_SAMP_FREQ:
+		return hts221_update_odr(hw, val);
+	case IIO_CHAN_INFO_OVERSAMPLING_RATIO:
+		switch (chan->type) {
+		case IIO_HUMIDITYRELATIVE:
+			return hts221_update_avg(hw, HTS221_SENSOR_H, val);
+		case IIO_TEMP:
+			return hts221_update_avg(hw, HTS221_SENSOR_T, val);
+		default:
+			return -EINVAL;
+		}
+	default:
+		return -EINVAL;
+	}
 }
 
 static int hts221_write_raw(struct iio_dev *iio_dev,
 			    struct iio_chan_spec const *chan,
 			    int val, int val2, long mask)
 {
-	struct hts221_hw *hw = iio_priv(iio_dev);
 	int ret;
 
-	ret = iio_device_claim_direct_mode(iio_dev);
-	if (ret)
-		return ret;
+	if (!iio_device_claim_direct(iio_dev))
+		return -EBUSY;
 
-	switch (mask) {
-	case IIO_CHAN_INFO_SAMP_FREQ:
-		ret = hts221_update_odr(hw, val);
-		break;
-	case IIO_CHAN_INFO_OVERSAMPLING_RATIO:
-		switch (chan->type) {
-		case IIO_HUMIDITYRELATIVE:
-			ret = hts221_update_avg(hw, HTS221_SENSOR_H, val);
-			break;
-		case IIO_TEMP:
-			ret = hts221_update_avg(hw, HTS221_SENSOR_T, val);
-			break;
-		default:
-			ret = -EINVAL;
-			break;
-		}
-		break;
-	default:
-		ret = -EINVAL;
-		break;
-	}
+	ret = __hts221_write_raw(iio_dev, chan, val, mask);
 
-	iio_device_release_direct_mode(iio_dev);
+	iio_device_release_direct(iio_dev);
 
 	return ret;
 }
@@ -549,31 +549,15 @@ static const unsigned long hts221_scan_masks[] = {0x3, 0x0};
 
 static int hts221_init_regulators(struct device *dev)
 {
-	struct iio_dev *iio_dev = dev_get_drvdata(dev);
-	struct hts221_hw *hw = iio_priv(iio_dev);
 	int err;
 
-	hw->vdd = devm_regulator_get(dev, "vdd");
-	if (IS_ERR(hw->vdd))
-		return dev_err_probe(dev, PTR_ERR(hw->vdd),
-				     "failed to get vdd regulator\n");
-
-	err = regulator_enable(hw->vdd);
-	if (err) {
-		dev_err(dev, "failed to enable vdd regulator: %d\n", err);
-		return err;
-	}
+	err = devm_regulator_get_enable(dev, "vdd");
+	if (err)
+		return dev_err_probe(dev, err, "failed to get vdd regulator\n");
 
 	msleep(50);
 
 	return 0;
-}
-
-static void hts221_chip_uninit(void *data)
-{
-	struct hts221_hw *hw = data;
-
-	regulator_disable(hw->vdd);
 }
 
 int hts221_probe(struct device *dev, int irq, const char *name,
@@ -588,7 +572,7 @@ int hts221_probe(struct device *dev, int irq, const char *name,
 	if (!iio_dev)
 		return -ENOMEM;
 
-	dev_set_drvdata(dev, (void *)iio_dev);
+	dev_set_drvdata(dev, iio_dev);
 
 	hw = iio_priv(iio_dev);
 	hw->name = name;
@@ -597,10 +581,6 @@ int hts221_probe(struct device *dev, int irq, const char *name,
 	hw->regmap = regmap;
 
 	err = hts221_init_regulators(dev);
-	if (err)
-		return err;
-
-	err = devm_add_action_or_reset(dev, hts221_chip_uninit, hw);
 	if (err)
 		return err;
 
@@ -668,9 +648,9 @@ int hts221_probe(struct device *dev, int irq, const char *name,
 
 	return devm_iio_device_register(hw->dev, iio_dev);
 }
-EXPORT_SYMBOL(hts221_probe);
+EXPORT_SYMBOL_NS(hts221_probe, "IIO_HTS221");
 
-static int __maybe_unused hts221_suspend(struct device *dev)
+static int hts221_suspend(struct device *dev)
 {
 	struct iio_dev *iio_dev = dev_get_drvdata(dev);
 	struct hts221_hw *hw = iio_priv(iio_dev);
@@ -680,7 +660,7 @@ static int __maybe_unused hts221_suspend(struct device *dev)
 				  FIELD_PREP(HTS221_ENABLE_MASK, false));
 }
 
-static int __maybe_unused hts221_resume(struct device *dev)
+static int hts221_resume(struct device *dev)
 {
 	struct iio_dev *iio_dev = dev_get_drvdata(dev);
 	struct hts221_hw *hw = iio_priv(iio_dev);
@@ -694,10 +674,8 @@ static int __maybe_unused hts221_resume(struct device *dev)
 	return err;
 }
 
-const struct dev_pm_ops hts221_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(hts221_suspend, hts221_resume)
-};
-EXPORT_SYMBOL(hts221_pm_ops);
+EXPORT_NS_SIMPLE_DEV_PM_OPS(hts221_pm_ops, hts221_suspend, hts221_resume,
+			    IIO_HTS221);
 
 MODULE_AUTHOR("Lorenzo Bianconi <lorenzo.bianconi@st.com>");
 MODULE_DESCRIPTION("STMicroelectronics hts221 sensor driver");

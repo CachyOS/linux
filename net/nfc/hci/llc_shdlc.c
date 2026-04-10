@@ -198,7 +198,7 @@ static void llc_shdlc_reset_t2(struct llc_shdlc *shdlc, int y_nr)
 
 	if (skb_queue_empty(&shdlc->ack_pending_q)) {
 		if (shdlc->t2_active) {
-			del_timer_sync(&shdlc->t2_timer);
+			timer_delete_sync(&shdlc->t2_timer);
 			shdlc->t2_active = false;
 
 			pr_debug("All sent frames acked. Stopped T2(retransmit)\n");
@@ -289,7 +289,7 @@ static void llc_shdlc_rcv_rej(struct llc_shdlc *shdlc, int y_nr)
 
 	if (llc_shdlc_x_lteq_y_lt_z(shdlc->dnr, y_nr, shdlc->ns)) {
 		if (shdlc->t2_active) {
-			del_timer_sync(&shdlc->t2_timer);
+			timer_delete_sync(&shdlc->t2_timer);
 			shdlc->t2_active = false;
 			pr_debug("Stopped T2(retransmit)\n");
 		}
@@ -342,7 +342,7 @@ static void llc_shdlc_connect_complete(struct llc_shdlc *shdlc, int r)
 {
 	pr_debug("result=%d\n", r);
 
-	del_timer_sync(&shdlc->connect_timer);
+	timer_delete_sync(&shdlc->connect_timer);
 
 	if (r == 0) {
 		shdlc->ns = 0;
@@ -526,7 +526,7 @@ static void llc_shdlc_handle_send_queue(struct llc_shdlc *shdlc)
 	       (shdlc->rnr == false)) {
 
 		if (shdlc->t1_active) {
-			del_timer_sync(&shdlc->t1_timer);
+			timer_delete_sync(&shdlc->t1_timer);
 			shdlc->t1_active = false;
 			pr_debug("Stopped T1(send ack)\n");
 		}
@@ -564,14 +564,14 @@ static void llc_shdlc_handle_send_queue(struct llc_shdlc *shdlc)
 
 static void llc_shdlc_connect_timeout(struct timer_list *t)
 {
-	struct llc_shdlc *shdlc = from_timer(shdlc, t, connect_timer);
+	struct llc_shdlc *shdlc = timer_container_of(shdlc, t, connect_timer);
 
 	schedule_work(&shdlc->sm_work);
 }
 
 static void llc_shdlc_t1_timeout(struct timer_list *t)
 {
-	struct llc_shdlc *shdlc = from_timer(shdlc, t, t1_timer);
+	struct llc_shdlc *shdlc = timer_container_of(shdlc, t, t1_timer);
 
 	pr_debug("SoftIRQ: need to send ack\n");
 
@@ -580,7 +580,7 @@ static void llc_shdlc_t1_timeout(struct timer_list *t)
 
 static void llc_shdlc_t2_timeout(struct timer_list *t)
 {
-	struct llc_shdlc *shdlc = from_timer(shdlc, t, t2_timer);
+	struct llc_shdlc *shdlc = timer_container_of(shdlc, t, t2_timer);
 
 	pr_debug("SoftIRQ: need to retransmit\n");
 
@@ -728,7 +728,7 @@ static void *llc_shdlc_init(struct nfc_hci_dev *hdev, xmit_to_drv_t xmit_to_drv,
 	*rx_headroom = SHDLC_LLC_HEAD_ROOM;
 	*rx_tailroom = 0;
 
-	shdlc = kzalloc(sizeof(struct llc_shdlc), GFP_KERNEL);
+	shdlc = kzalloc_obj(struct llc_shdlc);
 	if (shdlc == NULL)
 		return NULL;
 
@@ -761,6 +761,14 @@ static void *llc_shdlc_init(struct nfc_hci_dev *hdev, xmit_to_drv_t xmit_to_drv,
 static void llc_shdlc_deinit(struct nfc_llc *llc)
 {
 	struct llc_shdlc *shdlc = nfc_llc_get_data(llc);
+
+	timer_shutdown_sync(&shdlc->connect_timer);
+	timer_shutdown_sync(&shdlc->t1_timer);
+	timer_shutdown_sync(&shdlc->t2_timer);
+	shdlc->t1_active = false;
+	shdlc->t2_active = false;
+
+	cancel_work_sync(&shdlc->sm_work);
 
 	skb_queue_purge(&shdlc->rcv_q);
 	skb_queue_purge(&shdlc->send_q);

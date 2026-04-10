@@ -74,7 +74,7 @@ static inline struct parallel_io *alloc_parallel(void *data)
 {
 	struct parallel_io *rv;
 
-	rv  = kmalloc(sizeof(*rv), GFP_NOFS);
+	rv = kmalloc_obj(*rv, GFP_NOFS);
 	if (rv) {
 		rv->data = data;
 		kref_init(&rv->refcnt);
@@ -121,7 +121,7 @@ static bool offset_in_map(u64 offset, struct pnfs_block_dev_map *map)
 }
 
 static struct bio *
-do_add_page_to_bio(struct bio *bio, int npg, int rw, sector_t isect,
+do_add_page_to_bio(struct bio *bio, int npg, enum req_op op, sector_t isect,
 		struct page *page, struct pnfs_block_dev_map *map,
 		struct pnfs_block_extent *be, bio_end_io_t end_io,
 		struct parallel_io *par, unsigned int offset, int *len)
@@ -131,7 +131,7 @@ do_add_page_to_bio(struct bio *bio, int npg, int rw, sector_t isect,
 	u64 disk_addr, end;
 
 	dprintk("%s: npg %d rw %d isect %llu offset %u len %d\n", __func__,
-		npg, rw, (unsigned long long)isect, offset, *len);
+		npg, (__force u32)op, (unsigned long long)isect, offset, *len);
 
 	/* translate to device offset */
 	isect += be->be_v_offset;
@@ -149,12 +149,12 @@ do_add_page_to_bio(struct bio *bio, int npg, int rw, sector_t isect,
 
 	/* limit length to what the device mapping allows */
 	end = disk_addr + *len;
-	if (end >= map->start + map->len)
-		*len = map->start + map->len - disk_addr;
+	if (end >= map->disk_offset + map->len)
+		*len = map->disk_offset + map->len - disk_addr;
 
 retry:
 	if (!bio) {
-		bio = bio_alloc(map->bdev, bio_max_segs(npg), rw, GFP_NOIO);
+		bio = bio_alloc(map->bdev, bio_max_segs(npg), op, GFP_NOIO);
 		bio->bi_iter.bi_sector = disk_addr >> SECTOR_SHIFT;
 		bio->bi_end_io = end_io;
 		bio->bi_private = par;
@@ -291,7 +291,7 @@ bl_read_pagelist(struct nfs_pgio_header *header)
 		} else {
 			bio = do_add_page_to_bio(bio,
 						 header->page_array.npages - i,
-						 READ,
+						 REQ_OP_READ,
 						 isect, pages[i], &map, &be,
 						 bl_end_io_read, par,
 						 pg_offset, &pg_len);
@@ -420,9 +420,8 @@ bl_write_pagelist(struct nfs_pgio_header *header, int sync)
 
 		pg_len = PAGE_SIZE;
 		bio = do_add_page_to_bio(bio, header->page_array.npages - i,
-					 WRITE, isect, pages[i], &map, &be,
-					 bl_end_io_write, par,
-					 0, &pg_len);
+					 REQ_OP_WRITE, isect, pages[i], &map,
+					 &be, bl_end_io_write, par, 0, &pg_len);
 		if (IS_ERR(bio)) {
 			header->pnfs_error = PTR_ERR(bio);
 			bio = NULL;
@@ -462,7 +461,7 @@ static struct pnfs_layout_hdr *__bl_alloc_layout_hdr(struct inode *inode,
 	struct pnfs_block_layout *bl;
 
 	dprintk("%s enter\n", __func__);
-	bl = kzalloc(sizeof(*bl), gfp_flags);
+	bl = kzalloc_obj(*bl, gfp_flags);
 	if (!bl)
 		return NULL;
 
@@ -565,23 +564,45 @@ bl_find_get_deviceid(struct nfs_server *server,
 		gfp_t gfp_mask)
 {
 	struct nfs4_deviceid_node *node;
-	unsigned long start, end;
+	int err = -ENODEV;
 
 retry:
 	node = nfs4_find_get_deviceid(server, id, cred, gfp_mask);
 	if (!node)
 		return ERR_PTR(-ENODEV);
 
-	if (test_bit(NFS_DEVICEID_UNAVAILABLE, &node->flags) == 0)
-		return node;
+	/*
+	 * Devices that are marked unavailable are left in the cache with a
+	 * timeout to avoid sending GETDEVINFO after every LAYOUTGET, or
+	 * constantly attempting to register the device.  Once marked as
+	 * unavailable they must be deleted and never reused.
+	 */
+	if (test_bit(NFS_DEVICEID_UNAVAILABLE, &node->flags)) {
+		unsigned long end = jiffies;
+		unsigned long start = end - PNFS_DEVICE_RETRY_TIMEOUT;
 
-	end = jiffies;
-	start = end - PNFS_DEVICE_RETRY_TIMEOUT;
-	if (!time_in_range(node->timestamp_unavailable, start, end)) {
-		nfs4_delete_deviceid(node->ld, node->nfs_client, id);
-		goto retry;
+		if (!time_in_range(node->timestamp_unavailable, start, end)) {
+			/* Uncork subsequent GETDEVINFO operations for this device */
+			nfs4_delete_deviceid(node->ld, node->nfs_client, id);
+			goto retry;
+		}
+		goto out_put;
 	}
-	return ERR_PTR(-ENODEV);
+
+	if (!bl_register_dev(container_of(node, struct pnfs_block_dev, node))) {
+		/*
+		 * If we cannot register, treat this device as transient:
+		 * Make a negative cache entry for the device
+		 */
+		nfs4_mark_deviceid_unavailable(node);
+		goto out_put;
+	}
+
+	return node;
+
+out_put:
+	nfs4_put_deviceid_node(node);
+	return ERR_PTR(err);
 }
 
 static int
@@ -598,7 +619,7 @@ bl_alloc_extent(struct xdr_stream *xdr, struct pnfs_layout_hdr *lo,
 	if (!p)
 		return -EIO;
 
-	be = kzalloc(sizeof(*be), GFP_NOFS);
+	be = kzalloc_obj(*be, GFP_NOFS);
 	if (!be)
 		return -ENOMEM;
 
@@ -655,7 +676,7 @@ bl_alloc_lseg(struct pnfs_layout_hdr *lo, struct nfs4_layoutget_res *lgr,
 	struct pnfs_layout_segment *lseg;
 	struct xdr_buf buf;
 	struct xdr_stream xdr;
-	struct page *scratch;
+	struct folio *scratch;
 	int status, i;
 	uint32_t count;
 	__be32 *p;
@@ -663,18 +684,18 @@ bl_alloc_lseg(struct pnfs_layout_hdr *lo, struct nfs4_layoutget_res *lgr,
 
 	dprintk("---> %s\n", __func__);
 
-	lseg = kzalloc(sizeof(*lseg), gfp_mask);
+	lseg = kzalloc_obj(*lseg, gfp_mask);
 	if (!lseg)
 		return ERR_PTR(-ENOMEM);
 
 	status = -ENOMEM;
-	scratch = alloc_page(gfp_mask);
+	scratch = folio_alloc(gfp_mask, 0);
 	if (!scratch)
 		goto out;
 
 	xdr_init_decode_pages(&xdr, &buf,
 			lgr->layoutp->pages, lgr->layoutp->len);
-	xdr_set_scratch_page(&xdr, scratch);
+	xdr_set_scratch_folio(&xdr, scratch);
 
 	status = -EIO;
 	p = xdr_inline_decode(&xdr, 4);
@@ -723,7 +744,7 @@ process_extents:
 	}
 
 out_free_scratch:
-	__free_page(scratch);
+	folio_put(scratch);
 out:
 	dprintk("%s returns %d\n", __func__, status);
 	switch (status) {
@@ -894,10 +915,9 @@ bl_pg_init_write(struct nfs_pageio_descriptor *pgio, struct nfs_page *req)
 	}
 
 	if (pgio->pg_dreq == NULL)
-		wb_size = pnfs_num_cont_bytes(pgio->pg_inode,
-					      req->wb_index);
+		wb_size = pnfs_num_cont_bytes(pgio->pg_inode, req->wb_index);
 	else
-		wb_size = nfs_dreq_bytes_left(pgio->pg_dreq);
+		wb_size = nfs_dreq_bytes_left(pgio->pg_dreq, req_offset(req));
 
 	pnfs_generic_pg_init_write(pgio, req, wb_size);
 

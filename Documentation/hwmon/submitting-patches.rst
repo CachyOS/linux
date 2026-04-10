@@ -12,7 +12,6 @@ increase the chances of your change being accepted.
 * It should be unnecessary to mention, but please read and follow:
 
     - Documentation/process/submit-checklist.rst
-    - Documentation/process/submitting-drivers.rst
     - Documentation/process/submitting-patches.rst
     - Documentation/process/coding-style.rst
 
@@ -83,7 +82,10 @@ increase the chances of your change being accepted.
 * Avoid calculations in macros and macro-generated functions. While such macros
   may save a line or so in the source, it obfuscates the code and makes code
   review more difficult. It may also result in code which is more complicated
-  than necessary. Use inline functions or just regular functions instead.
+  than necessary. Such macros may also evaluate their arguments multiple times.
+  This leads to Time-of-Check to Time-of-Use (TOCTOU) race conditions when
+  accessing shared data without locking, for example when calculating values in
+  sysfs show functions. Use inline functions or just regular functions instead.
 
 * Limit the number of kernel log messages. In general, your driver should not
   generate an error message just because a runtime operation failed. Report
@@ -127,7 +129,7 @@ increase the chances of your change being accepted.
 * Use devm_hwmon_device_register_with_info() or, if your driver needs a remove
   function, hwmon_device_register_with_info() to register your driver with the
   hwmon subsystem. Try using devm_add_action() instead of a remove function if
-  possible. Do not use hwmon_device_register().
+  possible. Do not use any of the deprecated registration functions.
 
 * Your driver should be buildable as module. If not, please be prepared to
   explain why it has to be built into the kernel.

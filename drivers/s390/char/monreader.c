@@ -7,8 +7,7 @@
  * Author: Gerald Schaefer <gerald.schaefer@de.ibm.com>
  */
 
-#define KMSG_COMPONENT "monreader"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "monreader: " fmt
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -24,6 +23,7 @@
 #include <linux/slab.h>
 #include <net/iucv/iucv.h>
 #include <linux/uaccess.h>
+#include <asm/machine.h>
 #include <asm/ebcdic.h>
 #include <asm/extmem.h>
 
@@ -111,7 +111,7 @@ static inline unsigned long mon_mca_end(struct mon_msg *monmsg)
 
 static inline u8 mon_mca_type(struct mon_msg *monmsg, u8 index)
 {
-	return *((u8 *) mon_mca_start(monmsg) + monmsg->mca_offset + index);
+	return *((u8 *)__va(mon_mca_start(monmsg)) + monmsg->mca_offset + index);
 }
 
 static inline u32 mon_mca_size(struct mon_msg *monmsg)
@@ -121,12 +121,12 @@ static inline u32 mon_mca_size(struct mon_msg *monmsg)
 
 static inline u32 mon_rec_start(struct mon_msg *monmsg)
 {
-	return *((u32 *) (mon_mca_start(monmsg) + monmsg->mca_offset + 4));
+	return *((u32 *)(__va(mon_mca_start(monmsg)) + monmsg->mca_offset + 4));
 }
 
 static inline u32 mon_rec_end(struct mon_msg *monmsg)
 {
-	return *((u32 *) (mon_mca_start(monmsg) + monmsg->mca_offset + 8));
+	return *((u32 *)(__va(mon_mca_start(monmsg)) + monmsg->mca_offset + 8));
 }
 
 static int mon_check_mca(struct mon_msg *monmsg)
@@ -181,12 +181,11 @@ static struct mon_private *mon_alloc_mem(void)
 	int i;
 	struct mon_private *monpriv;
 
-	monpriv = kzalloc(sizeof(struct mon_private), GFP_KERNEL);
+	monpriv = kzalloc_obj(struct mon_private);
 	if (!monpriv)
 		return NULL;
 	for (i = 0; i < MON_MSGLIM; i++) {
-		monpriv->msg_array[i] = kzalloc(sizeof(struct mon_msg),
-						    GFP_KERNEL);
+		monpriv->msg_array[i] = kzalloc_obj(struct mon_msg);
 		if (!monpriv->msg_array[i]) {
 			mon_free_mem(monpriv);
 			return NULL;
@@ -392,8 +391,7 @@ static ssize_t mon_read(struct file *filp, char __user *data,
 	mce_start = mon_mca_start(monmsg) + monmsg->mca_offset;
 	if ((monmsg->pos >= mce_start) && (monmsg->pos < mce_start + 12)) {
 		count = min(count, (size_t) mce_start + 12 - monmsg->pos);
-		ret = copy_to_user(data, (void *) (unsigned long) monmsg->pos,
-				   count);
+		ret = copy_to_user(data, __va(monmsg->pos), count);
 		if (ret)
 			return -EFAULT;
 		monmsg->pos += count;
@@ -406,8 +404,7 @@ static ssize_t mon_read(struct file *filp, char __user *data,
 	if (monmsg->pos <= mon_rec_end(monmsg)) {
 		count = min(count, (size_t) mon_rec_end(monmsg) - monmsg->pos
 					    + 1);
-		ret = copy_to_user(data, (void *) (unsigned long) monmsg->pos,
-				   count);
+		ret = copy_to_user(data, __va(monmsg->pos), count);
 		if (ret)
 			return -EFAULT;
 		monmsg->pos += count;
@@ -458,7 +455,7 @@ static int __init mon_init(void)
 {
 	int rc;
 
-	if (!MACHINE_IS_VM) {
+	if (!machine_is_vm()) {
 		pr_err("The z/VM *MONITOR record device driver cannot be "
 		       "loaded without z/VM\n");
 		return -ENODEV;

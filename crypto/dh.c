@@ -106,6 +106,12 @@ err_clear_ctx:
  */
 static int dh_is_pubkey_valid(struct dh_ctx *ctx, MPI y)
 {
+	MPI val, q;
+	int ret;
+
+	if (!fips_enabled)
+		return 0;
+
 	if (unlikely(!ctx->p))
 		return -EINVAL;
 
@@ -125,40 +131,35 @@ static int dh_is_pubkey_valid(struct dh_ctx *ctx, MPI y)
 	 *
 	 * For the safe-prime groups q = (p - 1)/2.
 	 */
-	if (fips_enabled) {
-		MPI val, q;
-		int ret;
+	val = mpi_alloc(0);
+	if (!val)
+		return -ENOMEM;
 
-		val = mpi_alloc(0);
-		if (!val)
-			return -ENOMEM;
-
-		q = mpi_alloc(mpi_get_nlimbs(ctx->p));
-		if (!q) {
-			mpi_free(val);
-			return -ENOMEM;
-		}
-
-		/*
-		 * ->p is odd, so no need to explicitly subtract one
-		 * from it before shifting to the right.
-		 */
-		mpi_rshift(q, ctx->p, 1);
-
-		ret = mpi_powm(val, y, q, ctx->p);
-		mpi_free(q);
-		if (ret) {
-			mpi_free(val);
-			return ret;
-		}
-
-		ret = mpi_cmp_ui(val, 1);
-
+	q = mpi_alloc(mpi_get_nlimbs(ctx->p));
+	if (!q) {
 		mpi_free(val);
-
-		if (ret != 0)
-			return -EINVAL;
+		return -ENOMEM;
 	}
+
+	/*
+	 * ->p is odd, so no need to explicitly subtract one
+	 * from it before shifting to the right.
+	 */
+	ret = mpi_rshift(q, ctx->p, 1) ?:
+	      mpi_powm(val, y, q, ctx->p);
+
+	mpi_free(q);
+	if (ret) {
+		mpi_free(val);
+		return ret;
+	}
+
+	ret = mpi_cmp_ui(val, 1);
+
+	mpi_free(val);
+
+	if (ret != 0)
+		return -EINVAL;
 
 	return 0;
 }
@@ -317,6 +318,9 @@ static int dh_safe_prime_init_tfm(struct crypto_kpp *tfm)
 	tfm_ctx->dh_tfm = crypto_spawn_kpp(&inst_ctx->dh_spawn);
 	if (IS_ERR(tfm_ctx->dh_tfm))
 		return PTR_ERR(tfm_ctx->dh_tfm);
+
+	kpp_set_reqsize(tfm, sizeof(struct kpp_request) +
+			     crypto_kpp_reqsize(tfm_ctx->dh_tfm));
 
 	return 0;
 }
@@ -500,10 +504,9 @@ out:
 	return err;
 }
 
-static void dh_safe_prime_complete_req(struct crypto_async_request *dh_req,
-				       int err)
+static void dh_safe_prime_complete_req(void *data, int err)
 {
-	struct kpp_request *req = dh_req->data;
+	struct kpp_request *req = data;
 
 	kpp_request_complete(req, err);
 }
@@ -593,7 +596,6 @@ static int __maybe_unused __dh_safe_prime_create(
 	inst->alg.max_size = dh_safe_prime_max_size;
 	inst->alg.init = dh_safe_prime_init_tfm;
 	inst->alg.exit = dh_safe_prime_exit_tfm;
-	inst->alg.reqsize = sizeof(struct kpp_request) + dh_alg->reqsize;
 	inst->alg.base.cra_priority = dh_alg->base.cra_priority;
 	inst->alg.base.cra_module = THIS_MODULE;
 	inst->alg.base.cra_ctxsize = sizeof(struct dh_safe_prime_tfm_ctx);
@@ -893,7 +895,7 @@ static struct crypto_template crypto_ffdhe_templates[] = {};
 #endif /* CONFIG_CRYPTO_DH_RFC7919_GROUPS */
 
 
-static int dh_init(void)
+static int __init dh_init(void)
 {
 	int err;
 
@@ -911,14 +913,14 @@ static int dh_init(void)
 	return 0;
 }
 
-static void dh_exit(void)
+static void __exit dh_exit(void)
 {
 	crypto_unregister_templates(crypto_ffdhe_templates,
 				    ARRAY_SIZE(crypto_ffdhe_templates));
 	crypto_unregister_kpp(&dh);
 }
 
-subsys_initcall(dh_init);
+module_init(dh_init);
 module_exit(dh_exit);
 MODULE_ALIAS_CRYPTO("dh");
 MODULE_LICENSE("GPL");

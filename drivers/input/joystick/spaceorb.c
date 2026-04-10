@@ -10,9 +10,6 @@
  * SpaceTec SpaceOrb 360 and Avenger 6dof controller driver for Linux
  */
 
-/*
- */
-
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -150,7 +147,7 @@ static int spaceorb_connect(struct serio *serio, struct serio_driver *drv)
 	int err = -ENOMEM;
 	int i;
 
-	spaceorb = kzalloc(sizeof(struct spaceorb), GFP_KERNEL);
+	spaceorb = kzalloc_obj(*spaceorb);
 	input_dev = input_allocate_device();
 	if (!spaceorb || !input_dev)
 		goto fail1;

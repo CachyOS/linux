@@ -8,18 +8,20 @@
 #include "helpers/helpers.h"
 #include "helpers/sysfs.h"
 #include "cpufreq.h"
+#include "cpupower_intern.h"
 
 #if defined(__i386__) || defined(__x86_64__)
 
-#include "cpupower_intern.h"
-
 #define MSR_AMD_HWCR	0xc0010015
 
-int cpufreq_has_boost_support(unsigned int cpu, int *support, int *active,
-			int *states)
+int cpufreq_has_x86_boost_support(unsigned int cpu, int *support, int *active,
+				  int *states)
 {
 	int ret;
 	unsigned long long val;
+	char linebuf[MAX_LINE_LEN];
+	char path[SYSFS_PATH_MAX];
+	char *endp;
 
 	*support = *active = *states = 0;
 
@@ -43,8 +45,42 @@ int cpufreq_has_boost_support(unsigned int cpu, int *support, int *active,
 		}
 	} else if (cpupower_cpu_info.caps & CPUPOWER_CAP_AMD_PSTATE) {
 		amd_pstate_boost_init(cpu, support, active);
-	} else if (cpupower_cpu_info.caps & CPUPOWER_CAP_INTEL_IDA)
+	} else if (cpupower_cpu_info.caps & CPUPOWER_CAP_INTEL_IDA) {
 		*support = *active = 1;
+
+		snprintf(path, sizeof(path), PATH_TO_CPU "intel_pstate/no_turbo");
+
+		if (!is_valid_path(path))
+			return 0;
+
+		if (cpupower_read_sysfs(path, linebuf, MAX_LINE_LEN) == 0)
+			return -1;
+
+		val = strtol(linebuf, &endp, 0);
+		if (endp == linebuf || errno == ERANGE)
+			return -1;
+
+		*active = !val;
+	}
+	return 0;
+}
+
+int cpupower_set_intel_turbo_boost(int turbo_boost)
+{
+	char path[SYSFS_PATH_MAX];
+	char linebuf[2] = {};
+
+	snprintf(path, sizeof(path), PATH_TO_CPU "intel_pstate/no_turbo");
+
+	/* Fallback to generic solution when intel_pstate driver not running */
+	if (!is_valid_path(path))
+		return cpupower_set_generic_turbo_boost(turbo_boost);
+
+	snprintf(linebuf, sizeof(linebuf), "%d", !turbo_boost);
+
+	if (cpupower_write_sysfs(path, linebuf, 2) <= 0)
+		return -1;
+
 	return 0;
 }
 
@@ -87,6 +123,43 @@ int cpupower_intel_set_perf_bias(unsigned int cpu, unsigned int val)
 	return 0;
 }
 
+int cpupower_set_epp(unsigned int cpu, char *epp)
+{
+	char path[SYSFS_PATH_MAX];
+	char linebuf[30] = {};
+
+	snprintf(path, sizeof(path),
+		PATH_TO_CPU "cpu%u/cpufreq/energy_performance_preference", cpu);
+
+	if (!is_valid_path(path))
+		return -1;
+
+	snprintf(linebuf, sizeof(linebuf), "%s", epp);
+
+	if (cpupower_write_sysfs(path, linebuf, 30) <= 0)
+		return -1;
+
+	return 0;
+}
+
+int cpupower_set_amd_pstate_mode(char *mode)
+{
+	char path[SYSFS_PATH_MAX];
+	char linebuf[20] = {};
+
+	snprintf(path, sizeof(path), PATH_TO_CPU "amd_pstate/status");
+
+	if (!is_valid_path(path))
+		return -1;
+
+	snprintf(linebuf, sizeof(linebuf), "%s\n", mode);
+
+	if (cpupower_write_sysfs(path, linebuf, 20) <= 0)
+		return -1;
+
+	return 0;
+}
+
 bool cpupower_amd_pstate_enabled(void)
 {
 	char *driver = cpufreq_get_driver(0);
@@ -95,7 +168,7 @@ bool cpupower_amd_pstate_enabled(void)
 	if (!driver)
 		return ret;
 
-	if (!strcmp(driver, "amd-pstate"))
+	if (!strncmp(driver, "amd", 3))
 		ret = true;
 
 	cpufreq_put_driver(driver);
@@ -104,6 +177,39 @@ bool cpupower_amd_pstate_enabled(void)
 }
 
 #endif /* #if defined(__i386__) || defined(__x86_64__) */
+
+int cpufreq_has_generic_boost_support(bool *active)
+{
+	char path[SYSFS_PATH_MAX];
+	char linebuf[2] = {};
+	unsigned long val;
+	char *endp;
+
+	snprintf(path, sizeof(path), PATH_TO_CPU "cpufreq/boost");
+
+	if (!is_valid_path(path))
+		return -EACCES;
+
+	if (cpupower_read_sysfs(path, linebuf, 2) <= 0)
+		return -EINVAL;
+
+	val = strtoul(linebuf, &endp, 0);
+	if (endp == linebuf || errno == ERANGE)
+		return -EINVAL;
+
+	switch (val) {
+	case 0:
+		*active = false;
+		break;
+	case 1:
+		*active = true;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
 
 /* get_cpustate
  *
@@ -203,4 +309,22 @@ void print_speed(unsigned long speed, int no_rounding)
 			       ((unsigned int)(speed % 1000) / 100));
 		}
 	}
+}
+
+int cpupower_set_generic_turbo_boost(int turbo_boost)
+{
+	char path[SYSFS_PATH_MAX];
+	char linebuf[2] = {};
+
+	snprintf(path, sizeof(path), PATH_TO_CPU "cpufreq/boost");
+
+	if (!is_valid_path(path))
+		return -1;
+
+	snprintf(linebuf, sizeof(linebuf), "%d", turbo_boost);
+
+	if (cpupower_write_sysfs(path, linebuf, 2) <= 0)
+		return -1;
+
+	return 0;
 }

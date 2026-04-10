@@ -31,6 +31,7 @@
 /*This list is protected by the rtnl lock. */
 static LIST_HEAD(chnl_net_list);
 
+MODULE_DESCRIPTION("ST-Ericsson CAIF modem protocol GPRS network device");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_RTNL_LINK("caif");
 
@@ -46,7 +47,6 @@ struct chnl_net {
 	struct caif_connect_request conn_req;
 	struct list_head list_field;
 	struct net_device *netdev;
-	char name[256];
 	wait_queue_head_t netmgmt_wq;
 	/* Flow status to remember and control the transmission. */
 	bool flowenabled;
@@ -310,9 +310,6 @@ static int chnl_net_open(struct net_device *dev)
 
 	if (result == 0) {
 		pr_debug("connect timeout\n");
-		caif_disconnect_client(dev_net(dev), &priv->chnl);
-		priv->state = CAIF_DISCONNECTED;
-		pr_debug("state disconnected\n");
 		result = -ETIMEDOUT;
 		goto error;
 	}
@@ -349,7 +346,6 @@ static int chnl_net_init(struct net_device *dev)
 	struct chnl_net *priv;
 	ASSERT_RTNL();
 	priv = netdev_priv(dev);
-	strncpy(priv->name, dev->name, sizeof(priv->name));
 	INIT_LIST_HEAD(&priv->list_field);
 	return 0;
 }
@@ -442,10 +438,11 @@ static void caif_netlink_parms(struct nlattr *data[],
 	}
 }
 
-static int ipcaif_newlink(struct net *src_net, struct net_device *dev,
-			  struct nlattr *tb[], struct nlattr *data[],
+static int ipcaif_newlink(struct net_device *dev,
+			  struct rtnl_newlink_params *params,
 			  struct netlink_ext_ack *extack)
 {
+	struct nlattr **data = params->data;
 	int ret;
 	struct chnl_net *caifdev;
 	ASSERT_RTNL();

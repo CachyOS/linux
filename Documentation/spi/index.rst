@@ -9,14 +9,7 @@ Serial Peripheral Interface (SPI)
 
    spi-summary
    spidev
+   multiple-data-lanes
    butterfly
-   pxa2xx
    spi-lm70llp
    spi-sc18is602
-
-.. only::  subproject and html
-
-   Indices
-   =======
-
-   * :ref:`genindex`

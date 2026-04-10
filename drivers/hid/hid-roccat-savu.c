@@ -22,8 +22,6 @@
 #include "hid-roccat-common.h"
 #include "hid-roccat-savu.h"
 
-static struct class *savu_class;
-
 ROCCAT_COMMON2_BIN_ATTRIBUTE_W(control, 0x4, 0x03);
 ROCCAT_COMMON2_BIN_ATTRIBUTE_RW(profile, 0x5, 0x03);
 ROCCAT_COMMON2_BIN_ATTRIBUTE_RW(general, 0x6, 0x10);
@@ -32,7 +30,7 @@ ROCCAT_COMMON2_BIN_ATTRIBUTE_RW(macro, 0x8, 0x0823);
 ROCCAT_COMMON2_BIN_ATTRIBUTE_RW(info, 0x9, 0x08);
 ROCCAT_COMMON2_BIN_ATTRIBUTE_RW(sensor, 0xc, 0x04);
 
-static struct bin_attribute *savu_bin_attrs[] = {
+static const struct bin_attribute *const savu_bin_attrs[] = {
 	&bin_attr_control,
 	&bin_attr_profile,
 	&bin_attr_general,
@@ -52,6 +50,11 @@ static const struct attribute_group *savu_groups[] = {
 	NULL,
 };
 
+static const struct class savu_class = {
+	.name = "savu",
+	.dev_groups = savu_groups,
+};
+
 static int savu_init_specials(struct hid_device *hdev)
 {
 	struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
@@ -65,7 +68,7 @@ static int savu_init_specials(struct hid_device *hdev)
 		return 0;
 	}
 
-	savu = kzalloc(sizeof(*savu), GFP_KERNEL);
+	savu = kzalloc_obj(*savu);
 	if (!savu) {
 		hid_err(hdev, "can't alloc device descriptor\n");
 		return -ENOMEM;
@@ -78,7 +81,7 @@ static int savu_init_specials(struct hid_device *hdev)
 		goto exit_free;
 	}
 
-	retval = roccat_connect(savu_class, hdev,
+	retval = roccat_connect(&savu_class, hdev,
 			sizeof(struct savu_roccat_report));
 	if (retval < 0) {
 		hid_err(hdev, "couldn't init char dev\n");
@@ -204,21 +207,20 @@ static int __init savu_init(void)
 {
 	int retval;
 
-	savu_class = class_create(THIS_MODULE, "savu");
-	if (IS_ERR(savu_class))
-		return PTR_ERR(savu_class);
-	savu_class->dev_groups = savu_groups;
+	retval = class_register(&savu_class);
+	if (retval)
+		return retval;
 
 	retval = hid_register_driver(&savu_driver);
 	if (retval)
-		class_destroy(savu_class);
+		class_unregister(&savu_class);
 	return retval;
 }
 
 static void __exit savu_exit(void)
 {
 	hid_unregister_driver(&savu_driver);
-	class_destroy(savu_class);
+	class_unregister(&savu_class);
 }
 
 module_init(savu_init);

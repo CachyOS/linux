@@ -13,7 +13,7 @@
 #define INSN_PxTLB	0x02		/* modify pdtlb, pitlb */
 #define INSN_NOP	0x08000240	/* nop */
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #include <linux/init.h>
 #include <linux/types.h>
@@ -22,10 +22,10 @@
 
 struct alt_instr {
 	s32 orig_offset;	/* offset to original instructions */
-	s32 len;		/* end of original instructions */
-	u32 cond;		/* see ALT_COND_XXX */
+	s16 len;		/* end of original instructions */
+	u16 cond;		/* see ALT_COND_XXX */
 	u32 replacement;	/* replacement instruction or code */
-};
+} __packed;
 
 void set_kernel_text_rw(int enable_read_write);
 void apply_alternatives_all(void);
@@ -34,27 +34,33 @@ void apply_alternatives(struct alt_instr *start, struct alt_instr *end,
 
 /* Alternative SMP implementation. */
 #define ALTERNATIVE(cond, replacement)		"!0:"	\
-	".section .altinstructions, \"aw\"	!"	\
-	".word (0b-4-.), 1, " __stringify(cond) ","	\
-		__stringify(replacement) "	!"	\
+	".section .altinstructions, \"a\"	!"	\
+	".align 4				!"	\
+	".word (0b-4-.)				!"	\
+	".hword 1, " __stringify(cond) "	!"	\
+	".word " __stringify(replacement) "	!"	\
 	".previous"
 
 #else
 
 /* to replace one single instructions by a new instruction */
 #define ALTERNATIVE(from, to, cond, replacement)\
-	.section .altinstructions, "aw"	!	\
-	.word (from - .), (to - from)/4	!	\
-	.word cond, replacement		!	\
+	.section .altinstructions, "a"	!	\
+	.align 4			!	\
+	.word (from - .)		!	\
+	.hword (to - from)/4, cond	!	\
+	.word replacement		!	\
 	.previous
 
 /* to replace multiple instructions by new code */
 #define ALTERNATIVE_CODE(from, num_instructions, cond, new_instr_ptr)\
-	.section .altinstructions, "aw"	!	\
-	.word (from - .), -num_instructions !	\
-	.word cond, (new_instr_ptr - .)	!	\
+	.section .altinstructions, "a"	!	\
+	.align 4			!	\
+	.word (from - .)		!	\
+	.hword -num_instructions, cond	!	\
+	.word (new_instr_ptr - .)	!	\
 	.previous
 
-#endif  /*  __ASSEMBLY__  */
+#endif  /*  __ASSEMBLER__  */
 
 #endif /* __ASM_PARISC_ALTERNATIVE_H */

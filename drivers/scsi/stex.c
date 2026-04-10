@@ -109,7 +109,9 @@ enum {
 	TASK_ATTRIBUTE_HEADOFQUEUE		= 0x1,
 	TASK_ATTRIBUTE_ORDERED			= 0x2,
 	TASK_ATTRIBUTE_ACA			= 0x4,
+};
 
+enum {
 	SS_STS_NORMAL				= 0x80000000,
 	SS_STS_DONE				= 0x40000000,
 	SS_STS_HANDSHAKE			= 0x20000000,
@@ -121,7 +123,9 @@ enum {
 	SS_I2H_REQUEST_RESET			= 0x2000,
 
 	SS_MU_OPERATIONAL			= 0x80000000,
+};
 
+enum {
 	STEX_CDB_LENGTH				= 16,
 	STATUS_VAR_LEN				= 128,
 
@@ -330,7 +334,6 @@ struct st_hba {
 	struct st_ccb *wait_ccb;
 	__le32 *scratch;
 
-	char work_q_name[20];
 	struct workqueue_struct *work_q;
 	struct work_struct reset_work;
 	wait_queue_head_t reset_waitq;
@@ -581,7 +584,7 @@ static void return_abnormal_state(struct st_hba *hba, int status)
 	spin_unlock_irqrestore(hba->host->host_lock, flags);
 }
 static int
-stex_slave_config(struct scsi_device *sdev)
+stex_sdev_configure(struct scsi_device *sdev, struct queue_limits *lim)
 {
 	sdev->use_10_for_rw = 1;
 	sdev->use_10_for_ms = 1;
@@ -590,7 +593,7 @@ stex_slave_config(struct scsi_device *sdev)
 	return 0;
 }
 
-static int stex_queuecommand_lck(struct scsi_cmnd *cmd)
+static enum scsi_qc_status stex_queuecommand_lck(struct scsi_cmnd *cmd)
 {
 	void (*done)(struct scsi_cmnd *) = scsi_done;
 	struct st_hba *hba;
@@ -665,16 +668,17 @@ static int stex_queuecommand_lck(struct scsi_cmnd *cmd)
 		return 0;
 	case PASSTHRU_CMD:
 		if (cmd->cmnd[1] == PASSTHRU_GET_DRVVER) {
-			struct st_drvver ver;
+			const struct st_drvver ver = {
+				.major = ST_VER_MAJOR,
+				.minor = ST_VER_MINOR,
+				.oem = ST_OEM,
+				.build = ST_BUILD_VER,
+				.signature[0] = PASSTHRU_SIGNATURE,
+				.console_id = host->max_id - 1,
+				.host_no = hba->host->host_no,
+			};
 			size_t cp_len = sizeof(ver);
 
-			ver.major = ST_VER_MAJOR;
-			ver.minor = ST_VER_MINOR;
-			ver.oem = ST_OEM;
-			ver.build = ST_BUILD_VER;
-			ver.signature[0] = PASSTHRU_SIGNATURE;
-			ver.console_id = host->max_id - 1;
-			ver.host_no = hba->host->host_no;
 			cp_len = scsi_sg_copy_from_buffer(cmd, &ver, cp_len);
 			if (sizeof(ver) == cp_len)
 				cmd->result = DID_OK << 16;
@@ -1453,7 +1457,7 @@ static void stex_reset_work(struct work_struct *work)
 }
 
 static int stex_biosparam(struct scsi_device *sdev,
-	struct block_device *bdev, sector_t capacity, int geom[])
+	struct gendisk *unused, sector_t capacity, int geom[])
 {
 	int heads = 255, sectors = 63;
 
@@ -1471,20 +1475,20 @@ static int stex_biosparam(struct scsi_device *sdev,
 	return 0;
 }
 
-static struct scsi_host_template driver_template = {
+static const struct scsi_host_template driver_template = {
 	.module				= THIS_MODULE,
 	.name				= DRV_NAME,
 	.proc_name			= DRV_NAME,
 	.bios_param			= stex_biosparam,
 	.queuecommand			= stex_queuecommand,
-	.slave_configure		= stex_slave_config,
+	.sdev_configure			= stex_sdev_configure,
 	.eh_abort_handler		= stex_abort,
 	.eh_host_reset_handler		= stex_reset,
 	.this_id			= -1,
 	.dma_boundary			= PAGE_SIZE - 1,
 };
 
-static struct pci_device_id stex_pci_tbl[] = {
+static const struct pci_device_id stex_pci_tbl[] = {
 	/* st_shasta */
 	{ 0x105a, 0x8350, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
 		st_shasta }, /* SuperTrak EX8350/8300/16350/16300 */
@@ -1753,7 +1757,7 @@ static int stex_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		}
 	}
 
-	hba->ccb = kcalloc(ci->rq_count, sizeof(struct st_ccb), GFP_KERNEL);
+	hba->ccb = kzalloc_objs(struct st_ccb, ci->rq_count);
 	if (!hba->ccb) {
 		err = -ENOMEM;
 		printk(KERN_ERR DRV_NAME "(%s): ccb alloc failed\n",
@@ -1790,9 +1794,8 @@ static int stex_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	hba->pdev = pdev;
 	init_waitqueue_head(&hba->reset_waitq);
 
-	snprintf(hba->work_q_name, sizeof(hba->work_q_name),
-		 "stex_wq_%d", host->host_no);
-	hba->work_q = create_singlethread_workqueue(hba->work_q_name);
+	hba->work_q = alloc_ordered_workqueue("stex_wq_%d", WQ_MEM_RECLAIM,
+					      host->host_no);
 	if (!hba->work_q) {
 		printk(KERN_ERR DRV_NAME "(%s): create workqueue failed\n",
 			pci_name(pdev));
@@ -1841,6 +1844,7 @@ out_release_regions:
 out_scsi_host_put:
 	scsi_host_put(host);
 out_disable:
+	unregister_reboot_notifier(&stex_notifier);
 	pci_disable_device(pdev);
 
 	return err;
@@ -1962,6 +1966,7 @@ static int stex_choice_sleep_mic(struct st_hba *hba, pm_message_t state)
 	case PM_EVENT_SUSPEND:
 		return ST_S3;
 	case PM_EVENT_HIBERNATE:
+	case PM_EVENT_POWEROFF:
 		hba->msi_lock = 0;
 		return ST_S4;
 	default:

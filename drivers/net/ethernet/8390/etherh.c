@@ -258,7 +258,7 @@ static int etherh_set_config(struct net_device *dev, struct ifmap *map)
 		 * media type, turn off automedia detection.
 		 */
 		dev->flags &= ~IFF_AUTOMEDIA;
-		dev->if_port = map->port;
+		WRITE_ONCE(dev->if_port, map->port);
 		break;
 
 	default:
@@ -555,9 +555,9 @@ static int __init etherm_addr(char *addr)
 
 static void etherh_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, dev_name(dev->dev.parent),
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, dev_name(dev->dev.parent),
 		sizeof(info->bus_info));
 }
 

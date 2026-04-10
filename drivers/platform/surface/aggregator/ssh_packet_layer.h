@@ -2,7 +2,7 @@
 /*
  * SSH packet transport layer.
  *
- * Copyright (C) 2019-2021 Maximilian Luz <luzmaximilian@gmail.com>
+ * Copyright (C) 2019-2022 Maximilian Luz <luzmaximilian@gmail.com>
  */
 
 #ifndef _SURFACE_AGGREGATOR_SSH_PACKET_LAYER_H
@@ -162,7 +162,7 @@ void ssh_ptl_shutdown(struct ssh_ptl *ptl);
 int ssh_ptl_submit(struct ssh_ptl *ptl, struct ssh_packet *p);
 void ssh_ptl_cancel(struct ssh_packet *p);
 
-int ssh_ptl_rx_rcvbuf(struct ssh_ptl *ptl, const u8 *buf, size_t n);
+ssize_t ssh_ptl_rx_rcvbuf(struct ssh_ptl *ptl, const u8 *buf, size_t n);
 
 /**
  * ssh_ptl_tx_wakeup_transfer() - Wake up packet transmitter thread for

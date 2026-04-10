@@ -49,6 +49,9 @@ ssize_t pm_show_wakelocks(char *buf, bool show_active)
 			len += sysfs_emit_at(buf, len, "%s ", wl->name);
 	}
 
+	if (len > 0)
+		--len;
+
 	len += sysfs_emit_at(buf, len, "\n");
 
 	mutex_unlock(&wakelocks_lock);
@@ -175,7 +178,7 @@ static struct wakelock *wakelock_lookup_add(const char *name, size_t len,
 		return ERR_PTR(-ENOSPC);
 
 	/* Not found, we have to add a new one. */
-	wl = kzalloc(sizeof(*wl), GFP_KERNEL);
+	wl = kzalloc_obj(*wl);
 	if (!wl)
 		return ERR_PTR(-ENOMEM);
 

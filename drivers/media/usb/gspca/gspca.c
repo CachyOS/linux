@@ -1029,15 +1029,15 @@ static int vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,
 	return 0;
 }
 
-static int vidioc_g_fmt_vid_cap(struct file *file, void *_priv,
+static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,
 				struct v4l2_format *fmt)
 {
 	struct gspca_dev *gspca_dev = video_drvdata(file);
-	u32 priv = fmt->fmt.pix.priv;
+	u32 fmt_priv = fmt->fmt.pix.priv;
 
 	fmt->fmt.pix = gspca_dev->pixfmt;
 	/* some drivers use priv internally, so keep the original value */
-	fmt->fmt.pix.priv = priv;
+	fmt->fmt.pix.priv = fmt_priv;
 	return 0;
 }
 
@@ -1075,24 +1075,24 @@ static int try_fmt_vid_cap(struct gspca_dev *gspca_dev,
 	return mode;			/* used when s_fmt */
 }
 
-static int vidioc_try_fmt_vid_cap(struct file *file, void *_priv,
+static int vidioc_try_fmt_vid_cap(struct file *file, void *priv,
 				  struct v4l2_format *fmt)
 {
 	struct gspca_dev *gspca_dev = video_drvdata(file);
-	u32 priv = fmt->fmt.pix.priv;
+	u32 fmt_priv = fmt->fmt.pix.priv;
 
 	if (try_fmt_vid_cap(gspca_dev, fmt) < 0)
 		return -EINVAL;
 	/* some drivers use priv internally, so keep the original value */
-	fmt->fmt.pix.priv = priv;
+	fmt->fmt.pix.priv = fmt_priv;
 	return 0;
 }
 
-static int vidioc_s_fmt_vid_cap(struct file *file, void *_priv,
+static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 				struct v4l2_format *fmt)
 {
 	struct gspca_dev *gspca_dev = video_drvdata(file);
-	u32 priv = fmt->fmt.pix.priv;
+	u32 fmt_priv = fmt->fmt.pix.priv;
 	int mode;
 
 	if (vb2_is_busy(&gspca_dev->queue))
@@ -1109,7 +1109,7 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *_priv,
 	else
 		gspca_dev->pixfmt = gspca_dev->cam.cam_mode[mode];
 	/* some drivers use priv internally, so keep the original value */
-	fmt->fmt.pix.priv = priv;
+	fmt->fmt.pix.priv = fmt_priv;
 	return 0;
 }
 
@@ -1257,7 +1257,7 @@ static int vidioc_g_parm(struct file *filp, void *priv,
 {
 	struct gspca_dev *gspca_dev = video_drvdata(filp);
 
-	parm->parm.capture.readbuffers = gspca_dev->queue.min_buffers_needed;
+	parm->parm.capture.readbuffers = gspca_dev->queue.min_queued_buffers;
 
 	if (!gspca_dev->sd_desc->get_streamparm)
 		return 0;
@@ -1273,7 +1273,7 @@ static int vidioc_s_parm(struct file *filp, void *priv,
 {
 	struct gspca_dev *gspca_dev = video_drvdata(filp);
 
-	parm->parm.capture.readbuffers = gspca_dev->queue.min_buffers_needed;
+	parm->parm.capture.readbuffers = gspca_dev->queue.min_queued_buffers;
 
 	if (!gspca_dev->sd_desc->set_streamparm) {
 		parm->parm.capture.capability = 0;
@@ -1380,8 +1380,6 @@ static const struct vb2_ops gspca_qops = {
 	.buf_queue		= gspca_buffer_queue,
 	.start_streaming	= gspca_start_streaming,
 	.stop_streaming		= gspca_stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 static const struct v4l2_file_operations dev_fops = {
@@ -1517,7 +1515,7 @@ int gspca_dev_probe2(struct usb_interface *intf,
 	q->ops = &gspca_qops;
 	q->mem_ops = &vb2_vmalloc_memops;
 	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
-	q->min_buffers_needed = 2;
+	q->min_queued_buffers = 2;
 	q->lock = &gspca_dev->usb_lock;
 	ret = vb2_queue_init(q);
 	if (ret)

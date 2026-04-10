@@ -149,17 +149,23 @@ static int snd_acp6x_probe(struct pci_dev *pci,
 	int index = 0;
 	int val = 0x00;
 	u32 addr;
-	unsigned int irqflags;
+	unsigned int irqflags, flag;
 	int ret;
 
 	irqflags = IRQF_SHARED;
+
+	/* Return if acp config flag is defined */
+	flag = snd_amd_acp_find_config(pci);
+	if (flag)
+		return -ENODEV;
+
 	/* Yellow Carp device check */
 	switch (pci->revision) {
 	case 0x60:
 	case 0x6f:
 		break;
 	default:
-		dev_err(&pci->dev, "acp6x pci device not found\n");
+		dev_dbg(&pci->dev, "acp6x pci device not found\n");
 		return -ENODEV;
 	}
 	if (pci_enable_device(pci)) {
@@ -271,7 +277,7 @@ disable_pci:
 	return ret;
 }
 
-static int __maybe_unused snd_acp6x_suspend(struct device *dev)
+static int snd_acp6x_suspend(struct device *dev)
 {
 	struct acp6x_dev_data *adata;
 	int ret;
@@ -283,7 +289,7 @@ static int __maybe_unused snd_acp6x_suspend(struct device *dev)
 	return ret;
 }
 
-static int __maybe_unused snd_acp6x_resume(struct device *dev)
+static int snd_acp6x_resume(struct device *dev)
 {
 	struct acp6x_dev_data *adata;
 	int ret;
@@ -296,8 +302,8 @@ static int __maybe_unused snd_acp6x_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops acp6x_pm = {
-	SET_RUNTIME_PM_OPS(snd_acp6x_suspend, snd_acp6x_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(snd_acp6x_suspend, snd_acp6x_resume)
+	RUNTIME_PM_OPS(snd_acp6x_suspend, snd_acp6x_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(snd_acp6x_suspend, snd_acp6x_resume)
 };
 
 static void snd_acp6x_remove(struct pci_dev *pci)
@@ -333,7 +339,7 @@ static struct pci_driver yc_acp6x_driver  = {
 	.probe = snd_acp6x_probe,
 	.remove = snd_acp6x_remove,
 	.driver = {
-		.pm = &acp6x_pm,
+		.pm = pm_ptr(&acp6x_pm),
 	}
 };
 

@@ -15,13 +15,13 @@
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/phy/phy.h>
-#include <linux/platform_data/usb-davinci.h>
 #include <linux/regulator/consumer.h>
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "ohci.h"
 
@@ -165,17 +165,6 @@ static int ohci_da8xx_has_oci(struct usb_hcd *hcd)
 	return 0;
 }
 
-static int ohci_da8xx_has_potpgt(struct usb_hcd *hcd)
-{
-	struct device *dev		= hcd->self.controller;
-	struct da8xx_ohci_root_hub *hub	= dev_get_platdata(dev);
-
-	if (hub && hub->potpgt)
-		return 1;
-
-	return 0;
-}
-
 static int ohci_da8xx_regulator_event(struct notifier_block *nb,
 				unsigned long event, void *data)
 {
@@ -227,7 +216,6 @@ static int ohci_da8xx_register_notify(struct usb_hcd *hcd)
 static int ohci_da8xx_reset(struct usb_hcd *hcd)
 {
 	struct device *dev		= hcd->self.controller;
-	struct da8xx_ohci_root_hub *hub	= dev_get_platdata(dev);
 	struct ohci_hcd	*ohci		= hcd_to_ohci(hcd);
 	int result;
 	u32 rh_a;
@@ -264,10 +252,6 @@ static int ohci_da8xx_reset(struct usb_hcd *hcd)
 	if (ohci_da8xx_has_oci(hcd)) {
 		rh_a &= ~RH_A_NOCP;
 		rh_a |=  RH_A_OCPM;
-	}
-	if (ohci_da8xx_has_potpgt(hcd)) {
-		rh_a &= ~RH_A_POTPGT;
-		rh_a |= hub->potpgt << 24;
 	}
 	ohci_writel(ohci, rh_a, &ohci->regs->roothub.a);
 
@@ -435,8 +419,7 @@ static int ohci_da8xx_probe(struct platform_device *pdev)
 			goto err;
 	}
 
-	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	hcd->regs = devm_ioremap_resource(dev, mem);
+	hcd->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &mem);
 	if (IS_ERR(hcd->regs)) {
 		error = PTR_ERR(hcd->regs);
 		goto err;
@@ -469,14 +452,12 @@ err:
 	return error;
 }
 
-static int ohci_da8xx_remove(struct platform_device *pdev)
+static void ohci_da8xx_remove(struct platform_device *pdev)
 {
 	struct usb_hcd	*hcd = platform_get_drvdata(pdev);
 
 	usb_remove_hcd(hcd);
 	usb_put_hcd(hcd);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -551,7 +532,6 @@ static int __init ohci_da8xx_init(void)
 	if (usb_disabled())
 		return -ENODEV;
 
-	pr_info("%s: " DRIVER_DESC "\n", DRV_NAME);
 	ohci_init_driver(&ohci_da8xx_hc_driver, &da8xx_overrides);
 
 	/*

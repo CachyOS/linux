@@ -3,7 +3,7 @@
  */
 
 #include "hdmi.h"
-#include <linux/qcom_scm.h>
+#include <linux/firmware/qcom/qcom_scm.h>
 
 #define HDCP_REG_ENABLE 0x01
 #define HDCP_REG_DISABLE 0x00
@@ -1400,7 +1400,7 @@ struct hdmi_hdcp_ctrl *msm_hdmi_hdcp_init(struct hdmi *hdmi)
 		return ERR_PTR(-EINVAL);
 	}
 
-	hdcp_ctrl = kzalloc(sizeof(*hdcp_ctrl), GFP_KERNEL);
+	hdcp_ctrl = kzalloc_obj(*hdcp_ctrl);
 	if (!hdcp_ctrl)
 		return ERR_PTR(-ENOMEM);
 

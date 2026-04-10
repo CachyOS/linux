@@ -115,10 +115,20 @@ AMD_DAL_GPIO_DCN315 = $(addprefix $(AMDDALPATH)/dc/gpio/dcn315/,$(GPIO_DCN315))
 AMD_DISPLAY_FILES += $(AMD_DAL_GPIO_DCN315)
 
 ###############################################################################
-# Diagnostics on FPGA
+# DCN 3.2
 ###############################################################################
-GPIO_DIAG_FPGA = hw_translate_diag.o hw_factory_diag.o
+GPIO_DCN32 = hw_translate_dcn32.o hw_factory_dcn32.o
 
-AMD_DAL_GPIO_DIAG_FPGA = $(addprefix $(AMDDALPATH)/dc/gpio/diagnostics/,$(GPIO_DIAG_FPGA))
+AMD_DAL_GPIO_DCN32 = $(addprefix $(AMDDALPATH)/dc/gpio/dcn32/,$(GPIO_DCN32))
 
-AMD_DISPLAY_FILES += $(AMD_DAL_GPIO_DIAG_FPGA)
+AMD_DISPLAY_FILES += $(AMD_DAL_GPIO_DCN32)
+
+###############################################################################
+# DCN 4.01
+###############################################################################
+GPIO_DCN401 = hw_translate_dcn401.o hw_factory_dcn401.o
+
+AMD_DAL_GPIO_DCN401 = $(addprefix $(AMDDALPATH)/dc/gpio/dcn401/,$(GPIO_DCN401))
+
+AMD_DISPLAY_FILES += $(AMD_DAL_GPIO_DCN401)
+

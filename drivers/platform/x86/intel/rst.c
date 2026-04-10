@@ -7,6 +7,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 
+MODULE_DESCRIPTION("Intel Rapid Start Technology Driver");
 MODULE_LICENSE("GPL");
 
 static ssize_t irst_show_wakeup_events(struct device *dev,
@@ -113,12 +114,10 @@ static int irst_add(struct acpi_device *acpi)
 	return error;
 }
 
-static int irst_remove(struct acpi_device *acpi)
+static void irst_remove(struct acpi_device *acpi)
 {
 	device_remove_file(&acpi->dev, &irst_wakeup_attr);
 	device_remove_file(&acpi->dev, &irst_timeout_attr);
-
-	return 0;
 }
 
 static const struct acpi_device_id irst_ids[] = {
@@ -127,7 +126,6 @@ static const struct acpi_device_id irst_ids[] = {
 };
 
 static struct acpi_driver irst_driver = {
-	.owner = THIS_MODULE,
 	.name = "intel_rapid_start",
 	.class = "intel_rapid_start",
 	.ids = irst_ids,

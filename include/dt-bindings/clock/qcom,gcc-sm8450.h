@@ -8,7 +8,6 @@
 #define _DT_BINDINGS_CLK_QCOM_GCC_SM8450_H
 
 /* GCC HW clocks */
-#define CORE_BI_PLL_TEST_SE					0
 #define PCIE_0_PIPE_CLK						1
 #define PCIE_1_PHY_AUX_CLK					2
 #define PCIE_1_PIPE_CLK						3
@@ -195,6 +194,9 @@
 #define GCC_VIDEO_AXI0_CLK					182
 #define GCC_VIDEO_AXI1_CLK					183
 #define GCC_VIDEO_XO_CLK					184
+/* Additional SM8475-specific clocks */
+#define SM8475_GCC_GPLL2					185
+#define SM8475_GCC_GPLL3					186
 
 /* GCC resets */
 #define GCC_CAMERA_BCR						0

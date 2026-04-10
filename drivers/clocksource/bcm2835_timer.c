@@ -10,9 +10,9 @@
 #include <linux/irqreturn.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/of_platform.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/sched_clock.h>
@@ -98,7 +98,7 @@ static int __init bcm2835_timer_init(struct device_node *node)
 		goto err_iounmap;
 	}
 
-	timer = kzalloc(sizeof(*timer), GFP_KERNEL);
+	timer = kzalloc_obj(*timer);
 	if (!timer) {
 		ret = -ENOMEM;
 		goto err_iounmap;

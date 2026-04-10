@@ -250,7 +250,7 @@ static int stv0299_get_symbolrate (struct stv0299_state* state)
 	offset /= 128;
 
 	dprintk ("%s : srate = %i\n", __func__, srate);
-	dprintk ("%s : ofset = %i\n", __func__, offset);
+	dprintk ("%s : offset = %i\n", __func__, offset);
 
 	srate += offset;
 
@@ -671,7 +671,7 @@ struct dvb_frontend* stv0299_attach(const struct stv0299_config* config,
 	int id;
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(struct stv0299_state), GFP_KERNEL);
+	state = kzalloc_obj(struct stv0299_state);
 	if (state == NULL) goto error;
 
 	/* setup the state */
@@ -752,4 +752,4 @@ MODULE_DESCRIPTION("ST STV0299 DVB Demodulator driver");
 MODULE_AUTHOR("Ralph Metzler, Holger Waechtler, Peter Schildmann, Felix Domke, Andreas Oberritter, Andrew de Quincey, Kenneth Aafly");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(stv0299_attach);
+EXPORT_SYMBOL_GPL(stv0299_attach);

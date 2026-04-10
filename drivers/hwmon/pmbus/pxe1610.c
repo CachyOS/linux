@@ -104,7 +104,10 @@ static int pxe1610_probe(struct i2c_client *client)
 	 * By default this device doesn't boot to page 0, so set page 0
 	 * to access all pmbus registers.
 	 */
-	i2c_smbus_write_byte_data(client, PMBUS_PAGE, 0);
+	ret = i2c_smbus_write_byte_data(client, PMBUS_PAGE, 0);
+	if (ret < 0)
+		return dev_err_probe(&client->dev, ret,
+				     "Failed to set page 0\n");
 
 	/* Read Manufacturer id */
 	ret = i2c_smbus_read_block_data(client, PMBUS_MFR_ID, buf);
@@ -127,9 +130,9 @@ static int pxe1610_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id pxe1610_id[] = {
-	{"pxe1610", 0},
-	{"pxe1110", 0},
-	{"pxm1310", 0},
+	{"pxe1610"},
+	{"pxe1110"},
+	{"pxm1310"},
 	{}
 };
 
@@ -139,7 +142,7 @@ static struct i2c_driver pxe1610_driver = {
 	.driver = {
 			.name = "pxe1610",
 			},
-	.probe_new = pxe1610_probe,
+	.probe = pxe1610_probe,
 	.id_table = pxe1610_id,
 };
 
@@ -148,4 +151,4 @@ module_i2c_driver(pxe1610_driver);
 MODULE_AUTHOR("Vijay Khemka <vijaykhemka@fb.com>");
 MODULE_DESCRIPTION("PMBus driver for Infineon PXE1610, PXE1110 and PXM1310");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(PMBUS);
+MODULE_IMPORT_NS("PMBUS");

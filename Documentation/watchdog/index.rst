@@ -1,8 +1,8 @@
 .. SPDX-License-Identifier: GPL-2.0
 
-======================
-Linux Watchdog Support
-======================
+================
+Watchdog Support
+================
 
 .. toctree::
     :maxdepth: 1
@@ -16,10 +16,3 @@ Linux Watchdog Support
     watchdog-pm
     wdt
     convert_drivers_to_kernel_api
-
-.. only::  subproject and html
-
-   Indices
-   =======
-
-   * :ref:`genindex`

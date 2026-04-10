@@ -53,11 +53,6 @@ struct tcs3414_data {
 	u8 control;
 	u8 gain;
 	u8 timing;
-	/* Ensure timestamp is naturally aligned */
-	struct {
-		u16 chans[4];
-		s64 timestamp __aligned(8);
-	} scan;
 };
 
 #define TCS3414_CHANNEL(_color, _si, _addr) { \
@@ -134,16 +129,15 @@ static int tcs3414_read_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		ret = iio_device_claim_direct_mode(indio_dev);
-		if (ret)
-			return ret;
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
 		ret = tcs3414_req_data(data);
 		if (ret < 0) {
-			iio_device_release_direct_mode(indio_dev);
+			iio_device_release_direct(indio_dev);
 			return ret;
 		}
 		ret = i2c_smbus_read_word_data(data->client, chan->address);
-		iio_device_release_direct_mode(indio_dev);
+		iio_device_release_direct(indio_dev);
 		if (ret < 0)
 			return ret;
 		*val = ret;
@@ -205,18 +199,23 @@ static irqreturn_t tcs3414_trigger_handler(int irq, void *p)
 	struct iio_dev *indio_dev = pf->indio_dev;
 	struct tcs3414_data *data = iio_priv(indio_dev);
 	int i, j = 0;
+	/* Ensure timestamp is naturally aligned */
+	struct {
+		u16 chans[4];
+		aligned_s64 timestamp;
+	} scan = { };
 
-	for_each_set_bit(i, indio_dev->active_scan_mask,
-		indio_dev->masklength) {
+
+	iio_for_each_active_channel(indio_dev, i) {
 		int ret = i2c_smbus_read_word_data(data->client,
 			TCS3414_DATA_GREEN + 2*i);
 		if (ret < 0)
 			goto done;
 
-		data->scan.chans[j++] = ret;
+		scan.chans[j++] = ret;
 	}
 
-	iio_push_to_buffers_with_timestamp(indio_dev, &data->scan,
+	iio_push_to_buffers_with_ts(indio_dev, &scan, sizeof(scan),
 		iio_get_time_ns(indio_dev));
 
 done:
@@ -279,8 +278,7 @@ static void tcs3414_powerdown_cleanup(void *data)
 	tcs3414_powerdown(data);
 }
 
-static int tcs3414_probe(struct i2c_client *client,
-			   const struct i2c_device_id *id)
+static int tcs3414_probe(struct i2c_client *client)
 {
 	struct tcs3414_data *data;
 	struct iio_dev *indio_dev;
@@ -364,7 +362,7 @@ static DEFINE_SIMPLE_DEV_PM_OPS(tcs3414_pm_ops, tcs3414_suspend,
 				tcs3414_resume);
 
 static const struct i2c_device_id tcs3414_id[] = {
-	{ "tcs3414", 0 },
+	{ "tcs3414" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tcs3414_id);

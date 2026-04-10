@@ -217,8 +217,7 @@ static void da311_disable(void *client)
 	da311_enable(client, false);
 }
 
-static int da311_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int da311_probe(struct i2c_client *client)
 {
 	int ret;
 	struct iio_dev *indio_dev;
@@ -269,8 +268,8 @@ static int da311_resume(struct device *dev)
 static DEFINE_SIMPLE_DEV_PM_OPS(da311_pm_ops, da311_suspend, da311_resume);
 
 static const struct i2c_device_id da311_i2c_id[] = {
-	{"da311", 0},
-	{}
+	{ "da311" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, da311_i2c_id);
 

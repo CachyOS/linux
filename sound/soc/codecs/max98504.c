@@ -35,7 +35,7 @@ struct max98504_priv {
 	unsigned int brownout_release_rate;
 };
 
-static struct reg_default max98504_reg_defaults[] = {
+static const struct reg_default max98504_reg_defaults[] = {
 	{ 0x01,	0},
 	{ 0x02,	0},
 	{ 0x03,	0},
@@ -220,8 +220,10 @@ static int max98504_set_tdm_slot(struct snd_soc_dai *dai,
 	return 0;
 }
 static int max98504_set_channel_map(struct snd_soc_dai *dai,
-		unsigned int tx_num, unsigned int *tx_slot,
-		unsigned int rx_num, unsigned int *rx_slot)
+				    unsigned int tx_num,
+				    const unsigned int *tx_slot,
+				    unsigned int rx_num,
+				    const unsigned int *rx_slot)
 {
 	struct max98504_priv *max98504 = snd_soc_dai_get_drvdata(dai);
 	struct regmap *map = max98504->regmap;
@@ -371,7 +373,7 @@ static struct i2c_driver max98504_i2c_driver = {
 		.name = "max98504",
 		.of_match_table = of_match_ptr(max98504_of_match),
 	},
-	.probe_new = max98504_i2c_probe,
+	.probe = max98504_i2c_probe,
 	.id_table = max98504_i2c_id,
 };
 module_i2c_driver(max98504_i2c_driver);

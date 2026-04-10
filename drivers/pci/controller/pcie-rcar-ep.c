@@ -43,7 +43,7 @@ static void rcar_pcie_ep_hw_init(struct rcar_pcie *pcie)
 	rcar_rmw32(pcie, REXPCAP(0), 0xff, PCI_CAP_ID_EXP);
 	rcar_rmw32(pcie, REXPCAP(PCI_EXP_FLAGS),
 		   PCI_EXP_FLAGS_TYPE, PCI_EXP_TYPE_ENDPOINT << 4);
-	rcar_rmw32(pcie, RCONF(PCI_HEADER_TYPE), 0x7f,
+	rcar_rmw32(pcie, RCONF(PCI_HEADER_TYPE), PCI_HEADER_TYPE_MASK,
 		   PCI_HEADER_TYPE_NORMAL);
 
 	/* Write out the physical slot number = 0 */
@@ -107,7 +107,7 @@ static int rcar_pcie_parse_outbound_ranges(struct rcar_pcie_endpoint *ep,
 		}
 		if (!devm_request_mem_region(&pdev->dev, res->start,
 					     resource_size(res),
-					     outbound_name)) {
+					     res->name)) {
 			dev_err(pcie->dev, "Cannot request memory region %s.\n",
 				outbound_name);
 			return -EIO;
@@ -256,15 +256,15 @@ static void rcar_pcie_ep_clear_bar(struct pci_epc *epc, u8 fn, u8 vfn,
 	clear_bit(atu_index + 1, ep->ib_window_map);
 }
 
-static int rcar_pcie_ep_set_msi(struct pci_epc *epc, u8 fn, u8 vfn,
-				u8 interrupts)
+static int rcar_pcie_ep_set_msi(struct pci_epc *epc, u8 fn, u8 vfn, u8 nr_irqs)
 {
 	struct rcar_pcie_endpoint *ep = epc_get_drvdata(epc);
 	struct rcar_pcie *pcie = &ep->pcie;
+	u8 mmc = order_base_2(nr_irqs);
 	u32 flags;
 
 	flags = rcar_pci_read_reg(pcie, MSICAP(fn));
-	flags |= interrupts << MSICAP0_MMESCAP_OFFSET;
+	flags |= mmc << MSICAP0_MMESCAP_OFFSET;
 	rcar_pci_write_reg(pcie, flags, MSICAP(fn));
 
 	return 0;
@@ -280,7 +280,7 @@ static int rcar_pcie_ep_get_msi(struct pci_epc *epc, u8 fn, u8 vfn)
 	if (!(flags & MSICAP0_MSIE))
 		return -EINVAL;
 
-	return ((flags & MSICAP0_MMESE_MASK) >> MSICAP0_MMESE_OFFSET);
+	return 1 << ((flags & MSICAP0_MMESE_MASK) >> MSICAP0_MMESE_OFFSET);
 }
 
 static int rcar_pcie_ep_map_addr(struct pci_epc *epc, u8 fn, u8 vfn,
@@ -402,16 +402,15 @@ static int rcar_pcie_ep_assert_msi(struct rcar_pcie *pcie,
 }
 
 static int rcar_pcie_ep_raise_irq(struct pci_epc *epc, u8 fn, u8 vfn,
-				  enum pci_epc_irq_type type,
-				  u16 interrupt_num)
+				  unsigned int type, u16 interrupt_num)
 {
 	struct rcar_pcie_endpoint *ep = epc_get_drvdata(epc);
 
 	switch (type) {
-	case PCI_EPC_IRQ_LEGACY:
+	case PCI_IRQ_INTX:
 		return rcar_pcie_ep_assert_intx(ep, fn, 0);
 
-	case PCI_EPC_IRQ_MSI:
+	case PCI_IRQ_MSI:
 		return rcar_pcie_ep_assert_msi(&ep->pcie, fn, interrupt_num);
 
 	default:
@@ -437,15 +436,17 @@ static void rcar_pcie_ep_stop(struct pci_epc *epc)
 }
 
 static const struct pci_epc_features rcar_pcie_epc_features = {
-	.linkup_notifier = false,
 	.msi_capable = true,
-	.msix_capable = false,
 	/* use 64-bit BARs so mark BAR[1,3,5] as reserved */
-	.reserved_bar = 1 << BAR_1 | 1 << BAR_3 | 1 << BAR_5,
-	.bar_fixed_64bit = 1 << BAR_0 | 1 << BAR_2 | 1 << BAR_4,
-	.bar_fixed_size[0] = 128,
-	.bar_fixed_size[2] = 256,
-	.bar_fixed_size[4] = 256,
+	.bar[BAR_0] = { .type = BAR_FIXED, .fixed_size = 128,
+			.only_64bit = true, },
+	.bar[BAR_1] = { .type = BAR_RESERVED, },
+	.bar[BAR_2] = { .type = BAR_FIXED, .fixed_size = 256,
+			.only_64bit = true, },
+	.bar[BAR_3] = { .type = BAR_RESERVED, },
+	.bar[BAR_4] = { .type = BAR_FIXED, .fixed_size = 256,
+			.only_64bit = true, },
+	.bar[BAR_5] = { .type = BAR_RESERVED, },
 };
 
 static const struct pci_epc_features*
@@ -538,6 +539,8 @@ static int rcar_pcie_ep_probe(struct platform_device *pdev)
 		dev_err(dev, "failed to initialize the epc memory space\n");
 		goto err_pm_put;
 	}
+
+	pci_epc_init_notify(epc);
 
 	return 0;
 

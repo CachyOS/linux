@@ -12,7 +12,6 @@
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/pm.h>
 #include <linux/regulator/consumer.h>
 
@@ -20,7 +19,6 @@
 #include <drm/drm_bridge.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_of.h>
-#include <drm/drm_panel.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 
@@ -324,11 +322,7 @@ error:
 static int ps8622_backlight_update(struct backlight_device *bl)
 {
 	struct ps8622_bridge *ps8622 = dev_get_drvdata(&bl->dev);
-	int ret, brightness = bl->props.brightness;
-
-	if (bl->props.power != FB_BLANK_UNBLANK ||
-	    bl->props.state & (BL_CORE_SUSPENDED | BL_CORE_FBBLANK))
-		brightness = 0;
+	int ret, brightness = backlight_get_brightness(bl);
 
 	if (!ps8622->enabled)
 		return -EINVAL;
@@ -424,6 +418,7 @@ static void ps8622_post_disable(struct drm_bridge *bridge)
 }
 
 static int ps8622_attach(struct drm_bridge *bridge,
+			 struct drm_encoder *encoder,
 			 enum drm_bridge_attach_flags flags)
 {
 	struct ps8622_bridge *ps8622 = bridge_to_ps8622(bridge);
@@ -446,17 +441,18 @@ static const struct of_device_id ps8622_devices[] = {
 };
 MODULE_DEVICE_TABLE(of, ps8622_devices);
 
-static int ps8622_probe(struct i2c_client *client,
-					const struct i2c_device_id *id)
+static int ps8622_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct device *dev = &client->dev;
 	struct ps8622_bridge *ps8622;
 	struct drm_bridge *panel_bridge;
 	int ret;
 
-	ps8622 = devm_kzalloc(dev, sizeof(*ps8622), GFP_KERNEL);
-	if (!ps8622)
-		return -ENOMEM;
+	ps8622 = devm_drm_bridge_alloc(dev, struct ps8622_bridge, bridge,
+				       &ps8622_bridge_funcs);
+	if (IS_ERR(ps8622))
+		return PTR_ERR(ps8622);
 
 	panel_bridge = devm_drm_of_get_bridge(dev, dev->of_node, 0, 0);
 	if (IS_ERR(panel_bridge))
@@ -500,7 +496,7 @@ static int ps8622_probe(struct i2c_client *client,
 		ps8622->lane_count = ps8622->max_lane_count;
 	}
 
-	if (!of_find_property(dev->of_node, "use-external-pwm", NULL)) {
+	if (!of_property_read_bool(dev->of_node, "use-external-pwm")) {
 		ps8622->bl = backlight_device_register("ps8622-backlight",
 				dev, ps8622, &ps8622_backlight_ops,
 				NULL);
@@ -514,7 +510,6 @@ static int ps8622_probe(struct i2c_client *client,
 		ps8622->bl->props.brightness = PS8622_MAX_BRIGHTNESS;
 	}
 
-	ps8622->bridge.funcs = &ps8622_bridge_funcs;
 	ps8622->bridge.type = DRM_MODE_CONNECTOR_LVDS;
 	ps8622->bridge.of_node = dev->of_node;
 	drm_bridge_add(&ps8622->bridge);
@@ -524,14 +519,12 @@ static int ps8622_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int ps8622_remove(struct i2c_client *client)
+static void ps8622_remove(struct i2c_client *client)
 {
 	struct ps8622_bridge *ps8622 = i2c_get_clientdata(client);
 
 	backlight_device_unregister(ps8622->bl);
 	drm_bridge_remove(&ps8622->bridge);
-
-	return 0;
 }
 
 static const struct i2c_device_id ps8622_i2c_table[] = {

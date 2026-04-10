@@ -34,9 +34,9 @@
 #define CCU_DIV_CTL_CLKDIV_MASK(_width) \
 	GENMASK((_width) + CCU_DIV_CTL_CLKDIV_FLD - 1, CCU_DIV_CTL_CLKDIV_FLD)
 #define CCU_DIV_CTL_LOCK_SHIFTED	BIT(27)
+#define CCU_DIV_CTL_GATE_REF_BUF	BIT(28)
 #define CCU_DIV_CTL_LOCK_NORMAL		BIT(31)
 
-#define CCU_DIV_RST_DELAY_US		1
 #define CCU_DIV_LOCK_CHECK_RETRIES	50
 
 #define CCU_DIV_CLKDIV_MIN		0
@@ -170,6 +170,40 @@ static int ccu_div_gate_is_enabled(struct clk_hw *hw)
 	return !!(val & CCU_DIV_CTL_EN);
 }
 
+static int ccu_div_buf_enable(struct clk_hw *hw)
+{
+	struct ccu_div *div = to_ccu_div(hw);
+	unsigned long flags;
+
+	spin_lock_irqsave(&div->lock, flags);
+	regmap_update_bits(div->sys_regs, div->reg_ctl,
+			   CCU_DIV_CTL_GATE_REF_BUF, 0);
+	spin_unlock_irqrestore(&div->lock, flags);
+
+	return 0;
+}
+
+static void ccu_div_buf_disable(struct clk_hw *hw)
+{
+	struct ccu_div *div = to_ccu_div(hw);
+	unsigned long flags;
+
+	spin_lock_irqsave(&div->lock, flags);
+	regmap_update_bits(div->sys_regs, div->reg_ctl,
+			   CCU_DIV_CTL_GATE_REF_BUF, CCU_DIV_CTL_GATE_REF_BUF);
+	spin_unlock_irqrestore(&div->lock, flags);
+}
+
+static int ccu_div_buf_is_enabled(struct clk_hw *hw)
+{
+	struct ccu_div *div = to_ccu_div(hw);
+	u32 val = 0;
+
+	regmap_read(div->sys_regs, div->reg_ctl, &val);
+
+	return !(val & CCU_DIV_CTL_GATE_REF_BUF);
+}
+
 static unsigned long ccu_div_var_recalc_rate(struct clk_hw *hw,
 					     unsigned long parent_rate)
 {
@@ -194,15 +228,18 @@ static inline unsigned long ccu_div_var_calc_divider(unsigned long rate,
 		       CCU_DIV_CLKDIV_MAX(mask));
 }
 
-static long ccu_div_var_round_rate(struct clk_hw *hw, unsigned long rate,
-				   unsigned long *parent_rate)
+static int ccu_div_var_determine_rate(struct clk_hw *hw,
+				      struct clk_rate_request *req)
 {
 	struct ccu_div *div = to_ccu_div(hw);
 	unsigned long divider;
 
-	divider = ccu_div_var_calc_divider(rate, *parent_rate, div->mask);
+	divider = ccu_div_var_calc_divider(req->rate, req->best_parent_rate,
+					   div->mask);
 
-	return ccu_div_calc_freq(*parent_rate, divider);
+	req->rate = ccu_div_calc_freq(req->best_parent_rate, divider);
+
+	return 0;
 }
 
 /*
@@ -274,35 +311,19 @@ static unsigned long ccu_div_fixed_recalc_rate(struct clk_hw *hw,
 	return ccu_div_calc_freq(parent_rate, div->divider);
 }
 
-static long ccu_div_fixed_round_rate(struct clk_hw *hw, unsigned long rate,
-				     unsigned long *parent_rate)
+static int ccu_div_fixed_determine_rate(struct clk_hw *hw,
+					struct clk_rate_request *req)
 {
 	struct ccu_div *div = to_ccu_div(hw);
 
-	return ccu_div_calc_freq(*parent_rate, div->divider);
+	req->rate = ccu_div_calc_freq(req->best_parent_rate, div->divider);
+
+	return 0;
 }
 
 static int ccu_div_fixed_set_rate(struct clk_hw *hw, unsigned long rate,
 				  unsigned long parent_rate)
 {
-	return 0;
-}
-
-int ccu_div_reset_domain(struct ccu_div *div)
-{
-	unsigned long flags;
-
-	if (!div || !(div->features & CCU_DIV_RESET_DOMAIN))
-		return -EINVAL;
-
-	spin_lock_irqsave(&div->lock, flags);
-	regmap_update_bits(div->sys_regs, div->reg_ctl,
-			   CCU_DIV_CTL_RST, CCU_DIV_CTL_RST);
-	spin_unlock_irqrestore(&div->lock, flags);
-
-	/* The next delay must be enough to cover all the resets. */
-	udelay(CCU_DIV_RST_DELAY_US);
-
 	return 0;
 }
 
@@ -323,6 +344,7 @@ static const struct ccu_div_dbgfs_bit ccu_div_bits[] = {
 	CCU_DIV_DBGFS_BIT_ATTR("div_en", CCU_DIV_CTL_EN),
 	CCU_DIV_DBGFS_BIT_ATTR("div_rst", CCU_DIV_CTL_RST),
 	CCU_DIV_DBGFS_BIT_ATTR("div_bypass", CCU_DIV_CTL_SET_CLKDIV),
+	CCU_DIV_DBGFS_BIT_ATTR("div_buf", CCU_DIV_CTL_GATE_REF_BUF),
 	CCU_DIV_DBGFS_BIT_ATTR("div_lock", CCU_DIV_CTL_LOCK_NORMAL)
 };
 
@@ -425,7 +447,7 @@ static void ccu_div_var_debug_init(struct clk_hw *hw, struct dentry *dentry)
 	num += !!(div->flags & CLK_SET_RATE_GATE) +
 		!!(div->features & CCU_DIV_RESET_DOMAIN);
 
-	bits = kcalloc(num, sizeof(*bits), GFP_KERNEL);
+	bits = kzalloc_objs(*bits, num);
 	if (!bits)
 		return;
 
@@ -440,6 +462,9 @@ static void ccu_div_var_debug_init(struct clk_hw *hw, struct dentry *dentry)
 		    !strcmp("div_rst", name)) {
 			continue;
 		}
+
+		if (!strcmp("div_buf", name))
+			continue;
 
 		bits[didx] = ccu_div_bits[bidx];
 		bits[didx].div = div;
@@ -464,7 +489,7 @@ static void ccu_div_gate_debug_init(struct clk_hw *hw, struct dentry *dentry)
 	struct ccu_div *div = to_ccu_div(hw);
 	struct ccu_div_dbgfs_bit *bit;
 
-	bit = kmalloc(sizeof(*bit), GFP_KERNEL);
+	bit = kmalloc_obj(*bit);
 	if (!bit)
 		return;
 
@@ -475,6 +500,21 @@ static void ccu_div_gate_debug_init(struct clk_hw *hw, struct dentry *dentry)
 
 	debugfs_create_file_unsafe("div_clkdiv", 0400, dentry, div,
 				   &ccu_div_dbgfs_fixed_clkdiv_fops);
+}
+
+static void ccu_div_buf_debug_init(struct clk_hw *hw, struct dentry *dentry)
+{
+	struct ccu_div *div = to_ccu_div(hw);
+	struct ccu_div_dbgfs_bit *bit;
+
+	bit = kmalloc_obj(*bit);
+	if (!bit)
+		return;
+
+	*bit = ccu_div_bits[3];
+	bit->div = div;
+	debugfs_create_file_unsafe(bit->name, ccu_div_dbgfs_mode, dentry, bit,
+				   &ccu_div_dbgfs_bit_fops);
 }
 
 static void ccu_div_fixed_debug_init(struct clk_hw *hw, struct dentry *dentry)
@@ -489,6 +529,7 @@ static void ccu_div_fixed_debug_init(struct clk_hw *hw, struct dentry *dentry)
 
 #define ccu_div_var_debug_init NULL
 #define ccu_div_gate_debug_init NULL
+#define ccu_div_buf_debug_init NULL
 #define ccu_div_fixed_debug_init NULL
 
 #endif /* !CONFIG_DEBUG_FS */
@@ -498,14 +539,14 @@ static const struct clk_ops ccu_div_var_gate_to_set_ops = {
 	.disable = ccu_div_gate_disable,
 	.is_enabled = ccu_div_gate_is_enabled,
 	.recalc_rate = ccu_div_var_recalc_rate,
-	.round_rate = ccu_div_var_round_rate,
+	.determine_rate = ccu_div_var_determine_rate,
 	.set_rate = ccu_div_var_set_rate_fast,
 	.debug_init = ccu_div_var_debug_init
 };
 
 static const struct clk_ops ccu_div_var_nogate_ops = {
 	.recalc_rate = ccu_div_var_recalc_rate,
-	.round_rate = ccu_div_var_round_rate,
+	.determine_rate = ccu_div_var_determine_rate,
 	.set_rate = ccu_div_var_set_rate_slow,
 	.debug_init = ccu_div_var_debug_init
 };
@@ -515,14 +556,21 @@ static const struct clk_ops ccu_div_gate_ops = {
 	.disable = ccu_div_gate_disable,
 	.is_enabled = ccu_div_gate_is_enabled,
 	.recalc_rate = ccu_div_fixed_recalc_rate,
-	.round_rate = ccu_div_fixed_round_rate,
+	.determine_rate = ccu_div_fixed_determine_rate,
 	.set_rate = ccu_div_fixed_set_rate,
 	.debug_init = ccu_div_gate_debug_init
 };
 
+static const struct clk_ops ccu_div_buf_ops = {
+	.enable = ccu_div_buf_enable,
+	.disable = ccu_div_buf_disable,
+	.is_enabled = ccu_div_buf_is_enabled,
+	.debug_init = ccu_div_buf_debug_init
+};
+
 static const struct clk_ops ccu_div_fixed_ops = {
 	.recalc_rate = ccu_div_fixed_recalc_rate,
-	.round_rate = ccu_div_fixed_round_rate,
+	.determine_rate = ccu_div_fixed_determine_rate,
 	.set_rate = ccu_div_fixed_set_rate,
 	.debug_init = ccu_div_fixed_debug_init
 };
@@ -537,7 +585,7 @@ struct ccu_div *ccu_div_hw_register(const struct ccu_div_init_data *div_init)
 	if (!div_init)
 		return ERR_PTR(-EINVAL);
 
-	div = kzalloc(sizeof(*div), GFP_KERNEL);
+	div = kzalloc_obj(*div);
 	if (!div)
 		return ERR_PTR(-ENOMEM);
 
@@ -566,6 +614,8 @@ struct ccu_div *ccu_div_hw_register(const struct ccu_div_init_data *div_init)
 	} else if (div_init->type == CCU_DIV_GATE) {
 		hw_init.ops = &ccu_div_gate_ops;
 		div->divider = div_init->divider;
+	} else if (div_init->type == CCU_DIV_BUF) {
+		hw_init.ops = &ccu_div_buf_ops;
 	} else if (div_init->type == CCU_DIV_FIXED) {
 		hw_init.ops = &ccu_div_fixed_ops;
 		div->divider = div_init->divider;
@@ -579,6 +629,7 @@ struct ccu_div *ccu_div_hw_register(const struct ccu_div_init_data *div_init)
 		goto err_free_div;
 	}
 	parent_data.fw_name = div_init->parent_name;
+	parent_data.name = div_init->parent_name;
 	hw_init.parent_data = &parent_data;
 	hw_init.num_parents = 1;
 

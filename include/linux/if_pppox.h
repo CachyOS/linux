@@ -5,8 +5,6 @@
  *
  * This file supplies definitions required by the PPP over Ethernet driver
  * (pppox.c).  All version information wrt this file is located in pppox.c
- *
- * License:
  */
 #ifndef __LINUX_IF_PPPOX_H
 #define __LINUX_IF_PPPOX_H
@@ -45,7 +43,7 @@ struct pppox_sock {
 	/* struct sock must be the first member of pppox_sock */
 	struct sock sk;
 	struct ppp_channel chan;
-	struct pppox_sock	*next;	  /* for hash table */
+	struct pppox_sock __rcu	*next;	  /* for hash table */
 	union {
 		struct pppoe_opt pppoe;
 		struct pptp_opt  pptp;

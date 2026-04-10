@@ -155,11 +155,6 @@ static inline struct device *chan2dev(struct dma_chan *chan)
 	return &chan->dev->device;
 }
 
-static inline struct device *chan2parent(struct dma_chan *chan)
-{
-	return chan->dev->device.parent;
-}
-
 static inline
 struct pch_dma_desc *pdc_first_active(struct pch_dma_chan *pd_chan)
 {
@@ -811,7 +806,7 @@ static int pch_dma_probe(struct pci_dev *pdev,
 	int i;
 
 	nr_channels = id->driver_data;
-	pd = kzalloc(sizeof(*pd), GFP_KERNEL);
+	pd = kzalloc_obj(*pd);
 	if (!pd)
 		return -ENOMEM;
 

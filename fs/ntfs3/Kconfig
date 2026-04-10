@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0-only
 config NTFS3_FS
 	tristate "NTFS Read-Write file system support"
+	select BUFFER_HEAD
 	select NLS
+	select LEGACY_DIRECT_IO
 	help
 	  Windows OS native file system (NTFS) support up to NTFS version 3.1.
 
@@ -44,3 +46,12 @@ config NTFS3_FS_POSIX_ACL
 	  NOTE: this is linux only feature. Windows will ignore these ACLs.
 
 	  If you don't know what Access Control Lists are, say N.
+
+config NTFS_FS
+	tristate "NTFS file system support"
+	select NTFS3_FS
+	select BUFFER_HEAD
+	select NLS
+	help
+	  This config option is here only for backward compatibility. NTFS
+	  filesystem is now handled by the NTFS3 driver.

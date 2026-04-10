@@ -15,6 +15,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/regmap.h>
+#include <linux/string_choices.h>
 
 #include "edac_module.h"
 
@@ -913,8 +914,8 @@ static int xgene_edac_pmd_add(struct xgene_edac *edac, struct device_node *np,
 
 	snprintf(edac_name, sizeof(edac_name), "l2c%d", pmd);
 	edac_dev = edac_device_alloc_ctl_info(sizeof(*ctx),
-					      edac_name, 1, "l2c", 1, 2, NULL,
-					      0, edac_device_alloc_index());
+					      edac_name, 1, "l2c", 1, 2,
+					      edac_device_alloc_index());
 	if (!edac_dev) {
 		rc = -ENOMEM;
 		goto err_group;
@@ -1208,8 +1209,7 @@ static int xgene_edac_l3_add(struct xgene_edac *edac, struct device_node *np,
 
 	edac_idx = edac_device_alloc_index();
 	edac_dev = edac_device_alloc_ctl_info(sizeof(*ctx),
-					      "l3c", 1, "l3c", 1, 0, NULL, 0,
-					      edac_idx);
+					      "l3c", 1, "l3c", 1, 0, edac_idx);
 	if (!edac_dev) {
 		rc = -ENOMEM;
 		goto err_release_group;
@@ -1408,7 +1408,7 @@ static void xgene_edac_iob_gic_report(struct edac_device_ctl_info *edac_dev)
 		dev_err(edac_dev->dev, "Multiple XGIC write size error\n");
 	info = readl(ctx->dev_csr + XGICTRANSERRREQINFO);
 	dev_err(edac_dev->dev, "XGIC %s access @ 0x%08X (0x%08X)\n",
-		info & REQTYPE_MASK ? "read" : "write", ERRADDR_RD(info),
+		str_read_write(info & REQTYPE_MASK), ERRADDR_RD(info),
 		info);
 	writel(reg, ctx->dev_csr + XGICTRANSERRINTSTS);
 
@@ -1490,19 +1490,19 @@ static void xgene_edac_rb_report(struct edac_device_ctl_info *edac_dev)
 		if (reg & AGENT_OFFLINE_ERR_MASK)
 			dev_err(edac_dev->dev,
 				"IOB bus %s access to offline agent error\n",
-				write ? "write" : "read");
+				str_write_read(write));
 		if (reg & UNIMPL_RBPAGE_ERR_MASK)
 			dev_err(edac_dev->dev,
 				"IOB bus %s access to unimplemented page error\n",
-				write ? "write" : "read");
+				str_write_read(write));
 		if (reg & WORD_ALIGNED_ERR_MASK)
 			dev_err(edac_dev->dev,
 				"IOB bus %s word aligned access error\n",
-				write ? "write" : "read");
+				str_write_read(write));
 		if (reg & PAGE_ACCESS_ERR_MASK)
 			dev_err(edac_dev->dev,
 				"IOB bus %s to page out of range access error\n",
-				write ? "write" : "read");
+				str_write_read(write));
 		if (regmap_write(ctx->edac->rb_map, RBEIR, 0))
 			return;
 		if (regmap_write(ctx->edac->rb_map, RBCSR, 0))
@@ -1561,7 +1561,7 @@ rb_skip:
 	err_addr_lo = readl(ctx->dev_csr + IOBBATRANSERRREQINFOL);
 	err_addr_hi = readl(ctx->dev_csr + IOBBATRANSERRREQINFOH);
 	dev_err(edac_dev->dev, "IOB BA %s access at 0x%02X.%08X (0x%08X)\n",
-		REQTYPE_F2_RD(err_addr_hi) ? "read" : "write",
+		str_read_write(REQTYPE_F2_RD(err_addr_hi)),
 		ERRADDRH_F2_RD(err_addr_hi), err_addr_lo, err_addr_hi);
 	if (reg & WRERR_RESP_MASK)
 		dev_err(edac_dev->dev, "IOB BA requestor ID 0x%08X\n",
@@ -1612,7 +1612,7 @@ chk_iob_axi0:
 	dev_err(edac_dev->dev,
 		"%sAXI slave 0 illegal %s access @ 0x%02X.%08X (0x%08X)\n",
 		reg & IOBAXIS0_M_ILLEGAL_ACCESS_MASK ? "Multiple " : "",
-		REQTYPE_RD(err_addr_hi) ? "read" : "write",
+		str_read_write(REQTYPE_RD(err_addr_hi)),
 		ERRADDRH_RD(err_addr_hi), err_addr_lo, err_addr_hi);
 	writel(reg, ctx->dev_csr + IOBAXIS0TRANSERRINTSTS);
 
@@ -1626,7 +1626,7 @@ chk_iob_axi1:
 	dev_err(edac_dev->dev,
 		"%sAXI slave 1 illegal %s access @ 0x%02X.%08X (0x%08X)\n",
 		reg & IOBAXIS0_M_ILLEGAL_ACCESS_MASK ? "Multiple " : "",
-		REQTYPE_RD(err_addr_hi) ? "read" : "write",
+		str_read_write(REQTYPE_RD(err_addr_hi)),
 		ERRADDRH_RD(err_addr_hi), err_addr_lo, err_addr_hi);
 	writel(reg, ctx->dev_csr + IOBAXIS1TRANSERRINTSTS);
 }
@@ -1748,8 +1748,7 @@ static int xgene_edac_soc_add(struct xgene_edac *edac, struct device_node *np,
 
 	edac_idx = edac_device_alloc_index();
 	edac_dev = edac_device_alloc_ctl_info(sizeof(*ctx),
-					      "SOC", 1, "SOC", 1, 2, NULL, 0,
-					      edac_idx);
+					      "SOC", 1, "SOC", 1, 2, edac_idx);
 	if (!edac_dev) {
 		rc = -ENOMEM;
 		goto err_release_group;
@@ -1960,7 +1959,7 @@ out_err:
 	return rc;
 }
 
-static int xgene_edac_remove(struct platform_device *pdev)
+static void xgene_edac_remove(struct platform_device *pdev)
 {
 	struct xgene_edac *edac = dev_get_drvdata(&pdev->dev);
 	struct xgene_edac_mc_ctx *mcu;
@@ -1981,8 +1980,6 @@ static int xgene_edac_remove(struct platform_device *pdev)
 
 	list_for_each_entry_safe(node, temp_node, &edac->socs, next)
 		xgene_edac_soc_remove(node);
-
-	return 0;
 }
 
 static const struct of_device_id xgene_edac_of_match[] = {
@@ -2003,6 +2000,9 @@ static struct platform_driver xgene_edac_driver = {
 static int __init xgene_edac_init(void)
 {
 	int rc;
+
+	if (ghes_get_devices())
+		return -EBUSY;
 
 	/* Make sure error reporting method is sane */
 	switch (edac_op_state) {

@@ -10,15 +10,14 @@
 #include <objtool/check.h>
 #include <objtool/elf.h>
 
-#define C_JUMP_TABLE_SECTION ".rodata..c_jump_table"
+#define C_JUMP_TABLE_SECTION ".data.rel.ro.c_jump_table"
 
 struct special_alt {
 	struct list_head list;
 
 	bool group;
-	bool skip_orig;
-	bool skip_alt;
 	bool jump_or_nop;
+	u8 key_addend;
 
 	struct section *orig_sec;
 	unsigned long orig_off;
@@ -26,17 +25,19 @@ struct special_alt {
 	struct section *new_sec;
 	unsigned long new_off;
 
-	unsigned int orig_len, new_len; /* group only */
-	u8 key_addend;
+	unsigned int orig_len, new_len, feature; /* group only */
 };
 
 int special_get_alts(struct elf *elf, struct list_head *alts);
 
-void arch_handle_alternative(unsigned short feature, struct special_alt *alt);
+void arch_handle_alternative(struct special_alt *alt);
 
 bool arch_support_alt_relocation(struct special_alt *special_alt,
 				 struct instruction *insn,
 				 struct reloc *reloc);
 struct reloc *arch_find_switch_table(struct objtool_file *file,
-				    struct instruction *insn);
+				     struct instruction *insn,
+				     unsigned long *table_size);
+const char *arch_cpu_feature_name(int feature_number);
+
 #endif /* _SPECIAL_H */

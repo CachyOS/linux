@@ -26,9 +26,14 @@ description:
   with priority below this threshold will not cause the PLIC to raise its
   interrupt line leading to the context.
 
-  While the PLIC supports both edge-triggered and level-triggered interrupts,
-  interrupt handlers are oblivious to this distinction and therefore it is not
-  specified in the PLIC device-tree binding.
+  The PLIC supports both edge-triggered and level-triggered interrupts. For
+  edge-triggered interrupts, the RISC-V PLIC spec allows two responses to edges
+  seen while an interrupt handler is active; the PLIC may either queue them or
+  ignore them. In the first case, handlers are oblivious to the trigger type, so
+  it is not included in the interrupt specifier. In the second case, software
+  needs to know the trigger type, so it can reorder the interrupt flow to avoid
+  missing interrupts. This special handling is needed by at least the Renesas
+  RZ/Five SoC (AX45MP AndesCore with a NCEPLIC100) and the T-HEAD C900 PLIC.
 
   While the RISC-V ISA doesn't specify a memory layout for the PLIC, the
   "sifive,plic-1.0.0" device is a concrete implementation of the PLIC that
@@ -40,7 +45,6 @@ description:
   from S-mode. So add thead,c900-plic to distinguish them.
 
 maintainers:
-  - Sagar Kadam <sagar.kadam@sifive.com>
   - Paul Walmsley  <paul.walmsley@sifive.com>
   - Palmer Dabbelt <palmer@dabbelt.com>
 
@@ -49,14 +53,39 @@ properties:
     oneOf:
       - items:
           - enum:
-              - sifive,fu540-c000-plic
-              - starfive,jh7100-plic
+              - andestech,qilai-plic
+              - renesas,r9a07g043-plic
+          - const: andestech,nceplic100
+      - items:
+          - enum:
+              - anlogic,dr1v90-plic
               - canaan,k210-plic
+              - eswin,eic7700-plic
+              - microchip,pic64gx-plic
+              - sifive,fu540-c000-plic
+              - spacemit,k1-plic
+              - starfive,jh7100-plic
+              - starfive,jh7110-plic
+              - tenstorrent,blackhole-plic
           - const: sifive,plic-1.0.0
       - items:
           - enum:
               - allwinner,sun20i-d1-plic
+              - sophgo,cv1800b-plic
+              - sophgo,cv1812h-plic
+              - sophgo,sg2002-plic
+              - sophgo,sg2042-plic
+              - sophgo,sg2044-plic
+              - thead,th1520-plic
           - const: thead,c900-plic
+      - items:
+          - const: ultrarisc,dp1000-plic
+          - const: ultrarisc,cp100-plic
+      - items:
+          - const: sifive,plic-1.0.0
+          - const: riscv,plic0
+        deprecated: true
+        description: For the QEMU virt machine only
 
   reg:
     maxItems: 1
@@ -64,8 +93,7 @@ properties:
   '#address-cells':
     const: 0
 
-  '#interrupt-cells':
-    const: 1
+  '#interrupt-cells': true
 
   interrupt-controller: true
 
@@ -78,9 +106,17 @@ properties:
       riscv,cpu-intc node, which has a riscv node as parent.
 
   riscv,ndev:
-    $ref: "/schemas/types.yaml#/definitions/uint32"
+    $ref: /schemas/types.yaml#/definitions/uint32
     description:
-      Specifies how many external interrupts are supported by this controller.
+      Specifies how many external (device) interrupts are supported by this
+      controller.  Note that source 0 is reserved in PLIC, so the valid
+      interrupt sources are 1 to riscv,ndev inclusive.
+
+  clocks: true
+
+  power-domains: true
+
+  resets: true
 
 required:
   - compatible
@@ -90,6 +126,47 @@ required:
   - reg
   - interrupts-extended
   - riscv,ndev
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - andestech,nceplic100
+              - thead,c900-plic
+
+    then:
+      properties:
+        '#interrupt-cells':
+          const: 2
+
+    else:
+      properties:
+        '#interrupt-cells':
+          const: 1
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: renesas,r9a07g043-plic
+
+    then:
+      properties:
+        clocks:
+          maxItems: 1
+
+        power-domains:
+          maxItems: 1
+
+        resets:
+          maxItems: 1
+
+      required:
+        - clocks
+        - power-domains
+        - resets
 
 additionalProperties: false
 

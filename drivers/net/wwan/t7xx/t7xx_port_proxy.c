@@ -38,7 +38,8 @@
 #include "t7xx_state_monitor.h"
 
 #define Q_IDX_CTRL			0
-#define Q_IDX_MBIM			2
+#define Q_IDX_MBIM_MIPC		2
+#define Q_IDX_ADB			3
 #define Q_IDX_AT_CMD			5
 
 #define INVALID_SEQ_NUM			GENMASK(15, 0)
@@ -48,7 +49,10 @@
 	     i < (proxy)->port_count;		\
 	     i++, (p) = &(proxy)->ports[i])
 
-static const struct t7xx_port_conf t7xx_md_port_conf[] = {
+#define T7XX_MAX_POSSIBLE_PORTS_NUM	\
+	(max(ARRAY_SIZE(t7xx_port_conf), ARRAY_SIZE(t7xx_early_port_conf)))
+
+static const struct t7xx_port_conf t7xx_port_conf[] = {
 	{
 		.tx_ch = PORT_CH_UART2_TX,
 		.rx_ch = PORT_CH_UART2_RX,
@@ -63,13 +67,25 @@ static const struct t7xx_port_conf t7xx_md_port_conf[] = {
 	}, {
 		.tx_ch = PORT_CH_MBIM_TX,
 		.rx_ch = PORT_CH_MBIM_RX,
-		.txq_index = Q_IDX_MBIM,
-		.rxq_index = Q_IDX_MBIM,
+		.txq_index = Q_IDX_MBIM_MIPC,
+		.rxq_index = Q_IDX_MBIM_MIPC,
 		.path_id = CLDMA_ID_MD,
 		.ops = &wwan_sub_port_ops,
 		.name = "MBIM",
 		.port_type = WWAN_PORT_MBIM,
 	}, {
+#ifdef CONFIG_WWAN_DEBUGFS
+		.tx_ch = PORT_CH_MD_LOG_TX,
+		.rx_ch = PORT_CH_MD_LOG_RX,
+		.txq_index = 7,
+		.rxq_index = 7,
+		.txq_exp_index = 7,
+		.rxq_exp_index = 7,
+		.path_id = CLDMA_ID_MD,
+		.ops = &t7xx_trace_port_ops,
+		.name = "mdlog",
+	}, {
+#endif
 		.tx_ch = PORT_CH_CONTROL_TX,
 		.rx_ch = PORT_CH_CONTROL_RX,
 		.txq_index = Q_IDX_CTRL,
@@ -77,6 +93,49 @@ static const struct t7xx_port_conf t7xx_md_port_conf[] = {
 		.path_id = CLDMA_ID_MD,
 		.ops = &ctl_port_ops,
 		.name = "t7xx_ctrl",
+	}, {
+		.tx_ch = PORT_CH_AP_CONTROL_TX,
+		.rx_ch = PORT_CH_AP_CONTROL_RX,
+		.txq_index = Q_IDX_CTRL,
+		.rxq_index = Q_IDX_CTRL,
+		.path_id = CLDMA_ID_AP,
+		.ops = &ctl_port_ops,
+		.name = "t7xx_ap_ctrl",
+	}, {
+		.tx_ch = PORT_CH_AP_ADB_TX,
+		.rx_ch = PORT_CH_AP_ADB_RX,
+		.txq_index = Q_IDX_ADB,
+		.rxq_index = Q_IDX_ADB,
+		.path_id = CLDMA_ID_AP,
+		.ops = &wwan_sub_port_ops,
+		.name = "adb",
+		.port_type = WWAN_PORT_ADB,
+		.debug = true,
+	}, {
+		.tx_ch = PORT_CH_MIPC_TX,
+		.rx_ch = PORT_CH_MIPC_RX,
+		.txq_index = Q_IDX_MBIM_MIPC,
+		.rxq_index = Q_IDX_MBIM_MIPC,
+		.path_id = CLDMA_ID_MD,
+		.ops = &wwan_sub_port_ops,
+		.name = "mipc",
+		.port_type = WWAN_PORT_MIPC,
+		.debug = true,
+	}
+};
+
+static const struct t7xx_port_conf t7xx_early_port_conf[] = {
+	{
+		.tx_ch = PORT_CH_UNIMPORTANT,
+		.rx_ch = PORT_CH_UNIMPORTANT,
+		.txq_index = CLDMA_Q_IDX_DUMP,
+		.rxq_index = CLDMA_Q_IDX_DUMP,
+		.txq_exp_index = CLDMA_Q_IDX_DUMP,
+		.rxq_exp_index = CLDMA_Q_IDX_DUMP,
+		.path_id = CLDMA_ID_AP,
+		.ops = &wwan_sub_port_ops,
+		.name = "fastboot",
+		.port_type = WWAN_PORT_FASTBOOT,
 	},
 };
 
@@ -194,7 +253,17 @@ int t7xx_port_enqueue_skb(struct t7xx_port *port, struct sk_buff *skb)
 	return 0;
 }
 
-static int t7xx_port_send_raw_skb(struct t7xx_port *port, struct sk_buff *skb)
+int t7xx_get_port_mtu(struct t7xx_port *port)
+{
+	enum cldma_id path_id = port->port_conf->path_id;
+	int tx_qno = t7xx_port_get_queue_no(port);
+	struct cldma_ctrl *md_ctrl;
+
+	md_ctrl = port->t7xx_dev->md->md_ctrl[path_id];
+	return md_ctrl->tx_ring[tx_qno].pkt_size;
+}
+
+int t7xx_port_send_raw_skb(struct t7xx_port *port, struct sk_buff *skb)
 {
 	enum cldma_id path_id = port->port_conf->path_id;
 	struct cldma_ctrl *md_ctrl;
@@ -309,6 +378,39 @@ static void t7xx_proxy_setup_ch_mapping(struct port_proxy *port_prox)
 	}
 }
 
+/**
+ * t7xx_port_proxy_recv_skb_from_dedicated_queue() - Dispatch early port received skb.
+ * @queue: CLDMA queue.
+ * @skb: Socket buffer.
+ *
+ * Return:
+ ** 0		- Packet consumed.
+ ** -ERROR	- Failed to process skb.
+ */
+int t7xx_port_proxy_recv_skb_from_dedicated_queue(struct cldma_queue *queue, struct sk_buff *skb)
+{
+	struct t7xx_pci_dev *t7xx_dev = queue->md_ctrl->t7xx_dev;
+	struct port_proxy *port_prox = t7xx_dev->md->port_prox;
+	const struct t7xx_port_conf *port_conf;
+	struct t7xx_port *port;
+	int ret;
+
+	port = &port_prox->ports[0];
+	if (WARN_ON_ONCE(port->port_conf->rxq_index != queue->index)) {
+		dev_kfree_skb_any(skb);
+		return -EINVAL;
+	}
+
+	port_conf = port->port_conf;
+	ret = port_conf->ops->recv_skb(port, skb);
+	if (ret < 0 && ret != -ENOBUFS) {
+		dev_err(port->dev, "drop on RX ch %d, %d\n", port_conf->rx_ch, ret);
+		dev_kfree_skb_any(skb);
+	}
+
+	return ret;
+}
+
 static struct t7xx_port *t7xx_port_proxy_find_port(struct t7xx_pci_dev *t7xx_dev,
 						   struct cldma_queue *queue, u16 channel)
 {
@@ -339,7 +441,7 @@ static struct t7xx_port *t7xx_port_proxy_find_port(struct t7xx_pci_dev *t7xx_dev
  ** 0		- Packet consumed.
  ** -ERROR	- Failed to process skb.
  */
-static int t7xx_port_proxy_recv_skb(struct cldma_queue *queue, struct sk_buff *skb)
+int t7xx_port_proxy_recv_skb(struct cldma_queue *queue, struct sk_buff *skb)
 {
 	struct ccci_header *ccci_h = (struct ccci_header *)skb->data;
 	struct t7xx_pci_dev *t7xx_dev = queue->md_ctrl->t7xx_dev;
@@ -416,26 +518,76 @@ static void t7xx_proxy_init_all_ports(struct t7xx_modem *md)
 		if (port_conf->tx_ch == PORT_CH_CONTROL_TX)
 			md->core_md.ctl_port = port;
 
+		if (port_conf->tx_ch == PORT_CH_AP_CONTROL_TX)
+			md->core_ap.ctl_port = port;
+
 		port->t7xx_dev = md->t7xx_dev;
 		port->dev = &md->t7xx_dev->pdev->dev;
 		spin_lock_init(&port->port_update_lock);
 		port->chan_enable = false;
 
-		if (port_conf->ops->init)
+		if (!port_conf->debug &&
+		    port_conf->ops &&
+		    port_conf->ops->init)
 			port_conf->ops->init(port);
 	}
 
 	t7xx_proxy_setup_ch_mapping(port_prox);
 }
 
-static int t7xx_proxy_alloc(struct t7xx_modem *md)
+void t7xx_proxy_debug_ports_show(struct t7xx_pci_dev *t7xx_dev, bool show)
 {
-	unsigned int port_count = ARRAY_SIZE(t7xx_md_port_conf);
-	struct device *dev = &md->t7xx_dev->pdev->dev;
-	struct port_proxy *port_prox;
+	struct port_proxy *port_prox = t7xx_dev->md->port_prox;
+	struct t7xx_port *port;
 	int i;
 
-	port_prox = devm_kzalloc(dev, sizeof(*port_prox) + sizeof(struct t7xx_port) * port_count,
+	for_each_proxy_port(i, port, port_prox) {
+		const struct t7xx_port_conf *port_conf = port->port_conf;
+
+		if (port_conf->debug && port_conf->ops) {
+			if (show && port_conf->ops->init)
+				port_conf->ops->init(port);
+			else if (!show && port_conf->ops->uninit)
+				port_conf->ops->uninit(port);
+		}
+	}
+}
+
+void t7xx_port_proxy_set_cfg(struct t7xx_modem *md, enum port_cfg_id cfg_id)
+{
+	struct port_proxy *port_prox = md->port_prox;
+	const struct t7xx_port_conf *port_conf;
+	u32 port_count;
+	int i;
+
+	t7xx_port_proxy_uninit(port_prox);
+
+	if (cfg_id == PORT_CFG_ID_EARLY) {
+		port_conf = t7xx_early_port_conf;
+		port_count = ARRAY_SIZE(t7xx_early_port_conf);
+	} else {
+		port_conf = t7xx_port_conf;
+		port_count = ARRAY_SIZE(t7xx_port_conf);
+	}
+
+	for (i = 0; i < port_count; i++)
+		port_prox->ports[i].port_conf = &port_conf[i];
+
+	port_prox->cfg_id = cfg_id;
+	port_prox->port_count = port_count;
+
+	t7xx_proxy_init_all_ports(md);
+}
+
+static int t7xx_proxy_alloc(struct t7xx_modem *md)
+{
+	struct device *dev = &md->t7xx_dev->pdev->dev;
+	struct port_proxy *port_prox;
+
+	port_prox = devm_kzalloc(dev,
+				 struct_size(port_prox,
+					     ports,
+					     T7XX_MAX_POSSIBLE_PORTS_NUM),
 				 GFP_KERNEL);
 	if (!port_prox)
 		return -ENOMEM;
@@ -443,11 +595,6 @@ static int t7xx_proxy_alloc(struct t7xx_modem *md)
 	md->port_prox = port_prox;
 	port_prox->dev = dev;
 
-	for (i = 0; i < port_count; i++)
-		port_prox->ports[i].port_conf = &t7xx_md_port_conf[i];
-
-	port_prox->port_count = port_count;
-	t7xx_proxy_init_all_ports(md);
 	return 0;
 }
 
@@ -469,7 +616,6 @@ int t7xx_port_proxy_init(struct t7xx_modem *md)
 	if (ret)
 		return ret;
 
-	t7xx_cldma_set_recv_skb(md->md_ctrl[CLDMA_ID_MD], t7xx_port_proxy_recv_skb);
 	return 0;
 }
 
@@ -481,7 +627,7 @@ void t7xx_port_proxy_uninit(struct port_proxy *port_prox)
 	for_each_proxy_port(i, port, port_prox) {
 		const struct t7xx_port_conf *port_conf = port->port_conf;
 
-		if (port_conf->ops->uninit)
+		if (port_conf->ops && port_conf->ops->uninit)
 			port_conf->ops->uninit(port);
 	}
 }

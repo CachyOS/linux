@@ -15,7 +15,7 @@
 
 #define EREMOVE_ERROR_MESSAGE \
 	"EREMOVE returned %d (0x%x) and an EPC page was leaked. SGX may become unusable. " \
-	"Refer to Documentation/x86/sgx.rst for more information."
+	"Refer to Documentation/arch/x86/sgx.rst for more information."
 
 #define SGX_MAX_EPC_SECTIONS		8
 #define SGX_EEXTEND_BLOCK_SIZE		256
@@ -86,9 +86,12 @@ static inline void *sgx_get_epc_virt_addr(struct sgx_epc_page *page)
 struct sgx_epc_page *__sgx_alloc_epc_page(void);
 void sgx_free_epc_page(struct sgx_epc_page *page);
 
+void sgx_reclaim_direct(void);
 void sgx_mark_page_reclaimable(struct sgx_epc_page *page);
 int sgx_unmark_page_reclaimable(struct sgx_epc_page *page);
 struct sgx_epc_page *sgx_alloc_epc_page(void *owner, bool reclaim);
+
+void sgx_ipi_cb(void *info);
 
 #ifdef CONFIG_X86_SGX_KVM
 int __init sgx_vepc_init(void);
@@ -98,6 +101,9 @@ static inline int __init sgx_vepc_init(void)
 	return -ENODEV;
 }
 #endif
+
+int sgx_inc_usage_count(void);
+void sgx_dec_usage_count(void);
 
 void sgx_update_lepubkeyhash(u64 *lepubkeyhash);
 

@@ -381,7 +381,7 @@ eesoxscsi_dma_stop(struct Scsi_Host *host, struct scsi_pointer *SCp)
  * Params   : host - driver host structure to return info for.
  * Returns  : pointer to a static buffer containing null terminated string.
  */
-const char *eesoxscsi_info(struct Scsi_Host *host)
+static const char *eesoxscsi_info(struct Scsi_Host *host)
 {
 	struct eesoxscsi_info *info = (struct eesoxscsi_info *)host->hostdata;
 	static char string[150];
@@ -473,7 +473,7 @@ static ssize_t eesoxscsi_store_term(struct device *dev, struct device_attribute 
 static DEVICE_ATTR(bus_term, S_IRUGO | S_IWUSR,
 		   eesoxscsi_show_term, eesoxscsi_store_term);
 
-static struct scsi_host_template eesox_template = {
+static const struct scsi_host_template eesox_template = {
 	.module				= THIS_MODULE,
 	.show_info			= eesoxscsi_show_info,
 	.write_info			= eesoxscsi_set_proc_info,

@@ -467,8 +467,8 @@ struct list_buffer {
  *
  * If the port is idle on entry as much of the incoming data is written to
  * the port as the port will accept.  Otherwise a list buffer is created
- * and any remaning incoming data is copied to that buffer.  The buffer is
- * then enqueued for transmision via the transmit interrupt.
+ * and any remaining incoming data is copied to that buffer.  The buffer is
+ * then enqueued for transmission via the transmit interrupt.
  */
 
 int ps3_vuart_write(struct ps3_system_bus_device *dev, const void *buf,
@@ -914,7 +914,7 @@ static int ps3_vuart_bus_interrupt_get(void)
 
 	BUG_ON(vuart_bus_priv.bmp);
 
-	vuart_bus_priv.bmp = kzalloc(sizeof(struct ports_bmp), GFP_KERNEL);
+	vuart_bus_priv.bmp = kzalloc_obj(struct ports_bmp);
 
 	if (!vuart_bus_priv.bmp) {
 		result = -ENOMEM;
@@ -1015,8 +1015,7 @@ static int ps3_vuart_probe(struct ps3_system_bus_device *dev)
 
 	/* Setup dev->driver_priv. */
 
-	dev->driver_priv = kzalloc(sizeof(struct ps3_vuart_port_priv),
-		GFP_KERNEL);
+	dev->driver_priv = kzalloc_obj(struct ps3_vuart_port_priv);
 
 	if (!dev->driver_priv) {
 		result = -ENOMEM;

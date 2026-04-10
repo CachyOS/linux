@@ -87,6 +87,8 @@ bool ishtp_wait_resume(struct ishtp_device *dev);
 ishtp_print_log ishtp_trace_callback(struct ishtp_cl_device *cl_device);
 /* Get device pointer of PCI device for DMA acces */
 struct device *ishtp_get_pci_device(struct ishtp_cl_device *cl_device);
+/* Get the ISHTP workqueue */
+struct workqueue_struct *ishtp_get_workqueue(struct ishtp_cl_device *cl_device);
 
 struct ishtp_cl *ishtp_cl_allocate(struct ishtp_cl_device *cl_device);
 void ishtp_cl_free(struct ishtp_cl *cl);
@@ -94,10 +96,12 @@ int ishtp_cl_link(struct ishtp_cl *cl);
 void ishtp_cl_unlink(struct ishtp_cl *cl);
 int ishtp_cl_disconnect(struct ishtp_cl *cl);
 int ishtp_cl_connect(struct ishtp_cl *cl);
+int ishtp_cl_establish_connection(struct ishtp_cl *cl, const guid_t *uuid,
+				  int tx_size, int rx_size, bool reset);
+void ishtp_cl_destroy_connection(struct ishtp_cl *cl, bool reset);
 int ishtp_cl_send(struct ishtp_cl *cl, uint8_t *buf, size_t length);
 int ishtp_cl_flush_queues(struct ishtp_cl *cl);
 int ishtp_cl_io_rb_recycle(struct ishtp_cl_rb *rb);
-bool ishtp_cl_tx_empty(struct ishtp_cl *cl);
 struct ishtp_cl_rb *ishtp_cl_rx_get_rb(struct ishtp_cl *cl);
 void *ishtp_get_client_data(struct ishtp_cl *cl);
 void ishtp_set_client_data(struct ishtp_cl *cl, void *data);
@@ -105,6 +109,7 @@ struct ishtp_device *ishtp_get_ishtp_device(struct ishtp_cl *cl);
 void ishtp_set_tx_ring_size(struct ishtp_cl *cl, int size);
 void ishtp_set_rx_ring_size(struct ishtp_cl *cl, int size);
 void ishtp_set_connection_state(struct ishtp_cl *cl, int state);
+int ishtp_get_connection_state(struct ishtp_cl *cl);
 void ishtp_cl_set_fw_client_id(struct ishtp_cl *cl, int fw_client_id);
 
 void ishtp_put_device(struct ishtp_cl_device *cl_dev);

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB
+// SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB
 /* Copyright (c) 2015 - 2021 Intel Corporation */
 #include "osdep.h"
 #include "hmc.h"
@@ -230,6 +230,9 @@ static int irdma_puda_poll_info(struct irdma_sc_cq *cq,
 	if (valid_bit != cq_uk->polarity)
 		return -ENOENT;
 
+	/* Ensure CQE contents are read after valid bit is checked */
+	dma_rmb();
+
 	if (cq->dev->hw_attrs.uk_attrs.hw_rev >= IRDMA_GEN_2)
 		ext_valid = (bool)FIELD_GET(IRDMA_CQ_EXTCQE, qword3);
 
@@ -242,6 +245,9 @@ static int irdma_puda_poll_info(struct irdma_sc_cq *cq,
 			polarity ^= 1;
 		if (polarity != cq_uk->polarity)
 			return -ENOENT;
+
+		/* Ensure ext CQE contents are read after ext valid bit is checked */
+		dma_rmb();
 
 		IRDMA_RING_MOVE_HEAD_NOCHECK(cq_uk->cq_ring);
 		if (!IRDMA_RING_CURRENT_HEAD(cq_uk->cq_ring))
@@ -679,7 +685,6 @@ static int irdma_puda_qp_create(struct irdma_puda_rsrc *rsrc)
 	ukqp->rq_size = rsrc->rq_size;
 
 	IRDMA_RING_INIT(ukqp->sq_ring, ukqp->sq_size);
-	IRDMA_RING_INIT(ukqp->initial_ring, ukqp->sq_size);
 	IRDMA_RING_INIT(ukqp->rq_ring, ukqp->rq_size);
 	ukqp->wqe_alloc_db = qp->pd->dev->wqe_alloc_db;
 
@@ -720,7 +725,6 @@ static int irdma_puda_cq_wqe(struct irdma_sc_dev *dev, struct irdma_sc_cq *cq)
 	struct irdma_sc_cqp *cqp;
 	u64 hdr;
 	struct irdma_ccq_cqe_info compl_info;
-	int status = 0;
 
 	cqp = dev->cqp;
 	wqe = irdma_sc_cqp_get_next_send_wqe(cqp, 0);
@@ -750,16 +754,8 @@ static int irdma_puda_cq_wqe(struct irdma_sc_dev *dev, struct irdma_sc_cq *cq)
 	print_hex_dump_debug("PUDA: PUDA CREATE CQ", DUMP_PREFIX_OFFSET, 16,
 			     8, wqe, IRDMA_CQP_WQE_SIZE * 8, false);
 	irdma_sc_cqp_post_sq(dev->cqp);
-	status = irdma_sc_poll_for_cqp_op_done(dev->cqp, IRDMA_CQP_OP_CREATE_CQ,
-					       &compl_info);
-	if (!status) {
-		struct irdma_sc_ceq *ceq = dev->ceq[0];
-
-		if (ceq && ceq->reg_cq)
-			status = irdma_sc_add_cq_ctx(ceq, cq);
-	}
-
-	return status;
+	return irdma_sc_poll_for_cqp_op_done(dev->cqp, IRDMA_CQP_OP_CREATE_CQ,
+					     &compl_info);
 }
 
 /**
@@ -813,6 +809,13 @@ error:
 		dma_free_coherent(dev->hw->device, rsrc->cqmem.size,
 				  rsrc->cqmem.va, rsrc->cqmem.pa);
 		rsrc->cqmem.va = NULL;
+	} else {
+		scoped_guard(spinlock_irqsave, &dev->puda_cq_lock) {
+			if (rsrc->type == IRDMA_PUDA_RSRC_TYPE_ILQ)
+				dev->ilq_cq = cq;
+			else
+				dev->ieq_cq = cq;
+		}
 	}
 
 	return ret;
@@ -860,6 +863,13 @@ static void irdma_puda_free_cq(struct irdma_puda_rsrc *rsrc)
 	struct irdma_ccq_cqe_info compl_info;
 	struct irdma_sc_dev *dev = rsrc->dev;
 
+	scoped_guard(spinlock_irqsave, &dev->puda_cq_lock) {
+		if (rsrc->type == IRDMA_PUDA_RSRC_TYPE_ILQ)
+			dev->ilq_cq = NULL;
+		else
+			dev->ieq_cq = NULL;
+	}
+
 	if (rsrc->dev->ceq_valid) {
 		irdma_cqp_cq_destroy_cmd(dev, &rsrc->cq);
 		return;
@@ -891,23 +901,17 @@ void irdma_puda_dele_rsrc(struct irdma_sc_vsi *vsi, enum puda_rsrc_type type,
 	struct irdma_puda_buf *buf = NULL;
 	struct irdma_puda_buf *nextbuf = NULL;
 	struct irdma_virt_mem *vmem;
-	struct irdma_sc_ceq *ceq;
 
-	ceq = vsi->dev->ceq[0];
 	switch (type) {
 	case IRDMA_PUDA_RSRC_TYPE_ILQ:
 		rsrc = vsi->ilq;
 		vmem = &vsi->ilq_mem;
 		vsi->ilq = NULL;
-		if (ceq && ceq->reg_cq)
-			irdma_sc_remove_cq_ctx(ceq, &rsrc->cq);
 		break;
 	case IRDMA_PUDA_RSRC_TYPE_IEQ:
 		rsrc = vsi->ieq;
 		vmem = &vsi->ieq_mem;
 		vsi->ieq = NULL;
-		if (ceq && ceq->reg_cq)
-			irdma_sc_remove_cq_ctx(ceq, &rsrc->cq);
 		break;
 	default:
 		ibdev_dbg(to_ibdev(dev), "PUDA: error resource type = 0x%x\n",
@@ -917,8 +921,6 @@ void irdma_puda_dele_rsrc(struct irdma_sc_vsi *vsi, enum puda_rsrc_type type,
 
 	switch (rsrc->cmpl) {
 	case PUDA_HASH_CRC_COMPLETE:
-		irdma_free_hash_desc(rsrc->hash_desc);
-		fallthrough;
 	case PUDA_QP_CREATED:
 		irdma_qp_rem_qos(&rsrc->qp);
 
@@ -1089,15 +1091,12 @@ int irdma_puda_create_rsrc(struct irdma_sc_vsi *vsi,
 		goto error;
 
 	if (info->type == IRDMA_PUDA_RSRC_TYPE_IEQ) {
-		if (!irdma_init_hash_desc(&rsrc->hash_desc)) {
-			rsrc->check_crc = true;
-			rsrc->cmpl = PUDA_HASH_CRC_COMPLETE;
-			ret = 0;
-		}
+		rsrc->check_crc = true;
+		rsrc->cmpl = PUDA_HASH_CRC_COMPLETE;
 	}
 
 	irdma_sc_ccq_arm(&rsrc->cq);
-	return ret;
+	return 0;
 
 error:
 	irdma_puda_dele_rsrc(vsi, info->type, false);
@@ -1390,8 +1389,8 @@ static int irdma_ieq_handle_partial(struct irdma_puda_rsrc *ieq,
 	crcptr = txbuf->data + fpdu_len - 4;
 	mpacrc = *(u32 *)crcptr;
 	if (ieq->check_crc) {
-		status = irdma_ieq_check_mpacrc(ieq->hash_desc, txbuf->data,
-						(fpdu_len - 4), mpacrc);
+		status = irdma_ieq_check_mpacrc(txbuf->data, fpdu_len - 4,
+						mpacrc);
 		if (status) {
 			ibdev_dbg(to_ibdev(ieq->dev), "IEQ: error bad crc\n");
 			goto error;
@@ -1459,8 +1458,8 @@ static int irdma_ieq_process_buf(struct irdma_puda_rsrc *ieq,
 		crcptr = datap + fpdu_len - 4;
 		mpacrc = *(u32 *)crcptr;
 		if (ieq->check_crc)
-			ret = irdma_ieq_check_mpacrc(ieq->hash_desc, datap,
-						     fpdu_len - 4, mpacrc);
+			ret = irdma_ieq_check_mpacrc(datap, fpdu_len - 4,
+						     mpacrc);
 		if (ret) {
 			list_add(&buf->list, rxlist);
 			ibdev_dbg(to_ibdev(ieq->dev),

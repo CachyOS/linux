@@ -85,7 +85,7 @@ static irqreturn_t spear13xx_pcie_irq_handler(int irq, void *arg)
 	struct spear13xx_pcie *spear13xx_pcie = arg;
 	struct pcie_app_reg __iomem *app_reg = spear13xx_pcie->app_base;
 	struct dw_pcie *pci = spear13xx_pcie->pci;
-	struct pcie_port *pp = &pci->pp;
+	struct dw_pcie_rp *pp = &pci->pp;
 	unsigned int status;
 
 	status = readl(&app_reg->int_sts);
@@ -110,18 +110,15 @@ static void spear13xx_pcie_enable_interrupts(struct spear13xx_pcie *spear13xx_pc
 				MSI_CTRL_INT, &app_reg->int_mask);
 }
 
-static int spear13xx_pcie_link_up(struct dw_pcie *pci)
+static bool spear13xx_pcie_link_up(struct dw_pcie *pci)
 {
 	struct spear13xx_pcie *spear13xx_pcie = to_spear13xx_pcie(pci);
 	struct pcie_app_reg __iomem *app_reg = spear13xx_pcie->app_base;
 
-	if (readl(&app_reg->app_status_1) & XMLH_LINK_UP)
-		return 1;
-
-	return 0;
+	return readl(&app_reg->app_status_1) & XMLH_LINK_UP;
 }
 
-static int spear13xx_pcie_host_init(struct pcie_port *pp)
+static int spear13xx_pcie_host_init(struct dw_pcie_rp *pp)
 {
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
 	struct spear13xx_pcie *spear13xx_pcie = to_spear13xx_pcie(pci);
@@ -148,14 +145,14 @@ static int spear13xx_pcie_host_init(struct pcie_port *pp)
 }
 
 static const struct dw_pcie_host_ops spear13xx_pcie_host_ops = {
-	.host_init = spear13xx_pcie_host_init,
+	.init = spear13xx_pcie_host_init,
 };
 
 static int spear13xx_add_pcie_port(struct spear13xx_pcie *spear13xx_pcie,
 				   struct platform_device *pdev)
 {
 	struct dw_pcie *pci = spear13xx_pcie->pci;
-	struct pcie_port *pp = &pci->pp;
+	struct dw_pcie_rp *pp = &pci->pp;
 	struct device *dev = &pdev->dev;
 	int ret;
 
@@ -172,7 +169,7 @@ static int spear13xx_add_pcie_port(struct spear13xx_pcie *spear13xx_pcie,
 	}
 
 	pp->ops = &spear13xx_pcie_host_ops;
-	pp->msi_irq = -ENODEV;
+	pp->msi_irq[0] = -ENODEV;
 
 	ret = dw_pcie_host_init(pp);
 	if (ret) {
@@ -233,7 +230,7 @@ static int spear13xx_pcie_probe(struct platform_device *pdev)
 	}
 
 	if (of_property_read_bool(np, "st,pcie-is-gen1"))
-		pci->link_gen = 1;
+		pci->max_link_speed = 1;
 
 	platform_set_drvdata(pdev, spear13xx_pcie);
 
@@ -258,7 +255,7 @@ static struct platform_driver spear13xx_pcie_driver = {
 	.probe		= spear13xx_pcie_probe,
 	.driver = {
 		.name	= "spear-pcie",
-		.of_match_table = of_match_ptr(spear13xx_pcie_of_match),
+		.of_match_table = spear13xx_pcie_of_match,
 		.suppress_bind_attrs = true,
 	},
 };

@@ -13,9 +13,9 @@
 #include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/regmap.h>
-#include <linux/of_device.h>
 #include <linux/mfd/syscon.h>
 #include <linux/dma-mapping.h>
+#include <linux/of.h>
 
 #include "sdhci-pltfm.h"
 
@@ -184,15 +184,10 @@ static int sdhci_sparx5_probe(struct platform_device *pdev)
 	sdhci_sparx5 = sdhci_pltfm_priv(pltfm_host);
 	sdhci_sparx5->host = host;
 
-	pltfm_host->clk = devm_clk_get(&pdev->dev, "core");
-	if (IS_ERR(pltfm_host->clk)) {
-		ret = PTR_ERR(pltfm_host->clk);
-		dev_err(&pdev->dev, "failed to get core clk: %d\n", ret);
-		goto free_pltfm;
-	}
-	ret = clk_prepare_enable(pltfm_host->clk);
-	if (ret)
-		goto free_pltfm;
+	pltfm_host->clk = devm_clk_get_enabled(&pdev->dev, "core");
+	if (IS_ERR(pltfm_host->clk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(pltfm_host->clk),
+				     "failed to get and enable core clk\n");
 
 	if (!of_property_read_u32(np, "microchip,clock-delay", &value) &&
 	    (value > 0 && value <= MSHC_DLY_CC_MAX))
@@ -202,14 +197,12 @@ static int sdhci_sparx5_probe(struct platform_device *pdev)
 
 	ret = mmc_of_parse(host->mmc);
 	if (ret)
-		goto err_clk;
+		return ret;
 
 	sdhci_sparx5->cpu_ctrl = syscon_regmap_lookup_by_compatible(syscon);
-	if (IS_ERR(sdhci_sparx5->cpu_ctrl)) {
-		dev_err(&pdev->dev, "No CPU syscon regmap !\n");
-		ret = PTR_ERR(sdhci_sparx5->cpu_ctrl);
-		goto err_clk;
-	}
+	if (IS_ERR(sdhci_sparx5->cpu_ctrl))
+		return dev_err_probe(&pdev->dev, PTR_ERR(sdhci_sparx5->cpu_ctrl),
+				     "No CPU syscon regmap !\n");
 
 	if (sdhci_sparx5->delay_clock >= 0)
 		sparx5_set_delay(host, sdhci_sparx5->delay_clock);
@@ -225,7 +218,7 @@ static int sdhci_sparx5_probe(struct platform_device *pdev)
 
 	ret = sdhci_add_host(host);
 	if (ret)
-		goto err_clk;
+		return ret;
 
 	/* Set AXI bus master to use un-cached access (for DMA) */
 	if (host->flags & (SDHCI_USE_SDMA | SDHCI_USE_ADMA) &&
@@ -237,12 +230,6 @@ static int sdhci_sparx5_probe(struct platform_device *pdev)
 	pr_debug("%s: SDHC type:    0x%08x\n",
 		 mmc_hostname(host->mmc), sdhci_readl(host, MSHC2_TYPE));
 
-	return ret;
-
-err_clk:
-	clk_disable_unprepare(pltfm_host->clk);
-free_pltfm:
-	sdhci_pltfm_free(pdev);
 	return ret;
 }
 
@@ -260,7 +247,7 @@ static struct platform_driver sdhci_sparx5_driver = {
 		.pm = &sdhci_pltfm_pmops,
 	},
 	.probe = sdhci_sparx5_probe,
-	.remove = sdhci_pltfm_unregister,
+	.remove = sdhci_pltfm_remove,
 };
 
 module_platform_driver(sdhci_sparx5_driver);

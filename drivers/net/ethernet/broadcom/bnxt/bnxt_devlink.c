@@ -11,7 +11,8 @@
 #include <linux/netdevice.h>
 #include <linux/vmalloc.h>
 #include <net/devlink.h>
-#include "bnxt_hsi.h"
+#include <net/netdev_lock.h>
+#include <linux/bnxt/hsi.h>
 #include "bnxt.h"
 #include "bnxt_hwrm.h"
 #include "bnxt_vfr.h"
@@ -20,6 +21,7 @@
 #include "bnxt_ulp.h"
 #include "bnxt_ptp.h"
 #include "bnxt_coredump.h"
+#include "bnxt_nvm_defs.h"
 
 static void __bnxt_fw_recover(struct bnxt *bp)
 {
@@ -38,12 +40,6 @@ bnxt_dl_flash_update(struct devlink *dl,
 	struct bnxt *bp = bnxt_get_bp_from_dl(dl);
 	int rc;
 
-	if (!BNXT_PF(bp)) {
-		NL_SET_ERR_MSG_MOD(extack,
-				   "flash update not supported from a VF");
-		return -EPERM;
-	}
-
 	devlink_flash_update_status_notify(dl, "Preparing to flash", NULL, 0, 0);
 	rc = bnxt_flash_package_from_fw_obj(bp->dev, params->fw, 0, extack);
 	if (!rc)
@@ -61,7 +57,7 @@ static int bnxt_hwrm_remote_dev_reset_set(struct bnxt *bp, bool remote_reset)
 	if (~bp->fw_cap & BNXT_FW_CAP_HOT_RESET_IF)
 		return -EOPNOTSUPP;
 
-	rc = hwrm_req_init(bp, req, HWRM_FUNC_CFG);
+	rc = bnxt_hwrm_func_cfg_short_req_init(bp, &req);
 	if (rc)
 		return rc;
 
@@ -103,20 +99,21 @@ static int bnxt_fw_diagnose(struct devlink_health_reporter *reporter,
 	struct bnxt *bp = devlink_health_reporter_priv(reporter);
 	struct bnxt_fw_health *h = bp->fw_health;
 	u32 fw_status, fw_resets;
-	int rc;
 
-	if (test_bit(BNXT_STATE_IN_FW_RESET, &bp->state))
-		return devlink_fmsg_string_pair_put(fmsg, "Status", "recovering");
+	if (test_bit(BNXT_STATE_IN_FW_RESET, &bp->state)) {
+		devlink_fmsg_string_pair_put(fmsg, "Status", "recovering");
+		return 0;
+	}
 
-	if (!h->status_reliable)
-		return devlink_fmsg_string_pair_put(fmsg, "Status", "unknown");
+	if (!h->status_reliable) {
+		devlink_fmsg_string_pair_put(fmsg, "Status", "unknown");
+		return 0;
+	}
 
 	mutex_lock(&h->lock);
 	fw_status = bnxt_fw_health_readl(bp, BNXT_FW_HEALTH_REG);
 	if (BNXT_FW_IS_BOOTING(fw_status)) {
-		rc = devlink_fmsg_string_pair_put(fmsg, "Status", "initializing");
-		if (rc)
-			goto unlock;
+		devlink_fmsg_string_pair_put(fmsg, "Status", "initializing");
 	} else if (h->severity || fw_status != BNXT_FW_STATUS_HEALTHY) {
 		if (!h->severity) {
 			h->severity = SEVERITY_FATAL;
@@ -125,58 +122,35 @@ static int bnxt_fw_diagnose(struct devlink_health_reporter *reporter,
 			devlink_health_report(h->fw_reporter,
 					      "FW error diagnosed", h);
 		}
-		rc = devlink_fmsg_string_pair_put(fmsg, "Status", "error");
-		if (rc)
-			goto unlock;
-		rc = devlink_fmsg_u32_pair_put(fmsg, "Syndrome", fw_status);
-		if (rc)
-			goto unlock;
+		devlink_fmsg_string_pair_put(fmsg, "Status", "error");
+		devlink_fmsg_u32_pair_put(fmsg, "Syndrome", fw_status);
 	} else {
-		rc = devlink_fmsg_string_pair_put(fmsg, "Status", "healthy");
-		if (rc)
-			goto unlock;
+		devlink_fmsg_string_pair_put(fmsg, "Status", "healthy");
 	}
 
-	rc = devlink_fmsg_string_pair_put(fmsg, "Severity",
-					  bnxt_health_severity_str(h->severity));
-	if (rc)
-		goto unlock;
+	devlink_fmsg_string_pair_put(fmsg, "Severity",
+				     bnxt_health_severity_str(h->severity));
 
 	if (h->severity) {
-		rc = devlink_fmsg_string_pair_put(fmsg, "Remedy",
-						  bnxt_health_remedy_str(h->remedy));
-		if (rc)
-			goto unlock;
-		if (h->remedy == REMEDY_DEVLINK_RECOVER) {
-			rc = devlink_fmsg_string_pair_put(fmsg, "Impact",
-							  "traffic+ntuple_cfg");
-			if (rc)
-				goto unlock;
-		}
+		devlink_fmsg_string_pair_put(fmsg, "Remedy",
+					     bnxt_health_remedy_str(h->remedy));
+		if (h->remedy == REMEDY_DEVLINK_RECOVER)
+			devlink_fmsg_string_pair_put(fmsg, "Impact",
+						     "traffic+ntuple_cfg");
 	}
 
-unlock:
 	mutex_unlock(&h->lock);
-	if (rc || !h->resets_reliable)
-		return rc;
+	if (!h->resets_reliable)
+		return 0;
 
 	fw_resets = bnxt_fw_health_readl(bp, BNXT_FW_RESET_CNT_REG);
-	rc = devlink_fmsg_u32_pair_put(fmsg, "Resets", fw_resets);
-	if (rc)
-		return rc;
-	rc = devlink_fmsg_u32_pair_put(fmsg, "Arrests", h->arrests);
-	if (rc)
-		return rc;
-	rc = devlink_fmsg_u32_pair_put(fmsg, "Survivals", h->survivals);
-	if (rc)
-		return rc;
-	rc = devlink_fmsg_u32_pair_put(fmsg, "Discoveries", h->discoveries);
-	if (rc)
-		return rc;
-	rc = devlink_fmsg_u32_pair_put(fmsg, "Fatalities", h->fatalities);
-	if (rc)
-		return rc;
-	return devlink_fmsg_u32_pair_put(fmsg, "Diagnoses", h->diagnoses);
+	devlink_fmsg_u32_pair_put(fmsg, "Resets", fw_resets);
+	devlink_fmsg_u32_pair_put(fmsg, "Arrests", h->arrests);
+	devlink_fmsg_u32_pair_put(fmsg, "Survivals", h->survivals);
+	devlink_fmsg_u32_pair_put(fmsg, "Discoveries", h->discoveries);
+	devlink_fmsg_u32_pair_put(fmsg, "Fatalities", h->fatalities);
+	devlink_fmsg_u32_pair_put(fmsg, "Diagnoses", h->diagnoses);
+	return 0;
 }
 
 static int bnxt_fw_dump(struct devlink_health_reporter *reporter,
@@ -202,19 +176,12 @@ static int bnxt_fw_dump(struct devlink_health_reporter *reporter,
 
 	rc = bnxt_get_coredump(bp, BNXT_DUMP_LIVE, data, &dump_len);
 	if (!rc) {
-		rc = devlink_fmsg_pair_nest_start(fmsg, "core");
-		if (rc)
-			goto exit;
-		rc = devlink_fmsg_binary_pair_put(fmsg, "data", data, dump_len);
-		if (rc)
-			goto exit;
-		rc = devlink_fmsg_u32_pair_put(fmsg, "size", dump_len);
-		if (rc)
-			goto exit;
-		rc = devlink_fmsg_pair_nest_end(fmsg);
+		devlink_fmsg_pair_nest_start(fmsg, "core");
+		devlink_fmsg_binary_pair_put(fmsg, "data", data, dump_len);
+		devlink_fmsg_u32_pair_put(fmsg, "size", dump_len);
+		devlink_fmsg_pair_nest_end(fmsg);
 	}
 
-exit:
 	vfree(data);
 	return rc;
 }
@@ -247,7 +214,7 @@ __bnxt_dl_reporter_create(struct bnxt *bp,
 {
 	struct devlink_health_reporter *reporter;
 
-	reporter = devlink_health_reporter_create(bp->dl, ops, 0, bp);
+	reporter = devlink_health_reporter_create(bp->dl, ops, bp);
 	if (IS_ERR(reporter)) {
 		netdev_warn(bp->dev, "Failed to create %s health reporter, rc = %ld\n",
 			    ops->name, PTR_ERR(reporter));
@@ -465,40 +432,37 @@ static int bnxt_dl_reload_down(struct devlink *dl, bool netns_change,
 
 	switch (action) {
 	case DEVLINK_RELOAD_ACTION_DRIVER_REINIT: {
+		bnxt_ulp_stop(bp);
 		rtnl_lock();
+		netdev_lock(bp->dev);
 		if (bnxt_sriov_cfg(bp)) {
 			NL_SET_ERR_MSG_MOD(extack,
 					   "reload is unsupported while VFs are allocated or being configured");
+			netdev_unlock(bp->dev);
 			rtnl_unlock();
+			bnxt_ulp_start(bp, 0);
 			return -EOPNOTSUPP;
 		}
 		if (bp->dev->reg_state == NETREG_UNREGISTERED) {
+			netdev_unlock(bp->dev);
 			rtnl_unlock();
+			bnxt_ulp_start(bp, 0);
 			return -ENODEV;
 		}
-		bnxt_ulp_stop(bp);
-		if (netif_running(bp->dev)) {
-			rc = bnxt_close_nic(bp, true, true);
-			if (rc) {
-				NL_SET_ERR_MSG_MOD(extack, "Failed to close");
-				dev_close(bp->dev);
-				rtnl_unlock();
-				break;
-			}
-		}
+		if (netif_running(bp->dev))
+			bnxt_close_nic(bp, true, true);
 		bnxt_vf_reps_free(bp);
 		rc = bnxt_hwrm_func_drv_unrgtr(bp);
 		if (rc) {
 			NL_SET_ERR_MSG_MOD(extack, "Failed to deregister");
 			if (netif_running(bp->dev))
-				dev_close(bp->dev);
+				netif_close(bp->dev);
+			netdev_unlock(bp->dev);
 			rtnl_unlock();
 			break;
 		}
-		bnxt_cancel_reservations(bp, false);
-		bnxt_free_ctx_mem(bp);
-		kfree(bp->ctx);
-		bp->ctx = NULL;
+		bnxt_clear_reservations(bp, false);
+		bnxt_free_ctx_mem(bp, false);
 		break;
 	}
 	case DEVLINK_RELOAD_ACTION_FW_ACTIVATE: {
@@ -514,7 +478,9 @@ static int bnxt_dl_reload_down(struct devlink *dl, bool netns_change,
 			return -EPERM;
 		}
 		rtnl_lock();
+		netdev_lock(bp->dev);
 		if (bp->dev->reg_state == NETREG_UNREGISTERED) {
+			netdev_unlock(bp->dev);
 			rtnl_unlock();
 			return -ENODEV;
 		}
@@ -528,6 +494,7 @@ static int bnxt_dl_reload_down(struct devlink *dl, bool netns_change,
 		if (rc) {
 			NL_SET_ERR_MSG_MOD(extack, "Failed to activate firmware");
 			clear_bit(BNXT_STATE_FW_ACTIVATE, &bp->state);
+			netdev_unlock(bp->dev);
 			rtnl_unlock();
 		}
 		break;
@@ -546,6 +513,8 @@ static int bnxt_dl_reload_up(struct devlink *dl, enum devlink_reload_action acti
 	struct bnxt *bp = bnxt_get_bp_from_dl(dl);
 	int rc = 0;
 
+	netdev_assert_locked(bp->dev);
+
 	*actions_performed = 0;
 	switch (action) {
 	case DEVLINK_RELOAD_ACTION_DRIVER_REINIT: {
@@ -553,7 +522,6 @@ static int bnxt_dl_reload_up(struct devlink *dl, enum devlink_reload_action acti
 		bnxt_vf_reps_alloc(bp);
 		if (netif_running(bp->dev))
 			rc = bnxt_open_nic(bp, true, true);
-		bnxt_ulp_start(bp, rc);
 		if (!rc) {
 			bnxt_reenable_sriov(bp);
 			bnxt_ptp_reapply_pps(bp);
@@ -571,6 +539,7 @@ static int bnxt_dl_reload_up(struct devlink *dl, enum devlink_reload_action acti
 		if (!netif_running(bp->dev))
 			NL_SET_ERR_MSG_MOD(extack,
 					   "Device is closed, not waiting for reset notice that will never come");
+		netdev_unlock(bp->dev);
 		rtnl_unlock();
 		while (test_bit(BNXT_STATE_FW_ACTIVATE, &bp->state)) {
 			if (time_after(jiffies, timeout)) {
@@ -586,6 +555,7 @@ static int bnxt_dl_reload_up(struct devlink *dl, enum devlink_reload_action acti
 			msleep(50);
 		}
 		rtnl_lock();
+		netdev_lock(bp->dev);
 		if (!rc)
 			*actions_performed |= BIT(DEVLINK_RELOAD_ACTION_DRIVER_REINIT);
 		clear_bit(BNXT_STATE_FW_ACTIVATE, &bp->state);
@@ -604,10 +574,71 @@ static int bnxt_dl_reload_up(struct devlink *dl, enum devlink_reload_action acti
 		}
 		*actions_performed |= BIT(action);
 	} else if (netif_running(bp->dev)) {
-		dev_close(bp->dev);
+		netif_close(bp->dev);
 	}
+	netdev_unlock(bp->dev);
 	rtnl_unlock();
+	if (action == DEVLINK_RELOAD_ACTION_DRIVER_REINIT)
+		bnxt_ulp_start(bp, rc);
 	return rc;
+}
+
+static bool bnxt_nvm_test(struct bnxt *bp, struct netlink_ext_ack *extack)
+{
+	bool rc = false;
+	u32 datalen;
+	u16 index;
+	u8 *buf;
+
+	if (bnxt_find_nvram_item(bp->dev, BNX_DIR_TYPE_VPD,
+				 BNX_DIR_ORDINAL_FIRST, BNX_DIR_EXT_NONE,
+				 &index, NULL, &datalen) || !datalen) {
+		NL_SET_ERR_MSG_MOD(extack, "nvm test vpd entry error");
+		return false;
+	}
+
+	buf = kzalloc(datalen, GFP_KERNEL);
+	if (!buf) {
+		NL_SET_ERR_MSG_MOD(extack, "insufficient memory for nvm test");
+		return false;
+	}
+
+	if (bnxt_get_nvram_item(bp->dev, index, 0, datalen, buf)) {
+		NL_SET_ERR_MSG_MOD(extack, "nvm test vpd read error");
+		goto done;
+	}
+
+	if (bnxt_flash_nvram(bp->dev, BNX_DIR_TYPE_VPD, BNX_DIR_ORDINAL_FIRST,
+			     BNX_DIR_EXT_NONE, 0, 0, buf, datalen)) {
+		NL_SET_ERR_MSG_MOD(extack, "nvm test vpd write error");
+		goto done;
+	}
+
+	rc = true;
+
+done:
+	kfree(buf);
+	return rc;
+}
+
+static bool bnxt_dl_selftest_check(struct devlink *dl, unsigned int id,
+				   struct netlink_ext_ack *extack)
+{
+	return id == DEVLINK_ATTR_SELFTEST_ID_FLASH;
+}
+
+static enum devlink_selftest_status bnxt_dl_selftest_run(struct devlink *dl,
+							 unsigned int id,
+							 struct netlink_ext_ack *extack)
+{
+	struct bnxt *bp = bnxt_get_bp_from_dl(dl);
+
+	if (id == DEVLINK_ATTR_SELFTEST_ID_FLASH)
+		return bnxt_nvm_test(bp, extack) ?
+				DEVLINK_SELFTEST_STATUS_PASS :
+				DEVLINK_SELFTEST_STATUS_FAIL;
+
+	return DEVLINK_SELFTEST_STATUS_SKIP;
 }
 
 static const struct devlink_ops bnxt_dl_ops = {
@@ -622,6 +653,8 @@ static const struct devlink_ops bnxt_dl_ops = {
 	.reload_limits	  = BIT(DEVLINK_RELOAD_LIMIT_NO_RESET),
 	.reload_down	  = bnxt_dl_reload_down,
 	.reload_up	  = bnxt_dl_reload_up,
+	.selftest_check	  = bnxt_dl_selftest_check,
+	.selftest_run	  = bnxt_dl_selftest_run,
 };
 
 static const struct devlink_ops bnxt_vf_dl_ops;
@@ -640,6 +673,8 @@ static const struct bnxt_dl_nvm_param nvm_params[] = {
 	 NVM_OFF_MSIX_VEC_PER_PF_MAX, BNXT_NVM_SHARED_CFG, 10, 4},
 	{DEVLINK_PARAM_GENERIC_ID_MSIX_VEC_PER_PF_MIN,
 	 NVM_OFF_MSIX_VEC_PER_PF_MIN, BNXT_NVM_SHARED_CFG, 7, 4},
+	{DEVLINK_PARAM_GENERIC_ID_ENABLE_ROCE, NVM_OFF_SUPPORT_RDMA,
+	 BNXT_NVM_FUNC_CFG, 1, 1},
 	{BNXT_DEVLINK_PARAM_ID_GRE_VER_CHECK, NVM_OFF_DIS_GRE_VER_CHECK,
 	 BNXT_NVM_SHARED_CFG, 1, 1},
 };
@@ -709,7 +744,7 @@ static int bnxt_hwrm_get_nvm_cfg_ver(struct bnxt *bp, u32 *nvm_cfg_ver)
 	}
 
 	/* earlier devices present as an array of raw bytes */
-	if (!BNXT_CHIP_P5(bp)) {
+	if (!BNXT_CHIP_P5_PLUS(bp)) {
 		dim = 0;
 		i = 0;
 		bits *= 3;  /* array of 3 version components */
@@ -729,7 +764,7 @@ static int bnxt_hwrm_get_nvm_cfg_ver(struct bnxt *bp, u32 *nvm_cfg_ver)
 			goto exit;
 		bnxt_copy_from_nvm_data(&ver, data, bits, bytes);
 
-		if (BNXT_CHIP_P5(bp)) {
+		if (BNXT_CHIP_P5_PLUS(bp)) {
 			*nvm_cfg_ver <<= 8;
 			*nvm_cfg_ver |= ver.vu8;
 		} else {
@@ -749,7 +784,7 @@ static int bnxt_dl_info_put(struct bnxt *bp, struct devlink_info_req *req,
 	if (!strlen(buf))
 		return 0;
 
-	if ((bp->flags & BNXT_FLAG_CHIP_P5) &&
+	if ((bp->flags & BNXT_FLAG_CHIP_P5_PLUS) &&
 	    (!strcmp(key, DEVLINK_INFO_VERSION_GENERIC_FW_NCSI) ||
 	     !strcmp(key, DEVLINK_INFO_VERSION_GENERIC_FW_ROCE)))
 		return 0;
@@ -830,10 +865,6 @@ static int bnxt_dl_info_get(struct devlink *dl, struct devlink_info_req *req,
 	char buf[32];
 	u32 ver = 0;
 	int rc;
-
-	rc = devlink_info_driver_name_put(req, DRV_MODULE_NAME);
-	if (rc)
-		return rc;
 
 	if (BNXT_PF(bp) && (bp->flags & BNXT_FLAG_DSN_VALID)) {
 		sprintf(buf, "%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X",
@@ -979,44 +1010,28 @@ static int bnxt_dl_info_get(struct devlink *dl, struct devlink_info_req *req,
 	if (rc)
 		return rc;
 
-	rc = bnxt_dl_livepatch_info_put(bp, req, BNXT_FW_SRT_PATCH);
-	if (rc)
-		return rc;
+	if (BNXT_CHIP_P5_PLUS(bp)) {
+		rc = bnxt_dl_livepatch_info_put(bp, req, BNXT_FW_SRT_PATCH);
+		if (rc)
+			return rc;
+	}
 	return bnxt_dl_livepatch_info_put(bp, req, BNXT_FW_CRT_PATCH);
 
 }
 
-static int bnxt_hwrm_nvm_req(struct bnxt *bp, u32 param_id, void *msg,
-			     union devlink_param_value *val)
+static int __bnxt_hwrm_nvm_req(struct bnxt *bp,
+			       const struct bnxt_dl_nvm_param *nvm, void *msg,
+			       union devlink_param_value *val)
 {
 	struct hwrm_nvm_get_variable_input *req = msg;
-	struct bnxt_dl_nvm_param nvm_param;
 	struct hwrm_err_output *resp;
 	union bnxt_nvm_data *data;
 	dma_addr_t data_dma_addr;
-	int idx = 0, rc, i;
+	int idx = 0, rc;
 
-	/* Get/Set NVM CFG parameter is supported only on PFs */
-	if (BNXT_VF(bp)) {
-		hwrm_req_drop(bp, req);
-		return -EPERM;
-	}
-
-	for (i = 0; i < ARRAY_SIZE(nvm_params); i++) {
-		if (nvm_params[i].id == param_id) {
-			nvm_param = nvm_params[i];
-			break;
-		}
-	}
-
-	if (i == ARRAY_SIZE(nvm_params)) {
-		hwrm_req_drop(bp, req);
-		return -EOPNOTSUPP;
-	}
-
-	if (nvm_param.dir_type == BNXT_NVM_PORT_CFG)
+	if (nvm->dir_type == BNXT_NVM_PORT_CFG)
 		idx = bp->pf.port_id;
-	else if (nvm_param.dir_type == BNXT_NVM_FUNC_CFG)
+	else if (nvm->dir_type == BNXT_NVM_FUNC_CFG)
 		idx = bp->pf.fw_fid - BNXT_FIRST_PF_FID;
 
 	data = hwrm_req_dma_slice(bp, req, sizeof(*data), &data_dma_addr);
@@ -1027,23 +1042,23 @@ static int bnxt_hwrm_nvm_req(struct bnxt *bp, u32 param_id, void *msg,
 	}
 
 	req->dest_data_addr = cpu_to_le64(data_dma_addr);
-	req->data_len = cpu_to_le16(nvm_param.nvm_num_bits);
-	req->option_num = cpu_to_le16(nvm_param.offset);
+	req->data_len = cpu_to_le16(nvm->nvm_num_bits);
+	req->option_num = cpu_to_le16(nvm->offset);
 	req->index_0 = cpu_to_le16(idx);
 	if (idx)
 		req->dimensions = cpu_to_le16(1);
 
 	resp = hwrm_req_hold(bp, req);
 	if (req->req_type == cpu_to_le16(HWRM_NVM_SET_VARIABLE)) {
-		bnxt_copy_to_nvm_data(data, val, nvm_param.nvm_num_bits,
-				      nvm_param.dl_num_bytes);
+		bnxt_copy_to_nvm_data(data, val, nvm->nvm_num_bits,
+				      nvm->dl_num_bytes);
 		rc = hwrm_req_send(bp, msg);
 	} else {
 		rc = hwrm_req_send_silent(bp, msg);
 		if (!rc) {
 			bnxt_copy_from_nvm_data(val, data,
-						nvm_param.nvm_num_bits,
-						nvm_param.dl_num_bytes);
+						nvm->nvm_num_bits,
+						nvm->dl_num_bytes);
 		} else {
 			if (resp->cmd_err ==
 				NVM_GET_VARIABLE_CMD_ERR_CODE_VAR_NOT_EXIST)
@@ -1056,8 +1071,23 @@ static int bnxt_hwrm_nvm_req(struct bnxt *bp, u32 param_id, void *msg,
 	return rc;
 }
 
+static int bnxt_hwrm_nvm_req(struct bnxt *bp, u32 param_id, void *msg,
+			     union devlink_param_value *val)
+{
+	const struct bnxt_dl_nvm_param *nvm_param;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(nvm_params); i++) {
+		nvm_param = &nvm_params[i];
+		if (nvm_param->id == param_id)
+			return __bnxt_hwrm_nvm_req(bp, nvm_param, msg, val);
+	}
+	return -EOPNOTSUPP;
+}
+
 static int bnxt_dl_nvm_param_get(struct devlink *dl, u32 id,
-				 struct devlink_param_gset_ctx *ctx)
+				 struct devlink_param_gset_ctx *ctx,
+				 struct netlink_ext_ack *extack)
 {
 	struct bnxt *bp = bnxt_get_bp_from_dl(dl);
 	struct hwrm_nvm_get_variable_input *req;
@@ -1075,7 +1105,8 @@ static int bnxt_dl_nvm_param_get(struct devlink *dl, u32 id,
 }
 
 static int bnxt_dl_nvm_param_set(struct devlink *dl, u32 id,
-				 struct devlink_param_gset_ctx *ctx)
+				 struct devlink_param_gset_ctx *ctx,
+				 struct netlink_ext_ack *extack)
 {
 	struct bnxt *bp = bnxt_get_bp_from_dl(dl);
 	struct hwrm_nvm_set_variable_input *req;
@@ -1089,6 +1120,32 @@ static int bnxt_dl_nvm_param_set(struct devlink *dl, u32 id,
 		ctx->val.vbool = !ctx->val.vbool;
 
 	return bnxt_hwrm_nvm_req(bp, id, req, &ctx->val);
+}
+
+static int bnxt_dl_roce_validate(struct devlink *dl, u32 id,
+				 union devlink_param_value val,
+				 struct netlink_ext_ack *extack)
+{
+	const struct bnxt_dl_nvm_param nvm_roce_cap = {0, NVM_OFF_RDMA_CAPABLE,
+		BNXT_NVM_SHARED_CFG, 1, 1};
+	struct bnxt *bp = bnxt_get_bp_from_dl(dl);
+	struct hwrm_nvm_get_variable_input *req;
+	union devlink_param_value roce_cap;
+	int rc;
+
+	rc = hwrm_req_init(bp, req, HWRM_NVM_GET_VARIABLE);
+	if (rc)
+		return rc;
+
+	if (__bnxt_hwrm_nvm_req(bp, &nvm_roce_cap, req, &roce_cap)) {
+		NL_SET_ERR_MSG_MOD(extack, "Unable to verify if device is RDMA Capable");
+		return -EINVAL;
+	}
+	if (!roce_cap.vbool) {
+		NL_SET_ERR_MSG_MOD(extack, "Device does not support RDMA");
+		return -EINVAL;
+	}
+	return 0;
 }
 
 static int bnxt_dl_msix_validate(struct devlink *dl, u32 id,
@@ -1112,7 +1169,8 @@ static int bnxt_dl_msix_validate(struct devlink *dl, u32 id,
 }
 
 static int bnxt_remote_dev_reset_get(struct devlink *dl, u32 id,
-				     struct devlink_param_gset_ctx *ctx)
+				     struct devlink_param_gset_ctx *ctx,
+				     struct netlink_ext_ack *extack)
 {
 	struct bnxt *bp = bnxt_get_bp_from_dl(dl);
 
@@ -1124,7 +1182,8 @@ static int bnxt_remote_dev_reset_get(struct devlink *dl, u32 id,
 }
 
 static int bnxt_remote_dev_reset_set(struct devlink *dl, u32 id,
-				     struct devlink_param_gset_ctx *ctx)
+				     struct devlink_param_gset_ctx *ctx,
+				     struct netlink_ext_ack *extack)
 {
 	struct bnxt *bp = bnxt_get_bp_from_dl(dl);
 	int rc;
@@ -1154,6 +1213,10 @@ static const struct devlink_param bnxt_dl_params[] = {
 			      BIT(DEVLINK_PARAM_CMODE_PERMANENT),
 			      bnxt_dl_nvm_param_get, bnxt_dl_nvm_param_set,
 			      bnxt_dl_msix_validate),
+	DEVLINK_PARAM_GENERIC(ENABLE_ROCE,
+			      BIT(DEVLINK_PARAM_CMODE_PERMANENT),
+			      bnxt_dl_nvm_param_get, bnxt_dl_nvm_param_set,
+			      bnxt_dl_roce_validate),
 	DEVLINK_PARAM_DRIVER(BNXT_DEVLINK_PARAM_ID_GRE_VER_CHECK,
 			     "gre_ver_check", DEVLINK_PARAM_TYPE_BOOL,
 			     BIT(DEVLINK_PARAM_CMODE_PERMANENT),

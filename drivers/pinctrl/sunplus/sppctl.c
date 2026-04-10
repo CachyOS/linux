@@ -4,6 +4,7 @@
  * Copyright (C) Sunplus Tech / Tibbo Tech.
  */
 
+#include <linux/cleanup.h>
 #include <linux/bitfield.h>
 #include <linux/device.h>
 #include <linux/err.h>
@@ -11,7 +12,6 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/overflow.h>
 #include <linux/platform_device.h>
 #include <linux/seq_file.h>
@@ -461,13 +461,15 @@ static int sppctl_gpio_get(struct gpio_chip *chip, unsigned int offset)
 	return (reg & BIT(bit_off)) ? 1 : 0;
 }
 
-static void sppctl_gpio_set(struct gpio_chip *chip, unsigned int offset, int val)
+static int sppctl_gpio_set(struct gpio_chip *chip, unsigned int offset, int val)
 {
 	struct sppctl_gpio_chip *spp_gchip = gpiochip_get_data(chip);
 	u32 reg_off, reg;
 
 	reg = sppctl_prep_moon_reg_and_offset(offset, &reg_off, val);
 	sppctl_gpio_out_writel(spp_gchip, reg, reg_off);
+
+	return 0;
 }
 
 static int sppctl_gpio_set_config(struct gpio_chip *chip, unsigned int offset,
@@ -486,7 +488,7 @@ static int sppctl_gpio_set_config(struct gpio_chip *chip, unsigned int offset,
 	case PIN_CONFIG_INPUT_ENABLE:
 		break;
 
-	case PIN_CONFIG_OUTPUT:
+	case PIN_CONFIG_LEVEL:
 		return sppctl_gpio_direction_output(chip, offset, 0);
 
 	case PIN_CONFIG_PERSIST_STATE:
@@ -499,19 +501,17 @@ static int sppctl_gpio_set_config(struct gpio_chip *chip, unsigned int offset,
 	return 0;
 }
 
-#ifdef CONFIG_DEBUG_FS
 static void sppctl_gpio_dbg_show(struct seq_file *s, struct gpio_chip *chip)
 {
-	const char *label;
 	int i;
 
 	for (i = 0; i < chip->ngpio; i++) {
-		label = gpiochip_is_requested(chip, i);
-		if (!label)
-			label = "";
+		char *label __free(kfree) = gpiochip_dup_line_label(chip, i);
+		if (IS_ERR(label))
+			continue;
 
 		seq_printf(s, " gpio-%03d (%-16.16s | %-16.16s)", i + chip->base,
-			   chip->names[i], label);
+			   chip->names[i], label ?: "");
 		seq_printf(s, " %c", sppctl_gpio_get_direction(chip, i) ? 'I' : 'O');
 		seq_printf(s, ":%d", sppctl_gpio_get(chip, i));
 		seq_printf(s, " %s", sppctl_first_get(chip, i) ? "gpi" : "mux");
@@ -521,7 +521,6 @@ static void sppctl_gpio_dbg_show(struct seq_file *s, struct gpio_chip *chip)
 		seq_puts(s, "\n");
 	}
 }
-#endif
 
 static int sppctl_gpio_new(struct platform_device *pdev, struct sppctl_pdata *pctl)
 {
@@ -550,13 +549,11 @@ static int sppctl_gpio_new(struct platform_device *pdev, struct sppctl_pdata *pc
 	gchip->get              = sppctl_gpio_get;
 	gchip->set              = sppctl_gpio_set;
 	gchip->set_config       = sppctl_gpio_set_config;
-#ifdef CONFIG_DEBUG_FS
-	gchip->dbg_show         = sppctl_gpio_dbg_show;
-#endif
+	gchip->dbg_show         = IS_ENABLED(CONFIG_DEBUG_FS) ?
+				  sppctl_gpio_dbg_show : NULL;
 	gchip->base             = -1;
 	gchip->ngpio            = sppctl_gpio_list_sz;
 	gchip->names            = sppctl_gpio_list_s;
-	gchip->of_gpio_n_cells  = 2;
 
 	pctl->pctl_grange.npins = gchip->ngpio;
 	pctl->pctl_grange.name  = gchip->label;
@@ -583,7 +580,7 @@ static int sppctl_pin_config_get(struct pinctrl_dev *pctldev, unsigned int pin,
 		arg = 0;
 		break;
 
-	case PIN_CONFIG_OUTPUT:
+	case PIN_CONFIG_LEVEL:
 		if (!sppctl_first_get(&pctl->spp_gchip->chip, pin))
 			return -EINVAL;
 		if (!sppctl_master_get(&pctl->spp_gchip->chip, pin))
@@ -838,11 +835,6 @@ static int sppctl_dt_node_to_map(struct pinctrl_dev *pctldev, struct device_node
 	int i, size = 0;
 
 	list = of_get_property(np_config, "sunplus,pins", &size);
-
-	if (nmG <= 0)
-		nmG = 0;
-
-	parent = of_get_parent(np_config);
 	*num_maps = size / sizeof(*list);
 
 	/*
@@ -870,7 +862,14 @@ static int sppctl_dt_node_to_map(struct pinctrl_dev *pctldev, struct device_node
 		}
 	}
 
-	*map = kcalloc(*num_maps + nmG, sizeof(**map), GFP_KERNEL);
+	if (nmG <= 0)
+		nmG = 0;
+
+	*map = kzalloc_objs(**map, *num_maps + nmG);
+	if (!(*map))
+		return -ENOMEM;
+
+	parent = of_get_parent(np_config);
 	for (i = 0; i < (*num_maps); i++) {
 		dt_pin = be32_to_cpu(list[i]);
 		pin_num = FIELD_GET(GENMASK(31, 24), dt_pin);
@@ -883,7 +882,9 @@ static int sppctl_dt_node_to_map(struct pinctrl_dev *pctldev, struct device_node
 			(*map)[i].type = PIN_MAP_TYPE_CONFIGS_PIN;
 			(*map)[i].data.configs.num_configs = 1;
 			(*map)[i].data.configs.group_or_pin = pin_get_name(pctldev, pin_num);
-			configs = kmalloc(sizeof(*configs), GFP_KERNEL);
+			configs = kmalloc_obj(*configs);
+			if (!configs)
+				goto sppctl_map_err;
 			*configs = FIELD_GET(GENMASK(7, 0), dt_pin);
 			(*map)[i].data.configs.configs = configs;
 
@@ -896,7 +897,9 @@ static int sppctl_dt_node_to_map(struct pinctrl_dev *pctldev, struct device_node
 			(*map)[i].type = PIN_MAP_TYPE_CONFIGS_PIN;
 			(*map)[i].data.configs.num_configs = 1;
 			(*map)[i].data.configs.group_or_pin = pin_get_name(pctldev, pin_num);
-			configs = kmalloc(sizeof(*configs), GFP_KERNEL);
+			configs = kmalloc_obj(*configs);
+			if (!configs)
+				goto sppctl_map_err;
 			*configs = SPPCTL_IOP_CONFIGS;
 			(*map)[i].data.configs.configs = configs;
 
@@ -966,6 +969,14 @@ static int sppctl_dt_node_to_map(struct pinctrl_dev *pctldev, struct device_node
 	of_node_put(parent);
 	dev_dbg(pctldev->dev, "%d pins mapped\n", *num_maps);
 	return 0;
+
+sppctl_map_err:
+	for (i = 0; i < (*num_maps); i++)
+		if ((*map)[i].type == PIN_MAP_TYPE_CONFIGS_PIN)
+			kfree((*map)[i].data.configs.configs);
+	kfree(*map);
+	of_node_put(parent);
+	return -ENOMEM;
 }
 
 static const struct pinctrl_ops sppctl_pctl_ops = {

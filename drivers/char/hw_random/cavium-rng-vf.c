@@ -225,7 +225,6 @@ static int cavium_rng_probe_vf(struct	pci_dev		*pdev,
 		return -ENOMEM;
 
 	rng->ops.read    = cavium_rng_read;
-	rng->ops.quality = 1000;
 
 	pci_set_drvdata(pdev, rng);
 
@@ -267,4 +266,5 @@ static struct pci_driver cavium_rng_vf_driver = {
 module_pci_driver(cavium_rng_vf_driver);
 
 MODULE_AUTHOR("Omer Khaliq <okhaliq@caviumnetworks.com>");
+MODULE_DESCRIPTION("Cavium ThunderX Random Number Generator VF support");
 MODULE_LICENSE("GPL v2");

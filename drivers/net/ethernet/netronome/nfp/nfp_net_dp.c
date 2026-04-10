@@ -184,8 +184,7 @@ int nfp_net_tx_rings_prepare(struct nfp_net *nn, struct nfp_net_dp *dp)
 {
 	unsigned int r;
 
-	dp->tx_rings = kcalloc(dp->num_tx_rings, sizeof(*dp->tx_rings),
-			       GFP_KERNEL);
+	dp->tx_rings = kzalloc_objs(*dp->tx_rings, dp->num_tx_rings);
 	if (!dp->tx_rings)
 		return -ENOMEM;
 
@@ -340,8 +339,7 @@ int nfp_net_rx_rings_prepare(struct nfp_net *nn, struct nfp_net_dp *dp)
 {
 	unsigned int r;
 
-	dp->rx_rings = kcalloc(dp->num_rx_rings, sizeof(*dp->rx_rings),
-			       GFP_KERNEL);
+	dp->rx_rings = kzalloc_objs(*dp->rx_rings, dp->num_rx_rings);
 	if (!dp->rx_rings)
 		return -ENOMEM;
 
@@ -439,4 +437,28 @@ bool nfp_ctrl_tx(struct nfp_net *nn, struct sk_buff *skb)
 	spin_unlock_bh(&r_vec->lock);
 
 	return ret;
+}
+
+bool nfp_net_vlan_strip(struct sk_buff *skb, const struct nfp_net_rx_desc *rxd,
+			const struct nfp_meta_parsed *meta)
+{
+	u16 tpid = 0, tci = 0;
+
+	if (rxd->rxd.flags & PCIE_DESC_RX_VLAN) {
+		tpid = ETH_P_8021Q;
+		tci = le16_to_cpu(rxd->rxd.vlan);
+	} else if (meta->vlan.stripped) {
+		if (meta->vlan.tpid == NFP_NET_VLAN_CTAG)
+			tpid = ETH_P_8021Q;
+		else if (meta->vlan.tpid == NFP_NET_VLAN_STAG)
+			tpid = ETH_P_8021AD;
+		else
+			return false;
+
+		tci = meta->vlan.tci;
+	}
+	if (tpid)
+		__vlan_hwaccel_put_tag(skb, htons(tpid), tci);
+
+	return true;
 }

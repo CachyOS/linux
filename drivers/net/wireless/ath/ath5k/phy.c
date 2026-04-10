@@ -26,7 +26,8 @@
 
 #include <linux/delay.h>
 #include <linux/slab.h>
-#include <asm/unaligned.h>
+#include <linux/sort.h>
+#include <linux/unaligned.h>
 
 #include "ath5k.h"
 #include "reg.h"
@@ -1554,6 +1555,11 @@ static void ath5k_hw_update_nfcal_hist(struct ath5k_hw *ah, s16 noise_floor)
 	hist->nfval[hist->index] = noise_floor;
 }
 
+static int cmps16(const void *a, const void *b)
+{
+	return *(s16 *)a - *(s16 *)b;
+}
+
 /**
  * ath5k_hw_get_median_noise_floor() - Get median NF from history buffer
  * @ah: The &struct ath5k_hw
@@ -1561,25 +1567,16 @@ static void ath5k_hw_update_nfcal_hist(struct ath5k_hw *ah, s16 noise_floor)
 static s16
 ath5k_hw_get_median_noise_floor(struct ath5k_hw *ah)
 {
-	s16 sort[ATH5K_NF_CAL_HIST_MAX];
-	s16 tmp;
-	int i, j;
+	s16 sorted_nfval[ATH5K_NF_CAL_HIST_MAX];
+	int i;
 
-	memcpy(sort, ah->ah_nfcal_hist.nfval, sizeof(sort));
-	for (i = 0; i < ATH5K_NF_CAL_HIST_MAX - 1; i++) {
-		for (j = 1; j < ATH5K_NF_CAL_HIST_MAX - i; j++) {
-			if (sort[j] > sort[j - 1]) {
-				tmp = sort[j];
-				sort[j] = sort[j - 1];
-				sort[j - 1] = tmp;
-			}
-		}
-	}
+	memcpy(sorted_nfval, ah->ah_nfcal_hist.nfval, sizeof(sorted_nfval));
+	sort(sorted_nfval, ATH5K_NF_CAL_HIST_MAX, sizeof(s16), cmps16, NULL);
 	for (i = 0; i < ATH5K_NF_CAL_HIST_MAX; i++) {
 		ATH5K_DBG(ah, ATH5K_DEBUG_CALIBRATE,
-			"cal %d:%d\n", i, sort[i]);
+			"cal %d:%d\n", i, sorted_nfval[i]);
 	}
-	return sort[(ATH5K_NF_CAL_HIST_MAX - 1) / 2];
+	return sorted_nfval[(ATH5K_NF_CAL_HIST_MAX - 1) / 2];
 }
 
 /**
@@ -3119,10 +3116,7 @@ ath5k_combine_pwr_to_pdadc_curves(struct ath5k_hw *ah,
 							pd_gain_overlap;
 
 		/* Force each power step to be at least 0.5 dB */
-		if ((pdadc_tmp[1] - pdadc_tmp[0]) > 1)
-			pwr_step = pdadc_tmp[1] - pdadc_tmp[0];
-		else
-			pwr_step = 1;
+		pwr_step = max(pdadc_tmp[1] - pdadc_tmp[0], 1);
 
 		/* If pdadc_0 is negative, we need to extrapolate
 		 * below this pdgain by a number of pwr_steps */
@@ -3136,7 +3130,7 @@ ath5k_combine_pwr_to_pdadc_curves(struct ath5k_hw *ah,
 		pdadc_n = gain_boundaries[pdg] + pd_gain_overlap - pwr_min[pdg];
 		/* Limit it to be inside pwr range */
 		table_size = pwr_max[pdg] - pwr_min[pdg];
-		max_idx = (pdadc_n < table_size) ? pdadc_n : table_size;
+		max_idx = min(pdadc_n, table_size);
 
 		/* Fill pdadc_out table */
 		while (pdadc_0 < max_idx && pdadc_i < 128)
@@ -3147,11 +3141,8 @@ ath5k_combine_pwr_to_pdadc_curves(struct ath5k_hw *ah,
 			continue;
 
 		/* Force each power step to be at least 0.5 dB */
-		if ((pdadc_tmp[table_size - 1] - pdadc_tmp[table_size - 2]) > 1)
-			pwr_step = pdadc_tmp[table_size - 1] -
-						pdadc_tmp[table_size - 2];
-		else
-			pwr_step = 1;
+		pwr_step = max(pdadc_tmp[table_size - 1] -
+			       pdadc_tmp[table_size - 2], 1);
 
 		/* Extrapolate above */
 		while ((pdadc_0 < (s16) pdadc_n) &&

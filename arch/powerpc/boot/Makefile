@@ -32,38 +32,61 @@ else
     BOOTAR := $(AR)
 endif
 
-BOOTCFLAGS    := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
-		 -fno-strict-aliasing -O2 -msoft-float -mno-altivec -mno-vsx \
-		 -pipe -fomit-frame-pointer -fno-builtin -fPIC -nostdinc \
-		 $(LINUXINCLUDE)
-
 ifdef CONFIG_PPC64_BOOT_WRAPPER
-ifdef CONFIG_CPU_LITTLE_ENDIAN
-BOOTCFLAGS	+= -m64 -mcpu=powerpc64le
-else
-BOOTCFLAGS	+= -m64 -mcpu=powerpc64
+BOOTTARGETFLAGS	+= -m64
+BOOTTARGETFLAGS	+= -mabi=elfv2
+ifdef CONFIG_PPC64_ELF_ABI_V2
+BOOTTARGETFLAGS	+= $(call cc-option,-mabi=elfv2)
 endif
 else
-BOOTCFLAGS	+= -m32 -mcpu=powerpc
+BOOTTARGETFLAGS	:= -m32
 endif
 
-BOOTCFLAGS	+= -isystem $(shell $(BOOTCC) -print-file-name=include)
+ifdef CONFIG_TARGET_CPU_BOOL
+BOOTTARGETFLAGS	+= -mcpu=$(CONFIG_TARGET_CPU)
+else ifdef CONFIG_PPC64_BOOT_WRAPPER
+ifdef CONFIG_CPU_LITTLE_ENDIAN
+BOOTTARGETFLAGS	+= -mcpu=powerpc64le
+else
+BOOTTARGETFLAGS	+= -mcpu=powerpc64
+endif
+endif
+
+$(obj)/4xx.o: BOOTTARGETFLAGS += -mcpu=405
+$(obj)/ebony.o: BOOTTARGETFLAGS += -mcpu=440
+$(obj)/cuboot-taishan.o: BOOTTARGETFLAGS += -mcpu=440
+$(obj)/cuboot-katmai.o: BOOTTARGETFLAGS += -mcpu=440
+$(obj)/treeboot-iss4xx.o: BOOTTARGETFLAGS += -mcpu=405
+$(obj)/treeboot-currituck.o: BOOTTARGETFLAGS += -mcpu=405
+$(obj)/treeboot-akebono.o: BOOTTARGETFLAGS += -mcpu=405
 
 ifdef CONFIG_CPU_BIG_ENDIAN
-BOOTCFLAGS	+= -mbig-endian
+BOOTTARGETFLAGS	+= -mbig-endian
 else
-BOOTCFLAGS	+= -mlittle-endian
-endif
-ifdef CONFIG_PPC64_ELF_ABI_V2
-BOOTCFLAGS	+= $(call cc-option,-mabi=elfv2)
+BOOTTARGETFLAGS	+= -mlittle-endian
 endif
 
-BOOTAFLAGS	:= -D__ASSEMBLY__ $(BOOTCFLAGS) -nostdinc
+BOOTCPPFLAGS	:= -nostdinc $(LINUXINCLUDE)
+BOOTCPPFLAGS	+= -isystem $(shell $(BOOTCC) -print-file-name=include)
+
+BOOTCFLAGS	:= $(BOOTTARGETFLAGS) \
+		   -std=gnu11 -fms-extensions \
+		   -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
+		   -fno-strict-aliasing -O2 \
+		   -msoft-float -mno-altivec -mno-vsx \
+		   $(call cc-option,-mno-prefixed) \
+		   $(call cc-option,-mno-pcrel) \
+		   $(call cc-option,-mno-mma) \
+		   $(call cc-option,-mno-spe) $(call cc-option,-mspe=no) \
+		   -fomit-frame-pointer -fno-builtin -fPIC
+
+BOOTAFLAGS	:= $(BOOTTARGETFLAGS) -D__ASSEMBLY__
 
 BOOTARFLAGS	:= -crD
 
 ifdef CONFIG_CC_IS_CLANG
 BOOTCFLAGS += $(CLANG_FLAGS)
+BOOTCFLAGS += -Wno-microsoft-anon-tag
 BOOTAFLAGS += $(CLANG_FLAGS)
 endif
 
@@ -80,23 +103,13 @@ BOOTCFLAGS	+= -I$(objtree)/$(obj) -I$(srctree)/$(obj)
 
 DTC_FLAGS	?= -p 1024
 
-$(obj)/4xx.o: BOOTCFLAGS += -mcpu=405
-$(obj)/ebony.o: BOOTCFLAGS += -mcpu=440
-$(obj)/cuboot-hotfoot.o: BOOTCFLAGS += -mcpu=405
-$(obj)/cuboot-taishan.o: BOOTCFLAGS += -mcpu=440
-$(obj)/cuboot-katmai.o: BOOTCFLAGS += -mcpu=440
-$(obj)/cuboot-acadia.o: BOOTCFLAGS += -mcpu=405
-$(obj)/treeboot-iss4xx.o: BOOTCFLAGS += -mcpu=405
-$(obj)/treeboot-currituck.o: BOOTCFLAGS += -mcpu=405
-$(obj)/treeboot-akebono.o: BOOTCFLAGS += -mcpu=405
-
 # The pre-boot decompressors pull in a lot of kernel headers and other source
 # files. This creates a bit of a dependency headache since we need to copy
 # these files into the build dir, fix up any includes and ensure that dependent
 # files are copied in the right order.
 
-# these need to be seperate variables because they are copied out of different
-# directories in the kernel tree. Sure you COULd merge them, but it's a
+# these need to be separate variables because they are copied out of different
+# directories in the kernel tree. Sure you COULD merge them, but it's a
 # cure-is-worse-than-disease situation.
 zlib-decomp-$(CONFIG_KERNEL_GZIP) := decompress_inflate.c
 zlib-$(CONFIG_KERNEL_GZIP) := inffast.c inflate.c inftrees.c
@@ -133,7 +146,6 @@ src-wlib-$(CONFIG_PPC_POWERNV) += opal-calls.S opal.c
 ifndef CONFIG_PPC64_BOOT_WRAPPER
 src-wlib-y += crtsavres.S
 endif
-src-wlib-$(CONFIG_40x) += 4xx.c planetcore.c
 src-wlib-$(CONFIG_44x) += 4xx.c ebony.c bamboo.c
 src-wlib-$(CONFIG_PPC_8xx) += mpc8xx.c planetcore.c fsl-soc.c
 src-wlib-$(CONFIG_PPC_82xx) += pq2.c fsl-soc.c planetcore.c
@@ -141,9 +153,6 @@ src-wlib-$(CONFIG_EMBEDDED6xx) += ugecon.c fsl-soc.c
 src-wlib-$(CONFIG_CPM) += cpm-serial.c
 
 src-plat-y := of.c epapr.c
-src-plat-$(CONFIG_40x) += fixed-head.S cuboot-hotfoot.c \
-				cuboot-acadia.c \
-				cuboot-kilauea.c simpleboot.c
 src-plat-$(CONFIG_44x) += treeboot-ebony.c cuboot-ebony.c treeboot-bamboo.c \
 				cuboot-bamboo.c cuboot-sam440ep.c \
 				cuboot-sequoia.c cuboot-rainier.c \
@@ -157,7 +166,7 @@ src-plat-$(CONFIG_PPC_MPC52xx) += cuboot-52xx.c
 src-plat-$(CONFIG_PPC_82xx) += cuboot-pq2.c fixed-head.S ep8248e.c cuboot-824x.c
 src-plat-$(CONFIG_PPC_83xx) += cuboot-83xx.c fixed-head.S redboot-83xx.c
 src-plat-$(CONFIG_FSL_SOC_BOOKE) += cuboot-85xx.c cuboot-85xx-cpm2.c
-src-plat-$(CONFIG_EMBEDDED6xx) += cuboot-pq2.c cuboot-mpc7448hpc2.c \
+src-plat-$(CONFIG_EMBEDDED6xx) += cuboot-pq2.c \
 					gamecube-head.S gamecube.c \
 					wii-head.S wii.c holly.c \
 					fixed-head.S mvme5100.c
@@ -166,7 +175,6 @@ src-plat-$(CONFIG_PPC_PS3) += ps3-head.S ps3-hvcall.S ps3.c
 src-plat-$(CONFIG_EPAPR_BOOT) += epapr.c epapr-wrapper.c
 src-plat-$(CONFIG_PPC_PSERIES) += pseries-head.S
 src-plat-$(CONFIG_PPC_POWERNV) += pseries-head.S
-src-plat-$(CONFIG_PPC_IBM_CELL_BLADE) += pseries-head.S
 src-plat-$(CONFIG_MVME7100) += motload-head.S mvme7100.c
 
 src-plat-$(CONFIG_PPC_MICROWATT) += fixed-head.S microwatt.c
@@ -205,7 +213,7 @@ $(addprefix $(obj)/,$(libfdt) $(libfdtheader)): $(obj)/%: $(srctree)/scripts/dtc
 $(obj)/empty.c:
 	$(Q)touch $@
 
-$(obj)/zImage.coff.lds $(obj)/zImage.ps3.lds : $(obj)/%: $(srctree)/$(src)/%.S
+$(obj)/zImage.coff.lds $(obj)/zImage.ps3.lds : $(obj)/%: $(src)/%.S
 	$(Q)cp $< $@
 
 clean-files := $(zlib-) $(zlibheader-) $(zliblinuxheader-) \
@@ -213,10 +221,10 @@ clean-files := $(zlib-) $(zlibheader-) $(zliblinuxheader-) \
 		empty.c zImage.coff.lds zImage.ps3.lds zImage.lds
 
 quiet_cmd_bootcc = BOOTCC  $@
-      cmd_bootcc = $(BOOTCC) -Wp,-MD,$(depfile) $(BOOTCFLAGS) -c -o $@ $<
+      cmd_bootcc = $(BOOTCC) -Wp,-MD,$(depfile) $(BOOTCPPFLAGS) $(BOOTCFLAGS) -c -o $@ $<
 
 quiet_cmd_bootas = BOOTAS  $@
-      cmd_bootas = $(BOOTCC) -Wp,-MD,$(depfile) $(BOOTAFLAGS) -c -o $@ $<
+      cmd_bootas = $(BOOTCC) -Wp,-MD,$(depfile) $(BOOTCPPFLAGS) $(BOOTAFLAGS) -c -o $@ $<
 
 quiet_cmd_bootar = BOOTAR  $@
       cmd_bootar = $(BOOTAR) $(BOOTARFLAGS) $@.$$$$ $(real-prereqs); mv $@.$$$$ $@
@@ -236,13 +244,13 @@ $(obj)/wrapper.a: $(obj-wlib) FORCE
 hostprogs	:= addnote hack-coff mktree
 
 targets		+= $(patsubst $(obj)/%,%,$(obj-boot) wrapper.a) zImage.lds
-extra-y		:= $(obj)/wrapper.a $(obj-plat) $(obj)/empty.o \
+always-y	:= $(obj)/wrapper.a $(obj-plat) $(obj)/empty.o \
 		   $(obj)/zImage.lds $(obj)/zImage.coff.lds $(obj)/zImage.ps3.lds
 
-dtstree		:= $(srctree)/$(src)/dts
+dtstree		:= $(src)/dts
 
-wrapper		:=$(srctree)/$(src)/wrapper
-wrapperbits	:= $(extra-y) $(addprefix $(obj)/,addnote hack-coff mktree) \
+wrapper		:= $(src)/wrapper
+wrapperbits	:= $(always-y) $(addprefix $(obj)/,addnote hack-coff mktree) \
 			$(wrapper) FORCE
 
 #############
@@ -269,8 +277,6 @@ quiet_cmd_wrap	= WRAP    $@
 
 image-$(CONFIG_PPC_PSERIES)		+= zImage.pseries
 image-$(CONFIG_PPC_POWERNV)		+= zImage.pseries
-image-$(CONFIG_PPC_MAPLE)		+= zImage.maple
-image-$(CONFIG_PPC_IBM_CELL_BLADE)	+= zImage.pseries
 image-$(CONFIG_PPC_PS3)			+= dtbImage.ps3
 image-$(CONFIG_PPC_CHRP)		+= zImage.chrp
 image-$(CONFIG_PPC_EFIKA)		+= zImage.chrp
@@ -286,11 +292,6 @@ image-$(CONFIG_EPAPR_BOOT)		+= zImage.epapr
 # They are only required on boards which do not have FDT support in firmware.
 # Boards with newish u-boot firmware can use the uImage target above
 #
-
-# Board ports in arch/powerpc/platform/40x/Kconfig
-image-$(CONFIG_HOTFOOT)			+= cuImage.hotfoot
-image-$(CONFIG_ACADIA)			+= cuImage.acadia
-image-$(CONFIG_OBS600)			+= uImage.obs600
 
 # Board ports in arch/powerpc/platform/44x/Kconfig
 image-$(CONFIG_EBONY)			+= treeImage.ebony cuImage.ebony
@@ -320,25 +321,15 @@ image-$(CONFIG_PPC_LITE5200)		+= cuImage.lite5200b
 image-$(CONFIG_PPC_MEDIA5200)		+= cuImage.media5200
 
 # Board ports in arch/powerpc/platform/82xx/Kconfig
-image-$(CONFIG_MPC8272_ADS)		+= cuImage.mpc8272ads
-image-$(CONFIG_PQ2FADS)			+= cuImage.pq2fads
 image-$(CONFIG_EP8248E)			+= dtbImage.ep8248e
 
 # Board ports in arch/powerpc/platform/83xx/Kconfig
-image-$(CONFIG_MPC832x_MDS)		+= cuImage.mpc832x_mds
 image-$(CONFIG_MPC832x_RDB)		+= cuImage.mpc832x_rdb
 image-$(CONFIG_MPC834x_ITX)		+= cuImage.mpc8349emitx \
 					   cuImage.mpc8349emitxgp
-image-$(CONFIG_MPC834x_MDS)		+= cuImage.mpc834x_mds
-image-$(CONFIG_MPC836x_MDS)		+= cuImage.mpc836x_mds
 image-$(CONFIG_ASP834x)			+= dtbImage.asp834x-redboot
 
 # Board ports in arch/powerpc/platform/85xx/Kconfig
-image-$(CONFIG_MPC8540_ADS)		+= cuImage.mpc8540ads
-image-$(CONFIG_MPC8560_ADS)		+= cuImage.mpc8560ads
-image-$(CONFIG_MPC85xx_CDS)		+= cuImage.mpc8541cds \
-					   cuImage.mpc8548cds_32b \
-					   cuImage.mpc8555cds
 image-$(CONFIG_MPC85xx_MDS)		+= cuImage.mpc8568mds
 image-$(CONFIG_MPC85xx_DS)		+= cuImage.mpc8544ds \
 					   cuImage.mpc8572ds
@@ -354,7 +345,6 @@ image-$(CONFIG_MVME7100)                += dtbImage.mvme7100
 
 # Board ports in arch/powerpc/platform/embedded6xx/Kconfig
 image-$(CONFIG_STORCENTER)		+= cuImage.storcenter
-image-$(CONFIG_MPC7448HPC2)		+= cuImage.mpc7448hpc2
 image-$(CONFIG_GAMECUBE)		+= dtbImage.gamecube
 image-$(CONFIG_WII)			+= dtbImage.wii
 image-$(CONFIG_MVME5100)		+= dtbImage.mvme5100
@@ -453,7 +443,7 @@ $(obj)/zImage.initrd:	$(addprefix $(obj)/, $(initrd-y))
 clean-files += $(image-) $(initrd-) cuImage.* dtbImage.* treeImage.* \
 	zImage zImage.initrd zImage.chrp zImage.coff zImage.holly \
 	zImage.miboot zImage.pmac zImage.pseries \
-	zImage.maple simpleImage.* otheros.bld
+	simpleImage.* otheros.bld
 
 # clean up files cached by wrapper
 clean-kernel-base := vmlinux.strip vmlinux.bin
@@ -467,7 +457,7 @@ WRAPPER_DTSDIR := /usr/lib/kernel-wrapper/dts
 WRAPPER_BINDIR := /usr/sbin
 INSTALL := install
 
-extra-installed		:= $(patsubst $(obj)/%, $(DESTDIR)$(WRAPPER_OBJDIR)/%, $(extra-y))
+extra-installed		:= $(patsubst $(obj)/%, $(DESTDIR)$(WRAPPER_OBJDIR)/%, $(always-y))
 hostprogs-installed	:= $(patsubst %, $(DESTDIR)$(WRAPPER_BINDIR)/%, $(hostprogs))
 wrapper-installed	:= $(DESTDIR)$(WRAPPER_BINDIR)/wrapper
 dts-installed		:= $(patsubst $(dtstree)/%, $(DESTDIR)$(WRAPPER_DTSDIR)/%, $(wildcard $(dtstree)/*.dts))

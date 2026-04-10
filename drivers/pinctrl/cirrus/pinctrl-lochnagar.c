@@ -15,10 +15,13 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
+#include <linux/string_choices.h>
+
+#include <linux/pinctrl/consumer.h>
+#include <linux/pinctrl/pinconf-generic.h>
+#include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
-#include <linux/pinctrl/pinconf.h>
-#include <linux/pinctrl/pinconf-generic.h>
 
 #include <linux/mfd/lochnagar.h>
 #include <linux/mfd/lochnagar1_regs.h>
@@ -1055,48 +1058,49 @@ static const struct pinctrl_desc lochnagar_pin_desc = {
 	.confops = &lochnagar_pin_conf_ops,
 };
 
-static void lochnagar_gpio_set(struct gpio_chip *chip,
-			       unsigned int offset, int value)
+static int lochnagar_gpio_set(struct gpio_chip *chip,
+			      unsigned int offset, int value)
 {
 	struct lochnagar_pin_priv *priv = gpiochip_get_data(chip);
 	struct lochnagar *lochnagar = priv->lochnagar;
 	const struct lochnagar_pin *pin = priv->pins[offset].drv_data;
-	int ret;
 
 	value = !!value;
 
 	dev_dbg(priv->dev, "Set GPIO %s to %s\n",
-		pin->name, value ? "high" : "low");
+		pin->name, str_high_low(value));
 
 	switch (pin->type) {
 	case LN_PTYPE_MUX:
 		value |= LN2_OP_GPIO;
 
-		ret = lochnagar_pin_set_mux(priv, pin, value);
+		return lochnagar_pin_set_mux(priv, pin, value);
 		break;
 	case LN_PTYPE_GPIO:
 		if (pin->invert)
 			value = !value;
 
-		ret = regmap_update_bits(lochnagar->regmap, pin->reg,
-					 BIT(pin->shift), value << pin->shift);
+		return regmap_update_bits(lochnagar->regmap, pin->reg,
+					  BIT(pin->shift),
+					  value << pin->shift);
 		break;
 	default:
-		ret = -EINVAL;
 		break;
 	}
 
-	if (ret < 0)
-		dev_err(chip->parent, "Failed to set %s value: %d\n",
-			pin->name, ret);
+	return -EINVAL;
 }
 
 static int lochnagar_gpio_direction_out(struct gpio_chip *chip,
 					unsigned int offset, int value)
 {
-	lochnagar_gpio_set(chip, offset, value);
+	int ret;
 
-	return pinctrl_gpio_direction_output(chip->base + offset);
+	ret = lochnagar_gpio_set(chip, offset, value);
+	if (ret)
+		return ret;
+
+	return pinctrl_gpio_direction_output(chip, offset);
 }
 
 static int lochnagar_fill_func_groups(struct lochnagar_pin_priv *priv)

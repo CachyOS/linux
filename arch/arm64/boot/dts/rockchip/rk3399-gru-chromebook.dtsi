@@ -8,7 +8,7 @@
 #include "rk3399-gru.dtsi"
 
 / {
-	pp900_ap: pp900-ap {
+	pp900_ap: regulator-pp900-ap {
 		compatible = "regulator-fixed";
 		regulator-name = "pp900_ap";
 
@@ -22,14 +22,14 @@
 	};
 
 	/* EC turns on w/ pp900_usb_en */
-	pp900_usb: pp900-ap {
+	pp900_usb: regulator-pp900-ap {
 	};
 
 	/* EC turns on w/ pp900_pcie_en */
-	pp900_pcie: pp900-ap {
+	pp900_pcie: regulator-pp900-ap {
 	};
 
-	pp3000: pp3000 {
+	pp3000: regulator-pp3000 {
 		compatible = "regulator-fixed";
 		regulator-name = "pp3000";
 		pinctrl-names = "default";
@@ -46,7 +46,7 @@
 		vin-supply = <&ppvar_sys>;
 	};
 
-	ppvar_centerlogic_pwm: ppvar-centerlogic-pwm {
+	ppvar_centerlogic_pwm: regulator-ppvar-centerlogic-pwm {
 		compatible = "pwm-regulator";
 		regulator-name = "ppvar_centerlogic_pwm";
 
@@ -78,7 +78,7 @@
 	};
 
 	/* Schematics call this PPVAR even though it's fixed */
-	ppvar_logic: ppvar-logic {
+	ppvar_logic: regulator-ppvar-logic {
 		compatible = "regulator-fixed";
 		regulator-name = "ppvar_logic";
 
@@ -91,7 +91,7 @@
 		vin-supply = <&ppvar_sys>;
 	};
 
-	pp1800_audio: pp1800-audio {
+	pp1800_audio: regulator-pp1800-audio {
 		compatible = "regulator-fixed";
 		regulator-name = "pp1800_audio";
 		pinctrl-names = "default";
@@ -107,7 +107,7 @@
 	};
 
 	/* gpio is shared with pp3300_wifi_bt */
-	pp1800_pcie: pp1800-pcie {
+	pp1800_pcie: regulator-pp1800-pcie {
 		compatible = "regulator-fixed";
 		regulator-name = "pp1800_pcie";
 		pinctrl-names = "default";
@@ -126,10 +126,10 @@
 	};
 
 	/* Always on; plain and simple */
-	pp3000_ap: pp3000_emmc: pp3000 {
+	pp3000_ap: pp3000_emmc: regulator-pp3000 {
 	};
 
-	pp1500_ap_io: pp1500-ap-io {
+	pp1500_ap_io: regulator-pp1500-ap-io {
 		compatible = "regulator-fixed";
 		regulator-name = "pp1500_ap_io";
 		pinctrl-names = "default";
@@ -146,7 +146,7 @@
 		vin-supply = <&pp1800>;
 	};
 
-	pp3300_disp: pp3300-disp {
+	pp3300_disp: regulator-pp3300-disp {
 		compatible = "regulator-fixed";
 		regulator-name = "pp3300_disp";
 		pinctrl-names = "default";
@@ -160,11 +160,11 @@
 	};
 
 	/* EC turns on w/ pp3300_usb_en_l */
-	pp3300_usb: pp3300 {
+	pp3300_usb: regulator-pp3300 {
 	};
 
 	/* gpio is shared with pp1800_pcie and pinctrl is set there */
-	pp3300_wifi_bt: pp3300-wifi-bt {
+	pp3300_wifi_bt: regulator-pp3300-wifi-bt {
 		compatible = "regulator-fixed";
 		regulator-name = "pp3300_wifi_bt";
 
@@ -180,7 +180,7 @@
 	 * With some stretching of the imagination, we can call the 1.8V
 	 * regulator a supply.
 	 */
-	wlan_pd_n: wlan-pd-n {
+	wlan_pd_n: regulator-wlan-pd-n {
 		compatible = "regulator-fixed";
 		regulator-name = "wlan_pd_n";
 		pinctrl-names = "default";
@@ -198,7 +198,6 @@
 		power-supply = <&pp3300_disp>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&bl_en>;
-		pwm-delay-us = <10000>;
 	};
 
 	gpio_keys: gpio-keys {
@@ -206,7 +205,7 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&bt_host_wake_l>;
 
-		wake_on_bt: wake-on-bt {
+		wake_on_bt: key-wake-on-bt {
 			label = "Wake-on-Bluetooth";
 			gpios = <&gpio0 3 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_WAKEUP>;
@@ -244,17 +243,18 @@
 &edp {
 	status = "okay";
 
-	ports {
-		edp_out: port@1 {
-			reg = <1>;
-			#address-cells = <1>;
-			#size-cells = <0>;
+	/*
+	 * eDP PHY/clk don't sync reliably at anything other than 24 MHz. Only
+	 * set this here, because rk3399-gru.dtsi ensures we can generate this
+	 * off GPLL=600MHz, whereas some other RK3399 boards may not.
+	 */
+	assigned-clocks = <&cru PCLK_EDP>;
+	assigned-clock-rates = <24000000>;
+};
 
-			edp_out_panel: endpoint@0 {
-				reg = <0>;
-				remote-endpoint = <&panel_in_edp>;
-			};
-		};
+&edp_out {
+	edp_out_panel: endpoint {
+		remote-endpoint = <&panel_in_edp>;
 	};
 };
 
@@ -502,8 +502,7 @@ ap_i2c_tp: &i2c5 {
 &pci_rootport {
 	mvl_wifi: wifi@0,0 {
 		compatible = "pci1b4b,2b42";
-		reg = <0x83010000 0x0 0x00000000 0x0 0x00100000
-		       0x83010000 0x0 0x00100000 0x0 0x00100000>;
+		reg = <0x0000 0x0 0x0 0x0 0x0>;
 		interrupt-parent = <&gpio0>;
 		interrupts = <8 IRQ_TYPE_LEVEL_LOW>;
 		pinctrl-names = "default";
@@ -544,7 +543,7 @@ ap_i2c_tp: &i2c5 {
 };
 
 &pinctrl {
-	discrete-regulators {
+	discretes {
 		pp1500_en: pp1500-en {
 			rockchip,pins = <0 RK_PB2 RK_FUNC_GPIO
 					 &pcfg_pull_none>;
@@ -578,6 +577,7 @@ ap_i2c_tp: &i2c5 {
 	};
 
 	wlan_host_wake_l: wlan-host-wake-l {
+		/* Kevin has an external pull up, but Bob does not */
 		rockchip,pins = <0 RK_PB0 RK_FUNC_GPIO &pcfg_pull_none>;
 	};
 };

@@ -36,6 +36,7 @@
 #include "en.h"
 #include "en/port.h"
 #include "eswitch.h"
+#include "lib/mlx5.h"
 
 static int mlx5e_test_health_info(struct mlx5e_priv *priv)
 {
@@ -165,6 +166,9 @@ mlx5e_test_loopback_validate(struct sk_buff *skb,
 	struct udphdr *udph;
 	struct iphdr *iph;
 
+	if (skb_linearize(skb))
+		goto out;
+
 	/* We are only going to peek, no need to clone the SKB */
 	if (MLX5E_TEST_PKT_SIZE - ETH_HLEN > skb_headlen(skb))
 		goto out;
@@ -210,7 +214,7 @@ static int mlx5e_test_loopback_setup(struct mlx5e_priv *priv,
 			return err;
 	}
 
-	err = mlx5e_refresh_tirs(priv, true, false);
+	err = mlx5e_modify_tirs_lb(priv->mdev, true, false);
 	if (err)
 		goto out;
 
@@ -239,12 +243,15 @@ static void mlx5e_test_loopback_cleanup(struct mlx5e_priv *priv,
 		mlx5_nic_vport_update_local_lb(priv->mdev, false);
 
 	dev_remove_pack(&lbtp->pt);
-	mlx5e_refresh_tirs(priv, false, false);
+	mlx5e_modify_tirs_lb(priv->mdev, false, false);
 }
 
 static int mlx5e_cond_loopback(struct mlx5e_priv *priv)
 {
 	if (is_mdev_switchdev_mode(priv->mdev))
+		return -EOPNOTSUPP;
+
+	if (mlx5_get_sd(priv->mdev))
 		return -EOPNOTSUPP;
 
 	return 0;
@@ -263,7 +270,7 @@ static int mlx5e_test_loopback(struct mlx5e_priv *priv)
 		return -ENODEV;
 	}
 
-	lbtp = kzalloc(sizeof(*lbtp), GFP_KERNEL);
+	lbtp = kzalloc_obj(*lbtp);
 	if (!lbtp)
 		return -ENOMEM;
 	lbtp->loopback_ok = false;
@@ -359,7 +366,7 @@ int mlx5e_self_test_fill_strings(struct mlx5e_priv *priv, u8 *data)
 		if (st.cond_func && st.cond_func(priv))
 			continue;
 		if (data)
-			strcpy(data + count * ETH_GSTRING_LEN, st.name);
+			ethtool_puts(&data, st.name);
 		count++;
 	}
 	return count;

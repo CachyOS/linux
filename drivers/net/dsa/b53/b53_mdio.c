@@ -19,6 +19,7 @@
 #include <linux/kernel.h>
 #include <linux/phy.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/delay.h>
 #include <linux/brcmphy.h>
 #include <linux/rtnetlink.h>
@@ -286,6 +287,7 @@ static const struct b53_io_ops b53_mdio_ops = {
 #define B53_BRCM_OUI_2	0x03625c00
 #define B53_BRCM_OUI_3	0x00406000
 #define B53_BRCM_OUI_4	0x01410c00
+#define B53_BRCM_OUI_5	0xae025000
 
 static int b53_mdio_probe(struct mdio_device *mdiodev)
 {
@@ -313,7 +315,8 @@ static int b53_mdio_probe(struct mdio_device *mdiodev)
 	if ((phy_id & 0xfffffc00) != B53_BRCM_OUI_1 &&
 	    (phy_id & 0xfffffc00) != B53_BRCM_OUI_2 &&
 	    (phy_id & 0xfffffc00) != B53_BRCM_OUI_3 &&
-	    (phy_id & 0xfffffc00) != B53_BRCM_OUI_4) {
+	    (phy_id & 0xfffffc00) != B53_BRCM_OUI_4 &&
+	    (phy_id & 0xfffffc00) != B53_BRCM_OUI_5) {
 		dev_err(&mdiodev->dev, "Unsupported device: 0x%08x\n", phy_id);
 		return -ENODEV;
 	}
@@ -326,7 +329,7 @@ static int b53_mdio_probe(struct mdio_device *mdiodev)
 	 * layer setup
 	 */
 	if (of_machine_is_compatible("brcm,bcm7445d0") &&
-	    strcmp(mdiodev->bus->name, "sf2 slave mii"))
+	    strcmp(mdiodev->bus->name, "sf2 user mii"))
 		return -EPROBE_DEFER;
 
 	dev = b53_switch_alloc(&mdiodev->dev, &b53_mdio_ops, mdiodev->bus);
@@ -340,10 +343,9 @@ static int b53_mdio_probe(struct mdio_device *mdiodev)
 	dev_set_drvdata(&mdiodev->dev, dev);
 
 	ret = b53_switch_register(dev);
-	if (ret) {
-		dev_err(&mdiodev->dev, "failed to register switch: %i\n", ret);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(&mdiodev->dev, ret,
+				     "failed to register switch\n");
 
 	return ret;
 }
@@ -356,8 +358,6 @@ static void b53_mdio_remove(struct mdio_device *mdiodev)
 		return;
 
 	b53_switch_remove(dev);
-
-	dev_set_drvdata(&mdiodev->dev, NULL);
 }
 
 static void b53_mdio_shutdown(struct mdio_device *mdiodev)
@@ -374,9 +374,11 @@ static void b53_mdio_shutdown(struct mdio_device *mdiodev)
 
 static const struct of_device_id b53_of_match[] = {
 	{ .compatible = "brcm,bcm5325" },
+	{ .compatible = "brcm,bcm53101" },
 	{ .compatible = "brcm,bcm53115" },
 	{ .compatible = "brcm,bcm53125" },
 	{ .compatible = "brcm,bcm53128" },
+	{ .compatible = "brcm,bcm53134" },
 	{ .compatible = "brcm,bcm5365" },
 	{ .compatible = "brcm,bcm5389" },
 	{ .compatible = "brcm,bcm5395" },

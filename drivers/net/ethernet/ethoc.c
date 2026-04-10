@@ -1224,7 +1224,7 @@ static int ethoc_probe(struct platform_device *pdev)
 	netdev->ethtool_ops = &ethoc_ethtool_ops;
 
 	/* setup NAPI */
-	netif_napi_add(netdev, &priv->napi, ethoc_poll, 64);
+	netif_napi_add(netdev, &priv->napi, ethoc_poll);
 
 	spin_lock_init(&priv->lock);
 
@@ -1254,7 +1254,7 @@ out:
  * ethoc_remove - shutdown OpenCores ethernet MAC
  * @pdev:	platform device
  */
-static int ethoc_remove(struct platform_device *pdev)
+static void ethoc_remove(struct platform_device *pdev)
 {
 	struct net_device *netdev = platform_get_drvdata(pdev);
 	struct ethoc *priv = netdev_priv(netdev);
@@ -1271,8 +1271,6 @@ static int ethoc_remove(struct platform_device *pdev)
 		unregister_netdev(netdev);
 		free_netdev(netdev);
 	}
-
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -1298,7 +1296,7 @@ MODULE_DEVICE_TABLE(of, ethoc_match);
 
 static struct platform_driver ethoc_driver = {
 	.probe   = ethoc_probe,
-	.remove  = ethoc_remove,
+	.remove = ethoc_remove,
 	.suspend = ethoc_suspend,
 	.resume  = ethoc_resume,
 	.driver  = {

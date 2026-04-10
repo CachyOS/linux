@@ -257,10 +257,9 @@ static void pmu_irq_handler(struct irq_desc *desc)
 	 * So, let's structure the code so that the window is as small as
 	 * possible.
 	 */
-	irq_gc_lock(gc);
+	guard(raw_spinlock)(&gc->lock);
 	done &= readl_relaxed(base + PMC_IRQ_CAUSE);
 	writel_relaxed(done, base + PMC_IRQ_CAUSE);
-	irq_gc_unlock(gc);
 }
 
 static int __init dove_init_pmu_irq(struct pmu_data *pmu, int irq)
@@ -274,8 +273,8 @@ static int __init dove_init_pmu_irq(struct pmu_data *pmu, int irq)
 	writel(0, pmu->pmc_base + PMC_IRQ_MASK);
 	writel(0, pmu->pmc_base + PMC_IRQ_CAUSE);
 
-	domain = irq_domain_add_linear(pmu->of_node, NR_PMU_IRQS,
-				       &irq_generic_chip_ops, NULL);
+	domain = irq_domain_create_linear(of_fwnode_handle(pmu->of_node), NR_PMU_IRQS,
+					  &irq_generic_chip_ops, NULL);
 	if (!domain) {
 		pr_err("%s: unable to add irq domain\n", name);
 		return -ENOMEM;
@@ -312,7 +311,7 @@ int __init dove_init_pmu_legacy(const struct dove_pmu_initdata *initdata)
 	struct pmu_data *pmu;
 	int ret;
 
-	pmu = kzalloc(sizeof(*pmu), GFP_KERNEL);
+	pmu = kzalloc_obj(*pmu);
 	if (!pmu)
 		return -ENOMEM;
 
@@ -325,7 +324,7 @@ int __init dove_init_pmu_legacy(const struct dove_pmu_initdata *initdata)
 	     domain_initdata++) {
 		struct pmu_domain *domain;
 
-		domain = kzalloc(sizeof(*domain), GFP_KERNEL);
+		domain = kzalloc_obj(*domain);
 		if (domain) {
 			domain->pmu = pmu;
 			domain->pwr_mask = domain_initdata->pwr_mask;
@@ -372,7 +371,7 @@ int __init dove_init_pmu_legacy(const struct dove_pmu_initdata *initdata)
  */
 int __init dove_init_pmu(void)
 {
-	struct device_node *np_pmu, *domains_node, *np;
+	struct device_node *np_pmu, *domains_node;
 	struct pmu_data *pmu;
 	int ret, parent_irq;
 
@@ -387,7 +386,7 @@ int __init dove_init_pmu(void)
 		return 0;
 	}
 
-	pmu = kzalloc(sizeof(*pmu), GFP_KERNEL);
+	pmu = kzalloc_obj(*pmu);
 	if (!pmu)
 		return -ENOMEM;
 
@@ -405,11 +404,11 @@ int __init dove_init_pmu(void)
 
 	pmu_reset_init(pmu);
 
-	for_each_available_child_of_node(domains_node, np) {
+	for_each_available_child_of_node_scoped(domains_node, np) {
 		struct of_phandle_args args;
 		struct pmu_domain *domain;
 
-		domain = kzalloc(sizeof(*domain), GFP_KERNEL);
+		domain = kzalloc_obj(*domain);
 		if (!domain)
 			break;
 

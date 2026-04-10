@@ -9,25 +9,16 @@
 #include <keys/asymmetric-subtype.h>
 #include <keys/asymmetric-parser.h>
 #include <crypto/public_key.h>
+#include <linux/hex.h>
 #include <linux/seq_file.h>
 #include <linux/module.h>
+#include <linux/overflow.h>
 #include <linux/slab.h>
 #include <linux/ctype.h>
 #include <keys/system_keyring.h>
 #include <keys/user-type.h>
 #include "asymmetric_keys.h"
 
-MODULE_LICENSE("GPL");
-
-const char *const key_being_used_for[NR__KEY_BEING_USED_FOR] = {
-	[VERIFYING_MODULE_SIGNATURE]		= "mod sig",
-	[VERIFYING_FIRMWARE_SIGNATURE]		= "firmware sig",
-	[VERIFYING_KEXEC_PE_SIGNATURE]		= "kexec PE sig",
-	[VERIFYING_KEY_SIGNATURE]		= "key sig",
-	[VERIFYING_KEY_SELF_SIGNATURE]		= "key self sig",
-	[VERIFYING_UNSPECIFIED_SIGNATURE]	= "unspec sig",
-};
-EXPORT_SYMBOL_GPL(key_being_used_for);
 
 static LIST_HEAD(asymmetric_key_parsers);
 static DECLARE_RWSEM(asymmetric_key_parsers_sem);
@@ -61,17 +52,18 @@ struct key *find_asymmetric_key(struct key *keyring,
 	char *req, *p;
 	int len;
 
-	WARN_ON(!id_0 && !id_1 && !id_2);
-
 	if (id_0) {
 		lookup = id_0->data;
 		len = id_0->len;
 	} else if (id_1) {
 		lookup = id_1->data;
 		len = id_1->len;
-	} else {
+	} else if (id_2) {
 		lookup = id_2->data;
 		len = id_2->len;
+	} else {
+		WARN_ON(1);
+		return ERR_PTR(-EINVAL);
 	}
 
 	/* Construct an identifier "id:<keyid>". */
@@ -151,12 +143,17 @@ struct asymmetric_key_id *asymmetric_key_generate_id(const void *val_1,
 						     size_t len_2)
 {
 	struct asymmetric_key_id *kid;
+	size_t kid_sz;
+	size_t len;
 
-	kid = kmalloc(sizeof(struct asymmetric_key_id) + len_1 + len_2,
-		      GFP_KERNEL);
+	if (check_add_overflow(len_1, len_2, &len))
+		return ERR_PTR(-EOVERFLOW);
+	if (check_add_overflow(sizeof(struct asymmetric_key_id), len, &kid_sz))
+		return ERR_PTR(-EOVERFLOW);
+	kid = kmalloc(kid_sz, GFP_KERNEL);
 	if (!kid)
 		return ERR_PTR(-ENOMEM);
-	kid->len = len_1 + len_2;
+	kid->len = len;
 	memcpy(kid->data, val_1, len_1);
 	memcpy(kid->data + len_1, val_2, len_2);
 	return kid;
@@ -489,7 +486,7 @@ static struct key_restriction *asymmetric_restriction_alloc(
 	struct key *key)
 {
 	struct key_restriction *keyres =
-		kzalloc(sizeof(struct key_restriction), GFP_KERNEL);
+		kzalloc_obj(struct key_restriction);
 
 	if (!keyres)
 		return ERR_PTR(-ENOMEM);
@@ -597,10 +594,10 @@ static int asymmetric_key_verify_signature(struct kernel_pkey_params *params,
 {
 	struct public_key_signature sig = {
 		.s_size		= params->in2_len,
-		.digest_size	= params->in_len,
+		.m_size		= params->in_len,
 		.encoding	= params->encoding,
 		.hash_algo	= params->hash_algo,
-		.digest		= (void *)in,
+		.m		= (void *)in,
 		.s		= (void *)in2,
 	};
 

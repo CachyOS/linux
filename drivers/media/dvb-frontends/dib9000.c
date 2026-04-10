@@ -11,7 +11,7 @@
 #include <linux/i2c.h>
 #include <linux/mutex.h>
 
-#include <media/dvb_math.h>
+#include <linux/int_log.h>
 #include <media/dvb_frontend.h>
 
 #include "dib9000.h"
@@ -2474,10 +2474,10 @@ struct dvb_frontend *dib9000_attach(struct i2c_adapter *i2c_adap, u8 i2c_addr, c
 {
 	struct dvb_frontend *fe;
 	struct dib9000_state *st;
-	st = kzalloc(sizeof(struct dib9000_state), GFP_KERNEL);
+	st = kzalloc_obj(struct dib9000_state);
 	if (st == NULL)
 		return NULL;
-	fe = kzalloc(sizeof(struct dvb_frontend), GFP_KERNEL);
+	fe = kzalloc_obj(struct dvb_frontend);
 	if (fe == NULL) {
 		kfree(st);
 		return NULL;
@@ -2546,7 +2546,7 @@ error:
 	kfree(st);
 	return NULL;
 }
-EXPORT_SYMBOL(dib9000_attach);
+EXPORT_SYMBOL_GPL(dib9000_attach);
 
 static const struct dvb_frontend_ops dib9000_ops = {
 	.delsys = { SYS_DVBT },

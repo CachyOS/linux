@@ -168,7 +168,8 @@ il3945_rate_scale_flush_wins(struct il3945_rs_sta *rs_sta)
 static void
 il3945_bg_rate_scale_flush(struct timer_list *t)
 {
-	struct il3945_rs_sta *rs_sta = from_timer(rs_sta, t, rate_scale_flush);
+	struct il3945_rs_sta *rs_sta = timer_container_of(rs_sta, t,
+							  rate_scale_flush);
 	struct il_priv *il __maybe_unused = rs_sta->il;
 	int unflushed = 0;
 	unsigned long flags;
@@ -413,7 +414,7 @@ il3945_rs_free_sta(void *il_priv, struct ieee80211_sta *sta, void *il_sta)
 	 * to use il_priv to print out debugging) since it may not be fully
 	 * initialized at this point.
 	 */
-	del_timer_sync(&rs_sta->rate_scale_flush);
+	timer_delete_sync(&rs_sta->rate_scale_flush);
 }
 
 /*
@@ -444,11 +445,6 @@ il3945_rs_tx_status(void *il_rate, struct ieee80211_supported_band *sband,
 	first_idx = sband->bitrates[info->status.rates[0].idx].hw_value;
 	if (first_idx < 0 || first_idx >= RATE_COUNT_3945) {
 		D_RATE("leave: Rate out of bounds: %d\n", first_idx);
-		return;
-	}
-
-	if (!il_sta) {
-		D_RATE("leave: No STA il data to update!\n");
 		return;
 	}
 
@@ -626,7 +622,7 @@ il3945_rs_get_rate(void *il_r, struct ieee80211_sta *sta, void *il_sta,
 	D_RATE("enter\n");
 
 	/* Treat uninitialized rate scaling data same as non-existing. */
-	if (rs_sta && !rs_sta->il) {
+	if (!rs_sta->il) {
 		D_RATE("Rate scaling information not initialized yet.\n");
 		il_sta = NULL;
 	}

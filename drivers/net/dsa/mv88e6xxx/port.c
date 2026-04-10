@@ -12,6 +12,8 @@
 #include <linux/if_bridge.h>
 #include <linux/phy.h>
 #include <linux/phylink.h>
+#include <linux/property.h>
+#include <linux/string_choices.h>
 
 #include "chip.h"
 #include "global2.h"
@@ -133,6 +135,15 @@ int mv88e6390_port_set_rgmii_delay(struct mv88e6xxx_chip *chip, int port,
 	return mv88e6xxx_port_set_rgmii_delay(chip, port, mode);
 }
 
+int mv88e6320_port_set_rgmii_delay(struct mv88e6xxx_chip *chip, int port,
+				   phy_interface_t mode)
+{
+	if (port != 2 && port != 5 && port != 6)
+		return -EOPNOTSUPP;
+
+	return mv88e6xxx_port_set_rgmii_delay(chip, port, mode);
+}
+
 int mv88e6xxx_port_set_link(struct mv88e6xxx_chip *chip, int port, int link)
 {
 	u16 reg;
@@ -166,7 +177,7 @@ int mv88e6xxx_port_set_link(struct mv88e6xxx_chip *chip, int port, int link)
 
 	dev_dbg(chip->dev, "p%d: %s link %s\n", port,
 		reg & MV88E6XXX_PORT_MAC_CTL_FORCE_LINK ? "Force" : "Unforce",
-		reg & MV88E6XXX_PORT_MAC_CTL_LINK_UP ? "up" : "down");
+		str_up_down(reg & MV88E6XXX_PORT_MAC_CTL_LINK_UP));
 
 	return 0;
 }
@@ -294,28 +305,10 @@ static int mv88e6xxx_port_set_speed_duplex(struct mv88e6xxx_chip *chip,
 	return 0;
 }
 
-/* Support 10, 100, 200 Mbps (e.g. 88E6065 family) */
-int mv88e6065_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
-				    int speed, int duplex)
-{
-	if (speed == SPEED_MAX)
-		speed = 200;
-
-	if (speed > 200)
-		return -EOPNOTSUPP;
-
-	/* Setting 200 Mbps on port 0 to 3 selects 100 Mbps */
-	return mv88e6xxx_port_set_speed_duplex(chip, port, speed, false, false,
-					       duplex);
-}
-
 /* Support 10, 100, 1000 Mbps (e.g. 88E6185 family) */
 int mv88e6185_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 				    int speed, int duplex)
 {
-	if (speed == SPEED_MAX)
-		speed = 1000;
-
 	if (speed == 200 || speed > 1000)
 		return -EOPNOTSUPP;
 
@@ -327,9 +320,6 @@ int mv88e6185_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 int mv88e6250_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 				    int speed, int duplex)
 {
-	if (speed == SPEED_MAX)
-		speed = 100;
-
 	if (speed > 100)
 		return -EOPNOTSUPP;
 
@@ -341,9 +331,6 @@ int mv88e6250_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 int mv88e6341_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 				    int speed, int duplex)
 {
-	if (speed == SPEED_MAX)
-		speed = port < 5 ? 1000 : 2500;
-
 	if (speed > 2500)
 		return -EOPNOTSUPP;
 
@@ -357,7 +344,8 @@ int mv88e6341_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 					       duplex);
 }
 
-phy_interface_t mv88e6341_port_max_speed_mode(int port)
+phy_interface_t mv88e6341_port_max_speed_mode(struct mv88e6xxx_chip *chip,
+					      int port)
 {
 	if (port == 5)
 		return PHY_INTERFACE_MODE_2500BASEX;
@@ -369,9 +357,6 @@ phy_interface_t mv88e6341_port_max_speed_mode(int port)
 int mv88e6352_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 				    int speed, int duplex)
 {
-	if (speed == SPEED_MAX)
-		speed = 1000;
-
 	if (speed > 1000)
 		return -EOPNOTSUPP;
 
@@ -386,9 +371,6 @@ int mv88e6352_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 int mv88e6390_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 				    int speed, int duplex)
 {
-	if (speed == SPEED_MAX)
-		speed = port < 9 ? 1000 : 2500;
-
 	if (speed > 2500)
 		return -EOPNOTSUPP;
 
@@ -402,7 +384,8 @@ int mv88e6390_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 					       duplex);
 }
 
-phy_interface_t mv88e6390_port_max_speed_mode(int port)
+phy_interface_t mv88e6390_port_max_speed_mode(struct mv88e6xxx_chip *chip,
+					      int port)
 {
 	if (port == 9 || port == 10)
 		return PHY_INTERFACE_MODE_2500BASEX;
@@ -414,9 +397,6 @@ phy_interface_t mv88e6390_port_max_speed_mode(int port)
 int mv88e6390x_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 				     int speed, int duplex)
 {
-	if (speed == SPEED_MAX)
-		speed = port < 9 ? 1000 : 10000;
-
 	if (speed == 200 && port != 0)
 		return -EOPNOTSUPP;
 
@@ -427,7 +407,8 @@ int mv88e6390x_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 					       duplex);
 }
 
-phy_interface_t mv88e6390x_port_max_speed_mode(int port)
+phy_interface_t mv88e6390x_port_max_speed_mode(struct mv88e6xxx_chip *chip,
+					       int port)
 {
 	if (port == 9 || port == 10)
 		return PHY_INTERFACE_MODE_XAUI;
@@ -445,8 +426,9 @@ int mv88e6393x_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 	u16 reg, ctrl;
 	int err;
 
-	if (speed == SPEED_MAX)
-		speed = (port > 0 && port < 9) ? 1000 : 10000;
+	if (chip->info->prod_num == MV88E6XXX_PORT_SWITCH_ID_PROD_6361 &&
+	    speed > 2500)
+		return -EOPNOTSUPP;
 
 	if (speed == 200 && port != 0)
 		return -EOPNOTSUPP;
@@ -527,19 +509,23 @@ int mv88e6393x_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 	return 0;
 }
 
-phy_interface_t mv88e6393x_port_max_speed_mode(int port)
+phy_interface_t mv88e6393x_port_max_speed_mode(struct mv88e6xxx_chip *chip,
+					       int port)
 {
-	if (port == 0 || port == 9 || port == 10)
-		return PHY_INTERFACE_MODE_10GBASER;
 
-	return PHY_INTERFACE_MODE_NA;
+	if (port != 0 && port != 9 && port != 10)
+		return PHY_INTERFACE_MODE_NA;
+
+	if (chip->info->prod_num == MV88E6XXX_PORT_SWITCH_ID_PROD_6361)
+		return PHY_INTERFACE_MODE_2500BASEX;
+
+	return PHY_INTERFACE_MODE_10GBASER;
 }
 
 static int mv88e6xxx_port_set_cmode(struct mv88e6xxx_chip *chip, int port,
 				    phy_interface_t mode, bool force)
 {
 	u16 cmode;
-	int lane;
 	u16 reg;
 	int err;
 
@@ -552,6 +538,12 @@ static int mv88e6xxx_port_set_cmode(struct mv88e6xxx_chip *chip, int port,
 	switch (mode) {
 	case PHY_INTERFACE_MODE_RMII:
 		cmode = MV88E6XXX_PORT_STS_CMODE_RMII;
+		break;
+	case PHY_INTERFACE_MODE_RGMII:
+	case PHY_INTERFACE_MODE_RGMII_ID:
+	case PHY_INTERFACE_MODE_RGMII_RXID:
+	case PHY_INTERFACE_MODE_RGMII_TXID:
+		cmode = MV88E6XXX_PORT_STS_CMODE_RGMII;
 		break;
 	case PHY_INTERFACE_MODE_1000BASEX:
 		cmode = MV88E6XXX_PORT_STS_CMODE_1000BASEX;
@@ -575,6 +567,9 @@ static int mv88e6xxx_port_set_cmode(struct mv88e6xxx_chip *chip, int port,
 	case PHY_INTERFACE_MODE_10GBASER:
 		cmode = MV88E6393X_PORT_STS_CMODE_10GBASER;
 		break;
+	case PHY_INTERFACE_MODE_USXGMII:
+		cmode = MV88E6393X_PORT_STS_CMODE_USXGMII;
+		break;
 	default:
 		cmode = 0;
 	}
@@ -582,19 +577,6 @@ static int mv88e6xxx_port_set_cmode(struct mv88e6xxx_chip *chip, int port,
 	/* cmode doesn't change, nothing to do for us unless forced */
 	if (cmode == chip->ports[port].cmode && !force)
 		return 0;
-
-	lane = mv88e6xxx_serdes_get_lane(chip, port);
-	if (lane >= 0) {
-		if (chip->ports[port].serdes_irq) {
-			err = mv88e6xxx_serdes_irq_disable(chip, port, lane);
-			if (err)
-				return err;
-		}
-
-		err = mv88e6xxx_serdes_power_down(chip, port, lane);
-		if (err)
-			return err;
-	}
 
 	chip->ports[port].cmode = 0;
 
@@ -611,22 +593,6 @@ static int mv88e6xxx_port_set_cmode(struct mv88e6xxx_chip *chip, int port,
 			return err;
 
 		chip->ports[port].cmode = cmode;
-
-		lane = mv88e6xxx_serdes_get_lane(chip, port);
-		if (lane == -ENODEV)
-			return 0;
-		if (lane < 0)
-			return lane;
-
-		err = mv88e6xxx_serdes_power_up(chip, port, lane);
-		if (err)
-			return err;
-
-		if (chip->ports[port].serdes_irq) {
-			err = mv88e6xxx_serdes_irq_enable(chip, port, lane);
-			if (err)
-				return err;
-		}
 	}
 
 	return 0;
@@ -669,6 +635,19 @@ int mv88e6393x_port_set_cmode(struct mv88e6xxx_chip *chip, int port,
 
 	if (port != 0 && port != 9 && port != 10)
 		return -EOPNOTSUPP;
+
+	if (port == 9 || port == 10) {
+		switch (mode) {
+		case PHY_INTERFACE_MODE_RMII:
+		case PHY_INTERFACE_MODE_RGMII:
+		case PHY_INTERFACE_MODE_RGMII_ID:
+		case PHY_INTERFACE_MODE_RGMII_RXID:
+		case PHY_INTERFACE_MODE_RGMII_TXID:
+			return -EINVAL;
+		default:
+			break;
+		}
+	}
 
 	/* mv88e6393x errata 4.5: EEE should be disabled on SERDES ports */
 	err = mv88e6xxx_port_read(chip, port, MV88E6XXX_PORT_MAC_CTL, &reg);
@@ -1736,6 +1715,7 @@ int mv88e6393x_port_set_policy(struct mv88e6xxx_chip *chip, int port,
 	ptr = shift / 8;
 	shift %= 8;
 	mask >>= ptr * 8;
+	ptr <<= 8;
 
 	err = mv88e6393x_port_policy_read(chip, port, ptr, &reg);
 	if (err)

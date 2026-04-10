@@ -82,15 +82,15 @@ static void whiteheat_close(struct usb_serial_port *port);
 static void whiteheat_get_serial(struct tty_struct *tty,
 			struct serial_struct *ss);
 static void whiteheat_set_termios(struct tty_struct *tty,
-			struct usb_serial_port *port, struct ktermios *old);
+				  struct usb_serial_port *port,
+				  const struct ktermios *old_termios);
 static int  whiteheat_tiocmget(struct tty_struct *tty);
 static int  whiteheat_tiocmset(struct tty_struct *tty,
 			unsigned int set, unsigned int clear);
-static void whiteheat_break_ctl(struct tty_struct *tty, int break_state);
+static int whiteheat_break_ctl(struct tty_struct *tty, int break_state);
 
 static struct usb_serial_driver whiteheat_fake_device = {
 	.driver = {
-		.owner =	THIS_MODULE,
 		.name =		"whiteheatnofirm",
 	},
 	.description =		"Connect Tech - WhiteHEAT - (prerenumeration)",
@@ -102,7 +102,6 @@ static struct usb_serial_driver whiteheat_fake_device = {
 
 static struct usb_serial_driver whiteheat_device = {
 	.driver = {
-		.owner =	THIS_MODULE,
 		.name =		"whiteheat",
 	},
 	.description =		"Connect Tech - WhiteHEAT",
@@ -279,8 +278,7 @@ static int whiteheat_attach(struct usb_serial *serial)
 		 serial->type->description,
 		 hw_info->sw_major_rev, hw_info->sw_minor_rev);
 
-	command_info = kmalloc(sizeof(struct whiteheat_command_private),
-								GFP_KERNEL);
+	command_info = kmalloc_obj(struct whiteheat_command_private);
 	if (!command_info)
 		goto no_command_private;
 
@@ -331,7 +329,7 @@ static int whiteheat_port_probe(struct usb_serial_port *port)
 {
 	struct whiteheat_private *info;
 
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	info = kzalloc_obj(*info);
 	if (!info)
 		return -ENOMEM;
 
@@ -442,15 +440,17 @@ static void whiteheat_get_serial(struct tty_struct *tty, struct serial_struct *s
 
 
 static void whiteheat_set_termios(struct tty_struct *tty,
-	struct usb_serial_port *port, struct ktermios *old_termios)
+				  struct usb_serial_port *port,
+				  const struct ktermios *old_termios)
 {
 	firm_setup_port(tty);
 }
 
-static void whiteheat_break_ctl(struct tty_struct *tty, int break_state)
+static int whiteheat_break_ctl(struct tty_struct *tty, int break_state)
 {
 	struct usb_serial_port *port = tty->driver_data;
-	firm_set_break(port, break_state);
+
+	return firm_set_break(port, break_state);
 }
 
 

@@ -79,6 +79,7 @@ static int lance_debug = 1;
 #endif
 module_param(lance_debug, int, 0);
 MODULE_PARM_DESC(lance_debug, "atarilance debug level (0-3)");
+MODULE_DESCRIPTION("Atari LANCE Ethernet driver");
 MODULE_LICENSE("GPL");
 
 /* Print debug messages on probing? */
@@ -367,7 +368,7 @@ static void *slow_memcpy( void *dst, const void *src, size_t len )
 }
 
 
-struct net_device * __init atarilance_probe(void)
+static struct net_device * __init atarilance_probe(void)
 {
 	int i;
 	static int found;
@@ -581,15 +582,15 @@ static unsigned long __init lance_probe1( struct net_device *dev,
 
 	/* Get the ethernet address */
 	switch( lp->cardtype ) {
-	  case OLD_RIEBL:
+	case OLD_RIEBL:
 		/* No ethernet address! (Set some default address) */
 		eth_hw_addr_set(dev, OldRieblDefHwaddr);
 		break;
-	  case NEW_RIEBL:
+	case NEW_RIEBL:
 		lp->memcpy_f(addr, RIEBL_HWADDR_ADDR, ETH_ALEN);
 		eth_hw_addr_set(dev, addr);
 		break;
-	  case PAM_CARD:
+	case PAM_CARD:
 		i = IO->eeprom;
 		for( i = 0; i < 6; ++i )
 			addr[i] =
@@ -824,7 +825,7 @@ lance_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	lp->memcpy_f( PKTBUF_ADDR(head), (void *)skb->data, skb->len );
 	head->flag = TMD1_OWN_CHIP | TMD1_ENP | TMD1_STP;
 	dev->stats.tx_bytes += skb->len;
-	dev_kfree_skb( skb );
+	dev_consume_skb_irq(skb);
 	lp->cur_tx++;
 	while( lp->cur_tx >= TX_RING_SIZE && lp->dirty_tx >= TX_RING_SIZE ) {
 		lp->cur_tx -= TX_RING_SIZE;
@@ -854,7 +855,7 @@ static irqreturn_t lance_interrupt( int irq, void *dev_id )
 	int csr0, boguscnt = 10;
 	int handled = 0;
 
-	if (dev == NULL) {
+	if (!dev) {
 		DPRINTK( 1, ( "lance_interrupt(): interrupt for unknown device.\n" ));
 		return IRQ_NONE;
 	}
@@ -995,7 +996,7 @@ static int lance_rx( struct net_device *dev )
 			}
 			else {
 				skb = netdev_alloc_skb(dev, pkt_len + 2);
-				if (skb == NULL) {
+				if (!skb) {
 					for( i = 0; i < RX_RING_SIZE; i++ )
 						if (MEM->rx_head[(entry+i) & RX_RING_MOD_MASK].flag &
 							RMD1_OWN_CHIP)

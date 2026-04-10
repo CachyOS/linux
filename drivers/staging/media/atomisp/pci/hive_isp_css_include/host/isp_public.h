@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #ifndef __ISP_PUBLIC_H_INCLUDED__
@@ -29,19 +20,6 @@
 void cnd_isp_irq_enable(
     const isp_ID_t		ID,
     const bool			cnd);
-
-/*! Read the state of cell ISP[ID]
-
- \param	ID[in]				ISP identifier
- \param	state[out]			isp state structure
- \param	stall[out]			isp stall conditions
-
- \return none, state = ISP[ID].state, stall = ISP[ID].stall
- */
-void isp_get_state(
-    const isp_ID_t		ID,
-    isp_state_t			*state,
-    isp_stall_t			*stall);
 
 /*! Write to the status and control register of ISP[ID]
 

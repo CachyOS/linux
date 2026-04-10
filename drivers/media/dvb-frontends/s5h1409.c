@@ -946,7 +946,7 @@ struct dvb_frontend *s5h1409_attach(const struct s5h1409_config *config,
 	u16 reg;
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(struct s5h1409_state), GFP_KERNEL);
+	state = kzalloc_obj(struct s5h1409_state);
 	if (state == NULL)
 		goto error;
 
@@ -981,7 +981,7 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(s5h1409_attach);
+EXPORT_SYMBOL_GPL(s5h1409_attach);
 
 static const struct dvb_frontend_ops s5h1409_ops = {
 	.delsys = { SYS_ATSC, SYS_DVBC_ANNEX_B },

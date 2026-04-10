@@ -8,8 +8,8 @@
 #include "util/evsel.h"
 #include "util/evlist.h"
 #include "util/machine.h"
-#include "util/thread.h"
 #include "util/parse-events.h"
+#include "util/thread.h"
 #include "tests/tests.h"
 #include "tests/hists_common.h"
 #include <linux/kernel.h>
@@ -84,6 +84,7 @@ static int add_hist_entries(struct hists *hists, struct machine *machine)
 	struct perf_sample sample = { .period = 1000, };
 	size_t i;
 
+	addr_location__init(&al);
 	for (i = 0; i < ARRAY_SIZE(fake_samples); i++) {
 		struct hist_entry_iter iter = {
 			.evsel = evsel,
@@ -107,19 +108,22 @@ static int add_hist_entries(struct hists *hists, struct machine *machine)
 
 		if (hist_entry_iter__add(&iter, &al, sysctl_perf_event_max_stack,
 					 NULL) < 0) {
-			addr_location__put(&al);
 			goto out;
 		}
 
-		fake_samples[i].thread = al.thread;
-		fake_samples[i].map = al.map;
+		thread__put(fake_samples[i].thread);
+		fake_samples[i].thread = thread__get(al.thread);
+		map__put(fake_samples[i].map);
+		fake_samples[i].map = map__get(al.map);
 		fake_samples[i].sym = al.sym;
 	}
 
+	addr_location__exit(&al);
 	return TEST_OK;
 
 out:
 	pr_debug("Not enough memory for adding a hist entry\n");
+	addr_location__exit(&al);
 	return TEST_FAIL;
 }
 
@@ -147,15 +151,24 @@ static void del_hist_entries(struct hists *hists)
 	}
 }
 
+static void put_fake_samples(void)
+{
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(fake_samples); i++) {
+		map__zput(fake_samples[i].map);
+		thread__zput(fake_samples[i].thread);
+	}
+}
+
 typedef int (*test_fn_t)(struct evsel *, struct machine *);
 
 #define COMM(he)  (thread__comm_str(he->thread))
-#define DSO(he)   (he->ms.map->dso->short_name)
+#define DSO(he)   (dso__short_name(map__dso(he->ms.map)))
 #define SYM(he)   (he->ms.sym->name)
 #define CPU(he)   (he->cpu)
-#define PID(he)   (he->thread->tid)
 #define DEPTH(he) (he->callchain->max_depth)
-#define CDSO(cl)  (cl->ms.map->dso->short_name)
+#define CDSO(cl)  (dso__short_name(map__dso(cl->ms.map)))
 #define CSYM(cl)  (cl->ms.sym->name)
 
 struct result {
@@ -282,7 +295,7 @@ static int test1(struct evsel *evsel, struct machine *machine)
 	symbol_conf.cumulate_callchain = false;
 	evsel__reset_sample_bit(evsel, CALLCHAIN);
 
-	setup_sorting(NULL);
+	setup_sorting(/*evlist=*/NULL, machine->env);
 	callchain_register_param(&callchain_param);
 
 	err = add_hist_entries(hists, machine);
@@ -429,7 +442,7 @@ static int test2(struct evsel *evsel, struct machine *machine)
 	symbol_conf.cumulate_callchain = false;
 	evsel__set_sample_bit(evsel, CALLCHAIN);
 
-	setup_sorting(NULL);
+	setup_sorting(/*evlist=*/NULL, machine->env);
 	callchain_register_param(&callchain_param);
 
 	err = add_hist_entries(hists, machine);
@@ -487,7 +500,7 @@ static int test3(struct evsel *evsel, struct machine *machine)
 	symbol_conf.cumulate_callchain = true;
 	evsel__reset_sample_bit(evsel, CALLCHAIN);
 
-	setup_sorting(NULL);
+	setup_sorting(/*evlist=*/NULL, machine->env);
 	callchain_register_param(&callchain_param);
 
 	err = add_hist_entries(hists, machine);
@@ -671,7 +684,7 @@ static int test4(struct evsel *evsel, struct machine *machine)
 	symbol_conf.cumulate_callchain = true;
 	evsel__set_sample_bit(evsel, CALLCHAIN);
 
-	setup_sorting(NULL);
+	setup_sorting(/*evlist=*/NULL, machine->env);
 
 	callchain_param = callchain_param_default;
 	callchain_register_param(&callchain_param);
@@ -706,7 +719,7 @@ static int test__hists_cumulate(struct test_suite *test __maybe_unused, int subt
 
 	TEST_ASSERT_VAL("No memory", evlist);
 
-	err = parse_events(evlist, "cpu-clock", NULL);
+	err = parse_event(evlist, "cpu-clock");
 	if (err)
 		goto out;
 	err = TEST_FAIL;
@@ -733,6 +746,7 @@ out:
 	/* tear down everything */
 	evlist__delete(evlist);
 	machines__exit(&machines);
+	put_fake_samples();
 
 	return err;
 }

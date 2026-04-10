@@ -235,14 +235,12 @@ static int vt8500_rtc_probe(struct platform_device *pdev)
 	return devm_rtc_register_device(vt8500_rtc->rtc);
 }
 
-static int vt8500_rtc_remove(struct platform_device *pdev)
+static void vt8500_rtc_remove(struct platform_device *pdev)
 {
 	struct vt8500_rtc *vt8500_rtc = platform_get_drvdata(pdev);
 
 	/* Disable alarm matching */
 	writel(0, vt8500_rtc->regbase + VT8500_RTC_IS);
-
-	return 0;
 }
 
 static const struct of_device_id wmt_dt_ids[] = {

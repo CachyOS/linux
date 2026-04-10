@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause */
+/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
  * Copyright(c) 2015-2017 Intel Corporation.
  */
@@ -246,7 +246,6 @@ void sc_disable(struct send_context *sc);
 int sc_restart(struct send_context *sc);
 void sc_return_credits(struct send_context *sc);
 void sc_flush(struct send_context *sc);
-void sc_drop(struct send_context *sc);
 void sc_stop(struct send_context *sc, int bit);
 struct pio_buf *sc_buffer_alloc(struct send_context *sc, u32 dw_len,
 				pio_release_cb cb, void *arg);

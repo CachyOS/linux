@@ -391,14 +391,12 @@ mpt_lan_open(struct net_device *dev)
 				"a moment.\n");
 	}
 
-	priv->mpt_txfidx = kmalloc_array(priv->tx_max_out, sizeof(int),
-					 GFP_KERNEL);
+	priv->mpt_txfidx = kmalloc_objs(int, priv->tx_max_out);
 	if (priv->mpt_txfidx == NULL)
 		goto out;
 	priv->mpt_txfidx_tail = -1;
 
-	priv->SendCtl = kcalloc(priv->tx_max_out, sizeof(struct BufferControl),
-				GFP_KERNEL);
+	priv->SendCtl = kzalloc_objs(struct BufferControl, priv->tx_max_out);
 	if (priv->SendCtl == NULL)
 		goto out_mpt_txfidx;
 	for (i = 0; i < priv->tx_max_out; i++)
@@ -406,15 +404,12 @@ mpt_lan_open(struct net_device *dev)
 
 	dlprintk((KERN_INFO MYNAM "@lo: Finished initializing SendCtl\n"));
 
-	priv->mpt_rxfidx = kmalloc_array(priv->max_buckets_out, sizeof(int),
-					 GFP_KERNEL);
+	priv->mpt_rxfidx = kmalloc_objs(int, priv->max_buckets_out);
 	if (priv->mpt_rxfidx == NULL)
 		goto out_SendCtl;
 	priv->mpt_rxfidx_tail = -1;
 
-	priv->RcvCtl = kcalloc(priv->max_buckets_out,
-			       sizeof(struct BufferControl),
-			       GFP_KERNEL);
+	priv->RcvCtl = kzalloc_objs(struct BufferControl, priv->max_buckets_out);
 	if (priv->RcvCtl == NULL)
 		goto out_mpt_rxfidx;
 	for (i = 0; i < priv->max_buckets_out; i++)
@@ -1433,7 +1428,9 @@ mptlan_remove(struct pci_dev *pdev)
 {
 	MPT_ADAPTER 		*ioc = pci_get_drvdata(pdev);
 	struct net_device	*dev = ioc->netdev;
+	struct mpt_lan_priv *priv = netdev_priv(dev);
 
+	cancel_delayed_work_sync(&priv->post_buckets_task);
 	if(dev != NULL) {
 		unregister_netdev(dev);
 		free_netdev(dev);

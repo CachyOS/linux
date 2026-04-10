@@ -45,28 +45,28 @@
 #define LNB_HIGH_FREQ		10600000	/* transition frequency */
 
 static unsigned int drop_tslock_prob_on_low_snr;
-module_param(drop_tslock_prob_on_low_snr, uint, 0);
+module_param(drop_tslock_prob_on_low_snr, uint, 0444);
 MODULE_PARM_DESC(drop_tslock_prob_on_low_snr,
 		 "Probability of losing the TS lock if the signal quality is bad");
 
 static unsigned int recover_tslock_prob_on_good_snr;
-module_param(recover_tslock_prob_on_good_snr, uint, 0);
+module_param(recover_tslock_prob_on_good_snr, uint, 0444);
 MODULE_PARM_DESC(recover_tslock_prob_on_good_snr,
 		 "Probability recovering the TS lock when the signal improves");
 
 static unsigned int mock_power_up_delay_msec;
-module_param(mock_power_up_delay_msec, uint, 0);
+module_param(mock_power_up_delay_msec, uint, 0444);
 MODULE_PARM_DESC(mock_power_up_delay_msec, "Simulate a power up delay");
 
 static unsigned int mock_tune_delay_msec;
-module_param(mock_tune_delay_msec, uint, 0);
+module_param(mock_tune_delay_msec, uint, 0444);
 MODULE_PARM_DESC(mock_tune_delay_msec, "Simulate a tune delay");
 
 static unsigned int vidtv_valid_dvb_t_freqs[NUM_VALID_TUNER_FREQS] = {
 	474000000
 };
 
-module_param_array(vidtv_valid_dvb_t_freqs, uint, NULL, 0);
+module_param_array(vidtv_valid_dvb_t_freqs, uint, NULL, 0444);
 MODULE_PARM_DESC(vidtv_valid_dvb_t_freqs,
 		 "Valid DVB-T frequencies to simulate, in Hz");
 
@@ -74,19 +74,19 @@ static unsigned int vidtv_valid_dvb_c_freqs[NUM_VALID_TUNER_FREQS] = {
 	474000000
 };
 
-module_param_array(vidtv_valid_dvb_c_freqs, uint, NULL, 0);
+module_param_array(vidtv_valid_dvb_c_freqs, uint, NULL, 0444);
 MODULE_PARM_DESC(vidtv_valid_dvb_c_freqs,
 		 "Valid DVB-C frequencies to simulate, in Hz");
 
 static unsigned int vidtv_valid_dvb_s_freqs[NUM_VALID_TUNER_FREQS] = {
 	11362000
 };
-module_param_array(vidtv_valid_dvb_s_freqs, uint, NULL, 0);
+module_param_array(vidtv_valid_dvb_s_freqs, uint, NULL, 0444);
 MODULE_PARM_DESC(vidtv_valid_dvb_s_freqs,
 		 "Valid DVB-S/S2 frequencies to simulate at Ku-Band, in kHz");
 
 static unsigned int max_frequency_shift_hz;
-module_param(max_frequency_shift_hz, uint, 0);
+module_param(max_frequency_shift_hz, uint, 0444);
 MODULE_PARM_DESC(max_frequency_shift_hz,
 		 "Maximum shift in HZ allowed when tuning in a channel");
 
@@ -96,24 +96,24 @@ DVB_DEFINE_MOD_OPT_ADAPTER_NR(adapter_nums);
  * Influences the signal acquisition time. See ISO/IEC 13818-1 : 2000. p. 113.
  */
 static unsigned int si_period_msec = 40;
-module_param(si_period_msec, uint, 0);
+module_param(si_period_msec, uint, 0444);
 MODULE_PARM_DESC(si_period_msec, "How often to send SI packets. Default: 40ms");
 
 static unsigned int pcr_period_msec = 40;
-module_param(pcr_period_msec, uint, 0);
+module_param(pcr_period_msec, uint, 0444);
 MODULE_PARM_DESC(pcr_period_msec,
 		 "How often to send PCR packets. Default: 40ms");
 
 static unsigned int mux_rate_kbytes_sec = 4096;
-module_param(mux_rate_kbytes_sec, uint, 0);
+module_param(mux_rate_kbytes_sec, uint, 0444);
 MODULE_PARM_DESC(mux_rate_kbytes_sec, "Mux rate: will pad stream if below");
 
 static unsigned int pcr_pid = 0x200;
-module_param(pcr_pid, uint, 0);
+module_param(pcr_pid, uint, 0444);
 MODULE_PARM_DESC(pcr_pid, "PCR PID for all channels: defaults to 0x200");
 
 static unsigned int mux_buf_sz_pkts;
-module_param(mux_buf_sz_pkts, uint, 0);
+module_param(mux_buf_sz_pkts, uint, 0444);
 MODULE_PARM_DESC(mux_buf_sz_pkts,
 		 "Size for the internal mux buffer in multiples of 188 bytes");
 
@@ -191,10 +191,11 @@ static int vidtv_start_streaming(struct vidtv_dvb *dvb)
 
 	mux_args.mux_buf_sz  = mux_buf_sz;
 
-	dvb->streaming = true;
 	dvb->mux = vidtv_mux_init(dvb->fe[0], dev, &mux_args);
 	if (!dvb->mux)
 		return -ENOMEM;
+
+	dvb->streaming = true;
 	vidtv_mux_start_thread(dvb->mux);
 
 	dev_dbg_ratelimited(dev, "Started streaming\n");
@@ -204,6 +205,11 @@ static int vidtv_start_streaming(struct vidtv_dvb *dvb)
 static int vidtv_stop_streaming(struct vidtv_dvb *dvb)
 {
 	struct device *dev = &dvb->pdev->dev;
+
+	if (!dvb->streaming) {
+		dev_warn_ratelimited(dev, "No streaming. Skipping.\n");
+		return 0;
+	}
 
 	dvb->streaming = false;
 	vidtv_mux_stop_thread(dvb->mux);
@@ -459,26 +465,20 @@ fail_dmx_conn:
 	for (j = j - 1; j >= 0; --j)
 		dvb->demux.dmx.remove_frontend(&dvb->demux.dmx,
 					       &dvb->dmx_fe[j]);
-fail_dmx_dev:
 	dvb_dmxdev_release(&dvb->dmx_dev);
-fail_dmx:
+fail_dmx_dev:
 	dvb_dmx_release(&dvb->demux);
-fail_fe:
-	for (j = i; j >= 0; --j)
-		dvb_unregister_frontend(dvb->fe[j]);
-fail_tuner_probe:
-	for (j = i; j >= 0; --j)
-		if (dvb->i2c_client_tuner[j])
-			dvb_module_release(dvb->i2c_client_tuner[j]);
-
+fail_dmx:
 fail_demod_probe:
-	for (j = i; j >= 0; --j)
-		if (dvb->i2c_client_demod[j])
-			dvb_module_release(dvb->i2c_client_demod[j]);
-
+	for (i = i - 1; i >= 0; --i) {
+		dvb_unregister_frontend(dvb->fe[i]);
+fail_fe:
+		dvb_module_release(dvb->i2c_client_tuner[i]);
+fail_tuner_probe:
+		dvb_module_release(dvb->i2c_client_demod[i]);
+	}
 fail_adapter:
 	dvb_unregister_adapter(&dvb->adapter);
-
 fail_i2c:
 	i2c_del_adapter(&dvb->i2c_adapter);
 
@@ -490,7 +490,7 @@ static int vidtv_bridge_probe(struct platform_device *pdev)
 	struct vidtv_dvb *dvb;
 	int ret;
 
-	dvb = kzalloc(sizeof(*dvb), GFP_KERNEL);
+	dvb = kzalloc_obj(*dvb);
 	if (!dvb)
 		return -ENOMEM;
 
@@ -534,7 +534,7 @@ err_dvb:
 	return ret;
 }
 
-static int vidtv_bridge_remove(struct platform_device *pdev)
+static void vidtv_bridge_remove(struct platform_device *pdev)
 {
 	struct vidtv_dvb *dvb;
 	u32 i;
@@ -558,8 +558,6 @@ static int vidtv_bridge_remove(struct platform_device *pdev)
 	dvb_dmx_release(&dvb->demux);
 	dvb_unregister_adapter(&dvb->adapter);
 	dev_info(&pdev->dev, "Successfully removed vidtv\n");
-
-	return 0;
 }
 
 static void vidtv_bridge_dev_release(struct device *dev)
@@ -580,7 +578,7 @@ static struct platform_driver vidtv_bridge_driver = {
 		.name = VIDTV_PDEV_NAME,
 	},
 	.probe    = vidtv_bridge_probe,
-	.remove   = vidtv_bridge_remove,
+	.remove = vidtv_bridge_remove,
 };
 
 static void __exit vidtv_bridge_exit(void)

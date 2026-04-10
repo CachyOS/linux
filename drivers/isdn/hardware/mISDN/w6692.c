@@ -101,6 +101,7 @@ set_debug(const char *val, const struct kernel_param *kp)
 }
 
 MODULE_AUTHOR("Karsten Keil");
+MODULE_DESCRIPTION("mISDN driver for Winbond w6692 based cards");
 MODULE_LICENSE("GPL v2");
 MODULE_VERSION(W6692_REV);
 module_param_call(debug, set_debug, param_get_uint, &debug, S_IRUGO | S_IWUSR);
@@ -293,7 +294,7 @@ W6692_fill_Dfifo(struct w6692_hw *card)
 	WriteW6692(card, W_D_CMDR, cmd);
 	if (test_and_set_bit(FLG_BUSY_TIMER, &dch->Flags)) {
 		pr_debug("%s: fill_Dfifo dbusytimer running\n", card->name);
-		del_timer(&dch->timer);
+		timer_delete(&dch->timer);
 	}
 	dch->timer.expires = jiffies + ((DBUSY_TIMER_VALUE * HZ) / 1000);
 	add_timer(&dch->timer);
@@ -310,7 +311,7 @@ d_retransmit(struct w6692_hw *card)
 	struct dchannel *dch = &card->dch;
 
 	if (test_and_clear_bit(FLG_BUSY_TIMER, &dch->Flags))
-		del_timer(&dch->timer);
+		timer_delete(&dch->timer);
 #ifdef FIXME
 	if (test_and_clear_bit(FLG_L1_BUSY, &dch->Flags))
 		dchannel_sched_event(dch, D_CLEARBUSY);
@@ -371,7 +372,7 @@ handle_rxD(struct w6692_hw *card) {
 static void
 handle_txD(struct w6692_hw *card) {
 	if (test_and_clear_bit(FLG_BUSY_TIMER, &card->dch.Flags))
-		del_timer(&card->dch.timer);
+		timer_delete(&card->dch.timer);
 	if (card->dch.tx_skb && card->dch.tx_idx < card->dch.tx_skb->len) {
 		W6692_fill_Dfifo(card);
 	} else {
@@ -801,7 +802,7 @@ w6692_irq(int intno, void *dev_id)
 static void
 dbusy_timer_handler(struct timer_list *t)
 {
-	struct dchannel *dch = from_timer(dch, t, timer);
+	struct dchannel *dch = timer_container_of(dch, t, timer);
 	struct w6692_hw	*card = dch->hw;
 	int		rbch, star;
 	u_long		flags;
@@ -1129,7 +1130,7 @@ w6692_l1callback(struct dchannel *dch, u32 cmd)
 		}
 		test_and_clear_bit(FLG_TX_BUSY, &dch->Flags);
 		if (test_and_clear_bit(FLG_BUSY_TIMER, &dch->Flags))
-			del_timer(&dch->timer);
+			timer_delete(&dch->timer);
 		break;
 	case HW_POWERUP_REQ:
 		spin_lock_irqsave(&card->lock, flags);
@@ -1341,7 +1342,7 @@ w6692_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	struct w6692_hw	*card;
 	struct w6692map	*m = (struct w6692map *)ent->driver_data;
 
-	card = kzalloc(sizeof(struct w6692_hw), GFP_KERNEL);
+	card = kzalloc_obj(struct w6692_hw);
 	if (!card) {
 		pr_info("No kmem for w6692 card\n");
 		return err;

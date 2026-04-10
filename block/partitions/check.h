@@ -24,13 +24,13 @@ struct parsed_partitions {
 };
 
 typedef struct {
-	struct page *v;
+	struct folio *v;
 } Sector;
 
 void *read_part_sector(struct parsed_partitions *state, sector_t n, Sector *p);
 static inline void put_dev_sector(Sector p)
 {
-	put_page(p.v);
+	folio_put(p.v);
 }
 
 static inline void
@@ -62,6 +62,7 @@ int karma_partition(struct parsed_partitions *state);
 int ldm_partition(struct parsed_partitions *state);
 int mac_partition(struct parsed_partitions *state);
 int msdos_partition(struct parsed_partitions *state);
+int of_partition(struct parsed_partitions *state);
 int osf_partition(struct parsed_partitions *state);
 int sgi_partition(struct parsed_partitions *state);
 int sun_partition(struct parsed_partitions *state);

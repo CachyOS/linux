@@ -20,6 +20,7 @@
 #include <linux/suspend.h>
 #include <linux/time.h>
 #include <linux/greybus.h>
+#include <linux/of.h>
 #include "arche_platform.h"
 
 #if IS_ENABLED(CONFIG_USB_HSIC_USB3613)
@@ -522,10 +523,9 @@ static int arche_platform_probe(struct platform_device *pdev)
 
 	arche_pdata->pm_notifier.notifier_call = arche_platform_pm_notifier;
 	ret = register_pm_notifier(&arche_pdata->pm_notifier);
-
 	if (ret) {
 		dev_err(dev, "failed to register pm notifier %d\n", ret);
-		goto err_device_remove;
+		goto err_depopulate;
 	}
 
 	/* Explicitly power off if requested */
@@ -533,8 +533,9 @@ static int arche_platform_probe(struct platform_device *pdev)
 		mutex_lock(&arche_pdata->platform_state_mutex);
 		ret = arche_platform_coldboot_seq(arche_pdata);
 		if (ret) {
+			mutex_unlock(&arche_pdata->platform_state_mutex);
 			dev_err(dev, "Failed to cold boot svc %d\n", ret);
-			goto err_coldboot;
+			goto err_unregister_pm_notifier;
 		}
 		arche_platform_wd_irq_en(arche_pdata);
 		mutex_unlock(&arche_pdata->platform_state_mutex);
@@ -543,44 +544,35 @@ static int arche_platform_probe(struct platform_device *pdev)
 	dev_info(dev, "Device registered successfully\n");
 	return 0;
 
-err_coldboot:
-	mutex_unlock(&arche_pdata->platform_state_mutex);
+err_unregister_pm_notifier:
+	unregister_pm_notifier(&arche_pdata->pm_notifier);
+err_depopulate:
+	of_platform_depopulate(dev);
 err_device_remove:
 	device_remove_file(&pdev->dev, &dev_attr_state);
 	return ret;
 }
 
-static int arche_remove_child(struct device *dev, void *unused)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-
-	platform_device_unregister(pdev);
-
-	return 0;
-}
-
-static int arche_platform_remove(struct platform_device *pdev)
+static void arche_platform_remove(struct platform_device *pdev)
 {
 	struct arche_platform_drvdata *arche_pdata = platform_get_drvdata(pdev);
 
 	unregister_pm_notifier(&arche_pdata->pm_notifier);
 	device_remove_file(&pdev->dev, &dev_attr_state);
-	device_for_each_child(&pdev->dev, NULL, arche_remove_child);
+	of_platform_depopulate(&pdev->dev);
 	arche_platform_poweroff_seq(arche_pdata);
 
 	if (usb3613_hub_mode_ctrl(false))
 		dev_warn(arche_pdata->dev, "failed to control hub device\n");
-		/* TODO: Should we do anything more here ?? */
-	return 0;
 }
 
 static __maybe_unused int arche_platform_suspend(struct device *dev)
 {
 	/*
-	 * If timing profile premits, we may shutdown bridge
+	 * If timing profile permits, we may shutdown bridge
 	 * completely
 	 *
-	 * TODO: sequence ??
+	 * TODO: define shutdown sequence
 	 *
 	 * Also, need to make sure we meet precondition for unipro suspend
 	 * Precondition: Definition ???
@@ -620,14 +612,7 @@ static const struct of_device_id arche_platform_of_match[] = {
 	{ .compatible = "google,arche-platform", },
 	{ },
 };
-
-static const struct of_device_id arche_combined_id[] = {
-	/* Use PID/VID of SVC device */
-	{ .compatible = "google,arche-platform", },
-	{ .compatible = "usbffff,2", },
-	{ },
-};
-MODULE_DEVICE_TABLE(of, arche_combined_id);
+MODULE_DEVICE_TABLE(of, arche_platform_of_match);
 
 static struct platform_driver arche_platform_device_driver = {
 	.probe		= arche_platform_probe,

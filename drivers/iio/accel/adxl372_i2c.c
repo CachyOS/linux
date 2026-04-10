@@ -18,9 +18,9 @@ static const struct regmap_config adxl372_regmap_config = {
 	.readable_noinc_reg = adxl372_readable_noinc_reg,
 };
 
-static int adxl372_i2c_probe(struct i2c_client *client,
-			     const struct i2c_device_id *id)
+static int adxl372_i2c_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct regmap *regmap;
 	unsigned int regval;
 	int ret;
@@ -42,8 +42,8 @@ static int adxl372_i2c_probe(struct i2c_client *client,
 }
 
 static const struct i2c_device_id adxl372_i2c_id[] = {
-	{ "adxl372", 0 },
-	{}
+	{ "adxl372" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adxl372_i2c_id);
 
@@ -67,4 +67,4 @@ module_i2c_driver(adxl372_i2c_driver);
 MODULE_AUTHOR("Stefan Popa <stefan.popa@analog.com>");
 MODULE_DESCRIPTION("Analog Devices ADXL372 3-axis accelerometer I2C driver");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(IIO_ADXL372);
+MODULE_IMPORT_NS("IIO_ADXL372");

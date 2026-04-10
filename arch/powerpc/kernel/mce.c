@@ -131,6 +131,13 @@ void save_mce_event(struct pt_regs *regs, long handled,
 	if (mce->error_type == MCE_ERROR_TYPE_UE)
 		mce->u.ue_error.ignore_event = mce_err->ignore_event;
 
+	/*
+	 * Raise irq work, So that we don't miss to log the error for
+	 * unrecoverable errors.
+	 */
+	if (mce->disposition == MCE_DISPOSITION_NOT_RECOVERED)
+		mce_irq_work_queue();
+
 	if (!addr)
 		return;
 
@@ -233,9 +240,6 @@ static void machine_check_ue_event(struct machine_check_event *evt)
 	}
 	memcpy(&local_paca->mce_info->mce_ue_event_queue[index],
 	       evt, sizeof(*evt));
-
-	/* Queue work to process this event later. */
-	mce_irq_work_queue();
 }
 
 /*
@@ -756,7 +760,7 @@ void __init mce_init(void)
 		mce_info = memblock_alloc_try_nid(sizeof(*mce_info),
 						  __alignof__(*mce_info),
 						  MEMBLOCK_LOW_LIMIT,
-						  limit, cpu_to_node(i));
+						  limit, early_cpu_to_node(i));
 		if (!mce_info)
 			goto err;
 		paca_ptrs[i]->mce_info = mce_info;

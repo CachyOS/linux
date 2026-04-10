@@ -86,6 +86,10 @@ In case software/firmware components are loaded from the disk (e.g.
 ``/lib/firmware``) only the running version should be reported via
 the kernel API.
 
+Please note that any security versions reported via devlink are purely
+informational. Devlink does not use a secure channel to communicate with
+the device.
+
 Generic Versions
 ================
 
@@ -146,6 +150,11 @@ board.manufacture
 
 An identifier of the company or the facility which produced the part.
 
+board.part_number
+-----------------
+
+Part number of the board and its components.
+
 fw
 --
 
@@ -197,6 +206,11 @@ fw.bundle_id
 ------------
 
 Unique identifier of the entire firmware bundle.
+
+fw.bootloader
+-------------
+
+Version of the bootloader.
 
 Future work
 ===========

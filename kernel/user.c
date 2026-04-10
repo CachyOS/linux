@@ -18,54 +18,63 @@
 #include <linux/interrupt.h>
 #include <linux/export.h>
 #include <linux/user_namespace.h>
+#include <linux/binfmts.h>
 #include <linux/proc_ns.h>
+
+#if IS_ENABLED(CONFIG_BINFMT_MISC)
+struct binfmt_misc init_binfmt_misc = {
+	.entries = LIST_HEAD_INIT(init_binfmt_misc.entries),
+	.enabled = true,
+	.entries_lock = __RW_LOCK_UNLOCKED(init_binfmt_misc.entries_lock),
+};
+EXPORT_SYMBOL_GPL(init_binfmt_misc);
+#endif
 
 /*
  * userns count is 1 for root user, 1 for init_uts_ns,
  * and 1 for... ?
  */
 struct user_namespace init_user_ns = {
+	.ns = NS_COMMON_INIT(init_user_ns),
 	.uid_map = {
-		.nr_extents = 1,
 		{
 			.extent[0] = {
 				.first = 0,
 				.lower_first = 0,
 				.count = 4294967295U,
 			},
+			.nr_extents = 1,
 		},
 	},
 	.gid_map = {
-		.nr_extents = 1,
 		{
 			.extent[0] = {
 				.first = 0,
 				.lower_first = 0,
 				.count = 4294967295U,
 			},
+			.nr_extents = 1,
 		},
 	},
 	.projid_map = {
-		.nr_extents = 1,
 		{
 			.extent[0] = {
 				.first = 0,
 				.lower_first = 0,
 				.count = 4294967295U,
 			},
+			.nr_extents = 1,
 		},
 	},
-	.ns.count = REFCOUNT_INIT(3),
 	.owner = GLOBAL_ROOT_UID,
 	.group = GLOBAL_ROOT_GID,
-	.ns.inum = PROC_USER_INIT_INO,
-#ifdef CONFIG_USER_NS
-	.ns.ops = &userns_operations,
-#endif
 	.flags = USERNS_INIT_FLAGS,
 #ifdef CONFIG_KEYS
 	.keyring_name_list = LIST_HEAD_INIT(init_user_ns.keyring_name_list),
 	.keyring_sem = __RWSEM_INITIALIZER(init_user_ns.keyring_sem),
+#endif
+#if IS_ENABLED(CONFIG_BINFMT_MISC)
+	.binfmt_misc = &init_binfmt_misc,
 #endif
 };
 EXPORT_SYMBOL_GPL(init_user_ns);
@@ -75,7 +84,7 @@ EXPORT_SYMBOL_GPL(init_user_ns);
  * when changing user ID's (ie setuid() and friends).
  */
 
-#define UIDHASH_BITS	(CONFIG_BASE_SMALL ? 3 : 7)
+#define UIDHASH_BITS	(IS_ENABLED(CONFIG_BASE_SMALL) ? 3 : 7)
 #define UIDHASH_SZ	(1 << UIDHASH_BITS)
 #define UIDHASH_MASK		(UIDHASH_SZ - 1)
 #define __uidhashfn(uid)	(((uid >> UIDHASH_BITS) + uid) & UIDHASH_MASK)
@@ -185,6 +194,7 @@ void free_uid(struct user_struct *up)
 	if (refcount_dec_and_lock_irqsave(&up->__count, &uidhash_lock, &flags))
 		free_user(up, flags);
 }
+EXPORT_SYMBOL_GPL(free_uid);
 
 struct user_struct *alloc_uid(kuid_t uid)
 {

@@ -30,16 +30,9 @@ static int cpu_pm_notify(enum cpu_pm_event event)
 {
 	int ret;
 
-	/*
-	 * This introduces a RCU read critical section, which could be
-	 * disfunctional in cpu idle. Copy RCU_NONIDLE code to let RCU know
-	 * this.
-	 */
-	rcu_irq_enter_irqson();
 	rcu_read_lock();
 	ret = raw_notifier_call_chain(&cpu_pm_notifier.chain, event, NULL);
 	rcu_read_unlock();
-	rcu_irq_exit_irqson();
 
 	return notifier_to_errno(ret);
 }
@@ -49,11 +42,9 @@ static int cpu_pm_notify_robust(enum cpu_pm_event event_up, enum cpu_pm_event ev
 	unsigned long flags;
 	int ret;
 
-	rcu_irq_enter_irqson();
 	raw_spin_lock_irqsave(&cpu_pm_notifier.lock, flags);
 	ret = raw_notifier_call_chain_robust(&cpu_pm_notifier.chain, event_up, event_down, NULL);
 	raw_spin_unlock_irqrestore(&cpu_pm_notifier.lock, flags);
-	rcu_irq_exit_irqson();
 
 	return notifier_to_errno(ret);
 }
@@ -182,7 +173,7 @@ int cpu_cluster_pm_exit(void)
 EXPORT_SYMBOL_GPL(cpu_cluster_pm_exit);
 
 #ifdef CONFIG_PM
-static int cpu_pm_suspend(void)
+static int cpu_pm_suspend(void *data)
 {
 	int ret;
 
@@ -194,20 +185,24 @@ static int cpu_pm_suspend(void)
 	return ret;
 }
 
-static void cpu_pm_resume(void)
+static void cpu_pm_resume(void *data)
 {
 	cpu_cluster_pm_exit();
 	cpu_pm_exit();
 }
 
-static struct syscore_ops cpu_pm_syscore_ops = {
+static const struct syscore_ops cpu_pm_syscore_ops = {
 	.suspend = cpu_pm_suspend,
 	.resume = cpu_pm_resume,
 };
 
+static struct syscore cpu_pm_syscore = {
+	.ops = &cpu_pm_syscore_ops,
+};
+
 static int cpu_pm_init(void)
 {
-	register_syscore_ops(&cpu_pm_syscore_ops);
+	register_syscore(&cpu_pm_syscore);
 	return 0;
 }
 core_initcall(cpu_pm_init);

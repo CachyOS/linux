@@ -97,7 +97,7 @@ static unsigned long pacpi_discover_modes(struct ata_port *ap, struct ata_device
  *	this case the list of discovered valid modes obtained by ACPI probing
  */
 
-static unsigned long pacpi_mode_filter(struct ata_device *adev, unsigned long mask)
+static unsigned int pacpi_mode_filter(struct ata_device *adev, unsigned int mask)
 {
 	struct pata_acpi *acpi = adev->link->ap->private_data;
 	return mask & acpi->mask[adev->devno];
@@ -205,7 +205,7 @@ static int pacpi_port_start(struct ata_port *ap)
 	return ata_bmdma_port_start(ap);
 }
 
-static struct scsi_host_template pacpi_sht = {
+static const struct scsi_host_template pacpi_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -216,7 +216,7 @@ static struct ata_port_operations pacpi_ops = {
 	.mode_filter		= pacpi_mode_filter,
 	.set_piomode		= pacpi_set_piomode,
 	.set_dmamode		= pacpi_set_dmamode,
-	.prereset		= pacpi_pre_reset,
+	.reset.prereset		= pacpi_pre_reset,
 	.port_start		= pacpi_port_start,
 };
 

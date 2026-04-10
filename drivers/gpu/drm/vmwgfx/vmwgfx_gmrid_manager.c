@@ -29,7 +29,6 @@
  */
 
 #include "vmwgfx_drv.h"
-#include <drm/ttm/ttm_bo_driver.h>
 #include <drm/ttm/ttm_placement.h>
 #include <linux/idr.h>
 #include <linux/spinlock.h>
@@ -58,20 +57,23 @@ static int vmw_gmrid_man_get_node(struct ttm_resource_manager *man,
 	struct vmwgfx_gmrid_man *gman = to_gmrid_manager(man);
 	int id;
 
-	*res = kmalloc(sizeof(**res), GFP_KERNEL);
+	*res = kmalloc_obj(**res);
 	if (!*res)
 		return -ENOMEM;
 
 	ttm_resource_init(bo, place, *res);
 
 	id = ida_alloc_max(&gman->gmr_ida, gman->max_gmr_ids - 1, GFP_KERNEL);
-	if (id < 0)
+	if (id < 0) {
+		ttm_resource_fini(man, *res);
+		kfree(*res);
 		return id;
+	}
 
 	spin_lock(&gman->lock);
 
 	if (gman->max_gmr_pages > 0) {
-		gman->used_gmr_pages += (*res)->num_pages;
+		gman->used_gmr_pages += PFN_UP((*res)->size);
 		/*
 		 * Because the graphics memory is a soft limit we can try to
 		 * expand it instead of letting the userspace apps crash.
@@ -92,14 +94,14 @@ static int vmw_gmrid_man_get_node(struct ttm_resource_manager *man,
 			} else
 				new_max_pages = gman->max_gmr_pages * 2;
 			if (new_max_pages > gman->max_gmr_pages && new_max_pages >= gman->used_gmr_pages) {
-				DRM_WARN("vmwgfx: increasing guest mob limits to %u kB.\n",
+				DRM_WARN("vmwgfx: increasing guest mob limits to %u KiB.\n",
 					 ((new_max_pages) << (PAGE_SHIFT - 10)));
 
 				gman->max_gmr_pages = new_max_pages;
 			} else {
 				char buf[256];
 				snprintf(buf, sizeof(buf),
-					 "vmwgfx, error: guest graphics is out of memory (mob limit at: %ukB).\n",
+					 "vmwgfx, error: guest graphics is out of memory (mob limit at: %u KiB).\n",
 					 ((gman->max_gmr_pages) << (PAGE_SHIFT - 10)));
 				vmw_host_printf(buf);
 				DRM_WARN("%s", buf);
@@ -114,7 +116,7 @@ static int vmw_gmrid_man_get_node(struct ttm_resource_manager *man,
 	return 0;
 
 nospace:
-	gman->used_gmr_pages -= (*res)->num_pages;
+	gman->used_gmr_pages -= PFN_UP((*res)->size);
 	spin_unlock(&gman->lock);
 	ida_free(&gman->gmr_ida, id);
 	ttm_resource_fini(man, *res);
@@ -129,7 +131,7 @@ static void vmw_gmrid_man_put_node(struct ttm_resource_manager *man,
 
 	ida_free(&gman->gmr_ida, res->start);
 	spin_lock(&gman->lock);
-	gman->used_gmr_pages -= res->num_pages;
+	gman->used_gmr_pages -= PFN_UP(res->size);
 	spin_unlock(&gman->lock);
 	ttm_resource_fini(man, res);
 	kfree(res);
@@ -152,8 +154,7 @@ static const struct ttm_resource_manager_func vmw_gmrid_manager_func;
 int vmw_gmrid_man_init(struct vmw_private *dev_priv, int type)
 {
 	struct ttm_resource_manager *man;
-	struct vmwgfx_gmrid_man *gman =
-		kzalloc(sizeof(*gman), GFP_KERNEL);
+	struct vmwgfx_gmrid_man *gman = kzalloc_obj(*gman);
 
 	if (unlikely(!gman))
 		return -ENOMEM;

@@ -170,9 +170,7 @@ static void st_lsm6dsx_shub_wait_complete(struct st_lsm6dsx_hw *hw)
  *
  * Read st_lsm6dsx i2c controller register
  */
-static int
-st_lsm6dsx_shub_read_output(struct st_lsm6dsx_hw *hw, u8 *data,
-			    int len)
+int st_lsm6dsx_shub_read_output(struct st_lsm6dsx_hw *hw, u8 *data, int len)
 {
 	const struct st_lsm6dsx_shub_settings *hub_settings;
 	int err;
@@ -560,12 +558,11 @@ st_lsm6dsx_shub_read_raw(struct iio_dev *iio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		ret = iio_device_claim_direct_mode(iio_dev);
-		if (ret)
-			break;
+		if (!iio_device_claim_direct(iio_dev))
+			return -EBUSY;
 
 		ret = st_lsm6dsx_shub_read_oneshot(sensor, ch, val);
-		iio_device_release_direct_mode(iio_dev);
+		iio_device_release_direct(iio_dev);
 		break;
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		*val = sensor->ext_info.slv_odr / 1000;
@@ -616,53 +613,58 @@ st_lsm6dsx_shub_set_full_scale(struct st_lsm6dsx_sensor *sensor,
 }
 
 static int
-st_lsm6dsx_shub_write_raw(struct iio_dev *iio_dev,
-			  struct iio_chan_spec const *chan,
-			  int val, int val2, long mask)
+__st_lsm6dsx_shub_write_raw(struct iio_dev *iio_dev,
+			    struct iio_chan_spec const *chan,
+			    int val, int val2, long mask)
 {
 	struct st_lsm6dsx_sensor *sensor = iio_priv(iio_dev);
 	int err;
 
-	err = iio_device_claim_direct_mode(iio_dev);
-	if (err)
-		return err;
-
 	switch (mask) {
 	case IIO_CHAN_INFO_SAMP_FREQ: {
+		struct st_lsm6dsx_hw *hw = sensor->hw;
+		struct st_lsm6dsx_sensor *ref_sensor;
+		u8 odr_val;
 		u16 data;
+		int odr;
 
 		val = val * 1000 + val2 / 1000;
 		err = st_lsm6dsx_shub_get_odr_val(sensor, val, &data);
-		if (!err) {
-			struct st_lsm6dsx_hw *hw = sensor->hw;
-			struct st_lsm6dsx_sensor *ref_sensor;
-			u8 odr_val;
-			int odr;
+		if (err)
+			return err;
 
-			ref_sensor = iio_priv(hw->iio_devs[ST_LSM6DSX_ID_ACC]);
-			odr = st_lsm6dsx_check_odr(ref_sensor, val, &odr_val);
-			if (odr < 0) {
-				err = odr;
-				goto release;
-			}
+		ref_sensor = iio_priv(hw->iio_devs[ST_LSM6DSX_ID_ACC]);
+		odr = st_lsm6dsx_check_odr(ref_sensor, val, &odr_val);
+		if (odr < 0)
+			return odr;
 
-			sensor->ext_info.slv_odr = val;
-			sensor->odr = odr;
-		}
-		break;
+		sensor->ext_info.slv_odr = val;
+		sensor->odr = odr;
+		sensor->hwfifo_odr_mHz = odr;
+		return 0;
 	}
 	case IIO_CHAN_INFO_SCALE:
-		err = st_lsm6dsx_shub_set_full_scale(sensor, val2);
-		break;
+		return st_lsm6dsx_shub_set_full_scale(sensor, val2);
 	default:
-		err = -EINVAL;
-		break;
+		return -EINVAL;
 	}
+}
 
-release:
-	iio_device_release_direct_mode(iio_dev);
+static int
+st_lsm6dsx_shub_write_raw(struct iio_dev *iio_dev,
+			  struct iio_chan_spec const *chan,
+			  int val, int val2, long mask)
+{
+	int ret;
 
-	return err;
+	if (!iio_device_claim_direct(iio_dev))
+		return -EBUSY;
+
+	ret = __st_lsm6dsx_shub_write_raw(iio_dev, chan, val, val2, mask);
+
+	iio_device_release_direct(iio_dev);
+
+	return ret;
 }
 
 static ssize_t
@@ -706,18 +708,18 @@ static ssize_t st_lsm6dsx_shub_scale_avail(struct device *dev,
 static IIO_DEV_ATTR_SAMP_FREQ_AVAIL(st_lsm6dsx_shub_sampling_freq_avail);
 static IIO_DEVICE_ATTR(in_scale_available, 0444,
 		       st_lsm6dsx_shub_scale_avail, NULL, 0);
-static struct attribute *st_lsm6dsx_ext_attributes[] = {
+static struct attribute *st_lsm6dsx_shub_attributes[] = {
 	&iio_dev_attr_sampling_frequency_available.dev_attr.attr,
 	&iio_dev_attr_in_scale_available.dev_attr.attr,
 	NULL,
 };
 
-static const struct attribute_group st_lsm6dsx_ext_attribute_group = {
-	.attrs = st_lsm6dsx_ext_attributes,
+static const struct attribute_group st_lsm6dsx_shub_attribute_group = {
+	.attrs = st_lsm6dsx_shub_attributes,
 };
 
-static const struct iio_info st_lsm6dsx_ext_info = {
-	.attrs = &st_lsm6dsx_ext_attribute_group,
+static const struct iio_info st_lsm6dsx_shub_info = {
+	.attrs = &st_lsm6dsx_shub_attribute_group,
 	.read_raw = st_lsm6dsx_shub_read_raw,
 	.write_raw = st_lsm6dsx_shub_write_raw,
 	.hwfifo_set_watermark = st_lsm6dsx_set_watermark,
@@ -739,12 +741,13 @@ st_lsm6dsx_shub_alloc_iiodev(struct st_lsm6dsx_hw *hw,
 		return NULL;
 
 	iio_dev->modes = INDIO_DIRECT_MODE;
-	iio_dev->info = &st_lsm6dsx_ext_info;
+	iio_dev->info = &st_lsm6dsx_shub_info;
 
 	sensor = iio_priv(iio_dev);
 	sensor->id = id;
 	sensor->hw = hw;
 	sensor->odr = hw->settings->odr_table[ref_id].odr_avl[0].milli_hz;
+	sensor->hwfifo_odr_mHz = sensor->odr;
 	sensor->ext_info.slv_odr = info->odr_table.odr_avl[0].milli_hz;
 	sensor->gain = info->fs_table.fs_avl[0].gain;
 	sensor->ext_info.settings = info;

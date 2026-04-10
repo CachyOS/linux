@@ -21,11 +21,6 @@ static const struct flag_info flag_array[] = {
 		.set	= "huge",
 		.clear	= "    ",
 	}, {
-		.mask	= _PAGE_SH,
-		.val	= 0,
-		.set	= "user",
-		.clear	= "    ",
-	}, {
 		.mask	= _PAGE_RO | _PAGE_NA,
 		.val	= 0,
 		.set	= "rw",
@@ -74,20 +69,25 @@ static const struct flag_info flag_array[] = {
 	}
 };
 
-struct pgtable_level pg_level[5] = {
+struct ptdump_pg_level pg_level[5] = {
 	{ /* pgd */
+		.name	= "PGD",
 		.flag	= flag_array,
 		.num	= ARRAY_SIZE(flag_array),
 	}, { /* p4d */
+		.name	= "P4D",
 		.flag	= flag_array,
 		.num	= ARRAY_SIZE(flag_array),
 	}, { /* pud */
+		.name	= "PUD",
 		.flag	= flag_array,
 		.num	= ARRAY_SIZE(flag_array),
 	}, { /* pmd */
+		.name	= "PMD",
 		.flag	= flag_array,
 		.num	= ARRAY_SIZE(flag_array),
 	}, { /* pte */
+		.name	= "PTE",
 		.flag	= flag_array,
 		.num	= ARRAY_SIZE(flag_array),
 	},

@@ -4221,6 +4221,7 @@
 #define regCP_ECC_FIRSTOCCURRENCE_RING1_BASE_IDX                                                        0
 #define regGB_EDC_MODE                                                                                  0x1e1e
 #define regGB_EDC_MODE_BASE_IDX                                                                         0
+#define regCP_DEBUG                                                                                     0x1e1f
 #define regCP_DEBUG_BASE_IDX                                                                            0
 #define regCP_CPC_DEBUG                                                                                 0x1e21
 #define regCP_CPC_DEBUG_BASE_IDX                                                                        0
@@ -6368,6 +6369,8 @@
 #define regTCP_INVALIDATE_BASE_IDX                                                                      1
 #define regTCP_STATUS                                                                                   0x19a1
 #define regTCP_STATUS_BASE_IDX                                                                          1
+#define regTCP_CNTL                                                                                     0x19a2
+#define regTCP_CNTL_BASE_IDX                                                                            1
 #define regTCP_CNTL2                                                                                    0x19a3
 #define regTCP_CNTL2_BASE_IDX                                                                           1
 #define regTCP_DEBUG_INDEX                                                                              0x19a5
@@ -7082,10 +7085,18 @@
 #define regCP_GE_MSINVOC_COUNT_LO_BASE_IDX                                                              1
 #define regCP_GE_MSINVOC_COUNT_HI                                                                       0x20a7
 #define regCP_GE_MSINVOC_COUNT_HI_BASE_IDX                                                              1
+#define regCP_IB1_CMD_BUFSZ                                                                             0x20c0
+#define regCP_IB1_CMD_BUFSZ_BASE_IDX                                                                    1
 #define regCP_IB2_CMD_BUFSZ                                                                             0x20c1
 #define regCP_IB2_CMD_BUFSZ_BASE_IDX                                                                    1
 #define regCP_ST_CMD_BUFSZ                                                                              0x20c2
 #define regCP_ST_CMD_BUFSZ_BASE_IDX                                                                     1
+#define regCP_IB1_BASE_LO                                                                               0x20cc
+#define regCP_IB1_BASE_LO_BASE_IDX                                                                      1
+#define regCP_IB1_BASE_HI                                                                               0x20cd
+#define regCP_IB1_BASE_HI_BASE_IDX                                                                      1
+#define regCP_IB1_BUFSZ                                                                                 0x20ce
+#define regCP_IB1_BUFSZ_BASE_IDX                                                                        1
 #define regCP_IB2_BASE_LO                                                                               0x20cf
 #define regCP_IB2_BASE_LO_BASE_IDX                                                                      1
 #define regCP_IB2_BASE_HI                                                                               0x20d0
@@ -7538,6 +7549,8 @@
 #define regCP_MES_DOORBELL_CONTROL5_BASE_IDX                                                            1
 #define regCP_MES_DOORBELL_CONTROL6                                                                     0x2841
 #define regCP_MES_DOORBELL_CONTROL6_BASE_IDX                                                            1
+#define regCP_MES_DEBUG_INTERRUPT_INSTR_PNTR                                                            0x2842
+#define regCP_MES_DEBUG_INTERRUPT_INSTR_PNTR_BASE_IDX                                                   1
 #define regCP_MES_GP0_LO                                                                                0x2843
 #define regCP_MES_GP0_LO_BASE_IDX                                                                       1
 #define regCP_MES_GP0_HI                                                                                0x2844
@@ -8306,6 +8319,8 @@
 #define regGL1I_GL1R_REP_FGCG_OVERRIDE_BASE_IDX                                                         1
 #define regGL1C_STATUS                                                                                  0x2d41
 #define regGL1C_STATUS_BASE_IDX                                                                         1
+#define regGL1C_UTCL0_CNTL1                                                                             0x2d42
+#define regGL1C_UTCL0_CNTL1_BASE_IDX                                                                    1
 #define regGL1C_UTCL0_CNTL2                                                                             0x2d43
 #define regGL1C_UTCL0_CNTL2_BASE_IDX                                                                    1
 #define regGL1C_UTCL0_STATUS                                                                            0x2d44

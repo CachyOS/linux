@@ -57,7 +57,7 @@
 #include <linux/workqueue.h>
 
 #include <asm/barrier.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #define CREATE_TRACE_POINTS
 #include "applespi.h"
@@ -202,7 +202,7 @@ struct command_protocol_tp_info {
 };
 
 /**
- * struct touchpad_info - touchpad info response.
+ * struct touchpad_info_protocol - touchpad info response.
  * message.type = 0x1020, message.length = 0x006e
  *
  * @unknown1:		unknown
@@ -311,7 +311,7 @@ struct message {
 		struct command_protocol_mt_init	init_mt_command;
 		struct command_protocol_capsl	capsl_command;
 		struct command_protocol_bl	bl_command;
-		u8				data[0];
+		DECLARE_FLEX_ARRAY(u8, 		data);
 	};
 };
 
@@ -717,9 +717,7 @@ static int applespi_send_cmd_msg(struct applespi_data *applespi);
 static void applespi_msg_complete(struct applespi_data *applespi,
 				  bool is_write_msg, bool is_read_compl)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&applespi->cmd_msg_lock, flags);
+	guard(spinlock_irqsave)(&applespi->cmd_msg_lock);
 
 	if (is_read_compl)
 		applespi->read_active = false;
@@ -733,8 +731,6 @@ static void applespi_msg_complete(struct applespi_data *applespi,
 		applespi->cmd_msg_queued = 0;
 		applespi_send_cmd_msg(applespi);
 	}
-
-	spin_unlock_irqrestore(&applespi->cmd_msg_lock, flags);
 }
 
 static void applespi_async_write_complete(void *context)
@@ -888,33 +884,22 @@ static int applespi_send_cmd_msg(struct applespi_data *applespi)
 
 static void applespi_init(struct applespi_data *applespi, bool is_resume)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&applespi->cmd_msg_lock, flags);
+	guard(spinlock_irqsave)(&applespi->cmd_msg_lock);
 
 	if (is_resume)
 		applespi->want_mt_init_cmd = true;
 	else
 		applespi->want_tp_info_cmd = true;
 	applespi_send_cmd_msg(applespi);
-
-	spin_unlock_irqrestore(&applespi->cmd_msg_lock, flags);
 }
 
 static int applespi_set_capsl_led(struct applespi_data *applespi,
 				  bool capslock_on)
 {
-	unsigned long flags;
-	int sts;
-
-	spin_lock_irqsave(&applespi->cmd_msg_lock, flags);
+	guard(spinlock_irqsave)(&applespi->cmd_msg_lock);
 
 	applespi->want_cl_led_on = capslock_on;
-	sts = applespi_send_cmd_msg(applespi);
-
-	spin_unlock_irqrestore(&applespi->cmd_msg_lock, flags);
-
-	return sts;
+	return applespi_send_cmd_msg(applespi);
 }
 
 static void applespi_set_bl_level(struct led_classdev *led_cdev,
@@ -922,9 +907,8 @@ static void applespi_set_bl_level(struct led_classdev *led_cdev,
 {
 	struct applespi_data *applespi =
 		container_of(led_cdev, struct applespi_data, backlight_info);
-	unsigned long flags;
 
-	spin_lock_irqsave(&applespi->cmd_msg_lock, flags);
+	guard(spinlock_irqsave)(&applespi->cmd_msg_lock);
 
 	if (value == 0) {
 		applespi->want_bl_level = value;
@@ -940,8 +924,6 @@ static void applespi_set_bl_level(struct led_classdev *led_cdev,
 	}
 
 	applespi_send_cmd_msg(applespi);
-
-	spin_unlock_irqrestore(&applespi->cmd_msg_lock, flags);
 }
 
 static int applespi_event(struct input_dev *dev, unsigned int type,
@@ -1007,7 +989,6 @@ static const struct file_operations applespi_tp_dim_fops = {
 	.owner = THIS_MODULE,
 	.open = applespi_tp_dim_open,
 	.read = applespi_tp_dim_read,
-	.llseek = no_llseek,
 };
 
 static void report_finger_data(struct input_dev *input, int slot,
@@ -1428,9 +1409,7 @@ static void applespi_got_data(struct applespi_data *applespi)
 	/* process packet header */
 	if (!applespi_verify_crc(applespi, applespi->rx_buffer,
 				 APPLESPI_PACKET_SIZE)) {
-		unsigned long flags;
-
-		spin_lock_irqsave(&applespi->cmd_msg_lock, flags);
+		guard(spinlock_irqsave)(&applespi->cmd_msg_lock);
 
 		if (applespi->drain) {
 			applespi->read_active = false;
@@ -1438,8 +1417,6 @@ static void applespi_got_data(struct applespi_data *applespi)
 
 			wake_up_all(&applespi->drain_complete);
 		}
-
-		spin_unlock_irqrestore(&applespi->cmd_msg_lock, flags);
 
 		return;
 	}
@@ -1573,11 +1550,10 @@ static u32 applespi_notify(acpi_handle gpe_device, u32 gpe, void *context)
 {
 	struct applespi_data *applespi = context;
 	int sts;
-	unsigned long flags;
 
 	trace_applespi_irq_received(ET_RD_IRQ, PT_READ);
 
-	spin_lock_irqsave(&applespi->cmd_msg_lock, flags);
+	guard(spinlock_irqsave)(&applespi->cmd_msg_lock);
 
 	if (!applespi->suspended) {
 		sts = applespi_async(applespi, &applespi->rd_m,
@@ -1590,59 +1566,43 @@ static u32 applespi_notify(acpi_handle gpe_device, u32 gpe, void *context)
 			applespi->read_active = true;
 	}
 
-	spin_unlock_irqrestore(&applespi->cmd_msg_lock, flags);
-
 	return ACPI_INTERRUPT_HANDLED;
 }
 
 static int applespi_get_saved_bl_level(struct applespi_data *applespi)
 {
-	struct efivar_entry *efivar_entry;
+	efi_status_t sts = EFI_NOT_FOUND;
 	u16 efi_data = 0;
-	unsigned long efi_data_len;
-	int sts;
+	unsigned long efi_data_len = sizeof(efi_data);
 
-	efivar_entry = kmalloc(sizeof(*efivar_entry), GFP_KERNEL);
-	if (!efivar_entry)
-		return -ENOMEM;
-
-	memcpy(efivar_entry->var.VariableName, EFI_BL_LEVEL_NAME,
-	       sizeof(EFI_BL_LEVEL_NAME));
-	efivar_entry->var.VendorGuid = EFI_BL_LEVEL_GUID;
-	efi_data_len = sizeof(efi_data);
-
-	sts = efivar_entry_get(efivar_entry, NULL, &efi_data_len, &efi_data);
-	if (sts && sts != -ENOENT)
+	if (efi_rt_services_supported(EFI_RT_SUPPORTED_GET_VARIABLE))
+		sts = efi.get_variable(EFI_BL_LEVEL_NAME, &EFI_BL_LEVEL_GUID,
+				       NULL, &efi_data_len, &efi_data);
+	if (sts != EFI_SUCCESS && sts != EFI_NOT_FOUND)
 		dev_warn(&applespi->spi->dev,
-			 "Error getting backlight level from EFI vars: %d\n",
+			 "Error getting backlight level from EFI vars: 0x%lx\n",
 			 sts);
 
-	kfree(efivar_entry);
-
-	return sts ? sts : efi_data;
+	return sts != EFI_SUCCESS ? -ENODEV : efi_data;
 }
 
 static void applespi_save_bl_level(struct applespi_data *applespi,
 				   unsigned int level)
 {
-	efi_guid_t efi_guid;
+	efi_status_t sts = EFI_UNSUPPORTED;
 	u32 efi_attr;
-	unsigned long efi_data_len;
 	u16 efi_data;
-	int sts;
 
-	/* Save keyboard backlight level */
-	efi_guid = EFI_BL_LEVEL_GUID;
 	efi_data = (u16)level;
-	efi_data_len = sizeof(efi_data);
 	efi_attr = EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS |
 		   EFI_VARIABLE_RUNTIME_ACCESS;
 
-	sts = efivar_entry_set_safe((efi_char16_t *)EFI_BL_LEVEL_NAME, efi_guid,
-				    efi_attr, true, efi_data_len, &efi_data);
-	if (sts)
+	if (efi_rt_services_supported(EFI_RT_SUPPORTED_SET_VARIABLE))
+		sts = efi.set_variable(EFI_BL_LEVEL_NAME, &EFI_BL_LEVEL_GUID,
+				       efi_attr, sizeof(efi_data), &efi_data);
+	if (sts != EFI_SUCCESS)
 		dev_warn(&applespi->spi->dev,
-			 "Error saving backlight level to EFI vars: %d\n", sts);
+			 "Error saving backlight level to EFI vars: 0x%lx\n", sts);
 }
 
 static int applespi_probe(struct spi_device *spi)
@@ -1833,29 +1793,21 @@ static int applespi_probe(struct spi_device *spi)
 
 static void applespi_drain_writes(struct applespi_data *applespi)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&applespi->cmd_msg_lock, flags);
+	guard(spinlock_irqsave)(&applespi->cmd_msg_lock);
 
 	applespi->drain = true;
 	wait_event_lock_irq(applespi->drain_complete, !applespi->write_active,
 			    applespi->cmd_msg_lock);
-
-	spin_unlock_irqrestore(&applespi->cmd_msg_lock, flags);
 }
 
 static void applespi_drain_reads(struct applespi_data *applespi)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&applespi->cmd_msg_lock, flags);
+	guard(spinlock_irqsave)(&applespi->cmd_msg_lock);
 
 	wait_event_lock_irq(applespi->drain_complete, !applespi->read_active,
 			    applespi->cmd_msg_lock);
 
 	applespi->suspended = true;
-
-	spin_unlock_irqrestore(&applespi->cmd_msg_lock, flags);
 }
 
 static void applespi_remove(struct spi_device *spi)
@@ -1890,7 +1842,7 @@ static int applespi_poweroff_late(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused applespi_suspend(struct device *dev)
+static int applespi_suspend(struct device *dev)
 {
 	struct spi_device *spi = to_spi_device(dev);
 	struct applespi_data *applespi = spi_get_drvdata(spi);
@@ -1917,26 +1869,23 @@ static int __maybe_unused applespi_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused applespi_resume(struct device *dev)
+static int applespi_resume(struct device *dev)
 {
 	struct spi_device *spi = to_spi_device(dev);
 	struct applespi_data *applespi = spi_get_drvdata(spi);
 	acpi_status acpi_sts;
-	unsigned long flags;
 
 	/* ensure our flags and state reflect a newly resumed device */
-	spin_lock_irqsave(&applespi->cmd_msg_lock, flags);
+	scoped_guard(spinlock_irqsave, &applespi->cmd_msg_lock) {
+		applespi->drain = false;
+		applespi->have_cl_led_on = false;
+		applespi->have_bl_level = 0;
+		applespi->cmd_msg_queued = 0;
+		applespi->read_active = false;
+		applespi->write_active = false;
 
-	applespi->drain = false;
-	applespi->have_cl_led_on = false;
-	applespi->have_bl_level = 0;
-	applespi->cmd_msg_queued = 0;
-	applespi->read_active = false;
-	applespi->write_active = false;
-
-	applespi->suspended = false;
-
-	spin_unlock_irqrestore(&applespi->cmd_msg_lock, flags);
+		applespi->suspended = false;
+	}
 
 	/* switch on the SPI interface */
 	applespi_enable_spi(applespi);
@@ -1961,15 +1910,15 @@ static const struct acpi_device_id applespi_acpi_match[] = {
 MODULE_DEVICE_TABLE(acpi, applespi_acpi_match);
 
 static const struct dev_pm_ops applespi_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(applespi_suspend, applespi_resume)
-	.poweroff_late	= applespi_poweroff_late,
+	SYSTEM_SLEEP_PM_OPS(applespi_suspend, applespi_resume)
+	.poweroff_late	= pm_sleep_ptr(applespi_poweroff_late),
 };
 
 static struct spi_driver applespi_driver = {
 	.driver		= {
 		.name			= "applespi",
 		.acpi_match_table	= applespi_acpi_match,
-		.pm			= &applespi_pm_ops,
+		.pm			= pm_sleep_ptr(&applespi_pm_ops),
 	},
 	.probe		= applespi_probe,
 	.remove		= applespi_remove,

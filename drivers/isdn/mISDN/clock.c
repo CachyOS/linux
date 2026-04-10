@@ -91,12 +91,12 @@ struct mISDNclock
 
 	if (*debug & (DEBUG_CORE | DEBUG_CLOCK))
 		printk(KERN_DEBUG "%s: %s %d\n", __func__, name, pri);
-	iclock = kzalloc(sizeof(struct mISDNclock), GFP_ATOMIC);
+	iclock = kzalloc_obj(struct mISDNclock, GFP_ATOMIC);
 	if (!iclock) {
 		printk(KERN_ERR "%s: No memory for clock entry.\n", __func__);
 		return NULL;
 	}
-	strncpy(iclock->name, name, sizeof(iclock->name) - 1);
+	strscpy(iclock->name, name, sizeof(iclock->name));
 	iclock->pri = pri;
 	iclock->priv = priv;
 	iclock->ctl = ctl;

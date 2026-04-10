@@ -33,6 +33,7 @@
 #define __MLX5_EN_XDP_H__
 
 #include <linux/indirect_call_wrapper.h>
+#include <net/xdp_sock.h>
 
 #include "en.h"
 #include "en/txrx.h"
@@ -44,10 +45,60 @@
 	(MLX5E_XDP_INLINE_WQE_MAX_DS_CNT * MLX5_SEND_WQE_DS - \
 	 sizeof(struct mlx5_wqe_inline_seg))
 
+/* XDP packets can be transmitted in different ways. On completion, we need to
+ * distinguish between them to clean up things in a proper way.
+ */
+enum mlx5e_xdp_xmit_mode {
+	/* An xdp_frame was transmitted due to either XDP_REDIRECT from another
+	 * device or XDP_TX from an XSK RQ. The frame has to be unmapped and
+	 * returned.
+	 */
+	MLX5E_XDP_XMIT_MODE_FRAME,
+
+	/* The xdp_frame was created in place as a result of XDP_TX from a
+	 * regular RQ. No DMA remapping happened, and the page belongs to us.
+	 */
+	MLX5E_XDP_XMIT_MODE_PAGE,
+
+	/* No xdp_frame was created at all, the transmit happened from a UMEM
+	 * page. The UMEM Completion Ring producer pointer has to be increased.
+	 */
+	MLX5E_XDP_XMIT_MODE_XSK,
+};
+
+/* xmit_mode entry is pushed to the fifo per packet, followed by multiple
+ * entries, as follows:
+ *
+ * MLX5E_XDP_XMIT_MODE_FRAME:
+ *    xdpf, dma_addr_1, dma_addr_2, ... , dma_addr_num.
+ *    'num' is derived from xdpf.
+ *
+ * MLX5E_XDP_XMIT_MODE_PAGE:
+ *    num, page_1, page_2, ... , page_num.
+ *
+ * MLX5E_XDP_XMIT_MODE_XSK:
+ *    frame.xsk_meta.
+ */
+#define MLX5E_XDP_FIFO_ENTRIES2DS_MAX_RATIO 4
+
+union mlx5e_xdp_info {
+	enum mlx5e_xdp_xmit_mode mode;
+	union {
+		struct xdp_frame *xdpf;
+		dma_addr_t dma_addr;
+	} frame;
+	union {
+		struct mlx5e_rq *rq;
+		u8 num;
+		struct page *page;
+	} page;
+	struct xsk_tx_metadata_compl xsk_meta;
+};
+
 struct mlx5e_xsk_param;
 int mlx5e_xdp_max_mtu(struct mlx5e_params *params, struct mlx5e_xsk_param *xsk);
-bool mlx5e_xdp_handle(struct mlx5e_rq *rq, struct page *page,
-		      struct bpf_prog *prog, struct xdp_buff *xdp);
+bool mlx5e_xdp_handle(struct mlx5e_rq *rq,
+		      struct bpf_prog *prog, struct mlx5e_xdp_buff *mlctx);
 void mlx5e_xdp_mpwqe_complete(struct mlx5e_xdpsq *sq);
 bool mlx5e_poll_xdpsq_cq(struct mlx5e_cq *cq);
 void mlx5e_free_xdpsq_descs(struct mlx5e_xdpsq *sq);
@@ -56,14 +107,17 @@ void mlx5e_xdp_rx_poll_complete(struct mlx5e_rq *rq);
 int mlx5e_xdp_xmit(struct net_device *dev, int n, struct xdp_frame **frames,
 		   u32 flags);
 
+extern const struct xdp_metadata_ops mlx5e_xdp_metadata_ops;
+extern const struct xsk_tx_metadata_ops mlx5e_xsk_tx_metadata_ops;
+
 INDIRECT_CALLABLE_DECLARE(bool mlx5e_xmit_xdp_frame_mpwqe(struct mlx5e_xdpsq *sq,
 							  struct mlx5e_xmit_data *xdptxd,
-							  struct skb_shared_info *sinfo,
-							  int check_result));
+							  int check_result,
+							  struct xsk_tx_metadata *meta));
 INDIRECT_CALLABLE_DECLARE(bool mlx5e_xmit_xdp_frame(struct mlx5e_xdpsq *sq,
 						    struct mlx5e_xmit_data *xdptxd,
-						    struct skb_shared_info *sinfo,
-						    int check_result));
+						    int check_result,
+						    struct xsk_tx_metadata *meta));
 INDIRECT_CALLABLE_DECLARE(int mlx5e_xmit_xdp_frame_check_mpwqe(struct mlx5e_xdpsq *sq));
 INDIRECT_CALLABLE_DECLARE(int mlx5e_xmit_xdp_frame_check(struct mlx5e_xdpsq *sq));
 
@@ -122,13 +176,13 @@ static inline bool mlx5e_xdp_get_inline_state(struct mlx5e_xdpsq *sq, bool cur)
 	return cur;
 }
 
-static inline bool mlx5e_xdp_mpqwe_is_full(struct mlx5e_tx_mpwqe *session, u8 max_sq_mpw_wqebbs)
+static inline bool mlx5e_xdp_mpwqe_is_full(struct mlx5e_tx_mpwqe *session)
 {
 	if (session->inline_on)
 		return session->ds_count + MLX5E_XDP_INLINE_WQE_MAX_DS_CNT >
-		       max_sq_mpw_wqebbs * MLX5_SEND_WQEBB_NUM_DS;
+		       session->ds_count_max;
 
-	return mlx5e_tx_mpwqe_is_full(session, max_sq_mpw_wqebbs);
+	return mlx5e_tx_mpwqe_is_full(session);
 }
 
 struct mlx5e_xdp_wqe_info {
@@ -171,14 +225,14 @@ mlx5e_xdp_mpwqe_add_dseg(struct mlx5e_xdpsq *sq,
 
 static inline void
 mlx5e_xdpi_fifo_push(struct mlx5e_xdp_info_fifo *fifo,
-		     struct mlx5e_xdp_info *xi)
+		     union mlx5e_xdp_info xi)
 {
 	u32 i = (*fifo->pc)++ & fifo->mask;
 
-	fifo->xi[i] = *xi;
+	fifo->xi[i] = xi;
 }
 
-static inline struct mlx5e_xdp_info
+static inline union mlx5e_xdp_info
 mlx5e_xdpi_fifo_pop(struct mlx5e_xdp_info_fifo *fifo)
 {
 	return fifo->xi[(*fifo->cc)++ & fifo->mask];

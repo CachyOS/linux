@@ -8,7 +8,7 @@
 #ifndef __ASM_KVM_PTRAUTH_H
 #define __ASM_KVM_PTRAUTH_H
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 
 #include <asm/sysreg.h>
 
@@ -99,5 +99,26 @@ alternative_else_nop_endif
 .macro ptrauth_switch_to_hyp g_ctxt, h_ctxt, reg1, reg2, reg3
 .endm
 #endif /* CONFIG_ARM64_PTR_AUTH */
-#endif /* __ASSEMBLY__ */
+
+#else  /* !__ASSEMBLER__ */
+
+#define __ptrauth_save_key(ctxt, key)					\
+	do {								\
+		u64 __val;						\
+		__val = read_sysreg_s(SYS_ ## key ## KEYLO_EL1);	\
+		ctxt_sys_reg(ctxt, key ## KEYLO_EL1) = __val;		\
+		__val = read_sysreg_s(SYS_ ## key ## KEYHI_EL1);	\
+		ctxt_sys_reg(ctxt, key ## KEYHI_EL1) = __val;		\
+	} while(0)
+
+#define ptrauth_save_keys(ctxt)						\
+	do {								\
+		__ptrauth_save_key(ctxt, APIA);				\
+		__ptrauth_save_key(ctxt, APIB);				\
+		__ptrauth_save_key(ctxt, APDA);				\
+		__ptrauth_save_key(ctxt, APDB);				\
+		__ptrauth_save_key(ctxt, APGA);				\
+	} while(0)
+
+#endif /* __ASSEMBLER__ */
 #endif /* __ASM_KVM_PTRAUTH_H */

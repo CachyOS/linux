@@ -74,7 +74,7 @@ enum hinic_offload_type {
  * hinic_txq_clean_stats - Clean the statistics of specific queue
  * @txq: Logical Tx Queue
  **/
-void hinic_txq_clean_stats(struct hinic_txq *txq)
+static void hinic_txq_clean_stats(struct hinic_txq *txq)
 {
 	struct hinic_txq_stats *txq_stats = &txq->txq_stats;
 
@@ -98,7 +98,6 @@ void hinic_txq_get_stats(struct hinic_txq *txq, struct hinic_txq_stats *stats)
 	struct hinic_txq_stats *txq_stats = &txq->txq_stats;
 	unsigned int start;
 
-	u64_stats_update_begin(&stats->syncp);
 	do {
 		start = u64_stats_fetch_begin(&txq_stats->syncp);
 		stats->pkts    = txq_stats->pkts;
@@ -108,7 +107,6 @@ void hinic_txq_get_stats(struct hinic_txq *txq, struct hinic_txq_stats *stats)
 		stats->tx_dropped = txq_stats->tx_dropped;
 		stats->big_frags_pkts = txq_stats->big_frags_pkts;
 	} while (u64_stats_fetch_retry(&txq_stats->syncp, start));
-	u64_stats_update_end(&stats->syncp);
 }
 
 /**
@@ -532,7 +530,7 @@ netdev_tx_t hinic_lb_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 	}
 
 process_sq_wqe:
-	hinic_sq_prepare_wqe(txq->sq, prod_idx, sq_wqe, txq->sges, nr_sges);
+	hinic_sq_prepare_wqe(txq->sq, sq_wqe, txq->sges, nr_sges);
 	hinic_sq_write_wqe(txq->sq, prod_idx, sq_wqe, skb, wqe_size);
 
 flush_skbs:
@@ -616,7 +614,7 @@ netdev_tx_t hinic_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 	}
 
 process_sq_wqe:
-	hinic_sq_prepare_wqe(txq->sq, prod_idx, sq_wqe, txq->sges, nr_sges);
+	hinic_sq_prepare_wqe(txq->sq, sq_wqe, txq->sges, nr_sges);
 
 	err = hinic_tx_offload(skb, &sq_wqe->task, &sq_wqe->ctrl.queue_info);
 	if (err)
@@ -863,7 +861,7 @@ int hinic_init_txq(struct hinic_txq *txq, struct hinic_sq *sq,
 	struct hinic_qp *qp = container_of(sq, struct hinic_qp, sq);
 	struct hinic_dev *nic_dev = netdev_priv(netdev);
 	struct hinic_hwdev *hwdev = nic_dev->hwdev;
-	int err, irqname_len;
+	int err;
 
 	txq->netdev = netdev;
 	txq->sq = sq;
@@ -884,14 +882,12 @@ int hinic_init_txq(struct hinic_txq *txq, struct hinic_sq *sq,
 		goto err_alloc_free_sges;
 	}
 
-	irqname_len = snprintf(NULL, 0, "%s_txq%d", netdev->name, qp->q_id) + 1;
-	txq->irq_name = devm_kzalloc(&netdev->dev, irqname_len, GFP_KERNEL);
+	txq->irq_name = devm_kasprintf(&netdev->dev, GFP_KERNEL, "%s_txq%d",
+				       netdev->name, qp->q_id);
 	if (!txq->irq_name) {
 		err = -ENOMEM;
 		goto err_alloc_irqname;
 	}
-
-	sprintf(txq->irq_name, "%s_txq%d", netdev->name, qp->q_id);
 
 	err = hinic_hwdev_hw_ci_addr_set(hwdev, sq, CI_UPDATE_NO_PENDING,
 					 CI_UPDATE_NO_COALESC);

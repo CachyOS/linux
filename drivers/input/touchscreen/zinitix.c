@@ -10,80 +10,91 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/property.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 
 /* Register Map */
 
-#define BT541_SWRESET_CMD			0x0000
-#define BT541_WAKEUP_CMD			0x0001
+#define ZINITIX_SWRESET_CMD			0x0000
+#define ZINITIX_WAKEUP_CMD			0x0001
 
-#define BT541_IDLE_CMD				0x0004
-#define BT541_SLEEP_CMD				0x0005
+#define ZINITIX_IDLE_CMD			0x0004
+#define ZINITIX_SLEEP_CMD			0x0005
 
-#define BT541_CLEAR_INT_STATUS_CMD		0x0003
-#define BT541_CALIBRATE_CMD			0x0006
-#define BT541_SAVE_STATUS_CMD			0x0007
-#define BT541_SAVE_CALIBRATION_CMD		0x0008
-#define BT541_RECALL_FACTORY_CMD		0x000f
+#define ZINITIX_CLEAR_INT_STATUS_CMD		0x0003
+#define ZINITIX_CALIBRATE_CMD			0x0006
+#define ZINITIX_SAVE_STATUS_CMD			0x0007
+#define ZINITIX_SAVE_CALIBRATION_CMD		0x0008
+#define ZINITIX_RECALL_FACTORY_CMD		0x000f
 
-#define BT541_THRESHOLD				0x0020
+#define ZINITIX_THRESHOLD			0x0020
 
-#define BT541_LARGE_PALM_REJECT_AREA_TH		0x003F
+#define ZINITIX_LARGE_PALM_REJECT_AREA_TH	0x003F
 
-#define BT541_DEBUG_REG				0x0115 /* 0~7 */
+#define ZINITIX_DEBUG_REG			0x0115 /* 0~7 */
 
-#define BT541_TOUCH_MODE			0x0010
-#define BT541_CHIP_REVISION			0x0011
-#define BT541_FIRMWARE_VERSION			0x0012
+#define ZINITIX_TOUCH_MODE			0x0010
+
+#define ZINITIX_CHIP_REVISION			0x0011
+#define ZINITIX_CHIP_BTX0X_MASK			0xF0F0
+#define ZINITIX_CHIP_BT4X2			0x4020
+#define ZINITIX_CHIP_BT4X3			0x4030
+#define ZINITIX_CHIP_BT4X4			0x4040
+
+#define ZINITIX_FIRMWARE_VERSION		0x0012
 
 #define ZINITIX_USB_DETECT			0x116
 
-#define BT541_MINOR_FW_VERSION			0x0121
+#define ZINITIX_MINOR_FW_VERSION		0x0121
 
-#define BT541_VENDOR_ID				0x001C
-#define BT541_HW_ID				0x0014
+#define ZINITIX_VENDOR_ID			0x001C
+#define ZINITIX_HW_ID				0x0014
 
-#define BT541_DATA_VERSION_REG			0x0013
-#define BT541_SUPPORTED_FINGER_NUM		0x0015
-#define BT541_EEPROM_INFO			0x0018
-#define BT541_INITIAL_TOUCH_MODE		0x0019
+#define ZINITIX_DATA_VERSION_REG		0x0013
+#define ZINITIX_SUPPORTED_FINGER_NUM		0x0015
+#define ZINITIX_EEPROM_INFO			0x0018
+#define ZINITIX_INITIAL_TOUCH_MODE		0x0019
 
-#define BT541_TOTAL_NUMBER_OF_X			0x0060
-#define BT541_TOTAL_NUMBER_OF_Y			0x0061
+#define ZINITIX_TOTAL_NUMBER_OF_X		0x0060
+#define ZINITIX_TOTAL_NUMBER_OF_Y		0x0061
 
-#define BT541_DELAY_RAW_FOR_HOST		0x007f
+#define ZINITIX_DELAY_RAW_FOR_HOST		0x007f
 
-#define BT541_BUTTON_SUPPORTED_NUM		0x00B0
-#define BT541_BUTTON_SENSITIVITY		0x00B2
-#define BT541_DUMMY_BUTTON_SENSITIVITY		0X00C8
+#define ZINITIX_BUTTON_SUPPORTED_NUM		0x00B0
+#define ZINITIX_BUTTON_SENSITIVITY		0x00B2
+#define ZINITIX_DUMMY_BUTTON_SENSITIVITY	0X00C8
 
-#define BT541_X_RESOLUTION			0x00C0
-#define BT541_Y_RESOLUTION			0x00C1
+#define ZINITIX_X_RESOLUTION			0x00C0
+#define ZINITIX_Y_RESOLUTION			0x00C1
 
-#define BT541_POINT_STATUS_REG			0x0080
-#define BT541_ICON_STATUS_REG			0x00AA
+#define ZINITIX_POINT_STATUS_REG		0x0080
 
-#define BT541_POINT_COORD_REG			(BT541_POINT_STATUS_REG + 2)
+#define ZINITIX_BT4X2_ICON_STATUS_REG		0x009A
+#define ZINITIX_BT4X3_ICON_STATUS_REG		0x00A0
+#define ZINITIX_BT4X4_ICON_STATUS_REG		0x00A0
+#define ZINITIX_BT5XX_ICON_STATUS_REG		0x00AA
 
-#define BT541_AFE_FREQUENCY			0x0100
-#define BT541_DND_N_COUNT			0x0122
-#define BT541_DND_U_COUNT			0x0135
+#define ZINITIX_POINT_COORD_REG			(ZINITIX_POINT_STATUS_REG + 2)
 
-#define BT541_RAWDATA_REG			0x0200
+#define ZINITIX_AFE_FREQUENCY			0x0100
+#define ZINITIX_DND_N_COUNT			0x0122
+#define ZINITIX_DND_U_COUNT			0x0135
 
-#define BT541_EEPROM_INFO_REG			0x0018
+#define ZINITIX_RAWDATA_REG			0x0200
 
-#define BT541_INT_ENABLE_FLAG			0x00f0
-#define BT541_PERIODICAL_INTERRUPT_INTERVAL	0x00f1
+#define ZINITIX_EEPROM_INFO_REG			0x0018
 
-#define BT541_BTN_WIDTH				0x016d
+#define ZINITIX_INT_ENABLE_FLAG			0x00f0
+#define ZINITIX_PERIODICAL_INTERRUPT_INTERVAL	0x00f1
 
-#define BT541_CHECKSUM_RESULT			0x012c
+#define ZINITIX_BTN_WIDTH			0x016d
 
-#define BT541_INIT_FLASH			0x01d0
-#define BT541_WRITE_FLASH			0x01d1
-#define BT541_READ_FLASH			0x01d2
+#define ZINITIX_CHECKSUM_RESULT			0x012c
+
+#define ZINITIX_INIT_FLASH			0x01d0
+#define ZINITIX_WRITE_FLASH			0x01d1
+#define ZINITIX_READ_FLASH			0x01d2
 
 #define ZINITIX_INTERNAL_FLAG_02		0x011e
 #define ZINITIX_INTERNAL_FLAG_03		0x011f
@@ -119,6 +130,7 @@
 
 #define DEFAULT_TOUCH_POINT_MODE		2
 #define MAX_SUPPORTED_FINGER_NUM		5
+#define MAX_SUPPORTED_BUTTON_NUM		8
 
 #define CHIP_ON_DELAY				15 // ms
 #define FIRMWARE_ON_DELAY			40 // ms
@@ -146,6 +158,13 @@ struct bt541_ts_data {
 	struct touchscreen_properties prop;
 	struct regulator_bulk_data supplies[2];
 	u32 zinitix_mode;
+	u32 keycodes[MAX_SUPPORTED_BUTTON_NUM];
+	int num_keycodes;
+	bool have_versioninfo;
+	u16 chip_revision;
+	u16 firmware_version;
+	u16 regdata_version;
+	u16 icon_status_reg;
 };
 
 static int zinitix_read_data(struct i2c_client *client,
@@ -190,19 +209,74 @@ static int zinitix_write_cmd(struct i2c_client *client, u16 reg)
 	return 0;
 }
 
+static u16 zinitix_get_u16_reg(struct bt541_ts_data *bt541, u16 vreg)
+{
+	struct i2c_client *client = bt541->client;
+	int error;
+	__le16 val;
+
+	error = zinitix_read_data(client, vreg, (void *)&val, 2);
+	if (error)
+		return U8_MAX;
+
+	return le16_to_cpu(val);
+}
+
 static int zinitix_init_touch(struct bt541_ts_data *bt541)
 {
 	struct i2c_client *client = bt541->client;
 	int i;
 	int error;
+	u16 int_flags;
 
-	error = zinitix_write_cmd(client, BT541_SWRESET_CMD);
+	error = zinitix_write_cmd(client, ZINITIX_SWRESET_CMD);
 	if (error) {
 		dev_err(&client->dev, "Failed to write reset command\n");
 		return error;
 	}
 
-	error = zinitix_write_u16(client, BT541_INT_ENABLE_FLAG, 0x0);
+	/*
+	 * Read and cache the chip revision and firmware version the first time
+	 * we get here.
+	 */
+	if (!bt541->have_versioninfo) {
+		bt541->chip_revision = zinitix_get_u16_reg(bt541,
+						ZINITIX_CHIP_REVISION);
+		bt541->firmware_version = zinitix_get_u16_reg(bt541,
+						ZINITIX_FIRMWARE_VERSION);
+		bt541->regdata_version = zinitix_get_u16_reg(bt541,
+						ZINITIX_DATA_VERSION_REG);
+		bt541->have_versioninfo = true;
+
+		dev_dbg(&client->dev,
+			"chip revision %04x firmware version %04x regdata version %04x\n",
+			bt541->chip_revision, bt541->firmware_version,
+			bt541->regdata_version);
+
+		/*
+		 * Determine the "icon" status register which varies by the
+		 * chip.
+		 */
+		switch (bt541->chip_revision & ZINITIX_CHIP_BTX0X_MASK) {
+		case ZINITIX_CHIP_BT4X2:
+			bt541->icon_status_reg = ZINITIX_BT4X2_ICON_STATUS_REG;
+			break;
+
+		case ZINITIX_CHIP_BT4X3:
+			bt541->icon_status_reg = ZINITIX_BT4X3_ICON_STATUS_REG;
+			break;
+
+		case ZINITIX_CHIP_BT4X4:
+			bt541->icon_status_reg = ZINITIX_BT4X4_ICON_STATUS_REG;
+			break;
+
+		default:
+			bt541->icon_status_reg = ZINITIX_BT5XX_ICON_STATUS_REG;
+			break;
+		}
+	}
+
+	error = zinitix_write_u16(client, ZINITIX_INT_ENABLE_FLAG, 0x0);
 	if (error) {
 		dev_err(&client->dev,
 			"Failed to reset interrupt enable flag\n");
@@ -210,40 +284,47 @@ static int zinitix_init_touch(struct bt541_ts_data *bt541)
 	}
 
 	/* initialize */
-	error = zinitix_write_u16(client, BT541_X_RESOLUTION,
+	error = zinitix_write_u16(client, ZINITIX_X_RESOLUTION,
 				  bt541->prop.max_x);
 	if (error)
 		return error;
 
-	error = zinitix_write_u16(client, BT541_Y_RESOLUTION,
+	error = zinitix_write_u16(client, ZINITIX_Y_RESOLUTION,
 				  bt541->prop.max_y);
 	if (error)
 		return error;
 
-	error = zinitix_write_u16(client, BT541_SUPPORTED_FINGER_NUM,
+	error = zinitix_write_u16(client, ZINITIX_SUPPORTED_FINGER_NUM,
 				  MAX_SUPPORTED_FINGER_NUM);
 	if (error)
 		return error;
 
-	error = zinitix_write_u16(client, BT541_INITIAL_TOUCH_MODE,
+	error = zinitix_write_u16(client, ZINITIX_BUTTON_SUPPORTED_NUM,
+				  bt541->num_keycodes);
+	if (error)
+		return error;
+
+	error = zinitix_write_u16(client, ZINITIX_INITIAL_TOUCH_MODE,
 				  bt541->zinitix_mode);
 	if (error)
 		return error;
 
-	error = zinitix_write_u16(client, BT541_TOUCH_MODE,
+	error = zinitix_write_u16(client, ZINITIX_TOUCH_MODE,
 				  bt541->zinitix_mode);
 	if (error)
 		return error;
 
-	error = zinitix_write_u16(client, BT541_INT_ENABLE_FLAG,
-				  BIT_PT_CNT_CHANGE | BIT_DOWN | BIT_MOVE |
-					BIT_UP);
+	int_flags = BIT_PT_CNT_CHANGE | BIT_DOWN | BIT_MOVE | BIT_UP;
+	if (bt541->num_keycodes)
+		int_flags |= BIT_ICON_EVENT;
+
+	error = zinitix_write_u16(client, ZINITIX_INT_ENABLE_FLAG, int_flags);
 	if (error)
 		return error;
 
 	/* clear queue */
 	for (i = 0; i < 10; i++) {
-		zinitix_write_cmd(client, BT541_CLEAR_INT_STATUS_CMD);
+		zinitix_write_cmd(client, ZINITIX_CLEAR_INT_STATUS_CMD);
 		udelay(10);
 	}
 
@@ -260,7 +341,7 @@ static int zinitix_init_regulators(struct bt541_ts_data *bt541)
 	 * so check if "vddo" is present and in that case use these names.
 	 * Else use the proper supply names on the component.
 	 */
-	if (of_find_property(dev->of_node, "vddo-supply", NULL)) {
+	if (of_property_present(dev->of_node, "vddo-supply")) {
 		bt541->supplies[0].supply = "vdd";
 		bt541->supplies[1].supply = "vddo";
 	} else {
@@ -350,22 +431,43 @@ static void zinitix_report_finger(struct bt541_ts_data *bt541, int slot,
 	}
 }
 
+static void zinitix_report_keys(struct bt541_ts_data *bt541, u16 icon_events)
+{
+	int i;
+
+	for (i = 0; i < bt541->num_keycodes; i++)
+		input_report_key(bt541->input_dev,
+				 bt541->keycodes[i], icon_events & BIT(i));
+}
+
 static irqreturn_t zinitix_ts_irq_handler(int irq, void *bt541_handler)
 {
 	struct bt541_ts_data *bt541 = bt541_handler;
 	struct i2c_client *client = bt541->client;
 	struct touch_event touch_event;
 	unsigned long finger_mask;
+	__le16 icon_events;
 	int error;
 	int i;
 
 	memset(&touch_event, 0, sizeof(struct touch_event));
 
-	error = zinitix_read_data(bt541->client, BT541_POINT_STATUS_REG,
+	error = zinitix_read_data(bt541->client, ZINITIX_POINT_STATUS_REG,
 				  &touch_event, sizeof(struct touch_event));
 	if (error) {
 		dev_err(&client->dev, "Failed to read in touchpoint struct\n");
 		goto out;
+	}
+
+	if (le16_to_cpu(touch_event.status) & BIT_ICON_EVENT) {
+		error = zinitix_read_data(bt541->client, bt541->icon_status_reg,
+					  &icon_events, sizeof(icon_events));
+		if (error) {
+			dev_err(&client->dev, "Failed to read icon events\n");
+			goto out;
+		}
+
+		zinitix_report_keys(bt541, le16_to_cpu(icon_events));
 	}
 
 	finger_mask = touch_event.finger_mask;
@@ -381,7 +483,7 @@ static irqreturn_t zinitix_ts_irq_handler(int irq, void *bt541_handler)
 	input_sync(bt541->input_dev);
 
 out:
-	zinitix_write_cmd(bt541->client, BT541_CLEAR_INT_STATUS_CMD);
+	zinitix_write_cmd(bt541->client, ZINITIX_CLEAR_INT_STATUS_CMD);
 	return IRQ_HANDLED;
 }
 
@@ -453,6 +555,7 @@ static int zinitix_init_input_dev(struct bt541_ts_data *bt541)
 {
 	struct input_dev *input_dev;
 	int error;
+	int i;
 
 	input_dev = devm_input_allocate_device(&bt541->client->dev);
 	if (!input_dev) {
@@ -469,6 +572,14 @@ static int zinitix_init_input_dev(struct bt541_ts_data *bt541)
 	input_dev->id.bustype = BUS_I2C;
 	input_dev->open = zinitix_input_open;
 	input_dev->close = zinitix_input_close;
+
+	if (bt541->num_keycodes) {
+		input_dev->keycode = bt541->keycodes;
+		input_dev->keycodemax = bt541->num_keycodes;
+		input_dev->keycodesize = sizeof(bt541->keycodes[0]);
+		for (i = 0; i < bt541->num_keycodes; i++)
+			input_set_capability(input_dev, EV_KEY, bt541->keycodes[i]);
+	}
 
 	input_set_capability(input_dev, EV_ABS, ABS_MT_POSITION_X);
 	input_set_capability(input_dev, EV_ABS, ABS_MT_POSITION_Y);
@@ -534,6 +645,31 @@ static int zinitix_ts_probe(struct i2c_client *client)
 		return error;
 	}
 
+	if (device_property_present(&client->dev, "linux,keycodes")) {
+		bt541->num_keycodes = device_property_count_u32(&client->dev,
+								"linux,keycodes");
+		if (bt541->num_keycodes < 0) {
+			dev_err(&client->dev, "Failed to count keys (%d)\n",
+				bt541->num_keycodes);
+			return bt541->num_keycodes;
+		} else if (bt541->num_keycodes > ARRAY_SIZE(bt541->keycodes)) {
+			dev_err(&client->dev, "Too many keys defined (%d)\n",
+				bt541->num_keycodes);
+			return -EINVAL;
+		}
+
+		error = device_property_read_u32_array(&client->dev,
+						       "linux,keycodes",
+						       bt541->keycodes,
+						       bt541->num_keycodes);
+		if (error) {
+			dev_err(&client->dev,
+				"Unable to parse \"linux,keycodes\" property: %d\n",
+				error);
+			return error;
+		}
+	}
+
 	error = zinitix_init_input_dev(bt541);
 	if (error) {
 		dev_err(&client->dev,
@@ -562,7 +698,7 @@ static int zinitix_ts_probe(struct i2c_client *client)
 	return 0;
 }
 
-static int __maybe_unused zinitix_suspend(struct device *dev)
+static int zinitix_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct bt541_ts_data *bt541 = i2c_get_clientdata(client);
@@ -577,7 +713,7 @@ static int __maybe_unused zinitix_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused zinitix_resume(struct device *dev)
+static int zinitix_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct bt541_ts_data *bt541 = i2c_get_clientdata(client);
@@ -593,7 +729,7 @@ static int __maybe_unused zinitix_resume(struct device *dev)
 	return ret;
 }
 
-static SIMPLE_DEV_PM_OPS(zinitix_pm_ops, zinitix_suspend, zinitix_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(zinitix_pm_ops, zinitix_suspend, zinitix_resume);
 
 #ifdef CONFIG_OF
 static const struct of_device_id zinitix_of_match[] = {
@@ -617,10 +753,10 @@ MODULE_DEVICE_TABLE(of, zinitix_of_match);
 #endif
 
 static struct i2c_driver zinitix_ts_driver = {
-	.probe_new = zinitix_ts_probe,
+	.probe = zinitix_ts_probe,
 	.driver = {
 		.name = "Zinitix-TS",
-		.pm = &zinitix_pm_ops,
+		.pm = pm_sleep_ptr(&zinitix_pm_ops),
 		.of_match_table = of_match_ptr(zinitix_of_match),
 	},
 };

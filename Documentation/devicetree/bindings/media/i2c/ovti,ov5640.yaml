@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/media/i2c/ovti,ov5640.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: OmniVision OV5640 Image Sensor Device Tree Bindings
+title: OmniVision OV5640 Image Sensor
 
 maintainers:
   - Steve Longerbeam <slongerbeam@gmail.com>
@@ -44,11 +44,6 @@ properties:
     description: >
       Reference to the GPIO connected to the reset pin, if any.
 
-  rotation:
-    enum:
-      - 0
-      - 180
-
   port:
     description: Digital Output Port
     $ref: /schemas/graph.yaml#/$defs/port-base
@@ -85,7 +80,7 @@ required:
   - DOVDD-supply
   - port
 
-additionalProperties: false
+unevaluatedProperties: false
 
 examples:
   - |

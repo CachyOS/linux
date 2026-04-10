@@ -273,14 +273,14 @@ static int lifebook_create_relative_device(struct psmouse *psmouse)
 	struct lifebook_data *priv;
 	int error = -ENOMEM;
 
-	priv = kzalloc(sizeof(struct lifebook_data), GFP_KERNEL);
+	priv = kzalloc_obj(*priv);
 	dev2 = input_allocate_device();
 	if (!priv || !dev2)
 		goto err_out;
 
 	priv->dev2 = dev2;
-	snprintf(priv->phys, sizeof(priv->phys),
-		 "%s/input1", psmouse->ps2dev.serio->phys);
+	scnprintf(priv->phys, sizeof(priv->phys),
+		  "%s/input1", psmouse->ps2dev.serio->phys);
 
 	dev2->phys = priv->phys;
 	dev2->name = "LBPS/2 Fujitsu Lifebook Touchpad";

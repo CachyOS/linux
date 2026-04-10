@@ -5,33 +5,49 @@
  */
 
 #include <linux/errno.h>
+#include <linux/fb.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 
+#include <drm/drm_crtc_helper.h>
+#include <drm/drm_drv.h>
 #include <drm/drm_fb_helper.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_print.h>
 
 #include "armada_crtc.h"
 #include "armada_drm.h"
 #include "armada_fb.h"
 #include "armada_gem.h"
 
+static void armada_fbdev_fb_destroy(struct fb_info *info)
+{
+	struct drm_fb_helper *fbh = info->par;
+
+	drm_fb_helper_fini(fbh);
+
+	fbh->fb->funcs->destroy(fbh->fb);
+
+	drm_client_release(&fbh->client);
+}
+
 static const struct fb_ops armada_fb_ops = {
 	.owner		= THIS_MODULE,
+	FB_DEFAULT_IOMEM_OPS,
 	DRM_FB_HELPER_DEFAULT_OPS,
-	.fb_fillrect	= drm_fb_helper_cfb_fillrect,
-	.fb_copyarea	= drm_fb_helper_cfb_copyarea,
-	.fb_imageblit	= drm_fb_helper_cfb_imageblit,
+	.fb_destroy	= armada_fbdev_fb_destroy,
 };
 
-static int armada_fbdev_create(struct drm_fb_helper *fbh,
-	struct drm_fb_helper_surface_size *sizes)
+static const struct drm_fb_helper_funcs armada_fbdev_helper_funcs;
+
+int armada_fbdev_driver_fbdev_probe(struct drm_fb_helper *fbh,
+				    struct drm_fb_helper_surface_size *sizes)
 {
 	struct drm_device *dev = fbh->dev;
+	struct fb_info *info = fbh->info;
 	struct drm_mode_fb_cmd2 mode;
 	struct armada_framebuffer *dfb;
 	struct armada_gem_object *obj;
-	struct fb_info *info;
 	int size, ret;
 	void *ptr;
 
@@ -61,7 +77,10 @@ static int armada_fbdev_create(struct drm_fb_helper *fbh,
 		return -ENOMEM;
 	}
 
-	dfb = armada_framebuffer_create(dev, &mode, obj);
+	dfb = armada_framebuffer_create(dev,
+					drm_get_format_info(dev, mode.pixel_format,
+							    mode.modifier[0]),
+					&mode, obj);
 
 	/*
 	 * A reference is now held by the framebuffer object if
@@ -72,17 +91,12 @@ static int armada_fbdev_create(struct drm_fb_helper *fbh,
 	if (IS_ERR(dfb))
 		return PTR_ERR(dfb);
 
-	info = drm_fb_helper_alloc_fbi(fbh);
-	if (IS_ERR(info)) {
-		ret = PTR_ERR(info);
-		goto err_fballoc;
-	}
-
 	info->fbops = &armada_fb_ops;
 	info->fix.smem_start = obj->phys_addr;
 	info->fix.smem_len = obj->obj.size;
 	info->screen_size = obj->obj.size;
 	info->screen_base = ptr;
+	fbh->funcs = &armada_fbdev_helper_funcs;
 	fbh->fb = &dfb->fb;
 
 	drm_fb_helper_fill_info(info, fbh, sizes);
@@ -92,76 +106,4 @@ static int armada_fbdev_create(struct drm_fb_helper *fbh,
 		(unsigned long long)obj->phys_addr);
 
 	return 0;
-
- err_fballoc:
-	dfb->fb.funcs->destroy(&dfb->fb);
-	return ret;
-}
-
-static int armada_fb_probe(struct drm_fb_helper *fbh,
-	struct drm_fb_helper_surface_size *sizes)
-{
-	int ret = 0;
-
-	if (!fbh->fb) {
-		ret = armada_fbdev_create(fbh, sizes);
-		if (ret == 0)
-			ret = 1;
-	}
-	return ret;
-}
-
-static const struct drm_fb_helper_funcs armada_fb_helper_funcs = {
-	.fb_probe	= armada_fb_probe,
-};
-
-int armada_fbdev_init(struct drm_device *dev)
-{
-	struct armada_private *priv = drm_to_armada_dev(dev);
-	struct drm_fb_helper *fbh;
-	int ret;
-
-	fbh = devm_kzalloc(dev->dev, sizeof(*fbh), GFP_KERNEL);
-	if (!fbh)
-		return -ENOMEM;
-
-	priv->fbdev = fbh;
-
-	drm_fb_helper_prepare(dev, fbh, &armada_fb_helper_funcs);
-
-	ret = drm_fb_helper_init(dev, fbh);
-	if (ret) {
-		DRM_ERROR("failed to initialize drm fb helper\n");
-		goto err_fb_helper;
-	}
-
-	ret = drm_fb_helper_initial_config(fbh, 32);
-	if (ret) {
-		DRM_ERROR("failed to set initial config\n");
-		goto err_fb_setup;
-	}
-
-	return 0;
- err_fb_setup:
-	drm_fb_helper_fini(fbh);
- err_fb_helper:
-	priv->fbdev = NULL;
-	return ret;
-}
-
-void armada_fbdev_fini(struct drm_device *dev)
-{
-	struct armada_private *priv = drm_to_armada_dev(dev);
-	struct drm_fb_helper *fbh = priv->fbdev;
-
-	if (fbh) {
-		drm_fb_helper_unregister_fbi(fbh);
-
-		drm_fb_helper_fini(fbh);
-
-		if (fbh->fb)
-			fbh->fb->funcs->destroy(fbh->fb);
-
-		priv->fbdev = NULL;
-	}
 }

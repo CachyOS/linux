@@ -37,7 +37,7 @@ static int alloc_and_append_badrange_entry(struct badrange *badrange,
 {
 	struct badrange_entry *bre;
 
-	bre = kzalloc(sizeof(*bre), flags);
+	bre = kzalloc_obj(*bre, flags);
 	if (!bre)
 		return -ENOMEM;
 
@@ -50,7 +50,7 @@ static int add_badrange(struct badrange *badrange, u64 addr, u64 length)
 	struct badrange_entry *bre, *bre_new;
 
 	spin_unlock(&badrange->lock);
-	bre_new = kzalloc(sizeof(*bre_new), GFP_KERNEL);
+	bre_new = kzalloc_obj(*bre_new);
 	spin_lock(&badrange->lock);
 
 	if (list_empty(&badrange->list)) {
@@ -167,7 +167,7 @@ static void set_badblock(struct badblocks *bb, sector_t s, int num)
 	dev_dbg(bb->dev, "Found a bad range (0x%llx, 0x%llx)\n",
 			(u64) s * 512, (u64) num * 512);
 	/* this isn't an error as the hardware will still throw an exception */
-	if (badblocks_set(bb, s, num, 1))
+	if (!badblocks_set(bb, s, num, 1))
 		dev_info_once(bb->dev, "%s: failed for sector %llx\n",
 				__func__, (u64) s);
 }
@@ -257,9 +257,9 @@ static void badblocks_populate(struct badrange *badrange,
 
 /**
  * nvdimm_badblocks_populate() - Convert a list of badranges to badblocks
- * @region: parent region of the range to interrogate
+ * @nd_region: parent region of the range to interrogate
  * @bb: badblocks instance to populate
- * @res: resource range to consider
+ * @range: resource range to consider
  *
  * The badrange list generated during bus initialization may contain
  * multiple, possibly overlapping physical address ranges.  Compare each
@@ -278,8 +278,7 @@ void nvdimm_badblocks_populate(struct nd_region *nd_region,
 	}
 	nvdimm_bus = walk_to_nvdimm_bus(&nd_region->dev);
 
-	nvdimm_bus_lock(&nvdimm_bus->dev);
+	guard(nvdimm_bus)(&nvdimm_bus->dev);
 	badblocks_populate(&nvdimm_bus->badrange, bb, range);
-	nvdimm_bus_unlock(&nvdimm_bus->dev);
 }
 EXPORT_SYMBOL_GPL(nvdimm_badblocks_populate);

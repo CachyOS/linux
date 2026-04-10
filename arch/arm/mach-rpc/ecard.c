@@ -253,7 +253,7 @@ static int ecard_init_mm(void)
 	current->mm = mm;
 	current->active_mm = mm;
 	activate_mm(active_mm, mm);
-	mmdrop(active_mm);
+	mmdrop_lazy_tlb(active_mm);
 	ecard_init_pgtables(mm);
 	return 0;
 }
@@ -692,7 +692,7 @@ static struct expansion_card *__init ecard_alloc_card(int type, int slot)
 	unsigned long base;
 	int i;
 
-	ec = kzalloc(sizeof(ecard_t), GFP_KERNEL);
+	ec = kzalloc_obj(ecard_t);
 	if (!ec) {
 		ec = ERR_PTR(-ENOMEM);
 		goto nomem;
@@ -1109,7 +1109,7 @@ void ecard_remove_driver(struct ecard_driver *drv)
 	driver_unregister(&drv->drv);
 }
 
-static int ecard_match(struct device *_dev, struct device_driver *_drv)
+static int ecard_match(struct device *_dev, const struct device_driver *_drv)
 {
 	struct expansion_card *ec = ECARD_DEV(_dev);
 	struct ecard_driver *drv = ECARD_DRV(_drv);
@@ -1124,7 +1124,7 @@ static int ecard_match(struct device *_dev, struct device_driver *_drv)
 	return ret;
 }
 
-struct bus_type ecard_bus_type = {
+const struct bus_type ecard_bus_type = {
 	.name		= "ecard",
 	.dev_groups	= ecard_dev_groups,
 	.match		= ecard_match,

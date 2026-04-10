@@ -109,9 +109,9 @@ static int lbs_mesh_config(struct lbs_private *priv, uint16_t action,
 
 		if (priv->mesh_dev) {
 			mesh_wdev = priv->mesh_dev->ieee80211_ptr;
-			ie->val.mesh_id_len = mesh_wdev->mesh_id_up_len;
-			memcpy(ie->val.mesh_id, mesh_wdev->ssid,
-						mesh_wdev->mesh_id_up_len);
+			ie->val.mesh_id_len = mesh_wdev->u.mesh.id_up_len;
+			memcpy(ie->val.mesh_id, mesh_wdev->u.mesh.id,
+						mesh_wdev->u.mesh.id_up_len);
 		}
 
 		ie->len = sizeof(struct mrvl_meshie_val) -
@@ -188,8 +188,11 @@ static ssize_t anycast_mask_store(struct device *dev,
 	uint32_t datum;
 	int ret;
 
+	ret = kstrtouint(buf, 16, &datum);
+	if (ret)
+		return ret;
+
 	memset(&mesh_access, 0, sizeof(mesh_access));
-	sscanf(buf, "%x", &datum);
 	mesh_access.data[0] = cpu_to_le32(datum);
 
 	ret = lbs_mesh_access(priv, CMD_ACT_MESH_SET_ANYCAST, &mesh_access);
@@ -241,15 +244,14 @@ static ssize_t prb_rsp_limit_store(struct device *dev,
 	int ret;
 	unsigned long retry_limit;
 
-	memset(&mesh_access, 0, sizeof(mesh_access));
-	mesh_access.data[0] = cpu_to_le32(CMD_ACT_SET);
-
 	ret = kstrtoul(buf, 10, &retry_limit);
 	if (ret)
 		return ret;
 	if (retry_limit > 15)
 		return -ENOTSUPP;
 
+	memset(&mesh_access, 0, sizeof(mesh_access));
+	mesh_access.data[0] = cpu_to_le32(CMD_ACT_SET);
 	mesh_access.data[1] = cpu_to_le32(retry_limit);
 
 	ret = lbs_mesh_access(priv, CMD_ACT_MESH_SET_GET_PRB_RSP_LIMIT,
@@ -285,9 +287,12 @@ static ssize_t lbs_mesh_store(struct device *dev,
 			      const char *buf, size_t count)
 {
 	struct lbs_private *priv = to_net_dev(dev)->ml_priv;
-	int enable;
+	int ret, enable;
 
-	sscanf(buf, "%x", &enable);
+	ret = kstrtoint(buf, 16, &enable);
+	if (ret)
+		return ret;
+
 	enable = !!enable;
 	if (enable == !!priv->mesh_dev)
 		return count;
@@ -387,11 +392,13 @@ static ssize_t bootflag_store(struct device *dev, struct device_attribute *attr,
 	uint32_t datum;
 	int ret;
 
-	memset(&cmd, 0, sizeof(cmd));
-	ret = sscanf(buf, "%d", &datum);
-	if ((ret != 1) || (datum > 1))
+	ret = kstrtouint(buf, 10, &datum);
+	if (ret)
+		return ret;
+	if (datum > 1)
 		return -EINVAL;
 
+	memset(&cmd, 0, sizeof(cmd));
 	*((__le32 *)&cmd.data[0]) = cpu_to_le32(!!datum);
 	cmd.length = cpu_to_le16(sizeof(uint32_t));
 	ret = lbs_mesh_config_send(priv, &cmd, CMD_ACT_MESH_CONFIG_SET,
@@ -438,10 +445,13 @@ static ssize_t boottime_store(struct device *dev,
 	uint32_t datum;
 	int ret;
 
-	memset(&cmd, 0, sizeof(cmd));
-	ret = sscanf(buf, "%d", &datum);
-	if ((ret != 1) || (datum > 255))
+	ret = kstrtouint(buf, 10, &datum);
+	if (ret)
+		return ret;
+	if (datum > 255)
 		return -EINVAL;
+
+	memset(&cmd, 0, sizeof(cmd));
 
 	/* A too small boot time will result in the device booting into
 	 * standalone (no-host) mode before the host can take control of it,
@@ -497,11 +507,13 @@ static ssize_t channel_store(struct device *dev, struct device_attribute *attr,
 	uint32_t datum;
 	int ret;
 
-	memset(&cmd, 0, sizeof(cmd));
-	ret = sscanf(buf, "%d", &datum);
-	if (ret != 1 || datum < 1 || datum > 11)
+	ret = kstrtouint(buf, 10, &datum);
+	if (ret)
+		return ret;
+	if (datum < 1 || datum > 11)
 		return -EINVAL;
 
+	memset(&cmd, 0, sizeof(cmd));
 	*((__le16 *)&cmd.data[0]) = cpu_to_le16(datum);
 	cmd.length = cpu_to_le16(sizeof(uint16_t));
 	ret = lbs_mesh_config_send(priv, &cmd, CMD_ACT_MESH_CONFIG_SET,
@@ -626,10 +638,13 @@ static ssize_t protocol_id_store(struct device *dev,
 	uint32_t datum;
 	int ret;
 
-	memset(&cmd, 0, sizeof(cmd));
-	ret = sscanf(buf, "%d", &datum);
-	if ((ret != 1) || (datum > 255))
+	ret = kstrtouint(buf, 10, &datum);
+	if (ret)
+		return ret;
+	if (datum > 255)
 		return -EINVAL;
+
+	memset(&cmd, 0, sizeof(cmd));
 
 	/* fetch all other Information Element parameters */
 	ret = mesh_get_default_parameters(dev, &defs);
@@ -968,7 +983,7 @@ static int lbs_add_mesh(struct lbs_private *priv)
 	int ret = 0;
 
 	/* Allocate a virtual mesh device */
-	mesh_wdev = kzalloc(sizeof(struct wireless_dev), GFP_KERNEL);
+	mesh_wdev = kzalloc_obj(struct wireless_dev);
 	if (!mesh_wdev) {
 		lbs_deb_mesh("init mshX wireless device failed\n");
 		ret = -ENOMEM;
@@ -986,8 +1001,8 @@ static int lbs_add_mesh(struct lbs_private *priv)
 	mesh_wdev->wiphy = priv->wdev->wiphy;
 
 	if (priv->mesh_tlv) {
-		sprintf(mesh_wdev->ssid, "mesh");
-		mesh_wdev->mesh_id_up_len = 4;
+		sprintf(mesh_wdev->u.mesh.id, "mesh");
+		mesh_wdev->u.mesh.id_up_len = 4;
 	}
 
 	mesh_wdev->netdev = mesh_dev;

@@ -19,7 +19,6 @@
 #define IRQ_STACK_SIZE			THREAD_SIZE
 #define IRQ_STACK_START			(IRQ_STACK_SIZE - 16)
 
-extern void __init init_IRQ(void);
 extern void *irq_stack[NR_CPUS];
 
 /*
@@ -63,10 +62,6 @@ extern void do_domain_IRQ(struct irq_domain *domain, unsigned int irq);
 extern void arch_init_irq(void);
 extern void spurious_interrupt(void);
 
-extern int allocate_irqno(void);
-extern void alloc_legacy_irqno(void);
-extern void free_irqno(unsigned int irq);
-
 /*
  * Before R2 the timer and performance counter interrupts were both fixed to
  * IE7.	 Since R2 their number has to be read from the c0_intctl register.
@@ -82,7 +77,7 @@ extern int cp0_fdc_irq;
 extern int get_c0_fdc_int(void);
 
 void arch_trigger_cpumask_backtrace(const struct cpumask *mask,
-				    bool exclude_self);
+				    int exclude_cpu);
 #define arch_trigger_cpumask_backtrace arch_trigger_cpumask_backtrace
 
 #endif /* _ASM_IRQ_H */

@@ -1,24 +1,9 @@
+// SPDX-License-Identifier: LGPL-2.0+
 /*
  *  PCM Interface - misc routines
  *  Copyright (c) 1998 by Jaroslav Kysela <perex@perex.cz>
- *
- *
- *   This library is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU Library General Public License as
- *   published by the Free Software Foundation; either version 2 of
- *   the License, or (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU Library General Public License for more details.
- *
- *   You should have received a copy of the GNU Library General Public
- *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
-  
+
 #include <linux/time.h>
 #include <linux/export.h>
 #include <sound/core.h>
@@ -432,9 +417,9 @@ int snd_pcm_format_set_silence(snd_pcm_format_t format, void *data, unsigned int
 	if (samples == 0)
 		return 0;
 	width = pcm_formats[(INT)format].phys; /* physical width */
-	pat = pcm_formats[(INT)format].silence;
-	if (!width || !pat)
+	if (!width)
 		return -EINVAL;
+	pat = pcm_formats[(INT)format].silence;
 	/* signed or 1 byte data */
 	if (pcm_formats[(INT)format].signd == 1 || width <= 8) {
 		unsigned int bytes = samples * width / 8;
@@ -494,18 +479,20 @@ EXPORT_SYMBOL(snd_pcm_format_set_silence);
 int snd_pcm_hw_limit_rates(struct snd_pcm_hardware *hw)
 {
 	int i;
+	unsigned int rmin, rmax;
+
+	rmin = UINT_MAX;
+	rmax = 0;
 	for (i = 0; i < (int)snd_pcm_known_rates.count; i++) {
 		if (hw->rates & (1 << i)) {
-			hw->rate_min = snd_pcm_known_rates.list[i];
-			break;
+			rmin = min(rmin, snd_pcm_known_rates.list[i]);
+			rmax = max(rmax, snd_pcm_known_rates.list[i]);
 		}
 	}
-	for (i = (int)snd_pcm_known_rates.count - 1; i >= 0; i--) {
-		if (hw->rates & (1 << i)) {
-			hw->rate_max = snd_pcm_known_rates.list[i];
-			break;
-		}
-	}
+	if (rmin > rmax)
+		return -EINVAL;
+	hw->rate_min = rmin;
+	hw->rate_max = rmax;
 	return 0;
 }
 EXPORT_SYMBOL(snd_pcm_hw_limit_rates);
@@ -584,33 +571,3 @@ unsigned int snd_pcm_rate_mask_intersect(unsigned int rates_a,
 	return rates_a & rates_b;
 }
 EXPORT_SYMBOL_GPL(snd_pcm_rate_mask_intersect);
-
-/**
- * snd_pcm_rate_range_to_bits - converts rate range to SNDRV_PCM_RATE_xxx bit
- * @rate_min: the minimum sample rate
- * @rate_max: the maximum sample rate
- *
- * This function has an implicit assumption: the rates in the given range have
- * only the pre-defined rates like 44100 or 16000.
- *
- * Return: The SNDRV_PCM_RATE_xxx flag that corresponds to the given rate range,
- * or SNDRV_PCM_RATE_KNOT for an unknown range.
- */
-unsigned int snd_pcm_rate_range_to_bits(unsigned int rate_min,
-	unsigned int rate_max)
-{
-	unsigned int rates = 0;
-	int i;
-
-	for (i = 0; i < snd_pcm_known_rates.count; i++) {
-		if (snd_pcm_known_rates.list[i] >= rate_min
-			&& snd_pcm_known_rates.list[i] <= rate_max)
-			rates |= 1 << i;
-	}
-
-	if (!rates)
-		rates = SNDRV_PCM_RATE_KNOT;
-
-	return rates;
-}
-EXPORT_SYMBOL_GPL(snd_pcm_rate_range_to_bits);

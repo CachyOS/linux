@@ -12,10 +12,11 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/of.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/pm_opp.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
+#include <linux/sys_soc.h>
 
 #define REVISION_MASK				0xF
 #define REVISION_SHIFT				28
@@ -39,6 +40,51 @@
 #define OMAP34xx_ProdID_SKUID			0x4830A20C
 #define OMAP3_SYSCON_BASE	(0x48000000 + 0x2000 + 0x270)
 
+#define AM625_EFUSE_K_MPU_OPP			11
+#define AM625_EFUSE_S_MPU_OPP			19
+#define AM625_EFUSE_T_MPU_OPP			20
+
+#define AM625_SUPPORT_K_MPU_OPP			BIT(0)
+#define AM625_SUPPORT_S_MPU_OPP			BIT(1)
+#define AM625_SUPPORT_T_MPU_OPP			BIT(2)
+
+enum {
+	AM62A7_EFUSE_M_MPU_OPP =		13,
+	AM62A7_EFUSE_N_MPU_OPP,
+	AM62A7_EFUSE_O_MPU_OPP,
+	AM62A7_EFUSE_P_MPU_OPP,
+	AM62A7_EFUSE_Q_MPU_OPP,
+	AM62A7_EFUSE_R_MPU_OPP,
+	AM62A7_EFUSE_S_MPU_OPP,
+	/*
+	 * The V, U, and T speed grade numbering is out of order
+	 * to align with the AM625 more uniformly. I promise I know
+	 * my ABCs ;)
+	 */
+	AM62A7_EFUSE_V_MPU_OPP,
+	AM62A7_EFUSE_U_MPU_OPP,
+	AM62A7_EFUSE_T_MPU_OPP,
+};
+
+#define AM62A7_SUPPORT_N_MPU_OPP		BIT(0)
+#define AM62A7_SUPPORT_R_MPU_OPP		BIT(1)
+#define AM62A7_SUPPORT_V_MPU_OPP		BIT(2)
+
+#define AM62L3_EFUSE_E_MPU_OPP			5
+#define AM62L3_EFUSE_O_MPU_OPP			15
+
+#define AM62L3_SUPPORT_E_MPU_OPP		BIT(0)
+#define AM62L3_SUPPORT_O_MPU_OPP		BIT(1)
+
+#define AM62P5_EFUSE_O_MPU_OPP			15
+#define AM62P5_EFUSE_S_MPU_OPP			19
+#define AM62P5_EFUSE_T_MPU_OPP			20
+#define AM62P5_EFUSE_U_MPU_OPP			21
+#define AM62P5_EFUSE_V_MPU_OPP			22
+
+#define AM62P5_SUPPORT_O_MPU_OPP		BIT(0)
+#define AM62P5_SUPPORT_U_MPU_OPP		BIT(2)
+
 #define VERSION_COUNT				2
 
 struct ti_cpufreq_data;
@@ -53,6 +99,11 @@ struct ti_cpufreq_soc_data {
 	unsigned long efuse_shift;
 	unsigned long rev_offset;
 	bool multi_regulator;
+/* Backward compatibility hack: Might have missing syscon */
+#define TI_QUIRK_SYSCON_MAY_BE_MISSING	0x1
+/* Backward compatibility hack: new syscon size is 1 register wide */
+#define TI_QUIRK_SYSCON_IS_SINGLE_REG	0x2
+	u8 quirks;
 };
 
 struct ti_cpufreq_data {
@@ -60,7 +111,6 @@ struct ti_cpufreq_data {
 	struct device_node *opp_node;
 	struct regmap *syscon;
 	const struct ti_cpufreq_soc_data *soc_data;
-	struct opp_table *opp_table;
 };
 
 static unsigned long amx3_efuse_xlate(struct ti_cpufreq_data *opp_data,
@@ -103,6 +153,86 @@ static unsigned long omap3_efuse_xlate(struct ti_cpufreq_data *opp_data,
 {
 	/* OPP enable bit ("Speed Binned") */
 	return BIT(efuse);
+}
+
+static unsigned long am62p5_efuse_xlate(struct ti_cpufreq_data *opp_data,
+					unsigned long efuse)
+{
+	unsigned long calculated_efuse = AM62P5_SUPPORT_O_MPU_OPP;
+
+	switch (efuse) {
+	case AM62P5_EFUSE_V_MPU_OPP:
+	case AM62P5_EFUSE_U_MPU_OPP:
+	case AM62P5_EFUSE_T_MPU_OPP:
+	case AM62P5_EFUSE_S_MPU_OPP:
+		calculated_efuse |= AM62P5_SUPPORT_U_MPU_OPP;
+		fallthrough;
+	case AM62P5_EFUSE_O_MPU_OPP:
+		calculated_efuse |= AM62P5_SUPPORT_O_MPU_OPP;
+	}
+
+	return calculated_efuse;
+}
+
+static unsigned long am62a7_efuse_xlate(struct ti_cpufreq_data *opp_data,
+					unsigned long efuse)
+{
+	unsigned long calculated_efuse = AM62A7_SUPPORT_N_MPU_OPP;
+
+	switch (efuse) {
+	case AM62A7_EFUSE_V_MPU_OPP:
+	case AM62A7_EFUSE_U_MPU_OPP:
+	case AM62A7_EFUSE_T_MPU_OPP:
+	case AM62A7_EFUSE_S_MPU_OPP:
+		calculated_efuse |= AM62A7_SUPPORT_V_MPU_OPP;
+		fallthrough;
+	case AM62A7_EFUSE_R_MPU_OPP:
+	case AM62A7_EFUSE_Q_MPU_OPP:
+	case AM62A7_EFUSE_P_MPU_OPP:
+	case AM62A7_EFUSE_O_MPU_OPP:
+		calculated_efuse |= AM62A7_SUPPORT_R_MPU_OPP;
+		fallthrough;
+	case AM62A7_EFUSE_N_MPU_OPP:
+	case AM62A7_EFUSE_M_MPU_OPP:
+		calculated_efuse |= AM62A7_SUPPORT_N_MPU_OPP;
+	}
+
+	return calculated_efuse;
+}
+
+static unsigned long am625_efuse_xlate(struct ti_cpufreq_data *opp_data,
+				       unsigned long efuse)
+{
+	unsigned long calculated_efuse = AM625_SUPPORT_K_MPU_OPP;
+
+	switch (efuse) {
+	case AM625_EFUSE_T_MPU_OPP:
+		calculated_efuse |= AM625_SUPPORT_T_MPU_OPP;
+		fallthrough;
+	case AM625_EFUSE_S_MPU_OPP:
+		calculated_efuse |= AM625_SUPPORT_S_MPU_OPP;
+		fallthrough;
+	case AM625_EFUSE_K_MPU_OPP:
+		calculated_efuse |= AM625_SUPPORT_K_MPU_OPP;
+	}
+
+	return calculated_efuse;
+}
+
+static unsigned long am62l3_efuse_xlate(struct ti_cpufreq_data *opp_data,
+				       unsigned long efuse)
+{
+	unsigned long calculated_efuse = AM62L3_SUPPORT_E_MPU_OPP;
+
+	switch (efuse) {
+	case AM62L3_EFUSE_O_MPU_OPP:
+		calculated_efuse |= AM62L3_SUPPORT_O_MPU_OPP;
+		fallthrough;
+	case AM62L3_EFUSE_E_MPU_OPP:
+		calculated_efuse |= AM62L3_SUPPORT_E_MPU_OPP;
+	}
+
+	return calculated_efuse;
 }
 
 static struct ti_cpufreq_soc_data am3x_soc_data = {
@@ -156,6 +286,7 @@ static struct ti_cpufreq_soc_data omap34xx_soc_data = {
 	.efuse_mask = BIT(3),
 	.rev_offset = OMAP3_CONTROL_IDCODE - OMAP3_SYSCON_BASE,
 	.multi_regulator = false,
+	.quirks = TI_QUIRK_SYSCON_MAY_BE_MISSING,
 };
 
 /*
@@ -173,7 +304,7 @@ static struct ti_cpufreq_soc_data omap34xx_soc_data = {
  *    seems to always read as 0).
  */
 
-static const char * const omap3_reg_names[] = {"cpu0", "vbb"};
+static const char * const omap3_reg_names[] = {"cpu0", "vbb", NULL};
 
 static struct ti_cpufreq_soc_data omap36xx_soc_data = {
 	.reg_names = omap3_reg_names,
@@ -183,6 +314,7 @@ static struct ti_cpufreq_soc_data omap36xx_soc_data = {
 	.efuse_mask = BIT(9),
 	.rev_offset = OMAP3_CONTROL_IDCODE - OMAP3_SYSCON_BASE,
 	.multi_regulator = true,
+	.quirks = TI_QUIRK_SYSCON_MAY_BE_MISSING,
 };
 
 /*
@@ -197,8 +329,50 @@ static struct ti_cpufreq_soc_data am3517_soc_data = {
 	.efuse_mask = 0,
 	.rev_offset = OMAP3_CONTROL_IDCODE - OMAP3_SYSCON_BASE,
 	.multi_regulator = false,
+	.quirks = TI_QUIRK_SYSCON_MAY_BE_MISSING,
 };
 
+static const struct soc_device_attribute k3_cpufreq_soc[] = {
+	{ .family = "AM62X", },
+	{ .family = "AM62AX", },
+	{ .family = "AM62DX", },
+	{ .family = "AM62LX", },
+	{ .family = "AM62PX", },
+	{ /* sentinel */ }
+};
+
+static struct ti_cpufreq_soc_data am625_soc_data = {
+	.efuse_xlate = am625_efuse_xlate,
+	.efuse_offset = 0x0018,
+	.efuse_mask = 0x07c0,
+	.efuse_shift = 0x6,
+	.multi_regulator = false,
+	.quirks = TI_QUIRK_SYSCON_IS_SINGLE_REG,
+};
+
+static struct ti_cpufreq_soc_data am62a7_soc_data = {
+	.efuse_xlate = am62a7_efuse_xlate,
+	.efuse_offset = 0x0,
+	.efuse_mask = 0x07c0,
+	.efuse_shift = 0x6,
+	.multi_regulator = false,
+};
+
+static struct ti_cpufreq_soc_data am62l3_soc_data = {
+	.efuse_xlate = am62l3_efuse_xlate,
+	.efuse_offset = 0x0,
+	.efuse_mask = 0x07c0,
+	.efuse_shift = 0x6,
+	.multi_regulator = false,
+};
+
+static struct ti_cpufreq_soc_data am62p5_soc_data = {
+	.efuse_xlate = am62p5_efuse_xlate,
+	.efuse_offset = 0x0,
+	.efuse_mask = 0x07c0,
+	.efuse_shift = 0x6,
+	.multi_regulator = false,
+};
 
 /**
  * ti_cpufreq_get_efuse() - Parse and return efuse value present on SoC
@@ -216,7 +390,11 @@ static int ti_cpufreq_get_efuse(struct ti_cpufreq_data *opp_data,
 
 	ret = regmap_read(opp_data->syscon, opp_data->soc_data->efuse_offset,
 			  &efuse);
-	if (ret == -EIO) {
+
+	if (opp_data->soc_data->quirks & TI_QUIRK_SYSCON_IS_SINGLE_REG && ret == -EIO)
+		ret = regmap_read(opp_data->syscon, 0x0, &efuse);
+
+	if (opp_data->soc_data->quirks & TI_QUIRK_SYSCON_MAY_BE_MISSING && ret == -EIO) {
 		/* not a syscon register! */
 		void __iomem *regs = ioremap(OMAP3_SYSCON_BASE +
 				opp_data->soc_data->efuse_offset, 4);
@@ -254,10 +432,20 @@ static int ti_cpufreq_get_rev(struct ti_cpufreq_data *opp_data,
 	struct device *dev = opp_data->cpu_dev;
 	u32 revision;
 	int ret;
+	if (soc_device_match(k3_cpufreq_soc)) {
+		/*
+		 * Since the SR is 1.0, hard code the revision_value as
+		 * 0x1 here. This way we avoid re using the same register
+		 * that is giving us required information inside socinfo
+		 * anyway.
+		 */
+		*revision_value = 0x1;
+		goto done;
+	}
 
 	ret = regmap_read(opp_data->syscon, opp_data->soc_data->rev_offset,
 			  &revision);
-	if (ret == -EIO) {
+	if (opp_data->soc_data->quirks & TI_QUIRK_SYSCON_MAY_BE_MISSING && ret == -EIO) {
 		/* not a syscon register! */
 		void __iomem *regs = ioremap(OMAP3_SYSCON_BASE +
 				opp_data->soc_data->rev_offset, 4);
@@ -276,6 +464,7 @@ static int ti_cpufreq_get_rev(struct ti_cpufreq_data *opp_data,
 
 	*revision_value = BIT((revision >> REVISION_SHIFT) & REVISION_MASK);
 
+done:
 	return 0;
 }
 
@@ -295,13 +484,18 @@ static int ti_cpufreq_setup_syscon_register(struct ti_cpufreq_data *opp_data)
 	return 0;
 }
 
-static const struct of_device_id ti_cpufreq_of_match[] = {
+static const struct of_device_id ti_cpufreq_of_match[]  __maybe_unused = {
 	{ .compatible = "ti,am33xx", .data = &am3x_soc_data, },
 	{ .compatible = "ti,am3517", .data = &am3517_soc_data, },
 	{ .compatible = "ti,am43", .data = &am4x_soc_data, },
 	{ .compatible = "ti,dra7", .data = &dra7_soc_data },
 	{ .compatible = "ti,omap34xx", .data = &omap34xx_soc_data, },
 	{ .compatible = "ti,omap36xx", .data = &omap36xx_soc_data, },
+	{ .compatible = "ti,am625", .data = &am625_soc_data, },
+	{ .compatible = "ti,am62a7", .data = &am62a7_soc_data, },
+	{ .compatible = "ti,am62d2", .data = &am62a7_soc_data, },
+	{ .compatible = "ti,am62l3", .data = &am62l3_soc_data, },
+	{ .compatible = "ti,am62p5", .data = &am62p5_soc_data, },
 	/* legacy */
 	{ .compatible = "ti,omap3430", .data = &omap34xx_soc_data, },
 	{ .compatible = "ti,omap3630", .data = &omap36xx_soc_data, },
@@ -310,12 +504,10 @@ static const struct of_device_id ti_cpufreq_of_match[] = {
 
 static const struct of_device_id *ti_cpufreq_match_node(void)
 {
-	struct device_node *np;
+	struct device_node *np __free(device_node) = of_find_node_by_path("/");
 	const struct of_device_id *match;
 
-	np = of_find_node_by_path("/");
 	match = of_match_node(ti_cpufreq_of_match, np);
-	of_node_put(np);
 
 	return match;
 }
@@ -324,10 +516,13 @@ static int ti_cpufreq_probe(struct platform_device *pdev)
 {
 	u32 version[VERSION_COUNT];
 	const struct of_device_id *match;
-	struct opp_table *ti_opp_table;
 	struct ti_cpufreq_data *opp_data;
-	const char * const default_reg_names[] = {"vdd", "vbb"};
+	const char * const default_reg_names[] = {"vdd", "vbb", NULL};
 	int ret;
+	struct dev_pm_opp_config config = {
+		.supported_hw = version,
+		.supported_hw_count = ARRAY_SIZE(version),
+	};
 
 	match = dev_get_platdata(&pdev->dev);
 	if (!match)
@@ -370,33 +565,21 @@ static int ti_cpufreq_probe(struct platform_device *pdev)
 	if (ret)
 		goto fail_put_node;
 
-	ti_opp_table = dev_pm_opp_set_supported_hw(opp_data->cpu_dev,
-						   version, VERSION_COUNT);
-	if (IS_ERR(ti_opp_table)) {
-		dev_err(opp_data->cpu_dev,
-			"Failed to set supported hardware\n");
-		ret = PTR_ERR(ti_opp_table);
+	if (opp_data->soc_data->multi_regulator) {
+		if (opp_data->soc_data->reg_names)
+			config.regulator_names = opp_data->soc_data->reg_names;
+		else
+			config.regulator_names = default_reg_names;
+	}
+
+	ret = dev_pm_opp_set_config(opp_data->cpu_dev, &config);
+	if (ret < 0) {
+		dev_err_probe(opp_data->cpu_dev, ret, "Failed to set OPP config\n");
 		goto fail_put_node;
 	}
 
-	opp_data->opp_table = ti_opp_table;
-
-	if (opp_data->soc_data->multi_regulator) {
-		const char * const *reg_names = default_reg_names;
-
-		if (opp_data->soc_data->reg_names)
-			reg_names = opp_data->soc_data->reg_names;
-		ti_opp_table = dev_pm_opp_set_regulators(opp_data->cpu_dev,
-							 reg_names,
-							 ARRAY_SIZE(default_reg_names));
-		if (IS_ERR(ti_opp_table)) {
-			dev_pm_opp_put_supported_hw(opp_data->opp_table);
-			ret =  PTR_ERR(ti_opp_table);
-			goto fail_put_node;
-		}
-	}
-
 	of_node_put(opp_data->opp_node);
+
 register_cpufreq_dt:
 	platform_device_register_simple("cpufreq-dt", -1, NULL, 0);
 
@@ -408,7 +591,7 @@ fail_put_node:
 	return ret;
 }
 
-static int ti_cpufreq_init(void)
+static int __init ti_cpufreq_init(void)
 {
 	const struct of_device_id *match;
 

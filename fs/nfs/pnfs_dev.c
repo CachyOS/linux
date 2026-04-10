@@ -110,18 +110,15 @@ nfs4_get_device_info(struct nfs_server *server,
 	 * GETDEVICEINFO's maxcount
 	 */
 	max_resp_sz = server->nfs_client->cl_session->fc_attrs.max_resp_sz;
-	if (server->pnfs_curr_ld->max_deviceinfo_size &&
-	    server->pnfs_curr_ld->max_deviceinfo_size < max_resp_sz)
-		max_resp_sz = server->pnfs_curr_ld->max_deviceinfo_size;
 	max_pages = nfs_page_array_len(0, max_resp_sz);
 	dprintk("%s: server %p max_resp_sz %u max_pages %d\n",
 		__func__, server, max_resp_sz, max_pages);
 
-	pdev = kzalloc(sizeof(*pdev), gfp_flags);
+	pdev = kzalloc_obj(*pdev, gfp_flags);
 	if (!pdev)
 		return NULL;
 
-	pages = kcalloc(max_pages, sizeof(struct page *), gfp_flags);
+	pages = kzalloc_objs(struct page *, max_pages, gfp_flags);
 	if (!pages)
 		goto out_free_pdev;
 
@@ -154,7 +151,7 @@ nfs4_get_device_info(struct nfs_server *server,
 		set_bit(NFS_DEVICEID_NOCACHE, &d->flags);
 
 out_free_pages:
-	for (i = 0; i < max_pages; i++)
+	while (--i >= 0)
 		__free_page(pages[i]);
 	kfree(pages);
 out_free_pdev:

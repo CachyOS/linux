@@ -200,13 +200,11 @@ static const struct i2c_algorithm cbus_i2c_algo = {
 	.functionality		= cbus_i2c_func,
 };
 
-static int cbus_i2c_remove(struct platform_device *pdev)
+static void cbus_i2c_remove(struct platform_device *pdev)
 {
 	struct i2c_adapter *adapter = platform_get_drvdata(pdev);
 
 	i2c_del_adapter(adapter);
-
-	return 0;
 }
 
 static int cbus_i2c_probe(struct platform_device *pdev)
@@ -245,7 +243,7 @@ static int cbus_i2c_probe(struct platform_device *pdev)
 	adapter->nr		= pdev->id;
 	adapter->timeout	= HZ;
 	adapter->algo		= &cbus_i2c_algo;
-	strlcpy(adapter->name, "CBUS I2C adapter", sizeof(adapter->name));
+	strscpy(adapter->name, "CBUS I2C adapter", sizeof(adapter->name));
 
 	spin_lock_init(&chost->lock);
 	chost->dev = &pdev->dev;
@@ -266,7 +264,7 @@ MODULE_DEVICE_TABLE(of, i2c_cbus_dt_ids);
 
 static struct platform_driver cbus_i2c_driver = {
 	.probe	= cbus_i2c_probe,
-	.remove	= cbus_i2c_remove,
+	.remove = cbus_i2c_remove,
 	.driver	= {
 		.name	= "i2c-cbus-gpio",
 		.of_match_table = of_match_ptr(i2c_cbus_dt_ids),

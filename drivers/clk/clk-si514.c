@@ -227,20 +227,28 @@ static unsigned long si514_recalc_rate(struct clk_hw *hw,
 	return si514_calc_rate(&settings);
 }
 
-static long si514_round_rate(struct clk_hw *hw, unsigned long rate,
-		unsigned long *parent_rate)
+static int si514_determine_rate(struct clk_hw *hw,
+				struct clk_rate_request *req)
 {
 	struct clk_si514_muldiv settings;
 	int err;
 
-	if (!rate)
+	if (!req->rate) {
+		req->rate = 0;
+
 		return 0;
+	}
 
-	err = si514_calc_muldiv(&settings, rate);
-	if (err)
-		return err;
+	err = si514_calc_muldiv(&settings, req->rate);
+	if (err) {
+		req->rate = err;
 
-	return si514_calc_rate(&settings);
+		return 0;
+	}
+
+	req->rate = si514_calc_rate(&settings);
+
+	return 0;
 }
 
 /*
@@ -289,7 +297,7 @@ static const struct clk_ops si514_clk_ops = {
 	.unprepare = si514_unprepare,
 	.is_prepared = si514_is_prepared,
 	.recalc_rate = si514_recalc_rate,
-	.round_rate = si514_round_rate,
+	.determine_rate = si514_determine_rate,
 	.set_rate = si514_set_rate,
 };
 
@@ -321,7 +329,7 @@ static bool si514_regmap_is_writeable(struct device *dev, unsigned int reg)
 static const struct regmap_config si514_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.max_register = SI514_REG_CONTROL,
 	.writeable_reg = si514_regmap_is_writeable,
 	.volatile_reg = si514_regmap_is_volatile,
@@ -360,8 +368,8 @@ static int si514_probe(struct i2c_client *client)
 		dev_err(&client->dev, "clock registration failed\n");
 		return err;
 	}
-	err = of_clk_add_hw_provider(client->dev.of_node, of_clk_hw_simple_get,
-				     &data->hw);
+	err = devm_of_clk_add_hw_provider(&client->dev, of_clk_hw_simple_get,
+					  &data->hw);
 	if (err) {
 		dev_err(&client->dev, "unable to add clk provider\n");
 		return err;
@@ -370,14 +378,8 @@ static int si514_probe(struct i2c_client *client)
 	return 0;
 }
 
-static int si514_remove(struct i2c_client *client)
-{
-	of_clk_del_provider(client->dev.of_node);
-	return 0;
-}
-
 static const struct i2c_device_id si514_id[] = {
-	{ "si514", 0 },
+	{ "si514" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, si514_id);
@@ -393,8 +395,7 @@ static struct i2c_driver si514_driver = {
 		.name = "si514",
 		.of_match_table = clk_si514_of_match,
 	},
-	.probe_new	= si514_probe,
-	.remove		= si514_remove,
+	.probe		= si514_probe,
 	.id_table	= si514_id,
 };
 module_i2c_driver(si514_driver);

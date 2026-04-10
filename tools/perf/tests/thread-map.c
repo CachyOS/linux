@@ -11,6 +11,7 @@
 #include "util/synthetic-events.h"
 #include <linux/zalloc.h>
 #include <perf/event.h>
+#include <internal/threadmap.h>
 
 struct perf_sample;
 struct perf_tool;
@@ -59,7 +60,7 @@ static int test__thread_map(struct test_suite *test __maybe_unused, int subtest 
 	return 0;
 }
 
-static int process_event(struct perf_tool *tool __maybe_unused,
+static int process_event(const struct perf_tool *tool __maybe_unused,
 			 union perf_event *event,
 			 struct perf_sample *sample __maybe_unused,
 			 struct machine *machine __maybe_unused)
@@ -114,7 +115,7 @@ static int test__thread_map_remove(struct test_suite *test __maybe_unused, int s
 	TEST_ASSERT_VAL("failed to allocate map string",
 			asprintf(&str, "%d,%d", getpid(), getppid()) >= 0);
 
-	threads = thread_map__new_str(str, NULL, 0, false);
+	threads = thread_map__new_str(str, /*tid=*/NULL, /*all_threads=*/false);
 	free(str);
 
 	TEST_ASSERT_VAL("failed to allocate thread_map",

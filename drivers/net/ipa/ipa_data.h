@@ -1,16 +1,16 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 
 /* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
- * Copyright (C) 2019-2021 Linaro Ltd.
+ * Copyright (C) 2019-2024 Linaro Ltd.
  */
 #ifndef _IPA_DATA_H_
 #define _IPA_DATA_H_
 
 #include <linux/types.h>
 
-#include "ipa_version.h"
 #include "ipa_endpoint.h"
 #include "ipa_mem.h"
+#include "ipa_version.h"
 
 /**
  * DOC: IPA/GSI Configuration Data
@@ -31,7 +31,7 @@
  * communication path between the IPA and a particular execution environment
  * (EE), such as the AP or Modem.  Each EE has a set of channels associated
  * with it, and each channel has an ID unique for that EE.  For the most part
- * the only GSI channels of concern to this driver belong to the AP
+ * the only GSI channels of concern to this driver belong to the AP.
  *
  * An endpoint is an IPA construct representing a single channel anywhere
  * in the system.  An IPA endpoint ID maps directly to an (EE, channel_id)
@@ -180,7 +180,6 @@ struct ipa_resource_data {
  * @local:		array of IPA-local memory region descriptors
  * @imem_addr:		physical address of IPA region within IMEM
  * @imem_size:		size in bytes of IPA IMEM region
- * @smem_id:		item identifier for IPA region within SMEM memory
  * @smem_size:		size in bytes of the IPA SMEM region
  */
 struct ipa_mem_data {
@@ -188,7 +187,6 @@ struct ipa_mem_data {
 	const struct ipa_mem *local;
 	u32 imem_addr;
 	u32 imem_size;
-	u32 smem_id;
 	u32 smem_size;
 };
 
@@ -222,6 +220,7 @@ struct ipa_power_data {
  * @backward_compat:	BCR register value (prior to IPA v4.5 only)
  * @qsb_count:		number of entries in the qsb_data array
  * @qsb_data:		Qualcomm System Bus configuration data
+ * @modem_route_count:	number of modem entries in a routing table
  * @endpoint_count:	number of entries in the endpoint_data array
  * @endpoint_data:	IPA endpoint/GSI channel data
  * @resource_data:	IPA resource configuration data
@@ -233,6 +232,7 @@ struct ipa_data {
 	u32 backward_compat;
 	u32 qsb_count;		/* number of entries in qsb_data[] */
 	const struct ipa_qsb_data *qsb_data;
+	u32 modem_route_count;
 	u32 endpoint_count;	/* number of entries in endpoint_data[] */
 	const struct ipa_gsi_endpoint_data *endpoint_data;
 	const struct ipa_resource_data *resource_data;
@@ -244,7 +244,10 @@ extern const struct ipa_data ipa_data_v3_1;
 extern const struct ipa_data ipa_data_v3_5_1;
 extern const struct ipa_data ipa_data_v4_2;
 extern const struct ipa_data ipa_data_v4_5;
+extern const struct ipa_data ipa_data_v4_7;
 extern const struct ipa_data ipa_data_v4_9;
 extern const struct ipa_data ipa_data_v4_11;
+extern const struct ipa_data ipa_data_v5_0;
+extern const struct ipa_data ipa_data_v5_5;
 
 #endif /* _IPA_DATA_H_ */

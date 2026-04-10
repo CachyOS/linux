@@ -60,6 +60,7 @@
 #include <linux/soc/pxa/cpu.h>
 #include <video/of_display_timing.h>
 #include <video/videomode.h>
+#include <linux/string_choices.h>
 
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -418,12 +419,12 @@ static int pxafb_adjust_timing(struct pxafb_info *fbi,
 	var->yres = max_t(int, var->yres, MIN_YRES);
 
 	if (!(fbi->lccr0 & LCCR0_LCDT)) {
-		clamp_val(var->hsync_len, 1, 64);
-		clamp_val(var->vsync_len, 1, 64);
-		clamp_val(var->left_margin,  1, 255);
-		clamp_val(var->right_margin, 1, 255);
-		clamp_val(var->upper_margin, 1, 255);
-		clamp_val(var->lower_margin, 1, 255);
+		var->hsync_len = clamp(var->hsync_len, 1, 64);
+		var->vsync_len = clamp(var->vsync_len, 1, 64);
+		var->left_margin  = clamp(var->left_margin,  1, 255);
+		var->right_margin = clamp(var->right_margin, 1, 255);
+		var->upper_margin = clamp(var->upper_margin, 1, 255);
+		var->lower_margin = clamp(var->lower_margin, 1, 255);
 	}
 
 	/* make sure each line is aligned on word boundary */
@@ -599,13 +600,11 @@ static int pxafb_blank(int blank, struct fb_info *info)
 
 static const struct fb_ops pxafb_ops = {
 	.owner		= THIS_MODULE,
+	FB_DEFAULT_IOMEM_OPS,
 	.fb_check_var	= pxafb_check_var,
 	.fb_set_par	= pxafb_set_par,
 	.fb_pan_display	= pxafb_pan_display,
 	.fb_setcolreg	= pxafb_setcolreg,
-	.fb_fillrect	= cfb_fillrect,
-	.fb_copyarea	= cfb_copyarea,
-	.fb_imageblit	= cfb_imageblit,
 	.fb_blank	= pxafb_blank,
 };
 
@@ -888,7 +887,6 @@ static void init_pxafb_overlay(struct pxafb_info *fbi, struct pxafb_layer *ofb,
 	ofb->fb.var.vmode		= FB_VMODE_NONINTERLACED;
 
 	ofb->fb.fbops			= &overlay_fb_ops;
-	ofb->fb.flags			= FBINFO_FLAG_DEFAULT;
 	ofb->fb.node			= -1;
 	ofb->fb.pseudo_palette		= NULL;
 
@@ -1033,9 +1031,8 @@ static inline unsigned int get_pcd(struct pxafb_info *fbi,
 
 /*
  * Some touchscreens need hsync information from the video driver to
- * function correctly. We export it here.  Note that 'hsync_time' and
- * the value returned from pxafb_get_hsync_time() is the *reciprocal*
- * of the hsync period in seconds.
+ * function correctly. We export it here.  Note that 'hsync_time' is
+ * the *reciprocal* of the hsync period in seconds.
  */
 static inline void set_hsync_time(struct pxafb_info *fbi, unsigned int pcd)
 {
@@ -1050,18 +1047,6 @@ static inline void set_hsync_time(struct pxafb_info *fbi, unsigned int pcd)
 
 	fbi->hsync_time = htime;
 }
-
-unsigned long pxafb_get_hsync_time(struct device *dev)
-{
-	struct pxafb_info *fbi = dev_get_drvdata(dev);
-
-	/* If display is blanked/suspended, hsync isn't active */
-	if (!fbi || (fbi->state != C_ENABLE))
-		return 0;
-
-	return fbi->hsync_time;
-}
-EXPORT_SYMBOL(pxafb_get_hsync_time);
 
 static int setup_frame_dma(struct pxafb_info *fbi, int dma, int pal,
 			   unsigned long start, size_t size)
@@ -1435,7 +1420,7 @@ static inline void __pxafb_lcd_power(struct pxafb_info *fbi, int on)
 
 		if (ret < 0)
 			pr_warn("Unable to %s LCD supply regulator: %d\n",
-				on ? "enable" : "disable", ret);
+				str_enable_disable(on), ret);
 		else
 			fbi->lcd_supply_enabled = on;
 	}
@@ -1826,7 +1811,6 @@ static struct pxafb_info *pxafb_init_fbinfo(struct device *dev,
 	fbi->fb.var.vmode	= FB_VMODE_NONINTERLACED;
 
 	fbi->fb.fbops		= &pxafb_ops;
-	fbi->fb.flags		= FBINFO_DEFAULT;
 	fbi->fb.node		= -1;
 
 	addr = fbi;
@@ -2042,7 +2026,7 @@ static int __init pxafb_setup_options(void)
 		return -ENODEV;
 
 	if (options)
-		strlcpy(g_options, options, sizeof(g_options));
+		strscpy(g_options, options, sizeof(g_options));
 
 	return 0;
 }
@@ -2175,7 +2159,7 @@ static int of_get_pxafb_mode_info(struct device *dev,
 	u32 bus_width;
 	int ret, i;
 
-	np = of_graph_get_next_endpoint(dev->of_node, NULL);
+	np = of_graph_get_endpoint_by_regs(dev->of_node, 0, -1);
 	if (!np) {
 		dev_err(dev, "could not find endpoint\n");
 		return -EINVAL;
@@ -2237,31 +2221,26 @@ static int pxafb_probe(struct platform_device *dev)
 {
 	struct pxafb_info *fbi;
 	struct pxafb_mach_info *inf, *pdata;
-	int i, irq, ret;
+	int irq, ret;
 
 	dev_dbg(&dev->dev, "pxafb_probe\n");
 
 	ret = -ENOMEM;
 	pdata = dev_get_platdata(&dev->dev);
-	inf = devm_kmalloc(&dev->dev, sizeof(*inf), GFP_KERNEL);
-	if (!inf)
-		goto failed;
-
 	if (pdata) {
-		*inf = *pdata;
-		inf->modes =
-			devm_kmalloc_array(&dev->dev, pdata->num_modes,
-					   sizeof(inf->modes[0]), GFP_KERNEL);
+		inf = devm_kmemdup(&dev->dev, pdata, sizeof(*pdata), GFP_KERNEL);
+		if (!inf)
+			goto failed;
+
+		inf->modes = devm_kmemdup_array(&dev->dev, pdata->modes, pdata->num_modes,
+						sizeof(*pdata->modes), GFP_KERNEL);
 		if (!inf->modes)
 			goto failed;
-		for (i = 0; i < inf->num_modes; i++)
-			inf->modes[i] = pdata->modes[i];
 	} else {
 		inf = of_pxafb_of_mach_info(&dev->dev);
+		if (IS_ERR_OR_NULL(inf))
+			goto failed;
 	}
-
-	if (IS_ERR_OR_NULL(inf))
-		goto failed;
 
 	ret = pxafb_parse_options(&dev->dev, g_options, inf);
 	if (ret < 0)
@@ -2327,7 +2306,6 @@ static int pxafb_probe(struct platform_device *dev)
 
 	irq = platform_get_irq(dev, 0);
 	if (irq < 0) {
-		dev_err(&dev->dev, "no IRQ defined\n");
 		ret = -ENODEV;
 		goto failed_free_mem;
 	}
@@ -2397,17 +2375,18 @@ failed:
 	return ret;
 }
 
-static int pxafb_remove(struct platform_device *dev)
+static void pxafb_remove(struct platform_device *dev)
 {
 	struct pxafb_info *fbi = platform_get_drvdata(dev);
 	struct fb_info *info;
 
 	if (!fbi)
-		return 0;
+		return;
 
 	info = &fbi->fb;
 
 	pxafb_overlay_exit(fbi);
+	cancel_work_sync(&fbi->task);
 	unregister_framebuffer(info);
 
 	pxafb_disable_controller(fbi);
@@ -2419,8 +2398,6 @@ static int pxafb_remove(struct platform_device *dev)
 
 	dma_free_coherent(&dev->dev, fbi->dma_buff_size, fbi->dma_buff,
 			  fbi->dma_buff_phys);
-
-	return 0;
 }
 
 static const struct of_device_id pxafb_of_dev_id[] = {
@@ -2433,7 +2410,7 @@ MODULE_DEVICE_TABLE(of, pxafb_of_dev_id);
 
 static struct platform_driver pxafb_driver = {
 	.probe		= pxafb_probe,
-	.remove 	= pxafb_remove,
+	.remove		= pxafb_remove,
 	.driver		= {
 		.name	= "pxa2xx-fb",
 		.of_match_table = pxafb_of_dev_id,

@@ -105,8 +105,8 @@ long asihpi_hpi_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	if (cmd != HPI_IOCTL_LINUX)
 		return -EINVAL;
 
-	hm = kmalloc(sizeof(*hm), GFP_KERNEL);
-	hr = kzalloc(sizeof(*hr), GFP_KERNEL);
+	hm = kmalloc_obj(*hm);
+	hr = kzalloc_obj(*hr);
 	if (!hm || !hr) {
 		err = -ENOMEM;
 		goto out;
@@ -356,12 +356,12 @@ int asihpi_adapter_probe(struct pci_dev *pci_dev,
 
 	memset(&adapter, 0, sizeof(adapter));
 
-	dev_printk(KERN_DEBUG, &pci_dev->dev,
+	dev_dbg(&pci_dev->dev,
 		"probe %04x:%04x,%04x:%04x,%04x\n", pci_dev->vendor,
 		pci_dev->device, pci_dev->subsystem_vendor,
 		pci_dev->subsystem_device, pci_dev->devfn);
 
-	if (pci_enable_device(pci_dev) < 0) {
+	if (pcim_enable_device(pci_dev) < 0) {
 		dev_err(&pci_dev->dev,
 			"pci_enable_device failed, disabling device\n");
 		return -EIO;

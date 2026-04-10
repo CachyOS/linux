@@ -5,17 +5,6 @@
  * Copyright (c) 2010 Intel Corporation. All Rights Reserved.
  *
  * Copyright (c) 2010 Silicon Hive www.siliconhive.com.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version
- * 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- *
  */
 
 #ifndef	__HMM_H__
@@ -26,21 +15,19 @@
 #include <linux/slab.h>
 #include <linux/mm.h>
 
-#include "hmm/hmm_pool.h"
+#include "hmm_common.h"
+#include "hmm/hmm_bo.h"
 #include "ia_css_types.h"
 
 #define mmgr_NULL              ((ia_css_ptr)0)
 #define mmgr_EXCEPTION         ((ia_css_ptr) - 1)
 
-int hmm_pool_register(unsigned int pool_size, enum hmm_pool_type pool_type);
-void hmm_pool_unregister(enum hmm_pool_type pool_type);
-
 int hmm_init(void);
 void hmm_cleanup(void);
 
-ia_css_ptr hmm_alloc(size_t bytes, enum hmm_bo_type type,
-		     int from_highmem, const void __user *userptr,
-		     const uint16_t attrs);
+ia_css_ptr hmm_alloc(size_t bytes);
+ia_css_ptr hmm_create_from_vmalloc_buf(size_t bytes, void *vmalloc_addr);
+
 void hmm_free(ia_css_ptr ptr);
 int hmm_load(ia_css_ptr virt, void *data, unsigned int bytes);
 int hmm_store(ia_css_ptr virt, const void *data, unsigned int bytes);
@@ -69,17 +56,6 @@ void hmm_vunmap(ia_css_ptr virt);
 void hmm_flush_vmap(ia_css_ptr virt);
 
 /*
- * Address translation from ISP shared memory address to kernel virtual address
- * if the memory is not vmmaped,  then do it.
- */
-void *hmm_isp_vaddr_to_host_vaddr(ia_css_ptr ptr, bool cached);
-
-/*
- * Address translation from kernel virtual address to ISP shared memory address
- */
-ia_css_ptr hmm_host_vaddr_to_hrt_vaddr(const void *ptr);
-
-/*
  * map ISP memory starts with virt to specific vma.
  *
  * used for mmap operation.
@@ -89,16 +65,6 @@ ia_css_ptr hmm_host_vaddr_to_hrt_vaddr(const void *ptr);
  */
 int hmm_mmap(struct vm_area_struct *vma, ia_css_ptr virt);
 
-/* show memory statistic
- */
-void hmm_show_mem_stat(const char *func, const int line);
-
-/* init memory statistic
- */
-void hmm_init_mem_stat(int res_pgnr, int dyc_en, int dyc_pgnr);
-
-extern bool dypool_enable;
-extern unsigned int dypool_pgnr;
 extern struct hmm_bo_device bo_device;
 
 #endif

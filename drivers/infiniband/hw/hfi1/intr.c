@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
  * Copyright(c) 2015, 2016 Intel Corporation.
  */
@@ -45,37 +45,6 @@ static void add_full_mgmt_pkey(struct hfi1_pportdata *ppd)
 	ppd->pkeys[2] = FULL_MGMT_P_KEY;
 	(void)hfi1_set_ib_cfg(ppd, HFI1_IB_CFG_PKEYS, 0);
 	hfi1_event_pkey_change(ppd->dd, ppd->port);
-}
-
-/**
- * format_hwmsg - format a single hwerror message
- * @msg: message buffer
- * @msgl: length of message buffer
- * @hwmsg: message to add to message buffer
- */
-static void format_hwmsg(char *msg, size_t msgl, const char *hwmsg)
-{
-	strlcat(msg, "[", msgl);
-	strlcat(msg, hwmsg, msgl);
-	strlcat(msg, "]", msgl);
-}
-
-/**
- * hfi1_format_hwerrors - format hardware error messages for display
- * @hwerrs: hardware errors bit vector
- * @hwerrmsgs: hardware error descriptions
- * @nhwerrmsgs: number of hwerrmsgs
- * @msg: message buffer
- * @msgl: message buffer length
- */
-void hfi1_format_hwerrors(u64 hwerrs, const struct hfi1_hwerror_msgs *hwerrmsgs,
-			  size_t nhwerrmsgs, char *msg, size_t msgl)
-{
-	int i;
-
-	for (i = 0; i < nhwerrmsgs; i++)
-		if (hwerrs & hwerrmsgs[i].mask)
-			format_hwmsg(msg, msgl, hwerrmsgs[i].msg);
 }
 
 static void signal_ib_event(struct hfi1_pportdata *ppd, enum ib_event_type ev)

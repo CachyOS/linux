@@ -68,7 +68,7 @@ static struct clk_hw_onecell_data sun9i_a80_usb_hw_clks = {
 	.num	= CLK_NUMBER,
 };
 
-static struct ccu_reset_map sun9i_a80_usb_resets[] = {
+static const struct ccu_reset_map sun9i_a80_usb_resets[] = {
 	[RST_USB0_HCI]		= { 0x0, BIT(17) },
 	[RST_USB1_HCI]		= { 0x0, BIT(18) },
 	[RST_USB2_HCI]		= { 0x0, BIT(19) },
@@ -101,12 +101,9 @@ static int sun9i_a80_usb_clk_probe(struct platform_device *pdev)
 		return PTR_ERR(reg);
 
 	bus_clk = devm_clk_get(&pdev->dev, "bus");
-	if (IS_ERR(bus_clk)) {
-		ret = PTR_ERR(bus_clk);
-		if (ret != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "Couldn't get bus clk: %d\n", ret);
-		return ret;
-	}
+	if (IS_ERR(bus_clk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(bus_clk),
+				     "Couldn't get bus clk\n");
 
 	/* The bus clock needs to be enabled for us to access the registers */
 	ret = clk_prepare_enable(bus_clk);
@@ -130,6 +127,7 @@ static const struct of_device_id sun9i_a80_usb_clk_ids[] = {
 	{ .compatible = "allwinner,sun9i-a80-usb-clks" },
 	{ }
 };
+MODULE_DEVICE_TABLE(of, sun9i_a80_usb_clk_ids);
 
 static struct platform_driver sun9i_a80_usb_clk_driver = {
 	.probe	= sun9i_a80_usb_clk_probe,
@@ -140,5 +138,6 @@ static struct platform_driver sun9i_a80_usb_clk_driver = {
 };
 module_platform_driver(sun9i_a80_usb_clk_driver);
 
-MODULE_IMPORT_NS(SUNXI_CCU);
+MODULE_IMPORT_NS("SUNXI_CCU");
+MODULE_DESCRIPTION("Support for the Allwinner A80 USB CCU");
 MODULE_LICENSE("GPL");

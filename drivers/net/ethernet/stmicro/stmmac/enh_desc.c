@@ -12,11 +12,10 @@
 #include "common.h"
 #include "descs_com.h"
 
-static int enh_desc_get_tx_status(void *data, struct stmmac_extra_stats *x,
+static int enh_desc_get_tx_status(struct stmmac_extra_stats *x,
 				  struct dma_desc *p, void __iomem *ioaddr)
 {
-	struct net_device_stats *stats = (struct net_device_stats *)data;
-	unsigned int tdes0 = le32_to_cpu(p->des0);
+	u32 tdes0 = le32_to_cpu(p->des0);
 	int ret = tx_done;
 
 	/* Get tx owner first */
@@ -38,16 +37,14 @@ static int enh_desc_get_tx_status(void *data, struct stmmac_extra_stats *x,
 
 		if (unlikely(tdes0 & ETDES0_LOSS_CARRIER)) {
 			x->tx_losscarrier++;
-			stats->tx_carrier_errors++;
 		}
 		if (unlikely(tdes0 & ETDES0_NO_CARRIER)) {
 			x->tx_carrier++;
-			stats->tx_carrier_errors++;
 		}
 		if (unlikely((tdes0 & ETDES0_LATE_COLLISION) ||
 			     (tdes0 & ETDES0_EXCESSIVE_COLLISIONS)))
-			stats->collisions +=
-				(tdes0 & ETDES0_COLLISION_COUNT_MASK) >> 3;
+			x->tx_collision +=
+				FIELD_GET(ETDES0_COLLISION_COUNT_MASK, tdes0);
 
 		if (unlikely(tdes0 & ETDES0_EXCESSIVE_DEFERRAL))
 			x->tx_deferred++;
@@ -91,7 +88,7 @@ static int enh_desc_coe_rdes0(int ipc_err, int type, int payload_err)
 
 	/* bits 5 7 0 | Frame status
 	 * ----------------------------------------------------------
-	 *      0 0 0 | IEEE 802.3 Type frame (length < 1536 octects)
+	 *      0 0 0 | IEEE 802.3 Type frame (length < 1536 octets)
 	 *      1 0 0 | IPv4/6 No CSUM errorS.
 	 *      1 0 1 | IPv4/6 CSUM PAYLOAD error
 	 *      1 1 0 | IPv4/6 CSUM IP HR error
@@ -117,14 +114,14 @@ static int enh_desc_coe_rdes0(int ipc_err, int type, int payload_err)
 	return ret;
 }
 
-static void enh_desc_get_ext_status(void *data, struct stmmac_extra_stats *x,
+static void enh_desc_get_ext_status(struct stmmac_extra_stats *x,
 				    struct dma_extended_desc *p)
 {
-	unsigned int rdes0 = le32_to_cpu(p->basic.des0);
-	unsigned int rdes4 = le32_to_cpu(p->des4);
+	u32 rdes0 = le32_to_cpu(p->basic.des0);
+	u32 rdes4 = le32_to_cpu(p->des4);
 
 	if (unlikely(rdes0 & ERDES0_RX_MAC_ADDR)) {
-		int message_type = (rdes4 & ERDES4_MSG_TYPE_MASK) >> 8;
+		int message_type = FIELD_GET(ERDES4_MSG_TYPE_MASK, rdes4);
 
 		if (rdes4 & ERDES4_IP_HDR_ERR)
 			x->ip_hdr_err++;
@@ -170,36 +167,35 @@ static void enh_desc_get_ext_status(void *data, struct stmmac_extra_stats *x,
 			x->av_pkt_rcvd++;
 		if (rdes4 & ERDES4_AV_TAGGED_PKT_RCVD)
 			x->av_tagged_pkt_rcvd++;
-		if ((rdes4 & ERDES4_VLAN_TAG_PRI_VAL_MASK) >> 18)
+		if (rdes4 & ERDES4_VLAN_TAG_PRI_VAL_MASK)
 			x->vlan_tag_priority_val++;
 		if (rdes4 & ERDES4_L3_FILTER_MATCH)
 			x->l3_filter_match++;
 		if (rdes4 & ERDES4_L4_FILTER_MATCH)
 			x->l4_filter_match++;
-		if ((rdes4 & ERDES4_L3_L4_FILT_NO_MATCH_MASK) >> 26)
+		if (rdes4 & ERDES4_L3_L4_FILT_NO_MATCH_MASK)
 			x->l3_l4_filter_no_match++;
 	}
 }
 
-static int enh_desc_get_rx_status(void *data, struct stmmac_extra_stats *x,
+static int enh_desc_get_rx_status(struct stmmac_extra_stats *x,
 				  struct dma_desc *p)
 {
-	struct net_device_stats *stats = (struct net_device_stats *)data;
-	unsigned int rdes0 = le32_to_cpu(p->des0);
+	u32 rdes0 = le32_to_cpu(p->des0);
 	int ret = good_frame;
 
 	if (unlikely(rdes0 & RDES0_OWN))
 		return dma_own;
 
 	if (unlikely(!(rdes0 & RDES0_LAST_DESCRIPTOR))) {
-		stats->rx_length_errors++;
+		x->rx_length++;
 		return discard_frame;
 	}
 
 	if (unlikely(rdes0 & RDES0_ERROR_SUMMARY)) {
 		if (unlikely(rdes0 & RDES0_DESCRIPTOR_ERROR)) {
 			x->rx_desc++;
-			stats->rx_length_errors++;
+			x->rx_length++;
 		}
 		if (unlikely(rdes0 & RDES0_OVERFLOW_ERROR))
 			x->rx_gmac_overflow++;
@@ -208,7 +204,7 @@ static int enh_desc_get_rx_status(void *data, struct stmmac_extra_stats *x,
 			pr_err("\tIPC Csum Error/Giant frame\n");
 
 		if (unlikely(rdes0 & RDES0_COLLISION))
-			stats->collisions++;
+			x->rx_collision++;
 		if (unlikely(rdes0 & RDES0_RECEIVE_WATCHDOG))
 			x->rx_watchdog++;
 
@@ -217,7 +213,6 @@ static int enh_desc_get_rx_status(void *data, struct stmmac_extra_stats *x,
 
 		if (unlikely(rdes0 & RDES0_CRC_ERROR)) {
 			x->rx_crc_errors++;
-			stats->rx_crc_errors++;
 		}
 		ret = discard_frame;
 	}
@@ -317,7 +312,7 @@ static void enh_desc_prepare_tx_desc(struct dma_desc *p, int is_fs, int len,
 				     bool csum_flag, int mode, bool tx_own,
 				     bool ls, unsigned int tot_pkt_len)
 {
-	unsigned int tdes0 = le32_to_cpu(p->des0);
+	u32 tdes0 = le32_to_cpu(p->des0);
 
 	if (mode == STMMAC_CHAIN_MODE)
 		enh_set_tx_desc_len_on_chain(p, len);
@@ -329,10 +324,8 @@ static void enh_desc_prepare_tx_desc(struct dma_desc *p, int is_fs, int len,
 	else
 		tdes0 &= ~ETDES0_FIRST_SEGMENT;
 
-	if (likely(csum_flag))
-		tdes0 |= (TX_CIC_FULL << ETDES0_CHECKSUM_INSERTION_SHIFT);
-	else
-		tdes0 &= ~(TX_CIC_FULL << ETDES0_CHECKSUM_INSERTION_SHIFT);
+	tdes0 = u32_replace_bits(tdes0, csum_flag ? TX_CIC_FULL : 0,
+				 ETDES0_CHECKSUM_INSERTION_MASK);
 
 	if (ls)
 		tdes0 |= ETDES0_LAST_SEGMENT;
@@ -368,8 +361,7 @@ static int enh_desc_get_rx_frame_len(struct dma_desc *p, int rx_coe_type)
 	if (rx_coe_type == STMMAC_RX_COE_TYPE1)
 		csum = 2;
 
-	return (((le32_to_cpu(p->des0) & RDES0_FRAME_LEN_MASK)
-				>> RDES0_FRAME_LEN_SHIFT) - csum);
+	return FIELD_GET(RDES0_FRAME_LEN_MASK, le32_to_cpu(p->des0)) - csum;
 }
 
 static void enh_desc_enable_tx_timestamp(struct dma_desc *p)

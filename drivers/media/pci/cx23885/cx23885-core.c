@@ -554,14 +554,14 @@ void cx23885_sram_channel_dump(struct cx23885_dev *dev,
 
 	for (i = 0; i < 4; i++) {
 		risc = cx_read(ch->cmds_start + 4 * (i + 14));
-		pr_warn("%s:   risc%d: ", dev->name, i);
+		pr_warn("%s:   risc%d:", dev->name, i);
 		cx23885_risc_decode(risc);
 	}
 	for (i = 0; i < (64 >> 2); i += n) {
 		risc = cx_read(ch->ctrl_start + 4 * i);
 		/* No consideration for bits 63-32 */
 
-		pr_warn("%s:   (0x%08x) iq %x: ", dev->name,
+		pr_warn("%s:   (0x%08x) iq %x:", dev->name,
 			ch->ctrl_start + 4 * i, i);
 		n = cx23885_risc_decode(risc);
 		for (j = 1; j < n; j++) {
@@ -594,7 +594,7 @@ static void cx23885_risc_disasm(struct cx23885_tsport *port,
 	pr_info("%s: risc disasm: %p [dma=0x%08lx]\n",
 	       dev->name, risc->cpu, (unsigned long)risc->dma);
 	for (i = 0; i < (risc->size >> 2); i += n) {
-		pr_info("%s:   %04d: ", dev->name, i);
+		pr_info("%s:   %04d:", dev->name, i);
 		n = cx23885_risc_decode(le32_to_cpu(risc->cpu[i]));
 		for (j = 1; j < n; j++)
 			pr_info("%s:   %04d: 0x%08x [ arg #%d ]\n",
@@ -1325,7 +1325,9 @@ void cx23885_free_buffer(struct cx23885_dev *dev, struct cx23885_buffer *buf)
 {
 	struct cx23885_riscmem *risc = &buf->risc;
 
-	dma_free_coherent(&dev->pci->dev, risc->size, risc->cpu, risc->dma);
+	if (risc->cpu)
+		dma_free_coherent(&dev->pci->dev, risc->size, risc->cpu, risc->dma);
+	memset(risc, 0, sizeof(*risc));
 }
 
 static void cx23885_tsport_reg_dump(struct cx23885_tsport *port)
@@ -2086,6 +2088,9 @@ static struct {
 	/* 0x1419 is the PCI ID for the IOMMU found on 15h (Models 10h-1fh) family
 	 */
 	{ PCI_VENDOR_ID_AMD, 0x1419 },
+	/* 0x1631 is the PCI ID for the IOMMU found on Renoir/Cezanne
+	 */
+	{ PCI_VENDOR_ID_AMD, 0x1631 },
 	/* 0x5a23 is the PCI ID for the IOMMU found on RD890S/RD990
 	 */
 	{ PCI_VENDOR_ID_ATI, 0x5a23 },
@@ -2119,7 +2124,7 @@ static int cx23885_initdev(struct pci_dev *pci_dev,
 	struct v4l2_ctrl_handler *hdl;
 	int err;
 
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	dev = kzalloc_obj(*dev);
 	if (NULL == dev)
 		return -ENOMEM;
 
@@ -2226,6 +2231,28 @@ static void cx23885_finidev(struct pci_dev *pci_dev)
 	kfree(dev);
 }
 
+static int __maybe_unused cx23885_suspend(struct device *dev_d)
+{
+	struct pci_dev *pci_dev = to_pci_dev(dev_d);
+	struct v4l2_device *v4l2_dev = pci_get_drvdata(pci_dev);
+	struct cx23885_dev *dev = to_cx23885(v4l2_dev);
+
+	cx23885_shutdown(dev);
+
+	return 0;
+}
+
+static int __maybe_unused cx23885_resume(struct device *dev_d)
+{
+	struct pci_dev *pci_dev = to_pci_dev(dev_d);
+	struct v4l2_device *v4l2_dev = pci_get_drvdata(pci_dev);
+	struct cx23885_dev *dev = to_cx23885(v4l2_dev);
+
+	cx23885_reset(dev);
+
+	return 0;
+}
+
 static const struct pci_device_id cx23885_pci_tbl[] = {
 	{
 		/* CX23885 */
@@ -2245,11 +2272,14 @@ static const struct pci_device_id cx23885_pci_tbl[] = {
 };
 MODULE_DEVICE_TABLE(pci, cx23885_pci_tbl);
 
+static SIMPLE_DEV_PM_OPS(cx23885_pm_ops, cx23885_suspend, cx23885_resume);
+
 static struct pci_driver cx23885_pci_driver = {
-	.name     = "cx23885",
-	.id_table = cx23885_pci_tbl,
-	.probe    = cx23885_initdev,
-	.remove   = cx23885_finidev,
+	.name      = "cx23885",
+	.id_table  = cx23885_pci_tbl,
+	.probe     = cx23885_initdev,
+	.remove    = cx23885_finidev,
+	.driver.pm = &cx23885_pm_ops,
 };
 
 static int __init cx23885_init(void)

@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
    Common Flash Interface probe code.
-   (C) 2000 Red Hat. GPL'd.
+   (C) 2000 Red Hat.
 */
 
 #include <linux/module.h>
@@ -207,7 +208,7 @@ static int __xipram cfi_chip_setup(struct map_info *map,
 	if (!num_erase_regions)
 		return 0;
 
-	cfi->cfiq = kmalloc(sizeof(struct cfi_ident) + num_erase_regions * 4, GFP_KERNEL);
+	cfi->cfiq = kmalloc_flex(*cfi->cfiq, EraseRegionInfo, num_erase_regions);
 	if (!cfi->cfiq)
 		return 0;
 

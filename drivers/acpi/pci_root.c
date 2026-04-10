@@ -293,11 +293,6 @@ struct acpi_pci_root *acpi_pci_find_root(acpi_handle handle)
 }
 EXPORT_SYMBOL_GPL(acpi_pci_find_root);
 
-struct acpi_handle_node {
-	struct list_head node;
-	acpi_handle handle;
-};
-
 /**
  * acpi_get_pci_dev - convert ACPI CA handle to struct pci_dev
  * @handle: the handle in question
@@ -312,76 +307,26 @@ struct acpi_handle_node {
  */
 struct pci_dev *acpi_get_pci_dev(acpi_handle handle)
 {
-	int dev, fn;
-	unsigned long long adr;
-	acpi_status status;
-	acpi_handle phandle;
-	struct pci_bus *pbus;
-	struct pci_dev *pdev = NULL;
-	struct acpi_handle_node *node, *tmp;
-	struct acpi_pci_root *root;
-	LIST_HEAD(device_list);
+	struct acpi_device *adev = acpi_fetch_acpi_dev(handle);
+	struct acpi_device_physical_node *pn;
+	struct pci_dev *pci_dev = NULL;
 
-	/*
-	 * Walk up the ACPI CA namespace until we reach a PCI root bridge.
-	 */
-	phandle = handle;
-	while (!acpi_is_root_bridge(phandle)) {
-		node = kzalloc(sizeof(struct acpi_handle_node), GFP_KERNEL);
-		if (!node)
-			goto out;
+	if (!adev)
+		return NULL;
 
-		INIT_LIST_HEAD(&node->node);
-		node->handle = phandle;
-		list_add(&node->node, &device_list);
+	mutex_lock(&adev->physical_node_lock);
 
-		status = acpi_get_parent(phandle, &phandle);
-		if (ACPI_FAILURE(status))
-			goto out;
-	}
-
-	root = acpi_pci_find_root(phandle);
-	if (!root)
-		goto out;
-
-	pbus = root->bus;
-
-	/*
-	 * Now, walk back down the PCI device tree until we return to our
-	 * original handle. Assumes that everything between the PCI root
-	 * bridge and the device we're looking for must be a P2P bridge.
-	 */
-	list_for_each_entry(node, &device_list, node) {
-		acpi_handle hnd = node->handle;
-		status = acpi_evaluate_integer(hnd, "_ADR", NULL, &adr);
-		if (ACPI_FAILURE(status))
-			goto out;
-		dev = (adr >> 16) & 0xffff;
-		fn  = adr & 0xffff;
-
-		pdev = pci_get_slot(pbus, PCI_DEVFN(dev, fn));
-		if (!pdev || hnd == handle)
-			break;
-
-		pbus = pdev->subordinate;
-		pci_dev_put(pdev);
-
-		/*
-		 * This function may be called for a non-PCI device that has a
-		 * PCI parent (eg. a disk under a PCI SATA controller).  In that
-		 * case pdev->subordinate will be NULL for the parent.
-		 */
-		if (!pbus) {
-			dev_dbg(&pdev->dev, "Not a PCI-to-PCI bridge\n");
-			pdev = NULL;
+	list_for_each_entry(pn, &adev->physical_node_list, node) {
+		if (dev_is_pci(pn->dev)) {
+			get_device(pn->dev);
+			pci_dev = to_pci_dev(pn->dev);
 			break;
 		}
 	}
-out:
-	list_for_each_entry_safe(node, tmp, &device_list, node)
-		kfree(node);
 
-	return pdev;
+	mutex_unlock(&adev->physical_node_lock);
+
+	return pci_dev;
 }
 EXPORT_SYMBOL_GPL(acpi_get_pci_dev);
 
@@ -543,6 +488,7 @@ static u32 calculate_cxl_support(void)
 	u32 support;
 
 	support = OSC_CXL_2_0_PORT_DEV_REG_ACCESS_SUPPORT;
+	support |= OSC_CXL_1_1_PORT_REG_ACCESS_SUPPORT;
 	if (pci_aer_available())
 		support |= OSC_CXL_PROTOCOL_ERR_REPORTING_SUPPORT;
 	if (IS_ENABLED(CONFIG_HOTPLUG_PCI_PCIE))
@@ -702,7 +648,7 @@ static int acpi_pci_root_add(struct acpi_device *device,
 	bool hotadd = system_state == SYSTEM_RUNNING;
 	const char *acpi_hid;
 
-	root = kzalloc(sizeof(struct acpi_pci_root), GFP_KERNEL);
+	root = kzalloc_obj(struct acpi_pci_root);
 	if (!root)
 		return -ENOMEM;
 
@@ -743,8 +689,8 @@ static int acpi_pci_root_add(struct acpi_device *device,
 
 	root->device = device;
 	root->segment = segment & 0xFFFF;
-	strcpy(acpi_device_name(device), ACPI_PCI_ROOT_DEVICE_NAME);
-	strcpy(acpi_device_class(device), ACPI_PCI_ROOT_CLASS);
+	strscpy(acpi_device_name(device), ACPI_PCI_ROOT_DEVICE_NAME);
+	strscpy(acpi_device_class(device), ACPI_PCI_ROOT_CLASS);
 	device->driver_data = root;
 
 	if (hotadd && dmar_device_add(handle)) {
@@ -792,7 +738,7 @@ static int acpi_pci_root_add(struct acpi_device *device,
 	if (no_aspm)
 		pcie_no_aspm();
 
-	pci_acpi_add_bus_pm_notifier(device);
+	pci_acpi_add_root_pm_notifier(device, root);
 	device_set_wakeup_capable(root->bus->bridge, device->wakeup.flags.valid);
 
 	if (hotadd) {
@@ -912,7 +858,7 @@ next:
 	}
 }
 
-static void acpi_pci_root_remap_iospace(struct fwnode_handle *fwnode,
+static void acpi_pci_root_remap_iospace(const struct fwnode_handle *fwnode,
 			struct resource_entry *entry)
 {
 #ifdef PCI_IOBASE
@@ -1057,7 +1003,6 @@ struct pci_bus *acpi_pci_root_create(struct acpi_pci_root *root,
 	int node = acpi_get_node(device->handle);
 	struct pci_bus *bus;
 	struct pci_host_bridge *host_bridge;
-	union acpi_object *obj;
 
 	info->root = root;
 	info->bridge = device;
@@ -1096,16 +1041,8 @@ struct pci_bus *acpi_pci_root_create(struct acpi_pci_root *root,
 	if (!(root->osc_control_set & OSC_PCI_EXPRESS_DPC_CONTROL))
 		host_bridge->native_dpc = 0;
 
-	/*
-	 * Evaluate the "PCI Boot Configuration" _DSM Function.  If it
-	 * exists and returns 0, we must preserve any PCI resource
-	 * assignments made by firmware for this host bridge.
-	 */
-	obj = acpi_evaluate_dsm(ACPI_HANDLE(bus->bridge), &pci_acpi_dsm_guid, 1,
-				DSM_PCI_PRESERVE_BOOT_CONFIG, NULL);
-	if (obj && obj->type == ACPI_TYPE_INTEGER && obj->integer.value == 0)
-		host_bridge->preserve_config = 1;
-	ACPI_FREE(obj);
+	if (!(root->osc_ext_control_set & OSC_CXL_ERROR_REPORTING_CONTROL))
+		host_bridge->native_cxl_error = 0;
 
 	acpi_dev_power_up_children_with_adr(device);
 

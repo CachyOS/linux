@@ -1,28 +1,32 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2019 Facebook */
 
-/* WARNING: This implemenation is not necessarily the same
+/* WARNING: This implementation is not necessarily the same
  * as the tcp_dctcp.c.  The purpose is mainly for testing
  * the kernel BPF logic.
  */
 
-#include <stddef.h>
-#include <linux/bpf.h>
-#include <linux/types.h>
-#include <linux/stddef.h>
-#include <linux/tcp.h>
+#include "bpf_tracing_net.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
-#include "bpf_tcp_helpers.h"
+
+#ifndef EBUSY
+#define EBUSY 16
+#endif
+#define min_not_zero(x, y) ({			\
+	typeof(x) __x = (x);			\
+	typeof(y) __y = (y);			\
+	__x == 0 ? __y : ((__y == 0) ? __x : min(__x, __y)); })
 
 char _license[] SEC("license") = "GPL";
 
-volatile const char fallback[TCP_CA_NAME_MAX];
+volatile const char fallback_cc[TCP_CA_NAME_MAX];
 const char bpf_dctcp[] = "bpf_dctcp";
 const char tcp_cdg[] = "cdg";
 char cc_res[TCP_CA_NAME_MAX];
 int tcp_cdg_res = 0;
 int stg_result = 0;
+int ebusy_cnt = 0;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_SK_STORAGE);
@@ -33,7 +37,7 @@ struct {
 
 #define DCTCP_MAX_ALPHA	1024U
 
-struct dctcp {
+struct bpf_dctcp {
 	__u32 old_delivered;
 	__u32 old_delivered_ce;
 	__u32 prior_rcv_nxt;
@@ -46,8 +50,7 @@ struct dctcp {
 static unsigned int dctcp_shift_g = 4; /* g = 1/2^4 */
 static unsigned int dctcp_alpha_on_init = DCTCP_MAX_ALPHA;
 
-static __always_inline void dctcp_reset(const struct tcp_sock *tp,
-					struct dctcp *ca)
+static void dctcp_reset(const struct tcp_sock *tp, struct bpf_dctcp *ca)
 {
 	ca->next_seq = tp->snd_nxt;
 
@@ -55,25 +58,32 @@ static __always_inline void dctcp_reset(const struct tcp_sock *tp,
 	ca->old_delivered_ce = tp->delivered_ce;
 }
 
-SEC("struct_ops/dctcp_init")
-void BPF_PROG(dctcp_init, struct sock *sk)
+SEC("struct_ops")
+void BPF_PROG(bpf_dctcp_init, struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
-	struct dctcp *ca = inet_csk_ca(sk);
+	struct bpf_dctcp *ca = inet_csk_ca(sk);
 	int *stg;
 
-	if (!(tp->ecn_flags & TCP_ECN_OK) && fallback[0]) {
+	if (!(tp->ecn_flags & TCP_ECN_OK) && fallback_cc[0]) {
 		/* Switch to fallback */
-		bpf_setsockopt(sk, SOL_TCP, TCP_CONGESTION,
-			       (void *)fallback, sizeof(fallback));
-		/* Switch back to myself which the bpf trampoline
-		 * stopped calling dctcp_init recursively.
+		if (bpf_setsockopt(sk, SOL_TCP, TCP_CONGESTION,
+				   (void *)fallback_cc, sizeof(fallback_cc)) == -EBUSY)
+			ebusy_cnt++;
+
+		/* Switch back to myself and the recurred bpf_dctcp_init()
+		 * will get -EBUSY for all bpf_setsockopt(TCP_CONGESTION),
+		 * except the last "cdg" one.
 		 */
-		bpf_setsockopt(sk, SOL_TCP, TCP_CONGESTION,
-			       (void *)bpf_dctcp, sizeof(bpf_dctcp));
+		if (bpf_setsockopt(sk, SOL_TCP, TCP_CONGESTION,
+				   (void *)bpf_dctcp, sizeof(bpf_dctcp)) == -EBUSY)
+			ebusy_cnt++;
+
 		/* Switch back to fallback */
-		bpf_setsockopt(sk, SOL_TCP, TCP_CONGESTION,
-			       (void *)fallback, sizeof(fallback));
+		if (bpf_setsockopt(sk, SOL_TCP, TCP_CONGESTION,
+				   (void *)fallback_cc, sizeof(fallback_cc)) == -EBUSY)
+			ebusy_cnt++;
+
 		/* Expecting -ENOTSUPP for tcp_cdg_res */
 		tcp_cdg_res = bpf_setsockopt(sk, SOL_TCP, TCP_CONGESTION,
 					     (void *)tcp_cdg, sizeof(tcp_cdg));
@@ -95,21 +105,21 @@ void BPF_PROG(dctcp_init, struct sock *sk)
 	dctcp_reset(tp, ca);
 }
 
-SEC("struct_ops/dctcp_ssthresh")
-__u32 BPF_PROG(dctcp_ssthresh, struct sock *sk)
+SEC("struct_ops")
+__u32 BPF_PROG(bpf_dctcp_ssthresh, struct sock *sk)
 {
-	struct dctcp *ca = inet_csk_ca(sk);
+	struct bpf_dctcp *ca = inet_csk_ca(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	ca->loss_cwnd = tp->snd_cwnd;
 	return max(tp->snd_cwnd - ((tp->snd_cwnd * ca->dctcp_alpha) >> 11U), 2U);
 }
 
-SEC("struct_ops/dctcp_update_alpha")
-void BPF_PROG(dctcp_update_alpha, struct sock *sk, __u32 flags)
+SEC("struct_ops")
+void BPF_PROG(bpf_dctcp_update_alpha, struct sock *sk, __u32 flags)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
-	struct dctcp *ca = inet_csk_ca(sk);
+	struct bpf_dctcp *ca = inet_csk_ca(sk);
 
 	/* Expired RTT */
 	if (!before(tp->snd_una, ca->next_seq)) {
@@ -135,27 +145,27 @@ void BPF_PROG(dctcp_update_alpha, struct sock *sk, __u32 flags)
 	}
 }
 
-static __always_inline void dctcp_react_to_loss(struct sock *sk)
+static void dctcp_react_to_loss(struct sock *sk)
 {
-	struct dctcp *ca = inet_csk_ca(sk);
+	struct bpf_dctcp *ca = inet_csk_ca(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	ca->loss_cwnd = tp->snd_cwnd;
 	tp->snd_ssthresh = max(tp->snd_cwnd >> 1U, 2U);
 }
 
-SEC("struct_ops/dctcp_state")
-void BPF_PROG(dctcp_state, struct sock *sk, __u8 new_state)
+SEC("struct_ops")
+void BPF_PROG(bpf_dctcp_state, struct sock *sk, __u8 new_state)
 {
 	if (new_state == TCP_CA_Recovery &&
 	    new_state != BPF_CORE_READ_BITFIELD(inet_csk(sk), icsk_ca_state))
 		dctcp_react_to_loss(sk);
-	/* We handle RTO in dctcp_cwnd_event to ensure that we perform only
+	/* We handle RTO in bpf_dctcp_cwnd_event to ensure that we perform only
 	 * one loss-adjustment per RTT.
 	 */
 }
 
-static __always_inline void dctcp_ece_ack_cwr(struct sock *sk, __u32 ce_state)
+static void dctcp_ece_ack_cwr(struct sock *sk, __u32 ce_state)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
@@ -170,9 +180,8 @@ static __always_inline void dctcp_ece_ack_cwr(struct sock *sk, __u32 ce_state)
  * S:	0 <- last pkt was non-CE
  *	1 <- last pkt was CE
  */
-static __always_inline
-void dctcp_ece_ack_update(struct sock *sk, enum tcp_ca_event evt,
-			  __u32 *prior_rcv_nxt, __u32 *ce_state)
+static void dctcp_ece_ack_update(struct sock *sk, enum tcp_ca_event evt,
+				 __u32 *prior_rcv_nxt, __u32 *ce_state)
 {
 	__u32 new_ce_state = (evt == CA_EVENT_ECN_IS_CE) ? 1 : 0;
 
@@ -192,10 +201,10 @@ void dctcp_ece_ack_update(struct sock *sk, enum tcp_ca_event evt,
 	dctcp_ece_ack_cwr(sk, new_ce_state);
 }
 
-SEC("struct_ops/dctcp_cwnd_event")
-void BPF_PROG(dctcp_cwnd_event, struct sock *sk, enum tcp_ca_event ev)
+SEC("struct_ops")
+void BPF_PROG(bpf_dctcp_cwnd_event, struct sock *sk, enum tcp_ca_event ev)
 {
-	struct dctcp *ca = inet_csk_ca(sk);
+	struct bpf_dctcp *ca = inet_csk_ca(sk);
 
 	switch (ev) {
 	case CA_EVENT_ECN_IS_CE:
@@ -211,39 +220,39 @@ void BPF_PROG(dctcp_cwnd_event, struct sock *sk, enum tcp_ca_event ev)
 	}
 }
 
-SEC("struct_ops/dctcp_cwnd_undo")
-__u32 BPF_PROG(dctcp_cwnd_undo, struct sock *sk)
+SEC("struct_ops")
+__u32 BPF_PROG(bpf_dctcp_cwnd_undo, struct sock *sk)
 {
-	const struct dctcp *ca = inet_csk_ca(sk);
+	const struct bpf_dctcp *ca = inet_csk_ca(sk);
 
 	return max(tcp_sk(sk)->snd_cwnd, ca->loss_cwnd);
 }
 
 extern void tcp_reno_cong_avoid(struct sock *sk, __u32 ack, __u32 acked) __ksym;
 
-SEC("struct_ops/dctcp_reno_cong_avoid")
-void BPF_PROG(dctcp_cong_avoid, struct sock *sk, __u32 ack, __u32 acked)
+SEC("struct_ops")
+void BPF_PROG(bpf_dctcp_cong_avoid, struct sock *sk, __u32 ack, __u32 acked)
 {
 	tcp_reno_cong_avoid(sk, ack, acked);
 }
 
 SEC(".struct_ops")
 struct tcp_congestion_ops dctcp_nouse = {
-	.init		= (void *)dctcp_init,
-	.set_state	= (void *)dctcp_state,
+	.init		= (void *)bpf_dctcp_init,
+	.set_state	= (void *)bpf_dctcp_state,
 	.flags		= TCP_CONG_NEEDS_ECN,
 	.name		= "bpf_dctcp_nouse",
 };
 
 SEC(".struct_ops")
 struct tcp_congestion_ops dctcp = {
-	.init		= (void *)dctcp_init,
-	.in_ack_event   = (void *)dctcp_update_alpha,
-	.cwnd_event	= (void *)dctcp_cwnd_event,
-	.ssthresh	= (void *)dctcp_ssthresh,
-	.cong_avoid	= (void *)dctcp_cong_avoid,
-	.undo_cwnd	= (void *)dctcp_cwnd_undo,
-	.set_state	= (void *)dctcp_state,
+	.init		= (void *)bpf_dctcp_init,
+	.in_ack_event   = (void *)bpf_dctcp_update_alpha,
+	.cwnd_event	= (void *)bpf_dctcp_cwnd_event,
+	.ssthresh	= (void *)bpf_dctcp_ssthresh,
+	.cong_avoid	= (void *)bpf_dctcp_cong_avoid,
+	.undo_cwnd	= (void *)bpf_dctcp_cwnd_undo,
+	.set_state	= (void *)bpf_dctcp_state,
 	.flags		= TCP_CONG_NEEDS_ECN,
 	.name		= "bpf_dctcp",
 };

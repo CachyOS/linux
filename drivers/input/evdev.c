@@ -51,7 +51,7 @@ struct evdev_client {
 	bool revoked;
 	unsigned long *evmasks[EV_CNT];
 	unsigned int bufsize;
-	struct input_event buffer[];
+	struct input_event buffer[] __counted_by(bufsize);
 };
 
 static size_t evdev_get_mask_cnt(unsigned int type)
@@ -289,8 +289,8 @@ static void evdev_pass_values(struct evdev_client *client,
 /*
  * Pass incoming events to all connected clients.
  */
-static void evdev_events(struct input_handle *handle,
-			 const struct input_value *vals, unsigned int count)
+static unsigned int evdev_events(struct input_handle *handle,
+				 struct input_value *vals, unsigned int count)
 {
 	struct evdev *evdev = handle->private;
 	struct evdev_client *client;
@@ -307,17 +307,8 @@ static void evdev_events(struct input_handle *handle,
 			evdev_pass_values(client, vals, count, ev_time);
 
 	rcu_read_unlock();
-}
 
-/*
- * Pass incoming event to all connected clients.
- */
-static void evdev_event(struct input_handle *handle,
-			unsigned int type, unsigned int code, int value)
-{
-	struct input_value vals[] = { { type, code, value } };
-
-	evdev_events(handle, vals, 1);
+	return count;
 }
 
 static int evdev_fasync(int fd, struct file *file, int on)
@@ -478,7 +469,7 @@ static int evdev_open(struct inode *inode, struct file *file)
 	struct evdev_client *client;
 	int error;
 
-	client = kvzalloc(struct_size(client, buffer, bufsize), GFP_KERNEL);
+	client = kvzalloc_flex(*client, buffer, bufsize);
 	if (!client)
 		return -ENOMEM;
 
@@ -509,6 +500,13 @@ static ssize_t evdev_write(struct file *file, const char __user *buffer,
 	struct evdev *evdev = client->evdev;
 	struct input_event event;
 	int retval = 0;
+
+	/*
+	 * Limit amount of data we inject into the input subsystem so that
+	 * we do not hold evdev->mutex for too long. 4096 bytes corresponds
+	 * to 170 input events.
+	 */
+	count = min(count, 4096);
 
 	if (count != 0 && count < input_event_size())
 		return -EINVAL;
@@ -1304,7 +1302,6 @@ static const struct file_operations evdev_fops = {
 	.compat_ioctl	= evdev_ioctl_compat,
 #endif
 	.fasync		= evdev_fasync,
-	.llseek		= no_llseek,
 };
 
 /*
@@ -1352,7 +1349,7 @@ static int evdev_connect(struct input_handler *handler, struct input_dev *dev,
 		return error;
 	}
 
-	evdev = kzalloc(sizeof(struct evdev), GFP_KERNEL);
+	evdev = kzalloc_obj(struct evdev);
 	if (!evdev) {
 		error = -ENOMEM;
 		goto err_free_minor;
@@ -1414,14 +1411,17 @@ static void evdev_disconnect(struct input_handle *handle)
 }
 
 static const struct input_device_id evdev_ids[] = {
-	{ .driver_info = 1 },	/* Matches all devices */
-	{ },			/* Terminating zero entry */
+	{
+		/* Matches all devices */
+		.flags = INPUT_DEVICE_ID_MATCH_EVBIT,
+		.evbit = { BIT_MASK(EV_SYN) },
+	},
+	{ }	/* Terminating zero entry */
 };
 
 MODULE_DEVICE_TABLE(input, evdev_ids);
 
 static struct input_handler evdev_handler = {
-	.event		= evdev_event,
 	.events		= evdev_events,
 	.connect	= evdev_connect,
 	.disconnect	= evdev_disconnect,

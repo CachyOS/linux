@@ -12,13 +12,15 @@
  */
 #include <linux/init.h>
 #include <linux/acpi.h>
+#include <linux/cpu.h>
 #include <linux/dmi.h>
 #include <linux/efi.h>
 #include <linux/export.h>
-#include <linux/screen_info.h>
 #include <linux/memblock.h>
 #include <linux/initrd.h>
 #include <linux/ioport.h>
+#include <linux/kexec.h>
+#include <linux/crash_dump.h>
 #include <linux/root_dev.h>
 #include <linux/console.h>
 #include <linux/pfn.h>
@@ -26,9 +28,14 @@
 #include <linux/sizes.h>
 #include <linux/device.h>
 #include <linux/dma-map-ops.h>
+#include <linux/libfdt.h>
+#include <linux/of_fdt.h>
+#include <linux/of_address.h>
+#include <linux/suspend.h>
 #include <linux/swiotlb.h>
 
 #include <asm/addrspace.h>
+#include <asm/alternative.h>
 #include <asm/bootinfo.h>
 #include <asm/cache.h>
 #include <asm/cpu.h>
@@ -40,6 +47,7 @@
 #include <asm/sections.h>
 #include <asm/setup.h>
 #include <asm/time.h>
+#include <asm/unwind.h>
 
 #define SMBIOS_BIOSSIZE_OFFSET		0x09
 #define SMBIOS_BIOSEXTERN_OFFSET	0x13
@@ -47,13 +55,11 @@
 #define SMBIOS_FREQHIGH_OFFSET		0x17
 #define SMBIOS_FREQLOW_MASK		0xFF
 #define SMBIOS_CORE_PACKAGE_OFFSET	0x23
+#define SMBIOS_THREAD_PACKAGE_OFFSET	0x25
+#define SMBIOS_THREAD_PACKAGE_2_OFFSET	0x2E
 #define LOONGSON_EFI_ENABLE		(1 << 3)
 
-#ifdef CONFIG_VT
-struct screen_info screen_info;
-#endif
-
-unsigned long fw_arg0, fw_arg1;
+unsigned long fw_arg0, fw_arg1, fw_arg2;
 DEFINE_PER_CPU(unsigned long, kernelsp);
 struct cpuinfo_loongarch cpu_data[NR_CPUS] __read_mostly;
 
@@ -67,6 +73,7 @@ static const char dmi_empty_string[] = "        ";
  *
  * These are initialized so they are in the .data section
  */
+char init_command_line[COMMAND_LINE_SIZE] __initdata;
 
 static int num_standard_resources;
 static struct resource *standard_resources;
@@ -78,6 +85,11 @@ static struct resource bss_resource  = { .name = "Kernel bss", };
 const char *get_system_type(void)
 {
 	return "generic-loongson-machine";
+}
+
+void __init arch_cpu_finalize_init(void)
+{
+	alternative_instructions();
 }
 
 static const char *dmi_string_parse(const struct dmi_header *dm, u8 s)
@@ -115,23 +127,21 @@ static void __init parse_cpu_table(const struct dmi_header *dm)
 	cpu_clock_freq = freq_temp * 1000000;
 
 	loongson_sysconf.cpuname = (void *)dmi_string_parse(dm, dmi_data[16]);
-	loongson_sysconf.cores_per_package = *(dmi_data + SMBIOS_CORE_PACKAGE_OFFSET);
+	loongson_sysconf.cores_per_package = *(u8 *)(dmi_data + SMBIOS_THREAD_PACKAGE_OFFSET);
+	if (dm->length >= 0x30 && loongson_sysconf.cores_per_package == 0xff) {
+		/* SMBIOS 3.0+ has ThreadCount2 for more than 255 threads */
+		loongson_sysconf.cores_per_package =
+					  *(u16 *)(dmi_data + SMBIOS_THREAD_PACKAGE_2_OFFSET);
+	}
 
 	pr_info("CpuClock = %llu\n", cpu_clock_freq);
 }
 
 static void __init parse_bios_table(const struct dmi_header *dm)
 {
-	int bios_extern;
 	char *dmi_data = (char *)dm;
 
-	bios_extern = *(dmi_data + SMBIOS_BIOSEXTERN_OFFSET);
-	b_info.bios_size = *(dmi_data + SMBIOS_BIOSSIZE_OFFSET);
-
-	if (bios_extern & LOONGSON_EFI_ENABLE)
-		set_bit(EFI_BOOT, &efi.flags);
-	else
-		clear_bit(EFI_BOOT, &efi.flags);
+	b_info.bios_size = (*(dmi_data + SMBIOS_BIOSSIZE_OFFSET) + 1) << 6;
 }
 
 static void __init find_tokens(const struct dmi_header *dm, void *dummy)
@@ -155,6 +165,27 @@ static void __init smbios_parse(void)
 	dmi_walk(find_tokens, NULL);
 }
 
+#ifdef CONFIG_ARCH_WRITECOMBINE
+bool wc_enabled = true;
+#else
+bool wc_enabled = false;
+#endif
+
+EXPORT_SYMBOL(wc_enabled);
+
+static int __init setup_writecombine(char *p)
+{
+	if (!strcmp(p, "on"))
+		wc_enabled = true;
+	else if (!strcmp(p, "off"))
+		wc_enabled = false;
+	else
+		pr_warn("Unknown writecombine setting \"%s\".\n", p);
+
+	return 0;
+}
+early_param("writecombine", setup_writecombine);
+
 static int usermem __initdata;
 
 static int __init early_parse_mem(char *p)
@@ -164,6 +195,16 @@ static int __init early_parse_mem(char *p)
 	if (!p) {
 		pr_err("mem parameter is empty, do nothing\n");
 		return -EINVAL;
+	}
+
+	start = 0;
+	size = memparse(p, &p);
+	if (*p == '@')	/* Every mem=... should contain '@' */
+		start = memparse(p + 1, &p);
+	else {		/* Only one mem=... is allowed if no '@' */
+		usermem = 1;
+		memblock_enforce_memory_limit(size);
+		return 0;
 	}
 
 	/*
@@ -176,14 +217,6 @@ static int __init early_parse_mem(char *p)
 		memblock_remove(memblock_start_of_DRAM(),
 			memblock_end_of_DRAM() - memblock_start_of_DRAM());
 	}
-	start = 0;
-	size = memparse(p, &p);
-	if (*p == '@')
-		start = memparse(p + 1, &p);
-	else {
-		pr_err("Invalid format!\n");
-		return -EINVAL;
-	}
 
 	if (!IS_ENABLED(CONFIG_NUMA))
 		memblock_add(start, size);
@@ -194,17 +227,145 @@ static int __init early_parse_mem(char *p)
 }
 early_param("mem", early_parse_mem);
 
+static void __init arch_reserve_vmcore(void)
+{
+#ifdef CONFIG_PROC_VMCORE
+	u64 i;
+	phys_addr_t start, end;
+
+	if (!is_kdump_kernel())
+		return;
+
+	if (!elfcorehdr_size) {
+		for_each_mem_range(i, &start, &end) {
+			if (elfcorehdr_addr >= start && elfcorehdr_addr < end) {
+				/*
+				 * Reserve from the elf core header to the end of
+				 * the memory segment, that should all be kdump
+				 * reserved memory.
+				 */
+				elfcorehdr_size = end - elfcorehdr_addr;
+				break;
+			}
+		}
+	}
+
+	if (memblock_is_region_reserved(elfcorehdr_addr, elfcorehdr_size)) {
+		pr_warn("elfcorehdr is overlapped\n");
+		return;
+	}
+
+	memblock_reserve(elfcorehdr_addr, elfcorehdr_size);
+
+	pr_info("Reserving %llu KiB of memory at 0x%llx for elfcorehdr\n",
+		elfcorehdr_size >> 10, elfcorehdr_addr);
+#endif
+}
+
+static void __init arch_reserve_crashkernel(void)
+{
+	int ret;
+	unsigned long long low_size = 0;
+	unsigned long long crash_base, crash_size;
+	bool high = false;
+
+	if (!IS_ENABLED(CONFIG_CRASH_RESERVE))
+		return;
+
+	ret = parse_crashkernel(boot_command_line, memblock_phys_mem_size(),
+				&crash_size, &crash_base, &low_size, NULL, &high);
+	if (ret)
+		return;
+
+	reserve_crashkernel_generic(crash_size, crash_base, low_size, high);
+}
+
+static void __init fdt_setup(void)
+{
+#ifdef CONFIG_OF_EARLY_FLATTREE
+	void *fdt_pointer;
+
+	/* ACPI-based systems do not require parsing fdt */
+	if (acpi_os_get_root_pointer())
+		return;
+
+	/* Prefer to use built-in dtb, checking its legality first. */
+	if (IS_ENABLED(CONFIG_BUILTIN_DTB) && !fdt_check_header(__dtb_start))
+		fdt_pointer = __dtb_start;
+	else
+		fdt_pointer = efi_fdt_pointer(); /* Fallback to firmware dtb */
+
+	if (!fdt_pointer || fdt_check_header(fdt_pointer))
+		return;
+
+	early_init_dt_scan(fdt_pointer, __pa(fdt_pointer));
+	early_init_fdt_reserve_self();
+#endif
+}
+
+static void __init bootcmdline_init(char **cmdline_p)
+{
+	/*
+	 * If CONFIG_CMDLINE_FORCE is enabled then initializing the command line
+	 * is trivial - we simply use the built-in command line unconditionally &
+	 * unmodified.
+	 */
+	if (IS_ENABLED(CONFIG_CMDLINE_FORCE)) {
+		strscpy(boot_command_line, CONFIG_CMDLINE, COMMAND_LINE_SIZE);
+		goto out;
+	}
+
+#ifdef CONFIG_OF_FLATTREE
+	/*
+	 * If CONFIG_CMDLINE_BOOTLOADER is enabled and we are in FDT-based system,
+	 * the boot_command_line will be overwritten by early_init_dt_scan_chosen().
+	 * So we need to append init_command_line (the original copy of boot_command_line)
+	 * to boot_command_line.
+	 */
+	if (initial_boot_params) {
+		if (boot_command_line[0])
+			strlcat(boot_command_line, " ", COMMAND_LINE_SIZE);
+
+		if (!strstr(boot_command_line, init_command_line))
+			strlcat(boot_command_line, init_command_line, COMMAND_LINE_SIZE);
+
+		goto out;
+	}
+#endif
+
+	/*
+	 * Append built-in command line to the bootloader command line if
+	 * CONFIG_CMDLINE_EXTEND is enabled.
+	 */
+	if (IS_ENABLED(CONFIG_CMDLINE_EXTEND) && CONFIG_CMDLINE[0]) {
+		strlcat(boot_command_line, " ", COMMAND_LINE_SIZE);
+		strlcat(boot_command_line, CONFIG_CMDLINE, COMMAND_LINE_SIZE);
+	}
+
+	/*
+	 * Use built-in command line if the bootloader command line is empty.
+	 */
+	if (IS_ENABLED(CONFIG_CMDLINE_BOOTLOADER) && !boot_command_line[0])
+		strscpy(boot_command_line, CONFIG_CMDLINE, COMMAND_LINE_SIZE);
+
+out:
+	*cmdline_p = boot_command_line;
+}
+
 void __init platform_init(void)
 {
-	efi_init();
-#ifdef CONFIG_ACPI_TABLE_UPGRADE
-	acpi_table_upgrade();
-#endif
+	arch_reserve_vmcore();
+	arch_reserve_crashkernel();
+
 #ifdef CONFIG_ACPI
+	acpi_table_upgrade();
+	acpi_gbl_use_global_lock = false;
 	acpi_gbl_use_default_register_widths = false;
 	acpi_boot_table_init();
-	acpi_boot_init();
 #endif
+
+	early_init_fdt_scan_reserved_mem();
+	unflatten_and_copy_device_tree();
 
 #ifdef CONFIG_NUMA
 	init_numa_memory();
@@ -232,26 +393,27 @@ static void __init check_kernel_sections_mem(void)
  */
 static void __init arch_mem_init(char **cmdline_p)
 {
+	/* Recalculate max_low_pfn for "mem=xxx" */
+	max_pfn = PFN_DOWN(memblock_end_of_DRAM());
+	max_low_pfn = min(PFN_DOWN(HIGHMEM_START), max_pfn);
+
 	if (usermem)
 		pr_info("User-defined physical RAM map overwrite\n");
 
 	check_kernel_sections_mem();
 
-	/*
-	 * In order to reduce the possibility of kernel panic when failed to
-	 * get IO TLB memory under CONFIG_SWIOTLB, it is better to allocate
-	 * low memory as small as possible before plat_swiotlb_setup(), so
-	 * make sparse_init() using top-down allocation.
-	 */
-	memblock_set_bottom_up(false);
-	sparse_init();
 	memblock_set_bottom_up(true);
 
-	plat_swiotlb_setup();
+	swiotlb_init(true, SWIOTLB_VERBOSE);
 
 	dma_contiguous_reserve(PFN_PHYS(max_low_pfn));
 
+	/* Reserve for hibernation. */
+	register_nosave_region(PFN_DOWN(__pa_symbol(&__nosave_begin)),
+				   PFN_UP(__pa_symbol(&__nosave_end)));
+
 	memblock_dump_all();
+	memblock_set_bottom_up(false);
 
 	early_memtest(PFN_PHYS(ARCH_PFN_OFFSET), PFN_PHYS(max_low_pfn));
 }
@@ -272,7 +434,7 @@ static void __init resource_init(void)
 
 	num_standard_resources = memblock.memory.cnt;
 	res_size = num_standard_resources * sizeof(*standard_resources);
-	standard_resources = memblock_alloc(res_size, SMP_CACHE_BYTES);
+	standard_resources = memblock_alloc_or_panic(res_size, SMP_CACHE_BYTES);
 
 	for_each_mem_region(region) {
 		res = &standard_resources[i++];
@@ -300,6 +462,81 @@ static void __init resource_init(void)
 		request_resource(res, &bss_resource);
 	}
 }
+
+static int __init add_legacy_isa_io(struct fwnode_handle *fwnode,
+				resource_size_t hw_start, resource_size_t size)
+{
+	int ret = 0;
+	unsigned long vaddr;
+	struct logic_pio_hwaddr *range;
+
+	range = kzalloc_obj(*range, GFP_ATOMIC);
+	if (!range)
+		return -ENOMEM;
+
+	range->fwnode = fwnode;
+	range->size = size = round_up(size, PAGE_SIZE);
+	range->hw_start = hw_start;
+	range->flags = LOGIC_PIO_CPU_MMIO;
+
+	ret = logic_pio_register_range(range);
+	if (ret) {
+		kfree(range);
+		return ret;
+	}
+
+	/* Legacy ISA must placed at the start of PCI_IOBASE */
+	if (range->io_start != 0) {
+		logic_pio_unregister_range(range);
+		kfree(range);
+		return -EINVAL;
+	}
+
+	vaddr = (unsigned long)(PCI_IOBASE + range->io_start);
+	vmap_page_range(vaddr, vaddr + size, hw_start, pgprot_device(PAGE_KERNEL));
+
+	return 0;
+}
+
+static __init int arch_reserve_pio_range(void)
+{
+	struct device_node *np;
+
+	for_each_node_by_name(np, "isa") {
+		struct of_range range;
+		struct of_range_parser parser;
+
+		pr_info("ISA Bridge: %pOF\n", np);
+
+		if (of_range_parser_init(&parser, np)) {
+			pr_info("Failed to parse resources.\n");
+			of_node_put(np);
+			break;
+		}
+
+		for_each_of_range(&parser, &range) {
+			switch (range.flags & IORESOURCE_TYPE_BITS) {
+			case IORESOURCE_IO:
+				pr_info(" IO 0x%016llx..0x%016llx  ->  0x%016llx\n",
+					range.cpu_addr,
+					range.cpu_addr + range.size - 1,
+					range.bus_addr);
+				if (add_legacy_isa_io(&np->fwnode, range.cpu_addr, range.size))
+					pr_warn("Failed to reserve legacy IO in Logic PIO\n");
+				break;
+			case IORESOURCE_MEM:
+				pr_info(" MEM 0x%016llx..0x%016llx  ->  0x%016llx\n",
+					range.cpu_addr,
+					range.cpu_addr + range.size - 1,
+					range.bus_addr);
+				break;
+			}
+		}
+	}
+
+	return 0;
+}
+arch_initcall(arch_reserve_pio_range);
 
 static int __init reserve_memblock_reserved_regions(void)
 {
@@ -343,31 +580,41 @@ static void __init prefill_possible_map(void)
 
 	for (i = 0; i < possible; i++)
 		set_cpu_possible(i, true);
-	for (; i < NR_CPUS; i++)
+	for (; i < NR_CPUS; i++) {
+		set_cpu_present(i, false);
 		set_cpu_possible(i, false);
+	}
 
-	nr_cpu_ids = possible;
+	set_nr_cpu_ids(possible);
 }
 #endif
 
 void __init setup_arch(char **cmdline_p)
 {
 	cpu_probe();
-	*cmdline_p = boot_command_line;
+	unwind_init();
 
 	init_environ();
+	efi_init();
+	fdt_setup();
 	memblock_init();
+	pagetable_init();
+	bootcmdline_init(cmdline_p);
 	parse_early_param();
+	reserve_initrd_mem();
 
 	platform_init();
-	pagetable_init();
 	arch_mem_init(cmdline_p);
 
 	resource_init();
+	jump_label_init(); /* Initialise the static keys for paravirtualization */
+
 #ifdef CONFIG_SMP
 	plat_smp_setup();
 	prefill_possible_map();
 #endif
 
-	paging_init();
+#ifdef CONFIG_KASAN
+	kasan_init();
+#endif
 }

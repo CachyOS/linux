@@ -97,7 +97,7 @@ struct st_fdma_desc {
 	struct st_fdma_chan *fchan;
 	bool iscyclic;
 	unsigned int n_nodes;
-	struct st_fdma_sw_node node[];
+	struct st_fdma_sw_node node[] __counted_by(n_nodes);
 };
 
 enum st_fdma_type {
@@ -120,7 +120,7 @@ struct st_fdma_chan {
 	struct dma_slave_config scfg;
 	struct st_fdma_cfg cfg;
 
-	int dreq_line;
+	long dreq_line;
 
 	struct virt_dma_chan vchan;
 	struct st_fdma_desc *fdesc;

@@ -94,7 +94,7 @@ see "Example: simple sound card for Asynchronous mode"
  [xx]ch        [yy]ch
  ------> [CTU] -------->
 
-CTU can convert [xx]ch to [yy]ch, or exchange outputed channel.
+CTU can convert [xx]ch to [yy]ch, or exchange outputted channel.
 CTU conversion needs matrix settings.
 For more detail information, see below
 
@@ -109,7 +109,7 @@ For more detail information, see below
 	  - Register Description
 	   - CTUn Scale Value exx Register (CTUn_SVxxR)
 
-	${LINUX}/sound/soc/sh/rcar/ctu.c
+	${LINUX}/sound/soc/renesas/rcar/ctu.c
 	 - comment of header
 
 You need to use "simple-scu-audio-card" or "audio-graph-scu-card" for it.

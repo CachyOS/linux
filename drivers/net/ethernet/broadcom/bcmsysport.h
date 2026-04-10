@@ -290,6 +290,7 @@ struct bcm_rsb {
 
 #define RDMA_WRITE_PTR_HI		0x1010
 #define RDMA_WRITE_PTR_LO		0x1014
+#define RDMA_OVFL_DISC_CNTR		0x1018
 #define RDMA_PROD_INDEX			0x1018
 #define  RDMA_PROD_INDEX_MASK		0xffff
 
@@ -484,7 +485,7 @@ struct bcm_rsb {
 
 /* Number of Receive hardware descriptor words */
 #define SP_NUM_HW_RX_DESC_WORDS		1024
-#define SP_LT_NUM_HW_RX_DESC_WORDS	256
+#define SP_LT_NUM_HW_RX_DESC_WORDS	512
 
 /* Internal linked-list RAM size */
 #define SP_NUM_TX_DESC			1536
@@ -565,6 +566,7 @@ struct bcm_sysport_mib {
 	u32 rxchk_other_pkt_disc;
 	u32 rbuf_ovflow_cnt;
 	u32 rbuf_err_cnt;
+	u32 rdma_ovflow_cnt;
 	u32 alloc_rx_buff_failed;
 	u32 rx_dma_failed;
 	u32 tx_dma_failed;
@@ -581,6 +583,7 @@ enum bcm_sysport_stat_type {
 	BCM_SYSPORT_STAT_RUNT,
 	BCM_SYSPORT_STAT_RXCHK,
 	BCM_SYSPORT_STAT_RBUF,
+	BCM_SYSPORT_STAT_RDMA,
 	BCM_SYSPORT_STAT_SOFT,
 };
 
@@ -624,6 +627,14 @@ enum bcm_sysport_stat_type {
 	.stat_sizeof = sizeof(((struct bcm_sysport_priv *)0)->m), \
 	.stat_offset = offsetof(struct bcm_sysport_priv, m), \
 	.type = BCM_SYSPORT_STAT_RBUF, \
+	.reg_offset = ofs, \
+}
+
+#define STAT_RDMA(str, m, ofs) { \
+	.stat_string = str, \
+	.stat_sizeof = sizeof(((struct bcm_sysport_priv *)0)->m), \
+	.stat_offset = offsetof(struct bcm_sysport_priv, m), \
+	.type = BCM_SYSPORT_STAT_RDMA, \
 	.reg_offset = ofs, \
 }
 
@@ -762,4 +773,27 @@ struct bcm_sysport_priv {
 	struct bcm_sysport_tx_ring *ring_map[DSA_MAX_PORTS * 8];
 
 };
+
+/* I/O accessors register helpers */
+#define BCM_SYSPORT_IO_MACRO(name, offset) \
+static inline u32 name##_readl(struct bcm_sysport_priv *priv, u32 off)	\
+{									\
+	u32 reg = readl_relaxed(priv->base + (offset) + off);		\
+	return reg;							\
+}									\
+static inline void name##_writel(struct bcm_sysport_priv *priv,		\
+				  u32 val, u32 off)			\
+{									\
+	writel_relaxed(val, priv->base + (offset) + off);		\
+}									\
+
+BCM_SYSPORT_IO_MACRO(intrl2_0, SYS_PORT_INTRL2_0_OFFSET);
+BCM_SYSPORT_IO_MACRO(intrl2_1, SYS_PORT_INTRL2_1_OFFSET);
+BCM_SYSPORT_IO_MACRO(umac, SYS_PORT_UMAC_OFFSET);
+BCM_SYSPORT_IO_MACRO(gib, SYS_PORT_GIB_OFFSET);
+BCM_SYSPORT_IO_MACRO(tdma, SYS_PORT_TDMA_OFFSET);
+BCM_SYSPORT_IO_MACRO(rxchk, SYS_PORT_RXCHK_OFFSET);
+BCM_SYSPORT_IO_MACRO(rbuf, SYS_PORT_RBUF_OFFSET);
+BCM_SYSPORT_IO_MACRO(topctrl, SYS_PORT_TOPCTRL_OFFSET);
+
 #endif /* __BCM_SYSPORT_H */

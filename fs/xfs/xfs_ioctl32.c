@@ -5,7 +5,7 @@
  */
 #include <linux/mount.h>
 #include <linux/fsmap.h>
-#include "xfs.h"
+#include "xfs_platform.h"
 #include "xfs_fs.h"
 #include "xfs_shared.h"
 #include "xfs_format.h"
@@ -24,6 +24,7 @@
 #include "xfs_ioctl32.h"
 #include "xfs_trace.h"
 #include "xfs_sb.h"
+#include "xfs_handle.h"
 
 #define  _NATIVE_IOC(cmd, type) \
 	  _IOC(_IOC_DIR(cmd), _IOC_TYPE(cmd), _IOC_NR(cmd), sizeof(type))
@@ -204,7 +205,7 @@ xfs_compat_ioc_fsbulkstat(
 	struct xfs_fsop_bulkreq	bulkreq;
 	struct xfs_ibulk	breq = {
 		.mp		= mp,
-		.mnt_userns	= file_mnt_user_ns(file),
+		.idmap		= file_mnt_idmap(file),
 		.ocount		= 0,
 	};
 	xfs_ino_t		lastino;

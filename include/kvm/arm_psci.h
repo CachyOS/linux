@@ -14,8 +14,10 @@
 #define KVM_ARM_PSCI_0_2	PSCI_VERSION(0, 2)
 #define KVM_ARM_PSCI_1_0	PSCI_VERSION(1, 0)
 #define KVM_ARM_PSCI_1_1	PSCI_VERSION(1, 1)
+#define KVM_ARM_PSCI_1_2	PSCI_VERSION(1, 2)
+#define KVM_ARM_PSCI_1_3	PSCI_VERSION(1, 3)
 
-#define KVM_ARM_PSCI_LATEST	KVM_ARM_PSCI_1_1
+#define KVM_ARM_PSCI_LATEST	KVM_ARM_PSCI_1_3
 
 static inline int kvm_psci_version(struct kvm_vcpu *vcpu)
 {
@@ -26,7 +28,7 @@ static inline int kvm_psci_version(struct kvm_vcpu *vcpu)
 	 * revisions. It is thus safe to return the latest, unless
 	 * userspace has instructed us otherwise.
 	 */
-	if (test_bit(KVM_ARM_VCPU_PSCI_0_2, vcpu->arch.features)) {
+	if (vcpu_has_feature(vcpu, KVM_ARM_VCPU_PSCI_0_2)) {
 		if (vcpu->kvm->arch.psci_version)
 			return vcpu->kvm->arch.psci_version;
 

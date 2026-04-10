@@ -14,6 +14,9 @@ description: |-
   interface and CCI (I2C compatible) control bus. The output format
   is raw Bayer.
 
+allOf:
+  - $ref: /schemas/media/video-interface-devices.yaml#
+
 properties:
   compatible:
     const: hynix,hi846
@@ -24,12 +27,6 @@ properties:
   clocks:
     items:
       - description: Reference to the mclk clock.
-
-  assigned-clocks:
-    maxItems: 1
-
-  assigned-clock-rates:
-    maxItems: 1
 
   reset-gpios:
     description: Reference to the GPIO connected to the RESETB pin. Active low.
@@ -79,14 +76,12 @@ required:
   - compatible
   - reg
   - clocks
-  - assigned-clocks
-  - assigned-clock-rates
   - vddio-supply
   - vdda-supply
   - vddd-supply
   - port
 
-additionalProperties: false
+unevaluatedProperties: false
 
 examples:
   - |
@@ -102,13 +97,13 @@ examples:
             pinctrl-names = "default";
             pinctrl-0 = <&pinctrl_csi1>;
             clocks = <&clk 0>;
-            assigned-clocks = <&clk 0>;
-            assigned-clock-rates = <25000000>;
             vdda-supply = <&reg_camera_vdda>;
             vddd-supply = <&reg_camera_vddd>;
             vddio-supply = <&reg_camera_vddio>;
             reset-gpios = <&gpio1 25 GPIO_ACTIVE_LOW>;
             shutdown-gpios = <&gpio5 4 GPIO_ACTIVE_LOW>;
+            orientation = <0>;
+            rotation = <0>;
 
             port {
                 camera_out: endpoint {

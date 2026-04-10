@@ -9,6 +9,7 @@
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
 #include <linux/fs.h>
+#include <linux/filelock.h>
 
 static unsigned int grace_net_id;
 static DEFINE_SPINLOCK(grace_lock);
@@ -138,6 +139,7 @@ exit_grace(void)
 }
 
 MODULE_AUTHOR("Jeff Layton <jlayton@primarydata.com>");
+MODULE_DESCRIPTION("NFS client and server infrastructure");
 MODULE_LICENSE("GPL");
 module_init(init_grace)
 module_exit(exit_grace)

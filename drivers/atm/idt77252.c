@@ -638,7 +638,7 @@ alloc_scq(struct idt77252_dev *card, int class)
 {
 	struct scq_info *scq;
 
-	scq = kzalloc(sizeof(struct scq_info), GFP_KERNEL);
+	scq = kzalloc_obj(struct scq_info);
 	if (!scq)
 		return NULL;
 	scq->base = dma_alloc_coherent(&card->pcidev->dev, SCQ_SIZE,
@@ -852,6 +852,8 @@ queue_skb(struct idt77252_dev *card, struct vc_map *vc,
 
 	IDT77252_PRV_PADDR(skb) = dma_map_single(&card->pcidev->dev, skb->data,
 						 skb->len, DMA_TO_DEVICE);
+	if (dma_mapping_error(&card->pcidev->dev, IDT77252_PRV_PADDR(skb)))
+		return -ENOMEM;
 
 	error = -EINVAL;
 
@@ -1118,8 +1120,8 @@ dequeue_rx(struct idt77252_dev *card, struct rsq_entry *rsqe)
 	rpp->len += skb->len;
 
 	if (stat & SAR_RSQE_EPDU) {
+		unsigned int len, truesize;
 		unsigned char *l1l2;
-		unsigned int len;
 
 		l1l2 = (unsigned char *) ((unsigned long) skb->data + skb->len - 6);
 
@@ -1189,14 +1191,15 @@ dequeue_rx(struct idt77252_dev *card, struct rsq_entry *rsqe)
 		ATM_SKB(skb)->vcc = vcc;
 		__net_timestamp(skb);
 
+		truesize = skb->truesize;
 		vcc->push(vcc, skb);
 		atomic_inc(&vcc->stats->rx);
 
-		if (skb->truesize > SAR_FB_SIZE_3)
+		if (truesize > SAR_FB_SIZE_3)
 			add_rx_skb(card, 3, SAR_FB_SIZE_3, 1);
-		else if (skb->truesize > SAR_FB_SIZE_2)
+		else if (truesize > SAR_FB_SIZE_2)
 			add_rx_skb(card, 2, SAR_FB_SIZE_2, 1);
-		else if (skb->truesize > SAR_FB_SIZE_1)
+		else if (truesize > SAR_FB_SIZE_1)
 			add_rx_skb(card, 1, SAR_FB_SIZE_1, 1);
 		else
 			add_rx_skb(card, 0, SAR_FB_SIZE_0, 1);
@@ -1530,7 +1533,7 @@ idt77252_tx(struct idt77252_dev *card)
 static void
 tst_timer(struct timer_list *t)
 {
-	struct idt77252_dev *card = from_timer(card, t, tst_timer);
+	struct idt77252_dev *card = timer_container_of(card, t, tst_timer);
 	unsigned long base, idle, jump;
 	unsigned long flags;
 	u32 pc;
@@ -1841,7 +1844,6 @@ add_rx_skb(struct idt77252_dev *card, int queue,
 {
 	struct sk_buff *skb;
 	dma_addr_t paddr;
-	u32 handle;
 
 	while (count--) {
 		skb = dev_alloc_skb(size);
@@ -1856,6 +1858,8 @@ add_rx_skb(struct idt77252_dev *card, int queue,
 		paddr = dma_map_single(&card->pcidev->dev, skb->data,
 				       skb_end_pointer(skb) - skb->data,
 				       DMA_FROM_DEVICE);
+		if (dma_mapping_error(&card->pcidev->dev, paddr))
+			goto outpoolrm;
 		IDT77252_PRV_PADDR(skb) = paddr;
 
 		if (push_rx_skb(card, skb, queue)) {
@@ -1870,8 +1874,8 @@ outunmap:
 	dma_unmap_single(&card->pcidev->dev, IDT77252_PRV_PADDR(skb),
 			 skb_end_pointer(skb) - skb->data, DMA_FROM_DEVICE);
 
-	handle = IDT77252_PRV_POOL(skb);
-	card->sbpool[POOL_QUEUE(handle)].skb[POOL_INDEX(handle)] = NULL;
+outpoolrm:
+	sb_pool_remove(card, skb);
 
 outfree:
 	dev_kfree_skb(skb);
@@ -2069,7 +2073,7 @@ idt77252_rate_logindex(struct idt77252_dev *card, int pcr)
 static void
 idt77252_est_timer(struct timer_list *t)
 {
-	struct rate_estimator *est = from_timer(est, t, timer);
+	struct rate_estimator *est = timer_container_of(est, t, timer);
 	struct vc_map *vc = est->vc;
 	struct idt77252_dev *card = vc->card;
 	unsigned long flags;
@@ -2112,7 +2116,7 @@ idt77252_init_est(struct vc_map *vc, int pcr)
 {
 	struct rate_estimator *est;
 
-	est = kzalloc(sizeof(struct rate_estimator), GFP_KERNEL);
+	est = kzalloc_obj(struct rate_estimator);
 	if (!est)
 		return NULL;
 	est->maxcps = pcr < 0 ? -pcr : pcr;
@@ -2213,7 +2217,7 @@ idt77252_init_ubr(struct idt77252_dev *card, struct vc_map *vc,
 	}
 	spin_unlock_irqrestore(&vc->lock, flags);
 	if (est) {
-		del_timer_sync(&est->timer);
+		timer_shutdown_sync(&est->timer);
 		kfree(est);
 	}
 
@@ -2420,7 +2424,7 @@ idt77252_open(struct atm_vcc *vcc)
 
 	index = VPCI2VC(card, vpi, vci);
 	if (!card->vcs[index]) {
-		card->vcs[index] = kzalloc(sizeof(struct vc_map), GFP_KERNEL);
+		card->vcs[index] = kzalloc_obj(struct vc_map);
 		if (!card->vcs[index]) {
 			printk("%s: can't alloc vc in open()\n", card->name);
 			mutex_unlock(&card->mutex);
@@ -2530,7 +2534,7 @@ done:
 		vc->tx_vcc = NULL;
 
 		if (vc->estimator) {
-			del_timer(&vc->estimator->timer);
+			timer_shutdown(&vc->estimator->timer);
 			kfree(vc->estimator);
 			vc->estimator = NULL;
 		}
@@ -2851,7 +2855,7 @@ open_card_oam(struct idt77252_dev *card)
 		for (vci = 3; vci < 5; vci++) {
 			index = VPCI2VC(card, vpi, vci);
 
-			vc = kzalloc(sizeof(struct vc_map), GFP_KERNEL);
+			vc = kzalloc_obj(struct vc_map);
 			if (!vc) {
 				printk("%s: can't alloc vc\n", card->name);
 				return -ENOMEM;
@@ -2909,6 +2913,7 @@ close_card_oam(struct idt77252_dev *card)
 
 				recycle_rx_pool_skb(card, &vc->rcv.rx_pool);
 			}
+			kfree(vc);
 		}
 	}
 }
@@ -2918,7 +2923,7 @@ open_card_ubr0(struct idt77252_dev *card)
 {
 	struct vc_map *vc;
 
-	vc = kzalloc(sizeof(struct vc_map), GFP_KERNEL);
+	vc = kzalloc_obj(struct vc_map);
 	if (!vc) {
 		printk("%s: can't alloc vc\n", card->name);
 		return -ENOMEM;
@@ -2929,6 +2934,8 @@ open_card_ubr0(struct idt77252_dev *card)
 	vc->scq = alloc_scq(card, vc->class);
 	if (!vc->scq) {
 		printk("%s: can't get SCQ.\n", card->name);
+		kfree(card->vcs[0]);
+		card->vcs[0] = NULL;
 		return -ENOMEM;
 	}
 
@@ -2950,6 +2957,15 @@ open_card_ubr0(struct idt77252_dev *card)
 	clear_bit(VCF_IDLE, &vc->flags);
 	writel(TCMDQ_START | 0, SAR_REG_TCMDQ);
 	return 0;
+}
+
+static void
+close_card_ubr0(struct idt77252_dev *card)
+{
+	struct vc_map *vc = card->vcs[0];
+
+	free_scq(card, vc->scq);
+	kfree(vc);
 }
 
 static int
@@ -3001,6 +3017,7 @@ static void idt77252_dev_close(struct atm_dev *dev)
 	struct idt77252_dev *card = dev->dev_data;
 	u32 conf;
 
+	close_card_ubr0(card);
 	close_card_oam(card);
 
 	conf = SAR_CFG_RXPTH |	/* enable receive path           */
@@ -3604,7 +3621,7 @@ static int idt77252_init_one(struct pci_dev *pcidev,
 		goto err_out_disable_pdev;
 	}
 
-	card = kzalloc(sizeof(struct idt77252_dev), GFP_KERNEL);
+	card = kzalloc_obj(struct idt77252_dev);
 	if (!card) {
 		printk("idt77252-%d: can't allocate private data\n", index);
 		err = -ENOMEM;
@@ -3752,6 +3769,7 @@ static void __exit idt77252_exit(void)
 		card = idt77252_chain;
 		dev = card->atmdev;
 		idt77252_chain = card->next;
+		timer_shutdown_sync(&card->tst_timer);
 
 		if (dev->phy->stop)
 			dev->phy->stop(dev);

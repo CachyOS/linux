@@ -5,18 +5,19 @@
 #include <linux/spinlock.h>
 #include <linux/types.h>
 #include <linux/pci.h>
-#include <net/smc.h>
+#include <linux/dibs.h>
 #include <asm/pci_insn.h>
 
 #define UTIL_STR_LEN	16
+#define ISM_ERROR	0xFFFF
+
+#define ISM_NR_DMBS	1920
 
 /*
  * Do not use the first word of the DMB bits to ensure 8 byte aligned access.
  */
 #define ISM_DMB_WORD_OFFSET	1
 #define ISM_DMB_BIT_OFFSET	(ISM_DMB_WORD_OFFSET * 32)
-#define ISM_NR_DMBS		1920
-#define ISM_IDENT_MASK		0x00FFFF
 
 #define ISM_REG_SBA	0x1
 #define ISM_REG_IEQ	0x2
@@ -32,6 +33,23 @@
 #define ISM_SIGNAL_IEQ	0xE
 #define ISM_UNREG_SBA	0x11
 #define ISM_UNREG_IEQ	0x12
+
+enum ism_event_type {
+	ISM_EVENT_BUF = 0x00,
+	ISM_EVENT_DEV = 0x01,
+	ISM_EVENT_SWR = 0x02
+};
+
+enum ism_event_code {
+	ISM_BUF_DMB_UNREGISTERED = 0x04,
+	ISM_BUF_USING_ISM_DEV_DISABLED = 0x08,
+	ISM_BUF_OWNING_ISM_DEV_IN_ERR_STATE = 0x02,
+	ISM_BUF_USING_ISM_DEV_IN_ERR_STATE = 0x03,
+	ISM_BUF_VLAN_MISMATCH_WITH_OWNER = 0x05,
+	ISM_BUF_VLAN_MISMATCH_WITH_USER = 0x06,
+	ISM_DEV_GID_DISABLED = 0x07,
+	ISM_DEV_GID_ERR_STATE = 0x01
+};
 
 struct ism_req_hdr {
 	u32 cmd;
@@ -66,6 +84,15 @@ union ism_reg_ieq {
 	} response;
 } __aligned(16);
 
+/* ISM-vPCI devices provide 64 Bit GIDs
+ * Map them to ISM UUID GIDs like this:
+ *  _________________________________________
+ * | 64 Bit ISM-vPCI GID | 00000000_00000000 |
+ *  -----------------------------------------
+ * This will be interpreted as a UIID variant, that is reserved
+ * for NCS backward compatibility. So it will not collide with
+ * proper UUIDs.
+ */
 union ism_read_gid {
 	struct {
 		struct ism_req_hdr hdr;
@@ -175,9 +202,17 @@ struct ism_eq_header {
 	u64 : 64;
 };
 
+struct ism_event {
+	u32 type;
+	u32 code;
+	u64 tok;
+	u64 time;
+	u64 info;
+};
+
 struct ism_eq {
 	struct ism_eq_header header;
-	struct smcd_event entry[15];
+	struct ism_event entry[15];
 };
 
 struct ism_sba {
@@ -190,28 +225,20 @@ struct ism_sba {
 };
 
 struct ism_dev {
-	spinlock_t lock;
+	spinlock_t cmd_lock; /* serializes cmds */
+	struct dibs_dev *dibs;
 	struct pci_dev *pdev;
-	struct smcd_dev *smcd;
-
 	struct ism_sba *sba;
 	dma_addr_t sba_dma_addr;
 	DECLARE_BITMAP(sba_bitmap, ISM_NR_DMBS);
 
 	struct ism_eq *ieq;
 	dma_addr_t ieq_dma_addr;
-
 	int ieq_idx;
 };
 
 #define ISM_CREATE_REQ(dmb, idx, sf, offset)		\
 	((dmb) | (idx) << 24 | (sf) << 23 | (offset))
-
-struct ism_systemeid {
-	u8	seid_string[24];
-	u8	serial_number[4];
-	u8	type[4];
-};
 
 static inline void __ism_read_cmd(struct ism_dev *ism, void *data,
 				  unsigned long offset, unsigned long len)

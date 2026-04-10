@@ -31,6 +31,7 @@
 #include <linux/ssb/ssb.h>
 #include <linux/slab.h>
 #include <linux/phy.h>
+#include <linux/phy_fixed.h>
 
 #include <linux/uaccess.h>
 #include <asm/io.h>
@@ -194,28 +195,6 @@ static int b44_wait_bit(struct b44 *bp, unsigned long reg,
 		return -ENODEV;
 	}
 	return 0;
-}
-
-static inline void __b44_cam_read(struct b44 *bp, unsigned char *data, int index)
-{
-	u32 val;
-
-	bw32(bp, B44_CAM_CTRL, (CAM_CTRL_READ |
-			    (index << CAM_CTRL_INDEX_SHIFT)));
-
-	b44_wait_bit(bp, B44_CAM_CTRL, CAM_CTRL_BUSY, 100, 1);
-
-	val = br32(bp, B44_CAM_DATA_LO);
-
-	data[2] = (val >> 24) & 0xFF;
-	data[3] = (val >> 16) & 0xFF;
-	data[4] = (val >> 8) & 0xFF;
-	data[5] = (val >> 0) & 0xFF;
-
-	val = br32(bp, B44_CAM_DATA_HI);
-
-	data[0] = (val >> 8) & 0xFF;
-	data[1] = (val >> 0) & 0xFF;
 }
 
 static inline void __b44_cam_write(struct b44 *bp,
@@ -597,7 +576,7 @@ static void b44_check_phy(struct b44 *bp)
 
 static void b44_timer(struct timer_list *t)
 {
-	struct b44 *bp = from_timer(bp, t, timer);
+	struct b44 *bp = timer_container_of(bp, t, timer);
 
 	spin_lock_irq(&bp->lock);
 
@@ -1064,13 +1043,13 @@ static int b44_change_mtu(struct net_device *dev, int new_mtu)
 		/* We'll just catch it later when the
 		 * device is up'd.
 		 */
-		dev->mtu = new_mtu;
+		WRITE_ONCE(dev->mtu, new_mtu);
 		return 0;
 	}
 
 	spin_lock_irq(&bp->lock);
 	b44_halt(bp);
-	dev->mtu = new_mtu;
+	WRITE_ONCE(dev->mtu, new_mtu);
 	b44_init_rings(bp);
 	b44_init_hw(bp, B44_FULL_RESET);
 	spin_unlock_irq(&bp->lock);
@@ -1650,7 +1629,7 @@ static int b44_close(struct net_device *dev)
 
 	napi_disable(&bp->napi);
 
-	del_timer_sync(&bp->timer);
+	timer_delete_sync(&bp->timer);
 
 	spin_lock_irq(&bp->lock);
 
@@ -1680,7 +1659,7 @@ static void b44_get_stats64(struct net_device *dev,
 	unsigned int start;
 
 	do {
-		start = u64_stats_fetch_begin_irq(&hwstat->syncp);
+		start = u64_stats_fetch_begin(&hwstat->syncp);
 
 		/* Convert HW stats into rtnl_link_stats64 stats. */
 		nstat->rx_packets = hwstat->rx_pkts;
@@ -1714,7 +1693,7 @@ static void b44_get_stats64(struct net_device *dev,
 		/* Carrier lost counter seems to be broken for some devices */
 		nstat->tx_carrier_errors = hwstat->tx_carrier_lost;
 #endif
-	} while (u64_stats_fetch_retry_irq(&hwstat->syncp, start));
+	} while (u64_stats_fetch_retry(&hwstat->syncp, start));
 
 }
 
@@ -1790,13 +1769,13 @@ static void b44_get_drvinfo (struct net_device *dev, struct ethtool_drvinfo *inf
 	struct b44 *bp = netdev_priv(dev);
 	struct ssb_bus *bus = bp->sdev->bus;
 
-	strlcpy(info->driver, DRV_MODULE_NAME, sizeof(info->driver));
+	strscpy(info->driver, DRV_MODULE_NAME, sizeof(info->driver));
 	switch (bus->bustype) {
 	case SSB_BUSTYPE_PCI:
-		strlcpy(info->bus_info, pci_name(bus->host_pci), sizeof(info->bus_info));
+		strscpy(info->bus_info, pci_name(bus->host_pci), sizeof(info->bus_info));
 		break;
 	case SSB_BUSTYPE_SSB:
-		strlcpy(info->bus_info, "SSB", sizeof(info->bus_info));
+		strscpy(info->bus_info, "SSB", sizeof(info->bus_info));
 		break;
 	case SSB_BUSTYPE_PCMCIA:
 	case SSB_BUSTYPE_SDIO:
@@ -1811,15 +1790,16 @@ static int b44_nway_reset(struct net_device *dev)
 	u32 bmcr;
 	int r;
 
+	if (bp->flags & B44_FLAG_EXTERNAL_PHY)
+		return phy_ethtool_nway_reset(dev);
+
 	spin_lock_irq(&bp->lock);
 	b44_readphy(bp, MII_BMCR, &bmcr);
 	b44_readphy(bp, MII_BMCR, &bmcr);
 	r = -EINVAL;
-	if (bmcr & BMCR_ANENABLE) {
-		b44_writephy(bp, MII_BMCR,
-			     bmcr | BMCR_ANRESTART);
-		r = 0;
-	}
+	if (bmcr & BMCR_ANENABLE)
+		r = b44_writephy(bp, MII_BMCR,
+				 bmcr | BMCR_ANRESTART);
 	spin_unlock_irq(&bp->lock);
 
 	return r;
@@ -2033,12 +2013,14 @@ static int b44_set_pauseparam(struct net_device *dev,
 		bp->flags |= B44_FLAG_TX_PAUSE;
 	else
 		bp->flags &= ~B44_FLAG_TX_PAUSE;
-	if (bp->flags & B44_FLAG_PAUSE_AUTO) {
-		b44_halt(bp);
-		b44_init_rings(bp);
-		b44_init_hw(bp, B44_FULL_RESET);
-	} else {
-		__b44_set_flow_ctrl(bp, bp->flags);
+	if (netif_running(dev)) {
+		if (bp->flags & B44_FLAG_PAUSE_AUTO) {
+			b44_halt(bp);
+			b44_init_rings(bp);
+			b44_init_hw(bp, B44_FULL_RESET);
+		} else {
+			__b44_set_flow_ctrl(bp, bp->flags);
+		}
 	}
 	spin_unlock_irq(&bp->lock);
 
@@ -2082,12 +2064,12 @@ static void b44_get_ethtool_stats(struct net_device *dev,
 	do {
 		data_src = &hwstat->tx_good_octets;
 		data_dst = data;
-		start = u64_stats_fetch_begin_irq(&hwstat->syncp);
+		start = u64_stats_fetch_begin(&hwstat->syncp);
 
 		for (i = 0; i < ARRAY_SIZE(b44_gstrings); i++)
 			*data_dst++ = *data_src++;
 
-	} while (u64_stats_fetch_retry_irq(&hwstat->syncp, start));
+	} while (u64_stats_fetch_retry(&hwstat->syncp, start));
 }
 
 static void b44_get_wol(struct net_device *dev, struct ethtool_wolinfo *wol)
@@ -2255,7 +2237,6 @@ static int b44_register_phy_one(struct b44 *bp)
 	struct mii_bus *mii_bus;
 	struct ssb_device *sdev = bp->sdev;
 	struct phy_device *phydev;
-	char bus_id[MII_BUS_ID_SIZE + 3];
 	struct ssb_sprom *sprom = &sdev->bus->sprom;
 	int err;
 
@@ -2282,27 +2263,26 @@ static int b44_register_phy_one(struct b44 *bp)
 		goto err_out_mdiobus;
 	}
 
-	if (!mdiobus_is_registered_device(bp->mii_bus, bp->phy_addr) &&
-	    (sprom->boardflags_lo & (B44_BOARDFLAG_ROBO | B44_BOARDFLAG_ADM))) {
-
+	phydev = mdiobus_get_phy(bp->mii_bus, bp->phy_addr);
+	if (!phydev &&
+	    sprom->boardflags_lo & (B44_BOARDFLAG_ROBO | B44_BOARDFLAG_ADM)) {
 		dev_info(sdev->dev,
 			 "could not find PHY at %i, use fixed one\n",
 			 bp->phy_addr);
 
-		bp->phy_addr = 0;
-		snprintf(bus_id, sizeof(bus_id), PHY_ID_FMT, "fixed-0",
-			 bp->phy_addr);
-	} else {
-		snprintf(bus_id, sizeof(bus_id), PHY_ID_FMT, mii_bus->id,
-			 bp->phy_addr);
+		phydev = fixed_phy_register_100fd();
+		if (!IS_ERR(phydev))
+			bp->phy_addr = phydev->mdio.addr;
 	}
 
-	phydev = phy_connect(bp->dev, bus_id, &b44_adjust_link,
-			     PHY_INTERFACE_MODE_MII);
-	if (IS_ERR(phydev)) {
+	if (IS_ERR_OR_NULL(phydev))
+		err = -ENODEV;
+	else
+		err = phy_connect_direct(bp->dev, phydev, &b44_adjust_link,
+					 PHY_INTERFACE_MODE_MII);
+	if (err) {
 		dev_err(sdev->dev, "could not attach PHY at %i\n",
 			bp->phy_addr);
-		err = PTR_ERR(phydev);
 		goto err_out_mdiobus_unregister;
 	}
 
@@ -2315,7 +2295,6 @@ static int b44_register_phy_one(struct b44 *bp)
 	linkmode_copy(phydev->advertising, phydev->supported);
 
 	bp->old_link = 0;
-	bp->phy_addr = phydev->mdio.addr;
 
 	phy_attached_info(phydev);
 
@@ -2333,10 +2312,15 @@ err_out:
 
 static void b44_unregister_phy_one(struct b44 *bp)
 {
-	struct net_device *dev = bp->dev;
 	struct mii_bus *mii_bus = bp->mii_bus;
+	struct net_device *dev = bp->dev;
+	struct phy_device *phydev;
 
-	phy_disconnect(dev->phydev);
+	phydev = dev->phydev;
+
+	phy_disconnect(phydev);
+	if (phy_is_pseudo_fixed_link(phydev))
+		fixed_phy_unregister(phydev);
 	mdiobus_unregister(mii_bus);
 	mdiobus_free(mii_bus);
 }
@@ -2375,7 +2359,7 @@ static int b44_init_one(struct ssb_device *sdev,
 	bp->tx_pending = B44_DEF_TX_RING_PENDING;
 
 	dev->netdev_ops = &b44_netdev_ops;
-	netif_napi_add(dev, &bp->napi, b44_poll, 64);
+	netif_napi_add(dev, &bp->napi, b44_poll);
 	dev->watchdog_timeo = B44_TX_TIMEOUT;
 	dev->min_mtu = B44_MIN_MTU;
 	dev->max_mtu = B44_MAX_MTU;
@@ -2495,7 +2479,7 @@ static int b44_suspend(struct ssb_device *sdev, pm_message_t state)
 	if (!netif_running(dev))
 		return 0;
 
-	del_timer_sync(&bp->timer);
+	timer_delete_sync(&bp->timer);
 
 	spin_lock_irq(&bp->lock);
 
@@ -2592,7 +2576,7 @@ static int __init b44_init(void)
 	unsigned int dma_desc_align_size = dma_get_cache_alignment();
 	int err;
 
-	/* Setup paramaters for syncing RX/TX DMA descriptors */
+	/* Setup parameters for syncing RX/TX DMA descriptors */
 	dma_desc_sync_size = max_t(unsigned int, dma_desc_align_size, sizeof(struct dma_desc));
 
 	err = b44_pci_init();

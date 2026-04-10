@@ -36,7 +36,7 @@ Devices supporting the sliced VBI capturing or output API set the
 respectively, in the ``capabilities`` field of struct
 :c:type:`v4l2_capability` returned by the
 :ref:`VIDIOC_QUERYCAP` ioctl. At least one of the
-read/write, streaming or asynchronous :ref:`I/O methods <io>` must be
+read/write or streaming :ref:`I/O methods <io>` must be
 supported. Sliced VBI devices may have a tuner or modulator.
 
 Supplemental Functions
@@ -48,7 +48,7 @@ capabilities, and they may support :ref:`control` ioctls.
 The :ref:`video standard <standard>` ioctls provide information vital
 to program a sliced VBI device, therefore must be supported.
 
-.. _sliced-vbi-format-negotitation:
+.. _sliced-vbi-format-negotiation:
 
 Sliced VBI Format Negotiation
 =============================
@@ -377,7 +377,7 @@ Sliced VBI Data in MPEG Streams
 
 If a device can produce an MPEG output stream, it may be capable of
 providing
-:ref:`negotiated sliced VBI services <sliced-vbi-format-negotitation>`
+:ref:`negotiated sliced VBI services <sliced-vbi-format-negotiation>`
 as data embedded in the MPEG stream. Users or applications control this
 sliced VBI data insertion with the
 :ref:`V4L2_CID_MPEG_STREAM_VBI_FMT <v4l2-mpeg-stream-vbi-fmt>`
@@ -490,7 +490,7 @@ struct v4l2_mpeg_vbi_fmt_ivtv
       - An alternate form of the sliced VBI data payload used when 36
 	lines of sliced VBI data are present. No line masks are provided
 	in this form of the payload; all valid line mask bits are
-	implcitly set.
+	implicitly set.
     * - }
       -
 

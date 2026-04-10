@@ -13,7 +13,9 @@
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/slot-gpio.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <asm/octeon/octeon.h>
 #include "cavium.h"
 
@@ -215,7 +217,7 @@ static int octeon_mmc_probe(struct platform_device *pdev)
 		return PTR_ERR(base);
 	host->dma_base = base;
 	/*
-	 * To keep the register addresses shared we intentionaly use
+	 * To keep the register addresses shared we intentionally use
 	 * a negative offset here, first register used on Octeon therefore
 	 * starts at 0x20 (MIO_EMM_DMA_CFG).
 	 */
@@ -277,6 +279,7 @@ static int octeon_mmc_probe(struct platform_device *pdev)
 		if (ret) {
 			dev_err(&pdev->dev, "Error populating slots\n");
 			octeon_mmc_set_shared_power(host, 0);
+			of_node_put(cn);
 			goto error;
 		}
 		i++;
@@ -293,7 +296,7 @@ error:
 	return ret;
 }
 
-static int octeon_mmc_remove(struct platform_device *pdev)
+static void octeon_mmc_remove(struct platform_device *pdev)
 {
 	struct cvm_mmc_host *host = platform_get_drvdata(pdev);
 	u64 dma_cfg;
@@ -308,7 +311,6 @@ static int octeon_mmc_remove(struct platform_device *pdev)
 	writeq(dma_cfg, host->dma_base + MIO_EMM_DMA_CFG(host));
 
 	octeon_mmc_set_shared_power(host, 0);
-	return 0;
 }
 
 static const struct of_device_id octeon_mmc_match[] = {

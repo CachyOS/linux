@@ -3,7 +3,7 @@
  *
  * Module Name: utosi - Support for the _OSI predefined control method
  *
- * Copyright (C) 2000 - 2022, Intel Corp.
+ * Copyright (C) 2000 - 2025, Intel Corp.
  *
  *****************************************************************************/
 
@@ -75,6 +75,7 @@ static struct acpi_interface_info acpi_default_supported_interfaces[] = {
 	{"Windows 2019", NULL, 0, ACPI_OSI_WIN_10_19H1},	/* Windows 10 version 1903 - Added 08/2019 */
 	{"Windows 2020", NULL, 0, ACPI_OSI_WIN_10_20H1},	/* Windows 10 version 2004 - Added 08/2021 */
 	{"Windows 2021", NULL, 0, ACPI_OSI_WIN_11},	/* Windows 11 - Added 01/2022 */
+	{"Windows 2022", NULL, 0, ACPI_OSI_WIN_11_22H2},	/* Windows 11 version 22H2 - Added 04/2024 */
 
 	/* Feature Group Strings */
 
@@ -91,7 +92,11 @@ static struct acpi_interface_info acpi_default_supported_interfaces[] = {
 	{"Processor Device", NULL, ACPI_OSI_OPTIONAL_FEATURE, 0},
 	{"3.0 Thermal Model", NULL, ACPI_OSI_OPTIONAL_FEATURE, 0},
 	{"3.0 _SCP Extensions", NULL, ACPI_OSI_OPTIONAL_FEATURE, 0},
-	{"Processor Aggregator Device", NULL, ACPI_OSI_OPTIONAL_FEATURE, 0}
+	{"Processor Aggregator Device", NULL, ACPI_OSI_OPTIONAL_FEATURE, 0},
+
+	/* See https://learn.microsoft.com/en-us/windows-hardware/drivers/display/automatic-display-switch */
+
+	{"DisplayMux", NULL, ACPI_OSI_OPTIONAL_FEATURE, 0}
 };
 
 /*******************************************************************************

@@ -10,7 +10,7 @@ maintainers:
   - Mark Brown <broonie@kernel.org>
 
 allOf:
-  - $ref: "spi-controller.yaml#"
+  - $ref: spi-controller.yaml#
   - if:
       properties:
         compatible:
@@ -26,17 +26,13 @@ allOf:
       properties:
         compatible:
           contains:
-            enum:
-              - baikal,bt1-sys-ssi
+            const: amd,pensando-elba-spi
     then:
-      properties:
-        mux-controls:
-          maxItems: 1
       required:
-        - mux-controls
+        - amd,pensando-elba-syscon
     else:
-      required:
-        - interrupts
+      properties:
+        amd,pensando-elba-syscon: false
 
 properties:
   compatible:
@@ -45,33 +41,30 @@ properties:
         enum:
           - snps,dw-apb-ssi
           - snps,dwc-ssi-1.01a
-      - description: Microsemi Ocelot/Jaguar2 SoC SPI Controller
-        items:
-          - enum:
-              - mscc,ocelot-spi
-              - mscc,jaguar2-spi
-          - const: snps,dw-apb-ssi
       - description: Microchip Sparx5 SoC SPI Controller
         const: microchip,sparx5-spi
       - description: Amazon Alpine SPI Controller
         const: amazon,alpine-dw-apb-ssi
-      - description: Renesas RZ/N1 SPI Controller
+      - description: Vendor controllers which use snps,dw-apb-ssi as fallback
         items:
-          - const: renesas,rzn1-spi
+          - enum:
+              - mscc,ocelot-spi
+              - mscc,jaguar2-spi
+              - renesas,rzn1-spi
+              - sophgo,sg2042-spi
+              - thead,th1520-spi
           - const: snps,dw-apb-ssi
       - description: Intel Keem Bay SPI Controller
         const: intel,keembay-ssi
-      - description: Baikal-T1 SPI Controller
-        const: baikal,bt1-ssi
-      - description: Baikal-T1 System Boot SPI Controller
-        const: baikal,bt1-sys-ssi
+      - description: Intel Mount Evans Integrated Management Complex SPI Controller
+        const: intel,mountevans-imc-ssi
+      - description: AMD Pensando Elba SoC SPI Controller
+        const: amd,pensando-elba-spi
       - description: Canaan Kendryte K210 SoS SPI Controller
         const: canaan,k210-spi
       - description: Renesas RZ/N1 SPI Controller
         items:
-          - enum:
-              - renesas,r9a06g032-spi # RZ/N1D
-              - renesas,r9a06g033-spi # RZ/N1S
+          - const: renesas,r9a06g032-spi # RZ/N1D
           - const: renesas,rzn1-spi   # RZ/N1
 
   reg:
@@ -102,7 +95,6 @@ properties:
     const: spi
 
   reg-io-width:
-    $ref: /schemas/types.yaml#/definitions/uint32
     description: I/O register width (in bytes) implemented by this device
     default: 4
     enum: [ 2, 4 ]
@@ -110,7 +102,7 @@ properties:
   num-cs:
     default: 4
     minimum: 1
-    maximum: 4
+    maximum: 16
 
   dmas:
     items:
@@ -124,30 +116,32 @@ properties:
 
   rx-sample-delay-ns:
     default: 0
-    description: Default value of the rx-sample-delay-ns property.
+    description: |
+      Default value of the rx-sample-delay-ns property.
       This value will be used if the property is not explicitly defined
-      for a SPI slave device. See below.
+      for a SPI slave device.
+
+      SPI Rx sample delay offset, unit is nanoseconds.
+      The delay from the default sample time before the actual sample of the
+      rxd input signal occurs. The "rx_sample_delay" is an optional feature
+      of the designware controller, and the upper limit is also subject to
+      controller configuration.
+
+  amd,pensando-elba-syscon:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    description:
+      Block address to control SPI chip-selects. The Elba SoC system controller
+      provides an interface to override the native DWC SSI CS control.
 
 patternProperties:
-  "^.*@[0-9a-f]+$":
+  "@[0-9a-f]$":
     type: object
+    additionalProperties: true
+
     properties:
       reg:
         minimum: 0
-        maximum: 3
-
-      spi-rx-bus-width:
-        const: 1
-
-      spi-tx-bus-width:
-        const: 1
-
-      rx-sample-delay-ns:
-        description: SPI Rx sample delay offset, unit is nanoseconds.
-          The delay from the default sample time before the actual
-          sample of the rxd input signal occurs. The "rx_sample_delay"
-          is an optional feature of the designware controller, and the
-          upper limit is also subject to controller configuration.
+        maximum: 0xf
 
 unevaluatedProperties: false
 
@@ -157,6 +151,7 @@ required:
   - "#address-cells"
   - "#size-cells"
   - clocks
+  - interrupts
 
 examples:
   - |
@@ -176,16 +171,5 @@ examples:
         reg = <1>;
         rx-sample-delay-ns = <7>;
       };
-    };
-  - |
-    spi@1f040100 {
-      compatible = "baikal,bt1-sys-ssi";
-      reg = <0x1f040100 0x900>,
-            <0x1c000000 0x1000000>;
-      #address-cells = <1>;
-      #size-cells = <0>;
-      mux-controls = <&boot_mux>;
-      clocks = <&ccu_sys>;
-      clock-names = "ssi_clk";
     };
 ...

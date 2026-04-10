@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2010 - 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #include "hmm.h"
@@ -64,7 +55,7 @@ int ia_css_spctrl_load_fw(sp_ID_t sp_id, ia_css_spctrl_cfg *spctrl_cfg)
 	 * Data used to be stored separately, because of access alignment constraints,
 	 * fix the FW generation instead
 	 */
-	code_addr = hmm_alloc(spctrl_cfg->code_size, HMM_BO_PRIVATE, 0, NULL, 0);
+	code_addr = hmm_alloc(spctrl_cfg->code_size);
 	if (code_addr == mmgr_NULL)
 		return -ENOMEM;
 	hmm_store(code_addr, spctrl_cfg->code, spctrl_cfg->code_size);

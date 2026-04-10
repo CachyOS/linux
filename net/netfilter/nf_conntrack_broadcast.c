@@ -20,6 +20,8 @@ int nf_conntrack_broadcast_help(struct sk_buff *skb,
 				enum ip_conntrack_info ctinfo,
 				unsigned int timeout)
 {
+	const struct nf_conntrack_helper *helper;
+	struct net *net = read_pnet(&ct->ct_net);
 	struct nf_conntrack_expect *exp;
 	struct iphdr *iph = ip_hdr(skb);
 	struct rtable *rt = skb_rtable(skb);
@@ -58,7 +60,10 @@ int nf_conntrack_broadcast_help(struct sk_buff *skb,
 		goto out;
 
 	exp->tuple                = ct->tuplehash[IP_CT_DIR_REPLY].tuple;
-	exp->tuple.src.u.udp.port = help->helper->tuple.src.u.udp.port;
+
+	helper = rcu_dereference(help->helper);
+	if (helper)
+		exp->tuple.src.u.udp.port = helper->tuple.src.u.udp.port;
 
 	exp->mask.src.u3.ip       = mask;
 	exp->mask.src.u.udp.port  = htons(0xFFFF);
@@ -66,15 +71,19 @@ int nf_conntrack_broadcast_help(struct sk_buff *skb,
 	exp->expectfn             = NULL;
 	exp->flags                = NF_CT_EXPECT_PERMANENT;
 	exp->class		  = NF_CT_EXPECT_CLASS_DEFAULT;
-	exp->helper               = NULL;
-
+	rcu_assign_pointer(exp->helper, helper);
+	write_pnet(&exp->net, net);
+#ifdef CONFIG_NF_CONNTRACK_ZONES
+	exp->zone = ct->zone;
+#endif
 	nf_ct_expect_related(exp, 0);
 	nf_ct_expect_put(exp);
 
-	nf_ct_refresh(ct, skb, timeout * HZ);
+	nf_ct_refresh(ct, timeout * HZ);
 out:
 	return NF_ACCEPT;
 }
 EXPORT_SYMBOL_GPL(nf_conntrack_broadcast_help);
 
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Broadcast connection tracking helper");

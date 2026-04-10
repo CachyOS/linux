@@ -85,7 +85,6 @@
 	/* Port320 - Port329 */						\
 	PORT_10(320, fn, pfx##32, sfx)
 
-
 enum {
 	PINMUX_RESERVED = 0,
 
@@ -226,7 +225,6 @@ enum {
 	PINMUX_FUNCTION_END,
 
 	PINMUX_MARK_BEGIN,
-
 
 #define F1(a)	a##_MARK
 #define F2(a)	a##_MARK
@@ -2384,7 +2382,7 @@ static const struct pinmux_cfg_reg pinmux_config_regs[] = {
 			MSEL8CR_00_0, MSEL8CR_00_1,
 		))
 	},
-	{ },
+	{ /* sentinel */ }
 };
 
 static const struct pinmux_data_reg pinmux_data_regs[] = {
@@ -2510,7 +2508,7 @@ static const struct pinmux_data_reg pinmux_data_regs[] = {
 			PORT323_DATA, PORT322_DATA, PORT321_DATA, PORT320_DATA,
 		))
 	},
-	{ },
+	{ /* sentinel */ }
 };
 
 static const struct pinmux_irq pinmux_irqs[] = {

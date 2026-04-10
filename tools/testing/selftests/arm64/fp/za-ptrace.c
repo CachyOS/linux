@@ -18,14 +18,24 @@
 #include <asm/sigcontext.h>
 #include <asm/ptrace.h>
 
-#include "../../kselftest.h"
+#include "kselftest.h"
 
 /* <linux/elf.h> and <sys/auxv.h> don't like each other, so: */
 #ifndef NT_ARM_ZA
 #define NT_ARM_ZA 0x40c
 #endif
 
-#define EXPECTED_TESTS (((SVE_VQ_MAX - SVE_VQ_MIN) + 1) * 3)
+/*
+ * The architecture defines the maximum VQ as 16 but for extensibility
+ * the kernel specifies the SVE_VQ_MAX as 512 resulting in us running
+ * a *lot* more tests than are useful if we use it.  Until the
+ * architecture is extended let's limit our coverage to what is
+ * currently allowed, plus one extra to ensure we cover constraining
+ * the VL as expected.
+ */
+#define TEST_VQ_MAX 17
+
+#define EXPECTED_TESTS (((TEST_VQ_MAX - SVE_VQ_MIN) + 1) * 3)
 
 static void fill_buf(char *buf, size_t size)
 {
@@ -38,10 +48,12 @@ static void fill_buf(char *buf, size_t size)
 static int do_child(void)
 {
 	if (ptrace(PTRACE_TRACEME, -1, NULL, NULL))
-		ksft_exit_fail_msg("PTRACE_TRACEME", strerror(errno));
+		ksft_exit_fail_msg("ptrace(PTRACE_TRACEME) failed: %s (%d)",
+				   strerror(errno), errno);
 
 	if (raise(SIGSTOP))
-		ksft_exit_fail_msg("raise(SIGSTOP)", strerror(errno));
+		ksft_exit_fail_msg("raise(SIGSTOP) failed: %s (%d)\n",
+				   strerror(errno), errno);
 
 	return EXIT_SUCCESS;
 }
@@ -191,7 +203,7 @@ static void ptrace_set_get_data(pid_t child, unsigned int vl)
 	data_size = ZA_PT_SIZE(vq);
 	write_buf = malloc(data_size);
 	if (!write_buf) {
-		ksft_test_result_fail("Error allocating %d byte buffer for VL %u\n",
+		ksft_test_result_fail("Error allocating %ld byte buffer for VL %u\n",
 				      data_size, vl);
 		return;
 	}
@@ -301,7 +313,7 @@ static int do_parent(pid_t child)
 	ksft_print_msg("Parent is %d, child is %d\n", getpid(), child);
 
 	/* Step through every possible VQ */
-	for (vq = SVE_VQ_MIN; vq <= SVE_VQ_MAX; vq++) {
+	for (vq = SVE_VQ_MIN; vq <= TEST_VQ_MAX; vq++) {
 		vl = sve_vl_from_vq(vq);
 
 		/* First, try to set this vector length */

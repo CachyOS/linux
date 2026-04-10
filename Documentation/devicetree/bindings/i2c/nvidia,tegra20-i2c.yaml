@@ -80,18 +80,23 @@ properties:
           support for 64 KiB transactions whereas earlier chips supported no
           more than 4 KiB per transactions.
         const: nvidia,tegra194-i2c
+      - description: |
+          Tegra256 has 8 generic I2C controllers. The controllers are similar to
+          the previous generations, but have a different parent clock and hence
+          the timing parameters are configured differently.
+        const: nvidia,tegra256-i2c
+      - description:
+          Tegra264 has 17 generic I2C controllers, two of which are in the AON
+          (always-on) partition of the SoC. In addition to the features from
+          Tegra194, a SW mutex register is added to support use of the same I2C
+          instance across multiple firmwares.
+        const: nvidia,tegra264-i2c
 
   reg:
     maxItems: 1
 
   interrupts:
     maxItems: 1
-
-  '#address-cells':
-    const: 1
-
-  '#size-cells':
-    const: 0
 
   clocks:
     minItems: 1
@@ -103,11 +108,17 @@ properties:
 
   resets:
     items:
-      - description: module reset
+      - description:
+          Module reset. This property is optional for controllers in Tegra194,
+          Tegra234 etc where an internal software reset is available as an
+          alternative.
 
   reset-names:
     items:
       - const: i2c
+
+  power-domains:
+    maxItems: 1
 
   dmas:
     items:
@@ -118,6 +129,13 @@ properties:
     items:
       - const: rx
       - const: tx
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
 
 allOf:
   - $ref: /schemas/i2c/i2c-controller.yaml
@@ -130,6 +148,8 @@ allOf:
               - nvidia,tegra30-i2c
     then:
       properties:
+        clocks:
+          minItems: 2
         clock-names:
           items:
             - const: div-clk
@@ -139,20 +159,13 @@ allOf:
       properties:
         compatible:
           contains:
-            const: nvidia,tegra114-i2c
+            enum:
+              - nvidia,tegra114-i2c
+              - nvidia,tegra210-i2c
     then:
       properties:
-        clock-names:
-          items:
-            - const: div-clk
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: nvidia,tegra210-i2c
-    then:
-      properties:
+        clocks:
+          maxItems: 1
         clock-names:
           items:
             - const: div-clk
@@ -164,6 +177,8 @@ allOf:
             const: nvidia,tegra210-i2c-vi
     then:
       properties:
+        clocks:
+          minItems: 2
         clock-names:
           items:
             - const: div-clk
@@ -171,6 +186,23 @@ allOf:
         power-domains:
           items:
             - description: phandle to the VENC power domain
+    else:
+      properties:
+        power-domains: false
+
+  - if:
+      not:
+        properties:
+          compatible:
+            contains:
+              enum:
+                - nvidia,tegra194-i2c
+                - nvidia,tegra256-i2c
+                - nvidia,tegra264-i2c
+    then:
+      required:
+        - resets
+        - reset-names
 
 unevaluatedProperties: false
 

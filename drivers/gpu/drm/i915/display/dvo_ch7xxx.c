@@ -26,6 +26,8 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 **************************************************************************/
 
+#include <drm/drm_print.h>
+
 #include "intel_display_types.h"
 #include "intel_dvo_dev.h"
 
@@ -50,15 +52,26 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define CH7xxx_INPUT_CLOCK	0x1d
 #define CH7xxx_GPIO		0x1e
 #define CH7xxx_GPIO_HPIR	(1<<3)
-#define CH7xxx_IDF		0x1f
 
+#define CH7xxx_IDF		0x1f
+#define CH7xxx_IDF_IBS		(1<<7)
+#define CH7xxx_IDF_DES		(1<<6)
 #define CH7xxx_IDF_HSP		(1<<3)
 #define CH7xxx_IDF_VSP		(1<<4)
 
 #define CH7xxx_CONNECTION_DETECT 0x20
 #define CH7xxx_CDET_DVI		(1<<5)
 
-#define CH7301_DAC_CNTL		0x21
+#define CH7xxx_DAC_CNTL		0x21
+#define CH7xxx_SYNCO_MASK	(3 << 3)
+#define CH7xxx_SYNCO_VGA_HSYNC	(1 << 3)
+
+#define CH7xxx_CLOCK_OUTPUT	0x22
+#define CH7xxx_BCOEN		(1 << 4)
+#define CH7xxx_BCOP		(1 << 3)
+#define CH7xxx_BCO_MASK		(7 << 0)
+#define CH7xxx_BCO_VGA_VSYNC	(6 << 0)
+
 #define CH7301_HOTPLUG		0x23
 #define CH7xxx_TCTL		0x31
 #define CH7xxx_TVCO		0x32
@@ -142,13 +155,13 @@ static bool ch7xxx_readb(struct intel_dvo_device *dvo, int addr, u8 *ch)
 
 	struct i2c_msg msgs[] = {
 		{
-			.addr = dvo->slave_addr,
+			.addr = dvo->target_addr,
 			.flags = 0,
 			.len = 1,
 			.buf = out_buf,
 		},
 		{
-			.addr = dvo->slave_addr,
+			.addr = dvo->target_addr,
 			.flags = I2C_M_RD,
 			.len = 1,
 			.buf = in_buf,
@@ -165,7 +178,7 @@ static bool ch7xxx_readb(struct intel_dvo_device *dvo, int addr, u8 *ch)
 
 	if (!ch7xxx->quiet) {
 		DRM_DEBUG_KMS("Unable to read register 0x%02x from %s:%02x.\n",
-			  addr, adapter->name, dvo->slave_addr);
+			  addr, adapter->name, dvo->target_addr);
 	}
 	return false;
 }
@@ -177,7 +190,7 @@ static bool ch7xxx_writeb(struct intel_dvo_device *dvo, int addr, u8 ch)
 	struct i2c_adapter *adapter = dvo->i2c_bus;
 	u8 out_buf[2];
 	struct i2c_msg msg = {
-		.addr = dvo->slave_addr,
+		.addr = dvo->target_addr,
 		.flags = 0,
 		.len = 2,
 		.buf = out_buf,
@@ -191,7 +204,7 @@ static bool ch7xxx_writeb(struct intel_dvo_device *dvo, int addr, u8 ch)
 
 	if (!ch7xxx->quiet) {
 		DRM_DEBUG_KMS("Unable to write register 0x%02x to %s:%d.\n",
-			  addr, adapter->name, dvo->slave_addr);
+			  addr, adapter->name, dvo->target_addr);
 	}
 
 	return false;
@@ -205,7 +218,7 @@ static bool ch7xxx_init(struct intel_dvo_device *dvo,
 	u8 vendor, device;
 	char *name, *devid;
 
-	ch7xxx = kzalloc(sizeof(struct ch7xxx_priv), GFP_KERNEL);
+	ch7xxx = kzalloc_obj(*ch7xxx);
 	if (ch7xxx == NULL)
 		return false;
 
@@ -218,8 +231,8 @@ static bool ch7xxx_init(struct intel_dvo_device *dvo,
 
 	name = ch7xxx_get_id(vendor);
 	if (!name) {
-		DRM_DEBUG_KMS("ch7xxx not detected; got VID 0x%02x from %s slave %d.\n",
-			      vendor, adapter->name, dvo->slave_addr);
+		DRM_DEBUG_KMS("ch7xxx not detected; got VID 0x%02x from %s target %d.\n",
+			      vendor, adapter->name, dvo->target_addr);
 		goto out;
 	}
 
@@ -229,8 +242,8 @@ static bool ch7xxx_init(struct intel_dvo_device *dvo,
 
 	devid = ch7xxx_get_did(device);
 	if (!devid) {
-		DRM_DEBUG_KMS("ch7xxx not detected; got DID 0x%02x from %s slave %d.\n",
-			      device, adapter->name, dvo->slave_addr);
+		DRM_DEBUG_KMS("ch7xxx not detected; got DID 0x%02x from %s target %d.\n",
+			      device, adapter->name, dvo->target_addr);
 		goto out;
 	}
 
@@ -265,7 +278,7 @@ static enum drm_connector_status ch7xxx_detect(struct intel_dvo_device *dvo)
 }
 
 static enum drm_mode_status ch7xxx_mode_valid(struct intel_dvo_device *dvo,
-					      struct drm_display_mode *mode)
+					      const struct drm_display_mode *mode)
 {
 	if (mode->clock > 165000)
 		return MODE_CLOCK_HIGH;
@@ -301,6 +314,8 @@ static void ch7xxx_mode_set(struct intel_dvo_device *dvo,
 
 	ch7xxx_readb(dvo, CH7xxx_IDF, &idf);
 
+	idf |= CH7xxx_IDF_IBS;
+
 	idf &= ~(CH7xxx_IDF_HSP | CH7xxx_IDF_VSP);
 	if (mode->flags & DRM_MODE_FLAG_PHSYNC)
 		idf |= CH7xxx_IDF_HSP;
@@ -309,6 +324,11 @@ static void ch7xxx_mode_set(struct intel_dvo_device *dvo,
 		idf |= CH7xxx_IDF_VSP;
 
 	ch7xxx_writeb(dvo, CH7xxx_IDF, idf);
+
+	ch7xxx_writeb(dvo, CH7xxx_DAC_CNTL,
+		      CH7xxx_SYNCO_VGA_HSYNC);
+	ch7xxx_writeb(dvo, CH7xxx_CLOCK_OUTPUT,
+		      CH7xxx_BCOEN | CH7xxx_BCO_VGA_VSYNC);
 }
 
 /* set the CH7xxx power state */

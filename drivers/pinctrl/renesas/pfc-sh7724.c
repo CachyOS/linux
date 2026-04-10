@@ -210,7 +210,6 @@ enum {
 	PTZ7_FN, PTZ6_FN, PTZ5_FN, PTZ4_FN,
 	PTZ3_FN, PTZ2_FN, PTZ1_FN, PTZ0_FN,
 
-
 	PSA15_0, PSA15_1,
 	PSA14_0, PSA14_1,
 	PSA13_0, PSA13_1,
@@ -2059,7 +2058,7 @@ static const struct pinmux_cfg_reg pinmux_config_regs[] = {
 		PSE1_0,  PSE1_1,
 		PSE0_0,  PSE0_1))
 	},
-	{}
+	{ /* sentinel */ }
 };
 
 static const struct pinmux_data_reg pinmux_data_regs[] = {
@@ -2155,7 +2154,7 @@ static const struct pinmux_data_reg pinmux_data_regs[] = {
 		PTZ7_DATA, PTZ6_DATA, PTZ5_DATA, PTZ4_DATA,
 		PTZ3_DATA, PTZ2_DATA, PTZ1_DATA, PTZ0_DATA ))
 	},
-	{ },
+	{ /* sentinel */ }
 };
 
 const struct sh_pfc_soc_info sh7724_pinmux_info = {

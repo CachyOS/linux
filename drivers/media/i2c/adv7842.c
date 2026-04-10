@@ -38,7 +38,7 @@ module_param(debug, int, 0644);
 MODULE_PARM_DESC(debug, "debug level (0-2)");
 
 MODULE_DESCRIPTION("Analog Devices ADV7842 video decoder driver");
-MODULE_AUTHOR("Hans Verkuil <hans.verkuil@cisco.com>");
+MODULE_AUTHOR("Hans Verkuil <hverkuil@kernel.org>");
 MODULE_AUTHOR("Martin Bugge <marbugge@cisco.com>");
 MODULE_LICENSE("GPL");
 
@@ -113,6 +113,9 @@ struct adv7842_state {
 	struct delayed_work delayed_work_enable_hotplug;
 	bool restart_stdi_once;
 	bool hdmi_port_a;
+
+	struct dentry *debugfs_dir;
+	struct v4l2_debugfs_if *infoframes;
 
 	/* i2c clients */
 	struct i2c_client *i2c_sdp_io;
@@ -1431,14 +1434,15 @@ static int stdi2dv_timings(struct v4l2_subdev *sd,
 	}
 
 	if (v4l2_detect_cvt(stdi->lcf + 1, hfreq, stdi->lcvs, 0,
-			(stdi->hs_pol == '+' ? V4L2_DV_HSYNC_POS_POL : 0) |
-			(stdi->vs_pol == '+' ? V4L2_DV_VSYNC_POS_POL : 0),
-			false, timings))
+			    (stdi->hs_pol == '+' ? V4L2_DV_HSYNC_POS_POL : 0) |
+			    (stdi->vs_pol == '+' ? V4L2_DV_VSYNC_POS_POL : 0),
+			    false, adv7842_get_dv_timings_cap(sd), timings))
 		return 0;
 	if (v4l2_detect_gtf(stdi->lcf + 1, hfreq, stdi->lcvs,
-			(stdi->hs_pol == '+' ? V4L2_DV_HSYNC_POS_POL : 0) |
-			(stdi->vs_pol == '+' ? V4L2_DV_VSYNC_POS_POL : 0),
-			false, state->aspect_ratio, timings))
+			    (stdi->hs_pol == '+' ? V4L2_DV_HSYNC_POS_POL : 0) |
+			    (stdi->vs_pol == '+' ? V4L2_DV_VSYNC_POS_POL : 0),
+			    false, state->aspect_ratio,
+			    adv7842_get_dv_timings_cap(sd), timings))
 		return 0;
 
 	v4l2_dbg(2, debug, sd,
@@ -1518,7 +1522,7 @@ static void adv7842_fill_optional_dv_timings_fields(struct v4l2_subdev *sd,
 	timings->bt.flags |= V4L2_DV_FL_CAN_DETECT_REDUCED_FPS;
 }
 
-static int adv7842_query_dv_timings(struct v4l2_subdev *sd,
+static int adv7842_query_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
 				    struct v4l2_dv_timings *timings)
 {
 	struct adv7842_state *state = to_state(sd);
@@ -1526,6 +1530,9 @@ static int adv7842_query_dv_timings(struct v4l2_subdev *sd,
 	struct stdi_readback stdi = { 0 };
 
 	v4l2_dbg(1, debug, sd, "%s:\n", __func__);
+
+	if (pad != 0)
+		return -EINVAL;
 
 	memset(timings, 0, sizeof(struct v4l2_dv_timings));
 
@@ -1643,7 +1650,7 @@ found:
 	return 0;
 }
 
-static int adv7842_s_dv_timings(struct v4l2_subdev *sd,
+static int adv7842_s_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
 				struct v4l2_dv_timings *timings)
 {
 	struct adv7842_state *state = to_state(sd);
@@ -1651,6 +1658,9 @@ static int adv7842_s_dv_timings(struct v4l2_subdev *sd,
 	int err;
 
 	v4l2_dbg(1, debug, sd, "%s:\n", __func__);
+
+	if (pad != 0)
+		return -EINVAL;
 
 	if (state->mode == ADV7842_MODE_SDP)
 		return -ENODATA;
@@ -1689,10 +1699,13 @@ static int adv7842_s_dv_timings(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int adv7842_g_dv_timings(struct v4l2_subdev *sd,
+static int adv7842_g_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
 				struct v4l2_dv_timings *timings)
 {
 	struct adv7842_state *state = to_state(sd);
+
+	if (pad != 0)
+		return -EINVAL;
 
 	if (state->mode == ADV7842_MODE_SDP)
 		return -ENODATA;
@@ -2087,7 +2100,7 @@ static int adv7842_get_format(struct v4l2_subdev *sd,
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
 		struct v4l2_mbus_framefmt *fmt;
 
-		fmt = v4l2_subdev_get_try_format(sd, sd_state, format->pad);
+		fmt = v4l2_subdev_state_get_format(sd_state, format->pad);
 		format->format.code = fmt->code;
 	} else {
 		format->format.code = state->format->code;
@@ -2119,7 +2132,7 @@ static int adv7842_set_format(struct v4l2_subdev *sd,
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
 		struct v4l2_mbus_framefmt *fmt;
 
-		fmt = v4l2_subdev_get_try_format(sd, sd_state, format->pad);
+		fmt = v4l2_subdev_state_get_format(sd_state, format->pad);
 		fmt->code = format->format.code;
 	} else {
 		state->format = info;
@@ -2215,8 +2228,8 @@ static void adv7842_cec_isr(struct v4l2_subdev *sd, bool *handled)
 		struct cec_msg msg;
 
 		msg.len = cec_read(sd, 0x25) & 0x1f;
-		if (msg.len > 16)
-			msg.len = 16;
+		if (msg.len > CEC_MAX_MSG_SIZE)
+			msg.len = CEC_MAX_MSG_SIZE;
 
 		if (msg.len) {
 			u8 i;
@@ -2556,58 +2569,65 @@ struct adv7842_cfg_read_infoframe {
 	u8 payload_addr;
 };
 
-static void log_infoframe(struct v4l2_subdev *sd, const struct adv7842_cfg_read_infoframe *cri)
+static const struct adv7842_cfg_read_infoframe adv7842_cri[] = {
+	{ "AVI", 0x01, 0xe0, 0x00 },
+	{ "Audio", 0x02, 0xe3, 0x1c },
+	{ "SDP", 0x04, 0xe6, 0x2a },
+	{ "Vendor", 0x10, 0xec, 0x54 }
+};
+
+static int adv7842_read_infoframe_buf(struct v4l2_subdev *sd, int index,
+				      u8 buf[V4L2_DEBUGFS_IF_MAX_LEN])
 {
-	int i;
-	u8 buffer[32];
-	union hdmi_infoframe frame;
-	u8 len;
-	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	struct device *dev = &client->dev;
+	const struct adv7842_cfg_read_infoframe *cri = &adv7842_cri[index];
+	int len, i;
 
 	if (!(io_read(sd, 0x60) & cri->present_mask)) {
-		v4l2_info(sd, "%s infoframe not received\n", cri->desc);
-		return;
+		v4l2_dbg(1, debug, sd,
+			 "%s infoframe not received\n", cri->desc);
+		return -ENOENT;
 	}
 
 	for (i = 0; i < 3; i++)
-		buffer[i] = infoframe_read(sd, cri->head_addr + i);
+		buf[i] = infoframe_read(sd, cri->head_addr + i);
 
-	len = buffer[2] + 1;
+	len = buf[2] + 1;
 
-	if (len + 3 > sizeof(buffer)) {
-		v4l2_err(sd, "%s: invalid %s infoframe length %d\n", __func__, cri->desc, len);
-		return;
+	if (len + 3 > V4L2_DEBUGFS_IF_MAX_LEN) {
+		v4l2_err(sd, "%s: invalid %s infoframe length %d\n",
+			 __func__, cri->desc, len);
+		return -ENOENT;
 	}
 
 	for (i = 0; i < len; i++)
-		buffer[i + 3] = infoframe_read(sd, cri->payload_addr + i);
-
-	if (hdmi_infoframe_unpack(&frame, buffer, len + 3) < 0) {
-		v4l2_err(sd, "%s: unpack of %s infoframe failed\n", __func__, cri->desc);
-		return;
-	}
-
-	hdmi_infoframe_log(KERN_INFO, dev, &frame);
+		buf[i + 3] = infoframe_read(sd, cri->payload_addr + i);
+	return len + 3;
 }
 
 static void adv7842_log_infoframes(struct v4l2_subdev *sd)
 {
-	int i;
-	static const struct adv7842_cfg_read_infoframe cri[] = {
-		{ "AVI", 0x01, 0xe0, 0x00 },
-		{ "Audio", 0x02, 0xe3, 0x1c },
-		{ "SDP", 0x04, 0xe6, 0x2a },
-		{ "Vendor", 0x10, 0xec, 0x54 }
-	};
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct device *dev = &client->dev;
+	union hdmi_infoframe frame;
+	u8 buffer[V4L2_DEBUGFS_IF_MAX_LEN] = {};
+	int len, i;
 
 	if (!(hdmi_read(sd, 0x05) & 0x80)) {
 		v4l2_info(sd, "receive DVI-D signal, no infoframes\n");
 		return;
 	}
 
-	for (i = 0; i < ARRAY_SIZE(cri); i++)
-		log_infoframe(sd, &cri[i]);
+	for (i = 0; i < ARRAY_SIZE(adv7842_cri); i++) {
+		len = adv7842_read_infoframe_buf(sd, i, buffer);
+		if (len < 0)
+			continue;
+
+		if (hdmi_infoframe_unpack(&frame, buffer, len) < 0)
+			v4l2_err(sd, "%s: unpack of %s infoframe failed\n",
+				 __func__, adv7842_cri[i].desc);
+		else
+			hdmi_infoframe_log(KERN_INFO, dev, &frame);
+	}
 }
 
 #if 0
@@ -2679,6 +2699,7 @@ static int adv7842_cp_log_status(struct v4l2_subdev *sd)
 	/* CP block */
 	struct adv7842_state *state = to_state(sd);
 	struct v4l2_dv_timings timings;
+	int temp;
 	u8 reg_io_0x02 = io_read(sd, 0x02);
 	u8 reg_io_0x21 = io_read(sd, 0x21);
 	u8 reg_rep_0x77 = rep_read(sd, 0x77);
@@ -2780,7 +2801,7 @@ static int adv7842_cp_log_status(struct v4l2_subdev *sd)
 				"interlaced" : "progressive",
 			hs_pol, vs_pol);
 	}
-	if (adv7842_query_dv_timings(sd, &timings))
+	if (adv7842_query_dv_timings(sd, 0, &timings))
 		v4l2_info(sd, "No video detected\n");
 	else
 		v4l2_print_dv_timings(sd->name, "Detected format: ",
@@ -2801,8 +2822,9 @@ static int adv7842_cp_log_status(struct v4l2_subdev *sd)
 		  (((reg_io_0x02 >> 2) & 0x01) ^ (reg_io_0x02 & 0x01)) ?
 			"(16-235)" : "(0-255)",
 		  (reg_io_0x02 & 0x08) ? "enabled" : "disabled");
+	temp = cp_read(sd, 0xf4) >> 4;
 	v4l2_info(sd, "Color space conversion: %s\n",
-		  csc_coeff_sel_rb[cp_read(sd, 0xf4) >> 4]);
+		  temp < 0 ? "" : csc_coeff_sel_rb[temp]);
 
 	if (!is_digital_input(sd))
 		return 0;
@@ -2832,8 +2854,9 @@ static int adv7842_cp_log_status(struct v4l2_subdev *sd)
 			hdmi_read(sd, 0x5f));
 	v4l2_info(sd, "AV Mute: %s\n",
 			(hdmi_read(sd, 0x04) & 0x40) ? "on" : "off");
+	temp = hdmi_read(sd, 0x0b) >> 6;
 	v4l2_info(sd, "Deep color mode: %s\n",
-			deep_color_mode_txt[hdmi_read(sd, 0x0b) >> 6]);
+			temp < 0 ? "" : deep_color_mode_txt[temp]);
 
 	adv7842_log_infoframes(sd);
 
@@ -3226,7 +3249,7 @@ static int adv7842_command_ram_test(struct v4l2_subdev *sd)
 
 	memset(&state->timings, 0, sizeof(struct v4l2_dv_timings));
 
-	adv7842_s_dv_timings(sd, &timings);
+	adv7842_s_dv_timings(sd, 0, &timings);
 
 	return ret;
 }
@@ -3254,6 +3277,41 @@ static int adv7842_subscribe_event(struct v4l2_subdev *sd,
 	}
 }
 
+static ssize_t
+adv7842_debugfs_if_read(u32 type, void *priv, struct file *filp,
+			char __user *ubuf, size_t count, loff_t *ppos)
+{
+	u8 buf[V4L2_DEBUGFS_IF_MAX_LEN] = {};
+	struct v4l2_subdev *sd = priv;
+	int index;
+	int len;
+
+	if (!is_hdmi(sd))
+		return 0;
+
+	switch (type) {
+	case V4L2_DEBUGFS_IF_AVI:
+		index = 0;
+		break;
+	case V4L2_DEBUGFS_IF_AUDIO:
+		index = 1;
+		break;
+	case V4L2_DEBUGFS_IF_SPD:
+		index = 2;
+		break;
+	case V4L2_DEBUGFS_IF_HDMI:
+		index = 3;
+		break;
+	default:
+		return 0;
+	}
+
+	len = adv7842_read_infoframe_buf(sd, index, buf);
+	if (len > 0)
+		len = simple_read_from_buffer(ubuf, count, ppos, buf, len);
+	return len < 0 ? 0 : len;
+}
+
 static int adv7842_registered(struct v4l2_subdev *sd)
 {
 	struct adv7842_state *state = to_state(sd);
@@ -3261,8 +3319,15 @@ static int adv7842_registered(struct v4l2_subdev *sd)
 	int err;
 
 	err = cec_register_adapter(state->cec_adap, &client->dev);
-	if (err)
+	if (err) {
 		cec_delete_adapter(state->cec_adap);
+	} else {
+		state->debugfs_dir = debugfs_create_dir(sd->name, v4l2_debugfs_root());
+		state->infoframes = v4l2_debugfs_if_alloc(state->debugfs_dir,
+			V4L2_DEBUGFS_IF_AVI | V4L2_DEBUGFS_IF_AUDIO |
+			V4L2_DEBUGFS_IF_SPD | V4L2_DEBUGFS_IF_HDMI, sd,
+			adv7842_debugfs_if_read);
+	}
 	return err;
 }
 
@@ -3271,6 +3336,10 @@ static void adv7842_unregistered(struct v4l2_subdev *sd)
 	struct adv7842_state *state = to_state(sd);
 
 	cec_unregister_adapter(state->cec_adap);
+	v4l2_debugfs_if_free(state->infoframes);
+	state->infoframes = NULL;
+	debugfs_remove_recursive(state->debugfs_dir);
+	state->debugfs_dir = NULL;
 }
 
 /* ----------------------------------------------------------------------- */
@@ -3298,9 +3367,6 @@ static const struct v4l2_subdev_video_ops adv7842_video_ops = {
 	.s_routing = adv7842_s_routing,
 	.querystd = adv7842_querystd,
 	.g_input_status = adv7842_g_input_status,
-	.s_dv_timings = adv7842_s_dv_timings,
-	.g_dv_timings = adv7842_g_dv_timings,
-	.query_dv_timings = adv7842_query_dv_timings,
 };
 
 static const struct v4l2_subdev_pad_ops adv7842_pad_ops = {
@@ -3309,6 +3375,9 @@ static const struct v4l2_subdev_pad_ops adv7842_pad_ops = {
 	.set_fmt = adv7842_set_format,
 	.get_edid = adv7842_get_edid,
 	.set_edid = adv7842_set_edid,
+	.s_dv_timings = adv7842_s_dv_timings,
+	.g_dv_timings = adv7842_g_dv_timings,
+	.query_dv_timings = adv7842_query_dv_timings,
 	.enum_dv_timings = adv7842_enum_dv_timings,
 	.dv_timings_cap = adv7842_dv_timings_cap,
 };
@@ -3400,8 +3469,8 @@ static struct i2c_client *adv7842_dummy_client(struct v4l2_subdev *sd, const cha
 
 	cp = i2c_new_dummy_device(client->adapter, io_read(sd, io_reg) >> 1);
 	if (IS_ERR(cp)) {
-		v4l2_err(sd, "register %s on i2c addr 0x%x failed with %ld\n",
-			 desc, addr, PTR_ERR(cp));
+		v4l2_err(sd, "register %s on i2c addr 0x%x failed with %pe\n",
+			 desc, addr, cp);
 		cp = NULL;
 	}
 
@@ -3441,8 +3510,7 @@ static int adv7842_register_clients(struct v4l2_subdev *sd)
 	return 0;
 }
 
-static int adv7842_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int adv7842_probe(struct i2c_client *client)
 {
 	struct adv7842_state *state;
 	static const struct v4l2_dv_timings cea640x480 =
@@ -3561,7 +3629,7 @@ static int adv7842_probe(struct i2c_client *client,
 	err = media_entity_pads_init(&sd->entity, ADV7842_PAD_SOURCE + 1,
 				     state->pads);
 	if (err)
-		goto err_work_queues;
+		goto err_i2c;
 
 	err = adv7842_core_init(sd);
 	if (err)
@@ -3582,8 +3650,6 @@ static int adv7842_probe(struct i2c_client *client,
 
 err_entity:
 	media_entity_cleanup(&sd->entity);
-err_work_queues:
-	cancel_delayed_work(&state->delayed_work_enable_hotplug);
 err_i2c:
 	adv7842_unregister_clients(sd);
 err_hdl:
@@ -3593,7 +3659,7 @@ err_hdl:
 
 /* ----------------------------------------------------------------------- */
 
-static int adv7842_remove(struct i2c_client *client)
+static void adv7842_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct adv7842_state *state = to_state(sd);
@@ -3604,13 +3670,12 @@ static int adv7842_remove(struct i2c_client *client)
 	media_entity_cleanup(&sd->entity);
 	adv7842_unregister_clients(sd);
 	v4l2_ctrl_handler_free(sd->ctrl_handler);
-	return 0;
 }
 
 /* ----------------------------------------------------------------------- */
 
 static const struct i2c_device_id adv7842_id[] = {
-	{ "adv7842", 0 },
+	{ "adv7842" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adv7842_id);

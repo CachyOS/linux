@@ -168,7 +168,7 @@ struct dvb_frontend *tda8261_attach(struct dvb_frontend *fe,
 {
 	struct tda8261_state *state = NULL;
 
-	if ((state = kzalloc(sizeof (struct tda8261_state), GFP_KERNEL)) == NULL)
+	if ((state = kzalloc_obj(struct tda8261_state)) == NULL)
 		goto exit;
 
 	state->config		= config;
@@ -188,7 +188,7 @@ exit:
 	return NULL;
 }
 
-EXPORT_SYMBOL(tda8261_attach);
+EXPORT_SYMBOL_GPL(tda8261_attach);
 
 MODULE_AUTHOR("Manu Abraham");
 MODULE_DESCRIPTION("TDA8261 8PSK/QPSK Tuner");

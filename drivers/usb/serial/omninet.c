@@ -49,7 +49,6 @@ MODULE_DEVICE_TABLE(usb, id_table);
 
 static struct usb_serial_driver zyxel_omninet_device = {
 	.driver = {
-		.owner =	THIS_MODULE,
 		.name =		"omninet",
 	},
 	.description =		"ZyXEL - omni.net usb",
@@ -114,7 +113,7 @@ static int omninet_port_probe(struct usb_serial_port *port)
 {
 	struct omninet_data *od;
 
-	od = kzalloc(sizeof(*od), GFP_KERNEL);
+	od = kzalloc_obj(*od);
 	if (!od)
 		return -ENOMEM;
 

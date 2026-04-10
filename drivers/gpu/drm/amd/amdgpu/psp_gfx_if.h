@@ -102,6 +102,13 @@ enum psp_gfx_cmd_id
     GFX_CMD_ID_LOAD_TOC           = 0x00000020,   /* Load TOC and obtain TMR size */
     GFX_CMD_ID_AUTOLOAD_RLC       = 0x00000021,   /* Indicates all graphics fw loaded, start RLC autoload */
     GFX_CMD_ID_BOOT_CFG           = 0x00000022,   /* Boot Config */
+    GFX_CMD_ID_SRIOV_SPATIAL_PART = 0x00000027,   /* Configure spatial partitioning mode */
+    /*IDs of performance monitoring/profiling*/
+    GFX_CMD_ID_CONFIG_SQ_PERFMON  = 0x00000046,   /* Config CGTT_SQ_CLK_CTRL */
+    /* Dynamic memory partitioninig (NPS mode change)*/
+    GFX_CMD_ID_FB_NPS_MODE        = 0x00000048,  /* Configure memory partitioning mode */
+    GFX_CMD_ID_FB_FW_RESERV_ADDR  = 0x00000050,  /* Query FW reservation addr */
+    GFX_CMD_ID_FB_FW_RESERV_EXT_ADDR = 0x00000051,  /* Query FW reservation extended addr */
 };
 
 /* PSP boot config sub-commands */
@@ -259,6 +266,8 @@ enum psp_gfx_fw_type {
 	GFX_FW_TYPE_SDMA7                           = 57,   /* SDMA7                    MI      */
 	GFX_FW_TYPE_VCN1                            = 58,   /* VCN1                     MI      */
 	GFX_FW_TYPE_CAP                             = 62,   /* CAP_FW                           */
+	GFX_FW_TYPE_SE2_TAP_DELAYS                  = 65,   /* SE2 TAP DELAYS           NV      */
+	GFX_FW_TYPE_SE3_TAP_DELAYS                  = 66,   /* SE3 TAP DELAYS           NV      */
 	GFX_FW_TYPE_REG_LIST                        = 67,   /* REG_LIST                 MI      */
 	GFX_FW_TYPE_IMU_I                           = 68,   /* IMU Instruction FW       SOC21   */
 	GFX_FW_TYPE_IMU_D                           = 69,   /* IMU Data FW              SOC21   */
@@ -290,6 +299,13 @@ enum psp_gfx_fw_type {
 	GFX_FW_TYPE_RS64_MEC_P1_STACK               = 95,   /* RS64 MEC stack P1        SOC21   */
 	GFX_FW_TYPE_RS64_MEC_P2_STACK               = 96,   /* RS64 MEC stack P2        SOC21   */
 	GFX_FW_TYPE_RS64_MEC_P3_STACK               = 97,   /* RS64 MEC stack P3        SOC21   */
+	GFX_FW_TYPE_RLX6_UCODE_CORE1                = 98,   /* RLCV_IRAM                MI      */
+	GFX_FW_TYPE_RLX6_DRAM_BOOT_CORE1            = 99,   /* RLCV DRAM BOOT           MI      */
+	GFX_FW_TYPE_VPEC_FW1                        = 100,  /* VPEC FW1 To Save         VPE     */
+	GFX_FW_TYPE_VPEC_FW2                        = 101,  /* VPEC FW2 To Save         VPE     */
+	GFX_FW_TYPE_VPE                             = 102,
+	GFX_FW_TYPE_JPEG_RAM                        = 128,  /**< JPEG Command buffer */
+	GFX_FW_TYPE_P2S_TABLE                       = 129,
 	GFX_FW_TYPE_MAX
 };
 
@@ -336,6 +352,27 @@ struct psp_gfx_cmd_boot_cfg
     uint32_t                        boot_config_valid;    /* dynamic boot configuration valid bits bitmask */
 };
 
+struct psp_gfx_cmd_sriov_spatial_part {
+	uint32_t mode;
+	uint32_t override_ips;
+	uint32_t override_xcds_avail;
+	uint32_t override_this_aid;
+};
+
+/*Structure for sq performance monitoring/profiling enable/disable*/
+struct psp_gfx_cmd_config_sq_perfmon {
+	uint32_t        gfx_xcp_mask;
+	uint8_t         core_override;
+	uint8_t         reg_override;
+	uint8_t         perfmon_override;
+	uint8_t         reserved[5];
+};
+
+struct psp_gfx_cmd_fb_memory_part {
+	uint32_t mode; /* requested NPS mode */
+	uint32_t resvd;
+};
+
 /* All GFX ring buffer commands. */
 union psp_gfx_commands
 {
@@ -349,6 +386,9 @@ union psp_gfx_commands
     struct psp_gfx_cmd_setup_tmr        cmd_setup_vmr;
     struct psp_gfx_cmd_load_toc         cmd_load_toc;
     struct psp_gfx_cmd_boot_cfg         boot_cfg;
+    struct psp_gfx_cmd_sriov_spatial_part cmd_spatial_part;
+    struct psp_gfx_cmd_config_sq_perfmon config_sq_perfmon;
+    struct psp_gfx_cmd_fb_memory_part cmd_memory_part;
 };
 
 struct psp_gfx_uresp_reserved
@@ -368,11 +408,19 @@ struct psp_gfx_uresp_bootcfg {
 	uint32_t boot_cfg;	/* boot config data */
 };
 
+/* Command-specific response for fw reserve info */
+struct psp_gfx_uresp_fw_reserve_info {
+    uint32_t reserve_base_address_hi;
+    uint32_t reserve_base_address_lo;
+    uint32_t reserve_size;
+};
+
 /* Union of command-specific responses for GPCOM ring. */
 union psp_gfx_uresp {
 	struct psp_gfx_uresp_reserved		reserved;
 	struct psp_gfx_uresp_bootcfg		boot_cfg;
 	struct psp_gfx_uresp_fwar_db_info	fwar_db_info;
+	struct psp_gfx_uresp_fw_reserve_info	fw_reserve_info;
 };
 
 /* Structure of GFX Response buffer.
@@ -448,8 +496,9 @@ struct psp_gfx_rb_frame
 #define PSP_ERR_UNKNOWN_COMMAND 0x00000100
 
 enum tee_error_code {
-    TEE_SUCCESS                         = 0x00000000,
-    TEE_ERROR_NOT_SUPPORTED             = 0xFFFF000A,
+	TEE_SUCCESS			= 0x00000000,
+	TEE_ERROR_CANCEL		= 0xFFFF0002,
+	TEE_ERROR_NOT_SUPPORTED		= 0xFFFF000A,
 };
 
 #endif /* _PSP_TEE_GFX_IF_H_ */

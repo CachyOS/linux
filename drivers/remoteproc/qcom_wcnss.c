@@ -14,12 +14,12 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/io.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
-#include <linux/qcom_scm.h>
+#include <linux/firmware/qcom/qcom_scm.h>
 #include <linux/regulator/consumer.h>
 #include <linux/remoteproc.h>
 #include <linux/soc/qcom/mdt_loader.h>
@@ -117,10 +117,10 @@ static const struct wcnss_data pronto_v1_data = {
 	.pmu_offset = 0x1004,
 	.spare_offset = 0x1088,
 
-	.pd_names = { "mx", "cx" },
+	.pd_names = { "cx", "mx" },
 	.vregs = (struct wcnss_vreg_info[]) {
-		{ "vddmx", 950000, 1150000, 0 },
 		{ "vddcx", .super_turbo = true},
+		{ "vddmx", 950000, 1150000, 0 },
 		{ "vddpx", 1800000, 1800000, 0 },
 	},
 	.num_pd_vregs = 2,
@@ -131,19 +131,30 @@ static const struct wcnss_data pronto_v2_data = {
 	.pmu_offset = 0x1004,
 	.spare_offset = 0x1088,
 
-	.pd_names = { "mx", "cx" },
+	.pd_names = { "cx", "mx" },
 	.vregs = (struct wcnss_vreg_info[]) {
-		{ "vddmx", 1287500, 1287500, 0 },
 		{ "vddcx", .super_turbo = true },
+		{ "vddmx", 1287500, 1287500, 0 },
 		{ "vddpx", 1800000, 1800000, 0 },
 	},
 	.num_pd_vregs = 2,
 	.num_vregs = 1,
 };
 
+static const struct wcnss_data pronto_v3_data = {
+	.pmu_offset = 0x1004,
+	.spare_offset = 0x1088,
+
+	.pd_names = { "mx", "cx" },
+	.vregs = (struct wcnss_vreg_info[]) {
+		{ "vddpx", 1800000, 1800000, 0 },
+	},
+	.num_vregs = 1,
+};
+
 static int wcnss_load(struct rproc *rproc, const struct firmware *fw)
 {
-	struct qcom_wcnss *wcnss = (struct qcom_wcnss *)rproc->priv;
+	struct qcom_wcnss *wcnss = rproc->priv;
 	int ret;
 
 	ret = qcom_mdt_load(wcnss->dev, fw, rproc->firmware, WCNSS_PAS_ID,
@@ -216,7 +227,7 @@ static void wcnss_configure_iris(struct qcom_wcnss *wcnss)
 
 static int wcnss_start(struct rproc *rproc)
 {
-	struct qcom_wcnss *wcnss = (struct qcom_wcnss *)rproc->priv;
+	struct qcom_wcnss *wcnss = rproc->priv;
 	int ret, i;
 
 	mutex_lock(&wcnss->iris_lock);
@@ -282,7 +293,7 @@ release_iris_lock:
 
 static int wcnss_stop(struct rproc *rproc)
 {
-	struct qcom_wcnss *wcnss = (struct qcom_wcnss *)rproc->priv;
+	struct qcom_wcnss *wcnss = rproc->priv;
 	int ret;
 
 	if (wcnss->state) {
@@ -309,7 +320,7 @@ static int wcnss_stop(struct rproc *rproc)
 
 static void *wcnss_da_to_va(struct rproc *rproc, u64 da, size_t len, bool *is_iomem)
 {
-	struct qcom_wcnss *wcnss = (struct qcom_wcnss *)rproc->priv;
+	struct qcom_wcnss *wcnss = rproc->priv;
 	int offset;
 
 	offset = da - wcnss->mem_reloc;
@@ -386,7 +397,16 @@ static irqreturn_t wcnss_stop_ack_interrupt(int irq, void *dev)
 static int wcnss_init_pds(struct qcom_wcnss *wcnss,
 			  const char * const pd_names[WCNSS_MAX_PDS])
 {
+	struct device *dev = wcnss->dev;
 	int i, ret;
+
+	/* Handle single power domain */
+	if (dev->pm_domain) {
+		wcnss->pds[0] = dev;
+		wcnss->num_pds = 1;
+		pm_runtime_enable(dev);
+		return 0;
+	}
 
 	for (i = 0; i < WCNSS_MAX_PDS; i++) {
 		if (!pd_names[i])
@@ -407,7 +427,14 @@ static int wcnss_init_pds(struct qcom_wcnss *wcnss,
 
 static void wcnss_release_pds(struct qcom_wcnss *wcnss)
 {
+	struct device *dev = wcnss->dev;
 	int i;
+
+	/* Handle single power domain */
+	if (wcnss->num_pds == 1 && dev->pm_domain) {
+		pm_runtime_disable(dev);
+		return;
+	}
 
 	for (i = 0; i < wcnss->num_pds; i++)
 		dev_pm_domain_detach(wcnss->pds[i], false);
@@ -426,10 +453,14 @@ static int wcnss_init_regulators(struct qcom_wcnss *wcnss,
 	 * the regulators for the power domains. For old device trees we need to
 	 * reserve extra space to manage them through the regulator interface.
 	 */
-	if (wcnss->num_pds)
-		info += num_pd_vregs;
-	else
+	if (wcnss->num_pds) {
+		info += wcnss->num_pds;
+		/* Handle single power domain case */
+		if (wcnss->num_pds < num_pd_vregs)
+			num_vregs += num_pd_vregs - wcnss->num_pds;
+	} else {
 		num_vregs += num_pd_vregs;
+	}
 
 	bulk = devm_kcalloc(wcnss->dev,
 			    num_vregs, sizeof(struct regulator_bulk_data),
@@ -467,6 +498,7 @@ static int wcnss_request_irq(struct qcom_wcnss *wcnss,
 			     irq_handler_t thread_fn)
 {
 	int ret;
+	int irq_number;
 
 	ret = platform_get_irq_byname(pdev, name);
 	if (ret < 0 && optional) {
@@ -477,40 +509,38 @@ static int wcnss_request_irq(struct qcom_wcnss *wcnss,
 		return ret;
 	}
 
+	irq_number = ret;
+
 	ret = devm_request_threaded_irq(&pdev->dev, ret,
 					NULL, thread_fn,
 					IRQF_TRIGGER_RISING | IRQF_ONESHOT,
 					"wcnss", wcnss);
-	if (ret)
+	if (ret) {
 		dev_err(&pdev->dev, "request %s IRQ failed\n", name);
+		return ret;
+	}
 
-	return ret;
+	/* Return the IRQ number if the IRQ was successfully acquired */
+	return irq_number;
 }
 
 static int wcnss_alloc_memory_region(struct qcom_wcnss *wcnss)
 {
-	struct device_node *node;
-	struct resource r;
+	struct resource res;
 	int ret;
 
-	node = of_parse_phandle(wcnss->dev->of_node, "memory-region", 0);
-	if (!node) {
-		dev_err(wcnss->dev, "no memory-region specified\n");
-		return -EINVAL;
+	ret = of_reserved_mem_region_to_resource(wcnss->dev->of_node, 0, &res);
+	if (ret) {
+		dev_err(wcnss->dev, "unable to resolve memory-region\n");
+		return ret;
 	}
 
-	ret = of_address_to_resource(node, 0, &r);
-	of_node_put(node);
-	if (ret)
-		return ret;
-
-	wcnss->mem_phys = wcnss->mem_reloc = r.start;
-	wcnss->mem_size = resource_size(&r);
+	wcnss->mem_phys = wcnss->mem_reloc = res.start;
+	wcnss->mem_size = resource_size(&res);
 	wcnss->mem_region = devm_ioremap_wc(wcnss->dev, wcnss->mem_phys, wcnss->mem_size);
-	if (!wcnss->mem_region) {
-		dev_err(wcnss->dev, "unable to map memory region: %pa+%zx\n",
-			&r.start, wcnss->mem_size);
-		return -EBUSY;
+	if (IS_ERR(wcnss->mem_region)) {
+		dev_err(wcnss->dev, "unable to map memory region: %pR\n", &res);
+		return PTR_ERR(wcnss->mem_region);
 	}
 
 	return 0;
@@ -521,7 +551,6 @@ static int wcnss_probe(struct platform_device *pdev)
 	const char *fw_name = WCNSS_FIRMWARE_NAME;
 	const struct wcnss_data *data;
 	struct qcom_wcnss *wcnss;
-	struct resource *res;
 	struct rproc *rproc;
 	void __iomem *mmio;
 	int ret;
@@ -541,15 +570,15 @@ static int wcnss_probe(struct platform_device *pdev)
 	if (ret < 0 && ret != -EINVAL)
 		return ret;
 
-	rproc = rproc_alloc(&pdev->dev, pdev->name, &wcnss_ops,
-			    fw_name, sizeof(*wcnss));
+	rproc = devm_rproc_alloc(&pdev->dev, pdev->name, &wcnss_ops,
+				 fw_name, sizeof(*wcnss));
 	if (!rproc) {
 		dev_err(&pdev->dev, "unable to allocate remoteproc\n");
 		return -ENOMEM;
 	}
 	rproc_coredump_set_elf_info(rproc, ELFCLASS32, EM_NONE);
 
-	wcnss = (struct qcom_wcnss *)rproc->priv;
+	wcnss = rproc->priv;
 	wcnss->dev = &pdev->dev;
 	wcnss->rproc = rproc;
 	platform_set_drvdata(pdev, wcnss);
@@ -559,16 +588,13 @@ static int wcnss_probe(struct platform_device *pdev)
 
 	mutex_init(&wcnss->iris_lock);
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "pmu");
-	mmio = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(mmio)) {
-		ret = PTR_ERR(mmio);
-		goto free_rproc;
-	}
+	mmio = devm_platform_ioremap_resource_byname(pdev, "pmu");
+	if (IS_ERR(mmio))
+		return PTR_ERR(mmio);
 
 	ret = wcnss_alloc_memory_region(wcnss);
 	if (ret)
-		goto free_rproc;
+		return ret;
 
 	wcnss->pmu_cfg = mmio + data->pmu_offset;
 	wcnss->spare_out = mmio + data->spare_offset;
@@ -579,7 +605,7 @@ static int wcnss_probe(struct platform_device *pdev)
 	 */
 	ret = wcnss_init_pds(wcnss, data->pd_names);
 	if (ret && (ret != -ENODATA || !data->num_pd_vregs))
-		goto free_rproc;
+		return ret;
 
 	ret = wcnss_init_regulators(wcnss, data->vregs, data->num_vregs,
 				    data->num_pd_vregs);
@@ -643,13 +669,11 @@ remove_iris:
 	qcom_iris_remove(wcnss->iris);
 detach_pds:
 	wcnss_release_pds(wcnss);
-free_rproc:
-	rproc_free(rproc);
 
 	return ret;
 }
 
-static int wcnss_remove(struct platform_device *pdev)
+static void wcnss_remove(struct platform_device *pdev)
 {
 	struct qcom_wcnss *wcnss = platform_get_drvdata(pdev);
 
@@ -660,15 +684,13 @@ static int wcnss_remove(struct platform_device *pdev)
 	qcom_remove_sysmon_subdev(wcnss->sysmon);
 	qcom_remove_smd_subdev(wcnss->rproc, &wcnss->smd_subdev);
 	wcnss_release_pds(wcnss);
-	rproc_free(wcnss->rproc);
-
-	return 0;
 }
 
 static const struct of_device_id wcnss_of_match[] = {
 	{ .compatible = "qcom,riva-pil", &riva_data },
 	{ .compatible = "qcom,pronto-v1-pil", &pronto_v1_data },
 	{ .compatible = "qcom,pronto-v2-pil", &pronto_v2_data },
+	{ .compatible = "qcom,pronto-v3-pil", &pronto_v3_data },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, wcnss_of_match);

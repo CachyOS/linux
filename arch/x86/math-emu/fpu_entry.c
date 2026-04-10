@@ -32,6 +32,7 @@
 #include <asm/traps.h>
 #include <asm/user.h>
 #include <asm/fpu/api.h>
+#include <asm/fpu/regset.h>
 
 #include "fpu_system.h"
 #include "fpu_emu.h"
@@ -640,7 +641,7 @@ int fpregs_soft_set(struct task_struct *target,
 		    unsigned int pos, unsigned int count,
 		    const void *kbuf, const void __user *ubuf)
 {
-	struct swregs_state *s387 = &target->thread.fpu.fpstate->regs.soft;
+	struct swregs_state *s387 = &x86_task_fpu(target)->fpstate->regs.soft;
 	void *space = s387->st_space;
 	int ret;
 	int offset, other, i, tags, regnr, tag, newtop;
@@ -691,7 +692,7 @@ int fpregs_soft_get(struct task_struct *target,
 		    const struct user_regset *regset,
 		    struct membuf to)
 {
-	struct swregs_state *s387 = &target->thread.fpu.fpstate->regs.soft;
+	struct swregs_state *s387 = &x86_task_fpu(target)->fpstate->regs.soft;
 	const void *space = s387->st_space;
 	int offset = (S387->ftop & 7) * 10, other = 80 - offset;
 

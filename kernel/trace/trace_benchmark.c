@@ -51,7 +51,7 @@ static void trace_do_benchmark(void)
 
 	local_irq_disable();
 	start = trace_clock_local();
-	trace_benchmark_event(bm_str);
+	trace_benchmark_event(bm_str, bm_last);
 	stop = trace_clock_local();
 	local_irq_enable();
 
@@ -92,7 +92,6 @@ static void trace_do_benchmark(void)
 	bm_total += delta;
 	bm_totalsq += delta * delta;
 
-
 	if (bm_cnt > 1) {
 		/*
 		 * Apply Welford's method to calculate standard deviation:
@@ -105,7 +104,7 @@ static void trace_do_benchmark(void)
 		stddev = 0;
 
 	delta = bm_total;
-	do_div(delta, bm_cnt);
+	do_div(delta, (u32)bm_cnt);
 	avg = delta;
 
 	if (stddev > 0) {
@@ -127,7 +126,7 @@ static void trace_do_benchmark(void)
 			seed = stddev;
 			if (!last_seed)
 				break;
-			do_div(seed, last_seed);
+			seed = div64_u64(seed, last_seed);
 			seed += last_seed;
 			do_div(seed, 2);
 		} while (i++ < 10 && last_seed != seed);

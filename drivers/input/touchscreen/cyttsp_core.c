@@ -14,10 +14,10 @@
  */
 
 #include <linux/delay.h>
+#include <linux/export.h>
 #include <linux/input.h>
 #include <linux/input/mt.h>
 #include <linux/input/touchscreen.h>
-#include <linux/gpio.h>
 #include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/property.h>
@@ -491,7 +491,7 @@ static int cyttsp_disable(struct cyttsp *ts)
 	return 0;
 }
 
-static int __maybe_unused cyttsp_suspend(struct device *dev)
+static int cyttsp_suspend(struct device *dev)
 {
 	struct cyttsp *ts = dev_get_drvdata(dev);
 	int retval = 0;
@@ -509,7 +509,7 @@ static int __maybe_unused cyttsp_suspend(struct device *dev)
 	return retval;
 }
 
-static int __maybe_unused cyttsp_resume(struct device *dev)
+static int cyttsp_resume(struct device *dev)
 {
 	struct cyttsp *ts = dev_get_drvdata(dev);
 
@@ -525,8 +525,7 @@ static int __maybe_unused cyttsp_resume(struct device *dev)
 	return 0;
 }
 
-SIMPLE_DEV_PM_OPS(cyttsp_pm_ops, cyttsp_suspend, cyttsp_resume);
-EXPORT_SYMBOL_GPL(cyttsp_pm_ops);
+EXPORT_GPL_SIMPLE_DEV_PM_OPS(cyttsp_pm_ops, cyttsp_suspend, cyttsp_resume);
 
 static int cyttsp_open(struct input_dev *dev)
 {
@@ -616,17 +615,14 @@ static int cyttsp_parse_properties(struct cyttsp *ts)
 	return 0;
 }
 
-static void cyttsp_disable_regulators(void *_ts)
-{
-	struct cyttsp *ts = _ts;
-
-	regulator_bulk_disable(ARRAY_SIZE(ts->regulators),
-			       ts->regulators);
-}
-
 struct cyttsp *cyttsp_probe(const struct cyttsp_bus_ops *bus_ops,
 			    struct device *dev, int irq, size_t xfer_buf_size)
 {
+	/*
+	 * VCPIN is the analog voltage supply
+	 * VDD is the digital voltage supply
+	 */
+	static const char * const supplies[] = { "vcpin", "vdd" };
 	struct cyttsp *ts;
 	struct input_dev *input_dev;
 	int error;
@@ -644,29 +640,10 @@ struct cyttsp *cyttsp_probe(const struct cyttsp_bus_ops *bus_ops,
 	ts->bus_ops = bus_ops;
 	ts->irq = irq;
 
-	/*
-	 * VCPIN is the analog voltage supply
-	 * VDD is the digital voltage supply
-	 */
-	ts->regulators[0].supply = "vcpin";
-	ts->regulators[1].supply = "vdd";
-	error = devm_regulator_bulk_get(dev, ARRAY_SIZE(ts->regulators),
-					ts->regulators);
+	error = devm_regulator_bulk_get_enable(dev, ARRAY_SIZE(supplies),
+					       supplies);
 	if (error) {
-		dev_err(dev, "Failed to get regulators: %d\n", error);
-		return ERR_PTR(error);
-	}
-
-	error = regulator_bulk_enable(ARRAY_SIZE(ts->regulators),
-				      ts->regulators);
-	if (error) {
-		dev_err(dev, "Cannot enable regulators: %d\n", error);
-		return ERR_PTR(error);
-	}
-
-	error = devm_add_action_or_reset(dev, cyttsp_disable_regulators, ts);
-	if (error) {
-		dev_err(dev, "failed to install chip disable handler\n");
+		dev_err(dev, "Failed to enable regulators: %d\n", error);
 		return ERR_PTR(error);
 	}
 

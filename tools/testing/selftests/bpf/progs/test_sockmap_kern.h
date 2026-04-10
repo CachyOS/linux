@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
+#include "bpf_misc.h"
 
 /* Sockmap sample program connects a client and a backend together
  * using cgroups.
@@ -91,7 +92,7 @@ struct {
 	__uint(value_size, sizeof(int));
 } tls_sock_map SEC(".maps");
 
-SEC("sk_skb1")
+SEC("sk_skb/stream_parser")
 int bpf_prog1(struct __sk_buff *skb)
 {
 	int *f, two = 2;
@@ -103,7 +104,7 @@ int bpf_prog1(struct __sk_buff *skb)
 	return skb->len;
 }
 
-SEC("sk_skb2")
+SEC("sk_skb/stream_verdict")
 int bpf_prog2(struct __sk_buff *skb)
 {
 	__u32 lport = skb->local_port;
@@ -111,12 +112,15 @@ int bpf_prog2(struct __sk_buff *skb)
 	int len, *f, ret, zero = 0;
 	__u64 flags = 0;
 
+	__sink(rport);
 	if (lport == 10000)
 		ret = 10;
 	else
 		ret = 1;
 
 	len = (__u32)skb->data_end - (__u32)skb->data;
+	__sink(len);
+
 	f = bpf_map_lookup_elem(&sock_skb_opts, &zero);
 	if (f && *f) {
 		ret = 3;
@@ -147,7 +151,7 @@ static inline void bpf_write_pass(struct __sk_buff *skb, int offset)
 		memcpy(c + offset, "PASS", 4);
 }
 
-SEC("sk_skb3")
+SEC("sk_skb/stream_verdict")
 int bpf_prog3(struct __sk_buff *skb)
 {
 	int err, *f, ret = SK_PASS;
@@ -173,14 +177,10 @@ int bpf_prog3(struct __sk_buff *skb)
 		return bpf_sk_redirect_hash(skb, &tls_sock_map, &ret, flags);
 #endif
 	}
-	f = bpf_map_lookup_elem(&sock_skb_opts, &one);
-	if (f && *f)
-		ret = SK_DROP;
 	err = bpf_skb_adjust_room(skb, 4, 0, 0);
 	if (err)
 		return SK_DROP;
 	bpf_write_pass(skb, 13);
-tls_out:
 	return ret;
 }
 
@@ -188,8 +188,7 @@ SEC("sockops")
 int bpf_sockmap(struct bpf_sock_ops *skops)
 {
 	__u32 lport, rport;
-	int op, err = 0, index, key, ret;
-
+	int op, ret;
 
 	op = (int) skops->op;
 
@@ -201,10 +200,10 @@ int bpf_sockmap(struct bpf_sock_ops *skops)
 		if (lport == 10000) {
 			ret = 1;
 #ifdef SOCKMAP
-			err = bpf_sock_map_update(skops, &sock_map, &ret,
+			bpf_sock_map_update(skops, &sock_map, &ret,
 						  BPF_NOEXIST);
 #else
-			err = bpf_sock_hash_update(skops, &sock_map, &ret,
+			bpf_sock_hash_update(skops, &sock_map, &ret,
 						   BPF_NOEXIST);
 #endif
 		}
@@ -216,10 +215,10 @@ int bpf_sockmap(struct bpf_sock_ops *skops)
 		if (bpf_ntohl(rport) == 10001) {
 			ret = 10;
 #ifdef SOCKMAP
-			err = bpf_sock_map_update(skops, &sock_map, &ret,
+			bpf_sock_map_update(skops, &sock_map, &ret,
 						  BPF_NOEXIST);
 #else
-			err = bpf_sock_hash_update(skops, &sock_map, &ret,
+			bpf_sock_hash_update(skops, &sock_map, &ret,
 						   BPF_NOEXIST);
 #endif
 		}
@@ -231,7 +230,7 @@ int bpf_sockmap(struct bpf_sock_ops *skops)
 	return 0;
 }
 
-SEC("sk_msg1")
+SEC("sk_msg")
 int bpf_prog4(struct sk_msg_md *msg)
 {
 	int *bytes, zero = 0, one = 1, two = 2, three = 3, four = 4, five = 5;
@@ -261,7 +260,7 @@ int bpf_prog4(struct sk_msg_md *msg)
 	return SK_PASS;
 }
 
-SEC("sk_msg2")
+SEC("sk_msg")
 int bpf_prog6(struct sk_msg_md *msg)
 {
 	int zero = 0, one = 1, two = 2, three = 3, four = 4, five = 5, key = 0;
@@ -306,7 +305,7 @@ int bpf_prog6(struct sk_msg_md *msg)
 #endif
 }
 
-SEC("sk_msg3")
+SEC("sk_msg")
 int bpf_prog8(struct sk_msg_md *msg)
 {
 	void *data_end = (void *)(long) msg->data_end;
@@ -321,9 +320,14 @@ int bpf_prog8(struct sk_msg_md *msg)
 	} else {
 		return SK_DROP;
 	}
+
+	__sink(data_end);
+	__sink(data);
+
 	return SK_PASS;
 }
-SEC("sk_msg4")
+
+SEC("sk_msg")
 int bpf_prog9(struct sk_msg_md *msg)
 {
 	void *data_end = (void *)(long) msg->data_end;
@@ -341,7 +345,7 @@ int bpf_prog9(struct sk_msg_md *msg)
 	return SK_PASS;
 }
 
-SEC("sk_msg5")
+SEC("sk_msg")
 int bpf_prog10(struct sk_msg_md *msg)
 {
 	int *bytes, *start, *end, *start_push, *end_push, *start_pop, *pop;

@@ -16,7 +16,7 @@
 #include <linux/ppp-comp.h>
 
 #include <linux/zlib.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 /*
  * State for a Deflate (de)compressor.
@@ -97,8 +97,7 @@ static void *z_comp_alloc(unsigned char *options, int opt_len)
 	if (w_size < DEFLATE_MIN_SIZE || w_size > DEFLATE_MAX_SIZE)
 		return NULL;
 
-	state = kzalloc(sizeof(*state),
-						     GFP_KERNEL);
+	state = kzalloc_obj(*state);
 	if (state == NULL)
 		return NULL;
 
@@ -313,7 +312,7 @@ static void *z_decomp_alloc(unsigned char *options, int opt_len)
 	if (w_size < DEFLATE_MIN_SIZE || w_size > DEFLATE_MAX_SIZE)
 		return NULL;
 
-	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	state = kzalloc_obj(*state);
 	if (state == NULL)
 		return NULL;
 
@@ -630,6 +629,7 @@ static void __exit deflate_cleanup(void)
 
 module_init(deflate_init);
 module_exit(deflate_cleanup);
+MODULE_DESCRIPTION("PPP Deflate compression module");
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_ALIAS("ppp-compress-" __stringify(CI_DEFLATE));
 MODULE_ALIAS("ppp-compress-" __stringify(CI_DEFLATE_DRAFT));

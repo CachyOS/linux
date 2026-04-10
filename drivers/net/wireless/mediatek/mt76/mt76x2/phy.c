@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: ISC
+// SPDX-License-Identifier: BSD-3-Clause-Clear
 /*
  * Copyright (C) 2016 Felix Fietkau <nbd@nbd.name>
  * Copyright (C) 2018 Lorenzo Bianconi <lorenzo.bianconi83@gmail.com>
@@ -116,7 +116,7 @@ void mt76x2_phy_set_txpower_regs(struct mt76x02_dev *dev,
 EXPORT_SYMBOL_GPL(mt76x2_phy_set_txpower_regs);
 
 static int
-mt76x2_get_min_rate_power(struct mt76_rate_power *r)
+mt76x2_get_min_rate_power(struct mt76x02_rate_power *r)
 {
 	int i;
 	s8 ret = 0;
@@ -140,7 +140,7 @@ void mt76x2_phy_set_txpower(struct mt76x02_dev *dev)
 	struct ieee80211_channel *chan = dev->mphy.chandef.chan;
 	struct mt76x2_tx_power_info txp;
 	int txp_0, txp_1, delta = 0;
-	struct mt76_rate_power t = {};
+	struct mt76x02_rate_power t = {};
 	int base_power, gain;
 
 	mt76x2_get_power_info(dev, &txp, chan);
@@ -175,7 +175,7 @@ void mt76x2_phy_set_txpower(struct mt76x02_dev *dev)
 	dev->target_power = txp.target_power;
 	dev->target_power_delta[0] = txp_0 - txp.chain[0].target_power;
 	dev->target_power_delta[1] = txp_1 - txp.chain[0].target_power;
-	dev->mt76.rate_power = t;
+	dev->rate_power = t;
 
 	mt76x02_phy_set_txpower(dev, txp_0, txp_1);
 }
@@ -280,7 +280,7 @@ void mt76x2_phy_update_channel_gain(struct mt76x02_dev *dev)
 	int low_gain;
 	u32 val;
 
-	dev->cal.avg_rssi_all = mt76_get_min_avg_rssi(&dev->mt76, false);
+	dev->cal.avg_rssi_all = mt76_get_min_avg_rssi(&dev->mt76, 0);
 	if (!dev->cal.avg_rssi_all)
 		dev->cal.avg_rssi_all = -75;
 

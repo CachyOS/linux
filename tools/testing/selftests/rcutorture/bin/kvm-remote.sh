@@ -34,19 +34,18 @@ fi
 shift
 
 # Pathnames:
-# T:	  /tmp/kvm-remote.sh.$$
-# resdir: /tmp/kvm-remote.sh.$$/res
-# rundir: /tmp/kvm-remote.sh.$$/res/$ds ("-remote" suffix)
+# T:	  /tmp/kvm-remote.sh.NNNNNN where "NNNNNN" is set by mktemp
+# resdir: /tmp/kvm-remote.sh.NNNNNN/res
+# rundir: /tmp/kvm-remote.sh.NNNNNN/res/$ds ("-remote" suffix)
 # oldrun: `pwd`/tools/testing/.../res/$otherds
 #
 # Pathname segments:
-# TD:	  kvm-remote.sh.$$
+# TD:	  kvm-remote.sh.NNNNNN
 # ds:	  yyyy.mm.dd-hh.mm.ss-remote
 
-TD=kvm-remote.sh.$$
-T=${TMPDIR-/tmp}/$TD
+T="`mktemp -d ${TMPDIR-/tmp}/kvm-remote.sh.XXXXXX`"
 trap 'rm -rf $T' 0
-mkdir $T
+TD="`basename "$T"`"
 
 resdir="$T/res"
 ds=`date +%Y.%m.%d-%H.%M.%S`-remote
@@ -138,14 +137,20 @@ chmod +x $T/bin/kvm-remote-*.sh
 # Check first to avoid the need for cleanup for system-name typos
 for i in $systems
 do
-	ncpus="`ssh -o BatchMode=yes $i getconf _NPROCESSORS_ONLN 2> /dev/null`"
+	ssh -o BatchMode=yes $i getconf _NPROCESSORS_ONLN > $T/ssh.stdout 2> $T/ssh.stderr
 	ret=$?
 	if test "$ret" -ne 0
 	then
-		echo System $i unreachable, giving up. | tee -a "$oldrun/remote-log"
+		echo "System $i unreachable ($ret), giving up." | tee -a "$oldrun/remote-log"
+		echo ' --- ssh stdout: vvv' | tee -a "$oldrun/remote-log"
+		cat $T/ssh.stdout | tee -a "$oldrun/remote-log"
+		echo ' --- ssh stdout: ^^^' | tee -a "$oldrun/remote-log"
+		echo ' --- ssh stderr: vvv' | tee -a "$oldrun/remote-log"
+		cat $T/ssh.stderr | tee -a "$oldrun/remote-log"
+		echo ' --- ssh stderr: ^^^' | tee -a "$oldrun/remote-log"
 		exit 4
 	fi
-	echo $i: $ncpus CPUs " " `date` | tee -a "$oldrun/remote-log"
+	echo $i: `cat $T/ssh.stdout` CPUs " " `date` | tee -a "$oldrun/remote-log"
 done
 
 # Download and expand the tarball on all systems.
@@ -176,10 +181,11 @@ done
 
 # Function to check for presence of a file on the specified system.
 # Complain if the system cannot be reached, and retry after a wait.
-# Currently just waits forever if a machine disappears.
+# Currently just waits 15 minutes if a machine disappears.
 #
 # Usage: checkremotefile system pathname
 checkremotefile () {
+	local nsshfails=0
 	local ret
 	local sleeptime=60
 
@@ -190,6 +196,11 @@ checkremotefile () {
 		if test "$ret" -eq 255
 		then
 			echo " ---" ssh failure to $1 checking for file $2, retry after $sleeptime seconds. `date` | tee -a "$oldrun/remote-log"
+			nsshfails=$((nsshfails+1))
+			if ((nsshfails > 15))
+			then
+				return 255
+			fi
 		elif test "$ret" -eq 0
 		then
 			return 0
@@ -262,12 +273,24 @@ echo All batches started. `date` | tee -a "$oldrun/remote-log"
 # Wait for all remaining scenarios to complete and collect results.
 for i in $systems
 do
-	while checkremotefile "$i" "$resdir/$ds/remote.run"
+	echo " ---" Waiting for $i `date` | tee -a "$oldrun/remote-log"
+	while :
 	do
+		checkremotefile "$i" "$resdir/$ds/remote.run"
+		ret=$?
+		if test "$ret" -eq 1
+		then
+			echo " ---" Collecting results from $i `date` | tee -a "$oldrun/remote-log"
+			( cd "$oldrun"; ssh -o BatchMode=yes $i "cd $rundir; tar -czf - kvm-remote-*.sh.out */console.log */kvm-test-1-run*.sh.out */qemu[_-]pid */qemu-retval */qemu-affinity; rm -rf $T > /dev/null 2>&1" | tar -xzf - )
+			break;
+		fi
+		if test "$ret" -eq 255
+		then
+			echo System $i persistent ssh failure, lost results `date` | tee -a "$oldrun/remote-log"
+			break;
+		fi
 		sleep 30
 	done
-	echo " ---" Collecting results from $i `date` | tee -a "$oldrun/remote-log"
-	( cd "$oldrun"; ssh -o BatchMode=yes $i "cd $rundir; tar -czf - kvm-remote-*.sh.out */console.log */kvm-test-1-run*.sh.out */qemu[_-]pid */qemu-retval */qemu-affinity; rm -rf $T > /dev/null 2>&1" | tar -xzf - )
 done
 
 ( kvm-end-run-stats.sh "$oldrun" "$starttime"; echo $? > $T/exitcode ) | tee -a "$oldrun/remote-log"

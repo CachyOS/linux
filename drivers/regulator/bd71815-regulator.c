@@ -18,7 +18,6 @@
 #include <linux/regulator/driver.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
-#include <linux/gpio.h>
 #include <linux/mfd/rohm-generic.h>
 #include <linux/mfd/rohm-bd71815.h>
 #include <linux/regulator/of_regulator.h>
@@ -174,9 +173,9 @@ static int set_hw_dvs_levels(struct device_node *np,
 			     const struct regulator_desc *desc,
 			     struct regulator_config *cfg)
 {
-	struct bd71815_regulator *data;
+	const struct bd71815_regulator *data;
 
-	data = container_of(desc, struct bd71815_regulator, desc);
+	data = container_of_const(desc, struct bd71815_regulator, desc);
 	return rohm_regulator_set_dvs_levels(data->dvs, np, desc, cfg->regmap);
 }
 
@@ -196,15 +195,15 @@ static int buck12_set_hw_dvs_levels(struct device_node *np,
 				    const struct regulator_desc *desc,
 				    struct regulator_config *cfg)
 {
-	struct bd71815_regulator *data;
+	const struct bd71815_regulator *data;
 	int ret = 0, val;
 
-	data = container_of(desc, struct bd71815_regulator, desc);
+	data = container_of_const(desc, struct bd71815_regulator, desc);
 
-	if (of_find_property(np, "rohm,dvs-run-voltage", NULL) ||
-	    of_find_property(np, "rohm,dvs-suspend-voltage", NULL) ||
-	    of_find_property(np, "rohm,dvs-lpsr-voltage", NULL) ||
-	    of_find_property(np, "rohm,dvs-snvs-voltage", NULL)) {
+	if (of_property_present(np, "rohm,dvs-run-voltage") ||
+	    of_property_present(np, "rohm,dvs-suspend-voltage") ||
+	    of_property_present(np, "rohm,dvs-lpsr-voltage") ||
+	    of_property_present(np, "rohm,dvs-snvs-voltage")) {
 		ret = regmap_read(cfg->regmap, desc->vsel_reg, &val);
 		if (ret)
 			return ret;
@@ -257,7 +256,7 @@ static int buck12_set_hw_dvs_levels(struct device_node *np,
  * 10: 2.50mV/usec	10mV 4uS
  * 11: 1.25mV/usec	10mV 8uS
  */
-static const unsigned int bd7181x_ramp_table[] = { 1250, 2500, 5000, 10000 };
+static const unsigned int bd7181x_ramp_table[] = { 10000, 5000, 2500, 1250 };
 
 static int bd7181x_led_set_current_limit(struct regulator_dev *rdev,
 					int min_uA, int max_uA)
@@ -571,17 +570,13 @@ static int bd7181x_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "No parent regmap\n");
 		return -ENODEV;
 	}
-	ldo4_en = devm_gpiod_get_from_of_node(&pdev->dev,
-					      pdev->dev.parent->of_node,
-						 "rohm,vsel-gpios", 0,
-						 GPIOD_ASIS, "ldo4-en");
 
-	if (IS_ERR(ldo4_en)) {
-		ret = PTR_ERR(ldo4_en);
-		if (ret != -ENOENT)
-			return ret;
-		ldo4_en = NULL;
-	}
+	ldo4_en = devm_fwnode_gpiod_get_optional(&pdev->dev,
+						 dev_fwnode(pdev->dev.parent),
+						 "rohm,vsel", GPIOD_ASIS,
+						 "ldo4-en");
+	if (IS_ERR(ldo4_en))
+		return PTR_ERR(ldo4_en);
 
 	/* Disable to go to ship-mode */
 	ret = regmap_update_bits(regmap, BD71815_REG_PWRCTRL, RESTARTEN, 0);
@@ -603,12 +598,10 @@ static int bd7181x_probe(struct platform_device *pdev)
 			config.ena_gpiod = NULL;
 
 		rdev = devm_regulator_register(&pdev->dev, desc, &config);
-		if (IS_ERR(rdev)) {
-			dev_err(&pdev->dev,
-				"failed to register %s regulator\n",
-				desc->name);
-			return PTR_ERR(rdev);
-		}
+		if (IS_ERR(rdev))
+			return dev_err_probe(&pdev->dev, PTR_ERR(rdev),
+					     "failed to register %s regulator\n",
+					     desc->name);
 	}
 	return 0;
 }
@@ -622,6 +615,7 @@ MODULE_DEVICE_TABLE(platform, bd7181x_pmic_id);
 static struct platform_driver bd7181x_regulator = {
 	.driver = {
 		.name = "bd7181x-pmic",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe = bd7181x_probe,
 	.id_table = bd7181x_pmic_id,

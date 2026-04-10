@@ -23,6 +23,7 @@
 
 #include "amdgpu.h"
 #include "amdgpu_jpeg.h"
+#include "amdgpu_cs.h"
 #include "soc15.h"
 #include "soc15d.h"
 #include "vcn_v1_0.h"
@@ -34,6 +35,9 @@
 static void jpeg_v1_0_set_dec_ring_funcs(struct amdgpu_device *adev);
 static void jpeg_v1_0_set_irq_funcs(struct amdgpu_device *adev);
 static void jpeg_v1_0_ring_begin_use(struct amdgpu_ring *ring);
+static int jpeg_v1_dec_ring_parse_cs(struct amdgpu_cs_parser *parser,
+				     struct amdgpu_job *job,
+				     struct amdgpu_ib *ib);
 
 static void jpeg_v1_0_decode_ring_patch_wreg(struct amdgpu_ring *ring, uint32_t *ptr, uint32_t reg_offset, uint32_t val)
 {
@@ -300,7 +304,10 @@ static void jpeg_v1_0_decode_ring_emit_ib(struct amdgpu_ring *ring,
 
 	amdgpu_ring_write(ring,
 		PACKETJ(SOC15_REG_OFFSET(JPEG, 0, mmUVD_LMI_JRBC_IB_VMID), 0, 0, PACKETJ_TYPE0));
-	amdgpu_ring_write(ring, (vmid | (vmid << 4)));
+	if (ring->funcs->parse_cs)
+		amdgpu_ring_write(ring, 0);
+	else
+		amdgpu_ring_write(ring, (vmid | (vmid << 4)));
 
 	amdgpu_ring_write(ring,
 		PACKETJ(SOC15_REG_OFFSET(JPEG, 0, mmUVD_LMI_JPEG_VMID), 0, 0, PACKETJ_TYPE0));
@@ -376,7 +383,7 @@ static void jpeg_v1_0_decode_ring_emit_reg_wait(struct amdgpu_ring *ring,
 static void jpeg_v1_0_decode_ring_emit_vm_flush(struct amdgpu_ring *ring,
 		unsigned vmid, uint64_t pd_addr)
 {
-	struct amdgpu_vmhub *hub = &ring->adev->vmhub[ring->funcs->vmhub];
+	struct amdgpu_vmhub *hub = &ring->adev->vmhub[ring->vm_hub];
 	uint32_t data0, data1, mask;
 
 	pd_addr = amdgpu_gmc_emit_flush_gpu_tlb(ring, vmid, pd_addr);
@@ -437,7 +444,7 @@ static int jpeg_v1_0_process_interrupt(struct amdgpu_device *adev,
 
 	switch (entry->src_id) {
 	case 126:
-		amdgpu_fence_process(&adev->jpeg.inst->ring_dec);
+		amdgpu_fence_process(adev->jpeg.inst->ring_dec);
 		break;
 	default:
 		DRM_ERROR("Unhandled interrupt: %d %d\n",
@@ -451,15 +458,16 @@ static int jpeg_v1_0_process_interrupt(struct amdgpu_device *adev,
 /**
  * jpeg_v1_0_early_init - set function pointers
  *
- * @handle: amdgpu_device pointer
+ * @ip_block: Pointer to the amdgpu_ip_block for this hw instance.
  *
  * Set ring and irq function pointers
  */
-int jpeg_v1_0_early_init(void *handle)
+int jpeg_v1_0_early_init(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
 	adev->jpeg.num_jpeg_inst = 1;
+	adev->jpeg.num_jpeg_rings = 1;
 
 	jpeg_v1_0_set_dec_ring_funcs(adev);
 	jpeg_v1_0_set_irq_funcs(adev);
@@ -470,12 +478,12 @@ int jpeg_v1_0_early_init(void *handle)
 /**
  * jpeg_v1_0_sw_init - sw init for JPEG block
  *
- * @handle: amdgpu_device pointer
+ * @ip_block: Pointer to the amdgpu_ip_block for this hw instance.
  *
  */
-int jpeg_v1_0_sw_init(void *handle)
+int jpeg_v1_0_sw_init(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 	struct amdgpu_ring *ring;
 	int r;
 
@@ -484,14 +492,15 @@ int jpeg_v1_0_sw_init(void *handle)
 	if (r)
 		return r;
 
-	ring = &adev->jpeg.inst->ring_dec;
+	ring = adev->jpeg.inst->ring_dec;
+	ring->vm_hub = AMDGPU_MMHUB0(0);
 	sprintf(ring->name, "jpeg_dec");
 	r = amdgpu_ring_init(adev, ring, 512, &adev->jpeg.inst->irq,
 			     0, AMDGPU_RING_PRIO_DEFAULT, NULL);
 	if (r)
 		return r;
 
-	adev->jpeg.internal.jpeg_pitch = adev->jpeg.inst->external.jpeg_pitch =
+	adev->jpeg.internal.jpeg_pitch[0] = adev->jpeg.inst->external.jpeg_pitch[0] =
 		SOC15_REG_OFFSET(JPEG, 0, mmUVD_JPEG_PITCH);
 
 	return 0;
@@ -500,15 +509,15 @@ int jpeg_v1_0_sw_init(void *handle)
 /**
  * jpeg_v1_0_sw_fini - sw fini for JPEG block
  *
- * @handle: amdgpu_device pointer
+ * @ip_block: Pointer to the amdgpu_ip_block for this hw instance.
  *
  * JPEG free up sw allocation
  */
-void jpeg_v1_0_sw_fini(void *handle)
+void jpeg_v1_0_sw_fini(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
-	amdgpu_ring_fini(&adev->jpeg.inst[0].ring_dec);
+	amdgpu_ring_fini(adev->jpeg.inst->ring_dec);
 }
 
 /**
@@ -521,7 +530,7 @@ void jpeg_v1_0_sw_fini(void *handle)
  */
 void jpeg_v1_0_start(struct amdgpu_device *adev, int mode)
 {
-	struct amdgpu_ring *ring = &adev->jpeg.inst->ring_dec;
+	struct amdgpu_ring *ring = adev->jpeg.inst->ring_dec;
 
 	if (mode == 0) {
 		WREG32_SOC15(JPEG, 0, mmUVD_LMI_JRBC_RB_VMID, 0);
@@ -548,11 +557,11 @@ static const struct amdgpu_ring_funcs jpeg_v1_0_decode_ring_vm_funcs = {
 	.nop = PACKET0(0x81ff, 0),
 	.support_64bit_ptrs = false,
 	.no_user_fence = true,
-	.vmhub = AMDGPU_MMHUB_0,
-	.extra_dw = 64,
+	.extra_bytes = 256,
 	.get_rptr = jpeg_v1_0_decode_ring_get_rptr,
 	.get_wptr = jpeg_v1_0_decode_ring_get_wptr,
 	.set_wptr = jpeg_v1_0_decode_ring_set_wptr,
+	.parse_cs = jpeg_v1_dec_ring_parse_cs,
 	.emit_frame_size =
 		6 + 6 + /* hdp invalidate / flush */
 		SOC15_FLUSH_GPU_TLB_NUM_WREG * 6 +
@@ -579,8 +588,7 @@ static const struct amdgpu_ring_funcs jpeg_v1_0_decode_ring_vm_funcs = {
 
 static void jpeg_v1_0_set_dec_ring_funcs(struct amdgpu_device *adev)
 {
-	adev->jpeg.inst->ring_dec.funcs = &jpeg_v1_0_decode_ring_vm_funcs;
-	DRM_INFO("JPEG decode is enabled in VM mode\n");
+	adev->jpeg.inst->ring_dec->funcs = &jpeg_v1_0_decode_ring_vm_funcs;
 }
 
 static const struct amdgpu_irq_src_funcs jpeg_v1_0_irq_funcs = {
@@ -596,18 +604,84 @@ static void jpeg_v1_0_set_irq_funcs(struct amdgpu_device *adev)
 static void jpeg_v1_0_ring_begin_use(struct amdgpu_ring *ring)
 {
 	struct	amdgpu_device *adev = ring->adev;
-	bool	set_clocks = !cancel_delayed_work_sync(&adev->vcn.idle_work);
+	bool	set_clocks = !cancel_delayed_work_sync(&adev->vcn.inst[0].idle_work);
 	int		cnt = 0;
 
-	mutex_lock(&adev->vcn.vcn1_jpeg1_workaround);
+	mutex_lock(&adev->vcn.inst[0].vcn1_jpeg1_workaround);
 
 	if (amdgpu_fence_wait_empty(&adev->vcn.inst->ring_dec))
 		DRM_ERROR("JPEG dec: vcn dec ring may not be empty\n");
 
-	for (cnt = 0; cnt < adev->vcn.num_enc_rings; cnt++) {
+	for (cnt = 0; cnt < adev->vcn.inst[0].num_enc_rings; cnt++) {
 		if (amdgpu_fence_wait_empty(&adev->vcn.inst->ring_enc[cnt]))
 			DRM_ERROR("JPEG dec: vcn enc ring[%d] may not be empty\n", cnt);
 	}
 
 	vcn_v1_0_set_pg_for_begin_use(ring, set_clocks);
+}
+
+/**
+ * jpeg_v1_dec_ring_parse_cs - command submission parser
+ *
+ * @parser: Command submission parser context
+ * @job: the job to parse
+ * @ib: the IB to parse
+ *
+ * Parse the command stream, return -EINVAL for invalid packet,
+ * 0 otherwise
+ */
+static int jpeg_v1_dec_ring_parse_cs(struct amdgpu_cs_parser *parser,
+				     struct amdgpu_job *job,
+				     struct amdgpu_ib *ib)
+{
+	u32 i, reg, res, cond, type;
+	int ret = 0;
+	struct amdgpu_device *adev = parser->adev;
+
+	for (i = 0; i < ib->length_dw ; i += 2) {
+		reg  = CP_PACKETJ_GET_REG(ib->ptr[i]);
+		res  = CP_PACKETJ_GET_RES(ib->ptr[i]);
+		cond = CP_PACKETJ_GET_COND(ib->ptr[i]);
+		type = CP_PACKETJ_GET_TYPE(ib->ptr[i]);
+
+		if (res || cond != PACKETJ_CONDITION_CHECK0) /* only allow 0 for now */
+			return -EINVAL;
+
+		if (reg >= JPEG_V1_REG_RANGE_START && reg <= JPEG_V1_REG_RANGE_END)
+			continue;
+
+		switch (type) {
+		case PACKETJ_TYPE0:
+			if (reg != JPEG_V1_LMI_JPEG_WRITE_64BIT_BAR_HIGH &&
+			    reg != JPEG_V1_LMI_JPEG_WRITE_64BIT_BAR_LOW &&
+			    reg != JPEG_V1_LMI_JPEG_READ_64BIT_BAR_HIGH &&
+			    reg != JPEG_V1_LMI_JPEG_READ_64BIT_BAR_LOW &&
+			    reg != JPEG_V1_REG_CTX_INDEX &&
+			    reg != JPEG_V1_REG_CTX_DATA) {
+				ret = -EINVAL;
+			}
+			break;
+		case PACKETJ_TYPE1:
+			if (reg != JPEG_V1_REG_CTX_DATA)
+				ret = -EINVAL;
+			break;
+		case PACKETJ_TYPE3:
+			if (reg != JPEG_V1_REG_SOFT_RESET)
+				ret = -EINVAL;
+			break;
+		case PACKETJ_TYPE6:
+			if (ib->ptr[i] != CP_PACKETJ_NOP)
+				ret = -EINVAL;
+			break;
+		default:
+			ret = -EINVAL;
+		}
+
+		if (ret) {
+			dev_err(adev->dev, "Invalid packet [0x%08x]!\n", ib->ptr[i]);
+			break;
+		}
+	}
+
+	return ret;
 }

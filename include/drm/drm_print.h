@@ -28,14 +28,18 @@
 
 #include <linux/compiler.h>
 #include <linux/printk.h>
-#include <linux/seq_file.h>
 #include <linux/device.h>
-#include <linux/debugfs.h>
+#include <linux/dynamic_debug.h>
 
 #include <drm/drm.h>
+#include <drm/drm_device.h>
+
+struct debugfs_regset32;
+struct drm_device;
+struct seq_file;
 
 /* Do *not* use outside of drm_print.[ch]! */
-extern unsigned int __drm_debug;
+extern unsigned long __drm_debug;
 
 /**
  * DOC: print
@@ -67,6 +71,101 @@ extern unsigned int __drm_debug;
  */
 
 /**
+ * enum drm_debug_category - The DRM debug categories
+ *
+ * Each of the DRM debug logging macros use a specific category, and the logging
+ * is filtered by the drm.debug module parameter. This enum specifies the values
+ * for the interface.
+ *
+ * Each DRM_DEBUG_<CATEGORY> macro logs to DRM_UT_<CATEGORY> category, except
+ * DRM_DEBUG() logs to DRM_UT_CORE.
+ *
+ * Enabling verbose debug messages is done through the drm.debug parameter, each
+ * category being enabled by a bit:
+ *
+ *  - drm.debug=0x1 will enable CORE messages
+ *  - drm.debug=0x2 will enable DRIVER messages
+ *  - drm.debug=0x3 will enable CORE and DRIVER messages
+ *  - ...
+ *  - drm.debug=0x1ff will enable all messages
+ *
+ * An interesting feature is that it's possible to enable verbose logging at
+ * run-time by echoing the debug value in its sysfs node::
+ *
+ *   # echo 0xf > /sys/module/drm/parameters/debug
+ *
+ */
+enum drm_debug_category {
+	/* These names must match those in DYNAMIC_DEBUG_CLASSBITS */
+	/**
+	 * @DRM_UT_CORE: Used in the generic drm code: drm_ioctl.c, drm_mm.c,
+	 * drm_memory.c, ...
+	 */
+	DRM_UT_CORE,
+	/**
+	 * @DRM_UT_DRIVER: Used in the vendor specific part of the driver: i915,
+	 * radeon, ... macro.
+	 */
+	DRM_UT_DRIVER,
+	/**
+	 * @DRM_UT_KMS: Used in the modesetting code.
+	 */
+	DRM_UT_KMS,
+	/**
+	 * @DRM_UT_PRIME: Used in the prime code.
+	 */
+	DRM_UT_PRIME,
+	/**
+	 * @DRM_UT_ATOMIC: Used in the atomic code.
+	 */
+	DRM_UT_ATOMIC,
+	/**
+	 * @DRM_UT_VBL: Used for verbose debug message in the vblank code.
+	 */
+	DRM_UT_VBL,
+	/**
+	 * @DRM_UT_STATE: Used for verbose atomic state debugging.
+	 */
+	DRM_UT_STATE,
+	/**
+	 * @DRM_UT_LEASE: Used in the lease code.
+	 */
+	DRM_UT_LEASE,
+	/**
+	 * @DRM_UT_DP: Used in the DP code.
+	 */
+	DRM_UT_DP,
+	/**
+	 * @DRM_UT_DRMRES: Used in the drm managed resources code.
+	 */
+	DRM_UT_DRMRES
+};
+
+static inline bool drm_debug_enabled_raw(enum drm_debug_category category)
+{
+	return unlikely(__drm_debug & BIT(category));
+}
+
+#define drm_debug_enabled_instrumented(category)			\
+	({								\
+		pr_debug("todo: is this frequent enough to optimize ?\n"); \
+		drm_debug_enabled_raw(category);			\
+	})
+
+#if defined(CONFIG_DRM_USE_DYNAMIC_DEBUG)
+/*
+ * the drm.debug API uses dyndbg, so each drm_*dbg macro/callsite gets
+ * a descriptor, and only enabled callsites are reachable.  They use
+ * the private macro to avoid re-testing the enable-bit.
+ */
+#define __drm_debug_enabled(category)	true
+#define drm_debug_enabled(category)	drm_debug_enabled_instrumented(category)
+#else
+#define __drm_debug_enabled(category)	drm_debug_enabled_raw(category)
+#define drm_debug_enabled(category)	drm_debug_enabled_raw(category)
+#endif
+
+/**
  * struct drm_printer - drm output "stream"
  *
  * Do not use struct members directly.  Use drm_printer_seq_file(),
@@ -77,7 +176,13 @@ struct drm_printer {
 	void (*printfn)(struct drm_printer *p, struct va_format *vaf);
 	void (*puts)(struct drm_printer *p, const char *str);
 	void *arg;
+	const void *origin;
 	const char *prefix;
+	struct {
+		unsigned int series;
+		unsigned int counter;
+	} line;
+	enum drm_debug_category category;
 };
 
 void __drm_printfn_coredump(struct drm_printer *p, struct va_format *vaf);
@@ -85,8 +190,9 @@ void __drm_puts_coredump(struct drm_printer *p, const char *str);
 void __drm_printfn_seq_file(struct drm_printer *p, struct va_format *vaf);
 void __drm_puts_seq_file(struct drm_printer *p, const char *str);
 void __drm_printfn_info(struct drm_printer *p, struct va_format *vaf);
-void __drm_printfn_debug(struct drm_printer *p, struct va_format *vaf);
+void __drm_printfn_dbg(struct drm_printer *p, struct va_format *vaf);
 void __drm_printfn_err(struct drm_printer *p, struct va_format *vaf);
+void __drm_printfn_line(struct drm_printer *p, struct va_format *vaf);
 
 __printf(2, 3)
 void drm_printf(struct drm_printer *p, const char *f, ...);
@@ -94,6 +200,8 @@ void drm_puts(struct drm_printer *p, const char *str);
 void drm_print_regset32(struct drm_printer *p, struct debugfs_regset32 *regset);
 void drm_print_bits(struct drm_printer *p, unsigned long value,
 		    const char * const bits[], unsigned int nbits);
+void drm_print_hex_dump(struct drm_printer *p, const char *prefix,
+			const u8 *buf, size_t len);
 
 __printf(2, 0)
 /**
@@ -121,7 +229,8 @@ drm_vprintf(struct drm_printer *p, const char *fmt, va_list *va)
 
 /**
  * struct drm_print_iterator - local struct used with drm_printer_coredump
- * @data: Pointer to the devcoredump output buffer
+ * @data: Pointer to the devcoredump output buffer, can be NULL if using
+ * drm_printer_coredump to determine size of devcoredump
  * @start: The offset within the buffer to start writing
  * @remain: The number of bytes to write for this iteration
  */
@@ -166,6 +275,57 @@ struct drm_print_iterator {
  *			coredump_read, ...)
  *	}
  *
+ * The above example has a time complexity of O(N^2), where N is the size of the
+ * devcoredump. This is acceptable for small devcoredumps but scales poorly for
+ * larger ones.
+ *
+ * Another use case for drm_coredump_printer is to capture the devcoredump into
+ * a saved buffer before the dev_coredump() callback. This involves two passes:
+ * one to determine the size of the devcoredump and another to print it to a
+ * buffer. Then, in dev_coredump(), copy from the saved buffer into the
+ * devcoredump read buffer.
+ *
+ * For example::
+ *
+ *	char *devcoredump_saved_buffer;
+ *
+ *	ssize_t __coredump_print(char *buffer, ssize_t count, ...)
+ *	{
+ *		struct drm_print_iterator iter;
+ *		struct drm_printer p;
+ *
+ *		iter.data = buffer;
+ *		iter.start = 0;
+ *		iter.remain = count;
+ *
+ *		p = drm_coredump_printer(&iter);
+ *
+ *		drm_printf(p, "foo=%d\n", foo);
+ *		...
+ *		return count - iter.remain;
+ *	}
+ *
+ *	void coredump_print(...)
+ *	{
+ *		ssize_t count;
+ *
+ *		count = __coredump_print(NULL, INT_MAX, ...);
+ *		devcoredump_saved_buffer = kvmalloc(count, GFP_KERNEL);
+ *		__coredump_print(devcoredump_saved_buffer, count, ...);
+ *	}
+ *
+ *	void coredump_read(char *buffer, loff_t offset, size_t count,
+ *			   void *data, size_t datalen)
+ *	{
+ *		...
+ *		memcpy(buffer, devcoredump_saved_buffer + offset, count);
+ *		...
+ *	}
+ *
+ * The above example has a time complexity of O(N*2), where N is the size of the
+ * devcoredump. This scales better than the previous example for larger
+ * devcoredumps.
+ *
  * RETURNS:
  * The &drm_printer object
  */
@@ -182,6 +342,26 @@ drm_coredump_printer(struct drm_print_iterator *iter)
 	iter->offset = 0;
 
 	return p;
+}
+
+/**
+ * drm_coredump_printer_is_full() - DRM coredump printer output is full
+ * @p: DRM coredump printer
+ *
+ * DRM printer output is full, useful to short circuit coredump printing once
+ * printer is full.
+ *
+ * RETURNS:
+ * True if DRM coredump printer output buffer is full, False otherwise
+ */
+static inline bool drm_coredump_printer_is_full(struct drm_printer *p)
+{
+	struct drm_print_iterator *iterator = p->arg;
+
+	if (p->printfn != __drm_printfn_coredump)
+		return true;
+
+	return !iterator->remain;
 }
 
 /**
@@ -218,110 +398,104 @@ static inline struct drm_printer drm_info_printer(struct device *dev)
 }
 
 /**
- * drm_debug_printer - construct a &drm_printer that outputs to pr_debug()
- * @prefix: debug output prefix
+ * drm_dbg_printer - construct a &drm_printer for drm device specific output
+ * @drm: the &struct drm_device pointer, or NULL
+ * @category: the debug category to use
+ * @prefix: debug output prefix, or NULL for no prefix
  *
  * RETURNS:
  * The &drm_printer object
  */
-static inline struct drm_printer drm_debug_printer(const char *prefix)
+static inline struct drm_printer drm_dbg_printer(struct drm_device *drm,
+						 enum drm_debug_category category,
+						 const char *prefix)
 {
 	struct drm_printer p = {
-		.printfn = __drm_printfn_debug,
-		.prefix = prefix
+		.printfn = __drm_printfn_dbg,
+		.arg = drm,
+		.origin = (const void *)_THIS_IP_, /* it's fine as we will be inlined */
+		.prefix = prefix,
+		.category = category,
 	};
 	return p;
 }
 
 /**
- * drm_err_printer - construct a &drm_printer that outputs to pr_err()
- * @prefix: debug output prefix
+ * drm_err_printer - construct a &drm_printer that outputs to drm_err()
+ * @drm: the &struct drm_device pointer
+ * @prefix: debug output prefix, or NULL for no prefix
  *
  * RETURNS:
  * The &drm_printer object
  */
-static inline struct drm_printer drm_err_printer(const char *prefix)
+static inline struct drm_printer drm_err_printer(struct drm_device *drm,
+						 const char *prefix)
 {
 	struct drm_printer p = {
 		.printfn = __drm_printfn_err,
+		.arg = drm,
 		.prefix = prefix
 	};
 	return p;
 }
 
 /**
- * enum drm_debug_category - The DRM debug categories
+ * drm_line_printer - construct a &drm_printer that prefixes outputs with line numbers
+ * @p: the &struct drm_printer which actually generates the output
+ * @prefix: optional output prefix, or NULL for no prefix
+ * @series: optional unique series identifier, or 0 to omit identifier in the output
  *
- * Each of the DRM debug logging macros use a specific category, and the logging
- * is filtered by the drm.debug module parameter. This enum specifies the values
- * for the interface.
+ * This printer can be used to increase the robustness of the captured output
+ * to make sure we didn't lost any intermediate lines of the output. Helpful
+ * while capturing some crash data.
  *
- * Each DRM_DEBUG_<CATEGORY> macro logs to DRM_UT_<CATEGORY> category, except
- * DRM_DEBUG() logs to DRM_UT_CORE.
+ * Example 1::
  *
- * Enabling verbose debug messages is done through the drm.debug parameter, each
- * category being enabled by a bit:
+ *	void crash_dump(struct drm_device *drm)
+ *	{
+ *		static unsigned int id;
+ *		struct drm_printer p = drm_err_printer(drm, "crash");
+ *		struct drm_printer lp = drm_line_printer(&p, "dump", ++id);
  *
- *  - drm.debug=0x1 will enable CORE messages
- *  - drm.debug=0x2 will enable DRIVER messages
- *  - drm.debug=0x3 will enable CORE and DRIVER messages
- *  - ...
- *  - drm.debug=0x1ff will enable all messages
+ *		drm_printf(&lp, "foo");
+ *		drm_printf(&lp, "bar");
+ *	}
  *
- * An interesting feature is that it's possible to enable verbose logging at
- * run-time by echoing the debug value in its sysfs node::
+ * Above code will print into the dmesg something like::
  *
- *   # echo 0xf > /sys/module/drm/parameters/debug
+ *	[ ] 0000:00:00.0: [drm] *ERROR* crash dump 1.1: foo
+ *	[ ] 0000:00:00.0: [drm] *ERROR* crash dump 1.2: bar
  *
+ * Example 2::
+ *
+ *	void line_dump(struct device *dev)
+ *	{
+ *		struct drm_printer p = drm_info_printer(dev);
+ *		struct drm_printer lp = drm_line_printer(&p, NULL, 0);
+ *
+ *		drm_printf(&lp, "foo");
+ *		drm_printf(&lp, "bar");
+ *	}
+ *
+ * Above code will print::
+ *
+ *	[ ] 0000:00:00.0: [drm] 1: foo
+ *	[ ] 0000:00:00.0: [drm] 2: bar
+ *
+ * RETURNS:
+ * The &drm_printer object
  */
-enum drm_debug_category {
-	/**
-	 * @DRM_UT_CORE: Used in the generic drm code: drm_ioctl.c, drm_mm.c,
-	 * drm_memory.c, ...
-	 */
-	DRM_UT_CORE		= 0x01,
-	/**
-	 * @DRM_UT_DRIVER: Used in the vendor specific part of the driver: i915,
-	 * radeon, ... macro.
-	 */
-	DRM_UT_DRIVER		= 0x02,
-	/**
-	 * @DRM_UT_KMS: Used in the modesetting code.
-	 */
-	DRM_UT_KMS		= 0x04,
-	/**
-	 * @DRM_UT_PRIME: Used in the prime code.
-	 */
-	DRM_UT_PRIME		= 0x08,
-	/**
-	 * @DRM_UT_ATOMIC: Used in the atomic code.
-	 */
-	DRM_UT_ATOMIC		= 0x10,
-	/**
-	 * @DRM_UT_VBL: Used for verbose debug message in the vblank code.
-	 */
-	DRM_UT_VBL		= 0x20,
-	/**
-	 * @DRM_UT_STATE: Used for verbose atomic state debugging.
-	 */
-	DRM_UT_STATE		= 0x40,
-	/**
-	 * @DRM_UT_LEASE: Used in the lease code.
-	 */
-	DRM_UT_LEASE		= 0x80,
-	/**
-	 * @DRM_UT_DP: Used in the DP code.
-	 */
-	DRM_UT_DP		= 0x100,
-	/**
-	 * @DRM_UT_DRMRES: Used in the drm managed resources code.
-	 */
-	DRM_UT_DRMRES		= 0x200,
-};
-
-static inline bool drm_debug_enabled(enum drm_debug_category category)
+static inline struct drm_printer drm_line_printer(struct drm_printer *p,
+						  const char *prefix,
+						  unsigned int series)
 {
-	return unlikely(__drm_debug & category);
+	struct drm_printer lp = {
+		.printfn = __drm_printfn_line,
+		.arg = p,
+		.prefix = prefix,
+		.line = { .series = series, },
+	};
+	return lp;
 }
 
 /*
@@ -333,9 +507,10 @@ static inline bool drm_debug_enabled(enum drm_debug_category category)
 __printf(3, 4)
 void drm_dev_printk(const struct device *dev, const char *level,
 		    const char *format, ...);
-__printf(3, 4)
-void drm_dev_dbg(const struct device *dev, enum drm_debug_category category,
-		 const char *format, ...);
+struct _ddebug;
+__printf(4, 5)
+void __drm_dev_dbg(struct _ddebug *desc, const struct device *dev,
+		   enum drm_debug_category category, const char *format, ...);
 
 /**
  * DRM_DEV_ERROR() - Error output.
@@ -383,6 +558,15 @@ void drm_dev_dbg(const struct device *dev, enum drm_debug_category category,
 	}								\
 })
 
+#if !defined(CONFIG_DRM_USE_DYNAMIC_DEBUG)
+#define drm_dev_dbg(dev, cat, fmt, ...)				\
+	__drm_dev_dbg(NULL, dev, cat, fmt, ##__VA_ARGS__)
+#else
+#define drm_dev_dbg(dev, cat, fmt, ...)				\
+	_dynamic_func_call_cls(cat, fmt, __drm_dev_dbg,		\
+			       dev, cat, fmt, ##__VA_ARGS__)
+#endif
+
 /**
  * DRM_DEV_DEBUG() - Debug output for generic drm code
  *
@@ -420,9 +604,15 @@ void drm_dev_dbg(const struct device *dev, enum drm_debug_category category,
  * Prefer drm_device based logging over device or prink based logging.
  */
 
+/* Helper to enforce struct drm_device type */
+static inline struct device *__drm_to_dev(const struct drm_device *drm)
+{
+	return drm ? drm->dev : NULL;
+}
+
 /* Helper for struct drm_device based logging. */
 #define __drm_printk(drm, level, type, fmt, ...)			\
-	dev_##level##type((drm)->dev, "[drm] " fmt, ##__VA_ARGS__)
+	dev_##level##type(__drm_to_dev(drm), "[drm] " fmt, ##__VA_ARGS__)
 
 
 #define drm_info(drm, fmt, ...)					\
@@ -456,26 +646,27 @@ void drm_dev_dbg(const struct device *dev, enum drm_debug_category category,
 
 
 #define drm_dbg_core(drm, fmt, ...)					\
-	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_CORE, fmt, ##__VA_ARGS__)
-#define drm_dbg(drm, fmt, ...)						\
-	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_DRIVER, fmt, ##__VA_ARGS__)
+	drm_dev_dbg(__drm_to_dev(drm), DRM_UT_CORE, fmt, ##__VA_ARGS__)
+#define drm_dbg_driver(drm, fmt, ...)					\
+	drm_dev_dbg(__drm_to_dev(drm), DRM_UT_DRIVER, fmt, ##__VA_ARGS__)
 #define drm_dbg_kms(drm, fmt, ...)					\
-	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_KMS, fmt, ##__VA_ARGS__)
+	drm_dev_dbg(__drm_to_dev(drm), DRM_UT_KMS, fmt, ##__VA_ARGS__)
 #define drm_dbg_prime(drm, fmt, ...)					\
-	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_PRIME, fmt, ##__VA_ARGS__)
+	drm_dev_dbg(__drm_to_dev(drm), DRM_UT_PRIME, fmt, ##__VA_ARGS__)
 #define drm_dbg_atomic(drm, fmt, ...)					\
-	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_ATOMIC, fmt, ##__VA_ARGS__)
+	drm_dev_dbg(__drm_to_dev(drm), DRM_UT_ATOMIC, fmt, ##__VA_ARGS__)
 #define drm_dbg_vbl(drm, fmt, ...)					\
-	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_VBL, fmt, ##__VA_ARGS__)
+	drm_dev_dbg(__drm_to_dev(drm), DRM_UT_VBL, fmt, ##__VA_ARGS__)
 #define drm_dbg_state(drm, fmt, ...)					\
-	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_STATE, fmt, ##__VA_ARGS__)
+	drm_dev_dbg(__drm_to_dev(drm), DRM_UT_STATE, fmt, ##__VA_ARGS__)
 #define drm_dbg_lease(drm, fmt, ...)					\
-	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_LEASE, fmt, ##__VA_ARGS__)
+	drm_dev_dbg(__drm_to_dev(drm), DRM_UT_LEASE, fmt, ##__VA_ARGS__)
 #define drm_dbg_dp(drm, fmt, ...)					\
-	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_DP, fmt, ##__VA_ARGS__)
+	drm_dev_dbg(__drm_to_dev(drm), DRM_UT_DP, fmt, ##__VA_ARGS__)
 #define drm_dbg_drmres(drm, fmt, ...)					\
-	drm_dev_dbg((drm) ? (drm)->dev : NULL, DRM_UT_DRMRES, fmt, ##__VA_ARGS__)
+	drm_dev_dbg(__drm_to_dev(drm), DRM_UT_DRMRES, fmt, ##__VA_ARGS__)
 
+#define drm_dbg(drm, fmt, ...)	drm_dbg_driver(drm, fmt, ##__VA_ARGS__)
 
 /*
  * printk based logging
@@ -483,10 +674,16 @@ void drm_dev_dbg(const struct device *dev, enum drm_debug_category category,
  * Prefer drm_device based logging over device or prink based logging.
  */
 
-__printf(2, 3)
-void __drm_dbg(enum drm_debug_category category, const char *format, ...);
 __printf(1, 2)
 void __drm_err(const char *format, ...);
+
+#if !defined(CONFIG_DRM_USE_DYNAMIC_DEBUG)
+#define __drm_dbg(cat, fmt, ...)	__drm_dev_dbg(NULL, NULL, cat, fmt, ##__VA_ARGS__)
+#else
+#define __drm_dbg(cat, fmt, ...)					\
+	_dynamic_func_call_cls(cat, fmt, __drm_dev_dbg,			\
+			       NULL, cat, fmt, ##__VA_ARGS__)
+#endif
 
 /* Macros to make printk easier */
 
@@ -556,17 +753,16 @@ void __drm_err(const char *format, ...);
 #define __DRM_DEFINE_DBG_RATELIMITED(category, drm, fmt, ...)					\
 ({												\
 	static DEFINE_RATELIMIT_STATE(rs_, DEFAULT_RATELIMIT_INTERVAL, DEFAULT_RATELIMIT_BURST);\
-	const struct drm_device *drm_ = (drm);							\
 												\
 	if (drm_debug_enabled(DRM_UT_ ## category) && __ratelimit(&rs_))			\
-		drm_dev_printk(drm_ ? drm_->dev : NULL, KERN_DEBUG, fmt, ## __VA_ARGS__);	\
+		drm_dev_printk(__drm_to_dev(drm), KERN_DEBUG, fmt, ## __VA_ARGS__);		\
 })
+
+#define drm_dbg_ratelimited(drm, fmt, ...) \
+	__DRM_DEFINE_DBG_RATELIMITED(DRIVER, drm, fmt, ## __VA_ARGS__)
 
 #define drm_dbg_kms_ratelimited(drm, fmt, ...) \
 	__DRM_DEFINE_DBG_RATELIMITED(KMS, drm, fmt, ## __VA_ARGS__)
-
-/* NOTE: this is deprecated in favor of drm_dbg_kms_ratelimited(NULL, ...). */
-#define DRM_DEBUG_KMS_RATELIMITED(fmt, ...) drm_dbg_kms_ratelimited(NULL, fmt, ## __VA_ARGS__)
 
 /*
  * struct drm_device based WARNs
@@ -580,14 +776,14 @@ void __drm_err(const char *format, ...);
 
 /* Helper for struct drm_device based WARNs */
 #define drm_WARN(drm, condition, format, arg...)			\
-	WARN(condition, "%s %s: " format,				\
-			dev_driver_string((drm)->dev),			\
-			dev_name((drm)->dev), ## arg)
+	WARN(condition, "%s %s: [drm] " format,				\
+			dev_driver_string(__drm_to_dev(drm)),		\
+			dev_name(__drm_to_dev(drm)), ## arg)
 
 #define drm_WARN_ONCE(drm, condition, format, arg...)			\
-	WARN_ONCE(condition, "%s %s: " format,				\
-			dev_driver_string((drm)->dev),			\
-			dev_name((drm)->dev), ## arg)
+	WARN_ONCE(condition, "%s %s: [drm] " format,			\
+			dev_driver_string(__drm_to_dev(drm)),		\
+			dev_name(__drm_to_dev(drm)), ## arg)
 
 #define drm_WARN_ON(drm, x)						\
 	drm_WARN((drm), (x), "%s",					\

@@ -452,10 +452,10 @@ static int wm8971_set_dai_fmt(struct snd_soc_dai *codec_dai,
 
 	/* set master/slave audio interface */
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		iface = 0x0040;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		break;
 	default:
 		return -EINVAL;
@@ -561,6 +561,7 @@ static int wm8971_set_bias_level(struct snd_soc_component *component,
 	enum snd_soc_bias_level level)
 {
 	struct wm8971_priv *wm8971 = snd_soc_component_get_drvdata(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	u16 pwr_reg = snd_soc_component_read(component, WM8971_PWR1) & 0xfe3e;
 
 	switch (level) {
@@ -573,7 +574,7 @@ static int wm8971_set_bias_level(struct snd_soc_component *component,
 		flush_delayed_work(&wm8971->charge_work);
 		break;
 	case SND_SOC_BIAS_STANDBY:
-		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
+		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
 			snd_soc_component_cache_sync(component);
 			/* charge output caps - set vmid to 5k for quick power up */
 			snd_soc_component_write(component, WM8971_PWR1, pwr_reg | 0x01c0);
@@ -659,7 +660,6 @@ static const struct snd_soc_component_driver soc_component_dev_wm8971 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config wm8971_regmap = {
@@ -669,7 +669,7 @@ static const struct regmap_config wm8971_regmap = {
 
 	.reg_defaults = wm8971_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm8971_reg_defaults),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 };
 
 static int wm8971_i2c_probe(struct i2c_client *i2c)
@@ -692,7 +692,7 @@ static int wm8971_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id wm8971_i2c_id[] = {
-	{ "wm8971", 0 },
+	{ "wm8971" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wm8971_i2c_id);
@@ -701,7 +701,7 @@ static struct i2c_driver wm8971_i2c_driver = {
 	.driver = {
 		.name = "wm8971",
 	},
-	.probe_new = wm8971_i2c_probe,
+	.probe = wm8971_i2c_probe,
 	.id_table = wm8971_i2c_id,
 };
 

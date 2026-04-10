@@ -23,7 +23,6 @@
 #include <linux/timer.h>
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
-#include <linux/i2c.h>
 #include <linux/of.h>
 
 #include <linux/atmel-ssc.h>
@@ -67,7 +66,7 @@ static const struct snd_soc_dapm_route intercon[] = {
  */
 static int at91sam9g20ek_wm8731_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
+	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
 	struct device *dev = rtd->dev;
 	int ret;
 
@@ -81,7 +80,7 @@ static int at91sam9g20ek_wm8731_init(struct snd_soc_pcm_runtime *rtd)
 	}
 
 #ifndef ENABLE_MIC_INPUT
-	snd_soc_dapm_nc_pin(&rtd->card->dapm, "Int Mic");
+	snd_soc_dapm_disable_pin(snd_soc_card_to_dapm(rtd->card), "Int Mic");
 #endif
 
 	return 0;
@@ -98,6 +97,9 @@ static struct snd_soc_dai_link at91sam9g20ek_dai = {
 	.init = at91sam9g20ek_wm8731_init,
 	.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 		   SND_SOC_DAIFMT_CBP_CFP,
+#ifndef ENABLE_MIC_INPUT
+	.playback_only = true,
+#endif
 	SND_SOC_DAILINK_REG(pcm),
 };
 
@@ -172,7 +174,7 @@ static int at91sam9g20ek_audio_probe(struct platform_device *pdev)
 	ret = snd_soc_register_card(card);
 	if (ret) {
 		dev_err_probe(&pdev->dev, ret,
-			      "snd_soc_register_card() failed: %d\n", ret);
+			      "snd_soc_register_card() failed\n");
 		goto err;
 	}
 
@@ -183,14 +185,12 @@ err:
 	return ret;
 }
 
-static int at91sam9g20ek_audio_remove(struct platform_device *pdev)
+static void at91sam9g20ek_audio_remove(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = platform_get_drvdata(pdev);
 
 	snd_soc_unregister_card(card);
 	atmel_ssc_put_audio(0);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -207,7 +207,7 @@ static struct platform_driver at91sam9g20ek_audio_driver = {
 		.of_match_table = of_match_ptr(at91sam9g20ek_wm8731_dt_ids),
 	},
 	.probe	= at91sam9g20ek_audio_probe,
-	.remove	= at91sam9g20ek_audio_remove,
+	.remove = at91sam9g20ek_audio_remove,
 };
 
 module_platform_driver(at91sam9g20ek_audio_driver);

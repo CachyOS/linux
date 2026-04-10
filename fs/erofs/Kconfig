@@ -3,25 +3,49 @@
 config EROFS_FS
 	tristate "EROFS filesystem support"
 	depends on BLOCK
+	select CACHEFILES if EROFS_FS_ONDEMAND
+	select CRC32
+	select CRYPTO if EROFS_FS_ZIP_ACCEL
+	select CRYPTO_DEFLATE if EROFS_FS_ZIP_ACCEL
 	select FS_IOMAP
-	select LIBCRC32C
+	select LZ4_DECOMPRESS if EROFS_FS_ZIP
+	select NETFS_SUPPORT if EROFS_FS_ONDEMAND
+	select XXHASH if EROFS_FS_XATTR
+	select XZ_DEC if EROFS_FS_ZIP_LZMA
+	select XZ_DEC_MICROLZMA if EROFS_FS_ZIP_LZMA
+	select ZLIB_INFLATE if EROFS_FS_ZIP_DEFLATE
+	select ZSTD_DECOMPRESS if EROFS_FS_ZIP_ZSTD
 	help
-	  EROFS (Enhanced Read-Only File System) is a lightweight read-only
-	  file system with modern designs (e.g. no buffer heads, inline
-	  xattrs/data, chunk-based deduplication, multiple devices, etc.) for
-	  scenarios which need high-performance read-only solutions, e.g.
-	  smartphones with Android OS, LiveCDs and high-density hosts with
-	  numerous containers;
+	  EROFS (Enhanced Read-Only File System) is a modern, lightweight,
+	  secure read-only filesystem for various use cases, such as immutable
+	  system images, container images, application sandboxes, and datasets.
 
-	  It also provides fixed-sized output compression support in order to
-	  improve storage density as well as keep relatively higher compression
-	  ratios and implements in-place decompression to reuse the file page
-	  for compressed data temporarily with proper strategies, which is
-	  quite useful to ensure guaranteed end-to-end runtime decompression
-	  performance under extremely memory pressure without extra cost.
+	  EROFS uses a flexible, hierarchical on-disk design so that features
+	  can be enabled on demand: the core on-disk format is block-aligned in
+	  order to perform optimally on all kinds of devices, including block
+	  and memory-backed devices; the format is easy to parse and has zero
+	  metadata redundancy, unlike generic filesystems, making it ideal for
+	  filesystem auditing and remote access; inline data, random-access
+	  friendly directory data, inline/shared extended attributes and
+	  chunk-based deduplication ensure space efficiency while maintaining
+	  high performance.
 
-	  See the documentation at <file:Documentation/filesystems/erofs.rst>
-	  for more details.
+	  Optionally, it supports multiple devices to reference external data,
+	  enabling data sharing for container images.
+
+	  It also has advanced encoded on-disk layouts, particularly for data
+	  compression and fine-grained deduplication. It utilizes fixed-size
+	  output compression to improve storage density while keeping relatively
+	  high compression ratios. Furthermore, it implements in-place
+	  decompression to reuse file pages to keep compressed data temporarily
+	  with proper strategies, which ensures guaranteed end-to-end runtime
+	  performance under extreme memory pressure without extra cost.
+
+	  For more details, see the web pages at <https://erofs.docs.kernel.org>
+	  and the documentation at <file:Documentation/filesystems/erofs.rst>.
+
+	  To compile EROFS filesystem support as a module, choose M here. The
+	  module will be called erofs.
 
 	  If unsure, say N.
 
@@ -73,38 +97,119 @@ config EROFS_FS_SECURITY
 
 	  If you are not using a security module, say N.
 
+config EROFS_FS_BACKED_BY_FILE
+	bool "File-backed EROFS filesystem support"
+	depends on EROFS_FS
+	default y
+	help
+	  This allows EROFS to use filesystem image files directly, without
+	  the intercession of loopback block devices or likewise. It is
+	  particularly useful for container images with numerous blobs and
+	  other sandboxes, where loop devices behave intricately.  It can also
+	  be used to simplify error-prone lifetime management of unnecessary
+	  virtual block devices.
+
+	  Note that this feature, along with ongoing fanotify pre-content
+	  hooks, will eventually replace "EROFS over fscache."
+
+	  If you don't want to enable this feature, say N.
+
 config EROFS_FS_ZIP
 	bool "EROFS Data Compression Support"
 	depends on EROFS_FS
-	select LZ4_DECOMPRESS
 	default y
 	help
-	  Enable fixed-sized output compression for EROFS.
+	  Enable EROFS compression layouts so that filesystems containing
+	  compressed files can be parsed by the kernel.
 
 	  If you don't want to enable compression feature, say N.
 
 config EROFS_FS_ZIP_LZMA
 	bool "EROFS LZMA compressed data support"
 	depends on EROFS_FS_ZIP
-	select XZ_DEC
-	select XZ_DEC_MICROLZMA
+	default y
 	help
 	  Saying Y here includes support for reading EROFS file systems
-	  containing LZMA compressed data, specifically called microLZMA. it
-	  gives better compression ratios than the LZ4 algorithm, at the
+	  containing LZMA compressed data, specifically called microLZMA. It
+	  gives better compression ratios than the default LZ4 format, at the
 	  expense of more CPU overhead.
 
-	  LZMA support is an experimental feature for now and so most file
-	  systems will be readable without selecting this option.
+	  Say N if you want to disable LZMA compression support.
+
+config EROFS_FS_ZIP_DEFLATE
+	bool "EROFS DEFLATE compressed data support"
+	depends on EROFS_FS_ZIP
+	help
+	  Saying Y here includes support for reading EROFS file systems
+	  containing DEFLATE compressed data.  It gives better compression
+	  ratios than the default LZ4 format, while it costs more CPU
+	  overhead.
+
+	  If unsure, say N.
+
+config EROFS_FS_ZIP_ZSTD
+	bool "EROFS Zstandard compressed data support"
+	depends on EROFS_FS_ZIP
+	help
+	  Saying Y here includes support for reading EROFS file systems
+	  containing Zstandard compressed data.  It gives better compression
+	  ratios than the default LZ4 format, while it costs more CPU
+	  overhead and memory footprint.
+
+	  If unsure, say N.
+
+config EROFS_FS_ZIP_ACCEL
+	bool "EROFS hardware decompression support"
+	depends on EROFS_FS_ZIP
+	help
+	  Saying Y here includes hardware accelerator support for reading
+	  EROFS file systems containing compressed data.  It gives better
+	  decompression speed than the software-implemented decompression, and
+	  it costs lower CPU overhead.
+
+	  Hardware accelerator support is an experimental feature for now and
+	  file systems are still readable without selecting this option.
 
 	  If unsure, say N.
 
 config EROFS_FS_ONDEMAND
-	bool "EROFS fscache-based on-demand read support"
-	depends on CACHEFILES_ONDEMAND && (EROFS_FS=m && FSCACHE || EROFS_FS=y && FSCACHE=y)
-	default n
+	bool "EROFS fscache-based on-demand read support (deprecated)"
+	depends on EROFS_FS
+	select FSCACHE
+	select CACHEFILES_ONDEMAND
 	help
 	  This permits EROFS to use fscache-backed data blobs with on-demand
 	  read support.
+
+	  It is now deprecated and scheduled to be removed from the kernel
+	  after fanotify pre-content hooks are landed.
+
+	  If unsure, say N.
+
+config EROFS_FS_PCPU_KTHREAD
+	bool "EROFS per-cpu decompression kthread workers"
+	depends on EROFS_FS_ZIP
+	help
+	  Saying Y here enables per-CPU kthread workers pool to carry out
+	  async decompression for low latencies on some architectures.
+
+	  If unsure, say N.
+
+config EROFS_FS_PCPU_KTHREAD_HIPRI
+	bool "EROFS high priority per-CPU kthread workers"
+	depends on EROFS_FS_ZIP && EROFS_FS_PCPU_KTHREAD
+	default y
+	help
+	  This permits EROFS to configure per-CPU kthread workers to run
+	  at higher priority.
+
+	  If unsure, say N.
+
+config EROFS_FS_PAGE_CACHE_SHARE
+	bool "EROFS page cache share support (experimental)"
+	depends on EROFS_FS && EROFS_FS_XATTR && !EROFS_FS_ONDEMAND
+	help
+	  This enables page cache sharing among inodes with identical
+	  content fingerprints on the same machine.
 
 	  If unsure, say N.

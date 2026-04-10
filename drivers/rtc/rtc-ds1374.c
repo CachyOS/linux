@@ -52,7 +52,7 @@
 #define DS1374_REG_TCR		0x09 /* Trickle Charge */
 
 static const struct i2c_device_id ds1374_id[] = {
-	{ "ds1374", 0 },
+	{ "ds1374" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ds1374_id);
@@ -467,8 +467,7 @@ static const struct watchdog_ops ds1374_wdt_ops = {
  *
  *****************************************************************************
  */
-static int ds1374_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int ds1374_probe(struct i2c_client *client)
 {
 	struct ds1374 *ds1374;
 	int ret;
@@ -531,7 +530,7 @@ static int ds1374_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int ds1374_remove(struct i2c_client *client)
+static void ds1374_remove(struct i2c_client *client)
 {
 	struct ds1374 *ds1374 = i2c_get_clientdata(client);
 
@@ -543,8 +542,6 @@ static int ds1374_remove(struct i2c_client *client)
 		devm_free_irq(&client->dev, client->irq, client);
 		cancel_work_sync(&ds1374->work);
 	}
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

@@ -116,7 +116,7 @@ static irqreturn_t hopper_irq_handler(int irq, void *dev_id)
 	if (stat & MANTIS_INT_RISCI) {
 		dprintk(MANTIS_DEBUG, 0, "<%s>", label[8]);
 		mantis->busy_block = (stat & MANTIS_INT_RISCSTAT) >> 28;
-		tasklet_schedule(&mantis->tasklet);
+		queue_work(system_bh_wq, &mantis->bh_work);
 	}
 	if (stat & MANTIS_INT_I2CDONE) {
 		dprintk(MANTIS_DEBUG, 0, "<%s>", label[9]);
@@ -149,7 +149,7 @@ static int hopper_pci_probe(struct pci_dev *pdev,
 	struct mantis_hwconfig *config;
 	int err;
 
-	mantis = kzalloc(sizeof(*mantis), GFP_KERNEL);
+	mantis = kzalloc_obj(*mantis);
 	if (!mantis) {
 		err = -ENOMEM;
 		goto fail0;

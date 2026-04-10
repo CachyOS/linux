@@ -17,6 +17,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 
 static LIST_HEAD(container_list);
 static DEFINE_MUTEX(container_list_lock);
@@ -32,7 +33,7 @@ static struct class enclosure_class;
  * found. @start can be used as a starting point to obtain multiple
  * enclosures per parent (should begin with NULL and then be set to
  * each returned enclosure device). Obtains a reference to the
- * enclosure class device which must be released with device_put().
+ * enclosure class device which must be released with put_device().
  * If @start is not NULL, a reference must be taken on it which is
  * released before returning (this allows a loop through all
  * enclosures to exit with only the reference on the enclosure of
@@ -116,7 +117,7 @@ enclosure_register(struct device *dev, const char *name, int components,
 		   struct enclosure_component_callbacks *cb)
 {
 	struct enclosure_device *edev =
-		kzalloc(struct_size(edev, component, components), GFP_KERNEL);
+		kzalloc_flex(*edev, component, components);
 	int err, i;
 
 	BUG_ON(!cb);
@@ -451,7 +452,6 @@ ATTRIBUTE_GROUPS(enclosure_class);
 
 static struct class enclosure_class = {
 	.name			= "enclosure",
-	.owner			= THIS_MODULE,
 	.dev_release		= enclosure_release,
 	.dev_groups		= enclosure_class_groups,
 };
@@ -593,7 +593,7 @@ static ssize_t get_component_power_status(struct device *cdev,
 	if (ecomp->power_status == -1)
 		return (edev->cb->get_power_status) ? -EIO : -ENOTTY;
 
-	return sysfs_emit(buf, "%s\n", ecomp->power_status ? "on" : "off");
+	return sysfs_emit(buf, "%s\n", str_on_off(ecomp->power_status));
 }
 
 static ssize_t set_component_power_status(struct device *cdev,

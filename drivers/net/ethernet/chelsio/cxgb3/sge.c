@@ -166,11 +166,6 @@ static u8 flit_desc_map[] = {
 #endif
 };
 
-static inline struct sge_qset *fl_to_qset(const struct sge_fl *q, int qidx)
-{
-	return container_of(q, struct sge_qset, fl[qidx]);
-}
-
 static inline struct sge_qset *rspq_to_qset(const struct sge_rspq *q)
 {
 	return container_of(q, struct sge_qset, rspq);
@@ -2189,9 +2184,8 @@ static void lro_add_page(struct adapter *adap, struct sge_qset *qs,
 	len -= offset;
 
 	rx_frag += nr_frags;
-	__skb_frag_set_page(rx_frag, sd->pg_chunk.page);
-	skb_frag_off_set(rx_frag, sd->pg_chunk.offset + offset);
-	skb_frag_size_set(rx_frag, len);
+	skb_frag_fill_page_desc(rx_frag, sd->pg_chunk.page,
+				sd->pg_chunk.offset + offset, len);
 
 	skb->len += len;
 	skb->data_len += len;
@@ -2507,14 +2501,6 @@ static int napi_rx_handler(struct napi_struct *napi, int budget)
 	return work_done;
 }
 
-/*
- * Returns true if the device is already scheduled for polling.
- */
-static inline int napi_is_scheduled(struct napi_struct *napi)
-{
-	return test_bit(NAPI_STATE_SCHED, &napi->state);
-}
-
 /**
  *	process_pure_responses - process pure responses from a response queue
  *	@adap: the adapter
@@ -2680,12 +2666,7 @@ static int rspq_check_napi(struct sge_qset *qs)
 {
 	struct sge_rspq *q = &qs->rspq;
 
-	if (!napi_is_scheduled(&qs->napi) &&
-	    is_new_response(&q->desc[q->cidx], q)) {
-		napi_schedule(&qs->napi);
-		return 1;
-	}
-	return 0;
+	return is_new_response(&q->desc[q->cidx], q) && napi_schedule(&qs->napi);
 }
 
 /*
@@ -2925,7 +2906,7 @@ void t3_sge_err_intr_handler(struct adapter *adapter)
  */
 static void sge_timer_tx(struct timer_list *t)
 {
-	struct sge_qset *qs = from_timer(qs, t, tx_reclaim_timer);
+	struct sge_qset *qs = timer_container_of(qs, t, tx_reclaim_timer);
 	struct port_info *pi = netdev_priv(qs->netdev);
 	struct adapter *adap = pi->adapter;
 	unsigned int tbd[SGE_TXQ_PER_SET] = {0, 0};
@@ -2966,7 +2947,7 @@ static void sge_timer_tx(struct timer_list *t)
 static void sge_timer_rx(struct timer_list *t)
 {
 	spinlock_t *lock;
-	struct sge_qset *qs = from_timer(qs, t, rx_reclaim_timer);
+	struct sge_qset *qs = timer_container_of(qs, t, rx_reclaim_timer);
 	struct port_info *pi = netdev_priv(qs->netdev);
 	struct adapter *adap = pi->adapter;
 	u32 status;
@@ -3242,9 +3223,9 @@ void t3_stop_sge_timers(struct adapter *adap)
 		struct sge_qset *q = &adap->sge.qs[i];
 
 		if (q->tx_reclaim_timer.function)
-			del_timer_sync(&q->tx_reclaim_timer);
+			timer_delete_sync(&q->tx_reclaim_timer);
 		if (q->rx_reclaim_timer.function)
-			del_timer_sync(&q->rx_reclaim_timer);
+			timer_delete_sync(&q->rx_reclaim_timer);
 	}
 }
 

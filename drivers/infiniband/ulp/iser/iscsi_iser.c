@@ -78,7 +78,7 @@ MODULE_DESCRIPTION("iSER (iSCSI Extensions for RDMA) Datamover");
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Alex Nezhinsky, Dan Bar Dov, Or Gerlitz");
 
-static struct scsi_host_template iscsi_iser_sht;
+static const struct scsi_host_template iscsi_iser_sht;
 static struct iscsi_transport iscsi_iser_transport;
 static struct scsi_transport_template *iscsi_iser_scsi_transport;
 static struct workqueue_struct *release_wq;
@@ -267,11 +267,7 @@ static int iscsi_iser_task_init(struct iscsi_task *task)
 static int iscsi_iser_mtask_xmit(struct iscsi_conn *conn,
 				 struct iscsi_task *task)
 {
-	int error = 0;
-
 	iser_dbg("mtask xmit [cid %d itt 0x%x]\n", conn->id, task->itt);
-
-	error = iser_send_control(conn, task);
 
 	/* since iser xmits control with zero copy, tasks can not be recycled
 	 * right after sending them.
@@ -279,7 +275,7 @@ static int iscsi_iser_mtask_xmit(struct iscsi_conn *conn,
 	 * - if yes, the task is recycled at iscsi_complete_pdu
 	 * - if no,  the task is recycled at iser_snd_completion
 	 */
-	return error;
+	return iser_send_control(conn, task);
 }
 
 static int iscsi_iser_task_xmit_unsol_data(struct iscsi_conn *conn,
@@ -393,10 +389,10 @@ static void iscsi_iser_cleanup_task(struct iscsi_task *task)
  * @task:     iscsi task
  * @sector:   error sector if exsists (output)
  *
- * Return: zero if no data-integrity errors have occured
- *         0x1: data-integrity error occured in the guard-block
- *         0x2: data-integrity error occured in the reference tag
- *         0x3: data-integrity error occured in the application tag
+ * Return: zero if no data-integrity errors have occurred
+ *         0x1: data-integrity error occurred in the guard-block
+ *         0x2: data-integrity error occurred in the reference tag
+ *         0x3: data-integrity error occurred in the application tag
  *
  *         In addition the error sector is marked.
  */
@@ -446,7 +442,7 @@ iscsi_iser_conn_create(struct iscsi_cls_session *cls_session,
  * @is_leading:      indicate if this is the session leading connection (MCS)
  *
  * Return: zero on success, $error if iscsi_conn_bind fails and
- *         -EINVAL in case end-point doesn't exsits anymore or iser connection
+ *         -EINVAL in case end-point doesn't exists anymore or iser connection
  *         state is not UP (teardown already started).
  */
 static int iscsi_iser_conn_bind(struct iscsi_cls_session *cls_session,
@@ -568,7 +564,7 @@ static void iscsi_iser_session_destroy(struct iscsi_cls_session *cls_session)
 	struct Scsi_Host *shost = iscsi_session_to_shost(cls_session);
 
 	iscsi_session_teardown(cls_session);
-	iscsi_host_remove(shost);
+	iscsi_host_remove(shost, false);
 	iscsi_host_free(shost);
 }
 
@@ -685,7 +681,7 @@ iscsi_iser_session_create(struct iscsi_endpoint *ep,
 	return cls_session;
 
 remove_host:
-	iscsi_host_remove(shost);
+	iscsi_host_remove(shost, false);
 free_host:
 	iscsi_host_free(shost);
 	return NULL;
@@ -806,7 +802,7 @@ static struct iscsi_endpoint *iscsi_iser_ep_connect(struct Scsi_Host *shost,
 	if (!ep)
 		return ERR_PTR(-ENOMEM);
 
-	iser_conn = kzalloc(sizeof(*iser_conn), GFP_KERNEL);
+	iser_conn = kzalloc_obj(*iser_conn);
 	if (!iser_conn) {
 		err = -ENOMEM;
 		goto failure;
@@ -956,7 +952,7 @@ static umode_t iser_attr_is_visible(int param_type, int param)
 	return 0;
 }
 
-static struct scsi_host_template iscsi_iser_sht = {
+static const struct scsi_host_template iscsi_iser_sht = {
 	.module                 = THIS_MODULE,
 	.name                   = "iSCSI Initiator over iSER",
 	.queuecommand           = iscsi_queuecommand,
@@ -1033,7 +1029,7 @@ static int __init iser_init(void)
 	mutex_init(&ig.connlist_mutex);
 	INIT_LIST_HEAD(&ig.connlist);
 
-	release_wq = alloc_workqueue("release workqueue", 0, 0);
+	release_wq = alloc_workqueue("release workqueue", WQ_PERCPU, 0);
 	if (!release_wq) {
 		iser_err("failed to allocate release workqueue\n");
 		err = -ENOMEM;

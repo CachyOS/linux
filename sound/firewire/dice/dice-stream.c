@@ -59,7 +59,7 @@ int snd_dice_stream_get_rate_mode(struct snd_dice *dice, unsigned int rate,
 
 static int select_clock(struct snd_dice *dice, unsigned int rate)
 {
-	__be32 reg;
+	__be32 reg, new;
 	u32 data;
 	int i;
 	int err;
@@ -83,15 +83,17 @@ static int select_clock(struct snd_dice *dice, unsigned int rate)
 	if (completion_done(&dice->clock_accepted))
 		reinit_completion(&dice->clock_accepted);
 
-	reg = cpu_to_be32(data);
+	new = cpu_to_be32(data);
 	err = snd_dice_transaction_write_global(dice, GLOBAL_CLOCK_SELECT,
-						&reg, sizeof(reg));
+						&new, sizeof(new));
 	if (err < 0)
 		return err;
 
 	if (wait_for_completion_timeout(&dice->clock_accepted,
-			msecs_to_jiffies(NOTIFICATION_TIMEOUT_MS)) == 0)
-		return -ETIMEDOUT;
+			msecs_to_jiffies(NOTIFICATION_TIMEOUT_MS)) == 0) {
+		if (reg != new)
+			return -ETIMEDOUT;
+	}
 
 	return 0;
 }
@@ -675,32 +677,23 @@ static void dice_lock_changed(struct snd_dice *dice)
 
 int snd_dice_stream_lock_try(struct snd_dice *dice)
 {
-	int err;
+	guard(spinlock_irq)(&dice->lock);
 
-	spin_lock_irq(&dice->lock);
-
-	if (dice->dev_lock_count < 0) {
-		err = -EBUSY;
-		goto out;
-	}
+	if (dice->dev_lock_count < 0)
+		return -EBUSY;
 
 	if (dice->dev_lock_count++ == 0)
 		dice_lock_changed(dice);
-	err = 0;
-out:
-	spin_unlock_irq(&dice->lock);
-	return err;
+	return 0;
 }
 
 void snd_dice_stream_lock_release(struct snd_dice *dice)
 {
-	spin_lock_irq(&dice->lock);
+	guard(spinlock_irq)(&dice->lock);
 
 	if (WARN_ON(dice->dev_lock_count <= 0))
-		goto out;
+		return;
 
 	if (--dice->dev_lock_count == 0)
 		dice_lock_changed(dice);
-out:
-	spin_unlock_irq(&dice->lock);
 }

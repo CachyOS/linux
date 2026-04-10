@@ -23,24 +23,25 @@
  * indication of where the hardware is currently working.
  */
 
-#include <linux/kernel.h>
-#include <linux/io.h>
-#include <linux/init.h>
-#include <linux/slab.h>
-#include <linux/module.h>
-#include <linux/interrupt.h>
-#include <linux/dma-mapping.h>
-#include <linux/scatterlist.h>
-#include <linux/device.h>
-#include <linux/platform_device.h>
-#include <linux/of.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
-#include <linux/of_dma.h>
 #include <linux/circ_buf.h>
+#include <linux/cleanup.h>
 #include <linux/clk.h>
+#include <linux/device.h>
+#include <linux/dma-mapping.h>
 #include <linux/dmaengine.h>
+#include <linux/init.h>
+#include <linux/interrupt.h>
+#include <linux/io.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/of_address.h>
+#include <linux/of_dma.h>
+#include <linux/of_irq.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/scatterlist.h>
+#include <linux/slab.h>
 
 #include "../dmaengine.h"
 #include "../virt-dma.h"
@@ -74,7 +75,7 @@ struct bam_async_desc {
 	struct list_head desc_node;
 	enum dma_transfer_direction dir;
 	size_t length;
-	struct bam_desc_hw desc[];
+	struct bam_desc_hw desc[] __counted_by(num_desc);
 };
 
 enum bam_reg {
@@ -440,7 +441,7 @@ static void bam_reset(struct bam_device *bdev)
 	val |= BAM_EN;
 	writel_relaxed(val, bam_addr(bdev, 0, BAM_CTRL));
 
-	/* set descriptor threshhold, start with 4 bytes */
+	/* set descriptor threshold, start with 4 bytes */
 	writel_relaxed(DEFAULT_CNT_THRSHLD,
 			bam_addr(bdev, 0, BAM_DESC_CNT_TRSHLD));
 
@@ -558,14 +559,6 @@ static int bam_alloc_chan(struct dma_chan *chan)
 	return 0;
 }
 
-static int bam_pm_runtime_get_sync(struct device *dev)
-{
-	if (pm_runtime_enabled(dev))
-		return pm_runtime_get_sync(dev);
-
-	return 0;
-}
-
 /**
  * bam_free_chan - Frees dma resources associated with specific channel
  * @chan: specified channel
@@ -578,10 +571,9 @@ static void bam_free_chan(struct dma_chan *chan)
 	struct bam_chan *bchan = to_bam_chan(chan);
 	struct bam_device *bdev = bchan->bdev;
 	u32 val;
-	unsigned long flags;
 	int ret;
 
-	ret = bam_pm_runtime_get_sync(bdev->dev);
+	ret = pm_runtime_get_sync(bdev->dev);
 	if (ret < 0)
 		return;
 
@@ -592,9 +584,8 @@ static void bam_free_chan(struct dma_chan *chan)
 		goto err;
 	}
 
-	spin_lock_irqsave(&bchan->vc.lock, flags);
-	bam_reset_channel(bchan);
-	spin_unlock_irqrestore(&bchan->vc.lock, flags);
+	scoped_guard(spinlock_irqsave, &bchan->vc.lock)
+		bam_reset_channel(bchan);
 
 	dma_free_wc(bdev->dev, BAM_DESC_FIFO_SIZE, bchan->fifo_virt,
 		    bchan->fifo_phys);
@@ -632,12 +623,11 @@ static int bam_slave_config(struct dma_chan *chan,
 			    struct dma_slave_config *cfg)
 {
 	struct bam_chan *bchan = to_bam_chan(chan);
-	unsigned long flag;
 
-	spin_lock_irqsave(&bchan->vc.lock, flag);
+	guard(spinlock_irqsave)(&bchan->vc.lock);
+
 	memcpy(&bchan->slave, cfg, sizeof(*cfg));
 	bchan->reconfigure = 1;
-	spin_unlock_irqrestore(&bchan->vc.lock, flag);
 
 	return 0;
 }
@@ -663,22 +653,16 @@ static struct dma_async_tx_descriptor *bam_prep_slave_sg(struct dma_chan *chan,
 	struct scatterlist *sg;
 	u32 i;
 	struct bam_desc_hw *desc;
-	unsigned int num_alloc = 0;
-
+	unsigned int num_alloc;
 
 	if (!is_slave_direction(direction)) {
 		dev_err(bdev->dev, "invalid dma direction\n");
 		return NULL;
 	}
 
-	/* calculate number of required entries */
-	for_each_sg(sgl, sg, sg_len, i)
-		num_alloc += DIV_ROUND_UP(sg_dma_len(sg), BAM_FIFO_SIZE);
-
-	/* allocate enough room to accomodate the number of entries */
-	async_desc = kzalloc(struct_size(async_desc, desc, num_alloc),
-			     GFP_NOWAIT);
-
+	/* allocate enough room to accommodate the number of entries */
+	num_alloc = sg_nents_for_dma(sgl, sg_len, BAM_FIFO_SIZE);
+	async_desc = kzalloc_flex(*async_desc, desc, num_alloc, GFP_NOWAIT);
 	if (!async_desc)
 		return NULL;
 
@@ -734,38 +718,37 @@ static int bam_dma_terminate_all(struct dma_chan *chan)
 {
 	struct bam_chan *bchan = to_bam_chan(chan);
 	struct bam_async_desc *async_desc, *tmp;
-	unsigned long flag;
 	LIST_HEAD(head);
 
 	/* remove all transactions, including active transaction */
-	spin_lock_irqsave(&bchan->vc.lock, flag);
-	/*
-	 * If we have transactions queued, then some might be committed to the
-	 * hardware in the desc fifo.  The only way to reset the desc fifo is
-	 * to do a hardware reset (either by pipe or the entire block).
-	 * bam_chan_init_hw() will trigger a pipe reset, and also reinit the
-	 * pipe.  If the pipe is left disabled (default state after pipe reset)
-	 * and is accessed by a connected hardware engine, a fatal error in
-	 * the BAM will occur.  There is a small window where this could happen
-	 * with bam_chan_init_hw(), but it is assumed that the caller has
-	 * stopped activity on any attached hardware engine.  Make sure to do
-	 * this first so that the BAM hardware doesn't cause memory corruption
-	 * by accessing freed resources.
-	 */
-	if (!list_empty(&bchan->desc_list)) {
-		async_desc = list_first_entry(&bchan->desc_list,
-					      struct bam_async_desc, desc_node);
-		bam_chan_init_hw(bchan, async_desc->dir);
-	}
+	scoped_guard(spinlock_irqsave, &bchan->vc.lock) {
+		/*
+		 * If we have transactions queued, then some might be committed to the
+		 * hardware in the desc fifo.  The only way to reset the desc fifo is
+		 * to do a hardware reset (either by pipe or the entire block).
+		 * bam_chan_init_hw() will trigger a pipe reset, and also reinit the
+		 * pipe.  If the pipe is left disabled (default state after pipe reset)
+		 * and is accessed by a connected hardware engine, a fatal error in
+		 * the BAM will occur.  There is a small window where this could happen
+		 * with bam_chan_init_hw(), but it is assumed that the caller has
+		 * stopped activity on any attached hardware engine.  Make sure to do
+		 * this first so that the BAM hardware doesn't cause memory corruption
+		 * by accessing freed resources.
+		 */
+		if (!list_empty(&bchan->desc_list)) {
+			async_desc = list_first_entry(&bchan->desc_list,
+						      struct bam_async_desc, desc_node);
+			bam_chan_init_hw(bchan, async_desc->dir);
+		}
 
-	list_for_each_entry_safe(async_desc, tmp,
-				 &bchan->desc_list, desc_node) {
-		list_add(&async_desc->vd.node, &bchan->vc.desc_issued);
-		list_del(&async_desc->desc_node);
-	}
+		list_for_each_entry_safe(async_desc, tmp,
+					 &bchan->desc_list, desc_node) {
+			list_add(&async_desc->vd.node, &bchan->vc.desc_issued);
+			list_del(&async_desc->desc_node);
+		}
 
-	vchan_get_all_descriptors(&bchan->vc, &head);
-	spin_unlock_irqrestore(&bchan->vc.lock, flag);
+		vchan_get_all_descriptors(&bchan->vc, &head);
+	}
 
 	vchan_dma_desc_free_list(&bchan->vc, &head);
 
@@ -781,17 +764,16 @@ static int bam_pause(struct dma_chan *chan)
 {
 	struct bam_chan *bchan = to_bam_chan(chan);
 	struct bam_device *bdev = bchan->bdev;
-	unsigned long flag;
 	int ret;
 
-	ret = bam_pm_runtime_get_sync(bdev->dev);
+	ret = pm_runtime_get_sync(bdev->dev);
 	if (ret < 0)
 		return ret;
 
-	spin_lock_irqsave(&bchan->vc.lock, flag);
-	writel_relaxed(1, bam_addr(bdev, bchan->id, BAM_P_HALT));
-	bchan->paused = 1;
-	spin_unlock_irqrestore(&bchan->vc.lock, flag);
+	scoped_guard(spinlock_irqsave, &bchan->vc.lock) {
+		writel_relaxed(1, bam_addr(bdev, bchan->id, BAM_P_HALT));
+		bchan->paused = 1;
+	}
 	pm_runtime_mark_last_busy(bdev->dev);
 	pm_runtime_put_autosuspend(bdev->dev);
 
@@ -807,17 +789,16 @@ static int bam_resume(struct dma_chan *chan)
 {
 	struct bam_chan *bchan = to_bam_chan(chan);
 	struct bam_device *bdev = bchan->bdev;
-	unsigned long flag;
 	int ret;
 
-	ret = bam_pm_runtime_get_sync(bdev->dev);
+	ret = pm_runtime_get_sync(bdev->dev);
 	if (ret < 0)
 		return ret;
 
-	spin_lock_irqsave(&bchan->vc.lock, flag);
-	writel_relaxed(0, bam_addr(bdev, bchan->id, BAM_P_HALT));
-	bchan->paused = 0;
-	spin_unlock_irqrestore(&bchan->vc.lock, flag);
+	scoped_guard(spinlock_irqsave, &bchan->vc.lock) {
+		writel_relaxed(0, bam_addr(bdev, bchan->id, BAM_P_HALT));
+		bchan->paused = 0;
+	}
 	pm_runtime_mark_last_busy(bdev->dev);
 	pm_runtime_put_autosuspend(bdev->dev);
 
@@ -834,7 +815,6 @@ static int bam_resume(struct dma_chan *chan)
 static u32 process_channel_irqs(struct bam_device *bdev)
 {
 	u32 i, srcs, pipe_stts, offset, avail;
-	unsigned long flags;
 	struct bam_async_desc *async_desc, *tmp;
 
 	srcs = readl_relaxed(bam_addr(bdev, 0, BAM_IRQ_SRCS_EE));
@@ -854,7 +834,7 @@ static u32 process_channel_irqs(struct bam_device *bdev)
 
 		writel_relaxed(pipe_stts, bam_addr(bdev, i, BAM_P_IRQ_CLR));
 
-		spin_lock_irqsave(&bchan->vc.lock, flags);
+		guard(spinlock_irqsave)(&bchan->vc.lock);
 
 		offset = readl_relaxed(bam_addr(bdev, i, BAM_P_SW_OFSTS)) &
 				       P_SW_OFSTS_MASK;
@@ -893,8 +873,6 @@ static u32 process_channel_irqs(struct bam_device *bdev)
 			}
 			list_del(&async_desc->desc_node);
 		}
-
-		spin_unlock_irqrestore(&bchan->vc.lock, flags);
 	}
 
 	return srcs;
@@ -919,7 +897,7 @@ static irqreturn_t bam_dma_irq(int irq, void *data)
 	if (srcs & P_IRQ)
 		tasklet_schedule(&bdev->task);
 
-	ret = bam_pm_runtime_get_sync(bdev->dev);
+	ret = pm_runtime_get_sync(bdev->dev);
 	if (ret < 0)
 		return IRQ_NONE;
 
@@ -958,7 +936,6 @@ static enum dma_status bam_tx_status(struct dma_chan *chan, dma_cookie_t cookie,
 	int ret;
 	size_t residue = 0;
 	unsigned int i;
-	unsigned long flags;
 
 	ret = dma_cookie_status(chan, cookie, txstate);
 	if (ret == DMA_COMPLETE)
@@ -967,22 +944,21 @@ static enum dma_status bam_tx_status(struct dma_chan *chan, dma_cookie_t cookie,
 	if (!txstate)
 		return bchan->paused ? DMA_PAUSED : ret;
 
-	spin_lock_irqsave(&bchan->vc.lock, flags);
-	vd = vchan_find_desc(&bchan->vc, cookie);
-	if (vd) {
-		residue = container_of(vd, struct bam_async_desc, vd)->length;
-	} else {
-		list_for_each_entry(async_desc, &bchan->desc_list, desc_node) {
-			if (async_desc->vd.tx.cookie != cookie)
-				continue;
+	scoped_guard(spinlock_irqsave, &bchan->vc.lock) {
+		vd = vchan_find_desc(&bchan->vc, cookie);
+		if (vd) {
+			residue = container_of(vd, struct bam_async_desc, vd)->length;
+		} else {
+			list_for_each_entry(async_desc, &bchan->desc_list, desc_node) {
+				if (async_desc->vd.tx.cookie != cookie)
+					continue;
 
-			for (i = 0; i < async_desc->num_desc; i++)
-				residue += le16_to_cpu(
-						async_desc->curr_desc[i].size);
+				for (i = 0; i < async_desc->num_desc; i++)
+					residue += le16_to_cpu(
+							async_desc->curr_desc[i].size);
+			}
 		}
 	}
-
-	spin_unlock_irqrestore(&bchan->vc.lock, flags);
 
 	dma_set_residue(txstate, residue);
 
@@ -1037,7 +1013,7 @@ static void bam_start_dma(struct bam_chan *bchan)
 	if (!vd)
 		return;
 
-	ret = bam_pm_runtime_get_sync(bdev->dev);
+	ret = pm_runtime_get_sync(bdev->dev);
 	if (ret < 0)
 		return;
 
@@ -1124,17 +1100,16 @@ static void dma_tasklet(struct tasklet_struct *t)
 {
 	struct bam_device *bdev = from_tasklet(bdev, t, task);
 	struct bam_chan *bchan;
-	unsigned long flags;
 	unsigned int i;
 
 	/* go through the channels and kick off transactions */
 	for (i = 0; i < bdev->num_channels; i++) {
 		bchan = &bdev->channels[i];
-		spin_lock_irqsave(&bchan->vc.lock, flags);
+
+		guard(spinlock_irqsave)(&bchan->vc.lock);
 
 		if (!list_empty(&bchan->vc.desc_issued) && !IS_BUSY(bchan))
 			bam_start_dma(bchan);
-		spin_unlock_irqrestore(&bchan->vc.lock, flags);
 	}
 
 }
@@ -1148,15 +1123,12 @@ static void dma_tasklet(struct tasklet_struct *t)
 static void bam_issue_pending(struct dma_chan *chan)
 {
 	struct bam_chan *bchan = to_bam_chan(chan);
-	unsigned long flags;
 
-	spin_lock_irqsave(&bchan->vc.lock, flags);
+	guard(spinlock_irqsave)(&bchan->vc.lock);
 
 	/* if work pending and idle, start a transaction */
 	if (vchan_issue_pending(&bchan->vc) && !IS_BUSY(bchan))
 		bam_start_dma(bchan);
-
-	spin_unlock_irqrestore(&bchan->vc.lock, flags);
 }
 
 /**
@@ -1245,7 +1217,6 @@ static int bam_dma_probe(struct platform_device *pdev)
 {
 	struct bam_device *bdev;
 	const struct of_device_id *match;
-	struct resource *iores;
 	int ret, i;
 
 	bdev = devm_kzalloc(&pdev->dev, sizeof(*bdev), GFP_KERNEL);
@@ -1262,8 +1233,7 @@ static int bam_dma_probe(struct platform_device *pdev)
 
 	bdev->layout = match->data;
 
-	iores = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	bdev->regs = devm_ioremap_resource(&pdev->dev, iores);
+	bdev->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(bdev->regs))
 		return PTR_ERR(bdev->regs);
 
@@ -1282,18 +1252,6 @@ static int bam_dma_probe(struct platform_device *pdev)
 	bdev->powered_remotely = of_property_read_bool(pdev->dev.of_node,
 						"qcom,powered-remotely");
 
-	if (bdev->controlled_remotely || bdev->powered_remotely) {
-		ret = of_property_read_u32(pdev->dev.of_node, "num-channels",
-					   &bdev->num_channels);
-		if (ret)
-			dev_err(bdev->dev, "num-channels unspecified in dt\n");
-
-		ret = of_property_read_u32(pdev->dev.of_node, "qcom,num-ees",
-					   &bdev->num_ees);
-		if (ret)
-			dev_err(bdev->dev, "num-ees unspecified in dt\n");
-	}
-
 	if (bdev->controlled_remotely || bdev->powered_remotely)
 		bdev->bamclk = devm_clk_get_optional(bdev->dev, "bam_clk");
 	else
@@ -1301,6 +1259,22 @@ static int bam_dma_probe(struct platform_device *pdev)
 
 	if (IS_ERR(bdev->bamclk))
 		return PTR_ERR(bdev->bamclk);
+
+	if (!bdev->bamclk) {
+		ret = of_property_read_u32(pdev->dev.of_node, "num-channels",
+					   &bdev->num_channels);
+		if (ret) {
+			dev_err(bdev->dev, "num-channels unspecified in dt\n");
+			return ret;
+		}
+
+		ret = of_property_read_u32(pdev->dev.of_node, "qcom,num-ees",
+					   &bdev->num_ees);
+		if (ret) {
+			dev_err(bdev->dev, "num-ees unspecified in dt\n");
+			return ret;
+		}
+	}
 
 	ret = clk_prepare_enable(bdev->bamclk);
 	if (ret) {
@@ -1335,11 +1309,7 @@ static int bam_dma_probe(struct platform_device *pdev)
 
 	/* set max dma segment size */
 	bdev->common.dev = bdev->dev;
-	ret = dma_set_max_seg_size(bdev->common.dev, BAM_FIFO_SIZE);
-	if (ret) {
-		dev_err(bdev->dev, "cannot set maximum segment size\n");
-		goto err_bam_channel_exit;
-	}
+	dma_set_max_seg_size(bdev->common.dev, BAM_FIFO_SIZE);
 
 	platform_set_drvdata(pdev, bdev);
 
@@ -1374,11 +1344,6 @@ static int bam_dma_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_unregister_dma;
 
-	if (!bdev->bamclk) {
-		pm_runtime_disable(&pdev->dev);
-		return 0;
-	}
-
 	pm_runtime_irq_safe(&pdev->dev);
 	pm_runtime_set_autosuspend_delay(&pdev->dev, BAM_DMA_AUTOSUSPEND_DELAY);
 	pm_runtime_use_autosuspend(&pdev->dev);
@@ -1401,7 +1366,7 @@ err_disable_clk:
 	return ret;
 }
 
-static int bam_dma_remove(struct platform_device *pdev)
+static void bam_dma_remove(struct platform_device *pdev)
 {
 	struct bam_device *bdev = platform_get_drvdata(pdev);
 	u32 i;
@@ -1431,8 +1396,6 @@ static int bam_dma_remove(struct platform_device *pdev)
 	tasklet_kill(&bdev->task);
 
 	clk_disable_unprepare(bdev->bamclk);
-
-	return 0;
 }
 
 static int __maybe_unused bam_dma_runtime_suspend(struct device *dev)
@@ -1462,10 +1425,8 @@ static int __maybe_unused bam_dma_suspend(struct device *dev)
 {
 	struct bam_device *bdev = dev_get_drvdata(dev);
 
-	if (bdev->bamclk) {
-		pm_runtime_force_suspend(dev);
-		clk_unprepare(bdev->bamclk);
-	}
+	pm_runtime_force_suspend(dev);
+	clk_unprepare(bdev->bamclk);
 
 	return 0;
 }
@@ -1475,13 +1436,11 @@ static int __maybe_unused bam_dma_resume(struct device *dev)
 	struct bam_device *bdev = dev_get_drvdata(dev);
 	int ret;
 
-	if (bdev->bamclk) {
-		ret = clk_prepare(bdev->bamclk);
-		if (ret)
-			return ret;
+	ret = clk_prepare(bdev->bamclk);
+	if (ret)
+		return ret;
 
-		pm_runtime_force_resume(dev);
-	}
+	pm_runtime_force_resume(dev);
 
 	return 0;
 }

@@ -3,11 +3,6 @@
  * R-Car Gen3 Digital Radio Interface (DRIF) driver
  *
  * Copyright (C) 2017 Renesas Electronics Corporation
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 /*
@@ -49,8 +44,9 @@
 #include <linux/ioctl.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/of_graph.h>
-#include <linux/of_device.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/sched.h>
 #include <media/v4l2-async.h>
@@ -428,10 +424,11 @@ static int rcar_drif_queue_setup(struct vb2_queue *vq,
 			unsigned int sizes[], struct device *alloc_devs[])
 {
 	struct rcar_drif_sdr *sdr = vb2_get_drv_priv(vq);
+	unsigned int q_num_bufs = vb2_get_num_buffers(vq);
 
 	/* Need at least 16 buffers */
-	if (vq->num_buffers + *num_buffers < 16)
-		*num_buffers = 16 - vq->num_buffers;
+	if (q_num_bufs + *num_buffers < 16)
+		*num_buffers = 16 - q_num_bufs;
 
 	*num_planes = 1;
 	sizes[0] = PAGE_ALIGN(sdr->fmt->buffersize);
@@ -864,8 +861,6 @@ static const struct vb2_ops rcar_drif_vb2_ops = {
 	.buf_queue              = rcar_drif_buf_queue,
 	.start_streaming        = rcar_drif_start_streaming,
 	.stop_streaming         = rcar_drif_stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 static int rcar_drif_querycap(struct file *file, void *fh,
@@ -875,8 +870,7 @@ static int rcar_drif_querycap(struct file *file, void *fh,
 
 	strscpy(cap->driver, KBUILD_MODNAME, sizeof(cap->driver));
 	strscpy(cap->card, sdr->vdev->name, sizeof(cap->card));
-	snprintf(cap->bus_info, sizeof(cap->bus_info), "platform:%s",
-		 sdr->vdev->name);
+	strscpy(cap->bus_info, "platform:R-Car DRIF", sizeof(cap->bus_info));
 
 	return 0;
 }
@@ -1075,7 +1069,6 @@ static int rcar_drif_sdr_register(struct rcar_drif_sdr *sdr)
 	sdr->vdev->release = video_device_release;
 	sdr->vdev->lock = &sdr->v4l2_mutex;
 	sdr->vdev->queue = &sdr->vb_queue;
-	sdr->vdev->queue->lock = &sdr->vb_queue_mutex;
 	sdr->vdev->ctrl_handler = &sdr->ctrl_hdl;
 	sdr->vdev->v4l2_dev = &sdr->v4l2_dev;
 	sdr->vdev->device_caps = V4L2_CAP_SDR_CAPTURE | V4L2_CAP_TUNER |
@@ -1102,7 +1095,7 @@ static void rcar_drif_sdr_unregister(struct rcar_drif_sdr *sdr)
 /* Sub-device bound callback */
 static int rcar_drif_notify_bound(struct v4l2_async_notifier *notifier,
 				   struct v4l2_subdev *subdev,
-				   struct v4l2_async_subdev *asd)
+				   struct v4l2_async_connection *asd)
 {
 	struct rcar_drif_sdr *sdr =
 		container_of(notifier, struct rcar_drif_sdr, notifier);
@@ -1117,7 +1110,7 @@ static int rcar_drif_notify_bound(struct v4l2_async_notifier *notifier,
 /* Sub-device unbind callback */
 static void rcar_drif_notify_unbind(struct v4l2_async_notifier *notifier,
 				   struct v4l2_subdev *subdev,
-				   struct v4l2_async_subdev *asd)
+				   struct v4l2_async_connection *asd)
 {
 	struct rcar_drif_sdr *sdr =
 		container_of(notifier, struct rcar_drif_sdr, notifier);
@@ -1210,9 +1203,9 @@ static int rcar_drif_parse_subdevs(struct rcar_drif_sdr *sdr)
 {
 	struct v4l2_async_notifier *notifier = &sdr->notifier;
 	struct fwnode_handle *fwnode, *ep;
-	struct v4l2_async_subdev *asd;
+	struct v4l2_async_connection *asd;
 
-	v4l2_async_nf_init(notifier);
+	v4l2_async_nf_init(&sdr->notifier, &sdr->v4l2_dev);
 
 	ep = fwnode_graph_get_next_endpoint(of_fwnode_handle(sdr->dev->of_node),
 					    NULL);
@@ -1230,7 +1223,7 @@ static int rcar_drif_parse_subdevs(struct rcar_drif_sdr *sdr)
 	}
 
 	asd = v4l2_async_nf_add_fwnode(notifier, fwnode,
-				       struct v4l2_async_subdev);
+				       struct v4l2_async_connection);
 	fwnode_handle_put(fwnode);
 	if (IS_ERR(asd))
 		return PTR_ERR(asd);
@@ -1253,6 +1246,7 @@ static struct device_node *rcar_drif_bond_enabled(struct platform_device *p)
 	if (np && of_device_is_available(np))
 		return np;
 
+	of_node_put(np);
 	return NULL;
 }
 
@@ -1320,6 +1314,7 @@ static int rcar_drif_sdr_probe(struct rcar_drif_sdr *sdr)
 	sdr->vb_queue.ops = &rcar_drif_vb2_ops;
 	sdr->vb_queue.mem_ops = &vb2_vmalloc_memops;
 	sdr->vb_queue.timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+	sdr->vb_queue.lock = &sdr->vb_queue_mutex;
 
 	/* Init videobuf2 queue */
 	ret = vb2_queue_init(&sdr->vb_queue);
@@ -1346,7 +1341,7 @@ static int rcar_drif_sdr_probe(struct rcar_drif_sdr *sdr)
 	sdr->notifier.ops = &rcar_drif_notify_ops;
 
 	/* Register notifier */
-	ret = v4l2_async_nf_register(&sdr->v4l2_dev, &sdr->notifier);
+	ret = v4l2_async_nf_register(&sdr->notifier);
 	if (ret < 0) {
 		dev_err(sdr->dev, "failed: notifier register ret %d\n", ret);
 		goto cleanup;
@@ -1438,34 +1433,32 @@ static int rcar_drif_probe(struct platform_device *pdev)
 }
 
 /* DRIF channel remove */
-static int rcar_drif_remove(struct platform_device *pdev)
+static void rcar_drif_remove(struct platform_device *pdev)
 {
 	struct rcar_drif *ch = platform_get_drvdata(pdev);
 	struct rcar_drif_sdr *sdr = ch->sdr;
 
 	/* Channel 0 will be the SDR instance */
 	if (ch->num)
-		return 0;
+		return;
 
 	/* SDR instance */
 	rcar_drif_sdr_remove(sdr);
-
-	return 0;
 }
 
 /* FIXME: Implement suspend/resume support */
-static int __maybe_unused rcar_drif_suspend(struct device *dev)
+static int rcar_drif_suspend(struct device *dev)
 {
 	return 0;
 }
 
-static int __maybe_unused rcar_drif_resume(struct device *dev)
+static int rcar_drif_resume(struct device *dev)
 {
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(rcar_drif_pm_ops, rcar_drif_suspend,
-			 rcar_drif_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(rcar_drif_pm_ops, rcar_drif_suspend,
+				rcar_drif_resume);
 
 static const struct of_device_id rcar_drif_of_table[] = {
 	{ .compatible = "renesas,rcar-gen3-drif" },
@@ -1477,9 +1470,9 @@ MODULE_DEVICE_TABLE(of, rcar_drif_of_table);
 static struct platform_driver rcar_drif_driver = {
 	.driver = {
 		.name = RCAR_DRIF_DRV_NAME,
-		.of_match_table = of_match_ptr(rcar_drif_of_table),
-		.pm = &rcar_drif_pm_ops,
-		},
+		.of_match_table = rcar_drif_of_table,
+		.pm = pm_sleep_ptr(&rcar_drif_pm_ops),
+	},
 	.probe = rcar_drif_probe,
 	.remove = rcar_drif_remove,
 };

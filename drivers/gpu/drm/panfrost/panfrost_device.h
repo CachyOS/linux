@@ -7,13 +7,16 @@
 
 #include <linux/atomic.h>
 #include <linux/io-pgtable.h>
+#include <linux/pm.h>
 #include <linux/regulator/consumer.h>
 #include <linux/spinlock.h>
+#include <drm/drm_auth.h>
 #include <drm/drm_device.h>
 #include <drm/drm_mm.h>
 #include <drm/gpu_scheduler.h>
 
 #include "panfrost_devfreq.h"
+#include "panfrost_job.h"
 
 struct panfrost_device;
 struct panfrost_mmu;
@@ -21,8 +24,39 @@ struct panfrost_job_slot;
 struct panfrost_job;
 struct panfrost_perfcnt;
 
-#define NUM_JOB_SLOTS 3
-#define MAX_PM_DOMAINS 3
+#define MAX_PM_DOMAINS 5
+
+#define ALL_JS_INT_MASK					\
+	(GENMASK(16 + NUM_JOB_SLOTS - 1, 16) |		\
+	 GENMASK(NUM_JOB_SLOTS - 1, 0))
+
+enum panfrost_drv_comp_bits {
+	PANFROST_COMP_BIT_GPU,
+	PANFROST_COMP_BIT_JOB,
+	PANFROST_COMP_BIT_MMU,
+	PANFROST_COMP_BIT_MAX
+};
+
+/**
+ * enum panfrost_gpu_pm - Supported kernel power management features
+ * @GPU_PM_CLK_DIS:  Allow disabling clocks during system suspend
+ * @GPU_PM_VREG_OFF: Allow turning off regulators during system suspend
+ * @GPU_PM_RT: Allow disabling clocks and asserting the reset control during
+ *  system runtime suspend
+ */
+enum panfrost_gpu_pm {
+	GPU_PM_CLK_DIS,
+	GPU_PM_VREG_OFF,
+	GPU_PM_RT
+};
+
+/**
+ * enum panfrost_gpu_quirks - GPU optional quirks
+ * @GPU_QUIRK_FORCE_AARCH64_PGTABLE: Use AARCH64_4K page table format
+ */
+enum panfrost_gpu_quirks {
+	GPU_QUIRK_FORCE_AARCH64_PGTABLE,
+};
 
 struct panfrost_features {
 	u16 id;
@@ -45,6 +79,7 @@ struct panfrost_features {
 	u32 thread_max_workgroup_sz;
 	u32 thread_max_barrier_sz;
 	u32 coherency_features;
+	u32 selected_coherency;
 	u32 afbc_features;
 	u32 texture_features[4];
 	u32 js_features[16];
@@ -74,12 +109,29 @@ struct panfrost_compatible {
 
 	/* Vendor implementation quirks callback */
 	void (*vendor_quirk)(struct panfrost_device *pfdev);
+
+	/* Allowed PM features */
+	u8 pm_features;
+
+	/* GPU configuration quirks */
+	u8 gpu_quirks;
+};
+
+/**
+ * struct panfrost_device_debugfs - Device-wide DebugFS tracking structures
+ */
+struct panfrost_device_debugfs {
+	/** @gems_list: Device-wide list of GEM objects owned by at least one file. */
+	struct list_head gems_list;
+
+	/** @gems_lock: Serializes access to the device-wide list of GEM objects. */
+	struct mutex gems_lock;
 };
 
 struct panfrost_device {
-	struct device *dev;
-	struct drm_device *ddev;
-	struct platform_device *pdev;
+	struct drm_device base;
+	int gpu_irq;
+	int mmu_irq;
 
 	void __iomem *iomem;
 	struct clk *clock;
@@ -93,9 +145,9 @@ struct panfrost_device {
 
 	struct panfrost_features features;
 	const struct panfrost_compatible *comp;
+	DECLARE_BITMAP(is_suspended, PANFROST_COMP_BIT_MAX);
 
 	spinlock_t as_lock;
-	unsigned long as_in_use_mask;
 	unsigned long as_alloc_mask;
 	unsigned long as_faulty_mask;
 	struct list_head as_lru_list;
@@ -106,6 +158,7 @@ struct panfrost_device {
 	struct list_head scheduled_jobs;
 
 	struct panfrost_perfcnt *perfcnt;
+	bool profile_mode;
 
 	struct mutex sched_lock;
 
@@ -117,9 +170,18 @@ struct panfrost_device {
 
 	struct mutex shrinker_lock;
 	struct list_head shrinker_list;
-	struct shrinker shrinker;
+	struct shrinker *shrinker;
 
 	struct panfrost_devfreq pfdevfreq;
+
+	struct {
+		atomic_t use_count;
+		spinlock_t lock;
+	} cycle_counter;
+
+#ifdef CONFIG_DEBUG_FS
+	struct panfrost_device_debugfs debugfs;
+#endif
 };
 
 struct panfrost_mmu {
@@ -132,19 +194,37 @@ struct panfrost_mmu {
 	int as;
 	atomic_t as_count;
 	struct list_head list;
+	struct {
+		u64 transtab;
+		u64 memattr;
+		u64 transcfg;
+	} cfg;
+};
+
+struct panfrost_engine_usage {
+	unsigned long long elapsed_ns[NUM_JOB_SLOTS];
+	unsigned long long cycles[NUM_JOB_SLOTS];
 };
 
 struct panfrost_file_priv {
 	struct panfrost_device *pfdev;
 
-	struct drm_sched_entity sched_entity[NUM_JOB_SLOTS];
+	struct xarray jm_ctxs;
 
 	struct panfrost_mmu *mmu;
+
+	struct panfrost_engine_usage engine_usage;
 };
+
+static inline bool panfrost_high_prio_allowed(struct drm_file *file)
+{
+	/* Higher priorities require CAP_SYS_NICE or DRM_MASTER */
+	return (capable(CAP_SYS_NICE) || drm_is_current_master(file));
+}
 
 static inline struct panfrost_device *to_panfrost_device(struct drm_device *ddev)
 {
-	return ddev->dev_private;
+	return container_of(ddev, struct panfrost_device, base);
 }
 
 static inline int panfrost_model_cmp(struct panfrost_device *pfdev, s32 id)
@@ -170,10 +250,9 @@ int panfrost_unstable_ioctl_check(void);
 
 int panfrost_device_init(struct panfrost_device *pfdev);
 void panfrost_device_fini(struct panfrost_device *pfdev);
-void panfrost_device_reset(struct panfrost_device *pfdev);
+void panfrost_device_reset(struct panfrost_device *pfdev, bool enable_job_int);
 
-int panfrost_device_resume(struct device *dev);
-int panfrost_device_suspend(struct device *dev);
+extern const struct dev_pm_ops panfrost_pm_ops;
 
 enum drm_panfrost_exception_type {
 	DRM_PANFROST_EXCEPTION_OK = 0x00,

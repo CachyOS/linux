@@ -8,10 +8,12 @@
 /dts-v1/;
 
 #include "sc7280-herobrine.dtsi"
+#include "sc7280-herobrine-audio-wcd9385.dtsi"
+#include "sc7280-herobrine-lte-sku.dtsi"
 
 / {
 	model = "Qualcomm Technologies, Inc. sc7280 CRD platform (rev5+)";
-	compatible = "google,hoglin", "qcom,sc7280";
+	compatible = "google,zoglin", "google,hoglin", "qcom,sc7280";
 
 	/* FIXED REGULATORS */
 
@@ -38,7 +40,7 @@
 /* ADDITIONS TO NODES DEFINED IN PARENT DEVICE TREE FILES */
 
 &apps_rsc {
-	pmg1110-regulators {
+	regulators-2 {
 		compatible = "qcom,pmg1110-rpmh-regulators";
 		qcom,pmic-id = "k";
 
@@ -134,6 +136,17 @@ ap_ts_pen_1v8: &i2c13 {
 	status = "okay";
 };
 
+/* PINCTRL - ADDITIONS TO NODES IN PARENT DEVICE TREE FILES */
+
+/*
+ * This pin goes to the display panel but then doesn't actually do anything
+ * on the panel itself (it doesn't connect to the touchscreen controller).
+ * We'll set a pullup here just to park the line.
+ */
+&ts_rst_conn {
+	bias-pull-up;
+};
+
 /* PINCTRL - BOARD-SPECIFIC */
 
 /*
@@ -155,7 +168,7 @@ ap_ts_pen_1v8: &i2c13 {
 			  "PMIC_EDP_BL_PWM",
 			  "";
 
-	edp_bl_reg_en: edp-bl-reg-en {
+	edp_bl_reg_en: edp-bl-reg-en-state {
 		pins = "gpio6";
 		function = "normal";
 		bias-disable;
@@ -359,7 +372,6 @@ ap_ts_pen_1v8: &i2c13 {
 			  "",				/* 170 */
 			  "MOS_BLE_UART_TX",
 			  "MOS_BLE_UART_RX",
-			  "",
 			  "",
 			  "";
 };

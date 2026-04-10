@@ -2,7 +2,7 @@
 /******************************************************************************
  *
  * Copyright(c) 2003 - 2014 Intel Corporation. All rights reserved.
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019, 2025 Intel Corporation
  *****************************************************************************/
 
 
@@ -13,7 +13,7 @@
 #include <linux/netdevice.h>
 #include <net/mac80211.h>
 #include <linux/etherdevice.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include "iwl-io.h"
 #include "iwl-trans.h"
 #include "iwl-modparams.h"
@@ -116,9 +116,9 @@ static int iwl_led_cmd(struct iwl_priv *priv,
 	}
 
 	led_cmd.on = iwl_blink_compensation(priv, on,
-				priv->trans->trans_cfg->base_params->led_compensation);
+				priv->trans->mac_cfg->base->led_compensation);
 	led_cmd.off = iwl_blink_compensation(priv, off,
-				priv->trans->trans_cfg->base_params->led_compensation);
+				priv->trans->mac_cfg->base->led_compensation);
 
 	ret = iwl_send_led_cmd(priv, &led_cmd);
 	if (!ret) {

@@ -47,7 +47,9 @@ enum rdma_cm_state {
 	RDMA_CM_ADDR_BOUND,
 	RDMA_CM_LISTEN,
 	RDMA_CM_DEVICE_REMOVAL,
-	RDMA_CM_DESTROYING
+	RDMA_CM_DESTROYING,
+	RDMA_CM_ADDRINFO_QUERY,
+	RDMA_CM_ADDRINFO_RESOLVED
 };
 
 struct rdma_id_private {
@@ -64,11 +66,13 @@ struct rdma_id_private {
 		struct list_head listen_item;
 		struct list_head listen_list;
 	};
+	struct list_head        id_list_entry;
 	struct cma_device	*cma_dev;
 	struct list_head	mc_list;
 
 	int			internal_id;
 	enum rdma_cm_state	state;
+	u8			restricted_node_type;
 	spinlock_t		lock;
 	struct mutex		qp_mutex;
 

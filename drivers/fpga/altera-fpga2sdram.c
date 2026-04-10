@@ -27,7 +27,7 @@
 #include <linux/kernel.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
 #include <linux/regmap.h>
 
 #define ALT_SDR_CTL_FPGAPORTRST_OFST		0x80
@@ -74,12 +74,6 @@ static int alt_fpga2sdram_enable_set(struct fpga_bridge *bridge, bool enable)
 {
 	return _alt_fpga2sdram_enable_set(bridge->priv, enable);
 }
-
-struct prop_map {
-	char *prop_name;
-	u32 *prop_value;
-	u32 prop_max;
-};
 
 static const struct fpga_bridge_ops altera_fpga2sdram_br_ops = {
 	.enable_set = alt_fpga2sdram_enable_set,
@@ -147,13 +141,11 @@ static int alt_fpga_bridge_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int alt_fpga_bridge_remove(struct platform_device *pdev)
+static void alt_fpga_bridge_remove(struct platform_device *pdev)
 {
 	struct fpga_bridge *br = platform_get_drvdata(pdev);
 
 	fpga_bridge_unregister(br);
-
-	return 0;
 }
 
 MODULE_DEVICE_TABLE(of, altera_fpga_of_match);

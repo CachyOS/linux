@@ -5,125 +5,87 @@
 #ifndef _ASM_IO_H
 #define _ASM_IO_H
 
-#define ARCH_HAS_IOREMAP_WC
-
-#include <linux/compiler.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
 
 #include <asm/addrspace.h>
-#include <asm/bug.h>
-#include <asm/byteorder.h>
 #include <asm/cpu.h>
 #include <asm/page.h>
 #include <asm/pgtable-bits.h>
 #include <asm/string.h>
 
-/*
- * On LoongArch, I/O ports mappring is following:
- *
- *              |         ....          |
- *              |-----------------------|
- *              | pci io ports(64K~32M) |
- *              |-----------------------|
- *              | isa io ports(0  ~16K) |
- * PCI_IOBASE ->|-----------------------|
- *              |         ....          |
- */
-#define PCI_IOBASE	((void __iomem *)(vm_map_base + (2 * PAGE_SIZE)))
-#define PCI_IOSIZE	SZ_32M
-#define ISA_IOSIZE	SZ_16K
-#define IO_SPACE_LIMIT	(PCI_IOSIZE - 1)
-
-/*
- * Change "struct page" to physical address.
- */
-#define page_to_phys(page)	((phys_addr_t)page_to_pfn(page) << PAGE_SHIFT)
-
-extern void __init __iomem *early_ioremap(u64 phys_addr, unsigned long size);
+extern void __init __iomem *early_ioremap(phys_addr_t phys_addr, unsigned long size);
 extern void __init early_iounmap(void __iomem *addr, unsigned long size);
 
 #define early_memremap early_ioremap
 #define early_memunmap early_iounmap
 
+#ifdef CONFIG_ARCH_IOREMAP
+
 static inline void __iomem *ioremap_prot(phys_addr_t offset, unsigned long size,
-					 unsigned long prot_val)
+					 pgprot_t prot)
 {
-	if (prot_val == _CACHE_CC)
+	if (offset > TO_PHYS_MASK)
+		return NULL;
+
+	switch (pgprot_val(prot) & _CACHE_MASK) {
+	case _CACHE_CC:
 		return (void __iomem *)(unsigned long)(CACHE_BASE + offset);
-	else
+	case _CACHE_SUC:
 		return (void __iomem *)(unsigned long)(UNCACHE_BASE + offset);
+	case _CACHE_WUC:
+		return (void __iomem *)(unsigned long)(WRITECOMBINE_BASE + offset);
+	default:
+		return NULL;
+	}
 }
 
+#define ioremap(offset, size)		\
+	ioremap_prot((offset), (size), PAGE_KERNEL_SUC)
+
+#define iounmap(addr) 			((void)(addr))
+
+#endif
+
 /*
- * ioremap -   map bus memory into CPU space
+ * On LoongArch, ioremap() has two variants, ioremap_wc() and ioremap_cache().
+ * They map bus memory into CPU space, the mapped memory is marked uncachable
+ * (_CACHE_SUC), uncachable but accelerated by write-combine (_CACHE_WUC) and
+ * cachable (_CACHE_CC) respectively for CPU access.
+ *
  * @offset:    bus address of the memory
  * @size:      size of the resource to map
- *
- * ioremap performs a platform specific sequence of operations to
- * make bus memory CPU accessible via the readb/readw/readl/writeb/
- * writew/writel functions and the other mmio helpers. The returned
- * address is not guaranteed to be usable directly as a virtual
- * address.
  */
-#define ioremap(offset, size)					\
-	ioremap_prot((offset), (size), _CACHE_SUC)
+#define ioremap_wc(offset, size)	\
+	ioremap_prot((offset), (size),	\
+		     wc_enabled ? PAGE_KERNEL_WUC : PAGE_KERNEL_SUC)
 
-/*
- * ioremap_wc - map bus memory into CPU space
- * @offset:     bus address of the memory
- * @size:       size of the resource to map
- *
- * ioremap_wc performs a platform specific sequence of operations to
- * make bus memory CPU accessible via the readb/readw/readl/writeb/
- * writew/writel functions and the other mmio helpers. The returned
- * address is not guaranteed to be usable directly as a virtual
- * address.
- *
- * This version of ioremap ensures that the memory is marked uncachable
- * but accelerated by means of write-combining feature. It is specifically
- * useful for PCIe prefetchable windows, which may vastly improve a
- * communications performance. If it was determined on boot stage, what
- * CPU CCA doesn't support WUC, the method shall fall-back to the
- * _CACHE_SUC option (see cpu_probe() method).
- */
-#define ioremap_wc(offset, size)				\
-	ioremap_prot((offset), (size), _CACHE_WUC)
+#define ioremap_cache(offset, size)	\
+	ioremap_prot((offset), (size), PAGE_KERNEL)
 
-/*
- * ioremap_cache -  map bus memory into CPU space
- * @offset:	    bus address of the memory
- * @size:	    size of the resource to map
- *
- * ioremap_cache performs a platform specific sequence of operations to
- * make bus memory CPU accessible via the readb/readw/readl/writeb/
- * writew/writel functions and the other mmio helpers. The returned
- * address is not guaranteed to be usable directly as a virtual
- * address.
- *
- * This version of ioremap ensures that the memory is marked cachable by
- * the CPU.  Also enables full write-combining.	 Useful for some
- * memory-like regions on I/O busses.
- */
-#define ioremap_cache(offset, size)				\
-	ioremap_prot((offset), (size), _CACHE_CC)
+#define mmiowb() wmb()
 
-static inline void iounmap(const volatile void __iomem *addr)
-{
-}
+#define __io_aw() mmiowb()
 
-#define mmiowb() asm volatile ("dbar 0" ::: "memory")
+#ifdef CONFIG_KFENCE
+#define virt_to_phys(kaddr)								\
+({											\
+	(likely((unsigned long)kaddr < vm_map_base)) ? __pa((unsigned long)kaddr) :	\
+	page_to_phys(tlb_virt_to_page((unsigned long)kaddr)) + offset_in_page((unsigned long)kaddr);\
+})
 
-/*
- * String version of I/O memory access operations.
- */
-extern void __memset_io(volatile void __iomem *dst, int c, size_t count);
-extern void __memcpy_toio(volatile void __iomem *to, const void *from, size_t count);
-extern void __memcpy_fromio(void *to, const volatile void __iomem *from, size_t count);
-#define memset_io(c, v, l)     __memset_io((c), (v), (l))
-#define memcpy_fromio(a, c, l) __memcpy_fromio((a), (c), (l))
-#define memcpy_toio(c, a, l)   __memcpy_toio((c), (a), (l))
+#define phys_to_virt(paddr)								\
+({											\
+	extern char *__kfence_pool;							\
+	(unlikely(__kfence_pool == NULL)) ? __va((unsigned long)paddr) :		\
+	page_address(phys_to_page((unsigned long)paddr)) + offset_in_page((unsigned long)paddr);\
+})
+#endif
 
 #include <asm-generic/io.h>
+
+#define ARCH_HAS_VALID_PHYS_ADDR_RANGE
+extern int valid_phys_addr_range(phys_addr_t addr, size_t size);
+extern int valid_mmap_phys_addr_range(unsigned long pfn, size_t size);
 
 #endif /* _ASM_IO_H */

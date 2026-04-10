@@ -534,7 +534,7 @@ struct dvb_frontend *stb6100_attach(struct dvb_frontend *fe,
 {
 	struct stb6100_state *state = NULL;
 
-	state = kzalloc(sizeof (struct stb6100_state), GFP_KERNEL);
+	state = kzalloc_obj(struct stb6100_state);
 	if (!state)
 		return NULL;
 
@@ -557,7 +557,7 @@ static void stb6100_release(struct dvb_frontend *fe)
 	kfree(state);
 }
 
-EXPORT_SYMBOL(stb6100_attach);
+EXPORT_SYMBOL_GPL(stb6100_attach);
 MODULE_PARM_DESC(verbose, "Set Verbosity level");
 
 MODULE_AUTHOR("Manu Abraham");

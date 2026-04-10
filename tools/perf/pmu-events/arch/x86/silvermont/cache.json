@@ -124,7 +124,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000010044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -135,7 +134,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.L2_MISS.ANY",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1680000044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -146,7 +144,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.L2_MISS.HITM_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000000044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -157,7 +154,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.L2_MISS.HIT_OTHER_CORE_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0400000044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -168,7 +164,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.L2_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0200000044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -179,7 +174,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000013091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -190,7 +184,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.L2_MISS.ANY",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1680003091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -201,7 +194,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.L2_MISS.HITM_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000003091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -212,7 +204,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.L2_MISS.HIT_OTHER_CORE_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0400003091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -223,7 +214,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.L2_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0200003091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -234,7 +224,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000018008",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -245,7 +234,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.L2_MISS.HITM_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000008008",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -256,7 +244,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.L2_MISS.HIT_OTHER_CORE_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0400008008",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -267,7 +254,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.L2_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0200008008",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -278,7 +264,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000010022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -289,7 +274,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.L2_MISS.ANY",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1680000022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -300,7 +284,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.L2_MISS.HITM_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000000022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -311,7 +294,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.L2_MISS.HIT_OTHER_CORE_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0400000022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -322,7 +304,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.L2_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0200000022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -333,7 +314,6 @@
         "EventName": "OFFCORE_RESPONSE.COREWB.L2_MISS.ANY",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1680000008",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -344,7 +324,6 @@
         "EventName": "OFFCORE_RESPONSE.COREWB.L2_MISS.NO_SNOOP_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0080000008",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -355,7 +334,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000010004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -366,7 +344,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L2_MISS.ANY",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1680000004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -377,7 +354,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L2_MISS.HIT_OTHER_CORE_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0400000004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -388,7 +364,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L2_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0200000004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -399,7 +374,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000000004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -410,7 +384,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000010001",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -421,7 +394,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L2_MISS.ANY",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1680000001",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -432,7 +404,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L2_MISS.HITM_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000000001",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -443,7 +414,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L2_MISS.HIT_OTHER_CORE_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0400000001",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -454,7 +424,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L2_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0200000001",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -465,7 +434,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000000001",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -476,7 +444,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L2_MISS.ANY",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1680000002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -487,7 +454,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L2_MISS.HITM_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000000002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -498,7 +464,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L2_MISS.HIT_OTHER_CORE_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0400000002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -509,7 +474,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L2_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0200000002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -520,7 +484,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000000002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -531,7 +494,6 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_READS.L2_MISS.ANY",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1680000080",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -542,7 +504,6 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_WRITES.L2_MISS.ANY",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1680000100",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -553,7 +514,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000012000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -564,7 +524,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.L2_MISS.ANY",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1680002000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -575,7 +534,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.L2_MISS.HITM_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000002000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -586,7 +544,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.L2_MISS.HIT_OTHER_CORE_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0400002000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -597,7 +554,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.L2_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0200002000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -608,7 +564,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L2_MISS.ANY",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1680000040",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -619,7 +574,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L2_MISS.HIT_OTHER_CORE_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0400000040",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -630,7 +584,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L2_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0200000040",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -641,7 +594,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.L2_MISS.ANY",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1680000010",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -652,7 +604,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.L2_MISS.HITM_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000000010",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -663,7 +614,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.L2_MISS.HIT_OTHER_CORE_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0400000010",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -674,7 +624,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.L2_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0200000010",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -685,7 +634,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L2_MISS.ANY",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1680000020",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -696,7 +644,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L2_MISS.HITM_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000000020",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -707,7 +654,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L2_MISS.HIT_OTHER_CORE_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0400000020",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -718,7 +664,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L2_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0200000020",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -729,7 +674,6 @@
         "EventName": "OFFCORE_RESPONSE.STREAMING_STORES.L2_MISS.ANY",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1680004800",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },

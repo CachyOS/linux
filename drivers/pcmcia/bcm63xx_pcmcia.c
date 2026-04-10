@@ -268,7 +268,7 @@ static void bcm63xx_pcmcia_poll(struct timer_list *t)
 	struct bcm63xx_pcmcia_socket *skt;
 	unsigned int stat, events;
 
-	skt = from_timer(skt, t, timer);
+	skt = timer_container_of(skt, t, timer);
 
 	spin_lock_bh(&skt->lock);
 
@@ -333,7 +333,7 @@ static int bcm63xx_drv_pcmcia_probe(struct platform_device *pdev)
 	int ret;
 	int irq;
 
-	skt = kzalloc(sizeof(*skt), GFP_KERNEL);
+	skt = kzalloc_obj(*skt);
 	if (!skt)
 		return -ENOMEM;
 	spin_lock_init(&skt->lock);
@@ -437,27 +437,25 @@ err:
 	return ret;
 }
 
-static int bcm63xx_drv_pcmcia_remove(struct platform_device *pdev)
+static void bcm63xx_drv_pcmcia_remove(struct platform_device *pdev)
 {
 	struct bcm63xx_pcmcia_socket *skt;
 	struct resource *res;
 
 	skt = platform_get_drvdata(pdev);
-	del_timer_sync(&skt->timer);
+	timer_shutdown_sync(&skt->timer);
 	iounmap(skt->base);
 	iounmap(skt->io_base);
 	res = skt->reg_res;
 	release_mem_region(res->start, resource_size(res));
 	kfree(skt);
-	return 0;
 }
 
 struct platform_driver bcm63xx_pcmcia_driver = {
 	.probe	= bcm63xx_drv_pcmcia_probe,
-	.remove	= bcm63xx_drv_pcmcia_remove,
+	.remove = bcm63xx_drv_pcmcia_remove,
 	.driver	= {
 		.name	= "bcm63xx_pcmcia",
-		.owner  = THIS_MODULE,
 	},
 };
 

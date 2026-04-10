@@ -24,8 +24,9 @@ DEFINE_IDR(bfad_im_port_index);
 struct scsi_transport_template *bfad_im_scsi_transport_template;
 struct scsi_transport_template *bfad_im_scsi_vport_transport_template;
 static void bfad_im_itnim_work_handler(struct work_struct *work);
-static int bfad_im_queuecommand(struct Scsi_Host *h, struct scsi_cmnd *cmnd);
-static int bfad_im_slave_alloc(struct scsi_device *sdev);
+static enum scsi_qc_status bfad_im_queuecommand(struct Scsi_Host *h,
+						struct scsi_cmnd *cmnd);
+static int bfad_im_sdev_init(struct scsi_device *sdev);
 static void bfad_im_fc_rport_add(struct bfad_im_port_s  *im_port,
 				struct bfad_itnim_s *itnim);
 
@@ -404,10 +405,10 @@ bfad_im_reset_target_handler(struct scsi_cmnd *cmnd)
 }
 
 /*
- * Scsi_Host template entry slave_destroy.
+ * Scsi_Host template entry sdev_destroy.
  */
 static void
-bfad_im_slave_destroy(struct scsi_device *sdev)
+bfad_im_sdev_destroy(struct scsi_device *sdev)
 {
 	sdev->hostdata = NULL;
 	return;
@@ -425,7 +426,7 @@ int
 bfa_fcb_itnim_alloc(struct bfad_s *bfad, struct bfa_fcs_itnim_s **itnim,
 		    struct bfad_itnim_s **itnim_drv)
 {
-	*itnim_drv = kzalloc(sizeof(struct bfad_itnim_s), GFP_ATOMIC);
+	*itnim_drv = kzalloc_obj(struct bfad_itnim_s, GFP_ATOMIC);
 	if (*itnim_drv == NULL)
 		return -ENOMEM;
 
@@ -621,7 +622,7 @@ bfad_im_port_new(struct bfad_s *bfad, struct bfad_port_s *port)
 	int             rc = BFA_STATUS_OK;
 	struct bfad_im_port_s *im_port;
 
-	im_port = kzalloc(sizeof(struct bfad_im_port_s), GFP_ATOMIC);
+	im_port = kzalloc_obj(struct bfad_im_port_s, GFP_ATOMIC);
 	if (im_port == NULL) {
 		rc = BFA_STATUS_ENOMEM;
 		goto ext;
@@ -697,7 +698,7 @@ bfad_im_probe(struct bfad_s *bfad)
 {
 	struct bfad_im_s      *im;
 
-	im = kzalloc(sizeof(struct bfad_im_s), GFP_KERNEL);
+	im = kzalloc_obj(struct bfad_im_s);
 	if (im == NULL)
 		return BFA_STATUS_ENOMEM;
 
@@ -706,6 +707,7 @@ bfad_im_probe(struct bfad_s *bfad)
 
 	if (bfad_thread_workq(bfad) != BFA_STATUS_OK) {
 		kfree(im);
+		bfad->im = NULL;
 		return BFA_STATUS_FAILED;
 	}
 
@@ -766,9 +768,8 @@ bfad_thread_workq(struct bfad_s *bfad)
 	struct bfad_im_s      *im = bfad->im;
 
 	bfa_trc(bfad, 0);
-	snprintf(im->drv_workq_name, KOBJ_NAME_LEN, "bfad_wq_%d",
-		 bfad->inst_no);
-	im->drv_workq = create_singlethread_workqueue(im->drv_workq_name);
+	im->drv_workq = alloc_ordered_workqueue("bfad_wq_%d", WQ_MEM_RECLAIM,
+						bfad->inst_no);
 	if (!im->drv_workq)
 		return BFA_STATUS_FAILED;
 
@@ -784,7 +785,7 @@ bfad_thread_workq(struct bfad_s *bfad)
  * Return non-zero if fails.
  */
 static int
-bfad_im_slave_configure(struct scsi_device *sdev)
+bfad_im_sdev_configure(struct scsi_device *sdev, struct queue_limits *lim)
 {
 	scsi_change_queue_depth(sdev, bfa_lun_queue_depth);
 	return 0;
@@ -801,9 +802,9 @@ struct scsi_host_template bfad_im_scsi_host_template = {
 	.eh_device_reset_handler = bfad_im_reset_lun_handler,
 	.eh_target_reset_handler = bfad_im_reset_target_handler,
 
-	.slave_alloc = bfad_im_slave_alloc,
-	.slave_configure = bfad_im_slave_configure,
-	.slave_destroy = bfad_im_slave_destroy,
+	.sdev_init = bfad_im_sdev_init,
+	.sdev_configure = bfad_im_sdev_configure,
+	.sdev_destroy = bfad_im_sdev_destroy,
 
 	.this_id = -1,
 	.sg_tablesize = BFAD_IO_MAX_SGE,
@@ -824,9 +825,9 @@ struct scsi_host_template bfad_im_vport_template = {
 	.eh_device_reset_handler = bfad_im_reset_lun_handler,
 	.eh_target_reset_handler = bfad_im_reset_target_handler,
 
-	.slave_alloc = bfad_im_slave_alloc,
-	.slave_configure = bfad_im_slave_configure,
-	.slave_destroy = bfad_im_slave_destroy,
+	.sdev_init = bfad_im_sdev_init,
+	.sdev_configure = bfad_im_sdev_configure,
+	.sdev_destroy = bfad_im_sdev_destroy,
 
 	.this_id = -1,
 	.sg_tablesize = BFAD_IO_MAX_SGE,
@@ -916,7 +917,7 @@ bfad_get_itnim(struct bfad_im_port_s *im_port, int id)
 }
 
 /*
- * Function is invoked from the SCSI Host Template slave_alloc() entry point.
+ * Function is invoked from the SCSI Host Template sdev_init() entry point.
  * Has the logic to query the LUN Mask database to check if this LUN needs to
  * be made visible to the SCSI mid-layer or not.
  *
@@ -947,10 +948,10 @@ bfad_im_check_if_make_lun_visible(struct scsi_device *sdev,
 }
 
 /*
- * Scsi_Host template entry slave_alloc
+ * Scsi_Host template entry sdev_init
  */
 static int
-bfad_im_slave_alloc(struct scsi_device *sdev)
+bfad_im_sdev_init(struct scsi_device *sdev)
 {
 	struct fc_rport *rport = starget_to_rport(scsi_target(sdev));
 	struct bfad_itnim_data_s *itnim_data;
@@ -993,7 +994,7 @@ bfad_im_supported_speeds(struct bfa_s *bfa)
 	struct bfa_ioc_attr_s *ioc_attr;
 	u32 supported_speed = 0;
 
-	ioc_attr = kzalloc(sizeof(struct bfa_ioc_attr_s), GFP_KERNEL);
+	ioc_attr = kzalloc_obj(struct bfa_ioc_attr_s);
 	if (!ioc_attr)
 		return 0;
 
@@ -1046,7 +1047,7 @@ bfad_fc_host_init(struct bfad_im_port_s *im_port)
 	/* For fibre channel services type 0x20 */
 	fc_host_supported_fc4s(host)[7] = 1;
 
-	strlcpy(symname, bfad->bfa_fcs.fabric.bport.port_cfg.sym_name.symname,
+	strscpy(symname, bfad->bfa_fcs.fabric.bport.port_cfg.sym_name.symname,
 		BFA_SYMNAME_MAXLEN);
 	sprintf(fc_host_symbolic_name(host), "%s", symname);
 
@@ -1199,7 +1200,7 @@ bfad_im_itnim_work_handler(struct work_struct *work)
 /*
  * Scsi_Host template entry, queue a SCSI command to the BFAD.
  */
-static int bfad_im_queuecommand_lck(struct scsi_cmnd *cmnd)
+static enum scsi_qc_status bfad_im_queuecommand_lck(struct scsi_cmnd *cmnd)
 {
 	void (*done)(struct scsi_cmnd *) = scsi_done;
 	struct bfad_im_port_s *im_port =

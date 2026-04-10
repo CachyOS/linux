@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * drivers/char/watchdog/sp805-wdt.c
  *
@@ -24,6 +25,7 @@
 #include <linux/moduleparam.h>
 #include <linux/pm.h>
 #include <linux/property.h>
+#include <linux/reset.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
@@ -60,7 +62,6 @@
  * @clk: (optional) clock structure of wdt
  * @rate: (optional) clock rate when provided via properties
  * @adev: amba device structure of wdt
- * @status: current status of wdt
  * @load_val: load value to be set for current timeout
  */
 struct sp805_wdt {
@@ -87,7 +88,7 @@ static bool wdt_is_running(struct watchdog_device *wdd)
 	return (wdtcontrol & ENABLE_MASK) == ENABLE_MASK;
 }
 
-/* This routine finds load value that will reset system in required timout */
+/* This routine finds load value that will reset system in required timeout */
 static int wdt_setload(struct watchdog_device *wdd, unsigned int timeout)
 {
 	struct sp805_wdt *wdt = watchdog_get_drvdata(wdd);
@@ -126,7 +127,7 @@ static unsigned int wdt_timeleft(struct watchdog_device *wdd)
 
 	/*If the interrupt is inactive then time left is WDTValue + WDTLoad. */
 	if (!(readl_relaxed(wdt->base + WDTRIS) & INT_MASK))
-		load += wdt->load_val + 1;
+		load += (u64)wdt->load_val + 1;
 	spin_unlock(&wdt->lock);
 
 	return div_u64(load, wdt->rate);
@@ -231,6 +232,7 @@ static int
 sp805_wdt_probe(struct amba_device *adev, const struct amba_id *id)
 {
 	struct sp805_wdt *wdt;
+	struct reset_control *rst;
 	u64 rate = 0;
 	int ret = 0;
 
@@ -262,6 +264,12 @@ sp805_wdt_probe(struct amba_device *adev, const struct amba_id *id)
 		dev_err(&adev->dev, "no clock-frequency property\n");
 		return -ENODEV;
 	}
+
+	rst = devm_reset_control_get_optional_exclusive(&adev->dev, NULL);
+	if (IS_ERR(rst))
+		return dev_err_probe(&adev->dev, PTR_ERR(rst), "Can not get reset\n");
+
+	reset_control_deassert(rst);
 
 	wdt->adev = adev;
 	wdt->wdd.info = &wdt_info;
@@ -340,6 +348,10 @@ static const struct amba_id sp805_wdt_ids[] = {
 	{
 		.id	= 0x00141805,
 		.mask	= 0x00ffffff,
+	},
+	{
+		.id     = 0x001bb824,
+		.mask   = 0x00ffffff,
 	},
 	{ 0, 0 },
 };

@@ -20,7 +20,7 @@
 #include <media/dvb_frontend.h>
 #include "drxk.h"
 #include "drxk_hard.h"
-#include <media/dvb_math.h>
+#include <linux/int_log.h>
 
 static int power_down_dvbt(struct drxk_state *state, bool set_power_mode);
 static int power_down_qam(struct drxk_state *state);
@@ -229,13 +229,8 @@ static int i2c_write(struct drxk_state *state, u8 adr, u8 *data, int len)
 	struct i2c_msg msg = {
 	    .addr = adr, .flags = 0, .buf = data, .len = len };
 
-	dprintk(3, ":");
-	if (debug > 2) {
-		int i;
-		for (i = 0; i < len; i++)
-			pr_cont(" %02x", data[i]);
-		pr_cont("\n");
-	}
+	dprintk(3, ": %*ph\n", len, data);
+
 	status = drxk_i2c_transfer(state, &msg, 1);
 	if (status >= 0 && status != 1)
 		status = -EIO;
@@ -267,16 +262,7 @@ static int i2c_read(struct drxk_state *state,
 		pr_err("i2c read error at addr 0x%02x\n", adr);
 		return status;
 	}
-	if (debug > 2) {
-		int i;
-		dprintk(2, ": read from");
-		for (i = 0; i < len; i++)
-			pr_cont(" %02x", msg[i]);
-		pr_cont(", value = ");
-		for (i = 0; i < alen; i++)
-			pr_cont(" %02x", answ[i]);
-		pr_cont("\n");
-	}
+	dprintk(3, ": read from %*ph, value = %*ph\n", len, msg, alen, answ);
 	return 0;
 }
 
@@ -441,13 +427,8 @@ static int write_block(struct drxk_state *state, u32 address,
 		}
 		memcpy(&state->chunk[adr_length], p_block, chunk);
 		dprintk(2, "(0x%08x, 0x%02x)\n", address, flags);
-		if (debug > 1) {
-			int i;
-			if (p_block)
-				for (i = 0; i < chunk; i++)
-					pr_cont(" %02x", p_block[i]);
-			pr_cont("\n");
-		}
+		if (p_block)
+			dprintk(2, "%*ph\n", chunk, p_block);
 		status = i2c_write(state, state->demod_address,
 				   &state->chunk[0], chunk + adr_length);
 		if (status < 0) {
@@ -1585,7 +1566,7 @@ static int ctrl_power_mode(struct drxk_state *state, enum drx_power_mode *mode)
 		sio_cc_pwd_mode = SIO_CC_PWD_MODE_LEVEL_OSC;
 		break;
 	default:
-		/* Unknow sleep mode */
+		/* Unknown sleep mode */
 		return -EINVAL;
 	}
 
@@ -3516,7 +3497,7 @@ static int set_dvbt_standard(struct drxk_state *state,
 	status = write16(state, IQM_AF_CLP_LEN__A, 0);
 	if (status < 0)
 		goto error;
-	/* window size for for sense pre-SAW detection */
+	/* window size for sense pre-SAW detection */
 	status = write16(state, IQM_AF_SNS_LEN__A, 0);
 	if (status < 0)
 		goto error;
@@ -6343,8 +6324,7 @@ static int drxk_set_parameters(struct dvb_frontend *fe)
 		case SYS_DVBC_ANNEX_C:
 			if (!state->m_has_dvbc)
 				return -EINVAL;
-			state->m_itut_annex_c = (delsys == SYS_DVBC_ANNEX_C) ?
-						true : false;
+			state->m_itut_annex_c = delsys == SYS_DVBC_ANNEX_C;
 			if (state->m_itut_annex_c)
 				setoperation_mode(state, OM_QAM_ITU_C);
 			else
@@ -6660,7 +6640,7 @@ static int drxk_read_snr(struct dvb_frontend *fe, u16 *snr)
 static int drxk_read_ucblocks(struct dvb_frontend *fe, u32 *ucblocks)
 {
 	struct drxk_state *state = fe->demodulator_priv;
-	u16 err;
+	u16 err = 0;
 
 	dprintk(1, "\n");
 
@@ -6742,7 +6722,7 @@ struct dvb_frontend *drxk_attach(const struct drxk_config *config,
 	int status;
 
 	dprintk(1, "\n");
-	state = kzalloc(sizeof(struct drxk_state), GFP_KERNEL);
+	state = kzalloc_obj(struct drxk_state);
 	if (!state)
 		return NULL;
 
@@ -6833,7 +6813,7 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(drxk_attach);
+EXPORT_SYMBOL_GPL(drxk_attach);
 
 MODULE_DESCRIPTION("DRX-K driver");
 MODULE_AUTHOR("Ralph Metzler");

@@ -34,20 +34,32 @@ static int pm_map_process_v9(struct packet_manager *pm,
 {
 	struct pm4_mes_map_process *packet;
 	uint64_t vm_page_table_base_addr = qpd->page_table_base;
+	struct kfd_node *kfd = pm->dqm->dev;
+	struct kfd_process_device *pdd =
+			container_of(qpd, struct kfd_process_device, qpd);
+	struct amdgpu_device *adev = kfd->adev;
 
 	packet = (struct pm4_mes_map_process *)buffer;
 	memset(buffer, 0, sizeof(struct pm4_mes_map_process));
 	packet->header.u32All = pm_build_pm4_header(IT_MAP_PROCESS,
 					sizeof(struct pm4_mes_map_process));
+	if (adev->enforce_isolation[kfd->node_id] == AMDGPU_ENFORCE_ISOLATION_ENABLE)
+		packet->bitfields2.exec_cleaner_shader = 1;
 	packet->bitfields2.diq_enable = (qpd->is_debug) ? 1 : 0;
 	packet->bitfields2.process_quantum = 10;
-	packet->bitfields2.pasid = qpd->pqm->process->pasid;
+	packet->bitfields2.pasid = pdd->pasid;
 	packet->bitfields14.gds_size = qpd->gds_size & 0x3F;
 	packet->bitfields14.gds_size_hi = (qpd->gds_size >> 6) & 0xF;
 	packet->bitfields14.num_gws = (qpd->mapped_gws_queue) ? qpd->num_gws : 0;
 	packet->bitfields14.num_oac = qpd->num_oac;
 	packet->bitfields14.sdma_enable = 1;
 	packet->bitfields14.num_queues = (qpd->is_debug) ? 0 : qpd->queue_count;
+
+	if (kfd->dqm->trap_debug_vmid && pdd->process->debug_trap_enabled &&
+			pdd->process->runtime_info.runtime_state == DEBUG_RUNTIME_STATE_ENABLED) {
+		packet->bitfields2.debug_vmid = kfd->dqm->trap_debug_vmid;
+		packet->bitfields2.new_debug = 1;
+	}
 
 	packet->sh_mem_config = qpd->sh_mem_config;
 	packet->sh_mem_bases = qpd->sh_mem_bases;
@@ -79,25 +91,45 @@ static int pm_map_process_aldebaran(struct packet_manager *pm,
 {
 	struct pm4_mes_map_process_aldebaran *packet;
 	uint64_t vm_page_table_base_addr = qpd->page_table_base;
+	struct kfd_dev *kfd = pm->dqm->dev->kfd;
+	struct kfd_node *knode = pm->dqm->dev;
+	struct kfd_process_device *pdd =
+			container_of(qpd, struct kfd_process_device, qpd);
+	int i;
+	struct amdgpu_device *adev = kfd->adev;
 
 	packet = (struct pm4_mes_map_process_aldebaran *)buffer;
 	memset(buffer, 0, sizeof(struct pm4_mes_map_process_aldebaran));
 	packet->header.u32All = pm_build_pm4_header(IT_MAP_PROCESS,
 			sizeof(struct pm4_mes_map_process_aldebaran));
+	if (adev->enforce_isolation[knode->node_id] ==
+	    AMDGPU_ENFORCE_ISOLATION_ENABLE)
+		packet->bitfields2.exec_cleaner_shader = 1;
 	packet->bitfields2.diq_enable = (qpd->is_debug) ? 1 : 0;
 	packet->bitfields2.process_quantum = 10;
-	packet->bitfields2.pasid = qpd->pqm->process->pasid;
+	packet->bitfields2.pasid = pdd->pasid;
 	packet->bitfields14.gds_size = qpd->gds_size & 0x3F;
 	packet->bitfields14.gds_size_hi = (qpd->gds_size >> 6) & 0xF;
 	packet->bitfields14.num_gws = (qpd->mapped_gws_queue) ? qpd->num_gws : 0;
 	packet->bitfields14.num_oac = qpd->num_oac;
 	packet->bitfields14.sdma_enable = 1;
 	packet->bitfields14.num_queues = (qpd->is_debug) ? 0 : qpd->queue_count;
+	packet->spi_gdbg_per_vmid_cntl = pdd->spi_dbg_override |
+						pdd->spi_dbg_launch_mode;
+
+	if (pdd->process->debug_trap_enabled) {
+		for (i = 0; i < kfd->device_info.num_of_watch_points; i++)
+			packet->tcp_watch_cntl[i] = pdd->watch_points[i];
+
+		packet->bitfields2.single_memops =
+				!!(pdd->process->dbg_flags & KFD_DBG_TRAP_FLAG_SINGLE_MEM_OP);
+	}
 
 	packet->sh_mem_config = qpd->sh_mem_config;
 	packet->sh_mem_bases = qpd->sh_mem_bases;
 	if (qpd->tba_addr) {
 		packet->sq_shader_tba_lo = lower_32_bits(qpd->tba_addr >> 8);
+		packet->sq_shader_tba_hi = upper_32_bits(qpd->tba_addr >> 8);
 		packet->sq_shader_tma_lo = lower_32_bits(qpd->tma_addr >> 8);
 		packet->sq_shader_tma_hi = upper_32_bits(qpd->tma_addr >> 8);
 	}
@@ -119,19 +151,24 @@ static int pm_runlist_v9(struct packet_manager *pm, uint32_t *buffer,
 	struct pm4_mes_runlist *packet;
 
 	int concurrent_proc_cnt = 0;
-	struct kfd_dev *kfd = pm->dqm->dev;
+	struct kfd_node *kfd = pm->dqm->dev;
+	struct amdgpu_device *adev = kfd->adev;
 
 	/* Determine the number of processes to map together to HW:
 	 * it can not exceed the number of VMIDs available to the
 	 * scheduler, and it is determined by the smaller of the number
 	 * of processes in the runlist and kfd module parameter
 	 * hws_max_conc_proc.
+	 * However, if enforce_isolation is set (toggle LDS/VGPRs/SGPRs
+	 * cleaner between process switch), enable single-process mode
+	 * in HWS.
 	 * Note: the arbitration between the number of VMIDs and
 	 * hws_max_conc_proc has been done in
 	 * kgd2kfd_device_init().
 	 */
-	concurrent_proc_cnt = min(pm->dqm->processes_count,
-			kfd->max_proc_per_quantum);
+	concurrent_proc_cnt = (adev->enforce_isolation[kfd->node_id] ==
+			       AMDGPU_ENFORCE_ISOLATION_ENABLE) ?
+		1 : min(pm->dqm->processes_count, kfd->max_proc_per_quantum);
 
 	packet = (struct pm4_mes_runlist *)buffer;
 
@@ -166,6 +203,8 @@ static int pm_set_resources_v9(struct packet_manager *pm, uint32_t *buffer,
 			queue_type__mes_set_resources__hsa_interface_queue_hiq;
 	packet->bitfields2.vmid_mask = res->vmid_mask;
 	packet->bitfields2.unmap_latency = KFD_UNMAP_LATENCY_MS / 100;
+	if (pm->dqm->dev->adev->gmc.xnack_flags & AMDGPU_GMC_XNACK_FLAG_CHAIN)
+		packet->bitfields2.enb_xnack_retry_disable_check = 1;
 	packet->bitfields7.oac_mask = res->oac_mask;
 	packet->bitfields8.gds_heap_base = res->gds_heap_base;
 	packet->bitfields8.gds_heap_size = res->gds_heap_size;
@@ -181,14 +220,14 @@ static int pm_set_resources_v9(struct packet_manager *pm, uint32_t *buffer,
 
 static inline bool pm_use_ext_eng(struct kfd_dev *dev)
 {
-	return dev->adev->ip_versions[SDMA0_HWIP][0] >= IP_VERSION(5, 2, 0);
+	return amdgpu_ip_version(dev->adev, SDMA0_HWIP, 0) >=
+	       IP_VERSION(5, 2, 0);
 }
 
 static int pm_map_queues_v9(struct packet_manager *pm, uint32_t *buffer,
 		struct queue *q, bool is_static)
 {
 	struct pm4_mes_map_queues *packet;
-	bool use_static = is_static;
 
 	packet = (struct pm4_mes_map_queues *)buffer;
 	memset(buffer, 0, sizeof(struct pm4_mes_map_queues));
@@ -201,7 +240,7 @@ static int pm_map_queues_v9(struct packet_manager *pm, uint32_t *buffer,
 
 	packet->bitfields2.engine_sel =
 		engine_sel__mes_map_queues__compute_vi;
-	packet->bitfields2.gws_control_queue = q->gws ? 1 : 0;
+	packet->bitfields2.gws_control_queue = q->properties.is_gws ? 1 : 0;
 	packet->bitfields2.extended_engine_sel =
 		extended_engine_sel__mes_map_queues__legacy_engine_sel;
 	packet->bitfields2.queue_type =
@@ -209,24 +248,30 @@ static int pm_map_queues_v9(struct packet_manager *pm, uint32_t *buffer,
 
 	switch (q->properties.type) {
 	case KFD_QUEUE_TYPE_COMPUTE:
-		if (use_static)
+		if (is_static)
 			packet->bitfields2.queue_type =
 		queue_type__mes_map_queues__normal_latency_static_queue_vi;
 		break;
-	case KFD_QUEUE_TYPE_DIQ:
-		packet->bitfields2.queue_type =
-			queue_type__mes_map_queues__debug_interface_queue_vi;
-		break;
 	case KFD_QUEUE_TYPE_SDMA:
 	case KFD_QUEUE_TYPE_SDMA_XGMI:
-		use_static = false; /* no static queues under SDMA */
-		if (q->properties.sdma_engine_id < 2 && !pm_use_ext_eng(q->device))
+		if (q->properties.sdma_engine_id < 2 &&
+		    !pm_use_ext_eng(q->device->kfd))
 			packet->bitfields2.engine_sel = q->properties.sdma_engine_id +
 				engine_sel__mes_map_queues__sdma0_vi;
 		else {
-			packet->bitfields2.extended_engine_sel =
-				extended_engine_sel__mes_map_queues__sdma0_to_7_sel;
-			packet->bitfields2.engine_sel = q->properties.sdma_engine_id;
+			/*
+			 * For GFX9.4.3, SDMA engine id can be greater than 8.
+			 * For such cases, set extended_engine_sel to 2 and
+			 * ensure engine_sel lies between 0-7.
+			 */
+			if (q->properties.sdma_engine_id >= 8)
+				packet->bitfields2.extended_engine_sel =
+					extended_engine_sel__mes_map_queues__sdma8_to_15_sel;
+			else
+				packet->bitfields2.extended_engine_sel =
+					extended_engine_sel__mes_map_queues__sdma0_to_7_sel;
+
+			packet->bitfields2.engine_sel = q->properties.sdma_engine_id % 8;
 		}
 		break;
 	default:
@@ -251,6 +296,97 @@ static int pm_map_queues_v9(struct packet_manager *pm, uint32_t *buffer,
 	return 0;
 }
 
+static inline void pm_build_dequeue_wait_counts_packet_info(struct packet_manager *pm,
+			uint32_t sch_value, uint32_t que_sleep, uint32_t *reg_offset,
+			uint32_t *reg_data)
+{
+	pm->dqm->dev->kfd2kgd->build_dequeue_wait_counts_packet_info(
+		pm->dqm->dev->adev,
+		pm->dqm->wait_times,
+		sch_value,
+		que_sleep,
+		reg_offset,
+		reg_data);
+}
+
+/* pm_config_dequeue_wait_counts_v9: Builds WRITE_DATA packet with
+ *    register/value for configuring dequeue wait counts
+ *
+ * @return: -ve for failure and 0 for success and buffer is
+ *  filled in with packet
+ *
+ **/
+static int pm_config_dequeue_wait_counts_v9(struct packet_manager *pm,
+		uint32_t *buffer,
+		enum kfd_config_dequeue_wait_counts_cmd cmd,
+		uint32_t value)
+{
+	struct pm4_mec_write_data_mmio *packet;
+	uint32_t reg_offset = 0;
+	uint32_t reg_data = 0;
+
+	switch (cmd) {
+	case KFD_DEQUEUE_WAIT_INIT: {
+		uint32_t sch_wave = 0, que_sleep = 1;
+
+		/* For all gfx9 ASICs > gfx941,
+		 * Reduce CP_IQ_WAIT_TIME2.QUE_SLEEP to 0x1 from default 0x40.
+		 * On a 1GHz machine this is roughly 1 microsecond, which is
+		 * about how long it takes to load data out of memory during
+		 * queue connect
+		 * QUE_SLEEP: Wait Count for Dequeue Retry.
+		 *
+		 * Set CWSR grace period to 1x1000 cycle for GFX9.4.3 APU
+		 */
+		if (KFD_GC_VERSION(pm->dqm->dev) < IP_VERSION(9, 4, 1) ||
+		    KFD_GC_VERSION(pm->dqm->dev) >= IP_VERSION(10, 0, 0))
+			return -EPERM;
+
+		if (amdgpu_emu_mode == 0 && pm->dqm->dev->adev->gmc.is_app_apu &&
+		    (KFD_GC_VERSION(pm->dqm->dev) == IP_VERSION(9, 4, 3)))
+			sch_wave = 1;
+
+		pm_build_dequeue_wait_counts_packet_info(pm, sch_wave, que_sleep,
+			&reg_offset, &reg_data);
+
+		break;
+	}
+	case KFD_DEQUEUE_WAIT_RESET:
+		/* reg_data would be set to dqm->wait_times */
+		pm_build_dequeue_wait_counts_packet_info(pm, 0, 0, &reg_offset, &reg_data);
+		break;
+
+	case KFD_DEQUEUE_WAIT_SET_SCH_WAVE:
+		/* The CP cannot handle value 0 and it will result in
+		 * an infinite grace period being set so set to 1 to prevent this. Also
+		 * avoid debugger API breakage as it sets 0 and expects a low value.
+		 */
+		if (!value)
+			value = 1;
+		pm_build_dequeue_wait_counts_packet_info(pm, value, 0, &reg_offset, &reg_data);
+		break;
+	default:
+		pr_err("Invalid dequeue wait cmd\n");
+		return -EINVAL;
+	}
+
+	packet = (struct pm4_mec_write_data_mmio *)buffer;
+	memset(buffer, 0, sizeof(struct pm4_mec_write_data_mmio));
+
+	packet->header.u32All = pm_build_pm4_header(IT_WRITE_DATA,
+					sizeof(struct pm4_mec_write_data_mmio));
+
+	packet->bitfields2.dst_sel  = dst_sel___write_data__mem_mapped_register;
+	packet->bitfields2.addr_incr =
+			addr_incr___write_data__do_not_increment_address;
+
+	packet->bitfields3.dst_mmreg_addr = reg_offset;
+
+	packet->data = reg_data;
+
+	return 0;
+}
+
 static int pm_unmap_queues_v9(struct packet_manager *pm, uint32_t *buffer,
 			enum kfd_unmap_queues_filter filter,
 			uint32_t filter_param, bool reset)
@@ -263,7 +399,8 @@ static int pm_unmap_queues_v9(struct packet_manager *pm, uint32_t *buffer,
 	packet->header.u32All = pm_build_pm4_header(IT_UNMAP_QUEUES,
 					sizeof(struct pm4_mes_unmap_queues));
 
-	packet->bitfields2.extended_engine_sel = pm_use_ext_eng(pm->dqm->dev) ?
+	packet->bitfields2.extended_engine_sel =
+				pm_use_ext_eng(pm->dqm->dev->kfd) ?
 		extended_engine_sel__mes_unmap_queues__sdma0_to_7_sel :
 		extended_engine_sel__mes_unmap_queues__legacy_engine_sel;
 
@@ -333,6 +470,7 @@ const struct packet_manager_funcs kfd_v9_pm_funcs = {
 	.set_resources		= pm_set_resources_v9,
 	.map_queues		= pm_map_queues_v9,
 	.unmap_queues		= pm_unmap_queues_v9,
+	.config_dequeue_wait_counts = pm_config_dequeue_wait_counts_v9,
 	.query_status		= pm_query_status_v9,
 	.release_mem		= NULL,
 	.map_process_size	= sizeof(struct pm4_mes_map_process),
@@ -340,6 +478,7 @@ const struct packet_manager_funcs kfd_v9_pm_funcs = {
 	.set_resources_size	= sizeof(struct pm4_mes_set_resources),
 	.map_queues_size	= sizeof(struct pm4_mes_map_queues),
 	.unmap_queues_size	= sizeof(struct pm4_mes_unmap_queues),
+	.config_dequeue_wait_counts_size  = sizeof(struct pm4_mec_write_data_mmio),
 	.query_status_size	= sizeof(struct pm4_mes_query_status),
 	.release_mem_size	= 0,
 };
@@ -350,6 +489,7 @@ const struct packet_manager_funcs kfd_aldebaran_pm_funcs = {
 	.set_resources		= pm_set_resources_v9,
 	.map_queues		= pm_map_queues_v9,
 	.unmap_queues		= pm_unmap_queues_v9,
+	.config_dequeue_wait_counts = pm_config_dequeue_wait_counts_v9,
 	.query_status		= pm_query_status_v9,
 	.release_mem		= NULL,
 	.map_process_size	= sizeof(struct pm4_mes_map_process_aldebaran),
@@ -357,6 +497,7 @@ const struct packet_manager_funcs kfd_aldebaran_pm_funcs = {
 	.set_resources_size	= sizeof(struct pm4_mes_set_resources),
 	.map_queues_size	= sizeof(struct pm4_mes_map_queues),
 	.unmap_queues_size	= sizeof(struct pm4_mes_unmap_queues),
+	.config_dequeue_wait_counts_size  = sizeof(struct pm4_mec_write_data_mmio),
 	.query_status_size	= sizeof(struct pm4_mes_query_status),
 	.release_mem_size	= 0,
 };

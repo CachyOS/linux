@@ -32,32 +32,7 @@
 #include <asm/asm-compat.h>
 #include <asm/feature-fixups.h>
 
-#if defined(CONFIG_40x)
-
-/*
- * 40x implementation needs only tlbil_va
- */
-_GLOBAL(__tlbil_va)
-	/* We run the search with interrupts disabled because we have to change
-	 * the PID and I don't want to preempt when that happens.
-	 */
-	mfmsr	r5
-	mfspr	r6,SPRN_PID
-	wrteei	0
-	mtspr	SPRN_PID,r4
-	tlbsx.	r3, 0, r3
-	mtspr	SPRN_PID,r6
-	wrtee	r5
-	bne	1f
-	sync
-	/* There are only 64 TLB entries, so r3 < 64, which means bit 25 is
-	 * clear. Since 25 is the V bit in the TLB_TAG, loading this value
-	 * will invalidate the TLB entry. */
-	tlbwe	r3, r3, TLB_TAG
-	isync
-1:	blr
-
-#elif defined(CONFIG_PPC_8xx)
+#if defined(CONFIG_PPC_8xx)
 
 /*
  * Nothing to do for 8xx, everything is inline
@@ -186,7 +161,7 @@ _GLOBAL(_tlbivax_bcast)
 	isync
 	PPC_TLBIVAX(0, R3)
 	isync
-	eieio
+	mbar
 	tlbsync
 BEGIN_FTR_SECTION
 	b	1f
@@ -221,7 +196,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_476_DD2)
 	blr
 #endif /* CONFIG_PPC_47x */
 
-#elif defined(CONFIG_FSL_BOOKE)
+#elif defined(CONFIG_PPC_85xx)
 /*
  * FSL BookE implementations.
  *
@@ -294,7 +269,7 @@ ALT_MMU_FTR_SECTION_END_IFCLR(MMU_FTR_USE_TLBILX)
 	isync
 1:	wrtee	r10
 	blr
-#elif defined(CONFIG_PPC_BOOK3E)
+#elif defined(CONFIG_PPC_BOOK3E_64)
 /*
  * New Book3E (>= 2.06) implementation
  *
@@ -355,7 +330,7 @@ _GLOBAL(_tlbivax_bcast)
 	rlwimi	r4,r6,MAS6_SIND_SHIFT,MAS6_SIND
 1:	mtspr	SPRN_MAS6,r4		/* assume AS=0 for now */
 	PPC_TLBIVAX(0,R3)
-	eieio
+	mbar
 	tlbsync
 	sync
 	wrtee	r10
@@ -364,7 +339,7 @@ _GLOBAL(_tlbivax_bcast)
 #error Unsupported processor type !
 #endif
 
-#if defined(CONFIG_PPC_FSL_BOOK3E)
+#if defined(CONFIG_PPC_E500)
 /*
  * extern void loadcam_entry(unsigned int index)
  *

@@ -108,7 +108,7 @@ qedr_iw_mpa_request(void *context, struct qed_iwarp_cm_event_params *params)
 	struct iw_cm_event event;
 	struct qedr_iw_ep *ep;
 
-	ep = kzalloc(sizeof(*ep), GFP_ATOMIC);
+	ep = kzalloc_obj(*ep, GFP_ATOMIC);
 	if (!ep)
 		return;
 
@@ -258,7 +258,7 @@ qedr_iw_disconnect_event(void *context,
 	struct qedr_iw_ep *ep = (struct qedr_iw_ep *)context;
 	struct qedr_dev *dev = ep->dev;
 
-	work = kzalloc(sizeof(*work), GFP_ATOMIC);
+	work = kzalloc_obj(*work, GFP_ATOMIC);
 	if (!work)
 		return;
 
@@ -447,7 +447,8 @@ qedr_addr4_resolve(struct qedr_dev *dev,
 	struct rtable *rt = NULL;
 	int rc = 0;
 
-	rt = ip_route_output(&init_net, dst_ip, src_ip, 0, 0);
+	rt = ip_route_output(&init_net, dst_ip, src_ip, 0, 0,
+			     RT_SCOPE_UNIVERSE);
 	if (IS_ERR(rt)) {
 		DP_ERR(dev, "ip_route_output returned error\n");
 		return -EINVAL;
@@ -559,7 +560,7 @@ int qedr_iw_connect(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 	if (!laddr->sin_port || !raddr->sin_port)
 		return -EINVAL;
 
-	ep = kzalloc(sizeof(*ep), GFP_KERNEL);
+	ep = kzalloc_obj(*ep);
 	if (!ep)
 		return -ENOMEM;
 
@@ -671,7 +672,7 @@ int qedr_iw_create_listen(struct iw_cm_id *cm_id, int backlog)
 	DP_DEBUG(dev, QEDR_MSG_IWARP,
 		 "Create Listener address: %pISpc\n", &cm_id->local_addr);
 
-	listener = kzalloc(sizeof(*listener), GFP_KERNEL);
+	listener = kzalloc_obj(*listener);
 	if (!listener)
 		return -ENOMEM;
 

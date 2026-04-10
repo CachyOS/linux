@@ -19,7 +19,15 @@ struct mlx5_sf_dev {
 	u16 fn_id;
 };
 
+struct mlx5_sf_peer_devlink_event_ctx {
+	u16 fn_id;
+	struct devlink *devlink;
+	int err;
+};
+
+int mlx5_sf_dev_notifier_init(struct mlx5_core_dev *dev);
 void mlx5_sf_dev_table_create(struct mlx5_core_dev *dev);
+void mlx5_sf_dev_notifier_cleanup(struct mlx5_core_dev *dev);
 void mlx5_sf_dev_table_destroy(struct mlx5_core_dev *dev);
 
 int mlx5_sf_driver_register(void);
@@ -29,7 +37,16 @@ bool mlx5_sf_dev_allocated(const struct mlx5_core_dev *dev);
 
 #else
 
+static inline int mlx5_sf_dev_notifier_init(struct mlx5_core_dev *dev)
+{
+	return 0;
+}
+
 static inline void mlx5_sf_dev_table_create(struct mlx5_core_dev *dev)
+{
+}
+
+static inline void mlx5_sf_dev_notifier_cleanup(struct mlx5_core_dev *dev)
 {
 }
 

@@ -11,13 +11,11 @@
 #include <byteswap.h>
 #include "../../../arch/x86/include/asm/insn.h"
 
-#include "../../../arch/x86/lib/inat.c"
-#include "../../../arch/x86/lib/insn.c"
-
 #include "event.h"
 
 #include "intel-pt-insn-decoder.h"
 #include "dump-insn.h"
+#include "util/sample.h"
 
 #if INTEL_PT_INSN_BUF_SZ < MAX_INSN_SIZE || INTEL_PT_INSN_BUF_SZ > MAX_INSN
 #error Instruction buffer size too small
@@ -34,7 +32,7 @@ static void intel_pt_insn_decoder(struct insn *insn,
 	intel_pt_insn->rel = 0;
 	intel_pt_insn->emulated_ptwrite = false;
 
-	if (insn_is_avx(insn)) {
+	if (insn_is_avx_or_xop(insn)) {
 		intel_pt_insn->op = INTEL_PT_OP_OTHER;
 		intel_pt_insn->branch = INTEL_PT_BR_NO_BRANCH;
 		intel_pt_insn->length = insn->length;
@@ -50,6 +48,20 @@ static void intel_pt_insn_decoder(struct insn *insn,
 			case 0xc3: /* vmresume */
 				op = INTEL_PT_OP_VMENTRY;
 				branch = INTEL_PT_BR_INDIRECT;
+				break;
+			case 0xca:
+				switch (insn->prefixes.bytes[3]) {
+				case 0xf2: /* erets */
+					op = INTEL_PT_OP_ERETS;
+					branch = INTEL_PT_BR_INDIRECT;
+					break;
+				case 0xf3: /* eretu */
+					op = INTEL_PT_OP_ERETU;
+					branch = INTEL_PT_BR_INDIRECT;
+					break;
+				default:
+					break;
+				}
 				break;
 			default:
 				break;
@@ -76,6 +88,15 @@ static void intel_pt_insn_decoder(struct insn *insn,
 	case 0x70 ... 0x7f: /* jcc */
 		op = INTEL_PT_OP_JCC;
 		branch = INTEL_PT_BR_CONDITIONAL;
+		break;
+	case 0xa1:
+		if (insn_is_rex2(insn)) { /* jmpabs */
+			intel_pt_insn->op = INTEL_PT_OP_JMP;
+			/* jmpabs causes a TIP packet like an indirect branch */
+			intel_pt_insn->branch = INTEL_PT_BR_INDIRECT;
+			intel_pt_insn->length = insn->length;
+			return;
+		}
 		break;
 	case 0xc2: /* near ret */
 	case 0xc3: /* near ret */
@@ -185,12 +206,13 @@ int intel_pt_get_insn(const unsigned char *buf, size_t len, int x86_64,
 	return 0;
 }
 
-int arch_is_branch(const unsigned char *buf, size_t len, int x86_64)
+int arch_is_uncond_branch(const unsigned char *buf, size_t len, int x86_64)
 {
 	struct intel_pt_insn in;
 	if (intel_pt_get_insn(buf, len, x86_64, &in) < 0)
 		return -1;
-	return in.branch != INTEL_PT_BR_NO_BRANCH;
+	return in.branch == INTEL_PT_BR_UNCONDITIONAL ||
+	       in.branch == INTEL_PT_BR_INDIRECT;
 }
 
 const char *dump_insn(struct perf_insn *x, uint64_t ip __maybe_unused,
@@ -229,6 +251,8 @@ const char *branch_name[] = {
 	[INTEL_PT_OP_SYSCALL]	= "Syscall",
 	[INTEL_PT_OP_SYSRET]	= "Sysret",
 	[INTEL_PT_OP_VMENTRY]	= "VMentry",
+	[INTEL_PT_OP_ERETS]	= "Erets",
+	[INTEL_PT_OP_ERETU]	= "Eretu",
 };
 
 const char *intel_pt_insn_name(enum intel_pt_insn_op op)
@@ -272,6 +296,8 @@ int intel_pt_insn_type(enum intel_pt_insn_op op)
 	case INTEL_PT_OP_LOOP:
 		return PERF_IP_FLAG_BRANCH | PERF_IP_FLAG_CONDITIONAL;
 	case INTEL_PT_OP_IRET:
+	case INTEL_PT_OP_ERETS:
+	case INTEL_PT_OP_ERETU:
 		return PERF_IP_FLAG_BRANCH | PERF_IP_FLAG_RETURN |
 		       PERF_IP_FLAG_INTERRUPT;
 	case INTEL_PT_OP_INT:

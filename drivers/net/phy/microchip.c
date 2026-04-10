@@ -12,8 +12,14 @@
 #include <linux/of.h>
 #include <dt-bindings/net/microchip-lan78xx.h>
 
+#define PHY_ID_LAN937X_TX			0x0007c190
+
+#define LAN937X_MODE_CTRL_STATUS_REG		0x11
+#define LAN937X_AUTOMDIX_EN			BIT(7)
+#define LAN937X_MDI_MODE			BIT(6)
+
 #define DRIVER_AUTHOR	"WOOJUNG HUH <woojung.huh@microchip.com>"
-#define DRIVER_DESC	"Microchip LAN88XX PHY driver"
+#define DRIVER_DESC	"Microchip LAN88XX/LAN937X TX PHY driver"
 
 struct lan88xx_priv {
 	int	chip_id;
@@ -29,47 +35,6 @@ static int lan88xx_read_page(struct phy_device *phydev)
 static int lan88xx_write_page(struct phy_device *phydev, int page)
 {
 	return __phy_write(phydev, LAN88XX_EXT_PAGE_ACCESS, page);
-}
-
-static int lan88xx_phy_config_intr(struct phy_device *phydev)
-{
-	int rc;
-
-	if (phydev->interrupts == PHY_INTERRUPT_ENABLED) {
-		/* unmask all source and clear them before enable */
-		rc = phy_write(phydev, LAN88XX_INT_MASK, 0x7FFF);
-		rc = phy_read(phydev, LAN88XX_INT_STS);
-		rc = phy_write(phydev, LAN88XX_INT_MASK,
-			       LAN88XX_INT_MASK_MDINTPIN_EN_ |
-			       LAN88XX_INT_MASK_LINK_CHANGE_);
-	} else {
-		rc = phy_write(phydev, LAN88XX_INT_MASK, 0);
-		if (rc)
-			return rc;
-
-		/* Ack interrupts after they have been disabled */
-		rc = phy_read(phydev, LAN88XX_INT_STS);
-	}
-
-	return rc < 0 ? rc : 0;
-}
-
-static irqreturn_t lan88xx_handle_interrupt(struct phy_device *phydev)
-{
-	int irq_status;
-
-	irq_status = phy_read(phydev, LAN88XX_INT_STS);
-	if (irq_status < 0) {
-		phy_error(phydev);
-		return IRQ_NONE;
-	}
-
-	if (!(irq_status & LAN88XX_INT_STS_LINK_CHANGE_))
-		return IRQ_NONE;
-
-	phy_trigger_machine(phydev);
-
-	return IRQ_HANDLED;
 }
 
 static int lan88xx_suspend(struct phy_device *phydev)
@@ -342,12 +307,175 @@ static int lan88xx_config_aneg(struct phy_device *phydev)
 	return genphy_config_aneg(phydev);
 }
 
+static void lan88xx_link_change_notify(struct phy_device *phydev)
+{
+	int temp;
+	int ret;
+
+	/* Reset PHY to ensure MII_LPA provides up-to-date information. This
+	 * issue is reproducible only after parallel detection, as described
+	 * in IEEE 802.3-2022, Section 28.2.3.1 ("Parallel detection function"),
+	 * where the link partner does not support auto-negotiation.
+	 */
+	if (phydev->state == PHY_NOLINK) {
+		ret = phy_init_hw(phydev);
+		if (ret < 0)
+			goto link_change_notify_failed;
+
+		ret = _phy_start_aneg(phydev);
+		if (ret < 0)
+			goto link_change_notify_failed;
+	}
+
+	/* At forced 100 F/H mode, chip may fail to set mode correctly
+	 * when cable is switched between long(~50+m) and short one.
+	 * As workaround, set to 10 before setting to 100
+	 * at forced 100 F/H mode.
+	 */
+	if (phydev->state == PHY_NOLINK && !phydev->autoneg && phydev->speed == 100) {
+		/* disable phy interrupt */
+		temp = phy_read(phydev, LAN88XX_INT_MASK);
+		temp &= ~LAN88XX_INT_MASK_MDINTPIN_EN_;
+		phy_write(phydev, LAN88XX_INT_MASK, temp);
+
+		temp = phy_read(phydev, MII_BMCR);
+		temp &= ~(BMCR_SPEED100 | BMCR_SPEED1000);
+		phy_write(phydev, MII_BMCR, temp); /* set to 10 first */
+		temp |= BMCR_SPEED100;
+		phy_write(phydev, MII_BMCR, temp); /* set to 100 later */
+
+		/* clear pending interrupt generated while workaround */
+		temp = phy_read(phydev, LAN88XX_INT_STS);
+
+		/* enable phy interrupt back */
+		temp = phy_read(phydev, LAN88XX_INT_MASK);
+		temp |= LAN88XX_INT_MASK_MDINTPIN_EN_;
+		phy_write(phydev, LAN88XX_INT_MASK, temp);
+	}
+
+	return;
+
+link_change_notify_failed:
+	phydev_err(phydev, "Link change process failed %pe\n", ERR_PTR(ret));
+}
+
+/**
+ * lan937x_tx_read_mdix_status - Read the MDIX status for the LAN937x TX PHY.
+ * @phydev: Pointer to the phy_device structure.
+ *
+ * This function reads the MDIX status of the LAN937x TX PHY and sets the
+ * mdix_ctrl and mdix fields of the phy_device structure accordingly.
+ * Note that MDIX status is not supported in AUTO mode, and will be set
+ * to invalid in such cases.
+ *
+ * Return: 0 on success, a negative error code on failure.
+ */
+static int lan937x_tx_read_mdix_status(struct phy_device *phydev)
+{
+	int ret;
+
+	ret = phy_read(phydev, LAN937X_MODE_CTRL_STATUS_REG);
+	if (ret < 0)
+		return ret;
+
+	if (ret & LAN937X_AUTOMDIX_EN) {
+		phydev->mdix_ctrl = ETH_TP_MDI_AUTO;
+		/* MDI/MDIX status is unknown */
+		phydev->mdix = ETH_TP_MDI_INVALID;
+	} else if (ret & LAN937X_MDI_MODE) {
+		phydev->mdix_ctrl = ETH_TP_MDI_X;
+		phydev->mdix = ETH_TP_MDI_X;
+	} else {
+		phydev->mdix_ctrl = ETH_TP_MDI;
+		phydev->mdix = ETH_TP_MDI;
+	}
+
+	return 0;
+}
+
+/**
+ * lan937x_tx_read_status - Read the status for the LAN937x TX PHY.
+ * @phydev: Pointer to the phy_device structure.
+ *
+ * This function reads the status of the LAN937x TX PHY and updates the
+ * phy_device structure accordingly.
+ *
+ * Return: 0 on success, a negative error code on failure.
+ */
+static int lan937x_tx_read_status(struct phy_device *phydev)
+{
+	int ret;
+
+	ret = genphy_read_status(phydev);
+	if (ret < 0)
+		return ret;
+
+	return lan937x_tx_read_mdix_status(phydev);
+}
+
+/**
+ * lan937x_tx_set_mdix - Set the MDIX mode for the LAN937x TX PHY.
+ * @phydev: Pointer to the phy_device structure.
+ *
+ * This function configures the MDIX mode of the LAN937x TX PHY based on the
+ * mdix_ctrl field of the phy_device structure. The MDIX mode can be set to
+ * MDI (straight-through), MDIX (crossover), or AUTO (auto-MDIX). If the mode
+ * is not recognized, it returns 0 without making any changes.
+ *
+ * Return: 0 on success, a negative error code on failure.
+ */
+static int lan937x_tx_set_mdix(struct phy_device *phydev)
+{
+	u16 val;
+
+	switch (phydev->mdix_ctrl) {
+	case ETH_TP_MDI:
+		val = 0;
+		break;
+	case ETH_TP_MDI_X:
+		val = LAN937X_MDI_MODE;
+		break;
+	case ETH_TP_MDI_AUTO:
+		val = LAN937X_AUTOMDIX_EN;
+		break;
+	default:
+		return 0;
+	}
+
+	return phy_modify(phydev, LAN937X_MODE_CTRL_STATUS_REG,
+			  LAN937X_AUTOMDIX_EN | LAN937X_MDI_MODE, val);
+}
+
+/**
+ * lan937x_tx_config_aneg - Configure auto-negotiation and fixed modes for the
+ *                          LAN937x TX PHY.
+ * @phydev: Pointer to the phy_device structure.
+ *
+ * This function configures the MDIX mode for the LAN937x TX PHY and then
+ * proceeds to configure the auto-negotiation or fixed mode settings
+ * based on the phy_device structure.
+ *
+ * Return: 0 on success, a negative error code on failure.
+ */
+static int lan937x_tx_config_aneg(struct phy_device *phydev)
+{
+	int ret;
+
+	ret = lan937x_tx_set_mdix(phydev);
+	if (ret < 0)
+		return ret;
+
+	return genphy_config_aneg(phydev);
+}
+
 static struct phy_driver microchip_phy_driver[] = {
 {
 	.phy_id		= 0x0007c132,
 	/* This mask (0xfffffff2) is to differentiate from
 	 * LAN8742 (phy_id 0x0007c130 and 0x0007c131)
 	 * and allows future phy_id revisions.
+	 * These PHYs are integrated in LAN7800 and LAN7850 USB/Ethernet
+	 * controllers.
 	 */
 	.phy_id_mask	= 0xfffffff2,
 	.name		= "Microchip LAN88xx",
@@ -359,21 +487,33 @@ static struct phy_driver microchip_phy_driver[] = {
 
 	.config_init	= lan88xx_config_init,
 	.config_aneg	= lan88xx_config_aneg,
+	.link_change_notify = lan88xx_link_change_notify,
+	.soft_reset	= genphy_soft_reset,
 
-	.config_intr	= lan88xx_phy_config_intr,
-	.handle_interrupt = lan88xx_handle_interrupt,
+	/* Interrupt handling is broken, do not define related
+	 * functions to force polling.
+	 */
 
 	.suspend	= lan88xx_suspend,
 	.resume		= genphy_resume,
 	.set_wol	= lan88xx_set_wol,
 	.read_page	= lan88xx_read_page,
 	.write_page	= lan88xx_write_page,
+},
+{
+	PHY_ID_MATCH_MODEL(PHY_ID_LAN937X_TX),
+	.name		= "Microchip LAN937x TX",
+	.suspend	= genphy_suspend,
+	.resume		= genphy_resume,
+	.config_aneg	= lan937x_tx_config_aneg,
+	.read_status	= lan937x_tx_read_status,
 } };
 
 module_phy_driver(microchip_phy_driver);
 
-static struct mdio_device_id __maybe_unused microchip_tbl[] = {
+static const struct mdio_device_id __maybe_unused microchip_tbl[] = {
 	{ 0x0007c132, 0xfffffff2 },
+	{ PHY_ID_MATCH_MODEL(PHY_ID_LAN937X_TX) },
 	{ }
 };
 

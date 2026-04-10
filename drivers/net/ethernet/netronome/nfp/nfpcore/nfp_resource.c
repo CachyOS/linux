@@ -155,11 +155,11 @@ nfp_resource_acquire(struct nfp_cpp *cpp, const char *name)
 	struct nfp_resource *res;
 	int err;
 
-	res = kzalloc(sizeof(*res), GFP_KERNEL);
+	res = kzalloc_obj(*res);
 	if (!res)
 		return ERR_PTR(-ENOMEM);
 
-	strncpy(res->name, name, NFP_RESOURCE_ENTRY_NAME_SZ);
+	strscpy(res->name, name, sizeof(res->name));
 
 	dev_mutex = nfp_cpp_mutex_alloc(cpp, NFP_RESOURCE_TBL_TARGET,
 					NFP_RESOURCE_TBL_BASE,

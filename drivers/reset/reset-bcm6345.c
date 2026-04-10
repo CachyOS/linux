@@ -102,8 +102,6 @@ static int bcm6345_reset_probe(struct platform_device *pdev)
 	if (!bcm6345_reset)
 		return -ENOMEM;
 
-	platform_set_drvdata(pdev, bcm6345_reset);
-
 	bcm6345_reset->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(bcm6345_reset->base))
 		return PTR_ERR(bcm6345_reset->base);
@@ -121,6 +119,7 @@ static int bcm6345_reset_probe(struct platform_device *pdev)
 
 static const struct of_device_id bcm6345_reset_of_match[] = {
 	{ .compatible = "brcm,bcm6345-reset" },
+	{ .compatible = "brcm,bcm63xx-ephy-ctrl" },
 	{ /* sentinel */ },
 };
 

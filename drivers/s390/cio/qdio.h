@@ -95,7 +95,7 @@ static inline int do_sqbs(u64 token, unsigned char state, int queue,
 		"	lgr	1,%[token]\n"
 		"	.insn	rsy,0xeb000000008a,%[qs],%[ccq],0(%[state])"
 		: [ccq] "+&d" (_ccq), [qs] "+&d" (_queuestart)
-		: [state] "d" ((unsigned long)state), [token] "d" (token)
+		: [state] "a" ((unsigned long)state), [token] "d" (token)
 		: "memory", "cc", "1");
 	*count = _ccq & 0xff;
 	*start = _queuestart & 0xff;
@@ -210,11 +210,10 @@ struct qdio_q {
 	qdio_handler_t (*handler);
 
 	struct qdio_irq *irq_ptr;
+
+	/* memory page (PAGE_SIZE) used to place slib and sl on */
+	void *sl_page;
 	struct sl *sl;
-	/*
-	 * A page is allocated under this pointer and used for slib and sl.
-	 * slib is 2048 bytes big and sl points to offset PAGE_SIZE / 2.
-	 */
 	struct slib *slib;
 } __attribute__ ((aligned(256)));
 
@@ -266,7 +265,7 @@ struct qdio_irq {
 
 #define is_thinint_irq(irq) \
 	(irq->qib.qfmt == QDIO_IQDIO_QFMT || \
-	 css_general_characteristics.aif_osa)
+	 css_general_characteristics.aif_qdio)
 
 #define qperf(__qdev, __attr)	((__qdev)->perf_stat.(__attr))
 

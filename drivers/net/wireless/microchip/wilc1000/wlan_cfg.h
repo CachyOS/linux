@@ -24,13 +24,14 @@ struct wilc_cfg_word {
 
 struct wilc_cfg_str {
 	u16 id;
+	u16 len;
 	u8 *str;
 };
 
 struct wilc_cfg_str_vals {
-	u8 mac_address[7];
-	u8 firmware_version[129];
-	u8 assoc_rsp[256];
+	u8 mac_address[8];
+	u8 firmware_version[130];
+	u8 assoc_rsp[WILC_MAX_ASSOC_RESP_FRAME_SIZE];
 };
 
 struct wilc_cfg {

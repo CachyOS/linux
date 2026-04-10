@@ -453,7 +453,7 @@ i915_sched_engine_create(unsigned int subclass)
 {
 	struct i915_sched_engine *sched_engine;
 
-	sched_engine = kzalloc(sizeof(*sched_engine), GFP_KERNEL);
+	sched_engine = kzalloc_obj(*sched_engine);
 	if (!sched_engine)
 		return NULL;
 
@@ -506,6 +506,6 @@ int __init i915_scheduler_module_init(void)
 	return 0;
 
 err_priorities:
-	kmem_cache_destroy(slab_priorities);
+	kmem_cache_destroy(slab_dependencies);
 	return -ENOMEM;
 }

@@ -8,9 +8,6 @@
  * out of the joystick port into the syslog ...
  */
 
-/*
- */
-
 #include <linux/module.h>
 #include <linux/gameport.h>
 #include <linux/kernel.h>
@@ -64,7 +61,7 @@ static int joydump_connect(struct gameport *gameport, struct gameport_driver *dr
 
 	timeout = gameport_time(gameport, 10000); /* 10 ms */
 
-	buf = kmalloc_array(BUF_SIZE, sizeof(struct joydump), GFP_KERNEL);
+	buf = kmalloc_objs(struct joydump, BUF_SIZE);
 	if (!buf) {
 		printk(KERN_INFO "joydump: no memory for testing\n");
 		goto jd_end;

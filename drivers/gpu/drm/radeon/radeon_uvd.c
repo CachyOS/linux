@@ -324,7 +324,6 @@ void radeon_uvd_force_into_uvd_segment(struct radeon_bo *rbo,
 	rbo->placements[1].fpfn += (256 * 1024 * 1024) >> PAGE_SHIFT;
 	rbo->placements[1].lpfn += (256 * 1024 * 1024) >> PAGE_SHIFT;
 	rbo->placement.num_placement++;
-	rbo->placement.num_busy_placement++;
 }
 
 void radeon_uvd_free_handles(struct radeon_device *rdev, struct drm_file *filp)
@@ -962,7 +961,7 @@ int radeon_uvd_calc_upll_dividers(struct radeon_device *rdev,
 	unsigned optimal_score = ~0;
 
 	/* loop through vco from low to high */
-	vco_min = max(max(vco_min, vclk), dclk);
+	vco_min = max3(vco_min, vclk, dclk);
 	for (vco_freq = vco_min; vco_freq <= vco_max; vco_freq += 100) {
 
 		uint64_t fb_div = (uint64_t)vco_freq * fb_factor;

@@ -23,69 +23,71 @@
  * MMU notifier 'invalidate_range_start' hook.
  */
 void gfn_to_pfn_cache_invalidate_start(struct kvm *kvm, unsigned long start,
-				       unsigned long end, bool may_block)
+				       unsigned long end)
 {
-	DECLARE_BITMAP(vcpu_bitmap, KVM_MAX_VCPUS);
 	struct gfn_to_pfn_cache *gpc;
-	bool evict_vcpus = false;
 
 	spin_lock(&kvm->gpc_lock);
 	list_for_each_entry(gpc, &kvm->gpc_list, list) {
-		write_lock_irq(&gpc->lock);
+		read_lock_irq(&gpc->lock);
 
 		/* Only a single page so no need to care about length */
 		if (gpc->valid && !is_error_noslot_pfn(gpc->pfn) &&
 		    gpc->uhva >= start && gpc->uhva < end) {
-			gpc->valid = false;
+			read_unlock_irq(&gpc->lock);
 
 			/*
-			 * If a guest vCPU could be using the physical address,
-			 * it needs to be forced out of guest mode.
+			 * There is a small window here where the cache could
+			 * be modified, and invalidation would no longer be
+			 * necessary. Hence check again whether invalidation
+			 * is still necessary once the write lock has been
+			 * acquired.
 			 */
-			if (gpc->usage & KVM_GUEST_USES_PFN) {
-				if (!evict_vcpus) {
-					evict_vcpus = true;
-					bitmap_zero(vcpu_bitmap, KVM_MAX_VCPUS);
-				}
-				__set_bit(gpc->vcpu->vcpu_idx, vcpu_bitmap);
-			}
+
+			write_lock_irq(&gpc->lock);
+			if (gpc->valid && !is_error_noslot_pfn(gpc->pfn) &&
+			    gpc->uhva >= start && gpc->uhva < end)
+				gpc->valid = false;
+			write_unlock_irq(&gpc->lock);
+			continue;
 		}
-		write_unlock_irq(&gpc->lock);
+
+		read_unlock_irq(&gpc->lock);
 	}
 	spin_unlock(&kvm->gpc_lock);
-
-	if (evict_vcpus) {
-		/*
-		 * KVM needs to ensure the vCPU is fully out of guest context
-		 * before allowing the invalidation to continue.
-		 */
-		unsigned int req = KVM_REQ_OUTSIDE_GUEST_MODE;
-		bool called;
-
-		/*
-		 * If the OOM reaper is active, then all vCPUs should have
-		 * been stopped already, so perform the request without
-		 * KVM_REQUEST_WAIT and be sad if any needed to be IPI'd.
-		 */
-		if (!may_block)
-			req &= ~KVM_REQUEST_WAIT;
-
-		called = kvm_make_vcpus_request_mask(kvm, req, vcpu_bitmap);
-
-		WARN_ON_ONCE(called && !may_block);
-	}
 }
 
-bool kvm_gfn_to_pfn_cache_check(struct kvm *kvm, struct gfn_to_pfn_cache *gpc,
-				gpa_t gpa, unsigned long len)
+static bool kvm_gpc_is_valid_len(gpa_t gpa, unsigned long uhva,
+				 unsigned long len)
 {
-	struct kvm_memslots *slots = kvm_memslots(kvm);
+	unsigned long offset = kvm_is_error_gpa(gpa) ? offset_in_page(uhva) :
+						       offset_in_page(gpa);
 
-	if ((gpa & ~PAGE_MASK) + len > PAGE_SIZE)
+	/*
+	 * The cached access must fit within a single page. The 'len' argument
+	 * to activate() and refresh() exists only to enforce that.
+	 */
+	return offset + len <= PAGE_SIZE;
+}
+
+bool kvm_gpc_check(struct gfn_to_pfn_cache *gpc, unsigned long len)
+{
+	struct kvm_memslots *slots = kvm_memslots(gpc->kvm);
+
+	if (!gpc->active)
 		return false;
 
-	if (gpc->gpa != gpa || gpc->generation != slots->generation ||
-	    kvm_is_error_hva(gpc->uhva))
+	/*
+	 * If the page was cached from a memslot, make sure the memslots have
+	 * not been re-configured.
+	 */
+	if (!kvm_is_error_gpa(gpc->gpa) && gpc->generation != slots->generation)
+		return false;
+
+	if (kvm_is_error_hva(gpc->uhva))
+		return false;
+
+	if (!kvm_gpc_is_valid_len(gpc->gpa, gpc->uhva, len))
 		return false;
 
 	if (!gpc->valid)
@@ -93,225 +95,390 @@ bool kvm_gfn_to_pfn_cache_check(struct kvm *kvm, struct gfn_to_pfn_cache *gpc,
 
 	return true;
 }
-EXPORT_SYMBOL_GPL(kvm_gfn_to_pfn_cache_check);
 
-static void __release_gpc(struct kvm *kvm, kvm_pfn_t pfn, void *khva, gpa_t gpa)
+static void *gpc_map(kvm_pfn_t pfn)
 {
-	/* Unmap the old page if it was mapped before, and release it */
-	if (!is_error_noslot_pfn(pfn)) {
-		if (khva) {
-			if (pfn_valid(pfn))
-				kunmap(pfn_to_page(pfn));
+	if (pfn_valid(pfn))
+		return kmap(pfn_to_page(pfn));
+
 #ifdef CONFIG_HAS_IOMEM
-			else
-				memunmap(khva);
+	return memremap(pfn_to_hpa(pfn), PAGE_SIZE, MEMREMAP_WB);
+#else
+	return NULL;
 #endif
-		}
+}
 
-		kvm_release_pfn(pfn, false);
+static void gpc_unmap(kvm_pfn_t pfn, void *khva)
+{
+	/* Unmap the old pfn/page if it was mapped before. */
+	if (is_error_noslot_pfn(pfn) || !khva)
+		return;
+
+	if (pfn_valid(pfn)) {
+		kunmap(pfn_to_page(pfn));
+		return;
 	}
+
+#ifdef CONFIG_HAS_IOMEM
+	memunmap(khva);
+#endif
 }
 
-static kvm_pfn_t hva_to_pfn_retry(struct kvm *kvm, unsigned long uhva)
+static inline bool mmu_notifier_retry_cache(struct kvm *kvm, unsigned long mmu_seq)
 {
-	unsigned long mmu_seq;
-	kvm_pfn_t new_pfn;
-	int retry;
-
-	do {
-		mmu_seq = kvm->mmu_notifier_seq;
-		smp_rmb();
-
-		/* We always request a writeable mapping */
-		new_pfn = hva_to_pfn(uhva, false, NULL, true, NULL);
-		if (is_error_noslot_pfn(new_pfn))
-			break;
-
-		KVM_MMU_READ_LOCK(kvm);
-		retry = mmu_notifier_retry_hva(kvm, mmu_seq, uhva);
-		KVM_MMU_READ_UNLOCK(kvm);
-		if (!retry)
-			break;
-
-		cond_resched();
-	} while (1);
-
-	return new_pfn;
-}
-
-int kvm_gfn_to_pfn_cache_refresh(struct kvm *kvm, struct gfn_to_pfn_cache *gpc,
-				 gpa_t gpa, unsigned long len)
-{
-	struct kvm_memslots *slots = kvm_memslots(kvm);
-	unsigned long page_offset = gpa & ~PAGE_MASK;
-	kvm_pfn_t old_pfn, new_pfn;
-	unsigned long old_uhva;
-	gpa_t old_gpa;
-	void *old_khva;
-	bool old_valid;
-	int ret = 0;
+	/*
+	 * mn_active_invalidate_count acts for all intents and purposes
+	 * like mmu_invalidate_in_progress here; but the latter cannot
+	 * be used here because the invalidation of caches in the
+	 * mmu_notifier event occurs _before_ mmu_invalidate_in_progress
+	 * is elevated.
+	 *
+	 * Note, it does not matter that mn_active_invalidate_count
+	 * is not protected by gpc->lock.  It is guaranteed to
+	 * be elevated before the mmu_notifier acquires gpc->lock, and
+	 * isn't dropped until after mmu_invalidate_seq is updated.
+	 */
+	if (kvm->mn_active_invalidate_count)
+		return true;
 
 	/*
-	 * If must fit within a single page. The 'len' argument is
-	 * only to enforce that.
+	 * Ensure mn_active_invalidate_count is read before
+	 * mmu_invalidate_seq.  This pairs with the smp_wmb() in
+	 * mmu_notifier_invalidate_range_end() to guarantee either the
+	 * old (non-zero) value of mn_active_invalidate_count or the
+	 * new (incremented) value of mmu_invalidate_seq is observed.
 	 */
-	if (page_offset + len > PAGE_SIZE)
+	smp_rmb();
+	return kvm->mmu_invalidate_seq != mmu_seq;
+}
+
+static kvm_pfn_t hva_to_pfn_retry(struct gfn_to_pfn_cache *gpc)
+{
+	/* Note, the new page offset may be different than the old! */
+	void *old_khva = (void *)PAGE_ALIGN_DOWN((uintptr_t)gpc->khva);
+	kvm_pfn_t new_pfn = KVM_PFN_ERR_FAULT;
+	void *new_khva = NULL;
+	unsigned long mmu_seq;
+	struct page *page;
+
+	struct kvm_follow_pfn kfp = {
+		.slot = gpc->memslot,
+		.gfn = gpa_to_gfn(gpc->gpa),
+		.flags = FOLL_WRITE,
+		.hva = gpc->uhva,
+		.refcounted_page = &page,
+	};
+
+	lockdep_assert_held(&gpc->refresh_lock);
+
+	lockdep_assert_held_write(&gpc->lock);
+
+	/*
+	 * Invalidate the cache prior to dropping gpc->lock, the gpa=>uhva
+	 * assets have already been updated and so a concurrent check() from a
+	 * different task may not fail the gpa/uhva/generation checks.
+	 */
+	gpc->valid = false;
+
+	do {
+		mmu_seq = gpc->kvm->mmu_invalidate_seq;
+		smp_rmb();
+
+		write_unlock_irq(&gpc->lock);
+
+		/*
+		 * If the previous iteration "failed" due to an mmu_notifier
+		 * event, release the pfn and unmap the kernel virtual address
+		 * from the previous attempt.  Unmapping might sleep, so this
+		 * needs to be done after dropping the lock.  Opportunistically
+		 * check for resched while the lock isn't held.
+		 */
+		if (new_pfn != KVM_PFN_ERR_FAULT) {
+			/*
+			 * Keep the mapping if the previous iteration reused
+			 * the existing mapping and didn't create a new one.
+			 */
+			if (new_khva != old_khva)
+				gpc_unmap(new_pfn, new_khva);
+
+			kvm_release_page_unused(page);
+
+			cond_resched();
+		}
+
+		new_pfn = hva_to_pfn(&kfp);
+		if (is_error_noslot_pfn(new_pfn))
+			goto out_error;
+
+		/*
+		 * Obtain a new kernel mapping if KVM itself will access the
+		 * pfn.  Note, kmap() and memremap() can both sleep, so this
+		 * too must be done outside of gpc->lock!
+		 */
+		if (new_pfn == gpc->pfn)
+			new_khva = old_khva;
+		else
+			new_khva = gpc_map(new_pfn);
+
+		if (!new_khva) {
+			kvm_release_page_unused(page);
+			goto out_error;
+		}
+
+		write_lock_irq(&gpc->lock);
+
+		/*
+		 * Other tasks must wait for _this_ refresh to complete before
+		 * attempting to refresh.
+		 */
+		WARN_ON_ONCE(gpc->valid);
+	} while (mmu_notifier_retry_cache(gpc->kvm, mmu_seq));
+
+	gpc->valid = true;
+	gpc->pfn = new_pfn;
+	gpc->khva = new_khva + offset_in_page(gpc->uhva);
+
+	/*
+	 * Put the reference to the _new_ page.  The page is now tracked by the
+	 * cache and can be safely migrated, swapped, etc... as the cache will
+	 * invalidate any mappings in response to relevant mmu_notifier events.
+	 */
+	kvm_release_page_clean(page);
+
+	return 0;
+
+out_error:
+	write_lock_irq(&gpc->lock);
+
+	return -EFAULT;
+}
+
+static int __kvm_gpc_refresh(struct gfn_to_pfn_cache *gpc, gpa_t gpa, unsigned long uhva)
+{
+	unsigned long page_offset;
+	bool unmap_old = false;
+	unsigned long old_uhva;
+	kvm_pfn_t old_pfn;
+	bool hva_change = false;
+	void *old_khva;
+	int ret;
+
+	/* Either gpa or uhva must be valid, but not both */
+	if (WARN_ON_ONCE(kvm_is_error_gpa(gpa) == kvm_is_error_hva(uhva)))
 		return -EINVAL;
+
+	lockdep_assert_held(&gpc->refresh_lock);
 
 	write_lock_irq(&gpc->lock);
 
-	old_gpa = gpc->gpa;
-	old_pfn = gpc->pfn;
-	old_khva = gpc->khva - offset_in_page(gpc->khva);
-	old_uhva = gpc->uhva;
-	old_valid = gpc->valid;
-
-	/* If the userspace HVA is invalid, refresh that first */
-	if (gpc->gpa != gpa || gpc->generation != slots->generation ||
-	    kvm_is_error_hva(gpc->uhva)) {
-		gfn_t gfn = gpa_to_gfn(gpa);
-
-		gpc->gpa = gpa;
-		gpc->generation = slots->generation;
-		gpc->memslot = __gfn_to_memslot(slots, gfn);
-		gpc->uhva = gfn_to_hva_memslot(gpc->memslot, gfn);
-
-		if (kvm_is_error_hva(gpc->uhva)) {
-			gpc->pfn = KVM_PFN_ERR_FAULT;
-			ret = -EFAULT;
-			goto out;
-		}
-
-		gpc->uhva += page_offset;
+	if (!gpc->active) {
+		ret = -EINVAL;
+		goto out_unlock;
 	}
+
+	old_pfn = gpc->pfn;
+	old_khva = (void *)PAGE_ALIGN_DOWN((uintptr_t)gpc->khva);
+	old_uhva = PAGE_ALIGN_DOWN(gpc->uhva);
+
+	if (kvm_is_error_gpa(gpa)) {
+		page_offset = offset_in_page(uhva);
+
+		gpc->gpa = INVALID_GPA;
+		gpc->memslot = NULL;
+		gpc->uhva = PAGE_ALIGN_DOWN(uhva);
+
+		if (gpc->uhva != old_uhva)
+			hva_change = true;
+	} else {
+		struct kvm_memslots *slots = kvm_memslots(gpc->kvm);
+
+		page_offset = offset_in_page(gpa);
+
+		if (gpc->gpa != gpa || gpc->generation != slots->generation ||
+		    kvm_is_error_hva(gpc->uhva)) {
+			gfn_t gfn = gpa_to_gfn(gpa);
+
+			gpc->gpa = gpa;
+			gpc->generation = slots->generation;
+			gpc->memslot = __gfn_to_memslot(slots, gfn);
+			gpc->uhva = gfn_to_hva_memslot(gpc->memslot, gfn);
+
+			if (kvm_is_error_hva(gpc->uhva)) {
+				ret = -EFAULT;
+				goto out;
+			}
+
+			/*
+			 * Even if the GPA and/or the memslot generation changed, the
+			 * HVA may still be the same.
+			 */
+			if (gpc->uhva != old_uhva)
+				hva_change = true;
+		} else {
+			gpc->uhva = old_uhva;
+		}
+	}
+
+	/* Note: the offset must be correct before calling hva_to_pfn_retry() */
+	gpc->uhva += page_offset;
 
 	/*
 	 * If the userspace HVA changed or the PFN was already invalid,
 	 * drop the lock and do the HVA to PFN lookup again.
 	 */
-	if (!old_valid || old_uhva != gpc->uhva) {
-		unsigned long uhva = gpc->uhva;
-		void *new_khva = NULL;
-
-		/* Placeholders for "hva is valid but not yet mapped" */
-		gpc->pfn = KVM_PFN_ERR_FAULT;
-		gpc->khva = NULL;
-		gpc->valid = true;
-
-		write_unlock_irq(&gpc->lock);
-
-		new_pfn = hva_to_pfn_retry(kvm, uhva);
-		if (is_error_noslot_pfn(new_pfn)) {
-			ret = -EFAULT;
-			goto map_done;
-		}
-
-		if (gpc->usage & KVM_HOST_USES_PFN) {
-			if (new_pfn == old_pfn) {
-				new_khva = old_khva;
-				old_pfn = KVM_PFN_ERR_FAULT;
-				old_khva = NULL;
-			} else if (pfn_valid(new_pfn)) {
-				new_khva = kmap(pfn_to_page(new_pfn));
-#ifdef CONFIG_HAS_IOMEM
-			} else {
-				new_khva = memremap(pfn_to_hpa(new_pfn), PAGE_SIZE, MEMREMAP_WB);
-#endif
-			}
-			if (new_khva)
-				new_khva += page_offset;
-			else
-				ret = -EFAULT;
-		}
-
-	map_done:
-		write_lock_irq(&gpc->lock);
-		if (ret) {
-			gpc->valid = false;
-			gpc->pfn = KVM_PFN_ERR_FAULT;
-			gpc->khva = NULL;
-		} else {
-			/* At this point, gpc->valid may already have been cleared */
-			gpc->pfn = new_pfn;
-			gpc->khva = new_khva;
-		}
+	if (!gpc->valid || hva_change) {
+		ret = hva_to_pfn_retry(gpc);
 	} else {
-		/* If the HVA→PFN mapping was already valid, don't unmap it. */
-		old_pfn = KVM_PFN_ERR_FAULT;
-		old_khva = NULL;
+		/*
+		 * If the HVA→PFN mapping was already valid, don't unmap it.
+		 * But do update gpc->khva because the offset within the page
+		 * may have changed.
+		 */
+		gpc->khva = old_khva + page_offset;
+		ret = 0;
+		goto out_unlock;
 	}
 
  out:
+	/*
+	 * Invalidate the cache and purge the pfn/khva if the refresh failed.
+	 * Some/all of the uhva, gpa, and memslot generation info may still be
+	 * valid, leave it as is.
+	 */
+	if (ret) {
+		gpc->valid = false;
+		gpc->pfn = KVM_PFN_ERR_FAULT;
+		gpc->khva = NULL;
+	}
+
+	/* Detect a pfn change before dropping the lock! */
+	unmap_old = (old_pfn != gpc->pfn);
+
+out_unlock:
 	write_unlock_irq(&gpc->lock);
 
-	__release_gpc(kvm, old_pfn, old_khva, old_gpa);
+	if (unmap_old)
+		gpc_unmap(old_pfn, old_khva);
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(kvm_gfn_to_pfn_cache_refresh);
 
-void kvm_gfn_to_pfn_cache_unmap(struct kvm *kvm, struct gfn_to_pfn_cache *gpc)
+int kvm_gpc_refresh(struct gfn_to_pfn_cache *gpc, unsigned long len)
 {
-	void *old_khva;
-	kvm_pfn_t old_pfn;
-	gpa_t old_gpa;
+	unsigned long uhva;
 
-	write_lock_irq(&gpc->lock);
+	guard(mutex)(&gpc->refresh_lock);
 
-	gpc->valid = false;
-
-	old_khva = gpc->khva - offset_in_page(gpc->khva);
-	old_gpa = gpc->gpa;
-	old_pfn = gpc->pfn;
+	if (!kvm_gpc_is_valid_len(gpc->gpa, gpc->uhva, len))
+		return -EINVAL;
 
 	/*
-	 * We can leave the GPA → uHVA map cache intact but the PFN
-	 * lookup will need to be redone even for the same page.
+	 * If the GPA is valid then ignore the HVA, as a cache can be GPA-based
+	 * or HVA-based, not both.  For GPA-based caches, the HVA will be
+	 * recomputed during refresh if necessary.
 	 */
-	gpc->khva = NULL;
-	gpc->pfn = KVM_PFN_ERR_FAULT;
+	uhva = kvm_is_error_gpa(gpc->gpa) ? gpc->uhva : KVM_HVA_ERR_BAD;
 
-	write_unlock_irq(&gpc->lock);
-
-	__release_gpc(kvm, old_pfn, old_khva, old_gpa);
+	return __kvm_gpc_refresh(gpc, gpc->gpa, uhva);
 }
-EXPORT_SYMBOL_GPL(kvm_gfn_to_pfn_cache_unmap);
 
-
-int kvm_gfn_to_pfn_cache_init(struct kvm *kvm, struct gfn_to_pfn_cache *gpc,
-			      struct kvm_vcpu *vcpu, enum pfn_cache_usage usage,
-			      gpa_t gpa, unsigned long len)
+void kvm_gpc_init(struct gfn_to_pfn_cache *gpc, struct kvm *kvm)
 {
-	WARN_ON_ONCE(!usage || (usage & KVM_GUEST_AND_HOST_USE_PFN) != usage);
+	rwlock_init(&gpc->lock);
+	mutex_init(&gpc->refresh_lock);
+
+	gpc->kvm = kvm;
+	gpc->pfn = KVM_PFN_ERR_FAULT;
+	gpc->gpa = INVALID_GPA;
+	gpc->uhva = KVM_HVA_ERR_BAD;
+	gpc->active = gpc->valid = false;
+}
+
+static int __kvm_gpc_activate(struct gfn_to_pfn_cache *gpc, gpa_t gpa, unsigned long uhva,
+			      unsigned long len)
+{
+	struct kvm *kvm = gpc->kvm;
+
+	if (!kvm_gpc_is_valid_len(gpa, uhva, len))
+		return -EINVAL;
+
+	guard(mutex)(&gpc->refresh_lock);
 
 	if (!gpc->active) {
-		rwlock_init(&gpc->lock);
-
-		gpc->khva = NULL;
-		gpc->pfn = KVM_PFN_ERR_FAULT;
-		gpc->uhva = KVM_HVA_ERR_BAD;
-		gpc->vcpu = vcpu;
-		gpc->usage = usage;
-		gpc->valid = false;
-		gpc->active = true;
+		if (KVM_BUG_ON(gpc->valid, kvm))
+			return -EIO;
 
 		spin_lock(&kvm->gpc_lock);
 		list_add(&gpc->list, &kvm->gpc_list);
 		spin_unlock(&kvm->gpc_lock);
-	}
-	return kvm_gfn_to_pfn_cache_refresh(kvm, gpc, gpa, len);
-}
-EXPORT_SYMBOL_GPL(kvm_gfn_to_pfn_cache_init);
 
-void kvm_gfn_to_pfn_cache_destroy(struct kvm *kvm, struct gfn_to_pfn_cache *gpc)
+		/*
+		 * Activate the cache after adding it to the list, a concurrent
+		 * refresh must not establish a mapping until the cache is
+		 * reachable by mmu_notifier events.
+		 */
+		write_lock_irq(&gpc->lock);
+		gpc->active = true;
+		write_unlock_irq(&gpc->lock);
+	}
+	return __kvm_gpc_refresh(gpc, gpa, uhva);
+}
+
+int kvm_gpc_activate(struct gfn_to_pfn_cache *gpc, gpa_t gpa, unsigned long len)
 {
+	/*
+	 * Explicitly disallow INVALID_GPA so that the magic value can be used
+	 * by KVM to differentiate between GPA-based and HVA-based caches.
+	 */
+	if (WARN_ON_ONCE(kvm_is_error_gpa(gpa)))
+		return -EINVAL;
+
+	return __kvm_gpc_activate(gpc, gpa, KVM_HVA_ERR_BAD, len);
+}
+
+int kvm_gpc_activate_hva(struct gfn_to_pfn_cache *gpc, unsigned long uhva, unsigned long len)
+{
+	if (!access_ok((void __user *)uhva, len))
+		return -EINVAL;
+
+	return __kvm_gpc_activate(gpc, INVALID_GPA, uhva, len);
+}
+
+void kvm_gpc_deactivate(struct gfn_to_pfn_cache *gpc)
+{
+	struct kvm *kvm = gpc->kvm;
+	kvm_pfn_t old_pfn;
+	void *old_khva;
+
+	guard(mutex)(&gpc->refresh_lock);
+
 	if (gpc->active) {
+		/*
+		 * Deactivate the cache before removing it from the list, KVM
+		 * must stall mmu_notifier events until all users go away, i.e.
+		 * until gpc->lock is dropped and refresh is guaranteed to fail.
+		 */
+		write_lock_irq(&gpc->lock);
+		gpc->active = false;
+		gpc->valid = false;
+
+		/*
+		 * Leave the GPA => uHVA cache intact, it's protected by the
+		 * memslot generation.  The PFN lookup needs to be redone every
+		 * time as mmu_notifier protection is lost when the cache is
+		 * removed from the VM's gpc_list.
+		 */
+		old_khva = gpc->khva - offset_in_page(gpc->khva);
+		gpc->khva = NULL;
+
+		old_pfn = gpc->pfn;
+		gpc->pfn = KVM_PFN_ERR_FAULT;
+		write_unlock_irq(&gpc->lock);
+
 		spin_lock(&kvm->gpc_lock);
 		list_del(&gpc->list);
 		spin_unlock(&kvm->gpc_lock);
 
-		kvm_gfn_to_pfn_cache_unmap(kvm, gpc);
-		gpc->active = false;
+		gpc_unmap(old_pfn, old_khva);
 	}
 }
-EXPORT_SYMBOL_GPL(kvm_gfn_to_pfn_cache_destroy);

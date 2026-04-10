@@ -9,32 +9,54 @@ KVM Lock Overview
 
 The acquisition orders for mutexes are as follows:
 
+- cpus_read_lock() is taken outside kvm_lock
+
+- kvm_usage_lock is taken outside cpus_read_lock()
+
 - kvm->lock is taken outside vcpu->mutex
 
 - kvm->lock is taken outside kvm->slots_lock and kvm->irq_lock
 
+- vcpu->mutex is taken outside kvm->slots_lock and kvm->slots_arch_lock
+
 - kvm->slots_lock is taken outside kvm->irq_lock, though acquiring
   them together is quite rare.
-
-- Unlike kvm->slots_lock, kvm->slots_arch_lock is released before
-  synchronize_srcu(&kvm->srcu).  Therefore kvm->slots_arch_lock
-  can be taken inside a kvm->srcu read-side critical section,
-  while kvm->slots_lock cannot.
 
 - kvm->mn_active_invalidate_count ensures that pairs of
   invalidate_range_start() and invalidate_range_end() callbacks
   use the same memslots array.  kvm->slots_lock and kvm->slots_arch_lock
-  are taken on the waiting side in install_new_memslots, so MMU notifiers
+  are taken on the waiting side when modifying memslots, so MMU notifiers
   must not take either kvm->slots_lock or kvm->slots_arch_lock.
+
+cpus_read_lock() vs kvm_lock:
+
+- Taking cpus_read_lock() outside of kvm_lock is problematic, despite that
+  being the official ordering, as it is quite easy to unknowingly trigger
+  cpus_read_lock() while holding kvm_lock.  Use caution when walking vm_list,
+  e.g. avoid complex operations when possible.
+
+For SRCU:
+
+- ``synchronize_srcu(&kvm->srcu)`` is called inside critical sections
+  for kvm->lock, vcpu->mutex and kvm->slots_lock.  These locks _cannot_
+  be taken inside a kvm->srcu read-side critical section; that is, the
+  following is broken::
+
+      srcu_read_lock(&kvm->srcu);
+      mutex_lock(&kvm->slots_lock);
+
+- kvm->slots_arch_lock instead is released before the call to
+  ``synchronize_srcu()``.  It _can_ therefore be taken inside a
+  kvm->srcu read-side critical section, for example while processing
+  a vmexit.
 
 On x86:
 
-- vcpu->mutex is taken outside kvm->arch.hyperv.hv_lock
+- vcpu->mutex is taken outside kvm->arch.hyperv.hv_lock and kvm->arch.xen.xen_lock
 
-- kvm->arch.mmu_lock is an rwlock.  kvm->arch.tdp_mmu_pages_lock and
-  kvm->arch.mmu_unsync_pages_lock are taken inside kvm->arch.mmu_lock, and
-  cannot be taken without already holding kvm->arch.mmu_lock (typically with
-  ``read_lock`` for the TDP MMU, thus the need for additional spinlocks).
+- kvm->arch.mmu_lock is an rwlock; critical sections for
+  kvm->arch.tdp_mmu_pages_lock and kvm->arch.mmu_unsync_pages_lock must
+  also take kvm->arch.mmu_lock
 
 Everything else is a leaf: no other lock is taken inside the critical
 sections.
@@ -55,7 +77,7 @@ following two cases:
 2. Write-Protection: The SPTE is present and the fault is caused by
    write-protect. That means we just need to change the W bit of the spte.
 
-What we use to avoid all the race is the Host-writable bit and MMU-writable bit
+What we use to avoid all the races is the Host-writable bit and MMU-writable bit
 on the spte:
 
 - Host-writable means the gfn is writable in the host kernel page tables and in
@@ -115,10 +137,10 @@ We dirty-log for gfn1, that means gfn2 is lost in dirty-bitmap.
 For direct sp, we can easily avoid it since the spte of direct sp is fixed
 to gfn.  For indirect sp, we disabled fast page fault for simplicity.
 
-A solution for indirect sp could be to pin the gfn, for example via
-kvm_vcpu_gfn_to_pfn_atomic, before the cmpxchg.  After the pinning:
+A solution for indirect sp could be to pin the gfn before the cmpxchg.  After
+the pinning:
 
-- We have held the refcount of pfn that means the pfn can not be freed and
+- We have held the refcount of pfn; that means the pfn can not be freed and
   be reused for another gfn.
 - The pfn is writable and therefore it cannot be shared between different gfns
   by KSM.
@@ -127,70 +149,72 @@ Then, we can ensure the dirty bitmaps is correctly set for a gfn.
 
 2) Dirty bit tracking
 
-In the origin code, the spte can be fast updated (non-atomically) if the
+In the original code, the spte can be fast updated (non-atomically) if the
 spte is read-only and the Accessed bit has already been set since the
 Accessed bit and Dirty bit can not be lost.
 
 But it is not true after fast page fault since the spte can be marked
 writable between reading spte and updating spte. Like below case:
 
-+------------------------------------------------------------------------+
-| At the beginning::                                                     |
-|                                                                        |
-|	spte.W = 0                                                       |
-|	spte.Accessed = 1                                                |
-+------------------------------------+-----------------------------------+
-| CPU 0:                             | CPU 1:                            |
-+------------------------------------+-----------------------------------+
-| In mmu_spte_clear_track_bits()::   |                                   |
-|                                    |                                   |
-|  old_spte = *spte;                 |                                   |
-|                                    |                                   |
-|                                    |                                   |
-|  /* 'if' condition is satisfied. */|                                   |
-|  if (old_spte.Accessed == 1 &&     |                                   |
-|       old_spte.W == 0)             |                                   |
-|     spte = 0ull;                   |                                   |
-+------------------------------------+-----------------------------------+
-|                                    | on fast page fault path::         |
-|                                    |                                   |
-|                                    |    spte.W = 1                     |
-|                                    |                                   |
-|                                    | memory write on the spte::        |
-|                                    |                                   |
-|                                    |    spte.Dirty = 1                 |
-+------------------------------------+-----------------------------------+
-|  ::                                |                                   |
-|                                    |                                   |
-|   else                             |                                   |
-|     old_spte = xchg(spte, 0ull)    |                                   |
-|   if (old_spte.Accessed == 1)      |                                   |
-|     kvm_set_pfn_accessed(spte.pfn);|                                   |
-|   if (old_spte.Dirty == 1)         |                                   |
-|     kvm_set_pfn_dirty(spte.pfn);   |                                   |
-|     OOPS!!!                        |                                   |
-+------------------------------------+-----------------------------------+
++-------------------------------------------------------------------------+
+| At the beginning::                                                      |
+|                                                                         |
+|  spte.W = 0                                                             |
+|  spte.Accessed = 1                                                      |
++-------------------------------------+-----------------------------------+
+| CPU 0:                              | CPU 1:                            |
++-------------------------------------+-----------------------------------+
+| In mmu_spte_update()::              |                                   |
+|                                     |                                   |
+|  old_spte = *spte;                  |                                   |
+|                                     |                                   |
+|                                     |                                   |
+|  /* 'if' condition is satisfied. */ |                                   |
+|  if (old_spte.Accessed == 1 &&      |                                   |
+|       old_spte.W == 0)              |                                   |
+|     spte = new_spte;                |                                   |
++-------------------------------------+-----------------------------------+
+|                                     | on fast page fault path::         |
+|                                     |                                   |
+|                                     |    spte.W = 1                     |
+|                                     |                                   |
+|                                     | memory write on the spte::        |
+|                                     |                                   |
+|                                     |    spte.Dirty = 1                 |
++-------------------------------------+-----------------------------------+
+|  ::                                 |                                   |
+|                                     |                                   |
+|   else                              |                                   |
+|     old_spte = xchg(spte, new_spte);|                                   |
+|   if (old_spte.Accessed &&          |                                   |
+|       !new_spte.Accessed)           |                                   |
+|     flush = true;                   |                                   |
+|   if (old_spte.Dirty &&             |                                   |
+|       !new_spte.Dirty)              |                                   |
+|     flush = true;                   |                                   |
+|     OOPS!!!                         |                                   |
++-------------------------------------+-----------------------------------+
 
 The Dirty bit is lost in this case.
 
 In order to avoid this kind of issue, we always treat the spte as "volatile"
-if it can be updated out of mmu-lock, see spte_has_volatile_bits(), it means,
+if it can be updated out of mmu-lock [see spte_needs_atomic_update()]; it means
 the spte is always atomically updated in this case.
 
 3) flush tlbs due to spte updated
 
-If the spte is updated from writable to readonly, we should flush all TLBs,
+If the spte is updated from writable to read-only, we should flush all TLBs,
 otherwise rmap_write_protect will find a read-only spte, even though the
 writable spte might be cached on a CPU's TLB.
 
 As mentioned before, the spte can be updated to writable out of mmu-lock on
-fast page fault path, in order to easily audit the path, we see if TLBs need
-be flushed caused by this reason in mmu_spte_update() since this is a common
+fast page fault path. In order to easily audit the path, we see if TLBs needing
+to be flushed caused this reason in mmu_spte_update() since this is a common
 function to update spte (present -> present).
 
 Since the spte is "volatile" if it can be updated out of mmu-lock, we always
-atomically update the spte, the race caused by fast page fault can be avoided,
-See the comments in spte_has_volatile_bits() and mmu_spte_update().
+atomically update the spte and the race caused by fast page fault can be avoided.
+See the comments in spte_needs_atomic_update() and mmu_spte_update().
 
 Lockless Access Tracking:
 
@@ -217,14 +241,15 @@ time it will be set using the Dirty tracking mechanism described above.
 :Arch:		any
 :Protects:	- vm_list
 
-``kvm_count_lock``
+``kvm_usage_lock``
 ^^^^^^^^^^^^^^^^^^
 
-:Type:		raw_spinlock_t
+:Type:		mutex
 :Arch:		any
-:Protects:	- hardware virtualization enable/disable
-:Comment:	'raw' because hardware enabling/disabling must be atomic /wrt
-		migration.
+:Protects:	- kvm_usage_count
+		- hardware virtualization enable/disable
+:Comment:	Exists to allow taking cpus_read_lock() while kvm_usage_count is
+		protected, which simplifies the virtualization enabling logic.
 
 ``kvm->mn_invalidate_lock``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -276,9 +301,20 @@ time it will be set using the Dirty tracking mechanism described above.
 :Arch:		x86
 :Protects:	wakeup_vcpus_on_cpu
 :Comment:	This is a per-CPU lock and it is used for VT-d posted-interrupts.
-		When VT-d posted-interrupts is supported and the VM has assigned
+		When VT-d posted-interrupts are supported and the VM has assigned
 		devices, we put the blocked vCPU on the list blocked_vcpu_on_cpu
-		protected by blocked_vcpu_on_cpu_lock, when VT-d hardware issues
+		protected by blocked_vcpu_on_cpu_lock. When VT-d hardware issues
 		wakeup notification event since external interrupts from the
 		assigned devices happens, we will find the vCPU on the list to
 		wakeup.
+
+``vendor_module_lock``
+^^^^^^^^^^^^^^^^^^^^^^
+:Type:		mutex
+:Arch:		x86
+:Protects:	loading a vendor module (kvm_amd or kvm_intel)
+:Comment:	Exists because using kvm_lock leads to deadlock.  kvm_lock is taken
+    in notifiers, e.g. __kvmclock_cpufreq_notifier(), that may be invoked while
+    cpu_hotplug_lock is held, e.g. from cpufreq_boost_trigger_state(), and many
+    operations need to take cpu_hotplug_lock when loading a vendor module, e.g.
+    updating static calls.

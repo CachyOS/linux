@@ -10,12 +10,9 @@
 #define __OMAP_AES_H__
 
 #include <crypto/aes.h>
-#include <crypto/engine.h>
 
 #define DST_MAXBURST			4
 #define DMA_MIN				(DST_MAXBURST * sizeof(u32))
-
-#define _calc_walked(inout) (dd->inout##_walk.offset - dd->inout##_sg->offset)
 
 /*
  * OMAP TRM gives bitfields as start:end, where start is the higher bit
@@ -93,7 +90,6 @@ struct omap_aes_gcm_result {
 };
 
 struct omap_aes_ctx {
-	struct crypto_engine_ctx enginectx;
 	int		keylen;
 	u32		key[AES_KEYSIZE_256 / sizeof(u32)];
 	u8		nonce[4];
@@ -102,7 +98,7 @@ struct omap_aes_ctx {
 
 struct omap_aes_gcm_ctx {
 	struct omap_aes_ctx	octx;
-	struct crypto_aes_ctx	actx;
+	struct aes_enckey	akey;
 };
 
 struct omap_aes_reqctx {
@@ -117,15 +113,15 @@ struct omap_aes_reqctx {
 #define OMAP_AES_CACHE_SIZE	0
 
 struct omap_aes_algs_info {
-	struct skcipher_alg	*algs_list;
-	unsigned int		size;
-	unsigned int		registered;
+	struct skcipher_engine_alg	*algs_list;
+	unsigned int			size;
+	unsigned int			registered;
 };
 
 struct omap_aes_aead_algs {
-	struct aead_alg	*algs_list;
-	unsigned int	size;
-	unsigned int	registered;
+	struct aead_engine_alg		*algs_list;
+	unsigned int			size;
+	unsigned int			registered;
 };
 
 struct omap_aes_pdata {
@@ -163,7 +159,7 @@ struct omap_aes_dev {
 	unsigned long		flags;
 	int			err;
 
-	struct tasklet_struct	done_task;
+	struct work_struct	done_task;
 	struct aead_queue	aead_queue;
 	spinlock_t		lock;
 
@@ -188,8 +184,8 @@ struct omap_aes_dev {
 	struct scatterlist		out_sgl;
 	struct scatterlist		*orig_out;
 
-	struct scatter_walk		in_walk;
-	struct scatter_walk		out_walk;
+	unsigned int		in_sg_offset;
+	unsigned int		out_sg_offset;
 	struct dma_chan		*dma_lch_in;
 	struct dma_chan		*dma_lch_out;
 	int			in_sg_len;
@@ -218,5 +214,6 @@ int omap_aes_crypt_dma_start(struct omap_aes_dev *dd);
 int omap_aes_crypt_dma_stop(struct omap_aes_dev *dd);
 void omap_aes_gcm_dma_out_callback(void *data);
 void omap_aes_clear_copy_flags(struct omap_aes_dev *dd);
+int omap_aes_gcm_crypt_req(struct crypto_engine *engine, void *areq);
 
 #endif

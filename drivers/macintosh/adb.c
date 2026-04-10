@@ -74,13 +74,15 @@ static struct adb_driver *adb_driver_list[] = {
 	NULL
 };
 
-static struct class *adb_dev_class;
+static const struct class adb_dev_class = {
+	.name = "adb",
+};
 
 static struct adb_driver *adb_controller;
 BLOCKING_NOTIFIER_HEAD(adb_client_list);
 static int adb_got_sleep;
 static int adb_inited;
-static DEFINE_SEMAPHORE(adb_probe_mutex);
+static DEFINE_SEMAPHORE(adb_probe_mutex, 1);
 static int sleepy_trackpad;
 static int autopoll_devs;
 int __adb_probe_sync;
@@ -478,7 +480,7 @@ adb_register(int default_id, int handler_id, struct adb_ids *ids,
 		if ((adb_handler[i].original_address == default_id) &&
 		    (!handler_id || (handler_id == adb_handler[i].handler_id) || 
 		    try_handler_change(i, handler_id))) {
-			if (adb_handler[i].handler != 0) {
+			if (adb_handler[i].handler) {
 				pr_err("Two handlers for ADB device %d\n",
 				       default_id);
 				continue;
@@ -647,7 +649,7 @@ do_adb_query(struct adb_request *req)
 
 	switch(req->data[1]) {
 	case ADB_QUERY_GETDEVINFO:
-		if (req->nbytes < 3)
+		if (req->nbytes < 3 || req->data[2] >= 16)
 			break;
 		mutex_lock(&adb_handler_mutex);
 		req->reply[0] = adb_handler[req->data[2]].original_address;
@@ -672,8 +674,8 @@ static int adb_open(struct inode *inode, struct file *file)
 		ret = -ENXIO;
 		goto out;
 	}
-	state = kmalloc(sizeof(struct adbdev_state), GFP_KERNEL);
-	if (state == 0) {
+	state = kmalloc_obj(struct adbdev_state);
+	if (!state) {
 		ret = -ENOMEM;
 		goto out;
 	}
@@ -781,8 +783,7 @@ static ssize_t adb_write(struct file *file, const char __user *buf,
 	if (adb_controller == NULL)
 		return -ENXIO;
 
-	req = kmalloc(sizeof(struct adb_request),
-					     GFP_KERNEL);
+	req = kmalloc_obj(struct adb_request);
 	if (req == NULL)
 		return -ENOMEM;
 
@@ -840,7 +841,6 @@ out:
 
 static const struct file_operations adb_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.read		= adb_read,
 	.write		= adb_write,
 	.open		= adb_open,
@@ -888,10 +888,10 @@ adbdev_init(void)
 		return;
 	}
 
-	adb_dev_class = class_create(THIS_MODULE, "adb");
-	if (IS_ERR(adb_dev_class))
+	if (class_register(&adb_dev_class))
 		return;
-	device_create(adb_dev_class, NULL, MKDEV(ADB_MAJOR, 0), NULL, "adb");
+
+	device_create(&adb_dev_class, NULL, MKDEV(ADB_MAJOR, 0), NULL, "adb");
 
 	platform_device_register(&adb_pfdev);
 	platform_driver_probe(&adb_pfdrv, adb_dummy_probe);

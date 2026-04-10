@@ -1,17 +1,10 @@
 .. SPDX-License-Identifier: GPL-2.0
 
 ====
-fpga
+FPGA
 ====
 
 .. toctree::
     :maxdepth: 1
 
     dfl
-
-.. only::  subproject and html
-
-   Indices
-   =======
-
-   * :ref:`genindex`

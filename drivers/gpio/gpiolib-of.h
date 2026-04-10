@@ -3,21 +3,29 @@
 #ifndef GPIOLIB_OF_H
 #define GPIOLIB_OF_H
 
+#include <linux/err.h>
+#include <linux/types.h>
+
+#include <linux/notifier.h>
+
+struct device_node;
+struct fwnode_handle;
+
 struct gpio_chip;
-enum of_gpio_flags;
+struct gpio_desc;
+struct gpio_device;
 
 #ifdef CONFIG_OF_GPIO
-struct gpio_desc *of_find_gpio(struct device *dev,
+struct gpio_desc *of_find_gpio(struct device_node *np,
 			       const char *con_id,
 			       unsigned int idx,
 			       unsigned long *lookupflags);
 int of_gpiochip_add(struct gpio_chip *gc);
 void of_gpiochip_remove(struct gpio_chip *gc);
-int of_gpio_get_count(struct device *dev, const char *con_id);
-bool of_gpio_need_valid_mask(const struct gpio_chip *gc);
-void of_gpio_dev_init(struct gpio_chip *gc, struct gpio_device *gdev);
+bool of_gpiochip_instance_match(struct gpio_chip *gc, unsigned int index);
+int of_gpio_count(const struct fwnode_handle *fwnode, const char *con_id);
 #else
-static inline struct gpio_desc *of_find_gpio(struct device *dev,
+static inline struct gpio_desc *of_find_gpio(struct device_node *np,
 					     const char *con_id,
 					     unsigned int idx,
 					     unsigned long *lookupflags)
@@ -26,17 +34,15 @@ static inline struct gpio_desc *of_find_gpio(struct device *dev,
 }
 static inline int of_gpiochip_add(struct gpio_chip *gc) { return 0; }
 static inline void of_gpiochip_remove(struct gpio_chip *gc) { }
-static inline int of_gpio_get_count(struct device *dev, const char *con_id)
-{
-	return 0;
-}
-static inline bool of_gpio_need_valid_mask(const struct gpio_chip *gc)
+static inline bool of_gpiochip_instance_match(struct gpio_chip *gc,
+					      unsigned int index)
 {
 	return false;
 }
-static inline void of_gpio_dev_init(struct gpio_chip *gc,
-				    struct gpio_device *gdev)
+static inline int of_gpio_count(const struct fwnode_handle *fwnode,
+				const char *con_id)
 {
+	return 0;
 }
 #endif /* CONFIG_OF_GPIO */
 

@@ -294,7 +294,7 @@ static void lan966x_stats_update(struct lan966x *lan966x)
 {
 	int i, j;
 
-	mutex_lock(&lan966x->stats_lock);
+	spin_lock(&lan966x->stats_lock);
 
 	for (i = 0; i < lan966x->num_phys_ports; i++) {
 		uint idx = i * lan966x->num_stats;
@@ -310,7 +310,7 @@ static void lan966x_stats_update(struct lan966x *lan966x)
 		}
 	}
 
-	mutex_unlock(&lan966x->stats_lock);
+	spin_unlock(&lan966x->stats_lock);
 }
 
 static int lan966x_get_sset_count(struct net_device *dev, int sset)
@@ -365,7 +365,7 @@ static void lan966x_get_eth_mac_stats(struct net_device *dev,
 
 	idx = port->chip_port * lan966x->num_stats;
 
-	mutex_lock(&lan966x->stats_lock);
+	spin_lock(&lan966x->stats_lock);
 
 	mac_stats->FramesTransmittedOK =
 		lan966x->stats[idx + SYS_COUNT_TX_UC] +
@@ -376,7 +376,6 @@ static void lan966x_get_eth_mac_stats(struct net_device *dev,
 		lan966x->stats[idx + SYS_COUNT_TX_PMAC_BC];
 	mac_stats->SingleCollisionFrames =
 		lan966x->stats[idx + SYS_COUNT_TX_COL];
-	mac_stats->MultipleCollisionFrames = 0;
 	mac_stats->FramesReceivedOK =
 		lan966x->stats[idx + SYS_COUNT_RX_UC] +
 		lan966x->stats[idx + SYS_COUNT_RX_MC] +
@@ -384,26 +383,19 @@ static void lan966x_get_eth_mac_stats(struct net_device *dev,
 	mac_stats->FrameCheckSequenceErrors =
 		lan966x->stats[idx + SYS_COUNT_RX_CRC] +
 		lan966x->stats[idx + SYS_COUNT_RX_CRC];
-	mac_stats->AlignmentErrors = 0;
 	mac_stats->OctetsTransmittedOK =
 		lan966x->stats[idx + SYS_COUNT_TX_OCT] +
 		lan966x->stats[idx + SYS_COUNT_TX_PMAC_OCT];
 	mac_stats->FramesWithDeferredXmissions =
 		lan966x->stats[idx + SYS_COUNT_TX_MM_HOLD];
-	mac_stats->LateCollisions = 0;
-	mac_stats->FramesAbortedDueToXSColls = 0;
-	mac_stats->FramesLostDueToIntMACXmitError = 0;
-	mac_stats->CarrierSenseErrors = 0;
 	mac_stats->OctetsReceivedOK =
 		lan966x->stats[idx + SYS_COUNT_RX_OCT];
-	mac_stats->FramesLostDueToIntMACRcvError = 0;
 	mac_stats->MulticastFramesXmittedOK =
 		lan966x->stats[idx + SYS_COUNT_TX_MC] +
 		lan966x->stats[idx + SYS_COUNT_TX_PMAC_MC];
 	mac_stats->BroadcastFramesXmittedOK =
 		lan966x->stats[idx + SYS_COUNT_TX_BC] +
 		lan966x->stats[idx + SYS_COUNT_TX_PMAC_BC];
-	mac_stats->FramesWithExcessiveDeferral = 0;
 	mac_stats->MulticastFramesReceivedOK =
 		lan966x->stats[idx + SYS_COUNT_RX_MC];
 	mac_stats->BroadcastFramesReceivedOK =
@@ -424,7 +416,7 @@ static void lan966x_get_eth_mac_stats(struct net_device *dev,
 		lan966x->stats[idx + SYS_COUNT_RX_LONG] +
 		lan966x->stats[idx + SYS_COUNT_RX_PMAC_LONG];
 
-	mutex_unlock(&lan966x->stats_lock);
+	spin_unlock(&lan966x->stats_lock);
 }
 
 static const struct ethtool_rmon_hist_range lan966x_rmon_ranges[] = {
@@ -450,7 +442,7 @@ static void lan966x_get_eth_rmon_stats(struct net_device *dev,
 
 	idx = port->chip_port * lan966x->num_stats;
 
-	mutex_lock(&lan966x->stats_lock);
+	spin_lock(&lan966x->stats_lock);
 
 	rmon_stats->undersize_pkts =
 		lan966x->stats[idx + SYS_COUNT_RX_SHORT] +
@@ -508,7 +500,7 @@ static void lan966x_get_eth_rmon_stats(struct net_device *dev,
 		lan966x->stats[idx + SYS_COUNT_TX_SZ_1024_1526] +
 		lan966x->stats[idx + SYS_COUNT_TX_PMAC_SZ_1024_1526];
 
-	mutex_unlock(&lan966x->stats_lock);
+	spin_unlock(&lan966x->stats_lock);
 
 	*ranges = lan966x_rmon_ranges;
 }
@@ -546,7 +538,7 @@ static int lan966x_set_pauseparam(struct net_device *dev,
 }
 
 static int lan966x_get_ts_info(struct net_device *dev,
-			       struct ethtool_ts_info *info)
+			       struct kernel_ethtool_ts_info *info)
 {
 	struct lan966x_port *port = netdev_priv(dev);
 	struct lan966x *lan966x = port->lan966x;
@@ -557,16 +549,13 @@ static int lan966x_get_ts_info(struct net_device *dev,
 
 	phc = &lan966x->phc[LAN966X_PHC_PORT];
 
-	info->phc_index = phc->clock ? ptp_clock_index(phc->clock) : -1;
-	if (info->phc_index == -1) {
-		info->so_timestamping |= SOF_TIMESTAMPING_TX_SOFTWARE |
-					 SOF_TIMESTAMPING_RX_SOFTWARE |
-					 SOF_TIMESTAMPING_SOFTWARE;
+	if (phc->clock) {
+		info->phc_index = ptp_clock_index(phc->clock);
+	} else {
+		info->so_timestamping |= SOF_TIMESTAMPING_TX_SOFTWARE;
 		return 0;
 	}
 	info->so_timestamping |= SOF_TIMESTAMPING_TX_SOFTWARE |
-				 SOF_TIMESTAMPING_RX_SOFTWARE |
-				 SOF_TIMESTAMPING_SOFTWARE |
 				 SOF_TIMESTAMPING_TX_HARDWARE |
 				 SOF_TIMESTAMPING_RX_HARDWARE |
 				 SOF_TIMESTAMPING_RAW_HARDWARE;
@@ -614,7 +603,7 @@ void lan966x_stats_get(struct net_device *dev,
 
 	idx = port->chip_port * lan966x->num_stats;
 
-	mutex_lock(&lan966x->stats_lock);
+	spin_lock(&lan966x->stats_lock);
 
 	stats->rx_bytes = lan966x->stats[idx + SYS_COUNT_RX_OCT] +
 		lan966x->stats[idx + SYS_COUNT_RX_PMAC_OCT];
@@ -656,7 +645,15 @@ void lan966x_stats_get(struct net_device *dev,
 	stats->rx_dropped = dev->stats.rx_dropped +
 		lan966x->stats[idx + SYS_COUNT_RX_LONG] +
 		lan966x->stats[idx + SYS_COUNT_DR_LOCAL] +
-		lan966x->stats[idx + SYS_COUNT_DR_TAIL];
+		lan966x->stats[idx + SYS_COUNT_DR_TAIL] +
+		lan966x->stats[idx + SYS_COUNT_RX_RED_PRIO_0] +
+		lan966x->stats[idx + SYS_COUNT_RX_RED_PRIO_1] +
+		lan966x->stats[idx + SYS_COUNT_RX_RED_PRIO_2] +
+		lan966x->stats[idx + SYS_COUNT_RX_RED_PRIO_3] +
+		lan966x->stats[idx + SYS_COUNT_RX_RED_PRIO_4] +
+		lan966x->stats[idx + SYS_COUNT_RX_RED_PRIO_5] +
+		lan966x->stats[idx + SYS_COUNT_RX_RED_PRIO_6] +
+		lan966x->stats[idx + SYS_COUNT_RX_RED_PRIO_7];
 
 	for (i = 0; i < LAN966X_NUM_TC; i++) {
 		stats->rx_dropped +=
@@ -688,7 +685,7 @@ void lan966x_stats_get(struct net_device *dev,
 
 	stats->collisions = lan966x->stats[idx + SYS_COUNT_TX_COL];
 
-	mutex_unlock(&lan966x->stats_lock);
+	spin_unlock(&lan966x->stats_lock);
 }
 
 int lan966x_stats_init(struct lan966x *lan966x)
@@ -704,10 +701,13 @@ int lan966x_stats_init(struct lan966x *lan966x)
 		return -ENOMEM;
 
 	/* Init stats worker */
-	mutex_init(&lan966x->stats_lock);
+	spin_lock_init(&lan966x->stats_lock);
 	snprintf(queue_name, sizeof(queue_name), "%s-stats",
 		 dev_name(lan966x->dev));
 	lan966x->stats_queue = create_singlethread_workqueue(queue_name);
+	if (!lan966x->stats_queue)
+		return -ENOMEM;
+
 	INIT_DELAYED_WORK(&lan966x->stats_work, lan966x_check_stats_work);
 	queue_delayed_work(lan966x->stats_queue, &lan966x->stats_work,
 			   LAN966X_STATS_CHECK_DELAY);

@@ -22,7 +22,6 @@
  */
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/fb.h>
 #include "linux/delay.h"
 #include <linux/types.h>
 #include <linux/pci.h>
@@ -2203,7 +2202,7 @@ static int ci_program_mem_timing_parameters(struct pp_hwmgr *hwmgr)
 	struct smu7_hwmgr *data = (struct smu7_hwmgr *)(hwmgr->backend);
 
 	if (data->need_update_smu7_dpm_table &
-			(DPMTABLE_OD_UPDATE_SCLK + DPMTABLE_OD_UPDATE_MCLK))
+			(DPMTABLE_OD_UPDATE_SCLK | DPMTABLE_OD_UPDATE_MCLK))
 		return ci_program_memory_timing_parameters(hwmgr);
 
 	return 0;
@@ -2299,6 +2298,7 @@ static uint32_t ci_get_mac_definition(uint32_t value)
 	case SMU_MAX_ENTRIES_SMIO:
 		return SMU7_MAX_ENTRIES_SMIO;
 	case SMU_MAX_LEVELS_VDDC:
+	case SMU_MAX_LEVELS_VDDGFX:
 		return SMU7_MAX_LEVELS_VDDC;
 	case SMU_MAX_LEVELS_VDDCI:
 		return SMU7_MAX_LEVELS_VDDCI;
@@ -2681,7 +2681,7 @@ static int ci_initialize_mc_reg_table(struct pp_hwmgr *hwmgr)
 	struct ci_mc_reg_table *ni_table = &smu_data->mc_reg_table;
 	uint8_t module_index = ci_get_memory_modile_index(hwmgr);
 
-	table = kzalloc(sizeof(pp_atomctrl_mc_reg_table), GFP_KERNEL);
+	table = kzalloc_obj(pp_atomctrl_mc_reg_table);
 
 	if (NULL == table)
 		return -ENOMEM;
@@ -2733,9 +2733,9 @@ static bool ci_is_dpm_running(struct pp_hwmgr *hwmgr)
 
 static int ci_smu_init(struct pp_hwmgr *hwmgr)
 {
-	struct ci_smumgr *ci_priv = NULL;
+	struct ci_smumgr *ci_priv;
 
-	ci_priv = kzalloc(sizeof(struct ci_smumgr), GFP_KERNEL);
+	ci_priv = kzalloc_obj(struct ci_smumgr);
 
 	if (ci_priv == NULL)
 		return -ENOMEM;

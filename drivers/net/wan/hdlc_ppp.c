@@ -126,14 +126,12 @@ static inline struct proto *get_proto(struct net_device *dev, u16 pid)
 static inline const char *proto_name(u16 pid)
 {
 	switch (pid) {
-	case PID_LCP:
-		return "LCP";
 	case PID_IPCP:
 		return "IPCP";
 	case PID_IPV6CP:
 		return "IPV6CP";
 	default:
-		return NULL;
+		return "LCP";
 	}
 }
 
@@ -358,7 +356,7 @@ static void ppp_cp_event(struct net_device *dev, u16 pid, u16 event, u8 code,
 		}
 	}
 	if (old_state != CLOSED && proto->state == CLOSED)
-		del_timer(&proto->timer);
+		timer_delete(&proto->timer);
 
 #if DEBUG_STATE
 	printk(KERN_DEBUG "%s: %s ppp_cp_event(%s) ... %s\n", dev->name,
@@ -561,7 +559,7 @@ out:
 
 static void ppp_timer(struct timer_list *t)
 {
-	struct proto *proto = from_timer(proto, t, timer);
+	struct proto *proto = timer_container_of(proto, t, timer);
 	struct ppp *ppp = get_ppp(proto->dev);
 	unsigned long flags;
 

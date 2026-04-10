@@ -25,6 +25,14 @@ properties:
   interrupts:
     maxItems: 1
 
+  id-gpios:
+    description:
+      An input gpio for USB ID pin. Upon detecting a UFP device, HD3SS3220
+      will keep ID pin high if VBUS is not at VSafe0V. Once VBUS is at VSafe0V,
+      the HD3SS3220 will assert ID pin low. This is done to enforce Type-C
+      requirement that VBUS must be at VSafe0V before re-enabling VBUS.
+    maxItems: 1
+
   ports:
     $ref: /schemas/graph.yaml#/properties/ports
     description: OF graph bindings (specified in bindings/graph.txt) that model
@@ -46,37 +54,36 @@ properties:
 required:
   - compatible
   - reg
-  - interrupts
 
 additionalProperties: false
 
 examples:
   - |
-    i2c0 {
+    i2c {
         #address-cells = <1>;
         #size-cells = <0>;
 
         hd3ss3220@47 {
-                compatible = "ti,hd3ss3220";
-                reg = <0x47>;
-                interrupt-parent = <&gpio6>;
-                interrupts = <3>;
+            compatible = "ti,hd3ss3220";
+            reg = <0x47>;
+            interrupt-parent = <&gpio6>;
+            interrupts = <3>;
 
-                ports {
-                        #address-cells = <1>;
-                        #size-cells = <0>;
-                        port@0 {
-                                reg = <0>;
-                                hd3ss3220_in_ep: endpoint {
-                                        remote-endpoint = <&ss_ep>;
-                                };
-                        };
-                        port@1 {
-                                reg = <1>;
-                                hd3ss3220_out_ep: endpoint {
-                                        remote-endpoint = <&usb3_role_switch>;
-                                };
-                        };
+            ports {
+                #address-cells = <1>;
+                #size-cells = <0>;
+                port@0 {
+                    reg = <0>;
+                    hd3ss3220_in_ep: endpoint {
+                        remote-endpoint = <&ss_ep>;
+                    };
                 };
+                port@1 {
+                    reg = <1>;
+                    hd3ss3220_out_ep: endpoint {
+                        remote-endpoint = <&usb3_role_switch>;
+                    };
+                };
+            };
         };
     };

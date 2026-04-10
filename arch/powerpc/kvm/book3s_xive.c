@@ -328,7 +328,7 @@ static unsigned long xive_vm_h_xirr(struct kvm_vcpu *vcpu)
 	 */
 
 	/* Return interrupt and old CPPR in GPR4 */
-	vcpu->arch.regs.gpr[4] = hirq | (old_cppr << 24);
+	kvmppc_set_gpr(vcpu, 4, hirq | (old_cppr << 24));
 
 	return H_SUCCESS;
 }
@@ -364,7 +364,7 @@ static unsigned long xive_vm_h_ipoll(struct kvm_vcpu *vcpu, unsigned long server
 	hirq = xive_vm_scan_interrupts(xc, pending, scan_poll);
 
 	/* Return interrupt and old CPPR in GPR4 */
-	vcpu->arch.regs.gpr[4] = hirq | (xc->cppr << 24);
+	kvmppc_set_gpr(vcpu, 4, hirq | (xc->cppr << 24));
 
 	return H_SUCCESS;
 }
@@ -531,7 +531,7 @@ static int xive_vm_h_eoi(struct kvm_vcpu *vcpu, unsigned long xirr)
 	xc->cppr = xive_prio_from_guest(new_cppr);
 
 	/*
-	 * IPIs are synthetized from MFRR and thus don't need
+	 * IPIs are synthesized from MFRR and thus don't need
 	 * any special EOI handling. The underlying interrupt
 	 * used to signal MFRR changes is EOId when fetched from
 	 * the queue.
@@ -539,7 +539,7 @@ static int xive_vm_h_eoi(struct kvm_vcpu *vcpu, unsigned long xirr)
 	if (irq == XICS_IPI || irq == 0) {
 		/*
 		 * This barrier orders the setting of xc->cppr vs.
-		 * subsquent test of xc->mfrr done inside
+		 * subsequent test of xc->mfrr done inside
 		 * scan_interrupts and push_pending_to_hw
 		 */
 		smp_mb();
@@ -563,7 +563,7 @@ static int xive_vm_h_eoi(struct kvm_vcpu *vcpu, unsigned long xirr)
 	/*
 	 * This barrier orders both setting of in_eoi above vs,
 	 * subsequent test of guest_priority, and the setting
-	 * of xc->cppr vs. subsquent test of xc->mfrr done inside
+	 * of xc->cppr vs. subsequent test of xc->mfrr done inside
 	 * scan_interrupts and push_pending_to_hw
 	 */
 	smp_mb();
@@ -884,10 +884,10 @@ int kvmppc_xive_attach_escalation(struct kvm_vcpu *vcpu, u8 prio,
 	}
 
 	if (single_escalation)
-		name = kasprintf(GFP_KERNEL, "kvm-%d-%d",
+		name = kasprintf(GFP_KERNEL, "kvm-%lld-%d",
 				 vcpu->kvm->arch.lpid, xc->server_num);
 	else
-		name = kasprintf(GFP_KERNEL, "kvm-%d-%d-%d",
+		name = kasprintf(GFP_KERNEL, "kvm-%lld-%d-%d",
 				 vcpu->kvm->arch.lpid, xc->server_num, prio);
 	if (!name) {
 		pr_err("Failed to allocate escalation irq name for queue %d of VCPU %d\n",
@@ -916,8 +916,7 @@ int kvmppc_xive_attach_escalation(struct kvm_vcpu *vcpu, u8 prio,
 	 * it fires once.
 	 */
 	if (single_escalation) {
-		struct irq_data *d = irq_get_irq_data(xc->esc_virq[prio]);
-		struct xive_irq_data *xd = irq_data_get_irq_handler_data(d);
+		struct xive_irq_data *xd = irq_get_chip_data(xc->esc_virq[prio]);
 
 		xive_vm_esb_load(xd, XIVE_ESB_SET_PQ_01);
 		vcpu->arch.xive_esc_raddr = xd->eoi_page;
@@ -1555,7 +1554,7 @@ int kvmppc_xive_set_mapped(struct kvm *kvm, unsigned long guest_irq,
 	struct kvmppc_xive_src_block *sb;
 	struct kvmppc_xive_irq_state *state;
 	struct irq_data *host_data =
-		irq_domain_get_irq_data(irq_get_default_host(), host_irq);
+		irq_domain_get_irq_data(irq_get_default_domain(), host_irq);
 	unsigned int hw_irq = (unsigned int)irqd_to_hwirq(host_data);
 	u16 idx;
 	u8 prio;
@@ -1612,7 +1611,7 @@ int kvmppc_xive_set_mapped(struct kvm *kvm, unsigned long guest_irq,
 
 	/* Grab info about irq */
 	state->pt_number = hw_irq;
-	state->pt_data = irq_data_get_irq_handler_data(host_data);
+	state->pt_data = irq_data_get_irq_chip_data(host_data);
 
 	/*
 	 * Configure the IRQ to match the existing configuration of
@@ -1785,11 +1784,9 @@ void kvmppc_xive_disable_vcpu_interrupts(struct kvm_vcpu *vcpu)
  * stale_p (because it has no easy way to address it).  Hence we have
  * to adjust stale_p before shutting down the interrupt.
  */
-void xive_cleanup_single_escalation(struct kvm_vcpu *vcpu,
-				    struct kvmppc_xive_vcpu *xc, int irq)
+void xive_cleanup_single_escalation(struct kvm_vcpu *vcpu, int irq)
 {
-	struct irq_data *d = irq_get_irq_data(irq);
-	struct xive_irq_data *xd = irq_data_get_irq_handler_data(d);
+	struct xive_irq_data *xd = irq_get_chip_data(irq);
 
 	/*
 	 * This slightly odd sequence gives the right result
@@ -1827,8 +1824,7 @@ void kvmppc_xive_cleanup_vcpu(struct kvm_vcpu *vcpu)
 	for (i = 0; i < KVMPPC_XIVE_Q_COUNT; i++) {
 		if (xc->esc_virq[i]) {
 			if (kvmppc_xive_has_single_escalation(xc->xive))
-				xive_cleanup_single_escalation(vcpu, xc,
-							xc->esc_virq[i]);
+				xive_cleanup_single_escalation(vcpu, xc->esc_virq[i]);
 			free_irq(xc->esc_virq[i], vcpu);
 			irq_dispose_mapping(xc->esc_virq[i]);
 			kfree(xc->esc_virq_names[i]);
@@ -1928,7 +1924,7 @@ int kvmppc_xive_connect_vcpu(struct kvm_device *dev,
 	if (r)
 		goto bail;
 
-	xc = kzalloc(sizeof(*xc), GFP_KERNEL);
+	xc = kzalloc_obj(*xc);
 	if (!xc) {
 		r = -ENOMEM;
 		goto bail;
@@ -2280,7 +2276,7 @@ struct kvmppc_xive_src_block *kvmppc_xive_create_src_block(
 		goto out;
 
 	/* Create the ICS */
-	sb = kzalloc(sizeof(*sb), GFP_KERNEL);
+	sb = kzalloc_obj(*sb);
 	if (!sb)
 		goto out;
 
@@ -2392,7 +2388,7 @@ static int xive_set_source(struct kvmppc_xive *xive, long irq, u64 addr)
 	/*
 	 * Now, we select a target if we have one. If we don't we
 	 * leave the interrupt untargetted. It means that an interrupt
-	 * can become "untargetted" accross migration if it was masked
+	 * can become "untargetted" across migration if it was masked
 	 * by set_xive() but there is little we can do about it.
 	 */
 
@@ -2723,7 +2719,7 @@ struct kvmppc_xive *kvmppc_xive_get_device(struct kvm *kvm, u32 type)
 	struct kvmppc_xive *xive = *kvm_xive_device;
 
 	if (!xive) {
-		xive = kzalloc(sizeof(*xive), GFP_KERNEL);
+		xive = kzalloc_obj(*xive);
 		*kvm_xive_device = xive;
 	} else {
 		memset(xive, 0, sizeof(*xive));
@@ -2781,8 +2777,6 @@ static int kvmppc_xive_create(struct kvm_device *dev, u32 type)
 
 int kvmppc_xive_xics_hcall(struct kvm_vcpu *vcpu, u32 req)
 {
-	struct kvmppc_vcore *vc = vcpu->arch.vcore;
-
 	/* The VM should have configured XICS mode before doing XICS hcalls. */
 	if (!kvmppc_xics_enabled(vcpu))
 		return H_TOO_HARD;
@@ -2801,7 +2795,7 @@ int kvmppc_xive_xics_hcall(struct kvm_vcpu *vcpu, u32 req)
 		return xive_vm_h_ipoll(vcpu, kvmppc_get_gpr(vcpu, 4));
 	case H_XIRR_X:
 		xive_vm_h_xirr(vcpu);
-		kvmppc_set_gpr(vcpu, 5, get_tb() + vc->tb_offset);
+		kvmppc_set_gpr(vcpu, 5, get_tb() + kvmppc_get_tb_offset(vcpu));
 		return H_SUCCESS;
 	}
 
@@ -2831,9 +2825,7 @@ int kvmppc_xive_debug_show_queues(struct seq_file *m, struct kvm_vcpu *vcpu)
 				   i0, i1);
 		}
 		if (xc->esc_virq[i]) {
-			struct irq_data *d = irq_get_irq_data(xc->esc_virq[i]);
-			struct xive_irq_data *xd =
-				irq_data_get_irq_handler_data(d);
+			struct xive_irq_data *xd = irq_get_chip_data(xc->esc_virq[i]);
 			u64 pq = xive_vm_esb_load(xd, XIVE_ESB_GET);
 
 			seq_printf(m, "    ESC %d %c%c EOI @%llx",

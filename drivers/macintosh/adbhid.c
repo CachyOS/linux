@@ -724,7 +724,7 @@ adb_message_handler(struct notifier_block *this, unsigned long code, void *x)
 			int i;
 			for (i = 1; i < 16; i++) {
 				if (adbhid[i])
-					del_timer_sync(&adbhid[i]->input->timer);
+					timer_delete_sync(&adbhid[i]->input->timer);
 			}
 		}
 
@@ -764,7 +764,7 @@ adbhid_input_register(int id, int default_id, int original_handler_id,
 		return -EEXIST;
 	}
 
-	adbhid[id] = hid = kzalloc(sizeof(struct adbhid), GFP_KERNEL);
+	adbhid[id] = hid = kzalloc_obj(struct adbhid);
 	input_dev = input_allocate_device();
 	if (!hid || !input_dev) {
 		err = -ENOMEM;

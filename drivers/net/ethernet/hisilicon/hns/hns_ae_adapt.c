@@ -81,8 +81,7 @@ static struct hnae_handle *hns_ae_get_handle(struct hnae_ae_dev *dev,
 	vfnum_per_port = hns_ae_get_vf_num_per_port(dsaf_dev, port_id);
 	qnum_per_vf = hns_ae_get_q_num_per_vf(dsaf_dev, port_id);
 
-	vf_cb = kzalloc(struct_size(vf_cb, ae_handle.qs, qnum_per_vf),
-			GFP_KERNEL);
+	vf_cb = kzalloc_flex(*vf_cb, ae_handle.qs, qnum_per_vf);
 	if (unlikely(!vf_cb)) {
 		dev_err(dsaf_dev->dev, "malloc vf_cb fail!\n");
 		ae_handle = ERR_PTR(-ENOMEM);
@@ -730,15 +729,14 @@ static void hns_ae_get_stats(struct hnae_handle *handle, u64 *data)
 		hns_dsaf_get_stats(vf_cb->dsaf_dev, p, vf_cb->port_index);
 }
 
-static void hns_ae_get_strings(struct hnae_handle *handle,
-			       u32 stringset, u8 *data)
+static void hns_ae_get_strings(struct hnae_handle *handle, u32 stringset,
+			       u8 **data)
 {
 	int port;
 	int idx;
 	struct hns_mac_cb *mac_cb;
 	struct hns_ppe_cb *ppe_cb;
 	struct dsaf_device *dsaf_dev = hns_ae_get_dsaf_dev(handle->dev);
-	u8 *p = data;
 	struct	hnae_vf_cb *vf_cb;
 
 	assert(handle);
@@ -748,19 +746,14 @@ static void hns_ae_get_strings(struct hnae_handle *handle,
 	mac_cb = hns_get_mac_cb(handle);
 	ppe_cb = hns_get_ppe_cb(handle);
 
-	for (idx = 0; idx < handle->q_num; idx++) {
-		hns_rcb_get_strings(stringset, p, idx);
-		p += ETH_GSTRING_LEN * hns_rcb_get_ring_sset_count(stringset);
-	}
+	for (idx = 0; idx < handle->q_num; idx++)
+		hns_rcb_get_strings(stringset, data, idx);
 
-	hns_ppe_get_strings(ppe_cb, stringset, p);
-	p += ETH_GSTRING_LEN * hns_ppe_get_sset_count(stringset);
-
-	hns_mac_get_strings(mac_cb, stringset, p);
-	p += ETH_GSTRING_LEN * hns_mac_get_sset_count(mac_cb, stringset);
+	hns_ppe_get_strings(ppe_cb, stringset, data);
+	hns_mac_get_strings(mac_cb, stringset, data);
 
 	if (mac_cb->mac_type == HNAE_PORT_SERVICE)
-		hns_dsaf_get_strings(stringset, p, port, dsaf_dev);
+		hns_dsaf_get_strings(stringset, data, port, dsaf_dev);
 }
 
 static int hns_ae_get_sset_count(struct hnae_handle *handle, int stringset)

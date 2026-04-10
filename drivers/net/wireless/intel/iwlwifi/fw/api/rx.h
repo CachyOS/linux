@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
- * Copyright (C) 2012-2014, 2018-2021 Intel Corporation
+ * Copyright (C) 2012-2014, 2018-2025 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2015-2017 Intel Deutschland GmbH
  */
@@ -193,10 +193,13 @@ enum iwl_rx_mpdu_amsdu_info {
 	IWL_RX_MPDU_AMSDU_LAST_SUBFRAME		= 0x80,
 };
 
-#define RX_MPDU_BAND_POS 6
-#define RX_MPDU_BAND_MASK 0xC0
-#define BAND_IN_RX_STATUS(_val) \
-	(((_val) & RX_MPDU_BAND_MASK) >> RX_MPDU_BAND_POS)
+enum iwl_rx_mpdu_mac_phy_band {
+	/* whether or not this is MAC or LINK depends on the API */
+	IWL_RX_MPDU_MAC_PHY_BAND_MAC_MASK	= 0x0f,
+	IWL_RX_MPDU_MAC_PHY_BAND_LINK_MASK	= 0x0f,
+	IWL_RX_MPDU_MAC_PHY_BAND_PHY_MASK	= 0x30,
+	IWL_RX_MPDU_MAC_PHY_BAND_BAND_MASK	= 0xc0,
+};
 
 enum iwl_rx_l3_proto_values {
 	IWL_RX_L3_TYPE_NONE,
@@ -259,6 +262,7 @@ enum iwl_rx_mpdu_reorder_data {
 };
 
 enum iwl_rx_mpdu_phy_info {
+	IWL_RX_MPDU_PHY_EOF_INDICATION	= BIT(0),
 	IWL_RX_MPDU_PHY_AMPDU		= BIT(5),
 	IWL_RX_MPDU_PHY_AMPDU_TOGGLE	= BIT(6),
 	IWL_RX_MPDU_PHY_SHORT_PREAMBLE	= BIT(7),
@@ -273,7 +277,7 @@ enum iwl_rx_mpdu_mac_info {
 };
 
 /* TSF overload low dword */
-enum iwl_rx_phy_data0 {
+enum iwl_rx_phy_he_data0 {
 	/* info type: HE any */
 	IWL_RX_PHY_DATA0_HE_BEAM_CHNG				= 0x00000001,
 	IWL_RX_PHY_DATA0_HE_UPLINK				= 0x00000002,
@@ -289,6 +293,25 @@ enum iwl_rx_phy_data0 {
 	IWL_RX_PHY_DATA0_HE_DELIM_EOF				= 0x80000000,
 };
 
+/* TSF overload low dword */
+enum iwl_rx_phy_eht_data0 {
+	/* info type: EHT any */
+	IWL_RX_PHY_DATA0_EHT_VALIDATE				= BIT(0),
+	IWL_RX_PHY_DATA0_EHT_UPLINK				= BIT(1),
+	IWL_RX_PHY_DATA0_EHT_BSS_COLOR_MASK			= 0x000000fc,
+	IWL_RX_PHY_DATA0_ETH_SPATIAL_REUSE_MASK			= 0x00000f00,
+	IWL_RX_PHY_DATA0_EHT_PS160				= BIT(12),
+	IWL_RX_PHY_DATA0_EHT_TXOP_DUR_MASK			= 0x000fe000,
+	IWL_RX_PHY_DATA0_EHT_LDPC_EXT_SYM			= BIT(20),
+	IWL_RX_PHY_DATA0_EHT_PRE_FEC_PAD_MASK			= 0x00600000,
+	IWL_RX_PHY_DATA0_EHT_PE_DISAMBIG			= BIT(23),
+	IWL_RX_PHY_DATA0_EHT_BW320_SLOT				= BIT(24),
+	IWL_RX_PHY_DATA0_EHT_SIGA_CRC_OK			= BIT(25),
+	IWL_RX_PHY_DATA0_EHT_PHY_VER				= 0x1c000000,
+	/* 2 bits reserved */
+	IWL_RX_PHY_DATA0_EHT_DELIM_EOF				= BIT(31),
+};
+
 enum iwl_rx_phy_info_type {
 	IWL_RX_PHY_INFO_TYPE_NONE				= 0,
 	IWL_RX_PHY_INFO_TYPE_CCK				= 1,
@@ -301,19 +324,26 @@ enum iwl_rx_phy_info_type {
 	IWL_RX_PHY_INFO_TYPE_HE_TB				= 8,
 	IWL_RX_PHY_INFO_TYPE_HE_MU_EXT				= 9,
 	IWL_RX_PHY_INFO_TYPE_HE_TB_EXT				= 10,
+	IWL_RX_PHY_INFO_TYPE_EHT_MU				= 11,
+	IWL_RX_PHY_INFO_TYPE_EHT_TB				= 12,
+	IWL_RX_PHY_INFO_TYPE_EHT_MU_EXT				= 13,
+	IWL_RX_PHY_INFO_TYPE_EHT_TB_EXT				= 14,
 };
 
 /* TSF overload high dword */
-enum iwl_rx_phy_data1 {
+enum iwl_rx_phy_common_data1 {
 	/*
 	 * check this first - if TSF overload is set,
 	 * see &enum iwl_rx_phy_info_type
 	 */
 	IWL_RX_PHY_DATA1_INFO_TYPE_MASK				= 0xf0000000,
 
-	/* info type: HT/VHT/HE any */
+	/* info type: HT/VHT/HE/EHT any */
 	IWL_RX_PHY_DATA1_LSIG_LEN_MASK				= 0x0fff0000,
+};
 
+/* TSF overload high dword For HE rates*/
+enum iwl_rx_phy_he_data1 {
 	/* info type: HE MU/MU-EXT */
 	IWL_RX_PHY_DATA1_HE_MU_SIGB_COMPRESSION			= 0x00000001,
 	IWL_RX_PHY_DATA1_HE_MU_SIBG_SYM_OR_USER_NUM_MASK	= 0x0000001e,
@@ -329,8 +359,24 @@ enum iwl_rx_phy_data1 {
 	IWL_RX_PHY_DATA1_HE_TB_LOW_SS_MASK			= 0x0000000e,
 };
 
-/* goes into Metadata DW 7 */
-enum iwl_rx_phy_data2 {
+/* TSF overload high dword For EHT-MU/TB rates*/
+enum iwl_rx_phy_eht_data1 {
+	/* info type: EHT-MU */
+	IWL_RX_PHY_DATA1_EHT_MU_NUM_SIG_SYM_USIGA2	= 0x0000001f,
+	/* info type: EHT-TB */
+	IWL_RX_PHY_DATA1_EHT_TB_PILOT_TYPE		= BIT(0),
+	IWL_RX_PHY_DATA1_EHT_TB_LOW_SS			= 0x0000001e,
+
+	/* info type: EHT any */
+	/* number of EHT-LTF symbols 0 - 1 EHT-LTF, 1 - 2 EHT-LTFs, 2 - 4 EHT-LTFs,
+	 * 3 - 6 EHT-LTFs, 4 - 8 EHT-LTFs */
+	IWL_RX_PHY_DATA1_EHT_SIG_LTF_NUM		= 0x000000e0,
+	IWL_RX_PHY_DATA1_EHT_RU_ALLOC_B0		= 0x00000100,
+	IWL_RX_PHY_DATA1_EHT_RU_ALLOC_B1_B7		= 0x0000fe00,
+};
+
+/* goes into Metadata DW 7 (Qu) or 8 (So or higher) */
+enum iwl_rx_phy_he_data2 {
 	/* info type: HE MU-EXT */
 	/* the a1/a2/... is what the PHY/firmware calls the values */
 	IWL_RX_PHY_DATA2_HE_MU_EXT_CH1_RU0		= 0x000000ff, /* a1 */
@@ -345,8 +391,8 @@ enum iwl_rx_phy_data2 {
 	IWL_RX_PHY_DATA2_HE_TB_EXT_SPTL_REUSE4		= 0x0000f000,
 };
 
-/* goes into Metadata DW 8 */
-enum iwl_rx_phy_data3 {
+/* goes into Metadata DW 8 (Qu) or 7 (So or higher) */
+enum iwl_rx_phy_he_data3 {
 	/* info type: HE MU-EXT */
 	IWL_RX_PHY_DATA3_HE_MU_EXT_CH1_RU1		= 0x000000ff, /* c1 */
 	IWL_RX_PHY_DATA3_HE_MU_EXT_CH1_RU3		= 0x0000ff00, /* c2 */
@@ -355,7 +401,7 @@ enum iwl_rx_phy_data3 {
 };
 
 /* goes into Metadata DW 4 high 16 bits */
-enum iwl_rx_phy_data4 {
+enum iwl_rx_phy_he_he_data4 {
 	/* info type: HE MU-EXT */
 	IWL_RX_PHY_DATA4_HE_MU_EXT_CH1_CTR_RU			= 0x0001,
 	IWL_RX_PHY_DATA4_HE_MU_EXT_CH2_CTR_RU			= 0x0002,
@@ -364,6 +410,48 @@ enum iwl_rx_phy_data4 {
 	IWL_RX_PHY_DATA4_HE_MU_EXT_SIGB_MCS_MASK		= 0x00f0,
 	IWL_RX_PHY_DATA4_HE_MU_EXT_SIGB_DCM			= 0x0100,
 	IWL_RX_PHY_DATA4_HE_MU_EXT_PREAMBLE_PUNC_TYPE_MASK	= 0x0600,
+};
+
+/* goes into Metadata DW 8 (Qu has no EHT) */
+enum iwl_rx_phy_eht_data2 {
+	/* info type: EHT-MU-EXT */
+	IWL_RX_PHY_DATA2_EHT_MU_EXT_RU_ALLOC_A1	= 0x000001ff,
+	IWL_RX_PHY_DATA2_EHT_MU_EXT_RU_ALLOC_A2	= 0x0003fe00,
+	IWL_RX_PHY_DATA2_EHT_MU_EXT_RU_ALLOC_B1	= 0x07fc0000,
+
+	/* info type: EHT-TB-EXT */
+	IWL_RX_PHY_DATA2_EHT_TB_EXT_TRIG_SIGA1	= 0xffffffff,
+};
+
+/* goes into Metadata DW 7 (Qu has no EHT) */
+enum iwl_rx_phy_eht_data3 {
+	/* note: low 8 bits cannot be used */
+	/* info type: EHT-MU-EXT */
+	IWL_RX_PHY_DATA3_EHT_MU_EXT_RU_ALLOC_C1	= 0x0003fe00,
+	IWL_RX_PHY_DATA3_EHT_MU_EXT_RU_ALLOC_C2	= 0x07fc0000,
+};
+
+/* goes into Metadata DW 4 */
+enum iwl_rx_phy_eht_data4 {
+	/* info type: EHT-MU-EXT */
+	IWL_RX_PHY_DATA4_EHT_MU_EXT_RU_ALLOC_D1	= 0x000001ff,
+	IWL_RX_PHY_DATA4_EHT_MU_EXT_RU_ALLOC_D2	= 0x0003fe00,
+	IWL_RX_PHY_DATA4_EHT_MU_EXT_SIGB_MCS	= 0x000c0000,
+	IWL_RX_PHY_DATA4_EHT_MU_EXT_RU_ALLOC_B2	= 0x1ff00000,
+};
+
+/* goes into Metadata DW 16 */
+enum iwl_rx_phy_data5 {
+	/* info type: EHT any */
+	IWL_RX_PHY_DATA5_EHT_TYPE_AND_COMP		= 0x00000003,
+	/* info type: EHT-TB */
+	IWL_RX_PHY_DATA5_EHT_TB_SPATIAL_REUSE1		= 0x0000003c,
+	IWL_RX_PHY_DATA5_EHT_TB_SPATIAL_REUSE2		= 0x000003c0,
+	/* info type: EHT-MU */
+	IWL_RX_PHY_DATA5_EHT_MU_PUNC_CH_CODE		= 0x0000007c,
+	IWL_RX_PHY_DATA5_EHT_MU_STA_ID_USR		= 0x0003ff80,
+	IWL_RX_PHY_DATA5_EHT_MU_NUM_USR_NON_OFDMA	= 0x001c0000,
+	IWL_RX_PHY_DATA5_EHT_MU_SPATIAL_CONF_USR_FIELD	= 0x0fe00000,
 };
 
 /**
@@ -440,7 +528,9 @@ struct iwl_rx_mpdu_desc_v1 {
 			/**
 			 * @phy_data1: valid only if
 			 * %IWL_RX_MPDU_PHY_TSF_OVERLOAD is set,
-			 * see &enum iwl_rx_phy_data1.
+			 * see &enum iwl_rx_phy_common_data1 or
+			 *     &enum iwl_rx_phy_he_data1 or
+			 *     &enum iwl_rx_phy_eht_data1.
 			 */
 			__le32 phy_data1;
 		};
@@ -540,13 +630,22 @@ struct iwl_rx_mpdu_desc_v3 {
 			__le32 phy_data1;
 		};
 	};
-	/* DW16 & DW17 */
+	/* DW16 */
+	/**
+	 * @phy_data5: valid only if
+	 * %IWL_RX_MPDU_PHY_TSF_OVERLOAD is set,
+	 * see &enum iwl_rx_phy_data5.
+	 */
+	__le32 phy_data5;
+	/* DW17 */
 	/**
 	 * @reserved: reserved
 	 */
-	__le32 reserved[2];
+	__le32 reserved[1];
 } __packed; /* RX_MPDU_RES_START_API_S_VER_3,
-	       RX_MPDU_RES_START_API_S_VER_5 */
+	     * RX_MPDU_RES_START_API_S_VER_5,
+	     * RX_MPDU_RES_START_API_S_VER_6
+	     */
 
 /**
  * struct iwl_rx_mpdu_desc - RX MPDU descriptor
@@ -575,25 +674,35 @@ struct iwl_rx_mpdu_desc {
 	 */
 	__le16 phy_info;
 	/**
-	 * @mac_phy_idx: MAC/PHY index
+	 * @mac_phy_band: MAC/link ID, PHY ID, band;
+	 *	see &enum iwl_rx_mpdu_mac_phy_band
 	 */
-	u8 mac_phy_idx;
-	/* DW4 - carries csum data only when rpa_en == 1 */
-	/**
-	 * @raw_csum: raw checksum (alledgedly unreliable)
-	 */
-	__le16 raw_csum;
-
+	u8 mac_phy_band;
+	/* DW4 */
 	union {
-		/**
-		 * @l3l4_flags: &enum iwl_rx_l3l4_flags
-		 */
-		__le16 l3l4_flags;
+		struct {
+			/* carries csum data only when rpa_en == 1 */
+			/**
+			 * @raw_csum: raw checksum (alledgedly unreliable)
+			 */
+			__le16 raw_csum;
 
+			union {
+				/**
+				 * @l3l4_flags: &enum iwl_rx_l3l4_flags
+				 */
+				__le16 l3l4_flags;
+
+				/**
+				 * @phy_data4: depends on info type, see phy_data1
+				 */
+				__le16 phy_data4;
+			};
+		};
 		/**
-		 * @phy_data4: depends on info type, see phy_data1
+		 * @phy_eht_data4: depends on info type, see phy_data1
 		 */
-		__le16 phy_data4;
+		__le32 phy_eht_data4;
 	};
 	/* DW5 */
 	/**
@@ -608,12 +717,22 @@ struct iwl_rx_mpdu_desc {
 	__le32 reorder_data;
 
 	union {
+		/**
+		 * @v1: version 1 of the remaining RX descriptor,
+		 *	see &struct iwl_rx_mpdu_desc_v1
+		 */
 		struct iwl_rx_mpdu_desc_v1 v1;
+		/**
+		 * @v3: version 3 of the remaining RX descriptor,
+		 *	see &struct iwl_rx_mpdu_desc_v3
+		 */
 		struct iwl_rx_mpdu_desc_v3 v3;
 	};
 } __packed; /* RX_MPDU_RES_START_API_S_VER_3,
-	       RX_MPDU_RES_START_API_S_VER_4,
-	       RX_MPDU_RES_START_API_S_VER_5 */
+	     * RX_MPDU_RES_START_API_S_VER_4,
+	     * RX_MPDU_RES_START_API_S_VER_5,
+	     * RX_MPDU_RES_START_API_S_VER_6
+	     */
 
 #define IWL_RX_DESC_SIZE_V1 offsetofend(struct iwl_rx_mpdu_desc, v1)
 
@@ -630,7 +749,7 @@ struct iwl_rx_mpdu_desc {
 #define RX_NO_DATA_INFO_TYPE_RX_ERR	1
 #define RX_NO_DATA_INFO_TYPE_NDP	2
 #define RX_NO_DATA_INFO_TYPE_MU_UNMATCHED	3
-#define RX_NO_DATA_INFO_TYPE_HE_TB_UNMATCHED	4
+#define RX_NO_DATA_INFO_TYPE_TB_UNMATCHED	4
 
 #define RX_NO_DATA_INFO_ERR_POS		8
 #define RX_NO_DATA_INFO_ERR_MSK		(0xff << RX_NO_DATA_INFO_ERR_POS)
@@ -639,12 +758,43 @@ struct iwl_rx_mpdu_desc {
 #define RX_NO_DATA_INFO_ERR_UNSUPPORTED_RATE	2
 #define RX_NO_DATA_INFO_ERR_NO_DELIM		3
 #define RX_NO_DATA_INFO_ERR_BAD_MAC_HDR	4
+#define RX_NO_DATA_INFO_LOW_ENERGY		5
 
 #define RX_NO_DATA_FRAME_TIME_POS	0
 #define RX_NO_DATA_FRAME_TIME_MSK	(0xfffff << RX_NO_DATA_FRAME_TIME_POS)
 
 #define RX_NO_DATA_RX_VEC0_HE_NSTS_MSK	0x03800000
 #define RX_NO_DATA_RX_VEC0_VHT_NSTS_MSK	0x38000000
+#define RX_NO_DATA_RX_VEC2_EHT_NSTS_MSK	0x00f00000
+
+/* content of OFDM_RX_VECTOR_USIG_A1_OUT */
+enum iwl_rx_usig_a1 {
+	IWL_RX_USIG_A1_ENHANCED_WIFI_VER_ID	= 0x00000007,
+	IWL_RX_USIG_A1_BANDWIDTH		= 0x00000038,
+	IWL_RX_USIG_A1_UL_FLAG			= 0x00000040,
+	IWL_RX_USIG_A1_BSS_COLOR		= 0x00001f80,
+	IWL_RX_USIG_A1_TXOP_DURATION		= 0x000fe000,
+	IWL_RX_USIG_A1_DISREGARD		= 0x01f00000,
+	IWL_RX_USIG_A1_VALIDATE			= 0x02000000,
+	IWL_RX_USIG_A1_EHT_BW320_SLOT		= 0x04000000,
+	IWL_RX_USIG_A1_EHT_TYPE			= 0x18000000,
+	IWL_RX_USIG_A1_RDY			= 0x80000000,
+};
+
+/* content of OFDM_RX_VECTOR_USIG_A2_EHT_OUT */
+enum iwl_rx_usig_a2_eht {
+	IWL_RX_USIG_A2_EHT_PPDU_TYPE		= 0x00000003,
+	IWL_RX_USIG_A2_EHT_USIG2_VALIDATE_B2	= 0x00000004,
+	IWL_RX_USIG_A2_EHT_PUNC_CHANNEL		= 0x000000f8,
+	IWL_RX_USIG_A2_EHT_USIG2_VALIDATE_B8	= 0x00000100,
+	IWL_RX_USIG_A2_EHT_SIG_MCS		= 0x00000600,
+	IWL_RX_USIG_A2_EHT_SIG_SYM_NUM		= 0x0000f800,
+	IWL_RX_USIG_A2_EHT_TRIG_SPATIAL_REUSE_1 = 0x000f0000,
+	IWL_RX_USIG_A2_EHT_TRIG_SPATIAL_REUSE_2 = 0x00f00000,
+	IWL_RX_USIG_A2_EHT_TRIG_USIG2_DISREGARD	= 0x1f000000,
+	IWL_RX_USIG_A2_EHT_CRC_OK		= 0x40000000,
+	IWL_RX_USIG_A2_EHT_RDY			= 0x80000000,
+};
 
 /**
  * struct iwl_rx_no_data - RX no data descriptor
@@ -654,7 +804,8 @@ struct iwl_rx_mpdu_desc {
  * @on_air_rise_time: GP2 during on air rise
  * @fr_time: frame time
  * @rate: rate/mcs of frame
- * @phy_info: &enum iwl_rx_phy_data0 and &enum iwl_rx_phy_info_type
+ * @phy_info: &enum iwl_rx_phy_he_data0 or &enum iwl_rx_phy_eht_data0
+ *	      based on &enum iwl_rx_phy_info_type
  * @rx_vec: DW-12:9 raw RX vectors from DSP according to modulation type.
  *	for VHT: OFDM_RX_VECTOR_SIGA1_OUT, OFDM_RX_VECTOR_SIGA2_OUT
  *	for HE: OFDM_RX_VECTOR_HE_SIGA1_OUT, OFDM_RX_VECTOR_HE_SIGA2_OUT
@@ -668,7 +819,32 @@ struct iwl_rx_no_data {
 	__le32 phy_info[2];
 	__le32 rx_vec[2];
 } __packed; /* RX_NO_DATA_NTFY_API_S_VER_1,
-	       TX_NO_DATA_NTFY_API_S_VER_2 */
+	       RX_NO_DATA_NTFY_API_S_VER_2 */
+
+/**
+ * struct iwl_rx_no_data_ver_3 - RX no data descriptor
+ * @info: 7:0 frame type, 15:8 RX error type
+ * @rssi: 7:0 energy chain-A,
+ *	15:8 chain-B, measured at FINA time (FINA_ENERGY), 16:23 channel
+ * @on_air_rise_time: GP2 during on air rise
+ * @fr_time: frame time
+ * @rate: rate/mcs of frame, format depends on the notification version
+ * @phy_info: &enum iwl_rx_phy_eht_data0 and &enum iwl_rx_phy_info_type
+ * @rx_vec: DW-12:9 raw RX vectors from DSP according to modulation type.
+ *	for VHT: OFDM_RX_VECTOR_SIGA1_OUT, OFDM_RX_VECTOR_SIGA2_OUT
+ *	for HE: OFDM_RX_VECTOR_HE_SIGA1_OUT, OFDM_RX_VECTOR_HE_SIGA2_OUT
+ *	for EHT: OFDM_RX_VECTOR_USIG_A1_OUT, OFDM_RX_VECTOR_USIG_A2_EHT_OUT,
+ *	OFDM_RX_VECTOR_EHT_OUT, OFDM_RX_VECTOR_EHT_USER_FIELD_OUT
+ */
+struct iwl_rx_no_data_ver_3 {
+	__le32 info;
+	__le32 rssi;
+	__le32 on_air_rise_time;
+	__le32 fr_time;
+	__le32 rate;
+	__le32 phy_info[2];
+	__le32 rx_vec[4];
+} __packed; /* RX_NO_DATA_NTFY_API_S_VER_3, _VER_4 */
 
 struct iwl_frame_release {
 	u8 baid;
@@ -815,7 +991,7 @@ struct iwl_ba_window_status_notif {
 } __packed; /* BA_WINDOW_STATUS_NTFY_API_S_VER_1 */
 
 /**
- * struct iwl_rfh_queue_config - RX queue configuration
+ * struct iwl_rfh_queue_data - RX queue configuration
  * @q_num: Q num
  * @enable: enable queue
  * @reserved: alignment
@@ -845,5 +1021,397 @@ struct iwl_rfh_queue_config {
 	u8 reserved[3];
 	struct iwl_rfh_queue_data data[];
 } __packed; /* RFH_QUEUE_CONFIG_API_S_VER_1 */
+
+/**
+ * struct iwl_beacon_filter_notif_v1 - beacon filter notification
+ * @average_energy: average energy for the received beacon
+ * @mac_id: MAC ID the beacon was received for
+ */
+struct iwl_beacon_filter_notif_v1 {
+	__le32 average_energy;
+	__le32 mac_id;
+} __packed; /* BEACON_FILTER_IN_NTFY_API_S_VER_1 */
+
+/**
+ * struct iwl_beacon_filter_notif - beacon filter notification
+ * @average_energy: average energy for the received beacon
+ * @link_id: link ID the beacon was received for
+ */
+struct iwl_beacon_filter_notif {
+	__le32 average_energy;
+	__le32 link_id;
+} __packed; /* BEACON_FILTER_IN_NTFY_API_S_VER_2 */
+
+union iwl_legacy_sig {
+#define OFDM_RX_LEGACY_LENGTH				0x00000fff
+#define OFDM_RX_RATE					0x0000f000
+	__le32 ofdm;
+#define CCK_CRFR_SHORT_PREAMBLE				0x00000040
+	__le32 cck;
+};
+
+struct iwl_ht_sigs {
+#define OFDM_RX_FRAME_HT_MCS				0x0000007f
+#define OFDM_RX_FRAME_HT_BANDWIDTH			0x00000080
+#define OFDM_RX_FRAME_HT_LENGTH				0x03ffff00
+	__le32 a1;
+	__le32 a2;
+};
+
+struct iwl_vht_sigs {
+#define OFDM_RX_FRAME_VHT_NUM_OF_DATA_SYM		0x000007ff
+#define OFDM_RX_FRAME_VHT_NUM_OF_DATA_SYM_VALID		0x80000000
+	__le32 a0;
+#define OFDM_RX_FRAME_VHT_BANDWIDTH			0x00000003
+#define OFDM_RX_FRAME_VHT_STBC				0x00000008
+#define OFDM_RX_FRAME_VHT_GRP_ID			0x000003f0
+#define OFDM_RX_FRAME_VHT_STS_USER0			0x00001c00
+#define OFDM_RX_FRAME_VHT_MU_STS_USER1			0x0000e000
+#define OFDM_RX_FRAME_VHT_MU_STS_USER2			0x00070000
+#define OFDM_RX_FRAME_VHT_MU_STS_USER3			0x00380000
+#define OFDM_RX_FRAME_VHT_PARTIAL_AID_OR_MU_STS		0x003fe000
+#define OFDM_RX_FRAME_VHT_MU_MIMO_USER_POSITION		0x03000000
+#define OFDM_RX_FRAME_VHT_NO_STREAMS			0x04000000
+#define OFDM_RX_FRAME_VHT_STS				0x38000000
+	__le32 a1;
+#define OFDM_RX_FRAME_VHT_SHORT_GI			0x00000001
+#define OFDM_RX_FRAME_VHT_SHORT_GI_AMBIG		0x00000002
+#define OFDM_RX_FRAME_VHT_CODING			0x00000004
+#define OFDM_RX_FRAME_VHT_CODING_EXTRA_SYM		0x00000008
+#define OFDM_RX_FRAME_VHT_MCS_OR_MU_CODING		0x000000f0
+#define OFDM_RX_FRAME_VHT_BF_OR_MU_RESERVED		0x00000100
+#define OFDM_RX_FRAME_VHT_CRC				0x0003fc00
+#define OFDM_RX_FRAME_VHT_CRC_OK_BIT			0x00040000
+#define OFDM_RX_FRAME_VHT_CUR_USER_CODING		0x00080000
+#define OFDM_RX_FRAME_VHT_CUR_USER_STS			0x00700000
+	__le32 a2;
+};
+
+struct iwl_he_sigs {
+#define OFDM_RX_FRAME_HE_BEAM_CHANGE			0x00000001
+#define OFDM_RX_FRAME_HE_UL_FLAG			0x00000002
+/* SU/ER-SU: MCS, MU: SIG-B MCS */
+#define OFDM_RX_FRAME_HE_MCS				0x0000003c
+/* SU/ER-SU: DCM, MU: SIG-B DCM */
+#define OFDM_RX_FRAME_HE_DCM				0x00000040
+#define OFDM_RX_FRAME_HE_BSS_COLOR			0x00001f80
+#define OFDM_RX_FRAME_HE_SPATIAL_REUSE			0x0001e000
+#define OFDM_RX_FRAME_HE_BANDWIDTH			0x00060000
+#define OFDM_RX_FRAME_HE_SU_EXT_BW10			0x00080000
+#define OFDM_RX_FRAME_HE_GI_LTF_TYPE			0x00700000
+#define OFDM_RX_FRAME_HE_NSTS				0x03800000
+#define OFDM_RX_FRAME_HE_PRMBL_PUNC_TYPE		0x0c000000
+	__le32 a1;
+#define OFDM_RX_FRAME_HE_TXOP_DURATION			0x0000007f
+#define OFDM_RX_FRAME_HE_CODING				0x00000080
+#define OFDM_RX_FRAME_HE_CODING_EXTRA_SYM		0x00000100
+#define OFDM_RX_FRAME_HE_STBC				0x00000200
+#define OFDM_RX_FRAME_HE_BF				0x00000400
+#define OFDM_RX_FRAME_HE_PRE_FEC_PAD_FACTOR		0x00001800
+#define OFDM_RX_FRAME_HE_PE_DISAMBIG			0x00002000
+#define OFDM_RX_FRAME_HE_DOPPLER			0x00004000
+#define OFDM_RX_FRAME_HE_TYPE				0x00038000
+#define OFDM_RX_FRAME_HE_MU_NUM_OF_SIGB_SYM_OR_USER_NUM 0x003c0000
+#define OFDM_RX_FRAME_HE_MU_SIGB_COMP			0x00400000
+#define OFDM_RX_FRAME_HE_MU_NUM_OF_LTF_SYM		0x03800000
+	__le32 a2;
+#define OFDM_RX_FRAME_HE_NUM_OF_DATA_SYM		0x000007ff
+#define OFDM_RX_FRAME_HE_PE_DURATION			0x00003800
+#define OFDM_RX_FRAME_HE_NUM_OF_DATA_SYM_VALID		0x80000000
+	__le32 a3;
+#define OFDM_RX_FRAME_HE_SIGB_STA_ID_FOUND		0x00000001
+#define OFDM_RX_FRAME_HE_SIGB_STA_ID_INDX		0x0000000e
+#define OFDM_RX_FRAME_HE_SIGB_NSTS			0x00000070
+#define OFDM_RX_FRAME_HE_SIGB_BF			0x00000080
+#define OFDM_RX_FRAME_HE_SIGB_MCS			0x00000f00
+#define OFDM_RX_FRAME_HE_SIGB_DCM			0x00001000
+#define OFDM_RX_FRAME_HE_SIGB_CODING			0x00002000
+#define OFDM_RX_FRAME_HE_SIGB_SPATIAL_CONFIG		0x0003c000
+#define OFDM_RX_FRAME_HE_SIGB_STA_RU			0x03fc0000
+#define OFDM_RX_FRAME_HE_SIGB_NUM_OF_SYM		0x3c000000
+#define OFDM_RX_FRAME_HE_SIGB_CRC_OK			0x40000000
+	__le32 b;
+/* index 0 */
+#define OFDM_RX_FRAME_HE_RU_ALLOC_0_A1			0x000000ff
+#define OFDM_RX_FRAME_HE_RU_ALLOC_0_A2			0x0000ff00
+#define OFDM_RX_FRAME_HE_RU_ALLOC_0_B1			0x00ff0000
+#define OFDM_RX_FRAME_HE_RU_ALLOC_0_B2			0xff000000
+/* index 1 */
+#define OFDM_RX_FRAME_HE_RU_ALLOC_1_C1			0x000000ff
+#define OFDM_RX_FRAME_HE_RU_ALLOC_1_C2			0x0000ff00
+#define OFDM_RX_FRAME_HE_RU_ALLOC_1_D1			0x00ff0000
+#define OFDM_RX_FRAME_HE_RU_ALLOC_1_D2			0xff000000
+/* index 2 */
+#define OFDM_RX_FRAME_HE_CENTER_RU_CC1			0x00000001
+#define OFDM_RX_FRAME_HE_CENTER_RU_CC2			0x00000002
+#define OFDM_RX_FRAME_HE_COMMON_CC1_CRC_OK		0x00000004
+#define OFDM_RX_FRAME_HE_COMMON_CC2_CRC_OK		0x00000008
+	__le32 cmn[3];
+};
+
+struct iwl_he_tb_sigs {
+#define OFDM_RX_HE_TRIG_FORMAT				0x00000001
+#define OFDM_RX_HE_TRIG_BSS_COLOR			0x0000007e
+#define OFDM_RX_HE_TRIG_SPATIAL_REUSE_1			0x00000780
+#define OFDM_RX_HE_TRIG_SPATIAL_REUSE_2			0x00007800
+#define OFDM_RX_HE_TRIG_SPATIAL_REUSE_3			0x00078000
+#define OFDM_RX_HE_TRIG_SPATIAL_REUSE_4			0x00780000
+#define OFDM_RX_HE_TRIG_BANDWIDTH			0x03000000
+	__le32 a1;
+#define OFDM_RX_HE_TRIG_TXOP_DURATION			0x0000007f
+#define OFDM_RX_HE_TRIG_SIG2_RESERVED			0x0000ff80
+#define OFDM_RX_HE_TRIG_FORMAT_ERR			0x08000000
+#define OFDM_RX_HE_TRIG_BW_ERR				0x10000000
+#define OFDM_RX_HE_TRIG_LEGACY_LENGTH_ERR		0x20000000
+#define OFDM_RX_HE_TRIG_CRC_OK				0x40000000
+	__le32 a2;
+#define OFDM_UCODE_TRIG_BASE_RX_LGCY_LENGTH		0x00000fff
+#define OFDM_UCODE_TRIG_BASE_RX_BANDWIDTH		0x00007000
+#define OFDM_UCODE_TRIG_BASE_PS160			0x00008000
+#define OFDM_UCODE_EHT_TRIG_CONTROL_CHANNEL		0x000f0000
+	__le32 tb_rx0;
+#define OFDM_UCODE_TRIG_BASE_RX_MCS			0x0000000f
+#define OFDM_UCODE_TRIG_BASE_RX_DCM			0x00000010
+#define OFDM_UCODE_TRIG_BASE_RX_GI_LTF_TYPE		0x00000060
+#define OFDM_UCODE_TRIG_BASE_RX_NSTS			0x00000380
+#define OFDM_UCODE_TRIG_BASE_RX_CODING			0x00000400
+#define OFDM_UCODE_TRIG_BASE_RX_CODING_EXTRA_SYM	0x00000800
+#define OFDM_UCODE_TRIG_BASE_RX_STBC			0x00001000
+#define OFDM_UCODE_TRIG_BASE_RX_PRE_FEC_PAD_FACTOR	0x00006000
+#define OFDM_UCODE_TRIG_BASE_RX_PE_DISAMBIG		0x00008000
+#define OFDM_UCODE_TRIG_BASE_RX_DOPPLER			0x00010000
+#define OFDM_UCODE_TRIG_BASE_RX_RU			0x01fe0000
+#define OFDM_UCODE_TRIG_BASE_RX_RU_P80			0x00020000
+#define OFDM_UCODE_TRIG_BASE_RX_NUM_OF_LTF_SYM		0x0e000000
+#define OFDM_UCODE_TRIG_BASE_RX_LTF_PILOT_TYPE		0x10000000
+#define OFDM_UCODE_TRIG_BASE_RX_LOWEST_SS_ALLOCATION	0xe0000000
+	__le32 tb_rx1;
+};
+
+struct iwl_eht_sigs {
+#define OFDM_RX_FRAME_ENHANCED_WIFI_VER_ID		0x00000007
+#define OFDM_RX_FRAME_ENHANCED_WIFI_BANDWIDTH		0x00000038
+#define OFDM_RX_FRAME_ENHANCED_WIFI_UL_FLAG		0x00000040
+#define OFDM_RX_FRAME_ENHANCED_WIFI_BSS_COLOR		0x00001f80
+#define OFDM_RX_FRAME_ENHANCED_WIFI_TXOP_DURATION	0x000fe000
+#define OFDM_RX_FRAME_EHT_USIG1_DISREGARD		0x01f00000
+#define OFDM_RX_FRAME_EHT_USIG1_VALIDATE		0x02000000
+#define OFDM_RX_FRAME_EHT_BW320_SLOT			0x04000000
+#define OFDM_RX_FRAME_EHT_TYPE				0x18000000
+#define OFDM_RX_FRAME_ENHANCED_ER_NO_STREAMS		0x20000000
+	__le32 usig_a1;
+#define OFDM_RX_FRAME_EHT_PPDU_TYPE			0x00000003
+#define OFDM_RX_FRAME_EHT_USIG2_VALIDATE_B2		0x00000004
+#define OFDM_RX_FRAME_EHT_PUNC_CHANNEL			0x000000f8
+#define OFDM_RX_FRAME_EHT_USIG2_VALIDATE_B8		0x00000100
+#define OFDM_RX_FRAME_EHT_SIG_MCS			0x00000600
+#define OFDM_RX_FRAME_EHT_SIG_SYM_NUM			0x0000f800
+#define OFDM_RX_FRAME_EHT_TRIG_SPATIAL_REUSE_1		0x000f0000
+#define OFDM_RX_FRAME_EHT_TRIG_SPATIAL_REUSE_2		0x00f00000
+#define OFDM_RX_FRAME_EHT_TRIG_USIG2_DISREGARD		0x1f000000
+#define OFDM_RX_FRAME_EHT_TRIG_NO_STREAMS		0x20000000
+#define OFDM_RX_USIG_CRC_OK				0x40000000
+	__le32 usig_a2_eht;
+#define OFDM_RX_FRAME_EHT_SPATIAL_REUSE			0x0000000f
+#define OFDM_RX_FRAME_EHT_GI_LTF_TYPE			0x00000030
+#define OFDM_RX_FRAME_EHT_NUM_OF_LTF_SYM		0x000001c0
+#define OFDM_RX_FRAME_EHT_CODING_EXTRA_SYM		0x00000200
+#define OFDM_RX_FRAME_EHT_PRE_FEC_PAD_FACTOR		0x00000c00
+#define OFDM_RX_FRAME_EHT_PE_DISAMBIG			0x00001000
+#define OFDM_RX_FRAME_EHT_USIG_OVF_DISREGARD		0x0001e000
+#define OFDM_RX_FRAME_EHT_NUM_OF_USERS			0x000e0000
+#define OFDM_RX_FRAME_EHT_NSTS				0x00f00000
+#define OFDM_RX_FRAME_EHT_BF				0x01000000
+#define OFDM_RX_FRAME_EHT_USIG_OVF_NDP_DISREGARD	0x06000000
+#define OFDM_RX_FRAME_EHTSIG_COMM_CC1_CRC_OK		0x08000000
+#define OFDM_RX_FRAME_EHTSIG_COMM_CC2_CRC_OK		0x10000000
+#define OFDM_RX_FRAME_EHT_NON_VALID_RU_ALLOC		0x20000000
+#define OFDM_RX_FRAME_EHT_NO_STREAMS			0x40000000
+	__le32 b1;
+#define OFDM_RX_FRAME_EHT_MATCH_ID_FOUND		0x00000001
+#define OFDM_RX_FRAME_EHT_ID_INDX			0x0000000e
+#define OFDM_RX_FRAME_EHT_MCS				0x000000f0
+#define OFDM_RX_FRAME_EHT_CODING			0x00000100
+#define OFDM_RX_FRAME_EHT_SPATIAL_CONFIG		0x00007e00
+#define OFDM_RX_FRAME_EHT_STA_RU			0x007f8000
+#define OFDM_RX_FRAME_EHT_STA_RU_P80			0x00008000
+#define OFDM_RX_FRAME_EHT_STA_RU_PS160			0x00800000
+#define OFDM_RX_FRAME_EHT_USER_FIELD_CRC_OK		0x40000000
+	__le32 b2;
+#define OFDM_RX_FRAME_EHT_NUM_OF_DATA_SYM		0x000007ff
+#define OFDM_RX_FRAME_EHT_PE_DURATION			0x00003800
+#define OFDM_RX_FRAME_EHT_NUM_OF_DATA_SYM_VALID		0x80000000
+	__le32 sig2;
+#define OFDM_RX_FRAME_EHT_RU_ALLOC_0_A1			0x000001ff
+#define OFDM_RX_FRAME_EHT_RU_ALLOC_0_A2			0x0003fe00
+#define OFDM_RX_FRAME_EHT_RU_ALLOC_0_A3			0x07fc0000
+#define OFDM_RX_FRAME_EHT_RU_ALLOC_1_B1			0x000001ff
+#define OFDM_RX_FRAME_EHT_RU_ALLOC_1_B2			0x0003fe00
+#define OFDM_RX_FRAME_EHT_RU_ALLOC_1_B3			0x07fc0000
+#define OFDM_RX_FRAME_EHT_RU_ALLOC_2_C1			0x000001ff
+#define OFDM_RX_FRAME_EHT_RU_ALLOC_2_C2			0x0003fe00
+#define OFDM_RX_FRAME_EHT_RU_ALLOC_2_C3			0x07fc0000
+#define OFDM_RX_FRAME_EHT_RU_ALLOC_3_D1			0x000001ff
+#define OFDM_RX_FRAME_EHT_RU_ALLOC_3_D2			0x0003fe00
+#define OFDM_RX_FRAME_EHT_RU_ALLOC_3_D3			0x07fc0000
+#define OFDM_RX_FRAME_EHT_RU_ALLOC_4_A4			0x000001ff
+#define OFDM_RX_FRAME_EHT_RU_ALLOC_4_B4			0x0003fe00
+#define OFDM_RX_FRAME_EHT_RU_ALLOC_5_C4			0x000001ff
+#define OFDM_RX_FRAME_EHT_RU_ALLOC_5_D4			0x0003fe00
+	__le32 cmn[6];
+#define OFDM_RX_FRAME_EHT_USER_FIELD_ID			0x000007ff
+	__le32 user_id;
+};
+
+struct iwl_eht_tb_sigs {
+	/* same as non-TB above */
+	__le32 usig_a1, usig_a2_eht;
+	/* same as HE TB above */
+	__le32 tb_rx0, tb_rx1;
+};
+
+struct iwl_uhr_sigs {
+	/* same as EHT above */
+	__le32 usig_a1;
+#define OFDM_RX_FRAME_UHR_BSS_COLOR2			0x0000003f
+	__le32 usig_a1_uhr;
+#define	OFDM_RX_FRAME_UHR_PPDU_TYPE			0x00000003
+#define	OFDM_RX_FRAME_UHR_COBF_CSR_DISABLE		0x00000004
+#define	OFDM_RX_FRAME_UHR_PUNC_CHANNEL			0x000000f8
+#define	OFDM_RX_FRAME_UHR_USIG2_VALIDATE_B8		0x00000100
+#define	OFDM_RX_FRAME_UHR_SIG_MCS			0x00000600
+#define	OFDM_RX_FRAME_UHR_SIG_SYM_NUM			0x0000f800
+#define	OFDM_RX_FRAME_UHR_TRIG_SPATIAL_REUSE_1		0x000f0000
+#define	OFDM_RX_FRAME_UHR_TRIG_SPATIAL_REUSE_2		0x00f00000
+#define	OFDM_RX_FRAME_UHR_TRIG_USIG2_DISREGARD		0x1f000000
+	__le32 usig_a2_uhr;
+#define OFDM_RX_FRAME_UHR_SPATIAL_REUSE			0x0000000f
+#define OFDM_RX_FRAME_UHR_GI_LTF_TYPE			0x00000030
+#define OFDM_RX_FRAME_UHR_NUM_OF_LTF_SYM		0x000001c0
+#define OFDM_RX_FRAME_UHR_CODING_EXTRA_SYM		0x00000200
+#define OFDM_RX_FRAME_UHR_PE_A_FACTOR			0x00000c00
+#define OFDM_RX_FRAME_UHR_PE_DISAMBIGUITY		0x00001000
+#define OFDM_RX_FRAME_UHR_IM_DISABLE			0x00002000
+#define OFDM_RX_FRAME_UHR_USIG_OVF_DISREGARD		0x0000c000
+#define OFDM_RX_FRAME_UHR_NUM_OF_USERS			0x00070000
+#define OFDM_RX_FRAME_UHR_NSTS				0x00f00000
+#define OFDM_RX_FRAME_UHR_BF				0x01000000
+#define OFDM_RX_FRAME_UHR_USIG_OVF_NDP_DISREGARD	0x06000000
+#define OFDM_RX_FRAME_UHR_COMM_CC1_CRC_OK		0x08000000
+#define OFDM_RX_FRAME_UHR_COMM_CC2_CRC_OK		0x10000000
+#define OFDM_RX_FRAME_UHR_NON_VALID_RU_ALLOC		0x20000000
+	__le32 b1;
+#define OFDM_RX_FRAME_UHR_MCS				0x000001f0
+#define OFDM_RX_FRAME_UHR_CODING			0x00000200
+#define OFDM_RX_FRAME_UHR_SPATIAL_CONFIG		0x00003c00
+#define OFDM_RX_FRAME_UHR_STA_RU			0x003fc000
+#define OFDM_RX_FRAME_UHR_STA_RU_PS160			0x00400000
+#define OFDM_RX_FRAME_UHR_UEQM				0x00800000
+#define OFDM_RX_FRAME_UHR_2XLDPC			0x01000000
+#define OFDM_RX_FRAME_UHR_UEQM_PATTERN			0x06000000
+#define OFDM_RX_FRAME_UHR_IS_MU_MIMO_USER_FIELD		0x08000000
+#define OFDM_RX_FRAME_UHR_USER_FIELD_CRC_OK		0x40000000
+	__le32 b2;
+#define OFDM_RX_UHR_NUM_OF_DATA_SYM			0x000007ff
+#define OFDM_RX_UHR_PE_DURATION				0x00003800
+	__le32 sig2;
+	/* same as EHT above: OFDM_RX_FRAME_EHT_RU_ALLOC_* */
+	__le32 cmn[6];
+#define OFDM_RX_FRAME_UHR_USER_FIELD_ID			0x000007ff
+	__le32 user_id;
+};
+
+struct iwl_uhr_tb_sigs {
+	/* same as UHR above */
+	__le32 usig_a1, usig_a2_uhr;
+	/* same as HE above */
+	__le32 tb_rx0, tb_rx1;
+};
+
+struct iwl_uhr_elr_sigs {
+	/* same as UHR above */
+	__le32 usig_a1, usig_a2_uhr;
+#define OFDM_RX_VECTOR_UHR_ELR_VER_ID			0x00000007
+#define OFDM_RX_VECTOR_UHR_ELR_UPLINK_FLAG		0x00000008
+#define OFDM_RX_VECTOR_UHR_ELR_MCS			0x00000010
+#define OFDM_RX_VECTOR_UHR_ELR_CODING			0x00000020
+#define OFDM_RX_VECTOR_UHR_ELR_LENGTH_IN_SYM		0x00007fc0
+#define OFDM_RX_VECTOR_UHR_ELR_CODING_EXTRA_SYM		0x00008000
+#define OFDM_RX_VECTOR_UHR_ELR_SIG1_CRC_OK		0x00010000
+#define OFDM_RX_VECTOR_UHR_ELR_STA_ID			0x0ffe0000
+#define OFDM_RX_VECTOR_UHR_ELR_DISREGARD		0x70000000
+	__le32 uhr_sig_elr1;
+#define OFDM_RX_VECTOR_UHR_ELR_MARK_BSS_COLOR		0x0000003f
+#define OFDM_RX_VECTOR_UHR_ELR_SIG_ID_INDX		0x00000e00
+#define OFDM_RX_VECTOR_UHR_ELR_STA_RU			0x000ff000
+#define OFDM_RX_VECTOR_UHR_ELR_STA_RU_PS160		0x00100000
+#define OFDM_RX_VECTOR_UHR_ELR_SIG2_CRC_OK		0x00200000
+	__le32 uhr_sig_elr2;
+};
+
+union iwl_sigs {
+	struct iwl_ht_sigs ht;
+	struct iwl_vht_sigs vht;
+	struct iwl_he_sigs he;
+	struct iwl_he_tb_sigs he_tb;
+	struct iwl_eht_sigs eht;
+	struct iwl_eht_tb_sigs eht_tb;
+	struct iwl_uhr_sigs uhr;
+	struct iwl_uhr_tb_sigs uhr_tb;
+	struct iwl_uhr_elr_sigs uhr_elr;
+};
+
+enum iwl_sniffer_status {
+	IWL_SNIF_STAT_PLCP_RX_OK	= 0,
+	IWL_SNIF_STAT_AID_NOT_FOR_US	= 1,
+	IWL_SNIF_STAT_PLCP_RX_LSIG_ERR	= 2,
+	IWL_SNIF_STAT_PLCP_RX_SIGA_ERR	= 3,
+	IWL_SNIF_STAT_PLCP_RX_SIGB_ERR	= 4,
+	IWL_SNIF_STAT_UNEXPECTED_TB	= 5,
+	IWL_SNIF_STAT_UNSUPPORTED_RATE	= 6,
+	IWL_SNIF_STAT_UNKNOWN_ERROR	= 7,
+}; /* AIR_SNIFFER_STATUS_E_VER_1 */
+
+enum iwl_sniffer_flags {
+	IWL_SNIF_FLAG_VALID_TB_RX	= BIT(0),
+	IWL_SNIF_FLAG_VALID_RU		= BIT(1),
+}; /* AIR_SNIFFER_FLAGS_E_VER_1 */
+
+/**
+ * struct iwl_rx_phy_air_sniffer_ntfy - air sniffer notification
+ *
+ * @status: &enum iwl_sniffer_status
+ * @flags: &enum iwl_sniffer_flags
+ * @reserved1: reserved
+ * @rssi_a: energy chain-A in negative dBm, measured at FINA time
+ * @rssi_b: energy chain-B in negative dBm, measured at FINA time
+ * @channel: channel number
+ * @band: band information, PHY_BAND_*
+ * @on_air_rise_time: GP2 at on air rise
+ * @frame_time: frame time in us
+ * @rate: RATE_MCS_*
+ * @bytecount: byte count for legay and HT, otherwise number of symbols
+ * @legacy_sig: CCK signal information if %RATE_MCS_MOD_TYPE_MSK in @rate is
+ *	%RATE_MCS_MOD_TYPE_CCK, otherwise OFDM signal information
+ * @sigs: PHY signal information, depending on %RATE_MCS_MOD_TYPE_MSK in @rate
+ * @reserved2: reserved
+ *
+ * Sent for every frame and before the normal RX command if data is included.
+ */
+struct iwl_rx_phy_air_sniffer_ntfy {
+	u8 status;
+	u8 flags;
+	u8 reserved1[2];
+	u8 rssi_a, rssi_b;
+	u8 channel, band;
+	__le32 on_air_rise_time;
+	__le32 frame_time;
+	/* note: MCS in rate is not valid for MU-VHT */
+	__le32 rate;
+	__le32 bytecount;
+	union iwl_legacy_sig legacy_sig;
+	union iwl_sigs sigs;
+	__le32 reserved2;
+}; /* RX_PHY_AIR_SNIFFER_NTFY_API_S_VER_1 */
 
 #endif /* __iwl_fw_api_rx_h__ */

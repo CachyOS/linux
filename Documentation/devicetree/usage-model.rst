@@ -46,7 +46,7 @@ The DT was originally created by Open Firmware as part of the
 communication method for passing data from Open Firmware to a client
 program (like to an operating system).  An operating system used the
 Device Tree to discover the topology of the hardware at runtime, and
-thereby support a majority of available hardware without hard coded
+thereby supported a majority of available hardware without hard coded
 information (assuming drivers were available for all devices).
 
 Since Open Firmware is commonly used on PowerPC and SPARC platforms,
@@ -128,7 +128,7 @@ successor, the BeagleBoard xM board might look like, respectively::
 	compatible = "ti,omap3-beagleboard-xm", "ti,omap3450", "ti,omap3";
 
 Where "ti,omap3-beagleboard-xm" specifies the exact model, it also
-claims that it compatible with the OMAP 3450 SoC, and the omap3 family
+claims that it is compatible with the OMAP 3450 SoC, and the omap3 family
 of SoCs in general.  You'll notice that the list is sorted from most
 specific (exact board) to least specific (SoC family).
 
@@ -205,7 +205,7 @@ platform-specific configuration data.
 
 During early boot, the architecture setup code calls of_scan_flat_dt()
 several times with different helper callbacks to parse device tree
-data before paging is setup.  The of_scan_flat_dt() code scans through
+data before paging is set up.  The of_scan_flat_dt() code scans through
 the device tree and uses the helpers to extract information required
 during early boot.  Typically the early_init_dt_scan_chosen() helper
 is used to parse the chosen node including kernel parameters,
@@ -415,6 +415,6 @@ When using the DT, this creates problems for of_platform_populate()
 because it must decide whether to register each node as either a
 platform_device or an amba_device.  This unfortunately complicates the
 device creation model a little bit, but the solution turns out not to
-be too invasive.  If a node is compatible with "arm,amba-primecell", then
+be too invasive.  If a node is compatible with "arm,primecell", then
 of_platform_populate() will register it as an amba_device instead of a
 platform_device.

@@ -176,7 +176,7 @@ static int snd_imx_open(struct snd_soc_component *component,
 	struct imx_pcm_runtime_data *iprtd;
 	int ret;
 
-	iprtd = kzalloc(sizeof(*iprtd), GFP_KERNEL);
+	iprtd = kzalloc_obj(*iprtd);
 	if (iprtd == NULL)
 		return -ENOMEM;
 	runtime->private_data = iprtd;
@@ -185,8 +185,7 @@ static int snd_imx_open(struct snd_soc_component *component,
 
 	atomic_set(&iprtd->playing, 0);
 	atomic_set(&iprtd->capturing, 0);
-	hrtimer_init(&iprtd->hrt, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	iprtd->hrt.function = snd_hrtimer_callback;
+	hrtimer_setup(&iprtd->hrt, snd_hrtimer_callback, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 
 	ret = snd_pcm_hw_constraint_integer(substream->runtime,
 			SNDRV_PCM_HW_PARAM_PERIODS);
@@ -319,4 +318,5 @@ void imx_pcm_fiq_exit(struct platform_device *pdev)
 }
 EXPORT_SYMBOL_GPL(imx_pcm_fiq_exit);
 
+MODULE_DESCRIPTION("Freescale i.MX PCM FIQ handler");
 MODULE_LICENSE("GPL");

@@ -15,13 +15,13 @@
 #include "ptp.h"
 
 enum {
-	/* Revisions 0-2 were Falcon A0, A1 and B0 respectively.
+	/* Revisions 0-3 were Falcon A0, A1, B0 and Siena respectively.
 	 * They are not supported by this driver but these revision numbers
 	 * form part of the ethtool API for register dumping.
 	 */
-	EFX_REV_SIENA_A0 = 3,
 	EFX_REV_HUNT_A0 = 4,
 	EFX_REV_EF100 = 5,
+	EFX_REV_X4 = 6,
 };
 
 static inline int efx_nic_rev(struct efx_nic *efx)
@@ -33,7 +33,7 @@ static inline int efx_nic_rev(struct efx_nic *efx)
 static inline efx_qword_t *efx_event(struct efx_channel *channel,
 				     unsigned int index)
 {
-	return ((efx_qword_t *) (channel->eventq.buf.addr)) +
+	return ((efx_qword_t *)(channel->eventq.addr)) +
 		(index & channel->eventq_mask);
 }
 
@@ -59,7 +59,7 @@ static inline int efx_event_present(efx_qword_t *event)
 static inline efx_qword_t *
 efx_tx_desc(struct efx_tx_queue *tx_queue, unsigned int index)
 {
-	return ((efx_qword_t *) (tx_queue->txd.buf.addr)) + index;
+	return ((efx_qword_t *)(tx_queue->txd.addr)) + index;
 }
 
 /* Report whether this TX queue would be empty for the given write_count.
@@ -80,9 +80,7 @@ int efx_enqueue_skb_tso(struct efx_tx_queue *tx_queue, struct sk_buff *skb,
 
 /* Decide whether to push a TX descriptor to the NIC vs merely writing
  * the doorbell.  This can reduce latency when we are adding a single
- * descriptor to an empty queue, but is otherwise pointless.  Further,
- * Falcon and Siena have hardware bugs (SF bug 33851) that may be
- * triggered if we don't check this.
+ * descriptor to an empty queue, but is otherwise pointless.
  * We use the write_count used for the last doorbell push, to get the
  * NIC's view of the tx queue.
  */
@@ -99,7 +97,7 @@ static inline bool efx_nic_may_push_tx_desc(struct efx_tx_queue *tx_queue,
 static inline efx_qword_t *
 efx_rx_desc(struct efx_rx_queue *rx_queue, unsigned int index)
 {
-	return ((efx_qword_t *) (rx_queue->rxd.buf.addr)) + index;
+	return ((efx_qword_t *)(rx_queue->rxd.addr)) + index;
 }
 
 /* Alignment of PCIe DMA boundaries (4KB) */
@@ -243,7 +241,7 @@ void efx_nic_get_regs(struct efx_nic *efx, void *buf);
 #define EFX_MC_STATS_GENERATION_INVALID ((__force __le64)(-1))
 
 size_t efx_nic_describe_stats(const struct efx_hw_stat_desc *desc, size_t count,
-			      const unsigned long *mask, u8 *names);
+			      const unsigned long *mask, u8 **names);
 int efx_nic_copy_stats(struct efx_nic *efx, __le64 *dest);
 void efx_nic_update_stats(const struct efx_hw_stat_desc *desc, size_t count,
 			  const unsigned long *mask, u64 *stats,

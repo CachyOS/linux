@@ -10,14 +10,14 @@
 #include <linux/interrupt.h>
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 #include <linux/dmaengine.h>
 #include <linux/platform_device.h>
 #include <linux/device.h>
 #include <linux/platform_data/mmp_dma.h>
 #include <linux/dmapool.h>
-#include <linux/of_device.h>
-#include <linux/of_dma.h>
 #include <linux/of.h>
+#include <linux/of_dma.h>
 #include <linux/wait.h>
 #include <linux/dma/pxa-dma.h>
 
@@ -91,7 +91,8 @@ struct pxad_desc_sw {
 	bool			cyclic;
 	struct dma_pool		*desc_pool;	/* Channel's used allocator */
 
-	struct pxad_desc_hw	*hw_desc[];	/* DMA coherent descriptors */
+	struct pxad_desc_hw	*hw_desc[] __counted_by(nb_desc);
+						/* DMA coherent descriptors */
 };
 
 struct pxad_phy {
@@ -277,8 +278,7 @@ static int chan_state_show(struct seq_file *s, void *p)
 	seq_printf(s, "\tPriority : %s\n",
 			  str_prio[(phy->idx & 0xf) / 4]);
 	seq_printf(s, "\tUnaligned transfer bit: %s\n",
-			  _phy_readl_relaxed(phy, DALGN) & BIT(phy->idx) ?
-			  "yes" : "no");
+			  str_yes_no(_phy_readl_relaxed(phy, DALGN) & BIT(phy->idx)));
 	seq_printf(s, "\tDCSR  = %08x (%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s)\n",
 		   dcsr, PXA_DCSR_STR(RUN), PXA_DCSR_STR(NODESC),
 		   PXA_DCSR_STR(STOPIRQEN), PXA_DCSR_STR(EORIRQEN),
@@ -342,8 +342,7 @@ static void pxad_init_debugfs(struct pxad_device *pdev)
 	struct dentry *chandir;
 
 	pdev->dbgfs_chan =
-		kmalloc_array(pdev->nr_chans, sizeof(struct dentry *),
-			      GFP_KERNEL);
+		kmalloc_objs(struct dentry *, pdev->nr_chans);
 	if (!pdev->dbgfs_chan)
 		return;
 
@@ -722,7 +721,6 @@ static void pxad_free_desc(struct virt_dma_desc *vd)
 	dma_addr_t dma;
 	struct pxad_desc_sw *sw_desc = to_pxad_sw_desc(vd);
 
-	BUG_ON(sw_desc->nb_desc == 0);
 	for (i = sw_desc->nb_desc - 1; i >= 0; i--) {
 		if (i > 0)
 			dma = sw_desc->hw_desc[i - 1]->ddadr;
@@ -740,29 +738,30 @@ pxad_alloc_desc(struct pxad_chan *chan, unsigned int nb_hw_desc)
 {
 	struct pxad_desc_sw *sw_desc;
 	dma_addr_t dma;
+	void *desc;
 	int i;
 
-	sw_desc = kzalloc(struct_size(sw_desc, hw_desc, nb_hw_desc),
-			  GFP_NOWAIT);
+	sw_desc = kzalloc_flex(*sw_desc, hw_desc, nb_hw_desc, GFP_NOWAIT);
 	if (!sw_desc)
 		return NULL;
 	sw_desc->desc_pool = chan->desc_pool;
 
 	for (i = 0; i < nb_hw_desc; i++) {
-		sw_desc->hw_desc[i] = dma_pool_alloc(sw_desc->desc_pool,
-						     GFP_NOWAIT, &dma);
-		if (!sw_desc->hw_desc[i]) {
+		desc = dma_pool_alloc(sw_desc->desc_pool, GFP_NOWAIT, &dma);
+		if (!desc) {
 			dev_err(&chan->vc.chan.dev->device,
 				"%s(): Couldn't allocate the %dth hw_desc from dma_pool %p\n",
 				__func__, i, sw_desc->desc_pool);
 			goto err;
 		}
 
+		sw_desc->nb_desc++;
+		sw_desc->hw_desc[i] = desc;
+
 		if (i == 0)
 			sw_desc->first = dma;
 		else
 			sw_desc->hw_desc[i - 1]->ddadr = dma;
-		sw_desc->nb_desc++;
 	}
 
 	return sw_desc;
@@ -969,7 +968,7 @@ pxad_prep_slave_sg(struct dma_chan *dchan, struct scatterlist *sgl,
 	struct scatterlist *sg;
 	dma_addr_t dma;
 	u32 dcmd, dsadr = 0, dtadr = 0;
-	unsigned int nb_desc = 0, i, j = 0;
+	unsigned int nb_desc, i, j = 0;
 
 	if ((sgl == NULL) || (sg_len == 0))
 		return NULL;
@@ -978,8 +977,7 @@ pxad_prep_slave_sg(struct dma_chan *dchan, struct scatterlist *sgl,
 	dev_dbg(&chan->vc.chan.dev->device,
 		"%s(): dir=%d flags=%lx\n", __func__, dir, flags);
 
-	for_each_sg(sgl, sg, sg_len, i)
-		nb_desc += DIV_ROUND_UP(sg_dma_len(sg), PDMA_MAX_DESC_BYTES);
+	nb_desc = sg_nents_for_dma(sgl, sg_len, PDMA_MAX_DESC_BYTES);
 	sw_desc = pxad_alloc_desc(chan, nb_desc + 1);
 	if (!sw_desc)
 		return NULL;
@@ -1221,13 +1219,12 @@ static void pxad_free_channels(struct dma_device *dmadev)
 	}
 }
 
-static int pxad_remove(struct platform_device *op)
+static void pxad_remove(struct platform_device *op)
 {
 	struct pxad_device *pdev = platform_get_drvdata(op);
 
 	pxad_cleanup_debugfs(pdev);
 	pxad_free_channels(&pdev->slave);
-	return 0;
 }
 
 static int pxad_init_phys(struct platform_device *op,
@@ -1247,14 +1244,14 @@ static int pxad_init_phys(struct platform_device *op,
 		return -ENOMEM;
 
 	for (i = 0; i < nb_phy_chans; i++)
-		if (platform_get_irq(op, i) > 0)
+		if (platform_get_irq_optional(op, i) > 0)
 			nr_irq++;
 
 	for (i = 0; i < nb_phy_chans; i++) {
 		phy = &pdev->phys[i];
 		phy->base = pdev->base;
 		phy->idx = i;
-		irq = platform_get_irq(op, i);
+		irq = platform_get_irq_optional(op, i);
 		if ((nr_irq > 1) && (irq > 0))
 			ret = devm_request_irq(&op->dev, irq,
 					       pxad_chan_handler,
@@ -1343,10 +1340,8 @@ static int pxad_init_dmadev(struct platform_device *op,
 static int pxad_probe(struct platform_device *op)
 {
 	struct pxad_device *pdev;
-	const struct of_device_id *of_id;
 	const struct dma_slave_map *slave_map = NULL;
 	struct mmp_dma_platdata *pdata = dev_get_platdata(&op->dev);
-	struct resource *iores;
 	int ret, dma_channels = 0, nb_requestors = 0, slave_map_cnt = 0;
 	const enum dma_slave_buswidth widths =
 		DMA_SLAVE_BUSWIDTH_1_BYTE   | DMA_SLAVE_BUSWIDTH_2_BYTES |
@@ -1358,13 +1353,11 @@ static int pxad_probe(struct platform_device *op)
 
 	spin_lock_init(&pdev->phy_lock);
 
-	iores = platform_get_resource(op, IORESOURCE_MEM, 0);
-	pdev->base = devm_ioremap_resource(&op->dev, iores);
+	pdev->base = devm_platform_ioremap_resource(op, 0);
 	if (IS_ERR(pdev->base))
 		return PTR_ERR(pdev->base);
 
-	of_id = of_match_device(pxad_dt_ids, &op->dev);
-	if (of_id) {
+	if (op->dev.of_node) {
 		/* Parse new and deprecated dma-channels properties */
 		if (of_property_read_u32(op->dev.of_node, "dma-channels",
 					 &dma_channels))

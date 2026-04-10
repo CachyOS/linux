@@ -64,6 +64,12 @@ struct drr_params {
 	bool immediate_flip;
 };
 
+struct long_vtotal_params {
+	uint32_t vertical_total_min;
+	uint32_t vertical_total_max;
+	uint32_t vertical_blank_start;
+};
+
 #define LEFT_EYE_3D_PRIMARY_SURFACE 1
 #define RIGHT_EYE_3D_PRIMARY_SURFACE 0
 
@@ -116,6 +122,12 @@ enum timing_synchronization_type {
 	VBLANK_SYNCHRONIZABLE
 };
 
+enum crc_poly_mode {
+	CRC_POLY_MODE_16,
+	CRC_POLY_MODE_32,
+	CRC_POLY_MODE_MAX,
+};
+
 struct crc_params {
 	/* Regions used to calculate CRC*/
 	uint16_t windowa_x_start;
@@ -135,9 +147,177 @@ struct crc_params {
 
 	bool continuous_mode;
 	bool enable;
+
+	uint8_t crc_eng_inst;
+	bool reset;
+	enum crc_poly_mode crc_poly_mode;
 };
 
+struct dcn_otg_state {
+	uint32_t v_blank_start;
+	uint32_t v_blank_end;
+	uint32_t v_sync_a_pol;
+	uint32_t v_total;
+	uint32_t v_total_max;
+	uint32_t v_total_min;
+	uint32_t v_total_min_sel;
+	uint32_t v_total_max_sel;
+	uint32_t v_sync_a_start;
+	uint32_t v_sync_a_end;
+	uint32_t h_blank_start;
+	uint32_t h_blank_end;
+	uint32_t h_sync_a_start;
+	uint32_t h_sync_a_end;
+	uint32_t h_sync_a_pol;
+	uint32_t h_total;
+	uint32_t underflow_occurred_status;
+	uint32_t otg_enabled;
+	uint32_t blank_enabled;
+	uint32_t vertical_interrupt1_en;
+	uint32_t vertical_interrupt1_line;
+	uint32_t vertical_interrupt2_en;
+	uint32_t vertical_interrupt2_line;
+	uint32_t vertical_interrupt2_dest;
+	uint32_t otg_master_update_lock;
+	uint32_t otg_double_buffer_control;
+};
+
+struct dcn_optc_reg_state {
+	uint32_t optc_bytes_per_pixel;
+	uint32_t optc_data_format_control;
+	uint32_t optc_data_source_select;
+	uint32_t optc_input_clock_control;
+	uint32_t optc_input_global_control;
+	uint32_t optc_input_spare_register;
+	uint32_t optc_memory_config;
+	uint32_t optc_rsmu_underflow;
+	uint32_t optc_underflow_threshold;
+	uint32_t optc_width_control;
+
+	uint32_t otg_3d_structure_control;
+	uint32_t otg_clock_control;
+	uint32_t otg_control;
+	uint32_t otg_count_control;
+	uint32_t otg_count_reset;
+	uint32_t otg_crc_cntl;
+	uint32_t otg_crc_sig_blue_control_mask;
+	uint32_t otg_crc_sig_red_green_mask;
+	uint32_t otg_crc0_data_b;
+	uint32_t otg_crc0_data_rg;
+	uint32_t otg_crc0_windowa_x_control;
+	uint32_t otg_crc0_windowa_x_control_readback;
+	uint32_t otg_crc0_windowa_y_control;
+	uint32_t otg_crc0_windowa_y_control_readback;
+	uint32_t otg_crc0_windowb_x_control;
+	uint32_t otg_crc0_windowb_x_control_readback;
+	uint32_t otg_crc0_windowb_y_control;
+	uint32_t otg_crc0_windowb_y_control_readback;
+	uint32_t otg_crc1_data_b;
+	uint32_t otg_crc1_data_rg;
+	uint32_t otg_crc1_windowa_x_control;
+	uint32_t otg_crc1_windowa_x_control_readback;
+	uint32_t otg_crc1_windowa_y_control;
+	uint32_t otg_crc1_windowa_y_control_readback;
+	uint32_t otg_crc1_windowb_x_control;
+	uint32_t otg_crc1_windowb_x_control_readback;
+	uint32_t otg_crc1_windowb_y_control;
+	uint32_t otg_crc1_windowb_y_control_readback;
+	uint32_t otg_crc2_data_b;
+	uint32_t otg_crc2_data_rg;
+	uint32_t otg_crc3_data_b;
+	uint32_t otg_crc3_data_rg;
+	uint32_t otg_dlpc_control;
+	uint32_t otg_double_buffer_control;
+	uint32_t otg_drr_control2;
+	uint32_t otg_drr_control;
+	uint32_t otg_drr_timing_int_status;
+	uint32_t otg_drr_trigger_window;
+	uint32_t otg_drr_v_total_change;
+	uint32_t otg_drr_v_total_reach_range;
+	uint32_t otg_dsc_start_position;
+	uint32_t otg_force_count_now_cntl;
+	uint32_t otg_global_control0;
+	uint32_t otg_global_control1;
+	uint32_t otg_global_control2;
+	uint32_t otg_global_control3;
+	uint32_t otg_global_control4;
+	uint32_t otg_global_sync_status;
+	uint32_t otg_gsl_control;
+	uint32_t otg_gsl_vsync_gap;
+	uint32_t otg_gsl_window_x;
+	uint32_t otg_gsl_window_y;
+	uint32_t otg_h_blank_start_end;
+	uint32_t otg_h_sync_a;
+	uint32_t otg_h_sync_a_cntl;
+	uint32_t otg_h_timing_cntl;
+	uint32_t otg_h_total;
+	uint32_t otg_interlace_control;
+	uint32_t otg_interlace_status;
+	uint32_t otg_interrupt_control;
+	uint32_t otg_long_vblank_status;
+	uint32_t otg_m_const_dto0;
+	uint32_t otg_m_const_dto1;
+	uint32_t otg_manual_force_vsync_next_line;
+	uint32_t otg_master_en;
+	uint32_t otg_master_update_lock;
+	uint32_t otg_master_update_mode;
+	uint32_t otg_nom_vert_position;
+	uint32_t otg_pipe_update_status;
+	uint32_t otg_pixel_data_readback0;
+	uint32_t otg_pixel_data_readback1;
+	uint32_t otg_request_control;
+	uint32_t otg_snapshot_control;
+	uint32_t otg_snapshot_frame;
+	uint32_t otg_snapshot_position;
+	uint32_t otg_snapshot_status;
+	uint32_t otg_spare_register;
+	uint32_t otg_static_screen_control;
+	uint32_t otg_status;
+	uint32_t otg_status_frame_count;
+	uint32_t otg_status_hv_count;
+	uint32_t otg_status_position;
+	uint32_t otg_status_vf_count;
+	uint32_t otg_stereo_control;
+	uint32_t otg_stereo_force_next_eye;
+	uint32_t otg_stereo_status;
+	uint32_t otg_trig_manual_control;
+	uint32_t otg_triga_cntl;
+	uint32_t otg_triga_manual_trig;
+	uint32_t otg_trigb_cntl;
+	uint32_t otg_trigb_manual_trig;
+	uint32_t otg_update_lock;
+	uint32_t otg_v_blank_start_end;
+	uint32_t otg_v_count_stop_control;
+	uint32_t otg_v_count_stop_control2;
+	uint32_t otg_v_sync_a;
+	uint32_t otg_v_sync_a_cntl;
+	uint32_t otg_v_total;
+	uint32_t otg_v_total_control;
+	uint32_t otg_v_total_int_status;
+	uint32_t otg_v_total_max;
+	uint32_t otg_v_total_mid;
+	uint32_t otg_v_total_min;
+	uint32_t otg_vert_sync_control;
+	uint32_t otg_vertical_interrupt0_control;
+	uint32_t otg_vertical_interrupt0_position;
+	uint32_t otg_vertical_interrupt1_control;
+	uint32_t otg_vertical_interrupt1_position;
+	uint32_t otg_vertical_interrupt2_control;
+	uint32_t otg_vertical_interrupt2_position;
+	uint32_t otg_vready_param;
+	uint32_t otg_vstartup_param;
+	uint32_t otg_vsync_nom_int_status;
+	uint32_t otg_vupdate_keepout;
+	uint32_t otg_vupdate_param;
+};
+
+/**
+ * struct timing_generator - Entry point to Output Timing Generator feature.
+ */
 struct timing_generator {
+	/**
+	 * @funcs: Timing generator control functions
+	 */
 	const struct timing_generator_funcs *funcs;
 	struct dc_bios *bp;
 	struct dc_context *ctx;
@@ -148,7 +328,9 @@ struct dc_crtc_timing;
 
 struct drr_params;
 
-
+/**
+ * struct timing_generator_funcs - Control timing generator on a given device.
+ */
 struct timing_generator_funcs {
 	bool (*validate_timing)(struct timing_generator *tg,
 							const struct dc_crtc_timing *timing);
@@ -158,6 +340,7 @@ struct timing_generator_funcs {
 							int vstartup_start,
 							int vupdate_offset,
 							int vupdate_width,
+							int pstate_keepout,
 							const enum signal_type signal,
 							bool use_vbios
 	);
@@ -174,6 +357,8 @@ struct timing_generator_funcs {
 
 	bool (*enable_crtc)(struct timing_generator *tg);
 	bool (*disable_crtc)(struct timing_generator *tg);
+	void (*phantom_crtc_post_enable)(struct timing_generator *tg);
+	void (*disable_phantom_crtc)(struct timing_generator *tg);
 	bool (*immediate_disable_crtc)(struct timing_generator *tg);
 	bool (*is_counter_moving)(struct timing_generator *tg);
 	void (*get_position)(struct timing_generator *tg,
@@ -198,7 +383,6 @@ struct timing_generator_funcs {
 	void (*set_blank)(struct timing_generator *tg,
 					bool enable_blanking);
 	bool (*is_blanked)(struct timing_generator *tg);
-	bool (*is_locked)(struct timing_generator *tg);
 	void (*set_overscan_blank_color) (struct timing_generator *tg, const struct tg_color *color);
 	void (*set_blank_color)(struct timing_generator *tg, const struct tg_color *color);
 	void (*set_colors)(struct timing_generator *tg,
@@ -241,7 +425,8 @@ struct timing_generator_funcs {
 			int vready_offset,
 			int vstartup_start,
 			int vupdate_offset,
-			int vupdate_width);
+			int vupdate_width,
+			int pstate_keepout);
 	void (*enable_optc_clock)(struct timing_generator *tg, bool enable);
 	void (*program_stereo)(struct timing_generator *tg,
 		const struct dc_crtc_timing *timing, struct crtc_stereo_flags *flags);
@@ -261,6 +446,7 @@ struct timing_generator_funcs {
 			uint32_t *num_of_input_segments,
 			uint32_t *seg0_src_sel,
 			uint32_t *seg1_src_sel);
+	bool (*is_two_pixels_per_container)(const struct dc_crtc_timing *timing);
 
 	/**
 	 * Configure CRCs for the given timing generator. Return false if TG is
@@ -270,10 +456,10 @@ struct timing_generator_funcs {
 			       const struct crc_params *params);
 
 	/**
-	 * Get CRCs for the given timing generator. Return false if CRCs are
-	 * not enabled (via configure_crc).
+	 * @get_crc: Get CRCs for the given timing generator. Return false if
+	 * CRCs are not enabled (via configure_crc).
 	 */
-	bool (*get_crc)(struct timing_generator *tg,
+	bool (*get_crc)(struct timing_generator *tg, uint8_t idx,
 			uint32_t *r_cr, uint32_t *g_y, uint32_t *b_cb);
 
 	void (*program_manual_trigger)(struct timing_generator *optc);
@@ -291,15 +477,20 @@ struct timing_generator_funcs {
 	void (*get_dsc_status)(struct timing_generator *optc,
 					uint32_t *dsc_mode);
 	void (*set_odm_bypass)(struct timing_generator *optc, const struct dc_crtc_timing *dc_crtc_timing);
+
+	/**
+	 * @set_odm_combine: Set up the ODM block to read from the correct
+	 * OPP(s) and turn on/off ODM memory.
+	 */
 	void (*set_odm_combine)(struct timing_generator *optc, int *opp_id, int opp_cnt,
-			struct dc_crtc_timing *timing);
+			int segment_width, int last_segment_width);
+	void (*get_odm_combine_segments)(struct timing_generator *tg, int *odm_segments);
+	void (*set_h_timing_div_manual_mode)(struct timing_generator *optc, bool manual_mode);
 	void (*set_gsl)(struct timing_generator *optc, const struct gsl_params *params);
 	void (*set_gsl_source_select)(struct timing_generator *optc,
 			int group_idx,
 			uint32_t gsl_ready_signal);
 	void (*set_out_mux)(struct timing_generator *tg, enum otg_out_mux_dest dest);
-	void (*set_vrr_m_const)(struct timing_generator *optc,
-			double vtotal_avg);
 	void (*set_drr_trigger_window)(struct timing_generator *optc,
 			uint32_t window_start, uint32_t window_end);
 	void (*set_vtotal_change_limit)(struct timing_generator *optc,
@@ -310,8 +501,23 @@ struct timing_generator_funcs {
 			uint32_t slave_pixel_clock_100Hz,
 			uint8_t master_clock_divider,
 			uint8_t slave_clock_divider);
+	bool (*validate_vmin_vmax)(struct timing_generator *optc,
+			int vmin, int vmax);
+	bool (*validate_vtotal_change_limit)(struct timing_generator *optc,
+			uint32_t vtotal_change_limit);
 
 	void (*init_odm)(struct timing_generator *tg);
+	void (*wait_drr_doublebuffer_pending_clear)(struct timing_generator *tg);
+	void (*set_long_vtotal)(struct timing_generator *optc, const struct long_vtotal_params *params);
+	void (*wait_odm_doublebuffer_pending_clear)(struct timing_generator *tg);
+	void (*wait_otg_disable)(struct timing_generator *optc);
+	bool (*get_optc_double_buffer_pending)(struct timing_generator *tg);
+	bool (*get_otg_double_buffer_pending)(struct timing_generator *tg);
+	bool (*get_pipe_update_pending)(struct timing_generator *tg);
+	void (*set_vupdate_keepout)(struct timing_generator *tg, bool enable);
+	bool (*wait_update_lock_status)(struct timing_generator *tg, bool locked);
+	void (*read_otg_state)(struct timing_generator *tg, struct dcn_otg_state *s);
+	void (*optc_read_reg_state)(struct timing_generator *tg, struct dcn_optc_reg_state *optc_reg_state);
 };
 
 #endif

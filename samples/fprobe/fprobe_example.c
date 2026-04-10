@@ -20,17 +20,24 @@
 
 #define BACKTRACE_DEPTH 16
 #define MAX_SYMBOL_LEN 4096
-struct fprobe sample_probe;
+static struct fprobe sample_probe;
 static unsigned long nhit;
 
 static char symbol[MAX_SYMBOL_LEN] = "kernel_clone";
 module_param_string(symbol, symbol, sizeof(symbol), 0644);
+MODULE_PARM_DESC(symbol, "Probed symbol(s), given by comma separated symbols or a wildcard pattern.");
+
 static char nosymbol[MAX_SYMBOL_LEN] = "";
 module_param_string(nosymbol, nosymbol, sizeof(nosymbol), 0644);
+MODULE_PARM_DESC(nosymbol, "Not-probed symbols, given by a wildcard pattern.");
+
 static bool stackdump = true;
 module_param(stackdump, bool, 0644);
+MODULE_PARM_DESC(stackdump, "Enable stackdump.");
+
 static bool use_trace = false;
 module_param(use_trace, bool, 0644);
+MODULE_PARM_DESC(use_trace, "Use trace_printk instead of printk. This is only for debugging.");
 
 static void show_backtrace(void)
 {
@@ -41,7 +48,9 @@ static void show_backtrace(void)
 	stack_trace_print(stacks, len, 24);
 }
 
-static void sample_entry_handler(struct fprobe *fp, unsigned long ip, struct pt_regs *regs)
+static int sample_entry_handler(struct fprobe *fp, unsigned long ip,
+				unsigned long ret_ip,
+				struct ftrace_regs *fregs, void *data)
 {
 	if (use_trace)
 		/*
@@ -54,11 +63,14 @@ static void sample_entry_handler(struct fprobe *fp, unsigned long ip, struct pt_
 	nhit++;
 	if (stackdump)
 		show_backtrace();
+	return 0;
 }
 
-static void sample_exit_handler(struct fprobe *fp, unsigned long ip, struct pt_regs *regs)
+static void sample_exit_handler(struct fprobe *fp, unsigned long ip,
+				unsigned long ret_ip, struct ftrace_regs *regs,
+				void *data)
 {
-	unsigned long rip = instruction_pointer(regs);
+	unsigned long rip = ret_ip;
 
 	if (use_trace)
 		/*
@@ -138,4 +150,5 @@ static void __exit fprobe_exit(void)
 
 module_init(fprobe_init)
 module_exit(fprobe_exit)
+MODULE_DESCRIPTION("sample kernel module showing the use of fprobe");
 MODULE_LICENSE("GPL");

@@ -23,9 +23,9 @@
  *
  * 0.3.3
  *  - Porting over to new fbdev api. (jsimmons)
- *  
+ *
  * 0.3.2
- *  - got rid of all floating point (dok) 
+ *  - got rid of all floating point (dok)
  *
  * 0.3.1
  *  - added module license (dok)
@@ -54,6 +54,7 @@
  *
  */
 
+#include <linux/aperture.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -1154,14 +1155,14 @@ static int neofb_set_par(struct fb_info *info)
 
 	switch (info->fix.accel) {
 		case FB_ACCEL_NEOMAGIC_NM2200:
-		case FB_ACCEL_NEOMAGIC_NM2230: 
-		case FB_ACCEL_NEOMAGIC_NM2360: 
-		case FB_ACCEL_NEOMAGIC_NM2380: 
+		case FB_ACCEL_NEOMAGIC_NM2230:
+		case FB_ACCEL_NEOMAGIC_NM2360:
+		case FB_ACCEL_NEOMAGIC_NM2380:
 			neo2200_accel_init(info, &info->var);
 			break;
 		default:
 			break;
-	}	
+	}
 	return 0;
 }
 
@@ -1493,15 +1494,15 @@ neofb_fillrect(struct fb_info *info, const struct fb_fillrect *rect)
 {
 	switch (info->fix.accel) {
 		case FB_ACCEL_NEOMAGIC_NM2200:
-		case FB_ACCEL_NEOMAGIC_NM2230: 
-		case FB_ACCEL_NEOMAGIC_NM2360: 
+		case FB_ACCEL_NEOMAGIC_NM2230:
+		case FB_ACCEL_NEOMAGIC_NM2360:
 		case FB_ACCEL_NEOMAGIC_NM2380:
 			neo2200_fillrect(info, rect);
 			break;
 		default:
 			cfb_fillrect(info, rect);
 			break;
-	}	
+	}
 }
 
 static void
@@ -1509,15 +1510,15 @@ neofb_copyarea(struct fb_info *info, const struct fb_copyarea *area)
 {
 	switch (info->fix.accel) {
 		case FB_ACCEL_NEOMAGIC_NM2200:
-		case FB_ACCEL_NEOMAGIC_NM2230: 
-		case FB_ACCEL_NEOMAGIC_NM2360: 
-		case FB_ACCEL_NEOMAGIC_NM2380: 
+		case FB_ACCEL_NEOMAGIC_NM2230:
+		case FB_ACCEL_NEOMAGIC_NM2360:
+		case FB_ACCEL_NEOMAGIC_NM2380:
 			neo2200_copyarea(info, area);
 			break;
 		default:
 			cfb_copyarea(info, area);
 			break;
-	}	
+	}
 }
 
 static void
@@ -1536,20 +1537,20 @@ neofb_imageblit(struct fb_info *info, const struct fb_image *image)
 	}
 }
 
-static int 
+static int
 neofb_sync(struct fb_info *info)
 {
 	switch (info->fix.accel) {
 		case FB_ACCEL_NEOMAGIC_NM2200:
-		case FB_ACCEL_NEOMAGIC_NM2230: 
-		case FB_ACCEL_NEOMAGIC_NM2360: 
-		case FB_ACCEL_NEOMAGIC_NM2380: 
+		case FB_ACCEL_NEOMAGIC_NM2230:
+		case FB_ACCEL_NEOMAGIC_NM2360:
+		case FB_ACCEL_NEOMAGIC_NM2380:
 			neo2200_sync(info);
 			break;
 		default:
 			break;
 	}
-	return 0;		
+	return 0;
 }
 
 /*
@@ -1613,6 +1614,7 @@ static const struct fb_ops neofb_ops = {
 	.owner		= THIS_MODULE,
 	.fb_open	= neofb_open,
 	.fb_release	= neofb_release,
+	__FB_DEFAULT_IOMEM_OPS_RDWR,
 	.fb_check_var	= neofb_check_var,
 	.fb_set_par	= neofb_set_par,
 	.fb_setcolreg	= neofb_setcolreg,
@@ -1622,6 +1624,7 @@ static const struct fb_ops neofb_ops = {
 	.fb_fillrect	= neofb_fillrect,
 	.fb_copyarea	= neofb_copyarea,
 	.fb_imageblit	= neofb_imageblit,
+	__FB_DEFAULT_IOMEM_OPS_MMAP,
 };
 
 /* --------------------------------------------------------------------- */
@@ -1765,7 +1768,7 @@ static int neo_scan_monitor(struct fb_info *info)
 	int w;
 
 	// Eventually we will have i2c support.
-	info->monspecs.modedb = kmalloc(sizeof(struct fb_videomode), GFP_KERNEL);
+	info->monspecs.modedb = kmalloc_obj(struct fb_videomode);
 	if (!info->monspecs.modedb)
 		return -ENOMEM;
 	info->monspecs.modedb_len = 1;
@@ -1943,53 +1946,44 @@ static struct fb_info *neo_alloc_fb_info(struct pci_dev *dev,
 
 	par->internal_display = internal;
 	par->external_display = external;
-	info->flags = FBINFO_DEFAULT | FBINFO_HWACCEL_YPAN;
+	info->flags = FBINFO_HWACCEL_YPAN;
 
 	switch (info->fix.accel) {
 	case FB_ACCEL_NEOMAGIC_NM2070:
-		snprintf(info->fix.id, sizeof(info->fix.id),
-				"MagicGraph 128");
+		strscpy(info->fix.id, "MagicGraph128", sizeof(info->fix.id));
 		break;
 	case FB_ACCEL_NEOMAGIC_NM2090:
-		snprintf(info->fix.id, sizeof(info->fix.id),
-				"MagicGraph 128V");
+		strscpy(info->fix.id, "MagicGraph128V", sizeof(info->fix.id));
 		break;
 	case FB_ACCEL_NEOMAGIC_NM2093:
-		snprintf(info->fix.id, sizeof(info->fix.id),
-				"MagicGraph 128ZV");
+		strscpy(info->fix.id, "MagicGraph128ZV", sizeof(info->fix.id));
 		break;
 	case FB_ACCEL_NEOMAGIC_NM2097:
-		snprintf(info->fix.id, sizeof(info->fix.id),
-				"MagicGraph 128ZV+");
+		strscpy(info->fix.id, "Mag.Graph128ZV+", sizeof(info->fix.id));
 		break;
 	case FB_ACCEL_NEOMAGIC_NM2160:
-		snprintf(info->fix.id, sizeof(info->fix.id),
-				"MagicGraph 128XD");
+		strscpy(info->fix.id, "MagicGraph128XD", sizeof(info->fix.id));
 		break;
 	case FB_ACCEL_NEOMAGIC_NM2200:
-		snprintf(info->fix.id, sizeof(info->fix.id),
-				"MagicGraph 256AV");
+		strscpy(info->fix.id, "MagicGraph256AV", sizeof(info->fix.id));
 		info->flags |= FBINFO_HWACCEL_IMAGEBLIT |
 		               FBINFO_HWACCEL_COPYAREA |
                 	       FBINFO_HWACCEL_FILLRECT;
 		break;
 	case FB_ACCEL_NEOMAGIC_NM2230:
-		snprintf(info->fix.id, sizeof(info->fix.id),
-				"MagicGraph 256AV+");
+		strscpy(info->fix.id, "Mag.Graph256AV+", sizeof(info->fix.id));
 		info->flags |= FBINFO_HWACCEL_IMAGEBLIT |
 		               FBINFO_HWACCEL_COPYAREA |
                 	       FBINFO_HWACCEL_FILLRECT;
 		break;
 	case FB_ACCEL_NEOMAGIC_NM2360:
-		snprintf(info->fix.id, sizeof(info->fix.id),
-				"MagicGraph 256ZX");
+		strscpy(info->fix.id, "MagicGraph256ZX", sizeof(info->fix.id));
 		info->flags |= FBINFO_HWACCEL_IMAGEBLIT |
 		               FBINFO_HWACCEL_COPYAREA |
                 	       FBINFO_HWACCEL_FILLRECT;
 		break;
 	case FB_ACCEL_NEOMAGIC_NM2380:
-		snprintf(info->fix.id, sizeof(info->fix.id),
-				"MagicGraph 256XL+");
+		strscpy(info->fix.id, "Mag.Graph256XL+", sizeof(info->fix.id));
 		info->flags |= FBINFO_HWACCEL_IMAGEBLIT |
 		               FBINFO_HWACCEL_COPYAREA |
                 	       FBINFO_HWACCEL_FILLRECT;
@@ -2028,6 +2022,10 @@ static int neofb_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	int video_len, err;
 
 	DBG("neofb_probe");
+
+	err = aperture_remove_conflicting_pci_devices(dev, "neofb");
+	if (err)
+		return err;
 
 	err = pci_enable_device(dev);
 	if (err)
@@ -2204,7 +2202,12 @@ static int __init neofb_init(void)
 {
 #ifndef MODULE
 	char *option = NULL;
+#endif
 
+	if (fb_modesetting_disabled("neofb"))
+		return -ENODEV;
+
+#ifndef MODULE
 	if (fb_get_options("neofb", &option))
 		return -ENODEV;
 	neofb_setup(option);

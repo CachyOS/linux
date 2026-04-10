@@ -7,8 +7,8 @@
 
 #include <linux/futex.h>
 #include <linux/uaccess.h>
+#include <asm/asm-extable.h>
 #include <asm/barrier.h>
-#include <asm/compiler.h>
 #include <asm/errno.h>
 
 #define __futex_atomic_op(insn, ret, oldval, uaddr, oparg)		\
@@ -17,20 +17,13 @@
 	"1:	ll.w	%1, %4 # __futex_atomic_op\n"		\
 	"	" insn	"				\n"	\
 	"2:	sc.w	$t0, %2				\n"	\
-	"	beq	$t0, $zero, 1b			\n"	\
+	"	beqz	$t0, 1b				\n"	\
 	"3:						\n"	\
-	"	.section .fixup,\"ax\"			\n"	\
-	"4:	li.w	%0, %6				\n"	\
-	"	b	3b				\n"	\
-	"	.previous				\n"	\
-	"	.section __ex_table,\"a\"		\n"	\
-	"	"__UA_ADDR "\t1b, 4b			\n"	\
-	"	"__UA_ADDR "\t2b, 4b			\n"	\
-	"	.previous				\n"	\
+	_ASM_EXTABLE_UACCESS_ERR(1b, 3b, %0)			\
+	_ASM_EXTABLE_UACCESS_ERR(2b, 3b, %0)			\
 	: "=r" (ret), "=&r" (oldval),				\
 	  "=ZC" (*uaddr)					\
-	: "0" (0), "ZC" (*uaddr), "Jr" (oparg),			\
-	  "i" (-EFAULT)						\
+	: "0" (0), "ZC" (*uaddr), "Jr" (oparg)			\
 	: "memory", "t0");					\
 }
 
@@ -82,22 +75,15 @@ futex_atomic_cmpxchg_inatomic(u32 *uval, u32 __user *uaddr, u32 oldval, u32 newv
 	"# futex_atomic_cmpxchg_inatomic			\n"
 	"1:	ll.w	%1, %3					\n"
 	"	bne	%1, %z4, 3f				\n"
-	"	or	$t0, %z5, $zero				\n"
+	"	move	$t0, %z5				\n"
 	"2:	sc.w	$t0, %2					\n"
-	"	beq	$zero, $t0, 1b				\n"
+	"	beqz	$t0, 1b					\n"
 	"3:							\n"
 	__WEAK_LLSC_MB
-	"	.section .fixup,\"ax\"				\n"
-	"4:	li.d	%0, %6					\n"
-	"	b	3b					\n"
-	"	.previous					\n"
-	"	.section __ex_table,\"a\"			\n"
-	"	"__UA_ADDR "\t1b, 4b				\n"
-	"	"__UA_ADDR "\t2b, 4b				\n"
-	"	.previous					\n"
-	: "+r" (ret), "=&r" (val), "=" GCC_OFF_SMALL_ASM() (*uaddr)
-	: GCC_OFF_SMALL_ASM() (*uaddr), "Jr" (oldval), "Jr" (newval),
-	  "i" (-EFAULT)
+	_ASM_EXTABLE_UACCESS_ERR(1b, 3b, %0)
+	_ASM_EXTABLE_UACCESS_ERR(2b, 3b, %0)
+	: "+r" (ret), "=&r" (val), "=ZC" (*uaddr)
+	: "ZC" (*uaddr), "Jr" (oldval), "Jr" (newval)
 	: "memory", "t0");
 
 	*uval = val;

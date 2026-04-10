@@ -24,7 +24,6 @@
 #include <linux/scatterlist.h>
 #include <linux/skbuff.h>
 #include <linux/vmalloc.h>
-#include <linux/version.h>
 #include <scsi/scsi_device.h>
 #include <scsi/libiscsi_tcp.h>
 
@@ -486,7 +485,6 @@ struct cxgbi_device {
 	unsigned char nmtus;
 	unsigned char nports;
 	struct pci_dev *pdev;
-	struct dentry *debugfs_root;
 	struct iscsi_transport *itp;
 	struct module *owner;
 
@@ -500,7 +498,6 @@ struct cxgbi_device {
 	unsigned int rxq_idx_cntr;
 	struct cxgbi_ports_map pmap;
 
-	void (*dev_ddp_cleanup)(struct cxgbi_device *);
 	struct cxgbi_ppm* (*cdev2ppm)(struct cxgbi_device *);
 	int (*csk_ddp_set_map)(struct cxgbi_ppm *, struct cxgbi_sock *,
 			       struct cxgbi_task_tag_info *);
@@ -513,7 +510,6 @@ struct cxgbi_device {
 				   unsigned int, int);
 
 	void (*csk_release_offload_resources)(struct cxgbi_sock *);
-	int (*csk_rx_pdu_ready)(struct cxgbi_sock *, struct sk_buff *);
 	u32 (*csk_send_rx_credits)(struct cxgbi_sock *, u32);
 	int (*csk_push_tx_frames)(struct cxgbi_sock *, int);
 	void (*csk_send_abort_req)(struct cxgbi_sock *);
@@ -592,7 +588,7 @@ struct cxgbi_device *cxgbi_device_find_by_netdev(struct net_device *, int *);
 struct cxgbi_device *cxgbi_device_find_by_netdev_rcu(struct net_device *,
 						     int *);
 int cxgbi_hbas_add(struct cxgbi_device *, u64, unsigned int,
-			struct scsi_host_template *,
+			const struct scsi_host_template *,
 			struct scsi_transport_template *);
 void cxgbi_hbas_remove(struct cxgbi_device *);
 

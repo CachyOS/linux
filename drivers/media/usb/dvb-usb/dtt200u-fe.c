@@ -195,7 +195,7 @@ static int dtt200u_fe_get_frontend(struct dvb_frontend* fe,
 
 static void dtt200u_fe_release(struct dvb_frontend* fe)
 {
-	struct dtt200u_fe_state *state = (struct dtt200u_fe_state*) fe->demodulator_priv;
+	struct dtt200u_fe_state *state = fe->demodulator_priv;
 	kfree(state);
 }
 
@@ -206,7 +206,7 @@ struct dvb_frontend* dtt200u_fe_attach(struct dvb_usb_device *d)
 	struct dtt200u_fe_state* state = NULL;
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(struct dtt200u_fe_state), GFP_KERNEL);
+	state = kzalloc_obj(struct dtt200u_fe_state);
 	if (state == NULL)
 		goto error;
 

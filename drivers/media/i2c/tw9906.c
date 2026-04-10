@@ -157,8 +157,7 @@ static const struct v4l2_subdev_ops tw9906_ops = {
 	.video = &tw9906_video_ops,
 };
 
-static int tw9906_probe(struct i2c_client *client,
-			     const struct i2c_device_id *id)
+static int tw9906_probe(struct i2c_client *client)
 {
 	struct tw9906 *dec;
 	struct v4l2_subdev *sd;
@@ -197,25 +196,25 @@ static int tw9906_probe(struct i2c_client *client,
 
 	if (write_regs(sd, initial_registers) < 0) {
 		v4l2_err(client, "error initializing TW9906\n");
+		v4l2_ctrl_handler_free(hdl);
 		return -EINVAL;
 	}
 
 	return 0;
 }
 
-static int tw9906_remove(struct i2c_client *client)
+static void tw9906_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&to_state(sd)->hdl);
-	return 0;
 }
 
 /* ----------------------------------------------------------------------- */
 
 static const struct i2c_device_id tw9906_id[] = {
-	{ "tw9906", 0 },
+	{ "tw9906" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tw9906_id);

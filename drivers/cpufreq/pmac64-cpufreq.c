@@ -21,7 +21,7 @@
 #include <linux/init.h>
 #include <linux/completion.h>
 #include <linux/mutex.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 
 #include <asm/machdep.h>
 #include <asm/irq.h>
@@ -332,7 +332,6 @@ static struct cpufreq_driver g5_cpufreq_driver = {
 	.verify		= cpufreq_generic_frequency_table_verify,
 	.target_index	= g5_cpufreq_target,
 	.get		= g5_cpufreq_get_speed,
-	.attr 		= cpufreq_generic_attr,
 };
 
 
@@ -505,7 +504,7 @@ static int __init g5_pm72_cpufreq_init(struct device_node *cpunode)
 			continue;
 		if (strcmp(loc, "CPU CLOCK"))
 			continue;
-		if (!of_get_property(hwclock, "platform-get-frequency", NULL))
+		if (!of_property_present(hwclock, "platform-get-frequency"))
 			continue;
 		break;
 	}
@@ -671,4 +670,5 @@ static int __init g5_cpufreq_init(void)
 module_init(g5_cpufreq_init);
 
 
+MODULE_DESCRIPTION("cpufreq driver for SMU & 970FX based G5 Macs");
 MODULE_LICENSE("GPL");

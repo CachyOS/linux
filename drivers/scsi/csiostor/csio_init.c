@@ -38,7 +38,6 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/pci.h>
-#include <linux/aer.h>
 #include <linux/mm.h>
 #include <linux/notifier.h>
 #include <linux/kdebug.h>
@@ -517,12 +516,13 @@ static struct csio_hw *csio_hw_alloc(struct pci_dev *pdev)
 {
 	struct csio_hw *hw;
 
-	hw = kzalloc(sizeof(struct csio_hw), GFP_KERNEL);
+	hw = kzalloc_obj(struct csio_hw);
 	if (!hw)
 		goto err;
 
 	hw->pdev = pdev;
-	strncpy(hw->drv_version, CSIO_DRV_VERSION, 32);
+	strscpy(hw->drv_version, CSIO_DRV_VERSION,
+		sizeof(hw->drv_version));
 
 	/* memory pool/DMA pool allocation */
 	if (csio_resource_alloc(hw))
@@ -1093,7 +1093,6 @@ csio_pci_slot_reset(struct pci_dev *pdev)
 
 	pci_set_master(pdev);
 	pci_restore_state(pdev);
-	pci_save_state(pdev);
 
 	/* Bring HW s/m to ready state.
 	 * but don't resume IOs.
@@ -1162,7 +1161,7 @@ err_resume_exit:
 	dev_err(&pdev->dev, "resume of device failed: %d\n", rv);
 }
 
-static struct pci_error_handlers csio_err_handler = {
+static const struct pci_error_handlers csio_err_handler = {
 	.error_detected = csio_pci_error_detected,
 	.slot_reset	= csio_pci_slot_reset,
 	.resume		= csio_pci_resume,
@@ -1185,9 +1184,6 @@ static struct pci_error_handlers csio_err_handler = {
 
 static struct pci_driver csio_pci_driver = {
 	.name		= KBUILD_MODNAME,
-	.driver		= {
-		.owner	= THIS_MODULE,
-	},
 	.id_table	= csio_pci_tbl,
 	.probe		= csio_probe_one,
 	.remove		= csio_remove_one,

@@ -51,12 +51,24 @@ nvkm_subdev_info(struct nvkm_subdev *subdev, u64 mthd, u64 *data)
 }
 
 int
-nvkm_subdev_fini(struct nvkm_subdev *subdev, bool suspend)
+nvkm_subdev_fini(struct nvkm_subdev *subdev, enum nvkm_suspend_state suspend)
 {
 	struct nvkm_device *device = subdev->device;
-	const char *action = suspend ? "suspend" : "fini";
+	const char *action;
 	s64 time;
 
+	switch (suspend) {
+	case NVKM_POWEROFF:
+	default:
+		action = subdev->use.enabled ? "fini" : "reset";
+		break;
+	case NVKM_SUSPEND:
+		action = "suspend";
+		break;
+	case NVKM_RUNTIME_SUSPEND:
+		action = "runtime";
+		break;
+	}
 	nvkm_trace(subdev, "%s running...\n", action);
 	time = ktime_to_us(ktime_get());
 
@@ -68,6 +80,7 @@ nvkm_subdev_fini(struct nvkm_subdev *subdev, bool suspend)
 				return ret;
 		}
 	}
+	subdev->use.enabled = false;
 
 	nvkm_mc_reset(device, subdev->type, subdev->inst);
 
@@ -97,29 +110,48 @@ nvkm_subdev_preinit(struct nvkm_subdev *subdev)
 	return 0;
 }
 
-int
-nvkm_subdev_init(struct nvkm_subdev *subdev)
+static int
+nvkm_subdev_oneinit_(struct nvkm_subdev *subdev)
 {
 	s64 time;
 	int ret;
 
+	if (!subdev->func->oneinit || subdev->oneinit)
+		return 0;
+
+	nvkm_trace(subdev, "one-time init running...\n");
+	time = ktime_to_us(ktime_get());
+	ret = subdev->func->oneinit(subdev);
+	if (ret) {
+		nvkm_error(subdev, "one-time init failed, %d\n", ret);
+		return ret;
+	}
+
+	subdev->oneinit = true;
+	time = ktime_to_us(ktime_get()) - time;
+	nvkm_trace(subdev, "one-time init completed in %lldus\n", time);
+	return 0;
+}
+
+static int
+nvkm_subdev_init_(struct nvkm_subdev *subdev)
+{
+	s64 time;
+	int ret;
+
+	if (subdev->use.enabled) {
+		nvkm_trace(subdev, "init skipped, already running\n");
+		return 0;
+	}
+
 	nvkm_trace(subdev, "init running...\n");
 	time = ktime_to_us(ktime_get());
 
-	if (subdev->func->oneinit && !subdev->oneinit) {
-		s64 time;
-		nvkm_trace(subdev, "one-time init running...\n");
-		time = ktime_to_us(ktime_get());
-		ret = subdev->func->oneinit(subdev);
-		if (ret) {
-			nvkm_error(subdev, "one-time init failed, %d\n", ret);
-			return ret;
-		}
+	ret = nvkm_subdev_oneinit_(subdev);
+	if (ret)
+		return ret;
 
-		subdev->oneinit = true;
-		time = ktime_to_us(ktime_get()) - time;
-		nvkm_trace(subdev, "one-time init completed in %lldus\n", time);
-	}
+	subdev->use.enabled = true;
 
 	if (subdev->func->init) {
 		ret = subdev->func->init(subdev);
@@ -131,6 +163,64 @@ nvkm_subdev_init(struct nvkm_subdev *subdev)
 
 	time = ktime_to_us(ktime_get()) - time;
 	nvkm_trace(subdev, "init completed in %lldus\n", time);
+	return 0;
+}
+
+int
+nvkm_subdev_init(struct nvkm_subdev *subdev)
+{
+	int ret;
+
+	mutex_lock(&subdev->use.mutex);
+	if (refcount_read(&subdev->use.refcount) == 0) {
+		nvkm_trace(subdev, "init skipped, no users\n");
+		mutex_unlock(&subdev->use.mutex);
+		return 0;
+	}
+
+	ret = nvkm_subdev_init_(subdev);
+	mutex_unlock(&subdev->use.mutex);
+	return ret;
+}
+
+int
+nvkm_subdev_oneinit(struct nvkm_subdev *subdev)
+{
+	int ret;
+
+	mutex_lock(&subdev->use.mutex);
+	ret = nvkm_subdev_oneinit_(subdev);
+	mutex_unlock(&subdev->use.mutex);
+	return ret;
+}
+
+void
+nvkm_subdev_unref(struct nvkm_subdev *subdev)
+{
+	if (refcount_dec_and_mutex_lock(&subdev->use.refcount, &subdev->use.mutex)) {
+		nvkm_subdev_fini(subdev, NVKM_POWEROFF);
+		mutex_unlock(&subdev->use.mutex);
+	}
+}
+
+int
+nvkm_subdev_ref(struct nvkm_subdev *subdev)
+{
+	int ret;
+
+	if (subdev && !refcount_inc_not_zero(&subdev->use.refcount)) {
+		mutex_lock(&subdev->use.mutex);
+		if (!refcount_inc_not_zero(&subdev->use.refcount)) {
+			if ((ret = nvkm_subdev_init_(subdev))) {
+				mutex_unlock(&subdev->use.mutex);
+				return ret;
+			}
+
+			refcount_set(&subdev->use.refcount, 1);
+		}
+		mutex_unlock(&subdev->use.mutex);
+	}
+
 	return 0;
 }
 
@@ -146,6 +236,7 @@ nvkm_subdev_del(struct nvkm_subdev **psubdev)
 		list_del(&subdev->head);
 		if (subdev->func->dtor)
 			*psubdev = subdev->func->dtor(subdev);
+		mutex_destroy(&subdev->use.mutex);
 		time = ktime_to_us(ktime_get()) - time;
 		nvkm_trace(subdev, "destroy completed in %lldus\n", time);
 		kfree(*psubdev);
@@ -167,8 +258,8 @@ nvkm_subdev_disable(struct nvkm_device *device, enum nvkm_subdev_type type, int 
 }
 
 void
-nvkm_subdev_ctor(const struct nvkm_subdev_func *func, struct nvkm_device *device,
-		 enum nvkm_subdev_type type, int inst, struct nvkm_subdev *subdev)
+__nvkm_subdev_ctor(const struct nvkm_subdev_func *func, struct nvkm_device *device,
+		   enum nvkm_subdev_type type, int inst, struct nvkm_subdev *subdev)
 {
 	subdev->func = func;
 	subdev->device = device;
@@ -180,6 +271,8 @@ nvkm_subdev_ctor(const struct nvkm_subdev_func *func, struct nvkm_device *device
 	else
 		strscpy(subdev->name, nvkm_subdev_type[type], sizeof(subdev->name));
 	subdev->debug = nvkm_dbgopt(device->dbgopt, subdev->name);
+
+	refcount_set(&subdev->use.refcount, 1);
 	list_add_tail(&subdev->head, &device->subdev);
 }
 
@@ -187,7 +280,7 @@ int
 nvkm_subdev_new_(const struct nvkm_subdev_func *func, struct nvkm_device *device,
 		 enum nvkm_subdev_type type, int inst, struct nvkm_subdev **psubdev)
 {
-	if (!(*psubdev = kzalloc(sizeof(**psubdev), GFP_KERNEL)))
+	if (!(*psubdev = kzalloc_obj(**psubdev)))
 		return -ENOMEM;
 	nvkm_subdev_ctor(func, device, type, inst, *psubdev);
 	return 0;

@@ -22,7 +22,7 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 			break;
 		case MSM_SUBMIT_CMD_CTX_RESTORE_BUF:
 			/* ignore if there has not been a ctx switch: */
-			if (gpu->cur_ctx_seqno == submit->queue->ctx->seqno)
+			if (ring->cur_ctx_seqno == submit->queue->ctx->seqno)
 				break;
 			fallthrough;
 		case MSM_SUBMIT_CMD_BUF:
@@ -53,6 +53,8 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 
 static bool a2xx_me_init(struct msm_gpu *gpu)
 {
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
 	struct msm_ringbuffer *ring = gpu->rb[0];
 
 	OUT_PKT3(ring, CP_ME_INIT, 18);
@@ -75,7 +77,10 @@ static bool a2xx_me_init(struct msm_gpu *gpu)
 
 	/* Vertex and Pixel Shader Start Addresses in instructions
 	 * (3 DWORDS per instruction) */
-	OUT_RING(ring, 0x80000180);
+	if (adreno_is_a225(adreno_gpu))
+		OUT_RING(ring, 0x80000300);
+	else
+		OUT_RING(ring, 0x80000180);
 	/* Maximum Contexts */
 	OUT_RING(ring, 0x00000001);
 	/* Write Confirm Interval and The CP will wait the
@@ -84,15 +89,20 @@ static bool a2xx_me_init(struct msm_gpu *gpu)
 	/* NQ and External Memory Swap */
 	OUT_RING(ring, 0x00000000);
 	/* protected mode error checking (0x1f2 is REG_AXXX_CP_INT_CNTL) */
-	OUT_RING(ring, 0x200001f2);
+	if (a2xx_gpu->protection_disabled)
+		OUT_RING(ring, 0x00000000);
+	else
+		OUT_RING(ring, 0x200001f2);
 	/* Disable header dumping and Header dump address */
 	OUT_RING(ring, 0x00000000);
 	/* Header dump size */
 	OUT_RING(ring, 0x00000000);
 
-	/* enable protected mode */
-	OUT_PKT3(ring, CP_SET_PROTECTED_MODE, 1);
-	OUT_RING(ring, 1);
+	if (!a2xx_gpu->protection_disabled) {
+		/* enable protected mode */
+		OUT_PKT3(ring, CP_SET_PROTECTED_MODE, 1);
+		OUT_RING(ring, 1);
+	}
 
 	adreno_flush(gpu, ring, REG_AXXX_CP_RB_WPTR);
 	return a2xx_idle(gpu);
@@ -101,11 +111,12 @@ static bool a2xx_me_init(struct msm_gpu *gpu)
 static int a2xx_hw_init(struct msm_gpu *gpu)
 {
 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
 	dma_addr_t pt_base, tran_error;
 	uint32_t *ptr, len;
 	int i, ret;
 
-	msm_gpummu_params(gpu->aspace->mmu, &pt_base, &tran_error);
+	a2xx_gpummu_params(to_msm_vm(gpu->vm)->mmu, &pt_base, &tran_error);
 
 	DBG("%s", gpu->name);
 
@@ -197,7 +208,7 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 		A2XX_MH_INTERRUPT_MASK_MMU_PAGE_FAULT);
 
 	for (i = 3; i <= 5; i++)
-		if ((SZ_16K << i) == adreno_gpu->gmem)
+		if ((SZ_16K << i) == adreno_gpu->info->gmem)
 			break;
 	gpu_write(gpu, REG_A2XX_RB_EDRAM_INFO, i);
 
@@ -220,6 +231,17 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	ptr = (uint32_t *)(adreno_gpu->fw[ADRENO_FW_PM4]->data);
 	len = adreno_gpu->fw[ADRENO_FW_PM4]->size / 4;
 	DBG("loading PM4 ucode version: %x", ptr[1]);
+
+	/*
+	 * New firmware files seem to have GPU and firmware version in this
+	 * word (0x20xxxx for A200, 0x220xxx for A220, 0x225xxx for A225).
+	 * Older firmware files, which lack protection support, have 0 instead.
+	 */
+	if (ptr[1] == 0 && !a2xx_gpu->protection_disabled) {
+		dev_warn(gpu->dev->dev,
+			 "Legacy firmware detected, disabling protection support\n");
+		a2xx_gpu->protection_disabled = true;
+	}
 
 	gpu_write(gpu, REG_AXXX_CP_DEBUG,
 			AXXX_CP_DEBUG_MIU_128BIT_WRITE_ENABLE);
@@ -435,7 +457,7 @@ static void a2xx_dump(struct msm_gpu *gpu)
 
 static struct msm_gpu_state *a2xx_gpu_state_get(struct msm_gpu *gpu)
 {
-	struct msm_gpu_state *state = kzalloc(sizeof(*state), GFP_KERNEL);
+	struct msm_gpu_state *state = kzalloc_obj(*state);
 
 	if (!state)
 		return ERR_PTR(-ENOMEM);
@@ -447,19 +469,18 @@ static struct msm_gpu_state *a2xx_gpu_state_get(struct msm_gpu *gpu)
 	return state;
 }
 
-static struct msm_gem_address_space *
-a2xx_create_address_space(struct msm_gpu *gpu, struct platform_device *pdev)
+static struct drm_gpuvm *
+a2xx_create_vm(struct msm_gpu *gpu, struct platform_device *pdev)
 {
-	struct msm_mmu *mmu = msm_gpummu_new(&pdev->dev, gpu);
-	struct msm_gem_address_space *aspace;
+	struct msm_mmu *mmu = a2xx_gpummu_new(&pdev->dev, gpu);
+	struct drm_gpuvm *vm;
 
-	aspace = msm_gem_address_space_create(mmu, "gpu", SZ_16M,
-		0xfff * SZ_64K);
+	vm = msm_gem_vm_create(gpu->dev, mmu, "gpu", SZ_16M, 0xfff * SZ_64K, true);
 
-	if (IS_ERR(aspace) && !IS_ERR(mmu))
+	if (IS_ERR(vm) && !IS_ERR(mmu))
 		mmu->funcs->destroy(mmu);
 
-	return aspace;
+	return vm;
 }
 
 static u32 a2xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
@@ -468,7 +489,59 @@ static u32 a2xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 	return ring->memptrs->rptr;
 }
 
-static const struct adreno_gpu_funcs funcs = {
+static const struct msm_gpu_perfcntr perfcntrs[] = {
+/* TODO */
+};
+
+static struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
+{
+	struct a2xx_gpu *a2xx_gpu = NULL;
+	struct adreno_gpu *adreno_gpu;
+	struct msm_gpu *gpu;
+	struct msm_drm_private *priv = dev->dev_private;
+	struct platform_device *pdev = priv->gpu_pdev;
+	struct adreno_platform_config *config = pdev->dev.platform_data;
+	int ret;
+
+	if (!pdev) {
+		dev_err(dev->dev, "no a2xx device\n");
+		ret = -ENXIO;
+		goto fail;
+	}
+
+	a2xx_gpu = kzalloc_obj(*a2xx_gpu);
+	if (!a2xx_gpu) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+
+	adreno_gpu = &a2xx_gpu->base;
+	gpu = &adreno_gpu->base;
+
+	gpu->perfcntrs = perfcntrs;
+	gpu->num_perfcntrs = ARRAY_SIZE(perfcntrs);
+
+	ret = adreno_gpu_init(dev, pdev, adreno_gpu, config->info->funcs, 1);
+	if (ret)
+		goto fail;
+
+	if (adreno_is_a20x(adreno_gpu))
+		adreno_gpu->registers = a200_registers;
+	else if (adreno_is_a225(adreno_gpu))
+		adreno_gpu->registers = a225_registers;
+	else
+		adreno_gpu->registers = a220_registers;
+
+	return gpu;
+
+fail:
+	if (a2xx_gpu)
+		a2xx_destroy(&a2xx_gpu->base.base);
+
+	return ERR_PTR(ret);
+}
+
+const struct adreno_gpu_funcs a2xx_gpu_funcs = {
 	.base = {
 		.get_param = adreno_get_param,
 		.set_param = adreno_set_param,
@@ -485,66 +558,8 @@ static const struct adreno_gpu_funcs funcs = {
 #endif
 		.gpu_state_get = a2xx_gpu_state_get,
 		.gpu_state_put = adreno_gpu_state_put,
-		.create_address_space = a2xx_create_address_space,
+		.create_vm = a2xx_create_vm,
 		.get_rptr = a2xx_get_rptr,
 	},
+	.init = a2xx_gpu_init,
 };
-
-static const struct msm_gpu_perfcntr perfcntrs[] = {
-/* TODO */
-};
-
-struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
-{
-	struct a2xx_gpu *a2xx_gpu = NULL;
-	struct adreno_gpu *adreno_gpu;
-	struct msm_gpu *gpu;
-	struct msm_drm_private *priv = dev->dev_private;
-	struct platform_device *pdev = priv->gpu_pdev;
-	int ret;
-
-	if (!pdev) {
-		dev_err(dev->dev, "no a2xx device\n");
-		ret = -ENXIO;
-		goto fail;
-	}
-
-	a2xx_gpu = kzalloc(sizeof(*a2xx_gpu), GFP_KERNEL);
-	if (!a2xx_gpu) {
-		ret = -ENOMEM;
-		goto fail;
-	}
-
-	adreno_gpu = &a2xx_gpu->base;
-	gpu = &adreno_gpu->base;
-
-	gpu->perfcntrs = perfcntrs;
-	gpu->num_perfcntrs = ARRAY_SIZE(perfcntrs);
-
-	if (adreno_is_a20x(adreno_gpu))
-		adreno_gpu->registers = a200_registers;
-	else if (adreno_is_a225(adreno_gpu))
-		adreno_gpu->registers = a225_registers;
-	else
-		adreno_gpu->registers = a220_registers;
-
-	ret = adreno_gpu_init(dev, pdev, adreno_gpu, &funcs, 1);
-	if (ret)
-		goto fail;
-
-	if (!gpu->aspace) {
-		dev_err(dev->dev, "No memory protection without MMU\n");
-		if (!allow_vram_carveout) {
-			ret = -ENXIO;
-			goto fail;
-		}
-	}
-
-	return gpu;
-
-fail:
-	if (a2xx_gpu)
-		a2xx_destroy(&a2xx_gpu->base.base);
-
-	return ERR_PTR(ret);
-}

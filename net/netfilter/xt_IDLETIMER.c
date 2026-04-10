@@ -100,21 +100,19 @@ static void idletimer_tg_work(struct work_struct *work)
 
 static void idletimer_tg_expired(struct timer_list *t)
 {
-	struct idletimer_tg *timer = from_timer(timer, t, timer);
+	struct idletimer_tg *timer = timer_container_of(timer, t, timer);
 
 	pr_debug("timer %s expired\n", timer->attr.attr.name);
 
 	schedule_work(&timer->work);
 }
 
-static enum alarmtimer_restart idletimer_tg_alarmproc(struct alarm *alarm,
-							  ktime_t now)
+static void idletimer_tg_alarmproc(struct alarm *alarm, ktime_t now)
 {
 	struct idletimer_tg *timer = alarm->data;
 
 	pr_debug("alarm %s expired\n", timer->attr.attr.name);
 	schedule_work(&timer->work);
-	return ALARMTIMER_NORESTART;
 }
 
 static int idletimer_check_sysfs_name(const char *name, unsigned int size)
@@ -137,7 +135,7 @@ static int idletimer_tg_create(struct idletimer_tg_info *info)
 {
 	int ret;
 
-	info->timer = kzalloc(sizeof(*info->timer), GFP_KERNEL);
+	info->timer = kzalloc_obj(*info->timer);
 	if (!info->timer) {
 		ret = -ENOMEM;
 		goto out;
@@ -170,7 +168,7 @@ static int idletimer_tg_create(struct idletimer_tg_info *info)
 	INIT_WORK(&info->timer->work, idletimer_tg_work);
 
 	mod_timer(&info->timer->timer,
-		  msecs_to_jiffies(info->timeout * 1000) + jiffies);
+		  secs_to_jiffies(info->timeout) + jiffies);
 
 	return 0;
 
@@ -186,7 +184,7 @@ static int idletimer_tg_create_v1(struct idletimer_tg_info_v1 *info)
 {
 	int ret;
 
-	info->timer = kmalloc(sizeof(*info->timer), GFP_KERNEL);
+	info->timer = kmalloc_obj(*info->timer);
 	if (!info->timer) {
 		ret = -ENOMEM;
 		goto out;
@@ -231,7 +229,7 @@ static int idletimer_tg_create_v1(struct idletimer_tg_info_v1 *info)
 	} else {
 		timer_setup(&info->timer->timer, idletimer_tg_expired, 0);
 		mod_timer(&info->timer->timer,
-				msecs_to_jiffies(info->timeout * 1000) + jiffies);
+				secs_to_jiffies(info->timeout) + jiffies);
 	}
 
 	return 0;
@@ -256,7 +254,7 @@ static unsigned int idletimer_tg_target(struct sk_buff *skb,
 		 info->label, info->timeout);
 
 	mod_timer(&info->timer->timer,
-		  msecs_to_jiffies(info->timeout * 1000) + jiffies);
+		  secs_to_jiffies(info->timeout) + jiffies);
 
 	return XT_CONTINUE;
 }
@@ -277,7 +275,7 @@ static unsigned int idletimer_tg_target_v1(struct sk_buff *skb,
 		alarm_start_relative(&info->timer->alarm, tout);
 	} else {
 		mod_timer(&info->timer->timer,
-				msecs_to_jiffies(info->timeout * 1000) + jiffies);
+				secs_to_jiffies(info->timeout) + jiffies);
 	}
 
 	return XT_CONTINUE;
@@ -320,9 +318,15 @@ static int idletimer_tg_checkentry(const struct xt_tgchk_param *par)
 
 	info->timer = __idletimer_tg_find_by_label(info->label);
 	if (info->timer) {
+		if (info->timer->timer_type & XT_IDLETIMER_ALARM) {
+			pr_debug("Adding/Replacing rule with same label and different timer type is not allowed\n");
+			mutex_unlock(&list_mutex);
+			return -EINVAL;
+		}
+
 		info->timer->refcnt++;
 		mod_timer(&info->timer->timer,
-			  msecs_to_jiffies(info->timeout * 1000) + jiffies);
+			  secs_to_jiffies(info->timeout) + jiffies);
 
 		pr_debug("increased refcnt of timer %s to %u\n",
 			 info->label, info->timer->refcnt);
@@ -384,7 +388,7 @@ static int idletimer_tg_checkentry_v1(const struct xt_tgchk_param *par)
 			}
 		} else {
 				mod_timer(&info->timer->timer,
-					msecs_to_jiffies(info->timeout * 1000) + jiffies);
+					secs_to_jiffies(info->timeout) + jiffies);
 		}
 		pr_debug("increased refcnt of timer %s to %u\n",
 			 info->label, info->timer->refcnt);
@@ -409,21 +413,23 @@ static void idletimer_tg_destroy(const struct xt_tgdtor_param *par)
 
 	mutex_lock(&list_mutex);
 
-	if (--info->timer->refcnt == 0) {
-		pr_debug("deleting timer %s\n", info->label);
-
-		list_del(&info->timer->entry);
-		del_timer_sync(&info->timer->timer);
-		cancel_work_sync(&info->timer->work);
-		sysfs_remove_file(idletimer_tg_kobj, &info->timer->attr.attr);
-		kfree(info->timer->attr.attr.name);
-		kfree(info->timer);
-	} else {
+	if (--info->timer->refcnt > 0) {
 		pr_debug("decreased refcnt of timer %s to %u\n",
 			 info->label, info->timer->refcnt);
+		mutex_unlock(&list_mutex);
+		return;
 	}
 
+	pr_debug("deleting timer %s\n", info->label);
+
+	list_del(&info->timer->entry);
 	mutex_unlock(&list_mutex);
+
+	timer_shutdown_sync(&info->timer->timer);
+	cancel_work_sync(&info->timer->work);
+	sysfs_remove_file(idletimer_tg_kobj, &info->timer->attr.attr);
+	kfree(info->timer->attr.attr.name);
+	kfree(info->timer);
 }
 
 static void idletimer_tg_destroy_v1(const struct xt_tgdtor_param *par)
@@ -434,52 +440,75 @@ static void idletimer_tg_destroy_v1(const struct xt_tgdtor_param *par)
 
 	mutex_lock(&list_mutex);
 
-	if (--info->timer->refcnt == 0) {
-		pr_debug("deleting timer %s\n", info->label);
-
-		list_del(&info->timer->entry);
-		if (info->timer->timer_type & XT_IDLETIMER_ALARM) {
-			alarm_cancel(&info->timer->alarm);
-		} else {
-			del_timer_sync(&info->timer->timer);
-		}
-		cancel_work_sync(&info->timer->work);
-		sysfs_remove_file(idletimer_tg_kobj, &info->timer->attr.attr);
-		kfree(info->timer->attr.attr.name);
-		kfree(info->timer);
-	} else {
+	if (--info->timer->refcnt > 0) {
 		pr_debug("decreased refcnt of timer %s to %u\n",
 			 info->label, info->timer->refcnt);
+		mutex_unlock(&list_mutex);
+		return;
 	}
 
+	pr_debug("deleting timer %s\n", info->label);
+
+	list_del(&info->timer->entry);
 	mutex_unlock(&list_mutex);
+
+	if (info->timer->timer_type & XT_IDLETIMER_ALARM) {
+		alarm_cancel(&info->timer->alarm);
+	} else {
+		timer_shutdown_sync(&info->timer->timer);
+	}
+	cancel_work_sync(&info->timer->work);
+	sysfs_remove_file(idletimer_tg_kobj, &info->timer->attr.attr);
+	kfree(info->timer->attr.attr.name);
+	kfree(info->timer);
 }
 
 
 static struct xt_target idletimer_tg[] __read_mostly = {
 	{
-	.name		= "IDLETIMER",
-	.family		= NFPROTO_UNSPEC,
-	.target		= idletimer_tg_target,
-	.targetsize     = sizeof(struct idletimer_tg_info),
-	.usersize	= offsetof(struct idletimer_tg_info, timer),
-	.checkentry	= idletimer_tg_checkentry,
-	.destroy        = idletimer_tg_destroy,
-	.me		= THIS_MODULE,
+		.name		= "IDLETIMER",
+		.family		= NFPROTO_IPV4,
+		.target		= idletimer_tg_target,
+		.targetsize     = sizeof(struct idletimer_tg_info),
+		.usersize	= offsetof(struct idletimer_tg_info, timer),
+		.checkentry	= idletimer_tg_checkentry,
+		.destroy        = idletimer_tg_destroy,
+		.me		= THIS_MODULE,
 	},
 	{
-	.name		= "IDLETIMER",
-	.family		= NFPROTO_UNSPEC,
-	.revision	= 1,
-	.target		= idletimer_tg_target_v1,
-	.targetsize     = sizeof(struct idletimer_tg_info_v1),
-	.usersize	= offsetof(struct idletimer_tg_info_v1, timer),
-	.checkentry	= idletimer_tg_checkentry_v1,
-	.destroy        = idletimer_tg_destroy_v1,
-	.me		= THIS_MODULE,
+		.name		= "IDLETIMER",
+		.family		= NFPROTO_IPV4,
+		.revision	= 1,
+		.target		= idletimer_tg_target_v1,
+		.targetsize     = sizeof(struct idletimer_tg_info_v1),
+		.usersize	= offsetof(struct idletimer_tg_info_v1, timer),
+		.checkentry	= idletimer_tg_checkentry_v1,
+		.destroy        = idletimer_tg_destroy_v1,
+		.me		= THIS_MODULE,
 	},
-
-
+#if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
+	{
+		.name		= "IDLETIMER",
+		.family		= NFPROTO_IPV6,
+		.target		= idletimer_tg_target,
+		.targetsize     = sizeof(struct idletimer_tg_info),
+		.usersize	= offsetof(struct idletimer_tg_info, timer),
+		.checkentry	= idletimer_tg_checkentry,
+		.destroy        = idletimer_tg_destroy,
+		.me		= THIS_MODULE,
+	},
+	{
+		.name		= "IDLETIMER",
+		.family		= NFPROTO_IPV6,
+		.revision	= 1,
+		.target		= idletimer_tg_target_v1,
+		.targetsize     = sizeof(struct idletimer_tg_info_v1),
+		.usersize	= offsetof(struct idletimer_tg_info_v1, timer),
+		.checkentry	= idletimer_tg_checkentry_v1,
+		.destroy        = idletimer_tg_destroy_v1,
+		.me		= THIS_MODULE,
+	},
+#endif
 };
 
 static struct class *idletimer_tg_class;
@@ -490,7 +519,7 @@ static int __init idletimer_tg_init(void)
 {
 	int err;
 
-	idletimer_tg_class = class_create(THIS_MODULE, "xt_idletimer");
+	idletimer_tg_class = class_create("xt_idletimer");
 	err = PTR_ERR(idletimer_tg_class);
 	if (IS_ERR(idletimer_tg_class)) {
 		pr_debug("couldn't register device class\n");

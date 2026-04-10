@@ -190,7 +190,9 @@ static int camif_register_sensor(struct camif_dev *camif)
 	struct s3c_camif_sensor_info *sensor = &camif->pdata.sensor;
 	struct v4l2_device *v4l2_dev = &camif->v4l2_dev;
 	struct i2c_adapter *adapter;
-	struct v4l2_subdev_format format;
+	struct v4l2_subdev_format format = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+	};
 	struct v4l2_subdev *sd;
 	int ret;
 
@@ -220,7 +222,6 @@ static int camif_register_sensor(struct camif_dev *camif)
 
 	/* Get initial pixel format and set it at the camif sink pad */
 	format.pad = 0;
-	format.which = V4L2_SUBDEV_FORMAT_ACTIVE;
 	ret = v4l2_subdev_call(sd, pad, get_fmt, NULL, &format);
 
 	if (ret < 0)
@@ -380,8 +381,8 @@ static int camif_request_irqs(struct platform_device *pdev,
 		init_waitqueue_head(&vp->irq_queue);
 
 		irq = platform_get_irq(pdev, i);
-		if (irq <= 0)
-			return -ENXIO;
+		if (irq < 0)
+			return irq;
 
 		ret = devm_request_irq(&pdev->dev, irq, s3c_camif_irq_handler,
 				       0, dev_name(&pdev->dev), vp);
@@ -507,7 +508,7 @@ err_sd:
 	return ret;
 }
 
-static int s3c_camif_remove(struct platform_device *pdev)
+static void s3c_camif_remove(struct platform_device *pdev)
 {
 	struct camif_dev *camif = platform_get_drvdata(pdev);
 	struct s3c_camif_plat_data *pdata = &camif->pdata;
@@ -521,17 +522,24 @@ static int s3c_camif_remove(struct platform_device *pdev)
 	camif_clk_put(camif);
 	s3c_camif_unregister_subdev(camif);
 	pdata->gpio_put();
-
-	return 0;
 }
 
 static int s3c_camif_runtime_resume(struct device *dev)
 {
 	struct camif_dev *camif = dev_get_drvdata(dev);
+	int ret;
 
-	clk_enable(camif->clock[CLK_GATE]);
+	ret = clk_enable(camif->clock[CLK_GATE]);
+	if (ret)
+		return ret;
+
 	/* null op on s3c244x */
-	clk_enable(camif->clock[CLK_CAM]);
+	ret = clk_enable(camif->clock[CLK_CAM]);
+	if (ret) {
+		clk_disable(camif->clock[CLK_GATE]);
+		return ret;
+	}
+
 	return 0;
 }
 

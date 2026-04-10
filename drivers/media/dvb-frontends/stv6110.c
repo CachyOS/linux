@@ -408,7 +408,7 @@ struct dvb_frontend *stv6110_attach(struct dvb_frontend *fe,
 	if (ret != 1)
 		return NULL;
 
-	priv = kzalloc(sizeof(struct stv6110_priv), GFP_KERNEL);
+	priv = kzalloc_obj(struct stv6110_priv);
 	if (priv == NULL)
 		return NULL;
 
@@ -427,7 +427,7 @@ struct dvb_frontend *stv6110_attach(struct dvb_frontend *fe,
 
 	return fe;
 }
-EXPORT_SYMBOL(stv6110_attach);
+EXPORT_SYMBOL_GPL(stv6110_attach);
 
 module_param(debug, int, 0644);
 MODULE_PARM_DESC(debug, "Turn on/off frontend debugging (default:off).");

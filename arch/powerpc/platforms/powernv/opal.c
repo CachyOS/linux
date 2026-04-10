@@ -180,10 +180,7 @@ int __init early_init_dt_scan_recoverable_ranges(unsigned long node,
 	/*
 	 * Allocate a buffer to hold the MC recoverable ranges.
 	 */
-	mc_recoverable_range = memblock_alloc(size, __alignof__(u64));
-	if (!mc_recoverable_range)
-		panic("%s: Failed to allocate %u bytes align=0x%lx\n",
-		      __func__, size, __alignof__(u64));
+	mc_recoverable_range = memblock_alloc_or_panic(size, __alignof__(u64));
 
 	for (i = 0; i < mc_recoverable_range_len; i++) {
 		mc_recoverable_range[i].start_addr =
@@ -254,7 +251,7 @@ static void queue_replay_msg(void *msg)
 	struct opal_msg_node *msg_node;
 
 	if (msg_list_size < OPAL_MSG_QUEUE_MAX) {
-		msg_node = kzalloc(sizeof(*msg_node), GFP_ATOMIC);
+		msg_node = kzalloc_obj(*msg_node, GFP_ATOMIC);
 		if (msg_node) {
 			INIT_LIST_HEAD(&msg_node->list);
 			memcpy(&msg_node->msg, msg, sizeof(struct opal_msg));
@@ -424,7 +421,7 @@ static int __init opal_message_init(struct device_node *opal_node)
 	return 0;
 }
 
-int opal_get_chars(uint32_t vtermno, char *buf, int count)
+ssize_t opal_get_chars(uint32_t vtermno, u8 *buf, size_t count)
 {
 	s64 rc;
 	__be64 evt, len;
@@ -441,10 +438,11 @@ int opal_get_chars(uint32_t vtermno, char *buf, int count)
 	return 0;
 }
 
-static int __opal_put_chars(uint32_t vtermno, const char *data, int total_len, bool atomic)
+static ssize_t __opal_put_chars(uint32_t vtermno, const u8 *data,
+				size_t total_len, bool atomic)
 {
 	unsigned long flags = 0 /* shut up gcc */;
-	int written;
+	ssize_t written;
 	__be64 olen;
 	s64 rc;
 
@@ -484,7 +482,7 @@ static int __opal_put_chars(uint32_t vtermno, const char *data, int total_len, b
 		if (atomic) {
 			/* Should not happen */
 			pr_warn("atomic console write returned partial "
-				"len=%d written=%d\n", total_len, written);
+				"len=%zu written=%zd\n", total_len, written);
 		}
 		if (!written)
 			written = -EAGAIN;
@@ -497,7 +495,7 @@ out:
 	return written;
 }
 
-int opal_put_chars(uint32_t vtermno, const char *data, int total_len)
+ssize_t opal_put_chars(uint32_t vtermno, const u8 *data, size_t total_len)
 {
 	return __opal_put_chars(vtermno, data, total_len, false);
 }
@@ -508,7 +506,8 @@ int opal_put_chars(uint32_t vtermno, const char *data, int total_len)
  * true at the moment because console space can race with OPAL's console
  * writes.
  */
-int opal_put_chars_atomic(uint32_t vtermno, const char *data, int total_len)
+ssize_t opal_put_chars_atomic(uint32_t vtermno, const u8 *data,
+			      size_t total_len)
 {
 	return __opal_put_chars(vtermno, data, total_len, true);
 }
@@ -790,14 +789,6 @@ static int __init opal_sysfs_init(void)
 	return 0;
 }
 
-static ssize_t export_attr_read(struct file *fp, struct kobject *kobj,
-				struct bin_attribute *bin_attr, char *buf,
-				loff_t off, size_t count)
-{
-	return memory_read_from_buffer(buf, count, &off, bin_attr->private,
-				       bin_attr->size);
-}
-
 static int opal_add_one_export(struct kobject *parent, const char *export_name,
 			       struct device_node *np, const char *prop_name)
 {
@@ -810,7 +801,7 @@ static int opal_add_one_export(struct kobject *parent, const char *export_name,
 	if (rc)
 		goto out;
 
-	attr = kzalloc(sizeof(*attr), GFP_KERNEL);
+	attr = kzalloc_obj(*attr);
 	if (!attr) {
 		rc = -ENOMEM;
 		goto out;
@@ -824,7 +815,7 @@ static int opal_add_one_export(struct kobject *parent, const char *export_name,
 	sysfs_bin_attr_init(attr);
 	attr->attr.name = name;
 	attr->attr.mode = 0400;
-	attr->read = export_attr_read;
+	attr->read = sysfs_bin_attr_simple_read;
 	attr->private = __va(vals[0]);
 	attr->size = vals[1];
 
@@ -892,6 +883,7 @@ static void opal_export_attrs(void)
 	kobj = kobject_create_and_add("exports", opal_kobj);
 	if (!kobj) {
 		pr_warn("kobject_create_and_add() of exports failed\n");
+		of_node_put(np);
 		return;
 	}
 
@@ -952,6 +944,8 @@ static void __init opal_imc_init_dev(void)
 	np = of_find_compatible_node(NULL, NULL, IMC_DTB_COMPAT);
 	if (np)
 		of_platform_device_create(np, NULL, NULL);
+
+	of_node_put(np);
 }
 
 static int kopald(void *unused)

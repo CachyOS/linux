@@ -3,6 +3,7 @@
  * Copyright (C) 2020 The Linux Foundation. All rights reserved.
  */
 
+#include <linux/cleanup.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -74,24 +75,18 @@ static int pdr_locator_new_server(struct qmi_handle *qmi,
 {
 	struct pdr_handle *pdr = container_of(qmi, struct pdr_handle,
 					      locator_hdl);
-	struct pdr_service *pds;
 
+	mutex_lock(&pdr->lock);
 	/* Create a local client port for QMI communication */
 	pdr->locator_addr.sq_family = AF_QIPCRTR;
 	pdr->locator_addr.sq_node = svc->node;
 	pdr->locator_addr.sq_port = svc->port;
 
-	mutex_lock(&pdr->lock);
 	pdr->locator_init_complete = true;
 	mutex_unlock(&pdr->lock);
 
 	/* Service pending lookup requests */
-	mutex_lock(&pdr->list_lock);
-	list_for_each_entry(pds, &pdr->lookups, node) {
-		if (pds->need_locator_lookup)
-			schedule_work(&pdr->locator_work);
-	}
-	mutex_unlock(&pdr->list_lock);
+	schedule_work(&pdr->locator_work);
 
 	return 0;
 }
@@ -104,10 +99,10 @@ static void pdr_locator_del_server(struct qmi_handle *qmi,
 
 	mutex_lock(&pdr->lock);
 	pdr->locator_init_complete = false;
-	mutex_unlock(&pdr->lock);
 
 	pdr->locator_addr.sq_node = 0;
 	pdr->locator_addr.sq_port = 0;
+	mutex_unlock(&pdr->lock);
 }
 
 static const struct qmi_ops pdr_locator_ops = {
@@ -327,7 +322,7 @@ static void pdr_indication_cb(struct qmi_handle *qmi,
 		ind_msg->service_path, ind_msg->curr_state,
 		ind_msg->transaction_id);
 
-	ind = kzalloc(sizeof(*ind), GFP_KERNEL);
+	ind = kzalloc_obj(*ind);
 	if (!ind)
 		return;
 
@@ -365,12 +360,14 @@ static int pdr_get_domain_list(struct servreg_get_domain_list_req *req,
 	if (ret < 0)
 		return ret;
 
+	mutex_lock(&pdr->lock);
 	ret = qmi_send_request(&pdr->locator_hdl,
 			       &pdr->locator_addr,
 			       &txn, SERVREG_GET_DOMAIN_LIST_REQ,
 			       SERVREG_GET_DOMAIN_LIST_REQ_MAX_LEN,
 			       servreg_get_domain_list_req_ei,
 			       req);
+	mutex_unlock(&pdr->lock);
 	if (ret < 0) {
 		qmi_txn_cancel(&txn);
 		return ret;
@@ -394,13 +391,12 @@ static int pdr_get_domain_list(struct servreg_get_domain_list_req *req,
 
 static int pdr_locate_service(struct pdr_handle *pdr, struct pdr_service *pds)
 {
-	struct servreg_get_domain_list_resp *resp;
 	struct servreg_get_domain_list_req req;
 	struct servreg_location_entry *entry;
 	int domains_read = 0;
 	int ret, i;
 
-	resp = kzalloc(sizeof(*resp), GFP_KERNEL);
+	struct servreg_get_domain_list_resp *resp __free(kfree) = kzalloc_obj(*resp);
 	if (!resp)
 		return -ENOMEM;
 
@@ -413,9 +409,9 @@ static int pdr_locate_service(struct pdr_handle *pdr, struct pdr_service *pds)
 		req.domain_offset = domains_read;
 		ret = pdr_get_domain_list(&req, resp, pdr);
 		if (ret < 0)
-			goto out;
+			return ret;
 
-		for (i = domains_read; i < resp->domain_list_len; i++) {
+		for (i = 0; i < resp->domain_list_len; i++) {
 			entry = &resp->domain_list[i];
 
 			if (strnlen(entry->name, sizeof(entry->name)) == sizeof(entry->name))
@@ -425,7 +421,7 @@ static int pdr_locate_service(struct pdr_handle *pdr, struct pdr_service *pds)
 				pds->service_data_valid = entry->service_data_valid;
 				pds->service_data = entry->service_data;
 				pds->instance = entry->instance;
-				goto out;
+				return 0;
 			}
 		}
 
@@ -438,8 +434,7 @@ static int pdr_locate_service(struct pdr_handle *pdr, struct pdr_service *pds)
 
 		domains_read += resp->domain_list_len;
 	} while (domains_read < resp->total_domains);
-out:
-	kfree(resp);
+
 	return ret;
 }
 
@@ -515,8 +510,7 @@ struct pdr_service *pdr_add_lookup(struct pdr_handle *pdr,
 				   const char *service_name,
 				   const char *service_path)
 {
-	struct pdr_service *pds, *tmp;
-	int ret;
+	struct pdr_service *tmp;
 
 	if (IS_ERR_OR_NULL(pdr))
 		return ERR_PTR(-EINVAL);
@@ -525,7 +519,7 @@ struct pdr_service *pdr_add_lookup(struct pdr_handle *pdr,
 	    !service_path || strlen(service_path) > SERVREG_NAME_LENGTH)
 		return ERR_PTR(-EINVAL);
 
-	pds = kzalloc(sizeof(*pds), GFP_KERNEL);
+	struct pdr_service *pds __free(kfree) = kzalloc_obj(*pds);
 	if (!pds)
 		return ERR_PTR(-ENOMEM);
 
@@ -540,8 +534,7 @@ struct pdr_service *pdr_add_lookup(struct pdr_handle *pdr,
 			continue;
 
 		mutex_unlock(&pdr->list_lock);
-		ret = -EALREADY;
-		goto err;
+		return ERR_PTR(-EALREADY);
 	}
 
 	list_add(&pds->node, &pdr->lookups);
@@ -549,12 +542,9 @@ struct pdr_service *pdr_add_lookup(struct pdr_handle *pdr,
 
 	schedule_work(&pdr->locator_work);
 
-	return pds;
-err:
-	kfree(pds);
-	return ERR_PTR(ret);
+	return_ptr(pds);
 }
-EXPORT_SYMBOL(pdr_add_lookup);
+EXPORT_SYMBOL_GPL(pdr_add_lookup);
 
 /**
  * pdr_restart_pd() - restart PD
@@ -634,7 +624,7 @@ int pdr_restart_pd(struct pdr_handle *pdr, struct pdr_service *pds)
 
 	return 0;
 }
-EXPORT_SYMBOL(pdr_restart_pd);
+EXPORT_SYMBOL_GPL(pdr_restart_pd);
 
 /**
  * pdr_handle_alloc() - initialize the PDR client handle
@@ -649,13 +639,12 @@ struct pdr_handle *pdr_handle_alloc(void (*status)(int state,
 						   char *service_path,
 						   void *priv), void *priv)
 {
-	struct pdr_handle *pdr;
 	int ret;
 
 	if (!status)
 		return ERR_PTR(-EINVAL);
 
-	pdr = kzalloc(sizeof(*pdr), GFP_KERNEL);
+	struct pdr_handle *pdr __free(kfree) = kzalloc_obj(*pdr);
 	if (!pdr)
 		return ERR_PTR(-ENOMEM);
 
@@ -674,10 +663,8 @@ struct pdr_handle *pdr_handle_alloc(void (*status)(int state,
 	INIT_WORK(&pdr->indack_work, pdr_indack_work);
 
 	pdr->notifier_wq = create_singlethread_workqueue("pdr_notifier_wq");
-	if (!pdr->notifier_wq) {
-		ret = -ENOMEM;
-		goto free_pdr_handle;
-	}
+	if (!pdr->notifier_wq)
+		return ERR_PTR(-ENOMEM);
 
 	pdr->indack_wq = alloc_ordered_workqueue("pdr_indack_wq", WQ_HIGHPRI);
 	if (!pdr->indack_wq) {
@@ -702,7 +689,7 @@ struct pdr_handle *pdr_handle_alloc(void (*status)(int state,
 	if (ret < 0)
 		goto release_qmi_handle;
 
-	return pdr;
+	return_ptr(pdr);
 
 release_qmi_handle:
 	qmi_handle_release(&pdr->locator_hdl);
@@ -710,12 +697,10 @@ destroy_indack:
 	destroy_workqueue(pdr->indack_wq);
 destroy_notifier:
 	destroy_workqueue(pdr->notifier_wq);
-free_pdr_handle:
-	kfree(pdr);
 
 	return ERR_PTR(ret);
 }
-EXPORT_SYMBOL(pdr_handle_alloc);
+EXPORT_SYMBOL_GPL(pdr_handle_alloc);
 
 /**
  * pdr_handle_release() - release the PDR client handle
@@ -749,7 +734,7 @@ void pdr_handle_release(struct pdr_handle *pdr)
 
 	kfree(pdr);
 }
-EXPORT_SYMBOL(pdr_handle_release);
+EXPORT_SYMBOL_GPL(pdr_handle_release);
 
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("Qualcomm Protection Domain Restart helpers");

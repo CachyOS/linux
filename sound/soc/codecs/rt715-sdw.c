@@ -14,6 +14,7 @@
 #include <linux/soundwire/sdw_type.h>
 #include <linux/soundwire/sdw_registers.h>
 #include <linux/module.h>
+#include <linux/pm_runtime.h>
 #include <linux/of.h>
 #include <linux/regmap.h>
 #include <sound/soc.h>
@@ -110,6 +111,7 @@ static bool rt715_readable_register(struct device *dev, unsigned int reg)
 	case 0x839d:
 	case 0x83a7:
 	case 0x83a9:
+	case 0x752001:
 	case 0x752039:
 		return true;
 	default:
@@ -353,7 +355,7 @@ static const struct regmap_config rt715_regmap = {
 	.max_register = 0x752039, /* Maximum number of register */
 	.reg_defaults = rt715_reg_defaults, /* Defaults */
 	.num_reg_defaults = ARRAY_SIZE(rt715_reg_defaults),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.use_single_read = true,
 	.use_single_write = true,
 	.reg_read = rt715_sdw_read,
@@ -370,59 +372,16 @@ static const struct regmap_config rt715_sdw_regmap = {
 	.use_single_write = true,
 };
 
-int hda_to_sdw(unsigned int nid, unsigned int verb, unsigned int payload,
-	       unsigned int *sdw_addr_h, unsigned int *sdw_data_h,
-	       unsigned int *sdw_addr_l, unsigned int *sdw_data_l)
-{
-	unsigned int offset_h, offset_l, e_verb;
-
-	if (((verb & 0xff) != 0) || verb == 0xf00) { /* 12 bits command */
-		if (verb == 0x7ff) /* special case */
-			offset_h = 0;
-		else
-			offset_h = 0x3000;
-
-		if (verb & 0x800) /* get command */
-			e_verb = (verb - 0xf00) | 0x80;
-		else /* set command */
-			e_verb = (verb - 0x700);
-
-		*sdw_data_h = payload; /* 7 bits payload */
-		*sdw_addr_l = *sdw_data_l = 0;
-	} else { /* 4 bits command */
-		if ((verb & 0x800) == 0x800) { /* read */
-			offset_h = 0x9000;
-			offset_l = 0xa000;
-		} else { /* write */
-			offset_h = 0x7000;
-			offset_l = 0x8000;
-		}
-		e_verb = verb >> 8;
-		*sdw_data_h = (payload >> 8); /* 16 bits payload [15:8] */
-		*sdw_addr_l = (e_verb << 8) | nid | 0x80; /* 0x80: valid bit */
-		*sdw_addr_l += offset_l;
-		*sdw_data_l = payload & 0xff;
-	}
-
-	*sdw_addr_h = (e_verb << 8) | nid;
-	*sdw_addr_h += offset_h;
-
-	return 0;
-}
-EXPORT_SYMBOL(hda_to_sdw);
-
 static int rt715_update_status(struct sdw_slave *slave,
 				enum sdw_slave_status status)
 {
 	struct rt715_priv *rt715 = dev_get_drvdata(&slave->dev);
 
-	/* Update the status */
-	rt715->status = status;
 	/*
 	 * Perform initialization only if slave status is present and
 	 * hw_init flag is false
 	 */
-	if (rt715->hw_init || rt715->status != SDW_SLAVE_ATTACHED)
+	if (rt715->hw_init || status != SDW_SLAVE_ATTACHED)
 		return 0;
 
 	/* perform I/O transfers required for Slave initialization */
@@ -483,7 +442,7 @@ static int rt715_bus_config(struct sdw_slave *slave,
 
 	ret = rt715_clock_config(&slave->dev);
 	if (ret < 0)
-		dev_err(&slave->dev, "Invalid clk config");
+		dev_err(&slave->dev, "%s: Invalid clk config", __func__);
 
 	return 0;
 }
@@ -509,9 +468,12 @@ static int rt715_sdw_probe(struct sdw_slave *slave,
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
-	rt715_init(&slave->dev, sdw_regmap, regmap, slave);
+	return rt715_init(&slave->dev, sdw_regmap, regmap, slave);
+}
 
-	return 0;
+static void rt715_sdw_remove(struct sdw_slave *slave)
+{
+	pm_runtime_disable(&slave->dev);
 }
 
 static const struct sdw_device_id rt715_id[] = {
@@ -521,7 +483,7 @@ static const struct sdw_device_id rt715_id[] = {
 };
 MODULE_DEVICE_TABLE(sdw, rt715_id);
 
-static int __maybe_unused rt715_dev_suspend(struct device *dev)
+static int rt715_dev_suspend(struct device *dev)
 {
 	struct rt715_priv *rt715 = dev_get_drvdata(dev);
 
@@ -535,7 +497,7 @@ static int __maybe_unused rt715_dev_suspend(struct device *dev)
 
 #define RT715_PROBE_TIMEOUT 5000
 
-static int __maybe_unused rt715_dev_resume(struct device *dev)
+static int rt715_dev_resume(struct device *dev)
 {
 	struct sdw_slave *slave = dev_to_sdw_dev(dev);
 	struct rt715_priv *rt715 = dev_get_drvdata(dev);
@@ -550,7 +512,9 @@ static int __maybe_unused rt715_dev_resume(struct device *dev)
 	time = wait_for_completion_timeout(&slave->initialization_complete,
 					   msecs_to_jiffies(RT715_PROBE_TIMEOUT));
 	if (!time) {
-		dev_err(&slave->dev, "Initialization not complete, timed out\n");
+		dev_err(&slave->dev, "%s: Initialization not complete, timed out\n", __func__);
+		sdw_show_ping_status(slave->bus, true);
+
 		return -ETIMEDOUT;
 	}
 
@@ -564,17 +528,17 @@ regmap_sync:
 }
 
 static const struct dev_pm_ops rt715_pm = {
-	SET_SYSTEM_SLEEP_PM_OPS(rt715_dev_suspend, rt715_dev_resume)
-	SET_RUNTIME_PM_OPS(rt715_dev_suspend, rt715_dev_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(rt715_dev_suspend, rt715_dev_resume)
+	RUNTIME_PM_OPS(rt715_dev_suspend, rt715_dev_resume, NULL)
 };
 
 static struct sdw_driver rt715_sdw_driver = {
 	.driver = {
 		   .name = "rt715",
-		   .owner = THIS_MODULE,
-		   .pm = &rt715_pm,
+		   .pm = pm_ptr(&rt715_pm),
 		   },
 	.probe = rt715_sdw_probe,
+	.remove = rt715_sdw_remove,
 	.ops = &rt715_slave_ops,
 	.id_table = rt715_id,
 };

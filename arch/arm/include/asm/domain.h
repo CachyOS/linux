@@ -8,8 +8,8 @@
 #define __ASM_PROC_DOMAIN_H
 
 #ifndef __ASSEMBLY__
+#include <linux/thread_info.h>
 #include <asm/barrier.h>
-#include <asm/thread_info.h>
 #endif
 
 /*
@@ -110,19 +110,6 @@ static __always_inline unsigned int get_domain(void)
 static __always_inline void set_domain(unsigned int val)
 {
 }
-#endif
-
-#ifdef CONFIG_CPU_USE_DOMAINS
-#define modify_domain(dom,type)					\
-	do {							\
-		unsigned int domain = get_domain();		\
-		domain &= ~domain_mask(dom);			\
-		domain = domain | domain_val(dom, type);	\
-		set_domain(domain);				\
-	} while (0)
-
-#else
-static inline void modify_domain(unsigned dom, unsigned type)	{ }
 #endif
 
 /*

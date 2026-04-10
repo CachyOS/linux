@@ -9,6 +9,7 @@
 #include <linux/blkdev.h>
 #include <linux/fs.h>
 #include <linux/log2.h>
+#include <linux/overflow.h>
 
 #include "debug.h"
 #include "ntfs.h"
@@ -31,7 +32,7 @@ struct ntfs_run {
  * Case of entry missing from list 'index' will be set to
  * point to insertion position for the entry question.
  */
-bool run_lookup(const struct runs_tree *run, CLST vcn, size_t *index)
+static bool run_lookup(const struct runs_tree *run, CLST vcn, size_t *index)
 {
 	size_t min_idx, max_idx, mid_idx;
 	struct ntfs_run *r;
@@ -433,9 +434,9 @@ requires_new_range:
 			should_add_tail = Tovcn < r->len;
 
 			if (should_add_tail) {
-				tail_lcn = r->lcn == SPARSE_LCN
-						   ? SPARSE_LCN
-						   : (r->lcn + Tovcn);
+				tail_lcn = r->lcn == SPARSE_LCN ?
+						   SPARSE_LCN :
+						   (r->lcn + Tovcn);
 				tail_vcn = r->vcn + Tovcn;
 				tail_len = r->len - Tovcn;
 			}
@@ -453,7 +454,7 @@ requires_new_range:
 
 		/*
 		 * If existing range fits then were done.
-		 * Otherwise extend found one and fall back to range jocode.
+		 * Otherwise extend found one and fall back to range join code.
 		 */
 		if (r->vcn + r->len < vcn + len)
 			r->len += len - ((r->vcn + r->len) - vcn);
@@ -481,19 +482,21 @@ requires_new_range:
 	return true;
 }
 
-/* run_collapse_range
+/*
+ * run_collapse_range
  *
  * Helper for attr_collapse_range(),
  * which is helper for fallocate(collapse_range).
  */
-bool run_collapse_range(struct runs_tree *run, CLST vcn, CLST len)
+bool run_collapse_range(struct runs_tree *run, CLST vcn, CLST len, CLST sub)
 {
 	size_t index, eat;
 	struct ntfs_run *r, *e, *eat_start, *eat_end;
 	CLST end;
 
-	if (WARN_ON(!run_lookup(run, vcn, &index)))
-		return true; /* Should never be here. */
+	if (!run_lookup(run, vcn, &index) && index >= run->count) {
+		return true;
+	}
 
 	e = run->runs + run->count;
 	r = run->runs + index;
@@ -510,7 +513,7 @@ bool run_collapse_range(struct runs_tree *run, CLST vcn, CLST len)
 			/* Collapse a middle part of normal run, split. */
 			if (!run_add_entry(run, vcn, SPARSE_LCN, len, false))
 				return false;
-			return run_collapse_range(run, vcn, len);
+			return run_collapse_range(run, vcn, len, sub);
 		}
 
 		r += 1;
@@ -544,7 +547,92 @@ bool run_collapse_range(struct runs_tree *run, CLST vcn, CLST len)
 	memmove(eat_start, eat_end, (e - eat_end) * sizeof(*r));
 	run->count -= eat;
 
+	if (sub) {
+		e -= eat;
+		for (r = run->runs; r < e; r++) {
+			r->vcn -= sub;
+		}
+	}
+
 	return true;
+}
+
+/* run_insert_range
+ *
+ * Helper for attr_insert_range(),
+ * which is helper for fallocate(insert_range).
+ */
+int run_insert_range(struct runs_tree *run, CLST vcn, CLST len)
+{
+	size_t index;
+	struct ntfs_run *r, *e;
+
+	if (WARN_ON(!run_lookup(run, vcn, &index)))
+		return -EINVAL; /* Should never be here. */
+
+	e = run->runs + run->count;
+	r = run->runs + index;
+
+	if (vcn > r->vcn)
+		r += 1;
+
+	for (; r < e; r++)
+		r->vcn += len;
+
+	r = run->runs + index;
+
+	if (vcn > r->vcn) {
+		/* split fragment. */
+		CLST len1 = vcn - r->vcn;
+		CLST len2 = r->len - len1;
+		CLST lcn2 = r->lcn == SPARSE_LCN ? SPARSE_LCN : (r->lcn + len1);
+
+		r->len = len1;
+
+		if (!run_add_entry(run, vcn + len, lcn2, len2, false))
+			return -ENOMEM;
+	}
+
+	if (!run_add_entry(run, vcn, SPARSE_LCN, len, false))
+		return -ENOMEM;
+
+	return 0;
+}
+
+/* run_insert_range_da
+ *
+ * Helper for attr_insert_range(),
+ * which is helper for fallocate(insert_range).
+ */
+int run_insert_range_da(struct runs_tree *run, CLST vcn, CLST len)
+{
+	struct ntfs_run *r, *r0 = NULL, *e = run->runs + run->count;
+	;
+
+	for (r = run->runs; r < e; r++) {
+		CLST end = r->vcn + r->len;
+
+		if (vcn >= end)
+			continue;
+
+		if (!r0 && r->vcn < vcn) {
+			r0 = r;
+		} else {
+			r->vcn += len;
+		}
+	}
+
+	if (r0) {
+		/* split fragment. */
+		CLST len1 = vcn - r0->vcn;
+		CLST len2 = r0->len - len1;
+
+		r0->len = len1;
+		if (!run_add_entry(run, vcn + len, SPARSE_LCN, len2, false))
+			return -ENOMEM;
+	}
+
+	return 0;
 }
 
 /*
@@ -778,26 +866,36 @@ int run_pack(const struct runs_tree *run, CLST svcn, CLST len, u8 *run_buf,
 	CLST next_vcn, vcn, lcn;
 	CLST prev_lcn = 0;
 	CLST evcn1 = svcn + len;
+	const struct ntfs_run *r, *r_end;
 	int packed_size = 0;
 	size_t i;
-	bool ok;
 	s64 dlcn;
 	int offset_size, size_size, tmp;
-
-	next_vcn = vcn = svcn;
 
 	*packed_vcns = 0;
 
 	if (!len)
 		goto out;
 
-	ok = run_lookup_entry(run, vcn, &lcn, &len, &i);
+	/* Check all required entries [svcn, encv1) available. */
+	if (!run_lookup(run, svcn, &i))
+		return -ENOENT;
 
-	if (!ok)
-		goto error;
+	r_end = run->runs + run->count;
+	r = run->runs + i;
 
-	if (next_vcn != vcn)
-		goto error;
+	for (next_vcn = r->vcn + r->len; next_vcn < evcn1;
+	     next_vcn = r->vcn + r->len) {
+		if (++r >= r_end || r->vcn != next_vcn)
+			return -ENOENT;
+	}
+
+	/* Repeat cycle above and pack runs. Assume no errors. */
+	r = run->runs + i;
+	len = svcn - r->vcn;
+	vcn = svcn;
+	lcn = r->lcn == SPARSE_LCN ? SPARSE_LCN : (r->lcn + len);
+	len = r->len - len;
 
 	for (;;) {
 		next_vcn = vcn + len;
@@ -846,12 +944,10 @@ int run_pack(const struct runs_tree *run, CLST svcn, CLST len, u8 *run_buf,
 		if (packed_size + 1 >= run_buf_size || next_vcn >= evcn1)
 			goto out;
 
-		ok = run_get_entry(run, ++i, &vcn, &lcn, &len);
-		if (!ok)
-			goto error;
-
-		if (next_vcn != vcn)
-			goto error;
+		r += 1;
+		vcn = r->vcn;
+		lcn = r->lcn;
+		len = r->len;
 	}
 
 out:
@@ -860,9 +956,6 @@ out:
 		run_buf[0] = 0;
 
 	return packed_size + 1;
-
-error:
-	return -EOPNOTSUPP;
 }
 
 /*
@@ -872,11 +965,14 @@ error:
  */
 int run_unpack(struct runs_tree *run, struct ntfs_sb_info *sbi, CLST ino,
 	       CLST svcn, CLST evcn, CLST vcn, const u8 *run_buf,
-	       u32 run_buf_size)
+	       int run_buf_size)
 {
 	u64 prev_lcn, vcn64, lcn, next_vcn;
 	const u8 *run_last, *run_0;
 	bool is_mft = ino == MFT_REC_MFT;
+
+	if (run_buf_size < 0)
+		return -EINVAL;
 
 	/* Check for empty. */
 	if (evcn + 1 == svcn)
@@ -909,7 +1005,7 @@ int run_unpack(struct runs_tree *run, struct ntfs_sb_info *sbi, CLST ino,
 		 * Large positive number requires to store 5 bytes
 		 * e.g.: 05 FF 7E FF FF 00 00 00
 		 */
-		if (size_size > 8)
+		if (size_size > sizeof(len))
 			return -EINVAL;
 
 		len = run_unpack_s64(run_buf, size_size, 0);
@@ -921,7 +1017,7 @@ int run_unpack(struct runs_tree *run, struct ntfs_sb_info *sbi, CLST ino,
 
 		if (!offset_size)
 			lcn = SPARSE_LCN64;
-		else if (offset_size <= 8) {
+		else if (offset_size <= sizeof(s64)) {
 			s64 dlcn;
 
 			/* Initial value of dlcn is -1 or 0. */
@@ -932,12 +1028,22 @@ int run_unpack(struct runs_tree *run, struct ntfs_sb_info *sbi, CLST ino,
 
 			if (!dlcn)
 				return -EINVAL;
-			lcn = prev_lcn + dlcn;
+
+			/* Check special combination: 0 + SPARSE_LCN64. */
+			if (!prev_lcn && dlcn == SPARSE_LCN64) {
+				lcn = SPARSE_LCN64;
+			} else if (check_add_overflow(prev_lcn, dlcn, &lcn)) {
+				return -EINVAL;
+			}
 			prev_lcn = lcn;
-		} else
+		} else {
+			/* The size of 'dlcn' can't be > 8. */
+			return -EINVAL;
+		}
+
+		if (check_add_overflow(vcn64, len, &next_vcn))
 			return -EINVAL;
 
-		next_vcn = vcn64 + len;
 		/* Check boundary. */
 		if (next_vcn > evcn + 1)
 			return -EINVAL;
@@ -999,12 +1105,12 @@ int run_unpack(struct runs_tree *run, struct ntfs_sb_info *sbi, CLST ino,
  */
 int run_unpack_ex(struct runs_tree *run, struct ntfs_sb_info *sbi, CLST ino,
 		  CLST svcn, CLST evcn, CLST vcn, const u8 *run_buf,
-		  u32 run_buf_size)
+		  int run_buf_size)
 {
 	int ret, err;
 	CLST next_vcn, lcn, len;
-	size_t index;
-	bool ok;
+	size_t index, done;
+	bool ok, zone;
 	struct wnd_bitmap *wnd;
 
 	ret = run_unpack(run, sbi, ino, svcn, evcn, vcn, run_buf, run_buf_size);
@@ -1035,8 +1141,9 @@ int run_unpack_ex(struct runs_tree *run, struct ntfs_sb_info *sbi, CLST ino,
 			continue;
 
 		down_read_nested(&wnd->rw_lock, BITMAP_MUTEX_CLUSTERS);
+		zone = max(wnd->zone_bit, lcn) < min(wnd->zone_end, lcn + len);
 		/* Check for free blocks. */
-		ok = wnd_is_used(wnd, lcn, len);
+		ok = !zone && wnd_is_used(wnd, lcn, len);
 		up_read(&wnd->rw_lock);
 		if (ok)
 			continue;
@@ -1044,31 +1151,36 @@ int run_unpack_ex(struct runs_tree *run, struct ntfs_sb_info *sbi, CLST ino,
 		/* Looks like volume is corrupted. */
 		ntfs_set_state(sbi, NTFS_DIRTY_ERROR);
 
-		if (down_write_trylock(&wnd->rw_lock)) {
-			/* Mark all zero bits as used in range [lcn, lcn+len). */
-			CLST i, lcn_f = 0, len_f = 0;
+		if (!down_write_trylock(&wnd->rw_lock))
+			continue;
 
-			err = 0;
-			for (i = 0; i < len; i++) {
-				if (wnd_is_free(wnd, lcn + i, 1)) {
-					if (!len_f)
-						lcn_f = lcn + i;
-					len_f += 1;
-				} else if (len_f) {
-					err = wnd_set_used(wnd, lcn_f, len_f);
-					len_f = 0;
-					if (err)
-						break;
-				}
-			}
-
-			if (len_f)
-				err = wnd_set_used(wnd, lcn_f, len_f);
-
-			up_write(&wnd->rw_lock);
-			if (err)
-				return err;
+		if (zone) {
+			/*
+			 * Range [lcn, lcn + len) intersects with zone.
+			 * To avoid complex with zone just turn it off.
+			 */
+			wnd_zone_set(wnd, 0, 0);
 		}
+
+		/* Mark all zero bits as used in range [lcn, lcn+len). */
+		err = wnd_set_used_safe(wnd, lcn, len, &done);
+		if (zone) {
+			/* Restore zone. Lock mft run. */
+			struct rw_semaphore *lock =
+				is_mounted(sbi) ? &sbi->mft.ni->file.run_lock :
+						  NULL;
+			if (lock) {
+				if (down_read_trylock(lock)) {
+					ntfs_refresh_zone(sbi);
+					up_read(lock);
+				}
+			} else {
+				ntfs_refresh_zone(sbi);
+			}
+		}
+		up_write(&wnd->rw_lock);
+		if (err)
+			return err;
 	}
 
 	return ret;
@@ -1098,7 +1210,8 @@ int run_get_highest_vcn(CLST vcn, const u8 *run_buf, u64 *highest_vcn)
 			return -EINVAL;
 
 		run_buf += size_size + offset_size;
-		vcn64 += len;
+		if (check_add_overflow(vcn64, len, &vcn64))
+			return -EINVAL;
 
 #ifndef CONFIG_NTFS3_64BIT_CLUSTER
 		if (vcn64 > 0x100000000ull)
@@ -1108,4 +1221,123 @@ int run_get_highest_vcn(CLST vcn, const u8 *run_buf, u64 *highest_vcn)
 
 	*highest_vcn = vcn64 - 1;
 	return 0;
+}
+
+/*
+ * run_clone
+ *
+ * Make a copy of run
+ */
+int run_clone(const struct runs_tree *run, struct runs_tree *new_run)
+{
+	size_t bytes = run->count * sizeof(struct ntfs_run);
+
+	if (bytes > new_run->allocated) {
+		struct ntfs_run *new_ptr = kvmalloc(bytes, GFP_KERNEL);
+
+		if (!new_ptr)
+			return -ENOMEM;
+
+		kvfree(new_run->runs);
+		new_run->runs = new_ptr;
+		new_run->allocated = bytes;
+	}
+
+	memcpy(new_run->runs, run->runs, bytes);
+	new_run->count = run->count;
+	return 0;
+}
+
+/*
+ * run_remove_range
+ *
+ */
+bool run_remove_range(struct runs_tree *run, CLST vcn, CLST len, CLST *done)
+{
+	size_t index, eat;
+	struct ntfs_run *r, *e, *eat_start, *eat_end;
+	CLST end, d;
+
+	*done = 0;
+
+	/* Fast check. */
+	if (!run->count)
+		return true;
+
+	if (!run_lookup(run, vcn, &index) && index >= run->count) {
+		/* No entries in this run. */
+		return true;
+	}
+
+
+	e = run->runs + run->count;
+	r = run->runs + index;
+	end = vcn + len;
+
+	if (vcn > r->vcn) {
+		CLST r_end = r->vcn + r->len;
+		d = vcn - r->vcn;
+
+		if (r_end > end) {
+			/* Remove a middle part, split. */
+			*done += len;
+			r->len = d;
+			return run_add_entry(run, end, r->lcn, r_end - end,
+					     false);
+		}
+		/* Remove tail of run .*/
+		*done += r->len - d;
+		r->len = d;
+		r += 1;
+	}
+
+	eat_start = r;
+	eat_end = r;
+
+	for (; r < e; r++) {
+		if (r->vcn >= end)
+			continue;
+
+		if (r->vcn + r->len <= end) {
+			/* Eat this run. */
+			*done += r->len;
+			eat_end = r + 1;
+			continue;
+		}
+
+		d = end - r->vcn;
+		*done += d;
+		if (r->lcn != SPARSE_LCN)
+			r->lcn += d;
+		r->len -= d;
+		r->vcn = end;
+	}
+
+	eat = eat_end - eat_start;
+	memmove(eat_start, eat_end, (e - eat_end) * sizeof(*r));
+	run->count -= eat;
+
+	return true;
+}
+
+CLST run_len(const struct runs_tree *run)
+{
+	const struct ntfs_run *r, *e;
+	CLST len = 0;
+
+	for (r = run->runs, e = r + run->count; r < e; r++) {
+		len += r->len;
+	}
+
+	return len;
+}
+
+CLST run_get_max_vcn(const struct runs_tree *run)
+{
+	const struct ntfs_run *r;
+	if (!run->count)
+		return 0;
+
+	r = run->runs + run->count - 1;
+	return r->vcn + r->len;
 }

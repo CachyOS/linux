@@ -95,7 +95,7 @@ static int bcm47xxpart_parse(struct mtd_info *master,
 	uint32_t blocksize = master->erasesize;
 	int trx_parts[2]; /* Array with indexes of TRX partitions */
 	int trx_num = 0; /* Number of found TRX partitions */
-	int possible_nvram_sizes[] = { 0x8000, 0xF000, 0x10000, };
+	static const int possible_nvram_sizes[] = { 0x8000, 0xF000, 0x10000, };
 	int err;
 
 	/*
@@ -106,8 +106,7 @@ static int bcm47xxpart_parse(struct mtd_info *master,
 		blocksize = 0x1000;
 
 	/* Alloc */
-	parts = kcalloc(BCM47XXPART_MAX_PARTS, sizeof(struct mtd_partition),
-			GFP_KERNEL);
+	parts = kzalloc_objs(struct mtd_partition, BCM47XXPART_MAX_PARTS);
 	if (!parts)
 		return -ENOMEM;
 
@@ -233,11 +232,11 @@ static int bcm47xxpart_parse(struct mtd_info *master,
 		}
 
 		/* Read middle of the block */
-		err = mtd_read(master, offset + 0x8000, 0x4, &bytes_read,
+		err = mtd_read(master, offset + (blocksize / 2), 0x4, &bytes_read,
 			       (uint8_t *)buf);
 		if (err && !mtd_is_bitflip(err)) {
 			pr_err("mtd_read error while parsing (offset: 0x%X): %d\n",
-			       offset + 0x8000, err);
+			       offset + (blocksize / 2), err);
 			continue;
 		}
 

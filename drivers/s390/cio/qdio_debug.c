@@ -7,7 +7,6 @@
 #include <linux/seq_file.h>
 #include <linux/debugfs.h>
 #include <linux/uaccess.h>
-#include <linux/export.h>
 #include <linux/slab.h>
 #include <asm/debug.h>
 #include "qdio_debug.h"
@@ -82,12 +81,12 @@ int qdio_allocate_dbf(struct qdio_irq *irq_ptr)
 		}
 		debug_set_level(irq_ptr->debug_area, DBF_WARN);
 		DBF_DEV_EVENT(DBF_ERR, irq_ptr, "dbf created");
-		new_entry = kzalloc(sizeof(struct qdio_dbf_entry), GFP_KERNEL);
+		new_entry = kzalloc_obj(struct qdio_dbf_entry);
 		if (!new_entry) {
 			debug_unregister(irq_ptr->debug_area);
 			return -ENOMEM;
 		}
-		strlcpy(new_entry->dbf_name, text, QDIO_DBF_NAME_LEN);
+		strscpy(new_entry->dbf_name, text, QDIO_DBF_NAME_LEN);
 		new_entry->dbf_info = irq_ptr->debug_area;
 		mutex_lock(&qdio_dbf_list_mutex);
 		list_add(&new_entry->dbf_list, &qdio_dbf_list);

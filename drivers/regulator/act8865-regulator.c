@@ -643,7 +643,7 @@ static int act8600_charger_probe(struct device *dev, struct regmap *regmap)
 	struct power_supply *charger;
 	struct power_supply_config cfg = {
 		.drv_data = regmap,
-		.of_node = dev->of_node,
+		.fwnode = dev_fwnode(dev),
 	};
 
 	charger = devm_power_supply_register(dev, &act8600_charger_desc, &cfg);
@@ -651,9 +651,9 @@ static int act8600_charger_probe(struct device *dev, struct regmap *regmap)
 	return PTR_ERR_OR_ZERO(charger);
 }
 
-static int act8865_pmic_probe(struct i2c_client *client,
-			      const struct i2c_device_id *i2c_id)
+static int act8865_pmic_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *i2c_id = i2c_client_get_device_id(client);
 	const struct regulator_desc *regulators;
 	struct act8865_platform_data *pdata = NULL;
 	struct device *dev = &client->dev;
@@ -673,9 +673,7 @@ static int act8865_pmic_probe(struct i2c_client *client,
 
 		type = (unsigned long) id->data;
 
-		voltage_select = !!of_get_property(dev->of_node,
-						   "active-semi,vsel-high",
-						   NULL);
+		voltage_select = of_property_read_bool(dev->of_node, "active-semi,vsel-high");
 	} else {
 		type = i2c_id->driver_data;
 		pdata = dev_get_platdata(dev);
@@ -789,6 +787,7 @@ MODULE_DEVICE_TABLE(i2c, act8865_ids);
 static struct i2c_driver act8865_pmic_driver = {
 	.driver	= {
 		.name	= "act8865",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe		= act8865_pmic_probe,
 	.id_table	= act8865_ids,

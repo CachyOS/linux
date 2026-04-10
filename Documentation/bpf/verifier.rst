@@ -192,7 +192,7 @@ checked and found to be non-NULL, all copies can become PTR_TO_MAP_VALUEs.
 As well as range-checking, the tracked information is also used for enforcing
 alignment of pointer accesses.  For instance, on most systems the packet pointer
 is 2 bytes after a 4-byte alignment.  If a program adds 14 bytes to that to jump
-over the Ethernet header, then reads IHL and addes (IHL * 4), the resulting
+over the Ethernet header, then reads IHL and adds (IHL * 4), the resulting
 pointer will have a variable offset known to be 4n+2 for some n, so adding the 2
 bytes (NET_IP_ALIGN) gives a 4-byte alignment and so word-sized accesses through
 that pointer are safe.
@@ -315,6 +315,37 @@ another NOT_INIT) is safe.  The implementation is in the function regsafe().
 Pruning considers not only the registers but also the stack (and any spilled
 registers it may hold).  They must all be safe for the branch to be pruned.
 This is implemented in states_equal().
+
+Some technical details about state pruning implementation could be found below.
+
+Register liveness tracking
+--------------------------
+
+In order to make state pruning effective, liveness state is tracked for each
+register and stack slot. The basic idea is to track which registers and stack
+slots are actually used during subseqeuent execution of the program, until
+program exit is reached. Registers and stack slots that were never used could be
+removed from the cached state thus making more states equivalent to a cached
+state. This could be illustrated by the following program::
+
+  0: call bpf_get_prandom_u32()
+  1: r1 = 0
+  2: if r0 == 0 goto +1
+  3: r0 = 1
+  --- checkpoint ---
+  4: r0 = r1
+  5: exit
+
+Suppose that a state cache entry is created at instruction #4 (such entries are
+also called "checkpoints" in the text below). The verifier could reach the
+instruction with one of two possible register states:
+
+* r0 = 1, r1 = 0
+* r0 = 0, r1 = 0
+
+However, only the value of register ``r1`` is important to successfully finish
+verification. The goal of the liveness tracking algorithm is to spot this fact
+and figure out that both states are actually equivalent.
 
 Understanding eBPF verifier messages
 ====================================

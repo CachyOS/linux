@@ -10,7 +10,8 @@ maintainers:
   - Andrew Jeffery <andrew@aj.id.au>
 
 description:
-  This SGPIO controller is for ASPEED AST2400, AST2500 and AST2600 SoC,
+  This SGPIO controller is for ASPEED AST2400, AST2500, AST2600 and AST2700 SoC,
+  AST2700 have two sgpio master both with 256 pins,
   AST2600 have two sgpio master one with 128 pins another one with 80 pins,
   AST2500/AST2400 have one sgpio master with 80 pins. Each of the Serial
   GPIO pins can be programmed to support the following options
@@ -27,11 +28,17 @@ properties:
       - aspeed,ast2400-sgpio
       - aspeed,ast2500-sgpio
       - aspeed,ast2600-sgpiom
+      - aspeed,ast2700-sgpiom
 
   reg:
     maxItems: 1
 
   gpio-controller: true
+
+  # Each SGPIO is represented as a pair of input and output GPIOs
+  gpio-line-names:
+    minItems: 160
+    maxItems: 256
 
   '#gpio-cells':
     const: 2
@@ -40,6 +47,9 @@ properties:
     maxItems: 1
 
   interrupt-controller: true
+
+  '#interrupt-cells':
+    const: 2
 
   clocks:
     maxItems: 1
@@ -55,6 +65,7 @@ required:
   - '#gpio-cells'
   - interrupts
   - interrupt-controller
+  - '#interrupt-cells'
   - ngpios
   - clocks
   - bus-frequency
@@ -72,6 +83,7 @@ examples:
         reg = <0x1e780200 0x0100>;
         clocks = <&syscon ASPEED_CLK_APB>;
         interrupt-controller;
+        #interrupt-cells = <2>;
         ngpios = <80>;
         bus-frequency = <12000000>;
     };

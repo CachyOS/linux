@@ -67,8 +67,7 @@ static int netdev_boot_setup_add(char *name, struct ifmap *map)
 	s = dev_boot_setup;
 	for (i = 0; i < NETDEV_BOOT_SETUP_MAX; i++) {
 		if (s[i].name[0] == '\0' || s[i].name[0] == ' ') {
-			memset(s[i].name, 0, sizeof(s[i].name));
-			strlcpy(s[i].name, name, IFNAMSIZ);
+			strscpy_pad(s[i].name, name);
 			memcpy(&s[i].map, map, sizeof(s[i].map));
 			break;
 		}
@@ -246,12 +245,6 @@ static int __init net_olddevs_init(void)
 
 	for (num = 0; num < 8; ++num)
 		ethif_probe2(num);
-
-#ifdef CONFIG_COPS
-	cops_probe(0);
-	cops_probe(1);
-	cops_probe(2);
-#endif
 
 	return 0;
 }

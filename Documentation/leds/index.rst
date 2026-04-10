@@ -17,6 +17,7 @@ LEDs
    uleds
 
    leds-blinkm
+   leds-cht-wcove
    leds-el15203000
    leds-lm3556
    leds-lp3944
@@ -24,5 +25,9 @@ LEDs
    leds-lp5523
    leds-lp5562
    leds-lp55xx
+   leds-lp5812
    leds-mlxcpld
+   leds-mt6370-rgb
    leds-sc27xx
+   leds-st1202
+   leds-qcom-lpg

@@ -10,6 +10,7 @@ config OPENRISC
 	select ARCH_HAS_DMA_SET_UNCACHED
 	select ARCH_HAS_DMA_CLEAR_UNCACHED
 	select ARCH_HAS_SYNC_DMA_FOR_DEVICE
+	select GENERIC_BUILTIN_DTB
 	select COMMON_CLK
 	select OF
 	select OF_EARLY_FLATTREE
@@ -20,9 +21,16 @@ config OPENRISC
 	select GENERIC_IRQ_CHIP
 	select GENERIC_IRQ_PROBE
 	select GENERIC_IRQ_SHOW
-	select GENERIC_IOMAP
+	select GENERIC_PCI_IOMAP
+	select GENERIC_IOREMAP
 	select GENERIC_CPU_DEVICES
+	select HAVE_ARCH_JUMP_LABEL
+	select HAVE_ARCH_JUMP_LABEL_RELATIVE
+	select HAVE_PCI
 	select HAVE_UID16
+	select HAVE_PAGE_SIZE_8KB
+	select HAVE_REGS_AND_STACK_ACCESS_API
+	select HAVE_RSEQ
 	select GENERIC_ATOMIC64
 	select GENERIC_CLOCKEVENTS_BROADCAST
 	select GENERIC_SMP_IDLE_THREAD
@@ -32,6 +40,8 @@ config OPENRISC
 	select CPU_NO_EFFICIENT_FFS if !OPENRISC_HAVE_INST_FF1
 	select ARCH_USE_QUEUED_RWLOCKS
 	select OMPIC if SMP
+	select PCI_DOMAINS_GENERIC if PCI
+	select PCI_MSI if PCI
 	select ARCH_WANT_FRAME_POINTERS
 	select GENERIC_IRQ_MULTI_HANDLER
 	select MMU_GATHER_NO_RANGE if MMU
@@ -60,6 +70,9 @@ config STACKTRACE_SUPPORT
 config LOCKDEP_SUPPORT
 	def_bool  y
 
+config FIX_EARLYCON_MEM
+	def_bool y
+
 menu "Processor type and features"
 
 choice
@@ -84,7 +97,7 @@ config DCACHE_WRITETHROUGH
 
 	  If unsure say N here
 
-config OPENRISC_BUILTIN_DTB
+config BUILTIN_DTB_NAME
 	string "Builtin DTB"
 	default ""
 
@@ -182,6 +195,15 @@ config SMP
 	  than one CPU, say Y.
 
 	  If you don't know what to do here, say N.
+
+config FPU
+	bool "FPU support"
+	default y
+	help
+	  Say N here if you want to disable all floating-point related procedures
+	  in the kernel and reduce binary size.
+
+	  If you don't know what to do here, say Y.
 
 source "kernel/Kconfig.hz"
 

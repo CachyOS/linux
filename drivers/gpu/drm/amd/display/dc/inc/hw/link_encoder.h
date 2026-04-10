@@ -44,9 +44,12 @@ struct pipe_ctx;
 struct encoder_init_data {
 	enum channel_id channel;
 	struct graphics_object_id connector;
+	struct gpio *hpd_gpio;
 	enum hpd_source_id hpd_source;
 	/* TODO: in DAL2, here was pointer to EventManagerInterface */
 	struct graphics_object_id encoder;
+	struct graphics_object_id analog_encoder;
+	enum engine_id analog_engine;
 	struct dc_context *ctx;
 	enum transmitter transmitter;
 };
@@ -75,49 +78,19 @@ struct encoder_feature_support {
 	bool fec_supported;
 };
 
-union dpcd_psr_configuration {
-	struct {
-		unsigned char ENABLE                    : 1;
-		unsigned char TRANSMITTER_ACTIVE_IN_PSR : 1;
-		unsigned char CRC_VERIFICATION          : 1;
-		unsigned char FRAME_CAPTURE_INDICATION  : 1;
-		/* For eDP 1.4, PSR v2*/
-		unsigned char LINE_CAPTURE_INDICATION   : 1;
-		/* For eDP 1.4, PSR v2*/
-		unsigned char IRQ_HPD_WITH_CRC_ERROR    : 1;
-		unsigned char RESERVED                  : 2;
-	} bits;
-	unsigned char raw;
-};
-
-union psr_error_status {
-	struct {
-		unsigned char LINK_CRC_ERROR        :1;
-		unsigned char RFB_STORAGE_ERROR     :1;
-		unsigned char VSC_SDP_ERROR         :1;
-		unsigned char RESERVED              :5;
-	} bits;
-	unsigned char raw;
-};
-
-union psr_sink_psr_status {
-	struct {
-	unsigned char SINK_SELF_REFRESH_STATUS  :3;
-	unsigned char RESERVED                  :5;
-	} bits;
-	unsigned char raw;
-};
-
 struct link_encoder {
 	const struct link_encoder_funcs *funcs;
 	int32_t aux_channel_offset;
 	struct dc_context *ctx;
 	struct graphics_object_id id;
+	struct graphics_object_id analog_id;
 	struct graphics_object_id connector;
 	uint32_t output_signals;
 	enum engine_id preferred_engine;
+	enum engine_id analog_engine;
 	struct encoder_feature_support features;
 	enum transmitter transmitter;
+	struct gpio *hpd_gpio;
 	enum hpd_source_id hpd_source;
 	bool usbc_combo_phy;
 };
@@ -159,6 +132,8 @@ struct link_encoder_funcs {
 	void (*enable_lvds_output)(struct link_encoder *enc,
 		enum clock_source_id clock_source,
 		uint32_t pixel_clock);
+	void (*enable_analog_output)(struct link_encoder *enc,
+		uint32_t pixel_clock);
 	void (*disable_output)(struct link_encoder *link_enc,
 		enum signal_type signal);
 	void (*dp_set_lane_settings)(struct link_encoder *enc,
@@ -196,10 +171,21 @@ struct link_encoder_funcs {
 
 	enum signal_type (*get_dig_mode)(
 		struct link_encoder *enc);
+
 	void (*set_dio_phy_mux)(
 		struct link_encoder *enc,
 		enum encoder_type_select sel,
 		uint32_t hpo_inst);
+	void (*enable_dpia_output)(struct link_encoder *enc,
+		const struct dc_link_settings *link_settings,
+		uint8_t dpia_id,
+		uint8_t digmode,
+		uint8_t fec_rdy);
+	void (*disable_dpia_output)(struct link_encoder *link_enc,
+		uint8_t dpia_id,
+		uint8_t digmode);
+	bool (*get_hpd_state)(struct link_encoder *enc);
+	bool (*program_hpd_filter)(struct link_encoder *enc, int delay_on_connect_in_ms, int delay_on_disconnect_in_ms);
 };
 
 /*

@@ -154,11 +154,9 @@ suspending the device are satisfied) and to queue up a suspend request for the
 device in that case.  If there is no idle callback, or if the callback returns
 0, then the PM core will attempt to carry out a runtime suspend of the device,
 also respecting devices configured for autosuspend.  In essence this means a
-call to pm_runtime_autosuspend() (do note that drivers needs to update the
-device last busy mark, pm_runtime_mark_last_busy(), to control the delay under
-this circumstance).  To prevent this (for example, if the callback routine has
-started a delayed suspend), the routine must return a non-zero value.  Negative
-error return codes are ignored by the PM core.
+call to pm_runtime_autosuspend(). To prevent this (for example, if the callback
+routine has started a delayed suspend), the routine must return a non-zero
+value.  Negative error return codes are ignored by the PM core.
 
 The helper functions provided by the PM core, described in Section 4, guarantee
 that the following constraints are met with respect to runtime PM callbacks for
@@ -330,10 +328,9 @@ drivers/base/power/runtime.c and include/linux/pm_runtime.h:
       'power.disable_depth' is different from 0
 
   `int pm_runtime_autosuspend(struct device *dev);`
-    - same as pm_runtime_suspend() except that the autosuspend delay is taken
-      `into account;` if pm_runtime_autosuspend_expiration() says the delay has
-      not yet expired then an autosuspend is scheduled for the appropriate time
-      and 0 is returned
+    - same as pm_runtime_suspend() except that a call to
+      pm_runtime_mark_last_busy() is made and an autosuspend is scheduled for
+      the appropriate time and 0 is returned
 
   `int pm_runtime_resume(struct device *dev);`
     - execute the subsystem-level resume callback for the device; returns 0 on
@@ -347,7 +344,9 @@ drivers/base/power/runtime.c and include/linux/pm_runtime.h:
 
   `int pm_runtime_resume_and_get(struct device *dev);`
     - run pm_runtime_resume(dev) and if successful, increment the device's
-      usage counter; return the result of pm_runtime_resume
+      usage counter; returns 0 on success (whether or not the device's
+      runtime PM status was already 'active') or the error code from
+      pm_runtime_resume() on failure.
 
   `int pm_request_idle(struct device *dev);`
     - submit a request to execute the subsystem-level idle callback for the
@@ -355,9 +354,9 @@ drivers/base/power/runtime.c and include/linux/pm_runtime.h:
       success or error code if the request has not been queued up
 
   `int pm_request_autosuspend(struct device *dev);`
-    - schedule the execution of the subsystem-level suspend callback for the
-      device when the autosuspend delay has expired; if the delay has already
-      expired then the work item is queued up immediately
+    - Call pm_runtime_mark_last_busy() and schedule the execution of the
+      subsystem-level suspend callback for the device when the autosuspend delay
+      expires
 
   `int pm_schedule_suspend(struct device *dev, unsigned int delay);`
     - schedule the execution of the subsystem-level suspend callback for the
@@ -396,10 +395,9 @@ drivers/base/power/runtime.c and include/linux/pm_runtime.h:
       nonzero, increment the counter and return 1; otherwise return 0 without
       changing the counter
 
-  `int pm_runtime_get_if_active(struct device *dev, bool ign_usage_count);`
+  `int pm_runtime_get_if_active(struct device *dev);`
     - return -EINVAL if 'power.disable_depth' is nonzero; otherwise, if the
-      runtime PM status is RPM_ACTIVE, and either ign_usage_count is true
-      or the device's usage_count is non-zero, increment the counter and
+      runtime PM status is RPM_ACTIVE, increment the counter and
       return 1; otherwise return 0 without changing the counter
 
   `void pm_runtime_put_noidle(struct device *dev);`
@@ -410,6 +408,11 @@ drivers/base/power/runtime.c and include/linux/pm_runtime.h:
       pm_request_idle(dev) and return its result
 
   `int pm_runtime_put_autosuspend(struct device *dev);`
+    - set the power.last_busy field to the current time and decrement the
+      device's usage counter; if the result is 0 then run
+      pm_request_autosuspend(dev) and return its result
+
+  `int __pm_runtime_put_autosuspend(struct device *dev);`
     - decrement the device's usage counter; if the result is 0 then run
       pm_request_autosuspend(dev) and return its result
 
@@ -422,7 +425,8 @@ drivers/base/power/runtime.c and include/linux/pm_runtime.h:
       pm_runtime_suspend(dev) and return its result
 
   `int pm_runtime_put_sync_autosuspend(struct device *dev);`
-    - decrement the device's usage counter; if the result is 0 then run
+    - set the power.last_busy field to the current time and decrement the
+      device's usage counter; if the result is 0 then run
       pm_runtime_autosuspend(dev) and return its result
 
   `void pm_runtime_enable(struct device *dev);`
@@ -439,13 +443,11 @@ drivers/base/power/runtime.c and include/linux/pm_runtime.h:
       necessary to execute the subsystem-level resume callback for the device
       to satisfy that request, otherwise 0 is returned
 
-  `int pm_runtime_barrier(struct device *dev);`
+  `void pm_runtime_barrier(struct device *dev);`
     - check if there's a resume request pending for the device and resume it
       (synchronously) in that case, cancel any other pending runtime PM requests
       regarding it and wait for all runtime PM operations on it in progress to
-      complete; returns 1 if there was a resume request pending and it was
-      necessary to execute the subsystem-level resume callback for the device to
-      satisfy that request, otherwise 0 is returned
+      complete
 
   `void pm_suspend_ignore_children(struct device *dev, bool enable);`
     - set/unset the power.ignore_children flag of the device
@@ -475,16 +477,6 @@ drivers/base/power/runtime.c and include/linux/pm_runtime.h:
 
   `bool pm_runtime_status_suspended(struct device *dev);`
     - return true if the device's runtime PM status is 'suspended'
-
-  `void pm_runtime_allow(struct device *dev);`
-    - set the power.runtime_auto flag for the device and decrease its usage
-      counter (used by the /sys/devices/.../power/control interface to
-      effectively allow the device to be power managed at run time)
-
-  `void pm_runtime_forbid(struct device *dev);`
-    - unset the power.runtime_auto flag for the device and increase its usage
-      counter (used by the /sys/devices/.../power/control interface to
-      effectively prevent the device from being power managed at run time)
 
   `void pm_runtime_no_callbacks(struct device *dev);`
     - set the power.no_callbacks flag for the device and remove the runtime
@@ -540,6 +532,7 @@ It is safe to execute the following helper functions from interrupt context:
 - pm_runtime_put_noidle()
 - pm_runtime_put()
 - pm_runtime_put_autosuspend()
+- __pm_runtime_put_autosuspend()
 - pm_runtime_enable()
 - pm_suspend_ignore_children()
 - pm_runtime_set_active()
@@ -719,10 +712,9 @@ out the following operations:
   * During system suspend pm_runtime_get_noresume() is called for every device
     right before executing the subsystem-level .prepare() callback for it and
     pm_runtime_barrier() is called for every device right before executing the
-    subsystem-level .suspend() callback for it.  In addition to that the PM core
-    calls __pm_runtime_disable() with 'false' as the second argument for every
-    device right before executing the subsystem-level .suspend_late() callback
-    for it.
+    subsystem-level .suspend() callback for it.  In addition to that, the PM
+    core disables runtime PM for every device right before executing the
+    subsystem-level .suspend_late() callback for it.
 
   * During system resume pm_runtime_enable() and pm_runtime_put() are called for
     every device right after executing the subsystem-level .resume_early()
@@ -730,6 +722,7 @@ out the following operations:
     for it, respectively.
 
 7. Generic subsystem callbacks
+==============================
 
 Subsystems may wish to conserve code space by using the set of generic power
 management callbacks provided by the PM core, defined in
@@ -806,8 +799,8 @@ subsystem-level dev_pm_ops structure.
 
 Device drivers that wish to use the same function as a system suspend, freeze,
 poweroff and runtime suspend callback, and similarly for system resume, thaw,
-restore, and runtime resume, can achieve this with the help of the
-UNIVERSAL_DEV_PM_OPS macro defined in include/linux/pm.h (possibly setting its
+restore, and runtime resume, can achieve similar behaviour with the help of the
+DEFINE_RUNTIME_DEV_PM_OPS() defined in include/linux/pm_runtime.h (possibly setting its
 last argument to NULL).
 
 8. "No-Callback" Devices
@@ -863,9 +856,7 @@ device is automatically suspended (the subsystem or driver still has to call
 the appropriate PM routines); rather it means that runtime suspends will
 automatically be delayed until the desired period of inactivity has elapsed.
 
-Inactivity is determined based on the power.last_busy field.  Drivers should
-call pm_runtime_mark_last_busy() to update this field after carrying out I/O,
-typically just before calling pm_runtime_put_autosuspend().  The desired length
+Inactivity is determined based on the power.last_busy field. The desired length
 of the inactivity period is a matter of policy.  Subsystems can set this length
 initially by calling pm_runtime_set_autosuspend_delay(), but after device
 registration the length should be controlled by user space, using the
@@ -883,7 +874,8 @@ instead of the non-autosuspend counterparts::
 
 Drivers may also continue to use the non-autosuspend helper functions; they
 will behave normally, which means sometimes taking the autosuspend delay into
-account (see pm_runtime_idle).
+account (see pm_runtime_idle). The autosuspend variants of the functions also
+call pm_runtime_mark_last_busy().
 
 Under some circumstances a driver or subsystem may want to prevent a device
 from autosuspending immediately, even though the usage counter is zero and the
@@ -915,12 +907,10 @@ Here is a schematic pseudo-code example::
 	foo_io_completion(struct foo_priv *foo, void *req)
 	{
 		lock(&foo->private_lock);
-		if (--foo->num_pending_requests == 0) {
-			pm_runtime_mark_last_busy(&foo->dev);
+		if (--foo->num_pending_requests == 0)
 			pm_runtime_put_autosuspend(&foo->dev);
-		} else {
+		else
 			foo_process_next_request(foo);
-		}
 		unlock(&foo->private_lock);
 		/* Send req result back to the user ... */
 	}

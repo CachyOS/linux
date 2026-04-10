@@ -11,8 +11,11 @@
 #ifndef __LINUX_PINCTRL_PINCONF_GENERIC_H
 #define __LINUX_PINCTRL_PINCONF_GENERIC_H
 
-#include <linux/device.h>
+#include <linux/types.h>
+
 #include <linux/pinctrl/machine.h>
+
+struct device_node;
 
 struct pinctrl_dev;
 struct pinctrl_map;
@@ -35,7 +38,8 @@ struct pinctrl_map;
  *	impedance.
  * @PIN_CONFIG_BIAS_PULL_DOWN: the pin will be pulled down (usually with high
  *	impedance to GROUND). If the argument is != 0 pull-down is enabled,
- *	if it is 0, pull-down is total, i.e. the pin is connected to GROUND.
+ *	the value is interpreted by the driver and can be custom or an SI unit
+ *  	such as Ohms.
  * @PIN_CONFIG_BIAS_PULL_PIN_DEFAULT: the pin will be pulled up or down based
  *	on embedded knowledge of the controller hardware, like current mux
  *	function. The pull direction and possibly strength too will normally
@@ -46,7 +50,8 @@ struct pinctrl_map;
  *	@PIN_CONFIG_BIAS_DISABLE.
  * @PIN_CONFIG_BIAS_PULL_UP: the pin will be pulled up (usually with high
  *	impedance to VDD). If the argument is != 0 pull-up is enabled,
- *	if it is 0, pull-up is total, i.e. the pin is connected to VDD.
+ *	the value is interpreted by the driver and can be custom or an SI unit
+ *	such as Ohms.
  * @PIN_CONFIG_DRIVE_OPEN_DRAIN: the pin will be driven with open drain (open
  *	collector) which means it is usually wired with other output ports
  *	which are then pulled up with an external resistor. Setting this
@@ -76,14 +81,20 @@ struct pinctrl_map;
  * @PIN_CONFIG_INPUT_SCHMITT_ENABLE: control schmitt-trigger mode on the pin.
  *      If the argument != 0, schmitt-trigger mode is enabled. If it's 0,
  *      schmitt-trigger mode is disabled.
+ * @PIN_CONFIG_INPUT_SCHMITT_UV: this will configure an input pin to run in
+ *	schmitt-trigger mode. The argument is in uV.
  * @PIN_CONFIG_MODE_LOW_POWER: this will configure the pin for low power
  *	operation, if several modes of operation are supported these can be
  *	passed in the argument on a custom form, else just use argument 1
  *	to indicate low power mode, argument 0 turns low power mode off.
  * @PIN_CONFIG_MODE_PWM: this will configure the pin for PWM
- * @PIN_CONFIG_OUTPUT: this will configure the pin as an output and drive a
- * 	value on the line. Use argument 1 to indicate high level, argument 0 to
- *	indicate low level. (Please see Documentation/driver-api/pin-control.rst,
+ * @PIN_CONFIG_LEVEL: setting this will configure the pin as an output and
+ *	drive a value on the line. Use argument 1 to indicate high level,
+ *	argument 0 to indicate low level. Conversely the value of the line
+ *	can be read using this parameter, if and only if that value can be
+ *	represented as a binary 0 or 1 where 0 indicate a low voltage level
+ *	and 1 indicate a high voltage level.
+ *	(Please see Documentation/driver-api/pin-control.rst,
  *	section "GPIO mode pitfalls" for a discussion around this parameter.)
  * @PIN_CONFIG_OUTPUT_ENABLE: this will enable the pin's output mode
  * 	without driving a value there. For most platforms this reduces to
@@ -101,6 +112,12 @@ struct pinctrl_map;
  *	or latch delay (on outputs) this parameter (in a custom format)
  *	specifies the clock skew or latch delay. It typically controls how
  *	many double inverters are put in front of the line.
+ * @PIN_CONFIG_SKEW_DELAY_INPUT_PS: if the pin has independent values for the
+ *	programmable skew rate (on inputs) and latch delay (on outputs), then
+ *	this parameter specifies the clock skew only. The argument is in ps.
+ * @PIN_CONFIG_SKEW_DELAY_OUPUT_PS: if the pin has independent values for the
+ *	programmable skew rate (on inputs) and latch delay (on outputs), then
+ *	this parameter specifies the latch delay only. The argument is in ps.
  * @PIN_CONFIG_SLEEP_HARDWARE_STATE: indicate this is sleep related state.
  * @PIN_CONFIG_SLEW_RATE: if the pin can select slew rate, the argument to
  *	this parameter (on a custom format) tells the driver which alternative
@@ -127,14 +144,17 @@ enum pin_config_param {
 	PIN_CONFIG_INPUT_ENABLE,
 	PIN_CONFIG_INPUT_SCHMITT,
 	PIN_CONFIG_INPUT_SCHMITT_ENABLE,
+	PIN_CONFIG_INPUT_SCHMITT_UV,
 	PIN_CONFIG_MODE_LOW_POWER,
 	PIN_CONFIG_MODE_PWM,
-	PIN_CONFIG_OUTPUT,
+	PIN_CONFIG_LEVEL,
 	PIN_CONFIG_OUTPUT_ENABLE,
 	PIN_CONFIG_OUTPUT_IMPEDANCE_OHMS,
 	PIN_CONFIG_PERSIST_STATE,
 	PIN_CONFIG_POWER_SOURCE,
 	PIN_CONFIG_SKEW_DELAY,
+	PIN_CONFIG_SKEW_DELAY_INPUT_PS,
+	PIN_CONFIG_SKEW_DELAY_OUTPUT_PS,
 	PIN_CONFIG_SLEEP_HARDWARE_STATE,
 	PIN_CONFIG_SLEW_RATE,
 	PIN_CONFIG_END = 0x7F,
@@ -169,52 +189,59 @@ static inline unsigned long pinconf_to_config_packed(enum pin_config_param param
 	return PIN_CONF_PACKED(param, argument);
 }
 
-#define PCONFDUMP(a, b, c, d) {					\
-	.param = a, .display = b, .format = c, .has_arg = d	\
+#define PCONFDUMP_WITH_VALUES(a, b, c, d, e, f) {		\
+	.param = a, .display = b, .format = c, .has_arg = d,	\
+	.values = e, .num_values = f				\
 	}
+
+#define PCONFDUMP(a, b, c, d)	PCONFDUMP_WITH_VALUES(a, b, c, d, NULL, 0)
 
 struct pin_config_item {
 	const enum pin_config_param param;
 	const char * const display;
 	const char * const format;
 	bool has_arg;
+	const char * const *values;
+	size_t num_values;
 };
 
 struct pinconf_generic_params {
 	const char * const property;
 	enum pin_config_param param;
 	u32 default_value;
+	const char * const *values;
+	size_t num_values;
 };
 
 int pinconf_generic_dt_subnode_to_map(struct pinctrl_dev *pctldev,
 		struct device_node *np, struct pinctrl_map **map,
-		unsigned *reserved_maps, unsigned *num_maps,
+		unsigned int *reserved_maps, unsigned int *num_maps,
 		enum pinctrl_map_type type);
 int pinconf_generic_dt_node_to_map(struct pinctrl_dev *pctldev,
 		struct device_node *np_config, struct pinctrl_map **map,
-		unsigned *num_maps, enum pinctrl_map_type type);
+		unsigned int *num_maps, enum pinctrl_map_type type);
 void pinconf_generic_dt_free_map(struct pinctrl_dev *pctldev,
-		struct pinctrl_map *map, unsigned num_maps);
+		struct pinctrl_map *map, unsigned int num_maps);
 
-static inline int pinconf_generic_dt_node_to_map_group(
-		struct pinctrl_dev *pctldev, struct device_node *np_config,
-		struct pinctrl_map **map, unsigned *num_maps)
+static inline int pinconf_generic_dt_node_to_map_group(struct pinctrl_dev *pctldev,
+		struct device_node *np_config, struct pinctrl_map **map,
+		unsigned int *num_maps)
 {
 	return pinconf_generic_dt_node_to_map(pctldev, np_config, map, num_maps,
 			PIN_MAP_TYPE_CONFIGS_GROUP);
 }
 
-static inline int pinconf_generic_dt_node_to_map_pin(
-		struct pinctrl_dev *pctldev, struct device_node *np_config,
-		struct pinctrl_map **map, unsigned *num_maps)
+static inline int pinconf_generic_dt_node_to_map_pin(struct pinctrl_dev *pctldev,
+		struct device_node *np_config, struct pinctrl_map **map,
+		unsigned int *num_maps)
 {
 	return pinconf_generic_dt_node_to_map(pctldev, np_config, map, num_maps,
 			PIN_MAP_TYPE_CONFIGS_PIN);
 }
 
-static inline int pinconf_generic_dt_node_to_map_all(
-		struct pinctrl_dev *pctldev, struct device_node *np_config,
-		struct pinctrl_map **map, unsigned *num_maps)
+static inline int pinconf_generic_dt_node_to_map_all(struct pinctrl_dev *pctldev,
+		struct device_node *np_config, struct pinctrl_map **map,
+		unsigned *num_maps)
 {
 	/*
 	 * passing the type as PIN_MAP_TYPE_INVALID causes the underlying parser
@@ -223,5 +250,4 @@ static inline int pinconf_generic_dt_node_to_map_all(
 	return pinconf_generic_dt_node_to_map(pctldev, np_config, map, num_maps,
 			PIN_MAP_TYPE_INVALID);
 }
-
 #endif /* __LINUX_PINCTRL_PINCONF_GENERIC_H */

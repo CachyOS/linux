@@ -174,7 +174,7 @@ static void enetsw_set(struct clk *clk, int enable)
 	}
 
 	if (enable) {
-		/* reset switch core afer clock change */
+		/* reset switch core after clock change */
 		bcm63xx_core_set_reset(BCM63XX_RESET_ENETSW, 1);
 		msleep(10);
 		bcm63xx_core_set_reset(BCM63XX_RESET_ENETSW, 0);
@@ -304,7 +304,7 @@ static void xtm_set(struct clk *clk, int enable)
 	bcm_hwclock_set(CKCTL_6368_SAR_EN, enable);
 
 	if (enable) {
-		/* reset sar core afer clock change */
+		/* reset sar core after clock change */
 		bcm63xx_core_set_reset(BCM63XX_RESET_SAR, 1);
 		mdelay(1);
 		bcm63xx_core_set_reset(BCM63XX_RESET_SAR, 0);
@@ -361,6 +361,8 @@ static struct clk clk_periph = {
  */
 int clk_enable(struct clk *clk)
 {
+	if (!clk)
+		return 0;
 	mutex_lock(&clocks_mutex);
 	clk_enable_unlocked(clk);
 	mutex_unlock(&clocks_mutex);

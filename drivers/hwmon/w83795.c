@@ -1967,7 +1967,7 @@ static int w83795_detect(struct i2c_client *client,
 	else
 		chip_name = "w83795g";
 
-	strlcpy(info->type, chip_name, I2C_NAME_SIZE);
+	strscpy(info->type, chip_name, I2C_NAME_SIZE);
 	dev_info(&adapter->dev, "Found %s rev. %c at 0x%02hx\n", chip_name,
 		 'A' + (device_id & 0xf), address);
 
@@ -2134,8 +2134,6 @@ static void w83795_apply_temp_config(struct w83795_data *data, u8 config,
 	}
 }
 
-static const struct i2c_device_id w83795_id[];
-
 static int w83795_probe(struct i2c_client *client)
 {
 	int i;
@@ -2149,7 +2147,7 @@ static int w83795_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	i2c_set_clientdata(client, data);
-	data->chip_type = i2c_match_id(w83795_id, client)->driver_data;
+	data->chip_type = (uintptr_t)i2c_get_match_data(client);
 	data->bank = i2c_smbus_read_byte_data(client, W83795_REG_BANKSEL);
 	mutex_init(&data->update_lock);
 
@@ -2235,14 +2233,12 @@ exit_remove:
 	return err;
 }
 
-static int w83795_remove(struct i2c_client *client)
+static void w83795_remove(struct i2c_client *client)
 {
 	struct w83795_data *data = i2c_get_clientdata(client);
 
 	hwmon_device_unregister(data->hwmon_dev);
 	w83795_handle_files(&client->dev, device_remove_file_wrapper);
-
-	return 0;
 }
 
 
@@ -2257,7 +2253,7 @@ static struct i2c_driver w83795_driver = {
 	.driver = {
 		   .name = "w83795",
 	},
-	.probe_new	= w83795_probe,
+	.probe		= w83795_probe,
 	.remove		= w83795_remove,
 	.id_table	= w83795_id,
 

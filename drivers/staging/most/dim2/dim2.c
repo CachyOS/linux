@@ -8,7 +8,6 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
-#include <linux/of_platform.h>
 #include <linux/printk.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -21,6 +20,7 @@
 #include <linux/sched.h>
 #include <linux/kthread.h>
 #include <linux/most.h>
+#include <linux/of.h>
 #include "hal.h"
 #include "errors.h"
 #include "sysfs.h"
@@ -108,12 +108,17 @@ struct dim2_platform_data {
 	u8 fcnt;
 };
 
-#define iface_to_hdm(iface) container_of(iface, struct dim2_hdm, most_iface)
+static inline struct dim2_hdm *iface_to_hdm(struct most_interface *iface)
+{
+	return container_of(iface, struct dim2_hdm, most_iface);
+}
 
-/* Macro to identify a network status message */
-#define PACKET_IS_NET_INFO(p)  \
-	(((p)[1] == 0x18) && ((p)[2] == 0x05) && ((p)[3] == 0x0C) && \
-	 ((p)[13] == 0x3C) && ((p)[14] == 0x00) && ((p)[15] == 0x0A))
+/* Identify a network status message */
+static bool packet_is_net_info(const u8 *p)
+{
+	return p[1] == 0x18 && p[2] == 0x05 && p[3] == 0x0C &&
+	       p[13] == 0x3C && p[14] == 0x00 && p[15] == 0x0A;
+}
 
 static ssize_t state_show(struct device *dev, struct device_attribute *attr,
 			  char *buf)
@@ -161,7 +166,7 @@ static int try_start_dim_transfer(struct hdm_channel *hdm_ch)
 	struct list_head *head = &hdm_ch->pending_list;
 	struct mbo *mbo;
 	unsigned long flags;
-	struct dim_ch_state_t st;
+	struct dim_ch_state st;
 
 	BUG_ON(!hdm_ch);
 	BUG_ON(!hdm_ch->is_initialized);
@@ -259,7 +264,7 @@ static void retrieve_netinfo(struct dim2_hdm *dev, struct mbo *mbo)
 static void service_done_flag(struct dim2_hdm *dev, int ch_idx)
 {
 	struct hdm_channel *hdm_ch = dev->hch + ch_idx;
-	struct dim_ch_state_t st;
+	struct dim_ch_state st;
 	struct list_head *head;
 	struct mbo *mbo;
 	int done_buffers;
@@ -301,7 +306,7 @@ static void service_done_flag(struct dim2_hdm *dev, int ch_idx)
 
 		if (hdm_ch->data_type == MOST_CH_ASYNC &&
 		    hdm_ch->direction == MOST_CH_RX &&
-		    PACKET_IS_NET_INFO(data)) {
+		    packet_is_net_info(data)) {
 			retrieve_netinfo(dev, mbo);
 
 			spin_lock_irqsave(&dim_lock, flags);
@@ -754,7 +759,7 @@ static int dim2_probe(struct platform_device *pdev)
 
 	enum { MLB_INT_IDX, AHB0_INT_IDX };
 
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	dev = kzalloc_obj(*dev);
 	if (!dev)
 		return -ENOMEM;
 
@@ -775,8 +780,7 @@ static int dim2_probe(struct platform_device *pdev)
 		goto err_free_dev;
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	dev->io_base = devm_ioremap_resource(&pdev->dev, res);
+	dev->io_base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(dev->io_base)) {
 		ret = PTR_ERR(dev->io_base);
 		goto err_free_dev;
@@ -906,13 +910,11 @@ err_free_dev:
  *
  * Unregister the interface from mostcore
  */
-static int dim2_remove(struct platform_device *pdev)
+static void dim2_remove(struct platform_device *pdev)
 {
 	struct dim2_hdm *dev = platform_get_drvdata(pdev);
 
 	most_deregister_interface(&dev->most_iface);
-
-	return 0;
 }
 
 /* platform specific functions [[ */
@@ -986,7 +988,6 @@ static int rcar_gen2_enable(struct platform_device *pdev)
 		/* PLL */
 		writel(0x04, dev->io_base + 0x600);
 	}
-
 
 	/* BBCR = 0b11 */
 	writel(0x03, dev->io_base + 0x500);

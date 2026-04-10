@@ -53,16 +53,16 @@ properties:
       Single string containing the name of the GPIO line.
 
   regulators:
-    $ref: ../regulator/max77650-regulator.yaml
+    $ref: /schemas/regulator/max77650-regulator.yaml
 
   charger:
-    $ref: ../power/supply/max77650-charger.yaml
+    $ref: /schemas/power/supply/max77650-charger.yaml
 
   leds:
-    $ref: ../leds/leds-max77650.yaml
+    $ref: /schemas/leds/leds-max77650.yaml
 
   onkey:
-    $ref: ../input/max77650-onkey.yaml
+    $ref: /schemas/input/max77650-onkey.yaml
 
 required:
   - compatible
@@ -100,14 +100,12 @@ examples:
                 compatible = "maxim,max77650-regulator";
 
                 max77650_ldo: regulator-ldo {
-                    regulator-compatible = "ldo";
                     regulator-name = "max77650-ldo";
                     regulator-min-microvolt = <1350000>;
                     regulator-max-microvolt = <2937500>;
                 };
 
                 max77650_sbb0: regulator-sbb0 {
-                    regulator-compatible = "sbb0";
                     regulator-name = "max77650-sbb0";
                     regulator-min-microvolt = <800000>;
                     regulator-max-microvolt = <1587500>;

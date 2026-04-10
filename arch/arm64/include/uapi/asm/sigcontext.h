@@ -17,7 +17,7 @@
 #ifndef _UAPI__ASM_SIGCONTEXT_H
 #define _UAPI__ASM_SIGCONTEXT_H
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #include <linux/types.h>
 
@@ -62,6 +62,10 @@ struct sigcontext {
  * context. Such structures must be placed after the rt_sigframe on the stack
  * and be 16-byte aligned. The last structure must be a dummy one with the
  * magic and size set to 0.
+ *
+ * Note that the values allocated for use as magic should be chosen to
+ * be meaningful in ASCII to aid manual parsing, ZA doesn't follow this
+ * convention due to oversight but it should be observed for future additions.
  */
 struct _aarch64_ctx {
 	__u32 magic;
@@ -92,6 +96,13 @@ struct fpsimd_context {
 struct esr_context {
 	struct _aarch64_ctx head;
 	__u64 esr;
+};
+
+#define POE_MAGIC	0x504f4530
+
+struct poe_context {
+	struct _aarch64_ctx head;
+	__u64 por_el0;
 };
 
 /*
@@ -140,6 +151,22 @@ struct sve_context {
 
 #define SVE_SIG_FLAG_SM	0x1	/* Context describes streaming mode */
 
+/* TPIDR2_EL0 context */
+#define TPIDR2_MAGIC	0x54504902
+
+struct tpidr2_context {
+	struct _aarch64_ctx head;
+	__u64 tpidr2;
+};
+
+/* FPMR context */
+#define FPMR_MAGIC	0x46504d52
+
+struct fpmr_context {
+	struct _aarch64_ctx head;
+	__u64 fpmr;
+};
+
 #define ZA_MAGIC	0x54366345
 
 struct za_context {
@@ -148,7 +175,24 @@ struct za_context {
 	__u16 __reserved[3];
 };
 
-#endif /* !__ASSEMBLY__ */
+#define ZT_MAGIC	0x5a544e01
+
+struct zt_context {
+	struct _aarch64_ctx head;
+	__u16 nregs;
+	__u16 __reserved[3];
+};
+
+#define GCS_MAGIC	0x47435300
+
+struct gcs_context {
+	struct _aarch64_ctx head;
+	__u64 gcspr;
+	__u64 features_enabled;
+	__u64 reserved;
+};
+
+#endif /* !__ASSEMBLER__ */
 
 #include <asm/sve_context.h>
 
@@ -157,7 +201,7 @@ struct za_context {
  * vector length beyond its initial architectural limit of 2048 bits
  * (16 quadwords).
  *
- * See linux/Documentation/arm64/sve.rst for a description of the VL/VQ
+ * See linux/Documentation/arch/arm64/sve.rst for a description of the VL/VQ
  * terminology.
  */
 #define SVE_VQ_BYTES		__SVE_VQ_BYTES	/* bytes per quadword */
@@ -292,12 +336,23 @@ struct za_context {
 	((sizeof(struct za_context) + (__SVE_VQ_BYTES - 1))	\
 		/ __SVE_VQ_BYTES * __SVE_VQ_BYTES)
 
-#define ZA_SIG_REGS_SIZE(vq) ((vq * __SVE_VQ_BYTES) * (vq * __SVE_VQ_BYTES))
+#define ZA_SIG_REGS_SIZE(vq) (((vq) * __SVE_VQ_BYTES) * ((vq) * __SVE_VQ_BYTES))
 
 #define ZA_SIG_ZAV_OFFSET(vq, n) (ZA_SIG_REGS_OFFSET + \
-				  (SVE_SIG_ZREG_SIZE(vq) * n))
+				  (SVE_SIG_ZREG_SIZE(vq) * (n)))
 
 #define ZA_SIG_CONTEXT_SIZE(vq) \
 		(ZA_SIG_REGS_OFFSET + ZA_SIG_REGS_SIZE(vq))
+
+#define ZT_SIG_REG_SIZE 512
+
+#define ZT_SIG_REG_BYTES (ZT_SIG_REG_SIZE / 8)
+
+#define ZT_SIG_REGS_OFFSET sizeof(struct zt_context)
+
+#define ZT_SIG_REGS_SIZE(n) (ZT_SIG_REG_BYTES * (n))
+
+#define ZT_SIG_CONTEXT_SIZE(n) \
+	(sizeof(struct zt_context) + ZT_SIG_REGS_SIZE(n))
 
 #endif /* _UAPI__ASM_SIGCONTEXT_H */

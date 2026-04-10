@@ -3,6 +3,7 @@
 #include <linux/virtio_pci_modern.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/delay.h>
 
 /*
  * vp_modern_map_capability - map a part of virtio pci capability
@@ -202,6 +203,14 @@ static inline void check_offsets(void)
 		     offsetof(struct virtio_pci_common_cfg, queue_used_lo));
 	BUILD_BUG_ON(VIRTIO_PCI_COMMON_Q_USEDHI !=
 		     offsetof(struct virtio_pci_common_cfg, queue_used_hi));
+	BUILD_BUG_ON(VIRTIO_PCI_COMMON_Q_NDATA !=
+		     offsetof(struct virtio_pci_modern_common_cfg, queue_notify_data));
+	BUILD_BUG_ON(VIRTIO_PCI_COMMON_Q_RESET !=
+		     offsetof(struct virtio_pci_modern_common_cfg, queue_reset));
+	BUILD_BUG_ON(VIRTIO_PCI_COMMON_ADM_Q_IDX !=
+		     offsetof(struct virtio_pci_modern_common_cfg, admin_queue_index));
+	BUILD_BUG_ON(VIRTIO_PCI_COMMON_ADM_Q_NUM !=
+		     offsetof(struct virtio_pci_modern_common_cfg, admin_queue_num));
 }
 
 /*
@@ -217,23 +226,29 @@ int vp_modern_probe(struct virtio_pci_modern_device *mdev)
 	int err, common, isr, notify, device;
 	u32 notify_length;
 	u32 notify_offset;
+	int devid;
 
 	check_offsets();
 
-	mdev->pci_dev = pci_dev;
-
-	/* We only own devices >= 0x1000 and <= 0x107f: leave the rest. */
-	if (pci_dev->device < 0x1000 || pci_dev->device > 0x107f)
-		return -ENODEV;
-
-	if (pci_dev->device < 0x1040) {
-		/* Transitional devices: use the PCI subsystem device id as
-		 * virtio device id, same as legacy driver always did.
-		 */
-		mdev->id.device = pci_dev->subsystem_device;
+	if (mdev->device_id_check) {
+		devid = mdev->device_id_check(pci_dev);
+		if (devid < 0)
+			return devid;
+		mdev->id.device = devid;
 	} else {
-		/* Modern devices: simply use PCI device id, but start from 0x1040. */
-		mdev->id.device = pci_dev->device - 0x1040;
+		/* We only own devices >= 0x1000 and <= 0x107f: leave the rest. */
+		if (pci_dev->device < 0x1000 || pci_dev->device > 0x107f)
+			return -ENODEV;
+
+		if (pci_dev->device < 0x1040) {
+			/* Transitional devices: use the PCI subsystem device id as
+			 * virtio device id, same as legacy driver always did.
+			 */
+			mdev->id.device = pci_dev->subsystem_device;
+		} else {
+			/* Modern devices: simply use PCI device id, but start from 0x1040. */
+			mdev->id.device = pci_dev->device - 0x1040;
+		}
 	}
 	mdev->id.vendor = pci_dev->subsystem_vendor;
 
@@ -261,7 +276,8 @@ int vp_modern_probe(struct virtio_pci_modern_device *mdev)
 		return -EINVAL;
 	}
 
-	err = dma_set_mask_and_coherent(&pci_dev->dev, DMA_BIT_MASK(64));
+	err = dma_set_mask_and_coherent(&pci_dev->dev,
+					mdev->dma_mask ? : DMA_BIT_MASK(64));
 	if (err)
 		err = dma_set_mask_and_coherent(&pci_dev->dev,
 						DMA_BIT_MASK(32));
@@ -282,9 +298,10 @@ int vp_modern_probe(struct virtio_pci_modern_device *mdev)
 
 	err = -EINVAL;
 	mdev->common = vp_modern_map_capability(mdev, common,
-				      sizeof(struct virtio_pci_common_cfg), 4,
-				      0, sizeof(struct virtio_pci_common_cfg),
-				      NULL, NULL);
+			      sizeof(struct virtio_pci_common_cfg), 4, 0,
+			      offsetofend(struct virtio_pci_modern_common_cfg,
+					  admin_queue_num),
+			      &mdev->common_len, NULL);
 	if (!mdev->common)
 		goto err_map_common;
 	mdev->isr = vp_modern_map_capability(mdev, isr, sizeof(u8), 1,
@@ -371,63 +388,74 @@ void vp_modern_remove(struct virtio_pci_modern_device *mdev)
 EXPORT_SYMBOL_GPL(vp_modern_remove);
 
 /*
- * vp_modern_get_features - get features from device
+ * vp_modern_get_extended_features - get features from device
  * @mdev: the modern virtio-pci device
+ * @features: the features array to be filled
  *
- * Returns the features read from the device
+ * Fill the specified features array with the features read from the device
  */
-u64 vp_modern_get_features(struct virtio_pci_modern_device *mdev)
+void vp_modern_get_extended_features(struct virtio_pci_modern_device *mdev,
+				     u64 *features)
 {
 	struct virtio_pci_common_cfg __iomem *cfg = mdev->common;
+	int i;
 
-	u64 features;
+	virtio_features_zero(features);
+	for (i = 0; i < VIRTIO_FEATURES_BITS / 32; i++) {
+		u64 cur;
 
-	vp_iowrite32(0, &cfg->device_feature_select);
-	features = vp_ioread32(&cfg->device_feature);
-	vp_iowrite32(1, &cfg->device_feature_select);
-	features |= ((u64)vp_ioread32(&cfg->device_feature) << 32);
-
-	return features;
+		vp_iowrite32(i, &cfg->device_feature_select);
+		cur = vp_ioread32(&cfg->device_feature);
+		features[i >> 1] |= cur << (32 * (i & 1));
+	}
 }
-EXPORT_SYMBOL_GPL(vp_modern_get_features);
+EXPORT_SYMBOL_GPL(vp_modern_get_extended_features);
 
 /*
  * vp_modern_get_driver_features - get driver features from device
  * @mdev: the modern virtio-pci device
+ * @features: the features array to be filled
  *
- * Returns the driver features read from the device
+ * Fill the specified features array with the driver features read from the
+ * device
  */
-u64 vp_modern_get_driver_features(struct virtio_pci_modern_device *mdev)
+void
+vp_modern_get_driver_extended_features(struct virtio_pci_modern_device *mdev,
+				       u64 *features)
 {
 	struct virtio_pci_common_cfg __iomem *cfg = mdev->common;
+	int i;
 
-	u64 features;
+	virtio_features_zero(features);
+	for (i = 0; i < VIRTIO_FEATURES_BITS / 32; i++) {
+		u64 cur;
 
-	vp_iowrite32(0, &cfg->guest_feature_select);
-	features = vp_ioread32(&cfg->guest_feature);
-	vp_iowrite32(1, &cfg->guest_feature_select);
-	features |= ((u64)vp_ioread32(&cfg->guest_feature) << 32);
-
-	return features;
+		vp_iowrite32(i, &cfg->guest_feature_select);
+		cur = vp_ioread32(&cfg->guest_feature);
+		features[i >> 1] |= cur << (32 * (i & 1));
+	}
 }
-EXPORT_SYMBOL_GPL(vp_modern_get_driver_features);
+EXPORT_SYMBOL_GPL(vp_modern_get_driver_extended_features);
 
 /*
- * vp_modern_set_features - set features to device
+ * vp_modern_set_extended_features - set features to device
  * @mdev: the modern virtio-pci device
  * @features: the features set to device
  */
-void vp_modern_set_features(struct virtio_pci_modern_device *mdev,
-			    u64 features)
+void vp_modern_set_extended_features(struct virtio_pci_modern_device *mdev,
+				     const u64 *features)
 {
 	struct virtio_pci_common_cfg __iomem *cfg = mdev->common;
+	int i;
 
-	vp_iowrite32(0, &cfg->guest_feature_select);
-	vp_iowrite32((u32)features, &cfg->guest_feature);
-	vp_iowrite32(1, &cfg->guest_feature_select);
-	vp_iowrite32(features >> 32, &cfg->guest_feature);
+	for (i = 0; i < VIRTIO_FEATURES_BITS / 32; i++) {
+		u32 cur = features[i >> 1] >> (32 * (i & 1));
+
+		vp_iowrite32(i, &cfg->guest_feature_select);
+		vp_iowrite32(cur, &cfg->guest_feature);
+	}
 }
-EXPORT_SYMBOL_GPL(vp_modern_set_features);
+EXPORT_SYMBOL_GPL(vp_modern_set_extended_features);
 
 /*
  * vp_modern_generation - get the device genreation
@@ -477,12 +505,50 @@ void vp_modern_set_status(struct virtio_pci_modern_device *mdev,
 EXPORT_SYMBOL_GPL(vp_modern_set_status);
 
 /*
+ * vp_modern_get_queue_reset - get the queue reset status
+ * @mdev: the modern virtio-pci device
+ * @index: queue index
+ */
+int vp_modern_get_queue_reset(struct virtio_pci_modern_device *mdev, u16 index)
+{
+	struct virtio_pci_modern_common_cfg __iomem *cfg;
+
+	cfg = (struct virtio_pci_modern_common_cfg __iomem *)mdev->common;
+
+	vp_iowrite16(index, &cfg->cfg.queue_select);
+	return vp_ioread16(&cfg->queue_reset);
+}
+EXPORT_SYMBOL_GPL(vp_modern_get_queue_reset);
+
+/*
+ * vp_modern_set_queue_reset - reset the queue
+ * @mdev: the modern virtio-pci device
+ * @index: queue index
+ */
+void vp_modern_set_queue_reset(struct virtio_pci_modern_device *mdev, u16 index)
+{
+	struct virtio_pci_modern_common_cfg __iomem *cfg;
+
+	cfg = (struct virtio_pci_modern_common_cfg __iomem *)mdev->common;
+
+	vp_iowrite16(index, &cfg->cfg.queue_select);
+	vp_iowrite16(1, &cfg->queue_reset);
+
+	while (vp_ioread16(&cfg->queue_reset))
+		msleep(1);
+
+	while (vp_ioread16(&cfg->cfg.queue_enable))
+		msleep(1);
+}
+EXPORT_SYMBOL_GPL(vp_modern_set_queue_reset);
+
+/*
  * vp_modern_queue_vector - set the MSIX vector for a specific virtqueue
  * @mdev: the modern virtio-pci device
  * @index: queue index
- * @vector: the config vector
+ * @vector: the queue vector
  *
- * Returns the config vector read from the device
+ * Returns the queue vector read from the device
  */
 u16 vp_modern_queue_vector(struct virtio_pci_modern_device *mdev,
 			   u16 index, u16 vector)
@@ -667,6 +733,24 @@ void __iomem *vp_modern_map_vq_notify(struct virtio_pci_modern_device *mdev,
 	}
 }
 EXPORT_SYMBOL_GPL(vp_modern_map_vq_notify);
+
+u16 vp_modern_avq_num(struct virtio_pci_modern_device *mdev)
+{
+	struct virtio_pci_modern_common_cfg __iomem *cfg;
+
+	cfg = (struct virtio_pci_modern_common_cfg __iomem *)mdev->common;
+	return vp_ioread16(&cfg->admin_queue_num);
+}
+EXPORT_SYMBOL_GPL(vp_modern_avq_num);
+
+u16 vp_modern_avq_index(struct virtio_pci_modern_device *mdev)
+{
+	struct virtio_pci_modern_common_cfg __iomem *cfg;
+
+	cfg = (struct virtio_pci_modern_common_cfg __iomem *)mdev->common;
+	return vp_ioread16(&cfg->admin_queue_index);
+}
+EXPORT_SYMBOL_GPL(vp_modern_avq_index);
 
 MODULE_VERSION("0.1");
 MODULE_DESCRIPTION("Modern Virtio PCI Device");

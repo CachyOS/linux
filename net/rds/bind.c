@@ -104,7 +104,7 @@ static int rds_add_bound(struct rds_sock *rs, const struct in6_addr *addr,
 			return -EINVAL;
 		last = rover;
 	} else {
-		rover = max_t(u16, prandom_u32(), 2);
+		rover = max_t(u16, get_random_u16(), 2);
 		last = rover - 1;
 	}
 
@@ -160,7 +160,7 @@ void rds_remove_bound(struct rds_sock *rs)
 	rs->rs_bound_addr = in6addr_any;
 }
 
-int rds_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
+int rds_bind(struct socket *sock, struct sockaddr_unsized *uaddr, int addr_len)
 {
 	struct sock *sk = sock->sk;
 	struct rds_sock *rs = rds_sk_to_rs(sk);

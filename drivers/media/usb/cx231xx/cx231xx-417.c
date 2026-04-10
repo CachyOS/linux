@@ -937,7 +937,6 @@ static int cx231xx_load_firmware(struct cx231xx *dev)
 	u32 *p_current_fw, *p_fw;
 	u32 *p_fw_data;
 	int frame = 0;
-	u16 _buffer_size = 4096;
 	u8 *p_buffer;
 
 	p_current_fw = vmalloc(1884180 * 4);
@@ -947,7 +946,7 @@ static int cx231xx_load_firmware(struct cx231xx *dev)
 		return -ENOMEM;
 	}
 
-	p_buffer = vmalloc(4096);
+	p_buffer = vmalloc(EP5_BUF_SIZE);
 	if (p_buffer == NULL) {
 		dprintk(2, "FAIL!!!\n");
 		vfree(p_current_fw);
@@ -1030,9 +1029,9 @@ static int cx231xx_load_firmware(struct cx231xx *dev)
 
 	/*download the firmware by ep5-out*/
 
-	for (frame = 0; frame < (int)(CX231xx_FIRM_IMAGE_SIZE*20/_buffer_size);
+	for (frame = 0; frame < (int)(CX231xx_FIRM_IMAGE_SIZE*20/EP5_BUF_SIZE);
 	     frame++) {
-		for (i = 0; i < _buffer_size; i++) {
+		for (i = 0; i < EP5_BUF_SIZE; i++) {
 			*(p_buffer + i) = (u8)(*(p_fw + (frame * 128 * 8 + (i / 4))) & 0x000000FF);
 			i++;
 			*(p_buffer + i) = (u8)((*(p_fw + (frame * 128 * 8 + (i / 4))) & 0x0000FF00) >> 8);
@@ -1041,7 +1040,7 @@ static int cx231xx_load_firmware(struct cx231xx *dev)
 			i++;
 			*(p_buffer + i) = (u8)((*(p_fw + (frame * 128 * 8 + (i / 4))) & 0xFF000000) >> 24);
 		}
-		cx231xx_ep5_bulkout(dev, p_buffer, _buffer_size);
+		cx231xx_ep5_bulkout(dev, p_buffer, EP5_BUF_SIZE);
 	}
 
 	p_current_fw = p_fw;
@@ -1219,12 +1218,13 @@ static int queue_setup(struct vb2_queue *vq,
 {
 	struct cx231xx *dev = vb2_get_drv_priv(vq);
 	unsigned int size = mpeglinesize * mpeglines;
+	unsigned int q_num_bufs = vb2_get_num_buffers(vq);
 
 	dev->ts1.ts_packet_size  = mpeglinesize;
 	dev->ts1.ts_packet_count = mpeglines;
 
-	if (vq->num_buffers + *nbuffers < CX231XX_MIN_BUF)
-		*nbuffers = CX231XX_MIN_BUF - vq->num_buffers;
+	if (q_num_bufs + *nbuffers < CX231XX_MIN_BUF)
+		*nbuffers = CX231XX_MIN_BUF - q_num_bufs;
 
 	if (*nplanes)
 		return sizes[0] < size ? -EINVAL : 0;
@@ -1453,13 +1453,11 @@ static void stop_streaming(struct vb2_queue *vq)
 	return_all_buffers(dev, VB2_BUF_STATE_ERROR);
 }
 
-static struct vb2_ops cx231xx_video_qops = {
+static const struct vb2_ops cx231xx_video_qops = {
 	.queue_setup		= queue_setup,
 	.buf_queue		= buffer_queue,
 	.start_streaming	= start_streaming,
 	.stop_streaming		= stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 /* ------------------------------------------------------------------ */
@@ -1501,7 +1499,7 @@ static int vidioc_g_selection(struct file *file, void *priv,
 	return 0;
 }
 
-static int vidioc_g_std(struct file *file, void *fh0, v4l2_std_id *norm)
+static int vidioc_g_std(struct file *file, void *priv, v4l2_std_id *norm)
 {
 	struct cx231xx *dev = video_drvdata(file);
 
@@ -1537,20 +1535,6 @@ static int vidioc_s_std(struct file *file, void *priv, v4l2_std_id id)
 	cx231xx_do_mode_ctrl_overrides(dev);
 
 	dprintk(3, "exit vidioc_s_std() i=0x%x\n", i);
-	return 0;
-}
-
-static int vidioc_s_ctrl(struct file *file, void *priv,
-				struct v4l2_control *ctl)
-{
-	struct cx231xx *dev = video_drvdata(file);
-	struct v4l2_subdev *sd;
-
-	dprintk(3, "enter vidioc_s_ctrl()\n");
-	/* Update the A/V core */
-	v4l2_device_for_each_subdev(sd, &dev->v4l2_dev)
-		v4l2_s_ctrl(NULL, sd->ctrl_handler, ctl);
-	dprintk(3, "exit vidioc_s_ctrl()\n");
 	return 0;
 }
 
@@ -1629,7 +1613,6 @@ static const struct v4l2_ioctl_ops mpeg_ioctl_ops = {
 	.vidioc_enum_input	 = cx231xx_enum_input,
 	.vidioc_g_input		 = cx231xx_g_input,
 	.vidioc_s_input		 = cx231xx_s_input,
-	.vidioc_s_ctrl		 = vidioc_s_ctrl,
 	.vidioc_g_pixelaspect	 = vidioc_g_pixelaspect,
 	.vidioc_g_selection	 = vidioc_g_selection,
 	.vidioc_querycap	 = cx231xx_querycap,
@@ -1722,6 +1705,8 @@ static void cx231xx_video_dev_init(
 	vfd->lock = &dev->lock;
 	vfd->release = video_device_release_empty;
 	vfd->ctrl_handler = &dev->mpeg_ctrl_handler.hdl;
+	vfd->device_caps = V4L2_CAP_READWRITE | V4L2_CAP_STREAMING |
+			   V4L2_CAP_VIDEO_CAPTURE;
 	video_set_drvdata(vfd, dev);
 	if (dev->tuner_type == TUNER_ABSENT) {
 		v4l2_disable_ioctl(vfd, VIDIOC_G_FREQUENCY);
@@ -1759,7 +1744,7 @@ int cx231xx_417_register(struct cx231xx *dev)
 	dev->mpeg_ctrl_handler.ops = &cx231xx_ops;
 	if (dev->sd_cx25840)
 		v4l2_ctrl_add_handler(&dev->mpeg_ctrl_handler.hdl,
-				dev->sd_cx25840->ctrl_handler, NULL, false);
+				dev->sd_cx25840->ctrl_handler, NULL, true);
 	if (dev->mpeg_ctrl_handler.hdl.error) {
 		err = dev->mpeg_ctrl_handler.hdl.error;
 		dprintk(3, "%s: can't add cx25840 controls\n", dev->name);
@@ -1782,7 +1767,7 @@ int cx231xx_417_register(struct cx231xx *dev)
 	q->ops = &cx231xx_video_qops;
 	q->mem_ops = &vb2_vmalloc_memops;
 	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
-	q->min_buffers_needed = 1;
+	q->min_queued_buffers = 1;
 	q->lock = &dev->lock;
 	err = vb2_queue_init(q);
 	if (err)

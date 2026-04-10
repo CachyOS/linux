@@ -160,8 +160,7 @@ static int __init pmu_bat_init(void)
 
 	for (i = 0; i < pmu_battery_count; i++) {
 		struct power_supply_config psy_cfg = {};
-		struct pmu_battery_dev *pbat = kzalloc(sizeof(*pbat),
-						       GFP_KERNEL);
+		struct pmu_battery_dev *pbat = kzalloc_obj(*pbat);
 		if (!pbat)
 			break;
 
@@ -170,6 +169,7 @@ static int __init pmu_bat_init(void)
 		pbat->bat_desc.properties = pmu_bat_props;
 		pbat->bat_desc.num_properties = ARRAY_SIZE(pmu_bat_props);
 		pbat->bat_desc.get_property = pmu_bat_get_property;
+		pbat->bat_desc.type = POWER_SUPPLY_TYPE_BATTERY;
 		pbat->pbi = &pmu_batteries[i];
 		psy_cfg.drv_data = pbat;
 

@@ -10,6 +10,7 @@
 
 #include <linux/ctype.h>
 #include <linux/firmware.h>
+#include <linux/string_choices.h>
 #include "otx_cpt_common.h"
 #include "otx_cptpf_ucode.h"
 #include "otx_cptpf.h"
@@ -97,7 +98,7 @@ static int dev_supports_eng_type(struct otx_cpt_eng_grps *eng_grps,
 static void set_ucode_filename(struct otx_cpt_ucode *ucode,
 			       const char *filename)
 {
-	strlcpy(ucode->filename, filename, OTX_CPT_UCODE_NAME_LENGTH);
+	strscpy(ucode->filename, filename, OTX_CPT_UCODE_NAME_LENGTH);
 }
 
 static char *get_eng_type_str(int eng_type)
@@ -138,7 +139,7 @@ static int get_ucode_type(struct otx_cpt_ucode_hdr *ucode_hdr, int *ucode_type)
 	u32 i, val = 0;
 	u8 nn;
 
-	strlcpy(tmp_ver_str, ucode_hdr->ver_str, OTX_CPT_UCODE_VER_STR_SZ);
+	strscpy(tmp_ver_str, ucode_hdr->ver_str, OTX_CPT_UCODE_VER_STR_SZ);
 	for (i = 0; i < strlen(tmp_ver_str); i++)
 		tmp_ver_str[i] = tolower(tmp_ver_str[i]);
 
@@ -286,6 +287,7 @@ static int process_tar_file(struct device *dev,
 	struct tar_ucode_info_t *tar_info;
 	struct otx_cpt_ucode_hdr *ucode_hdr;
 	int ucode_type, ucode_size;
+	unsigned int code_length;
 
 	/*
 	 * If size is less than microcode header size then don't report
@@ -303,14 +305,20 @@ static int process_tar_file(struct device *dev,
 	if (get_ucode_type(ucode_hdr, &ucode_type))
 		return 0;
 
-	ucode_size = ntohl(ucode_hdr->code_length) * 2;
+	code_length = ntohl(ucode_hdr->code_length);
+	if (code_length >= INT_MAX / 2) {
+		dev_err(dev, "Invalid code_length %u\n", code_length);
+		return -EINVAL;
+	}
+
+	ucode_size = code_length * 2;
 	if (!ucode_size || (size < round_up(ucode_size, 16) +
 	    sizeof(struct otx_cpt_ucode_hdr) + OTX_CPT_UCODE_SIGN_LEN)) {
 		dev_err(dev, "Ucode %s invalid size\n", filename);
 		return -EINVAL;
 	}
 
-	tar_info = kzalloc(sizeof(struct tar_ucode_info_t), GFP_KERNEL);
+	tar_info = kzalloc_obj(struct tar_ucode_info_t);
 	if (!tar_info)
 		return -ENOMEM;
 
@@ -338,8 +346,7 @@ static void release_tar_archive(struct tar_arch_info_t *tar_arch)
 		kfree(curr);
 	}
 
-	if (tar_arch->fw)
-		release_firmware(tar_arch->fw);
+	release_firmware(tar_arch->fw);
 	kfree(tar_arch);
 }
 
@@ -405,7 +412,7 @@ static struct tar_arch_info_t *load_tar_archive(struct device *dev,
 	size_t tar_size;
 	int ret;
 
-	tar_arch = kzalloc(sizeof(struct tar_arch_info_t), GFP_KERNEL);
+	tar_arch = kzalloc_obj(struct tar_arch_info_t);
 	if (!tar_arch)
 		return NULL;
 
@@ -498,17 +505,6 @@ int otx_cpt_uc_supports_eng_type(struct otx_cpt_ucode *ucode, int eng_type)
 	return is_eng_type(ucode->type, eng_type);
 }
 EXPORT_SYMBOL_GPL(otx_cpt_uc_supports_eng_type);
-
-int otx_cpt_eng_grp_has_eng_type(struct otx_cpt_eng_grp_info *eng_grp,
-				 int eng_type)
-{
-	struct otx_cpt_engs_rsvd *engs;
-
-	engs = find_engines_by_type(eng_grp, eng_type);
-
-	return (engs != NULL ? 1 : 0);
-}
-EXPORT_SYMBOL_GPL(otx_cpt_eng_grp_has_eng_type);
 
 static void print_ucode_info(struct otx_cpt_eng_grp_info *eng_grp,
 			     char *buf, int size)
@@ -608,8 +604,8 @@ static void print_dbg_info(struct device *dev,
 
 	for (i = 0; i < OTX_CPT_MAX_ENGINE_GROUPS; i++) {
 		grp = &eng_grps->grp[i];
-		pr_debug("engine_group%d, state %s\n", i, grp->is_enabled ?
-			 "enabled" : "disabled");
+		pr_debug("engine_group%d, state %s\n", i,
+			 str_enabled_disabled(grp->is_enabled));
 		if (grp->is_enabled) {
 			mirrored_grp = &eng_grps->grp[grp->mirror.idx];
 			pr_debug("Ucode0 filename %s, version %s\n",
@@ -886,6 +882,7 @@ static int ucode_load(struct device *dev, struct otx_cpt_ucode *ucode,
 {
 	struct otx_cpt_ucode_hdr *ucode_hdr;
 	const struct firmware *fw;
+	unsigned int code_length;
 	int ret;
 
 	set_ucode_filename(ucode, ucode_filename);
@@ -896,7 +893,13 @@ static int ucode_load(struct device *dev, struct otx_cpt_ucode *ucode,
 	ucode_hdr = (struct otx_cpt_ucode_hdr *) fw->data;
 	memcpy(ucode->ver_str, ucode_hdr->ver_str, OTX_CPT_UCODE_VER_STR_SZ);
 	ucode->ver_num = ucode_hdr->ver_num;
-	ucode->size = ntohl(ucode_hdr->code_length) * 2;
+	code_length = ntohl(ucode_hdr->code_length);
+	if (code_length >= INT_MAX / 2) {
+		dev_err(dev, "Ucode invalid code_length %u\n", code_length);
+		ret = -EINVAL;
+		goto release_fw;
+	}
+	ucode->size = code_length * 2;
 	if (!ucode->size || (fw->size < round_up(ucode->size, 16)
 	    + sizeof(struct otx_cpt_ucode_hdr) + OTX_CPT_UCODE_SIGN_LEN)) {
 		dev_err(dev, "Ucode %s invalid size\n", ucode_filename);
@@ -1323,12 +1326,12 @@ static ssize_t ucode_load_store(struct device *dev,
 	int del_grp_idx = -1;
 	int ucode_idx = 0;
 
-	if (strlen(buf) > OTX_CPT_UCODE_NAME_LENGTH)
+	if (count >= OTX_CPT_UCODE_NAME_LENGTH)
 		return -EINVAL;
 
 	eng_grps = container_of(attr, struct otx_cpt_eng_grps, ucode_load_attr);
 	err_msg = "Invalid engine group format";
-	strlcpy(tmp_buf, buf, OTX_CPT_UCODE_NAME_LENGTH);
+	strscpy(tmp_buf, buf, OTX_CPT_UCODE_NAME_LENGTH);
 	start = tmp_buf;
 
 	has_se = has_ie = has_ae = false;

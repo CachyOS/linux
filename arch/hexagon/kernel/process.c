@@ -5,6 +5,7 @@
  * Copyright (c) 2010-2012, The Linux Foundation. All rights reserved.
  */
 
+#include <linux/cpu.h>
 #include <linux/sched.h>
 #include <linux/sched/debug.h>
 #include <linux/sched/task.h>
@@ -44,7 +45,6 @@ void arch_cpu_idle(void)
 {
 	__vmwait();
 	/*  interrupts wake us up, but irqs are still disabled */
-	raw_local_irq_enable();
 }
 
 /*
@@ -52,7 +52,7 @@ void arch_cpu_idle(void)
  */
 int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 {
-	unsigned long clone_flags = args->flags;
+	u64 clone_flags = args->flags;
 	unsigned long usp = args->stack;
 	unsigned long tls = args->tls;
 	struct thread_info *ti = task_thread_info(p);
@@ -113,13 +113,6 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 }
 
 /*
- * Release any architecture-specific resources locked by thread
- */
-void release_thread(struct task_struct *dead_task)
-{
-}
-
-/*
  * Some archs flush debug and FPU info here
  */
 void flush_thread(void)
@@ -160,6 +153,7 @@ unsigned long __get_wchan(struct task_struct *p)
  * Returns 0 if there's no need to re-check for more work.
  */
 
+int do_work_pending(struct pt_regs *regs, u32 thread_info_flags);
 int do_work_pending(struct pt_regs *regs, u32 thread_info_flags)
 {
 	if (!(thread_info_flags & _TIF_WORK_MASK)) {

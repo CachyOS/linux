@@ -20,6 +20,8 @@
 #include <linux/poll.h>
 #include <net/net_namespace.h>
 
+struct net_device_path;
+struct net_device_path_ctx;
 struct ppp_channel;
 
 struct ppp_channel_ops {
@@ -40,8 +42,7 @@ struct ppp_channel {
 	int		hdrlen;		/* amount of headroom channel needs */
 	void		*ppp;		/* opaque to channel */
 	int		speed;		/* transfer rate (bytes/second) */
-	/* the following is not used at present */
-	int		latency;	/* overhead time in milliseconds */
+	bool		direct_xmit;	/* no qdisc, xmit directly */
 };
 
 #ifdef __KERNEL__

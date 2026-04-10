@@ -29,18 +29,17 @@
  * Authors: Thomas Hellstrom <thellstrom-at-vmware-dot-com>
  */
 
-#include <drm/ttm/ttm_bo_driver.h>
-#include <drm/ttm/ttm_placement.h>
-#include <drm/drm_cache.h>
-#include <drm/drm_vma_manager.h>
-#include <linux/iosys-map.h>
-#include <linux/io.h>
-#include <linux/highmem.h>
-#include <linux/wait.h>
-#include <linux/slab.h>
+#include <linux/export.h>
+#include <linux/swap.h>
 #include <linux/vmalloc.h>
-#include <linux/module.h>
-#include <linux/dma-resv.h>
+
+#include <drm/ttm/ttm_bo.h>
+#include <drm/ttm/ttm_placement.h>
+#include <drm/ttm/ttm_tt.h>
+
+#include <drm/drm_cache.h>
+
+#include "ttm_bo_internal.h"
 
 struct ttm_transfer_obj {
 	struct ttm_buffer_object base;
@@ -128,6 +127,22 @@ void ttm_move_memcpy(bool clear,
 }
 EXPORT_SYMBOL(ttm_move_memcpy);
 
+/**
+ * ttm_bo_move_memcpy
+ *
+ * @bo: A pointer to a struct ttm_buffer_object.
+ * @ctx: operation context
+ * @dst_mem: struct ttm_resource indicating where to move.
+ *
+ * Fallback move function for a mappable buffer object in mappable memory.
+ * The function will, if successful,
+ * free any old aperture space, and set (@new_mem)->mm_node to NULL,
+ * and update the (@bo)->mem placement flags. If unsuccessful, the old
+ * data remains untouched, and it's up to the caller to free the
+ * memory space indicated by @new_mem.
+ * Returns:
+ * !0: Failure.
+ */
 int ttm_bo_move_memcpy(struct ttm_buffer_object *bo,
 		       struct ttm_operation_ctx *ctx,
 		       struct ttm_resource *dst_mem)
@@ -137,8 +152,7 @@ int ttm_bo_move_memcpy(struct ttm_buffer_object *bo,
 		ttm_manager_type(bo->bdev, dst_mem->mem_type);
 	struct ttm_tt *ttm = bo->ttm;
 	struct ttm_resource *src_mem = bo->resource;
-	struct ttm_resource_manager *src_man =
-		ttm_manager_type(bdev, src_mem->mem_type);
+	struct ttm_resource_manager *src_man;
 	union {
 		struct ttm_kmap_iter_tt tt;
 		struct ttm_kmap_iter_linear_io io;
@@ -147,22 +161,26 @@ int ttm_bo_move_memcpy(struct ttm_buffer_object *bo,
 	bool clear;
 	int ret = 0;
 
+	if (WARN_ON(!src_mem))
+		return -EINVAL;
+
+	src_man = ttm_manager_type(bdev, src_mem->mem_type);
 	if (ttm && ((ttm->page_flags & TTM_TT_FLAG_SWAPPED) ||
 		    dst_man->use_tt)) {
-		ret = ttm_tt_populate(bdev, ttm, ctx);
+		ret = ttm_bo_populate(bo, ctx);
 		if (ret)
 			return ret;
 	}
 
 	dst_iter = ttm_kmap_iter_linear_io_init(&_dst_iter.io, bdev, dst_mem);
 	if (PTR_ERR(dst_iter) == -EINVAL && dst_man->use_tt)
-		dst_iter = ttm_kmap_iter_tt_init(&_dst_iter.tt, bo->ttm);
+		dst_iter = ttm_kmap_iter_tt_init(&_dst_iter.tt, ttm);
 	if (IS_ERR(dst_iter))
 		return PTR_ERR(dst_iter);
 
 	src_iter = ttm_kmap_iter_linear_io_init(&_src_iter.io, bdev, src_mem);
 	if (PTR_ERR(src_iter) == -EINVAL && src_man->use_tt)
-		src_iter = ttm_kmap_iter_tt_init(&_src_iter.tt, bo->ttm);
+		src_iter = ttm_kmap_iter_tt_init(&_src_iter.tt, ttm);
 	if (IS_ERR(src_iter)) {
 		ret = PTR_ERR(src_iter);
 		goto out_src_iter;
@@ -170,7 +188,7 @@ int ttm_bo_move_memcpy(struct ttm_buffer_object *bo,
 
 	clear = src_iter->ops->maps_tt && (!ttm || !ttm_tt_is_populated(ttm));
 	if (!(clear && ttm && !(ttm->page_flags & TTM_TT_FLAG_ZERO_ALLOC)))
-		ttm_move_memcpy(clear, dst_mem->num_pages, dst_iter, src_iter);
+		ttm_move_memcpy(clear, PFN_UP(dst_mem->size), dst_iter, src_iter);
 
 	if (!src_iter->ops->maps_tt)
 		ttm_kmap_iter_linear_io_fini(&_src_iter.io, bdev, src_mem);
@@ -215,7 +233,7 @@ static int ttm_buffer_object_transfer(struct ttm_buffer_object *bo,
 	struct ttm_transfer_obj *fbo;
 	int ret;
 
-	fbo = kmalloc(sizeof(*fbo), GFP_KERNEL);
+	fbo = kmalloc_obj(*fbo);
 	if (!fbo)
 		return -ENOMEM;
 
@@ -227,7 +245,6 @@ static int ttm_buffer_object_transfer(struct ttm_buffer_object *bo,
 	 */
 
 	atomic_inc(&ttm_glob.bo_count);
-	INIT_LIST_HEAD(&fbo->base.ddestroy);
 	drm_vma_node_reset(&fbo->base.base.vma_node);
 
 	kref_init(&fbo->base.kref);
@@ -236,20 +253,24 @@ static int ttm_buffer_object_transfer(struct ttm_buffer_object *bo,
 	if (bo->type != ttm_bo_type_sg)
 		fbo->base.base.resv = &fbo->base.base._resv;
 
-	if (fbo->base.resource) {
-		ttm_resource_set_bo(fbo->base.resource, &fbo->base);
-		bo->resource = NULL;
-	}
-
 	dma_resv_init(&fbo->base.base._resv);
 	fbo->base.base.dev = NULL;
 	ret = dma_resv_trylock(&fbo->base.base._resv);
 	WARN_ON(!ret);
 
-	ret = dma_resv_reserve_fences(&fbo->base.base._resv, 1);
+	ret = dma_resv_reserve_fences(&fbo->base.base._resv, TTM_NUM_MOVE_FENCES);
 	if (ret) {
+		dma_resv_unlock(&fbo->base.base._resv);
 		kfree(fbo);
 		return ret;
+	}
+
+	if (fbo->base.resource) {
+		ttm_resource_set_bo(fbo->base.resource, &fbo->base);
+		bo->resource = NULL;
+		ttm_bo_set_bulk_move(&fbo->base, NULL);
+	} else {
+		fbo->base.bulk_move = NULL;
 	}
 
 	ttm_bo_get(bo);
@@ -261,6 +282,16 @@ static int ttm_buffer_object_transfer(struct ttm_buffer_object *bo,
 	return 0;
 }
 
+/**
+ * ttm_io_prot
+ *
+ * @bo: ttm buffer object
+ * @res: ttm resource object
+ * @tmp: Page protection flag for a normal, cached mapping.
+ *
+ * Utility function that returns the pgprot_t that should be used for
+ * setting up a PTE with the caching model indicated by @c_state.
+ */
 pgprot_t ttm_io_prot(struct ttm_buffer_object *bo, struct ttm_resource *res,
 		     pgprot_t tmp)
 {
@@ -268,7 +299,13 @@ pgprot_t ttm_io_prot(struct ttm_buffer_object *bo, struct ttm_resource *res,
 	enum ttm_caching caching;
 
 	man = ttm_manager_type(bo->bdev, res->mem_type);
-	caching = man->use_tt ? bo->ttm->caching : res->bus.caching;
+	if (man->use_tt) {
+		caching = bo->ttm->caching;
+		if (bo->ttm->page_flags & TTM_TT_FLAG_DECRYPTED)
+			tmp = pgprot_decrypted(tmp);
+	} else  {
+		caching = res->bus.caching;
+	}
 
 	return ttm_prot_from_caching(caching, tmp);
 }
@@ -281,11 +318,11 @@ static int ttm_bo_ioremap(struct ttm_buffer_object *bo,
 {
 	struct ttm_resource *mem = bo->resource;
 
-	if (bo->resource->bus.addr) {
+	if (mem->bus.addr) {
 		map->bo_kmap_type = ttm_bo_map_premapped;
-		map->virtual = ((u8 *)bo->resource->bus.addr) + offset;
+		map->virtual = ((u8 *)mem->bus.addr) + offset;
 	} else {
-		resource_size_t res = bo->resource->bus.offset + offset;
+		resource_size_t res = mem->bus.offset + offset;
 
 		map->bo_kmap_type = ttm_bo_map_iomap;
 		if (mem->bus.caching == ttm_write_combined)
@@ -306,21 +343,21 @@ static int ttm_bo_kmap_ttm(struct ttm_buffer_object *bo,
 			   struct ttm_bo_kmap_obj *map)
 {
 	struct ttm_resource *mem = bo->resource;
-	struct ttm_operation_ctx ctx = {
-		.interruptible = false,
-		.no_wait_gpu = false
-	};
+	struct ttm_operation_ctx ctx = { };
 	struct ttm_tt *ttm = bo->ttm;
+	struct ttm_resource_manager *man =
+			ttm_manager_type(bo->bdev, mem->mem_type);
 	pgprot_t prot;
 	int ret;
 
 	BUG_ON(!ttm);
 
-	ret = ttm_tt_populate(bo->bdev, ttm, &ctx);
+	ret = ttm_bo_populate(bo, &ctx);
 	if (ret)
 		return ret;
 
-	if (num_pages == 1 && ttm->caching == ttm_cached) {
+	if (num_pages == 1 && ttm->caching == ttm_cached &&
+	    !(man->use_tt && (ttm->page_flags & TTM_TT_FLAG_DECRYPTED))) {
 		/*
 		 * We're mapping a single page, and the desired
 		 * page protection is consistent with the bo.
@@ -342,24 +379,67 @@ static int ttm_bo_kmap_ttm(struct ttm_buffer_object *bo,
 	return (!map->virtual) ? -ENOMEM : 0;
 }
 
+/**
+ * ttm_bo_kmap_try_from_panic
+ *
+ * @bo: The buffer object
+ * @page: The page to map
+ *
+ * Sets up a kernel virtual mapping using kmap_local_page_try_from_panic().
+ * This should only be called from the panic handler, if you make sure the bo
+ * is the one being displayed, so is properly allocated, and protected.
+ *
+ * Returns the vaddr, that you can use to write to the bo, and that you should
+ * pass to kunmap_local() when you're done with this page, or NULL if the bo
+ * is in iomem.
+ */
+void *ttm_bo_kmap_try_from_panic(struct ttm_buffer_object *bo, unsigned long page)
+{
+	if (page + 1 > PFN_UP(bo->resource->size))
+		return NULL;
+
+	if (!bo->resource->bus.is_iomem && bo->ttm->pages && bo->ttm->pages[page])
+		return kmap_local_page_try_from_panic(bo->ttm->pages[page]);
+
+	return NULL;
+}
+EXPORT_SYMBOL(ttm_bo_kmap_try_from_panic);
+
+/**
+ * ttm_bo_kmap
+ *
+ * @bo: The buffer object.
+ * @start_page: The first page to map.
+ * @num_pages: Number of pages to map.
+ * @map: pointer to a struct ttm_bo_kmap_obj representing the map.
+ *
+ * Sets up a kernel virtual mapping, using ioremap, vmap or kmap to the
+ * data in the buffer object. The ttm_kmap_obj_virtual function can then be
+ * used to obtain a virtual address to the data.
+ *
+ * Returns
+ * -ENOMEM: Out of memory.
+ * -EINVAL: Invalid range.
+ */
 int ttm_bo_kmap(struct ttm_buffer_object *bo,
 		unsigned long start_page, unsigned long num_pages,
 		struct ttm_bo_kmap_obj *map)
 {
+	struct ttm_resource *res = bo->resource;
 	unsigned long offset, size;
 	int ret;
 
 	map->virtual = NULL;
 	map->bo = bo;
-	if (num_pages > bo->resource->num_pages)
+	if (num_pages > PFN_UP(res->size))
 		return -EINVAL;
-	if ((start_page + num_pages) > bo->resource->num_pages)
+	if ((start_page + num_pages) > PFN_UP(res->size))
 		return -EINVAL;
 
-	ret = ttm_mem_io_reserve(bo->bdev, bo->resource);
+	ret = ttm_mem_io_reserve(bo->bdev, res);
 	if (ret)
 		return ret;
-	if (!bo->resource->bus.is_iomem) {
+	if (!res->bus.is_iomem) {
 		return ttm_bo_kmap_ttm(bo, start_page, num_pages, map);
 	} else {
 		offset = start_page << PAGE_SHIFT;
@@ -369,6 +449,13 @@ int ttm_bo_kmap(struct ttm_buffer_object *bo,
 }
 EXPORT_SYMBOL(ttm_bo_kmap);
 
+/**
+ * ttm_bo_kunmap
+ *
+ * @map: Object describing the map to unmap.
+ *
+ * Unmaps a kernel map set up by ttm_bo_kmap.
+ */
 void ttm_bo_kunmap(struct ttm_bo_kmap_obj *map)
 {
 	if (!map->virtual)
@@ -394,10 +481,26 @@ void ttm_bo_kunmap(struct ttm_bo_kmap_obj *map)
 }
 EXPORT_SYMBOL(ttm_bo_kunmap);
 
+/**
+ * ttm_bo_vmap
+ *
+ * @bo: The buffer object.
+ * @map: pointer to a struct iosys_map representing the map.
+ *
+ * Sets up a kernel virtual mapping, using ioremap or vmap to the
+ * data in the buffer object. The parameter @map returns the virtual
+ * address as struct iosys_map. Unmap the buffer with ttm_bo_vunmap().
+ *
+ * Returns
+ * -ENOMEM: Out of memory.
+ * -EINVAL: Invalid range.
+ */
 int ttm_bo_vmap(struct ttm_buffer_object *bo, struct iosys_map *map)
 {
 	struct ttm_resource *mem = bo->resource;
 	int ret;
+
+	dma_resv_assert_held(bo->base.resv);
 
 	ret = ttm_mem_io_reserve(bo->bdev, mem);
 	if (ret)
@@ -425,15 +528,12 @@ int ttm_bo_vmap(struct ttm_buffer_object *bo, struct iosys_map *map)
 		iosys_map_set_vaddr_iomem(map, vaddr_iomem);
 
 	} else {
-		struct ttm_operation_ctx ctx = {
-			.interruptible = false,
-			.no_wait_gpu = false
-		};
+		struct ttm_operation_ctx ctx = { };
 		struct ttm_tt *ttm = bo->ttm;
 		pgprot_t prot;
 		void *vaddr;
 
-		ret = ttm_tt_populate(bo->bdev, ttm, &ctx);
+		ret = ttm_bo_populate(bo, &ctx);
 		if (ret)
 			return ret;
 
@@ -453,9 +553,19 @@ int ttm_bo_vmap(struct ttm_buffer_object *bo, struct iosys_map *map)
 }
 EXPORT_SYMBOL(ttm_bo_vmap);
 
+/**
+ * ttm_bo_vunmap
+ *
+ * @bo: The buffer object.
+ * @map: Object describing the map to unmap.
+ *
+ * Unmaps a kernel map set up by ttm_bo_vmap().
+ */
 void ttm_bo_vunmap(struct ttm_buffer_object *bo, struct iosys_map *map)
 {
 	struct ttm_resource *mem = bo->resource;
+
+	dma_resv_assert_held(bo->base.resv);
 
 	if (iosys_map_is_null(map))
 		return;
@@ -466,16 +576,20 @@ void ttm_bo_vunmap(struct ttm_buffer_object *bo, struct iosys_map *map)
 		iounmap(map->vaddr_iomem);
 	iosys_map_clear(map);
 
-	ttm_mem_io_free(bo->bdev, bo->resource);
+	ttm_mem_io_free(bo->bdev, mem);
 }
 EXPORT_SYMBOL(ttm_bo_vunmap);
 
 static int ttm_bo_wait_free_node(struct ttm_buffer_object *bo,
 				 bool dst_use_tt)
 {
-	int ret;
-	ret = ttm_bo_wait(bo, false, false);
-	if (ret)
+	long ret;
+
+	ret = dma_resv_wait_timeout(bo->base.resv, DMA_RESV_USAGE_BOOKKEEP,
+				    false, 15 * HZ);
+	if (ret == 0)
+		return -EBUSY;
+	if (ret < 0)
 		return ret;
 
 	if (!dst_use_tt)
@@ -525,25 +639,64 @@ static int ttm_bo_move_to_ghost(struct ttm_buffer_object *bo,
 static void ttm_bo_move_pipeline_evict(struct ttm_buffer_object *bo,
 				       struct dma_fence *fence)
 {
-	struct ttm_device *bdev = bo->bdev;
 	struct ttm_resource_manager *from;
+	struct dma_fence *tmp;
+	int i;
 
-	from = ttm_manager_type(bdev, bo->resource->mem_type);
+	from = ttm_manager_type(bo->bdev, bo->resource->mem_type);
 
 	/**
 	 * BO doesn't have a TTM we need to bind/unbind. Just remember
-	 * this eviction and free up the allocation
+	 * this eviction and free up the allocation.
+	 * The fence will be saved in the first free slot or in the slot
+	 * already used to store a fence from the same context. Since
+	 * drivers can't use more than TTM_NUM_MOVE_FENCES contexts for
+	 * evictions we should always find a slot to use.
 	 */
-	spin_lock(&from->move_lock);
-	if (!from->move || dma_fence_is_later(fence, from->move)) {
-		dma_fence_put(from->move);
-		from->move = dma_fence_get(fence);
+	spin_lock(&from->eviction_lock);
+	for (i = 0; i < TTM_NUM_MOVE_FENCES; i++) {
+		tmp = from->eviction_fences[i];
+		if (!tmp)
+			break;
+		if (fence->context != tmp->context)
+			continue;
+		if (dma_fence_is_later(fence, tmp)) {
+			dma_fence_put(tmp);
+			break;
+		}
+		goto unlock;
 	}
-	spin_unlock(&from->move_lock);
+	if (i < TTM_NUM_MOVE_FENCES) {
+		from->eviction_fences[i] = dma_fence_get(fence);
+	} else {
+		WARN(1, "not enough fence slots for all fence contexts");
+		spin_unlock(&from->eviction_lock);
+		dma_fence_wait(fence, false);
+		goto end;
+	}
 
+unlock:
+	spin_unlock(&from->eviction_lock);
+end:
 	ttm_resource_free(bo, &bo->resource);
 }
 
+/**
+ * ttm_bo_move_accel_cleanup - cleanup helper for hw copies
+ *
+ * @bo: A pointer to a struct ttm_buffer_object.
+ * @fence: A fence object that signals when moving is complete.
+ * @evict: This is an evict move. Don't return until the buffer is idle.
+ * @pipeline: evictions are to be pipelined.
+ * @new_mem: struct ttm_resource indicating where to move.
+ *
+ * Accelerated move function to be called when an accelerated move
+ * has been scheduled. The function will create a new temporary buffer object
+ * representing the old placement, and put the sync object on both buffer
+ * objects. After that the newly created buffer object is unref'd to be
+ * destroyed when the move is complete. This will help pipeline
+ * buffer moves.
+ */
 int ttm_bo_move_accel_cleanup(struct ttm_buffer_object *bo,
 			      struct dma_fence *fence,
 			      bool evict,
@@ -572,11 +725,20 @@ int ttm_bo_move_accel_cleanup(struct ttm_buffer_object *bo,
 }
 EXPORT_SYMBOL(ttm_bo_move_accel_cleanup);
 
+/**
+ * ttm_bo_move_sync_cleanup - cleanup by waiting for the move to finish
+ *
+ * @bo: A pointer to a struct ttm_buffer_object.
+ * @new_mem: struct ttm_resource indicating where to move.
+ *
+ * Special case of ttm_bo_move_accel_cleanup where the bo is guaranteed
+ * by the caller to be idle. Typically used after memcpy buffer moves.
+ */
 void ttm_bo_move_sync_cleanup(struct ttm_buffer_object *bo,
 			      struct ttm_resource *new_mem)
 {
-	struct ttm_device *bdev = bo->bdev;
-	struct ttm_resource_manager *man = ttm_manager_type(bdev, new_mem->mem_type);
+	struct ttm_resource_manager *man =
+		ttm_manager_type(bo->bdev, new_mem->mem_type);
 	int ret;
 
 	ret = ttm_bo_wait_free_node(bo, man->use_tt);
@@ -600,31 +762,23 @@ EXPORT_SYMBOL(ttm_bo_move_sync_cleanup);
  */
 int ttm_bo_pipeline_gutting(struct ttm_buffer_object *bo)
 {
-	static const struct ttm_place sys_mem = { .mem_type = TTM_PL_SYSTEM };
 	struct ttm_buffer_object *ghost;
-	struct ttm_resource *sys_res;
 	struct ttm_tt *ttm;
 	int ret;
 
-	ret = ttm_resource_alloc(bo, &sys_mem, &sys_res);
-	if (ret)
-		return ret;
-
 	/* If already idle, no need for ghost object dance. */
-	ret = ttm_bo_wait(bo, false, true);
-	if (ret != -EBUSY) {
+	if (dma_resv_test_signaled(bo->base.resv, DMA_RESV_USAGE_BOOKKEEP)) {
 		if (!bo->ttm) {
 			/* See comment below about clearing. */
 			ret = ttm_tt_create(bo, true);
 			if (ret)
-				goto error_free_sys_mem;
+				return ret;
 		} else {
 			ttm_tt_unpopulate(bo->bdev, bo->ttm);
 			if (bo->type == ttm_bo_type_device)
 				ttm_tt_mark_for_clear(bo->ttm);
 		}
 		ttm_resource_free(bo, &bo->resource);
-		ttm_bo_assign_mem(bo, sys_res);
 		return 0;
 	}
 
@@ -641,7 +795,7 @@ int ttm_bo_pipeline_gutting(struct ttm_buffer_object *bo)
 	ret = ttm_tt_create(bo, true);
 	swap(bo->ttm, ttm);
 	if (ret)
-		goto error_free_sys_mem;
+		return ret;
 
 	ret = ttm_buffer_object_transfer(bo, &ghost);
 	if (ret)
@@ -649,19 +803,369 @@ int ttm_bo_pipeline_gutting(struct ttm_buffer_object *bo)
 
 	ret = dma_resv_copy_fences(&ghost->base._resv, bo->base.resv);
 	/* Last resort, wait for the BO to be idle when we are OOM */
-	if (ret)
-		ttm_bo_wait(bo, false, false);
+	if (ret) {
+		dma_resv_wait_timeout(bo->base.resv, DMA_RESV_USAGE_BOOKKEEP,
+				      false, MAX_SCHEDULE_TIMEOUT);
+	}
 
 	dma_resv_unlock(&ghost->base._resv);
 	ttm_bo_put(ghost);
 	bo->ttm = ttm;
-	ttm_bo_assign_mem(bo, sys_res);
 	return 0;
 
 error_destroy_tt:
 	ttm_tt_destroy(bo->bdev, ttm);
-
-error_free_sys_mem:
-	ttm_resource_free(bo, &sys_res);
 	return ret;
 }
+
+static bool ttm_lru_walk_trylock(struct ttm_bo_lru_cursor *curs,
+				 struct ttm_buffer_object *bo)
+{
+	struct ttm_operation_ctx *ctx = curs->arg->ctx;
+
+	curs->needs_unlock = false;
+
+	if (dma_resv_trylock(bo->base.resv)) {
+		curs->needs_unlock = true;
+		return true;
+	}
+
+	if (bo->base.resv == ctx->resv && ctx->allow_res_evict) {
+		dma_resv_assert_held(bo->base.resv);
+		return true;
+	}
+
+	return false;
+}
+
+static int ttm_lru_walk_ticketlock(struct ttm_bo_lru_cursor *curs,
+				   struct ttm_buffer_object *bo)
+{
+	struct ttm_lru_walk_arg *arg = curs->arg;
+	int ret;
+
+	if (arg->ctx->interruptible)
+		ret = dma_resv_lock_interruptible(bo->base.resv, arg->ticket);
+	else
+		ret = dma_resv_lock(bo->base.resv, arg->ticket);
+
+	if (!ret) {
+		curs->needs_unlock = true;
+		/*
+		 * Only a single ticketlock per loop. Ticketlocks are prone
+		 * to return -EDEADLK causing the eviction to fail, so
+		 * after waiting for the ticketlock, revert back to
+		 * trylocking for this walk.
+		 */
+		arg->ticket = NULL;
+	} else if (ret == -EDEADLK) {
+		/* Caller needs to exit the ww transaction. */
+		ret = -ENOSPC;
+	}
+
+	return ret;
+}
+
+/**
+ * ttm_lru_walk_for_evict() - Perform a LRU list walk, with actions taken on
+ * valid items.
+ * @walk: describe the walks and actions taken
+ * @bdev: The TTM device.
+ * @man: The struct ttm_resource manager whose LRU lists we're walking.
+ * @target: The end condition for the walk.
+ *
+ * The LRU lists of @man are walk, and for each struct ttm_resource encountered,
+ * the corresponding ttm_buffer_object is locked and taken a reference on, and
+ * the LRU lock is dropped. the LRU lock may be dropped before locking and, in
+ * that case, it's verified that the item actually remains on the LRU list after
+ * the lock, and that the buffer object didn't switch resource in between.
+ *
+ * With a locked object, the actions indicated by @walk->process_bo are
+ * performed, and after that, the bo is unlocked, the refcount dropped and the
+ * next struct ttm_resource is processed. Here, the walker relies on
+ * TTM's restartable LRU list implementation.
+ *
+ * Typically @walk->process_bo() would return the number of pages evicted,
+ * swapped or shrunken, so that when the total exceeds @target, or when the
+ * LRU list has been walked in full, iteration is terminated. It's also terminated
+ * on error. Note that the definition of @target is done by the caller, it
+ * could have a different meaning than the number of pages.
+ *
+ * Note that the way dma_resv individualization is done, locking needs to be done
+ * either with the LRU lock held (trylocking only) or with a reference on the
+ * object.
+ *
+ * Return: The progress made towards target or negative error code on error.
+ */
+s64 ttm_lru_walk_for_evict(struct ttm_lru_walk *walk, struct ttm_device *bdev,
+			   struct ttm_resource_manager *man, s64 target)
+{
+	struct ttm_bo_lru_cursor cursor;
+	struct ttm_buffer_object *bo;
+	s64 progress = 0;
+	s64 lret;
+
+	ttm_bo_lru_for_each_reserved_guarded(&cursor, man, &walk->arg, bo) {
+		lret = walk->ops->process_bo(walk, bo);
+		if (lret == -EBUSY || lret == -EALREADY)
+			lret = 0;
+		progress = (lret < 0) ? lret : progress + lret;
+		if (progress < 0 || progress >= target)
+			break;
+	}
+	if (IS_ERR(bo))
+		return PTR_ERR(bo);
+
+	return progress;
+}
+EXPORT_SYMBOL(ttm_lru_walk_for_evict);
+
+static void ttm_bo_lru_cursor_cleanup_bo(struct ttm_bo_lru_cursor *curs)
+{
+	struct ttm_buffer_object *bo = curs->bo;
+
+	if (bo) {
+		if (curs->needs_unlock)
+			dma_resv_unlock(bo->base.resv);
+		ttm_bo_put(bo);
+		curs->bo = NULL;
+	}
+}
+
+/**
+ * ttm_bo_lru_cursor_fini() - Stop using a struct ttm_bo_lru_cursor
+ * and clean up any iteration it was used for.
+ * @curs: The cursor.
+ */
+void ttm_bo_lru_cursor_fini(struct ttm_bo_lru_cursor *curs)
+{
+	spinlock_t *lru_lock = &curs->res_curs.man->bdev->lru_lock;
+
+	ttm_bo_lru_cursor_cleanup_bo(curs);
+	spin_lock(lru_lock);
+	ttm_resource_cursor_fini(&curs->res_curs);
+	spin_unlock(lru_lock);
+}
+EXPORT_SYMBOL(ttm_bo_lru_cursor_fini);
+
+/**
+ * ttm_bo_lru_cursor_init() - Initialize a struct ttm_bo_lru_cursor
+ * @curs: The ttm_bo_lru_cursor to initialize.
+ * @man: The ttm resource_manager whose LRU lists to iterate over.
+ * @arg: The ttm_lru_walk_arg to govern the walk.
+ *
+ * Initialize a struct ttm_bo_lru_cursor.
+ *
+ * Return: Pointer to @curs. The function does not fail.
+ */
+struct ttm_bo_lru_cursor *
+ttm_bo_lru_cursor_init(struct ttm_bo_lru_cursor *curs,
+		       struct ttm_resource_manager *man,
+		       struct ttm_lru_walk_arg *arg)
+{
+	memset(curs, 0, sizeof(*curs));
+	ttm_resource_cursor_init(&curs->res_curs, man);
+	curs->arg = arg;
+
+	return curs;
+}
+EXPORT_SYMBOL(ttm_bo_lru_cursor_init);
+
+static struct ttm_buffer_object *
+__ttm_bo_lru_cursor_next(struct ttm_bo_lru_cursor *curs)
+{
+	spinlock_t *lru_lock = &curs->res_curs.man->bdev->lru_lock;
+	struct ttm_resource *res = NULL;
+	struct ttm_buffer_object *bo;
+	struct ttm_lru_walk_arg *arg = curs->arg;
+	bool first = !curs->bo;
+
+	ttm_bo_lru_cursor_cleanup_bo(curs);
+
+	spin_lock(lru_lock);
+	for (;;) {
+		int mem_type, ret = 0;
+		bool bo_locked = false;
+
+		if (first) {
+			res = ttm_resource_manager_first(&curs->res_curs);
+			first = false;
+		} else {
+			res = ttm_resource_manager_next(&curs->res_curs);
+		}
+		if (!res)
+			break;
+
+		bo = res->bo;
+		if (ttm_lru_walk_trylock(curs, bo))
+			bo_locked = true;
+		else if (!arg->ticket || arg->ctx->no_wait_gpu || arg->trylock_only)
+			continue;
+
+		if (!ttm_bo_get_unless_zero(bo)) {
+			if (curs->needs_unlock)
+				dma_resv_unlock(bo->base.resv);
+			continue;
+		}
+
+		mem_type = res->mem_type;
+		spin_unlock(lru_lock);
+		if (!bo_locked)
+			ret = ttm_lru_walk_ticketlock(curs, bo);
+
+		/*
+		 * Note that in between the release of the lru lock and the
+		 * ticketlock, the bo may have switched resource,
+		 * and also memory type, since the resource may have been
+		 * freed and allocated again with a different memory type.
+		 * In that case, just skip it.
+		 */
+		curs->bo = bo;
+		if (!ret && bo->resource && bo->resource->mem_type == mem_type)
+			return bo;
+
+		ttm_bo_lru_cursor_cleanup_bo(curs);
+		if (ret && ret != -EALREADY)
+			return ERR_PTR(ret);
+
+		spin_lock(lru_lock);
+	}
+
+	spin_unlock(lru_lock);
+	return res ? bo : NULL;
+}
+
+/**
+ * ttm_bo_lru_cursor_next() - Continue iterating a manager's LRU lists
+ * to find and lock buffer object.
+ * @curs: The cursor initialized using ttm_bo_lru_cursor_init() and
+ * ttm_bo_lru_cursor_first().
+ *
+ * Return: A pointer to a locked and reference-counted buffer object,
+ * or NULL if none could be found and looping should be terminated.
+ */
+struct ttm_buffer_object *ttm_bo_lru_cursor_next(struct ttm_bo_lru_cursor *curs)
+{
+	return __ttm_bo_lru_cursor_next(curs);
+}
+EXPORT_SYMBOL(ttm_bo_lru_cursor_next);
+
+/**
+ * ttm_bo_lru_cursor_first() - Start iterating a manager's LRU lists
+ * to find and lock buffer object.
+ * @curs: The cursor initialized using ttm_bo_lru_cursor_init().
+ *
+ * Return: A pointer to a locked and reference-counted buffer object,
+ * or NULL if none could be found and looping should be terminated.
+ */
+struct ttm_buffer_object *ttm_bo_lru_cursor_first(struct ttm_bo_lru_cursor *curs)
+{
+	ttm_bo_lru_cursor_cleanup_bo(curs);
+	return __ttm_bo_lru_cursor_next(curs);
+}
+EXPORT_SYMBOL(ttm_bo_lru_cursor_first);
+
+/**
+ * ttm_bo_shrink() - Helper to shrink a ttm buffer object.
+ * @ctx: The struct ttm_operation_ctx used for the shrinking operation.
+ * @bo: The buffer object.
+ * @flags: Flags governing the shrinking behaviour.
+ *
+ * The function uses the ttm_tt_back_up functionality to back up or
+ * purge a struct ttm_tt. If the bo is not in system, it's first
+ * moved there.
+ *
+ * Return: The number of pages shrunken or purged, or
+ * negative error code on failure.
+ */
+long ttm_bo_shrink(struct ttm_operation_ctx *ctx, struct ttm_buffer_object *bo,
+		   const struct ttm_bo_shrink_flags flags)
+{
+	static const struct ttm_place sys_placement_flags = {
+		.fpfn = 0,
+		.lpfn = 0,
+		.mem_type = TTM_PL_SYSTEM,
+		.flags = 0,
+	};
+	static struct ttm_placement sys_placement = {
+		.num_placement = 1,
+		.placement = &sys_placement_flags,
+	};
+	struct ttm_device *bdev = bo->bdev;
+	long lret;
+
+	dma_resv_assert_held(bo->base.resv);
+
+	if (flags.allow_move && bo->resource->mem_type != TTM_PL_SYSTEM) {
+		int ret = ttm_bo_validate(bo, &sys_placement, ctx);
+
+		/* Consider -ENOMEM and -ENOSPC non-fatal. */
+		if (ret) {
+			if (ret == -ENOMEM || ret == -ENOSPC)
+				ret = -EBUSY;
+			return ret;
+		}
+	}
+
+	ttm_bo_unmap_virtual(bo);
+	lret = ttm_bo_wait_ctx(bo, ctx);
+	if (lret < 0)
+		return lret;
+
+	if (bo->bulk_move) {
+		spin_lock(&bdev->lru_lock);
+		ttm_resource_del_bulk_move(bo->resource, bo);
+		spin_unlock(&bdev->lru_lock);
+	}
+
+	lret = ttm_tt_backup(bdev, bo->ttm, (struct ttm_backup_flags)
+			     {.purge = flags.purge,
+			      .writeback = flags.writeback});
+
+	if (lret <= 0 && bo->bulk_move) {
+		spin_lock(&bdev->lru_lock);
+		ttm_resource_add_bulk_move(bo->resource, bo);
+		spin_unlock(&bdev->lru_lock);
+	}
+
+	if (lret < 0 && lret != -EINTR)
+		return -EBUSY;
+
+	return lret;
+}
+EXPORT_SYMBOL(ttm_bo_shrink);
+
+/**
+ * ttm_bo_shrink_suitable() - Whether a bo is suitable for shinking
+ * @ctx: The struct ttm_operation_ctx governing the shrinking.
+ * @bo: The candidate for shrinking.
+ *
+ * Check whether the object, given the information available to TTM,
+ * is suitable for shinking, This function can and should be used
+ * before attempting to shrink an object.
+ *
+ * Return: true if suitable. false if not.
+ */
+bool ttm_bo_shrink_suitable(struct ttm_buffer_object *bo, struct ttm_operation_ctx *ctx)
+{
+	return bo->ttm && ttm_tt_is_populated(bo->ttm) && !bo->pin_count &&
+		(!ctx->no_wait_gpu ||
+		 dma_resv_test_signaled(bo->base.resv, DMA_RESV_USAGE_BOOKKEEP));
+}
+EXPORT_SYMBOL(ttm_bo_shrink_suitable);
+
+/**
+ * ttm_bo_shrink_avoid_wait() - Whether to avoid waiting for GPU
+ * during shrinking
+ *
+ * In some situations, like direct reclaim, waiting (in particular gpu waiting)
+ * should be avoided since it may stall a system that could otherwise make progress
+ * shrinking something else less time consuming.
+ *
+ * Return: true if gpu waiting should be avoided, false if not.
+ */
+bool ttm_bo_shrink_avoid_wait(void)
+{
+	return !current_is_kswapd();
+}
+EXPORT_SYMBOL(ttm_bo_shrink_avoid_wait);

@@ -131,9 +131,8 @@ static int gb_interface_route_create(struct gb_interface *intf)
 	int ret;
 
 	/* Allocate an interface device id. */
-	ret = ida_simple_get(&svc->device_id_map,
-			     GB_SVC_DEVICE_ID_MIN, GB_SVC_DEVICE_ID_MAX + 1,
-			     GFP_KERNEL);
+	ret = ida_alloc_range(&svc->device_id_map, GB_SVC_DEVICE_ID_MIN,
+			      GB_SVC_DEVICE_ID_MAX, GFP_KERNEL);
 	if (ret < 0) {
 		dev_err(&intf->dev, "failed to allocate device id: %d\n", ret);
 		return ret;
@@ -165,7 +164,7 @@ err_svc_id_free:
 	 * XXX anymore.
 	 */
 err_ida_remove:
-	ida_simple_remove(&svc->device_id_map, device_id);
+	ida_free(&svc->device_id_map, device_id);
 
 	return ret;
 }
@@ -178,7 +177,7 @@ static void gb_interface_route_destroy(struct gb_interface *intf)
 		return;
 
 	gb_svc_route_destroy(svc, svc->ap_intf_id, intf->interface_id);
-	ida_simple_remove(&svc->device_id_map, intf->device_id);
+	ida_free(&svc->device_id_map, intf->device_id);
 	intf->device_id = GB_INTERFACE_DEVICE_ID_BAD;
 }
 
@@ -694,6 +693,7 @@ static void gb_interface_release(struct device *dev)
 
 	trace_gb_interface_release(intf);
 
+	cancel_work_sync(&intf->mode_switch_work);
 	kfree(intf);
 }
 
@@ -765,7 +765,7 @@ static const struct dev_pm_ops gb_interface_pm_ops = {
 			   gb_interface_runtime_idle)
 };
 
-struct device_type greybus_interface_type = {
+const struct device_type greybus_interface_type = {
 	.name =		"greybus_interface",
 	.release =	gb_interface_release,
 	.pm =		&gb_interface_pm_ops,
@@ -780,7 +780,7 @@ struct device_type greybus_interface_type = {
  * The position of interface within the Endo is encoded in "interface_id"
  * argument.
  *
- * Returns a pointer to the new interfce or a null pointer if a
+ * Returns a pointer to the new interface or a null pointer if a
  * failure occurs due to memory exhaustion.
  */
 struct gb_interface *gb_interface_create(struct gb_module *module,
@@ -789,7 +789,7 @@ struct gb_interface *gb_interface_create(struct gb_module *module,
 	struct gb_host_device *hd = module->hd;
 	struct gb_interface *intf;
 
-	intf = kzalloc(sizeof(*intf), GFP_KERNEL);
+	intf = kzalloc_obj(*intf);
 	if (!intf)
 		return NULL;
 

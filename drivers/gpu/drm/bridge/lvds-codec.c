@@ -5,9 +5,9 @@
  */
 
 #include <linux/gpio/consumer.h>
+#include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_graph.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
@@ -34,11 +34,12 @@ static inline struct lvds_codec *to_lvds_codec(struct drm_bridge *bridge)
 }
 
 static int lvds_codec_attach(struct drm_bridge *bridge,
+			     struct drm_encoder *encoder,
 			     enum drm_bridge_attach_flags flags)
 {
 	struct lvds_codec *lvds_codec = to_lvds_codec(bridge);
 
-	return drm_bridge_attach(bridge->encoder, lvds_codec->panel_bridge,
+	return drm_bridge_attach(encoder, lvds_codec->panel_bridge,
 				 bridge, flags);
 }
 
@@ -72,12 +73,6 @@ static void lvds_codec_disable(struct drm_bridge *bridge)
 			"Failed to disable regulator \"vcc\": %d\n", ret);
 }
 
-static const struct drm_bridge_funcs funcs = {
-	.attach = lvds_codec_attach,
-	.enable = lvds_codec_enable,
-	.disable = lvds_codec_disable,
-};
-
 #define MAX_INPUT_SEL_FORMATS 1
 static u32 *
 lvds_codec_atomic_get_input_bus_fmts(struct drm_bridge *bridge,
@@ -103,7 +98,7 @@ lvds_codec_atomic_get_input_bus_fmts(struct drm_bridge *bridge,
 	return input_fmts;
 }
 
-static const struct drm_bridge_funcs funcs_decoder = {
+static const struct drm_bridge_funcs funcs = {
 	.attach = lvds_codec_attach,
 	.enable = lvds_codec_enable,
 	.disable = lvds_codec_disable,
@@ -123,9 +118,10 @@ static int lvds_codec_probe(struct platform_device *pdev)
 	u32 val;
 	int ret;
 
-	lvds_codec = devm_kzalloc(dev, sizeof(*lvds_codec), GFP_KERNEL);
-	if (!lvds_codec)
-		return -ENOMEM;
+	lvds_codec = devm_drm_bridge_alloc(dev, struct lvds_codec, bridge,
+					   &funcs);
+	if (IS_ERR(lvds_codec))
+		return PTR_ERR(lvds_codec);
 
 	lvds_codec->dev = &pdev->dev;
 	lvds_codec->connector_type = (uintptr_t)of_device_get_match_data(dev);
@@ -161,8 +157,6 @@ static int lvds_codec_probe(struct platform_device *pdev)
 	if (IS_ERR(lvds_codec->panel_bridge))
 		return PTR_ERR(lvds_codec->panel_bridge);
 
-	lvds_codec->bridge.funcs = &funcs;
-
 	/*
 	 * Decoder input LVDS format is a property of the decoder chip or even
 	 * its strapping. Handle data-mapping the same way lvds-panel does. In
@@ -180,13 +174,14 @@ static int lvds_codec_probe(struct platform_device *pdev)
 		of_node_put(bus_node);
 		if (ret == -ENODEV) {
 			dev_warn(dev, "missing 'data-mapping' DT property\n");
-		} else if (ret) {
+		} else if (ret < 0) {
 			dev_err(dev, "invalid 'data-mapping' DT property\n");
 			return ret;
 		} else {
 			lvds_codec->bus_format = ret;
-			lvds_codec->bridge.funcs = &funcs_decoder;
 		}
+	} else {
+		lvds_codec->bus_format = MEDIA_BUS_FMT_RGB888_1X24;
 	}
 
 	/*
@@ -215,13 +210,11 @@ static int lvds_codec_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int lvds_codec_remove(struct platform_device *pdev)
+static void lvds_codec_remove(struct platform_device *pdev)
 {
 	struct lvds_codec *lvds_codec = platform_get_drvdata(pdev);
 
 	drm_bridge_remove(&lvds_codec->bridge);
-
-	return 0;
 }
 
 static const struct of_device_id lvds_codec_match[] = {
@@ -243,7 +236,7 @@ MODULE_DEVICE_TABLE(of, lvds_codec_match);
 
 static struct platform_driver lvds_codec_driver = {
 	.probe	= lvds_codec_probe,
-	.remove	= lvds_codec_remove,
+	.remove = lvds_codec_remove,
 	.driver		= {
 		.name		= "lvds-codec",
 		.of_match_table	= lvds_codec_match,

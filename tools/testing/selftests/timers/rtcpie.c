@@ -18,7 +18,7 @@
 #include <stdlib.h>
 #include <errno.h>
 
-#include "../kselftest.h"
+#include "kselftest.h"
 
 /*
  * This expects the new RTC class driver framework, working with
@@ -29,7 +29,7 @@ static const char default_rtc[] = "/dev/rtc0";
 
 int main(int argc, char **argv)
 {
-	int i, fd, retval, irqcount = 0;
+	int i, fd, retval;
 	unsigned long tmp, data, old_pie_rate;
 	const char *rtc = default_rtc;
 	struct timeval start, end, diff;
@@ -120,7 +120,6 @@ int main(int argc, char **argv)
 
 			fprintf(stderr, " %d",i);
 			fflush(stderr);
-			irqcount++;
 		}
 
 		/* Disable periodic interrupts */

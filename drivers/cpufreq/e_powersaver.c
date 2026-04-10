@@ -55,8 +55,7 @@ static struct acpi_processor_performance *eps_acpi_cpu_perf;
 /* Minimum necessary to get acpi_processor_get_bios_limit() working */
 static int eps_acpi_init(void)
 {
-	eps_acpi_cpu_perf = kzalloc(sizeof(*eps_acpi_cpu_perf),
-				      GFP_KERNEL);
+	eps_acpi_cpu_perf = kzalloc_obj(*eps_acpi_cpu_perf);
 	if (!eps_acpi_cpu_perf)
 		return -ENOMEM;
 
@@ -225,12 +224,12 @@ static int eps_cpu_init(struct cpufreq_policy *policy)
 		return -ENODEV;
 	}
 	/* Enable Enhanced PowerSaver */
-	rdmsrl(MSR_IA32_MISC_ENABLE, val);
+	rdmsrq(MSR_IA32_MISC_ENABLE, val);
 	if (!(val & MSR_IA32_MISC_ENABLE_ENHANCED_SPEEDSTEP)) {
 		val |= MSR_IA32_MISC_ENABLE_ENHANCED_SPEEDSTEP;
-		wrmsrl(MSR_IA32_MISC_ENABLE, val);
+		wrmsrq(MSR_IA32_MISC_ENABLE, val);
 		/* Can be locked at 0 */
-		rdmsrl(MSR_IA32_MISC_ENABLE, val);
+		rdmsrq(MSR_IA32_MISC_ENABLE, val);
 		if (!(val & MSR_IA32_MISC_ENABLE_ENHANCED_SPEEDSTEP)) {
 			pr_info("Can't enable Enhanced PowerSaver\n");
 			return -ENODEV;
@@ -321,8 +320,7 @@ static int eps_cpu_init(struct cpufreq_policy *policy)
 		states = 2;
 
 	/* Allocate private data and frequency table for current cpu */
-	centaur = kzalloc(struct_size(centaur, freq_table, states + 1),
-			  GFP_KERNEL);
+	centaur = kzalloc_flex(*centaur, freq_table, states + 1);
 	if (!centaur)
 		return -ENOMEM;
 	eps_cpu[0] = centaur;
@@ -360,14 +358,13 @@ static int eps_cpu_init(struct cpufreq_policy *policy)
 	return 0;
 }
 
-static int eps_cpu_exit(struct cpufreq_policy *policy)
+static void eps_cpu_exit(struct cpufreq_policy *policy)
 {
 	unsigned int cpu = policy->cpu;
 
 	/* Bye */
 	kfree(eps_cpu[cpu]);
 	eps_cpu[cpu] = NULL;
-	return 0;
 }
 
 static struct cpufreq_driver eps_driver = {
@@ -377,7 +374,6 @@ static struct cpufreq_driver eps_driver = {
 	.exit		= eps_cpu_exit,
 	.get		= eps_get,
 	.name		= "e_powersaver",
-	.attr		= cpufreq_generic_attr,
 };
 
 

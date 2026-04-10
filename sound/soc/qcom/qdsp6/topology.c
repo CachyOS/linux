@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // Copyright (c) 2020, Linaro Limited
 
+#include <linux/cleanup.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
 #include <sound/pcm.h>
@@ -16,7 +17,11 @@
 #include "audioreach.h"
 
 struct snd_ar_control {
+	u32 graph_id; /* Graph ID */
 	u32 sgid; /* Sub Graph ID */
+	u32 module_instance_id; /* Connected Module Instance ID */
+	struct snd_soc_dapm_widget *w;
+	struct list_head node;
 	struct snd_soc_component *scomp;
 };
 
@@ -37,14 +42,14 @@ static struct audioreach_graph_info *audioreach_tplg_alloc_graph_info(struct q6a
 	}
 
 	*found = false;
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	info = kzalloc_obj(*info);
 	if (!info)
 		return ERR_PTR(-ENOMEM);
 
 	INIT_LIST_HEAD(&info->sg_list);
 
 	mutex_lock(&apm->lock);
-	ret = idr_alloc(&apm->graph_info_idr, info, graph_id, graph_id + 1, GFP_KERNEL);
+	ret = idr_alloc_u32(&apm->graph_info_idr, info, &graph_id, graph_id, GFP_KERNEL);
 	mutex_unlock(&apm->lock);
 
 	if (ret < 0) {
@@ -53,7 +58,7 @@ static struct audioreach_graph_info *audioreach_tplg_alloc_graph_info(struct q6a
 		return ERR_PTR(ret);
 	}
 
-	info->id = ret;
+	info->id = graph_id;
 
 	return info;
 }
@@ -87,14 +92,14 @@ static struct audioreach_sub_graph *audioreach_tplg_alloc_sub_graph(struct q6apm
 	}
 
 	*found = false;
-	sg = kzalloc(sizeof(*sg), GFP_KERNEL);
+	sg = kzalloc_obj(*sg);
 	if (!sg)
 		return ERR_PTR(-ENOMEM);
 
 	INIT_LIST_HEAD(&sg->container_list);
 
 	mutex_lock(&apm->lock);
-	ret = idr_alloc(&apm->sub_graphs_idr, sg, sub_graph_id, sub_graph_id + 1, GFP_KERNEL);
+	ret = idr_alloc_u32(&apm->sub_graphs_idr, sg, &sub_graph_id, sub_graph_id, GFP_KERNEL);
 	mutex_unlock(&apm->lock);
 
 	if (ret < 0) {
@@ -103,7 +108,7 @@ static struct audioreach_sub_graph *audioreach_tplg_alloc_sub_graph(struct q6apm
 		return ERR_PTR(ret);
 	}
 
-	sg->sub_graph_id = ret;
+	sg->sub_graph_id = sub_graph_id;
 
 	return sg;
 }
@@ -129,14 +134,14 @@ static struct audioreach_container *audioreach_tplg_alloc_container(struct q6apm
 	}
 	*found = false;
 
-	cont = kzalloc(sizeof(*cont), GFP_KERNEL);
+	cont = kzalloc_obj(*cont);
 	if (!cont)
 		return ERR_PTR(-ENOMEM);
 
 	INIT_LIST_HEAD(&cont->modules_list);
 
 	mutex_lock(&apm->lock);
-	ret = idr_alloc(&apm->containers_idr, cont, container_id, container_id + 1, GFP_KERNEL);
+	ret = idr_alloc_u32(&apm->containers_idr, cont, &container_id, container_id, GFP_KERNEL);
 	mutex_unlock(&apm->lock);
 
 	if (ret < 0) {
@@ -145,7 +150,7 @@ static struct audioreach_container *audioreach_tplg_alloc_container(struct q6apm
 		return ERR_PTR(ret);
 	}
 
-	cont->container_id = ret;
+	cont->container_id = container_id;
 	cont->sub_graph = sg;
 	/* add to container list */
 	list_add_tail(&cont->node, &sg->container_list);
@@ -171,7 +176,7 @@ static struct audioreach_module *audioreach_tplg_alloc_module(struct q6apm *apm,
 		return mod;
 	}
 	*found = false;
-	mod = kzalloc(sizeof(*mod), GFP_KERNEL);
+	mod = kzalloc_obj(*mod);
 	if (!mod)
 		return ERR_PTR(-ENOMEM);
 
@@ -181,7 +186,7 @@ static struct audioreach_module *audioreach_tplg_alloc_module(struct q6apm *apm,
 				       AR_MODULE_DYNAMIC_INSTANCE_ID_START,
 				       AR_MODULE_DYNAMIC_INSTANCE_ID_END, GFP_KERNEL);
 	} else {
-		ret = idr_alloc(&apm->modules_idr, mod, module_id, module_id + 1, GFP_KERNEL);
+		ret = idr_alloc_u32(&apm->modules_idr, mod, &module_id, module_id, GFP_KERNEL);
 	}
 	mutex_unlock(&apm->lock);
 
@@ -191,7 +196,7 @@ static struct audioreach_module *audioreach_tplg_alloc_module(struct q6apm *apm,
 		return ERR_PTR(ret);
 	}
 
-	mod->instance_id = ret;
+	mod->instance_id = module_id;
 	/* add to module list */
 	list_add_tail(&mod->node, &cont->modules_list);
 	mod->container = cont;
@@ -201,15 +206,15 @@ static struct audioreach_module *audioreach_tplg_alloc_module(struct q6apm *apm,
 	return mod;
 }
 
-static struct snd_soc_tplg_vendor_array *audioreach_get_sg_array(
-							struct snd_soc_tplg_private *private)
+static const struct snd_soc_tplg_vendor_array *
+audioreach_get_sg_array(const struct snd_soc_tplg_private *private)
 {
-	struct snd_soc_tplg_vendor_array *sg_array = NULL;
+	const struct snd_soc_tplg_vendor_array *sg_array = NULL;
 	bool found = false;
 	int sz;
 
 	for (sz = 0; !found && (sz < le32_to_cpu(private->size)); ) {
-		struct snd_soc_tplg_vendor_value_elem *sg_elem;
+		const struct snd_soc_tplg_vendor_value_elem *sg_elem;
 		int tkn_count = 0;
 
 		sg_array = (struct snd_soc_tplg_vendor_array *)((u8 *)private->array + sz);
@@ -234,15 +239,15 @@ static struct snd_soc_tplg_vendor_array *audioreach_get_sg_array(
 	return NULL;
 }
 
-static struct snd_soc_tplg_vendor_array *audioreach_get_cont_array(
-							struct snd_soc_tplg_private *private)
+static const struct snd_soc_tplg_vendor_array *
+audioreach_get_cont_array(const struct snd_soc_tplg_private *private)
 {
-	struct snd_soc_tplg_vendor_array *cont_array = NULL;
+	const struct snd_soc_tplg_vendor_array *cont_array = NULL;
 	bool found = false;
 	int sz;
 
 	for (sz = 0; !found && (sz < le32_to_cpu(private->size)); ) {
-		struct snd_soc_tplg_vendor_value_elem *cont_elem;
+		const struct snd_soc_tplg_vendor_value_elem *cont_elem;
 		int tkn_count = 0;
 
 		cont_array = (struct snd_soc_tplg_vendor_array *)((u8 *)private->array + sz);
@@ -267,15 +272,15 @@ static struct snd_soc_tplg_vendor_array *audioreach_get_cont_array(
 	return NULL;
 }
 
-static struct snd_soc_tplg_vendor_array *audioreach_get_module_array(
-							     struct snd_soc_tplg_private *private)
+static const struct snd_soc_tplg_vendor_array *
+audioreach_get_module_array(const struct snd_soc_tplg_private *private)
 {
-	struct snd_soc_tplg_vendor_array *mod_array = NULL;
+	const struct snd_soc_tplg_vendor_array *mod_array = NULL;
 	bool found = false;
 	int sz = 0;
 
 	for (sz = 0; !found && (sz < le32_to_cpu(private->size)); ) {
-		struct snd_soc_tplg_vendor_value_elem *mod_elem;
+		const struct snd_soc_tplg_vendor_value_elem *mod_elem;
 		int tkn_count = 0;
 
 		mod_array = (struct snd_soc_tplg_vendor_array *)((u8 *)private->array + sz);
@@ -300,11 +305,39 @@ static struct snd_soc_tplg_vendor_array *audioreach_get_module_array(
 	return NULL;
 }
 
-static struct audioreach_sub_graph *audioreach_parse_sg_tokens(struct q6apm *apm,
-						       struct snd_soc_tplg_private *private)
+static struct audioreach_module_priv_data *
+audioreach_get_module_priv_data(const struct snd_soc_tplg_private *private)
 {
-	struct snd_soc_tplg_vendor_value_elem *sg_elem;
-	struct snd_soc_tplg_vendor_array *sg_array;
+	int sz;
+
+	for (sz = 0; sz < le32_to_cpu(private->size); ) {
+		const struct snd_soc_tplg_vendor_array *mod_array;
+
+		mod_array = (struct snd_soc_tplg_vendor_array *)((u8 *)private->array + sz);
+		if (le32_to_cpu(mod_array->type) == SND_SOC_AR_TPLG_MODULE_CFG_TYPE) {
+			struct audioreach_module_priv_data *pdata;
+
+			pdata = kzalloc_flex(*pdata, data,
+					     le32_to_cpu(mod_array->size));
+			if (!pdata)
+				return ERR_PTR(-ENOMEM);
+
+			memcpy(pdata, ((u8 *)private->data + sz), struct_size(pdata, data,
+						le32_to_cpu(mod_array->size)));
+			return pdata;
+		}
+
+		sz = sz + le32_to_cpu(mod_array->size);
+	}
+
+	return NULL;
+}
+
+static struct audioreach_sub_graph *audioreach_parse_sg_tokens(struct q6apm *apm,
+							       const struct snd_soc_tplg_private *private)
+{
+	const struct snd_soc_tplg_vendor_value_elem *sg_elem;
+	const struct snd_soc_tplg_vendor_array *sg_array;
 	struct audioreach_graph_info *info = NULL;
 	int graph_id, sub_graph_id, tkn_count = 0;
 	struct audioreach_sub_graph *sg;
@@ -359,10 +392,10 @@ static struct audioreach_sub_graph *audioreach_parse_sg_tokens(struct q6apm *apm
 
 static struct audioreach_container *audioreach_parse_cont_tokens(struct q6apm *apm,
 							 struct audioreach_sub_graph *sg,
-							 struct snd_soc_tplg_private *private)
+							 const struct snd_soc_tplg_private *private)
 {
-	struct snd_soc_tplg_vendor_value_elem *cont_elem;
-	struct snd_soc_tplg_vendor_array *cont_array;
+	const struct snd_soc_tplg_vendor_value_elem *cont_elem;
+	const struct snd_soc_tplg_vendor_array *cont_array;
 	struct audioreach_container *cont;
 	int container_id, tkn_count = 0;
 	bool found = false;
@@ -404,23 +437,29 @@ static struct audioreach_container *audioreach_parse_cont_tokens(struct q6apm *a
 
 static struct audioreach_module *audioreach_parse_common_tokens(struct q6apm *apm,
 							struct audioreach_container *cont,
-							struct snd_soc_tplg_private *private,
+							const struct snd_soc_tplg_private *private,
 							struct snd_soc_dapm_widget *w)
 {
-	uint32_t max_ip_port = 0, max_op_port = 0, in_port = 0, out_port = 0;
-	uint32_t src_mod_inst_id = 0, src_mod_op_port_id = 0;
-	uint32_t dst_mod_inst_id = 0, dst_mod_ip_port_id = 0;
+	uint32_t max_ip_port = 0, max_op_port = 0;
+	uint32_t src_mod_op_port_id[AR_MAX_MOD_LINKS] = { 0, };
+	uint32_t dst_mod_inst_id[AR_MAX_MOD_LINKS] = { 0, };
+	uint32_t dst_mod_ip_port_id[AR_MAX_MOD_LINKS] = { 0, };
+	uint32_t src_mod_inst_id = 0;
+
 	int module_id = 0, instance_id = 0, tkn_count = 0;
-	struct snd_soc_tplg_vendor_value_elem *mod_elem;
-	struct snd_soc_tplg_vendor_array *mod_array;
+	const struct snd_soc_tplg_vendor_value_elem *mod_elem;
+	const struct snd_soc_tplg_vendor_array *mod_array;
 	struct audioreach_module *mod = NULL;
+	uint32_t token;
 	bool found;
+	int max_tokens;
 
 	mod_array = audioreach_get_module_array(private);
 	mod_elem = mod_array->value;
-
-	while (tkn_count <= (le32_to_cpu(mod_array->num_elems) - 1)) {
-		switch (le32_to_cpu(mod_elem->token)) {
+	max_tokens = le32_to_cpu(mod_array->num_elems);
+	while (tkn_count <= (max_tokens - 1)) {
+		token = le32_to_cpu(mod_elem->token);
+		switch (token) {
 		/* common module info */
 		case AR_TKN_U32_MODULE_ID:
 			module_id = le32_to_cpu(mod_elem->value);
@@ -444,23 +483,80 @@ static struct audioreach_module *audioreach_parse_common_tokens(struct q6apm *ap
 		case AR_TKN_U32_MODULE_MAX_OP_PORTS:
 			max_op_port = le32_to_cpu(mod_elem->value);
 			break;
-		case AR_TKN_U32_MODULE_IN_PORTS:
-			in_port = le32_to_cpu(mod_elem->value);
-			break;
-		case AR_TKN_U32_MODULE_OUT_PORTS:
-			out_port = le32_to_cpu(mod_elem->value);
-			break;
-		case AR_TKN_U32_MODULE_SRC_OP_PORT_ID:
-			src_mod_op_port_id = le32_to_cpu(mod_elem->value);
-			break;
 		case AR_TKN_U32_MODULE_SRC_INSTANCE_ID:
 			src_mod_inst_id = le32_to_cpu(mod_elem->value);
 			break;
+		case AR_TKN_U32_MODULE_SRC_OP_PORT_ID:
+			src_mod_op_port_id[0] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_SRC_OP_PORT_ID1:
+			src_mod_op_port_id[1] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_SRC_OP_PORT_ID2:
+			src_mod_op_port_id[2] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_SRC_OP_PORT_ID3:
+			src_mod_op_port_id[3] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_SRC_OP_PORT_ID4:
+			src_mod_op_port_id[4] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_SRC_OP_PORT_ID5:
+			src_mod_op_port_id[5] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_SRC_OP_PORT_ID6:
+			src_mod_op_port_id[6] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_SRC_OP_PORT_ID7:
+			src_mod_op_port_id[7] = le32_to_cpu(mod_elem->value);
+			break;
 		case AR_TKN_U32_MODULE_DST_INSTANCE_ID:
-			dst_mod_inst_id = le32_to_cpu(mod_elem->value);
+			dst_mod_inst_id[0] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_DST_INSTANCE_ID1:
+			dst_mod_inst_id[1] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_DST_INSTANCE_ID2:
+			dst_mod_inst_id[2] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_DST_INSTANCE_ID3:
+			dst_mod_inst_id[3] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_DST_INSTANCE_ID4:
+			dst_mod_inst_id[4] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_DST_INSTANCE_ID5:
+			dst_mod_inst_id[5] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_DST_INSTANCE_ID6:
+			dst_mod_inst_id[6] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_DST_INSTANCE_ID7:
+			dst_mod_inst_id[7] = le32_to_cpu(mod_elem->value);
 			break;
 		case AR_TKN_U32_MODULE_DST_IN_PORT_ID:
-			dst_mod_ip_port_id = le32_to_cpu(mod_elem->value);
+			dst_mod_ip_port_id[0] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_DST_IN_PORT_ID1:
+			dst_mod_ip_port_id[1] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_DST_IN_PORT_ID2:
+			dst_mod_ip_port_id[2] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_DST_IN_PORT_ID3:
+			dst_mod_ip_port_id[3] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_DST_IN_PORT_ID4:
+			dst_mod_ip_port_id[4] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_DST_IN_PORT_ID5:
+			dst_mod_ip_port_id[5] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_DST_IN_PORT_ID6:
+			dst_mod_ip_port_id[6] = le32_to_cpu(mod_elem->value);
+			break;
+		case AR_TKN_U32_MODULE_DST_IN_PORT_ID7:
+			dst_mod_ip_port_id[7] = le32_to_cpu(mod_elem->value);
 			break;
 		default:
 			break;
@@ -471,15 +567,22 @@ static struct audioreach_module *audioreach_parse_common_tokens(struct q6apm *ap
 	}
 
 	if (mod) {
+		int pn, id = 0;
+
 		mod->module_id = module_id;
 		mod->max_ip_port = max_ip_port;
 		mod->max_op_port = max_op_port;
-		mod->in_port = in_port;
-		mod->out_port = out_port;
 		mod->src_mod_inst_id = src_mod_inst_id;
-		mod->src_mod_op_port_id = src_mod_op_port_id;
-		mod->dst_mod_inst_id = dst_mod_inst_id;
-		mod->dst_mod_ip_port_id = dst_mod_ip_port_id;
+		for (pn = 0; pn < mod->max_op_port; pn++) {
+			if (src_mod_op_port_id[pn] && dst_mod_inst_id[pn] &&
+			    dst_mod_ip_port_id[pn]) {
+				mod->src_mod_op_port_id[id] = src_mod_op_port_id[pn];
+				mod->dst_mod_inst_id[id] = dst_mod_inst_id[pn];
+				mod->dst_mod_ip_port_id[id] = dst_mod_ip_port_id[pn];
+				id++;
+				mod->num_connections = id;
+			}
+		}
 	}
 
 	return mod;
@@ -487,7 +590,7 @@ static struct audioreach_module *audioreach_parse_common_tokens(struct q6apm *ap
 
 static int audioreach_widget_load_module_common(struct snd_soc_component *component,
 						int index, struct snd_soc_dapm_widget *w,
-						struct snd_soc_tplg_dapm_widget *tplg_w)
+						const struct snd_soc_tplg_dapm_widget *tplg_w)
 {
 	struct q6apm *apm = dev_get_drvdata(component->dev);
 	struct audioreach_container *cont;
@@ -504,8 +607,10 @@ static int audioreach_widget_load_module_common(struct snd_soc_component *compon
 		return PTR_ERR(cont);
 
 	mod = audioreach_parse_common_tokens(apm, cont, &tplg_w->priv, w);
-	if (IS_ERR(mod))
-		return PTR_ERR(mod);
+	if (IS_ERR_OR_NULL(mod))
+		return mod ? PTR_ERR(mod) : -ENODEV;
+
+	mod->data = audioreach_get_module_priv_data(&tplg_w->priv);
 
 	dobj = &w->dobj;
 	dobj->private = mod;
@@ -515,10 +620,10 @@ static int audioreach_widget_load_module_common(struct snd_soc_component *compon
 
 static int audioreach_widget_load_enc_dec_cnv(struct snd_soc_component *component,
 					      int index, struct snd_soc_dapm_widget *w,
-					      struct snd_soc_tplg_dapm_widget *tplg_w)
+					      const struct snd_soc_tplg_dapm_widget *tplg_w)
 {
-	struct snd_soc_tplg_vendor_value_elem *mod_elem;
-	struct snd_soc_tplg_vendor_array *mod_array;
+	const struct snd_soc_tplg_vendor_value_elem *mod_elem;
+	const struct snd_soc_tplg_vendor_array *mod_array;
 	struct audioreach_module *mod;
 	struct snd_soc_dobj *dobj;
 	int tkn_count = 0;
@@ -555,9 +660,9 @@ static int audioreach_widget_load_enc_dec_cnv(struct snd_soc_component *componen
 }
 
 static int audioreach_widget_log_module_load(struct audioreach_module *mod,
-					     struct snd_soc_tplg_vendor_array *mod_array)
+					     const struct snd_soc_tplg_vendor_array *mod_array)
 {
-	struct snd_soc_tplg_vendor_value_elem *mod_elem;
+	const struct snd_soc_tplg_vendor_value_elem *mod_elem;
 	int tkn_count = 0;
 
 	mod_elem = mod_array->value;
@@ -585,9 +690,9 @@ static int audioreach_widget_log_module_load(struct audioreach_module *mod,
 }
 
 static int audioreach_widget_dma_module_load(struct audioreach_module *mod,
-					     struct snd_soc_tplg_vendor_array *mod_array)
+					     const struct snd_soc_tplg_vendor_array *mod_array)
 {
-	struct snd_soc_tplg_vendor_value_elem *mod_elem;
+	const struct snd_soc_tplg_vendor_value_elem *mod_elem;
 	int tkn_count = 0;
 
 	mod_elem = mod_array->value;
@@ -614,9 +719,9 @@ static int audioreach_widget_dma_module_load(struct audioreach_module *mod,
 }
 
 static int audioreach_widget_i2s_module_load(struct audioreach_module *mod,
-					     struct snd_soc_tplg_vendor_array *mod_array)
+					     const struct snd_soc_tplg_vendor_array *mod_array)
 {
-	struct snd_soc_tplg_vendor_value_elem *mod_elem;
+	const struct snd_soc_tplg_vendor_value_elem *mod_elem;
 	int tkn_count = 0;
 
 	mod_elem = mod_array->value;
@@ -648,11 +753,34 @@ static int audioreach_widget_i2s_module_load(struct audioreach_module *mod,
 	return 0;
 }
 
+static int audioreach_widget_dp_module_load(struct audioreach_module *mod,
+					    const struct snd_soc_tplg_vendor_array *mod_array)
+{
+	const struct snd_soc_tplg_vendor_value_elem *mod_elem;
+	int tkn_count = 0;
+
+	mod_elem = mod_array->value;
+
+	while (tkn_count <= (le32_to_cpu(mod_array->num_elems) - 1)) {
+		switch (le32_to_cpu(mod_elem->token)) {
+		case AR_TKN_U32_MODULE_FMT_DATA:
+			mod->data_format = le32_to_cpu(mod_elem->value);
+			break;
+		default:
+			break;
+		}
+		tkn_count++;
+		mod_elem++;
+	}
+
+	return 0;
+}
+
 static int audioreach_widget_load_buffer(struct snd_soc_component *component,
 					 int index, struct snd_soc_dapm_widget *w,
-					 struct snd_soc_tplg_dapm_widget *tplg_w)
+					 const struct snd_soc_tplg_dapm_widget *tplg_w)
 {
-	struct snd_soc_tplg_vendor_array *mod_array;
+	const struct snd_soc_tplg_vendor_array *mod_array;
 	struct audioreach_module *mod;
 	struct snd_soc_dobj *dobj;
 	int ret;
@@ -678,6 +806,9 @@ static int audioreach_widget_load_buffer(struct snd_soc_component *component,
 	case MODULE_ID_I2S_SOURCE:
 		audioreach_widget_i2s_module_load(mod, mod_array);
 		break;
+	case MODULE_ID_DISPLAY_PORT_SINK:
+		audioreach_widget_dp_module_load(mod, mod_array);
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -687,17 +818,18 @@ static int audioreach_widget_load_buffer(struct snd_soc_component *component,
 
 static int audioreach_widget_load_mixer(struct snd_soc_component *component,
 					int index, struct snd_soc_dapm_widget *w,
-					struct snd_soc_tplg_dapm_widget *tplg_w)
+					const struct snd_soc_tplg_dapm_widget *tplg_w)
 {
-	struct snd_soc_tplg_vendor_value_elem *w_elem;
-	struct snd_soc_tplg_vendor_array *w_array;
+	const struct snd_soc_tplg_vendor_value_elem *w_elem;
+	const struct snd_soc_tplg_vendor_array *w_array;
 	struct snd_ar_control *scontrol;
+	struct q6apm *data = dev_get_drvdata(component->dev);
 	struct snd_soc_dobj *dobj;
 	int tkn_count = 0;
 
 	w_array = &tplg_w->priv.array[0];
 
-	scontrol = kzalloc(sizeof(*scontrol), GFP_KERNEL);
+	scontrol = kzalloc_obj(*scontrol);
 	if (!scontrol)
 		return -ENOMEM;
 
@@ -711,12 +843,18 @@ static int audioreach_widget_load_mixer(struct snd_soc_component *component,
 		case AR_TKN_U32_SUB_GRAPH_INSTANCE_ID:
 			scontrol->sgid = le32_to_cpu(w_elem->value);
 			break;
+		case AR_TKN_DAI_INDEX:
+			scontrol->graph_id = le32_to_cpu(w_elem->value);
+			break;
 		default: /* ignore other tokens */
 			break;
 		}
 		tkn_count++;
 		w_elem++;
 	}
+
+	scontrol->w = w;
+	list_add_tail(&scontrol->node, &data->widget_list);
 
 	return 0;
 }
@@ -748,7 +886,7 @@ static const struct snd_soc_tplg_widget_events audioreach_widget_ops[] = {
 
 static int audioreach_widget_load_pga(struct snd_soc_component *component,
 				      int index, struct snd_soc_dapm_widget *w,
-				      struct snd_soc_tplg_dapm_widget *tplg_w)
+				      const struct snd_soc_tplg_dapm_widget *tplg_w)
 {
 	struct audioreach_module *mod;
 	struct snd_soc_dobj *dobj;
@@ -809,7 +947,7 @@ static int audioreach_widget_ready(struct snd_soc_component *component,
 static int audioreach_widget_unload(struct snd_soc_component *scomp,
 				    struct snd_soc_dobj *dobj)
 {
-	struct snd_soc_dapm_widget *w = container_of(dobj, struct snd_soc_dapm_widget, dobj);
+	const struct snd_soc_dapm_widget *w = container_of(dobj, struct snd_soc_dapm_widget, dobj);
 	struct q6apm *apm = dev_get_drvdata(scomp->dev);
 	struct audioreach_container *cont;
 	struct audioreach_module *mod;
@@ -819,7 +957,10 @@ static int audioreach_widget_unload(struct snd_soc_component *scomp,
 
 	if (w->id == snd_soc_dapm_mixer) {
 		/* virtual widget */
-		kfree(dobj->private);
+		struct snd_ar_control *scontrol = dobj->private;
+
+		list_del(&scontrol->node);
+		kfree(scontrol);
 		return 0;
 	}
 
@@ -828,6 +969,7 @@ static int audioreach_widget_unload(struct snd_soc_component *scomp,
 	cont->num_modules--;
 
 	list_del(&mod->node);
+	kfree(mod->data);
 	kfree(mod);
 	/* Graph Info has N sub-graphs, sub-graph has N containers, Container has N Modules */
 	if (list_empty(&cont->modules_list)) { /* if no modules in the container then remove it */
@@ -858,7 +1000,21 @@ static int audioreach_widget_unload(struct snd_soc_component *scomp,
 	return 0;
 }
 
-static struct audioreach_module *audioreach_find_widget(struct snd_soc_component *comp,
+static struct snd_ar_control *audioreach_find_widget(struct snd_soc_component *comp,
+						     const char *name)
+{
+	struct q6apm *apm = dev_get_drvdata(comp->dev);
+	struct snd_ar_control *control;
+
+	list_for_each_entry(control, &apm->widget_list, node) {
+		if (control->w && !strcmp(name, control->w->name))
+			return control;
+	}
+
+	return NULL;
+}
+
+static struct audioreach_module *audioreach_find_module(struct snd_soc_component *comp,
 							const char *name)
 {
 	struct q6apm *apm = dev_get_drvdata(comp->dev);
@@ -876,14 +1032,41 @@ static struct audioreach_module *audioreach_find_widget(struct snd_soc_component
 static int audioreach_route_load(struct snd_soc_component *scomp, int index,
 				 struct snd_soc_dapm_route *route)
 {
-	struct audioreach_module *src, *sink;
+	const struct audioreach_module *src_module, *sink_module;
+	struct snd_ar_control *control;
+	struct snd_soc_dapm_widget *w;
+	int i;
 
-	src = audioreach_find_widget(scomp, route->source);
-	sink = audioreach_find_widget(scomp, route->sink);
+	/* check if these are actual modules */
+	src_module = audioreach_find_module(scomp, route->source);
+	sink_module = audioreach_find_module(scomp, route->sink);
 
-	if (src && sink) {
-		src->dst_mod_inst_id = sink->instance_id;
-		sink->src_mod_inst_id = src->instance_id;
+	if (sink_module && !src_module) {
+		control = audioreach_find_widget(scomp, route->source);
+		if (control)
+			control->module_instance_id = sink_module->instance_id;
+
+	} else if (!sink_module && src_module && route->control) {
+		/* check if this is a virtual mixer */
+		control = audioreach_find_widget(scomp, route->sink);
+		if (!control || !control->w)
+			return 0;
+
+		w = control->w;
+
+		for (i = 0; i < w->num_kcontrols; i++) {
+			if (!strcmp(route->control, w->kcontrol_news[i].name)) {
+				struct soc_mixer_control *sm;
+				struct snd_soc_dobj *dobj;
+				struct snd_ar_control *scontrol;
+
+				sm = (struct soc_mixer_control *)w->kcontrol_news[i].private_value;
+				dobj = &sm->dobj;
+				scontrol = dobj->private;
+				scontrol->module_instance_id = src_module->instance_id;
+			}
+		}
+
 	}
 
 	return 0;
@@ -914,19 +1097,61 @@ static int audioreach_link_load(struct snd_soc_component *component, int index,
 	return 0;
 }
 
+static void audioreach_connect_sub_graphs(struct q6apm *apm,
+					  const struct snd_ar_control *m1,
+					  const struct snd_ar_control *m2,
+					  bool connect)
+{
+	struct audioreach_graph_info *info;
+
+	mutex_lock(&apm->lock);
+	info = idr_find(&apm->graph_info_idr, m2->graph_id);
+	mutex_unlock(&apm->lock);
+
+	if (connect) {
+		info->src_mod_inst_id = m1->module_instance_id;
+		info->src_mod_op_port_id = 1;
+		info->dst_mod_inst_id = m2->module_instance_id;
+		info->dst_mod_ip_port_id = 2;
+
+	} else {
+		info->src_mod_inst_id = 0;
+		info->src_mod_op_port_id = 0;
+		info->dst_mod_inst_id = 0;
+		info->dst_mod_ip_port_id = 0;
+	}
+}
+
+static bool audioreach_is_vmixer_connected(struct q6apm *apm,
+					   const struct snd_ar_control *m1,
+					   const struct snd_ar_control *m2)
+{
+	const struct audioreach_graph_info *info;
+
+	mutex_lock(&apm->lock);
+	info = idr_find(&apm->graph_info_idr, m2->graph_id);
+	mutex_unlock(&apm->lock);
+
+	if (info->dst_mod_inst_id == m2->module_instance_id &&
+	    info->src_mod_inst_id == m1->module_instance_id)
+		return true;
+
+	return false;
+}
+
 static int audioreach_get_audio_mixer(struct snd_kcontrol *kcontrol,
 				      struct snd_ctl_elem_value *ucontrol)
 {
 	struct soc_mixer_control *mc = (struct soc_mixer_control *)kcontrol->private_value;
-	struct snd_soc_dapm_context *dapm = snd_soc_dapm_kcontrol_dapm(kcontrol);
-	struct snd_soc_dapm_widget *dw = snd_soc_dapm_kcontrol_widget(kcontrol);
+	struct snd_soc_dapm_context *dapm = snd_soc_dapm_kcontrol_to_dapm(kcontrol);
+	const struct snd_soc_dapm_widget *dw = snd_soc_dapm_kcontrol_to_widget(kcontrol);
 	struct snd_soc_component *c = snd_soc_dapm_to_component(dapm);
-	struct snd_ar_control *dapm_scontrol = dw->dobj.private;
-	struct snd_ar_control *scontrol = mc->dobj.private;
+	const struct snd_ar_control *dapm_scontrol = dw->dobj.private;
+	const struct snd_ar_control *scontrol = mc->dobj.private;
 	struct q6apm *data = dev_get_drvdata(c->dev);
 	bool connected;
 
-	connected = q6apm_is_sub_graphs_connected(data, scontrol->sgid, dapm_scontrol->sgid);
+	connected = audioreach_is_vmixer_connected(data, scontrol, dapm_scontrol);
 	if (connected)
 		ucontrol->value.integer.value[0] = 1;
 	else
@@ -939,18 +1164,18 @@ static int audioreach_put_audio_mixer(struct snd_kcontrol *kcontrol,
 				      struct snd_ctl_elem_value *ucontrol)
 {
 	struct soc_mixer_control *mc = (struct soc_mixer_control *)kcontrol->private_value;
-	struct snd_soc_dapm_context *dapm = snd_soc_dapm_kcontrol_dapm(kcontrol);
-	struct snd_soc_dapm_widget *dw = snd_soc_dapm_kcontrol_widget(kcontrol);
+	struct snd_soc_dapm_context *dapm = snd_soc_dapm_kcontrol_to_dapm(kcontrol);
+	struct snd_soc_dapm_widget *dw = snd_soc_dapm_kcontrol_to_widget(kcontrol);
 	struct snd_soc_component *c = snd_soc_dapm_to_component(dapm);
-	struct snd_ar_control *dapm_scontrol = dw->dobj.private;
-	struct snd_ar_control *scontrol = mc->dobj.private;
+	const struct snd_ar_control *dapm_scontrol = dw->dobj.private;
+	const struct snd_ar_control *scontrol = mc->dobj.private;
 	struct q6apm *data = dev_get_drvdata(c->dev);
 
 	if (ucontrol->value.integer.value[0]) {
-		q6apm_connect_sub_graphs(data, scontrol->sgid, dapm_scontrol->sgid, true);
+		audioreach_connect_sub_graphs(data, scontrol, dapm_scontrol, true);
 		snd_soc_dapm_mixer_update_power(dapm, kcontrol, 1, NULL);
 	} else {
-		q6apm_connect_sub_graphs(data, scontrol->sgid, dapm_scontrol->sgid, false);
+		audioreach_connect_sub_graphs(data, scontrol, dapm_scontrol, false);
 		snd_soc_dapm_mixer_update_power(dapm, kcontrol, 0, NULL);
 	}
 	return 0;
@@ -959,7 +1184,7 @@ static int audioreach_put_audio_mixer(struct snd_kcontrol *kcontrol,
 static int audioreach_get_vol_ctrl_audio_mixer(struct snd_kcontrol *kcontrol,
 					       struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_dapm_widget *dw = snd_soc_dapm_kcontrol_widget(kcontrol);
+	struct snd_soc_dapm_widget *dw = snd_soc_dapm_kcontrol_to_widget(kcontrol);
 	struct audioreach_module *mod = dw->dobj.private;
 
 	ucontrol->value.integer.value[0] = mod->gain;
@@ -970,7 +1195,7 @@ static int audioreach_get_vol_ctrl_audio_mixer(struct snd_kcontrol *kcontrol,
 static int audioreach_put_vol_ctrl_audio_mixer(struct snd_kcontrol *kcontrol,
 					       struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_dapm_widget *dw = snd_soc_dapm_kcontrol_widget(kcontrol);
+	struct snd_soc_dapm_widget *dw = snd_soc_dapm_kcontrol_to_widget(kcontrol);
 	struct audioreach_module *mod = dw->dobj.private;
 
 	mod->gain = ucontrol->value.integer.value[0];
@@ -981,14 +1206,14 @@ static int audioreach_put_vol_ctrl_audio_mixer(struct snd_kcontrol *kcontrol,
 static int audioreach_control_load_mix(struct snd_soc_component *scomp,
 				       struct snd_ar_control *scontrol,
 				       struct snd_kcontrol_new *kc,
-				       struct snd_soc_tplg_ctl_hdr *hdr)
+				       const struct snd_soc_tplg_ctl_hdr *hdr)
 {
-	struct snd_soc_tplg_vendor_value_elem *c_elem;
-	struct snd_soc_tplg_vendor_array *c_array;
-	struct snd_soc_tplg_mixer_control *mc;
+	const struct snd_soc_tplg_vendor_value_elem *c_elem;
+	const struct snd_soc_tplg_vendor_array *c_array;
+	const struct snd_soc_tplg_mixer_control *mc;
 	int tkn_count = 0;
 
-	mc = container_of(hdr, struct snd_soc_tplg_mixer_control, hdr);
+	mc = container_of_const(hdr, struct snd_soc_tplg_mixer_control, hdr);
 	c_array = (struct snd_soc_tplg_vendor_array *)mc->priv.data;
 
 	c_elem = c_array->value;
@@ -997,6 +1222,9 @@ static int audioreach_control_load_mix(struct snd_soc_component *scomp,
 		switch (le32_to_cpu(c_elem->token)) {
 		case AR_TKN_U32_SUB_GRAPH_INSTANCE_ID:
 			scontrol->sgid = le32_to_cpu(c_elem->value);
+			break;
+		case AR_TKN_DAI_INDEX:
+			scontrol->graph_id = le32_to_cpu(c_elem->value);
 			break;
 		default:
 			/* Ignore other tokens */
@@ -1018,7 +1246,7 @@ static int audioreach_control_load(struct snd_soc_component *scomp, int index,
 	struct snd_soc_dobj *dobj;
 	int ret = 0;
 
-	scontrol = kzalloc(sizeof(*scontrol), GFP_KERNEL);
+	scontrol = kzalloc_obj(*scontrol);
 	if (!scontrol)
 		return -ENOMEM;
 
@@ -1062,7 +1290,7 @@ static const struct snd_soc_tplg_kcontrol_ops audioreach_io_ops[] = {
 		audioreach_put_vol_ctrl_audio_mixer, snd_soc_info_volsw},
 };
 
-static struct snd_soc_tplg_ops audioreach_tplg_ops  = {
+static const struct snd_soc_tplg_ops audioreach_tplg_ops = {
 	.io_ops = audioreach_io_ops,
 	.io_ops_count = ARRAY_SIZE(audioreach_io_ops),
 
@@ -1084,29 +1312,28 @@ int audioreach_tplg_init(struct snd_soc_component *component)
 	struct snd_soc_card *card = component->card;
 	struct device *dev = component->dev;
 	const struct firmware *fw;
-	char *tplg_fw_name;
 	int ret;
 
 	/* Inline with Qualcomm UCM configs and linux-firmware path */
-	tplg_fw_name = kasprintf(GFP_KERNEL, "qcom/%s/%s-tplg.bin", card->driver_name, card->name);
+	char *tplg_fw_name __free(kfree) = kasprintf(GFP_KERNEL, "qcom/%s/%s-tplg.bin",
+						     card->driver_name,
+						     card->name);
 	if (!tplg_fw_name)
 		return -ENOMEM;
 
 	ret = request_firmware(&fw, tplg_fw_name, dev);
 	if (ret < 0) {
-		dev_err(dev, "tplg firmware loading %s failed %d \n", tplg_fw_name, ret);
-		goto err;
+		dev_err(dev, "tplg firmware loading %s failed %d\n", tplg_fw_name, ret);
+		return ret;
 	}
 
 	ret = snd_soc_tplg_component_load(component, &audioreach_tplg_ops, fw);
 	if (ret < 0) {
-		dev_err(dev, "tplg component load failed%d\n", ret);
-		ret = -EINVAL;
+		if (ret != -EPROBE_DEFER)
+			dev_err(dev, "tplg component load failed: %d\n", ret);
 	}
 
 	release_firmware(fw);
-err:
-	kfree(tplg_fw_name);
 
 	return ret;
 }

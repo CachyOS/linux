@@ -85,7 +85,7 @@ static struct stv090x_dev *append_internal(struct stv090x_internal *internal)
 	struct stv090x_dev *new_dev;
 	struct stv090x_dev *temp_dev;
 
-	new_dev = kmalloc(sizeof(struct stv090x_dev), GFP_KERNEL);
+	new_dev = kmalloc_obj(struct stv090x_dev);
 	if (new_dev != NULL) {
 		new_dev->internal = internal;
 		new_dev->next_dev = NULL;
@@ -748,6 +748,22 @@ static int stv090x_write_reg(struct stv090x_state *state, unsigned int reg, u8 d
 	return stv090x_write_regs(state, reg, &tmp, 1);
 }
 
+static inline void stv090x_tuner_i2c_lock(struct stv090x_state *state)
+{
+	if (state->config->tuner_i2c_lock)
+		state->config->tuner_i2c_lock(&state->frontend, 1);
+	else
+		mutex_lock(&state->internal->tuner_lock);
+}
+
+static inline void stv090x_tuner_i2c_unlock(struct stv090x_state *state)
+{
+	if (state->config->tuner_i2c_lock)
+		state->config->tuner_i2c_lock(&state->frontend, 0);
+	else
+		mutex_unlock(&state->internal->tuner_lock);
+}
+
 static int stv090x_i2c_gate_ctrl(struct stv090x_state *state, int enable)
 {
 	u32 reg;
@@ -761,12 +777,8 @@ static int stv090x_i2c_gate_ctrl(struct stv090x_state *state, int enable)
 	 * In case of any error, the lock is unlocked and exit within the
 	 * relevant operations themselves.
 	 */
-	if (enable) {
-		if (state->config->tuner_i2c_lock)
-			state->config->tuner_i2c_lock(&state->frontend, 1);
-		else
-			mutex_lock(&state->internal->tuner_lock);
-	}
+	if (enable)
+		stv090x_tuner_i2c_lock(state);
 
 	reg = STV090x_READ_DEMOD(state, I2CRPT);
 	if (enable) {
@@ -782,20 +794,13 @@ static int stv090x_i2c_gate_ctrl(struct stv090x_state *state, int enable)
 			goto err;
 	}
 
-	if (!enable) {
-		if (state->config->tuner_i2c_lock)
-			state->config->tuner_i2c_lock(&state->frontend, 0);
-		else
-			mutex_unlock(&state->internal->tuner_lock);
-	}
+	if (!enable)
+		stv090x_tuner_i2c_unlock(state);
 
 	return 0;
 err:
 	dprintk(FE_ERROR, 1, "I/O error");
-	if (state->config->tuner_i2c_lock)
-		state->config->tuner_i2c_lock(&state->frontend, 0);
-	else
-		mutex_unlock(&state->internal->tuner_lock);
+	stv090x_tuner_i2c_unlock(state);
 	return -1;
 }
 
@@ -4901,7 +4906,7 @@ static int stv090x_setup_compound(struct stv090x_state *state)
 		state->internal->num_used++;
 		dprintk(FE_INFO, 1, "Found Internal Structure!");
 	} else {
-		state->internal = kmalloc(sizeof(*state->internal), GFP_KERNEL);
+		state->internal = kmalloc_obj(*state->internal);
 		if (!state->internal)
 			goto error;
 		temp_int = append_internal(state->internal);
@@ -4990,15 +4995,14 @@ static struct dvb_frontend *stv090x_get_dvb_frontend(struct i2c_client *client)
 	return &state->frontend;
 }
 
-static int stv090x_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int stv090x_probe(struct i2c_client *client)
 {
 	int ret = 0;
 	struct stv090x_config *config = client->dev.platform_data;
 
 	struct stv090x_state *state = NULL;
 
-	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	state = kzalloc_obj(*state);
 	if (!state) {
 		ret = -ENOMEM;
 		goto error;
@@ -5032,12 +5036,11 @@ error:
 	return ret;
 }
 
-static int stv090x_remove(struct i2c_client *client)
+static void stv090x_remove(struct i2c_client *client)
 {
 	struct stv090x_state *state = i2c_get_clientdata(client);
 
 	stv090x_release(&state->frontend);
-	return 0;
 }
 
 struct dvb_frontend *stv090x_attach(struct stv090x_config *config,
@@ -5047,7 +5050,7 @@ struct dvb_frontend *stv090x_attach(struct stv090x_config *config,
 	int ret = 0;
 	struct stv090x_state *state = NULL;
 
-	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	state = kzalloc_obj(*state);
 	if (!state)
 		goto error;
 
@@ -5073,10 +5076,10 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(stv090x_attach);
+EXPORT_SYMBOL_GPL(stv090x_attach);
 
 static const struct i2c_device_id stv090x_id_table[] = {
-	{"stv090x", 0},
+	{ "stv090x" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, stv090x_id_table);

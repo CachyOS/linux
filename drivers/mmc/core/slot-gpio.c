@@ -19,10 +19,11 @@
 struct mmc_gpio {
 	struct gpio_desc *ro_gpio;
 	struct gpio_desc *cd_gpio;
-	irqreturn_t (*cd_gpio_isr)(int irq, void *dev_id);
+	irq_handler_t cd_gpio_isr;
 	char *ro_label;
 	char *cd_label;
 	u32 cd_debounce_delay_ms;
+	int cd_irq;
 };
 
 static irqreturn_t mmc_gpio_cd_irqt(int irq, void *dev_id)
@@ -53,20 +54,36 @@ int mmc_gpio_alloc(struct mmc_host *host)
 	ctx->ro_label = devm_kasprintf(host->parent, GFP_KERNEL, "%s ro", devname);
 	if (!ctx->ro_label)
 		return -ENOMEM;
+	ctx->cd_irq = -EINVAL;
 	host->slot.handler_priv = ctx;
 	host->slot.cd_irq = -EINVAL;
 
 	return 0;
 }
 
+void mmc_gpio_set_cd_irq(struct mmc_host *host, int irq)
+{
+	struct mmc_gpio *ctx = host->slot.handler_priv;
+
+	if (!ctx || irq < 0)
+		return;
+
+	ctx->cd_irq = irq;
+}
+EXPORT_SYMBOL(mmc_gpio_set_cd_irq);
+
 int mmc_gpio_get_ro(struct mmc_host *host)
 {
 	struct mmc_gpio *ctx = host->slot.handler_priv;
+	int cansleep;
 
 	if (!ctx || !ctx->ro_gpio)
 		return -ENOSYS;
 
-	return gpiod_get_value_cansleep(ctx->ro_gpio);
+	cansleep = gpiod_cansleep(ctx->ro_gpio);
+	return cansleep ?
+		gpiod_get_value_cansleep(ctx->ro_gpio) :
+		gpiod_get_value(ctx->ro_gpio);
 }
 EXPORT_SYMBOL(mmc_gpio_get_ro);
 
@@ -98,7 +115,9 @@ void mmc_gpiod_request_cd_irq(struct mmc_host *host)
 	 * Do not use IRQ if the platform prefers to poll, e.g., because that
 	 * IRQ number is already used by another unit and cannot be shared.
 	 */
-	if (!(host->caps & MMC_CAP_NEEDS_POLL))
+	if (ctx->cd_irq >= 0)
+		irq = ctx->cd_irq;
+	else if (!(host->caps & MMC_CAP_NEEDS_POLL))
 		irq = gpiod_to_irq(ctx->cd_gpio);
 
 	if (irq >= 0) {
@@ -139,19 +158,6 @@ int mmc_gpio_set_cd_wake(struct mmc_host *host, bool on)
 	return ret;
 }
 EXPORT_SYMBOL(mmc_gpio_set_cd_wake);
-
-/* Register an alternate interrupt service routine for
- * the card-detect GPIO.
- */
-void mmc_gpio_set_cd_isr(struct mmc_host *host,
-			 irqreturn_t (*isr)(int irq, void *dev_id))
-{
-	struct mmc_gpio *ctx = host->slot.handler_priv;
-
-	WARN_ON(ctx->cd_gpio_isr);
-	ctx->cd_gpio_isr = isr;
-}
-EXPORT_SYMBOL(mmc_gpio_set_cd_isr);
 
 /**
  * mmc_gpiod_request_cd - request a gpio descriptor for card-detection
@@ -202,13 +208,33 @@ int mmc_gpiod_request_cd(struct mmc_host *host, const char *con_id,
 }
 EXPORT_SYMBOL(mmc_gpiod_request_cd);
 
-bool mmc_can_gpio_cd(struct mmc_host *host)
+/**
+ * mmc_gpiod_set_cd_config - set config for card-detection GPIO
+ * @host: mmc host
+ * @config: Generic pinconf config (from pinconf_to_config_packed())
+ *
+ * This can be used by mmc host drivers to fixup a card-detection GPIO's config
+ * (e.g. set PIN_CONFIG_BIAS_PULL_UP) after acquiring the GPIO descriptor
+ * through mmc_gpiod_request_cd().
+ *
+ * Returns:
+ * 0 on success, or a negative errno value on error.
+ */
+int mmc_gpiod_set_cd_config(struct mmc_host *host, unsigned long config)
+{
+	struct mmc_gpio *ctx = host->slot.handler_priv;
+
+	return gpiod_set_config(ctx->cd_gpio, config);
+}
+EXPORT_SYMBOL(mmc_gpiod_set_cd_config);
+
+bool mmc_host_can_gpio_cd(struct mmc_host *host)
 {
 	struct mmc_gpio *ctx = host->slot.handler_priv;
 
 	return ctx->cd_gpio ? true : false;
 }
-EXPORT_SYMBOL(mmc_can_gpio_cd);
+EXPORT_SYMBOL(mmc_host_can_gpio_cd);
 
 /**
  * mmc_gpiod_request_ro - request a gpio descriptor for write protection
@@ -249,10 +275,10 @@ int mmc_gpiod_request_ro(struct mmc_host *host, const char *con_id,
 }
 EXPORT_SYMBOL(mmc_gpiod_request_ro);
 
-bool mmc_can_gpio_ro(struct mmc_host *host)
+bool mmc_host_can_gpio_ro(struct mmc_host *host)
 {
 	struct mmc_gpio *ctx = host->slot.handler_priv;
 
 	return ctx->ro_gpio ? true : false;
 }
-EXPORT_SYMBOL(mmc_can_gpio_ro);
+EXPORT_SYMBOL(mmc_host_can_gpio_ro);

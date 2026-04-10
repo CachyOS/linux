@@ -5,12 +5,12 @@
 
 #define pr_fmt(fmt)"[drm-dp] %s: " fmt, __func__
 
+#ifdef CONFIG_DEBUG_FS
+
 #include <linux/debugfs.h>
 #include <drm/drm_connector.h>
 #include <drm/drm_file.h>
 
-#include "dp_parser.h"
-#include "dp_catalog.h"
 #include "dp_aux.h"
 #include "dp_ctrl.h"
 #include "dp_debug.h"
@@ -18,22 +18,15 @@
 
 #define DEBUG_NAME "msm_dp"
 
-struct dp_debug_private {
-	struct dentry *root;
-
-	struct dp_usbpd *usbpd;
-	struct dp_link *link;
-	struct dp_panel *panel;
+struct msm_dp_debug_private {
+	struct msm_dp_link *link;
+	struct msm_dp_panel *panel;
 	struct drm_connector *connector;
-	struct device *dev;
-	struct drm_device *drm_dev;
-
-	struct dp_debug dp_debug;
 };
 
-static int dp_debug_show(struct seq_file *seq, void *p)
+static int msm_dp_debug_show(struct seq_file *seq, void *p)
 {
-	struct dp_debug_private *debug = seq->private;
+	struct msm_dp_debug_private *debug = seq->private;
 	u64 lclk = 0;
 	u32 link_params_rate;
 	const struct drm_display_mode *drm_mode;
@@ -41,7 +34,7 @@ static int dp_debug_show(struct seq_file *seq, void *p)
 	if (!debug)
 		return -ENODEV;
 
-	drm_mode = &debug->panel->dp_mode.drm_mode;
+	drm_mode = &debug->panel->msm_dp_mode.drm_mode;
 
 	seq_printf(seq, "\tname = %s\n", DEBUG_NAME);
 	seq_printf(seq, "\tdrm_dp_link\n\t\trate = %u\n",
@@ -63,8 +56,8 @@ static int dp_debug_show(struct seq_file *seq, void *p)
 			drm_mode->hsync_end - drm_mode->hsync_start,
 			drm_mode->vsync_end - drm_mode->vsync_start);
 	seq_printf(seq, "\t\tactive_low = %dx%d\n",
-			debug->panel->dp_mode.h_active_low,
-			debug->panel->dp_mode.v_active_low);
+			debug->panel->msm_dp_mode.h_active_low,
+			debug->panel->msm_dp_mode.v_active_low);
 	seq_printf(seq, "\t\th_skew = %d\n",
 			drm_mode->hskew);
 	seq_printf(seq, "\t\trefresh rate = %d\n",
@@ -72,7 +65,7 @@ static int dp_debug_show(struct seq_file *seq, void *p)
 	seq_printf(seq, "\t\tpixel clock khz = %d\n",
 			drm_mode->clock);
 	seq_printf(seq, "\t\tbpp = %d\n",
-			debug->panel->dp_mode.bpp);
+			debug->panel->msm_dp_mode.bpp);
 
 	/* Link Information */
 	seq_printf(seq, "\tdp_link:\n\t\ttest_requested = %d\n",
@@ -91,11 +84,11 @@ static int dp_debug_show(struct seq_file *seq, void *p)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(dp_debug);
+DEFINE_SHOW_ATTRIBUTE(msm_dp_debug);
 
-static int dp_test_data_show(struct seq_file *m, void *data)
+static int msm_dp_test_data_show(struct seq_file *m, void *data)
 {
-	const struct dp_debug_private *debug = m->private;
+	const struct msm_dp_debug_private *debug = m->private;
 	const struct drm_connector *connector = debug->connector;
 	u32 bpc;
 
@@ -106,18 +99,18 @@ static int dp_test_data_show(struct seq_file *m, void *data)
 		seq_printf(m, "vdisplay: %d\n",
 				debug->link->test_video.test_v_height);
 		seq_printf(m, "bpc: %u\n",
-				dp_link_bit_depth_to_bpc(bpc));
+				msm_dp_link_bit_depth_to_bpp(bpc) / 3);
 	} else {
 		seq_puts(m, "0");
 	}
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(dp_test_data);
+DEFINE_SHOW_ATTRIBUTE(msm_dp_test_data);
 
-static int dp_test_type_show(struct seq_file *m, void *data)
+static int msm_dp_test_type_show(struct seq_file *m, void *data)
 {
-	const struct dp_debug_private *debug = m->private;
+	const struct msm_dp_debug_private *debug = m->private;
 	const struct drm_connector *connector = debug->connector;
 
 	if (connector->status == connector_status_connected)
@@ -127,15 +120,15 @@ static int dp_test_type_show(struct seq_file *m, void *data)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(dp_test_type);
+DEFINE_SHOW_ATTRIBUTE(msm_dp_test_type);
 
-static ssize_t dp_test_active_write(struct file *file,
+static ssize_t msm_dp_test_active_write(struct file *file,
 		const char __user *ubuf,
 		size_t len, loff_t *offp)
 {
 	char *input_buffer;
 	int status = 0;
-	const struct dp_debug_private *debug;
+	const struct msm_dp_debug_private *debug;
 	const struct drm_connector *connector;
 	int val = 0;
 
@@ -172,9 +165,9 @@ static ssize_t dp_test_active_write(struct file *file,
 	return len;
 }
 
-static int dp_test_active_show(struct seq_file *m, void *data)
+static int msm_dp_test_active_show(struct seq_file *m, void *data)
 {
-	struct dp_debug_private *debug = m->private;
+	struct msm_dp_debug_private *debug = m->private;
 	struct drm_connector *connector = debug->connector;
 
 	if (connector->status == connector_status_connected) {
@@ -189,112 +182,59 @@ static int dp_test_active_show(struct seq_file *m, void *data)
 	return 0;
 }
 
-static int dp_test_active_open(struct inode *inode,
+static int msm_dp_test_active_open(struct inode *inode,
 		struct file *file)
 {
-	return single_open(file, dp_test_active_show,
+	return single_open(file, msm_dp_test_active_show,
 			inode->i_private);
 }
 
 static const struct file_operations test_active_fops = {
 	.owner = THIS_MODULE,
-	.open = dp_test_active_open,
+	.open = msm_dp_test_active_open,
 	.read = seq_read,
 	.llseek = seq_lseek,
 	.release = single_release,
-	.write = dp_test_active_write
+	.write = msm_dp_test_active_write
 };
 
-static void dp_debug_init(struct dp_debug *dp_debug, struct drm_minor *minor)
+int msm_dp_debug_init(struct device *dev, struct msm_dp_panel *panel,
+		  struct msm_dp_link *link,
+		  struct drm_connector *connector,
+		  struct dentry *root, bool is_edp)
 {
-	char path[64];
-	struct dp_debug_private *debug = container_of(dp_debug,
-			struct dp_debug_private, dp_debug);
+	struct msm_dp_debug_private *debug;
 
-	snprintf(path, sizeof(path), "msm_dp-%s", debug->connector->name);
-
-	debug->root = debugfs_create_dir(path, minor->debugfs_root);
-
-	debugfs_create_file("dp_debug", 0444, debug->root,
-			debug, &dp_debug_fops);
-
-	debugfs_create_file("msm_dp_test_active", 0444,
-			debug->root,
-			debug, &test_active_fops);
-
-	debugfs_create_file("msm_dp_test_data", 0444,
-			debug->root,
-			debug, &dp_test_data_fops);
-
-	debugfs_create_file("msm_dp_test_type", 0444,
-			debug->root,
-			debug, &dp_test_type_fops);
-}
-
-struct dp_debug *dp_debug_get(struct device *dev, struct dp_panel *panel,
-		struct dp_usbpd *usbpd, struct dp_link *link,
-		struct drm_connector *connector, struct drm_minor *minor)
-{
-	struct dp_debug_private *debug;
-	struct dp_debug *dp_debug;
-	int rc;
-
-	if (!dev || !panel || !usbpd || !link) {
+	if (!dev || !panel || !link) {
 		DRM_ERROR("invalid input\n");
-		rc = -EINVAL;
-		goto error;
+		return -EINVAL;
 	}
 
 	debug = devm_kzalloc(dev, sizeof(*debug), GFP_KERNEL);
-	if (!debug) {
-		rc = -ENOMEM;
-		goto error;
-	}
+	if (!debug)
+		return -ENOMEM;
 
-	debug->dp_debug.debug_en = false;
-	debug->usbpd = usbpd;
 	debug->link = link;
 	debug->panel = panel;
-	debug->dev = dev;
-	debug->drm_dev = minor->dev;
-	debug->connector = connector;
 
-	dp_debug = &debug->dp_debug;
-	dp_debug->vdisplay = 0;
-	dp_debug->hdisplay = 0;
-	dp_debug->vrefresh = 0;
+	debugfs_create_file("dp_debug", 0444, root,
+			debug, &msm_dp_debug_fops);
 
-	dp_debug_init(dp_debug, minor);
+	if (!is_edp) {
+		debugfs_create_file("dp_test_active", 0444,
+				    root,
+				    debug, &test_active_fops);
 
-	return dp_debug;
- error:
-	return ERR_PTR(rc);
-}
+		debugfs_create_file("dp_test_data", 0444,
+				    root,
+				    debug, &msm_dp_test_data_fops);
 
-static int dp_debug_deinit(struct dp_debug *dp_debug)
-{
-	struct dp_debug_private *debug;
-
-	if (!dp_debug)
-		return -EINVAL;
-
-	debug = container_of(dp_debug, struct dp_debug_private, dp_debug);
-
-	debugfs_remove_recursive(debug->root);
+		debugfs_create_file("dp_test_type", 0444,
+				    root,
+				    debug, &msm_dp_test_type_fops);
+	}
 
 	return 0;
 }
 
-void dp_debug_put(struct dp_debug *dp_debug)
-{
-	struct dp_debug_private *debug;
-
-	if (!dp_debug)
-		return;
-
-	debug = container_of(dp_debug, struct dp_debug_private, dp_debug);
-
-	dp_debug_deinit(dp_debug);
-
-	devm_kfree(debug->dev, debug);
-}
+#endif

@@ -36,11 +36,9 @@ static int int3401_add(struct platform_device *pdev)
 	return ret;
 }
 
-static int int3401_remove(struct platform_device *pdev)
+static void int3401_remove(struct platform_device *pdev)
 {
 	proc_thermal_remove(platform_get_drvdata(pdev));
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -70,18 +68,7 @@ static struct platform_driver int3401_driver = {
 	},
 };
 
-static int __init proc_thermal_init(void)
-{
-	return platform_driver_register(&int3401_driver);
-}
-
-static void __exit proc_thermal_exit(void)
-{
-	platform_driver_unregister(&int3401_driver);
-}
-
-module_init(proc_thermal_init);
-module_exit(proc_thermal_exit);
+module_platform_driver(int3401_driver);
 
 MODULE_AUTHOR("Srinivas Pandruvada <srinivas.pandruvada@linux.intel.com>");
 MODULE_DESCRIPTION("Processor Thermal Reporting Device Driver");

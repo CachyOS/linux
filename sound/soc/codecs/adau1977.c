@@ -473,6 +473,7 @@ static int adau1977_set_bias_level(struct snd_soc_component *component,
 	enum snd_soc_bias_level level)
 {
 	struct adau1977 *adau1977 = snd_soc_component_get_drvdata(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	int ret = 0;
 
 	switch (level) {
@@ -481,7 +482,7 @@ static int adau1977_set_bias_level(struct snd_soc_component *component,
 	case SND_SOC_BIAS_PREPARE:
 		break;
 	case SND_SOC_BIAS_STANDBY:
-		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF)
+		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF)
 			ret = adau1977_power_enable(adau1977);
 		break;
 	case SND_SOC_BIAS_OFF:
@@ -795,7 +796,7 @@ static int adau1977_set_sysclk(struct snd_soc_component *component,
 	struct adau1977 *adau1977 = snd_soc_component_get_drvdata(component);
 	unsigned int mask = 0;
 	unsigned int clk_src;
-	unsigned int ret;
+	int ret;
 
 	if (dir != SND_SOC_CLOCK_IN)
 		return -EINVAL;
@@ -845,7 +846,7 @@ static int adau1977_set_sysclk(struct snd_soc_component *component,
 
 static int adau1977_component_probe(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct adau1977 *adau1977 = snd_soc_component_get_drvdata(component);
 	int ret;
 
@@ -876,7 +877,6 @@ static const struct snd_soc_component_driver adau1977_component_driver = {
 	.num_dapm_routes	= ARRAY_SIZE(adau1977_dapm_routes),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static int adau1977_setup_micbias(struct adau1977 *adau1977)
@@ -992,7 +992,7 @@ const struct regmap_config adau1977_regmap_config = {
 	.max_register = ADAU1977_REG_DC_HPF_CAL,
 	.volatile_reg = adau1977_register_volatile,
 
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.reg_defaults = adau1977_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(adau1977_reg_defaults),
 };

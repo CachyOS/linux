@@ -7,7 +7,7 @@
 #define _SIBYTE_BOARD_H
 
 #if defined(CONFIG_SIBYTE_SWARM) || defined(CONFIG_SIBYTE_CRHONE) || \
-    defined(CONFIG_SIBYTE_CRHINE) || defined(CONFIG_SIBYTE_LITTLESUR)
+    defined(CONFIG_SIBYTE_LITTLESUR)
 #include <asm/sibyte/swarm.h>
 #endif
 
@@ -15,15 +15,11 @@
 #include <asm/sibyte/sentosa.h>
 #endif
 
-#ifdef CONFIG_SIBYTE_CARMEL
-#include <asm/sibyte/carmel.h>
-#endif
-
 #ifdef CONFIG_SIBYTE_BIGSUR
 #include <asm/sibyte/bigsur.h>
 #endif
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 
 #ifdef LEDS_PHYS
 #define setleds(t0, t1, c0, c1, c2, c3) \
@@ -50,6 +46,6 @@ extern void setleds(char *str);
 #define setleds(s) do { } while (0)
 #endif /* LEDS_PHYS */
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 #endif /* _SIBYTE_BOARD_H */

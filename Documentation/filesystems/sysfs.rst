@@ -12,10 +12,10 @@ Mike Murphy <mamurph@cs.clemson.edu>
 :Original:   10 January 2003
 
 
-What it is:
-~~~~~~~~~~~
+What it is
+~~~~~~~~~~
 
-sysfs is a ram-based filesystem initially based on ramfs. It provides
+sysfs is a RAM-based filesystem initially based on ramfs. It provides
 a means to export kernel data structures, their attributes, and the
 linkages between them to userspace.
 
@@ -43,7 +43,7 @@ userspace. Top-level directories in sysfs represent the common
 ancestors of object hierarchies; i.e. the subsystems the objects
 belong to.
 
-Sysfs internally stores a pointer to the kobject that implements a
+sysfs internally stores a pointer to the kobject that implements a
 directory in the kernfs_node object associated with the directory. In
 the past this kobject pointer has been used by sysfs to do reference
 counting directly on the kobject whenever the file is opened or closed.
@@ -55,7 +55,7 @@ Attributes
 ~~~~~~~~~~
 
 Attributes can be exported for kobjects in the form of regular files in
-the filesystem. Sysfs forwards file I/O operations to methods defined
+the filesystem. sysfs forwards file I/O operations to methods defined
 for the attributes, providing a means to read and write kernel
 attributes.
 
@@ -72,8 +72,8 @@ you publicly humiliated and your code rewritten without notice.
 An attribute definition is simply::
 
     struct attribute {
-	    char                    * name;
-	    struct module		*owner;
+	    char                    *name;
+	    struct module           *owner;
 	    umode_t                 mode;
     };
 
@@ -120,7 +120,7 @@ is equivalent to doing::
 	    .store = store_foo,
     };
 
-Note as stated in include/linux/kernel.h "OTHER_WRITABLE?  Generally
+Note as stated in include/linux/sysfs.h "OTHER_WRITABLE?  Generally
 considered a bad idea." so trying to set a sysfs file writable for
 everyone will fail reverting to RO mode for "Others".
 
@@ -138,7 +138,7 @@ __ATTR_WO(name):
 		 assumes a name_store only and is restricted to mode
                  0200 that is root write access only.
 __ATTR_RO_MODE(name, mode):
-	         fore more restrictive RO access currently
+	         for more restrictive RO access; currently
                  only use case is the EFI System Resource Table
                  (see drivers/firmware/efi/esrt.c)
 __ATTR_RW(name):
@@ -207,7 +207,7 @@ IOW, they should take only an object, an attribute, and a buffer as parameters.
 
 
 sysfs allocates a buffer of size (PAGE_SIZE) and passes it to the
-method. Sysfs will call the method exactly once for each read or
+method. sysfs will call the method exactly once for each read or
 write. This forces the following behavior on the method
 implementations:
 
@@ -221,7 +221,7 @@ implementations:
   be called again, rearmed, to fill the buffer.
 
 - On write(2), sysfs expects the entire buffer to be passed during the
-  first write. Sysfs then passes the entire buffer to the store() method.
+  first write. sysfs then passes the entire buffer to the store() method.
   A terminating null is added after the data on stores. This makes
   functions like sysfs_streq() safe to use.
 
@@ -237,14 +237,14 @@ Other notes:
 - Writing causes the show() method to be rearmed regardless of current
   file position.
 
-- The buffer will always be PAGE_SIZE bytes in length. On i386, this
+- The buffer will always be PAGE_SIZE bytes in length. On x86, this
   is 4096.
 
 - show() methods should return the number of bytes printed into the
   buffer.
 
-- show() should only use sysfs_emit() or sysfs_emit_at() when formatting
-  the value to be returned to user space.
+- New implementations of show() methods should only use sysfs_emit() or
+  sysfs_emit_at() when formatting the value to be returned to user space.
 
 - store() should return the number of bytes used from the buffer. If the
   entire buffer has been used, just return the count argument.
@@ -253,7 +253,7 @@ Other notes:
   through, be sure to return an error.
 
 - The object passed to the methods will be pinned in memory via sysfs
-  referencing counting its embedded object. However, the physical
+  reference counting its embedded object. However, the physical
   entity (e.g. device) the object represents may not be present. Be
   sure to have a way to check this, if necessary.
 
@@ -263,7 +263,7 @@ A very simple (and naive) implementation of a device attribute is::
     static ssize_t show_name(struct device *dev, struct device_attribute *attr,
 			    char *buf)
     {
-	    return scnprintf(buf, PAGE_SIZE, "%s\n", dev->name);
+	    return sysfs_emit(buf, "%s\n", dev->name);
     }
 
     static ssize_t store_name(struct device *dev, struct device_attribute *attr,
@@ -295,8 +295,11 @@ The top level sysfs directory looks like::
     dev/
     devices/
     firmware/
-    net/
     fs/
+    hypervisor/
+    kernel/
+    module/
+    power/
 
 devices/ contains a filesystem representation of the device tree. It maps
 directly to the internal kernel device tree, which is a hierarchy of
@@ -309,7 +312,7 @@ kernel. Each bus's directory contains two subdirectories::
 	drivers/
 
 devices/ contains symlinks for each device discovered in the system
-that point to the device's directory under root/.
+that point to the device's directory under /sys/devices.
 
 drivers/ contains a directory for each device driver that is loaded
 for devices on that particular bus (this assumes that drivers do not
@@ -317,25 +320,42 @@ span multiple bus types).
 
 fs/ contains a directory for some filesystems.  Currently each
 filesystem wanting to export attributes must create its own hierarchy
-below fs/ (see ./fuse.txt for an example).
+below fs/ (see fuse/fuse.rst for an example).
 
-dev/ contains two directories char/ and block/. Inside these two
+module/ contains parameter values and state information for all
+loaded system modules, for both builtin and loadable modules.
+
+dev/ contains two directories: char/ and block/. Inside these two
 directories there are symlinks named <major>:<minor>.  These symlinks
-point to the sysfs directory for the given device.  /sys/dev provides a
+point to the directories under /sys/devices for each device.  /sys/dev provides a
 quick way to lookup the sysfs interface for a device from the result of
 a stat(2) operation.
 
-More information can driver-model specific features can be found in
+More information on driver-model specific features can be found in
 Documentation/driver-api/driver-model/.
 
+block/ contains symlinks to all the block devices discovered on the system.
+These symlinks point to directories under /sys/devices.
 
-TODO: Finish this section.
+class/ contains a directory for each device class, grouped by functional type.
+Each directory in class/ contains symlinks to devices in the /sys/devices directory.
+
+firmware/ contains system firmware data and configuration such as firmware tables,
+ACPI information, and device tree data.
+
+hypervisor/ contains virtualization platform information and provides an interface to
+the underlying hypervisor.  It is only present when running on a virtual machine.
+
+kernel/ contains runtime kernel parameters, configuration settings, and status.
+
+power/ contains power management subsystem information including
+sleep states, suspend/resume capabilities, and policies.
 
 
 Current Interfaces
 ~~~~~~~~~~~~~~~~~~
 
-The following interface layers currently exist in sysfs:
+The following interface layers currently exist in sysfs.
 
 
 devices (include/linux/device.h)
@@ -366,8 +386,8 @@ Structure::
 
     struct bus_attribute {
 	    struct attribute        attr;
-	    ssize_t (*show)(struct bus_type *, char * buf);
-	    ssize_t (*store)(struct bus_type *, const char * buf, size_t count);
+	    ssize_t (*show)(const struct bus_type *, char * buf);
+	    ssize_t (*store)(const struct bus_type *, const char * buf, size_t count);
     };
 
 Declaring::

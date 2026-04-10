@@ -82,8 +82,8 @@ static int ehci_hcd_sh_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq <= 0) {
-		ret = -ENODEV;
+	if (irq < 0) {
+		ret = irq;
 		goto fail_create_hcd;
 	}
 
@@ -95,8 +95,7 @@ static int ehci_hcd_sh_probe(struct platform_device *pdev)
 		goto fail_create_hcd;
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	hcd->regs = devm_ioremap_resource(&pdev->dev, res);
+	hcd->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(hcd->regs)) {
 		ret = PTR_ERR(hcd->regs);
 		goto fail_request_resource;
@@ -120,8 +119,12 @@ static int ehci_hcd_sh_probe(struct platform_device *pdev)
 	if (IS_ERR(priv->iclk))
 		priv->iclk = NULL;
 
-	clk_enable(priv->fclk);
-	clk_enable(priv->iclk);
+	ret = clk_enable(priv->fclk);
+	if (ret)
+		goto fail_request_resource;
+	ret = clk_enable(priv->iclk);
+	if (ret)
+		goto fail_iclk;
 
 	ret = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (ret != 0) {
@@ -137,6 +140,7 @@ static int ehci_hcd_sh_probe(struct platform_device *pdev)
 
 fail_add_hcd:
 	clk_disable(priv->iclk);
+fail_iclk:
 	clk_disable(priv->fclk);
 
 fail_request_resource:
@@ -147,7 +151,7 @@ fail_create_hcd:
 	return ret;
 }
 
-static int ehci_hcd_sh_remove(struct platform_device *pdev)
+static void ehci_hcd_sh_remove(struct platform_device *pdev)
 {
 	struct ehci_sh_priv *priv = platform_get_drvdata(pdev);
 	struct usb_hcd *hcd = priv->hcd;
@@ -157,8 +161,6 @@ static int ehci_hcd_sh_remove(struct platform_device *pdev)
 
 	clk_disable(priv->fclk);
 	clk_disable(priv->iclk);
-
-	return 0;
 }
 
 static void ehci_hcd_sh_shutdown(struct platform_device *pdev)

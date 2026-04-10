@@ -168,8 +168,7 @@ static void max11801_ts_phy_init(struct max11801_data *data)
 	max11801_write_reg(client, OP_MODE_CONF_REG, 0x36);
 }
 
-static int max11801_ts_probe(struct i2c_client *client,
-				       const struct i2c_device_id *id)
+static int max11801_ts_probe(struct i2c_client *client)
 {
 	struct max11801_data *data;
 	struct input_dev *input_dev;
@@ -214,7 +213,7 @@ static int max11801_ts_probe(struct i2c_client *client,
 }
 
 static const struct i2c_device_id max11801_ts_id[] = {
-	{"max11801", 0},
+	{ "max11801" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max11801_ts_id);

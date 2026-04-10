@@ -8,6 +8,7 @@
  */
 
 #include <crypto/arc4.h>
+#include <linux/export.h>
 #include <linux/module.h>
 
 int arc4_setkey(struct arc4_ctx *ctx, const u8 *in_key, unsigned int key_len)
@@ -71,4 +72,5 @@ void arc4_crypt(struct arc4_ctx *ctx, u8 *out, const u8 *in, unsigned int len)
 }
 EXPORT_SYMBOL(arc4_crypt);
 
+MODULE_DESCRIPTION("ARC4 Cipher Algorithm");
 MODULE_LICENSE("GPL");

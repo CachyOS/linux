@@ -7,12 +7,19 @@
         "SampleAfterValue": "200003"
     },
     {
-        "BriefDescription": "Counts the number of core cycles the fetch stalls because of an icache miss. This is a cummulative count of core cycles the fetch stalled for all icache misses.",
+        "BriefDescription": "This event counts the number of core cycles the fetch stalls because of an icache miss. This is a cumulative count of cycles the NIP stalled for all icache misses.",
         "Counter": "0,1",
         "EventCode": "0x86",
         "EventName": "FETCH_STALL.ICACHE_FILL_PENDING_CYCLES",
-        "PublicDescription": "This event counts the number of core cycles the fetch stalls because of an icache miss. This is a cumulative count of cycles the NIP stalled for all icache misses.",
         "SampleAfterValue": "200003",
+        "UMask": "0x4"
+    },
+    {
+        "BriefDescription": "Counts the number of L2HWP allocated into XQ GP",
+        "Counter": "0,1",
+        "EventCode": "0x3E",
+        "EventName": "L2_PREFETCHER.ALLOC_XQ",
+        "SampleAfterValue": "100007",
         "UMask": "0x4"
     },
     {
@@ -32,7 +39,7 @@
         "UMask": "0x4f"
     },
     {
-        "BriefDescription": "Counts the number of MEC requests from the L2Q that reference a cache line (cacheable requests) exlcuding SW prefetches filling only to L2 cache and L1 evictions (automatically exlcudes L2HWP, UC, WC) that were rejected - Multiple repeated rejects should be counted multiple times",
+        "BriefDescription": "Counts the number of MEC requests from the L2Q that reference a cache line (cacheable requests) excluding SW prefetches filling only to L2 cache and L1 evictions (automatically excludes L2HWP, UC, WC) that were rejected - Multiple repeated rejects should be counted multiple times",
         "Counter": "0,1",
         "EventCode": "0x30",
         "EventName": "L2_REQUESTS_REJECT.ALL",
@@ -57,12 +64,13 @@
         "UMask": "0x80"
     },
     {
-        "BriefDescription": "Counts the loads retired that get the data from the other core in the same tile in M state",
+        "BriefDescription": "Counts the loads retired that get the data from the other core in the same tile in M state (Precise Event)",
         "Counter": "0,1",
         "Data_LA": "1",
         "EventCode": "0x04",
         "EventName": "MEM_UOPS_RETIRED.HITM",
         "PEBS": "1",
+        "PublicDescription": "This event counts the number of load micro-ops retired that got data from another core's cache. (Precise Event).",
         "SampleAfterValue": "200003",
         "UMask": "0x20"
     },
@@ -76,22 +84,24 @@
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts the number of load micro-ops retired that hit in the L2",
+        "BriefDescription": "Counts the number of load micro-ops retired that hit in the L2 (Precise Event)",
         "Counter": "0,1",
         "Data_LA": "1",
         "EventCode": "0x04",
         "EventName": "MEM_UOPS_RETIRED.L2_HIT_LOADS",
         "PEBS": "1",
+        "PublicDescription": "This event counts the number of load micro-uops retired that hit in the L2 (Precise Event)",
         "SampleAfterValue": "200003",
         "UMask": "0x2"
     },
     {
-        "BriefDescription": "Counts the number of load micro-ops retired that miss in the L2",
+        "BriefDescription": "Counts the number of load micro-ops retired that miss in the L2 (Precise Event)",
         "Counter": "0,1",
         "Data_LA": "1",
         "EventCode": "0x04",
         "EventName": "MEM_UOPS_RETIRED.L2_MISS_LOADS",
         "PEBS": "1",
+        "PublicDescription": "This event counts the number of load micro-ops retired that miss in the L2 (Precise Event)",
         "SampleAfterValue": "100007",
         "UMask": "0x4"
     },
@@ -118,18 +128,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000010044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Demand code reads and prefetch code read requests  that accounts for reponses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
+        "BriefDescription": "Counts Demand code reads and prefetch code read requests  that accounts for responses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.L2_HIT_FAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800400044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -140,7 +148,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800400044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -151,18 +158,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000400044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Demand code reads and prefetch code read requests  that accounts for reponses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
+        "BriefDescription": "Counts Demand code reads and prefetch code read requests  that accounts for responses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.L2_HIT_NEAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800180044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -173,7 +178,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800080044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -184,7 +188,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000080044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -195,7 +198,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0004000044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -206,7 +208,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0010000044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -217,7 +218,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.L2_HIT_THIS_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0002000044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -228,18 +228,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.L2_HIT_THIS_TILE_S",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0008000044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Demand code reads and prefetch code read requests  that are outstanding, per weighted cycle, from the time of the request to when any response is received. The oustanding response should be programmed only on PMC0.",
+        "BriefDescription": "Counts Demand code reads and prefetch code read requests  that are outstanding, per weighted cycle, from the time of the request to when any response is received. The outstanding response should be programmed only on PMC0.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_CODE_RD.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000000044",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -250,18 +248,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000013091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Demand cacheable data and L1 prefetch data read requests  that accounts for reponses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
+        "BriefDescription": "Counts Demand cacheable data and L1 prefetch data read requests  that accounts for responses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.L2_HIT_FAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800403091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -272,7 +268,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800403091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -283,18 +278,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000403091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Demand cacheable data and L1 prefetch data read requests  that accounts for reponses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
+        "BriefDescription": "Counts Demand cacheable data and L1 prefetch data read requests  that accounts for responses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.L2_HIT_NEAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800183091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -305,7 +298,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800083091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -316,7 +308,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000083091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -327,7 +318,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0004003091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -338,7 +328,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0010003091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -349,7 +338,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.L2_HIT_THIS_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0002003091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -360,18 +348,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.L2_HIT_THIS_TILE_S",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0008003091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Demand cacheable data and L1 prefetch data read requests  that are outstanding, per weighted cycle, from the time of the request to when any response is received. The oustanding response should be programmed only on PMC0.",
+        "BriefDescription": "Counts Demand cacheable data and L1 prefetch data read requests  that are outstanding, per weighted cycle, from the time of the request to when any response is received. The outstanding response should be programmed only on PMC0.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_DATA_RD.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000003091",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -382,18 +368,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_PF_L2.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000010070",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts any Prefetch requests that accounts for reponses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
+        "BriefDescription": "Counts any Prefetch requests that accounts for responses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_PF_L2.L2_HIT_FAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800400070",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -404,7 +388,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_PF_L2.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800400070",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -415,18 +398,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_PF_L2.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000400070",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts any Prefetch requests that accounts for reponses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
+        "BriefDescription": "Counts any Prefetch requests that accounts for responses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_PF_L2.L2_HIT_NEAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800180070",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -437,7 +418,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_PF_L2.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800080070",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -448,7 +428,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_PF_L2.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000080070",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -459,7 +438,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_PF_L2.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0004000070",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -470,7 +448,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_PF_L2.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0010000070",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -481,18 +458,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_PF_L2.L2_HIT_THIS_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0002000070",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts any Prefetch requests that are outstanding, per weighted cycle, from the time of the request to when any response is received. The oustanding response should be programmed only on PMC0.",
+        "BriefDescription": "Counts any Prefetch requests that are outstanding, per weighted cycle, from the time of the request to when any response is received. The outstanding response should be programmed only on PMC0.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_PF_L2.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000000070",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -503,18 +478,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_READ.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x00000132f7",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts any Read request  that accounts for reponses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
+        "BriefDescription": "Counts any Read request  that accounts for responses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_READ.L2_HIT_FAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x18004032f7",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -525,7 +498,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_READ.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x08004032f7",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -536,18 +508,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_READ.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x10004032f7",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts any Read request  that accounts for reponses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
+        "BriefDescription": "Counts any Read request  that accounts for responses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_READ.L2_HIT_NEAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x18001832f7",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -558,7 +528,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_READ.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x08000832f7",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -569,7 +538,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_READ.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x10000832f7",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -580,7 +548,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_READ.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x00040032f7",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -591,7 +558,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_READ.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x00100032f7",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -602,7 +568,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_READ.L2_HIT_THIS_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x00020032f7",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -613,18 +578,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_READ.L2_HIT_THIS_TILE_S",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x00080032f7",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts any Read request  that are outstanding, per weighted cycle, from the time of the request to when any response is received. The oustanding response should be programmed only on PMC0.",
+        "BriefDescription": "Counts any Read request  that are outstanding, per weighted cycle, from the time of the request to when any response is received. The outstanding response should be programmed only on PMC0.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_READ.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x40000032f7",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -635,18 +598,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000018000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts any request that accounts for reponses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
+        "BriefDescription": "Counts any request that accounts for responses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.L2_HIT_FAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800408000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -657,7 +618,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800408000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -668,18 +628,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000408000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts any request that accounts for reponses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
+        "BriefDescription": "Counts any request that accounts for responses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.L2_HIT_NEAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800188000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -690,7 +648,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800088000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -701,7 +658,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000088000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -712,7 +668,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0004008000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -723,7 +678,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0010008000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -734,7 +688,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.L2_HIT_THIS_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0002008000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -745,18 +698,26 @@
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.L2_HIT_THIS_TILE_S",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0008008000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts any request that are outstanding, per weighted cycle, from the time of the request to when any response is received. The oustanding response should be programmed only on PMC0.",
+        "BriefDescription": "Accounts for responses which miss its own tile's L2.",
+        "Counter": "0,1",
+        "EventCode": "0xB7",
+        "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.L2_MISS",
+        "MSRIndex": "0x1a6,0x1a7",
+        "MSRValue": "0x18001981F8",
+        "SampleAfterValue": "100007",
+        "UMask": "0x1"
+    },
+    {
+        "BriefDescription": "Counts any request that are outstanding, per weighted cycle, from the time of the request to when any response is received. The outstanding response should be programmed only on PMC0.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000008000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -767,18 +728,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000010022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Demand cacheable data write requests  that accounts for reponses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
+        "BriefDescription": "Counts Demand cacheable data write requests  that accounts for responses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.L2_HIT_FAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800400022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -789,7 +748,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800400022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -800,18 +758,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000400022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Demand cacheable data write requests  that accounts for reponses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
+        "BriefDescription": "Counts Demand cacheable data write requests  that accounts for responses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.L2_HIT_NEAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800180022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -822,7 +778,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800080022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -833,7 +788,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000080022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -844,7 +798,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0004000022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -855,7 +808,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0010000022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -866,7 +818,6 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.L2_HIT_THIS_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0002000022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -877,18 +828,16 @@
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.L2_HIT_THIS_TILE_S",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0008000022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Demand cacheable data write requests  that are outstanding, per weighted cycle, from the time of the request to when any response is received. The oustanding response should be programmed only on PMC0.",
+        "BriefDescription": "Counts Demand cacheable data write requests  that are outstanding, per weighted cycle, from the time of the request to when any response is received. The outstanding response should be programmed only on PMC0.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000000022",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -899,18 +848,16 @@
         "EventName": "OFFCORE_RESPONSE.BUS_LOCKS.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000010400",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Bus locks and split lock requests that accounts for reponses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
+        "BriefDescription": "Counts Bus locks and split lock requests that accounts for responses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.BUS_LOCKS.L2_HIT_FAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800400400",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -921,7 +868,6 @@
         "EventName": "OFFCORE_RESPONSE.BUS_LOCKS.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800400400",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -932,18 +878,16 @@
         "EventName": "OFFCORE_RESPONSE.BUS_LOCKS.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000400400",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Bus locks and split lock requests that accounts for reponses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
+        "BriefDescription": "Counts Bus locks and split lock requests that accounts for responses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.BUS_LOCKS.L2_HIT_NEAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800180400",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -954,7 +898,6 @@
         "EventName": "OFFCORE_RESPONSE.BUS_LOCKS.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800080400",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -965,7 +908,6 @@
         "EventName": "OFFCORE_RESPONSE.BUS_LOCKS.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000080400",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -976,7 +918,6 @@
         "EventName": "OFFCORE_RESPONSE.BUS_LOCKS.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0004000400",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -987,7 +928,6 @@
         "EventName": "OFFCORE_RESPONSE.BUS_LOCKS.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0010000400",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -998,7 +938,6 @@
         "EventName": "OFFCORE_RESPONSE.BUS_LOCKS.L2_HIT_THIS_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0002000400",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1009,18 +948,16 @@
         "EventName": "OFFCORE_RESPONSE.BUS_LOCKS.L2_HIT_THIS_TILE_S",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0008000400",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Bus locks and split lock requests that are outstanding, per weighted cycle, from the time of the request to when any response is received. The oustanding response should be programmed only on PMC0.",
+        "BriefDescription": "Counts Bus locks and split lock requests that are outstanding, per weighted cycle, from the time of the request to when any response is received. The outstanding response should be programmed only on PMC0.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.BUS_LOCKS.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000000400",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1031,18 +968,16 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000010004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts demand code reads and prefetch code reads that accounts for reponses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
+        "BriefDescription": "Counts demand code reads and prefetch code reads that accounts for responses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L2_HIT_FAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800400004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1053,7 +988,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800400004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1064,18 +998,16 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000400004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts demand code reads and prefetch code reads that accounts for reponses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
+        "BriefDescription": "Counts demand code reads and prefetch code reads that accounts for responses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L2_HIT_NEAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800180004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1086,7 +1018,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800080004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1097,7 +1028,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000080004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1108,7 +1038,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0004000004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1119,7 +1048,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0010000004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1130,7 +1058,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L2_HIT_THIS_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0002000004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1141,18 +1068,16 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L2_HIT_THIS_TILE_S",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0008000004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts demand code reads and prefetch code reads that are outstanding, per weighted cycle, from the time of the request to when any response is received. The oustanding response should be programmed only on PMC0.",
+        "BriefDescription": "Counts demand code reads and prefetch code reads that are outstanding, per weighted cycle, from the time of the request to when any response is received. The outstanding response should be programmed only on PMC0.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000000004",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1163,7 +1088,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000010001",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1174,7 +1098,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800400001",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1185,7 +1108,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000400001",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1196,7 +1118,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800080001",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1207,7 +1128,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000080001",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1218,7 +1138,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0004000001",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1229,7 +1148,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0010000001",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1240,7 +1158,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L2_HIT_THIS_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0002000001",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1251,18 +1168,16 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L2_HIT_THIS_TILE_S",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0008000001",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts demand cacheable data and L1 prefetch data reads that are outstanding, per weighted cycle, from the time of the request to when any response is received. The oustanding response should be programmed only on PMC0.",
+        "BriefDescription": "Counts demand cacheable data and L1 prefetch data reads that are outstanding, per weighted cycle, from the time of the request to when any response is received. The outstanding response should be programmed only on PMC0.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000000001",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1273,18 +1188,16 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000010002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Demand cacheable data writes that accounts for reponses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
+        "BriefDescription": "Counts Demand cacheable data writes that accounts for responses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L2_HIT_FAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800400002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1295,7 +1208,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800400002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1306,18 +1218,16 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000400002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Demand cacheable data writes that accounts for reponses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
+        "BriefDescription": "Counts Demand cacheable data writes that accounts for responses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L2_HIT_NEAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800180002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1328,7 +1238,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800080002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1339,7 +1248,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000080002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1350,7 +1258,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0004000002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1361,7 +1268,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0010000002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1372,7 +1278,6 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L2_HIT_THIS_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0002000002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1383,18 +1288,16 @@
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L2_HIT_THIS_TILE_S",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0008000002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Demand cacheable data writes that are outstanding, per weighted cycle, from the time of the request to when any response is received. The oustanding response should be programmed only on PMC0.",
+        "BriefDescription": "Counts Demand cacheable data writes that are outstanding, per weighted cycle, from the time of the request to when any response is received. The outstanding response should be programmed only on PMC0.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000000002",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1405,7 +1308,6 @@
         "EventName": "OFFCORE_RESPONSE.FULL_STREAMING_STORES.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000010800",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1416,18 +1318,16 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_READS.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000010080",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Partial reads (UC or WC and is valid only for Outstanding response type).  that accounts for reponses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
+        "BriefDescription": "Counts Partial reads (UC or WC and is valid only for Outstanding response type).  that accounts for responses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.PARTIAL_READS.L2_HIT_FAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800400080",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1438,7 +1338,6 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_READS.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800400080",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1449,18 +1348,16 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_READS.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000400080",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Partial reads (UC or WC and is valid only for Outstanding response type).  that accounts for reponses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
+        "BriefDescription": "Counts Partial reads (UC or WC and is valid only for Outstanding response type).  that accounts for responses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.PARTIAL_READS.L2_HIT_NEAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800180080",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1471,7 +1368,6 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_READS.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800080080",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1482,7 +1378,6 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_READS.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000080080",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1493,7 +1388,6 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_READS.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0004000080",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1504,7 +1398,6 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_READS.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0010000080",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1515,7 +1408,6 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_READS.L2_HIT_THIS_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0002000080",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1526,18 +1418,16 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_READS.L2_HIT_THIS_TILE_S",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0008000080",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Partial reads (UC or WC and is valid only for Outstanding response type).  that are outstanding, per weighted cycle, from the time of the request to when any response is received. The oustanding response should be programmed only on PMC0.",
+        "BriefDescription": "Counts Partial reads (UC or WC and is valid only for Outstanding response type).  that are outstanding, per weighted cycle, from the time of the request to when any response is received. The outstanding response should be programmed only on PMC0.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.PARTIAL_READS.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000000080",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1548,7 +1438,6 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_STREAMING_STORES.ANY_RESPONSE",
         "MSRIndex": "0x1a7",
         "MSRValue": "0x0000014000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1559,18 +1448,16 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_WRITES.ANY_RESPONSE",
         "MSRIndex": "0x1a7",
         "MSRValue": "0x0000010100",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Partial writes (UC or WT or WP and should be programmed on PMC1) that accounts for reponses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
+        "BriefDescription": "Counts Partial writes (UC or WT or WP and should be programmed on PMC1) that accounts for responses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.PARTIAL_WRITES.L2_HIT_FAR_TILE",
         "MSRIndex": "0x1a7",
         "MSRValue": "0x1800400100",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1581,7 +1468,6 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_WRITES.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a7",
         "MSRValue": "0x0800400100",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1592,18 +1478,16 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_WRITES.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a7",
         "MSRValue": "0x1000400100",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Partial writes (UC or WT or WP and should be programmed on PMC1) that accounts for reponses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
+        "BriefDescription": "Counts Partial writes (UC or WT or WP and should be programmed on PMC1) that accounts for responses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.PARTIAL_WRITES.L2_HIT_NEAR_TILE",
         "MSRIndex": "0x1a7",
         "MSRValue": "0x1800180100",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1614,7 +1498,6 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_WRITES.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a7",
         "MSRValue": "0x0800080100",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1625,7 +1508,6 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_WRITES.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a7",
         "MSRValue": "0x1000080100",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1636,7 +1518,6 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_WRITES.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a7",
         "MSRValue": "0x0004000100",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1647,7 +1528,6 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_WRITES.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a7",
         "MSRValue": "0x0010000100",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1658,7 +1538,6 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_WRITES.L2_HIT_THIS_TILE_M",
         "MSRIndex": "0x1a7",
         "MSRValue": "0x0002000100",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1669,7 +1548,6 @@
         "EventName": "OFFCORE_RESPONSE.PARTIAL_WRITES.L2_HIT_THIS_TILE_S",
         "MSRIndex": "0x1a7",
         "MSRValue": "0x0008000100",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1680,18 +1558,16 @@
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000012000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts L1 data HW prefetches that accounts for reponses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
+        "BriefDescription": "Counts L1 data HW prefetches that accounts for responses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.L2_HIT_FAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800402000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1702,7 +1578,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800402000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1713,18 +1588,16 @@
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000402000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts L1 data HW prefetches that accounts for reponses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
+        "BriefDescription": "Counts L1 data HW prefetches that accounts for responses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.L2_HIT_NEAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800182000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1735,7 +1608,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800082000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1746,7 +1618,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000082000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1757,7 +1628,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0004002000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1768,7 +1638,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0010002000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1779,7 +1648,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.L2_HIT_THIS_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0002002000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1790,18 +1658,16 @@
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.L2_HIT_THIS_TILE_S",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0008002000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts L1 data HW prefetches that are outstanding, per weighted cycle, from the time of the request to when any response is received. The oustanding response should be programmed only on PMC0.",
+        "BriefDescription": "Counts L1 data HW prefetches that are outstanding, per weighted cycle, from the time of the request to when any response is received. The outstanding response should be programmed only on PMC0.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.PF_L1_DATA_RD.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000002000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1812,18 +1678,16 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000010040",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts L2 code HW prefetches that accounts for reponses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
+        "BriefDescription": "Counts L2 code HW prefetches that accounts for responses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L2_HIT_FAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800400040",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1834,7 +1698,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800400040",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1845,18 +1708,16 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000400040",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts L2 code HW prefetches that accounts for reponses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
+        "BriefDescription": "Counts L2 code HW prefetches that accounts for responses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L2_HIT_NEAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800180040",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1867,7 +1728,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800080040",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1878,7 +1738,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000080040",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1889,7 +1748,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0004000040",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1900,18 +1758,16 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0010000040",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts L2 code HW prefetches that are outstanding, per weighted cycle, from the time of the request to when any response is received. The oustanding response should be programmed only on PMC0.",
+        "BriefDescription": "Counts L2 code HW prefetches that are outstanding, per weighted cycle, from the time of the request to when any response is received. The outstanding response should be programmed only on PMC0.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000000040",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1922,7 +1778,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000010020",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1933,7 +1788,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800400020",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1944,18 +1798,16 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000400020",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts L2 data RFO prefetches (includes PREFETCHW instruction) that accounts for reponses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
+        "BriefDescription": "Counts L2 data RFO prefetches (includes PREFETCHW instruction) that accounts for responses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L2_HIT_NEAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800180020",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1966,7 +1818,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800080020",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1977,7 +1828,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000080020",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1988,7 +1838,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0004000020",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -1999,7 +1848,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0010000020",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2010,7 +1858,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L2_HIT_THIS_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0002000020",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2021,18 +1868,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L2_HIT_THIS_TILE_S",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0008000020",
-        "Offcore": "1",
-        "SampleAfterValue": "100007",
-        "UMask": "0x1"
-    },
-    {
-        "BriefDescription": "Counts L2 data RFO prefetches (includes PREFETCHW instruction) that provides no supplier details",
-        "Counter": "0,1",
-        "EventCode": "0xB7",
-        "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.SUPPLIER_NONE",
-        "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x0000020020",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2043,18 +1878,16 @@
         "EventName": "OFFCORE_RESPONSE.PF_SOFTWARE.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000011000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Software Prefetches that accounts for reponses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
+        "BriefDescription": "Counts Software Prefetches that accounts for responses from snoop request hit with data forwarded from it Far(not in the same quadrant as the request)-other tile L2 in E/F/M state. Valid only in SNC4 Cluster mode.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.PF_SOFTWARE.L2_HIT_FAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800401000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2065,7 +1898,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_SOFTWARE.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800401000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2076,18 +1908,16 @@
         "EventName": "OFFCORE_RESPONSE.PF_SOFTWARE.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000401000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Software Prefetches that accounts for reponses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
+        "BriefDescription": "Counts Software Prefetches that accounts for responses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.PF_SOFTWARE.L2_HIT_NEAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800181000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2098,7 +1928,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_SOFTWARE.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800081000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2109,7 +1938,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_SOFTWARE.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000081000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2120,7 +1948,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_SOFTWARE.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0004001000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2131,7 +1958,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_SOFTWARE.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0010001000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2142,7 +1968,6 @@
         "EventName": "OFFCORE_RESPONSE.PF_SOFTWARE.L2_HIT_THIS_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0002001000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2153,18 +1978,16 @@
         "EventName": "OFFCORE_RESPONSE.PF_SOFTWARE.L2_HIT_THIS_TILE_S",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0008001000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts Software Prefetches that are outstanding, per weighted cycle, from the time of the request to when any response is received. The oustanding response should be programmed only on PMC0.",
+        "BriefDescription": "Counts Software Prefetches that are outstanding, per weighted cycle, from the time of the request to when any response is received. The outstanding response should be programmed only on PMC0.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.PF_SOFTWARE.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000001000",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2175,7 +1998,6 @@
         "EventName": "OFFCORE_RESPONSE.STREAMING_STORES.ANY_RESPONSE",
         "MSRIndex": "0x1a7",
         "MSRValue": "0x0000014800",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2186,7 +2008,6 @@
         "EventName": "OFFCORE_RESPONSE.UC_CODE_READS.ANY_RESPONSE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0000010200",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2197,7 +2018,6 @@
         "EventName": "OFFCORE_RESPONSE.UC_CODE_READS.L2_HIT_FAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800400200",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2208,18 +2028,16 @@
         "EventName": "OFFCORE_RESPONSE.UC_CODE_READS.L2_HIT_FAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000400200",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts UC code reads (valid only for Outstanding response type)  that accounts for reponses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
+        "BriefDescription": "Counts UC code reads (valid only for Outstanding response type)  that accounts for responses from snoop request hit with data forwarded from its Near-other tile L2 in E/F/M state",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.UC_CODE_READS.L2_HIT_NEAR_TILE",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1800180200",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2230,7 +2048,6 @@
         "EventName": "OFFCORE_RESPONSE.UC_CODE_READS.L2_HIT_NEAR_TILE_E_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0800080200",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2241,7 +2058,6 @@
         "EventName": "OFFCORE_RESPONSE.UC_CODE_READS.L2_HIT_NEAR_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x1000080200",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2252,7 +2068,6 @@
         "EventName": "OFFCORE_RESPONSE.UC_CODE_READS.L2_HIT_THIS_TILE_E",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0004000200",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2263,7 +2078,6 @@
         "EventName": "OFFCORE_RESPONSE.UC_CODE_READS.L2_HIT_THIS_TILE_F",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0010000200",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2274,7 +2088,6 @@
         "EventName": "OFFCORE_RESPONSE.UC_CODE_READS.L2_HIT_THIS_TILE_M",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0002000200",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
@@ -2285,18 +2098,16 @@
         "EventName": "OFFCORE_RESPONSE.UC_CODE_READS.L2_HIT_THIS_TILE_S",
         "MSRIndex": "0x1a6,0x1a7",
         "MSRValue": "0x0008000200",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     },
     {
-        "BriefDescription": "Counts UC code reads (valid only for Outstanding response type)  that are outstanding, per weighted cycle, from the time of the request to when any response is received. The oustanding response should be programmed only on PMC0.",
+        "BriefDescription": "Counts UC code reads (valid only for Outstanding response type)  that are outstanding, per weighted cycle, from the time of the request to when any response is received. The outstanding response should be programmed only on PMC0.",
         "Counter": "0,1",
         "EventCode": "0xB7",
         "EventName": "OFFCORE_RESPONSE.UC_CODE_READS.OUTSTANDING",
         "MSRIndex": "0x1a6",
         "MSRValue": "0x4000000200",
-        "Offcore": "1",
         "SampleAfterValue": "100007",
         "UMask": "0x1"
     }

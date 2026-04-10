@@ -70,6 +70,8 @@ static u32 df_v1_7_get_hbm_channel_number(struct amdgpu_device *adev)
 	int fb_channel_number;
 
 	fb_channel_number = adev->df.funcs->get_fb_channel_number(adev);
+	if (fb_channel_number >= ARRAY_SIZE(df_v1_7_channel_number))
+		fb_channel_number = 0;
 
 	return df_v1_7_channel_number[fb_channel_number];
 }
@@ -94,7 +96,7 @@ static void df_v1_7_update_medium_grain_clock_gating(struct amdgpu_device *adev,
 		WREG32_SOC15(DF, 0, mmDF_PIE_AON0_DfGlobalClkGater, tmp);
 	}
 
-	/* Exit boradcast mode */
+	/* Exit broadcast mode */
 	adev->df.funcs->enable_broadcast_mode(adev, false);
 }
 

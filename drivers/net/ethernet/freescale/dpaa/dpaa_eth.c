@@ -7,8 +7,8 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/init.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_platform.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
 #include <linux/io.h>
@@ -17,6 +17,7 @@
 #include <linux/icmp.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
+#include <linux/platform_device.h>
 #include <linux/udp.h>
 #include <linux/tcp.h>
 #include <linux/net.h>
@@ -27,7 +28,6 @@
 #include <linux/percpu.h>
 #include <linux/dma-mapping.h>
 #include <linux/sort.h>
-#include <linux/phy_fixed.h>
 #include <linux/bpf.h>
 #include <linux/bpf_trace.h>
 #include <soc/fsl/bman.h>
@@ -197,12 +197,15 @@ static int dpaa_rx_extra_headroom;
 #define dpaa_get_max_mtu()	\
 	(dpaa_max_frm - (VLAN_ETH_HLEN + ETH_FCS_LEN))
 
+static void dpaa_eth_cgr_set_speed(struct mac_device *mac_dev, int speed);
+
 static int dpaa_netdev_init(struct net_device *net_dev,
 			    const struct net_device_ops *dpaa_ops,
 			    u16 tx_timeout)
 {
 	struct dpaa_priv *priv = netdev_priv(net_dev);
 	struct device *dev = net_dev->dev.parent;
+	struct mac_device *mac_dev = priv->mac_dev;
 	struct dpaa_percpu_priv *percpu_priv;
 	const u8 *mac_addr;
 	int i, err;
@@ -216,16 +219,16 @@ static int dpaa_netdev_init(struct net_device *net_dev,
 	}
 
 	net_dev->netdev_ops = dpaa_ops;
-	mac_addr = priv->mac_dev->addr;
+	mac_addr = mac_dev->addr;
 
-	net_dev->mem_start = priv->mac_dev->res->start;
-	net_dev->mem_end = priv->mac_dev->res->end;
+	net_dev->mem_start = (unsigned long)priv->mac_dev->res->start;
+	net_dev->mem_end = (unsigned long)priv->mac_dev->res->end;
 
 	net_dev->min_mtu = ETH_MIN_MTU;
 	net_dev->max_mtu = dpaa_get_max_mtu();
 
 	net_dev->hw_features |= (NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
-				 NETIF_F_LLTX | NETIF_F_RXHASH);
+				 NETIF_F_RXHASH);
 
 	net_dev->hw_features |= NETIF_F_SG | NETIF_F_HIGHDMA;
 	/* The kernels enables GSO automatically, if we declare NETIF_F_SG.
@@ -235,18 +238,23 @@ static int dpaa_netdev_init(struct net_device *net_dev,
 	net_dev->features |= NETIF_F_RXCSUM;
 
 	net_dev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
+	net_dev->lltx = true;
 	/* we do not want shared skbs on TX */
 	net_dev->priv_flags &= ~IFF_TX_SKB_SHARING;
 
 	net_dev->features |= net_dev->hw_features;
 	net_dev->vlan_features = net_dev->features;
 
+	net_dev->xdp_features = NETDEV_XDP_ACT_BASIC |
+				NETDEV_XDP_ACT_REDIRECT |
+				NETDEV_XDP_ACT_NDO_XMIT;
+
 	if (is_valid_ether_addr(mac_addr)) {
 		memcpy(net_dev->perm_addr, mac_addr, net_dev->addr_len);
 		eth_hw_addr_set(net_dev, mac_addr);
 	} else {
 		eth_hw_addr_random(net_dev);
-		err = priv->mac_dev->change_addr(priv->mac_dev->fman_mac,
+		err = mac_dev->change_addr(mac_dev->fman_mac,
 			(const enet_addr_t *)net_dev->dev_addr);
 		if (err) {
 			dev_err(dev, "Failed to set random MAC address\n");
@@ -261,12 +269,27 @@ static int dpaa_netdev_init(struct net_device *net_dev,
 	net_dev->needed_headroom = priv->tx_headroom;
 	net_dev->watchdog_timeo = msecs_to_jiffies(tx_timeout);
 
+	/* The rest of the config is filled in by the mac device already */
+	mac_dev->phylink_config.dev = &net_dev->dev;
+	mac_dev->phylink_config.type = PHYLINK_NETDEV;
+	mac_dev->update_speed = dpaa_eth_cgr_set_speed;
+	mac_dev->phylink = phylink_create(&mac_dev->phylink_config,
+					  dev_fwnode(mac_dev->dev),
+					  mac_dev->phy_if,
+					  mac_dev->phylink_ops);
+	if (IS_ERR(mac_dev->phylink)) {
+		err = PTR_ERR(mac_dev->phylink);
+		dev_err_probe(dev, err, "Could not create phylink\n");
+		return err;
+	}
+
 	/* start without the RUNNING flag, phylib controls it later */
 	netif_carrier_off(net_dev);
 
 	err = register_netdev(net_dev);
 	if (err < 0) {
 		dev_err(dev, "register_netdev() = %d\n", err);
+		phylink_destroy(mac_dev->phylink);
 		return err;
 	}
 
@@ -277,7 +300,8 @@ static int dpaa_stop(struct net_device *net_dev)
 {
 	struct mac_device *mac_dev;
 	struct dpaa_priv *priv;
-	int i, err, error;
+	int i, error;
+	int err = 0;
 
 	priv = netdev_priv(net_dev);
 	mac_dev = priv->mac_dev;
@@ -288,10 +312,8 @@ static int dpaa_stop(struct net_device *net_dev)
 	 */
 	msleep(200);
 
-	err = mac_dev->stop(mac_dev);
-	if (err < 0)
-		netif_err(priv, ifdown, net_dev, "mac_dev->stop() = %d\n",
-			  err);
+	phylink_stop(mac_dev->phylink);
+	mac_dev->disable(mac_dev->fman_mac);
 
 	for (i = 0; i < ARRAY_SIZE(mac_dev->port); i++) {
 		error = fman_port_disable(mac_dev->port[i]);
@@ -299,8 +321,7 @@ static int dpaa_stop(struct net_device *net_dev)
 			err = error;
 	}
 
-	if (net_dev->phydev)
-		phy_disconnect(net_dev->phydev);
+	phylink_disconnect_phy(mac_dev->phylink);
 	net_dev->phydev = NULL;
 
 	msleep(200);
@@ -350,6 +371,7 @@ static int dpaa_setup_tc(struct net_device *net_dev, enum tc_setup_type type,
 			 void *type_data)
 {
 	struct dpaa_priv *priv = netdev_priv(net_dev);
+	int num_txqs_per_tc = dpaa_num_txqs_per_tc();
 	struct tc_mqprio_qopt *mqprio = type_data;
 	u8 num_tc;
 	int i;
@@ -377,12 +399,12 @@ static int dpaa_setup_tc(struct net_device *net_dev, enum tc_setup_type type,
 	netdev_set_num_tc(net_dev, num_tc);
 
 	for (i = 0; i < num_tc; i++)
-		netdev_set_tc_queue(net_dev, i, DPAA_TC_TXQ_NUM,
-				    i * DPAA_TC_TXQ_NUM);
+		netdev_set_tc_queue(net_dev, i, num_txqs_per_tc,
+				    i * num_txqs_per_tc);
 
 out:
 	priv->num_tc = num_tc ? : 1;
-	netif_set_real_num_tx_queues(net_dev, priv->num_tc * DPAA_TC_TXQ_NUM);
+	netif_set_real_num_tx_queues(net_dev, priv->num_tc * num_txqs_per_tc);
 	return 0;
 }
 
@@ -440,6 +462,22 @@ static int dpaa_set_mac_address(struct net_device *net_dev, void *addr)
 	return 0;
 }
 
+static int dpaa_addr_sync(struct net_device *net_dev, const u8 *addr)
+{
+	const struct dpaa_priv *priv = netdev_priv(net_dev);
+
+	return priv->mac_dev->add_hash_mac_addr(priv->mac_dev->fman_mac,
+						(enet_addr_t *)addr);
+}
+
+static int dpaa_addr_unsync(struct net_device *net_dev, const u8 *addr)
+{
+	const struct dpaa_priv *priv = netdev_priv(net_dev);
+
+	return priv->mac_dev->remove_hash_mac_addr(priv->mac_dev->fman_mac,
+						   (enet_addr_t *)addr);
+}
+
 static void dpaa_set_rx_mode(struct net_device *net_dev)
 {
 	const struct dpaa_priv	*priv;
@@ -467,9 +505,9 @@ static void dpaa_set_rx_mode(struct net_device *net_dev)
 				  err);
 	}
 
-	err = priv->mac_dev->set_multi(net_dev, priv->mac_dev);
+	err = __dev_mc_sync(net_dev, dpaa_addr_sync, dpaa_addr_unsync);
 	if (err < 0)
-		netif_err(priv, drv, net_dev, "mac_dev->set_multi() = %d\n",
+		netif_err(priv, drv, net_dev, "dpaa_addr_sync() = %d\n",
 			  err);
 }
 
@@ -628,7 +666,7 @@ static inline void dpaa_assign_wq(struct dpaa_fq *fq, int idx)
 		fq->wq = 6;
 		break;
 	case FQ_TYPE_TX:
-		switch (idx / DPAA_TC_TXQ_NUM) {
+		switch (idx / dpaa_num_txqs_per_tc()) {
 		case 0:
 			/* Low priority (best effort) */
 			fq->wq = 6;
@@ -646,8 +684,8 @@ static inline void dpaa_assign_wq(struct dpaa_fq *fq, int idx)
 			fq->wq = 0;
 			break;
 		default:
-			WARN(1, "Too many TX FQs: more than %d!\n",
-			     DPAA_ETH_TXQ_NUM);
+			WARN(1, "Too many TX FQs: more than %zu!\n",
+			     dpaa_max_num_txqs());
 		}
 		break;
 	default:
@@ -719,7 +757,8 @@ static int dpaa_alloc_all_fqs(struct device *dev, struct list_head *list,
 
 	port_fqs->rx_pcdq = &dpaa_fq[0];
 
-	if (!dpaa_fq_alloc(dev, 0, DPAA_ETH_TXQ_NUM, list, FQ_TYPE_TX_CONF_MQ))
+	if (!dpaa_fq_alloc(dev, 0, dpaa_max_num_txqs(), list,
+			   FQ_TYPE_TX_CONF_MQ))
 		goto fq_alloc_failed;
 
 	dpaa_fq = dpaa_fq_alloc(dev, 0, 1, list, FQ_TYPE_TX_ERROR);
@@ -734,7 +773,7 @@ static int dpaa_alloc_all_fqs(struct device *dev, struct list_head *list,
 
 	port_fqs->tx_defq = &dpaa_fq[0];
 
-	if (!dpaa_fq_alloc(dev, 0, DPAA_ETH_TXQ_NUM, list, FQ_TYPE_TX))
+	if (!dpaa_fq_alloc(dev, 0, dpaa_max_num_txqs(), list, FQ_TYPE_TX))
 		goto fq_alloc_failed;
 
 	return 0;
@@ -826,12 +865,12 @@ static int dpaa_eth_cgr_init(struct dpaa_priv *priv)
 	initcgr.we_mask = cpu_to_be16(QM_CGR_WE_CSCN_EN | QM_CGR_WE_CS_THRES);
 	initcgr.cgr.cscn_en = QM_CGR_EN;
 
-	/* Set different thresholds based on the MAC speed.
-	 * This may turn suboptimal if the MAC is reconfigured at a speed
-	 * lower than its max, e.g. if a dTSEC later negotiates a 100Mbps link.
-	 * In such cases, we ought to reconfigure the threshold, too.
+	/* Set different thresholds based on the configured MAC speed.
+	 * This may turn suboptimal if the MAC is reconfigured at another
+	 * speed, so MACs must call dpaa_eth_cgr_set_speed in their link_up
+	 * callback.
 	 */
-	if (priv->mac_dev->if_support & SUPPORTED_10000baseT_Full)
+	if (priv->mac_dev->phylink_config.mac_capabilities & MAC_10000FD)
 		cs_th = DPAA_CS_THRESHOLD_10G;
 	else
 		cs_th = DPAA_CS_THRESHOLD_1G;
@@ -856,6 +895,31 @@ static int dpaa_eth_cgr_init(struct dpaa_priv *priv)
 
 out_error:
 	return err;
+}
+
+static void dpaa_eth_cgr_set_speed(struct mac_device *mac_dev, int speed)
+{
+	struct net_device *net_dev = to_net_dev(mac_dev->phylink_config.dev);
+	struct dpaa_priv *priv = netdev_priv(net_dev);
+	struct qm_mcc_initcgr opts = { };
+	u32 cs_th;
+	int err;
+
+	opts.we_mask = cpu_to_be16(QM_CGR_WE_CS_THRES);
+	switch (speed) {
+	case SPEED_10000:
+		cs_th = DPAA_CS_THRESHOLD_10G;
+		break;
+	case SPEED_1000:
+	default:
+		cs_th = DPAA_CS_THRESHOLD_1G;
+		break;
+	}
+	qm_cgr_cs_thres_set64(&opts.cgr.cs_thres, cs_th, 1);
+
+	err = qman_update_cgr_safe(&priv->cgr_data.cgr, &opts);
+	if (err)
+		netdev_err(net_dev, "could not update speed: %d\n", err);
 }
 
 static inline void dpaa_setup_ingress(const struct dpaa_priv *priv,
@@ -885,14 +949,18 @@ static inline void dpaa_setup_egress(const struct dpaa_priv *priv,
 	}
 }
 
-static void dpaa_fq_setup(struct dpaa_priv *priv,
-			  const struct dpaa_fq_cbs *fq_cbs,
-			  struct fman_port *tx_port)
+static int dpaa_fq_setup(struct dpaa_priv *priv,
+			 const struct dpaa_fq_cbs *fq_cbs,
+			 struct fman_port *tx_port)
 {
 	int egress_cnt = 0, conf_cnt = 0, num_portals = 0, portal_cnt = 0, cpu;
 	const cpumask_t *affine_cpus = qman_affine_cpus();
-	u16 channels[NR_CPUS];
 	struct dpaa_fq *fq;
+	u16 *channels;
+
+	channels = kcalloc(num_possible_cpus(), sizeof(u16), GFP_KERNEL);
+	if (!channels)
+		return -ENOMEM;
 
 	for_each_cpu_and(cpu, affine_cpus, cpu_online_mask)
 		channels[num_portals++] = qman_affine_channel(cpu);
@@ -919,11 +987,7 @@ static void dpaa_fq_setup(struct dpaa_priv *priv,
 		case FQ_TYPE_TX:
 			dpaa_setup_egress(priv, fq, tx_port,
 					  &fq_cbs->egress_ern);
-			/* If we have more Tx queues than the number of cores,
-			 * just ignore the extra ones.
-			 */
-			if (egress_cnt < DPAA_ETH_TXQ_NUM)
-				priv->egress_fqs[egress_cnt++] = &fq->fq_base;
+			priv->egress_fqs[egress_cnt++] = &fq->fq_base;
 			break;
 		case FQ_TYPE_TX_CONF_MQ:
 			priv->conf_fqs[conf_cnt++] = &fq->fq_base;
@@ -941,16 +1005,9 @@ static void dpaa_fq_setup(struct dpaa_priv *priv,
 		}
 	}
 
-	 /* Make sure all CPUs receive a corresponding Tx queue. */
-	while (egress_cnt < DPAA_ETH_TXQ_NUM) {
-		list_for_each_entry(fq, &priv->dpaa_fq_list, list) {
-			if (fq->fq_type != FQ_TYPE_TX)
-				continue;
-			priv->egress_fqs[egress_cnt++] = &fq->fq_base;
-			if (egress_cnt == DPAA_ETH_TXQ_NUM)
-				break;
-		}
-	}
+	kfree(channels);
+
+	return 0;
 }
 
 static inline int dpaa_tx_fq_to_id(const struct dpaa_priv *priv,
@@ -958,7 +1015,7 @@ static inline int dpaa_tx_fq_to_id(const struct dpaa_priv *priv,
 {
 	int i;
 
-	for (i = 0; i < DPAA_ETH_TXQ_NUM; i++)
+	for (i = 0; i < dpaa_max_num_txqs(); i++)
 		if (priv->egress_fqs[i] == tx_fq)
 			return i;
 
@@ -1438,13 +1495,8 @@ static int dpaa_enable_tx_csum(struct dpaa_priv *priv,
 	parse_result = (struct fman_prs_result *)parse_results;
 
 	/* If we're dealing with VLAN, get the real Ethernet type */
-	if (ethertype == ETH_P_8021Q) {
-		/* We can't always assume the MAC header is set correctly
-		 * by the stack, so reset to beginning of skb->data
-		 */
-		skb_reset_mac_header(skb);
-		ethertype = ntohs(vlan_eth_hdr(skb)->h_vlan_encapsulated_proto);
-	}
+	if (ethertype == ETH_P_8021Q)
+		ethertype = ntohs(skb_vlan_eth_hdr(skb)->h_vlan_encapsulated_proto);
 
 	/* Fill in the relevant L3 parse result fields
 	 * and read the L4 protocol type
@@ -1767,7 +1819,6 @@ static struct sk_buff *sg_fd_to_skb(const struct dpaa_priv *priv,
 	struct page *page, *head_page;
 	struct dpaa_bp *dpaa_bp;
 	void *vaddr, *sg_vaddr;
-	int frag_off, frag_len;
 	struct sk_buff *skb;
 	dma_addr_t sg_addr;
 	int page_offset;
@@ -1810,6 +1861,11 @@ static struct sk_buff *sg_fd_to_skb(const struct dpaa_priv *priv,
 			 * on Tx, if extra headers are added.
 			 */
 			WARN_ON(fd_off != priv->rx_headroom);
+			/* The offset to data start within the buffer holding
+			 * the SGT should always be equal to the offset to data
+			 * start within the first buffer holding the frame.
+			 */
+			WARN_ON_ONCE(fd_off != qm_sg_entry_get_off(&sgt[i]));
 			skb_reserve(skb, fd_off);
 			skb_put(skb, qm_sg_entry_get_len(&sgt[i]));
 		} else {
@@ -1823,21 +1879,23 @@ static struct sk_buff *sg_fd_to_skb(const struct dpaa_priv *priv,
 			page = virt_to_page(sg_vaddr);
 			head_page = virt_to_head_page(sg_vaddr);
 
-			/* Compute offset in (possibly tail) page */
+			/* Compute offset of sg_vaddr in (possibly tail) page */
 			page_offset = ((unsigned long)sg_vaddr &
 					(PAGE_SIZE - 1)) +
 				(page_address(page) - page_address(head_page));
-			/* page_offset only refers to the beginning of sgt[i];
-			 * but the buffer itself may have an internal offset.
+
+			/* Non-initial SGT entries should not have a buffer
+			 * offset.
 			 */
-			frag_off = qm_sg_entry_get_off(&sgt[i]) + page_offset;
-			frag_len = qm_sg_entry_get_len(&sgt[i]);
+			WARN_ON_ONCE(qm_sg_entry_get_off(&sgt[i]));
+
 			/* skb_add_rx_frag() does no checking on the page; if
 			 * we pass it a tail page, we'll end up with
-			 * bad page accounting and eventually with segafults.
+			 * bad page accounting and eventually with segfaults.
 			 */
-			skb_add_rx_frag(skb, i - 1, head_page, frag_off,
-					frag_len, dpaa_bp->size);
+			skb_add_rx_frag(skb, i - 1, head_page, page_offset,
+					qm_sg_entry_get_len(&sgt[i]),
+					dpaa_bp->size);
 		}
 
 		/* Update the pool count for the current {cpu x bpool} */
@@ -2222,7 +2280,7 @@ static int dpaa_a050385_wa_xdpf(struct dpaa_priv *priv,
 	new_xdpf->len = xdpf->len;
 	new_xdpf->headroom = priv->tx_headroom;
 	new_xdpf->frame_sz = DPAA_BP_RAW_SIZE;
-	new_xdpf->mem.type = MEM_TYPE_PAGE_ORDER0;
+	new_xdpf->mem_type = MEM_TYPE_PAGE_ORDER0;
 
 	/* Release the initial buffer */
 	xdp_return_frame_rx_napi(xdpf);
@@ -2236,12 +2294,12 @@ static netdev_tx_t
 dpaa_start_xmit(struct sk_buff *skb, struct net_device *net_dev)
 {
 	const int queue_mapping = skb_get_queue_mapping(skb);
-	bool nonlinear = skb_is_nonlinear(skb);
 	struct rtnl_link_stats64 *percpu_stats;
 	struct dpaa_percpu_priv *percpu_priv;
 	struct netdev_queue *txq;
 	struct dpaa_priv *priv;
 	struct qm_fd fd;
+	bool nonlinear;
 	int offset = 0;
 	int err = 0;
 
@@ -2251,6 +2309,13 @@ dpaa_start_xmit(struct sk_buff *skb, struct net_device *net_dev)
 
 	qm_fd_clear_fd(&fd);
 
+	/* Packet data is always read as 32-bit words, so zero out any part of
+	 * the skb which might be sent if we have to pad the packet
+	 */
+	if (__skb_put_padto(skb, ETH_ZLEN, false))
+		goto enomem;
+
+	nonlinear = skb_is_nonlinear(skb);
 	if (!nonlinear) {
 		/* We're going to store the skb backpointer at the beginning
 		 * of the data buffer, so we need a privately owned skb
@@ -2370,15 +2435,15 @@ static int dpaa_eth_poll(struct napi_struct *napi, int budget)
 
 	cleaned = qman_p_poll_dqrr(np->p, budget);
 
+	if (np->xdp_act & XDP_REDIRECT)
+		xdp_do_flush();
+
 	if (cleaned < budget) {
 		napi_complete_done(napi, cleaned);
 		qman_p_irqsource_add(np->p, QM_PIRQ_DQRI);
 	} else if (np->down) {
 		qman_p_irqsource_add(np->p, QM_PIRQ_DQRI);
 	}
-
-	if (np->xdp_act & XDP_REDIRECT)
-		xdp_do_flush();
 
 	return cleaned;
 }
@@ -2706,7 +2771,7 @@ static enum qman_cb_dqrr_result rx_default_dqrr(struct qman_portal *portal,
 	if (net_dev->features & NETIF_F_RXHASH && priv->keygen_in_use &&
 	    !fman_port_get_hash_result_offset(priv->mac_dev->port[RX],
 					      &hash_offset)) {
-		hash = be32_to_cpu(*(u32 *)(vaddr + hash_offset));
+		hash = be32_to_cpu(*(__be32 *)(vaddr + hash_offset));
 		hash_valid = true;
 	}
 
@@ -2874,54 +2939,6 @@ static void dpaa_eth_napi_disable(struct dpaa_priv *priv)
 	}
 }
 
-static void dpaa_adjust_link(struct net_device *net_dev)
-{
-	struct mac_device *mac_dev;
-	struct dpaa_priv *priv;
-
-	priv = netdev_priv(net_dev);
-	mac_dev = priv->mac_dev;
-	mac_dev->adjust_link(mac_dev);
-}
-
-/* The Aquantia PHYs are capable of performing rate adaptation */
-#define PHY_VEND_AQUANTIA	0x03a1b400
-
-static int dpaa_phy_init(struct net_device *net_dev)
-{
-	__ETHTOOL_DECLARE_LINK_MODE_MASK(mask) = { 0, };
-	struct mac_device *mac_dev;
-	struct phy_device *phy_dev;
-	struct dpaa_priv *priv;
-
-	priv = netdev_priv(net_dev);
-	mac_dev = priv->mac_dev;
-
-	phy_dev = of_phy_connect(net_dev, mac_dev->phy_node,
-				 &dpaa_adjust_link, 0,
-				 mac_dev->phy_if);
-	if (!phy_dev) {
-		netif_err(priv, ifup, net_dev, "init_phy() failed\n");
-		return -ENODEV;
-	}
-
-	/* Unless the PHY is capable of rate adaptation */
-	if (mac_dev->phy_if != PHY_INTERFACE_MODE_XGMII ||
-	    ((phy_dev->drv->phy_id & GENMASK(31, 10)) != PHY_VEND_AQUANTIA)) {
-		/* remove any features not supported by the controller */
-		ethtool_convert_legacy_u32_to_link_mode(mask,
-							mac_dev->if_support);
-		linkmode_and(phy_dev->supported, phy_dev->supported, mask);
-	}
-
-	phy_support_asym_pause(phy_dev);
-
-	mac_dev->phy_dev = phy_dev;
-	net_dev->phydev = phy_dev;
-
-	return 0;
-}
-
 static int dpaa_open(struct net_device *net_dev)
 {
 	struct mac_device *mac_dev;
@@ -2932,7 +2949,8 @@ static int dpaa_open(struct net_device *net_dev)
 	mac_dev = priv->mac_dev;
 	dpaa_eth_napi_enable(priv);
 
-	err = dpaa_phy_init(net_dev);
+	err = phylink_of_phy_connect(mac_dev->phylink,
+				     mac_dev->dev->of_node, 0);
 	if (err)
 		goto phy_init_failed;
 
@@ -2942,11 +2960,12 @@ static int dpaa_open(struct net_device *net_dev)
 			goto mac_start_failed;
 	}
 
-	err = priv->mac_dev->start(mac_dev);
+	err = priv->mac_dev->enable(mac_dev->fman_mac);
 	if (err < 0) {
-		netif_err(priv, ifup, net_dev, "mac_dev->start() = %d\n", err);
+		netif_err(priv, ifup, net_dev, "mac_dev->enable() = %d\n", err);
 		goto mac_start_failed;
 	}
+	phylink_start(mac_dev->phylink);
 
 	netif_tx_start_all_queues(net_dev);
 
@@ -2955,6 +2974,7 @@ static int dpaa_open(struct net_device *net_dev)
 mac_start_failed:
 	for (i = 0; i < ARRAY_SIZE(mac_dev->port); i++)
 		fman_port_disable(mac_dev->port[i]);
+	phylink_disconnect_phy(mac_dev->phylink);
 
 phy_init_failed:
 	dpaa_eth_napi_disable(priv);
@@ -2999,7 +3019,7 @@ static int dpaa_change_mtu(struct net_device *net_dev, int new_mtu)
 	if (priv->xdp_prog && !xdp_validate_mtu(priv, new_mtu))
 		return -EINVAL;
 
-	net_dev->mtu = new_mtu;
+	WRITE_ONCE(net_dev->mtu, new_mtu);
 	return 0;
 }
 
@@ -3068,15 +3088,25 @@ static int dpaa_xdp_xmit(struct net_device *net_dev, int n,
 	return nxmit;
 }
 
-static int dpaa_ts_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
+static int dpaa_hwtstamp_get(struct net_device *dev,
+			     struct kernel_hwtstamp_config *config)
 {
 	struct dpaa_priv *priv = netdev_priv(dev);
-	struct hwtstamp_config config;
 
-	if (copy_from_user(&config, rq->ifr_data, sizeof(config)))
-		return -EFAULT;
+	config->tx_type = priv->tx_tstamp ? HWTSTAMP_TX_ON : HWTSTAMP_TX_OFF;
+	config->rx_filter = priv->rx_tstamp ? HWTSTAMP_FILTER_ALL :
+			    HWTSTAMP_FILTER_NONE;
 
-	switch (config.tx_type) {
+	return 0;
+}
+
+static int dpaa_hwtstamp_set(struct net_device *dev,
+			     struct kernel_hwtstamp_config *config,
+			     struct netlink_ext_ack *extack)
+{
+	struct dpaa_priv *priv = netdev_priv(dev);
+
+	switch (config->tx_type) {
 	case HWTSTAMP_TX_OFF:
 		/* Couldn't disable rx/tx timestamping separately.
 		 * Do nothing here.
@@ -3091,7 +3121,7 @@ static int dpaa_ts_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 		return -ERANGE;
 	}
 
-	if (config.rx_filter == HWTSTAMP_FILTER_NONE) {
+	if (config->rx_filter == HWTSTAMP_FILTER_NONE) {
 		/* Couldn't disable rx/tx timestamping separately.
 		 * Do nothing here.
 		 */
@@ -3100,26 +3130,17 @@ static int dpaa_ts_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 		priv->mac_dev->set_tstamp(priv->mac_dev->fman_mac, true);
 		priv->rx_tstamp = true;
 		/* TS is set for all frame types, not only those requested */
-		config.rx_filter = HWTSTAMP_FILTER_ALL;
+		config->rx_filter = HWTSTAMP_FILTER_ALL;
 	}
 
-	return copy_to_user(rq->ifr_data, &config, sizeof(config)) ?
-			-EFAULT : 0;
+	return 0;
 }
 
 static int dpaa_ioctl(struct net_device *net_dev, struct ifreq *rq, int cmd)
 {
-	int ret = -EINVAL;
+	struct dpaa_priv *priv = netdev_priv(net_dev);
 
-	if (cmd == SIOCGMIIREG) {
-		if (net_dev->phydev)
-			return phy_mii_ioctl(net_dev->phydev, rq, cmd);
-	}
-
-	if (cmd == SIOCSHWTSTAMP)
-		return dpaa_ts_ioctl(net_dev, rq, cmd);
-
-	return ret;
+	return phylink_mii_ioctl(priv->mac_dev->phylink, rq, cmd);
 }
 
 static const struct net_device_ops dpaa_ops = {
@@ -3128,7 +3149,6 @@ static const struct net_device_ops dpaa_ops = {
 	.ndo_stop = dpaa_eth_stop,
 	.ndo_tx_timeout = dpaa_tx_timeout,
 	.ndo_get_stats64 = dpaa_get_stats64,
-	.ndo_change_carrier = fixed_phy_change_carrier,
 	.ndo_set_mac_address = dpaa_set_mac_address,
 	.ndo_validate_addr = eth_validate_addr,
 	.ndo_set_rx_mode = dpaa_set_rx_mode,
@@ -3137,6 +3157,8 @@ static const struct net_device_ops dpaa_ops = {
 	.ndo_change_mtu = dpaa_change_mtu,
 	.ndo_bpf = dpaa_xdp,
 	.ndo_xdp_xmit = dpaa_xdp_xmit,
+	.ndo_hwtstamp_get = dpaa_hwtstamp_get,
+	.ndo_hwtstamp_set = dpaa_hwtstamp_set,
 };
 
 static int dpaa_napi_add(struct net_device *net_dev)
@@ -3148,8 +3170,7 @@ static int dpaa_napi_add(struct net_device *net_dev)
 	for_each_possible_cpu(cpu) {
 		percpu_priv = per_cpu_ptr(priv->percpu_priv, cpu);
 
-		netif_napi_add(net_dev, &percpu_priv->np.napi,
-			       dpaa_eth_poll, NAPI_POLL_WEIGHT);
+		netif_napi_add(net_dev, &percpu_priv->np.napi, dpaa_eth_poll);
 	}
 
 	return 0;
@@ -3164,8 +3185,9 @@ static void dpaa_napi_del(struct net_device *net_dev)
 	for_each_possible_cpu(cpu) {
 		percpu_priv = per_cpu_ptr(priv->percpu_priv, cpu);
 
-		netif_napi_del(&percpu_priv->np.napi);
+		__netif_napi_del(&percpu_priv->np.napi);
 	}
+	synchronize_net();
 }
 
 static inline void dpaa_bp_free_pf(const struct dpaa_bp *bp,
@@ -3327,7 +3349,7 @@ static int dpaa_eth_probe(struct platform_device *pdev)
 	/* Allocate this early, so we can store relevant information in
 	 * the private area
 	 */
-	net_dev = alloc_etherdev_mq(sizeof(*priv), DPAA_ETH_TXQ_NUM);
+	net_dev = alloc_etherdev_mq(sizeof(*priv), dpaa_max_num_txqs());
 	if (!net_dev) {
 		dev_err(dev, "alloc_etherdev_mq() failed\n");
 		return -ENOMEM;
@@ -3341,6 +3363,22 @@ static int dpaa_eth_probe(struct platform_device *pdev)
 	priv->net_dev = net_dev;
 
 	priv->msg_enable = netif_msg_init(debug, DPAA_MSG_DEFAULT);
+
+	priv->egress_fqs = devm_kcalloc(dev, dpaa_max_num_txqs(),
+					sizeof(*priv->egress_fqs),
+					GFP_KERNEL);
+	if (!priv->egress_fqs) {
+		err = -ENOMEM;
+		goto free_netdev;
+	}
+
+	priv->conf_fqs = devm_kcalloc(dev, dpaa_max_num_txqs(),
+				      sizeof(*priv->conf_fqs),
+				      GFP_KERNEL);
+	if (!priv->conf_fqs) {
+		err = -ENOMEM;
+		goto free_netdev;
+	}
 
 	mac_dev = dpaa_mac_dev_get(pdev);
 	if (IS_ERR(mac_dev)) {
@@ -3419,7 +3457,9 @@ static int dpaa_eth_probe(struct platform_device *pdev)
 	 */
 	dpaa_eth_add_channel(priv->channel, &pdev->dev);
 
-	dpaa_fq_setup(priv, &dpaa_fq_cbs, priv->mac_dev->port[TX]);
+	err = dpaa_fq_setup(priv, &dpaa_fq_cbs, priv->mac_dev->port[TX]);
+	if (err)
+		goto free_dpaa_bps;
 
 	/* Create a congestion group for this netdev, with
 	 * dynamically-allocated CGR ID.
@@ -3465,7 +3505,8 @@ static int dpaa_eth_probe(struct platform_device *pdev)
 	}
 
 	priv->num_tc = 1;
-	netif_set_real_num_tx_queues(net_dev, priv->num_tc * DPAA_TC_TXQ_NUM);
+	netif_set_real_num_tx_queues(net_dev,
+				     priv->num_tc * dpaa_num_txqs_per_tc());
 
 	/* Initialize NAPI */
 	err = dpaa_napi_add(net_dev);
@@ -3501,7 +3542,7 @@ free_netdev:
 	return err;
 }
 
-static int dpaa_remove(struct platform_device *pdev)
+static void dpaa_remove(struct platform_device *pdev)
 {
 	struct net_device *net_dev;
 	struct dpaa_priv *priv;
@@ -3517,8 +3558,12 @@ static int dpaa_remove(struct platform_device *pdev)
 
 	dev_set_drvdata(dev, NULL);
 	unregister_netdev(net_dev);
+	phylink_destroy(priv->mac_dev->phylink);
 
 	err = dpaa_fq_free(dev, &priv->dpaa_fq_list);
+	if (err)
+		dev_err(dev, "Failed to free FQs on remove (%pE)\n",
+			ERR_PTR(err));
 
 	qman_delete_cgr_safe(&priv->ingress_cgr);
 	qman_release_cgrid(priv->ingress_cgr.cgrid);
@@ -3530,8 +3575,6 @@ static int dpaa_remove(struct platform_device *pdev)
 	dpaa_bps_free(priv);
 
 	free_netdev(net_dev);
-
-	return err;
 }
 
 static const struct platform_device_id dpaa_devtype[] = {

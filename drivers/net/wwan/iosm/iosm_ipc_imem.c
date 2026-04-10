@@ -565,28 +565,43 @@ static void ipc_imem_run_state_worker(struct work_struct *instance)
 	struct ipc_mux_config mux_cfg;
 	struct iosm_imem *ipc_imem;
 	u8 ctrl_chl_idx = 0;
+	int ret;
 
 	ipc_imem = container_of(instance, struct iosm_imem, run_state_worker);
 
 	if (ipc_imem->phase != IPC_P_RUN) {
 		dev_err(ipc_imem->dev,
 			"Modem link down. Exit run state worker.");
-		return;
+		goto err_out;
 	}
 
 	if (test_and_clear_bit(IOSM_DEVLINK_INIT, &ipc_imem->flag))
 		ipc_devlink_deinit(ipc_imem->ipc_devlink);
 
-	if (!ipc_imem_setup_cp_mux_cap_init(ipc_imem, &mux_cfg))
-		ipc_imem->mux = ipc_mux_init(&mux_cfg, ipc_imem);
+	ret = ipc_imem_setup_cp_mux_cap_init(ipc_imem, &mux_cfg);
+	if (ret < 0)
+		goto err_out;
 
-	ipc_imem_wwan_channel_init(ipc_imem, mux_cfg.protocol);
-	if (ipc_imem->mux)
-		ipc_imem->mux->wwan = ipc_imem->wwan;
+	ipc_imem->mux = ipc_mux_init(&mux_cfg, ipc_imem);
+	if (!ipc_imem->mux)
+		goto err_out;
+
+	ret = ipc_imem_wwan_channel_init(ipc_imem, mux_cfg.protocol);
+	if (ret < 0)
+		goto err_ipc_mux_deinit;
+
+	ipc_imem->mux->wwan = ipc_imem->wwan;
 
 	while (ctrl_chl_idx < IPC_MEM_MAX_CHANNELS) {
 		if (!ipc_chnl_cfg_get(&chnl_cfg_port, ctrl_chl_idx)) {
 			ipc_imem->ipc_port[ctrl_chl_idx] = NULL;
+
+			if (ipc_imem->pcie->pci->device == INTEL_CP_DEVICE_7560_ID &&
+			    chnl_cfg_port.wwan_port_type == WWAN_PORT_XMMRPC) {
+				ctrl_chl_idx++;
+				continue;
+			}
+
 			if (ipc_imem->pcie->pci->device == INTEL_CP_DEVICE_7360_ID &&
 			    chnl_cfg_port.wwan_port_type == WWAN_PORT_MBIM) {
 				ctrl_chl_idx++;
@@ -615,6 +630,13 @@ static void ipc_imem_run_state_worker(struct work_struct *instance)
 
 	/* Complete all memory stores after setting bit */
 	smp_mb__after_atomic();
+
+	return;
+
+err_ipc_mux_deinit:
+	ipc_mux_deinit(ipc_imem->mux);
+err_out:
+	ipc_uevent_send(ipc_imem->dev, UEVENT_CD_READY_LINK_DOWN);
 }
 
 static void ipc_imem_handle_irq(struct iosm_imem *ipc_imem, int irq)
@@ -1312,7 +1334,7 @@ static int ipc_imem_config(struct iosm_imem *ipc_imem)
 struct iosm_imem *ipc_imem_init(struct iosm_pcie *pcie, unsigned int device_id,
 				void __iomem *mmio, struct device *dev)
 {
-	struct iosm_imem *ipc_imem = kzalloc(sizeof(*pcie->imem), GFP_KERNEL);
+	struct iosm_imem *ipc_imem = kzalloc_obj(*pcie->imem);
 	enum ipc_mem_exec_stage stage;
 
 	if (!ipc_imem)
@@ -1337,8 +1359,7 @@ struct iosm_imem *ipc_imem_init(struct iosm_pcie *pcie, unsigned int device_id,
 		goto mmio_init_fail;
 	}
 
-	ipc_imem->ipc_task = kzalloc(sizeof(*ipc_imem->ipc_task),
-				     GFP_KERNEL);
+	ipc_imem->ipc_task = kzalloc_obj(*ipc_imem->ipc_task);
 
 	/* Create tasklet for event handling*/
 	if (!ipc_imem->ipc_task)
@@ -1359,24 +1380,20 @@ struct iosm_imem *ipc_imem_init(struct iosm_pcie *pcie, unsigned int device_id,
 	/* The phase is set to power off. */
 	ipc_imem->phase = IPC_P_OFF;
 
-	hrtimer_init(&ipc_imem->startup_timer, CLOCK_MONOTONIC,
-		     HRTIMER_MODE_REL);
-	ipc_imem->startup_timer.function = ipc_imem_startup_timer_cb;
+	hrtimer_setup(&ipc_imem->startup_timer, ipc_imem_startup_timer_cb, CLOCK_MONOTONIC,
+		      HRTIMER_MODE_REL);
 
-	hrtimer_init(&ipc_imem->tdupdate_timer, CLOCK_MONOTONIC,
-		     HRTIMER_MODE_REL);
-	ipc_imem->tdupdate_timer.function = ipc_imem_td_update_timer_cb;
+	hrtimer_setup(&ipc_imem->tdupdate_timer, ipc_imem_td_update_timer_cb, CLOCK_MONOTONIC,
+		      HRTIMER_MODE_REL);
 
-	hrtimer_init(&ipc_imem->fast_update_timer, CLOCK_MONOTONIC,
-		     HRTIMER_MODE_REL);
-	ipc_imem->fast_update_timer.function = ipc_imem_fast_update_timer_cb;
+	hrtimer_setup(&ipc_imem->fast_update_timer, ipc_imem_fast_update_timer_cb, CLOCK_MONOTONIC,
+		      HRTIMER_MODE_REL);
 
-	hrtimer_init(&ipc_imem->td_alloc_timer, CLOCK_MONOTONIC,
-		     HRTIMER_MODE_REL);
-	ipc_imem->td_alloc_timer.function = ipc_imem_td_alloc_timer_cb;
+	hrtimer_setup(&ipc_imem->td_alloc_timer, ipc_imem_td_alloc_timer_cb, CLOCK_MONOTONIC,
+		      HRTIMER_MODE_REL);
 
-	hrtimer_init(&ipc_imem->adb_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	ipc_imem->adb_timer.function = ipc_imem_adb_timer_cb;
+	hrtimer_setup(&ipc_imem->adb_timer, ipc_imem_adb_timer_cb, CLOCK_MONOTONIC,
+		      HRTIMER_MODE_REL);
 
 	if (ipc_imem_config(ipc_imem)) {
 		dev_err(ipc_imem->dev, "failed to initialize the imem");

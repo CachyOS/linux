@@ -31,8 +31,6 @@
 #define HNS_BUFFER_SIZE_2048 2048
 
 #define BD_MAX_SEND_SIZE 8191
-#define SKB_TMP_LEN(SKB) \
-	(((SKB)->transport_header - (SKB)->mac_header) + tcp_hdrlen(SKB))
 
 static void fill_v2_desc_hw(struct hnae_ring *ring, void *priv, int size,
 			    int send_sz, dma_addr_t dma, int frag_end,
@@ -94,7 +92,7 @@ static void fill_v2_desc_hw(struct hnae_ring *ring, void *priv, int size,
 						     HNSV2_TXD_TSE_B, 1);
 					l4_len = tcp_hdrlen(skb);
 					mss = skb_shinfo(skb)->gso_size;
-					paylen = skb->len - SKB_TMP_LEN(skb);
+					paylen = skb->len - skb_tcp_all_headers(skb);
 				}
 			} else if (skb->protocol == htons(ETH_P_IPV6)) {
 				hnae_set_bit(tvsvsn, HNSV2_TXD_IPV6_B, 1);
@@ -108,7 +106,7 @@ static void fill_v2_desc_hw(struct hnae_ring *ring, void *priv, int size,
 						     HNSV2_TXD_TSE_B, 1);
 					l4_len = tcp_hdrlen(skb);
 					mss = skb_shinfo(skb)->gso_size;
-					paylen = skb->len - SKB_TMP_LEN(skb);
+					paylen = skb->len - skb_tcp_all_headers(skb);
 				}
 			}
 			desc->tx.ip_offset = ip_offset;
@@ -144,7 +142,8 @@ MODULE_DEVICE_TABLE(acpi, hns_enet_acpi_match);
 
 static void fill_desc(struct hnae_ring *ring, void *priv,
 		      int size, dma_addr_t dma, int frag_end,
-		      int buf_num, enum hns_desc_type type, int mtu)
+		      int buf_num, enum hns_desc_type type, int mtu,
+		      bool is_gso)
 {
 	struct hnae_desc *desc = &ring->desc[ring->next_to_use];
 	struct hnae_desc_cb *desc_cb = &ring->desc_cb[ring->next_to_use];
@@ -277,6 +276,15 @@ static int hns_nic_maybe_stop_tso(
 	return 0;
 }
 
+static int hns_nic_maybe_stop_tx_v2(struct sk_buff **out_skb, int *bnum,
+				    struct hnae_ring *ring)
+{
+	if (skb_is_gso(*out_skb))
+		return hns_nic_maybe_stop_tso(out_skb, bnum, ring);
+	else
+		return hns_nic_maybe_stop_tx(out_skb, bnum, ring);
+}
+
 static void fill_tso_desc(struct hnae_ring *ring, void *priv,
 			  int size, dma_addr_t dma, int frag_end,
 			  int buf_num, enum hns_desc_type type, int mtu)
@@ -302,6 +310,19 @@ static void fill_tso_desc(struct hnae_ring *ring, void *priv,
 				mtu);
 }
 
+static void fill_desc_v2(struct hnae_ring *ring, void *priv,
+			 int size, dma_addr_t dma, int frag_end,
+			 int buf_num, enum hns_desc_type type, int mtu,
+			 bool is_gso)
+{
+	if (is_gso)
+		fill_tso_desc(ring, priv, size, dma, frag_end, buf_num, type,
+			      mtu);
+	else
+		fill_v2_desc(ring, priv, size, dma, frag_end, buf_num, type,
+			     mtu);
+}
+
 netdev_tx_t hns_nic_net_xmit_hw(struct net_device *ndev,
 				struct sk_buff *skb,
 				struct hns_nic_ring_data *ring_data)
@@ -315,6 +336,7 @@ netdev_tx_t hns_nic_net_xmit_hw(struct net_device *ndev,
 	int seg_num;
 	dma_addr_t dma;
 	int size, next_to_use;
+	bool is_gso;
 	int i;
 
 	switch (priv->ops.maybe_stop_tx(&skb, &buf_num, ring)) {
@@ -341,8 +363,9 @@ netdev_tx_t hns_nic_net_xmit_hw(struct net_device *ndev,
 		ring->stats.sw_err_cnt++;
 		goto out_err_tx_ok;
 	}
+	is_gso = skb_is_gso(skb);
 	priv->ops.fill_desc(ring, skb, size, dma, seg_num == 1 ? 1 : 0,
-			    buf_num, DESC_TYPE_SKB, ndev->mtu);
+			    buf_num, DESC_TYPE_SKB, ndev->mtu, is_gso);
 
 	/* fill the fragments */
 	for (i = 1; i < seg_num; i++) {
@@ -356,7 +379,7 @@ netdev_tx_t hns_nic_net_xmit_hw(struct net_device *ndev,
 		}
 		priv->ops.fill_desc(ring, skb_frag_page(frag), size, dma,
 				    seg_num - 1 == i ? 1 : 0, buf_num,
-				    DESC_TYPE_PAGE, ndev->mtu);
+				    DESC_TYPE_PAGE, ndev->mtu, is_gso);
 	}
 
 	/*complete translate all packets*/
@@ -1379,7 +1402,7 @@ static void hns_nic_net_down(struct net_device *ndev)
 	if (test_and_set_bit(NIC_STATE_DOWN, &priv->state))
 		return;
 
-	(void)del_timer_sync(&priv->service_timer);
+	(void) timer_delete_sync(&priv->service_timer);
 	netif_tx_stop_all_queues(ndev);
 	netif_carrier_off(ndev);
 	netif_tx_disable(ndev);
@@ -1754,7 +1777,7 @@ static int hns_nic_change_mtu(struct net_device *ndev, int new_mtu)
 	}
 
 	/* finally, set new mtu to netdevice */
-	ndev->mtu = new_mtu;
+	WRITE_ONCE(ndev->mtu, new_mtu);
 
 out:
 	if (if_running) {
@@ -1778,15 +1801,6 @@ static int hns_nic_set_features(struct net_device *netdev,
 			netdev_info(netdev, "enet v1 do not support tso!\n");
 		break;
 	default:
-		if (features & (NETIF_F_TSO | NETIF_F_TSO6)) {
-			priv->ops.fill_desc = fill_tso_desc;
-			priv->ops.maybe_stop_tx = hns_nic_maybe_stop_tso;
-			/* The chip only support 7*4096 */
-			netif_set_tso_max_size(netdev, 7 * 4096);
-		} else {
-			priv->ops.fill_desc = fill_v2_desc;
-			priv->ops.maybe_stop_tx = hns_nic_maybe_stop_tx;
-		}
 		break;
 	}
 	netdev->features = features;
@@ -2061,7 +2075,7 @@ static void hns_nic_task_schedule(struct hns_nic_priv *priv)
 
 static void hns_nic_service_timer(struct timer_list *t)
 {
-	struct hns_nic_priv *priv = from_timer(priv, t, service_timer);
+	struct hns_nic_priv *priv = timer_container_of(priv, t, service_timer);
 
 	(void)mod_timer(&priv->service_timer, jiffies + SERVICE_TIMER_HZ);
 
@@ -2111,8 +2125,7 @@ static int hns_nic_init_ring_data(struct hns_nic_priv *priv)
 		rd->fini_process = is_ver1 ? hns_nic_tx_fini_pro :
 			hns_nic_tx_fini_pro_v2;
 
-		netif_napi_add(priv->netdev, &rd->napi,
-			       hns_nic_common_poll, NAPI_POLL_WEIGHT);
+		netif_napi_add(priv->netdev, &rd->napi, hns_nic_common_poll);
 		rd->ring->irq_init_flag = RCB_IRQ_NOT_INITED;
 	}
 	for (i = h->q_num; i < h->q_num * 2; i++) {
@@ -2124,8 +2137,7 @@ static int hns_nic_init_ring_data(struct hns_nic_priv *priv)
 		rd->fini_process = is_ver1 ? hns_nic_rx_fini_pro :
 			hns_nic_rx_fini_pro_v2;
 
-		netif_napi_add(priv->netdev, &rd->napi,
-			       hns_nic_common_poll, NAPI_POLL_WEIGHT);
+		netif_napi_add(priv->netdev, &rd->napi, hns_nic_common_poll);
 		rd->ring->irq_init_flag = RCB_IRQ_NOT_INITED;
 	}
 
@@ -2163,16 +2175,9 @@ static void hns_nic_set_priv_ops(struct net_device *netdev)
 		priv->ops.maybe_stop_tx = hns_nic_maybe_stop_tx;
 	} else {
 		priv->ops.get_rxd_bnum = get_v2rx_desc_bnum;
-		if ((netdev->features & NETIF_F_TSO) ||
-		    (netdev->features & NETIF_F_TSO6)) {
-			priv->ops.fill_desc = fill_tso_desc;
-			priv->ops.maybe_stop_tx = hns_nic_maybe_stop_tso;
-			/* This chip only support 7*4096 */
-			netif_set_tso_max_size(netdev, 7 * 4096);
-		} else {
-			priv->ops.fill_desc = fill_v2_desc;
-			priv->ops.maybe_stop_tx = hns_nic_maybe_stop_tx;
-		}
+		priv->ops.fill_desc = fill_desc_v2;
+		priv->ops.maybe_stop_tx = hns_nic_maybe_stop_tx_v2;
+		netif_set_tso_max_size(netdev, 7 * 4096);
 		/* enable tso when init
 		 * control tso on/off through TSE bit in bd
 		 */
@@ -2388,7 +2393,7 @@ out_read_prop_fail:
 	return ret;
 }
 
-static int hns_nic_dev_remove(struct platform_device *pdev)
+static void hns_nic_dev_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct hns_nic_priv *priv = netdev_priv(ndev);
@@ -2417,7 +2422,6 @@ static int hns_nic_dev_remove(struct platform_device *pdev)
 	of_node_put(to_of_node(priv->fwnode));
 
 	free_netdev(ndev);
-	return 0;
 }
 
 static const struct of_device_id hns_enet_of_match[] = {

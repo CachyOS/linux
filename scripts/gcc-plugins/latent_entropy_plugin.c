@@ -1,7 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2012-2016 by the PaX Team <pageexec@freemail.hu>
  * Copyright 2016 by Emese Revfy <re.emese@gmail.com>
- * Licensed under the GPL v2
  *
  * Note: the choice of the license means that the compilation process is
  *       NOT 'eligible' as defined by gcc's library exception to the GPL v3,
@@ -17,7 +17,7 @@
  *	if (argc <= 1)
  *		printf("%s: no command arguments :(\n", *argv);
  *	else
- *		printf("%s: %d command arguments!\n", *argv, args - 1);
+ *		printf("%s: %d command arguments!\n", *argv, argc - 1);
  * }
  *
  * after:
@@ -47,7 +47,7 @@
  *		// perturb_local_entropy()
  *	} else {
  *		local_entropy ^= 3896280633962944730;
- *		printf("%s: %d command arguments!\n", *argv, args - 1);
+ *		printf("%s: %d command arguments!\n", *argv, argc - 1);
  *	}
  *
  *	// latent_entropy_execute() 4.

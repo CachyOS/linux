@@ -1,7 +1,14 @@
 # SPDX-License-Identifier: GPL-2.0
-subdir-y += sifive
-subdir-y += starfive
-subdir-$(CONFIG_SOC_CANAAN_K210_DTB_BUILTIN) += canaan
+subdir-y += allwinner
+subdir-y += andes
+subdir-y += anlogic
+subdir-y += canaan
+subdir-y += eswin
 subdir-y += microchip
-
-obj-$(CONFIG_BUILTIN_DTB) := $(addsuffix /, $(subdir-y))
+subdir-y += renesas
+subdir-y += sifive
+subdir-y += sophgo
+subdir-y += spacemit
+subdir-y += starfive
+subdir-y += tenstorrent
+subdir-y += thead

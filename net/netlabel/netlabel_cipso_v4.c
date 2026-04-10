@@ -139,10 +139,10 @@ static int netlbl_cipsov4_add_std(struct genl_info *info,
 					   NULL) != 0)
 		return -EINVAL;
 
-	doi_def = kmalloc(sizeof(*doi_def), GFP_KERNEL);
+	doi_def = kmalloc_obj(*doi_def);
 	if (doi_def == NULL)
 		return -ENOMEM;
-	doi_def->map.std = kzalloc(sizeof(*doi_def->map.std), GFP_KERNEL);
+	doi_def->map.std = kzalloc_obj(*doi_def->map.std);
 	if (doi_def->map.std == NULL) {
 		kfree(doi_def);
 		return -ENOMEM;
@@ -332,7 +332,7 @@ static int netlbl_cipsov4_add_pass(struct genl_info *info,
 	if (!info->attrs[NLBL_CIPSOV4_A_TAGLST])
 		return -EINVAL;
 
-	doi_def = kmalloc(sizeof(*doi_def), GFP_KERNEL);
+	doi_def = kmalloc_obj(*doi_def);
 	if (doi_def == NULL)
 		return -ENOMEM;
 	doi_def->type = CIPSO_V4_MAP_PASS;
@@ -371,7 +371,7 @@ static int netlbl_cipsov4_add_local(struct genl_info *info,
 	if (!info->attrs[NLBL_CIPSOV4_A_TAGLST])
 		return -EINVAL;
 
-	doi_def = kmalloc(sizeof(*doi_def), GFP_KERNEL);
+	doi_def = kmalloc_obj(*doi_def);
 	if (doi_def == NULL)
 		return -ENOMEM;
 	doi_def->type = CIPSO_V4_MAP_LOCAL;
@@ -767,6 +767,7 @@ static struct genl_family netlbl_cipsov4_gnl_family __ro_after_init = {
 	.module = THIS_MODULE,
 	.small_ops = netlbl_cipsov4_ops,
 	.n_small_ops = ARRAY_SIZE(netlbl_cipsov4_ops),
+	.resv_start_op = NLBL_CIPSOV4_C_LISTALL + 1,
 };
 
 /*

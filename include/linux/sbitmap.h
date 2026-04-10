@@ -36,6 +36,11 @@ struct sbitmap_word {
 	 * @cleared: word holding cleared bits
 	 */
 	unsigned long cleared ____cacheline_aligned_in_smp;
+
+	/**
+	 * @swap_lock: serializes simultaneous updates of ->word and ->cleared
+	 */
+	raw_spinlock_t swap_lock;
 } ____cacheline_aligned_in_smp;
 
 /**
@@ -70,7 +75,7 @@ struct sbitmap {
 	 */
 	struct sbitmap_word *map;
 
-	/*
+	/**
 	 * @alloc_hint: Cache of last successfully allocated or freed bit.
 	 *
 	 * This is per-cpu, which allows multiple users to stick to different
@@ -86,11 +91,6 @@ struct sbitmap {
  * struct sbq_wait_state - Wait queue in a &struct sbitmap_queue.
  */
 struct sbq_wait_state {
-	/**
-	 * @wait_cnt: Number of frees remaining before we wake up.
-	 */
-	atomic_t wait_cnt;
-
 	/**
 	 * @wait: Wait queue.
 	 */
@@ -128,7 +128,7 @@ struct sbitmap_queue {
 	 */
 	struct sbq_wait_state *ws;
 
-	/*
+	/**
 	 * @ws_active: count of currently active ws waitqueues
 	 */
 	atomic_t ws_active;
@@ -138,6 +138,17 @@ struct sbitmap_queue {
 	 * sbitmap_queue_get_shallow()
 	 */
 	unsigned int min_shallow_depth;
+
+	/**
+	 * @completion_cnt: Number of bits cleared passed to the
+	 * wakeup function.
+	 */
+	atomic_t completion_cnt;
+
+	/**
+	 * @wakeup_cnt: Number of thread wake ups issued.
+	 */
+	atomic_t wakeup_cnt;
 };
 
 /**
@@ -197,23 +208,6 @@ void sbitmap_resize(struct sbitmap *sb, unsigned int depth);
  * Return: Non-negative allocated bit number if successful, -1 otherwise.
  */
 int sbitmap_get(struct sbitmap *sb);
-
-/**
- * sbitmap_get_shallow() - Try to allocate a free bit from a &struct sbitmap,
- * limiting the depth used from each word.
- * @sb: Bitmap to allocate from.
- * @shallow_depth: The maximum number of bits to allocate from a single word.
- *
- * This rather specific operation allows for having multiple users with
- * different allocation limits. E.g., there can be a high-priority class that
- * uses sbitmap_get() and a low-priority class that uses sbitmap_get_shallow()
- * with a @shallow_depth of (1 << (@sb->shift - 1)). Then, the low-priority
- * class can only allocate half of the total bits in the bitmap, preventing it
- * from starving out the high-priority class.
- *
- * Return: Non-negative allocated bit number if successful, -1 otherwise.
- */
-int sbitmap_get_shallow(struct sbitmap *sb, unsigned long shallow_depth);
 
 /**
  * sbitmap_any_bit_set() - Check for a set bit in a &struct sbitmap.
@@ -467,7 +461,7 @@ unsigned long __sbitmap_queue_get_batch(struct sbitmap_queue *sbq, int nr_tags,
  * sbitmap_queue, limiting the depth used from each word, with preemption
  * already disabled.
  * @sbq: Bitmap queue to allocate from.
- * @shallow_depth: The maximum number of bits to allocate from a single word.
+ * @shallow_depth: The maximum number of bits to allocate from the queue.
  * See sbitmap_get_shallow().
  *
  * If you call this, make sure to call sbitmap_queue_min_shallow_depth() after
@@ -553,6 +547,8 @@ static inline void sbq_index_atomic_inc(atomic_t *index)
  * sbitmap_queue.
  * @sbq: Bitmap queue to wait on.
  * @wait_index: A counter per "user" of @sbq.
+ *
+ * Return: Next wait queue to be used
  */
 static inline struct sbq_wait_state *sbq_wait_ptr(struct sbitmap_queue *sbq,
 						  atomic_t *wait_index)
@@ -575,8 +571,9 @@ void sbitmap_queue_wake_all(struct sbitmap_queue *sbq);
  * sbitmap_queue_wake_up() - Wake up some of waiters in one waitqueue
  * on a &struct sbitmap_queue.
  * @sbq: Bitmap queue to wake up.
+ * @nr: Number of bits cleared.
  */
-void sbitmap_queue_wake_up(struct sbitmap_queue *sbq);
+void sbitmap_queue_wake_up(struct sbitmap_queue *sbq, int nr);
 
 /**
  * sbitmap_queue_show() - Dump &struct sbitmap_queue information to a &struct

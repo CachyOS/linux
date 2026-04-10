@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #ifndef __IA_CSS_MIPI_H
@@ -24,22 +15,6 @@
 #include "ia_css_err.h"
 #include "ia_css_stream_format.h"
 #include "ia_css_input_port.h"
-
-/* @brief Register size of a CSS MIPI frame for check during capturing.
- *
- * @param[in]	port	CSI-2 port this check is registered.
- * @param[in]	size_mem_words	The frame size in memory words (32B).
- * @return		Return the error in case of failure. E.g. MAX_NOF_ENTRIES REACHED
- *
- * Register size of a CSS MIPI frame to check during capturing. Up to
- *		IA_CSS_MIPI_SIZE_CHECK_MAX_NOF_ENTRIES entries per port allowed. Entries are reset
- *		when stream is stopped.
- *
- *
- */
-int
-ia_css_mipi_frame_enable_check_on_size(const enum mipi_port_id port,
-				       const unsigned int	size_mem_words);
 
 /* @brief Calculate the size of a mipi frame.
  *

@@ -387,7 +387,7 @@ static int wm8955_set_deemph(struct snd_soc_component *component)
 static int wm8955_get_deemph(struct snd_kcontrol *kcontrol,
 			     struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct wm8955_priv *wm8955 = snd_soc_component_get_drvdata(component);
 
 	ucontrol->value.integer.value[0] = wm8955->deemph;
@@ -397,7 +397,7 @@ static int wm8955_get_deemph(struct snd_kcontrol *kcontrol,
 static int wm8955_put_deemph(struct snd_kcontrol *kcontrol,
 			     struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct wm8955_priv *wm8955 = snd_soc_component_get_drvdata(component);
 	unsigned int deemph = ucontrol->value.integer.value[0];
 
@@ -671,9 +671,9 @@ static int wm8955_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	u16 aif = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		break;
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		aif |= WM8955_MS;
 		break;
 	default:
@@ -764,6 +764,7 @@ static int wm8955_set_bias_level(struct snd_soc_component *component,
 				 enum snd_soc_bias_level level)
 {
 	struct wm8955_priv *wm8955 = snd_soc_component_get_drvdata(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	int ret;
 
 	switch (level) {
@@ -783,7 +784,7 @@ static int wm8955_set_bias_level(struct snd_soc_component *component,
 		break;
 
 	case SND_SOC_BIAS_STANDBY:
-		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
+		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
 			ret = regulator_bulk_enable(ARRAY_SIZE(wm8955->supplies),
 						    wm8955->supplies);
 			if (ret != 0) {
@@ -866,6 +867,7 @@ static struct snd_soc_dai_driver wm8955_dai = {
 
 static int wm8955_probe(struct snd_soc_component *component)
 {
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct wm8955_priv *wm8955 = snd_soc_component_get_drvdata(component);
 	struct wm8955_pdata *pdata = dev_get_platdata(component->dev);
 	int ret, i;
@@ -927,7 +929,7 @@ static int wm8955_probe(struct snd_soc_component *component)
 					    WM8955_DMEN, WM8955_DMEN);
 	}
 
-	snd_soc_component_force_bias_level(component, SND_SOC_BIAS_STANDBY);
+	snd_soc_dapm_force_bias_level(dapm, SND_SOC_BIAS_STANDBY);
 
 	/* Bias level configuration will have done an extra enable */
 	regulator_bulk_disable(ARRAY_SIZE(wm8955->supplies), wm8955->supplies);
@@ -952,7 +954,6 @@ static const struct snd_soc_component_driver soc_component_dev_wm8955 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config wm8955_regmap = {
@@ -963,7 +964,7 @@ static const struct regmap_config wm8955_regmap = {
 	.volatile_reg = wm8955_volatile,
 	.writeable_reg = wm8955_writeable,
 
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.reg_defaults = wm8955_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm8955_reg_defaults),
 };
@@ -995,7 +996,7 @@ static int wm8955_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id wm8955_i2c_id[] = {
-	{ "wm8955", 0 },
+	{ "wm8955" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wm8955_i2c_id);
@@ -1004,7 +1005,7 @@ static struct i2c_driver wm8955_i2c_driver = {
 	.driver = {
 		.name = "wm8955",
 	},
-	.probe_new = wm8955_i2c_probe,
+	.probe = wm8955_i2c_probe,
 	.id_table = wm8955_i2c_id,
 };
 

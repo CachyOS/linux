@@ -10,8 +10,8 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/io.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -25,7 +25,7 @@
 
 #include "tegra20_spdif.h"
 
-static __maybe_unused int tegra20_spdif_runtime_suspend(struct device *dev)
+static int tegra20_spdif_runtime_suspend(struct device *dev)
 {
 	struct tegra20_spdif *spdif = dev_get_drvdata(dev);
 
@@ -36,7 +36,7 @@ static __maybe_unused int tegra20_spdif_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static __maybe_unused int tegra20_spdif_runtime_resume(struct device *dev)
+static int tegra20_spdif_runtime_resume(struct device *dev)
 {
 	struct tegra20_spdif *spdif = dev_get_drvdata(dev);
 	int ret;
@@ -187,13 +187,12 @@ static int tegra20_spdif_filter_rates(struct snd_pcm_hw_params *params,
 	struct tegra20_spdif *spdif = dev_get_drvdata(dai->dev);
 	struct clk *parent = clk_get_parent(spdif->clk_spdif_out);
 	static const unsigned int rates[] = { 32000, 44100, 48000 };
-	long i, parent_rate, valid_rates = 0;
+	unsigned long i, parent_rate, valid_rates = 0;
 
 	parent_rate = clk_get_rate(parent);
-	if (parent_rate <= 0) {
-		dev_err(dai->dev, "Can't get parent clock rate: %ld\n",
-			parent_rate);
-		return parent_rate ?: -EINVAL;
+	if (!parent_rate) {
+		dev_err(dai->dev, "Can't get parent clock rate\n");
+		return -EINVAL;
 	}
 
 	for (i = 0; i < ARRAY_SIZE(rates); i++) {
@@ -236,13 +235,13 @@ static int tegra20_spdif_probe(struct snd_soc_dai *dai)
 {
 	struct tegra20_spdif *spdif = dev_get_drvdata(dai->dev);
 
-	dai->capture_dma_data = NULL;
-	dai->playback_dma_data = &spdif->playback_dma_data;
+	snd_soc_dai_init_dma_data(dai, &spdif->playback_dma_data, NULL);
 
 	return 0;
 }
 
 static const struct snd_soc_dai_ops tegra20_spdif_dai_ops = {
+	.probe = tegra20_spdif_probe,
 	.hw_params = tegra20_spdif_hw_params,
 	.trigger = tegra20_spdif_trigger,
 	.startup = tegra20_spdif_startup,
@@ -250,7 +249,6 @@ static const struct snd_soc_dai_ops tegra20_spdif_dai_ops = {
 
 static struct snd_soc_dai_driver tegra20_spdif_dai = {
 	.name = "tegra20-spdif",
-	.probe = tegra20_spdif_probe,
 	.playback = {
 		.stream_name = "Playback",
 		.channels_min = 2,
@@ -264,6 +262,7 @@ static struct snd_soc_dai_driver tegra20_spdif_dai = {
 
 static const struct snd_soc_component_driver tegra20_spdif_component = {
 	.name = "tegra20-spdif",
+	.legacy_dai_naming = 1,
 };
 
 static bool tegra20_spdif_wr_rd_reg(struct device *dev, unsigned int reg)
@@ -404,10 +403,9 @@ static int tegra20_spdif_platform_probe(struct platform_device *pdev)
 }
 
 static const struct dev_pm_ops tegra20_spdif_pm_ops = {
-	SET_RUNTIME_PM_OPS(tegra20_spdif_runtime_suspend,
-			   tegra20_spdif_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
+	RUNTIME_PM_OPS(tegra20_spdif_runtime_suspend,
+		       tegra20_spdif_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 };
 
 static const struct of_device_id tegra20_spdif_of_match[] = {
@@ -419,7 +417,7 @@ MODULE_DEVICE_TABLE(of, tegra20_spdif_of_match);
 static struct platform_driver tegra20_spdif_driver = {
 	.driver = {
 		.name = "tegra20-spdif",
-		.pm = &tegra20_spdif_pm_ops,
+		.pm = pm_ptr(&tegra20_spdif_pm_ops),
 		.of_match_table = tegra20_spdif_of_match,
 	},
 	.probe = tegra20_spdif_platform_probe,

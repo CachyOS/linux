@@ -3,7 +3,8 @@
  * Copyright 2022 Toradex
  */
 
-#include "dt-bindings/pwm/pwm.h"
+#include <dt-bindings/phy/phy-imx8-pcie.h>
+#include <dt-bindings/pwm/pwm.h>
 #include "imx8mp.dtsi"
 
 / {
@@ -44,12 +45,29 @@
 		status = "disabled";
 	};
 
+	connector {
+		compatible = "gpio-usb-b-connector", "usb-b-connector";
+		id-gpios = <&gpio2 10 GPIO_ACTIVE_HIGH>;
+		label = "Type-C";
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_usb_1_id>;
+		self-powered;
+		type = "micro";
+		vbus-supply = <&reg_usb1_vbus>;
+
+		port {
+			usb_dr_connector: endpoint {
+				remote-endpoint = <&usb3_dwc>;
+			};
+		};
+	};
+
 	gpio-keys {
 		compatible = "gpio-keys";
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_gpio_keys>;
 
-		wakeup {
+		key-wakeup {
 			debounce-interval = <10>;
 			/* Verdin CTRL_WAKE1_MICO# (SODIMM 252) */
 			gpios = <&gpio4 0 GPIO_ACTIVE_LOW>;
@@ -57,6 +75,14 @@
 			linux,code = <KEY_WAKEUP>;
 			wakeup-source;
 		};
+	};
+
+	sound_hdmi: sound-hdmi {
+		compatible = "fsl,imx-audio-hdmi";
+		model = "audio-hdmi";
+		audio-cpu = <&aud2htx>;
+		hdmi-out;
+		status = "disabled";
 	};
 
 	/* Carrier Board Supplies */
@@ -86,7 +112,7 @@
 		compatible = "regulator-fixed";
 		enable-active-high;
 		gpio = <&gpio2 20 GPIO_ACTIVE_HIGH>; /* PMIC_EN_ETH */
-		off-on-delay = <500000>;
+		off-on-delay-us = <500000>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_reg_eth>;
 		regulator-always-on;
@@ -96,6 +122,22 @@
 		regulator-name = "On-module +V3.3_ETH";
 		startup-delay-us = <200000>;
 		vin-supply = <&reg_vdd_3v3>;
+	};
+
+	/*
+	 * By default we enable CTRL_SLEEP_MOCI#, this is required to have
+	 * peripherals on the carrier board powered.
+	 * If more granularity or power saving is required this can be disabled
+	 * in the carrier board device tree files.
+	 */
+	reg_force_sleep_moci: regulator-force-sleep-moci {
+		compatible = "regulator-fixed";
+		enable-active-high;
+		/* Verdin CTRL_SLEEP_MOCI# (SODIMM 256) */
+		gpio = <&gpio4 29 GPIO_ACTIVE_HIGH>;
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-name = "CTRL_SLEEP_MOCI#";
 	};
 
 	reg_usb1_vbus: regulator-usb1-vbus {
@@ -127,13 +169,13 @@
 		enable-active-high;
 		/* Verdin SD_1_PWR_EN (SODIMM 76) */
 		gpio = <&gpio4 22 GPIO_ACTIVE_HIGH>;
-		off-on-delay = <100000>;
+		off-on-delay-us = <100000>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_usdhc2_pwr_en>;
 		regulator-max-microvolt = <3300000>;
 		regulator-min-microvolt = <3300000>;
 		regulator-name = "+V3.3_SD";
-		startup-delay-us = <2000>;
+		startup-delay-us = <20000>;
 	};
 
 	reserved-memory {
@@ -144,6 +186,30 @@
 		/* Use the kernel configuration settings instead */
 		/delete-node/ linux,cma;
 	};
+};
+
+&A53_0 {
+	cpu-supply = <&reg_vdd_arm>;
+};
+
+&A53_1 {
+	cpu-supply = <&reg_vdd_arm>;
+};
+
+&A53_2 {
+	cpu-supply = <&reg_vdd_arm>;
+};
+
+&A53_3 {
+	cpu-supply = <&reg_vdd_arm>;
+};
+
+&cpu_alert0 {
+	temperature = <95000>;
+};
+
+&cpu_crit0 {
+	temperature = <105000>;
 };
 
 /* Verdin SPI_1 */
@@ -159,7 +225,6 @@
 &eqos {
 	phy-handle = <&ethphy0>;
 	phy-mode = "rgmii-id";
-	phy-supply = <&reg_module_eth1phy>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_eqos>;
 	snps,force_thresh_dma_mode;
@@ -184,7 +249,6 @@
 
 	mtl_rx_setup: rx-queues-config {
 		snps,rx-queues-to-use = <5>;
-		snps,rx-sched-sp;
 
 		queue0 {
 			snps,dcb-algorithm;
@@ -219,7 +283,6 @@
 
 	mtl_tx_setup: tx-queues-config {
 		snps,tx-queues-to-use = <5>;
-		snps,tx-sched-sp;
 
 		queue0 {
 			snps,dcb-algorithm;
@@ -257,7 +320,7 @@
 	pinctrl-0 = <&pinctrl_fec>;
 	pinctrl-1 = <&pinctrl_fec_sleep>;
 
-	mdio {
+	verdin_eth2_mdio: mdio {
 		#address-cells = <1>;
 		#size-cells = <0>;
 
@@ -277,7 +340,6 @@
 	pinctrl-0 = <&pinctrl_flexcan1>;
 	status = "disabled";
 };
-
 
 /* Verdin CAN_2 */
 &flexcan2 {
@@ -331,16 +393,6 @@
 			  "SODIMM_82",
 			  "SODIMM_70",
 			  "SODIMM_72";
-
-	ctrl-sleep-moci-hog {
-		gpio-hog;
-		/* Verdin CTRL_SLEEP_MOCI# (SODIMM 256) */
-		gpios = <29 GPIO_ACTIVE_HIGH>;
-		line-name = "CTRL_SLEEP_MOCI#";
-		output-high;
-		pinctrl-names = "default";
-		pinctrl-0 = <&pinctrl_ctrl_sleep_moci>;
-	};
 };
 
 &gpio3 {
@@ -411,6 +463,13 @@
 			  "SODIMM_44";
 };
 
+/* Verdin HDMI_1 */
+&hdmi_tx {
+	ddc-i2c-bus = <&i2c5>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_hdmi>;
+};
+
 /* On-module I2C */
 &i2c1 {
 	clock-frequency = <400000>;
@@ -419,6 +478,7 @@
 	pinctrl-1 = <&pinctrl_i2c1_gpio>;
 	scl-gpios = <&gpio5 14 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 	sda-gpios = <&gpio5 15 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	single-master;
 	status = "okay";
 
 	pca9450: pmic@25 {
@@ -429,7 +489,6 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_pmic>;
 		reg = <0x25>;
-		sd-vsel-gpios = <&gpio1 4 GPIO_ACTIVE_HIGH>;
 
 		/*
 		 * The bootloader is expected to switch on LDO4 for the on-module +V3.3_ADC and the
@@ -446,7 +505,7 @@
 				regulator-ramp-delay = <3125>;
 			};
 
-			BUCK2 {
+			reg_vdd_arm: BUCK2 {
 				nxp,dvs-run-voltage = <950000>;
 				nxp,dvs-standby-voltage = <850000>;
 				regulator-always-on;
@@ -513,7 +572,7 @@
 				regulator-name = "On-module +V3.3_ADC (LDO4)";
 			};
 
-			LDO5 {
+			reg_vdd_sdio: LDO5 {
 				regulator-max-microvolt = <3300000>;
 				regulator-min-microvolt = <1800000>;
 				regulator-name = "On-module +V3.3_1.8_SD (LDO5)";
@@ -533,11 +592,12 @@
 		vs-supply = <&reg_vdd_1v8>;
 	};
 
-	adc@49 {
+	verdin_som_adc: adc@49 {
 		compatible = "ti,ads1015";
 		reg = <0x49>;
 		#address-cells = <1>;
 		#size-cells = <0>;
+		#io-channel-cells = <1>;
 
 		/* Verdin I2C_1 (ADC_4 - ADC_3) */
 		channel@0 {
@@ -597,7 +657,7 @@
 	};
 
 	eeprom@50 {
-		compatible = "st,24c02";
+		compatible = "st,24c02", "atmel,24c02";
 		pagesize = <16>;
 		reg = <0x50>;
 	};
@@ -605,13 +665,13 @@
 
 /* Verdin I2C_2_DSI */
 &i2c2 {
-	/* Lower frequency to avoid DDC/EDID issues with certain displays/screens. */
-	clock-frequency = <10000>;
+	clock-frequency = <400000>;
 	pinctrl-names = "default", "gpio";
 	pinctrl-0 = <&pinctrl_i2c2>;
 	pinctrl-1 = <&pinctrl_i2c2_gpio>;
 	scl-gpios = <&gpio5 16 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 	sda-gpios = <&gpio5 17 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	single-master;
 
 	atmel_mxt_ts_mezzanine: touch-mezzanine@4a {
 		compatible = "atmel,maxtouch";
@@ -620,12 +680,10 @@
 		interrupts = <5 IRQ_TYPE_EDGE_FALLING>;
 		reg = <0x4a>;
 		/* Verdin GPIO_2 (SODIMM 208) */
-		reset-gpios = <&gpio1 1 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio1 1 GPIO_ACTIVE_LOW>;
 		status = "disabled";
 	};
 };
-
-/* TODO: Verdin I2C_3_HDMI */
 
 /* Verdin I2C_4_CSI */
 &i2c3 {
@@ -635,6 +693,7 @@
 	pinctrl-1 = <&pinctrl_i2c3_gpio>;
 	scl-gpios = <&gpio5 18 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 	sda-gpios = <&gpio5 19 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	single-master;
 };
 
 /* Verdin I2C_1 */
@@ -645,6 +704,7 @@
 	pinctrl-1 = <&pinctrl_i2c4_gpio>;
 	scl-gpios = <&gpio5 20 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 	sda-gpios = <&gpio5 21 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	single-master;
 
 	gpio_expander_21: gpio-expander@21 {
 		compatible = "nxp,pcal6416";
@@ -655,8 +715,8 @@
 		status = "disabled";
 	};
 
-	lvds_ti_sn65dsi83: bridge@2c {
-		compatible = "ti,sn65dsi83";
+	lvds_ti_sn65dsi84: bridge@2c {
+		compatible = "ti,sn65dsi84";
 		/* Verdin GPIO_9_DSI (SN65DSI84 IRQ, SODIMM 17, unused) */
 		/* Verdin GPIO_10_DSI (SODIMM 21) */
 		enable-gpios = <&gpio4 28 GPIO_ACTIVE_HIGH>;
@@ -689,7 +749,7 @@
 		compatible = "atmel,maxtouch";
 		/*
 		 * Verdin GPIO_9_DSI
-		 * (TOUCH_INT#, SODIMM 17, also routed to SN65DSI83 IRQ albeit currently unused)
+		 * (TOUCH_INT#, SODIMM 17, also routed to SN65DSI84 IRQ albeit currently unused)
 		 */
 		interrupt-parent = <&gpio4>;
 		interrupts = <25 IRQ_TYPE_EDGE_FALLING>;
@@ -697,7 +757,7 @@
 		pinctrl-0 = <&pinctrl_gpio_9_dsi>, <&pinctrl_i2s_2_bclk_touch_reset>;
 		reg = <0x4a>;
 		/* Verdin I2S_2_BCLK (TOUCH_RESET#, SODIMM 42) */
-		reset-gpios = <&gpio5 0 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio5 0 GPIO_ACTIVE_LOW>;
 		status = "disabled";
 	};
 
@@ -710,7 +770,7 @@
 
 	/* EEPROM on display adapter (MIPI DSI Display Adapter) */
 	eeprom_display_adapter: eeprom@50 {
-		compatible = "st,24c02";
+		compatible = "st,24c02", "atmel,24c02";
 		pagesize = <16>;
 		reg = <0x50>;
 		status = "disabled";
@@ -718,14 +778,38 @@
 
 	/* EEPROM on carrier board */
 	eeprom_carrier_board: eeprom@57 {
-		compatible = "st,24c02";
+		compatible = "st,24c02", "atmel,24c02";
 		pagesize = <16>;
 		reg = <0x57>;
 		status = "disabled";
 	};
 };
 
-/* TODO: Verdin PCIE_1 */
+/* Verdin I2C_3_HDMI */
+&i2c5 {
+	clock-frequency = <100000>;
+	pinctrl-names = "default", "gpio";
+	pinctrl-0 = <&pinctrl_i2c5>;
+	pinctrl-1 = <&pinctrl_i2c5_gpio>;
+	scl-gpios = <&gpio3 26 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	sda-gpios = <&gpio3 27 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	single-master;
+};
+
+/* Verdin PCIE_1 */
+&pcie {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_pcie>;
+	/* PCIE_1_RESET# (SODIMM 244) */
+	reset-gpio = <&gpio4 19 GPIO_ACTIVE_LOW>;
+};
+
+&pcie_phy {
+	clocks = <&hsio_blk_ctrl>;
+	clock-names = "ref";
+	fsl,clkreq-unsupported;
+	fsl,refclk-pad-mode = <IMX8_PCIE_REFCLK_PAD_OUTPUT>;
+};
 
 /* Verdin PWM_1 */
 &pwm1 {
@@ -747,10 +831,6 @@
 	pinctrl-0 = <&pinctrl_pwm_3>;
 	#pwm-cells = <3>;
 };
-
-/* TODO: Verdin I2S_1 */
-
-/* TODO: Verdin I2S_2 */
 
 &snvs_pwrkey {
 	status = "okay";
@@ -783,28 +863,40 @@
 };
 
 /* Verdin USB_1 */
-&usb3_phy0 {
-	vbus-supply = <&reg_usb1_vbus>;
+&usb3_0 {
+	fsl,disable-port-power-control;
+	fsl,over-current-active-low;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_usb_1_oc_n>;
 };
 
 &usb_dwc3_0 {
+	/* dual role only, not full featured OTG */
 	adp-disable;
 	dr_mode = "otg";
 	hnp-disable;
 	maximum-speed = "high-speed";
-	over-current-active-low;
-	pinctrl-names = "default";
-	pinctrl-0 = <&pinctrl_usb_1_id>;
+	role-switch-default-mode = "peripheral";
 	srp-disable;
+	usb-role-switch;
+
+	port {
+		usb3_dwc: endpoint {
+			remote-endpoint = <&usb_dr_connector>;
+		};
+	};
 };
 
 /* Verdin USB_2 */
+&usb3_1 {
+	fsl,disable-port-power-control;
+};
+
 &usb3_phy1 {
 	vbus-supply = <&reg_usb2_vbus>;
 };
 
 &usb_dwc3_1 {
-	disable-over-current;
 	dr_mode = "host";
 };
 
@@ -821,6 +913,7 @@
 	pinctrl-2 = <&pinctrl_usdhc2_200mhz>, <&pinctrl_usdhc2_cd>;
 	pinctrl-3 = <&pinctrl_usdhc2_sleep>, <&pinctrl_usdhc2_cd_sleep>;
 	vmmc-supply = <&reg_usdhc2_vmmc>;
+	vqmmc-supply = <&reg_vdd_sdio>;
 };
 
 /* On-module eMMC */
@@ -1022,7 +1115,6 @@
 
 	pinctrl_gpio_hog3: gpiohog3grp {
 		fsl,pins =
-			<MX8MP_IOMUXC_GPIO1_IO13__GPIO1_IO13		0x1c4>,	/* SODIMM 157 */
 			/* CSI_1_MCLK */
 			<MX8MP_IOMUXC_GPIO1_IO15__GPIO1_IO15		0x1c4>;	/* SODIMM 91 */
 	};
@@ -1039,12 +1131,10 @@
 			<MX8MP_IOMUXC_SAI1_RXFS__GPIO4_IO00		0x1c4>;	/* SODIMM 252 */
 	};
 
-	pinctrl_hdmi_hog: hdmihoggrp {
+	pinctrl_hdmi: hdmigrp {
 		fsl,pins =
-			<MX8MP_IOMUXC_HDMI_CEC__HDMIMIX_HDMI_CEC	0x40000019>,	/* SODIMM 63 */
-			<MX8MP_IOMUXC_HDMI_DDC_SCL__HDMIMIX_HDMI_SCL	0x400001c3>,	/* SODIMM 59 */
-			<MX8MP_IOMUXC_HDMI_DDC_SDA__HDMIMIX_HDMI_SDA	0x400001c3>,	/* SODIMM 57 */
-			<MX8MP_IOMUXC_HDMI_HPD__HDMIMIX_HDMI_HPD	0x40000019>;	/* SODIMM 61 */
+			<MX8MP_IOMUXC_HDMI_CEC__HDMIMIX_HDMI_CEC	0x140>,	/* SODIMM 63 */
+			<MX8MP_IOMUXC_HDMI_HPD__HDMIMIX_HDMI_HPD	0x180>;	/* SODIMM 61 */
 	};
 
 	/* On-module I2C */
@@ -1097,6 +1187,19 @@
 		fsl,pins =
 			<MX8MP_IOMUXC_I2C4_SCL__GPIO5_IO20		0x400001c6>,	/* SODIMM 14 */
 			<MX8MP_IOMUXC_I2C4_SDA__GPIO5_IO21		0x400001c6>;	/* SODIMM 12 */
+	};
+
+	/* Verdin I2C_3_HDMI */
+	pinctrl_i2c5: i2c5grp {
+		fsl,pins =
+			<MX8MP_IOMUXC_HDMI_DDC_SCL__I2C5_SCL		0x400001c6>,	/* SODIMM 59 */
+			<MX8MP_IOMUXC_HDMI_DDC_SDA__I2C5_SDA		0x400001c6>;	/* SODIMM 57 */
+	};
+
+	pinctrl_i2c5_gpio: i2c5gpiogrp {
+		fsl,pins =
+			<MX8MP_IOMUXC_HDMI_DDC_SCL__GPIO3_IO26		0x400001c6>,	/* SODIMM 59 */
+			<MX8MP_IOMUXC_HDMI_DDC_SDA__GPIO3_IO27		0x400001c6>;	/* SODIMM 57 */
 	};
 
 	/* Verdin I2S_2_BCLK (TOUCH_RESET#) */
@@ -1197,7 +1300,7 @@
 
 	pinctrl_usb1_vbus: usb1vbusgrp {
 		fsl,pins =
-			<MX8MP_IOMUXC_GPIO1_IO12__USB1_OTG_PWR		0x19>;	/* SODIMM 155 */
+			<MX8MP_IOMUXC_GPIO1_IO12__GPIO1_IO12		0x106>;	/* SODIMM 155 */
 	};
 
 	/* USB_1_ID */
@@ -1206,9 +1309,15 @@
 			<MX8MP_IOMUXC_SD1_RESET_B__GPIO2_IO10		0x1c4>;	/* SODIMM 161 */
 	};
 
+	/* USB_1_OC# */
+	pinctrl_usb_1_oc_n: usb1ocngrp {
+		fsl,pins =
+			<MX8MP_IOMUXC_GPIO1_IO13__USB1_OTG_OC		0x1c4>;	/* SODIMM 157 */
+	};
+
 	pinctrl_usb2_vbus: usb2vbusgrp {
 		fsl,pins =
-			<MX8MP_IOMUXC_GPIO1_IO14__USB2_OTG_PWR		0x19>;	/* SODIMM 185 */
+			<MX8MP_IOMUXC_GPIO1_IO14__GPIO1_IO14		0x106>;	/* SODIMM 185 */
 	};
 
 	/* On-module Wi-Fi */

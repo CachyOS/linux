@@ -8,15 +8,23 @@
 #include <linux/compiler.h>
 #include <assert.h>
 
+#include "guest_modes.h"
 #include "kvm_util.h"
-#include "../kvm_util_internal.h"
 #include "processor.h"
+#include "ucall_common.h"
 
 #define DEFAULT_RISCV_GUEST_STACK_VADDR_MIN	0xac0000
 
-static uint64_t page_align(struct kvm_vm *vm, uint64_t v)
+static vm_vaddr_t exception_handlers;
+
+bool __vcpu_has_ext(struct kvm_vcpu *vcpu, uint64_t ext)
 {
-	return (v + vm->page_size) & ~(vm->page_size - 1);
+	unsigned long value = 0;
+	int ret;
+
+	ret = __vcpu_get_reg(vcpu, ext, &value);
+
+	return !ret && !!value;
 }
 
 static uint64_t pte_addr(struct kvm_vm *vm, uint64_t entry)
@@ -48,27 +56,29 @@ static uint64_t pte_index(struct kvm_vm *vm, vm_vaddr_t gva, int level)
 {
 	TEST_ASSERT(level > -1,
 		"Negative page table level (%d) not possible", level);
-	TEST_ASSERT(level < vm->pgtable_levels,
+	TEST_ASSERT(level < vm->mmu.pgtable_levels,
 		"Invalid page table level (%d)", level);
 
 	return (gva & pte_index_mask[level]) >> pte_index_shift[level];
 }
 
-void virt_pgd_alloc(struct kvm_vm *vm)
+void virt_arch_pgd_alloc(struct kvm_vm *vm)
 {
-	if (!vm->pgd_created) {
-		vm_paddr_t paddr = vm_phy_pages_alloc(vm,
-			page_align(vm, ptrs_per_pte(vm) * 8) / vm->page_size,
-			KVM_GUEST_PAGE_TABLE_MIN_PADDR, 0);
-		vm->pgd = paddr;
-		vm->pgd_created = true;
-	}
+	size_t nr_pages = vm_page_align(vm, ptrs_per_pte(vm) * 8) / vm->page_size;
+
+	if (vm->mmu.pgd_created)
+		return;
+
+	vm->mmu.pgd = vm_phy_pages_alloc(vm, nr_pages,
+					 KVM_GUEST_PAGE_TABLE_MIN_PADDR,
+					 vm->memslots[MEM_REGION_PT]);
+	vm->mmu.pgd_created = true;
 }
 
-void virt_pg_map(struct kvm_vm *vm, uint64_t vaddr, uint64_t paddr)
+void virt_arch_pg_map(struct kvm_vm *vm, uint64_t vaddr, uint64_t paddr)
 {
 	uint64_t *ptep, next_ppn;
-	int level = vm->pgtable_levels - 1;
+	int level = vm->mmu.pgtable_levels - 1;
 
 	TEST_ASSERT((vaddr % vm->page_size) == 0,
 		"Virtual address not on page boundary,\n"
@@ -84,7 +94,7 @@ void virt_pg_map(struct kvm_vm *vm, uint64_t vaddr, uint64_t paddr)
 		"  paddr: 0x%lx vm->max_gfn: 0x%lx vm->page_size: 0x%x",
 		paddr, vm->max_gfn, vm->page_size);
 
-	ptep = addr_gpa2hva(vm, vm->pgd) + pte_index(vm, vaddr, level) * 8;
+	ptep = addr_gpa2hva(vm, vm->mmu.pgd) + pte_index(vm, vaddr, level) * 8;
 	if (!*ptep) {
 		next_ppn = vm_alloc_page_table(vm) >> PGTBL_PAGE_SIZE_SHIFT;
 		*ptep = (next_ppn << PGTBL_PTE_ADDR_SHIFT) |
@@ -109,15 +119,15 @@ void virt_pg_map(struct kvm_vm *vm, uint64_t vaddr, uint64_t paddr)
 		PGTBL_PTE_PERM_MASK | PGTBL_PTE_VALID_MASK;
 }
 
-vm_paddr_t addr_gva2gpa(struct kvm_vm *vm, vm_vaddr_t gva)
+vm_paddr_t addr_arch_gva2gpa(struct kvm_vm *vm, vm_vaddr_t gva)
 {
 	uint64_t *ptep;
-	int level = vm->pgtable_levels - 1;
+	int level = vm->mmu.pgtable_levels - 1;
 
-	if (!vm->pgd_created)
+	if (!vm->mmu.pgd_created)
 		goto unmapped_gva;
 
-	ptep = addr_gpa2hva(vm, vm->pgd) + pte_index(vm, gva, level) * 8;
+	ptep = addr_gpa2hva(vm, vm->mmu.pgd) + pte_index(vm, gva, level) * 8;
 	if (!ptep)
 		goto unmapped_gva;
 	level--;
@@ -160,15 +170,16 @@ static void pte_dump(FILE *stream, struct kvm_vm *vm, uint8_t indent,
 #endif
 }
 
-void virt_dump(FILE *stream, struct kvm_vm *vm, uint8_t indent)
+void virt_arch_dump(FILE *stream, struct kvm_vm *vm, uint8_t indent)
 {
-	int level = vm->pgtable_levels - 1;
+	struct kvm_mmu *mmu = &vm->mmu;
+	int level = mmu->pgtable_levels - 1;
 	uint64_t pgd, *ptep;
 
-	if (!vm->pgd_created)
+	if (!mmu->pgd_created)
 		return;
 
-	for (pgd = vm->pgd; pgd < vm->pgd + ptrs_per_pte(vm) * 8; pgd += 8) {
+	for (pgd = mmu->pgd; pgd < mmu->pgd + ptrs_per_pte(vm) * 8; pgd += 8) {
 		ptep = addr_gpa2hva(vm, pgd);
 		if (!*ptep)
 			continue;
@@ -179,66 +190,86 @@ void virt_dump(FILE *stream, struct kvm_vm *vm, uint8_t indent)
 	}
 }
 
-void riscv_vcpu_mmu_setup(struct kvm_vm *vm, int vcpuid)
+void riscv_vcpu_mmu_setup(struct kvm_vcpu *vcpu)
 {
+	struct kvm_vm *vm = vcpu->vm;
 	unsigned long satp;
+	unsigned long satp_mode;
+	unsigned long max_satp_mode;
 
 	/*
 	 * The RISC-V Sv48 MMU mode supports 56-bit physical address
 	 * for 48-bit virtual address with 4KB last level page size.
 	 */
 	switch (vm->mode) {
-	case VM_MODE_P52V48_4K:
-	case VM_MODE_P48V48_4K:
-	case VM_MODE_P40V48_4K:
+	case VM_MODE_P56V57_4K:
+	case VM_MODE_P50V57_4K:
+	case VM_MODE_P41V57_4K:
+		satp_mode = SATP_MODE_57;
+		break;
+	case VM_MODE_P56V48_4K:
+	case VM_MODE_P50V48_4K:
+	case VM_MODE_P41V48_4K:
+		satp_mode = SATP_MODE_48;
+		break;
+	case VM_MODE_P56V39_4K:
+	case VM_MODE_P50V39_4K:
+	case VM_MODE_P41V39_4K:
+		satp_mode = SATP_MODE_39;
 		break;
 	default:
 		TEST_FAIL("Unknown guest mode, mode: 0x%x", vm->mode);
 	}
 
-	satp = (vm->pgd >> PGTBL_PAGE_SIZE_SHIFT) & SATP_PPN;
-	satp |= SATP_MODE_48;
+	max_satp_mode = vcpu_get_reg(vcpu, RISCV_CONFIG_REG(satp_mode));
 
-	set_reg(vm, vcpuid, RISCV_CSR_REG(satp), satp);
+	if ((satp_mode >> SATP_MODE_SHIFT) > max_satp_mode)
+		TEST_FAIL("Unable to set satp mode 0x%lx, max mode 0x%lx\n",
+			  satp_mode >> SATP_MODE_SHIFT, max_satp_mode);
+
+	satp = (vm->mmu.pgd >> PGTBL_PAGE_SIZE_SHIFT) & SATP_PPN;
+	satp |= satp_mode;
+
+	vcpu_set_reg(vcpu, RISCV_GENERAL_CSR_REG(satp), satp);
 }
 
-void vcpu_dump(FILE *stream, struct kvm_vm *vm, uint32_t vcpuid, uint8_t indent)
+void vcpu_arch_dump(FILE *stream, struct kvm_vcpu *vcpu, uint8_t indent)
 {
 	struct kvm_riscv_core core;
 
-	get_reg(vm, vcpuid, RISCV_CORE_REG(mode), &core.mode);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.pc), &core.regs.pc);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.ra), &core.regs.ra);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.sp), &core.regs.sp);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.gp), &core.regs.gp);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.tp), &core.regs.tp);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.t0), &core.regs.t0);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.t1), &core.regs.t1);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.t2), &core.regs.t2);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.s0), &core.regs.s0);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.s1), &core.regs.s1);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.a0), &core.regs.a0);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.a1), &core.regs.a1);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.a2), &core.regs.a2);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.a3), &core.regs.a3);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.a4), &core.regs.a4);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.a5), &core.regs.a5);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.a6), &core.regs.a6);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.a7), &core.regs.a7);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.s2), &core.regs.s2);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.s3), &core.regs.s3);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.s4), &core.regs.s4);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.s5), &core.regs.s5);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.s6), &core.regs.s6);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.s7), &core.regs.s7);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.s8), &core.regs.s8);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.s9), &core.regs.s9);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.s10), &core.regs.s10);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.s11), &core.regs.s11);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.t3), &core.regs.t3);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.t4), &core.regs.t4);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.t5), &core.regs.t5);
-	get_reg(vm, vcpuid, RISCV_CORE_REG(regs.t6), &core.regs.t6);
+	core.mode = vcpu_get_reg(vcpu, RISCV_CORE_REG(mode));
+	core.regs.pc = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.pc));
+	core.regs.ra = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.ra));
+	core.regs.sp = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.sp));
+	core.regs.gp = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.gp));
+	core.regs.tp = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.tp));
+	core.regs.t0 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.t0));
+	core.regs.t1 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.t1));
+	core.regs.t2 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.t2));
+	core.regs.s0 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.s0));
+	core.regs.s1 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.s1));
+	core.regs.a0 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.a0));
+	core.regs.a1 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.a1));
+	core.regs.a2 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.a2));
+	core.regs.a3 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.a3));
+	core.regs.a4 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.a4));
+	core.regs.a5 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.a5));
+	core.regs.a6 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.a6));
+	core.regs.a7 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.a7));
+	core.regs.s2 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.s2));
+	core.regs.s3 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.s3));
+	core.regs.s4 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.s4));
+	core.regs.s5 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.s5));
+	core.regs.s6 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.s6));
+	core.regs.s7 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.s7));
+	core.regs.s8 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.s8));
+	core.regs.s9 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.s9));
+	core.regs.s10 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.s10));
+	core.regs.s11 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.s11));
+	core.regs.t3 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.t3));
+	core.regs.t4 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.t4));
+	core.regs.t5 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.t5));
+	core.regs.t6 = vcpu_get_reg(vcpu, RISCV_CORE_REG(regs.t6));
 
 	fprintf(stream,
 		" MODE:  0x%lx\n", core.mode);
@@ -275,19 +306,28 @@ static void __aligned(16) guest_unexp_trap(void)
 		  0, 0, 0, 0, 0, 0);
 }
 
-void vm_vcpu_add_default(struct kvm_vm *vm, uint32_t vcpuid, void *guest_code)
+void vcpu_arch_set_entry_point(struct kvm_vcpu *vcpu, void *guest_code)
+{
+	vcpu_set_reg(vcpu, RISCV_CORE_REG(regs.pc), (unsigned long)guest_code);
+}
+
+struct kvm_vcpu *vm_arch_vcpu_add(struct kvm_vm *vm, uint32_t vcpu_id)
 {
 	int r;
-	size_t stack_size = vm->page_size == 4096 ?
-					DEFAULT_STACK_PGS * vm->page_size :
-					vm->page_size;
-	unsigned long stack_vaddr = vm_vaddr_alloc(vm, stack_size,
-					DEFAULT_RISCV_GUEST_STACK_VADDR_MIN);
+	size_t stack_size;
+	unsigned long stack_vaddr;
 	unsigned long current_gp = 0;
 	struct kvm_mp_state mps;
+	struct kvm_vcpu *vcpu;
 
-	vm_vcpu_add(vm, vcpuid);
-	riscv_vcpu_mmu_setup(vm, vcpuid);
+	stack_size = vm->page_size == 4096 ? DEFAULT_STACK_PGS * vm->page_size :
+					     vm->page_size;
+	stack_vaddr = __vm_vaddr_alloc(vm, stack_size,
+				       DEFAULT_RISCV_GUEST_STACK_VADDR_MIN,
+				       MEM_REGION_DATA);
+
+	vcpu = __vm_vcpu_add(vm, vcpu_id);
+	riscv_vcpu_mmu_setup(vcpu);
 
 	/*
 	 * With SBI HSM support in KVM RISC-V, all secondary VCPUs are
@@ -295,33 +335,34 @@ void vm_vcpu_add_default(struct kvm_vm *vm, uint32_t vcpuid, void *guest_code)
 	 * are powered-on using KVM_SET_MP_STATE ioctl().
 	 */
 	mps.mp_state = KVM_MP_STATE_RUNNABLE;
-	r = _vcpu_ioctl(vm, vcpuid, KVM_SET_MP_STATE, &mps);
+	r = __vcpu_ioctl(vcpu, KVM_SET_MP_STATE, &mps);
 	TEST_ASSERT(!r, "IOCTL KVM_SET_MP_STATE failed (error %d)", r);
 
 	/* Setup global pointer of guest to be same as the host */
 	asm volatile (
 		"add %0, gp, zero" : "=r" (current_gp) : : "memory");
-	set_reg(vm, vcpuid, RISCV_CORE_REG(regs.gp), current_gp);
+	vcpu_set_reg(vcpu, RISCV_CORE_REG(regs.gp), current_gp);
 
 	/* Setup stack pointer and program counter of guest */
-	set_reg(vm, vcpuid, RISCV_CORE_REG(regs.sp),
-		stack_vaddr + stack_size);
-	set_reg(vm, vcpuid, RISCV_CORE_REG(regs.pc),
-		(unsigned long)guest_code);
+	vcpu_set_reg(vcpu, RISCV_CORE_REG(regs.sp), stack_vaddr + stack_size);
+
+	/* Setup sscratch for guest_get_vcpuid() */
+	vcpu_set_reg(vcpu, RISCV_GENERAL_CSR_REG(sscratch), vcpu_id);
 
 	/* Setup default exception vector of guest */
-	set_reg(vm, vcpuid, RISCV_CSR_REG(stvec),
-		(unsigned long)guest_unexp_trap);
+	vcpu_set_reg(vcpu, RISCV_GENERAL_CSR_REG(stvec), (unsigned long)guest_unexp_trap);
+
+	return vcpu;
 }
 
-void vcpu_args_set(struct kvm_vm *vm, uint32_t vcpuid, unsigned int num, ...)
+void vcpu_args_set(struct kvm_vcpu *vcpu, unsigned int num, ...)
 {
 	va_list ap;
 	uint64_t id = RISCV_CORE_REG(regs.a0);
 	int i;
 
 	TEST_ASSERT(num >= 1 && num <= 8, "Unsupported number of args,\n"
-		    "  num: %u\n", num);
+		    "  num: %u", num);
 
 	va_start(ap, num);
 
@@ -352,12 +393,176 @@ void vcpu_args_set(struct kvm_vm *vm, uint32_t vcpuid, unsigned int num, ...)
 			id = RISCV_CORE_REG(regs.a7);
 			break;
 		}
-		set_reg(vm, vcpuid, id, va_arg(ap, uint64_t));
+		vcpu_set_reg(vcpu, id, va_arg(ap, uint64_t));
 	}
 
 	va_end(ap);
 }
 
-void assert_on_unhandled_exception(struct kvm_vm *vm, uint32_t vcpuid)
+void kvm_exit_unexpected_exception(int vector, int ec)
 {
+	ucall(UCALL_UNHANDLED, 2, vector, ec);
+}
+
+void assert_on_unhandled_exception(struct kvm_vcpu *vcpu)
+{
+	struct ucall uc;
+
+	if (get_ucall(vcpu, &uc) == UCALL_UNHANDLED) {
+		TEST_FAIL("Unexpected exception (vector:0x%lx, ec:0x%lx)",
+			uc.args[0], uc.args[1]);
+	}
+}
+
+struct handlers {
+	exception_handler_fn exception_handlers[NR_VECTORS][NR_EXCEPTIONS];
+};
+
+void route_exception(struct pt_regs *regs)
+{
+	struct handlers *handlers = (struct handlers *)exception_handlers;
+	int vector = 0, ec;
+
+	ec = regs->cause & ~CAUSE_IRQ_FLAG;
+	if (ec >= NR_EXCEPTIONS)
+		goto unexpected_exception;
+
+	/* Use the same handler for all the interrupts */
+	if (regs->cause & CAUSE_IRQ_FLAG) {
+		vector = 1;
+		ec = 0;
+	}
+
+	if (handlers && handlers->exception_handlers[vector][ec])
+		return handlers->exception_handlers[vector][ec](regs);
+
+unexpected_exception:
+	return kvm_exit_unexpected_exception(vector, ec);
+}
+
+void vcpu_init_vector_tables(struct kvm_vcpu *vcpu)
+{
+	extern char exception_vectors;
+
+	vcpu_set_reg(vcpu, RISCV_GENERAL_CSR_REG(stvec), (unsigned long)&exception_vectors);
+}
+
+void vm_init_vector_tables(struct kvm_vm *vm)
+{
+	vm->handlers = __vm_vaddr_alloc(vm, sizeof(struct handlers),
+				   vm->page_size, MEM_REGION_DATA);
+
+	*(vm_vaddr_t *)addr_gva2hva(vm, (vm_vaddr_t)(&exception_handlers)) = vm->handlers;
+}
+
+void vm_install_exception_handler(struct kvm_vm *vm, int vector, exception_handler_fn handler)
+{
+	struct handlers *handlers = addr_gva2hva(vm, vm->handlers);
+
+	assert(vector < NR_EXCEPTIONS);
+	handlers->exception_handlers[0][vector] = handler;
+}
+
+void vm_install_interrupt_handler(struct kvm_vm *vm, exception_handler_fn handler)
+{
+	struct handlers *handlers = addr_gva2hva(vm, vm->handlers);
+
+	handlers->exception_handlers[1][0] = handler;
+}
+
+uint32_t guest_get_vcpuid(void)
+{
+	return csr_read(CSR_SSCRATCH);
+}
+
+struct sbiret sbi_ecall(int ext, int fid, unsigned long arg0,
+			unsigned long arg1, unsigned long arg2,
+			unsigned long arg3, unsigned long arg4,
+			unsigned long arg5)
+{
+	register uintptr_t a0 asm ("a0") = (uintptr_t)(arg0);
+	register uintptr_t a1 asm ("a1") = (uintptr_t)(arg1);
+	register uintptr_t a2 asm ("a2") = (uintptr_t)(arg2);
+	register uintptr_t a3 asm ("a3") = (uintptr_t)(arg3);
+	register uintptr_t a4 asm ("a4") = (uintptr_t)(arg4);
+	register uintptr_t a5 asm ("a5") = (uintptr_t)(arg5);
+	register uintptr_t a6 asm ("a6") = (uintptr_t)(fid);
+	register uintptr_t a7 asm ("a7") = (uintptr_t)(ext);
+	struct sbiret ret;
+
+	asm volatile (
+		"ecall"
+		: "+r" (a0), "+r" (a1)
+		: "r" (a2), "r" (a3), "r" (a4), "r" (a5), "r" (a6), "r" (a7)
+		: "memory");
+	ret.error = a0;
+	ret.value = a1;
+
+	return ret;
+}
+
+bool guest_sbi_probe_extension(int extid, long *out_val)
+{
+	struct sbiret ret;
+
+	ret = sbi_ecall(SBI_EXT_BASE, SBI_EXT_BASE_PROBE_EXT, extid,
+			0, 0, 0, 0, 0);
+
+	__GUEST_ASSERT(!ret.error || ret.error == SBI_ERR_NOT_SUPPORTED,
+		       "ret.error=%ld, ret.value=%ld\n", ret.error, ret.value);
+
+	if (ret.error == SBI_ERR_NOT_SUPPORTED)
+		return false;
+
+	if (out_val)
+		*out_val = ret.value;
+
+	return true;
+}
+
+unsigned long get_host_sbi_spec_version(void)
+{
+	struct sbiret ret;
+
+	ret = sbi_ecall(SBI_EXT_BASE, SBI_EXT_BASE_GET_SPEC_VERSION, 0,
+		       0, 0, 0, 0, 0);
+
+	GUEST_ASSERT(!ret.error);
+
+	return ret.value;
+}
+
+void kvm_selftest_arch_init(void)
+{
+	/*
+	 * riscv64 doesn't have a true default mode, so start by detecting the
+	 * supported vm mode.
+	 */
+	guest_modes_append_default();
+}
+
+unsigned long riscv64_get_satp_mode(void)
+{
+	int kvm_fd, vm_fd, vcpu_fd, err;
+	uint64_t val;
+	struct kvm_one_reg reg = {
+		.id     = RISCV_CONFIG_REG(satp_mode),
+		.addr   = (uint64_t)&val,
+	};
+
+	kvm_fd = open_kvm_dev_path_or_exit();
+	vm_fd = __kvm_ioctl(kvm_fd, KVM_CREATE_VM, NULL);
+	TEST_ASSERT(vm_fd >= 0, KVM_IOCTL_ERROR(KVM_CREATE_VM, vm_fd));
+
+	vcpu_fd = ioctl(vm_fd, KVM_CREATE_VCPU, 0);
+	TEST_ASSERT(vcpu_fd >= 0, KVM_IOCTL_ERROR(KVM_CREATE_VCPU, vcpu_fd));
+
+	err = ioctl(vcpu_fd, KVM_GET_ONE_REG, &reg);
+	TEST_ASSERT(err == 0, KVM_IOCTL_ERROR(KVM_GET_ONE_REG, vcpu_fd));
+
+	close(vcpu_fd);
+	close(vm_fd);
+	close(kvm_fd);
+
+	return val;
 }

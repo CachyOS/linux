@@ -28,7 +28,7 @@
 #include <asm/byteorder.h>
 
 #include <media/dvb_frontend.h>
-#include <media/dvb_math.h>
+#include <linux/int_log.h>
 #include "lgdt330x_priv.h"
 #include "lgdt330x.h"
 
@@ -124,7 +124,6 @@ static int i2c_read_demod_bytes(struct lgdt330x_state *state,
 /* Software reset */
 static int lgdt3302_sw_reset(struct lgdt330x_state *state)
 {
-	u8 ret;
 	u8 reset[] = {
 		IRQ_MASK,
 		/*
@@ -133,6 +132,7 @@ static int lgdt3302_sw_reset(struct lgdt330x_state *state)
 		 */
 		0x00
 	};
+	int ret;
 
 	ret = i2c_write_demod_bytes(state,
 				    reset, sizeof(reset));
@@ -147,11 +147,11 @@ static int lgdt3302_sw_reset(struct lgdt330x_state *state)
 
 static int lgdt3303_sw_reset(struct lgdt330x_state *state)
 {
-	u8 ret;
 	u8 reset[] = {
 		0x02,
 		0x00 /* bit 0 is active low software reset */
 	};
+	int ret;
 
 	ret = i2c_write_demod_bytes(state,
 				    reset, sizeof(reset));
@@ -857,14 +857,13 @@ static struct dvb_frontend *lgdt330x_get_dvb_frontend(struct i2c_client *client)
 static const struct dvb_frontend_ops lgdt3302_ops;
 static const struct dvb_frontend_ops lgdt3303_ops;
 
-static int lgdt330x_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int lgdt330x_probe(struct i2c_client *client)
 {
 	struct lgdt330x_state *state = NULL;
 	u8 buf[1];
 
 	/* Allocate memory for the internal state */
-	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	state = kzalloc_obj(*state);
 	if (!state)
 		goto error;
 
@@ -928,7 +927,7 @@ struct dvb_frontend *lgdt330x_attach(const struct lgdt330x_config *_config,
 
 	return lgdt330x_get_dvb_frontend(client);
 }
-EXPORT_SYMBOL(lgdt330x_attach);
+EXPORT_SYMBOL_GPL(lgdt330x_attach);
 
 static const struct dvb_frontend_ops lgdt3302_ops = {
 	.delsys = { SYS_ATSC, SYS_DVBC_ANNEX_B },
@@ -974,19 +973,17 @@ static const struct dvb_frontend_ops lgdt3303_ops = {
 	.release              = lgdt330x_release,
 };
 
-static int lgdt330x_remove(struct i2c_client *client)
+static void lgdt330x_remove(struct i2c_client *client)
 {
 	struct lgdt330x_state *state = i2c_get_clientdata(client);
 
 	dev_dbg(&client->dev, "\n");
 
 	kfree(state);
-
-	return 0;
 }
 
 static const struct i2c_device_id lgdt330x_id_table[] = {
-	{"lgdt330x", 0},
+	{ "lgdt330x" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, lgdt330x_id_table);

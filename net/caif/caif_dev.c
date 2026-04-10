@@ -27,6 +27,7 @@
 #include <net/caif/cfcnfg.h>
 #include <net/caif/cfserl.h>
 
+MODULE_DESCRIPTION("ST-Ericsson CAIF modem protocol support");
 MODULE_LICENSE("GPL");
 
 /* Used for local tracking of the CAIF net devices */
@@ -93,7 +94,7 @@ static struct caif_device_entry *caif_device_alloc(struct net_device *dev)
 {
 	struct caif_device_entry *caifd;
 
-	caifd = kzalloc(sizeof(*caifd), GFP_KERNEL);
+	caifd = kzalloc_obj(*caifd);
 	if (!caifd)
 		return NULL;
 	caifd->pcpu_refcnt = alloc_percpu(int);
@@ -342,7 +343,7 @@ int caif_enroll_dev(struct net_device *dev, struct caif_dev_common *caifdev,
 	mutex_lock(&caifdevs->lock);
 	list_add_rcu(&caifd->list, &caifdevs->list);
 
-	strlcpy(caifd->layer.name, dev->name,
+	strscpy(caifd->layer.name, dev->name,
 		sizeof(caifd->layer.name));
 	caifd->layer.transmit = transmit;
 	res = cfcnfg_add_phy_layer(cfg,

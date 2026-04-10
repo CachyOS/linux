@@ -114,7 +114,7 @@ static const char *bnad_net_stats_strings[] = {
 	"mac_tx_deferral",
 	"mac_tx_excessive_deferral",
 	"mac_tx_single_collision",
-	"mac_tx_muliple_collision",
+	"mac_tx_multiple_collision",
 	"mac_tx_late_collision",
 	"mac_tx_excessive_collision",
 	"mac_tx_total_collision",
@@ -283,20 +283,20 @@ bnad_get_drvinfo(struct net_device *netdev, struct ethtool_drvinfo *drvinfo)
 	struct bfa_ioc_attr *ioc_attr;
 	unsigned long flags;
 
-	strlcpy(drvinfo->driver, BNAD_NAME, sizeof(drvinfo->driver));
+	strscpy(drvinfo->driver, BNAD_NAME, sizeof(drvinfo->driver));
 
-	ioc_attr = kzalloc(sizeof(*ioc_attr), GFP_KERNEL);
+	ioc_attr = kzalloc_obj(*ioc_attr);
 	if (ioc_attr) {
 		spin_lock_irqsave(&bnad->bna_lock, flags);
 		bfa_nw_ioc_get_attr(&bnad->bna.ioceth.ioc, ioc_attr);
 		spin_unlock_irqrestore(&bnad->bna_lock, flags);
 
-		strlcpy(drvinfo->fw_version, ioc_attr->adapter_attr.fw_ver,
+		strscpy(drvinfo->fw_version, ioc_attr->adapter_attr.fw_ver,
 			sizeof(drvinfo->fw_version));
 		kfree(ioc_attr);
 	}
 
-	strlcpy(drvinfo->bus_info, pci_name(bnad->pcidev),
+	strscpy(drvinfo->bus_info, pci_name(bnad->pcidev),
 		sizeof(drvinfo->bus_info));
 }
 
@@ -373,7 +373,7 @@ static int bnad_set_coalesce(struct net_device *netdev,
 			}
 			spin_unlock_irqrestore(&bnad->bna_lock, flags);
 			if (to_del)
-				del_timer_sync(&bnad->dim_timer);
+				timer_delete_sync(&bnad->dim_timer);
 			spin_lock_irqsave(&bnad->bna_lock, flags);
 			bnad_rx_coalescing_timeo_set(bnad);
 		}
@@ -608,7 +608,7 @@ bnad_get_strings(struct net_device *netdev, u32 stringset, u8 *string)
 
 	for (i = 0; i < BNAD_ETHTOOL_STATS_NUM; i++) {
 		BUG_ON(!(strlen(bnad_net_stats_strings[i]) < ETH_GSTRING_LEN));
-		ethtool_sprintf(&string, bnad_net_stats_strings[i]);
+		ethtool_puts(&string, bnad_net_stats_strings[i]);
 	}
 
 	bmap = bna_tx_rid_mask(&bnad->bna);
@@ -900,7 +900,7 @@ bnad_get_flash_partition_by_offset(struct bnad *bnad, u32 offset,
 	u32 i, flash_part = 0, ret;
 	unsigned long flags = 0;
 
-	flash_attr = kzalloc(sizeof(struct bfa_flash_attr), GFP_KERNEL);
+	flash_attr = kzalloc_obj(struct bfa_flash_attr);
 	if (!flash_attr)
 		return 0;
 

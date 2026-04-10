@@ -197,10 +197,9 @@ struct drm_exynos_file_private {
  * @wait: wait an atomic commit to finish
  */
 struct exynos_drm_private {
-	struct drm_fb_helper *fb_helper;
-
 	struct device *g2d_dev;
 	struct device *dma_dev;
+	struct device *vidi_dev;
 	void *mapping;
 
 	/* for atomic commit */
@@ -255,10 +254,6 @@ static inline int exynos_drm_check_fimc_device(struct device *dev)
 	return 0;
 }
 #endif
-
-int exynos_atomic_commit(struct drm_device *dev, struct drm_atomic_state *state,
-			 bool nonblock);
-
 
 extern struct platform_driver fimd_driver;
 extern struct platform_driver exynos5433_decon_driver;

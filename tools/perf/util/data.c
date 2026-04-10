@@ -3,6 +3,7 @@
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/zalloc.h>
+#include <linux/err.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <errno.h>
@@ -16,6 +17,7 @@
 #include "util.h" // rm_rf_perf_data()
 #include "debug.h"
 #include "header.h"
+#include "rlimit.h"
 #include <internal/lib.h>
 
 static void close_dir(struct perf_data_file *files, int nr)
@@ -34,6 +36,7 @@ void perf_data__close_dir(struct perf_data *data)
 
 int perf_data__create_dir(struct perf_data *data, int nr)
 {
+	enum rlimit_action set_rlimit = NO_CHANGE;
 	struct perf_data_file *files = NULL;
 	int i, ret;
 
@@ -53,11 +56,21 @@ int perf_data__create_dir(struct perf_data *data, int nr)
 			goto out_err;
 		}
 
+retry_open:
 		ret = open(file->path, O_RDWR|O_CREAT|O_TRUNC, S_IRUSR|S_IWUSR);
 		if (ret < 0) {
+			/*
+			 * If using parallel threads to collect data,
+			 * perf record needs at least 6 fds per CPU.
+			 * When we run out of them try to increase the limits.
+			 */
+			if (errno == EMFILE && rlimit__increase_nofile(&set_rlimit))
+				goto retry_open;
+
 			ret = -errno;
 			goto out_err;
 		}
+		set_rlimit = NO_CHANGE;
 
 		file->fd = ret;
 	}
@@ -131,6 +144,7 @@ int perf_data__open_dir(struct perf_data *data)
 		file->size = st.st_size;
 	}
 
+	closedir(dir);
 	if (!files)
 		return -EINVAL;
 
@@ -139,28 +153,9 @@ int perf_data__open_dir(struct perf_data *data)
 	return 0;
 
 out_err:
+	closedir(dir);
 	close_dir(files, nr);
 	return ret;
-}
-
-int perf_data__update_dir(struct perf_data *data)
-{
-	int i;
-
-	if (WARN_ON(!data->is_dir))
-		return -EINVAL;
-
-	for (i = 0; i < data->dir.nr; i++) {
-		struct perf_data_file *file = &data->dir.files[i];
-		struct stat st;
-
-		if (fstat(file->fd, &st))
-			return -1;
-
-		file->size = st.st_size;
-	}
-
-	return 0;
 }
 
 static bool check_pipe(struct perf_data *data)
@@ -189,7 +184,12 @@ static bool check_pipe(struct perf_data *data)
 				data->file.fd = fd;
 				data->use_stdio = false;
 			}
-		} else {
+
+		/*
+		 * When is_pipe and data->file.fd is given, use given fd
+		 * instead of STDIN_FILENO or STDOUT_FILENO
+		 */
+		} else if (data->file.fd <= 0) {
 			data->file.fd = fd;
 		}
 	}
@@ -213,17 +213,15 @@ static int check_backup(struct perf_data *data)
 
 		ret = rm_rf_perf_data(oldname);
 		if (ret) {
-			pr_err("Can't remove old data: %s (%s)\n",
-			       ret == -2 ?
-			       "Unknown file found" : strerror(errno),
-			       oldname);
+			if (ret == -2)
+				pr_err("Can't remove old data: Unknown file found (%s)\n", oldname);
+			else
+				pr_err("Can't remove old data: %m (%s)\n", oldname);
 			return -1;
 		}
 
 		if (rename(data->path, oldname)) {
-			pr_err("Can't move data: %s (%s to %s)\n",
-			       strerror(errno),
-			       data->path, oldname);
+			pr_err("Can't move data: %m (%s to %s)\n", data->path, oldname);
 			return -1;
 		}
 	}
@@ -246,14 +244,12 @@ static int open_file_read(struct perf_data *data)
 	int flags = data->in_place_update ? O_RDWR : O_RDONLY;
 	struct stat st;
 	int fd;
-	char sbuf[STRERR_BUFSIZE];
 
 	fd = open(data->file.path, flags);
 	if (fd < 0) {
 		int err = errno;
 
-		pr_err("failed to open %s: %s", data->file.path,
-			str_error_r(err, sbuf, sizeof(sbuf)));
+		pr_err("failed to open %s: %m", data->file.path);
 		if (err == ENOENT && !strcmp(data->file.path, "perf.data"))
 			pr_err("  (try 'perf record' first)");
 		pr_err("\n");
@@ -285,15 +281,10 @@ static int open_file_read(struct perf_data *data)
 
 static int open_file_write(struct perf_data *data)
 {
-	int fd;
-	char sbuf[STRERR_BUFSIZE];
-
-	fd = open(data->file.path, O_CREAT|O_RDWR|O_TRUNC|O_CLOEXEC,
-		  S_IRUSR|S_IWUSR);
+	int fd = open(data->file.path, O_CREAT|O_RDWR|O_TRUNC|O_CLOEXEC, S_IRUSR|S_IWUSR);
 
 	if (fd < 0)
-		pr_err("failed to open %s : %s\n", data->file.path,
-			str_error_r(errno, sbuf, sizeof(sbuf)));
+		pr_err("failed to open %s : %m\n", data->file.path);
 
 	return fd;
 }
@@ -398,7 +389,7 @@ ssize_t perf_data_file__write(struct perf_data_file *file,
 }
 
 ssize_t perf_data__write(struct perf_data *data,
-			      void *buf, size_t size)
+			 void *buf, size_t size)
 {
 	if (data->use_stdio) {
 		if (fwrite(buf, size, 1, data->file.fptr) == 1)
@@ -409,14 +400,12 @@ ssize_t perf_data__write(struct perf_data *data,
 }
 
 int perf_data__switch(struct perf_data *data,
-			   const char *postfix,
-			   size_t pos, bool at_exit,
-			   char **new_filepath)
+		      const char *postfix,
+		      size_t pos, bool at_exit,
+		      char **new_filepath)
 {
 	int ret;
 
-	if (check_pipe(data))
-		return -EINVAL;
 	if (perf_data__is_read(data))
 		return -EINVAL;
 
@@ -438,8 +427,8 @@ int perf_data__switch(struct perf_data *data,
 
 		if (lseek(data->file.fd, pos, SEEK_SET) == (off_t)-1) {
 			ret = -errno;
-			pr_debug("Failed to lseek to %zu: %s",
-				 pos, strerror(errno));
+			pr_debug("Failed to lseek to %zu: %m\n",
+				 pos);
 			goto out;
 		}
 	}
@@ -481,16 +470,21 @@ int perf_data__make_kcore_dir(struct perf_data *data, char *buf, size_t buf_sz)
 
 bool has_kcore_dir(const char *path)
 {
-	char *kcore_dir;
-	int ret;
+	struct dirent *d = ERR_PTR(-EINVAL);
+	const char *name = "kcore_dir";
+	DIR *dir = opendir(path);
+	size_t n = strlen(name);
+	bool result = false;
 
-	if (asprintf(&kcore_dir, "%s/kcore_dir", path) < 0)
-		return false;
+	if (dir) {
+		while (d && !result) {
+			d = readdir(dir);
+			result = d ? strncmp(d->d_name, name, n) : false;
+		}
+		closedir(dir);
+	}
 
-	ret = access(kcore_dir, F_OK);
-
-	free(kcore_dir);
-	return !ret;
+	return result;
 }
 
 char *perf_data__kallsyms_name(struct perf_data *data)
@@ -502,6 +496,25 @@ char *perf_data__kallsyms_name(struct perf_data *data)
 		return NULL;
 
 	if (asprintf(&kallsyms_name, "%s/kcore_dir/kallsyms", data->path) < 0)
+		return NULL;
+
+	if (stat(kallsyms_name, &st)) {
+		free(kallsyms_name);
+		return NULL;
+	}
+
+	return kallsyms_name;
+}
+
+char *perf_data__guest_kallsyms_name(struct perf_data *data, pid_t machine_pid)
+{
+	char *kallsyms_name;
+	struct stat st;
+
+	if (!data->is_dir)
+		return NULL;
+
+	if (asprintf(&kallsyms_name, "%s/kcore_dir__%d/kallsyms", data->path, machine_pid) < 0)
 		return NULL;
 
 	if (stat(kallsyms_name, &st)) {

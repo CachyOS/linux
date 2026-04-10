@@ -22,7 +22,6 @@
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/rtc.h>
@@ -130,7 +129,7 @@ static void at91_rtc_write_idr(u32 mask)
 	 *
 	 * Note that there is still a possibility that the mask is updated
 	 * before interrupts have actually been disabled in hardware. The only
-	 * way to be certain would be to poll the IMR-register, which is is
+	 * way to be certain would be to poll the IMR-register, which is
 	 * the very register we are trying to emulate. The register read back
 	 * is a reasonable heuristic.
 	 */
@@ -529,7 +528,7 @@ static int __init at91_rtc_probe(struct platform_device *pdev)
 	 * being wake-capable; if it didn't, do that here.
 	 */
 	if (!device_can_wakeup(&pdev->dev))
-		device_init_wakeup(&pdev->dev, 1);
+		device_init_wakeup(&pdev->dev, true);
 
 	if (at91_rtc_config->has_correction)
 		rtc->ops = &sama5d4_rtc_ops;
@@ -559,7 +558,7 @@ err_clk:
 /*
  * Disable and remove the RTC driver
  */
-static int __exit at91_rtc_remove(struct platform_device *pdev)
+static void __exit at91_rtc_remove(struct platform_device *pdev)
 {
 	/* Disable all interrupts */
 	at91_rtc_write_idr(AT91_RTC_ACKUPD | AT91_RTC_ALARM |
@@ -567,8 +566,6 @@ static int __exit at91_rtc_remove(struct platform_device *pdev)
 					AT91_RTC_CALEV);
 
 	clk_disable_unprepare(sclk);
-
-	return 0;
 }
 
 static void at91_rtc_shutdown(struct platform_device *pdev)
@@ -636,13 +633,19 @@ static int at91_rtc_resume(struct device *dev)
 
 static SIMPLE_DEV_PM_OPS(at91_rtc_pm_ops, at91_rtc_suspend, at91_rtc_resume);
 
-static struct platform_driver at91_rtc_driver = {
+/*
+ * at91_rtc_remove() lives in .exit.text. For drivers registered via
+ * module_platform_driver_probe() this is ok because they cannot get unbound at
+ * runtime. So mark the driver struct with __refdata to prevent modpost
+ * triggering a section mismatch warning.
+ */
+static struct platform_driver at91_rtc_driver __refdata = {
 	.remove		= __exit_p(at91_rtc_remove),
 	.shutdown	= at91_rtc_shutdown,
 	.driver		= {
 		.name	= "at91_rtc",
 		.pm	= &at91_rtc_pm_ops,
-		.of_match_table = of_match_ptr(at91_rtc_dt_ids),
+		.of_match_table = at91_rtc_dt_ids,
 	},
 };
 
@@ -651,4 +654,3 @@ module_platform_driver_probe(at91_rtc_driver, at91_rtc_probe);
 MODULE_AUTHOR("Rick Bronson");
 MODULE_DESCRIPTION("RTC driver for Atmel AT91RM9200");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS("platform:at91_rtc");

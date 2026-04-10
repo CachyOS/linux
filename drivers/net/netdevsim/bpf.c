@@ -93,7 +93,7 @@ static void nsim_prog_set_loaded(struct bpf_prog *prog, bool loaded)
 {
 	struct nsim_bpf_bound_prog *state;
 
-	if (!prog || !prog->aux->offload)
+	if (!prog || !bpf_prog_is_offloaded(prog->aux))
 		return;
 
 	state = prog->aux->offload->dev_priv;
@@ -222,7 +222,7 @@ static int nsim_bpf_create_prog(struct nsim_dev *nsim_dev,
 	char name[16];
 	int ret;
 
-	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	state = kzalloc_obj(*state);
 	if (!state)
 		return -ENOMEM;
 
@@ -244,7 +244,9 @@ static int nsim_bpf_create_prog(struct nsim_dev *nsim_dev,
 			    &state->state, &nsim_bpf_string_fops);
 	debugfs_create_bool("loaded", 0400, state->ddir, &state->is_loaded);
 
+	mutex_lock(&nsim_dev->progs_list_lock);
 	list_add_tail(&state->l, &nsim_dev->bpf_bound_progs);
+	mutex_unlock(&nsim_dev->progs_list_lock);
 
 	prog->aux->offload->dev_priv = state;
 
@@ -273,12 +275,16 @@ static int nsim_bpf_translate(struct bpf_prog *prog)
 static void nsim_bpf_destroy_prog(struct bpf_prog *prog)
 {
 	struct nsim_bpf_bound_prog *state;
+	struct nsim_dev *nsim_dev;
 
 	state = prog->aux->offload->dev_priv;
+	nsim_dev = state->nsim_dev;
 	WARN(state->is_loaded,
 	     "offload state destroyed while program still bound");
 	debugfs_remove_recursive(state->ddir);
+	mutex_lock(&nsim_dev->progs_list_lock);
 	list_del(&state->l);
+	mutex_unlock(&nsim_dev->progs_list_lock);
 	kfree(state);
 }
 
@@ -296,7 +302,8 @@ static int nsim_setup_prog_checks(struct netdevsim *ns, struct netdev_bpf *bpf)
 		NSIM_EA(bpf->extack, "attempt to load offloaded prog to drv");
 		return -EINVAL;
 	}
-	if (ns->netdev->mtu > NSIM_XDP_MAX_MTU) {
+	if (bpf->prog && !bpf->prog->aux->xdp_has_frags &&
+	    ns->netdev->mtu > NSIM_XDP_MAX_MTU) {
 		NSIM_EA(bpf->extack, "MTU too large w/ XDP enabled");
 		return -EINVAL;
 	}
@@ -311,12 +318,8 @@ nsim_setup_prog_hw_checks(struct netdevsim *ns, struct netdev_bpf *bpf)
 	if (!bpf->prog)
 		return 0;
 
-	if (!bpf->prog->aux->offload) {
+	if (!bpf_prog_is_offloaded(bpf->prog->aux)) {
 		NSIM_EA(bpf->extack, "xdpoffload of non-bound program");
-		return -EINVAL;
-	}
-	if (!bpf_offload_dev_match(bpf->prog, ns->netdev)) {
-		NSIM_EA(bpf->extack, "program bound to different dev");
 		return -EINVAL;
 	}
 
@@ -351,10 +354,12 @@ nsim_map_alloc_elem(struct bpf_offloaded_map *offmap, unsigned int idx)
 {
 	struct nsim_bpf_bound_map *nmap = offmap->dev_priv;
 
-	nmap->entry[idx].key = kmalloc(offmap->map.key_size, GFP_USER);
+	nmap->entry[idx].key = kmalloc(offmap->map.key_size,
+				       GFP_KERNEL_ACCOUNT | __GFP_NOWARN);
 	if (!nmap->entry[idx].key)
 		return -ENOMEM;
-	nmap->entry[idx].value = kmalloc(offmap->map.value_size, GFP_USER);
+	nmap->entry[idx].value = kmalloc(offmap->map.value_size,
+					 GFP_KERNEL_ACCOUNT | __GFP_NOWARN);
 	if (!nmap->entry[idx].value) {
 		kfree(nmap->entry[idx].key);
 		nmap->entry[idx].key = NULL;
@@ -496,7 +501,7 @@ nsim_bpf_map_alloc(struct netdevsim *ns, struct bpf_offloaded_map *offmap)
 	if (offmap->map.map_flags)
 		return -EINVAL;
 
-	nmap = kzalloc(sizeof(*nmap), GFP_USER);
+	nmap = kzalloc_obj(*nmap, GFP_KERNEL_ACCOUNT);
 	if (!nmap)
 		return -ENOMEM;
 

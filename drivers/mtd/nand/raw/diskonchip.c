@@ -11,7 +11,7 @@
  * Error correction code lifted from the old docecc code
  * Author: Fabrice Bellard (fabrice.bellard@netgem.com)
  * Copyright (C) 2000 Netgem S.A.
- * converted to the generic Reed-Solomon library by Thomas Gleixner <tglx@linutronix.de>
+ * converted to the generic Reed-Solomon library by Thomas Gleixner <tglx@kernel.org>
  *
  * Interface to generic NAND code for M-Systems DiskOnChip devices
  */
@@ -53,7 +53,7 @@ static unsigned long doc_locations[] __initdata = {
 	0xe8000, 0xea000, 0xec000, 0xee000,
 #endif
 #endif
-	0xffffffff };
+};
 
 static struct mtd_info *doclist = NULL;
 
@@ -1098,7 +1098,7 @@ static inline int __init inftl_partscan(struct mtd_info *mtd, struct mtd_partiti
 		    (i == 0) && (ip->firstUnit > 0)) {
 			parts[0].name = " DiskOnChip IPL / Media Header partition";
 			parts[0].offset = 0;
-			parts[0].size = mtd->erasesize * ip->firstUnit;
+			parts[0].size = (uint64_t)mtd->erasesize * ip->firstUnit;
 			numparts = 1;
 		}
 
@@ -1491,10 +1491,12 @@ static int __init doc_probe(unsigned long physadr)
 	else
 		numchips = doc2001_init(mtd);
 
-	if ((ret = nand_scan(nand, numchips)) || (ret = doc->late_init(mtd))) {
-		/* DBB note: i believe nand_cleanup is necessary here, as
-		   buffers may have been allocated in nand_base.  Check with
-		   Thomas. FIX ME! */
+	ret = nand_scan(nand, numchips);
+	if (ret)
+		goto fail;
+
+	ret = doc->late_init(mtd);
+	if (ret) {
 		nand_cleanup(nand);
 		goto fail;
 	}
@@ -1552,7 +1554,7 @@ static int __init init_nanddoc(void)
 		if (ret < 0)
 			return ret;
 	} else {
-		for (i = 0; (doc_locations[i] != 0xffffffff); i++) {
+		for (i = 0; i < ARRAY_SIZE(doc_locations); i++) {
 			doc_probe(doc_locations[i]);
 		}
 	}

@@ -47,23 +47,32 @@
 /* Message with data needs at least two words (for header & data). */
 #define MLXBF_TMFIFO_DATA_MIN_WORDS		2
 
+/* Tx timeout in milliseconds. */
+#define TMFIFO_TX_TIMEOUT			2000
+
+/* ACPI UID for BlueField-3. */
+#define TMFIFO_BF3_UID				1
+
 struct mlxbf_tmfifo;
 
 /**
- * mlxbf_tmfifo_vring - Structure of the TmFifo virtual ring
+ * struct mlxbf_tmfifo_vring - Structure of the TmFifo virtual ring
  * @va: virtual address of the ring
  * @dma: dma address of the ring
  * @vq: pointer to the virtio virtqueue
  * @desc: current descriptor of the pending packet
  * @desc_head: head descriptor of the pending packet
+ * @drop_desc: dummy desc for packet dropping
  * @cur_len: processed length of the current descriptor
  * @rem_len: remaining length of the pending packet
+ * @rem_padding: remaining bytes to send as paddings
  * @pkt_len: total length of the pending packet
  * @next_avail: next avail descriptor id
  * @num: vring size (number of descriptors)
  * @align: vring alignment size
  * @index: vring index
  * @vdev_id: vring virtio id (VIRTIO_ID_xxx)
+ * @tx_timeout: expire time of last tx packet
  * @fifo: pointer to the tmfifo structure
  */
 struct mlxbf_tmfifo_vring {
@@ -72,16 +81,27 @@ struct mlxbf_tmfifo_vring {
 	struct virtqueue *vq;
 	struct vring_desc *desc;
 	struct vring_desc *desc_head;
+	struct vring_desc drop_desc;
 	int cur_len;
 	int rem_len;
+	int rem_padding;
 	u32 pkt_len;
 	u16 next_avail;
 	int num;
 	int align;
 	int index;
 	int vdev_id;
+	unsigned long tx_timeout;
 	struct mlxbf_tmfifo *fifo;
 };
+
+/* Check whether vring is in drop mode. */
+#define IS_VRING_DROP(_r) ({ \
+	typeof(_r) (r) = (_r); \
+	r->desc_head == &r->drop_desc; })
+
+/* A stub length to drop maximum length packet. */
+#define VRING_DROP_DESC_MAX_LEN		GENMASK(15, 0)
 
 /* Interrupt types. */
 enum {
@@ -100,12 +120,13 @@ enum {
 };
 
 /**
- * mlxbf_tmfifo_vdev - Structure of the TmFifo virtual device
+ * struct mlxbf_tmfifo_vdev - Structure of the TmFifo virtual device
  * @vdev: virtio device, in which the vdev.id.device field has the
  *        VIRTIO_ID_xxx id to distinguish the virtual device.
  * @status: status of the device
  * @features: supported features of the device
  * @vrings: array of tmfifo vrings of this device
+ * @config: non-anonymous union for cons and net
  * @config.cons: virtual console config -
  *               select if vdev.id.device is VIRTIO_ID_CONSOLE
  * @config.net: virtual network config -
@@ -125,7 +146,7 @@ struct mlxbf_tmfifo_vdev {
 };
 
 /**
- * mlxbf_tmfifo_irq_info - Structure of the interrupt information
+ * struct mlxbf_tmfifo_irq_info - Structure of the interrupt information
  * @fifo: pointer to the tmfifo structure
  * @irq: interrupt number
  * @index: index into the interrupt array
@@ -137,11 +158,25 @@ struct mlxbf_tmfifo_irq_info {
 };
 
 /**
- * mlxbf_tmfifo - Structure of the TmFifo
+ * struct mlxbf_tmfifo_io - Structure of the TmFifo IO resource (for both rx & tx)
+ * @ctl: control register offset (TMFIFO_RX_CTL / TMFIFO_TX_CTL)
+ * @sts: status register offset (TMFIFO_RX_STS / TMFIFO_TX_STS)
+ * @data: data register offset (TMFIFO_RX_DATA / TMFIFO_TX_DATA)
+ */
+struct mlxbf_tmfifo_io {
+	void __iomem *ctl;
+	void __iomem *sts;
+	void __iomem *data;
+};
+
+/**
+ * struct mlxbf_tmfifo - Structure of the TmFifo
  * @vdev: array of the virtual devices running over the TmFifo
  * @lock: lock to protect the TmFifo access
- * @rx_base: mapped register base address for the Rx FIFO
- * @tx_base: mapped register base address for the Tx FIFO
+ * @res0: mapped resource block 0
+ * @res1: mapped resource block 1
+ * @rx: rx io resource
+ * @tx: tx io resource
  * @rx_fifo_size: number of entries of the Rx FIFO
  * @tx_fifo_size: number of entries of the Tx FIFO
  * @pend_events: pending bits for deferred events
@@ -155,8 +190,10 @@ struct mlxbf_tmfifo_irq_info {
 struct mlxbf_tmfifo {
 	struct mlxbf_tmfifo_vdev *vdev[MLXBF_TMFIFO_VDEV_MAX];
 	struct mutex lock;		/* TmFifo lock */
-	void __iomem *rx_base;
-	void __iomem *tx_base;
+	void __iomem *res0;
+	void __iomem *res1;
+	struct mlxbf_tmfifo_io rx;
+	struct mlxbf_tmfifo_io tx;
 	int rx_fifo_size;
 	int tx_fifo_size;
 	unsigned long pend_events;
@@ -169,7 +206,7 @@ struct mlxbf_tmfifo {
 };
 
 /**
- * mlxbf_tmfifo_msg_hdr - Structure of the TmFifo message header
+ * struct mlxbf_tmfifo_msg_hdr - Structure of the TmFifo message header
  * @type: message type
  * @len: payload length in network byte order. Messages sent into the FIFO
  *       will be read by the other side as data stream in the same byte order.
@@ -179,6 +216,7 @@ struct mlxbf_tmfifo {
 struct mlxbf_tmfifo_msg_hdr {
 	u8 type;
 	__be16 len;
+	/* private: */
 	u8 unused[5];
 } __packed __aligned(sizeof(u64));
 
@@ -195,7 +233,7 @@ static u8 mlxbf_tmfifo_net_default_mac[ETH_ALEN] = {
 static efi_char16_t mlxbf_tmfifo_efi_name[] = L"RshimMacAddr";
 
 /* Maximum L2 header length. */
-#define MLXBF_TMFIFO_NET_L2_OVERHEAD	36
+#define MLXBF_TMFIFO_NET_L2_OVERHEAD	(ETH_HLEN + VLAN_HLEN)
 
 /* Supported virtio-net features. */
 #define MLXBF_TMFIFO_NET_FEATURES \
@@ -243,6 +281,8 @@ static int mlxbf_tmfifo_alloc_vrings(struct mlxbf_tmfifo *fifo,
 		vring->align = SMP_CACHE_BYTES;
 		vring->index = i;
 		vring->vdev_id = tm_vdev->vdev.id.device;
+		vring->drop_desc.len = cpu_to_virtio32(&tm_vdev->vdev,
+						       VRING_DROP_DESC_MAX_LEN);
 		dev = &tm_vdev->vdev.dev;
 
 		size = vring_size(vring->num, vring->align);
@@ -348,7 +388,7 @@ static u32 mlxbf_tmfifo_get_pkt_len(struct mlxbf_tmfifo_vring *vring,
 	return len;
 }
 
-static void mlxbf_tmfifo_release_pending_pkt(struct mlxbf_tmfifo_vring *vring)
+static void mlxbf_tmfifo_release_pkt(struct mlxbf_tmfifo_vring *vring)
 {
 	struct vring_desc *desc_head;
 	u32 len = 0;
@@ -472,7 +512,7 @@ static int mlxbf_tmfifo_get_rx_avail(struct mlxbf_tmfifo *fifo)
 {
 	u64 sts;
 
-	sts = readq(fifo->rx_base + MLXBF_TMFIFO_RX_STS);
+	sts = readq(fifo->rx.sts);
 	return FIELD_GET(MLXBF_TMFIFO_RX_STS__COUNT_MASK, sts);
 }
 
@@ -489,7 +529,7 @@ static int mlxbf_tmfifo_get_tx_avail(struct mlxbf_tmfifo *fifo, int vdev_id)
 	else
 		tx_reserve = 1;
 
-	sts = readq(fifo->tx_base + MLXBF_TMFIFO_TX_STS);
+	sts = readq(fifo->tx.sts);
 	count = FIELD_GET(MLXBF_TMFIFO_TX_STS__COUNT_MASK, sts);
 	return fifo->tx_fifo_size - tx_reserve - count;
 }
@@ -525,7 +565,7 @@ static void mlxbf_tmfifo_console_tx(struct mlxbf_tmfifo *fifo, int avail)
 	/* Write header. */
 	hdr.type = VIRTIO_ID_CONSOLE;
 	hdr.len = htons(size);
-	writeq(*(u64 *)&hdr, fifo->tx_base + MLXBF_TMFIFO_TX_DATA);
+	writeq(*(u64 *)&hdr, fifo->tx.data);
 
 	/* Use spin-lock to protect the 'cons->tx_buf'. */
 	spin_lock_irqsave(&fifo->spin_lock[0], flags);
@@ -542,7 +582,7 @@ static void mlxbf_tmfifo_console_tx(struct mlxbf_tmfifo *fifo, int avail)
 			memcpy((u8 *)&data + seg, cons->tx_buf.buf,
 			       sizeof(u64) - seg);
 		}
-		writeq(data, fifo->tx_base + MLXBF_TMFIFO_TX_DATA);
+		writeq(data, fifo->tx.data);
 
 		if (size >= sizeof(u64)) {
 			cons->tx_buf.tail = (cons->tx_buf.tail + sizeof(u64)) %
@@ -573,29 +613,36 @@ static void mlxbf_tmfifo_rxtx_word(struct mlxbf_tmfifo_vring *vring,
 
 	/* Read a word from FIFO for Rx. */
 	if (is_rx)
-		data = readq(fifo->rx_base + MLXBF_TMFIFO_RX_DATA);
+		data = readq(fifo->rx.data);
 
 	if (vring->cur_len + sizeof(u64) <= len) {
 		/* The whole word. */
-		if (is_rx)
-			memcpy(addr + vring->cur_len, &data, sizeof(u64));
-		else
-			memcpy(&data, addr + vring->cur_len, sizeof(u64));
+		if (is_rx) {
+			if (!IS_VRING_DROP(vring))
+				memcpy(addr + vring->cur_len, &data,
+				       sizeof(u64));
+		} else {
+			memcpy(&data, addr + vring->cur_len,
+			       sizeof(u64));
+		}
 		vring->cur_len += sizeof(u64);
 	} else {
 		/* Leftover bytes. */
-		if (is_rx)
-			memcpy(addr + vring->cur_len, &data,
-			       len - vring->cur_len);
-		else
+		if (is_rx) {
+			if (!IS_VRING_DROP(vring))
+				memcpy(addr + vring->cur_len, &data,
+				       len - vring->cur_len);
+		} else {
+			data = 0;
 			memcpy(&data, addr + vring->cur_len,
 			       len - vring->cur_len);
+		}
 		vring->cur_len = len;
 	}
 
 	/* Write the word into FIFO for Tx. */
 	if (!is_rx)
-		writeq(data, fifo->tx_base + MLXBF_TMFIFO_TX_DATA);
+		writeq(data, fifo->tx.data);
 }
 
 /*
@@ -606,18 +653,19 @@ static void mlxbf_tmfifo_rxtx_word(struct mlxbf_tmfifo_vring *vring,
  * flag is set.
  */
 static void mlxbf_tmfifo_rxtx_header(struct mlxbf_tmfifo_vring *vring,
-				     struct vring_desc *desc,
+				     struct vring_desc **desc,
 				     bool is_rx, bool *vring_change)
 {
 	struct mlxbf_tmfifo *fifo = vring->fifo;
 	struct virtio_net_config *config;
 	struct mlxbf_tmfifo_msg_hdr hdr;
 	int vdev_id, hdr_len;
+	bool drop_rx = false;
 
 	/* Read/Write packet header. */
 	if (is_rx) {
 		/* Drain one word from the FIFO. */
-		*(u64 *)&hdr = readq(fifo->rx_base + MLXBF_TMFIFO_RX_DATA);
+		*(u64 *)&hdr = readq(fifo->rx.data);
 
 		/* Skip the length 0 packets (keepalive). */
 		if (hdr.len == 0)
@@ -632,8 +680,8 @@ static void mlxbf_tmfifo_rxtx_header(struct mlxbf_tmfifo_vring *vring,
 			if (ntohs(hdr.len) >
 			    __virtio16_to_cpu(virtio_legacy_is_little_endian(),
 					      config->mtu) +
-			    MLXBF_TMFIFO_NET_L2_OVERHEAD)
-				return;
+					      MLXBF_TMFIFO_NET_L2_OVERHEAD)
+				drop_rx = true;
 		} else {
 			vdev_id = VIRTIO_ID_CONSOLE;
 			hdr_len = 0;
@@ -648,20 +696,29 @@ static void mlxbf_tmfifo_rxtx_header(struct mlxbf_tmfifo_vring *vring,
 
 			if (!tm_dev2)
 				return;
-			vring->desc = desc;
+			vring->desc = *desc;
 			vring = &tm_dev2->vrings[MLXBF_TMFIFO_VRING_RX];
 			*vring_change = true;
 		}
+
+		if (drop_rx && !IS_VRING_DROP(vring)) {
+			if (vring->desc_head)
+				mlxbf_tmfifo_release_pkt(vring);
+			*desc = &vring->drop_desc;
+			vring->desc_head = *desc;
+			vring->desc = *desc;
+		}
+
 		vring->pkt_len = ntohs(hdr.len) + hdr_len;
 	} else {
 		/* Network virtio has an extra header. */
 		hdr_len = (vring->vdev_id == VIRTIO_ID_NET) ?
 			   sizeof(struct virtio_net_hdr) : 0;
-		vring->pkt_len = mlxbf_tmfifo_get_pkt_len(vring, desc);
+		vring->pkt_len = mlxbf_tmfifo_get_pkt_len(vring, *desc);
 		hdr.type = (vring->vdev_id == VIRTIO_ID_NET) ?
 			    VIRTIO_ID_NET : VIRTIO_ID_CONSOLE;
 		hdr.len = htons(vring->pkt_len - hdr_len);
-		writeq(*(u64 *)&hdr, fifo->tx_base + MLXBF_TMFIFO_TX_DATA);
+		writeq(*(u64 *)&hdr, fifo->tx.data);
 	}
 
 	vring->cur_len = hdr_len;
@@ -690,15 +747,23 @@ static bool mlxbf_tmfifo_rxtx_one_desc(struct mlxbf_tmfifo_vring *vring,
 	/* Get the descriptor of the next packet. */
 	if (!vring->desc) {
 		desc = mlxbf_tmfifo_get_next_pkt(vring, is_rx);
-		if (!desc)
-			return false;
+		if (!desc) {
+			/* Drop next Rx packet to avoid stuck. */
+			if (is_rx) {
+				desc = &vring->drop_desc;
+				vring->desc_head = desc;
+				vring->desc = desc;
+			} else {
+				return false;
+			}
+		}
 	} else {
 		desc = vring->desc;
 	}
 
 	/* Beginning of a packet. Start to Rx/Tx packet header. */
 	if (vring->pkt_len == 0) {
-		mlxbf_tmfifo_rxtx_header(vring, desc, is_rx, &vring_change);
+		mlxbf_tmfifo_rxtx_header(vring, &desc, is_rx, &vring_change);
 		(*avail)--;
 
 		/* Return if new packet is for another ring. */
@@ -724,17 +789,24 @@ static bool mlxbf_tmfifo_rxtx_one_desc(struct mlxbf_tmfifo_vring *vring,
 		vring->rem_len -= len;
 
 		/* Get the next desc on the chain. */
-		if (vring->rem_len > 0 &&
+		if (!IS_VRING_DROP(vring) && vring->rem_len > 0 &&
 		    (virtio16_to_cpu(vdev, desc->flags) & VRING_DESC_F_NEXT)) {
 			idx = virtio16_to_cpu(vdev, desc->next);
 			desc = &vr->desc[idx];
 			goto mlxbf_tmfifo_desc_done;
 		}
 
-		/* Done and release the pending packet. */
-		mlxbf_tmfifo_release_pending_pkt(vring);
+		/* Done and release the packet. */
 		desc = NULL;
 		fifo->vring[is_rx] = NULL;
+		if (!IS_VRING_DROP(vring)) {
+			mlxbf_tmfifo_release_pkt(vring);
+		} else {
+			vring->pkt_len = 0;
+			vring->desc_head = NULL;
+			vring->desc = NULL;
+			return false;
+		}
 
 		/*
 		 * Make sure the load/store are in order before
@@ -755,6 +827,50 @@ mlxbf_tmfifo_desc_done:
 	return true;
 }
 
+static void mlxbf_tmfifo_check_tx_timeout(struct mlxbf_tmfifo_vring *vring)
+{
+	unsigned long flags;
+
+	/* Only handle Tx timeout for network vdev. */
+	if (vring->vdev_id != VIRTIO_ID_NET)
+		return;
+
+	/* Initialize the timeout or return if not expired. */
+	if (!vring->tx_timeout) {
+		/* Initialize the timeout. */
+		vring->tx_timeout = jiffies +
+			msecs_to_jiffies(TMFIFO_TX_TIMEOUT);
+		return;
+	} else if (time_before(jiffies, vring->tx_timeout)) {
+		/* Return if not timeout yet. */
+		return;
+	}
+
+	/*
+	 * Drop the packet after timeout. The outstanding packet is
+	 * released and the remaining bytes will be sent with padding byte 0x00
+	 * as a recovery. On the peer(host) side, the padding bytes 0x00 will be
+	 * either dropped directly, or appended into existing outstanding packet
+	 * thus dropped as corrupted network packet.
+	 */
+	vring->rem_padding = round_up(vring->rem_len, sizeof(u64));
+	mlxbf_tmfifo_release_pkt(vring);
+	vring->cur_len = 0;
+	vring->rem_len = 0;
+	vring->fifo->vring[0] = NULL;
+
+	/*
+	 * Make sure the load/store are in order before
+	 * returning back to virtio.
+	 */
+	virtio_mb(false);
+
+	/* Notify upper layer. */
+	spin_lock_irqsave(&vring->fifo->spin_lock[0], flags);
+	vring_interrupt(0, vring->vq);
+	spin_unlock_irqrestore(&vring->fifo->spin_lock[0], flags);
+}
+
 /* Rx & Tx processing of a queue. */
 static void mlxbf_tmfifo_rxtx(struct mlxbf_tmfifo_vring *vring, bool is_rx)
 {
@@ -765,7 +881,7 @@ static void mlxbf_tmfifo_rxtx(struct mlxbf_tmfifo_vring *vring, bool is_rx)
 	fifo = vring->fifo;
 
 	/* Return if vdev is not ready. */
-	if (!fifo->vdev[devid])
+	if (!fifo || !fifo->vdev[devid])
 		return;
 
 	/* Return if another vring is running. */
@@ -777,6 +893,7 @@ static void mlxbf_tmfifo_rxtx(struct mlxbf_tmfifo_vring *vring, bool is_rx)
 		return;
 
 	do {
+retry:
 		/* Get available FIFO space. */
 		if (avail == 0) {
 			if (is_rx)
@@ -785,6 +902,17 @@ static void mlxbf_tmfifo_rxtx(struct mlxbf_tmfifo_vring *vring, bool is_rx)
 				avail = mlxbf_tmfifo_get_tx_avail(fifo, devid);
 			if (avail <= 0)
 				break;
+		}
+
+		/* Insert paddings for discarded Tx packet. */
+		if (!is_rx) {
+			vring->tx_timeout = 0;
+			while (vring->rem_padding >= sizeof(u64)) {
+				writeq(0, vring->fifo->tx.data);
+				vring->rem_padding -= sizeof(u64);
+				if (--avail == 0)
+					goto retry;
+			}
 		}
 
 		/* Console output always comes from the Tx buffer. */
@@ -796,6 +924,10 @@ static void mlxbf_tmfifo_rxtx(struct mlxbf_tmfifo_vring *vring, bool is_rx)
 		/* Handle one descriptor. */
 		more = mlxbf_tmfifo_rxtx_one_desc(vring, is_rx, &avail);
 	} while (more);
+
+	/* Check Tx timeout. */
+	if (avail <= 0 && !is_rx)
+		mlxbf_tmfifo_check_tx_timeout(vring);
 }
 
 /* Handle Rx or Tx queues. */
@@ -868,6 +1000,7 @@ static bool mlxbf_tmfifo_virtio_notify(struct virtqueue *vq)
 			tm_vdev = fifo->vdev[VIRTIO_ID_CONSOLE];
 			mlxbf_tmfifo_console_output(tm_vdev, vring);
 			spin_unlock_irqrestore(&fifo->spin_lock[0], flags);
+			set_bit(MLXBF_TM_TX_LWM_IRQ, &fifo->pend_events);
 		} else if (test_and_set_bit(MLXBF_TM_TX_LWM_IRQ,
 					    &fifo->pend_events)) {
 			return true;
@@ -913,7 +1046,7 @@ static void mlxbf_tmfifo_virtio_del_vqs(struct virtio_device *vdev)
 
 		/* Release the pending packet. */
 		if (vring->desc)
-			mlxbf_tmfifo_release_pending_pkt(vring);
+			mlxbf_tmfifo_release_pkt(vring);
 		vq = vring->vq;
 		if (vq) {
 			vring->vq = NULL;
@@ -926,9 +1059,7 @@ static void mlxbf_tmfifo_virtio_del_vqs(struct virtio_device *vdev)
 static int mlxbf_tmfifo_virtio_find_vqs(struct virtio_device *vdev,
 					unsigned int nvqs,
 					struct virtqueue *vqs[],
-					vq_callback_t *callbacks[],
-					const char * const names[],
-					const bool *ctx,
+					struct virtqueue_info vqs_info[],
 					struct irq_affinity *desc)
 {
 	struct mlxbf_tmfifo_vdev *tm_vdev = mlxbf_vdev_to_tmfifo(vdev);
@@ -940,7 +1071,9 @@ static int mlxbf_tmfifo_virtio_find_vqs(struct virtio_device *vdev,
 		return -EINVAL;
 
 	for (i = 0; i < nvqs; ++i) {
-		if (!names[i]) {
+		struct virtqueue_info *vqi = &vqs_info[i];
+
+		if (!vqi->name) {
 			ret = -EINVAL;
 			goto error;
 		}
@@ -952,16 +1085,22 @@ static int mlxbf_tmfifo_virtio_find_vqs(struct virtio_device *vdev,
 		vq = vring_new_virtqueue(i, vring->num, vring->align, vdev,
 					 false, false, vring->va,
 					 mlxbf_tmfifo_virtio_notify,
-					 callbacks[i], names[i]);
+					 vqi->callback, vqi->name);
 		if (!vq) {
 			dev_err(&vdev->dev, "vring_new_virtqueue failed\n");
 			ret = -ENOMEM;
 			goto error;
 		}
 
+		vq->num_max = vring->num;
+
+		vq->priv = vring;
+
+		/* Make vq update visible before using it. */
+		virtio_mb(false);
+
 		vqs[i] = vq;
 		vring->vq = vq;
-		vq->priv = vring;
 	}
 
 	return 0;
@@ -1064,7 +1203,7 @@ static int mlxbf_tmfifo_create_vdev(struct device *dev,
 		goto fail;
 	}
 
-	tm_vdev = kzalloc(sizeof(*tm_vdev), GFP_KERNEL);
+	tm_vdev = kzalloc_obj(*tm_vdev);
 	if (!tm_vdev) {
 		ret = -ENOMEM;
 		goto fail;
@@ -1149,13 +1288,13 @@ static void mlxbf_tmfifo_get_cfg_mac(u8 *mac)
 		ether_addr_copy(mac, mlxbf_tmfifo_net_default_mac);
 }
 
-/* Set TmFifo thresolds which is used to trigger interrupts. */
+/* Set TmFifo thresholds which is used to trigger interrupts. */
 static void mlxbf_tmfifo_set_threshold(struct mlxbf_tmfifo *fifo)
 {
 	u64 ctl;
 
 	/* Get Tx FIFO size and set the low/high watermark. */
-	ctl = readq(fifo->tx_base + MLXBF_TMFIFO_TX_CTL);
+	ctl = readq(fifo->tx.ctl);
 	fifo->tx_fifo_size =
 		FIELD_GET(MLXBF_TMFIFO_TX_CTL__MAX_ENTRIES_MASK, ctl);
 	ctl = (ctl & ~MLXBF_TMFIFO_TX_CTL__LWM_MASK) |
@@ -1164,17 +1303,17 @@ static void mlxbf_tmfifo_set_threshold(struct mlxbf_tmfifo *fifo)
 	ctl = (ctl & ~MLXBF_TMFIFO_TX_CTL__HWM_MASK) |
 		FIELD_PREP(MLXBF_TMFIFO_TX_CTL__HWM_MASK,
 			   fifo->tx_fifo_size - 1);
-	writeq(ctl, fifo->tx_base + MLXBF_TMFIFO_TX_CTL);
+	writeq(ctl, fifo->tx.ctl);
 
 	/* Get Rx FIFO size and set the low/high watermark. */
-	ctl = readq(fifo->rx_base + MLXBF_TMFIFO_RX_CTL);
+	ctl = readq(fifo->rx.ctl);
 	fifo->rx_fifo_size =
 		FIELD_GET(MLXBF_TMFIFO_RX_CTL__MAX_ENTRIES_MASK, ctl);
 	ctl = (ctl & ~MLXBF_TMFIFO_RX_CTL__LWM_MASK) |
 		FIELD_PREP(MLXBF_TMFIFO_RX_CTL__LWM_MASK, 0);
 	ctl = (ctl & ~MLXBF_TMFIFO_RX_CTL__HWM_MASK) |
 		FIELD_PREP(MLXBF_TMFIFO_RX_CTL__HWM_MASK, 1);
-	writeq(ctl, fifo->rx_base + MLXBF_TMFIFO_RX_CTL);
+	writeq(ctl, fifo->rx.ctl);
 }
 
 static void mlxbf_tmfifo_cleanup(struct mlxbf_tmfifo *fifo)
@@ -1182,7 +1321,7 @@ static void mlxbf_tmfifo_cleanup(struct mlxbf_tmfifo *fifo)
 	int i;
 
 	fifo->is_ready = false;
-	del_timer_sync(&fifo->timer);
+	timer_delete_sync(&fifo->timer);
 	mlxbf_tmfifo_disable_irqs(fifo);
 	cancel_work_sync(&fifo->work);
 	for (i = 0; i < MLXBF_TMFIFO_VDEV_MAX; i++)
@@ -1195,7 +1334,14 @@ static int mlxbf_tmfifo_probe(struct platform_device *pdev)
 	struct virtio_net_config net_config;
 	struct device *dev = &pdev->dev;
 	struct mlxbf_tmfifo *fifo;
+	u64 dev_id;
 	int i, rc;
+
+	rc = acpi_dev_uid_to_integer(ACPI_COMPANION(dev), &dev_id);
+	if (rc) {
+		dev_err(dev, "Cannot retrieve UID\n");
+		return rc;
+	}
 
 	fifo = devm_kzalloc(dev, sizeof(*fifo), GFP_KERNEL);
 	if (!fifo)
@@ -1207,14 +1353,30 @@ static int mlxbf_tmfifo_probe(struct platform_device *pdev)
 	mutex_init(&fifo->lock);
 
 	/* Get the resource of the Rx FIFO. */
-	fifo->rx_base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(fifo->rx_base))
-		return PTR_ERR(fifo->rx_base);
+	fifo->res0 = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(fifo->res0))
+		return PTR_ERR(fifo->res0);
 
 	/* Get the resource of the Tx FIFO. */
-	fifo->tx_base = devm_platform_ioremap_resource(pdev, 1);
-	if (IS_ERR(fifo->tx_base))
-		return PTR_ERR(fifo->tx_base);
+	fifo->res1 = devm_platform_ioremap_resource(pdev, 1);
+	if (IS_ERR(fifo->res1))
+		return PTR_ERR(fifo->res1);
+
+	if (dev_id == TMFIFO_BF3_UID) {
+		fifo->rx.ctl = fifo->res1 + MLXBF_TMFIFO_RX_CTL_BF3;
+		fifo->rx.sts = fifo->res1 + MLXBF_TMFIFO_RX_STS_BF3;
+		fifo->rx.data = fifo->res0 + MLXBF_TMFIFO_RX_DATA_BF3;
+		fifo->tx.ctl = fifo->res1 + MLXBF_TMFIFO_TX_CTL_BF3;
+		fifo->tx.sts = fifo->res1 + MLXBF_TMFIFO_TX_STS_BF3;
+		fifo->tx.data = fifo->res0 + MLXBF_TMFIFO_TX_DATA_BF3;
+	} else {
+		fifo->rx.ctl = fifo->res0 + MLXBF_TMFIFO_RX_CTL;
+		fifo->rx.sts = fifo->res0 + MLXBF_TMFIFO_RX_STS;
+		fifo->rx.data = fifo->res0 + MLXBF_TMFIFO_RX_DATA;
+		fifo->tx.ctl = fifo->res1 + MLXBF_TMFIFO_TX_CTL;
+		fifo->tx.sts = fifo->res1 + MLXBF_TMFIFO_TX_STS;
+		fifo->tx.data = fifo->res1 + MLXBF_TMFIFO_TX_DATA;
+	}
 
 	platform_set_drvdata(pdev, fifo);
 
@@ -1258,6 +1420,9 @@ static int mlxbf_tmfifo_probe(struct platform_device *pdev)
 
 	mod_timer(&fifo->timer, jiffies + MLXBF_TMFIFO_TIMER_INTERVAL);
 
+	/* Make all updates visible before setting the 'is_ready' flag. */
+	virtio_mb(false);
+
 	fifo->is_ready = true;
 	return 0;
 
@@ -1267,13 +1432,11 @@ fail:
 }
 
 /* Device remove function. */
-static int mlxbf_tmfifo_remove(struct platform_device *pdev)
+static void mlxbf_tmfifo_remove(struct platform_device *pdev)
 {
 	struct mlxbf_tmfifo *fifo = platform_get_drvdata(pdev);
 
 	mlxbf_tmfifo_cleanup(fifo);
-
-	return 0;
 }
 
 static const struct acpi_device_id mlxbf_tmfifo_acpi_match[] = {

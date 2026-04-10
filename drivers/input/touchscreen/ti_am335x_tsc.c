@@ -25,7 +25,6 @@
 #include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/sort.h>
 #include <linux/pm_wakeirq.h>
 
@@ -86,7 +85,7 @@ static int titsc_config_wires(struct titsc *ts_dev)
 		wire_order[i] = ts_dev->config_inp[i] & 0x0F;
 		if (WARN_ON(analog_line[i] > 7))
 			return -EINVAL;
-		if (WARN_ON(wire_order[i] > ARRAY_SIZE(config_pins)))
+		if (WARN_ON(wire_order[i] >= ARRAY_SIZE(config_pins)))
 			return -EINVAL;
 	}
 
@@ -158,7 +157,6 @@ static void titsc_step_config(struct titsc *ts_dev)
 			     n++ == 0 ? STEPCONFIG_OPENDLY : 0);
 	}
 
-	config = 0;
 	config = STEPCONFIG_MODE_HWSYNC |
 			STEPCONFIG_AVG_16 | ts_dev->bit_yn |
 			STEPCONFIG_INM_ADCREFM;
@@ -391,6 +389,10 @@ static int titsc_parse_dt(struct platform_device *pdev,
 		dev_warn(&pdev->dev,
 			 "invalid co-ordinate readouts, resetting it to 5\n");
 		ts_dev->coordinate_readouts = 5;
+	} else if (ts_dev->coordinate_readouts > 6) {
+		dev_warn(&pdev->dev,
+			 "co-ordinate readouts too large, limiting to 6\n");
+		ts_dev->coordinate_readouts = 6;
 	}
 
 	err = of_property_read_u32(node, "ti,charge-delay",
@@ -420,7 +422,7 @@ static int titsc_probe(struct platform_device *pdev)
 	int err;
 
 	/* Allocate memory for device */
-	ts_dev = kzalloc(sizeof(*ts_dev), GFP_KERNEL);
+	ts_dev = kzalloc_obj(*ts_dev);
 	input_dev = input_allocate_device();
 	if (!ts_dev || !input_dev) {
 		dev_err(&pdev->dev, "failed to allocate memory.\n");
@@ -492,7 +494,7 @@ err_free_mem:
 	return err;
 }
 
-static int titsc_remove(struct platform_device *pdev)
+static void titsc_remove(struct platform_device *pdev)
 {
 	struct titsc *ts_dev = platform_get_drvdata(pdev);
 	u32 steps;
@@ -509,10 +511,9 @@ static int titsc_remove(struct platform_device *pdev)
 	input_unregister_device(ts_dev->input);
 
 	kfree(ts_dev);
-	return 0;
 }
 
-static int __maybe_unused titsc_suspend(struct device *dev)
+static int titsc_suspend(struct device *dev)
 {
 	struct titsc *ts_dev = dev_get_drvdata(dev);
 	unsigned int idle;
@@ -527,7 +528,7 @@ static int __maybe_unused titsc_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused titsc_resume(struct device *dev)
+static int titsc_resume(struct device *dev)
 {
 	struct titsc *ts_dev = dev_get_drvdata(dev);
 
@@ -543,7 +544,7 @@ static int __maybe_unused titsc_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(titsc_pm_ops, titsc_suspend, titsc_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(titsc_pm_ops, titsc_suspend, titsc_resume);
 
 static const struct of_device_id ti_tsc_dt_ids[] = {
 	{ .compatible = "ti,am3359-tsc", },
@@ -555,8 +556,8 @@ static struct platform_driver ti_tsc_driver = {
 	.probe	= titsc_probe,
 	.remove	= titsc_remove,
 	.driver	= {
-		.name   = "TI-am335x-tsc",
-		.pm	= &titsc_pm_ops,
+		.name	= "TI-am335x-tsc",
+		.pm	= pm_sleep_ptr(&titsc_pm_ops),
 		.of_match_table = ti_tsc_dt_ids,
 	},
 };

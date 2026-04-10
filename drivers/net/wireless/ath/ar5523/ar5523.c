@@ -241,6 +241,11 @@ static void ar5523_cmd_tx_cb(struct urb *urb)
 	}
 }
 
+static void ar5523_cancel_tx_cmd(struct ar5523 *ar)
+{
+	usb_kill_urb(ar->tx_cmd.urb_tx);
+}
+
 static int ar5523_cmd(struct ar5523 *ar, u32 code, const void *idata,
 		      int ilen, void *odata, int olen, int flags)
 {
@@ -251,7 +256,7 @@ static int ar5523_cmd(struct ar5523 *ar, u32 code, const void *idata,
 	/* always bulk-out a multiple of 4 bytes */
 	xferlen = (sizeof(struct ar5523_cmd_hdr) + ilen + 3) & ~3;
 
-	hdr = (struct ar5523_cmd_hdr *)cmd->buf_tx;
+	hdr = cmd->buf_tx;
 	memset(hdr, 0, sizeof(struct ar5523_cmd_hdr));
 	hdr->len  = cpu_to_be32(xferlen);
 	hdr->code = cpu_to_be32(code);
@@ -280,6 +285,7 @@ static int ar5523_cmd(struct ar5523 *ar, u32 code, const void *idata,
 	}
 
 	if (!wait_for_completion_timeout(&cmd->done, 2 * HZ)) {
+		ar5523_cancel_tx_cmd(ar);
 		cmd->odata = NULL;
 		ar5523_err(ar, "timeout waiting for command %02x reply\n",
 			   code);
@@ -727,7 +733,7 @@ static void ar5523_data_tx_pkt_put(struct ar5523 *ar)
 {
 	atomic_dec(&ar->tx_nr_total);
 	if (!atomic_dec_return(&ar->tx_nr_pending)) {
-		del_timer(&ar->tx_wd_timer);
+		timer_delete(&ar->tx_wd_timer);
 		wake_up(&ar->tx_flush_waitq);
 	}
 
@@ -896,7 +902,7 @@ static void ar5523_tx_work(struct work_struct *work)
 
 static void ar5523_tx_wd_timer(struct timer_list *t)
 {
-	struct ar5523 *ar = from_timer(ar, t, tx_wd_timer);
+	struct ar5523 *ar = timer_container_of(ar, t, tx_wd_timer);
 
 	ar5523_dbg(ar, "TX watchdog timer triggered\n");
 	ieee80211_queue_work(ar->hw, &ar->tx_wd_work);
@@ -1055,7 +1061,7 @@ err:
 	return error;
 }
 
-static void ar5523_stop(struct ieee80211_hw *hw)
+static void ar5523_stop(struct ieee80211_hw *hw, bool suspend)
 {
 	struct ar5523 *ar = hw->priv;
 
@@ -1070,14 +1076,15 @@ static void ar5523_stop(struct ieee80211_hw *hw)
 
 	ar5523_cmd_write(ar, WDCMSG_TARGET_STOP, NULL, 0, 0);
 
-	del_timer_sync(&ar->tx_wd_timer);
+	timer_delete_sync(&ar->tx_wd_timer);
 	cancel_work_sync(&ar->tx_wd_work);
 	cancel_work_sync(&ar->rx_refill_work);
 	ar5523_cancel_rx_bufs(ar);
 	mutex_unlock(&ar->mutex);
 }
 
-static int ar5523_set_rts_threshold(struct ieee80211_hw *hw, u32 value)
+static int ar5523_set_rts_threshold(struct ieee80211_hw *hw, int radio_idx,
+				    u32 value)
 {
 	struct ar5523 *ar = hw->priv;
 	int ret;
@@ -1131,7 +1138,7 @@ static void ar5523_remove_interface(struct ieee80211_hw *hw,
 	ar->vif = NULL;
 }
 
-static int ar5523_hwconfig(struct ieee80211_hw *hw, u32 changed)
+static int ar5523_hwconfig(struct ieee80211_hw *hw, int radio_idx, u32 changed)
 {
 	struct ar5523 *ar = hw->priv;
 
@@ -1256,14 +1263,14 @@ static int ar5523_create_connection(struct ar5523 *ar,
 				sizeof(create), 0);
 }
 
-static int ar5523_write_associd(struct ar5523 *ar,
-				struct ieee80211_bss_conf *bss)
+static int ar5523_write_associd(struct ar5523 *ar, struct ieee80211_vif *vif)
 {
+	struct ieee80211_bss_conf *bss = &vif->bss_conf;
 	struct ar5523_cmd_set_associd associd;
 
 	memset(&associd, 0, sizeof(associd));
 	associd.defaultrateix = cpu_to_be32(0);	/* XXX */
-	associd.associd = cpu_to_be32(bss->aid);
+	associd.associd = cpu_to_be32(vif->cfg.aid);
 	associd.timoffset = cpu_to_be32(0x3b);	/* XXX */
 	memcpy(associd.bssid, bss->bssid, ETH_ALEN);
 	return ar5523_cmd_write(ar, WDCMSG_WRITE_ASSOCID, &associd,
@@ -1273,7 +1280,7 @@ static int ar5523_write_associd(struct ar5523 *ar,
 static void ar5523_bss_info_changed(struct ieee80211_hw *hw,
 				    struct ieee80211_vif *vif,
 				    struct ieee80211_bss_conf *bss,
-				    u32 changed)
+				    u64 changed)
 {
 	struct ar5523 *ar = hw->priv;
 	int error;
@@ -1284,7 +1291,7 @@ static void ar5523_bss_info_changed(struct ieee80211_hw *hw,
 	if (!(changed & BSS_CHANGED_ASSOC))
 		goto out_unlock;
 
-	if (bss->assoc) {
+	if (vif->cfg.assoc) {
 		error = ar5523_create_connection(ar, vif, bss);
 		if (error) {
 			ar5523_err(ar, "could not create connection\n");
@@ -1297,7 +1304,7 @@ static void ar5523_bss_info_changed(struct ieee80211_hw *hw,
 			goto out_unlock;
 		}
 
-		error = ar5523_write_associd(ar, bss);
+		error = ar5523_write_associd(ar, vif);
 		if (error) {
 			ar5523_err(ar, "could not set association\n");
 			goto out_unlock;
@@ -1352,9 +1359,14 @@ static void ar5523_configure_filter(struct ieee80211_hw *hw,
 }
 
 static const struct ieee80211_ops ar5523_ops = {
+	.add_chanctx = ieee80211_emulate_add_chanctx,
+	.remove_chanctx = ieee80211_emulate_remove_chanctx,
+	.change_chanctx = ieee80211_emulate_change_chanctx,
+	.switch_vif_chanctx = ieee80211_emulate_switch_vif_chanctx,
 	.start			= ar5523_start,
 	.stop			= ar5523_stop,
 	.tx			= ar5523_tx,
+	.wake_tx_queue		= ieee80211_handle_wake_tx_queue,
 	.set_rts_threshold	= ar5523_set_rts_threshold,
 	.add_interface		= ar5523_add_interface,
 	.remove_interface	= ar5523_remove_interface,
@@ -1500,11 +1512,11 @@ static int ar5523_load_firmware(struct usb_device *dev)
 		return -ENOENT;
 	}
 
-	txblock = kzalloc(sizeof(*txblock), GFP_KERNEL);
+	txblock = kzalloc_obj(*txblock);
 	if (!txblock)
 		goto out;
 
-	rxblock = kmalloc(sizeof(*rxblock), GFP_KERNEL);
+	rxblock = kmalloc_obj(*rxblock);
 	if (!rxblock)
 		goto out_free_txblock;
 
@@ -1582,6 +1594,20 @@ static int ar5523_probe(struct usb_interface *intf,
 	struct ieee80211_hw *hw;
 	struct ar5523 *ar;
 	int error = -ENOMEM;
+
+	static const u8 bulk_ep_addr[] = {
+		AR5523_CMD_TX_PIPE | USB_DIR_OUT,
+		AR5523_DATA_TX_PIPE | USB_DIR_OUT,
+		AR5523_CMD_RX_PIPE | USB_DIR_IN,
+		AR5523_DATA_RX_PIPE | USB_DIR_IN,
+		0};
+
+	if (!usb_check_bulk_endpoints(intf, bulk_ep_addr)) {
+		dev_err(&dev->dev,
+			"Could not find all expected endpoints\n");
+		error = -ENODEV;
+		goto out;
+	}
 
 	/*
 	 * Load firmware if the device requires it.  This will return
@@ -1796,5 +1822,6 @@ static struct usb_driver ar5523_driver = {
 
 module_usb_driver(ar5523_driver);
 
+MODULE_DESCRIPTION("Atheros AR5523 wireless driver");
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_FIRMWARE(AR5523_FIRMWARE_FILE);

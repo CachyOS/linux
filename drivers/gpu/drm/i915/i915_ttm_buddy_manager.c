@@ -5,10 +5,10 @@
 
 #include <linux/slab.h>
 
-#include <drm/ttm/ttm_bo_driver.h>
-#include <drm/ttm/ttm_placement.h>
-
 #include <drm/drm_buddy.h>
+#include <drm/drm_print.h>
+#include <drm/ttm/ttm_placement.h>
+#include <drm/ttm/ttm_bo.h>
 
 #include "i915_ttm_buddy_manager.h"
 
@@ -48,7 +48,7 @@ static int i915_ttm_buddy_man_alloc(struct ttm_resource_manager *man,
 	if (!lpfn)
 		lpfn = man->size;
 
-	bman_res = kzalloc(sizeof(*bman_res), GFP_KERNEL);
+	bman_res = kzalloc_obj(*bman_res);
 	if (!bman_res)
 		return -ENOMEM;
 
@@ -59,11 +59,14 @@ static int i915_ttm_buddy_man_alloc(struct ttm_resource_manager *man,
 	if (place->flags & TTM_PL_FLAG_TOPDOWN)
 		bman_res->flags |= DRM_BUDDY_TOPDOWN_ALLOCATION;
 
+	if (place->flags & TTM_PL_FLAG_CONTIGUOUS)
+		bman_res->flags |= DRM_BUDDY_CONTIGUOUS_ALLOCATION;
+
 	if (place->fpfn || lpfn != man->size)
 		bman_res->flags |= DRM_BUDDY_RANGE_ALLOCATION;
 
-	GEM_BUG_ON(!bman_res->base.num_pages);
-	size = bman_res->base.num_pages << PAGE_SHIFT;
+	GEM_BUG_ON(!bman_res->base.size);
+	size = bman_res->base.size;
 
 	min_page_size = bman->default_page_size;
 	if (bo->page_alignment)
@@ -71,18 +74,6 @@ static int i915_ttm_buddy_man_alloc(struct ttm_resource_manager *man,
 
 	GEM_BUG_ON(min_page_size < mm->chunk_size);
 	GEM_BUG_ON(!IS_ALIGNED(size, min_page_size));
-
-	if (place->fpfn + bman_res->base.num_pages != place->lpfn &&
-	    place->flags & TTM_PL_FLAG_CONTIGUOUS) {
-		unsigned long pages;
-
-		size = roundup_pow_of_two(size);
-		min_page_size = size;
-
-		pages = size >> ilog2(mm->chunk_size);
-		if (pages > lpfn)
-			lpfn = pages;
-	}
 
 	if (size > lpfn << PAGE_SHIFT) {
 		err = -E2BIG;
@@ -104,22 +95,11 @@ static int i915_ttm_buddy_man_alloc(struct ttm_resource_manager *man,
 				     min_page_size,
 				     &bman_res->blocks,
 				     bman_res->flags);
-	mutex_unlock(&bman->lock);
 	if (unlikely(err))
 		goto err_free_blocks;
 
-	if (place->flags & TTM_PL_FLAG_CONTIGUOUS) {
-		u64 original_size = (u64)bman_res->base.num_pages << PAGE_SHIFT;
-
-		mutex_lock(&bman->lock);
-		drm_buddy_block_trim(mm,
-				     original_size,
-				     &bman_res->blocks);
-		mutex_unlock(&bman->lock);
-	}
-
 	if (lpfn <= bman->visible_size) {
-		bman_res->used_visible_size = bman_res->base.num_pages;
+		bman_res->used_visible_size = PFN_UP(bman_res->base.size);
 	} else {
 		struct drm_buddy_block *block;
 
@@ -137,25 +117,16 @@ static int i915_ttm_buddy_man_alloc(struct ttm_resource_manager *man,
 		}
 	}
 
-	if (bman_res->used_visible_size) {
-		mutex_lock(&bman->lock);
+	if (bman_res->used_visible_size)
 		bman->visible_avail -= bman_res->used_visible_size;
-		mutex_unlock(&bman->lock);
-	}
 
-	if (place->lpfn - place->fpfn == n_pages)
-		bman_res->base.start = place->fpfn;
-	else if (lpfn <= bman->visible_size)
-		bman_res->base.start = 0;
-	else
-		bman_res->base.start = bman->visible_size;
+	mutex_unlock(&bman->lock);
 
 	*res = &bman_res->base;
 	return 0;
 
 err_free_blocks:
-	mutex_lock(&bman->lock);
-	drm_buddy_free_list(mm, &bman_res->blocks);
+	drm_buddy_free_list(mm, &bman_res->blocks, 0);
 	mutex_unlock(&bman->lock);
 err_free_res:
 	ttm_resource_fini(man, &bman_res->base);
@@ -170,12 +141,83 @@ static void i915_ttm_buddy_man_free(struct ttm_resource_manager *man,
 	struct i915_ttm_buddy_manager *bman = to_buddy_manager(man);
 
 	mutex_lock(&bman->lock);
-	drm_buddy_free_list(&bman->mm, &bman_res->blocks);
+	drm_buddy_free_list(&bman->mm, &bman_res->blocks, 0);
 	bman->visible_avail += bman_res->used_visible_size;
 	mutex_unlock(&bman->lock);
 
 	ttm_resource_fini(man, res);
 	kfree(bman_res);
+}
+
+static bool i915_ttm_buddy_man_intersects(struct ttm_resource_manager *man,
+					  struct ttm_resource *res,
+					  const struct ttm_place *place,
+					  size_t size)
+{
+	struct i915_ttm_buddy_resource *bman_res = to_ttm_buddy_resource(res);
+	struct i915_ttm_buddy_manager *bman = to_buddy_manager(man);
+	struct drm_buddy *mm = &bman->mm;
+	struct drm_buddy_block *block;
+
+	if (!place->fpfn && !place->lpfn)
+		return true;
+
+	GEM_BUG_ON(!place->lpfn);
+
+	/*
+	 * If we just want something mappable then we can quickly check
+	 * if the current victim resource is using any of the CPU
+	 * visible portion.
+	 */
+	if (!place->fpfn &&
+	    place->lpfn == i915_ttm_buddy_man_visible_size(man))
+		return bman_res->used_visible_size > 0;
+
+	/* Check each drm buddy block individually */
+	list_for_each_entry(block, &bman_res->blocks, link) {
+		unsigned long fpfn =
+			drm_buddy_block_offset(block) >> PAGE_SHIFT;
+		unsigned long lpfn = fpfn +
+			(drm_buddy_block_size(mm, block) >> PAGE_SHIFT);
+
+		if (place->fpfn < lpfn && place->lpfn > fpfn)
+			return true;
+	}
+
+	return false;
+}
+
+static bool i915_ttm_buddy_man_compatible(struct ttm_resource_manager *man,
+					  struct ttm_resource *res,
+					  const struct ttm_place *place,
+					  size_t size)
+{
+	struct i915_ttm_buddy_resource *bman_res = to_ttm_buddy_resource(res);
+	struct i915_ttm_buddy_manager *bman = to_buddy_manager(man);
+	struct drm_buddy *mm = &bman->mm;
+	struct drm_buddy_block *block;
+
+	if (!place->fpfn && !place->lpfn)
+		return true;
+
+	GEM_BUG_ON(!place->lpfn);
+
+	if (!place->fpfn &&
+	    place->lpfn == i915_ttm_buddy_man_visible_size(man))
+		return bman_res->used_visible_size == PFN_UP(res->size);
+
+	/* Check each drm buddy block individually */
+	list_for_each_entry(block, &bman_res->blocks, link) {
+		unsigned long fpfn =
+			drm_buddy_block_offset(block) >> PAGE_SHIFT;
+		unsigned long lpfn = fpfn +
+			(drm_buddy_block_size(mm, block) >> PAGE_SHIFT);
+
+		if (fpfn < place->fpfn || lpfn > place->lpfn)
+			return false;
+	}
+
+	return true;
 }
 
 static void i915_ttm_buddy_man_debug(struct ttm_resource_manager *man,
@@ -205,6 +247,8 @@ static void i915_ttm_buddy_man_debug(struct ttm_resource_manager *man,
 static const struct ttm_resource_manager_func i915_ttm_buddy_manager_func = {
 	.alloc = i915_ttm_buddy_man_alloc,
 	.free = i915_ttm_buddy_man_free,
+	.intersects = i915_ttm_buddy_man_intersects,
+	.compatible = i915_ttm_buddy_man_compatible,
 	.debug = i915_ttm_buddy_man_debug,
 };
 
@@ -245,7 +289,7 @@ int i915_ttm_buddy_man_init(struct ttm_device *bdev,
 	struct i915_ttm_buddy_manager *bman;
 	int err;
 
-	bman = kzalloc(sizeof(*bman), GFP_KERNEL);
+	bman = kzalloc_obj(*bman);
 	if (!bman)
 		return -ENOMEM;
 
@@ -301,7 +345,7 @@ int i915_ttm_buddy_man_fini(struct ttm_device *bdev, unsigned int type)
 	ttm_set_driver_manager(bdev, type, NULL);
 
 	mutex_lock(&bman->lock);
-	drm_buddy_free_list(mm, &bman->reserved);
+	drm_buddy_free_list(mm, &bman->reserved, 0);
 	drm_buddy_fini(mm);
 	bman->visible_avail += bman->visible_reserved;
 	WARN_ON_ONCE(bman->visible_avail != bman->visible_size);
@@ -363,6 +407,26 @@ u64 i915_ttm_buddy_man_visible_size(struct ttm_resource_manager *man)
 	struct i915_ttm_buddy_manager *bman = to_buddy_manager(man);
 
 	return bman->visible_size;
+}
+
+/**
+ * i915_ttm_buddy_man_avail - Query the avail tracking for the manager.
+ *
+ * @man: The buddy allocator ttm manager
+ * @avail: The total available memory in pages for the entire manager.
+ * @visible_avail: The total available memory in pages for the CPU visible
+ * portion. Note that this will always give the same value as @avail on
+ * configurations that don't have a small BAR.
+ */
+void i915_ttm_buddy_man_avail(struct ttm_resource_manager *man,
+			      u64 *avail, u64 *visible_avail)
+{
+	struct i915_ttm_buddy_manager *bman = to_buddy_manager(man);
+
+	mutex_lock(&bman->lock);
+	*avail = bman->mm.avail >> PAGE_SHIFT;
+	*visible_avail = bman->visible_avail;
+	mutex_unlock(&bman->lock);
 }
 
 #if IS_ENABLED(CONFIG_DRM_I915_SELFTEST)

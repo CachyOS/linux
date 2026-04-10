@@ -485,7 +485,7 @@ struct dvb_frontend *fc0011_attach(struct dvb_frontend *fe,
 {
 	struct fc0011_priv *priv;
 
-	priv = kzalloc(sizeof(struct fc0011_priv), GFP_KERNEL);
+	priv = kzalloc_obj(struct fc0011_priv);
 	if (!priv)
 		return NULL;
 
@@ -499,7 +499,7 @@ struct dvb_frontend *fc0011_attach(struct dvb_frontend *fe,
 
 	return fe;
 }
-EXPORT_SYMBOL(fc0011_attach);
+EXPORT_SYMBOL_GPL(fc0011_attach);
 
 MODULE_DESCRIPTION("Fitipower FC0011 silicon tuner driver");
 MODULE_AUTHOR("Michael Buesch <m@bues.ch>");

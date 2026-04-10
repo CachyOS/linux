@@ -67,16 +67,23 @@ static int __init do_alloc_pages_order(int order, int *total_failures)
 	size_t size = PAGE_SIZE << order;
 
 	page = alloc_pages(GFP_KERNEL, order);
+	if (!page)
+		goto err;
 	buf = page_address(page);
 	fill_with_garbage(buf, size);
 	__free_pages(page, order);
 
 	page = alloc_pages(GFP_KERNEL, order);
+	if (!page)
+		goto err;
 	buf = page_address(page);
 	if (count_nonzero_bytes(buf, size))
 		(*total_failures)++;
 	fill_with_garbage(buf, size);
 	__free_pages(page, order);
+	return 1;
+err:
+	(*total_failures)++;
 	return 1;
 }
 
@@ -86,7 +93,7 @@ static int __init test_pages(int *total_failures)
 	int failures = 0, num_tests = 0;
 	int i;
 
-	for (i = 0; i < 10; i++)
+	for (i = 0; i < NR_PAGE_ORDERS; i++)
 		num_tests += do_alloc_pages_order(i, &failures);
 
 	REPORT_FAILURES_IN_FN();
@@ -100,14 +107,21 @@ static int __init do_kmalloc_size(size_t size, int *total_failures)
 	void *buf;
 
 	buf = kmalloc(size, GFP_KERNEL);
+	if (!buf)
+		goto err;
 	fill_with_garbage(buf, size);
 	kfree(buf);
 
 	buf = kmalloc(size, GFP_KERNEL);
+	if (!buf)
+		goto err;
 	if (count_nonzero_bytes(buf, size))
 		(*total_failures)++;
 	fill_with_garbage(buf, size);
 	kfree(buf);
+	return 1;
+err:
+	(*total_failures)++;
 	return 1;
 }
 
@@ -117,14 +131,21 @@ static int __init do_vmalloc_size(size_t size, int *total_failures)
 	void *buf;
 
 	buf = vmalloc(size);
+	if (!buf)
+		goto err;
 	fill_with_garbage(buf, size);
 	vfree(buf);
 
 	buf = vmalloc(size);
+	if (!buf)
+		goto err;
 	if (count_nonzero_bytes(buf, size))
 		(*total_failures)++;
 	fill_with_garbage(buf, size);
 	vfree(buf);
+	return 1;
+err:
+	(*total_failures)++;
 	return 1;
 }
 
@@ -415,4 +436,5 @@ static int __init test_meminit_init(void)
 }
 module_init(test_meminit_init);
 
+MODULE_DESCRIPTION("Test cases for SL[AOU]B/page initialization at alloc/free time");
 MODULE_LICENSE("GPL");

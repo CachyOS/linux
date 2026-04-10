@@ -1549,7 +1549,7 @@ static u16 b43_nphy_gen_load_samples(struct b43_wldev *dev, u32 freq, u16 max,
 		len = bw << 1;
 	}
 
-	samples = kcalloc(len, sizeof(struct cordic_iq), GFP_KERNEL);
+	samples = kzalloc_objs(struct cordic_iq, len);
 	if (!samples) {
 		b43err(dev->wl, "allocation for samples generation failed\n");
 		return 0;
@@ -2479,11 +2479,7 @@ static void b43_nphy_gain_ctl_workarounds_rev19(struct b43_wldev *dev)
 
 static void b43_nphy_gain_ctl_workarounds_rev7(struct b43_wldev *dev)
 {
-	struct b43_phy *phy = &dev->phy;
-
-	switch (phy->rev) {
-	/* TODO */
-	}
+	/* TODO - should depend on phy->rev */
 }
 
 static void b43_nphy_gain_ctl_workarounds_rev3(struct b43_wldev *dev)
@@ -6250,7 +6246,7 @@ static void b43_nphy_channel_setup(struct b43_wldev *dev,
 		b43_write16(dev, B43_MMIO_PSM_PHY_HDR, tmp16 | 4);
 		/* Take BPHY out of the reset */
 		b43_phy_mask(dev, B43_PHY_B_BBCFG,
-			     (u16)~(B43_PHY_B_BBCFG_RSTCCA | B43_PHY_B_BBCFG_RSTRX));
+			     ~(B43_PHY_B_BBCFG_RSTCCA | B43_PHY_B_BBCFG_RSTRX) & 0xffff);
 		b43_write16(dev, B43_MMIO_PSM_PHY_HDR, tmp16);
 	}
 
@@ -6381,7 +6377,7 @@ static int b43_nphy_set_channel(struct b43_wldev *dev,
 	} else if (channel_type == NL80211_CHAN_HT40MINUS) {
 		b43_phy_mask(dev, B43_NPHY_RXCTL, ~B43_NPHY_RXCTL_BSELU20);
 		if (phy->rev >= 7)
-			b43_phy_mask(dev, 0x310, (u16)~0x8000);
+			b43_phy_mask(dev, 0x310, 0x7fff);
 	}
 
 	if (phy->rev >= 19) {
@@ -6421,7 +6417,7 @@ static int b43_nphy_op_allocate(struct b43_wldev *dev)
 {
 	struct b43_phy_n *nphy;
 
-	nphy = kzalloc(sizeof(*nphy), GFP_KERNEL);
+	nphy = kzalloc_obj(*nphy);
 	if (!nphy)
 		return -ENOMEM;
 

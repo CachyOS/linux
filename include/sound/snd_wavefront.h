@@ -110,12 +110,8 @@ struct _snd_wavefront_card {
 };
 
 extern void snd_wavefront_internal_interrupt (snd_wavefront_card_t *card);
-extern int  snd_wavefront_detect_irq (snd_wavefront_t *dev) ;
-extern int  snd_wavefront_check_irq (snd_wavefront_t *dev, int irq);
-extern int  snd_wavefront_restart (snd_wavefront_t *dev);
 extern int  snd_wavefront_start (snd_wavefront_t *dev);
 extern int  snd_wavefront_detect (snd_wavefront_card_t *card);
-extern int  snd_wavefront_config_midi (snd_wavefront_t *dev) ;
 extern int  snd_wavefront_cmd (snd_wavefront_t *, int, unsigned char *,
 			       unsigned char *);
 
@@ -136,9 +132,5 @@ extern int  snd_wavefront_fx_ioctl  (struct snd_hwdep *,
 				     unsigned long arg);
 extern int snd_wavefront_fx_open    (struct snd_hwdep *, struct file *);
 extern int snd_wavefront_fx_release (struct snd_hwdep *, struct file *);
-
-/* prefix in all snd_printk() delivered messages */
-
-#define LOGNAME "WaveFront: "
 
 #endif  /* __SOUND_SND_WAVEFRONT_H__ */

@@ -506,8 +506,7 @@ static struct v4l2_subdev *fc2580_get_v4l2_subdev(struct i2c_client *client)
 		return NULL;
 }
 
-static int fc2580_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int fc2580_probe(struct i2c_client *client)
 {
 	struct fc2580_dev *dev;
 	struct fc2580_platform_data *pdata = client->dev.platform_data;
@@ -519,7 +518,7 @@ static int fc2580_probe(struct i2c_client *client,
 		.val_bits = 8,
 	};
 
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	dev = kzalloc_obj(*dev);
 	if (!dev) {
 		ret = -ENOMEM;
 		goto err;
@@ -588,7 +587,7 @@ err:
 	return ret;
 }
 
-static int fc2580_remove(struct i2c_client *client)
+static void fc2580_remove(struct i2c_client *client)
 {
 	struct fc2580_dev *dev = i2c_get_clientdata(client);
 
@@ -598,11 +597,10 @@ static int fc2580_remove(struct i2c_client *client)
 	v4l2_ctrl_handler_free(&dev->hdl);
 #endif
 	kfree(dev);
-	return 0;
 }
 
 static const struct i2c_device_id fc2580_id_table[] = {
-	{"fc2580", 0},
+	{ "fc2580" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, fc2580_id_table);

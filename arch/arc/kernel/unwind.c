@@ -19,7 +19,7 @@
 #include <linux/uaccess.h>
 #include <linux/ptrace.h>
 #include <asm/sections.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <asm/unwind.h>
 
 extern char __start_unwind[], __end_unwind[];
@@ -241,15 +241,6 @@ static int cmp_eh_frame_hdr_table_entries(const void *p1, const void *p2)
 	return (e1->start > e2->start) - (e1->start < e2->start);
 }
 
-static void swap_eh_frame_hdr_table_entries(void *p1, void *p2, int size)
-{
-	struct eh_frame_hdr_table_entry *e1 = p1;
-	struct eh_frame_hdr_table_entry *e2 = p2;
-
-	swap(e1->start, e2->start);
-	swap(e1->fde, e2->fde);
-}
-
 static void init_unwind_hdr(struct unwind_table *table,
 			    void *(*alloc) (unsigned long))
 {
@@ -345,7 +336,7 @@ static void init_unwind_hdr(struct unwind_table *table,
 	sort(header->table,
 	     n,
 	     sizeof(*header->table),
-	     cmp_eh_frame_hdr_table_entries, swap_eh_frame_hdr_table_entries);
+	     cmp_eh_frame_hdr_table_entries, NULL);
 
 	table->hdrsz = hdrSize;
 	smp_wmb();
@@ -369,19 +360,21 @@ void *unwind_add_table(struct module *module, const void *table_start,
 		       unsigned long table_size)
 {
 	struct unwind_table *table;
+	struct module_memory *core_text;
+	struct module_memory *init_text;
 
 	if (table_size <= 0)
 		return NULL;
 
-	table = kmalloc(sizeof(*table), GFP_KERNEL);
+	table = kmalloc_obj(*table);
 	if (!table)
 		return NULL;
 
-	init_unwind_table(table, module->name,
-			  module->core_layout.base, module->core_layout.size,
-			  module->init_layout.base, module->init_layout.size,
-			  table_start, table_size,
-			  NULL, 0);
+	core_text = &module->mem[MOD_TEXT];
+	init_text = &module->mem[MOD_INIT_TEXT];
+
+	init_unwind_table(table, module->name, core_text->base, core_text->size,
+			  init_text->base, init_text->size, table_start, table_size, NULL, 0);
 
 	init_unwind_hdr(table, unw_hdr_alloc);
 

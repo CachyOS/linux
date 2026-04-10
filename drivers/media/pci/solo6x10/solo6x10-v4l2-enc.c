@@ -756,8 +756,6 @@ static const struct vb2_ops solo_enc_video_qops = {
 	.buf_finish	= solo_enc_buf_finish,
 	.start_streaming = solo_enc_start_streaming,
 	.stop_streaming = solo_enc_stop_streaming,
-	.wait_prepare	= vb2_ops_wait_prepare,
-	.wait_finish	= vb2_ops_wait_finish,
 };
 
 static int solo_enc_querycap(struct file *file, void  *priv,
@@ -1020,7 +1018,7 @@ static int solo_g_parm(struct file *file, void *priv,
 	cp->timeperframe.numerator = solo_enc->interval;
 	cp->timeperframe.denominator = solo_enc->solo_dev->fps;
 	cp->capturemode = 0;
-	/* XXX: Shouldn't we be able to get/set this from videobuf? */
+	/* XXX: Shouldn't we be able to get/set this from vb2? */
 	cp->readbuffers = 2;
 
 	return 0;
@@ -1210,7 +1208,7 @@ static struct solo_enc_dev *solo_enc_alloc(struct solo_dev *solo_dev,
 	struct v4l2_ctrl_handler *hdl;
 	int ret;
 
-	solo_enc = kzalloc(sizeof(*solo_enc), GFP_KERNEL);
+	solo_enc = kzalloc_obj(*solo_enc);
 	if (!solo_enc)
 		return ERR_PTR(-ENOMEM);
 

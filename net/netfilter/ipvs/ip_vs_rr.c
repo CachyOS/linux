@@ -14,8 +14,7 @@
  *     Wensong Zhang            :     added any dest with weight=0 is quiesced
  */
 
-#define KMSG_COMPONENT "IPVS"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "IPVS: " fmt
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -122,4 +121,5 @@ static void __exit ip_vs_rr_cleanup(void)
 
 module_init(ip_vs_rr_init);
 module_exit(ip_vs_rr_cleanup);
+MODULE_DESCRIPTION("ipvs round-robin scheduler");
 MODULE_LICENSE("GPL");

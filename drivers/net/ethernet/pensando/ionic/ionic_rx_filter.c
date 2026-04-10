@@ -312,8 +312,8 @@ static int ionic_lif_filter_add(struct ionic_lif *lif,
 	int err = 0;
 
 	ctx.cmd.rx_filter_add = *ac;
-	ctx.cmd.rx_filter_add.opcode = IONIC_CMD_RX_FILTER_ADD,
-	ctx.cmd.rx_filter_add.lif_index = cpu_to_le16(lif->index),
+	ctx.cmd.rx_filter_add.opcode = IONIC_CMD_RX_FILTER_ADD;
+	ctx.cmd.rx_filter_add.lif_index = cpu_to_le16(lif->index);
 
 	spin_lock_bh(&lif->rx_filters.lock);
 	f = ionic_rx_filter_find(lif, &ctx.cmd.rx_filter_add);
@@ -604,14 +604,14 @@ loop_out:
 	 * they can clear room for some new filters
 	 */
 	list_for_each_entry_safe(sync_item, spos, &sync_del_list, list) {
-		(void)ionic_lif_filter_del(lif, &sync_item->f.cmd);
+		ionic_lif_filter_del(lif, &sync_item->f.cmd);
 
 		list_del(&sync_item->list);
 		devm_kfree(dev, sync_item);
 	}
 
 	list_for_each_entry_safe(sync_item, spos, &sync_add_list, list) {
-		(void)ionic_lif_filter_add(lif, &sync_item->f.cmd);
+		ionic_lif_filter_add(lif, &sync_item->f.cmd);
 
 		list_del(&sync_item->list);
 		devm_kfree(dev, sync_item);

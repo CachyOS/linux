@@ -35,9 +35,11 @@
 #include <linux/export.h>
 #include <linux/dma-fence.h>
 #include <linux/uaccess.h>
+#include <drm/drm_blend.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_modeset_lock.h>
 #include <drm/drm_atomic.h>
@@ -59,13 +61,13 @@
  * to one or more &drm_encoder, which are then each connected to one
  * &drm_connector.
  *
- * To create a CRTC, a KMS drivers allocates and zeroes an instances of
+ * To create a CRTC, a KMS driver allocates and zeroes an instance of
  * &struct drm_crtc (possibly as part of a larger structure) and registers it
  * with a call to drm_crtc_init_with_planes().
  *
- * The CRTC is also the entry point for legacy modeset operations, see
- * &drm_crtc_funcs.set_config, legacy plane operations, see
- * &drm_crtc_funcs.page_flip and &drm_crtc_funcs.cursor_set2, and other legacy
+ * The CRTC is also the entry point for legacy modeset operations (see
+ * &drm_crtc_funcs.set_config), legacy plane operations (see
+ * &drm_crtc_funcs.page_flip and &drm_crtc_funcs.cursor_set2), and other legacy
  * operations like &drm_crtc_funcs.gamma_set. For atomic drivers all these
  * features are controlled through &drm_property and
  * &drm_mode_config_funcs.atomic_check.
@@ -103,18 +105,6 @@ int drm_crtc_force_disable(struct drm_crtc *crtc)
 	WARN_ON(drm_drv_uses_atomic_modeset(crtc->dev));
 
 	return drm_mode_set_config_internal(&set);
-}
-
-static unsigned int drm_num_crtcs(struct drm_device *dev)
-{
-	unsigned int num = 0;
-	struct drm_crtc *tmp;
-
-	drm_for_each_crtc(tmp, dev) {
-		num++;
-	}
-
-	return num;
 }
 
 int drm_crtc_register_all(struct drm_device *dev)
@@ -195,7 +185,7 @@ struct dma_fence *drm_crtc_create_fence(struct drm_crtc *crtc)
 {
 	struct dma_fence *fence;
 
-	fence = kzalloc(sizeof(*fence), GFP_KERNEL);
+	fence = kzalloc_obj(*fence);
 	if (!fence)
 		return NULL;
 
@@ -239,6 +229,25 @@ struct dma_fence *drm_crtc_create_fence(struct drm_crtc *crtc)
  * 		Driver's default scaling filter
  * 	Nearest Neighbor:
  * 		Nearest Neighbor scaling filter
+ * SHARPNESS_STRENGTH:
+ *	Atomic property for setting the sharpness strength/intensity by userspace.
+ *
+ *	The value of this property is set as an integer value ranging
+ *	from 0 - 255 where:
+ *
+ *	0: Sharpness feature is disabled(default value).
+ *
+ *	1: Minimum sharpness.
+ *
+ *	255: Maximum sharpness.
+ *
+ *	User can gradually increase or decrease the sharpness level and can
+ *	set the optimum value depending on content.
+ *	This value will be passed to kernel through the UAPI.
+ *	The setting of this property does not require modeset.
+ *	The sharpness effect takes place post blending on the final composed output.
+ *	If the feature is disabled, the content remains same without any sharpening effect
+ *	and when this feature is applied, it enhances the clarity of the content.
  */
 
 __printf(6, 0)
@@ -276,8 +285,7 @@ static int __drm_crtc_init_with_planes(struct drm_device *dev, struct drm_crtc *
 	if (name) {
 		crtc->name = kvasprintf(GFP_KERNEL, name, ap);
 	} else {
-		crtc->name = kasprintf(GFP_KERNEL, "crtc-%d",
-				       drm_num_crtcs(dev));
+		crtc->name = kasprintf(GFP_KERNEL, "crtc-%d", config->num_crtc);
 	}
 	if (!crtc->name) {
 		drm_mode_object_unregister(dev, &crtc->base);
@@ -341,9 +349,10 @@ static int __drm_crtc_init_with_planes(struct drm_device *dev, struct drm_crtc *
  * The @primary and @cursor planes are only relevant for legacy uAPI, see
  * &drm_crtc.primary and &drm_crtc.cursor.
  *
- * Note: consider using drmm_crtc_alloc_with_planes() instead of
- * drm_crtc_init_with_planes() to let the DRM managed resource infrastructure
- * take care of cleanup and deallocation.
+ * Note: consider using drmm_crtc_alloc_with_planes() or
+ * drmm_crtc_init_with_planes() instead of drm_crtc_init_with_planes()
+ * to let the DRM managed resource infrastructure take care of cleanup
+ * and deallocation.
  *
  * Returns:
  * Zero on success, error code on failure.
@@ -368,13 +377,87 @@ int drm_crtc_init_with_planes(struct drm_device *dev, struct drm_crtc *crtc,
 }
 EXPORT_SYMBOL(drm_crtc_init_with_planes);
 
-static void drmm_crtc_alloc_with_planes_cleanup(struct drm_device *dev,
-						void *ptr)
+static void drmm_crtc_init_with_planes_cleanup(struct drm_device *dev,
+					       void *ptr)
 {
 	struct drm_crtc *crtc = ptr;
 
 	drm_crtc_cleanup(crtc);
 }
+
+__printf(6, 0)
+static int __drmm_crtc_init_with_planes(struct drm_device *dev,
+					struct drm_crtc *crtc,
+					struct drm_plane *primary,
+					struct drm_plane *cursor,
+					const struct drm_crtc_funcs *funcs,
+					const char *name,
+					va_list args)
+{
+	int ret;
+
+	drm_WARN_ON(dev, funcs && funcs->destroy);
+
+	ret = __drm_crtc_init_with_planes(dev, crtc, primary, cursor, funcs,
+					  name, args);
+	if (ret)
+		return ret;
+
+	ret = drmm_add_action_or_reset(dev, drmm_crtc_init_with_planes_cleanup,
+				       crtc);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
+/**
+ * drmm_crtc_init_with_planes - Initialise a new CRTC object with
+ *    specified primary and cursor planes.
+ * @dev: DRM device
+ * @crtc: CRTC object to init
+ * @primary: Primary plane for CRTC
+ * @cursor: Cursor plane for CRTC
+ * @funcs: callbacks for the new CRTC
+ * @name: printf style format string for the CRTC name, or NULL for default name
+ *
+ * Inits a new object created as base part of a driver crtc object. Drivers
+ * should use this function instead of drm_crtc_init(), which is only provided
+ * for backwards compatibility with drivers which do not yet support universal
+ * planes). For really simple hardware which has only 1 plane look at
+ * drm_simple_display_pipe_init() instead.
+ *
+ * Cleanup is automatically handled through registering
+ * drmm_crtc_cleanup() with drmm_add_action(). The crtc structure should
+ * be allocated with drmm_kzalloc().
+ *
+ * The @drm_crtc_funcs.destroy hook must be NULL.
+ *
+ * The @primary and @cursor planes are only relevant for legacy uAPI, see
+ * &drm_crtc.primary and &drm_crtc.cursor.
+ *
+ * Returns:
+ * Zero on success, error code on failure.
+ */
+int drmm_crtc_init_with_planes(struct drm_device *dev, struct drm_crtc *crtc,
+			       struct drm_plane *primary,
+			       struct drm_plane *cursor,
+			       const struct drm_crtc_funcs *funcs,
+			       const char *name, ...)
+{
+	va_list ap;
+	int ret;
+
+	va_start(ap, name);
+	ret = __drmm_crtc_init_with_planes(dev, crtc, primary, cursor, funcs,
+					   name, ap);
+	va_end(ap);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+EXPORT_SYMBOL(drmm_crtc_init_with_planes);
 
 void *__drmm_crtc_alloc_with_planes(struct drm_device *dev,
 				    size_t size, size_t offset,
@@ -398,14 +481,9 @@ void *__drmm_crtc_alloc_with_planes(struct drm_device *dev,
 	crtc = container + offset;
 
 	va_start(ap, name);
-	ret = __drm_crtc_init_with_planes(dev, crtc, primary, cursor, funcs,
-					  name, ap);
+	ret = __drmm_crtc_init_with_planes(dev, crtc, primary, cursor, funcs,
+					   name, ap);
 	va_end(ap);
-	if (ret)
-		return ERR_PTR(ret);
-
-	ret = drmm_add_action_or_reset(dev, drmm_crtc_alloc_with_planes_cleanup,
-				       crtc);
 	if (ret)
 		return ERR_PTR(ret);
 
@@ -643,8 +721,7 @@ int drm_mode_setcrtc(struct drm_device *dev, void *data,
 	struct drm_mode_set set;
 	uint32_t __user *set_connectors_ptr;
 	struct drm_modeset_acquire_ctx ctx;
-	int ret;
-	int i;
+	int ret, i, num_connectors = 0;
 
 	if (!drm_core_check_feature(dev, DRIVER_MODESET))
 		return -EOPNOTSUPP;
@@ -658,10 +735,10 @@ int drm_mode_setcrtc(struct drm_device *dev, void *data,
 
 	crtc = drm_crtc_find(dev, file_priv, crtc_req->crtc_id);
 	if (!crtc) {
-		DRM_DEBUG_KMS("Unknown CRTC ID %d\n", crtc_req->crtc_id);
+		drm_dbg_kms(dev, "Unknown CRTC ID %d\n", crtc_req->crtc_id);
 		return -ENOENT;
 	}
-	DRM_DEBUG_KMS("[CRTC:%d:%s]\n", crtc->base.id, crtc->name);
+	drm_dbg_kms(dev, "[CRTC:%d:%s]\n", crtc->base.id, crtc->name);
 
 	plane = crtc->primary;
 
@@ -684,7 +761,7 @@ int drm_mode_setcrtc(struct drm_device *dev, void *data,
 				old_fb = plane->fb;
 
 			if (!old_fb) {
-				DRM_DEBUG_KMS("CRTC doesn't have current FB\n");
+				drm_dbg_kms(dev, "CRTC doesn't have current FB\n");
 				ret = -EINVAL;
 				goto out;
 			}
@@ -695,8 +772,8 @@ int drm_mode_setcrtc(struct drm_device *dev, void *data,
 		} else {
 			fb = drm_framebuffer_lookup(dev, file_priv, crtc_req->fb_id);
 			if (!fb) {
-				DRM_DEBUG_KMS("Unknown FB ID%d\n",
-						crtc_req->fb_id);
+				drm_dbg_kms(dev, "Unknown FB ID%d\n",
+					    crtc_req->fb_id);
 				ret = -ENOENT;
 				goto out;
 			}
@@ -709,7 +786,7 @@ int drm_mode_setcrtc(struct drm_device *dev, void *data,
 		}
 		if (!file_priv->aspect_ratio_allowed &&
 		    (crtc_req->mode.flags & DRM_MODE_FLAG_PIC_AR_MASK) != DRM_MODE_FLAG_PIC_AR_NONE) {
-			DRM_DEBUG_KMS("Unexpected aspect-ratio flag bits\n");
+			drm_dbg_kms(dev, "Unexpected aspect-ratio flag bits\n");
 			ret = -EINVAL;
 			goto out;
 		}
@@ -717,9 +794,9 @@ int drm_mode_setcrtc(struct drm_device *dev, void *data,
 
 		ret = drm_mode_convert_umode(dev, mode, &crtc_req->mode);
 		if (ret) {
-			DRM_DEBUG_KMS("Invalid mode (ret=%d, status=%s)\n",
-				      ret, drm_get_mode_status_name(mode->status));
-			drm_mode_debug_printmodeline(mode);
+			drm_dbg_kms(dev, "Invalid mode (%s, %pe): " DRM_MODE_FMT "\n",
+				    drm_get_mode_status_name(mode->status),
+				    ERR_PTR(ret), DRM_MODE_ARG(mode));
 			goto out;
 		}
 
@@ -731,13 +808,10 @@ int drm_mode_setcrtc(struct drm_device *dev, void *data,
 		 * case.
 		 */
 		if (!plane->format_default) {
-			ret = drm_plane_check_pixel_format(plane,
-							   fb->format->format,
-							   fb->modifier);
-			if (ret) {
-				DRM_DEBUG_KMS("Invalid pixel format %p4cc, modifier 0x%llx\n",
-					      &fb->format->format,
-					      fb->modifier);
+			if (!drm_plane_has_format(plane, fb->format->format, fb->modifier)) {
+				drm_dbg_kms(dev, "Invalid pixel format %p4cc, modifier 0x%llx\n",
+					    &fb->format->format, fb->modifier);
+				ret = -EINVAL;
 				goto out;
 			}
 		}
@@ -750,14 +824,14 @@ int drm_mode_setcrtc(struct drm_device *dev, void *data,
 	}
 
 	if (crtc_req->count_connectors == 0 && mode) {
-		DRM_DEBUG_KMS("Count connectors is 0 but mode set\n");
+		drm_dbg_kms(dev, "Count connectors is 0 but mode set\n");
 		ret = -EINVAL;
 		goto out;
 	}
 
 	if (crtc_req->count_connectors > 0 && (!mode || !fb)) {
-		DRM_DEBUG_KMS("Count connectors is %d but no mode or fb set\n",
-			  crtc_req->count_connectors);
+		drm_dbg_kms(dev, "Count connectors is %d but no mode or fb set\n",
+			    crtc_req->count_connectors);
 		ret = -EINVAL;
 		goto out;
 	}
@@ -771,9 +845,8 @@ int drm_mode_setcrtc(struct drm_device *dev, void *data,
 			goto out;
 		}
 
-		connector_set = kmalloc_array(crtc_req->count_connectors,
-					      sizeof(struct drm_connector *),
-					      GFP_KERNEL);
+		connector_set = kmalloc_objs(struct drm_connector *,
+					     crtc_req->count_connectors);
 		if (!connector_set) {
 			ret = -ENOMEM;
 			goto out;
@@ -789,16 +862,16 @@ int drm_mode_setcrtc(struct drm_device *dev, void *data,
 
 			connector = drm_connector_lookup(dev, file_priv, out_id);
 			if (!connector) {
-				DRM_DEBUG_KMS("Connector id %d unknown\n",
-						out_id);
+				drm_dbg_kms(dev, "Connector id %d unknown\n",
+					    out_id);
 				ret = -ENOENT;
 				goto out;
 			}
-			DRM_DEBUG_KMS("[CONNECTOR:%d:%s]\n",
-					connector->base.id,
-					connector->name);
+			drm_dbg_kms(dev, "[CONNECTOR:%d:%s]\n",
+				    connector->base.id, connector->name);
 
 			connector_set[i] = connector;
+			num_connectors++;
 		}
 	}
 
@@ -807,7 +880,7 @@ int drm_mode_setcrtc(struct drm_device *dev, void *data,
 	set.y = crtc_req->y;
 	set.mode = mode;
 	set.connectors = connector_set;
-	set.num_connectors = crtc_req->count_connectors;
+	set.num_connectors = num_connectors;
 	set.fb = fb;
 
 	if (drm_drv_uses_atomic_modeset(dev))
@@ -820,7 +893,7 @@ out:
 		drm_framebuffer_put(fb);
 
 	if (connector_set) {
-		for (i = 0; i < crtc_req->count_connectors; i++) {
+		for (i = 0; i < num_connectors; i++) {
 			if (connector_set[i])
 				drm_connector_put(connector_set[i]);
 		}
@@ -832,6 +905,7 @@ out:
 	connector_set = NULL;
 	fb = NULL;
 	mode = NULL;
+	num_connectors = 0;
 
 	DRM_MODESET_LOCK_ALL_END(dev, ctx, ret);
 
@@ -883,3 +957,39 @@ int drm_crtc_create_scaling_filter_property(struct drm_crtc *crtc,
 	return 0;
 }
 EXPORT_SYMBOL(drm_crtc_create_scaling_filter_property);
+
+int drm_crtc_create_sharpness_strength_property(struct drm_crtc *crtc)
+{
+	struct drm_device *dev = crtc->dev;
+	struct drm_property *prop =
+		drm_property_create_range(dev, 0, "SHARPNESS_STRENGTH", 0, 255);
+
+	if (!prop)
+		return -ENOMEM;
+
+	crtc->sharpness_strength_property = prop;
+	drm_object_attach_property(&crtc->base, prop, 0);
+
+	return 0;
+}
+EXPORT_SYMBOL(drm_crtc_create_sharpness_strength_property);
+
+/**
+ * drm_crtc_in_clone_mode - check if the given CRTC state is in clone mode
+ *
+ * @crtc_state: CRTC state to check
+ *
+ * This function determines if the given CRTC state is being cloned by multiple
+ * encoders.
+ *
+ * RETURNS:
+ * True if the CRTC state is in clone mode. False otherwise
+ */
+bool drm_crtc_in_clone_mode(struct drm_crtc_state *crtc_state)
+{
+	if (!crtc_state)
+		return false;
+
+	return hweight32(crtc_state->encoder_mask) > 1;
+}
+EXPORT_SYMBOL(drm_crtc_in_clone_mode);

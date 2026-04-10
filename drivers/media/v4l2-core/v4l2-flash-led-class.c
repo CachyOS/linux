@@ -94,7 +94,7 @@ static int v4l2_flash_set_led_brightness(struct v4l2_flash *v4l2_flash,
 	 * brightness <-> intensity conversion, it also must have defined
 	 * related v4l2 control step == 1. In such a case a backward conversion
 	 * from led brightness to v4l2 intensity is required to find out the
-	 * the aligned intensity value.
+	 * aligned intensity value.
 	 */
 	if (has_flash_op(v4l2_flash, led_brightness_to_intensity))
 		ctrl->val = call_flash_op(v4l2_flash,
@@ -443,8 +443,7 @@ static int v4l2_flash_init_controls(struct v4l2_flash *v4l2_flash,
 		return -ENOMEM;
 
 	/* allocate memory dynamically so as not to exceed stack frame size */
-	ctrl_init_data = kcalloc(NUM_FLASH_CTRLS, sizeof(*ctrl_init_data),
-					GFP_KERNEL);
+	ctrl_init_data = kzalloc_objs(*ctrl_init_data, NUM_FLASH_CTRLS);
 	if (!ctrl_init_data)
 		return -ENOMEM;
 

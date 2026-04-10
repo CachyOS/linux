@@ -482,7 +482,7 @@ static int olpc_xo175_ec_cmd(u8 cmd, u8 *inbuf, size_t inlen, u8 *resp,
 	dev_dbg(dev, "CMD %x, %zd bytes expected\n", cmd, resp_len);
 
 	if (inlen > 5) {
-		dev_err(dev, "command len %zd too big!\n", resp_len);
+		dev_err(dev, "command len %zd too big!\n", inlen);
 		return -EOVERFLOW;
 	}
 
@@ -536,7 +536,7 @@ static int olpc_xo175_ec_cmd(u8 cmd, u8 *inbuf, size_t inlen, u8 *resp,
 		dev_err(dev, "EC cmd error: timeout in STATE %d\n",
 				priv->cmd_state);
 		gpiod_set_value_cansleep(priv->gpio_cmd, 0);
-		spi_slave_abort(priv->spi);
+		spi_target_abort(priv->spi);
 		olpc_xo175_ec_read_packet(priv);
 		return -ETIMEDOUT;
 	}
@@ -653,7 +653,7 @@ static void olpc_xo175_ec_remove(struct spi_device *spi)
 	if (pm_power_off == olpc_xo175_ec_power_off)
 		pm_power_off = NULL;
 
-	spi_slave_abort(spi);
+	spi_target_abort(spi);
 
 	platform_device_unregister(olpc_ec);
 	olpc_ec = NULL;
@@ -746,6 +746,7 @@ static struct spi_driver olpc_xo175_ec_spi_driver = {
 		.of_match_table = olpc_xo175_ec_of_match,
 		.pm = &olpc_xo175_ec_pm_ops,
 	},
+	.id_table	= olpc_xo175_ec_id_table,
 	.probe		= olpc_xo175_ec_probe,
 	.remove		= olpc_xo175_ec_remove,
 };

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: ISC */
+/* SPDX-License-Identifier: BSD-3-Clause-Clear */
 /* Copyright (C) 2019 MediaTek Inc. */
 
 #ifndef __MT7615_REGS_H
@@ -211,6 +211,15 @@ enum mt7615_reg_base {
 #define MT_WF_PHYCTRL_STAT_MDRDY_CCK	GENMASK(15, 0)
 
 #define MT7663_WF_PHY_R0_PHYCTRL_STS5(_phy)	MT_WF_PHY(0x0224 + ((_phy) << 12))
+
+#define MT_WF_PHY_GID_TAB_VLD(_phy, i)		MT_WF_PHY(0x0254 + (i) * 4 + \
+							  ((_phy) << 9))
+#define MT7663_WF_PHY_GID_TAB_VLD(_phy, i)	MT_WF_PHY(0x0254 + (i) * 4 + \
+							  ((_phy) << 12))
+#define MT_WF_PHY_GID_TAB_POS(_phy, i)		MT_WF_PHY(0x025c + (i) * 4 + \
+							  ((_phy) << 9))
+#define MT7663_WF_PHY_GID_TAB_POS(_phy, i)	MT_WF_PHY(0x025c + (i) * 4 + \
+							  ((_phy) << 12))
 
 #define MT_WF_PHY_MIN_PRI_PWR(_phy)	MT_WF_PHY((_phy) ? 0x084 : 0x229c)
 #define MT_WF_PHY_PD_OFDM_MASK(_phy)	((_phy) ? GENMASK(24, 16) : \
@@ -446,6 +455,8 @@ enum mt7615_reg_base {
 #define MT_WTBL_RIUCR3_RATE6		GENMASK(19, 8)
 #define MT_WTBL_RIUCR3_RATE7		GENMASK(31, 20)
 
+#define MT_WTBL_W3_RTS			BIT(22)
+
 #define MT_WTBL_W5_CHANGE_BW_RATE	GENMASK(7, 5)
 #define MT_WTBL_W5_SHORT_GI_20		BIT(8)
 #define MT_WTBL_W5_SHORT_GI_40		BIT(9)
@@ -542,6 +553,7 @@ enum mt7615_reg_base {
 #define MT_LED_CTRL_POLARITY(_n)	BIT(1 + (8 * (_n)))
 #define MT_LED_CTRL_TX_BLINK_MODE(_n)	BIT(2 + (8 * (_n)))
 #define MT_LED_CTRL_TX_MANUAL_BLINK(_n)	BIT(3 + (8 * (_n)))
+#define MT_LED_CTRL_BAND(_n)		BIT(4 + (8 * (_n)))
 #define MT_LED_CTRL_TX_OVER_BLINK(_n)	BIT(5 + (8 * (_n)))
 #define MT_LED_CTRL_KICK(_n)		BIT(7 + (8 * (_n)))
 

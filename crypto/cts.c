@@ -85,9 +85,9 @@ static int crypto_cts_setkey(struct crypto_skcipher *parent, const u8 *key,
 	return crypto_skcipher_setkey(child, key, keylen);
 }
 
-static void cts_cbc_crypt_done(struct crypto_async_request *areq, int err)
+static void cts_cbc_crypt_done(void *data, int err)
 {
-	struct skcipher_request *req = areq->data;
+	struct skcipher_request *req = data;
 
 	if (err == -EINPROGRESS)
 		return;
@@ -125,9 +125,9 @@ static int cts_cbc_encrypt(struct skcipher_request *req)
 	return crypto_skcipher_encrypt(subreq);
 }
 
-static void crypto_cts_encrypt_done(struct crypto_async_request *areq, int err)
+static void crypto_cts_encrypt_done(void *data, int err)
 {
-	struct skcipher_request *req = areq->data;
+	struct skcipher_request *req = data;
 
 	if (err)
 		goto out;
@@ -219,9 +219,9 @@ static int cts_cbc_decrypt(struct skcipher_request *req)
 	return crypto_skcipher_decrypt(subreq);
 }
 
-static void crypto_cts_decrypt_done(struct crypto_async_request *areq, int err)
+static void crypto_cts_decrypt_done(void *data, int err)
 {
-	struct skcipher_request *req = areq->data;
+	struct skcipher_request *req = data;
 
 	if (err)
 		goto out;
@@ -324,8 +324,8 @@ static void crypto_cts_free(struct skcipher_instance *inst)
 static int crypto_cts_create(struct crypto_template *tmpl, struct rtattr **tb)
 {
 	struct crypto_skcipher_spawn *spawn;
+	struct skcipher_alg_common *alg;
 	struct skcipher_instance *inst;
-	struct skcipher_alg *alg;
 	u32 mask;
 	int err;
 
@@ -344,10 +344,10 @@ static int crypto_cts_create(struct crypto_template *tmpl, struct rtattr **tb)
 	if (err)
 		goto err_free_inst;
 
-	alg = crypto_spawn_skcipher_alg(spawn);
+	alg = crypto_spawn_skcipher_alg_common(spawn);
 
 	err = -EINVAL;
-	if (crypto_skcipher_alg_ivsize(alg) != alg->base.cra_blocksize)
+	if (alg->ivsize != alg->base.cra_blocksize)
 		goto err_free_inst;
 
 	if (strncmp(alg->base.cra_name, "cbc(", 4))
@@ -363,9 +363,9 @@ static int crypto_cts_create(struct crypto_template *tmpl, struct rtattr **tb)
 	inst->alg.base.cra_alignmask = alg->base.cra_alignmask;
 
 	inst->alg.ivsize = alg->base.cra_blocksize;
-	inst->alg.chunksize = crypto_skcipher_alg_chunksize(alg);
-	inst->alg.min_keysize = crypto_skcipher_alg_min_keysize(alg);
-	inst->alg.max_keysize = crypto_skcipher_alg_max_keysize(alg);
+	inst->alg.chunksize = alg->chunksize;
+	inst->alg.min_keysize = alg->min_keysize;
+	inst->alg.max_keysize = alg->max_keysize;
 
 	inst->alg.base.cra_ctxsize = sizeof(struct crypto_cts_ctx);
 
@@ -402,7 +402,7 @@ static void __exit crypto_cts_module_exit(void)
 	crypto_unregister_template(&crypto_cts_tmpl);
 }
 
-subsys_initcall(crypto_cts_module_init);
+module_init(crypto_cts_module_init);
 module_exit(crypto_cts_module_exit);
 
 MODULE_LICENSE("Dual BSD/GPL");

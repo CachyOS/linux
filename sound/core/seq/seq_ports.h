@@ -7,6 +7,7 @@
 #define __SND_SEQ_PORTS_H
 
 #include <sound/seq_kernel.h>
+#include <sound/ump_convert.h>
 #include "seq_lock.h"
 
 /* list of 'exported' ports */
@@ -72,6 +73,15 @@ struct snd_seq_client_port {
 	int midi_voices;
 	int synth_voices;
 		
+	/* UMP direction and group */
+	unsigned char direction;
+	unsigned char ump_group;
+
+	bool is_midi1;	/* keep MIDI 1.0 protocol */
+
+#if IS_ENABLED(CONFIG_SND_SEQ_UMP)
+	struct ump_cvt_to_ump_bank midi2_bank[16]; /* per channel */
+#endif
 };
 
 struct snd_seq_client;
@@ -86,8 +96,11 @@ struct snd_seq_client_port *snd_seq_port_query_nearest(struct snd_seq_client *cl
 /* unlock the port */
 #define snd_seq_port_unlock(port) snd_use_lock_free(&(port)->use_lock)
 
-/* create a port, port number is returned (-1 on failure) */
-struct snd_seq_client_port *snd_seq_create_port(struct snd_seq_client *client, int port_index);
+DEFINE_FREE(snd_seq_port, struct snd_seq_client_port *, if (!IS_ERR_OR_NULL(_T)) snd_seq_port_unlock(_T))
+
+/* create a port, port number or a negative error code is returned */
+int snd_seq_create_port(struct snd_seq_client *client, int port_index,
+			struct snd_seq_client_port **port_ret);
 
 /* delete a port */
 int snd_seq_delete_port(struct snd_seq_client *client, int port);

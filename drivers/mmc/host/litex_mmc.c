@@ -502,12 +502,8 @@ static int litex_mmc_irq_init(struct platform_device *pdev,
 
 use_polling:
 	host->mmc->caps |= MMC_CAP_NEEDS_POLL;
+	host->irq = 0;
 	return 0;
-}
-
-static void litex_mmc_free_host_wrapper(void *mmc)
-{
-	mmc_free_host(mmc);
 }
 
 static int litex_mmc_probe(struct platform_device *pdev)
@@ -524,14 +520,9 @@ static int litex_mmc_probe(struct platform_device *pdev)
 	 * If for some reason we need to modify max_blk_count, we must also
 	 * re-calculate `max_[req,seg]_size = max_blk_size * max_blk_count;`
 	 */
-	mmc = mmc_alloc_host(sizeof(struct litex_mmc_host), dev);
+	mmc = devm_mmc_alloc_host(dev, sizeof(*host));
 	if (!mmc)
 		return -ENOMEM;
-
-	ret = devm_add_action_or_reset(dev, litex_mmc_free_host_wrapper, mmc);
-	if (ret)
-		return dev_err_probe(dev, ret,
-				     "Can't register mmc_free_host action\n");
 
 	host = mmc_priv(mmc);
 	host->mmc = mmc;
@@ -628,12 +619,11 @@ static int litex_mmc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int litex_mmc_remove(struct platform_device *pdev)
+static void litex_mmc_remove(struct platform_device *pdev)
 {
 	struct litex_mmc_host *host = platform_get_drvdata(pdev);
 
 	mmc_remove_host(host->mmc);
-	return 0;
 }
 
 static const struct of_device_id litex_match[] = {
@@ -648,6 +638,7 @@ static struct platform_driver litex_mmc_driver = {
 	.driver = {
 		.name = "litex-mmc",
 		.of_match_table = litex_match,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 };
 module_platform_driver(litex_mmc_driver);

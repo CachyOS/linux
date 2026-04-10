@@ -20,8 +20,7 @@
         "Counter": "0,1",
         "EventCode": "0xCD",
         "EventName": "SIMD_ASSIST",
-        "SampleAfterValue": "100000",
-        "UMask": "0x0"
+        "SampleAfterValue": "100000"
     },
     {
         "BriefDescription": "Retired computational Streaming SIMD Extensions (SSE) packed-single instructions.",
@@ -52,8 +51,7 @@
         "Counter": "0,1",
         "EventCode": "0xCE",
         "EventName": "SIMD_INSTR_RETIRED",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x0"
+        "SampleAfterValue": "2000000"
     },
     {
         "BriefDescription": "Retired Streaming SIMD Extensions (SSE) packed-single instructions.",
@@ -92,8 +90,7 @@
         "Counter": "0,1",
         "EventCode": "0xCF",
         "EventName": "SIMD_SAT_INSTR_RETIRED",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x0"
+        "SampleAfterValue": "2000000"
     },
     {
         "BriefDescription": "SIMD saturated arithmetic micro-ops retired.",
@@ -108,8 +105,7 @@
         "Counter": "0,1",
         "EventCode": "0xB1",
         "EventName": "SIMD_SAT_UOP_EXEC.S",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x0"
+        "SampleAfterValue": "2000000"
     },
     {
         "BriefDescription": "SIMD micro-ops retired (excluding stores).",
@@ -125,8 +121,7 @@
         "Counter": "0,1",
         "EventCode": "0xB0",
         "EventName": "SIMD_UOPS_EXEC.S",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x0"
+        "SampleAfterValue": "2000000"
     },
     {
         "BriefDescription": "SIMD packed arithmetic micro-ops retired",

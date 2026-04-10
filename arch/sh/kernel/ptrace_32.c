@@ -157,8 +157,8 @@ static int genregs_set(struct task_struct *target,
 					 offsetof(struct pt_regs, pc),
 					 sizeof(struct pt_regs));
 	if (!ret)
-		ret = user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
-						sizeof(struct pt_regs), -1);
+		user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
+					  sizeof(struct pt_regs), -1);
 
 	return ret;
 }
@@ -229,8 +229,8 @@ static int dspregs_set(struct task_struct *target,
 	ret = user_regset_copyin(&pos, &count, &kbuf, &ubuf, regs,
 				 0, sizeof(struct pt_dspregs));
 	if (!ret)
-		ret = user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
-						sizeof(struct pt_dspregs), -1);
+		user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
+					  sizeof(struct pt_dspregs), -1);
 
 	return ret;
 }
@@ -291,7 +291,7 @@ static const struct user_regset sh_regsets[] = {
 	 *	PC, PR, SR, GBR, MACH, MACL, TRA
 	 */
 	[REGSET_GENERAL] = {
-		.core_note_type	= NT_PRSTATUS,
+		USER_REGSET_NOTE_TYPE(PRSTATUS),
 		.n		= ELF_NGREG,
 		.size		= sizeof(long),
 		.align		= sizeof(long),
@@ -301,7 +301,7 @@ static const struct user_regset sh_regsets[] = {
 
 #ifdef CONFIG_SH_FPU
 	[REGSET_FPU] = {
-		.core_note_type	= NT_PRFPREG,
+		USER_REGSET_NOTE_TYPE(PRFPREG),
 		.n		= sizeof(struct user_fpu_struct) / sizeof(long),
 		.size		= sizeof(long),
 		.align		= sizeof(long),

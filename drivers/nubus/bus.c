@@ -14,11 +14,6 @@
 #define to_nubus_board(d)       container_of(d, struct nubus_board, dev)
 #define to_nubus_driver(d)      container_of(d, struct nubus_driver, driver)
 
-static int nubus_bus_match(struct device *dev, struct device_driver *driver)
-{
-	return 1;
-}
-
 static int nubus_device_probe(struct device *dev)
 {
 	struct nubus_driver *ndrv = to_nubus_driver(dev->driver);
@@ -37,13 +32,11 @@ static void nubus_device_remove(struct device *dev)
 		ndrv->remove(to_nubus_board(dev));
 }
 
-struct bus_type nubus_bus_type = {
+static const struct bus_type nubus_bus_type = {
 	.name		= "nubus",
-	.match		= nubus_bus_match,
 	.probe		= nubus_device_probe,
 	.remove		= nubus_device_remove,
 };
-EXPORT_SYMBOL(nubus_bus_type);
 
 int nubus_driver_register(struct nubus_driver *ndrv)
 {
@@ -58,20 +51,11 @@ void nubus_driver_unregister(struct nubus_driver *ndrv)
 }
 EXPORT_SYMBOL(nubus_driver_unregister);
 
-static struct device nubus_parent = {
-	.init_name	= "nubus",
-};
-
 static int __init nubus_bus_register(void)
 {
 	return bus_register(&nubus_bus_type);
 }
 postcore_initcall(nubus_bus_register);
-
-int __init nubus_parent_device_register(void)
-{
-	return device_register(&nubus_parent);
-}
 
 static void nubus_device_release(struct device *dev)
 {
@@ -86,9 +70,9 @@ static void nubus_device_release(struct device *dev)
 	kfree(board);
 }
 
-int nubus_device_register(struct nubus_board *board)
+int nubus_device_register(struct device *parent, struct nubus_board *board)
 {
-	board->dev.parent = &nubus_parent;
+	board->dev.parent = parent;
 	board->dev.release = nubus_device_release;
 	board->dev.bus = &nubus_bus_type;
 	dev_set_name(&board->dev, "slot.%X", board->slot);

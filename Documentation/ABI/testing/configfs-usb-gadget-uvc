@@ -15,12 +15,14 @@ Date:		Dec 2014
 KernelVersion:	4.0
 Description:	Control descriptors
 
-		All attributes read only:
+		All attributes read only except enable_interrupt_ep:
 
-		================	=============================
+		===================	=============================
 		bInterfaceNumber	USB interface number for this
 					streaming interface
-		================	=============================
+		enable_interrupt_ep	flag to enable the interrupt
+					endpoint for the VC interface
+		===================	=============================
 
 What:		/config/usb-gadget/gadget/functions/uvc.name/control/class
 Date:		Dec 2014
@@ -52,7 +54,7 @@ Date:		Dec 2014
 KernelVersion:	4.0
 Description:	Default output terminal descriptors
 
-		All attributes read only:
+		All attributes read only except bSourceID:
 
 		==============	=============================================
 		iTerminal	index of string descriptor
@@ -74,7 +76,7 @@ Date:		Dec 2014
 KernelVersion:	4.0
 Description:	Default camera terminal descriptors
 
-		All attributes read only:
+		All attributes read only except bmControls, which is read/write:
 
 		========================  ====================================
 		bmControls		  bitmap specifying which controls are
@@ -99,7 +101,7 @@ Date:		Dec 2014
 KernelVersion:	4.0
 Description:	Default processing unit descriptors
 
-		All attributes read only:
+		All attributes read only except bmControls, which is read/write:
 
 		===============	========================================
 		iProcessing	index of string descriptor
@@ -110,6 +112,34 @@ Description:	Default processing unit descriptors
 				connected
 		bUnitID		a non-zero id of this unit
 		===============	========================================
+
+What:		/config/usb-gadget/gadget/functions/uvc.name/control/extensions
+Date:		Nov 2022
+KernelVersion:	6.1
+Description:	Extension unit descriptors
+
+What:		/config/usb-gadget/gadget/functions/uvc.name/control/extensions/name
+Date:		Nov 2022
+KernelVersion:	6.1
+Description:	Extension Unit (XU) Descriptor
+
+		bLength, bUnitID and iExtension are read-only. All others are
+		read-write.
+
+		=================	========================================
+		bLength			size of the descriptor in bytes
+		bUnitID			non-zero ID of this unit
+		guidExtensionCode	Vendor-specific code identifying the XU
+		bNumControls		number of controls in this XU
+		bNrInPins		number of input pins for this unit
+		baSourceID		list of the IDs of the units or terminals
+					to which this XU is connected
+		bControlSize		size of the bmControls field in bytes
+		bmControls		list of bitmaps detailing which vendor
+					specific controls are supported
+		iExtension		index of a string descriptor that describes
+					this extension unit
+		=================	========================================
 
 What:		/config/usb-gadget/gadget/functions/uvc.name/control/header
 Date:		Dec 2014
@@ -165,7 +195,24 @@ Date:		Dec 2014
 KernelVersion:	4.0
 Description:	Default color matching descriptors
 
-		All attributes read only:
+		All attributes read/write:
+
+		========================  ======================================
+		bMatrixCoefficients	  matrix used to compute luma and
+					  chroma values from the color primaries
+		bTransferCharacteristics  optoelectronic transfer
+					  characteristic of the source picture,
+					  also called the gamma function
+		bColorPrimaries		  color primaries and the reference
+					  white
+		========================  ======================================
+
+What:		/config/usb-gadget/gadget/functions/uvc.name/streaming/color_matching/name
+Date:		Dec 2022
+KernelVersion:	6.3
+Description:	Additional color matching descriptors
+
+		All attributes read/write:
 
 		========================  ======================================
 		bMatrixCoefficients	  matrix used to compute luma and
@@ -197,7 +244,7 @@ Description:	Specific MJPEG format descriptors
 					read-only
 		bmaControls		this format's data for bmaControls in
 					the streaming header
-		bmInterfaceFlags	specifies interlace information,
+		bmInterlaceFlags	specifies interlace information,
 					read-only
 		bAspectRatioY		the X dimension of the picture aspect
 					ratio, read-only
@@ -253,7 +300,7 @@ Description:	Specific uncompressed format descriptors
 					read-only
 		bmaControls		this format's data for bmaControls in
 					the streaming header
-		bmInterfaceFlags	specifies interlace information,
+		bmInterlaceFlags	specifies interlace information,
 					read-only
 		bAspectRatioY		the X dimension of the picture aspect
 					ratio, read-only
@@ -294,6 +341,70 @@ Description:	Specific uncompressed frame descriptors
 		bmCapabilities		   still image support, fixed frame-rate
 					   support
 		=========================  =====================================
+
+What:           /config/usb-gadget/gadget/functions/uvc.name/streaming/framebased
+Date:           Sept 2024
+KernelVersion:  5.15
+Description:    Framebased format descriptors
+
+What:           /config/usb-gadget/gadget/functions/uvc.name/streaming/framebased/name
+Date:           Sept 2024
+KernelVersion:  5.15
+Description:    Specific framebased format descriptors
+
+                ==================      =======================================
+                bFormatIndex            unique id for this format descriptor;
+                                        only defined after parent header is
+                                        linked into the streaming class;
+                                        read-only
+                bmaControls             this format's data for bmaControls in
+                                        the streaming header
+                bmInterlaceFlags        specifies interlace information,
+                                        read-only
+                bAspectRatioY           the X dimension of the picture aspect
+                                        ratio, read-only
+                bAspectRatioX           the Y dimension of the picture aspect
+                                        ratio, read-only
+                bDefaultFrameIndex      optimum frame index for this stream
+                bBitsPerPixel           number of bits per pixel used to
+                                        specify color in the decoded video
+                                        frame
+                guidFormat              globally unique id used to identify
+                                        stream-encoding format
+                ==================      =======================================
+
+What:           /config/usb-gadget/gadget/functions/uvc.name/streaming/framebased/name/name
+Date:           Sept 2024
+KernelVersion:  5.15
+Description:    Specific framebased frame descriptors
+
+                =========================  =====================================
+                bFrameIndex                unique id for this framedescriptor;
+                                           only defined after parent format is
+                                           linked into the streaming header;
+                                           read-only
+                dwFrameInterval            indicates how frame interval can be
+                                           programmed; a number of values
+                                           separated by newline can be specified
+                dwDefaultFrameInterval     the frame interval the device would
+                                           like to use as default
+                dwBytesPerLine             Specifies the number of bytes per line
+                                           of video for packed fixed frame size
+                                           formats, allowing the receiver to
+                                           perform stride alignment of the video.
+                                           If the bVariableSize value (above) is
+                                           TRUE (1), or if the format does not
+                                           permit such alignment, this value shall
+                                           be set to zero (0).
+                dwMaxBitRate               the maximum bit rate at the shortest
+                                           frame interval in bps
+                dwMinBitRate               the minimum bit rate at the longest
+                                           frame interval in bps
+                wHeight                    height of decoded bitmap frame in px
+                wWidth                     width of decoded bitmam frame in px
+                bmCapabilities             still image support, fixed frame-rate
+                                           support
+                =========================  =====================================
 
 What:		/config/usb-gadget/gadget/functions/uvc.name/streaming/header
 Date:		Dec 2014

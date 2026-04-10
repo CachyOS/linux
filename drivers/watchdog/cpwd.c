@@ -31,7 +31,7 @@
 #include <linux/mutex.h>
 #include <linux/io.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/uaccess.h>
 
 #include <asm/irq.h>
@@ -240,7 +240,7 @@ static void cpwd_brokentimer(struct timer_list *unused)
 	 * were called directly instead of by kernel timer
 	 */
 	if (timer_pending(&cpwd_timer))
-		del_timer(&cpwd_timer);
+		timer_delete(&cpwd_timer);
 
 	for (id = 0; id < WD_NUMDEVS; id++) {
 		if (p->devs[id].runstatus & WD_STAT_BSTOP) {
@@ -507,7 +507,6 @@ static const struct file_operations cpwd_fops = {
 	.write =		cpwd_write,
 	.read =			cpwd_read,
 	.release =		cpwd_release,
-	.llseek =		no_llseek,
 };
 
 static int cpwd_probe(struct platform_device *op)
@@ -614,7 +613,7 @@ out_iounmap:
 	return err;
 }
 
-static int cpwd_remove(struct platform_device *op)
+static void cpwd_remove(struct platform_device *op)
 {
 	struct cpwd *p = platform_get_drvdata(op);
 	int i;
@@ -630,7 +629,7 @@ static int cpwd_remove(struct platform_device *op)
 	}
 
 	if (p->broken)
-		del_timer_sync(&cpwd_timer);
+		timer_delete_sync(&cpwd_timer);
 
 	if (p->initialized)
 		free_irq(p->irq, p);
@@ -638,8 +637,6 @@ static int cpwd_remove(struct platform_device *op)
 	of_iounmap(&op->resource[0], p->regs, 4 * WD_TIMER_REGSZ);
 
 	cpwd_device = NULL;
-
-	return 0;
 }
 
 static const struct of_device_id cpwd_match[] = {

@@ -28,9 +28,6 @@
  * coder :-(
  */
 
-/*
- */
-
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -134,7 +131,7 @@ static int zhenhua_connect(struct serio *serio, struct serio_driver *drv)
 	struct input_dev *input_dev;
 	int err = -ENOMEM;
 
-	zhenhua = kzalloc(sizeof(struct zhenhua), GFP_KERNEL);
+	zhenhua = kzalloc_obj(*zhenhua);
 	input_dev = input_allocate_device();
 	if (!zhenhua || !input_dev)
 		goto fail1;

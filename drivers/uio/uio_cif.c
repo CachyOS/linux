@@ -105,7 +105,7 @@ static void hilscher_pci_remove(struct pci_dev *dev)
 	iounmap(info->mem[0].internal_addr);
 }
 
-static struct pci_device_id hilscher_pci_ids[] = {
+static const struct pci_device_id hilscher_pci_ids[] = {
 	{
 		.vendor =	PCI_VENDOR_ID_PLX,
 		.device =	PCI_DEVICE_ID_PLX_9030,
@@ -130,5 +130,6 @@ static struct pci_driver hilscher_pci_driver = {
 
 module_pci_driver(hilscher_pci_driver);
 MODULE_DEVICE_TABLE(pci, hilscher_pci_ids);
+MODULE_DESCRIPTION("UIO Hilscher CIF card driver");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Hans J. Koch, Benedikt Spranger");

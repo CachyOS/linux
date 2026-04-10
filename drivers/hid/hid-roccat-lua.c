@@ -66,7 +66,7 @@ static ssize_t lua_sysfs_write(struct file *fp, struct kobject *kobj,
 
 #define LUA_SYSFS_W(thingy, THINGY) \
 static ssize_t lua_sysfs_write_ ## thingy(struct file *fp, \
-		struct kobject *kobj, struct bin_attribute *attr, \
+		struct kobject *kobj, const struct bin_attribute *attr, \
 		char *buf, loff_t off, size_t count) \
 { \
 	return lua_sysfs_write(fp, kobj, buf, off, count, \
@@ -75,7 +75,7 @@ static ssize_t lua_sysfs_write_ ## thingy(struct file *fp, \
 
 #define LUA_SYSFS_R(thingy, THINGY) \
 static ssize_t lua_sysfs_read_ ## thingy(struct file *fp, \
-		struct kobject *kobj, struct bin_attribute *attr, \
+		struct kobject *kobj, const struct bin_attribute *attr, \
 		char *buf, loff_t off, size_t count) \
 { \
 	return lua_sysfs_read(fp, kobj, buf, off, count, \
@@ -85,7 +85,7 @@ static ssize_t lua_sysfs_read_ ## thingy(struct file *fp, \
 #define LUA_BIN_ATTRIBUTE_RW(thingy, THINGY) \
 LUA_SYSFS_W(thingy, THINGY) \
 LUA_SYSFS_R(thingy, THINGY) \
-static struct bin_attribute lua_ ## thingy ## _attr = { \
+static const struct bin_attribute lua_ ## thingy ## _attr = { \
 	.attr = { .name = #thingy, .mode = 0660 }, \
 	.size = LUA_SIZE_ ## THINGY, \
 	.read = lua_sysfs_read_ ## thingy, \
@@ -119,7 +119,7 @@ static int lua_init_specials(struct hid_device *hdev)
 	struct lua_device *lua;
 	int retval;
 
-	lua = kzalloc(sizeof(*lua), GFP_KERNEL);
+	lua = kzalloc_obj(*lua);
 	if (!lua) {
 		hid_err(hdev, "can't alloc device descriptor\n");
 		return -ENOMEM;

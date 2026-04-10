@@ -76,7 +76,7 @@
 	},
 	.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 	.result = REJECT,
-	.errstr = "arg#0 expected pointer to ctx, but got PTR",
+	.errstr = "arg#0 expected pointer to ctx, but got fp",
 	.fixup_kfunc_btf_id = {
 		{ "bpf_kfunc_call_test_pass_ctx", 2 },
 	},
@@ -109,7 +109,7 @@
 	},
 	.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 	.result = REJECT,
-	.errstr = "arg#0 pointer type STRUCT prog_test_ref_kfunc must point",
+	.errstr = "Possibly NULL pointer passed to trusted arg0",
 	.fixup_kfunc_btf_id = {
 		{ "bpf_kfunc_call_test_acquire", 3 },
 		{ "bpf_kfunc_call_test_release", 5 },
@@ -165,11 +165,14 @@
 	BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -8),
 	BPF_ST_MEM(BPF_DW, BPF_REG_1, 0, 0),
 	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, BPF_PSEUDO_KFUNC_CALL, 0, 0),
+	BPF_MOV64_REG(BPF_REG_2, BPF_REG_0),
 	BPF_JMP_IMM(BPF_JNE, BPF_REG_0, 0, 1),
 	BPF_EXIT_INSN(),
 	BPF_MOV64_REG(BPF_REG_1, BPF_REG_0),
-	BPF_LDX_MEM(BPF_DW, BPF_REG_1, BPF_REG_1, 16),
 	BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -4),
+	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, BPF_PSEUDO_KFUNC_CALL, 0, 0),
+	BPF_MOV64_IMM(BPF_REG_0, 0),
+	BPF_MOV64_REG(BPF_REG_1, BPF_REG_2),
 	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, BPF_PSEUDO_KFUNC_CALL, 0, 0),
 	BPF_MOV64_IMM(BPF_REG_0, 0),
 	BPF_EXIT_INSN(),
@@ -177,11 +180,12 @@
 	.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 	.fixup_kfunc_btf_id = {
 		{ "bpf_kfunc_call_test_acquire", 3 },
-		{ "bpf_kfunc_call_test_release", 9 },
+		{ "bpf_kfunc_call_test_offset", 9 },
+		{ "bpf_kfunc_call_test_release", 12 },
 	},
 	.result_unpriv = REJECT,
 	.result = REJECT,
-	.errstr = "negative offset ptr_ ptr R1 off=-4 disallowed",
+	.errstr = "ptr R1 off=-4 disallowed",
 },
 {
 	"calls: invalid kfunc call: PTR_TO_BTF_ID with variable offset",
@@ -216,7 +220,73 @@
 	},
 	.result_unpriv = REJECT,
 	.result = REJECT,
-	.errstr = "variable ptr_ access var_off=(0x0; 0x7) disallowed",
+	.errstr = "variable trusted_ptr_ access var_off=(0x0; 0x7) disallowed",
+},
+{
+	"calls: invalid kfunc call: referenced arg needs refcounted PTR_TO_BTF_ID",
+	.insns = {
+	BPF_MOV64_REG(BPF_REG_1, BPF_REG_10),
+	BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -8),
+	BPF_ST_MEM(BPF_DW, BPF_REG_1, 0, 0),
+	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, BPF_PSEUDO_KFUNC_CALL, 0, 0),
+	BPF_JMP_IMM(BPF_JNE, BPF_REG_0, 0, 1),
+	BPF_EXIT_INSN(),
+	BPF_MOV64_REG(BPF_REG_6, BPF_REG_0),
+	BPF_MOV64_REG(BPF_REG_1, BPF_REG_0),
+	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, BPF_PSEUDO_KFUNC_CALL, 0, 0),
+	BPF_LDX_MEM(BPF_DW, BPF_REG_1, BPF_REG_6, 16),
+	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, BPF_PSEUDO_KFUNC_CALL, 0, 0),
+	BPF_MOV64_IMM(BPF_REG_0, 0),
+	BPF_EXIT_INSN(),
+	},
+	.prog_type = BPF_PROG_TYPE_SCHED_CLS,
+	.fixup_kfunc_btf_id = {
+		{ "bpf_kfunc_call_test_acquire", 3 },
+		{ "bpf_kfunc_call_test_ref", 8 },
+		{ "bpf_kfunc_call_test_ref", 10 },
+	},
+	.result_unpriv = REJECT,
+	.result = REJECT,
+	.errstr = "R1 must be",
+},
+{
+	"calls: valid kfunc call: referenced arg needs refcounted PTR_TO_BTF_ID",
+	.insns = {
+	BPF_MOV64_REG(BPF_REG_1, BPF_REG_10),
+	BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -8),
+	BPF_ST_MEM(BPF_DW, BPF_REG_1, 0, 0),
+	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, BPF_PSEUDO_KFUNC_CALL, 0, 0),
+	BPF_JMP_IMM(BPF_JNE, BPF_REG_0, 0, 1),
+	BPF_EXIT_INSN(),
+	BPF_MOV64_REG(BPF_REG_6, BPF_REG_0),
+	BPF_MOV64_REG(BPF_REG_1, BPF_REG_0),
+	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, BPF_PSEUDO_KFUNC_CALL, 0, 0),
+	BPF_MOV64_REG(BPF_REG_1, BPF_REG_6),
+	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, BPF_PSEUDO_KFUNC_CALL, 0, 0),
+	BPF_MOV64_IMM(BPF_REG_0, 0),
+	BPF_EXIT_INSN(),
+	},
+	.prog_type = BPF_PROG_TYPE_SCHED_CLS,
+	.fixup_kfunc_btf_id = {
+		{ "bpf_kfunc_call_test_acquire", 3 },
+		{ "bpf_kfunc_call_test_ref", 8 },
+		{ "bpf_kfunc_call_test_release", 10 },
+	},
+	.result_unpriv = REJECT,
+	.result = ACCEPT,
+},
+{
+	"calls: invalid kfunc call: must provide (attach_prog_fd, btf_id) pair when freplace",
+	.insns = {
+	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, BPF_PSEUDO_KFUNC_CALL, 0, 0),
+	BPF_EXIT_INSN(),
+	},
+	.prog_type = BPF_PROG_TYPE_EXT,
+	.result = REJECT,
+	.errstr = "Tracing programs must provide btf_id",
+	.fixup_kfunc_btf_id = {
+		{ "bpf_dynptr_from_skb", 0 },
+	},
 },
 {
 	"calls: basic sanity",
@@ -231,7 +301,7 @@
 	.result = ACCEPT,
 },
 {
-	"calls: not on unpriviledged",
+	"calls: not on unprivileged",
 	.insns = {
 	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 1, 0, 2),
 	BPF_MOV64_IMM(BPF_REG_0, 1),
@@ -385,7 +455,7 @@
 	BPF_EXIT_INSN(),
 	},
 	.prog_type = BPF_PROG_TYPE_TRACEPOINT,
-	.errstr = "back-edge from insn 0 to 0",
+	.errstr = "the call stack of 9 frames is too deep",
 	.result = REJECT,
 },
 {
@@ -742,7 +812,7 @@
 	BPF_EXIT_INSN(),
 	},
 	.prog_type = BPF_PROG_TYPE_TRACEPOINT,
-	.errstr = "back-edge",
+	.errstr = "the call stack of 9 frames is too deep",
 	.result = REJECT,
 },
 {
@@ -754,7 +824,7 @@
 	BPF_EXIT_INSN(),
 	},
 	.prog_type = BPF_PROG_TYPE_TRACEPOINT,
-	.errstr = "back-edge",
+	.errstr = "the call stack of 9 frames is too deep",
 	.result = REJECT,
 },
 {
@@ -1305,7 +1375,7 @@
 	BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 1),
 	/* write into map value */
 	BPF_ST_MEM(BPF_DW, BPF_REG_0, 0, 0),
-	/* fetch secound map_value_ptr from the stack */
+	/* fetch second map_value_ptr from the stack */
 	BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_10, -16),
 	BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 1),
 	/* write into map value */
@@ -1369,7 +1439,7 @@
 	/* second time with fp-16 */
 	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 1, 0, 4),
 	BPF_JMP_IMM(BPF_JNE, BPF_REG_0, 1, 2),
-	/* fetch secound map_value_ptr from the stack */
+	/* fetch second map_value_ptr from the stack */
 	BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_7, 0),
 	/* write into map value */
 	BPF_ST_MEM(BPF_DW, BPF_REG_0, 0, 0),
@@ -1423,7 +1493,7 @@
 	/* second time with fp-16 */
 	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 1, 0, 4),
 	BPF_JMP_IMM(BPF_JNE, BPF_REG_0, 0, 2),
-	/* fetch secound map_value_ptr from the stack */
+	/* fetch second map_value_ptr from the stack */
 	BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_7, 0),
 	/* write into map value */
 	BPF_ST_MEM(BPF_DW, BPF_REG_0, 0, 0),
@@ -1448,7 +1518,9 @@
 	.prog_type = BPF_PROG_TYPE_XDP,
 	.fixup_map_hash_8b = { 23 },
 	.result = REJECT,
-	.errstr = "invalid read from stack R7 off=-16 size=8",
+	.errstr = "R0 invalid mem access 'scalar'",
+	.result_unpriv = REJECT,
+	.errstr_unpriv = "invalid read from stack R7 off=-16 size=8",
 },
 {
 	"calls: two calls that receive map_value via arg=ptr_stack_of_caller. test1",
@@ -2168,19 +2240,22 @@
 	 * that fp-8 stack slot was unused in the fall-through
 	 * branch and will accept the program incorrectly
 	 */
-	BPF_JMP_IMM(BPF_JGT, BPF_REG_1, 2, 2),
+	BPF_EMIT_CALL(BPF_FUNC_get_prandom_u32),
+	BPF_JMP_IMM(BPF_JGT, BPF_REG_0, 2, 2),
 	BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
 	BPF_JMP_IMM(BPF_JA, 0, 0, 0),
 	BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
 	BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
 	BPF_LD_MAP_FD(BPF_REG_1, 0),
 	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0, BPF_FUNC_map_lookup_elem),
+	BPF_MOV64_IMM(BPF_REG_0, 0),
 	BPF_EXIT_INSN(),
 	},
-	.fixup_map_hash_48b = { 6 },
-	.errstr = "invalid indirect read from stack R2 off -8+0 size 8",
-	.result = REJECT,
-	.prog_type = BPF_PROG_TYPE_XDP,
+	.fixup_map_hash_48b = { 7 },
+	.errstr_unpriv = "invalid read from stack R2 off -8+0 size 8",
+	.result_unpriv = REJECT,
+	/* in privileged mode reads from uninitialized stack locations are permitted */
+	.result = ACCEPT,
 },
 {
 	"calls: ctx read at start of subprog",
@@ -2251,4 +2326,110 @@
 	.errstr_unpriv = "loading/calling other bpf or kernel functions are allowed for",
 	.errstr = "!read_ok",
 	.result = REJECT,
+},
+/* Make sure that verifier.c:states_equal() considers IDs from all
+ * frames when building 'idmap' for check_ids().
+ */
+{
+	"calls: check_ids() across call boundary",
+	.insns = {
+	/* Function main() */
+	BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+	/* fp[-24] = map_lookup_elem(...) ; get a MAP_VALUE_PTR_OR_NULL with some ID */
+	BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+	BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+	BPF_LD_MAP_FD(BPF_REG_1,
+		      0),
+	BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem),
+	BPF_STX_MEM(BPF_DW, BPF_REG_FP, BPF_REG_0, -24),
+	/* fp[-32] = map_lookup_elem(...) ; get a MAP_VALUE_PTR_OR_NULL with some ID */
+	BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+	BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+	BPF_LD_MAP_FD(BPF_REG_1,
+		      0),
+	BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem),
+	BPF_STX_MEM(BPF_DW, BPF_REG_FP, BPF_REG_0, -32),
+	/* call foo(&fp[-24], &fp[-32])   ; both arguments have IDs in the current
+	 *                                ; stack frame
+	 */
+	BPF_MOV64_REG(BPF_REG_1, BPF_REG_FP),
+	BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -24),
+	BPF_MOV64_REG(BPF_REG_2, BPF_REG_FP),
+	BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -32),
+	BPF_CALL_REL(2),
+	/* exit 0 */
+	BPF_MOV64_IMM(BPF_REG_0, 0),
+	BPF_EXIT_INSN(),
+	/* Function foo()
+	 *
+	 * r9 = &frame[0].fp[-24]  ; save arguments in the callee saved registers,
+	 * r8 = &frame[0].fp[-32]  ; arguments are pointers to pointers to map value
+	 */
+	BPF_MOV64_REG(BPF_REG_9, BPF_REG_1),
+	BPF_MOV64_REG(BPF_REG_8, BPF_REG_2),
+	/* r7 = ktime_get_ns() */
+	BPF_EMIT_CALL(BPF_FUNC_ktime_get_ns),
+	BPF_MOV64_REG(BPF_REG_7, BPF_REG_0),
+	/* r6 = ktime_get_ns() */
+	BPF_EMIT_CALL(BPF_FUNC_ktime_get_ns),
+	BPF_MOV64_REG(BPF_REG_6, BPF_REG_0),
+	/* if r6 > r7 goto +1      ; no new information about the state is derived from
+	 *                         ; this check, thus produced verifier states differ
+	 *                         ; only in 'insn_idx'
+	 * r9 = r8
+	 */
+	BPF_JMP_REG(BPF_JGT, BPF_REG_6, BPF_REG_7, 1),
+	BPF_MOV64_REG(BPF_REG_9, BPF_REG_8),
+	/* r9 = *r9                ; verifier gets to this point via two paths:
+	 *                         ; (I) one including r9 = r8, verified first;
+	 *                         ; (II) one excluding r9 = r8, verified next.
+	 *                         ; After load of *r9 to r9 the frame[0].fp[-24].id == r9.id.
+	 *                         ; Suppose that checkpoint is created here via path (I).
+	 *                         ; When verifying via (II) the r9.id must be compared against
+	 *                         ; frame[0].fp[-24].id, otherwise (I) and (II) would be
+	 *                         ; incorrectly deemed equivalent.
+	 * if r9 == 0 goto <exit>
+	 */
+	BPF_LDX_MEM(BPF_DW, BPF_REG_9, BPF_REG_9, 0),
+	BPF_JMP_IMM(BPF_JEQ, BPF_REG_9, 0, 1),
+	/* r8 = *r8                ; read map value via r8, this is not safe
+	 * r0 = *r8                ; because r8 might be not equal to r9.
+	 */
+	BPF_LDX_MEM(BPF_DW, BPF_REG_8, BPF_REG_8, 0),
+	BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_8, 0),
+	/* exit 0 */
+	BPF_MOV64_IMM(BPF_REG_0, 0),
+	BPF_EXIT_INSN(),
+	},
+	.flags = BPF_F_TEST_STATE_FREQ,
+	.fixup_map_hash_8b = { 3, 9 },
+	.result = REJECT,
+	.errstr = "R8 invalid mem access 'map_value_or_null'",
+	.result_unpriv = REJECT,
+	.errstr_unpriv = "",
+	.prog_type = BPF_PROG_TYPE_CGROUP_SKB,
+},
+{
+	"calls: several args with ref_obj_id",
+	.insns = {
+	/* Reserve at least sizeof(struct iphdr) bytes in the ring buffer.
+	 * With a smaller size, the verifier would reject the call to
+	 * bpf_tcp_raw_gen_syncookie_ipv4 before we can reach the
+	 * ref_obj_id error.
+	 */
+	BPF_MOV64_IMM(BPF_REG_2, 20),
+	BPF_MOV64_IMM(BPF_REG_3, 0),
+	BPF_LD_MAP_FD(BPF_REG_1, 0),
+	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0, BPF_FUNC_ringbuf_reserve),
+	/* if r0 == 0 goto <exit> */
+	BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 3),
+	BPF_MOV64_REG(BPF_REG_1, BPF_REG_0),
+	BPF_MOV64_REG(BPF_REG_2, BPF_REG_0),
+	BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0, BPF_FUNC_tcp_raw_gen_syncookie_ipv4),
+	BPF_EXIT_INSN(),
+	},
+	.fixup_map_ringbuf = { 2 },
+	.result = REJECT,
+	.errstr = "more than one arg with ref_obj_id",
+	.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 },

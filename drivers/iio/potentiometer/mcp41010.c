@@ -60,7 +60,7 @@ struct mcp41010_data {
 	const struct mcp41010_cfg *cfg;
 	struct mutex lock; /* Protect write sequences */
 	unsigned int value[MCP41010_MAX_WIPERS]; /* Cache wiper values */
-	u8 buf[2] ____cacheline_aligned;
+	u8 buf[2] __aligned(IIO_DMA_MINALIGN);
 };
 
 #define MCP41010_CHANNEL(ch) {					\
@@ -171,7 +171,7 @@ static const struct of_device_id mcp41010_match[] = {
 	{ .compatible = "microchip,mcp42010", .data = &mcp41010_cfg[MCP42010] },
 	{ .compatible = "microchip,mcp42050", .data = &mcp41010_cfg[MCP42050] },
 	{ .compatible = "microchip,mcp42100", .data = &mcp41010_cfg[MCP42100] },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, mcp41010_match);
 
@@ -182,7 +182,7 @@ static const struct spi_device_id mcp41010_id[] = {
 	{ "mcp42010", MCP42010 },
 	{ "mcp42050", MCP42050 },
 	{ "mcp42100", MCP42100 },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, mcp41010_id);
 

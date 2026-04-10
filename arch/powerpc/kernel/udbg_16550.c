@@ -7,7 +7,7 @@
 #include <linux/types.h>
 #include <asm/udbg.h>
 #include <asm/io.h>
-#include <asm/reg_a2.h>
+#include <asm/early_ioremap.h>
 
 extern u8 real_readb(volatile u8 __iomem  *addr);
 extern void real_writeb(u8 data, volatile u8 __iomem *addr);
@@ -205,29 +205,6 @@ void __init udbg_uart_init_mmio(void __iomem *addr, unsigned int stride)
 	udbg_use_uart();
 }
 
-#ifdef CONFIG_PPC_MAPLE
-
-#define UDBG_UART_MAPLE_ADDR	((void __iomem *)0xf40003f8)
-
-static u8 udbg_uart_in_maple(unsigned int reg)
-{
-	return real_readb(UDBG_UART_MAPLE_ADDR + reg);
-}
-
-static void udbg_uart_out_maple(unsigned int reg, u8 val)
-{
-	real_writeb(val, UDBG_UART_MAPLE_ADDR + reg);
-}
-
-void __init udbg_init_maple_realmode(void)
-{
-	udbg_uart_in = udbg_uart_in_maple;
-	udbg_uart_out = udbg_uart_out_maple;
-	udbg_use_uart();
-}
-
-#endif /* CONFIG_PPC_MAPLE */
-
 #ifdef CONFIG_PPC_PASEMI
 
 #define UDBG_UART_PAS_ADDR	((void __iomem *)0xfcff03f8UL)
@@ -274,64 +251,34 @@ void __init udbg_init_44x_as1(void)
 
 #endif /* CONFIG_PPC_EARLY_DEBUG_44x */
 
-#ifdef CONFIG_PPC_EARLY_DEBUG_40x
+#ifdef CONFIG_PPC_EARLY_DEBUG_16550
 
-static u8 udbg_uart_in_40x(unsigned int reg)
+static void __iomem *udbg_uart_early_addr;
+
+void __init udbg_init_debug_16550(void)
 {
-	return real_readb((void __iomem *)CONFIG_PPC_EARLY_DEBUG_40x_PHYSADDR
-			  + reg);
+	udbg_uart_early_addr = early_ioremap(CONFIG_PPC_EARLY_DEBUG_16550_PHYSADDR, 0x1000);
+	udbg_uart_init_mmio(udbg_uart_early_addr, CONFIG_PPC_EARLY_DEBUG_16550_STRIDE);
 }
 
-static void udbg_uart_out_40x(unsigned int reg, u8 val)
+static int __init udbg_init_debug_16550_ioremap(void)
 {
-	real_writeb(val, (void __iomem *)CONFIG_PPC_EARLY_DEBUG_40x_PHYSADDR
-		    + reg);
+	void __iomem *addr;
+
+	if (!udbg_uart_early_addr)
+		return 0;
+
+	addr = ioremap(CONFIG_PPC_EARLY_DEBUG_16550_PHYSADDR, 0x1000);
+	if (WARN_ON(!addr))
+		return -ENOMEM;
+
+	udbg_uart_init_mmio(addr, CONFIG_PPC_EARLY_DEBUG_16550_STRIDE);
+	early_iounmap(udbg_uart_early_addr, 0x1000);
+	udbg_uart_early_addr = NULL;
+
+	return 0;
 }
 
-void __init udbg_init_40x_realmode(void)
-{
-	udbg_uart_in = udbg_uart_in_40x;
-	udbg_uart_out = udbg_uart_out_40x;
-	udbg_use_uart();
-}
+early_initcall(udbg_init_debug_16550_ioremap);
 
-#endif /* CONFIG_PPC_EARLY_DEBUG_40x */
-
-#ifdef CONFIG_PPC_EARLY_DEBUG_MICROWATT
-
-#define UDBG_UART_MW_ADDR	((void __iomem *)0xc0002000)
-
-static u8 udbg_uart_in_isa300_rm(unsigned int reg)
-{
-	uint64_t msr = mfmsr();
-	uint8_t  c;
-
-	mtmsr(msr & ~(MSR_EE|MSR_DR));
-	isync();
-	eieio();
-	c = __raw_rm_readb(UDBG_UART_MW_ADDR + (reg << 2));
-	mtmsr(msr);
-	isync();
-	return c;
-}
-
-static void udbg_uart_out_isa300_rm(unsigned int reg, u8 val)
-{
-	uint64_t msr = mfmsr();
-
-	mtmsr(msr & ~(MSR_EE|MSR_DR));
-	isync();
-	eieio();
-	__raw_rm_writeb(val, UDBG_UART_MW_ADDR + (reg << 2));
-	mtmsr(msr);
-	isync();
-}
-
-void __init udbg_init_debug_microwatt(void)
-{
-	udbg_uart_in = udbg_uart_in_isa300_rm;
-	udbg_uart_out = udbg_uart_out_isa300_rm;
-	udbg_use_uart();
-}
-
-#endif /* CONFIG_PPC_EARLY_DEBUG_MICROWATT */
+#endif /* CONFIG_PPC_EARLY_DEBUG_16550 */

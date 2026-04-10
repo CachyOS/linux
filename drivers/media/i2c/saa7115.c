@@ -18,13 +18,14 @@
 // Added saa7115 support by Kevin Thayer <nufan_wfk at yahoo.com>
 // (2/17/2003)
 //
-// VBI support (2004) and cleanups (2005) by Hans Verkuil <hverkuil@xs4all.nl>
+// VBI support (2004) and cleanups (2005) by Hans Verkuil <hverkuil@kernel.org>
 //
 // Copyright (c) 2005-2006 Mauro Carvalho Chehab <mchehab@kernel.org>
 //	SAA7111, SAA7113 and SAA7118 support
 
 #include "saa711x_regs.h"
 
+#include <linux/bitops.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -664,15 +665,6 @@ static const unsigned char saa7115_init_misc[] = {
 	0x00, 0x00
 };
 
-static int saa711x_odd_parity(u8 c)
-{
-	c ^= (c >> 4);
-	c ^= (c >> 2);
-	c ^= (c >> 1);
-
-	return c & 1;
-}
-
 static int saa711x_decode_vps(u8 *dst, u8 *p)
 {
 	static const u8 biphase_tbl[] = {
@@ -1227,7 +1219,7 @@ static int saa711x_decode_vbi_line(struct v4l2_subdev *sd, struct v4l2_decode_vb
 		vbi->type = V4L2_SLICED_TELETEXT_B;
 		break;
 	case 4:
-		if (!saa711x_odd_parity(p[0]) || !saa711x_odd_parity(p[1]))
+		if (!parity8(p[0]) || !parity8(p[1]))
 			return 0;
 		vbi->type = V4L2_SLICED_CAPTION_525;
 		break;
@@ -1804,9 +1796,9 @@ static int saa711x_detect_chip(struct i2c_client *client,
 	return -ENODEV;
 }
 
-static int saa711x_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int saa711x_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct saa711x_state *state;
 	struct v4l2_subdev *sd;
 	struct v4l2_ctrl_handler *hdl;
@@ -1927,13 +1919,12 @@ static int saa711x_probe(struct i2c_client *client,
 
 /* ----------------------------------------------------------------------- */
 
-static int saa711x_remove(struct i2c_client *client)
+static void saa711x_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(sd->ctrl_handler);
-	return 0;
 }
 
 static const struct i2c_device_id saa711x_id[] = {

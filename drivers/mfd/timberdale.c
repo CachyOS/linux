@@ -11,8 +11,8 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/msi.h>
 #include <linux/mfd/core.h>
+#include <linux/property.h>
 #include <linux/slab.h>
 
 #include <linux/timb_gpio.h>
@@ -26,7 +26,6 @@
 #include <linux/spi/max7301.h>
 #include <linux/spi/mc33880.h>
 
-#include <linux/platform_data/tsc2007.h>
 #include <linux/platform_data/media/timb_radio.h>
 #include <linux/platform_data/media/timb_video.h>
 
@@ -50,16 +49,21 @@ struct timberdale_device {
 
 /*--------------------------------------------------------------------------*/
 
-static struct tsc2007_platform_data timberdale_tsc2007_platform_data = {
-	.model = 2003,
-	.x_plate_ohms = 100
+static const struct property_entry timberdale_tsc2007_properties[] = {
+	PROPERTY_ENTRY_U32("ti,x-plate-ohms", 100),
+	{ }
+};
+
+static const struct software_node timberdale_tsc2007_node = {
+	.name = "tsc2007",
+	.properties = timberdale_tsc2007_properties,
 };
 
 static struct i2c_board_info timberdale_i2c_board_info[] = {
 	{
 		I2C_BOARD_INFO("tsc2007", 0x48),
-		.platform_data = &timberdale_tsc2007_platform_data,
-		.irq = IRQ_TIMBERDALE_TSC_INT
+		.irq = IRQ_TIMBERDALE_TSC_INT,
+		.swnode = &timberdale_tsc2007_node,
 	},
 };
 
@@ -645,7 +649,7 @@ static int timb_probe(struct pci_dev *dev,
 	struct msix_entry *msix_entries = NULL;
 	u8 ip_setup;
 
-	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+	priv = kzalloc_obj(*priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -694,8 +698,7 @@ static int timb_probe(struct pci_dev *dev,
 		goto err_config;
 	}
 
-	msix_entries = kcalloc(TIMBERDALE_NR_IRQS, sizeof(*msix_entries),
-			       GFP_KERNEL);
+	msix_entries = kzalloc_objs(*msix_entries, TIMBERDALE_NR_IRQS);
 	if (!msix_entries)
 		goto err_config;
 
@@ -766,7 +769,6 @@ static int timb_probe(struct pci_dev *dev,
 	default:
 		dev_err(&dev->dev, "Unknown IP setup: %d.%d.%d\n",
 			priv->fw.major, priv->fw.minor, ip_setup);
-		err = -ENODEV;
 		goto err_mfd;
 	}
 
@@ -855,4 +857,5 @@ module_pci_driver(timberdale_pci_driver);
 
 MODULE_AUTHOR("Mocean Laboratories <info@mocean-labs.com>");
 MODULE_VERSION(DRV_VERSION);
+MODULE_DESCRIPTION("Timberdale FPGA MFD driver");
 MODULE_LICENSE("GPL v2");

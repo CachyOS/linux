@@ -9,6 +9,7 @@
 
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
+#include <linux/export.h>
 #include <linux/slab.h>
 
 #include <media/media-entity.h>
@@ -66,7 +67,9 @@ static int vsp1_du_insert_uif(struct vsp1_device *vsp1,
 			      struct vsp1_entity *prev, unsigned int prev_pad,
 			      struct vsp1_entity *next, unsigned int next_pad)
 {
-	struct v4l2_subdev_format format;
+	struct v4l2_subdev_format format = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+	};
 	int ret;
 
 	if (!uif) {
@@ -82,8 +85,6 @@ static int vsp1_du_insert_uif(struct vsp1_device *vsp1,
 	prev->sink = uif;
 	prev->sink_pad = UIF_PAD_SINK;
 
-	memset(&format, 0, sizeof(format));
-	format.which = V4L2_SUBDEV_FORMAT_ACTIVE;
 	format.pad = prev_pad;
 
 	ret = v4l2_subdev_call(&prev->subdev, pad, get_fmt, NULL, &format);
@@ -118,24 +119,26 @@ static int vsp1_du_pipeline_setup_rpf(struct vsp1_device *vsp1,
 				      struct vsp1_entity *uif,
 				      unsigned int brx_input)
 {
-	struct v4l2_subdev_selection sel;
-	struct v4l2_subdev_format format;
-	const struct v4l2_rect *crop;
+	const struct vsp1_drm_input *input = &vsp1->drm->inputs[rpf->entity.index];
+	struct v4l2_subdev_selection sel = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+	};
+	struct v4l2_subdev_format format = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+	};
 	int ret;
 
 	/*
 	 * Configure the format on the RPF sink pad and propagate it up to the
 	 * BRx sink pad.
 	 */
-	crop = &vsp1->drm->inputs[rpf->entity.index].crop;
-
-	memset(&format, 0, sizeof(format));
-	format.which = V4L2_SUBDEV_FORMAT_ACTIVE;
 	format.pad = RWPF_PAD_SINK;
-	format.format.width = crop->width + crop->left;
-	format.format.height = crop->height + crop->top;
+	format.format.width = input->crop.width + input->crop.left;
+	format.format.height = input->crop.height + input->crop.top;
 	format.format.code = rpf->fmtinfo->mbus;
 	format.format.field = V4L2_FIELD_NONE;
+	format.format.ycbcr_enc = input->ycbcr_enc;
+	format.format.quantization = input->quantization;
 
 	ret = v4l2_subdev_call(&rpf->entity.subdev, pad, set_fmt, NULL,
 			       &format);
@@ -147,11 +150,9 @@ static int vsp1_du_pipeline_setup_rpf(struct vsp1_device *vsp1,
 		__func__, format.format.width, format.format.height,
 		format.format.code, rpf->entity.index);
 
-	memset(&sel, 0, sizeof(sel));
-	sel.which = V4L2_SUBDEV_FORMAT_ACTIVE;
 	sel.pad = RWPF_PAD_SINK;
 	sel.target = V4L2_SEL_TGT_CROP;
-	sel.r = *crop;
+	sel.r = input->crop;
 
 	ret = v4l2_subdev_call(&rpf->entity.subdev, pad, set_selection, NULL,
 			       &sel);
@@ -317,7 +318,10 @@ static int vsp1_du_pipeline_setup_brx(struct vsp1_device *vsp1,
 			list_add_tail(&released_brx->list_pipe,
 				      &pipe->entities);
 
-		/* Add the BRx to the pipeline. */
+		/*
+		 * Add the BRx to the pipeline, inserting it just before the
+		 * WPF.
+		 */
 		dev_dbg(vsp1->dev, "%s: pipe %u: acquired %s\n",
 			__func__, pipe->lif->index, BRX_NAME(brx));
 
@@ -326,7 +330,8 @@ static int vsp1_du_pipeline_setup_brx(struct vsp1_device *vsp1,
 		pipe->brx->sink = &pipe->output->entity;
 		pipe->brx->sink_pad = 0;
 
-		list_add_tail(&pipe->brx->list_pipe, &pipe->entities);
+		list_add_tail(&pipe->brx->list_pipe,
+			      &pipe->output->entity.list_pipe);
 	}
 
 	/*
@@ -420,7 +425,7 @@ static int vsp1_du_pipeline_setup_inputs(struct vsp1_device *vsp1,
 
 		if (!rpf->entity.pipe) {
 			rpf->entity.pipe = pipe;
-			list_add_tail(&rpf->entity.list_pipe, &pipe->entities);
+			list_add(&rpf->entity.list_pipe, &pipe->entities);
 		}
 
 		brx->inputs[i].rpf = rpf;
@@ -481,10 +486,11 @@ static int vsp1_du_pipeline_setup_output(struct vsp1_device *vsp1,
 					 struct vsp1_pipeline *pipe)
 {
 	struct vsp1_drm_pipeline *drm_pipe = to_vsp1_drm_pipeline(pipe);
-	struct v4l2_subdev_format format = { 0, };
+	struct v4l2_subdev_format format = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+	};
 	int ret;
 
-	format.which = V4L2_SUBDEV_FORMAT_ACTIVE;
 	format.pad = RWPF_PAD_SINK;
 	format.format.width = drm_pipe->width;
 	format.format.height = drm_pipe->height;
@@ -545,6 +551,9 @@ static void vsp1_du_pipeline_configure(struct vsp1_pipeline *pipe)
 	struct vsp1_dl_body *dlb;
 	unsigned int dl_flags = 0;
 
+	vsp1_pipeline_calculate_partition(pipe, &pipe->part_table[0],
+					  drm_pipe->width, 0);
+
 	if (drm_pipe->force_brx_release)
 		dl_flags |= VSP1_DL_FRAME_END_INTERNAL;
 	if (pipe->output->writeback)
@@ -566,9 +575,11 @@ static void vsp1_du_pipeline_configure(struct vsp1_pipeline *pipe)
 		}
 
 		vsp1_entity_route_setup(entity, pipe, dlb);
-		vsp1_entity_configure_stream(entity, pipe, dl, dlb);
+		vsp1_entity_configure_stream(entity, entity->state, pipe,
+					     dl, dlb);
 		vsp1_entity_configure_frame(entity, pipe, dl, dlb);
-		vsp1_entity_configure_partition(entity, pipe, dl, dlb);
+		vsp1_entity_configure_partition(entity, pipe,
+						&pipe->part_table[0], dl, dlb);
 	}
 
 	vsp1_dl_list_commit(dl, dl_flags);
@@ -583,8 +594,8 @@ static int vsp1_du_pipeline_set_rwpf_format(struct vsp1_device *vsp1,
 
 	fmtinfo = vsp1_get_format_info(vsp1, pixelformat);
 	if (!fmtinfo) {
-		dev_dbg(vsp1->dev, "Unsupported pixel format %08x\n",
-			pixelformat);
+		dev_dbg(vsp1->dev, "Unsupported pixel format %p4cc\n",
+			&pixelformat);
 		return -EINVAL;
 	}
 
@@ -710,6 +721,9 @@ int vsp1_du_setup_lif(struct device *dev, unsigned int pipe_index,
 		return 0;
 	}
 
+	/* Reset the underrun counter */
+	pipe->underrun_count = 0;
+
 	drm_pipe->width = cfg->width;
 	drm_pipe->height = cfg->height;
 	pipe->interlaced = cfg->interlaced;
@@ -728,6 +742,8 @@ int vsp1_du_setup_lif(struct device *dev, unsigned int pipe_index,
 	ret = vsp1_du_pipeline_setup_output(vsp1, pipe);
 	if (ret < 0)
 		goto unlock;
+
+	vsp1_pipeline_dump(pipe, "LIF setup");
 
 	/* Enable the VSP1. */
 	ret = vsp1_device_get(vsp1);
@@ -811,12 +827,14 @@ int vsp1_du_atomic_update(struct device *dev, unsigned int pipe_index,
 {
 	struct vsp1_device *vsp1 = dev_get_drvdata(dev);
 	struct vsp1_drm_pipeline *drm_pipe = &vsp1->drm->pipe[pipe_index];
+	struct vsp1_drm_input *input;
 	struct vsp1_rwpf *rpf;
 	int ret;
 
 	if (rpf_index >= vsp1->info->rpf_count)
 		return -EINVAL;
 
+	input = &vsp1->drm->inputs[rpf_index];
 	rpf = vsp1->rpf[rpf_index];
 
 	if (!cfg) {
@@ -834,11 +852,11 @@ int vsp1_du_atomic_update(struct device *dev, unsigned int pipe_index,
 	}
 
 	dev_dbg(vsp1->dev,
-		"%s: RPF%u: (%u,%u)/%ux%u -> (%u,%u)/%ux%u (%08x), pitch %u dma { %pad, %pad, %pad } zpos %u\n",
+		"%s: RPF%u: (%u,%u)/%ux%u -> (%u,%u)/%ux%u (%p4cc), pitch %u dma { %pad, %pad, %pad } zpos %u\n",
 		__func__, rpf_index,
 		cfg->src.left, cfg->src.top, cfg->src.width, cfg->src.height,
 		cfg->dst.left, cfg->dst.top, cfg->dst.width, cfg->dst.height,
-		cfg->pixelformat, cfg->pitch, &cfg->mem[0], &cfg->mem[1],
+		&cfg->pixelformat, cfg->pitch, &cfg->mem[0], &cfg->mem[1],
 		&cfg->mem[2], cfg->zpos);
 
 	/*
@@ -856,9 +874,13 @@ int vsp1_du_atomic_update(struct device *dev, unsigned int pipe_index,
 	rpf->mem.addr[1] = cfg->mem[1];
 	rpf->mem.addr[2] = cfg->mem[2];
 
-	vsp1->drm->inputs[rpf_index].crop = cfg->src;
-	vsp1->drm->inputs[rpf_index].compose = cfg->dst;
-	vsp1->drm->inputs[rpf_index].zpos = cfg->zpos;
+	rpf->format.flags = cfg->premult ? V4L2_PIX_FMT_FLAG_PREMUL_ALPHA : 0;
+
+	input->crop = cfg->src;
+	input->compose = cfg->dst;
+	input->zpos = cfg->zpos;
+	input->ycbcr_enc = cfg->color_encoding;
+	input->quantization = cfg->color_range;
 
 	drm_pipe->pipe.inputs[rpf_index] = rpf;
 
@@ -900,6 +922,9 @@ void vsp1_du_atomic_flush(struct device *dev, unsigned int pipe_index,
 	}
 
 	vsp1_du_pipeline_setup_inputs(vsp1, pipe);
+
+	vsp1_pipeline_dump(pipe, "atomic update");
+
 	vsp1_du_pipeline_configure(pipe);
 
 done:
@@ -952,6 +977,9 @@ int vsp1_drm_init(struct vsp1_device *vsp1)
 		init_waitqueue_head(&drm_pipe->wait_queue);
 
 		vsp1_pipeline_init(pipe);
+
+		pipe->partitions = 1;
+		pipe->part_table = &drm_pipe->partition;
 
 		pipe->frame_end = vsp1_du_pipeline_frame_end;
 

@@ -36,6 +36,7 @@
 #include <linux/mlx5/vport.h>
 #include <linux/mlx5/eswitch.h>
 #include "mlx5_core.h"
+#include "eswitch.h"
 #include "sf/sf.h"
 
 /* Mutex to hold while enabling or disabling RoCE */
@@ -61,6 +62,28 @@ u8 mlx5_query_vport_state(struct mlx5_core_dev *mdev, u8 opmod, u16 vport)
 	return MLX5_GET(query_vport_state_out, out, state);
 }
 
+static int mlx5_query_vport_admin_state(struct mlx5_core_dev *mdev, u8 opmod,
+					u16 vport, u8 other_vport,
+					u8 *admin_state)
+{
+	u32 out[MLX5_ST_SZ_DW(query_vport_state_out)] = {};
+	u32 in[MLX5_ST_SZ_DW(query_vport_state_in)] = {};
+	int err;
+
+	MLX5_SET(query_vport_state_in, in, opcode,
+		 MLX5_CMD_OP_QUERY_VPORT_STATE);
+	MLX5_SET(query_vport_state_in, in, op_mod, opmod);
+	MLX5_SET(query_vport_state_in, in, vport_number, vport);
+	MLX5_SET(query_vport_state_in, in, other_vport, other_vport);
+
+	err = mlx5_cmd_exec_inout(mdev, query_vport_state, in, out);
+	if (err)
+		return err;
+
+	*admin_state = MLX5_GET(query_vport_state_out, out, admin_state);
+	return 0;
+}
+
 int mlx5_modify_vport_admin_state(struct mlx5_core_dev *mdev, u8 opmod,
 				  u16 vport, u8 other_vport, u8 state)
 {
@@ -76,16 +99,67 @@ int mlx5_modify_vport_admin_state(struct mlx5_core_dev *mdev, u8 opmod,
 	return mlx5_cmd_exec_in(mdev, modify_vport_state, in);
 }
 
+int mlx5_modify_vport_max_tx_speed(struct mlx5_core_dev *mdev, u8 opmod,
+				   u16 vport, u8 other_vport, u16 max_tx_speed)
+{
+	u32 in[MLX5_ST_SZ_DW(modify_vport_state_in)] = {};
+	u8 admin_state;
+	int err;
+
+	err = mlx5_query_vport_admin_state(mdev, opmod, vport, other_vport,
+					   &admin_state);
+	if (err)
+		return err;
+
+	MLX5_SET(modify_vport_state_in, in, opcode,
+		 MLX5_CMD_OP_MODIFY_VPORT_STATE);
+	MLX5_SET(modify_vport_state_in, in, op_mod, opmod);
+	MLX5_SET(modify_vport_state_in, in, vport_number, vport);
+	MLX5_SET(modify_vport_state_in, in, other_vport, other_vport);
+	MLX5_SET(modify_vport_state_in, in, admin_state, admin_state);
+	MLX5_SET(modify_vport_state_in, in, max_tx_speed, max_tx_speed);
+
+	return mlx5_cmd_exec_in(mdev, modify_vport_state, in);
+}
+
+int mlx5_query_vport_max_tx_speed(struct mlx5_core_dev *mdev, u8 op_mod,
+				  u16 vport, u8 other_vport, u32 *max_tx_speed)
+{
+	u32 out[MLX5_ST_SZ_DW(query_vport_state_out)] = {};
+	u32 in[MLX5_ST_SZ_DW(query_vport_state_in)] = {};
+	u32 state;
+	int err;
+
+	MLX5_SET(query_vport_state_in, in, opcode,
+		 MLX5_CMD_OP_QUERY_VPORT_STATE);
+	MLX5_SET(query_vport_state_in, in, op_mod, op_mod);
+	MLX5_SET(query_vport_state_in, in, vport_number, vport);
+	MLX5_SET(query_vport_state_in, in, other_vport, other_vport);
+
+	err = mlx5_cmd_exec_inout(mdev, query_vport_state, in, out);
+	if (err)
+		return err;
+
+	state = MLX5_GET(query_vport_state_out, out, state);
+	if (state == VPORT_STATE_DOWN) {
+		*max_tx_speed = 0;
+		return 0;
+	}
+
+	*max_tx_speed = MLX5_GET(query_vport_state_out, out, max_tx_speed);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mlx5_query_vport_max_tx_speed);
+
 static int mlx5_query_nic_vport_context(struct mlx5_core_dev *mdev, u16 vport,
-					u32 *out)
+					bool other_vport, u32 *out)
 {
 	u32 in[MLX5_ST_SZ_DW(query_nic_vport_context_in)] = {};
 
 	MLX5_SET(query_nic_vport_context_in, in, opcode,
 		 MLX5_CMD_OP_QUERY_NIC_VPORT_CONTEXT);
 	MLX5_SET(query_nic_vport_context_in, in, vport_number, vport);
-	if (vport)
-		MLX5_SET(query_nic_vport_context_in, in, other_vport, 1);
+	MLX5_SET(query_nic_vport_context_in, in, other_vport, other_vport);
 
 	return mlx5_cmd_exec_inout(mdev, query_nic_vport_context, in, out);
 }
@@ -96,7 +170,7 @@ int mlx5_query_nic_vport_min_inline(struct mlx5_core_dev *mdev,
 	u32 out[MLX5_ST_SZ_DW(query_nic_vport_context_out)] = {};
 	int err;
 
-	err = mlx5_query_nic_vport_context(mdev, vport, out);
+	err = mlx5_query_nic_vport_context(mdev, vport, vport > 0, out);
 	if (!err)
 		*min_inline = MLX5_GET(query_nic_vport_context_out, out,
 				       nic_vport_context.min_wqe_inline_mode);
@@ -218,7 +292,7 @@ int mlx5_query_nic_vport_mtu(struct mlx5_core_dev *mdev, u16 *mtu)
 	if (!out)
 		return -ENOMEM;
 
-	err = mlx5_query_nic_vport_context(mdev, 0, out);
+	err = mlx5_query_nic_vport_context(mdev, 0, false, out);
 	if (!err)
 		*mtu = MLX5_GET(query_nic_vport_context_out, out,
 				nic_vport_context.mtu);
@@ -277,7 +351,7 @@ int mlx5_query_nic_vport_mac_list(struct mlx5_core_dev *dev,
 		req_list_size = max_list_size;
 	}
 
-	out_sz = MLX5_ST_SZ_BYTES(query_nic_vport_context_in) +
+	out_sz = MLX5_ST_SZ_BYTES(query_nic_vport_context_out) +
 			req_list_size * MLX5_ST_SZ_BYTES(mac_address_layout);
 
 	out = kvzalloc(out_sz, GFP_KERNEL);
@@ -288,7 +362,8 @@ int mlx5_query_nic_vport_mac_list(struct mlx5_core_dev *dev,
 		 MLX5_CMD_OP_QUERY_NIC_VPORT_CONTEXT);
 	MLX5_SET(query_nic_vport_context_in, in, allowed_list_type, list_type);
 	MLX5_SET(query_nic_vport_context_in, in, vport_number, vport);
-	MLX5_SET(query_nic_vport_context_in, in, other_vport, 1);
+	if (vport || mlx5_core_is_ecpf(dev))
+		MLX5_SET(query_nic_vport_context_in, in, other_vport, 1);
 
 	err = mlx5_cmd_exec(dev, in, sizeof(in), out, out_sz);
 	if (err)
@@ -427,7 +502,7 @@ int mlx5_query_nic_vport_system_image_guid(struct mlx5_core_dev *mdev,
 	if (!out)
 		return -ENOMEM;
 
-	err = mlx5_query_nic_vport_context(mdev, 0, out);
+	err = mlx5_query_nic_vport_context(mdev, 0, false, out);
 	if (err)
 		goto out;
 
@@ -439,23 +514,48 @@ out:
 }
 EXPORT_SYMBOL_GPL(mlx5_query_nic_vport_system_image_guid);
 
-int mlx5_query_nic_vport_node_guid(struct mlx5_core_dev *mdev, u64 *node_guid)
+int mlx5_query_nic_vport_sd_group(struct mlx5_core_dev *mdev, u8 *sd_group)
 {
-	u32 *out;
 	int outlen = MLX5_ST_SZ_BYTES(query_nic_vport_context_out);
+	u32 *out;
+	int err;
 
 	out = kvzalloc(outlen, GFP_KERNEL);
 	if (!out)
 		return -ENOMEM;
 
-	mlx5_query_nic_vport_context(mdev, 0, out);
+	err = mlx5_query_nic_vport_context(mdev, 0, false, out);
+	if (err)
+		goto out;
+
+	*sd_group = MLX5_GET(query_nic_vport_context_out, out,
+			     nic_vport_context.sd_group);
+out:
+	kvfree(out);
+	return err;
+}
+
+int mlx5_query_nic_vport_node_guid(struct mlx5_core_dev *mdev,
+				   u16 vport, bool other_vport, u64 *node_guid)
+{
+	u32 *out;
+	int outlen = MLX5_ST_SZ_BYTES(query_nic_vport_context_out);
+	int err;
+
+	out = kvzalloc(outlen, GFP_KERNEL);
+	if (!out)
+		return -ENOMEM;
+
+	err = mlx5_query_nic_vport_context(mdev, vport, other_vport, out);
+	if (err)
+		goto out;
 
 	*node_guid = MLX5_GET64(query_nic_vport_context_out, out,
 				nic_vport_context.node_guid);
-
+out:
 	kvfree(out);
 
-	return 0;
+	return err;
 }
 EXPORT_SYMBOL_GPL(mlx5_query_nic_vport_node_guid);
 
@@ -497,19 +597,22 @@ int mlx5_query_nic_vport_qkey_viol_cntr(struct mlx5_core_dev *mdev,
 {
 	u32 *out;
 	int outlen = MLX5_ST_SZ_BYTES(query_nic_vport_context_out);
+	int err;
 
 	out = kvzalloc(outlen, GFP_KERNEL);
 	if (!out)
 		return -ENOMEM;
 
-	mlx5_query_nic_vport_context(mdev, 0, out);
+	err = mlx5_query_nic_vport_context(mdev, 0, false, out);
+	if (err)
+		goto out;
 
 	*qkey_viol_cntr = MLX5_GET(query_nic_vport_context_out, out,
 				   nic_vport_context.qkey_violation_counter);
-
+out:
 	kvfree(out);
 
-	return 0;
+	return err;
 }
 EXPORT_SYMBOL_GPL(mlx5_query_nic_vport_qkey_viol_cntr);
 
@@ -715,6 +818,7 @@ int mlx5_query_hca_vport_context(struct mlx5_core_dev *dev,
 	rep->grh_required = MLX5_GET_PR(hca_vport_context, ctx, grh_required);
 	rep->sys_image_guid = MLX5_GET64_PR(hca_vport_context, ctx,
 					    system_image_guid);
+	rep->num_plane = MLX5_GET_PR(hca_vport_context, ctx, num_port_plane);
 
 ex:
 	kvfree(out);
@@ -728,7 +832,7 @@ int mlx5_query_hca_vport_system_image_guid(struct mlx5_core_dev *dev,
 	struct mlx5_hca_vport_context *rep;
 	int err;
 
-	rep = kvzalloc(sizeof(*rep), GFP_KERNEL);
+	rep = kvzalloc_obj(*rep);
 	if (!rep)
 		return -ENOMEM;
 
@@ -747,7 +851,7 @@ int mlx5_query_hca_vport_node_guid(struct mlx5_core_dev *dev,
 	struct mlx5_hca_vport_context *rep;
 	int err;
 
-	rep = kvzalloc(sizeof(*rep), GFP_KERNEL);
+	rep = kvzalloc_obj(*rep);
 	if (!rep)
 		return -ENOMEM;
 
@@ -774,7 +878,7 @@ int mlx5_query_nic_vport_promisc(struct mlx5_core_dev *mdev,
 	if (!out)
 		return -ENOMEM;
 
-	err = mlx5_query_nic_vport_context(mdev, vport, out);
+	err = mlx5_query_nic_vport_context(mdev, vport, vport > 0, out);
 	if (err)
 		goto out;
 
@@ -878,7 +982,7 @@ int mlx5_nic_vport_query_local_lb(struct mlx5_core_dev *mdev, bool *status)
 	if (!out)
 		return -ENOMEM;
 
-	err = mlx5_query_nic_vport_context(mdev, 0, out);
+	err = mlx5_query_nic_vport_context(mdev, 0, false, out);
 	if (err)
 		goto out;
 
@@ -1086,9 +1190,17 @@ int mlx5_nic_vport_affiliate_multiport(struct mlx5_core_dev *master_mdev,
 		goto free;
 
 	MLX5_SET(modify_nic_vport_context_in, in, field_select.affiliation, 1);
-	MLX5_SET(modify_nic_vport_context_in, in,
-		 nic_vport_context.affiliated_vhca_id,
-		 MLX5_CAP_GEN(master_mdev, vhca_id));
+	if (MLX5_CAP_GEN_2(master_mdev, sw_vhca_id_valid)) {
+		MLX5_SET(modify_nic_vport_context_in, in,
+			 nic_vport_context.vhca_id_type, VHCA_ID_TYPE_SW);
+		MLX5_SET(modify_nic_vport_context_in, in,
+			 nic_vport_context.affiliated_vhca_id,
+			 MLX5_CAP_GEN_2(master_mdev, sw_vhca_id));
+	} else {
+		MLX5_SET(modify_nic_vport_context_in, in,
+			 nic_vport_context.affiliated_vhca_id,
+			 MLX5_CAP_GEN(master_mdev, vhca_id));
+	}
 	MLX5_SET(modify_nic_vport_context_in, in,
 		 nic_vport_context.affiliation_criteria,
 		 MLX5_CAP_GEN(port_mdev, affiliate_nic_vport_criteria));
@@ -1152,14 +1264,134 @@ u64 mlx5_query_nic_system_image_guid(struct mlx5_core_dev *mdev)
 }
 EXPORT_SYMBOL_GPL(mlx5_query_nic_system_image_guid);
 
-int mlx5_vport_get_other_func_cap(struct mlx5_core_dev *dev, u16 function_id, void *out)
+void mlx5_query_nic_sw_system_image_guid(struct mlx5_core_dev *mdev, u8 *buf,
+					 u8 *len)
 {
-	u16 opmod = (MLX5_CAP_GENERAL << 1) | (HCA_CAP_OPMOD_GET_MAX & 0x01);
-	u8 in[MLX5_ST_SZ_BYTES(query_hca_cap_in)] = {};
+	u64 fw_system_image_guid;
 
+	*len = 0;
+
+	fw_system_image_guid = mlx5_query_nic_system_image_guid(mdev);
+	if (!fw_system_image_guid)
+		return;
+
+	memcpy(buf, &fw_system_image_guid, sizeof(fw_system_image_guid));
+	*len += sizeof(fw_system_image_guid);
+
+	if (MLX5_CAP_GEN_2(mdev, load_balance_id) &&
+	    MLX5_CAP_GEN_2(mdev, lag_per_mp_group))
+		buf[(*len)++] = MLX5_CAP_GEN_2(mdev, load_balance_id);
+}
+
+static bool mlx5_vport_use_vhca_id_as_func_id(struct mlx5_core_dev *dev,
+					      u16 vport_num, u16 *vhca_id)
+{
+	if (!MLX5_CAP_GEN_2(dev, function_id_type_vhca_id))
+		return false;
+
+	return mlx5_esw_vport_vhca_id(dev->priv.eswitch, vport_num, vhca_id);
+}
+
+int mlx5_vport_get_other_func_cap(struct mlx5_core_dev *dev, u16 vport, void *out,
+				  u16 opmod)
+{
+	u8 in[MLX5_ST_SZ_BYTES(query_hca_cap_in)] = {};
+	u16 vhca_id = 0, function_id = 0;
+	bool ec_vf_func = false;
+
+	/* if this vport is referring to a vport on the ec PF (embedded cpu )
+	 * let the FW know which domain we are querying since vport numbers or
+	 * function_ids are not unique across the different PF domains,
+	 * unless we use vhca_id as the function_id below.
+	 */
+	ec_vf_func = mlx5_core_is_ec_vf_vport(dev, vport);
+	function_id = mlx5_vport_to_func_id(dev, vport, ec_vf_func);
+
+	if (mlx5_vport_use_vhca_id_as_func_id(dev, vport, &vhca_id)) {
+		MLX5_SET(query_hca_cap_in, in, function_id_type, 1);
+		function_id = vhca_id;
+		ec_vf_func = false;
+		mlx5_core_dbg(dev, "%s using vhca_id as function_id for vport %d vhca_id 0x%x\n",
+			      __func__, vport, vhca_id);
+	}
+
+	opmod = (opmod << 1) | (HCA_CAP_OPMOD_GET_MAX & 0x01);
 	MLX5_SET(query_hca_cap_in, in, opcode, MLX5_CMD_OP_QUERY_HCA_CAP);
 	MLX5_SET(query_hca_cap_in, in, op_mod, opmod);
-	MLX5_SET(query_hca_cap_in, in, function_id, function_id);
 	MLX5_SET(query_hca_cap_in, in, other_function, true);
+	MLX5_SET(query_hca_cap_in, in, ec_vf_function, ec_vf_func);
+	MLX5_SET(query_hca_cap_in, in, function_id, function_id);
 	return mlx5_cmd_exec_inout(dev, query_hca_cap, in, out);
+}
+EXPORT_SYMBOL_GPL(mlx5_vport_get_other_func_cap);
+
+int mlx5_vport_get_vhca_id(struct mlx5_core_dev *dev, u16 vport, u16 *vhca_id)
+{
+	int query_out_sz = MLX5_ST_SZ_BYTES(query_hca_cap_out);
+	void *query_ctx;
+	void *hca_caps;
+	int err;
+
+	/* try get vhca_id via eswitch */
+	if (mlx5_esw_vport_vhca_id(dev->priv.eswitch, vport, vhca_id))
+		return 0;
+
+	query_ctx = kzalloc(query_out_sz, GFP_KERNEL);
+	if (!query_ctx)
+		return -ENOMEM;
+
+	err = mlx5_vport_get_other_func_general_cap(dev, vport, query_ctx);
+	if (err)
+		goto out_free;
+
+	hca_caps = MLX5_ADDR_OF(query_hca_cap_out, query_ctx, capability);
+	*vhca_id = MLX5_GET(cmd_hca_cap, hca_caps, vhca_id);
+
+out_free:
+	kfree(query_ctx);
+	return err;
+}
+EXPORT_SYMBOL_GPL(mlx5_vport_get_vhca_id);
+
+int mlx5_vport_set_other_func_cap(struct mlx5_core_dev *dev, const void *hca_cap,
+				  u16 vport, u16 opmod)
+{
+	int set_sz = MLX5_ST_SZ_BYTES(set_hca_cap_in);
+	u16 vhca_id = 0, function_id = 0;
+	bool ec_vf_func = false;
+	void *set_hca_cap;
+	void *set_ctx;
+	int ret;
+
+	set_ctx = kzalloc(set_sz, GFP_KERNEL);
+	if (!set_ctx)
+		return -ENOMEM;
+
+	/* if this vport is referring to a vport on the ec PF (embedded cpu )
+	 * let the FW know which domain we are querying since vport numbers or
+	 * function_ids are not unique across the different PF domains,
+	 * unless we use vhca_id as the function_id below.
+	 */
+	ec_vf_func = mlx5_core_is_ec_vf_vport(dev, vport);
+	function_id = mlx5_vport_to_func_id(dev, vport, ec_vf_func);
+
+	if (mlx5_vport_use_vhca_id_as_func_id(dev, vport, &vhca_id)) {
+		MLX5_SET(set_hca_cap_in, set_ctx, function_id_type, 1);
+		function_id = vhca_id;
+		ec_vf_func = false;
+		mlx5_core_dbg(dev, "%s using vhca_id as function_id for vport %d vhca_id 0x%x\n",
+			      __func__, vport, vhca_id);
+	}
+
+	MLX5_SET(set_hca_cap_in, set_ctx, opcode, MLX5_CMD_OP_SET_HCA_CAP);
+	MLX5_SET(set_hca_cap_in, set_ctx, op_mod, opmod << 1);
+	set_hca_cap = MLX5_ADDR_OF(set_hca_cap_in, set_ctx, capability);
+	memcpy(set_hca_cap, hca_cap, MLX5_ST_SZ_BYTES(cmd_hca_cap));
+	MLX5_SET(set_hca_cap_in, set_ctx, other_function, true);
+	MLX5_SET(set_hca_cap_in, set_ctx, ec_vf_function, ec_vf_func);
+	MLX5_SET(set_hca_cap_in, set_ctx, function_id, function_id);
+	ret = mlx5_cmd_exec_in(dev, set_hca_cap, set_ctx);
+
+	kfree(set_ctx);
+	return ret;
 }

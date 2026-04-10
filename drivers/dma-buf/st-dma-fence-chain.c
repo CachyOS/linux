@@ -84,7 +84,9 @@ static int sanitycheck(void *arg)
 		return -ENOMEM;
 
 	chain = mock_chain(NULL, f, 1);
-	if (!chain)
+	if (chain)
+		dma_fence_enable_sw_signaling(chain);
+	else
 		err = -ENOMEM;
 
 	dma_fence_signal(f);
@@ -114,13 +116,11 @@ static int fence_chains_init(struct fence_chains *fc, unsigned int count,
 	unsigned int i;
 	int err = 0;
 
-	fc->chains = kvmalloc_array(count, sizeof(*fc->chains),
-				    GFP_KERNEL | __GFP_ZERO);
+	fc->chains = kvmalloc_objs(*fc->chains, count, GFP_KERNEL | __GFP_ZERO);
 	if (!fc->chains)
 		return -ENOMEM;
 
-	fc->fences = kvmalloc_array(count, sizeof(*fc->fences),
-				    GFP_KERNEL | __GFP_ZERO);
+	fc->fences = kvmalloc_objs(*fc->fences, count, GFP_KERNEL | __GFP_ZERO);
 	if (!fc->fences) {
 		err = -ENOMEM;
 		goto err_chains;
@@ -143,6 +143,8 @@ static int fence_chains_init(struct fence_chains *fc, unsigned int count,
 		}
 
 		fc->tail = fc->chains[i];
+
+		dma_fence_enable_sw_signaling(fc->chains[i]);
 	}
 
 	fc->chain_length = i;
@@ -396,7 +398,7 @@ static int __find_race(void *arg)
 		struct dma_fence *fence = dma_fence_get(data->fc.tail);
 		int seqno;
 
-		seqno = prandom_u32_max(data->fc.chain_length) + 1;
+		seqno = get_random_u32_inclusive(1, data->fc.chain_length);
 
 		err = dma_fence_chain_find_seqno(&fence, seqno);
 		if (err) {
@@ -425,7 +427,7 @@ static int __find_race(void *arg)
 		dma_fence_put(fence);
 
 signal:
-		seqno = prandom_u32_max(data->fc.chain_length - 1);
+		seqno = get_random_u32_below(data->fc.chain_length - 1);
 		dma_fence_signal(data->fc.fences[seqno]);
 		cond_resched();
 	}
@@ -448,7 +450,7 @@ static int find_race(void *arg)
 	if (err)
 		return err;
 
-	threads = kmalloc_array(ncpus, sizeof(*threads), GFP_KERNEL);
+	threads = kmalloc_objs(*threads, ncpus);
 	if (!threads) {
 		err = -ENOMEM;
 		goto err;
@@ -472,10 +474,9 @@ static int find_race(void *arg)
 	for (i = 0; i < ncpus; i++) {
 		int ret;
 
-		ret = kthread_stop(threads[i]);
+		ret = kthread_stop_put(threads[i]);
 		if (ret && !err)
 			err = ret;
-		put_task_struct(threads[i]);
 	}
 	kfree(threads);
 
@@ -587,8 +588,7 @@ static int wait_forward(void *arg)
 	for (i = 0; i < fc.chain_length; i++)
 		dma_fence_signal(fc.fences[i]);
 
-	err = kthread_stop(tsk);
-	put_task_struct(tsk);
+	err = kthread_stop_put(tsk);
 
 err:
 	fence_chains_fini(&fc);
@@ -617,8 +617,7 @@ static int wait_backward(void *arg)
 	for (i = fc.chain_length; i--; )
 		dma_fence_signal(fc.fences[i]);
 
-	err = kthread_stop(tsk);
-	put_task_struct(tsk);
+	err = kthread_stop_put(tsk);
 
 err:
 	fence_chains_fini(&fc);
@@ -633,7 +632,7 @@ static void randomise_fences(struct fence_chains *fc)
 	while (--count) {
 		unsigned int swp;
 
-		swp = prandom_u32_max(count + 1);
+		swp = get_random_u32_below(count + 1);
 		if (swp == count)
 			continue;
 
@@ -665,8 +664,7 @@ static int wait_random(void *arg)
 	for (i = 0; i < fc.chain_length; i++)
 		dma_fence_signal(fc.fences[i]);
 
-	err = kthread_stop(tsk);
-	put_task_struct(tsk);
+	err = kthread_stop_put(tsk);
 
 err:
 	fence_chains_fini(&fc);

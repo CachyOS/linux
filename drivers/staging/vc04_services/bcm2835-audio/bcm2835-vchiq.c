@@ -4,6 +4,9 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/completion.h>
+
+#include <linux/raspberrypi/vchiq_arm.h>
+
 #include "bcm2835.h"
 #include "vc_vchi_audioserv_defs.h"
 
@@ -25,12 +28,14 @@ MODULE_PARM_DESC(force_bulk, "Force use of vchiq bulk for audio");
 static void bcm2835_audio_lock(struct bcm2835_audio_instance *instance)
 {
 	mutex_lock(&instance->vchi_mutex);
-	vchiq_use_service(instance->service_handle);
+	vchiq_use_service(instance->alsa_stream->chip->vchi_ctx->instance,
+			  instance->service_handle);
 }
 
 static void bcm2835_audio_unlock(struct bcm2835_audio_instance *instance)
 {
-	vchiq_release_service(instance->service_handle);
+	vchiq_release_service(instance->alsa_stream->chip->vchi_ctx->instance,
+			      instance->service_handle);
 	mutex_unlock(&instance->vchi_mutex);
 }
 
@@ -44,8 +49,8 @@ static int bcm2835_audio_send_msg_locked(struct bcm2835_audio_instance *instance
 		init_completion(&instance->msg_avail_comp);
 	}
 
-	status = vchiq_queue_kernel_message(instance->service_handle,
-					    m, sizeof(*m));
+	status = vchiq_queue_kernel_message(instance->alsa_stream->chip->vchi_ctx->instance,
+					    instance->service_handle, m, sizeof(*m));
 	if (status) {
 		dev_err(instance->dev,
 			"vchi message queue failed: %d, msg=%d\n",
@@ -55,7 +60,7 @@ static int bcm2835_audio_send_msg_locked(struct bcm2835_audio_instance *instance
 
 	if (wait) {
 		if (!wait_for_completion_timeout(&instance->msg_avail_comp,
-						 msecs_to_jiffies(10 * 1000))) {
+						 secs_to_jiffies(10))) {
 			dev_err(instance->dev,
 				"vchi message timeout, msg=%d\n", m->type);
 			return -ETIMEDOUT;
@@ -89,15 +94,18 @@ static int bcm2835_audio_send_simple(struct bcm2835_audio_instance *instance,
 	return bcm2835_audio_send_msg(instance, &m, wait);
 }
 
-static enum vchiq_status audio_vchi_callback(enum vchiq_reason reason,
-					     struct vchiq_header *header,
-					     unsigned int handle, void *userdata)
+static int audio_vchi_callback(struct vchiq_instance *vchiq_instance,
+			       enum vchiq_reason reason,
+			       struct vchiq_header *header,
+			       unsigned int handle,
+			       void *cb_data, void __user *cb_userdata)
 {
-	struct bcm2835_audio_instance *instance = vchiq_get_service_userdata(handle);
+	struct bcm2835_audio_instance *instance = vchiq_get_service_userdata(vchiq_instance,
+									     handle);
 	struct vc_audio_msg *m;
 
 	if (reason != VCHIQ_MESSAGE_AVAILABLE)
-		return VCHIQ_SUCCESS;
+		return 0;
 
 	m = (void *)header->data;
 	if (m->type == VC_AUDIO_MSG_TYPE_RESULT) {
@@ -114,8 +122,8 @@ static enum vchiq_status audio_vchi_callback(enum vchiq_reason reason,
 		dev_err(instance->dev, "unexpected callback type=%d\n", m->type);
 	}
 
-	vchiq_release_message(handle, header);
-	return VCHIQ_SUCCESS;
+	vchiq_release_message(vchiq_instance, instance->service_handle, header);
+	return 0;
 }
 
 static int
@@ -143,7 +151,8 @@ vc_vchi_audio_init(struct vchiq_instance *vchiq_instance,
 	}
 
 	/* Finished with the service for now */
-	vchiq_release_service(instance->service_handle);
+	vchiq_release_service(instance->alsa_stream->chip->vchi_ctx->instance,
+			      instance->service_handle);
 
 	return 0;
 }
@@ -153,10 +162,12 @@ static void vc_vchi_audio_deinit(struct bcm2835_audio_instance *instance)
 	int status;
 
 	mutex_lock(&instance->vchi_mutex);
-	vchiq_use_service(instance->service_handle);
+	vchiq_use_service(instance->alsa_stream->chip->vchi_ctx->instance,
+			  instance->service_handle);
 
 	/* Close all VCHI service connections */
-	status = vchiq_close_service(instance->service_handle);
+	status = vchiq_close_service(instance->alsa_stream->chip->vchi_ctx->instance,
+				     instance->service_handle);
 	if (status) {
 		dev_err(instance->dev,
 			"failed to close VCHI service connection (status=%d)\n",
@@ -168,10 +179,11 @@ static void vc_vchi_audio_deinit(struct bcm2835_audio_instance *instance)
 
 int bcm2835_new_vchi_ctx(struct device *dev, struct bcm2835_vchi_ctx *vchi_ctx)
 {
+	struct vchiq_drv_mgmt *mgmt = dev_get_drvdata(dev->parent);
 	int ret;
 
 	/* Initialize and create a VCHI connection */
-	ret = vchiq_initialise(&vchi_ctx->instance);
+	ret = vchiq_initialise(&mgmt->state, &vchi_ctx->instance);
 	if (ret) {
 		dev_err(dev, "failed to initialise VCHI instance (ret=%d)\n",
 			ret);
@@ -207,7 +219,7 @@ int bcm2835_audio_open(struct bcm2835_alsa_stream *alsa_stream)
 	int err;
 
 	/* Allocate memory for this instance */
-	instance = kzalloc(sizeof(*instance), GFP_KERNEL);
+	instance = kzalloc_obj(*instance);
 	if (!instance)
 		return -ENOMEM;
 	mutex_init(&instance->vchi_mutex);
@@ -226,7 +238,7 @@ int bcm2835_audio_open(struct bcm2835_alsa_stream *alsa_stream)
 		goto deinit;
 
 	bcm2835_audio_lock(instance);
-	vchiq_get_peer_version(instance->service_handle,
+	vchiq_get_peer_version(vchi_ctx->instance, instance->service_handle,
 			       &instance->peer_version);
 	bcm2835_audio_unlock(instance);
 	if (instance->peer_version < 2 || force_bulk)
@@ -322,6 +334,8 @@ int bcm2835_audio_write(struct bcm2835_alsa_stream *alsa_stream,
 			unsigned int size, void *src)
 {
 	struct bcm2835_audio_instance *instance = alsa_stream->instance;
+	struct bcm2835_vchi_ctx *vchi_ctx = alsa_stream->chip->vchi_ctx;
+	struct vchiq_instance *vchiq_instance = vchi_ctx->instance;
 	struct vc_audio_msg m = {
 		.type = VC_AUDIO_MSG_TYPE_WRITE,
 		.write.count = size,
@@ -343,15 +357,14 @@ int bcm2835_audio_write(struct bcm2835_alsa_stream *alsa_stream,
 	count = size;
 	if (!instance->max_packet) {
 		/* Send the message to the videocore */
-		status = vchiq_bulk_transmit(instance->service_handle, src,
-					     count, NULL,
-					     VCHIQ_BULK_MODE_BLOCKING);
+		status = vchiq_bulk_transmit(vchiq_instance, instance->service_handle, src, count,
+					     NULL, VCHIQ_BULK_MODE_BLOCKING);
 	} else {
 		while (count > 0) {
 			int bytes = min(instance->max_packet, count);
 
-			status = vchiq_queue_kernel_message(instance->service_handle,
-							    src, bytes);
+			status = vchiq_queue_kernel_message(vchiq_instance,
+							    instance->service_handle, src, bytes);
 			src += bytes;
 			count -= bytes;
 		}

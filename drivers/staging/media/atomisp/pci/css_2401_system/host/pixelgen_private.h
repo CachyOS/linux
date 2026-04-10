@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #ifndef __PIXELGEN_PRIVATE_H_INCLUDED__
@@ -161,7 +152,7 @@ STORAGE_CLASS_PIXELGEN_C void pixelgen_ctrl_dump_state(
 		     state->syng_stat_fcnt);
 	ia_css_print("Pixel Generator ID %d syng stat done  0x%x\n", ID,
 		     state->syng_stat_done);
-	ia_css_print("Pixel Generator ID %d tpg modee  0x%x\n", ID, state->tpg_mode);
+	ia_css_print("Pixel Generator ID %d tpg mode  0x%x\n", ID, state->tpg_mode);
 	ia_css_print("Pixel Generator ID %d tpg hcnt mask  0x%x\n", ID,
 		     state->tpg_hcnt_mask);
 	ia_css_print("Pixel Generator ID %d tpg hcnt mask  0x%x\n", ID,

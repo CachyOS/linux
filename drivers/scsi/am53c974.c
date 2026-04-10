@@ -371,7 +371,7 @@ static void dc390_check_eeprom(struct esp *esp)
 static int pci_esp_probe_one(struct pci_dev *pdev,
 			      const struct pci_device_id *id)
 {
-	struct scsi_host_template *hostt = &scsi_esp_template;
+	const struct scsi_host_template *hostt = &scsi_esp_template;
 	int err = -ENODEV;
 	struct Scsi_Host *shost;
 	struct esp *esp;
@@ -396,7 +396,7 @@ static int pci_esp_probe_one(struct pci_dev *pdev,
 		goto fail_disable_device;
 	}
 
-	pep = kzalloc(sizeof(struct pci_esp_priv), GFP_KERNEL);
+	pep = kzalloc_obj(struct pci_esp_priv);
 	if (!pep) {
 		dev_printk(KERN_INFO, &pdev->dev,
 			   "failed to allocate esp_priv\n");
@@ -513,7 +513,7 @@ static void pci_esp_remove_one(struct pci_dev *pdev)
 	scsi_host_put(esp->host);
 }
 
-static struct pci_device_id am53c974_pci_tbl[] = {
+static const struct pci_device_id am53c974_pci_tbl[] = {
 	{ PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_SCSI,
 		PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
 	{ }

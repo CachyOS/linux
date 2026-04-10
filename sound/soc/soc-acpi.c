@@ -125,5 +125,80 @@ struct snd_soc_acpi_mach *snd_soc_acpi_codec_list(void *arg)
 }
 EXPORT_SYMBOL_GPL(snd_soc_acpi_codec_list);
 
+#define SDW_CODEC_ADR_MASK(_adr) ((_adr) & (SDW_DISCO_LINK_ID_MASK | SDW_VERSION_MASK | \
+				  SDW_MFG_ID_MASK | SDW_PART_ID_MASK))
+
+/* Check if all Slaves defined on the link can be found */
+bool snd_soc_acpi_sdw_link_slaves_found(struct device *dev,
+					const struct snd_soc_acpi_link_adr *link,
+					struct sdw_peripherals *peripherals)
+{
+	unsigned int part_id, link_id, unique_id, mfg_id, version;
+	int i, j, k;
+
+	for (i = 0; i < link->num_adr; i++) {
+		u64 adr = link->adr_d[i].adr;
+		int reported_part_count = 0;
+
+		mfg_id = SDW_MFG_ID(adr);
+		part_id = SDW_PART_ID(adr);
+		link_id = SDW_DISCO_LINK_ID(adr);
+		version = SDW_VERSION(adr);
+
+		for (j = 0; j < peripherals->num_peripherals; j++) {
+			struct sdw_slave *peripheral = peripherals->array[j];
+
+			/* find out how many identical parts were reported on that link */
+			if (peripheral->bus->link_id == link_id &&
+			    peripheral->id.part_id == part_id &&
+			    peripheral->id.mfg_id == mfg_id &&
+			    peripheral->id.sdw_version == version)
+				reported_part_count++;
+		}
+
+		for (j = 0; j < peripherals->num_peripherals; j++) {
+			struct sdw_slave *peripheral = peripherals->array[j];
+			int expected_part_count = 0;
+
+			if (peripheral->bus->link_id != link_id ||
+			    peripheral->id.part_id != part_id ||
+			    peripheral->id.mfg_id != mfg_id ||
+			    peripheral->id.sdw_version != version)
+				continue;
+
+			/* find out how many identical parts are expected */
+			for (k = 0; k < link->num_adr; k++) {
+				u64 adr2 = link->adr_d[k].adr;
+
+				if (SDW_CODEC_ADR_MASK(adr2) == SDW_CODEC_ADR_MASK(adr))
+					expected_part_count++;
+			}
+
+			if (reported_part_count == expected_part_count) {
+				/*
+				 * we have to check unique id
+				 * if there is more than one
+				 * Slave on the link
+				 */
+				unique_id = SDW_UNIQUE_ID(adr);
+				if (reported_part_count == 1 ||
+				    peripheral->id.unique_id == unique_id) {
+					dev_dbg(dev, "found part_id %#x at link %d\n", part_id, link_id);
+					break;
+				}
+			} else {
+				dev_dbg(dev, "part_id %#x reported %d expected %d on link %d, skipping\n",
+					part_id, reported_part_count, expected_part_count, link_id);
+			}
+		}
+		if (j == peripherals->num_peripherals) {
+			dev_dbg(dev, "Slave part_id %#x not found\n", part_id);
+			return false;
+		}
+	}
+	return true;
+}
+EXPORT_SYMBOL_GPL(snd_soc_acpi_sdw_link_slaves_found);
+
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("ALSA SoC ACPI module");

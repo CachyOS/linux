@@ -132,7 +132,7 @@ static int sharpsl_nand_probe(struct platform_device *pdev)
 	}
 
 	/* Allocate memory for MTD device structure and private data */
-	sharpsl = kzalloc(sizeof(struct sharpsl_nand), GFP_KERNEL);
+	sharpsl = kzalloc_obj(struct sharpsl_nand);
 	if (!sharpsl)
 		return -ENOMEM;
 
@@ -210,7 +210,7 @@ err_get_res:
 /*
  * Clean up routine
  */
-static int sharpsl_nand_remove(struct platform_device *pdev)
+static void sharpsl_nand_remove(struct platform_device *pdev)
 {
 	struct sharpsl_nand *sharpsl = platform_get_drvdata(pdev);
 	struct nand_chip *chip = &sharpsl->chip;
@@ -227,8 +227,6 @@ static int sharpsl_nand_remove(struct platform_device *pdev)
 
 	/* Free the driver's structure */
 	kfree(sharpsl);
-
-	return 0;
 }
 
 static struct platform_driver sharpsl_nand_driver = {

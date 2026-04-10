@@ -450,7 +450,7 @@ static int sso_gpio_get(struct gpio_chip *chip, unsigned int offset)
 	return !!(reg_val & BIT(offset));
 }
 
-static void sso_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
+static int sso_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
 {
 	struct sso_led_priv *priv = gpiochip_get_data(chip);
 
@@ -458,6 +458,8 @@ static void sso_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
 	if (!priv->gpio.freq)
 		regmap_update_bits(priv->mmap, SSO_CON0, SSO_CON0_SWU,
 				   SSO_CON0_SWU);
+
+	return 0;
 }
 
 static int sso_gpio_gc_init(struct device *dev, struct sso_led_priv *priv)
@@ -635,9 +637,8 @@ __sso_led_dt_parse(struct sso_led_priv *priv, struct fwnode_handle *fw_ssoled)
 		led->priv = priv;
 		desc = &led->desc;
 
-		led->gpiod = devm_fwnode_get_gpiod_from_child(dev, NULL,
-							      fwnode_child,
-							      GPIOD_ASIS, NULL);
+		led->gpiod = devm_fwnode_gpiod_get(dev, fwnode_child, NULL,
+						   GPIOD_ASIS, NULL);
 		if (IS_ERR(led->gpiod)) {
 			ret = dev_err_probe(dev, PTR_ERR(led->gpiod), "led: get gpio fail!\n");
 			goto __dt_err;
@@ -838,7 +839,7 @@ static int intel_sso_led_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int intel_sso_led_remove(struct platform_device *pdev)
+static void intel_sso_led_remove(struct platform_device *pdev)
 {
 	struct sso_led_priv *priv;
 	struct sso_led *led, *n;
@@ -851,8 +852,6 @@ static int intel_sso_led_remove(struct platform_device *pdev)
 	}
 
 	regmap_exit(priv->mmap);
-
-	return 0;
 }
 
 static const struct of_device_id of_sso_led_match[] = {

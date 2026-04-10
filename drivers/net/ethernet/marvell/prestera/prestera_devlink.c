@@ -355,11 +355,6 @@ static int prestera_dl_info_get(struct devlink *dl,
 {
 	struct prestera_switch *sw = devlink_priv(dl);
 	char buf[16];
-	int err;
-
-	err = devlink_info_driver_name_put(req, PRESTERA_DRV_NAME);
-	if (err)
-		return err;
 
 	snprintf(buf, sizeof(buf), "%d.%d.%d",
 		 sw->dev->fw_rev.maj,
@@ -392,6 +387,8 @@ struct prestera_switch *prestera_devlink_alloc(struct prestera_device *dev)
 
 	dl = devlink_alloc(&prestera_dl_ops, sizeof(struct prestera_switch),
 			   dev->dev);
+	if (!dl)
+		return NULL;
 
 	return devlink_priv(dl);
 }
@@ -445,23 +442,6 @@ void prestera_devlink_port_unregister(struct prestera_port *port)
 	devlink_port_unregister(&port->dl_port);
 }
 
-void prestera_devlink_port_set(struct prestera_port *port)
-{
-	devlink_port_type_eth_set(&port->dl_port, port->dev);
-}
-
-void prestera_devlink_port_clear(struct prestera_port *port)
-{
-	devlink_port_type_clear(&port->dl_port);
-}
-
-struct devlink_port *prestera_devlink_get_port(struct net_device *dev)
-{
-	struct prestera_port *port = netdev_priv(dev);
-
-	return &port->dl_port;
-}
-
 int prestera_devlink_traps_register(struct prestera_switch *sw)
 {
 	const u32 groups_count = ARRAY_SIZE(prestera_trap_groups_arr);
@@ -471,13 +451,12 @@ int prestera_devlink_traps_register(struct prestera_switch *sw)
 	struct prestera_trap *prestera_trap;
 	int err, i;
 
-	trap_data = kzalloc(sizeof(*trap_data), GFP_KERNEL);
+	trap_data = kzalloc_obj(*trap_data);
 	if (!trap_data)
 		return -ENOMEM;
 
-	trap_data->trap_items_arr = kcalloc(traps_count,
-					    sizeof(struct prestera_trap_item),
-					    GFP_KERNEL);
+	trap_data->trap_items_arr = kzalloc_objs(struct prestera_trap_item,
+						 traps_count);
 	if (!trap_data->trap_items_arr) {
 		err = -ENOMEM;
 		goto err_trap_items_alloc;

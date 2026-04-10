@@ -80,7 +80,7 @@
 
 /* ESP config register 4 read-write */
 #define ESP_CONFIG4_BBTE      0x01     /* Back-to-back transfers     (fsc)   */
-#define ESP_CONGIG4_TEST      0x02     /* Transfer counter test mode (fsc)   */
+#define ESP_CONFIG4_TEST      0x02     /* Transfer counter test mode (fsc)   */
 #define ESP_CONFIG4_RADE      0x04     /* Active negation   (am53c974/fsc)   */
 #define ESP_CONFIG4_RAE       0x08     /* Act. negation REQ/ACK (am53c974)   */
 #define ESP_CONFIG4_PWD       0x20     /* Reduced power feature (am53c974)   */
@@ -572,7 +572,7 @@ struct esp {
  * 13) Check scsi_esp_register() return value, release all resources
  *     if an error was returned.
  */
-extern struct scsi_host_template scsi_esp_template;
+extern const struct scsi_host_template scsi_esp_template;
 extern int scsi_esp_register(struct esp *);
 
 extern void scsi_esp_unregister(struct esp *);

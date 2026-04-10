@@ -12,6 +12,7 @@
 #include <linux/module.h>
 #include <linux/of_graph.h>
 #include <linux/platform_device.h>
+#include <media/v4l2-common.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-mc.h>
@@ -22,65 +23,65 @@
  * there must be 5 pads: 1 input pad from sensor, and
  * the 4 virtual channel output pads
  */
-#define CSI2_SINK_PAD       0
-#define CSI2_NUM_SINK_PADS  1
-#define CSI2_NUM_SRC_PADS   4
-#define CSI2_NUM_PADS       5
+#define CSI2_SINK_PAD		0
+#define CSI2_NUM_SINK_PADS	1
+#define CSI2_NUM_SRC_PADS	4
+#define CSI2_NUM_PADS		5
 
 /*
  * The default maximum bit-rate per lane in Mbps, if the
  * source subdev does not provide V4L2_CID_LINK_FREQ.
  */
-#define CSI2_DEFAULT_MAX_MBPS 849
+#define CSI2_DEFAULT_MAX_MBPS	849
 
 struct csi2_dev {
-	struct device          *dev;
-	struct v4l2_subdev      sd;
+	struct device *dev;
+	struct v4l2_subdev sd;
 	struct v4l2_async_notifier notifier;
-	struct media_pad       pad[CSI2_NUM_PADS];
-	struct clk             *dphy_clk;
-	struct clk             *pllref_clk;
-	struct clk             *pix_clk; /* what is this? */
-	void __iomem           *base;
+	struct media_pad pad[CSI2_NUM_PADS];
+	struct clk *dphy_clk;
+	struct clk *pllref_clk;
+	struct clk *pix_clk; /* what is this? */
+	void __iomem *base;
 
-	struct v4l2_subdev	*remote;
-	unsigned int		remote_pad;
-	unsigned short		data_lanes;
+	struct v4l2_subdev *remote;
+	unsigned int remote_pad;
+	unsigned short data_lanes;
 
 	/* lock to protect all members below */
 	struct mutex lock;
 
 	struct v4l2_mbus_framefmt format_mbus;
 
-	int                     stream_count;
-	struct v4l2_subdev      *src_sd;
-	bool                    sink_linked[CSI2_NUM_SRC_PADS];
+	int stream_count;
+	struct v4l2_subdev *src_sd;
+	bool sink_linked[CSI2_NUM_SRC_PADS];
 };
 
 #define DEVICE_NAME "imx6-mipi-csi2"
 
 /* Register offsets */
-#define CSI2_VERSION            0x000
-#define CSI2_N_LANES            0x004
-#define CSI2_PHY_SHUTDOWNZ      0x008
-#define CSI2_DPHY_RSTZ          0x00c
-#define CSI2_RESETN             0x010
-#define CSI2_PHY_STATE          0x014
-#define PHY_STOPSTATEDATA_BIT   4
-#define PHY_STOPSTATEDATA(n)    BIT(PHY_STOPSTATEDATA_BIT + (n))
-#define PHY_RXCLKACTIVEHS       BIT(8)
-#define PHY_RXULPSCLKNOT        BIT(9)
-#define PHY_STOPSTATECLK        BIT(10)
-#define CSI2_DATA_IDS_1         0x018
-#define CSI2_DATA_IDS_2         0x01c
-#define CSI2_ERR1               0x020
-#define CSI2_ERR2               0x024
-#define CSI2_MSK1               0x028
-#define CSI2_MSK2               0x02c
-#define CSI2_PHY_TST_CTRL0      0x030
+#define CSI2_VERSION		0x000
+#define CSI2_N_LANES		0x004
+#define CSI2_PHY_SHUTDOWNZ	0x008
+#define CSI2_DPHY_RSTZ		0x00c
+#define CSI2_RESETN		0x010
+#define CSI2_PHY_STATE		0x014
+#define PHY_STOPSTATEDATA_BIT	4
+#define PHY_STOPSTATEDATA(n)	BIT(PHY_STOPSTATEDATA_BIT + (n))
+#define PHY_RXCLKACTIVEHS	BIT(8)
+#define PHY_RXULPSCLKNOT	BIT(9)
+#define PHY_STOPSTATECLK	BIT(10)
+#define CSI2_DATA_IDS_1		0x018
+#define CSI2_DATA_IDS_2		0x01c
+#define CSI2_ERR1		0x020
+#define CSI2_ERR2		0x024
+#define CSI2_MSK1		0x028
+#define CSI2_MSK2		0x02c
+#define CSI2_PHY_TST_CTRL0	0x030
 #define PHY_TESTCLR		BIT(0)
 #define PHY_TESTCLK		BIT(1)
-#define CSI2_PHY_TST_CTRL1      0x034
+#define CSI2_PHY_TST_CTRL1	0x034
 #define PHY_TESTEN		BIT(16)
 /*
  * i.MX CSI2IPU Gasket registers follow. The CSI2IPU gasket is
@@ -105,13 +106,13 @@ static inline struct csi2_dev *notifier_to_dev(struct v4l2_async_notifier *n)
  * reference manual is as follows:
  *
  * 1. Deassert presetn signal (global reset).
- *        It's not clear what this "global reset" signal is (maybe APB
- *        global reset), but in any case this step would be probably
- *        be carried out during driver load in csi2_probe().
+ *	It's not clear what this "global reset" signal is (maybe APB
+ *	global reset), but in any case this step would be probably
+ *	be carried out during driver load in csi2_probe().
  *
  * 2. Configure MIPI Camera Sensor to put all Tx lanes in LP-11 state.
- *        This must be carried out by the MIPI sensor's s_power(ON) subdev
- *        op.
+ *	This must be carried out by the MIPI sensor's s_power(ON) subdev
+ *	op.
  *
  * 3. D-PHY initialization.
  * 4. CSI2 Controller programming (Set N_LANES, deassert PHY_SHUTDOWNZ,
@@ -500,7 +501,7 @@ __csi2_get_fmt(struct csi2_dev *csi2, struct v4l2_subdev_state *sd_state,
 	       unsigned int pad, enum v4l2_subdev_format_whence which)
 {
 	if (which == V4L2_SUBDEV_FORMAT_TRY)
-		return v4l2_subdev_get_try_format(&csi2->sd, sd_state, pad);
+		return v4l2_subdev_state_get_format(sd_state, pad);
 	else
 		return &csi2->format_mbus;
 }
@@ -564,6 +565,49 @@ static int csi2_registered(struct v4l2_subdev *sd)
 				      V4L2_FIELD_NONE, NULL);
 }
 
+/* --------------- CORE OPS --------------- */
+
+static int csi2_log_status(struct v4l2_subdev *sd)
+{
+	struct csi2_dev *csi2 = sd_to_dev(sd);
+
+	v4l2_info(sd, "-----MIPI CSI status-----\n");
+	v4l2_info(sd, "VERSION: 0x%x\n",
+		  readl(csi2->base + CSI2_VERSION));
+	v4l2_info(sd, "N_LANES: 0x%x\n",
+		  readl(csi2->base + CSI2_N_LANES));
+	v4l2_info(sd, "PHY_SHUTDOWNZ: 0x%x\n",
+		  readl(csi2->base + CSI2_PHY_SHUTDOWNZ));
+	v4l2_info(sd, "DPHY_RSTZ: 0x%x\n",
+		  readl(csi2->base + CSI2_DPHY_RSTZ));
+	v4l2_info(sd, "RESETN: 0x%x\n",
+		  readl(csi2->base + CSI2_RESETN));
+	v4l2_info(sd, "PHY_STATE: 0x%x\n",
+		  readl(csi2->base + CSI2_PHY_STATE));
+	v4l2_info(sd, "DATA_IDS_1: 0x%x\n",
+		  readl(csi2->base + CSI2_DATA_IDS_1));
+	v4l2_info(sd, "DATA_IDS_2: 0x%x\n",
+		  readl(csi2->base + CSI2_DATA_IDS_2));
+	v4l2_info(sd, "ERR1: 0x%x\n",
+		  readl(csi2->base + CSI2_ERR1));
+	v4l2_info(sd, "ERR2: 0x%x\n",
+		  readl(csi2->base + CSI2_ERR2));
+	v4l2_info(sd, "MSK1: 0x%x\n",
+		  readl(csi2->base + CSI2_MSK1));
+	v4l2_info(sd, "MSK2: 0x%x\n",
+		  readl(csi2->base + CSI2_MSK2));
+	v4l2_info(sd, "PHY_TST_CTRL0: 0x%x\n",
+		  readl(csi2->base + CSI2_PHY_TST_CTRL0));
+	v4l2_info(sd, "PHY_TST_CTRL1: 0x%x\n",
+		  readl(csi2->base + CSI2_PHY_TST_CTRL1));
+
+	return 0;
+}
+
+static const struct v4l2_subdev_core_ops csi2_core_ops = {
+	.log_status = csi2_log_status,
+};
+
 static const struct media_entity_operations csi2_entity_ops = {
 	.link_setup = csi2_link_setup,
 	.link_validate = v4l2_subdev_link_validate,
@@ -575,23 +619,24 @@ static const struct v4l2_subdev_video_ops csi2_video_ops = {
 };
 
 static const struct v4l2_subdev_pad_ops csi2_pad_ops = {
-	.init_cfg = imx_media_init_cfg,
 	.get_fmt = csi2_get_fmt,
 	.set_fmt = csi2_set_fmt,
 };
 
 static const struct v4l2_subdev_ops csi2_subdev_ops = {
+	.core = &csi2_core_ops,
 	.video = &csi2_video_ops,
 	.pad = &csi2_pad_ops,
 };
 
 static const struct v4l2_subdev_internal_ops csi2_internal_ops = {
+	.init_state = imx_media_init_state,
 	.registered = csi2_registered,
 };
 
 static int csi2_notify_bound(struct v4l2_async_notifier *notifier,
 			     struct v4l2_subdev *sd,
-			     struct v4l2_async_subdev *asd)
+			     struct v4l2_async_connection *asd)
 {
 	struct csi2_dev *csi2 = notifier_to_dev(notifier);
 	struct media_pad *sink = &csi2->sd.entity.pads[CSI2_SINK_PAD];
@@ -614,7 +659,7 @@ static int csi2_notify_bound(struct v4l2_async_notifier *notifier,
 
 static void csi2_notify_unbind(struct v4l2_async_notifier *notifier,
 			       struct v4l2_subdev *sd,
-			       struct v4l2_async_subdev *asd)
+			       struct v4l2_async_connection *asd)
 {
 	struct csi2_dev *csi2 = notifier_to_dev(notifier);
 
@@ -631,11 +676,11 @@ static int csi2_async_register(struct csi2_dev *csi2)
 	struct v4l2_fwnode_endpoint vep = {
 		.bus_type = V4L2_MBUS_CSI2_DPHY,
 	};
-	struct v4l2_async_subdev *asd;
+	struct v4l2_async_connection *asd;
 	struct fwnode_handle *ep;
 	int ret;
 
-	v4l2_async_nf_init(&csi2->notifier);
+	v4l2_async_subdev_nf_init(&csi2->notifier, &csi2->sd);
 
 	ep = fwnode_graph_get_endpoint_by_id(dev_fwnode(csi2->dev), 0, 0,
 					     FWNODE_GRAPH_ENDPOINT_NEXT);
@@ -652,7 +697,7 @@ static int csi2_async_register(struct csi2_dev *csi2)
 	dev_dbg(csi2->dev, "flags: 0x%08x\n", vep.bus.mipi_csi2.flags);
 
 	asd = v4l2_async_nf_add_fwnode_remote(&csi2->notifier, ep,
-					      struct v4l2_async_subdev);
+					      struct v4l2_async_connection);
 	fwnode_handle_put(ep);
 
 	if (IS_ERR(asd))
@@ -660,7 +705,7 @@ static int csi2_async_register(struct csi2_dev *csi2)
 
 	csi2->notifier.ops = &csi2_notify_ops;
 
-	ret = v4l2_async_subdev_nf_register(&csi2->sd, &csi2->notifier);
+	ret = v4l2_async_nf_register(&csi2->notifier);
 	if (ret)
 		return ret;
 
@@ -674,7 +719,6 @@ err_parse:
 static int csi2_probe(struct platform_device *pdev)
 {
 	struct csi2_dev *csi2;
-	struct resource *res;
 	int i, ret;
 
 	csi2 = devm_kzalloc(&pdev->dev, sizeof(*csi2), GFP_KERNEL);
@@ -722,22 +766,18 @@ static int csi2_probe(struct platform_device *pdev)
 		return PTR_ERR(csi2->pix_clk);
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		v4l2_err(&csi2->sd, "failed to get platform resources\n");
-		return -ENODEV;
-	}
+	csi2->base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(csi2->base))
+		return PTR_ERR(csi2->base);
 
-	csi2->base = devm_ioremap(&pdev->dev, res->start, PAGE_SIZE);
-	if (!csi2->base)
-		return -ENOMEM;
-
-	mutex_init(&csi2->lock);
+	ret = devm_mutex_init(&pdev->dev, &csi2->lock);
+	if (ret)
+		return ret;
 
 	ret = clk_prepare_enable(csi2->pllref_clk);
 	if (ret) {
 		v4l2_err(&csi2->sd, "failed to enable pllref_clk\n");
-		goto rmmutex;
+		return ret;
 	}
 
 	ret = clk_prepare_enable(csi2->dphy_clk);
@@ -760,12 +800,10 @@ clean_notifier:
 	clk_disable_unprepare(csi2->dphy_clk);
 pllref_off:
 	clk_disable_unprepare(csi2->pllref_clk);
-rmmutex:
-	mutex_destroy(&csi2->lock);
 	return ret;
 }
 
-static int csi2_remove(struct platform_device *pdev)
+static void csi2_remove(struct platform_device *pdev)
 {
 	struct v4l2_subdev *sd = platform_get_drvdata(pdev);
 	struct csi2_dev *csi2 = sd_to_dev(sd);
@@ -775,10 +813,7 @@ static int csi2_remove(struct platform_device *pdev)
 	v4l2_async_unregister_subdev(sd);
 	clk_disable_unprepare(csi2->dphy_clk);
 	clk_disable_unprepare(csi2->pllref_clk);
-	mutex_destroy(&csi2->lock);
 	media_entity_cleanup(&sd->entity);
-
-	return 0;
 }
 
 static const struct of_device_id csi2_dt_ids[] = {

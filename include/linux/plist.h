@@ -8,7 +8,7 @@
  * 2001-2005 (c) MontaVista Software, Inc.
  * Daniel Walker <dwalker@mvista.com>
  *
- * (C) 2005 Thomas Gleixner <tglx@linutronix.de>
+ * (C) 2005 Linutronix GmbH, Thomas Gleixner <tglx@kernel.org>
  *
  * Simplifications of the original code by
  * Oleg Nesterov <oleg@tv-sign.ru>
@@ -75,19 +75,9 @@
 
 #include <linux/container_of.h>
 #include <linux/list.h>
-#include <linux/types.h>
+#include <linux/plist_types.h>
 
 #include <asm/bug.h>
-
-struct plist_head {
-	struct list_head node_list;
-};
-
-struct plist_node {
-	int			prio;
-	struct list_head	prio_list;
-	struct list_head	node_list;
-};
 
 /**
  * PLIST_HEAD_INIT - static struct plist_head initializer

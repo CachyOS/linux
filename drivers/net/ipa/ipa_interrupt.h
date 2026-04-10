@@ -1,49 +1,19 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 
 /* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
- * Copyright (C) 2018-2020 Linaro Ltd.
+ * Copyright (C) 2018-2024 Linaro Ltd.
  */
 #ifndef _IPA_INTERRUPT_H_
 #define _IPA_INTERRUPT_H_
 
 #include <linux/types.h>
-#include <linux/bits.h>
+
+struct platform_device;
 
 struct ipa;
 struct ipa_interrupt;
 
-/**
- * typedef ipa_irq_handler_t - IPA interrupt handler function type
- * @ipa:	IPA pointer
- * @irq_id:	interrupt type
- *
- * Callback function registered by ipa_interrupt_add() to handle a specific
- * IPA interrupt type
- */
-typedef void (*ipa_irq_handler_t)(struct ipa *ipa, enum ipa_irq_id irq_id);
-
-/**
- * ipa_interrupt_add() - Register a handler for an IPA interrupt type
- * @interrupt:	IPA interrupt structure
- * @irq_id:	IPA interrupt type
- * @handler:	Handler function for the interrupt
- *
- * Add a handler for an IPA interrupt and enable it.  IPA interrupt
- * handlers are run in threaded interrupt context, so are allowed to
- * block.
- */
-void ipa_interrupt_add(struct ipa_interrupt *interrupt, enum ipa_irq_id irq_id,
-		       ipa_irq_handler_t handler);
-
-/**
- * ipa_interrupt_remove() - Remove the handler for an IPA interrupt type
- * @interrupt:	IPA interrupt structure
- * @irq_id:	IPA interrupt type
- *
- * Remove an IPA interrupt handler and disable it.
- */
-void ipa_interrupt_remove(struct ipa_interrupt *interrupt,
-			  enum ipa_irq_id irq_id);
+enum ipa_irq_id;
 
 /**
  * ipa_interrupt_suspend_enable - Enable TX_SUSPEND for an endpoint
@@ -67,14 +37,6 @@ void ipa_interrupt_suspend_disable(struct ipa_interrupt *interrupt,
 				   u32 endpoint_id);
 
 /**
- * ipa_interrupt_suspend_clear_all - clear all suspend interrupts
- * @interrupt:	IPA interrupt structure
- *
- * Clear the TX_SUSPEND interrupt for all endpoints that signaled it.
- */
-void ipa_interrupt_suspend_clear_all(struct ipa_interrupt *interrupt);
-
-/**
  * ipa_interrupt_simulate_suspend() - Simulate TX_SUSPEND IPA interrupt
  * @interrupt:	IPA interrupt structure
  *
@@ -86,17 +48,61 @@ void ipa_interrupt_suspend_clear_all(struct ipa_interrupt *interrupt);
 void ipa_interrupt_simulate_suspend(struct ipa_interrupt *interrupt);
 
 /**
- * ipa_interrupt_config() - Configure the IPA interrupt framework
+ * ipa_interrupt_enable() - Enable an IPA interrupt type
+ * @ipa:	IPA pointer
+ * @ipa_irq:	IPA interrupt ID
+ */
+void ipa_interrupt_enable(struct ipa *ipa, enum ipa_irq_id ipa_irq);
+
+/**
+ * ipa_interrupt_disable() - Disable an IPA interrupt type
+ * @ipa:	IPA pointer
+ * @ipa_irq:	IPA interrupt ID
+ */
+void ipa_interrupt_disable(struct ipa *ipa, enum ipa_irq_id ipa_irq);
+
+/**
+ * ipa_interrupt_irq_enable() - Enable IPA interrupts
  * @ipa:	IPA pointer
  *
- * Return:	Pointer to IPA SMP2P info, or a pointer-coded error
+ * This enables the IPA interrupt line
  */
-struct ipa_interrupt *ipa_interrupt_config(struct ipa *ipa);
+void ipa_interrupt_irq_enable(struct ipa *ipa);
+
+/**
+ * ipa_interrupt_irq_disable() - Disable IPA interrupts
+ * @ipa:	IPA pointer
+ *
+ * This disables the IPA interrupt line
+ */
+void ipa_interrupt_irq_disable(struct ipa *ipa);
+
+/**
+ * ipa_interrupt_config() - Configure IPA interrupts
+ * @ipa:	IPA pointer
+ *
+ * Return:	0 if successful, or a negative error code
+ */
+int ipa_interrupt_config(struct ipa *ipa);
 
 /**
  * ipa_interrupt_deconfig() - Inverse of ipa_interrupt_config()
+ * @ipa:	IPA pointer
+ */
+void ipa_interrupt_deconfig(struct ipa *ipa);
+
+/**
+ * ipa_interrupt_init() - Initialize the IPA interrupt structure
+ * @pdev:	IPA platform device pointer
+ *
+ * Return:	Pointer to an IPA interrupt structure, or a pointer-coded error
+ */
+struct ipa_interrupt *ipa_interrupt_init(struct platform_device *pdev);
+
+/**
+ * ipa_interrupt_exit() - Inverse of ipa_interrupt_init()
  * @interrupt:	IPA interrupt structure
  */
-void ipa_interrupt_deconfig(struct ipa_interrupt *interrupt);
+void ipa_interrupt_exit(struct ipa_interrupt *interrupt);
 
 #endif /* _IPA_INTERRUPT_H_ */

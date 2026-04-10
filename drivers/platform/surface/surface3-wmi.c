@@ -226,14 +226,13 @@ static int __init s3_wmi_probe(struct platform_device *pdev)
 	return error;
 }
 
-static int s3_wmi_remove(struct platform_device *device)
+static void s3_wmi_remove(struct platform_device *device)
 {
 	/* remove the hotplug context from the acpi device */
 	s3_wmi.touchscreen_adev->hp = NULL;
 
 	/* reinstall the actual PNPC0C0D LID default handle */
 	acpi_bus_scan(s3_wmi.pnp0c0d_adev->handle);
-	return 0;
 }
 
 static int __maybe_unused s3_wmi_resume(struct device *dev)

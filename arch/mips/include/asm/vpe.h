@@ -29,12 +29,8 @@
 
 static inline int aprp_cpu_index(void)
 {
-#ifdef CONFIG_MIPS_CMP
-	return setup_max_cpus;
-#else
 	extern int tclimit;
 	return tclimit;
-#endif
 }
 
 enum vpe_state {
@@ -102,7 +98,6 @@ struct vpe_control {
 	struct list_head tc_list;       /* Thread contexts */
 };
 
-extern unsigned long physical_memsize;
 extern struct vpe_control vpecontrol;
 extern const struct file_operations vpe_fops;
 
@@ -124,4 +119,12 @@ void cleanup_tc(struct tc *tc);
 
 int __init vpe_module_init(void);
 void __exit vpe_module_exit(void);
+
+#ifdef CONFIG_MIPS_VPE_LOADER_MT
+void *vpe_alloc(void);
+int vpe_start(void *vpe, unsigned long start);
+int vpe_stop(void *vpe);
+int vpe_free(void *vpe);
+#endif /* CONFIG_MIPS_VPE_LOADER_MT */
+
 #endif /* _ASM_VPE_H */

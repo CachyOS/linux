@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2010-2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #include "assert_support.h"
@@ -222,25 +213,6 @@ void irq_raise(
 			    (unsigned int)addr, 1);
 	gp_device_reg_store(GP_DEVICE0_ID,
 			    (unsigned int)addr, 0);
-	return;
-}
-
-void irq_controller_get_state(const irq_ID_t ID,
-			      struct irq_controller_state *state)
-{
-	assert(ID < N_IRQ_ID);
-	assert(state);
-
-	state->irq_edge = irq_reg_load(ID,
-				       _HRT_IRQ_CONTROLLER_EDGE_REG_IDX);
-	state->irq_mask = irq_reg_load(ID,
-				       _HRT_IRQ_CONTROLLER_MASK_REG_IDX);
-	state->irq_status = irq_reg_load(ID,
-					 _HRT_IRQ_CONTROLLER_STATUS_REG_IDX);
-	state->irq_enable = irq_reg_load(ID,
-					 _HRT_IRQ_CONTROLLER_ENABLE_REG_IDX);
-	state->irq_level_not_pulse = irq_reg_load(ID,
-				     _HRT_IRQ_CONTROLLER_EDGE_NOT_PULSE_REG_IDX);
 	return;
 }
 

@@ -42,7 +42,7 @@ struct test_name_type_v01 {
 	char name[TEST_MAX_NAME_SIZE_V01];
 };
 
-static struct qmi_elem_info test_name_type_v01_ei[] = {
+static const struct qmi_elem_info test_name_type_v01_ei[] = {
 	{
 		.data_type	= QMI_DATA_LEN,
 		.elem_len	= 1,
@@ -71,7 +71,7 @@ struct test_ping_req_msg_v01 {
 	struct test_name_type_v01 client_name;
 };
 
-static struct qmi_elem_info test_ping_req_msg_v01_ei[] = {
+static const struct qmi_elem_info test_ping_req_msg_v01_ei[] = {
 	{
 		.data_type	= QMI_UNSIGNED_1_BYTE,
 		.elem_len	= 4,
@@ -113,7 +113,7 @@ struct test_ping_resp_msg_v01 {
 	struct test_name_type_v01 service_name;
 };
 
-static struct qmi_elem_info test_ping_resp_msg_v01_ei[] = {
+static const struct qmi_elem_info test_ping_resp_msg_v01_ei[] = {
 	{
 		.data_type	= QMI_STRUCT,
 		.elem_len	= 1,
@@ -172,7 +172,7 @@ struct test_data_req_msg_v01 {
 	struct test_name_type_v01 client_name;
 };
 
-static struct qmi_elem_info test_data_req_msg_v01_ei[] = {
+static const struct qmi_elem_info test_data_req_msg_v01_ei[] = {
 	{
 		.data_type	= QMI_DATA_LEN,
 		.elem_len	= 1,
@@ -224,7 +224,7 @@ struct test_data_resp_msg_v01 {
 	struct test_name_type_v01 service_name;
 };
 
-static struct qmi_elem_info test_data_resp_msg_v01_ei[] = {
+static const struct qmi_elem_info test_data_resp_msg_v01_ei[] = {
 	{
 		.data_type	= QMI_STRUCT,
 		.elem_len	= 1,
@@ -468,7 +468,7 @@ static int qmi_sample_probe(struct platform_device *pdev)
 		return ret;
 
 	sq = dev_get_platdata(&pdev->dev);
-	ret = kernel_connect(sample->qmi.sock, (struct sockaddr *)sq,
+	ret = kernel_connect(sample->qmi.sock, (struct sockaddr_unsized *)sq,
 			     sizeof(*sq), 0);
 	if (ret < 0) {
 		pr_err("failed to connect to remote service port\n");
@@ -511,7 +511,7 @@ err_release_qmi_handle:
 	return ret;
 }
 
-static int qmi_sample_remove(struct platform_device *pdev)
+static void qmi_sample_remove(struct platform_device *pdev)
 {
 	struct qmi_sample *sample = platform_get_drvdata(pdev);
 
@@ -520,8 +520,6 @@ static int qmi_sample_remove(struct platform_device *pdev)
 	debugfs_remove(sample->de_dir);
 
 	qmi_handle_release(&sample->qmi);
-
-	return 0;
 }
 
 static struct platform_driver qmi_sample_driver = {

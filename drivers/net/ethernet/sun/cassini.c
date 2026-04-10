@@ -29,7 +29,7 @@
  *  -- on page reclamation, the driver swaps the page with a spare page.
  *     if that page is still in use, it frees its reference to that page,
  *     and allocates a new page for use. otherwise, it just recycles the
- *     the page.
+ *     page.
  *
  * NOTE: cassini can parse the header. however, it's not worth it
  *       as long as the network stack requires a header copy.
@@ -73,6 +73,7 @@
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
+#include <linux/skbuff_ref.h>
 #include <linux/ethtool.h>
 #include <linux/crc32.h>
 #include <linux/random.h>
@@ -90,8 +91,6 @@
 #include <linux/uaccess.h>
 #include <linux/jiffies.h>
 
-#define cas_page_map(x)      kmap_atomic((x))
-#define cas_page_unmap(x)    kunmap_atomic((x))
 #define CAS_NCPUS            num_online_cpus()
 
 #define cas_skb_release(x)  netif_rx(x)
@@ -178,7 +177,7 @@ static char version[] =
 static int cassini_debug = -1;	/* -1 == use CAS_DEF_MSG_ENABLE as value */
 static int link_mode;
 
-MODULE_AUTHOR("Adrian Sun (asun@darksunrising.com)");
+MODULE_AUTHOR("Adrian Sun <asun@darksunrising.com>");
 MODULE_DESCRIPTION("Sun Cassini(+) ethernet driver");
 MODULE_LICENSE("GPL");
 MODULE_FIRMWARE("sun/cassini.bin");
@@ -466,7 +465,7 @@ static cas_page_t *cas_page_alloc(struct cas *cp, const gfp_t flags)
 {
 	cas_page_t *page;
 
-	page = kmalloc(sizeof(cas_page_t), flags);
+	page = kmalloc_obj(cas_page_t, flags);
 	if (!page)
 		return NULL;
 
@@ -1915,7 +1914,7 @@ static int cas_rx_process_pkt(struct cas *cp, struct cas_rx_comp *rxc,
 	int off, swivel = RX_SWIVEL_OFF_VAL;
 	struct cas_page *page;
 	struct sk_buff *skb;
-	void *addr, *crcaddr;
+	void *crcaddr;
 	__sum16 csum;
 	char *p;
 
@@ -1936,7 +1935,7 @@ static int cas_rx_process_pkt(struct cas *cp, struct cas_rx_comp *rxc,
 	skb_reserve(skb, swivel);
 
 	p = skb->data;
-	addr = crcaddr = NULL;
+	crcaddr = NULL;
 	if (hlen) { /* always copy header pages */
 		i = CAS_VAL(RX_COMP2_HDR_INDEX, words[1]);
 		page = cp->rx_pages[CAS_VAL(RX_INDEX_RING, i)][CAS_VAL(RX_INDEX_NUM, i)];
@@ -1948,12 +1947,10 @@ static int cas_rx_process_pkt(struct cas *cp, struct cas_rx_comp *rxc,
 			i += cp->crc_size;
 		dma_sync_single_for_cpu(&cp->pdev->dev, page->dma_addr + off,
 					i, DMA_FROM_DEVICE);
-		addr = cas_page_map(page->buffer);
-		memcpy(p, addr + off, i);
+		memcpy(p, page_address(page->buffer) + off, i);
 		dma_sync_single_for_device(&cp->pdev->dev,
 					   page->dma_addr + off, i,
 					   DMA_FROM_DEVICE);
-		cas_page_unmap(addr);
 		RX_USED_ADD(page, 0x100);
 		p += hlen;
 		swivel = 0;
@@ -1984,12 +1981,11 @@ static int cas_rx_process_pkt(struct cas *cp, struct cas_rx_comp *rxc,
 		/* make sure we always copy a header */
 		swivel = 0;
 		if (p == (char *) skb->data) { /* not split */
-			addr = cas_page_map(page->buffer);
-			memcpy(p, addr + off, RX_COPY_MIN);
+			memcpy(p, page_address(page->buffer) + off,
+			       RX_COPY_MIN);
 			dma_sync_single_for_device(&cp->pdev->dev,
 						   page->dma_addr + off, i,
 						   DMA_FROM_DEVICE);
-			cas_page_unmap(addr);
 			off += RX_COPY_MIN;
 			swivel = RX_COPY_MIN;
 			RX_USED_ADD(page, cp->mtu_stride);
@@ -2003,10 +1999,8 @@ static int cas_rx_process_pkt(struct cas *cp, struct cas_rx_comp *rxc,
 		skb->truesize += hlen - swivel;
 		skb->len      += hlen - swivel;
 
-		__skb_frag_set_page(frag, page->buffer);
+		skb_frag_fill_page_desc(frag, page->buffer, off, hlen - swivel);
 		__skb_frag_ref(frag);
-		skb_frag_off_set(frag, off);
-		skb_frag_size_set(frag, hlen - swivel);
 
 		/* any more data? */
 		if ((words[0] & RX_COMP1_SPLIT_PKT) && ((dlen -= hlen) > 0)) {
@@ -2029,17 +2023,13 @@ static int cas_rx_process_pkt(struct cas *cp, struct cas_rx_comp *rxc,
 			skb->len      += hlen;
 			frag++;
 
-			__skb_frag_set_page(frag, page->buffer);
+			skb_frag_fill_page_desc(frag, page->buffer, 0, hlen);
 			__skb_frag_ref(frag);
-			skb_frag_off_set(frag, 0);
-			skb_frag_size_set(frag, hlen);
 			RX_USED_ADD(page, hlen + cp->crc_size);
 		}
 
-		if (cp->crc_size) {
-			addr = cas_page_map(page->buffer);
-			crcaddr  = addr + off + hlen;
-		}
+		if (cp->crc_size)
+			crcaddr = page_address(page->buffer) + off + hlen;
 
 	} else {
 		/* copying packet */
@@ -2061,12 +2051,10 @@ static int cas_rx_process_pkt(struct cas *cp, struct cas_rx_comp *rxc,
 			i += cp->crc_size;
 		dma_sync_single_for_cpu(&cp->pdev->dev, page->dma_addr + off,
 					i, DMA_FROM_DEVICE);
-		addr = cas_page_map(page->buffer);
-		memcpy(p, addr + off, i);
+		memcpy(p, page_address(page->buffer) + off, i);
 		dma_sync_single_for_device(&cp->pdev->dev,
 					   page->dma_addr + off, i,
 					   DMA_FROM_DEVICE);
-		cas_page_unmap(addr);
 		if (p == (char *) skb->data) /* not split */
 			RX_USED_ADD(page, cp->mtu_stride);
 		else
@@ -2081,20 +2069,17 @@ static int cas_rx_process_pkt(struct cas *cp, struct cas_rx_comp *rxc,
 						page->dma_addr,
 						dlen + cp->crc_size,
 						DMA_FROM_DEVICE);
-			addr = cas_page_map(page->buffer);
-			memcpy(p, addr, dlen + cp->crc_size);
+			memcpy(p, page_address(page->buffer), dlen + cp->crc_size);
 			dma_sync_single_for_device(&cp->pdev->dev,
 						   page->dma_addr,
 						   dlen + cp->crc_size,
 						   DMA_FROM_DEVICE);
-			cas_page_unmap(addr);
 			RX_USED_ADD(page, dlen + cp->crc_size);
 		}
 end_copy_pkt:
-		if (cp->crc_size) {
-			addr    = NULL;
+		if (cp->crc_size)
 			crcaddr = skb->data + alloclen;
-		}
+
 		skb_put(skb, alloclen);
 	}
 
@@ -2103,8 +2088,6 @@ end_copy_pkt:
 		/* checksum includes FCS. strip it out. */
 		csum = csum_fold(csum_partial(crcaddr, cp->crc_size,
 					      csum_unfold(csum)));
-		if (addr)
-			cas_page_unmap(addr);
 	}
 	skb->protocol = eth_type_trans(skb, cp->dev);
 	if (skb->protocol == htons(ETH_P_IP)) {
@@ -2793,18 +2776,14 @@ static inline int cas_xmit_tx_ringN(struct cas *cp, int ring,
 
 		tabort = cas_calc_tabort(cp, skb_frag_off(fragp), len);
 		if (unlikely(tabort)) {
-			void *addr;
-
 			/* NOTE: len is always > tabort */
 			cas_write_txd(cp, ring, entry, mapping, len - tabort,
 				      ctrl, 0);
 			entry = TX_DESC_NEXT(ring, entry);
-
-			addr = cas_page_map(skb_frag_page(fragp));
-			memcpy(tx_tiny_buf(cp, ring, entry),
-			       addr + skb_frag_off(fragp) + len - tabort,
-			       tabort);
-			cas_page_unmap(addr);
+			memcpy_from_page(tx_tiny_buf(cp, ring, entry),
+					 skb_frag_page(fragp),
+					 skb_frag_off(fragp) + len - tabort,
+					 tabort);
 			mapping = tx_tiny_map(cp, ring, entry, tentry);
 			len     = tabort;
 		}
@@ -3800,7 +3779,7 @@ static void cas_shutdown(struct cas *cp)
 	/* Make us not-running to avoid timers respawning */
 	cp->hw_running = 0;
 
-	del_timer_sync(&cp->link_timer);
+	timer_delete_sync(&cp->link_timer);
 
 	/* Stop the reset task */
 #if 0
@@ -3825,7 +3804,7 @@ static int cas_change_mtu(struct net_device *dev, int new_mtu)
 {
 	struct cas *cp = netdev_priv(dev);
 
-	dev->mtu = new_mtu;
+	WRITE_ONCE(dev->mtu, new_mtu);
 	if (!netif_running(dev) || !netif_device_present(dev))
 		return 0;
 
@@ -4042,7 +4021,7 @@ done:
 
 static void cas_link_timer(struct timer_list *t)
 {
-	struct cas *cp = from_timer(cp, t, link_timer);
+	struct cas *cp = timer_container_of(cp, t, link_timer);
 	int mask, pending = 0, reset = 0;
 	unsigned long flags;
 
@@ -4484,9 +4463,9 @@ static void cas_set_multicast(struct net_device *dev)
 static void cas_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
 {
 	struct cas *cp = netdev_priv(dev);
-	strlcpy(info->driver, DRV_MODULE_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_MODULE_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, pci_name(cp->pdev), sizeof(info->bus_info));
+	strscpy(info->driver, DRV_MODULE_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_MODULE_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, pci_name(cp->pdev), sizeof(info->bus_info));
 }
 
 static int cas_get_link_ksettings(struct net_device *dev,
@@ -5050,7 +5029,7 @@ static int cas_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	dev->watchdog_timeo = CAS_TX_TIMEOUT;
 
 #ifdef USE_NAPI
-	netif_napi_add(dev, &cp->napi, cas_poll, 64);
+	netif_napi_add(dev, &cp->napi, cas_poll);
 #endif
 	dev->irq = pdev->irq;
 	dev->dma = 0;
@@ -5094,6 +5073,8 @@ err_out_iounmap:
 	if (cp->hw_running)
 		cas_shutdown(cp);
 	mutex_unlock(&cp->pm_mutex);
+
+	vfree(cp->fw_data);
 
 	pci_iounmap(pdev, cp->regs);
 

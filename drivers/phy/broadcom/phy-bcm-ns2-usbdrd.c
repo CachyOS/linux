@@ -1,15 +1,5 @@
-/*
- * Copyright (C) 2017 Broadcom
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+// SPDX-License-Identifier: GPL-2.0-only
+// Copyright (C) 2017 Broadcom
 
 #include <linux/delay.h>
 #include <linux/extcon-provider.h>
@@ -405,7 +395,6 @@ static int ns2_drd_phy_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, driver);
 
-	dev_info(dev, "Registered NS2 DRD Phy device\n");
 	queue_delayed_work(system_power_efficient_wq, &driver->wq_extcon,
 			   driver->debounce_jiffies);
 

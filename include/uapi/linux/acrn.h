@@ -12,7 +12,6 @@
 #define _UAPI_ACRN_H
 
 #include <linux/types.h>
-#include <linux/uuid.h>
 
 #define ACRN_IO_REQUEST_MAX		16
 
@@ -186,7 +185,7 @@ struct acrn_ioreq_notify {
  * @reserved0:		Reserved and must be 0
  * @vcpu_num:		Number of vCPU in the VM. Return from hypervisor.
  * @reserved1:		Reserved and must be 0
- * @uuid:		UUID of the VM. Pass to hypervisor directly.
+ * @uuid:		Empty space never to be used again (used to be UUID of the VM)
  * @vm_flag:		Flag of the VM creating. Pass to hypervisor directly.
  * @ioreq_buf:		Service VM GPA of I/O request buffer. Pass to
  *			hypervisor directly.
@@ -198,7 +197,7 @@ struct acrn_vm_creation {
 	__u16	reserved0;
 	__u16	vcpu_num;
 	__u16	reserved1;
-	guid_t	uuid;
+	__u8	uuid[16];
 	__u64	vm_flag;
 	__u64	ioreq_buf;
 	__u64	cpu_affinity;
@@ -419,26 +418,32 @@ struct acrn_pcidev {
 };
 
 /**
- * struct acrn_mmiodev - Info for assigning or de-assigning a MMIO device
- * @name:			Name of the MMIO device.
- * @res[].user_vm_pa:		Physical address of User VM of the MMIO region
- *				for the MMIO device.
- * @res[].service_vm_pa:	Physical address of Service VM of the MMIO
- *				region for the MMIO device.
- * @res[].size:			Size of the MMIO region for the MMIO device.
- * @res[].mem_type:		Memory type of the MMIO region for the MMIO
- *				device.
+ * struct acrn_mmio_dev_res - MMIO device resource description
+ * @user_vm_pa:		Physical address of User VM of the MMIO region
+ *			for the MMIO device.
+ * @service_vm_pa:	Physical address of Service VM of the MMIO
+ *			region for the MMIO device.
+ * @size:		Size of the MMIO region for the MMIO device.
+ * @mem_type:		Memory type of the MMIO region for the MMIO
+ *			device.
+ */
+struct acrn_mmio_dev_res {
+	__u64	user_vm_pa;
+	__u64	service_vm_pa;
+	__u64	size;
+	__u64	mem_type;
+};
+
+/**
+ * struct acrn_mmiodev - Info for assigning or de-assigning an MMIO device
+ * @name:	Name of the MMIO device.
+ * @res:	Array of MMIO device descriptions
  *
  * This structure will be passed to hypervisor directly.
  */
 struct acrn_mmiodev {
 	__u8	name[8];
-	struct {
-		__u64	user_vm_pa;
-		__u64	service_vm_pa;
-		__u64	size;
-		__u64	mem_type;
-	} res[ACRN_MMIODEV_RES_NUM];
+	struct acrn_mmio_dev_res res[ACRN_MMIODEV_RES_NUM];
 };
 
 /**

@@ -138,6 +138,10 @@ times, but it's highly important.  If we can actually eliminate warnings
 from the documentation build, then we can start expecting developers to
 avoid adding new ones.
 
+In addition to warnings from the regular documentation build, you can also
+run ``make refcheckdocs`` to find references to nonexistent documentation
+files.
+
 Languishing kerneldoc comments
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -148,7 +152,7 @@ generate links to that documentation.  Adding ``kernel-doc`` directives to
 the documentation to bring those comments in can help the community derive
 the full value of the work that has gone into creating them.
 
-The ``scripts/find-unused-docs.sh`` tool can be used to find these
+The ``tools/docs/find-unused-docs.sh`` tool can be used to find these
 overlooked comments.
 
 Note that the most value comes from pulling in the documentation for

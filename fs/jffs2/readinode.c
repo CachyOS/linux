@@ -72,7 +72,7 @@ static int check_node_data(struct jffs2_sb_info *c, struct jffs2_tmp_dnode_info 
 		if (err != -EOPNOTSUPP)
 			JFFS2_WARNING("MTD point failed: error code %d.\n", err);
 	} else
-		pointed = 1; /* succefully pointed to device */
+		pointed = 1; /* successfully pointed to device */
 #endif
 
 	if (!pointed) {
@@ -1392,7 +1392,7 @@ int jffs2_do_read_inode(struct jffs2_sb_info *c, struct jffs2_inode_info *f,
 int jffs2_do_crccheck_inode(struct jffs2_sb_info *c, struct jffs2_inode_cache *ic)
 {
 	struct jffs2_raw_inode n;
-	struct jffs2_inode_info *f = kzalloc(sizeof(*f), GFP_KERNEL);
+	struct jffs2_inode_info *f = kzalloc_obj(*f);
 	int ret;
 
 	if (!f)

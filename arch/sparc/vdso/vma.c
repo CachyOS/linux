@@ -243,8 +243,9 @@ static int stick_patch(const struct vdso_image *image, struct vdso_elfinfo *e, b
  * Allocate pages for the vdso and vvar, and copy in the vdso text from the
  * kernel image.
  */
-int __init init_vdso_image(const struct vdso_image *image,
-			   struct vm_special_mapping *vdso_mapping, bool elf64)
+static int __init init_vdso_image(const struct vdso_image *image,
+				  struct vm_special_mapping *vdso_mapping,
+				  bool elf64)
 {
 	int cnpages = (image->size) / PAGE_SIZE;
 	struct page *dp, **dpp = NULL;
@@ -265,7 +266,7 @@ int __init init_vdso_image(const struct vdso_image *image,
 	if (WARN_ON(image->size % PAGE_SIZE != 0))
 		goto oom;
 
-	cpp = kcalloc(cnpages, sizeof(struct page *), GFP_KERNEL);
+	cpp = kzalloc_objs(struct page *, cnpages);
 	vdso_mapping->pages = cpp;
 
 	if (!cpp)
@@ -287,7 +288,7 @@ int __init init_vdso_image(const struct vdso_image *image,
 		dnpages = (sizeof(struct vvar_data) / PAGE_SIZE) + 1;
 		if (WARN_ON(dnpages != 1))
 			goto oom;
-		dpp = kcalloc(dnpages, sizeof(struct page *), GFP_KERNEL);
+		dpp = kzalloc_objs(struct page *, dnpages);
 		vvar_mapping.pages = dpp;
 
 		if (!dpp)
@@ -354,7 +355,7 @@ static unsigned long vdso_addr(unsigned long start, unsigned int len)
 	unsigned int offset;
 
 	/* This loses some more bits than a modulo, but is cheaper */
-	offset = get_random_int() & (PTRS_PER_PTE - 1);
+	offset = get_random_u32_below(PTRS_PER_PTE);
 	return start + (offset << PAGE_SHIFT);
 }
 
@@ -449,9 +450,8 @@ static __init int vdso_setup(char *s)
 	unsigned long val;
 
 	err = kstrtoul(s, 10, &val);
-	if (err)
-		return err;
-	vdso_enabled = val;
-	return 0;
+	if (!err)
+		vdso_enabled = val;
+	return 1;
 }
 __setup("vdso=", vdso_setup);

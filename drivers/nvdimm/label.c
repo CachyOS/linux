@@ -442,7 +442,8 @@ int nd_label_data_init(struct nvdimm_drvdata *ndd)
 	if (ndd->data)
 		return 0;
 
-	if (ndd->nsarea.status || ndd->nsarea.max_xfer == 0) {
+	if (ndd->nsarea.status || ndd->nsarea.max_xfer == 0 ||
+	    ndd->nsarea.config_size == 0) {
 		dev_dbg(ndd->dev, "failed to init config data area: (%u:%u)\n",
 			ndd->nsarea.max_xfer, ndd->nsarea.config_size);
 		return -ENXIO;
@@ -981,7 +982,7 @@ static int init_labels(struct nd_mapping *nd_mapping, int num_labels)
 	 * they can be garbage collected after writing the new labels.
 	 */
 	for (i = old_num_labels; i < num_labels; i++) {
-		label_ent = kzalloc(sizeof(*label_ent), GFP_KERNEL);
+		label_ent = kzalloc_obj(*label_ent);
 		if (!label_ent)
 			return -ENOMEM;
 		mutex_lock(&nd_mapping->lock);

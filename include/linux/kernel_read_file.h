@@ -14,6 +14,7 @@
 	id(KEXEC_INITRAMFS, kexec-initramfs)	\
 	id(POLICY, security-policy)		\
 	id(X509_CERTIFICATE, x509-certificate)	\
+	id(MODULE_COMPRESSED, kernel-module-compressed) \
 	id(MAX_ID, )
 
 #define __fid_enumify(ENUM, dummy) READING_ ## ENUM,
@@ -35,21 +36,21 @@ static inline const char *kernel_read_file_id_str(enum kernel_read_file_id id)
 	return kernel_read_file_str[id];
 }
 
-int kernel_read_file(struct file *file, loff_t offset,
-		     void **buf, size_t buf_size,
-		     size_t *file_size,
-		     enum kernel_read_file_id id);
-int kernel_read_file_from_path(const char *path, loff_t offset,
-			       void **buf, size_t buf_size,
-			       size_t *file_size,
-			       enum kernel_read_file_id id);
-int kernel_read_file_from_path_initns(const char *path, loff_t offset,
-				      void **buf, size_t buf_size,
-				      size_t *file_size,
-				      enum kernel_read_file_id id);
-int kernel_read_file_from_fd(int fd, loff_t offset,
-			     void **buf, size_t buf_size,
-			     size_t *file_size,
-			     enum kernel_read_file_id id);
+ssize_t kernel_read_file(struct file *file, loff_t offset,
+			 void **buf, size_t buf_size,
+			 size_t *file_size,
+			 enum kernel_read_file_id id);
+ssize_t kernel_read_file_from_path(const char *path, loff_t offset,
+				   void **buf, size_t buf_size,
+				   size_t *file_size,
+				   enum kernel_read_file_id id);
+ssize_t kernel_read_file_from_path_initns(const char *path, loff_t offset,
+					  void **buf, size_t buf_size,
+					  size_t *file_size,
+					  enum kernel_read_file_id id);
+ssize_t kernel_read_file_from_fd(int fd, loff_t offset,
+				 void **buf, size_t buf_size,
+				 size_t *file_size,
+				 enum kernel_read_file_id id);
 
 #endif /* _LINUX_KERNEL_READ_FILE_H */

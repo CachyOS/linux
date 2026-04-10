@@ -16,7 +16,7 @@
 #include <linux/configfs.h>
 #include <linux/ctype.h>
 #include <linux/hash.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <scsi/scsi_tcq.h>
 #include <scsi/libfc.h>
 
@@ -220,11 +220,6 @@ int ft_write_pending(struct se_cmd *se_cmd)
 		}
 	}
 	fc_seq_send(lport, cmd->seq, fp);
-	return 0;
-}
-
-int ft_get_cmd_state(struct se_cmd *se_cmd)
-{
 	return 0;
 }
 

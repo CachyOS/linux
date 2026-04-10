@@ -26,33 +26,18 @@ static const struct mvs_chip_info mvs_chips[] = {
 };
 
 static const struct attribute_group *mvst_host_groups[];
+static const struct attribute_group *mvst_sdev_groups[];
 
 #define SOC_SAS_NUM 2
 
-static struct scsi_host_template mvs_sht = {
-	.module			= THIS_MODULE,
-	.name			= DRV_NAME,
-	.queuecommand		= sas_queuecommand,
-	.dma_need_drain		= ata_scsi_dma_need_drain,
-	.target_alloc		= sas_target_alloc,
-	.slave_configure	= sas_slave_configure,
+static const struct scsi_host_template mvs_sht = {
+	LIBSAS_SHT_BASE
 	.scan_finished		= mvs_scan_finished,
 	.scan_start		= mvs_scan_start,
-	.change_queue_depth	= sas_change_queue_depth,
-	.bios_param		= sas_bios_param,
 	.can_queue		= 1,
-	.this_id		= -1,
 	.sg_tablesize		= SG_ALL,
-	.max_sectors		= SCSI_DEFAULT_MAX_SECTORS,
-	.eh_device_reset_handler = sas_eh_device_reset_handler,
-	.eh_target_reset_handler = sas_eh_target_reset_handler,
-	.slave_alloc		= sas_slave_alloc,
-	.target_destroy		= sas_target_destroy,
-	.ioctl			= sas_ioctl,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl		= sas_ioctl,
-#endif
 	.shost_groups		= mvst_host_groups,
+	.sdev_groups		= mvst_sdev_groups,
 	.track_queue_depth	= 1,
 };
 
@@ -84,10 +69,8 @@ static void mvs_phy_init(struct mvs_info *mvi, int phy_id)
 	phy->port = NULL;
 	timer_setup(&phy->timer, NULL, 0);
 	sas_phy->enabled = (phy_id < mvi->chip->n_phy) ? 1 : 0;
-	sas_phy->class = SAS;
 	sas_phy->iproto = SAS_PROTOCOL_ALL;
 	sas_phy->tproto = 0;
-	sas_phy->type = PHY_TYPE_PHYSICAL;
 	sas_phy->role = PHY_ROLE_INITIATOR;
 	sas_phy->oob_mode = OOB_NOT_CONNECTED;
 	sas_phy->linkrate = SAS_LINK_RATE_UNKNOWN;
@@ -141,8 +124,8 @@ static void mvs_free(struct mvs_info *mvi)
 	if (mvi->shost)
 		scsi_host_put(mvi->shost);
 	list_for_each_entry(mwq, &mvi->wq_list, entry)
-		cancel_delayed_work(&mwq->work_q);
-	kfree(mvi->tags);
+		cancel_delayed_work_sync(&mwq->work_q);
+	kfree(mvi->rsvd_tags);
 	kfree(mvi);
 }
 
@@ -284,10 +267,7 @@ static int mvs_alloc(struct mvs_info *mvi, struct Scsi_Host *shost)
 			printk(KERN_DEBUG "failed to create dma pool %s.\n", pool_name);
 			goto err_out;
 	}
-	mvi->tags_num = slot_nr;
 
-	/* Initialize tags */
-	mvs_tag_init(mvi);
 	return 0;
 err_out:
 	return 1;
@@ -369,8 +349,8 @@ static struct mvs_info *mvs_pci_alloc(struct pci_dev *pdev,
 	mvi->sas = sha;
 	mvi->shost = shost;
 
-	mvi->tags = kzalloc(MVS_CHIP_SLOT_SZ>>3, GFP_KERNEL);
-	if (!mvi->tags)
+	mvi->rsvd_tags = bitmap_zalloc(MVS_RSVD_SLOTS, GFP_KERNEL);
+	if (!mvi->rsvd_tags)
 		goto err_out;
 
 	if (MVS_CHIP_DISP->chip_ioremap(mvi))
@@ -419,9 +399,9 @@ static int mvs_prep_sas_ha_init(struct Scsi_Host *shost,
 
 	sha->sas_phy = arr_phy;
 	sha->sas_port = arr_port;
-	sha->core.shost = shost;
+	sha->shost = shost;
 
-	sha->lldd_ha = kzalloc(sizeof(struct mvs_prv_info), GFP_KERNEL);
+	sha->lldd_ha = kzalloc_obj(struct mvs_prv_info);
 	if (!sha->lldd_ha)
 		goto exit_free;
 
@@ -461,7 +441,6 @@ static void  mvs_post_sas_ha_init(struct Scsi_Host *shost,
 
 	sha->sas_ha_name = DRV_NAME;
 	sha->dev = mvi->dev;
-	sha->lldd_module = THIS_MODULE;
 	sha->sas_addr = &mvi->sas_addr[0];
 
 	sha->num_phys = nr_core * chip_info->n_phy;
@@ -471,10 +450,12 @@ static void  mvs_post_sas_ha_init(struct Scsi_Host *shost,
 	else
 		can_queue = MVS_CHIP_SLOT_SZ;
 
+	can_queue -= MVS_RSVD_SLOTS;
+
 	shost->sg_tablesize = min_t(u16, SG_ALL, MVS_MAX_SG);
 	shost->can_queue = can_queue;
 	mvi->shost->cmd_per_lun = MVS_QUEUE_SIZE;
-	sha->core.shost = mvi->shost;
+	sha->shost = mvi->shost;
 }
 
 static void mvs_init_sas_add(struct mvs_info *mvi)
@@ -521,7 +502,7 @@ static int mvs_pci_init(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	chip = &mvs_chips[ent->driver_data];
 	SHOST_TO_SAS_HA(shost) =
-		kcalloc(1, sizeof(struct sas_ha_struct), GFP_KERNEL);
+		kzalloc_objs(struct sas_ha_struct, 1);
 	if (!SHOST_TO_SAS_HA(shost)) {
 		scsi_host_put(shost);
 		rc = -ENOMEM;
@@ -628,7 +609,7 @@ static void mvs_pci_remove(struct pci_dev *pdev)
 	return;
 }
 
-static struct pci_device_id mvs_pci_table[] = {
+static const struct pci_device_id mvs_pci_table[] = {
 	{ PCI_VDEVICE(MARVELL, 0x6320), chip_6320 },
 	{ PCI_VDEVICE(MARVELL, 0x6340), chip_6440 },
 	{
@@ -695,13 +676,7 @@ static struct pci_driver mvs_pci_driver = {
 	.remove		= mvs_pci_remove,
 };
 
-static ssize_t driver_version_show(struct device *cdev,
-				   struct device_attribute *attr, char *buffer)
-{
-	return sysfs_emit(buffer, "%s\n", DRV_VERSION);
-}
-
-static DEVICE_ATTR_RO(driver_version);
+static DEVICE_STRING_ATTR_RO(driver_version, 0444, DRV_VERSION);
 
 static ssize_t interrupt_coalescing_store(struct device *cdev,
 					  struct device_attribute *attr,
@@ -776,12 +751,17 @@ static void __exit mvs_exit(void)
 }
 
 static struct attribute *mvst_host_attrs[] = {
-	&dev_attr_driver_version.attr,
+	&dev_attr_driver_version.attr.attr,
 	&dev_attr_interrupt_coalescing.attr,
 	NULL,
 };
 
 ATTRIBUTE_GROUPS(mvst_host);
+
+static const struct attribute_group *mvst_sdev_groups[] = {
+	&sas_ata_sdev_attr_group,
+	NULL
+};
 
 module_init(mvs_init);
 module_exit(mvs_exit);

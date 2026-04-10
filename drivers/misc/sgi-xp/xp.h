@@ -16,7 +16,7 @@
 
 #include <linux/mutex.h>
 
-#if defined CONFIG_X86_UV || defined CONFIG_IA64_SGI_UV
+#if defined CONFIG_X86_UV
 #include <asm/uv/uv.h>
 #endif
 
@@ -333,10 +333,6 @@ extern enum xp_retval (*xp_remote_memcpy) (unsigned long, const unsigned long,
 extern int (*xp_cpu_to_nasid) (int);
 extern enum xp_retval (*xp_expand_memprotect) (unsigned long, unsigned long);
 extern enum xp_retval (*xp_restrict_memprotect) (unsigned long, unsigned long);
-
-extern u64 xp_nofault_PIOR_target;
-extern int xp_nofault_PIOR(void *);
-extern int xp_error_PIOR(void);
 
 extern struct device *xp;
 extern enum xp_retval xp_init_uv(void);

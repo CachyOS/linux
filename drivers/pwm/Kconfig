@@ -29,10 +29,6 @@ menuconfig PWM
 
 if PWM
 
-config PWM_SYSFS
-	bool
-	default y if SYSFS
-
 config PWM_DEBUG
 	bool "PWM lowlevel drivers additional checks and debug messages"
 	depends on DEBUG_KERNEL
@@ -42,6 +38,15 @@ config PWM_DEBUG
 	  It is expected to introduce some runtime overhead and diagnostic
 	  output to the kernel log, so only enable while working on a driver.
 
+config PWM_PROVIDE_GPIO
+	bool "Provide a GPIO chip for each PWM chip"
+	depends on GPIOLIB
+	help
+	  Most PWMs can emit both a constant active high and a constant active
+	  low signal and so they can be used as GPIO. Say Y here to let each
+	  PWM chip provide a GPIO chip and so be easily plugged into consumers
+	  that know how to handle GPIOs but not PWMs.
+
 config PWM_AB8500
 	tristate "AB8500 PWM support"
 	depends on AB8500_CORE && ARCH_U8500
@@ -50,6 +55,44 @@ config PWM_AB8500
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-ab8500.
+
+config PWM_ADP5585
+	tristate "ADP5585 PWM support"
+	depends on MFD_ADP5585
+	help
+	  This option enables support for the PWM function found in the Analog
+	  Devices ADP5585.
+
+config PWM_AIROHA
+	tristate "Airoha PWM support"
+	depends on ARCH_AIROHA || COMPILE_TEST
+	select REGMAP_MMIO
+	help
+	  Generic PWM framework driver for Airoha SoC.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-airoha.
+
+config PWM_APPLE
+	tristate "Apple SoC PWM support"
+	depends on ARCH_APPLE || COMPILE_TEST
+	help
+	  Generic PWM framework driver for PWM controller present on
+	  Apple SoCs
+
+	  Say Y here if you have an ARM Apple laptop, otherwise say N
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-apple.
+
+config PWM_ARGON_FAN_HAT
+	tristate "Argon40 Fan HAT support"
+	depends on I2C && OF
+	help
+	  Generic PWM framework driver for Argon40 Fan HAT.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-argon-fan-hat.
 
 config PWM_ATMEL
 	tristate "Atmel PWM support"
@@ -86,6 +129,29 @@ config PWM_ATMEL_TCB
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-atmel-tcb.
 
+config PWM_AXI_PWMGEN
+	tristate "Analog Devices AXI PWM generator"
+	depends on MICROBLAZE || NIOS2 || ARCH_ZYNQ || ARCH_ZYNQMP || ARCH_INTEL_SOCFPGA || COMPILE_TEST
+	select REGMAP_MMIO
+	help
+	  This enables support for the Analog Devices AXI PWM generator.
+
+	  This is a configurable PWM generator with variable pulse width and
+	  period.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called pwm-axi-pwmgen.
+
+config PWM_BCM2835
+	tristate "BCM2835 PWM support"
+	depends on ARCH_BCM2835 || ARCH_BRCMSTB || COMPILE_TEST
+	depends on HAS_IOMEM
+	help
+	  PWM framework driver for BCM2835 controller (Raspberry Pi)
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-bcm2835.
+
 config PWM_BCM_IPROC
 	tristate "iProc PWM support"
 	depends on ARCH_BCM_IPROC || COMPILE_TEST
@@ -109,16 +175,6 @@ config PWM_BCM_KONA
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-bcm-kona.
 
-config PWM_BCM2835
-	tristate "BCM2835 PWM support"
-	depends on ARCH_BCM2835 || ARCH_BRCMSTB || COMPILE_TEST
-	depends on HAS_IOMEM
-	help
-	  PWM framework driver for BCM2835 controller (Raspberry Pi)
-
-	  To compile this driver as a module, choose M here: the module
-	  will be called pwm-bcm2835.
-
 config PWM_BERLIN
 	tristate "Marvell Berlin PWM support"
 	depends on ARCH_BERLIN || COMPILE_TEST
@@ -140,6 +196,16 @@ config PWM_BRCMSTB
 	  To compile this driver as a module, choose M Here: the module
 	  will be called pwm-brcmstb.c.
 
+config PWM_CLK
+	tristate "Clock based PWM support"
+	depends on HAVE_CLK || COMPILE_TEST
+	help
+	  Generic PWM framework driver for outputs that can be
+	  muxed to clocks.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-clk.
+
 config PWM_CLPS711X
 	tristate "CLPS711X PWM support"
 	depends on ARCH_CLPS711X || COMPILE_TEST
@@ -151,8 +217,8 @@ config PWM_CLPS711X
 	  will be called pwm-clps711x.
 
 config PWM_CRC
-	bool "Intel Crystalcove (CRC) PWM support"
-	depends on X86 && INTEL_SOC_PMIC
+	tristate "Intel Crystalcove (CRC) PWM support"
+	depends on INTEL_SOC_PMIC
 	help
 	  Generic PWM framework driver for Crystalcove (CRC) PMIC based PWM
 	  control.
@@ -164,9 +230,19 @@ config PWM_CROS_EC
 	  PWM driver for exposing a PWM attached to the ChromeOS Embedded
 	  Controller.
 
+config PWM_DWC_CORE
+	tristate
+	depends on HAS_IOMEM
+	help
+	  PWM driver for Synopsys DWC PWM Controller.
+
+	  To compile this driver as a module, build the dependecies as
+	  modules, this will be called pwm-dwc-core.
+
 config PWM_DWC
-	tristate "DesignWare PWM Controller"
-	depends on PCI
+	tristate "DesignWare PWM Controller (PCI bus)"
+	depends on HAS_IOMEM && PCI
+	select PWM_DWC_CORE
 	help
 	  PWM driver for Synopsys DWC PWM Controller attached to a PCI bus.
 
@@ -194,6 +270,17 @@ config PWM_FSL_FTM
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-fsl-ftm.
+
+config PWM_GPIO
+	tristate "GPIO PWM support"
+	depends on GPIOLIB
+	depends on HIGH_RES_TIMERS
+	help
+	  Generic PWM framework driver for software PWM toggling a GPIO pin
+	  from kernel high-resolution timers.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-gpio.
 
 config PWM_HIBVT
 	tristate "HiSilicon BVT PWM support"
@@ -272,8 +359,8 @@ config PWM_IQS620A
 
 config PWM_JZ4740
 	tristate "Ingenic JZ47xx PWM support"
-	depends on MIPS || COMPILE_TEST
-	depends on COMMON_CLK
+	depends on MACH_INGENIC || COMPILE_TEST
+	depends on COMMON_CLK && OF
 	select MFD_SYSCON
 	help
 	  Generic PWM framework driver for Ingenic JZ47xx based
@@ -291,6 +378,18 @@ config PWM_KEEMBAY
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-keembay.
+
+config PWM_LOONGSON
+	tristate "Loongson PWM support"
+	depends on MACH_LOONGSON64 || COMPILE_TEST
+	depends on COMMON_CLK
+	help
+	  Generic PWM framework driver for Loongson family.
+	  It can be found on Loongson-2K series cpus and Loongson LS7A
+	  bridge chips.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-loongson.
 
 config PWM_LP3943
 	tristate "TI/National Semiconductor LP3943 PWM support"
@@ -352,6 +451,39 @@ config PWM_LPSS_PLATFORM
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-lpss-platform.
 
+config PWM_MAX7360
+	tristate "MAX7360 PWMs"
+	depends on MFD_MAX7360
+	help
+	  PWM driver for Maxim Integrated MAX7360 multifunction device, with
+	  support for up to 8 PWM outputs.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-max7360.
+
+config PWM_MC33XS2410
+	tristate "MC33XS2410 PWM support"
+	depends on OF
+	depends on SPI
+	select AUXILIARY_BUS
+	help
+	  NXP MC33XS2410 high-side switch driver. The MC33XS2410 is a four
+	  channel high-side switch. The device is operational from 3.0 V
+	  to 60 V. The device is controlled by SPI port for configuration.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-mc33xs2410.
+
+config PWM_MEDIATEK
+	tristate "MediaTek PWM support"
+	depends on ARCH_MEDIATEK || RALINK || COMPILE_TEST
+	depends on HAS_IOMEM
+	help
+	  Generic PWM framework driver for Mediatek ARM SoC.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-mediatek.
+
 config PWM_MESON
 	tristate "Amlogic Meson PWM driver"
 	depends on ARCH_MESON || COMPILE_TEST
@@ -361,6 +493,16 @@ config PWM_MESON
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-meson.
+
+config PWM_MICROCHIP_CORE
+	tristate "Microchip corePWM PWM support"
+	depends on ARCH_MICROCHIP_POLARFIRE || COMPILE_TEST
+	depends on HAS_IOMEM && OF
+	help
+	  PWM driver for Microchip FPGA soft IP core.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-microchip-core.
 
 config PWM_MTK_DISP
 	tristate "MediaTek display PWM driver"
@@ -372,16 +514,6 @@ config PWM_MTK_DISP
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-mtk-disp.
-
-config PWM_MEDIATEK
-	tristate "MediaTek PWM support"
-	depends on ARCH_MEDIATEK || RALINK || COMPILE_TEST
-	depends on HAS_IOMEM
-	help
-	  Generic PWM framework driver for Mediatek ARM SoC.
-
-	  To compile this driver as a module, choose M here: the module
-	  will be called pwm-mediatek.
 
 config PWM_MXS
 	tristate "Freescale MXS PWM support"
@@ -424,7 +556,7 @@ config PWM_PCA9685
 
 config PWM_PXA
 	tristate "PXA PWM support"
-	depends on ARCH_PXA || COMPILE_TEST
+	depends on ARCH_PXA || ARCH_MMP || ARCH_SPACEMIT || COMPILE_TEST
 	depends on HAS_IOMEM
 	help
 	  Generic PWM framework driver for PXA.
@@ -433,7 +565,7 @@ config PWM_PXA
 	  will be called pwm-pxa.
 
 config PWM_RASPBERRYPI_POE
-	tristate "Raspberry Pi Firwmware PoE Hat PWM support"
+	tristate "Raspberry Pi Firmware PoE Hat PWM support"
 	# Make sure not 'y' when RASPBERRYPI_FIRMWARE is 'm'. This can only
 	# happen when COMPILE_TEST=y, hence the added !RASPBERRYPI_FIRMWARE.
 	depends on RASPBERRYPI_FIRMWARE || (COMPILE_TEST && !RASPBERRYPI_FIRMWARE)
@@ -441,7 +573,7 @@ config PWM_RASPBERRYPI_POE
 	  Enable Raspberry Pi firmware controller PWM bus used to control the
 	  official RPI PoE hat
 
-config PWM_RCAR
+config PWM_RENESAS_RCAR
 	tristate "Renesas R-Car PWM support"
 	depends on ARCH_RENESAS || COMPILE_TEST
 	depends on HAS_IOMEM
@@ -451,6 +583,28 @@ config PWM_RCAR
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-rcar.
+
+config PWM_RENESAS_RZG2L_GPT
+	tristate "Renesas RZ/G2L General PWM Timer support"
+	depends on ARCH_RZG2L || COMPILE_TEST
+	depends on HAS_IOMEM
+	help
+	  This driver exposes the General PWM Timer controller found in Renesas
+	  RZ/G2L like chips through the PWM API.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-rzg2l-gpt.
+
+config PWM_RENESAS_RZ_MTU3
+	tristate "Renesas RZ/G2L MTU3a PWM Timer support"
+	depends on RZ_MTU3
+	depends on HAS_IOMEM
+	help
+	  This driver exposes the MTU3a PWM Timer controller found in Renesas
+	  RZ/G2L like chips through the PWM API.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-rz-mtu3.
 
 config PWM_RENESAS_TPU
 	tristate "Renesas TPU PWM support"
@@ -487,7 +641,7 @@ config PWM_SIFIVE
 	tristate "SiFive PWM support"
 	depends on OF
 	depends on COMMON_CLK && HAS_IOMEM
-	depends on RISCV || COMPILE_TEST
+	depends on ARCH_SIFIVE || COMPILE_TEST
 	help
 	  Generic PWM framework driver for SiFive SoCs.
 
@@ -503,6 +657,16 @@ config PWM_SL28CPLD
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-sl28cpld.
+
+config PWM_SOPHGO_SG2042
+	tristate "Sophgo SG2042 PWM support"
+	depends on ARCH_SOPHGO || COMPILE_TEST
+	help
+	  PWM driver for the PWM controller on Sophgo SG2042 SoC. The PWM
+	  controller supports outputing 4 channels of PWM waveforms.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm_sophgo_sg2042.
 
 config PWM_SPEAR
 	tristate "STMicroelectronics SPEAr PWM support"
@@ -556,7 +720,7 @@ config PWM_STM32_LP
 	  will be called pwm-stm32-lp.
 
 config PWM_STMPE
-	bool "STMPE expander PWM export"
+	tristate "STMPE expander PWM export"
 	depends on MFD_STMPE
 	help
 	  This enables support for the PWMs found in the STMPE I/O
@@ -593,6 +757,19 @@ config PWM_TEGRA
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-tegra.
+
+config PWM_TH1520
+	tristate "TH1520 PWM support"
+	depends on ARCH_THEAD || COMPILE_TEST
+	depends on RUST
+	depends on HAS_IOMEM && COMMON_CLK
+	select RUST_PWM_ABSTRACTIONS
+	help
+	  This option enables the driver for the PWM controller found on the
+	  T-HEAD TH1520 SoC.
+
+	  To compile this driver as a module, choose M here; the module
+	  will be called pwm-th1520. If you are unsure, say N.
 
 config PWM_TIECAP
 	tristate "ECAP PWM support"
@@ -664,5 +841,17 @@ config PWM_XILINX
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-xilinx.
+
+ config RUST_PWM_ABSTRACTIONS
+	bool
+	depends on RUST
+	help
+	  This option enables the safe Rust abstraction layer for the PWM
+	  subsystem. It provides idiomatic wrappers and traits necessary for
+	  writing PWM controller drivers in Rust.
+
+	  The abstractions handle resource management (like memory and reference
+	  counting) and provide safe interfaces to the underlying C core,
+	  allowing driver logic to be written in safe Rust.
 
 endif

@@ -32,6 +32,7 @@
 #ifndef __sctp_structs_h__
 #define __sctp_structs_h__
 
+#include <crypto/sha2.h>
 #include <linux/ktime.h>
 #include <linux/generic-radix-tree.h>
 #include <linux/rhashtable-types.h>
@@ -51,9 +52,9 @@
  * We should wean ourselves off this.
  */
 union sctp_addr {
+	struct sockaddr_inet sa;	/* Large enough for both address families */
 	struct sockaddr_in v4;
 	struct sockaddr_in6 v6;
-	struct sockaddr sa;
 };
 
 /* Forward declarations for data structures. */
@@ -68,7 +69,6 @@ struct sctp_outq;
 struct sctp_bind_addr;
 struct sctp_ulpq;
 struct sctp_ep_common;
-struct crypto_shash;
 struct sctp_stream;
 
 
@@ -155,10 +155,6 @@ struct sctp_sock {
 	/* PF_ family specific functions.  */
 	struct sctp_pf *pf;
 
-	/* Access to HMAC transform. */
-	struct crypto_shash *hmac;
-	char *sctp_hmac_alg;
-
 	/* What is our base endpointer? */
 	struct sctp_endpoint *ep;
 
@@ -227,13 +223,10 @@ struct sctp_sock {
 		frag_interleave:1,
 		recvrcvinfo:1,
 		recvnxtinfo:1,
-		data_ready_signalled:1;
+		data_ready_signalled:1,
+		cookie_auth_enable:1;
 
 	atomic_t pd_mode;
-
-	/* Fields after this point will be skipped on copies, like on accept
-	 * and peeloff operations
-	 */
 
 	/* Receive to here while partial delivery is in effect. */
 	struct sk_buff_head pd_lobby;
@@ -242,10 +235,7 @@ struct sctp_sock {
 	int do_auto_asconf;
 };
 
-static inline struct sctp_sock *sctp_sk(const struct sock *sk)
-{
-       return (struct sctp_sock *)sk;
-}
+#define sctp_sk(ptr) container_of_const(ptr, struct sctp_sock, inet.sk)
 
 static inline struct sock *sctp_opt2sk(const struct sctp_sock *sp)
 {
@@ -332,13 +322,13 @@ struct sctp_cookie {
 	 * the association TCB is re-constructed from the cookie.
 	 */
 	__u32 raw_addr_list_len;
-	struct sctp_init_chunk peer_init[];
+	/* struct sctp_init_chunk peer_init[]; */
 };
 
 
 /* The format of our cookie that we send to our peer. */
 struct sctp_signed_cookie {
-	__u8 signature[SCTP_SECRET_SIZE];
+	__u8 mac[SCTP_COOKIE_MAC_SIZE];
 	__u32 __pad;		/* force sctp_cookie alignment to 64 bits */
 	struct sctp_cookie c;
 } __packed;
@@ -477,6 +467,7 @@ struct sctp_af {
 	int		(*available)	(union sctp_addr *,
 					 struct sctp_sock *);
 	int		(*skb_iif)	(const struct sk_buff *sk);
+	int		(*skb_sdif)(const struct sk_buff *sk);
 	int		(*is_ce)	(const struct sk_buff *sk);
 	void		(*seq_dump_addr)(struct seq_file *seq,
 					 union sctp_addr *addr);
@@ -502,9 +493,6 @@ struct sctp_pf {
 	int  (*bind_verify) (struct sctp_sock *, union sctp_addr *);
 	int  (*send_verify) (struct sctp_sock *, union sctp_addr *);
 	int  (*supported_addrs)(const struct sctp_sock *, __be16 *);
-	struct sock *(*create_accept_sk) (struct sock *sk,
-					  struct sctp_association *asoc,
-					  bool kern);
 	int (*addr_to_user)(struct sctp_sock *sk, union sctp_addr *addr);
 	void (*to_sk_saddr)(union sctp_addr *, struct sock *sk);
 	void (*to_sk_daddr)(union sctp_addr *, struct sock *sk);
@@ -523,7 +511,7 @@ struct sctp_datamsg {
 	refcount_t refcnt;
 	/* When is this message no longer interesting to the peer? */
 	unsigned long expires_at;
-	/* Did the messenge fail to send? */
+	/* Did the message fail to send? */
 	int send_error;
 	u8 send_failed:1,
 	   can_delay:1,	/* should this message be Nagle delayed */
@@ -777,6 +765,7 @@ struct sctp_transport {
 
 	/* Reference counting. */
 	refcount_t refcnt;
+	__u32	dead:1,
 		/* RTO-Pending : A flag used to track if one of the DATA
 		 *		chunks sent to this address is currently being
 		 *		used to compute a RTT. If this flag is 0,
@@ -786,7 +775,7 @@ struct sctp_transport {
 		 *		calculation completes (i.e. the DATA chunk
 		 *		is SACK'd) clear this flag.
 		 */
-	__u32	rto_pending:1,
+		rto_pending:1,
 
 		/*
 		 * hb_sent : a flag that signals that we have a pending
@@ -794,7 +783,7 @@ struct sctp_transport {
 		 */
 		hb_sent:1,
 
-		/* Is the Path MTU update pending on this tranport */
+		/* Is the Path MTU update pending on this transport */
 		pmtu_pending:1,
 
 		dst_pending_confirm:1,	/* need to confirm neighbour */
@@ -1080,7 +1069,7 @@ struct sctp_outq {
 	struct list_head out_chunk_list;
 
 	/* Stream scheduler being used */
-	struct sctp_sched_ops *sched;
+	const struct sctp_sched_ops *sched;
 
 	unsigned int out_qlen;	/* Total length of queued data chunks. */
 
@@ -1121,8 +1110,6 @@ void sctp_outq_free(struct sctp_outq*);
 void sctp_outq_tail(struct sctp_outq *, struct sctp_chunk *chunk, gfp_t);
 int sctp_outq_sack(struct sctp_outq *, struct sctp_chunk *);
 int sctp_outq_is_empty(const struct sctp_outq *);
-void sctp_outq_restart(struct sctp_outq *);
-
 void sctp_retransmit(struct sctp_outq *q, struct sctp_transport *transport,
 		     enum sctp_retransmit_reason reason);
 void sctp_retransmit_mark(struct sctp_outq *, struct sctp_transport *, __u8);
@@ -1227,7 +1214,7 @@ enum sctp_endpoint_type {
 };
 
 /*
- * A common base class to bridge the implmentation view of a
+ * A common base class to bridge the implementation view of a
  * socket (usually listening) endpoint versus an association's
  * local endpoint.
  * This common structure is useful for several purposes:
@@ -1310,32 +1297,14 @@ struct sctp_endpoint {
 	/* This is really a list of struct sctp_association entries. */
 	struct list_head asocs;
 
-	/* Secret Key: A secret key used by this endpoint to compute
-	 *	      the MAC.	This SHOULD be a cryptographic quality
-	 *	      random number with a sufficient length.
-	 *	      Discussion in [RFC1750] can be helpful in
-	 *	      selection of the key.
-	 */
-	__u8 secret_key[SCTP_SECRET_SIZE];
+	/* Cookie authentication key used by this endpoint */
+	struct hmac_sha256_key cookie_auth_key;
 
- 	/* digest:  This is a digest of the sctp cookie.  This field is
- 	 * 	    only used on the receive path when we try to validate
- 	 * 	    that the cookie has not been tampered with.  We put
- 	 * 	    this here so we pre-allocate this once and can re-use
- 	 * 	    on every receive.
- 	 */
- 	__u8 *digest;
- 
 	/* sendbuf acct. policy.	*/
 	__u32 sndbuf_policy;
 
 	/* rcvbuf acct. policy.	*/
 	__u32 rcvbuf_policy;
-
-	/* SCTP AUTH: array of the HMACs that will be allocated
-	 * we need this per association so that we don't serialize
-	 */
-	struct crypto_shash **auth_hmacs;
 
 	/* SCTP-AUTH: hmacs for the endpoint encoded into parameter */
 	 struct sctp_hmac_algo_param *auth_hmacs_list;
@@ -1357,7 +1326,7 @@ struct sctp_endpoint {
 	struct rcu_head rcu;
 };
 
-/* Recover the outter endpoint structure. */
+/* Recover the outer endpoint structure. */
 static inline struct sctp_endpoint *sctp_ep(struct sctp_ep_common *base)
 {
 	struct sctp_endpoint *ep;
@@ -1378,10 +1347,12 @@ struct sctp_association *sctp_endpoint_lookup_assoc(
 	struct sctp_transport **);
 bool sctp_endpoint_is_peeled_off(struct sctp_endpoint *ep,
 				 const union sctp_addr *paddr);
-struct sctp_endpoint *sctp_endpoint_is_match(struct sctp_endpoint *,
-					struct net *, const union sctp_addr *);
+struct sctp_endpoint *sctp_endpoint_is_match(struct sctp_endpoint *ep,
+					     struct net *net,
+					     const union sctp_addr *laddr,
+					     int dif, int sdif);
 bool sctp_has_association(struct net *net, const union sctp_addr *laddr,
-			  const union sctp_addr *paddr);
+			  const union sctp_addr *paddr, int dif, int sdif);
 
 int sctp_verify_init(struct net *net, const struct sctp_endpoint *ep,
 		     const struct sctp_association *asoc,
@@ -1409,6 +1380,7 @@ struct sctp_stream_priorities {
 	/* The next stream in line */
 	struct sctp_stream_out_ext *next;
 	__u16 prio;
+	__u16 users;
 };
 
 struct sctp_stream_out_ext {
@@ -1424,6 +1396,11 @@ struct sctp_stream_out_ext {
 		/* Fields used by RR scheduler */
 		struct {
 			struct list_head rr_list;
+		};
+		struct {
+			struct list_head fc_list;
+			__u32 fc_length;
+			__u16 fc_weight;
 		};
 	};
 };
@@ -1470,6 +1447,9 @@ struct sctp_stream {
 			struct list_head rr_list;
 			/* The next stream in line */
 			struct sctp_stream_out_ext *rr_next;
+		};
+		struct {
+			struct list_head fc_list;
 		};
 	};
 	struct sctp_stream_interleave *si;
@@ -1699,7 +1679,6 @@ struct sctp_association {
 		__u16	ecn_capable:1,      /* Can peer do ECN? */
 			ipv4_address:1,     /* Peer understands IPv4 addresses? */
 			ipv6_address:1,     /* Peer understands IPv6 addresses? */
-			hostname_address:1, /* Peer understands DNS addresses? */
 			asconf_capable:1,   /* Does peer support ADDIP? */
 			prsctp_capable:1,   /* Can peer do PR-SCTP? */
 			reconf_capable:1,   /* Can peer do RE-CONFIG? */
@@ -1900,7 +1879,7 @@ struct sctp_association {
 	__u32 rwnd_over;
 
 	/* Keeps treack of rwnd pressure.  This happens when we have
-	 * a window, but not recevie buffer (i.e small packets).  This one
+	 * a window, but not receive buffer (i.e small packets).  This one
 	 * is releases slowly (1 PMTU at a time ).
 	 */
 	__u32 rwnd_press;
@@ -1988,7 +1967,7 @@ struct sctp_association {
 
 	/* ADDIP Section 5.2 Upon reception of an ASCONF Chunk.
 	 *
-	 * This is needed to implement itmes E1 - E4 of the updated
+	 * This is needed to implement items E1 - E4 of the updated
 	 * spec.  Here is the justification:
 	 *
 	 * Since the peer may bundle multiple ASCONF chunks toward us,
@@ -1999,7 +1978,7 @@ struct sctp_association {
 
 	/* These ASCONF chunks are waiting to be sent.
 	 *
-	 * These chunaks can't be pushed to outqueue until receiving
+	 * These chunks can't be pushed to outqueue until receiving
 	 * ASCONF_ACK for the previous ASCONF indicated by
 	 * addip_last_asconf, so as to guarantee that only one ASCONF
 	 * is in flight at any time.
@@ -2053,13 +2032,13 @@ struct sctp_association {
 	struct sctp_transport *new_transport;
 
 	/* SCTP AUTH: list of the endpoint shared keys.  These
-	 * keys are provided out of band by the user applicaton
+	 * keys are provided out of band by the user application
 	 * and can't change during the lifetime of the association
 	 */
 	struct list_head endpoint_shared_keys;
 
 	/* SCTP AUTH:
-	 * The current generated assocaition shared key (secret)
+	 * The current generated association shared key (secret)
 	 */
 	struct sctp_auth_bytes *asoc_shared_key;
 	struct sctp_shared_key *shkey;
@@ -2115,7 +2094,7 @@ enum {
 	SCTP_ASSOC_EYECATCHER = 0xa550c123,
 };
 
-/* Recover the outter association structure. */
+/* Recover the outer association structure. */
 static inline struct sctp_association *sctp_assoc(struct sctp_ep_common *base)
 {
 	struct sctp_association *asoc;
@@ -2145,8 +2124,6 @@ struct sctp_transport *sctp_assoc_add_peer(struct sctp_association *,
 				     const union sctp_addr *address,
 				     const gfp_t gfp,
 				     const int peer_state);
-void sctp_assoc_del_peer(struct sctp_association *asoc,
-			 const union sctp_addr *addr);
 void sctp_assoc_rm_peer(struct sctp_association *asoc,
 			 struct sctp_transport *peer);
 void sctp_assoc_control_transport(struct sctp_association *asoc,

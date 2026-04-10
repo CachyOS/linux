@@ -31,11 +31,6 @@
 
 static void snd_ymfpci_irq_wait(struct snd_ymfpci *chip);
 
-static inline u8 snd_ymfpci_readb(struct snd_ymfpci *chip, u32 offset)
-{
-	return readb(chip->reg_area_virt + offset);
-}
-
 static inline void snd_ymfpci_writeb(struct snd_ymfpci *chip, u32 offset, u8 val)
 {
 	writeb(val, chip->reg_area_virt + offset);
@@ -164,26 +159,21 @@ static u32 snd_ymfpci_calc_lpfQ(u32 rate)
 
 static void snd_ymfpci_hw_start(struct snd_ymfpci *chip)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&chip->reg_lock, flags);
+	guard(spinlock_irqsave)(&chip->reg_lock);
 	if (chip->start_count++ > 0)
-		goto __end;
+		return;
 	snd_ymfpci_writel(chip, YDSXGR_MODE,
 			  snd_ymfpci_readl(chip, YDSXGR_MODE) | 3);
 	chip->active_bank = snd_ymfpci_readl(chip, YDSXGR_CTRLSELECT) & 1;
-      __end:
-      	spin_unlock_irqrestore(&chip->reg_lock, flags);
 }
 
 static void snd_ymfpci_hw_stop(struct snd_ymfpci *chip)
 {
-	unsigned long flags;
 	long timeout = 1000;
 
-	spin_lock_irqsave(&chip->reg_lock, flags);
+	guard(spinlock_irqsave)(&chip->reg_lock);
 	if (--chip->start_count > 0)
-		goto __end;
+		return;
 	snd_ymfpci_writel(chip, YDSXGR_MODE,
 			  snd_ymfpci_readl(chip, YDSXGR_MODE) & ~3);
 	while (timeout-- > 0) {
@@ -194,8 +184,6 @@ static void snd_ymfpci_hw_stop(struct snd_ymfpci *chip)
 		atomic_set(&chip->interrupt_sleep_count, 0);
 		wake_up(&chip->interrupt_sleep);
 	}
-      __end:
-      	spin_unlock_irqrestore(&chip->reg_lock, flags);
 }
 
 /*
@@ -244,7 +232,6 @@ static int snd_ymfpci_voice_alloc(struct snd_ymfpci *chip,
 				  enum snd_ymfpci_voice_type type, int pair,
 				  struct snd_ymfpci_voice **rvoice)
 {
-	unsigned long flags;
 	int result;
 	
 	if (snd_BUG_ON(!rvoice))
@@ -252,7 +239,7 @@ static int snd_ymfpci_voice_alloc(struct snd_ymfpci *chip,
 	if (snd_BUG_ON(pair && type != YMFPCI_PCM))
 		return -EINVAL;
 	
-	spin_lock_irqsave(&chip->voice_lock, flags);
+	guard(spinlock_irqsave)(&chip->voice_lock);
 	for (;;) {
 		result = voice_alloc(chip, type, pair, rvoice);
 		if (result == 0 || type != YMFPCI_PCM)
@@ -260,18 +247,15 @@ static int snd_ymfpci_voice_alloc(struct snd_ymfpci *chip,
 		/* TODO: synth/midi voice deallocation */
 		break;
 	}
-	spin_unlock_irqrestore(&chip->voice_lock, flags);	
 	return result;		
 }
 
 static int snd_ymfpci_voice_free(struct snd_ymfpci *chip, struct snd_ymfpci_voice *pvoice)
 {
-	unsigned long flags;
-	
 	if (snd_BUG_ON(!pvoice))
 		return -EINVAL;
 	snd_ymfpci_hw_stop(chip);
-	spin_lock_irqsave(&chip->voice_lock, flags);
+	guard(spinlock_irqsave)(&chip->voice_lock);
 	if (pvoice->number == chip->src441_used) {
 		chip->src441_used = -1;
 		pvoice->ypcm->use_441_slot = 0;
@@ -279,7 +263,6 @@ static int snd_ymfpci_voice_free(struct snd_ymfpci *chip, struct snd_ymfpci_voic
 	pvoice->use = pvoice->pcm = pvoice->synth = pvoice->midi = 0;
 	pvoice->ypcm = NULL;
 	pvoice->interrupt = NULL;
-	spin_unlock_irqrestore(&chip->voice_lock, flags);
 	return 0;
 }
 
@@ -297,7 +280,7 @@ static void snd_ymfpci_pcm_interrupt(struct snd_ymfpci *chip, struct snd_ymfpci_
 		return;
 	if (ypcm->substream == NULL)
 		return;
-	spin_lock(&chip->reg_lock);
+	guard(spinlock)(&chip->reg_lock);
 	if (ypcm->running) {
 		pos = le32_to_cpu(voice->bank[chip->active_bank].start);
 		if (pos < ypcm->last_pos)
@@ -339,7 +322,6 @@ static void snd_ymfpci_pcm_interrupt(struct snd_ymfpci *chip, struct snd_ymfpci_
 			ypcm->update_pcm_vol--;
 		}
 	}
-	spin_unlock(&chip->reg_lock);
 }
 
 static void snd_ymfpci_pcm_capture_interrupt(struct snd_pcm_substream *substream)
@@ -349,7 +331,7 @@ static void snd_ymfpci_pcm_capture_interrupt(struct snd_pcm_substream *substream
 	struct snd_ymfpci *chip = ypcm->chip;
 	u32 pos, delta;
 	
-	spin_lock(&chip->reg_lock);
+	guard(spinlock)(&chip->reg_lock);
 	if (ypcm->running) {
 		pos = le32_to_cpu(chip->bank_capture[ypcm->capture_bank_number][chip->active_bank]->start) >> ypcm->shift;
 		if (pos < ypcm->last_pos)
@@ -371,7 +353,6 @@ static void snd_ymfpci_pcm_capture_interrupt(struct snd_pcm_substream *substream
 			spin_lock(&chip->reg_lock);
 		}
 	}
-	spin_unlock(&chip->reg_lock);
 }
 
 static int snd_ymfpci_playback_trigger(struct snd_pcm_substream *substream,
@@ -382,11 +363,9 @@ static int snd_ymfpci_playback_trigger(struct snd_pcm_substream *substream,
 	struct snd_kcontrol *kctl = NULL;
 	int result = 0;
 
-	spin_lock(&chip->reg_lock);
-	if (ypcm->voices[0] == NULL) {
-		result = -EINVAL;
-		goto __unlock;
-	}
+	guard(spinlock)(&chip->reg_lock);
+	if (ypcm->voices[0] == NULL)
+		return -EINVAL;
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
@@ -410,11 +389,8 @@ static int snd_ymfpci_playback_trigger(struct snd_pcm_substream *substream,
 		ypcm->running = 0;
 		break;
 	default:
-		result = -EINVAL;
-		break;
+		return -EINVAL;
 	}
-      __unlock:
-	spin_unlock(&chip->reg_lock);
 	if (kctl)
 		snd_ctl_notify(chip->card, SNDRV_CTL_EVENT_MASK_INFO, &kctl->id);
 	return result;
@@ -427,7 +403,7 @@ static int snd_ymfpci_capture_trigger(struct snd_pcm_substream *substream,
 	int result = 0;
 	u32 tmp;
 
-	spin_lock(&chip->reg_lock);
+	guard(spinlock)(&chip->reg_lock);
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
@@ -447,7 +423,6 @@ static int snd_ymfpci_capture_trigger(struct snd_pcm_substream *substream,
 		result = -EINVAL;
 		break;
 	}
-	spin_unlock(&chip->reg_lock);
 	return result;
 }
 
@@ -494,7 +469,6 @@ static void snd_ymfpci_pcm_init_voice(struct snd_ymfpci_pcm *ypcm, unsigned int 
 	unsigned int nbank;
 	__le32 vol_left, vol_right;
 	u8 use_left, use_right;
-	unsigned long flags;
 
 	if (snd_BUG_ON(!voice))
 		return;
@@ -514,26 +488,26 @@ static void snd_ymfpci_pcm_init_voice(struct snd_ymfpci_pcm *ypcm, unsigned int 
 		vol_left = cpu_to_le32(0x40000000);
 		vol_right = cpu_to_le32(0x40000000);
 	}
-	spin_lock_irqsave(&ypcm->chip->voice_lock, flags);
-	format = runtime->channels == 2 ? 0x00010000 : 0;
-	if (snd_pcm_format_width(runtime->format) == 8)
-		format |= 0x80000000;
-	else if (ypcm->chip->device_id == PCI_DEVICE_ID_YAMAHA_754 &&
-		 runtime->rate == 44100 && runtime->channels == 2 &&
-		 voiceidx == 0 && (ypcm->chip->src441_used == -1 ||
-				   ypcm->chip->src441_used == voice->number)) {
-		ypcm->chip->src441_used = voice->number;
-		ypcm->use_441_slot = 1;
-		format |= 0x10000000;
+	scoped_guard(spinlock_irqsave, &ypcm->chip->voice_lock) {
+		format = runtime->channels == 2 ? 0x00010000 : 0;
+		if (snd_pcm_format_width(runtime->format) == 8)
+			format |= 0x80000000;
+		else if (ypcm->chip->device_id == PCI_DEVICE_ID_YAMAHA_754 &&
+			 runtime->rate == 44100 && runtime->channels == 2 &&
+			 voiceidx == 0 && (ypcm->chip->src441_used == -1 ||
+					   ypcm->chip->src441_used == voice->number)) {
+			ypcm->chip->src441_used = voice->number;
+			ypcm->use_441_slot = 1;
+			format |= 0x10000000;
+		}
+		if (ypcm->chip->src441_used == voice->number &&
+		    (format & 0x10000000) == 0) {
+			ypcm->chip->src441_used = -1;
+			ypcm->use_441_slot = 0;
+		}
+		if (runtime->channels == 2 && (voiceidx & 1) != 0)
+			format |= 1;
 	}
-	if (ypcm->chip->src441_used == voice->number &&
-	    (format & 0x10000000) == 0) {
-		ypcm->chip->src441_used = -1;
-		ypcm->use_441_slot = 0;
-	}
-	if (runtime->channels == 2 && (voiceidx & 1) != 0)
-		format |= 1;
-	spin_unlock_irqrestore(&ypcm->chip->voice_lock, flags);
 	for (nbank = 0; nbank < 2; nbank++) {
 		bank = &voice->bank[nbank];
 		memset(bank, 0, sizeof(*bank));
@@ -601,19 +575,18 @@ static int snd_ymfpci_ac3_init(struct snd_ymfpci *chip)
 	chip->bank_effect[4][0]->loop_end =
 	chip->bank_effect[4][1]->loop_end = cpu_to_le32(1024);
 
-	spin_lock_irq(&chip->reg_lock);
+	guard(spinlock_irq)(&chip->reg_lock);
 	snd_ymfpci_writel(chip, YDSXGR_MAPOFEFFECT,
 			  snd_ymfpci_readl(chip, YDSXGR_MAPOFEFFECT) | 3 << 3);
-	spin_unlock_irq(&chip->reg_lock);
 	return 0;
 }
 
 static int snd_ymfpci_ac3_done(struct snd_ymfpci *chip)
 {
-	spin_lock_irq(&chip->reg_lock);
-	snd_ymfpci_writel(chip, YDSXGR_MAPOFEFFECT,
-			  snd_ymfpci_readl(chip, YDSXGR_MAPOFEFFECT) & ~(3 << 3));
-	spin_unlock_irq(&chip->reg_lock);
+	scoped_guard(spinlock_irq, &chip->reg_lock) {
+		snd_ymfpci_writel(chip, YDSXGR_MAPOFEFFECT,
+				  snd_ymfpci_readl(chip, YDSXGR_MAPOFEFFECT) & ~(3 << 3));
+	}
 	// snd_ymfpci_irq_wait(chip);
 	if (chip->ac3_tmp_base.area) {
 		snd_dma_free_pages(&chip->ac3_tmp_base);
@@ -783,28 +756,28 @@ static irqreturn_t snd_ymfpci_interrupt(int irq, void *dev_id)
 	status = snd_ymfpci_readl(chip, YDSXGR_STATUS);
 	if (status & 0x80000000) {
 		chip->active_bank = snd_ymfpci_readl(chip, YDSXGR_CTRLSELECT) & 1;
-		spin_lock(&chip->voice_lock);
-		for (nvoice = 0; nvoice < YDSXG_PLAYBACK_VOICES; nvoice++) {
-			voice = &chip->voices[nvoice];
-			if (voice->interrupt)
-				voice->interrupt(chip, voice);
-		}
-		for (nvoice = 0; nvoice < YDSXG_CAPTURE_VOICES; nvoice++) {
-			if (chip->capture_substream[nvoice])
-				snd_ymfpci_pcm_capture_interrupt(chip->capture_substream[nvoice]);
-		}
+		scoped_guard(spinlock, &chip->voice_lock) {
+			for (nvoice = 0; nvoice < YDSXG_PLAYBACK_VOICES; nvoice++) {
+				voice = &chip->voices[nvoice];
+				if (voice->interrupt)
+					voice->interrupt(chip, voice);
+			}
+			for (nvoice = 0; nvoice < YDSXG_CAPTURE_VOICES; nvoice++) {
+				if (chip->capture_substream[nvoice])
+					snd_ymfpci_pcm_capture_interrupt(chip->capture_substream[nvoice]);
+			}
 #if 0
-		for (nvoice = 0; nvoice < YDSXG_EFFECT_VOICES; nvoice++) {
-			if (chip->effect_substream[nvoice])
-				snd_ymfpci_pcm_effect_interrupt(chip->effect_substream[nvoice]);
-		}
+			for (nvoice = 0; nvoice < YDSXG_EFFECT_VOICES; nvoice++) {
+				if (chip->effect_substream[nvoice])
+					snd_ymfpci_pcm_effect_interrupt(chip->effect_substream[nvoice]);
+			}
 #endif
-		spin_unlock(&chip->voice_lock);
-		spin_lock(&chip->reg_lock);
-		snd_ymfpci_writel(chip, YDSXGR_STATUS, 0x80000000);
-		mode = snd_ymfpci_readl(chip, YDSXGR_MODE) | 2;
-		snd_ymfpci_writel(chip, YDSXGR_MODE, mode);
-		spin_unlock(&chip->reg_lock);
+		}
+		scoped_guard(spinlock, &chip->reg_lock) {
+			snd_ymfpci_writel(chip, YDSXGR_STATUS, 0x80000000);
+			mode = snd_ymfpci_readl(chip, YDSXGR_MODE) | 2;
+			snd_ymfpci_writel(chip, YDSXGR_MODE, mode);
+		}
 
 		if (atomic_read(&chip->interrupt_sleep_count)) {
 			atomic_set(&chip->interrupt_sleep_count, 0);
@@ -891,7 +864,7 @@ static int snd_ymfpci_playback_open_1(struct snd_pcm_substream *substream)
 	if (err < 0)
 		return err;
 
-	ypcm = kzalloc(sizeof(*ypcm), GFP_KERNEL);
+	ypcm = kzalloc_obj(*ypcm);
 	if (ypcm == NULL)
 		return -ENOMEM;
 	ypcm->chip = chip;
@@ -941,12 +914,11 @@ static int snd_ymfpci_playback_open(struct snd_pcm_substream *substream)
 	ypcm->output_front = 1;
 	ypcm->output_rear = chip->mode_dup4ch ? 1 : 0;
 	ypcm->swap_rear = 0;
-	spin_lock_irq(&chip->reg_lock);
+	guard(spinlock_irq)(&chip->reg_lock);
 	if (ypcm->output_rear) {
 		ymfpci_open_extension(chip);
 		chip->rear_opened++;
 	}
-	spin_unlock_irq(&chip->reg_lock);
 	return 0;
 }
 
@@ -964,14 +936,14 @@ static int snd_ymfpci_playback_spdif_open(struct snd_pcm_substream *substream)
 	ypcm->output_front = 0;
 	ypcm->output_rear = 1;
 	ypcm->swap_rear = 1;
-	spin_lock_irq(&chip->reg_lock);
-	snd_ymfpci_writew(chip, YDSXGR_SPDIFOUTCTRL,
-			  snd_ymfpci_readw(chip, YDSXGR_SPDIFOUTCTRL) | 2);
-	ymfpci_open_extension(chip);
-	chip->spdif_pcm_bits = chip->spdif_bits;
-	snd_ymfpci_writew(chip, YDSXGR_SPDIFOUTSTATUS, chip->spdif_pcm_bits);
-	chip->spdif_opened++;
-	spin_unlock_irq(&chip->reg_lock);
+	scoped_guard(spinlock_irq, &chip->reg_lock) {
+		snd_ymfpci_writew(chip, YDSXGR_SPDIFOUTCTRL,
+				  snd_ymfpci_readw(chip, YDSXGR_SPDIFOUTCTRL) | 2);
+		ymfpci_open_extension(chip);
+		chip->spdif_pcm_bits = chip->spdif_bits;
+		snd_ymfpci_writew(chip, YDSXGR_SPDIFOUTSTATUS, chip->spdif_pcm_bits);
+		chip->spdif_opened++;
+	}
 
 	chip->spdif_pcm_ctl->vd[0].access &= ~SNDRV_CTL_ELEM_ACCESS_INACTIVE;
 	snd_ctl_notify(chip->card, SNDRV_CTL_EVENT_MASK_VALUE |
@@ -993,10 +965,9 @@ static int snd_ymfpci_playback_4ch_open(struct snd_pcm_substream *substream)
 	ypcm->output_front = 0;
 	ypcm->output_rear = 1;
 	ypcm->swap_rear = 0;
-	spin_lock_irq(&chip->reg_lock);
+	guard(spinlock_irq)(&chip->reg_lock);
 	ymfpci_open_extension(chip);
 	chip->rear_opened++;
-	spin_unlock_irq(&chip->reg_lock);
 	return 0;
 }
 
@@ -1019,7 +990,7 @@ static int snd_ymfpci_capture_open(struct snd_pcm_substream *substream,
 	if (err < 0)
 		return err;
 
-	ypcm = kzalloc(sizeof(*ypcm), GFP_KERNEL);
+	ypcm = kzalloc_obj(*ypcm);
 	if (ypcm == NULL)
 		return -ENOMEM;
 	ypcm->chip = chip;
@@ -1053,12 +1024,12 @@ static int snd_ymfpci_playback_close(struct snd_pcm_substream *substream)
 	struct snd_ymfpci *chip = snd_pcm_substream_chip(substream);
 	struct snd_ymfpci_pcm *ypcm = substream->runtime->private_data;
 
-	spin_lock_irq(&chip->reg_lock);
-	if (ypcm->output_rear && chip->rear_opened > 0) {
-		chip->rear_opened--;
-		ymfpci_close_extension(chip);
+	scoped_guard(spinlock_irq, &chip->reg_lock) {
+		if (ypcm->output_rear && chip->rear_opened > 0) {
+			chip->rear_opened--;
+			ymfpci_close_extension(chip);
+		}
 	}
-	spin_unlock_irq(&chip->reg_lock);
 	return snd_ymfpci_playback_close_1(substream);
 }
 
@@ -1066,13 +1037,13 @@ static int snd_ymfpci_playback_spdif_close(struct snd_pcm_substream *substream)
 {
 	struct snd_ymfpci *chip = snd_pcm_substream_chip(substream);
 
-	spin_lock_irq(&chip->reg_lock);
-	chip->spdif_opened = 0;
-	ymfpci_close_extension(chip);
-	snd_ymfpci_writew(chip, YDSXGR_SPDIFOUTCTRL,
-			  snd_ymfpci_readw(chip, YDSXGR_SPDIFOUTCTRL) & ~2);
-	snd_ymfpci_writew(chip, YDSXGR_SPDIFOUTSTATUS, chip->spdif_bits);
-	spin_unlock_irq(&chip->reg_lock);
+	scoped_guard(spinlock_irq, &chip->reg_lock) {
+		chip->spdif_opened = 0;
+		ymfpci_close_extension(chip);
+		snd_ymfpci_writew(chip, YDSXGR_SPDIFOUTCTRL,
+				  snd_ymfpci_readw(chip, YDSXGR_SPDIFOUTCTRL) & ~2);
+		snd_ymfpci_writew(chip, YDSXGR_SPDIFOUTSTATUS, chip->spdif_bits);
+	}
 	chip->spdif_pcm_ctl->vd[0].access |= SNDRV_CTL_ELEM_ACCESS_INACTIVE;
 	snd_ctl_notify(chip->card, SNDRV_CTL_EVENT_MASK_VALUE |
 		       SNDRV_CTL_EVENT_MASK_INFO, &chip->spdif_pcm_ctl->id);
@@ -1083,12 +1054,12 @@ static int snd_ymfpci_playback_4ch_close(struct snd_pcm_substream *substream)
 {
 	struct snd_ymfpci *chip = snd_pcm_substream_chip(substream);
 
-	spin_lock_irq(&chip->reg_lock);
-	if (chip->rear_opened > 0) {
-		chip->rear_opened--;
-		ymfpci_close_extension(chip);
+	scoped_guard(spinlock_irq, &chip->reg_lock) {
+		if (chip->rear_opened > 0) {
+			chip->rear_opened--;
+			ymfpci_close_extension(chip);
+		}
 	}
-	spin_unlock_irq(&chip->reg_lock);
 	return snd_ymfpci_playback_close_1(substream);
 }
 
@@ -1139,7 +1110,7 @@ int snd_ymfpci_pcm(struct snd_ymfpci *chip, int device)
 
 	/* global setup */
 	pcm->info_flags = 0;
-	strcpy(pcm->name, "YMFPCI");
+	strscpy(pcm->name, "YMFPCI");
 	chip->pcm = pcm;
 
 	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV,
@@ -1206,7 +1177,7 @@ int snd_ymfpci_pcm_spdif(struct snd_ymfpci *chip, int device)
 
 	/* global setup */
 	pcm->info_flags = 0;
-	strcpy(pcm->name, "YMFPCI - IEC958");
+	strscpy(pcm->name, "YMFPCI - IEC958");
 	chip->pcm_spdif = pcm;
 
 	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV,
@@ -1247,7 +1218,7 @@ int snd_ymfpci_pcm_4ch(struct snd_ymfpci *chip, int device)
 
 	/* global setup */
 	pcm->info_flags = 0;
-	strcpy(pcm->name, "YMFPCI - Rear PCM");
+	strscpy(pcm->name, "YMFPCI - Rear PCM");
 	chip->pcm_4ch = pcm;
 
 	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV,
@@ -1269,11 +1240,10 @@ static int snd_ymfpci_spdif_default_get(struct snd_kcontrol *kcontrol,
 {
 	struct snd_ymfpci *chip = snd_kcontrol_chip(kcontrol);
 
-	spin_lock_irq(&chip->reg_lock);
+	guard(spinlock_irq)(&chip->reg_lock);
 	ucontrol->value.iec958.status[0] = (chip->spdif_bits >> 0) & 0xff;
 	ucontrol->value.iec958.status[1] = (chip->spdif_bits >> 8) & 0xff;
 	ucontrol->value.iec958.status[3] = IEC958_AES3_CON_FS_48000;
-	spin_unlock_irq(&chip->reg_lock);
 	return 0;
 }
 
@@ -1286,12 +1256,11 @@ static int snd_ymfpci_spdif_default_put(struct snd_kcontrol *kcontrol,
 
 	val = ((ucontrol->value.iec958.status[0] & 0x3e) << 0) |
 	      (ucontrol->value.iec958.status[1] << 8);
-	spin_lock_irq(&chip->reg_lock);
+	guard(spinlock_irq)(&chip->reg_lock);
 	change = chip->spdif_bits != val;
 	chip->spdif_bits = val;
 	if ((snd_ymfpci_readw(chip, YDSXGR_SPDIFOUTCTRL) & 1) && chip->pcm_spdif == NULL)
 		snd_ymfpci_writew(chip, YDSXGR_SPDIFOUTSTATUS, chip->spdif_bits);
-	spin_unlock_irq(&chip->reg_lock);
 	return change;
 }
 
@@ -1316,10 +1285,9 @@ static int snd_ymfpci_spdif_mask_get(struct snd_kcontrol *kcontrol,
 {
 	struct snd_ymfpci *chip = snd_kcontrol_chip(kcontrol);
 
-	spin_lock_irq(&chip->reg_lock);
+	guard(spinlock_irq)(&chip->reg_lock);
 	ucontrol->value.iec958.status[0] = 0x3e;
 	ucontrol->value.iec958.status[1] = 0xff;
-	spin_unlock_irq(&chip->reg_lock);
 	return 0;
 }
 
@@ -1344,11 +1312,10 @@ static int snd_ymfpci_spdif_stream_get(struct snd_kcontrol *kcontrol,
 {
 	struct snd_ymfpci *chip = snd_kcontrol_chip(kcontrol);
 
-	spin_lock_irq(&chip->reg_lock);
+	guard(spinlock_irq)(&chip->reg_lock);
 	ucontrol->value.iec958.status[0] = (chip->spdif_pcm_bits >> 0) & 0xff;
 	ucontrol->value.iec958.status[1] = (chip->spdif_pcm_bits >> 8) & 0xff;
 	ucontrol->value.iec958.status[3] = IEC958_AES3_CON_FS_48000;
-	spin_unlock_irq(&chip->reg_lock);
 	return 0;
 }
 
@@ -1361,12 +1328,11 @@ static int snd_ymfpci_spdif_stream_put(struct snd_kcontrol *kcontrol,
 
 	val = ((ucontrol->value.iec958.status[0] & 0x3e) << 0) |
 	      (ucontrol->value.iec958.status[1] << 8);
-	spin_lock_irq(&chip->reg_lock);
+	guard(spinlock_irq)(&chip->reg_lock);
 	change = chip->spdif_pcm_bits != val;
 	chip->spdif_pcm_bits = val;
 	if ((snd_ymfpci_readw(chip, YDSXGR_SPDIFOUTCTRL) & 2))
 		snd_ymfpci_writew(chip, YDSXGR_SPDIFOUTSTATUS, chip->spdif_pcm_bits);
-	spin_unlock_irq(&chip->reg_lock);
 	return change;
 }
 
@@ -1392,9 +1358,8 @@ static int snd_ymfpci_drec_source_get(struct snd_kcontrol *kcontrol, struct snd_
 	struct snd_ymfpci *chip = snd_kcontrol_chip(kcontrol);
 	u16 reg;
 
-	spin_lock_irq(&chip->reg_lock);
+	guard(spinlock_irq)(&chip->reg_lock);
 	reg = snd_ymfpci_readw(chip, YDSXGR_GLOBALCTRL);
-	spin_unlock_irq(&chip->reg_lock);
 	if (!(reg & 0x100))
 		value->value.enumerated.item[0] = 0;
 	else
@@ -1407,14 +1372,13 @@ static int snd_ymfpci_drec_source_put(struct snd_kcontrol *kcontrol, struct snd_
 	struct snd_ymfpci *chip = snd_kcontrol_chip(kcontrol);
 	u16 reg, old_reg;
 
-	spin_lock_irq(&chip->reg_lock);
+	guard(spinlock_irq)(&chip->reg_lock);
 	old_reg = snd_ymfpci_readw(chip, YDSXGR_GLOBALCTRL);
 	if (value->value.enumerated.item[0] == 0)
 		reg = old_reg & ~0x100;
 	else
 		reg = (old_reg & ~0x300) | 0x100 | ((value->value.enumerated.item[0] == 2) << 9);
 	snd_ymfpci_writew(chip, YDSXGR_GLOBALCTRL, reg);
-	spin_unlock_irq(&chip->reg_lock);
 	return reg != old_reg;
 }
 
@@ -1474,12 +1438,11 @@ static int snd_ymfpci_put_single(struct snd_kcontrol *kcontrol,
 	}
 	val = (ucontrol->value.integer.value[0] & mask);
 	val <<= shift;
-	spin_lock_irq(&chip->reg_lock);
+	guard(spinlock_irq)(&chip->reg_lock);
 	oval = snd_ymfpci_readl(chip, reg);
 	val = (oval & ~(mask << shift)) | val;
 	change = val != oval;
 	snd_ymfpci_writel(chip, reg, val);
-	spin_unlock_irq(&chip->reg_lock);
 	return change;
 }
 
@@ -1515,9 +1478,8 @@ static int snd_ymfpci_get_double(struct snd_kcontrol *kcontrol, struct snd_ctl_e
 	
 	if (reg < 0x80 || reg >= 0xc0)
 		return -EINVAL;
-	spin_lock_irq(&chip->reg_lock);
+	guard(spinlock_irq)(&chip->reg_lock);
 	val = snd_ymfpci_readl(chip, reg);
-	spin_unlock_irq(&chip->reg_lock);
 	ucontrol->value.integer.value[0] = (val >> shift_left) & mask;
 	ucontrol->value.integer.value[1] = (val >> shift_right) & mask;
 	return 0;
@@ -1537,12 +1499,11 @@ static int snd_ymfpci_put_double(struct snd_kcontrol *kcontrol, struct snd_ctl_e
 	val2 = ucontrol->value.integer.value[1] & mask;
 	val1 <<= shift_left;
 	val2 <<= shift_right;
-	spin_lock_irq(&chip->reg_lock);
+	guard(spinlock_irq)(&chip->reg_lock);
 	oval = snd_ymfpci_readl(chip, reg);
 	val1 = (oval & ~((mask << shift_left) | (mask << shift_right))) | val1 | val2;
 	change = val1 != oval;
 	snd_ymfpci_writel(chip, reg, val1);
-	spin_unlock_irq(&chip->reg_lock);
 	return change;
 }
 
@@ -1557,12 +1518,11 @@ static int snd_ymfpci_put_nativedacvol(struct snd_kcontrol *kcontrol,
 	
 	value = ucontrol->value.integer.value[0] & 0x3fff;
 	value |= (ucontrol->value.integer.value[1] & 0x3fff) << 16;
-	spin_lock_irq(&chip->reg_lock);
+	guard(spinlock_irq)(&chip->reg_lock);
 	oval = snd_ymfpci_readl(chip, reg);
 	change = value != oval;
 	snd_ymfpci_writel(chip, reg, value);
 	snd_ymfpci_writel(chip, reg2, value);
-	spin_unlock_irq(&chip->reg_lock);
 	return change;
 }
 
@@ -1634,9 +1594,8 @@ YMFPCI_SINGLE(SNDRV_CTL_NAME_IEC958("Loop",NONE,NONE), 0, YDSXGR_SPDIFINCTRL, 4)
 static int snd_ymfpci_get_gpio_out(struct snd_ymfpci *chip, int pin)
 {
 	u16 reg, mode;
-	unsigned long flags;
 
-	spin_lock_irqsave(&chip->reg_lock, flags);
+	guard(spinlock_irqsave)(&chip->reg_lock);
 	reg = snd_ymfpci_readw(chip, YDSXGR_GPIOFUNCENABLE);
 	reg &= ~(1 << (pin + 8));
 	reg |= (1 << pin);
@@ -1647,23 +1606,20 @@ static int snd_ymfpci_get_gpio_out(struct snd_ymfpci *chip, int pin)
 	snd_ymfpci_writew(chip, YDSXGR_GPIOTYPECONFIG, mode);
 	snd_ymfpci_writew(chip, YDSXGR_GPIOFUNCENABLE, reg | (1 << (pin + 8)));
 	mode = snd_ymfpci_readw(chip, YDSXGR_GPIOINSTATUS);
-	spin_unlock_irqrestore(&chip->reg_lock, flags);
 	return (mode >> pin) & 1;
 }
 
 static int snd_ymfpci_set_gpio_out(struct snd_ymfpci *chip, int pin, int enable)
 {
 	u16 reg;
-	unsigned long flags;
 
-	spin_lock_irqsave(&chip->reg_lock, flags);
+	guard(spinlock_irqsave)(&chip->reg_lock);
 	reg = snd_ymfpci_readw(chip, YDSXGR_GPIOFUNCENABLE);
 	reg &= ~(1 << pin);
 	reg &= ~(1 << (pin + 8));
 	snd_ymfpci_writew(chip, YDSXGR_GPIOFUNCENABLE, reg);
 	snd_ymfpci_writew(chip, YDSXGR_GPIOOUTCTRL, enable << pin);
 	snd_ymfpci_writew(chip, YDSXGR_GPIOFUNCENABLE, reg | (1 << (pin + 8)));
-	spin_unlock_irqrestore(&chip->reg_lock, flags);
 
 	return 0;
 }
@@ -1731,7 +1687,6 @@ static int snd_ymfpci_pcm_vol_put(struct snd_kcontrol *kcontrol,
 	struct snd_ymfpci *chip = snd_kcontrol_chip(kcontrol);
 	unsigned int subs = kcontrol->id.subdevice;
 	struct snd_pcm_substream *substream;
-	unsigned long flags;
 
 	if (ucontrol->value.integer.value[0] != chip->pcm_mixer[subs].left ||
 	    ucontrol->value.integer.value[1] != chip->pcm_mixer[subs].right) {
@@ -1743,13 +1698,12 @@ static int snd_ymfpci_pcm_vol_put(struct snd_kcontrol *kcontrol,
 			chip->pcm_mixer[subs].right = 0x8000;
 
 		substream = (struct snd_pcm_substream *)kcontrol->private_value;
-		spin_lock_irqsave(&chip->voice_lock, flags);
+		guard(spinlock_irqsave)(&chip->voice_lock);
 		if (substream->runtime && substream->runtime->private_data) {
 			struct snd_ymfpci_pcm *ypcm = substream->runtime->private_data;
 			if (!ypcm->use_441_slot)
 				ypcm->update_pcm_vol = 2;
 		}
-		spin_unlock_irqrestore(&chip->voice_lock, flags);
 		return 1;
 	}
 	return 0;
@@ -1827,20 +1781,20 @@ int snd_ymfpci_mixer(struct snd_ymfpci *chip, int rear_switch)
 	if (snd_BUG_ON(!chip->pcm_spdif))
 		return -ENXIO;
 	kctl = snd_ctl_new1(&snd_ymfpci_spdif_default, chip);
+	kctl->id.device = chip->pcm_spdif->device;
 	err = snd_ctl_add(chip->card, kctl);
 	if (err < 0)
 		return err;
-	kctl->id.device = chip->pcm_spdif->device;
 	kctl = snd_ctl_new1(&snd_ymfpci_spdif_mask, chip);
+	kctl->id.device = chip->pcm_spdif->device;
 	err = snd_ctl_add(chip->card, kctl);
 	if (err < 0)
 		return err;
-	kctl->id.device = chip->pcm_spdif->device;
 	kctl = snd_ctl_new1(&snd_ymfpci_spdif_stream, chip);
+	kctl->id.device = chip->pcm_spdif->device;
 	err = snd_ctl_add(chip->card, kctl);
 	if (err < 0)
 		return err;
-	kctl->id.device = chip->pcm_spdif->device;
 	chip->spdif_pcm_ctl = kctl;
 
 	/* direct recording source */
@@ -1889,11 +1843,10 @@ int snd_ymfpci_mixer(struct snd_ymfpci *chip, int rear_switch)
 static int snd_ymfpci_timer_start(struct snd_timer *timer)
 {
 	struct snd_ymfpci *chip;
-	unsigned long flags;
 	unsigned int count;
 
 	chip = snd_timer_chip(timer);
-	spin_lock_irqsave(&chip->reg_lock, flags);
+	guard(spinlock_irqsave)(&chip->reg_lock);
 	if (timer->sticks > 1) {
 		chip->timer_ticks = timer->sticks;
 		count = timer->sticks - 1;
@@ -1907,19 +1860,16 @@ static int snd_ymfpci_timer_start(struct snd_timer *timer)
 	}
 	snd_ymfpci_writew(chip, YDSXGR_TIMERCOUNT, count);
 	snd_ymfpci_writeb(chip, YDSXGR_TIMERCTRL, 0x03);
-	spin_unlock_irqrestore(&chip->reg_lock, flags);
 	return 0;
 }
 
 static int snd_ymfpci_timer_stop(struct snd_timer *timer)
 {
 	struct snd_ymfpci *chip;
-	unsigned long flags;
 
 	chip = snd_timer_chip(timer);
-	spin_lock_irqsave(&chip->reg_lock, flags);
+	guard(spinlock_irqsave)(&chip->reg_lock);
 	snd_ymfpci_writeb(chip, YDSXGR_TIMERCTRL, 0x00);
-	spin_unlock_irqrestore(&chip->reg_lock, flags);
 	return 0;
 }
 
@@ -1953,7 +1903,7 @@ int snd_ymfpci_timer(struct snd_ymfpci *chip, int device)
 	tid.subdevice = 0;
 	err = snd_timer_new(chip->card, "YMFPCI", &tid, &timer);
 	if (err >= 0) {
-		strcpy(timer->name, "YMFPCI timer");
+		strscpy(timer->name, "YMFPCI timer");
 		timer->private_data = chip;
 		timer->hw = snd_ymfpci_timer_hw;
 	}
@@ -2165,7 +2115,7 @@ static int snd_ymfpci_memalloc(struct snd_ymfpci *chip)
 	chip->work_base = ptr;
 	chip->work_base_addr = ptr_addr;
 	
-	snd_BUG_ON(ptr + chip->work_size !=
+	snd_BUG_ON(ptr + PAGE_ALIGN(chip->work_size) !=
 		   chip->work_ptr->area + chip->work_ptr->bytes);
 
 	snd_ymfpci_writel(chip, YDSXGR_PLAYCTRLBASE, chip->bank_base_playback_addr);
@@ -2219,57 +2169,33 @@ static void snd_ymfpci_free(struct snd_card *card)
 
 	snd_ymfpci_free_gameport(chip);
 	
-	pci_write_config_word(chip->pci, 0x40, chip->old_legacy_ctrl);
+	pci_write_config_word(chip->pci, PCIR_DSXG_LEGACY, chip->old_legacy_ctrl);
 	
 	release_firmware(chip->dsp_microcode);
 	release_firmware(chip->controller_microcode);
 }
 
-#ifdef CONFIG_PM_SLEEP
-static const int saved_regs_index[] = {
-	/* spdif */
-	YDSXGR_SPDIFOUTCTRL,
-	YDSXGR_SPDIFOUTSTATUS,
-	YDSXGR_SPDIFINCTRL,
-	/* volumes */
-	YDSXGR_PRIADCLOOPVOL,
-	YDSXGR_NATIVEDACINVOL,
-	YDSXGR_NATIVEDACOUTVOL,
-	YDSXGR_BUF441OUTVOL,
-	YDSXGR_NATIVEADCINVOL,
-	YDSXGR_SPDIFLOOPVOL,
-	YDSXGR_SPDIFOUTVOL,
-	YDSXGR_ZVOUTVOL,
-	YDSXGR_LEGACYOUTVOL,
-	/* address bases */
-	YDSXGR_PLAYCTRLBASE,
-	YDSXGR_RECCTRLBASE,
-	YDSXGR_EFFCTRLBASE,
-	YDSXGR_WORKBASE,
-	/* capture set up */
-	YDSXGR_MAPOFREC,
-	YDSXGR_RECFORMAT,
-	YDSXGR_RECSLOTSR,
-	YDSXGR_ADCFORMAT,
-	YDSXGR_ADCSLOTSR,
-};
-#define YDSXGR_NUM_SAVED_REGS	ARRAY_SIZE(saved_regs_index)
-
 static int snd_ymfpci_suspend(struct device *dev)
 {
 	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_ymfpci *chip = card->private_data;
-	unsigned int i;
-	
+	unsigned int i, legacy_reg_count = DSXG_PCI_NUM_SAVED_LEGACY_REGS;
+
+	if (chip->pci->device >= 0x0010) /* YMF 744/754 */
+		legacy_reg_count = DSXG_PCI_NUM_SAVED_REGS;
+
 	snd_power_change_state(card, SNDRV_CTL_POWER_D3hot);
 	snd_ac97_suspend(chip->ac97);
+
 	for (i = 0; i < YDSXGR_NUM_SAVED_REGS; i++)
 		chip->saved_regs[i] = snd_ymfpci_readl(chip, saved_regs_index[i]);
+
 	chip->saved_ydsxgr_mode = snd_ymfpci_readl(chip, YDSXGR_MODE);
-	pci_read_config_word(chip->pci, PCIR_DSXG_LEGACY,
-			     &chip->saved_dsxg_legacy);
-	pci_read_config_word(chip->pci, PCIR_DSXG_ELEGACY,
-			     &chip->saved_dsxg_elegacy);
+
+	for (i = 0; i < legacy_reg_count; i++)
+		pci_read_config_word(chip->pci, pci_saved_regs_index[i],
+				      chip->saved_dsxg_pci_regs + i);
+
 	snd_ymfpci_writel(chip, YDSXGR_NATIVEDACOUTVOL, 0);
 	snd_ymfpci_writel(chip, YDSXGR_BUF441OUTVOL, 0);
 	snd_ymfpci_disable_dsp(chip);
@@ -2281,7 +2207,10 @@ static int snd_ymfpci_resume(struct device *dev)
 	struct pci_dev *pci = to_pci_dev(dev);
 	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_ymfpci *chip = card->private_data;
-	unsigned int i;
+	unsigned int i, legacy_reg_count = DSXG_PCI_NUM_SAVED_LEGACY_REGS;
+
+	if (chip->pci->device >= 0x0010) /* YMF 744/754 */
+		legacy_reg_count = DSXG_PCI_NUM_SAVED_REGS;
 
 	snd_ymfpci_aclink_reset(pci);
 	snd_ymfpci_codec_ready(chip, 0);
@@ -2293,28 +2222,25 @@ static int snd_ymfpci_resume(struct device *dev)
 
 	snd_ac97_resume(chip->ac97);
 
-	pci_write_config_word(chip->pci, PCIR_DSXG_LEGACY,
-			      chip->saved_dsxg_legacy);
-	pci_write_config_word(chip->pci, PCIR_DSXG_ELEGACY,
-			      chip->saved_dsxg_elegacy);
+	for (i = 0; i < legacy_reg_count; i++)
+		pci_write_config_word(chip->pci, pci_saved_regs_index[i],
+				      chip->saved_dsxg_pci_regs[i]);
 
 	/* start hw again */
 	if (chip->start_count > 0) {
-		spin_lock_irq(&chip->reg_lock);
+		guard(spinlock_irq)(&chip->reg_lock);
 		snd_ymfpci_writel(chip, YDSXGR_MODE, chip->saved_ydsxgr_mode);
 		chip->active_bank = snd_ymfpci_readl(chip, YDSXGR_CTRLSELECT);
-		spin_unlock_irq(&chip->reg_lock);
 	}
 	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
 	return 0;
 }
 
-SIMPLE_DEV_PM_OPS(snd_ymfpci_pm, snd_ymfpci_suspend, snd_ymfpci_resume);
-#endif /* CONFIG_PM_SLEEP */
+DEFINE_SIMPLE_DEV_PM_OPS(snd_ymfpci_pm, snd_ymfpci_suspend, snd_ymfpci_resume);
 
 int snd_ymfpci_create(struct snd_card *card,
 		      struct pci_dev *pci,
-		      unsigned short old_legacy_ctrl)
+		      u16 old_legacy_ctrl)
 {
 	struct snd_ymfpci *chip = card->private_data;
 	int err;
@@ -2335,7 +2261,7 @@ int snd_ymfpci_create(struct snd_card *card,
 	chip->device_id = pci->device;
 	chip->rev = pci->revision;
 
-	err = pci_request_regions(pci, "YMFPCI");
+	err = pcim_request_all_regions(pci, "YMFPCI");
 	if (err < 0)
 		return err;
 
@@ -2378,13 +2304,6 @@ int snd_ymfpci_create(struct snd_card *card,
 	err = snd_ymfpci_ac3_init(chip);
 	if (err < 0)
 		return err;
-
-#ifdef CONFIG_PM_SLEEP
-	chip->saved_regs = devm_kmalloc_array(&pci->dev, YDSXGR_NUM_SAVED_REGS,
-					      sizeof(u32), GFP_KERNEL);
-	if (!chip->saved_regs)
-		return -ENOMEM;
-#endif
 
 	snd_ymfpci_proc_init(card, chip);
 

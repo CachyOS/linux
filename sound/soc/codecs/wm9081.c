@@ -335,7 +335,7 @@ static SOC_ENUM_SINGLE_DECL(speaker_mode, WM9081_ANALOGUE_SPEAKER_2, 6,
 static int speaker_mode_get(struct snd_kcontrol *kcontrol,
 			    struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	unsigned int reg;
 
 	reg = snd_soc_component_read(component, WM9081_ANALOGUE_SPEAKER_2);
@@ -356,7 +356,7 @@ static int speaker_mode_get(struct snd_kcontrol *kcontrol,
 static int speaker_mode_put(struct snd_kcontrol *kcontrol,
 			    struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	unsigned int reg_pwr = snd_soc_component_read(component, WM9081_POWER_MANAGEMENT);
 	unsigned int reg2 = snd_soc_component_read(component, WM9081_ANALOGUE_SPEAKER_2);
 
@@ -816,6 +816,7 @@ static int wm9081_set_bias_level(struct snd_soc_component *component,
 				 enum snd_soc_bias_level level)
 {
 	struct wm9081_priv *wm9081 = snd_soc_component_get_drvdata(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
@@ -833,7 +834,7 @@ static int wm9081_set_bias_level(struct snd_soc_component *component,
 
 	case SND_SOC_BIAS_STANDBY:
 		/* Initial cold start */
-		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
+		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
 			regcache_cache_only(wm9081->regmap, false);
 			regcache_sync(wm9081->regmap);
 
@@ -907,18 +908,18 @@ static int wm9081_set_dai_fmt(struct snd_soc_dai *dai,
 		  WM9081_BCLK_DIR | WM9081_LRCLK_DIR | WM9081_AIF_FMT_MASK);
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		wm9081->master = 0;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFM:
+	case SND_SOC_DAIFMT_CBC_CFP:
 		aif2 |= WM9081_LRCLK_DIR;
 		wm9081->master = 1;
 		break;
-	case SND_SOC_DAIFMT_CBM_CFS:
+	case SND_SOC_DAIFMT_CBP_CFC:
 		aif2 |= WM9081_BCLK_DIR;
 		wm9081->master = 1;
 		break;
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		aif2 |= WM9081_LRCLK_DIR | WM9081_BCLK_DIR;
 		wm9081->master = 1;
 		break;
@@ -1284,7 +1285,6 @@ static const struct snd_soc_component_driver soc_component_dev_wm9081 = {
 	.num_dapm_routes	= ARRAY_SIZE(wm9081_audio_paths),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config wm9081_regmap = {
@@ -1296,7 +1296,7 @@ static const struct regmap_config wm9081_regmap = {
 	.num_reg_defaults = ARRAY_SIZE(wm9081_reg),
 	.volatile_reg = wm9081_volatile_register,
 	.readable_reg = wm9081_readable_register,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 };
 
 static int wm9081_i2c_probe(struct i2c_client *i2c)
@@ -1357,13 +1357,11 @@ static int wm9081_i2c_probe(struct i2c_client *i2c)
 	return 0;
 }
 
-static int wm9081_i2c_remove(struct i2c_client *client)
-{
-	return 0;
-}
+static void wm9081_i2c_remove(struct i2c_client *client)
+{}
 
 static const struct i2c_device_id wm9081_i2c_id[] = {
-	{ "wm9081", 0 },
+	{ "wm9081" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wm9081_i2c_id);
@@ -1372,7 +1370,7 @@ static struct i2c_driver wm9081_i2c_driver = {
 	.driver = {
 		.name = "wm9081",
 	},
-	.probe_new = wm9081_i2c_probe,
+	.probe =    wm9081_i2c_probe,
 	.remove =   wm9081_i2c_remove,
 	.id_table = wm9081_i2c_id,
 };

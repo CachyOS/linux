@@ -236,13 +236,21 @@ static int ishtp_cl_device_probe(struct device *dev)
  *
  * Return: 1 if dev & drv matches, 0 otherwise.
  */
-static int ishtp_cl_bus_match(struct device *dev, struct device_driver *drv)
+static int ishtp_cl_bus_match(struct device *dev, const struct device_driver *drv)
 {
 	struct ishtp_cl_device *device = to_ishtp_cl_device(dev);
 	struct ishtp_cl_driver *driver = to_ishtp_cl_driver(drv);
+	struct ishtp_fw_client *client = device->fw_client;
+	const struct ishtp_device_id *id;
 
-	return guid_equal(&driver->id[0].guid,
-			  &device->fw_client->props.protocol_name);
+	if (client) {
+		for (id = driver->id; !guid_is_null(&id->guid); id++) {
+			if (guid_equal(&id->guid, &client->props.protocol_name))
+				return 1;
+		}
+	}
+
+	return 0;
 }
 
 /**
@@ -361,7 +369,7 @@ static struct attribute *ishtp_cl_dev_attrs[] = {
 };
 ATTRIBUTE_GROUPS(ishtp_cl_dev);
 
-static int ishtp_cl_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int ishtp_cl_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
 	if (add_uevent_var(env, "MODALIAS=" ISHTP_MODULE_PREFIX "%s", dev_name(dev)))
 		return -ENOMEM;
@@ -378,7 +386,7 @@ static const struct dev_pm_ops ishtp_cl_bus_dev_pm_ops = {
 	.restore = ishtp_cl_device_resume,
 };
 
-static struct bus_type ishtp_cl_bus_type = {
+static const struct bus_type ishtp_cl_bus_type = {
 	.name		= "ishtp",
 	.dev_groups	= ishtp_cl_dev_groups,
 	.probe		= ishtp_cl_device_probe,
@@ -427,7 +435,7 @@ static struct ishtp_cl_device *ishtp_bus_add_device(struct ishtp_device *dev,
 	}
 	spin_unlock_irqrestore(&dev->device_list_lock, flags);
 
-	device = kzalloc(sizeof(struct ishtp_cl_device), GFP_KERNEL);
+	device = kzalloc_obj(struct ishtp_cl_device);
 	if (!device)
 		return NULL;
 
@@ -541,7 +549,7 @@ void ishtp_cl_bus_rx_event(struct ishtp_cl_device *device)
 		return;
 
 	if (device->event_cb)
-		schedule_work(&device->event_work);
+		queue_work(device->ishtp_dev->unbound_wq, &device->event_work);
 }
 
 /**
@@ -722,6 +730,8 @@ void ishtp_bus_remove_all_clients(struct ishtp_device *ishtp_dev,
 	spin_lock_irqsave(&ishtp_dev->cl_list_lock, flags);
 	list_for_each_entry(cl, &ishtp_dev->cl_list, link) {
 		cl->state = ISHTP_CL_DISCONNECTED;
+		if (warm_reset && cl->device && cl->device->reference_count)
+			continue;
 
 		/*
 		 * Wake any pending process. The waiter would check dev->state
@@ -842,6 +852,7 @@ EXPORT_SYMBOL(ishtp_device);
 
 /**
  * ishtp_wait_resume() - Wait for IPC resume
+ * @dev: ishtp device
  *
  * Wait for IPC resume
  *
@@ -849,9 +860,6 @@ EXPORT_SYMBOL(ishtp_device);
  */
 bool ishtp_wait_resume(struct ishtp_device *dev)
 {
-	/* 50ms to get resume response */
-	#define WAIT_FOR_RESUME_ACK_MS		50
-
 	/* Waiting to get resume response */
 	if (dev->resume_flag)
 		wait_event_interruptible_timeout(dev->resume_wait,
@@ -875,6 +883,22 @@ struct device *ishtp_get_pci_device(struct ishtp_cl_device *device)
 	return device->ishtp_dev->devc;
 }
 EXPORT_SYMBOL(ishtp_get_pci_device);
+
+/**
+ * ishtp_get_workqueue - Retrieve the workqueue associated with an ISHTP device
+ * @cl_device: Pointer to the ISHTP client device structure
+ *
+ * Returns the workqueue_struct pointer (unbound_wq) associated with the given
+ * ISHTP client device. This workqueue is typically used for scheduling work
+ * related to the device.
+ *
+ * Return: Pointer to struct workqueue_struct.
+ */
+struct workqueue_struct *ishtp_get_workqueue(struct ishtp_cl_device *cl_device)
+{
+	return cl_device->ishtp_dev->unbound_wq;
+}
+EXPORT_SYMBOL(ishtp_get_workqueue);
 
 /**
  * ishtp_trace_callback() - Return trace callback
@@ -929,4 +953,5 @@ static void __exit ishtp_bus_unregister(void)
 module_init(ishtp_bus_register);
 module_exit(ishtp_bus_unregister);
 
+MODULE_DESCRIPTION("ISHTP bus driver");
 MODULE_LICENSE("GPL");

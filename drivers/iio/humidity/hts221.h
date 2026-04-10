@@ -13,7 +13,6 @@
 #define HTS221_DEV_NAME		"hts221"
 
 #include <linux/iio/iio.h>
-#include <linux/regulator/consumer.h>
 
 enum hts221_sensor_type {
 	HTS221_SENSOR_H,
@@ -30,7 +29,6 @@ struct hts221_hw {
 	const char *name;
 	struct device *dev;
 	struct regmap *regmap;
-	struct regulator *vdd;
 
 	struct iio_trigger *trig;
 	int irq;
@@ -42,7 +40,7 @@ struct hts221_hw {
 	/* Ensure natural alignment of timestamp */
 	struct {
 		__le16 channels[2];
-		s64 ts __aligned(8);
+		aligned_s64 ts;
 	} scan;
 };
 

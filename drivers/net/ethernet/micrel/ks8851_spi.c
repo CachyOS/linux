@@ -20,8 +20,6 @@
 #include <linux/regulator/consumer.h>
 
 #include <linux/spi/spi.h>
-#include <linux/gpio.h>
-#include <linux/of_gpio.h>
 #include <linux/of_net.h>
 
 #include "ks8851.h"
@@ -41,7 +39,7 @@ static int msg_enable;
  *
  * The @lock ensures that the chip is protected when certain operations are
  * in progress. When the read or write packet transfer is in progress, most
- * of the chip registers are not ccessible until the transfer is finished and
+ * of the chip registers are not accessible until the transfer is finished and
  * the DMA has been de-asserted.
  */
 struct ks8851_net_spi {
@@ -156,7 +154,7 @@ static void ks8851_rdreg(struct ks8851_net *ks, unsigned int op,
 
 	txb[0] = cpu_to_le16(op | KS_SPIOP_RD);
 
-	if (kss->spidev->master->flags & SPI_MASTER_HALF_DUPLEX) {
+	if (kss->spidev->controller->flags & SPI_CONTROLLER_HALF_DUPLEX) {
 		msg = &kss->spi_msg2;
 		xfer = kss->spi_xfer2;
 
@@ -180,7 +178,7 @@ static void ks8851_rdreg(struct ks8851_net *ks, unsigned int op,
 	ret = spi_sync(kss->spidev, msg);
 	if (ret < 0)
 		netdev_err(ks->netdev, "read: spi_sync() failed\n");
-	else if (kss->spidev->master->flags & SPI_MASTER_HALF_DUPLEX)
+	else if (kss->spidev->controller->flags & SPI_CONTROLLER_HALF_DUPLEX)
 		memcpy(rxb, trx, rxl);
 	else
 		memcpy(rxb, trx + 2, rxl);
@@ -287,25 +285,29 @@ static void ks8851_wrfifo_spi(struct ks8851_net *ks, struct sk_buff *txp,
 }
 
 /**
- * ks8851_rx_skb_spi - receive skbuff
- * @ks: The device state
- * @skb: The skbuff
+ * calc_txlen - calculate size of message to send packet
+ * @len: Length of data
+ *
+ * Returns the size of the TXFIFO message needed to send
+ * this packet.
  */
-static void ks8851_rx_skb_spi(struct ks8851_net *ks, struct sk_buff *skb)
+static unsigned int calc_txlen(unsigned int len)
 {
-	netif_rx(skb);
+	return ALIGN(len + 4, 4);
 }
 
 /**
  * ks8851_tx_work - process tx packet(s)
- * @work: The work strucutre what was scheduled.
+ * @work: The work structure what was scheduled.
  *
  * This is called when a number of packets have been scheduled for
  * transmission and need to be sent to the device.
  */
 static void ks8851_tx_work(struct work_struct *work)
 {
+	unsigned int dequeued_len = 0;
 	struct ks8851_net_spi *kss;
+	unsigned short tx_space;
 	struct ks8851_net *ks;
 	unsigned long flags;
 	struct sk_buff *txb;
@@ -322,6 +324,8 @@ static void ks8851_tx_work(struct work_struct *work)
 		last = skb_queue_empty(&ks->txq);
 
 		if (txb) {
+			dequeued_len += calc_txlen(txb->len);
+
 			ks8851_wrreg16_spi(ks, KS_RXQCR,
 					   ks->rc_rxqcr | RXQCR_SDA);
 			ks8851_wrfifo_spi(ks, txb, last);
@@ -331,6 +335,13 @@ static void ks8851_tx_work(struct work_struct *work)
 			ks8851_done_tx(ks, txb);
 		}
 	}
+
+	tx_space = ks8851_rdreg16_spi(ks, KS_TXMIR);
+
+	spin_lock_bh(&ks->statelock);
+	ks->queued_len -= dequeued_len;
+	ks->tx_space = tx_space;
+	spin_unlock_bh(&ks->statelock);
 
 	ks8851_unlock_spi(ks, &flags);
 }
@@ -344,18 +355,6 @@ static void ks8851_flush_tx_work_spi(struct ks8851_net *ks)
 	struct ks8851_net_spi *kss = to_ks8851_spi(ks);
 
 	flush_work(&kss->tx_work);
-}
-
-/**
- * calc_txlen - calculate size of message to send packet
- * @len: Length of data
- *
- * Returns the size of the TXFIFO message needed to send
- * this packet.
- */
-static unsigned int calc_txlen(unsigned int len)
-{
-	return ALIGN(len + 4, 4);
 }
 
 /**
@@ -386,16 +385,17 @@ static netdev_tx_t ks8851_start_xmit_spi(struct sk_buff *skb,
 
 	spin_lock(&ks->statelock);
 
-	if (needed > ks->tx_space) {
+	if (ks->queued_len + needed > ks->tx_space) {
 		netif_stop_queue(dev);
 		ret = NETDEV_TX_BUSY;
 	} else {
-		ks->tx_space -= needed;
+		ks->queued_len += needed;
 		skb_queue_tail(&ks->txq, skb);
 	}
 
 	spin_unlock(&ks->statelock);
-	schedule_work(&kss->tx_work);
+	if (ret == NETDEV_TX_OK)
+		schedule_work(&kss->tx_work);
 
 	return ret;
 }
@@ -413,7 +413,8 @@ static int ks8851_probe_spi(struct spi_device *spi)
 
 	spi->bits_per_word = 8;
 
-	ks = netdev_priv(netdev);
+	kss = netdev_priv(netdev);
+	ks = &kss->ks8851;
 
 	ks->lock = ks8851_lock_spi;
 	ks->unlock = ks8851_unlock_spi;
@@ -422,7 +423,6 @@ static int ks8851_probe_spi(struct spi_device *spi)
 	ks->rdfifo = ks8851_rdfifo_spi;
 	ks->wrfifo = ks8851_wrfifo_spi;
 	ks->start_xmit = ks8851_start_xmit_spi;
-	ks->rx_skb = ks8851_rx_skb_spi;
 	ks->flush_tx_work = ks8851_flush_tx_work_spi;
 
 #define STD_IRQ (IRQ_LCI |	/* Link Change */	\
@@ -432,8 +432,6 @@ static int ks8851_probe_spi(struct spi_device *spi)
 		 IRQ_TXPSI |	/* TX process stop */	\
 		 IRQ_RXPSI)	/* RX process stop */
 	ks->rc_ier = STD_IRQ;
-
-	kss = to_ks8851_spi(ks);
 
 	kss->spidev = spi;
 	mutex_init(&kss->lock);

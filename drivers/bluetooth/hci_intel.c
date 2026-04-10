@@ -126,7 +126,6 @@ static int intel_wait_booting(struct hci_uart *hu)
 	return err;
 }
 
-#ifdef CONFIG_PM
 static int intel_wait_lpm_transaction(struct hci_uart *hu)
 {
 	struct intel_data *intel = hu->priv;
@@ -237,7 +236,6 @@ static int intel_lpm_resume(struct hci_uart *hu)
 
 	return 0;
 }
-#endif /* CONFIG_PM */
 
 static int intel_lpm_host_wake(struct hci_uart *hu)
 {
@@ -280,7 +278,6 @@ static irqreturn_t intel_irq(int irq, void *dev_id)
 
 	/* Host/Controller are now LPM resumed, trigger a new delayed suspend */
 	pm_runtime_get(&idev->pdev->dev);
-	pm_runtime_mark_last_busy(&idev->pdev->dev);
 	pm_runtime_put_autosuspend(&idev->pdev->dev);
 
 	return IRQ_HANDLED;
@@ -371,7 +368,6 @@ static void intel_busy_work(struct work_struct *work)
 	list_for_each_entry(idev, &intel_device_list, list) {
 		if (intel->hu->tty->dev->parent == idev->pdev->dev.parent) {
 			pm_runtime_get(&idev->pdev->dev);
-			pm_runtime_mark_last_busy(&idev->pdev->dev);
 			pm_runtime_put_autosuspend(&idev->pdev->dev);
 			break;
 		}
@@ -388,7 +384,7 @@ static int intel_open(struct hci_uart *hu)
 	if (!hci_uart_has_flow_control(hu))
 		return -EOPNOTSUPP;
 
-	intel = kzalloc(sizeof(*intel), GFP_KERNEL);
+	intel = kzalloc_obj(*intel);
 	if (!intel)
 		return -ENOMEM;
 
@@ -537,7 +533,7 @@ static int intel_setup(struct hci_uart *hu)
 	int speed_change = 0;
 	int err;
 
-	bt_dev_dbg(hdev, "start intel_setup");
+	bt_dev_dbg(hdev, "");
 
 	hu->hdev->set_diag = btintel_set_diag;
 	hu->hdev->set_bdaddr = btintel_set_bdaddr;
@@ -591,12 +587,12 @@ static int intel_setup(struct hci_uart *hu)
 		return -EINVAL;
 	}
 
-        /* Check for supported iBT hardware variants of this firmware
-         * loading method.
-         *
-         * This check has been put in place to ensure correct forward
-         * compatibility options when newer hardware variants come along.
-         */
+	/* Check for supported iBT hardware variants of this firmware
+	 * loading method.
+	 *
+	 * This check has been put in place to ensure correct forward
+	 * compatibility options when newer hardware variants come along.
+	 */
 	switch (ver.hw_variant) {
 	case 0x0b:	/* LnP */
 	case 0x0c:	/* WsP */
@@ -660,7 +656,7 @@ static int intel_setup(struct hci_uart *hu)
 	 */
 	if (!bacmp(&params.otp_bdaddr, BDADDR_ANY)) {
 		bt_dev_info(hdev, "No device address configured");
-		set_bit(HCI_QUIRK_INVALID_BDADDR, &hdev->quirks);
+		hci_set_quirk(hdev, HCI_QUIRK_INVALID_BDADDR);
 	}
 
 	/* With this Intel bootloader only the hardware variant and device
@@ -777,7 +773,7 @@ static int intel_setup(struct hci_uart *hu)
 
 	rettime = ktime_get();
 	delta = ktime_sub(rettime, calltime);
-	duration = (unsigned long long) ktime_to_ns(delta) >> 10;
+	duration = (unsigned long long)ktime_to_ns(delta) >> 10;
 
 	bt_dev_info(hdev, "Firmware loaded in %llu usecs", duration);
 
@@ -822,7 +818,7 @@ done:
 
 	rettime = ktime_get();
 	delta = ktime_sub(rettime, calltime);
-	duration = (unsigned long long) ktime_to_ns(delta) >> 10;
+	duration = (unsigned long long)ktime_to_ns(delta) >> 10;
 
 	bt_dev_info(hdev, "Device booted in %llu usecs", duration);
 
@@ -972,11 +968,12 @@ static int intel_recv(struct hci_uart *hu, const void *data, int count)
 	if (!test_bit(HCI_UART_REGISTERED, &hu->flags))
 		return -EUNATCH;
 
-	intel->rx_skb = h4_recv_buf(hu->hdev, intel->rx_skb, data, count,
+	intel->rx_skb = h4_recv_buf(hu, intel->rx_skb, data, count,
 				    intel_recv_pkts,
 				    ARRAY_SIZE(intel_recv_pkts));
 	if (IS_ERR(intel->rx_skb)) {
 		int err = PTR_ERR(intel->rx_skb);
+
 		bt_dev_err(hu->hdev, "Frame reassembly failed (%d)", err);
 		intel->rx_skb = NULL;
 		return err;
@@ -1002,7 +999,6 @@ static int intel_enqueue(struct hci_uart *hu, struct sk_buff *skb)
 	list_for_each_entry(idev, &intel_device_list, list) {
 		if (hu->tty->dev->parent == idev->pdev->dev.parent) {
 			pm_runtime_get_sync(&idev->pdev->dev);
-			pm_runtime_mark_last_busy(&idev->pdev->dev);
 			pm_runtime_put_autosuspend(&idev->pdev->dev);
 			break;
 		}
@@ -1028,12 +1024,12 @@ static struct sk_buff *intel_dequeue(struct hci_uart *hu)
 		struct hci_command_hdr *cmd = (void *)skb->data;
 		__u16 opcode = le16_to_cpu(cmd->opcode);
 
-		/* When the 0xfc01 command is issued to boot into
-		 * the operational firmware, it will actually not
-		 * send a command complete event. To keep the flow
-		 * control working inject that event here.
+		/* When the BTINTEL_HCI_OP_RESET command is issued to boot into
+		 * the operational firmware, it will actually not send a command
+		 * complete event. To keep the flow control working inject that
+		 * event here.
 		 */
-		if (opcode == 0xfc01)
+		if (opcode == BTINTEL_HCI_OP_RESET)
 			inject_cmd_complete(hu->hdev, opcode);
 	}
 
@@ -1068,7 +1064,6 @@ static const struct acpi_device_id intel_acpi_match[] = {
 MODULE_DEVICE_TABLE(acpi, intel_acpi_match);
 #endif
 
-#ifdef CONFIG_PM
 static int intel_suspend_device(struct device *dev)
 {
 	struct intel_device *idev = dev_get_drvdata(dev);
@@ -1092,10 +1087,8 @@ static int intel_resume_device(struct device *dev)
 
 	return 0;
 }
-#endif
 
-#ifdef CONFIG_PM_SLEEP
-static int intel_suspend(struct device *dev)
+static int __maybe_unused intel_suspend(struct device *dev)
 {
 	struct intel_device *idev = dev_get_drvdata(dev);
 
@@ -1105,7 +1098,7 @@ static int intel_suspend(struct device *dev)
 	return intel_suspend_device(dev);
 }
 
-static int intel_resume(struct device *dev)
+static int __maybe_unused intel_resume(struct device *dev)
 {
 	struct intel_device *idev = dev_get_drvdata(dev);
 
@@ -1114,7 +1107,6 @@ static int intel_resume(struct device *dev)
 
 	return intel_resume_device(dev);
 }
-#endif
 
 static const struct dev_pm_ops intel_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(intel_suspend, intel_resume)
@@ -1190,7 +1182,7 @@ no_irq:
 	return 0;
 }
 
-static int intel_remove(struct platform_device *pdev)
+static void intel_remove(struct platform_device *pdev)
 {
 	struct intel_device *idev = platform_get_drvdata(pdev);
 
@@ -1201,8 +1193,6 @@ static int intel_remove(struct platform_device *pdev)
 	mutex_unlock(&intel_device_list_lock);
 
 	dev_info(&pdev->dev, "unregistered.\n");
-
-	return 0;
 }
 
 static struct platform_driver intel_driver = {
@@ -1217,7 +1207,11 @@ static struct platform_driver intel_driver = {
 
 int __init intel_init(void)
 {
-	platform_driver_register(&intel_driver);
+	int err;
+
+	err = platform_driver_register(&intel_driver);
+	if (err)
+		return err;
 
 	return hci_uart_register_proto(&intel_proto);
 }

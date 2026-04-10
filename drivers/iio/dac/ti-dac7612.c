@@ -31,10 +31,10 @@ struct dac7612 {
 	struct mutex lock;
 
 	/*
-	 * DMA (thus cache coherency maintenance) requires the
+	 * DMA (thus cache coherency maintenance) may require the
 	 * transfer buffers to live in their own cache lines.
 	 */
-	uint8_t data[2] ____cacheline_aligned;
+	uint8_t data[2] __aligned(IIO_DMA_MINALIGN);
 };
 
 static int dac7612_cmd_single(struct dac7612 *priv, int channel, u16 val)
@@ -166,7 +166,7 @@ static int dac7612_probe(struct spi_device *spi)
 
 static const struct spi_device_id dac7612_id[] = {
 	{"ti-dac7612"},
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, dac7612_id);
 
@@ -174,7 +174,7 @@ static const struct of_device_id dac7612_of_match[] = {
 	{ .compatible = "ti,dac7612" },
 	{ .compatible = "ti,dac7612u" },
 	{ .compatible = "ti,dac7612ub" },
-	{ },
+	{ }
 };
 MODULE_DEVICE_TABLE(of, dac7612_of_match);
 

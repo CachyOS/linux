@@ -17,6 +17,7 @@
 #include <linux/jiffies.h>
 #include <linux/err.h>
 #include <linux/acpi.h>
+#include <linux/string_choices.h>
 
 #define ATK_HID "ATK0110"
 
@@ -187,7 +188,7 @@ struct atk_acpi_input_buf {
 };
 
 static int atk_add(struct acpi_device *device);
-static int atk_remove(struct acpi_device *device);
+static void atk_remove(struct acpi_device *device);
 static void atk_print_sensor(struct atk_data *data, union acpi_object *obj);
 static int atk_read_value(struct atk_sensor_data *sensor, u64 *value);
 
@@ -441,7 +442,7 @@ static void atk_print_sensor(struct atk_data *data, union acpi_object *obj)
 			flags->integer.value,
 			name->string.pointer,
 			limit1->integer.value, limit2->integer.value,
-			enable->integer.value ? "enabled" : "disabled");
+			str_enabled_disabled(enable->integer.value));
 #endif
 }
 
@@ -783,7 +784,6 @@ static const struct file_operations atk_debugfs_ggrp_fops = {
 	.read		= atk_debugfs_ggrp_read,
 	.open		= atk_debugfs_ggrp_open,
 	.release	= atk_debugfs_ggrp_release,
-	.llseek		= no_llseek,
 };
 
 static void atk_debugfs_init(struct atk_data *data)
@@ -1075,8 +1075,7 @@ static int atk_ec_enabled(struct atk_data *data)
 		err = -EIO;
 	} else {
 		err = (buf->value != 0);
-		dev_dbg(dev, "EC is %sabled\n",
-				err ? "en" : "dis");
+		dev_dbg(dev, "EC is %s\n", str_enabled_disabled(err));
 	}
 
 	ACPI_FREE(obj);
@@ -1097,18 +1096,15 @@ static int atk_ec_ctl(struct atk_data *data, int enable)
 
 	obj = atk_sitm(data, &sitm);
 	if (IS_ERR(obj)) {
-		dev_err(dev, "Failed to %sable the EC\n",
-				enable ? "en" : "dis");
+		dev_err(dev, "Failed to %s the EC\n", str_enable_disable(enable));
 		return PTR_ERR(obj);
 	}
 	ec_ret = (struct atk_acpi_ret_buffer *)obj->buffer.pointer;
 	if (ec_ret->flags == 0) {
-		dev_err(dev, "Failed to %sable the EC\n",
-				enable ? "en" : "dis");
+		dev_err(dev, "Failed to %s the EC\n", str_enable_disable(enable));
 		err = -EIO;
 	} else {
-		dev_info(dev, "EC %sabled\n",
-				enable ? "en" : "dis");
+		dev_info(dev, "EC %s\n", str_enabled_disabled(enable));
 	}
 
 	ACPI_FREE(obj);
@@ -1344,7 +1340,7 @@ out:
 	return err;
 }
 
-static int atk_remove(struct acpi_device *device)
+static void atk_remove(struct acpi_device *device)
 {
 	struct atk_data *data = device->driver_data;
 	dev_dbg(&device->dev, "removing...\n");
@@ -1359,8 +1355,6 @@ static int atk_remove(struct acpi_device *device)
 		if (atk_ec_ctl(data, 0))
 			dev_err(&device->dev, "Failed to disable EC\n");
 	}
-
-	return 0;
 }
 
 static int __init atk0110_init(void)
@@ -1391,4 +1385,5 @@ static void __exit atk0110_exit(void)
 module_init(atk0110_init);
 module_exit(atk0110_exit);
 
+MODULE_DESCRIPTION("ASUS ATK0110 driver");
 MODULE_LICENSE("GPL");

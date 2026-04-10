@@ -17,9 +17,11 @@ properties:
   compatible:
     const: samsung,ld9040
 
+  reg:
+    maxItems: 1
+
   display-timings: true
   port: true
-  reg: true
   reset-gpios: true
 
   vdd3-supply:
@@ -41,6 +43,9 @@ properties:
 
   panel-height-mm:
     description: physical panel height [mm]
+
+  spi-cpha: true
+  spi-cpol: true
 
 required:
   - compatible

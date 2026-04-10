@@ -26,8 +26,10 @@ static void _rtl8821ae_return_beacon_queue_skb(struct ieee80211_hw *hw)
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_pci *rtlpci = rtl_pcidev(rtl_pcipriv(hw));
 	struct rtl8192_tx_ring *ring = &rtlpci->tx_ring[BEACON_QUEUE];
+	struct sk_buff_head free_list;
 	unsigned long flags;
 
+	skb_queue_head_init(&free_list);
 	spin_lock_irqsave(&rtlpriv->locks.irq_th_lock, flags);
 	while (skb_queue_len(&ring->queue)) {
 		struct rtl_tx_desc *entry = &ring->desc[ring->idx];
@@ -37,10 +39,12 @@ static void _rtl8821ae_return_beacon_queue_skb(struct ieee80211_hw *hw)
 				 rtlpriv->cfg->ops->get_desc(hw, (u8 *)entry,
 						true, HW_DESC_TXBUFF_ADDR),
 				 skb->len, DMA_TO_DEVICE);
-		kfree_skb(skb);
+		__skb_queue_tail(&free_list, skb);
 		ring->idx = (ring->idx + 1) % ring->entries;
 	}
 	spin_unlock_irqrestore(&rtlpriv->locks.irq_th_lock, flags);
+
+	__skb_queue_purge(&free_list);
 }
 
 static void _rtl8821ae_set_bcn_ctrl_reg(struct ieee80211_hw *hw,
@@ -542,14 +546,9 @@ void rtl8821ae_set_hw_reg(struct ieee80211_hw *hw, u8 variable, u8 *val)
 		break;
 	case HW_VAR_AMPDU_MIN_SPACE:{
 		u8 min_spacing_to_set;
-		u8 sec_min_space;
 
 		min_spacing_to_set = *((u8 *)val);
 		if (min_spacing_to_set <= 7) {
-			sec_min_space = 0;
-
-			if (min_spacing_to_set < sec_min_space)
-				min_spacing_to_set = sec_min_space;
 
 			mac->min_space_cfg = ((mac->min_space_cfg &
 					       0xf8) |
@@ -865,7 +864,7 @@ static void _rtl8821ae_gen_refresh_led_state(struct ieee80211_hw *hw)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_ps_ctl *ppsc = rtl_psc(rtl_priv(hw));
-	struct rtl_led *pled0 = &rtlpriv->ledctl.sw_led0;
+	enum rtl_led_pin pin0 = rtlpriv->ledctl.sw_led0;
 	struct rtl_hal *rtlhal = rtl_hal(rtl_priv(hw));
 
 	if (rtlpriv->rtlhal.up_first_time)
@@ -873,19 +872,19 @@ static void _rtl8821ae_gen_refresh_led_state(struct ieee80211_hw *hw)
 
 	if (ppsc->rfoff_reason == RF_CHANGE_BY_IPS)
 		if (rtlhal->hw_type == HARDWARE_TYPE_RTL8812AE)
-			rtl8812ae_sw_led_on(hw, pled0);
+			rtl8812ae_sw_led_on(hw, pin0);
 		else
-			rtl8821ae_sw_led_on(hw, pled0);
+			rtl8821ae_sw_led_on(hw, pin0);
 	else if (ppsc->rfoff_reason == RF_CHANGE_BY_INIT)
 		if (rtlhal->hw_type == HARDWARE_TYPE_RTL8812AE)
-			rtl8812ae_sw_led_on(hw, pled0);
+			rtl8812ae_sw_led_on(hw, pin0);
 		else
-			rtl8821ae_sw_led_on(hw, pled0);
+			rtl8821ae_sw_led_on(hw, pin0);
 	else
 		if (rtlhal->hw_type == HARDWARE_TYPE_RTL8812AE)
-			rtl8812ae_sw_led_off(hw, pled0);
+			rtl8812ae_sw_led_off(hw, pin0);
 		else
-			rtl8821ae_sw_led_off(hw, pled0);
+			rtl8821ae_sw_led_off(hw, pin0);
 }
 
 static bool _rtl8821ae_init_mac(struct ieee80211_hw *hw)
@@ -1027,7 +1026,7 @@ static void _rtl8821ae_hw_configure(struct ieee80211_hw *hw)
 	/*Set retry limit*/
 	rtl_write_word(rtlpriv, REG_RL, 0x0707);
 
-	/* Set Data / Response auto rate fallack retry count*/
+	/* Set Data / Response auto rate fallback retry count*/
 	rtl_write_dword(rtlpriv, REG_DARFRC, 0x01000000);
 	rtl_write_dword(rtlpriv, REG_DARFRC + 4, 0x07060504);
 	rtl_write_dword(rtlpriv, REG_RARFRC, 0x01000000);
@@ -1296,12 +1295,12 @@ static bool _rtl8821ae_reset_pcie_interface_dma(struct ieee80211_hw *hw,
 		rtl_write_byte(rtlpriv, REG_CR, 0xFF);
 
 		/* We should init LLT & RQPN and
-		 * prepare Tx/Rx descrptor address later
+		 * prepare Tx/Rx descriptor address later
 		 * because MAC function is reset.*/
 	}
 
 	/* 7. Restore PCIe autoload down bit */
-	/* 8812AE does not has the defination. */
+	/* 8812AE does not have the definition. */
 	if (rtlhal->hw_type == HARDWARE_TYPE_RTL8821AE) {
 		/* write 0xF8 bit[17] = 1'b1 */
 		tmp = rtl_read_byte(rtlpriv, REG_MAC_PHY_CTRL_NORMAL + 2);
@@ -1309,7 +1308,7 @@ static bool _rtl8821ae_reset_pcie_interface_dma(struct ieee80211_hw *hw,
 		rtl_write_byte(rtlpriv, REG_MAC_PHY_CTRL_NORMAL + 2, tmp);
 	}
 
-	/* In MAC power on state, BB and RF maybe in ON state,
+	/* In MAC power on state, BB and RF may be in ON state,
 	 * if we release TRx DMA here.
 	 * it will cause packets to be started to Tx/Rx,
 	 * so we release Tx/Rx DMA later.*/
@@ -1714,7 +1713,7 @@ static bool _rtl8821ae_wowlan_initialize_adapter(struct ieee80211_hw *hw)
 	_rtl8821ae_get_wakeup_reason(hw);
 
 	/* Patch Pcie Rx DMA hang after S3/S4 several times.
-	 * The root cause has not be found. */
+	 * The root cause has not been found. */
 	if (_rtl8821ae_check_pcie_dma_hang(hw))
 		_rtl8821ae_reset_pcie_interface_dma(hw, true, false);
 
@@ -1927,7 +1926,7 @@ int rtl8821ae_hw_init(struct ieee80211_hw *hw)
 	rtl8821ae_phy_mac_config(hw);
 	/* because last function modify RCR, so we update
 	 * rcr var here, or TP will unstable for receive_config
-	 * is wrong, RX RCR_ACRC32 will cause TP unstabel & Rx
+	 * is wrong, RX RCR_ACRC32 will cause TP unstable & Rx
 	 * RCR_APP_ICV will cause mac80211 unassoc for cisco 1252
 	rtlpci->receive_config = rtl_read_dword(rtlpriv, REG_RCR);
 	rtlpci->receive_config &= ~(RCR_ACRC32 | RCR_AICV);
@@ -2271,67 +2270,27 @@ static void _rtl8821ae_clear_pci_pme_status(struct ieee80211_hw *hw)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_pci *rtlpci = rtl_pcidev(rtl_pcipriv(hw));
-	u16 cap_hdr;
-	u8 cap_pointer;
-	u8 cap_id = 0xff;
-	u8 pmcs_reg;
-	u8 cnt = 0;
+	struct pci_dev *pdev = rtlpci->pdev;
+	u16 pmcs_reg;
+	u8 pm_cap;
 
-	/* Get the Capability pointer first,
-	 * the Capability Pointer is located at
-	 * offset 0x34 from the Function Header */
-
-	pci_read_config_byte(rtlpci->pdev, 0x34, &cap_pointer);
-	rtl_dbg(rtlpriv, COMP_INIT, DBG_LOUD,
-		"PCI configuration 0x34 = 0x%2x\n", cap_pointer);
-
-	do {
-		pci_read_config_word(rtlpci->pdev, cap_pointer, &cap_hdr);
-		cap_id = cap_hdr & 0xFF;
-
-		rtl_dbg(rtlpriv, COMP_INIT, DBG_LOUD,
-			"in pci configuration, cap_pointer%x = %x\n",
-			cap_pointer, cap_id);
-
-		if (cap_id == 0x01) {
-			break;
-		} else {
-			/* point to next Capability */
-			cap_pointer = (cap_hdr >> 8) & 0xFF;
-			/* 0: end of pci capability, 0xff: invalid value */
-			if (cap_pointer == 0x00 || cap_pointer == 0xff) {
-				cap_id = 0xff;
-				break;
-			}
-		}
-	} while (cnt++ < 200);
-
-	if (cap_id == 0x01) {
-		/* Get the PM CSR (Control/Status Register),
-		 * The PME_Status is located at PM Capatibility offset 5, bit 7
-		 */
-		pci_read_config_byte(rtlpci->pdev, cap_pointer + 5, &pmcs_reg);
-
-		if (pmcs_reg & BIT(7)) {
-			/* PME event occured, clear the PM_Status by write 1 */
-			pmcs_reg = pmcs_reg | BIT(7);
-
-			pci_write_config_byte(rtlpci->pdev, cap_pointer + 5,
-					      pmcs_reg);
-			/* Read it back to check */
-			pci_read_config_byte(rtlpci->pdev, cap_pointer + 5,
-					     &pmcs_reg);
-			rtl_dbg(rtlpriv, COMP_INIT, DBG_DMESG,
-				"Clear PME status 0x%2x to 0x%2x\n",
-				cap_pointer + 5, pmcs_reg);
-		} else {
-			rtl_dbg(rtlpriv, COMP_INIT, DBG_DMESG,
-				"PME status(0x%2x) = 0x%2x\n",
-				cap_pointer + 5, pmcs_reg);
-		}
-	} else {
+	pm_cap = pci_find_capability(pdev, PCI_CAP_ID_PM);
+	if (!pm_cap) {
 		rtl_dbg(rtlpriv, COMP_INIT, DBG_WARNING,
 			"Cannot find PME Capability\n");
+		return;
+	}
+
+	pci_read_config_word(pdev, pm_cap + PCI_PM_CTRL, &pmcs_reg);
+	if (pmcs_reg & PCI_PM_CTRL_PME_STATUS) {
+		/* Clear PME_Status with write */
+		pci_write_config_word(pdev, pm_cap + PCI_PM_CTRL, pmcs_reg);
+		pci_read_config_word(pdev, pm_cap + PCI_PM_CTRL, &pmcs_reg);
+		rtl_dbg(rtlpriv, COMP_INIT, DBG_DMESG,
+			"Cleared PME status, PMCS reg = 0x%4x\n", pmcs_reg);
+	} else {
+		rtl_dbg(rtlpriv, COMP_INIT, DBG_DMESG,
+			"PMCS reg = 0x%4x\n", pmcs_reg);
 	}
 }
 
@@ -2373,7 +2332,7 @@ void rtl8821ae_card_disable(struct ieee80211_hw *hw)
 		if (_rtl8821ae_dynamic_rqpn(hw, 0xE0, 0x3, 0x80c20d0d))
 			rtlhal->re_init_llt_table = true;
 
-		/* 3 <2> Set Fw releted H2C cmd. */
+		/* 3 <2> Set Fw related H2C cmd. */
 
 		/* Set WoWLAN related security information. */
 		rtl8821ae_set_fw_global_info_cmd(hw);
@@ -2398,8 +2357,8 @@ void rtl8821ae_card_disable(struct ieee80211_hw *hw)
 
 		/* 3 <3> Hw Configutations */
 
-		/* Wait untill Rx DMA Finished before host sleep.
-		 * FW Pause Rx DMA may happens when received packet doing dma.
+		/* Wait until Rx DMA Finished before host sleep.
+		 * FW Pause Rx DMA may happen when received packet doing DMA.
 		 */
 		rtl_write_byte(rtlpriv, REG_RXDMA_CONTROL, BIT(2));
 
@@ -2823,9 +2782,9 @@ static void _rtl8812ae_read_txpower_info_from_hwpg(struct ieee80211_hw *hw,
 	"eeprom_regulatory = 0x%x\n", rtlefuse->eeprom_regulatory);
 }
 #endif
-static void _rtl8821ae_read_txpower_info_from_hwpg(struct ieee80211_hw *hw,
-						 bool autoload_fail,
-						 u8 *hwinfo)
+static noinline_for_stack void
+_rtl8821ae_read_txpower_info_from_hwpg(struct ieee80211_hw *hw,
+				       bool autoload_fail, u8 *hwinfo)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_efuse *rtlefuse = rtl_efuse(rtl_priv(hw));
@@ -3105,10 +3064,12 @@ static void _rtl8821ae_read_adapter_info(struct ieee80211_hw *hw, bool b_pseudo_
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_efuse *rtlefuse = rtl_efuse(rtl_priv(hw));
 	struct rtl_hal *rtlhal = rtl_hal(rtl_priv(hw));
-	int params[] = {RTL_EEPROM_ID, EEPROM_VID, EEPROM_DID,
-			EEPROM_SVID, EEPROM_SMID, EEPROM_MAC_ADDR,
-			EEPROM_CHANNELPLAN, EEPROM_VERSION, EEPROM_CUSTOMER_ID,
-			COUNTRY_CODE_WORLD_WIDE_13};
+	static const int params[] = {
+		RTL_EEPROM_ID, EEPROM_VID, EEPROM_DID,
+		EEPROM_SVID, EEPROM_SMID, EEPROM_MAC_ADDR,
+		EEPROM_CHANNELPLAN, EEPROM_VERSION, EEPROM_CUSTOMER_ID,
+		COUNTRY_CODE_WORLD_WIDE_13
+	};
 	u8 *hwinfo;
 
 	if (b_pseudo_test) {
@@ -3966,7 +3927,7 @@ void rtl8821ae_resume(struct ieee80211_hw *hw)
 {
 }
 
-/* Turn on AAP (RCR:bit 0) for promicuous mode. */
+/* Turn on AAP (RCR:bit 0) for promiscuous mode. */
 void rtl8821ae_allow_all_destaddr(struct ieee80211_hw *hw,
 	bool allow_all_da, bool write_into_reg)
 {
@@ -4003,7 +3964,7 @@ void rtl8821ae_add_wowlan_pattern(struct ieee80211_hw *hw,
 
 	/* RX page size = 128 byte */
 	offset = MAX_RX_DMA_BUFFER_SIZE_8812 / 128;
-	/* We should start from the boundry */
+	/* We should start from the boundary */
 	cam_start = offset * 128;
 
 	/* Enable Rx packet buffer access. */

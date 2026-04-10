@@ -26,6 +26,7 @@ u64 *hclge_comm_tqps_get_stats(struct hnae3_handle *handle, u64 *data)
 
 	return buff;
 }
+EXPORT_SYMBOL_GPL(hclge_comm_tqps_get_stats);
 
 int hclge_comm_tqps_get_sset_count(struct hnae3_handle *handle)
 {
@@ -33,29 +34,26 @@ int hclge_comm_tqps_get_sset_count(struct hnae3_handle *handle)
 
 	return kinfo->num_tqps * HCLGE_COMM_QUEUE_PAIR_SIZE;
 }
+EXPORT_SYMBOL_GPL(hclge_comm_tqps_get_sset_count);
 
-u8 *hclge_comm_tqps_get_strings(struct hnae3_handle *handle, u8 *data)
+void hclge_comm_tqps_get_strings(struct hnae3_handle *handle, u8 **data)
 {
 	struct hnae3_knic_private_info *kinfo = &handle->kinfo;
-	u8 *buff = data;
 	u16 i;
 
 	for (i = 0; i < kinfo->num_tqps; i++) {
 		struct hclge_comm_tqp *tqp =
 			container_of(kinfo->tqp[i], struct hclge_comm_tqp, q);
-		snprintf(buff, ETH_GSTRING_LEN, "txq%u_pktnum_rcd", tqp->index);
-		buff += ETH_GSTRING_LEN;
+		ethtool_sprintf(data, "txq%u_pktnum_rcd", tqp->index);
 	}
 
 	for (i = 0; i < kinfo->num_tqps; i++) {
 		struct hclge_comm_tqp *tqp =
 			container_of(kinfo->tqp[i], struct hclge_comm_tqp, q);
-		snprintf(buff, ETH_GSTRING_LEN, "rxq%u_pktnum_rcd", tqp->index);
-		buff += ETH_GSTRING_LEN;
+		ethtool_sprintf(data, "rxq%u_pktnum_rcd", tqp->index);
 	}
-
-	return buff;
 }
+EXPORT_SYMBOL_GPL(hclge_comm_tqps_get_strings);
 
 int hclge_comm_tqps_update_stats(struct hnae3_handle *handle,
 				 struct hclge_comm_hw *hw)
@@ -85,7 +83,7 @@ int hclge_comm_tqps_update_stats(struct hnae3_handle *handle,
 		hclge_comm_cmd_setup_basic_desc(&desc, HCLGE_OPC_QUERY_TX_STATS,
 						true);
 
-		desc.data[0] = cpu_to_le32(tqp->index & 0x1ff);
+		desc.data[0] = cpu_to_le32(tqp->index);
 		ret = hclge_comm_cmd_send(hw, &desc, 1);
 		if (ret) {
 			dev_err(&hw->cmq.csq.pdev->dev,
@@ -99,6 +97,7 @@ int hclge_comm_tqps_update_stats(struct hnae3_handle *handle,
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(hclge_comm_tqps_update_stats);
 
 void hclge_comm_reset_tqp_stats(struct hnae3_handle *handle)
 {
@@ -113,3 +112,4 @@ void hclge_comm_reset_tqp_stats(struct hnae3_handle *handle)
 		memset(&tqp->tqp_stats, 0, sizeof(tqp->tqp_stats));
 	}
 }
+EXPORT_SYMBOL_GPL(hclge_comm_reset_tqp_stats);

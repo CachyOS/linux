@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/sound/allwinner,sun4i-a10-i2s.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Allwinner A10 I2S Controller Device Tree Bindings
+title: Allwinner A10 I2S Controller
 
 maintainers:
   - Chen-Yu Tsai <wens@csie.org>
@@ -33,7 +33,9 @@ properties:
       - const: allwinner,sun50i-h6-i2s
       - const: allwinner,sun50i-r329-i2s
       - items:
-          - const: allwinner,sun20i-d1-i2s
+          - enum:
+              - allwinner,sun20i-d1-i2s
+              - allwinner,sun55i-a523-i2s
           - const: allwinner,sun50i-r329-i2s
 
   reg:
@@ -61,6 +63,7 @@ properties:
     maxItems: 1
 
 allOf:
+  - $ref: dai-common.yaml#
   - if:
       properties:
         compatible:
@@ -128,7 +131,7 @@ required:
   - dmas
   - dma-names
 
-additionalProperties: false
+unevaluatedProperties: false
 
 examples:
   - |

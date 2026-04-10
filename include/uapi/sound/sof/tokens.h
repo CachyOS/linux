@@ -3,7 +3,7 @@
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
  *
- * Copyright(c) 2018 Intel Corporation. All rights reserved.
+ * Copyright(c) 2018 Intel Corporation
  * Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
  *         Keyon Jie <yang.jie@linux.intel.com>
  */
@@ -35,6 +35,7 @@
 /* buffers */
 #define SOF_TKN_BUF_SIZE			100
 #define SOF_TKN_BUF_CAPS			101
+#define SOF_TKN_BUF_FLAGS			102
 
 /* DAI */
 /* Token retired with ABI 3.2, do not use for new capabilities
@@ -52,10 +53,20 @@
 #define SOF_TKN_SCHED_FRAMES			204
 #define SOF_TKN_SCHED_TIME_DOMAIN		205
 #define SOF_TKN_SCHED_DYNAMIC_PIPELINE		206
+#define SOF_TKN_SCHED_LP_MODE			207
+#define SOF_TKN_SCHED_MEM_USAGE			208
+#define SOF_TKN_SCHED_USE_CHAIN_DMA		209
+#define SOF_TKN_SCHED_KCPS			210
+#define SOF_TKN_SCHED_DIRECTION			211
+#define SOF_TKN_SCHED_DIRECTION_VALID		212
 
 /* volume */
 #define SOF_TKN_VOLUME_RAMP_STEP_TYPE		250
 #define SOF_TKN_VOLUME_RAMP_STEP_MS		251
+
+#define SOF_TKN_GAIN_RAMP_TYPE			260
+#define SOF_TKN_GAIN_RAMP_DURATION		261
+#define SOF_TKN_GAIN_VAL			262
 
 /* SRC */
 #define SOF_TKN_SRC_RATE_IN			300
@@ -79,6 +90,29 @@
  */
 #define SOF_TKN_COMP_CORE_ID			404
 #define SOF_TKN_COMP_UUID                       405
+#define SOF_TKN_COMP_CPC			406
+#define SOF_TKN_COMP_IS_PAGES			409
+#define SOF_TKN_COMP_NUM_AUDIO_FORMATS		410
+#define SOF_TKN_COMP_NUM_INPUT_PINS		411
+#define SOF_TKN_COMP_NUM_OUTPUT_PINS		412
+/*
+ * The token for input/output pin binding, it specifies the widget
+ * name that the input/output pin is connected from/to.
+ */
+#define SOF_TKN_COMP_INPUT_PIN_BINDING_WNAME	413
+#define SOF_TKN_COMP_OUTPUT_PIN_BINDING_WNAME	414
+#define SOF_TKN_COMP_NUM_INPUT_AUDIO_FORMATS	415
+#define SOF_TKN_COMP_NUM_OUTPUT_AUDIO_FORMATS	416
+/*
+ * The token value is copied to the dapm_widget's
+ * no_wname_in_kcontrol_name.
+ */
+#define SOF_TKN_COMP_NO_WNAME_IN_KCONTROL_NAME	417
+
+#define SOF_TKN_COMP_SCHED_DOMAIN		418
+#define SOF_TKN_COMP_DOMAIN_ID			419
+#define SOF_TKN_COMP_HEAP_BYTES_REQUIREMENT	420
+#define SOF_TKN_COMP_STACK_BYTES_REQUIREMENT	421
 
 /* SSP */
 #define SOF_TKN_INTEL_SSP_CLKS_CONTROL		500
@@ -127,6 +161,8 @@
 /* Stream */
 #define SOF_TKN_STREAM_PLAYBACK_COMPATIBLE_D0I3	1200
 #define SOF_TKN_STREAM_CAPTURE_COMPATIBLE_D0I3	1201
+#define SOF_TKN_STREAM_PLAYBACK_PAUSE_SUPPORTED	1202
+#define SOF_TKN_STREAM_CAPTURE_PAUSE_SUPPORTED	1203
 
 /* Led control for mute switches */
 #define SOF_TKN_MUTE_LED_USE			1300
@@ -144,5 +180,56 @@
 #define SOF_TKN_MEDIATEK_AFE_RATE		1600
 #define SOF_TKN_MEDIATEK_AFE_CH			1601
 #define SOF_TKN_MEDIATEK_AFE_FORMAT		1602
+
+/* MIXER */
+#define SOF_TKN_MIXER_TYPE			1700
+
+/* ACPDMIC */
+#define SOF_TKN_AMD_ACPDMIC_RATE		1800
+#define SOF_TKN_AMD_ACPDMIC_CH			1801
+
+/* CAVS AUDIO FORMAT */
+#define SOF_TKN_CAVS_AUDIO_FORMAT_IN_RATE	1900
+#define SOF_TKN_CAVS_AUDIO_FORMAT_IN_BIT_DEPTH	1901
+#define SOF_TKN_CAVS_AUDIO_FORMAT_IN_VALID_BIT_DEPTH	1902
+#define SOF_TKN_CAVS_AUDIO_FORMAT_IN_CHANNELS	1903
+#define SOF_TKN_CAVS_AUDIO_FORMAT_IN_CH_MAP	1904
+#define SOF_TKN_CAVS_AUDIO_FORMAT_IN_CH_CFG	1905
+#define SOF_TKN_CAVS_AUDIO_FORMAT_IN_INTERLEAVING_STYLE	1906
+#define SOF_TKN_CAVS_AUDIO_FORMAT_IN_FMT_CFG	1907
+#define SOF_TKN_CAVS_AUDIO_FORMAT_IN_SAMPLE_TYPE	1908
+#define SOF_TKN_CAVS_AUDIO_FORMAT_INPUT_PIN_INDEX	1909
+/* intentional token numbering discontinuity, reserved for future use */
+#define SOF_TKN_CAVS_AUDIO_FORMAT_OUT_RATE	1930
+#define SOF_TKN_CAVS_AUDIO_FORMAT_OUT_BIT_DEPTH	1931
+#define SOF_TKN_CAVS_AUDIO_FORMAT_OUT_VALID_BIT_DEPTH 1932
+#define SOF_TKN_CAVS_AUDIO_FORMAT_OUT_CHANNELS	1933
+#define SOF_TKN_CAVS_AUDIO_FORMAT_OUT_CH_MAP	1934
+#define SOF_TKN_CAVS_AUDIO_FORMAT_OUT_CH_CFG	1935
+#define SOF_TKN_CAVS_AUDIO_FORMAT_OUT_INTERLEAVING_STYLE	1936
+#define SOF_TKN_CAVS_AUDIO_FORMAT_OUT_FMT_CFG	1937
+#define SOF_TKN_CAVS_AUDIO_FORMAT_OUT_SAMPLE_TYPE	1938
+#define SOF_TKN_CAVS_AUDIO_FORMAT_OUTPUT_PIN_INDEX	1939
+/* intentional token numbering discontinuity, reserved for future use */
+#define SOF_TKN_CAVS_AUDIO_FORMAT_IBS		1970
+#define SOF_TKN_CAVS_AUDIO_FORMAT_OBS		1971
+#define SOF_TKN_CAVS_AUDIO_FORMAT_DMA_BUFFER_SIZE	1972
+
+/* COPIER */
+#define SOF_TKN_INTEL_COPIER_NODE_TYPE		1980
+#define SOF_TKN_INTEL_COPIER_DEEP_BUFFER_DMA_MS	1981
+
+/* ACP I2S */
+#define SOF_TKN_AMD_ACPI2S_RATE			1700
+#define SOF_TKN_AMD_ACPI2S_CH			1701
+#define SOF_TKN_AMD_ACPI2S_TDM_MODE		1702
+
+/* MICFIL PDM */
+#define SOF_TKN_IMX_MICFIL_RATE			2000
+#define SOF_TKN_IMX_MICFIL_CH			2001
+
+/* ACP SDW */
+#define SOF_TKN_AMD_ACP_SDW_RATE		2100
+#define SOF_TKN_AMD_ACP_SDW_CH			2101
 
 #endif

@@ -10,6 +10,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/init.h>
 #include <linux/i2c.h>
 #include <linux/regmap.h>
@@ -19,7 +20,6 @@
 #include <linux/iio/buffer.h>
 #include <linux/iio/trigger_consumer.h>
 #include <linux/iio/triggered_buffer.h>
-#include <linux/acpi.h>
 
 #define MAX44000_DRV_NAME		"max44000"
 
@@ -75,11 +75,6 @@
 struct max44000_data {
 	struct mutex lock;
 	struct regmap *regmap;
-	/* Ensure naturally aligned timestamp */
-	struct {
-		u16 channels[2];
-		s64 ts __aligned(8);
-	} scan;
 };
 
 /* Default scale is set to the minimum of 0.03125 or 1 / (1 << 5) lux */
@@ -496,24 +491,29 @@ static irqreturn_t max44000_trigger_handler(int irq, void *p)
 	int index = 0;
 	unsigned int regval;
 	int ret;
+	struct {
+		u16 channels[2];
+		aligned_s64 ts;
+	} scan = { };
+
 
 	mutex_lock(&data->lock);
 	if (test_bit(MAX44000_SCAN_INDEX_ALS, indio_dev->active_scan_mask)) {
 		ret = max44000_read_alsval(data);
 		if (ret < 0)
 			goto out_unlock;
-		data->scan.channels[index++] = ret;
+		scan.channels[index++] = ret;
 	}
 	if (test_bit(MAX44000_SCAN_INDEX_PRX, indio_dev->active_scan_mask)) {
 		ret = regmap_read(data->regmap, MAX44000_REG_PRX_DATA, &regval);
 		if (ret < 0)
 			goto out_unlock;
-		data->scan.channels[index] = regval;
+		scan.channels[index] = regval;
 	}
 	mutex_unlock(&data->lock);
 
-	iio_push_to_buffers_with_timestamp(indio_dev, &data->scan,
-					   iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_ts(indio_dev, &scan, sizeof(scan),
+				    iio_get_time_ns(indio_dev));
 	iio_trigger_notify_done(indio_dev->trig);
 	return IRQ_HANDLED;
 
@@ -523,8 +523,7 @@ out_unlock:
 	return IRQ_HANDLED;
 }
 
-static int max44000_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int max44000_probe(struct i2c_client *client)
 {
 	struct max44000_data *data;
 	struct iio_dev *indio_dev;
@@ -599,23 +598,21 @@ static int max44000_probe(struct i2c_client *client,
 }
 
 static const struct i2c_device_id max44000_id[] = {
-	{"max44000", 0},
+	{ "max44000" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max44000_id);
 
-#ifdef CONFIG_ACPI
 static const struct acpi_device_id max44000_acpi_match[] = {
 	{"MAX44000", 0},
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, max44000_acpi_match);
-#endif
 
 static struct i2c_driver max44000_driver = {
 	.driver = {
 		.name	= MAX44000_DRV_NAME,
-		.acpi_match_table = ACPI_PTR(max44000_acpi_match),
+		.acpi_match_table = max44000_acpi_match,
 	},
 	.probe		= max44000_probe,
 	.id_table	= max44000_id,

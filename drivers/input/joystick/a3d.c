@@ -7,9 +7,6 @@
  * FP-Gaming Assassin 3D joystick driver for Linux
  */
 
-/*
- */
-
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -252,7 +249,7 @@ static int a3d_connect(struct gameport *gameport, struct gameport_driver *drv)
 	int i;
 	int err;
 
-	a3d = kzalloc(sizeof(struct a3d), GFP_KERNEL);
+	a3d = kzalloc_obj(*a3d);
 	input_dev = input_allocate_device();
 	if (!a3d || !input_dev) {
 		err = -ENOMEM;

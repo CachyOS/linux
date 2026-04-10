@@ -100,12 +100,16 @@ properties:
       - description: Video layer, plane 1 (U/V or U)
       - description: Video layer, plane 2 (V)
       - description: Graphics layer
+      - description: Audio channel 0
+      - description: Audio channel 1
   dma-names:
     items:
       - const: vid0
       - const: vid1
       - const: vid2
       - const: gfx0
+      - const: aud0
+      - const: aud1
 
   phys:
     description: PHYs for the DP data lanes
@@ -116,6 +120,45 @@ properties:
     items:
       - const: dp-phy0
       - const: dp-phy1
+
+  ports:
+    $ref: /schemas/graph.yaml#/properties/ports
+    description: |
+      Connections to the programmable logic and the DisplayPort PHYs. Each port
+      shall have a single endpoint.
+
+    properties:
+      port@0:
+        $ref: /schemas/graph.yaml#/properties/port
+        description: The live video input from the programmable logic
+
+      port@1:
+        $ref: /schemas/graph.yaml#/properties/port
+        description: The live graphics input from the programmable logic
+
+      port@2:
+        $ref: /schemas/graph.yaml#/properties/port
+        description: The live audio input from the programmable logic
+
+      port@3:
+        $ref: /schemas/graph.yaml#/properties/port
+        description: The blended video output to the programmable logic
+
+      port@4:
+        $ref: /schemas/graph.yaml#/properties/port
+        description: The mixed audio output to the programmable logic
+
+      port@5:
+        $ref: /schemas/graph.yaml#/properties/port
+        description: The DisplayPort output
+
+    required:
+      - port@0
+      - port@1
+      - port@2
+      - port@3
+      - port@4
+      - port@5
 
 required:
   - compatible
@@ -130,6 +173,7 @@ required:
   - dma-names
   - phys
   - phy-names
+  - ports
 
 additionalProperties: false
 
@@ -154,16 +198,45 @@ examples:
         power-domains = <&pd_dp>;
         resets = <&reset ZYNQMP_RESET_DP>;
 
-        dma-names = "vid0", "vid1", "vid2", "gfx0";
+        dma-names = "vid0", "vid1", "vid2", "gfx0", "aud0", "aud1";
         dmas = <&xlnx_dpdma 0>,
                <&xlnx_dpdma 1>,
                <&xlnx_dpdma 2>,
-               <&xlnx_dpdma 3>;
+               <&xlnx_dpdma 3>,
+               <&xlnx_dpdma 4>,
+               <&xlnx_dpdma 5>;
 
         phys = <&psgtr 1 PHY_TYPE_DP 0 3>,
                <&psgtr 0 PHY_TYPE_DP 1 3>;
 
         phy-names = "dp-phy0", "dp-phy1";
+
+        ports {
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            port@0 {
+                reg = <0>;
+            };
+            port@1 {
+                reg = <1>;
+            };
+            port@2 {
+                reg = <2>;
+            };
+            port@3 {
+                reg = <3>;
+            };
+            port@4 {
+                reg = <4>;
+            };
+            port@5 {
+                reg = <5>;
+                dpsub_dp_out: endpoint {
+                    remote-endpoint = <&dp_connector>;
+                };
+            };
+        };
     };
 
 ...

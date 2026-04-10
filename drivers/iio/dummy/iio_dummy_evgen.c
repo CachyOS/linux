@@ -31,8 +31,6 @@
  * @regs: irq regs we are faking
  * @lock: protect the evgen state
  * @inuse: mask of which irqs are connected
- * @irq_sim: interrupt simulator
- * @base: base of irq range
  * @irq_sim_domain: irq simulator domain
  */
 struct iio_dummy_eventgen {
@@ -49,7 +47,7 @@ static int iio_dummy_evgen_create(void)
 {
 	int ret;
 
-	iio_evgen = kzalloc(sizeof(*iio_evgen), GFP_KERNEL);
+	iio_evgen = kzalloc_obj(*iio_evgen);
 	if (!iio_evgen)
 		return -ENOMEM;
 

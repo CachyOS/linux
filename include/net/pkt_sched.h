@@ -20,15 +20,10 @@ struct qdisc_walker {
 	int	(*fn)(struct Qdisc *, unsigned long cl, struct qdisc_walker *);
 };
 
-static inline void *qdisc_priv(struct Qdisc *q)
-{
-	return &q->privdata;
-}
-
-static inline struct Qdisc *qdisc_from_priv(void *priv)
-{
-	return container_of(priv, struct Qdisc, privdata);
-}
+#define qdisc_priv(q)							\
+	_Generic(q,							\
+		 const struct Qdisc * : (const void *)&q->privdata,	\
+		 struct Qdisc * : (void *)&q->privdata)
 
 /* 
    Timer resolution MUST BE < 10% of min_schedulable_packet_size/bandwidth
@@ -48,7 +43,6 @@ static inline struct Qdisc *qdisc_from_priv(void *priv)
  */
 
 typedef u64	psched_time_t;
-typedef long	psched_tdiff_t;
 
 /* Avoid doing 64 bit divide */
 #define PSCHED_SHIFT			6
@@ -64,7 +58,6 @@ static inline psched_time_t psched_get_time(void)
 }
 
 struct qdisc_watchdog {
-	u64		last_expires;
 	struct hrtimer	timer;
 	struct Qdisc	*qdisc;
 };
@@ -100,7 +93,9 @@ struct Qdisc *fifo_create_dflt(struct Qdisc *sch, struct Qdisc_ops *ops,
 			       struct netlink_ext_ack *extack);
 
 int register_qdisc(struct Qdisc_ops *qops);
-int unregister_qdisc(struct Qdisc_ops *qops);
+void unregister_qdisc(struct Qdisc_ops *qops);
+#define NET_SCH_ALIAS_PREFIX "net-sch-"
+#define MODULE_ALIAS_NET_SCH(id)	MODULE_ALIAS(NET_SCH_ALIAS_PREFIX id)
 void qdisc_get_default(char *id, size_t len);
 int qdisc_set_default(const char *id);
 
@@ -113,33 +108,40 @@ struct qdisc_rate_table *qdisc_get_rtab(struct tc_ratespec *r,
 					struct netlink_ext_ack *extack);
 void qdisc_put_rtab(struct qdisc_rate_table *tab);
 void qdisc_put_stab(struct qdisc_size_table *tab);
-void qdisc_warn_nonwc(const char *txt, struct Qdisc *qdisc);
 bool sch_direct_xmit(struct sk_buff *skb, struct Qdisc *q,
 		     struct net_device *dev, struct netdev_queue *txq,
 		     spinlock_t *root_lock, bool validate);
 
 void __qdisc_run(struct Qdisc *q);
 
-static inline void qdisc_run(struct Qdisc *q)
+static inline struct sk_buff *qdisc_run(struct Qdisc *q)
 {
 	if (qdisc_run_begin(q)) {
 		__qdisc_run(q);
-		qdisc_run_end(q);
+		return qdisc_run_end(q);
 	}
+	return NULL;
 }
+
+extern const struct nla_policy rtm_tca_policy[TCA_MAX + 1];
 
 /* Calculate maximal size of packet seen by hard_start_xmit
    routine of this device.
  */
 static inline unsigned int psched_mtu(const struct net_device *dev)
 {
-	return dev->mtu + dev->hard_header_len;
+	return READ_ONCE(dev->mtu) + dev->hard_header_len;
 }
 
 static inline struct net *qdisc_net(struct Qdisc *q)
 {
 	return dev_net(q->dev_queue->dev);
 }
+
+struct tc_query_caps_base {
+	enum tc_setup_type type;
+	void *caps;
+};
 
 struct tc_cbs_qopt_offload {
 	u8 enable;
@@ -155,6 +157,58 @@ struct tc_etf_qopt_offload {
 	s32 queue;
 };
 
+struct tc_mqprio_caps {
+	bool validate_queue_counts:1;
+};
+
+struct tc_mqprio_qopt_offload {
+	/* struct tc_mqprio_qopt must always be the first element */
+	struct tc_mqprio_qopt qopt;
+	struct netlink_ext_ack *extack;
+	u16 mode;
+	u16 shaper;
+	u32 flags;
+	u64 min_rate[TC_QOPT_MAX_QUEUE];
+	u64 max_rate[TC_QOPT_MAX_QUEUE];
+	unsigned long preemptible_tcs;
+};
+
+struct tc_taprio_caps {
+	bool supports_queue_max_sdu:1;
+	bool gate_mask_per_txq:1;
+	/* Device expects lower TXQ numbers to have higher priority over higher
+	 * TXQs, regardless of their TC mapping. DO NOT USE FOR NEW DRIVERS,
+	 * INSTEAD ENFORCE A PROPER TC:TXQ MAPPING COMING FROM USER SPACE.
+	 */
+	bool broken_mqprio:1;
+};
+
+enum tc_taprio_qopt_cmd {
+	TAPRIO_CMD_REPLACE,
+	TAPRIO_CMD_DESTROY,
+	TAPRIO_CMD_STATS,
+	TAPRIO_CMD_QUEUE_STATS,
+};
+
+/**
+ * struct tc_taprio_qopt_stats - IEEE 802.1Qbv statistics
+ * @window_drops: Frames that were dropped because they were too large to be
+ *	transmitted in any of the allotted time windows (open gates) for their
+ *	traffic class.
+ * @tx_overruns: Frames still being transmitted by the MAC after the
+ *	transmission gate associated with their traffic class has closed.
+ *	Equivalent to `12.29.1.1.2 TransmissionOverrun` from 802.1Q-2018.
+ */
+struct tc_taprio_qopt_stats {
+	u64 window_drops;
+	u64 tx_overruns;
+};
+
+struct tc_taprio_qopt_queue_stats {
+	int queue;
+	struct tc_taprio_qopt_stats stats;
+};
+
 struct tc_taprio_sched_entry {
 	u8 command; /* TC_TAPRIO_CMD_* */
 
@@ -164,19 +218,49 @@ struct tc_taprio_sched_entry {
 };
 
 struct tc_taprio_qopt_offload {
-	u8 enable;
-	ktime_t base_time;
-	u64 cycle_time;
-	u64 cycle_time_extension;
+	enum tc_taprio_qopt_cmd cmd;
 
-	size_t num_entries;
-	struct tc_taprio_sched_entry entries[];
+	union {
+		/* TAPRIO_CMD_STATS */
+		struct tc_taprio_qopt_stats stats;
+		/* TAPRIO_CMD_QUEUE_STATS */
+		struct tc_taprio_qopt_queue_stats queue_stats;
+		/* TAPRIO_CMD_REPLACE */
+		struct {
+			struct tc_mqprio_qopt_offload mqprio;
+			struct netlink_ext_ack *extack;
+			ktime_t base_time;
+			u64 cycle_time;
+			u64 cycle_time_extension;
+			u32 max_sdu[TC_MAX_QUEUE];
+
+			size_t num_entries;
+			struct tc_taprio_sched_entry entries[];
+		};
+	};
 };
+
+#if IS_ENABLED(CONFIG_NET_SCH_TAPRIO)
 
 /* Reference counting */
 struct tc_taprio_qopt_offload *taprio_offload_get(struct tc_taprio_qopt_offload
 						  *offload);
 void taprio_offload_free(struct tc_taprio_qopt_offload *offload);
+
+#else
+
+/* Reference counting */
+static inline struct tc_taprio_qopt_offload *
+taprio_offload_get(struct tc_taprio_qopt_offload *offload)
+{
+	return NULL;
+}
+
+static inline void taprio_offload_free(struct tc_taprio_qopt_offload *offload)
+{
+}
+
+#endif
 
 /* Ensure skb_mstamp_ns, which might have been populated with the txtime, is
  * not mistaken for a software timestamp, because this will otherwise prevent
@@ -187,22 +271,65 @@ static inline void skb_txtime_consumed(struct sk_buff *skb)
 	skb->tstamp = ktime_set(0, 0);
 }
 
-struct tc_skb_cb {
-	struct qdisc_skb_cb qdisc_cb;
-
-	u16 mru;
-	u8 post_ct:1;
-	u8 post_ct_snat:1;
-	u8 post_ct_dnat:1;
-	u16 zone; /* Only valid if post_ct = true */
-};
-
-static inline struct tc_skb_cb *tc_skb_cb(const struct sk_buff *skb)
+static inline bool tc_qdisc_stats_dump(struct Qdisc *sch,
+				       unsigned long cl,
+				       struct qdisc_walker *arg)
 {
-	struct tc_skb_cb *cb = (struct tc_skb_cb *)skb->cb;
+	if (arg->count >= arg->skip && arg->fn(sch, cl, arg) < 0) {
+		arg->stop = 1;
+		return false;
+	}
 
-	BUILD_BUG_ON(sizeof(*cb) > sizeof_field(struct sk_buff, cb));
-	return cb;
+	arg->count++;
+	return true;
+}
+
+static inline void qdisc_warn_nonwc(const char *txt, struct Qdisc *qdisc)
+{
+	if (!(qdisc->flags & TCQ_F_WARN_NONWC)) {
+		pr_warn("%s: %s qdisc %X: is non-work-conserving?\n",
+			txt, qdisc->ops->id, qdisc->handle >> 16);
+		qdisc->flags |= TCQ_F_WARN_NONWC;
+	}
+}
+
+static inline unsigned int qdisc_peek_len(struct Qdisc *sch)
+{
+	struct sk_buff *skb;
+	unsigned int len;
+
+	skb = sch->ops->peek(sch);
+	if (unlikely(skb == NULL)) {
+		qdisc_warn_nonwc("qdisc_peek_len", sch);
+		return 0;
+	}
+	len = qdisc_pkt_len(skb);
+
+	return len;
+}
+
+static inline void qdisc_lock_init(struct Qdisc *sch,
+				   const struct Qdisc_ops *ops)
+{
+	spin_lock_init(&sch->q.lock);
+
+	/* Skip dynamic keys if nesting is not possible */
+	if (ops->static_flags & TCQ_F_INGRESS ||
+	    ops == &noqueue_qdisc_ops)
+		return;
+
+	lockdep_register_key(&sch->root_lock_key);
+	lockdep_set_class(&sch->q.lock, &sch->root_lock_key);
+}
+
+static inline void qdisc_lock_uninit(struct Qdisc *sch,
+				     const struct Qdisc_ops *ops)
+{
+	if (ops->static_flags & TCQ_F_INGRESS ||
+	    ops == &noqueue_qdisc_ops)
+		return;
+
+	lockdep_unregister_key(&sch->root_lock_key);
 }
 
 #endif

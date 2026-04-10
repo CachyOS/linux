@@ -16,6 +16,7 @@
 #include <media/v4l2-rect.h>
 
 #include "vivid-core.h"
+#include "vivid-osd.h"
 #include "vivid-vid-common.h"
 #include "vivid-kthread-out.h"
 #include "vivid-vid-out.h"
@@ -63,22 +64,21 @@ static int vid_out_queue_setup(struct vb2_queue *vq,
 		if (sizes[0] < size)
 			return -EINVAL;
 		for (p = 1; p < planes; p++) {
-			if (sizes[p] < dev->bytesperline_out[p] * h +
-				       vfmt->data_offset[p])
+			if (sizes[p] < dev->bytesperline_out[p] * h /
+					vfmt->vdownsampling[p] +
+					vfmt->data_offset[p])
 				return -EINVAL;
 		}
 	} else {
 		for (p = 0; p < planes; p++)
-			sizes[p] = p ? dev->bytesperline_out[p] * h +
-				       vfmt->data_offset[p] : size;
+			sizes[p] = p ? dev->bytesperline_out[p] * h /
+					vfmt->vdownsampling[p] +
+					vfmt->data_offset[p] : size;
 	}
-
-	if (vq->num_buffers + *nbuffers < 2)
-		*nbuffers = 2 - vq->num_buffers;
 
 	*nplanes = planes;
 
-	dprintk(dev, 1, "%s: count=%d\n", __func__, *nbuffers);
+	dprintk(dev, 1, "%s: count=%u\n", __func__, *nbuffers);
 	for (p = 0; p < planes; p++)
 		dprintk(dev, 1, "%s: size[%u]=%u\n", __func__, p, sizes[p]);
 	return 0;
@@ -127,7 +127,7 @@ static int vid_out_buf_prepare(struct vb2_buffer *vb)
 
 	for (p = 0; p < planes; p++) {
 		if (p)
-			size = dev->bytesperline_out[p] * h;
+			size = dev->bytesperline_out[p] * h / vfmt->vdownsampling[p];
 		size += vb->planes[p].data_offset;
 
 		if (vb2_get_plane_payload(vb, p) < size) {
@@ -158,9 +158,6 @@ static int vid_out_start_streaming(struct vb2_queue *vq, unsigned count)
 	struct vivid_dev *dev = vb2_get_drv_priv(vq);
 	int err;
 
-	if (vb2_is_streaming(&dev->vb_vid_cap_q))
-		dev->can_loop_video = vivid_vid_can_loop(dev);
-
 	dev->vid_out_seq_count = 0;
 	dprintk(dev, 1, "%s\n", __func__);
 	if (dev->start_streaming_error) {
@@ -188,7 +185,6 @@ static void vid_out_stop_streaming(struct vb2_queue *vq)
 
 	dprintk(dev, 1, "%s\n", __func__);
 	vivid_stop_generating_vid_out(dev, &dev->vid_out_streaming);
-	dev->can_loop_video = false;
 }
 
 static void vid_out_buf_request_complete(struct vb2_buffer *vb)
@@ -206,8 +202,6 @@ const struct vb2_ops vivid_vid_out_qops = {
 	.start_streaming	= vid_out_start_streaming,
 	.stop_streaming		= vid_out_stop_streaming,
 	.buf_request_complete	= vid_out_buf_request_complete,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 /*
@@ -334,8 +328,8 @@ int vivid_g_fmt_vid_out(struct file *file, void *priv,
 	for (p = 0; p < mp->num_planes; p++) {
 		mp->plane_fmt[p].bytesperline = dev->bytesperline_out[p];
 		mp->plane_fmt[p].sizeimage =
-			mp->plane_fmt[p].bytesperline * mp->height +
-			fmt->data_offset[p];
+			mp->plane_fmt[p].bytesperline * mp->height /
+			fmt->vdownsampling[p] + fmt->data_offset[p];
 	}
 	for (p = fmt->buffers; p < fmt->planes; p++) {
 		unsigned stride = dev->bytesperline_out[p];
@@ -565,9 +559,11 @@ set_colorspace:
 	dev->xfer_func_out = mp->xfer_func;
 	dev->ycbcr_enc_out = mp->ycbcr_enc;
 	dev->quantization_out = mp->quantization;
-	if (dev->loop_video) {
-		vivid_send_source_change(dev, SVID);
-		vivid_send_source_change(dev, HDMI);
+	struct vivid_dev *in_dev = vivid_output_is_connected_to(dev);
+
+	if (in_dev) {
+		vivid_send_source_change(in_dev, SVID);
+		vivid_send_source_change(in_dev, HDMI);
 	}
 	return 0;
 }
@@ -676,7 +672,7 @@ int vivid_vid_out_g_selection(struct file *file, void *priv,
 	return 0;
 }
 
-int vivid_vid_out_s_selection(struct file *file, void *fh, struct v4l2_selection *s)
+int vivid_vid_out_s_selection(struct file *file, void *priv, struct v4l2_selection *s)
 {
 	struct vivid_dev *dev = video_drvdata(file);
 	struct v4l2_rect *crop = &dev->crop_out;
@@ -793,11 +789,6 @@ int vivid_vid_out_s_selection(struct file *file, void *fh, struct v4l2_selection
 		}
 		s->r.top *= factor;
 		s->r.height *= factor;
-		if (dev->bitmap_out && (compose->width != s->r.width ||
-					compose->height != s->r.height)) {
-			vfree(dev->bitmap_out);
-			dev->bitmap_out = NULL;
-		}
 		*compose = s->r;
 		break;
 	default:
@@ -836,7 +827,6 @@ int vidioc_g_fmt_vid_out_overlay(struct file *file, void *priv,
 	struct vivid_dev *dev = video_drvdata(file);
 	const struct v4l2_rect *compose = &dev->compose_out;
 	struct v4l2_window *win = &f->fmt.win;
-	unsigned clipcount = win->clipcount;
 
 	if (!dev->has_fb)
 		return -EINVAL;
@@ -844,22 +834,9 @@ int vidioc_g_fmt_vid_out_overlay(struct file *file, void *priv,
 	win->w.left = dev->overlay_out_left;
 	win->w.width = compose->width;
 	win->w.height = compose->height;
-	win->clipcount = dev->clipcount_out;
 	win->field = V4L2_FIELD_ANY;
 	win->chromakey = dev->chromakey_out;
 	win->global_alpha = dev->global_alpha_out;
-	if (clipcount > dev->clipcount_out)
-		clipcount = dev->clipcount_out;
-	if (dev->bitmap_out == NULL)
-		win->bitmap = NULL;
-	else if (win->bitmap) {
-		if (copy_to_user(win->bitmap, dev->bitmap_out,
-		    ((dev->compose_out.width + 7) / 8) * dev->compose_out.height))
-			return -EFAULT;
-	}
-	if (clipcount && win->clips)
-		memcpy(win->clips, dev->clips_out,
-		       clipcount * sizeof(dev->clips_out[0]));
 	return 0;
 }
 
@@ -869,7 +846,6 @@ int vidioc_try_fmt_vid_out_overlay(struct file *file, void *priv,
 	struct vivid_dev *dev = video_drvdata(file);
 	const struct v4l2_rect *compose = &dev->compose_out;
 	struct v4l2_window *win = &f->fmt.win;
-	int i, j;
 
 	if (!dev->has_fb)
 		return -EINVAL;
@@ -884,38 +860,6 @@ int vidioc_try_fmt_vid_out_overlay(struct file *file, void *priv,
 	 * so always set this to ANY.
 	 */
 	win->field = V4L2_FIELD_ANY;
-	if (win->clipcount && !win->clips)
-		win->clipcount = 0;
-	if (win->clipcount > MAX_CLIPS)
-		win->clipcount = MAX_CLIPS;
-	if (win->clipcount) {
-		memcpy(dev->try_clips_out, win->clips,
-		       win->clipcount * sizeof(dev->clips_out[0]));
-		for (i = 0; i < win->clipcount; i++) {
-			struct v4l2_rect *r = &dev->try_clips_out[i].c;
-
-			r->top = clamp_t(s32, r->top, 0, dev->display_height - 1);
-			r->height = clamp_t(s32, r->height, 1, dev->display_height - r->top);
-			r->left = clamp_t(u32, r->left, 0, dev->display_width - 1);
-			r->width = clamp_t(u32, r->width, 1, dev->display_width - r->left);
-		}
-		/*
-		 * Yeah, so sue me, it's an O(n^2) algorithm. But n is a small
-		 * number and it's typically a one-time deal.
-		 */
-		for (i = 0; i < win->clipcount - 1; i++) {
-			struct v4l2_rect *r1 = &dev->try_clips_out[i].c;
-
-			for (j = i + 1; j < win->clipcount; j++) {
-				struct v4l2_rect *r2 = &dev->try_clips_out[j].c;
-
-				if (v4l2_rect_overlap(r1, r2))
-					return -EINVAL;
-			}
-		}
-		memcpy(win->clips, dev->try_clips_out,
-		       win->clipcount * sizeof(dev->clips_out[0]));
-	}
 	return 0;
 }
 
@@ -923,40 +867,20 @@ int vidioc_s_fmt_vid_out_overlay(struct file *file, void *priv,
 					struct v4l2_format *f)
 {
 	struct vivid_dev *dev = video_drvdata(file);
-	const struct v4l2_rect *compose = &dev->compose_out;
 	struct v4l2_window *win = &f->fmt.win;
 	int ret = vidioc_try_fmt_vid_out_overlay(file, priv, f);
-	unsigned bitmap_size = ((compose->width + 7) / 8) * compose->height;
-	unsigned clips_size = win->clipcount * sizeof(dev->clips_out[0]);
-	void *new_bitmap = NULL;
 
 	if (ret)
 		return ret;
 
-	if (win->bitmap) {
-		new_bitmap = vzalloc(bitmap_size);
-
-		if (!new_bitmap)
-			return -ENOMEM;
-		if (copy_from_user(new_bitmap, win->bitmap, bitmap_size)) {
-			vfree(new_bitmap);
-			return -EFAULT;
-		}
-	}
-
 	dev->overlay_out_top = win->w.top;
 	dev->overlay_out_left = win->w.left;
-	vfree(dev->bitmap_out);
-	dev->bitmap_out = new_bitmap;
-	dev->clipcount_out = win->clipcount;
-	if (dev->clipcount_out)
-		memcpy(dev->clips_out, dev->try_clips_out, clips_size);
 	dev->chromakey_out = win->chromakey;
 	dev->global_alpha_out = win->global_alpha;
 	return ret;
 }
 
-int vivid_vid_out_overlay(struct file *file, void *fh, unsigned i)
+int vivid_vid_out_overlay(struct file *file, void *priv, unsigned i)
 {
 	struct vivid_dev *dev = video_drvdata(file);
 
@@ -969,14 +893,12 @@ int vivid_vid_out_overlay(struct file *file, void *fh, unsigned i)
 	return 0;
 }
 
-int vivid_vid_out_g_fbuf(struct file *file, void *fh,
+int vivid_vid_out_g_fbuf(struct file *file, void *priv,
 				struct v4l2_framebuffer *a)
 {
 	struct vivid_dev *dev = video_drvdata(file);
 
 	a->capability = V4L2_FBUF_CAP_EXTERNOVERLAY |
-			V4L2_FBUF_CAP_BITMAP_CLIPPING |
-			V4L2_FBUF_CAP_LIST_CLIPPING |
 			V4L2_FBUF_CAP_CHROMAKEY |
 			V4L2_FBUF_CAP_SRC_CHROMAKEY |
 			V4L2_FBUF_CAP_GLOBAL_ALPHA |
@@ -986,7 +908,7 @@ int vivid_vid_out_g_fbuf(struct file *file, void *fh,
 	a->base = (void *)dev->video_pbase;
 	a->fmt.width = dev->display_width;
 	a->fmt.height = dev->display_height;
-	if (dev->fb_defined.green.length == 5)
+	if (vivid_fb_green_bits(dev) == 5)
 		a->fmt.pixelformat = V4L2_PIX_FMT_ARGB555;
 	else
 		a->fmt.pixelformat = V4L2_PIX_FMT_RGB565;
@@ -998,7 +920,7 @@ int vivid_vid_out_g_fbuf(struct file *file, void *fh,
 	return 0;
 }
 
-int vivid_vid_out_s_fbuf(struct file *file, void *fh,
+int vivid_vid_out_s_fbuf(struct file *file, void *priv,
 				const struct v4l2_framebuffer *a)
 {
 	struct vivid_dev *dev = video_drvdata(file);
@@ -1041,16 +963,16 @@ int vidioc_enum_output(struct file *file, void *priv,
 	out->type = V4L2_OUTPUT_TYPE_ANALOG;
 	switch (dev->output_type[out->index]) {
 	case SVID:
-		snprintf(out->name, sizeof(out->name), "S-Video %u",
-				dev->output_name_counter[out->index]);
+		snprintf(out->name, sizeof(out->name), "S-Video %03u-%u",
+			 dev->inst, dev->output_name_counter[out->index]);
 		out->std = V4L2_STD_ALL;
 		if (dev->has_audio_outputs)
 			out->audioset = (1 << ARRAY_SIZE(vivid_audio_outputs)) - 1;
 		out->capabilities = V4L2_OUT_CAP_STD;
 		break;
 	case HDMI:
-		snprintf(out->name, sizeof(out->name), "HDMI %u",
-				dev->output_name_counter[out->index]);
+		snprintf(out->name, sizeof(out->name), "HDMI %03u-%u",
+			 dev->inst, dev->output_name_counter[out->index]);
 		out->capabilities = V4L2_OUT_CAP_DV_TIMINGS;
 		break;
 	}
@@ -1091,15 +1013,10 @@ int vidioc_s_output(struct file *file, void *priv, unsigned o)
 	dev->meta_out_dev.tvnorms = dev->vid_out_dev.tvnorms;
 	vivid_update_format_out(dev);
 
-	v4l2_ctrl_activate(dev->ctrl_display_present, vivid_is_hdmi_out(dev));
-	if (vivid_is_hdmi_out(dev))
-		v4l2_ctrl_s_ctrl(dev->ctrl_display_present,
-				 dev->display_present[dev->output]);
-
 	return 0;
 }
 
-int vidioc_enumaudout(struct file *file, void *fh, struct v4l2_audioout *vout)
+int vidioc_enumaudout(struct file *file, void *priv, struct v4l2_audioout *vout)
 {
 	if (vout->index >= ARRAY_SIZE(vivid_audio_outputs))
 		return -EINVAL;
@@ -1107,7 +1024,7 @@ int vidioc_enumaudout(struct file *file, void *fh, struct v4l2_audioout *vout)
 	return 0;
 }
 
-int vidioc_g_audout(struct file *file, void *fh, struct v4l2_audioout *vout)
+int vidioc_g_audout(struct file *file, void *priv, struct v4l2_audioout *vout)
 {
 	struct vivid_dev *dev = video_drvdata(file);
 
@@ -1117,7 +1034,7 @@ int vidioc_g_audout(struct file *file, void *fh, struct v4l2_audioout *vout)
 	return 0;
 }
 
-int vidioc_s_audout(struct file *file, void *fh, const struct v4l2_audioout *vout)
+int vidioc_s_audout(struct file *file, void *priv, const struct v4l2_audioout *vout)
 {
 	struct vivid_dev *dev = video_drvdata(file);
 
@@ -1155,7 +1072,7 @@ static bool valid_cvt_gtf_timings(struct v4l2_dv_timings *timings)
 	return false;
 }
 
-int vivid_vid_out_s_dv_timings(struct file *file, void *_fh,
+int vivid_vid_out_s_dv_timings(struct file *file, void *priv,
 				    struct v4l2_dv_timings *timings)
 {
 	struct vivid_dev *dev = video_drvdata(file);

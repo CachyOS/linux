@@ -14,12 +14,6 @@
 
 #define MAX_BUF_SZ	PAGE_SIZE
 
-static int adi_open(struct inode *inode, struct file *file)
-{
-	file->f_mode |= FMODE_UNSIGNED_OFFSET;
-	return 0;
-}
-
 static int read_mcd_tag(unsigned long addr)
 {
 	long err;
@@ -86,8 +80,8 @@ static ssize_t adi_read(struct file *file, char __user *buf,
 			bytes_read += ver_buf_sz;
 			ver_buf_idx = 0;
 
-			ver_buf_sz = min(count - bytes_read,
-					 (size_t)MAX_BUF_SZ);
+			ver_buf_sz = min_t(size_t, count - bytes_read,
+					   MAX_BUF_SZ);
 		}
 	}
 
@@ -137,7 +131,7 @@ static ssize_t adi_write(struct file *file, const char __user *buf,
 	ssize_t ret;
 	int i;
 
-	if (count <= 0)
+	if (count == 0)
 		return -EINVAL;
 
 	ver_buf_sz = min_t(size_t, count, MAX_BUF_SZ);
@@ -163,7 +157,7 @@ static ssize_t adi_write(struct file *file, const char __user *buf,
 		}
 
 		bytes_written += ver_buf_sz;
-		ver_buf_sz = min(count - bytes_written, (size_t)MAX_BUF_SZ);
+		ver_buf_sz = min_t(size_t, count - bytes_written, MAX_BUF_SZ);
 	} while (bytes_written < count);
 
 	(*offp) += bytes_written;
@@ -196,7 +190,6 @@ static loff_t adi_llseek(struct file *file, loff_t offset, int whence)
 
 	if (offset != file->f_pos) {
 		file->f_pos = offset;
-		file->f_version = 0;
 		ret = offset;
 	}
 
@@ -206,9 +199,9 @@ static loff_t adi_llseek(struct file *file, loff_t offset, int whence)
 static const struct file_operations adi_fops = {
 	.owner		= THIS_MODULE,
 	.llseek		= adi_llseek,
-	.open		= adi_open,
 	.read		= adi_read,
 	.write		= adi_write,
+	.fop_flags	= FOP_UNSIGNED_OFFSET,
 };
 
 static struct miscdevice adi_miscdev = {

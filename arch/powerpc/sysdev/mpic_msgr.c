@@ -7,9 +7,10 @@
  */
 
 #include <linux/list.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/errno.h>
 #include <linux/err.h>
 #include <linux/export.h>
@@ -20,7 +21,7 @@
 
 #define MPIC_MSGR_REGISTERS_PER_BLOCK	4
 #define MPIC_MSGR_STRIDE		0x10
-#define MPIC_MSGR_MER_OFFSET		0x100
+#define MPIC_MSGR_MER_OFFSET		(0x100 / sizeof(u32))
 #define MSGR_INUSE			0
 #define MSGR_FREE			1
 
@@ -116,11 +117,12 @@ static unsigned int mpic_msgr_number_of_blocks(void)
 
 		for (;;) {
 			snprintf(buf, sizeof(buf), "mpic-msgr-block%d", count);
-			if (!of_find_property(aliases, buf, NULL))
+			if (!of_property_present(aliases, buf))
 				break;
 
 			count += 1;
 		}
+		of_node_put(aliases);
 	}
 
 	return count;
@@ -144,12 +146,18 @@ static int mpic_msgr_block_number(struct device_node *node)
 
 	for (index = 0; index < number_of_blocks; ++index) {
 		struct property *prop;
+		struct device_node *tn;
 
 		snprintf(buf, sizeof(buf), "mpic-msgr-block%d", index);
 		prop = of_find_property(aliases, buf, NULL);
-		if (node == of_find_node_by_path(prop->value))
+		tn = of_find_node_by_path(prop->value);
+		if (node == tn) {
+			of_node_put(tn);
 			break;
+		}
+		of_node_put(tn);
 	}
+	of_node_put(aliases);
 
 	return index == number_of_blocks ? -1 : index;
 }
@@ -180,8 +188,7 @@ static int mpic_msgr_probe(struct platform_device *dev)
 		dev_info(&dev->dev, "Found %d message registers\n",
 				mpic_msgr_count);
 
-		mpic_msgrs = kcalloc(mpic_msgr_count, sizeof(*mpic_msgrs),
-							 GFP_KERNEL);
+		mpic_msgrs = kzalloc_objs(*mpic_msgrs, mpic_msgr_count);
 		if (!mpic_msgrs) {
 			dev_err(&dev->dev,
 				"No memory for message register blocks\n");
@@ -219,7 +226,7 @@ static int mpic_msgr_probe(struct platform_device *dev)
 		struct mpic_msgr *msgr;
 		unsigned int reg_number;
 
-		msgr = kzalloc(sizeof(struct mpic_msgr), GFP_KERNEL);
+		msgr = kzalloc_obj(struct mpic_msgr);
 		if (!msgr) {
 			dev_err(&dev->dev, "No memory for message register\n");
 			return -ENOMEM;
@@ -227,7 +234,7 @@ static int mpic_msgr_probe(struct platform_device *dev)
 
 		reg_number = block_number * MPIC_MSGR_REGISTERS_PER_BLOCK + i;
 		msgr->base = msgr_block_addr + i * MPIC_MSGR_STRIDE;
-		msgr->mer = (u32 *)((u8 *)msgr->base + MPIC_MSGR_MER_OFFSET);
+		msgr->mer = msgr->base + MPIC_MSGR_MER_OFFSET;
 		msgr->in_use = MSGR_FREE;
 		msgr->num = i;
 		raw_spin_lock_init(&msgr->lock);

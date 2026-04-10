@@ -77,6 +77,8 @@ static bool cfg_epollet;
 static bool cfg_do_listen;
 static uint16_t dest_port = 9000;
 static bool cfg_print_nsec;
+static uint32_t ts_opt_id;
+static bool cfg_use_cmsg_opt_id;
 
 static struct sockaddr_in daddr;
 static struct sockaddr_in6 daddr6;
@@ -136,12 +138,13 @@ static void validate_key(int tskey, int tstype)
 	/* compare key for each subsequent request
 	 * must only test for one type, the first one requested
 	 */
-	if (saved_tskey == -1)
+	if (saved_tskey == -1 || cfg_use_cmsg_opt_id)
 		saved_tskey_type = tstype;
 	else if (saved_tskey_type != tstype)
 		return;
 
 	stepsize = cfg_proto == SOCK_STREAM ? cfg_payload_len : 1;
+	stepsize = cfg_use_cmsg_opt_id ? 0 : stepsize;
 	if (tskey != saved_tskey + stepsize) {
 		fprintf(stderr, "ERROR: key %d, expected %d\n",
 				tskey, saved_tskey + stepsize);
@@ -163,7 +166,8 @@ static void validate_timestamp(struct timespec *cur, int min_delay)
 	if (cur64 < start64 + min_delay || cur64 > start64 + max_delay) {
 		fprintf(stderr, "ERROR: %" PRId64 " us expected between %d and %d\n",
 				cur64 - start64, min_delay, max_delay);
-		test_failed = true;
+		if (!getenv("KSFT_MACHINE_SLOW"))
+			test_failed = true;
 	}
 }
 
@@ -202,18 +206,16 @@ static void __print_timestamp(const char *name, struct timespec *cur,
 	fprintf(stderr, "\n");
 }
 
-static void print_timestamp_usr(void)
+static void record_timestamp_usr(void)
 {
 	if (clock_gettime(CLOCK_REALTIME, &ts_usr))
 		error(1, errno, "clock_gettime");
-
-	__print_timestamp("  USR", &ts_usr, 0, 0);
 }
 
 static void print_timestamp(struct scm_timestamping *tss, int tstype,
 			    int tskey, int payload_len)
 {
-	const char *tsname;
+	const char *tsname = NULL;
 
 	validate_key(tskey, tstype);
 
@@ -355,8 +357,12 @@ static void __recv_errmsg_cmsg(struct msghdr *msg, int payload_len)
 		}
 	}
 
-	if (batch > 1)
+	if (batch > 1) {
 		fprintf(stderr, "batched %d timestamps\n", batch);
+	} else if (!batch) {
+		fprintf(stderr, "Failed to report timestamps\n");
+		test_failed = true;
+	}
 }
 
 static int recv_errmsg(int fd)
@@ -479,7 +485,7 @@ static void fill_header_udp(void *p, bool is_ipv4)
 
 static void do_test(int family, unsigned int report_opt)
 {
-	char control[CMSG_SPACE(sizeof(uint32_t))];
+	char control[2 * CMSG_SPACE(sizeof(uint32_t))];
 	struct sockaddr_ll laddr;
 	unsigned int sock_opt;
 	struct cmsghdr *cmsg;
@@ -591,8 +597,6 @@ static void do_test(int family, unsigned int report_opt)
 			fill_header_udp(buf + off, family == PF_INET);
 		}
 
-		print_timestamp_usr();
-
 		iov.iov_base = buf;
 		iov.iov_len = total_len;
 
@@ -619,23 +623,41 @@ static void do_test(int family, unsigned int report_opt)
 		msg.msg_iov = &iov;
 		msg.msg_iovlen = 1;
 
-		if (cfg_use_cmsg) {
+		if (cfg_use_cmsg || cfg_use_cmsg_opt_id) {
 			memset(control, 0, sizeof(control));
 
 			msg.msg_control = control;
-			msg.msg_controllen = sizeof(control);
+			msg.msg_controllen = cfg_use_cmsg * CMSG_SPACE(sizeof(uint32_t));
+			msg.msg_controllen += cfg_use_cmsg_opt_id * CMSG_SPACE(sizeof(uint32_t));
 
-			cmsg = CMSG_FIRSTHDR(&msg);
-			cmsg->cmsg_level = SOL_SOCKET;
-			cmsg->cmsg_type = SO_TIMESTAMPING;
-			cmsg->cmsg_len = CMSG_LEN(sizeof(uint32_t));
+			cmsg = NULL;
+			if (cfg_use_cmsg) {
+				cmsg = CMSG_FIRSTHDR(&msg);
+				cmsg->cmsg_level = SOL_SOCKET;
+				cmsg->cmsg_type = SO_TIMESTAMPING;
+				cmsg->cmsg_len = CMSG_LEN(sizeof(uint32_t));
 
-			*((uint32_t *) CMSG_DATA(cmsg)) = report_opt;
+				*((uint32_t *)CMSG_DATA(cmsg)) = report_opt;
+			}
+			if (cfg_use_cmsg_opt_id) {
+				cmsg = cmsg ? CMSG_NXTHDR(&msg, cmsg) : CMSG_FIRSTHDR(&msg);
+				cmsg->cmsg_level = SOL_SOCKET;
+				cmsg->cmsg_type = SCM_TS_OPT_ID;
+				cmsg->cmsg_len = CMSG_LEN(sizeof(uint32_t));
+
+				*((uint32_t *)CMSG_DATA(cmsg)) = ts_opt_id;
+				saved_tskey = ts_opt_id;
+			}
+
 		}
+
+		record_timestamp_usr();
 
 		val = sendmsg(fd, &msg, 0);
 		if (val != total_len)
 			error(1, errno, "send");
+
+		__print_timestamp("  USR", &ts_usr, 0, 0);
 
 		/* wait for all errors to be queued, else ACKs arrive OOO */
 		if (cfg_sleep_usec)
@@ -680,6 +702,7 @@ static void __attribute__((noreturn)) usage(const char *filepath)
 			"  -L    listen on hostname and port\n"
 			"  -n:   set no-payload option\n"
 			"  -N:   print timestamps and durations in nsec (instead of usec)\n"
+			"  -o N: use SCM_TS_OPT_ID control message to provide N as tskey\n"
 			"  -p N: connect to port N\n"
 			"  -P:   use PF_PACKET\n"
 			"  -r:   use raw\n"
@@ -700,7 +723,7 @@ static void parse_opt(int argc, char **argv)
 	int c;
 
 	while ((c = getopt(argc, argv,
-				"46bc:CeEFhIl:LnNp:PrRS:t:uv:V:x")) != -1) {
+				"46bc:CeEFhIl:LnNo:p:PrRS:t:uv:V:x")) != -1) {
 		switch (c) {
 		case '4':
 			do_ipv6 = 0;
@@ -740,6 +763,10 @@ static void parse_opt(int argc, char **argv)
 			break;
 		case 'N':
 			cfg_print_nsec = true;
+			break;
+		case 'o':
+			ts_opt_id = strtoul(optarg, NULL, 10);
+			cfg_use_cmsg_opt_id = true;
 			break;
 		case 'p':
 			dest_port = strtoul(optarg, NULL, 10);
@@ -798,6 +825,8 @@ static void parse_opt(int argc, char **argv)
 		error(1, 0, "cannot ask for pktinfo over pf_packet");
 	if (cfg_busy_poll && cfg_use_epoll)
 		error(1, 0, "pass epoll or busy_poll, not both");
+	if (cfg_proto == SOCK_STREAM && cfg_use_cmsg_opt_id)
+		error(1, 0, "TCP sockets don't support SCM_TS_OPT_ID");
 
 	if (optind != argc - 1)
 		error(1, 0, "missing required hostname argument");

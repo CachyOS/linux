@@ -11,6 +11,7 @@
  *  Author: Lars Pöschel <poeschel@lemonage.de>
  *  All rights reserved.
  */
+#include <linux/hex.h>
 #include <linux/kernel.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
@@ -98,8 +99,13 @@ static int lcd2s_print(struct charlcd *lcd, int c)
 {
 	struct lcd2s_data *lcd2s = lcd->drvdata;
 	u8 buf[2] = { LCD2S_CMD_WRITE, c };
+	int ret;
 
-	lcd2s_i2c_master_send(lcd2s->i2c, buf, sizeof(buf));
+	ret = lcd2s_i2c_master_send(lcd2s->i2c, buf, sizeof(buf));
+	if (ret < 0)
+		return ret;
+	if (ret != sizeof(buf))
+		return -EIO;
 	return 0;
 }
 
@@ -107,9 +113,13 @@ static int lcd2s_gotoxy(struct charlcd *lcd, unsigned int x, unsigned int y)
 {
 	struct lcd2s_data *lcd2s = lcd->drvdata;
 	u8 buf[3] = { LCD2S_CMD_CUR_POS, y + 1, x + 1 };
+	int ret;
 
-	lcd2s_i2c_master_send(lcd2s->i2c, buf, sizeof(buf));
-
+	ret = lcd2s_i2c_master_send(lcd2s->i2c, buf, sizeof(buf));
+	if (ret < 0)
+		return ret;
+	if (ret != sizeof(buf))
+		return -EIO;
 	return 0;
 }
 
@@ -298,20 +308,18 @@ static int lcd2s_i2c_probe(struct i2c_client *i2c)
 			I2C_FUNC_SMBUS_WRITE_BLOCK_DATA))
 		return -EIO;
 
-	lcd2s = devm_kzalloc(&i2c->dev, sizeof(*lcd2s), GFP_KERNEL);
-	if (!lcd2s)
-		return -ENOMEM;
-
 	/* Test, if the display is responding */
 	err = lcd2s_i2c_smbus_write_byte(i2c, LCD2S_CMD_DISPLAY_OFF);
 	if (err < 0)
 		return err;
 
-	lcd = charlcd_alloc();
+	lcd = charlcd_alloc(sizeof(*lcd2s));
 	if (!lcd)
 		return -ENOMEM;
 
-	lcd->drvdata = lcd2s;
+	lcd->ops = &lcd2s_ops;
+
+	lcd2s = lcd->drvdata;
 	lcd2s->i2c = i2c;
 	lcd2s->charlcd = lcd;
 
@@ -326,8 +334,6 @@ static int lcd2s_i2c_probe(struct i2c_client *i2c)
 	if (err)
 		goto fail1;
 
-	lcd->ops = &lcd2s_ops;
-
 	err = charlcd_register(lcd2s->charlcd);
 	if (err)
 		goto fail1;
@@ -340,17 +346,16 @@ fail1:
 	return err;
 }
 
-static int lcd2s_i2c_remove(struct i2c_client *i2c)
+static void lcd2s_i2c_remove(struct i2c_client *i2c)
 {
 	struct lcd2s_data *lcd2s = i2c_get_clientdata(i2c);
 
 	charlcd_unregister(lcd2s->charlcd);
 	charlcd_free(lcd2s->charlcd);
-	return 0;
 }
 
 static const struct i2c_device_id lcd2s_i2c_id[] = {
-	{ "lcd2s", 0 },
+	{ "lcd2s" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, lcd2s_i2c_id);
@@ -366,7 +371,7 @@ static struct i2c_driver lcd2s_i2c_driver = {
 		.name = "lcd2s",
 		.of_match_table = lcd2s_of_table,
 	},
-	.probe_new = lcd2s_i2c_probe,
+	.probe = lcd2s_i2c_probe,
 	.remove = lcd2s_i2c_remove,
 	.id_table = lcd2s_i2c_id,
 };

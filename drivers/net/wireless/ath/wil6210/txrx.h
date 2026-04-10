@@ -7,6 +7,7 @@
 #ifndef WIL6210_TXRX_H
 #define WIL6210_TXRX_H
 
+#include <net/sock.h>
 #include "wil6210.h"
 #include "txrx_edma.h"
 
@@ -343,8 +344,10 @@ struct vring_rx_mac {
 	u32 d0;
 	u32 d1;
 	u16 w4;
-	u16 pn_15_0;
-	u32 pn_47_16;
+	struct_group_attr(pn, __packed,
+		u16 pn_15_0;
+		u32 pn_47_16;
+	);
 } __packed;
 
 /* Rx descriptor - DMA part
@@ -356,7 +359,7 @@ struct vring_rx_mac {
  * bit     10 : cmd_dma_it:1 immediate interrupt
  * bit 11..15 : reserved:5
  * bit 16..29 : phy_info_length:14 It is valid when the PII is set.
- *		When the FFM bit is set bits 29-27 are used for for
+ *		When the FFM bit is set bits 29-27 are used for
  *		Flex Filter Match. Matching Index to one of the L2
  *		EtherType Flex Filter
  * bit 30..31 : l4_type:2 valid if the L4I bit is set in the status field
@@ -614,8 +617,7 @@ static inline bool wil_need_txstat(struct sk_buff *skb)
 {
 	const u8 *da = wil_skb_get_da(skb);
 
-	return is_unicast_ether_addr(da) && skb->sk &&
-	       (skb_shinfo(skb)->tx_flags & SKBTX_WIFI_STATUS);
+	return is_unicast_ether_addr(da) && sk_requests_wifi_status(skb->sk);
 }
 
 static inline void wil_consume_skb(struct sk_buff *skb, bool acked)

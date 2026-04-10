@@ -13,7 +13,7 @@ void vif_device_init(struct vif_device *v,
 		     unsigned short flags,
 		     unsigned short get_iflink_mask)
 {
-	v->dev = NULL;
+	RCU_INIT_POINTER(v->dev, NULL);
 	v->bytes_in = 0;
 	v->bytes_out = 0;
 	v->pkt_in = 0;
@@ -38,7 +38,7 @@ mr_table_alloc(struct net *net, u32 id,
 	struct mr_table *mrt;
 	int err;
 
-	mrt = kzalloc(sizeof(*mrt), GFP_KERNEL);
+	mrt = kzalloc_obj(*mrt);
 	if (!mrt)
 		return ERR_PTR(-ENOMEM);
 	mrt->id = id;
@@ -208,6 +208,7 @@ EXPORT_SYMBOL(mr_mfc_seq_next);
 int mr_fill_mroute(struct mr_table *mrt, struct sk_buff *skb,
 		   struct mr_mfc *c, struct rtmsg *rtm)
 {
+	struct net_device *vif_dev;
 	struct rta_mfc_stats mfcs;
 	struct nlattr *mp_attr;
 	struct rtnexthop *nhp;
@@ -220,10 +221,13 @@ int mr_fill_mroute(struct mr_table *mrt, struct sk_buff *skb,
 		return -ENOENT;
 	}
 
-	if (VIF_EXISTS(mrt, c->mfc_parent) &&
-	    nla_put_u32(skb, RTA_IIF,
-			mrt->vif_table[c->mfc_parent].dev->ifindex) < 0)
+	rcu_read_lock();
+	vif_dev = rcu_dereference(mrt->vif_table[c->mfc_parent].dev);
+	if (vif_dev && nla_put_u32(skb, RTA_IIF, vif_dev->ifindex) < 0) {
+		rcu_read_unlock();
 		return -EMSGSIZE;
+	}
+	rcu_read_unlock();
 
 	if (c->mfc_flags & MFC_OFFLOAD)
 		rtm->rtm_flags |= RTNH_F_OFFLOAD;
@@ -232,32 +236,36 @@ int mr_fill_mroute(struct mr_table *mrt, struct sk_buff *skb,
 	if (!mp_attr)
 		return -EMSGSIZE;
 
+	rcu_read_lock();
 	for (ct = c->mfc_un.res.minvif; ct < c->mfc_un.res.maxvif; ct++) {
-		if (VIF_EXISTS(mrt, ct) && c->mfc_un.res.ttls[ct] < 255) {
-			struct vif_device *vif;
+		struct vif_device *vif = &mrt->vif_table[ct];
+
+		vif_dev = rcu_dereference(vif->dev);
+		if (vif_dev && c->mfc_un.res.ttls[ct] < 255) {
 
 			nhp = nla_reserve_nohdr(skb, sizeof(*nhp));
 			if (!nhp) {
+				rcu_read_unlock();
 				nla_nest_cancel(skb, mp_attr);
 				return -EMSGSIZE;
 			}
 
 			nhp->rtnh_flags = 0;
 			nhp->rtnh_hops = c->mfc_un.res.ttls[ct];
-			vif = &mrt->vif_table[ct];
-			nhp->rtnh_ifindex = vif->dev->ifindex;
+			nhp->rtnh_ifindex = vif_dev->ifindex;
 			nhp->rtnh_len = sizeof(*nhp);
 		}
 	}
+	rcu_read_unlock();
 
 	nla_nest_end(skb, mp_attr);
 
 	lastuse = READ_ONCE(c->mfc_un.res.lastuse);
 	lastuse = time_after_eq(jiffies, lastuse) ? jiffies - lastuse : 0;
 
-	mfcs.mfcs_packets = c->mfc_un.res.pkt;
-	mfcs.mfcs_bytes = c->mfc_un.res.bytes;
-	mfcs.mfcs_wrong_if = c->mfc_un.res.wrong_if;
+	mfcs.mfcs_packets = atomic_long_read(&c->mfc_un.res.pkt);
+	mfcs.mfcs_bytes = atomic_long_read(&c->mfc_un.res.bytes);
+	mfcs.mfcs_wrong_if = atomic_long_read(&c->mfc_un.res.wrong_if);
 	if (nla_put_64bit(skb, RTA_MFC_STATS, sizeof(mfcs), &mfcs, RTA_PAD) ||
 	    nla_put_u64_64bit(skb, RTA_EXPIRES, jiffies_to_clock_t(lastuse),
 			      RTA_PAD))
@@ -275,13 +283,14 @@ static bool mr_mfc_uses_dev(const struct mr_table *mrt,
 	int ct;
 
 	for (ct = c->mfc_un.res.minvif; ct < c->mfc_un.res.maxvif; ct++) {
-		if (VIF_EXISTS(mrt, ct) && c->mfc_un.res.ttls[ct] < 255) {
-			const struct vif_device *vif;
+		const struct net_device *vif_dev;
+		const struct vif_device *vif;
 
-			vif = &mrt->vif_table[ct];
-			if (vif->dev == dev)
-				return true;
-		}
+		vif = &mrt->vif_table[ct];
+		vif_dev = rcu_access_pointer(vif->dev);
+		if (vif_dev && c->mfc_un.res.ttls[ct] < 255 &&
+		    vif_dev == dev)
+			return true;
 	}
 	return false;
 }
@@ -301,7 +310,8 @@ int mr_table_dump(struct mr_table *mrt, struct sk_buff *skb,
 	if (filter->filter_set)
 		flags |= NLM_F_DUMP_FILTERED;
 
-	list_for_each_entry_rcu(mfc, &mrt->mfc_cache_list, list) {
+	list_for_each_entry_rcu(mfc, &mrt->mfc_cache_list, list,
+				lockdep_rtnl_is_held()) {
 		if (e < s_e)
 			goto next_entry;
 		if (filter->dev &&
@@ -319,9 +329,6 @@ next_entry:
 	spin_lock_bh(lock);
 	list_for_each_entry(mfc, &mrt->mfc_unres_queue, list) {
 		if (e < s_e)
-			goto next_entry2;
-		if (filter->dev &&
-		    !mr_mfc_uses_dev(mrt, mfc, filter->dev))
 			goto next_entry2;
 
 		err = fill(mrt, skb, NETLINK_CB(cb->skb).portid,
@@ -390,7 +397,6 @@ int mr_dump(struct net *net, struct notifier_block *nb, unsigned short family,
 			      struct netlink_ext_ack *extack),
 	    struct mr_table *(*mr_iter)(struct net *net,
 					struct mr_table *mrt),
-	    rwlock_t *mrt_lock,
 	    struct netlink_ext_ack *extack)
 {
 	struct mr_table *mrt;
@@ -402,22 +408,25 @@ int mr_dump(struct net *net, struct notifier_block *nb, unsigned short family,
 
 	for (mrt = mr_iter(net, NULL); mrt; mrt = mr_iter(net, mrt)) {
 		struct vif_device *v = &mrt->vif_table[0];
+		struct net_device *vif_dev;
 		struct mr_mfc *mfc;
 		int vifi;
 
 		/* Notifiy on table VIF entries */
-		read_lock(mrt_lock);
+		rcu_read_lock();
 		for (vifi = 0; vifi < mrt->maxvif; vifi++, v++) {
-			if (!v->dev)
+			vif_dev = rcu_dereference(v->dev);
+			if (!vif_dev)
 				continue;
 
 			err = mr_call_vif_notifier(nb, family,
-						   FIB_EVENT_VIF_ADD,
-						   v, vifi, mrt->id, extack);
+						   FIB_EVENT_VIF_ADD, v,
+						   vif_dev, vifi,
+						   mrt->id, extack);
 			if (err)
 				break;
 		}
-		read_unlock(mrt_lock);
+		rcu_read_unlock();
 
 		if (err)
 			return err;

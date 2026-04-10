@@ -77,47 +77,16 @@ nvkm_pmu_intr(struct nvkm_subdev *subdev)
 }
 
 static int
-nvkm_pmu_fini(struct nvkm_subdev *subdev, bool suspend)
+nvkm_pmu_fini(struct nvkm_subdev *subdev, enum nvkm_suspend_state suspend)
 {
 	struct nvkm_pmu *pmu = nvkm_pmu(subdev);
+
+	if (!subdev->use.enabled)
+		return 0;
 
 	if (pmu->func->fini)
 		pmu->func->fini(pmu);
 
-	flush_work(&pmu->recv.work);
-
-	reinit_completion(&pmu->wpr_ready);
-
-	nvkm_falcon_cmdq_fini(pmu->lpq);
-	nvkm_falcon_cmdq_fini(pmu->hpq);
-	pmu->initmsg_received = false;
-	return 0;
-}
-
-static void
-nvkm_pmu_reset(struct nvkm_pmu *pmu)
-{
-	struct nvkm_device *device = pmu->subdev.device;
-
-	if (!pmu->func->enabled(pmu))
-		return;
-
-	/* Reset. */
-	if (pmu->func->reset)
-		pmu->func->reset(pmu);
-
-	/* Wait for IMEM/DMEM scrubbing to be complete. */
-	nvkm_msec(device, 2000,
-		if (!(nvkm_rd32(device, 0x10a10c) & 0x00000006))
-			break;
-	);
-}
-
-static int
-nvkm_pmu_preinit(struct nvkm_subdev *subdev)
-{
-	struct nvkm_pmu *pmu = nvkm_pmu(subdev);
-	nvkm_pmu_reset(pmu);
 	return 0;
 }
 
@@ -125,21 +94,9 @@ static int
 nvkm_pmu_init(struct nvkm_subdev *subdev)
 {
 	struct nvkm_pmu *pmu = nvkm_pmu(subdev);
-	struct nvkm_device *device = pmu->subdev.device;
 
 	if (!pmu->func->init)
 		return 0;
-
-	if (pmu->func->enabled(pmu)) {
-		/* Inhibit interrupts, and wait for idle. */
-		nvkm_wr32(device, 0x10a014, 0x0000ffff);
-		nvkm_msec(device, 2000,
-			if (!nvkm_rd32(device, 0x10a04c))
-				break;
-		);
-
-		nvkm_pmu_reset(pmu);
-	}
 
 	return pmu->func->init(pmu);
 }
@@ -160,7 +117,6 @@ nvkm_pmu_dtor(struct nvkm_subdev *subdev)
 static const struct nvkm_subdev_func
 nvkm_pmu = {
 	.dtor = nvkm_pmu_dtor,
-	.preinit = nvkm_pmu_preinit,
 	.init = nvkm_pmu_init,
 	.fini = nvkm_pmu_fini,
 	.intr = nvkm_pmu_intr,
@@ -205,7 +161,7 @@ nvkm_pmu_new_(const struct nvkm_pmu_fwif *fwif, struct nvkm_device *device,
 	      enum nvkm_subdev_type type, int inst, struct nvkm_pmu **ppmu)
 {
 	struct nvkm_pmu *pmu;
-	if (!(pmu = *ppmu = kzalloc(sizeof(*pmu), GFP_KERNEL)))
+	if (!(pmu = *ppmu = kzalloc_obj(*pmu)))
 		return -ENOMEM;
 	return nvkm_pmu_ctor(fwif, device, type, inst, *ppmu);
 }

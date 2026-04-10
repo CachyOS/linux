@@ -26,15 +26,6 @@
 #ifndef DMUB_CMD_H
 #define DMUB_CMD_H
 
-#if defined(_TEST_HARNESS) || defined(FPGA_USB4)
-#include "dmub_fw_types.h"
-#include "include_legacy/atomfirmware.h"
-
-#if defined(_TEST_HARNESS)
-#include <string.h>
-#endif
-#else
-
 #include <asm/byteorder.h>
 #include <linux/types.h>
 #include <linux/string.h>
@@ -42,11 +33,12 @@
 
 #include "atomfirmware.h"
 
-#endif // defined(_TEST_HARNESS) || defined(FPGA_USB4)
-
 //<DMUB_TYPES>==================================================================
 /* Basic type definitions. */
 
+#ifdef __forceinline
+#undef __forceinline
+#endif
 #define __forceinline inline
 
 /**
@@ -92,14 +84,50 @@
  */
 #define NUM_BL_CURVE_SEGS               16
 
+/**
+ * Maximum number of segments in ABM ACE curve.
+ */
+#define ABM_MAX_NUM_OF_ACE_SEGMENTS         64
+
+/**
+ * Maximum number of bins in ABM histogram.
+ */
+#define ABM_MAX_NUM_OF_HG_BINS              64
+
+/* Maximum number of SubVP streams */
+#define DMUB_MAX_SUBVP_STREAMS 2
+
+/* Define max FPO streams as 4 for now. Current implementation today
+ * only supports 1, but could be more in the future. Reduce array
+ * size to ensure the command size remains less than 64 bytes if
+ * adding new fields.
+ */
+#define DMUB_MAX_FPO_STREAMS 4
+
+/* Define to ensure that the "common" members always appear in the same
+ * order in different structs for back compat purposes
+ */
+#define COMMON_STREAM_STATIC_SUB_STATE \
+    struct dmub_fams2_cmd_legacy_stream_static_state legacy; \
+    struct dmub_fams2_cmd_subvp_stream_static_state subvp; \
+    struct dmub_fams2_cmd_drr_stream_static_state drr;
+
 /* Maximum number of streams on any ASIC. */
 #define DMUB_MAX_STREAMS 6
 
 /* Maximum number of planes on any ASIC. */
 #define DMUB_MAX_PLANES 6
 
+/* Maximum number of phantom planes on any ASIC */
+#define DMUB_MAX_PHANTOM_PLANES ((DMUB_MAX_PLANES) / 2)
+
 /* Trace buffer offset for entry */
-#define TRACE_BUFFER_ENTRY_OFFSET  16
+#define TRACE_BUFFER_ENTRY_OFFSET 16
+
+/**
+ * Maximum number of dirty rects supported by FW.
+ */
+#define DMUB_MAX_DIRTY_RECTS 3
 
 /**
  *
@@ -111,6 +139,33 @@
  */
 #define DMUB_CMD_PSR_CONTROL_VERSION_1 0x1
 
+/**
+ *
+ * dirty rect cmd version legacy
+ */
+#define DMUB_CMD_DIRTY_RECTS_VERSION_UNKNOWN 0x0
+/**
+ * dirty rect cmd version with multi edp support
+ */
+#define DMUB_CMD_DIRTY_RECTS_VERSION_1 0x1
+/**
+ * dirty rect cmd version with external monitor support
+ */
+#define DMUB_CMD_DIRTY_RECTS_VERSION_2 0x2
+
+/**
+ *
+ * Cursor update cmd version legacy
+ */
+#define DMUB_CMD_CURSOR_UPDATE_VERSION_UNKNOWN 0x0
+/**
+ * Cursor update cmd version with multi edp support
+ */
+#define DMUB_CMD_CURSOR_UPDATE_VERSION_1 0x1
+/**
+ * Cursor update cmd version with external monitor support
+ */
+#define DMUB_CMD_CURSOR_UPDATE_VERSION_2 0x2
 
 /**
  * ABM control version legacy
@@ -143,8 +198,11 @@
 #define dmub_memset(dest, val, bytes) memset((dest), (val), (bytes))
 #endif
 
-#if defined(__cplusplus)
-extern "C" {
+/**
+ * OS/FW agnostic memcmp
+ */
+#ifndef dmub_memcmp
+#define dmub_memcmp(lhs, rhs, bytes) memcmp((lhs), (rhs), (bytes))
 #endif
 
 /**
@@ -153,6 +211,110 @@ extern "C" {
 #ifndef dmub_udelay
 #define dmub_udelay(microseconds) udelay(microseconds)
 #endif
+
+#pragma pack(push, 1)
+#define ABM_NUM_OF_ACE_SEGMENTS         5
+
+/**
+ * Debug FW state offset
+ */
+#define DMUB_DEBUG_FW_STATE_OFFSET 0x300
+
+union abm_flags {
+	struct {
+		/**
+		 * @abm_enabled: Indicates if ABM is enabled.
+		 */
+		unsigned int abm_enabled : 1;
+
+		/**
+		 * @disable_abm_requested: Indicates if driver has requested ABM to be disabled.
+		 */
+		unsigned int disable_abm_requested : 1;
+
+		/**
+		 * @disable_abm_immediately: Indicates if driver has requested ABM to be disabled immediately.
+		 */
+		unsigned int disable_abm_immediately : 1;
+
+		/**
+		 * @disable_abm_immediate_keep_gain: Indicates if driver has requested ABM
+		 * to be disabled immediately and keep gain.
+		 */
+		unsigned int disable_abm_immediate_keep_gain : 1;
+
+		/**
+		 * @fractional_pwm: Indicates if fractional duty cycle for backlight PWM is enabled.
+		 */
+		unsigned int fractional_pwm : 1;
+
+		/**
+		 * @abm_gradual_bl_change: Indicates if algorithm has completed gradual adjustment
+		 * of user backlight level.
+		 */
+		unsigned int abm_gradual_bl_change : 1;
+
+		/**
+		 * @abm_new_frame: Indicates if a new frame update needed for ABM to ramp up into steady
+		 */
+		unsigned int abm_new_frame : 1;
+
+		/**
+		 * @vb_scaling_enabled: Indicates variBright Scaling Enable
+		 */
+		unsigned int vb_scaling_enabled : 1;
+	} bitfields;
+
+	unsigned int u32All;
+};
+
+struct abm_save_restore {
+	/**
+	 * @flags: Misc. ABM flags.
+	 */
+	union abm_flags flags;
+
+	/**
+	 * @pause: true:  pause ABM and get state
+	 *         false: unpause ABM after setting state
+	 */
+	uint32_t pause;
+
+	/**
+	 * @next_ace_slope: Next ACE slopes to be programmed in HW (u3.13)
+	 */
+	uint32_t next_ace_slope[ABM_NUM_OF_ACE_SEGMENTS];
+
+	/**
+	 * @next_ace_thresh: Next ACE thresholds to be programmed in HW (u10.6)
+	 */
+	uint32_t next_ace_thresh[ABM_NUM_OF_ACE_SEGMENTS];
+
+	/**
+	 * @next_ace_offset: Next ACE offsets to be programmed in HW (u10.6)
+	 */
+	uint32_t next_ace_offset[ABM_NUM_OF_ACE_SEGMENTS];
+
+
+	/**
+	 * @knee_threshold: Current x-position of ACE knee (u0.16).
+	 */
+	uint32_t knee_threshold;
+	/**
+	 * @current_gain: Current backlight reduction (u16.16).
+	 */
+	uint32_t current_gain;
+	/**
+	 * @curr_bl_level: Current actual backlight level converging to target backlight level.
+	 */
+	uint16_t curr_bl_level;
+
+	/**
+	 * @curr_user_bl_level: Current nominal backlight level converging to level requested by user.
+	 */
+	uint16_t curr_user_bl_level;
+
+};
 
 /**
  * union dmub_addr - DMUB physical/virtual 64-bit address.
@@ -163,6 +325,57 @@ union dmub_addr {
 		uint32_t high_part; /**< Upper 32 bits */
 	} u; /*<< Low/high bit access */
 	uint64_t quad_part; /*<< 64 bit address */
+};
+
+/* Flattened structure containing SOC BB parameters stored in the VBIOS
+ * It is not practical to store the entire bounding box in VBIOS since the bounding box struct can gain new parameters.
+ * This also prevents alighment issues when new parameters are added to the SoC BB.
+ * The following parameters should be added since these values can't be obtained elsewhere:
+ * -dml2_soc_power_management_parameters
+ * -dml2_soc_vmin_clock_limits
+ */
+struct dmub_soc_bb_params {
+	uint32_t dram_clk_change_blackout_ns;
+	uint32_t dram_clk_change_read_only_ns;
+	uint32_t dram_clk_change_write_only_ns;
+	uint32_t fclk_change_blackout_ns;
+	uint32_t g7_ppt_blackout_ns;
+	uint32_t stutter_enter_plus_exit_latency_ns;
+	uint32_t stutter_exit_latency_ns;
+	uint32_t z8_stutter_enter_plus_exit_latency_ns;
+	uint32_t z8_stutter_exit_latency_ns;
+	uint32_t z8_min_idle_time_ns;
+	uint32_t type_b_dram_clk_change_blackout_ns;
+	uint32_t type_b_ppt_blackout_ns;
+	uint32_t vmin_limit_dispclk_khz;
+	uint32_t vmin_limit_dcfclk_khz;
+	uint32_t g7_temperature_read_blackout_ns;
+};
+#pragma pack(pop)
+
+/**
+ * Dirty rect definition.
+ */
+struct dmub_rect {
+	/**
+	 * Dirty rect x offset.
+	 */
+	uint32_t x;
+
+	/**
+	 * Dirty rect y offset.
+	 */
+	uint32_t y;
+
+	/**
+	 * Dirty rect width.
+	 */
+	uint32_t width;
+
+	/**
+	 * Dirty rect height.
+	 */
+	uint32_t height;
 };
 
 /**
@@ -177,6 +390,12 @@ union dmub_psr_debug_flags {
 		 * Enable visual confirm in FW.
 		 */
 		uint32_t visual_confirm : 1;
+
+		/**
+		 * Force all selective updates to bw full frame updates.
+		 */
+		uint32_t force_full_frame_update : 1;
+
 		/**
 		 * Use HW Lock Mgr object to do HW locking in FW.
 		 */
@@ -186,12 +405,353 @@ union dmub_psr_debug_flags {
 		 * Use TPS3 signal when restore main link.
 		 */
 		uint32_t force_wakeup_by_tps3 : 1;
+
+		/**
+		 * Back to back flip, therefore cannot power down PHY
+		 */
+		uint32_t back_to_back_flip : 1;
+
+		/**
+		 * Enable visual confirm for IPS
+		 */
+		uint32_t enable_ips_visual_confirm : 1;
 	} bitfields;
 
 	/**
 	 * Union for debug flags.
 	 */
 	uint32_t u32All;
+};
+
+/**
+ * Flags that can be set by driver to change some Replay behaviour.
+ */
+union replay_debug_flags {
+	struct {
+		/**
+		 * 0x1 (bit 0)
+		 * Enable visual confirm in FW.
+		 */
+		uint32_t visual_confirm : 1;
+
+		/**
+		 * 0x2 (bit 1)
+		 * @skip_crc: Set if need to skip CRC.
+		 */
+		uint32_t skip_crc : 1;
+
+		/**
+		 * 0x4 (bit 2)
+		 * @force_link_power_on: Force disable ALPM control
+		 */
+		uint32_t force_link_power_on : 1;
+
+		/**
+		 * 0x8 (bit 3)
+		 * @force_phy_power_on: Force phy power on
+		 */
+		uint32_t force_phy_power_on : 1;
+
+		/**
+		 * 0x10 (bit 4)
+		 * @timing_resync_disabled: Disabled Replay normal sleep mode timing resync
+		 */
+		uint32_t timing_resync_disabled : 1;
+
+		/**
+		 * 0x20 (bit 5)
+		 * @skip_crtc_disabled: CRTC disable skipped
+		 */
+		uint32_t skip_crtc_disabled : 1;
+
+		/**
+		 * 0x40 (bit 6)
+		 * @force_defer_one_frame_update: Force defer one frame update in ultra sleep mode
+		 */
+		uint32_t force_defer_one_frame_update : 1;
+
+		/**
+		 * 0x80 (bit 7)
+		 * @disable_delay_alpm_on: Force disable delay alpm on
+		 */
+		uint32_t disable_delay_alpm_on : 1;
+
+		/**
+		 * 0x100 (bit 8)
+		 * @disable_desync_error_check: Force disable desync error check
+		 */
+		uint32_t disable_desync_error_check : 1;
+
+		/**
+		 * 0x200 (bit 9)
+		 * @force_self_update_when_abm_non_steady: Force self update if abm is not steady
+		 */
+		uint32_t force_self_update_when_abm_non_steady : 1;
+
+		/**
+		 * 0x400 (bit 10)
+		 * @enable_ips_visual_confirm: Enable IPS visual confirm when entering IPS
+		 * If we enter IPS2, the Visual confirm bar will change to yellow
+		 */
+		uint32_t enable_ips_visual_confirm : 1;
+
+		/**
+		 * 0x800 (bit 11)
+		 * @enable_ips_residency_profiling: Enable IPS residency profiling
+		 */
+		uint32_t enable_ips_residency_profiling : 1;
+
+		/**
+		 * 0x1000 (bit 12)
+		 * @enable_coasting_vtotal_check: Enable Coasting_vtotal_check
+		 */
+		uint32_t enable_coasting_vtotal_check : 1;
+		/**
+		 * 0x2000 (bit 13)
+		 * @enable_visual_confirm_debug: Enable Visual Confirm Debug
+		 */
+		uint32_t enable_visual_confirm_debug : 1;
+
+		/**
+		 * 0x4000 (bit 14)
+		 * @debug_log_enabled: Debug Log Enabled
+		 */
+		uint32_t debug_log_enabled : 1;
+
+		/**
+		 * 0x8000 (bit 15)
+		 * @enable_sub_feature_visual_confirm: Enable Sub Feature Visual Confirm
+		 */
+		uint32_t enable_sub_feature_visual_confirm : 1;
+
+		uint32_t reserved : 16;
+	} bitfields;
+
+	uint32_t u32All;
+};
+
+/**
+ * Flags record error state.
+ */
+union replay_visual_confirm_error_state_flags {
+	struct {
+		/**
+		 * 0x1 (bit 0) - Desync Error flag.
+		 */
+		uint32_t desync_error : 1;
+
+		/**
+		 * 0x2 (bit 1) - State Transition Error flag.
+		 */
+		uint32_t state_transition_error : 1;
+
+		/**
+		 * 0x4 (bit 2) - Crc Error flag
+		 */
+		uint32_t crc_error : 1;
+
+		/**
+		 * 0x8 (bit 3) - Reserved
+		 */
+		uint32_t reserved_3 : 1;
+
+		/**
+		 * 0x10 (bit 4) - Incorrect Coasting vtotal checking --> use debug flag to control DPCD write.
+		 * Added new debug flag to control DPCD.
+		 */
+		uint32_t incorrect_vtotal_in_static_screen : 1;
+
+		/**
+		 * 0x20 (bit 5) - No doubled Refresh Rate.
+		 */
+		uint32_t no_double_rr : 1;
+
+		/**
+		 * Reserved bit 6-7
+		 */
+		uint32_t reserved_6_7 : 2;
+
+		/**
+		 * Reserved bit 9-31
+		 */
+		uint32_t reserved_9_31 : 24;
+	} bitfields;
+
+	uint32_t u32All;
+};
+
+union replay_hw_flags {
+	struct {
+		/**
+		 * @allow_alpm_fw_standby_mode: To indicate whether the
+		 * ALPM FW standby mode is allowed
+		 */
+		uint32_t allow_alpm_fw_standby_mode : 1;
+
+		/*
+		 * @dsc_enable_status: DSC enable status in driver
+		 */
+		uint32_t dsc_enable_status : 1;
+
+		/**
+		 * @fec_enable_status: receive fec enable/disable status from driver
+		 */
+		uint32_t fec_enable_status : 1;
+
+		/*
+		 * @smu_optimizations_en: SMU power optimization.
+		 * Only when active display is Replay capable and display enters Replay.
+		 * Trigger interrupt to SMU to powerup/down.
+		 */
+		uint32_t smu_optimizations_en : 1;
+
+		/**
+		 * @phy_power_state: Indicates current phy power state
+		 */
+		uint32_t phy_power_state : 1;
+
+		/**
+		 * @link_power_state: Indicates current link power state
+		 */
+		uint32_t link_power_state : 1;
+		/**
+		 * Use TPS3 signal when restore main link.
+		 */
+		uint32_t force_wakeup_by_tps3 : 1;
+		/**
+		 * @is_alpm_initialized: Indicates whether ALPM is initialized
+		 */
+		uint32_t is_alpm_initialized : 1;
+
+		/**
+		 * @alpm_mode: Indicates ALPM mode selected
+		 */
+		uint32_t alpm_mode : 2;
+	} bitfields;
+
+	uint32_t u32All;
+};
+
+/**
+ * Flags that can be set by driver to change some Panel Replay behaviour.
+ */
+union pr_debug_flags {
+	struct {
+		/**
+		 * 0x1 (bit 0)
+		 * Enable visual confirm in FW.
+		 */
+		uint32_t visual_confirm : 1;
+
+		/**
+		 * 0x2 (bit 1)
+		 * @skip_crc: Set if need to skip CRC.
+		 */
+		uint32_t skip_crc : 1;
+
+		/**
+		 * 0x4 (bit 2)
+		 * @force_link_power_on: Force disable ALPM control
+		 */
+		uint32_t force_link_power_on : 1;
+
+		/**
+		 * 0x8 (bit 3)
+		 * @force_phy_power_on: Force phy power on
+		 */
+		uint32_t force_phy_power_on : 1;
+
+		/**
+		 * 0x10 (bit 4)
+		 * @visual_confirm_rate_control: Enable Visual Confirm rate control detection
+		 */
+		uint32_t visual_confirm_rate_control : 1;
+
+		/**
+		 * 0x20 (bit 5)
+		 * @force_full_frame_update: Force all selective updates to be full frame updates
+		 */
+		uint32_t force_full_frame_update : 1;
+
+		/**
+		 * 0x40 (bit 6)
+		 * @force_dpg_on: Force DPG on
+		 */
+		uint32_t force_dpg_on : 1;
+
+		/**
+		 * 0x80 (bit 7)
+		 * @force_hubp_on: Force Hubp on
+		 */
+		uint32_t force_hubp_on : 1;
+
+		uint32_t reserved : 24;
+	} bitfields;
+
+	uint32_t u32All;
+};
+
+union pr_hw_flags {
+	struct {
+		/**
+		 * @allow_alpm_fw_standby_mode: To indicate whether the
+		 * ALPM FW standby mode is allowed
+		 */
+		uint32_t allow_alpm_fw_standby_mode : 1;
+
+		/*
+		 * @dsc_enable_status: DSC enable status in driver
+		 */
+		uint32_t dsc_enable_status : 1;
+
+		/**
+		 * @fec_enable_status: receive fec enable/disable status from driver
+		 */
+		uint32_t fec_enable_status : 1;
+		/*
+		 * @smu_optimizations_en: SMU power optimization.
+		 * Only when active display is Replay capable and display enters Replay.
+		 * Trigger interrupt to SMU to powerup/down.
+		 */
+		uint32_t smu_optimizations_en : 1;
+		/**
+		 * @link_power_state: Indicates current link power state
+		 */
+		uint32_t link_power_state : 1;
+		/**
+		 * Use TPS3 signal when restore main link.
+		 */
+		uint32_t force_wakeup_by_tps3 : 1;
+		/**
+		 * @is_alpm_initialized: Indicates whether ALPM is initialized
+		 */
+		uint32_t is_alpm_initialized : 1;
+		/**
+		 * @alpm_mode: Indicates ALPM mode selected
+		 */
+		uint32_t alpm_mode : 2;
+		uint32_t reserved : 23;
+	} bitfields;
+
+	uint32_t u32All;
+};
+
+/**
+ * Definition of Panel Replay ML Activity Options
+ */
+enum pr_ml_activity_option {
+	OPTION_DEFAULT	= 0x00, // VESA Option Default (1C)
+	OPTION_1A		= 0x01, // VESA Option 1A
+	OPTION_1B		= 0x02, // VESA Option 1B
+	OPTION_1C		= 0x03, // VESA Option 1C
+};
+
+union fw_assisted_mclk_switch_version {
+	struct {
+		uint8_t minor : 5;
+		uint8_t major : 3;
+	};
+	uint8_t ver;
 };
 
 /**
@@ -203,12 +763,131 @@ struct dmub_feature_caps {
 	 * Max PSR version supported by FW.
 	 */
 	uint8_t psr;
-	uint8_t reserved[7];
+	uint8_t fw_assisted_mclk_switch_ver;
+	uint8_t reserved[4];
+	uint8_t subvp_psr_support;
+	uint8_t gecc_enable;
+	uint8_t replay_supported;
+	uint8_t replay_reserved[3];
+	uint8_t abm_aux_backlight_support;
+	uint8_t lsdma_support_in_dmu;
 };
 
-#if defined(__cplusplus)
-}
-#endif
+struct dmub_visual_confirm_color {
+	/**
+	 * Maximum 10 bits color value
+	 */
+	uint16_t color_r_cr;
+	uint16_t color_g_y;
+	uint16_t color_b_cb;
+	uint16_t panel_inst;
+};
+
+/**
+ * struct dmub_cursor_offload_pipe_data_dcn30_v1 - DCN30+ per pipe data.
+ */
+struct dmub_cursor_offload_pipe_data_dcn30_v1 {
+	uint32_t CURSOR0_0_CURSOR_SURFACE_ADDRESS;
+	uint32_t CURSOR0_0_CURSOR_SURFACE_ADDRESS_HIGH;
+	uint32_t CURSOR0_0_CURSOR_SIZE__CURSOR_WIDTH : 16;
+	uint32_t CURSOR0_0_CURSOR_SIZE__CURSOR_HEIGHT : 16;
+	uint32_t CURSOR0_0_CURSOR_POSITION__CURSOR_X_POSITION : 16;
+	uint32_t CURSOR0_0_CURSOR_POSITION__CURSOR_Y_POSITION : 16;
+	uint32_t CURSOR0_0_CURSOR_HOT_SPOT__CURSOR_HOT_SPOT_X : 16;
+	uint32_t CURSOR0_0_CURSOR_HOT_SPOT__CURSOR_HOT_SPOT_Y : 16;
+	uint32_t CURSOR0_0_CURSOR_DST_OFFSET__CURSOR_DST_X_OFFSET : 13;
+	uint32_t CURSOR0_0_CURSOR_CONTROL__CURSOR_ENABLE : 1;
+	uint32_t CURSOR0_0_CURSOR_CONTROL__CURSOR_MODE : 3;
+	uint32_t CURSOR0_0_CURSOR_CONTROL__CURSOR_2X_MAGNIFY : 1;
+	uint32_t CURSOR0_0_CURSOR_CONTROL__CURSOR_PITCH : 2;
+	uint32_t CURSOR0_0_CURSOR_CONTROL__CURSOR_LINES_PER_CHUNK : 5;
+	uint32_t reserved0[4];
+	uint32_t CNVC_CUR0_CURSOR0_CONTROL__CUR0_ENABLE : 1;
+	uint32_t CNVC_CUR0_CURSOR0_CONTROL__CUR0_MODE : 3;
+	uint32_t CNVC_CUR0_CURSOR0_CONTROL__CUR0_EXPANSION_MODE : 1;
+	uint32_t CNVC_CUR0_CURSOR0_CONTROL__CUR0_ROM_EN : 1;
+	uint32_t CNVC_CUR0_CURSOR0_COLOR0__CUR0_COLOR0 : 24;
+	uint32_t CNVC_CUR0_CURSOR0_COLOR1__CUR0_COLOR1 : 24;
+	uint32_t CNVC_CUR0_CURSOR0_FP_SCALE_BIAS__CUR0_FP_BIAS : 16;
+	uint32_t CNVC_CUR0_CURSOR0_FP_SCALE_BIAS__CUR0_FP_SCALE, : 16;
+	uint32_t reserved1[5];
+	uint32_t HUBPREQ0_CURSOR_SETTINGS__CURSOR0_DST_Y_OFFSET : 8;
+	uint32_t HUBPREQ0_CURSOR_SETTINGS__CURSOR0_CHUNK_HDL_ADJUST : 8;
+	uint32_t reserved2[3];
+};
+
+/**
+ * struct dmub_cursor_offload_pipe_data_dcn401_v1 - DCN401 per pipe data.
+ */
+struct dmub_cursor_offload_pipe_data_dcn401_v1 {
+	uint32_t CURSOR0_0_CURSOR_SURFACE_ADDRESS;
+	uint32_t CURSOR0_0_CURSOR_SURFACE_ADDRESS_HIGH;
+	uint32_t CURSOR0_0_CURSOR_SIZE__CURSOR_WIDTH : 16;
+	uint32_t CURSOR0_0_CURSOR_SIZE__CURSOR_HEIGHT : 16;
+	uint32_t CURSOR0_0_CURSOR_POSITION__CURSOR_X_POSITION : 16;
+	uint32_t CURSOR0_0_CURSOR_POSITION__CURSOR_Y_POSITION : 16;
+	uint32_t CURSOR0_0_CURSOR_HOT_SPOT__CURSOR_HOT_SPOT_X : 16;
+	uint32_t CURSOR0_0_CURSOR_HOT_SPOT__CURSOR_HOT_SPOT_Y : 16;
+	uint32_t CURSOR0_0_CURSOR_DST_OFFSET__CURSOR_DST_X_OFFSET : 13;
+	uint32_t CURSOR0_0_CURSOR_CONTROL__CURSOR_ENABLE : 1;
+	uint32_t CURSOR0_0_CURSOR_CONTROL__CURSOR_MODE : 3;
+	uint32_t CURSOR0_0_CURSOR_CONTROL__CURSOR_2X_MAGNIFY : 1;
+	uint32_t CURSOR0_0_CURSOR_CONTROL__CURSOR_PITCH : 2;
+	uint32_t CURSOR0_0_CURSOR_CONTROL__CURSOR_LINES_PER_CHUNK : 5;
+	uint32_t reserved0[4];
+	uint32_t CM_CUR0_CURSOR0_CONTROL__CUR0_ENABLE : 1;
+	uint32_t CM_CUR0_CURSOR0_CONTROL__CUR0_MODE : 3;
+	uint32_t CM_CUR0_CURSOR0_CONTROL__CUR0_EXPANSION_MODE : 1;
+	uint32_t CM_CUR0_CURSOR0_CONTROL__CUR0_ROM_EN : 1;
+	uint32_t CM_CUR0_CURSOR0_COLOR0__CUR0_COLOR0 : 24;
+	uint32_t CM_CUR0_CURSOR0_COLOR1__CUR0_COLOR1 : 24;
+	uint32_t CM_CUR0_CURSOR0_FP_SCALE_BIAS_G_Y__CUR0_FP_BIAS_G_Y : 16;
+	uint32_t CM_CUR0_CURSOR0_FP_SCALE_BIAS_G_Y__CUR0_FP_SCALE_G_Y, : 16;
+	uint32_t CM_CUR0_CURSOR0_FP_SCALE_BIAS_RB_CRCB__CUR0_FP_BIAS_RB_CRCB : 16;
+	uint32_t CM_CUR0_CURSOR0_FP_SCALE_BIAS_RB_CRCB__CUR0_FP_SCALE_RB_CRCB : 16;
+	uint32_t reserved1[4];
+	uint32_t HUBPREQ0_CURSOR_SETTINGS__CURSOR0_DST_Y_OFFSET : 8;
+	uint32_t HUBPREQ0_CURSOR_SETTINGS__CURSOR0_CHUNK_HDL_ADJUST : 8;
+	uint32_t HUBP0_DCHUBP_MALL_CONFIG__USE_MALL_FOR_CURSOR : 1;
+	uint32_t reserved2[3];
+};
+
+/**
+ * struct dmub_cursor_offload_pipe_data_v1 - Per pipe data for cursor offload.
+ */
+struct dmub_cursor_offload_pipe_data_v1 {
+	union {
+		struct dmub_cursor_offload_pipe_data_dcn30_v1 dcn30; /**< DCN30 cursor data. */
+		struct dmub_cursor_offload_pipe_data_dcn401_v1 dcn401; /**< DCN401 cursor data. */
+		uint8_t payload[96]; /**< Guarantees the cursor pipe data size per-pipe. */
+	};
+};
+
+/**
+ * struct dmub_cursor_offload_payload_data_v1 - A payload of stream data.
+ */
+struct dmub_cursor_offload_payload_data_v1 {
+	uint32_t write_idx_start; /**< Write index, updated before pipe_data is written. */
+	uint32_t write_idx_finish; /**< Write index, updated after pipe_data is written. */
+	uint32_t pipe_mask; /**< Mask of pipes to update. */
+	uint32_t reserved; /**< Reserved for future use. */
+	struct dmub_cursor_offload_pipe_data_v1 pipe_data[6]; /**< Per-pipe cursor data. */
+};
+
+/**
+ * struct dmub_cursor_offload_stream_v1 - Per-stream data for cursor offload.
+ */
+struct dmub_cursor_offload_stream_v1 {
+	struct dmub_cursor_offload_payload_data_v1 payloads[4]; /**< A small buffer of cursor payloads. */
+	uint32_t write_idx; /**< The index of the last written payload. */
+};
+
+/**
+ * struct dmub_cursor_offload_v1 - Cursor offload feature state.
+ */
+struct dmub_cursor_offload_v1 {
+	struct dmub_cursor_offload_stream_v1 offload_streams[6]; /**< Per-stream cursor offload data */
+};
 
 //==============================================================================
 //</DMUB_TYPES>=================================================================
@@ -224,6 +903,18 @@ struct dmub_feature_caps {
 #define DMUB_FW_META_OFFSET 0x24
 
 /**
+ * union dmub_fw_meta_feature_bits - Static feature bits for pre-initialization
+ */
+union dmub_fw_meta_feature_bits {
+	struct {
+		uint32_t shared_state_link_detection : 1; /**< 1 supports link detection via shared state */
+		uint32_t cursor_offload_v1_support: 1; /**< 1 supports cursor offload */
+		uint32_t reserved : 30;
+	} bits; /**< status bits */
+	uint32_t all; /**< 32-bit access to status bits */
+};
+
+/**
  * struct dmub_fw_meta_info - metadata associated with fw binary
  *
  * NOTE: This should be considered a stable API. Fields should
@@ -235,6 +926,8 @@ struct dmub_feature_caps {
  * @trace_buffer_size: size of the tracebuffer region
  * @fw_version: the firmware version information
  * @dal_fw: 1 if the firmware is DAL
+ * @shared_state_size: size of the shared state region in bytes
+ * @shared_state_features: number of shared state features
  */
 struct dmub_fw_meta_info {
 	uint32_t magic_value; /**< magic value identifying DMUB firmware meta info */
@@ -243,6 +936,10 @@ struct dmub_fw_meta_info {
 	uint32_t fw_version; /**< the firmware version information */
 	uint8_t dal_fw; /**< 1 if the firmware is DAL */
 	uint8_t reserved[3]; /**< padding bits */
+	uint32_t shared_state_size; /**< size of the shared state region in bytes */
+	uint16_t shared_state_features; /**< number of shared state features */
+	uint16_t reserved2; /**< padding bytes */
+	union dmub_fw_meta_feature_bits feature_bits; /**< static feature bits */
 };
 
 /**
@@ -258,6 +955,7 @@ union dmub_fw_meta {
 //==============================================================================
 //< DMUB Trace Buffer>================================================================
 //==============================================================================
+#if !defined(TENSILICA) && !defined(DMUB_TRACE_ENTRY_DEFINED)
 /**
  * dmub_trace_code_t - firmware trace code, 32-bits
  */
@@ -272,6 +970,7 @@ struct dmcub_trace_buf_entry {
 	uint32_t param0; /**< trace defined parameter 0 */
 	uint32_t param1; /**< trace defined parameter 1 */
 };
+#endif
 
 //==============================================================================
 //< DMUB_STATUS>================================================================
@@ -296,9 +995,10 @@ union dmub_fw_boot_status {
 		uint32_t optimized_init_done : 1; /**< 1 if optimized init done */
 		uint32_t restore_required : 1; /**< 1 if driver should call restore */
 		uint32_t defer_load : 1; /**< 1 if VBIOS data is deferred programmed */
-		uint32_t reserved : 1;
+		uint32_t fams_enabled : 1; /**< 1 if VBIOS data is deferred programmed */
 		uint32_t detection_required: 1; /**<  if detection need to be triggered by driver */
-
+		uint32_t hw_power_init_done: 1; /**< 1 if hw power init is completed */
+		uint32_t ono_regions_enabled: 1; /**< 1 if ONO regions are enabled */
 	} bits; /**< status bits */
 	uint32_t all; /**< 32-bit access to status bits */
 };
@@ -312,7 +1012,10 @@ enum dmub_fw_boot_status_bit {
 	DMUB_FW_BOOT_STATUS_BIT_OPTIMIZED_INIT_DONE = (1 << 2), /**< 1 if init done */
 	DMUB_FW_BOOT_STATUS_BIT_RESTORE_REQUIRED = (1 << 3), /**< 1 if driver should call restore */
 	DMUB_FW_BOOT_STATUS_BIT_DEFERRED_LOADED = (1 << 4), /**< 1 if VBIOS data is deferred programmed */
+	DMUB_FW_BOOT_STATUS_BIT_FAMS_ENABLED = (1 << 5), /**< 1 if FAMS is enabled*/
 	DMUB_FW_BOOT_STATUS_BIT_DETECTION_REQUIRED = (1 << 6), /**< 1 if detection need to be triggered by driver*/
+	DMUB_FW_BOOT_STATUS_BIT_HW_POWER_INIT_DONE = (1 << 7), /**< 1 if hw power init is completed */
+	DMUB_FW_BOOT_STATUS_BIT_ONO_REGIONS_ENABLED = (1 << 8), /**< 1 if ONO regions are enabled */
 };
 
 /* Register bit definition for SCRATCH5 */
@@ -330,6 +1033,69 @@ enum dmub_lvtma_status_bit {
 	DMUB_LVTMA_STATUS_BIT_EDP_ON = (1 << 1),
 };
 
+enum dmub_ips_disable_type {
+	DMUB_IPS_ENABLE = 0,
+	DMUB_IPS_DISABLE_ALL = 1,
+	DMUB_IPS_DISABLE_IPS1 = 2,
+	DMUB_IPS_DISABLE_IPS2 = 3,
+	DMUB_IPS_DISABLE_IPS2_Z10 = 4,
+	DMUB_IPS_DISABLE_DYNAMIC = 5,
+	DMUB_IPS_RCG_IN_ACTIVE_IPS2_IN_OFF = 6,
+	DMUB_IPS_DISABLE_Z8_RETENTION = 7,
+};
+
+enum dmub_ips_rcg_disable_type {
+	DMUB_IPS_RCG_ENABLE = 0,
+	DMUB_IPS0_RCG_DISABLE = 1,
+	DMUB_IPS1_RCG_DISABLE = 2,
+	DMUB_IPS_RCG_DISABLE = 3
+};
+
+enum dmub_ips_in_vpb_disable_type {
+	DMUB_IPS_VPB_RCG_ONLY = 0, // Legacy behaviour
+	DMUB_IPS_VPB_DISABLE_ALL = 1,
+	DMUB_IPS_VPB_ENABLE_IPS1_AND_RCG = 2,
+	DMUB_IPS_VPB_ENABLE_ALL = 3 // Enable IPS1 Z8, IPS1 and RCG
+};
+
+#define DMUB_IPS1_ALLOW_MASK 0x00000001
+#define DMUB_IPS2_ALLOW_MASK 0x00000002
+#define DMUB_IPS1_COMMIT_MASK 0x00000004
+#define DMUB_IPS2_COMMIT_MASK 0x00000008
+
+enum dmub_ips_comand_type {
+	/**
+	 * Start/stop IPS residency measurements for a given IPS mode
+	 */
+	DMUB_CMD__IPS_RESIDENCY_CNTL = 0,
+	/**
+	 * Query IPS residency information for a given IPS mode
+	 */
+	DMUB_CMD__IPS_QUERY_RESIDENCY_INFO = 1,
+};
+
+/**
+ * enum dmub_cursor_offload_comand_type - Cursor offload subcommands.
+ */
+enum dmub_cursor_offload_comand_type {
+	/**
+	 * Initializes the cursor offload feature.
+	 */
+	DMUB_CMD__CURSOR_OFFLOAD_INIT = 0,
+	/**
+	 * Enables cursor offloading for a stream and updates the timing parameters.
+	 */
+	DMUB_CMD__CURSOR_OFFLOAD_STREAM_ENABLE = 1,
+	/**
+	 * Disables cursor offloading for a given stream.
+	 */
+	DMUB_CMD__CURSOR_OFFLOAD_STREAM_DISABLE = 2,
+	/**
+	 * Programs the latest data for a given stream.
+	 */
+	DMUB_CMD__CURSOR_OFFLOAD_STREAM_PROGRAM = 3,
+};
+
 /**
  * union dmub_fw_boot_options - Boot option definitions for SCRATCH14
  */
@@ -345,14 +1111,27 @@ union dmub_fw_boot_options {
 		uint32_t enable_dpia: 1; /**< 1 if DPIA should be enabled */
 		uint32_t invalid_vbios_data: 1; /**< 1 if VBIOS data table is invalid */
 		uint32_t dpia_supported: 1; /**< 1 if DPIA is supported on this platform */
-		uint32_t sel_mux_phy_c_d_phy_f_g: 1; /**< 1 if PHYF/PHYG should be enabled */
+		uint32_t sel_mux_phy_c_d_phy_f_g: 1; /**< 1 if PHYF/PHYG should be enabled on DCN31 */
 		/**< 1 if all root clock gating is enabled and low power memory is enabled*/
 		uint32_t power_optimization: 1;
 		uint32_t diag_env: 1; /* 1 if diagnostic environment */
 		uint32_t gpint_scratch8: 1; /* 1 if GPINT is in scratch8*/
 		uint32_t usb4_cm_version: 1; /**< 1 CM support */
-
-		uint32_t reserved : 17; /**< reserved */
+		uint32_t dpia_hpd_int_enable_supported: 1; /* 1 if dpia hpd int enable supported */
+		uint32_t enable_non_transparent_setconfig: 1; /* 1 if dpia use conventional dp lt flow*/
+		uint32_t disable_clk_ds: 1; /* 1 if disallow dispclk_ds and dppclk_ds*/
+		uint32_t disable_timeout_recovery : 1; /* 1 if timeout recovery should be disabled */
+		uint32_t ips_pg_disable: 1; /* 1 to disable ONO domains power gating*/
+		uint32_t ips_disable: 3; /* options to disable ips support*/
+		uint32_t ips_sequential_ono: 1; /**< 1 to enable sequential ONO IPS sequence */
+		uint32_t disable_sldo_opt: 1; /**< 1 to disable SLDO optimizations */
+		uint32_t lower_hbr3_phy_ssc: 1; /**< 1 to lower hbr3 phy ssc to 0.125 percent */
+		uint32_t override_hbr3_pll_vco: 1; /**< 1 to override the hbr3 pll vco to 0 */
+		uint32_t disable_dpia_bw_allocation: 1; /**< 1 to disable the USB4 DPIA BW allocation */
+		uint32_t bootcrc_en_at_preos: 1; /**< 1 to run the boot time crc during warm/cold boot*/
+		uint32_t bootcrc_en_at_S0i3: 1; /**< 1 to run the boot time crc during S0i3 boot*/
+		uint32_t bootcrc_boot_mode: 1; /**< 1 for S0i3 resume and 0 for Warm/cold boot*/
+		uint32_t reserved : 1; /**< reserved */
 	} bits; /**< boot bits */
 	uint32_t all; /**< 32-bit access to bits */
 };
@@ -362,6 +1141,161 @@ enum dmub_fw_boot_options_bit {
 	DMUB_FW_BOOT_OPTION_BIT_FPGA_ENV = (1 << 1), /**< 1 if FPGA */
 	DMUB_FW_BOOT_OPTION_BIT_OPTIMIZED_INIT_DONE = (1 << 2), /**< 1 if optimized init done */
 };
+
+//==============================================================================
+//< DMUB_SHARED_STATE>==========================================================
+//==============================================================================
+
+/**
+ * Shared firmware state between driver and firmware for lockless communication
+ * in situations where the inbox/outbox may be unavailable.
+ *
+ * Each structure *must* be at most 256-bytes in size. The layout allocation is
+ * described below:
+ *
+ * [Header (256 Bytes)][Feature 1 (256 Bytes)][Feature 2 (256 Bytes)]...
+ */
+
+/**
+ * enum dmub_shared_state_feature_id - List of shared state features.
+ */
+enum dmub_shared_state_feature_id {
+	DMUB_SHARED_SHARE_FEATURE__INVALID = 0,
+	DMUB_SHARED_SHARE_FEATURE__IPS_FW = 1,
+	DMUB_SHARED_SHARE_FEATURE__IPS_DRIVER = 2,
+	DMUB_SHARED_SHARE_FEATURE__DEBUG_SETUP = 3,
+	DMUB_SHARED_STATE_FEATURE__CURSOR_OFFLOAD_V1 = 4,
+	DMUB_SHARED_STATE_FEATURE__LAST, /* Total number of features. */
+};
+
+/**
+ * struct dmub_shared_state_ips_fw - Firmware signals for IPS.
+ */
+union dmub_shared_state_ips_fw_signals {
+	struct {
+		uint32_t ips1_commit : 1;  /**< 1 if in IPS1 or IPS0 RCG */
+		uint32_t ips2_commit : 1; /**< 1 if in IPS2 */
+		uint32_t in_idle : 1; /**< 1 if DMCUB is in idle */
+		uint32_t detection_required : 1; /**< 1 if detection is required */
+		uint32_t ips1z8_commit: 1; /**< 1 if in IPS1 Z8 Retention */
+		uint32_t reserved_bits : 27; /**< Reversed */
+	} bits;
+	uint32_t all;
+};
+
+/**
+ * struct dmub_shared_state_ips_signals - Firmware signals for IPS.
+ */
+union dmub_shared_state_ips_driver_signals {
+	struct {
+		uint32_t allow_pg : 1; /**< 1 if PG is allowed */
+		uint32_t allow_ips1 : 1; /**< 1 is IPS1 is allowed */
+		uint32_t allow_ips2 : 1; /**< 1 is IPS1 is allowed */
+		uint32_t allow_z10 : 1; /**< 1 if Z10 is allowed */
+		uint32_t allow_idle: 1; /**< 1 if driver is allowing idle */
+		uint32_t allow_ips0_rcg : 1; /**< 1 is IPS0 RCG is allowed */
+		uint32_t allow_ips1_rcg : 1; /**< 1 is IPS1 RCG is allowed */
+		uint32_t allow_ips1z8 : 1; /**< 1 is IPS1 Z8 Retention is allowed */
+		uint32_t allow_dynamic_ips1 : 1; /**< 1 if IPS1 is allowed in dynamic use cases such as VPB */
+		uint32_t allow_dynamic_ips1_z8: 1; /**< 1 if IPS1 z8 ret is allowed in dynamic use cases such as VPB */
+		uint32_t reserved_bits : 22; /**< Reversed bits */
+	} bits;
+	uint32_t all;
+};
+
+/**
+ * IPS FW Version
+ */
+#define DMUB_SHARED_STATE__IPS_FW_VERSION 1
+
+struct dmub_shared_state_debug_setup {
+	union {
+		struct {
+			uint32_t exclude_points[62];
+		} profile_mode;
+	};
+};
+
+/**
+ * struct dmub_shared_state_ips_fw - Firmware state for IPS.
+ */
+struct dmub_shared_state_ips_fw {
+	union dmub_shared_state_ips_fw_signals signals; /**< 4 bytes, IPS signal bits */
+	uint32_t rcg_entry_count; /**< Entry counter for RCG */
+	uint32_t rcg_exit_count; /**< Exit counter for RCG */
+	uint32_t ips1_entry_count; /**< Entry counter for IPS1 */
+	uint32_t ips1_exit_count; /**< Exit counter for IPS1 */
+	uint32_t ips2_entry_count; /**< Entry counter for IPS2 */
+	uint32_t ips2_exit_count; /**< Exit counter for IPS2 */
+	uint32_t ips1_z8ret_entry_count; /**< Entry counter for IPS1 Z8 Retention */
+	uint32_t ips1_z8ret_exit_count; /**< Exit counter for IPS1 Z8 Retention */
+	uint32_t reserved[53]; /**< Reversed, to be updated when adding new fields. */
+}; /* 248-bytes, fixed */
+
+/**
+ * IPS Driver Version
+ */
+#define DMUB_SHARED_STATE__IPS_DRIVER_VERSION 1
+
+/**
+ * struct dmub_shared_state_ips_driver - Driver state for IPS.
+ */
+struct dmub_shared_state_ips_driver {
+	union dmub_shared_state_ips_driver_signals signals; /**< 4 bytes, IPS signal bits */
+	uint32_t reserved[61]; /**< Reversed, to be updated when adding new fields. */
+}; /* 248-bytes, fixed */
+
+/**
+ * struct dmub_shared_state_cursor_offload_v1 - Header metadata for cursor offload.
+ */
+struct dmub_shared_state_cursor_offload_stream_v1 {
+	uint32_t last_write_idx; /**< Last write index */
+	uint8_t reserved[28]; /**< Reserved bytes. */
+}; /* 32-bytes, fixed */
+
+/**
+ * struct dmub_shared_state_cursor_offload_v1 - Header metadata for cursor offload.
+ */
+struct dmub_shared_state_cursor_offload_v1 {
+	struct dmub_shared_state_cursor_offload_stream_v1 offload_streams[6]; /**< stream state, 32-bytes each */
+	uint8_t reserved[56]; /**< reserved for future use */
+}; /* 248-bytes, fixed */
+
+/**
+ * enum dmub_shared_state_feature_common - Generic payload.
+ */
+struct dmub_shared_state_feature_common {
+	uint32_t padding[62];
+}; /* 248-bytes, fixed */
+
+/**
+ * enum dmub_shared_state_feature_header - Feature description.
+ */
+struct dmub_shared_state_feature_header {
+	uint16_t id; /**< Feature ID */
+	uint16_t version; /**< Feature version */
+	uint32_t reserved; /**< Reserved bytes. */
+}; /* 8 bytes, fixed */
+
+/**
+ * struct dmub_shared_state_feature_block - Feature block.
+ */
+struct dmub_shared_state_feature_block {
+	struct dmub_shared_state_feature_header header; /**< Shared state header. */
+	union dmub_shared_feature_state_union {
+		struct dmub_shared_state_feature_common common; /**< Generic data */
+		struct dmub_shared_state_ips_fw ips_fw; /**< IPS firmware state */
+		struct dmub_shared_state_ips_driver ips_driver; /**< IPS driver state */
+		struct dmub_shared_state_debug_setup debug_setup; /**< Debug setup */
+		struct dmub_shared_state_cursor_offload_v1 cursor_offload_v1; /**< Cursor offload */
+	} data; /**< Shared state data. */
+}; /* 256-bytes, fixed */
+
+/**
+ * Shared state size in bytes.
+ */
+#define DMUB_FW_HEADER_SHARED_STATE_SIZE \
+	((DMUB_SHARED_STATE_FEATURE__LAST + 1) * sizeof(struct dmub_shared_state_feature_block))
 
 //==============================================================================
 //</DMUB_STATUS>================================================================
@@ -400,6 +1334,14 @@ enum dmub_cmd_vbios_type {
 	 * Query DP alt status on a transmitter.
 	 */
 	DMUB_CMD__VBIOS_TRANSMITTER_QUERY_DP_ALT  = 26,
+	/**
+	 * Control PHY FSM
+	 */
+	DMUB_CMD__VBIOS_TRANSMITTER_SET_PHY_FSM  = 29,
+	/**
+	 * Controls domain power gating
+	 */
+	DMUB_CMD__VBIOS_DOMAIN_CONTROL = 28,
 };
 
 //==============================================================================
@@ -486,6 +1428,221 @@ enum dmub_gpint_command {
 	 * DESC: Notifies DMCUB detection is done so detection required can be cleared.
 	 */
 	DMUB_GPINT__NOTIFY_DETECTION_DONE = 12,
+
+	/**
+	 * DESC: Get REPLAY state from FW.
+	 * RETURN: REPLAY state enum. This enum may need to be converted to the legacy REPLAY state value.
+	 */
+	DMUB_GPINT__GET_REPLAY_STATE = 13,
+
+	/**
+	 * DESC: Start REPLAY residency counter. Stop REPLAY resdiency counter and get value.
+	 * ARGS: We can measure residency from various points. The argument will specify the residency mode.
+	 *       By default, it is measured from after we powerdown the PHY, to just before we powerup the PHY.
+	 * RETURN: REPLAY residency in milli-percent.
+	 */
+	DMUB_GPINT__REPLAY_RESIDENCY = 14,
+
+	/**
+	 * DESC: Copy bounding box to the host.
+	 * ARGS: Version of bounding box to copy
+	 * RETURN: Result of copying bounding box
+	 */
+	DMUB_GPINT__BB_COPY = 96,
+
+	/**
+	 * DESC: Updates the host addresses bit48~bit63 for bounding box.
+	 * ARGS: The word3 for the 64 bit address
+	 */
+	DMUB_GPINT__SET_BB_ADDR_WORD3 = 97,
+
+	/**
+	 * DESC: Updates the host addresses bit32~bit47 for bounding box.
+	 * ARGS: The word2 for the 64 bit address
+	 */
+	DMUB_GPINT__SET_BB_ADDR_WORD2 = 98,
+
+	/**
+	 * DESC: Updates the host addresses bit16~bit31 for bounding box.
+	 * ARGS: The word1 for the 64 bit address
+	 */
+	DMUB_GPINT__SET_BB_ADDR_WORD1 = 99,
+
+	/**
+	 * DESC: Updates the host addresses bit0~bit15 for bounding box.
+	 * ARGS: The word0 for the 64 bit address
+	 */
+	DMUB_GPINT__SET_BB_ADDR_WORD0 = 100,
+
+	/**
+	 * DESC: Updates the trace buffer lower 32-bit mask.
+	 * ARGS: The new mask
+	 * RETURN: Lower 32-bit mask.
+	 */
+	DMUB_GPINT__UPDATE_TRACE_BUFFER_MASK = 101,
+
+	/**
+	 * DESC: Updates the trace buffer mask bit0~bit15.
+	 * ARGS: The new mask
+	 * RETURN: Lower 32-bit mask.
+	 */
+	DMUB_GPINT__SET_TRACE_BUFFER_MASK_WORD0 = 102,
+
+	/**
+	 * DESC: Updates the trace buffer mask bit16~bit31.
+	 * ARGS: The new mask
+	 * RETURN: Lower 32-bit mask.
+	 */
+	DMUB_GPINT__SET_TRACE_BUFFER_MASK_WORD1 = 103,
+
+	/**
+	 * DESC: Updates the trace buffer mask bit32~bit47.
+	 * ARGS: The new mask
+	 * RETURN: Lower 32-bit mask.
+	 */
+	DMUB_GPINT__SET_TRACE_BUFFER_MASK_WORD2 = 114,
+
+	/**
+	 * DESC: Updates the trace buffer mask bit48~bit63.
+	 * ARGS: The new mask
+	 * RETURN: Lower 32-bit mask.
+	 */
+	DMUB_GPINT__SET_TRACE_BUFFER_MASK_WORD3 = 115,
+
+	/**
+	 * DESC: Read the trace buffer mask bi0~bit15.
+	 */
+	DMUB_GPINT__GET_TRACE_BUFFER_MASK_WORD0 = 116,
+
+	/**
+	 * DESC: Read the trace buffer mask bit16~bit31.
+	 */
+	DMUB_GPINT__GET_TRACE_BUFFER_MASK_WORD1 = 117,
+
+	/**
+	 * DESC: Read the trace buffer mask bi32~bit47.
+	 */
+	DMUB_GPINT__GET_TRACE_BUFFER_MASK_WORD2 = 118,
+
+	/**
+	 * DESC: Updates the trace buffer mask bit32~bit63.
+	 */
+	DMUB_GPINT__GET_TRACE_BUFFER_MASK_WORD3 = 119,
+
+	/**
+	 * DESC: Set IPS residency measurement
+	 * ARGS: 0 - Disable ips measurement
+	 *       1 - Enable ips measurement
+	 */
+	DMUB_GPINT__IPS_RESIDENCY = 121,
+
+	/**
+	 * DESC: Enable measurements for various task duration
+	 * ARGS: 0 - Disable measurement
+	 *       1 - Enable measurement
+	 */
+	DMUB_GPINT__TRACE_DMUB_WAKE_ACTIVITY = 123,
+
+	/**
+	 * DESC: Gets IPS residency in microseconds
+	 * ARGS: 0 - Return IPS1 residency
+	 *       1 - Return IPS2 residency
+	 *       2 - Return IPS1_RCG residency
+	 *       3 - Return IPS1_ONO2_ON residency
+	 * RETURN: Total residency in microseconds - lower 32 bits
+	 */
+	DMUB_GPINT__GET_IPS_RESIDENCY_DURATION_US_LO = 124,
+
+	/**
+	 * DESC: Gets IPS1 histogram counts
+	 * ARGS: Bucket index
+	 * RETURN: Total count for the bucket
+	 */
+	DMUB_GPINT__GET_IPS1_HISTOGRAM_COUNTER = 125,
+
+	/**
+	 * DESC: Gets IPS2 histogram counts
+	 * ARGS: Bucket index
+	 * RETURN: Total count for the bucket
+	 */
+	DMUB_GPINT__GET_IPS2_HISTOGRAM_COUNTER = 126,
+
+	/**
+	 * DESC: Gets IPS residency
+	 * ARGS: 0 - Return IPS1 residency
+	 *       1 - Return IPS2 residency
+	 *       2 - Return IPS1_RCG residency
+	 *       3 - Return IPS1_ONO2_ON residency
+	 * RETURN: Total residency in milli-percent.
+	 */
+	DMUB_GPINT__GET_IPS_RESIDENCY_PERCENT = 127,
+
+	/**
+	 * DESC: Gets IPS1_RCG histogram counts
+	 * ARGS: Bucket index
+	 * RETURN: Total count for the bucket
+	 */
+	DMUB_GPINT__GET_IPS1_RCG_HISTOGRAM_COUNTER = 128,
+
+	/**
+	 * DESC: Gets IPS1_ONO2_ON histogram counts
+	 * ARGS: Bucket index
+	 * RETURN: Total count for the bucket
+	 */
+	DMUB_GPINT__GET_IPS1_ONO2_ON_HISTOGRAM_COUNTER = 129,
+
+	/**
+	 * DESC: Gets IPS entry counter during residency measurement
+	 * ARGS: 0 - Return IPS1 entry counts
+	 *       1 - Return IPS2 entry counts
+	 *       2 - Return IPS1_RCG entry counts
+	 *       3 - Return IPS2_ONO2_ON entry counts
+	 * RETURN: Entry counter for selected IPS mode
+	 */
+	DMUB_GPINT__GET_IPS_RESIDENCY_ENTRY_COUNTER = 130,
+
+	/**
+	 * DESC: Gets IPS inactive residency in microseconds
+	 * ARGS: 0 - Return IPS1_MAX residency
+	 *       1 - Return IPS2 residency
+	 *       2 - Return IPS1_RCG residency
+	 *       3 - Return IPS1_ONO2_ON residency
+	 * RETURN: Total inactive residency in microseconds - lower 32 bits
+	 */
+	DMUB_GPINT__GET_IPS_INACTIVE_RESIDENCY_DURATION_US_LO = 131,
+
+	/**
+	 * DESC: Gets IPS inactive residency in microseconds
+	 * ARGS: 0 - Return IPS1_MAX residency
+	 *       1 - Return IPS2 residency
+	 *       2 - Return IPS1_RCG residency
+	 *       3 - Return IPS1_ONO2_ON residency
+	 * RETURN: Total inactive residency in microseconds - upper 32 bits
+	 */
+	DMUB_GPINT__GET_IPS_INACTIVE_RESIDENCY_DURATION_US_HI = 132,
+
+	/**
+	 * DESC: Gets IPS residency in microseconds
+	 * ARGS: 0 - Return IPS1 residency
+	 *       1 - Return IPS2 residency
+	 *       2 - Return IPS1_RCG residency
+	 *       3 - Return IPS1_ONO2_ON residency
+	 * RETURN: Total residency in microseconds - upper 32 bits
+	 */
+	DMUB_GPINT__GET_IPS_RESIDENCY_DURATION_US_HI = 133,
+	/**
+	 * DESC: Setup debug configs.
+	 */
+	DMUB_GPINT__SETUP_DEBUG_MODE = 136,
+	/**
+	 * DESC: Initiates IPS wake sequence.
+	 */
+	DMUB_GPINT__IPS_DEBUG_WAKE = 137,
+	/**
+	 * DESC: Do panel power off sequence
+	 * ARGS: 1 - Power off
+	 */
+	DMUB_GPINT__PANEL_POWER_OFF_SEQ = 138,
 };
 
 /**
@@ -520,9 +1677,9 @@ union dmub_inbox0_cmd_lock_hw {
 		uint32_t lock_dig: 1;
 		uint32_t triple_buffer_lock: 1;
 
-		uint32_t lock: 1;				/**< Lock */
+		uint32_t lock: 1;			/**< Lock */
 		uint32_t should_release: 1;		/**< Release */
-		uint32_t reserved: 7; 			/**< Reserved for extending more clients, HW, etc. */
+		uint32_t reserved: 7;			/**< Reserved for extending more clients, HW, etc. */
 	} bits;
 	uint32_t all;
 };
@@ -565,6 +1722,16 @@ enum dmub_inbox0_command {
 #define DMUB_RB_SIZE (DMUB_RB_CMD_SIZE * DMUB_RB_MAX_ENTRY)
 
 /**
+ * Maximum number of items in the DMUB REG INBOX0 internal ringbuffer.
+ */
+#define DMUB_REG_INBOX0_RB_MAX_ENTRY 16
+
+/**
+ * Ringbuffer size in bytes.
+ */
+#define DMUB_REG_INBOX0_RB_SIZE (DMUB_RB_CMD_SIZE * DMUB_REG_INBOX0_RB_MAX_ENTRY)
+
+/**
  * REG_SET mask for reg offload.
  */
 #define REG_SET_MASK 0xFFFF
@@ -605,6 +1772,10 @@ enum dmub_cmd_type {
 	 */
 	DMUB_CMD__QUERY_FEATURE_CAPS = 6,
 	/**
+	 * Command type used to get visual confirm color.
+	 */
+	DMUB_CMD__GET_VISUAL_CONFIRM_COLOR = 8,
+	/**
 	 * Command type used for all PSR commands.
 	 */
 	DMUB_CMD__PSR = 64,
@@ -616,6 +1787,14 @@ enum dmub_cmd_type {
 	 * Command type used for all ABM commands.
 	 */
 	DMUB_CMD__ABM = 66,
+	/**
+	 * Command type used to update dirty rects in FW.
+	 */
+	DMUB_CMD__UPDATE_DIRTY_RECT = 67,
+	/**
+	 * Command type used to update cursor info in FW.
+	 */
+	DMUB_CMD__UPDATE_CURSOR_INFO = 68,
 	/**
 	 * Command type used for HW locking in FW.
 	 */
@@ -643,6 +1822,13 @@ enum dmub_cmd_type {
 	DMUB_CMD__PANEL_CNTL = 74,
 
 	/**
+	 * Command type used for all CAB commands.
+	 */
+	DMUB_CMD__CAB_FOR_SS = 75,
+
+	DMUB_CMD__FW_ASSISTED_MCLK_SWITCH = 76,
+
+	/**
 	 * Command type used for interfacing with DPIA.
 	 */
 	DMUB_CMD__DPIA = 77,
@@ -660,6 +1846,60 @@ enum dmub_cmd_type {
 	DMUB_CMD__QUERY_HPD_STATE = 82,
 	/**
 	 * Command type used for all VBIOS interface commands.
+	 */
+	/**
+	 * Command type used for all REPLAY commands.
+	 */
+	DMUB_CMD__REPLAY = 83,
+
+	/**
+	 * Command type used for all SECURE_DISPLAY commands.
+	 */
+	DMUB_CMD__SECURE_DISPLAY = 85,
+
+	/**
+	 * Command type used to set DPIA HPD interrupt state
+	 */
+	DMUB_CMD__DPIA_HPD_INT_ENABLE = 86,
+
+	/**
+	 * Command type used for all PSP commands.
+	 */
+	DMUB_CMD__PSP = 88,
+
+	/**
+	 * Command type used for all Fused IO commands.
+	 */
+	DMUB_CMD__FUSED_IO = 89,
+
+	/**
+	 * Command type used for all LSDMA commands.
+	 */
+	DMUB_CMD__LSDMA = 90,
+
+	/**
+	 * Command type use for all IPS commands.
+	 */
+	DMUB_CMD__IPS = 91,
+
+	/**
+	 * Command type use for Cursor offload.
+	 */
+	DMUB_CMD__CURSOR_OFFLOAD = 92,
+
+	/**
+	 * Command type used for all SMART_POWER_OLED commands.
+	 */
+	DMUB_CMD__SMART_POWER_OLED = 93,
+
+	/**
+	 * Command type use for all Panel Replay commands.
+	 */
+	DMUB_CMD__PR = 94,
+
+
+	/**
+	 * Command type use for VBIOS shared commands.
 	 */
 	DMUB_CMD__VBIOS = 128,
 };
@@ -684,13 +1924,32 @@ enum dmub_out_cmd_type {
 	 * Command type used for SET_CONFIG Reply notification
 	 */
 	DMUB_OUT_CMD__SET_CONFIG_REPLY = 3,
+	/**
+	 * Command type used for USB4 DPIA notification
+	 */
+	DMUB_OUT_CMD__DPIA_NOTIFICATION = 5,
+	/**
+	 * Command type used for HPD redetect notification
+	 */
+	DMUB_OUT_CMD__HPD_SENSE_NOTIFY = 6,
+	/**
+	 * Command type used for Fused IO notification
+	 */
+	DMUB_OUT_CMD__FUSED_IO = 7,
 };
 
 /* DMUB_CMD__DPIA command sub-types. */
 enum dmub_cmd_dpia_type {
 	DMUB_CMD__DPIA_DIG1_DPIA_CONTROL = 0,
-	DMUB_CMD__DPIA_SET_CONFIG_ACCESS = 1,
+	DMUB_CMD__DPIA_SET_CONFIG_ACCESS = 1, // will be replaced by DPIA_SET_CONFIG_REQUEST
 	DMUB_CMD__DPIA_MST_ALLOC_SLOTS = 2,
+	DMUB_CMD__DPIA_SET_TPS_NOTIFICATION = 3,
+	DMUB_CMD__DPIA_SET_CONFIG_REQUEST = 4,
+};
+
+/* DMUB_OUT_CMD__DPIA_NOTIFICATION command types. */
+enum dmub_cmd_dpia_notification_type {
+	DPIA_NOTIFY__BW_ALLOCATION = 0,
 };
 
 #pragma pack(push, 1)
@@ -703,7 +1962,8 @@ struct dmub_cmd_header {
 	unsigned int sub_type : 8; /**< command sub type */
 	unsigned int ret_status : 1; /**< 1 if returned data, 0 otherwise */
 	unsigned int multi_cmd_pending : 1; /**< 1 if multiple commands chained together */
-	unsigned int reserved0 : 6; /**< reserved bits */
+	unsigned int is_reg_based : 1; /**< 1 if register based mailbox cmd, 0 if FB based cmd */
+	unsigned int reserved0 : 5; /**< reserved bits */
 	unsigned int payload_bytes : 6;  /* payload excluding header - up to 60 bytes */
 	unsigned int reserved1 : 2; /**< reserved bits */
 };
@@ -841,11 +2101,11 @@ struct dmub_cmd_PLAT_54186_wa {
 	uint32_t DCSURF_PRIMARY_SURFACE_ADDRESS_HIGH_C; /**< reg value */
 	uint32_t DCSURF_PRIMARY_SURFACE_ADDRESS_C; /**< reg value */
 	struct {
-		uint8_t hubp_inst : 4; /**< HUBP instance */
-		uint8_t tmz_surface : 1; /**< TMZ enable or disable */
-		uint8_t immediate :1; /**< Immediate flip */
-		uint8_t vmid : 4; /**< VMID */
-		uint8_t grph_stereo : 1; /**< 1 if stereo */
+		uint32_t hubp_inst : 4; /**< HUBP instance */
+		uint32_t tmz_surface : 1; /**< TMZ enable or disable */
+		uint32_t immediate :1; /**< Immediate flip */
+		uint32_t vmid : 4; /**< VMID */
+		uint32_t grph_stereo : 1; /**< 1 if stereo */
 		uint32_t reserved : 21; /**< Reserved */
 	} flip_params; /**< Pageflip parameters */
 	uint32_t reserved[9]; /**< Reserved bits */
@@ -857,6 +2117,28 @@ struct dmub_cmd_PLAT_54186_wa {
 struct dmub_rb_cmd_PLAT_54186_wa {
 	struct dmub_cmd_header header; /**< Command header */
 	struct dmub_cmd_PLAT_54186_wa flip; /**< Flip data */
+};
+
+/**
+ * enum dmub_cmd_mall_type - MALL commands
+ */
+enum dmub_cmd_mall_type {
+	/**
+	 * Allows display refresh from MALL.
+	 */
+	DMUB_CMD__MALL_ACTION_ALLOW = 0,
+	/**
+	 * Disallows display refresh from MALL.
+	 */
+	DMUB_CMD__MALL_ACTION_DISALLOW = 1,
+	/**
+	 * Cursor copy for MALL.
+	 */
+	DMUB_CMD__MALL_ACTION_COPY_CURSOR = 2,
+	/**
+	 * Controls DF requests.
+	 */
+	DMUB_CMD__MALL_ACTION_NO_DF_REQ = 3,
 };
 
 /**
@@ -879,6 +2161,582 @@ struct dmub_rb_cmd_mall {
 };
 
 /**
+ * enum dmub_cmd_cab_type - CAB command data.
+ */
+enum dmub_cmd_cab_type {
+	/**
+	 * No idle optimizations (i.e. no CAB)
+	 */
+	DMUB_CMD__CAB_NO_IDLE_OPTIMIZATION = 0,
+	/**
+	 * No DCN requests for memory
+	 */
+	DMUB_CMD__CAB_NO_DCN_REQ = 1,
+	/**
+	 * Fit surfaces in CAB (i.e. CAB enable)
+	 */
+	DMUB_CMD__CAB_DCN_SS_FIT_IN_CAB = 2,
+	/**
+	 * Do not fit surfaces in CAB (i.e. no CAB)
+	 */
+	DMUB_CMD__CAB_DCN_SS_NOT_FIT_IN_CAB = 3,
+};
+
+/**
+ * struct dmub_rb_cmd_cab - CAB command data.
+ */
+struct dmub_rb_cmd_cab_for_ss {
+	struct dmub_cmd_header header;
+	uint8_t cab_alloc_ways; /* total number of ways */
+	uint8_t debug_bits;     /* debug bits */
+};
+
+/**
+ * Enum for indicating which MCLK switch mode per pipe
+ */
+enum mclk_switch_mode {
+	NONE = 0,
+	FPO = 1,
+	SUBVP = 2,
+	VBLANK = 3,
+};
+
+/* Per pipe struct which stores the MCLK switch mode
+ * data to be sent to DMUB.
+ * Named "v2" for now -- once FPO and SUBVP are fully merged
+ * the type name can be updated
+ */
+struct dmub_cmd_fw_assisted_mclk_switch_pipe_data_v2 {
+	union {
+		struct {
+			uint32_t pix_clk_100hz;
+			uint16_t main_vblank_start;
+			uint16_t main_vblank_end;
+			uint16_t mall_region_lines;
+			uint16_t prefetch_lines;
+			uint16_t prefetch_to_mall_start_lines;
+			uint16_t processing_delay_lines;
+			uint16_t htotal; // required to calculate line time for multi-display cases
+			uint16_t vtotal;
+			uint8_t main_pipe_index;
+			uint8_t phantom_pipe_index;
+			/* Since the microschedule is calculated in terms of OTG lines,
+			 * include any scaling factors to make sure when we get accurate
+			 * conversion when programming MALL_START_LINE (which is in terms
+			 * of HUBP lines). If 4K is being downscaled to 1080p, scale factor
+			 * is 1/2 (numerator = 1, denominator = 2).
+			 */
+			uint8_t scale_factor_numerator;
+			uint8_t scale_factor_denominator;
+			uint8_t is_drr;
+			uint8_t main_split_pipe_index;
+			uint8_t phantom_split_pipe_index;
+		} subvp_data;
+
+		struct {
+			uint32_t pix_clk_100hz;
+			uint16_t vblank_start;
+			uint16_t vblank_end;
+			uint16_t vstartup_start;
+			uint16_t vtotal;
+			uint16_t htotal;
+			uint8_t vblank_pipe_index;
+			uint8_t padding[1];
+			struct {
+				uint8_t drr_in_use;
+				uint8_t drr_window_size_ms;	// Indicates largest VMIN/VMAX adjustment per frame
+				uint16_t min_vtotal_supported;	// Min VTOTAL that supports switching in VBLANK
+				uint16_t max_vtotal_supported;	// Max VTOTAL that can support SubVP static scheduling
+				uint8_t use_ramping;		// Use ramping or not
+				uint8_t drr_vblank_start_margin;
+			} drr_info;				// DRR considered as part of SubVP + VBLANK case
+		} vblank_data;
+	} pipe_config;
+
+	/* - subvp_data in the union (pipe_config) takes up 27 bytes.
+	 * - Make the "mode" field a uint8_t instead of enum so we only use 1 byte (only
+	 *   for the DMCUB command, cast to enum once we populate the DMCUB subvp state).
+	 */
+	uint8_t mode; // enum mclk_switch_mode
+};
+
+/**
+ * Config data for Sub-VP and FPO
+ * Named "v2" for now -- once FPO and SUBVP are fully merged
+ * the type name can be updated
+ */
+struct dmub_cmd_fw_assisted_mclk_switch_config_v2 {
+	uint16_t watermark_a_cache;
+	uint8_t vertical_int_margin_us;
+	uint8_t pstate_allow_width_us;
+	struct dmub_cmd_fw_assisted_mclk_switch_pipe_data_v2 pipe_data[DMUB_MAX_SUBVP_STREAMS];
+};
+
+/**
+ * DMUB rb command definition for Sub-VP and FPO
+ * Named "v2" for now -- once FPO and SUBVP are fully merged
+ * the type name can be updated
+ */
+struct dmub_rb_cmd_fw_assisted_mclk_switch_v2 {
+	struct dmub_cmd_header header;
+	struct dmub_cmd_fw_assisted_mclk_switch_config_v2 config_data;
+};
+
+struct dmub_flip_addr_info {
+	uint32_t surf_addr_lo;
+	uint32_t surf_addr_c_lo;
+	uint32_t meta_addr_lo;
+	uint32_t meta_addr_c_lo;
+	uint16_t surf_addr_hi;
+	uint16_t surf_addr_c_hi;
+	uint16_t meta_addr_hi;
+	uint16_t meta_addr_c_hi;
+};
+
+struct dmub_fams2_flip_info {
+	union {
+		struct {
+			uint8_t is_immediate: 1;
+		} bits;
+		uint8_t all;
+	} config;
+	uint8_t otg_inst;
+	uint8_t pipe_mask;
+	uint8_t pad;
+	struct dmub_flip_addr_info addr_info;
+};
+
+struct dmub_rb_cmd_fams2_flip {
+	struct dmub_cmd_header header;
+	struct dmub_fams2_flip_info flip_info;
+};
+
+struct dmub_cmd_lsdma_data {
+	union {
+		struct lsdma_init_data {
+			union dmub_addr gpu_addr_base;
+			uint32_t ring_size;
+		} init_data;
+		struct lsdma_tiled_copy_data {
+			uint32_t src_addr_lo;
+			uint32_t src_addr_hi;
+
+			uint32_t dst_addr_lo;
+			uint32_t dst_addr_hi;
+
+			uint32_t src_x            : 16;
+			uint32_t src_y            : 16;
+
+			uint32_t dst_x            : 16;
+			uint32_t dst_y            : 16;
+
+			uint32_t src_width        : 16;
+			uint32_t src_height       : 16;
+
+			uint32_t dst_width        : 16;
+			uint32_t dst_height       : 16;
+
+			uint32_t rect_x           : 16;
+			uint32_t rect_y           : 16;
+
+			uint32_t src_swizzle_mode : 5;
+			uint32_t src_mip_max      : 5;
+			uint32_t src_mip_id       : 5;
+			uint32_t dst_mip_max      : 5;
+			uint32_t dst_swizzle_mode : 5;
+			uint32_t dst_mip_id       : 5;
+			uint32_t tmz              : 1;
+			uint32_t dcc              : 1;
+
+			uint32_t data_format      : 6;
+			uint32_t padding1         : 4;
+			uint32_t dst_element_size : 3;
+			uint32_t num_type         : 3;
+			uint32_t src_element_size : 3;
+			uint32_t write_compress   : 2;
+			uint32_t cache_policy_dst : 2;
+			uint32_t cache_policy_src : 2;
+			uint32_t read_compress    : 2;
+			uint32_t src_dim          : 2;
+			uint32_t dst_dim          : 2;
+			uint32_t max_uncom        : 1;
+
+			uint32_t max_com          : 2;
+			uint32_t padding          : 30;
+		} tiled_copy_data;
+		struct lsdma_linear_copy_data {
+			uint32_t src_lo;
+			uint32_t src_hi;
+
+			uint32_t dst_lo;
+			uint32_t dst_hi;
+
+			uint32_t count            : 30;
+			uint32_t cache_policy_dst : 2;
+
+			uint32_t tmz              : 1;
+			uint32_t cache_policy_src : 2;
+			uint32_t padding          : 29;
+		} linear_copy_data;
+		struct lsdma_linear_sub_window_copy_data {
+			uint32_t src_lo;
+			uint32_t src_hi;
+
+			uint32_t dst_lo;
+			uint32_t dst_hi;
+
+			uint32_t src_x        : 16;
+			uint32_t src_y        : 16;
+
+			uint32_t dst_x        : 16;
+			uint32_t dst_y        : 16;
+
+			uint32_t rect_x       : 16;
+			uint32_t rect_y       : 16;
+
+			uint32_t src_pitch    : 16;
+			uint32_t dst_pitch    : 16;
+
+			uint32_t src_slice_pitch;
+			uint32_t dst_slice_pitch;
+
+			uint32_t tmz              : 1;
+			uint32_t element_size     : 3;
+			uint32_t src_cache_policy : 3;
+			uint32_t dst_cache_policy : 3;
+			uint32_t reserved0        : 22;
+		} linear_sub_window_copy_data;
+		struct lsdma_reg_write_data {
+			uint32_t reg_addr;
+			uint32_t reg_data;
+		} reg_write_data;
+		struct lsdma_pio_copy_data {
+			uint32_t src_lo;
+			uint32_t src_hi;
+
+			uint32_t dst_lo;
+			uint32_t dst_hi;
+
+			union {
+				struct {
+					uint32_t byte_count      : 26;
+					uint32_t src_loc         : 1;
+					uint32_t dst_loc         : 1;
+					uint32_t src_addr_inc    : 1;
+					uint32_t dst_addr_inc    : 1;
+					uint32_t overlap_disable : 1;
+					uint32_t constant_fill   : 1;
+				} fields;
+				uint32_t raw;
+			} packet;
+		} pio_copy_data;
+		struct lsdma_pio_constfill_data {
+			uint32_t dst_lo;
+			uint32_t dst_hi;
+
+			union {
+				struct {
+					uint32_t byte_count      : 26;
+					uint32_t src_loc         : 1;
+					uint32_t dst_loc         : 1;
+					uint32_t src_addr_inc    : 1;
+					uint32_t dst_addr_inc    : 1;
+					uint32_t overlap_disable : 1;
+					uint32_t constant_fill   : 1;
+				} fields;
+				uint32_t raw;
+			} packet;
+
+			uint32_t data;
+		} pio_constfill_data;
+
+		uint32_t all[14];
+	} u;
+};
+
+struct dmub_rb_cmd_lsdma {
+	struct dmub_cmd_header header;
+	struct dmub_cmd_lsdma_data lsdma_data;
+};
+
+struct dmub_optc_state_v2 {
+	uint32_t v_total_min;
+	uint32_t v_total_max;
+	uint32_t v_total_mid;
+	uint32_t v_total_mid_frame_num;
+	uint8_t program_manual_trigger;
+	uint8_t tg_inst;
+	uint8_t pad[2];
+};
+
+struct dmub_optc_position {
+	uint32_t vpos;
+	uint32_t hpos;
+	uint32_t frame;
+};
+
+struct dmub_rb_cmd_fams2_drr_update {
+	struct dmub_cmd_header header;
+	struct dmub_optc_state_v2 dmub_optc_state_req;
+};
+
+/* HW and FW global configuration data for FAMS2 */
+/* FAMS2 types and structs */
+enum fams2_stream_type {
+	FAMS2_STREAM_TYPE_NONE = 0,
+	FAMS2_STREAM_TYPE_VBLANK = 1,
+	FAMS2_STREAM_TYPE_VACTIVE = 2,
+	FAMS2_STREAM_TYPE_DRR = 3,
+	FAMS2_STREAM_TYPE_SUBVP = 4,
+};
+
+struct dmub_rect16 {
+	/**
+	 * Dirty rect x offset.
+	 */
+	uint16_t x;
+
+	/**
+	 * Dirty rect y offset.
+	 */
+	uint16_t y;
+
+	/**
+	 * Dirty rect width.
+	 */
+	uint16_t width;
+
+	/**
+	 * Dirty rect height.
+	 */
+	uint16_t height;
+};
+
+/* static stream state */
+struct dmub_fams2_legacy_stream_static_state {
+	uint8_t vactive_det_fill_delay_otg_vlines;
+	uint8_t programming_delay_otg_vlines;
+}; //v0
+
+struct dmub_fams2_subvp_stream_static_state {
+	uint16_t vratio_numerator;
+	uint16_t vratio_denominator;
+	uint16_t phantom_vtotal;
+	uint16_t phantom_vactive;
+	union {
+		struct {
+			uint8_t is_multi_planar : 1;
+			uint8_t is_yuv420 : 1;
+		} bits;
+		uint8_t all;
+	} config;
+	uint8_t programming_delay_otg_vlines;
+	uint8_t prefetch_to_mall_otg_vlines;
+	uint8_t phantom_otg_inst;
+	uint8_t phantom_pipe_mask;
+	uint8_t phantom_plane_pipe_masks[DMUB_MAX_PHANTOM_PLANES]; // phantom pipe mask per plane (for flip passthrough)
+}; //v0
+
+struct dmub_fams2_drr_stream_static_state {
+	uint16_t nom_stretched_vtotal;
+	uint8_t programming_delay_otg_vlines;
+	uint8_t only_stretch_if_required;
+	uint8_t pad[2];
+}; //v0
+
+struct dmub_fams2_cmd_legacy_stream_static_state {
+	uint16_t vactive_det_fill_delay_otg_vlines;
+	uint16_t programming_delay_otg_vlines;
+	uint32_t disallow_time_us;
+}; //v1
+
+struct dmub_fams2_cmd_subvp_stream_static_state {
+	uint16_t vratio_numerator;
+	uint16_t vratio_denominator;
+	uint16_t phantom_vtotal;
+	uint16_t phantom_vactive;
+	uint16_t programming_delay_otg_vlines;
+	uint16_t prefetch_to_mall_otg_vlines;
+	union {
+		struct {
+			uint8_t is_multi_planar : 1;
+			uint8_t is_yuv420 : 1;
+		} bits;
+		uint8_t all;
+	} config;
+	uint8_t phantom_otg_inst;
+	uint8_t phantom_pipe_mask;
+	uint8_t pad0;
+	uint8_t phantom_plane_pipe_masks[DMUB_MAX_PHANTOM_PLANES]; // phantom pipe mask per plane (for flip passthrough)
+	uint8_t pad1[4 - (DMUB_MAX_PHANTOM_PLANES % 4)];
+}; //v1
+
+struct dmub_fams2_cmd_drr_stream_static_state {
+	uint16_t nom_stretched_vtotal;
+	uint16_t programming_delay_otg_vlines;
+	uint8_t only_stretch_if_required;
+	uint8_t pad[3];
+}; //v1
+
+union dmub_fams2_stream_static_sub_state {
+	struct dmub_fams2_legacy_stream_static_state legacy;
+	struct dmub_fams2_subvp_stream_static_state subvp;
+	struct dmub_fams2_drr_stream_static_state drr;
+}; //v0
+
+union dmub_fams2_cmd_stream_static_sub_state {
+	COMMON_STREAM_STATIC_SUB_STATE
+}; //v1
+
+union dmub_fams2_stream_static_sub_state_v2 {
+	COMMON_STREAM_STATIC_SUB_STATE
+}; //v2
+
+struct dmub_fams2_stream_static_state {
+	enum fams2_stream_type type;
+	uint32_t otg_vline_time_ns;
+	uint32_t otg_vline_time_ticks;
+	uint16_t htotal;
+	uint16_t vtotal; // nominal vtotal
+	uint16_t vblank_start;
+	uint16_t vblank_end;
+	uint16_t max_vtotal;
+	uint16_t allow_start_otg_vline;
+	uint16_t allow_end_otg_vline;
+	uint16_t drr_keepout_otg_vline; // after this vline, vtotal cannot be changed
+	uint8_t scheduling_delay_otg_vlines; // min time to budget for ready to microschedule start
+	uint8_t contention_delay_otg_vlines; // time to budget for contention on execution
+	uint8_t vline_int_ack_delay_otg_vlines; // min time to budget for vertical interrupt firing
+	uint8_t allow_to_target_delay_otg_vlines; // time from allow vline to target vline
+	union {
+		struct {
+			uint8_t is_drr: 1; // stream is DRR enabled
+			uint8_t clamp_vtotal_min: 1; // clamp vtotal to min instead of nominal
+			uint8_t min_ttu_vblank_usable: 1; // if min ttu vblank is above wm, no force pstate is needed in blank
+		} bits;
+		uint8_t all;
+	} config;
+	uint8_t otg_inst;
+	uint8_t pipe_mask; // pipe mask for the whole config
+	uint8_t num_planes;
+	uint8_t plane_pipe_masks[DMUB_MAX_PLANES]; // pipe mask per plane (for flip passthrough)
+	uint8_t pad[4 - (DMUB_MAX_PLANES % 4)];
+	union dmub_fams2_stream_static_sub_state sub_state;
+}; //v0
+
+struct dmub_fams2_cmd_stream_static_base_state {
+	enum fams2_stream_type type;
+	uint32_t otg_vline_time_ns;
+	uint32_t otg_vline_time_ticks;
+	uint16_t htotal;
+	uint16_t vtotal; // nominal vtotal
+	uint16_t vblank_start;
+	uint16_t vblank_end;
+	uint16_t max_vtotal;
+	uint16_t allow_start_otg_vline;
+	uint16_t allow_end_otg_vline;
+	uint16_t drr_keepout_otg_vline; // after this vline, vtotal cannot be changed
+	uint16_t scheduling_delay_otg_vlines; // min time to budget for ready to microschedule start
+	uint16_t contention_delay_otg_vlines; // time to budget for contention on execution
+	uint16_t vline_int_ack_delay_otg_vlines; // min time to budget for vertical interrupt firing
+	uint16_t allow_to_target_delay_otg_vlines; // time from allow vline to target vline
+	union {
+		struct {
+			uint8_t is_drr : 1; // stream is DRR enabled
+			uint8_t clamp_vtotal_min : 1; // clamp vtotal to min instead of nominal
+			uint8_t min_ttu_vblank_usable : 1; // if min ttu vblank is above wm, no force pstate is needed in blank
+		} bits;
+		uint8_t all;
+	} config;
+	uint8_t otg_inst;
+	uint8_t pipe_mask; // pipe mask for the whole config
+	uint8_t num_planes;
+	uint8_t plane_pipe_masks[DMUB_MAX_PLANES]; // pipe mask per plane (for flip passthrough)
+	uint8_t pad[4 - (DMUB_MAX_PLANES % 4)];
+}; //v1
+
+struct dmub_fams2_stream_static_state_v1 {
+	struct dmub_fams2_cmd_stream_static_base_state base;
+	union dmub_fams2_stream_static_sub_state_v2 sub_state;
+}; //v1
+
+/**
+ * enum dmub_fams2_allow_delay_check_mode - macroscheduler mode for breaking on excessive
+ * p-state request to allow latency
+ */
+enum dmub_fams2_allow_delay_check_mode {
+	/* No check for request to allow delay */
+	FAMS2_ALLOW_DELAY_CHECK_NONE = 0,
+	/* Check for request to allow delay */
+	FAMS2_ALLOW_DELAY_CHECK_FROM_START = 1,
+	/* Check for prepare to allow delay */
+	FAMS2_ALLOW_DELAY_CHECK_FROM_PREPARE = 2,
+};
+
+union dmub_fams2_global_feature_config {
+	struct {
+		uint32_t enable: 1;
+		uint32_t enable_ppt_check: 1;
+		uint32_t enable_stall_recovery: 1;
+		uint32_t enable_debug: 1;
+		uint32_t enable_offload_flip: 1;
+		uint32_t enable_visual_confirm: 1;
+		uint32_t allow_delay_check_mode: 2;
+		uint32_t legacy_method_no_fams2 : 1;
+		uint32_t reserved : 23;
+	} bits;
+	uint32_t all;
+};
+
+struct dmub_cmd_fams2_global_config {
+	uint32_t max_allow_delay_us; // max delay to assert allow from uclk change begin
+	uint32_t lock_wait_time_us; // time to forecast acquisition of lock
+	uint32_t num_streams;
+	union dmub_fams2_global_feature_config features;
+	uint32_t recovery_timeout_us;
+	uint32_t hwfq_flip_programming_delay_us;
+	uint32_t max_allow_to_target_delta_us; // how early DCN could assert P-State allow compared to the P-State target
+};
+
+union dmub_cmd_fams2_config {
+	struct dmub_cmd_fams2_global_config global;
+	struct dmub_fams2_stream_static_state stream; //v0
+	union {
+		struct dmub_fams2_cmd_stream_static_base_state base;
+		union dmub_fams2_cmd_stream_static_sub_state sub_state;
+	} stream_v1; //v1
+};
+
+struct dmub_fams2_config_v2 {
+	struct dmub_cmd_fams2_global_config global;
+	struct dmub_fams2_stream_static_state_v1 stream_v1[DMUB_MAX_STREAMS]; //v1
+};
+
+/**
+ * DMUB rb command definition for FAMS2 (merged SubVP, FPO, Legacy)
+ */
+struct dmub_rb_cmd_fams2 {
+	struct dmub_cmd_header header;
+	union dmub_cmd_fams2_config config;
+};
+
+/**
+ * Indirect buffer descriptor
+ */
+struct dmub_ib_data {
+	union dmub_addr src; // location of indirect buffer in memory
+	uint16_t size; // indirect buffer size in bytes
+};
+
+/**
+ * DMUB rb command definition for commands passed over indirect buffer
+ */
+struct dmub_rb_cmd_ib {
+	struct dmub_cmd_header header;
+	struct dmub_ib_data ib_data;
+};
+
+/**
  * enum dmub_cmd_idle_opt_type - Idle optimization command type.
  */
 enum dmub_cmd_idle_opt_type {
@@ -890,7 +2748,22 @@ enum dmub_cmd_idle_opt_type {
 	/**
 	 * DCN hardware save.
 	 */
-	DMUB_CMD__IDLE_OPT_DCN_SAVE_INIT = 1
+	DMUB_CMD__IDLE_OPT_DCN_SAVE_INIT = 1,
+
+	/**
+	 * DCN hardware notify idle.
+	 */
+	DMUB_CMD__IDLE_OPT_DCN_NOTIFY_IDLE = 2,
+
+	/**
+	 * DCN hardware notify power state.
+	 */
+	DMUB_CMD__IDLE_OPT_SET_DC_POWER_STATE = 3,
+
+	/**
+	 * DCN notify to release HW.
+	 */
+	 DMUB_CMD__IDLE_OPT_RELEASE_HW = 4,
 };
 
 /**
@@ -898,6 +2771,50 @@ enum dmub_cmd_idle_opt_type {
  */
 struct dmub_rb_cmd_idle_opt_dcn_restore {
 	struct dmub_cmd_header header; /**< header */
+};
+
+/**
+ * struct dmub_dcn_notify_idle_cntl_data - Data passed to FW in a DMUB_CMD__IDLE_OPT_DCN_NOTIFY_IDLE command.
+ */
+struct dmub_dcn_notify_idle_cntl_data {
+	uint8_t driver_idle;
+	uint8_t skip_otg_disable;
+	uint8_t reserved[58];
+};
+
+/**
+ * struct dmub_rb_cmd_idle_opt_dcn_notify_idle - Data passed to FW in a DMUB_CMD__IDLE_OPT_DCN_NOTIFY_IDLE command.
+ */
+struct dmub_rb_cmd_idle_opt_dcn_notify_idle {
+	struct dmub_cmd_header header; /**< header */
+	struct dmub_dcn_notify_idle_cntl_data cntl_data;
+};
+
+/**
+ * enum dmub_idle_opt_dc_power_state - DC power states.
+ */
+enum dmub_idle_opt_dc_power_state {
+	DMUB_IDLE_OPT_DC_POWER_STATE_UNKNOWN = 0,
+	DMUB_IDLE_OPT_DC_POWER_STATE_D0 = 1,
+	DMUB_IDLE_OPT_DC_POWER_STATE_D1 = 2,
+	DMUB_IDLE_OPT_DC_POWER_STATE_D2 = 4,
+	DMUB_IDLE_OPT_DC_POWER_STATE_D3 = 8,
+};
+
+/**
+ * struct dmub_idle_opt_set_dc_power_state_data - Data passed to FW in a DMUB_CMD__IDLE_OPT_SET_DC_POWER_STATE command.
+ */
+struct dmub_idle_opt_set_dc_power_state_data {
+	uint8_t power_state; /**< power state */
+	uint8_t pad[3]; /**< padding */
+};
+
+/**
+ * struct dmub_rb_cmd_idle_opt_set_dc_power_state - Data passed to FW in a DMUB_CMD__IDLE_OPT_SET_DC_POWER_STATE command.
+ */
+struct dmub_rb_cmd_idle_opt_set_dc_power_state {
+	struct dmub_cmd_header header; /**< header */
+	struct dmub_idle_opt_set_dc_power_state_data data;
 };
 
 /**
@@ -992,7 +2909,8 @@ struct dmub_dig_transmitter_control_data_v1_7 {
 	uint8_t connobj_id; /**< Connector Object Id defined in ObjectId.h */
 	uint8_t HPO_instance; /**< HPO instance (0: inst0, 1: inst1) */
 	uint8_t reserved1; /**< For future use */
-	uint8_t reserved2[3]; /**< For future use */
+	uint8_t skip_phy_ssc_reduction;
+	uint8_t reserved2[2]; /**< For future use */
 	uint32_t reserved3[11]; /**< For future use */
 };
 
@@ -1010,6 +2928,23 @@ union dmub_cmd_dig1_transmitter_control_data {
 struct dmub_rb_cmd_dig1_transmitter_control {
 	struct dmub_cmd_header header; /**< header */
 	union dmub_cmd_dig1_transmitter_control_data transmitter_control; /**< payload */
+};
+
+/**
+ * struct dmub_rb_cmd_domain_control_data - Data for DOMAIN power control
+ */
+struct dmub_rb_cmd_domain_control_data {
+	uint8_t inst : 6; /**< DOMAIN instance to control */
+	uint8_t power_gate : 1; /**< 1=power gate, 0=power up */
+	uint8_t reserved[3]; /**< Reserved for future use */
+};
+
+/**
+ * struct dmub_rb_cmd_domain_control - Controls DOMAIN power gating
+ */
+struct dmub_rb_cmd_domain_control {
+	struct dmub_cmd_header header; /**< header */
+	struct dmub_rb_cmd_domain_control_data data; /**< payload */
 };
 
 /**
@@ -1041,7 +2976,7 @@ struct dmub_rb_cmd_dig1_dpia_control {
 };
 
 /**
- * SET_CONFIG Command Payload
+ * SET_CONFIG Command Payload (deprecated)
  */
 struct set_config_cmd_payload {
 	uint8_t msg_type; /* set config message type */
@@ -1049,7 +2984,7 @@ struct set_config_cmd_payload {
 };
 
 /**
- * Data passed from driver to FW in a DMUB_CMD__DPIA_SET_CONFIG_ACCESS command.
+ * Data passed from driver to FW in a DMUB_CMD__DPIA_SET_CONFIG_ACCESS command. (deprecated)
  */
 struct dmub_cmd_set_config_control_data {
 	struct set_config_cmd_payload cmd_pkt;
@@ -1058,11 +2993,30 @@ struct dmub_cmd_set_config_control_data {
 };
 
 /**
+ * SET_CONFIG Request Command Payload
+ */
+struct set_config_request_cmd_payload {
+	uint8_t instance; /* DPIA instance */
+	uint8_t immed_status; /* Immediate status returned in case of error */
+	uint8_t msg_type; /* set config message type */
+	uint8_t reserved;
+	uint32_t msg_data; /* set config message data */
+};
+
+/**
  * DMUB command structure for SET_CONFIG command.
  */
 struct dmub_rb_cmd_set_config_access {
 	struct dmub_cmd_header header; /* header */
 	struct dmub_cmd_set_config_control_data set_config_control; /* set config data */
+};
+
+/**
+ * DMUB command structure for SET_CONFIG request command.
+ */
+struct dmub_rb_cmd_set_config_request {
+	struct dmub_cmd_header header; /* header */
+	struct set_config_request_cmd_payload payload; /* set config request payload */
 };
 
 /**
@@ -1081,6 +3035,32 @@ struct dmub_cmd_mst_alloc_slots_control_data {
 struct dmub_rb_cmd_set_mst_alloc_slots {
 	struct dmub_cmd_header header; /* header */
 	struct dmub_cmd_mst_alloc_slots_control_data mst_slots_control; /* mst slots control */
+};
+
+/**
+ * Data passed from driver to FW in a DMUB_CMD__SET_TPS_NOTIFICATION command.
+ */
+struct dmub_cmd_tps_notification_data {
+	uint8_t instance; /* DPIA instance */
+	uint8_t tps; /* requested training pattern */
+	uint8_t reserved1;
+	uint8_t reserved2;
+};
+
+/**
+ * DMUB command structure for SET_TPS_NOTIFICATION command.
+ */
+struct dmub_rb_cmd_set_tps_notification {
+	struct dmub_cmd_header header; /* header */
+	struct dmub_cmd_tps_notification_data tps_notification; /* set tps_notification data */
+};
+
+/**
+ * DMUB command structure for DPIA HPD int enable control.
+ */
+struct dmub_rb_cmd_dpia_hpd_int_enable {
+	struct dmub_cmd_header header; /* header */
+	uint32_t enable; /* dpia hpd interrupt enable */
 };
 
 /**
@@ -1277,7 +3257,11 @@ enum dp_hpd_type {
 	/**
 	 * DP HPD short pulse
 	 */
-	DP_IRQ
+	DP_IRQ = 1,
+	/**
+	 * Failure to acquire DP HPD state
+	 */
+	DP_NONE_HPD = 2
 };
 
 /**
@@ -1358,11 +3342,85 @@ struct dmub_rb_cmd_dp_set_config_reply {
 };
 
 /**
+ * Definition of a DPIA notification header
+ */
+struct dpia_notification_header {
+	uint8_t instance; /**< DPIA Instance */
+	uint8_t reserved[3];
+	enum dmub_cmd_dpia_notification_type type; /**< DPIA notification type */
+};
+
+/**
+ * Definition of the common data struct of DPIA notification
+ */
+struct dpia_notification_common {
+	uint8_t cmd_buffer[DMUB_RB_CMD_SIZE - sizeof(struct dmub_cmd_header)
+								- sizeof(struct dpia_notification_header)];
+};
+
+/**
+ * Definition of a DPIA notification data
+ */
+struct dpia_bw_allocation_notify_data {
+	union {
+		struct {
+			uint16_t cm_bw_alloc_support: 1; /**< USB4 CM BW Allocation mode support */
+			uint16_t bw_request_failed: 1; /**< BW_Request_Failed */
+			uint16_t bw_request_succeeded: 1; /**< BW_Request_Succeeded */
+			uint16_t est_bw_changed: 1; /**< Estimated_BW changed */
+			uint16_t bw_alloc_cap_changed: 1; /**< BW_Allocation_Capabiity_Changed */
+			uint16_t reserved: 11; /**< Reserved */
+		} bits;
+
+		uint16_t flags;
+	};
+
+	uint8_t cm_id; /**< CM ID */
+	uint8_t group_id; /**< Group ID */
+	uint8_t granularity; /**< BW Allocation Granularity */
+	uint8_t estimated_bw; /**< Estimated_BW */
+	uint8_t allocated_bw; /**< Allocated_BW */
+	uint8_t reserved;
+};
+
+/**
+ * union dpia_notify_data_type - DPIA Notification in Outbox command
+ */
+union dpia_notification_data {
+	/**
+	 * DPIA Notification for common data struct
+	 */
+	struct dpia_notification_common common_data;
+
+	/**
+	 * DPIA Notification for DP BW Allocation support
+	 */
+	struct dpia_bw_allocation_notify_data dpia_bw_alloc;
+};
+
+/**
+ * Definition of a DPIA notification payload
+ */
+struct dpia_notification_payload {
+	struct dpia_notification_header header;
+	union dpia_notification_data data; /**< DPIA notification payload data */
+};
+
+/**
+ * Definition of a DMUB_OUT_CMD__DPIA_NOTIFICATION command.
+ */
+struct dmub_rb_cmd_dpia_notification {
+	struct dmub_cmd_header header; /**< DPIA notification header */
+	struct dpia_notification_payload payload; /**< DPIA notification payload */
+};
+
+/**
  * Data passed from driver to FW in a DMUB_CMD__QUERY_HPD_STATE command.
  */
 struct dmub_cmd_hpd_state_query_data {
 	uint8_t instance; /**< HPD instance or DPIA instance */
 	uint8_t result; /**< For returning HPD state */
+	uint16_t pad; /** < Alignment */
 	enum aux_channel_type ch_type; /**< enum aux_channel_type */
 	enum aux_return_code_type status; /**< for returning the status of command */
 };
@@ -1379,6 +3437,22 @@ struct dmub_rb_cmd_query_hpd_state {
 	 * Data passed from driver to FW in a DMUB_CMD__QUERY_HPD_STATE command.
 	 */
 	struct dmub_cmd_hpd_state_query_data data;
+};
+
+/**
+ * struct dmub_rb_cmd_hpd_sense_notify - HPD sense notification data.
+ */
+struct dmub_rb_cmd_hpd_sense_notify_data {
+	uint32_t old_hpd_sense_mask; /**< Old HPD sense mask */
+	uint32_t new_hpd_sense_mask; /**< New HPD sense mask */
+};
+
+/**
+ * struct dmub_rb_cmd_hpd_sense_notify - DMUB_OUT_CMD__HPD_SENSE_NOTIFY command.
+ */
+struct dmub_rb_cmd_hpd_sense_notify {
+	struct dmub_cmd_header header; /**< header */
+	struct dmub_rb_cmd_hpd_sense_notify_data data; /**< payload */
 };
 
 /*
@@ -1420,9 +3494,41 @@ enum dmub_cmd_psr_type {
 	 */
 	DMUB_CMD__PSR_FORCE_STATIC		= 5,
 	/**
+	 * Set vtotal in psr active for FreeSync PSR.
+	 */
+	DMUB_CMD__SET_SINK_VTOTAL_IN_PSR_ACTIVE = 6,
+	/**
 	 * Set PSR power option
 	 */
 	DMUB_CMD__SET_PSR_POWER_OPT = 7,
+};
+
+/**
+ * Different PSR residency modes.
+ * Different modes change the definition of PSR residency.
+ */
+enum psr_residency_mode {
+	PSR_RESIDENCY_MODE_PHY = 0,
+	PSR_RESIDENCY_MODE_ALPM,
+	PSR_RESIDENCY_MODE_ENABLEMENT_PERIOD,
+	/* Do not add below. */
+	PSR_RESIDENCY_MODE_LAST_ELEMENT,
+};
+
+enum dmub_cmd_fams_type {
+	DMUB_CMD__FAMS_SETUP_FW_CTRL	= 0,
+	DMUB_CMD__FAMS_DRR_UPDATE		= 1,
+	DMUB_CMD__HANDLE_SUBVP_CMD	= 2, // specifically for SubVP cmd
+	/**
+	 * For SubVP set manual trigger in FW because it
+	 * triggers DRR_UPDATE_PENDING which SubVP relies
+	 * on (for any SubVP cases that use a DRR display)
+	 */
+	DMUB_CMD__FAMS_SET_MANUAL_TRIGGER = 3,
+	DMUB_CMD__FAMS2_CONFIG = 4,
+	DMUB_CMD__FAMS2_DRR_UPDATE = 5,
+	DMUB_CMD__FAMS2_FLIP = 6,
+	DMUB_CMD__FAMS2_IB_CONFIG = 7,
 };
 
 /**
@@ -1434,31 +3540,13 @@ enum psr_version {
 	 */
 	PSR_VERSION_1				= 0,
 	/**
+	 * Freesync PSR SU.
+	 */
+	PSR_VERSION_SU_1			= 1,
+	/**
 	 * PSR not supported.
 	 */
-	PSR_VERSION_UNSUPPORTED			= 0xFFFFFFFF,
-};
-
-/**
- * enum dmub_cmd_mall_type - MALL commands
- */
-enum dmub_cmd_mall_type {
-	/**
-	 * Allows display refresh from MALL.
-	 */
-	DMUB_CMD__MALL_ACTION_ALLOW = 0,
-	/**
-	 * Disallows display refresh from MALL.
-	 */
-	DMUB_CMD__MALL_ACTION_DISALLOW = 1,
-	/**
-	 * Cursor copy for MALL.
-	 */
-	DMUB_CMD__MALL_ACTION_COPY_CURSOR = 2,
-	/**
-	 * Controls DF requests.
-	 */
-	DMUB_CMD__MALL_ACTION_NO_DF_REQ = 3,
+	PSR_VERSION_UNSUPPORTED			= 0xFF,	// psr_version field is only 8 bits wide
 };
 
 /**
@@ -1513,6 +3601,11 @@ enum phy_link_rate {
 	 * UHBR10 - 20.0 Gbps/Lane
 	 */
 	PHY_RATE_2000 = 11,
+
+	PHY_RATE_675 = 12,
+	/**
+	 * Rate 12 - 6.75 Gbps/Lane
+	 */
 };
 
 /**
@@ -1531,7 +3624,12 @@ enum dmub_phy_fsm_state {
 	DMUB_PHY_FSM_POWER_DOWN,
 	DMUB_PHY_FSM_PLL_EN,
 	DMUB_PHY_FSM_TX_EN,
+	DMUB_PHY_FSM_TX_EN_TEST_MODE,
 	DMUB_PHY_FSM_FAST_LP,
+	DMUB_PHY_FSM_P2_PLL_OFF_CPM,
+	DMUB_PHY_FSM_P2_PLL_OFF_PG,
+	DMUB_PHY_FSM_P2_PLL_OFF,
+	DMUB_PHY_FSM_P2_PLL_ON,
 };
 
 /**
@@ -1600,9 +3698,15 @@ struct dmub_cmd_psr_copy_settings_data {
 	 */
 	uint8_t frame_cap_ind;
 	/**
-	 * Explicit padding to 4 byte boundary.
+	 * Granularity of Y offset supported by sink.
 	 */
-	uint8_t pad[2];
+	uint8_t su_y_granularity;
+	/**
+	 * Indicates whether sink should start capturing
+	 * immediately following active scan line,
+	 * or starting with the 2nd active scan line.
+	 */
+	uint8_t line_capture_indication;
 	/**
 	 * Multi-display optimizations are implemented on certain ASICs.
 	 */
@@ -1613,9 +3717,13 @@ struct dmub_cmd_psr_copy_settings_data {
 	 */
 	uint16_t init_sdp_deadline;
 	/**
-	 * Explicit padding to 4 byte boundary.
+	 * @ rate_control_caps : Indicate FreeSync PSR Sink Capabilities
 	 */
-	uint16_t pad2;
+	uint8_t rate_control_caps;
+	/*
+	 * Force PSRSU always doing full frame update
+	 */
+	uint8_t force_ffu_mode;
 	/**
 	 * Length of each horizontal line in us.
 	 */
@@ -1635,7 +3743,7 @@ struct dmub_cmd_psr_copy_settings_data {
 	uint8_t cmd_version;
 	/**
 	 * Panel Instance.
-	 * Panel isntance to identify which psr_state to use
+	 * Panel instance to identify which psr_state to use
 	 * Currently the support is only for 0 or 1
 	 */
 	uint8_t panel_inst;
@@ -1648,9 +3756,27 @@ struct dmub_cmd_psr_copy_settings_data {
 	 */
 	uint8_t use_phy_fsm;
 	/**
-	 * Explicit padding to 2 byte boundary.
+	 * frame delay for frame re-lock
 	 */
-	uint8_t pad3[2];
+	uint8_t relock_delay_frame_cnt;
+	/**
+	 * esd recovery indicate.
+	 */
+	uint8_t esd_recovery;
+	/**
+	 * DSC Slice height.
+	 */
+	uint16_t dsc_slice_height;
+	/**
+	 * Some panels request main link off before xth vertical line
+	 */
+	uint16_t poweroff_before_vertical_line;
+	/**
+	 * Some panels cannot handle idle pattern during PSR entry.
+	 * To power down phy before disable stream to avoid sending
+	 * idle pattern.
+	 */
+	uint8_t power_down_phy_before_disable_stream;
 };
 
 /**
@@ -1681,7 +3807,7 @@ struct dmub_cmd_psr_set_level_data {
 	uint8_t cmd_version;
 	/**
 	 * Panel Instance.
-	 * Panel isntance to identify which psr_state to use
+	 * Panel instance to identify which psr_state to use
 	 * Currently the support is only for 0 or 1
 	 */
 	uint8_t panel_inst;
@@ -1708,7 +3834,7 @@ struct dmub_rb_cmd_psr_enable_data {
 	uint8_t cmd_version;
 	/**
 	 * Panel Instance.
-	 * Panel isntance to identify which psr_state to use
+	 * Panel instance to identify which psr_state to use
 	 * Currently the support is only for 0 or 1
 	 */
 	uint8_t panel_inst;
@@ -1752,7 +3878,7 @@ struct dmub_cmd_psr_set_version_data {
 	uint8_t cmd_version;
 	/**
 	 * Panel Instance.
-	 * Panel isntance to identify which psr_state to use
+	 * Panel instance to identify which psr_state to use
 	 * Currently the support is only for 0 or 1
 	 */
 	uint8_t panel_inst;
@@ -1783,7 +3909,7 @@ struct dmub_cmd_psr_force_static_data {
 	uint8_t cmd_version;
 	/**
 	 * Panel Instance.
-	 * Panel isntance to identify which psr_state to use
+	 * Panel instance to identify which psr_state to use
 	 * Currently the support is only for 0 or 1
 	 */
 	uint8_t panel_inst;
@@ -1808,6 +3934,286 @@ struct dmub_rb_cmd_psr_force_static {
 };
 
 /**
+ * PSR SU debug flags.
+ */
+union dmub_psr_su_debug_flags {
+	/**
+	 * PSR SU debug flags.
+	 */
+	struct {
+		/**
+		 * Update dirty rect in SW only.
+		 */
+		uint8_t update_dirty_rect_only : 1;
+		/**
+		 * Reset the cursor/plane state before processing the call.
+		 */
+		uint8_t reset_state : 1;
+	} bitfields;
+
+	/**
+	 * Union for debug flags.
+	 */
+	uint32_t u32All;
+};
+
+/**
+ * Data passed from driver to FW in a DMUB_CMD__UPDATE_DIRTY_RECT command.
+ * This triggers a selective update for PSR SU.
+ */
+struct dmub_cmd_update_dirty_rect_data {
+	/**
+	 * Dirty rects from OS.
+	 */
+	struct dmub_rect src_dirty_rects[DMUB_MAX_DIRTY_RECTS];
+	/**
+	 * PSR SU debug flags.
+	 */
+	union dmub_psr_su_debug_flags debug_flags;
+	/**
+	 * Pipe index.
+	 */
+	uint8_t pipe_idx;
+	/**
+	 * Number of dirty rects.
+	 */
+	uint8_t dirty_rect_count;
+	/**
+	 * dirty rects cmd version.
+	 */
+	uint8_t cmd_version;
+	/**
+	 * Panel Instance.
+	 * Panel instance to identify which psr_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+	/**
+	 * OTG HW instance
+	 */
+	uint8_t otg_inst;
+	/**
+	 * Padding for 4 byte alignment
+	 */
+	uint8_t padding[3];
+};
+
+/**
+ * Definition of a DMUB_CMD__UPDATE_DIRTY_RECT command.
+ */
+struct dmub_rb_cmd_update_dirty_rect {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+	/**
+	 * Data passed from driver to FW in a DMUB_CMD__UPDATE_DIRTY_RECT command.
+	 */
+	struct dmub_cmd_update_dirty_rect_data update_dirty_rect_data;
+};
+
+/**
+ * Data passed from driver to FW in a DMUB_CMD__UPDATE_CURSOR_INFO command.
+ */
+union dmub_reg_cursor_control_cfg {
+	struct {
+		uint32_t     cur_enable: 1;
+		uint32_t         reser0: 3;
+		uint32_t cur_2x_magnify: 1;
+		uint32_t         reser1: 3;
+		uint32_t           mode: 3;
+		uint32_t         reser2: 5;
+		uint32_t          pitch: 2;
+		uint32_t         reser3: 6;
+		uint32_t line_per_chunk: 5;
+		uint32_t         reser4: 3;
+	} bits;
+	uint32_t raw;
+};
+struct dmub_cursor_position_cache_hubp {
+	union dmub_reg_cursor_control_cfg cur_ctl;
+	union dmub_reg_position_cfg {
+		struct {
+			uint32_t cur_x_pos: 16;
+			uint32_t cur_y_pos: 16;
+		} bits;
+		uint32_t raw;
+	} position;
+	union dmub_reg_hot_spot_cfg {
+		struct {
+			uint32_t hot_x: 16;
+			uint32_t hot_y: 16;
+		} bits;
+		uint32_t raw;
+	} hot_spot;
+	union dmub_reg_dst_offset_cfg {
+		struct {
+			uint32_t dst_x_offset: 13;
+			uint32_t reserved: 19;
+		} bits;
+		uint32_t raw;
+	} dst_offset;
+};
+
+union dmub_reg_cur0_control_cfg {
+	struct {
+		uint32_t     cur0_enable: 1;
+		uint32_t  expansion_mode: 1;
+		uint32_t          reser0: 1;
+		uint32_t     cur0_rom_en: 1;
+		uint32_t            mode: 3;
+		uint32_t        reserved: 25;
+	} bits;
+	uint32_t raw;
+};
+struct dmub_cursor_position_cache_dpp {
+	union dmub_reg_cur0_control_cfg cur0_ctl;
+};
+struct dmub_cursor_position_cfg {
+	struct  dmub_cursor_position_cache_hubp pHubp;
+	struct  dmub_cursor_position_cache_dpp  pDpp;
+	uint8_t pipe_idx;
+	/*
+	 * Padding is required. To be 4 Bytes Aligned.
+	 */
+	uint8_t padding[3];
+};
+
+struct dmub_cursor_attribute_cache_hubp {
+	uint32_t SURFACE_ADDR_HIGH;
+	uint32_t SURFACE_ADDR;
+	union    dmub_reg_cursor_control_cfg  cur_ctl;
+	union    dmub_reg_cursor_size_cfg {
+		struct {
+			uint32_t width: 16;
+			uint32_t height: 16;
+		} bits;
+		uint32_t raw;
+	} size;
+	union    dmub_reg_cursor_settings_cfg {
+		struct {
+			uint32_t     dst_y_offset: 8;
+			uint32_t chunk_hdl_adjust: 2;
+			uint32_t         reserved: 22;
+		} bits;
+		uint32_t raw;
+	} settings;
+};
+struct dmub_cursor_attribute_cache_dpp {
+	union dmub_reg_cur0_control_cfg cur0_ctl;
+};
+struct dmub_cursor_attributes_cfg {
+	struct  dmub_cursor_attribute_cache_hubp aHubp;
+	struct  dmub_cursor_attribute_cache_dpp  aDpp;
+};
+
+struct dmub_cmd_update_cursor_payload0 {
+	/**
+	 * Cursor dirty rects.
+	 */
+	struct dmub_rect cursor_rect;
+	/**
+	 * PSR SU debug flags.
+	 */
+	union dmub_psr_su_debug_flags debug_flags;
+	/**
+	 * Cursor enable/disable.
+	 */
+	uint8_t enable;
+	/**
+	 * Pipe index.
+	 */
+	uint8_t pipe_idx;
+	/**
+	 * Cursor update cmd version.
+	 */
+	uint8_t cmd_version;
+	/**
+	 * Panel Instance.
+	 * Panel instance to identify which psr_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+	/**
+	 * Cursor Position Register.
+	 * Registers contains Hubp & Dpp modules
+	 */
+	struct dmub_cursor_position_cfg position_cfg;
+	/**
+	 * OTG HW instance
+	 */
+	uint8_t otg_inst;
+	/**
+	 * Padding for 4 byte alignment
+	 */
+	uint8_t padding[3];
+};
+
+struct dmub_cmd_update_cursor_payload1 {
+	struct dmub_cursor_attributes_cfg attribute_cfg;
+};
+
+union dmub_cmd_update_cursor_info_data {
+	struct dmub_cmd_update_cursor_payload0 payload0;
+	struct dmub_cmd_update_cursor_payload1 payload1;
+};
+/**
+ * Definition of a DMUB_CMD__UPDATE_CURSOR_INFO command.
+ */
+struct dmub_rb_cmd_update_cursor_info {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+	/**
+	 * Data passed from driver to FW in a DMUB_CMD__UPDATE_CURSOR_INFO command.
+	 */
+	union dmub_cmd_update_cursor_info_data update_cursor_info_data;
+};
+
+/**
+ * Data passed from driver to FW in a DMUB_CMD__SET_SINK_VTOTAL_IN_PSR_ACTIVE command.
+ */
+struct dmub_cmd_psr_set_vtotal_data {
+	/**
+	 * 16-bit value dicated by driver that indicates the vtotal in PSR active requirement when screen idle..
+	 */
+	uint16_t psr_vtotal_idle;
+	/**
+	 * PSR control version.
+	 */
+	uint8_t cmd_version;
+	/**
+	 * Panel Instance.
+	 * Panel instance to identify which psr_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+	/*
+	 * 16-bit value dicated by driver that indicates the vtotal in PSR active requirement when doing SU/FFU.
+	 */
+	uint16_t psr_vtotal_su;
+	/**
+	 * Explicit padding to 4 byte boundary.
+	 */
+	uint8_t pad2[2];
+};
+
+/**
+ * Definition of a DMUB_CMD__SET_SINK_VTOTAL_IN_PSR_ACTIVE command.
+ */
+struct dmub_rb_cmd_psr_set_vtotal {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+	/**
+	 * Definition of a DMUB_CMD__SET_SINK_VTOTAL_IN_PSR_ACTIVE command.
+	 */
+	struct dmub_cmd_psr_set_vtotal_data psr_set_vtotal_data;
+};
+
+/**
  * Data passed from driver to FW in a DMUB_CMD__SET_PSR_POWER_OPT command.
  */
 struct dmub_cmd_psr_set_power_opt_data {
@@ -1817,7 +4223,7 @@ struct dmub_cmd_psr_set_power_opt_data {
 	uint8_t cmd_version;
 	/**
 	 * Panel Instance.
-	 * Panel isntance to identify which psr_state to use
+	 * Panel instance to identify which psr_state to use
 	 * Currently the support is only for 0 or 1
 	 */
 	uint8_t panel_inst;
@@ -1843,6 +4249,766 @@ struct dmub_rb_cmd_psr_set_power_opt {
 	 * Definition of a DMUB_CMD__SET_PSR_POWER_OPT command.
 	 */
 	struct dmub_cmd_psr_set_power_opt_data psr_set_power_opt_data;
+};
+
+enum dmub_alpm_mode {
+	ALPM_AUXWAKE = 0,
+	ALPM_AUXLESS = 1,
+	ALPM_UNSUPPORTED = 2,
+};
+
+/**
+ * Definition of Replay Residency GPINT command.
+ * Bit[0] - Residency mode for Revision 0
+ * Bit[1] - Enable/Disable state
+ * Bit[2-3] - Revision number
+ * Bit[4-7] - Residency mode for Revision 1
+ * Bit[8] - Panel instance
+ * Bit[9-15] - Reserved
+ */
+
+enum pr_residency_mode {
+	PR_RESIDENCY_MODE_PHY = 0x0,
+	PR_RESIDENCY_MODE_ALPM,
+	PR_RESIDENCY_MODE_IPS2,
+	PR_RESIDENCY_MODE_FRAME_CNT,
+	PR_RESIDENCY_MODE_ENABLEMENT_PERIOD,
+};
+
+#define REPLAY_RESIDENCY_MODE_SHIFT            (0)
+#define REPLAY_RESIDENCY_ENABLE_SHIFT          (1)
+#define REPLAY_RESIDENCY_REVISION_SHIFT        (2)
+#define REPLAY_RESIDENCY_MODE2_SHIFT           (4)
+
+#define REPLAY_RESIDENCY_MODE_MASK             (0x1 << REPLAY_RESIDENCY_MODE_SHIFT)
+# define REPLAY_RESIDENCY_FIELD_MODE_PHY       (0x0 << REPLAY_RESIDENCY_MODE_SHIFT)
+# define REPLAY_RESIDENCY_FIELD_MODE_ALPM      (0x1 << REPLAY_RESIDENCY_MODE_SHIFT)
+
+#define REPLAY_RESIDENCY_MODE2_MASK            (0xF << REPLAY_RESIDENCY_MODE2_SHIFT)
+# define REPLAY_RESIDENCY_FIELD_MODE2_IPS      (0x1 << REPLAY_RESIDENCY_MODE2_SHIFT)
+# define REPLAY_RESIDENCY_FIELD_MODE2_FRAME_CNT    (0x2 << REPLAY_RESIDENCY_MODE2_SHIFT)
+# define REPLAY_RESIDENCY_FIELD_MODE2_EN_PERIOD	(0x3 << REPLAY_RESIDENCY_MODE2_SHIFT)
+
+#define REPLAY_RESIDENCY_ENABLE_MASK           (0x1 << REPLAY_RESIDENCY_ENABLE_SHIFT)
+# define REPLAY_RESIDENCY_DISABLE              (0x0 << REPLAY_RESIDENCY_ENABLE_SHIFT)
+# define REPLAY_RESIDENCY_ENABLE               (0x1 << REPLAY_RESIDENCY_ENABLE_SHIFT)
+
+#define REPLAY_RESIDENCY_REVISION_MASK         (0x3 << REPLAY_RESIDENCY_REVISION_SHIFT)
+# define REPLAY_RESIDENCY_REVISION_0           (0x0 << REPLAY_RESIDENCY_REVISION_SHIFT)
+# define REPLAY_RESIDENCY_REVISION_1           (0x1 << REPLAY_RESIDENCY_REVISION_SHIFT)
+
+/**
+ * Definition of a replay_state.
+ */
+enum replay_state {
+	REPLAY_STATE_0			= 0x0,
+	REPLAY_STATE_1			= 0x10,
+	REPLAY_STATE_1A			= 0x11,
+	REPLAY_STATE_2			= 0x20,
+	REPLAY_STATE_2A			= 0x21,
+	REPLAY_STATE_3			= 0x30,
+	REPLAY_STATE_3INIT		= 0x31,
+	REPLAY_STATE_4			= 0x40,
+	REPLAY_STATE_4A			= 0x41,
+	REPLAY_STATE_4B			= 0x42,
+	REPLAY_STATE_4C			= 0x43,
+	REPLAY_STATE_4D			= 0x44,
+	REPLAY_STATE_4E			= 0x45,
+	REPLAY_STATE_4B_LOCKED		= 0x4A,
+	REPLAY_STATE_4C_UNLOCKED	= 0x4B,
+	REPLAY_STATE_5			= 0x50,
+	REPLAY_STATE_5A			= 0x51,
+	REPLAY_STATE_5B			= 0x52,
+	REPLAY_STATE_5A_LOCKED		= 0x5A,
+	REPLAY_STATE_5B_UNLOCKED	= 0x5B,
+	REPLAY_STATE_6			= 0x60,
+	REPLAY_STATE_6A			= 0x61,
+	REPLAY_STATE_6B			= 0x62,
+	REPLAY_STATE_INVALID		= 0xFF,
+};
+
+/**
+ * Definition of a panel replay state
+ */
+enum pr_state {
+	PR_STATE_0									= 0x00, // State 0 steady state
+	// Pending SDP and Unlock before back to State 0
+	PR_STATE_0_PENDING_SDP_AND_UNLOCK			= 0x01,
+	PR_STATE_1									= 0x10, // State 1
+	PR_STATE_2									= 0x20, // State 2 steady state
+	// Pending frame transmission before transition to State 2
+	PR_STATE_2_PENDING_FRAME_TRANSMISSION		= 0x30,
+	// Active and Powered Up
+	PR_STATE_2_POWERED							= 0x31,
+	// Active and Powered Down, but need to blank HUBP after DPG_EN latch
+	PR_STATE_2_PENDING_HUBP_BLANK				= 0x32,
+	// Active and Pending Power Up
+	PR_STATE_2_PENDING_POWER_UP					= 0x33,
+	// Active and Powered Up, Pending DPG latch
+	PR_STATE_2_PENDING_LOCK	= 0x34,
+	// Active and Powered Up, Pending SDP and Unlock
+	PR_STATE_2_PENDING_SDP_AND_UNLOCK			= 0x35,
+	// Pending transmission of AS SDP for timing sync, but no rfb update
+	PR_STATE_2_PENDING_AS_SDP					= 0x36,
+	// Invalid
+	PR_STATE_INVALID							= 0xFF,
+};
+
+/**
+ * Replay command sub-types.
+ */
+enum dmub_cmd_replay_type {
+	/**
+	 * Copy driver-calculated parameters to REPLAY state.
+	 */
+	DMUB_CMD__REPLAY_COPY_SETTINGS		= 0,
+	/**
+	 * Enable REPLAY.
+	 */
+	DMUB_CMD__REPLAY_ENABLE			= 1,
+	/**
+	 * Set Replay power option.
+	 */
+	DMUB_CMD__SET_REPLAY_POWER_OPT		= 2,
+	/**
+	 * Set coasting vtotal.
+	 */
+	DMUB_CMD__REPLAY_SET_COASTING_VTOTAL	= 3,
+	/**
+	 * Set power opt and coasting vtotal.
+	 */
+	DMUB_CMD__REPLAY_SET_POWER_OPT_AND_COASTING_VTOTAL	= 4,
+	/**
+	 * Set disabled iiming sync.
+	 */
+	DMUB_CMD__REPLAY_SET_TIMING_SYNC_SUPPORTED	= 5,
+	/**
+	 * Set Residency Frameupdate Timer.
+	 */
+	DMUB_CMD__REPLAY_SET_RESIDENCY_FRAMEUPDATE_TIMER = 6,
+	/**
+	 * Set pseudo vtotal
+	 */
+	DMUB_CMD__REPLAY_SET_PSEUDO_VTOTAL = 7,
+	/**
+	 * Set adaptive sync sdp enabled
+	 */
+	DMUB_CMD__REPLAY_DISABLED_ADAPTIVE_SYNC_SDP = 8,
+	/**
+	 * Set Replay General command.
+	 */
+	DMUB_CMD__REPLAY_SET_GENERAL_CMD = 16,
+};
+
+/*
+ * Panel Replay sub-types
+ */
+enum dmub_cmd_panel_replay_type {
+	DMUB_CMD__PR_ENABLE = 0,
+	DMUB_CMD__PR_COPY_SETTINGS = 1,
+	DMUB_CMD__PR_UPDATE_STATE = 2,
+	DMUB_CMD__PR_GENERAL_CMD = 3,
+};
+
+enum dmub_cmd_panel_replay_state_update_subtype {
+	PR_STATE_UPDATE_COASTING_VTOTAL = 0x1,
+	PR_STATE_UPDATE_SYNC_MODE = 0x2,
+	PR_STATE_UPDATE_RUNTIME_FLAGS = 0x3,
+};
+
+enum dmub_cmd_panel_replay_general_subtype {
+	PR_GENERAL_CMD_DEBUG_OPTION = 0x1,
+};
+
+/**
+ * Replay general command sub-types.
+ */
+enum dmub_cmd_replay_general_subtype {
+	REPLAY_GENERAL_CMD_NOT_SUPPORTED = -1,
+	/**
+	 * TODO: For backward compatible, allow new command only.
+	 * REPLAY_GENERAL_CMD_SET_TIMING_SYNC_SUPPORTED,
+	 * REPLAY_GENERAL_CMD_SET_RESIDENCY_FRAMEUPDATE_TIMER,
+	 * REPLAY_GENERAL_CMD_SET_PSEUDO_VTOTAL,
+	 */
+	REPLAY_GENERAL_CMD_DISABLED_ADAPTIVE_SYNC_SDP,
+	REPLAY_GENERAL_CMD_DISABLED_DESYNC_ERROR_DETECTION,
+	REPLAY_GENERAL_CMD_UPDATE_ERROR_STATUS,
+	REPLAY_GENERAL_CMD_SET_LOW_RR_ACTIVATE,
+	REPLAY_GENERAL_CMD_VIDEO_CONFERENCING,
+	REPLAY_GENERAL_CMD_SET_CONTINUOUSLY_RESYNC,
+};
+
+struct dmub_alpm_auxless_data {
+	uint16_t lfps_setup_ns;
+	uint16_t lfps_period_ns;
+	uint16_t lfps_silence_ns;
+	uint16_t lfps_t1_t2_override_us;
+	short lfps_t1_t2_offset_us;
+	uint8_t lttpr_count;
+	/*
+	 * Padding to align structure to 4 byte boundary.
+	 */
+	uint8_t pad[1];
+};
+
+/**
+ * Data passed from driver to FW in a DMUB_CMD__REPLAY_COPY_SETTINGS command.
+ */
+struct dmub_cmd_replay_copy_settings_data {
+	/**
+	 * Flags that can be set by driver to change some replay behaviour.
+	 */
+	union replay_debug_flags debug;
+
+	/**
+	 * @flags: Flags used to determine feature functionality.
+	 */
+	union replay_hw_flags flags;
+
+	/**
+	 * DPP HW instance.
+	 */
+	uint8_t dpp_inst;
+	/**
+	 * OTG HW instance.
+	 */
+	uint8_t otg_inst;
+	/**
+	 * DIG FE HW instance.
+	 */
+	uint8_t digfe_inst;
+	/**
+	 * DIG BE HW instance.
+	 */
+	uint8_t digbe_inst;
+	/**
+	 * AUX HW instance.
+	 */
+	uint8_t aux_inst;
+	/**
+	 * Panel Instance.
+	 * Panel isntance to identify which psr_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+	/**
+	 * @pixel_deviation_per_line: Indicate the maximum pixel deviation per line compare
+	 * to Source timing when Sink maintains coasting vtotal during the Replay normal sleep mode
+	 */
+	uint8_t pixel_deviation_per_line;
+	/**
+	 * @max_deviation_line: The max number of deviation line that can keep the timing
+	 * synchronized between the Source and Sink during Replay normal sleep mode.
+	 */
+	uint8_t max_deviation_line;
+	/**
+	 * Length of each horizontal line in ns.
+	 */
+	uint32_t line_time_in_ns;
+	/**
+	 * PHY instance.
+	 */
+	uint8_t dpphy_inst;
+	/**
+	 * Determines if SMU optimzations are enabled/disabled.
+	 */
+	uint8_t smu_optimizations_en;
+	/**
+	 * Determines if timing sync are enabled/disabled.
+	 */
+	uint8_t replay_timing_sync_supported;
+	/*
+	 * Use FSM state for Replay power up/down
+	 */
+	uint8_t use_phy_fsm;
+	/**
+	 * Use for AUX-less ALPM LFPS wake operation
+	 */
+	struct dmub_alpm_auxless_data auxless_alpm_data;
+	/**
+	 * @hpo_stream_enc_inst: HPO stream encoder instance
+	 */
+	uint8_t hpo_stream_enc_inst;
+	/**
+	 * @hpo_link_enc_inst: HPO link encoder instance
+	 */
+	uint8_t hpo_link_enc_inst;
+	/**
+	 * Determines if fast resync in ultra sleep mode is enabled/disabled.
+	 */
+	uint8_t replay_support_fast_resync_in_ultra_sleep_mode;
+	/**
+	 * @pad: Align structure to 4 byte boundary.
+	 */
+	uint8_t pad[1];
+};
+
+
+/**
+ * Replay versions.
+ */
+enum replay_version {
+	/**
+	 * FreeSync Replay
+	 */
+	REPLAY_VERSION_FREESYNC_REPLAY	= 0,
+	/**
+	 * Panel Replay
+	 */
+	REPLAY_VERSION_PANEL_REPLAY		= 1,
+	/**
+	 * Replay not supported.
+	 */
+	REPLAY_VERSION_UNSUPPORTED		= 0xFF,
+};
+
+/**
+ * Definition of a DMUB_CMD__REPLAY_COPY_SETTINGS command.
+ */
+struct dmub_rb_cmd_replay_copy_settings {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+	/**
+	 * Data passed from driver to FW in a DMUB_CMD__REPLAY_COPY_SETTINGS command.
+	 */
+	struct dmub_cmd_replay_copy_settings_data replay_copy_settings_data;
+};
+
+/**
+ * Replay disable / enable state for dmub_rb_cmd_replay_enable_data.enable
+ */
+enum replay_enable {
+	/**
+	 * Disable REPLAY.
+	 */
+	REPLAY_DISABLE				= 0,
+	/**
+	 * Enable REPLAY.
+	 */
+	REPLAY_ENABLE				= 1,
+};
+
+/**
+ * Data passed from driver to FW in a DMUB_CMD__SMART_POWER_OLED_ENABLE command.
+ */
+struct dmub_rb_cmd_smart_power_oled_enable_data {
+	/**
+	 * SMART_POWER_OLED enable or disable.
+	 */
+	uint8_t enable;
+	/**
+	 * Panel Instance.
+	 * Panel isntance to identify which replay_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+
+	uint16_t peak_nits;
+	/**
+	 * OTG HW instance.
+	 */
+	uint8_t otg_inst;
+	/**
+	 * DIG FE HW instance.
+	 */
+	uint8_t digfe_inst;
+	/**
+	 * DIG BE HW instance.
+	 */
+	uint8_t digbe_inst;
+	uint8_t debugcontrol;
+	/*
+	 * vertical interrupt trigger line
+	 */
+	uint32_t triggerline;
+
+	uint16_t fixed_max_cll;
+
+	uint8_t pad[2];
+};
+
+/**
+ * Data passed from driver to FW in a DMUB_CMD__REPLAY_ENABLE command.
+ */
+struct dmub_rb_cmd_replay_enable_data {
+	/**
+	 * Replay enable or disable.
+	 */
+	uint8_t enable;
+	/**
+	 * Panel Instance.
+	 * Panel isntance to identify which replay_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+	/**
+	 * Phy state to enter.
+	 * Values to use are defined in dmub_phy_fsm_state
+	 */
+	uint8_t phy_fsm_state;
+	/**
+	 * Phy rate for DP - RBR/HBR/HBR2/HBR3.
+	 * Set this using enum phy_link_rate.
+	 * This does not support HDMI/DP2 for now.
+	 */
+	uint8_t phy_rate;
+};
+
+/**
+ * Definition of a DMUB_CMD__REPLAY_ENABLE command.
+ * Replay enable/disable is controlled using action in data.
+ */
+struct dmub_rb_cmd_replay_enable {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+
+	struct dmub_rb_cmd_replay_enable_data data;
+};
+
+/**
+ * Data passed from driver to FW in a DMUB_CMD__SET_REPLAY_POWER_OPT command.
+ */
+struct dmub_cmd_replay_set_power_opt_data {
+	/**
+	 * Panel Instance.
+	 * Panel isntance to identify which replay_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+	/**
+	 * Explicit padding to 4 byte boundary.
+	 */
+	uint8_t pad[3];
+	/**
+	 * REPLAY power option
+	 */
+	uint32_t power_opt;
+};
+
+/**
+ * Data passed from driver to FW in a DMUB_CMD__REPLAY_SET_TIMING_SYNC_SUPPORTED command.
+ */
+struct dmub_cmd_replay_set_timing_sync_data {
+	/**
+	 * Panel Instance.
+	 * Panel isntance to identify which replay_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+	/**
+	 * REPLAY set_timing_sync
+	 */
+	uint8_t timing_sync_supported;
+	/**
+	 * Explicit padding to 4 byte boundary.
+	 */
+	uint8_t pad[2];
+};
+
+/**
+ * Data passed from driver to FW in a DMUB_CMD__REPLAY_SET_PSEUDO_VTOTAL command.
+ */
+struct dmub_cmd_replay_set_pseudo_vtotal {
+	/**
+	 * Panel Instance.
+	 * Panel isntance to identify which replay_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+	/**
+	 * Source Vtotal that Replay + IPS + ABM full screen video src vtotal
+	 */
+	uint16_t vtotal;
+	/**
+	 * Explicit padding to 4 byte boundary.
+	 */
+	uint8_t pad;
+};
+struct dmub_cmd_replay_disabled_adaptive_sync_sdp_data {
+	/**
+	 * Panel Instance.
+	 * Panel isntance to identify which replay_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+	/**
+	 * enabled: set adaptive sync sdp enabled
+	 */
+	uint8_t force_disabled;
+
+	uint8_t pad[2];
+};
+struct dmub_cmd_replay_set_general_cmd_data {
+	/**
+	 * Panel Instance.
+	 * Panel isntance to identify which replay_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+	/**
+	 * subtype: replay general cmd sub type
+	 */
+	uint8_t subtype;
+
+	uint8_t pad[2];
+	/**
+	 * config data with param1 and param2
+	 */
+	uint32_t param1;
+
+	uint32_t param2;
+};
+
+/**
+ * Definition of a DMUB_CMD__SET_REPLAY_POWER_OPT command.
+ */
+struct dmub_rb_cmd_replay_set_power_opt {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+	/**
+	 * Definition of a DMUB_CMD__SET_REPLAY_POWER_OPT command.
+	 */
+	struct dmub_cmd_replay_set_power_opt_data replay_set_power_opt_data;
+};
+
+/**
+ * Data passed from driver to FW in a DMUB_CMD__REPLAY_SET_COASTING_VTOTAL command.
+ */
+struct dmub_cmd_replay_set_coasting_vtotal_data {
+	/**
+	 * 16-bit value dicated by driver that indicates the coasting vtotal.
+	 */
+	uint16_t coasting_vtotal;
+	/**
+	 * REPLAY control version.
+	 */
+	uint8_t cmd_version;
+	/**
+	 * Panel Instance.
+	 * Panel isntance to identify which replay_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+	/**
+	 * 16-bit value dicated by driver that indicates the coasting vtotal high byte part.
+	 */
+	uint16_t coasting_vtotal_high;
+	/**
+	 * frame skip number.
+	 */
+	uint16_t frame_skip_number;
+};
+
+/**
+ * Definition of a DMUB_CMD__REPLAY_SET_COASTING_VTOTAL command.
+ */
+struct dmub_rb_cmd_replay_set_coasting_vtotal {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+	/**
+	 * Definition of a DMUB_CMD__REPLAY_SET_COASTING_VTOTAL command.
+	 */
+	struct dmub_cmd_replay_set_coasting_vtotal_data replay_set_coasting_vtotal_data;
+};
+
+/**
+ * Definition of a DMUB_CMD__REPLAY_SET_POWER_OPT_AND_COASTING_VTOTAL command.
+ */
+struct dmub_rb_cmd_replay_set_power_opt_and_coasting_vtotal {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+	/**
+	 * Definition of a DMUB_CMD__SET_REPLAY_POWER_OPT command.
+	 */
+	struct dmub_cmd_replay_set_power_opt_data replay_set_power_opt_data;
+	/**
+	 * Definition of a DMUB_CMD__REPLAY_SET_COASTING_VTOTAL command.
+	 */
+	struct dmub_cmd_replay_set_coasting_vtotal_data replay_set_coasting_vtotal_data;
+};
+
+/**
+ * Definition of a DMUB_CMD__REPLAY_SET_TIMING_SYNC_SUPPORTED command.
+ */
+struct dmub_rb_cmd_replay_set_timing_sync {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+	/**
+	 * Definition of DMUB_CMD__REPLAY_SET_TIMING_SYNC_SUPPORTED command.
+	 */
+	struct dmub_cmd_replay_set_timing_sync_data replay_set_timing_sync_data;
+};
+
+/**
+ * Definition of a DMUB_CMD__REPLAY_SET_PSEUDO_VTOTAL command.
+ */
+struct dmub_rb_cmd_replay_set_pseudo_vtotal {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+	/**
+	 * Definition of DMUB_CMD__REPLAY_SET_PSEUDO_VTOTAL command.
+	 */
+	struct dmub_cmd_replay_set_pseudo_vtotal data;
+};
+
+/**
+ * Definition of a DMUB_CMD__REPLAY_DISABLED_ADAPTIVE_SYNC_SDP command.
+ */
+struct dmub_rb_cmd_replay_disabled_adaptive_sync_sdp {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+	/**
+	 * Definition of DMUB_CMD__REPLAY_DISABLED_ADAPTIVE_SYNC_SDP command.
+	 */
+	struct dmub_cmd_replay_disabled_adaptive_sync_sdp_data data;
+};
+
+/**
+ * Definition of a DMUB_CMD__REPLAY_SET_GENERAL_CMD command.
+ */
+struct dmub_rb_cmd_replay_set_general_cmd {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+	/**
+	 * Definition of DMUB_CMD__REPLAY_SET_GENERAL_CMD command.
+	 */
+	struct dmub_cmd_replay_set_general_cmd_data data;
+};
+
+/**
+ * Data passed from driver to FW in  DMUB_CMD__REPLAY_SET_RESIDENCY_FRAMEUPDATE_TIMER command.
+ */
+struct dmub_cmd_replay_frameupdate_timer_data {
+	/**
+	 * Panel Instance.
+	 * Panel isntance to identify which replay_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+	/**
+	 * Replay Frameupdate Timer Enable or not
+	 */
+	uint8_t enable;
+	/**
+	 * REPLAY force reflash frame update number
+	 */
+	uint16_t frameupdate_count;
+};
+/**
+ * Definition of DMUB_CMD__REPLAY_SET_RESIDENCY_FRAMEUPDATE_TIMER
+ */
+struct dmub_rb_cmd_replay_set_frameupdate_timer {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+	/**
+	 * Definition of a DMUB_CMD__SET_REPLAY_POWER_OPT command.
+	 */
+	struct dmub_cmd_replay_frameupdate_timer_data data;
+};
+
+/**
+ * Definition union of replay command set
+ */
+union dmub_replay_cmd_set {
+	/**
+	 * Panel Instance.
+	 * Panel isntance to identify which replay_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+	/**
+	 * Definition of DMUB_CMD__REPLAY_SET_TIMING_SYNC_SUPPORTED command data.
+	 */
+	struct dmub_cmd_replay_set_timing_sync_data sync_data;
+	/**
+	 * Definition of DMUB_CMD__REPLAY_SET_RESIDENCY_FRAMEUPDATE_TIMER command data.
+	 */
+	struct dmub_cmd_replay_frameupdate_timer_data timer_data;
+	/**
+	 * Definition of DMUB_CMD__REPLAY_SET_PSEUDO_VTOTAL command data.
+	 */
+	struct dmub_cmd_replay_set_pseudo_vtotal pseudo_vtotal_data;
+	/**
+	 * Definition of DMUB_CMD__REPLAY_DISABLED_ADAPTIVE_SYNC_SDP command data.
+	 */
+	struct dmub_cmd_replay_disabled_adaptive_sync_sdp_data disabled_adaptive_sync_sdp_data;
+	/**
+	 * Definition of DMUB_CMD__REPLAY_SET_GENERAL_CMD command data.
+	 */
+	struct dmub_cmd_replay_set_general_cmd_data set_general_cmd_data;
+};
+
+/**
+ * SMART POWER OLED command sub-types.
+ */
+enum dmub_cmd_smart_power_oled_type {
+
+	/**
+	 * Enable/Disable SMART_POWER_OLED.
+	 */
+	DMUB_CMD__SMART_POWER_OLED_ENABLE = 1,
+	/**
+	 * Get current MaxCLL value if SMART POWER OLED is enabled.
+	 */
+	DMUB_CMD__SMART_POWER_OLED_GETMAXCLL = 2,
+};
+
+/**
+ * Definition of a DMUB_CMD__SMART_POWER_OLED command.
+ */
+struct dmub_rb_cmd_smart_power_oled_enable {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+
+	struct dmub_rb_cmd_smart_power_oled_enable_data data;
+};
+
+struct dmub_cmd_smart_power_oled_getmaxcll_input {
+	uint8_t panel_inst;
+	uint8_t pad[3];
+};
+
+struct dmub_cmd_smart_power_oled_getmaxcll_output {
+	uint16_t current_max_cll;
+	uint8_t pad[2];
+};
+
+/**
+ * Definition of a DMUB_CMD__SMART_POWER_OLED command.
+ */
+struct dmub_rb_cmd_smart_power_oled_getmaxcll {
+	struct dmub_cmd_header header; /**< Command header */
+	/**
+	 * Data passed from driver to FW in a DMUB_CMD__SMART_POWER_OLED_GETMAXCLL command.
+	 */
+	union dmub_cmd_smart_power_oled_getmaxcll_data {
+		struct dmub_cmd_smart_power_oled_getmaxcll_input input; /**< Input */
+		struct dmub_cmd_smart_power_oled_getmaxcll_output output; /**< Output */
+		uint32_t output_raw; /**< Raw data output */
+	} data;
 };
 
 /**
@@ -1917,6 +5083,17 @@ enum hw_lock_client {
 	 * Driver is the client of HW Lock Manager.
 	 */
 	HW_LOCK_CLIENT_DRIVER = 0,
+	/**
+	 * PSR SU is the client of HW Lock Manager.
+	 */
+	HW_LOCK_CLIENT_PSR_SU		= 1,
+	HW_LOCK_CLIENT_SUBVP = 3,
+	/**
+	 * Replay is the client of HW Lock Manager.
+	 */
+	HW_LOCK_CLIENT_REPLAY		= 4,
+	HW_LOCK_CLIENT_FAMS2 = 5,
+	HW_LOCK_CLIENT_CURSOR_OFFLOAD = 6,
 	/**
 	 * Invalid client.
 	 */
@@ -2003,6 +5180,138 @@ enum dmub_cmd_abm_type {
 	 * unregister vertical interrupt after steady state is reached
 	 */
 	DMUB_CMD__ABM_PAUSE	= 6,
+
+	/**
+	 * Save and Restore ABM state. On save we save parameters, and
+	 * on restore we update state with passed in data.
+	 */
+	DMUB_CMD__ABM_SAVE_RESTORE	= 7,
+
+	/**
+	 * Query ABM caps.
+	 */
+	DMUB_CMD__ABM_QUERY_CAPS	= 8,
+
+	/**
+	 * Set ABM Events
+	 */
+	DMUB_CMD__ABM_SET_EVENT	= 9,
+
+	/**
+	 * Get the current ACE curve.
+	 */
+	DMUB_CMD__ABM_GET_ACE_CURVE = 10,
+
+	/**
+	 * Get current histogram data
+	 */
+	DMUB_CMD__ABM_GET_HISTOGRAM_DATA = 11,
+};
+
+/**
+ * LSDMA command sub-types.
+ */
+enum dmub_cmd_lsdma_type {
+	/**
+	 * Initialize parameters for LSDMA.
+	 * Ring buffer is mapped to the ring buffer
+	 */
+	DMUB_CMD__LSDMA_INIT_CONFIG	= 0,
+	/**
+	 * LSDMA copies data from source to destination linearly
+	 */
+	DMUB_CMD__LSDMA_LINEAR_COPY = 1,
+	/**
+	 * LSDMA copies data from source to destination linearly in sub window
+	 */
+	DMUB_CMD__LSDMA_LINEAR_SUB_WINDOW_COPY = 2,
+	/**
+	 * Send the tiled-to-tiled copy command
+	 */
+	DMUB_CMD__LSDMA_TILED_TO_TILED_COPY = 3,
+	/**
+	 * Send the poll reg write command
+	 */
+	DMUB_CMD__LSDMA_POLL_REG_WRITE = 4,
+	/**
+	 * Send the pio copy command
+	 */
+	DMUB_CMD__LSDMA_PIO_COPY = 5,
+	/**
+	 * Send the pio constfill command
+	 */
+	DMUB_CMD__LSDMA_PIO_CONSTFILL = 6,
+};
+
+struct abm_ace_curve {
+	/**
+	 * @offsets: ACE curve offsets.
+	 */
+	uint32_t offsets[ABM_MAX_NUM_OF_ACE_SEGMENTS];
+
+	/**
+	 * @thresholds: ACE curve thresholds.
+	 */
+	uint32_t thresholds[ABM_MAX_NUM_OF_ACE_SEGMENTS];
+
+	/**
+	 * @slopes: ACE curve slopes.
+	 */
+	uint32_t slopes[ABM_MAX_NUM_OF_ACE_SEGMENTS];
+};
+
+struct fixed_pt_format {
+	/**
+	 * @sign_bit: Indicates whether one bit is reserved for the sign.
+	 */
+	bool sign_bit;
+
+	/**
+	 * @num_int_bits: Number of bits used for integer part.
+	 */
+	uint8_t num_int_bits;
+
+	/**
+	 * @num_frac_bits: Number of bits used for fractional part.
+	 */
+	uint8_t num_frac_bits;
+
+	/**
+	 * @pad: Explicit padding to 4 byte boundary.
+	 */
+	uint8_t pad;
+};
+
+struct abm_caps {
+	/**
+	 * @num_hg_bins: Number of histogram bins.
+	 */
+	uint8_t num_hg_bins;
+
+	/**
+	 * @num_ace_segments: Number of ACE curve segments.
+	 */
+	uint8_t num_ace_segments;
+
+	/**
+	 * @pad: Explicit padding to 4 byte boundary.
+	 */
+	uint8_t pad[2];
+
+	/**
+	 * @ace_thresholds_format: Format of the ACE thresholds. If not programmable, it is set to 0.
+	 */
+	struct fixed_pt_format ace_thresholds_format;
+
+	/**
+	 * @ace_offsets_format: Format of the ACE offsets. If not programmable, it is set to 0.
+	 */
+	struct fixed_pt_format ace_offsets_format;
+
+	/**
+	 * @ace_slopes_format: Format of the ACE slopes.
+	 */
+	struct fixed_pt_format ace_slopes_format;
 };
 
 /**
@@ -2119,6 +5428,16 @@ struct dmub_cmd_abm_set_pipe_data {
 	 * TODO: Remove.
 	 */
 	uint8_t ramping_boundary;
+
+	/**
+	 * PwrSeq HW Instance.
+	 */
+	uint8_t pwrseq_inst;
+
+	/**
+	 * Explicit padding to 4 byte boundary.
+	 */
+	uint8_t pad[3];
 };
 
 /**
@@ -2134,6 +5453,24 @@ struct dmub_rb_cmd_abm_set_pipe {
 	 * Data passed from driver to FW in a DMUB_CMD__ABM_SET_PIPE command.
 	 */
 	struct dmub_cmd_abm_set_pipe_data abm_set_pipe_data;
+};
+
+/**
+ * Type of backlight control method to be used by ABM module
+ */
+enum dmub_backlight_control_type {
+	/**
+	 * PWM Backlight control
+	 */
+	DMU_BACKLIGHT_CONTROL_PWM = 0,
+	/**
+	 * VESA Aux-based backlight control
+	 */
+	DMU_BACKLIGHT_CONTROL_VESA_AUX = 1,
+	/**
+	 * AMD DPCD Aux-based backlight control
+	 */
+	DMU_BACKLIGHT_CONTROL_AMD_AUX = 2,
 };
 
 /**
@@ -2163,9 +5500,42 @@ struct dmub_cmd_abm_set_backlight_data {
 	uint8_t panel_mask;
 
 	/**
+	 * AUX HW Instance.
+	 */
+	uint8_t aux_inst;
+
+	/**
 	 * Explicit padding to 4 byte boundary.
 	 */
-	uint8_t pad[2];
+	uint8_t pad[1];
+
+	/**
+	 * Backlight control type.
+	 * Value 0 is PWM backlight control.
+	 * Value 1 is VAUX backlight control.
+	 * Value 2 is AMD DPCD AUX backlight control.
+	 */
+	enum dmub_backlight_control_type backlight_control_type;
+
+	/**
+	 * Minimum luminance in nits.
+	 */
+	uint32_t min_luminance;
+
+	/**
+	 * Maximum luminance in nits.
+	 */
+	uint32_t max_luminance;
+
+	/**
+	 * Minimum backlight in pwm.
+	 */
+	uint32_t min_backlight_pwm;
+
+	/**
+	 * Maximum backlight in pwm.
+	 */
+	uint32_t max_backlight_pwm;
 };
 
 /**
@@ -2403,6 +5773,228 @@ struct dmub_rb_cmd_abm_pause {
 };
 
 /**
+ * Data passed from driver to FW in a DMUB_CMD__ABM_QUERY_CAPS command.
+ */
+struct dmub_cmd_abm_query_caps_in {
+	/**
+	 * Panel instance.
+	 */
+	uint8_t panel_inst;
+
+	/**
+	 * Explicit padding to 4 byte boundary.
+	 */
+	uint8_t pad[3];
+};
+
+/**
+ * Data passed from FW to driver in a DMUB_CMD__ABM_QUERY_CAPS command.
+ */
+struct dmub_cmd_abm_query_caps_out {
+	/**
+	 * SW Algorithm caps.
+	 */
+	struct abm_caps sw_caps;
+
+	/**
+	 * ABM HW caps.
+	 */
+	struct abm_caps hw_caps;
+};
+
+/**
+ * Definition of a DMUB_CMD__ABM_QUERY_CAPS command.
+ */
+struct dmub_rb_cmd_abm_query_caps {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+
+	/**
+	 * Data passed between FW and driver in a DMUB_CMD__ABM_QUERY_CAPS command.
+	 */
+	union {
+		struct dmub_cmd_abm_query_caps_in  abm_query_caps_in;
+		struct dmub_cmd_abm_query_caps_out abm_query_caps_out;
+	} data;
+};
+
+/**
+ * enum dmub_abm_ace_curve_type - ACE curve type.
+ */
+enum dmub_abm_ace_curve_type {
+	/**
+	 * ACE curve as defined by the SW layer.
+	 */
+	ABM_ACE_CURVE_TYPE__SW = 0,
+	/**
+	 * ACE curve as defined by the SW to HW translation interface layer.
+	 */
+	ABM_ACE_CURVE_TYPE__SW_IF = 1,
+};
+
+/**
+ * enum dmub_abm_histogram_type - Histogram type.
+ */
+enum dmub_abm_histogram_type {
+	/**
+	 * ACE curve as defined by the SW layer.
+	 */
+	ABM_HISTOGRAM_TYPE__SW = 0,
+	/**
+	 * ACE curve as defined by the SW to HW translation interface layer.
+	 */
+	ABM_HISTOGRAM_TYPE__SW_IF = 1,
+};
+
+/**
+ * Definition of a DMUB_CMD__ABM_GET_ACE_CURVE command.
+ */
+struct dmub_rb_cmd_abm_get_ace_curve {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+
+	/**
+	 * Address where ACE curve should be copied.
+	 */
+	union dmub_addr dest;
+
+	/**
+	 * Type of ACE curve being queried.
+	 */
+	enum dmub_abm_ace_curve_type ace_type;
+
+	/**
+	 * Indirect buffer length.
+	 */
+	uint16_t bytes;
+
+	/**
+	 * eDP panel instance.
+	 */
+	uint8_t panel_inst;
+
+	/**
+	 * Explicit padding to 4 byte boundary.
+	 */
+	uint8_t pad;
+};
+
+/**
+ * Definition of a DMUB_CMD__ABM_GET_HISTOGRAM command.
+ */
+struct dmub_rb_cmd_abm_get_histogram {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+
+	/**
+	 * Address where Histogram should be copied.
+	 */
+	union dmub_addr dest;
+
+	/**
+	 * Type of Histogram being queried.
+	 */
+	enum dmub_abm_histogram_type histogram_type;
+
+	/**
+	 * Indirect buffer length.
+	 */
+	uint16_t bytes;
+
+	/**
+	 * eDP panel instance.
+	 */
+	uint8_t panel_inst;
+
+	/**
+	 * Explicit padding to 4 byte boundary.
+	 */
+	uint8_t pad;
+};
+
+/**
+ * Definition of a DMUB_CMD__ABM_SAVE_RESTORE command.
+ */
+struct dmub_rb_cmd_abm_save_restore {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+
+	/**
+	 * OTG hw instance
+	 */
+	uint8_t otg_inst;
+
+	/**
+	 * Enable or disable ABM pause
+	 */
+	uint8_t freeze;
+
+	/**
+	 * Explicit padding to 4 byte boundary.
+	 */
+	uint8_t debug;
+
+	/**
+	 * Data passed from driver to FW in a DMUB_CMD__ABM_INIT_CONFIG command.
+	 */
+	struct dmub_cmd_abm_init_config_data abm_init_config_data;
+};
+
+/**
+ * Data passed from driver to FW in a DMUB_CMD__ABM_SET_EVENT command.
+ */
+
+struct dmub_cmd_abm_set_event_data {
+
+	/**
+	 * VB Scaling Init. Strength Mapping
+	 * Byte 0: 0~255 for VB level 0
+	 * Byte 1: 0~255 for VB level 1
+	 * Byte 2: 0~255 for VB level 2
+	 * Byte 3: 0~255 for VB level 3
+	 */
+	uint32_t vb_scaling_strength_mapping;
+	/**
+	 * VariBright Scaling Enable
+	 */
+	uint8_t vb_scaling_enable;
+	/**
+	 * Panel Control HW instance mask.
+	 * Bit 0 is Panel Control HW instance 0.
+	 * Bit 1 is Panel Control HW instance 1.
+	 */
+	uint8_t panel_mask;
+
+	/**
+	 * Explicit padding to 4 byte boundary.
+	 */
+	uint8_t pad[2];
+};
+
+/**
+ * Definition of a DMUB_CMD__ABM_SET_EVENT command.
+ */
+struct dmub_rb_cmd_abm_set_event {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+
+	/**
+	 * Data passed from driver to FW in a DMUB_CMD__ABM_SET_EVENT command.
+	 */
+	struct dmub_cmd_abm_set_event_data abm_set_event_data;
+};
+
+/**
  * Data passed from driver to FW in a DMUB_CMD__QUERY_FEATURE_CAPS command.
  */
 struct dmub_cmd_query_feature_caps_data {
@@ -2427,19 +6019,28 @@ struct dmub_rb_cmd_query_feature_caps {
 	struct dmub_cmd_query_feature_caps_data query_feature_caps_data;
 };
 
-struct dmub_optc_state {
-	uint32_t v_total_max;
-	uint32_t v_total_min;
-	uint32_t v_total_mid;
-	uint32_t v_total_mid_frame_num;
-	uint32_t tg_inst;
-	uint32_t enable_manual_trigger;
-	uint32_t clear_force_vsync;
+/**
+ * Data passed from driver to FW in a DMUB_CMD__GET_VISUAL_CONFIRM_COLOR command.
+ */
+struct dmub_cmd_visual_confirm_color_data {
+	/**
+	 * DMUB visual confirm color
+	 */
+	struct dmub_visual_confirm_color visual_confirm_color;
 };
 
-struct dmub_rb_cmd_drr_update {
-		struct dmub_cmd_header header;
-		struct dmub_optc_state dmub_optc_state_req;
+/**
+ * Definition of a DMUB_CMD__GET_VISUAL_CONFIRM_COLOR command.
+ */
+struct dmub_rb_cmd_get_visual_confirm_color {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+	/**
+	 * Data passed from driver to FW in a DMUB_CMD__GET_VISUAL_CONFIRM_COLOR command.
+	 */
+	struct dmub_cmd_visual_confirm_color_data visual_confirm_color_data;
 };
 
 /**
@@ -2454,13 +6055,17 @@ enum dmub_cmd_panel_cntl_type {
 	 * Queries backlight info for the embedded panel.
 	 */
 	DMUB_CMD__PANEL_CNTL_QUERY_BACKLIGHT_INFO = 1,
+	/**
+	 * Sets the PWM Freq as per user's requirement.
+	 */
+	DMUB_CMD__PANEL_DEBUG_PWM_FREQ = 2,
 };
 
 /**
  * struct dmub_cmd_panel_cntl_data - Panel control data.
  */
 struct dmub_cmd_panel_cntl_data {
-	uint32_t inst; /**< panel instance */
+	uint32_t pwrseq_inst; /**< pwrseq instance */
 	uint32_t current_backlight; /* in/out */
 	uint32_t bl_pwm_cntl; /* in/out */
 	uint32_t bl_pwm_period_cntl; /* in/out */
@@ -2480,13 +6085,46 @@ struct dmub_rb_cmd_panel_cntl {
 	struct dmub_cmd_panel_cntl_data data; /**< payload */
 };
 
+struct dmub_optc_state {
+	uint32_t v_total_max;
+	uint32_t v_total_min;
+	uint32_t tg_inst;
+};
+
+struct dmub_rb_cmd_drr_update {
+	struct dmub_cmd_header header;
+	struct dmub_optc_state dmub_optc_state_req;
+};
+
+struct dmub_cmd_fw_assisted_mclk_switch_pipe_data {
+	uint32_t pix_clk_100hz;
+	uint8_t max_ramp_step;
+	uint8_t pipes;
+	uint8_t min_refresh_in_hz;
+	uint8_t pipe_count;
+	uint8_t pipe_index[4];
+};
+
+struct dmub_cmd_fw_assisted_mclk_switch_config {
+	uint8_t fams_enabled;
+	uint8_t visual_confirm_enabled;
+	uint16_t vactive_stretch_margin_us; // Extra vblank stretch required when doing FPO + Vactive
+	struct dmub_cmd_fw_assisted_mclk_switch_pipe_data pipe_data[DMUB_MAX_FPO_STREAMS];
+};
+
+struct dmub_rb_cmd_fw_assisted_mclk_switch {
+	struct dmub_cmd_header header;
+	struct dmub_cmd_fw_assisted_mclk_switch_config config_data;
+};
+
 /**
  * Data passed from driver to FW in a DMUB_CMD__VBIOS_LVTMA_CONTROL command.
  */
 struct dmub_cmd_lvtma_control_data {
 	uint8_t uc_pwr_action; /**< LVTMA_ACTION */
-	uint8_t reserved_0[3]; /**< For future use */
-	uint8_t panel_inst; /**< LVTMA control instance */
+	uint8_t bypass_panel_control_wait;
+	uint8_t reserved_0[2]; /**< For future use */
+	uint8_t pwrseq_inst; /**< LVTMA control instance */
 	uint8_t reserved_1[3]; /**< For future use */
 };
 
@@ -2520,6 +6158,34 @@ struct dmub_rb_cmd_transmitter_query_dp_alt_data {
 struct dmub_rb_cmd_transmitter_query_dp_alt {
 	struct dmub_cmd_header header; /**< header */
 	struct dmub_rb_cmd_transmitter_query_dp_alt_data data; /**< payload */
+};
+
+struct phy_test_mode {
+	uint8_t mode;
+	uint8_t pat0;
+	uint8_t pad[2];
+};
+
+/**
+ * Data passed in/out in a DMUB_CMD__VBIOS_TRANSMITTER_SET_PHY_FSM command.
+ */
+struct dmub_rb_cmd_transmitter_set_phy_fsm_data {
+	uint8_t phy_id; /**< 0=UNIPHYA, 1=UNIPHYB, 2=UNIPHYC, 3=UNIPHYD, 4=UNIPHYE, 5=UNIPHYF */
+	uint8_t mode; /**< HDMI/DP/DP2 etc */
+	uint8_t lane_num; /**< Number of lanes */
+	uint32_t symclk_100Hz; /**< PLL symclock in 100hz */
+	struct phy_test_mode test_mode;
+	enum dmub_phy_fsm_state state;
+	uint32_t status;
+	uint8_t pad;
+};
+
+/**
+ * Definition of a DMUB_CMD__VBIOS_TRANSMITTER_SET_PHY_FSM command.
+ */
+struct dmub_rb_cmd_transmitter_set_phy_fsm {
+	struct dmub_cmd_header header; /**< header */
+	struct dmub_rb_cmd_transmitter_set_phy_fsm_data data; /**< payload */
 };
 
 /**
@@ -2616,11 +6282,513 @@ struct dmub_rb_cmd_get_usbc_cable_id {
 	} data;
 };
 
+enum dmub_cmd_fused_io_sub_type {
+	DMUB_CMD__FUSED_IO_EXECUTE = 0,
+	DMUB_CMD__FUSED_IO_ABORT = 1,
+};
+
+enum dmub_cmd_fused_request_type {
+	FUSED_REQUEST_READ,
+	FUSED_REQUEST_WRITE,
+	FUSED_REQUEST_POLL,
+};
+
+enum dmub_cmd_fused_request_status {
+	FUSED_REQUEST_STATUS_SUCCESS,
+	FUSED_REQUEST_STATUS_BEGIN,
+	FUSED_REQUEST_STATUS_SUBMIT,
+	FUSED_REQUEST_STATUS_REPLY,
+	FUSED_REQUEST_STATUS_POLL,
+	FUSED_REQUEST_STATUS_ABORTED,
+	FUSED_REQUEST_STATUS_FAILED = 0x80,
+	FUSED_REQUEST_STATUS_INVALID,
+	FUSED_REQUEST_STATUS_BUSY,
+	FUSED_REQUEST_STATUS_TIMEOUT,
+	FUSED_REQUEST_STATUS_POLL_TIMEOUT,
+};
+
+struct dmub_cmd_fused_request {
+	uint8_t status;
+	uint8_t type : 2;
+	uint8_t _reserved0 : 3;
+	uint8_t poll_mask_msb : 3;  // Number of MSB to zero out from last byte before comparing
+	uint8_t identifier;
+	uint8_t _reserved1;
+	uint32_t timeout_us;
+	union dmub_cmd_fused_request_location {
+		struct dmub_cmd_fused_request_location_i2c {
+			uint8_t is_aux : 1;  // False
+			uint8_t ddc_line : 3;
+			uint8_t over_aux : 1;
+			uint8_t _reserved0 : 3;
+			uint8_t address;
+			uint8_t offset;
+			uint8_t length;
+		} i2c;
+		struct dmub_cmd_fused_request_location_aux {
+			uint32_t is_aux : 1;  // True
+			uint32_t ddc_line : 3;
+			uint32_t address : 20;
+			uint32_t length : 8;  // Automatically split into 16B transactions
+		} aux;
+	} u;
+	uint8_t buffer[0x30];  // Read: out, write: in, poll: expected
+};
+
+struct dmub_rb_cmd_fused_io {
+	struct dmub_cmd_header header;
+	struct dmub_cmd_fused_request request;
+};
+
+/**
+ * Command type of a DMUB_CMD__SECURE_DISPLAY command
+ */
+enum dmub_cmd_secure_display_type {
+	DMUB_CMD__SECURE_DISPLAY_TEST_CMD = 0,		/* test command to only check if inbox message works */
+	DMUB_CMD__SECURE_DISPLAY_CRC_STOP_UPDATE,
+	DMUB_CMD__SECURE_DISPLAY_CRC_WIN_NOTIFY,
+	DMUB_CMD__SECURE_DISPLAY_MULTIPLE_CRC_STOP_UPDATE,
+	DMUB_CMD__SECURE_DISPLAY_MULTIPLE_CRC_WIN_NOTIFY
+};
+
+#define MAX_ROI_NUM	2
+
+struct dmub_cmd_roi_info {
+	uint16_t x_start;
+	uint16_t x_end;
+	uint16_t y_start;
+	uint16_t y_end;
+	uint8_t otg_id;
+	uint8_t phy_id;
+};
+
+struct dmub_cmd_roi_window_ctl {
+	uint16_t x_start;
+	uint16_t x_end;
+	uint16_t y_start;
+	uint16_t y_end;
+	bool enable;
+};
+
+struct dmub_cmd_roi_ctl_info {
+	uint8_t otg_id;
+	uint8_t phy_id;
+	struct dmub_cmd_roi_window_ctl roi_ctl[MAX_ROI_NUM];
+};
+
+/**
+ * Definition of a DMUB_CMD__SECURE_DISPLAY command
+ */
+struct dmub_rb_cmd_secure_display {
+	struct dmub_cmd_header header;
+	/**
+	 * Data passed from driver to dmub firmware.
+	 */
+	struct dmub_cmd_roi_info roi_info;
+	struct dmub_cmd_roi_ctl_info mul_roi_ctl;
+};
+
+/**
+ * Command type of a DMUB_CMD__PSP command
+ */
+enum dmub_cmd_psp_type {
+	DMUB_CMD__PSP_ASSR_ENABLE = 0
+};
+
+/**
+ * Data passed from driver to FW in a DMUB_CMD__PSP_ASSR_ENABLE command.
+ */
+struct dmub_cmd_assr_enable_data {
+	/**
+	 * ASSR enable or disable.
+	 */
+	uint8_t enable;
+	/**
+	 * PHY port type.
+	 * Indicates eDP / non-eDP port type
+	 */
+	uint8_t phy_port_type;
+	/**
+	 * PHY port ID.
+	 */
+	uint8_t phy_port_id;
+	/**
+	 * Link encoder index.
+	 */
+	uint8_t link_enc_index;
+	/**
+	 * HPO mode.
+	 */
+	uint8_t hpo_mode;
+
+	/**
+	 * Reserved field.
+	 */
+	uint8_t reserved[7];
+};
+
+/**
+ * Definition of a DMUB_CMD__PSP_ASSR_ENABLE command.
+ */
+struct dmub_rb_cmd_assr_enable {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+
+	/**
+	 * Assr data.
+	 */
+	struct dmub_cmd_assr_enable_data assr_data;
+
+	/**
+	 * Reserved field.
+	 */
+	uint32_t reserved[3];
+};
+
+/**
+ * Current definition of "ips_mode" from driver
+ */
+enum ips_residency_mode {
+	IPS_RESIDENCY__IPS1_MAX,
+	IPS_RESIDENCY__IPS2,
+	IPS_RESIDENCY__IPS1_RCG,
+	IPS_RESIDENCY__IPS1_ONO2_ON,
+	IPS_RESIDENCY__IPS1_Z8_RETENTION,
+	IPS_RESIDENCY__PG_ONO_LAST_SEEN_IN_IPS,
+	IPS_RESIDENCY__PG_ONO_CURRENT_STATE
+};
+
+#define NUM_IPS_HISTOGRAM_BUCKETS 16
+
+/**
+ * IPS residency statistics to be sent to driver - subset of struct dmub_ips_residency_stats
+ */
+struct dmub_ips_residency_info {
+	uint32_t residency_millipercent;
+	uint32_t entry_counter;
+	uint32_t histogram[NUM_IPS_HISTOGRAM_BUCKETS];
+	uint64_t total_time_us;
+	uint64_t total_inactive_time_us;
+	uint32_t ono_pg_state_at_collection;
+	uint32_t ono_pg_state_last_seen_in_ips;
+};
+
+/**
+ * Data passed from driver to FW in a DMUB_CMD__IPS_RESIDENCY_CNTL command.
+ */
+struct dmub_cmd_ips_residency_cntl_data {
+	uint8_t panel_inst;
+	uint8_t start_measurement;
+	uint8_t padding[2]; // align to 4-byte boundary
+};
+
+struct dmub_rb_cmd_ips_residency_cntl {
+	struct dmub_cmd_header header;
+	struct dmub_cmd_ips_residency_cntl_data cntl_data;
+};
+
+/**
+ * Data passed from FW to driver in a DMUB_CMD__IPS_QUERY_RESIDENCY_INFO command.
+ */
+struct dmub_cmd_ips_query_residency_info_data {
+	union dmub_addr dest;
+	uint32_t size;
+	uint32_t ips_mode;
+	uint8_t panel_inst;
+	uint8_t padding[3]; // align to 4-byte boundary
+};
+
+struct dmub_rb_cmd_ips_query_residency_info {
+	struct dmub_cmd_header header;
+	struct dmub_cmd_ips_query_residency_info_data info_data;
+};
+
+/**
+ * struct dmub_cmd_cursor_offload_init_data - Payload for cursor offload init command.
+ */
+struct dmub_cmd_cursor_offload_init_data {
+	union dmub_addr state_addr; /**< State address for dmub_cursor_offload */
+	uint32_t state_size; /**< State size for dmub_cursor_offload */
+};
+
+/**
+ * struct dmub_rb_cmd_cursor_offload_init - Data for initializing cursor offload.
+ */
+struct dmub_rb_cmd_cursor_offload_init {
+	struct dmub_cmd_header header;
+	struct dmub_cmd_cursor_offload_init_data init_data;
+};
+
+/**
+ * struct dmub_cmd_cursor_offload_stream_data - Payload for cursor offload stream command.
+ */
+struct dmub_cmd_cursor_offload_stream_data {
+	uint32_t otg_inst: 4; /**< OTG instance to control  */
+	uint32_t reserved: 28; /**< Reserved for future use */
+	uint32_t line_time_in_ns; /**< Line time in ns for the OTG */
+	uint32_t v_total_max; /**< OTG v_total_max */
+};
+
+/**
+ * struct dmub_rb_cmd_cursor_offload_stream_cntl - Controls a stream for cursor offload.
+ */
+struct dmub_rb_cmd_cursor_offload_stream_cntl {
+	struct dmub_cmd_header header;
+	struct dmub_cmd_cursor_offload_stream_data data;
+};
+
+/**
+ * Data passed from driver to FW in a DMUB_CMD__PR_ENABLE command.
+ */
+struct dmub_cmd_pr_enable_data {
+	/**
+	 * Panel Replay enable or disable.
+	 */
+	uint8_t enable;
+	/**
+	 * Panel Instance.
+	 * Panel isntance to identify which replay_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+	/**
+	 * Phy state to enter.
+	 * Values to use are defined in dmub_phy_fsm_state
+	 */
+	uint8_t phy_fsm_state;
+	/**
+	 * Phy rate for DP - RBR/HBR/HBR2/HBR3.
+	 * Set this using enum phy_link_rate.
+	 * This does not support HDMI/DP2 for now.
+	 */
+	uint8_t phy_rate;
+	/**
+	 * @hpo_stream_enc_inst: HPO stream encoder instance
+	 */
+	uint8_t hpo_stream_enc_inst;
+	/**
+	 * @hpo_link_enc_inst: HPO link encoder instance
+	 */
+	uint8_t hpo_link_enc_inst;
+	/**
+	 * @pad: Align structure to 4 byte boundary.
+	 */
+	uint8_t pad[2];
+};
+
+/**
+ * Definition of a DMUB_CMD__PR_ENABLE command.
+ * Panel Replay enable/disable is controlled using action in data.
+ */
+struct dmub_rb_cmd_pr_enable {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+
+	struct dmub_cmd_pr_enable_data data;
+};
+
+/**
+ * Data passed from driver to FW in a DMUB_CMD__PR_COPY_SETTINGS command.
+ */
+struct dmub_cmd_pr_copy_settings_data {
+	/**
+	 * Flags that can be set by driver to change some replay behaviour.
+	 */
+	union pr_debug_flags debug;
+
+	/**
+	 * @flags: Flags used to determine feature functionality.
+	 */
+	union pr_hw_flags flags;
+
+	/**
+	 * DPP HW instance.
+	 */
+	uint8_t dpp_inst;
+	/**
+	 * OTG HW instance.
+	 */
+	uint8_t otg_inst;
+	/**
+	 * DIG FE HW instance.
+	 */
+	uint8_t digfe_inst;
+	/**
+	 * DIG BE HW instance.
+	 */
+	uint8_t digbe_inst;
+	/**
+	 * AUX HW instance.
+	 */
+	uint8_t aux_inst;
+	/**
+	 * Panel Instance.
+	 * Panel isntance to identify which psr_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+	/**
+	 * PHY instance.
+	 */
+	uint8_t dpphy_inst;
+	/**
+	 * Determines if SMU optimzations are enabled/disabled.
+	 */
+	uint8_t smu_optimizations_en;
+	/**
+	 * Length of each horizontal line in ns.
+	 */
+	uint32_t line_time_in_ns;
+	/*
+	 * Use FSFT afftet pixel clk
+	 */
+	uint32_t pix_clk_100hz;
+	/*
+	 * Use Original pixel clock
+	 */
+	uint32_t sink_pix_clk_100hz;
+	/**
+	 * Use for AUX-less ALPM LFPS wake operation
+	 */
+	struct dmub_alpm_auxless_data auxless_alpm_data;
+	/**
+	 * DSC Slice height.
+	 */
+	uint16_t dsc_slice_height;
+	/*
+	 * Use FSM state for Replay power up/down
+	 */
+	uint8_t use_phy_fsm;
+	/**
+	 * @hpo_stream_enc_inst: HPO stream encoder instance
+	 */
+	uint8_t hpo_stream_enc_inst;
+	/**
+	 * @hpo_link_enc_inst: HPO link encoder instance
+	 */
+	uint8_t hpo_link_enc_inst;
+	/*
+	 * Selective Update granularity needed.
+	 */
+	uint8_t su_granularity_needed;
+	/*
+	 * Horizontal granularity for Selective Update.
+	 */
+	uint16_t su_x_granularity;
+	/*
+	 * Extended caps of vertical granularity for Selective Update.
+	 */
+	uint16_t su_y_granularity_extended_caps;
+	/*
+	 * Vertical granularity for Selective Update.
+	 */
+	uint8_t su_y_granularity;
+	/**
+	 * @main_link_activity_option: Indicates main link activity option selected
+	 */
+	uint8_t main_link_activity_option;
+};
+
+/**
+ * Definition of a DMUB_CMD__PR_COPY_SETTINGS command.
+ */
+struct dmub_rb_cmd_pr_copy_settings {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+	/**
+	 * Data passed from driver to FW in a DMUB_CMD__PR_COPY_SETTINGS command.
+	 */
+	struct dmub_cmd_pr_copy_settings_data data;
+};
+
+union dmub_pr_runtime_flags {
+	struct {
+		uint32_t disable_abm_optimization : 1; // Disable ABM optimization for PR
+	} bitfields;
+	uint32_t u32All;
+};
+
+struct dmub_cmd_pr_update_state_data {
+	/**
+	 * Panel Instance.
+	 * Panel isntance to identify which psr_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+
+	uint8_t pad[3]; // align to 4-byte boundary
+	/*
+	 * Update flags to control the update behavior.
+	 */
+	uint32_t update_flag;
+	/**
+	 * state/data to set.
+	 */
+	uint32_t coasting_vtotal;
+	uint32_t sync_mode;
+
+	union dmub_pr_runtime_flags pr_runtime_flags;
+};
+
+struct dmub_cmd_pr_general_cmd_data {
+	/**
+	 * Panel Instance.
+	 * Panel isntance to identify which psr_state to use
+	 * Currently the support is only for 0 or 1
+	 */
+	uint8_t panel_inst;
+	/**
+	 * subtype: PR general cmd sub type
+	 */
+	uint8_t subtype;
+
+	uint8_t pad[2];
+	/**
+	 * config data by different subtypes
+	 */
+	union {
+		uint32_t u32All;
+	} data;
+};
+
+/**
+ * Definition of a DMUB_CMD__PR_UPDATE_STATE command.
+ */
+struct dmub_rb_cmd_pr_update_state {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+	/**
+	 * Data passed from driver to FW in a DMUB_CMD__PR_UPDATE_STATE command.
+	 */
+	struct dmub_cmd_pr_update_state_data data;
+};
+
+/**
+ * Definition of a DMUB_CMD__PR_GENERAL_CMD command.
+ */
+struct dmub_rb_cmd_pr_general_cmd {
+	/**
+	 * Command header.
+	 */
+	struct dmub_cmd_header header;
+	/**
+	 * Data passed from driver to FW in a DMUB_CMD__PR_GENERAL_CMD command.
+	 */
+	struct dmub_cmd_pr_general_cmd_data data;
+};
+
 /**
  * union dmub_rb_cmd - DMUB inbox command.
  */
 union dmub_rb_cmd {
-	struct dmub_rb_cmd_lock_hw lock_hw;
 	/**
 	 * Elements shared with all commands.
 	 */
@@ -2662,6 +6830,10 @@ union dmub_rb_cmd {
 	 */
 	struct dmub_rb_cmd_dig1_transmitter_control dig1_transmitter_control;
 	/**
+	 * Definition of a DMUB_CMD__VBIOS_DOMAIN_CONTROL command.
+	 */
+	struct dmub_rb_cmd_domain_control domain_control;
+	/**
 	 * Definition of a DMUB_CMD__PSR_SET_VERSION command.
 	 */
 	struct dmub_rb_cmd_psr_set_version psr_set_version;
@@ -2682,6 +6854,23 @@ union dmub_rb_cmd {
 	 */
 	struct dmub_rb_cmd_psr_force_static psr_force_static;
 	/**
+	 * Definition of a DMUB_CMD__UPDATE_DIRTY_RECT command.
+	 */
+	struct dmub_rb_cmd_update_dirty_rect update_dirty_rect;
+	/**
+	 * Definition of a DMUB_CMD__UPDATE_CURSOR_INFO command.
+	 */
+	struct dmub_rb_cmd_update_cursor_info update_cursor_info;
+	/**
+	 * Definition of a DMUB_CMD__HW_LOCK command.
+	 * Command is used by driver and FW.
+	 */
+	struct dmub_rb_cmd_lock_hw lock_hw;
+	/**
+	 * Definition of a DMUB_CMD__SET_SINK_VTOTAL_IN_PSR_ACTIVE command.
+	 */
+	struct dmub_rb_cmd_psr_set_vtotal psr_set_vtotal;
+	/**
 	 * Definition of a DMUB_CMD__SET_PSR_POWER_OPT command.
 	 */
 	struct dmub_rb_cmd_psr_set_power_opt psr_set_power_opt;
@@ -2693,6 +6882,14 @@ union dmub_rb_cmd {
 	 * Definition of a DMUB_CMD__MALL command.
 	 */
 	struct dmub_rb_cmd_mall mall;
+
+	/**
+	 * Definition of a DMUB_CMD__CAB command.
+	 */
+	struct dmub_rb_cmd_cab_for_ss cab;
+
+	struct dmub_rb_cmd_fw_assisted_mclk_switch_v2 fw_assisted_mclk_switch_v2;
+
 	/**
 	 * Definition of a DMUB_CMD__IDLE_OPT_DCN_RESTORE command.
 	 */
@@ -2707,6 +6904,7 @@ union dmub_rb_cmd {
 	 * Definition of DMUB_CMD__PANEL_CNTL commands.
 	 */
 	struct dmub_rb_cmd_panel_cntl panel_cntl;
+
 	/**
 	 * Definition of a DMUB_CMD__ABM_SET_PIPE command.
 	 */
@@ -2743,6 +6941,31 @@ union dmub_rb_cmd {
 	struct dmub_rb_cmd_abm_pause abm_pause;
 
 	/**
+	 * Definition of a DMUB_CMD__ABM_SAVE_RESTORE command.
+	 */
+	struct dmub_rb_cmd_abm_save_restore abm_save_restore;
+
+	/**
+	 * Definition of a DMUB_CMD__ABM_QUERY_CAPS command.
+	 */
+	struct dmub_rb_cmd_abm_query_caps abm_query_caps;
+
+	/**
+	 * Definition of a DMUB_CMD__ABM_GET_ACE_CURVE command.
+	 */
+	struct dmub_rb_cmd_abm_get_ace_curve abm_get_ace_curve;
+
+	/**
+	 * Definition of a DMUB_CMD__ABM_GET_HISTOGRAM command.
+	 */
+	struct dmub_rb_cmd_abm_get_histogram abm_get_histogram;
+
+	/**
+	 * Definition of a DMUB_CMD__ABM_SET_EVENT command.
+	 */
+	struct dmub_rb_cmd_abm_set_event abm_set_event;
+
+	/**
 	 * Definition of a DMUB_CMD__DP_AUX_ACCESS command.
 	 */
 	struct dmub_rb_cmd_dp_aux_access dp_aux_access;
@@ -2756,7 +6979,14 @@ union dmub_rb_cmd {
 	 * Definition of a DMUB_CMD__QUERY_FEATURE_CAPS command.
 	 */
 	struct dmub_rb_cmd_query_feature_caps query_feature_caps;
+
+	/**
+	 * Definition of a DMUB_CMD__GET_VISUAL_CONFIRM_COLOR command.
+	 */
+	struct dmub_rb_cmd_get_visual_confirm_color visual_confirm_color;
 	struct dmub_rb_cmd_drr_update drr_update;
+	struct dmub_rb_cmd_fw_assisted_mclk_switch fw_assisted_mclk_switch;
+
 	/**
 	 * Definition of a DMUB_CMD__VBIOS_LVTMA_CONTROL command.
 	 */
@@ -2766,17 +6996,29 @@ union dmub_rb_cmd {
 	 */
 	struct dmub_rb_cmd_transmitter_query_dp_alt query_dp_alt;
 	/**
+	 * Definition of a DMUB_CMD__VBIOS_TRANSMITTER_SET_PHY_FSM command.
+	 */
+	struct dmub_rb_cmd_transmitter_set_phy_fsm set_phy_fsm;
+	/**
 	 * Definition of a DMUB_CMD__DPIA_DIG1_CONTROL command.
 	 */
 	struct dmub_rb_cmd_dig1_dpia_control dig1_dpia_control;
 	/**
 	 * Definition of a DMUB_CMD__DPIA_SET_CONFIG_ACCESS command.
 	 */
-	struct dmub_rb_cmd_set_config_access set_config_access;
+	struct dmub_rb_cmd_set_config_access set_config_access; // (deprecated)
+	/**
+	 * Definition of a DMUB_CMD__DPIA_SET_CONFIG_ACCESS command.
+	 */
+	struct dmub_rb_cmd_set_config_request set_config_request;
 	/**
 	 * Definition of a DMUB_CMD__DPIA_MST_ALLOC_SLOTS command.
 	 */
 	struct dmub_rb_cmd_set_mst_alloc_slots set_mst_alloc_slots;
+	/**
+	 * Definition of a DMUB_CMD__DPIA_SET_TPS_NOTIFICATION command.
+	 */
+	struct dmub_rb_cmd_set_tps_notification set_tps_notification;
 	/**
 	 * Definition of a DMUB_CMD__EDID_CEA command.
 	 */
@@ -2790,6 +7032,116 @@ union dmub_rb_cmd {
 	 * Definition of a DMUB_CMD__QUERY_HPD_STATE command.
 	 */
 	struct dmub_rb_cmd_query_hpd_state query_hpd;
+	/**
+	 * Definition of a DMUB_CMD__SECURE_DISPLAY command.
+	 */
+	struct dmub_rb_cmd_secure_display secure_display;
+
+	/**
+	 * Definition of a DMUB_CMD__DPIA_HPD_INT_ENABLE command.
+	 */
+	struct dmub_rb_cmd_dpia_hpd_int_enable dpia_hpd_int_enable;
+	/**
+	 * Definition of a DMUB_CMD__IDLE_OPT_DCN_NOTIFY_IDLE command.
+	 */
+	struct dmub_rb_cmd_idle_opt_dcn_notify_idle idle_opt_notify_idle;
+	/**
+	 * Definition of a DMUB_CMD__IDLE_OPT_SET_DC_POWER_STATE command.
+	 */
+	struct dmub_rb_cmd_idle_opt_set_dc_power_state idle_opt_set_dc_power_state;
+	/*
+	 * Definition of a DMUB_CMD__REPLAY_COPY_SETTINGS command.
+	 */
+	struct dmub_rb_cmd_replay_copy_settings replay_copy_settings;
+	/**
+	 * Definition of a DMUB_CMD__REPLAY_ENABLE command.
+	 */
+	struct dmub_rb_cmd_replay_enable replay_enable;
+	/**
+	 * Definition of a DMUB_CMD__SET_REPLAY_POWER_OPT command.
+	 */
+	struct dmub_rb_cmd_replay_set_power_opt replay_set_power_opt;
+	/**
+	 * Definition of a DMUB_CMD__REPLAY_SET_COASTING_VTOTAL command.
+	 */
+	struct dmub_rb_cmd_replay_set_coasting_vtotal replay_set_coasting_vtotal;
+	/**
+	 * Definition of a DMUB_CMD__REPLAY_SET_POWER_OPT_AND_COASTING_VTOTAL command.
+	 */
+	struct dmub_rb_cmd_replay_set_power_opt_and_coasting_vtotal replay_set_power_opt_and_coasting_vtotal;
+
+	struct dmub_rb_cmd_replay_set_timing_sync replay_set_timing_sync;
+	/**
+	 * Definition of a DMUB_CMD__REPLAY_SET_RESIDENCY_FRAMEUPDATE_TIMER command.
+	 */
+	struct dmub_rb_cmd_replay_set_frameupdate_timer replay_set_frameupdate_timer;
+	/**
+	 * Definition of a DMUB_CMD__REPLAY_SET_PSEUDO_VTOTAL command.
+	 */
+	struct dmub_rb_cmd_replay_set_pseudo_vtotal replay_set_pseudo_vtotal;
+	/**
+	 * Definition of a DMUB_CMD__REPLAY_DISABLED_ADAPTIVE_SYNC_SDP command.
+	 */
+	struct dmub_rb_cmd_replay_disabled_adaptive_sync_sdp replay_disabled_adaptive_sync_sdp;
+	/**
+	 * Definition of a DMUB_CMD__REPLAY_SET_GENERAL_CMD command.
+	 */
+	struct dmub_rb_cmd_replay_set_general_cmd replay_set_general_cmd;
+	/**
+	 * Definition of a DMUB_CMD__PSP_ASSR_ENABLE command.
+	 */
+	struct dmub_rb_cmd_assr_enable assr_enable;
+
+	struct dmub_rb_cmd_fams2 fams2_config;
+
+	struct dmub_rb_cmd_ib ib_fams2_config;
+
+	struct dmub_rb_cmd_fams2_drr_update fams2_drr_update;
+
+	struct dmub_rb_cmd_fams2_flip fams2_flip;
+
+	struct dmub_rb_cmd_fused_io fused_io;
+
+	/**
+	 * Definition of a DMUB_CMD__LSDMA command.
+	 */
+	struct dmub_rb_cmd_lsdma lsdma;
+
+	struct dmub_rb_cmd_ips_residency_cntl ips_residency_cntl;
+
+	struct dmub_rb_cmd_ips_query_residency_info ips_query_residency_info;
+	/**
+	 * Definition of a DMUB_CMD__CURSOR_OFFLOAD_INIT command.
+	 */
+	struct dmub_rb_cmd_cursor_offload_init cursor_offload_init;
+	/**
+	 * Definition of a DMUB_CMD__CURSOR_OFFLOAD control commands.
+	 * - DMUB_CMD__CURSOR_OFFLOAD_STREAM_ENABLE
+	 * - DMUB_CMD__CURSOR_OFFLOAD_STREAM_DISABLE
+	 * - DMUB_CMD__CURSOR_OFFLOAD_STREAM_PROGRAM
+	 * - DMUB_CMD__CURSOR_OFFLOAD_STREAM_UPDATE_DRR
+	 */
+	struct dmub_rb_cmd_cursor_offload_stream_cntl cursor_offload_stream_ctnl;
+	/**
+	 * Definition of a DMUB_CMD__SMART_POWER_OLED_ENABLE command.
+	 */
+	struct dmub_rb_cmd_smart_power_oled_enable smart_power_oled_enable;
+	/**
+	 * Definition of a DMUB_CMD__DMUB_CMD__SMART_POWER_OLED_GETMAXCLL command.
+	 */
+	struct dmub_rb_cmd_smart_power_oled_getmaxcll smart_power_oled_getmaxcll;
+	/*
+	 * Definition of a DMUB_CMD__REPLAY_COPY_SETTINGS command.
+	 */
+	struct dmub_rb_cmd_pr_copy_settings pr_copy_settings;
+	/**
+	 * Definition of a DMUB_CMD__REPLAY_ENABLE command.
+	 */
+	struct dmub_rb_cmd_pr_enable pr_enable;
+
+	struct dmub_rb_cmd_pr_update_state pr_update_state;
+
+	struct dmub_rb_cmd_pr_general_cmd pr_general_cmd;
 };
 
 /**
@@ -2812,6 +7164,15 @@ union dmub_rb_out_cmd {
 	 * SET_CONFIG reply command.
 	 */
 	struct dmub_rb_cmd_dp_set_config_reply set_config_reply;
+	/**
+	 * DPIA notification command.
+	 */
+	struct dmub_rb_cmd_dpia_notification dpia_notification;
+	/**
+	 * HPD sense notification command.
+	 */
+	struct dmub_rb_cmd_hpd_sense_notify hpd_sense_notify;
+	struct dmub_rb_cmd_fused_io fused_io;
 };
 #pragma pack(pop)
 
@@ -2821,10 +7182,6 @@ union dmub_rb_out_cmd {
 //==============================================================================
 //< DMUB_RB>====================================================================
 //==============================================================================
-
-#if defined(__cplusplus)
-extern "C" {
-#endif
 
 /**
  * struct dmub_rb_init_params - Initialization params for DMUB ringbuffer
@@ -2863,6 +7220,45 @@ static inline bool dmub_rb_empty(struct dmub_rb *rb)
 }
 
 /**
+ * @brief gets number of outstanding requests in the RB
+ *
+ * @param rb DMUB Ringbuffer
+ * @return true if full
+ */
+static inline uint32_t dmub_rb_num_outstanding(struct dmub_rb *rb)
+{
+	uint32_t data_count;
+
+	if (rb->wrpt >= rb->rptr)
+		data_count = rb->wrpt - rb->rptr;
+	else
+		data_count = rb->capacity - (rb->rptr - rb->wrpt);
+
+	return data_count / DMUB_RB_CMD_SIZE;
+}
+
+/**
+ * @brief gets number of free buffers in the RB
+ *
+ * @param rb DMUB Ringbuffer
+ * @return true if full
+ */
+static inline uint32_t dmub_rb_num_free(struct dmub_rb *rb)
+{
+	uint32_t data_count;
+
+	if (rb->wrpt >= rb->rptr)
+		data_count = rb->wrpt - rb->rptr;
+	else
+		data_count = rb->capacity - (rb->rptr - rb->wrpt);
+
+	/* +1 because 1 entry is always unusable */
+	data_count += DMUB_RB_CMD_SIZE;
+
+	return (rb->capacity - data_count) / DMUB_RB_CMD_SIZE;
+}
+
+/**
  * @brief Checks if the ringbuffer is full
  *
  * @param rb DMUB Ringbuffer
@@ -2878,6 +7274,7 @@ static inline bool dmub_rb_full(struct dmub_rb *rb)
 	else
 		data_count = rb->capacity - (rb->rptr - rb->wrpt);
 
+	/* -1 because 1 entry is always unusable */
 	return (data_count == (rb->capacity - DMUB_RB_CMD_SIZE));
 }
 
@@ -2892,15 +7289,18 @@ static inline bool dmub_rb_full(struct dmub_rb *rb)
 static inline bool dmub_rb_push_front(struct dmub_rb *rb,
 				      const union dmub_rb_cmd *cmd)
 {
-	uint64_t volatile *dst = (uint64_t volatile *)((uint8_t *)(rb->base_address) + rb->wrpt);
-	const uint64_t *src = (const uint64_t *)cmd;
+	uint8_t *dst = (uint8_t *)(rb->base_address) + rb->wrpt;
+	const uint8_t *src = (const uint8_t *)cmd;
 	uint8_t i;
+
+	if (rb->capacity == 0)
+		return false;
 
 	if (dmub_rb_full(rb))
 		return false;
 
 	// copying data
-	for (i = 0; i < DMUB_RB_CMD_SIZE / sizeof(uint64_t); i++)
+	for (i = 0; i < DMUB_RB_CMD_SIZE; i++)
 		*dst++ = *src++;
 
 	rb->wrpt += DMUB_RB_CMD_SIZE;
@@ -2924,6 +7324,9 @@ static inline bool dmub_rb_out_push_front(struct dmub_rb *rb,
 {
 	uint8_t *dst = (uint8_t *)(rb->base_address) + rb->wrpt;
 	const uint8_t *src = (const uint8_t *)cmd;
+
+	if (rb->capacity == 0)
+		return false;
 
 	if (dmub_rb_full(rb))
 		return false;
@@ -2970,6 +7373,9 @@ static inline void dmub_rb_get_rptr_with_offset(struct dmub_rb *rb,
 				  uint32_t num_cmds,
 				  uint32_t *next_rptr)
 {
+	if (rb->capacity == 0)
+		return;
+
 	*next_rptr = rb->rptr + DMUB_RB_CMD_SIZE * num_cmds;
 
 	if (*next_rptr >= rb->capacity)
@@ -3033,6 +7439,9 @@ static inline bool dmub_rb_out_front(struct dmub_rb *rb,
  */
 static inline bool dmub_rb_pop_front(struct dmub_rb *rb)
 {
+	if (rb->capacity == 0)
+		return false;
+
 	if (dmub_rb_empty(rb))
 		return false;
 
@@ -3057,14 +7466,13 @@ static inline void dmub_rb_flush_pending(const struct dmub_rb *rb)
 	uint32_t rptr = rb->rptr;
 	uint32_t wptr = rb->wrpt;
 
+	if (rb->capacity == 0)
+		return;
+
 	while (rptr != wptr) {
 		uint64_t *data = (uint64_t *)((uint8_t *)(rb->base_address) + rptr);
 		uint8_t i;
 
-		/* Don't remove this.
-		 * The contents need to actually be read from the ring buffer
-		 * for this function to be effective.
-		 */
 		for (i = 0; i < DMUB_RB_CMD_SIZE / sizeof(uint64_t); i++)
 			(void)READ_ONCE(*data++);
 
@@ -3106,12 +7514,7 @@ static inline void dmub_rb_get_return_data(struct dmub_rb *rb,
 	dmub_memcpy(cmd, rd_ptr, DMUB_RB_CMD_SIZE);
 }
 
-#if defined(__cplusplus)
-}
-#endif
-
 //==============================================================================
 //</DMUB_RB>====================================================================
 //==============================================================================
-
 #endif /* _DMUB_CMD_H_ */

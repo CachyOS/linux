@@ -15,6 +15,7 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
+#include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 
@@ -49,6 +50,8 @@ struct lpc32xx_adc_state {
 	struct clk *clk;
 	struct completion completion;
 	struct regulator *vref;
+	/* lock to protect against multiple access to the device */
+	struct mutex lock;
 
 	u32 value;
 };
@@ -64,10 +67,10 @@ static int lpc32xx_read_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		mutex_lock(&indio_dev->mlock);
+		mutex_lock(&st->lock);
 		ret = clk_prepare_enable(st->clk);
 		if (ret) {
-			mutex_unlock(&indio_dev->mlock);
+			mutex_unlock(&st->lock);
 			return ret;
 		}
 		/* Measurement setup */
@@ -80,7 +83,7 @@ static int lpc32xx_read_raw(struct iio_dev *indio_dev,
 		wait_for_completion(&st->completion); /* set by ISR */
 		clk_disable_unprepare(st->clk);
 		*val = st->value;
-		mutex_unlock(&indio_dev->mlock);
+		mutex_unlock(&st->lock);
 
 		return IIO_VAL_INT;
 
@@ -173,8 +176,8 @@ static int lpc32xx_adc_probe(struct platform_device *pdev)
 	}
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq <= 0)
-		return -ENXIO;
+	if (irq < 0)
+		return irq;
 
 	retval = devm_request_irq(&pdev->dev, irq, lpc32xx_adc_isr, 0,
 				  LPC32XXAD_NAME, st);
@@ -201,6 +204,8 @@ static int lpc32xx_adc_probe(struct platform_device *pdev)
 	iodev->modes = INDIO_DIRECT_MODE;
 	iodev->num_channels = ARRAY_SIZE(lpc32xx_adc_iio_channels);
 
+	mutex_init(&st->lock);
+
 	retval = devm_iio_device_register(&pdev->dev, iodev);
 	if (retval)
 		return retval;
@@ -212,7 +217,7 @@ static int lpc32xx_adc_probe(struct platform_device *pdev)
 
 static const struct of_device_id lpc32xx_adc_match[] = {
 	{ .compatible = "nxp,lpc3220-adc" },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, lpc32xx_adc_match);
 

@@ -7,6 +7,7 @@
  *
  */
 
+#include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/interrupt.h>
@@ -21,7 +22,6 @@
 
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
-#include <drm/drm_crtc_helper.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_modes.h>
 #include <drm/drm_print.h>
@@ -34,10 +34,6 @@
 #define IT66121_DEVICE_ID0_REG			0x02
 #define IT66121_DEVICE_ID1_REG			0x03
 
-#define IT66121_VENDOR_ID0			0x54
-#define IT66121_VENDOR_ID1			0x49
-#define IT66121_DEVICE_ID0			0x12
-#define IT66121_DEVICE_ID1			0x06
 #define IT66121_REVISION_MASK			GENMASK(7, 4)
 #define IT66121_DEVICE_ID1_MASK			GENMASK(3, 0)
 
@@ -71,6 +67,7 @@
 #define IT66121_AFE_XP_ENO			BIT(4)
 #define IT66121_AFE_XP_RESETB			BIT(3)
 #define IT66121_AFE_XP_PWDI			BIT(2)
+#define IT6610_AFE_XP_BYPASS			BIT(0)
 
 #define IT66121_AFE_IP_REG			0x64
 #define IT66121_AFE_IP_GAINBIT			BIT(7)
@@ -285,22 +282,26 @@
 #define IT66121_AUD_SWL_16BIT			0x2
 #define IT66121_AUD_SWL_NOT_INDICATED		0x0
 
-#define IT66121_VENDOR_ID0			0x54
-#define IT66121_VENDOR_ID1			0x49
-#define IT66121_DEVICE_ID0			0x12
-#define IT66121_DEVICE_ID1			0x06
-#define IT66121_DEVICE_MASK			0x0F
 #define IT66121_AFE_CLK_HIGH			80000 /* Khz */
+
+enum chip_id {
+	ID_IT6610,
+	ID_IT66121,
+	ID_IT66122,
+};
+
+struct it66121_chip_info {
+	enum chip_id id;
+	u16 vid, pid;
+};
 
 struct it66121_ctx {
 	struct regmap *regmap;
 	struct drm_bridge bridge;
-	struct drm_bridge *next_bridge;
 	struct drm_connector *connector;
 	struct device *dev;
 	struct gpio_desc *gpio_reset;
 	struct i2c_client *client;
-	struct regulator_bulk_data supplies[3];
 	u32 bus_width;
 	struct mutex lock; /* Protects fields below and device registers */
 	struct hdmi_avi_infoframe hdmi_avi_infoframe;
@@ -311,6 +312,7 @@ struct it66121_ctx {
 		u8 swl;
 		bool auto_cts;
 	} audio;
+	enum chip_id id;
 };
 
 static const struct regmap_range_cfg it66121_regmap_banks[] = {
@@ -339,16 +341,6 @@ static void it66121_hw_reset(struct it66121_ctx *ctx)
 	gpiod_set_value(ctx->gpio_reset, 1);
 	msleep(20);
 	gpiod_set_value(ctx->gpio_reset, 0);
-}
-
-static inline int ite66121_power_on(struct it66121_ctx *ctx)
-{
-	return regulator_bulk_enable(ARRAY_SIZE(ctx->supplies), ctx->supplies);
-}
-
-static inline int ite66121_power_off(struct it66121_ctx *ctx)
-{
-	return regulator_bulk_disable(ARRAY_SIZE(ctx->supplies), ctx->supplies);
 }
 
 static inline int it66121_preamble_ddc(struct it66121_ctx *ctx)
@@ -405,16 +397,22 @@ static int it66121_configure_afe(struct it66121_ctx *ctx,
 
 		ret = regmap_write_bits(ctx->regmap, IT66121_AFE_IP_REG,
 					IT66121_AFE_IP_GAINBIT |
-					IT66121_AFE_IP_ER0 |
-					IT66121_AFE_IP_EC1,
+					IT66121_AFE_IP_ER0,
 					IT66121_AFE_IP_GAINBIT);
 		if (ret)
 			return ret;
 
-		ret = regmap_write_bits(ctx->regmap, IT66121_AFE_XP_EC1_REG,
-					IT66121_AFE_XP_EC1_LOWCLK, 0x80);
-		if (ret)
-			return ret;
+		if (ctx->id == ID_IT66121 || ctx->id == ID_IT66122) {
+			ret = regmap_write_bits(ctx->regmap, IT66121_AFE_IP_REG,
+						IT66121_AFE_IP_EC1, 0);
+			if (ret)
+				return ret;
+
+			ret = regmap_write_bits(ctx->regmap, IT66121_AFE_XP_EC1_REG,
+						IT66121_AFE_XP_EC1_LOWCLK, 0x80);
+			if (ret)
+				return ret;
+		}
 	} else {
 		ret = regmap_write_bits(ctx->regmap, IT66121_AFE_XP_REG,
 					IT66121_AFE_XP_GAINBIT |
@@ -425,17 +423,24 @@ static int it66121_configure_afe(struct it66121_ctx *ctx,
 
 		ret = regmap_write_bits(ctx->regmap, IT66121_AFE_IP_REG,
 					IT66121_AFE_IP_GAINBIT |
-					IT66121_AFE_IP_ER0 |
-					IT66121_AFE_IP_EC1, IT66121_AFE_IP_ER0 |
-					IT66121_AFE_IP_EC1);
+					IT66121_AFE_IP_ER0,
+					IT66121_AFE_IP_ER0);
 		if (ret)
 			return ret;
 
-		ret = regmap_write_bits(ctx->regmap, IT66121_AFE_XP_EC1_REG,
-					IT66121_AFE_XP_EC1_LOWCLK,
-					IT66121_AFE_XP_EC1_LOWCLK);
-		if (ret)
-			return ret;
+		if (ctx->id == ID_IT66121 || ctx->id == ID_IT66122) {
+			ret = regmap_write_bits(ctx->regmap, IT66121_AFE_IP_REG,
+						IT66121_AFE_IP_EC1,
+						IT66121_AFE_IP_EC1);
+			if (ret)
+				return ret;
+
+			ret = regmap_write_bits(ctx->regmap, IT66121_AFE_XP_EC1_REG,
+						IT66121_AFE_XP_EC1_LOWCLK,
+						IT66121_AFE_XP_EC1_LOWCLK);
+			if (ret)
+				return ret;
+		}
 	}
 
 	/* Clear reset flags */
@@ -444,36 +449,34 @@ static int it66121_configure_afe(struct it66121_ctx *ctx,
 	if (ret)
 		return ret;
 
+	if (ctx->id == ID_IT6610) {
+		ret = regmap_write_bits(ctx->regmap, IT66121_AFE_XP_REG,
+					IT6610_AFE_XP_BYPASS,
+					IT6610_AFE_XP_BYPASS);
+		if (ret)
+			return ret;
+	}
+
 	return it66121_fire_afe(ctx);
 }
 
 static inline int it66121_wait_ddc_ready(struct it66121_ctx *ctx)
 {
 	int ret, val;
-	u32 busy = IT66121_DDC_STATUS_NOACK | IT66121_DDC_STATUS_WAIT_BUS |
-		   IT66121_DDC_STATUS_ARBI_LOSE;
+	u32 error = IT66121_DDC_STATUS_NOACK | IT66121_DDC_STATUS_WAIT_BUS |
+		    IT66121_DDC_STATUS_ARBI_LOSE;
+	u32 done = IT66121_DDC_STATUS_TX_DONE;
 
-	ret = regmap_read_poll_timeout(ctx->regmap, IT66121_DDC_STATUS_REG, val, true,
-				       IT66121_EDID_SLEEP_US, IT66121_EDID_TIMEOUT_US);
+	ret = regmap_read_poll_timeout(ctx->regmap, IT66121_DDC_STATUS_REG, val,
+				       val & (error | done), IT66121_EDID_SLEEP_US,
+				       IT66121_EDID_TIMEOUT_US);
 	if (ret)
 		return ret;
 
-	if (val & busy)
+	if (val & error)
 		return -EAGAIN;
 
 	return 0;
-}
-
-static int it66121_clear_ddc_fifo(struct it66121_ctx *ctx)
-{
-	int ret;
-
-	ret = it66121_preamble_ddc(ctx);
-	if (ret)
-		return ret;
-
-	return regmap_write(ctx->regmap, IT66121_DDC_COMMAND_REG,
-			    IT66121_DDC_COMMAND_FIFO_CLR);
 }
 
 static int it66121_abort_ddc_ops(struct it66121_ctx *ctx)
@@ -515,7 +518,6 @@ static int it66121_get_edid_block(void *context, u8 *buf,
 				  unsigned int block, size_t len)
 {
 	struct it66121_ctx *ctx = context;
-	unsigned int val;
 	int remain = len;
 	int offset = 0;
 	int ret, cnt;
@@ -523,26 +525,9 @@ static int it66121_get_edid_block(void *context, u8 *buf,
 	offset = (block % 2) * len;
 	block = block / 2;
 
-	ret = regmap_read(ctx->regmap, IT66121_INT_STATUS1_REG, &val);
-	if (ret)
-		return ret;
-
-	if (val & IT66121_INT_STATUS1_DDC_BUSHANG) {
-		ret = it66121_abort_ddc_ops(ctx);
-		if (ret)
-			return ret;
-	}
-
-	ret = it66121_clear_ddc_fifo(ctx);
-	if (ret)
-		return ret;
-
 	while (remain > 0) {
 		cnt = (remain > IT66121_EDID_FIFO_SIZE) ?
 				IT66121_EDID_FIFO_SIZE : remain;
-		ret = it66121_preamble_ddc(ctx);
-		if (ret)
-			return ret;
 
 		ret = regmap_write(ctx->regmap, IT66121_DDC_COMMAND_REG,
 				   IT66121_DDC_COMMAND_FIFO_CLR);
@@ -550,25 +535,6 @@ static int it66121_get_edid_block(void *context, u8 *buf,
 			return ret;
 
 		ret = it66121_wait_ddc_ready(ctx);
-		if (ret)
-			return ret;
-
-		ret = regmap_read(ctx->regmap, IT66121_INT_STATUS1_REG, &val);
-		if (ret)
-			return ret;
-
-		if (val & IT66121_INT_STATUS1_DDC_BUSHANG) {
-			ret = it66121_abort_ddc_ops(ctx);
-			if (ret)
-				return ret;
-		}
-
-		ret = it66121_preamble_ddc(ctx);
-		if (ret)
-			return ret;
-
-		ret = regmap_write(ctx->regmap, IT66121_DDC_HEADER_REG,
-				   IT66121_DDC_HEADER_EDID);
 		if (ret)
 			return ret;
 
@@ -592,20 +558,18 @@ static int it66121_get_edid_block(void *context, u8 *buf,
 		offset += cnt;
 		remain -= cnt;
 
-		/* Per programming manual, sleep here before emptying the FIFO */
-		msleep(20);
-
 		ret = it66121_wait_ddc_ready(ctx);
+		if (ret) {
+			it66121_abort_ddc_ops(ctx);
+			return ret;
+		}
+
+		ret = regmap_noinc_read(ctx->regmap, IT66121_DDC_RD_FIFO_REG,
+					buf, cnt);
 		if (ret)
 			return ret;
 
-		do {
-			ret = regmap_read(ctx->regmap, IT66121_DDC_RD_FIFO_REG, &val);
-			if (ret)
-				return ret;
-			*(buf++) = val;
-			cnt--;
-		} while (cnt > 0);
+		buf += cnt;
 	}
 
 	return 0;
@@ -622,6 +586,7 @@ static bool it66121_is_hpd_detect(struct it66121_ctx *ctx)
 }
 
 static int it66121_bridge_attach(struct drm_bridge *bridge,
+				 struct drm_encoder *encoder,
 				 enum drm_bridge_attach_flags flags)
 {
 	struct it66121_ctx *ctx = container_of(bridge, struct it66121_ctx, bridge);
@@ -630,14 +595,16 @@ static int it66121_bridge_attach(struct drm_bridge *bridge,
 	if (!(flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR))
 		return -EINVAL;
 
-	ret = drm_bridge_attach(bridge->encoder, ctx->next_bridge, bridge, flags);
+	ret = drm_bridge_attach(encoder, ctx->bridge.next_bridge, bridge, flags);
 	if (ret)
 		return ret;
 
-	ret = regmap_write_bits(ctx->regmap, IT66121_CLK_BANK_REG,
-				IT66121_CLK_BANK_PWROFF_RCLK, 0);
-	if (ret)
-		return ret;
+	if (ctx->id == ID_IT66121 || ctx->id == ID_IT66122) {
+		ret = regmap_write_bits(ctx->regmap, IT66121_CLK_BANK_REG,
+					IT66121_CLK_BANK_PWROFF_RCLK, 0);
+		if (ret)
+			return ret;
+	}
 
 	ret = regmap_write_bits(ctx->regmap, IT66121_INT_REG,
 				IT66121_INT_TX_CLK_OFF, 0);
@@ -683,11 +650,7 @@ static int it66121_bridge_attach(struct drm_bridge *bridge,
 	/* Per programming manual, sleep here for bridge to settle */
 	msleep(50);
 
-	/* Start interrupts */
-	return regmap_write_bits(ctx->regmap, IT66121_INT_MASK1_REG,
-				 IT66121_INT_MASK1_DDC_NOACK |
-				 IT66121_INT_MASK1_DDC_FIFOERR |
-				 IT66121_INT_MASK1_DDC_BUSHANG, 0);
+	return 0;
 }
 
 static int it66121_set_mute(struct it66121_ctx *ctx, bool mute)
@@ -759,10 +722,9 @@ static u32 *it66121_bridge_atomic_get_input_bus_fmts(struct drm_bridge *bridge,
 }
 
 static void it66121_bridge_enable(struct drm_bridge *bridge,
-				  struct drm_bridge_state *bridge_state)
+				  struct drm_atomic_state *state)
 {
 	struct it66121_ctx *ctx = container_of(bridge, struct it66121_ctx, bridge);
-	struct drm_atomic_state *state = bridge_state->base.state;
 
 	ctx->connector = drm_atomic_get_new_connector_for_encoder(state, bridge->encoder);
 
@@ -770,7 +732,7 @@ static void it66121_bridge_enable(struct drm_bridge *bridge,
 }
 
 static void it66121_bridge_disable(struct drm_bridge *bridge,
-				   struct drm_bridge_state *bridge_state)
+				   struct drm_atomic_state *state)
 {
 	struct it66121_ctx *ctx = container_of(bridge, struct it66121_ctx, bridge);
 
@@ -779,33 +741,34 @@ static void it66121_bridge_disable(struct drm_bridge *bridge,
 	ctx->connector = NULL;
 }
 
+static int it66121_bridge_check(struct drm_bridge *bridge,
+				struct drm_bridge_state *bridge_state,
+				struct drm_crtc_state *crtc_state,
+				struct drm_connector_state *conn_state)
+{
+	struct it66121_ctx *ctx = container_of(bridge, struct it66121_ctx, bridge);
+
+	if (ctx->id == ID_IT6610) {
+		/* The IT6610 only supports these settings */
+		bridge_state->input_bus_cfg.flags |= DRM_BUS_FLAG_DE_HIGH |
+			DRM_BUS_FLAG_PIXDATA_DRIVE_NEGEDGE;
+		bridge_state->input_bus_cfg.flags &=
+			~DRM_BUS_FLAG_PIXDATA_DRIVE_POSEDGE;
+	}
+
+	return 0;
+}
+
 static
 void it66121_bridge_mode_set(struct drm_bridge *bridge,
 			     const struct drm_display_mode *mode,
 			     const struct drm_display_mode *adjusted_mode)
 {
-	int ret, i;
 	u8 buf[HDMI_INFOFRAME_SIZE(AVI)];
 	struct it66121_ctx *ctx = container_of(bridge, struct it66121_ctx, bridge);
-	const u16 aviinfo_reg[HDMI_AVI_INFOFRAME_SIZE] = {
-		IT66121_AVIINFO_DB1_REG,
-		IT66121_AVIINFO_DB2_REG,
-		IT66121_AVIINFO_DB3_REG,
-		IT66121_AVIINFO_DB4_REG,
-		IT66121_AVIINFO_DB5_REG,
-		IT66121_AVIINFO_DB6_REG,
-		IT66121_AVIINFO_DB7_REG,
-		IT66121_AVIINFO_DB8_REG,
-		IT66121_AVIINFO_DB9_REG,
-		IT66121_AVIINFO_DB10_REG,
-		IT66121_AVIINFO_DB11_REG,
-		IT66121_AVIINFO_DB12_REG,
-		IT66121_AVIINFO_DB13_REG
-	};
+	int ret;
 
 	mutex_lock(&ctx->lock);
-
-	hdmi_avi_infoframe_init(&ctx->hdmi_avi_infoframe);
 
 	ret = drm_hdmi_avi_infoframe_from_display_mode(&ctx->hdmi_avi_infoframe, ctx->connector,
 						       adjusted_mode);
@@ -821,10 +784,12 @@ void it66121_bridge_mode_set(struct drm_bridge *bridge,
 	}
 
 	/* Write new AVI infoframe packet */
-	for (i = 0; i < HDMI_AVI_INFOFRAME_SIZE; i++) {
-		if (regmap_write(ctx->regmap, aviinfo_reg[i], buf[i + HDMI_INFOFRAME_HEADER_SIZE]))
-			goto unlock;
-	}
+	ret = regmap_bulk_write(ctx->regmap, IT66121_AVIINFO_DB1_REG,
+				&buf[HDMI_INFOFRAME_HEADER_SIZE],
+				HDMI_AVI_INFOFRAME_SIZE);
+	if (ret)
+		goto unlock;
+
 	if (regmap_write(ctx->regmap, IT66121_AVIINFO_CSUM_REG, buf[3]))
 		goto unlock;
 
@@ -837,9 +802,12 @@ void it66121_bridge_mode_set(struct drm_bridge *bridge,
 	if (regmap_write(ctx->regmap, IT66121_HDMI_MODE_REG, IT66121_HDMI_MODE_HDMI))
 		goto unlock;
 
-	if (regmap_write_bits(ctx->regmap, IT66121_CLK_BANK_REG,
-			      IT66121_CLK_BANK_PWROFF_TXCLK, IT66121_CLK_BANK_PWROFF_TXCLK))
+	if ((ctx->id == ID_IT66121 || ctx->id == ID_IT66122) &&
+	    regmap_write_bits(ctx->regmap, IT66121_CLK_BANK_REG,
+			      IT66121_CLK_BANK_PWROFF_TXCLK,
+			      IT66121_CLK_BANK_PWROFF_TXCLK)) {
 		goto unlock;
+	}
 
 	if (it66121_configure_input(ctx))
 		goto unlock;
@@ -847,7 +815,11 @@ void it66121_bridge_mode_set(struct drm_bridge *bridge,
 	if (it66121_configure_afe(ctx, adjusted_mode))
 		goto unlock;
 
-	regmap_write_bits(ctx->regmap, IT66121_CLK_BANK_REG, IT66121_CLK_BANK_PWROFF_TXCLK, 0);
+	if ((ctx->id == ID_IT66121 || ctx->id == ID_IT66122) &&
+	    regmap_write_bits(ctx->regmap, IT66121_CLK_BANK_REG,
+			      IT66121_CLK_BANK_PWROFF_TXCLK, 0)) {
+		goto unlock;
+	}
 
 unlock:
 	mutex_unlock(&ctx->lock);
@@ -871,7 +843,8 @@ static enum drm_mode_status it66121_bridge_mode_valid(struct drm_bridge *bridge,
 	return MODE_OK;
 }
 
-static enum drm_connector_status it66121_bridge_detect(struct drm_bridge *bridge)
+static enum drm_connector_status
+it66121_bridge_detect(struct drm_bridge *bridge, struct drm_connector *connector)
 {
 	struct it66121_ctx *ctx = container_of(bridge, struct it66121_ctx, bridge);
 
@@ -900,17 +873,33 @@ static void it66121_bridge_hpd_disable(struct drm_bridge *bridge)
 		dev_err(ctx->dev, "failed to disable HPD IRQ\n");
 }
 
-static struct edid *it66121_bridge_get_edid(struct drm_bridge *bridge,
-					    struct drm_connector *connector)
+static const struct drm_edid *it66121_bridge_edid_read(struct drm_bridge *bridge,
+						       struct drm_connector *connector)
 {
 	struct it66121_ctx *ctx = container_of(bridge, struct it66121_ctx, bridge);
-	struct edid *edid;
+	const struct drm_edid *drm_edid;
+	int ret;
 
 	mutex_lock(&ctx->lock);
-	edid = drm_do_get_edid(connector, it66121_get_edid_block, ctx);
+	ret = it66121_preamble_ddc(ctx);
+	if (ret) {
+		drm_edid = NULL;
+		goto out_unlock;
+	}
+
+	ret = regmap_write(ctx->regmap, IT66121_DDC_HEADER_REG,
+			   IT66121_DDC_HEADER_EDID);
+	if (ret) {
+		drm_edid = NULL;
+		goto out_unlock;
+	}
+
+	drm_edid = drm_edid_read_custom(connector, it66121_get_edid_block, ctx);
+
+out_unlock:
 	mutex_unlock(&ctx->lock);
 
-	return edid;
+	return drm_edid;
 }
 
 static const struct drm_bridge_funcs it66121_bridge_funcs = {
@@ -922,10 +911,11 @@ static const struct drm_bridge_funcs it66121_bridge_funcs = {
 	.atomic_get_input_bus_fmts = it66121_bridge_atomic_get_input_bus_fmts,
 	.atomic_enable = it66121_bridge_enable,
 	.atomic_disable = it66121_bridge_disable,
+	.atomic_check = it66121_bridge_check,
 	.mode_set = it66121_bridge_mode_set,
 	.mode_valid = it66121_bridge_mode_valid,
 	.detect = it66121_bridge_detect,
-	.get_edid = it66121_bridge_get_edid,
+	.edid_read = it66121_bridge_edid_read,
 	.hpd_enable = it66121_bridge_hpd_enable,
 	.hpd_disable = it66121_bridge_hpd_disable,
 };
@@ -951,21 +941,14 @@ static irqreturn_t it66121_irq_threaded_handler(int irq, void *dev_id)
 	ret = regmap_read(ctx->regmap, IT66121_INT_STATUS1_REG, &val);
 	if (ret) {
 		dev_err(dev, "Cannot read STATUS1_REG %d\n", ret);
-	} else {
-		if (val & IT66121_INT_STATUS1_DDC_FIFOERR)
-			it66121_clear_ddc_fifo(ctx);
-		if (val & (IT66121_INT_STATUS1_DDC_BUSHANG |
-			   IT66121_INT_STATUS1_DDC_NOACK))
-			it66121_abort_ddc_ops(ctx);
-		if (val & IT66121_INT_STATUS1_HPD_STATUS) {
-			regmap_write_bits(ctx->regmap, IT66121_INT_CLR1_REG,
-					  IT66121_INT_CLR1_HPD, IT66121_INT_CLR1_HPD);
+	} else if (val & IT66121_INT_STATUS1_HPD_STATUS) {
+		regmap_write_bits(ctx->regmap, IT66121_INT_CLR1_REG,
+				  IT66121_INT_CLR1_HPD, IT66121_INT_CLR1_HPD);
 
-			status = it66121_is_hpd_detect(ctx) ? connector_status_connected
-							    : connector_status_disconnected;
+		status = it66121_is_hpd_detect(ctx) ? connector_status_connected
+			: connector_status_disconnected;
 
-			event = true;
-		}
+		event = true;
 	}
 
 	regmap_write_bits(ctx->regmap, IT66121_SYS_STATUS_REG,
@@ -1401,8 +1384,6 @@ static int it66121_audio_startup(struct device *dev, void *data)
 	int ret;
 	struct it66121_ctx *ctx = dev_get_drvdata(dev);
 
-	dev_dbg(dev, "%s\n", __func__);
-
 	mutex_lock(&ctx->lock);
 	ret = it661221_audio_output_enable(ctx, true);
 	if (ret)
@@ -1417,8 +1398,6 @@ static void it66121_audio_shutdown(struct device *dev, void *data)
 {
 	int ret;
 	struct it66121_ctx *ctx = dev_get_drvdata(dev);
-
-	dev_dbg(dev, "%s\n", __func__);
 
 	mutex_lock(&ctx->lock);
 	ret = it661221_audio_output_enable(ctx, false);
@@ -1463,10 +1442,16 @@ static int it66121_audio_get_eld(struct device *dev, void *data,
 	struct it66121_ctx *ctx = dev_get_drvdata(dev);
 
 	mutex_lock(&ctx->lock);
-
-	memcpy(buf, ctx->connector->eld,
-	       min(sizeof(ctx->connector->eld), len));
-
+	if (!ctx->connector) {
+		/* Pass en empty ELD if connector not available */
+		dev_dbg(dev, "No connector present, passing empty EDID data");
+		memset(buf, 0, len);
+	} else {
+		mutex_lock(&ctx->connector->eld_mutex);
+		memcpy(buf, ctx->connector->eld,
+		       min(sizeof(ctx->connector->eld), len));
+		mutex_unlock(&ctx->connector->eld_mutex);
+	}
 	mutex_unlock(&ctx->lock);
 
 	return 0;
@@ -1478,7 +1463,6 @@ static const struct hdmi_codec_ops it66121_audio_codec_ops = {
 	.audio_shutdown = it66121_audio_shutdown,
 	.mute_stream = it66121_audio_mute,
 	.get_eld = it66121_audio_get_eld,
-	.no_capture_mute = 1,
 };
 
 static int it66121_audio_codec_init(struct it66121_ctx *ctx, struct device *dev)
@@ -1488,11 +1472,10 @@ static int it66121_audio_codec_init(struct it66121_ctx *ctx, struct device *dev)
 		.i2s = 1, /* Only i2s support for now */
 		.spdif = 0,
 		.max_i2s_channels = 8,
+		.no_capture_mute = 1,
 	};
 
-	dev_dbg(dev, "%s\n", __func__);
-
-	if (!of_property_read_bool(dev->of_node, "#sound-dai-cells")) {
+	if (!of_property_present(dev->of_node, "#sound-dai-cells")) {
 		dev_info(dev, "No \"#sound-dai-cells\", no audio\n");
 		return 0;
 	}
@@ -1511,23 +1494,34 @@ static int it66121_audio_codec_init(struct it66121_ctx *ctx, struct device *dev)
 	return PTR_ERR_OR_ZERO(ctx->audio.pdev);
 }
 
-static int it66121_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static const char * const it66121_supplies[] = {
+	"vcn33", "vcn18", "vrf12"
+};
+
+static const struct it66121_chip_info it66xx_chip_info[] = {
+	{.id = ID_IT6610, .vid = 0xca00, .pid = 0x0611 },
+	{.id = ID_IT66121, .vid = 0x4954, .pid = 0x0612 },
+	{.id = ID_IT66122, .vid = 0x4954, .pid = 0x0622 },
+};
+
+static int it66121_probe(struct i2c_client *client)
 {
 	u32 revision_id, vendor_ids[2] = { 0 }, device_ids[2] = { 0 };
 	struct device_node *ep;
-	int ret;
+	int ret, i;
 	struct it66121_ctx *ctx;
 	struct device *dev = &client->dev;
+	const struct it66121_chip_info *chip_info;
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		dev_err(dev, "I2C check functionality failed.\n");
 		return -ENXIO;
 	}
 
-	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
-	if (!ctx)
-		return -ENOMEM;
+	ctx = devm_drm_bridge_alloc(dev, struct it66121_ctx, bridge,
+				    &it66121_bridge_funcs);
+	if (IS_ERR(ctx))
+		return PTR_ERR(ctx);
 
 	ep = of_graph_get_endpoint_by_regs(dev->of_node, 0, 0);
 	if (!ep)
@@ -1548,15 +1542,9 @@ static int it66121_probe(struct i2c_client *client,
 		return -EINVAL;
 	}
 
-	if (!of_device_is_available(ep)) {
-		of_node_put(ep);
-		dev_err(ctx->dev, "The remote device is disabled\n");
-		return -ENODEV;
-	}
-
-	ctx->next_bridge = of_drm_find_bridge(ep);
+	ctx->bridge.next_bridge = of_drm_find_and_get_bridge(ep);
 	of_node_put(ep);
-	if (!ctx->next_bridge) {
+	if (!ctx->bridge.next_bridge) {
 		dev_dbg(ctx->dev, "Next bridge not found, deferring probe\n");
 		return -EPROBE_DEFER;
 	}
@@ -1564,26 +1552,18 @@ static int it66121_probe(struct i2c_client *client,
 	i2c_set_clientdata(client, ctx);
 	mutex_init(&ctx->lock);
 
-	ctx->supplies[0].supply = "vcn33";
-	ctx->supplies[1].supply = "vcn18";
-	ctx->supplies[2].supply = "vrf12";
-	ret = devm_regulator_bulk_get(ctx->dev, 3, ctx->supplies);
+	ret = devm_regulator_bulk_get_enable(dev, ARRAY_SIZE(it66121_supplies),
+					     it66121_supplies);
 	if (ret) {
-		dev_err(ctx->dev, "regulator_bulk failed\n");
+		dev_err(dev, "Failed to enable power supplies\n");
 		return ret;
 	}
-
-	ret = ite66121_power_on(ctx);
-	if (ret)
-		return ret;
 
 	it66121_hw_reset(ctx);
 
 	ctx->regmap = devm_regmap_init_i2c(client, &it66121_regmap_config);
-	if (IS_ERR(ctx->regmap)) {
-		ite66121_power_off(ctx);
+	if (IS_ERR(ctx->regmap))
 		return PTR_ERR(ctx->regmap);
-	}
 
 	regmap_read(ctx->regmap, IT66121_VENDOR_ID0_REG, &vendor_ids[0]);
 	regmap_read(ctx->regmap, IT66121_VENDOR_ID1_REG, &vendor_ids[1]);
@@ -1594,23 +1574,32 @@ static int it66121_probe(struct i2c_client *client,
 	revision_id = FIELD_GET(IT66121_REVISION_MASK, device_ids[1]);
 	device_ids[1] &= IT66121_DEVICE_ID1_MASK;
 
-	if (vendor_ids[0] != IT66121_VENDOR_ID0 || vendor_ids[1] != IT66121_VENDOR_ID1 ||
-	    device_ids[0] != IT66121_DEVICE_ID0 || device_ids[1] != IT66121_DEVICE_ID1) {
-		ite66121_power_off(ctx);
-		return -ENODEV;
+	for (i = 0; i < ARRAY_SIZE(it66xx_chip_info); i++) {
+		chip_info = &it66xx_chip_info[i];
+		if ((vendor_ids[1] << 8 | vendor_ids[0]) == chip_info->vid &&
+		    (device_ids[1] << 8 | device_ids[0]) == chip_info->pid) {
+			ctx->id = chip_info->id;
+			break;
+		}
 	}
 
-	ctx->bridge.funcs = &it66121_bridge_funcs;
+	if (i == ARRAY_SIZE(it66xx_chip_info))
+		return -ENODEV;
+
 	ctx->bridge.of_node = dev->of_node;
 	ctx->bridge.type = DRM_MODE_CONNECTOR_HDMIA;
-	ctx->bridge.ops = DRM_BRIDGE_OP_DETECT | DRM_BRIDGE_OP_EDID | DRM_BRIDGE_OP_HPD;
+	ctx->bridge.ops = DRM_BRIDGE_OP_DETECT | DRM_BRIDGE_OP_EDID;
+	if (client->irq > 0) {
+		ctx->bridge.ops |= DRM_BRIDGE_OP_HPD;
 
-	ret = devm_request_threaded_irq(dev, client->irq, NULL,	it66121_irq_threaded_handler,
-					IRQF_ONESHOT, dev_name(dev), ctx);
-	if (ret < 0) {
-		dev_err(dev, "Failed to request irq %d:%d\n", client->irq, ret);
-		ite66121_power_off(ctx);
-		return ret;
+		ret = devm_request_threaded_irq(dev, client->irq, NULL,
+						it66121_irq_threaded_handler,
+						IRQF_ONESHOT, dev_name(dev),
+						ctx);
+		if (ret < 0) {
+			dev_err(dev, "Failed to request irq %d:%d\n", client->irq, ret);
+			return ret;
+		}
 	}
 
 	it66121_audio_codec_init(ctx, dev);
@@ -1622,25 +1611,26 @@ static int it66121_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int it66121_remove(struct i2c_client *client)
+static void it66121_remove(struct i2c_client *client)
 {
 	struct it66121_ctx *ctx = i2c_get_clientdata(client);
 
-	ite66121_power_off(ctx);
 	drm_bridge_remove(&ctx->bridge);
 	mutex_destroy(&ctx->lock);
-
-	return 0;
 }
 
 static const struct of_device_id it66121_dt_match[] = {
+	{ .compatible = "ite,it6610" },
 	{ .compatible = "ite,it66121" },
+	{ .compatible = "ite,it66122" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, it66121_dt_match);
 
 static const struct i2c_device_id it66121_id[] = {
-	{ "it66121", 0 },
+	{ .name = "it6610" },
+	{ .name = "it66121" },
+	{ .name = "it66122" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, it66121_id);

@@ -48,6 +48,9 @@
 #define GFX_11_0_0__SRCID__SDMA_SRAM_ECC                        64      // 0x40 SRAM ECC Error
 #define GFX_11_0_0__SRCID__SDMA_SEM_INCOMPLETE_TIMEOUT          65      // 0x41 GPF(Sem incomplete timeout)
 #define GFX_11_0_0__SRCID__SDMA_SEM_WAIT_FAIL_TIMEOUT           66      // 0x42 Semaphore wait fail timeout
+#define GFX_11_0_0__SRCID__SDMA_FENCE                           67      // 0x43 User fence
+
+#define GFX_11_0_0__SRCID__RLC_GC_FED_INTERRUPT                 128     // 0x80 FED Interrupt (for data poisoning)
 
 #define GFX_11_0_0__SRCID__CP_GENERIC_INT				        177		// 0xB1 CP_GENERIC int
 #define GFX_11_0_0__SRCID__CP_PM4_PKT_RSVD_BIT_ERROR		    180		// 0xB4 PM4 Pkt Rsvd Bits Error

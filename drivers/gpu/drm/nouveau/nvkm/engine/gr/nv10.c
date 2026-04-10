@@ -951,7 +951,7 @@ nv10_gr_context_switch(struct nv10_gr *gr)
 }
 
 static int
-nv10_gr_chan_fini(struct nvkm_object *object, bool suspend)
+nv10_gr_chan_fini(struct nvkm_object *object, enum nvkm_suspend_state suspend)
 {
 	struct nv10_gr_chan *chan = nv10_gr_chan(object);
 	struct nv10_gr *gr = chan->gr;
@@ -999,7 +999,7 @@ nv10_gr_chan = {
 	} while (0)
 
 int
-nv10_gr_chan_new(struct nvkm_gr *base, struct nvkm_fifo_chan *fifoch,
+nv10_gr_chan_new(struct nvkm_gr *base, struct nvkm_chan *fifoch,
 		 const struct nvkm_oclass *oclass, struct nvkm_object **pobject)
 {
 	struct nv10_gr *gr = nv10_gr(base);
@@ -1007,11 +1007,11 @@ nv10_gr_chan_new(struct nvkm_gr *base, struct nvkm_fifo_chan *fifoch,
 	struct nvkm_device *device = gr->base.engine.subdev.device;
 	unsigned long flags;
 
-	if (!(chan = kzalloc(sizeof(*chan), GFP_KERNEL)))
+	if (!(chan = kzalloc_obj(*chan)))
 		return -ENOMEM;
 	nvkm_object_ctor(&nv10_gr_chan, oclass, &chan->object);
 	chan->gr = gr;
-	chan->chid = fifoch->chid;
+	chan->chid = fifoch->id;
 	*pobject = &chan->object;
 
 	NV_WRITE_CTX(0x00400e88, 0x08000000);
@@ -1177,7 +1177,7 @@ nv10_gr_new_(const struct nvkm_gr_func *func, struct nvkm_device *device,
 {
 	struct nv10_gr *gr;
 
-	if (!(gr = kzalloc(sizeof(*gr), GFP_KERNEL)))
+	if (!(gr = kzalloc_obj(*gr)))
 		return -ENOMEM;
 	spin_lock_init(&gr->lock);
 	*pgr = &gr->base;

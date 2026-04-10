@@ -142,7 +142,7 @@ nvkm_volt_map(struct nvkm_volt *volt, u8 id, u8 temp)
 			return -ENODEV;
 		}
 
-		result = min(max(result, (s64)info.min), (s64)info.max);
+		result = clamp(result, (s64)info.min, (s64)info.max);
 
 		if (info.link != 0xff) {
 			int ret = nvkm_volt_map(volt, info.link, temp);
@@ -321,7 +321,7 @@ int
 nvkm_volt_new_(const struct nvkm_volt_func *func, struct nvkm_device *device,
 	       enum nvkm_subdev_type type, int inst, struct nvkm_volt **pvolt)
 {
-	if (!(*pvolt = kzalloc(sizeof(**pvolt), GFP_KERNEL)))
+	if (!(*pvolt = kzalloc_obj(**pvolt)))
 		return -ENOMEM;
 	nvkm_volt_ctor(func, device, type, inst, *pvolt);
 	return 0;

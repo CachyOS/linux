@@ -15,7 +15,7 @@
 #define _TRACE_RDMA_CMA_H
 
 #include <linux/tracepoint.h>
-#include <trace/events/rdma.h>
+#include <trace/misc/rdma.h>
 
 
 DECLARE_EVENT_CLASS(cma_fsm_class,
@@ -55,7 +55,7 @@ DECLARE_EVENT_CLASS(cma_fsm_class,
 
 DEFINE_CMA_FSM_EVENT(send_rtu);
 DEFINE_CMA_FSM_EVENT(send_rej);
-DEFINE_CMA_FSM_EVENT(send_mra);
+DEFINE_CMA_FSM_EVENT(prepare_mra);
 DEFINE_CMA_FSM_EVENT(send_sidr_req);
 DEFINE_CMA_FSM_EVENT(send_sidr_rep);
 DEFINE_CMA_FSM_EVENT(disconnect);
@@ -84,7 +84,7 @@ TRACE_EVENT(cm_id_attach,
 		       sizeof(struct sockaddr_in6));
 		memcpy(__entry->dstaddr, &id_priv->id.route.addr.dst_addr,
 		       sizeof(struct sockaddr_in6));
-		__assign_str(devname, device->name);
+		__assign_str(devname);
 	),
 
 	TP_printk("cm.id=%u src=%pISpc dst=%pISpc device=%s",
@@ -334,7 +334,7 @@ DECLARE_EVENT_CLASS(cma_client_class,
 	),
 
 	TP_fast_assign(
-		__assign_str(name, device->name);
+		__assign_str(name);
 	),
 
 	TP_printk("device name=%s",

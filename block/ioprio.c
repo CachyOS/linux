@@ -33,7 +33,7 @@
 int ioprio_check_cap(int ioprio)
 {
 	int class = IOPRIO_PRIO_CLASS(ioprio);
-	int data = IOPRIO_PRIO_DATA(ioprio);
+	int level = IOPRIO_PRIO_LEVEL(ioprio);
 
 	switch (class) {
 		case IOPRIO_CLASS_RT:
@@ -46,18 +46,15 @@ int ioprio_check_cap(int ioprio)
 			 */
 			if (!capable(CAP_SYS_ADMIN) && !capable(CAP_SYS_NICE))
 				return -EPERM;
-			fallthrough;
-			/* rt has prio field too */
-		case IOPRIO_CLASS_BE:
-			if (data >= IOPRIO_NR_LEVELS || data < 0)
-				return -EINVAL;
 			break;
+		case IOPRIO_CLASS_BE:
 		case IOPRIO_CLASS_IDLE:
 			break;
 		case IOPRIO_CLASS_NONE:
-			if (data)
+			if (level)
 				return -EINVAL;
 			break;
+		case IOPRIO_CLASS_INVALID:
 		default:
 			return -EINVAL;
 	}
@@ -145,22 +142,38 @@ static int get_task_ioprio(struct task_struct *p)
 	ret = security_task_getioprio(p);
 	if (ret)
 		goto out;
-	ret = IOPRIO_DEFAULT;
 	task_lock(p);
-	if (p->io_context)
-		ret = p->io_context->ioprio;
+	ret = __get_task_ioprio(p);
 	task_unlock(p);
 out:
 	return ret;
 }
 
-int ioprio_best(unsigned short aprio, unsigned short bprio)
+/*
+ * Return raw IO priority value as set by userspace. We use this for
+ * ioprio_get(pid, IOPRIO_WHO_PROCESS) so that we keep historical behavior and
+ * also so that userspace can distinguish unset IO priority (which just gets
+ * overriden based on task's nice value) from IO priority set to some value.
+ */
+static int get_task_raw_ioprio(struct task_struct *p)
 {
-	if (!ioprio_valid(aprio))
-		aprio = IOPRIO_DEFAULT;
-	if (!ioprio_valid(bprio))
-		bprio = IOPRIO_DEFAULT;
+	int ret;
 
+	ret = security_task_getioprio(p);
+	if (ret)
+		goto out;
+	task_lock(p);
+	if (p->io_context)
+		ret = p->io_context->ioprio;
+	else
+		ret = IOPRIO_DEFAULT;
+	task_unlock(p);
+out:
+	return ret;
+}
+
+static int ioprio_best(unsigned short aprio, unsigned short bprio)
+{
 	return min(aprio, bprio);
 }
 
@@ -181,7 +194,7 @@ SYSCALL_DEFINE2(ioprio_get, int, which, int, who)
 			else
 				p = find_task_by_vpid(who);
 			if (p)
-				ret = get_task_ioprio(p);
+				ret = get_task_raw_ioprio(p);
 			break;
 		case IOPRIO_WHO_PGRP:
 			if (!who)

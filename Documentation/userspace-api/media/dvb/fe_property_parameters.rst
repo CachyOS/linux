@@ -72,11 +72,11 @@ DTV_MODULATION
 ==============
 
 Specifies the frontend modulation type for delivery systems that
-supports more multiple modulations.
+support multiple modulations.
 
 The modulation can be one of the types defined by enum :c:type:`fe_modulation`.
 
-Most of the digital TV standards offers more than one possible
+Most of the digital TV standards offer more than one possible
 modulation type.
 
 The table below presents a summary of the types of modulation types
@@ -89,15 +89,20 @@ ATSC (version 1)	8-VSB and 16-VSB.
 DMTB			4-QAM, 16-QAM, 32-QAM, 64-QAM and 4-QAM-NR.
 DVB-C Annex A/C		16-QAM, 32-QAM, 64-QAM and 256-QAM.
 DVB-C Annex B		64-QAM.
+DVB-C2			QPSK, 16-QAM, 64-QAM, 256-QAM, 1024-QAM and 4096-QAM.
 DVB-T			QPSK, 16-QAM and 64-QAM.
 DVB-T2			QPSK, 16-QAM, 64-QAM and 256-QAM.
 DVB-S			No need to set. It supports only QPSK.
 DVB-S2			QPSK, 8-PSK, 16-APSK and 32-APSK.
+DVB-S2X			8-APSK-L, 16-APSK-L, 32-APSK-L, 64-APSK and 64-APSK-L.
 ISDB-T			QPSK, DQPSK, 16-QAM and 64-QAM.
 ISDB-S			8-PSK, QPSK and BPSK.
 ======================= =======================================================
 
 .. note::
+
+   As DVB-S2X specifies extensions to the DVB-S2 standard, the same
+   delivery system enum value is used (SYS_DVBS2).
 
    Please notice that some of the above modulation types may not be
    defined currently at the Kernel. The reason is simple: no driver
@@ -138,9 +143,8 @@ ISDB-T			5MHz, 6MHz, 7MHz and 8MHz, although most places
      (DTV_ISDBT_SB_SEGMENT_IDX, DTV_ISDBT_SB_SEGMENT_COUNT).
 
   #. On Satellite and Cable delivery systems, the bandwidth depends on
-     the symbol rate. So, the Kernel will silently ignore any setting
-     :ref:`DTV-BANDWIDTH-HZ`. I will however fill it back with a
-     bandwidth estimation.
+     the symbol rate. The kernel will silently ignore any :ref:`DTV-BANDWIDTH-HZ`
+     setting and overwrites it with bandwidth estimation.
 
      Such bandwidth estimation takes into account the symbol rate set with
      :ref:`DTV-SYMBOL-RATE`, and the rolloff factor, with is fixed for
@@ -195,7 +199,7 @@ DTV_VOLTAGE
 Used on satellite delivery systems.
 
 The voltage is usually used with non-DiSEqC capable LNBs to switch the
-polarzation (horizontal/vertical). When using DiSEqC epuipment this
+polarization (horizontal/vertical). When using DiSEqC equipment this
 voltage has to be switched consistently to the DiSEqC commands as
 described in the DiSEqC spec.
 
@@ -275,7 +279,7 @@ DTV_ISDBT_PARTIAL_RECEPTION
 
 Used only on ISDB.
 
-If ``DTV_ISDBT_SOUND_BROADCASTING`` is '0' this bit-field represents
+If ``DTV_ISDBT_SOUND_BROADCASTING`` is '0' this bit field represents
 whether the channel is in partial reception mode or not.
 
 If '1' ``DTV_ISDBT_LAYERA_*`` values are assigned to the center segment
@@ -326,8 +330,8 @@ broadcaster has several possibilities to put those channels in the air:
 Assuming a normal 13-segment ISDB-T spectrum he can align the 8 segments
 from position 1-8 to 5-13 or anything in between.
 
-The underlying layer of segments are subchannels: each segment is
-consisting of several subchannels with a predefined IDs. A sub-channel
+The underlying layer of segments are sub-channels: each segment is
+consisting of several sub-channels with a predefined IDs. A sub-channel
 is used to help the demodulator to synchronize on the channel.
 
 An ISDB-T channel is always centered over all sub-channels. As for the
@@ -723,7 +727,7 @@ DTV_ATSCMH_RS_FRAME_ENSEMBLE
 
 Used only on ATSC-MH.
 
-Reed Solomon(RS) frame ensemble.
+Reed Solomon (RS) frame ensemble.
 
 The acceptable values are defined by :c:type:`atscmh_rs_frame_ensemble`.
 
@@ -854,9 +858,10 @@ The acceptable values are defined by :c:type:`fe_guard_interval`.
    #. If ``DTV_GUARD_INTERVAL`` is set the ``GUARD_INTERVAL_AUTO`` the
       hardware will try to find the correct guard interval (if capable) and
       will use TMCC to fill in the missing parameters.
-   #. Intervals ``GUARD_INTERVAL_1_128``, ``GUARD_INTERVAL_19_128``
-      and ``GUARD_INTERVAL_19_256`` are used only for DVB-T2 at
-      present.
+   #. Interval ``GUARD_INTERVAL_1_64`` is used only for DVB-C2.
+   #. Interval ``GUARD_INTERVAL_1_128`` is used for both DVB-C2 and DVB_T2.
+   #. Intervals ``GUARD_INTERVAL_19_128`` and ``GUARD_INTERVAL_19_256`` are
+      used only for DVB-T2.
    #. Intervals ``GUARD_INTERVAL_PN420``, ``GUARD_INTERVAL_PN595`` and
       ``GUARD_INTERVAL_PN945`` are used only for DMTB at the present.
       On such standard, only those intervals and ``GUARD_INTERVAL_AUTO``
@@ -916,14 +921,15 @@ The acceptable values are defined by :c:type:`fe_hierarchy`.
 DTV_STREAM_ID
 =============
 
-Used on DVB-S2, DVB-T2 and ISDB-S.
+Used on DVB-C2, DVB-S2, DVB-T2 and ISDB-S.
 
-DVB-S2, DVB-T2 and ISDB-S support the transmission of several streams on
-a single transport stream. This property enables the digital TV driver to
-handle substream filtering, when supported by the hardware. By default,
-substream filtering is disabled.
+DVB-C2, DVB-S2, DVB-T2 and ISDB-S support the transmission of several
+streams on a single transport stream. This property enables the digital
+TV driver to handle substream filtering, when supported by the hardware.
+By default, substream filtering is disabled.
 
-For DVB-S2 and DVB-T2, the valid substream id range is from 0 to 255.
+For DVB-C2, DVB-S2 and DVB-T2, the valid substream id range is from 0 to
+255.
 
 For ISDB, the valid substream id range is from 1 to 65535.
 
@@ -947,14 +953,14 @@ DTV_ENUM_DELSYS
 
 A Multi standard frontend needs to advertise the delivery systems
 provided. Applications need to enumerate the provided delivery systems,
-before using any other operation with the frontend. Prior to it's
+before using any other operation with the frontend. Prior to its
 introduction, FE_GET_INFO was used to determine a frontend type. A
 frontend which provides more than a single delivery system,
 FE_GET_INFO doesn't help much. Applications which intends to use a
 multistandard frontend must enumerate the delivery systems associated
 with it, rather than trying to use FE_GET_INFO. In the case of a
 legacy frontend, the result is just the same as with FE_GET_INFO, but
-in a more structured format
+in a more structured format.
 
 The acceptable values are defined by :c:type:`fe_delivery_system`.
 

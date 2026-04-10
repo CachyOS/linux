@@ -10,8 +10,10 @@ struct page **dma_common_find_pages(void *cpu_addr)
 {
 	struct vm_struct *area = find_vm_area(cpu_addr);
 
-	if (!area || area->flags != VM_DMA_COHERENT)
+	if (!area || !(area->flags & VM_DMA_COHERENT))
 		return NULL;
+	WARN(area->flags != VM_DMA_COHERENT,
+	     "unexpected flags in area: %p\n", cpu_addr);
 	return area->pages;
 }
 
@@ -43,13 +45,13 @@ void *dma_common_contiguous_remap(struct page *page, size_t size,
 	void *vaddr;
 	int i;
 
-	pages = kmalloc_array(count, sizeof(struct page *), GFP_KERNEL);
+	pages = kvmalloc_objs(struct page *, count);
 	if (!pages)
 		return NULL;
 	for (i = 0; i < count; i++)
-		pages[i] = nth_page(page, i);
+		pages[i] = page++;
 	vaddr = vmap(pages, count, VM_DMA_COHERENT, prot);
-	kfree(pages);
+	kvfree(pages);
 
 	return vaddr;
 }
@@ -61,7 +63,7 @@ void dma_common_free_remap(void *cpu_addr, size_t size)
 {
 	struct vm_struct *area = find_vm_area(cpu_addr);
 
-	if (!area || area->flags != VM_DMA_COHERENT) {
+	if (!area || !(area->flags & VM_DMA_COHERENT)) {
 		WARN(1, "trying to free invalid coherent area: %p\n", cpu_addr);
 		return;
 	}

@@ -14,11 +14,12 @@
  * Copyright (c) Kyle McMartin <kyle@debian.org>
  * Copyright (c) 2002 James Morris <jmorris@intercode.com.au>
  */
+
+#include <crypto/algapi.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/mm.h>
 #include <asm/byteorder.h>
-#include <linux/crypto.h>
 #include <linux/types.h>
 #include <crypto/blowfish.h>
 
@@ -305,7 +306,7 @@ static const u32 bf_sbox[256 * 4] = {
 
 /*
  * The blowfish encipher, processes 64-bit blocks.
- * NOTE: This function MUSTN'T respect endianess
+ * NOTE: This function MUSTN'T respect endianness
  */
 static void encrypt_block(struct bf_ctx *bctx, u32 *dst, u32 *src)
 {

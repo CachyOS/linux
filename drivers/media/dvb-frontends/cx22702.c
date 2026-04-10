@@ -582,7 +582,7 @@ struct dvb_frontend *cx22702_attach(const struct cx22702_config *config,
 	struct cx22702_state *state = NULL;
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(struct cx22702_state), GFP_KERNEL);
+	state = kzalloc_obj(struct cx22702_state);
 	if (state == NULL)
 		goto error;
 
@@ -604,7 +604,7 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(cx22702_attach);
+EXPORT_SYMBOL_GPL(cx22702_attach);
 
 static const struct dvb_frontend_ops cx22702_ops = {
 	.delsys = { SYS_DVBT },

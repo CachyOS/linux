@@ -2,7 +2,7 @@
 /*
  * max8997.h - Driver for the Maxim 8997/8966
  *
- *  Copyright (C) 2009-2010 Samsung Electrnoics
+ *  Copyright (C) 2009-2010 Samsung Electronics
  *  MyungJoo Ham <myungjoo.ham@samsung.com>
  *
  * This driver is based on max8998.h
@@ -110,8 +110,6 @@ enum max8997_haptic_pwm_divisor {
 
 /**
  * max8997_haptic_platform_data
- * @pwm_channel_id: channel number of PWM device
- *		    valid for MAX8997_EXTERNAL_MODE
  * @pwm_period: period in nano second for PWM device
  *		valid for MAX8997_EXTERNAL_MODE
  * @type: motor type
@@ -128,7 +126,6 @@ enum max8997_haptic_pwm_divisor {
  *     [0 - 255]: available period
  */
 struct max8997_haptic_platform_data {
-	unsigned int pwm_channel_id;
 	unsigned int pwm_period;
 
 	enum max8997_haptic_motor_type type;
@@ -181,7 +178,6 @@ struct max8997_platform_data {
 	 *
 	 */
 	bool ignore_gpiodvs_side_effect;
-	int buck125_gpios[3]; /* GPIO of [0]SET1, [1]SET2, [2]SET3 */
 	int buck125_default_idx; /* Default value of SET1, 2, 3 */
 	unsigned int buck1_voltage[8]; /* buckx_voltage in uV */
 	bool buck1_gpiodvs;

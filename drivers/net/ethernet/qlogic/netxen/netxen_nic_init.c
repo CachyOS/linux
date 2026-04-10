@@ -185,7 +185,7 @@ int netxen_alloc_sw_resources(struct netxen_adapter *adapter)
 	struct netxen_cmd_buffer *cmd_buf_arr;
 	struct net_device *netdev = adapter->netdev;
 
-	tx_ring = kzalloc(sizeof(struct nx_host_tx_ring), GFP_KERNEL);
+	tx_ring = kzalloc_obj(struct nx_host_tx_ring);
 	if (tx_ring == NULL)
 		return -ENOMEM;
 
@@ -202,8 +202,7 @@ int netxen_alloc_sw_resources(struct netxen_adapter *adapter)
 
 	recv_ctx = &adapter->recv_ctx;
 
-	rds_ring = kcalloc(adapter->max_rds_rings,
-			   sizeof(struct nx_host_rds_ring), GFP_KERNEL);
+	rds_ring = kzalloc_objs(struct nx_host_rds_ring, adapter->max_rds_rings);
 	if (rds_ring == NULL)
 		goto err_out;
 
@@ -451,7 +450,7 @@ int netxen_pinit_from_rom(struct netxen_adapter *adapter)
 		return -EIO;
 	}
 
-	buf = kcalloc(n, sizeof(struct crb_addr_pair), GFP_KERNEL);
+	buf = kzalloc_objs(struct crb_addr_pair, n);
 	if (buf == NULL)
 		return -ENOMEM;
 
@@ -1186,7 +1185,6 @@ static int
 netxen_p3_has_mn(struct netxen_adapter *adapter)
 {
 	u32 capability, flashed_ver;
-	capability = 0;
 
 	/* NX2031 always had MN */
 	if (NX_IS_REVISION_P2(adapter->ahw.revision_id))
@@ -1197,7 +1195,6 @@ netxen_p3_has_mn(struct netxen_adapter *adapter)
 	flashed_ver = NETXEN_DECODE_VERSION(flashed_ver);
 
 	if (flashed_ver >= NETXEN_VERSION_CODE(4, 0, 220)) {
-
 		capability = NXRD32(adapter, NX_PEG_TUNE_CAPABILITY);
 		if (capability & NX_PEG_TUNE_MN_PRESENT)
 			return 1;

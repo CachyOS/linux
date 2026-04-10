@@ -13,9 +13,6 @@
  */
 
 /*
- */
-
-/*
  * Building an adaptor to DE9 / DB25 RS232
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  *
@@ -138,12 +135,12 @@ static void vsxxxaa_detection_done(struct vsxxxaa *mouse)
 {
 	switch (mouse->type) {
 	case 0x02:
-		strlcpy(mouse->name, "DEC VSXXX-AA/-GA mouse",
+		strscpy(mouse->name, "DEC VSXXX-AA/-GA mouse",
 			sizeof(mouse->name));
 		break;
 
 	case 0x04:
-		strlcpy(mouse->name, "DEC VSXXX-AB digitizer",
+		strscpy(mouse->name, "DEC VSXXX-AB digitizer",
 			sizeof(mouse->name));
 		break;
 
@@ -459,7 +456,7 @@ static int vsxxxaa_connect(struct serio *serio, struct serio_driver *drv)
 	struct input_dev *input_dev;
 	int err = -ENOMEM;
 
-	mouse = kzalloc(sizeof(struct vsxxxaa), GFP_KERNEL);
+	mouse = kzalloc_obj(*mouse);
 	input_dev = input_allocate_device();
 	if (!mouse || !input_dev)
 		goto fail1;

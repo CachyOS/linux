@@ -50,20 +50,8 @@ config WKUP_M3_IPC
 	  to communicate and use the Wakeup M3 for PM features like suspend
 	  resume and boots it using wkup_m3_rproc driver.
 
-config TI_SCI_PM_DOMAINS
-	tristate "TI SCI PM Domains Driver"
-	depends on TI_SCI_PROTOCOL
-	depends on PM_GENERIC_DOMAINS
-	help
-	  Generic power domain implementation for TI device implementing
-	  the TI SCI protocol.
-
-	  To compile this as a module, choose M here. The module will be
-	  called ti_sci_pm_domains. Note this is needed early in boot before
-	  rootfs may be available.
-
 config TI_K3_RINGACC
-	bool "K3 Ring accelerator Sub System"
+	tristate "K3 Ring accelerator Sub System"
 	depends on ARCH_K3 || COMPILE_TEST
 	depends on TI_SCI_INTA_IRQCHIP
 	help
@@ -74,7 +62,7 @@ config TI_K3_RINGACC
 	  If unsure, say N.
 
 config TI_K3_SOCINFO
-	bool
+	bool "K3 SoC Information driver" if COMPILE_TEST
 	depends on ARCH_K3 || COMPILE_TEST
 	select SOC_BUS
 	select MFD_SYSCON
@@ -85,7 +73,7 @@ config TI_K3_SOCINFO
 
 config TI_PRUSS
 	tristate "TI PRU-ICSS Subsystem Platform drivers"
-	depends on SOC_AM33XX || SOC_AM43XX || SOC_DRA7XX || ARCH_KEYSTONE || ARCH_K3
+	depends on SOC_AM33XX || SOC_AM43XX || SOC_DRA7XX || ARCH_KEYSTONE || ARCH_K3 || COMPILE_TEST
 	select MFD_SYSCON
 	help
 	  TI PRU-ICSS Subsystem platform specific support.
@@ -98,6 +86,6 @@ endif # SOC_TI
 
 config TI_SCI_INTA_MSI_DOMAIN
 	bool
-	select GENERIC_MSI_IRQ_DOMAIN
+	select GENERIC_MSI_IRQ
 	help
 	  Driver to enable Interrupt Aggregator specific MSI Domain.

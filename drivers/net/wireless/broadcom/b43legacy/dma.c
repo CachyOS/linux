@@ -127,14 +127,6 @@ static inline int next_slot(struct b43legacy_dmaring *ring, int slot)
 	return slot + 1;
 }
 
-static inline int prev_slot(struct b43legacy_dmaring *ring, int slot)
-{
-	B43legacy_WARN_ON(!(slot >= 0 && slot <= ring->nr_slots - 1));
-	if (slot == 0)
-		return ring->nr_slots - 1;
-	return slot - 1;
-}
-
 #ifdef CONFIG_B43LEGACY_DEBUG
 static void update_max_used_slots(struct b43legacy_dmaring *ring,
 				  int current_used_slots)
@@ -618,7 +610,7 @@ struct b43legacy_dmaring *b43legacy_setup_dmaring(struct b43legacy_wldev *dev,
 	int nr_slots;
 	dma_addr_t dma_test;
 
-	ring = kzalloc(sizeof(*ring), GFP_KERNEL);
+	ring = kzalloc_obj(*ring);
 	if (!ring)
 		goto out;
 	ring->type = type;
@@ -628,8 +620,7 @@ struct b43legacy_dmaring *b43legacy_setup_dmaring(struct b43legacy_wldev *dev,
 	if (for_tx)
 		nr_slots = B43legacy_TXRING_SLOTS;
 
-	ring->meta = kcalloc(nr_slots, sizeof(struct b43legacy_dmadesc_meta),
-			     GFP_KERNEL);
+	ring->meta = kzalloc_objs(struct b43legacy_dmadesc_meta, nr_slots);
 	if (!ring->meta)
 		goto err_kfree_ring;
 	if (for_tx) {

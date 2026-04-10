@@ -104,7 +104,7 @@ clear_dynamic_events() { # reset all current dynamic events
     done
 }
 
-initialize_ftrace() { # Reset ftrace to initial-state
+initialize_system() { # Reset ftrace to initial-state
 # As the initial state, ftrace will be set to nop tracer,
 # no events, no triggers, no filters, no function filters,
 # no probes, and tracing on.
@@ -134,23 +134,35 @@ initialize_ftrace() { # Reset ftrace to initial-state
     enable_tracing
 }
 
-finish_ftrace() {
-    initialize_ftrace
+finish_system() {
+    initialize_system
 # And recover it to default.
     [ -f options/pause-on-trace ] && echo 0 > options/pause-on-trace
 }
 
 check_requires() { # Check required files and tracers
     for i in "$@" ; do
+	p=${i%:program}
         r=${i%:README}
         t=${i%:tracer}
-        if [ $t != $i ]; then
+	if [ $p != $i ]; then
+	    if ! which $p ; then
+                echo "Required program $p is not found."
+                exit_unresolved
+	    fi
+        elif [ $t != $i ]; then
             if ! grep -wq $t available_tracers ; then
                 echo "Required tracer $t is not configured."
                 exit_unsupported
             fi
         elif [ "$r" != "$i" ]; then
-            if ! grep -Fq "$r" README ; then
+	    # If this is an instance, check the top directory
+	    if echo $TRACING_DIR | grep -q "/instances/"; then
+		test="$TRACING_DIR/../.."
+	    else
+		test=$TRACING_DIR
+	    fi
+            if ! grep -Fq "$r" $test/README ; then
                 echo "Required feature pattern \"$r\" is not in README."
                 exit_unsupported
             fi
@@ -186,4 +198,29 @@ ftrace_errlog_check() { # err-prefix command-with-error-pos-by-^ command-file
     N=$(tail -n 1 error_log | wc -c)
     # "  Command: " and "^\n" => 13
     test $(expr 13 + $pos) -eq $N
+}
+
+# Helper to get the tracefs mount point
+get_mount_point() {
+	local mount_point=`stat -c '%m' .`
+
+	# If stat -c '%m' does not work (e.g. busybox) or failed, try to use the
+	# current working directory (which should be a tracefs) as the mount point.
+	if [ ! -d "$mount_point" ]; then
+		if mount | grep -qw "$PWD"; then
+			mount_point=$PWD
+		else
+			# If PWD doesn't work, that is an environmental problem.
+			exit_unresolved
+		fi
+	fi
+	echo "$mount_point"
+}
+
+# Helper function to retrieve mount options for a given mount point
+get_mnt_options() {
+	local mnt_point="$1"
+	local opts=$(mount | grep -m1 "$mnt_point" | sed -e 's/.*(\(.*\)).*/\1/')
+
+	echo "$opts"
 }

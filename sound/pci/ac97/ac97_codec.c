@@ -152,7 +152,6 @@ static const struct ac97_codec_id snd_ac97_codec_ids[] = {
 { 0x4e534300, 0xffffffff, "LM4540,43,45,46,48",	NULL,		NULL }, // only guess --jk
 { 0x4e534331, 0xffffffff, "LM4549",		NULL,		NULL },
 { 0x4e534350, 0xffffffff, "LM4550",		patch_lm4550,  	NULL }, // volume wrap fix 
-{ 0x50534304, 0xffffffff, "UCB1400",		patch_ucb1400,	NULL },
 { 0x53494c20, 0xffffffe0, "Si3036,8",		mpatch_si3036,	mpatch_si3036, AC97_MODEM_PATCH },
 { 0x53544d02, 0xffffffff, "ST7597",		NULL,		NULL },
 { 0x54524102, 0xffffffff, "TR28022",		NULL,		NULL },
@@ -327,11 +326,10 @@ void snd_ac97_write_cache(struct snd_ac97 *ac97, unsigned short reg, unsigned sh
 {
 	if (!snd_ac97_valid_reg(ac97, reg))
 		return;
-	mutex_lock(&ac97->reg_mutex);
+	guard(mutex)(&ac97->reg_mutex);
 	ac97->regs[reg] = value;
 	ac97->bus->ops->write(ac97, reg, value);
 	set_bit(reg, ac97->reg_accessed);
-	mutex_unlock(&ac97->reg_mutex);
 }
 
 EXPORT_SYMBOL(snd_ac97_write_cache);
@@ -354,14 +352,13 @@ int snd_ac97_update(struct snd_ac97 *ac97, unsigned short reg, unsigned short va
 
 	if (!snd_ac97_valid_reg(ac97, reg))
 		return -EINVAL;
-	mutex_lock(&ac97->reg_mutex);
+	guard(mutex)(&ac97->reg_mutex);
 	change = ac97->regs[reg] != value;
 	if (change) {
 		ac97->regs[reg] = value;
 		ac97->bus->ops->write(ac97, reg, value);
 	}
 	set_bit(reg, ac97->reg_accessed);
-	mutex_unlock(&ac97->reg_mutex);
 	return change;
 }
 
@@ -382,14 +379,10 @@ EXPORT_SYMBOL(snd_ac97_update);
  */
 int snd_ac97_update_bits(struct snd_ac97 *ac97, unsigned short reg, unsigned short mask, unsigned short value)
 {
-	int change;
-
 	if (!snd_ac97_valid_reg(ac97, reg))
 		return -EINVAL;
-	mutex_lock(&ac97->reg_mutex);
-	change = snd_ac97_update_bits_nolock(ac97, reg, mask, value);
-	mutex_unlock(&ac97->reg_mutex);
-	return change;
+	guard(mutex)(&ac97->reg_mutex);
+	return snd_ac97_update_bits_nolock(ac97, reg, mask, value);
 }
 
 EXPORT_SYMBOL(snd_ac97_update_bits);
@@ -417,12 +410,12 @@ static int snd_ac97_ad18xx_update_pcm_bits(struct snd_ac97 *ac97, int codec, uns
 	int change;
 	unsigned short old, new, cfg;
 
-	mutex_lock(&ac97->page_mutex);
+	guard(mutex)(&ac97->page_mutex);
 	old = ac97->spec.ad18xx.pcmreg[codec];
 	new = (old & ~mask) | (value & mask);
 	change = old != new;
 	if (change) {
-		mutex_lock(&ac97->reg_mutex);
+		guard(mutex)(&ac97->reg_mutex);
 		cfg = snd_ac97_read_cache(ac97, AC97_AD_SERIAL_CFG);
 		ac97->spec.ad18xx.pcmreg[codec] = new;
 		/* select single codec */
@@ -434,9 +427,7 @@ static int snd_ac97_ad18xx_update_pcm_bits(struct snd_ac97 *ac97, int codec, uns
 		/* select all codecs */
 		ac97->bus->ops->write(ac97, AC97_AD_SERIAL_CFG,
 				 cfg | 0x7000);
-		mutex_unlock(&ac97->reg_mutex);
 	}
-	mutex_unlock(&ac97->page_mutex);
 	return change;
 }
 
@@ -717,12 +708,11 @@ static int snd_ac97_spdif_default_get(struct snd_kcontrol *kcontrol, struct snd_
 {
 	struct snd_ac97 *ac97 = snd_kcontrol_chip(kcontrol);
 
-	mutex_lock(&ac97->reg_mutex);
+	guard(mutex)(&ac97->reg_mutex);
 	ucontrol->value.iec958.status[0] = ac97->spdif_status & 0xff;
 	ucontrol->value.iec958.status[1] = (ac97->spdif_status >> 8) & 0xff;
 	ucontrol->value.iec958.status[2] = (ac97->spdif_status >> 16) & 0xff;
 	ucontrol->value.iec958.status[3] = (ac97->spdif_status >> 24) & 0xff;
-	mutex_unlock(&ac97->reg_mutex);
 	return 0;
 }
                         
@@ -761,7 +751,7 @@ static int snd_ac97_spdif_default_put(struct snd_kcontrol *kcontrol, struct snd_
 		}
 	}
 
-	mutex_lock(&ac97->reg_mutex);
+	guard(mutex)(&ac97->reg_mutex);
 	change = ac97->spdif_status != new;
 	ac97->spdif_status = new;
 
@@ -795,7 +785,6 @@ static int snd_ac97_spdif_default_put(struct snd_kcontrol *kcontrol, struct snd_
 			snd_ac97_update_bits_nolock(ac97, AC97_EXTENDED_STATUS, AC97_EA_SPDIF, AC97_EA_SPDIF); /* turn on again */
                 }
 	}
-	mutex_unlock(&ac97->reg_mutex);
 
 	return change;
 }
@@ -812,7 +801,7 @@ static int snd_ac97_put_spsa(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_
 
 	value = (ucontrol->value.integer.value[0] & mask);
 
-	mutex_lock(&ac97->reg_mutex);
+	guard(mutex)(&ac97->reg_mutex);
 	mask <<= shift;
 	value <<= shift;
 	old = snd_ac97_read_cache(ac97, reg);
@@ -826,7 +815,6 @@ static int snd_ac97_put_spsa(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_
 		if (extst & AC97_EA_SPDIF)
 			snd_ac97_update_bits_nolock(ac97, AC97_EXTENDED_STATUS, AC97_EA_SPDIF, AC97_EA_SPDIF); /* turn on again */
 	}
-	mutex_unlock(&ac97->reg_mutex);
 	return change;
 }
 
@@ -937,10 +925,9 @@ static int snd_ac97_ad18xx_pcm_get_volume(struct snd_kcontrol *kcontrol, struct 
 	struct snd_ac97 *ac97 = snd_kcontrol_chip(kcontrol);
 	int codec = kcontrol->private_value & 3;
 	
-	mutex_lock(&ac97->page_mutex);
+	guard(mutex)(&ac97->page_mutex);
 	ucontrol->value.integer.value[0] = 31 - ((ac97->spec.ad18xx.pcmreg[codec] >> 8) & 31);
 	ucontrol->value.integer.value[1] = 31 - ((ac97->spec.ad18xx.pcmreg[codec] >> 0) & 31);
-	mutex_unlock(&ac97->page_mutex);
 	return 0;
 }
 
@@ -1841,7 +1828,8 @@ static const struct ac97_codec_id *look_for_codec_id(const struct ac97_codec_id 
 	return NULL;
 }
 
-void snd_ac97_get_name(struct snd_ac97 *ac97, unsigned int id, char *name, int modem)
+void snd_ac97_get_name(struct snd_ac97 *ac97, unsigned int id, char *name,
+		       size_t maxlen, int modem)
 {
 	const struct ac97_codec_id *pid;
 
@@ -1853,7 +1841,7 @@ void snd_ac97_get_name(struct snd_ac97 *ac97, unsigned int id, char *name, int m
 	if (! pid)
 		return;
 
-	strcpy(name, pid->name);
+	strscpy(name, pid->name, maxlen);
 	if (ac97 && pid->patch) {
 		if ((modem && (pid->flags & AC97_MODEM_PATCH)) ||
 		    (! modem && ! (pid->flags & AC97_MODEM_PATCH)))
@@ -1862,17 +1850,19 @@ void snd_ac97_get_name(struct snd_ac97 *ac97, unsigned int id, char *name, int m
 
 	pid = look_for_codec_id(snd_ac97_codec_ids, id);
 	if (pid) {
-		strcat(name, " ");
-		strcat(name, pid->name);
+		strlcat(name, " ", maxlen);
+		strlcat(name, pid->name, maxlen);
 		if (pid->mask != 0xffffffff)
-			sprintf(name + strlen(name), " rev %d", id & ~pid->mask);
+			sprintf(name + strlen(name), " rev %u", id & ~pid->mask);
 		if (ac97 && pid->patch) {
 			if ((modem && (pid->flags & AC97_MODEM_PATCH)) ||
 			    (! modem && ! (pid->flags & AC97_MODEM_PATCH)))
 				pid->patch(ac97);
 		}
-	} else
-		sprintf(name + strlen(name), " id %x", id & 0xff);
+	} else {
+		int l = strlen(name);
+		snprintf(name + l, maxlen - l, " id %x", id & 0xff);
+	}
 }
 
 /**
@@ -1967,7 +1957,7 @@ int snd_ac97_bus(struct snd_card *card, int num,
 
 	if (snd_BUG_ON(!card))
 		return -EINVAL;
-	bus = kzalloc(sizeof(*bus), GFP_KERNEL);
+	bus = kzalloc_obj(*bus);
 	if (bus == NULL)
 		return -ENOMEM;
 	bus->card = card;
@@ -2009,6 +1999,7 @@ static int snd_ac97_dev_register(struct snd_device *device)
 	err = device_register(&ac97->dev);
 	if (err < 0) {
 		ac97_err(ac97, "Can't register ac97 bus\n");
+		put_device(&ac97->dev);
 		ac97->dev.bus = NULL;
 		return err;
 	}
@@ -2069,17 +2060,16 @@ int snd_ac97_mixer(struct snd_ac97_bus *bus, struct snd_ac97_template *template,
 		.dev_disconnect =	snd_ac97_dev_disconnect,
 	};
 
-	if (rac97)
-		*rac97 = NULL;
-	if (snd_BUG_ON(!bus || !template))
+	if (snd_BUG_ON(!bus || !template || !rac97))
 		return -EINVAL;
+	*rac97 = NULL;
 	if (snd_BUG_ON(template->num >= 4))
 		return -EINVAL;
 	if (bus->codec[template->num])
 		return -EBUSY;
 
 	card = bus->card;
-	ac97 = kzalloc(sizeof(*ac97), GFP_KERNEL);
+	ac97 = kzalloc_obj(*ac97);
 	if (ac97 == NULL)
 		return -ENOMEM;
 	ac97->private_data = template->private_data;
@@ -2296,15 +2286,15 @@ int snd_ac97_mixer(struct snd_ac97_bus *bus, struct snd_ac97_template *template,
 	/* additional initializations */
 	if (bus->ops->init)
 		bus->ops->init(ac97);
-	snd_ac97_get_name(ac97, ac97->id, name, !ac97_is_audio(ac97));
-	snd_ac97_get_name(NULL, ac97->id, name, !ac97_is_audio(ac97));  // ac97->id might be changed in the special setup code
+	snd_ac97_get_name(ac97, ac97->id, name, sizeof(name), !ac97_is_audio(ac97));
+	snd_ac97_get_name(NULL, ac97->id, name, sizeof(name), !ac97_is_audio(ac97));  // ac97->id might be changed in the special setup code
 	if (! ac97->build_ops)
 		ac97->build_ops = &null_build_ops;
 
 	if (ac97_is_audio(ac97)) {
 		char comp[16];
 		if (card->mixername[0] == '\0') {
-			strcpy(card->mixername, name);
+			strscpy(card->mixername, name);
 		} else {
 			if (strlen(card->mixername) + 1 + strlen(name) + 1 <= sizeof(card->mixername)) {
 				strcat(card->mixername, ",");
@@ -2325,7 +2315,7 @@ int snd_ac97_mixer(struct snd_ac97_bus *bus, struct snd_ac97_template *template,
 	if (ac97_is_modem(ac97)) {
 		char comp[16];
 		if (card->mixername[0] == '\0') {
-			strcpy(card->mixername, name);
+			strscpy(card->mixername, name);
 		} else {
 			if (strlen(card->mixername) + 1 + strlen(name) + 1 <= sizeof(card->mixername)) {
 				strcat(card->mixername, ",");
@@ -2462,8 +2452,7 @@ int snd_ac97_update_power(struct snd_ac97 *ac97, int reg, int powerup)
 		 * (for avoiding loud click noises for many (OSS) apps
 		 *  that open/close frequently)
 		 */
-		schedule_delayed_work(&ac97->power_work,
-				      msecs_to_jiffies(power_save * 1000));
+		schedule_delayed_work(&ac97->power_work, secs_to_jiffies(power_save));
 	else {
 		cancel_delayed_work(&ac97->power_work);
 		update_power_regs(ac97);
@@ -2655,11 +2644,18 @@ EXPORT_SYMBOL(snd_ac97_resume);
  */
 static void set_ctl_name(char *dst, const char *src, const char *suffix)
 {
-	if (suffix)
-		sprintf(dst, "%s %s", src, suffix);
-	else
-		strcpy(dst, src);
-}	
+	const size_t msize = SNDRV_CTL_ELEM_ID_NAME_MAXLEN;
+
+	if (suffix) {
+		if (snprintf(dst, msize, "%s %s", src, suffix) >= msize)
+			pr_warn("ALSA: AC97 control name '%s %s' truncated to '%s'\n",
+				src, suffix, dst);
+	} else {
+		if (strscpy(dst, src, msize) < 0)
+			pr_warn("ALSA: AC97 control name '%s' truncated to '%s'\n",
+				src, dst);
+	}
+}
 
 /* remove the control with the given name and optional suffix */
 static int snd_ac97_remove_ctl(struct snd_ac97 *ac97, const char *name,
@@ -2686,8 +2682,11 @@ static int snd_ac97_rename_ctl(struct snd_ac97 *ac97, const char *src,
 			       const char *dst, const char *suffix)
 {
 	struct snd_kcontrol *kctl = ctl_find(ac97, src, suffix);
+	char name[SNDRV_CTL_ELEM_ID_NAME_MAXLEN];
+
 	if (kctl) {
-		set_ctl_name(kctl->id.name, dst, suffix);
+		set_ctl_name(name, dst, suffix);
+		snd_ctl_rename(ac97->bus->card, kctl, name);
 		return 0;
 	}
 	return -ENOENT;
@@ -2706,11 +2705,17 @@ static int snd_ac97_swap_ctl(struct snd_ac97 *ac97, const char *s1,
 			     const char *s2, const char *suffix)
 {
 	struct snd_kcontrol *kctl1, *kctl2;
+	char name[SNDRV_CTL_ELEM_ID_NAME_MAXLEN];
+
 	kctl1 = ctl_find(ac97, s1, suffix);
 	kctl2 = ctl_find(ac97, s2, suffix);
 	if (kctl1 && kctl2) {
-		set_ctl_name(kctl1->id.name, s2, suffix);
-		set_ctl_name(kctl2->id.name, s1, suffix);
+		set_ctl_name(name, s2, suffix);
+		snd_ctl_rename(ac97->bus->card, kctl1, name);
+
+		set_ctl_name(name, s1, suffix);
+		snd_ctl_rename(ac97->bus->card, kctl2, name);
+
 		return 0;
 	}
 	return -ENOENT;

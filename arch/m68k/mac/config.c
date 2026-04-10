@@ -15,7 +15,6 @@
 #include <linux/reboot.h>
 #include <linux/types.h>
 #include <linux/mm.h>
-#include <linux/tty.h>
 #include <linux/console.h>
 #include <linux/interrupt.h>
 /* keyb */
@@ -23,7 +22,6 @@
 #include <linux/delay.h>
 /* keyb */
 #include <linux/init.h>
-#include <linux/vt_kern.h>
 #include <linux/platform_device.h>
 #include <linux/ata_platform.h>
 #include <linux/adb.h>
@@ -50,21 +48,13 @@
 #include <asm/mac_psc.h>
 #include <asm/config.h>
 
+#include "mac.h"
+
 /* Mac bootinfo struct */
 struct mac_booter_data mac_bi_data;
 
 /* The phys. video addr. - might be bogus on some machines */
 static unsigned long mac_orig_videoaddr;
-
-extern int mac_hwclk(int, struct rtc_time *);
-extern void iop_init(void);
-extern void via_init(void);
-extern void via_init_clock(void);
-extern void oss_init(void);
-extern void psc_init(void);
-extern void baboon_init(void);
-
-extern void mac_mksound(unsigned int, unsigned int);
 
 static void mac_get_model(char *str);
 static void mac_identify(void);
@@ -801,7 +791,7 @@ static void __init mac_identify(void)
 	}
 
 	macintosh_config = mac_data_table;
-	for (m = macintosh_config; m->ident != -1; m++) {
+	for (m = &mac_data_table[1]; m->ident != -1; m++) {
 		if (m->ident == model) {
 			macintosh_config = m;
 			break;
@@ -958,7 +948,7 @@ static const struct pata_platform_info mac_pata_data __initconst = {
 	.ioport_shift = 2,
 };
 
-int __init mac_platform_init(void)
+static int __init mac_platform_init(void)
 {
 	phys_addr_t swim_base = 0;
 

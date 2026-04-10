@@ -41,10 +41,7 @@ static struct inode *ecryptfs_alloc_inode(struct super_block *sb)
 	inode_info = alloc_inode_sb(sb, ecryptfs_inode_info_cache, GFP_KERNEL);
 	if (unlikely(!inode_info))
 		goto out;
-	if (ecryptfs_init_crypt_stat(&inode_info->crypt_stat)) {
-		kmem_cache_free(ecryptfs_inode_info_cache, inode_info);
-		goto out;
-	}
+	ecryptfs_init_crypt_stat(&inode_info->crypt_stat);
 	mutex_init(&inode_info->lower_file_mutex);
 	atomic_set(&inode_info->lower_file_count, 0);
 	inode_info->lower_file = NULL;
@@ -172,7 +169,6 @@ const struct super_operations ecryptfs_sops = {
 	.destroy_inode = ecryptfs_destroy_inode,
 	.free_inode = ecryptfs_free_inode,
 	.statfs = ecryptfs_statfs,
-	.remount_fs = NULL,
 	.evict_inode = ecryptfs_evict_inode,
 	.show_options = ecryptfs_show_options
 };

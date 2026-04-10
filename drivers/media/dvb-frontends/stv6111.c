@@ -161,7 +161,7 @@ static const struct slookup gain_rfagc_lookup[] = {
 };
 
 /*
- * This table is 6 dB too low comapred to the others (probably created with
+ * This table is 6 dB too low compared to the others (probably created with
  * a different BB_MAG setting)
  */
 static const struct slookup gain_channel_agc_nf_lookup[] = {
@@ -653,7 +653,7 @@ struct dvb_frontend *stv6111_attach(struct dvb_frontend *fe,
 	int stat = -ENODEV;
 	int gatestat = 0;
 
-	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	state = kzalloc_obj(*state);
 	if (!state)
 		return NULL;
 	state->adr = adr;

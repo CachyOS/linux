@@ -16,7 +16,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <linux/delay.h>
 #include <linux/kernel.h>
@@ -320,8 +320,6 @@ static void b53_spi_remove(struct spi_device *spi)
 
 	if (dev)
 		b53_switch_remove(dev);
-
-	spi_set_drvdata(spi, NULL);
 }
 
 static void b53_spi_shutdown(struct spi_device *spi)

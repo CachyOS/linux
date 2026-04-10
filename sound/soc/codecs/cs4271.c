@@ -10,13 +10,12 @@
  * DAPM support not implemented.
  */
 
+#include <linux/clk.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
-#include <linux/of_gpio.h>
 #include <linux/regulator/consumer.h>
 #include <sound/pcm.h>
 #include <sound/soc.h>
@@ -161,12 +160,11 @@ struct cs4271_private {
 	/* Current sample rate for de-emphasis control */
 	int				rate;
 	/* GPIO driving Reset pin, if any */
-	int				gpio_nreset;
-	/* GPIO that disable serial bus, if any */
-	int				gpio_disable;
+	struct gpio_desc		*reset;
 	/* enable soft reset workaround */
 	bool				enable_soft_reset;
 	struct regulator_bulk_data      supplies[ARRAY_SIZE(supply_names)];
+	struct clk *clk;
 };
 
 static const struct snd_soc_dapm_widget cs4271_dapm_widgets[] = {
@@ -213,10 +211,10 @@ static int cs4271_set_dai_fmt(struct snd_soc_dai *codec_dai,
 	int ret;
 
 	switch (format & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		cs4271->master = false;
 		break;
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		cs4271->master = true;
 		val |= CS4271_MODE1_MASTER;
 		break;
@@ -280,7 +278,7 @@ static int cs4271_set_deemph(struct snd_soc_component *component)
 static int cs4271_get_deemph(struct snd_kcontrol *kcontrol,
 			     struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct cs4271_private *cs4271 = snd_soc_component_get_drvdata(component);
 
 	ucontrol->value.integer.value[0] = cs4271->deemph;
@@ -290,7 +288,7 @@ static int cs4271_get_deemph(struct snd_kcontrol *kcontrol,
 static int cs4271_put_deemph(struct snd_kcontrol *kcontrol,
 			     struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct cs4271_private *cs4271 = snd_soc_component_get_drvdata(component);
 
 	cs4271->deemph = ucontrol->value.integer.value[0];
@@ -488,12 +486,10 @@ static int cs4271_reset(struct snd_soc_component *component)
 {
 	struct cs4271_private *cs4271 = snd_soc_component_get_drvdata(component);
 
-	if (gpio_is_valid(cs4271->gpio_nreset)) {
-		gpio_direction_output(cs4271->gpio_nreset, 0);
-		mdelay(1);
-		gpio_set_value(cs4271->gpio_nreset, 1);
-		mdelay(1);
-	}
+	gpiod_direction_output(cs4271->reset, 1);
+	mdelay(1);
+	gpiod_set_value(cs4271->reset, 0);
+	mdelay(1);
 
 	return 0;
 }
@@ -511,6 +507,7 @@ static int cs4271_soc_suspend(struct snd_soc_component *component)
 		return ret;
 
 	regcache_mark_dirty(cs4271->regmap);
+	clk_disable_unprepare(cs4271->clk);
 	regulator_bulk_disable(ARRAY_SIZE(cs4271->supplies), cs4271->supplies);
 
 	return 0;
@@ -528,21 +525,33 @@ static int cs4271_soc_resume(struct snd_soc_component *component)
 		return ret;
 	}
 
+	ret = clk_prepare_enable(cs4271->clk);
+	if (ret) {
+		dev_err(component->dev, "Failed to enable clk: %d\n", ret);
+		goto err_disable_regulators;
+	}
+
 	/* Do a proper reset after power up */
 	cs4271_reset(component);
 
 	/* Restore codec state */
 	ret = regcache_sync(cs4271->regmap);
 	if (ret < 0)
-		return ret;
+		goto err_disable_clk;
 
 	/* then disable the power-down bit */
 	ret = regmap_update_bits(cs4271->regmap, CS4271_MODE2,
 				 CS4271_MODE2_PDN, 0);
 	if (ret < 0)
-		return ret;
+		goto err_disable_clk;
 
 	return 0;
+
+err_disable_clk:
+	clk_disable_unprepare(cs4271->clk);
+err_disable_regulators:
+	regulator_bulk_disable(ARRAY_SIZE(cs4271->supplies), cs4271->supplies);
+	return ret;
 }
 #else
 #define cs4271_soc_suspend	NULL
@@ -563,19 +572,12 @@ static int cs4271_component_probe(struct snd_soc_component *component)
 	struct cs4271_private *cs4271 = snd_soc_component_get_drvdata(component);
 	struct cs4271_platform_data *cs4271plat = component->dev->platform_data;
 	int ret;
-	bool amutec_eq_bmutec = false;
+	bool amutec_eq_bmutec;
 
-#ifdef CONFIG_OF
-	if (of_match_device(cs4271_dt_ids, component->dev)) {
-		if (of_get_property(component->dev->of_node,
-				     "cirrus,amutec-eq-bmutec", NULL))
-			amutec_eq_bmutec = true;
-
-		if (of_get_property(component->dev->of_node,
-				     "cirrus,enable-soft-reset", NULL))
-			cs4271->enable_soft_reset = true;
-	}
-#endif
+	amutec_eq_bmutec = of_property_read_bool(component->dev->of_node,
+						 "cirrus,amutec-eq-bmutec");
+	cs4271->enable_soft_reset = of_property_read_bool(component->dev->of_node,
+							  "cirrus,enable-soft-reset");
 
 	ret = regulator_bulk_enable(ARRAY_SIZE(cs4271->supplies),
 				    cs4271->supplies);
@@ -589,22 +591,30 @@ static int cs4271_component_probe(struct snd_soc_component *component)
 		cs4271->enable_soft_reset = cs4271plat->enable_soft_reset;
 	}
 
+	ret = clk_prepare_enable(cs4271->clk);
+	if (ret) {
+		dev_err(component->dev, "Failed to enable clk: %d\n", ret);
+		goto err_disable_regulators;
+	}
+
 	/* Reset codec */
 	cs4271_reset(component);
 
 	ret = regcache_sync(cs4271->regmap);
 	if (ret < 0)
-		return ret;
+		goto err_disable_clk;
 
 	ret = regmap_update_bits(cs4271->regmap, CS4271_MODE2,
 				 CS4271_MODE2_PDN | CS4271_MODE2_CPEN,
 				 CS4271_MODE2_PDN | CS4271_MODE2_CPEN);
 	if (ret < 0)
-		return ret;
+		goto err_disable_clk;
+
 	ret = regmap_update_bits(cs4271->regmap, CS4271_MODE2,
 				 CS4271_MODE2_PDN, 0);
 	if (ret < 0)
-		return ret;
+		goto err_disable_clk;
+
 	/* Power-up sequence requires 85 uS */
 	udelay(85);
 
@@ -614,18 +624,24 @@ static int cs4271_component_probe(struct snd_soc_component *component)
 				   CS4271_MODE2_MUTECAEQUB);
 
 	return 0;
+
+err_disable_clk:
+	clk_disable_unprepare(cs4271->clk);
+err_disable_regulators:
+	regulator_bulk_disable(ARRAY_SIZE(cs4271->supplies), cs4271->supplies);
+	return ret;
 }
 
 static void cs4271_component_remove(struct snd_soc_component *component)
 {
 	struct cs4271_private *cs4271 = snd_soc_component_get_drvdata(component);
 
-	if (gpio_is_valid(cs4271->gpio_nreset))
-		/* Set codec to the reset state */
-		gpio_set_value(cs4271->gpio_nreset, 0);
+	/* Set codec to the reset state */
+	gpiod_set_value(cs4271->reset, 1);
 
 	regcache_mark_dirty(cs4271->regmap);
 	regulator_bulk_disable(ARRAY_SIZE(cs4271->supplies), cs4271->supplies);
+	clk_disable_unprepare(cs4271->clk);
 };
 
 static const struct snd_soc_component_driver soc_component_dev_cs4271 = {
@@ -642,13 +658,11 @@ static const struct snd_soc_component_driver soc_component_dev_cs4271 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static int cs4271_common_probe(struct device *dev,
 			       struct cs4271_private **c)
 {
-	struct cs4271_platform_data *cs4271plat = dev->platform_data;
 	struct cs4271_private *cs4271;
 	int i, ret;
 
@@ -656,19 +670,15 @@ static int cs4271_common_probe(struct device *dev,
 	if (!cs4271)
 		return -ENOMEM;
 
-	if (of_match_device(cs4271_dt_ids, dev))
-		cs4271->gpio_nreset =
-			of_get_named_gpio(dev->of_node, "reset-gpio", 0);
+	cs4271->reset = devm_gpiod_get_optional(dev, "reset", GPIOD_ASIS);
+	if (IS_ERR(cs4271->reset))
+		return dev_err_probe(dev, PTR_ERR(cs4271->reset),
+				     "error retrieving RESET GPIO\n");
+	gpiod_set_consumer_name(cs4271->reset, "CS4271 Reset");
 
-	if (cs4271plat)
-		cs4271->gpio_nreset = cs4271plat->gpio_nreset;
-
-	if (gpio_is_valid(cs4271->gpio_nreset)) {
-		ret = devm_gpio_request(dev, cs4271->gpio_nreset,
-					"CS4271 Reset");
-		if (ret < 0)
-			return ret;
-	}
+	cs4271->clk = devm_clk_get_optional(dev, "mclk");
+	if (IS_ERR(cs4271->clk))
+		return dev_err_probe(dev, PTR_ERR(cs4271->clk), "Failed to get mclk\n");
 
 	for (i = 0; i < ARRAY_SIZE(supply_names); i++)
 		cs4271->supplies[i].supply = supply_names[i];
@@ -690,8 +700,8 @@ const struct regmap_config cs4271_regmap_config = {
 
 	.reg_defaults = cs4271_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(cs4271_reg_defaults),
-	.cache_type = REGCACHE_RBTREE,
-
+	.cache_type = REGCACHE_FLAT,
+	.val_bits = 8,
 	.volatile_reg = cs4271_volatile_reg,
 };
 EXPORT_SYMBOL_GPL(cs4271_regmap_config);

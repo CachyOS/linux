@@ -163,7 +163,7 @@ err:
 	return ret;
 }
 
-static int adp5520_led_remove(struct platform_device *pdev)
+static void adp5520_led_remove(struct platform_device *pdev)
 {
 	struct adp5520_leds_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	struct adp5520_led *led;
@@ -177,8 +177,6 @@ static int adp5520_led_remove(struct platform_device *pdev)
 	for (i = 0; i < pdata->num_leds; i++) {
 		led_classdev_unregister(&led[i].cdev);
 	}
-
-	return 0;
 }
 
 static struct platform_driver adp5520_led_driver = {

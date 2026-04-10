@@ -47,6 +47,9 @@
 
 #define	MAX_DMA_DELAY	20
 
+/* 300ms to get resume response */
+#define WAIT_FOR_RESUME_ACK_MS		300
+
 /* ISHTP device states */
 enum ishtp_dev_state {
 	ISHTP_DEV_INITIALIZING = 0,
@@ -57,7 +60,6 @@ enum ishtp_dev_state {
 	ISHTP_DEV_POWER_DOWN,
 	ISHTP_DEV_POWER_UP
 };
-const char *ishtp_dev_state_str(int state);
 
 struct ishtp_cl;
 
@@ -123,11 +125,37 @@ struct ishtp_hw_ops {
 };
 
 /**
+ * struct ishtp_driver_data - Driver-specific data for ISHTP devices
+ *
+ * This structure holds driver-specific data that can be associated with each
+ * ISHTP device instance. It allows for the storage of data that is unique to
+ * a particular driver or hardware variant.
+ *
+ * @fw_generation: The generation name associated with a specific hardware
+ *               variant of the Intel Integrated Sensor Hub (ISH). This allows
+ *               the driver to load the correct firmware based on the device's
+ *               hardware variant. For example, "lnlm" for the Lunar Lake-M
+ *               platform. The generation name must not exceed 8 characters
+ *               in length.
+ */
+struct ishtp_driver_data {
+	char *fw_generation;
+};
+
+struct ish_version {
+	u16 major;
+	u16 minor;
+	u16 hotfix;
+	u16 build;
+};
+
+/**
  * struct ishtp_device - ISHTP private device struct
  */
 struct ishtp_device {
 	struct device *devc;	/* pointer to lowest device */
 	struct pci_dev *pdev;	/* PCI device to get device ids */
+	struct ishtp_driver_data *driver_data; /* pointer to driver-specific data */
 
 	/* waitq for waiting for suspend response */
 	wait_queue_head_t suspend_wait;
@@ -146,6 +174,20 @@ struct ishtp_device {
 	bool recvd_hw_ready;
 	struct hbm_version version;
 	int transfer_path; /* Choice of transfer path: IPC or DMA */
+
+	/* Alloc a dedicated unbound workqueue for ishtp device */
+	struct workqueue_struct *unbound_wq;
+
+	/* work structure for scheduling firmware loading tasks */
+	struct work_struct work_fw_loader;
+	/* waitq for waiting for command response from the firmware loader */
+	wait_queue_head_t wait_loader_recvd_msg;
+	/* indicating whether a message from the firmware loader has been received */
+	bool fw_loader_received;
+	/* pointer to a buffer for receiving messages from the firmware loader */
+	void *fw_loader_rx_buf;
+	/* size of the buffer pointed to by fw_loader_rx_buf */
+	int fw_loader_rx_size;
 
 	/* ishtp device states */
 	enum ishtp_dev_state dev_state;
@@ -206,12 +248,19 @@ struct ishtp_device {
 	/* Dump to trace buffers if enabled*/
 	ishtp_print_log print_log;
 
+	/* Base version of Intel's released firmware */
+	struct ish_version base_ver;
+	/* Vendor-customized project version */
+	struct ish_version prj_ver;
+
 	/* Debug stats */
 	unsigned int	ipc_rx_cnt;
 	unsigned long long	ipc_rx_bytes_cnt;
 	unsigned int	ipc_tx_cnt;
 	unsigned long long	ipc_tx_bytes_cnt;
 
+	/* Time of the last clock sync */
+	unsigned long prev_sync;
 	const struct ishtp_hw_ops *ops;
 	size_t	mtu;
 	uint32_t	ishtp_msg_hdr;

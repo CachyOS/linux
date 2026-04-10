@@ -838,7 +838,6 @@ static int sti_tvout_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct device_node *node = dev->of_node;
 	struct sti_tvout *tvout;
-	struct resource *res;
 
 	DRM_INFO("%s\n", __func__);
 
@@ -850,16 +849,9 @@ static int sti_tvout_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	tvout->dev = dev;
-
-	/* get memory resources */
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "tvout-reg");
-	if (!res) {
-		DRM_ERROR("Invalid glue resource\n");
-		return -ENOMEM;
-	}
-	tvout->regs = devm_ioremap(dev, res->start, resource_size(res));
-	if (!tvout->regs)
-		return -ENOMEM;
+	tvout->regs = devm_platform_ioremap_resource_byname(pdev, "tvout-reg");
+	if (IS_ERR(tvout->regs))
+		return PTR_ERR(tvout->regs);
 
 	/* get reset resources */
 	tvout->reset = devm_reset_control_get(dev, "tvout");
@@ -872,10 +864,9 @@ static int sti_tvout_probe(struct platform_device *pdev)
 	return component_add(dev, &sti_tvout_ops);
 }
 
-static int sti_tvout_remove(struct platform_device *pdev)
+static void sti_tvout_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &sti_tvout_ops);
-	return 0;
 }
 
 static const struct of_device_id tvout_of_match[] = {
@@ -887,7 +878,6 @@ MODULE_DEVICE_TABLE(of, tvout_of_match);
 struct platform_driver sti_tvout_driver = {
 	.driver = {
 		.name = "sti-tvout",
-		.owner = THIS_MODULE,
 		.of_match_table = tvout_of_match,
 	},
 	.probe = sti_tvout_probe,

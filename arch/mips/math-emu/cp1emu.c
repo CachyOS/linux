@@ -1032,7 +1032,7 @@ static int cop1Emulate(struct pt_regs *xcp, struct mips_fpu_struct *ctx,
 	 */
 	if (dec_insn.micro_mips_mode) {
 		/*
-		 * If next instruction is a 16-bit instruction, then it
+		 * If next instruction is a 16-bit instruction, then
 		 * it cannot be a FPU instruction. This could happen
 		 * since we can be called for non-FPU instructions.
 		 */
@@ -1660,7 +1660,7 @@ static int fpux_emu(struct pt_regs *xcp, struct mips_fpu_struct *ctx,
 		break;
 	}
 
-	case 0x3:
+	case 0x7:
 		if (MIPSInst_FUNC(ir) != pfetch_op)
 			return SIGILL;
 

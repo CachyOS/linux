@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2001-2003 Sistina Software (UK) Limited.
  *
@@ -38,7 +39,7 @@ static int linear_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		return -EINVAL;
 	}
 
-	lc = kmalloc(sizeof(*lc), GFP_KERNEL);
+	lc = kmalloc_obj(*lc);
 	if (lc == NULL) {
 		ti->error = "Cannot allocate linear context";
 		return -ENOMEM;
@@ -61,17 +62,18 @@ static int linear_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ti->num_discard_bios = 1;
 	ti->num_secure_erase_bios = 1;
 	ti->num_write_zeroes_bios = 1;
+	ti->flush_bypasses_map = true;
 	ti->private = lc;
 	return 0;
 
-      bad:
+bad:
 	kfree(lc);
 	return ret;
 }
 
 static void linear_dtr(struct dm_target *ti)
 {
-	struct linear_c *lc = (struct linear_c *) ti->private;
+	struct linear_c *lc = ti->private;
 
 	dm_put_device(ti, lc->dev);
 	kfree(lc);
@@ -84,7 +86,7 @@ static sector_t linear_map_sector(struct dm_target *ti, sector_t bi_sector)
 	return lc->start + dm_target_offset(ti, bi_sector);
 }
 
-static int linear_map(struct dm_target *ti, struct bio *bio)
+int linear_map(struct dm_target *ti, struct bio *bio)
 {
 	struct linear_c *lc = ti->private;
 
@@ -95,9 +97,9 @@ static int linear_map(struct dm_target *ti, struct bio *bio)
 }
 
 static void linear_status(struct dm_target *ti, status_type_t type,
-			  unsigned status_flags, char *result, unsigned maxlen)
+			  unsigned int status_flags, char *result, unsigned int maxlen)
 {
-	struct linear_c *lc = (struct linear_c *) ti->private;
+	struct linear_c *lc = ti->private;
 	size_t sz = 0;
 
 	switch (type) {
@@ -117,9 +119,11 @@ static void linear_status(struct dm_target *ti, status_type_t type,
 	}
 }
 
-static int linear_prepare_ioctl(struct dm_target *ti, struct block_device **bdev)
+static int linear_prepare_ioctl(struct dm_target *ti, struct block_device **bdev,
+				unsigned int cmd, unsigned long arg,
+				bool *forward)
 {
-	struct linear_c *lc = (struct linear_c *) ti->private;
+	struct linear_c *lc = ti->private;
 	struct dm_dev *dev = lc->dev;
 
 	*bdev = dev->bdev;
@@ -166,7 +170,7 @@ static struct dax_device *linear_dax_pgoff(struct dm_target *ti, pgoff_t *pgoff)
 
 static long linear_dax_direct_access(struct dm_target *ti, pgoff_t pgoff,
 		long nr_pages, enum dax_access_mode mode, void **kaddr,
-		pfn_t *pfn)
+		unsigned long *pfn)
 {
 	struct dax_device *dax_dev = linear_dax_pgoff(ti, &pgoff);
 
@@ -197,9 +201,10 @@ static size_t linear_dax_recovery_write(struct dm_target *ti, pgoff_t pgoff,
 
 static struct target_type linear_target = {
 	.name   = "linear",
-	.version = {1, 4, 0},
+	.version = {1, 5, 0},
 	.features = DM_TARGET_PASSES_INTEGRITY | DM_TARGET_NOWAIT |
-		    DM_TARGET_ZONED_HM | DM_TARGET_PASSES_CRYPTO,
+		    DM_TARGET_ZONED_HM | DM_TARGET_PASSES_CRYPTO |
+		    DM_TARGET_ATOMIC_WRITES,
 	.report_zones = linear_report_zones,
 	.module = THIS_MODULE,
 	.ctr    = linear_ctr,

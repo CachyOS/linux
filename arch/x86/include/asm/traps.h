@@ -14,16 +14,18 @@
 asmlinkage __visible notrace struct pt_regs *sync_regs(struct pt_regs *eregs);
 asmlinkage __visible notrace
 struct pt_regs *fixup_bad_iret(struct pt_regs *bad_regs);
-void __init trap_init(void);
 asmlinkage __visible noinstr struct pt_regs *vc_switch_off_ist(struct pt_regs *eregs);
 #endif
 
-extern bool ibt_selftest(void);
+extern int ibt_selftest(void);
+extern int ibt_selftest_noendbr(void);
 
 #ifdef CONFIG_X86_F00F_BUG
 /* For handling the FOOF bug */
 void handle_invalid_op(struct pt_regs *regs);
 #endif
+
+noinstr bool handle_bug(struct pt_regs *regs);
 
 static inline int get_si_code(unsigned long condition)
 {
@@ -35,8 +37,6 @@ static inline int get_si_code(unsigned long condition)
 		return TRAP_BRKPT;
 }
 
-extern int panic_on_unrecovered_nmi;
-
 void math_emulate(struct math_emu_info *);
 
 bool fault_in_kernel_space(unsigned long address);
@@ -46,5 +46,17 @@ void __noreturn handle_stack_overflow(struct pt_regs *regs,
 				      unsigned long fault_address,
 				      struct stack_info *info);
 #endif
+
+static inline void cond_local_irq_enable(struct pt_regs *regs)
+{
+	if (regs->flags & X86_EFLAGS_IF)
+		local_irq_enable();
+}
+
+static inline void cond_local_irq_disable(struct pt_regs *regs)
+{
+	if (regs->flags & X86_EFLAGS_IF)
+		local_irq_disable();
+}
 
 #endif /* _ASM_X86_TRAPS_H */

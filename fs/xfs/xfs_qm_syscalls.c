@@ -5,7 +5,7 @@
  */
 
 
-#include "xfs.h"
+#include "xfs_platform.h"
 #include "xfs_fs.h"
 #include "xfs_shared.h"
 #include "xfs_format.h"
@@ -53,16 +53,15 @@ xfs_qm_scall_quotaoff(
 STATIC int
 xfs_qm_scall_trunc_qfile(
 	struct xfs_mount	*mp,
-	xfs_ino_t		ino)
+	xfs_dqtype_t		type)
 {
 	struct xfs_inode	*ip;
 	struct xfs_trans	*tp;
 	int			error;
 
-	if (ino == NULLFSINO)
+	error = xfs_qm_qino_load(mp, type, &ip);
+	if (error == -ENOENT)
 		return 0;
-
-	error = xfs_iget(mp, NULL, ino, 0, 0, &ip);
 	if (error)
 		return error;
 
@@ -113,17 +112,17 @@ xfs_qm_scall_trunc_qfiles(
 	}
 
 	if (flags & XFS_QMOPT_UQUOTA) {
-		error = xfs_qm_scall_trunc_qfile(mp, mp->m_sb.sb_uquotino);
+		error = xfs_qm_scall_trunc_qfile(mp, XFS_DQTYPE_USER);
 		if (error)
 			return error;
 	}
 	if (flags & XFS_QMOPT_GQUOTA) {
-		error = xfs_qm_scall_trunc_qfile(mp, mp->m_sb.sb_gquotino);
+		error = xfs_qm_scall_trunc_qfile(mp, XFS_DQTYPE_GROUP);
 		if (error)
 			return error;
 	}
 	if (flags & XFS_QMOPT_PQUOTA)
-		error = xfs_qm_scall_trunc_qfile(mp, mp->m_sb.sb_pquotino);
+		error = xfs_qm_scall_trunc_qfile(mp, XFS_DQTYPE_PROJ);
 
 	return error;
 }
@@ -304,13 +303,12 @@ xfs_qm_scall_setqlim(
 	}
 
 	defq = xfs_get_defquota(q, xfs_dquot_type(dqp));
-	xfs_dqunlock(dqp);
 
 	error = xfs_trans_alloc(mp, &M_RES(mp)->tr_qm_setqlim, 0, 0, 0, &tp);
 	if (error)
 		goto out_rele;
 
-	xfs_dqlock(dqp);
+	mutex_lock(&dqp->q_qlock);
 	xfs_trans_dqjoin(tp, dqp);
 
 	/*
@@ -428,19 +426,6 @@ xfs_qm_scall_getquota_fill_qc(
 		dst->d_ino_timer = 0;
 		dst->d_rt_spc_timer = 0;
 	}
-
-#ifdef DEBUG
-	if (xfs_dquot_is_enforced(dqp) && dqp->q_id != 0) {
-		if ((dst->d_space > dst->d_spc_softlimit) &&
-		    (dst->d_spc_softlimit > 0)) {
-			ASSERT(dst->d_spc_timer != 0);
-		}
-		if ((dst->d_ino_count > dqp->q_ino.softlimit) &&
-		    (dqp->q_ino.softlimit > 0)) {
-			ASSERT(dst->d_ino_timer != 0);
-		}
-	}
-#endif
 }
 
 /* Return the quota information for the dquot matching id. */
@@ -454,9 +439,12 @@ xfs_qm_scall_getquota(
 	struct xfs_dquot	*dqp;
 	int			error;
 
-	/* Flush inodegc work at the start of a quota reporting scan. */
+	/*
+	 * Expedite pending inodegc work at the start of a quota reporting
+	 * scan but don't block waiting for it to complete.
+	 */
 	if (id == 0)
-		xfs_inodegc_flush(mp);
+		xfs_inodegc_push(mp);
 
 	/*
 	 * Try to get the dquot. We don't want it allocated on disk, so don't
@@ -470,6 +458,7 @@ xfs_qm_scall_getquota(
 	 * If everything's NULL, this dquot doesn't quite exist as far as
 	 * our utility programs are concerned.
 	 */
+	mutex_lock(&dqp->q_qlock);
 	if (XFS_IS_DQUOT_UNINITIALIZED(dqp)) {
 		error = -ENOENT;
 		goto out_put;
@@ -478,7 +467,8 @@ xfs_qm_scall_getquota(
 	xfs_qm_scall_getquota_fill_qc(mp, type, dqp, dst);
 
 out_put:
-	xfs_qm_dqput(dqp);
+	mutex_unlock(&dqp->q_qlock);
+	xfs_qm_dqrele(dqp);
 	return error;
 }
 
@@ -498,7 +488,7 @@ xfs_qm_scall_getquota_next(
 
 	/* Flush inodegc work at the start of a quota reporting scan. */
 	if (*id == 0)
-		xfs_inodegc_flush(mp);
+		xfs_inodegc_push(mp);
 
 	error = xfs_qm_dqget_next(mp, *id, type, &dqp);
 	if (error)
@@ -508,7 +498,8 @@ xfs_qm_scall_getquota_next(
 	*id = dqp->q_id;
 
 	xfs_qm_scall_getquota_fill_qc(mp, type, dqp, dst);
+	mutex_unlock(&dqp->q_qlock);
 
-	xfs_qm_dqput(dqp);
+	xfs_qm_dqrele(dqp);
 	return error;
 }

@@ -9,17 +9,9 @@
 
 #include "bprm_opts.skel.h"
 #include "network_helpers.h"
-
-#ifndef __NR_pidfd_open
-#define __NR_pidfd_open 434
-#endif
+#include "task_local_storage_helpers.h"
 
 static const char * const bash_envp[] = { "TMPDIR=shouldnotbeset", NULL };
-
-static inline int sys_pidfd_open(pid_t pid, unsigned int flags)
-{
-	return syscall(__NR_pidfd_open, pid, flags);
-}
 
 static int update_storage(int map_fd, int secureexec)
 {
@@ -59,7 +51,7 @@ static int run_set_secureexec(int map_fd, int secureexec)
 			exit(ret);
 
 		/* If the binary is executed with securexec=1, the dynamic
-		 * loader ingores and unsets certain variables like LD_PRELOAD,
+		 * loader ignores and unsets certain variables like LD_PRELOAD,
 		 * TMPDIR etc. TMPDIR is used here to simplify the example, as
 		 * LD_PRELOAD requires a real .so file.
 		 *

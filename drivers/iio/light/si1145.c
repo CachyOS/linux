@@ -465,11 +465,10 @@ static irqreturn_t si1145_trigger_handler(int irq, void *private)
 			goto done;
 	}
 
-	for_each_set_bit(i, indio_dev->active_scan_mask,
-		indio_dev->masklength) {
+	iio_for_each_active_channel(indio_dev, i) {
 		int run = 1;
 
-		while (i + run < indio_dev->masklength) {
+		while (i + run < iio_get_masklength(indio_dev)) {
 			if (!test_bit(i + run, indio_dev->active_scan_mask))
 				break;
 			if (indio_dev->channels[i + run].address !=
@@ -495,8 +494,9 @@ static irqreturn_t si1145_trigger_handler(int irq, void *private)
 			goto done;
 	}
 
-	iio_push_to_buffers_with_timestamp(indio_dev, data->buffer,
-		iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_ts(indio_dev, data->buffer,
+				    sizeof(data->buffer),
+				    iio_get_time_ns(indio_dev));
 
 done:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -514,7 +514,7 @@ static int si1145_set_chlist(struct iio_dev *indio_dev, unsigned long scan_mask)
 	if (data->scan_mask == scan_mask)
 		return 0;
 
-	for_each_set_bit(i, &scan_mask, indio_dev->masklength) {
+	for_each_set_bit(i, &scan_mask, iio_get_masklength(indio_dev)) {
 		switch (indio_dev->channels[i].address) {
 		case SI1145_REG_ALSVIS_DATA:
 			reg |= SI1145_CHLIST_EN_ALSVIS;
@@ -634,11 +634,10 @@ static int si1145_read_raw(struct iio_dev *indio_dev,
 		case IIO_VOLTAGE:
 		case IIO_TEMP:
 		case IIO_UVINDEX:
-			ret = iio_device_claim_direct_mode(indio_dev);
-			if (ret)
-				return ret;
+			if (!iio_device_claim_direct(indio_dev))
+				return -EBUSY;
 			ret = si1145_measure(indio_dev, chan);
-			iio_device_release_direct_mode(indio_dev);
+			iio_device_release_direct(indio_dev);
 
 			if (ret < 0)
 				return ret;
@@ -751,18 +750,17 @@ static int si1145_write_raw(struct iio_dev *indio_dev,
 			return -EINVAL;
 		}
 
-		ret = iio_device_claim_direct_mode(indio_dev);
-		if (ret)
-			return ret;
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
 
 		ret = si1145_param_set(data, reg1, val);
 		if (ret < 0) {
-			iio_device_release_direct_mode(indio_dev);
+			iio_device_release_direct(indio_dev);
 			return ret;
 		}
 		/* Set recovery period to one's complement of gain */
 		ret = si1145_param_set(data, reg2, (~val & 0x07) << 4);
-		iio_device_release_direct_mode(indio_dev);
+		iio_device_release_direct(indio_dev);
 		return ret;
 	case IIO_CHAN_INFO_RAW:
 		if (chan->type != IIO_CURRENT)
@@ -774,19 +772,18 @@ static int si1145_write_raw(struct iio_dev *indio_dev,
 		reg1 = SI1145_PS_LED_REG(chan->channel);
 		shift = SI1145_PS_LED_SHIFT(chan->channel);
 
-		ret = iio_device_claim_direct_mode(indio_dev);
-		if (ret)
-			return ret;
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
 
 		ret = i2c_smbus_read_byte_data(data->client, reg1);
 		if (ret < 0) {
-			iio_device_release_direct_mode(indio_dev);
+			iio_device_release_direct(indio_dev);
 			return ret;
 		}
 		ret = i2c_smbus_write_byte_data(data->client, reg1,
 			(ret & ~(0x0f << shift)) |
 			((val & 0x0f) << shift));
-		iio_device_release_direct_mode(indio_dev);
+		iio_device_release_direct(indio_dev);
 		return ret;
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		return si1145_store_samp_freq(data, val);
@@ -1251,7 +1248,7 @@ static int si1145_probe_trigger(struct iio_dev *indio_dev)
 
 	ret = devm_request_irq(&client->dev, client->irq,
 			  iio_trigger_generic_data_rdy_poll,
-			  IRQF_TRIGGER_FALLING,
+			  IRQF_TRIGGER_FALLING | IRQF_NO_THREAD,
 			  "si1145_irq",
 			  trig);
 	if (ret < 0) {
@@ -1269,9 +1266,9 @@ static int si1145_probe_trigger(struct iio_dev *indio_dev)
 	return 0;
 }
 
-static int si1145_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int si1145_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct si1145_data *data;
 	struct iio_dev *indio_dev;
 	u8 part_id, rev_id, seq_id;
@@ -1352,7 +1349,7 @@ static struct i2c_driver si1145_driver = {
 	.driver = {
 		.name   = "si1145",
 	},
-	.probe  = si1145_probe,
+	.probe = si1145_probe,
 	.id_table = si1145_ids,
 };
 

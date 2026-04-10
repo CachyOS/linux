@@ -232,7 +232,8 @@ static int micro_batt_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	mb->micro = dev_get_drvdata(pdev->dev.parent);
-	mb->wq = alloc_workqueue("ipaq-battery-wq", WQ_MEM_RECLAIM, 0);
+	mb->wq = alloc_workqueue("ipaq-battery-wq",
+				 WQ_MEM_RECLAIM | WQ_PERCPU, 0);
 	if (!mb->wq)
 		return -ENOMEM;
 
@@ -265,7 +266,7 @@ batt_err:
 	return ret;
 }
 
-static int micro_batt_remove(struct platform_device *pdev)
+static void micro_batt_remove(struct platform_device *pdev)
 
 {
 	struct micro_battery *mb = platform_get_drvdata(pdev);
@@ -274,8 +275,6 @@ static int micro_batt_remove(struct platform_device *pdev)
 	power_supply_unregister(micro_batt_power);
 	cancel_delayed_work_sync(&mb->update);
 	destroy_workqueue(mb->wq);
-
-	return 0;
 }
 
 static int __maybe_unused micro_batt_suspend(struct device *dev)

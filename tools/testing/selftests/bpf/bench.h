@@ -10,6 +10,7 @@
 #include <math.h>
 #include <time.h>
 #include <sys/syscall.h>
+#include <limits.h>
 
 struct cpu_set {
 	bool *cpus;
@@ -24,20 +25,34 @@ struct env {
 	bool verbose;
 	bool list;
 	bool affinity;
+	bool quiet;
+	bool stacktrace;
 	int consumer_cnt;
 	int producer_cnt;
+	int nr_cpus;
 	struct cpu_set prod_cpus;
 	struct cpu_set cons_cpus;
+};
+
+struct basic_stats {
+	double mean;
+	double stddev;
 };
 
 struct bench_res {
 	long hits;
 	long drops;
 	long false_hits;
+	long important_hits;
+	unsigned long gp_ns;
+	unsigned long gp_ct;
+	unsigned int stime;
+	unsigned long duration_ns;
 };
 
 struct bench {
 	const char *name;
+	const struct argp *argp;
 	void (*validate)(void);
 	void (*setup)(void);
 	void *(*producer_thread)(void *ctx);
@@ -61,15 +76,13 @@ void false_hits_report_progress(int iter, struct bench_res *res, long delta_ns);
 void false_hits_report_final(struct bench_res res[], int res_cnt);
 void ops_report_progress(int iter, struct bench_res *res, long delta_ns);
 void ops_report_final(struct bench_res res[], int res_cnt);
-
-static inline __u64 get_time_ns(void)
-{
-	struct timespec t;
-
-	clock_gettime(CLOCK_MONOTONIC, &t);
-
-	return (u64)t.tv_sec * 1000000000 + t.tv_nsec;
-}
+void local_storage_report_progress(int iter, struct bench_res *res,
+				   long delta_ns);
+void local_storage_report_final(struct bench_res res[], int res_cnt);
+void grace_period_latency_basic_stats(struct bench_res res[], int res_cnt,
+				      struct basic_stats *gp_stat);
+void grace_period_ticks_basic_stats(struct bench_res res[], int res_cnt,
+				    struct basic_stats *gp_stat);
 
 static inline void atomic_inc(long *value)
 {

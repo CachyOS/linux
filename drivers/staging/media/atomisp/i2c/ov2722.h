@@ -3,17 +3,6 @@
  * Support for OmniVision OV2722 1080p HD camera sensor.
  *
  * Copyright (c) 2013 Intel Corporation. All Rights Reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version
- * 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- *
  */
 
 #ifndef __OV2722_H__
@@ -39,9 +28,6 @@
 #define I2C_RETRY_COUNT		5
 
 #define OV2722_FOCAL_LENGTH_NUM	278	/*2.78mm*/
-#define OV2722_FOCAL_LENGTH_DEM	100
-#define OV2722_F_NUMBER_DEFAULT_NUM	26
-#define OV2722_F_NUMBER_DEM	10
 
 #define MAX_FMTS		1
 
@@ -180,9 +166,6 @@ struct ov2722_resolution {
 	u32 skip_frames;
 	u16 pixels_per_line;
 	u16 lines_per_frame;
-	u8 bin_factor_x;
-	u8 bin_factor_y;
-	u8 bin_mode;
 	bool used;
 	int mipi_freq;
 };
@@ -204,8 +187,6 @@ struct ov2722_device {
 	struct ov2722_resolution *res;
 
 	struct camera_sensor_platform_data *platform_data;
-	int vt_pix_clk_freq_mhz;
-	int run_mode;
 	u16 pixels_per_line;
 	u16 lines_per_frame;
 	u8 type;
@@ -255,7 +236,7 @@ struct ov2722_write_ctrl {
  * Register settings for various resolution
  */
 #if 0
-static struct ov2722_reg const ov2722_QVGA_30fps[] = {
+static const struct ov2722_reg ov2722_QVGA_30fps[] = {
 	{OV2722_8BIT, 0x3718, 0x10},
 	{OV2722_8BIT, 0x3702, 0x0c},
 	{OV2722_8BIT, 0x373a, 0x1c},
@@ -365,7 +346,7 @@ static struct ov2722_reg const ov2722_QVGA_30fps[] = {
 
 };
 
-static struct ov2722_reg const ov2722_480P_30fps[] = {
+static const struct ov2722_reg ov2722_480P_30fps[] = {
 	{OV2722_8BIT, 0x3718, 0x10},
 	{OV2722_8BIT, 0x3702, 0x18},
 	{OV2722_8BIT, 0x373a, 0x3c},
@@ -474,7 +455,7 @@ static struct ov2722_reg const ov2722_480P_30fps[] = {
 	{OV2722_TOK_TERM, 0, 0},
 };
 
-static struct ov2722_reg const ov2722_VGA_30fps[] = {
+static const struct ov2722_reg ov2722_VGA_30fps[] = {
 	{OV2722_8BIT, 0x3718, 0x10},
 	{OV2722_8BIT, 0x3702, 0x18},
 	{OV2722_8BIT, 0x373a, 0x3c},
@@ -584,7 +565,7 @@ static struct ov2722_reg const ov2722_VGA_30fps[] = {
 };
 #endif
 
-static struct ov2722_reg const ov2722_1632_1092_30fps[] = {
+static const struct ov2722_reg ov2722_1632_1092_30fps[] = {
 	{OV2722_8BIT, 0x3021, 0x03}, /* For stand wait for
 				a whole frame complete.(vblank) */
 	{OV2722_8BIT, 0x3718, 0x10},
@@ -686,7 +667,7 @@ static struct ov2722_reg const ov2722_1632_1092_30fps[] = {
 	{OV2722_TOK_TERM, 0, 0}
 };
 
-static struct ov2722_reg const ov2722_1452_1092_30fps[] = {
+static const struct ov2722_reg ov2722_1452_1092_30fps[] = {
 	{OV2722_8BIT, 0x3021, 0x03}, /* For stand wait for
 				a whole frame complete.(vblank) */
 	{OV2722_8BIT, 0x3718, 0x10},
@@ -788,7 +769,7 @@ static struct ov2722_reg const ov2722_1452_1092_30fps[] = {
 };
 
 #if 0
-static struct ov2722_reg const ov2722_1M3_30fps[] = {
+static const struct ov2722_reg ov2722_1M3_30fps[] = {
 	{OV2722_8BIT, 0x3718, 0x10},
 	{OV2722_8BIT, 0x3702, 0x24},
 	{OV2722_8BIT, 0x373a, 0x60},
@@ -896,7 +877,7 @@ static struct ov2722_reg const ov2722_1M3_30fps[] = {
 };
 #endif
 
-static struct ov2722_reg const ov2722_1080p_30fps[] = {
+static const struct ov2722_reg ov2722_1080p_30fps[] = {
 	{OV2722_8BIT, 0x3021, 0x03}, /* For stand wait for a whole
 					frame complete.(vblank) */
 	{OV2722_8BIT, 0x3718, 0x10},
@@ -1002,7 +983,7 @@ static struct ov2722_reg const ov2722_1080p_30fps[] = {
 };
 
 #if 0 /* Currently unused */
-static struct ov2722_reg const ov2722_720p_30fps[] = {
+static const struct ov2722_reg ov2722_720p_30fps[] = {
 	{OV2722_8BIT, 0x3021, 0x03},
 	{OV2722_8BIT, 0x3718, 0x10},
 	{OV2722_8BIT, 0x3702, 0x24},
@@ -1113,9 +1094,6 @@ static struct ov2722_resolution ov2722_res_preview[] = {
 		.used = 0,
 		.pixels_per_line = 2260,
 		.lines_per_frame = 1244,
-		.bin_factor_x = 1,
-		.bin_factor_y = 1,
-		.bin_mode = 0,
 		.skip_frames = 3,
 		.regs = ov2722_1632_1092_30fps,
 		.mipi_freq = 422400,
@@ -1129,9 +1107,6 @@ static struct ov2722_resolution ov2722_res_preview[] = {
 		.used = 0,
 		.pixels_per_line = 2260,
 		.lines_per_frame = 1244,
-		.bin_factor_x = 1,
-		.bin_factor_y = 1,
-		.bin_mode = 0,
 		.skip_frames = 3,
 		.regs = ov2722_1452_1092_30fps,
 		.mipi_freq = 422400,
@@ -1145,9 +1120,6 @@ static struct ov2722_resolution ov2722_res_preview[] = {
 		.used = 0,
 		.pixels_per_line = 2068,
 		.lines_per_frame = 1114,
-		.bin_factor_x = 1,
-		.bin_factor_y = 1,
-		.bin_mode = 0,
 		.skip_frames = 3,
 		.regs = ov2722_1080p_30fps,
 		.mipi_freq = 345600,
@@ -1171,9 +1143,6 @@ struct ov2722_resolution ov2722_res_still[] = {
 		.used = 0,
 		.pixels_per_line = 2260,
 		.lines_per_frame = 1244,
-		.bin_factor_x = 1,
-		.bin_factor_y = 1,
-		.bin_mode = 0,
 		.skip_frames = 3,
 		.regs = ov2722_1632_1092_30fps,
 		.mipi_freq = 422400,
@@ -1187,9 +1156,6 @@ struct ov2722_resolution ov2722_res_still[] = {
 		.used = 0,
 		.pixels_per_line = 2260,
 		.lines_per_frame = 1244,
-		.bin_factor_x = 1,
-		.bin_factor_y = 1,
-		.bin_mode = 0,
 		.skip_frames = 3,
 		.regs = ov2722_1452_1092_30fps,
 		.mipi_freq = 422400,
@@ -1203,9 +1169,6 @@ struct ov2722_resolution ov2722_res_still[] = {
 		.used = 0,
 		.pixels_per_line = 2068,
 		.lines_per_frame = 1114,
-		.bin_factor_x = 1,
-		.bin_factor_y = 1,
-		.bin_mode = 0,
 		.skip_frames = 3,
 		.regs = ov2722_1080p_30fps,
 		.mipi_freq = 345600,
@@ -1224,9 +1187,6 @@ struct ov2722_resolution ov2722_res_video[] = {
 		.used = 0,
 		.pixels_per_line = 2048,
 		.lines_per_frame = 1184,
-		.bin_factor_x = 1,
-		.bin_factor_y = 1,
-		.bin_mode = 0,
 		.skip_frames = 3,
 		.regs = ov2722_QVGA_30fps,
 		.mipi_freq = 364800,
@@ -1240,9 +1200,6 @@ struct ov2722_resolution ov2722_res_video[] = {
 		.used = 0,
 		.pixels_per_line = 2048,
 		.lines_per_frame = 1184,
-		.bin_factor_x = 1,
-		.bin_factor_y = 1,
-		.bin_mode = 0,
 		.skip_frames = 3,
 		.regs = ov2722_480P_30fps,
 	},
@@ -1255,9 +1212,6 @@ struct ov2722_resolution ov2722_res_video[] = {
 		.used = 0,
 		.pixels_per_line = 2068,
 		.lines_per_frame = 1114,
-		.bin_factor_x = 1,
-		.bin_factor_y = 1,
-		.bin_mode = 0,
 		.skip_frames = 3,
 		.regs = ov2722_1080p_30fps,
 		.mipi_freq = 345600,

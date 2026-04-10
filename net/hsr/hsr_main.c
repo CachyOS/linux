@@ -22,7 +22,7 @@ static bool hsr_slave_empty(struct hsr_priv *hsr)
 {
 	struct hsr_port *port;
 
-	hsr_for_each_port(hsr, port)
+	hsr_for_each_port_rtnl(hsr, port)
 		if (port->type != HSR_PT_MASTER)
 			return false;
 	return true;
@@ -78,6 +78,15 @@ static int hsr_netdev_notify(struct notifier_block *nb, unsigned long event,
 			eth_hw_addr_set(master->dev, dev->dev_addr);
 			call_netdevice_notifiers(NETDEV_CHANGEADDR,
 						 master->dev);
+
+			if (hsr->prot_version == PRP_V1) {
+				port = hsr_port_get_hsr(hsr, HSR_PT_SLAVE_B);
+				if (port) {
+					eth_hw_addr_set(port->dev, dev->dev_addr);
+					call_netdevice_notifiers(NETDEV_CHANGEADDR,
+								 port->dev);
+				}
+			}
 		}
 
 		/* Make sure we recognize frames from ourselves in hsr_rcv() */
@@ -96,7 +105,7 @@ static int hsr_netdev_notify(struct notifier_block *nb, unsigned long event,
 			break; /* Handled in ndo_change_mtu() */
 		mtu_max = hsr_get_max_mtu(port->hsr);
 		master = hsr_port_get_hsr(port->hsr, HSR_PT_MASTER);
-		master->dev->mtu = mtu_max;
+		WRITE_ONCE(master->dev->mtu, mtu_max);
 		break;
 	case NETDEV_UNREGISTER:
 		if (!is_hsr_master(dev)) {
@@ -125,7 +134,7 @@ struct hsr_port *hsr_port_get_hsr(struct hsr_priv *hsr, enum hsr_port_type pt)
 {
 	struct hsr_port *port;
 
-	hsr_for_each_port(hsr, port)
+	hsr_for_each_port_rtnl(hsr, port)
 		if (port->type == pt)
 			return port;
 	return NULL;
@@ -148,14 +157,21 @@ static struct notifier_block hsr_nb = {
 
 static int __init hsr_init(void)
 {
-	int res;
+	int err;
 
 	BUILD_BUG_ON(sizeof(struct hsr_tag) != HSR_HLEN);
 
-	register_netdevice_notifier(&hsr_nb);
-	res = hsr_netlink_init();
+	err = register_netdevice_notifier(&hsr_nb);
+	if (err)
+		return err;
 
-	return res;
+	err = hsr_netlink_init();
+	if (err) {
+		unregister_netdevice_notifier(&hsr_nb);
+		return err;
+	}
+
+	return 0;
 }
 
 static void __exit hsr_exit(void)
@@ -167,4 +183,5 @@ static void __exit hsr_exit(void)
 
 module_init(hsr_init);
 module_exit(hsr_exit);
+MODULE_DESCRIPTION("High-availability Seamless Redundancy (HSR) driver");
 MODULE_LICENSE("GPL");

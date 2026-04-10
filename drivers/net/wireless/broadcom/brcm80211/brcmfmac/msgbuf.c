@@ -71,6 +71,7 @@
 #define BRCMF_MSGBUF_TRICKLE_TXWORKER_THRS	32
 #define BRCMF_MSGBUF_UPDATE_RX_PTR_THRS		48
 
+#define BRCMF_MAX_TXSTATUS_WAIT_RETRIES		10
 
 struct msgbuf_common_hdr {
 	u8				msgtype;
@@ -298,11 +299,11 @@ brcmf_msgbuf_init_pktids(u32 nr_array_entries,
 	struct brcmf_msgbuf_pktid *array;
 	struct brcmf_msgbuf_pktids *pktids;
 
-	array = kcalloc(nr_array_entries, sizeof(*array), GFP_KERNEL);
+	array = kzalloc_objs(*array, nr_array_entries);
 	if (!array)
 		return NULL;
 
-	pktids = kzalloc(sizeof(*pktids), GFP_KERNEL);
+	pktids = kzalloc_obj(*pktids);
 	if (!pktids) {
 		kfree(array);
 		return NULL;
@@ -346,8 +347,11 @@ brcmf_msgbuf_alloc_pktid(struct device *dev,
 		count++;
 	} while (count < pktids->array_size);
 
-	if (count == pktids->array_size)
+	if (count == pktids->array_size) {
+		dma_unmap_single(dev, *physaddr, skb->len - data_offset,
+				 pktids->direction);
 		return -ENOMEM;
+	}
 
 	array[*idx].data_offset = data_offset;
 	array[*idx].physaddr = *physaddr;
@@ -666,7 +670,7 @@ static u32 brcmf_msgbuf_flowring_create(struct brcmf_msgbuf *msgbuf, int ifidx,
 	u32 flowid;
 	ulong flags;
 
-	create = kzalloc(sizeof(*create), GFP_ATOMIC);
+	create = kzalloc_obj(*create, GFP_ATOMIC);
 	if (create == NULL)
 		return BRCMF_FLOWRING_INVALID_ID;
 
@@ -806,8 +810,12 @@ static int brcmf_msgbuf_tx_queue_data(struct brcmf_pub *drvr, int ifidx,
 	flowid = brcmf_flowring_lookup(flow, eh->h_dest, skb->priority, ifidx);
 	if (flowid == BRCMF_FLOWRING_INVALID_ID) {
 		flowid = brcmf_msgbuf_flowring_create(msgbuf, ifidx, skb);
-		if (flowid == BRCMF_FLOWRING_INVALID_ID)
+		if (flowid == BRCMF_FLOWRING_INVALID_ID) {
 			return -ENOMEM;
+		} else {
+			brcmf_flowring_enqueue(flow, flowid, skb);
+			return 0;
+		}
 	}
 	queue_count = brcmf_flowring_enqueue(flow, flowid, skb);
 	force = ((queue_count % BRCMF_MSGBUF_TRICKLE_TXWORKER_THRS) == 0);
@@ -1395,9 +1403,27 @@ void brcmf_msgbuf_delete_flowring(struct brcmf_pub *drvr, u16 flowid)
 	struct brcmf_msgbuf *msgbuf = (struct brcmf_msgbuf *)drvr->proto->pd;
 	struct msgbuf_tx_flowring_delete_req *delete;
 	struct brcmf_commonring *commonring;
+	struct brcmf_commonring *commonring_del = msgbuf->flowrings[flowid];
+	struct brcmf_flowring *flow = msgbuf->flow;
 	void *ret_ptr;
 	u8 ifidx;
 	int err;
+	int retry = BRCMF_MAX_TXSTATUS_WAIT_RETRIES;
+
+	/* make sure it is not in txflow */
+	brcmf_commonring_lock(commonring_del);
+	flow->rings[flowid]->status = RING_CLOSING;
+	brcmf_commonring_unlock(commonring_del);
+
+	/* wait for commonring txflow finished */
+	while (retry && atomic_read(&commonring_del->outstanding_tx)) {
+		usleep_range(5000, 10000);
+		retry--;
+	}
+	if (!retry) {
+		brcmf_err("timed out waiting for txstatus\n");
+		atomic_set(&commonring_del->outstanding_tx, 0);
+	}
 
 	/* no need to submit if firmware can not be reached */
 	if (drvr->bus_if->state != BRCMF_BUS_UP) {
@@ -1513,7 +1539,7 @@ int brcmf_proto_msgbuf_attach(struct brcmf_pub *drvr)
 		if_msgbuf->max_flowrings = BRCMF_FLOWRING_HASHSIZE - 1;
 	}
 
-	msgbuf = kzalloc(sizeof(*msgbuf), GFP_KERNEL);
+	msgbuf = kzalloc_obj(*msgbuf);
 	if (!msgbuf)
 		goto fail;
 
@@ -1562,8 +1588,8 @@ int brcmf_proto_msgbuf_attach(struct brcmf_pub *drvr)
 	msgbuf->flowrings = (struct brcmf_commonring **)if_msgbuf->flowrings;
 	msgbuf->max_flowrings = if_msgbuf->max_flowrings;
 	msgbuf->flowring_dma_handle =
-		kcalloc(msgbuf->max_flowrings,
-			sizeof(*msgbuf->flowring_dma_handle), GFP_KERNEL);
+		kzalloc_objs(*msgbuf->flowring_dma_handle,
+			     msgbuf->max_flowrings);
 	if (!msgbuf->flowring_dma_handle)
 		goto fail;
 

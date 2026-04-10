@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 config DRM_VMWGFX
 	tristate "DRM driver for VMware Virtual GPU"
-	depends on DRM && PCI && MMU
-	depends on X86 || ARM64
+	depends on DRM && PCI
+	depends on (X86 && HYPERVISOR_GUEST) || ARM64
+	select DRM_CLIENT_SELECTION
 	select DRM_TTM
 	select DRM_TTM_HELPER
 	select MAPPING_DIRTY_HELPERS
@@ -15,13 +16,6 @@ config DRM_VMWGFX
 	  This is a KMS enabled DRM driver for the VMware SVGA2
 	  virtual hardware.
 	  The compiled module will be called "vmwgfx.ko".
-
-config DRM_VMWGFX_FBCON
-	depends on DRM_VMWGFX && DRM_FBDEV_EMULATION
-	bool "Enable framebuffer console under vmwgfx by default"
-	help
-	   Choose this option if you are shipping a new vmwgfx
-	   userspace driver that supports using the kernel driver.
 
 config DRM_VMWGFX_MKSSTATS
 	bool "Enable mksGuestStats instrumentation of vmwgfx by default"

@@ -23,7 +23,6 @@ static int thunder_mdiobus_pci_probe(struct pci_dev *pdev,
 				     const struct pci_device_id *ent)
 {
 	struct device_node *node;
-	struct fwnode_handle *fwn;
 	struct thunder_mdiobus_nexus *nexus;
 	int err;
 	int i;
@@ -41,20 +40,20 @@ static int thunder_mdiobus_pci_probe(struct pci_dev *pdev,
 		return err;
 	}
 
-	err = pci_request_regions(pdev, KBUILD_MODNAME);
+	err = pcim_request_all_regions(pdev, KBUILD_MODNAME);
 	if (err) {
-		dev_err(&pdev->dev, "pci_request_regions failed\n");
+		dev_err(&pdev->dev, "pcim_request_all_regions failed\n");
 		goto err_disable_device;
 	}
 
 	nexus->bar0 = pcim_iomap(pdev, 0, pci_resource_len(pdev, 0));
 	if (!nexus->bar0) {
 		err = -ENOMEM;
-		goto err_release_regions;
+		goto err_disable_device;
 	}
 
 	i = 0;
-	device_for_each_child_node(&pdev->dev, fwn) {
+	device_for_each_child_node_scoped(&pdev->dev, fwn) {
 		struct resource r;
 		struct mii_bus *mii_bus;
 		struct cavium_mdiobus *bus;
@@ -93,8 +92,10 @@ static int thunder_mdiobus_pci_probe(struct pci_dev *pdev,
 		bus->mii_bus->name = KBUILD_MODNAME;
 		snprintf(bus->mii_bus->id, MII_BUS_ID_SIZE, "%llx", r.start);
 		bus->mii_bus->parent = &pdev->dev;
-		bus->mii_bus->read = cavium_mdiobus_read;
-		bus->mii_bus->write = cavium_mdiobus_write;
+		bus->mii_bus->read = cavium_mdiobus_read_c22;
+		bus->mii_bus->write = cavium_mdiobus_write_c22;
+		bus->mii_bus->read_c45 = cavium_mdiobus_read_c45;
+		bus->mii_bus->write_c45 = cavium_mdiobus_write_c45;
 
 		err = of_mdiobus_register(bus->mii_bus, node);
 		if (err)
@@ -105,9 +106,6 @@ static int thunder_mdiobus_pci_probe(struct pci_dev *pdev,
 			break;
 	}
 	return 0;
-
-err_release_regions:
-	pci_release_regions(pdev);
 
 err_disable_device:
 	pci_set_drvdata(pdev, NULL);
@@ -128,7 +126,6 @@ static void thunder_mdiobus_pci_remove(struct pci_dev *pdev)
 		mdiobus_unregister(bus->mii_bus);
 		oct_mdio_writeq(0, bus->register_base + SMI_EN);
 	}
-	pci_release_regions(pdev);
 	pci_set_drvdata(pdev, NULL);
 }
 

@@ -178,7 +178,7 @@ static void _rtl_reg_apply_beaconing_flags(struct wiphy *wiphy,
 	}
 }
 
-/* Allows active scan scan on Ch 12 and 13 */
+/* Allows active scan on Ch 12 and 13 */
 static void _rtl_reg_apply_active_scan_flags(struct wiphy *wiphy,
 					     enum nl80211_reg_initiator
 					     initiator)
@@ -206,7 +206,7 @@ static void _rtl_reg_apply_active_scan_flags(struct wiphy *wiphy,
 	}
 
 	/*
-	 *If a country IE has been recieved check its rule for this
+	 *If a country IE has been received check its rule for this
 	 *channel first before enabling active scan. The passive scan
 	 *would have been enforced by the initial processing of our
 	 *custom regulatory domain.

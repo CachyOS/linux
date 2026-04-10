@@ -111,31 +111,6 @@ struct f75375_data {
 	s8 temp_max_hyst[2];
 };
 
-static int f75375_detect(struct i2c_client *client,
-			 struct i2c_board_info *info);
-static int f75375_probe(struct i2c_client *client);
-static int f75375_remove(struct i2c_client *client);
-
-static const struct i2c_device_id f75375_id[] = {
-	{ "f75373", f75373 },
-	{ "f75375", f75375 },
-	{ "f75387", f75387 },
-	{ }
-};
-MODULE_DEVICE_TABLE(i2c, f75375_id);
-
-static struct i2c_driver f75375_driver = {
-	.class = I2C_CLASS_HWMON,
-	.driver = {
-		.name = "f75375",
-	},
-	.probe_new = f75375_probe,
-	.remove = f75375_remove,
-	.id_table = f75375_id,
-	.detect = f75375_detect,
-	.address_list = normal_i2c,
-};
-
 static inline int f75375_read8(struct i2c_client *client, u8 reg)
 {
 	return i2c_smbus_read_byte_data(client, reg);
@@ -830,7 +805,7 @@ static int f75375_probe(struct i2c_client *client)
 
 	i2c_set_clientdata(client, data);
 	mutex_init(&data->update_lock);
-	data->kind = i2c_match_id(f75375_id, client)->driver_data;
+	data->kind = (uintptr_t)i2c_get_match_data(client);
 
 	err = sysfs_create_group(&client->dev.kobj, &f75375_group);
 	if (err)
@@ -864,12 +839,11 @@ exit_remove:
 	return err;
 }
 
-static int f75375_remove(struct i2c_client *client)
+static void f75375_remove(struct i2c_client *client)
 {
 	struct f75375_data *data = i2c_get_clientdata(client);
 	hwmon_device_unregister(data->hwmon_dev);
 	sysfs_remove_group(&client->dev.kobj, &f75375_group);
-	return 0;
 }
 
 /* Return 0 if detection is successful, -ENODEV otherwise */
@@ -897,11 +871,30 @@ static int f75375_detect(struct i2c_client *client,
 
 	version = f75375_read8(client, F75375_REG_VERSION);
 	dev_info(&adapter->dev, "found %s version: %02X\n", name, version);
-	strlcpy(info->type, name, I2C_NAME_SIZE);
+	strscpy(info->type, name, I2C_NAME_SIZE);
 
 	return 0;
 }
 
+static const struct i2c_device_id f75375_id[] = {
+	{ "f75373", f75373 },
+	{ "f75375", f75375 },
+	{ "f75387", f75387 },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, f75375_id);
+
+static struct i2c_driver f75375_driver = {
+	.class = I2C_CLASS_HWMON,
+	.driver = {
+		.name = "f75375",
+	},
+	.probe = f75375_probe,
+	.remove = f75375_remove,
+	.id_table = f75375_id,
+	.detect = f75375_detect,
+	.address_list = normal_i2c,
+};
 module_i2c_driver(f75375_driver);
 
 MODULE_AUTHOR("Riku Voipio");

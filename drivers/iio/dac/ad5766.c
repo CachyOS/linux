@@ -14,7 +14,7 @@
 #include <linux/iio/trigger_consumer.h>
 #include <linux/module.h>
 #include <linux/spi/spi.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #define AD5766_UPPER_WORD_SPI_MASK		GENMASK(31, 16)
 #define AD5766_LOWER_WORD_SPI_MASK		GENMASK(15, 0)
@@ -123,7 +123,7 @@ struct ad5766_state {
 		u32	d32;
 		u16	w16[2];
 		u8	b8[4];
-	} data[3] ____cacheline_aligned;
+	} data[3] __aligned(IIO_DMA_MINALIGN);
 };
 
 struct ad5766_span_tbl {
@@ -148,13 +148,11 @@ static int __ad5766_spi_read(struct ad5766_state *st, u8 dac, int *val)
 	struct spi_transfer xfers[] = {
 		{
 			.tx_buf = &st->data[0].d32,
-			.bits_per_word = 8,
 			.len = 3,
 			.cs_change = 1,
 		}, {
 			.tx_buf = &st->data[1].d32,
 			.rx_buf = &st->data[2].d32,
-			.bits_per_word = 8,
 			.len = 3,
 		},
 	};
@@ -437,7 +435,7 @@ static const struct iio_chan_spec_ext_info ad5766_ext_info[] = {
 	IIO_ENUM("dither_scale", IIO_SEPARATE, &ad5766_dither_scale_enum),
 	IIO_ENUM_AVAILABLE("dither_scale", IIO_SEPARATE,
 			   &ad5766_dither_scale_enum),
-	{}
+	{ }
 };
 
 #define AD576x_CHANNEL(_chan, _bits) {					\
@@ -648,14 +646,14 @@ static int ad5766_probe(struct spi_device *spi)
 static const struct of_device_id ad5766_dt_match[] = {
 	{ .compatible = "adi,ad5766" },
 	{ .compatible = "adi,ad5767" },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ad5766_dt_match);
 
 static const struct spi_device_id ad5766_spi_ids[] = {
 	{ "ad5766", ID_AD5766 },
 	{ "ad5767", ID_AD5767 },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad5766_spi_ids);
 

@@ -11,7 +11,6 @@
 #include <linux/pm.h>
 #include <linux/platform_device.h>
 #include <linux/i2c.h>
-#include <linux/fb.h>
 #include <linux/backlight.h>
 #include <linux/leds.h>
 #include <linux/slab.h>
@@ -648,9 +647,9 @@ static const struct attribute_group adp8860_bl_attr_group = {
 	.attrs = adp8860_bl_attributes,
 };
 
-static int adp8860_probe(struct i2c_client *client,
-					const struct i2c_device_id *id)
+static int adp8860_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct backlight_device *bl;
 	struct adp8860_bl *data;
 	struct adp8860_backlight_platform_data *pdata =
@@ -753,7 +752,7 @@ out:
 	return ret;
 }
 
-static int adp8860_remove(struct i2c_client *client)
+static void adp8860_remove(struct i2c_client *client)
 {
 	struct adp8860_bl *data = i2c_get_clientdata(client);
 
@@ -765,8 +764,6 @@ static int adp8860_remove(struct i2c_client *client)
 	if (data->en_ambl_sens)
 		sysfs_remove_group(&data->bl->dev.kobj,
 			&adp8860_bl_attr_group);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -805,8 +802,8 @@ static struct i2c_driver adp8860_driver = {
 		.name	= KBUILD_MODNAME,
 		.pm	= &adp8860_i2c_pm_ops,
 	},
-	.probe    = adp8860_probe,
-	.remove   = adp8860_remove,
+	.probe = adp8860_probe,
+	.remove = adp8860_remove,
 	.id_table = adp8860_id,
 };
 

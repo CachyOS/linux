@@ -25,9 +25,10 @@ static ssize_t current_value_show(struct kobject *kobj, struct kobj_attribute *a
 	obj = get_wmiobj_pointer(instance_id, DELL_WMI_BIOS_STRING_ATTRIBUTE_GUID);
 	if (!obj)
 		return -EIO;
-	if (obj->package.elements[CURRENT_VAL].type != ACPI_TYPE_STRING) {
+	if (obj->type != ACPI_TYPE_PACKAGE || obj->package.count < STR_MIN_ELEMENTS ||
+	    obj->package.elements[CURRENT_VAL].type != ACPI_TYPE_STRING) {
 		kfree(obj);
-		return -EINVAL;
+		return -EIO;
 	}
 	ret = snprintf(buf, PAGE_SIZE, "%s\n", obj->package.elements[CURRENT_VAL].string.pointer);
 	kfree(obj);
@@ -107,8 +108,8 @@ int alloc_str_data(void)
 	int ret = 0;
 
 	wmi_priv.str_instances_count = get_instance_count(DELL_WMI_BIOS_STRING_ATTRIBUTE_GUID);
-	wmi_priv.str_data = kcalloc(wmi_priv.str_instances_count,
-					sizeof(struct str_data), GFP_KERNEL);
+	wmi_priv.str_data = kzalloc_objs(struct str_data,
+					 wmi_priv.str_instances_count);
 	if (!wmi_priv.str_data) {
 		wmi_priv.str_instances_count = 0;
 		ret = -ENOMEM;

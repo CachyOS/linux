@@ -7,6 +7,7 @@
  * License. See the file "COPYING" in the main directory of this archive
  * for more details.
  */
+#define COMPILE_OFFSETS
 
 #include <linux/init.h>
 #include <linux/stddef.h>
@@ -118,6 +119,13 @@ int main(int argc, char *argv[])
 	DEFINE(CC_EAR, offsetof(struct cpu_context, ear));
 	DEFINE(CC_ESR, offsetof(struct cpu_context, esr));
 	DEFINE(CC_FSR, offsetof(struct cpu_context, fsr));
+	BLANK();
+
+	/* struct cpuinfo */
+	DEFINE(CI_DCS, offsetof(struct cpuinfo, dcache_size));
+	DEFINE(CI_DCL, offsetof(struct cpuinfo, dcache_line_length));
+	DEFINE(CI_ICS, offsetof(struct cpuinfo, icache_size));
+	DEFINE(CI_ICL, offsetof(struct cpuinfo, icache_line_length));
 	BLANK();
 
 	return 0;

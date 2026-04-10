@@ -3,7 +3,7 @@
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
  *
- * Copyright(c) 2018 Intel Corporation. All rights reserved.
+ * Copyright(c) 2018 Intel Corporation
  */
 
 #ifndef __INCLUDE_SOUND_SOF_DAI_INTEL_H__
@@ -52,6 +52,8 @@
 #define SOF_DAI_INTEL_SSP_CLKCTRL_MCLK_ES               BIT(6)
 /* bclk early start */
 #define SOF_DAI_INTEL_SSP_CLKCTRL_BCLK_ES               BIT(7)
+/* mclk always on */
+#define SOF_DAI_INTEL_SSP_CLKCTRL_MCLK_AON		BIT(8)
 
 /* DMIC max. four controllers for eight microphone channels */
 #define SOF_DAI_INTEL_DMIC_NUM_CTRL			4

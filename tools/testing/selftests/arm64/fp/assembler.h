@@ -57,12 +57,27 @@ endfunction
 // Utility macro to print a literal string
 // Clobbers x0-x4,x8
 .macro puts string
-	.pushsection .rodata.str1.1, "aMS", 1
+	.pushsection .rodata.str1.1, "aMS", @progbits, 1
 .L__puts_literal\@: .string "\string"
 	.popsection
 
 	ldr	x0, =.L__puts_literal\@
 	bl	puts
+.endm
+
+#define PR_SET_SHADOW_STACK_STATUS      75
+# define PR_SHADOW_STACK_ENABLE         (1UL << 0)
+
+.macro enable_gcs
+	// Run with GCS
+	mov	x0, PR_SET_SHADOW_STACK_STATUS
+	mov	x1, PR_SHADOW_STACK_ENABLE
+	mov	x2, xzr
+	mov	x3, xzr
+	mov	x4, xzr
+	mov	x5, xzr
+	mov	x8, #__NR_prctl
+	svc	#0
 .endm
 
 #endif /* ! ASSEMBLER_H */

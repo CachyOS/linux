@@ -86,7 +86,6 @@ SECTIONS
 		TEXT_TEXT
 		LOCK_TEXT
 		SCHED_TEXT
-		CPUIDLE_TEXT
 		KPROBES_TEXT
 		IRQENTRY_TEXT
 		SOFTIRQENTRY_TEXT
@@ -128,9 +127,10 @@ SECTIONS
 	}
 #endif
 
-	RO_DATA(8)
+	RO_DATA(PAGE_SIZE)
 
 	/* unwind info */
+	. = ALIGN(4);
 	.PARISC.unwind : {
 		__start___unwind = .;
 		*(.PARISC.unwind)
@@ -155,6 +155,7 @@ SECTIONS
 	}
 
 	/* End of data section */
+	. = ALIGN(PAGE_SIZE);
 	_edata = .;
 
 	/* BSS */
@@ -164,6 +165,7 @@ SECTIONS
 	_end = . ;
 
 	STABS_DEBUG
+	MODINFO
 	ELF_DETAILS
 	.note 0 : { *(.note) }
 

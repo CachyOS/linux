@@ -6,10 +6,21 @@
  * Author: Heikki Krogerus <heikki.krogerus@linux.intel.com>
  */
 
+#include <linux/container_of.h>
 #include <linux/device.h>
-#include <linux/kernel.h>
+#include <linux/err.h>
+#include <linux/export.h>
+#include <linux/idr.h>
+#include <linux/init.h>
+#include <linux/kobject.h>
+#include <linux/kstrtox.h>
+#include <linux/list.h>
 #include <linux/property.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
+#include <linux/string.h>
+#include <linux/sysfs.h>
+#include <linux/types.h>
 
 #include "base.h"
 
@@ -321,7 +332,7 @@ property_entries_dup(const struct property_entry *properties)
 	while (properties[n].name)
 		n++;
 
-	p = kcalloc(n + 1, sizeof(*p), GFP_KERNEL);
+	p = kzalloc_objs(*p, n + 1);
 	if (!p)
 		return ERR_PTR(-ENOMEM);
 
@@ -518,20 +529,35 @@ software_node_get_reference_args(const struct fwnode_handle *fwnode,
 	if (prop->is_inline)
 		return -EINVAL;
 
-	if (index * sizeof(*ref) >= prop->length)
+	if ((index + 1) * sizeof(*ref) > prop->length)
 		return -ENOENT;
 
 	ref_array = prop->pointer;
 	ref = &ref_array[index];
 
-	refnode = software_node_fwnode(ref->node);
+	/*
+	 * A software node can reference other software nodes or firmware
+	 * nodes (which are the abstraction layer sitting on top of them).
+	 * This is done to ensure we can create references to static software
+	 * nodes before they're registered with the firmware node framework.
+	 * At the time the reference is being resolved, we expect the swnodes
+	 * in question to already have been registered and to be backed by
+	 * a firmware node. This is why we use the fwnode API below to read the
+	 * relevant properties and bump the reference count.
+	 */
+
+	if (ref->swnode)
+		refnode = software_node_fwnode(ref->swnode);
+	else if (ref->fwnode)
+		refnode = ref->fwnode;
+	else
+		return -EINVAL;
+
 	if (!refnode)
 		return -ENOENT;
 
 	if (nargs_prop) {
-		error = property_entry_read_int_array(ref->node->properties,
-						      nargs_prop, sizeof(u32),
-						      &nargs_prop_val, 1);
+		error = fwnode_property_read_u32(refnode, nargs_prop, &nargs_prop_val);
 		if (error)
 			return error;
 
@@ -541,7 +567,10 @@ software_node_get_reference_args(const struct fwnode_handle *fwnode,
 	if (nargs > NR_FWNODE_REFERENCE_ARGS)
 		return -EINVAL;
 
-	args->fwnode = software_node_get(refnode);
+	if (!args)
+		return 0;
+
+	args->fwnode = fwnode_handle_get(refnode);
 	args->nargs = nargs;
 
 	for (i = 0; i < nargs; i++)
@@ -621,7 +650,10 @@ software_node_graph_get_remote_endpoint(const struct fwnode_handle *fwnode)
 
 	ref = prop->pointer;
 
-	return software_node_get(software_node_fwnode(ref[0].node));
+	if (!ref->swnode)
+		return NULL;
+
+	return software_node_get(software_node_fwnode(ref->swnode));
 }
 
 static struct fwnode_handle *
@@ -663,6 +695,7 @@ static const struct fwnode_operations software_node_ops = {
 	.get = software_node_get,
 	.put = software_node_put,
 	.property_present = software_node_property_present,
+	.property_read_bool = software_node_property_present,
 	.property_read_int_array = software_node_read_int_array,
 	.property_read_string_array = software_node_read_string_array,
 	.get_name = software_node_get_name,
@@ -725,7 +758,7 @@ static struct software_node *software_node_alloc(const struct property_entry *pr
 	if (IS_ERR(props))
 		return ERR_CAST(props);
 
-	node = kzalloc(sizeof(*node), GFP_KERNEL);
+	node = kzalloc_obj(*node);
 	if (!node) {
 		property_entries_free(props);
 		return ERR_PTR(-ENOMEM);
@@ -747,10 +780,10 @@ static void software_node_release(struct kobject *kobj)
 	struct swnode *swnode = kobj_to_swnode(kobj);
 
 	if (swnode->parent) {
-		ida_simple_remove(&swnode->parent->child_ids, swnode->id);
+		ida_free(&swnode->parent->child_ids, swnode->id);
 		list_del(&swnode->entry);
 	} else {
-		ida_simple_remove(&swnode_root_ids, swnode->id);
+		ida_free(&swnode_root_ids, swnode->id);
 	}
 
 	if (swnode->allocated)
@@ -760,7 +793,7 @@ static void software_node_release(struct kobject *kobj)
 	kfree(swnode);
 }
 
-static struct kobj_type software_node_type = {
+static const struct kobj_type software_node_type = {
 	.release = software_node_release,
 	.sysfs_ops = &kobj_sysfs_ops,
 };
@@ -772,12 +805,12 @@ swnode_register(const struct software_node *node, struct swnode *parent,
 	struct swnode *swnode;
 	int ret;
 
-	swnode = kzalloc(sizeof(*swnode), GFP_KERNEL);
+	swnode = kzalloc_obj(*swnode);
 	if (!swnode)
 		return ERR_PTR(-ENOMEM);
 
-	ret = ida_simple_get(parent ? &parent->child_ids : &swnode_root_ids,
-			     0, 0, GFP_KERNEL);
+	ret = ida_alloc(parent ? &parent->child_ids : &swnode_root_ids,
+			GFP_KERNEL);
 	if (ret < 0) {
 		kfree(swnode);
 		return ERR_PTR(ret);
@@ -820,67 +853,6 @@ swnode_register(const struct software_node *node, struct swnode *parent,
 }
 
 /**
- * software_node_register_nodes - Register an array of software nodes
- * @nodes: Zero terminated array of software nodes to be registered
- *
- * Register multiple software nodes at once. If any node in the array
- * has its .parent pointer set (which can only be to another software_node),
- * then its parent **must** have been registered before it is; either outside
- * of this function or by ordering the array such that parent comes before
- * child.
- */
-int software_node_register_nodes(const struct software_node *nodes)
-{
-	int ret;
-	int i;
-
-	for (i = 0; nodes[i].name; i++) {
-		const struct software_node *parent = nodes[i].parent;
-
-		if (parent && !software_node_to_swnode(parent)) {
-			ret = -EINVAL;
-			goto err_unregister_nodes;
-		}
-
-		ret = software_node_register(&nodes[i]);
-		if (ret)
-			goto err_unregister_nodes;
-	}
-
-	return 0;
-
-err_unregister_nodes:
-	software_node_unregister_nodes(nodes);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(software_node_register_nodes);
-
-/**
- * software_node_unregister_nodes - Unregister an array of software nodes
- * @nodes: Zero terminated array of software nodes to be unregistered
- *
- * Unregister multiple software nodes at once. If parent pointers are set up
- * in any of the software nodes then the array **must** be ordered such that
- * parents come before their children.
- *
- * NOTE: If you are uncertain whether the array is ordered such that
- * parents will be unregistered before their children, it is wiser to
- * remove the nodes individually, in the correct order (child before
- * parent).
- */
-void software_node_unregister_nodes(const struct software_node *nodes)
-{
-	unsigned int i = 0;
-
-	while (nodes[i].name)
-		i++;
-
-	while (i--)
-		software_node_unregister(&nodes[i]);
-}
-EXPORT_SYMBOL_GPL(software_node_unregister_nodes);
-
-/**
  * software_node_register_node_group - Register a group of software nodes
  * @node_group: NULL terminated array of software node pointers to be registered
  *
@@ -890,7 +862,7 @@ EXPORT_SYMBOL_GPL(software_node_unregister_nodes);
  * of this function or by ordering the array such that parent comes before
  * child.
  */
-int software_node_register_node_group(const struct software_node **node_group)
+int software_node_register_node_group(const struct software_node * const *node_group)
 {
 	unsigned int i;
 	int ret;
@@ -923,8 +895,7 @@ EXPORT_SYMBOL_GPL(software_node_register_node_group);
  * remove the nodes individually, in the correct order (child before
  * parent).
  */
-void software_node_unregister_node_group(
-		const struct software_node **node_group)
+void software_node_unregister_node_group(const struct software_node * const *node_group)
 {
 	unsigned int i = 0;
 
@@ -1126,6 +1097,7 @@ void software_node_notify(struct device *dev)
 	if (!swnode)
 		return;
 
+	kobject_get(&swnode->kobj);
 	ret = sysfs_create_link(&dev->kobj, &swnode->kobj, "software_node");
 	if (ret)
 		return;
@@ -1135,8 +1107,6 @@ void software_node_notify(struct device *dev)
 		sysfs_remove_link(&dev->kobj, "software_node");
 		return;
 	}
-
-	kobject_get(&swnode->kobj);
 }
 
 void software_node_notify_remove(struct device *dev)

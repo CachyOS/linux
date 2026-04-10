@@ -12,7 +12,7 @@ void flush_tmregs_to_thread(struct task_struct *tsk)
 {
 	/*
 	 * If task is not current, it will have been flushed already to
-	 * it's thread_struct during __switch_to().
+	 * its thread_struct during __switch_to().
 	 *
 	 * A reclaim flushes ALL the state or if not in TM save TM SPRs
 	 * in the appropriate thread structures from live.
@@ -170,9 +170,9 @@ int tm_cgpr_set(struct task_struct *target, const struct user_regset *regset,
 					 (PT_MAX_PUT_REG + 1) * sizeof(reg));
 
 	if (PT_MAX_PUT_REG + 1 < PT_TRAP && !ret)
-		ret = user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
-						(PT_MAX_PUT_REG + 1) * sizeof(reg),
-						PT_TRAP * sizeof(reg));
+		user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
+					  (PT_MAX_PUT_REG + 1) * sizeof(reg),
+					  PT_TRAP * sizeof(reg));
 
 	if (!ret && count > 0) {
 		ret = user_regset_copyin(&pos, &count, &kbuf, &ubuf, &reg,
@@ -183,8 +183,8 @@ int tm_cgpr_set(struct task_struct *target, const struct user_regset *regset,
 	}
 
 	if (!ret)
-		ret = user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
-						(PT_TRAP + 1) * sizeof(reg), -1);
+		user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
+					  (PT_TRAP + 1) * sizeof(reg), -1);
 
 	return ret;
 }

@@ -407,7 +407,7 @@ struct dvb_frontend * mt2060_attach(struct dvb_frontend *fe, struct i2c_adapter 
 	struct mt2060_priv *priv = NULL;
 	u8 id = 0;
 
-	priv = kzalloc(sizeof(struct mt2060_priv), GFP_KERNEL);
+	priv = kzalloc_obj(struct mt2060_priv);
 	if (priv == NULL)
 		return NULL;
 
@@ -440,10 +440,9 @@ struct dvb_frontend * mt2060_attach(struct dvb_frontend *fe, struct i2c_adapter 
 
 	return fe;
 }
-EXPORT_SYMBOL(mt2060_attach);
+EXPORT_SYMBOL_GPL(mt2060_attach);
 
-static int mt2060_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int mt2060_probe(struct i2c_client *client)
 {
 	struct mt2060_platform_data *pdata = client->dev.platform_data;
 	struct dvb_frontend *fe;
@@ -509,15 +508,13 @@ err:
 	return ret;
 }
 
-static int mt2060_remove(struct i2c_client *client)
+static void mt2060_remove(struct i2c_client *client)
 {
 	dev_dbg(&client->dev, "\n");
-
-	return 0;
 }
 
 static const struct i2c_device_id mt2060_id_table[] = {
-	{"mt2060", 0},
+	{ "mt2060" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, mt2060_id_table);

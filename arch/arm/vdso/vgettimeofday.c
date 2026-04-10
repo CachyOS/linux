@@ -6,6 +6,9 @@
  */
 #include <linux/time.h>
 #include <linux/types.h>
+#include <asm/vdso.h>
+#include <asm/unwind.h>
+#include <vdso/gettime.h>
 
 int __vdso_clock_gettime(clockid_t clock,
 			 struct old_timespec32 *ts)
@@ -29,6 +32,11 @@ int __vdso_clock_getres(clockid_t clock_id,
 			struct old_timespec32 *res)
 {
 	return __cvdso_clock_getres_time32(clock_id, res);
+}
+
+int __vdso_clock_getres_time64(clockid_t clock_id, struct __kernel_timespec *res)
+{
+	return __cvdso_clock_getres(clock_id, res);
 }
 
 /* Avoid unresolved references emitted by GCC */

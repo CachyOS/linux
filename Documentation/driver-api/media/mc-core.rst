@@ -144,7 +144,8 @@ valid values are described at :c:func:`media_create_pad_link()` and
 Graph traversal
 ^^^^^^^^^^^^^^^
 
-The media framework provides APIs to iterate over entities in a graph.
+The media framework provides APIs to traverse media graphs, locating connected
+entities and links.
 
 To iterate over all entities belonging to a media device, drivers can use
 the media_device_for_each_entity macro, defined in
@@ -159,35 +160,11 @@ the media_device_for_each_entity macro, defined in
     ...
     }
 
-Drivers might also need to iterate over all entities in a graph that can be
-reached only through enabled links starting at a given entity. The media
-framework provides a depth-first graph traversal API for that purpose.
-
-.. note::
-
-   Graphs with cycles (whether directed or undirected) are **NOT**
-   supported by the graph traversal API. To prevent infinite loops, the graph
-   traversal code limits the maximum depth to ``MEDIA_ENTITY_ENUM_MAX_DEPTH``,
-   currently defined as 16.
-
-Drivers initiate a graph traversal by calling
-:c:func:`media_graph_walk_start()`
-
-The graph structure, provided by the caller, is initialized to start graph
-traversal at the given entity.
-
-Drivers can then retrieve the next entity by calling
-:c:func:`media_graph_walk_next()`
-
-When the graph traversal is complete the function will return ``NULL``.
-
-Graph traversal can be interrupted at any moment. No cleanup function call
-is required and the graph structure can be freed normally.
-
 Helper functions can be used to find a link between two given pads, or a pad
 connected to another pad through an enabled link
-:c:func:`media_entity_find_link()` and
-:c:func:`media_entity_remote_pad()`.
+(:c:func:`media_entity_find_link()`, :c:func:`media_pad_remote_pad_first()`,
+:c:func:`media_entity_remote_source_pad_unique()` and
+:c:func:`media_pad_remote_pad_unique()`).
 
 Use count and power handling
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -213,19 +190,28 @@ Link properties can be modified at runtime by calling
 Pipelines and media streams
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+A media stream is a stream of pixels or metadata originating from one or more
+source devices (such as a sensors) and flowing through media entity pads
+towards the final sinks. The stream can be modified on the route by the
+devices (e.g. scaling or pixel format conversions), or it can be split into
+multiple branches, or multiple branches can be merged.
+
+A media pipeline is a set of media streams which are interdependent. This
+interdependency can be caused by the hardware (e.g. configuration of a second
+stream cannot be changed if the first stream has been enabled) or by the driver
+due to the software design. Most commonly a media pipeline consists of a single
+stream which does not branch.
+
 When starting streaming, drivers must notify all entities in the pipeline to
 prevent link states from being modified during streaming by calling
 :c:func:`media_pipeline_start()`.
 
-The function will mark all entities connected to the given entity through
-enabled links, either directly or indirectly, as streaming.
+The function will mark all the pads which are part of the pipeline as streaming.
 
-The struct media_pipeline instance pointed to by
-the pipe argument will be stored in every entity in the pipeline.
-Drivers should embed the struct media_pipeline
-in higher-level pipeline structures and can then access the
-pipeline through the struct media_entity
-pipe field.
+The struct media_pipeline instance pointed to by the pipe argument will be
+stored in every pad in the pipeline. Drivers should embed the struct
+media_pipeline in higher-level pipeline structures and can then access the
+pipeline through the struct media_pad pipe field.
 
 Calls to :c:func:`media_pipeline_start()` can be nested.
 The pipeline pointer must be identical for all nested calls to the function.
@@ -265,6 +251,45 @@ properties of the hardware) what matching actually means.
 Subsystems should facilitate link validation by providing subsystem specific
 helper functions to provide easy access for commonly needed information, and
 in the end provide a way to use driver-specific callbacks.
+
+Pipeline traversal
+^^^^^^^^^^^^^^^^^^
+
+Once a pipeline has been constructed with :c:func:`media_pipeline_start()`,
+drivers can iterate over entities or pads in the pipeline with the
+:c:macro:´media_pipeline_for_each_entity` and
+:c:macro:´media_pipeline_for_each_pad` macros. Iterating over pads is
+straightforward:
+
+.. code-block:: c
+
+   media_pipeline_pad_iter iter;
+   struct media_pad *pad;
+
+   media_pipeline_for_each_pad(pipe, &iter, pad) {
+       /* 'pad' will point to each pad in turn */
+       ...
+   }
+
+To iterate over entities, the iterator needs to be initialized and cleaned up
+as an additional steps:
+
+.. code-block:: c
+
+   media_pipeline_entity_iter iter;
+   struct media_entity *entity;
+   int ret;
+
+   ret = media_pipeline_entity_iter_init(pipe, &iter);
+   if (ret)
+       ...;
+
+   media_pipeline_for_each_entity(pipe, &iter, entity) {
+       /* 'entity' will point to each entity in turn */
+       ...
+   }
+
+   media_pipeline_entity_iter_cleanup(&iter);
 
 Media Controller Device Allocator API
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

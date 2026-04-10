@@ -436,7 +436,7 @@ static void gb_control_release(struct device *dev)
 	kfree(control);
 }
 
-struct device_type greybus_control_type = {
+const struct device_type greybus_control_type = {
 	.name =		"greybus_control",
 	.release =	gb_control_release,
 };
@@ -446,7 +446,7 @@ struct gb_control *gb_control_create(struct gb_interface *intf)
 	struct gb_connection *connection;
 	struct gb_control *control;
 
-	control = kzalloc(sizeof(*control), GFP_KERNEL);
+	control = kzalloc_obj(*control);
 	if (!control)
 		return ERR_PTR(-ENOMEM);
 

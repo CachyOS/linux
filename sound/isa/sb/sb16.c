@@ -10,6 +10,7 @@
 #include <linux/err.h>
 #include <linux/isa.h>
 #include <linux/module.h>
+#include <linux/string.h>
 #include <sound/core.h>
 #include <sound/sb.h>
 #include <sound/sb16_csp.h>
@@ -20,12 +21,6 @@
 #define SNDRV_LEGACY_FIND_FREE_IRQ
 #define SNDRV_LEGACY_FIND_FREE_DMA
 #include <sound/initval.h>
-
-#ifdef SNDRV_SBAWE
-#define PFX "sbawe: "
-#else
-#define PFX "sb16: "
-#endif
 
 MODULE_AUTHOR("Jaroslav Kysela <perex@perex.cz>");
 MODULE_LICENSE("GPL");
@@ -246,7 +241,7 @@ static int snd_card_sb16_pnp(int dev, struct snd_card_sb16 *acard,
 
 	err = pnp_activate_dev(pdev); 
 	if (err < 0) { 
-		snd_printk(KERN_ERR PFX "AUDIO pnp configure failure\n"); 
+		dev_err(&pdev->dev, "AUDIO pnp configure failure\n");
 		return err; 
 	} 
 	port[dev] = pnp_port_start(pdev, 0);
@@ -255,10 +250,10 @@ static int snd_card_sb16_pnp(int dev, struct snd_card_sb16 *acard,
 	dma8[dev] = pnp_dma(pdev, 0);
 	dma16[dev] = pnp_dma(pdev, 1);
 	irq[dev] = pnp_irq(pdev, 0);
-	snd_printdd("pnp SB16: port=0x%lx, mpu port=0x%lx, fm port=0x%lx\n",
-			port[dev], mpu_port[dev], fm_port[dev]);
-	snd_printdd("pnp SB16: dma1=%i, dma2=%i, irq=%i\n",
-			dma8[dev], dma16[dev], irq[dev]);
+	dev_dbg(&pdev->dev, "pnp SB16: port=0x%lx, mpu port=0x%lx, fm port=0x%lx\n",
+		port[dev], mpu_port[dev], fm_port[dev]);
+	dev_dbg(&pdev->dev, "pnp SB16: dma1=%i, dma2=%i, irq=%i\n",
+		dma8[dev], dma16[dev], irq[dev]);
 #ifdef SNDRV_SBAWE_EMU8000
 	/* WaveTable initialization */
 	pdev = acard->devwt;
@@ -268,13 +263,13 @@ static int snd_card_sb16_pnp(int dev, struct snd_card_sb16 *acard,
 			goto __wt_error; 
 		} 
 		awe_port[dev] = pnp_port_start(pdev, 0);
-		snd_printdd("pnp SB16: wavetable port=0x%llx\n",
-				(unsigned long long)pnp_port_start(pdev, 0));
+		dev_dbg(&pdev->dev, "pnp SB16: wavetable port=0x%llx\n",
+			(unsigned long long)pnp_port_start(pdev, 0));
 	} else {
 __wt_error:
 		if (pdev) {
 			pnp_release_card_device(pdev);
-			snd_printk(KERN_ERR PFX "WaveTable pnp configure failure\n");
+			dev_err(&pdev->dev, "WaveTable pnp configure failure\n");
 		}
 		acard->devwt = NULL;
 		awe_port[dev] = -1;
@@ -315,7 +310,6 @@ static int snd_sb16_probe(struct snd_card *card, int dev)
 #ifdef CONFIG_SND_SB16_CSP
 	struct snd_hwdep *xcsp = NULL;
 #endif
-	unsigned long flags;
 	int err;
 
 	xirq = irq[dev];
@@ -329,7 +323,7 @@ static int snd_sb16_probe(struct snd_card *card, int dev)
 
 	acard->chip = chip;
 	if (chip->hardware != SB_HW_16) {
-		snd_printk(KERN_ERR PFX "SB 16 chip was not detected at 0x%lx\n", port[dev]);
+		dev_err(card->dev, "SB 16 chip was not detected at 0x%lx\n", port[dev]);
 		return -ENODEV;
 	}
 	chip->mpu_port = mpu_port[dev];
@@ -343,12 +337,12 @@ static int snd_sb16_probe(struct snd_card *card, int dev)
 	if (err < 0)
 		return err;
 
-	strcpy(card->driver,
+	strscpy(card->driver,
 #ifdef SNDRV_SBAWE_EMU8000
 			awe_port[dev] > 0 ? "SB AWE" :
 #endif
 			"SB16");
-	strcpy(card->shortname, chip->name);
+	strscpy(card->shortname, chip->name);
 	sprintf(card->longname, "%s at 0x%lx, irq %i, dma ",
 		chip->name,
 		chip->port,
@@ -379,8 +373,8 @@ static int snd_sb16_probe(struct snd_card *card, int dev)
 				    OPL3_HW_OPL3,
 				    acard->fm_res != NULL || fm_port[dev] == port[dev],
 				    &opl3) < 0) {
-			snd_printk(KERN_ERR PFX "no OPL device at 0x%lx-0x%lx\n",
-				   fm_port[dev], fm_port[dev] + 2);
+			dev_err(card->dev, "no OPL device at 0x%lx-0x%lx\n",
+				fm_port[dev], fm_port[dev] + 2);
 		} else {
 #ifdef SNDRV_SBAWE_EMU8000
 			int seqdev = awe_port[dev] > 0 ? 2 : 1;
@@ -405,7 +399,9 @@ static int snd_sb16_probe(struct snd_card *card, int dev)
 			chip->csp = xcsp->private_data;
 			chip->hardware = SB_HW_16CSP;
 		} else {
-			snd_printk(KERN_INFO PFX "warning - CSP chip not detected on soundcard #%i\n", dev + 1);
+			dev_info(card->dev,
+				 "warning - CSP chip not detected on soundcard #%i\n",
+				 dev + 1);
 		}
 	}
 #endif
@@ -414,7 +410,9 @@ static int snd_sb16_probe(struct snd_card *card, int dev)
 		err = snd_emu8000_new(card, 1, awe_port[dev],
 				      seq_ports[dev], NULL);
 		if (err < 0) {
-			snd_printk(KERN_ERR PFX "fatal error - EMU-8000 synthesizer not detected at 0x%lx\n", awe_port[dev]);
+			dev_err(card->dev,
+				"fatal error - EMU-8000 synthesizer not detected at 0x%lx\n",
+				awe_port[dev]);
 
 			return err;
 		}
@@ -422,11 +420,11 @@ static int snd_sb16_probe(struct snd_card *card, int dev)
 #endif
 
 	/* setup Mic AGC */
-	spin_lock_irqsave(&chip->mixer_lock, flags);
-	snd_sbmixer_write(chip, SB_DSP4_MIC_AGC,
-		(snd_sbmixer_read(chip, SB_DSP4_MIC_AGC) & 0x01) |
-		(mic_agc[dev] ? 0x00 : 0x01));
-	spin_unlock_irqrestore(&chip->mixer_lock, flags);
+	scoped_guard(spinlock_irqsave, &chip->mixer_lock) {
+		snd_sbmixer_write(chip, SB_DSP4_MIC_AGC,
+			(snd_sbmixer_read(chip, SB_DSP4_MIC_AGC) & 0x01) |
+			(mic_agc[dev] ? 0x00 : 0x01));
+	}
 
 	err = snd_card_register(card);
 	if (err < 0)
@@ -502,21 +500,21 @@ static int snd_sb16_isa_probe(struct device *pdev, unsigned int dev)
 	if (irq[dev] == SNDRV_AUTO_IRQ) {
 		irq[dev] = snd_legacy_find_free_irq(possible_irqs);
 		if (irq[dev] < 0) {
-			snd_printk(KERN_ERR PFX "unable to find a free IRQ\n");
+			dev_err(pdev, "unable to find a free IRQ\n");
 			return -EBUSY;
 		}
 	}
 	if (dma8[dev] == SNDRV_AUTO_DMA) {
 		dma8[dev] = snd_legacy_find_free_dma(possible_dmas8);
 		if (dma8[dev] < 0) {
-			snd_printk(KERN_ERR PFX "unable to find a free 8-bit DMA\n");
+			dev_err(pdev, "unable to find a free 8-bit DMA\n");
 			return -EBUSY;
 		}
 	}
 	if (dma16[dev] == SNDRV_AUTO_DMA) {
 		dma16[dev] = snd_legacy_find_free_dma(possible_dmas16);
 		if (dma16[dev] < 0) {
-			snd_printk(KERN_ERR PFX "unable to find a free 16-bit DMA\n");
+			dev_err(pdev, "unable to find a free 16-bit DMA\n");
 			return -EBUSY;
 		}
 	}

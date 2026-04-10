@@ -6,10 +6,10 @@
 KBUILD_DEFCONFIG := haps_hs_smp_defconfig
 
 ifeq ($(CROSS_COMPILE),)
-CROSS_COMPILE := $(call cc-cross-prefix, arc-linux- arceb-linux-)
+CROSS_COMPILE := $(call cc-cross-prefix, arc-linux- arceb-linux- arc-linux-gnu-)
 endif
 
-cflags-y	+= -fno-common -pipe -fno-builtin -mmedium-calls -D__linux__
+cflags-y	+= -fno-common -pipe -fno-builtin -mmedium-calls -mswape -D__linux__
 
 tune-mcpu-def-$(CONFIG_ISA_ARCOMPACT)	:= -mcpu=arc700
 tune-mcpu-def-$(CONFIG_ISA_ARCV2)	:= -mcpu=hs38
@@ -28,20 +28,19 @@ cflags-y				+= $(tune-mcpu-def-y)
 endif
 endif
 
-
 ifdef CONFIG_ARC_CURR_IN_REG
 # For a global register definition, make sure it gets passed to every file
 # We had a customer reported bug where some code built in kernel was NOT using
-# any kernel headers, and missing the r25 global register
+# any kernel headers, and missing the global register
 # Can't do unconditionally because of recursive include issues
 # due to <linux/thread_info.h>
 LINUXINCLUDE	+=  -include $(srctree)/arch/arc/include/asm/current.h
+cflags-y	+= -ffixed-gp
 endif
 
 cflags-y				+= -fsection-anchors
 
 cflags-$(CONFIG_ARC_HAS_LLSC)		+= -mlock
-cflags-$(CONFIG_ARC_HAS_SWAPE)		+= -mswape
 
 ifdef CONFIG_ISA_ARCV2
 
@@ -67,7 +66,7 @@ cflags-$(CONFIG_ARC_DW2_UNWIND)		+= -fasynchronous-unwind-tables $(cfi)
 # small data is default for elf32 tool-chain. If not usable, disable it
 # This also allows repurposing GP as scratch reg to gcc reg allocator
 disable_small_data := y
-cflags-$(disable_small_data)		+= -mno-sdata -fcall-used-gp
+cflags-$(disable_small_data)		+= -mno-sdata
 
 cflags-$(CONFIG_CPU_BIG_ENDIAN)		+= -mbig-endian
 ldflags-$(CONFIG_CPU_BIG_ENDIAN)	+= -EB
@@ -81,11 +80,6 @@ KBUILD_CFLAGS_MODULE	+= -mlong-calls -mno-millicode
 KBUILD_CFLAGS	+= $(cflags-y)
 KBUILD_AFLAGS	+= $(KBUILD_CFLAGS)
 KBUILD_LDFLAGS	+= $(ldflags-y)
-
-head-y		:= arch/arc/kernel/head.o
-
-# w/o this dtb won't embed into kernel binary
-core-y		+= arch/arc/boot/dts/
 
 core-y				+= arch/arc/plat-sim/
 core-$(CONFIG_ARC_PLAT_TB10X)	+= arch/arc/plat-tb10x/

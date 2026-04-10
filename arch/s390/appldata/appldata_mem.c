@@ -15,7 +15,7 @@
 #include <linux/pagemap.h>
 #include <linux/swap.h>
 #include <linux/slab.h>
-#include <asm/io.h>
+#include <linux/io.h>
 
 #include "appldata.h"
 
@@ -130,7 +130,7 @@ static int __init appldata_mem_init(void)
 {
 	int ret;
 
-	ops.data = kzalloc(sizeof(struct appldata_mem_data), GFP_KERNEL);
+	ops.data = kzalloc_obj(struct appldata_mem_data);
 	if (!ops.data)
 		return -ENOMEM;
 

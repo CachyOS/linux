@@ -91,9 +91,17 @@ struct dc_vbios_funcs {
 		struct device_id id);
 	/* COMMANDS */
 
+	enum bp_result (*select_crtc_source)(
+		struct dc_bios *bios,
+		struct bp_crtc_source_select *bp_params);
 	enum bp_result (*encoder_control)(
 		struct dc_bios *bios,
 		struct bp_encoder_control *cntl);
+	enum bp_result (*dac_load_detection)(
+		struct dc_bios *bios,
+		enum engine_id engine_id,
+		enum dal_device_type device_type,
+		uint32_t enum_id);
 	enum bp_result (*transmitter_control)(
 		struct dc_bios *bios,
 		struct bp_transmitter_control *cntl);
@@ -140,7 +148,8 @@ struct dc_vbios_funcs {
 	enum bp_result (*enable_lvtma_control)(
 		struct dc_bios *bios,
 		uint8_t uc_pwr_on,
-		uint8_t panel_instance);
+		uint8_t pwrseq_instance,
+		uint8_t bypass_panel_control_wait);
 
 	enum bp_result (*get_soc_bb_info)(
 		struct dc_bios *dcb,
@@ -156,9 +165,15 @@ struct dc_vbios_funcs {
 	enum bp_result (*get_lttpr_interop)(
 			struct dc_bios *dcb,
 			uint8_t *dce_caps);
+
+	enum bp_result (*get_connector_speed_cap_info)(
+		struct dc_bios *bios,
+		struct graphics_object_id object_id,
+		struct bp_connector_speed_cap_info *info);
 };
 
 struct bios_registers {
+	uint32_t BIOS_SCRATCH_0;
 	uint32_t BIOS_SCRATCH_3;
 	uint32_t BIOS_SCRATCH_6;
 };
@@ -177,6 +192,7 @@ struct dc_bios {
 	struct dc_firmware_info fw_info;
 	bool fw_info_valid;
 	struct dc_vram_info vram_info;
+	struct bp_soc_bb_info bb_info;
 	struct dc_golden_table golden_table;
 };
 

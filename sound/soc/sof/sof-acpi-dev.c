@@ -3,7 +3,7 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2018 Intel Corporation. All rights reserved.
+// Copyright(c) 2018 Intel Corporation
 //
 // Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
 //
@@ -24,11 +24,11 @@
 
 static char *fw_path;
 module_param(fw_path, charp, 0444);
-MODULE_PARM_DESC(fw_path, "alternate path for SOF firmware.");
+MODULE_PARM_DESC(fw_path, "deprecated - moved to snd-sof module.");
 
 static char *tplg_path;
 module_param(tplg_path, charp, 0444);
-MODULE_PARM_DESC(tplg_path, "alternate path for SOF topology.");
+MODULE_PARM_DESC(tplg_path, "deprecated - moved to snd-sof module.");
 
 static int sof_acpi_debug;
 module_param_named(sof_acpi_debug, sof_acpi_debug, int, 0444);
@@ -36,12 +36,11 @@ MODULE_PARM_DESC(sof_acpi_debug, "SOF ACPI debug options (0x0 all off)");
 
 #define SOF_ACPI_DISABLE_PM_RUNTIME BIT(0)
 
-const struct dev_pm_ops sof_acpi_pm = {
-	SET_SYSTEM_SLEEP_PM_OPS(snd_sof_suspend, snd_sof_resume)
-	SET_RUNTIME_PM_OPS(snd_sof_runtime_suspend, snd_sof_runtime_resume,
-			   snd_sof_runtime_idle)
+EXPORT_NS_DEV_PM_OPS(sof_acpi_pm, SND_SOC_SOF_ACPI_DEV) = {
+	SYSTEM_SLEEP_PM_OPS(snd_sof_suspend, snd_sof_resume)
+	RUNTIME_PM_OPS(snd_sof_runtime_suspend, snd_sof_runtime_resume,
+		       snd_sof_runtime_idle)
 };
-EXPORT_SYMBOL_NS(sof_acpi_pm, SND_SOC_SOF_ACPI_DEV);
 
 static void sof_acpi_probe_complete(struct device *dev)
 {
@@ -74,20 +73,10 @@ int sof_acpi_probe(struct platform_device *pdev, const struct sof_dev_desc *desc
 
 	sof_pdata->desc = desc;
 	sof_pdata->dev = &pdev->dev;
-	sof_pdata->fw_filename = desc->default_fw_filename[SOF_IPC];
 
-	/* alternate fw and tplg filenames ? */
-	if (fw_path)
-		sof_pdata->fw_filename_prefix = fw_path;
-	else
-		sof_pdata->fw_filename_prefix =
-			sof_pdata->desc->default_fw_path[SOF_IPC];
-
-	if (tplg_path)
-		sof_pdata->tplg_filename_prefix = tplg_path;
-	else
-		sof_pdata->tplg_filename_prefix =
-			sof_pdata->desc->default_tplg_path[SOF_IPC];
+	sof_pdata->ipc_file_profile_base.ipc_type = desc->ipc_default;
+	sof_pdata->ipc_file_profile_base.fw_path = fw_path;
+	sof_pdata->ipc_file_profile_base.tplg_path = tplg_path;
 
 	/* set callback to be called on successful device probe to enable runtime_pm */
 	sof_pdata->sof_probe_complete = sof_acpi_probe_complete;
@@ -95,9 +84,9 @@ int sof_acpi_probe(struct platform_device *pdev, const struct sof_dev_desc *desc
 	/* call sof helper for DSP hardware probe */
 	return snd_sof_device_probe(dev, sof_pdata);
 }
-EXPORT_SYMBOL_NS(sof_acpi_probe, SND_SOC_SOF_ACPI_DEV);
+EXPORT_SYMBOL_NS(sof_acpi_probe, "SND_SOC_SOF_ACPI_DEV");
 
-int sof_acpi_remove(struct platform_device *pdev)
+void sof_acpi_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 
@@ -106,9 +95,8 @@ int sof_acpi_remove(struct platform_device *pdev)
 
 	/* call sof helper for DSP hardware remove */
 	snd_sof_device_remove(dev);
-
-	return 0;
 }
-EXPORT_SYMBOL_NS(sof_acpi_remove, SND_SOC_SOF_ACPI_DEV);
+EXPORT_SYMBOL_NS(sof_acpi_remove, "SND_SOC_SOF_ACPI_DEV");
 
 MODULE_LICENSE("Dual BSD/GPL");
+MODULE_DESCRIPTION("SOF support for ACPI platforms");

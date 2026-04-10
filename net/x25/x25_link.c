@@ -46,7 +46,7 @@ static inline void x25_start_t20timer(struct x25_neigh *nb)
 
 static void x25_t20timer_expiry(struct timer_list *t)
 {
-	struct x25_neigh *nb = from_timer(nb, t, t20timer);
+	struct x25_neigh *nb = timer_container_of(nb, t, t20timer);
 
 	x25_transmit_restart_request(nb);
 
@@ -55,7 +55,7 @@ static void x25_t20timer_expiry(struct timer_list *t)
 
 static inline void x25_stop_t20timer(struct x25_neigh *nb)
 {
-	del_timer(&nb->t20timer);
+	timer_delete(&nb->t20timer);
 }
 
 /*
@@ -262,7 +262,7 @@ void x25_link_terminated(struct x25_neigh *nb)
  */
 void x25_link_device_up(struct net_device *dev)
 {
-	struct x25_neigh *nb = kmalloc(sizeof(*nb), GFP_ATOMIC);
+	struct x25_neigh *nb = kmalloc_obj(*nb, GFP_ATOMIC);
 
 	if (!nb)
 		return;

@@ -6,26 +6,36 @@ What is RCU?  --  "Read, Copy, Update"
 Please note that the "What is RCU?" LWN series is an excellent place
 to start learning about RCU:
 
-| 1.	What is RCU, Fundamentally?  http://lwn.net/Articles/262464/
-| 2.	What is RCU? Part 2: Usage   http://lwn.net/Articles/263130/
-| 3.	RCU part 3: the RCU API      http://lwn.net/Articles/264090/
-| 4.	The RCU API, 2010 Edition    http://lwn.net/Articles/418853/
-| 	2010 Big API Table           http://lwn.net/Articles/419086/
-| 5.	The RCU API, 2014 Edition    http://lwn.net/Articles/609904/
-|	2014 Big API Table           http://lwn.net/Articles/609973/
+| 1.	What is RCU, Fundamentally?  https://lwn.net/Articles/262464/
+| 2.	What is RCU? Part 2: Usage   https://lwn.net/Articles/263130/
+| 3.	RCU part 3: the RCU API      https://lwn.net/Articles/264090/
+| 4.	The RCU API, 2010 Edition    https://lwn.net/Articles/418853/
+| 	2010 Big API Table           https://lwn.net/Articles/419086/
+| 5.	The RCU API, 2014 Edition    https://lwn.net/Articles/609904/
+|	2014 Big API Table           https://lwn.net/Articles/609973/
+| 6.	The RCU API, 2019 Edition    https://lwn.net/Articles/777036/
+|	2019 Big API Table           https://lwn.net/Articles/777165/
+| 7.	The RCU API, 2024 Edition    https://lwn.net/Articles/988638/
+|       2024 Background Information  https://lwn.net/Articles/988641/
+|	2024 Big API Table           https://lwn.net/Articles/988666/
+
+For those preferring video:
+
+| 1.	Unraveling RCU Mysteries: Fundamentals          https://www.linuxfoundation.org/webinars/unraveling-rcu-usage-mysteries
+| 2.	Unraveling RCU Mysteries: Additional Use Cases  https://www.linuxfoundation.org/webinars/unraveling-rcu-usage-mysteries-additional-use-cases
 
 
 What is RCU?
 
 RCU is a synchronization mechanism that was added to the Linux kernel
 during the 2.5 development effort that is optimized for read-mostly
-situations.  Although RCU is actually quite simple once you understand it,
-getting there can sometimes be a challenge.  Part of the problem is that
-most of the past descriptions of RCU have been written with the mistaken
-assumption that there is "one true way" to describe RCU.  Instead,
-the experience has been that different people must take different paths
-to arrive at an understanding of RCU.  This document provides several
-different paths, as follows:
+situations.  Although RCU is actually quite simple, making effective use
+of it requires you to think differently about your code.  Another part
+of the problem is the mistaken assumption that there is "one true way" to
+describe and to use RCU.  Instead, the experience has been that different
+people must take different paths to arrive at an understanding of RCU,
+depending on their experiences and use cases.  This document provides
+several different paths, as follows:
 
 :ref:`1.	RCU OVERVIEW <1_whatisRCU>`
 
@@ -52,8 +62,8 @@ experiment with should focus on Section 2.  People who prefer to start
 with example uses should focus on Sections 3 and 4.  People who need to
 understand the RCU implementation should focus on Section 5, then dive
 into the kernel source code.  People who reason best by analogy should
-focus on Section 6.  Section 7 serves as an index to the docbook API
-documentation, and Section 8 is the traditional answer key.
+focus on Section 6 and 7.  Section 8 serves as an index to the docbook
+API documentation, and Section 9 is the traditional answer key.
 
 So, start with the section that makes the most sense to you and your
 preferred method of learning.  If you need to know everything about
@@ -155,34 +165,47 @@ rcu_read_lock()
 ^^^^^^^^^^^^^^^
 	void rcu_read_lock(void);
 
-	Used by a reader to inform the reclaimer that the reader is
-	entering an RCU read-side critical section.  It is illegal
-	to block while in an RCU read-side critical section, though
-	kernels built with CONFIG_PREEMPT_RCU can preempt RCU
-	read-side critical sections.  Any RCU-protected data structure
-	accessed during an RCU read-side critical section is guaranteed to
-	remain unreclaimed for the full duration of that critical section.
-	Reference counts may be used in conjunction with RCU to maintain
-	longer-term references to data structures.
+	This temporal primitive is used by a reader to inform the
+	reclaimer that the reader is entering an RCU read-side critical
+	section.  It is illegal to block while in an RCU read-side
+	critical section, though kernels built with CONFIG_PREEMPT_RCU
+	can preempt RCU read-side critical sections.  Any RCU-protected
+	data structure accessed during an RCU read-side critical section
+	is guaranteed to remain unreclaimed for the full duration of that
+	critical section.  Reference counts may be used in conjunction
+	with RCU to maintain longer-term references to data structures.
+
+	Note that anything that disables bottom halves, preemption,
+	or interrupts also enters an RCU read-side critical section.
+	Acquiring a spinlock also enters an RCU read-side critical
+	sections, even for spinlocks that do not disable preemption,
+	as is the case in kernels built with CONFIG_PREEMPT_RT=y.
+	Sleeplocks do *not* enter RCU read-side critical sections.
 
 rcu_read_unlock()
 ^^^^^^^^^^^^^^^^^
 	void rcu_read_unlock(void);
 
-	Used by a reader to inform the reclaimer that the reader is
-	exiting an RCU read-side critical section.  Note that RCU
-	read-side critical sections may be nested and/or overlapping.
+	This temporal primitives is used by a reader to inform the
+	reclaimer that the reader is exiting an RCU read-side critical
+	section.  Anything that enables bottom halves, preemption,
+	or interrupts also exits an RCU read-side critical section.
+	Releasing a spinlock also exits an RCU read-side critical section.
+
+	Note that RCU read-side critical sections may be nested and/or
+	overlapping.
 
 synchronize_rcu()
 ^^^^^^^^^^^^^^^^^
 	void synchronize_rcu(void);
 
-	Marks the end of updater code and the beginning of reclaimer
-	code.  It does this by blocking until all pre-existing RCU
-	read-side critical sections on all CPUs have completed.
-	Note that synchronize_rcu() will **not** necessarily wait for
-	any subsequent RCU read-side critical sections to complete.
-	For example, consider the following sequence of events::
+	This temporal primitive marks the end of updater code and the
+	beginning of reclaimer code.  It does this by blocking until
+	all pre-existing RCU read-side critical sections on all CPUs
+	have completed.  Note that synchronize_rcu() will **not**
+	necessarily wait for any subsequent RCU read-side critical
+	sections to complete.  For example, consider the following
+	sequence of events::
 
 	         CPU 0                  CPU 1                 CPU 2
 	     ----------------- ------------------------- ---------------
@@ -209,13 +232,13 @@ synchronize_rcu()
 	to be useful in all but the most read-intensive situations,
 	synchronize_rcu()'s overhead must also be quite small.
 
-	The call_rcu() API is a callback form of synchronize_rcu(),
-	and is described in more detail in a later section.  Instead of
-	blocking, it registers a function and argument which are invoked
-	after all ongoing RCU read-side critical sections have completed.
-	This callback variant is particularly useful in situations where
-	it is illegal to block or where update-side performance is
-	critically important.
+	The call_rcu() API is an asynchronous callback form of
+	synchronize_rcu(), and is described in more detail in a later
+	section.  Instead of blocking, it registers a function and
+	argument which are invoked after all ongoing RCU read-side
+	critical sections have completed.  This callback variant is
+	particularly useful in situations where it is illegal to block
+	or where update-side performance is critically important.
 
 	However, the call_rcu() API should not be used lightly, as use
 	of the synchronize_rcu() API generally results in simpler code.
@@ -230,19 +253,25 @@ rcu_assign_pointer()
 ^^^^^^^^^^^^^^^^^^^^
 	void rcu_assign_pointer(p, typeof(p) v);
 
-	Yes, rcu_assign_pointer() **is** implemented as a macro, though it
-	would be cool to be able to declare a function in this manner.
-	(Compiler experts will no doubt disagree.)
+	Yes, rcu_assign_pointer() **is** implemented as a macro, though
+	it would be cool to be able to declare a function in this manner.
+	(And there has been some discussion of adding overloaded functions
+	to the C language, so who knows?)
 
-	The updater uses this function to assign a new value to an
+	The updater uses this spatial macro to assign a new value to an
 	RCU-protected pointer, in order to safely communicate the change
-	in value from the updater to the reader.  This macro does not
-	evaluate to an rvalue, but it does execute any memory-barrier
-	instructions required for a given CPU architecture.
+	in value from the updater to the reader.  This is a spatial (as
+	opposed to temporal) macro.  It does not evaluate to an rvalue,
+	but it does provide any compiler directives and memory-barrier
+	instructions required for a given compile or CPU architecture.
+	Its ordering properties are that of a store-release operation,
+	that is, any prior loads and stores required to initialize the
+	structure are ordered before the store that publishes the pointer
+	to that structure.
 
-	Perhaps just as important, it serves to document (1) which
-	pointers are protected by RCU and (2) the point at which a
-	given structure becomes accessible to other CPUs.  That said,
+	Perhaps just as important, rcu_assign_pointer() serves to document
+	(1) which pointers are protected by RCU and (2) the point at which
+	a given structure becomes accessible to other CPUs.  That said,
 	rcu_assign_pointer() is most frequently used indirectly, via
 	the _rcu list-manipulation primitives such as list_add_rcu().
 
@@ -253,14 +282,19 @@ rcu_dereference()
 	Like rcu_assign_pointer(), rcu_dereference() must be implemented
 	as a macro.
 
-	The reader uses rcu_dereference() to fetch an RCU-protected
-	pointer, which returns a value that may then be safely
-	dereferenced.  Note that rcu_dereference() does not actually
-	dereference the pointer, instead, it protects the pointer for
-	later dereferencing.  It also executes any needed memory-barrier
-	instructions for a given CPU architecture.  Currently, only Alpha
-	needs memory barriers within rcu_dereference() -- on other CPUs,
-	it compiles to nothing, not even a compiler directive.
+	The reader uses the spatial rcu_dereference() macro to fetch
+	an RCU-protected pointer, which returns a value that may
+	then be safely dereferenced.  Note that rcu_dereference()
+	does not actually dereference the pointer, instead, it
+	protects the pointer for later dereferencing.  It also
+	executes any needed memory-barrier instructions for a given
+	CPU architecture.  Currently, only Alpha needs memory barriers
+	within rcu_dereference() -- on other CPUs, it compiles to a
+	volatile load.	However, no mainstream C compilers respect
+	address dependencies, so rcu_dereference() uses volatile casts,
+	which, in combination with the coding guidelines listed in
+	rcu_dereference.rst, prevent current compilers from breaking
+	these dependencies.
 
 	Common coding practice uses rcu_dereference() to copy an
 	RCU-protected pointer to a local variable, then dereferences
@@ -353,12 +387,15 @@ reader, updater, and reclaimer.
 	      synchronize_rcu() & call_rcu()
 
 
-The RCU infrastructure observes the time sequence of rcu_read_lock(),
+The RCU infrastructure observes the temporal sequence of rcu_read_lock(),
 rcu_read_unlock(), synchronize_rcu(), and call_rcu() invocations in
 order to determine when (1) synchronize_rcu() invocations may return
 to their callers and (2) call_rcu() callbacks may be invoked.  Efficient
 implementations of the RCU infrastructure make heavy use of batching in
 order to amortize their overhead over many uses of the corresponding APIs.
+The rcu_assign_pointer() and rcu_dereference() invocations communicate
+spatial changes via stores to and loads from the RCU-protected pointer in
+question.
 
 There are at least three flavors of RCU usage in the Linux kernel. The diagram
 above shows the most common one. On the updater side, the rcu_assign_pointer(),
@@ -390,7 +427,9 @@ b.	RCU applied to networking data structures that may be subjected
 c.	RCU applied to scheduler and interrupt/NMI-handler tasks.
 
 Again, most uses will be of (a).  The (b) and (c) cases are important
-for specialized uses, but are relatively uncommon.
+for specialized uses, but are relatively uncommon.  The SRCU, RCU-Tasks,
+RCU-Tasks-Rude, and RCU-Tasks-Trace have similar relationships among
+their assorted primitives.
 
 .. _3_whatisRCU:
 
@@ -399,7 +438,7 @@ for specialized uses, but are relatively uncommon.
 
 This section shows a simple use of the core RCU API to protect a
 global pointer to a dynamically allocated structure.  More-typical
-uses of RCU may be found in listRCU.rst, arrayRCU.rst, and NMI-RCU.rst.
+uses of RCU may be found in listRCU.rst and NMI-RCU.rst.
 ::
 
 	struct foo {
@@ -466,7 +505,7 @@ So, to sum up:
 -	Within an RCU read-side critical section, use rcu_dereference()
 	to dereference RCU-protected pointers.
 
--	Use some solid scheme (such as locks or semaphores) to
+-	Use some solid design (such as locks or semaphores) to
 	keep concurrent updates from interfering with each other.
 
 -	Use rcu_assign_pointer() to update an RCU-protected pointer.
@@ -482,8 +521,8 @@ So, to sum up:
 	data item.
 
 See checklist.rst for additional rules to follow when using RCU.
-And again, more-typical uses of RCU may be found in listRCU.rst,
-arrayRCU.rst, and NMI-RCU.rst.
+And again, more-typical uses of RCU may be found in listRCU.rst
+and NMI-RCU.rst.
 
 .. _4_whatisRCU:
 
@@ -577,6 +616,14 @@ to avoid having to write your own callback::
 
 	kfree_rcu(old_fp, rcu);
 
+If the occasional sleep is permitted, the single-argument form may
+be used, omitting the rcu_head structure from struct foo.
+
+	kfree_rcu_mightsleep(old_fp);
+
+This variant almost never blocks, but might do so by invoking
+synchronize_rcu() in response to memory-allocation failure.
+
 Again, see checklist.rst for additional rules governing the use of RCU.
 
 .. _5_whatisRCU:
@@ -594,7 +641,7 @@ lacking both functionality and performance.  However, they are useful
 in getting a feel for how RCU works.  See kernel/rcu/update.c for a
 production-quality implementation, and see:
 
-	http://www.rdrop.com/users/paulmck/RCU
+	https://docs.google.com/document/d/1X0lThx8OK0ZgLMqVoXiR4ZrGURHrXK6NyLRbeXe3Xac/edit
 
 for papers describing the Linux kernel RCU implementation.  The OLS'01
 and OLS'02 papers are a good introduction, and the dissertation provides
@@ -915,13 +962,30 @@ which an RCU reference is held include:
 The understanding that RCU provides a reference that only prevents a
 change of type is particularly visible with objects allocated from a
 slab cache marked ``SLAB_TYPESAFE_BY_RCU``.  RCU operations may yield a
-reference to an object from such a cache that has been concurrently
-freed and the memory reallocated to a completely different object,
-though of the same type.  In this case RCU doesn't even protect the
-identity of the object from changing, only its type.  So the object
-found may not be the one expected, but it will be one where it is safe
-to take a reference or spinlock and then confirm that the identity
-matches the expectations.
+reference to an object from such a cache that has been concurrently freed
+and the memory reallocated to a completely different object, though of
+the same type.  In this case RCU doesn't even protect the identity of the
+object from changing, only its type.  So the object found may not be the
+one expected, but it will be one where it is safe to take a reference
+(and then potentially acquiring a spinlock), allowing subsequent code
+to check whether the identity matches expectations.  It is tempting
+to simply acquire the spinlock without first taking the reference, but
+unfortunately any spinlock in a ``SLAB_TYPESAFE_BY_RCU`` object must be
+initialized after each and every call to kmem_cache_alloc(), which renders
+reference-free spinlock acquisition completely unsafe.  Therefore, when
+using ``SLAB_TYPESAFE_BY_RCU``, make proper use of a reference counter.
+If using refcount_t, the specialized refcount_{add|inc}_not_zero_acquire()
+and refcount_set_release() APIs should be used to ensure correct operation
+ordering when verifying object identity and when initializing newly
+allocated objects. Acquire fence in refcount_{add|inc}_not_zero_acquire()
+ensures that identity checks happen *after* reference count is taken.
+refcount_set_release() should be called after a newly allocated object is
+fully initialized and release fence ensures that new values are visible
+*before* refcount can be successfully taken by other users. Once
+refcount_set_release() is called, the object should be considered visible
+by other tasks.
+(Those willing to initialize their locks in a kmem_cache constructor
+may also use locking, including cache-friendly sequence locking.)
 
 With traditional reference counting -- such as that implemented by the
 kref library in Linux -- there is typically code that runs when the last
@@ -957,32 +1021,41 @@ RCU list traversal::
 	list_entry_rcu
 	list_entry_lockless
 	list_first_entry_rcu
+	list_first_or_null_rcu
+	list_tail_rcu
 	list_next_rcu
+	list_next_or_null_rcu
 	list_for_each_entry_rcu
 	list_for_each_entry_continue_rcu
 	list_for_each_entry_from_rcu
-	list_first_or_null_rcu
-	list_next_or_null_rcu
+	list_for_each_entry_lockless
 	hlist_first_rcu
 	hlist_next_rcu
 	hlist_pprev_rcu
 	hlist_for_each_entry_rcu
+	hlist_for_each_entry_rcu_notrace
 	hlist_for_each_entry_rcu_bh
 	hlist_for_each_entry_from_rcu
 	hlist_for_each_entry_continue_rcu
 	hlist_for_each_entry_continue_rcu_bh
 	hlist_nulls_first_rcu
+	hlist_nulls_next_rcu
 	hlist_nulls_for_each_entry_rcu
+	hlist_nulls_for_each_entry_safe
 	hlist_bl_first_rcu
 	hlist_bl_for_each_entry_rcu
 
 RCU pointer/list update::
 
 	rcu_assign_pointer
+	rcu_replace_pointer
+	INIT_LIST_HEAD_RCU
 	list_add_rcu
 	list_add_tail_rcu
 	list_del_rcu
 	list_replace_rcu
+	list_splice_init_rcu
+	list_splice_tail_init_rcu
 	hlist_add_behind_rcu
 	hlist_add_before_rcu
 	hlist_add_head_rcu
@@ -990,34 +1063,53 @@ RCU pointer/list update::
 	hlist_del_rcu
 	hlist_del_init_rcu
 	hlist_replace_rcu
-	list_splice_init_rcu
-	list_splice_tail_init_rcu
 	hlist_nulls_del_init_rcu
 	hlist_nulls_del_rcu
 	hlist_nulls_add_head_rcu
+	hlist_nulls_add_tail_rcu
+	hlist_nulls_add_fake
+	hlists_swap_heads_rcu
 	hlist_bl_add_head_rcu
-	hlist_bl_del_init_rcu
 	hlist_bl_del_rcu
 	hlist_bl_set_first_rcu
 
 RCU::
 
-	Critical sections	Grace period		Barrier
+	Critical sections		Grace period		Barrier
 
-	rcu_read_lock		synchronize_net		rcu_barrier
-	rcu_read_unlock		synchronize_rcu
-	rcu_dereference		synchronize_rcu_expedited
-	rcu_read_lock_held	call_rcu
-	rcu_dereference_check	kfree_rcu
-	rcu_dereference_protected
+	rcu_read_lock			synchronize_net		rcu_barrier
+	rcu_read_unlock			synchronize_rcu
+	guard(rcu)()			synchronize_rcu_expedited
+	scoped_guard(rcu)		synchronize_rcu_mult
+	rcu_dereference			call_rcu
+	rcu_dereference_check		call_rcu_hurry
+	rcu_dereference_protected	kfree_rcu
+	rcu_read_lock_held		kvfree_rcu
+	rcu_read_lock_any_held		kfree_rcu_mightsleep
+	rcu_pointer_handoff		cond_synchronize_rcu
+	unrcu_pointer			cond_synchronize_rcu_full
+					cond_synchronize_rcu_expedited
+					cond_synchronize_rcu_expedited_full
+					get_completed_synchronize_rcu
+					get_completed_synchronize_rcu_full
+					get_state_synchronize_rcu
+					get_state_synchronize_rcu_full
+					poll_state_synchronize_rcu
+					poll_state_synchronize_rcu_full
+					same_state_synchronize_rcu
+					same_state_synchronize_rcu_full
+					start_poll_synchronize_rcu
+					start_poll_synchronize_rcu_full
+					start_poll_synchronize_rcu_expedited
+					start_poll_synchronize_rcu_expedited_full
 
 bh::
 
 	Critical sections	Grace period		Barrier
 
-	rcu_read_lock_bh	call_rcu		rcu_barrier
-	rcu_read_unlock_bh	synchronize_rcu
-	[local_bh_disable]	synchronize_rcu_expedited
+	rcu_read_lock_bh	[Same as RCU]		[Same as RCU]
+	rcu_read_unlock_bh
+	[local_bh_disable]
 	[and friends]
 	rcu_dereference_bh
 	rcu_dereference_bh_check
@@ -1028,9 +1120,9 @@ sched::
 
 	Critical sections	Grace period		Barrier
 
-	rcu_read_lock_sched	call_rcu		rcu_barrier
-	rcu_read_unlock_sched	synchronize_rcu
-	[preempt_disable]	synchronize_rcu_expedited
+	rcu_read_lock_sched	[Same as RCU]		[Same as RCU]
+	rcu_read_unlock_sched
+	[preempt_disable]
 	[and friends]
 	rcu_read_lock_sched_notrace
 	rcu_read_unlock_sched_notrace
@@ -1040,30 +1132,120 @@ sched::
 	rcu_read_lock_sched_held
 
 
+RCU: Initialization/cleanup/ordering::
+
+	RCU_INIT_POINTER
+	RCU_INITIALIZER
+	RCU_POINTER_INITIALIZER
+	init_rcu_head
+	destroy_rcu_head
+	init_rcu_head_on_stack
+	destroy_rcu_head_on_stack
+	SLAB_TYPESAFE_BY_RCU
+
+
+RCU: Quiescents states and control::
+
+	cond_resched_tasks_rcu_qs
+	rcu_all_qs
+	rcu_softirq_qs_periodic
+	rcu_end_inkernel_boot
+	rcu_expedite_gp
+	rcu_gp_is_expedited
+	rcu_unexpedite_gp
+	rcu_cpu_stall_reset
+	rcu_head_after_call_rcu
+	rcu_is_watching
+
+
+RCU-sync primitive::
+
+	rcu_sync_is_idle
+	rcu_sync_init
+	rcu_sync_enter
+	rcu_sync_exit
+	rcu_sync_dtor
+
+
+RCU-Tasks::
+
+	Critical sections	Grace period			Barrier
+
+	N/A			call_rcu_tasks			rcu_barrier_tasks
+				synchronize_rcu_tasks
+
+
+RCU-Tasks-Rude::
+
+	Critical sections	Grace period			Barrier
+
+	N/A			synchronize_rcu_tasks_rude	rcu_barrier_tasks_rude
+				call_rcu_tasks_rude
+
+
+RCU-Tasks-Trace::
+
+	Critical sections	Grace period			Barrier
+
+	rcu_read_lock_trace	call_rcu_tasks_trace		rcu_barrier_tasks_trace
+	rcu_read_unlock_trace	synchronize_rcu_tasks_trace
+	guard(rcu_tasks_trace)()
+	scoped_guard(rcu_tasks_trace)
+
+
+SRCU list traversal::
+	list_for_each_entry_srcu
+	hlist_for_each_entry_srcu
+
+
 SRCU::
 
-	Critical sections	Grace period		Barrier
+	Critical sections		Grace period		Barrier
 
-	srcu_read_lock		call_srcu		srcu_barrier
-	srcu_read_unlock	synchronize_srcu
-	srcu_dereference	synchronize_srcu_expedited
+	srcu_read_lock			call_srcu		srcu_barrier
+	srcu_read_unlock		synchronize_srcu
+	srcu_read_lock_fast		synchronize_srcu_expedited
+	srcu_read_unlock_fast		get_state_synchronize_srcu
+	srcu_read_lock_nmisafe		start_poll_synchronize_srcu
+	srcu_read_unlock_nmisafe	start_poll_synchronize_srcu_expedited
+	srcu_read_lock_notrace		poll_state_synchronize_srcu
+	srcu_read_unlock_notrace
+	srcu_down_read
+	srcu_up_read
+	srcu_down_read_fast
+	srcu_up_read_fast
+	guard(srcu)()
+	scoped_guard(srcu)
+	srcu_read_lock_held
+	srcu_dereference
 	srcu_dereference_check
+	srcu_dereference_notrace
 	srcu_read_lock_held
 
-SRCU: Initialization/cleanup::
+
+SRCU: Initialization/cleanup/ordering::
 
 	DEFINE_SRCU
 	DEFINE_STATIC_SRCU
+	DEFINE_SRCU_FAST        // for srcu_read_lock_fast() and friends
+	DEFINE_STATIC_SRCU_FAST // for srcu_read_lock_fast() and friends
 	init_srcu_struct
+	init_srcu_struct_fast
 	cleanup_srcu_struct
+	smp_mb__after_srcu_read_unlock
 
-All: lockdep-checked RCU-protected pointer access::
+All: lockdep-checked RCU utility APIs::
 
-	rcu_access_pointer
-	rcu_dereference_raw
 	RCU_LOCKDEP_WARN
 	rcu_sleep_check
-	RCU_NONIDLE
+
+All: Unchecked RCU-protected pointer access::
+
+	rcu_dereference_raw
+
+All: Unchecked RCU-protected pointer access with dereferencing prohibited::
+
+	rcu_access_pointer
 
 See the comment headers in the source code (or the docbook generated
 from them) for more information.
@@ -1074,35 +1256,43 @@ list can be helpful:
 
 a.	Will readers need to block?  If so, you need SRCU.
 
-b.	What about the -rt patchset?  If readers would need to block
-	in an non-rt kernel, you need SRCU.  If readers would block
-	in a -rt kernel, but not in a non-rt kernel, SRCU is not
-	necessary.  (The -rt patchset turns spinlocks into sleeplocks,
-	hence this distinction.)
+b.	Will readers need to block and are you doing tracing, for
+	example, ftrace or BPF?  If so, you need RCU-tasks,
+	RCU-tasks-rude, and/or RCU-tasks-trace.
 
-c.	Do you need to treat NMI handlers, hardirq handlers,
+c.	What about the -rt patchset?  If readers would need to block in
+	an non-rt kernel, you need SRCU.  If readers would block when
+	acquiring spinlocks in a -rt kernel, but not in a non-rt kernel,
+	SRCU is not necessary.	(The -rt patchset turns spinlocks into
+	sleeplocks, hence this distinction.)
+
+d.	Do you need to treat NMI handlers, hardirq handlers,
 	and code segments with preemption disabled (whether
 	via preempt_disable(), local_irq_save(), local_bh_disable(),
 	or some other mechanism) as if they were explicit RCU readers?
-	If so, RCU-sched is the only choice that will work for you.
+	If so, RCU-sched readers are the only choice that will work
+	for you, but since about v4.20 you use can use the vanilla RCU
+	update primitives.
 
-d.	Do you need RCU grace periods to complete even in the face
-	of softirq monopolization of one or more of the CPUs?  For
-	example, is your code subject to network-based denial-of-service
-	attacks?  If so, you should disable softirq across your readers,
-	for example, by using rcu_read_lock_bh().
+e.	Do you need RCU grace periods to complete even in the face of
+	softirq monopolization of one or more of the CPUs?  For example,
+	is your code subject to network-based denial-of-service attacks?
+	If so, you should disable softirq across your readers, for
+	example, by using rcu_read_lock_bh().  Since about v4.20 you
+	use can use the vanilla RCU update primitives.
 
-e.	Is your workload too update-intensive for normal use of
+f.	Is your workload too update-intensive for normal use of
 	RCU, but inappropriate for other synchronization mechanisms?
 	If so, consider SLAB_TYPESAFE_BY_RCU (which was originally
 	named SLAB_DESTROY_BY_RCU).  But please be careful!
 
-f.	Do you need read-side critical sections that are respected
-	even though they are in the middle of the idle loop, during
-	user-mode execution, or on an offlined CPU?  If so, SRCU is the
-	only choice that will work for you.
+g.	Do you need read-side critical sections that are respected even
+	on CPUs that are deep in the idle loop, during entry to or exit
+	from user-mode execution, or on an offlined CPU?  If so, SRCU
+	and RCU Tasks Trace are the only choices that will work for you,
+	with SRCU being strongly preferred in almost all cases.
 
-g.	Otherwise, use RCU.
+h.	Otherwise, use RCU.
 
 Of course, this all assumes that you have determined that RCU is in fact
 the right tool for your job.

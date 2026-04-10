@@ -69,7 +69,7 @@
 				compatible = "snps,dw-apb-gpio-port";
 				gpio-controller;
 				#gpio-cells = <2>;
-				snps,nr-gpios = <30>;
+				ngpios = <30>;
 				reg = <0>;
 				interrupt-controller;
 				#interrupt-cells = <2>;
@@ -110,11 +110,11 @@
 			dma-coherent;
 		};
 
-		ehci@40000 {
+		usb@40000 {
 			dma-coherent;
 		};
 
-		ohci@60000 {
+		usb@60000 {
 			dma-coherent;
 		};
 

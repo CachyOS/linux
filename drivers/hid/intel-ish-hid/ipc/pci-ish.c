@@ -23,27 +23,72 @@
 #include "ishtp-dev.h"
 #include "hw-ish.h"
 
+enum ishtp_driver_data_index {
+	ISHTP_DRIVER_DATA_NONE,
+	ISHTP_DRIVER_DATA_LNL_M,
+	ISHTP_DRIVER_DATA_PTL,
+	ISHTP_DRIVER_DATA_WCL,
+	ISHTP_DRIVER_DATA_NVL_H,
+	ISHTP_DRIVER_DATA_NVL_S,
+};
+
+#define ISH_FW_GEN_LNL_M "lnlm"
+#define ISH_FW_GEN_PTL "ptl"
+#define ISH_FW_GEN_WCL "wcl"
+#define ISH_FW_GEN_NVL_H "nvlh"
+#define ISH_FW_GEN_NVL_S "nvls"
+
+#define ISH_FIRMWARE_PATH(gen) "intel/ish/ish_" gen ".bin"
+#define ISH_FIRMWARE_PATH_ALL "intel/ish/ish_*.bin"
+
+static struct ishtp_driver_data ishtp_driver_data[] = {
+	[ISHTP_DRIVER_DATA_LNL_M] = {
+		.fw_generation = ISH_FW_GEN_LNL_M,
+	},
+	[ISHTP_DRIVER_DATA_PTL] = {
+		.fw_generation = ISH_FW_GEN_PTL,
+	},
+	[ISHTP_DRIVER_DATA_WCL] = {
+		.fw_generation = ISH_FW_GEN_WCL,
+	},
+	[ISHTP_DRIVER_DATA_NVL_H] = {
+		.fw_generation = ISH_FW_GEN_NVL_H,
+	},
+	[ISHTP_DRIVER_DATA_NVL_S] = {
+		.fw_generation = ISH_FW_GEN_NVL_S,
+	},
+};
+
 static const struct pci_device_id ish_pci_tbl[] = {
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, CHV_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, BXT_Ax_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, BXT_Bx_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, APL_Ax_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, SPT_Ax_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, CNL_Ax_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, GLK_Ax_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, CNL_H_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, ICL_MOBILE_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, SPT_H_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, CML_LP_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, CMP_H_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, EHL_Ax_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, TGL_LP_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, TGL_H_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, ADL_S_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, ADL_P_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, ADL_N_DEVICE_ID)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, RPL_S_DEVICE_ID)},
-	{0, }
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_CHV)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_BXT_Ax)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_BXT_Bx)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_APL_Ax)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_SPT_Ax)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_CNL_Ax)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_GLK_Ax)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_CNL_H)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_ICL_MOBILE)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_SPT_H)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_CML_LP)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_CMP_H)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_EHL_Ax)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_TGL_LP)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_TGL_H)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_ADL_S)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_ADL_P)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_ADL_N)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_RPL_S)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_MTL_P)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_ARL_H)},
+	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_ISH_ARL_S)},
+	{PCI_DEVICE_DATA(INTEL, ISH_LNL_M, ISHTP_DRIVER_DATA_LNL_M)},
+	{PCI_DEVICE_DATA(INTEL, ISH_PTL_H, ISHTP_DRIVER_DATA_PTL)},
+	{PCI_DEVICE_DATA(INTEL, ISH_PTL_P, ISHTP_DRIVER_DATA_PTL)},
+	{PCI_DEVICE_DATA(INTEL, ISH_WCL, ISHTP_DRIVER_DATA_WCL)},
+	{PCI_DEVICE_DATA(INTEL, ISH_NVL_H, ISHTP_DRIVER_DATA_NVL_H)},
+	{PCI_DEVICE_DATA(INTEL, ISH_NVL_S, ISHTP_DRIVER_DATA_NVL_S)},
+	{}
 };
 MODULE_DEVICE_TABLE(pci, ish_pci_tbl);
 
@@ -102,55 +147,25 @@ static int ish_init(struct ishtp_device *dev)
 
 static const struct pci_device_id ish_invalid_pci_ids[] = {
 	/* Mehlow platform special pci ids */
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0xA309)},
-	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0xA30A)},
+	{PCI_VDEVICE(INTEL, 0xA309)},
+	{PCI_VDEVICE(INTEL, 0xA30A)},
 	{}
 };
 
 static inline bool ish_should_enter_d0i3(struct pci_dev *pdev)
 {
-	return !pm_suspend_via_firmware() || pdev->device == CHV_DEVICE_ID;
+	return !pm_suspend_via_firmware() || pdev->device == PCI_DEVICE_ID_INTEL_ISH_CHV;
 }
 
 static inline bool ish_should_leave_d0i3(struct pci_dev *pdev)
 {
-	return !pm_resume_via_firmware() || pdev->device == CHV_DEVICE_ID;
-}
+	struct ishtp_device *dev = pci_get_drvdata(pdev);
+	u32 fwsts = dev->ops->get_fw_status(dev);
 
-static int enable_gpe(struct device *dev)
-{
-#ifdef CONFIG_ACPI
-	acpi_status acpi_sts;
-	struct acpi_device *adev;
-	struct acpi_device_wakeup *wakeup;
+	if (dev->suspend_flag || !IPC_IS_ISH_ILUP(fwsts))
+		return false;
 
-	adev = ACPI_COMPANION(dev);
-	if (!adev) {
-		dev_err(dev, "get acpi handle failed\n");
-		return -ENODEV;
-	}
-	wakeup = &adev->wakeup;
-
-	acpi_sts = acpi_enable_gpe(wakeup->gpe_device, wakeup->gpe_number);
-	if (ACPI_FAILURE(acpi_sts)) {
-		dev_err(dev, "enable ose_gpe failed\n");
-		return -EIO;
-	}
-
-	return 0;
-#else
-	return -ENODEV;
-#endif
-}
-
-static void enable_pme_wake(struct pci_dev *pdev)
-{
-	if ((pci_pme_capable(pdev, PCI_D0) ||
-	     pci_pme_capable(pdev, PCI_D3hot) ||
-	     pci_pme_capable(pdev, PCI_D3cold)) && !enable_gpe(&pdev->dev)) {
-		pci_pme_active(pdev, true);
-		dev_dbg(&pdev->dev, "ish ipc driver pme wake enabled\n");
-	}
+	return !pm_resume_via_firmware() || pdev->device == PCI_DEVICE_ID_INTEL_ISH_CHV;
 }
 
 /**
@@ -199,6 +214,7 @@ static int ish_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	}
 	hw = to_ish_hw(ishtp);
 	ishtp->print_log = ish_event_tracer;
+	ishtp->driver_data = &ishtp_driver_data[ent->driver_data];
 
 	/* mapping IO device memory */
 	hw->mem_addr = pcim_iomap_table(pdev)[0];
@@ -206,6 +222,11 @@ static int ish_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	/* request and enable interrupt */
 	ret = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_ALL_TYPES);
+	if (ret < 0) {
+		dev_err(dev, "ISH: Failed to allocate IRQ vectors\n");
+		return ret;
+	}
+
 	if (!pdev->msi_enabled && !pdev->msix_enabled)
 		irq_flag = IRQF_SHARED;
 
@@ -222,8 +243,8 @@ static int ish_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	init_waitqueue_head(&ishtp->resume_wait);
 
 	/* Enable PME for EHL */
-	if (pdev->device == EHL_Ax_DEVICE_ID)
-		enable_pme_wake(pdev);
+	if (pdev->device == PCI_DEVICE_ID_INTEL_ISH_EHL_Ax)
+		device_init_wakeup(dev, true);
 
 	ret = ish_init(ishtp);
 	if (ret)
@@ -246,10 +267,20 @@ static void ish_remove(struct pci_dev *pdev)
 	ish_device_disable(ishtp_dev);
 }
 
-static struct device __maybe_unused *ish_resume_device;
 
-/* 50ms to get resume response */
-#define WAIT_FOR_RESUME_ACK_MS		50
+/**
+ * ish_shutdown() - PCI driver shutdown callback
+ * @pdev:	pci device
+ *
+ * This function sets up wakeup for S5
+ */
+static void ish_shutdown(struct pci_dev *pdev)
+{
+	if (pdev->device == PCI_DEVICE_ID_INTEL_ISH_EHL_Ax)
+		pci_prepare_to_sleep(pdev);
+}
+
+static struct device __maybe_unused *ish_resume_device;
 
 /**
  * ish_resume_handler() - Work function to complete resume
@@ -264,10 +295,8 @@ static void __maybe_unused ish_resume_handler(struct work_struct *work)
 {
 	struct pci_dev *pdev = to_pci_dev(ish_resume_device);
 	struct ishtp_device *dev = pci_get_drvdata(pdev);
-	uint32_t fwsts = dev->ops->get_fw_status(dev);
 
-	if (ish_should_leave_d0i3(pdev) && !dev->suspend_flag
-			&& IPC_IS_ISH_ILUP(fwsts)) {
+	if (ish_should_leave_d0i3(pdev)) {
 		if (device_may_wakeup(&pdev->dev))
 			disable_irq_wake(pdev->irq);
 
@@ -368,29 +397,85 @@ static int __maybe_unused ish_resume(struct device *device)
 	struct pci_dev *pdev = to_pci_dev(device);
 	struct ishtp_device *dev = pci_get_drvdata(pdev);
 
-	/* add this to finish power flow for EHL */
-	if (dev->pdev->device == EHL_Ax_DEVICE_ID) {
-		pci_set_power_state(pdev, PCI_D0);
-		enable_pme_wake(pdev);
-		dev_dbg(dev->devc, "set power state to D0 for ehl\n");
-	}
-
 	ish_resume_device = device;
 	dev->resume_flag = 1;
 
-	schedule_work(&resume_work);
+	/* If ISH resume from D3, reset ishtp clients before return */
+	if (!ish_should_leave_d0i3(pdev))
+		ishtp_reset_handler(dev);
+
+	queue_work(dev->unbound_wq, &resume_work);
 
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(ish_pm_ops, ish_suspend, ish_resume);
+static int __maybe_unused ish_freeze(struct device *device)
+{
+	struct pci_dev *pdev = to_pci_dev(device);
+
+	return pci_save_state(pdev);
+}
+
+static const struct dev_pm_ops __maybe_unused ish_pm_ops = {
+	.suspend = pm_sleep_ptr(ish_suspend),
+	.resume = pm_sleep_ptr(ish_resume),
+	.freeze = pm_sleep_ptr(ish_freeze),
+	.restore = pm_sleep_ptr(ish_resume),
+	.poweroff = pm_sleep_ptr(ish_suspend),
+};
+
+static ssize_t base_version_show(struct device *cdev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct ishtp_device *dev = dev_get_drvdata(cdev);
+
+	return sysfs_emit(buf, "%u.%u.%u.%u\n", dev->base_ver.major,
+			  dev->base_ver.minor, dev->base_ver.hotfix,
+			  dev->base_ver.build);
+}
+static DEVICE_ATTR_RO(base_version);
+
+static ssize_t project_version_show(struct device *cdev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct ishtp_device *dev = dev_get_drvdata(cdev);
+
+	return sysfs_emit(buf, "%u.%u.%u.%u\n", dev->prj_ver.major,
+			  dev->prj_ver.minor, dev->prj_ver.hotfix,
+			  dev->prj_ver.build);
+}
+static DEVICE_ATTR_RO(project_version);
+
+static struct attribute *ish_firmware_attrs[] = {
+	&dev_attr_base_version.attr,
+	&dev_attr_project_version.attr,
+	NULL
+};
+
+static umode_t firmware_is_visible(struct kobject *kobj, struct attribute *attr,
+				   int i)
+{
+	struct ishtp_device *dev = dev_get_drvdata(kobj_to_dev(kobj));
+
+	return dev->driver_data->fw_generation ? attr->mode : 0;
+}
+
+static const struct attribute_group ish_firmware_group = {
+	.name = "firmware",
+	.attrs = ish_firmware_attrs,
+	.is_visible = firmware_is_visible,
+};
+
+__ATTRIBUTE_GROUPS(ish_firmware);
 
 static struct pci_driver ish_driver = {
 	.name = KBUILD_MODNAME,
 	.id_table = ish_pci_tbl,
 	.probe = ish_probe,
 	.remove = ish_remove,
+	.shutdown = ish_shutdown,
 	.driver.pm = &ish_pm_ops,
+	.dev_groups = ish_firmware_groups,
 };
 
 module_pci_driver(ish_driver);
@@ -402,3 +487,6 @@ MODULE_AUTHOR("Srinivas Pandruvada <srinivas.pandruvada@linux.intel.com>");
 
 MODULE_DESCRIPTION("Intel(R) Integrated Sensor Hub PCI Device Driver");
 MODULE_LICENSE("GPL");
+
+MODULE_FIRMWARE(ISH_FIRMWARE_PATH(ISH_FW_GEN_LNL_M));
+MODULE_FIRMWARE(ISH_FIRMWARE_PATH_ALL);

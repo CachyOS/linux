@@ -13,16 +13,18 @@ struct afs_vlserver *afs_alloc_vlserver(const char *name, size_t name_len,
 					unsigned short port)
 {
 	struct afs_vlserver *vlserver;
+	static atomic_t debug_ids;
 
-	vlserver = kzalloc(struct_size(vlserver, name, name_len + 1),
-			   GFP_KERNEL);
+	vlserver = kzalloc_flex(*vlserver, name, name_len + 1);
 	if (vlserver) {
-		atomic_set(&vlserver->usage, 1);
+		refcount_set(&vlserver->ref, 1);
 		rwlock_init(&vlserver->lock);
 		init_waitqueue_head(&vlserver->probe_wq);
 		spin_lock_init(&vlserver->probe_lock);
+		vlserver->debug_id = atomic_inc_return(&debug_ids);
 		vlserver->rtt = UINT_MAX;
 		vlserver->name_len = name_len;
+		vlserver->service_id = VL_SERVICE;
 		vlserver->port = port;
 		memcpy(vlserver->name, name, name_len);
 	}
@@ -33,28 +35,25 @@ static void afs_vlserver_rcu(struct rcu_head *rcu)
 {
 	struct afs_vlserver *vlserver = container_of(rcu, struct afs_vlserver, rcu);
 
-	afs_put_addrlist(rcu_access_pointer(vlserver->addresses));
+	afs_put_addrlist(rcu_access_pointer(vlserver->addresses),
+			 afs_alist_trace_put_vlserver);
 	kfree_rcu(vlserver, rcu);
 }
 
 void afs_put_vlserver(struct afs_net *net, struct afs_vlserver *vlserver)
 {
-	if (vlserver) {
-		unsigned int u = atomic_dec_return(&vlserver->usage);
-		//_debug("VL PUT %p{%u}", vlserver, u);
-
-		if (u == 0)
-			call_rcu(&vlserver->rcu, afs_vlserver_rcu);
-	}
+	if (vlserver &&
+	    refcount_dec_and_test(&vlserver->ref))
+		call_rcu(&vlserver->rcu, afs_vlserver_rcu);
 }
 
 struct afs_vlserver_list *afs_alloc_vlserver_list(unsigned int nr_servers)
 {
 	struct afs_vlserver_list *vllist;
 
-	vllist = kzalloc(struct_size(vllist, servers, nr_servers), GFP_KERNEL);
+	vllist = kzalloc_flex(*vllist, servers, nr_servers);
 	if (vllist) {
-		atomic_set(&vllist->usage, 1);
+		refcount_set(&vllist->ref, 1);
 		rwlock_init(&vllist->lock);
 	}
 
@@ -64,10 +63,7 @@ struct afs_vlserver_list *afs_alloc_vlserver_list(unsigned int nr_servers)
 void afs_put_vlserverlist(struct afs_net *net, struct afs_vlserver_list *vllist)
 {
 	if (vllist) {
-		unsigned int u = atomic_dec_return(&vllist->usage);
-
-		//_debug("VLLS PUT %p{%u}", vllist, u);
-		if (u == 0) {
+		if (refcount_dec_and_test(&vllist->ref)) {
 			int i;
 
 			for (i = 0; i < vllist->nr_servers; i++) {
@@ -90,14 +86,15 @@ static u16 afs_extract_le16(const u8 **_b)
 /*
  * Build a VL server address list from a DNS queried server list.
  */
-static struct afs_addr_list *afs_extract_vl_addrs(const u8 **_b, const u8 *end,
+static struct afs_addr_list *afs_extract_vl_addrs(struct afs_net *net,
+						  const u8 **_b, const u8 *end,
 						  u8 nr_addrs, u16 port)
 {
 	struct afs_addr_list *alist;
 	const u8 *b = *_b;
 	int ret = -EINVAL;
 
-	alist = afs_alloc_addrlist(nr_addrs, VL_SERVICE, port);
+	alist = afs_alloc_addrlist(nr_addrs);
 	if (!alist)
 		return ERR_PTR(-ENOMEM);
 	if (nr_addrs == 0)
@@ -116,7 +113,9 @@ static struct afs_addr_list *afs_extract_vl_addrs(const u8 **_b, const u8 *end,
 				goto error;
 			}
 			memcpy(x, b, 4);
-			afs_merge_fs_addr4(alist, x[0], port);
+			ret = afs_merge_fs_addr4(net, alist, x[0], port);
+			if (ret < 0)
+				goto error;
 			b += 4;
 			break;
 
@@ -126,7 +125,9 @@ static struct afs_addr_list *afs_extract_vl_addrs(const u8 **_b, const u8 *end,
 				goto error;
 			}
 			memcpy(x, b, 16);
-			afs_merge_fs_addr6(alist, x, port);
+			ret = afs_merge_fs_addr6(net, alist, x, port);
+			if (ret < 0)
+				goto error;
 			b += 16;
 			break;
 
@@ -147,7 +148,7 @@ static struct afs_addr_list *afs_extract_vl_addrs(const u8 **_b, const u8 *end,
 
 error:
 	*_b = b;
-	afs_put_addrlist(alist);
+	afs_put_addrlist(alist, afs_alist_trace_put_parse_error);
 	return ERR_PTR(ret);
 }
 
@@ -254,7 +255,7 @@ struct afs_vlserver_list *afs_extract_vlserver_list(struct afs_cell *cell,
 		/* Extract the addresses - note that we can't skip this as we
 		 * have to advance the payload pointer.
 		 */
-		addrs = afs_extract_vl_addrs(&b, end, bs.nr_addrs, bs.port);
+		addrs = afs_extract_vl_addrs(cell->net, &b, end, bs.nr_addrs, bs.port);
 		if (IS_ERR(addrs)) {
 			ret = PTR_ERR(addrs);
 			goto error_2;
@@ -262,7 +263,7 @@ struct afs_vlserver_list *afs_extract_vlserver_list(struct afs_cell *cell,
 
 		if (vllist->nr_servers >= nr_servers) {
 			_debug("skip %u >= %u", vllist->nr_servers, nr_servers);
-			afs_put_addrlist(addrs);
+			afs_put_addrlist(addrs, afs_alist_trace_put_parse_empty);
 			afs_put_vlserver(cell->net, server);
 			continue;
 		}
@@ -271,7 +272,7 @@ struct afs_vlserver_list *afs_extract_vlserver_list(struct afs_cell *cell,
 		addrs->status = bs.status;
 
 		if (addrs->nr_addrs == 0) {
-			afs_put_addrlist(addrs);
+			afs_put_addrlist(addrs, afs_alist_trace_put_parse_empty);
 			if (!rcu_access_pointer(server->addresses)) {
 				afs_put_vlserver(cell->net, server);
 				continue;
@@ -283,7 +284,7 @@ struct afs_vlserver_list *afs_extract_vlserver_list(struct afs_cell *cell,
 			old = rcu_replace_pointer(server->addresses, old,
 						  lockdep_is_held(&server->lock));
 			write_unlock(&server->lock);
-			afs_put_addrlist(old);
+			afs_put_addrlist(old, afs_alist_trace_put_vlserver_old);
 		}
 
 

@@ -108,11 +108,11 @@ static inline struct audit_entry *audit_init_entry(u32 field_count)
 	struct audit_entry *entry;
 	struct audit_field *fields;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (unlikely(!entry))
 		return NULL;
 
-	fields = kcalloc(field_count, sizeof(*fields), GFP_KERNEL);
+	fields = kzalloc_objs(*fields, field_count);
 	if (unlikely(!fields)) {
 		kfree(entry);
 		return NULL;
@@ -221,7 +221,7 @@ static int audit_match_signal(struct audit_entry *entry)
 					       entry->rule.mask));
 	}
 
-	switch(audit_classify_arch(arch->val)) {
+	switch (audit_classify_arch(arch->val)) {
 	case 0: /* native */
 		return (audit_match_class_bits(AUDIT_CLASS_SIGNAL,
 					       entry->rule.mask));
@@ -243,7 +243,7 @@ static inline struct audit_entry *audit_to_entry_common(struct audit_rule_data *
 
 	err = -EINVAL;
 	listnr = rule->flags & ~AUDIT_FILTER_PREPEND;
-	switch(listnr) {
+	switch (listnr) {
 	default:
 		goto exit_err;
 #ifdef CONFIG_AUDITSYSCALL
@@ -344,7 +344,7 @@ static int audit_field_valid(struct audit_entry *entry, struct audit_field *f)
 
 	switch (entry->rule.listnr) {
 	case AUDIT_FILTER_FS:
-		switch(f->type) {
+		switch (f->type) {
 		case AUDIT_FSTYPE:
 		case AUDIT_FILTERKEY:
 			break;
@@ -529,7 +529,8 @@ static struct audit_entry *audit_data_to_entry(struct audit_rule_data *data,
 			entry->rule.buflen += f_val;
 			f->lsm_str = str;
 			err = security_audit_rule_init(f->type, f->op, str,
-						       (void **)&f->lsm_rule);
+						       (void **)&f->lsm_rule,
+						       GFP_KERNEL);
 			/* Keep currently invalid fields around in case they
 			 * become valid after a policy reload. */
 			if (err == -EINVAL) {
@@ -637,10 +638,9 @@ static struct audit_rule_data *audit_krule_to_data(struct audit_krule *krule)
 	void *bufp;
 	int i;
 
-	data = kmalloc(struct_size(data, buf, krule->buflen), GFP_KERNEL);
+	data = kzalloc_flex(*data, buf, krule->buflen);
 	if (unlikely(!data))
 		return NULL;
-	memset(data, 0, sizeof(*data));
 
 	data->flags = krule->flags | krule->listnr;
 	data->action = krule->action;
@@ -651,7 +651,7 @@ static struct audit_rule_data *audit_krule_to_data(struct audit_krule *krule)
 
 		data->fields[i] = f->type;
 		data->fieldflags[i] = audit_ops[f->op];
-		switch(f->type) {
+		switch (f->type) {
 		case AUDIT_SUBJ_USER:
 		case AUDIT_SUBJ_ROLE:
 		case AUDIT_SUBJ_TYPE:
@@ -694,7 +694,8 @@ static struct audit_rule_data *audit_krule_to_data(struct audit_krule *krule)
 			data->values[i] = f->val;
 		}
 	}
-	for (i = 0; i < AUDIT_BITMASK_SIZE; i++) data->mask[i] = krule->mask[i];
+	for (i = 0; i < AUDIT_BITMASK_SIZE; i++)
+		data->mask[i] = krule->mask[i];
 
 	return data;
 }
@@ -717,7 +718,7 @@ static int audit_compare_rule(struct audit_krule *a, struct audit_krule *b)
 		    a->fields[i].op != b->fields[i].op)
 			return 1;
 
-		switch(a->fields[i].type) {
+		switch (a->fields[i].type) {
 		case AUDIT_SUBJ_USER:
 		case AUDIT_SUBJ_ROLE:
 		case AUDIT_SUBJ_TYPE:
@@ -787,7 +788,7 @@ static int audit_compare_rule(struct audit_krule *a, struct audit_krule *b)
 static inline int audit_dupe_lsm_field(struct audit_field *df,
 					   struct audit_field *sf)
 {
-	int ret = 0;
+	int ret;
 	char *lsm_str;
 
 	/* our own copy of lsm_str */
@@ -798,7 +799,7 @@ static inline int audit_dupe_lsm_field(struct audit_field *df,
 
 	/* our own (refreshed) copy of lsm_rule */
 	ret = security_audit_rule_init(df->type, df->op, df->lsm_str,
-				       (void **)&df->lsm_rule);
+				       (void **)&df->lsm_rule, GFP_KERNEL);
 	/* Keep currently invalid fields around in case they
 	 * become valid after a policy reload. */
 	if (ret == -EINVAL) {
@@ -946,7 +947,7 @@ static inline int audit_add_rule(struct audit_entry *entry)
 	int dont_count = 0;
 
 	/* If any of these, don't count towards total */
-	switch(entry->rule.listnr) {
+	switch (entry->rule.listnr) {
 	case AUDIT_FILTER_USER:
 	case AUDIT_FILTER_EXCLUDE:
 	case AUDIT_FILTER_FS:
@@ -1029,7 +1030,7 @@ int audit_del_rule(struct audit_entry *entry)
 	int dont_count = 0;
 
 	/* If any of these, don't count towards total */
-	switch(entry->rule.listnr) {
+	switch (entry->rule.listnr) {
 	case AUDIT_FILTER_USER:
 	case AUDIT_FILTER_EXCLUDE:
 	case AUDIT_FILTER_FS:
@@ -1083,7 +1084,7 @@ static void audit_list_rules(int seq, struct sk_buff_head *q)
 
 	/* This is a blocking read, so use audit_filter_mutex instead of rcu
 	 * iterator to sync with list writers. */
-	for (i=0; i<AUDIT_NR_FILTERS; i++) {
+	for (i = 0; i < AUDIT_NR_FILTERS; i++) {
 		list_for_each_entry(r, &audit_rules_list[i], list) {
 			struct audit_rule_data *data;
 
@@ -1179,7 +1180,7 @@ int audit_list_rules_send(struct sk_buff *request_skb, int seq)
 	 * happen if we're actually running in the context of auditctl
 	 * trying to _send_ the stuff */
 
-	dest = kmalloc(sizeof(*dest), GFP_KERNEL);
+	dest = kmalloc_obj(*dest);
 	if (!dest)
 		return -ENOMEM;
 	dest->net = get_net(sock_net(NETLINK_CB(request_skb).sk));
@@ -1317,13 +1318,20 @@ int audit_compare_dname_path(const struct qstr *dname, const char *path, int par
 	if (pathlen < dlen)
 		return 1;
 
-	parentlen = parentlen == AUDIT_NAME_FULL ? parent_len(path) : parentlen;
-	if (pathlen - parentlen != dlen)
-		return 1;
+	if (parentlen == AUDIT_NAME_FULL)
+		parentlen = parent_len(path);
 
 	p = path + parentlen;
 
-	return strncmp(p, dname->name, dlen);
+	/* handle trailing slashes */
+	pathlen -= parentlen;
+	while (pathlen > 0 && p[pathlen - 1] == '/')
+		pathlen--;
+
+	if (pathlen != dlen)
+		return 1;
+
+	return memcmp(p, dname->name, dlen);
 }
 
 int audit_filter(int msgtype, unsigned int listtype)
@@ -1337,12 +1345,12 @@ int audit_filter(int msgtype, unsigned int listtype)
 
 		for (i = 0; i < e->rule.field_count; i++) {
 			struct audit_field *f = &e->rule.fields[i];
+			struct lsm_prop prop = { };
 			pid_t pid;
-			u32 sid;
 
 			switch (f->type) {
 			case AUDIT_PID:
-				pid = task_pid_nr(current);
+				pid = task_tgid_nr(current);
 				result = audit_comparator(pid, f->op, f->val);
 				break;
 			case AUDIT_UID:
@@ -1368,9 +1376,10 @@ int audit_filter(int msgtype, unsigned int listtype)
 			case AUDIT_SUBJ_SEN:
 			case AUDIT_SUBJ_CLR:
 				if (f->lsm_rule) {
-					security_current_getsecid_subj(&sid);
-					result = security_audit_rule_match(sid,
-						   f->type, f->op, f->lsm_rule);
+					security_current_getlsmprop_subj(&prop);
+					result = security_audit_rule_match(
+						   &prop, f->type, f->op,
+						   f->lsm_rule);
 				}
 				break;
 			case AUDIT_EXE:
@@ -1430,7 +1439,7 @@ static int update_lsm_rule(struct audit_krule *r)
 }
 
 /* This function will re-initialize the lsm_rule field of all applicable rules.
- * It will traverse the filter lists serarching for rules that contain LSM
+ * It will traverse the filter lists searching for rules that contain LSM
  * specific filter fields.  When such a rule is found, it is copied, the
  * LSM field is re-initialized, and the old rule is replaced with the
  * updated rule. */

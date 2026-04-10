@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: (GPL-2.0 or MIT) */
+/* SPDX-License-Identifier: (GPL-2.0 OR MIT) */
 /*
  * DSA driver for:
  * Hirschmann Hellcreek TSN switch.
@@ -12,14 +12,16 @@
 
 #include <linux/bitmap.h>
 #include <linux/bitops.h>
+#include <linux/container_of.h>
 #include <linux/device.h>
-#include <linux/kernel.h>
-#include <linux/mutex.h>
-#include <linux/workqueue.h>
 #include <linux/leds.h>
+#include <linux/mutex.h>
 #include <linux/platform_data/hirschmann-hellcreek.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/timecounter.h>
+#include <linux/types.h>
+#include <linux/workqueue.h>
+
 #include <net/dsa.h>
 #include <net/pkt_sched.h>
 
@@ -37,6 +39,7 @@
 #define HELLCREEK_VLAN_UNTAGGED_MEMBER	0x1
 #define HELLCREEK_VLAN_TAGGED_MEMBER	0x3
 #define HELLCREEK_NUM_EGRESS_QUEUES	8
+#define HELLCREEK_DEFAULT_MAX_SDU	1536
 
 /* Register definitions */
 #define HR_MODID_C			(0 * 2)
@@ -71,6 +74,12 @@
 #define HR_PRTCCFG			(0xa8 * 2)
 #define HR_PRTCCFG_PCP_TC_MAP_SHIFT	0
 #define HR_PRTCCFG_PCP_TC_MAP_MASK	GENMASK(2, 0)
+
+#define HR_PTPRTCCFG			(0xa9 * 2)
+#define HR_PTPRTCCFG_SET_QTRACK		BIT(15)
+#define HR_PTPRTCCFG_REJECT		BIT(14)
+#define HR_PTPRTCCFG_MAXSDU_SHIFT	0
+#define HR_PTPRTCCFG_MAXSDU_MASK	GENMASK(10, 0)
 
 #define HR_CSEL				(0x8d * 2)
 #define HR_CSEL_SHIFT			0
@@ -235,7 +244,7 @@ struct hellcreek_port_hwtstamp {
 	struct sk_buff *tx_skb;
 
 	/* Current timestamp configuration */
-	struct hwtstamp_config tstamp_config;
+	struct kernel_hwtstamp_config tstamp_config;
 };
 
 struct hellcreek_port {

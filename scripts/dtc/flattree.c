@@ -503,7 +503,7 @@ void dt_to_asm(FILE *f, struct dt_info *dti, int version)
 	 * Reserve map entries.
 	 * Align the reserve map to a doubleword boundary.
 	 * Each entry is an (address, size) pair of u64 values.
-	 * Always supply a zero-sized temination entry.
+	 * Always supply a zero-sized termination entry.
 	 */
 	asm_emit_align(f, 8);
 	emit_label(f, symprefix, "reserve_map");
@@ -604,11 +604,11 @@ static void flat_realign(struct inbuf *inb, int align)
 		die("Premature end of data parsing flat device tree\n");
 }
 
-static char *flat_read_string(struct inbuf *inb)
+static const char *flat_read_string(struct inbuf *inb)
 {
 	int len = 0;
 	const char *p = inb->ptr;
-	char *str;
+	const char *str;
 
 	do {
 		if (p >= inb->limit)
@@ -616,7 +616,7 @@ static char *flat_read_string(struct inbuf *inb)
 		len++;
 	} while ((*p++) != '\0');
 
-	str = xstrdup(inb->ptr);
+	str = inb->ptr;
 
 	inb->ptr += len;
 
@@ -711,7 +711,7 @@ static struct reserve_info *flat_read_mem_reserve(struct inbuf *inb)
 }
 
 
-static char *nodename_from_path(const char *ppath, const char *cpath)
+static const char *nodename_from_path(const char *ppath, const char *cpath)
 {
 	int plen;
 
@@ -725,7 +725,7 @@ static char *nodename_from_path(const char *ppath, const char *cpath)
 	if (!streq(ppath, "/"))
 		plen++;
 
-	return xstrdup(cpath + plen);
+	return cpath + plen;
 }
 
 static struct node *unflatten_tree(struct inbuf *dtbuf,
@@ -733,7 +733,7 @@ static struct node *unflatten_tree(struct inbuf *dtbuf,
 				   const char *parent_flatname, int flags)
 {
 	struct node *node;
-	char *flatname;
+	const char *flatname;
 	uint32_t val;
 
 	node = build_node(NULL, NULL, NULL);
@@ -741,9 +741,10 @@ static struct node *unflatten_tree(struct inbuf *dtbuf,
 	flatname = flat_read_string(dtbuf);
 
 	if (flags & FTF_FULLPATH)
-		node->name = nodename_from_path(parent_flatname, flatname);
+		node->name = xstrdup(nodename_from_path(parent_flatname,
+							flatname));
 	else
-		node->name = flatname;
+		node->name = xstrdup(flatname);
 
 	do {
 		struct property *prop;
@@ -785,10 +786,6 @@ static struct node *unflatten_tree(struct inbuf *dtbuf,
 		}
 	} while (val != FDT_END_NODE);
 
-	if (node->name != flatname) {
-		free(flatname);
-	}
-
 	return node;
 }
 
@@ -810,6 +807,7 @@ struct dt_info *dt_from_blob(const char *fname)
 	struct node *tree;
 	uint32_t val;
 	int flags = 0;
+	unsigned int dtsflags = DTSF_V1;
 
 	f = srcfile_relative_open(fname, NULL);
 
@@ -922,5 +920,8 @@ struct dt_info *dt_from_blob(const char *fname)
 
 	fclose(f);
 
-	return build_dt_info(DTSF_V1, reservelist, tree, boot_cpuid_phys);
+	if (get_subnode(tree, "__fixups__") || get_subnode(tree, "__local_fixups__"))
+		dtsflags |= DTSF_PLUGIN;
+
+	return build_dt_info(dtsflags, reservelist, tree, boot_cpuid_phys);
 }

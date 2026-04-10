@@ -5,8 +5,9 @@
 #include <asm/ptrace.h>	/* for STACK_FRAME_REGS_MARKER */
 #include <asm/kvm_asm.h>
 #include <asm/kvm_booke_hv_asm.h>
+#include <asm/thread_info.h>	/* for THREAD_SHIFT */
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 
 /*
  * Macros used for common Book-e exception handling
@@ -34,7 +35,7 @@
  */
 #define THREAD_NORMSAVE(offset)	(THREAD_NORMSAVES + (offset * 4))
 
-#ifdef CONFIG_PPC_FSL_BOOK3E
+#ifdef CONFIG_PPC_E500
 #define BOOKE_CLEAR_BTB(reg)									\
 START_BTB_FLUSH_SECTION								\
 	BTB_FLUSH(reg)									\
@@ -84,7 +85,7 @@ END_BTB_FLUSH_SECTION
 	stw	r0,GPR0(r1)
 	lis	r10, STACK_FRAME_REGS_MARKER@ha	/* exception frame marker */
 	addi	r10, r10, STACK_FRAME_REGS_MARKER@l
-	stw	r10, 8(r1)
+	stw	r10, STACK_INT_FRAME_MARKER(r1)
 	li	r10, \trapno
 	stw	r10,_TRAP(r1)
 	SAVE_GPRS(3, 8, r1)
@@ -99,11 +100,11 @@ END_BTB_FLUSH_SECTION
 	mfspr	r10,SPRN_XER
 	addi	r2, r2, -THREAD
 	stw	r10,_XER(r1)
-	addi	r3,r1,STACK_FRAME_OVERHEAD
+	addi	r3,r1,STACK_INT_FRAME_REGS
 .endm
 
 .macro prepare_transfer_to_handler
-#ifdef CONFIG_E500
+#ifdef CONFIG_PPC_E500
 	andi.	r12,r9,MSR_PR
 	bne	777f
 	bl	prepare_transfer_to_handler
@@ -144,10 +145,9 @@ ALT_FTR_SECTION_END_IFSET(CPU_FTR_EMB_HV)
 	b	transfer_to_syscall	/* jump to handler */
 .endm
 
-/* To handle the additional exception priority levels on 40x and Book-E
+/* To handle the additional exception priority levels on Book-E
  * processors we allocate a stack per additional priority level.
  *
- * On 40x critical is the only additional level
  * On 44x/e500 we have critical and machine check
  *
  * Additionally we reserve a SPRG for each priority level so we can free up a
@@ -242,7 +242,7 @@ ALT_FTR_SECTION_END_IFSET(CPU_FTR_EMB_HV)
 
 
 .macro SAVE_MMU_REGS
-#ifdef CONFIG_PPC_BOOK3E_MMU
+#ifdef CONFIG_PPC_E500
 	mfspr	r0,SPRN_MAS0
 	stw	r0,MAS0(r1)
 	mfspr	r0,SPRN_MAS1
@@ -257,7 +257,7 @@ ALT_FTR_SECTION_END_IFSET(CPU_FTR_EMB_HV)
 	mfspr	r0,SPRN_MAS7
 	stw	r0,MAS7(r1)
 #endif /* CONFIG_PHYS_64BIT */
-#endif /* CONFIG_PPC_BOOK3E_MMU */
+#endif /* CONFIG_PPC_E500 */
 #ifdef CONFIG_44x
 	mfspr	r0,SPRN_MMUCR
 	stw	r0,MMUCR(r1)
@@ -522,5 +522,5 @@ label:
 	bl	kernel_fp_unavailable_exception;			      \
 	b	interrupt_return
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 #endif /* __HEAD_BOOKE_H__ */

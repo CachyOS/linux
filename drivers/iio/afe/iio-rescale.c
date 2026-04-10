@@ -107,6 +107,7 @@ int rescale_process_scale(struct rescale *rescale, int scale_type,
 		return -EOPNOTSUPP;
 	}
 }
+EXPORT_SYMBOL_NS_GPL(rescale_process_scale, "IIO_RESCALE");
 
 int rescale_process_offset(struct rescale *rescale, int scale_type,
 			   int scale, int scale2, int schan_off,
@@ -140,6 +141,7 @@ int rescale_process_offset(struct rescale *rescale, int scale_type,
 		return -EOPNOTSUPP;
 	}
 }
+EXPORT_SYMBOL_NS_GPL(rescale_process_offset, "IIO_RESCALE");
 
 static int rescale_read_raw(struct iio_dev *indio_dev,
 			    struct iio_chan_spec const *chan,
@@ -212,8 +214,18 @@ static int rescale_read_raw(struct iio_dev *indio_dev,
 				return ret < 0 ? ret : -EOPNOTSUPP;
 		}
 
-		ret = iio_read_channel_scale(rescale->source, &scale, &scale2);
-		return rescale_process_offset(rescale, ret, scale, scale2,
+		if (iio_channel_has_info(rescale->source->channel,
+					 IIO_CHAN_INFO_SCALE)) {
+			ret = iio_read_channel_scale(rescale->source, &scale, &scale2);
+			return rescale_process_offset(rescale, ret, scale, scale2,
+						      schan_off, val, val2);
+		}
+
+		/*
+		 * If we get here we have no scale so scale 1:1 but apply
+		 * rescaler and offset, if any.
+		 */
+		return rescale_process_offset(rescale, IIO_VAL_FRACTIONAL, 1, 1,
 					      schan_off, val, val2);
 	default:
 		return -EINVAL;
@@ -277,9 +289,10 @@ static int rescale_configure_channel(struct device *dev,
 	chan->ext_info = rescale->ext_info;
 	chan->type = rescale->cfg->type;
 
-	if (iio_channel_has_info(schan, IIO_CHAN_INFO_RAW) ||
-	    iio_channel_has_info(schan, IIO_CHAN_INFO_SCALE)) {
-		dev_info(dev, "using raw+scale source channel\n");
+	if (iio_channel_has_info(schan, IIO_CHAN_INFO_RAW) &&
+	    (iio_channel_has_info(schan, IIO_CHAN_INFO_SCALE) ||
+	     iio_channel_has_info(schan, IIO_CHAN_INFO_OFFSET))) {
+		dev_info(dev, "using raw+scale/offset source channel\n");
 	} else if (iio_channel_has_info(schan, IIO_CHAN_INFO_PROCESSED)) {
 		dev_info(dev, "using processed channel\n");
 		rescale->chan_processed = true;
@@ -501,7 +514,7 @@ static const struct of_device_id rescale_match[] = {
 	  .data = &rescale_cfg[TEMP_SENSE_RTD], },
 	{ .compatible = "temperature-transducer",
 	  .data = &rescale_cfg[TEMP_TRANSDUCER], },
-	{ /* sentinel */ }
+	{ }
 };
 MODULE_DEVICE_TABLE(of, rescale_match);
 

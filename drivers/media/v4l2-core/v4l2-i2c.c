@@ -5,6 +5,7 @@
 
 #include <linux/i2c.h>
 #include <linux/module.h>
+#include <linux/property.h>
 #include <media/v4l2-common.h>
 #include <media/v4l2-device.h>
 
@@ -24,7 +25,7 @@ void v4l2_i2c_subdev_unregister(struct v4l2_subdev *sd)
 	 * registered by us, and would not be
 	 * re-created by just probing the V4L2 driver.
 	 */
-	if (client && !client->dev.of_node && !client->dev.fwnode)
+	if (client && !dev_fwnode(&client->dev))
 		i2c_unregister_device(client);
 }
 
@@ -100,7 +101,7 @@ struct v4l2_subdev
 	 * Register with the v4l2_device which increases the module's
 	 * use count as well.
 	 */
-	if (v4l2_device_register_subdev(v4l2_dev, sd))
+	if (__v4l2_device_register_subdev(v4l2_dev, sd, sd->owner))
 		sd = NULL;
 	/* Decrease the module use count to match the first try_module_get. */
 	module_put(client->dev.driver->owner);

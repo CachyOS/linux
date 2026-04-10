@@ -42,14 +42,13 @@
 #define LGM_PWM_PERIOD_2WIRE_NS		(40 * NSEC_PER_MSEC)
 
 struct lgm_pwm_chip {
-	struct pwm_chip chip;
 	struct regmap *regmap;
 	u32 period;
 };
 
 static inline struct lgm_pwm_chip *to_lgm_pwm_chip(struct pwm_chip *chip)
 {
-	return container_of(chip, struct lgm_pwm_chip, chip);
+	return pwmchip_get_drvdata(chip);
 }
 
 static int lgm_pwm_enable(struct pwm_chip *chip, bool enable)
@@ -86,8 +85,8 @@ static int lgm_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	return lgm_pwm_enable(chip, 1);
 }
 
-static void lgm_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
-			      struct pwm_state *state)
+static int lgm_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
+			     struct pwm_state *state)
 {
 	struct lgm_pwm_chip *pc = to_lgm_pwm_chip(chip);
 	u32 duty, val;
@@ -100,12 +99,13 @@ static void lgm_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
 	regmap_read(pc->regmap, LGM_PWM_FAN_CON0, &val);
 	duty = FIELD_GET(LGM_PWM_FAN_DC_MSK, val);
 	state->duty_cycle = DIV_ROUND_UP(duty * pc->period, LGM_PWM_MAX_DUTY_CYCLE);
+
+	return 0;
 }
 
 static const struct pwm_ops lgm_pwm_ops = {
 	.get_state = lgm_pwm_get_state,
 	.apply = lgm_pwm_apply,
-	.owner = THIS_MODULE,
 };
 
 static void lgm_pwm_init(struct lgm_pwm_chip *pc)
@@ -167,14 +167,16 @@ static int lgm_pwm_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct reset_control *rst;
+	struct pwm_chip *chip;
 	struct lgm_pwm_chip *pc;
 	void __iomem *io_base;
 	struct clk *clk;
 	int ret;
 
-	pc = devm_kzalloc(dev, sizeof(*pc), GFP_KERNEL);
-	if (!pc)
-		return -ENOMEM;
+	chip = devm_pwmchip_alloc(dev, 1, sizeof(*pc));
+	if (IS_ERR(chip))
+		return PTR_ERR(chip);
+	pc = to_lgm_pwm_chip(chip);
 
 	io_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(io_base))
@@ -202,13 +204,11 @@ static int lgm_pwm_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "cannot deassert reset control\n");
 
-	pc->chip.dev = dev;
-	pc->chip.ops = &lgm_pwm_ops;
-	pc->chip.npwm = 1;
+	chip->ops = &lgm_pwm_ops;
 
 	lgm_pwm_init(pc);
 
-	ret = devm_pwmchip_add(dev, &pc->chip);
+	ret = devm_pwmchip_add(dev, chip);
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "failed to add PWM chip\n");
 
@@ -230,4 +230,5 @@ static struct platform_driver lgm_pwm_driver = {
 };
 module_platform_driver(lgm_pwm_driver);
 
+MODULE_DESCRIPTION("Intel LGM Pulse Width Modulator driver");
 MODULE_LICENSE("GPL v2");

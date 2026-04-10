@@ -77,6 +77,7 @@
 
 #include <net/ip.h>
 #include <net/arp.h>
+#include <net/netdev_lock.h>
 #include <net/net_namespace.h>
 
 #include <linux/bpqether.h>
@@ -106,27 +107,6 @@ struct bpqdev {
 };
 
 static LIST_HEAD(bpq_devices);
-
-/*
- * bpqether network devices are paired with ethernet devices below them, so
- * form a special "super class" of normal ethernet devices; split their locks
- * off into a separate class since they always nest.
- */
-static struct lock_class_key bpq_netdev_xmit_lock_key;
-static struct lock_class_key bpq_netdev_addr_lock_key;
-
-static void bpq_set_lockdep_class_one(struct net_device *dev,
-				      struct netdev_queue *txq,
-				      void *_unused)
-{
-	lockdep_set_class(&txq->_xmit_lock, &bpq_netdev_xmit_lock_key);
-}
-
-static void bpq_set_lockdep_class(struct net_device *dev)
-{
-	lockdep_set_class(&dev->addr_list_lock, &bpq_netdev_addr_lock_key);
-	netdev_for_each_tx_queue(dev, bpq_set_lockdep_class_one, NULL);
-}
 
 /* ------------------------------------------------------------------------ */
 
@@ -158,7 +138,7 @@ static inline struct net_device *bpq_get_ax25_dev(struct net_device *dev)
 
 static inline int dev_is_ethdev(struct net_device *dev)
 {
-	return dev->type == ARPHRD_ETHER && strncmp(dev->name, "dummy", 5);
+	return dev->type == ARPHRD_ETHER && !netdev_need_ops_lock(dev);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -454,11 +434,13 @@ static const struct net_device_ops bpq_netdev_ops = {
 
 static void bpq_setup(struct net_device *dev)
 {
+	netdev_lockdep_set_classes(dev);
+
 	dev->netdev_ops	     = &bpq_netdev_ops;
 	dev->needs_free_netdev = true;
 
 	dev->flags      = 0;
-	dev->features	= NETIF_F_LLTX;	/* Allow recursion */
+	dev->lltx = true;	/* Allow recursion */
 
 #if IS_ENABLED(CONFIG_AX25)
 	dev->header_ops      = &ax25_header_ops;
@@ -499,7 +481,6 @@ static int bpq_new_device(struct net_device *edev)
 	err = register_netdevice(ndev);
 	if (err)
 		goto error;
-	bpq_set_lockdep_class(ndev);
 
 	/* List protected by RTNL */
 	list_add_rcu(&bpq->bpq_list, &bpq_devices);
@@ -533,7 +514,7 @@ static int bpq_device_event(struct notifier_block *this,
 	if (!net_eq(dev_net(dev), &init_net))
 		return NOTIFY_DONE;
 
-	if (!dev_is_ethdev(dev))
+	if (!dev_is_ethdev(dev) && !bpq_get_ax25_dev(dev))
 		return NOTIFY_DONE;
 
 	switch (event) {

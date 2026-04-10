@@ -52,7 +52,7 @@ static void ts4800_irq_print_chip(struct irq_data *d, struct seq_file *p)
 {
 	struct ts4800_irq_data *data = irq_data_get_irq_chip_data(d);
 
-	seq_printf(p, "%s", dev_name(&data->pdev->dev));
+	seq_puts(p, dev_name(&data->pdev->dev));
 }
 
 static const struct irq_chip ts4800_chip = {
@@ -125,7 +125,7 @@ static int ts4800_ic_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	data->domain = irq_domain_add_linear(node, 8, &ts4800_ic_ops, data);
+	data->domain = irq_domain_create_linear(dev_fwnode(&pdev->dev), 8, &ts4800_ic_ops, data);
 	if (!data->domain) {
 		dev_err(&pdev->dev, "cannot add IRQ domain\n");
 		return -ENOMEM;
@@ -139,13 +139,11 @@ static int ts4800_ic_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int ts4800_ic_remove(struct platform_device *pdev)
+static void ts4800_ic_remove(struct platform_device *pdev)
 {
 	struct ts4800_irq_data *data = platform_get_drvdata(pdev);
 
 	irq_domain_remove(data->domain);
-
-	return 0;
 }
 
 static const struct of_device_id ts4800_ic_of_match[] = {
@@ -155,15 +153,15 @@ static const struct of_device_id ts4800_ic_of_match[] = {
 MODULE_DEVICE_TABLE(of, ts4800_ic_of_match);
 
 static struct platform_driver ts4800_ic_driver = {
-	.probe  = ts4800_ic_probe,
-	.remove = ts4800_ic_remove,
+	.probe		= ts4800_ic_probe,
+	.remove		= ts4800_ic_remove,
 	.driver = {
-		.name = "ts4800-irqc",
-		.of_match_table = ts4800_ic_of_match,
+		.name		= "ts4800-irqc",
+		.of_match_table	= ts4800_ic_of_match,
 	},
 };
 module_platform_driver(ts4800_ic_driver);
 
 MODULE_AUTHOR("Damien Riegel <damien.riegel@savoirfairelinux.com>");
+MODULE_DESCRIPTION("Multiplexed-IRQs driver for TS-4800's FPGA");
 MODULE_LICENSE("GPL v2");
-MODULE_ALIAS("platform:ts4800_irqc");

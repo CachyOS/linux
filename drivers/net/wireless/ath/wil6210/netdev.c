@@ -200,8 +200,8 @@ static void wil_dev_setup(struct net_device *dev)
 
 static void wil_vif_deinit(struct wil6210_vif *vif)
 {
-	del_timer_sync(&vif->scan_timer);
-	del_timer_sync(&vif->p2p.discovery_timer);
+	timer_delete_sync(&vif->scan_timer);
+	timer_delete_sync(&vif->p2p.discovery_timer);
 	cancel_work_sync(&vif->disconnect_worker);
 	cancel_work_sync(&vif->p2p.discovery_expired_work);
 	cancel_work_sync(&vif->p2p.delayed_listen_work);
@@ -227,7 +227,7 @@ static void wil_ndev_destructor(struct net_device *ndev)
 
 static void wil_connect_timer_fn(struct timer_list *t)
 {
-	struct wil6210_vif *vif = from_timer(vif, t, connect_timer);
+	struct wil6210_vif *vif = timer_container_of(vif, t, connect_timer);
 	struct wil6210_priv *wil = vif_to_wil(vif);
 	bool q;
 
@@ -243,7 +243,7 @@ static void wil_connect_timer_fn(struct timer_list *t)
 
 static void wil_scan_timer_fn(struct timer_list *t)
 {
-	struct wil6210_vif *vif = from_timer(vif, t, scan_timer);
+	struct wil6210_vif *vif = timer_container_of(vif, t, scan_timer);
 	struct wil6210_priv *wil = vif_to_wil(vif);
 
 	clear_bit(wil_status_fwready, wil->status);
@@ -253,7 +253,8 @@ static void wil_scan_timer_fn(struct timer_list *t)
 
 static void wil_p2p_discovery_timer_fn(struct timer_list *t)
 {
-	struct wil6210_vif *vif = from_timer(vif, t, p2p.discovery_timer);
+	struct wil6210_vif *vif = timer_container_of(vif, t,
+						     p2p.discovery_timer);
 	struct wil6210_priv *wil = vif_to_wil(vif);
 
 	wil_dbg_misc(wil, "p2p_discovery_timer_fn\n");
@@ -445,7 +446,7 @@ int wil_if_add(struct wil6210_priv *wil)
 
 	wil_dbg_misc(wil, "entered");
 
-	strlcpy(wiphy->fw_version, wil->fw_version, sizeof(wiphy->fw_version));
+	strscpy(wiphy->fw_version, wil->fw_version, sizeof(wiphy->fw_version));
 
 	rc = wiphy_register(wiphy);
 	if (rc < 0) {
@@ -453,18 +454,21 @@ int wil_if_add(struct wil6210_priv *wil)
 		return rc;
 	}
 
-	init_dummy_netdev(&wil->napi_ndev);
+	wil->napi_ndev = alloc_netdev_dummy(0);
+	if (!wil->napi_ndev) {
+		wil_err(wil, "failed to allocate dummy netdev");
+		rc = -ENOMEM;
+		goto out_wiphy;
+	}
 	if (wil->use_enhanced_dma_hw) {
-		netif_napi_add(&wil->napi_ndev, &wil->napi_rx,
-			       wil6210_netdev_poll_rx_edma,
-			       NAPI_POLL_WEIGHT);
-		netif_napi_add_tx(&wil->napi_ndev,
+		netif_napi_add(wil->napi_ndev, &wil->napi_rx,
+			       wil6210_netdev_poll_rx_edma);
+		netif_napi_add_tx(wil->napi_ndev,
 				  &wil->napi_tx, wil6210_netdev_poll_tx_edma);
 	} else {
-		netif_napi_add(&wil->napi_ndev, &wil->napi_rx,
-			       wil6210_netdev_poll_rx,
-			       NAPI_POLL_WEIGHT);
-		netif_napi_add_tx(&wil->napi_ndev,
+		netif_napi_add(wil->napi_ndev, &wil->napi_rx,
+			       wil6210_netdev_poll_rx);
+		netif_napi_add_tx(wil->napi_ndev,
 				  &wil->napi_tx, wil6210_netdev_poll_tx);
 	}
 
@@ -476,10 +480,12 @@ int wil_if_add(struct wil6210_priv *wil)
 	wiphy_unlock(wiphy);
 	rtnl_unlock();
 	if (rc < 0)
-		goto out_wiphy;
+		goto free_dummy;
 
 	return 0;
 
+free_dummy:
+	free_netdev(wil->napi_ndev);
 out_wiphy:
 	wiphy_unregister(wiphy);
 	return rc;
@@ -528,7 +534,7 @@ void wil_vif_remove(struct wil6210_priv *wil, u8 mid)
 	mutex_unlock(&wil->vif_mutex);
 
 	flush_work(&wil->wmi_event_worker);
-	del_timer_sync(&vif->connect_timer);
+	timer_delete_sync(&vif->connect_timer);
 	cancel_work_sync(&vif->disconnect_worker);
 	wil_probe_client_flush(vif);
 	cancel_work_sync(&vif->probe_client_worker);
@@ -555,6 +561,8 @@ void wil_if_remove(struct wil6210_priv *wil)
 
 	netif_napi_del(&wil->napi_tx);
 	netif_napi_del(&wil->napi_rx);
+
+	free_netdev(wil->napi_ndev);
 
 	wiphy_unregister(wiphy);
 }

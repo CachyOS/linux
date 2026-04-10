@@ -212,14 +212,9 @@ void rtl8723e_set_hw_reg(struct ieee80211_hw *hw, u8 variable, u8 *val)
 		}
 	case HW_VAR_AMPDU_MIN_SPACE:{
 			u8 min_spacing_to_set;
-			u8 sec_min_space;
 
 			min_spacing_to_set = *((u8 *)val);
 			if (min_spacing_to_set <= 7) {
-				sec_min_space = 0;
-
-				if (min_spacing_to_set < sec_min_space)
-					min_spacing_to_set = sec_min_space;
 
 				mac->min_space_cfg = ((mac->min_space_cfg &
 						       0xf8) |
@@ -643,17 +638,17 @@ static void _rtl8723e_gen_refresh_led_state(struct ieee80211_hw *hw)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_ps_ctl *ppsc = rtl_psc(rtl_priv(hw));
-	struct rtl_led *pled0 = &rtlpriv->ledctl.sw_led0;
+	enum rtl_led_pin pin0 = rtlpriv->ledctl.sw_led0;
 
 	if (rtlpriv->rtlhal.up_first_time)
 		return;
 
 	if (ppsc->rfoff_reason == RF_CHANGE_BY_IPS)
-		rtl8723e_sw_led_on(hw, pled0);
+		rtl8723e_sw_led_on(hw, pin0);
 	else if (ppsc->rfoff_reason == RF_CHANGE_BY_INIT)
-		rtl8723e_sw_led_on(hw, pled0);
+		rtl8723e_sw_led_on(hw, pin0);
 	else
-		rtl8723e_sw_led_off(hw, pled0);
+		rtl8723e_sw_led_off(hw, pin0);
 }
 
 static bool _rtl8712e_init_mac(struct ieee80211_hw *hw)
@@ -1386,9 +1381,9 @@ static u8 _rtl8723e_get_chnl_group(u8 chnl)
 	return group;
 }
 
-static void _rtl8723e_read_txpower_info_from_hwpg(struct ieee80211_hw *hw,
-						  bool autoload_fail,
-						  u8 *hwinfo)
+static noinline_for_stack void
+_rtl8723e_read_txpower_info_from_hwpg(struct ieee80211_hw *hw,
+				      bool autoload_fail, u8 *hwinfo)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_efuse *rtlefuse = rtl_efuse(rtl_priv(hw));
@@ -1454,18 +1449,9 @@ static void _rtl8723e_read_txpower_info_from_hwpg(struct ieee80211_hw *hw,
 				rtlefuse->eeprom_chnlarea_txpwr_ht40_1s
 					[rf_path][index];
 
-			if ((rtlefuse->eeprom_chnlarea_txpwr_ht40_1s
-					[rf_path][index] -
-			     rtlefuse->eprom_chnl_txpwr_ht40_2sdf
-					[rf_path][index]) > 0) {
-				rtlefuse->txpwrlevel_ht40_2s[rf_path][i] =
-				  rtlefuse->eeprom_chnlarea_txpwr_ht40_1s
-				  [rf_path][index] -
-				  rtlefuse->eprom_chnl_txpwr_ht40_2sdf
-				  [rf_path][index];
-			} else {
-				rtlefuse->txpwrlevel_ht40_2s[rf_path][i] = 0;
-			}
+			rtlefuse->txpwrlevel_ht40_2s[rf_path][i] =
+				max(rtlefuse->eeprom_chnlarea_txpwr_ht40_1s[rf_path][index] -
+				    rtlefuse->eprom_chnl_txpwr_ht40_2sdf[rf_path][index], 0);
 		}
 
 		for (i = 0; i < 14; i++) {

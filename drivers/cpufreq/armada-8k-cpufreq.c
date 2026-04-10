@@ -21,6 +21,13 @@
 #include <linux/pm_opp.h>
 #include <linux/slab.h>
 
+static const struct of_device_id __maybe_unused armada_8k_cpufreq_of_match[] = {
+	{ .compatible = "marvell,ap806-cpu-clock" },
+	{ .compatible = "marvell,ap807-cpu-clock" },
+	{ },
+};
+MODULE_DEVICE_TABLE(of, armada_8k_cpufreq_of_match);
+
 /*
  * Setup the opps list with the divider for the max frequency, that
  * will be filled at runtime.
@@ -40,7 +47,7 @@ static void __init armada_8k_get_sharing_cpus(struct clk *cur_clk,
 {
 	int cpu;
 
-	for_each_possible_cpu(cpu) {
+	for_each_present_cpu(cpu) {
 		struct device *cpu_dev;
 		struct clk *clk;
 
@@ -50,7 +57,7 @@ static void __init armada_8k_get_sharing_cpus(struct clk *cur_clk,
 			continue;
 		}
 
-		clk = clk_get(cpu_dev, 0);
+		clk = clk_get(cpu_dev, NULL);
 		if (IS_ERR(clk)) {
 			pr_warn("Cannot get clock for CPU %d\n", cpu);
 		} else {
@@ -96,7 +103,7 @@ static void armada_8k_cpufreq_free_table(struct freq_table *freq_tables)
 {
 	int opps_index, nb_cpus = num_possible_cpus();
 
-	for (opps_index = 0 ; opps_index <= nb_cpus; opps_index++) {
+	for (opps_index = 0 ; opps_index < nb_cpus; opps_index++) {
 		int i;
 
 		/* If cpu_dev is NULL then we reached the end of the array */
@@ -125,9 +132,10 @@ static int __init armada_8k_cpufreq_init(void)
 	int ret = 0, opps_index = 0, cpu, nb_cpus;
 	struct freq_table *freq_tables;
 	struct device_node *node;
-	struct cpumask cpus;
+	static struct cpumask cpus, shared_cpus;
 
-	node = of_find_compatible_node(NULL, NULL, "marvell,ap806-cpu-clock");
+	node = of_find_matching_node_and_match(NULL, armada_8k_cpufreq_of_match,
+					       NULL);
 	if (!node || !of_device_is_available(node)) {
 		of_node_put(node);
 		return -ENODEV;
@@ -135,7 +143,7 @@ static int __init armada_8k_cpufreq_init(void)
 	of_node_put(node);
 
 	nb_cpus = num_possible_cpus();
-	freq_tables = kcalloc(nb_cpus, sizeof(*freq_tables), GFP_KERNEL);
+	freq_tables = kzalloc_objs(*freq_tables, nb_cpus);
 	if (!freq_tables)
 		return -ENOMEM;
 	cpumask_copy(&cpus, cpu_possible_mask);
@@ -146,7 +154,6 @@ static int __init armada_8k_cpufreq_init(void)
 	 * divisions of it).
 	 */
 	for_each_cpu(cpu, &cpus) {
-		struct cpumask shared_cpus;
 		struct device *cpu_dev;
 		struct clk *clk;
 
@@ -157,7 +164,7 @@ static int __init armada_8k_cpufreq_init(void)
 			continue;
 		}
 
-		clk = clk_get(cpu_dev, 0);
+		clk = clk_get(cpu_dev, NULL);
 
 		if (IS_ERR(clk)) {
 			pr_err("Cannot get clock for CPU %d\n", cpu);
@@ -203,12 +210,6 @@ static void __exit armada_8k_cpufreq_exit(void)
 	armada_8k_cpufreq_free_table(freq_tables);
 }
 module_exit(armada_8k_cpufreq_exit);
-
-static const struct of_device_id __maybe_unused armada_8k_cpufreq_of_match[] = {
-	{ .compatible = "marvell,ap806-cpu-clock" },
-	{ },
-};
-MODULE_DEVICE_TABLE(of, armada_8k_cpufreq_of_match);
 
 MODULE_AUTHOR("Gregory Clement <gregory.clement@bootlin.com>");
 MODULE_DESCRIPTION("Armada 8K cpufreq driver");

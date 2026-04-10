@@ -1,4 +1,5 @@
 .. SPDX-License-Identifier: GFDL-1.1-no-invariants-or-later
+.. c:namespace:: V4L
 
 .. _control:
 
@@ -143,8 +144,12 @@ Control IDs
     recognise the difference between digital and analogue gain use
     controls ``V4L2_CID_DIGITAL_GAIN`` and ``V4L2_CID_ANALOGUE_GAIN``.
 
+.. _v4l2-cid-hflip:
+
 ``V4L2_CID_HFLIP`` ``(boolean)``
     Mirror the picture horizontally.
+
+.. _v4l2-cid-vflip:
 
 ``V4L2_CID_VFLIP`` ``(boolean)``
     Mirror the picture vertically.
@@ -286,13 +291,15 @@ Control IDs
     This is a read-only control that can be read by the application and
     used as a hint to determine the number of CAPTURE buffers to pass to
     REQBUFS. The value is the minimum number of CAPTURE buffers that is
-    necessary for hardware to work.
+    necessary for hardware to work. This control is required for stateful
+    decoders.
 
 ``V4L2_CID_MIN_BUFFERS_FOR_OUTPUT`` ``(integer)``
     This is a read-only control that can be read by the application and
     used as a hint to determine the number of OUTPUT buffers to pass to
     REQBUFS. The value is the minimum number of OUTPUT buffers that is
-    necessary for hardware to work.
+    necessary for hardware to work. This control is required for stateful
+    encoders.
 
 .. _v4l2-alpha-component:
 
@@ -461,10 +468,10 @@ Example: Changing controls
 	    perror("VIDIOC_QUERYCTRL");
 	    exit(EXIT_FAILURE);
 	} else {
-	    printf("V4L2_CID_BRIGHTNESS is not supportedn");
+	    printf("V4L2_CID_BRIGHTNESS is not supported\n");
 	}
     } else if (queryctrl.flags & V4L2_CTRL_FLAG_DISABLED) {
-	printf("V4L2_CID_BRIGHTNESS is not supportedn");
+	printf("V4L2_CID_BRIGHTNESS is not supported\n");
     } else {
 	memset(&control, 0, sizeof (control));
 	control.id = V4L2_CID_BRIGHTNESS;

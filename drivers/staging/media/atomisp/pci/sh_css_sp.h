@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #ifndef _SH_CSS_SP_H_
@@ -18,9 +9,7 @@
 
 #include <system_global.h>
 #include <type_support.h>
-#if !defined(ISP2401)
 #include "input_formatter.h"
-#endif
 
 #include "ia_css_binary.h"
 #include "ia_css_types.h"
@@ -149,13 +138,11 @@ sh_css_sp_get_debug_state(struct sh_css_sp_debug_state *state);
 
 #endif
 
-#if !defined(ISP2401)
 void
 sh_css_sp_set_if_configs(
     const input_formatter_cfg_t	*config_a,
     const input_formatter_cfg_t	*config_b,
     const uint8_t		if_config_index);
-#endif
 
 void
 sh_css_sp_program_input_circuit(int fmt_type,
@@ -167,13 +154,6 @@ sh_css_sp_configure_sync_gen(int width,
 			     int height,
 			     int hblank_cycles,
 			     int vblank_cycles);
-
-void
-sh_css_sp_configure_tpg(int x_mask,
-			int y_mask,
-			int x_delta,
-			int y_delta,
-			int xy_mask);
 
 void
 sh_css_sp_configure_prbs(int seed);

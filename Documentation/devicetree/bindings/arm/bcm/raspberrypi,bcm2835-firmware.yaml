@@ -30,6 +30,7 @@ properties:
 
   clocks:
     type: object
+    additionalProperties: false
 
     properties:
       compatible:
@@ -45,8 +46,38 @@ properties:
       - compatible
       - "#clock-cells"
 
+  gpio:
+    type: object
+    additionalProperties: false
+
+    properties:
+      compatible:
+        const: raspberrypi,firmware-gpio
+
+      gpio-controller: true
+
+      "#gpio-cells":
+        const: 2
+        description:
+          The first cell is the pin number, and the second cell is used to
+          specify the gpio polarity (GPIO_ACTIVE_HIGH or GPIO_ACTIVE_LOW).
+
+      gpio-line-names:
+        minItems: 8
+
+    patternProperties:
+      '-hog$':
+        required:
+          - gpio-hog
+
+    required:
+      - compatible
+      - gpio-controller
+      - "#gpio-cells"
+
   reset:
     type: object
+    additionalProperties: false
 
     properties:
       compatible:
@@ -61,8 +92,12 @@ properties:
       - compatible
       - "#reset-cells"
 
+  power:
+    $ref: /schemas/power/raspberrypi,bcm2835-power.yaml#
+
   pwm:
     type: object
+    additionalProperties: false
 
     properties:
       compatible:
@@ -76,7 +111,27 @@ properties:
       - compatible
       - "#pwm-cells"
 
+  touchscreen:
+    type: object
+    $ref: /schemas/input/touchscreen/touchscreen.yaml#
     additionalProperties: false
+
+    properties:
+      compatible:
+        const: raspberrypi,firmware-ts
+
+      firmware:
+        deprecated: true
+        description: Phandle to RPi's firmware device node.
+
+      touchscreen-size-x: true
+      touchscreen-size-y: true
+      touchscreen-inverted-x: true
+      touchscreen-inverted-y: true
+      touchscreen-swapped-x-y: true
+
+    required:
+      - compatible
 
 required:
   - compatible
@@ -95,6 +150,12 @@ examples:
             #clock-cells = <1>;
         };
 
+        expgpio: gpio {
+            compatible = "raspberrypi,firmware-gpio";
+            gpio-controller;
+            #gpio-cells = <2>;
+        };
+
         reset: reset {
             compatible = "raspberrypi,firmware-reset";
             #reset-cells = <1>;
@@ -103,6 +164,12 @@ examples:
         pwm: pwm {
             compatible = "raspberrypi,firmware-poe-pwm";
             #pwm-cells = <2>;
+        };
+
+        ts: touchscreen {
+            compatible = "raspberrypi,firmware-ts";
+            touchscreen-size-x = <800>;
+            touchscreen-size-y = <480>;
         };
     };
 ...

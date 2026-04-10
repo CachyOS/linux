@@ -428,7 +428,7 @@ static struct pci_resource *do_pre_bridge_resource_split(struct pci_resource **h
 		/* this one isn't an aligned length, so we'll make a new entry
 		 * and split it up.
 		 */
-		split_node = kmalloc(sizeof(*split_node), GFP_KERNEL);
+		split_node = kmalloc_obj(*split_node);
 
 		if (!split_node)
 			return NULL;
@@ -553,7 +553,7 @@ static struct pci_resource *get_io_resource(struct pci_resource **head, u32 size
 			if ((node->length - (temp_dword - node->base)) < size)
 				continue;
 
-			split_node = kmalloc(sizeof(*split_node), GFP_KERNEL);
+			split_node = kmalloc_obj(*split_node);
 
 			if (!split_node)
 				return NULL;
@@ -573,7 +573,7 @@ static struct pci_resource *get_io_resource(struct pci_resource **head, u32 size
 			/* this one is longer than we need
 			 * so we'll make a new entry and split it up
 			 */
-			split_node = kmalloc(sizeof(*split_node), GFP_KERNEL);
+			split_node = kmalloc_obj(*split_node);
 
 			if (!split_node)
 				return NULL;
@@ -650,7 +650,7 @@ static struct pci_resource *get_max_resource(struct pci_resource **head, u32 siz
 			if ((max->length - (temp_dword - max->base)) < size)
 				continue;
 
-			split_node = kmalloc(sizeof(*split_node), GFP_KERNEL);
+			split_node = kmalloc_obj(*split_node);
 
 			if (!split_node)
 				return NULL;
@@ -668,7 +668,7 @@ static struct pci_resource *get_max_resource(struct pci_resource **head, u32 siz
 			/* this one isn't end aligned properly at the top
 			 * so we'll make a new entry and split it up
 			 */
-			split_node = kmalloc(sizeof(*split_node), GFP_KERNEL);
+			split_node = kmalloc_obj(*split_node);
 
 			if (!split_node)
 				return NULL;
@@ -747,7 +747,7 @@ static struct pci_resource *get_resource(struct pci_resource **head, u32 size)
 			if ((node->length - (temp_dword - node->base)) < size)
 				continue;
 
-			split_node = kmalloc(sizeof(*split_node), GFP_KERNEL);
+			split_node = kmalloc_obj(*split_node);
 
 			if (!split_node)
 				return NULL;
@@ -767,7 +767,7 @@ static struct pci_resource *get_resource(struct pci_resource **head, u32 size)
 			/* this one is longer than we need
 			 * so we'll make a new entry and split it up
 			 */
-			split_node = kmalloc(sizeof(*split_node), GFP_KERNEL);
+			split_node = kmalloc_obj(*split_node);
 
 			if (!split_node)
 				return NULL;
@@ -955,7 +955,7 @@ struct pci_func *cpqhp_slot_create(u8 busnumber)
 	struct pci_func *new_slot;
 	struct pci_func *next;
 
-	new_slot = kzalloc(sizeof(*new_slot), GFP_KERNEL);
+	new_slot = kzalloc_obj(*new_slot);
 	if (new_slot == NULL)
 		return new_slot;
 
@@ -1794,7 +1794,7 @@ static void interrupt_event_handler(struct controller *ctrl)
 				} else if (ctrl->event_queue[loop].event_type ==
 					   INT_BUTTON_CANCEL) {
 					dbg("button cancel\n");
-					del_timer(&p_slot->task_event);
+					timer_delete(&p_slot->task_event);
 
 					mutex_lock(&ctrl->crit_sect);
 
@@ -1883,7 +1883,7 @@ void cpqhp_pushbutton_thread(struct timer_list *t)
 {
 	u8 hp_slot;
 	struct pci_func *func;
-	struct slot *p_slot = from_timer(p_slot, t, task_event);
+	struct slot *p_slot = timer_container_of(p_slot, t, task_event);
 	struct controller *ctrl = (struct controller *) p_slot->ctrl;
 
 	pushbutton_pending = NULL;
@@ -2059,7 +2059,7 @@ int cpqhp_process_SS(struct controller *ctrl, struct pci_func *func)
 				return rc;
 
 			/* If it's a bridge, check the VGA Enable bit */
-			if ((header_type & 0x7F) == PCI_HEADER_TYPE_BRIDGE) {
+			if ((header_type & PCI_HEADER_TYPE_MASK) == PCI_HEADER_TYPE_BRIDGE) {
 				rc = pci_bus_read_config_byte(pci_bus, devfn, PCI_BRIDGE_CONTROL, &BCR);
 				if (rc)
 					return rc;
@@ -2342,7 +2342,7 @@ static int configure_new_function(struct controller *ctrl, struct pci_func *func
 	if (rc)
 		return rc;
 
-	if ((temp_byte & 0x7F) == PCI_HEADER_TYPE_BRIDGE) {
+	if ((temp_byte & PCI_HEADER_TYPE_MASK) == PCI_HEADER_TYPE_BRIDGE) {
 		/* set Primary bus */
 		dbg("set Primary bus = %d\n", func->bus);
 		rc = pci_bus_write_config_byte(pci_bus, devfn, PCI_PRIMARY_BUS, func->bus);
@@ -2435,10 +2435,10 @@ static int configure_new_function(struct controller *ctrl, struct pci_func *func
 		/* Make copies of the nodes we are going to pass down so that
 		 * if there is a problem,we can just use these to free resources
 		 */
-		hold_bus_node = kmalloc(sizeof(*hold_bus_node), GFP_KERNEL);
-		hold_IO_node = kmalloc(sizeof(*hold_IO_node), GFP_KERNEL);
-		hold_mem_node = kmalloc(sizeof(*hold_mem_node), GFP_KERNEL);
-		hold_p_mem_node = kmalloc(sizeof(*hold_p_mem_node), GFP_KERNEL);
+		hold_bus_node = kmalloc_obj(*hold_bus_node);
+		hold_IO_node = kmalloc_obj(*hold_IO_node);
+		hold_mem_node = kmalloc_obj(*hold_mem_node);
+		hold_p_mem_node = kmalloc_obj(*hold_p_mem_node);
 
 		if (!hold_bus_node || !hold_IO_node || !hold_mem_node || !hold_p_mem_node) {
 			kfree(hold_bus_node);
@@ -2739,7 +2739,7 @@ static int configure_new_function(struct controller *ctrl, struct pci_func *func
 					 *   PCI_BRIDGE_CTL_SERR |
 					 *   PCI_BRIDGE_CTL_NO_ISA */
 		rc = pci_bus_write_config_word(pci_bus, devfn, PCI_BRIDGE_CONTROL, command);
-	} else if ((temp_byte & 0x7F) == PCI_HEADER_TYPE_NORMAL) {
+	} else if ((temp_byte & PCI_HEADER_TYPE_MASK) == PCI_HEADER_TYPE_NORMAL) {
 		/* Standard device */
 		rc = pci_bus_read_config_byte(pci_bus, devfn, 0x0B, &class_code);
 

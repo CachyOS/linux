@@ -17,10 +17,12 @@
 #include <linux/bitops.h>
 
 #define MCP4922_NUM_CHANNELS	2
+#define MCP4921_NUM_CHANNELS	1
 
 enum mcp4922_supported_device_ids {
 	ID_MCP4902,
 	ID_MCP4912,
+	ID_MCP4921,
 	ID_MCP4922,
 };
 
@@ -28,8 +30,7 @@ struct mcp4922_state {
 	struct spi_device *spi;
 	unsigned int value[MCP4922_NUM_CHANNELS];
 	unsigned int vref_mv;
-	struct regulator *vref_reg;
-	u8 mosi[2] ____cacheline_aligned;
+	u8 mosi[2] __aligned(IIO_DMA_MINALIGN);
 };
 
 #define MCP4922_CHAN(chan, bits) {			\
@@ -105,9 +106,10 @@ static int mcp4922_write_raw(struct iio_dev *indio_dev,
 	}
 }
 
-static const struct iio_chan_spec mcp4922_channels[3][MCP4922_NUM_CHANNELS] = {
+static const struct iio_chan_spec mcp4922_channels[4][MCP4922_NUM_CHANNELS] = {
 	[ID_MCP4902] = { MCP4922_CHAN(0, 8),	MCP4922_CHAN(1, 8) },
 	[ID_MCP4912] = { MCP4922_CHAN(0, 10),	MCP4922_CHAN(1, 10) },
+	[ID_MCP4921] = { MCP4922_CHAN(0, 12),	{} },
 	[ID_MCP4922] = { MCP4922_CHAN(0, 12),	MCP4922_CHAN(1, 12) },
 };
 
@@ -129,64 +131,37 @@ static int mcp4922_probe(struct spi_device *spi)
 
 	state = iio_priv(indio_dev);
 	state->spi = spi;
-	state->vref_reg = devm_regulator_get(&spi->dev, "vref");
-	if (IS_ERR(state->vref_reg))
-		return dev_err_probe(&spi->dev, PTR_ERR(state->vref_reg),
-				     "Vref regulator not specified\n");
 
-	ret = regulator_enable(state->vref_reg);
-	if (ret) {
-		dev_err(&spi->dev, "Failed to enable vref regulator: %d\n",
-				ret);
-		return ret;
-	}
+	ret = devm_regulator_get_enable_read_voltage(&spi->dev, "vref");
+	if (ret < 0)
+		return dev_err_probe(&spi->dev, ret, "Failed to get vref voltage\n");
 
-	ret = regulator_get_voltage(state->vref_reg);
-	if (ret < 0) {
-		dev_err(&spi->dev, "Failed to read vref regulator: %d\n",
-				ret);
-		goto error_disable_reg;
-	}
 	state->vref_mv = ret / 1000;
 
-	spi_set_drvdata(spi, indio_dev);
 	id = spi_get_device_id(spi);
 	indio_dev->info = &mcp4922_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels = mcp4922_channels[id->driver_data];
-	indio_dev->num_channels = MCP4922_NUM_CHANNELS;
+	if (id->driver_data == ID_MCP4921)
+		indio_dev->num_channels = MCP4921_NUM_CHANNELS;
+	else
+		indio_dev->num_channels = MCP4922_NUM_CHANNELS;
 	indio_dev->name = id->name;
 
-	ret = iio_device_register(indio_dev);
-	if (ret) {
-		dev_err(&spi->dev, "Failed to register iio device: %d\n",
-				ret);
-		goto error_disable_reg;
-	}
+	ret = devm_iio_device_register(&spi->dev, indio_dev);
+	if (ret)
+		return dev_err_probe(&spi->dev, ret, "Failed to register iio device\n");
 
 	return 0;
-
-error_disable_reg:
-	regulator_disable(state->vref_reg);
-
-	return ret;
 }
 
-static void mcp4922_remove(struct spi_device *spi)
-{
-	struct iio_dev *indio_dev = spi_get_drvdata(spi);
-	struct mcp4922_state *state;
-
-	iio_device_unregister(indio_dev);
-	state = iio_priv(indio_dev);
-	regulator_disable(state->vref_reg);
-}
 
 static const struct spi_device_id mcp4922_id[] = {
 	{"mcp4902", ID_MCP4902},
 	{"mcp4912", ID_MCP4912},
+	{"mcp4921", ID_MCP4921},
 	{"mcp4922", ID_MCP4922},
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, mcp4922_id);
 
@@ -195,7 +170,6 @@ static struct spi_driver mcp4922_driver = {
 		   .name = "mcp4922",
 		   },
 	.probe = mcp4922_probe,
-	.remove = mcp4922_remove,
 	.id_table = mcp4922_id,
 };
 module_spi_driver(mcp4922_driver);

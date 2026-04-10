@@ -98,6 +98,7 @@ extern bool dwarf_callchain_users;
 
 struct callchain_param {
 	bool			enabled;
+	bool			defer;
 	enum perf_call_graph_mode record_mode;
 	u32			dump_size;
 	enum chain_mode 	mode;
@@ -116,22 +117,22 @@ extern struct callchain_param callchain_param;
 extern struct callchain_param callchain_param_default;
 
 struct callchain_list {
+	struct list_head	list;
 	u64			ip;
 	struct map_symbol	ms;
+	const char		*srcline;
+	u64			branch_count;
+	u64			from_count;
+	u64			cycles_count;
+	u64			iter_count;
+	u64			iter_cycles;
+	struct branch_type_stat *brtype_stat;
+	u64			predicted_count;
+	u64			abort_count;
 	struct /* for TUI */ {
 		bool		unfolded;
 		bool		has_children;
 	};
-	u64			branch_count;
-	u64			from_count;
-	u64			predicted_count;
-	u64			abort_count;
-	u64			cycles_count;
-	u64			iter_count;
-	u64			iter_cycles;
-	struct branch_type_stat brtype_stat;
-	const char		*srcline;
-	struct list_head	list;
 };
 
 /*
@@ -167,8 +168,6 @@ struct callchain_cursor {
 	u64				pos;
 	struct callchain_cursor_node	*curr;
 };
-
-extern __thread struct callchain_cursor callchain_cursor;
 
 static inline void callchain_init(struct callchain_root *root)
 {
@@ -211,6 +210,8 @@ int callchain_cursor_append(struct callchain_cursor *cursor, u64 ip,
 /* Close a cursor writing session. Initialize for the reader */
 static inline void callchain_cursor_commit(struct callchain_cursor *cursor)
 {
+	if (cursor == NULL)
+		return;
 	cursor->curr = cursor->first;
 	cursor->pos = 0;
 }
@@ -219,7 +220,7 @@ static inline void callchain_cursor_commit(struct callchain_cursor *cursor)
 static inline struct callchain_cursor_node *
 callchain_cursor_current(struct callchain_cursor *cursor)
 {
-	if (cursor->pos == cursor->nr)
+	if (cursor == NULL || cursor->pos == cursor->nr)
 		return NULL;
 
 	return cursor->curr;
@@ -230,6 +231,8 @@ static inline void callchain_cursor_advance(struct callchain_cursor *cursor)
 	cursor->curr = cursor->curr->next;
 	cursor->pos++;
 }
+
+struct callchain_cursor *get_tls_callchain_cursor(void);
 
 int callchain_cursor__copy(struct callchain_cursor *dst,
 			   struct callchain_cursor *src);
@@ -300,7 +303,7 @@ int callchain_branch_counts(struct callchain_root *root,
 			    u64 *branch_count, u64 *predicted_count,
 			    u64 *abort_count, u64 *cycles_count);
 
-void callchain_param_setup(u64 sample_type, const char *arch);
+void callchain_param_setup(u64 sample_type, uint16_t e_machine);
 
 bool callchain_cnode_matched(struct callchain_node *base_cnode,
 			     struct callchain_node *pair_cnode);
@@ -308,5 +311,14 @@ bool callchain_cnode_matched(struct callchain_node *base_cnode,
 u64 callchain_total_hits(struct hists *hists);
 
 s64 callchain_avg_cycles(struct callchain_node *cnode);
+
+typedef int (*callchain_iter_fn)(struct callchain_cursor_node *node, void *data);
+
+int sample__for_each_callchain_node(struct thread *thread, struct evsel *evsel,
+				    struct perf_sample *sample, int max_stack,
+				    bool symbols, callchain_iter_fn cb, void *data);
+
+int sample__merge_deferred_callchain(struct perf_sample *sample_orig,
+				     struct perf_sample *sample_callchain);
 
 #endif	/* __PERF_CALLCHAIN_H */

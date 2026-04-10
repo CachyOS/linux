@@ -70,11 +70,11 @@ struct hisi_acc_sgl_pool *hisi_acc_create_sgl_pool(struct device *dev,
 			 HISI_ACC_SGL_ALIGN_SIZE);
 
 	/*
-	 * the pool may allocate a block of memory of size PAGE_SIZE * 2^(MAX_ORDER - 1),
+	 * the pool may allocate a block of memory of size PAGE_SIZE * 2^MAX_PAGE_ORDER,
 	 * block size may exceed 2^31 on ia64, so the max of block size is 2^31
 	 */
-	block_size = 1 << (PAGE_SHIFT + MAX_ORDER <= 32 ?
-			   PAGE_SHIFT + MAX_ORDER - 1 : 31);
+	block_size = 1 << (PAGE_SHIFT + MAX_PAGE_ORDER < 32 ?
+			   PAGE_SHIFT + MAX_PAGE_ORDER : 31);
 	sgl_num_per_block = block_size / sgl_size;
 	block_num = count / sgl_num_per_block;
 	remain_sgl = count % sgl_num_per_block;
@@ -83,7 +83,7 @@ struct hisi_acc_sgl_pool *hisi_acc_create_sgl_pool(struct device *dev,
 	    (remain_sgl > 0 && block_num > HISI_ACC_MEM_BLOCK_NR - 1))
 		return ERR_PTR(-EINVAL);
 
-	pool = kzalloc(sizeof(*pool), GFP_KERNEL);
+	pool = kzalloc_obj(*pool);
 	if (!pool)
 		return ERR_PTR(-ENOMEM);
 	block = pool->mem_block;
@@ -121,12 +121,11 @@ struct hisi_acc_sgl_pool *hisi_acc_create_sgl_pool(struct device *dev,
 	return pool;
 
 err_free_mem:
-	for (j = 0; j < i; j++) {
+	for (j = 0; j < i; j++)
 		dma_free_coherent(dev, block_size, block[j].sgl,
 				  block[j].sgl_dma);
-		memset(block + j, 0, sizeof(*block));
-	}
-	kfree(pool);
+
+	kfree_sensitive(pool);
 	return ERR_PTR(-ENOMEM);
 }
 EXPORT_SYMBOL_GPL(hisi_acc_create_sgl_pool);
@@ -141,7 +140,7 @@ EXPORT_SYMBOL_GPL(hisi_acc_create_sgl_pool);
 void hisi_acc_free_sgl_pool(struct device *dev, struct hisi_acc_sgl_pool *pool)
 {
 	struct mem_block *block;
-	int i;
+	u32 i;
 
 	if (!dev || !pool)
 		return;
@@ -161,9 +160,6 @@ static struct hisi_acc_hw_sgl *acc_get_sgl(struct hisi_acc_sgl_pool *pool,
 {
 	struct mem_block *block;
 	u32 block_index, offset;
-
-	if (!pool || !hw_sgl_dma || index >= pool->count)
-		return ERR_PTR(-EINVAL);
 
 	block = pool->mem_block;
 	block_index = index / pool->sgl_num_per_block;
@@ -197,9 +193,10 @@ static void update_hw_sgl_sum_sge(struct hisi_acc_hw_sgl *hw_sgl, u16 sum)
 static void clear_hw_sgl_sge(struct hisi_acc_hw_sgl *hw_sgl)
 {
 	struct acc_hw_sge *hw_sge = hw_sgl->sge_entries;
+	u16 entry_sum = le16_to_cpu(hw_sgl->entry_sum_in_sgl);
 	int i;
 
-	for (i = 0; i < le16_to_cpu(hw_sgl->entry_sum_in_sgl); i++) {
+	for (i = 0; i < entry_sum; i++) {
 		hw_sge[i].page_ctrl = NULL;
 		hw_sge[i].buf = 0;
 		hw_sge[i].len = 0;
@@ -213,28 +210,29 @@ static void clear_hw_sgl_sge(struct hisi_acc_hw_sgl *hw_sgl)
  * @pool: Pool which hw sgl memory will be allocated in.
  * @index: Index of hisi_acc_hw_sgl in pool.
  * @hw_sgl_dma: The dma address of allocated hw sgl.
+ * @dir: DMA direction.
  *
  * This function builds hw sgl according input sgl, user can use hw_sgl_dma
  * as src/dst in its BD. Only support single hw sgl currently.
  */
 struct hisi_acc_hw_sgl *
-hisi_acc_sg_buf_map_to_hw_sgl(struct device *dev,
-			      struct scatterlist *sgl,
-			      struct hisi_acc_sgl_pool *pool,
-			      u32 index, dma_addr_t *hw_sgl_dma)
+hisi_acc_sg_buf_map_to_hw_sgl(struct device *dev, struct scatterlist *sgl,
+			      struct hisi_acc_sgl_pool *pool, u32 index,
+			      dma_addr_t *hw_sgl_dma, enum dma_data_direction dir)
 {
 	struct hisi_acc_hw_sgl *curr_hw_sgl;
+	unsigned int i, sg_n_mapped;
 	dma_addr_t curr_sgl_dma = 0;
 	struct acc_hw_sge *curr_hw_sge;
 	struct scatterlist *sg;
-	int i, sg_n, sg_n_mapped;
+	int sg_n, ret;
 
-	if (!dev || !sgl || !pool || !hw_sgl_dma)
+	if (!dev || !sgl || !pool || !hw_sgl_dma || index >= pool->count)
 		return ERR_PTR(-EINVAL);
 
 	sg_n = sg_nents(sgl);
 
-	sg_n_mapped = dma_map_sg(dev, sgl, sg_n, DMA_BIDIRECTIONAL);
+	sg_n_mapped = dma_map_sg(dev, sgl, sg_n, dir);
 	if (!sg_n_mapped) {
 		dev_err(dev, "DMA mapping for SG error!\n");
 		return ERR_PTR(-EINVAL);
@@ -242,16 +240,11 @@ hisi_acc_sg_buf_map_to_hw_sgl(struct device *dev,
 
 	if (sg_n_mapped > pool->sge_nr) {
 		dev_err(dev, "the number of entries in input scatterlist is bigger than SGL pool setting.\n");
-		return ERR_PTR(-EINVAL);
+		ret = -EINVAL;
+		goto err_unmap;
 	}
 
 	curr_hw_sgl = acc_get_sgl(pool, index, &curr_sgl_dma);
-	if (IS_ERR(curr_hw_sgl)) {
-		dev_err(dev, "Get SGL error!\n");
-		dma_unmap_sg(dev, sgl, sg_n, DMA_BIDIRECTIONAL);
-		return ERR_PTR(-ENOMEM);
-
-	}
 	curr_hw_sgl->entry_length_in_sgl = cpu_to_le16(pool->sge_nr);
 	curr_hw_sge = curr_hw_sgl->sge_entries;
 
@@ -265,6 +258,11 @@ hisi_acc_sg_buf_map_to_hw_sgl(struct device *dev,
 	*hw_sgl_dma = curr_sgl_dma;
 
 	return curr_hw_sgl;
+
+err_unmap:
+	dma_unmap_sg(dev, sgl, sg_n, dir);
+
+	return ERR_PTR(ret);
 }
 EXPORT_SYMBOL_GPL(hisi_acc_sg_buf_map_to_hw_sgl);
 
@@ -273,16 +271,17 @@ EXPORT_SYMBOL_GPL(hisi_acc_sg_buf_map_to_hw_sgl);
  * @dev: The device which hw sgl belongs to.
  * @sgl: Related scatterlist.
  * @hw_sgl: Virtual address of hw sgl.
+ * @dir: DMA direction.
  *
  * This function unmaps allocated hw sgl.
  */
 void hisi_acc_sg_buf_unmap(struct device *dev, struct scatterlist *sgl,
-			   struct hisi_acc_hw_sgl *hw_sgl)
+			   struct hisi_acc_hw_sgl *hw_sgl, enum dma_data_direction dir)
 {
 	if (!dev || !sgl || !hw_sgl)
 		return;
 
-	dma_unmap_sg(dev, sgl, sg_nents(sgl), DMA_BIDIRECTIONAL);
+	dma_unmap_sg(dev, sgl, sg_nents(sgl), dir);
 	clear_hw_sgl_sge(hw_sgl);
 	hw_sgl->entry_sum_in_chain = 0;
 	hw_sgl->entry_sum_in_sgl = 0;

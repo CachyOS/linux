@@ -79,6 +79,15 @@
 
 #include "ni_stc.h"
 
+static const struct comedi_lrange range_ni_E_ao_ext = {
+	4, {
+		BIP_RANGE(10),
+		UNI_RANGE(10),
+		RANGE_ext(-1, 1),
+		RANGE_ext(0, 1)
+	}
+};
+
 /* AT specific setup */
 static const struct ni_board_struct ni_boards[] = {
 	{
@@ -206,7 +215,7 @@ static const int ni_irqpin[] = {
 
 #include "ni_mio_common.c"
 
-static const struct pnp_device_id device_ids[] = {
+static const struct pnp_device_id __maybe_unused device_ids[] = {
 	{.id = "NIC1900", .driver_data = 0},
 	{.id = "NIC2400", .driver_data = 0},
 	{.id = "NIC2500", .driver_data = 0},

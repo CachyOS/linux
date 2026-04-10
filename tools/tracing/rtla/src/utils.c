@@ -3,6 +3,10 @@
  * Copyright (C) 2021 Red Hat Inc, Daniel Bristot de Oliveira <bristot@kernel.org>
  */
 
+#define _GNU_SOURCE
+#ifdef HAVE_LIBCPUPOWER_SUPPORT
+#include <cpuidle.h>
+#endif /* HAVE_LIBCPUPOWER_SUPPORT */
 #include <dirent.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -13,6 +17,7 @@
 #include <fcntl.h>
 #include <sched.h>
 #include <stdio.h>
+#include <limits.h>
 
 #include "utils.h"
 
@@ -53,6 +58,21 @@ void debug_msg(const char *fmt, ...)
 }
 
 /*
+ * fatal - print an error message and EOL to stderr and exit with ERROR
+ */
+void fatal(const char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	vfprintf(stderr, fmt, ap);
+	va_end(ap);
+	fprintf(stderr, "\n");
+
+	exit(ERROR);
+}
+
+/*
  * get_llong_from_str - get a long long int from a string
  */
 long long get_llong_from_str(char *start)
@@ -88,26 +108,24 @@ void get_duration(time_t start_time, char *output, int output_size)
 }
 
 /*
- * parse_cpu_list - parse a cpu_list filling a char vector with cpus set
+ * parse_cpu_set - parse a cpu_list filling cpu_set_t argument
  *
- * Receives a cpu list, like 1-3,5 (cpus 1, 2, 3, 5), and then set the char
- * in the monitored_cpus.
+ * Receives a cpu list, like 1-3,5 (cpus 1, 2, 3, 5), and then set
+ * filling cpu_set_t argument.
  *
- * XXX: convert to a bitmask.
+ * Returns 0 on success, 1 otherwise.
  */
-int parse_cpu_list(char *cpu_list, char **monitored_cpus)
+int parse_cpu_set(char *cpu_list, cpu_set_t *set)
 {
-	char *mon_cpus;
 	const char *p;
 	int end_cpu;
 	int nr_cpus;
 	int cpu;
 	int i;
 
-	nr_cpus = sysconf(_SC_NPROCESSORS_CONF);
+	CPU_ZERO(set);
 
-	mon_cpus = malloc(nr_cpus * sizeof(char));
-	memset(mon_cpus, 0, (nr_cpus * sizeof(char)));
+	nr_cpus = sysconf(_SC_NPROCESSORS_CONF);
 
 	for (p = cpu_list; *p; ) {
 		cpu = atoi(p);
@@ -127,12 +145,12 @@ int parse_cpu_list(char *cpu_list, char **monitored_cpus)
 			end_cpu = cpu;
 
 		if (cpu == end_cpu) {
-			debug_msg("cpu_list: adding cpu %d\n", cpu);
-			mon_cpus[cpu] = 1;
+			debug_msg("cpu_set: adding cpu %d\n", cpu);
+			CPU_SET(cpu, set);
 		} else {
 			for (i = cpu; i <= end_cpu; i++) {
-				debug_msg("cpu_list: adding cpu %d\n", i);
-				mon_cpus[i] = 1;
+				debug_msg("cpu_set: adding cpu %d\n", i);
+				CPU_SET(i, set);
 			}
 		}
 
@@ -140,12 +158,9 @@ int parse_cpu_list(char *cpu_list, char **monitored_cpus)
 			p++;
 	}
 
-	*monitored_cpus = mon_cpus;
-
 	return 0;
-
 err:
-	debug_msg("Error parsing the cpu list %s", cpu_list);
+	debug_msg("Error parsing the cpu set %s\n", cpu_list);
 	return 1;
 }
 
@@ -215,37 +230,29 @@ long parse_ns_duration(char *val)
 /*
  * This is a set of helper functions to use SCHED_DEADLINE.
  */
-#ifdef __x86_64__
-# define __NR_sched_setattr	314
-# define __NR_sched_getattr	315
-#elif __i386__
-# define __NR_sched_setattr	351
-# define __NR_sched_getattr	352
-#elif __arm__
-# define __NR_sched_setattr	380
-# define __NR_sched_getattr	381
-#elif __aarch64__
-# define __NR_sched_setattr	274
-# define __NR_sched_getattr	275
-#elif __powerpc__
-# define __NR_sched_setattr	355
-# define __NR_sched_getattr	356
-#elif __s390x__
-# define __NR_sched_setattr	345
-# define __NR_sched_getattr	346
+#ifndef __NR_sched_setattr
+# ifdef __x86_64__
+#  define __NR_sched_setattr	314
+# elif __i386__
+#  define __NR_sched_setattr	351
+# elif __arm__
+#  define __NR_sched_setattr	380
+# elif __aarch64__ || __riscv
+#  define __NR_sched_setattr	274
+# elif __powerpc__
+#  define __NR_sched_setattr	355
+# elif __s390x__
+#  define __NR_sched_setattr	345
+# elif __loongarch__
+#  define __NR_sched_setattr	274
+# endif
 #endif
 
 #define SCHED_DEADLINE		6
 
-static inline int sched_setattr(pid_t pid, const struct sched_attr *attr,
+static inline int syscall_sched_setattr(pid_t pid, const struct sched_attr *attr,
 				unsigned int flags) {
 	return syscall(__NR_sched_setattr, pid, attr, flags);
-}
-
-static inline int sched_getattr(pid_t pid, struct sched_attr *attr,
-				unsigned int size, unsigned int flags)
-{
-	return syscall(__NR_sched_getattr, pid, attr, size, flags);
 }
 
 int __set_sched_attr(int pid, struct sched_attr *attr)
@@ -253,7 +260,7 @@ int __set_sched_attr(int pid, struct sched_attr *attr)
 	int flags = 0;
 	int retval;
 
-	retval = sched_setattr(pid, attr, flags);
+	retval = syscall_sched_setattr(pid, attr, flags);
 	if (retval < 0) {
 		err_msg("Failed to set sched attributes to the pid %d: %s\n",
 			pid, strerror(errno));
@@ -308,6 +315,7 @@ static int procfs_is_workload_pid(const char *comm_prefix, struct dirent *proc_e
 	if (retval <= 0)
 		return 0;
 
+	buffer[MAX_PATH-1] = '\0';
 	retval = strncmp(comm_prefix, buffer, strlen(comm_prefix));
 	if (retval)
 		return 0;
@@ -331,6 +339,7 @@ int set_comm_sched_attr(const char *comm_prefix, struct sched_attr *attr)
 	struct dirent *proc_entry;
 	DIR *procfs;
 	int retval;
+	int pid;
 
 	if (strlen(comm_prefix) >= MAX_PATH) {
 		err_msg("Command prefix is too long: %d < strlen(%s)\n",
@@ -350,8 +359,12 @@ int set_comm_sched_attr(const char *comm_prefix, struct sched_attr *attr)
 		if (!retval)
 			continue;
 
+		if (strtoi(proc_entry->d_name, &pid)) {
+			err_msg("'%s' is not a valid pid", proc_entry->d_name);
+			goto out_err;
+		}
 		/* procfs_is_workload_pid confirmed it is a pid */
-		retval = __set_sched_attr(atoi(proc_entry->d_name), attr);
+		retval = __set_sched_attr(pid, attr);
 		if (retval) {
 			err_msg("Error setting sched attributes for pid:%s\n", proc_entry->d_name);
 			goto out_err;
@@ -483,13 +496,13 @@ int parse_prio(char *arg, struct sched_attr *sched_param)
 		if (prio == INVALID_VAL)
 			return -1;
 
-		if (prio < sched_get_priority_min(SCHED_OTHER))
+		if (prio < MIN_NICE)
 			return -1;
-		if (prio > sched_get_priority_max(SCHED_OTHER))
+		if (prio > MAX_NICE)
 			return -1;
 
 		sched_param->sched_policy   = SCHED_OTHER;
-		sched_param->sched_priority = prio;
+		sched_param->sched_nice = prio;
 		break;
 	default:
 		return -1;
@@ -527,4 +540,493 @@ int set_cpu_dma_latency(int32_t latency)
 	debug_msg("Set /dev/cpu_dma_latency to %d\n", latency);
 
 	return fd;
+}
+
+#ifdef HAVE_LIBCPUPOWER_SUPPORT
+static unsigned int **saved_cpu_idle_disable_state;
+static size_t saved_cpu_idle_disable_state_alloc_ctr;
+
+/*
+ * save_cpu_idle_state_disable - save disable for all idle states of a cpu
+ *
+ * Saves the current disable of all idle states of a cpu, to be subsequently
+ * restored via restore_cpu_idle_disable_state.
+ *
+ * Return: idle state count on success, negative on error
+ */
+int save_cpu_idle_disable_state(unsigned int cpu)
+{
+	unsigned int nr_states;
+	unsigned int state;
+	int disabled;
+	int nr_cpus;
+
+	nr_states = cpuidle_state_count(cpu);
+
+	if (nr_states == 0)
+		return 0;
+
+	if (saved_cpu_idle_disable_state == NULL) {
+		nr_cpus = sysconf(_SC_NPROCESSORS_CONF);
+		saved_cpu_idle_disable_state = calloc(nr_cpus, sizeof(unsigned int *));
+		if (!saved_cpu_idle_disable_state)
+			return -1;
+	}
+
+	saved_cpu_idle_disable_state[cpu] = calloc(nr_states, sizeof(unsigned int));
+	if (!saved_cpu_idle_disable_state[cpu])
+		return -1;
+	saved_cpu_idle_disable_state_alloc_ctr++;
+
+	for (state = 0; state < nr_states; state++) {
+		disabled = cpuidle_is_state_disabled(cpu, state);
+		if (disabled < 0)
+			return disabled;
+		saved_cpu_idle_disable_state[cpu][state] = disabled;
+	}
+
+	return nr_states;
+}
+
+/*
+ * restore_cpu_idle_disable_state - restore disable for all idle states of a cpu
+ *
+ * Restores the current disable state of all idle states of a cpu that was
+ * previously saved by save_cpu_idle_disable_state.
+ *
+ * Return: idle state count on success, negative on error
+ */
+int restore_cpu_idle_disable_state(unsigned int cpu)
+{
+	unsigned int nr_states;
+	unsigned int state;
+	int disabled;
+	int result;
+
+	nr_states = cpuidle_state_count(cpu);
+
+	if (nr_states == 0)
+		return 0;
+
+	if (!saved_cpu_idle_disable_state)
+		return -1;
+
+	for (state = 0; state < nr_states; state++) {
+		if (!saved_cpu_idle_disable_state[cpu])
+			return -1;
+		disabled = saved_cpu_idle_disable_state[cpu][state];
+		result = cpuidle_state_disable(cpu, state, disabled);
+		if (result < 0)
+			return result;
+	}
+
+	free(saved_cpu_idle_disable_state[cpu]);
+	saved_cpu_idle_disable_state[cpu] = NULL;
+	saved_cpu_idle_disable_state_alloc_ctr--;
+	if (saved_cpu_idle_disable_state_alloc_ctr == 0) {
+		free(saved_cpu_idle_disable_state);
+		saved_cpu_idle_disable_state = NULL;
+	}
+
+	return nr_states;
+}
+
+/*
+ * free_cpu_idle_disable_states - free saved idle state disable for all cpus
+ *
+ * Frees the memory used for storing cpu idle state disable for all cpus
+ * and states.
+ *
+ * Normally, the memory is freed automatically in
+ * restore_cpu_idle_disable_state; this is mostly for cleaning up after an
+ * error.
+ */
+void free_cpu_idle_disable_states(void)
+{
+	int cpu;
+	int nr_cpus;
+
+	if (!saved_cpu_idle_disable_state)
+		return;
+
+	nr_cpus = sysconf(_SC_NPROCESSORS_CONF);
+
+	for (cpu = 0; cpu < nr_cpus; cpu++) {
+		free(saved_cpu_idle_disable_state[cpu]);
+		saved_cpu_idle_disable_state[cpu] = NULL;
+	}
+
+	free(saved_cpu_idle_disable_state);
+	saved_cpu_idle_disable_state = NULL;
+}
+
+/*
+ * set_deepest_cpu_idle_state - limit idle state of cpu
+ *
+ * Disables all idle states deeper than the one given in
+ * deepest_state (assuming states with higher number are deeper).
+ *
+ * This is used to reduce the exit from idle latency. Unlike
+ * set_cpu_dma_latency, it can disable idle states per cpu.
+ *
+ * Return: idle state count on success, negative on error
+ */
+int set_deepest_cpu_idle_state(unsigned int cpu, unsigned int deepest_state)
+{
+	unsigned int nr_states;
+	unsigned int state;
+	int result;
+
+	nr_states = cpuidle_state_count(cpu);
+
+	for (state = deepest_state + 1; state < nr_states; state++) {
+		result = cpuidle_state_disable(cpu, state, 1);
+		if (result < 0)
+			return result;
+	}
+
+	return nr_states;
+}
+#endif /* HAVE_LIBCPUPOWER_SUPPORT */
+
+#define _STR(x) #x
+#define STR(x) _STR(x)
+
+/*
+ * find_mount - find a the mount point of a given fs
+ *
+ * Returns 0 if mount is not found, otherwise return 1 and fill mp
+ * with the mount point.
+ */
+static const int find_mount(const char *fs, char *mp, int sizeof_mp)
+{
+	char mount_point[MAX_PATH+1];
+	char type[100];
+	int found = 0;
+	FILE *fp;
+
+	fp = fopen("/proc/mounts", "r");
+	if (!fp)
+		return 0;
+
+	while (fscanf(fp, "%*s %" STR(MAX_PATH) "s %99s %*s %*d %*d\n",	mount_point, type) == 2) {
+		if (strcmp(type, fs) == 0) {
+			found = 1;
+			break;
+		}
+	}
+	fclose(fp);
+
+	if (!found)
+		return 0;
+
+	memset(mp, 0, sizeof_mp);
+	strncpy(mp, mount_point, sizeof_mp - 1);
+
+	debug_msg("Fs %s found at %s\n", fs, mp);
+	return 1;
+}
+
+/*
+ * get_self_cgroup - get the current thread cgroup path
+ *
+ * Parse /proc/$$/cgroup file to get the thread's cgroup. As an example of line to parse:
+ *
+ * 0::/user.slice/user-0.slice/session-3.scope'\n'
+ *
+ * This function is interested in the content after the second : and before the '\n'.
+ *
+ * Returns 1 if a string was found, 0 otherwise.
+ */
+static int get_self_cgroup(char *self_cg, int sizeof_self_cg)
+{
+	char path[MAX_PATH], *start;
+	int fd, retval;
+
+	snprintf(path, MAX_PATH, "/proc/%d/cgroup", getpid());
+
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return 0;
+
+	memset(path, 0, sizeof(path));
+	retval = read(fd, path, MAX_PATH);
+
+	close(fd);
+
+	if (retval <= 0)
+		return 0;
+
+	path[MAX_PATH-1] = '\0';
+	start = path;
+
+	start = strstr(start, ":");
+	if (!start)
+		return 0;
+
+	/* skip ":" */
+	start++;
+
+	start = strstr(start, ":");
+	if (!start)
+		return 0;
+
+	/* skip ":" */
+	start++;
+
+	if (strlen(start) >= sizeof_self_cg)
+		return 0;
+
+	snprintf(self_cg, sizeof_self_cg, "%s", start);
+
+	/* Swap '\n' with '\0' */
+	start = strstr(self_cg, "\n");
+
+	/* there must be '\n' */
+	if (!start)
+		return 0;
+
+	/* ok, it found a string after the second : and before the \n */
+	*start = '\0';
+
+	return 1;
+}
+
+/*
+ * open_cgroup_procs - Open the cgroup.procs file for the given cgroup
+ *
+ * If cgroup argument is not NULL, the cgroup.procs file for that cgroup
+ * will be opened. Otherwise, the cgroup of the calling, i.e., rtla, thread
+ * will be used.
+ *
+ * Supports cgroup v2.
+ *
+ * Returns the file descriptor on success, -1 otherwise.
+ */
+static int open_cgroup_procs(const char *cgroup)
+{
+	char cgroup_path[MAX_PATH - strlen("/cgroup.procs")];
+	char cgroup_procs[MAX_PATH];
+	int retval;
+	int cg_fd;
+
+	retval = find_mount("cgroup2", cgroup_path, sizeof(cgroup_path));
+	if (!retval) {
+		err_msg("Did not find cgroupv2 mount point\n");
+		return -1;
+	}
+
+	if (!cgroup) {
+		retval = get_self_cgroup(&cgroup_path[strlen(cgroup_path)],
+				sizeof(cgroup_path) - strlen(cgroup_path));
+		if (!retval) {
+			err_msg("Did not find self cgroup\n");
+			return -1;
+		}
+	} else {
+		snprintf(&cgroup_path[strlen(cgroup_path)],
+				sizeof(cgroup_path) - strlen(cgroup_path), "%s/", cgroup);
+	}
+
+	snprintf(cgroup_procs, MAX_PATH, "%s/cgroup.procs", cgroup_path);
+
+	debug_msg("Using cgroup path at: %s\n", cgroup_procs);
+
+	cg_fd = open(cgroup_procs, O_RDWR);
+	if (cg_fd < 0)
+		return -1;
+
+	return cg_fd;
+}
+
+/*
+ * set_pid_cgroup - Set cgroup to pid_t pid
+ *
+ * If cgroup argument is not NULL, the threads will move to the given cgroup.
+ * Otherwise, the cgroup of the calling, i.e., rtla, thread will be used.
+ *
+ * Supports cgroup v2.
+ *
+ * Returns 1 on success, 0 otherwise.
+ */
+int set_pid_cgroup(pid_t pid, const char *cgroup)
+{
+	char pid_str[24];
+	int retval;
+	int cg_fd;
+
+	cg_fd = open_cgroup_procs(cgroup);
+	if (cg_fd < 0)
+		return 0;
+
+	snprintf(pid_str, sizeof(pid_str), "%d\n", pid);
+
+	retval = write(cg_fd, pid_str, strlen(pid_str));
+	if (retval < 0)
+		err_msg("Error setting cgroup attributes for pid:%s - %s\n",
+				pid_str, strerror(errno));
+	else
+		debug_msg("Set cgroup attributes for pid:%s\n", pid_str);
+
+	close(cg_fd);
+
+	return (retval >= 0);
+}
+
+/**
+ * set_comm_cgroup - Set cgroup to threads starting with char *comm_prefix
+ *
+ * If cgroup argument is not NULL, the threads will move to the given cgroup.
+ * Otherwise, the cgroup of the calling, i.e., rtla, thread will be used.
+ *
+ * Supports cgroup v2.
+ *
+ * Returns 1 on success, 0 otherwise.
+ */
+int set_comm_cgroup(const char *comm_prefix, const char *cgroup)
+{
+	struct dirent *proc_entry;
+	DIR *procfs;
+	int retval;
+	int cg_fd;
+
+	if (strlen(comm_prefix) >= MAX_PATH) {
+		err_msg("Command prefix is too long: %d < strlen(%s)\n",
+			MAX_PATH, comm_prefix);
+		return 0;
+	}
+
+	cg_fd = open_cgroup_procs(cgroup);
+	if (cg_fd < 0)
+		return 0;
+
+	procfs = opendir("/proc");
+	if (!procfs) {
+		err_msg("Could not open procfs\n");
+		goto out_cg;
+	}
+
+	while ((proc_entry = readdir(procfs))) {
+
+		retval = procfs_is_workload_pid(comm_prefix, proc_entry);
+		if (!retval)
+			continue;
+
+		retval = write(cg_fd, proc_entry->d_name, strlen(proc_entry->d_name));
+		if (retval < 0) {
+			err_msg("Error setting cgroup attributes for pid:%s - %s\n",
+				proc_entry->d_name, strerror(errno));
+			goto out_procfs;
+		}
+
+		debug_msg("Set cgroup attributes for pid:%s\n", proc_entry->d_name);
+	}
+
+	closedir(procfs);
+	close(cg_fd);
+	return 1;
+
+out_procfs:
+	closedir(procfs);
+out_cg:
+	close(cg_fd);
+	return 0;
+}
+
+/**
+ * auto_house_keeping - Automatically move rtla out of measurement threads
+ *
+ * Try to move rtla away from the tracer, if possible.
+ *
+ * Returns 1 on success, 0 otherwise.
+ */
+int auto_house_keeping(cpu_set_t *monitored_cpus)
+{
+	cpu_set_t rtla_cpus, house_keeping_cpus;
+	int retval;
+
+	/* first get the CPUs in which rtla can actually run. */
+	retval = sched_getaffinity(getpid(), sizeof(rtla_cpus), &rtla_cpus);
+	if (retval == -1) {
+		debug_msg("Could not get rtla affinity, rtla might run with the threads!\n");
+		return 0;
+	}
+
+	/* then check if the existing setup is already good. */
+	CPU_AND(&house_keeping_cpus, &rtla_cpus, monitored_cpus);
+	if (!CPU_COUNT(&house_keeping_cpus)) {
+		debug_msg("rtla and the monitored CPUs do not share CPUs.");
+		debug_msg("Skipping auto house-keeping\n");
+		return 1;
+	}
+
+	/* remove the intersection */
+	CPU_XOR(&house_keeping_cpus, &rtla_cpus, monitored_cpus);
+
+	/* get only those that rtla can run */
+	CPU_AND(&house_keeping_cpus, &house_keeping_cpus, &rtla_cpus);
+
+	/* is there any cpu left? */
+	if (!CPU_COUNT(&house_keeping_cpus)) {
+		debug_msg("Could not find any CPU for auto house-keeping\n");
+		return 0;
+	}
+
+	retval = sched_setaffinity(getpid(), sizeof(house_keeping_cpus), &house_keeping_cpus);
+	if (retval == -1) {
+		debug_msg("Could not set affinity for auto house-keeping\n");
+		return 0;
+	}
+
+	debug_msg("rtla automatically moved to an auto house-keeping cpu set\n");
+
+	return 1;
+}
+
+/**
+ * parse_optional_arg - Parse optional argument value
+ *
+ * Parse optional argument value, which can be in the form of:
+ * -sarg, -s/--long=arg, -s/--long arg
+ *
+ * Returns arg value if found, NULL otherwise.
+ */
+char *parse_optional_arg(int argc, char **argv)
+{
+	if (optarg) {
+		if (optarg[0] == '=') {
+			/* skip the = */
+			return &optarg[1];
+		} else {
+			return optarg;
+		}
+	/* parse argument of form -s [arg] and --long [arg]*/
+	} else if (optind < argc && argv[optind][0] != '-') {
+		/* consume optind */
+		return argv[optind++];
+	} else {
+		return NULL;
+	}
+}
+
+/*
+ * strtoi - convert string to integer with error checking
+ *
+ * Returns 0 on success, -1 if conversion fails or result is out of int range.
+ */
+int strtoi(const char *s, int *res)
+{
+	char *end_ptr;
+	long lres;
+
+	if (!*s)
+		return -1;
+
+	errno = 0;
+	lres = strtol(s, &end_ptr, 0);
+	if (errno || *end_ptr || lres > INT_MAX || lres < INT_MIN)
+		return -1;
+
+	*res = (int) lres;
+	return 0;
 }

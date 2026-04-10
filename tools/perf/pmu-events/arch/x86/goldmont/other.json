@@ -1,7 +1,6 @@
 [
     {
         "BriefDescription": "Cycles code-fetch stalled due to any reason.",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0x86",
         "EventName": "FETCH_STALL.ALL",
@@ -10,7 +9,6 @@
     },
     {
         "BriefDescription": "Cycles code-fetch stalled due to an outstanding ITLB miss.",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0x86",
         "EventName": "FETCH_STALL.ITLB_FILL_PENDING_CYCLES",
@@ -20,7 +18,6 @@
     },
     {
         "BriefDescription": "Cycles hardware interrupts are masked",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xCB",
         "EventName": "HW_INTERRUPTS.MASKED",
@@ -30,7 +27,6 @@
     },
     {
         "BriefDescription": "Cycles pending interrupts are masked",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xCB",
         "EventName": "HW_INTERRUPTS.PENDING_AND_MASKED",
@@ -40,7 +36,6 @@
     },
     {
         "BriefDescription": "Hardware interrupts received",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xCB",
         "EventName": "HW_INTERRUPTS.RECEIVED",

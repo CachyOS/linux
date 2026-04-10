@@ -7,7 +7,6 @@
 #include <linux/delay.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/regulator/consumer.h>
 
 #include <drm/drm_mipi_dsi.h>
@@ -444,9 +443,11 @@ static int k101_im2ba02_dsi_probe(struct mipi_dsi_device *dsi)
 	unsigned int i;
 	int ret;
 
-	ctx = devm_kzalloc(&dsi->dev, sizeof(*ctx), GFP_KERNEL);
-	if (!ctx)
-		return -ENOMEM;
+	ctx = devm_drm_panel_alloc(&dsi->dev, struct k101_im2ba02, panel,
+				   &k101_im2ba02_funcs,
+				   DRM_MODE_CONNECTOR_DSI);
+	if (IS_ERR(ctx))
+		return PTR_ERR(ctx);
 
 	mipi_dsi_set_drvdata(dsi, ctx);
 	ctx->dsi = dsi;
@@ -463,9 +464,6 @@ static int k101_im2ba02_dsi_probe(struct mipi_dsi_device *dsi)
 	if (IS_ERR(ctx->reset))
 		return dev_err_probe(&dsi->dev, PTR_ERR(ctx->reset),
 				     "Couldn't get our reset GPIO\n");
-
-	drm_panel_init(&ctx->panel, &dsi->dev, &k101_im2ba02_funcs,
-		       DRM_MODE_CONNECTOR_DSI);
 
 	ret = drm_panel_of_backlight(&ctx->panel);
 	if (ret)
@@ -486,14 +484,12 @@ static int k101_im2ba02_dsi_probe(struct mipi_dsi_device *dsi)
 	return 0;
 }
 
-static int k101_im2ba02_dsi_remove(struct mipi_dsi_device *dsi)
+static void k101_im2ba02_dsi_remove(struct mipi_dsi_device *dsi)
 {
 	struct k101_im2ba02 *ctx = mipi_dsi_get_drvdata(dsi);
 
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
-
-	return 0;
 }
 
 static const struct of_device_id k101_im2ba02_of_match[] = {

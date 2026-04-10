@@ -21,8 +21,8 @@ struct tb_ctl;
 typedef bool (*event_cb)(void *data, enum tb_cfg_pkg_type type,
 			 const void *buf, size_t size);
 
-struct tb_ctl *tb_ctl_alloc(struct tb_nhi *nhi, int timeout_msec, event_cb cb,
-			    void *cb_data);
+struct tb_ctl *tb_ctl_alloc(struct tb_nhi *nhi, int index, int timeout_msec,
+			    event_cb cb, void *cb_data);
 void tb_ctl_start(struct tb_ctl *ctl);
 void tb_ctl_stop(struct tb_ctl *ctl);
 void tb_ctl_free(struct tb_ctl *ctl);
@@ -35,7 +35,7 @@ struct tb_cfg_result {
 			    * If err = 1 then this is the port that send the
 			    * error.
 			    * If err = 0 and if this was a cfg_read/write then
-			    * this is the the upstream port of the responding
+			    * this is the upstream port of the responding
 			    * switch.
 			    * Otherwise the field is set to zero.
 			    */
@@ -54,6 +54,7 @@ struct ctl_pkg {
  * @kref: Reference count
  * @ctl: Pointer to the control channel structure. Only set when the
  *	 request is queued.
+ * @request: Request is stored here
  * @request_size: Size of the request packet (in bytes)
  * @request_type: Type of the request packet
  * @response: Response is stored here
@@ -122,6 +123,8 @@ static inline struct tb_cfg_header tb_cfg_make_header(u64 route)
 	return header;
 }
 
+int tb_cfg_ack_notification(struct tb_ctl *ctl, u64 route,
+			    const struct cfg_error_pkg *error);
 int tb_cfg_ack_plug(struct tb_ctl *ctl, u64 route, u32 port, bool unplug);
 struct tb_cfg_result tb_cfg_reset(struct tb_ctl *ctl, u64 route);
 struct tb_cfg_result tb_cfg_read_raw(struct tb_ctl *ctl, void *buffer,
@@ -137,6 +140,5 @@ int tb_cfg_read(struct tb_ctl *ctl, void *buffer, u64 route, u32 port,
 int tb_cfg_write(struct tb_ctl *ctl, const void *buffer, u64 route, u32 port,
 		 enum tb_cfg_space space, u32 offset, u32 length);
 int tb_cfg_get_upstream_port(struct tb_ctl *ctl, u64 route);
-
 
 #endif

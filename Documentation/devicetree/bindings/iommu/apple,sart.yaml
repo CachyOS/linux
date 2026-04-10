@@ -28,9 +28,16 @@ description:
 
 properties:
   compatible:
-    enum:
-      - apple,t6000-sart
-      - apple,t8103-sart
+    oneOf:
+      - items:
+          - enum:
+              - apple,t6020-sart
+              - apple,t8112-sart
+          - const: apple,t6000-sart
+      - enum:
+          - apple,t6000-sart
+          - apple,t8015-sart
+          - apple,t8103-sart
 
   reg:
     maxItems: 1

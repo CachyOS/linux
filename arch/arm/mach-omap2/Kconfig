@@ -105,6 +105,7 @@ config ARCH_OMAP2PLUS
 	select MACH_OMAP_GENERIC
 	select MEMORY
 	select MFD_SYSCON
+	select OMAP_DM_SYSTIMER
 	select OMAP_DM_TIMER
 	select OMAP_GPMC
 	select PINCTRL
@@ -122,7 +123,7 @@ config ARCH_OMAP2PLUS
 config OMAP_INTERCONNECT_BARRIER
 	bool
 	select ARM_HEAVY_MB
-	
+
 config ARCH_OMAP
 	bool
 
@@ -209,6 +210,7 @@ config SOC_OMAP2420
 	bool "OMAP2420 support"
 	depends on ARCH_OMAP2
 	default y
+	select OMAP_DM_SYSTIMER
 	select OMAP_DM_TIMER
 	select SOC_HAS_OMAP2_SDRC
 
@@ -241,10 +243,10 @@ config MACH_OMAP2_TUSB6010
 	default y if MACH_NOKIA_N8X0
 
 config MACH_NOKIA_N810
-       bool
+	bool
 
 config MACH_NOKIA_N810_WIMAX
-       bool
+	bool
 
 config MACH_NOKIA_N8X0
 	bool "Nokia N800/N810"
@@ -252,17 +254,6 @@ config MACH_NOKIA_N8X0
 	default y
 	select MACH_NOKIA_N810
 	select MACH_NOKIA_N810_WIMAX
-
-config OMAP3_SDRC_AC_TIMING
-	bool "Enable SDRC AC timing register changes"
-	depends on ARCH_OMAP3
-	help
-	  If you know that none of your system initiators will attempt to
-	  access SDRAM during CORE DVFS, select Y here.  This should boost
-	  SDRAM performance at lower CORE OPPs.  There are relatively few
-	  users who will wish to say yes at this point - almost everyone will
-	  wish to say no.  Selecting yes without understanding what is
-	  going on could result in system crashes;
 
 endmenu
 

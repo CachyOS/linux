@@ -1282,7 +1282,6 @@ bfa_iocfc_cfgrsp(struct bfa_s *bfa)
 	struct bfi_iocfc_cfgrsp_s	*cfgrsp	 = iocfc->cfgrsp;
 	struct bfa_iocfc_fwcfg_s	*fwcfg	 = &cfgrsp->fwcfg;
 
-	fwcfg->num_cqs	      = fwcfg->num_cqs;
 	fwcfg->num_ioim_reqs  = be16_to_cpu(fwcfg->num_ioim_reqs);
 	fwcfg->num_fwtio_reqs = be16_to_cpu(fwcfg->num_fwtio_reqs);
 	fwcfg->num_tskim_reqs = be16_to_cpu(fwcfg->num_tskim_reqs);
@@ -1907,15 +1906,13 @@ bfa_comp_process(struct bfa_s *bfa, struct list_head *comp_q)
 	struct list_head		*qe;
 	struct list_head		*qen;
 	struct bfa_cb_qe_s	*hcb_qe;
-	bfa_cb_cbfn_status_t	cbfn;
 
 	list_for_each_safe(qe, qen, comp_q) {
 		hcb_qe = (struct bfa_cb_qe_s *) qe;
 		if (hcb_qe->pre_rmv) {
 			/* qe is invalid after return, dequeue before cbfn() */
 			list_del(qe);
-			cbfn = (bfa_cb_cbfn_status_t)(hcb_qe->cbfn);
-			cbfn(hcb_qe->cbarg, hcb_qe->fw_status);
+			hcb_qe->cbfn_status(hcb_qe->cbarg, hcb_qe->fw_status);
 		} else
 			hcb_qe->cbfn(hcb_qe->cbarg, BFA_TRUE);
 	}
@@ -1933,24 +1930,6 @@ bfa_comp_free(struct bfa_s *bfa, struct list_head *comp_q)
 		WARN_ON(hcb_qe->pre_rmv);
 		hcb_qe->cbfn(hcb_qe->cbarg, BFA_FALSE);
 	}
-}
-
-/*
- * Return the list of PCI vendor/device id lists supported by this
- * BFA instance.
- */
-void
-bfa_get_pciids(struct bfa_pciid_s **pciids, int *npciids)
-{
-	static struct bfa_pciid_s __pciids[] = {
-		{BFA_PCI_VENDOR_ID_BROCADE, BFA_PCI_DEVICE_ID_FC_8G2P},
-		{BFA_PCI_VENDOR_ID_BROCADE, BFA_PCI_DEVICE_ID_FC_8G1P},
-		{BFA_PCI_VENDOR_ID_BROCADE, BFA_PCI_DEVICE_ID_CT},
-		{BFA_PCI_VENDOR_ID_BROCADE, BFA_PCI_DEVICE_ID_CT_FC},
-	};
-
-	*npciids = ARRAY_SIZE(__pciids);
-	*pciids = __pciids;
 }
 
 /*
@@ -1988,21 +1967,4 @@ bfa_cfg_get_default(struct bfa_iocfc_cfg_s *cfg)
 	cfg->drvcfg.ioc_recover = BFA_FALSE;
 	cfg->drvcfg.delay_comp = BFA_FALSE;
 
-}
-
-void
-bfa_cfg_get_min(struct bfa_iocfc_cfg_s *cfg)
-{
-	bfa_cfg_get_default(cfg);
-	cfg->fwcfg.num_ioim_reqs   = BFA_IOIM_MIN;
-	cfg->fwcfg.num_tskim_reqs  = BFA_TSKIM_MIN;
-	cfg->fwcfg.num_fcxp_reqs   = BFA_FCXP_MIN;
-	cfg->fwcfg.num_uf_bufs     = BFA_UF_MIN;
-	cfg->fwcfg.num_rports      = BFA_RPORT_MIN;
-	cfg->fwcfg.num_fwtio_reqs = 0;
-
-	cfg->drvcfg.num_sgpgs      = BFA_SGPG_MIN;
-	cfg->drvcfg.num_reqq_elems = BFA_REQQ_NELEMS_MIN;
-	cfg->drvcfg.num_rspq_elems = BFA_RSPQ_NELEMS_MIN;
-	cfg->drvcfg.min_cfg	   = BFA_TRUE;
 }

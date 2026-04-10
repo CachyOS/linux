@@ -106,12 +106,12 @@ void dal_hw_generic_init(
 	enum gpio_id id,
 	uint32_t en)
 {
-	if ((en < GPIO_DDC_LINE_MIN) || (en > GPIO_DDC_LINE_MAX)) {
+	if (en > GPIO_DDC_LINE_MAX) {
 		ASSERT_CRITICAL(false);
 		*hw_generic = NULL;
 	}
 
-	*hw_generic = kzalloc(sizeof(struct hw_generic), GFP_KERNEL);
+	*hw_generic = kzalloc_obj(struct hw_generic);
 	if (!*hw_generic) {
 		ASSERT_CRITICAL(false);
 		return;

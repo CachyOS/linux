@@ -16,6 +16,7 @@
 #include <linux/bitops.h>
 #include <linux/pm_qos.h>
 #include <linux/refcount.h>
+#include <linux/uio.h>
 
 #define snd_pcm_substream_chip(substream) ((substream)->private_data)
 #define snd_pcm_chip(pcm) ((pcm)->private_data)
@@ -31,6 +32,7 @@
 struct snd_pcm_hardware {
 	unsigned int info;		/* SNDRV_PCM_INFO_* */
 	u64 formats;			/* SNDRV_PCM_FMTBIT_* */
+	u32 subformats;			/* for S32_LE, SNDRV_PCM_SUBFMTBIT_* */
 	unsigned int rates;		/* SNDRV_PCM_RATE_* */
 	unsigned int rate_min;		/* min rate */
 	unsigned int rate_max;		/* max rate */
@@ -68,11 +70,8 @@ struct snd_pcm_ops {
 			struct snd_pcm_audio_tstamp_report *audio_tstamp_report);
 	int (*fill_silence)(struct snd_pcm_substream *substream, int channel,
 			    unsigned long pos, unsigned long bytes);
-	int (*copy_user)(struct snd_pcm_substream *substream, int channel,
-			 unsigned long pos, void __user *buf,
-			 unsigned long bytes);
-	int (*copy_kernel)(struct snd_pcm_substream *substream, int channel,
-			   unsigned long pos, void *buf, unsigned long bytes);
+	int (*copy)(struct snd_pcm_substream *substream, int channel,
+		    unsigned long pos, struct iov_iter *iter, unsigned long bytes);
 	struct page *(*page)(struct snd_pcm_substream *substream,
 			     unsigned long offset);
 	int (*mmap)(struct snd_pcm_substream *substream, struct vm_area_struct *vma);
@@ -94,36 +93,43 @@ struct snd_pcm_ops {
 #define SNDRV_PCM_IOCTL1_CHANNEL_INFO	2
 /* 3 is absent slot. */
 #define SNDRV_PCM_IOCTL1_FIFO_SIZE	4
+#define SNDRV_PCM_IOCTL1_SYNC_ID	5
 
 #define SNDRV_PCM_TRIGGER_STOP		0
 #define SNDRV_PCM_TRIGGER_START		1
-#define SNDRV_PCM_TRIGGER_PAUSE_PUSH	3
-#define SNDRV_PCM_TRIGGER_PAUSE_RELEASE	4
-#define SNDRV_PCM_TRIGGER_SUSPEND	5
-#define SNDRV_PCM_TRIGGER_RESUME	6
-#define SNDRV_PCM_TRIGGER_DRAIN		7
+#define SNDRV_PCM_TRIGGER_PAUSE_PUSH	2
+#define SNDRV_PCM_TRIGGER_PAUSE_RELEASE	3
+#define SNDRV_PCM_TRIGGER_SUSPEND	4
+#define SNDRV_PCM_TRIGGER_RESUME	5
+#define SNDRV_PCM_TRIGGER_DRAIN		6
 
 #define SNDRV_PCM_POS_XRUN		((snd_pcm_uframes_t)-1)
 
 /* If you change this don't forget to change rates[] table in pcm_native.c */
-#define SNDRV_PCM_RATE_5512		(1<<0)		/* 5512Hz */
-#define SNDRV_PCM_RATE_8000		(1<<1)		/* 8000Hz */
-#define SNDRV_PCM_RATE_11025		(1<<2)		/* 11025Hz */
-#define SNDRV_PCM_RATE_16000		(1<<3)		/* 16000Hz */
-#define SNDRV_PCM_RATE_22050		(1<<4)		/* 22050Hz */
-#define SNDRV_PCM_RATE_32000		(1<<5)		/* 32000Hz */
-#define SNDRV_PCM_RATE_44100		(1<<6)		/* 44100Hz */
-#define SNDRV_PCM_RATE_48000		(1<<7)		/* 48000Hz */
-#define SNDRV_PCM_RATE_64000		(1<<8)		/* 64000Hz */
-#define SNDRV_PCM_RATE_88200		(1<<9)		/* 88200Hz */
-#define SNDRV_PCM_RATE_96000		(1<<10)		/* 96000Hz */
-#define SNDRV_PCM_RATE_176400		(1<<11)		/* 176400Hz */
-#define SNDRV_PCM_RATE_192000		(1<<12)		/* 192000Hz */
-#define SNDRV_PCM_RATE_352800		(1<<13)		/* 352800Hz */
-#define SNDRV_PCM_RATE_384000		(1<<14)		/* 384000Hz */
+#define SNDRV_PCM_RATE_5512		(1U<<0)		/* 5512Hz */
+#define SNDRV_PCM_RATE_8000		(1U<<1)		/* 8000Hz */
+#define SNDRV_PCM_RATE_11025		(1U<<2)		/* 11025Hz */
+#define SNDRV_PCM_RATE_16000		(1U<<3)		/* 16000Hz */
+#define SNDRV_PCM_RATE_22050		(1U<<4)		/* 22050Hz */
+#define SNDRV_PCM_RATE_32000		(1U<<5)		/* 32000Hz */
+#define SNDRV_PCM_RATE_44100		(1U<<6)		/* 44100Hz */
+#define SNDRV_PCM_RATE_48000		(1U<<7)		/* 48000Hz */
+#define SNDRV_PCM_RATE_64000		(1U<<8)		/* 64000Hz */
+#define SNDRV_PCM_RATE_88200		(1U<<9)		/* 88200Hz */
+#define SNDRV_PCM_RATE_96000		(1U<<10)	/* 96000Hz */
+#define SNDRV_PCM_RATE_176400		(1U<<11)	/* 176400Hz */
+#define SNDRV_PCM_RATE_192000		(1U<<12)	/* 192000Hz */
+#define SNDRV_PCM_RATE_352800		(1U<<13)	/* 352800Hz */
+#define SNDRV_PCM_RATE_384000		(1U<<14)	/* 384000Hz */
+#define SNDRV_PCM_RATE_705600		(1U<<15)	/* 705600Hz */
+#define SNDRV_PCM_RATE_768000		(1U<<16)	/* 768000Hz */
+/* extended rates since 6.12 */
+#define SNDRV_PCM_RATE_12000		(1U<<17)	/* 12000Hz */
+#define SNDRV_PCM_RATE_24000		(1U<<18)	/* 24000Hz */
+#define SNDRV_PCM_RATE_128000		(1U<<19)	/* 128000Hz */
 
-#define SNDRV_PCM_RATE_CONTINUOUS	(1<<30)		/* continuous range */
-#define SNDRV_PCM_RATE_KNOT		(1<<31)		/* supports more non-continuos rates */
+#define SNDRV_PCM_RATE_CONTINUOUS	(1U<<30)	/* continuous range */
+#define SNDRV_PCM_RATE_KNOT		(1U<<31)	/* supports more non-continuous rates */
 
 #define SNDRV_PCM_RATE_8000_44100	(SNDRV_PCM_RATE_8000|SNDRV_PCM_RATE_11025|\
 					 SNDRV_PCM_RATE_16000|SNDRV_PCM_RATE_22050|\
@@ -136,6 +142,9 @@ struct snd_pcm_ops {
 #define SNDRV_PCM_RATE_8000_384000	(SNDRV_PCM_RATE_8000_192000|\
 					 SNDRV_PCM_RATE_352800|\
 					 SNDRV_PCM_RATE_384000)
+#define SNDRV_PCM_RATE_8000_768000	(SNDRV_PCM_RATE_8000_384000|\
+					 SNDRV_PCM_RATE_705600|\
+					 SNDRV_PCM_RATE_768000)
 #define _SNDRV_PCM_FMTBIT(fmt)		(1ULL << (__force int)SNDRV_PCM_FORMAT_##fmt)
 #define SNDRV_PCM_FMTBIT_S8		_SNDRV_PCM_FMTBIT(S8)
 #define SNDRV_PCM_FMTBIT_U8		_SNDRV_PCM_FMTBIT(U8)
@@ -218,6 +227,12 @@ struct snd_pcm_ops {
 #define SNDRV_PCM_FMTBIT_S20		SNDRV_PCM_FMTBIT_S20_BE
 #define SNDRV_PCM_FMTBIT_U20		SNDRV_PCM_FMTBIT_U20_BE
 #endif
+
+#define _SNDRV_PCM_SUBFMTBIT(fmt)	BIT((__force int)SNDRV_PCM_SUBFORMAT_##fmt)
+#define SNDRV_PCM_SUBFMTBIT_STD		_SNDRV_PCM_SUBFMTBIT(STD)
+#define SNDRV_PCM_SUBFMTBIT_MSBITS_MAX	_SNDRV_PCM_SUBFMTBIT(MSBITS_MAX)
+#define SNDRV_PCM_SUBFMTBIT_MSBITS_20	_SNDRV_PCM_SUBFMTBIT(MSBITS_20)
+#define SNDRV_PCM_SUBFMTBIT_MSBITS_24	_SNDRV_PCM_SUBFMTBIT(MSBITS_24)
 
 struct snd_pcm_file {
 	struct snd_pcm_substream *substream;
@@ -346,6 +361,8 @@ static inline void snd_pcm_pack_audio_tstamp_report(__u32 *data, __u32 *accuracy
 
 struct snd_pcm_runtime {
 	/* -- Status -- */
+	snd_pcm_state_t state;		/* stream state */
+	snd_pcm_state_t suspended_state; /* suspended stream state */
 	struct snd_pcm_substream *trigger_master;
 	struct timespec64 trigger_tstamp;	/* trigger timestamp */
 	bool trigger_tstamp_latched;     /* trigger timestamp latched in low-level driver/hardware */
@@ -376,20 +393,20 @@ struct snd_pcm_runtime {
 	unsigned int rate_den;
 	unsigned int no_period_wakeup: 1;
 
-	/* -- SW params -- */
-	int tstamp_mode;		/* mmap timestamp is updated */
+	/* -- SW params; see struct snd_pcm_sw_params for comments -- */
+	int tstamp_mode;
   	unsigned int period_step;
 	snd_pcm_uframes_t start_threshold;
 	snd_pcm_uframes_t stop_threshold;
-	snd_pcm_uframes_t silence_threshold; /* Silence filling happens when
-						noise is nearest than this */
-	snd_pcm_uframes_t silence_size;	/* Silence filling size */
-	snd_pcm_uframes_t boundary;	/* pointers wrap point */
+	snd_pcm_uframes_t silence_threshold;
+	snd_pcm_uframes_t silence_size;
+	snd_pcm_uframes_t boundary;
 
+	/* internal data of auto-silencer */
 	snd_pcm_uframes_t silence_start; /* starting pointer to silence area */
-	snd_pcm_uframes_t silence_filled; /* size filled with silence */
+	snd_pcm_uframes_t silence_filled; /* already filled part of silence area */
 
-	union snd_pcm_sync_id sync;	/* hardware synchronization ID */
+	bool std_sync_id;		/* hardware synchronization - standard per card ID */
 
 	/* -- mmap -- */
 	struct snd_pcm_mmap_status *status;
@@ -399,7 +416,7 @@ struct snd_pcm_runtime {
 	snd_pcm_uframes_t twake; 	/* do transfer (!poll) wakeup if non-zero */
 	wait_queue_head_t sleep;	/* poll sleep */
 	wait_queue_head_t tsleep;	/* transfer sleep */
-	struct fasync_struct *fasync;
+	struct snd_fasync *fasync;
 	bool stop_operating;		/* sync_stop will be called */
 	struct mutex buffer_mutex;	/* protect for buffer changes */
 	atomic_t buffer_accessing;	/* >0: in r/w operation, <0: blocked */
@@ -485,6 +502,9 @@ struct snd_pcm_substream {
 	/* misc flags */
 	unsigned int hw_opened: 1;
 	unsigned int managed_buffer_alloc:1;
+#ifdef CONFIG_SND_PCM_XRUN_DEBUG
+	unsigned int xrun_counter; /* number of times xrun happens */
+#endif /* CONFIG_SND_PCM_XRUN_DEBUG */
 };
 
 #define SUBSTREAM_BUSY(substream) ((substream)->ref_count > 0)
@@ -508,7 +528,7 @@ struct snd_pcm_str {
 #endif
 #endif
 	struct snd_kcontrol *chmap_kctl; /* channel-mapping controls */
-	struct device dev;
+	struct device *dev;
 };
 
 struct snd_pcm {
@@ -607,7 +627,7 @@ snd_pcm_debug_name(struct snd_pcm_substream *substream, char *buf, size_t size)
  * snd_pcm_stream_linked - Check whether the substream is linked with others
  * @substream: substream to check
  *
- * Returns true if the given substream is being linked with others.
+ * Return: true if the given substream is being linked with others
  */
 static inline int snd_pcm_stream_linked(struct snd_pcm_substream *substream)
 {
@@ -652,6 +672,18 @@ void snd_pcm_stream_unlock_irqrestore(struct snd_pcm_substream *substream,
 		flags = _snd_pcm_stream_lock_irqsave_nested(substream); \
 	} while (0)
 
+/* definitions for guard(); use like guard(pcm_stream_lock) */
+DEFINE_LOCK_GUARD_1(pcm_stream_lock, struct snd_pcm_substream,
+		    snd_pcm_stream_lock(_T->lock),
+		    snd_pcm_stream_unlock(_T->lock))
+DEFINE_LOCK_GUARD_1(pcm_stream_lock_irq, struct snd_pcm_substream,
+		    snd_pcm_stream_lock_irq(_T->lock),
+		    snd_pcm_stream_unlock_irq(_T->lock))
+DEFINE_LOCK_GUARD_1(pcm_stream_lock_irqsave, struct snd_pcm_substream,
+		    snd_pcm_stream_lock_irqsave(_T->lock, _T->flags),
+		    snd_pcm_stream_unlock_irqrestore(_T->lock, _T->flags),
+		    unsigned long flags)
+
 /**
  * snd_pcm_group_for_each_entry - iterate over the linked substreams
  * @s: the iterator
@@ -673,20 +705,36 @@ void snd_pcm_stream_unlock_irqrestore(struct snd_pcm_substream *substream,
  * snd_pcm_running - Check whether the substream is in a running state
  * @substream: substream to check
  *
- * Returns true if the given substream is in the state RUNNING, or in the
+ * Return: true if the given substream is in the state RUNNING, or in the
  * state DRAINING for playback.
  */
 static inline int snd_pcm_running(struct snd_pcm_substream *substream)
 {
-	return (substream->runtime->status->state == SNDRV_PCM_STATE_RUNNING ||
-		(substream->runtime->status->state == SNDRV_PCM_STATE_DRAINING &&
+	return (substream->runtime->state == SNDRV_PCM_STATE_RUNNING ||
+		(substream->runtime->state == SNDRV_PCM_STATE_DRAINING &&
 		 substream->stream == SNDRV_PCM_STREAM_PLAYBACK));
+}
+
+/**
+ * __snd_pcm_set_state - Change the current PCM state
+ * @runtime: PCM runtime to set
+ * @state: the current state to set
+ *
+ * Call within the stream lock
+ */
+static inline void __snd_pcm_set_state(struct snd_pcm_runtime *runtime,
+				       snd_pcm_state_t state)
+{
+	runtime->state = state;
+	runtime->status->state = state; /* copy for mmap */
 }
 
 /**
  * bytes_to_samples - Unit conversion of the size from bytes to samples
  * @runtime: PCM runtime instance
  * @size: size in bytes
+ *
+ * Return: the size in samples
  */
 static inline ssize_t bytes_to_samples(struct snd_pcm_runtime *runtime, ssize_t size)
 {
@@ -697,6 +745,8 @@ static inline ssize_t bytes_to_samples(struct snd_pcm_runtime *runtime, ssize_t 
  * bytes_to_frames - Unit conversion of the size from bytes to frames
  * @runtime: PCM runtime instance
  * @size: size in bytes
+ *
+ * Return: the size in frames
  */
 static inline snd_pcm_sframes_t bytes_to_frames(struct snd_pcm_runtime *runtime, ssize_t size)
 {
@@ -707,6 +757,8 @@ static inline snd_pcm_sframes_t bytes_to_frames(struct snd_pcm_runtime *runtime,
  * samples_to_bytes - Unit conversion of the size from samples to bytes
  * @runtime: PCM runtime instance
  * @size: size in samples
+ *
+ * Return: the byte size
  */
 static inline ssize_t samples_to_bytes(struct snd_pcm_runtime *runtime, ssize_t size)
 {
@@ -717,6 +769,8 @@ static inline ssize_t samples_to_bytes(struct snd_pcm_runtime *runtime, ssize_t 
  * frames_to_bytes - Unit conversion of the size from frames to bytes
  * @runtime: PCM runtime instance
  * @size: size in frames
+ *
+ * Return: the byte size
  */
 static inline ssize_t frames_to_bytes(struct snd_pcm_runtime *runtime, snd_pcm_sframes_t size)
 {
@@ -727,6 +781,8 @@ static inline ssize_t frames_to_bytes(struct snd_pcm_runtime *runtime, snd_pcm_s
  * frame_aligned - Check whether the byte size is aligned to frames
  * @runtime: PCM runtime instance
  * @bytes: size in bytes
+ *
+ * Return: true if aligned, or false if not
  */
 static inline int frame_aligned(struct snd_pcm_runtime *runtime, ssize_t bytes)
 {
@@ -736,6 +792,8 @@ static inline int frame_aligned(struct snd_pcm_runtime *runtime, ssize_t bytes)
 /**
  * snd_pcm_lib_buffer_bytes - Get the buffer size of the current PCM in bytes
  * @substream: PCM substream
+ *
+ * Return: buffer byte size
  */
 static inline size_t snd_pcm_lib_buffer_bytes(struct snd_pcm_substream *substream)
 {
@@ -746,6 +804,8 @@ static inline size_t snd_pcm_lib_buffer_bytes(struct snd_pcm_substream *substrea
 /**
  * snd_pcm_lib_period_bytes - Get the period size of the current PCM in bytes
  * @substream: PCM substream
+ *
+ * Return: period byte size
  */
 static inline size_t snd_pcm_lib_period_bytes(struct snd_pcm_substream *substream)
 {
@@ -758,6 +818,8 @@ static inline size_t snd_pcm_lib_period_bytes(struct snd_pcm_substream *substrea
  * @runtime: PCM runtime instance
  *
  * Result is between 0 ... (boundary - 1)
+ *
+ * Return: available frame size
  */
 static inline snd_pcm_uframes_t snd_pcm_playback_avail(struct snd_pcm_runtime *runtime)
 {
@@ -774,6 +836,8 @@ static inline snd_pcm_uframes_t snd_pcm_playback_avail(struct snd_pcm_runtime *r
  * @runtime: PCM runtime instance
  *
  * Result is between 0 ... (boundary - 1)
+ *
+ * Return: available frame size
  */
 static inline snd_pcm_uframes_t snd_pcm_capture_avail(struct snd_pcm_runtime *runtime)
 {
@@ -786,6 +850,8 @@ static inline snd_pcm_uframes_t snd_pcm_capture_avail(struct snd_pcm_runtime *ru
 /**
  * snd_pcm_playback_hw_avail - Get the queued space for playback
  * @runtime: PCM runtime instance
+ *
+ * Return: available frame size
  */
 static inline snd_pcm_sframes_t snd_pcm_playback_hw_avail(struct snd_pcm_runtime *runtime)
 {
@@ -795,6 +861,8 @@ static inline snd_pcm_sframes_t snd_pcm_playback_hw_avail(struct snd_pcm_runtime
 /**
  * snd_pcm_capture_hw_avail - Get the free space for capture
  * @runtime: PCM runtime instance
+ *
+ * Return: available frame size
  */
 static inline snd_pcm_sframes_t snd_pcm_capture_hw_avail(struct snd_pcm_runtime *runtime)
 {
@@ -934,6 +1002,8 @@ static inline const struct snd_interval *hw_param_interval_c(const struct snd_pc
 /**
  * params_channels - Get the number of channels from the hw params
  * @p: hw params
+ *
+ * Return: the number of channels
  */
 static inline unsigned int params_channels(const struct snd_pcm_hw_params *p)
 {
@@ -943,6 +1013,8 @@ static inline unsigned int params_channels(const struct snd_pcm_hw_params *p)
 /**
  * params_rate - Get the sample rate from the hw params
  * @p: hw params
+ *
+ * Return: the sample rate
  */
 static inline unsigned int params_rate(const struct snd_pcm_hw_params *p)
 {
@@ -952,6 +1024,8 @@ static inline unsigned int params_rate(const struct snd_pcm_hw_params *p)
 /**
  * params_period_size - Get the period size (in frames) from the hw params
  * @p: hw params
+ *
+ * Return: the period size in frames
  */
 static inline unsigned int params_period_size(const struct snd_pcm_hw_params *p)
 {
@@ -961,6 +1035,8 @@ static inline unsigned int params_period_size(const struct snd_pcm_hw_params *p)
 /**
  * params_periods - Get the number of periods from the hw params
  * @p: hw params
+ *
+ * Return: the number of periods
  */
 static inline unsigned int params_periods(const struct snd_pcm_hw_params *p)
 {
@@ -970,6 +1046,8 @@ static inline unsigned int params_periods(const struct snd_pcm_hw_params *p)
 /**
  * params_buffer_size - Get the buffer size (in frames) from the hw params
  * @p: hw params
+ *
+ * Return: the buffer size in frames
  */
 static inline unsigned int params_buffer_size(const struct snd_pcm_hw_params *p)
 {
@@ -979,6 +1057,8 @@ static inline unsigned int params_buffer_size(const struct snd_pcm_hw_params *p)
 /**
  * params_buffer_bytes - Get the buffer size (in bytes) from the hw params
  * @p: hw params
+ *
+ * Return: the buffer size in bytes
  */
 static inline unsigned int params_buffer_bytes(const struct snd_pcm_hw_params *p)
 {
@@ -1083,7 +1163,18 @@ int snd_pcm_format_set_silence(snd_pcm_format_t format, void *buf, unsigned int 
 
 void snd_pcm_set_ops(struct snd_pcm * pcm, int direction,
 		     const struct snd_pcm_ops *ops);
-void snd_pcm_set_sync(struct snd_pcm_substream *substream);
+void snd_pcm_set_sync_per_card(struct snd_pcm_substream *substream, struct snd_pcm_hw_params *params,
+			       const unsigned char *id, unsigned int len);
+/**
+ * snd_pcm_set_sync - set the PCM sync id
+ * @substream: the pcm substream
+ *
+ * Use the default PCM sync identifier for the specific card.
+ */
+static inline void snd_pcm_set_sync(struct snd_pcm_substream *substream)
+{
+	substream->runtime->std_sync_id = true;
+}
 int snd_pcm_lib_ioctl(struct snd_pcm_substream *substream,
 		      unsigned int cmd, void *arg);                      
 void snd_pcm_period_elapsed_under_stream_lock(struct snd_pcm_substream *substream);
@@ -1160,8 +1251,6 @@ unsigned int snd_pcm_rate_to_rate_bit(unsigned int rate);
 unsigned int snd_pcm_rate_bit_to_rate(unsigned int rate_bit);
 unsigned int snd_pcm_rate_mask_intersect(unsigned int rates_a,
 					 unsigned int rates_b);
-unsigned int snd_pcm_rate_range_to_bits(unsigned int rate_min,
-					unsigned int rate_max);
 
 /**
  * snd_pcm_set_runtime_buffer - Set the PCM runtime buffer
@@ -1241,6 +1330,8 @@ int snd_pcm_set_managed_buffer_all(struct snd_pcm *pcm, int type,
  * only the given sized buffer and doesn't allow re-allocation nor dynamic
  * allocation of a larger buffer unlike the standard one.
  * The function may return -ENOMEM error, hence the caller must check it.
+ *
+ * Return: zero if successful, or a negative error code
  */
 static inline int __must_check
 snd_pcm_set_fixed_buffer(struct snd_pcm_substream *substream, int type,
@@ -1259,6 +1350,8 @@ snd_pcm_set_fixed_buffer(struct snd_pcm_substream *substream, int type,
  * Apply the set up of the fixed buffer via snd_pcm_set_fixed_buffer() for
  * all substream.  If any of allocation fails, it returns -ENOMEM, hence the
  * caller must check the return value.
+ *
+ * Return: zero if successful, or a negative error code
  */
 static inline int __must_check
 snd_pcm_set_fixed_buffer_all(struct snd_pcm *pcm, int type,
@@ -1267,54 +1360,14 @@ snd_pcm_set_fixed_buffer_all(struct snd_pcm *pcm, int type,
 	return snd_pcm_set_managed_buffer_all(pcm, type, data, size, 0);
 }
 
-int _snd_pcm_lib_alloc_vmalloc_buffer(struct snd_pcm_substream *substream,
-				      size_t size, gfp_t gfp_flags);
-int snd_pcm_lib_free_vmalloc_buffer(struct snd_pcm_substream *substream);
-struct page *snd_pcm_lib_get_vmalloc_page(struct snd_pcm_substream *substream,
-					  unsigned long offset);
-/**
- * snd_pcm_lib_alloc_vmalloc_buffer - allocate virtual DMA buffer
- * @substream: the substream to allocate the buffer to
- * @size: the requested buffer size, in bytes
- *
- * Allocates the PCM substream buffer using vmalloc(), i.e., the memory is
- * contiguous in kernel virtual space, but not in physical memory.  Use this
- * if the buffer is accessed by kernel code but not by device DMA.
- *
- * Return: 1 if the buffer was changed, 0 if not changed, or a negative error
- * code.
- */
-static inline int snd_pcm_lib_alloc_vmalloc_buffer
-			(struct snd_pcm_substream *substream, size_t size)
-{
-	return _snd_pcm_lib_alloc_vmalloc_buffer(substream, size,
-						 GFP_KERNEL | __GFP_HIGHMEM | __GFP_ZERO);
-}
-
-/**
- * snd_pcm_lib_alloc_vmalloc_32_buffer - allocate 32-bit-addressable buffer
- * @substream: the substream to allocate the buffer to
- * @size: the requested buffer size, in bytes
- *
- * This function works like snd_pcm_lib_alloc_vmalloc_buffer(), but uses
- * vmalloc_32(), i.e., the pages are allocated from 32-bit-addressable memory.
- *
- * Return: 1 if the buffer was changed, 0 if not changed, or a negative error
- * code.
- */
-static inline int snd_pcm_lib_alloc_vmalloc_32_buffer
-			(struct snd_pcm_substream *substream, size_t size)
-{
-	return _snd_pcm_lib_alloc_vmalloc_buffer(substream, size,
-						 GFP_KERNEL | GFP_DMA32 | __GFP_ZERO);
-}
-
 #define snd_pcm_get_dma_buf(substream) ((substream)->runtime->dma_buffer_p)
 
 /**
  * snd_pcm_sgbuf_get_addr - Get the DMA address at the corresponding offset
  * @substream: PCM substream
  * @ofs: byte offset
+ *
+ * Return: DMA address
  */
 static inline dma_addr_t
 snd_pcm_sgbuf_get_addr(struct snd_pcm_substream *substream, unsigned int ofs)
@@ -1328,36 +1381,14 @@ snd_pcm_sgbuf_get_addr(struct snd_pcm_substream *substream, unsigned int ofs)
  * @substream: PCM substream
  * @ofs: byte offset
  * @size: byte size to examine
+ *
+ * Return: chunk size
  */
 static inline unsigned int
 snd_pcm_sgbuf_get_chunk_size(struct snd_pcm_substream *substream,
 			     unsigned int ofs, unsigned int size)
 {
 	return snd_sgbuf_get_chunk_size(snd_pcm_get_dma_buf(substream), ofs, size);
-}
-
-/**
- * snd_pcm_mmap_data_open - increase the mmap counter
- * @area: VMA
- *
- * PCM mmap callback should handle this counter properly
- */
-static inline void snd_pcm_mmap_data_open(struct vm_area_struct *area)
-{
-	struct snd_pcm_substream *substream = (struct snd_pcm_substream *)area->vm_private_data;
-	atomic_inc(&substream->mmap_count);
-}
-
-/**
- * snd_pcm_mmap_data_close - decrease the mmap counter
- * @area: VMA
- *
- * PCM mmap callback should handle this counter properly
- */
-static inline void snd_pcm_mmap_data_close(struct vm_area_struct *area)
-{
-	struct snd_pcm_substream *substream = (struct snd_pcm_substream *)area->vm_private_data;
-	atomic_dec(&substream->mmap_count);
 }
 
 int snd_pcm_lib_default_mmap(struct snd_pcm_substream *substream,
@@ -1370,6 +1401,8 @@ int snd_pcm_lib_mmap_iomem(struct snd_pcm_substream *substream, struct vm_area_s
 #define SNDRV_PCM_INFO_MMAP_IOMEM	0
 #define snd_pcm_lib_mmap_iomem	NULL
 #endif
+
+int snd_pcm_runtime_buffer_set_silence(struct snd_pcm_runtime *runtime);
 
 /**
  * snd_pcm_limit_isa_dma_size - Get the max size fitting with ISA DMA transfer
@@ -1393,6 +1426,20 @@ static inline void snd_pcm_limit_isa_dma_size(int dma, size_t *max)
 const char *snd_pcm_format_name(snd_pcm_format_t format);
 
 /**
+ * snd_pcm_direction_name - Get a string naming the direction of a stream
+ * @direction: Stream's direction, one of SNDRV_PCM_STREAM_XXX
+ *
+ * Returns a string naming the direction of the stream.
+ */
+static inline const char *snd_pcm_direction_name(int direction)
+{
+	if (direction == SNDRV_PCM_STREAM_PLAYBACK)
+		return "Playback";
+	else
+		return "Capture";
+}
+
+/**
  * snd_pcm_stream_str - Get a string naming the direction of a stream
  * @substream: the pcm substream instance
  *
@@ -1400,10 +1447,7 @@ const char *snd_pcm_format_name(snd_pcm_format_t format);
  */
 static inline const char *snd_pcm_stream_str(struct snd_pcm_substream *substream)
 {
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-		return "Playback";
-	else
-		return "Capture";
+	return snd_pcm_direction_name(substream->stream);
 }
 
 /*
@@ -1430,6 +1474,8 @@ struct snd_pcm_chmap {
  * snd_pcm_chmap_substream - get the PCM substream assigned to the given chmap info
  * @info: chmap information
  * @idx: the substream number index
+ *
+ * Return: the matched PCM substream, or NULL if not found
  */
 static inline struct snd_pcm_substream *
 snd_pcm_chmap_substream(struct snd_pcm_chmap *info, unsigned int idx)
@@ -1460,6 +1506,8 @@ int snd_pcm_add_chmap_ctls(struct snd_pcm *pcm, int stream,
 /**
  * pcm_format_to_bits - Strong-typed conversion of pcm_format to bitwise
  * @pcm_format: PCM format
+ *
+ * Return: 64bit mask corresponding to the given PCM format
  */
 static inline u64 pcm_format_to_bits(snd_pcm_format_t pcm_format)
 {
@@ -1482,6 +1530,12 @@ static inline u64 pcm_format_to_bits(snd_pcm_format_t pcm_format)
 	dev_warn((pcm)->card->dev, fmt, ##args)
 #define pcm_dbg(pcm, fmt, args...) \
 	dev_dbg((pcm)->card->dev, fmt, ##args)
+
+/* helpers for copying between iov_iter and iomem */
+size_t copy_to_iter_fromio(const void __iomem *src, size_t bytes,
+			   struct iov_iter *iter) __must_check;
+size_t copy_from_iter_toio(void __iomem *dst, size_t bytes,
+			   struct iov_iter *iter) __must_check;
 
 struct snd_pcm_status64 {
 	snd_pcm_state_t state;		/* stream state */

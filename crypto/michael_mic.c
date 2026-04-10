@@ -7,7 +7,7 @@
  * Copyright (c) 2004 Jouni Malinen <j@w1.fi>
  */
 #include <crypto/internal/hash.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/string.h>
@@ -167,7 +167,7 @@ static void __exit michael_mic_exit(void)
 }
 
 
-subsys_initcall(michael_mic_init);
+module_init(michael_mic_init);
 module_exit(michael_mic_exit);
 
 MODULE_LICENSE("GPL v2");

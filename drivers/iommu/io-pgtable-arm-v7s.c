@@ -166,7 +166,6 @@ struct arm_v7s_io_pgtable {
 
 	arm_v7s_iopte		*pgd;
 	struct kmem_cache	*l2_tables;
-	spinlock_t		split_lock;
 };
 
 static bool arm_v7s_pte_is_cont(arm_v7s_iopte pte, int lvl);
@@ -182,20 +181,25 @@ static bool arm_v7s_is_mtk_enabled(struct io_pgtable_cfg *cfg)
 		(cfg->quirks & IO_PGTABLE_QUIRK_ARM_MTK_EXT);
 }
 
-static arm_v7s_iopte paddr_to_iopte(phys_addr_t paddr, int lvl,
-				    struct io_pgtable_cfg *cfg)
+static arm_v7s_iopte to_mtk_iopte(phys_addr_t paddr, arm_v7s_iopte pte)
 {
-	arm_v7s_iopte pte = paddr & ARM_V7S_LVL_MASK(lvl);
-
-	if (!arm_v7s_is_mtk_enabled(cfg))
-		return pte;
-
 	if (paddr & BIT_ULL(32))
 		pte |= ARM_V7S_ATTR_MTK_PA_BIT32;
 	if (paddr & BIT_ULL(33))
 		pte |= ARM_V7S_ATTR_MTK_PA_BIT33;
 	if (paddr & BIT_ULL(34))
 		pte |= ARM_V7S_ATTR_MTK_PA_BIT34;
+	return pte;
+}
+
+static arm_v7s_iopte paddr_to_iopte(phys_addr_t paddr, int lvl,
+				    struct io_pgtable_cfg *cfg)
+{
+	arm_v7s_iopte pte = paddr & ARM_V7S_LVL_MASK(lvl);
+
+	if (arm_v7s_is_mtk_enabled(cfg))
+		return to_mtk_iopte(paddr, pte);
+
 	return pte;
 }
 
@@ -240,10 +244,17 @@ static void *__arm_v7s_alloc_table(int lvl, gfp_t gfp,
 	dma_addr_t dma;
 	size_t size = ARM_V7S_TABLE_SIZE(lvl, cfg);
 	void *table = NULL;
+	gfp_t gfp_l1;
+
+	/*
+	 * ARM_MTK_TTBR_EXT extend the translation table base support larger
+	 * memory address.
+	 */
+	gfp_l1 = cfg->quirks & IO_PGTABLE_QUIRK_ARM_MTK_TTBR_EXT ?
+		 GFP_KERNEL : ARM_V7S_TABLE_GFP_DMA;
 
 	if (lvl == 1)
-		table = (void *)__get_free_pages(
-			__GFP_ZERO | ARM_V7S_TABLE_GFP_DMA, get_order(size));
+		table = (void *)__get_free_pages(gfp_l1 | __GFP_ZERO, get_order(size));
 	else if (lvl == 2)
 		table = kmem_cache_zalloc(data->l2_tables, gfp);
 
@@ -251,7 +262,8 @@ static void *__arm_v7s_alloc_table(int lvl, gfp_t gfp,
 		return NULL;
 
 	phys = virt_to_phys(table);
-	if (phys != (arm_v7s_iopte)phys) {
+	if (cfg->quirks & IO_PGTABLE_QUIRK_ARM_MTK_TTBR_EXT ?
+	    phys >= (1ULL << cfg->oas) : phys != (arm_v7s_iopte)phys) {
 		/* Doesn't fit in PTE */
 		dev_err(dev, "Page table does not fit in PTE: %pa", &phys);
 		goto out_free;
@@ -350,25 +362,6 @@ static arm_v7s_iopte arm_v7s_prot_to_pte(int prot, int lvl,
 	return pte;
 }
 
-static int arm_v7s_pte_to_prot(arm_v7s_iopte pte, int lvl)
-{
-	int prot = IOMMU_READ;
-	arm_v7s_iopte attr = pte >> ARM_V7S_ATTR_SHIFT(lvl);
-
-	if (!(attr & ARM_V7S_PTE_AP_RDONLY))
-		prot |= IOMMU_WRITE;
-	if (!(attr & ARM_V7S_PTE_AP_UNPRIV))
-		prot |= IOMMU_PRIV;
-	if ((attr & (ARM_V7S_TEX_MASK << ARM_V7S_TEX_SHIFT)) == 0)
-		prot |= IOMMU_MMIO;
-	else if (pte & ARM_V7S_ATTR_C)
-		prot |= IOMMU_CACHE;
-	if (pte & ARM_V7S_ATTR_XN(lvl))
-		prot |= IOMMU_NOEXEC;
-
-	return prot;
-}
-
 static arm_v7s_iopte arm_v7s_pte_to_cont(arm_v7s_iopte pte, int lvl)
 {
 	if (lvl == 1) {
@@ -381,23 +374,6 @@ static arm_v7s_iopte arm_v7s_pte_to_cont(arm_v7s_iopte pte, int lvl)
 		pte |= (xn << ARM_V7S_CONT_PAGE_XN_SHIFT) |
 		       (tex << ARM_V7S_CONT_PAGE_TEX_SHIFT) |
 		       ARM_V7S_PTE_TYPE_CONT_PAGE;
-	}
-	return pte;
-}
-
-static arm_v7s_iopte arm_v7s_cont_to_pte(arm_v7s_iopte pte, int lvl)
-{
-	if (lvl == 1) {
-		pte &= ~ARM_V7S_CONT_SECTION;
-	} else if (lvl == 2) {
-		arm_v7s_iopte xn = pte & BIT(ARM_V7S_CONT_PAGE_XN_SHIFT);
-		arm_v7s_iopte tex = pte & (ARM_V7S_CONT_PAGE_TEX_MASK <<
-					   ARM_V7S_CONT_PAGE_TEX_SHIFT);
-
-		pte ^= xn | tex | ARM_V7S_PTE_TYPE_CONT_PAGE;
-		pte |= (xn >> ARM_V7S_CONT_PAGE_XN_SHIFT) |
-		       (tex >> ARM_V7S_CONT_PAGE_TEX_SHIFT) |
-		       ARM_V7S_PTE_TYPE_PAGE;
 	}
 	return pte;
 }
@@ -457,9 +433,14 @@ static arm_v7s_iopte arm_v7s_install_table(arm_v7s_iopte *table,
 					   arm_v7s_iopte curr,
 					   struct io_pgtable_cfg *cfg)
 {
+	phys_addr_t phys = virt_to_phys(table);
 	arm_v7s_iopte old, new;
 
-	new = virt_to_phys(table) | ARM_V7S_PTE_TYPE_TABLE;
+	new = phys | ARM_V7S_PTE_TYPE_TABLE;
+
+	if (cfg->quirks & IO_PGTABLE_QUIRK_ARM_MTK_TTBR_EXT)
+		new = to_mtk_iopte(phys, new);
+
 	if (cfg->quirks & IO_PGTABLE_QUIRK_ARM_NS)
 		new |= ARM_V7S_ATTR_NS_TABLE;
 
@@ -534,9 +515,8 @@ static int arm_v7s_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
 		    paddr >= (1ULL << data->iop.cfg.oas)))
 		return -ERANGE;
 
-	/* If no access, then nothing to do */
 	if (!(prot & (IOMMU_READ | IOMMU_WRITE)))
-		return 0;
+		return -EINVAL;
 
 	while (pgcount--) {
 		ret = __arm_v7s_map(data, iova, paddr, pgsize, prot, 1, data->pgd,
@@ -546,8 +526,7 @@ static int arm_v7s_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
 
 		iova += pgsize;
 		paddr += pgsize;
-		if (mapped)
-			*mapped += pgsize;
+		*mapped += pgsize;
 	}
 	/*
 	 * Synchronise all PTE updates for the new mapping before there's
@@ -556,12 +535,6 @@ static int arm_v7s_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
 	wmb();
 
 	return ret;
-}
-
-static int arm_v7s_map(struct io_pgtable_ops *ops, unsigned long iova,
-		       phys_addr_t paddr, size_t size, int prot, gfp_t gfp)
-{
-	return arm_v7s_map_pages(ops, iova, paddr, size, 1, prot, gfp, NULL);
 }
 
 static void arm_v7s_free_pgtable(struct io_pgtable *iop)
@@ -579,77 +552,6 @@ static void arm_v7s_free_pgtable(struct io_pgtable *iop)
 	__arm_v7s_free_table(data->pgd, 1, data);
 	kmem_cache_destroy(data->l2_tables);
 	kfree(data);
-}
-
-static arm_v7s_iopte arm_v7s_split_cont(struct arm_v7s_io_pgtable *data,
-					unsigned long iova, int idx, int lvl,
-					arm_v7s_iopte *ptep)
-{
-	struct io_pgtable *iop = &data->iop;
-	arm_v7s_iopte pte;
-	size_t size = ARM_V7S_BLOCK_SIZE(lvl);
-	int i;
-
-	/* Check that we didn't lose a race to get the lock */
-	pte = *ptep;
-	if (!arm_v7s_pte_is_cont(pte, lvl))
-		return pte;
-
-	ptep -= idx & (ARM_V7S_CONT_PAGES - 1);
-	pte = arm_v7s_cont_to_pte(pte, lvl);
-	for (i = 0; i < ARM_V7S_CONT_PAGES; i++)
-		ptep[i] = pte + i * size;
-
-	__arm_v7s_pte_sync(ptep, ARM_V7S_CONT_PAGES, &iop->cfg);
-
-	size *= ARM_V7S_CONT_PAGES;
-	io_pgtable_tlb_flush_walk(iop, iova, size, size);
-	return pte;
-}
-
-static size_t arm_v7s_split_blk_unmap(struct arm_v7s_io_pgtable *data,
-				      struct iommu_iotlb_gather *gather,
-				      unsigned long iova, size_t size,
-				      arm_v7s_iopte blk_pte,
-				      arm_v7s_iopte *ptep)
-{
-	struct io_pgtable_cfg *cfg = &data->iop.cfg;
-	arm_v7s_iopte pte, *tablep;
-	int i, unmap_idx, num_entries, num_ptes;
-
-	tablep = __arm_v7s_alloc_table(2, GFP_ATOMIC, data);
-	if (!tablep)
-		return 0; /* Bytes unmapped */
-
-	num_ptes = ARM_V7S_PTES_PER_LVL(2, cfg);
-	num_entries = size >> ARM_V7S_LVL_SHIFT(2);
-	unmap_idx = ARM_V7S_LVL_IDX(iova, 2, cfg);
-
-	pte = arm_v7s_prot_to_pte(arm_v7s_pte_to_prot(blk_pte, 1), 2, cfg);
-	if (num_entries > 1)
-		pte = arm_v7s_pte_to_cont(pte, 2);
-
-	for (i = 0; i < num_ptes; i += num_entries, pte += size) {
-		/* Unmap! */
-		if (i == unmap_idx)
-			continue;
-
-		__arm_v7s_set_pte(&tablep[i], pte, num_entries, cfg);
-	}
-
-	pte = arm_v7s_install_table(tablep, ptep, blk_pte, cfg);
-	if (pte != blk_pte) {
-		__arm_v7s_free_table(tablep, 2, data);
-
-		if (!ARM_V7S_PTE_IS_TABLE(pte, 1))
-			return 0;
-
-		tablep = iopte_deref(pte, 1, data);
-		return __arm_v7s_unmap(data, gather, iova, size, 2, tablep);
-	}
-
-	io_pgtable_tlb_add_page(&data->iop, gather, iova, size);
-	return size;
 }
 
 static size_t __arm_v7s_unmap(struct arm_v7s_io_pgtable *data,
@@ -684,11 +586,8 @@ static size_t __arm_v7s_unmap(struct arm_v7s_io_pgtable *data,
 	 * case in a lock for the sake of correctness and be done with it.
 	 */
 	if (num_entries <= 1 && arm_v7s_pte_is_cont(pte[0], lvl)) {
-		unsigned long flags;
-
-		spin_lock_irqsave(&data->split_lock, flags);
-		pte[0] = arm_v7s_split_cont(data, iova, idx, lvl, ptep);
-		spin_unlock_irqrestore(&data->split_lock, flags);
+		WARN_ONCE(true, "Unmap of a partial large IOPTE is not allowed");
+		return 0;
 	}
 
 	/* If the size matches this level, we're in the right place */
@@ -711,12 +610,8 @@ static size_t __arm_v7s_unmap(struct arm_v7s_io_pgtable *data,
 		}
 		return size;
 	} else if (lvl == 1 && !ARM_V7S_PTE_IS_TABLE(pte[0], lvl)) {
-		/*
-		 * Insert a table at the next level to map the old region,
-		 * minus the part we want to unmap
-		 */
-		return arm_v7s_split_blk_unmap(data, gather, iova, size, pte[0],
-					       ptep);
+		WARN_ONCE(true, "Unmap of a partial large IOPTE is not allowed");
+		return 0;
 	}
 
 	/* Keep on walkin' */
@@ -746,12 +641,6 @@ static size_t arm_v7s_unmap_pages(struct io_pgtable_ops *ops, unsigned long iova
 	return unmapped;
 }
 
-static size_t arm_v7s_unmap(struct io_pgtable_ops *ops, unsigned long iova,
-			    size_t size, struct iommu_iotlb_gather *gather)
-{
-	return arm_v7s_unmap_pages(ops, iova, size, 1, gather);
-}
-
 static phys_addr_t arm_v7s_iova_to_phys(struct io_pgtable_ops *ops,
 					unsigned long iova)
 {
@@ -779,6 +668,8 @@ static struct io_pgtable *arm_v7s_alloc_pgtable(struct io_pgtable_cfg *cfg,
 						void *cookie)
 {
 	struct arm_v7s_io_pgtable *data;
+	slab_flags_t slab_flag;
+	phys_addr_t paddr;
 
 	if (cfg->ias > (arm_v7s_is_mtk_enabled(cfg) ? 34 : ARM_V7S_ADDR_BITS))
 		return NULL;
@@ -788,7 +679,8 @@ static struct io_pgtable *arm_v7s_alloc_pgtable(struct io_pgtable_cfg *cfg,
 
 	if (cfg->quirks & ~(IO_PGTABLE_QUIRK_ARM_NS |
 			    IO_PGTABLE_QUIRK_NO_PERMS |
-			    IO_PGTABLE_QUIRK_ARM_MTK_EXT))
+			    IO_PGTABLE_QUIRK_ARM_MTK_EXT |
+			    IO_PGTABLE_QUIRK_ARM_MTK_TTBR_EXT))
 		return NULL;
 
 	/* If ARM_MTK_4GB is enabled, the NO_PERMS is also expected. */
@@ -796,22 +688,30 @@ static struct io_pgtable *arm_v7s_alloc_pgtable(struct io_pgtable_cfg *cfg,
 	    !(cfg->quirks & IO_PGTABLE_QUIRK_NO_PERMS))
 			return NULL;
 
-	data = kmalloc(sizeof(*data), GFP_KERNEL);
+	if ((cfg->quirks & IO_PGTABLE_QUIRK_ARM_MTK_TTBR_EXT) &&
+	    !arm_v7s_is_mtk_enabled(cfg))
+		return NULL;
+
+	data = kmalloc_obj(*data);
 	if (!data)
 		return NULL;
 
-	spin_lock_init(&data->split_lock);
+	/*
+	 * ARM_MTK_TTBR_EXT extend the translation table base support larger
+	 * memory address.
+	 */
+	slab_flag = cfg->quirks & IO_PGTABLE_QUIRK_ARM_MTK_TTBR_EXT ?
+		    0 : ARM_V7S_TABLE_SLAB_FLAGS;
+
 	data->l2_tables = kmem_cache_create("io-pgtable_armv7s_l2",
 					    ARM_V7S_TABLE_SIZE(2, cfg),
 					    ARM_V7S_TABLE_SIZE(2, cfg),
-					    ARM_V7S_TABLE_SLAB_FLAGS, NULL);
+					    slab_flag, NULL);
 	if (!data->l2_tables)
 		goto out_free_data;
 
 	data->iop.ops = (struct io_pgtable_ops) {
-		.map		= arm_v7s_map,
 		.map_pages	= arm_v7s_map_pages,
-		.unmap		= arm_v7s_unmap,
 		.unmap_pages	= arm_v7s_unmap_pages,
 		.iova_to_phys	= arm_v7s_iova_to_phys,
 	};
@@ -850,12 +750,16 @@ static struct io_pgtable *arm_v7s_alloc_pgtable(struct io_pgtable_cfg *cfg,
 	wmb();
 
 	/* TTBR */
-	cfg->arm_v7s_cfg.ttbr = virt_to_phys(data->pgd) | ARM_V7S_TTBR_S |
-				(cfg->coherent_walk ? (ARM_V7S_TTBR_NOS |
-				 ARM_V7S_TTBR_IRGN_ATTR(ARM_V7S_RGN_WBWA) |
-				 ARM_V7S_TTBR_ORGN_ATTR(ARM_V7S_RGN_WBWA)) :
-				(ARM_V7S_TTBR_IRGN_ATTR(ARM_V7S_RGN_NC) |
-				 ARM_V7S_TTBR_ORGN_ATTR(ARM_V7S_RGN_NC)));
+	paddr = virt_to_phys(data->pgd);
+	if (arm_v7s_is_mtk_enabled(cfg))
+		cfg->arm_v7s_cfg.ttbr = paddr | upper_32_bits(paddr);
+	else
+		cfg->arm_v7s_cfg.ttbr = paddr | ARM_V7S_TTBR_S |
+					(cfg->coherent_walk ? (ARM_V7S_TTBR_NOS |
+					 ARM_V7S_TTBR_IRGN_ATTR(ARM_V7S_RGN_WBWA) |
+					 ARM_V7S_TTBR_ORGN_ATTR(ARM_V7S_RGN_WBWA)) :
+					(ARM_V7S_TTBR_IRGN_ATTR(ARM_V7S_RGN_NC) |
+					 ARM_V7S_TTBR_ORGN_ATTR(ARM_V7S_RGN_NC)));
 	return &data->iop;
 
 out_free_data:
@@ -915,8 +819,9 @@ static int __init arm_v7s_do_selftests(void)
 		.quirks = IO_PGTABLE_QUIRK_ARM_NS,
 		.pgsize_bitmap = SZ_4K | SZ_64K | SZ_1M | SZ_16M,
 	};
-	unsigned int iova, size, iova_start;
-	unsigned int i, loopnr = 0;
+	unsigned int iova, size;
+	unsigned int i;
+	size_t mapped;
 
 	selftest_running = true;
 
@@ -947,40 +852,22 @@ static int __init arm_v7s_do_selftests(void)
 	iova = 0;
 	for_each_set_bit(i, &cfg.pgsize_bitmap, BITS_PER_LONG) {
 		size = 1UL << i;
-		if (ops->map(ops, iova, iova, size, IOMMU_READ |
-						    IOMMU_WRITE |
-						    IOMMU_NOEXEC |
-						    IOMMU_CACHE, GFP_KERNEL))
+		if (ops->map_pages(ops, iova, iova, size, 1,
+				   IOMMU_READ | IOMMU_WRITE |
+				   IOMMU_NOEXEC | IOMMU_CACHE,
+				   GFP_KERNEL, &mapped))
 			return __FAIL(ops);
 
 		/* Overlapping mappings */
-		if (!ops->map(ops, iova, iova + size, size,
-			      IOMMU_READ | IOMMU_NOEXEC, GFP_KERNEL))
+		if (!ops->map_pages(ops, iova, iova + size, size, 1,
+				    IOMMU_READ | IOMMU_NOEXEC, GFP_KERNEL,
+				    &mapped))
 			return __FAIL(ops);
 
 		if (ops->iova_to_phys(ops, iova + 42) != (iova + 42))
 			return __FAIL(ops);
 
 		iova += SZ_16M;
-		loopnr++;
-	}
-
-	/* Partial unmap */
-	i = 1;
-	size = 1UL << __ffs(cfg.pgsize_bitmap);
-	while (i < loopnr) {
-		iova_start = i * SZ_16M;
-		if (ops->unmap(ops, iova_start + size, size, NULL) != size)
-			return __FAIL(ops);
-
-		/* Remap of partial unmap */
-		if (ops->map(ops, iova_start + size, size, size, IOMMU_READ, GFP_KERNEL))
-			return __FAIL(ops);
-
-		if (ops->iova_to_phys(ops, iova_start + size + 42)
-		    != (size + 42))
-			return __FAIL(ops);
-		i++;
 	}
 
 	/* Full unmap */
@@ -988,14 +875,15 @@ static int __init arm_v7s_do_selftests(void)
 	for_each_set_bit(i, &cfg.pgsize_bitmap, BITS_PER_LONG) {
 		size = 1UL << i;
 
-		if (ops->unmap(ops, iova, size, NULL) != size)
+		if (ops->unmap_pages(ops, iova, size, 1, NULL) != size)
 			return __FAIL(ops);
 
 		if (ops->iova_to_phys(ops, iova + 42))
 			return __FAIL(ops);
 
 		/* Remap full block */
-		if (ops->map(ops, iova, iova, size, IOMMU_WRITE, GFP_KERNEL))
+		if (ops->map_pages(ops, iova, iova, size, 1, IOMMU_WRITE,
+				   GFP_KERNEL, &mapped))
 			return __FAIL(ops);
 
 		if (ops->iova_to_phys(ops, iova + 42) != (iova + 42))

@@ -4,8 +4,6 @@ Generic Thermal Sysfs driver How To
 
 Written by Sujith Thomas <sujith.thomas@intel.com>, Zhang Rui <rui.zhang@intel.com>
 
-Updated: 2 January 2008
-
 Copyright (c)  2008 Intel Corporation
 
 
@@ -38,61 +36,57 @@ temperature) and throttle appropriate devices.
 
     ::
 
-	struct thermal_zone_device
-	*thermal_zone_device_register(char *type,
-				      int trips, int mask, void *devdata,
-				      struct thermal_zone_device_ops *ops,
-				      const struct thermal_zone_params *tzp,
-				      int passive_delay, int polling_delay))
+	struct thermal_zone_device *
+	thermal_zone_device_register_with_trips(const char *type,
+					const struct thermal_trip *trips,
+					int num_trips, void *devdata,
+					const struct thermal_zone_device_ops *ops,
+					const struct thermal_zone_params *tzp,
+					unsigned int passive_delay,
+					unsigned int polling_delay)
 
-    This interface function adds a new thermal zone device (sensor) to
+    This interface function adds a new thermal zone device (sensor) to the
     /sys/class/thermal folder as `thermal_zone[0-*]`. It tries to bind all the
-    thermal cooling devices registered at the same time.
+    thermal cooling devices registered to it at the same time.
 
     type:
 	the thermal zone type.
     trips:
-	the total number of trip points this thermal zone supports.
-    mask:
-	Bit string: If 'n'th bit is set, then trip point 'n' is writable.
+	the table of trip points for this thermal zone.
     devdata:
 	device private data
     ops:
 	thermal zone device call-backs.
 
-	.bind:
-		bind the thermal zone device with a thermal cooling device.
-	.unbind:
-		unbind the thermal zone device with a thermal cooling device.
+	.should_bind:
+		check whether or not a given cooling device should be bound to
+		a given trip point in this thermal zone.
 	.get_temp:
 		get the current temperature of the thermal zone.
 	.set_trips:
-		    set the trip points window. Whenever the current temperature
-		    is updated, the trip points immediately below and above the
-		    current temperature are found.
-	.get_mode:
-		   get the current mode (enabled/disabled) of the thermal zone.
-
-			- "enabled" means the kernel thermal management is
-			  enabled.
-			- "disabled" will prevent kernel thermal driver action
-			  upon trip points so that user applications can take
-			  charge of thermal management.
-	.set_mode:
-		set the mode (enabled/disabled) of the thermal zone.
-	.get_trip_type:
-		get the type of certain trip point.
-	.get_trip_temp:
-			get the temperature above which the certain trip point
-			will be fired.
+		set the trip points window. Whenever the current temperature
+		is updated, the trip points immediately below and above the
+		current temperature are found.
+	.change_mode:
+		change the mode (enabled/disabled) of the thermal zone.
+	.set_trip_temp:
+		set the temperature of a given trip point.
+	.get_crit_temp:
+		get the critical temperature for this thermal zone.
 	.set_emul_temp:
-			set the emulation temperature which helps in debugging
-			different threshold temperature points.
+		set the emulation temperature which helps in debugging
+		different threshold temperature points.
+	.get_trend:
+		get the trend of most recent zone temperature changes.
+	.hot:
+		hot trip point crossing handler.
+	.critical:
+		critical trip point crossing handler.
     tzp:
 	thermal zone platform parameters.
     passive_delay:
-	number of milliseconds to wait between polls when
-	performing passive cooling.
+	number of milliseconds to wait between polls when performing passive
+	cooling.
     polling_delay:
 	number of milliseconds to wait between polls when checking
 	whether trip points have been crossed (0 for interrupt driven systems).
@@ -251,94 +245,8 @@ temperature) and throttle appropriate devices.
     It deletes the corresponding entry from /sys/class/thermal folder and
     unbinds itself from all the thermal zone devices using it.
 
-1.3 interface for binding a thermal zone device with a thermal cooling device
------------------------------------------------------------------------------
-
-    ::
-
-	int thermal_zone_bind_cooling_device(struct thermal_zone_device *tz,
-		int trip, struct thermal_cooling_device *cdev,
-		unsigned long upper, unsigned long lower, unsigned int weight);
-
-    This interface function binds a thermal cooling device to a particular trip
-    point of a thermal zone device.
-
-    This function is usually called in the thermal zone device .bind callback.
-
-    tz:
-	  the thermal zone device
-    cdev:
-	  thermal cooling device
-    trip:
-	  indicates which trip point in this thermal zone the cooling device
-	  is associated with.
-    upper:
-	  the Maximum cooling state for this trip point.
-	  THERMAL_NO_LIMIT means no upper limit,
-	  and the cooling device can be in max_state.
-    lower:
-	  the Minimum cooling state can be used for this trip point.
-	  THERMAL_NO_LIMIT means no lower limit,
-	  and the cooling device can be in cooling state 0.
-    weight:
-	  the influence of this cooling device in this thermal
-	  zone.  See 1.4.1 below for more information.
-
-    ::
-
-	int thermal_zone_unbind_cooling_device(struct thermal_zone_device *tz,
-				int trip, struct thermal_cooling_device *cdev);
-
-    This interface function unbinds a thermal cooling device from a particular
-    trip point of a thermal zone device. This function is usually called in
-    the thermal zone device .unbind callback.
-
-    tz:
-	the thermal zone device
-    cdev:
-	thermal cooling device
-    trip:
-	indicates which trip point in this thermal zone the cooling device
-	is associated with.
-
 1.4 Thermal Zone Parameters
 ---------------------------
-
-    ::
-
-	struct thermal_bind_params
-
-    This structure defines the following parameters that are used to bind
-    a zone with a cooling device for a particular trip point.
-
-    .cdev:
-	     The cooling device pointer
-    .weight:
-	     The 'influence' of a particular cooling device on this
-	     zone. This is relative to the rest of the cooling
-	     devices. For example, if all cooling devices have a
-	     weight of 1, then they all contribute the same. You can
-	     use percentages if you want, but it's not mandatory. A
-	     weight of 0 means that this cooling device doesn't
-	     contribute to the cooling of this zone unless all cooling
-	     devices have a weight of 0. If all weights are 0, then
-	     they all contribute the same.
-    .trip_mask:
-	       This is a bit mask that gives the binding relation between
-	       this thermal zone and cdev, for a particular trip point.
-	       If nth bit is set, then the cdev and thermal zone are bound
-	       for trip point n.
-    .binding_limits:
-		     This is an array of cooling state limits. Must have
-		     exactly 2 * thermal_zone.number_of_trip_points. It is an
-		     array consisting of tuples <lower-state upper-state> of
-		     state limits. Each trip will be associated with one state
-		     limit tuple when binding. A NULL pointer means
-		     <THERMAL_NO_LIMITS THERMAL_NO_LIMITS> on all trips.
-		     These limits are used when binding a cdev to a trip point.
-    .match:
-	    This call back returns success(0) if the 'tz and cdev' need to
-	    be bound, as per platform data.
 
     ::
 
@@ -357,10 +265,6 @@ temperature) and throttle appropriate devices.
 	       will be created. when no_hwmon == true, nothing will be done.
 	       In case the thermal_zone_params is NULL, the hwmon interface
 	       will be created (for backward compatibility).
-    .num_tbps:
-	       Number of thermal_bind_params entries for this zone
-    .tbp:
-	       thermal_bind_params entries
 
 2. sysfs attributes structure
 =============================
@@ -411,8 +315,6 @@ Thermal cooling device sys I/F, created once it's registered::
 
 Then next two dynamic attributes are created/removed in pairs. They represent
 the relationship between a thermal zone and its associated cooling device.
-They are created/removed for each successful execution of
-thermal_zone_bind_cooling_device/thermal_zone_unbind_cooling_device.
 
 ::
 
@@ -504,32 +406,28 @@ are supposed to implement the callback. If they don't, the thermal
 framework calculated the trend by comparing the previous and the current
 temperature values.
 
-4.2. get_thermal_instance
--------------------------
-
-This function returns the thermal_instance corresponding to a given
-{thermal_zone, cooling_device, trip_point} combination. Returns NULL
-if such an instance does not exist.
-
-4.3. thermal_cdev_update
+4.2. thermal_cdev_update
 ------------------------
 
 This function serves as an arbitrator to set the state of a cooling
 device. It sets the cooling device to the deepest cooling state if
 possible.
 
-5. thermal_emergency_poweroff
-=============================
+5. Critical Events
+==================
 
-On an event of critical trip temperature crossing the thermal framework
-shuts down the system by calling hw_protection_shutdown(). The
-hw_protection_shutdown() first attempts to perform an orderly shutdown
-but accepts a delay after which it proceeds doing a forced power-off
-or as last resort an emergency_restart.
+On an event of critical trip temperature crossing, the thermal framework
+will trigger a hardware protection power-off (shutdown) or reboot,
+depending on configuration.
+
+At first, the kernel will attempt an orderly power-off or reboot, but
+accepts a delay after which it proceeds to do a forced power-off or
+reboot, respectively. If this fails, ``emergency_restart()`` is invoked
+as last resort.
 
 The delay should be carefully profiled so as to give adequate time for
-orderly poweroff.
+orderly power-off or reboot.
 
-If the delay is set to 0 emergency poweroff will not be supported. So a
-carefully profiled non-zero positive value is a must for emergency
-poweroff to be triggered.
+If the delay is set to 0, the emergency action will not be supported. So a
+carefully profiled non-zero positive value is a must for the emergency
+action to be triggered.

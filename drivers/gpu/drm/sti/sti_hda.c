@@ -7,6 +7,7 @@
 #include <linux/clk.h>
 #include <linux/component.h>
 #include <linux/io.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/seq_file.h>
@@ -245,6 +246,7 @@ struct sti_hda {
 	struct device dev;
 	struct drm_device *drm_dev;
 	struct drm_display_mode mode;
+	struct drm_bridge bridge;
 	void __iomem *regs;
 	void __iomem *video_dacs_ctrl;
 	struct clk *clk_pix;
@@ -260,6 +262,11 @@ struct sti_hda_connector {
 
 #define to_sti_hda_connector(x) \
 	container_of(x, struct sti_hda_connector, drm_connector)
+
+static struct sti_hda *drm_bridge_to_sti_hda(struct drm_bridge *bridge)
+{
+	return container_of(bridge, struct sti_hda, bridge);
+}
 
 static u32 hda_read(struct sti_hda *hda, int offset)
 {
@@ -279,12 +286,12 @@ static void hda_write(struct sti_hda *hda, u32 val, int offset)
  *
  * Return true if mode is found
  */
-static bool hda_get_mode_idx(struct drm_display_mode mode, int *idx)
+static bool hda_get_mode_idx(const struct drm_display_mode *mode, int *idx)
 {
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(hda_supported_modes); i++)
-		if (drm_mode_equal(&hda_supported_modes[i].mode, &mode)) {
+		if (drm_mode_equal(&hda_supported_modes[i].mode, mode)) {
 			*idx = i;
 			return true;
 		}
@@ -400,7 +407,7 @@ static void sti_hda_configure_awg(struct sti_hda *hda, u32 *awg_instr, int nb)
 
 static void sti_hda_disable(struct drm_bridge *bridge)
 {
-	struct sti_hda *hda = bridge->driver_private;
+	struct sti_hda *hda = drm_bridge_to_sti_hda(bridge);
 	u32 val;
 
 	if (!hda->enabled)
@@ -425,7 +432,7 @@ static void sti_hda_disable(struct drm_bridge *bridge)
 
 static void sti_hda_pre_enable(struct drm_bridge *bridge)
 {
-	struct sti_hda *hda = bridge->driver_private;
+	struct sti_hda *hda = drm_bridge_to_sti_hda(bridge);
 	u32 val, i, mode_idx;
 	u32 src_filter_y, src_filter_c;
 	u32 *coef_y, *coef_c;
@@ -442,7 +449,7 @@ static void sti_hda_pre_enable(struct drm_bridge *bridge)
 	if (clk_prepare_enable(hda->clk_hddac))
 		DRM_ERROR("Failed to prepare/enable hda_hddac clk\n");
 
-	if (!hda_get_mode_idx(hda->mode, &mode_idx)) {
+	if (!hda_get_mode_idx(&hda->mode, &mode_idx)) {
 		DRM_ERROR("Undefined mode\n");
 		return;
 	}
@@ -516,16 +523,16 @@ static void sti_hda_set_mode(struct drm_bridge *bridge,
 			     const struct drm_display_mode *mode,
 			     const struct drm_display_mode *adjusted_mode)
 {
-	struct sti_hda *hda = bridge->driver_private;
+	struct sti_hda *hda = drm_bridge_to_sti_hda(bridge);
 	u32 mode_idx;
 	int hddac_rate;
 	int ret;
 
 	DRM_DEBUG_DRIVER("\n");
 
-	memcpy(&hda->mode, mode, sizeof(struct drm_display_mode));
+	drm_mode_copy(&hda->mode, mode);
 
-	if (!hda_get_mode_idx(hda->mode, &mode_idx)) {
+	if (!hda_get_mode_idx(&hda->mode, &mode_idx)) {
 		DRM_ERROR("Undefined mode\n");
 		return;
 	}
@@ -600,8 +607,9 @@ static int sti_hda_connector_get_modes(struct drm_connector *connector)
 
 #define CLK_TOLERANCE_HZ 50
 
-static int sti_hda_connector_mode_valid(struct drm_connector *connector,
-					struct drm_display_mode *mode)
+static enum drm_mode_status
+sti_hda_connector_mode_valid(struct drm_connector *connector,
+			     const struct drm_display_mode *mode)
 {
 	int target = mode->clock * 1000;
 	int target_min = target - CLK_TOLERANCE_HZ;
@@ -612,7 +620,7 @@ static int sti_hda_connector_mode_valid(struct drm_connector *connector,
 		= to_sti_hda_connector(connector);
 	struct sti_hda *hda = hda_connector->hda;
 
-	if (!hda_get_mode_idx(*mode, &idx)) {
+	if (!hda_get_mode_idx(mode, &idx)) {
 		return MODE_BAD;
 	} else {
 		result = clk_round_rate(hda->clk_pix, target);
@@ -675,7 +683,6 @@ static int sti_hda_bind(struct device *dev, struct device *master, void *data)
 	struct drm_encoder *encoder;
 	struct sti_hda_connector *connector;
 	struct drm_connector *drm_connector;
-	struct drm_bridge *bridge;
 	int err;
 
 	/* Set the drm device handle */
@@ -691,13 +698,7 @@ static int sti_hda_bind(struct device *dev, struct device *master, void *data)
 
 	connector->hda = hda;
 
-		bridge = devm_kzalloc(dev, sizeof(*bridge), GFP_KERNEL);
-	if (!bridge)
-		return -ENOMEM;
-
-	bridge->driver_private = hda;
-	bridge->funcs = &sti_hda_bridge_funcs;
-	drm_bridge_attach(encoder, bridge, NULL, 0);
+	drm_bridge_attach(encoder, &hda->bridge, NULL, 0);
 
 	connector->encoder = encoder;
 
@@ -743,21 +744,14 @@ static int sti_hda_probe(struct platform_device *pdev)
 
 	DRM_INFO("%s\n", __func__);
 
-	hda = devm_kzalloc(dev, sizeof(*hda), GFP_KERNEL);
-	if (!hda)
-		return -ENOMEM;
+	hda = devm_drm_bridge_alloc(dev, struct sti_hda, bridge, &sti_hda_bridge_funcs);
+	if (IS_ERR(hda))
+		return PTR_ERR(hda);
 
 	hda->dev = pdev->dev;
-
-	/* Get resources */
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "hda-reg");
-	if (!res) {
-		DRM_ERROR("Invalid hda resource\n");
-		return -ENOMEM;
-	}
-	hda->regs = devm_ioremap(dev, res->start, resource_size(res));
-	if (!hda->regs)
-		return -ENOMEM;
+	hda->regs = devm_platform_ioremap_resource_byname(pdev, "hda-reg");
+	if (IS_ERR(hda->regs))
+		return PTR_ERR(hda->regs);
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
 			"video-dacs-ctrl");
@@ -785,15 +779,19 @@ static int sti_hda_probe(struct platform_device *pdev)
 		return PTR_ERR(hda->clk_hddac);
 	}
 
+	drm_bridge_add(&hda->bridge);
+
 	platform_set_drvdata(pdev, hda);
 
 	return component_add(&pdev->dev, &sti_hda_ops);
 }
 
-static int sti_hda_remove(struct platform_device *pdev)
+static void sti_hda_remove(struct platform_device *pdev)
 {
+	struct sti_hda *hda = platform_get_drvdata(pdev);
+
 	component_del(&pdev->dev, &sti_hda_ops);
-	return 0;
+	drm_bridge_remove(&hda->bridge);
 }
 
 static const struct of_device_id hda_of_match[] = {
@@ -806,7 +804,6 @@ MODULE_DEVICE_TABLE(of, hda_of_match);
 struct platform_driver sti_hda_driver = {
 	.driver = {
 		.name = "sti-hda",
-		.owner = THIS_MODULE,
 		.of_match_table = hda_of_match,
 	},
 	.probe = sti_hda_probe,

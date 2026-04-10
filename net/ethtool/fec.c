@@ -17,6 +17,7 @@ struct fec_reply_data {
 		u64 stats[1 + ETHTOOL_MAX_LANES];
 		u8 cnt;
 	} corr, uncorr, corr_bits;
+	struct ethtool_fec_hist fec_stat_hist;
 };
 
 #define FEC_REPDATA(__reply_base) \
@@ -92,7 +93,7 @@ fec_stats_recalc(struct fec_stat_grp *grp, struct ethtool_fec_stat *stats)
 
 static int fec_prepare_data(const struct ethnl_req_info *req_base,
 			    struct ethnl_reply_data *reply_base,
-			    struct genl_info *info)
+			    const struct genl_info *info)
 {
 	__ETHTOOL_DECLARE_LINK_MODE_MASK(active_fec_modes) = {};
 	struct fec_reply_data *data = FEC_REPDATA(reply_base);
@@ -113,7 +114,10 @@ static int fec_prepare_data(const struct ethnl_req_info *req_base,
 		struct ethtool_fec_stats stats;
 
 		ethtool_stats_init((u64 *)&stats, sizeof(stats) / 8);
-		dev->ethtool_ops->get_fec_stats(dev, &stats);
+		ethtool_stats_init((u64 *)data->fec_stat_hist.values,
+				   sizeof(data->fec_stat_hist.values) / 8);
+		dev->ethtool_ops->get_fec_stats(dev, &stats,
+						&data->fec_stat_hist);
 
 		fec_stats_recalc(&data->corr, &stats.corrected_blocks);
 		fec_stats_recalc(&data->uncorr, &stats.uncorrectable_blocks);
@@ -157,11 +161,75 @@ static int fec_reply_size(const struct ethnl_req_info *req_base,
 	len += nla_total_size(sizeof(u8)) +	/* _FEC_AUTO */
 	       nla_total_size(sizeof(u32));	/* _FEC_ACTIVE */
 
-	if (req_base->flags & ETHTOOL_FLAG_STATS)
+	if (req_base->flags & ETHTOOL_FLAG_STATS) {
 		len += 3 * nla_total_size_64bit(sizeof(u64) *
 						(1 + ETHTOOL_MAX_LANES));
+		/* add FEC bins information */
+		len += (nla_total_size(0) +  /* _A_FEC_HIST */
+			nla_total_size(4) +  /* _A_FEC_HIST_BIN_LOW */
+			nla_total_size(4) +  /* _A_FEC_HIST_BIN_HI */
+			/* _A_FEC_HIST_BIN_VAL + per-lane values */
+			nla_total_size_64bit(sizeof(u64)) +
+			nla_total_size_64bit(sizeof(u64) * ETHTOOL_MAX_LANES)) *
+			ETHTOOL_FEC_HIST_MAX;
+	}
 
 	return len;
+}
+
+static int fec_put_hist(struct sk_buff *skb,
+			const struct ethtool_fec_hist *hist)
+{
+	const struct ethtool_fec_hist_range *ranges = hist->ranges;
+	const struct ethtool_fec_hist_value *values = hist->values;
+	struct nlattr *nest;
+	int i, j;
+	u64 sum;
+
+	if (!ranges)
+		return 0;
+
+	for (i = 0; i < ETHTOOL_FEC_HIST_MAX; i++) {
+		if (i && !ranges[i].low && !ranges[i].high)
+			break;
+
+		if (WARN_ON_ONCE(values[i].sum == ETHTOOL_STAT_NOT_SET &&
+				 values[i].per_lane[0] == ETHTOOL_STAT_NOT_SET))
+			break;
+
+		nest = nla_nest_start(skb, ETHTOOL_A_FEC_STAT_HIST);
+		if (!nest)
+			return -EMSGSIZE;
+
+		if (nla_put_u32(skb, ETHTOOL_A_FEC_HIST_BIN_LOW,
+				ranges[i].low) ||
+		    nla_put_u32(skb, ETHTOOL_A_FEC_HIST_BIN_HIGH,
+				ranges[i].high))
+			goto err_cancel_hist;
+		sum = 0;
+		for (j = 0; j < ETHTOOL_MAX_LANES; j++) {
+			if (values[i].per_lane[j] == ETHTOOL_STAT_NOT_SET)
+				break;
+			sum += values[i].per_lane[j];
+		}
+		if (nla_put_uint(skb, ETHTOOL_A_FEC_HIST_BIN_VAL,
+				 values[i].sum == ETHTOOL_STAT_NOT_SET ?
+				 sum : values[i].sum))
+			goto err_cancel_hist;
+		if (j && nla_put_64bit(skb, ETHTOOL_A_FEC_HIST_BIN_VAL_PER_LANE,
+				       sizeof(u64) * j,
+				       values[i].per_lane,
+				       ETHTOOL_A_FEC_HIST_PAD))
+			goto err_cancel_hist;
+
+		nla_nest_end(skb, nest);
+	}
+
+	return 0;
+
+err_cancel_hist:
+	nla_nest_cancel(skb, nest);
+	return -EMSGSIZE;
 }
 
 static int fec_put_stats(struct sk_buff *skb, const struct fec_reply_data *data)
@@ -181,6 +249,9 @@ static int fec_put_stats(struct sk_buff *skb, const struct fec_reply_data *data)
 	    nla_put_64bit(skb, ETHTOOL_A_FEC_STAT_CORR_BITS,
 			  sizeof(u64) * data->corr_bits.cnt,
 			  data->corr_bits.stats, ETHTOOL_A_FEC_STAT_PAD))
+		goto err_cancel;
+
+	if (fec_put_hist(skb, &data->fec_stat_hist))
 		goto err_cancel;
 
 	nla_nest_end(skb, nest);
@@ -217,6 +288,65 @@ static int fec_fill_reply(struct sk_buff *skb,
 	return 0;
 }
 
+/* FEC_SET */
+
+const struct nla_policy ethnl_fec_set_policy[ETHTOOL_A_FEC_AUTO + 1] = {
+	[ETHTOOL_A_FEC_HEADER]	= NLA_POLICY_NESTED(ethnl_header_policy),
+	[ETHTOOL_A_FEC_MODES]	= { .type = NLA_NESTED },
+	[ETHTOOL_A_FEC_AUTO]	= NLA_POLICY_MAX(NLA_U8, 1),
+};
+
+static int
+ethnl_set_fec_validate(struct ethnl_req_info *req_info, struct genl_info *info)
+{
+	const struct ethtool_ops *ops = req_info->dev->ethtool_ops;
+
+	return ops->get_fecparam && ops->set_fecparam ? 1 : -EOPNOTSUPP;
+}
+
+static int
+ethnl_set_fec(struct ethnl_req_info *req_info, struct genl_info *info)
+{
+	__ETHTOOL_DECLARE_LINK_MODE_MASK(fec_link_modes) = {};
+	struct net_device *dev = req_info->dev;
+	struct nlattr **tb = info->attrs;
+	struct ethtool_fecparam fec = {};
+	bool mod = false;
+	u8 fec_auto;
+	int ret;
+
+	ret = dev->ethtool_ops->get_fecparam(dev, &fec);
+	if (ret < 0)
+		return ret;
+
+	ethtool_fec_to_link_modes(fec.fec, fec_link_modes, &fec_auto);
+
+	ret = ethnl_update_bitset(fec_link_modes,
+				  __ETHTOOL_LINK_MODE_MASK_NBITS,
+				  tb[ETHTOOL_A_FEC_MODES],
+				  link_mode_names, info->extack, &mod);
+	if (ret < 0)
+		return ret;
+	ethnl_update_u8(&fec_auto, tb[ETHTOOL_A_FEC_AUTO], &mod);
+	if (!mod)
+		return 0;
+
+	ret = ethtool_link_modes_to_fecparam(&fec, fec_link_modes, fec_auto);
+	if (ret) {
+		NL_SET_ERR_MSG_ATTR(info->extack, tb[ETHTOOL_A_FEC_MODES],
+				    "invalid FEC modes requested");
+		return ret;
+	}
+	if (!fec.fec) {
+		NL_SET_ERR_MSG_ATTR(info->extack, tb[ETHTOOL_A_FEC_MODES],
+				    "no FEC modes set");
+		return -EINVAL;
+	}
+
+	ret = dev->ethtool_ops->set_fecparam(dev, &fec);
+	return ret < 0 ? ret : 1;
+}
+
 const struct ethnl_request_ops ethnl_fec_request_ops = {
 	.request_cmd		= ETHTOOL_MSG_FEC_GET,
 	.reply_cmd		= ETHTOOL_MSG_FEC_GET_REPLY,
@@ -227,84 +357,8 @@ const struct ethnl_request_ops ethnl_fec_request_ops = {
 	.prepare_data		= fec_prepare_data,
 	.reply_size		= fec_reply_size,
 	.fill_reply		= fec_fill_reply,
+
+	.set_validate		= ethnl_set_fec_validate,
+	.set			= ethnl_set_fec,
+	.set_ntf_cmd		= ETHTOOL_MSG_FEC_NTF,
 };
-
-/* FEC_SET */
-
-const struct nla_policy ethnl_fec_set_policy[ETHTOOL_A_FEC_AUTO + 1] = {
-	[ETHTOOL_A_FEC_HEADER]	= NLA_POLICY_NESTED(ethnl_header_policy),
-	[ETHTOOL_A_FEC_MODES]	= { .type = NLA_NESTED },
-	[ETHTOOL_A_FEC_AUTO]	= NLA_POLICY_MAX(NLA_U8, 1),
-};
-
-int ethnl_set_fec(struct sk_buff *skb, struct genl_info *info)
-{
-	__ETHTOOL_DECLARE_LINK_MODE_MASK(fec_link_modes) = {};
-	struct ethnl_req_info req_info = {};
-	struct nlattr **tb = info->attrs;
-	struct ethtool_fecparam fec = {};
-	const struct ethtool_ops *ops;
-	struct net_device *dev;
-	bool mod = false;
-	u8 fec_auto;
-	int ret;
-
-	ret = ethnl_parse_header_dev_get(&req_info, tb[ETHTOOL_A_FEC_HEADER],
-					 genl_info_net(info), info->extack,
-					 true);
-	if (ret < 0)
-		return ret;
-	dev = req_info.dev;
-	ops = dev->ethtool_ops;
-	ret = -EOPNOTSUPP;
-	if (!ops->get_fecparam || !ops->set_fecparam)
-		goto out_dev;
-
-	rtnl_lock();
-	ret = ethnl_ops_begin(dev);
-	if (ret < 0)
-		goto out_rtnl;
-	ret = ops->get_fecparam(dev, &fec);
-	if (ret < 0)
-		goto out_ops;
-
-	ethtool_fec_to_link_modes(fec.fec, fec_link_modes, &fec_auto);
-
-	ret = ethnl_update_bitset(fec_link_modes,
-				  __ETHTOOL_LINK_MODE_MASK_NBITS,
-				  tb[ETHTOOL_A_FEC_MODES],
-				  link_mode_names, info->extack, &mod);
-	if (ret < 0)
-		goto out_ops;
-	ethnl_update_u8(&fec_auto, tb[ETHTOOL_A_FEC_AUTO], &mod);
-
-	ret = 0;
-	if (!mod)
-		goto out_ops;
-
-	ret = ethtool_link_modes_to_fecparam(&fec, fec_link_modes, fec_auto);
-	if (ret) {
-		NL_SET_ERR_MSG_ATTR(info->extack, tb[ETHTOOL_A_FEC_MODES],
-				    "invalid FEC modes requested");
-		goto out_ops;
-	}
-	if (!fec.fec) {
-		ret = -EINVAL;
-		NL_SET_ERR_MSG_ATTR(info->extack, tb[ETHTOOL_A_FEC_MODES],
-				    "no FEC modes set");
-		goto out_ops;
-	}
-
-	ret = dev->ethtool_ops->set_fecparam(dev, &fec);
-	if (ret < 0)
-		goto out_ops;
-	ethtool_notify(dev, ETHTOOL_MSG_FEC_NTF, NULL);
-
-out_ops:
-	ethnl_ops_complete(dev);
-out_rtnl:
-	rtnl_unlock();
-out_dev:
-	ethnl_parse_header_dev_put(&req_info);
-	return ret;
-}

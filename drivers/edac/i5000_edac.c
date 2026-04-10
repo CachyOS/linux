@@ -338,11 +338,11 @@ struct i5000_pvt {
 
 	u16 mir0, mir1, mir2;
 
-	u16 b0_mtr[NUM_MTRS];	/* Memory Technlogy Reg */
+	u16 b0_mtr[NUM_MTRS];	/* Memory Technology Reg */
 	u16 b0_ambpresent0;	/* Branch 0, Channel 0 */
-	u16 b0_ambpresent1;	/* Brnach 0, Channel 1 */
+	u16 b0_ambpresent1;	/* Branch 0, Channel 1 */
 
-	u16 b1_mtr[NUM_MTRS];	/* Memory Technlogy Reg */
+	u16 b1_mtr[NUM_MTRS];	/* Memory Technology Reg */
 	u16 b1_ambpresent0;	/* Branch 1, Channel 8 */
 	u16 b1_ambpresent1;	/* Branch 1, Channel 1 */
 
@@ -1111,6 +1111,7 @@ static void calculate_dimm_size(struct i5000_pvt *pvt)
 
 	n = snprintf(p, space, "           ");
 	p += n;
+	space -= n;
 	for (branch = 0; branch < MAX_BRANCHES; branch++) {
 		n = snprintf(p, space, "       branch %d       | ", branch);
 		p += n;
@@ -1210,7 +1211,7 @@ static void i5000_get_mc_regs(struct mem_ctl_info *mci)
 			&pvt->b0_ambpresent1);
 	edac_dbg(2, "\t\tAMB-Branch 0-present1 0x%x:\n", pvt->b0_ambpresent1);
 
-	/* Only if we have 2 branchs (4 channels) */
+	/* Only if we have 2 branches (4 channels) */
 	if (pvt->maxch < CHANNELS_PER_BRANCH) {
 		pvt->b1_ambpresent0 = 0;
 		pvt->b1_ambpresent1 = 0;
@@ -1573,13 +1574,10 @@ module_init(i5000_init);
 module_exit(i5000_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR
-    ("Linux Networx (http://lnxi.com) Doug Thompson <norsk5@xmission.com>");
-MODULE_DESCRIPTION("MC Driver for Intel I5000 memory controllers - "
-		I5000_REVISION);
+MODULE_AUTHOR("Linux Networx (http://lnxi.com) Doug Thompson <norsk5@xmission.com>");
+MODULE_DESCRIPTION("MC Driver for Intel I5000 memory controllers - " I5000_REVISION);
 
 module_param(edac_op_state, int, 0444);
 MODULE_PARM_DESC(edac_op_state, "EDAC Error Reporting state: 0=Poll,1=NMI");
 module_param(misc_messages, int, 0444);
 MODULE_PARM_DESC(misc_messages, "Log miscellaneous non fatal messages");
-

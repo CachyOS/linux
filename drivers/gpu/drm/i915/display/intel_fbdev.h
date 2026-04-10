@@ -8,52 +8,40 @@
 
 #include <linux/types.h>
 
-struct drm_device;
-struct drm_i915_private;
+struct drm_fb_helper;
+struct drm_fb_helper_surface_size;
+struct intel_display;
 struct intel_fbdev;
 struct intel_framebuffer;
+struct iosys_map;
 
 #ifdef CONFIG_DRM_FBDEV_EMULATION
-int intel_fbdev_init(struct drm_device *dev);
-void intel_fbdev_initial_config_async(struct drm_device *dev);
-void intel_fbdev_unregister(struct drm_i915_private *dev_priv);
-void intel_fbdev_fini(struct drm_i915_private *dev_priv);
-void intel_fbdev_set_suspend(struct drm_device *dev, int state, bool synchronous);
-void intel_fbdev_output_poll_changed(struct drm_device *dev);
-void intel_fbdev_restore_mode(struct drm_device *dev);
+int intel_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
+				   struct drm_fb_helper_surface_size *sizes);
+#define INTEL_FBDEV_DRIVER_OPS \
+	.fbdev_probe = intel_fbdev_driver_fbdev_probe
+void intel_fbdev_setup(struct intel_display *display);
 struct intel_framebuffer *intel_fbdev_framebuffer(struct intel_fbdev *fbdev);
+struct i915_vma *intel_fbdev_vma_pointer(struct intel_fbdev *fbdev);
+void intel_fbdev_get_map(struct intel_fbdev *fbdev, struct iosys_map *map);
 #else
-static inline int intel_fbdev_init(struct drm_device *dev)
-{
-	return 0;
-}
-
-static inline void intel_fbdev_initial_config_async(struct drm_device *dev)
-{
-}
-
-static inline void intel_fbdev_unregister(struct drm_i915_private *dev_priv)
-{
-}
-
-static inline void intel_fbdev_fini(struct drm_i915_private *dev_priv)
-{
-}
-
-static inline void intel_fbdev_set_suspend(struct drm_device *dev, int state, bool synchronous)
-{
-}
-
-static inline void intel_fbdev_output_poll_changed(struct drm_device *dev)
-{
-}
-
-static inline void intel_fbdev_restore_mode(struct drm_device *dev)
+#define INTEL_FBDEV_DRIVER_OPS \
+	.fbdev_probe = NULL
+static inline void intel_fbdev_setup(struct intel_display *display)
 {
 }
 static inline struct intel_framebuffer *intel_fbdev_framebuffer(struct intel_fbdev *fbdev)
 {
 	return NULL;
+}
+
+static inline struct i915_vma *intel_fbdev_vma_pointer(struct intel_fbdev *fbdev)
+{
+	return NULL;
+}
+
+static inline void intel_fbdev_get_map(struct intel_fbdev *fbdev, struct iosys_map *map)
+{
 }
 #endif
 

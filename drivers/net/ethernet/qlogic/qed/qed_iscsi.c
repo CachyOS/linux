@@ -710,7 +710,7 @@ static int qed_iscsi_allocate_connection(struct qed_hwfn *p_hwfn,
 	/* Need to allocate a new connection */
 	p_params = &p_hwfn->pf_params.iscsi_pf_params;
 
-	p_conn = kzalloc(sizeof(*p_conn), GFP_KERNEL);
+	p_conn = kzalloc_obj(*p_conn);
 	if (!p_conn)
 		return -ENOMEM;
 
@@ -845,7 +845,7 @@ int qed_iscsi_alloc(struct qed_hwfn *p_hwfn)
 {
 	struct qed_iscsi_info *p_iscsi_info;
 
-	p_iscsi_info = kzalloc(sizeof(*p_iscsi_info), GFP_KERNEL);
+	p_iscsi_info = kzalloc_obj(*p_iscsi_info);
 	if (!p_iscsi_info)
 		return -ENOMEM;
 
@@ -999,13 +999,14 @@ static void _qed_iscsi_get_pstats(struct qed_hwfn *p_hwfn,
 }
 
 static int qed_iscsi_get_stats(struct qed_hwfn *p_hwfn,
-			       struct qed_iscsi_stats *stats)
+			       struct qed_iscsi_stats *stats,
+			       bool is_atomic)
 {
 	struct qed_ptt *p_ptt;
 
 	memset(stats, 0, sizeof(*stats));
 
-	p_ptt = qed_ptt_acquire(p_hwfn);
+	p_ptt = qed_ptt_acquire_context(p_hwfn, is_atomic);
 	if (!p_ptt) {
 		DP_ERR(p_hwfn, "Failed to acquire ptt\n");
 		return -EAGAIN;
@@ -1124,7 +1125,7 @@ static int qed_iscsi_start(struct qed_dev *cdev,
 	if (!tasks)
 		return 0;
 
-	tid_info = kzalloc(sizeof(*tid_info), GFP_KERNEL);
+	tid_info = kzalloc_obj(*tid_info);
 
 	if (!tid_info) {
 		qed_iscsi_stop(cdev);
@@ -1158,7 +1159,7 @@ static int qed_iscsi_acquire_conn(struct qed_dev *cdev,
 	int rc;
 
 	/* Allocate a hashed connection */
-	hash_con = kzalloc(sizeof(*hash_con), GFP_ATOMIC);
+	hash_con = kzalloc_obj(*hash_con, GFP_ATOMIC);
 	if (!hash_con)
 		return -ENOMEM;
 
@@ -1336,9 +1337,16 @@ static int qed_iscsi_destroy_conn(struct qed_dev *cdev,
 					   QED_SPQ_MODE_EBLOCK, NULL);
 }
 
+static int qed_iscsi_stats_context(struct qed_dev *cdev,
+				   struct qed_iscsi_stats *stats,
+				   bool is_atomic)
+{
+	return qed_iscsi_get_stats(QED_AFFIN_HWFN(cdev), stats, is_atomic);
+}
+
 static int qed_iscsi_stats(struct qed_dev *cdev, struct qed_iscsi_stats *stats)
 {
-	return qed_iscsi_get_stats(QED_AFFIN_HWFN(cdev), stats);
+	return qed_iscsi_stats_context(cdev, stats, false);
 }
 
 static int qed_iscsi_change_mac(struct qed_dev *cdev,
@@ -1358,13 +1366,14 @@ static int qed_iscsi_change_mac(struct qed_dev *cdev,
 }
 
 void qed_get_protocol_stats_iscsi(struct qed_dev *cdev,
-				  struct qed_mcp_iscsi_stats *stats)
+				  struct qed_mcp_iscsi_stats *stats,
+				  bool is_atomic)
 {
 	struct qed_iscsi_stats proto_stats;
 
 	/* Retrieve FW statistics */
 	memset(&proto_stats, 0, sizeof(proto_stats));
-	if (qed_iscsi_stats(cdev, &proto_stats)) {
+	if (qed_iscsi_stats_context(cdev, &proto_stats, is_atomic)) {
 		DP_VERBOSE(cdev, QED_MSG_STORAGE,
 			   "Failed to collect ISCSI statistics\n");
 		return;

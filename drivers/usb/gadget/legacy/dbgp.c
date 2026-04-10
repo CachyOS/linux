@@ -298,7 +298,7 @@ static int dbgp_bind(struct usb_gadget *gadget,
 	dbgp.req->length = DBGP_REQ_EP0_LEN;
 
 #ifdef CONFIG_USB_G_DBGP_SERIAL
-	dbgp.serial = kzalloc(sizeof(struct gserial), GFP_KERNEL);
+	dbgp.serial = kzalloc_obj(struct gserial);
 	if (!dbgp.serial) {
 		stp = 3;
 		err = -ENOMEM;
@@ -434,6 +434,7 @@ static void __exit dbgp_exit(void)
 }
 
 MODULE_AUTHOR("Stephane Duverger");
+MODULE_DESCRIPTION("EHCI Debug Port device gadget");
 MODULE_LICENSE("GPL");
 module_init(dbgp_init);
 module_exit(dbgp_exit);

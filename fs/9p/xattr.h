@@ -10,9 +10,7 @@
 #include <net/9p/9p.h>
 #include <net/9p/client.h>
 
-extern const struct xattr_handler *v9fs_xattr_handlers[];
-extern const struct xattr_handler v9fs_xattr_acl_access_handler;
-extern const struct xattr_handler v9fs_xattr_acl_default_handler;
+extern const struct xattr_handler * const v9fs_xattr_handlers[];
 
 ssize_t v9fs_fid_xattr_get(struct p9_fid *fid, const char *name,
 			   void *buffer, size_t buffer_size);

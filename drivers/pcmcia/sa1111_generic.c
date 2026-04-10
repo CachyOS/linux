@@ -153,7 +153,7 @@ int sa1111_pcmcia_add(struct sa1111_dev *dev, struct pcmcia_low_level *ops,
 	ops->socket_state = sa1111_pcmcia_socket_state;
 
 	for (i = 0; i < ops->nr; i++) {
-		s = kzalloc(sizeof(*s), GFP_KERNEL);
+		s = kzalloc_obj(*s);
 		if (!s)
 			return -ENOMEM;
 
@@ -212,17 +212,9 @@ static int pcmcia_probe(struct sa1111_dev *dev)
 	writel_relaxed(PCCR_S0_FLT | PCCR_S1_FLT, base + PCCR);
 
 	ret = -ENODEV;
-#ifdef CONFIG_SA1100_BADGE4
-	if (machine_is_badge4())
-		ret = pcmcia_badge4_init(dev);
-#endif
 #ifdef CONFIG_SA1100_JORNADA720
 	if (machine_is_jornada720())
 		ret = pcmcia_jornada720_init(dev);
-#endif
-#ifdef CONFIG_ARCH_LUBBOCK
-	if (machine_is_lubbock())
-		ret = pcmcia_lubbock_init(dev);
 #endif
 #ifdef CONFIG_ASSABET_NEPONSET
 	if (machine_is_assabet())

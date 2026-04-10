@@ -983,7 +983,7 @@ static int rtl2832_pid_filter(struct dvb_frontend *fe, u8 index, u16 pid,
 		index, pid, onoff, dev->slave_ts);
 
 	/* skip invalid PIDs (0x2000) */
-	if (pid > 0x1fff || index > 32)
+	if (pid > 0x1fff || index >= 32)
 		return 0;
 
 	if (onoff)
@@ -1021,8 +1021,7 @@ err:
 	return ret;
 }
 
-static int rtl2832_probe(struct i2c_client *client,
-		const struct i2c_device_id *id)
+static int rtl2832_probe(struct i2c_client *client)
 {
 	struct rtl2832_platform_data *pdata = client->dev.platform_data;
 	struct i2c_adapter *i2c = client->adapter;
@@ -1044,7 +1043,7 @@ static int rtl2832_probe(struct i2c_client *client,
 	dev_dbg(&client->dev, "\n");
 
 	/* allocate memory for the internal state */
-	dev = kzalloc(sizeof(struct rtl2832_dev), GFP_KERNEL);
+	dev = kzalloc_obj(struct rtl2832_dev);
 	if (dev == NULL) {
 		ret = -ENOMEM;
 		goto err;
@@ -1083,7 +1082,7 @@ static int rtl2832_probe(struct i2c_client *client,
 		goto err_regmap_exit;
 	}
 	dev->muxc->priv = dev;
-	ret = i2c_mux_add_adapter(dev->muxc, 0, 0, 0);
+	ret = i2c_mux_add_adapter(dev->muxc, 0, 0);
 	if (ret)
 		goto err_regmap_exit;
 
@@ -1110,7 +1109,7 @@ err:
 	return ret;
 }
 
-static int rtl2832_remove(struct i2c_client *client)
+static void rtl2832_remove(struct i2c_client *client)
 {
 	struct rtl2832_dev *dev = i2c_get_clientdata(client);
 
@@ -1123,12 +1122,10 @@ static int rtl2832_remove(struct i2c_client *client)
 	regmap_exit(dev->regmap);
 
 	kfree(dev);
-
-	return 0;
 }
 
 static const struct i2c_device_id rtl2832_id_table[] = {
-	{"rtl2832", 0},
+	{ "rtl2832" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, rtl2832_id_table);

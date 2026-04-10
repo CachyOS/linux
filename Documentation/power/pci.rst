@@ -315,7 +315,7 @@ that these callbacks operate on::
 					   configuration space */
 	unsigned int	pme_support:5;	/* Bitmask of states from which PME#
 					   can be generated */
-	unsigned int	pme_interrupt:1;/* Is native PCIe PME signaling used? */
+	unsigned int	pme_poll:1;	/* Poll device's PME status bit */
 	unsigned int	d1_support:1;	/* Low power state D1 is supported */
 	unsigned int	d2_support:1;	/* Low power state D2 is supported */
 	unsigned int	no_d1d2:1;	/* D1 and D2 are forbidden */
@@ -333,7 +333,7 @@ struct pci_dev.
 The PCI subsystem's first task related to device power management is to
 prepare the device for power management and initialize the fields of struct
 pci_dev used for this purpose.  This happens in two functions defined in
-drivers/pci/pci.c, pci_pm_init() and platform_pci_wakeup_init().
+drivers/pci/, pci_pm_init() and pci_acpi_setup().
 
 The first of these functions checks if the device supports native PCI PM
 and if that's the case the offset of its power management capability structure
@@ -472,7 +472,7 @@ in the device tree from the root bridge to a leaf device contains both of them).
 The pci_pm_suspend_noirq() routine is executed after suspend_device_irqs() has
 been called, which means that the device driver's interrupt handler won't be
 invoked while this routine is running.  It first checks if the device's driver
-implements legacy PCI suspends routines (Section 3), in which case the legacy
+implements legacy PCI suspend routines (Section 3), in which case the legacy
 late suspend routine is called and its result is returned (the standard
 configuration registers of the device are saved if the driver's callback hasn't
 done that).  Second, if the device driver's struct dev_pm_ops object is not
@@ -544,7 +544,7 @@ result is then returned).
 The resume phase is carried out asynchronously for PCI devices, like the
 suspend phase described above, which means that if two PCI devices don't depend
 on each other in a known way, the pci_pm_resume() routine may be executed for
-the both of them in parallel.
+both of them in parallel.
 
 The pci_pm_complete() routine only executes the device driver's pm->complete()
 callback, if defined.
@@ -625,7 +625,7 @@ The PCI subsystem-level callbacks they correspond to::
 	pci_pm_poweroff()
 	pci_pm_poweroff_noirq()
 
-work in analogy with pci_pm_suspend() and pci_pm_poweroff_noirq(), respectively,
+work in analogy with pci_pm_suspend() and pci_pm_suspend_noirq(), respectively,
 although they don't attempt to save the device's standard configuration
 registers.
 
@@ -979,18 +979,17 @@ subsections can be defined as a separate function, it often is convenient to
 point two or more members of struct dev_pm_ops to the same routine.  There are
 a few convenience macros that can be used for this purpose.
 
-The SIMPLE_DEV_PM_OPS macro declares a struct dev_pm_ops object with one
+The DEFINE_SIMPLE_DEV_PM_OPS() declares a struct dev_pm_ops object with one
 suspend routine pointed to by the .suspend(), .freeze(), and .poweroff()
 members and one resume routine pointed to by the .resume(), .thaw(), and
 .restore() members.  The other function pointers in this struct dev_pm_ops are
 unset.
 
-The UNIVERSAL_DEV_PM_OPS macro is similar to SIMPLE_DEV_PM_OPS, but it
-additionally sets the .runtime_resume() pointer to the same value as
-.resume() (and .thaw(), and .restore()) and the .runtime_suspend() pointer to
-the same value as .suspend() (and .freeze() and .poweroff()).
+The DEFINE_RUNTIME_DEV_PM_OPS() is similar to DEFINE_SIMPLE_DEV_PM_OPS(), but it
+additionally sets the .runtime_resume() pointer to pm_runtime_force_resume()
+and the .runtime_suspend() pointer to pm_runtime_force_suspend().
 
-The SET_SYSTEM_SLEEP_PM_OPS can be used inside of a declaration of struct
+The SYSTEM_SLEEP_PM_OPS() can be used inside of a declaration of struct
 dev_pm_ops to indicate that one suspend routine is to be pointed to by the
 .suspend(), .freeze(), and .poweroff() members and one resume routine is to
 be pointed to by the .resume(), .thaw(), and .restore() members.

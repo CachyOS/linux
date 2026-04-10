@@ -19,10 +19,12 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/delay.h>
+#include <linux/mod_devicetable.h>
+#include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/slab.h>
 #include <linux/mfd/twl.h>
-#include <linux/module.h>
 #include <linux/stddef.h>
 #include <linux/mutex.h>
 #include <linux/bitops.h>
@@ -246,7 +248,7 @@ static const struct s16_fract twl4030_divider_ratios[16] = {
 	{15, 100},	/* CHANNEL 11 */
 	{1, 4},		/* CHANNEL 12 */
 	{1, 1},		/* CHANNEL 13 Reserved channels */
-	{1, 1},		/* CHANNEL 14 Reseved channels */
+	{1, 1},		/* CHANNEL 14 Reserved channels */
 	{5, 11},	/* CHANNEL 15 */
 };
 
@@ -743,23 +745,21 @@ static int twl4030_madc_set_power(struct twl4030_madc_data *madc, int on)
  */
 static int twl4030_madc_probe(struct platform_device *pdev)
 {
+	struct device *dev = &pdev->dev;
+	struct twl4030_madc_platform_data *pdata = dev_get_platdata(dev);
 	struct twl4030_madc_data *madc;
-	struct twl4030_madc_platform_data *pdata = dev_get_platdata(&pdev->dev);
-	struct device_node *np = pdev->dev.of_node;
 	int irq, ret;
 	u8 regval;
 	struct iio_dev *iio_dev = NULL;
 
-	if (!pdata && !np) {
+	if (!pdata && !dev_fwnode(dev)) {
 		dev_err(&pdev->dev, "neither platform data nor Device Tree node available\n");
 		return -EINVAL;
 	}
 
 	iio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(*madc));
-	if (!iio_dev) {
-		dev_err(&pdev->dev, "failed allocating iio device\n");
+	if (!iio_dev)
 		return -ENOMEM;
-	}
 
 	madc = iio_priv(iio_dev);
 	madc->dev = &pdev->dev;
@@ -778,7 +778,7 @@ static int twl4030_madc_probe(struct platform_device *pdev)
 	if (pdata)
 		madc->use_second_irq = (pdata->irq_line != 1);
 	else
-		madc->use_second_irq = of_property_read_bool(np,
+		madc->use_second_irq = device_property_read_bool(dev,
 				       "ti,system-uses-second-madc-irq");
 
 	madc->imr = madc->use_second_irq ? TWL4030_MADC_IMR2 :
@@ -891,7 +891,7 @@ err_current_generator:
 	return ret;
 }
 
-static int twl4030_madc_remove(struct platform_device *pdev)
+static void twl4030_madc_remove(struct platform_device *pdev)
 {
 	struct iio_dev *iio_dev = platform_get_drvdata(pdev);
 	struct twl4030_madc_data *madc = iio_priv(iio_dev);
@@ -902,24 +902,20 @@ static int twl4030_madc_remove(struct platform_device *pdev)
 	twl4030_madc_set_power(madc, 0);
 
 	regulator_disable(madc->usb3v1);
-
-	return 0;
 }
 
-#ifdef CONFIG_OF
 static const struct of_device_id twl_madc_of_match[] = {
 	{ .compatible = "ti,twl4030-madc", },
-	{ },
+	{ }
 };
 MODULE_DEVICE_TABLE(of, twl_madc_of_match);
-#endif
 
 static struct platform_driver twl4030_madc_driver = {
 	.probe = twl4030_madc_probe,
 	.remove = twl4030_madc_remove,
 	.driver = {
 		   .name = "twl4030_madc",
-		   .of_match_table = of_match_ptr(twl_madc_of_match),
+		   .of_match_table = twl_madc_of_match,
 	},
 };
 

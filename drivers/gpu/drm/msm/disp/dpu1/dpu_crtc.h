@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021 The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -12,7 +13,6 @@
 #include <drm/drm_crtc.h>
 #include "dpu_kms.h"
 #include "dpu_core_perf.h"
-#include "dpu_hw_blk.h"
 
 #define DPU_CRTC_NAME_SIZE	12
 
@@ -73,11 +73,13 @@ struct dpu_crtc_smmu_state_data {
  * enum dpu_crtc_crc_source: CRC source
  * @DPU_CRTC_CRC_SOURCE_NONE: no source set
  * @DPU_CRTC_CRC_SOURCE_LAYER_MIXER: CRC in layer mixer
+ * @DPU_CRTC_CRC_SOURCE_ENCODER: CRC in encoder
  * @DPU_CRTC_CRC_SOURCE_INVALID: Invalid source
  */
 enum dpu_crtc_crc_source {
 	DPU_CRTC_CRC_SOURCE_NONE = 0,
 	DPU_CRTC_CRC_SOURCE_LAYER_MIXER,
+	DPU_CRTC_CRC_SOURCE_ENCODER,
 	DPU_CRTC_CRC_SOURCE_MAX,
 	DPU_CRTC_CRC_SOURCE_INVALID = -1
 };
@@ -95,7 +97,6 @@ struct dpu_crtc_mixer {
 	struct dpu_hw_ctl *lm_ctl;
 	struct dpu_hw_dspp *hw_dspp;
 	u32 mixer_op_mode;
-	u32 flush_mask;
 };
 
 /**
@@ -201,6 +202,8 @@ struct dpu_crtc {
  * @mixers        : List of active mixers
  * @num_ctls      : Number of ctl paths in use
  * @hw_ctls       : List of active ctl paths
+ * @crc_source    : CRC source
+ * @crc_frame_skip_count: Number of frames skipped before getting CRC
  */
 struct dpu_crtc_state {
 	struct drm_crtc_state base;
@@ -228,7 +231,7 @@ struct dpu_crtc_state {
 	container_of(x, struct dpu_crtc_state, base)
 
 /**
- * dpu_crtc_frame_pending - retun the number of pending frames
+ * dpu_crtc_frame_pending - return the number of pending frames
  * @crtc: Pointer to drm crtc object
  */
 static inline int dpu_crtc_frame_pending(struct drm_crtc *crtc)
@@ -236,55 +239,20 @@ static inline int dpu_crtc_frame_pending(struct drm_crtc *crtc)
 	return crtc ? atomic_read(&to_dpu_crtc(crtc)->frame_pending) : -EINVAL;
 }
 
-/**
- * dpu_crtc_vblank - enable or disable vblanks for this crtc
- * @crtc: Pointer to drm crtc object
- * @en: true to enable vblanks, false to disable
- */
+int dpu_crtc_check_mode_changed(struct drm_crtc_state *old_crtc_state,
+				struct drm_crtc_state *new_crtc_state);
+
 int dpu_crtc_vblank(struct drm_crtc *crtc, bool en);
 
-/**
- * dpu_crtc_vblank_callback - called on vblank irq, issues completion events
- * @crtc: Pointer to drm crtc object
- */
 void dpu_crtc_vblank_callback(struct drm_crtc *crtc);
 
-/**
- * dpu_crtc_commit_kickoff - trigger kickoff of the commit for this crtc
- * @crtc: Pointer to drm crtc object
- */
 void dpu_crtc_commit_kickoff(struct drm_crtc *crtc);
 
-/**
- * dpu_crtc_complete_commit - callback signalling completion of current commit
- * @crtc: Pointer to drm crtc object
- */
 void dpu_crtc_complete_commit(struct drm_crtc *crtc);
 
-/**
- * dpu_crtc_init - create a new crtc object
- * @dev: dpu device
- * @plane: base plane
- * @cursor: cursor plane
- * @Return: new crtc object or error
- */
 struct drm_crtc *dpu_crtc_init(struct drm_device *dev, struct drm_plane *plane,
 			       struct drm_plane *cursor);
 
-/**
- * dpu_crtc_register_custom_event - api for enabling/disabling crtc event
- * @kms: Pointer to dpu_kms
- * @crtc_drm: Pointer to crtc object
- * @event: Event that client is interested
- * @en: Flag to enable/disable the event
- */
-int dpu_crtc_register_custom_event(struct dpu_kms *kms,
-		struct drm_crtc *crtc_drm, u32 event, bool en);
-
-/**
- * dpu_crtc_get_intf_mode - get interface mode of the given crtc
- * @crtc: Pointert to crtc
- */
 enum dpu_intf_mode dpu_crtc_get_intf_mode(struct drm_crtc *crtc);
 
 /**
@@ -296,5 +264,7 @@ static inline enum dpu_crtc_client_type dpu_crtc_get_client_type(
 {
 	return crtc && crtc->state ? RT_CLIENT : NRT_CLIENT;
 }
+
+void dpu_crtc_frame_event_cb(struct drm_crtc *crtc, u32 event);
 
 #endif /* _DPU_CRTC_H_ */

@@ -69,7 +69,7 @@ static void fpga_irq_print_chip(struct irq_data *d, struct seq_file *p)
 {
 	struct fpga_irq_data *f = irq_data_get_irq_chip_data(d);
 
-	seq_printf(p, irq_domain_get_of_node(f->domain)->name);
+	seq_puts(p, irq_domain_get_of_node(f->domain)->name);
 }
 
 static const struct irq_chip fpga_chip = {
@@ -128,7 +128,7 @@ static int handle_one_fpga(struct fpga_irq_data *f, struct pt_regs *regs)
  * Keep iterating over all registered FPGA IRQ controllers until there are
  * no pending interrupts.
  */
-static asmlinkage void __exception_irq_entry fpga_handle_irq(struct pt_regs *regs)
+static void __exception_irq_entry fpga_handle_irq(struct pt_regs *regs)
 {
 	int i, handled;
 
@@ -176,8 +176,8 @@ static void __init fpga_irq_init(void __iomem *base, int parent_irq,
 						 f);
 	}
 
-	f->domain = irq_domain_add_linear(node, fls(valid),
-					  &fpga_irqdomain_ops, f);
+	f->domain = irq_domain_create_linear(of_fwnode_handle(node), fls(valid),
+					     &fpga_irqdomain_ops, f);
 
 	/* This will allocate all valid descriptors in the linear case */
 	for (i = 0; i < fls(valid); i++)
@@ -242,5 +242,4 @@ static int __init fpga_irq_of_init(struct device_node *node,
 }
 IRQCHIP_DECLARE(arm_fpga, "arm,versatile-fpga-irq", fpga_irq_of_init);
 IRQCHIP_DECLARE(arm_fpga_sic, "arm,versatile-sic", fpga_irq_of_init);
-IRQCHIP_DECLARE(ox810se_rps, "oxsemi,ox810se-rps-irq", fpga_irq_of_init);
 #endif

@@ -100,7 +100,7 @@ struct dvb_frontend *ddbridge_dummy_fe_qam_attach(void)
 	struct ddbridge_dummy_fe_state *state = NULL;
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(struct ddbridge_dummy_fe_state), GFP_KERNEL);
+	state = kzalloc_obj(struct ddbridge_dummy_fe_state);
 	if (!state)
 		return NULL;
 
@@ -112,7 +112,7 @@ struct dvb_frontend *ddbridge_dummy_fe_qam_attach(void)
 	state->frontend.demodulator_priv = state;
 	return &state->frontend;
 }
-EXPORT_SYMBOL(ddbridge_dummy_fe_qam_attach);
+EXPORT_SYMBOL_GPL(ddbridge_dummy_fe_qam_attach);
 
 static const struct dvb_frontend_ops ddbridge_dummy_fe_qam_ops = {
 	.delsys = { SYS_DVBC_ANNEX_A },

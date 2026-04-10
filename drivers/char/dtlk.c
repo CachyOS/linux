@@ -107,7 +107,6 @@ static const struct file_operations dtlk_fops =
 	.unlocked_ioctl	= dtlk_ioctl,
 	.open		= dtlk_open,
 	.release	= dtlk_release,
-	.llseek		= no_llseek,
 };
 
 /* local prototypes */
@@ -244,11 +243,11 @@ static __poll_t dtlk_poll(struct file *file, poll_table * wait)
 	poll_wait(file, &dtlk_process_list, wait);
 
 	if (dtlk_has_indexing && dtlk_readable()) {
-	        del_timer(&dtlk_timer);
+	        timer_delete(&dtlk_timer);
 		mask = EPOLLIN | EPOLLRDNORM;
 	}
 	if (dtlk_writeable()) {
-	        del_timer(&dtlk_timer);
+	        timer_delete(&dtlk_timer);
 		mask |= EPOLLOUT | EPOLLWRNORM;
 	}
 	/* there are no exception conditions */
@@ -323,7 +322,7 @@ static int dtlk_release(struct inode *inode, struct file *file)
 	}
 	TRACE_RET;
 	
-	del_timer_sync(&dtlk_timer);
+	timer_delete_sync(&dtlk_timer);
 
 	return 0;
 }
@@ -660,4 +659,5 @@ static char dtlk_write_tts(char ch)
 	return 0;
 }
 
+MODULE_DESCRIPTION("RC Systems DoubleTalk PC speech card driver");
 MODULE_LICENSE("GPL");

@@ -8,6 +8,7 @@
  */
 
 #define IFH_LEN                      7
+#define IFH_LEN_BYTES                (IFH_LEN * sizeof(u32))
 
 /* Timestamp for frame */
 #define IFH_POS_TIMESTAMP            192
@@ -77,7 +78,7 @@
 /* Classified internal priority for queuing */
 #define IFH_POS_QOS_CLASS            100
 
-/* Bit mask with eight cpu copy classses */
+/* Bit mask with eight cpu copy classes */
 #define IFH_POS_CPUQ                 92
 
 /* Relearn + learn flags (*) */

@@ -7,11 +7,13 @@
  */
 
 #include <linux/acpi.h>
+#include <linux/bitrev.h>
+#include <linux/crc-ccitt.h>
 #include <linux/errno.h>
 #include <linux/gpio/consumer.h>
 #include <linux/kernel.h>
 #include <linux/mod_devicetable.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/pm_runtime.h>
 #include <linux/serdev.h>
 #include <linux/skbuff.h>
@@ -58,6 +60,7 @@ enum {
 	H5_TX_ACK_REQ,		/* Pending ack to send */
 	H5_WAKEUP_DISABLE,	/* Device cannot wake host */
 	H5_HW_FLOW_CONTROL,	/* Use HW flow control */
+	H5_CRC,			/* Use CRC */
 };
 
 struct h5 {
@@ -113,6 +116,7 @@ struct h5_vnd {
 	int (*suspend)(struct h5 *h5);
 	int (*resume)(struct h5 *h5);
 	const struct acpi_gpio_mapping *acpi_gpio_map;
+	int sizeof_priv;
 };
 
 struct h5_device_data {
@@ -140,15 +144,15 @@ static void h5_link_control(struct hci_uart *hu, const void *data, size_t len)
 
 static u8 h5_cfg_field(struct h5 *h5)
 {
-	/* Sliding window size (first 3 bits) */
-	return h5->tx_win & 0x07;
+	/* Sliding window size (first 3 bits) and CRC request (fifth bit). */
+	return (h5->tx_win & 0x07) | 0x10;
 }
 
 static void h5_timed_event(struct timer_list *t)
 {
 	const unsigned char sync_req[] = { 0x01, 0x7e };
 	unsigned char conf_req[3] = { 0x03, 0xfc };
-	struct h5 *h5 = from_timer(h5, t, timer);
+	struct h5 *h5 = timer_container_of(h5, t, timer);
 	struct hci_uart *hu = h5->hu;
 	struct sk_buff *skb;
 	unsigned long flags;
@@ -196,7 +200,7 @@ static void h5_peer_reset(struct hci_uart *hu)
 
 	h5->state = H5_UNINITIALIZED;
 
-	del_timer(&h5->timer);
+	timer_delete(&h5->timer);
 
 	skb_queue_purge(&h5->rel);
 	skb_queue_purge(&h5->unrel);
@@ -212,14 +216,13 @@ static void h5_peer_reset(struct hci_uart *hu)
 static int h5_open(struct hci_uart *hu)
 {
 	struct h5 *h5;
-	const unsigned char sync[] = { 0x01, 0x7e };
 
 	BT_DBG("hu %p", hu);
 
 	if (hu->serdev) {
 		h5 = serdev_device_get_drvdata(hu->serdev);
 	} else {
-		h5 = kzalloc(sizeof(*h5), GFP_KERNEL);
+		h5 = kzalloc_obj(*h5);
 		if (!h5)
 			return -ENOMEM;
 	}
@@ -242,9 +245,11 @@ static int h5_open(struct hci_uart *hu)
 
 	set_bit(HCI_UART_INIT_PENDING, &hu->hdev_flags);
 
-	/* Send initial sync request */
-	h5_link_control(hu, sync, sizeof(sync));
-	mod_timer(&h5->timer, jiffies + H5_SYNC_TIMEOUT);
+	/*
+	 * Wait one jiffy because the UART layer won't set HCI_UART_PROTO_READY,
+	 * which allows us to send link packets, until this function returns.
+	 */
+	mod_timer(&h5->timer, jiffies + 1);
 
 	return 0;
 }
@@ -253,7 +258,7 @@ static int h5_close(struct hci_uart *hu)
 {
 	struct h5 *h5 = hu->priv;
 
-	del_timer_sync(&h5->timer);
+	timer_delete_sync(&h5->timer);
 
 	skb_queue_purge(&h5->unack);
 	skb_queue_purge(&h5->rel);
@@ -313,11 +318,11 @@ static void h5_pkt_cull(struct h5 *h5)
 			break;
 
 		__skb_unlink(skb, &h5->unack);
-		kfree_skb(skb);
+		dev_kfree_skb_irq(skb);
 	}
 
 	if (skb_queue_empty(&h5->unack))
-		del_timer(&h5->timer);
+		timer_delete(&h5->timer);
 
 unlock:
 	spin_unlock_irqrestore(&h5->unack.lock, flags);
@@ -359,8 +364,10 @@ static void h5_handle_internal_rx(struct hci_uart *hu)
 		h5_link_control(hu, conf_rsp, 2);
 		h5_link_control(hu, conf_req, 3);
 	} else if (memcmp(data, conf_rsp, 2) == 0) {
-		if (H5_HDR_LEN(hdr) > 2)
+		if (H5_HDR_LEN(hdr) > 2) {
 			h5->tx_win = (data[2] & 0x07);
+			assign_bit(H5_CRC, &h5->flags, data[2] & 0x10);
+		}
 		BT_DBG("Three-wire init complete. tx_win %u", h5->tx_win);
 		h5->state = H5_ACTIVE;
 		hci_uart_init_ready(hu);
@@ -424,7 +431,24 @@ static void h5_complete_rx_pkt(struct hci_uart *hu)
 
 static int h5_rx_crc(struct hci_uart *hu, unsigned char c)
 {
-	h5_complete_rx_pkt(hu);
+	struct h5 *h5 = hu->priv;
+	const unsigned char *hdr = h5->rx_skb->data;
+	u16 crc;
+	__be16 crc_be;
+
+	crc = crc_ccitt(0xffff, hdr, 4 + H5_HDR_LEN(hdr));
+	crc = bitrev16(crc);
+
+	crc_be = cpu_to_be16(crc);
+
+	if (memcmp(&crc_be, hdr + 4 + H5_HDR_LEN(hdr), 2) != 0) {
+		bt_dev_err(hu->hdev, "Received packet with invalid CRC");
+		h5_reset_rx(h5);
+	} else {
+		/* Remove CRC bytes */
+		skb_trim(h5->rx_skb, 4 + H5_HDR_LEN(hdr));
+		h5_complete_rx_pkt(hu);
+	}
 
 	return 0;
 }
@@ -463,6 +487,8 @@ static int h5_rx_3wire_hdr(struct hci_uart *hu, unsigned char c)
 	if (H5_HDR_RELIABLE(hdr) && H5_HDR_SEQ(hdr) != h5->tx_ack) {
 		bt_dev_err(hu->hdev, "Out-of-order packet arrived (%u != %u)",
 			   H5_HDR_SEQ(hdr), h5->tx_ack);
+		set_bit(H5_TX_ACK_REQ, &h5->flags);
+		hci_uart_tx_wakeup(hu);
 		h5_reset_rx(h5);
 		return 0;
 	}
@@ -553,6 +579,7 @@ static void h5_reset_rx(struct h5 *h5)
 	h5->rx_func = h5_rx_delimiter;
 	h5->rx_pending = 0;
 	clear_bit(H5_RX_ESC, &h5->flags);
+	clear_bit(H5_CRC, &h5->flags);
 }
 
 static int h5_recv(struct hci_uart *hu, const void *data, int count)
@@ -589,7 +616,6 @@ static int h5_recv(struct hci_uart *hu, const void *data, int count)
 
 	if (hu->serdev) {
 		pm_runtime_get(&hu->serdev->dev);
-		pm_runtime_mark_last_busy(&hu->serdev->dev);
 		pm_runtime_put_autosuspend(&hu->serdev->dev);
 	}
 
@@ -631,7 +657,6 @@ static int h5_enqueue(struct hci_uart *hu, struct sk_buff *skb)
 
 	if (hu->serdev) {
 		pm_runtime_get_sync(&hu->serdev->dev);
-		pm_runtime_mark_last_busy(&hu->serdev->dev);
 		pm_runtime_put_autosuspend(&hu->serdev->dev);
 	}
 
@@ -683,6 +708,7 @@ static struct sk_buff *h5_prepare_pkt(struct hci_uart *hu, u8 pkt_type,
 	struct h5 *h5 = hu->priv;
 	struct sk_buff *nskb;
 	u8 hdr[4];
+	u16 crc;
 	int i;
 
 	if (!valid_packet_type(pkt_type)) {
@@ -710,6 +736,7 @@ static struct sk_buff *h5_prepare_pkt(struct hci_uart *hu, u8 pkt_type,
 	/* Reliable packet? */
 	if (pkt_type == HCI_ACLDATA_PKT || pkt_type == HCI_COMMAND_PKT) {
 		hdr[0] |= 1 << 7;
+		hdr[0] |= (test_bit(H5_CRC, &h5->flags) && 1) << 6;
 		hdr[0] |= h5->tx_seq;
 		h5->tx_seq = (h5->tx_seq + 1) % 8;
 	}
@@ -728,6 +755,15 @@ static struct sk_buff *h5_prepare_pkt(struct hci_uart *hu, u8 pkt_type,
 
 	for (i = 0; i < len; i++)
 		h5_slip_one_byte(nskb, data[i]);
+
+	if (H5_HDR_CRC(hdr)) {
+		crc = crc_ccitt(0xffff, hdr, 4);
+		crc = crc_ccitt(crc, data, len);
+		crc = bitrev16(crc);
+
+		h5_slip_one_byte(nskb, (crc >> 8) & 0xff);
+		h5_slip_one_byte(nskb, crc & 0xff);
+	}
 
 	h5_slip_delim(nskb);
 
@@ -861,7 +897,8 @@ static int h5_serdev_probe(struct serdev_device *serdev)
 	if (IS_ERR(h5->device_wake_gpio))
 		return PTR_ERR(h5->device_wake_gpio);
 
-	return hci_uart_register_device(&h5->serdev_hu, &h5p);
+	return hci_uart_register_device_priv(&h5->serdev_hu, &h5p,
+					     h5->vnd->sizeof_priv);
 }
 
 static void h5_serdev_remove(struct serdev_device *serdev)
@@ -936,6 +973,8 @@ static int h5_btrtl_setup(struct h5 *h5)
 	err = btrtl_download_firmware(h5->hu->hdev, btrtl_dev);
 	/* Give the device some time before the hci-core sends it a reset */
 	usleep_range(10000, 20000);
+	if (err)
+		goto out_free;
 
 	btrtl_set_quirks(h5->hu->hdev, btrtl_dev);
 
@@ -1030,7 +1069,7 @@ static int h5_btrtl_resume(struct h5 *h5)
 	if (test_bit(H5_WAKEUP_DISABLE, &h5->flags)) {
 		struct h5_btrtl_reprobe *reprobe;
 
-		reprobe = kzalloc(sizeof(*reprobe), GFP_KERNEL);
+		reprobe = kzalloc_obj(*reprobe);
 		if (!reprobe)
 			return -ENOMEM;
 
@@ -1066,6 +1105,7 @@ static struct h5_vnd rtl_vnd = {
 	.suspend	= h5_btrtl_suspend,
 	.resume		= h5_btrtl_resume,
 	.acpi_gpio_map	= acpi_btrtl_gpios,
+	.sizeof_priv    = sizeof(struct btrealtek_data),
 };
 
 static const struct h5_device_data h5_data_rtl8822cs = {
@@ -1099,6 +1139,8 @@ static const struct of_device_id rtl_bluetooth_of_match[] = {
 	{ .compatible = "realtek,rtl8822cs-bt",
 	  .data = (const void *)&h5_data_rtl8822cs },
 	{ .compatible = "realtek,rtl8723bs-bt",
+	  .data = (const void *)&h5_data_rtl8723bs },
+	{ .compatible = "realtek,rtl8723cs-bt",
 	  .data = (const void *)&h5_data_rtl8723bs },
 	{ .compatible = "realtek,rtl8723ds-bt",
 	  .data = (const void *)&h5_data_rtl8723bs },

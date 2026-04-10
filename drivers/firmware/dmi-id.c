@@ -96,6 +96,7 @@ static ssize_t get_modalias(char *buffer, size_t buffer_size)
 		{ "ct",  DMI_CHASSIS_TYPE },
 		{ "cvr", DMI_CHASSIS_VERSION },
 		{ "sku", DMI_PRODUCT_SKU },
+		{ "pfa", DMI_PRODUCT_FAMILY },
 		{ NULL,  DMI_NONE }
 	};
 
@@ -155,7 +156,7 @@ static const struct attribute_group* sys_dmi_attribute_groups[] = {
 	NULL
 };
 
-static int dmi_dev_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int dmi_dev_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
 	ssize_t len;
 
@@ -169,9 +170,14 @@ static int dmi_dev_uevent(struct device *dev, struct kobj_uevent_env *env)
 	return 0;
 }
 
+static void dmi_dev_release(struct device *dev)
+{
+	kfree(dev);
+}
+
 static struct class dmi_class = {
 	.name = "dmi",
-	.dev_release = (void(*)(struct device *)) kfree,
+	.dev_release = dmi_dev_release,
 	.dev_uevent = dmi_dev_uevent,
 };
 
@@ -231,7 +237,7 @@ static int __init dmi_id_init(void)
 	if (ret)
 		return ret;
 
-	dmi_dev = kzalloc(sizeof(*dmi_dev), GFP_KERNEL);
+	dmi_dev = kzalloc_obj(*dmi_dev);
 	if (!dmi_dev) {
 		ret = -ENOMEM;
 		goto fail_class_unregister;

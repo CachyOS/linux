@@ -15,7 +15,6 @@
 #include <linux/jiffies.h>
 #include <linux/hwmon.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
 #include <linux/slab.h>
 
 #define DEVNAME "lm95241"
@@ -75,7 +74,6 @@ static const u8 lm95241_reg_address[] = {
 /* Client data (each client gets its own) */
 struct lm95241_data {
 	struct i2c_client *client;
-	struct mutex update_lock;
 	unsigned long last_updated;	/* in jiffies */
 	unsigned long interval;		/* in milli-seconds */
 	bool valid;		/* false until following fields are valid */
@@ -102,8 +100,6 @@ static struct lm95241_data *lm95241_update_device(struct device *dev)
 	struct lm95241_data *data = dev_get_drvdata(dev);
 	struct i2c_client *client = data->client;
 
-	mutex_lock(&data->update_lock);
-
 	if (time_after(jiffies, data->last_updated
 		       + msecs_to_jiffies(data->interval)) ||
 	    !data->valid) {
@@ -120,9 +116,6 @@ static struct lm95241_data *lm95241_update_device(struct device *dev)
 		data->last_updated = jiffies;
 		data->valid = true;
 	}
-
-	mutex_unlock(&data->update_lock);
-
 	return data;
 }
 
@@ -204,8 +197,6 @@ static int lm95241_write_chip(struct device *dev, u32 attr, int channel,
 	u8 config;
 	int ret;
 
-	mutex_lock(&data->update_lock);
-
 	switch (attr) {
 	case hwmon_chip_update_interval:
 		config = data->config & ~CFG_CRMASK;
@@ -231,7 +222,6 @@ static int lm95241_write_chip(struct device *dev, u32 attr, int channel,
 		ret = -EOPNOTSUPP;
 		break;
 	}
-	mutex_unlock(&data->update_lock);
 	return ret;
 }
 
@@ -241,8 +231,6 @@ static int lm95241_write_temp(struct device *dev, u32 attr, int channel,
 	struct lm95241_data *data = dev_get_drvdata(dev);
 	struct i2c_client *client = data->client;
 	int ret;
-
-	mutex_lock(&data->update_lock);
 
 	switch (attr) {
 	case hwmon_temp_min:
@@ -313,9 +301,6 @@ static int lm95241_write_temp(struct device *dev, u32 attr, int channel,
 		ret = -EOPNOTSUPP;
 		break;
 	}
-
-	mutex_unlock(&data->update_lock);
-
 	return ret;
 }
 
@@ -389,7 +374,7 @@ static int lm95241_detect(struct i2c_client *new_client,
 	}
 
 	/* Fill the i2c board info */
-	strlcpy(info->type, name, I2C_NAME_SIZE);
+	strscpy(info->type, name, I2C_NAME_SIZE);
 	return 0;
 }
 
@@ -409,7 +394,7 @@ static void lm95241_init_client(struct i2c_client *client,
 				  data->model);
 }
 
-static const struct hwmon_channel_info *lm95241_info[] = {
+static const struct hwmon_channel_info * const lm95241_info[] = {
 	HWMON_CHANNEL_INFO(chip,
 			   HWMON_C_UPDATE_INTERVAL),
 	HWMON_CHANNEL_INFO(temp,
@@ -443,7 +428,6 @@ static int lm95241_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	data->client = client;
-	mutex_init(&data->update_lock);
 
 	/* Initialize the LM95241 chip */
 	lm95241_init_client(client, data);
@@ -457,8 +441,8 @@ static int lm95241_probe(struct i2c_client *client)
 
 /* Driver data (common to all clients) */
 static const struct i2c_device_id lm95241_id[] = {
-	{ "lm95231", 0 },
-	{ "lm95241", 0 },
+	{ "lm95231" },
+	{ "lm95241" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, lm95241_id);
@@ -468,7 +452,7 @@ static struct i2c_driver lm95241_driver = {
 	.driver = {
 		.name	= DEVNAME,
 	},
-	.probe_new	= lm95241_probe,
+	.probe		= lm95241_probe,
 	.id_table	= lm95241_id,
 	.detect		= lm95241_detect,
 	.address_list	= normal_i2c,

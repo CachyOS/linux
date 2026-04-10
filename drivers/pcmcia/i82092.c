@@ -23,6 +23,7 @@
 #include "i82092aa.h"
 #include "i82365.h"
 
+MODULE_DESCRIPTION("Driver for Intel I82092AA PCI-PCMCIA bridge");
 MODULE_LICENSE("GPL");
 
 /* PCI core routines */
@@ -661,12 +662,12 @@ static int i82092aa_set_mem_map(struct pcmcia_socket *socket,
 	return 0;
 }
 
-static int i82092aa_module_init(void)
+static int __init i82092aa_module_init(void)
 {
 	return pci_register_driver(&i82092aa_pci_driver);
 }
 
-static void i82092aa_module_exit(void)
+static void __exit i82092aa_module_exit(void)
 {
 	pci_unregister_driver(&i82092aa_pci_driver);
 	if (sockets[0].io_base > 0)

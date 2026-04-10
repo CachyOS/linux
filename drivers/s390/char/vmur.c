@@ -9,18 +9,20 @@
  *	    Frank Munzert <munzert@de.ibm.com>
  */
 
-#define KMSG_COMPONENT "vmur"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "vmur: " fmt
 
 #include <linux/cdev.h>
 #include <linux/slab.h>
 #include <linux/module.h>
+#include <linux/kobject.h>
 
 #include <linux/uaccess.h>
+#include <asm/machine.h>
 #include <asm/cio.h>
 #include <asm/ccwdev.h>
 #include <asm/debug.h>
 #include <asm/diag.h>
+#include <asm/scsw.h>
 
 #include "vmur.h"
 
@@ -46,7 +48,9 @@ MODULE_DESCRIPTION("s390 z/VM virtual unit record device driver");
 MODULE_LICENSE("GPL");
 
 static dev_t ur_first_dev_maj_min;
-static struct class *vmur_class;
+static const struct class vmur_class = {
+	.name = "vmur",
+};
 static struct debug_info *vmur_dbf;
 
 /* We put the device's record length (for writes) in the driver_info field */
@@ -78,6 +82,8 @@ static struct ccw_driver ur_driver = {
 
 static DEFINE_MUTEX(vmur_mutex);
 
+static void ur_uevent(struct work_struct *ws);
+
 /*
  * Allocation, freeing, getting and putting of urdev structures
  *
@@ -101,13 +107,14 @@ static struct urdev *urdev_alloc(struct ccw_device *cdev)
 {
 	struct urdev *urd;
 
-	urd = kzalloc(sizeof(struct urdev), GFP_KERNEL);
+	urd = kzalloc_obj(struct urdev);
 	if (!urd)
 		return NULL;
 	urd->reclen = cdev->id.driver_info;
 	ccw_device_get_id(cdev, &urd->dev_id);
 	mutex_init(&urd->io_mutex);
 	init_waitqueue_head(&urd->wait);
+	INIT_WORK(&urd->uevent_work, ur_uevent);
 	spin_lock_init(&urd->open_lock);
 	refcount_set(&urd->ref_count,  1);
 	urd->cdev = cdev;
@@ -147,7 +154,7 @@ static struct urdev *urdev_get_from_devno(u16 devno)
 	struct ccw_device *cdev;
 	struct urdev *urd;
 
-	sprintf(bus_id, "0.0.%04x", devno);
+	scnprintf(bus_id, sizeof(bus_id), "0.0.%04x", devno);
 	cdev = get_ccwdev_by_busid(&ur_driver, bus_id);
 	if (!cdev)
 		return NULL;
@@ -190,7 +197,7 @@ static void free_chan_prog(struct ccw1 *cpa)
 	struct ccw1 *ptr = cpa;
 
 	while (ptr->cda) {
-		kfree((void *)(addr_t) ptr->cda);
+		kfree(dma32_to_virt(ptr->cda));
 		ptr++;
 	}
 	kfree(cpa);
@@ -218,8 +225,7 @@ static struct ccw1 *alloc_chan_prog(const char __user *ubuf, int rec_count,
 	 * That means we allocate room for CCWs to cover count/reclen
 	 * records plus a NOP.
 	 */
-	cpa = kcalloc(rec_count + 1, sizeof(struct ccw1),
-		      GFP_KERNEL | GFP_DMA);
+	cpa = kzalloc_objs(struct ccw1, rec_count + 1, GFP_KERNEL | GFP_DMA);
 	if (!cpa)
 		return ERR_PTR(-ENOMEM);
 
@@ -232,7 +238,7 @@ static struct ccw1 *alloc_chan_prog(const char __user *ubuf, int rec_count,
 			free_chan_prog(cpa);
 			return ERR_PTR(-ENOMEM);
 		}
-		cpa[i].cda = (u32)(addr_t) kbuf;
+		cpa[i].cda = virt_to_dma32(kbuf);
 		if (copy_from_user(kbuf, ubuf, reclen)) {
 			free_chan_prog(cpa);
 			return ERR_PTR(-EFAULT);
@@ -275,6 +281,18 @@ out:
 	return rc;
 }
 
+static void ur_uevent(struct work_struct *ws)
+{
+	struct urdev *urd = container_of(ws, struct urdev, uevent_work);
+	char *envp[] = {
+		"EVENT=unsol_de",	/* Unsolicited device-end interrupt */
+		NULL
+	};
+
+	kobject_uevent_env(&urd->cdev->dev.kobj, KOBJ_CHANGE, envp);
+	urdev_put(urd);
+}
+
 /*
  * ur interrupt handler, called from the ccw_device layer
  */
@@ -288,12 +306,21 @@ static void ur_int_handler(struct ccw_device *cdev, unsigned long intparm,
 		      intparm, irb->scsw.cmd.cstat, irb->scsw.cmd.dstat,
 		      irb->scsw.cmd.count);
 	}
+	urd = dev_get_drvdata(&cdev->dev);
 	if (!intparm) {
 		TRACE("ur_int_handler: unsolicited interrupt\n");
+
+		if (scsw_dstat(&irb->scsw) & DEV_STAT_DEV_END) {
+			/*
+			 * Userspace might be interested in a transition to
+			 * device-ready state.
+			 */
+			urdev_get(urd);
+			schedule_work(&urd->uevent_work);
+		}
+
 		return;
 	}
-	urd = dev_get_drvdata(&cdev->dev);
-	BUG_ON(!urd);
 	/* On special conditions irb is an error pointer */
 	if (IS_ERR(irb))
 		urd->io_request_rc = PTR_ERR(irb);
@@ -317,7 +344,7 @@ static ssize_t ur_attr_reclen_show(struct device *dev,
 	urd = urdev_get_from_cdev(to_ccwdev(dev));
 	if (!urd)
 		return -ENODEV;
-	rc = sprintf(buf, "%zu\n", urd->reclen);
+	rc = sysfs_emit(buf, "%zu\n", urd->reclen);
 	urdev_put(urd);
 	return rc;
 }
@@ -369,7 +396,7 @@ static struct urfile *urfile_alloc(struct urdev *urd)
 {
 	struct urfile *urf;
 
-	urf = kzalloc(sizeof(struct urfile), GFP_KERNEL);
+	urf = kzalloc_obj(struct urfile);
 	if (!urf)
 		return NULL;
 	urf->urd = urd;
@@ -578,7 +605,7 @@ static int verify_uri_device(struct urdev *urd)
 	char *buf;
 	int rc;
 
-	fcb = kmalloc(sizeof(*fcb), GFP_KERNEL | GFP_DMA);
+	fcb = kmalloc_obj(*fcb, GFP_KERNEL | GFP_DMA);
 	if (!fcb)
 		return -ENOMEM;
 
@@ -637,7 +664,7 @@ static int get_uri_file_reclen(struct urdev *urd)
 	struct file_control_block *fcb;
 	int rc;
 
-	fcb = kmalloc(sizeof(*fcb), GFP_KERNEL | GFP_DMA);
+	fcb = kmalloc_obj(*fcb, GFP_KERNEL | GFP_DMA);
 	if (!fcb)
 		return -ENOMEM;
 	rc = diag_read_next_file_info(fcb, 0);
@@ -809,7 +836,6 @@ static int ur_probe(struct ccw_device *cdev)
 		rc = -ENOMEM;
 		goto fail_urdev_put;
 	}
-	cdev->handler = ur_int_handler;
 
 	/* validate virtual unit record device */
 	urd->class = get_urd_class(urd);
@@ -823,6 +849,7 @@ static int ur_probe(struct ccw_device *cdev)
 	}
 	spin_lock_irq(get_ccwdev_lock(cdev));
 	dev_set_drvdata(&cdev->dev, urd);
+	cdev->handler = ur_int_handler;
 	spin_unlock_irq(get_ccwdev_lock(cdev));
 
 	mutex_unlock(&vmur_mutex);
@@ -876,17 +903,17 @@ static int ur_set_online(struct ccw_device *cdev)
 		goto fail_free_cdev;
 	if (urd->cdev->id.cu_type == READER_PUNCH_DEVTYPE) {
 		if (urd->class == DEV_CLASS_UR_I)
-			sprintf(node_id, "vmrdr-%s", dev_name(&cdev->dev));
+			scnprintf(node_id, sizeof(node_id), "vmrdr-%s", dev_name(&cdev->dev));
 		if (urd->class == DEV_CLASS_UR_O)
-			sprintf(node_id, "vmpun-%s", dev_name(&cdev->dev));
+			scnprintf(node_id, sizeof(node_id), "vmpun-%s", dev_name(&cdev->dev));
 	} else if (urd->cdev->id.cu_type == PRINTER_DEVTYPE) {
-		sprintf(node_id, "vmprt-%s", dev_name(&cdev->dev));
+		scnprintf(node_id, sizeof(node_id), "vmprt-%s", dev_name(&cdev->dev));
 	} else {
 		rc = -EOPNOTSUPP;
 		goto fail_free_cdev;
 	}
 
-	urd->device = device_create(vmur_class, &cdev->dev,
+	urd->device = device_create(&vmur_class, &cdev->dev,
 				    urd->char_device->dev, NULL, "%s", node_id);
 	if (IS_ERR(urd->device)) {
 		rc = PTR_ERR(urd->device);
@@ -928,7 +955,11 @@ static int ur_set_offline_force(struct ccw_device *cdev, int force)
 		rc = -EBUSY;
 		goto fail_urdev_put;
 	}
-	device_destroy(vmur_class, urd->char_device->dev);
+	if (cancel_work_sync(&urd->uevent_work)) {
+		/* Work not run yet - need to release reference here */
+		urdev_put(urd);
+	}
+	device_destroy(&vmur_class, urd->char_device->dev);
 	cdev_del(urd->char_device);
 	urd->char_device = NULL;
 	rc = 0;
@@ -963,6 +994,7 @@ static void ur_remove(struct ccw_device *cdev)
 	spin_lock_irqsave(get_ccwdev_lock(cdev), flags);
 	urdev_put(dev_get_drvdata(&cdev->dev));
 	dev_set_drvdata(&cdev->dev, NULL);
+	cdev->handler = NULL;
 	spin_unlock_irqrestore(get_ccwdev_lock(cdev), flags);
 
 	mutex_unlock(&vmur_mutex);
@@ -976,7 +1008,7 @@ static int __init ur_init(void)
 	int rc;
 	dev_t dev;
 
-	if (!MACHINE_IS_VM) {
+	if (!machine_is_vm()) {
 		pr_err("The %s cannot be loaded without z/VM\n",
 		       ur_banner);
 		return -ENODEV;
@@ -991,11 +1023,9 @@ static int __init ur_init(void)
 
 	debug_set_level(vmur_dbf, 6);
 
-	vmur_class = class_create(THIS_MODULE, "vmur");
-	if (IS_ERR(vmur_class)) {
-		rc = PTR_ERR(vmur_class);
+	rc = class_register(&vmur_class);
+	if (rc)
 		goto fail_free_dbf;
-	}
 
 	rc = ccw_driver_register(&ur_driver);
 	if (rc)
@@ -1015,7 +1045,7 @@ static int __init ur_init(void)
 fail_unregister_driver:
 	ccw_driver_unregister(&ur_driver);
 fail_class_destroy:
-	class_destroy(vmur_class);
+	class_unregister(&vmur_class);
 fail_free_dbf:
 	debug_unregister(vmur_dbf);
 	return rc;
@@ -1025,7 +1055,7 @@ static void __exit ur_exit(void)
 {
 	unregister_chrdev_region(ur_first_dev_maj_min, NUM_MINORS);
 	ccw_driver_unregister(&ur_driver);
-	class_destroy(vmur_class);
+	class_unregister(&vmur_class);
 	debug_unregister(vmur_dbf);
 	pr_info("%s unloaded.\n", ur_banner);
 }

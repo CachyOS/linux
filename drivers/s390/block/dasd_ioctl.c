@@ -10,10 +10,8 @@
  * i/o controls for the dasd driver.
  */
 
-#define KMSG_COMPONENT "dasd"
-
 #include <linux/interrupt.h>
-#include <linux/compat.h>
+#include <linux/export.h>
 #include <linux/major.h>
 #include <linux/fs.h>
 #include <linux/blkpg.h>
@@ -24,11 +22,7 @@
 #include <linux/uaccess.h>
 #include <linux/dasd_mod.h>
 
-/* This is ugly... */
-#define PRINTK_HEADER "dasd_ioctl:"
-
 #include "dasd_int.h"
-
 
 static int
 dasd_ioctl_api_version(void __user *argp)
@@ -131,6 +125,7 @@ static int dasd_ioctl_resume(struct dasd_block *block)
 	spin_unlock_irqrestore(get_ccwdev_lock(base->cdev), flags);
 
 	dasd_schedule_block_bh(block);
+	dasd_schedule_device_bh(base);
 	return 0;
 }
 
@@ -220,7 +215,7 @@ dasd_format(struct dasd_block *block, struct format_data_t *fdata)
 	 * enabling the device later.
 	 */
 	if (fdata->start_unit == 0) {
-		block->gdp->part0->bd_inode->i_blkbits =
+		block->gdp->part0->bd_mapping->host->i_blkbits =
 			blksize_bits(fdata->blksize);
 	}
 
@@ -379,6 +374,56 @@ out_err:
 	return rc;
 }
 
+/*
+ * Swap driver iternal copy relation.
+ */
+static int
+dasd_ioctl_copy_pair_swap(struct block_device *bdev, void __user *argp)
+{
+	struct dasd_copypair_swap_data_t data;
+	struct dasd_device *device;
+	int rc;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EACCES;
+
+	device = dasd_device_from_gendisk(bdev->bd_disk);
+	if (!device)
+		return -ENODEV;
+
+	if (copy_from_user(&data, argp, sizeof(struct dasd_copypair_swap_data_t))) {
+		dasd_put_device(device);
+		return -EFAULT;
+	}
+	if (memchr_inv(data.reserved, 0, sizeof(data.reserved))) {
+		pr_warn("%s: Invalid swap data specified\n",
+			dev_name(&device->cdev->dev));
+		dasd_put_device(device);
+		return DASD_COPYPAIRSWAP_INVALID;
+	}
+	if (bdev_is_partition(bdev)) {
+		pr_warn("%s: The specified DASD is a partition and cannot be swapped\n",
+			dev_name(&device->cdev->dev));
+		dasd_put_device(device);
+		return DASD_COPYPAIRSWAP_INVALID;
+	}
+	if (!device->copy) {
+		pr_warn("%s: The specified DASD has no copy pair set up\n",
+			dev_name(&device->cdev->dev));
+		dasd_put_device(device);
+		return -ENODEV;
+	}
+	if (!device->discipline->copy_pair_swap) {
+		dasd_put_device(device);
+		return -EOPNOTSUPP;
+	}
+	rc = device->discipline->copy_pair_swap(device, data.primary,
+						data.secondary);
+	dasd_put_device(device);
+
+	return rc;
+}
+
 #ifdef CONFIG_DASD_PROFILE
 /*
  * Reset device profile information
@@ -397,7 +442,7 @@ static int dasd_ioctl_read_profile(struct dasd_block *block, void __user *argp)
 	struct dasd_profile_info_t *data;
 	int rc = 0;
 
-	data = kmalloc(sizeof(*data), GFP_KERNEL);
+	data = kmalloc_obj(*data);
 	if (!data)
 		return -ENOMEM;
 
@@ -486,7 +531,7 @@ static int __dasd_ioctl_information(struct dasd_block *block,
 	 * This must be hidden from user-space.
 	 */
 	dasd_info->open_count = atomic_read(&block->open_count);
-	if (!block->bdev)
+	if (!block->bdev_file)
 		dasd_info->open_count++;
 
 	/*
@@ -502,10 +547,10 @@ static int __dasd_ioctl_information(struct dasd_block *block,
 
 	memcpy(dasd_info->type, base->discipline->name, 4);
 
-	spin_lock_irqsave(&block->queue_lock, flags);
+	spin_lock_irqsave(get_ccwdev_lock(base->cdev), flags);
 	list_for_each(l, &base->ccw_queue)
 		dasd_info->chanq_len++;
-	spin_unlock_irqrestore(&block->queue_lock, flags);
+	spin_unlock_irqrestore(get_ccwdev_lock(base->cdev), flags);
 	return 0;
 }
 
@@ -515,7 +560,7 @@ static int dasd_ioctl_information(struct dasd_block *block, void __user *argp,
 	struct dasd_information2_t *dasd_info;
 	int error;
 
-	dasd_info = kzalloc(sizeof(*dasd_info), GFP_KERNEL);
+	dasd_info = kzalloc_obj(*dasd_info);
 	if (!dasd_info)
 		return -ENOMEM;
 
@@ -562,7 +607,7 @@ static int dasd_ioctl_readall_cmb(struct dasd_block *block, unsigned int cmd,
 	return ret;
 }
 
-int dasd_ioctl(struct block_device *bdev, fmode_t mode,
+int dasd_ioctl(struct block_device *bdev, blk_mode_t mode,
 	       unsigned int cmd, unsigned long arg)
 {
 	struct dasd_block *block;
@@ -570,10 +615,7 @@ int dasd_ioctl(struct block_device *bdev, fmode_t mode,
 	void __user *argp;
 	int rc;
 
-	if (is_compat_task())
-		argp = compat_ptr(arg);
-	else
-		argp = (void __user *)arg;
+	argp = (void __user *)arg;
 
 	if ((_IOC_DIR(cmd) != _IOC_NONE) && !arg)
 		return -EINVAL;
@@ -636,6 +678,9 @@ int dasd_ioctl(struct block_device *bdev, fmode_t mode,
 		break;
 	case BIODASDRAS:
 		rc = dasd_ioctl_release_space(bdev, argp);
+		break;
+	case BIODASDCOPYPAIRSWAP:
+		rc = dasd_ioctl_copy_pair_swap(bdev, argp);
 		break;
 	default:
 		/* if the discipline has an ioctl method try it. */

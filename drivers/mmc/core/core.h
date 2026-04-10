@@ -31,6 +31,7 @@ struct mmc_bus_ops {
 	int (*sw_reset)(struct mmc_host *);
 	bool (*cache_enabled)(struct mmc_host *);
 	int (*flush_cache)(struct mmc_host *);
+	int (*handle_undervoltage)(struct mmc_host *host);
 };
 
 void mmc_attach_bus(struct mmc_host *host, const struct mmc_bus_ops *ops);
@@ -59,6 +60,10 @@ void mmc_power_off(struct mmc_host *host);
 void mmc_power_cycle(struct mmc_host *host, u32 ocr);
 void mmc_set_initial_state(struct mmc_host *host);
 u32 mmc_vddrange_to_ocrmask(int vdd_min, int vdd_max);
+int mmc_handle_undervoltage(struct mmc_host *host);
+void mmc_regulator_register_undervoltage_notifier(struct mmc_host *host);
+void mmc_regulator_unregister_undervoltage_notifier(struct mmc_host *host);
+void mmc_undervoltage_workfn(struct work_struct *work);
 
 static inline void mmc_delay(unsigned int ms)
 {
@@ -81,16 +86,32 @@ int mmc_detect_card_removed(struct mmc_host *host);
 int mmc_attach_mmc(struct mmc_host *host);
 int mmc_attach_sd(struct mmc_host *host);
 int mmc_attach_sdio(struct mmc_host *host);
+int mmc_attach_sd_uhs2(struct mmc_host *host);
 
 /* Module parameters */
 extern bool use_spi_crc;
 
 /* Debugfs information for hosts and cards */
+#ifdef CONFIG_DEBUG_FS
 void mmc_add_host_debugfs(struct mmc_host *host);
 void mmc_remove_host_debugfs(struct mmc_host *host);
 
 void mmc_add_card_debugfs(struct mmc_card *card);
 void mmc_remove_card_debugfs(struct mmc_card *card);
+#else
+static inline void mmc_add_host_debugfs(struct mmc_host *host)
+{
+}
+static inline void mmc_remove_host_debugfs(struct mmc_host *host)
+{
+}
+static inline void mmc_add_card_debugfs(struct mmc_card *card)
+{
+}
+static inline void mmc_remove_card_debugfs(struct mmc_card *card)
+{
+}
+#endif
 
 int mmc_execute_tuning(struct mmc_card *card);
 int mmc_hs200_to_hs400(struct mmc_card *card);
@@ -101,15 +122,14 @@ bool mmc_is_req_done(struct mmc_host *host, struct mmc_request *mrq);
 
 int mmc_start_request(struct mmc_host *host, struct mmc_request *mrq);
 
-int mmc_erase(struct mmc_card *card, unsigned int from, unsigned int nr,
-		unsigned int arg);
-int mmc_can_erase(struct mmc_card *card);
-int mmc_can_trim(struct mmc_card *card);
-int mmc_can_discard(struct mmc_card *card);
-int mmc_can_sanitize(struct mmc_card *card);
-int mmc_can_secure_erase_trim(struct mmc_card *card);
-int mmc_erase_group_aligned(struct mmc_card *card, unsigned int from,
-			unsigned int nr);
+int mmc_erase(struct mmc_card *card, sector_t from, unsigned int nr, unsigned int arg);
+bool mmc_card_can_erase(struct mmc_card *card);
+bool mmc_card_can_trim(struct mmc_card *card);
+bool mmc_card_can_discard(struct mmc_card *card);
+bool mmc_card_can_sanitize(struct mmc_card *card);
+bool mmc_card_can_secure_erase_trim(struct mmc_card *card);
+bool mmc_card_can_cmd23(struct mmc_card *card);
+int mmc_erase_group_aligned(struct mmc_card *card, sector_t from, unsigned int nr);
 unsigned int mmc_calc_max_discard(struct mmc_card *card);
 
 int mmc_set_blocklen(struct mmc_card *card, unsigned int blocklen);
@@ -182,6 +202,16 @@ static inline int mmc_flush_cache(struct mmc_host *host)
 		return host->bus_ops->flush_cache(host);
 
 	return 0;
+}
+
+static inline unsigned int mmc_sector_div(sector_t dividend, u32 divisor)
+{
+	return div_u64(dividend, divisor);
+}
+
+static inline unsigned int mmc_sector_mod(sector_t dividend, u32 divisor)
+{
+	return sector_div(dividend, divisor);
 }
 
 #endif

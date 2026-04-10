@@ -44,10 +44,10 @@ struct ad7303_state {
 
 	struct mutex lock;
 	/*
-	 * DMA (thus cache coherency maintenance) requires the
+	 * DMA (thus cache coherency maintenance) may require the
 	 * transfer buffers to live in their own cache lines.
 	 */
-	__be16 data ____cacheline_aligned;
+	__be16 data __aligned(IIO_DMA_MINALIGN);
 };
 
 static int ad7303_write(struct ad7303_state *st, unsigned int chan,
@@ -173,7 +173,7 @@ static const struct iio_chan_spec_ext_info ad7303_ext_info[] = {
 		.write = ad7303_write_dac_powerdown,
 		.shared = IIO_SEPARATE,
 	},
-	{ },
+	{ }
 };
 
 #define AD7303_CHANNEL(chan) {					\
@@ -264,13 +264,13 @@ static int ad7303_probe(struct spi_device *spi)
 
 static const struct of_device_id ad7303_spi_of_match[] = {
 	{ .compatible = "adi,ad7303", },
-	{ /* sentinel */ },
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ad7303_spi_of_match);
 
 static const struct spi_device_id ad7303_spi_ids[] = {
 	{ "ad7303", 0 },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad7303_spi_ids);
 

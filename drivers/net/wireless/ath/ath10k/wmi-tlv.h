@@ -3,6 +3,7 @@
  * Copyright (c) 2005-2011 Atheros Communications Inc.
  * Copyright (c) 2011-2017 Qualcomm Atheros, Inc.
  * Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, 2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #ifndef _WMI_TLV_H
 #define _WMI_TLV_H
@@ -1813,7 +1814,7 @@ struct wmi_tlv_pdev_get_temp_cmd {
 
 struct wmi_tlv_pdev_temperature_event {
 	__le32 tlv_hdr;
-	/* temperature value in Celcius degree */
+	/* temperature value in Celsius degree */
 	__le32 temperature;
 	__le32 pdev_id;
 } __packed;
@@ -2342,7 +2343,7 @@ struct wmi_tlv_adaptive_qcs {
 } __packed;
 
 /**
- * wmi_tlv_tx_pause_id - firmware tx queue pause reason types
+ * enum wmi_tlv_tx_pause_id - firmware tx queue pause reason types
  *
  * @WMI_TLV_TX_PAUSE_ID_MCC: used for by multi-channel firmware scheduler.
  *		Only vdev_map is valid.
@@ -2548,7 +2549,7 @@ struct nlo_channel_prediction_cfg {
 
 	/* Preconfigured stationary threshold.
 	 * Lesser value means more conservative. Bigger value means more aggressive.
-	 * Maximum is 100 and mininum is 0.
+	 * Maximum is 100 and minimum is 0.
 	 */
 	__le32 stationary_threshold;
 

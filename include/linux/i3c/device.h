@@ -18,17 +18,18 @@
 /**
  * enum i3c_error_code - I3C error codes
  *
- * These are the standard error codes as defined by the I3C specification.
- * When -EIO is returned by the i3c_device_do_priv_xfers() or
- * i3c_device_send_hdr_cmds() one can check the error code in
- * &struct_i3c_priv_xfer.err or &struct i3c_hdr_cmd.err to get a better idea of
- * what went wrong.
- *
  * @I3C_ERROR_UNKNOWN: unknown error, usually means the error is not I3C
  *		       related
  * @I3C_ERROR_M0: M0 error
  * @I3C_ERROR_M1: M1 error
  * @I3C_ERROR_M2: M2 error
+ *
+ * These are the standard error codes as defined by the I3C specification.
+ * When -EIO is returned by the i3c_device_do_i3c_xfers() or
+ * i3c_device_send_hdr_cmds() one can check the error code in
+ * &struct_i3c_xfer.err or &struct i3c_hdr_cmd.err to get a better idea of
+ * what went wrong.
+ *
  */
 enum i3c_error_code {
 	I3C_ERROR_UNKNOWN = 0,
@@ -38,29 +39,39 @@ enum i3c_error_code {
 };
 
 /**
- * enum i3c_hdr_mode - HDR mode ids
+ * enum i3c_xfer_mode - I3C xfer mode ids
  * @I3C_HDR_DDR: DDR mode
  * @I3C_HDR_TSP: TSP mode
  * @I3C_HDR_TSL: TSL mode
+ * @I3C_SDR: SDR mode (NOT HDR mode)
  */
-enum i3c_hdr_mode {
-	I3C_HDR_DDR,
-	I3C_HDR_TSP,
-	I3C_HDR_TSL,
+enum i3c_xfer_mode {
+	/* The below 3 value (I3C_HDR*) must match GETCAP1 Byte bit position */
+	I3C_HDR_DDR = 0,
+	I3C_HDR_TSP = 1,
+	I3C_HDR_TSL = 2,
+	/* Use for default SDR transfer mode */
+	I3C_SDR = 31,
 };
 
 /**
- * struct i3c_priv_xfer - I3C SDR private transfer
+ * struct i3c_xfer - I3C data transfer
  * @rnw: encodes the transfer direction. true for a read, false for a write
+ * @cmd: Read/Write command in HDR mode, read: 0x80 - 0xff, write: 0x00 - 0x7f
  * @len: transfer length in bytes of the transfer
+ * @actual_len: actual length in bytes are transferred by the controller
  * @data: input/output buffer
  * @data.in: input buffer. Must point to a DMA-able buffer
  * @data.out: output buffer. Must point to a DMA-able buffer
  * @err: I3C error code
  */
-struct i3c_priv_xfer {
-	u8 rnw;
+struct i3c_xfer {
+	union {
+		u8 rnw;
+		u8 cmd;
+	};
 	u16 len;
+	u16 actual_len;
 	union {
 		void *in;
 		const void *out;
@@ -95,7 +106,7 @@ enum i3c_dcr {
 
 /**
  * struct i3c_device_info - I3C device information
- * @pid: Provisional ID
+ * @pid: Provisioned ID
  * @bcr: Bus Characteristic Register
  * @dcr: Device Characteristic Register
  * @static_addr: static/I2C address
@@ -180,13 +191,17 @@ struct i3c_driver {
 	const struct i3c_device_id *id_table;
 };
 
-static inline struct i3c_driver *drv_to_i3cdrv(struct device_driver *drv)
-{
-	return container_of(drv, struct i3c_driver, driver);
-}
+#define drv_to_i3cdrv(__drv)	container_of_const(__drv, struct i3c_driver, driver)
 
 struct device *i3cdev_to_dev(struct i3c_device *i3cdev);
-struct i3c_device *dev_to_i3cdev(struct device *dev);
+
+/**
+ * dev_to_i3cdev() - Returns the I3C device containing @dev
+ * @__dev: device object
+ *
+ * Return: a pointer to an I3C device object.
+ */
+#define dev_to_i3cdev(__dev)	container_of_const(__dev, struct i3c_device, dev)
 
 const struct i3c_device_id *
 i3c_device_match_id(struct i3c_device *i3cdev,
@@ -238,7 +253,7 @@ void i3c_driver_unregister(struct i3c_driver *drv);
  *
  * Return: 0 if both registrations succeeds, a negative error code otherwise.
  */
-static inline int i3c_i2c_driver_register(struct i3c_driver *i3cdrv,
+static __always_inline int i3c_i2c_driver_register(struct i3c_driver *i3cdrv,
 					  struct i2c_driver *i2cdrv)
 {
 	int ret;
@@ -263,7 +278,7 @@ static inline int i3c_i2c_driver_register(struct i3c_driver *i3cdrv,
  * Note that when CONFIG_I3C is not enabled, this function only unregisters the
  * @i2cdrv.
  */
-static inline void i3c_i2c_driver_unregister(struct i3c_driver *i3cdrv,
+static __always_inline void i3c_i2c_driver_unregister(struct i3c_driver *i3cdrv,
 					     struct i2c_driver *i2cdrv)
 {
 	if (IS_ENABLED(CONFIG_I3C))
@@ -276,7 +291,7 @@ static inline void i3c_i2c_driver_unregister(struct i3c_driver *i3cdrv,
  * module_i3c_i2c_driver() - Register a module providing an I3C and an I2C
  *			     driver
  * @__i3cdrv: the I3C driver to register
- * @__i2cdrv: the I3C driver to register
+ * @__i2cdrv: the I2C driver to register
  *
  * Provide generic init/exit functions that simply register/unregister an I3C
  * and an I2C driver.
@@ -287,13 +302,30 @@ static inline void i3c_i2c_driver_unregister(struct i3c_driver *i3cdrv,
 #define module_i3c_i2c_driver(__i3cdrv, __i2cdrv)	\
 	module_driver(__i3cdrv,				\
 		      i3c_i2c_driver_register,		\
-		      i3c_i2c_driver_unregister)
+		      i3c_i2c_driver_unregister,	\
+		      __i2cdrv)
 
-int i3c_device_do_priv_xfers(struct i3c_device *dev,
-			     struct i3c_priv_xfer *xfers,
-			     int nxfers);
+#if IS_ENABLED(CONFIG_I3C)
+int i3c_device_do_xfers(struct i3c_device *dev, struct i3c_xfer *xfers,
+			int nxfers, enum i3c_xfer_mode mode);
+u32 i3c_device_get_supported_xfer_mode(struct i3c_device *dev);
+#else
+static inline int
+i3c_device_do_xfers(struct i3c_device *dev, struct i3c_xfer *xfers,
+		    int nxfers, enum i3c_xfer_mode mode)
+{
+	return -EOPNOTSUPP;
+}
 
-void i3c_device_get_info(struct i3c_device *dev, struct i3c_device_info *info);
+static inline u32 i3c_device_get_supported_xfer_mode(struct i3c_device *dev)
+{
+	return 0;
+}
+#endif
+
+int i3c_device_do_setdasa(struct i3c_device *dev);
+
+void i3c_device_get_info(const struct i3c_device *dev, struct i3c_device_info *info);
 
 struct i3c_ibi_payload {
 	unsigned int len;

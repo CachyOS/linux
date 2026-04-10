@@ -29,12 +29,12 @@
 #include <linux/crc32.h>
 #include <linux/hardirq.h>
 #include <linux/delay.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/of_device.h>
 #include <linux/of_irq.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
@@ -619,7 +619,7 @@ static void mpc52xx_fec_hw_init(struct net_device *dev)
 	out_be32(&fec->rfifo_alarm, 0x0000030c);
 	out_be32(&fec->tfifo_alarm, 0x00000100);
 
-	/* begin transmittion when 256 bytes are in FIFO (or EOF or FIFO full) */
+	/* begin transmission when 256 bytes are in FIFO (or EOF or FIFO full) */
 	out_be32(&fec->x_wmrk, FEC_FIFO_WMRK_256B);
 
 	/* enable crc generation */
@@ -924,7 +924,7 @@ static int mpc52xx_fec_probe(struct platform_device *op)
 	/* Start with safe defaults for link connection */
 	priv->speed = 100;
 	priv->duplex = DUPLEX_HALF;
-	priv->mdio_speed = ((mpc5xxx_get_bus_frequency(np) >> 20) / 5) << 1;
+	priv->mdio_speed = ((mpc5xxx_get_bus_frequency(&op->dev) >> 20) / 5) << 1;
 
 	/* The current speed preconfigures the speed of the MII link */
 	prop = of_get_property(np, "current-speed", &prop_size);
@@ -937,7 +937,7 @@ static int mpc52xx_fec_probe(struct platform_device *op)
 	priv->phy_node = of_parse_phandle(np, "phy-handle", 0);
 
 	/* the 7-wire property means don't use MII mode */
-	if (of_find_property(np, "fsl,7-wire-mode", NULL)) {
+	if (of_property_read_bool(np, "fsl,7-wire-mode")) {
 		priv->seven_wire_mode = 1;
 		dev_info(&ndev->dev, "using 7-wire PHY mode\n");
 	}
@@ -974,7 +974,7 @@ err_netdev:
 	return rv;
 }
 
-static int
+static void
 mpc52xx_fec_remove(struct platform_device *op)
 {
 	struct net_device *ndev;
@@ -998,8 +998,6 @@ mpc52xx_fec_remove(struct platform_device *op)
 	release_mem_region(ndev->base_addr, sizeof(struct mpc52xx_fec));
 
 	free_netdev(ndev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM

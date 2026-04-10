@@ -93,8 +93,7 @@ void kvmppc_xive_native_cleanup_vcpu(struct kvm_vcpu *vcpu)
 		/* Free the escalation irq */
 		if (xc->esc_virq[i]) {
 			if (kvmppc_xive_has_single_escalation(xc->xive))
-				xive_cleanup_single_escalation(vcpu, xc,
-							xc->esc_virq[i]);
+				xive_cleanup_single_escalation(vcpu, xc->esc_virq[i]);
 			free_irq(xc->esc_virq[i], vcpu);
 			irq_dispose_mapping(xc->esc_virq[i]);
 			kfree(xc->esc_virq_names[i]);
@@ -146,7 +145,7 @@ int kvmppc_xive_native_connect_vcpu(struct kvm_device *dev,
 	if (rc)
 		goto bail;
 
-	xc = kzalloc(sizeof(*xc), GFP_KERNEL);
+	xc = kzalloc_obj(*xc);
 	if (!xc) {
 		rc = -ENOMEM;
 		goto bail;
@@ -325,7 +324,7 @@ static int kvmppc_xive_native_mmap(struct kvm_device *dev,
 		return -EINVAL;
 	}
 
-	vma->vm_flags |= VM_IO | VM_PFNMAP;
+	vm_flags_set(vma, VM_IO | VM_PFNMAP);
 	vma->vm_page_prot = pgprot_noncached_wc(vma->vm_page_prot);
 
 	/*
@@ -568,7 +567,7 @@ static int kvmppc_xive_native_set_queue_config(struct kvmppc_xive *xive,
 	u8 priority;
 	struct kvm_ppc_xive_eq kvm_eq;
 	int rc;
-	__be32 *qaddr = 0;
+	__be32 *qaddr = NULL;
 	struct page *page;
 	struct xive_q *q;
 	gfn_t gfn;
@@ -655,7 +654,7 @@ static int kvmppc_xive_native_set_queue_config(struct kvmppc_xive *xive,
 	}
 
 	page = gfn_to_page(kvm, gfn);
-	if (is_error_page(page)) {
+	if (!page) {
 		srcu_read_unlock(&kvm->srcu, srcu_idx);
 		pr_err("Couldn't get queue page %llx!\n", kvm_eq.qaddr);
 		return -EINVAL;

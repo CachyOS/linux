@@ -2,7 +2,7 @@
 /*
  * Intel Sunrisepoint PCH pinctrl/GPIO driver
  *
- * Copyright (C) 2015, Intel Corporation
+ * Copyright (C) 2015 Intel Corporation
  * Authors: Mathias Nyman <mathias.nyman@linux.intel.com>
  *          Mika Westerberg <mika.westerberg@linux.intel.com>
  */
@@ -10,47 +10,29 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/pm.h>
 
 #include <linux/pinctrl/pinctrl.h>
 
 #include "pinctrl-intel.h"
 
-#define SPT_PAD_OWN		0x020
+#define SPT_H_PAD_OWN		0x020
 #define SPT_H_PADCFGLOCK	0x090
+#define SPT_H_HOSTSW_OWN	0x0d0
+#define SPT_H_GPI_IS		0x100
+#define SPT_H_GPI_IE		0x120
+
+#define SPT_LP_PAD_OWN		0x020
 #define SPT_LP_PADCFGLOCK	0x0a0
-#define SPT_HOSTSW_OWN		0x0d0
-#define SPT_GPI_IS		0x100
-#define SPT_GPI_IE		0x120
-
-#define SPT_COMMUNITY(b, s, e, pl, gs, gn, g, n)	\
-	{						\
-		.barno = (b),				\
-		.padown_offset = SPT_PAD_OWN,		\
-		.padcfglock_offset = (pl),		\
-		.hostown_offset = SPT_HOSTSW_OWN,	\
-		.is_offset = SPT_GPI_IS,		\
-		.ie_offset = SPT_GPI_IE,		\
-		.gpp_size = (gs),			\
-		.gpp_num_padown_regs = (gn),		\
-		.pin_base = (s),			\
-		.npins = ((e) - (s) + 1),		\
-		.gpps = (g),				\
-		.ngpps = (n),				\
-	}
-
-#define SPT_LP_COMMUNITY(b, s, e)			\
-	SPT_COMMUNITY(b, s, e, SPT_LP_PADCFGLOCK, 24, 4, NULL, 0)
-
-#define SPT_H_GPP(r, s, e, g)				\
-	{						\
-		.reg_num = (r),				\
-		.base = (s),				\
-		.size = ((e) - (s) + 1),		\
-		.gpio_base = (g),			\
-	}
+#define SPT_LP_HOSTSW_OWN	0x0d0
+#define SPT_LP_GPI_IS		0x100
+#define SPT_LP_GPI_IE		0x120
 
 #define SPT_H_COMMUNITY(b, s, e, g)			\
-	SPT_COMMUNITY(b, s, e, SPT_H_PADCFGLOCK, 0, 0, g, ARRAY_SIZE(g))
+	INTEL_COMMUNITY_GPPS(b, s, e, g, SPT_H)
+
+#define SPT_LP_COMMUNITY(b, s, e)			\
+	INTEL_COMMUNITY_SIZE(b, s, e, 24, 4, SPT_LP)
 
 /* Sunrisepoint-LP */
 static const struct pinctrl_pin_desc sptlp_pins[] = {
@@ -548,21 +530,21 @@ static const struct intel_function spth_functions[] = {
 };
 
 static const struct intel_padgroup spth_community0_gpps[] = {
-	SPT_H_GPP(0, 0, 23, 0),		/* GPP_A */
-	SPT_H_GPP(1, 24, 47, 24),	/* GPP_B */
+	INTEL_GPP(0, 0, 23, 0),		/* GPP_A */
+	INTEL_GPP(1, 24, 47, 24),	/* GPP_B */
 };
 
 static const struct intel_padgroup spth_community1_gpps[] = {
-	SPT_H_GPP(0, 48, 71, 48),	/* GPP_C */
-	SPT_H_GPP(1, 72, 95, 72),	/* GPP_D */
-	SPT_H_GPP(2, 96, 108, 96),	/* GPP_E */
-	SPT_H_GPP(3, 109, 132, 120),	/* GPP_F */
-	SPT_H_GPP(4, 133, 156, 144),	/* GPP_G */
-	SPT_H_GPP(5, 157, 180, 168),	/* GPP_H */
+	INTEL_GPP(0, 48, 71, 48),	/* GPP_C */
+	INTEL_GPP(1, 72, 95, 72),	/* GPP_D */
+	INTEL_GPP(2, 96, 108, 96),	/* GPP_E */
+	INTEL_GPP(3, 109, 132, 120),	/* GPP_F */
+	INTEL_GPP(4, 133, 156, 144),	/* GPP_G */
+	INTEL_GPP(5, 157, 180, 168),	/* GPP_H */
 };
 
 static const struct intel_padgroup spth_community3_gpps[] = {
-	SPT_H_GPP(0, 181, 191, 192),	/* GPP_I */
+	INTEL_GPP(0, 181, 191, 192),	/* GPP_I */
 };
 
 static const struct intel_community spth_communities[] = {
@@ -590,14 +572,12 @@ static const struct acpi_device_id spt_pinctrl_acpi_match[] = {
 };
 MODULE_DEVICE_TABLE(acpi, spt_pinctrl_acpi_match);
 
-static INTEL_PINCTRL_PM_OPS(spt_pinctrl_pm_ops);
-
 static struct platform_driver spt_pinctrl_driver = {
 	.probe = intel_pinctrl_probe_by_hid,
 	.driver = {
 		.name = "sunrisepoint-pinctrl",
 		.acpi_match_table = spt_pinctrl_acpi_match,
-		.pm = &spt_pinctrl_pm_ops,
+		.pm = pm_sleep_ptr(&intel_pinctrl_pm_ops),
 	},
 };
 
@@ -617,3 +597,4 @@ MODULE_AUTHOR("Mathias Nyman <mathias.nyman@linux.intel.com>");
 MODULE_AUTHOR("Mika Westerberg <mika.westerberg@linux.intel.com>");
 MODULE_DESCRIPTION("Intel Sunrisepoint PCH pinctrl/GPIO driver");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS("PINCTRL_INTEL");

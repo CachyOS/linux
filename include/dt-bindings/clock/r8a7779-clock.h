@@ -19,6 +19,7 @@
 #define R8A7779_CLK_OUT		7
 
 /* MSTP 0 */
+#define R8A7779_CLK_PWM		5
 #define R8A7779_CLK_HSPI	7
 #define R8A7779_CLK_TMU2	14
 #define R8A7779_CLK_TMU1	15
@@ -55,6 +56,5 @@
 #define R8A7779_CLK_SDHI0	23
 #define R8A7779_CLK_MMC1	30
 #define R8A7779_CLK_MMC0	31
-
 
 #endif /* __DT_BINDINGS_CLOCK_R8A7779_H__ */

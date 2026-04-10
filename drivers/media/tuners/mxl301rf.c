@@ -64,7 +64,7 @@ static int reg_read(struct mxl301rf_state *state, u8 reg, u8 *val)
 
 /* tuner_ops */
 
-/* get RSSI and update propery cache, set to *out in % */
+/* get RSSI and update property cache, set to *out in % */
 static int mxl301rf_get_rf_strength(struct dvb_frontend *fe, u16 *out)
 {
 	struct mxl301rf_state *state;
@@ -283,14 +283,13 @@ static const struct dvb_tuner_ops mxl301rf_ops = {
 };
 
 
-static int mxl301rf_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int mxl301rf_probe(struct i2c_client *client)
 {
 	struct mxl301rf_state *state;
 	struct mxl301rf_config *cfg;
 	struct dvb_frontend *fe;
 
-	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	state = kzalloc_obj(*state);
 	if (!state)
 		return -ENOMEM;
 
@@ -307,19 +306,18 @@ static int mxl301rf_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int mxl301rf_remove(struct i2c_client *client)
+static void mxl301rf_remove(struct i2c_client *client)
 {
 	struct mxl301rf_state *state;
 
 	state = cfg_to_state(i2c_get_clientdata(client));
 	state->cfg.fe->tuner_priv = NULL;
 	kfree(state);
-	return 0;
 }
 
 
 static const struct i2c_device_id mxl301rf_id[] = {
-	{"mxl301rf", 0},
+	{ "mxl301rf" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, mxl301rf_id);

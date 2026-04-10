@@ -5,9 +5,9 @@
  */
 
 #include <drm/drm_atomic.h>
-#include <drm/drm_plane_helper.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_framebuffer.h>
 
 #include "tilcdc_drv.h"
 
@@ -42,8 +42,7 @@ static int tilcdc_plane_atomic_check(struct drm_plane *plane,
 		return -EINVAL;
 	}
 
-	crtc_state = drm_atomic_get_existing_crtc_state(state,
-							new_state->crtc);
+	crtc_state = drm_atomic_get_new_crtc_state(state, new_state->crtc);
 	/* we should have a crtc state if the plane is attached to a crtc */
 	if (WARN_ON(!crtc_state))
 		return 0;
@@ -105,11 +104,10 @@ int tilcdc_plane_init(struct drm_device *dev,
 	struct tilcdc_drm_private *priv = dev->dev_private;
 	int ret;
 
-	ret = drm_plane_init(dev, plane, 1,
-			     &tilcdc_plane_funcs,
-			     priv->pixelformats,
-			     priv->num_pixelformats,
-			     true);
+	ret = drm_universal_plane_init(dev, plane, 1, &tilcdc_plane_funcs,
+				       priv->pixelformats,
+				       priv->num_pixelformats,
+				       NULL, DRM_PLANE_TYPE_PRIMARY, NULL);
 	if (ret) {
 		dev_err(dev->dev, "Failed to initialize plane: %d\n", ret);
 		return ret;

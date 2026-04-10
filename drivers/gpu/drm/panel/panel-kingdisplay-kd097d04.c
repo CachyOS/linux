@@ -23,9 +23,6 @@ struct kingdisplay_panel {
 
 	struct regulator *supply;
 	struct gpio_desc *enable_gpio;
-
-	bool prepared;
-	bool enabled;
 };
 
 struct kingdisplay_panel_cmd {
@@ -185,14 +182,9 @@ static int kingdisplay_panel_disable(struct drm_panel *panel)
 	struct kingdisplay_panel *kingdisplay = to_kingdisplay_panel(panel);
 	int err;
 
-	if (!kingdisplay->enabled)
-		return 0;
-
 	err = mipi_dsi_dcs_set_display_off(kingdisplay->link);
 	if (err < 0)
 		dev_err(panel->dev, "failed to set display off: %d\n", err);
-
-	kingdisplay->enabled = false;
 
 	return 0;
 }
@@ -201,9 +193,6 @@ static int kingdisplay_panel_unprepare(struct drm_panel *panel)
 {
 	struct kingdisplay_panel *kingdisplay = to_kingdisplay_panel(panel);
 	int err;
-
-	if (!kingdisplay->prepared)
-		return 0;
 
 	err = mipi_dsi_dcs_enter_sleep_mode(kingdisplay->link);
 	if (err < 0) {
@@ -220,8 +209,6 @@ static int kingdisplay_panel_unprepare(struct drm_panel *panel)
 	if (err < 0)
 		return err;
 
-	kingdisplay->prepared = false;
-
 	return 0;
 }
 
@@ -230,9 +217,6 @@ static int kingdisplay_panel_prepare(struct drm_panel *panel)
 	struct kingdisplay_panel *kingdisplay = to_kingdisplay_panel(panel);
 	int err, regulator_err;
 	unsigned int i;
-
-	if (kingdisplay->prepared)
-		return 0;
 
 	gpiod_set_value_cansleep(kingdisplay->enable_gpio, 0);
 
@@ -275,8 +259,6 @@ static int kingdisplay_panel_prepare(struct drm_panel *panel)
 	/* T7: 10ms */
 	usleep_range(10000, 11000);
 
-	kingdisplay->prepared = true;
-
 	return 0;
 
 poweroff:
@@ -287,18 +269,6 @@ poweroff:
 		dev_err(panel->dev, "failed to disable regulator: %d\n", regulator_err);
 
 	return err;
-}
-
-static int kingdisplay_panel_enable(struct drm_panel *panel)
-{
-	struct kingdisplay_panel *kingdisplay = to_kingdisplay_panel(panel);
-
-	if (kingdisplay->enabled)
-		return 0;
-
-	kingdisplay->enabled = true;
-
-	return 0;
 }
 
 static const struct drm_display_mode default_mode = {
@@ -341,7 +311,6 @@ static const struct drm_panel_funcs kingdisplay_panel_funcs = {
 	.disable = kingdisplay_panel_disable,
 	.unprepare = kingdisplay_panel_unprepare,
 	.prepare = kingdisplay_panel_prepare,
-	.enable = kingdisplay_panel_enable,
 	.get_modes = kingdisplay_panel_get_modes,
 };
 
@@ -368,9 +337,6 @@ static int kingdisplay_panel_add(struct kingdisplay_panel *kingdisplay)
 		kingdisplay->enable_gpio = NULL;
 	}
 
-	drm_panel_init(&kingdisplay->base, &kingdisplay->link->dev,
-		       &kingdisplay_panel_funcs, DRM_MODE_CONNECTOR_DSI);
-
 	err = drm_panel_of_backlight(&kingdisplay->base);
 	if (err)
 		return err;
@@ -393,11 +359,14 @@ static int kingdisplay_panel_probe(struct mipi_dsi_device *dsi)
 	dsi->lanes = 4;
 	dsi->format = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
-			  MIPI_DSI_MODE_LPM;
+			  MIPI_DSI_MODE_LPM | MIPI_DSI_MODE_NO_EOT_PACKET;
 
-	kingdisplay = devm_kzalloc(&dsi->dev, sizeof(*kingdisplay), GFP_KERNEL);
-	if (!kingdisplay)
-		return -ENOMEM;
+	kingdisplay = devm_drm_panel_alloc(&dsi->dev, __typeof(*kingdisplay), base,
+					   &kingdisplay_panel_funcs,
+					   DRM_MODE_CONNECTOR_DSI);
+
+	if (IS_ERR(kingdisplay))
+		return PTR_ERR(kingdisplay);
 
 	mipi_dsi_set_drvdata(dsi, kingdisplay);
 	kingdisplay->link = dsi;
@@ -415,34 +384,16 @@ static int kingdisplay_panel_probe(struct mipi_dsi_device *dsi)
 	return 0;
 }
 
-static int kingdisplay_panel_remove(struct mipi_dsi_device *dsi)
+static void kingdisplay_panel_remove(struct mipi_dsi_device *dsi)
 {
 	struct kingdisplay_panel *kingdisplay = mipi_dsi_get_drvdata(dsi);
 	int err;
-
-	err = drm_panel_unprepare(&kingdisplay->base);
-	if (err < 0)
-		dev_err(&dsi->dev, "failed to unprepare panel: %d\n", err);
-
-	err = drm_panel_disable(&kingdisplay->base);
-	if (err < 0)
-		dev_err(&dsi->dev, "failed to disable panel: %d\n", err);
 
 	err = mipi_dsi_detach(dsi);
 	if (err < 0)
 		dev_err(&dsi->dev, "failed to detach from DSI host: %d\n", err);
 
 	kingdisplay_panel_del(kingdisplay);
-
-	return 0;
-}
-
-static void kingdisplay_panel_shutdown(struct mipi_dsi_device *dsi)
-{
-	struct kingdisplay_panel *kingdisplay = mipi_dsi_get_drvdata(dsi);
-
-	drm_panel_unprepare(&kingdisplay->base);
-	drm_panel_disable(&kingdisplay->base);
 }
 
 static struct mipi_dsi_driver kingdisplay_panel_driver = {
@@ -452,7 +403,6 @@ static struct mipi_dsi_driver kingdisplay_panel_driver = {
 	},
 	.probe = kingdisplay_panel_probe,
 	.remove = kingdisplay_panel_remove,
-	.shutdown = kingdisplay_panel_shutdown,
 };
 module_mipi_dsi_driver(kingdisplay_panel_driver);
 

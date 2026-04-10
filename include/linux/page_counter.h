@@ -3,15 +3,19 @@
 #define _LINUX_PAGE_COUNTER_H
 
 #include <linux/atomic.h>
-#include <linux/kernel.h>
+#include <linux/cache.h>
+#include <linux/limits.h>
 #include <asm/page.h>
 
 struct page_counter {
+	/*
+	 * Make sure 'usage' does not share cacheline with any other field in
+	 * v2. The memcg->memory.usage is a hot member of struct mem_cgroup.
+	 */
 	atomic_long_t usage;
-	unsigned long min;
-	unsigned long low;
-	unsigned long high;
-	unsigned long max;
+	unsigned long failcnt; /* v1-only field */
+
+	CACHELINE_PADDING(_pad1_);
 
 	/* effective memory.min and memory.min usage tracking */
 	unsigned long emin;
@@ -23,18 +27,21 @@ struct page_counter {
 	atomic_long_t low_usage;
 	atomic_long_t children_low_usage;
 
-	/* legacy */
 	unsigned long watermark;
-	unsigned long failcnt;
+	/* Latest cg2 reset watermark */
+	unsigned long local_watermark;
 
-	/*
-	 * 'parent' is placed here to be far from 'usage' to reduce
-	 * cache false sharing, as 'usage' is written mostly while
-	 * parent is frequently read for cgroup's hierarchical
-	 * counting nature.
-	 */
+	/* Keep all the read most fields in a separete cacheline. */
+	CACHELINE_PADDING(_pad2_);
+
+	bool protection_support;
+	bool track_failcnt;
+	unsigned long min;
+	unsigned long low;
+	unsigned long high;
+	unsigned long max;
 	struct page_counter *parent;
-};
+} ____cacheline_internodealigned_in_smp;
 
 #if BITS_PER_LONG == 32
 #define PAGE_COUNTER_MAX LONG_MAX
@@ -42,12 +49,18 @@ struct page_counter {
 #define PAGE_COUNTER_MAX (LONG_MAX / PAGE_SIZE)
 #endif
 
+/*
+ * Protection is supported only for the first counter (with id 0).
+ */
 static inline void page_counter_init(struct page_counter *counter,
-				     struct page_counter *parent)
+				     struct page_counter *parent,
+				     bool protection_support)
 {
-	atomic_long_set(&counter->usage, 0);
+	counter->usage = (atomic_long_t)ATOMIC_LONG_INIT(0);
 	counter->max = PAGE_COUNTER_MAX;
 	counter->parent = parent;
+	counter->protection_support = protection_support;
+	counter->track_failcnt = false;
 }
 
 static inline unsigned long page_counter_read(struct page_counter *counter)
@@ -76,7 +89,24 @@ int page_counter_memparse(const char *buf, const char *max,
 
 static inline void page_counter_reset_watermark(struct page_counter *counter)
 {
-	counter->watermark = page_counter_read(counter);
+	unsigned long usage = page_counter_read(counter);
+
+	/*
+	 * Update local_watermark first, so it's always <= watermark
+	 * (modulo CPU/compiler re-ordering)
+	 */
+	counter->local_watermark = usage;
+	counter->watermark = usage;
 }
+
+#if IS_ENABLED(CONFIG_MEMCG) || IS_ENABLED(CONFIG_CGROUP_DMEM)
+void page_counter_calculate_protection(struct page_counter *root,
+				       struct page_counter *counter,
+				       bool recursive_protection);
+#else
+static inline void page_counter_calculate_protection(struct page_counter *root,
+						     struct page_counter *counter,
+						     bool recursive_protection) {}
+#endif
 
 #endif /* _LINUX_PAGE_COUNTER_H */

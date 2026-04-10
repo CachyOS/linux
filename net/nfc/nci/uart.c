@@ -113,28 +113,28 @@ static int nci_uart_set_driver(struct tty_struct *tty, unsigned int driver)
 	if (!nci_uart_drivers[driver])
 		return -ENOENT;
 
-	nu = kzalloc(sizeof(*nu), GFP_KERNEL);
+	nu = kzalloc_obj(*nu);
 	if (!nu)
 		return -ENOMEM;
 
 	memcpy(nu, nci_uart_drivers[driver], sizeof(struct nci_uart));
 	nu->tty = tty;
-	tty->disc_data = nu;
 	skb_queue_head_init(&nu->tx_q);
 	INIT_WORK(&nu->write_work, nci_uart_write_work);
 	spin_lock_init(&nu->rx_lock);
 
 	ret = nu->ops.open(nu);
 	if (ret) {
-		tty->disc_data = NULL;
 		kfree(nu);
+		return ret;
 	} else if (!try_module_get(nu->owner)) {
 		nu->ops.close(nu);
-		tty->disc_data = NULL;
 		kfree(nu);
 		return -ENOENT;
 	}
-	return ret;
+	tty->disc_data = nu;
+
+	return 0;
 }
 
 /* ------ LDISC part ------ */
@@ -172,7 +172,7 @@ static int nci_uart_tty_open(struct tty_struct *tty)
  */
 static void nci_uart_tty_close(struct tty_struct *tty)
 {
-	struct nci_uart *nu = (void *)tty->disc_data;
+	struct nci_uart *nu = tty->disc_data;
 
 	/* Detach from the tty */
 	tty->disc_data = NULL;
@@ -204,7 +204,7 @@ static void nci_uart_tty_close(struct tty_struct *tty)
  */
 static void nci_uart_tty_wakeup(struct tty_struct *tty)
 {
-	struct nci_uart *nu = (void *)tty->disc_data;
+	struct nci_uart *nu = tty->disc_data;
 
 	if (!nu)
 		return;
@@ -296,9 +296,9 @@ static int nci_uart_default_recv_buf(struct nci_uart *nu, const u8 *data,
  * Return Value:    None
  */
 static void nci_uart_tty_receive(struct tty_struct *tty, const u8 *data,
-				 const char *flags, int count)
+				 const u8 *flags, size_t count)
 {
-	struct nci_uart *nu = (void *)tty->disc_data;
+	struct nci_uart *nu = tty->disc_data;
 
 	if (!nu || tty != nu->tty)
 		return;
@@ -325,7 +325,7 @@ static void nci_uart_tty_receive(struct tty_struct *tty, const u8 *data,
 static int nci_uart_tty_ioctl(struct tty_struct *tty, unsigned int cmd,
 			      unsigned long arg)
 {
-	struct nci_uart *nu = (void *)tty->disc_data;
+	struct nci_uart *nu = tty->disc_data;
 	int err = 0;
 
 	switch (cmd) {
@@ -345,20 +345,14 @@ static int nci_uart_tty_ioctl(struct tty_struct *tty, unsigned int cmd,
 
 /* We don't provide read/write/poll interface for user space. */
 static ssize_t nci_uart_tty_read(struct tty_struct *tty, struct file *file,
-				 unsigned char *buf, size_t nr,
-				 void **cookie, unsigned long offset)
+				 u8 *buf, size_t nr, void **cookie,
+				 unsigned long offset)
 {
 	return 0;
 }
 
 static ssize_t nci_uart_tty_write(struct tty_struct *tty, struct file *file,
-				  const unsigned char *data, size_t count)
-{
-	return 0;
-}
-
-static __poll_t nci_uart_tty_poll(struct tty_struct *tty,
-				      struct file *filp, poll_table *wait)
+				  const u8 *data, size_t count)
 {
 	return 0;
 }
@@ -435,7 +429,6 @@ static struct tty_ldisc_ops nci_uart_ldisc = {
 	.close		= nci_uart_tty_close,
 	.read		= nci_uart_tty_read,
 	.write		= nci_uart_tty_write,
-	.poll		= nci_uart_tty_poll,
 	.receive_buf	= nci_uart_tty_receive,
 	.write_wakeup	= nci_uart_tty_wakeup,
 	.ioctl		= nci_uart_tty_ioctl,

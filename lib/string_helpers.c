@@ -13,17 +13,20 @@
 #include <linux/device.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
+#include <linux/hex.h>
 #include <linux/limits.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/string_helpers.h>
+#include <kunit/test.h>
+#include <kunit/test-bug.h>
 
 /**
  * string_get_size - get the size in the specified units
  * @size:	The size to be converted in blocks
  * @blk_size:	Size of the block (use 1 for size in bytes)
- * @units:	units to use (powers of 1000 or 1024)
+ * @units:	Units to use (powers of 1000 or 1024), whether to include space separator
  * @buf:	buffer to format to
  * @len:	length of buffer
  *
@@ -31,15 +34,18 @@
  * giving the size in the required units.  @buf should have room for
  * at least 9 bytes and will always be zero terminated.
  *
+ * Return value: number of characters of output that would have been written
+ * (which may be greater than len, if output was truncated).
  */
-void string_get_size(u64 size, u64 blk_size, const enum string_size_units units,
-		     char *buf, int len)
+int string_get_size(u64 size, u64 blk_size, const enum string_size_units units,
+		    char *buf, int len)
 {
+	enum string_size_units units_base = units & STRING_UNITS_MASK;
 	static const char *const units_10[] = {
-		"B", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"
+		"", "k", "M", "G", "T", "P", "E", "Z", "Y",
 	};
 	static const char *const units_2[] = {
-		"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"
+		"", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi", "Yi",
 	};
 	static const char *const *const units_str[] = {
 		[STRING_UNITS_10] = units_10,
@@ -52,7 +58,7 @@ void string_get_size(u64 size, u64 blk_size, const enum string_size_units units,
 	static const unsigned int rounding[] = { 500, 50, 5 };
 	int i = 0, j;
 	u32 remainder = 0, sf_cap;
-	char tmp[8];
+	char tmp[12];
 	const char *unit;
 
 	tmp[0] = '\0';
@@ -64,7 +70,7 @@ void string_get_size(u64 size, u64 blk_size, const enum string_size_units units,
 
 	/* This is Napier's algorithm.  Reduce the original block size to
 	 *
-	 * coefficient * divisor[units]^i
+	 * coefficient * divisor[units_base]^i
 	 *
 	 * we do the reduction so both coefficients are just under 32 bits so
 	 * that multiplying them together won't overflow 64 bits and we keep
@@ -74,12 +80,12 @@ void string_get_size(u64 size, u64 blk_size, const enum string_size_units units,
 	 * precision is in the coefficients.
 	 */
 	while (blk_size >> 32) {
-		do_div(blk_size, divisor[units]);
+		do_div(blk_size, divisor[units_base]);
 		i++;
 	}
 
 	while (size >> 32) {
-		do_div(size, divisor[units]);
+		do_div(size, divisor[units_base]);
 		i++;
 	}
 
@@ -88,8 +94,8 @@ void string_get_size(u64 size, u64 blk_size, const enum string_size_units units,
 	size *= blk_size;
 
 	/* and logarithmically reduce it until it's just under the divisor */
-	while (size >= divisor[units]) {
-		remainder = do_div(size, divisor[units]);
+	while (size >= divisor[units_base]) {
+		remainder = do_div(size, divisor[units_base]);
 		i++;
 	}
 
@@ -99,10 +105,10 @@ void string_get_size(u64 size, u64 blk_size, const enum string_size_units units,
 	for (j = 0; sf_cap*10 < 1000; j++)
 		sf_cap *= 10;
 
-	if (units == STRING_UNITS_2) {
+	if (units_base == STRING_UNITS_2) {
 		/* express the remainder as a decimal.  It's currently the
 		 * numerator of a fraction whose denominator is
-		 * divisor[units], which is 1 << 10 for STRING_UNITS_2 */
+		 * divisor[units_base], which is 1 << 10 for STRING_UNITS_2 */
 		remainder *= 1000;
 		remainder >>= 10;
 	}
@@ -124,12 +130,61 @@ void string_get_size(u64 size, u64 blk_size, const enum string_size_units units,
 	if (i >= ARRAY_SIZE(units_2))
 		unit = "UNK";
 	else
-		unit = units_str[units][i];
+		unit = units_str[units_base][i];
 
-	snprintf(buf, len, "%u%s %s", (u32)size,
-		 tmp, unit);
+	return snprintf(buf, len, "%u%s%s%s%s", (u32)size, tmp,
+			(units & STRING_UNITS_NO_SPACE) ? "" : " ",
+			unit,
+			(units & STRING_UNITS_NO_BYTES) ? "" : "B");
 }
 EXPORT_SYMBOL(string_get_size);
+
+int parse_int_array(const char *buf, size_t count, int **array)
+{
+	int *ints, nints;
+
+	get_options(buf, 0, &nints);
+	if (!nints)
+		return -ENOENT;
+
+	ints = kzalloc_objs(*ints, nints + 1);
+	if (!ints)
+		return -ENOMEM;
+
+	get_options(buf, nints + 1, ints);
+	*array = ints;
+
+	return 0;
+}
+EXPORT_SYMBOL(parse_int_array);
+
+/**
+ * parse_int_array_user - Split string into a sequence of integers
+ * @from:	The user space buffer to read from
+ * @count:	The maximum number of bytes to read
+ * @array:	Returned pointer to sequence of integers
+ *
+ * On success @array is allocated and initialized with a sequence of
+ * integers extracted from the @from plus an additional element that
+ * begins the sequence and specifies the integers count.
+ *
+ * Caller takes responsibility for freeing @array when it is no longer
+ * needed.
+ */
+int parse_int_array_user(const char __user *from, size_t count, int **array)
+{
+	char *buf;
+	int ret;
+
+	buf = memdup_user_nul(from, count);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
+
+	ret = parse_int_array(buf, count, array);
+	kfree(buf);
+	return ret;
+}
+EXPORT_SYMBOL(parse_int_array_user);
 
 static bool unescape_space(char **src, char **dst)
 {
@@ -269,6 +324,9 @@ static bool unescape_special(char **src, char **dst)
 int string_unescape(char *src, char *dst, size_t size, unsigned int flags)
 {
 	char *out = dst;
+
+	if (!size)
+		size = SIZE_MAX;
 
 	while (*src && --size) {
 		if (src[0] == '\\' && src[1] != '\0' && size > 1) {
@@ -675,6 +733,21 @@ char *kstrdup_quotable_file(struct file *file, gfp_t gfp)
 }
 EXPORT_SYMBOL_GPL(kstrdup_quotable_file);
 
+/*
+ * Returns duplicate string in which the @old characters are replaced by @new.
+ */
+char *kstrdup_and_replace(const char *src, char old, char new, gfp_t gfp)
+{
+	char *dst;
+
+	dst = kstrdup(src, gfp);
+	if (!dst)
+		return NULL;
+
+	return strreplace(dst, old, new);
+}
+EXPORT_SYMBOL_GPL(kstrdup_and_replace);
+
 /**
  * kasprintf_strarray - allocate and fill array of sequential strings
  * @gfp: flags for the slab allocator
@@ -763,40 +836,6 @@ char **devm_kasprintf_strarray(struct device *dev, const char *prefix, size_t n)
 	return ptr->array;
 }
 EXPORT_SYMBOL_GPL(devm_kasprintf_strarray);
-
-/**
- * strscpy_pad() - Copy a C-string into a sized buffer
- * @dest: Where to copy the string to
- * @src: Where to copy the string from
- * @count: Size of destination buffer
- *
- * Copy the string, or as much of it as fits, into the dest buffer.  The
- * behavior is undefined if the string buffers overlap.  The destination
- * buffer is always %NUL terminated, unless it's zero-sized.
- *
- * If the source string is shorter than the destination buffer, zeros
- * the tail of the destination buffer.
- *
- * For full explanation of why you may want to consider using the
- * 'strscpy' functions please see the function docstring for strscpy().
- *
- * Returns:
- * * The number of characters copied (not including the trailing %NUL)
- * * -E2BIG if count is 0 or @src was truncated.
- */
-ssize_t strscpy_pad(char *dest, const char *src, size_t count)
-{
-	ssize_t written;
-
-	written = strscpy(dest, src, count);
-	if (written < 0 || written == count - 1)
-		return written;
-
-	memset(dest + written + 1, 0, count - written - 1);
-
-	return written;
-}
-EXPORT_SYMBOL(strscpy_pad);
 
 /**
  * skip_spaces - Removes leading whitespace from @str.
@@ -935,18 +974,22 @@ EXPORT_SYMBOL(__sysfs_match_string);
 
 /**
  * strreplace - Replace all occurrences of character in string.
- * @s: The string to operate on.
+ * @str: The string to operate on.
  * @old: The character being replaced.
  * @new: The character @old is replaced with.
  *
- * Returns pointer to the nul byte at the end of @s.
+ * Replaces the each @old character with a @new one in the given string @str.
+ *
+ * Return: pointer to the string @str itself.
  */
-char *strreplace(char *s, char old, char new)
+char *strreplace(char *str, char old, char new)
 {
+	char *s = str;
+
 	for (; *s; ++s)
 		if (*s == old)
 			*s = new;
-	return s;
+	return str;
 }
 EXPORT_SYMBOL(strreplace);
 
@@ -977,10 +1020,28 @@ EXPORT_SYMBOL(__read_overflow2_field);
 void __write_overflow_field(size_t avail, size_t wanted) { }
 EXPORT_SYMBOL(__write_overflow_field);
 
-void fortify_panic(const char *name)
+static const char * const fortify_func_name[] = {
+#define MAKE_FORTIFY_FUNC_NAME(func)	[MAKE_FORTIFY_FUNC(func)] = #func
+	EACH_FORTIFY_FUNC(MAKE_FORTIFY_FUNC_NAME)
+#undef  MAKE_FORTIFY_FUNC_NAME
+};
+
+void __fortify_report(const u8 reason, const size_t avail, const size_t size)
 {
-	pr_emerg("detected buffer overflow in %s\n", name);
+	const u8 func = FORTIFY_REASON_FUNC(reason);
+	const bool write = FORTIFY_REASON_DIR(reason);
+	const char *name;
+
+	name = fortify_func_name[umin(func, FORTIFY_FUNC_UNKNOWN)];
+	WARN(1, "%s: detected buffer overflow: %zu byte %s of buffer size %zu\n",
+		 name, size, str_read_write(!write), avail);
+}
+EXPORT_SYMBOL(__fortify_report);
+
+void __fortify_panic(const u8 reason, const size_t avail, const size_t size)
+{
+	__fortify_report(reason, avail, size);
 	BUG();
 }
-EXPORT_SYMBOL(fortify_panic);
+EXPORT_SYMBOL(__fortify_panic);
 #endif /* CONFIG_FORTIFY_SOURCE */

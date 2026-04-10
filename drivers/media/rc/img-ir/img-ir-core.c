@@ -152,7 +152,7 @@ err_probe:
 	return error;
 }
 
-static int img_ir_remove(struct platform_device *pdev)
+static void img_ir_remove(struct platform_device *pdev)
 {
 	struct img_ir_priv *priv = platform_get_drvdata(pdev);
 
@@ -164,7 +164,6 @@ static int img_ir_remove(struct platform_device *pdev)
 		clk_disable_unprepare(priv->clk);
 	if (!IS_ERR(priv->sys_clk))
 		clk_disable_unprepare(priv->sys_clk);
-	return 0;
 }
 
 static SIMPLE_DEV_PM_OPS(img_ir_pmops, img_ir_suspend, img_ir_resume);

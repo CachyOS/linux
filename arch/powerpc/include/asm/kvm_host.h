@@ -25,6 +25,7 @@
 #include <asm/cacheflush.h>
 #include <asm/hvcall.h>
 #include <asm/mce.h>
+#include <asm/guest-state-buffer.h>
 
 #define __KVM_HAVE_ARCH_VCPU_DEBUGFS
 
@@ -61,8 +62,6 @@
 #define KVM_REQ_PENDING_TIMER	KVM_ARCH_REQ(2)
 
 #include <linux/mmu_notifier.h>
-
-#define KVM_ARCH_WANT_MMU_NOTIFIER
 
 #define HPTEG_CACHE_NUM			(1 << 15)
 #define HPTEG_HASH_BITS_PTE		13
@@ -276,7 +275,7 @@ struct kvm_resize_hpt;
 #define KVMPPC_SECURE_INIT_ABORT 0x4 /* H_SVM_INIT_ABORT issued */
 
 struct kvm_arch {
-	unsigned int lpid;
+	u64 lpid;
 	unsigned int smt_mode;		/* # vcpus per virtual core */
 	unsigned int emul_smt_mode;	/* emualted SMT mode, on P9 */
 #ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
@@ -443,7 +442,7 @@ struct kvmppc_passthru_irqmap {
 };
 #endif
 
-# ifdef CONFIG_PPC_FSL_BOOK3E
+# ifdef CONFIG_PPC_E500
 #define KVMPPC_BOOKE_IAC_NUM	2
 #define KVMPPC_BOOKE_DAC_NUM	2
 # else
@@ -509,6 +508,23 @@ union xive_tma_w01 {
 	__be64 w01;
 };
 
+ /* Nestedv2 H_GUEST_RUN_VCPU configuration */
+struct kvmhv_nestedv2_config {
+	struct kvmppc_gs_buff_info vcpu_run_output_cfg;
+	struct kvmppc_gs_buff_info vcpu_run_input_cfg;
+	u64 vcpu_run_output_size;
+};
+
+ /* Nestedv2 L1<->L0 communication state */
+struct kvmhv_nestedv2_io {
+	struct kvmhv_nestedv2_config cfg;
+	struct kvmppc_gs_buff *vcpu_run_output;
+	struct kvmppc_gs_buff *vcpu_run_input;
+	struct kvmppc_gs_msg *vcpu_message;
+	struct kvmppc_gs_msg *vcore_message;
+	struct kvmppc_gs_bitmap valids;
+};
+
 struct kvm_vcpu_arch {
 	ulong host_stack;
 	u32 host_pid;
@@ -523,7 +539,11 @@ struct kvm_vcpu_arch {
 	struct kvmppc_book3s_shadow_vcpu *shadow_vcpu;
 #endif
 
-	struct pt_regs regs;
+	/*
+	 * This is passed along to the HV via H_ENTER_NESTED. Align to
+	 * prevent it crossing a real 4K page.
+	 */
+	struct pt_regs regs __aligned(512);
 
 	struct thread_fp_state fp;
 
@@ -579,6 +599,9 @@ struct kvm_vcpu_arch {
 	ulong dawrx0;
 	ulong dawr1;
 	ulong dawrx1;
+	ulong dexcr;
+	ulong hashkeyr;
+	ulong hashpkeyr;
 	ulong ciabr;
 	ulong cfar;
 	ulong ppr;
@@ -754,7 +777,7 @@ struct kvm_vcpu_arch {
 	u8 prodded;
 	u8 doorbell_request;
 	u8 irq_pending; /* Used by XIVE to signal pending guest irqs */
-	u32 last_inst;
+	unsigned long last_inst;
 
 	struct rcuwait wait;
 	struct rcuwait *waitp;
@@ -814,7 +837,7 @@ struct kvm_vcpu_arch {
 	u64 busy_stolen;
 	u64 busy_preempt;
 
-	u32 emul_inst;
+	u64 emul_inst;
 
 	u32 online;
 
@@ -825,17 +848,34 @@ struct kvm_vcpu_arch {
 	u64 nested_hfscr;	/* HFSCR that the L1 requested for the nested guest */
 	u32 nested_vcpu_id;
 	gpa_t nested_io_gpr;
+	/* For nested APIv2 guests*/
+	struct kvmhv_nestedv2_io nestedv2_io;
 #endif
 
 #ifdef CONFIG_KVM_BOOK3S_HV_EXIT_TIMING
 	struct kvmhv_tb_accumulator *cur_activity;	/* What we're timing */
 	u64	cur_tb_start;			/* when it started */
+#ifdef CONFIG_KVM_BOOK3S_HV_P9_TIMING
+	struct kvmhv_tb_accumulator vcpu_entry;
+	struct kvmhv_tb_accumulator vcpu_exit;
+	struct kvmhv_tb_accumulator in_guest;
+	struct kvmhv_tb_accumulator hcall;
+	struct kvmhv_tb_accumulator pg_fault;
+	struct kvmhv_tb_accumulator guest_entry;
+	struct kvmhv_tb_accumulator guest_exit;
+#else
 	struct kvmhv_tb_accumulator rm_entry;	/* real-mode entry code */
 	struct kvmhv_tb_accumulator rm_intr;	/* real-mode intr handling */
 	struct kvmhv_tb_accumulator rm_exit;	/* real-mode exit code */
 	struct kvmhv_tb_accumulator guest_time;	/* guest execution */
 	struct kvmhv_tb_accumulator cede_time;	/* time napping inside guest */
+#endif
 #endif /* CONFIG_KVM_BOOK3S_HV_EXIT_TIMING */
+#ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
+	u64 l1_to_l2_cs;
+	u64 l2_to_l1_cs;
+	u64 l2_runtime_agg;
+#endif
 };
 
 #define VCPU_FPR(vcpu, i)	(vcpu)->arch.fp.fpr[i][TS_FPROFFSET]
@@ -862,13 +902,8 @@ struct kvm_vcpu_arch {
 #define __KVM_HAVE_ARCH_WQP
 #define __KVM_HAVE_CREATE_DEVICE
 
-static inline void kvm_arch_hardware_disable(void) {}
-static inline void kvm_arch_hardware_unsetup(void) {}
-static inline void kvm_arch_sync_events(struct kvm *kvm) {}
 static inline void kvm_arch_memslots_updated(struct kvm *kvm, u64 gen) {}
 static inline void kvm_arch_flush_shadow_all(struct kvm *kvm) {}
-static inline void kvm_arch_sched_in(struct kvm_vcpu *vcpu, int cpu) {}
-static inline void kvm_arch_exit(void) {}
 static inline void kvm_arch_vcpu_blocking(struct kvm_vcpu *vcpu) {}
 static inline void kvm_arch_vcpu_unblocking(struct kvm_vcpu *vcpu) {}
 

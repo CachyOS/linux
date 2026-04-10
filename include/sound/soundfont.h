@@ -86,10 +86,12 @@ struct snd_sf_list {
 };
 
 /* Prototypes for soundfont.c */
-int snd_soundfont_load(struct snd_sf_list *sflist, const void __user *data,
+int snd_soundfont_load(struct snd_card *card,
+		       struct snd_sf_list *sflist, const void __user *data,
 		       long count, int client);
-int snd_soundfont_load_guspatch(struct snd_sf_list *sflist, const char __user *data,
-				long count, int client);
+int snd_soundfont_load_guspatch(struct snd_card *card,
+				struct snd_sf_list *sflist, const char __user *data,
+				long count);
 int snd_soundfont_close_check(struct snd_sf_list *sflist, int client);
 
 struct snd_sf_list *snd_sf_new(struct snd_sf_callback *callback,
@@ -112,5 +114,23 @@ int snd_sf_calc_parm_decay(int msec);
 extern int snd_sf_vol_table[128];
 int snd_sf_linear_to_log(unsigned int amount, int offset, int ratio);
 
+/* lock access to sflist */
+static inline void snd_soundfont_lock_preset(struct snd_sf_list *sflist)
+{
+	mutex_lock(&sflist->presets_mutex);
+	guard(spinlock_irqsave)(&sflist->lock);
+	sflist->presets_locked = 1;
+}
+
+/* remove lock */
+static inline void snd_soundfont_unlock_preset(struct snd_sf_list *sflist)
+{
+	guard(spinlock_irqsave)(&sflist->lock);
+	sflist->presets_locked = 0;
+	mutex_unlock(&sflist->presets_mutex);
+}
+
+DEFINE_GUARD(snd_soundfont_lock_preset, struct snd_sf_list *,
+	     snd_soundfont_lock_preset(_T), snd_soundfont_unlock_preset(_T))
 
 #endif /* __SOUND_SOUNDFONT_H */

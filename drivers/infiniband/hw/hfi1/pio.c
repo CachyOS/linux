@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
  * Copyright(c) 2015-2018 Intel Corporation.
  */
@@ -407,9 +407,8 @@ int init_send_contexts(struct hfi1_devdata *dd)
 
 	dd->hw_to_sw = kmalloc_array(TXE_NUM_CONTEXTS, sizeof(u8),
 					GFP_KERNEL);
-	dd->send_contexts = kcalloc(dd->num_send_contexts,
-				    sizeof(struct send_context_info),
-				    GFP_KERNEL);
+	dd->send_contexts = kzalloc_objs(struct send_context_info,
+					 dd->num_send_contexts);
 	if (!dd->send_contexts || !dd->hw_to_sw) {
 		kfree(dd->hw_to_sw);
 		kfree(dd->send_contexts);
@@ -820,7 +819,7 @@ struct send_context *sc_alloc(struct hfi1_devdata *dd, int type,
 	}
 
 	hfi1_cdbg(PIO,
-		  "Send context %u(%u) %s group %u credits %u credit_ctrl 0x%llx threshold %u\n",
+		  "Send context %u(%u) %s group %u credits %u credit_ctrl 0x%llx threshold %u",
 		  sw_index,
 		  hw_context,
 		  sc_type_name(type),
@@ -913,8 +912,7 @@ void sc_disable(struct send_context *sc)
 	spin_unlock(&sc->release_lock);
 
 	write_seqlock(&sc->waitlock);
-	if (!list_empty(&sc->piowait))
-		list_move(&sc->piowait, &wake_list);
+	list_splice_init(&sc->piowait, &wake_list);
 	write_sequnlock(&sc->waitlock);
 	while (!list_empty(&wake_list)) {
 		struct iowait *wait;
@@ -1360,16 +1358,6 @@ void sc_flush(struct send_context *sc)
 		return;
 
 	sc_wait_for_packet_egress(sc, 1);
-}
-
-/* drop all packets on the context, no waiting until they are sent */
-void sc_drop(struct send_context *sc)
-{
-	if (!sc)
-		return;
-
-	dd_dev_info(sc->dd, "%s: context %u(%u) - not implemented\n",
-		    __func__, sc->sw_index, sc->hw_context);
 }
 
 /*
@@ -1894,10 +1882,7 @@ int pio_map_init(struct hfi1_devdata *dd, u8 port, u8 num_vls, u8 *vl_scontexts)
 			vl_scontexts[i] = sc_per_vl + (extra > 0 ? 1 : 0);
 	}
 	/* build new map */
-	newmap = kzalloc(sizeof(*newmap) +
-			 roundup_pow_of_two(num_vls) *
-			 sizeof(struct pio_map_elem *),
-			 GFP_KERNEL);
+	newmap = kzalloc_flex(*newmap, map, roundup_pow_of_two(num_vls));
 	if (!newmap)
 		goto bail;
 	newmap->actual_vls = num_vls;
@@ -1911,10 +1896,7 @@ int pio_map_init(struct hfi1_devdata *dd, u8 port, u8 num_vls, u8 *vl_scontexts)
 			int sz = roundup_pow_of_two(vl_scontexts[i]);
 
 			/* only allocate once */
-			newmap->map[i] = kzalloc(sizeof(*newmap->map[i]) +
-						 sz * sizeof(struct
-							     send_context *),
-						 GFP_KERNEL);
+			newmap->map[i] = kzalloc_flex(*newmap->map[i], ksc, sz);
 			if (!newmap->map[i])
 				goto bail;
 			newmap->map[i]->mask = (1 << ilog2(sz)) - 1;
@@ -2068,10 +2050,8 @@ int init_credit_return(struct hfi1_devdata *dd)
 	int ret;
 	int i;
 
-	dd->cr_base = kcalloc(
-		node_affinity.num_possible_nodes,
-		sizeof(struct credit_return_base),
-		GFP_KERNEL);
+	dd->cr_base = kzalloc_objs(struct credit_return_base,
+				   node_affinity.num_possible_nodes);
 	if (!dd->cr_base) {
 		ret = -ENOMEM;
 		goto done;
@@ -2090,7 +2070,7 @@ int init_credit_return(struct hfi1_devdata *dd)
 				   "Unable to allocate credit return DMA range for NUMA %d\n",
 				   i);
 			ret = -ENOMEM;
-			goto done;
+			goto free_cr_base;
 		}
 	}
 	set_dev_node(&dd->pcidev->dev, dd->node);
@@ -2098,6 +2078,10 @@ int init_credit_return(struct hfi1_devdata *dd)
 	ret = 0;
 done:
 	return ret;
+
+free_cr_base:
+	free_credit_return(dd);
+	goto done;
 }
 
 void free_credit_return(struct hfi1_devdata *dd)

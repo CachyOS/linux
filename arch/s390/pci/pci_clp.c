@@ -6,10 +6,8 @@
  *   Jan Glauber <jang@linux.vnet.ibm.com>
  */
 
-#define KMSG_COMPONENT "zpci"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "zpci: " fmt
 
-#include <linux/compat.h>
 #include <linux/kernel.h>
 #include <linux/miscdevice.h>
 #include <linux/slab.h>
@@ -20,6 +18,7 @@
 #include <asm/asm-extable.h>
 #include <asm/pci_debug.h>
 #include <asm/pci_clp.h>
+#include <asm/asm.h>
 #include <asm/clp.h>
 #include <uapi/asm/clp.h>
 
@@ -52,18 +51,20 @@ static inline void zpci_err_clp(unsigned int rsp, int rc)
 static inline int clp_get_ilp(unsigned long *ilp)
 {
 	unsigned long mask;
-	int cc = 3;
+	int cc, exception;
 
-	asm volatile (
+	exception = 1;
+	asm_inline volatile (
 		"	.insn	rrf,0xb9a00000,%[mask],%[cmd],8,0\n"
-		"0:	ipm	%[cc]\n"
-		"	srl	%[cc],28\n"
+		"0:	lhi	%[exc],0\n"
 		"1:\n"
+		CC_IPM(cc)
 		EX_TABLE(0b, 1b)
-		: [cc] "+d" (cc), [mask] "=d" (mask) : [cmd] "a" (1)
-		: "cc");
+		: CC_OUT(cc, cc), [mask] "=d" (mask), [exc] "+d" (exception)
+		: [cmd] "a" (1)
+		: CC_CLOBBER);
 	*ilp = mask;
-	return cc;
+	return exception ? 3 : CC_TRANSFORM(cc);
 }
 
 /*
@@ -72,19 +73,20 @@ static inline int clp_get_ilp(unsigned long *ilp)
 static __always_inline int clp_req(void *data, unsigned int lps)
 {
 	struct { u8 _[CLP_BLK_SIZE]; } *req = data;
+	int cc, exception;
 	u64 ignored;
-	int cc = 3;
 
-	asm volatile (
+	exception = 1;
+	asm_inline volatile (
 		"	.insn	rrf,0xb9a00000,%[ign],%[req],0,%[lps]\n"
-		"0:	ipm	%[cc]\n"
-		"	srl	%[cc],28\n"
+		"0:	lhi	%[exc],0\n"
 		"1:\n"
+		CC_IPM(cc)
 		EX_TABLE(0b, 1b)
-		: [cc] "+d" (cc), [ign] "=d" (ignored), "+m" (*req)
+		: CC_OUT(cc, cc), [ign] "=d" (ignored), "+m" (*req), [exc] "+d" (exception)
 		: [req] "a" (req), [lps] "i" (lps)
-		: "cc");
-	return cc;
+		: CC_CLOBBER);
+	return exception ? 3 : CC_TRANSFORM(cc);
 }
 
 static void *clp_alloc_block(gfp_t gfp_mask)
@@ -106,6 +108,9 @@ static void clp_store_query_pci_fngrp(struct zpci_dev *zdev,
 	zdev->max_msi = response->noi;
 	zdev->fmb_update = response->mui;
 	zdev->version = response->version;
+	zdev->maxstbl = response->maxstbl;
+	zdev->dtsm = response->dtsm;
+	zdev->rtr_avail = response->rtr;
 
 	switch (response->version) {
 	case 1:
@@ -160,12 +165,16 @@ static int clp_store_query_pci_fn(struct zpci_dev *zdev,
 	zdev->pft = response->pft;
 	zdev->vfn = response->vfn;
 	zdev->port = response->port;
+	zdev->fidparm = response->fidparm;
 	zdev->uid = response->uid;
 	zdev->fmb_length = sizeof(u32) * response->fmb_len;
-	zdev->rid_available = response->rid_avail;
 	zdev->is_physfn = response->is_physfn;
-	if (!s390_pci_no_rid && zdev->rid_available)
-		zdev->devfn = response->rid & ZPCI_RID_MASK_DEVFN;
+	zdev->rid_available = response->rid_avail;
+	if (zdev->rid_available)
+		zdev->rid = response->rid;
+	zdev->tid_avail = response->tid_avail;
+	if (zdev->tid_avail)
+		zdev->tid = response->tid;
 
 	memcpy(zdev->pfip, response->pfip, sizeof(zdev->pfip));
 	if (response->util_str_avail) {
@@ -229,11 +238,15 @@ static int clp_set_pci_fn(struct zpci_dev *zdev, u32 *fh, u8 nr_dma_as, u8 comma
 {
 	struct clp_req_rsp_set_pci *rrb;
 	int rc, retries = 100;
+	u32 gisa = 0;
 
 	*fh = 0;
 	rrb = clp_alloc_block(GFP_KERNEL);
 	if (!rrb)
 		return -ENOMEM;
+
+	if (command != CLP_SET_DISABLE_PCI_FN)
+		gisa = zdev->gisa;
 
 	do {
 		memset(rrb, 0, sizeof(*rrb));
@@ -243,6 +256,7 @@ static int clp_set_pci_fn(struct zpci_dev *zdev, u32 *fh, u8 nr_dma_as, u8 comma
 		rrb->request.fh = zdev->fh;
 		rrb->request.oc = command;
 		rrb->request.ndas = nr_dma_as;
+		rrb->request.gisa = gisa;
 
 		rc = clp_req(rrb, CLP_LPS_PCI);
 		if (rrb->response.hdr.rsp == CLP_RC_SETPCIFN_BUSY) {
@@ -400,6 +414,7 @@ static int clp_find_pci(struct clp_req_rsp_list_pci *rrb, u32 fid,
 
 static void __clp_add(struct clp_fh_list_entry *entry, void *data)
 {
+	struct list_head *scan_list = data;
 	struct zpci_dev *zdev;
 
 	if (!entry->vendor_id)
@@ -410,10 +425,13 @@ static void __clp_add(struct clp_fh_list_entry *entry, void *data)
 		zpci_zdev_put(zdev);
 		return;
 	}
-	zpci_create_device(entry->fid, entry->fh, entry->config_state);
+	zdev = zpci_create_device(entry->fid, entry->fh, entry->config_state);
+	if (IS_ERR(zdev))
+		return;
+	list_add_tail(&zdev->entry, scan_list);
 }
 
-int clp_scan_pci_devices(void)
+int clp_scan_pci_devices(struct list_head *scan_list)
 {
 	struct clp_req_rsp_list_pci *rrb;
 	int rc;
@@ -422,7 +440,7 @@ int clp_scan_pci_devices(void)
 	if (!rrb)
 		return -ENOMEM;
 
-	rc = clp_list_pci(rrb, NULL, __clp_add);
+	rc = clp_list_pci(rrb, scan_list, __clp_add);
 
 	clp_free_block(rrb);
 	return rc;
@@ -631,7 +649,7 @@ static long clp_misc_ioctl(struct file *filp, unsigned int cmd,
 	if (cmd != CLP_SYNC)
 		return -EINVAL;
 
-	argp = is_compat_task() ? compat_ptr(arg) : (void __user *) arg;
+	argp = (void __user *)arg;
 	if (copy_from_user(&req, argp, sizeof(req)))
 		return -EFAULT;
 	if (req.r != 0)
@@ -649,8 +667,6 @@ static const struct file_operations clp_misc_fops = {
 	.open = nonseekable_open,
 	.release = clp_misc_release,
 	.unlocked_ioctl = clp_misc_ioctl,
-	.compat_ioctl = clp_misc_ioctl,
-	.llseek = no_llseek,
 };
 
 static struct miscdevice clp_misc_device = {
@@ -659,9 +675,4 @@ static struct miscdevice clp_misc_device = {
 	.fops = &clp_misc_fops,
 };
 
-static int __init clp_misc_init(void)
-{
-	return misc_register(&clp_misc_device);
-}
-
-device_initcall(clp_misc_init);
+builtin_misc_device(clp_misc_device);

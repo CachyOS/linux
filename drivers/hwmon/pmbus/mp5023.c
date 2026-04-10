@@ -5,7 +5,7 @@
 
 #include <linux/i2c.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include "pmbus.h"
 
 static struct pmbus_driver_info mp5023_info = {
@@ -56,7 +56,7 @@ static struct i2c_driver mp5023_driver = {
 		   .name = "mp5023",
 		   .of_match_table = of_match_ptr(mp5023_of_match),
 	},
-	.probe_new = mp5023_probe,
+	.probe = mp5023_probe,
 };
 
 module_i2c_driver(mp5023_driver);
@@ -64,4 +64,4 @@ module_i2c_driver(mp5023_driver);
 MODULE_AUTHOR("Howard Chiu <howard.chiu@quantatw.com>");
 MODULE_DESCRIPTION("PMBus driver for MPS MP5023 HSC");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(PMBUS);
+MODULE_IMPORT_NS("PMBUS");

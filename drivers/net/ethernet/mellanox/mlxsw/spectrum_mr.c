@@ -172,7 +172,7 @@ static int mlxsw_sp_mr_route_evif_link(struct mlxsw_sp_mr_route *mr_route,
 {
 	struct mlxsw_sp_mr_route_vif_entry *rve;
 
-	rve = kzalloc(sizeof(*rve), GFP_KERNEL);
+	rve = kzalloc_obj(*rve);
 	if (!rve)
 		return -ENOMEM;
 	rve->mr_route = mr_route;
@@ -305,7 +305,7 @@ mlxsw_sp_mr_route_create(struct mlxsw_sp_mr_table *mr_table,
 	int i;
 
 	/* Allocate and init a new route and fill it with parameters */
-	mr_route = kzalloc(sizeof(*mr_route), GFP_KERNEL);
+	mr_route = kzalloc_obj(*mr_route);
 	if (!mr_route)
 		return ERR_PTR(-ENOMEM);
 	INIT_LIST_HEAD(&mr_route->evif_list);
@@ -440,7 +440,9 @@ int mlxsw_sp_mr_route_add(struct mlxsw_sp_mr_table *mr_table,
 		rhashtable_remove_fast(&mr_table->route_ht,
 				       &mr_orig_route->ht_node,
 				       mlxsw_sp_mr_route_ht_params);
+		mutex_lock(&mr_table->route_list_lock);
 		list_del(&mr_orig_route->node);
+		mutex_unlock(&mr_table->route_list_lock);
 		mlxsw_sp_mr_route_destroy(mr_table, mr_orig_route);
 	}
 
@@ -704,12 +706,12 @@ void mlxsw_sp_mr_vif_del(struct mlxsw_sp_mr_table *mr_table, vifi_t vif_index)
 
 static struct mlxsw_sp_mr_vif *
 mlxsw_sp_mr_dev_vif_lookup(struct mlxsw_sp_mr_table *mr_table,
-			   const struct net_device *dev)
+			   const struct mlxsw_sp_rif *rif)
 {
 	vifi_t vif_index;
 
 	for (vif_index = 0; vif_index < MAXVIFS; vif_index++)
-		if (mr_table->vifs[vif_index].dev == dev)
+		if (mlxsw_sp_rif_dev_is(rif, mr_table->vifs[vif_index].dev))
 			return &mr_table->vifs[vif_index];
 	return NULL;
 }
@@ -717,13 +719,12 @@ mlxsw_sp_mr_dev_vif_lookup(struct mlxsw_sp_mr_table *mr_table,
 int mlxsw_sp_mr_rif_add(struct mlxsw_sp_mr_table *mr_table,
 			const struct mlxsw_sp_rif *rif)
 {
-	const struct net_device *rif_dev = mlxsw_sp_rif_dev(rif);
 	struct mlxsw_sp_mr_vif *mr_vif;
 
-	if (!rif_dev)
+	if (!mlxsw_sp_rif_has_dev(rif))
 		return 0;
 
-	mr_vif = mlxsw_sp_mr_dev_vif_lookup(mr_table, rif_dev);
+	mr_vif = mlxsw_sp_mr_dev_vif_lookup(mr_table, rif);
 	if (!mr_vif)
 		return 0;
 	return mlxsw_sp_mr_vif_resolve(mr_table, mr_vif->dev, mr_vif,
@@ -733,13 +734,12 @@ int mlxsw_sp_mr_rif_add(struct mlxsw_sp_mr_table *mr_table,
 void mlxsw_sp_mr_rif_del(struct mlxsw_sp_mr_table *mr_table,
 			 const struct mlxsw_sp_rif *rif)
 {
-	const struct net_device *rif_dev = mlxsw_sp_rif_dev(rif);
 	struct mlxsw_sp_mr_vif *mr_vif;
 
-	if (!rif_dev)
+	if (!mlxsw_sp_rif_has_dev(rif))
 		return;
 
-	mr_vif = mlxsw_sp_mr_dev_vif_lookup(mr_table, rif_dev);
+	mr_vif = mlxsw_sp_mr_dev_vif_lookup(mr_table, rif);
 	if (!mr_vif)
 		return;
 	mlxsw_sp_mr_vif_unresolve(mr_table, mr_vif->dev, mr_vif);
@@ -748,17 +748,16 @@ void mlxsw_sp_mr_rif_del(struct mlxsw_sp_mr_table *mr_table,
 void mlxsw_sp_mr_rif_mtu_update(struct mlxsw_sp_mr_table *mr_table,
 				const struct mlxsw_sp_rif *rif, int mtu)
 {
-	const struct net_device *rif_dev = mlxsw_sp_rif_dev(rif);
 	struct mlxsw_sp *mlxsw_sp = mr_table->mlxsw_sp;
 	struct mlxsw_sp_mr_route_vif_entry *rve;
 	struct mlxsw_sp_mr *mr = mlxsw_sp->mr;
 	struct mlxsw_sp_mr_vif *mr_vif;
 
-	if (!rif_dev)
+	if (!mlxsw_sp_rif_has_dev(rif))
 		return;
 
 	/* Search for a VIF that use that RIF */
-	mr_vif = mlxsw_sp_mr_dev_vif_lookup(mr_table, rif_dev);
+	mr_vif = mlxsw_sp_mr_dev_vif_lookup(mr_table, rif);
 	if (!mr_vif)
 		return;
 
@@ -1006,10 +1005,10 @@ static void mlxsw_sp_mr_route_stats_update(struct mlxsw_sp *mlxsw_sp,
 	mr->mr_ops->route_stats(mlxsw_sp, mr_route->route_priv, &packets,
 				&bytes);
 
-	if (mr_route->mfc->mfc_un.res.pkt != packets)
-		mr_route->mfc->mfc_un.res.lastuse = jiffies;
-	mr_route->mfc->mfc_un.res.pkt = packets;
-	mr_route->mfc->mfc_un.res.bytes = bytes;
+	if (atomic_long_read(&mr_route->mfc->mfc_un.res.pkt) != packets)
+		WRITE_ONCE(mr_route->mfc->mfc_un.res.lastuse, jiffies);
+	atomic_long_set(&mr_route->mfc->mfc_un.res.pkt, packets);
+	atomic_long_set(&mr_route->mfc->mfc_un.res.bytes, bytes);
 }
 
 static void mlxsw_sp_mr_stats_update(struct work_struct *work)

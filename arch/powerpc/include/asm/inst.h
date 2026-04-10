@@ -139,33 +139,10 @@ static inline void ppc_inst_write(u32 *ptr, ppc_inst_t x)
 		*(u64 *)ptr = ppc_inst_as_ulong(x);
 }
 
-#define PPC_INST_STR_LEN sizeof("00000000 00000000")
-
-static inline char *__ppc_inst_as_str(char str[PPC_INST_STR_LEN], ppc_inst_t x)
-{
-	if (ppc_inst_prefixed(x))
-		sprintf(str, "%08x %08x", ppc_inst_val(x), ppc_inst_suffix(x));
-	else
-		sprintf(str, "%08x", ppc_inst_val(x));
-
-	return str;
-}
-
-#define ppc_inst_as_str(x)		\
-({					\
-	char __str[PPC_INST_STR_LEN];	\
-	__ppc_inst_as_str(__str, x);	\
-	__str;				\
-})
-
 static inline int __copy_inst_from_kernel_nofault(ppc_inst_t *inst, u32 *src)
 {
 	unsigned int val, suffix;
 
-/* See https://github.com/ClangBuiltLinux/linux/issues/1521 */
-#if defined(CONFIG_CC_IS_CLANG) && CONFIG_CLANG_VERSION < 140000
-	val = suffix = 0;
-#endif
 	__get_kernel_nofault(&val, src, u32, Efault);
 	if (IS_ENABLED(CONFIG_PPC64) && get_op(val) == OP_PREFIX) {
 		__get_kernel_nofault(&suffix, src + 1, u32, Efault);

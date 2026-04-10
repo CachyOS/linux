@@ -52,21 +52,64 @@ config NET_INGRESS
 config NET_EGRESS
 	bool
 
+config NET_XGRESS
+	select NET_INGRESS
+	select NET_EGRESS
+	bool
+
 config NET_REDIRECT
+	bool
+
+config SKB_DECRYPTED
 	bool
 
 config SKB_EXTENSIONS
 	bool
 
+config NET_DEVMEM
+	def_bool y
+	select GENERIC_ALLOCATOR
+	depends on DMA_SHARED_BUFFER
+	depends on PAGE_POOL
+
+config NET_SHAPER
+	bool
+
+config NET_CRC32C
+	bool
+	select CRC32
+
 menu "Networking options"
 
 source "net/packet/Kconfig"
+source "net/psp/Kconfig"
 source "net/unix/Kconfig"
 source "net/tls/Kconfig"
 source "net/xfrm/Kconfig"
 source "net/iucv/Kconfig"
 source "net/smc/Kconfig"
+source "drivers/dibs/Kconfig"
 source "net/xdp/Kconfig"
+
+config NET_HANDSHAKE
+	bool
+	depends on SUNRPC || NVME_TARGET_TCP || NVME_TCP
+	default y
+
+config NET_HANDSHAKE_KUNIT_TEST
+	tristate "KUnit tests for the handshake upcall mechanism" if !KUNIT_ALL_TESTS
+	default KUNIT_ALL_TESTS
+	depends on KUNIT
+	help
+	  This builds the KUnit tests for the handshake upcall mechanism.
+
+	  KUnit tests run during boot and output the results to the debug
+	  log in TAP format (https://testanything.org/). Only useful for
+	  kernel devs running KUnit test harness and are not for inclusion
+	  into a production build.
+
+	  For more information on KUnit and unit tests in general, refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
 
 config INET
 	bool "TCP/IP networking"
@@ -204,14 +247,10 @@ config BRIDGE_NETFILTER
 source "net/netfilter/Kconfig"
 source "net/ipv4/netfilter/Kconfig"
 source "net/ipv6/netfilter/Kconfig"
-source "net/decnet/netfilter/Kconfig"
 source "net/bridge/netfilter/Kconfig"
 
-endif
+endif # if NETFILTER
 
-source "net/bpfilter/Kconfig"
-
-source "net/dccp/Kconfig"
 source "net/sctp/Kconfig"
 source "net/rds/Kconfig"
 source "net/tipc/Kconfig"
@@ -221,9 +260,8 @@ source "net/802/Kconfig"
 source "net/bridge/Kconfig"
 source "net/dsa/Kconfig"
 source "net/8021q/Kconfig"
-source "net/decnet/Kconfig"
 source "net/llc/Kconfig"
-source "drivers/net/appletalk/Kconfig"
+source "net/appletalk/Kconfig"
 source "net/x25/Kconfig"
 source "net/lapb/Kconfig"
 source "net/phonet/Kconfig"
@@ -253,16 +291,34 @@ config PCPU_DEV_REFCNT
 	  network device refcount are using per cpu variables if this option is set.
 	  This can be forced to N to detect underflows (with a performance drop).
 
+config MAX_SKB_FRAGS
+	int "Maximum number of fragments per skb_shared_info"
+	range 17 45
+	default 17
+	help
+	  Having more fragments per skb_shared_info can help GRO efficiency.
+	  This helps BIG TCP workloads, but might expose bugs in some
+	  legacy drivers.
+	  This also increases memory overhead of small packets,
+	  and in drivers using build_skb().
+	  If unsure, say 17.
+
 config RPS
-	bool
+	bool "Receive packet steering"
 	depends on SMP && SYSFS
 	default y
+	help
+	  Software receive side packet steering (RPS) distributes the
+	  load of received packet processing across multiple CPUs.
 
 config RFS_ACCEL
-	bool
+	bool "Hardware acceleration of RFS"
 	depends on RPS
 	select CPU_RMAP
 	default y
+	help
+	  Allowing drivers for multiqueue hardware with flow filter tables to
+	  accelerate RFS.
 
 config SOCK_RX_QUEUE_MAPPING
 	bool
@@ -294,10 +350,11 @@ config CGROUP_NET_CLASSID
 
 config NET_RX_BUSY_POLL
 	bool
-	default y if !PREEMPT_RT
+	default y if !PREEMPT_RT || (PREEMPT_RT && !NETCONSOLE)
 
 config BQL
 	bool
+	prompt "Enable Byte Queue Limits"
 	depends on SYSFS
 	select DQL
 	default y
@@ -314,7 +371,7 @@ config BPF_STREAM_PARSER
 	  BPF_MAP_TYPE_SOCKMAP.
 
 config NET_FLOW_LIMIT
-	bool
+	bool "Net flow limit"
 	depends on RPS
 	default y
 	help
@@ -343,19 +400,19 @@ config NET_PKTGEN
 	  module will be called pktgen.
 
 config NET_DROP_MONITOR
-	tristate "Network packet drop alerting service"
+	tristate "Legacy network packet drop alerting service"
 	depends on INET && TRACEPOINTS
 	help
 	  This feature provides an alerting service to userspace in the
 	  event that packets are discarded in the network stack.  Alerts
 	  are broadcast via netlink socket to any listening user space
-	  process.  If you don't need network drop alerts, or if you are ok
-	  just checking the various proc files and other utilities for
-	  drop statistics, say N here.
+	  process. This feature is NOT related to "perf" based drop monitoring.
+	  Say N here unless you need to support older userspace tools like
+	  "dropwatch".
 
-endmenu
+endmenu # Network testing
 
-endmenu
+endmenu # Networking options
 
 source "net/ax25/Kconfig"
 source "net/can/Kconfig"
@@ -415,6 +472,9 @@ config GRO_CELLS
 config SOCK_VALIDATE_XMIT
 	bool
 
+config NET_IEEE8021Q_HELPERS
+	bool
+
 config NET_SELFTESTS
 	def_tristate PHYLIB
 	depends on PHYLIB && INET
@@ -462,6 +522,7 @@ config FAILOVER
 
 config ETHTOOL_NETLINK
 	bool "Netlink interface for ethtool"
+	select DIMLIB
 	default y
 	help
 	  An alternative userspace interface for ethtool based on generic
@@ -472,5 +533,14 @@ config NETDEV_ADDR_LIST_TEST
 	tristate "Unit tests for device address list"
 	default KUNIT_ALL_TESTS
 	depends on KUNIT
+
+config NET_TEST
+	tristate "KUnit tests for networking" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  KUnit tests covering core networking infra, such as sk_buff.
+
+	  If unsure, say N.
 
 endif   # if NET

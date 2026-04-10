@@ -39,8 +39,8 @@
 #define TX_Q_LIMIT    32
 
 struct ifb_q_stats {
-	u64 packets;
-	u64 bytes;
+	u64_stats_t packets;
+	u64_stats_t bytes;
 	struct u64_stats_sync	sync;
 };
 
@@ -81,8 +81,8 @@ static int ifb_close(struct net_device *dev);
 static void ifb_update_q_stats(struct ifb_q_stats *stats, int len)
 {
 	u64_stats_update_begin(&stats->sync);
-	stats->packets++;
-	stats->bytes += len;
+	u64_stats_inc(&stats->packets);
+	u64_stats_add(&stats->bytes, len);
 	u64_stats_update_end(&stats->sync);
 }
 
@@ -162,18 +162,18 @@ static void ifb_stats64(struct net_device *dev,
 
 	for (i = 0; i < dev->num_tx_queues; i++,txp++) {
 		do {
-			start = u64_stats_fetch_begin_irq(&txp->rx_stats.sync);
-			packets = txp->rx_stats.packets;
-			bytes = txp->rx_stats.bytes;
-		} while (u64_stats_fetch_retry_irq(&txp->rx_stats.sync, start));
+			start = u64_stats_fetch_begin(&txp->rx_stats.sync);
+			packets = u64_stats_read(&txp->rx_stats.packets);
+			bytes = u64_stats_read(&txp->rx_stats.bytes);
+		} while (u64_stats_fetch_retry(&txp->rx_stats.sync, start));
 		stats->rx_packets += packets;
 		stats->rx_bytes += bytes;
 
 		do {
-			start = u64_stats_fetch_begin_irq(&txp->tx_stats.sync);
-			packets = txp->tx_stats.packets;
-			bytes = txp->tx_stats.bytes;
-		} while (u64_stats_fetch_retry_irq(&txp->tx_stats.sync, start));
+			start = u64_stats_fetch_begin(&txp->tx_stats.sync);
+			packets = u64_stats_read(&txp->tx_stats.packets);
+			bytes = u64_stats_read(&txp->tx_stats.bytes);
+		} while (u64_stats_fetch_retry(&txp->tx_stats.sync, start));
 		stats->tx_packets += packets;
 		stats->tx_bytes += bytes;
 	}
@@ -187,7 +187,7 @@ static int ifb_dev_init(struct net_device *dev)
 	struct ifb_q_private *txp;
 	int i;
 
-	txp = kcalloc(dev->num_tx_queues, sizeof(*txp), GFP_KERNEL);
+	txp = kzalloc_objs(*txp, dev->num_tx_queues);
 	if (!txp)
 		return -ENOMEM;
 	dp->tx_private = txp;
@@ -245,12 +245,12 @@ static void ifb_fill_stats_data(u64 **data,
 	int j;
 
 	do {
-		start = u64_stats_fetch_begin_irq(&q_stats->sync);
+		start = u64_stats_fetch_begin(&q_stats->sync);
 		for (j = 0; j < IFB_Q_STATS_LEN; j++) {
 			offset = ifb_q_stats_desc[j].offset;
-			(*data)[j] = *(u64 *)(stats_base + offset);
+			(*data)[j] = u64_stats_read((u64_stats_t *)(stats_base + offset));
 		}
-	} while (u64_stats_fetch_retry_irq(&q_stats->sync, start));
+	} while (u64_stats_fetch_retry(&q_stats->sync, start));
 
 	*data += IFB_Q_STATS_LEN;
 }
@@ -333,6 +333,7 @@ static void ifb_setup(struct net_device *dev)
 
 	dev->min_mtu = 0;
 	dev->max_mtu = 0;
+	netif_set_tso_max_size(dev, GSO_MAX_SIZE);
 }
 
 static netdev_tx_t ifb_xmit(struct sk_buff *skb, struct net_device *dev)
@@ -426,22 +427,21 @@ static int __init ifb_init_module(void)
 {
 	int i, err;
 
-	down_write(&pernet_ops_rwsem);
-	rtnl_lock();
-	err = __rtnl_link_register(&ifb_link_ops);
+	err = rtnl_link_register(&ifb_link_ops);
 	if (err < 0)
-		goto out;
+		return err;
+
+	rtnl_net_lock(&init_net);
 
 	for (i = 0; i < numifbs && !err; i++) {
 		err = ifb_init_one(i);
 		cond_resched();
 	}
-	if (err)
-		__rtnl_link_unregister(&ifb_link_ops);
 
-out:
-	rtnl_unlock();
-	up_write(&pernet_ops_rwsem);
+	rtnl_net_unlock(&init_net);
+
+	if (err)
+		rtnl_link_unregister(&ifb_link_ops);
 
 	return err;
 }
@@ -454,5 +454,6 @@ static void __exit ifb_cleanup_module(void)
 module_init(ifb_init_module);
 module_exit(ifb_cleanup_module);
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Intermediate Functional Block (ifb) netdevice driver for sharing of resources and ingress packet queuing");
 MODULE_AUTHOR("Jamal Hadi Salim");
 MODULE_ALIAS_RTNL_LINK("ifb");

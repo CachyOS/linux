@@ -18,7 +18,7 @@
 #include <linux/iio/sysfs.h>
 #include <linux/property.h>
 #include <linux/spi/spi.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 /*
  * The MSB of the register value determines whether the following byte will
@@ -55,7 +55,7 @@ struct max31865_data {
 	struct mutex lock;
 	bool filter_50hz;
 	bool three_wire;
-	u8 buf[2] ____cacheline_aligned;
+	u8 buf[2] __aligned(IIO_DMA_MINALIGN);
 };
 
 static int max31865_read(struct max31865_data *data, u8 reg,

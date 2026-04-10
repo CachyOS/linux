@@ -23,6 +23,7 @@
 #include <linux/list.h>
 #include <linux/rcupdate.h>
 #include <linux/export.h>
+#include <net/flow.h>
 #include <net/inet_dscp.h>
 #include <net/ip.h>
 #include <net/route.h>
@@ -37,6 +38,8 @@ struct fib4_rule {
 	u8			dst_len;
 	u8			src_len;
 	dscp_t			dscp;
+	dscp_t			dscp_mask;
+	u8			dscp_full:1;	/* DSCP or TOS selector */
 	__be32			src;
 	__be32			srcmask;
 	__be32			dst;
@@ -73,7 +76,7 @@ int fib4_rules_dump(struct net *net, struct notifier_block *nb,
 	return fib_rules_dump(net, nb, AF_INET, extack);
 }
 
-unsigned int fib4_rules_seq_read(struct net *net)
+unsigned int fib4_rules_seq_read(const struct net *net)
 {
 	return fib_rules_seq_read(net, AF_INET);
 }
@@ -186,18 +189,26 @@ INDIRECT_CALLABLE_SCOPE int fib4_rule_match(struct fib_rule *rule,
 	    ((daddr ^ r->dst) & r->dstmask))
 		return 0;
 
-	if (r->dscp && r->dscp != inet_dsfield_to_dscp(fl4->flowi4_tos))
+	/* When DSCP selector is used we need to match on the entire DSCP field
+	 * in the flow information structure. When TOS selector is used we need
+	 * to mask the upper three DSCP bits prior to matching to maintain
+	 * legacy behavior.
+	 */
+	if (r->dscp_full && (r->dscp ^ fl4->flowi4_dscp) & r->dscp_mask)
+		return 0;
+	else if (!r->dscp_full && r->dscp &&
+		 !fib_dscp_masked_match(r->dscp, fl4))
 		return 0;
 
 	if (rule->ip_proto && (rule->ip_proto != fl4->flowi4_proto))
 		return 0;
 
-	if (fib_rule_port_range_set(&rule->sport_range) &&
-	    !fib_rule_port_inrange(&rule->sport_range, fl4->fl4_sport))
+	if (!fib_rule_port_match(&rule->sport_range, rule->sport_mask,
+				 fl4->fl4_sport))
 		return 0;
 
-	if (fib_rule_port_range_set(&rule->dport_range) &&
-	    !fib_rule_port_inrange(&rule->dport_range, fl4->fl4_dport))
+	if (!fib_rule_port_match(&rule->dport_range, rule->dport_mask,
+				 fl4->fl4_dport))
 		return 0;
 
 	return 1;
@@ -217,14 +228,58 @@ static struct fib_table *fib_empty_table(struct net *net)
 	return NULL;
 }
 
+static int fib4_nl2rule_dscp(const struct nlattr *nla, struct fib4_rule *rule4,
+			     struct netlink_ext_ack *extack)
+{
+	if (rule4->dscp) {
+		NL_SET_ERR_MSG(extack, "Cannot specify both TOS and DSCP");
+		return -EINVAL;
+	}
+
+	rule4->dscp = inet_dsfield_to_dscp(nla_get_u8(nla) << 2);
+	rule4->dscp_mask = inet_dsfield_to_dscp(INET_DSCP_MASK);
+	rule4->dscp_full = true;
+
+	return 0;
+}
+
+static int fib4_nl2rule_dscp_mask(const struct nlattr *nla,
+				  struct fib4_rule *rule4,
+				  struct netlink_ext_ack *extack)
+{
+	dscp_t dscp_mask;
+
+	if (!rule4->dscp_full) {
+		NL_SET_ERR_MSG_ATTR(extack, nla,
+				    "Cannot specify DSCP mask without DSCP value");
+		return -EINVAL;
+	}
+
+	dscp_mask = inet_dsfield_to_dscp(nla_get_u8(nla) << 2);
+	if (rule4->dscp & ~dscp_mask) {
+		NL_SET_ERR_MSG_ATTR(extack, nla, "Invalid DSCP mask");
+		return -EINVAL;
+	}
+
+	rule4->dscp_mask = dscp_mask;
+
+	return 0;
+}
+
 static int fib4_rule_configure(struct fib_rule *rule, struct sk_buff *skb,
 			       struct fib_rule_hdr *frh,
 			       struct nlattr **tb,
 			       struct netlink_ext_ack *extack)
 {
-	struct net *net = sock_net(skb->sk);
+	struct fib4_rule *rule4 = (struct fib4_rule *)rule;
+	struct net *net = rule->fr_net;
 	int err = -EINVAL;
-	struct fib4_rule *rule4 = (struct fib4_rule *) rule;
+
+	if (tb[FRA_FLOWLABEL] || tb[FRA_FLOWLABEL_MASK]) {
+		NL_SET_ERR_MSG(extack,
+			       "Flow label cannot be specified for IPv4 FIB rules");
+		goto errout;
+	}
 
 	if (!inet_validate_dscp(frh->tos)) {
 		NL_SET_ERR_MSG(extack,
@@ -237,6 +292,14 @@ static int fib4_rule_configure(struct fib_rule *rule, struct sk_buff *skb,
 		goto errout;
 	}
 	rule4->dscp = inet_dsfield_to_dscp(frh->tos);
+
+	if (tb[FRA_DSCP] &&
+	    fib4_nl2rule_dscp(tb[FRA_DSCP], rule4, extack) < 0)
+		goto errout;
+
+	if (tb[FRA_DSCP_MASK] &&
+	    fib4_nl2rule_dscp_mask(tb[FRA_DSCP_MASK], rule4, extack) < 0)
+		goto errout;
 
 	/* split local/main if they are not already split */
 	err = fib_unmerge(net);
@@ -320,8 +383,26 @@ static int fib4_rule_compare(struct fib_rule *rule, struct fib_rule_hdr *frh,
 	if (frh->dst_len && (rule4->dst_len != frh->dst_len))
 		return 0;
 
-	if (frh->tos && inet_dscp_to_dsfield(rule4->dscp) != frh->tos)
+	if (frh->tos &&
+	    (rule4->dscp_full ||
+	     inet_dscp_to_dsfield(rule4->dscp) != frh->tos))
 		return 0;
+
+	if (tb[FRA_DSCP]) {
+		dscp_t dscp;
+
+		dscp = inet_dsfield_to_dscp(nla_get_u8(tb[FRA_DSCP]) << 2);
+		if (!rule4->dscp_full || rule4->dscp != dscp)
+			return 0;
+	}
+
+	if (tb[FRA_DSCP_MASK]) {
+		dscp_t dscp_mask;
+
+		dscp_mask = inet_dsfield_to_dscp(nla_get_u8(tb[FRA_DSCP_MASK]) << 2);
+		if (!rule4->dscp_full || rule4->dscp_mask != dscp_mask)
+			return 0;
+	}
 
 #ifdef CONFIG_IP_ROUTE_CLASSID
 	if (tb[FRA_FLOW] && (rule4->tclassid != nla_get_u32(tb[FRA_FLOW])))
@@ -344,7 +425,17 @@ static int fib4_rule_fill(struct fib_rule *rule, struct sk_buff *skb,
 
 	frh->dst_len = rule4->dst_len;
 	frh->src_len = rule4->src_len;
-	frh->tos = inet_dscp_to_dsfield(rule4->dscp);
+
+	if (rule4->dscp_full) {
+		frh->tos = 0;
+		if (nla_put_u8(skb, FRA_DSCP,
+			       inet_dscp_to_dsfield(rule4->dscp) >> 2) ||
+		    nla_put_u8(skb, FRA_DSCP_MASK,
+			       inet_dscp_to_dsfield(rule4->dscp_mask) >> 2))
+			goto nla_put_failure;
+	} else {
+		frh->tos = inet_dscp_to_dsfield(rule4->dscp);
+	}
 
 	if ((rule4->dst_len &&
 	     nla_put_in_addr(skb, FRA_DST, rule4->dst)) ||
@@ -366,7 +457,9 @@ static size_t fib4_rule_nlmsg_payload(struct fib_rule *rule)
 {
 	return nla_total_size(4) /* dst */
 	       + nla_total_size(4) /* src */
-	       + nla_total_size(4); /* flow */
+	       + nla_total_size(4) /* flow */
+	       + nla_total_size(1) /* dscp */
+	       + nla_total_size(1); /* dscp mask */
 }
 
 static void fib4_rule_flush_cache(struct fib_rules_ops *ops)
@@ -395,13 +488,13 @@ static int fib_default_rules_init(struct fib_rules_ops *ops)
 {
 	int err;
 
-	err = fib_default_rule_add(ops, 0, RT_TABLE_LOCAL, 0);
+	err = fib_default_rule_add(ops, 0, RT_TABLE_LOCAL);
 	if (err < 0)
 		return err;
-	err = fib_default_rule_add(ops, 0x7FFE, RT_TABLE_MAIN, 0);
+	err = fib_default_rule_add(ops, 0x7FFE, RT_TABLE_MAIN);
 	if (err < 0)
 		return err;
-	err = fib_default_rule_add(ops, 0x7FFF, RT_TABLE_DEFAULT, 0);
+	err = fib_default_rule_add(ops, 0x7FFF, RT_TABLE_DEFAULT);
 	if (err < 0)
 		return err;
 	return 0;

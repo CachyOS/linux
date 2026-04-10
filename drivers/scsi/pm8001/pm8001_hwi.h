@@ -339,8 +339,10 @@ struct ssp_completion_resp {
 	__le32	status;
 	__le32	param;
 	__le32	ssptag_rescv_rescpad;
+
+	/* Must be last --ends in a flexible-array member. */
 	struct ssp_response_iu  ssp_resp_iu;
-	__le32	residual_count;
+	/* __le32  residual_count; */
 } __attribute__((packed, aligned(4)));
 
 
@@ -515,7 +517,7 @@ struct sata_start_req {
 	__le32	tag;
 	__le32	device_id;
 	__le32	data_len;
-	__le32	ncqtag_atap_dir_m;
+	__le32	retfis_ncqtag_atap_dir_m;
 	struct host_to_dev_fis	sata_fis;
 	u32	reserved1;
 	u32	reserved2;

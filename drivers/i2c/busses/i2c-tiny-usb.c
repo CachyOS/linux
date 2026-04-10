@@ -10,6 +10,7 @@
 #include <linux/errno.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 #include <linux/types.h>
 
 /* include interfaces to usb layer */
@@ -54,9 +55,7 @@ static int usb_xfer(struct i2c_adapter *adapter, struct i2c_msg *msgs, int num)
 	struct i2c_msg *pmsg;
 	int i, ret;
 
-	dev_dbg(&adapter->dev, "master xfer %d messages:\n", num);
-
-	pstatus = kmalloc(sizeof(*pstatus), GFP_KERNEL);
+	pstatus = kmalloc_obj(*pstatus);
 	if (!pstatus)
 		return -ENOMEM;
 
@@ -73,7 +72,7 @@ static int usb_xfer(struct i2c_adapter *adapter, struct i2c_msg *msgs, int num)
 
 		dev_dbg(&adapter->dev,
 			"  %d: %s (flags %d) %d bytes to 0x%02x\n",
-			i, pmsg->flags & I2C_M_RD ? "read" : "write",
+			i, str_read_write(pmsg->flags & I2C_M_RD),
 			pmsg->flags, pmsg->len, pmsg->addr);
 
 		/* and directly send the message */
@@ -124,7 +123,7 @@ static u32 usb_func(struct i2c_adapter *adapter)
 	__le32 *pfunc;
 	u32 ret;
 
-	pfunc = kmalloc(sizeof(*pfunc), GFP_KERNEL);
+	pfunc = kmalloc_obj(*pfunc);
 
 	/* get functionality from adapter */
 	if (!pfunc || usb_read(adapter, CMD_GET_FUNC, 0, 0, pfunc,
@@ -140,10 +139,15 @@ out:
 	return ret;
 }
 
+/* prevent invalid 0-length usb_control_msg */
+static const struct i2c_adapter_quirks usb_quirks = {
+	.flags = I2C_AQ_NO_ZERO_LEN_READ,
+};
+
 /* This is the actual algorithm we define */
 static const struct i2c_algorithm usb_algorithm = {
-	.master_xfer	= usb_xfer,
-	.functionality	= usb_func,
+	.xfer = usb_xfer,
+	.functionality = usb_func,
 };
 
 /* ----- end of i2c layer ------------------------------------------------ */
@@ -222,14 +226,16 @@ static int i2c_tiny_usb_probe(struct usb_interface *interface,
 	int retval = -ENOMEM;
 	u16 version;
 
+	if (interface->intf_assoc &&
+	    interface->intf_assoc->bFunctionClass != USB_CLASS_VENDOR_SPEC)
+		return -ENODEV;
+
 	dev_dbg(&interface->dev, "probing usb device\n");
 
 	/* allocate memory for our device state and initialize it */
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
-	if (dev == NULL) {
-		dev_err(&interface->dev, "Out of memory\n");
+	dev = kzalloc_obj(*dev);
+	if (!dev)
 		goto error;
-	}
 
 	dev->usb_dev = usb_get_dev(interface_to_usbdev(interface));
 	dev->interface = interface;
@@ -246,6 +252,7 @@ static int i2c_tiny_usb_probe(struct usb_interface *interface,
 	/* setup i2c adapter description */
 	dev->adapter.owner = THIS_MODULE;
 	dev->adapter.class = I2C_CLASS_HWMON;
+	dev->adapter.quirks = &usb_quirks;
 	dev->adapter.algo = &usb_algorithm;
 	dev->adapter.algo_data = dev;
 	snprintf(dev->adapter.name, sizeof(dev->adapter.name),

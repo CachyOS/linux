@@ -90,7 +90,7 @@ static void vivid_thread_sdr_cap_tick(struct vivid_dev *dev)
 
 	/* Drop a certain percentage of buffers. */
 	if (dev->perc_dropped_buffers &&
-	    prandom_u32_max(100) < dev->perc_dropped_buffers)
+	    get_random_u32_below(100) < dev->perc_dropped_buffers)
 		return;
 
 	spin_lock(&dev->slock);
@@ -206,9 +206,14 @@ static int vivid_thread_sdr_cap(void *data)
 			next_jiffies_since_start = jiffies_since_start;
 
 		wait_jiffies = next_jiffies_since_start - jiffies_since_start;
-		while (time_is_after_jiffies(cur_jiffies + wait_jiffies) &&
-		       !kthread_should_stop())
-			schedule();
+		if (!time_is_after_jiffies(cur_jiffies + wait_jiffies))
+			continue;
+
+		wait_queue_head_t wait;
+
+		init_waitqueue_head(&wait);
+		wait_event_interruptible_timeout(wait, kthread_should_stop(),
+					cur_jiffies + wait_jiffies - jiffies);
 	}
 	dprintk(dev, 1, "SDR Capture Thread End\n");
 	return 0;
@@ -219,8 +224,13 @@ static int sdr_cap_queue_setup(struct vb2_queue *vq,
 		       unsigned sizes[], struct device *alloc_devs[])
 {
 	/* 2 = max 16-bit sample returned */
-	sizes[0] = SDR_CAP_SAMPLES_PER_BUF * 2;
+	u32 size = SDR_CAP_SAMPLES_PER_BUF * 2;
+
+	if (*nplanes)
+		return sizes[0] < size ? -EINVAL : 0;
+
 	*nplanes = 1;
+	sizes[0] = size;
 	return 0;
 }
 
@@ -332,11 +342,9 @@ const struct vb2_ops vivid_sdr_cap_qops = {
 	.start_streaming	= sdr_cap_start_streaming,
 	.stop_streaming		= sdr_cap_stop_streaming,
 	.buf_request_complete	= sdr_cap_buf_request_complete,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
-int vivid_sdr_enum_freq_bands(struct file *file, void *fh,
+int vivid_sdr_enum_freq_bands(struct file *file, void *priv,
 		struct v4l2_frequency_band *band)
 {
 	switch (band->tuner) {
@@ -355,7 +363,7 @@ int vivid_sdr_enum_freq_bands(struct file *file, void *fh,
 	}
 }
 
-int vivid_sdr_g_frequency(struct file *file, void *fh,
+int vivid_sdr_g_frequency(struct file *file, void *priv,
 		struct v4l2_frequency *vf)
 {
 	struct vivid_dev *dev = video_drvdata(file);
@@ -374,7 +382,7 @@ int vivid_sdr_g_frequency(struct file *file, void *fh,
 	}
 }
 
-int vivid_sdr_s_frequency(struct file *file, void *fh,
+int vivid_sdr_s_frequency(struct file *file, void *priv,
 		const struct v4l2_frequency *vf)
 {
 	struct vivid_dev *dev = video_drvdata(file);
@@ -415,7 +423,7 @@ int vivid_sdr_s_frequency(struct file *file, void *fh,
 	}
 }
 
-int vivid_sdr_g_tuner(struct file *file, void *fh, struct v4l2_tuner *vt)
+int vivid_sdr_g_tuner(struct file *file, void *priv, struct v4l2_tuner *vt)
 {
 	switch (vt->index) {
 	case 0:
@@ -439,14 +447,14 @@ int vivid_sdr_g_tuner(struct file *file, void *fh, struct v4l2_tuner *vt)
 	}
 }
 
-int vivid_sdr_s_tuner(struct file *file, void *fh, const struct v4l2_tuner *vt)
+int vivid_sdr_s_tuner(struct file *file, void *priv, const struct v4l2_tuner *vt)
 {
 	if (vt->index > 1)
 		return -EINVAL;
 	return 0;
 }
 
-int vidioc_enum_fmt_sdr_cap(struct file *file, void *fh, struct v4l2_fmtdesc *f)
+int vidioc_enum_fmt_sdr_cap(struct file *file, void *priv, struct v4l2_fmtdesc *f)
 {
 	if (f->index >= ARRAY_SIZE(formats))
 		return -EINVAL;
@@ -454,7 +462,7 @@ int vidioc_enum_fmt_sdr_cap(struct file *file, void *fh, struct v4l2_fmtdesc *f)
 	return 0;
 }
 
-int vidioc_g_fmt_sdr_cap(struct file *file, void *fh, struct v4l2_format *f)
+int vidioc_g_fmt_sdr_cap(struct file *file, void *priv, struct v4l2_format *f)
 {
 	struct vivid_dev *dev = video_drvdata(file);
 
@@ -463,7 +471,7 @@ int vidioc_g_fmt_sdr_cap(struct file *file, void *fh, struct v4l2_format *f)
 	return 0;
 }
 
-int vidioc_s_fmt_sdr_cap(struct file *file, void *fh, struct v4l2_format *f)
+int vidioc_s_fmt_sdr_cap(struct file *file, void *priv, struct v4l2_format *f)
 {
 	struct vivid_dev *dev = video_drvdata(file);
 	struct vb2_queue *q = &dev->vb_sdr_cap_q;
@@ -487,7 +495,7 @@ int vidioc_s_fmt_sdr_cap(struct file *file, void *fh, struct v4l2_format *f)
 	return 0;
 }
 
-int vidioc_try_fmt_sdr_cap(struct file *file, void *fh, struct v4l2_format *f)
+int vidioc_try_fmt_sdr_cap(struct file *file, void *priv, struct v4l2_format *f)
 {
 	int i;
 

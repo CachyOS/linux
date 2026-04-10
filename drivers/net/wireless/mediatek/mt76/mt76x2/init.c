@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: ISC
+// SPDX-License-Identifier: BSD-3-Clause-Clear
 /*
  * Copyright (C) 2016 Felix Fietkau <nbd@nbd.name>
  * Copyright (C) 2018 Lorenzo Bianconi <lorenzo.bianconi83@gmail.com>
@@ -182,7 +182,7 @@ void mt76x2_init_txpower(struct mt76x02_dev *dev,
 {
 	struct ieee80211_channel *chan;
 	struct mt76x2_tx_power_info txp;
-	struct mt76_rate_power t = {};
+	struct mt76x02_rate_power t = {};
 	int i;
 
 	for (i = 0; i < sband->n_channels; i++) {

@@ -297,7 +297,7 @@ struct efx_ptp_data {
 	u32 rxfilter_event;
 	u32 rxfilter_general;
 	bool rxfilter_installed;
-	struct hwtstamp_config config;
+	struct kernel_hwtstamp_config config;
 	bool enabled;
 	unsigned int mode;
 	void (*ns_to_nic_time)(s64 ns, u32 *nic_major, u32 *nic_minor);
@@ -347,7 +347,7 @@ struct efx_ptp_data {
 	void (*xmit_skb)(struct efx_nic *efx, struct sk_buff *skb);
 };
 
-static int efx_phc_adjfreq(struct ptp_clock_info *ptp, s32 delta);
+static int efx_phc_adjfine(struct ptp_clock_info *ptp, long scaled_ppm);
 static int efx_phc_adjtime(struct ptp_clock_info *ptp, s64 delta);
 static int efx_phc_gettime(struct ptp_clock_info *ptp, struct timespec64 *ts);
 static int efx_phc_settime(struct ptp_clock_info *ptp,
@@ -393,7 +393,7 @@ static const unsigned long efx_ptp_stat_mask[] = {
 	[0 ... BITS_TO_LONGS(PTP_STAT_COUNT) - 1] = ~0UL,
 };
 
-size_t efx_siena_ptp_describe_stats(struct efx_nic *efx, u8 *strings)
+size_t efx_siena_ptp_describe_stats(struct efx_nic *efx, u8 **strings)
 {
 	if (!efx->ptp_data)
 		return 0;
@@ -897,7 +897,7 @@ static void efx_ptp_read_timeset(MCDI_DECLARE_STRUCT_PTR(data),
 	timeset->host_start = MCDI_DWORD(data, PTP_OUT_SYNCHRONIZE_HOSTSTART);
 	timeset->major = MCDI_DWORD(data, PTP_OUT_SYNCHRONIZE_MAJOR);
 	timeset->minor = MCDI_DWORD(data, PTP_OUT_SYNCHRONIZE_MINOR);
-	timeset->host_end = MCDI_DWORD(data, PTP_OUT_SYNCHRONIZE_HOSTEND),
+	timeset->host_end = MCDI_DWORD(data, PTP_OUT_SYNCHRONIZE_HOSTEND);
 	timeset->wait = MCDI_DWORD(data, PTP_OUT_SYNCHRONIZE_WAITNS);
 
 	/* Ignore seconds */
@@ -1429,7 +1429,7 @@ static const struct ptp_clock_info efx_phc_clock_info = {
 	.n_per_out	= 0,
 	.n_pins		= 0,
 	.pps		= 1,
-	.adjfreq	= efx_phc_adjfreq,
+	.adjfine	= efx_phc_adjfine,
 	.adjtime	= efx_phc_adjtime,
 	.gettime64	= efx_phc_gettime,
 	.settime64	= efx_phc_settime,
@@ -1443,7 +1443,7 @@ static int efx_ptp_probe(struct efx_nic *efx, struct efx_channel *channel)
 	int rc = 0;
 	unsigned int pos;
 
-	ptp = kzalloc(sizeof(struct efx_ptp_data), GFP_KERNEL);
+	ptp = kzalloc_obj(struct efx_ptp_data);
 	efx->ptp_data = ptp;
 	if (!efx->ptp_data)
 		return -ENOMEM;
@@ -1762,7 +1762,8 @@ int efx_siena_ptp_change_mode(struct efx_nic *efx, bool enable_wanted,
 	return 0;
 }
 
-static int efx_ptp_ts_init(struct efx_nic *efx, struct hwtstamp_config *init)
+static int efx_ptp_ts_init(struct efx_nic *efx,
+			   struct kernel_hwtstamp_config *init)
 {
 	int rc;
 
@@ -1779,7 +1780,7 @@ static int efx_ptp_ts_init(struct efx_nic *efx, struct hwtstamp_config *init)
 }
 
 void efx_siena_ptp_get_ts_info(struct efx_nic *efx,
-			       struct ethtool_ts_info *ts_info)
+			       struct kernel_ethtool_ts_info *ts_info)
 {
 	struct efx_ptp_data *ptp = efx->ptp_data;
 	struct efx_nic *primary = efx->primary;
@@ -1799,33 +1800,26 @@ void efx_siena_ptp_get_ts_info(struct efx_nic *efx,
 	ts_info->rx_filters = ptp->efx->type->hwtstamp_filters;
 }
 
-int efx_siena_ptp_set_ts_config(struct efx_nic *efx, struct ifreq *ifr)
+int efx_siena_ptp_set_ts_config(struct efx_nic *efx,
+				struct kernel_hwtstamp_config *config,
+				struct netlink_ext_ack __always_unused *extack)
 {
-	struct hwtstamp_config config;
-	int rc;
-
 	/* Not a PTP enabled port */
 	if (!efx->ptp_data)
 		return -EOPNOTSUPP;
 
-	if (copy_from_user(&config, ifr->ifr_data, sizeof(config)))
-		return -EFAULT;
-
-	rc = efx_ptp_ts_init(efx, &config);
-	if (rc != 0)
-		return rc;
-
-	return copy_to_user(ifr->ifr_data, &config, sizeof(config))
-		? -EFAULT : 0;
+	return efx_ptp_ts_init(efx, config);
 }
 
-int efx_siena_ptp_get_ts_config(struct efx_nic *efx, struct ifreq *ifr)
+int efx_siena_ptp_get_ts_config(struct efx_nic *efx,
+				struct kernel_hwtstamp_config *config)
 {
+	/* Not a PTP enabled port */
 	if (!efx->ptp_data)
 		return -EOPNOTSUPP;
 
-	return copy_to_user(ifr->ifr_data, &efx->ptp_data->config,
-			    sizeof(efx->ptp_data->config)) ? -EFAULT : 0;
+	*config = efx->ptp_data->config;
+	return 0;
 }
 
 static void ptp_event_failure(struct efx_nic *efx, int expected_frag_len)
@@ -2044,11 +2038,12 @@ void __efx_siena_rx_skb_attach_timestamp(struct efx_channel *channel,
 					ptp->ts_corrections.general_rx);
 }
 
-static int efx_phc_adjfreq(struct ptp_clock_info *ptp, s32 delta)
+static int efx_phc_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 {
 	struct efx_ptp_data *ptp_data = container_of(ptp,
 						     struct efx_ptp_data,
 						     phc_clock_info);
+	s32 delta = scaled_ppm_to_ppb(scaled_ppm);
 	struct efx_nic *efx = ptp_data->efx;
 	MCDI_DECLARE_BUF(inadj, MC_CMD_PTP_IN_ADJUST_LEN);
 	s64 adjustment_ns;

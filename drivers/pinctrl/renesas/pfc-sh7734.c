@@ -664,7 +664,6 @@ static const u16 pinmux_data[] = {
 	PINMUX_IPSR_MSEL(IP0_31_30, LCD_DATA15_A, SEL_LCDC_0),
 	PINMUX_IPSR_MSEL(IP0_31_30, TIOC3D_C, SEL_MTU2_CH3_1),
 
-
 	/* IPSR1 */
 	PINMUX_IPSR_GPSR(IP1_1_0, A16),
 	PINMUX_IPSR_GPSR(IP1_1_0, ST0_PWM),
@@ -2366,7 +2365,7 @@ static const struct pinmux_cfg_reg pinmux_config_regs[] = {
 		GP_5_1_IN, GP_5_1_OUT,
 		GP_5_0_IN, GP_5_0_OUT ))
 	},
-	{ },
+	{ /* sentinel */ }
 };
 
 static const struct pinmux_data_reg pinmux_data_regs[] = {
@@ -2383,7 +2382,7 @@ static const struct pinmux_data_reg pinmux_data_regs[] = {
 		GP_5_7_DATA, GP_5_6_DATA, GP_5_5_DATA, GP_5_4_DATA,
 		GP_5_3_DATA, GP_5_2_DATA, GP_5_1_DATA, GP_5_0_DATA ))
 	},
-	{ },
+	{ /* sentinel */ }
 };
 
 const struct sh_pfc_soc_info sh7734_pinmux_info = {

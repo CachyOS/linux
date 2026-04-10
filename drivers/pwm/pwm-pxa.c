@@ -6,8 +6,16 @@
  *
  * 2008-02-13	initial version
  *		eric miao <eric.miao@marvell.com>
+ *
+ * Links to reference manuals for some of the supported PWM chips can be found
+ * in Documentation/arch/arm/marvell.rst.
+ *
+ * Limitations:
+ * - When PWM is stopped, the current PWM period stops abruptly at the next
+ *   input clock (PWMCR_SD is set) and the output is driven to inactive.
  */
 
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
@@ -16,7 +24,8 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/pwm.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/reset.h>
 
 #include <asm/div64.h>
 
@@ -41,7 +50,6 @@ MODULE_DEVICE_TABLE(platform, pwm_id_table);
 #define PWMDCR_FD	(1 << 10)
 
 struct pxa_pwm_chip {
-	struct pwm_chip	chip;
 	struct device	*dev;
 
 	struct clk	*clk;
@@ -50,7 +58,7 @@ struct pxa_pwm_chip {
 
 static inline struct pxa_pwm_chip *to_pxa_pwm_chip(struct pwm_chip *chip)
 {
-	return container_of(chip, struct pxa_pwm_chip, chip);
+	return pwmchip_get_drvdata(chip);
 }
 
 /*
@@ -64,7 +72,6 @@ static int pxa_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
 	unsigned long long c;
 	unsigned long period_cycles, prescale, pv, dc;
 	unsigned long offset;
-	int rc;
 
 	offset = pwm->hwpwm ? 0x10 : 0;
 
@@ -86,63 +93,48 @@ static int pxa_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
 	else
 		dc = mul_u64_u64_div_u64(pv + 1, duty_ns, period_ns);
 
-	/* NOTE: the clock to PWM has to be enabled first
-	 * before writing to the registers
-	 */
-	rc = clk_prepare_enable(pc->clk);
-	if (rc < 0)
-		return rc;
-
-	writel(prescale, pc->mmio_base + offset + PWMCR);
+	writel(prescale | PWMCR_SD, pc->mmio_base + offset + PWMCR);
 	writel(dc, pc->mmio_base + offset + PWMDCR);
 	writel(pv, pc->mmio_base + offset + PWMPCR);
 
-	clk_disable_unprepare(pc->clk);
 	return 0;
-}
-
-static int pxa_pwm_enable(struct pwm_chip *chip, struct pwm_device *pwm)
-{
-	struct pxa_pwm_chip *pc = to_pxa_pwm_chip(chip);
-
-	return clk_prepare_enable(pc->clk);
-}
-
-static void pxa_pwm_disable(struct pwm_chip *chip, struct pwm_device *pwm)
-{
-	struct pxa_pwm_chip *pc = to_pxa_pwm_chip(chip);
-
-	clk_disable_unprepare(pc->clk);
 }
 
 static int pxa_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 			 const struct pwm_state *state)
 {
+	struct pxa_pwm_chip *pc = to_pxa_pwm_chip(chip);
+	u64 duty_cycle;
 	int err;
 
 	if (state->polarity != PWM_POLARITY_NORMAL)
 		return -EINVAL;
 
-	if (!state->enabled) {
-		if (pwm->state.enabled)
-			pxa_pwm_disable(chip, pwm);
-
-		return 0;
-	}
-
-	err = pxa_pwm_config(chip, pwm, state->duty_cycle, state->period);
+	err = clk_prepare_enable(pc->clk);
 	if (err)
 		return err;
 
-	if (!pwm->state.enabled)
-		return pxa_pwm_enable(chip, pwm);
+	duty_cycle = state->enabled ? state->duty_cycle : 0;
+
+	err = pxa_pwm_config(chip, pwm, duty_cycle, state->period);
+	if (err) {
+		clk_disable_unprepare(pc->clk);
+		return err;
+	}
+
+	if (state->enabled && !pwm->state.enabled)
+		return 0;
+
+	clk_disable_unprepare(pc->clk);
+
+	if (!state->enabled && pwm->state.enabled)
+		clk_disable_unprepare(pc->clk);
 
 	return 0;
 }
 
 static const struct pwm_ops pxa_pwm_ops = {
 	.apply = pxa_pwm_apply,
-	.owner = THIS_MODULE,
 };
 
 #ifdef CONFIG_OF
@@ -164,51 +156,47 @@ MODULE_DEVICE_TABLE(of, pwm_of_match);
 #define pwm_of_match NULL
 #endif
 
-static const struct platform_device_id *pxa_pwm_get_id_dt(struct device *dev)
-{
-	const struct of_device_id *id = of_match_device(pwm_of_match, dev);
-
-	return id ? id->data : NULL;
-}
-
 static int pwm_probe(struct platform_device *pdev)
 {
 	const struct platform_device_id *id = platform_get_device_id(pdev);
+	struct pwm_chip *chip;
 	struct pxa_pwm_chip *pc;
+	struct device *dev = &pdev->dev;
+	struct reset_control *rst;
 	int ret = 0;
 
 	if (IS_ENABLED(CONFIG_OF) && id == NULL)
-		id = pxa_pwm_get_id_dt(&pdev->dev);
+		id = of_device_get_match_data(dev);
 
 	if (id == NULL)
 		return -EINVAL;
 
-	pc = devm_kzalloc(&pdev->dev, sizeof(*pc), GFP_KERNEL);
-	if (pc == NULL)
-		return -ENOMEM;
+	chip = devm_pwmchip_alloc(dev, (id->driver_data & HAS_SECONDARY_PWM) ? 2 : 1,
+				  sizeof(*pc));
+	if (IS_ERR(chip))
+		return PTR_ERR(chip);
+	pc = to_pxa_pwm_chip(chip);
 
-	pc->clk = devm_clk_get(&pdev->dev, NULL);
+	pc->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(pc->clk))
-		return PTR_ERR(pc->clk);
+		return dev_err_probe(dev, PTR_ERR(pc->clk), "Failed to get clock\n");
 
-	pc->chip.dev = &pdev->dev;
-	pc->chip.ops = &pxa_pwm_ops;
-	pc->chip.npwm = (id->driver_data & HAS_SECONDARY_PWM) ? 2 : 1;
+	rst = devm_reset_control_get_optional_exclusive_deasserted(dev, NULL);
+	if (IS_ERR(rst))
+		return PTR_ERR(rst);
 
-	if (IS_ENABLED(CONFIG_OF)) {
-		pc->chip.of_xlate = of_pwm_single_xlate;
-		pc->chip.of_pwm_n_cells = 1;
-	}
+	chip->ops = &pxa_pwm_ops;
+
+	if (IS_ENABLED(CONFIG_OF))
+		chip->of_xlate = of_pwm_single_xlate;
 
 	pc->mmio_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(pc->mmio_base))
 		return PTR_ERR(pc->mmio_base);
 
-	ret = devm_pwmchip_add(&pdev->dev, &pc->chip);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "pwmchip_add() failed: %d\n", ret);
-		return ret;
-	}
+	ret = devm_pwmchip_add(dev, chip);
+	if (ret < 0)
+		return dev_err_probe(dev, ret, "pwmchip_add() failed\n");
 
 	return 0;
 }
@@ -224,4 +212,5 @@ static struct platform_driver pwm_driver = {
 
 module_platform_driver(pwm_driver);
 
+MODULE_DESCRIPTION("PXA Pulse Width Modulator driver");
 MODULE_LICENSE("GPL v2");

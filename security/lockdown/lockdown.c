@@ -13,6 +13,7 @@
 #include <linux/security.h>
 #include <linux/export.h>
 #include <linux/lsm_hooks.h>
+#include <uapi/linux/lsm.h>
 
 static enum lockdown_reason kernel_locked_down;
 
@@ -63,7 +64,7 @@ static int lockdown_is_locked_down(enum lockdown_reason what)
 
 	if (kernel_locked_down >= what) {
 		if (lockdown_reasons[what])
-			pr_notice("Lockdown: %s: %s is restricted; see man kernel_lockdown.7\n",
+			pr_notice_ratelimited("Lockdown: %s: %s is restricted; see man kernel_lockdown.7\n",
 				  current->comm, lockdown_reasons[what]);
 		return -EPERM;
 	}
@@ -71,8 +72,13 @@ static int lockdown_is_locked_down(enum lockdown_reason what)
 	return 0;
 }
 
-static struct security_hook_list lockdown_hooks[] __lsm_ro_after_init = {
+static struct security_hook_list lockdown_hooks[] __ro_after_init = {
 	LSM_HOOK_INIT(locked_down, lockdown_is_locked_down),
+};
+
+static const struct lsm_id lockdown_lsmid = {
+	.name = "lockdown",
+	.id = LSM_ID_LOCKDOWN,
 };
 
 static int __init lockdown_lsm_init(void)
@@ -83,14 +89,14 @@ static int __init lockdown_lsm_init(void)
 	lock_kernel_down("Kernel configuration", LOCKDOWN_CONFIDENTIALITY_MAX);
 #endif
 	security_add_hooks(lockdown_hooks, ARRAY_SIZE(lockdown_hooks),
-			   "lockdown");
+			   &lockdown_lsmid);
 	return 0;
 }
 
 static ssize_t lockdown_read(struct file *filp, char __user *buf, size_t count,
 			     loff_t *ppos)
 {
-	char temp[80];
+	char temp[80] = "";
 	int i, offset = 0;
 
 	for (i = 0; i < ARRAY_SIZE(lockdown_levels); i++) {
@@ -155,13 +161,12 @@ static int __init lockdown_secfs_init(void)
 	return PTR_ERR_OR_ZERO(dentry);
 }
 
-core_initcall(lockdown_secfs_init);
-
 #ifdef CONFIG_SECURITY_LOCKDOWN_LSM_EARLY
 DEFINE_EARLY_LSM(lockdown) = {
 #else
 DEFINE_LSM(lockdown) = {
 #endif
-	.name = "lockdown",
+	.id = &lockdown_lsmid,
 	.init = lockdown_lsm_init,
+	.initcall_core = lockdown_secfs_init,
 };

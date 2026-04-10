@@ -1,16 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver for MPC52xx processor BestComm peripheral controller
- *
  *
  * Copyright (C) 2006-2007 Sylvain Munaut <tnt@246tNt.com>
  * Copyright (C) 2005      Varma Electronics Oy,
  *                         ( by Andrey Volkov <avolkov@varma-el.com> )
  * Copyright (C) 2003-2004 MontaVista, Software, Inc.
  *                         ( by Dale Farnsworth <dfarnsworth@mvista.com> )
- *
- * This file is licensed under the terms of the GNU General Public License
- * version 2. This program is licensed "as is" without any warranty of any
- * kind, whether express or implied.
  */
 
 #include <linux/module.h>
@@ -18,9 +14,8 @@
 #include <linux/slab.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/of_device.h>
 #include <linux/of_irq.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/mpc52xx.h>
@@ -398,7 +393,7 @@ static int mpc52xx_bcom_probe(struct platform_device *op)
 	}
 
 	/* Get a clean struct */
-	bcom_eng = kzalloc(sizeof(struct bcom_engine), GFP_KERNEL);
+	bcom_eng = kzalloc_obj(struct bcom_engine);
 	if (!bcom_eng) {
 		rv = -ENOMEM;
 		goto error_sramclean;
@@ -460,7 +455,7 @@ error_ofput:
 }
 
 
-static int mpc52xx_bcom_remove(struct platform_device *op)
+static void mpc52xx_bcom_remove(struct platform_device *op)
 {
 	/* Clean up the engine */
 	bcom_engine_cleanup();
@@ -478,8 +473,6 @@ static int mpc52xx_bcom_remove(struct platform_device *op)
 	/* Release memory */
 	kfree(bcom_eng);
 	bcom_eng = NULL;
-
-	return 0;
 }
 
 static const struct of_device_id mpc52xx_bcom_of_match[] = {
@@ -528,4 +521,3 @@ MODULE_AUTHOR("Sylvain Munaut <tnt@246tNt.com>");
 MODULE_AUTHOR("Andrey Volkov <avolkov@varma-el.com>");
 MODULE_AUTHOR("Dale Farnsworth <dfarnsworth@mvista.com>");
 MODULE_LICENSE("GPL v2");
-

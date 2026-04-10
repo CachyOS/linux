@@ -41,7 +41,7 @@ struct page **ceph_alloc_page_vector(int num_pages, gfp_t flags)
 	struct page **pages;
 	int i;
 
-	pages = kmalloc_array(num_pages, sizeof(*pages), flags);
+	pages = kmalloc_objs(*pages, num_pages, flags);
 	if (!pages)
 		return ERR_PTR(-ENOMEM);
 	for (i = 0; i < num_pages; i++) {
@@ -54,58 +54,6 @@ struct page **ceph_alloc_page_vector(int num_pages, gfp_t flags)
 	return pages;
 }
 EXPORT_SYMBOL(ceph_alloc_page_vector);
-
-/*
- * copy user data into a page vector
- */
-int ceph_copy_user_to_page_vector(struct page **pages,
-					 const void __user *data,
-					 loff_t off, size_t len)
-{
-	int i = 0;
-	int po = off & ~PAGE_MASK;
-	int left = len;
-	int l, bad;
-
-	while (left > 0) {
-		l = min_t(int, PAGE_SIZE-po, left);
-		bad = copy_from_user(page_address(pages[i]) + po, data, l);
-		if (bad == l)
-			return -EFAULT;
-		data += l - bad;
-		left -= l - bad;
-		po += l - bad;
-		if (po == PAGE_SIZE) {
-			po = 0;
-			i++;
-		}
-	}
-	return len;
-}
-EXPORT_SYMBOL(ceph_copy_user_to_page_vector);
-
-void ceph_copy_to_page_vector(struct page **pages,
-				    const void *data,
-				    loff_t off, size_t len)
-{
-	int i = 0;
-	size_t po = off & ~PAGE_MASK;
-	size_t left = len;
-
-	while (left > 0) {
-		size_t l = min_t(size_t, PAGE_SIZE-po, left);
-
-		memcpy(page_address(pages[i]) + po, data, l);
-		data += l;
-		left -= l;
-		po += l;
-		if (po == PAGE_SIZE) {
-			po = 0;
-			i++;
-		}
-	}
-}
-EXPORT_SYMBOL(ceph_copy_to_page_vector);
 
 void ceph_copy_from_page_vector(struct page **pages,
 				    void *data,

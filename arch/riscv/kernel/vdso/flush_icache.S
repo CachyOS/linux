@@ -5,11 +5,13 @@
 
 #include <linux/linkage.h>
 #include <asm/unistd.h>
+#include <asm/assembler.h>
 
 	.text
 /* int __vdso_flush_icache(void *start, void *end, unsigned long flags); */
-ENTRY(__vdso_flush_icache)
+SYM_FUNC_START(__vdso_flush_icache)
 	.cfi_startproc
+	vdso_lpad
 #ifdef CONFIG_SMP
 	li a7, __NR_riscv_flush_icache
 	ecall
@@ -19,4 +21,6 @@ ENTRY(__vdso_flush_icache)
 #endif
 	ret
 	.cfi_endproc
-ENDPROC(__vdso_flush_icache)
+SYM_FUNC_END(__vdso_flush_icache)
+
+emit_riscv_feature_1_and

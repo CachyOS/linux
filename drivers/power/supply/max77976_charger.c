@@ -3,7 +3,7 @@
  * max77976_charger.c - Driver for the Maxim MAX77976 battery charger
  *
  * Copyright (C) 2021 Luca Ceresoli
- * Author: Luca Ceresoli <luca@lucaceresoli.net>
+ * Author: Luca Ceresoli <luca.ceresoli@bootlin.com>
  */
 
 #include <linux/i2c.h>
@@ -292,10 +292,10 @@ static int max77976_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_ONLINE:
 		err = max77976_get_online(chg, &val->intval);
 		break;
-	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT_MAX:
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
 		val->intval = MAX77976_CHG_CC_MAX;
 		break;
-	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT:
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
 		err = max77976_get_integer(chg, CHG_CC,
 					   MAX77976_CHG_CC_MIN,
 					   MAX77976_CHG_CC_MAX,
@@ -330,7 +330,7 @@ static int max77976_set_property(struct power_supply *psy,
 	int err = 0;
 
 	switch (psp) {
-	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT:
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
 		err = max77976_set_integer(chg, CHG_CC,
 					   MAX77976_CHG_CC_MIN,
 					   MAX77976_CHG_CC_MAX,
@@ -355,7 +355,7 @@ static int max77976_property_is_writeable(struct power_supply *psy,
 					  enum power_supply_property psp)
 {
 	switch (psp) {
-	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT:
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
 		return true;
 	default:
@@ -368,8 +368,8 @@ static enum power_supply_property max77976_psy_props[] = {
 	POWER_SUPPLY_PROP_CHARGE_TYPE,
 	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_ONLINE,
-	POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT,
-	POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT_MAX,
+	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
+	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX,
 	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
 	POWER_SUPPLY_PROP_MODEL_NAME,
 	POWER_SUPPLY_PROP_MANUFACTURER,
@@ -452,6 +452,7 @@ static int max77976_probe(struct i2c_client *client)
 
 	i2c_set_clientdata(client, chg);
 	psy_cfg.drv_data = chg;
+	psy_cfg.no_wakeup_source = true;
 	chg->client = client;
 
 	chg->regmap = devm_regmap_init_i2c(client, &max77976_regmap_config);
@@ -475,7 +476,7 @@ static int max77976_probe(struct i2c_client *client)
 	if (err)
 		return err;
 
-	psy = devm_power_supply_register_no_ws(dev, &max77976_psy_desc, &psy_cfg);
+	psy = devm_power_supply_register(dev, &max77976_psy_desc, &psy_cfg);
 	if (IS_ERR(psy))
 		return dev_err_probe(dev, PTR_ERR(psy), "cannot register\n");
 
@@ -483,8 +484,8 @@ static int max77976_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id max77976_i2c_id[] = {
-	{ MAX77976_DRIVER_NAME, 0 },
-	{ },
+	{ MAX77976_DRIVER_NAME },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max77976_i2c_id);
 
@@ -499,11 +500,11 @@ static struct i2c_driver max77976_driver = {
 		.name		= MAX77976_DRIVER_NAME,
 		.of_match_table	= max77976_of_id,
 	},
-	.probe_new	= max77976_probe,
+	.probe		= max77976_probe,
 	.id_table	= max77976_i2c_id,
 };
 module_i2c_driver(max77976_driver);
 
-MODULE_AUTHOR("Luca Ceresoli <luca@lucaceresoli.net>");
+MODULE_AUTHOR("Luca Ceresoli <luca.ceresoli@bootlin.com>");
 MODULE_DESCRIPTION("Maxim MAX77976 charger driver");
 MODULE_LICENSE("GPL v2");

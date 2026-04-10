@@ -51,7 +51,7 @@ MODULE_PARM_DESC(debug, "set debugging level (1=info,2=xfer,4=setfe,8=getfe (|-a
 static int dib3000_read_reg(struct dib3000_state *state, u16 reg)
 {
 	u8 wb[] = { ((reg >> 8) | 0x80) & 0xff, reg & 0xff };
-	u8 rb[2];
+	u8 rb[2] = {};
 	struct i2c_msg msg[] = {
 		{ .addr = state->config.demod_address, .flags = 0,        .buf = wb, .len = 2 },
 		{ .addr = state->config.demod_address, .flags = I2C_M_RD, .buf = rb, .len = 2 },
@@ -640,7 +640,7 @@ static int dib3000mb_read_ber(struct dvb_frontend* fe, u32 *ber)
 	return 0;
 }
 
-/* see dib3000-watch dvb-apps for exact calcuations of signal_strength and snr */
+/* see dib3000-watch dvb-apps for exact calculations of signal_strength and snr */
 static int dib3000mb_read_signal_strength(struct dvb_frontend* fe, u16 *strength)
 {
 	struct dib3000_state* state = fe->demodulator_priv;
@@ -746,7 +746,7 @@ struct dvb_frontend* dib3000mb_attach(const struct dib3000_config* config,
 	struct dib3000_state* state = NULL;
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(struct dib3000_state), GFP_KERNEL);
+	state = kzalloc_obj(struct dib3000_state);
 	if (state == NULL)
 		goto error;
 
@@ -815,4 +815,4 @@ MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(dib3000mb_attach);
+EXPORT_SYMBOL_GPL(dib3000mb_attach);

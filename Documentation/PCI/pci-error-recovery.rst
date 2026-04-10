@@ -13,11 +13,11 @@ PCI Error Recovery
 Many PCI bus controllers are able to detect a variety of hardware
 PCI errors on the bus, such as parity errors on the data and address
 buses, as well as SERR and PERR errors.  Some of the more advanced
-chipsets are able to deal with these errors; these include PCI-E chipsets,
+chipsets are able to deal with these errors; these include PCIe chipsets,
 and the PCI-host bridges found on IBM Power4, Power5 and Power6-based
 pSeries boxes. A typical action taken is to disconnect the affected device,
 halting all I/O to it.  The goal of a disconnection is to avoid system
-corruption; for example, to halt system memory corruption due to DMA's
+corruption; for example, to halt system memory corruption due to DMAs
 to "wild" addresses. Typically, a reconnection mechanism is also
 offered, so that the affected PCI device(s) are reset and put back
 into working condition. The reset phase requires coordination
@@ -83,6 +83,7 @@ This structure has the form::
 		int (*mmio_enabled)(struct pci_dev *dev);
 		int (*slot_reset)(struct pci_dev *dev);
 		void (*resume)(struct pci_dev *dev);
+		void (*cor_error_detected)(struct pci_dev *dev);
 	};
 
 The possible channel states are::
@@ -107,8 +108,8 @@ A driver does not have to implement all of these callbacks; however,
 if it implements any, it must implement error_detected(). If a callback
 is not implemented, the corresponding feature is considered unsupported.
 For example, if mmio_enabled() and resume() aren't there, then it
-is assumed that the driver is not doing any direct recovery and requires
-a slot reset.  Typically a driver will want to know about
+is assumed that the driver does not need these callbacks
+for recovery.  Typically a driver will want to know about
 a slot_reset().
 
 The actual steps taken by a platform to recover from a PCI error
@@ -121,6 +122,10 @@ A PCI bus error is detected by the PCI hardware.  On powerpc, the slot
 is isolated, in that all I/O is blocked: all reads return 0xffffffff,
 all writes are ignored.
 
+Similarly, on platforms supporting Downstream Port Containment
+(PCIe r7.0 sec 6.2.11), the link to the sub-hierarchy with the
+faulting device is disabled. Any device in the sub-hierarchy
+becomes inaccessible.
 
 STEP 1: Notification
 --------------------
@@ -140,6 +145,9 @@ shouldn't do any new IOs. Called in task context. This is sort of a
 All drivers participating in this system must implement this call.
 The driver must return one of the following result codes:
 
+  - PCI_ERS_RESULT_RECOVERED
+      Driver returns this if it thinks the device is usable despite
+      the error and does not need further intervention.
   - PCI_ERS_RESULT_CAN_RECOVER
       Driver returns this if it thinks it might be able to recover
       the HW by just banging IOs or if it wants to be given
@@ -177,9 +185,9 @@ is STEP 6 (Permanent Failure).
    complex and not worth implementing.
 
    The current powerpc implementation doesn't much care if the device
-   attempts I/O at this point, or not.  I/O's will fail, returning
+   attempts I/O at this point, or not.  I/Os will fail, returning
    a value of 0xff on read, and writes will be dropped. If more than
-   EEH_MAX_FAILS I/O's are attempted to a frozen adapter, EEH
+   EEH_MAX_FAILS I/Os are attempted to a frozen adapter, EEH
    assumes that the device driver has gone into an infinite loop
    and prints an error to syslog.  A reboot is then required to
    get the device working again.
@@ -198,12 +206,30 @@ reset or some such, but not restart operations. This callback is made if
 all drivers on a segment agree that they can try to recover and if no automatic
 link reset was performed by the HW. If the platform can't just re-enable IOs
 without a slot reset or a link reset, it will not call this callback, and
-instead will have gone directly to STEP 3 (Link Reset) or STEP 4 (Slot Reset)
+instead will have gone directly to STEP 3 (Link Reset) or STEP 4 (Slot Reset).
+
+.. note::
+
+   On platforms supporting Advanced Error Reporting (PCIe r7.0 sec 6.2),
+   the faulting device may already be accessible in STEP 1 (Notification).
+   Drivers should nevertheless defer accesses to STEP 2 (MMIO Enabled)
+   to be compatible with EEH on powerpc and with s390 (where devices are
+   inaccessible until STEP 2).
+
+   On platforms supporting Downstream Port Containment, the link to the
+   sub-hierarchy with the faulting device is re-enabled in STEP 3 (Link
+   Reset). Hence devices in the sub-hierarchy are inaccessible until
+   STEP 4 (Slot Reset).
+
+   For errors such as Surprise Down (PCIe r7.0 sec 6.2.7), the device
+   may not even be accessible in STEP 4 (Slot Reset). Drivers can detect
+   accessibility by checking whether reads from the device return all 1's
+   (PCI_POSSIBLE_ERROR()).
 
 .. note::
 
    The following is proposed; no platform implements this yet:
-   Proposal: All I/O's should be done _synchronously_ from within
+   Proposal: All I/Os should be done _synchronously_ from within
    this callback, errors triggered by them will be returned via
    the normal pci_check_whatever() API, no new error_detected()
    callback will be issued due to an error happening here. However,
@@ -233,14 +259,14 @@ The driver should return one of the following result codes:
 
 The next step taken depends on the results returned by the drivers.
 If all drivers returned PCI_ERS_RESULT_RECOVERED, then the platform
-proceeds to either STEP3 (Link Reset) or to STEP 5 (Resume Operations).
+proceeds to either STEP 3 (Link Reset) or to STEP 5 (Resume Operations).
 
 If any driver returned PCI_ERS_RESULT_NEED_RESET, then the platform
 proceeds to STEP 4 (Slot Reset)
 
 STEP 3: Link Reset
 ------------------
-The platform resets the link.  This is a PCI-Express specific step
+The platform resets the link.  This is a PCIe specific step
 and is done whenever a fatal error has been detected that can be
 "solved" by resetting the link.
 
@@ -257,18 +283,18 @@ Powerpc platforms implement two levels of slot reset:
 soft reset(default) and fundamental(optional) reset.
 
 Powerpc soft reset consists of asserting the adapter #RST line and then
-restoring the PCI BAR's and PCI configuration header to a state
+restoring the PCI BARs and PCI configuration header to a state
 that is equivalent to what it would be after a fresh system
 power-on followed by power-on BIOS/system firmware initialization.
 Soft reset is also known as hot-reset.
 
-Powerpc fundamental reset is supported by PCI Express cards only
+Powerpc fundamental reset is supported by PCIe cards only
 and results in device's state machines, hardware logic, port states and
 configuration registers to initialize to their default conditions.
 
 For most PCI devices, a soft reset will be sufficient for recovery.
 Optional fundamental reset is provided to support a limited number
-of PCI Express devices for which a soft reset is not sufficient
+of PCIe devices for which a soft reset is not sufficient
 for recovery.
 
 If the platform supports PCI hotplug, then the reset might be
@@ -300,6 +326,21 @@ be recovered, there is nothing more that can be done;  the platform
 will typically report a "permanent failure" in such a case.  The
 device will be considered "dead" in this case.
 
+Drivers typically need to call pci_restore_state() after reset to
+re-initialize the device's config space registers and thereby
+bring it from D0\ :sub:`uninitialized` into D0\ :sub:`active` state
+(PCIe r7.0 sec 5.3.1.1).  The PCI core invokes pci_save_state()
+on enumeration after initializing config space to ensure that a
+saved state is available for subsequent error recovery.
+Drivers which modify config space on probe may need to invoke
+pci_save_state() afterwards to record those changes for later
+error recovery.  When going into system suspend, pci_save_state()
+is called for every PCI device and that state will be restored
+not only on resume, but also on any subsequent error recovery.
+In the unlikely event that the saved state recorded on suspend
+is unsuitable for error recovery, drivers should call
+pci_save_state() on resume.
+
 Drivers for multi-function cards will need to coordinate among
 themselves as to which driver instance will perform any "one-shot"
 or global device initialization. For example, the Symbios sym53cxx2
@@ -312,7 +353,7 @@ Result codes:
 	- PCI_ERS_RESULT_DISCONNECT
 	  Same as above.
 
-Drivers for PCI Express cards that require a fundamental reset must
+Drivers for PCIe cards that require a fundamental reset must
 set the needs_freset bit in the pci_dev structure in their probe function.
 For example, the QLogic qla2xxx driver sets the needs_freset bit for certain
 PCI card types::
@@ -361,9 +402,9 @@ permanent failure in some way.  If the device is hotplug-capable,
 the operator will probably want to remove and replace the device.
 Note, however, not all failures are truly "permanent". Some are
 caused by over-heating, some by a poorly seated card. Many
-PCI error events are caused by software bugs, e.g. DMA's to
+PCI error events are caused by software bugs, e.g. DMAs to
 wild addresses or bogus split transactions due to programming
-errors. See the discussion in powerpc/eeh-pci-error-recovery.txt
+errors. See the discussion in Documentation/arch/powerpc/eeh-pci-error-recovery.rst
 for additional detail on real-life experience of the causes of
 software errors.
 
@@ -403,7 +444,7 @@ That is, the recovery API only requires that:
 .. note::
 
    Implementation details for the powerpc platform are discussed in
-   the file Documentation/powerpc/eeh-pci-error-recovery.rst
+   the file Documentation/arch/powerpc/eeh-pci-error-recovery.rst
 
    As of this writing, there is a growing list of device drivers with
    patches implementing error recovery. Not all of these patches are in
@@ -417,10 +458,14 @@ That is, the recovery API only requires that:
    - drivers/next/e100.c
    - drivers/net/e1000
    - drivers/net/e1000e
-   - drivers/net/ixgb
    - drivers/net/ixgbe
    - drivers/net/cxgb3
-   - drivers/net/s2io.c
+
+   The cor_error_detected() callback is invoked in handle_error_source() when
+   the error severity is "correctable". The callback is optional and allows
+   additional logging to be done if desired. See example:
+
+   - drivers/cxl/pci.c
 
 The End
 -------

@@ -50,7 +50,10 @@
 #include <linux/list.h>
 #include <linux/slab.h>
 
-#include "dsa_priv.h"
+#include "tag.h"
+
+#define DSA_NAME	"dsa"
+#define EDSA_NAME	"edsa"
 
 #define DSA_HLEN	4
 
@@ -126,7 +129,7 @@ enum dsa_code {
 static struct sk_buff *dsa_xmit_ll(struct sk_buff *skb, struct net_device *dev,
 				   u8 extra)
 {
-	struct dsa_port *dp = dsa_slave_to_port(dev);
+	struct dsa_port *dp = dsa_user_to_port(dev);
 	struct net_device *br_dev;
 	u8 tag_dev, tag_port;
 	enum dsa_cmd cmd;
@@ -264,14 +267,14 @@ static struct sk_buff *dsa_rcv_ll(struct sk_buff *skb, struct net_device *dev,
 		lag = dsa_lag_by_id(cpu_dp->dst, source_port + 1);
 		skb->dev = lag ? lag->dev : NULL;
 	} else {
-		skb->dev = dsa_master_find_slave(dev, source_device,
+		skb->dev = dsa_conduit_find_user(dev, source_device,
 						 source_port);
 	}
 
 	if (!skb->dev)
 		return NULL;
 
-	/* When using LAG offload, skb->dev is not a DSA slave interface,
+	/* When using LAG offload, skb->dev is not a DSA user interface,
 	 * so we cannot call dsa_default_offload_fwd_mark and we need to
 	 * special-case it.
 	 */
@@ -339,7 +342,7 @@ static struct sk_buff *dsa_rcv(struct sk_buff *skb, struct net_device *dev)
 }
 
 static const struct dsa_device_ops dsa_netdev_ops = {
-	.name	  = "dsa",
+	.name	  = DSA_NAME,
 	.proto	  = DSA_TAG_PROTO_DSA,
 	.xmit	  = dsa_xmit,
 	.rcv	  = dsa_rcv,
@@ -347,7 +350,7 @@ static const struct dsa_device_ops dsa_netdev_ops = {
 };
 
 DSA_TAG_DRIVER(dsa_netdev_ops);
-MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_DSA);
+MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_DSA, DSA_NAME);
 #endif	/* CONFIG_NET_DSA_TAG_DSA */
 
 #if IS_ENABLED(CONFIG_NET_DSA_TAG_EDSA)
@@ -381,7 +384,7 @@ static struct sk_buff *edsa_rcv(struct sk_buff *skb, struct net_device *dev)
 }
 
 static const struct dsa_device_ops edsa_netdev_ops = {
-	.name	  = "edsa",
+	.name	  = EDSA_NAME,
 	.proto	  = DSA_TAG_PROTO_EDSA,
 	.xmit	  = edsa_xmit,
 	.rcv	  = edsa_rcv,
@@ -389,7 +392,7 @@ static const struct dsa_device_ops edsa_netdev_ops = {
 };
 
 DSA_TAG_DRIVER(edsa_netdev_ops);
-MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_EDSA);
+MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_EDSA, EDSA_NAME);
 #endif	/* CONFIG_NET_DSA_TAG_EDSA */
 
 static struct dsa_tag_driver *dsa_tag_drivers[] = {
@@ -403,4 +406,5 @@ static struct dsa_tag_driver *dsa_tag_drivers[] = {
 
 module_dsa_tag_drivers(dsa_tag_drivers);
 
+MODULE_DESCRIPTION("DSA tag driver for Marvell switches using DSA headers");
 MODULE_LICENSE("GPL");

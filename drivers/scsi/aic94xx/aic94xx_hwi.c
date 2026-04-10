@@ -28,7 +28,7 @@ static int asd_get_user_sas_addr(struct asd_ha_struct *asd_ha)
 	if (asd_ha->hw_prof.sas_addr[0])
 		return 0;
 
-	return sas_request_addr(asd_ha->sas_ha.core.shost,
+	return sas_request_addr(asd_ha->sas_ha.shost,
 				asd_ha->hw_prof.sas_addr);
 }
 
@@ -72,10 +72,8 @@ static int asd_init_phy(struct asd_phy *phy)
 	struct asd_sas_phy *sas_phy = &phy->sas_phy;
 
 	sas_phy->enabled = 1;
-	sas_phy->class = SAS;
 	sas_phy->iproto = SAS_PROTOCOL_ALL;
 	sas_phy->tproto = 0;
-	sas_phy->type = PHY_TYPE_PHYSICAL;
 	sas_phy->role = PHY_ROLE_INITIATOR;
 	sas_phy->oob_mode = OOB_NOT_CONNECTED;
 	sas_phy->linkrate = SAS_LINK_RATE_UNKNOWN;
@@ -274,8 +272,7 @@ static int asd_alloc_edbs(struct asd_ha_struct *asd_ha, gfp_t gfp_flags)
 	struct asd_seq_data *seq = &asd_ha->seq;
 	int i;
 
-	seq->edb_arr = kmalloc_array(seq->num_edbs, sizeof(*seq->edb_arr),
-				     gfp_flags);
+	seq->edb_arr = kmalloc_objs(*seq->edb_arr, seq->num_edbs, gfp_flags);
 	if (!seq->edb_arr)
 		return -ENOMEM;
 
@@ -307,8 +304,7 @@ static int asd_alloc_escbs(struct asd_ha_struct *asd_ha,
 	struct asd_ascb *escb;
 	int i, escbs;
 
-	seq->escb_arr = kmalloc_array(seq->num_escbs, sizeof(*seq->escb_arr),
-				      gfp_flags);
+	seq->escb_arr = kmalloc_objs(*seq->escb_arr, seq->num_escbs, gfp_flags);
 	if (!seq->escb_arr)
 		return -ENOMEM;
 
@@ -733,7 +729,7 @@ static void asd_dl_tasklet_handler(unsigned long data)
 			goto next_1;
 		} else if (ascb->scb->header.opcode == EMPTY_SCB) {
 			goto out;
-		} else if (!ascb->uldd_timer && !del_timer(&ascb->timer)) {
+		} else if (!ascb->uldd_timer && !timer_delete(&ascb->timer)) {
 			goto next_1;
 		}
 		spin_lock_irqsave(&seq->pend_q_lock, flags);

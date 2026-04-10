@@ -286,6 +286,39 @@ in order to detect the beginnings and ends of grace periods in a
 distributed fashion. The values flow from ``rcu_state`` to ``rcu_node``
 (down the tree from the root to the leaves) to ``rcu_data``.
 
++-----------------------------------------------------------------------+
+| **Quick Quiz**:                                                       |
++-----------------------------------------------------------------------+
+| Given that the root rcu_node structure has a gp_seq field,            |
+| why does RCU maintain a separate gp_seq in the rcu_state structure?   |
+| Why not just use the root rcu_node's gp_seq as the official record    |
+| and update it directly when starting a new grace period?              |
++-----------------------------------------------------------------------+
+| **Answer**:                                                           |
++-----------------------------------------------------------------------+
+| On single-node RCU trees (where the root node is also a leaf),        |
+| updating the root node's gp_seq immediately would create unnecessary  |
+| lock contention. Here's why:                                          |
+|                                                                       |
+| If we did rcu_seq_start() directly on the root node's gp_seq:         |
+|                                                                       |
+| 1. All CPUs would immediately see their node's gp_seq from their rdp's|
+|    gp_seq, in rcu_pending(). They would all then invoke the RCU-core. |
+| 2. Which calls note_gp_changes() and try to acquire the node lock.    |
+| 3. But rnp->qsmask isn't initialized yet (happens later in            |
+|    rcu_gp_init())                                                     |
+| 4. So each CPU would acquire the lock, find it can't determine if it  |
+|    needs to report quiescent state (no qsmask), update rdp->gp_seq,   |
+|    and release the lock.                                              |
+| 5. Result: Lots of lock acquisitions with no grace period progress    |
+|                                                                       |
+| By having a separate rcu_state.gp_seq, we can increment the official  |
+| grace period counter without immediately affecting what CPUs see in   |
+| their nodes. The hierarchical propagation in rcu_gp_init() then       |
+| updates the root node's gp_seq and qsmask together under the same lock|
+| acquisition, avoiding this useless contention.                        |
++-----------------------------------------------------------------------+
+
 Miscellaneous
 '''''''''''''
 
@@ -921,10 +954,10 @@ This portion of the ``rcu_data`` structure is declared as follows:
 
 ::
 
-     1   int dynticks_snap;
+     1   int watching_snap;
      2   unsigned long dynticks_fqs;
 
-The ``->dynticks_snap`` field is used to take a snapshot of the
+The ``->watching_snap`` field is used to take a snapshot of the
 corresponding CPU's dyntick-idle state when forcing quiescent states,
 and is therefore accessed from other CPUs. Finally, the
 ``->dynticks_fqs`` field is used to count the number of times this CPU
@@ -935,8 +968,8 @@ This portion of the rcu_data structure is declared as follows:
 
 ::
 
-     1   long dynticks_nesting;
-     2   long dynticks_nmi_nesting;
+     1   long nesting;
+     2   long nmi_nesting;
      3   atomic_t dynticks;
      4   bool rcu_need_heavy_qs;
      5   bool rcu_urgent_qs;
@@ -945,14 +978,14 @@ These fields in the rcu_data structure maintain the per-CPU dyntick-idle
 state for the corresponding CPU. The fields may be accessed only from
 the corresponding CPU (and from tracing) unless otherwise stated.
 
-The ``->dynticks_nesting`` field counts the nesting depth of process
+The ``->nesting`` field counts the nesting depth of process
 execution, so that in normal circumstances this counter has value zero
 or one. NMIs, irqs, and tracers are counted by the
-``->dynticks_nmi_nesting`` field. Because NMIs cannot be masked, changes
+``->nmi_nesting`` field. Because NMIs cannot be masked, changes
 to this variable have to be undertaken carefully using an algorithm
 provided by Andy Lutomirski. The initial transition from idle adds one,
 and nested transitions add two, so that a nesting level of five is
-represented by a ``->dynticks_nmi_nesting`` value of nine. This counter
+represented by a ``->nmi_nesting`` value of nine. This counter
 can therefore be thought of as counting the number of reasons why this
 CPU cannot be permitted to enter dyntick-idle mode, aside from
 process-level transitions.
@@ -960,12 +993,12 @@ process-level transitions.
 However, it turns out that when running in non-idle kernel context, the
 Linux kernel is fully capable of entering interrupt handlers that never
 exit and perhaps also vice versa. Therefore, whenever the
-``->dynticks_nesting`` field is incremented up from zero, the
-``->dynticks_nmi_nesting`` field is set to a large positive number, and
-whenever the ``->dynticks_nesting`` field is decremented down to zero,
-the ``->dynticks_nmi_nesting`` field is set to zero. Assuming that
+``->nesting`` field is incremented up from zero, the
+``->nmi_nesting`` field is set to a large positive number, and
+whenever the ``->nesting`` field is decremented down to zero,
+the ``->nmi_nesting`` field is set to zero. Assuming that
 the number of misnested interrupts is not sufficient to overflow the
-counter, this approach corrects the ``->dynticks_nmi_nesting`` field
+counter, this approach corrects the ``->nmi_nesting`` field
 every time the corresponding CPU enters the idle loop from process
 context.
 
@@ -992,8 +1025,8 @@ code.
 +-----------------------------------------------------------------------+
 | **Quick Quiz**:                                                       |
 +-----------------------------------------------------------------------+
-| Why not simply combine the ``->dynticks_nesting`` and                 |
-| ``->dynticks_nmi_nesting`` counters into a single counter that just   |
+| Why not simply combine the ``->nesting`` and                          |
+| ``->nmi_nesting`` counters into a single counter that just            |
 | counts the number of reasons that the corresponding CPU is non-idle?  |
 +-----------------------------------------------------------------------+
 | **Answer**:                                                           |

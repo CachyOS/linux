@@ -409,7 +409,7 @@ static const struct snd_soc_dapm_route audio_map_in2_diff[] = {
 static int wm9090_add_controls(struct snd_soc_component *component)
 {
 	struct wm9090_priv *wm9090 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	int i;
 
 	snd_soc_dapm_new_controls(dapm, wm9090_dapm_widgets,
@@ -463,6 +463,7 @@ static int wm9090_set_bias_level(struct snd_soc_component *component,
 				 enum snd_soc_bias_level level)
 {
 	struct wm9090_priv *wm9090 = snd_soc_component_get_drvdata(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
@@ -480,7 +481,7 @@ static int wm9090_set_bias_level(struct snd_soc_component *component,
 		break;
 
 	case SND_SOC_BIAS_STANDBY:
-		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
+		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
 			/* Restore the register cache */
 			regcache_sync(wm9090->regmap);
 		}
@@ -543,7 +544,6 @@ static const struct snd_soc_component_driver soc_component_dev_wm9090 = {
 	.suspend_bias_off	= 1,
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config wm9090_regmap = {
@@ -554,7 +554,7 @@ static const struct regmap_config wm9090_regmap = {
 	.volatile_reg = wm9090_volatile,
 	.readable_reg = wm9090_readable,
 
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.reg_defaults = wm9090_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm9090_reg_defaults),
 };
@@ -607,8 +607,8 @@ static int wm9090_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id wm9090_id[] = {
-	{ "wm9090", 0 },
-	{ "wm9093", 0 },
+	{ "wm9090" },
+	{ "wm9093" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wm9090_id);
@@ -617,7 +617,7 @@ static struct i2c_driver wm9090_i2c_driver = {
 	.driver = {
 		.name = "wm9090",
 	},
-	.probe_new = wm9090_i2c_probe,
+	.probe = wm9090_i2c_probe,
 	.id_table = wm9090_id,
 };
 

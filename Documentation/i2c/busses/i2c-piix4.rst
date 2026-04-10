@@ -64,7 +64,7 @@ correct address for this module, you could get in big trouble (read:
 crashes, data corruption, etc.). Try this only as a last resort (try BIOS
 updates first, for example), and backup first! An even more dangerous
 option is 'force_addr=<IOPORT>'. This will not only enable the PIIX4 like
-'force' foes, but it will also set a new base I/O port address. The SMBus
+'force' does, but it will also set a new base I/O port address. The SMBus
 parts of the PIIX4 needs a range of 8 of these addresses to function
 correctly. If these addresses are already reserved by some other device,
 you will get into big trouble! DON'T USE THIS IF YOU ARE NOT VERY SURE
@@ -86,15 +86,15 @@ If you own Force CPCI735 motherboard or other OSB4 based systems you may need
 to change the SMBus Interrupt Select register so the SMBus controller uses
 the SMI mode.
 
-1) Use lspci command and locate the PCI device with the SMBus controller:
+1) Use ``lspci`` command and locate the PCI device with the SMBus controller:
    00:0f.0 ISA bridge: ServerWorks OSB4 South Bridge (rev 4f)
    The line may vary for different chipsets. Please consult the driver source
-   for all possible PCI ids (and lspci -n to match them). Lets assume the
+   for all possible PCI ids (and ``lspci -n`` to match them). Let's assume the
    device is located at 00:0f.0.
 2) Now you just need to change the value in 0xD2 register. Get it first with
-   command: lspci -xxx -s 00:0f.0
+   command: ``lspci -xxx -s 00:0f.0``
    If the value is 0x3 then you need to change it to 0x1:
-   setpci  -s 00:0f.0 d2.b=1
+   ``setpci  -s 00:0f.0 d2.b=1``
 
 Please note that you don't need to do that in all cases, just when the SMBus is
 not working properly.
@@ -110,5 +110,65 @@ Thinkpad laptops, but desktop systems may also be affected. We have no list
 of all affected systems, so the only safe solution was to prevent access to
 the SMBus on all IBM systems (detected using DMI data.)
 
-For additional information, read:
-http://www.lm-sensors.org/browser/lm-sensors/trunk/README
+
+Description in the ACPI code
+----------------------------
+
+Device driver for the PIIX4 chip creates a separate I2C bus for each of its
+ports::
+
+    $ i2cdetect -l
+    ...
+    i2c-7   unknown         SMBus PIIX4 adapter port 0 at 0b00      N/A
+    i2c-8   unknown         SMBus PIIX4 adapter port 2 at 0b00      N/A
+    i2c-9   unknown         SMBus PIIX4 adapter port 1 at 0b20      N/A
+    ...
+
+Therefore if you want to access one of these busses in the ACPI code, port
+subdevices are needed to be declared inside the PIIX device::
+
+    Scope (\_SB_.PCI0.SMBS)
+    {
+        Name (_ADR, 0x00140000)
+
+        Device (SMB0) {
+            Name (_ADR, 0)
+        }
+        Device (SMB1) {
+            Name (_ADR, 1)
+        }
+        Device (SMB2) {
+            Name (_ADR, 2)
+        }
+    }
+
+If this is not the case for your UEFI firmware and you don't have access to the
+source code, you can use ACPI SSDT Overlays to provide the missing parts. Just
+keep in mind that in this case you would need to load your extra SSDT table
+before the piix4 driver starts, i.e. you should provide SSDT via initrd or EFI
+variable methods and not via configfs.
+
+As an example of usage here is the ACPI snippet code that would assign jc42
+driver to the 0x1C device on the I2C bus created by the PIIX port 0::
+
+    Device (JC42) {
+        Name (_HID, "PRP0001")
+        Name (_DDN, "JC42 Temperature sensor")
+        Name (_CRS, ResourceTemplate () {
+            I2cSerialBusV2 (
+                0x001c,
+                ControllerInitiated,
+                100000,
+                AddressingMode7Bit,
+                "\\_SB.PCI0.SMBS.SMB0",
+                0
+            )
+        })
+
+        Name (_DSD, Package () {
+            ToUUID("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+            Package () {
+                Package () { "compatible", Package() { "jedec,jc-42.4-temp" } },
+            }
+        })
+    }

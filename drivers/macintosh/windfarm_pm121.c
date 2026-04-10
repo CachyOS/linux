@@ -531,8 +531,7 @@ static void pm121_create_sys_fans(int loop_id)
 	control = controls[param->control_id];
 
 	/* Alloc & initialize state */
-	pm121_sys_state[loop_id] = kmalloc(sizeof(struct pm121_sys_state),
-					   GFP_KERNEL);
+	pm121_sys_state[loop_id] = kmalloc_obj(struct pm121_sys_state);
 	if (pm121_sys_state[loop_id] == NULL) {
 		printk(KERN_WARNING "pm121: Memory allocation error\n");
 		goto fail;
@@ -651,7 +650,7 @@ static void pm121_create_cpu_fans(void)
 
 	/* First, locate the PID params in SMU SBD */
 	hdr = smu_get_sdb_partition(SMU_SDB_CPUPIDDATA_ID, NULL);
-	if (hdr == 0) {
+	if (!hdr) {
 		printk(KERN_WARNING "pm121: CPU PID fan config not found.\n");
 		goto fail;
 	}
@@ -668,8 +667,7 @@ static void pm121_create_cpu_fans(void)
 		tmax = 0x5e0000; /* 94 degree default */
 
 	/* Alloc & initialize state */
-	pm121_cpu_state = kmalloc(sizeof(struct pm121_cpu_state),
-				  GFP_KERNEL);
+	pm121_cpu_state = kmalloc_obj(struct pm121_cpu_state);
 	if (pm121_cpu_state == NULL)
 		goto fail;
 	pm121_cpu_state->ticks = 1;
@@ -970,7 +968,7 @@ static int pm121_init_pm(void)
 	const struct smu_sdbp_header *hdr;
 
 	hdr = smu_get_sdb_partition(SMU_SDB_SENSORTREE_ID, NULL);
-	if (hdr != 0) {
+	if (hdr) {
 		struct smu_sdbp_sensortree *st =
 			(struct smu_sdbp_sensortree *)&hdr[1];
 		pm121_mach_model = st->model_id;
@@ -992,10 +990,9 @@ static int pm121_probe(struct platform_device *ddev)
 	return 0;
 }
 
-static int pm121_remove(struct platform_device *ddev)
+static void pm121_remove(struct platform_device *ddev)
 {
 	wf_unregister_client(&pm121_events);
-	return 0;
 }
 
 static struct platform_driver pm121_driver = {

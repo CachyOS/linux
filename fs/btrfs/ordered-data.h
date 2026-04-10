@@ -6,21 +6,30 @@
 #ifndef BTRFS_ORDERED_DATA_H
 #define BTRFS_ORDERED_DATA_H
 
-/* one of these per inode */
-struct btrfs_ordered_inode_tree {
-	spinlock_t lock;
-	struct rb_root tree;
-	struct rb_node *last;
-};
+#include <linux/types.h>
+#include <linux/list.h>
+#include <linux/refcount.h>
+#include <linux/completion.h>
+#include <linux/rbtree.h>
+#include <linux/wait.h>
+#include "async-thread.h"
+
+struct inode;
+struct page;
+struct extent_state;
+struct btrfs_block_group;
+struct btrfs_inode;
+struct btrfs_root;
+struct btrfs_fs_info;
 
 struct btrfs_ordered_sum {
-	/* bytenr is the start of this extent on disk */
-	u64 bytenr;
-
 	/*
-	 * this is the length in bytes covered by the sums array below.
+	 * Logical start address and length for of the blocks covered by
+	 * the sums array.
 	 */
-	int len;
+	u64 logical;
+	u32 len;
+
 	struct list_head list;
 	/* last field is a variable length array of csums */
 	u8 sums[];
@@ -104,13 +113,6 @@ struct btrfs_ordered_extent {
 	u64 bytes_left;
 
 	/*
-	 * the end of the ordered extent which is behind it but
-	 * didn't update disk_i_size. Please see the comment of
-	 * btrfs_ordered_update_i_size();
-	 */
-	u64 outstanding_isize;
-
-	/*
 	 * If we get truncated we need to adjust the file extent we enter for
 	 * this ordered extent so that we do not expose stale data.
 	 */
@@ -129,7 +131,7 @@ struct btrfs_ordered_extent {
 	refcount_t refs;
 
 	/* the inode we belong to */
-	struct inode *inode;
+	struct btrfs_inode *inode;
 
 	/* list of checksums for insertion when the extent io is done */
 	struct list_head list;
@@ -152,54 +154,52 @@ struct btrfs_ordered_extent {
 	struct btrfs_work flush_work;
 	struct list_head work_list;
 
-	/*
-	 * Used to reverse-map physical address returned from ZONE_APPEND write
-	 * command in a workqueue context
-	 */
-	u64 physical;
-	struct block_device *bdev;
+	struct list_head bioc_list;
 };
 
-/*
- * calculates the total size you need to allocate for an ordered sum
- * structure spanning 'bytes' in the file
- */
-static inline int btrfs_ordered_sum_size(struct btrfs_fs_info *fs_info,
-					 unsigned long bytes)
-{
-	int num_sectors = (int)DIV_ROUND_UP(bytes, fs_info->sectorsize);
-
-	return sizeof(struct btrfs_ordered_sum) + num_sectors * fs_info->csum_size;
-}
-
-static inline void
-btrfs_ordered_inode_tree_init(struct btrfs_ordered_inode_tree *t)
-{
-	spin_lock_init(&t->lock);
-	t->tree = RB_ROOT;
-	t->last = NULL;
-}
+int btrfs_finish_one_ordered(struct btrfs_ordered_extent *ordered_extent);
+int btrfs_finish_ordered_io(struct btrfs_ordered_extent *ordered_extent);
 
 void btrfs_put_ordered_extent(struct btrfs_ordered_extent *entry);
 void btrfs_remove_ordered_extent(struct btrfs_inode *btrfs_inode,
 				struct btrfs_ordered_extent *entry);
+void btrfs_finish_ordered_extent(struct btrfs_ordered_extent *ordered,
+				 struct folio *folio, u64 file_offset, u64 len,
+				 bool uptodate);
 void btrfs_mark_ordered_io_finished(struct btrfs_inode *inode,
-				struct page *page, u64 file_offset,
-				u64 num_bytes, btrfs_func_t finish_func,
-				bool uptodate);
+				    struct folio *folio, u64 file_offset,
+				    u64 num_bytes, bool uptodate);
 bool btrfs_dec_test_ordered_pending(struct btrfs_inode *inode,
 				    struct btrfs_ordered_extent **cached,
 				    u64 file_offset, u64 io_size);
-int btrfs_add_ordered_extent(struct btrfs_inode *inode, u64 file_offset,
-			     u64 num_bytes, u64 ram_bytes, u64 disk_bytenr,
-			     u64 disk_num_bytes, u64 offset, unsigned flags,
-			     int compress_type);
+
+/*
+ * This represents details about the target file extent item of a write operation.
+ */
+struct btrfs_file_extent {
+	u64 disk_bytenr;
+	u64 disk_num_bytes;
+	u64 num_bytes;
+	u64 ram_bytes;
+	u64 offset;
+	u8 compression;
+};
+
+struct btrfs_ordered_extent *btrfs_alloc_ordered_extent(
+			struct btrfs_inode *inode, u64 file_offset,
+			const struct btrfs_file_extent *file_extent, unsigned long flags);
 void btrfs_add_ordered_sum(struct btrfs_ordered_extent *entry,
 			   struct btrfs_ordered_sum *sum);
 struct btrfs_ordered_extent *btrfs_lookup_ordered_extent(struct btrfs_inode *inode,
 							 u64 file_offset);
-void btrfs_start_ordered_extent(struct btrfs_ordered_extent *entry, int wait);
-int btrfs_wait_ordered_range(struct inode *inode, u64 start, u64 len);
+void btrfs_start_ordered_extent_nowriteback(struct btrfs_ordered_extent *entry,
+				u64 nowriteback_start, u32 nowriteback_len);
+static inline void btrfs_start_ordered_extent(struct btrfs_ordered_extent *entry)
+{
+	return btrfs_start_ordered_extent_nowriteback(entry, 0, 0);
+}
+
+int btrfs_wait_ordered_range(struct btrfs_inode *inode, u64 start, u64 len);
 struct btrfs_ordered_extent *
 btrfs_lookup_first_ordered_extent(struct btrfs_inode *inode, u64 file_offset);
 struct btrfs_ordered_extent *btrfs_lookup_first_ordered_range(
@@ -211,14 +211,17 @@ struct btrfs_ordered_extent *btrfs_lookup_ordered_range(
 void btrfs_get_ordered_extents_for_logging(struct btrfs_inode *inode,
 					   struct list_head *list);
 u64 btrfs_wait_ordered_extents(struct btrfs_root *root, u64 nr,
-			       const u64 range_start, const u64 range_len);
+			       const struct btrfs_block_group *bg);
 void btrfs_wait_ordered_roots(struct btrfs_fs_info *fs_info, u64 nr,
-			      const u64 range_start, const u64 range_len);
+			      const struct btrfs_block_group *bg);
 void btrfs_lock_and_flush_ordered_range(struct btrfs_inode *inode, u64 start,
 					u64 end,
 					struct extent_state **cached_state);
-int btrfs_split_ordered_extent(struct btrfs_ordered_extent *ordered, u64 pre,
-			       u64 post);
+bool btrfs_try_lock_ordered_range(struct btrfs_inode *inode, u64 start, u64 end,
+				  struct extent_state **cached_state);
+struct btrfs_ordered_extent *btrfs_split_ordered_extent(
+			struct btrfs_ordered_extent *ordered, u64 len);
+void btrfs_mark_ordered_extent_error(struct btrfs_ordered_extent *ordered);
 int __init ordered_data_init(void);
 void __cold ordered_data_exit(void);
 

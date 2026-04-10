@@ -141,7 +141,7 @@ static int mixcomwd_open(struct inode *inode, struct file *file)
 		__module_get(THIS_MODULE);
 	else {
 		if (mixcomwd_timer_alive) {
-			del_timer(&mixcomwd_timer);
+			timer_delete(&mixcomwd_timer);
 			mixcomwd_timer_alive = 0;
 		}
 	}
@@ -224,7 +224,6 @@ static long mixcomwd_ioctl(struct file *file,
 
 static const struct file_operations mixcomwd_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.write		= mixcomwd_write,
 	.unlocked_ioctl	= mixcomwd_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
@@ -296,7 +295,7 @@ static void __exit mixcomwd_exit(void)
 	if (!nowayout) {
 		if (mixcomwd_timer_alive) {
 			pr_warn("I quit now, hardware will probably reboot!\n");
-			del_timer_sync(&mixcomwd_timer);
+			timer_delete_sync(&mixcomwd_timer);
 			mixcomwd_timer_alive = 0;
 		}
 	}

@@ -514,7 +514,8 @@ out:
 	return size;
 }
 
-static int tpm_tis_i2c_send(struct tpm_chip *chip, u8 *buf, size_t len)
+static int tpm_tis_i2c_send(struct tpm_chip *chip, u8 *buf, size_t bufsiz,
+			    size_t len)
 {
 	int rc, status;
 	ssize_t burstcnt;
@@ -543,8 +544,10 @@ static int tpm_tis_i2c_send(struct tpm_chip *chip, u8 *buf, size_t len)
 		burstcnt = get_burstcount(chip);
 
 		/* burstcnt < 0 = TPM is busy */
-		if (burstcnt < 0)
-			return burstcnt;
+		if (burstcnt < 0) {
+			rc = burstcnt;
+			goto out_err;
+		}
 
 		if (burstcnt > (len - 1 - count))
 			burstcnt = len - 1 - count;
@@ -681,8 +684,7 @@ MODULE_DEVICE_TABLE(of, tpm_tis_i2c_of_match);
 
 static SIMPLE_DEV_PM_OPS(tpm_tis_i2c_ops, tpm_pm_suspend, tpm_pm_resume);
 
-static int tpm_tis_i2c_probe(struct i2c_client *client,
-			     const struct i2c_device_id *id)
+static int tpm_tis_i2c_probe(struct i2c_client *client)
 {
 	int rc;
 	struct device *dev = &(client->dev);
@@ -706,15 +708,13 @@ static int tpm_tis_i2c_probe(struct i2c_client *client,
 	return rc;
 }
 
-static int tpm_tis_i2c_remove(struct i2c_client *client)
+static void tpm_tis_i2c_remove(struct i2c_client *client)
 {
 	struct tpm_chip *chip = tpm_dev.chip;
 
 	tpm_chip_unregister(chip);
 	release_locality(chip, tpm_dev.locality, 1);
 	tpm_dev.client = NULL;
-
-	return 0;
 }
 
 static struct i2c_driver tpm_tis_i2c_driver = {

@@ -37,17 +37,11 @@ static int sk_fds[REUSEPORT_ARRAY_SIZE];
 static int reuseport_array = -1, outer_map = -1;
 static enum bpf_map_type inner_map_type;
 static int select_by_skb_data_prog;
-static int saved_tcp_syncookie = -1;
 static struct bpf_object *obj;
-static int saved_tcp_fo = -1;
 static __u32 index_zero;
 static int epfd;
 
-static union sa46 {
-	struct sockaddr_in6 v6;
-	struct sockaddr_in v4;
-	sa_family_t family;
-} srv_sa;
+static struct sockaddr_storage srv_sa;
 
 #define RET_IF(condition, tag, format...) ({				\
 	if (CHECK_FAIL(condition)) {					\
@@ -91,9 +85,9 @@ static int prepare_bpf_obj(void)
 	struct bpf_map *map;
 	int err;
 
-	obj = bpf_object__open("test_select_reuseport_kern.o");
+	obj = bpf_object__open("test_select_reuseport_kern.bpf.o");
 	err = libbpf_get_error(obj);
-	RET_ERR(err, "open test_select_reuseport_kern.o",
+	RET_ERR(err, "open test_select_reuseport_kern.bpf.o",
 		"obj:%p PTR_ERR(obj):%d\n", obj, err);
 
 	map = bpf_object__find_map_by_name(obj, "outer_map");
@@ -137,24 +131,24 @@ static int prepare_bpf_obj(void)
 	return 0;
 }
 
-static void sa46_init_loopback(union sa46 *sa, sa_family_t family)
+static void ss_init_loopback(struct sockaddr_storage *sa, sa_family_t family)
 {
 	memset(sa, 0, sizeof(*sa));
-	sa->family = family;
-	if (sa->family == AF_INET6)
-		sa->v6.sin6_addr = in6addr_loopback;
+	sa->ss_family = family;
+	if (sa->ss_family == AF_INET6)
+		((struct sockaddr_in6 *)sa)->sin6_addr = in6addr_loopback;
 	else
-		sa->v4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		((struct sockaddr_in *)sa)->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 }
 
-static void sa46_init_inany(union sa46 *sa, sa_family_t family)
+static void ss_init_inany(struct sockaddr_storage *sa, sa_family_t family)
 {
 	memset(sa, 0, sizeof(*sa));
-	sa->family = family;
-	if (sa->family == AF_INET6)
-		sa->v6.sin6_addr = in6addr_any;
+	sa->ss_family = family;
+	if (sa->ss_family == AF_INET6)
+		((struct sockaddr_in6 *)sa)->sin6_addr = in6addr_any;
 	else
-		sa->v4.sin_addr.s_addr = INADDR_ANY;
+		((struct sockaddr_in *)sa)->sin_addr.s_addr = INADDR_ANY;
 }
 
 static int read_int_sysctl(const char *sysctl)
@@ -191,14 +185,6 @@ static int write_int_sysctl(const char *sysctl, int v)
 
 	close(fd);
 	return 0;
-}
-
-static void restore_sysctls(void)
-{
-	if (saved_tcp_fo != -1)
-		write_int_sysctl(TCP_FO_SYSCTL, saved_tcp_fo);
-	if (saved_tcp_syncookie != -1)
-		write_int_sysctl(TCP_SYNCOOKIE_SYSCTL, saved_tcp_syncookie);
 }
 
 static int enable_fastopen(void)
@@ -238,7 +224,7 @@ static void check_data(int type, sa_family_t family, const struct cmd *cmd,
 		       int cli_fd)
 {
 	struct data_check expected = {}, result;
-	union sa46 cli_sa;
+	struct sockaddr_storage cli_sa;
 	socklen_t addrlen;
 	int err;
 
@@ -261,26 +247,32 @@ static void check_data(int type, sa_family_t family, const struct cmd *cmd,
 	}
 
 	if (family == AF_INET6) {
-		expected.eth_protocol = htons(ETH_P_IPV6);
-		expected.bind_inany = !srv_sa.v6.sin6_addr.s6_addr32[3] &&
-			!srv_sa.v6.sin6_addr.s6_addr32[2] &&
-			!srv_sa.v6.sin6_addr.s6_addr32[1] &&
-			!srv_sa.v6.sin6_addr.s6_addr32[0];
+		struct sockaddr_in6 *srv_v6 = (struct sockaddr_in6 *)&srv_sa;
+		struct sockaddr_in6 *cli_v6 = (struct sockaddr_in6 *)&cli_sa;
 
-		memcpy(&expected.skb_addrs[0], cli_sa.v6.sin6_addr.s6_addr32,
-		       sizeof(cli_sa.v6.sin6_addr));
+		expected.eth_protocol = htons(ETH_P_IPV6);
+		expected.bind_inany = !srv_v6->sin6_addr.s6_addr32[3] &&
+			!srv_v6->sin6_addr.s6_addr32[2] &&
+			!srv_v6->sin6_addr.s6_addr32[1] &&
+			!srv_v6->sin6_addr.s6_addr32[0];
+
+		memcpy(&expected.skb_addrs[0], cli_v6->sin6_addr.s6_addr32,
+		       sizeof(cli_v6->sin6_addr));
 		memcpy(&expected.skb_addrs[4], &in6addr_loopback,
 		       sizeof(in6addr_loopback));
-		expected.skb_ports[0] = cli_sa.v6.sin6_port;
-		expected.skb_ports[1] = srv_sa.v6.sin6_port;
+		expected.skb_ports[0] = cli_v6->sin6_port;
+		expected.skb_ports[1] = srv_v6->sin6_port;
 	} else {
-		expected.eth_protocol = htons(ETH_P_IP);
-		expected.bind_inany = !srv_sa.v4.sin_addr.s_addr;
+		struct sockaddr_in *srv_v4 = (struct sockaddr_in *)&srv_sa;
+		struct sockaddr_in *cli_v4 = (struct sockaddr_in *)&cli_sa;
 
-		expected.skb_addrs[0] = cli_sa.v4.sin_addr.s_addr;
+		expected.eth_protocol = htons(ETH_P_IP);
+		expected.bind_inany = !srv_v4->sin_addr.s_addr;
+
+		expected.skb_addrs[0] = cli_v4->sin_addr.s_addr;
 		expected.skb_addrs[1] = htonl(INADDR_LOOPBACK);
-		expected.skb_ports[0] = cli_sa.v4.sin_port;
-		expected.skb_ports[1] = srv_sa.v4.sin_port;
+		expected.skb_ports[0] = cli_v4->sin_port;
+		expected.skb_ports[1] = srv_v4->sin_port;
 	}
 
 	if (memcmp(&result, &expected, offsetof(struct data_check,
@@ -374,16 +366,15 @@ static void check_results(void)
 static int send_data(int type, sa_family_t family, void *data, size_t len,
 		     enum result expected)
 {
-	union sa46 cli_sa;
+	struct sockaddr_storage cli_sa;
 	int fd, err;
 
 	fd = socket(family, type, 0);
 	RET_ERR(fd == -1, "socket()", "fd:%d errno:%d\n", fd, errno);
 
-	sa46_init_loopback(&cli_sa, family);
+	ss_init_loopback(&cli_sa, family);
 	err = bind(fd, (struct sockaddr *)&cli_sa, sizeof(cli_sa));
 	RET_ERR(fd == -1, "bind(cli_sa)", "err:%d errno:%d\n", err, errno);
-
 	err = sendto(fd, data, len, MSG_FASTOPEN, (struct sockaddr *)&srv_sa,
 		     sizeof(srv_sa));
 	RET_ERR(err != len && expected >= PASS,
@@ -599,9 +590,9 @@ static void prepare_sk_fds(int type, sa_family_t family, bool inany)
 	socklen_t addrlen;
 
 	if (inany)
-		sa46_init_inany(&srv_sa, family);
+		ss_init_inany(&srv_sa, family);
 	else
-		sa46_init_loopback(&srv_sa, family);
+		ss_init_loopback(&srv_sa, family);
 	addrlen = sizeof(srv_sa);
 
 	/*
@@ -793,6 +784,7 @@ static void test_config(int sotype, sa_family_t family, bool inany)
 		TEST_INIT(test_pass_on_err),
 		TEST_INIT(test_detach_bpf),
 	};
+	struct netns_obj *netns;
 	char s[MAX_TEST_NAME];
 	const struct test *t;
 
@@ -808,9 +800,21 @@ static void test_config(int sotype, sa_family_t family, bool inany)
 		if (!test__start_subtest(s))
 			continue;
 
+		netns = netns_new("select_reuseport", true);
+		if (!ASSERT_OK_PTR(netns, "netns_new"))
+			continue;
+
+		if (CHECK_FAIL(enable_fastopen()))
+			goto out;
+		if (CHECK_FAIL(disable_syncookie()))
+			goto out;
+
 		setup_per_test(sotype, family, inany, t->no_inner_map);
 		t->fn(sotype, family);
 		cleanup_per_test(t->no_inner_map);
+
+out:
+		netns_free(netns);
 	}
 }
 
@@ -850,21 +854,7 @@ out:
 
 void serial_test_select_reuseport(void)
 {
-	saved_tcp_fo = read_int_sysctl(TCP_FO_SYSCTL);
-	if (saved_tcp_fo < 0)
-		goto out;
-	saved_tcp_syncookie = read_int_sysctl(TCP_SYNCOOKIE_SYSCTL);
-	if (saved_tcp_syncookie < 0)
-		goto out;
-
-	if (enable_fastopen())
-		goto out;
-	if (disable_syncookie())
-		goto out;
-
 	test_map_type(BPF_MAP_TYPE_REUSEPORT_SOCKARRAY);
 	test_map_type(BPF_MAP_TYPE_SOCKMAP);
 	test_map_type(BPF_MAP_TYPE_SOCKHASH);
-out:
-	restore_sysctls();
 }

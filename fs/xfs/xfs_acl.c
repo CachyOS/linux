@@ -3,7 +3,7 @@
  * Copyright (c) 2008, Christoph Hellwig
  * All Rights Reserved.
  */
-#include "xfs.h"
+#include "xfs_platform.h"
 #include "xfs_shared.h"
 #include "xfs_format.h"
 #include "xfs_log_format.h"
@@ -167,7 +167,7 @@ xfs_get_acl(struct inode *inode, int type, bool rcu)
 		acl = ERR_PTR(error);
 	}
 
-	kmem_free(args.value);
+	kvfree(args.value);
 	return acl;
 }
 
@@ -201,16 +201,17 @@ __xfs_set_acl(struct inode *inode, struct posix_acl *acl, int type)
 		if (!args.value)
 			return -ENOMEM;
 		xfs_acl_to_disk(args.value, acl);
+		error = xfs_attr_change(&args, XFS_ATTRUPDATE_UPSERT);
+		kvfree(args.value);
+	} else {
+		error = xfs_attr_change(&args, XFS_ATTRUPDATE_REMOVE);
+		/*
+		 * If the attribute didn't exist to start with that's fine.
+		 */
+		if (error == -ENOATTR)
+			error = 0;
 	}
 
-	error = xfs_attr_change(&args);
-	kmem_free(args.value);
-
-	/*
-	 * If the attribute didn't exist to start with that's fine.
-	 */
-	if (!acl && error == -ENOATTR)
-		error = 0;
 	if (!error)
 		set_cached_acl(inode, type, acl);
 	return error;
@@ -233,7 +234,7 @@ xfs_acl_set_mode(
 	xfs_ilock(ip, XFS_ILOCK_EXCL);
 	xfs_trans_ijoin(tp, ip, XFS_ILOCK_EXCL);
 	inode->i_mode = mode;
-	inode->i_ctime = current_time(inode);
+	inode_set_ctime_current(inode);
 	xfs_trans_log_inode(tp, ip, XFS_ILOG_CORE);
 
 	if (xfs_has_wsync(mp))
@@ -242,12 +243,13 @@ xfs_acl_set_mode(
 }
 
 int
-xfs_set_acl(struct user_namespace *mnt_userns, struct inode *inode,
+xfs_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 	    struct posix_acl *acl, int type)
 {
 	umode_t mode;
 	bool set_mode = false;
 	int error = 0;
+	struct inode *inode = d_inode(dentry);
 
 	if (!acl)
 		goto set_acl;
@@ -257,7 +259,7 @@ xfs_set_acl(struct user_namespace *mnt_userns, struct inode *inode,
 		return error;
 
 	if (type == ACL_TYPE_ACCESS) {
-		error = posix_acl_update_mode(mnt_userns, inode, &mode, &acl);
+		error = posix_acl_update_mode(idmap, inode, &mode, &acl);
 		if (error)
 			return error;
 		set_mode = true;

@@ -18,10 +18,11 @@
 #include <linux/etherdevice.h>
 #include <linux/bits.h>
 
-#include "dsa_priv.h"
+#include "tag.h"
+
+#define RTL4_A_NAME		"rtl4a"
 
 #define RTL4_A_HDR_LEN		4
-#define RTL4_A_ETHERTYPE	0x8899
 #define RTL4_A_PROTOCOL_SHIFT	12
 /*
  * 0x1 = Realtek Remote Control protocol (RRCP)
@@ -34,7 +35,7 @@
 static struct sk_buff *rtl4a_tag_xmit(struct sk_buff *skb,
 				      struct net_device *dev)
 {
-	struct dsa_port *dp = dsa_slave_to_port(dev);
+	struct dsa_port *dp = dsa_user_to_port(dev);
 	__be16 *p;
 	u8 *tag;
 	u16 out;
@@ -52,11 +53,11 @@ static struct sk_buff *rtl4a_tag_xmit(struct sk_buff *skb,
 
 	/* Set Ethertype */
 	p = (__be16 *)tag;
-	*p = htons(RTL4_A_ETHERTYPE);
+	*p = htons(ETH_P_REALTEK);
 
 	out = (RTL4_A_PROTOCOL_RTL8366RB << RTL4_A_PROTOCOL_SHIFT);
 	/* The lower bits indicate the port number */
-	out |= BIT(dp->index);
+	out |= dsa_xmit_port_mask(skb, dev);
 
 	p = (__be16 *)(tag + 2);
 	*p = htons(out);
@@ -80,7 +81,7 @@ static struct sk_buff *rtl4a_tag_rcv(struct sk_buff *skb,
 	tag = dsa_etype_header_pos_rx(skb);
 	p = (__be16 *)tag;
 	etype = ntohs(*p);
-	if (etype != RTL4_A_ETHERTYPE) {
+	if (etype != ETH_P_REALTEK) {
 		/* Not custom, just pass through */
 		netdev_dbg(dev, "non-realtek ethertype 0x%04x\n", etype);
 		return skb;
@@ -95,9 +96,9 @@ static struct sk_buff *rtl4a_tag_rcv(struct sk_buff *skb,
 	}
 	port = protport & 0xff;
 
-	skb->dev = dsa_master_find_slave(dev, 0, port);
+	skb->dev = dsa_conduit_find_user(dev, 0, port);
 	if (!skb->dev) {
-		netdev_dbg(dev, "could not find slave for port %d\n", port);
+		netdev_dbg(dev, "could not find user for port %d\n", port);
 		return NULL;
 	}
 
@@ -112,7 +113,7 @@ static struct sk_buff *rtl4a_tag_rcv(struct sk_buff *skb,
 }
 
 static const struct dsa_device_ops rtl4a_netdev_ops = {
-	.name	= "rtl4a",
+	.name	= RTL4_A_NAME,
 	.proto	= DSA_TAG_PROTO_RTL4_A,
 	.xmit	= rtl4a_tag_xmit,
 	.rcv	= rtl4a_tag_rcv,
@@ -120,5 +121,6 @@ static const struct dsa_device_ops rtl4a_netdev_ops = {
 };
 module_dsa_tag_driver(rtl4a_netdev_ops);
 
+MODULE_DESCRIPTION("DSA tag driver for Realtek 4 byte protocol A tags");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_RTL4_A);
+MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_RTL4_A, RTL4_A_NAME);

@@ -182,7 +182,7 @@ struct dm_target_spec {
 struct dm_target_deps {
 	__u32 count;	/* Array size */
 	__u32 padding;	/* unused */
-	__u64 dev[0];	/* out */
+	__u64 dev[];	/* out */
 };
 
 /*
@@ -192,7 +192,7 @@ struct dm_name_list {
 	__u64 dev;
 	__u32 next;		/* offset to the next record from
 				   the _start_ of this */
-	char name[0];
+	char name[];
 
 	/*
 	 * The following members can be accessed by taking a pointer that
@@ -216,7 +216,7 @@ struct dm_target_versions {
         __u32 next;
         __u32 version[3];
 
-        char name[0];
+        char name[];
 };
 
 /*
@@ -225,7 +225,7 @@ struct dm_target_versions {
 struct dm_target_msg {
 	__u64 sector;	/* Device sector */
 
-	char message[0];
+	char message[];
 };
 
 /*
@@ -258,10 +258,12 @@ enum {
 	DM_DEV_SET_GEOMETRY_CMD,
 	DM_DEV_ARM_POLL_CMD,
 	DM_GET_TARGET_VERSION_CMD,
+	DM_MPATH_PROBE_PATHS_CMD,
 };
 
 #define DM_IOCTL 0xfd
 
+/* Control device ioctls */
 #define DM_VERSION       _IOWR(DM_IOCTL, DM_VERSION_CMD, struct dm_ioctl)
 #define DM_REMOVE_ALL    _IOWR(DM_IOCTL, DM_REMOVE_ALL_CMD, struct dm_ioctl)
 #define DM_LIST_DEVICES  _IOWR(DM_IOCTL, DM_LIST_DEVICES_CMD, struct dm_ioctl)
@@ -285,10 +287,13 @@ enum {
 #define DM_TARGET_MSG	 _IOWR(DM_IOCTL, DM_TARGET_MSG_CMD, struct dm_ioctl)
 #define DM_DEV_SET_GEOMETRY	_IOWR(DM_IOCTL, DM_DEV_SET_GEOMETRY_CMD, struct dm_ioctl)
 
+/* Block device ioctls */
+#define DM_MPATH_PROBE_PATHS _IO(DM_IOCTL, DM_MPATH_PROBE_PATHS_CMD)
+
 #define DM_VERSION_MAJOR	4
-#define DM_VERSION_MINOR	46
+#define DM_VERSION_MINOR	50
 #define DM_VERSION_PATCHLEVEL	0
-#define DM_VERSION_EXTRA	"-ioctl (2022-02-22)"
+#define DM_VERSION_EXTRA	"-ioctl (2025-04-28)"
 
 /* Status bits */
 #define DM_READONLY_FLAG	(1 << 0) /* In/Out */

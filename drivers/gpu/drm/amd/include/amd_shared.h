@@ -24,9 +24,12 @@
 #define __AMD_SHARED_H__
 
 #include <drm/amd_asic_type.h>
+#include <drm/drm_print.h>
 
 
 #define AMD_MAX_USEC_TIMEOUT		1000000  /* 1000 ms */
+struct amdgpu_ip_block;
+
 
 /*
  * Chip flags
@@ -60,7 +63,7 @@ enum amd_apu_flags {
 * acquires the list of IP blocks for the GPU in use on initialization.
 * It can then operate on this list to perform standard driver operations
 * such as: init, fini, suspend, resume, etc.
-* 
+*
 *
 * IP block implementations are named using the following convention:
 * <functionality>_v<version> (E.g.: gfx_v6_0).
@@ -83,6 +86,10 @@ enum amd_apu_flags {
 * @AMD_IP_BLOCK_TYPE_VCN: Video Core/Codec Next
 * @AMD_IP_BLOCK_TYPE_MES: Micro-Engine Scheduler
 * @AMD_IP_BLOCK_TYPE_JPEG: JPEG Engine
+* @AMD_IP_BLOCK_TYPE_VPE: Video Processing Engine
+* @AMD_IP_BLOCK_TYPE_UMSCH_MM: User Mode Scheduler for Multimedia
+* @AMD_IP_BLOCK_TYPE_ISP: Image Signal Processor
+* @AMD_IP_BLOCK_TYPE_RAS: Reliability, Availability, Serviceability
 * @AMD_IP_BLOCK_TYPE_NUM: Total number of IP block types
 */
 enum amd_ip_block_type {
@@ -100,6 +107,10 @@ enum amd_ip_block_type {
 	AMD_IP_BLOCK_TYPE_VCN,
 	AMD_IP_BLOCK_TYPE_MES,
 	AMD_IP_BLOCK_TYPE_JPEG,
+	AMD_IP_BLOCK_TYPE_VPE,
+	AMD_IP_BLOCK_TYPE_UMSCH_MM,
+	AMD_IP_BLOCK_TYPE_ISP,
+	AMD_IP_BLOCK_TYPE_RAS,
 	AMD_IP_BLOCK_TYPE_NUM,
 };
 
@@ -170,6 +181,7 @@ enum amd_powergating_state {
 #define AMD_PG_SUPPORT_ATHUB			(1 << 16)
 #define AMD_PG_SUPPORT_JPEG			(1 << 17)
 #define AMD_PG_SUPPORT_IH_SRAM_PG		(1 << 18)
+#define AMD_PG_SUPPORT_JPEG_DPG		(1 << 19)
 
 /**
  * enum PP_FEATURE_MASK - Used to mask power play features.
@@ -193,6 +205,7 @@ enum amd_powergating_state {
  * @PP_ACG_MASK: Adaptive clock generator.
  * @PP_STUTTER_MODE: Stutter mode.
  * @PP_AVFS_MASK: Adaptive voltage and frequency scaling.
+ * @PP_GFX_DCS_MASK: GFX Async DCS.
  *
  * To override these settings on boot, append amdgpu.ppfeaturemask=<mask> to
  * the kernel's command line parameters. This is usually done through a system's
@@ -228,25 +241,177 @@ enum amd_harvest_ip_mask {
     AMD_HARVEST_IP_DMU_MASK = 0x4,
 };
 
+/**
+ * enum DC_FEATURE_MASK - Bits that control DC feature defaults
+ */
 enum DC_FEATURE_MASK {
 	//Default value can be found at "uint amdgpu_dc_feature_mask"
-	DC_FBC_MASK = (1 << 0), //0x1, disabled by default
-	DC_MULTI_MON_PP_MCLK_SWITCH_MASK = (1 << 1), //0x2, enabled by default
-	DC_DISABLE_FRACTIONAL_PWM_MASK = (1 << 2), //0x4, disabled by default
-	DC_PSR_MASK = (1 << 3), //0x8, disabled by default for dcn < 3.1
-	DC_EDP_NO_POWER_SEQUENCING = (1 << 4), //0x10, disabled by default
-	DC_DISABLE_LTTPR_DP1_4A = (1 << 5), //0x20, disabled by default
-	DC_DISABLE_LTTPR_DP2_0 = (1 << 6), //0x40, disabled by default
-	DC_PSR_ALLOW_SMU_OPT = (1 << 7), //0x80, disabled by default
-	DC_PSR_ALLOW_MULTI_DISP_OPT = (1 << 8), //0x100, disabled by default
+	/**
+	 * @DC_FBC_MASK: (0x1) disabled by default
+	 */
+	DC_FBC_MASK = (1 << 0),
+	/**
+	 * @DC_MULTI_MON_PP_MCLK_SWITCH_MASK: (0x2) enabled by default
+	 */
+	DC_MULTI_MON_PP_MCLK_SWITCH_MASK = (1 << 1),
+	/**
+	 * @DC_DISABLE_FRACTIONAL_PWM_MASK: (0x4) disabled by default
+	 */
+	DC_DISABLE_FRACTIONAL_PWM_MASK = (1 << 2),
+	/**
+	 * @DC_PSR_MASK: (0x8) disabled by default for DCN < 3.1
+	 */
+	DC_PSR_MASK = (1 << 3),
+	/**
+	 * @DC_EDP_NO_POWER_SEQUENCING: (0x10) disabled by default
+	 */
+	DC_EDP_NO_POWER_SEQUENCING = (1 << 4),
+	/**
+	 * @DC_DISABLE_LTTPR_DP1_4A: (0x20) disabled by default
+	 */
+	DC_DISABLE_LTTPR_DP1_4A = (1 << 5),
+	/**
+	 * @DC_DISABLE_LTTPR_DP2_0: (0x40) disabled by default
+	 */
+	DC_DISABLE_LTTPR_DP2_0 = (1 << 6),
+	/**
+	 * @DC_PSR_ALLOW_SMU_OPT: (0x80) disabled by default
+	 */
+	DC_PSR_ALLOW_SMU_OPT = (1 << 7),
+	/**
+	 * @DC_PSR_ALLOW_MULTI_DISP_OPT: (0x100) disabled by default
+	 */
+	DC_PSR_ALLOW_MULTI_DISP_OPT = (1 << 8),
+	/**
+	 * @DC_REPLAY_MASK: (0x200) disabled by default for DCN < 3.1.4
+	 */
+	DC_REPLAY_MASK = (1 << 9),
 };
 
+/**
+ * enum DC_DEBUG_MASK - Bits that are useful for debugging the Display Core IP
+ */
 enum DC_DEBUG_MASK {
+	/**
+	 * @DC_DISABLE_PIPE_SPLIT: (0x1) If set, disable pipe-splitting
+	 */
 	DC_DISABLE_PIPE_SPLIT = 0x1,
+
+	/**
+	 * @DC_DISABLE_STUTTER: (0x2) If set, disable memory stutter mode
+	 */
 	DC_DISABLE_STUTTER = 0x2,
+
+	/**
+	 * @DC_DISABLE_DSC: (0x4) If set, disable display stream compression
+	 */
 	DC_DISABLE_DSC = 0x4,
+
+	/**
+	 * @DC_DISABLE_CLOCK_GATING: (0x8) If set, disable clock gating optimizations
+	 */
 	DC_DISABLE_CLOCK_GATING = 0x8,
+
+	/**
+	 * @DC_DISABLE_PSR: (0x10) If set, disable Panel self refresh v1 and PSR-SU
+	 */
 	DC_DISABLE_PSR = 0x10,
+
+	/**
+	 * @DC_FORCE_SUBVP_MCLK_SWITCH: (0x20) If set, force mclk switch in subvp, even
+	 * if mclk switch in vblank is possible
+	 */
+	DC_FORCE_SUBVP_MCLK_SWITCH = 0x20,
+
+	/**
+	 * @DC_DISABLE_MPO: (0x40) If set, disable multi-plane offloading
+	 */
+	DC_DISABLE_MPO = 0x40,
+
+	/**
+	 * @DC_ENABLE_DPIA_TRACE: (0x80) If set, enable trace logging for DPIA
+	 */
+	DC_ENABLE_DPIA_TRACE = 0x80,
+
+	/**
+	 * @DC_ENABLE_DML2: (0x100) If set, force usage of DML2, even if the DCN version
+	 * does not default to it.
+	 */
+	DC_ENABLE_DML2 = 0x100,
+
+	/**
+	 * @DC_DISABLE_PSR_SU: (0x200) If set, disable PSR SU
+	 */
+	DC_DISABLE_PSR_SU = 0x200,
+
+	/**
+	 * @DC_DISABLE_REPLAY: (0x400) If set, disable Panel Replay
+	 */
+	DC_DISABLE_REPLAY = 0x400,
+
+	/**
+	 * @DC_DISABLE_IPS: (0x800) If set, disable all Idle Power States, all the time.
+	 * If more than one IPS debug bit is set, the lowest bit takes
+	 * precedence. For example, if DC_FORCE_IPS_ENABLE and
+	 * DC_DISABLE_IPS_DYNAMIC are set, then DC_DISABLE_IPS_DYNAMIC takes
+	 * precedence.
+	 */
+	DC_DISABLE_IPS = 0x800,
+
+	/**
+	 * @DC_DISABLE_IPS_DYNAMIC: (0x1000) If set, disable all IPS, all the time,
+	 * *except* when driver goes into suspend.
+	 */
+	DC_DISABLE_IPS_DYNAMIC = 0x1000,
+
+	/**
+	 * @DC_DISABLE_IPS2_DYNAMIC: (0x2000) If set, disable IPS2 (IPS1 allowed) if
+	 * there is an enabled display. Otherwise, enable all IPS.
+	 */
+	DC_DISABLE_IPS2_DYNAMIC = 0x2000,
+
+	/**
+	 * @DC_FORCE_IPS_ENABLE: (0x4000) If set, force enable all IPS, all the time.
+	 */
+	DC_FORCE_IPS_ENABLE = 0x4000,
+	/**
+	 * @DC_DISABLE_ACPI_EDID: (0x8000) If set, don't attempt to fetch EDID for
+	 * eDP display from ACPI _DDC method.
+	 */
+	DC_DISABLE_ACPI_EDID = 0x8000,
+
+	/**
+	 * @DC_DISABLE_HDMI_CEC: (0x10000) If set, disable HDMI-CEC feature in amdgpu driver.
+	 */
+	DC_DISABLE_HDMI_CEC = 0x10000,
+
+	/**
+	 * @DC_DISABLE_SUBVP_FAMS: (0x20000) If set, disable DCN Sub-Viewport & Firmware Assisted
+	 * Memory Clock Switching (FAMS) feature in amdgpu driver.
+	 */
+	DC_DISABLE_SUBVP_FAMS = 0x20000,
+	/**
+	 * @DC_DISABLE_CUSTOM_BRIGHTNESS_CURVE: (0x40000) If set, disable support for custom
+	 * brightness curves
+	 */
+	DC_DISABLE_CUSTOM_BRIGHTNESS_CURVE = 0x40000,
+
+	/**
+	 * @DC_HDCP_LC_FORCE_FW_ENABLE: (0x80000) If set, use HDCP Locality Check FW
+	 * path regardless of reported HW capabilities.
+	 */
+	DC_HDCP_LC_FORCE_FW_ENABLE = 0x80000,
+
+	/**
+	 * @DC_HDCP_LC_ENABLE_SW_FALLBACK: (0x100000) If set, upon HDCP Locality Check FW
+	 * path failure, retry using legacy SW path.
+	 */
+	DC_HDCP_LC_ENABLE_SW_FALLBACK = 0x100000,
+
+	/**
+	 * @DC_SKIP_DETECTION_LT: (0x200000) If set, skip detection link training
+	 */
+	DC_SKIP_DETECTION_LT = 0x200000,
 };
 
 enum amd_dpm_forced_level;
@@ -263,8 +428,11 @@ enum amd_dpm_forced_level;
  * @hw_init: sets up the hw state
  * @hw_fini: tears down the hw state
  * @late_fini: final cleanup
+ * @prepare_suspend: handle IP specific changes to prepare for suspend
+ *                   (such as allocating any required memory)
  * @suspend: handles IP specific hw/sw changes for suspend
  * @resume: handles IP specific hw/sw changes for resume
+ * @complete: handles IP specific changes after resume
  * @is_idle: returns current IP block idle status
  * @wait_for_idle: poll for idle
  * @check_soft_reset: check soft reset the IP block
@@ -274,6 +442,8 @@ enum amd_dpm_forced_level;
  * @set_clockgating_state: enable/disable cg for the IP block
  * @set_powergating_state: enable/disable pg for the IP block
  * @get_clockgating_state: get current clockgating status
+ * @dump_ip_state: dump the IP state of the ASIC during a gpu hang
+ * @print_ip_state: print the IP state in devcoredump for each IP of the ASIC
  *
  * These hooks provide an interface for controlling the operational state
  * of IP blocks. After acquiring a list of IP blocks for the GPU in use,
@@ -283,27 +453,31 @@ enum amd_dpm_forced_level;
  */
 struct amd_ip_funcs {
 	char *name;
-	int (*early_init)(void *handle);
-	int (*late_init)(void *handle);
-	int (*sw_init)(void *handle);
-	int (*sw_fini)(void *handle);
-	int (*early_fini)(void *handle);
-	int (*hw_init)(void *handle);
-	int (*hw_fini)(void *handle);
-	void (*late_fini)(void *handle);
-	int (*suspend)(void *handle);
-	int (*resume)(void *handle);
-	bool (*is_idle)(void *handle);
-	int (*wait_for_idle)(void *handle);
-	bool (*check_soft_reset)(void *handle);
-	int (*pre_soft_reset)(void *handle);
-	int (*soft_reset)(void *handle);
-	int (*post_soft_reset)(void *handle);
-	int (*set_clockgating_state)(void *handle,
+	int (*early_init)(struct amdgpu_ip_block *ip_block);
+	int (*late_init)(struct amdgpu_ip_block *ip_block);
+	int (*sw_init)(struct amdgpu_ip_block *ip_block);
+	int (*sw_fini)(struct amdgpu_ip_block *ip_block);
+	int (*early_fini)(struct amdgpu_ip_block *ip_block);
+	int (*hw_init)(struct amdgpu_ip_block *ip_block);
+	int (*hw_fini)(struct amdgpu_ip_block *ip_block);
+	void (*late_fini)(struct amdgpu_ip_block *ip_block);
+	int (*prepare_suspend)(struct amdgpu_ip_block *ip_block);
+	int (*suspend)(struct amdgpu_ip_block *ip_block);
+	int (*resume)(struct amdgpu_ip_block *ip_block);
+	void (*complete)(struct amdgpu_ip_block *ip_block);
+	bool (*is_idle)(struct amdgpu_ip_block *ip_block);
+	int (*wait_for_idle)(struct amdgpu_ip_block *ip_block);
+	bool (*check_soft_reset)(struct amdgpu_ip_block *ip_block);
+	int (*pre_soft_reset)(struct amdgpu_ip_block *ip_block);
+	int (*soft_reset)(struct amdgpu_ip_block *ip_block);
+	int (*post_soft_reset)(struct amdgpu_ip_block *ip_block);
+	int (*set_clockgating_state)(struct amdgpu_ip_block *ip_block,
 				     enum amd_clockgating_state state);
-	int (*set_powergating_state)(void *handle,
+	int (*set_powergating_state)(struct amdgpu_ip_block *ip_block,
 				     enum amd_powergating_state state);
-	void (*get_clockgating_state)(void *handle, u64 *flags);
+	void (*get_clockgating_state)(struct amdgpu_ip_block *ip_block, u64 *flags);
+	void (*dump_ip_state)(struct amdgpu_ip_block *ip_block);
+	void (*print_ip_state)(struct amdgpu_ip_block *ip_block, struct drm_printer *p);
 };
 
 

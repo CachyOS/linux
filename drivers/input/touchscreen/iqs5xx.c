@@ -17,16 +17,17 @@
 #include <linux/err.h>
 #include <linux/firmware.h>
 #include <linux/gpio/consumer.h>
+#include <linux/hex.h>
 #include <linux/i2c.h>
 #include <linux/input.h>
 #include <linux/input/mt.h>
 #include <linux/input/touchscreen.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/slab.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #define IQS5XX_FW_FILE_LEN	64
 #define IQS5XX_NUM_RETRIES	10
@@ -943,12 +944,12 @@ static ssize_t fw_info_show(struct device *dev,
 	if (!iqs5xx->dev_id_info.bl_status)
 		return -ENODATA;
 
-	return scnprintf(buf, PAGE_SIZE, "%u.%u.%u.%u:%u.%u\n",
-			 be16_to_cpu(iqs5xx->dev_id_info.prod_num),
-			 be16_to_cpu(iqs5xx->dev_id_info.proj_num),
-			 iqs5xx->dev_id_info.major_ver,
-			 iqs5xx->dev_id_info.minor_ver,
-			 iqs5xx->exp_file[0], iqs5xx->exp_file[1]);
+	return sysfs_emit(buf, "%u.%u.%u.%u:%u.%u\n",
+			  be16_to_cpu(iqs5xx->dev_id_info.prod_num),
+			  be16_to_cpu(iqs5xx->dev_id_info.proj_num),
+			  iqs5xx->dev_id_info.major_ver,
+			  iqs5xx->dev_id_info.minor_ver,
+			  iqs5xx->exp_file[0], iqs5xx->exp_file[1]);
 }
 
 static DEVICE_ATTR_WO(fw_file);
@@ -974,12 +975,13 @@ static umode_t iqs5xx_attr_is_visible(struct kobject *kobj,
 	return attr->mode;
 }
 
-static const struct attribute_group iqs5xx_attr_group = {
+static const struct attribute_group iqs5xx_group = {
 	.is_visible = iqs5xx_attr_is_visible,
 	.attrs = iqs5xx_attrs,
 };
+__ATTRIBUTE_GROUPS(iqs5xx);
 
-static int __maybe_unused iqs5xx_suspend(struct device *dev)
+static int iqs5xx_suspend(struct device *dev)
 {
 	struct iqs5xx_private *iqs5xx = dev_get_drvdata(dev);
 	struct input_dev *input = iqs5xx->input;
@@ -998,7 +1000,7 @@ static int __maybe_unused iqs5xx_suspend(struct device *dev)
 	return error;
 }
 
-static int __maybe_unused iqs5xx_resume(struct device *dev)
+static int iqs5xx_resume(struct device *dev)
 {
 	struct iqs5xx_private *iqs5xx = dev_get_drvdata(dev);
 	struct input_dev *input = iqs5xx->input;
@@ -1017,10 +1019,9 @@ static int __maybe_unused iqs5xx_resume(struct device *dev)
 	return error;
 }
 
-static SIMPLE_DEV_PM_OPS(iqs5xx_pm, iqs5xx_suspend, iqs5xx_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(iqs5xx_pm, iqs5xx_suspend, iqs5xx_resume);
 
-static int iqs5xx_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int iqs5xx_probe(struct i2c_client *client)
 {
 	struct iqs5xx_private *iqs5xx;
 	int error;
@@ -1054,12 +1055,6 @@ static int iqs5xx_probe(struct i2c_client *client,
 		return error;
 	}
 
-	error = devm_device_add_group(&client->dev, &iqs5xx_attr_group);
-	if (error) {
-		dev_err(&client->dev, "Failed to add attributes: %d\n", error);
-		return error;
-	}
-
 	if (iqs5xx->input) {
 		error = input_register_device(iqs5xx->input);
 		if (error)
@@ -1090,8 +1085,9 @@ MODULE_DEVICE_TABLE(of, iqs5xx_of_match);
 static struct i2c_driver iqs5xx_i2c_driver = {
 	.driver = {
 		.name		= "iqs5xx",
+		.dev_groups	= iqs5xx_groups,
 		.of_match_table	= iqs5xx_of_match,
-		.pm		= &iqs5xx_pm,
+		.pm		= pm_sleep_ptr(&iqs5xx_pm),
 	},
 	.id_table	= iqs5xx_id,
 	.probe		= iqs5xx_probe,

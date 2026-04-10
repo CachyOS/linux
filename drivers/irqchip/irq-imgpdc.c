@@ -372,8 +372,8 @@ static int pdc_intc_probe(struct platform_device *pdev)
 	priv->syswake_irq = irq;
 
 	/* Set up an IRQ domain */
-	priv->domain = irq_domain_add_linear(node, 16, &irq_generic_chip_ops,
-					     priv);
+	priv->domain = irq_domain_create_linear(dev_fwnode(&pdev->dev), 16, &irq_generic_chip_ops,
+						priv);
 	if (unlikely(!priv->domain)) {
 		dev_err(&pdev->dev, "cannot add IRQ domain\n");
 		return -ENOMEM;
@@ -461,12 +461,11 @@ err_generic:
 	return ret;
 }
 
-static int pdc_intc_remove(struct platform_device *pdev)
+static void pdc_intc_remove(struct platform_device *pdev)
 {
 	struct pdc_intc_priv *priv = platform_get_drvdata(pdev);
 
 	irq_domain_remove(priv->domain);
-	return 0;
 }
 
 static const struct of_device_id pdc_intc_match[] = {
@@ -479,8 +478,8 @@ static struct platform_driver pdc_intc_driver = {
 		.name		= "pdc-intc",
 		.of_match_table	= pdc_intc_match,
 	},
-	.probe = pdc_intc_probe,
-	.remove = pdc_intc_remove,
+	.probe		= pdc_intc_probe,
+	.remove		= pdc_intc_remove,
 };
 
 static int __init pdc_intc_init(void)

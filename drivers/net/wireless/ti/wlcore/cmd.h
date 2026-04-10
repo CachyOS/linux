@@ -81,7 +81,6 @@ int wlcore_cmd_regdomain_config_locked(struct wl1271 *wl);
 int wlcore_cmd_generic_cfg(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 			   u8 feature, u8 enable, u8 value);
 int wl12xx_cmd_config_fwlog(struct wl1271 *wl);
-int wl12xx_cmd_start_fwlog(struct wl1271 *wl);
 int wl12xx_cmd_stop_fwlog(struct wl1271 *wl);
 int wl12xx_cmd_channel_switch(struct wl1271 *wl,
 			      struct wl12xx_vif *wlvif,
@@ -208,8 +207,6 @@ enum cmd_templ {
 struct wl1271_cmd_header {
 	__le16 id;
 	__le16 status;
-	/* payload */
-	u8 data[];
 } __packed;
 
 #define WL1271_CMD_MAX_PARAMS 572
@@ -458,6 +455,7 @@ enum wl1271_cmd_key_type {
 	KEY_TKIP = 2,
 	KEY_AES  = 3,
 	KEY_GEM  = 4,
+	KEY_IGTK = 5,
 };
 
 struct wl1271_cmd_set_keys {

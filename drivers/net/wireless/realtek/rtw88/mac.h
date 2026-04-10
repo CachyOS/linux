@@ -7,7 +7,6 @@
 
 #define RTW_HW_PORT_NUM		5
 #define cut_version_to_mask(cut) (0x1 << ((cut) + 1))
-#define SDIO_LOCAL_OFFSET	0x10250000
 #define DDMA_POLLING_COUNT	1000
 #define C2H_PKT_BUF		256
 #define REPORT_BUF		128
@@ -31,11 +30,17 @@
 
 void rtw_set_channel_mac(struct rtw_dev *rtwdev, u8 channel, u8 bw,
 			 u8 primary_ch_idx);
+int rtw_pwr_seq_parser(struct rtw_dev *rtwdev,
+		       const struct rtw_pwr_seq_cmd * const *cmd_seq);
 int rtw_mac_power_on(struct rtw_dev *rtwdev);
 void rtw_mac_power_off(struct rtw_dev *rtwdev);
+void rtw_write_firmware_page(struct rtw_dev *rtwdev, u32 page,
+			     const u8 *data, u32 size);
 int rtw_download_firmware(struct rtw_dev *rtwdev, struct rtw_fw_state *fw);
 int rtw_mac_init(struct rtw_dev *rtwdev);
+int rtw_mac_postinit(struct rtw_dev *rtwdev);
 void rtw_mac_flush_queues(struct rtw_dev *rtwdev, u32 queues, bool drop);
+int rtw_set_trx_fifo_info(struct rtw_dev *rtwdev);
 int rtw_ddma_to_fw_fifo(struct rtw_dev *rtwdev, u32 ocp_src, u32 size);
 
 static inline void rtw_mac_flush_all_queues(struct rtw_dev *rtwdev, bool drop)

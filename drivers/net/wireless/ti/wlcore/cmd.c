@@ -172,7 +172,7 @@ int wlcore_cmd_wait_for_event_or_timeout(struct wl1271 *wl,
 
 	*timeout = false;
 
-	events_vector = kmalloc(sizeof(*events_vector), GFP_KERNEL | GFP_DMA);
+	events_vector = kmalloc_obj(*events_vector, GFP_KERNEL | GFP_DMA);
 	if (!events_vector)
 		return -ENOMEM;
 
@@ -213,7 +213,6 @@ int wlcore_cmd_wait_for_event_or_timeout(struct wl1271 *wl,
 	} while (!event);
 
 out:
-	pm_runtime_mark_last_busy(wl->dev);
 	pm_runtime_put_autosuspend(wl->dev);
 free_vector:
 	kfree(events_vector);
@@ -232,7 +231,7 @@ int wl12xx_cmd_role_enable(struct wl1271 *wl, u8 *addr, u8 role_type,
 	if (WARN_ON(*role_id != WL12XX_INVALID_ROLE_ID))
 		return -EBUSY;
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -274,7 +273,7 @@ int wl12xx_cmd_role_disable(struct wl1271 *wl, u8 *role_id)
 	if (WARN_ON(*role_id == WL12XX_INVALID_ROLE_ID))
 		return -ENOENT;
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -333,6 +332,14 @@ int wl12xx_allocate_link(struct wl1271 *wl, struct wl12xx_vif *wlvif, u8 *hlid)
 	wl->links[link].wlvif = wlvif;
 
 	/*
+	 * Take the last sec_pn16 value from the current FW status. On recovery,
+	 * we might not have fw_status yet, and tx_lnk_sec_pn16[] will be NULL.
+	 */
+	if (wl->fw_status->counters.tx_lnk_sec_pn16)
+		wl->links[link].prev_sec_pn16 =
+			le16_to_cpu(wl->fw_status->counters.tx_lnk_sec_pn16[link]);
+
+	/*
 	 * Take saved value for total freed packets from wlvif, in case this is
 	 * recovery/resume
 	 */
@@ -360,6 +367,7 @@ void wl12xx_free_link(struct wl1271 *wl, struct wl12xx_vif *wlvif, u8 *hlid)
 
 	wl->links[*hlid].allocated_pkts = 0;
 	wl->links[*hlid].prev_freed_pkts = 0;
+	wl->links[*hlid].prev_sec_pn16 = 0;
 	wl->links[*hlid].ba_bitmap = 0;
 	eth_zero_addr(wl->links[*hlid].addr);
 
@@ -423,7 +431,7 @@ static int wl12xx_cmd_role_start_dev(struct wl1271 *wl,
 	struct wl12xx_cmd_role_start *cmd;
 	int ret;
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -475,7 +483,7 @@ static int wl12xx_cmd_role_stop_dev(struct wl1271 *wl,
 	if (WARN_ON(wlvif->dev_hlid == WL12XX_INVALID_LINK_ID))
 		return -EINVAL;
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -509,7 +517,7 @@ int wl12xx_cmd_role_start_sta(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 	u32 supported_rates;
 	int ret;
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -586,7 +594,7 @@ int wl12xx_cmd_role_stop_sta(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 	if (WARN_ON(wlvif->sta.hlid == WL12XX_INVALID_LINK_ID))
 		return -EINVAL;
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -633,7 +641,7 @@ int wl12xx_cmd_role_start_ap(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 		}
 	}
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -675,8 +683,8 @@ int wl12xx_cmd_role_start_ap(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 		memcpy(cmd->ap.ssid, wlvif->ssid, wlvif->ssid_len);
 	} else {
 		cmd->ap.ssid_type = WL12XX_SSID_TYPE_HIDDEN;
-		cmd->ap.ssid_len = bss_conf->ssid_len;
-		memcpy(cmd->ap.ssid, bss_conf->ssid, bss_conf->ssid_len);
+		cmd->ap.ssid_len = vif->cfg.ssid_len;
+		memcpy(cmd->ap.ssid, vif->cfg.ssid, vif->cfg.ssid_len);
 	}
 
 	supported_rates = CONF_TX_ENABLED_RATES | CONF_TX_MCS_RATES |
@@ -728,7 +736,7 @@ int wl12xx_cmd_role_stop_ap(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 	struct wl12xx_cmd_role_stop *cmd;
 	int ret;
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -761,7 +769,7 @@ int wl12xx_cmd_role_start_ibss(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 	struct ieee80211_bss_conf *bss_conf = &vif->bss_conf;
 	int ret;
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -934,7 +942,7 @@ int wl1271_cmd_data_path(struct wl1271 *wl, bool enable)
 
 	wl1271_debug(DEBUG_CMD, "cmd data path");
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -985,7 +993,7 @@ int wl1271_cmd_ps_mode(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 
 	wl1271_debug(DEBUG_CMD, "cmd set ps mode");
 
-	ps_params = kzalloc(sizeof(*ps_params), GFP_KERNEL);
+	ps_params = kzalloc_obj(*ps_params);
 	if (!ps_params) {
 		ret = -ENOMEM;
 		goto out;
@@ -1020,7 +1028,7 @@ int wl1271_cmd_template_set(struct wl1271 *wl, u8 role_id,
 	WARN_ON(buf_len > WL1271_CMD_TEMPL_MAX_SIZE);
 	buf_len = min_t(size_t, buf_len, WL1271_CMD_TEMPL_MAX_SIZE);
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -1065,7 +1073,7 @@ int wl12xx_cmd_build_null_data(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 	} else {
 		skb = ieee80211_nullfunc_get(wl->hw,
 					     wl12xx_wlvif_to_vif(wlvif),
-					     false);
+					     -1, false);
 		if (!skb)
 			goto out;
 		size = skb->len;
@@ -1092,7 +1100,7 @@ int wl12xx_cmd_build_klv_null_data(struct wl1271 *wl,
 	struct sk_buff *skb = NULL;
 	int ret = -ENOMEM;
 
-	skb = ieee80211_nullfunc_get(wl->hw, vif, false);
+	skb = ieee80211_nullfunc_get(wl->hw, vif,-1, false);
 	if (!skb)
 		goto out;
 
@@ -1332,7 +1340,7 @@ int wl12xx_cmd_set_default_wep_key(struct wl1271 *wl, u8 id, u8 hlid)
 
 	wl1271_debug(DEBUG_CMD, "cmd set_default_wep_key %d", id);
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -1368,7 +1376,7 @@ int wl1271_cmd_set_sta_key(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 	if (wlvif->sta.hlid == WL12XX_INVALID_LINK_ID)
 		return 0;
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -1434,7 +1442,7 @@ int wl1271_cmd_set_ap_key(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 	int ret = 0;
 	u8 lid_type;
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd)
 		return -ENOMEM;
 
@@ -1497,7 +1505,7 @@ int wl12xx_cmd_set_peer_state(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 
 	wl1271_debug(DEBUG_CMD, "cmd set peer state (hlid=%d)", hlid);
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -1532,7 +1540,7 @@ int wl12xx_cmd_add_peer(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 
 	wl1271_debug(DEBUG_CMD, "cmd add peer %d", (int)hlid);
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -1566,13 +1574,6 @@ int wl12xx_cmd_add_peer(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 		cpu_to_le32(wl1271_tx_enabled_rates_get(wl, sta_rates,
 							wlvif->band));
 
-	if (!cmd->supported_rates) {
-		wl1271_debug(DEBUG_CMD,
-			     "peer has no supported rates yet, configuring basic rates: 0x%x",
-			     wlvif->basic_rate_set);
-		cmd->supported_rates = cpu_to_le32(wlvif->basic_rate_set);
-	}
-
 	wl1271_debug(DEBUG_CMD, "new peer rates=0x%x queues=0x%x",
 		     cmd->supported_rates, sta->uapsd_queues);
 
@@ -1598,7 +1599,7 @@ int wl12xx_cmd_remove_peer(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 
 	wl1271_debug(DEBUG_CMD, "cmd remove peer %d", (int)hlid);
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -1732,7 +1733,7 @@ int wlcore_cmd_regdomain_config_locked(struct wl1271 *wl)
 	if (!memcmp(tmp_ch_bitmap, wl->reg_ch_conf_last, sizeof(tmp_ch_bitmap)))
 		goto out;
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -1777,7 +1778,7 @@ int wl12xx_cmd_config_fwlog(struct wl1271 *wl)
 
 	wl1271_debug(DEBUG_CMD, "cmd config firmware logger");
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -1802,32 +1803,6 @@ out:
 	return ret;
 }
 
-int wl12xx_cmd_start_fwlog(struct wl1271 *wl)
-{
-	struct wl12xx_cmd_start_fwlog *cmd;
-	int ret = 0;
-
-	wl1271_debug(DEBUG_CMD, "cmd start firmware logger");
-
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
-	if (!cmd) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	ret = wl1271_cmd_send(wl, CMD_START_FWLOGGER, cmd, sizeof(*cmd), 0);
-	if (ret < 0) {
-		wl1271_error("failed to send start firmware logger command");
-		goto out_free;
-	}
-
-out_free:
-	kfree(cmd);
-
-out:
-	return ret;
-}
-
 int wl12xx_cmd_stop_fwlog(struct wl1271 *wl)
 {
 	struct wl12xx_cmd_stop_fwlog *cmd;
@@ -1835,7 +1810,7 @@ int wl12xx_cmd_stop_fwlog(struct wl1271 *wl)
 
 	wl1271_debug(DEBUG_CMD, "cmd stop firmware logger");
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -1865,7 +1840,7 @@ static int wl12xx_cmd_roc(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 	if (WARN_ON(role_id == WL12XX_INVALID_ROLE_ID))
 		return -EINVAL;
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -1907,7 +1882,7 @@ static int wl12xx_cmd_croc(struct wl1271 *wl, u8 role_id)
 
 	wl1271_debug(DEBUG_CMD, "cmd croc (%d)", role_id);
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -1976,7 +1951,7 @@ int wl12xx_cmd_stop_channel_switch(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 
 	wl1271_debug(DEBUG_ACX, "cmd stop channel switch");
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		ret = -ENOMEM;
 		goto out;
@@ -2080,7 +2055,7 @@ int wlcore_cmd_generic_cfg(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 		     "cmd generic cfg (role %d feature %d enable %d value %d)",
 		     wlvif->role_id, feature, enable, value);
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd)
 		return -ENOMEM;
 

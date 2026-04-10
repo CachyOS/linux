@@ -15,7 +15,7 @@
 #include "fwcmd.h"
 #include "version.h"
 
-static const u8 otus_magic[4] = { OTUS_MAGIC };
+static const u8 otus_magic[4] __nonstring = { OTUS_MAGIC };
 
 static const void *carl9170_fw_find_desc(struct ar9170 *ar, const u8 descid[4],
 	const unsigned int len, const u8 compatible_revision)
@@ -105,7 +105,7 @@ static void carl9170_fw_info(struct ar9170 *ar)
 			 CARL9170FW_GET_MONTH(fw_date),
 			 CARL9170FW_GET_DAY(fw_date));
 
-		strlcpy(ar->hw->wiphy->fw_version, motd_desc->release,
+		strscpy(ar->hw->wiphy->fw_version, motd_desc->release,
 			sizeof(ar->hw->wiphy->fw_version));
 	}
 }

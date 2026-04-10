@@ -73,7 +73,7 @@ static int pcsp_treble_put(struct snd_kcontrol *kcontrol,
 	if (treble != chip->treble) {
 		chip->treble = treble;
 #if PCSP_DEBUG
-		printk(KERN_INFO "PCSP: rate set to %li\n", PCSP_RATE());
+		dev_dbg(chip->card->dev, "PCSP: rate set to %li\n", PCSP_RATE());
 #endif
 		changed = 1;
 	}
@@ -158,7 +158,7 @@ int snd_pcsp_new_mixer(struct snd_pcsp *chip, int nopcm)
 	if (err < 0)
 		return err;
 
-	strcpy(card->mixername, "PC-Speaker");
+	strscpy(card->mixername, "PC-Speaker");
 
 	return 0;
 }

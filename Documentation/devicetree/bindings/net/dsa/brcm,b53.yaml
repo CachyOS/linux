@@ -16,9 +16,11 @@ properties:
   compatible:
     oneOf:
       - const: brcm,bcm5325
+      - const: brcm,bcm53101
       - const: brcm,bcm53115
       - const: brcm,bcm53125
       - const: brcm,bcm53128
+      - const: brcm,bcm53134
       - const: brcm,bcm5365
       - const: brcm,bcm5395
       - const: brcm,bcm5389
@@ -57,22 +59,32 @@ properties:
       - items:
           - enum:
               - brcm,bcm3384-switch
+              - brcm,bcm6318-switch
               - brcm,bcm6328-switch
+              - brcm,bcm6362-switch
               - brcm,bcm6368-switch
+              - brcm,bcm63268-switch
           - const: brcm,bcm63xx-switch
+
+  brcm,gpio-ctrl:
+    description:
+      A phandle to the syscon node of the bcm63xx gpio controller
+      which contains phy control registers
+    $ref: /schemas/types.yaml#/definitions/phandle
 
 required:
   - compatible
   - reg
 
 allOf:
-  - $ref: dsa.yaml#
+  - $ref: dsa.yaml#/$defs/ethernet-ports
   - if:
       properties:
         compatible:
           contains:
             enum:
               - brcm,bcm5325
+              - brcm,bcm53101
               - brcm,bcm53115
               - brcm,bcm53125
               - brcm,bcm53128
@@ -169,7 +181,6 @@ examples:
 
                 port@8 {
                     reg = <8>;
-                    label = "cpu";
                     phy-mode = "rgmii-txid";
                     ethernet = <&eth0>;
                     fixed-link {
@@ -252,8 +263,9 @@ examples:
 
                 port@8 {
                     ethernet = <&amac2>;
-                    label = "cpu";
                     reg = <8>;
+                    phy-mode = "internal";
+
                     fixed-link {
                         speed = <1000>;
                         full-duplex;

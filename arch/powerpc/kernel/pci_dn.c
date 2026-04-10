@@ -130,7 +130,7 @@ static struct eeh_dev *eeh_dev_init(struct pci_dn *pdn)
 	struct eeh_dev *edev;
 
 	/* Allocate EEH device */
-	edev = kzalloc(sizeof(*edev), GFP_KERNEL);
+	edev = kzalloc_obj(*edev);
 	if (!edev)
 		return NULL;
 
@@ -154,7 +154,7 @@ static struct pci_dn *add_one_sriov_vf_pdn(struct pci_dn *parent,
 	if (!parent)
 		return NULL;
 
-	pdn = kzalloc(sizeof(*pdn), GFP_KERNEL);
+	pdn = kzalloc_obj(*pdn);
 	if (!pdn)
 		return NULL;
 
@@ -259,7 +259,7 @@ void remove_sriov_vf_pdns(struct pci_dev *pdev)
 			if (edev) {
 				/*
 				 * We allocate pci_dn's for the totalvfs count,
-				 * but only only the vfs that were activated
+				 * but only the vfs that were activated
 				 * have a configured PE.
 				 */
 				if (edev->pe)
@@ -290,7 +290,7 @@ struct pci_dn *pci_add_device_node_info(struct pci_controller *hose,
 	struct eeh_dev *edev;
 #endif
 
-	pdn = kzalloc(sizeof(*pdn), GFP_KERNEL);
+	pdn = kzalloc_obj(*pdn);
 	if (pdn == NULL)
 		return NULL;
 	dn->data = pdn;
@@ -330,6 +330,7 @@ struct pci_dn *pci_add_device_node_info(struct pci_controller *hose,
 	INIT_LIST_HEAD(&pdn->list);
 	parent = of_get_parent(dn);
 	pdn->parent = parent ? PCI_DN(parent) : NULL;
+	of_node_put(parent);
 	if (pdn->parent)
 		list_add_tail(&pdn->list, &pdn->parent->child_list);
 

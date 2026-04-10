@@ -27,8 +27,8 @@
 #include <linux/if_vlan.h>
 #include <linux/phy.h>
 #include <net/selftests.h>
+#include <linux/phylink.h>
 
-#define DRIVER_VERSION "22-Dec-2011"
 #define DRIVER_NAME "asix"
 
 /* ASIX AX8817X based USB 2.0 Ethernet Devices */
@@ -126,8 +126,7 @@
 	 AX_MEDIUM_RE)
 
 #define AX88772_MEDIUM_DEFAULT	\
-	(AX_MEDIUM_FD | AX_MEDIUM_RFC | \
-	 AX_MEDIUM_TFC | AX_MEDIUM_PS | \
+	(AX_MEDIUM_FD | AX_MEDIUM_PS | \
 	 AX_MEDIUM_AC | AX_MEDIUM_RE)
 
 /* AX88772 & AX88178 RX_CTL values */
@@ -186,6 +185,8 @@ struct asix_common_private {
 	struct mii_bus *mdio;
 	struct phy_device *phydev;
 	struct phy_device *phydev_int;
+	struct phylink *phylink;
+	struct phylink_config phylink_config;
 	u16 phy_addr;
 	bool embd_phy;
 	u8 chipcode;
@@ -213,9 +214,6 @@ void asix_rx_fixup_common_free(struct asix_common_private *dp);
 struct sk_buff *asix_tx_fixup(struct usbnet *dev, struct sk_buff *skb,
 			      gfp_t flags);
 
-int asix_set_sw_mii(struct usbnet *dev, int in_pm);
-int asix_set_hw_mii(struct usbnet *dev, int in_pm);
-
 int asix_read_phy_addr(struct usbnet *dev, bool internal);
 
 int asix_sw_reset(struct usbnet *dev, u8 flags, int in_pm);
@@ -225,7 +223,6 @@ int asix_write_rx_ctl(struct usbnet *dev, u16 mode, int in_pm);
 
 u16 asix_read_medium_status(struct usbnet *dev, int in_pm);
 int asix_write_medium_mode(struct usbnet *dev, u16 mode, int in_pm);
-void asix_adjust_link(struct net_device *netdev);
 
 int asix_write_gpio(struct usbnet *dev, u16 value, int sleep, int in_pm);
 
@@ -249,8 +246,6 @@ int asix_get_eeprom(struct net_device *net, struct ethtool_eeprom *eeprom,
 		    u8 *data);
 int asix_set_eeprom(struct net_device *net, struct ethtool_eeprom *eeprom,
 		    u8 *data);
-
-void asix_get_drvinfo(struct net_device *net, struct ethtool_drvinfo *info);
 
 int asix_set_mac_address(struct net_device *net, void *p);
 

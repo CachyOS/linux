@@ -33,7 +33,7 @@ struct pci_bar_info {
 
 static void *command_init(struct pci_dev *dev, int offset)
 {
-	struct pci_cmd_info *cmd = kmalloc(sizeof(*cmd), GFP_KERNEL);
+	struct pci_cmd_info *cmd = kmalloc_obj(*cmd);
 	int err;
 
 	if (!cmd)
@@ -104,24 +104,9 @@ static int command_write(struct pci_dev *dev, int offset, u16 value, void *data)
 		pci_clear_mwi(dev);
 	}
 
-	if (dev_data && dev_data->allow_interrupt_control) {
-		if ((cmd->val ^ value) & PCI_COMMAND_INTX_DISABLE) {
-			if (value & PCI_COMMAND_INTX_DISABLE) {
-				pci_intx(dev, 0);
-			} else {
-				/* Do not allow enabling INTx together with MSI or MSI-X. */
-				switch (xen_pcibk_get_interrupt_type(dev)) {
-				case INTERRUPT_TYPE_NONE:
-					pci_intx(dev, 1);
-					break;
-				case INTERRUPT_TYPE_INTX:
-					break;
-				default:
-					return PCIBIOS_SET_FAILED;
-				}
-			}
-		}
-	}
+	if (dev_data && dev_data->allow_interrupt_control &&
+	    ((cmd->val ^ value) & PCI_COMMAND_INTX_DISABLE))
+		pci_intx(dev, !(value & PCI_COMMAND_INTX_DISABLE));
 
 	cmd->val = value;
 
@@ -226,7 +211,7 @@ static void *bar_init(struct pci_dev *dev, int offset)
 {
 	unsigned int pos;
 	const struct resource *res = dev->resource;
-	struct pci_bar_info *bar = kzalloc(sizeof(*bar), GFP_KERNEL);
+	struct pci_bar_info *bar = kzalloc_obj(*bar);
 
 	if (!bar)
 		return ERR_PTR(-ENOMEM);

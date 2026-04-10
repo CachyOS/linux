@@ -46,10 +46,10 @@ static inline void macvlan_count_rx(const struct macvlan_dev *vlan,
 
 		pcpu_stats = get_cpu_ptr(vlan->pcpu_stats);
 		u64_stats_update_begin(&pcpu_stats->syncp);
-		pcpu_stats->rx_packets++;
-		pcpu_stats->rx_bytes += len;
+		u64_stats_inc(&pcpu_stats->rx_packets);
+		u64_stats_add(&pcpu_stats->rx_bytes, len);
 		if (multicast)
-			pcpu_stats->rx_multicast++;
+			u64_stats_inc(&pcpu_stats->rx_multicast);
 		u64_stats_update_end(&pcpu_stats->syncp);
 		put_cpu_ptr(vlan->pcpu_stats);
 	} else {
@@ -59,8 +59,10 @@ static inline void macvlan_count_rx(const struct macvlan_dev *vlan,
 
 extern void macvlan_common_setup(struct net_device *dev);
 
-extern int macvlan_common_newlink(struct net *src_net, struct net_device *dev,
-				  struct nlattr *tb[], struct nlattr *data[],
+struct rtnl_newlink_params;
+
+extern int macvlan_common_newlink(struct net_device *dev,
+				  struct rtnl_newlink_params *params,
 				  struct netlink_ext_ack *extack);
 
 extern void macvlan_dellink(struct net_device *dev, struct list_head *head);

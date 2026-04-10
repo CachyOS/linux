@@ -4,6 +4,7 @@
  * Copyright (c) 2011 Unixphere
  */
 
+#include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/device.h>
 #include <linux/irq.h>
@@ -77,7 +78,7 @@ int rmi_register_transport_device(struct rmi_transport_dev *xport)
 	struct rmi_device *rmi_dev;
 	int error;
 
-	rmi_dev = kzalloc(sizeof(struct rmi_device), GFP_KERNEL);
+	rmi_dev = kzalloc_obj(struct rmi_device);
 	if (!rmi_dev)
 		return -ENOMEM;
 
@@ -144,9 +145,9 @@ bool rmi_is_function_device(struct device *dev)
 	return dev->type == &rmi_function_type;
 }
 
-static int rmi_function_match(struct device *dev, struct device_driver *drv)
+static int rmi_function_match(struct device *dev, const struct device_driver *drv)
 {
-	struct rmi_function_handler *handler = to_rmi_function_handler(drv);
+	const struct rmi_function_handler *handler = to_rmi_function_handler(drv);
 	struct rmi_function *fn = to_rmi_function(dev);
 
 	return fn->fd.function_number == handler->func;
@@ -277,15 +278,15 @@ void rmi_unregister_function(struct rmi_function *fn)
 
 	device_del(&fn->dev);
 	of_node_put(fn->dev.of_node);
-	put_device(&fn->dev);
 
 	for (i = 0; i < fn->num_of_irqs; i++)
 		irq_dispose_mapping(fn->irq[i]);
 
+	put_device(&fn->dev);
 }
 
 /**
- * rmi_register_function_handler - register a handler for an RMI function
+ * __rmi_register_function_handler - register a handler for an RMI function
  * @handler: RMI handler that should be registered.
  * @owner: pointer to module that implements the handler
  * @mod_name: name of the module implementing the handler
@@ -333,7 +334,7 @@ EXPORT_SYMBOL_GPL(rmi_unregister_function_handler);
 
 /* Bus specific stuff */
 
-static int rmi_bus_match(struct device *dev, struct device_driver *drv)
+static int rmi_bus_match(struct device *dev, const struct device_driver *drv)
 {
 	bool physical = rmi_is_physical_device(dev);
 
@@ -344,7 +345,7 @@ static int rmi_bus_match(struct device *dev, struct device_driver *drv)
 	return physical || rmi_function_match(dev, drv);
 }
 
-struct bus_type rmi_bus_type = {
+const struct bus_type rmi_bus_type = {
 	.match		= rmi_bus_match,
 	.name		= "rmi4",
 };
@@ -359,6 +360,12 @@ static struct rmi_function_handler *fn_handlers[] = {
 #endif
 #ifdef CONFIG_RMI4_F12
 	&rmi_f12_handler,
+#endif
+#ifdef CONFIG_RMI4_F1A
+	&rmi_f1a_handler,
+#endif
+#ifdef CONFIG_RMI4_F21
+	&rmi_f21_handler,
 #endif
 #ifdef CONFIG_RMI4_F30
 	&rmi_f30_handler,

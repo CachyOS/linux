@@ -95,7 +95,7 @@ static int chtls_start_listen(struct chtls_dev *cdev, struct sock *sk)
 		return -EADDRNOTAVAIL;
 
 	sk->sk_backlog_rcv = listen_backlog_rcv;
-	clisten = kmalloc(sizeof(*clisten), GFP_KERNEL);
+	clisten = kmalloc_obj(*clisten);
 	if (!clisten)
 		return -ENOMEM;
 	clisten->cdev = cdev;
@@ -114,7 +114,7 @@ static void chtls_stop_listen(struct chtls_dev *cdev, struct sock *sk)
 	if (sk->sk_protocol != IPPROTO_TCP)
 		return;
 
-	clisten = kmalloc(sizeof(*clisten), GFP_KERNEL);
+	clisten = kmalloc_obj(*clisten);
 	if (!clisten)
 		return;
 	clisten->cdev = cdev;
@@ -193,7 +193,7 @@ static void chtls_register_dev(struct chtls_dev *cdev)
 {
 	struct tls_toe_device *tlsdev = &cdev->tlsdev;
 
-	strlcpy(tlsdev->name, "chtls", TLS_TOE_DEVICE_NAME_MAX);
+	strscpy(tlsdev->name, "chtls", TLS_TOE_DEVICE_NAME_MAX);
 	strlcat(tlsdev->name, cdev->lldi->ports[0]->name,
 		TLS_TOE_DEVICE_NAME_MAX);
 	tlsdev->feature = chtls_inline_feature;
@@ -238,11 +238,11 @@ static void *chtls_uld_add(const struct cxgb4_lld_info *info)
 	struct chtls_dev *cdev;
 	int i, j;
 
-	cdev = kzalloc(sizeof(*cdev), GFP_KERNEL);
+	cdev = kzalloc_obj(*cdev);
 	if (!cdev)
 		goto out;
 
-	lldi = kzalloc(sizeof(*lldi), GFP_KERNEL);
+	lldi = kzalloc_obj(*lldi);
 	if (!lldi)
 		goto out_lldi;
 
@@ -342,12 +342,13 @@ static struct sk_buff *copy_gl_to_skb_pkt(const struct pkt_gl *gl,
 {
 	struct sk_buff *skb;
 
-	/* Allocate space for cpl_pass_accpet_req which will be synthesized by
-	 * driver. Once driver synthesizes cpl_pass_accpet_req the skb will go
+	/* Allocate space for cpl_pass_accept_req which will be synthesized by
+	 * driver. Once driver synthesizes cpl_pass_accept_req the skb will go
 	 * through the regular cpl_pass_accept_req processing in TOM.
 	 */
-	skb = alloc_skb(gl->tot_len + sizeof(struct cpl_pass_accept_req)
-			- pktshift, GFP_ATOMIC);
+	skb = alloc_skb(size_add(gl->tot_len,
+				 sizeof(struct cpl_pass_accept_req)) -
+			pktshift, GFP_ATOMIC);
 	if (unlikely(!skb))
 		return NULL;
 	__skb_put(skb, gl->tot_len + sizeof(struct cpl_pass_accept_req)
@@ -606,7 +607,7 @@ static void __init chtls_init_ulp_ops(void)
 	chtls_cpl_prot.destroy		= chtls_destroy_sock;
 	chtls_cpl_prot.shutdown		= chtls_shutdown;
 	chtls_cpl_prot.sendmsg		= chtls_sendmsg;
-	chtls_cpl_prot.sendpage		= chtls_sendpage;
+	chtls_cpl_prot.splice_eof	= chtls_splice_eof;
 	chtls_cpl_prot.recvmsg		= chtls_recvmsg;
 	chtls_cpl_prot.setsockopt	= chtls_setsockopt;
 	chtls_cpl_prot.getsockopt	= chtls_getsockopt;

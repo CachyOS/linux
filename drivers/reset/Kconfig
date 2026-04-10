@@ -17,10 +17,17 @@ if RESET_CONTROLLER
 
 config RESET_A10SR
 	tristate "Altera Arria10 System Resource Reset"
-	depends on MFD_ALTERA_A10SR
+	depends on MFD_ALTERA_A10SR || COMPILE_TEST
 	help
 	  This option enables support for the external reset functions for
 	  peripheral PHYs on the Altera Arria10 System Resource Chip.
+
+config RESET_ASPEED
+	tristate "ASPEED Reset Driver"
+	depends on ARCH_ASPEED || COMPILE_TEST
+	select AUXILIARY_BUS
+	help
+	  This enables the reset controller driver for AST2700.
 
 config RESET_ATH79
 	bool "AR71xx Reset Driver" if COMPILE_TEST
@@ -51,8 +58,8 @@ config RESET_BERLIN
 
 config RESET_BRCMSTB
 	tristate "Broadcom STB reset controller"
-	depends on ARCH_BRCMSTB || COMPILE_TEST
-	default ARCH_BRCMSTB
+	depends on ARCH_BRCMSTB || ARCH_BCM2835 || COMPILE_TEST
+	default ARCH_BRCMSTB || ARCH_BCM2835
 	help
 	  This enables the reset controller driver for Broadcom STB SoCs using
 	  a SUN_TOP_CTRL_SW_INIT style controller.
@@ -60,11 +67,45 @@ config RESET_BRCMSTB
 config RESET_BRCMSTB_RESCAL
 	tristate "Broadcom STB RESCAL reset controller"
 	depends on HAS_IOMEM
-	depends on ARCH_BRCMSTB || COMPILE_TEST
-	default ARCH_BRCMSTB
+	depends on ARCH_BRCMSTB || ARCH_BCM2835 || COMPILE_TEST
+	default ARCH_BRCMSTB || ARCH_BCM2835
 	help
 	  This enables the RESCAL reset controller for SATA, PCIe0, or PCIe1 on
-	  BCM7216.
+	  BCM7216 or the BCM2712.
+
+config RESET_EIC7700
+	bool "Reset controller driver for ESWIN SoCs"
+	depends on ARCH_ESWIN || COMPILE_TEST
+	default ARCH_ESWIN
+	help
+	  This enables the reset controller driver for ESWIN SoCs. This driver is
+	  specific to ESWIN SoCs and should only be enabled if using such hardware.
+	  The driver supports eic7700 series chips and provides functionality for
+	  asserting and deasserting resets on the chip.
+
+config RESET_EYEQ
+	bool "Mobileye EyeQ reset controller"
+	depends on MACH_EYEQ5 || MACH_EYEQ6H || COMPILE_TEST
+	select AUXILIARY_BUS
+	default MACH_EYEQ5 || MACH_EYEQ6H
+	help
+	  This enables the Mobileye EyeQ reset controller, used in EyeQ5, EyeQ6L
+	  and EyeQ6H SoCs.
+
+	  It has one or more domains, with a varying number of resets in each.
+	  Registers are located in a shared register region called OLB. EyeQ6H
+	  has multiple reset instances.
+
+config RESET_GPIO
+	tristate "GPIO reset controller"
+	depends on GPIOLIB
+	select AUXILIARY_BUS
+	help
+	  This enables a generic reset controller for resets attached via
+	  GPIOs.  Typically for OF platforms this driver expects "reset-gpios"
+	  property.
+
+	  If compiled as module, it will be called reset-gpio.
 
 config RESET_HSDK
 	bool "Synopsys HSDK Reset Driver"
@@ -72,6 +113,13 @@ config RESET_HSDK
 	depends on ARC_SOC_HSDK || COMPILE_TEST
 	help
 	  This enables the reset controller driver for HSDK board.
+
+config RESET_IMX_SCU
+	tristate "i.MX8Q Reset Driver"
+	depends on IMX_SCU && HAVE_ARM_SMCCC
+	depends on (ARM64 && ARCH_MXC) || COMPILE_TEST
+	help
+          This enables the reset controller driver for i.MX8QM/i.MX8QXP
 
 config RESET_IMX7
 	tristate "i.MX7/8 Reset Driver"
@@ -81,6 +129,14 @@ config RESET_IMX7
 	select MFD_SYSCON
 	help
 	  This enables the reset controller driver for i.MX7 SoCs.
+
+config RESET_IMX8MP_AUDIOMIX
+	tristate "i.MX8MP AudioMix Reset Driver"
+	depends on ARCH_MXC || COMPILE_TEST
+	select AUXILIARY_BUS
+	default CLK_IMX8MP
+	help
+	  This enables the reset controller driver for i.MX8MP AudioMix
 
 config RESET_INTEL_GW
 	bool "Intel Reset Controller Driver"
@@ -94,11 +150,20 @@ config RESET_INTEL_GW
 
 config RESET_K210
 	bool "Reset controller driver for Canaan Kendryte K210 SoC"
-	depends on (SOC_CANAAN || COMPILE_TEST) && OF
+	depends on (SOC_CANAAN_K210 || COMPILE_TEST) && OF
 	select MFD_SYSCON
-	default SOC_CANAAN
+	default SOC_CANAAN_K210
 	help
 	  Support for the Canaan Kendryte K210 RISC-V SoC reset controller.
+	  Say Y if you want to control reset signals provided by this
+	  controller.
+
+config RESET_K230
+	tristate "Reset controller driver for Canaan Kendryte K230 SoC"
+	depends on ARCH_CANAAN || COMPILE_TEST
+	default ARCH_CANAAN
+	help
+	  Support for the Canaan Kendryte K230 RISC-V SoC reset controller.
 	  Say Y if you want to control reset signals provided by this
 	  controller.
 
@@ -115,42 +180,42 @@ config RESET_LPC18XX
 	  This enables the reset controller driver for NXP LPC18xx/43xx SoCs.
 
 config RESET_MCHP_SPARX5
-	bool "Microchip Sparx5 reset driver"
-	depends on ARCH_SPARX5 || SOC_LAN966 || COMPILE_TEST
+	tristate "Microchip Sparx5 reset driver"
+	depends on ARCH_SPARX5 || ARCH_LAN969X || SOC_LAN966 || MCHP_LAN966X_PCI || COMPILE_TEST
 	default y if SPARX5_SWITCH
 	select MFD_SYSCON
 	help
 	  This driver supports switch core reset for the Microchip Sparx5 SoC.
 
-config RESET_MESON
-	tristate "Meson Reset Driver"
-	depends on ARCH_MESON || COMPILE_TEST
-	default ARCH_MESON
-	help
-	  This enables the reset driver for Amlogic Meson SoCs.
-
-config RESET_MESON_AUDIO_ARB
-	tristate "Meson Audio Memory Arbiter Reset Driver"
-	depends on ARCH_MESON || COMPILE_TEST
-	help
-	  This enables the reset driver for Audio Memory Arbiter of
-	  Amlogic's A113 based SoCs
-
 config RESET_NPCM
 	bool "NPCM BMC Reset Driver" if COMPILE_TEST
 	default ARCH_NPCM
+	select AUXILIARY_BUS
 	help
 	  This enables the reset controller driver for Nuvoton NPCM
 	  BMC SoCs.
 
-config RESET_OXNAS
-	bool
+config RESET_NUVOTON_MA35D1
+	bool "Nuvoton MA35D1 Reset Driver"
+	depends on ARCH_MA35 || COMPILE_TEST
+	default ARCH_MA35
+	help
+	  This enables the reset controller driver for Nuvoton MA35D1 SoC.
 
 config RESET_PISTACHIO
 	bool "Pistachio Reset Driver"
 	depends on MIPS || COMPILE_TEST
 	help
 	  This enables the reset driver for ImgTec Pistachio SoCs.
+
+config RESET_POLARFIRE_SOC
+	bool "Microchip PolarFire SoC (MPFS) Reset Driver"
+	depends on MCHP_CLK_MPFS
+	depends on MFD_SYSCON
+	select AUXILIARY_BUS
+	default MCHP_CLK_MPFS
+	help
+	  This driver supports peripheral reset for the Microchip PolarFire SoC
 
 config RESET_QCOM_AOSS
 	tristate "Qcom AOSS Reset Driver"
@@ -184,9 +249,17 @@ config RESET_RASPBERRYPI
 config RESET_RZG2L_USBPHY_CTRL
 	tristate "Renesas RZ/G2L USBPHY control driver"
 	depends on ARCH_RZG2L || COMPILE_TEST
+	select MFD_SYSCON
 	help
 	  Support for USBPHY Control found on RZ/G2L family. It mainly
 	  controls reset and power down of the USB/PHY.
+
+config RESET_RZV2H_USB2PHY
+	tristate "Renesas RZ/V2H(P) (and similar SoCs) USB2PHY Reset driver"
+	depends on ARCH_RENESAS || COMPILE_TEST
+	help
+	  Support for USB2PHY Port reset Control found on the RZ/V2H(P) SoC
+	  (and similar SoCs).
 
 config RESET_SCMI
 	tristate "Reset driver controlled via ARM SCMI interface"
@@ -200,8 +273,9 @@ config RESET_SCMI
 	  firmware controlling all the reset signals.
 
 config RESET_SIMPLE
-	bool "Simple Reset Controller Driver" if COMPILE_TEST
-	default ARCH_ASPEED || ARCH_BCM4908 || ARCH_BITMAIN || ARCH_REALTEK || ARCH_STM32 || (ARCH_INTEL_SOCFPGA && ARM64) || ARCH_SUNXI || ARC
+	bool "Simple Reset Controller Driver" if COMPILE_TEST || EXPERT
+	default ARCH_ASPEED || ARCH_BCMBCA || ARCH_BITMAIN || ARCH_REALTEK || ARCH_SOPHGO || ARCH_STM32 || (ARCH_INTEL_SOCFPGA && ARM64) || ARCH_SUNXI || ARC
+	depends on HAS_IOMEM
 	help
 	  This enables a simple reset controller driver for reset lines that
 	  that can be asserted and deasserted by toggling bits in a contiguous,
@@ -215,6 +289,7 @@ config RESET_SIMPLE
 	   - RCC reset controller in STM32 MCUs
 	   - Allwinner SoCs
 	   - SiFive FU740 SoCs
+	   - Sophgo SoCs
 
 config RESET_SOCFPGA
 	bool "SoCFPGA Reset Driver" if COMPILE_TEST && (!ARM || !ARCH_INTEL_SOCFPGA)
@@ -224,12 +299,14 @@ config RESET_SOCFPGA
 	  This enables the reset driver for the SoCFPGA ARMv7 platforms. This
 	  driver gets initialized early during platform init calls.
 
-config RESET_STARFIVE_JH7100
-	bool "StarFive JH7100 Reset Driver"
-	depends on SOC_STARFIVE || COMPILE_TEST
-	default SOC_STARFIVE
+config RESET_SUNPLUS
+	bool "Sunplus SoCs Reset Driver" if COMPILE_TEST
+	default ARCH_SUNPLUS
 	help
-	  This enables the reset controller driver for the StarFive JH7100 SoC.
+	  This enables the reset driver support for Sunplus SoCs.
+	  The reset lines that can be asserted and deasserted by toggling bits
+	  in a contiguous, exclusive register space. The register is HIWORD_MASKED,
+	  which means each register holds 16 reset lines.
 
 config RESET_SUNXI
 	bool "Allwinner SoCs Reset Driver" if COMPILE_TEST && !ARCH_SUNXI
@@ -238,9 +315,19 @@ config RESET_SUNXI
 	help
 	  This enables the reset driver for Allwinner SoCs.
 
+config RESET_TH1520
+	tristate "T-HEAD TH1520 reset controller"
+	depends on ARCH_THEAD || COMPILE_TEST
+	select REGMAP_MMIO
+	help
+	  This driver provides support for the T-HEAD TH1520 SoC reset controller,
+	  which manages hardware reset lines for SoC components such as the GPU.
+	  Enable this option if you need to control hardware resets on TH1520-based
+	  systems.
+
 config RESET_TI_SCI
 	tristate "TI System Control Interface (TI-SCI) reset driver"
-	depends on TI_SCI_PROTOCOL || COMPILE_TEST
+	depends on TI_SCI_PROTOCOL || (COMPILE_TEST && TI_SCI_PROTOCOL=n)
 	help
 	  This enables the reset driver support over TI System Control Interface
 	  available on some new TI's SoCs. If you wish to use reset resources
@@ -255,6 +342,14 @@ config RESET_TI_SYSCON
 	  memory-mapped reset registers as part of a syscon device node. If
 	  you wish to use the reset framework for such memory-mapped devices,
 	  say Y here. Otherwise, say N.
+
+config RESET_TI_TPS380X
+	tristate "TI TPS380x Reset Driver"
+	select GPIOLIB
+	help
+	  This enables the reset driver support for TI TPS380x devices. If
+	  you wish to use the reset framework for such devices, say Y here.
+	  Otherwise, say N.
 
 config RESET_TN48M_CPLD
 	tristate "Delta Networks TN48M switch CPLD reset controller"
@@ -295,8 +390,17 @@ config RESET_ZYNQ
 	help
 	  This enables the reset controller driver for Xilinx Zynq SoCs.
 
-source "drivers/reset/sti/Kconfig"
+config RESET_ZYNQMP
+	bool "ZYNQMP Reset Driver" if COMPILE_TEST
+	default ARCH_ZYNQMP
+	help
+	  This enables the reset controller driver for Xilinx ZynqMP SoCs.
+
+source "drivers/reset/amlogic/Kconfig"
 source "drivers/reset/hisilicon/Kconfig"
+source "drivers/reset/spacemit/Kconfig"
+source "drivers/reset/starfive/Kconfig"
+source "drivers/reset/sti/Kconfig"
 source "drivers/reset/tegra/Kconfig"
 
 endif

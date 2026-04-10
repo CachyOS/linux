@@ -77,7 +77,7 @@ ipu3-cio2         Intel ipu3-cio2 driver
 ivtv              Conexant cx23416/cx23415 MPEG encoder/decoder
 ivtvfb            Conexant cx23415 framebuffer
 mantis            MANTIS based cards
-meye              Sony Vaio Picturebook Motion Eye
+mgb4              Digiteq Automotive MGB4 frame grabber
 mxb               Siemens-Nixdorf 'Multimedia eXtension Board'
 netup-unidvb      NetUP Universal DVB card
 ngene             Micronas nGene
@@ -86,7 +86,6 @@ saa7134           Philips SAA7134
 saa7164           NXP SAA7164
 smipcie           SMI PCIe DVBSky cards
 solo6x10          Bluecherry / Softlogic 6x10 capture cards (MPEG-4/H.264)
-sta2x11_vip       STA2X11 VIP Video For Linux
 tw5864            Techwell TW5864 video/audio grabber and encoder
 tw686x            Intersil/Techwell TW686x
 tw68              Techwell tw68x Video For Linux

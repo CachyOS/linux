@@ -7,11 +7,11 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: Q6SSTOP clock Controller
 
 maintainers:
-  - Govind Singh <govinds@codeaurora.org>
+  - Bjorn Andersson <andersson@kernel.org>
 
 properties:
   compatible:
-    const: "qcom,qcs404-q6sstopcc"
+    const: qcom,qcs404-q6sstopcc
 
   reg:
     items:

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2003-2020, Intel Corporation. All rights reserved.
+ * Copyright (c) 2003-2022, Intel Corporation. All rights reserved.
  * Intel Management Engine Interface (Intel MEI) Linux driver
  */
 
@@ -48,9 +48,9 @@ struct mei_me_client *mei_me_cl_get(struct mei_me_client *me_cl)
 /**
  * mei_me_cl_release - free me client
  *
- * Locking: called under "dev->device_lock" lock
- *
  * @ref: me_client refcount
+ *
+ * Locking: called under "dev->device_lock" lock
  */
 static void mei_me_cl_release(struct kref *ref)
 {
@@ -63,9 +63,9 @@ static void mei_me_cl_release(struct kref *ref)
 /**
  * mei_me_cl_put - decrease me client refcount and free client if necessary
  *
- * Locking: called under "dev->device_lock" lock
- *
  * @me_cl: me client
+ *
+ * Locking: called under "dev->device_lock" lock
  */
 void mei_me_cl_put(struct mei_me_client *me_cl)
 {
@@ -262,32 +262,10 @@ void mei_me_cl_rm_by_uuid(struct mei_device *dev, const uuid_le *uuid)
 {
 	struct mei_me_client *me_cl;
 
-	dev_dbg(dev->dev, "remove %pUl\n", uuid);
+	dev_dbg(&dev->dev, "remove %pUl\n", uuid);
 
 	down_write(&dev->me_clients_rwsem);
 	me_cl = __mei_me_cl_by_uuid(dev, uuid);
-	__mei_me_cl_del(dev, me_cl);
-	mei_me_cl_put(me_cl);
-	up_write(&dev->me_clients_rwsem);
-}
-
-/**
- * mei_me_cl_rm_by_uuid_id - remove all me clients matching client id
- *
- * @dev: the device structure
- * @uuid: me client uuid
- * @id: me client id
- *
- * Locking: called under "dev->device_lock" lock
- */
-void mei_me_cl_rm_by_uuid_id(struct mei_device *dev, const uuid_le *uuid, u8 id)
-{
-	struct mei_me_client *me_cl;
-
-	dev_dbg(dev->dev, "remove %pUl %d\n", uuid, id);
-
-	down_write(&dev->me_clients_rwsem);
-	me_cl = __mei_me_cl_by_uuid_id(dev, uuid, id);
 	__mei_me_cl_del(dev, me_cl);
 	mei_me_cl_put(me_cl);
 	up_write(&dev->me_clients_rwsem);
@@ -321,17 +299,18 @@ void mei_io_cb_free(struct mei_cl_cb *cb)
 		return;
 
 	list_del(&cb->list);
-	kfree(cb->buf.data);
+	kvfree(cb->buf.data);
+	kfree(cb->ext_hdr);
 	kfree(cb);
 }
 
 /**
  * mei_tx_cb_enqueue - queue tx callback
  *
- * Locking: called under "dev->device_lock" lock
- *
  * @cb: mei callback struct
  * @head: an instance of list to queue on
+ *
+ * Locking: called under "dev->device_lock" lock
  */
 static inline void mei_tx_cb_enqueue(struct mei_cl_cb *cb,
 				     struct list_head *head)
@@ -343,9 +322,9 @@ static inline void mei_tx_cb_enqueue(struct mei_cl_cb *cb,
 /**
  * mei_tx_cb_dequeue - dequeue tx callback
  *
- * Locking: called under "dev->device_lock" lock
- *
  * @cb: mei callback struct to dequeue and free
+ *
+ * Locking: called under "dev->device_lock" lock
  */
 static inline void mei_tx_cb_dequeue(struct mei_cl_cb *cb)
 {
@@ -358,10 +337,10 @@ static inline void mei_tx_cb_dequeue(struct mei_cl_cb *cb)
 /**
  * mei_cl_set_read_by_fp - set pending_read flag to vtag struct for given fp
  *
- * Locking: called under "dev->device_lock" lock
- *
  * @cl: mei client
  * @fp: pointer to file structure
+ *
+ * Locking: called under "dev->device_lock" lock
  */
 static void mei_cl_set_read_by_fp(const struct mei_cl *cl,
 				  const struct file *fp)
@@ -391,7 +370,7 @@ static struct mei_cl_cb *mei_io_cb_init(struct mei_cl *cl,
 {
 	struct mei_cl_cb *cb;
 
-	cb = kzalloc(sizeof(*cb), GFP_KERNEL);
+	cb = kzalloc_obj(*cb);
 	if (!cb)
 		return NULL;
 
@@ -401,6 +380,7 @@ static struct mei_cl_cb *mei_io_cb_init(struct mei_cl *cl,
 	cb->buf_idx = 0;
 	cb->fop_type = type;
 	cb->vtag = 0;
+	cb->ext_hdr = NULL;
 
 	return cb;
 }
@@ -495,7 +475,7 @@ struct mei_cl_cb *mei_cl_alloc_cb(struct mei_cl *cl, size_t length,
 	if (length == 0)
 		return cb;
 
-	cb->buf.data = kmalloc(roundup(length, MEI_SLOT_SIZE), GFP_KERNEL);
+	cb->buf.data = kvmalloc(roundup(length, MEI_SLOT_SIZE), GFP_KERNEL);
 	if (!cb->buf.data) {
 		mei_io_cb_free(cb);
 		return NULL;
@@ -625,7 +605,7 @@ struct mei_cl *mei_cl_allocate(struct mei_device *dev)
 {
 	struct mei_cl *cl;
 
-	cl = kmalloc(sizeof(*cl), GFP_KERNEL);
+	cl = kmalloc_obj(*cl);
 	if (!cl)
 		return NULL;
 
@@ -655,12 +635,12 @@ int mei_cl_link(struct mei_cl *cl)
 
 	id = find_first_zero_bit(dev->host_clients_map, MEI_CLIENTS_MAX);
 	if (id >= MEI_CLIENTS_MAX) {
-		dev_err(dev->dev, "id exceeded %d", MEI_CLIENTS_MAX);
+		dev_err(&dev->dev, "id exceeded %d", MEI_CLIENTS_MAX);
 		return -EMFILE;
 	}
 
 	if (dev->open_handle_count >= MEI_MAX_OPEN_HANDLE_COUNT) {
-		dev_err(dev->dev, "open_handle_count exceeded %d",
+		dev_err(&dev->dev, "open_handle_count exceeded %d",
 			MEI_MAX_OPEN_HANDLE_COUNT);
 		return -EMFILE;
 	}
@@ -729,9 +709,8 @@ void mei_host_client_init(struct mei_device *dev)
 
 	schedule_work(&dev->bus_rescan_work);
 
-	pm_runtime_mark_last_busy(dev->dev);
-	dev_dbg(dev->dev, "rpm: autosuspend\n");
-	pm_request_autosuspend(dev->dev);
+	dev_dbg(&dev->dev, "rpm: autosuspend\n");
+	pm_request_autosuspend(dev->parent);
 }
 
 /**
@@ -744,12 +723,12 @@ bool mei_hbuf_acquire(struct mei_device *dev)
 {
 	if (mei_pg_state(dev) == MEI_PG_ON ||
 	    mei_pg_in_transition(dev)) {
-		dev_dbg(dev->dev, "device is in pg\n");
+		dev_dbg(&dev->dev, "device is in pg\n");
 		return false;
 	}
 
 	if (!dev->hbuf_is_ready) {
-		dev_dbg(dev->dev, "hbuf is not ready\n");
+		dev_dbg(&dev->dev, "hbuf is not ready\n");
 		return false;
 	}
 
@@ -870,7 +849,7 @@ static int mei_cl_send_disconnect(struct mei_cl *cl, struct mei_cl_cb *cb)
 	}
 
 	list_move_tail(&cb->list, &dev->ctrl_rd_list);
-	cl->timer_count = MEI_CONNECT_TIMEOUT;
+	cl->timer_count = dev->timeouts.connect;
 	mei_schedule_stall_timer(dev);
 
 	return 0;
@@ -945,7 +924,7 @@ static int __mei_cl_disconnect(struct mei_cl *cl)
 	wait_event_timeout(cl->wait,
 			   cl->state == MEI_FILE_DISCONNECT_REPLY ||
 			   cl->state == MEI_FILE_DISCONNECTED,
-			   mei_secs_to_jiffies(MEI_CL_CONNECT_TIMEOUT));
+			   dev->timeouts.cl_connect);
 	mutex_lock(&dev->device_lock);
 
 	rets = cl->status;
@@ -1001,9 +980,9 @@ int mei_cl_disconnect(struct mei_cl *cl)
 		return 0;
 	}
 
-	rets = pm_runtime_get(dev->dev);
+	rets = pm_runtime_get(dev->parent);
 	if (rets < 0 && rets != -EINPROGRESS) {
-		pm_runtime_put_noidle(dev->dev);
+		pm_runtime_put_noidle(dev->parent);
 		cl_err(dev, cl, "rpm: get failed %d\n", rets);
 		return rets;
 	}
@@ -1011,8 +990,7 @@ int mei_cl_disconnect(struct mei_cl *cl)
 	rets = __mei_cl_disconnect(cl);
 
 	cl_dbg(dev, cl, "rpm: autosuspend\n");
-	pm_runtime_mark_last_busy(dev->dev);
-	pm_runtime_put_autosuspend(dev->dev);
+	pm_runtime_put_autosuspend(dev->parent);
 
 	return rets;
 }
@@ -1065,7 +1043,7 @@ static int mei_cl_send_connect(struct mei_cl *cl, struct mei_cl_cb *cb)
 	}
 
 	list_move_tail(&cb->list, &dev->ctrl_rd_list);
-	cl->timer_count = MEI_CONNECT_TIMEOUT;
+	cl->timer_count = dev->timeouts.connect;
 	mei_schedule_stall_timer(dev);
 	return 0;
 }
@@ -1138,9 +1116,9 @@ int mei_cl_connect(struct mei_cl *cl, struct mei_me_client *me_cl,
 		goto nortpm;
 	}
 
-	rets = pm_runtime_get(dev->dev);
+	rets = pm_runtime_get(dev->parent);
 	if (rets < 0 && rets != -EINPROGRESS) {
-		pm_runtime_put_noidle(dev->dev);
+		pm_runtime_put_noidle(dev->parent);
 		cl_err(dev, cl, "rpm: get failed %d\n", rets);
 		goto nortpm;
 	}
@@ -1164,7 +1142,7 @@ int mei_cl_connect(struct mei_cl *cl, struct mei_me_client *me_cl,
 			 cl->state == MEI_FILE_DISCONNECTED ||
 			 cl->state == MEI_FILE_DISCONNECT_REQUIRED ||
 			 cl->state == MEI_FILE_DISCONNECT_REPLY),
-			mei_secs_to_jiffies(MEI_CL_CONNECT_TIMEOUT));
+			dev->timeouts.cl_connect);
 	mutex_lock(&dev->device_lock);
 
 	if (!mei_cl_is_connected(cl)) {
@@ -1187,8 +1165,7 @@ int mei_cl_connect(struct mei_cl *cl, struct mei_me_client *me_cl,
 	rets = cl->status;
 out:
 	cl_dbg(dev, cl, "rpm: autosuspend\n");
-	pm_runtime_mark_last_busy(dev->dev);
-	pm_runtime_put_autosuspend(dev->dev);
+	pm_runtime_put_autosuspend(dev->parent);
 
 	mei_io_cb_free(cb);
 
@@ -1296,7 +1273,7 @@ struct mei_cl_vtag *mei_cl_vtag_alloc(struct file *fp, u8 vtag)
 {
 	struct mei_cl_vtag *cl_vtag;
 
-	cl_vtag = kzalloc(sizeof(*cl_vtag), GFP_KERNEL);
+	cl_vtag = kzalloc_obj(*cl_vtag);
 	if (!cl_vtag)
 		return ERR_PTR(-ENOMEM);
 
@@ -1341,7 +1318,9 @@ static void mei_cl_reset_read_by_vtag(const struct mei_cl *cl, u8 vtag)
 	struct mei_cl_vtag *vtag_l;
 
 	list_for_each_entry(vtag_l, &cl->vtag_map, list) {
-		if (vtag_l->vtag == vtag) {
+		/* The client on bus has one fixed vtag map */
+		if ((cl->cldev && mei_cldev_enabled(cl->cldev)) ||
+		    vtag_l->vtag == vtag) {
 			vtag_l->pending_read = false;
 			break;
 		}
@@ -1535,9 +1514,9 @@ int mei_cl_notify_request(struct mei_cl *cl,
 	if (!mei_cl_is_connected(cl))
 		return -ENODEV;
 
-	rets = pm_runtime_get(dev->dev);
+	rets = pm_runtime_get(dev->parent);
 	if (rets < 0 && rets != -EINPROGRESS) {
-		pm_runtime_put_noidle(dev->dev);
+		pm_runtime_put_noidle(dev->parent);
 		cl_err(dev, cl, "rpm: get failed %d\n", rets);
 		return rets;
 	}
@@ -1562,7 +1541,7 @@ int mei_cl_notify_request(struct mei_cl *cl,
 			   cl->notify_en == request ||
 			   cl->status ||
 			   !mei_cl_is_connected(cl),
-			   mei_secs_to_jiffies(MEI_CL_CONNECT_TIMEOUT));
+			   dev->timeouts.cl_connect);
 	mutex_lock(&dev->device_lock);
 
 	if (cl->notify_en != request && !cl->status)
@@ -1572,8 +1551,7 @@ int mei_cl_notify_request(struct mei_cl *cl,
 
 out:
 	cl_dbg(dev, cl, "rpm: autosuspend\n");
-	pm_runtime_mark_last_busy(dev->dev);
-	pm_runtime_put_autosuspend(dev->dev);
+	pm_runtime_put_autosuspend(dev->parent);
 
 	mei_io_cb_free(cb);
 	return rets;
@@ -1701,9 +1679,9 @@ int mei_cl_read_start(struct mei_cl *cl, size_t length, const struct file *fp)
 
 	mei_cl_set_read_by_fp(cl, fp);
 
-	rets = pm_runtime_get(dev->dev);
+	rets = pm_runtime_get(dev->parent);
 	if (rets < 0 && rets != -EINPROGRESS) {
-		pm_runtime_put_noidle(dev->dev);
+		pm_runtime_put_noidle(dev->parent);
 		cl_err(dev, cl, "rpm: get failed %d\n", rets);
 		goto nortpm;
 	}
@@ -1720,8 +1698,7 @@ int mei_cl_read_start(struct mei_cl *cl, size_t length, const struct file *fp)
 
 out:
 	cl_dbg(dev, cl, "rpm: autosuspend\n");
-	pm_runtime_mark_last_busy(dev->dev);
-	pm_runtime_put_autosuspend(dev->dev);
+	pm_runtime_put_autosuspend(dev->parent);
 nortpm:
 	if (rets)
 		mei_io_cb_free(cb);
@@ -1740,6 +1717,17 @@ static inline u8 mei_ext_hdr_set_vtag(void *ext, u8 vtag)
 	return vtag_hdr->hdr.length;
 }
 
+static inline bool mei_ext_hdr_is_gsc(struct mei_ext_hdr *ext)
+{
+	return ext && ext->type == MEI_EXT_HDR_GSC;
+}
+
+static inline u8 mei_ext_hdr_set_gsc(struct mei_ext_hdr *ext, struct mei_ext_hdr *gsc_hdr)
+{
+	memcpy(ext, gsc_hdr, mei_ext_hdr_len(gsc_hdr));
+	return ext->length;
+}
+
 /**
  * mei_msg_hdr_init - allocate and initialize mei message header
  *
@@ -1752,14 +1740,17 @@ static struct mei_msg_hdr *mei_msg_hdr_init(const struct mei_cl_cb *cb)
 	size_t hdr_len;
 	struct mei_ext_meta_hdr *meta;
 	struct mei_msg_hdr *mei_hdr;
-	bool is_ext, is_vtag;
+	bool is_ext, is_hbm, is_gsc, is_vtag;
+	struct mei_ext_hdr *next_ext;
 
 	if (!cb)
 		return ERR_PTR(-EINVAL);
 
 	/* Extended header for vtag is attached only on the first fragment */
 	is_vtag = (cb->vtag && cb->buf_idx == 0);
-	is_ext = is_vtag;
+	is_hbm = cb->cl->me_cl->client_id == 0;
+	is_gsc = ((!is_hbm) && cb->cl->dev->hbm_f_gsc_supported && mei_ext_hdr_is_gsc(cb->ext_hdr));
+	is_ext = is_vtag || is_gsc;
 
 	/* Compute extended header size */
 	hdr_len = sizeof(*mei_hdr);
@@ -1770,6 +1761,9 @@ static struct mei_msg_hdr *mei_msg_hdr_init(const struct mei_cl_cb *cb)
 	hdr_len += sizeof(*meta);
 	if (is_vtag)
 		hdr_len += sizeof(struct mei_ext_hdr_vtag);
+
+	if (is_gsc)
+		hdr_len += mei_ext_hdr_len(cb->ext_hdr);
 
 setup_hdr:
 	mei_hdr = kzalloc(hdr_len, GFP_KERNEL);
@@ -1785,10 +1779,20 @@ setup_hdr:
 		goto out;
 
 	meta = (struct mei_ext_meta_hdr *)mei_hdr->extension;
+	meta->size = 0;
+	next_ext = (struct mei_ext_hdr *)meta->hdrs;
 	if (is_vtag) {
 		meta->count++;
-		meta->size += mei_ext_hdr_set_vtag(meta->hdrs, cb->vtag);
+		meta->size += mei_ext_hdr_set_vtag(next_ext, cb->vtag);
+		next_ext = mei_ext_next(next_ext);
 	}
+
+	if (is_gsc) {
+		meta->count++;
+		meta->size += mei_ext_hdr_set_gsc(next_ext, cb->ext_hdr);
+		next_ext = mei_ext_next(next_ext);
+	}
+
 out:
 	mei_hdr->length = hdr_len - sizeof(*mei_hdr);
 	return mei_hdr;
@@ -1812,14 +1816,14 @@ int mei_cl_irq_write(struct mei_cl *cl, struct mei_cl_cb *cb,
 	struct mei_msg_hdr *mei_hdr = NULL;
 	size_t hdr_len;
 	size_t hbuf_len, dr_len;
-	size_t buf_len;
+	size_t buf_len = 0;
 	size_t data_len;
 	int hbuf_slots;
 	u32 dr_slots;
 	u32 dma_len;
 	int rets;
 	bool first_chunk;
-	const void *data;
+	const void *data = NULL;
 
 	if (WARN_ON(!cl || !cl->dev))
 		return -ENODEV;
@@ -1839,8 +1843,10 @@ int mei_cl_irq_write(struct mei_cl *cl, struct mei_cl_cb *cb,
 		return 0;
 	}
 
-	buf_len = buf->size - cb->buf_idx;
-	data = buf->data + cb->buf_idx;
+	if (buf->data) {
+		buf_len = buf->size - cb->buf_idx;
+		data = buf->data + cb->buf_idx;
+	}
 	hbuf_slots = mei_hbuf_empty_slots(dev);
 	if (hbuf_slots < 0) {
 		rets = -EOVERFLOW;
@@ -1857,9 +1863,6 @@ int mei_cl_irq_write(struct mei_cl *cl, struct mei_cl_cb *cb,
 		mei_hdr = NULL;
 		goto err;
 	}
-
-	cl_dbg(dev, cl, "Extended Header %d vtag = %d\n",
-	       mei_hdr->extended, cb->vtag);
 
 	hdr_len = sizeof(*mei_hdr) + mei_hdr->length;
 
@@ -1889,7 +1892,7 @@ int mei_cl_irq_write(struct mei_cl *cl, struct mei_cl_cb *cb,
 	}
 	mei_hdr->length += data_len;
 
-	if (mei_hdr->dma_ring)
+	if (mei_hdr->dma_ring && buf->data)
 		mei_dma_ring_write(dev, buf->data + cb->buf_idx, buf_len);
 	rets = mei_write_message(dev, mei_hdr, hdr_len, data, data_len);
 
@@ -1926,10 +1929,13 @@ err:
  *
  * @cl: host client
  * @cb: write callback with filled data
+ * @timeout: send timeout in milliseconds.
+ *           effective only for blocking writes: the cb->blocking is set.
+ *           set timeout to the MAX_SCHEDULE_TIMEOUT to maixum allowed wait.
  *
  * Return: number of bytes sent on success, <0 on failure.
  */
-ssize_t mei_cl_write(struct mei_cl *cl, struct mei_cl_cb *cb)
+ssize_t mei_cl_write(struct mei_cl *cl, struct mei_cl_cb *cb, unsigned long timeout)
 {
 	struct mei_device *dev;
 	struct mei_msg_data *buf;
@@ -1961,9 +1967,9 @@ ssize_t mei_cl_write(struct mei_cl *cl, struct mei_cl_cb *cb)
 	blocking = cb->blocking;
 	data = buf->data;
 
-	rets = pm_runtime_get(dev->dev);
+	rets = pm_runtime_get(dev->parent);
 	if (rets < 0 && rets != -EINPROGRESS) {
-		pm_runtime_put_noidle(dev->dev);
+		pm_runtime_put_noidle(dev->parent);
 		cl_err(dev, cl, "rpm: get failed %zd\n", rets);
 		goto free;
 	}
@@ -1978,13 +1984,10 @@ ssize_t mei_cl_write(struct mei_cl *cl, struct mei_cl_cb *cb)
 
 	mei_hdr = mei_msg_hdr_init(cb);
 	if (IS_ERR(mei_hdr)) {
-		rets = -PTR_ERR(mei_hdr);
+		rets = PTR_ERR(mei_hdr);
 		mei_hdr = NULL;
 		goto err;
 	}
-
-	cl_dbg(dev, cl, "Extended Header %d vtag = %d\n",
-	       mei_hdr->extended, cb->vtag);
 
 	hdr_len = sizeof(*mei_hdr) + mei_hdr->length;
 
@@ -2002,7 +2005,7 @@ ssize_t mei_cl_write(struct mei_cl *cl, struct mei_cl_cb *cb)
 
 	hbuf_slots = mei_hbuf_empty_slots(dev);
 	if (hbuf_slots < 0) {
-		rets = -EOVERFLOW;
+		buf_len = -EOVERFLOW;
 		goto out;
 	}
 
@@ -2030,7 +2033,7 @@ ssize_t mei_cl_write(struct mei_cl *cl, struct mei_cl_cb *cb)
 
 	mei_hdr->length += data_len;
 
-	if (mei_hdr->dma_ring)
+	if (mei_hdr->dma_ring && buf->data)
 		mei_dma_ring_write(dev, buf->data, buf_len);
 	rets = mei_write_message(dev, mei_hdr, hdr_len, data, data_len);
 
@@ -2056,11 +2059,20 @@ out:
 	if (blocking && cl->writing_state != MEI_WRITE_COMPLETE) {
 
 		mutex_unlock(&dev->device_lock);
-		rets = wait_event_interruptible(cl->tx_wait,
-				cl->writing_state == MEI_WRITE_COMPLETE ||
-				(!mei_cl_is_connected(cl)));
+		rets = wait_event_interruptible_timeout(cl->tx_wait,
+							cl->writing_state == MEI_WRITE_COMPLETE ||
+							(!mei_cl_is_connected(cl)),
+							msecs_to_jiffies(timeout));
 		mutex_lock(&dev->device_lock);
+		/* clean all queue on timeout as something fatal happened */
+		if (rets == 0) {
+			rets = -ETIME;
+			mei_io_tx_list_free_cl(&dev->write_list, cl, NULL);
+			mei_io_tx_list_free_cl(&dev->write_waiting_list, cl, NULL);
+		}
 		/* wait_event_interruptible returns -ERESTARTSYS */
+		if (rets > 0)
+			rets = 0;
 		if (rets) {
 			if (signal_pending(current))
 				rets = -EINTR;
@@ -2075,8 +2087,7 @@ out:
 	rets = buf_len;
 err:
 	cl_dbg(dev, cl, "rpm: autosuspend\n");
-	pm_runtime_mark_last_busy(dev->dev);
-	pm_runtime_put_autosuspend(dev->dev);
+	pm_runtime_put_autosuspend(dev->parent);
 free:
 	mei_io_cb_free(cb);
 
@@ -2099,12 +2110,10 @@ void mei_cl_complete(struct mei_cl *cl, struct mei_cl_cb *cb)
 	case MEI_FOP_WRITE:
 		mei_tx_cb_dequeue(cb);
 		cl->writing_state = MEI_WRITE_COMPLETE;
-		if (waitqueue_active(&cl->tx_wait)) {
+		if (waitqueue_active(&cl->tx_wait))
 			wake_up_interruptible(&cl->tx_wait);
-		} else {
-			pm_runtime_mark_last_busy(dev->dev);
-			pm_request_autosuspend(dev->dev);
-		}
+		else
+			pm_request_autosuspend(dev->parent);
 		break;
 
 	case MEI_FOP_READ:
@@ -2234,7 +2243,7 @@ int mei_cl_irq_dma_unmap(struct mei_cl *cl, struct mei_cl_cb *cb,
 
 static int mei_cl_dma_alloc(struct mei_cl *cl, u8 buf_id, size_t size)
 {
-	cl->dma.vaddr = dmam_alloc_coherent(cl->dev->dev, size,
+	cl->dma.vaddr = dmam_alloc_coherent(&cl->dev->dev, size,
 					    &cl->dma.daddr, GFP_KERNEL);
 	if (!cl->dma.vaddr)
 		return -ENOMEM;
@@ -2248,7 +2257,7 @@ static int mei_cl_dma_alloc(struct mei_cl *cl, u8 buf_id, size_t size)
 static void mei_cl_dma_free(struct mei_cl *cl)
 {
 	cl->dma.buffer_id = 0;
-	dmam_free_coherent(cl->dev->dev,
+	dmam_free_coherent(&cl->dev->dev,
 			   cl->dma.size, cl->dma.vaddr, cl->dma.daddr);
 	cl->dma.size = 0;
 	cl->dma.vaddr = NULL;
@@ -2304,16 +2313,16 @@ int mei_cl_dma_alloc_and_map(struct mei_cl *cl, const struct file *fp,
 		return -EPROTO;
 	}
 
-	rets = pm_runtime_get(dev->dev);
+	rets = pm_runtime_get(dev->parent);
 	if (rets < 0 && rets != -EINPROGRESS) {
-		pm_runtime_put_noidle(dev->dev);
+		pm_runtime_put_noidle(dev->parent);
 		cl_err(dev, cl, "rpm: get failed %d\n", rets);
 		return rets;
 	}
 
 	rets = mei_cl_dma_alloc(cl, buffer_id, size);
 	if (rets) {
-		pm_runtime_put_noidle(dev->dev);
+		pm_runtime_put_noidle(dev->parent);
 		return rets;
 	}
 
@@ -2336,7 +2345,7 @@ int mei_cl_dma_alloc_and_map(struct mei_cl *cl, const struct file *fp,
 	mutex_unlock(&dev->device_lock);
 	wait_event_timeout(cl->wait,
 			   cl->dma_mapped || cl->status,
-			   mei_secs_to_jiffies(MEI_CL_CONNECT_TIMEOUT));
+			   dev->timeouts.cl_connect);
 	mutex_lock(&dev->device_lock);
 
 	if (!cl->dma_mapped && !cl->status)
@@ -2349,8 +2358,7 @@ out:
 		mei_cl_dma_free(cl);
 
 	cl_dbg(dev, cl, "rpm: autosuspend\n");
-	pm_runtime_mark_last_busy(dev->dev);
-	pm_runtime_put_autosuspend(dev->dev);
+	pm_runtime_put_autosuspend(dev->parent);
 
 	mei_io_cb_free(cb);
 	return rets;
@@ -2389,9 +2397,9 @@ int mei_cl_dma_unmap(struct mei_cl *cl, const struct file *fp)
 	if (!cl->dma_mapped)
 		return -EPROTO;
 
-	rets = pm_runtime_get(dev->dev);
+	rets = pm_runtime_get(dev->parent);
 	if (rets < 0 && rets != -EINPROGRESS) {
-		pm_runtime_put_noidle(dev->dev);
+		pm_runtime_put_noidle(dev->parent);
 		cl_err(dev, cl, "rpm: get failed %d\n", rets);
 		return rets;
 	}
@@ -2415,7 +2423,7 @@ int mei_cl_dma_unmap(struct mei_cl *cl, const struct file *fp)
 	mutex_unlock(&dev->device_lock);
 	wait_event_timeout(cl->wait,
 			   !cl->dma_mapped || cl->status,
-			   mei_secs_to_jiffies(MEI_CL_CONNECT_TIMEOUT));
+			   dev->timeouts.cl_connect);
 	mutex_lock(&dev->device_lock);
 
 	if (cl->dma_mapped && !cl->status)
@@ -2427,8 +2435,7 @@ int mei_cl_dma_unmap(struct mei_cl *cl, const struct file *fp)
 		mei_cl_dma_free(cl);
 out:
 	cl_dbg(dev, cl, "rpm: autosuspend\n");
-	pm_runtime_mark_last_busy(dev->dev);
-	pm_runtime_put_autosuspend(dev->dev);
+	pm_runtime_put_autosuspend(dev->parent);
 
 	mei_io_cb_free(cb);
 	return rets;

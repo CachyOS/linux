@@ -9,9 +9,11 @@ config ARCH_SUPPORTS_ACPI
 menuconfig ACPI
 	bool "ACPI (Advanced Configuration and Power Interface) Support"
 	depends on ARCH_SUPPORTS_ACPI
+	select AUXILIARY_BUS
 	select PNP
 	select NLS
 	select CRC32
+	select FIRMWARE_TABLE
 	default y if X86
 	help
 	  Advanced Configuration and Power Interface (ACPI) support for 
@@ -26,9 +28,6 @@ menuconfig ACPI
 	  MultiProcessor Specification (MPS), and the Advanced Power 
 	  Management (APM) specification.  If both ACPI and APM support 
 	  are configured, ACPI is used.
-
-	  The project home page for the Linux ACPI subsystem is here:
-	  <https://01.org/linux-acpi>
 
 	  Linux support for ACPI is based on Intel Corporation's ACPI
 	  Component Architecture (ACPI CA).  For more information on the
@@ -63,6 +62,10 @@ config ACPI_CCA_REQUIRED
 config ACPI_TABLE_LIB
 	bool
 
+config ACPI_THERMAL_LIB
+       depends on THERMAL
+       bool
+
 config ACPI_DEBUGGER
 	bool "AML debugger interface"
 	select ACPI_DEBUG
@@ -93,7 +96,7 @@ config ACPI_SPCR_TABLE
 
 config ACPI_FPDT
 	bool "ACPI Firmware Performance Data Table (FPDT) support"
-	depends on X86_64
+	depends on X86_64 || ARM64
 	help
 	  Enable support for the Firmware Performance Data Table (FPDT).
 	  This table provides information on the timing of the system
@@ -130,8 +133,17 @@ config ACPI_REV_OVERRIDE_POSSIBLE
 	  makes it possible to force the kernel to return "5" as the supported
 	  ACPI revision via the "acpi_rev_override" command line switch.
 
+config ACPI_EC
+	bool "Embedded Controller"
+	depends on HAS_IOPORT
+	default X86 || LOONGARCH
+	help
+	  This driver handles communication with the microcontroller
+	  on many x86/LoongArch laptops and other machines.
+
 config ACPI_EC_DEBUGFS
 	tristate "EC read/write access through /sys/kernel/debug/ec"
+	depends on ACPI_EC
 	help
 	  Say N to disable Embedded Controller /sys/kernel/debug interface
 
@@ -210,8 +222,9 @@ config ACPI_TINY_POWER_BUTTON_SIGNAL
 
 config ACPI_VIDEO
 	tristate "Video"
-	depends on X86 && BACKLIGHT_CLASS_DEVICE
+	depends on BACKLIGHT_CLASS_DEVICE
 	depends on INPUT
+	depends on ACPI_WMI || !X86
 	select THERMAL
 	help
 	  This driver implements the ACPI Extensions For Display Adapters
@@ -255,12 +268,11 @@ config ACPI_DOCK
 
 config ACPI_CPU_FREQ_PSS
 	bool
-	select THERMAL
 
 config ACPI_PROCESSOR_CSTATE
 	def_bool y
 	depends on ACPI_PROCESSOR
-	depends on IA64 || X86
+	depends on X86
 
 config ACPI_PROCESSOR_IDLE
 	bool
@@ -284,9 +296,10 @@ config ACPI_CPPC_LIB
 
 config ACPI_PROCESSOR
 	tristate "Processor"
-	depends on X86 || IA64 || ARM64 || LOONGARCH
+	depends on X86 || ARM64 || LOONGARCH || RISCV
 	select ACPI_PROCESSOR_IDLE
-	select ACPI_CPU_FREQ_PSS if X86 || IA64 || LOONGARCH
+	select ACPI_CPU_FREQ_PSS if X86 || LOONGARCH
+	select THERMAL
 	default y
 	help
 	  This driver adds support for the ACPI Processor package. It is required
@@ -311,7 +324,6 @@ config ACPI_HOTPLUG_CPU
 	bool
 	depends on ACPI_PROCESSOR && HOTPLUG_CPU
 	select ACPI_CONTAINER
-	default y
 
 config ACPI_PROCESSOR_AGGREGATOR
 	tristate "Processor Aggregator"
@@ -328,6 +340,7 @@ config ACPI_THERMAL
 	tristate "Thermal Zone"
 	depends on ACPI_PROCESSOR
 	select THERMAL
+	select ACPI_THERMAL_LIB
 	default y
 	help
 	  This driver supports ACPI thermal zones.  Most mobile and
@@ -347,7 +360,6 @@ config ACPI_CUSTOM_DSDT_FILE
 	depends on !STANDALONE
 	help
 	  This option supports a custom DSDT by linking it into the kernel.
-	  See Documentation/admin-guide/acpi/dsdt-override.rst
 
 	  Enter the full path name to the file which includes the AmlCode
 	  or dsdt_aml_code declaration.
@@ -383,6 +395,7 @@ config ACPI_TABLE_OVERRIDE_VIA_BUILTIN_INITRD
 
 config ACPI_DEBUG
 	bool "Debug Statements"
+	default y
 	help
 	  The ACPI subsystem can produce debug output.  Saying Y enables this
 	  output and increases the kernel size by around 50K.
@@ -431,7 +444,7 @@ config ACPI_HOTPLUG_IOAPIC
 
 config ACPI_SBS
 	tristate "Smart Battery System"
-	depends on X86
+	depends on X86 && ACPI_EC
 	select POWER_SUPPLY
 	help
 	  This driver supports the Smart Battery System, another
@@ -441,29 +454,15 @@ config ACPI_SBS
 	  the modules will be called sbs and sbshc.
 
 config ACPI_HED
-	tristate "Hardware Error Device"
+	bool "Hardware Error Device"
 	help
 	  This driver supports the Hardware Error Device (PNP0C33),
 	  which is used to report some hardware errors notified via
 	  SCI, mainly the corrected errors.
 
-config ACPI_CUSTOM_METHOD
-	tristate "Allow ACPI methods to be inserted/replaced at run time"
-	depends on DEBUG_FS
-	help
-	  This debug facility allows ACPI AML methods to be inserted and/or
-	  replaced without rebooting the system. For details refer to:
-	  Documentation/firmware-guide/acpi/method-customizing.rst.
-
-	  NOTE: This option is security sensitive, because it allows arbitrary
-	  kernel memory to be written to by root (uid=0) users, allowing them
-	  to bypass certain security measures (e.g. if root is not allowed to
-	  load additional kernel modules after boot, this feature may be used
-	  to override that restriction).
-
 config ACPI_BGRT
 	bool "Boottime Graphics Resource Table support"
-	depends on EFI && (X86 || ARM64)
+	depends on EFI
 	help
 	  This driver adds support for exposing the ACPI Boottime Graphics
 	  Resource Table, which allows the operating system to obtain
@@ -472,7 +471,6 @@ config ACPI_BGRT
 
 config ACPI_REDUCED_HARDWARE_ONLY
 	bool "Hardware-reduced ACPI support only" if EXPERT
-	def_bool n
 	help
 	  This config item changes the way the ACPI code is built.  When this
 	  option is selected, the kernel will use a specialized version of
@@ -481,6 +479,9 @@ config ACPI_REDUCED_HARDWARE_ONLY
 	  running in ACPI reduced hardware mode ONLY.
 
 	  If you are unsure what to do, do not enable this option.
+
+config ACPI_NHLT
+	bool
 
 source "drivers/acpi/nfit/Kconfig"
 source "drivers/acpi/numa/Kconfig"
@@ -494,6 +495,8 @@ config ACPI_EXTLOG
 	tristate "Extended Error Log support"
 	depends on X86_MCE && X86_LOCAL_APIC && EDAC
 	select UEFI_CPER
+	select ACPI_APEI
+	select ACPI_APEI_GHES
 	help
 	  Certain usages such as Predictive Failure Analysis (PFA) require
 	  more information about the error than what can be described in
@@ -545,10 +548,14 @@ config ACPI_PFRUT
 
 if ARM64
 source "drivers/acpi/arm64/Kconfig"
+endif
+
+if RISCV
+source "drivers/acpi/riscv/Kconfig"
+endif
 
 config ACPI_PPTT
 	bool
-endif
 
 config ACPI_PCC
 	bool "ACPI PCC Address Space"
@@ -567,10 +574,38 @@ config ACPI_PCC
 	  Enable this feature if you want to set up and install the PCC Address
 	  Space handler to handle PCC OpRegion in the firmware.
 
+config ACPI_FFH
+	bool "ACPI FFH Address Space"
+	default n
+	help
+	  The FFH(Fixed Function Hardware) Address Space also referred as FFH
+	  Operation Region allows to define platform specific opregion.
+
+	  Enable this feature if you want to set up and install the FFH Address
+	  Space handler to handle FFH OpRegion in the firmware.
+
+config ACPI_MRRM
+	bool
+
 source "drivers/acpi/pmic/Kconfig"
 
 config ACPI_VIOT
 	bool
+
+config ACPI_PRMT
+	bool "Platform Runtime Mechanism Support"
+	depends on EFI_RUNTIME_WRAPPERS && (X86_64 || ARM64)
+	default y
+	help
+	  Platform Runtime Mechanism (PRM) is a firmware interface exposing a
+	  set of binary executables that can be called from the AML interpreter
+	  or directly from device drivers.
+
+	  Say Y to enable the AML interpreter to execute the PRM code.
+
+	  While this feature is optional in principle, leaving it out may
+	  substantially increase computational overhead related to the
+	  initialization of some server systems.
 
 endif	# ACPI
 
@@ -589,18 +624,3 @@ config X86_PM_TIMER
 
 	  You should nearly always say Y here because many modern
 	  systems require this timer.
-
-config ACPI_PRMT
-	bool "Platform Runtime Mechanism Support"
-	depends on EFI && X86_64
-	default y
-	help
-	  Platform Runtime Mechanism (PRM) is a firmware interface exposing a
-	  set of binary executables that can be called from the AML interpreter
-	  or directly from device drivers.
-
-	  Say Y to enable the AML interpreter to execute the PRM code.
-
-	  While this feature is optional in principle, leaving it out may
-	  substantially increase computational overhead related to the
-	  initialization of some server systems.

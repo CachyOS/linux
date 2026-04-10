@@ -23,14 +23,13 @@
 #include <linux/swab.h>		/* for swab16 */
 #include <uapi/linux/i2c.h>
 
-extern struct bus_type i2c_bus_type;
-extern struct device_type i2c_adapter_type;
-extern struct device_type i2c_client_type;
+extern const struct bus_type i2c_bus_type;
+extern const struct device_type i2c_adapter_type;
+extern const struct device_type i2c_client_type;
 
 /* --- General options ------------------------------------------------	*/
 
 struct i2c_msg;
-struct i2c_algorithm;
 struct i2c_adapter;
 struct i2c_client;
 struct i2c_driver;
@@ -189,6 +188,7 @@ s32 i2c_smbus_read_i2c_block_data_or_emulated(const struct i2c_client *client,
 					      u8 *values);
 int i2c_get_device_id(const struct i2c_client *client,
 		      struct i2c_device_identity *id);
+const struct i2c_device_id *i2c_client_get_device_id(const struct i2c_client *client);
 #endif /* I2C */
 
 /**
@@ -235,8 +235,7 @@ enum i2c_driver_flags {
 /**
  * struct i2c_driver - represent an I2C device driver
  * @class: What kind of i2c device we instantiate (for detect)
- * @probe: Callback for device binding - soon to be deprecated
- * @probe_new: New callback for device binding
+ * @probe: Callback for device binding
  * @remove: Callback for device unbinding
  * @shutdown: Callback for device shutdown
  * @alert: Alert callback, for example for the SMBus alert protocol
@@ -272,13 +271,9 @@ struct i2c_driver {
 	unsigned int class;
 
 	/* Standard driver model interfaces */
-	int (*probe)(struct i2c_client *client, const struct i2c_device_id *id);
-	int (*remove)(struct i2c_client *client);
+	int (*probe)(struct i2c_client *client);
+	void (*remove)(struct i2c_client *client);
 
-	/* New driver model interface to aid the seamless removal of the
-	 * current probe()'s, more commonly unused than used second parameter.
-	 */
-	int (*probe_new)(struct i2c_client *client);
 
 	/* driver model interfaces that don't relate to enumeration  */
 	void (*shutdown)(struct i2c_client *client);
@@ -308,7 +303,7 @@ struct i2c_driver {
 
 	u32 flags;
 };
-#define to_i2c_driver(d) container_of(d, struct i2c_driver, driver)
+#define to_i2c_driver(d) container_of_const(d, struct i2c_driver, driver)
 
 /**
  * struct i2c_client - represent an I2C slave device
@@ -326,6 +321,8 @@ struct i2c_driver {
  *	calls it to pass on slave events to the slave driver.
  * @devres_group_id: id of the devres group that will be created for resources
  *	acquired when probing this device.
+ * @debugfs: pointer to the debugfs subdirectory which the I2C core created
+ *	for this client.
  *
  * An i2c_client identifies a single device (i.e. chip) connected to an
  * i2c bus. The behaviour exposed to Linux is defined by the driver
@@ -355,12 +352,15 @@ struct i2c_client {
 	i2c_slave_cb_t slave_cb;	/* callback for slave mode	*/
 #endif
 	void *devres_group_id;		/* ID of probe devres group	*/
+	struct dentry *debugfs;		/* per-client debugfs dir	*/
 };
 #define to_i2c_client(d) container_of(d, struct i2c_client, dev)
 
 struct i2c_adapter *i2c_verify_adapter(struct device *dev);
 const struct i2c_device_id *i2c_match_id(const struct i2c_device_id *id,
 					 const struct i2c_client *client);
+
+const void *i2c_get_match_data(const struct i2c_client *client);
 
 static inline struct i2c_client *kobj_to_i2c_client(struct kobject *kobj)
 {
@@ -380,7 +380,6 @@ static inline void i2c_set_clientdata(struct i2c_client *client, void *data)
 
 /* I2C slave support */
 
-#if IS_ENABLED(CONFIG_I2C_SLAVE)
 enum i2c_slave_event {
 	I2C_SLAVE_READ_REQUESTED,
 	I2C_SLAVE_WRITE_REQUESTED,
@@ -391,9 +390,10 @@ enum i2c_slave_event {
 
 int i2c_slave_register(struct i2c_client *client, i2c_slave_cb_t slave_cb);
 int i2c_slave_unregister(struct i2c_client *client);
-bool i2c_detect_slave_mode(struct device *dev);
 int i2c_slave_event(struct i2c_client *client,
 		    enum i2c_slave_event event, u8 *val);
+#if IS_ENABLED(CONFIG_I2C_SLAVE)
+bool i2c_detect_slave_mode(struct device *dev);
 #else
 static inline bool i2c_detect_slave_mode(struct device *dev) { return false; }
 #endif
@@ -405,7 +405,6 @@ static inline bool i2c_detect_slave_mode(struct device *dev) { return false; }
  * @addr: stored in i2c_client.addr
  * @dev_name: Overrides the default <busnr>-<addr> dev_name if set
  * @platform_data: stored in i2c_client.dev.platform_data
- * @of_node: pointer to OpenFirmware device node
  * @fwnode: device node supplied by the platform firmware
  * @swnode: software node for the device
  * @resources: resources associated with the device
@@ -429,7 +428,6 @@ struct i2c_board_info {
 	unsigned short	addr;
 	const char	*dev_name;
 	void		*platform_data;
-	struct device_node *of_node;
 	struct fwnode_handle *fwnode;
 	const struct software_node *swnode;
 	const struct resource *resources;
@@ -514,45 +512,54 @@ i2c_register_board_info(int busnum, struct i2c_board_info const *info,
 #endif /* I2C_BOARDINFO */
 
 /**
- * struct i2c_algorithm - represent I2C transfer method
- * @master_xfer: Issue a set of i2c transactions to the given I2C adapter
- *   defined by the msgs array, with num messages available to transfer via
- *   the adapter specified by adap.
- * @master_xfer_atomic: same as @master_xfer. Yet, only using atomic context
- *   so e.g. PMICs can be accessed very late before shutdown. Optional.
- * @smbus_xfer: Issue smbus transactions to the given I2C adapter. If this
+ * struct i2c_algorithm - represent I2C transfer methods
+ * @xfer: Transfer a given number of messages defined by the msgs array via
+ *   the specified adapter.
+ * @xfer_atomic: Same as @xfer. Yet, only using atomic context so e.g. PMICs
+ *   can be accessed very late before shutdown. Optional.
+ * @smbus_xfer: Issue SMBus transactions to the given I2C adapter. If this
  *   is not present, then the bus layer will try and convert the SMBus calls
  *   into I2C transfers instead.
- * @smbus_xfer_atomic: same as @smbus_xfer. Yet, only using atomic context
+ * @smbus_xfer_atomic: Same as @smbus_xfer. Yet, only using atomic context
  *   so e.g. PMICs can be accessed very late before shutdown. Optional.
  * @functionality: Return the flags that this algorithm/adapter pair supports
  *   from the ``I2C_FUNC_*`` flags.
- * @reg_slave: Register given client to I2C slave mode of this adapter
- * @unreg_slave: Unregister given client from I2C slave mode of this adapter
+ * @reg_target: Register given client to local target mode of this adapter
+ * @unreg_target: Unregister given client from local target mode of this adapter
  *
- * The following structs are for those who like to implement new bus drivers:
+ * @master_xfer: deprecated, use @xfer
+ * @master_xfer_atomic: deprecated, use @xfer_atomic
+ * @reg_slave: deprecated, use @reg_target
+ * @unreg_slave: deprecated, use @unreg_target
+ *
  * i2c_algorithm is the interface to a class of hardware solutions which can
  * be addressed using the same bus algorithms - i.e. bit-banging or the PCF8584
  * to name two of the most common.
  *
- * The return codes from the ``master_xfer{_atomic}`` fields should indicate the
+ * The return codes from the ``xfer{_atomic}`` fields should indicate the
  * type of error code that occurred during the transfer, as documented in the
- * Kernel Documentation file Documentation/i2c/fault-codes.rst.
+ * Kernel Documentation file Documentation/i2c/fault-codes.rst. Otherwise, the
+ * number of messages executed should be returned.
  */
 struct i2c_algorithm {
 	/*
-	 * If an adapter algorithm can't do I2C-level access, set master_xfer
+	 * If an adapter algorithm can't do I2C-level access, set xfer
 	 * to NULL. If an adapter algorithm can do SMBus access, set
 	 * smbus_xfer. If set to NULL, the SMBus protocol is simulated
 	 * using common I2C messages.
-	 *
-	 * master_xfer should return the number of messages successfully
-	 * processed, or a negative value on error
 	 */
-	int (*master_xfer)(struct i2c_adapter *adap, struct i2c_msg *msgs,
-			   int num);
-	int (*master_xfer_atomic)(struct i2c_adapter *adap,
+	union {
+		int (*xfer)(struct i2c_adapter *adap, struct i2c_msg *msgs,
+			    int num);
+		int (*master_xfer)(struct i2c_adapter *adap, struct i2c_msg *msgs,
+				   int num);
+	};
+	union {
+		int (*xfer_atomic)(struct i2c_adapter *adap,
 				   struct i2c_msg *msgs, int num);
+		int (*master_xfer_atomic)(struct i2c_adapter *adap,
+					   struct i2c_msg *msgs, int num);
+	};
 	int (*smbus_xfer)(struct i2c_adapter *adap, u16 addr,
 			  unsigned short flags, char read_write,
 			  u8 command, int size, union i2c_smbus_data *data);
@@ -564,8 +571,14 @@ struct i2c_algorithm {
 	u32 (*functionality)(struct i2c_adapter *adap);
 
 #if IS_ENABLED(CONFIG_I2C_SLAVE)
-	int (*reg_slave)(struct i2c_client *client);
-	int (*unreg_slave)(struct i2c_client *client);
+	union {
+		int (*reg_target)(struct i2c_client *client);
+		int (*reg_slave)(struct i2c_client *client);
+	};
+	union {
+		int (*unreg_target)(struct i2c_client *client);
+		int (*unreg_slave)(struct i2c_client *client);
+	};
 #endif
 };
 
@@ -747,6 +760,11 @@ struct i2c_adapter {
 
 	struct irq_domain *host_notify_domain;
 	struct regulator *bus_regulator;
+
+	struct dentry *debugfs;
+
+	/* 7bit address space */
+	DECLARE_BITMAP(addrs_in_instantiation, 1 << 7);
 };
 #define to_i2c_adapter(d) container_of(d, struct i2c_adapter, dev)
 
@@ -851,8 +869,6 @@ static inline void i2c_mark_adapter_resumed(struct i2c_adapter *adap)
 
 /* i2c adapter classes (bitmask) */
 #define I2C_CLASS_HWMON		(1<<0)	/* lm_sensors, ... */
-#define I2C_CLASS_DDC		(1<<3)	/* DDC bus on graphics adapters */
-#define I2C_CLASS_SPD		(1<<7)	/* Memory modules */
 /* Warn users that the adapter doesn't support classes anymore */
 #define I2C_CLASS_DEPRECATED	(1<<8)
 
@@ -931,7 +947,22 @@ static inline int i2c_adapter_id(struct i2c_adapter *adap)
 
 static inline u8 i2c_8bit_addr_from_msg(const struct i2c_msg *msg)
 {
-	return (msg->addr << 1) | (msg->flags & I2C_M_RD ? 1 : 0);
+	return (msg->addr << 1) | (msg->flags & I2C_M_RD);
+}
+
+/*
+ * 10-bit address
+ *   addr_1: 5'b11110 | addr[9:8] | (R/nW)
+ *   addr_2: addr[7:0]
+ */
+static inline u8 i2c_10bit_addr_hi_from_msg(const struct i2c_msg *msg)
+{
+	return 0xf0 | ((msg->addr & GENMASK(9, 8)) >> 7) | (msg->flags & I2C_M_RD);
+}
+
+static inline u8 i2c_10bit_addr_lo_from_msg(const struct i2c_msg *msg)
+{
+	return msg->addr & GENMASK(7, 0);
 }
 
 u8 *i2c_get_dma_safe_msg_buf(struct i2c_msg *msg, unsigned int threshold);
@@ -961,21 +992,55 @@ int i2c_handle_smbus_host_notify(struct i2c_adapter *adap, unsigned short addr);
 #define builtin_i2c_driver(__i2c_driver) \
 	builtin_driver(__i2c_driver, i2c_add_driver)
 
-#endif /* I2C */
+/* must call put_device() when done with returned i2c_client device */
+struct i2c_client *i2c_find_device_by_fwnode(struct fwnode_handle *fwnode);
+
+/* must call put_device() when done with returned i2c_adapter device */
+struct i2c_adapter *i2c_find_adapter_by_fwnode(struct fwnode_handle *fwnode);
+
+/* must call i2c_put_adapter() when done with returned i2c_adapter device */
+struct i2c_adapter *i2c_get_adapter_by_fwnode(struct fwnode_handle *fwnode);
+
+#else /* I2C */
+
+static inline struct i2c_client *
+i2c_find_device_by_fwnode(struct fwnode_handle *fwnode)
+{
+	return NULL;
+}
+
+static inline struct i2c_adapter *
+i2c_find_adapter_by_fwnode(struct fwnode_handle *fwnode)
+{
+	return NULL;
+}
+
+static inline struct i2c_adapter *
+i2c_get_adapter_by_fwnode(struct fwnode_handle *fwnode)
+{
+	return NULL;
+}
+
+#endif /* !I2C */
 
 #if IS_ENABLED(CONFIG_OF)
 /* must call put_device() when done with returned i2c_client device */
-struct i2c_client *of_find_i2c_device_by_node(struct device_node *node);
+static inline struct i2c_client *of_find_i2c_device_by_node(struct device_node *node)
+{
+	return i2c_find_device_by_fwnode(of_fwnode_handle(node));
+}
 
 /* must call put_device() when done with returned i2c_adapter device */
-struct i2c_adapter *of_find_i2c_adapter_by_node(struct device_node *node);
+static inline struct i2c_adapter *of_find_i2c_adapter_by_node(struct device_node *node)
+{
+	return i2c_find_adapter_by_fwnode(of_fwnode_handle(node));
+}
 
 /* must call i2c_put_adapter() when done with returned i2c_adapter device */
-struct i2c_adapter *of_get_i2c_adapter_by_node(struct device_node *node);
-
-const struct of_device_id
-*i2c_of_match_device(const struct of_device_id *matches,
-		     struct i2c_client *client);
+static inline struct i2c_adapter *of_get_i2c_adapter_by_node(struct device_node *node)
+{
+	return i2c_get_adapter_by_fwnode(of_fwnode_handle(node));
+}
 
 int of_i2c_get_board_info(struct device *dev, struct device_node *node,
 			  struct i2c_board_info *info);
@@ -997,13 +1062,6 @@ static inline struct i2c_adapter *of_get_i2c_adapter_by_node(struct device_node 
 	return NULL;
 }
 
-static inline const struct of_device_id
-*i2c_of_match_device(const struct of_device_id *matches,
-		     struct i2c_client *client)
-{
-	return NULL;
-}
-
 static inline int of_i2c_get_board_info(struct device *dev,
 					struct device_node *node,
 					struct i2c_board_info *info)
@@ -1016,7 +1074,7 @@ static inline int of_i2c_get_board_info(struct device *dev,
 struct acpi_resource;
 struct acpi_resource_i2c_serialbus;
 
-#if IS_ENABLED(CONFIG_ACPI)
+#if IS_REACHABLE(CONFIG_ACPI) && IS_REACHABLE(CONFIG_I2C)
 bool i2c_acpi_get_i2c_resource(struct acpi_resource *ares,
 			       struct acpi_resource_i2c_serialbus **i2c);
 int i2c_acpi_client_count(struct acpi_device *adev);

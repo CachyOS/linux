@@ -15,6 +15,7 @@
 #include <linux/slab.h>
 
 #include "super.h"
+#include "mds_client.h"
 
 static inline void ceph_set_cached_acl(struct inode *inode,
 					int type, struct posix_acl *acl)
@@ -31,6 +32,7 @@ static inline void ceph_set_cached_acl(struct inode *inode,
 
 struct posix_acl *ceph_get_acl(struct inode *inode, int type, bool rcu)
 {
+	struct ceph_client *cl = ceph_inode_to_client(inode);
 	int size;
 	unsigned int retry_cnt = 0;
 	const char *name;
@@ -72,8 +74,8 @@ retry:
 	} else if (size == -ENODATA || size == 0) {
 		acl = NULL;
 	} else {
-		pr_err_ratelimited("get acl %llx.%llx failed, err=%d\n",
-				   ceph_vinop(inode), size);
+		pr_err_ratelimited_client(cl, "%llx.%llx failed, err=%d\n",
+					  ceph_vinop(inode), size);
 		acl = ERR_PTR(-EIO);
 	}
 
@@ -85,14 +87,16 @@ retry:
 	return acl;
 }
 
-int ceph_set_acl(struct user_namespace *mnt_userns, struct inode *inode,
+int ceph_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 		 struct posix_acl *acl, int type)
 {
-	int ret = 0, size = 0;
+	int ret = 0;
+	size_t size = 0;
 	const char *name = NULL;
 	char *value = NULL;
 	struct iattr newattrs;
-	struct timespec64 old_ctime = inode->i_ctime;
+	struct inode *inode = d_inode(dentry);
+	struct timespec64 old_ctime = inode_get_ctime(inode);
 	umode_t new_mode = inode->i_mode, old_mode = inode->i_mode;
 
 	if (ceph_snap(inode) != CEPH_NOSNAP) {
@@ -104,7 +108,7 @@ int ceph_set_acl(struct user_namespace *mnt_userns, struct inode *inode,
 	case ACL_TYPE_ACCESS:
 		name = XATTR_NAME_POSIX_ACL_ACCESS;
 		if (acl) {
-			ret = posix_acl_update_mode(&init_user_ns, inode,
+			ret = posix_acl_update_mode(idmap, inode,
 						    &new_mode, &acl);
 			if (ret)
 				goto out;
@@ -123,23 +127,18 @@ int ceph_set_acl(struct user_namespace *mnt_userns, struct inode *inode,
 	}
 
 	if (acl) {
-		size = posix_acl_xattr_size(acl->a_count);
-		value = kmalloc(size, GFP_NOFS);
+		value = posix_acl_to_xattr(&init_user_ns, acl, &size, GFP_NOFS);
 		if (!value) {
 			ret = -ENOMEM;
 			goto out;
 		}
-
-		ret = posix_acl_to_xattr(&init_user_ns, acl, value, size);
-		if (ret < 0)
-			goto out_free;
 	}
 
 	if (new_mode != old_mode) {
 		newattrs.ia_ctime = current_time(inode);
 		newattrs.ia_mode = new_mode;
 		newattrs.ia_valid = ATTR_MODE | ATTR_CTIME;
-		ret = __ceph_setattr(inode, &newattrs);
+		ret = __ceph_setattr(idmap, inode, &newattrs, NULL);
 		if (ret)
 			goto out_free;
 	}
@@ -150,7 +149,7 @@ int ceph_set_acl(struct user_namespace *mnt_userns, struct inode *inode,
 			newattrs.ia_ctime = old_ctime;
 			newattrs.ia_mode = old_mode;
 			newattrs.ia_valid = ATTR_MODE | ATTR_CTIME;
-			__ceph_setattr(inode, &newattrs);
+			__ceph_setattr(idmap, inode, &newattrs, NULL);
 		}
 		goto out_free;
 	}
@@ -169,7 +168,7 @@ int ceph_pre_init_acls(struct inode *dir, umode_t *mode,
 	struct posix_acl *acl, *default_acl;
 	size_t val_size1 = 0, val_size2 = 0;
 	struct ceph_pagelist *pagelist = NULL;
-	void *tmp_buf = NULL;
+	void *tmp_buf1 = NULL, *tmp_buf2 = NULL;
 	int err;
 
 	err = posix_acl_create(dir, mode, &default_acl, &acl);
@@ -189,15 +188,7 @@ int ceph_pre_init_acls(struct inode *dir, umode_t *mode,
 	if (!default_acl && !acl)
 		return 0;
 
-	if (acl)
-		val_size1 = posix_acl_xattr_size(acl->a_count);
-	if (default_acl)
-		val_size2 = posix_acl_xattr_size(default_acl->a_count);
-
 	err = -ENOMEM;
-	tmp_buf = kmalloc(max(val_size1, val_size2), GFP_KERNEL);
-	if (!tmp_buf)
-		goto out_err;
 	pagelist = ceph_pagelist_alloc(GFP_KERNEL);
 	if (!pagelist)
 		goto out_err;
@@ -210,34 +201,39 @@ int ceph_pre_init_acls(struct inode *dir, umode_t *mode,
 
 	if (acl) {
 		size_t len = strlen(XATTR_NAME_POSIX_ACL_ACCESS);
+
+		err = -ENOMEM;
+		tmp_buf1 = posix_acl_to_xattr(&init_user_ns, acl,
+					      &val_size1, GFP_KERNEL);
+		if (!tmp_buf1)
+			goto out_err;
 		err = ceph_pagelist_reserve(pagelist, len + val_size1 + 8);
 		if (err)
 			goto out_err;
 		ceph_pagelist_encode_string(pagelist, XATTR_NAME_POSIX_ACL_ACCESS,
 					    len);
-		err = posix_acl_to_xattr(&init_user_ns, acl,
-					 tmp_buf, val_size1);
-		if (err < 0)
-			goto out_err;
 		ceph_pagelist_encode_32(pagelist, val_size1);
-		ceph_pagelist_append(pagelist, tmp_buf, val_size1);
+		ceph_pagelist_append(pagelist, tmp_buf1, val_size1);
 	}
 	if (default_acl) {
 		size_t len = strlen(XATTR_NAME_POSIX_ACL_DEFAULT);
+
+		err = -ENOMEM;
+		tmp_buf2 = posix_acl_to_xattr(&init_user_ns, default_acl,
+					      &val_size2, GFP_KERNEL);
+		if (!tmp_buf2)
+			goto out_err;
 		err = ceph_pagelist_reserve(pagelist, len + val_size2 + 8);
 		if (err)
 			goto out_err;
 		ceph_pagelist_encode_string(pagelist,
 					  XATTR_NAME_POSIX_ACL_DEFAULT, len);
-		err = posix_acl_to_xattr(&init_user_ns, default_acl,
-					 tmp_buf, val_size2);
-		if (err < 0)
-			goto out_err;
 		ceph_pagelist_encode_32(pagelist, val_size2);
-		ceph_pagelist_append(pagelist, tmp_buf, val_size2);
+		ceph_pagelist_append(pagelist, tmp_buf2, val_size2);
 	}
 
-	kfree(tmp_buf);
+	kfree(tmp_buf1);
+	kfree(tmp_buf2);
 
 	as_ctx->acl = acl;
 	as_ctx->default_acl = default_acl;
@@ -247,7 +243,8 @@ int ceph_pre_init_acls(struct inode *dir, umode_t *mode,
 out_err:
 	posix_acl_release(acl);
 	posix_acl_release(default_acl);
-	kfree(tmp_buf);
+	kfree(tmp_buf1);
+	kfree(tmp_buf2);
 	if (pagelist)
 		ceph_pagelist_release(pagelist);
 	return err;

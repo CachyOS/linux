@@ -9,7 +9,6 @@
 #include <linux/i2c.h>
 #include <linux/i2c-algo-bit.h>
 #include <drm/drm_crtc.h>
-#include <drm/drm_crtc_helper.h>
 #include <drm/drm_encoder.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
@@ -78,13 +77,14 @@ struct psb_intel_mode_device {
 	uint32_t saveBLC_PWM_CTL;
 };
 
-struct psb_intel_i2c_chan {
+struct gma_i2c_chan {
+	struct i2c_adapter base;
+	struct i2c_algo_bit_data algo;
+	u8 target_addr;
+
 	/* for getting at dev. private (mmio etc.) */
 	struct drm_device *drm_dev;
-	u32 reg;		/* GPIO reg */
-	struct i2c_adapter adapter;
-	struct i2c_algo_bit_data algo;
-	u8 slave_addr;
+	u32 reg; /* GPIO reg */
 };
 
 struct gma_encoder {
@@ -103,8 +103,7 @@ struct gma_encoder {
 
 	/* FIXME: Either make SDVO and LVDS store it's i2c here or give CDV it's
 	   own set of output privates */
-	struct psb_intel_i2c_chan *i2c_bus;
-	struct psb_intel_i2c_chan *ddc_bus;
+	struct gma_i2c_chan *i2c_bus;
 };
 
 struct gma_connector {
@@ -175,31 +174,24 @@ struct gma_crtc {
 		container_of(x, struct gma_encoder, base)
 #define to_psb_intel_framebuffer(x)	\
 		container_of(x, struct psb_intel_framebuffer, base)
+#define to_gma_i2c_chan(x)	\
+		container_of(x, struct gma_i2c_chan, base)
 
-struct psb_intel_i2c_chan *psb_intel_i2c_create(struct drm_device *dev,
-					const u32 reg, const char *name);
-void psb_intel_i2c_destroy(struct psb_intel_i2c_chan *chan);
+struct gma_i2c_chan *gma_i2c_create(struct drm_device *dev, const u32 reg,
+				    const char *name);
+void gma_i2c_destroy(struct gma_i2c_chan *chan);
 int psb_intel_ddc_get_modes(struct drm_connector *connector,
 			    struct i2c_adapter *adapter);
-extern bool psb_intel_ddc_probe(struct i2c_adapter *adapter);
 
 extern void psb_intel_crtc_init(struct drm_device *dev, int pipe,
 			    struct psb_intel_mode_device *mode_dev);
-extern void psb_intel_crt_init(struct drm_device *dev);
 extern bool psb_intel_sdvo_init(struct drm_device *dev, int output_device);
-extern void psb_intel_dvo_init(struct drm_device *dev);
-extern void psb_intel_tv_init(struct drm_device *dev);
 extern void psb_intel_lvds_init(struct drm_device *dev,
 			    struct psb_intel_mode_device *mode_dev);
 extern void psb_intel_lvds_set_brightness(struct drm_device *dev, int level);
 extern void oaktrail_lvds_init(struct drm_device *dev,
 			   struct psb_intel_mode_device *mode_dev);
-extern void oaktrail_wait_for_INTR_PKT_SENT(struct drm_device *dev);
-extern void oaktrail_dsi_init(struct drm_device *dev,
-			   struct psb_intel_mode_device *mode_dev);
-extern void oaktrail_lvds_i2c_init(struct drm_encoder *encoder);
-extern void mid_dsi_init(struct drm_device *dev,
-		    struct psb_intel_mode_device *mode_dev, int dsi_num);
+struct gma_i2c_chan *oaktrail_lvds_i2c_init(struct drm_device *dev);
 
 extern struct drm_encoder *gma_best_encoder(struct drm_connector *connector);
 extern void gma_connector_attach_encoder(struct gma_connector *connector,
@@ -215,19 +207,11 @@ extern struct drm_display_mode *psb_intel_crtc_mode_get(struct drm_device *dev,
 						    struct drm_crtc *crtc);
 extern struct drm_crtc *psb_intel_get_crtc_from_pipe(struct drm_device *dev,
 						 int pipe);
-extern struct drm_connector *psb_intel_sdvo_find(struct drm_device *dev,
-					     int sdvoB);
-extern int psb_intel_sdvo_supports_hotplug(struct drm_connector *connector);
-extern void psb_intel_sdvo_set_hotplug(struct drm_connector *connector,
-				   int enable);
-extern int intelfb_probe(struct drm_device *dev);
-extern int intelfb_remove(struct drm_device *dev,
-			  struct drm_framebuffer *fb);
 extern bool psb_intel_lvds_mode_fixup(struct drm_encoder *encoder,
 				      const struct drm_display_mode *mode,
 				      struct drm_display_mode *adjusted_mode);
 extern enum drm_mode_status psb_intel_lvds_mode_valid(struct drm_connector *connector,
-				     struct drm_display_mode *mode);
+				     const struct drm_display_mode *mode);
 extern int psb_intel_lvds_set_property(struct drm_connector *connector,
 					struct drm_property *property,
 					uint64_t value);
@@ -245,9 +229,6 @@ extern void cdv_intel_dp_init(struct drm_device *dev, struct psb_intel_mode_devi
 extern void cdv_intel_dp_set_m_n(struct drm_crtc *crtc,
 					struct drm_display_mode *mode,
 					struct drm_display_mode *adjusted_mode);
-
-extern void psb_intel_attach_force_audio_property(struct drm_connector *connector);
-extern void psb_intel_attach_broadcast_rgb_property(struct drm_connector *connector);
 
 extern int cdv_sb_read(struct drm_device *dev, u32 reg, u32 *val);
 extern int cdv_sb_write(struct drm_device *dev, u32 reg, u32 val);

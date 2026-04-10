@@ -89,12 +89,14 @@
 #include <linux/syscalls.h>
 #include <linux/nmi.h>
 #include <linux/delay.h>
+#include <linux/hex.h>
 #include <linux/kthread.h>
 #include <linux/module.h>
 #include <linux/sched/task.h>
 #include <linux/kallsyms.h>
 
 #include <asm/sections.h>
+#include <asm/rwonce.h>
 
 #define v1printk(a...) do {		\
 	if (verbose)			\
@@ -126,7 +128,6 @@ static int final_ack;
 static int force_hwbrks;
 static int hwbreaks_ok;
 static int hw_break_val;
-static int hw_break_val2;
 static int cont_instead_of_sstep;
 static unsigned long cont_thread_id;
 static unsigned long sstep_thread_id;
@@ -284,7 +285,7 @@ static void hw_rem_access_break(char *arg)
 
 static void hw_break_val_access(void)
 {
-	hw_break_val2 = hw_break_val;
+	READ_ONCE(hw_break_val);
 }
 
 static void hw_break_val_write(void)
@@ -1066,7 +1067,7 @@ static void kgdbts_run_tests(void)
 	configured = 0;
 }
 
-static int kgdbts_option_setup(char *opt)
+static int __init kgdbts_option_setup(char *opt)
 {
 	if (strlen(opt) >= MAX_CONFIG_LEN) {
 		printk(KERN_ERR "kgdbts: config string too long\n");

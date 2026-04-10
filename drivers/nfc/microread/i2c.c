@@ -231,8 +231,7 @@ static const struct nfc_phy_ops i2c_phy_ops = {
 	.disable = microread_i2c_disable,
 };
 
-static int microread_i2c_probe(struct i2c_client *client,
-			       const struct i2c_device_id *id)
+static int microread_i2c_probe(struct i2c_client *client)
 {
 	struct microread_i2c_phy *phy;
 	int r;
@@ -268,19 +267,17 @@ err_irq:
 	return r;
 }
 
-static int microread_i2c_remove(struct i2c_client *client)
+static void microread_i2c_remove(struct i2c_client *client)
 {
 	struct microread_i2c_phy *phy = i2c_get_clientdata(client);
 
 	microread_remove(phy->hdev);
 
 	free_irq(client->irq, phy);
-
-	return 0;
 }
 
 static const struct i2c_device_id microread_i2c_id[] = {
-	{ MICROREAD_I2C_DRIVER_NAME, 0},
+	{ MICROREAD_I2C_DRIVER_NAME },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, microread_i2c_id);

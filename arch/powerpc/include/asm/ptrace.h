@@ -24,7 +24,7 @@
 #include <asm/asm-const.h>
 #include <asm/reg.h>
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 struct pt_regs
 {
 	union {
@@ -97,7 +97,12 @@ struct pt_regs
 #endif
 
 
-#define STACK_FRAME_WITH_PT_REGS (STACK_FRAME_OVERHEAD + sizeof(struct pt_regs))
+// Always displays as "REGS" in memory dumps
+#ifdef CONFIG_CPU_BIG_ENDIAN
+#define STACK_FRAME_REGS_MARKER	ASM_CONST(0x52454753)
+#else
+#define STACK_FRAME_REGS_MARKER	ASM_CONST(0x53474552)
+#endif
 
 #ifdef __powerpc64__
 
@@ -113,17 +118,27 @@ struct pt_regs
 #define USER_REDZONE_SIZE	512
 #define KERNEL_REDZONE_SIZE	288
 
-#define STACK_FRAME_OVERHEAD	112	/* size of minimum stack frame */
 #define STACK_FRAME_LR_SAVE	2	/* Location of LR in stack frame */
-#define STACK_FRAME_REGS_MARKER	ASM_CONST(0x7265677368657265)
-#define STACK_INT_FRAME_SIZE	(sizeof(struct pt_regs) + \
-				 STACK_FRAME_OVERHEAD + KERNEL_REDZONE_SIZE)
-#define STACK_FRAME_MARKER	12
 
 #ifdef CONFIG_PPC64_ELF_ABI_V2
 #define STACK_FRAME_MIN_SIZE	32
+#define STACK_USER_INT_FRAME_SIZE	(sizeof(struct pt_regs) + STACK_FRAME_MIN_SIZE + 16)
+#define STACK_INT_FRAME_REGS	(STACK_FRAME_MIN_SIZE + 16)
+#define STACK_INT_FRAME_MARKER	STACK_FRAME_MIN_SIZE
+#define STACK_SWITCH_FRAME_SIZE (sizeof(struct pt_regs) + STACK_FRAME_MIN_SIZE + 16)
+#define STACK_SWITCH_FRAME_REGS	(STACK_FRAME_MIN_SIZE + 16)
 #else
-#define STACK_FRAME_MIN_SIZE	STACK_FRAME_OVERHEAD
+/*
+ * The ELFv1 ABI specifies 48 bytes plus a minimum 64 byte parameter save
+ * area. This parameter area is not used by calls to C from interrupt entry,
+ * so the second from last one of those is used for the frame marker.
+ */
+#define STACK_FRAME_MIN_SIZE	112
+#define STACK_USER_INT_FRAME_SIZE	(sizeof(struct pt_regs) + STACK_FRAME_MIN_SIZE)
+#define STACK_INT_FRAME_REGS	STACK_FRAME_MIN_SIZE
+#define STACK_INT_FRAME_MARKER	(STACK_FRAME_MIN_SIZE - 16)
+#define STACK_SWITCH_FRAME_SIZE	(sizeof(struct pt_regs) + STACK_FRAME_MIN_SIZE)
+#define STACK_SWITCH_FRAME_REGS	STACK_FRAME_MIN_SIZE
 #endif
 
 /* Size of dummy stack frame allocated when calling signal handler. */
@@ -134,19 +149,23 @@ struct pt_regs
 
 #define USER_REDZONE_SIZE	0
 #define KERNEL_REDZONE_SIZE	0
-#define STACK_FRAME_OVERHEAD	16	/* size of minimum stack frame */
+#define STACK_FRAME_MIN_SIZE	16
 #define STACK_FRAME_LR_SAVE	1	/* Location of LR in stack frame */
-#define STACK_FRAME_REGS_MARKER	ASM_CONST(0x72656773)
-#define STACK_INT_FRAME_SIZE	(sizeof(struct pt_regs) + STACK_FRAME_OVERHEAD)
-#define STACK_FRAME_MARKER	2
-#define STACK_FRAME_MIN_SIZE	STACK_FRAME_OVERHEAD
+#define STACK_USER_INT_FRAME_SIZE	(sizeof(struct pt_regs) + STACK_FRAME_MIN_SIZE)
+#define STACK_INT_FRAME_REGS	STACK_FRAME_MIN_SIZE
+#define STACK_INT_FRAME_MARKER	(STACK_FRAME_MIN_SIZE - 8)
+#define STACK_SWITCH_FRAME_SIZE	(sizeof(struct pt_regs) + STACK_FRAME_MIN_SIZE)
+#define STACK_SWITCH_FRAME_REGS	STACK_FRAME_MIN_SIZE
 
 /* Size of stack frame allocated when calling signal handler. */
 #define __SIGNAL_FRAMESIZE	64
 
 #endif /* __powerpc64__ */
 
-#ifndef __ASSEMBLY__
+#define STACK_INT_FRAME_SIZE	(KERNEL_REDZONE_SIZE + STACK_USER_INT_FRAME_SIZE)
+#define STACK_INT_FRAME_MARKER_LONGS	(STACK_INT_FRAME_MARKER/sizeof(long))
+
+#ifndef __ASSEMBLER__
 #include <asm/paca.h>
 
 #ifdef CONFIG_SMP
@@ -161,8 +180,8 @@ void do_syscall_trace_leave(struct pt_regs *regs);
 static inline void set_return_regs_changed(void)
 {
 #ifdef CONFIG_PPC_BOOK3S_64
-	local_paca->hsrr_valid = 0;
-	local_paca->srr_valid = 0;
+	WRITE_ONCE(local_paca->hsrr_valid, 0);
+	WRITE_ONCE(local_paca->srr_valid, 0);
 #endif
 }
 
@@ -291,7 +310,7 @@ static inline void regs_set_return_value(struct pt_regs *regs, unsigned long rc)
 
 static inline bool cpu_has_msr_ri(void)
 {
-	return !IS_ENABLED(CONFIG_BOOKE_OR_40x);
+	return !IS_ENABLED(CONFIG_BOOKE);
 }
 
 static inline bool regs_is_unrecoverable(struct pt_regs *regs)
@@ -378,7 +397,24 @@ static inline unsigned long regs_get_kernel_stack_nth(struct pt_regs *regs,
 		return 0;
 }
 
-#endif /* __ASSEMBLY__ */
+/**
+ * regs_get_kernel_argument() - get Nth function argument in kernel
+ * @regs:	pt_regs of that context
+ * @n:		function argument number (start from 0)
+ *
+ * We support up to 8 arguments and assume they are sent in through the GPRs.
+ * This will fail for fp/vector arguments, but those aren't usually found in
+ * kernel code. This is expected to be called from kprobes or ftrace with regs.
+ */
+static inline unsigned long regs_get_kernel_argument(struct pt_regs *regs, unsigned int n)
+{
+#define NR_REG_ARGUMENTS 8
+	if (n < NR_REG_ARGUMENTS)
+		return regs_get_register(regs, offsetof(struct pt_regs, gpr[3 + n]));
+	return 0;
+}
+
+#endif /* __ASSEMBLER__ */
 
 #ifndef __powerpc64__
 /* We need PT_SOFTE defined at all time to avoid #ifdefs */

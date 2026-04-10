@@ -85,8 +85,7 @@ static const struct iio_info max5432_info = {
 	.write_raw = max5432_write_raw,
 };
 
-static int max5432_probe(struct i2c_client *client,
-		const struct i2c_device_id *id)
+static int max5432_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct iio_dev *indio_dev;
@@ -115,7 +114,7 @@ static const struct of_device_id max5432_dt_ids[] = {
 	{ .compatible = "maxim,max5433", .data = (void *)MAX5432_OHM_100K },
 	{ .compatible = "maxim,max5434", .data = (void *)MAX5432_OHM_50K  },
 	{ .compatible = "maxim,max5435", .data = (void *)MAX5432_OHM_100K },
-	{ /* sentinel */ }
+	{ }
 };
 MODULE_DEVICE_TABLE(of, max5432_dt_ids);
 

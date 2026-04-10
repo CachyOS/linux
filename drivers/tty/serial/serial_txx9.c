@@ -23,8 +23,9 @@
 #include <linux/serial.h>
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
-
 #include <linux/io.h>
+
+#include <asm/txx9/generic.h>
 
 #define PASS_LIMIT	256
 
@@ -246,11 +247,10 @@ static void serial_txx9_initialize(struct uart_port *up)
 static inline void
 receive_chars(struct uart_port *up, unsigned int *status)
 {
-	unsigned char ch;
 	unsigned int disr = *status;
 	int max_count = 256;
-	char flag;
 	unsigned int next_ignore_status_mask;
+	u8 ch, flag;
 
 	do {
 		ch = sio_in(up, TXX9_SIRFIFO);
@@ -321,34 +321,12 @@ receive_chars(struct uart_port *up, unsigned int *status)
 
 static inline void transmit_chars(struct uart_port *up)
 {
-	struct circ_buf *xmit = &up->state->xmit;
-	int count;
+	u8 ch;
 
-	if (up->x_char) {
-		sio_out(up, TXX9_SITFIFO, up->x_char);
-		up->icount.tx++;
-		up->x_char = 0;
-		return;
-	}
-	if (uart_circ_empty(xmit) || uart_tx_stopped(up)) {
-		serial_txx9_stop_tx(up);
-		return;
-	}
-
-	count = TXX9_SIO_TX_FIFO;
-	do {
-		sio_out(up, TXX9_SITFIFO, xmit->buf[xmit->tail]);
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-		up->icount.tx++;
-		if (uart_circ_empty(xmit))
-			break;
-	} while (--count > 0);
-
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
-		uart_write_wakeup(up);
-
-	if (uart_circ_empty(xmit))
-		serial_txx9_stop_tx(up);
+	uart_port_tx_limited(up, ch, TXX9_SIO_TX_FIFO,
+		true,
+		sio_out(up, TXX9_SITFIFO, ch),
+		({}));
 }
 
 static irqreturn_t serial_txx9_interrupt(int irq, void *dev_id)
@@ -358,13 +336,13 @@ static irqreturn_t serial_txx9_interrupt(int irq, void *dev_id)
 	unsigned int status;
 
 	while (1) {
-		spin_lock(&up->lock);
+		uart_port_lock(up);
 		status = sio_in(up, TXX9_SIDISR);
 		if (!(sio_in(up, TXX9_SIDICR) & TXX9_SIDICR_TIE))
 			status &= ~TXX9_SIDISR_TDIS;
 		if (!(status & (TXX9_SIDISR_TDIS | TXX9_SIDISR_RDIS |
 				TXX9_SIDISR_TOUT))) {
-			spin_unlock(&up->lock);
+			uart_port_unlock(up);
 			break;
 		}
 
@@ -376,7 +354,7 @@ static irqreturn_t serial_txx9_interrupt(int irq, void *dev_id)
 		sio_mask(up, TXX9_SIDISR,
 			 TXX9_SIDISR_TDIS | TXX9_SIDISR_RDIS |
 			 TXX9_SIDISR_TOUT);
-		spin_unlock(&up->lock);
+		uart_port_unlock(up);
 
 		if (pass_counter++ > PASS_LIMIT)
 			break;
@@ -390,9 +368,9 @@ static unsigned int serial_txx9_tx_empty(struct uart_port *up)
 	unsigned long flags;
 	unsigned int ret;
 
-	spin_lock_irqsave(&up->lock, flags);
+	uart_port_lock_irqsave(up, &flags);
 	ret = (sio_in(up, TXX9_SICISR) & TXX9_SICISR_TXALS) ? TIOCSER_TEMT : 0;
-	spin_unlock_irqrestore(&up->lock, flags);
+	uart_port_unlock_irqrestore(up, flags);
 
 	return ret;
 }
@@ -422,12 +400,12 @@ static void serial_txx9_break_ctl(struct uart_port *up, int break_state)
 {
 	unsigned long flags;
 
-	spin_lock_irqsave(&up->lock, flags);
+	uart_port_lock_irqsave(up, &flags);
 	if (break_state == -1)
 		sio_set(up, TXX9_SIFLCR, TXX9_SIFLCR_TBRK);
 	else
 		sio_mask(up, TXX9_SIFLCR, TXX9_SIFLCR_TBRK);
-	spin_unlock_irqrestore(&up->lock, flags);
+	uart_port_unlock_irqrestore(up, flags);
 }
 
 #if defined(CONFIG_SERIAL_TXX9_CONSOLE) || defined(CONFIG_CONSOLE_POLL)
@@ -540,9 +518,9 @@ static int serial_txx9_startup(struct uart_port *up)
 	/*
 	 * Now, initialize the UART
 	 */
-	spin_lock_irqsave(&up->lock, flags);
+	uart_port_lock_irqsave(up, &flags);
 	serial_txx9_set_mctrl(up, up->mctrl);
-	spin_unlock_irqrestore(&up->lock, flags);
+	uart_port_unlock_irqrestore(up, flags);
 
 	/* Enable RX/TX */
 	sio_mask(up, TXX9_SIFLCR, TXX9_SIFLCR_RSDE | TXX9_SIFLCR_TSDE);
@@ -564,9 +542,9 @@ static void serial_txx9_shutdown(struct uart_port *up)
 	 */
 	sio_out(up, TXX9_SIDICR, 0);	/* disable all intrs */
 
-	spin_lock_irqsave(&up->lock, flags);
+	uart_port_lock_irqsave(up, &flags);
 	serial_txx9_set_mctrl(up, up->mctrl);
-	spin_unlock_irqrestore(&up->lock, flags);
+	uart_port_unlock_irqrestore(up, flags);
 
 	/*
 	 * Disable break condition
@@ -594,7 +572,7 @@ static void serial_txx9_shutdown(struct uart_port *up)
 
 static void
 serial_txx9_set_termios(struct uart_port *up, struct ktermios *termios,
-		       struct ktermios *old)
+			const struct ktermios *old)
 {
 	unsigned int cval, fcr = 0;
 	unsigned long flags;
@@ -648,7 +626,7 @@ serial_txx9_set_termios(struct uart_port *up, struct ktermios *termios,
 	 * Ok, we're now changing the port state.  Do it with
 	 * interrupts disabled.
 	 */
-	spin_lock_irqsave(&up->lock, flags);
+	uart_port_lock_irqsave(up, &flags);
 
 	/*
 	 * Update the per-port timeout.
@@ -699,7 +677,7 @@ serial_txx9_set_termios(struct uart_port *up, struct ktermios *termios,
 	sio_out(up, TXX9_SIFCR, fcr);
 
 	serial_txx9_set_mctrl(up, up->mctrl);
-	spin_unlock_irqrestore(&up->lock, flags);
+	uart_port_unlock_irqrestore(up, flags);
 }
 
 static void
@@ -1075,7 +1053,7 @@ static int serial_txx9_probe(struct platform_device *dev)
 /*
  * Remove serial ports registered against a platform device.
  */
-static int serial_txx9_remove(struct platform_device *dev)
+static void serial_txx9_remove(struct platform_device *dev)
 {
 	int i;
 
@@ -1085,7 +1063,6 @@ static int serial_txx9_remove(struct platform_device *dev)
 		if (up->dev == &dev->dev)
 			serial_txx9_unregister_port(i);
 	}
-	return 0;
 }
 
 #ifdef CONFIG_PM

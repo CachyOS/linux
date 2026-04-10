@@ -264,7 +264,7 @@ int64_t cvmx_bootmem_phy_alloc(uint64_t req_size, uint64_t address_min,
 	 * Convert !0 address_min and 0 address_max to special case of
 	 * range that specifies an exact memory block to allocate.  Do
 	 * this before other checks and adjustments so that this
-	 * tranformation will be validated.
+	 * transformation will be validated.
 	 */
 	if (address_min && !address_max)
 		address_max = address_min + req_size;
@@ -780,9 +780,8 @@ int64_t cvmx_bootmem_phy_named_block_alloc(uint64_t size, uint64_t min_addr,
 	if (addr_allocated >= 0) {
 		named_block_desc_ptr->base_addr = addr_allocated;
 		named_block_desc_ptr->size = size;
-		strncpy(named_block_desc_ptr->name, name,
+		strscpy(named_block_desc_ptr->name, name,
 			cvmx_bootmem_desc->named_block_name_len);
-		named_block_desc_ptr->name[cvmx_bootmem_desc->named_block_name_len - 1] = 0;
 	}
 
 	if (!(flags & CVMX_BOOTMEM_FLAG_NO_LOCKING))

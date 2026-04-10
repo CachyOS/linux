@@ -1516,7 +1516,7 @@ static irqreturn_t r8a66597_irq(int irq, void *_r8a66597)
 
 static void r8a66597_timer(struct timer_list *t)
 {
-	struct r8a66597 *r8a66597 = from_timer(r8a66597, t, timer);
+	struct r8a66597 *r8a66597 = timer_container_of(r8a66597, t, timer);
 	unsigned long flags;
 	u16 tmp;
 
@@ -1580,7 +1580,7 @@ static struct usb_request *r8a66597_alloc_request(struct usb_ep *_ep,
 {
 	struct r8a66597_request *req;
 
-	req = kzalloc(sizeof(struct r8a66597_request), gfp_flags);
+	req = kzalloc_obj(struct r8a66597_request, gfp_flags);
 	if (!req)
 		return NULL;
 
@@ -1805,19 +1805,17 @@ static const struct usb_gadget_ops r8a66597_gadget_ops = {
 	.set_selfpowered	= r8a66597_set_selfpowered,
 };
 
-static int r8a66597_remove(struct platform_device *pdev)
+static void r8a66597_remove(struct platform_device *pdev)
 {
 	struct r8a66597		*r8a66597 = platform_get_drvdata(pdev);
 
 	usb_del_gadget_udc(&r8a66597->gadget);
-	del_timer_sync(&r8a66597->timer);
+	timer_delete_sync(&r8a66597->timer);
 	r8a66597_free_request(&r8a66597->ep[0].ep, r8a66597->ep0_req);
 
 	if (r8a66597->pdata->on_chip) {
 		clk_disable_unprepare(r8a66597->clk);
 	}
-
-	return 0;
 }
 
 static void nop_completion(struct usb_ep *ep, struct usb_request *r)
@@ -1966,13 +1964,14 @@ clean_up2:
 
 /*-------------------------------------------------------------------------*/
 static struct platform_driver r8a66597_driver = {
+	.probe =	r8a66597_probe,
 	.remove =	r8a66597_remove,
 	.driver		= {
 		.name =	udc_name,
 	},
 };
 
-module_platform_driver_probe(r8a66597_driver, r8a66597_probe);
+module_platform_driver(r8a66597_driver);
 
 MODULE_DESCRIPTION("R8A66597 USB gadget driver");
 MODULE_LICENSE("GPL");

@@ -52,27 +52,27 @@ void blkg_rwstat_recursive_sum(struct blkcg_gq *blkg, struct blkcg_policy *pol,
 /**
  * blkg_rwstat_add - add a value to a blkg_rwstat
  * @rwstat: target blkg_rwstat
- * @op: REQ_OP and flags
+ * @opf: REQ_OP and flags
  * @val: value to add
  *
  * Add @val to @rwstat.  The counters are chosen according to @rw.  The
  * caller is responsible for synchronizing calls to this function.
  */
 static inline void blkg_rwstat_add(struct blkg_rwstat *rwstat,
-				   unsigned int op, uint64_t val)
+				   blk_opf_t opf, uint64_t val)
 {
 	struct percpu_counter *cnt;
 
-	if (op_is_discard(op))
+	if (op_is_discard(opf))
 		cnt = &rwstat->cpu_cnt[BLKG_RWSTAT_DISCARD];
-	else if (op_is_write(op))
+	else if (op_is_write(opf))
 		cnt = &rwstat->cpu_cnt[BLKG_RWSTAT_WRITE];
 	else
 		cnt = &rwstat->cpu_cnt[BLKG_RWSTAT_READ];
 
 	percpu_counter_add_batch(cnt, val, BLKG_STAT_CPU_BATCH);
 
-	if (op_is_sync(op))
+	if (op_is_sync(opf))
 		cnt = &rwstat->cpu_cnt[BLKG_RWSTAT_SYNC];
 	else
 		cnt = &rwstat->cpu_cnt[BLKG_RWSTAT_ASYNC];
@@ -83,8 +83,9 @@ static inline void blkg_rwstat_add(struct blkg_rwstat *rwstat,
 /**
  * blkg_rwstat_read - read the current values of a blkg_rwstat
  * @rwstat: blkg_rwstat to read
+ * @result: where to put the current values
  *
- * Read the current snapshot of @rwstat and return it in the aux counts.
+ * Read the current snapshot of @rwstat and return it in the @result counts.
  */
 static inline void blkg_rwstat_read(struct blkg_rwstat *rwstat,
 		struct blkg_rwstat_sample *result)

@@ -9,9 +9,10 @@
 // This driver is based on max8997.c
 
 #include <linux/err.h>
+#include <linux/i2c.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
-#include <linux/of_device.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/max14577.h>
 #include <linux/mfd/max14577-private.h>
@@ -142,6 +143,7 @@ static const struct of_device_id max14577_dt_match[] = {
 	},
 	{},
 };
+MODULE_DEVICE_TABLE(of, max14577_dt_match);
 
 static bool max14577_muic_volatile_reg(struct device *dev, unsigned int reg)
 {
@@ -209,8 +211,7 @@ static const struct regmap_irq max14577_irqs[] = {
 static const struct regmap_irq_chip max14577_irq_chip = {
 	.name			= "max14577",
 	.status_base		= MAX14577_REG_INT1,
-	.mask_base		= MAX14577_REG_INTMASK1,
-	.mask_invert		= true,
+	.unmask_base		= MAX14577_REG_INTMASK1,
 	.num_regs		= 3,
 	.irqs			= max14577_irqs,
 	.num_irqs		= ARRAY_SIZE(max14577_irqs),
@@ -239,8 +240,7 @@ static const struct regmap_irq max77836_muic_irqs[] = {
 static const struct regmap_irq_chip max77836_muic_irq_chip = {
 	.name			= "max77836-muic",
 	.status_base		= MAX14577_REG_INT1,
-	.mask_base		= MAX14577_REG_INTMASK1,
-	.mask_invert		= true,
+	.unmask_base		= MAX14577_REG_INTMASK1,
 	.num_regs		= 3,
 	.irqs			= max77836_muic_irqs,
 	.num_irqs		= ARRAY_SIZE(max77836_muic_irqs),
@@ -255,7 +255,6 @@ static const struct regmap_irq_chip max77836_pmic_irq_chip = {
 	.name			= "max77836-pmic",
 	.status_base		= MAX77836_PMIC_REG_TOPSYS_INT,
 	.mask_base		= MAX77836_PMIC_REG_TOPSYS_INT_MASK,
-	.mask_invert		= false,
 	.num_regs		= 1,
 	.irqs			= max77836_pmic_irqs,
 	.num_irqs		= ARRAY_SIZE(max77836_pmic_irqs),
@@ -358,8 +357,7 @@ static void max77836_remove(struct max14577 *max14577)
 	i2c_unregister_device(max14577->i2c_pmic);
 }
 
-static int max14577_i2c_probe(struct i2c_client *i2c,
-			      const struct i2c_device_id *id)
+static int max14577_i2c_probe(struct i2c_client *i2c)
 {
 	struct max14577 *max14577;
 	struct max14577_platform_data *pdata = dev_get_platdata(&i2c->dev);
@@ -400,16 +398,7 @@ static int max14577_i2c_probe(struct i2c_client *i2c,
 		return ret;
 	}
 
-	if (np) {
-		const struct of_device_id *of_id;
-
-		of_id = of_match_device(max14577_dt_match, &i2c->dev);
-		if (of_id)
-			max14577->dev_type =
-				(enum maxim_device_type)of_id->data;
-	} else {
-		max14577->dev_type = id->driver_data;
-	}
+	max14577->dev_type = (kernel_ulong_t)i2c_get_match_data(i2c);
 
 	max14577_print_dev_type(max14577);
 
@@ -463,16 +452,15 @@ err_max77836:
 	return ret;
 }
 
-static int max14577_i2c_remove(struct i2c_client *i2c)
+static void max14577_i2c_remove(struct i2c_client *i2c)
 {
 	struct max14577 *max14577 = i2c_get_clientdata(i2c);
 
+	device_init_wakeup(max14577->dev, false);
 	mfd_remove_devices(max14577->dev);
 	regmap_del_irq_chip(max14577->irq, max14577->irq_data);
 	if (max14577->dev_type == MAXIM_DEVICE_TYPE_MAX77836)
 		max77836_remove(max14577);
-
-	return 0;
 }
 
 static const struct i2c_device_id max14577_i2c_id[] = {
@@ -482,7 +470,6 @@ static const struct i2c_device_id max14577_i2c_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, max14577_i2c_id);
 
-#ifdef CONFIG_PM_SLEEP
 static int max14577_suspend(struct device *dev)
 {
 	struct i2c_client *i2c = to_i2c_client(dev);
@@ -515,14 +502,13 @@ static int max14577_resume(struct device *dev)
 
 	return 0;
 }
-#endif /* CONFIG_PM_SLEEP */
 
-static SIMPLE_DEV_PM_OPS(max14577_pm, max14577_suspend, max14577_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(max14577_pm, max14577_suspend, max14577_resume);
 
 static struct i2c_driver max14577_i2c_driver = {
 	.driver = {
 		.name = "max14577",
-		.pm = &max14577_pm,
+		.pm = pm_sleep_ptr(&max14577_pm),
 		.of_match_table = max14577_dt_match,
 	},
 	.probe = max14577_i2c_probe,

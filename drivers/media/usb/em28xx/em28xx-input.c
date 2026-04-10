@@ -6,16 +6,6 @@
 //		      Markus Rechberger <mrechberger@gmail.com>
 //		      Mauro Carvalho Chehab <mchehab@kernel.org>
 //		      Sascha Sommer <saschasommer@freenet.de>
-//
-// This program is free software; you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation; either version 2 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
 
 #include "em28xx.h"
 
@@ -734,7 +724,7 @@ static int em28xx_ir_init(struct em28xx *dev)
 
 	dev_info(&dev->intf->dev, "Registering input extension\n");
 
-	ir = kzalloc(sizeof(*ir), GFP_KERNEL);
+	ir = kzalloc_obj(*ir);
 	if (!ir)
 		goto ref_put;
 	rc = rc_allocate_device(RC_DRIVER_SCANCODE);
@@ -775,7 +765,7 @@ static int em28xx_ir_init(struct em28xx *dev)
 			goto error;
 		}
 
-		ir->i2c_client = kzalloc(sizeof(*ir->i2c_client), GFP_KERNEL);
+		ir->i2c_client = kzalloc_obj(*ir->i2c_client);
 		if (!ir->i2c_client)
 			goto error;
 		ir->i2c_client->adapter = &ir->dev->i2c_adap[dev->def_i2c_bus];

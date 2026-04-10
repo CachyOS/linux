@@ -18,6 +18,7 @@
 #include <linux/extcon-provider.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/string_choices.h>
 #include <linux/usb/otg.h>
 #include <linux/mfd/retu.h>
 #include <linux/usb/gadget.h>
@@ -63,7 +64,7 @@ static ssize_t vbus_show(struct device *device,
 			       struct device_attribute *attr, char *buf)
 {
 	struct tahvo_usb *tu = dev_get_drvdata(device);
-	return sprintf(buf, "%s\n", tu->vbus_state ? "on" : "off");
+	return sprintf(buf, "%s\n", str_on_off(tu->vbus_state));
 }
 static DEVICE_ATTR_RO(vbus);
 
@@ -391,7 +392,7 @@ static int tahvo_usb_probe(struct platform_device *pdev)
 
 	tu->irq = ret = platform_get_irq(pdev, 0);
 	if (ret < 0)
-		return ret;
+		goto err_remove_phy;
 	ret = request_threaded_irq(tu->irq, NULL, tahvo_usb_vbus_interrupt,
 				   IRQF_ONESHOT,
 				   "tahvo-vbus", tu);
@@ -412,7 +413,7 @@ err_disable_clk:
 	return ret;
 }
 
-static int tahvo_usb_remove(struct platform_device *pdev)
+static void tahvo_usb_remove(struct platform_device *pdev)
 {
 	struct tahvo_usb *tu = platform_get_drvdata(pdev);
 
@@ -420,8 +421,6 @@ static int tahvo_usb_remove(struct platform_device *pdev)
 	usb_remove_phy(&tu->phy);
 	if (!IS_ERR(tu->ick))
 		clk_disable(tu->ick);
-
-	return 0;
 }
 
 static struct platform_driver tahvo_usb_driver = {

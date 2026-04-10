@@ -34,7 +34,6 @@
 #include <linux/nospec.h>
 #include <linux/proc_fs.h>
 #include <linux/psi.h>
-#include <linux/psi.h>
 #include <linux/ptrace_api.h>
 #include <linux/sched_clock.h>
 #include <linux/security.h>
@@ -69,9 +68,7 @@
 # include "cpufreq_schedutil.c"
 #endif
 
-#ifdef CONFIG_SCHED_DEBUG
-# include "debug.c"
-#endif
+#include "debug.c"
 
 #ifdef CONFIG_SCHEDSTATS
 # include "stats.c"
@@ -83,11 +80,10 @@
 #include "wait_bit.c"
 #include "wait.c"
 
-#ifdef CONFIG_SMP
-# include "cpupri.c"
-# include "stop_task.c"
-# include "topology.c"
-#endif
+#include "cpupri.c"
+#include "stop_task.c"
+
+#include "topology.c"
 
 #ifdef CONFIG_SCHED_CORE
 # include "core_sched.c"

@@ -15,6 +15,7 @@
 #include <asm/qdio.h>
 #include <asm/airq.h>
 #include <asm/isc.h>
+#include <asm/tpi.h>
 
 #include "cio.h"
 #include "ioasm.h"
@@ -93,11 +94,12 @@ static inline u32 clear_shared_ind(void)
 /**
  * tiqdio_thinint_handler - thin interrupt handler for qdio
  * @airq: pointer to adapter interrupt descriptor
- * @floating: flag to recognize floating vs. directed interrupts (unused)
+ * @tpi_info: interrupt information (e.g. floating vs directed -- unused)
  */
-static void tiqdio_thinint_handler(struct airq_struct *airq, bool floating)
+static void tiqdio_thinint_handler(struct airq_struct *airq,
+				   struct tpi_info *tpi_info)
 {
-	u64 irq_time = S390_lowcore.int_clock;
+	u64 irq_time = get_lowcore()->int_clock;
 	u32 si_used = clear_shared_ind();
 	struct qdio_irq *irq;
 
@@ -135,15 +137,15 @@ static struct airq_struct tiqdio_airq = {
 static int set_subchannel_ind(struct qdio_irq *irq_ptr, int reset)
 {
 	struct chsc_scssc_area *scssc = (void *)irq_ptr->chsc_page;
-	u64 summary_indicator_addr, subchannel_indicator_addr;
+	dma64_t summary_indicator_addr, subchannel_indicator_addr;
 	int rc;
 
 	if (reset) {
 		summary_indicator_addr = 0;
 		subchannel_indicator_addr = 0;
 	} else {
-		summary_indicator_addr = virt_to_phys(tiqdio_airq.lsi_ptr);
-		subchannel_indicator_addr = virt_to_phys(irq_ptr->dsci);
+		summary_indicator_addr = virt_to_dma64(tiqdio_airq.lsi_ptr);
+		subchannel_indicator_addr = virt_to_dma64(irq_ptr->dsci);
 	}
 
 	rc = chsc_sadc(irq_ptr->schid, scssc, summary_indicator_addr,
@@ -202,8 +204,7 @@ int __init qdio_thinint_init(void)
 {
 	int rc;
 
-	q_indicators = kcalloc(TIQDIO_NR_INDICATORS, sizeof(struct indicator_t),
-			       GFP_KERNEL);
+	q_indicators = kzalloc_objs(struct indicator_t, TIQDIO_NR_INDICATORS);
 	if (!q_indicators)
 		return -ENOMEM;
 

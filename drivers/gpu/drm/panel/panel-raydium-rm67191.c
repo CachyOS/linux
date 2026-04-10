@@ -8,6 +8,7 @@
 #include <linux/backlight.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
+#include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/regulator/consumer.h>
@@ -204,7 +205,6 @@ struct rad_panel {
 	unsigned int num_supplies;
 
 	bool prepared;
-	bool enabled;
 };
 
 static const struct drm_display_mode default_mode = {
@@ -266,9 +266,6 @@ static int rad_panel_prepare(struct drm_panel *panel)
 	struct rad_panel *rad = to_rad_panel(panel);
 	int ret;
 
-	if (rad->prepared)
-		return 0;
-
 	ret = regulator_bulk_enable(rad->num_supplies, rad->supplies);
 	if (ret)
 		return ret;
@@ -289,9 +286,6 @@ static int rad_panel_unprepare(struct drm_panel *panel)
 {
 	struct rad_panel *rad = to_rad_panel(panel);
 	int ret;
-
-	if (!rad->prepared)
-		return 0;
 
 	/*
 	 * Right after asserting the reset, we need to release it, so that the
@@ -320,9 +314,6 @@ static int rad_panel_enable(struct drm_panel *panel)
 	struct device *dev = &dsi->dev;
 	int color_format = color_format_from_dsi_format(dsi->format);
 	int ret;
-
-	if (rad->enabled)
-		return 0;
 
 	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 
@@ -388,8 +379,6 @@ static int rad_panel_enable(struct drm_panel *panel)
 
 	backlight_enable(rad->backlight);
 
-	rad->enabled = true;
-
 	return 0;
 
 fail:
@@ -404,9 +393,6 @@ static int rad_panel_disable(struct drm_panel *panel)
 	struct mipi_dsi_device *dsi = rad->dsi;
 	struct device *dev = &dsi->dev;
 	int ret;
-
-	if (!rad->enabled)
-		return 0;
 
 	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 
@@ -427,8 +413,6 @@ static int rad_panel_disable(struct drm_panel *panel)
 		dev_err(dev, "Failed to enter sleep mode (%d)\n", ret);
 		return ret;
 	}
-
-	rad->enabled = false;
 
 	return 0;
 }
@@ -543,9 +527,11 @@ static int rad_panel_probe(struct mipi_dsi_device *dsi)
 	int ret;
 	u32 video_mode;
 
-	panel = devm_kzalloc(&dsi->dev, sizeof(*panel), GFP_KERNEL);
-	if (!panel)
-		return -ENOMEM;
+	panel = devm_drm_panel_alloc(dev, struct rad_panel, panel,
+				     &rad_panel_funcs,
+				     DRM_MODE_CONNECTOR_DSI);
+	if (IS_ERR(panel))
+		return PTR_ERR(panel);
 
 	mipi_dsi_set_drvdata(dsi, panel);
 
@@ -602,8 +588,6 @@ static int rad_panel_probe(struct mipi_dsi_device *dsi)
 	if (ret)
 		return ret;
 
-	drm_panel_init(&panel->panel, dev, &rad_panel_funcs,
-		       DRM_MODE_CONNECTOR_DSI);
 	dev_set_drvdata(dev, panel);
 
 	drm_panel_add(&panel->panel);
@@ -615,7 +599,7 @@ static int rad_panel_probe(struct mipi_dsi_device *dsi)
 	return ret;
 }
 
-static int rad_panel_remove(struct mipi_dsi_device *dsi)
+static void rad_panel_remove(struct mipi_dsi_device *dsi)
 {
 	struct rad_panel *rad = mipi_dsi_get_drvdata(dsi);
 	struct device *dev = &dsi->dev;
@@ -626,16 +610,6 @@ static int rad_panel_remove(struct mipi_dsi_device *dsi)
 		dev_err(dev, "Failed to detach from host (%d)\n", ret);
 
 	drm_panel_remove(&rad->panel);
-
-	return 0;
-}
-
-static void rad_panel_shutdown(struct mipi_dsi_device *dsi)
-{
-	struct rad_panel *rad = mipi_dsi_get_drvdata(dsi);
-
-	rad_panel_disable(&rad->panel);
-	rad_panel_unprepare(&rad->panel);
 }
 
 static const struct of_device_id rad_of_match[] = {
@@ -651,7 +625,6 @@ static struct mipi_dsi_driver rad_panel_driver = {
 	},
 	.probe = rad_panel_probe,
 	.remove = rad_panel_remove,
-	.shutdown = rad_panel_shutdown,
 };
 module_mipi_dsi_driver(rad_panel_driver);
 

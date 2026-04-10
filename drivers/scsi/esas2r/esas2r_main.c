@@ -66,7 +66,7 @@ static struct esas2r_adapter *esas2r_adapter_from_kobj(struct kobject *kobj)
 }
 
 static ssize_t read_fw(struct file *file, struct kobject *kobj,
-		       struct bin_attribute *attr,
+		       const struct bin_attribute *attr,
 		       char *buf, loff_t off, size_t count)
 {
 	struct esas2r_adapter *a = esas2r_adapter_from_kobj(kobj);
@@ -75,7 +75,7 @@ static ssize_t read_fw(struct file *file, struct kobject *kobj,
 }
 
 static ssize_t write_fw(struct file *file, struct kobject *kobj,
-			struct bin_attribute *attr,
+			const struct bin_attribute *attr,
 			char *buf, loff_t off, size_t count)
 {
 	struct esas2r_adapter *a = esas2r_adapter_from_kobj(kobj);
@@ -84,7 +84,7 @@ static ssize_t write_fw(struct file *file, struct kobject *kobj,
 }
 
 static ssize_t read_fs(struct file *file, struct kobject *kobj,
-		       struct bin_attribute *attr,
+		       const struct bin_attribute *attr,
 		       char *buf, loff_t off, size_t count)
 {
 	struct esas2r_adapter *a = esas2r_adapter_from_kobj(kobj);
@@ -93,7 +93,7 @@ static ssize_t read_fs(struct file *file, struct kobject *kobj,
 }
 
 static ssize_t write_fs(struct file *file, struct kobject *kobj,
-			struct bin_attribute *attr,
+			const struct bin_attribute *attr,
 			char *buf, loff_t off, size_t count)
 {
 	struct esas2r_adapter *a = esas2r_adapter_from_kobj(kobj);
@@ -109,7 +109,7 @@ static ssize_t write_fs(struct file *file, struct kobject *kobj,
 }
 
 static ssize_t read_vda(struct file *file, struct kobject *kobj,
-			struct bin_attribute *attr,
+			const struct bin_attribute *attr,
 			char *buf, loff_t off, size_t count)
 {
 	struct esas2r_adapter *a = esas2r_adapter_from_kobj(kobj);
@@ -118,7 +118,7 @@ static ssize_t read_vda(struct file *file, struct kobject *kobj,
 }
 
 static ssize_t write_vda(struct file *file, struct kobject *kobj,
-			 struct bin_attribute *attr,
+			 const struct bin_attribute *attr,
 			 char *buf, loff_t off, size_t count)
 {
 	struct esas2r_adapter *a = esas2r_adapter_from_kobj(kobj);
@@ -127,7 +127,7 @@ static ssize_t write_vda(struct file *file, struct kobject *kobj,
 }
 
 static ssize_t read_live_nvram(struct file *file, struct kobject *kobj,
-			       struct bin_attribute *attr,
+			       const struct bin_attribute *attr,
 			       char *buf, loff_t off, size_t count)
 {
 	struct esas2r_adapter *a = esas2r_adapter_from_kobj(kobj);
@@ -138,7 +138,7 @@ static ssize_t read_live_nvram(struct file *file, struct kobject *kobj,
 }
 
 static ssize_t write_live_nvram(struct file *file, struct kobject *kobj,
-				struct bin_attribute *attr,
+				const struct bin_attribute *attr,
 				char *buf, loff_t off, size_t count)
 {
 	struct esas2r_adapter *a = esas2r_adapter_from_kobj(kobj);
@@ -158,7 +158,7 @@ static ssize_t write_live_nvram(struct file *file, struct kobject *kobj,
 }
 
 static ssize_t read_default_nvram(struct file *file, struct kobject *kobj,
-				  struct bin_attribute *attr,
+				  const struct bin_attribute *attr,
 				  char *buf, loff_t off, size_t count)
 {
 	struct esas2r_adapter *a = esas2r_adapter_from_kobj(kobj);
@@ -169,7 +169,7 @@ static ssize_t read_default_nvram(struct file *file, struct kobject *kobj,
 }
 
 static ssize_t read_hw(struct file *file, struct kobject *kobj,
-		       struct bin_attribute *attr,
+		       const struct bin_attribute *attr,
 		       char *buf, loff_t off, size_t count)
 {
 	struct esas2r_adapter *a = esas2r_adapter_from_kobj(kobj);
@@ -187,15 +187,14 @@ static ssize_t read_hw(struct file *file, struct kobject *kobj,
 }
 
 static ssize_t write_hw(struct file *file, struct kobject *kobj,
-			struct bin_attribute *attr,
+			const struct bin_attribute *attr,
 			char *buf, loff_t off, size_t count)
 {
 	struct esas2r_adapter *a = esas2r_adapter_from_kobj(kobj);
 	int length = min(sizeof(struct atto_ioctl), count);
 
 	if (!a->local_atto_ioctl) {
-		a->local_atto_ioctl = kmalloc(sizeof(struct atto_ioctl),
-					      GFP_KERNEL);
+		a->local_atto_ioctl = kmalloc_obj(struct atto_ioctl);
 		if (a->local_atto_ioctl == NULL) {
 			esas2r_log(ESAS2R_LOG_WARN,
 				   "write_hw kzalloc failed for %zu bytes",
@@ -211,7 +210,7 @@ static ssize_t write_hw(struct file *file, struct kobject *kobj,
 }
 
 #define ESAS2R_RW_BIN_ATTR(_name) \
-	struct bin_attribute bin_attr_ ## _name = { \
+	const struct bin_attribute bin_attr_ ## _name = { \
 		.attr	= \
 		{ .name = __stringify(_name), .mode  = S_IRUSR | S_IWUSR }, \
 		.size	= 0, \
@@ -224,14 +223,14 @@ ESAS2R_RW_BIN_ATTR(vda);
 ESAS2R_RW_BIN_ATTR(hw);
 ESAS2R_RW_BIN_ATTR(live_nvram);
 
-struct bin_attribute bin_attr_default_nvram = {
+const struct bin_attribute bin_attr_default_nvram = {
 	.attr	= { .name = "default_nvram", .mode = S_IRUGO },
 	.size	= 0,
 	.read	= read_default_nvram,
 	.write	= NULL
 };
 
-static struct scsi_host_template driver_template = {
+static const struct scsi_host_template driver_template = {
 	.module				= THIS_MODULE,
 	.show_info			= esas2r_show_info,
 	.name				= ESAS2R_LONGNAME,
@@ -248,8 +247,6 @@ static struct scsi_host_template driver_template = {
 	.sg_tablesize			= SG_CHUNK_SIZE,
 	.cmd_per_lun			=
 		ESAS2R_DEFAULT_CMD_PER_LUN,
-	.present			= 0,
-	.emulated			= 0,
 	.proc_name			= ESAS2R_DRVR_NAME,
 	.change_queue_depth		= scsi_change_queue_depth,
 	.max_sectors			= 0xFFFF,
@@ -637,10 +634,13 @@ static void __exit esas2r_exit(void)
 	esas2r_log(ESAS2R_LOG_INFO, "%s called", __func__);
 
 	if (esas2r_proc_major > 0) {
+		struct proc_dir_entry *proc_dir;
+
 		esas2r_log(ESAS2R_LOG_INFO, "unregister proc");
 
-		remove_proc_entry(ATTONODE_NAME,
-				  esas2r_proc_host->hostt->proc_dir);
+		proc_dir = scsi_template_proc_dir(esas2r_proc_host->hostt);
+		if (proc_dir)
+			remove_proc_entry(ATTONODE_NAME, proc_dir);
 		unregister_chrdev(esas2r_proc_major, ESAS2R_DRVR_NAME);
 
 		esas2r_proc_major = 0;
@@ -730,11 +730,13 @@ const char *esas2r_info(struct Scsi_Host *sh)
 			       esas2r_proc_major);
 
 		if (esas2r_proc_major > 0) {
-			struct proc_dir_entry *pde;
+			struct proc_dir_entry *proc_dir;
+			struct proc_dir_entry *pde = NULL;
 
-			pde = proc_create(ATTONODE_NAME, 0,
-					  sh->hostt->proc_dir,
-					  &esas2r_proc_ops);
+			proc_dir = scsi_template_proc_dir(sh->hostt);
+			if (proc_dir)
+				pde = proc_create(ATTONODE_NAME, 0, proc_dir,
+						  &esas2r_proc_ops);
 
 			if (!pde) {
 				esas2r_log_dev(ESAS2R_LOG_WARN,
@@ -815,7 +817,8 @@ static u32 get_physaddr_from_sgc(struct esas2r_sg_context *sgc, u64 *addr)
 	return len;
 }
 
-int esas2r_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *cmd)
+enum scsi_qc_status esas2r_queuecommand(struct Scsi_Host *host,
+					struct scsi_cmnd *cmd)
 {
 	struct esas2r_adapter *a =
 		(struct esas2r_adapter *)cmd->device->host->hostdata;
@@ -1582,7 +1585,7 @@ void esas2r_kickoff_timer(struct esas2r_adapter *a)
 
 static void esas2r_timer_callback(struct timer_list *t)
 {
-	struct esas2r_adapter *a = from_timer(a, t, timer);
+	struct esas2r_adapter *a = timer_container_of(a, t, timer);
 
 	set_bit(AF2_TIMER_TICK, &a->flags2);
 
@@ -1827,7 +1830,7 @@ void esas2r_queue_fw_event(struct esas2r_adapter *a,
 	struct esas2r_fw_event_work *fw_event;
 	unsigned long flags;
 
-	fw_event = kzalloc(sizeof(struct esas2r_fw_event_work), GFP_ATOMIC);
+	fw_event = kzalloc_obj(struct esas2r_fw_event_work, GFP_ATOMIC);
 	if (!fw_event) {
 		esas2r_log(ESAS2R_LOG_WARN,
 			   "esas2r_queue_fw_event failed to alloc");

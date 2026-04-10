@@ -22,9 +22,6 @@
 #define TIMEOUT_US	2000	/* CVP STATUS timeout for USERMODE polling */
 
 /* Vendor Specific Extended Capability Registers */
-#define VSE_PCIE_EXT_CAP_ID		0x0
-#define VSE_PCIE_EXT_CAP_ID_VAL		0x000b	/* 16bit */
-
 #define VSE_CVP_STATUS			0x1c	/* 32bit */
 #define VSE_CVP_STATUS_CFG_RDY		BIT(18)	/* CVP_CONFIG_READY */
 #define VSE_CVP_STATUS_CFG_ERR		BIT(19)	/* CVP_CONFIG_ERROR */
@@ -52,7 +49,7 @@
 /* V2 Defines */
 #define VSE_CVP_TX_CREDITS		0x49	/* 8bit */
 
-#define V2_CREDIT_TIMEOUT_US		20000
+#define V2_CREDIT_TIMEOUT_US		40000
 #define V2_CHECK_CREDIT_US		10
 #define V2_POLL_TIMEOUT_US		1000000
 #define V2_USER_TIMEOUT_US		500000
@@ -72,7 +69,6 @@ static bool altera_cvp_chkcfg;
 struct cvp_priv;
 
 struct altera_cvp_conf {
-	struct fpga_manager	*mgr;
 	struct pci_dev		*pci_dev;
 	void __iomem		*map;
 	void			(*write_data)(struct altera_cvp_conf *conf,
@@ -578,25 +574,18 @@ static int altera_cvp_probe(struct pci_dev *pdev,
 {
 	struct altera_cvp_conf *conf;
 	struct fpga_manager *mgr;
-	int ret, offset;
-	u16 cmd, val;
+	u16 cmd, offset;
 	u32 regval;
-
-	/* Discover the Vendor Specific Offset for this device */
-	offset = pci_find_next_ext_capability(pdev, 0, PCI_EXT_CAP_ID_VNDR);
-	if (!offset) {
-		dev_err(&pdev->dev, "No Vendor Specific Offset.\n");
-		return -ENODEV;
-	}
+	int ret;
 
 	/*
 	 * First check if this is the expected FPGA device. PCI config
 	 * space access works without enabling the PCI device, memory
 	 * space access is enabled further down.
 	 */
-	pci_read_config_word(pdev, offset + VSE_PCIE_EXT_CAP_ID, &val);
-	if (val != VSE_PCIE_EXT_CAP_ID_VAL) {
-		dev_err(&pdev->dev, "Wrong EXT_CAP_ID value 0x%x\n", val);
+	offset = pci_find_vsec_capability(pdev, PCI_VENDOR_ID_ALTERA, 0x1172);
+	if (!offset) {
+		dev_err(&pdev->dev, "Wrong VSEC ID value\n");
 		return -ENODEV;
 	}
 

@@ -43,7 +43,7 @@
 #include <linux/ioport.h>
 #include <linux/iopoll.h>
 #include <linux/in.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/of_net.h>
 #include <linux/slab.h>
 #include <linux/string.h>
@@ -416,7 +416,8 @@ static void korina_abort_rx(struct net_device *dev)
 }
 
 /* transmit packet */
-static int korina_send_packet(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t korina_send_packet(struct sk_buff *skb,
+				      struct net_device *dev)
 {
 	struct korina_private *lp = netdev_priv(dev);
 	u32 chain_prev, chain_next;
@@ -899,7 +900,8 @@ static void korina_check_media(struct net_device *dev, unsigned int init_media)
 
 static void korina_poll_media(struct timer_list *t)
 {
-	struct korina_private *lp = from_timer(lp, t, media_check_timer);
+	struct korina_private *lp = timer_container_of(lp, t,
+						       media_check_timer);
 	struct net_device *dev = lp->dev;
 
 	korina_check_media(dev, 0);
@@ -938,9 +940,9 @@ static void netdev_get_drvinfo(struct net_device *dev,
 {
 	struct korina_private *lp = netdev_priv(dev);
 
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, lp->dev->name, sizeof(info->bus_info));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, lp->dev->name, sizeof(info->bus_info));
 }
 
 static int netdev_get_link_ksettings(struct net_device *dev,
@@ -1238,7 +1240,7 @@ static int korina_close(struct net_device *dev)
 	struct korina_private *lp = netdev_priv(dev);
 	u32 tmp;
 
-	del_timer(&lp->media_check_timer);
+	timer_delete(&lp->media_check_timer);
 
 	/* Disable interrupts */
 	disable_irq(lp->rx_irq);
@@ -1301,11 +1303,10 @@ static int korina_probe(struct platform_device *pdev)
 	else if (of_get_ethdev_address(pdev->dev.of_node, dev) < 0)
 		eth_hw_addr_random(dev);
 
-	clk = devm_clk_get_optional(&pdev->dev, "mdioclk");
+	clk = devm_clk_get_optional_enabled(&pdev->dev, "mdioclk");
 	if (IS_ERR(clk))
 		return PTR_ERR(clk);
 	if (clk) {
-		clk_prepare_enable(clk);
 		lp->mii_clock_freq = clk_get_rate(clk);
 	} else {
 		lp->mii_clock_freq = 200000000; /* max possible input clk */
@@ -1354,7 +1355,7 @@ static int korina_probe(struct platform_device *pdev)
 	dev->netdev_ops = &korina_netdev_ops;
 	dev->ethtool_ops = &netdev_ethtool_ops;
 	dev->watchdog_timeo = TX_TIMEOUT;
-	netif_napi_add(dev, &lp->napi, korina_poll, NAPI_POLL_WEIGHT);
+	netif_napi_add(dev, &lp->napi, korina_poll);
 
 	lp->mii_if.dev = dev;
 	lp->mii_if.mdio_read = korina_mdio_read;
@@ -1380,13 +1381,11 @@ static int korina_probe(struct platform_device *pdev)
 	return rc;
 }
 
-static int korina_remove(struct platform_device *pdev)
+static void korina_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 
 	unregister_netdev(dev);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF

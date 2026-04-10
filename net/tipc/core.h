@@ -44,6 +44,7 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
+#include <linux/hex.h>
 #include <linux/mm.h>
 #include <linux/timer.h>
 #include <linux/string.h>
@@ -72,7 +73,6 @@ struct tipc_node;
 struct tipc_bearer;
 struct tipc_bc_base;
 struct tipc_link;
-struct tipc_name_table;
 struct tipc_topsrv;
 struct tipc_monitor;
 #ifdef CONFIG_TIPC_CRYPTO
@@ -197,7 +197,7 @@ static inline int less(u16 left, u16 right)
 	return less_eq(left, right) && (mod(right) != mod(left));
 }
 
-static inline int in_range(u16 val, u16 min, u16 max)
+static inline int tipc_in_range(u16 val, u16 min, u16 max)
 {
 	return !less(val, min) && !more(val, max);
 }

@@ -928,7 +928,7 @@ static int open_file_eeprom(struct inode *inode, struct file *file)
 
 	/* Create private struct and assign to file */
 
-	ep = kmalloc(sizeof(*ep), GFP_KERNEL);
+	ep = kmalloc_obj(*ep);
 	if (!ep) {
 		ret = -ENOMEM;
 		goto freebuf;
@@ -982,8 +982,6 @@ ath5k_debug_init_device(struct ath5k_hw *ah)
 	ah->debug.level = ath5k_debug;
 
 	phydir = debugfs_create_dir("ath5k", ah->hw->wiphy->debugfsdir);
-	if (!phydir)
-		return;
 
 	debugfs_create_file("debug", 0600, phydir, ah, &fops_debug);
 	debugfs_create_file("registers", 0400, phydir, ah, &registers_fops);

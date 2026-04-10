@@ -204,7 +204,7 @@ concat_writev(struct mtd_info *mtd, const struct kvec *vecs,
 	}
 
 	/* make a copy of vecs */
-	vecs_copy = kmemdup(vecs, sizeof(struct kvec) * count, GFP_KERNEL);
+	vecs_copy = kmemdup_array(vecs, count, sizeof(struct kvec), GFP_KERNEL);
 	if (!vecs_copy)
 		return -ENOMEM;
 
@@ -416,7 +416,7 @@ static int concat_erase(struct mtd_info *mtd, struct erase_info *instr)
 	}
 
 	/* make a local copy of instr to avoid modifying the caller's struct */
-	erase = kmalloc(sizeof (struct erase_info), GFP_KERNEL);
+	erase = kmalloc_obj(struct erase_info);
 
 	if (!erase)
 		return -ENOMEM;
@@ -823,9 +823,7 @@ struct mtd_info *mtd_concat_create(struct mtd_info *subdev[],	/* subdevices to c
 		concat->mtd.erasesize = max_erasesize;
 		concat->mtd.numeraseregions = num_erase_region;
 		concat->mtd.eraseregions = erase_region_p =
-		    kmalloc_array(num_erase_region,
-				  sizeof(struct mtd_erase_region_info),
-				  GFP_KERNEL);
+		    kmalloc_objs(struct mtd_erase_region_info, num_erase_region);
 		if (!erase_region_p) {
 			kfree(concat);
 			printk
@@ -836,7 +834,7 @@ struct mtd_info *mtd_concat_create(struct mtd_info *subdev[],	/* subdevices to c
 
 		/*
 		 * walk the map of the new device once more and fill in
-		 * in erase region info:
+		 * erase region info:
 		 */
 		curr_erasesize = subdev[0]->erasesize;
 		begin = position = 0;

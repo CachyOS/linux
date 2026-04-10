@@ -33,13 +33,36 @@ static ssize_t ecryptfs_read_update_atime(struct kiocb *iocb,
 				struct iov_iter *to)
 {
 	ssize_t rc;
-	struct path *path;
 	struct file *file = iocb->ki_filp;
 
 	rc = generic_file_read_iter(iocb, to);
 	if (rc >= 0) {
-		path = ecryptfs_dentry_to_lower_path(file->f_path.dentry);
-		touch_atime(path);
+		struct path path = ecryptfs_lower_path(file->f_path.dentry);
+		touch_atime(&path);
+	}
+	return rc;
+}
+
+/*
+ * ecryptfs_splice_read_update_atime
+ *
+ * filemap_splice_read updates the atime of upper layer inode.  But, it
+ * doesn't give us a chance to update the atime of the lower layer inode.  This
+ * function is a wrapper to generic_file_read.  It updates the atime of the
+ * lower level inode if generic_file_read returns without any errors. This is
+ * to be used only for file reads.  The function to be used for directory reads
+ * is ecryptfs_read.
+ */
+static ssize_t ecryptfs_splice_read_update_atime(struct file *in, loff_t *ppos,
+						 struct pipe_inode_info *pipe,
+						 size_t len, unsigned int flags)
+{
+	ssize_t rc;
+
+	rc = filemap_splice_read(in, ppos, pipe, len, flags);
+	if (rc >= 0) {
+		struct path path = ecryptfs_lower_path(in->f_path.dentry);
+		touch_atime(&path);
 	}
 	return rc;
 }
@@ -53,7 +76,7 @@ struct ecryptfs_getdents_callback {
 };
 
 /* Inspired by generic filldir in fs/readdir.c */
-static int
+static bool
 ecryptfs_filldir(struct dir_context *ctx, const char *lower_name,
 		 int lower_namelen, loff_t offset, u64 ino, unsigned int d_type)
 {
@@ -61,18 +84,19 @@ ecryptfs_filldir(struct dir_context *ctx, const char *lower_name,
 		container_of(ctx, struct ecryptfs_getdents_callback, ctx);
 	size_t name_size;
 	char *name;
-	int rc;
+	int err;
+	bool res;
 
 	buf->filldir_called++;
-	rc = ecryptfs_decode_and_decrypt_filename(&name, &name_size,
-						  buf->sb, lower_name,
-						  lower_namelen);
-	if (rc) {
-		if (rc != -EINVAL) {
+	err = ecryptfs_decode_and_decrypt_filename(&name, &name_size,
+						   buf->sb, lower_name,
+						   lower_namelen);
+	if (err) {
+		if (err != -EINVAL) {
 			ecryptfs_printk(KERN_DEBUG,
 					"%s: Error attempting to decode and decrypt filename [%s]; rc = [%d]\n",
-					__func__, lower_name, rc);
-			return rc;
+					__func__, lower_name, err);
+			return false;
 		}
 
 		/* Mask -EINVAL errors as these are most likely due a plaintext
@@ -81,16 +105,15 @@ ecryptfs_filldir(struct dir_context *ctx, const char *lower_name,
 		 * the "lost+found" dentry in the root directory of an Ext4
 		 * filesystem.
 		 */
-		return 0;
+		return true;
 	}
 
 	buf->caller->pos = buf->ctx.pos;
-	rc = !dir_emit(buf->caller, name, name_size, ino, d_type);
+	res = dir_emit(buf->caller, name, name_size, ino, d_type);
 	kfree(name);
-	if (!rc)
+	if (res)
 		buf->entries_written++;
-
-	return rc;
+	return res;
 }
 
 /**
@@ -111,14 +134,8 @@ static int ecryptfs_readdir(struct file *file, struct dir_context *ctx)
 	lower_file = ecryptfs_file_to_lower(file);
 	rc = iterate_dir(lower_file, &buf.ctx);
 	ctx->pos = buf.ctx.pos;
-	if (rc < 0)
-		goto out;
-	if (buf.filldir_called && !buf.entries_written)
-		goto out;
-	if (rc >= 0)
-		fsstack_copy_attr_atime(inode,
-					file_inode(lower_file));
-out:
+	if (rc >= 0 && (buf.entries_written || !buf.filldir_called))
+		fsstack_copy_attr_atime(inode, file_inode(lower_file));
 	return rc;
 }
 
@@ -174,7 +191,7 @@ static int ecryptfs_mmap(struct file *file, struct vm_area_struct *vma)
 	 * natively.  If FILESYSTEM_MAX_STACK_DEPTH > 2 or ecryptfs
 	 * allows recursive mounting, this will need to be extended.
 	 */
-	if (!lower_file->f_op->mmap)
+	if (!can_mmap_file(lower_file))
 		return -ENODEV;
 	return generic_file_mmap(file, vma);
 }
@@ -264,6 +281,7 @@ static int ecryptfs_dir_open(struct inode *inode, struct file *file)
 	 * ecryptfs_lookup() */
 	struct ecryptfs_file_info *file_info;
 	struct file *lower_file;
+	struct path path;
 
 	/* Released in ecryptfs_release or end of function if failure */
 	file_info = kmem_cache_zalloc(ecryptfs_file_info_cache, GFP_KERNEL);
@@ -273,8 +291,8 @@ static int ecryptfs_dir_open(struct inode *inode, struct file *file)
 				"Error attempting to allocate memory\n");
 		return -ENOMEM;
 	}
-	lower_file = dentry_open(ecryptfs_dentry_to_lower_path(ecryptfs_dentry),
-				 file->f_flags, current_cred());
+	path = ecryptfs_lower_path(ecryptfs_dentry);
+	lower_file = dentry_open(&path, file->f_flags, current_cred());
 	if (IS_ERR(lower_file)) {
 		printk(KERN_ERR "%s: Error attempting to initialize "
 			"the lower file for the dentry with name "
@@ -420,5 +438,5 @@ const struct file_operations ecryptfs_main_fops = {
 	.release = ecryptfs_release,
 	.fsync = ecryptfs_fsync,
 	.fasync = ecryptfs_fasync,
-	.splice_read = generic_file_splice_read,
+	.splice_read = ecryptfs_splice_read_update_atime,
 };

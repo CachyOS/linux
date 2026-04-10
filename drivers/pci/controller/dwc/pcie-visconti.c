@@ -121,13 +121,13 @@ static u32 visconti_mpu_readl(struct visconti_pcie *pcie, u32 reg)
 	return readl_relaxed(pcie->mpu_base + reg);
 }
 
-static int visconti_pcie_link_up(struct dw_pcie *pci)
+static bool visconti_pcie_link_up(struct dw_pcie *pci)
 {
 	struct visconti_pcie *pcie = dev_get_drvdata(pci->dev);
 	void __iomem *addr = pcie->ulreg_base;
 	u32 val = readl_relaxed(addr + PCIE_UL_REG_V_PHY_ST_02);
 
-	return !!(val & PCIE_UL_S_L0);
+	return val & PCIE_UL_S_L0;
 }
 
 static int visconti_pcie_start_link(struct dw_pcie *pci)
@@ -178,7 +178,7 @@ static void visconti_pcie_stop_link(struct dw_pcie *pci)
  */
 static u64 visconti_pcie_cpu_addr_fixup(struct dw_pcie *pci, u64 cpu_addr)
 {
-	struct pcie_port *pp = &pci->pp;
+	struct dw_pcie_rp *pp = &pci->pp;
 
 	return cpu_addr & ~pp->io_base;
 }
@@ -190,7 +190,7 @@ static const struct dw_pcie_ops dw_pcie_ops = {
 	.stop_link = visconti_pcie_stop_link,
 };
 
-static int visconti_pcie_host_init(struct pcie_port *pp)
+static int visconti_pcie_host_init(struct dw_pcie_rp *pp)
 {
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
 	struct visconti_pcie *pcie = dev_get_drvdata(pci->dev);
@@ -236,7 +236,7 @@ static int visconti_pcie_host_init(struct pcie_port *pp)
 }
 
 static const struct dw_pcie_host_ops visconti_pcie_host_ops = {
-	.host_init = visconti_pcie_host_init,
+	.init = visconti_pcie_host_init,
 };
 
 static int visconti_get_resources(struct platform_device *pdev,
@@ -278,7 +278,7 @@ static int visconti_add_pcie_port(struct visconti_pcie *pcie,
 				  struct platform_device *pdev)
 {
 	struct dw_pcie *pci = &pcie->pci;
-	struct pcie_port *pp = &pci->pp;
+	struct dw_pcie_rp *pp = &pci->pp;
 
 	pp->irq = platform_get_irq_byname(pdev, "intr");
 	if (pp->irq < 0)

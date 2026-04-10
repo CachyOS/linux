@@ -76,6 +76,8 @@ enum ovs_datapath_cmd {
  * datapath.  Always present in notifications.
  * @OVS_DP_ATTR_MEGAFLOW_STATS: Statistics about mega flow masks usage for the
  * datapath. Always present in notifications.
+ * @OVS_DP_ATTR_IFINDEX: Interface index for a new datapath netdev. Only
+ * valid for %OVS_DP_CMD_NEW requests.
  *
  * These attributes follow the &struct ovs_header within the Generic Netlink
  * payload for %OVS_DP_* commands.
@@ -92,6 +94,7 @@ enum ovs_datapath_attr {
 	OVS_DP_ATTR_PER_CPU_PIDS,   /* Netlink PIDS to receive upcalls in
 				     * per-cpu dispatch mode
 				     */
+	OVS_DP_ATTR_IFINDEX,
 	__OVS_DP_ATTR_MAX
 };
 
@@ -183,6 +186,11 @@ enum ovs_packet_cmd {
  * %OVS_PACKET_ATTR_USERSPACE action specify the Maximum received fragment
  * size.
  * @OVS_PACKET_ATTR_HASH: Packet hash info (e.g. hash, sw_hash and l4_hash in skb).
+ * @OVS_PACKET_ATTR_UPCALL_PID: Netlink PID to use for upcalls while
+ * processing %OVS_PACKET_CMD_EXECUTE.  Takes precedence over all other ways
+ * to determine the Netlink PID including %OVS_USERSPACE_ATTR_PID,
+ * %OVS_DP_ATTR_UPCALL_PID, %OVS_DP_ATTR_PER_CPU_PIDS and the
+ * %OVS_VPORT_ATTR_UPCALL_PID.
  *
  * These attributes follow the &struct ovs_header within the Generic Netlink
  * payload for %OVS_PACKET_* commands.
@@ -202,6 +210,7 @@ enum ovs_packet_attr {
 	OVS_PACKET_ATTR_MRU,	    /* Maximum received IP fragment size. */
 	OVS_PACKET_ATTR_LEN,	    /* Packet size before truncation. */
 	OVS_PACKET_ATTR_HASH,	    /* Packet hash. */
+	OVS_PACKET_ATTR_UPCALL_PID, /* u32 Netlink PID. */
 	__OVS_PACKET_ATTR_MAX
 };
 
@@ -274,10 +283,24 @@ enum ovs_vport_attr {
 	OVS_VPORT_ATTR_PAD,
 	OVS_VPORT_ATTR_IFINDEX,
 	OVS_VPORT_ATTR_NETNSID,
+	OVS_VPORT_ATTR_UPCALL_STATS,
 	__OVS_VPORT_ATTR_MAX
 };
 
 #define OVS_VPORT_ATTR_MAX (__OVS_VPORT_ATTR_MAX - 1)
+
+/**
+ * enum ovs_vport_upcall_attr - attributes for %OVS_VPORT_UPCALL* commands
+ * @OVS_VPORT_UPCALL_SUCCESS: 64-bit upcall success packets.
+ * @OVS_VPORT_UPCALL_FAIL: 64-bit upcall fail packets.
+ */
+enum ovs_vport_upcall_attr {
+	OVS_VPORT_UPCALL_ATTR_SUCCESS,
+	OVS_VPORT_UPCALL_ATTR_FAIL,
+	__OVS_VPORT_UPCALL_ATTR_MAX
+};
+
+#define OVS_VPORT_UPCALL_ATTR_MAX (__OVS_VPORT_UPCALL_ATTR_MAX - 1)
 
 enum {
 	OVS_VXLAN_EXT_UNSPEC,
@@ -632,7 +655,8 @@ enum ovs_flow_attr {
  * Actions are passed as nested attributes.
  *
  * Executes the specified actions with the given probability on a per-packet
- * basis.
+ * basis. Nested actions will be able to access the probability value of the
+ * parent @OVS_ACTION_ATTR_SAMPLE.
  */
 enum ovs_sample_attr {
 	OVS_SAMPLE_ATTR_UNSPEC,
@@ -748,6 +772,7 @@ struct ovs_action_push_vlan {
  */
 enum ovs_hash_alg {
 	OVS_HASH_ALG_L4,
+	OVS_HASH_ALG_SYM_L4,
 };
 
 /*
@@ -896,6 +921,31 @@ struct check_pkt_len_arg {
 };
 #endif
 
+#define OVS_PSAMPLE_COOKIE_MAX_SIZE 16
+/**
+ * enum ovs_psample_attr - Attributes for %OVS_ACTION_ATTR_PSAMPLE
+ * action.
+ *
+ * @OVS_PSAMPLE_ATTR_GROUP: 32-bit number to identify the source of the
+ * sample.
+ * @OVS_PSAMPLE_ATTR_COOKIE: An optional variable-length binary cookie that
+ * contains user-defined metadata. The maximum length is
+ * OVS_PSAMPLE_COOKIE_MAX_SIZE bytes.
+ *
+ * Sends the packet to the psample multicast group with the specified group and
+ * cookie. It is possible to combine this action with the
+ * %OVS_ACTION_ATTR_TRUNC action to limit the size of the sample.
+ */
+enum ovs_psample_attr {
+	OVS_PSAMPLE_ATTR_GROUP = 1,	/* u32 number. */
+	OVS_PSAMPLE_ATTR_COOKIE,	/* Optional, user specified cookie. */
+
+	/* private: */
+	__OVS_PSAMPLE_ATTR_MAX
+};
+
+#define OVS_PSAMPLE_ATTR_MAX (__OVS_PSAMPLE_ATTR_MAX - 1)
+
 /**
  * enum ovs_action_attr - Action types.
  *
@@ -947,6 +997,9 @@ struct check_pkt_len_arg {
  * start of the packet or at the start of the l3 header depending on the value
  * of l3 tunnel flag in the tun_flags field of OVS_ACTION_ATTR_ADD_MPLS
  * argument.
+ * @OVS_ACTION_ATTR_DROP: Explicit drop action.
+ * @OVS_ACTION_ATTR_PSAMPLE: Send a sample of the packet to external observers
+ * via psample.
  *
  * Only a single header can be set with a single %OVS_ACTION_ATTR_SET.  Not all
  * fields within a header are modifiable, e.g. the IPv4 protocol and fragment
@@ -984,6 +1037,8 @@ enum ovs_action_attr {
 	OVS_ACTION_ATTR_CHECK_PKT_LEN, /* Nested OVS_CHECK_PKT_LEN_ATTR_*. */
 	OVS_ACTION_ATTR_ADD_MPLS,     /* struct ovs_action_add_mpls. */
 	OVS_ACTION_ATTR_DEC_TTL,      /* Nested OVS_DEC_TTL_ATTR_*. */
+	OVS_ACTION_ATTR_DROP,         /* u32 error code. */
+	OVS_ACTION_ATTR_PSAMPLE,      /* Nested OVS_PSAMPLE_ATTR_*. */
 
 	__OVS_ACTION_ATTR_MAX,	      /* Nothing past this will be accepted
 				       * from userspace. */

@@ -22,9 +22,9 @@ struct mlx5e_post_act_handle {
 	u32 id;
 };
 
-#define MLX5_POST_ACTION_BITS (mlx5e_tc_attr_to_reg_mappings[FTEID_TO_REG].mlen)
-#define MLX5_POST_ACTION_MAX GENMASK(MLX5_POST_ACTION_BITS - 1, 0)
-#define MLX5_POST_ACTION_MASK MLX5_POST_ACTION_MAX
+#define MLX5_POST_ACTION_BITS MLX5_REG_MAPPING_MBITS(FTEID_TO_REG)
+#define MLX5_POST_ACTION_MASK MLX5_REG_MAPPING_MASK(FTEID_TO_REG)
+#define MLX5_POST_ACTION_MAX MLX5_POST_ACTION_MASK
 
 struct mlx5e_post_act *
 mlx5e_tc_post_act_init(struct mlx5e_priv *priv, struct mlx5_fs_chains *chains,
@@ -36,13 +36,13 @@ mlx5e_tc_post_act_init(struct mlx5e_priv *priv, struct mlx5_fs_chains *chains,
 	int err;
 
 	if (!MLX5_CAP_FLOWTABLE_TYPE(priv->mdev, ignore_flow_level, table_type)) {
-		if (priv->mdev->coredev_type != MLX5_COREDEV_VF)
-			mlx5_core_warn(priv->mdev, "firmware level support is missing\n");
+		if (priv->mdev->coredev_type == MLX5_COREDEV_PF)
+			mlx5_core_dbg(priv->mdev, "firmware flow level support is missing\n");
 		err = -EOPNOTSUPP;
 		goto err_check;
 	}
 
-	post_act = kzalloc(sizeof(*post_act), GFP_KERNEL);
+	post_act = kzalloc_obj(*post_act);
 	if (!post_act) {
 		err = -ENOMEM;
 		goto err_check;
@@ -83,7 +83,10 @@ mlx5e_tc_post_act_offload(struct mlx5e_post_act *post_act,
 	struct mlx5_flow_spec *spec;
 	int err;
 
-	spec = kvzalloc(sizeof(*spec), GFP_KERNEL);
+	if (IS_ERR(post_act))
+		return PTR_ERR(post_act);
+
+	spec = kvzalloc_obj(*spec);
 	if (!spec)
 		return -ENOMEM;
 
@@ -106,28 +109,25 @@ err_rule:
 }
 
 struct mlx5e_post_act_handle *
-mlx5e_tc_post_act_add(struct mlx5e_post_act *post_act, struct mlx5_flow_attr *attr)
+mlx5e_tc_post_act_add(struct mlx5e_post_act *post_act, struct mlx5_flow_attr *post_attr)
 {
-	u32 attr_sz = ns_to_attr_sz(post_act->ns_type);
 	struct mlx5e_post_act_handle *handle;
-	struct mlx5_flow_attr *post_attr;
 	int err;
 
-	handle = kzalloc(sizeof(*handle), GFP_KERNEL);
-	post_attr = mlx5_alloc_flow_attr(post_act->ns_type);
-	if (!handle || !post_attr) {
-		kfree(post_attr);
-		kfree(handle);
-		return ERR_PTR(-ENOMEM);
-	}
+	if (IS_ERR(post_act))
+		return ERR_CAST(post_act);
 
-	memcpy(post_attr, attr, attr_sz);
+	handle = kzalloc_obj(*handle);
+	if (!handle)
+		return ERR_PTR(-ENOMEM);
+
 	post_attr->chain = 0;
 	post_attr->prio = 0;
 	post_attr->ft = post_act->ft;
 	post_attr->inner_match_level = MLX5_MATCH_NONE;
 	post_attr->outer_match_level = MLX5_MATCH_NONE;
 	post_attr->action &= ~MLX5_FLOW_CONTEXT_ACTION_DECAP;
+	post_attr->flags |= MLX5_ATTR_FLAG_NO_IN_PORT;
 
 	handle->ns_type = post_act->ns_type;
 	/* Splits were handled before post action */
@@ -144,7 +144,6 @@ mlx5e_tc_post_act_add(struct mlx5e_post_act *post_act, struct mlx5_flow_attr *at
 	return handle;
 
 err_xarray:
-	kfree(post_attr);
 	kfree(handle);
 	return ERR_PTR(err);
 }
@@ -163,7 +162,6 @@ mlx5e_tc_post_act_del(struct mlx5e_post_act *post_act, struct mlx5e_post_act_han
 	if (!IS_ERR_OR_NULL(handle->rule))
 		mlx5e_tc_post_act_unoffload(post_act, handle);
 	xa_erase(&post_act->ids, handle->id);
-	kfree(handle->attr);
 	kfree(handle);
 }
 

@@ -9,7 +9,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
@@ -342,7 +342,7 @@ static void ak5558_remove(struct snd_soc_component *component)
 	ak5558_reset(ak5558, true);
 }
 
-static int __maybe_unused ak5558_runtime_suspend(struct device *dev)
+static int ak5558_runtime_suspend(struct device *dev)
 {
 	struct ak5558_priv *ak5558 = dev_get_drvdata(dev);
 
@@ -354,7 +354,7 @@ static int __maybe_unused ak5558_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused ak5558_runtime_resume(struct device *dev)
+static int ak5558_runtime_resume(struct device *dev)
 {
 	struct ak5558_priv *ak5558 = dev_get_drvdata(dev);
 	int ret;
@@ -372,13 +372,20 @@ static int __maybe_unused ak5558_runtime_resume(struct device *dev)
 	regcache_cache_only(ak5558->regmap, false);
 	regcache_mark_dirty(ak5558->regmap);
 
-	return regcache_sync(ak5558->regmap);
+	ret = regcache_sync(ak5558->regmap);
+	if (ret)
+		goto err;
+
+	return 0;
+err:
+	regcache_cache_only(ak5558->regmap, true);
+	regulator_bulk_disable(ARRAY_SIZE(ak5558->supplies), ak5558->supplies);
+	return ret;
 }
 
 static const struct dev_pm_ops ak5558_pm = {
-	SET_RUNTIME_PM_OPS(ak5558_runtime_suspend, ak5558_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
+	RUNTIME_PM_OPS(ak5558_runtime_suspend, ak5558_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 };
 
 static const struct snd_soc_component_driver soc_codec_dev_ak5558 = {
@@ -393,7 +400,6 @@ static const struct snd_soc_component_driver soc_codec_dev_ak5558 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct snd_soc_component_driver soc_codec_dev_ak5552 = {
@@ -408,7 +414,6 @@ static const struct snd_soc_component_driver soc_codec_dev_ak5552 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config ak5558_regmap = {
@@ -481,11 +486,9 @@ static int ak5558_i2c_probe(struct i2c_client *i2c)
 	return 0;
 }
 
-static int ak5558_i2c_remove(struct i2c_client *i2c)
+static void ak5558_i2c_remove(struct i2c_client *i2c)
 {
 	pm_runtime_disable(&i2c->dev);
-
-	return 0;
 }
 
 static const struct of_device_id ak5558_i2c_dt_ids[] __maybe_unused = {
@@ -499,9 +502,9 @@ static struct i2c_driver ak5558_i2c_driver = {
 	.driver = {
 		.name = "ak5558",
 		.of_match_table = of_match_ptr(ak5558_i2c_dt_ids),
-		.pm = &ak5558_pm,
+		.pm = pm_ptr(&ak5558_pm),
 	},
-	.probe_new = ak5558_i2c_probe,
+	.probe = ak5558_i2c_probe,
 	.remove = ak5558_i2c_remove,
 };
 

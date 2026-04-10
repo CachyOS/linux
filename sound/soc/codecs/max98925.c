@@ -97,7 +97,7 @@ static const struct snd_kcontrol_new max98925_dai_sel_mux =
 static int max98925_dac_event(struct snd_soc_dapm_widget *w,
 		struct snd_kcontrol *kcontrol, int event)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct max98925_priv *max98925 = snd_soc_component_get_drvdata(component);
 
 	switch (event) {
@@ -544,7 +544,6 @@ static const struct snd_soc_component_driver soc_component_dev_max98925 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config max98925_regmap = {
@@ -618,7 +617,7 @@ static int max98925_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id max98925_i2c_id[] = {
-	{ "max98925", 0 },
+	{ "max98925" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max98925_i2c_id);
@@ -636,7 +635,7 @@ static struct i2c_driver max98925_i2c_driver = {
 		.name = "max98925",
 		.of_match_table = of_match_ptr(max98925_of_match),
 	},
-	.probe_new  = max98925_i2c_probe,
+	.probe = max98925_i2c_probe,
 	.id_table = max98925_i2c_id,
 };
 

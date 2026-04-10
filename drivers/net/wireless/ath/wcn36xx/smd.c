@@ -22,6 +22,7 @@
 #include <linux/bitops.h>
 #include <linux/rpmsg.h>
 #include "smd.h"
+#include "firmware.h"
 
 struct wcn36xx_cfg_val {
 	u32 cfg_id;
@@ -295,7 +296,7 @@ static void wcn36xx_smd_set_sta_vht_params(struct wcn36xx *wcn,
 		sta_params->vht_capable = sta->deflink.vht_cap.vht_supported;
 		sta_params->vht_ldpc_enabled =
 			is_cap_supported(caps, IEEE80211_VHT_CAP_RXLDPC);
-		if (get_feat_caps(wcn->fw_feat_caps, MU_MIMO)) {
+		if (wcn36xx_firmware_get_feat_caps(wcn->fw_feat_caps, MU_MIMO)) {
 			sta_params->vht_tx_mu_beamformee_capable =
 				is_cap_supported(caps, IEEE80211_VHT_CAP_MU_BEAMFORMER_CAPABLE);
 			if (sta_params->vht_tx_mu_beamformee_capable)
@@ -474,8 +475,8 @@ out:
 
 #define PREPARE_HAL_BUF(send_buf, msg_body) \
 	do {							\
-		memset(send_buf, 0, msg_body.header.len);	\
-		memcpy(send_buf, &msg_body, sizeof(msg_body));	\
+		memcpy_and_pad(send_buf, msg_body.header.len,	\
+			       &msg_body, sizeof(msg_body), 0);	\
 	} while (0)						\
 
 #define PREPARE_HAL_PTT_MSG_BUF(send_buf, p_msg_body) \
@@ -575,7 +576,7 @@ static int wcn36xx_smd_start_rsp(struct wcn36xx *wcn, void *buf, size_t len)
 	if (len < sizeof(*rsp))
 		return -EIO;
 
-	rsp = (struct wcn36xx_hal_mac_start_rsp_msg *)buf;
+	rsp = buf;
 
 	if (WCN36XX_FW_MSG_RESULT_SUCCESS != rsp->start_rsp_params.status)
 		return -EIO;
@@ -846,7 +847,7 @@ int wcn36xx_smd_start_hw_scan(struct wcn36xx *wcn, struct ieee80211_vif *vif,
 		return -EINVAL;
 
 	mutex_lock(&wcn->hal_mutex);
-	msg_body = kzalloc(sizeof(*msg_body), GFP_KERNEL);
+	msg_body = kzalloc_obj(*msg_body);
 	if (!msg_body) {
 		ret = -ENOMEM;
 		goto out;
@@ -941,7 +942,7 @@ int wcn36xx_smd_update_channel_list(struct wcn36xx *wcn, struct cfg80211_scan_re
 	struct wcn36xx_hal_update_channel_list_req_msg *msg_body;
 	int ret, i;
 
-	msg_body = kzalloc(sizeof(*msg_body), GFP_KERNEL);
+	msg_body = kzalloc_obj(*msg_body);
 	if (!msg_body)
 		return -ENOMEM;
 
@@ -1024,7 +1025,7 @@ static int wcn36xx_smd_switch_channel_rsp(void *buf, size_t len)
 	ret = wcn36xx_smd_rsp_status_check(buf, len);
 	if (ret)
 		return ret;
-	rsp = (struct wcn36xx_hal_switch_channel_rsp_msg *)buf;
+	rsp = buf;
 	wcn36xx_dbg(WCN36XX_DBG_HAL, "channel switched to: %d, status: %d\n",
 		    rsp->channel_number, rsp->status);
 	return ret;
@@ -1071,7 +1072,7 @@ static int wcn36xx_smd_process_ptt_msg_rsp(void *buf, size_t len,
 	if (ret)
 		return ret;
 
-	rsp = (struct wcn36xx_hal_process_ptt_msg_rsp_msg *)buf;
+	rsp = buf;
 
 	wcn36xx_dbg(WCN36XX_DBG_HAL, "process ptt msg responded with length %d\n",
 		    rsp->header.len);
@@ -1126,66 +1127,6 @@ out_nomem:
 	return ret;
 }
 
-static int wcn36xx_smd_update_scan_params_rsp(void *buf, size_t len)
-{
-	struct wcn36xx_hal_update_scan_params_resp *rsp;
-
-	rsp = (struct wcn36xx_hal_update_scan_params_resp *)buf;
-
-	/* Remove the PNO version bit */
-	rsp->status &= (~(WCN36XX_FW_MSG_PNO_VERSION_MASK));
-
-	if (WCN36XX_FW_MSG_RESULT_SUCCESS != rsp->status) {
-		wcn36xx_warn("error response from update scan\n");
-		return rsp->status;
-	}
-
-	return 0;
-}
-
-int wcn36xx_smd_update_scan_params(struct wcn36xx *wcn,
-				   u8 *channels, size_t channel_count)
-{
-	struct wcn36xx_hal_update_scan_params_req_ex msg_body;
-	int ret;
-
-	mutex_lock(&wcn->hal_mutex);
-	INIT_HAL_MSG(msg_body, WCN36XX_HAL_UPDATE_SCAN_PARAM_REQ);
-
-	msg_body.dot11d_enabled	= false;
-	msg_body.dot11d_resolved = true;
-
-	msg_body.channel_count = channel_count;
-	memcpy(msg_body.channels, channels, channel_count);
-	msg_body.active_min_ch_time = 60;
-	msg_body.active_max_ch_time = 120;
-	msg_body.passive_min_ch_time = 60;
-	msg_body.passive_max_ch_time = 110;
-	msg_body.state = PHY_SINGLE_CHANNEL_CENTERED;
-
-	PREPARE_HAL_BUF(wcn->hal_buf, msg_body);
-
-	wcn36xx_dbg(WCN36XX_DBG_HAL,
-		    "hal update scan params channel_count %d\n",
-		    msg_body.channel_count);
-
-	ret = wcn36xx_smd_send_and_wait(wcn, msg_body.header.len);
-	if (ret) {
-		wcn36xx_err("Sending hal_update_scan_params failed\n");
-		goto out;
-	}
-	ret = wcn36xx_smd_update_scan_params_rsp(wcn->hal_buf,
-						 wcn->hal_rsp_len);
-	if (ret) {
-		wcn36xx_err("hal_update_scan_params response failed err=%d\n",
-			    ret);
-		goto out;
-	}
-out:
-	mutex_unlock(&wcn->hal_mutex);
-	return ret;
-}
-
 static int wcn36xx_smd_add_sta_self_rsp(struct wcn36xx *wcn,
 					struct ieee80211_vif *vif,
 					void *buf,
@@ -1197,7 +1138,7 @@ static int wcn36xx_smd_add_sta_self_rsp(struct wcn36xx *wcn,
 	if (len < sizeof(*rsp))
 		return -EINVAL;
 
-	rsp = (struct wcn36xx_hal_add_sta_self_rsp_msg *)buf;
+	rsp = buf;
 
 	if (rsp->status != WCN36XX_FW_MSG_RESULT_SUCCESS) {
 		wcn36xx_warn("hal add sta self failure: %d\n",
@@ -1315,7 +1256,7 @@ static int wcn36xx_smd_join_rsp(void *buf, size_t len)
 	if (wcn36xx_smd_rsp_status_check(buf, len))
 		return -EIO;
 
-	rsp = (struct wcn36xx_hal_join_rsp_msg *)buf;
+	rsp = buf;
 
 	wcn36xx_dbg(WCN36XX_DBG_HAL,
 		    "hal rsp join status %d tx_mgmt_power %d\n",
@@ -1480,7 +1421,7 @@ static int wcn36xx_smd_config_sta_rsp(struct wcn36xx *wcn,
 	if (len < sizeof(*rsp))
 		return -EINVAL;
 
-	rsp = (struct wcn36xx_hal_config_sta_rsp_msg *)buf;
+	rsp = buf;
 	params = &rsp->params;
 
 	if (params->status != WCN36XX_FW_MSG_RESULT_SUCCESS) {
@@ -1683,7 +1624,7 @@ static int wcn36xx_smd_config_bss_v1(struct wcn36xx *wcn,
 	struct cfg80211_chan_def *chandef;
 	int ret;
 
-	msg_body = kzalloc(sizeof(*msg_body), GFP_KERNEL);
+	msg_body = kzalloc_obj(*msg_body);
 	if (!msg_body)
 		return -ENOMEM;
 
@@ -1803,7 +1744,7 @@ static int wcn36xx_smd_config_bss_v0(struct wcn36xx *wcn,
 	struct wcn36xx_hal_config_sta_params *sta_params;
 	int ret;
 
-	msg = kzalloc(sizeof(*msg), GFP_KERNEL);
+	msg = kzalloc_obj(*msg);
 	if (!msg)
 		return -ENOMEM;
 
@@ -1848,7 +1789,7 @@ static int wcn36xx_smd_config_bss_rsp(struct wcn36xx *wcn,
 	if (len < sizeof(*rsp))
 		return -EINVAL;
 
-	rsp = (struct wcn36xx_hal_config_bss_rsp_msg *)buf;
+	rsp = buf;
 	params = &rsp->bss_rsp_params;
 
 	if (params->status != WCN36XX_FW_MSG_RESULT_SUCCESS) {
@@ -2431,49 +2372,6 @@ out:
 	return ret;
 }
 
-void set_feat_caps(u32 *bitmap, enum place_holder_in_cap_bitmap cap)
-{
-	int arr_idx, bit_idx;
-
-	if (cap < 0 || cap > 127) {
-		wcn36xx_warn("error cap idx %d\n", cap);
-		return;
-	}
-
-	arr_idx = cap / 32;
-	bit_idx = cap % 32;
-	bitmap[arr_idx] |= (1 << bit_idx);
-}
-
-int get_feat_caps(u32 *bitmap, enum place_holder_in_cap_bitmap cap)
-{
-	int arr_idx, bit_idx;
-
-	if (cap < 0 || cap > 127) {
-		wcn36xx_warn("error cap idx %d\n", cap);
-		return -EINVAL;
-	}
-
-	arr_idx = cap / 32;
-	bit_idx = cap % 32;
-
-	return (bitmap[arr_idx] & (1 << bit_idx)) ? 1 : 0;
-}
-
-void clear_feat_caps(u32 *bitmap, enum place_holder_in_cap_bitmap cap)
-{
-	int arr_idx, bit_idx;
-
-	if (cap < 0 || cap > 127) {
-		wcn36xx_warn("error cap idx %d\n", cap);
-		return;
-	}
-
-	arr_idx = cap / 32;
-	bit_idx = cap % 32;
-	bitmap[arr_idx] &= ~(1 << bit_idx);
-}
-
 int wcn36xx_smd_feature_caps_exchange(struct wcn36xx *wcn)
 {
 	struct wcn36xx_hal_feat_caps_msg msg_body, *rsp;
@@ -2482,11 +2380,12 @@ int wcn36xx_smd_feature_caps_exchange(struct wcn36xx *wcn)
 	mutex_lock(&wcn->hal_mutex);
 	INIT_HAL_MSG(msg_body, WCN36XX_HAL_FEATURE_CAPS_EXCHANGE_REQ);
 
-	set_feat_caps(msg_body.feat_caps, STA_POWERSAVE);
+	wcn36xx_firmware_set_feat_caps(msg_body.feat_caps, STA_POWERSAVE);
 	if (wcn->rf_id == RF_IRIS_WCN3680) {
-		set_feat_caps(msg_body.feat_caps, DOT11AC);
-		set_feat_caps(msg_body.feat_caps, WLAN_CH144);
-		set_feat_caps(msg_body.feat_caps, ANTENNA_DIVERSITY_SELECTION);
+		wcn36xx_firmware_set_feat_caps(msg_body.feat_caps, DOT11AC);
+		wcn36xx_firmware_set_feat_caps(msg_body.feat_caps, WLAN_CH144);
+		wcn36xx_firmware_set_feat_caps(msg_body.feat_caps,
+					       ANTENNA_DIVERSITY_SELECTION);
 	}
 
 	PREPARE_HAL_BUF(wcn->hal_buf, msg_body);
@@ -2517,7 +2416,7 @@ static int wcn36xx_smd_add_ba_session_rsp(void *buf, int len, u8 *session)
 	if (len < sizeof(*rsp))
 		return -EINVAL;
 
-	rsp = (struct wcn36xx_hal_add_ba_session_rsp_msg *)buf;
+	rsp = buf;
 	if (rsp->status != WCN36XX_FW_MSG_RESULT_SUCCESS)
 		return rsp->status;
 
@@ -2695,7 +2594,7 @@ static int wcn36xx_smd_trigger_ba_rsp(void *buf, int len, struct add_ba_info *ba
 	if (len < sizeof(*rsp))
 		return -EINVAL;
 
-	rsp = (struct wcn36xx_hal_trigger_ba_rsp_msg *) buf;
+	rsp = buf;
 
 	if (rsp->candidate_cnt < 1)
 		return rsp->status ? rsp->status : -EINVAL;
@@ -3005,7 +2904,7 @@ int wcn36xx_smd_arp_offload(struct wcn36xx *wcn, struct ieee80211_vif *vif,
 		msg_body.host_offload_params.enable =
 			WCN36XX_HAL_OFFLOAD_ARP_AND_BCAST_FILTER_ENABLE;
 		memcpy(&msg_body.host_offload_params.u,
-		       &vif->bss_conf.arp_addr_list[0], sizeof(__be32));
+		       &vif->cfg.arp_addr_list[0], sizeof(__be32));
 	}
 	msg_body.ns_offload_params.bss_index = vif_priv->bss_index;
 
@@ -3300,7 +3199,7 @@ int wcn36xx_smd_add_beacon_filter(struct wcn36xx *wcn,
 	size_t payload_size;
 	int ret;
 
-	if (!get_feat_caps(wcn->fw_feat_caps, BCN_FILTER))
+	if (!wcn36xx_firmware_get_feat_caps(wcn->fw_feat_caps, BCN_FILTER))
 		return -EOPNOTSUPP;
 
 	mutex_lock(&wcn->hal_mutex);
@@ -3407,7 +3306,7 @@ int wcn36xx_smd_rsp_process(struct rpmsg_device *rpdev,
 	case WCN36XX_HAL_DELETE_STA_CONTEXT_IND:
 	case WCN36XX_HAL_PRINT_REG_INFO_IND:
 	case WCN36XX_HAL_SCAN_OFFLOAD_IND:
-		msg_ind = kmalloc(struct_size(msg_ind, msg, len), GFP_ATOMIC);
+		msg_ind = kmalloc_flex(*msg_ind, msg, len, GFP_ATOMIC);
 		if (!msg_ind) {
 			wcn36xx_err("Run out of memory while handling SMD_EVENT (%d)\n",
 				    msg_header->msg_type);

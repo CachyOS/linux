@@ -2,6 +2,7 @@
 /*
  * Copyright(c) 2013-2015 Intel Corporation. All rights reserved.
  */
+#include <linux/memregion.h>
 #include <linux/cpumask.h>
 #include <linux/module.h>
 #include <linux/device.h>
@@ -69,7 +70,7 @@ static int nd_region_probe(struct device *dev)
 	 * "<async-registered>/<total>" namespace count.
 	 */
 	dev_err(dev, "failed to register %d namespace%s, continuing...\n",
-			err, err == 1 ? "" : "s");
+			err, str_plural(err));
 	return 0;
 }
 
@@ -86,13 +87,13 @@ static void nd_region_remove(struct device *dev)
 	device_for_each_child(dev, NULL, child_unregister);
 
 	/* flush attribute readers and disable */
-	nvdimm_bus_lock(dev);
-	nd_region->ns_seed = NULL;
-	nd_region->btt_seed = NULL;
-	nd_region->pfn_seed = NULL;
-	nd_region->dax_seed = NULL;
-	dev_set_drvdata(dev, NULL);
-	nvdimm_bus_unlock(dev);
+	scoped_guard(nvdimm_bus, dev) {
+		nd_region->ns_seed = NULL;
+		nd_region->btt_seed = NULL;
+		nd_region->pfn_seed = NULL;
+		nd_region->dax_seed = NULL;
+		dev_set_drvdata(dev, NULL);
+	}
 
 	/*
 	 * Note, this assumes device_lock() context to not race
@@ -100,6 +101,16 @@ static void nd_region_remove(struct device *dev)
 	 */
 	sysfs_put(nd_region->bb_state);
 	nd_region->bb_state = NULL;
+
+	/*
+	 * Try to flush caches here since a disabled region may be subject to
+	 * secure erase while disabled, and previous dirty data should not be
+	 * written back to a new instance of the region. This only matters on
+	 * bare metal where security commands are available, so silent failure
+	 * here is ok.
+	 */
+	if (cpu_cache_has_invalidate_memregion())
+		cpu_cache_invalidate_all();
 }
 
 static int child_notify(struct device *dev, void *data)

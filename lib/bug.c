@@ -47,6 +47,7 @@
 #include <linux/sched.h>
 #include <linux/rculist.h>
 #include <linux/ftrace.h>
+#include <linux/context_tracking.h>
 
 extern struct bug_entry __start___bug_table[], __stop___bug_table[];
 
@@ -65,23 +66,19 @@ static LIST_HEAD(module_bug_list);
 
 static struct bug_entry *module_find_bug(unsigned long bugaddr)
 {
+	struct bug_entry *bug;
 	struct module *mod;
-	struct bug_entry *bug = NULL;
 
-	rcu_read_lock_sched();
+	guard(rcu)();
 	list_for_each_entry_rcu(mod, &module_bug_list, bug_list) {
 		unsigned i;
 
 		bug = mod->bug_table;
 		for (i = 0; i < mod->num_bugs; ++i, ++bug)
 			if (bugaddr == bug_addr(bug))
-				goto out;
+				return bug;
 	}
-	bug = NULL;
-out:
-	rcu_read_unlock_sched();
-
-	return bug;
+	return NULL;
 }
 
 void module_bug_finalize(const Elf_Ehdr *hdr, const Elf_Shdr *sechdrs,
@@ -142,6 +139,29 @@ void bug_get_file_line(struct bug_entry *bug, const char **file,
 #endif
 }
 
+static const char *bug_get_format(struct bug_entry *bug)
+{
+	const char *format = NULL;
+#ifdef HAVE_ARCH_BUG_FORMAT
+#ifdef CONFIG_GENERIC_BUG_RELATIVE_POINTERS
+	/*
+	 * Allow an architecture to:
+	 *  - relative encode NULL (difficult vs KASLR);
+	 *  - use a literal 0 (there are no valid objects inside
+	 *    the __bug_table itself to refer to after all);
+	 *  - use an empty string.
+	 */
+	if (bug->format_disp)
+		format = (const char *)&bug->format_disp + bug->format_disp;
+	if (format && format[0] == '\0')
+		format = NULL;
+#else
+	format = bug->format;
+#endif
+#endif
+	return format;
+}
+
 struct bug_entry *find_bug(unsigned long bugaddr)
 {
 	struct bug_entry *bug;
@@ -153,26 +173,52 @@ struct bug_entry *find_bug(unsigned long bugaddr)
 	return module_find_bug(bugaddr);
 }
 
-enum bug_trap_type report_bug(unsigned long bugaddr, struct pt_regs *regs)
+static __printf(1, 0)
+void __warn_printf(const char *fmt, struct pt_regs *regs)
 {
-	struct bug_entry *bug;
-	const char *file;
-	unsigned line, warning, once, done;
+	if (!fmt)
+		return;
 
-	if (!is_valid_bugaddr(bugaddr))
-		return BUG_TRAP_TYPE_NONE;
+#ifdef HAVE_ARCH_BUG_FORMAT_ARGS
+	if (regs) {
+		struct arch_va_list _args;
+		va_list *args = __warn_args(&_args, regs);
 
-	bug = find_bug(bugaddr);
-	if (!bug)
-		return BUG_TRAP_TYPE_NONE;
+		if (args) {
+			vprintk(fmt, *args);
+			return;
+		}
+	}
+#endif
+
+	printk("%s", fmt);
+}
+
+static enum bug_trap_type __report_bug(struct bug_entry *bug, unsigned long bugaddr, struct pt_regs *regs)
+{
+	bool warning, once, done, no_cut, has_args;
+	const char *file, *fmt;
+	unsigned line;
+
+	if (!bug) {
+		if (!is_valid_bugaddr(bugaddr))
+			return BUG_TRAP_TYPE_NONE;
+
+		bug = find_bug(bugaddr);
+		if (!bug)
+			return BUG_TRAP_TYPE_NONE;
+	}
 
 	disable_trace_on_warning();
 
 	bug_get_file_line(bug, &file, &line);
+	fmt = bug_get_format(bug);
 
-	warning = (bug->flags & BUGFLAG_WARNING) != 0;
-	once = (bug->flags & BUGFLAG_ONCE) != 0;
-	done = (bug->flags & BUGFLAG_DONE) != 0;
+	warning  = bug->flags & BUGFLAG_WARNING;
+	once     = bug->flags & BUGFLAG_ONCE;
+	done     = bug->flags & BUGFLAG_DONE;
+	no_cut   = bug->flags & BUGFLAG_NO_CUT_HERE;
+	has_args = bug->flags & BUGFLAG_ARGS;
 
 	if (warning && once) {
 		if (done)
@@ -190,8 +236,10 @@ enum bug_trap_type report_bug(unsigned long bugaddr, struct pt_regs *regs)
 	 * "cut here" line now. WARN() issues its own "cut here" before the
 	 * extra debugging message it writes before triggering the handler.
 	 */
-	if ((bug->flags & BUGFLAG_NO_CUT_HERE) == 0)
+	if (!no_cut) {
 		printk(KERN_DEFAULT CUT_HERE);
+		__warn_printf(fmt, has_args ? regs : NULL);
+	}
 
 	if (warning) {
 		/* this is a WARN_ON rather than BUG/BUG_ON */
@@ -209,6 +257,30 @@ enum bug_trap_type report_bug(unsigned long bugaddr, struct pt_regs *regs)
 	return BUG_TRAP_TYPE_BUG;
 }
 
+enum bug_trap_type report_bug_entry(struct bug_entry *bug, struct pt_regs *regs)
+{
+	enum bug_trap_type ret;
+	bool rcu = false;
+
+	rcu = warn_rcu_enter();
+	ret = __report_bug(bug, bug_addr(bug), regs);
+	warn_rcu_exit(rcu);
+
+	return ret;
+}
+
+enum bug_trap_type report_bug(unsigned long bugaddr, struct pt_regs *regs)
+{
+	enum bug_trap_type ret;
+	bool rcu = false;
+
+	rcu = warn_rcu_enter();
+	ret = __report_bug(NULL, bugaddr, regs);
+	warn_rcu_exit(rcu);
+
+	return ret;
+}
+
 static void clear_once_table(struct bug_entry *start, struct bug_entry *end)
 {
 	struct bug_entry *bug;
@@ -222,11 +294,11 @@ void generic_bug_clear_once(void)
 #ifdef CONFIG_MODULES
 	struct module *mod;
 
-	rcu_read_lock_sched();
-	list_for_each_entry_rcu(mod, &module_bug_list, bug_list)
-		clear_once_table(mod->bug_table,
-				 mod->bug_table + mod->num_bugs);
-	rcu_read_unlock_sched();
+	scoped_guard(rcu) {
+		list_for_each_entry_rcu(mod, &module_bug_list, bug_list)
+			clear_once_table(mod->bug_table,
+					 mod->bug_table + mod->num_bugs);
+	}
 #endif
 
 	clear_once_table(__start___bug_table, __stop___bug_table);

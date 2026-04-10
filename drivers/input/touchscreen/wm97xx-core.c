@@ -29,6 +29,7 @@
  *       - Support for async sampling control for noisy LCDs.
  */
 
+#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/kernel.h>
@@ -222,7 +223,7 @@ EXPORT_SYMBOL_GPL(wm97xx_set_gpio);
 
 /*
  * Codec GPIO pin configuration, this sets pin direction, polarity,
- * stickyness and wake up.
+ * stickiness and wake up.
  */
 void wm97xx_config_gpio(struct wm97xx *wm, u32 gpio, enum wm97xx_gpio_dir dir,
 		   enum wm97xx_gpio_pol pol, enum wm97xx_gpio_sticky sticky,
@@ -403,7 +404,7 @@ static int wm97xx_read_samples(struct wm97xx *wm)
 			* is actively working with the touchscreen we
 			* don't want to lose the quick response. So we
 			* will slowly increase sleep time after the
-			* pen is up and quicky restore it to ~one task
+			* pen is up and quickly restore it to ~one task
 			* switch when pen is down again.
 			*/
 			if (wm->ts_reader_interval < HZ / 10)
@@ -756,12 +757,12 @@ batt_err:
 	return ret;
 }
 
-static int wm97xx_mfd_remove(struct platform_device *pdev)
+static void wm97xx_mfd_remove(struct platform_device *pdev)
 {
-	return wm97xx_remove(&pdev->dev);
+	wm97xx_remove(&pdev->dev);
 }
 
-static int __maybe_unused wm97xx_suspend(struct device *dev)
+static int wm97xx_suspend(struct device *dev)
 {
 	struct wm97xx *wm = dev_get_drvdata(dev);
 	u16 reg;
@@ -795,7 +796,7 @@ static int __maybe_unused wm97xx_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused wm97xx_resume(struct device *dev)
+static int wm97xx_resume(struct device *dev)
 {
 	struct wm97xx *wm = dev_get_drvdata(dev);
 
@@ -831,7 +832,7 @@ static int __maybe_unused wm97xx_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(wm97xx_pm_ops, wm97xx_suspend, wm97xx_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(wm97xx_pm_ops, wm97xx_suspend, wm97xx_resume);
 
 /*
  * Machine specific operations
@@ -867,13 +868,13 @@ static struct device_driver wm97xx_driver = {
 	.owner =	THIS_MODULE,
 	.probe =	wm97xx_probe,
 	.remove =	wm97xx_remove,
-	.pm =		&wm97xx_pm_ops,
+	.pm =		pm_sleep_ptr(&wm97xx_pm_ops),
 };
 
 static struct platform_driver wm97xx_mfd_driver = {
 	.driver = {
 		.name =		"wm97xx-ts",
-		.pm =		&wm97xx_pm_ops,
+		.pm =		pm_sleep_ptr(&wm97xx_pm_ops),
 	},
 	.probe =	wm97xx_mfd_probe,
 	.remove =	wm97xx_mfd_remove,

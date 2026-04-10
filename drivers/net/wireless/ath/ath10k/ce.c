@@ -3,8 +3,11 @@
  * Copyright (c) 2005-2011 Atheros Communications Inc.
  * Copyright (c) 2011-2017 Qualcomm Atheros, Inc.
  * Copyright (c) 2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
+#include <linux/export.h>
 #include "hif.h"
 #include "ce.h"
 #include "debug.h"
@@ -77,57 +80,11 @@ static inline u32 shadow_sr_wr_ind_addr(struct ath10k *ar,
 	return addr;
 }
 
-static inline u32 shadow_dst_wr_ind_addr(struct ath10k *ar,
-					 struct ath10k_ce_pipe *ce_state)
-{
-	u32 ce_id = ce_state->id;
-	u32 addr = 0;
-
-	switch (ce_id) {
-	case 1:
-		addr = 0x00032034;
-		break;
-	case 2:
-		addr = 0x00032038;
-		break;
-	case 5:
-		addr = 0x00032044;
-		break;
-	case 7:
-		addr = 0x0003204C;
-		break;
-	case 8:
-		addr = 0x00032050;
-		break;
-	case 9:
-		addr = 0x00032054;
-		break;
-	case 10:
-		addr = 0x00032058;
-		break;
-	case 11:
-		addr = 0x0003205C;
-		break;
-	default:
-		ath10k_warn(ar, "invalid CE id: %d", ce_id);
-		break;
-	}
-
-	return addr;
-}
-
 static inline unsigned int
 ath10k_set_ring_byte(unsigned int offset,
-		     struct ath10k_hw_ce_regs_addr_map *addr_map)
+		     const struct ath10k_hw_ce_regs_addr_map *addr_map)
 {
 	return ((offset << addr_map->lsb) & addr_map->mask);
-}
-
-static inline unsigned int
-ath10k_get_ring_byte(unsigned int offset,
-		     struct ath10k_hw_ce_regs_addr_map *addr_map)
-{
-	return ((offset & addr_map->mask) >> (addr_map->lsb));
 }
 
 static inline u32 ath10k_ce_read32(struct ath10k *ar, u32 offset)
@@ -208,14 +165,6 @@ ath10k_ce_shadow_src_ring_write_index_set(struct ath10k *ar,
 	ath10k_ce_write32(ar, shadow_sr_wr_ind_addr(ar, ce_state), value);
 }
 
-static inline void
-ath10k_ce_shadow_dest_ring_write_index_set(struct ath10k *ar,
-					   struct ath10k_ce_pipe *ce_state,
-					   unsigned int value)
-{
-	ath10k_ce_write32(ar, shadow_dst_wr_ind_addr(ar, ce_state), value);
-}
-
 static inline void ath10k_ce_src_ring_base_addr_set(struct ath10k *ar,
 						    u32 ce_id,
 						    u64 addr)
@@ -256,7 +205,7 @@ static inline void ath10k_ce_src_ring_dmax_set(struct ath10k *ar,
 					       u32 ce_ctrl_addr,
 					       unsigned int n)
 {
-	struct ath10k_hw_ce_ctrl1 *ctrl_regs = ar->hw_ce_regs->ctrl1_regs;
+	const struct ath10k_hw_ce_ctrl1 *ctrl_regs = ar->hw_ce_regs->ctrl1_regs;
 
 	u32 ctrl1_addr = ath10k_ce_read32(ar, ce_ctrl_addr +
 					  ctrl_regs->addr);
@@ -270,7 +219,7 @@ static inline void ath10k_ce_src_ring_byte_swap_set(struct ath10k *ar,
 						    u32 ce_ctrl_addr,
 						    unsigned int n)
 {
-	struct ath10k_hw_ce_ctrl1 *ctrl_regs = ar->hw_ce_regs->ctrl1_regs;
+	const struct ath10k_hw_ce_ctrl1 *ctrl_regs = ar->hw_ce_regs->ctrl1_regs;
 
 	u32 ctrl1_addr = ath10k_ce_read32(ar, ce_ctrl_addr +
 					  ctrl_regs->addr);
@@ -284,7 +233,7 @@ static inline void ath10k_ce_dest_ring_byte_swap_set(struct ath10k *ar,
 						     u32 ce_ctrl_addr,
 						     unsigned int n)
 {
-	struct ath10k_hw_ce_ctrl1 *ctrl_regs = ar->hw_ce_regs->ctrl1_regs;
+	const struct ath10k_hw_ce_ctrl1 *ctrl_regs = ar->hw_ce_regs->ctrl1_regs;
 
 	u32 ctrl1_addr = ath10k_ce_read32(ar, ce_ctrl_addr +
 					  ctrl_regs->addr);
@@ -366,7 +315,7 @@ static inline void ath10k_ce_src_ring_highmark_set(struct ath10k *ar,
 						   u32 ce_ctrl_addr,
 						   unsigned int n)
 {
-	struct ath10k_hw_ce_dst_src_wm_regs *srcr_wm = ar->hw_ce_regs->wm_srcr;
+	const struct ath10k_hw_ce_dst_src_wm_regs *srcr_wm = ar->hw_ce_regs->wm_srcr;
 	u32 addr = ath10k_ce_read32(ar, ce_ctrl_addr + srcr_wm->addr);
 
 	ath10k_ce_write32(ar, ce_ctrl_addr + srcr_wm->addr,
@@ -378,7 +327,7 @@ static inline void ath10k_ce_src_ring_lowmark_set(struct ath10k *ar,
 						  u32 ce_ctrl_addr,
 						  unsigned int n)
 {
-	struct ath10k_hw_ce_dst_src_wm_regs *srcr_wm = ar->hw_ce_regs->wm_srcr;
+	const struct ath10k_hw_ce_dst_src_wm_regs *srcr_wm = ar->hw_ce_regs->wm_srcr;
 	u32 addr = ath10k_ce_read32(ar, ce_ctrl_addr + srcr_wm->addr);
 
 	ath10k_ce_write32(ar, ce_ctrl_addr + srcr_wm->addr,
@@ -390,7 +339,7 @@ static inline void ath10k_ce_dest_ring_highmark_set(struct ath10k *ar,
 						    u32 ce_ctrl_addr,
 						    unsigned int n)
 {
-	struct ath10k_hw_ce_dst_src_wm_regs *dstr_wm = ar->hw_ce_regs->wm_dstr;
+	const struct ath10k_hw_ce_dst_src_wm_regs *dstr_wm = ar->hw_ce_regs->wm_dstr;
 	u32 addr = ath10k_ce_read32(ar, ce_ctrl_addr + dstr_wm->addr);
 
 	ath10k_ce_write32(ar, ce_ctrl_addr + dstr_wm->addr,
@@ -402,7 +351,7 @@ static inline void ath10k_ce_dest_ring_lowmark_set(struct ath10k *ar,
 						   u32 ce_ctrl_addr,
 						   unsigned int n)
 {
-	struct ath10k_hw_ce_dst_src_wm_regs *dstr_wm = ar->hw_ce_regs->wm_dstr;
+	const struct ath10k_hw_ce_dst_src_wm_regs *dstr_wm = ar->hw_ce_regs->wm_dstr;
 	u32 addr = ath10k_ce_read32(ar, ce_ctrl_addr + dstr_wm->addr);
 
 	ath10k_ce_write32(ar, ce_ctrl_addr + dstr_wm->addr,
@@ -413,7 +362,7 @@ static inline void ath10k_ce_dest_ring_lowmark_set(struct ath10k *ar,
 static inline void ath10k_ce_copy_complete_inter_enable(struct ath10k *ar,
 							u32 ce_ctrl_addr)
 {
-	struct ath10k_hw_ce_host_ie *host_ie = ar->hw_ce_regs->host_ie;
+	const struct ath10k_hw_ce_host_ie *host_ie = ar->hw_ce_regs->host_ie;
 
 	u32 host_ie_addr = ath10k_ce_read32(ar, ce_ctrl_addr +
 					    ar->hw_ce_regs->host_ie_addr);
@@ -425,7 +374,7 @@ static inline void ath10k_ce_copy_complete_inter_enable(struct ath10k *ar,
 static inline void ath10k_ce_copy_complete_intr_disable(struct ath10k *ar,
 							u32 ce_ctrl_addr)
 {
-	struct ath10k_hw_ce_host_ie *host_ie = ar->hw_ce_regs->host_ie;
+	const struct ath10k_hw_ce_host_ie *host_ie = ar->hw_ce_regs->host_ie;
 
 	u32 host_ie_addr = ath10k_ce_read32(ar, ce_ctrl_addr +
 					    ar->hw_ce_regs->host_ie_addr);
@@ -437,7 +386,7 @@ static inline void ath10k_ce_copy_complete_intr_disable(struct ath10k *ar,
 static inline void ath10k_ce_watermark_intr_disable(struct ath10k *ar,
 						    u32 ce_ctrl_addr)
 {
-	struct ath10k_hw_ce_host_wm_regs *wm_regs = ar->hw_ce_regs->wm_regs;
+	const struct ath10k_hw_ce_host_wm_regs *wm_regs = ar->hw_ce_regs->wm_regs;
 
 	u32 host_ie_addr = ath10k_ce_read32(ar, ce_ctrl_addr +
 					    ar->hw_ce_regs->host_ie_addr);
@@ -446,23 +395,10 @@ static inline void ath10k_ce_watermark_intr_disable(struct ath10k *ar,
 			  host_ie_addr & ~(wm_regs->wm_mask));
 }
 
-static inline void ath10k_ce_error_intr_enable(struct ath10k *ar,
-					       u32 ce_ctrl_addr)
-{
-	struct ath10k_hw_ce_misc_regs *misc_regs = ar->hw_ce_regs->misc_regs;
-
-	u32 misc_ie_addr = ath10k_ce_read32(ar, ce_ctrl_addr +
-					    ar->hw_ce_regs->misc_ie_addr);
-
-	ath10k_ce_write32(ar,
-			  ce_ctrl_addr + ar->hw_ce_regs->misc_ie_addr,
-			  misc_ie_addr | misc_regs->err_mask);
-}
-
 static inline void ath10k_ce_error_intr_disable(struct ath10k *ar,
 						u32 ce_ctrl_addr)
 {
-	struct ath10k_hw_ce_misc_regs *misc_regs = ar->hw_ce_regs->misc_regs;
+	const struct ath10k_hw_ce_misc_regs *misc_regs = ar->hw_ce_regs->misc_regs;
 
 	u32 misc_ie_addr = ath10k_ce_read32(ar,
 			ce_ctrl_addr + ar->hw_ce_regs->misc_ie_addr);
@@ -476,7 +412,7 @@ static inline void ath10k_ce_engine_int_status_clear(struct ath10k *ar,
 						     u32 ce_ctrl_addr,
 						     unsigned int mask)
 {
-	struct ath10k_hw_ce_host_wm_regs *wm_regs = ar->hw_ce_regs->wm_regs;
+	const struct ath10k_hw_ce_host_wm_regs *wm_regs = ar->hw_ce_regs->wm_regs;
 
 	ath10k_ce_write32(ar, ce_ctrl_addr + wm_regs->addr, mask);
 }
@@ -1296,7 +1232,7 @@ void ath10k_ce_per_engine_service(struct ath10k *ar, unsigned int ce_id)
 {
 	struct ath10k_ce *ce = ath10k_ce_priv(ar);
 	struct ath10k_ce_pipe *ce_state = &ce->ce_states[ce_id];
-	struct ath10k_hw_ce_host_wm_regs *wm_regs = ar->hw_ce_regs->wm_regs;
+	const struct ath10k_hw_ce_host_wm_regs *wm_regs = ar->hw_ce_regs->wm_regs;
 	u32 ctrl_addr = ce_state->ctrl_addr;
 
 	/*
@@ -1323,7 +1259,7 @@ EXPORT_SYMBOL(ath10k_ce_per_engine_service);
 /*
  * Handler for per-engine interrupts on ALL active CEs.
  * This is used in cases where the system is sharing a
- * single interrput for all CEs
+ * single interrupt for all CEs
  */
 
 void ath10k_ce_per_engine_service_any(struct ath10k *ar)
@@ -1454,7 +1390,7 @@ static int ath10k_ce_init_src_ring(struct ath10k *ar,
 	ath10k_ce_src_ring_highmark_set(ar, ctrl_addr, nentries);
 
 	ath10k_dbg(ar, ATH10K_DBG_BOOT,
-		   "boot init ce src ring id %d entries %d base_addr %pK\n",
+		   "boot init ce src ring id %d entries %d base_addr %p\n",
 		   ce_id, nentries, src_ring->base_addr_owner_space);
 
 	return 0;
@@ -1492,7 +1428,7 @@ static int ath10k_ce_init_dest_ring(struct ath10k *ar,
 	ath10k_ce_dest_ring_highmark_set(ar, ctrl_addr, nentries);
 
 	ath10k_dbg(ar, ATH10K_DBG_BOOT,
-		   "boot ce dest ring id %d entries %d base_addr %pK\n",
+		   "boot ce dest ring id %d entries %d base_addr %p\n",
 		   ce_id, nentries, dest_ring->base_addr_owner_space);
 
 	return 0;
@@ -1525,8 +1461,7 @@ ath10k_ce_alloc_src_ring(struct ath10k *ar, unsigned int ce_id,
 
 	nentries = roundup_pow_of_two(nentries);
 
-	src_ring = kzalloc(struct_size(src_ring, per_transfer_context,
-				       nentries), GFP_KERNEL);
+	src_ring = kzalloc_flex(*src_ring, per_transfer_context, nentries);
 	if (src_ring == NULL)
 		return ERR_PTR(-ENOMEM);
 
@@ -1583,8 +1518,7 @@ ath10k_ce_alloc_src_ring_64(struct ath10k *ar, unsigned int ce_id,
 
 	nentries = roundup_pow_of_two(nentries);
 
-	src_ring = kzalloc(struct_size(src_ring, per_transfer_context,
-				       nentries), GFP_KERNEL);
+	src_ring = kzalloc_flex(*src_ring, per_transfer_context, nentries);
 	if (!src_ring)
 		return ERR_PTR(-ENOMEM);
 
@@ -1639,8 +1573,7 @@ ath10k_ce_alloc_dest_ring(struct ath10k *ar, unsigned int ce_id,
 
 	nentries = roundup_pow_of_two(attr->dest_nentries);
 
-	dest_ring = kzalloc(struct_size(dest_ring, per_transfer_context,
-					nentries), GFP_KERNEL);
+	dest_ring = kzalloc_flex(*dest_ring, per_transfer_context, nentries);
 	if (dest_ring == NULL)
 		return ERR_PTR(-ENOMEM);
 
@@ -1683,8 +1616,7 @@ ath10k_ce_alloc_dest_ring_64(struct ath10k *ar, unsigned int ce_id,
 
 	nentries = roundup_pow_of_two(attr->dest_nentries);
 
-	dest_ring = kzalloc(struct_size(dest_ring, per_transfer_context,
-					nentries), GFP_KERNEL);
+	dest_ring = kzalloc_flex(*dest_ring, per_transfer_context, nentries);
 	if (!dest_ring)
 		return ERR_PTR(-ENOMEM);
 
@@ -1791,8 +1723,8 @@ static void _ath10k_ce_free_pipe(struct ath10k *ar, int ce_id)
 				  (ce_state->src_ring->nentries *
 				   sizeof(struct ce_desc) +
 				   CE_DESC_RING_ALIGN),
-				  ce_state->src_ring->base_addr_owner_space,
-				  ce_state->src_ring->base_addr_ce_space);
+				  ce_state->src_ring->base_addr_owner_space_unaligned,
+				  ce_state->src_ring->base_addr_ce_space_unaligned);
 		kfree(ce_state->src_ring);
 	}
 
@@ -1801,8 +1733,8 @@ static void _ath10k_ce_free_pipe(struct ath10k *ar, int ce_id)
 				  (ce_state->dest_ring->nentries *
 				   sizeof(struct ce_desc) +
 				   CE_DESC_RING_ALIGN),
-				  ce_state->dest_ring->base_addr_owner_space,
-				  ce_state->dest_ring->base_addr_ce_space);
+				  ce_state->dest_ring->base_addr_owner_space_unaligned,
+				  ce_state->dest_ring->base_addr_ce_space_unaligned);
 		kfree(ce_state->dest_ring);
 	}
 
@@ -1822,8 +1754,8 @@ static void _ath10k_ce_free_pipe_64(struct ath10k *ar, int ce_id)
 				  (ce_state->src_ring->nentries *
 				   sizeof(struct ce_desc_64) +
 				   CE_DESC_RING_ALIGN),
-				  ce_state->src_ring->base_addr_owner_space,
-				  ce_state->src_ring->base_addr_ce_space);
+				  ce_state->src_ring->base_addr_owner_space_unaligned,
+				  ce_state->src_ring->base_addr_ce_space_unaligned);
 		kfree(ce_state->src_ring);
 	}
 
@@ -1832,8 +1764,8 @@ static void _ath10k_ce_free_pipe_64(struct ath10k *ar, int ce_id)
 				  (ce_state->dest_ring->nentries *
 				   sizeof(struct ce_desc_64) +
 				   CE_DESC_RING_ALIGN),
-				  ce_state->dest_ring->base_addr_owner_space,
-				  ce_state->dest_ring->base_addr_ce_space);
+				  ce_state->dest_ring->base_addr_owner_space_unaligned,
+				  ce_state->dest_ring->base_addr_ce_space_unaligned);
 		kfree(ce_state->dest_ring);
 	}
 

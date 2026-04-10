@@ -12,6 +12,7 @@
 #define _LINUX_FSVERITY_H
 
 #include <linux/fs.h>
+#include <linux/mm.h>
 #include <crypto/hash_info.h>
 #include <crypto/sha2.h>
 #include <uapi/linux/fsverity.h>
@@ -22,9 +23,13 @@
  */
 #define FS_VERITY_MAX_DIGEST_SIZE	SHA512_DIGEST_SIZE
 
+/* Arbitrary limit to bound the kmalloc() size.  Can be changed. */
+#define FS_VERITY_MAX_DESCRIPTOR_SIZE	16384
+
+struct fsverity_info;
+
 /* Verity operations for filesystems */
 struct fsverity_operations {
-
 	/**
 	 * Begin enabling verity on the given file.
 	 *
@@ -85,13 +90,8 @@ struct fsverity_operations {
 	 *
 	 * @inode: the inode
 	 * @index: 0-based index of the page within the Merkle tree
-	 * @num_ra_pages: The number of Merkle tree pages that should be
-	 *		  prefetched starting at @index if the page at @index
-	 *		  isn't already cached.  Implementations may ignore this
-	 *		  argument; it's only a performance optimization.
 	 *
-	 * This can be called at any time on an open verity file, as well as
-	 * between ->begin_enable_verity() and ->end_enable_verity().  It may be
+	 * This can be called at any time on an open verity file.  It may be
 	 * called by multiple processes concurrently, even with the same page.
 	 *
 	 * Note that this must retrieve a *page*, not necessarily a *block*.
@@ -99,37 +99,79 @@ struct fsverity_operations {
 	 * Return: the page on success, ERR_PTR() on failure
 	 */
 	struct page *(*read_merkle_tree_page)(struct inode *inode,
-					      pgoff_t index,
-					      unsigned long num_ra_pages);
+					      pgoff_t index);
 
 	/**
-	 * Write a Merkle tree block to the given inode.
+	 * Perform readahead of a Merkle tree for the given inode.
 	 *
-	 * @inode: the inode for which the Merkle tree is being built
-	 * @buf: block to write
-	 * @index: 0-based index of the block within the Merkle tree
-	 * @log_blocksize: log base 2 of the Merkle tree block size
+	 * @inode: the inode
+	 * @index: 0-based index of the first page within the Merkle tree
+	 * @nr_pages: number of pages to be read ahead.
+	 *
+	 * This can be called at any time on an open verity file.  It may be
+	 * called by multiple processes concurrently, even with the same range.
+	 *
+	 * Optional method so that ->read_merkle_tree_page preferably finds
+	 * cached data instead of issuing dependent I/O.
+	 */
+	void (*readahead_merkle_tree)(struct inode *inode, pgoff_t index,
+				      unsigned long nr_pages);
+
+	/**
+	 * Write a Merkle tree block to the given file.
+	 *
+	 * @file: the file for which the Merkle tree is being built
+	 * @buf: the Merkle tree block to write
+	 * @pos: the position of the block in the Merkle tree (in bytes)
+	 * @size: the Merkle tree block size (in bytes)
 	 *
 	 * This is only called between ->begin_enable_verity() and
 	 * ->end_enable_verity().
 	 *
 	 * Return: 0 on success, -errno on failure
 	 */
-	int (*write_merkle_tree_block)(struct inode *inode, const void *buf,
-				       u64 index, int log_blocksize);
+	int (*write_merkle_tree_block)(struct file *file, const void *buf,
+				       u64 pos, unsigned int size);
 };
 
 #ifdef CONFIG_FS_VERITY
+/**
+ * fsverity_active() - do reads from the inode need to go through fs-verity?
+ * @inode: inode to check
+ *
+ * This checks whether the inode's verity info has been set, and reads need
+ * to verify the file data.
+ *
+ * Return: true if reads need to go through fs-verity, otherwise false
+ */
+static inline bool fsverity_active(const struct inode *inode)
+{
+	if (IS_VERITY(inode)) {
+		/*
+		 * This pairs with the try_cmpxchg in set_mask_bits()
+		 * used to set the S_VERITY bit in i_flags.
+		 */
+		smp_mb();
+		return true;
+	}
 
+	return false;
+}
+
+struct fsverity_info *__fsverity_get_info(const struct inode *inode);
+/**
+ * fsverity_get_info - get fsverity information for an inode
+ * @inode: inode to operate on.
+ *
+ * This gets the fsverity_info for @inode if it exists.  Safe to call without
+ * knowin that a fsverity_info exist for @inode, including on file systems that
+ * do not support fsverity.
+ */
 static inline struct fsverity_info *fsverity_get_info(const struct inode *inode)
 {
-	/*
-	 * Pairs with the cmpxchg_release() in fsverity_set_info().
-	 * I.e., another task may publish ->i_verity_info concurrently,
-	 * executing a RELEASE barrier.  We need to use smp_load_acquire() here
-	 * to safely ACQUIRE the memory the other task published.
-	 */
-	return smp_load_acquire(&inode->i_verity_info);
+	if (!fsverity_active(inode))
+		return NULL;
+	return __fsverity_get_info(inode);
 }
 
 /* enable.c */
@@ -140,14 +182,12 @@ int fsverity_ioctl_enable(struct file *filp, const void __user *arg);
 
 int fsverity_ioctl_measure(struct file *filp, void __user *arg);
 int fsverity_get_digest(struct inode *inode,
-			u8 digest[FS_VERITY_MAX_DIGEST_SIZE],
-			enum hash_algo *alg);
+			u8 raw_digest[FS_VERITY_MAX_DIGEST_SIZE],
+			u8 *alg, enum hash_algo *halg);
 
 /* open.c */
 
-int fsverity_file_open(struct inode *inode, struct file *filp);
-int fsverity_prepare_setattr(struct dentry *dentry, struct iattr *attr);
-void fsverity_cleanup_inode(struct inode *inode);
+int __fsverity_file_open(struct inode *inode, struct file *filp);
 
 /* read_metadata.c */
 
@@ -155,11 +195,19 @@ int fsverity_ioctl_read_metadata(struct file *filp, const void __user *uarg);
 
 /* verify.c */
 
-bool fsverity_verify_page(struct page *page);
-void fsverity_verify_bio(struct bio *bio);
+void fsverity_readahead(struct fsverity_info *vi, pgoff_t index,
+			unsigned long nr_pages);
+bool fsverity_verify_blocks(struct fsverity_info *vi, struct folio *folio,
+			    size_t len, size_t offset);
+void fsverity_verify_bio(struct fsverity_info *vi, struct bio *bio);
 void fsverity_enqueue_verify_work(struct work_struct *work);
 
 #else /* !CONFIG_FS_VERITY */
+
+static inline bool fsverity_active(const struct inode *inode)
+{
+	return false;
+}
 
 static inline struct fsverity_info *fsverity_get_info(const struct inode *inode)
 {
@@ -182,27 +230,21 @@ static inline int fsverity_ioctl_measure(struct file *filp, void __user *arg)
 }
 
 static inline int fsverity_get_digest(struct inode *inode,
-				      u8 digest[FS_VERITY_MAX_DIGEST_SIZE],
-				      enum hash_algo *alg)
+				      u8 raw_digest[FS_VERITY_MAX_DIGEST_SIZE],
+				      u8 *alg, enum hash_algo *halg)
 {
-	return -EOPNOTSUPP;
+	/*
+	 * fsverity is not enabled in the kernel configuration, so always report
+	 * that the file doesn't have fsverity enabled (digest size 0).
+	 */
+	return 0;
 }
 
 /* open.c */
 
-static inline int fsverity_file_open(struct inode *inode, struct file *filp)
+static inline int __fsverity_file_open(struct inode *inode, struct file *filp)
 {
-	return IS_VERITY(inode) ? -EOPNOTSUPP : 0;
-}
-
-static inline int fsverity_prepare_setattr(struct dentry *dentry,
-					   struct iattr *attr)
-{
-	return IS_VERITY(d_inode(dentry)) ? -EOPNOTSUPP : 0;
-}
-
-static inline void fsverity_cleanup_inode(struct inode *inode)
-{
+	return -EOPNOTSUPP;
 }
 
 /* read_metadata.c */
@@ -215,40 +257,62 @@ static inline int fsverity_ioctl_read_metadata(struct file *filp,
 
 /* verify.c */
 
-static inline bool fsverity_verify_page(struct page *page)
+static inline void fsverity_readahead(struct fsverity_info *vi, pgoff_t index,
+				      unsigned long nr_pages)
 {
-	WARN_ON(1);
+}
+
+static inline bool fsverity_verify_blocks(struct fsverity_info *vi,
+					  struct folio *folio, size_t len,
+					  size_t offset)
+{
+	WARN_ON_ONCE(1);
 	return false;
 }
 
-static inline void fsverity_verify_bio(struct bio *bio)
+static inline void fsverity_verify_bio(struct fsverity_info *vi,
+				       struct bio *bio)
 {
-	WARN_ON(1);
+	WARN_ON_ONCE(1);
 }
 
 static inline void fsverity_enqueue_verify_work(struct work_struct *work)
 {
-	WARN_ON(1);
+	WARN_ON_ONCE(1);
 }
 
 #endif	/* !CONFIG_FS_VERITY */
 
-/**
- * fsverity_active() - do reads from the inode need to go through fs-verity?
- * @inode: inode to check
- *
- * This checks whether ->i_verity_info has been set.
- *
- * Filesystems call this from ->readahead() to check whether the pages need to
- * be verified or not.  Don't use IS_VERITY() for this purpose; it's subject to
- * a race condition where the file is being read concurrently with
- * FS_IOC_ENABLE_VERITY completing.  (S_VERITY is set before ->i_verity_info.)
- *
- * Return: true if reads need to go through fs-verity, otherwise false
- */
-static inline bool fsverity_active(const struct inode *inode)
+static inline bool fsverity_verify_folio(struct fsverity_info *vi,
+					 struct folio *folio)
 {
-	return fsverity_get_info(inode) != NULL;
+	return fsverity_verify_blocks(vi, folio, folio_size(folio), 0);
 }
+
+/**
+ * fsverity_file_open() - prepare to open a verity file
+ * @inode: the inode being opened
+ * @filp: the struct file being set up
+ *
+ * When opening a verity file, deny the open if it is for writing.  Otherwise,
+ * set up the inode's verity info if not already done.
+ *
+ * When combined with fscrypt, this must be called after fscrypt_file_open().
+ * Otherwise, we won't have the key set up to decrypt the verity metadata.
+ *
+ * Return: 0 on success, -errno on failure
+ */
+static inline int fsverity_file_open(struct inode *inode, struct file *filp)
+{
+	if (IS_VERITY(inode))
+		return __fsverity_file_open(inode, filp);
+	return 0;
+}
+
+void fsverity_cleanup_inode(struct inode *inode);
+
+struct page *generic_read_merkle_tree_page(struct inode *inode, pgoff_t index);
+void generic_readahead_merkle_tree(struct inode *inode, pgoff_t index,
+				   unsigned long nr_pages);
 
 #endif	/* _LINUX_FSVERITY_H */

@@ -13,6 +13,7 @@
 #include <linux/i2c.h>
 #include <linux/rtc.h>
 #include <linux/init.h>
+#include <linux/kstrtox.h>
 #include <linux/errno.h>
 #include <linux/bcd.h>
 
@@ -249,8 +250,7 @@ static void bq32k_sysfs_unregister(struct device *dev)
 	device_remove_file(dev, &dev_attr_trickle_charge_bypass);
 }
 
-static int bq32k_probe(struct i2c_client *client,
-				const struct i2c_device_id *id)
+static int bq32k_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct rtc_device *rtc;
@@ -298,15 +298,13 @@ static int bq32k_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int bq32k_remove(struct i2c_client *client)
+static void bq32k_remove(struct i2c_client *client)
 {
 	bq32k_sysfs_unregister(&client->dev);
-
-	return 0;
 }
 
 static const struct i2c_device_id bq32k_id[] = {
-	{ "bq32000", 0 },
+	{ "bq32000" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, bq32k_id);

@@ -1,7 +1,7 @@
 .. SPDX-License-Identifier: GPL-2.0
 
 =======
-locking
+Locking
 =======
 
 .. toctree::
@@ -24,10 +24,3 @@ locking
     percpu-rw-semaphore
     robust-futexes
     robust-futex-ABI
-
-.. only::  subproject and html
-
-   Indices
-   =======
-
-   * :ref:`genindex`

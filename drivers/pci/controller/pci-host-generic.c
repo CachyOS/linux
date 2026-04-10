@@ -14,6 +14,8 @@
 #include <linux/pci-ecam.h>
 #include <linux/platform_device.h>
 
+#include "pci-host-common.h"
+
 static const struct pci_ecam_ops gen_pci_cfg_cam_bus_ops = {
 	.bus_shift	= 16,
 	.pci_ops	= {
@@ -86,4 +88,5 @@ static struct platform_driver gen_pci_driver = {
 };
 module_platform_driver(gen_pci_driver);
 
+MODULE_DESCRIPTION("Generic PCI host controller driver");
 MODULE_LICENSE("GPL v2");

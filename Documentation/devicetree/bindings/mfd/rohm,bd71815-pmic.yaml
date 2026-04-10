@@ -4,10 +4,10 @@
 $id: http://devicetree.org/schemas/mfd/rohm,bd71815-pmic.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: ROHM BD71815 Power Management Integrated Circuit bindings
+title: ROHM BD71815 Power Management Integrated Circuit
 
 maintainers:
-  - Matti Vaittinen <matti.vaittinen@fi.rohmeurope.com>
+  - Matti Vaittinen <mazziesaccount@gmail.com>
 
 description: |
   BD71815AGW is a single-chip power management ICs for battery-powered
@@ -46,35 +46,35 @@ properties:
 
   rohm,clkout-open-drain:
     description: clk32kout mode. Set to 1 for "open-drain" or 0 for "cmos".
-    $ref: "/schemas/types.yaml#/definitions/uint32"
+    $ref: /schemas/types.yaml#/definitions/uint32
     minimum: 0
     maximum: 1
 
-  rohm,charger-sense-resistor-ohms:
-    minimum: 10000000
-    maximum: 50000000
+  rohm,charger-sense-resistor-micro-ohms:
+    minimum: 10000
+    maximum: 50000
     description: |
-      BD71827 and BD71828 have SAR ADC for measuring charging currents.
-      External sense resistor (RSENSE in data sheet) should be used. If
-      something other but 30MOhm resistor is used the resistance value
-      should be given here in Ohms.
-    default: 30000000
+      BD71815 has SAR ADC for measuring charging currents. External sense
+      resistor (RSENSE in data sheet) should be used. If something other
+      but a 30 mOhm resistor is used the resistance value should be given
+      here in micro Ohms.
+    default: 30000
 
   regulators:
-    $ref: ../regulator/rohm,bd71815-regulator.yaml
+    $ref: /schemas/regulator/rohm,bd71815-regulator.yaml
     description:
       List of child nodes that specify the regulators.
 
   gpio-reserved-ranges:
     description: |
-      Usage of BD71828 GPIO pins can be changed via OTP. This property can be
+      Usage of BD71815 GPIO pins can be changed via OTP. This property can be
       used to mark the pins which should not be configured for GPIO. Please see
       the ../gpio/gpio.txt for more information.
 
   rohm,enable-hidden-gpo:
     description: |
       The BD71815 has undocumented GPO at pin E5. Pin is marked as GND at the
-      data-sheet as it's location in the middle of GND pins makes it hard to
+      data-sheet as its location in the middle of GND pins makes it hard to
       use on PCB. If your board has managed to use this pin you can enable the
       second GPO by defining this property. Dont enable this if you are unsure
       about how the E5 pin is connected on your board.
@@ -113,7 +113,7 @@ examples:
             gpio-controller;
             #gpio-cells = <2>;
 
-            rohm,charger-sense-resistor-ohms = <10000000>;
+            rohm,charger-sense-resistor-micro-ohms = <10000>;
 
             regulators {
                 buck1: buck1 {

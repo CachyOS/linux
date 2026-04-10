@@ -394,7 +394,7 @@ struct dvb_frontend *max2165_attach(struct dvb_frontend *fe,
 		i2c ? i2c_adapter_id(i2c) : -1,
 		cfg ? cfg->i2c_address : -1);
 
-	priv = kzalloc(sizeof(struct max2165_priv), GFP_KERNEL);
+	priv = kzalloc_obj(struct max2165_priv);
 	if (priv == NULL)
 		return NULL;
 
@@ -410,7 +410,7 @@ struct dvb_frontend *max2165_attach(struct dvb_frontend *fe,
 
 	return fe;
 }
-EXPORT_SYMBOL(max2165_attach);
+EXPORT_SYMBOL_GPL(max2165_attach);
 
 MODULE_AUTHOR("David T. L. Wong <davidtlwong@gmail.com>");
 MODULE_DESCRIPTION("Maxim MAX2165 silicon tuner driver");

@@ -25,7 +25,6 @@
 extern struct files_struct init_files;
 extern struct fs_struct init_fs;
 extern struct nsproxy init_nsproxy;
-extern struct cred init_cred;
 
 #ifndef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
 #define INIT_PREV_CPUTIME(x)	.prev_cputime = {			\
@@ -36,13 +35,6 @@ extern struct cred init_cred;
 #endif
 
 #define INIT_TASK_COMM "swapper"
-
-/* Attach to the init_task data structure for proper alignment */
-#ifdef CONFIG_ARCH_TASK_STRUCT_ON_STACK
-#define __init_task_data __section(".data..init_task")
-#else
-#define __init_task_data /**/
-#endif
 
 /* Attach to the thread_info data structure for proper alignment */
 #define __init_thread_info __section(".data..init_thread_info")

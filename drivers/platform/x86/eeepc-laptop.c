@@ -15,7 +15,6 @@
 #include <linux/types.h>
 #include <linux/platform_device.h>
 #include <linux/backlight.h>
-#include <linux/fb.h>
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
 #include <linux/slab.h>
@@ -26,6 +25,7 @@
 #include <linux/rfkill.h>
 #include <linux/pci.h>
 #include <linux/pci_hotplug.h>
+#include <linux/sysfs.h>
 #include <linux/leds.h>
 #include <linux/dmi.h>
 #include <acpi/video.h>
@@ -286,7 +286,7 @@ static ssize_t show_sys_acpi(struct device *dev, int cm, char *buf)
 
 	if (value < 0)
 		return -EIO;
-	return sprintf(buf, "%d\n", value);
+	return sysfs_emit(buf, "%d\n", value);
 }
 
 #define EEEPC_ACPI_SHOW_FUNC(_name, _cm)				\
@@ -362,7 +362,7 @@ static ssize_t cpufv_show(struct device *dev,
 
 	if (get_cpufv(eeepc, &c))
 		return -ENODEV;
-	return sprintf(buf, "%#x\n", (c.num << 8) | c.cur);
+	return sysfs_emit(buf, "%#x\n", (c.num << 8) | c.cur);
 }
 
 static ssize_t cpufv_store(struct device *dev,
@@ -394,7 +394,7 @@ static ssize_t cpufv_disabled_show(struct device *dev,
 {
 	struct eeepc_laptop *eeepc = dev_get_drvdata(dev);
 
-	return sprintf(buf, "%d\n", eeepc->cpufv_disabled);
+	return sysfs_emit(buf, "%d\n", eeepc->cpufv_disabled);
 }
 
 static ssize_t cpufv_disabled_store(struct device *dev,
@@ -444,7 +444,7 @@ static int eeepc_platform_init(struct eeepc_laptop *eeepc)
 {
 	int result;
 
-	eeepc->platform_device = platform_device_alloc(EEEPC_LAPTOP_FILE, -1);
+	eeepc->platform_device = platform_device_alloc(EEEPC_LAPTOP_FILE, PLATFORM_DEVID_NONE);
 	if (!eeepc->platform_device)
 		return -ENOMEM;
 	platform_set_drvdata(eeepc->platform_device, eeepc);
@@ -1026,7 +1026,7 @@ static ssize_t store_sys_hwmon(void (*set)(int), const char *buf, size_t count)
 
 static ssize_t show_sys_hwmon(int (*get)(void), char *buf)
 {
-	return sprintf(buf, "%d\n", get());
+	return sysfs_emit(buf, "%d\n", get());
 }
 
 #define EEEPC_SENSOR_SHOW_FUNC(_name, _get)				\
@@ -1137,7 +1137,7 @@ static int eeepc_backlight_init(struct eeepc_laptop *eeepc)
 	}
 	eeepc->backlight_device = bd;
 	bd->props.brightness = read_brightness(bd);
-	bd->props.power = FB_BLANK_UNBLANK;
+	bd->props.power = BACKLIGHT_POWER_ON;
 	backlight_update_status(bd);
 	return 0;
 }
@@ -1366,12 +1366,12 @@ static int eeepc_acpi_add(struct acpi_device *device)
 	int result;
 
 	pr_notice(EEEPC_LAPTOP_NAME "\n");
-	eeepc = kzalloc(sizeof(struct eeepc_laptop), GFP_KERNEL);
+	eeepc = kzalloc_obj(struct eeepc_laptop);
 	if (!eeepc)
 		return -ENOMEM;
 	eeepc->handle = device->handle;
-	strcpy(acpi_device_name(device), EEEPC_ACPI_DEVICE_NAME);
-	strcpy(acpi_device_class(device), EEEPC_ACPI_CLASS);
+	strscpy(acpi_device_name(device), EEEPC_ACPI_DEVICE_NAME);
+	strscpy(acpi_device_class(device), EEEPC_ACPI_CLASS);
 	device->driver_data = eeepc;
 	eeepc->device = device;
 
@@ -1394,7 +1394,7 @@ static int eeepc_acpi_add(struct acpi_device *device)
 	 * and machine-specific scripts find the fixed name convenient.  But
 	 * It's also good for us to exclude multiple instances because both
 	 * our hwmon and our wlan rfkill subdevice use global ACPI objects
-	 * (the EC and the wlan PCI slot respectively).
+	 * (the EC and the PCI wlan slot respectively).
 	 */
 	result = eeepc_platform_init(eeepc);
 	if (result)
@@ -1440,7 +1440,7 @@ fail_platform:
 	return result;
 }
 
-static int eeepc_acpi_remove(struct acpi_device *device)
+static void eeepc_acpi_remove(struct acpi_device *device)
 {
 	struct eeepc_laptop *eeepc = acpi_driver_data(device);
 
@@ -1451,7 +1451,6 @@ static int eeepc_acpi_remove(struct acpi_device *device)
 	eeepc_platform_exit(eeepc);
 
 	kfree(eeepc);
-	return 0;
 }
 
 
@@ -1464,7 +1463,6 @@ MODULE_DEVICE_TABLE(acpi, eeepc_device_ids);
 static struct acpi_driver eeepc_acpi_driver = {
 	.name = EEEPC_LAPTOP_NAME,
 	.class = EEEPC_ACPI_CLASS,
-	.owner = THIS_MODULE,
 	.ids = eeepc_device_ids,
 	.flags = ACPI_DRIVER_ALL_NOTIFY_EVENTS,
 	.ops = {

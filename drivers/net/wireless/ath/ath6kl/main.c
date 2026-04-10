@@ -485,7 +485,7 @@ void ath6kl_connect_ap_mode_sta(struct ath6kl_vif *vif, u16 aid, u8 *mac_addr,
 			   keymgmt, ucipher, auth, apsd_info);
 
 	/* send event to application */
-	sinfo = kzalloc(sizeof(*sinfo), GFP_KERNEL);
+	sinfo = kzalloc_obj(*sinfo);
 	if (!sinfo)
 		return;
 
@@ -503,7 +503,7 @@ void ath6kl_connect_ap_mode_sta(struct ath6kl_vif *vif, u16 aid, u8 *mac_addr,
 
 void disconnect_timer_handler(struct timer_list *t)
 {
-	struct ath6kl_vif *vif = from_timer(vif, t, disconnect_timer);
+	struct ath6kl_vif *vif = timer_container_of(vif, t, disconnect_timer);
 
 	ath6kl_init_profile_info(vif);
 	ath6kl_disconnect(vif);
@@ -583,7 +583,7 @@ static int ath6kl_commit_ch_switch(struct ath6kl_vif *vif, u16 channel)
 	switch (vif->nw_type) {
 	case AP_NETWORK:
 		/*
-		 * reconfigure any saved RSN IE capabilites in the beacon /
+		 * reconfigure any saved RSN IE capabilities in the beacon /
 		 * probe response to stay in sync with the supplicant.
 		 */
 		if (vif->rsn_capab &&
@@ -852,14 +852,14 @@ void ath6kl_tgt_stats_event(struct ath6kl_vif *vif, u8 *ptr, u32 len)
 
 void ath6kl_wakeup_event(void *dev)
 {
-	struct ath6kl *ar = (struct ath6kl *) dev;
+	struct ath6kl *ar = dev;
 
 	wake_up(&ar->event_wq);
 }
 
 void ath6kl_txpwr_rx_evt(void *devt, u8 tx_pwr)
 {
-	struct ath6kl *ar = (struct ath6kl *) devt;
+	struct ath6kl *ar = devt;
 
 	ar->tx_pwr = tx_pwr;
 	wake_up(&ar->event_wq);
@@ -1027,7 +1027,7 @@ void ath6kl_disconnect_event(struct ath6kl_vif *vif, u8 reason, u8 *bssid,
 
 	aggr_reset_state(vif->aggr_cntxt->aggr_conn);
 
-	del_timer(&vif->disconnect_timer);
+	timer_delete(&vif->disconnect_timer);
 
 	ath6kl_dbg(ATH6KL_DBG_WLAN_CFG, "disconnect reason is %d\n", reason);
 
@@ -1249,8 +1249,8 @@ static void ath6kl_set_multicast_list(struct net_device *ndev)
 		}
 
 		if (!found) {
-			mc_filter = kzalloc(sizeof(struct ath6kl_mc_filter),
-					    GFP_ATOMIC);
+			mc_filter = kzalloc_obj(struct ath6kl_mc_filter,
+						GFP_ATOMIC);
 			if (!mc_filter) {
 				WARN_ON(1);
 				goto out;

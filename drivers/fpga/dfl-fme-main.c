@@ -19,6 +19,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/uaccess.h>
+#include <linux/units.h>
 #include <linux/fpga-dfl.h>
 
 #include "dfl.h"
@@ -27,10 +28,11 @@
 static ssize_t ports_num_show(struct device *dev,
 			      struct device_attribute *attr, char *buf)
 {
+	struct dfl_feature_dev_data *fdata = to_dfl_feature_dev_data(dev);
 	void __iomem *base;
 	u64 v;
 
-	base = dfl_get_feature_ioaddr_by_id(dev, FME_FEATURE_ID_HEADER);
+	base = dfl_get_feature_ioaddr_by_id(fdata, FME_FEATURE_ID_HEADER);
 
 	v = readq(base + FME_HDR_CAP);
 
@@ -46,10 +48,11 @@ static DEVICE_ATTR_RO(ports_num);
 static ssize_t bitstream_id_show(struct device *dev,
 				 struct device_attribute *attr, char *buf)
 {
+	struct dfl_feature_dev_data *fdata = to_dfl_feature_dev_data(dev);
 	void __iomem *base;
 	u64 v;
 
-	base = dfl_get_feature_ioaddr_by_id(dev, FME_FEATURE_ID_HEADER);
+	base = dfl_get_feature_ioaddr_by_id(fdata, FME_FEATURE_ID_HEADER);
 
 	v = readq(base + FME_HDR_BITSTREAM_ID);
 
@@ -64,10 +67,11 @@ static DEVICE_ATTR_RO(bitstream_id);
 static ssize_t bitstream_metadata_show(struct device *dev,
 				       struct device_attribute *attr, char *buf)
 {
+	struct dfl_feature_dev_data *fdata = to_dfl_feature_dev_data(dev);
 	void __iomem *base;
 	u64 v;
 
-	base = dfl_get_feature_ioaddr_by_id(dev, FME_FEATURE_ID_HEADER);
+	base = dfl_get_feature_ioaddr_by_id(fdata, FME_FEATURE_ID_HEADER);
 
 	v = readq(base + FME_HDR_BITSTREAM_MD);
 
@@ -78,10 +82,11 @@ static DEVICE_ATTR_RO(bitstream_metadata);
 static ssize_t cache_size_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
+	struct dfl_feature_dev_data *fdata = to_dfl_feature_dev_data(dev);
 	void __iomem *base;
 	u64 v;
 
-	base = dfl_get_feature_ioaddr_by_id(dev, FME_FEATURE_ID_HEADER);
+	base = dfl_get_feature_ioaddr_by_id(fdata, FME_FEATURE_ID_HEADER);
 
 	v = readq(base + FME_HDR_CAP);
 
@@ -93,10 +98,11 @@ static DEVICE_ATTR_RO(cache_size);
 static ssize_t fabric_version_show(struct device *dev,
 				   struct device_attribute *attr, char *buf)
 {
+	struct dfl_feature_dev_data *fdata = to_dfl_feature_dev_data(dev);
 	void __iomem *base;
 	u64 v;
 
-	base = dfl_get_feature_ioaddr_by_id(dev, FME_FEATURE_ID_HEADER);
+	base = dfl_get_feature_ioaddr_by_id(fdata, FME_FEATURE_ID_HEADER);
 
 	v = readq(base + FME_HDR_CAP);
 
@@ -108,10 +114,11 @@ static DEVICE_ATTR_RO(fabric_version);
 static ssize_t socket_id_show(struct device *dev,
 			      struct device_attribute *attr, char *buf)
 {
+	struct dfl_feature_dev_data *fdata = to_dfl_feature_dev_data(dev);
 	void __iomem *base;
 	u64 v;
 
-	base = dfl_get_feature_ioaddr_by_id(dev, FME_FEATURE_ID_HEADER);
+	base = dfl_get_feature_ioaddr_by_id(fdata, FME_FEATURE_ID_HEADER);
 
 	v = readq(base + FME_HDR_CAP);
 
@@ -134,10 +141,10 @@ static const struct attribute_group fme_hdr_group = {
 	.attrs = fme_hdr_attrs,
 };
 
-static long fme_hdr_ioctl_release_port(struct dfl_feature_platform_data *pdata,
+static long fme_hdr_ioctl_release_port(struct dfl_feature_dev_data *fdata,
 				       unsigned long arg)
 {
-	struct dfl_fpga_cdev *cdev = pdata->dfl_cdev;
+	struct dfl_fpga_cdev *cdev = fdata->dfl_cdev;
 	int port_id;
 
 	if (get_user(port_id, (int __user *)arg))
@@ -146,10 +153,10 @@ static long fme_hdr_ioctl_release_port(struct dfl_feature_platform_data *pdata,
 	return dfl_fpga_cdev_release_port(cdev, port_id);
 }
 
-static long fme_hdr_ioctl_assign_port(struct dfl_feature_platform_data *pdata,
+static long fme_hdr_ioctl_assign_port(struct dfl_feature_dev_data *fdata,
 				      unsigned long arg)
 {
-	struct dfl_fpga_cdev *cdev = pdata->dfl_cdev;
+	struct dfl_fpga_cdev *cdev = fdata->dfl_cdev;
 	int port_id;
 
 	if (get_user(port_id, (int __user *)arg))
@@ -162,13 +169,13 @@ static long fme_hdr_ioctl(struct platform_device *pdev,
 			  struct dfl_feature *feature,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct dfl_feature_platform_data *pdata = dev_get_platdata(&pdev->dev);
+	struct dfl_feature_dev_data *fdata = to_dfl_feature_dev_data(&pdev->dev);
 
 	switch (cmd) {
 	case DFL_FPGA_FME_PORT_RELEASE:
-		return fme_hdr_ioctl_release_port(pdata, arg);
+		return fme_hdr_ioctl_release_port(fdata, arg);
 	case DFL_FPGA_FME_PORT_ASSIGN:
-		return fme_hdr_ioctl_assign_port(pdata, arg);
+		return fme_hdr_ioctl_assign_port(fdata, arg);
 	}
 
 	return -ENODEV;
@@ -231,19 +238,19 @@ static int thermal_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 	switch (attr) {
 	case hwmon_temp_input:
 		v = readq(feature->ioaddr + FME_THERM_RDSENSOR_FMT1);
-		*val = (long)(FIELD_GET(FPGA_TEMPERATURE, v) * 1000);
+		*val = (long)(FIELD_GET(FPGA_TEMPERATURE, v) * MILLI);
 		break;
 	case hwmon_temp_max:
 		v = readq(feature->ioaddr + FME_THERM_THRESHOLD);
-		*val = (long)(FIELD_GET(TEMP_THRESHOLD1, v) * 1000);
+		*val = (long)(FIELD_GET(TEMP_THRESHOLD1, v) * MILLI);
 		break;
 	case hwmon_temp_crit:
 		v = readq(feature->ioaddr + FME_THERM_THRESHOLD);
-		*val = (long)(FIELD_GET(TEMP_THRESHOLD2, v) * 1000);
+		*val = (long)(FIELD_GET(TEMP_THRESHOLD2, v) * MILLI);
 		break;
 	case hwmon_temp_emergency:
 		v = readq(feature->ioaddr + FME_THERM_THRESHOLD);
-		*val = (long)(FIELD_GET(TRIP_THRESHOLD, v) * 1000);
+		*val = (long)(FIELD_GET(TRIP_THRESHOLD, v) * MILLI);
 		break;
 	case hwmon_temp_max_alarm:
 		v = readq(feature->ioaddr + FME_THERM_THRESHOLD);
@@ -265,7 +272,7 @@ static const struct hwmon_ops thermal_hwmon_ops = {
 	.read = thermal_hwmon_read,
 };
 
-static const struct hwmon_channel_info *thermal_hwmon_info[] = {
+static const struct hwmon_channel_info * const thermal_hwmon_info[] = {
 	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT | HWMON_T_EMERGENCY |
 				 HWMON_T_MAX   | HWMON_T_MAX_ALARM |
 				 HWMON_T_CRIT  | HWMON_T_CRIT_ALARM),
@@ -382,15 +389,15 @@ static int power_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 	switch (attr) {
 	case hwmon_power_input:
 		v = readq(feature->ioaddr + FME_PWR_STATUS);
-		*val = (long)(FIELD_GET(PWR_CONSUMED, v) * 1000000);
+		*val = (long)(FIELD_GET(PWR_CONSUMED, v) * MICRO);
 		break;
 	case hwmon_power_max:
 		v = readq(feature->ioaddr + FME_PWR_THRESHOLD);
-		*val = (long)(FIELD_GET(PWR_THRESHOLD1, v) * 1000000);
+		*val = (long)(FIELD_GET(PWR_THRESHOLD1, v) * MICRO);
 		break;
 	case hwmon_power_crit:
 		v = readq(feature->ioaddr + FME_PWR_THRESHOLD);
-		*val = (long)(FIELD_GET(PWR_THRESHOLD2, v) * 1000000);
+		*val = (long)(FIELD_GET(PWR_THRESHOLD2, v) * MICRO);
 		break;
 	case hwmon_power_max_alarm:
 		v = readq(feature->ioaddr + FME_PWR_THRESHOLD);
@@ -410,14 +417,14 @@ static int power_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 static int power_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
 			     u32 attr, int channel, long val)
 {
-	struct dfl_feature_platform_data *pdata = dev_get_platdata(dev->parent);
+	struct dfl_feature_dev_data *fdata = to_dfl_feature_dev_data(dev->parent);
 	struct dfl_feature *feature = dev_get_drvdata(dev);
 	int ret = 0;
 	u64 v;
 
-	val = clamp_val(val / 1000000, 0, PWR_THRESHOLD_MAX);
+	val = clamp_val(val / MICRO, 0, PWR_THRESHOLD_MAX);
 
-	mutex_lock(&pdata->lock);
+	mutex_lock(&fdata->lock);
 
 	switch (attr) {
 	case hwmon_power_max:
@@ -437,7 +444,7 @@ static int power_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
 		break;
 	}
 
-	mutex_unlock(&pdata->lock);
+	mutex_unlock(&fdata->lock);
 
 	return ret;
 }
@@ -465,7 +472,7 @@ static const struct hwmon_ops power_hwmon_ops = {
 	.write = power_hwmon_write,
 };
 
-static const struct hwmon_channel_info *power_hwmon_info[] = {
+static const struct hwmon_channel_info * const power_hwmon_info[] = {
 	HWMON_CHANNEL_INFO(power, HWMON_P_INPUT |
 				  HWMON_P_MAX   | HWMON_P_MAX_ALARM |
 				  HWMON_P_CRIT  | HWMON_P_CRIT_ALARM),
@@ -588,7 +595,7 @@ static struct dfl_feature_driver fme_feature_drvs[] = {
 	},
 };
 
-static long fme_ioctl_check_extension(struct dfl_feature_platform_data *pdata,
+static long fme_ioctl_check_extension(struct dfl_feature_dev_data *fdata,
 				      unsigned long arg)
 {
 	/* No extension support for now */
@@ -597,49 +604,46 @@ static long fme_ioctl_check_extension(struct dfl_feature_platform_data *pdata,
 
 static int fme_open(struct inode *inode, struct file *filp)
 {
-	struct platform_device *fdev = dfl_fpga_inode_to_feature_dev(inode);
-	struct dfl_feature_platform_data *pdata = dev_get_platdata(&fdev->dev);
+	struct dfl_feature_dev_data *fdata = dfl_fpga_inode_to_feature_dev_data(inode);
+	struct platform_device *fdev = fdata->dev;
 	int ret;
 
-	if (WARN_ON(!pdata))
-		return -ENODEV;
-
-	mutex_lock(&pdata->lock);
-	ret = dfl_feature_dev_use_begin(pdata, filp->f_flags & O_EXCL);
+	mutex_lock(&fdata->lock);
+	ret = dfl_feature_dev_use_begin(fdata, filp->f_flags & O_EXCL);
 	if (!ret) {
 		dev_dbg(&fdev->dev, "Device File Opened %d Times\n",
-			dfl_feature_dev_use_count(pdata));
-		filp->private_data = pdata;
+			dfl_feature_dev_use_count(fdata));
+		filp->private_data = fdata;
 	}
-	mutex_unlock(&pdata->lock);
+	mutex_unlock(&fdata->lock);
 
 	return ret;
 }
 
 static int fme_release(struct inode *inode, struct file *filp)
 {
-	struct dfl_feature_platform_data *pdata = filp->private_data;
-	struct platform_device *pdev = pdata->dev;
+	struct dfl_feature_dev_data *fdata = filp->private_data;
+	struct platform_device *pdev = fdata->dev;
 	struct dfl_feature *feature;
 
 	dev_dbg(&pdev->dev, "Device File Release\n");
 
-	mutex_lock(&pdata->lock);
-	dfl_feature_dev_use_end(pdata);
+	mutex_lock(&fdata->lock);
+	dfl_feature_dev_use_end(fdata);
 
-	if (!dfl_feature_dev_use_count(pdata))
-		dfl_fpga_dev_for_each_feature(pdata, feature)
+	if (!dfl_feature_dev_use_count(fdata))
+		dfl_fpga_dev_for_each_feature(fdata, feature)
 			dfl_fpga_set_irq_triggers(feature, 0,
 						  feature->nr_irqs, NULL);
-	mutex_unlock(&pdata->lock);
+	mutex_unlock(&fdata->lock);
 
 	return 0;
 }
 
 static long fme_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	struct dfl_feature_platform_data *pdata = filp->private_data;
-	struct platform_device *pdev = pdata->dev;
+	struct dfl_feature_dev_data *fdata = filp->private_data;
+	struct platform_device *pdev = fdata->dev;
 	struct dfl_feature *f;
 	long ret;
 
@@ -649,7 +653,7 @@ static long fme_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	case DFL_FPGA_GET_API_VERSION:
 		return DFL_FPGA_API_VERSION;
 	case DFL_FPGA_CHECK_EXTENSION:
-		return fme_ioctl_check_extension(pdata, arg);
+		return fme_ioctl_check_extension(fdata, arg);
 	default:
 		/*
 		 * Let sub-feature's ioctl function to handle the cmd.
@@ -657,7 +661,7 @@ static long fme_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		 * handled in this sub feature, and returns 0 or other
 		 * error code if cmd is handled.
 		 */
-		dfl_fpga_dev_for_each_feature(pdata, f) {
+		dfl_fpga_dev_for_each_feature(fdata, f) {
 			if (f->ops && f->ops->ioctl) {
 				ret = f->ops->ioctl(pdev, f, cmd, arg);
 				if (ret != -ENODEV)
@@ -671,29 +675,27 @@ static long fme_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 static int fme_dev_init(struct platform_device *pdev)
 {
-	struct dfl_feature_platform_data *pdata = dev_get_platdata(&pdev->dev);
+	struct dfl_feature_dev_data *fdata = to_dfl_feature_dev_data(&pdev->dev);
 	struct dfl_fme *fme;
 
 	fme = devm_kzalloc(&pdev->dev, sizeof(*fme), GFP_KERNEL);
 	if (!fme)
 		return -ENOMEM;
 
-	fme->pdata = pdata;
-
-	mutex_lock(&pdata->lock);
-	dfl_fpga_pdata_set_private(pdata, fme);
-	mutex_unlock(&pdata->lock);
+	mutex_lock(&fdata->lock);
+	dfl_fpga_fdata_set_private(fdata, fme);
+	mutex_unlock(&fdata->lock);
 
 	return 0;
 }
 
 static void fme_dev_destroy(struct platform_device *pdev)
 {
-	struct dfl_feature_platform_data *pdata = dev_get_platdata(&pdev->dev);
+	struct dfl_feature_dev_data *fdata = to_dfl_feature_dev_data(&pdev->dev);
 
-	mutex_lock(&pdata->lock);
-	dfl_fpga_pdata_set_private(pdata, NULL);
-	mutex_unlock(&pdata->lock);
+	mutex_lock(&fdata->lock);
+	dfl_fpga_fdata_set_private(fdata, NULL);
+	mutex_unlock(&fdata->lock);
 }
 
 static const struct file_operations fme_fops = {
@@ -729,13 +731,11 @@ exit:
 	return ret;
 }
 
-static int fme_remove(struct platform_device *pdev)
+static void fme_remove(struct platform_device *pdev)
 {
 	dfl_fpga_dev_ops_unregister(pdev);
 	dfl_fpga_dev_feature_uinit(pdev);
 	fme_dev_destroy(pdev);
-
-	return 0;
 }
 
 static const struct attribute_group *fme_dev_groups[] = {
@@ -745,12 +745,12 @@ static const struct attribute_group *fme_dev_groups[] = {
 };
 
 static struct platform_driver fme_driver = {
-	.driver	= {
-		.name       = DFL_FPGA_FEATURE_DEV_FME,
+	.driver = {
+		.name = DFL_FPGA_FEATURE_DEV_FME,
 		.dev_groups = fme_dev_groups,
 	},
-	.probe   = fme_probe,
-	.remove  = fme_remove,
+	.probe = fme_probe,
+	.remove = fme_remove,
 };
 
 module_platform_driver(fme_driver);

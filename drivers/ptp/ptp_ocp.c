@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2020 Facebook */
 
+#include <linux/bits.h>
 #include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -12,23 +13,30 @@
 #include <linux/clk-provider.h>
 #include <linux/platform_device.h>
 #include <linux/platform_data/i2c-xiic.h>
+#include <linux/platform_data/i2c-ocores.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/xilinx_spi.h>
+#include <linux/spi/altera.h>
 #include <net/devlink.h>
 #include <linux/i2c.h>
 #include <linux/mtd/mtd.h>
 #include <linux/nvmem-consumer.h>
 #include <linux/crc16.h>
+#include <linux/dpll.h>
 
-#define PCI_VENDOR_ID_FACEBOOK			0x1d9b
-#define PCI_DEVICE_ID_FACEBOOK_TIMECARD		0x0400
+#define PCI_DEVICE_ID_META_TIMECARD		0x0400
 
 #define PCI_VENDOR_ID_CELESTICA			0x18d4
 #define PCI_DEVICE_ID_CELESTICA_TIMECARD	0x1008
 
+#define PCI_VENDOR_ID_OROLIA			0x1ad7
+#define PCI_DEVICE_ID_OROLIA_ARTCARD		0xa000
+
+#define PCI_VENDOR_ID_ADVA			0xad5a
+#define PCI_DEVICE_ID_ADVA_TIMECARD		0x0400
+
 static struct class timecard_class = {
-	.owner		= THIS_MODULE,
 	.name		= "timecard",
 };
 
@@ -55,6 +63,13 @@ struct ocp_reg {
 	u32	servo_drift_i;
 	u32	status_offset;
 	u32	status_drift;
+};
+
+struct ptp_ocp_servo_conf {
+	u32	servo_offset_p;
+	u32	servo_offset_i;
+	u32	servo_drift_p;
+	u32	servo_drift_i;
 };
 
 #define OCP_CTRL_ENABLE		BIT(0)
@@ -88,10 +103,10 @@ struct tod_reg {
 #define TOD_CTRL_DISABLE_FMT_A	BIT(17)
 #define TOD_CTRL_DISABLE_FMT_B	BIT(16)
 #define TOD_CTRL_ENABLE		BIT(0)
-#define TOD_CTRL_GNSS_MASK	((1U << 4) - 1)
+#define TOD_CTRL_GNSS_MASK	GENMASK(3, 0)
 #define TOD_CTRL_GNSS_SHIFT	24
 
-#define TOD_STATUS_UTC_MASK		0xff
+#define TOD_STATUS_UTC_MASK		GENMASK(7, 0)
 #define TOD_STATUS_UTC_VALID		BIT(8)
 #define TOD_STATUS_LEAP_ANNOUNCE	BIT(12)
 #define TOD_STATUS_LEAP_VALID		BIT(16)
@@ -202,10 +217,15 @@ struct frequency_reg {
 	u32	ctrl;
 	u32	status;
 };
+
+struct board_config_reg {
+	u32 mro50_serial_activate;
+};
+
 #define FREQ_STATUS_VALID	BIT(31)
 #define FREQ_STATUS_ERROR	BIT(30)
 #define FREQ_STATUS_OVERRUN	BIT(29)
-#define FREQ_STATUS_MASK	(BIT(24) - 1)
+#define FREQ_STATUS_MASK	GENMASK(23, 0)
 
 struct ptp_ocp_flash_info {
 	const char *name;
@@ -250,12 +270,22 @@ enum ptp_ocp_sma_mode {
 	SMA_MODE_OUT,
 };
 
+static struct dpll_pin_frequency ptp_ocp_sma_freq[] = {
+	DPLL_PIN_FREQUENCY_1PPS,
+	DPLL_PIN_FREQUENCY_10MHZ,
+	DPLL_PIN_FREQUENCY_IRIG_B,
+	DPLL_PIN_FREQUENCY_DCF77,
+};
+
 struct ptp_ocp_sma_connector {
 	enum	ptp_ocp_sma_mode mode;
 	bool	fixed_fcn;
 	bool	fixed_dir;
 	bool	disabled;
 	u8	default_fcn;
+	struct dpll_pin		   *dpll_pin;
+	struct dpll_pin_properties dpll_prop;
+	dpll_tracker		   tracker;
 };
 
 struct ocp_attr_group {
@@ -277,8 +307,25 @@ struct ptp_ocp_signal {
 	bool		running;
 };
 
+struct ptp_ocp_serial_port {
+	int line;
+	int baud;
+};
+
 #define OCP_BOARD_ID_LEN		13
 #define OCP_SERIAL_LEN			6
+#define OCP_SMA_NUM			4
+#define OCP_SIGNAL_NUM			4
+#define OCP_FREQ_NUM			4
+
+enum {
+	PORT_GNSS,
+	PORT_GNSS2,
+	PORT_MAC, /* miniature atomic clock */
+	PORT_NMEA,
+
+	__PORT_COUNT,
+};
 
 struct ptp_ocp {
 	struct pci_dev		*pdev;
@@ -288,6 +335,7 @@ struct ptp_ocp {
 	struct tod_reg __iomem	*tod;
 	struct pps_reg __iomem	*pps_to_ext;
 	struct pps_reg __iomem	*pps_to_clk;
+	struct board_config_reg __iomem	*board_config;
 	struct gpio_reg __iomem	*pps_select;
 	struct gpio_reg __iomem	*sma_map1;
 	struct gpio_reg __iomem	*sma_map2;
@@ -296,14 +344,15 @@ struct ptp_ocp {
 	struct dcf_master_reg	__iomem *dcf_out;
 	struct dcf_slave_reg	__iomem *dcf_in;
 	struct tod_reg		__iomem *nmea_out;
-	struct frequency_reg	__iomem *freq_in[4];
-	struct ptp_ocp_ext_src	*signal_out[4];
+	struct frequency_reg	__iomem *freq_in[OCP_FREQ_NUM];
+	struct ptp_ocp_ext_src	*signal_out[OCP_SIGNAL_NUM];
 	struct ptp_ocp_ext_src	*pps;
 	struct ptp_ocp_ext_src	*ts0;
 	struct ptp_ocp_ext_src	*ts1;
 	struct ptp_ocp_ext_src	*ts2;
 	struct ptp_ocp_ext_src	*ts3;
 	struct ptp_ocp_ext_src	*ts4;
+	struct ocp_art_gpio_reg __iomem *art_sma;
 	struct img_reg __iomem	*image;
 	struct ptp_clock	*ptp;
 	struct ptp_clock_info	ptp_info;
@@ -314,13 +363,12 @@ struct ptp_ocp {
 	const struct attribute_group **attr_group;
 	const struct ptp_ocp_eeprom_map *eeprom_map;
 	struct dentry		*debug_root;
+	bool			sync;
 	time64_t		gnss_lost;
+	struct delayed_work	sync_work;
 	int			id;
 	int			n_irqs;
-	int			gnss_port;
-	int			gnss2_port;
-	int			mac_port;	/* miniature atomic clock */
-	int			nmea_port;
+	struct ptp_ocp_serial_port	port[__PORT_COUNT];
 	bool			fw_loader;
 	u8			fw_tag;
 	u16			fw_version;
@@ -332,9 +380,13 @@ struct ptp_ocp {
 	u32			utc_tai_offset;
 	u32			ts_window_adjust;
 	u64			fw_cap;
-	struct ptp_ocp_signal	signal[4];
-	struct ptp_ocp_sma_connector sma[4];
+	struct ptp_ocp_signal	signal[OCP_SIGNAL_NUM];
+	struct ptp_ocp_sma_connector sma[OCP_SMA_NUM];
 	const struct ocp_sma_op *sma_op;
+	struct dpll_device *dpll;
+	dpll_tracker tracker;
+	int signals_nr;
+	int freq_in_nr;
 };
 
 #define OCP_REQ_TIMESTAMP	BIT(0)
@@ -364,7 +416,15 @@ static int ptp_ocp_signal_from_perout(struct ptp_ocp *bp, int gen,
 static int ptp_ocp_signal_enable(void *priv, u32 req, bool enable);
 static int ptp_ocp_sma_store(struct ptp_ocp *bp, const char *buf, int sma_nr);
 
+static int ptp_ocp_art_board_init(struct ptp_ocp *bp, struct ocp_resource *r);
+
+static int ptp_ocp_adva_board_init(struct ptp_ocp *bp, struct ocp_resource *r);
+
 static const struct ocp_attr_group fb_timecard_groups[];
+
+static const struct ocp_attr_group art_timecard_groups[];
+
+static const struct ocp_attr_group adva_timecard_groups[];
 
 struct ptp_ocp_eeprom_map {
 	u16	off;
@@ -385,6 +445,12 @@ struct ptp_ocp_eeprom_map {
 static struct ptp_ocp_eeprom_map fb_eeprom_map[] = {
 	{ EEPROM_ENTRY(0x43, board_id) },
 	{ EEPROM_ENTRY(0x00, serial), .tag = "mac" },
+	{ }
+};
+
+static struct ptp_ocp_eeprom_map art_eeprom_map[] = {
+	{ EEPROM_ENTRY(0x200 + 0x43, board_id) },
+	{ EEPROM_ENTRY(0x200 + 0x63, serial) },
 	{ }
 };
 
@@ -429,6 +495,13 @@ static struct ptp_ocp_eeprom_map fb_eeprom_map[] = {
  * 14: Signal Generator 4
  * 15: TS3
  * 16: TS4
+ --
+ * 8: Orolia TS1
+ * 10: Orolia TS2
+ * 11: Orolia TS0 (GNSS)
+ * 12: Orolia PPS
+ * 14: Orolia TS3
+ * 15: Orolia TS4
  */
 
 static struct ocp_resource ocp_fb_resource[] = {
@@ -593,19 +666,28 @@ static struct ocp_resource ocp_fb_resource[] = {
 		},
 	},
 	{
-		OCP_SERIAL_RESOURCE(gnss_port),
+		OCP_SERIAL_RESOURCE(port[PORT_GNSS]),
 		.offset = 0x00160000 + 0x1000, .irq_vec = 3,
+		.extra = &(struct ptp_ocp_serial_port) {
+			.baud = 115200,
+		},
 	},
 	{
-		OCP_SERIAL_RESOURCE(gnss2_port),
+		OCP_SERIAL_RESOURCE(port[PORT_GNSS2]),
 		.offset = 0x00170000 + 0x1000, .irq_vec = 4,
+		.extra = &(struct ptp_ocp_serial_port) {
+			.baud = 115200,
+		},
 	},
 	{
-		OCP_SERIAL_RESOURCE(mac_port),
+		OCP_SERIAL_RESOURCE(port[PORT_MAC]),
 		.offset = 0x00180000 + 0x1000, .irq_vec = 5,
+		.extra = &(struct ptp_ocp_serial_port) {
+			.baud = 57600,
+		},
 	},
 	{
-		OCP_SERIAL_RESOURCE(nmea_port),
+		OCP_SERIAL_RESOURCE(port[PORT_NMEA]),
 		.offset = 0x00190000 + 0x1000, .irq_vec = 10,
 	},
 	{
@@ -618,6 +700,7 @@ static struct ocp_resource ocp_fb_resource[] = {
 				.num_chipselect = 1,
 				.bits_per_word = 8,
 				.num_devices = 1,
+				.force_irq = true,
 				.devices = &(struct spi_board_info) {
 					.modalias = "spi-nor",
 				},
@@ -642,13 +725,316 @@ static struct ocp_resource ocp_fb_resource[] = {
 	},
 	{
 		.setup = ptp_ocp_fb_board_init,
+		.extra = &(struct ptp_ocp_servo_conf) {
+			.servo_offset_p = 0x2000,
+			.servo_offset_i = 0x1000,
+			.servo_drift_p = 0,
+			.servo_drift_i = 0,
+		},
+	},
+	{ }
+};
+
+#define OCP_ART_CONFIG_SIZE		144
+#define OCP_ART_TEMP_TABLE_SIZE		368
+
+struct ocp_art_gpio_reg {
+	struct {
+		u32	gpio;
+		u32	__pad[3];
+	} map[4];
+};
+
+static struct ocp_resource ocp_art_resource[] = {
+	{
+		OCP_MEM_RESOURCE(reg),
+		.offset = 0x01000000, .size = 0x10000,
+	},
+	{
+		OCP_SERIAL_RESOURCE(port[PORT_GNSS]),
+		.offset = 0x00160000 + 0x1000, .irq_vec = 3,
+		.extra = &(struct ptp_ocp_serial_port) {
+			.baud = 115200,
+		},
+	},
+	{
+		OCP_MEM_RESOURCE(art_sma),
+		.offset = 0x003C0000, .size = 0x1000,
+	},
+	/* Timestamp associated with GNSS1 receiver PPS */
+	{
+		OCP_EXT_RESOURCE(ts0),
+		.offset = 0x360000, .size = 0x20, .irq_vec = 12,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 0,
+			.irq_fcn = ptp_ocp_ts_irq,
+			.enable = ptp_ocp_ts_enable,
+		},
+	},
+	{
+		OCP_EXT_RESOURCE(ts1),
+		.offset = 0x380000, .size = 0x20, .irq_vec = 8,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 1,
+			.irq_fcn = ptp_ocp_ts_irq,
+			.enable = ptp_ocp_ts_enable,
+		},
+	},
+	{
+		OCP_EXT_RESOURCE(ts2),
+		.offset = 0x390000, .size = 0x20, .irq_vec = 10,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 2,
+			.irq_fcn = ptp_ocp_ts_irq,
+			.enable = ptp_ocp_ts_enable,
+		},
+	},
+	{
+		OCP_EXT_RESOURCE(ts3),
+		.offset = 0x3A0000, .size = 0x20, .irq_vec = 14,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 3,
+			.irq_fcn = ptp_ocp_ts_irq,
+			.enable = ptp_ocp_ts_enable,
+		},
+	},
+	{
+		OCP_EXT_RESOURCE(ts4),
+		.offset = 0x3B0000, .size = 0x20, .irq_vec = 15,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 4,
+			.irq_fcn = ptp_ocp_ts_irq,
+			.enable = ptp_ocp_ts_enable,
+		},
+	},
+	/* Timestamp associated with Internal PPS of the card */
+	{
+		OCP_EXT_RESOURCE(pps),
+		.offset = 0x00330000, .size = 0x20, .irq_vec = 11,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 5,
+			.irq_fcn = ptp_ocp_ts_irq,
+			.enable = ptp_ocp_ts_enable,
+		},
+	},
+	{
+		OCP_SPI_RESOURCE(spi_flash),
+		.offset = 0x00310000, .size = 0x10000, .irq_vec = 9,
+		.extra = &(struct ptp_ocp_flash_info) {
+			.name = "spi_altera", .pci_offset = 0,
+			.data_size = sizeof(struct altera_spi_platform_data),
+			.data = &(struct altera_spi_platform_data) {
+				.num_chipselect = 1,
+				.num_devices = 1,
+				.devices = &(struct spi_board_info) {
+					.modalias = "spi-nor",
+				},
+			},
+		},
+	},
+	{
+		OCP_I2C_RESOURCE(i2c_ctrl),
+		.offset = 0x350000, .size = 0x100, .irq_vec = 4,
+		.extra = &(struct ptp_ocp_i2c_info) {
+			.name = "ocores-i2c",
+			.fixed_rate = 400000,
+			.data_size = sizeof(struct ocores_i2c_platform_data),
+			.data = &(struct ocores_i2c_platform_data) {
+				.clock_khz = 125000,
+				.bus_khz = 400,
+				.num_devices = 1,
+				.devices = &(struct i2c_board_info) {
+					I2C_BOARD_INFO("24c08", 0x50),
+				},
+			},
+		},
+	},
+	{
+		OCP_SERIAL_RESOURCE(port[PORT_MAC]),
+		.offset = 0x00190000, .irq_vec = 7,
+		.extra = &(struct ptp_ocp_serial_port) {
+			.baud = 9600,
+		},
+	},
+	{
+		OCP_MEM_RESOURCE(board_config),
+		.offset = 0x210000, .size = 0x1000,
+	},
+	{
+		.setup = ptp_ocp_art_board_init,
+		.extra = &(struct ptp_ocp_servo_conf) {
+			.servo_offset_p = 0x2000,
+			.servo_offset_i = 0x1000,
+			.servo_drift_p = 0,
+			.servo_drift_i = 0,
+		},
+	},
+	{ }
+};
+
+static struct ocp_resource ocp_adva_resource[] = {
+	{
+		OCP_MEM_RESOURCE(reg),
+		.offset = 0x01000000, .size = 0x10000,
+	},
+	{
+		OCP_EXT_RESOURCE(ts0),
+		.offset = 0x01010000, .size = 0x10000, .irq_vec = 1,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 0,
+			.irq_fcn = ptp_ocp_ts_irq,
+			.enable = ptp_ocp_ts_enable,
+		},
+	},
+	{
+		OCP_EXT_RESOURCE(ts1),
+		.offset = 0x01020000, .size = 0x10000, .irq_vec = 2,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 1,
+			.irq_fcn = ptp_ocp_ts_irq,
+			.enable = ptp_ocp_ts_enable,
+		},
+	},
+	{
+		OCP_EXT_RESOURCE(ts2),
+		.offset = 0x01060000, .size = 0x10000, .irq_vec = 6,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 2,
+			.irq_fcn = ptp_ocp_ts_irq,
+			.enable = ptp_ocp_ts_enable,
+		},
+	},
+	/* Timestamp for PHC and/or PPS generator */
+	{
+		OCP_EXT_RESOURCE(pps),
+		.offset = 0x010C0000, .size = 0x10000, .irq_vec = 0,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 5,
+			.irq_fcn = ptp_ocp_ts_irq,
+			.enable = ptp_ocp_ts_enable,
+		},
+	},
+	{
+		OCP_EXT_RESOURCE(signal_out[0]),
+		.offset = 0x010D0000, .size = 0x10000, .irq_vec = 11,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 1,
+			.irq_fcn = ptp_ocp_signal_irq,
+			.enable = ptp_ocp_signal_enable,
+		},
+	},
+	{
+		OCP_EXT_RESOURCE(signal_out[1]),
+		.offset = 0x010E0000, .size = 0x10000, .irq_vec = 12,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 2,
+			.irq_fcn = ptp_ocp_signal_irq,
+			.enable = ptp_ocp_signal_enable,
+		},
+	},
+	{
+		OCP_MEM_RESOURCE(pps_to_ext),
+		.offset = 0x01030000, .size = 0x10000,
+	},
+	{
+		OCP_MEM_RESOURCE(pps_to_clk),
+		.offset = 0x01040000, .size = 0x10000,
+	},
+	{
+		OCP_MEM_RESOURCE(tod),
+		.offset = 0x01050000, .size = 0x10000,
+	},
+	{
+		OCP_MEM_RESOURCE(image),
+		.offset = 0x00020000, .size = 0x1000,
+	},
+	{
+		OCP_MEM_RESOURCE(pps_select),
+		.offset = 0x00130000, .size = 0x1000,
+	},
+	{
+		OCP_MEM_RESOURCE(sma_map1),
+		.offset = 0x00140000, .size = 0x1000,
+	},
+	{
+		OCP_MEM_RESOURCE(sma_map2),
+		.offset = 0x00220000, .size = 0x1000,
+	},
+	{
+		OCP_SERIAL_RESOURCE(port[PORT_GNSS]),
+		.offset = 0x00160000 + 0x1000, .irq_vec = 3,
+		.extra = &(struct ptp_ocp_serial_port) {
+			.baud = 9600,
+		},
+	},
+	{
+		OCP_SERIAL_RESOURCE(port[PORT_MAC]),
+		.offset = 0x00180000 + 0x1000, .irq_vec = 5,
+		.extra = &(struct ptp_ocp_serial_port) {
+			.baud = 115200,
+		},
+	},
+	{
+		OCP_MEM_RESOURCE(freq_in[0]),
+		.offset = 0x01200000, .size = 0x10000,
+	},
+	{
+		OCP_MEM_RESOURCE(freq_in[1]),
+		.offset = 0x01210000, .size = 0x10000,
+	},
+	{
+		OCP_SPI_RESOURCE(spi_flash),
+		.offset = 0x00310400, .size = 0x10000, .irq_vec = 9,
+		.extra = &(struct ptp_ocp_flash_info) {
+			.name = "spi_altera", .pci_offset = 0,
+			.data_size = sizeof(struct altera_spi_platform_data),
+			.data = &(struct altera_spi_platform_data) {
+				.num_chipselect = 1,
+				.num_devices = 1,
+				.devices = &(struct spi_board_info) {
+					.modalias = "spi-nor",
+				},
+			},
+		},
+	},
+	{
+		OCP_I2C_RESOURCE(i2c_ctrl),
+		.offset = 0x150000, .size = 0x100, .irq_vec = 7,
+		.extra = &(struct ptp_ocp_i2c_info) {
+			.name = "ocores-i2c",
+			.fixed_rate = 50000000,
+			.data_size = sizeof(struct ocores_i2c_platform_data),
+			.data = &(struct ocores_i2c_platform_data) {
+				.clock_khz = 50000,
+				.bus_khz = 100,
+				.reg_io_width = 4, // 32-bit/4-byte
+				.reg_shift = 2, // 32-bit addressing
+				.num_devices = 2,
+				.devices = (struct i2c_board_info[]) {
+					{ I2C_BOARD_INFO("24c02", 0x50) },
+					{ I2C_BOARD_INFO("24mac402", 0x58),
+					 .platform_data = "mac" },
+				},
+			},
+		},
+	},
+	{
+		.setup = ptp_ocp_adva_board_init,
+		.extra = &(struct ptp_ocp_servo_conf) {
+			.servo_offset_p = 0xc000,
+			.servo_offset_i = 0x1000,
+			.servo_drift_p = 0,
+			.servo_drift_i = 0,
+		},
 	},
 	{ }
 };
 
 static const struct pci_device_id ptp_ocp_pcidev_id[] = {
-	{ PCI_DEVICE_DATA(FACEBOOK, TIMECARD, &ocp_fb_resource) },
+	{ PCI_DEVICE_DATA(META, TIMECARD, &ocp_fb_resource) },
 	{ PCI_DEVICE_DATA(CELESTICA, TIMECARD, &ocp_fb_resource) },
+	{ PCI_DEVICE_DATA(OROLIA, ARTCARD, &ocp_art_resource) },
+	{ PCI_DEVICE_DATA(ADVA, TIMECARD, &ocp_adva_resource) },
 	{ }
 };
 MODULE_DEVICE_TABLE(pci, ptp_ocp_pcidev_id);
@@ -659,6 +1045,7 @@ static DEFINE_IDR(ptp_ocp_idr);
 struct ocp_selector {
 	const char *name;
 	int value;
+	u64 frequency;
 };
 
 static const struct ocp_selector ptp_ocp_clock[] = {
@@ -674,40 +1061,77 @@ static const struct ocp_selector ptp_ocp_clock[] = {
 	{ }
 };
 
+#define SMA_DISABLE		BIT(16)
 #define SMA_ENABLE		BIT(15)
-#define SMA_SELECT_MASK		((1U << 15) - 1)
-#define SMA_DISABLE		0x10000
+#define SMA_SELECT_MASK		GENMASK(14, 0)
 
 static const struct ocp_selector ptp_ocp_sma_in[] = {
-	{ .name = "10Mhz",	.value = 0x0000 },
-	{ .name = "PPS1",	.value = 0x0001 },
-	{ .name = "PPS2",	.value = 0x0002 },
-	{ .name = "TS1",	.value = 0x0004 },
-	{ .name = "TS2",	.value = 0x0008 },
-	{ .name = "IRIG",	.value = 0x0010 },
-	{ .name = "DCF",	.value = 0x0020 },
-	{ .name = "TS3",	.value = 0x0040 },
-	{ .name = "TS4",	.value = 0x0080 },
-	{ .name = "FREQ1",	.value = 0x0100 },
-	{ .name = "FREQ2",	.value = 0x0200 },
-	{ .name = "FREQ3",	.value = 0x0400 },
-	{ .name = "FREQ4",	.value = 0x0800 },
-	{ .name = "None",	.value = SMA_DISABLE },
+	{ .name = "10Mhz",  .value = 0x0000,      .frequency = 10000000 },
+	{ .name = "PPS1",   .value = 0x0001,      .frequency = 1 },
+	{ .name = "PPS2",   .value = 0x0002,      .frequency = 1 },
+	{ .name = "TS1",    .value = 0x0004,      .frequency = 0 },
+	{ .name = "TS2",    .value = 0x0008,      .frequency = 0 },
+	{ .name = "IRIG",   .value = 0x0010,      .frequency = 10000 },
+	{ .name = "DCF",    .value = 0x0020,      .frequency = 77500 },
+	{ .name = "TS3",    .value = 0x0040,      .frequency = 0 },
+	{ .name = "TS4",    .value = 0x0080,      .frequency = 0 },
+	{ .name = "FREQ1",  .value = 0x0100,      .frequency = 0 },
+	{ .name = "FREQ2",  .value = 0x0200,      .frequency = 0 },
+	{ .name = "FREQ3",  .value = 0x0400,      .frequency = 0 },
+	{ .name = "FREQ4",  .value = 0x0800,      .frequency = 0 },
+	{ .name = "None",   .value = SMA_DISABLE, .frequency = 0 },
 	{ }
 };
 
 static const struct ocp_selector ptp_ocp_sma_out[] = {
-	{ .name = "10Mhz",	.value = 0x0000 },
-	{ .name = "PHC",	.value = 0x0001 },
-	{ .name = "MAC",	.value = 0x0002 },
-	{ .name = "GNSS1",	.value = 0x0004 },
-	{ .name = "GNSS2",	.value = 0x0008 },
-	{ .name = "IRIG",	.value = 0x0010 },
-	{ .name = "DCF",	.value = 0x0020 },
+	{ .name = "10Mhz",	.value = 0x0000,  .frequency = 10000000 },
+	{ .name = "PHC",	.value = 0x0001,  .frequency = 1 },
+	{ .name = "MAC",	.value = 0x0002,  .frequency = 1 },
+	{ .name = "GNSS1",	.value = 0x0004,  .frequency = 1 },
+	{ .name = "GNSS2",	.value = 0x0008,  .frequency = 1 },
+	{ .name = "IRIG",	.value = 0x0010,  .frequency = 10000 },
+	{ .name = "DCF",	.value = 0x0020,  .frequency = 77000 },
 	{ .name = "GEN1",	.value = 0x0040 },
 	{ .name = "GEN2",	.value = 0x0080 },
 	{ .name = "GEN3",	.value = 0x0100 },
 	{ .name = "GEN4",	.value = 0x0200 },
+	{ .name = "GND",	.value = 0x2000 },
+	{ .name = "VCC",	.value = 0x4000 },
+	{ }
+};
+
+static const struct ocp_selector ptp_ocp_art_sma_in[] = {
+	{ .name = "PPS1",	.value = 0x0001,  .frequency = 1 },
+	{ .name = "10Mhz",	.value = 0x0008,  .frequency = 1000000 },
+	{ }
+};
+
+static const struct ocp_selector ptp_ocp_art_sma_out[] = {
+	{ .name = "PHC",	.value = 0x0002,  .frequency = 1 },
+	{ .name = "GNSS",	.value = 0x0004,  .frequency = 1 },
+	{ .name = "10Mhz",	.value = 0x0010,  .frequency = 10000000 },
+	{ }
+};
+
+static const struct ocp_selector ptp_ocp_adva_sma_in[] = {
+	{ .name = "10Mhz",	.value = 0x0000,      .frequency = 10000000},
+	{ .name = "PPS1",	.value = 0x0001,      .frequency = 1 },
+	{ .name = "PPS2",	.value = 0x0002,      .frequency = 1 },
+	{ .name = "TS1",	.value = 0x0004,      .frequency = 0 },
+	{ .name = "TS2",	.value = 0x0008,      .frequency = 0 },
+	{ .name = "FREQ1",	.value = 0x0100,      .frequency = 0 },
+	{ .name = "FREQ2",	.value = 0x0200,      .frequency = 0 },
+	{ .name = "None",	.value = SMA_DISABLE, .frequency = 0 },
+	{ }
+};
+
+static const struct ocp_selector ptp_ocp_adva_sma_out[] = {
+	{ .name = "10Mhz",	.value = 0x0000,  .frequency = 10000000},
+	{ .name = "PHC",	.value = 0x0001,  .frequency = 1 },
+	{ .name = "MAC",	.value = 0x0002,  .frequency = 1 },
+	{ .name = "GNSS1",	.value = 0x0004,  .frequency = 1 },
+	{ .name = "GEN1",	.value = 0x0040 },
+	{ .name = "GEN2",	.value = 0x0080 },
 	{ .name = "GND",	.value = 0x2000 },
 	{ .name = "VCC",	.value = 0x4000 },
 	{ }
@@ -935,6 +1359,12 @@ ptp_ocp_null_adjfine(struct ptp_clock_info *ptp_info, long scaled_ppm)
 	return -EOPNOTSUPP;
 }
 
+static s32
+ptp_ocp_null_getmaxphase(struct ptp_clock_info *ptp_info)
+{
+	return 0;
+}
+
 static int
 ptp_ocp_null_adjphase(struct ptp_clock_info *ptp_info, s32 phase_ns)
 {
@@ -1050,11 +1480,14 @@ static const struct ptp_clock_info ptp_ocp_clock_info = {
 	.adjtime	= ptp_ocp_adjtime,
 	.adjfine	= ptp_ocp_null_adjfine,
 	.adjphase	= ptp_ocp_null_adjphase,
+	.getmaxphase	= ptp_ocp_null_getmaxphase,
 	.enable		= ptp_ocp_enable,
 	.verify		= ptp_ocp_verify,
 	.pps		= true,
 	.n_ext_ts	= 6,
 	.n_per_out	= 5,
+	.supported_extts_flags = PTP_STRICT_FLAGS | PTP_RISING_EDGE,
+	.supported_perout_flags = PTP_PEROUT_DUTY_CYCLE | PTP_PEROUT_PHASE,
 };
 
 static void
@@ -1096,7 +1529,7 @@ ptp_ocp_utc_distribute(struct ptp_ocp *bp, u32 val)
 static void
 ptp_ocp_watchdog(struct timer_list *t)
 {
-	struct ptp_ocp *bp = from_timer(bp, t, watchdog);
+	struct ptp_ocp *bp = timer_container_of(bp, t, watchdog);
 	unsigned long flags;
 	u32 status, utc_offset;
 
@@ -1132,41 +1565,41 @@ ptp_ocp_watchdog(struct timer_list *t)
 static void
 ptp_ocp_estimate_pci_timing(struct ptp_ocp *bp)
 {
-	ktime_t start, end;
-	ktime_t delay;
+	ktime_t start, end, delay = U64_MAX;
 	u32 ctrl;
+	int i;
 
-	ctrl = ioread32(&bp->reg->ctrl);
-	ctrl = OCP_CTRL_READ_TIME_REQ | OCP_CTRL_ENABLE;
+	for (i = 0; i < 3; i++) {
+		ctrl = ioread32(&bp->reg->ctrl);
+		ctrl = OCP_CTRL_READ_TIME_REQ | OCP_CTRL_ENABLE;
 
-	iowrite32(ctrl, &bp->reg->ctrl);
+		iowrite32(ctrl, &bp->reg->ctrl);
 
-	start = ktime_get_ns();
+		start = ktime_get_raw_ns();
 
-	ctrl = ioread32(&bp->reg->ctrl);
+		ctrl = ioread32(&bp->reg->ctrl);
 
-	end = ktime_get_ns();
+		end = ktime_get_raw_ns();
 
-	delay = end - start;
+		delay = min(delay, end - start);
+	}
 	bp->ts_window_adjust = (delay >> 5) * 3;
 }
 
 static int
-ptp_ocp_init_clock(struct ptp_ocp *bp)
+ptp_ocp_init_clock(struct ptp_ocp *bp, struct ptp_ocp_servo_conf *servo_conf)
 {
 	struct timespec64 ts;
-	bool sync;
 	u32 ctrl;
 
 	ctrl = OCP_CTRL_ENABLE;
 	iowrite32(ctrl, &bp->reg->ctrl);
 
-	/* NO DRIFT Correction */
-	/* offset_p:i 1/8, offset_i: 1/16, drift_p: 0, drift_i: 0 */
-	iowrite32(0x2000, &bp->reg->servo_offset_p);
-	iowrite32(0x1000, &bp->reg->servo_offset_i);
-	iowrite32(0,	  &bp->reg->servo_drift_p);
-	iowrite32(0,	  &bp->reg->servo_drift_i);
+	/* servo configuration */
+	iowrite32(servo_conf->servo_offset_p, &bp->reg->servo_offset_p);
+	iowrite32(servo_conf->servo_offset_i, &bp->reg->servo_offset_i);
+	iowrite32(servo_conf->servo_drift_p, &bp->reg->servo_drift_p);
+	iowrite32(servo_conf->servo_drift_p, &bp->reg->servo_drift_i);
 
 	/* latch servo values */
 	ctrl |= OCP_CTRL_ADJUST_SERVO;
@@ -1179,8 +1612,8 @@ ptp_ocp_init_clock(struct ptp_ocp *bp)
 
 	ptp_ocp_estimate_pci_timing(bp);
 
-	sync = ioread32(&bp->reg->status) & OCP_STATUS_IN_SYNC;
-	if (!sync) {
+	bp->sync = ioread32(&bp->reg->status) & OCP_STATUS_IN_SYNC;
+	if (!bp->sync) {
 		ktime_get_clocktai_ts64(&ts);
 		ptp_ocp_settime(&bp->ptp_info, &ts);
 	}
@@ -1229,6 +1662,15 @@ ptp_ocp_tod_gnss_name(int idx)
 	if (idx >= ARRAY_SIZE(gnss_name))
 		idx = ARRAY_SIZE(gnss_name) - 1;
 	return gnss_name[idx];
+}
+
+static const char *
+ptp_ocp_tty_port_name(int idx)
+{
+	static const char * const tty_name[] = {
+		"GNSS", "GNSS2", "MAC", "NMEA"
+	};
+	return tty_name[idx];
 }
 
 struct ptp_ocp_nvmem_match_info {
@@ -1310,12 +1752,6 @@ fail:
 	goto out;
 }
 
-static int
-ptp_ocp_firstchild(struct device *dev, void *data)
-{
-	return 1;
-}
-
 static struct device *
 ptp_ocp_find_flash(struct ptp_ocp *bp)
 {
@@ -1324,7 +1760,7 @@ ptp_ocp_find_flash(struct ptp_ocp *bp)
 	last = NULL;
 	dev = &bp->spi_flash->dev;
 
-	while ((dev = device_find_child(dev, NULL, ptp_ocp_firstchild))) {
+	while ((dev = device_find_any_child(dev))) {
 		if (!strcmp("mtd", dev_bus_name(dev)))
 			break;
 		put_device(last);
@@ -1347,11 +1783,9 @@ ptp_ocp_devlink_fw_image(struct devlink *devlink, const struct firmware *fw,
 	hdr = (const struct ptp_ocp_firmware_header *)fw->data;
 	if (memcmp(hdr->magic, OCP_FIRMWARE_MAGIC_HEADER, 4)) {
 		devlink_flash_update_status_notify(devlink,
-			"No firmware header found, flashing raw image",
+			"No firmware header found, cancel firmware upgrade",
 			NULL, 0, 0);
-		offset = 0;
-		length = fw->size;
-		goto out;
+		return -EINVAL;
 	}
 
 	if (be16_to_cpu(hdr->pci_vendor_id) != bp->pdev->vendor ||
@@ -1379,7 +1813,6 @@ ptp_ocp_devlink_fw_image(struct devlink *devlink, const struct firmware *fw,
 		return -EINVAL;
 	}
 
-out:
 	*data = &fw->data[offset];
 	*size = length;
 
@@ -1467,10 +1900,6 @@ ptp_ocp_devlink_info_get(struct devlink *devlink, struct devlink_info_req *req,
 	char buf[32];
 	int err;
 
-	err = devlink_info_driver_name_put(req, KBUILD_MODNAME);
-	if (err)
-		return err;
-
 	fw_image = bp->fw_loader ? "loader" : "fw";
 	sprintf(buf, "%d.%d", bp->fw_tag, bp->fw_version);
 	err = devlink_info_version_running_put(req, fw_image, buf);
@@ -1519,20 +1948,6 @@ ptp_ocp_get_mem(struct ptp_ocp *bp, struct ocp_resource *r)
 	return __ptp_ocp_get_mem(bp, start, r->size);
 }
 
-static void
-ptp_ocp_set_irq_resource(struct resource *res, int irq)
-{
-	struct resource r = DEFINE_RES_IRQ(irq);
-	*res = r;
-}
-
-static void
-ptp_ocp_set_mem_resource(struct resource *res, resource_size_t start, int size)
-{
-	struct resource r = DEFINE_RES_MEM(start, size);
-	*res = r;
-}
-
 static int
 ptp_ocp_register_spi(struct ptp_ocp *bp, struct ocp_resource *r)
 {
@@ -1544,15 +1959,15 @@ ptp_ocp_register_spi(struct ptp_ocp *bp, struct ocp_resource *r)
 	int id;
 
 	start = pci_resource_start(pdev, 0) + r->offset;
-	ptp_ocp_set_mem_resource(&res[0], start, r->size);
-	ptp_ocp_set_irq_resource(&res[1], pci_irq_vector(pdev, r->irq_vec));
+	res[0] = DEFINE_RES_MEM(start, r->size);
+	res[1] = DEFINE_RES_IRQ(pci_irq_vector(pdev, r->irq_vec));
 
 	info = r->extra;
 	id = pci_dev_id(pdev) << 1;
 	id += info->pci_offset;
 
 	p = platform_device_register_resndata(&pdev->dev, info->name, id,
-					      res, 2, info->data,
+					      res, ARRAY_SIZE(res), info->data,
 					      info->data_size);
 	if (IS_ERR(p))
 		return PTR_ERR(p);
@@ -1571,11 +1986,11 @@ ptp_ocp_i2c_bus(struct pci_dev *pdev, struct ocp_resource *r, int id)
 
 	info = r->extra;
 	start = pci_resource_start(pdev, 0) + r->offset;
-	ptp_ocp_set_mem_resource(&res[0], start, r->size);
-	ptp_ocp_set_irq_resource(&res[1], pci_irq_vector(pdev, r->irq_vec));
+	res[0] = DEFINE_RES_MEM(start, r->size);
+	res[1] = DEFINE_RES_IRQ(pci_irq_vector(pdev, r->irq_vec));
 
 	return platform_device_register_resndata(&pdev->dev, info->name,
-						 id, res, 2,
+						 id, res, ARRAY_SIZE(res),
 						 info->data, info->data_size);
 }
 
@@ -1659,6 +2074,7 @@ ptp_ocp_signal_set(struct ptp_ocp *bp, int gen, struct ptp_ocp_signal *s)
 	if (!s->start) {
 		/* roundup() does not work on 32-bit systems */
 		s->start = DIV64_U64_ROUND_UP(start_ns, s->period);
+		s->start *= s->period;
 		s->start = ktime_add(s->start, s->phase);
 	}
 
@@ -1810,6 +2226,9 @@ ptp_ocp_ts_enable(void *priv, u32 req, bool enable)
 static void
 ptp_ocp_unregister_ext(struct ptp_ocp_ext_src *ext)
 {
+	if (!ext)
+		return;
+
 	ext->info->enable(ext, ~0, false);
 	pci_free_irq(ext->bp->pdev, ext->irq_vec, ext);
 	kfree(ext);
@@ -1822,7 +2241,7 @@ ptp_ocp_register_ext(struct ptp_ocp *bp, struct ocp_resource *r)
 	struct ptp_ocp_ext_src *ext;
 	int err;
 
-	ext = kzalloc(sizeof(*ext), GFP_KERNEL);
+	ext = kzalloc_obj(*ext);
 	if (!ext)
 		return -ENOMEM;
 
@@ -1877,11 +2296,15 @@ ptp_ocp_serial_line(struct ptp_ocp *bp, struct ocp_resource *r)
 static int
 ptp_ocp_register_serial(struct ptp_ocp *bp, struct ocp_resource *r)
 {
-	int port;
+	struct ptp_ocp_serial_port *p = (struct ptp_ocp_serial_port *)r->extra;
+	struct ptp_ocp_serial_port port = {};
 
-	port = ptp_ocp_serial_line(bp, r);
-	if (port < 0)
-		return port;
+	port.line = ptp_ocp_serial_line(bp, r);
+	if (port.line < 0)
+		return port.line;
+
+	if (p)
+		port.baud = p->baud;
 
 	bp_assign_entry(bp, r, port);
 
@@ -1955,8 +2378,7 @@ ptp_ocp_attr_group_add(struct ptp_ocp *bp,
 		if (attr_tbl[i].cap & bp->fw_cap)
 			count++;
 
-	bp->attr_group = kcalloc(count + 1, sizeof(struct attribute_group *),
-				 GFP_KERNEL);
+	bp->attr_group = kzalloc_objs(*bp->attr_group, count + 1);
 	if (!bp->attr_group)
 		return -ENOMEM;
 
@@ -2102,22 +2524,35 @@ ptp_ocp_sma_fb_set_inputs(struct ptp_ocp *bp, int sma_nr, u32 val)
 static void
 ptp_ocp_sma_fb_init(struct ptp_ocp *bp)
 {
+	struct dpll_pin_properties prop = {
+		.board_label = NULL,
+		.type = DPLL_PIN_TYPE_EXT,
+		.capabilities = DPLL_PIN_CAPABILITIES_DIRECTION_CAN_CHANGE,
+		.freq_supported_num = ARRAY_SIZE(ptp_ocp_sma_freq),
+		.freq_supported = ptp_ocp_sma_freq,
+
+	};
 	u32 reg;
 	int i;
 
 	/* defaults */
+	for (i = 0; i < OCP_SMA_NUM; i++) {
+		bp->sma[i].default_fcn = i & 1;
+		bp->sma[i].dpll_prop = prop;
+		bp->sma[i].dpll_prop.board_label =
+			bp->ptp_info.pin_config[i].name;
+	}
 	bp->sma[0].mode = SMA_MODE_IN;
 	bp->sma[1].mode = SMA_MODE_IN;
 	bp->sma[2].mode = SMA_MODE_OUT;
 	bp->sma[3].mode = SMA_MODE_OUT;
-	for (i = 0; i < 4; i++)
-		bp->sma[i].default_fcn = i & 1;
-
 	/* If no SMA1 map, the pin functions and directions are fixed. */
 	if (!bp->sma_map1) {
-		for (i = 0; i < 4; i++) {
+		for (i = 0; i < OCP_SMA_NUM; i++) {
 			bp->sma[i].fixed_fcn = true;
 			bp->sma[i].fixed_dir = true;
+			bp->sma[i].dpll_prop.capabilities &=
+				~DPLL_PIN_CAPABILITIES_DIRECTION_CAN_CHANGE;
 		}
 		return;
 	}
@@ -2127,7 +2562,7 @@ ptp_ocp_sma_fb_init(struct ptp_ocp *bp)
 	 */
 	reg = ioread32(&bp->sma_map2->gpio2);
 	if (reg == 0xffffffff) {
-		for (i = 0; i < 4; i++)
+		for (i = 0; i < OCP_SMA_NUM; i++)
 			bp->sma[i].fixed_dir = true;
 	} else {
 		reg = ioread32(&bp->sma_map1->gpio1);
@@ -2149,12 +2584,68 @@ static const struct ocp_sma_op ocp_fb_sma_op = {
 };
 
 static int
-ptp_ocp_fb_set_pins(struct ptp_ocp *bp)
+ptp_ocp_sma_adva_set_output(struct ptp_ocp *bp, int sma_nr, u32 val)
+{
+	u32 reg, mask, shift;
+	unsigned long flags;
+	u32 __iomem *gpio;
+
+	gpio = sma_nr > 2 ? &bp->sma_map1->gpio2 : &bp->sma_map2->gpio2;
+	shift = sma_nr & 1 ? 0 : 16;
+
+	mask = 0xffff << (16 - shift);
+
+	spin_lock_irqsave(&bp->lock, flags);
+
+	reg = ioread32(gpio);
+	reg = (reg & mask) | (val << shift);
+
+	iowrite32(reg, gpio);
+
+	spin_unlock_irqrestore(&bp->lock, flags);
+
+	return 0;
+}
+
+static int
+ptp_ocp_sma_adva_set_inputs(struct ptp_ocp *bp, int sma_nr, u32 val)
+{
+	u32 reg, mask, shift;
+	unsigned long flags;
+	u32 __iomem *gpio;
+
+	gpio = sma_nr > 2 ? &bp->sma_map2->gpio1 : &bp->sma_map1->gpio1;
+	shift = sma_nr & 1 ? 0 : 16;
+
+	mask = 0xffff << (16 - shift);
+
+	spin_lock_irqsave(&bp->lock, flags);
+
+	reg = ioread32(gpio);
+	reg = (reg & mask) | (val << shift);
+
+	iowrite32(reg, gpio);
+
+	spin_unlock_irqrestore(&bp->lock, flags);
+
+	return 0;
+}
+
+static const struct ocp_sma_op ocp_adva_sma_op = {
+	.tbl		= { ptp_ocp_adva_sma_in, ptp_ocp_adva_sma_out },
+	.init		= ptp_ocp_sma_fb_init,
+	.get		= ptp_ocp_sma_fb_get,
+	.set_inputs	= ptp_ocp_sma_adva_set_inputs,
+	.set_output	= ptp_ocp_sma_adva_set_output,
+};
+
+static int
+ptp_ocp_set_pins(struct ptp_ocp *bp)
 {
 	struct ptp_pin_desc *config;
 	int i;
 
-	config = kzalloc(sizeof(*config) * 4, GFP_KERNEL);
+	config = kzalloc_objs(*config, 4);
 	if (!config)
 		return -ENOMEM;
 
@@ -2211,23 +2702,25 @@ ptp_ocp_fb_board_init(struct ptp_ocp *bp, struct ocp_resource *r)
 	bp->eeprom_map = fb_eeprom_map;
 	bp->fw_version = ioread32(&bp->image->version);
 	bp->sma_op = &ocp_fb_sma_op;
+	bp->signals_nr = 4;
+	bp->freq_in_nr = 4;
 
 	ptp_ocp_fb_set_version(bp);
 
 	ptp_ocp_tod_init(bp);
 	ptp_ocp_nmea_out_init(bp);
-	ptp_ocp_sma_init(bp);
 	ptp_ocp_signal_init(bp);
 
 	err = ptp_ocp_attr_group_add(bp, fb_timecard_groups);
 	if (err)
 		return err;
 
-	err = ptp_ocp_fb_set_pins(bp);
+	err = ptp_ocp_set_pins(bp);
 	if (err)
 		return err;
+	ptp_ocp_sma_init(bp);
 
-	return ptp_ocp_init_clock(bp);
+	return ptp_ocp_init_clock(bp, r->extra);
 }
 
 static bool
@@ -2260,6 +2753,177 @@ ptp_ocp_register_resources(struct ptp_ocp *bp, kernel_ulong_t driver_data)
 		}
 	}
 	return err;
+}
+
+static void
+ptp_ocp_art_sma_init(struct ptp_ocp *bp)
+{
+	struct dpll_pin_properties prop = {
+		.board_label = NULL,
+		.type = DPLL_PIN_TYPE_EXT,
+		.capabilities = 0,
+		.freq_supported_num = ARRAY_SIZE(ptp_ocp_sma_freq),
+		.freq_supported = ptp_ocp_sma_freq,
+
+	};
+	u32 reg;
+	int i;
+
+	/* defaults */
+	bp->sma[0].mode = SMA_MODE_IN;
+	bp->sma[1].mode = SMA_MODE_IN;
+	bp->sma[2].mode = SMA_MODE_OUT;
+	bp->sma[3].mode = SMA_MODE_OUT;
+
+	bp->sma[0].default_fcn = 0x08;	/* IN: 10Mhz */
+	bp->sma[1].default_fcn = 0x01;	/* IN: PPS1 */
+	bp->sma[2].default_fcn = 0x10;	/* OUT: 10Mhz */
+	bp->sma[3].default_fcn = 0x02;	/* OUT: PHC */
+
+	for (i = 0; i < OCP_SMA_NUM; i++) {
+		/* If no SMA map, the pin functions and directions are fixed. */
+		bp->sma[i].dpll_prop = prop;
+		bp->sma[i].dpll_prop.board_label =
+			bp->ptp_info.pin_config[i].name;
+		if (!bp->art_sma) {
+			bp->sma[i].fixed_fcn = true;
+			bp->sma[i].fixed_dir = true;
+			continue;
+		}
+		reg = ioread32(&bp->art_sma->map[i].gpio);
+
+		switch (reg & 0xff) {
+		case 0:
+			bp->sma[i].fixed_fcn = true;
+			bp->sma[i].fixed_dir = true;
+			break;
+		case 1:
+		case 8:
+			bp->sma[i].mode = SMA_MODE_IN;
+			bp->sma[i].dpll_prop.capabilities =
+				DPLL_PIN_CAPABILITIES_DIRECTION_CAN_CHANGE;
+			break;
+		default:
+			bp->sma[i].mode = SMA_MODE_OUT;
+			bp->sma[i].dpll_prop.capabilities =
+				DPLL_PIN_CAPABILITIES_DIRECTION_CAN_CHANGE;
+			break;
+		}
+	}
+}
+
+static u32
+ptp_ocp_art_sma_get(struct ptp_ocp *bp, int sma_nr)
+{
+	if (bp->sma[sma_nr - 1].fixed_fcn)
+		return bp->sma[sma_nr - 1].default_fcn;
+
+	return ioread32(&bp->art_sma->map[sma_nr - 1].gpio) & 0xff;
+}
+
+/* note: store 0 is considered invalid. */
+static int
+ptp_ocp_art_sma_set(struct ptp_ocp *bp, int sma_nr, u32 val)
+{
+	unsigned long flags;
+	u32 __iomem *gpio;
+	int err = 0;
+	u32 reg;
+
+	val &= SMA_SELECT_MASK;
+	if (hweight32(val) > 1)
+		return -EINVAL;
+
+	gpio = &bp->art_sma->map[sma_nr - 1].gpio;
+
+	spin_lock_irqsave(&bp->lock, flags);
+	reg = ioread32(gpio);
+	if (((reg >> 16) & val) == 0) {
+		err = -EOPNOTSUPP;
+	} else {
+		reg = (reg & 0xff00) | (val & 0xff);
+		iowrite32(reg, gpio);
+	}
+	spin_unlock_irqrestore(&bp->lock, flags);
+
+	return err;
+}
+
+static const struct ocp_sma_op ocp_art_sma_op = {
+	.tbl		= { ptp_ocp_art_sma_in, ptp_ocp_art_sma_out },
+	.init		= ptp_ocp_art_sma_init,
+	.get		= ptp_ocp_art_sma_get,
+	.set_inputs	= ptp_ocp_art_sma_set,
+	.set_output	= ptp_ocp_art_sma_set,
+};
+
+/* ART specific board initializers; last "resource" registered. */
+static int
+ptp_ocp_art_board_init(struct ptp_ocp *bp, struct ocp_resource *r)
+{
+	int err;
+
+	bp->flash_start = 0x1000000;
+	bp->eeprom_map = art_eeprom_map;
+	bp->fw_cap = OCP_CAP_BASIC;
+	bp->fw_version = ioread32(&bp->reg->version);
+	bp->fw_tag = 2;
+	bp->sma_op = &ocp_art_sma_op;
+	bp->signals_nr = 4;
+	bp->freq_in_nr = 4;
+
+	/* Enable MAC serial port during initialisation */
+	iowrite32(1, &bp->board_config->mro50_serial_activate);
+
+	err = ptp_ocp_set_pins(bp);
+	if (err)
+		return err;
+	ptp_ocp_sma_init(bp);
+
+	err = ptp_ocp_attr_group_add(bp, art_timecard_groups);
+	if (err)
+		return err;
+
+	return ptp_ocp_init_clock(bp, r->extra);
+}
+
+/* ADVA specific board initializers; last "resource" registered. */
+static int
+ptp_ocp_adva_board_init(struct ptp_ocp *bp, struct ocp_resource *r)
+{
+	int err;
+	u32 version;
+
+	bp->flash_start = 0xA00000;
+	bp->eeprom_map = fb_eeprom_map;
+	bp->sma_op = &ocp_adva_sma_op;
+	bp->signals_nr = 2;
+	bp->freq_in_nr = 2;
+
+	version = ioread32(&bp->image->version);
+	/* if lower 16 bits are empty, this is the fw loader. */
+	if ((version & 0xffff) == 0) {
+		version = version >> 16;
+		bp->fw_loader = true;
+	}
+	bp->fw_tag = 3;
+	bp->fw_version = version & 0xffff;
+	bp->fw_cap = OCP_CAP_BASIC | OCP_CAP_SIGNAL | OCP_CAP_FREQ;
+
+	ptp_ocp_tod_init(bp);
+	ptp_ocp_nmea_out_init(bp);
+	ptp_ocp_signal_init(bp);
+
+	err = ptp_ocp_attr_group_add(bp, adva_timecard_groups);
+	if (err)
+		return err;
+
+	err = ptp_ocp_set_pins(bp);
+	if (err)
+		return err;
+	ptp_ocp_sma_init(bp);
+
+	return ptp_ocp_init_clock(bp, r->extra);
 }
 
 static ssize_t
@@ -2394,16 +3058,9 @@ sma4_show(struct device *dev, struct device_attribute *attr, char *buf)
 }
 
 static int
-ptp_ocp_sma_store(struct ptp_ocp *bp, const char *buf, int sma_nr)
+ptp_ocp_sma_store_val(struct ptp_ocp *bp, int val, enum ptp_ocp_sma_mode mode, int sma_nr)
 {
 	struct ptp_ocp_sma_connector *sma = &bp->sma[sma_nr - 1];
-	enum ptp_ocp_sma_mode mode;
-	int val;
-
-	mode = sma->mode;
-	val = sma_parse_inputs(bp->sma_op->tbl, buf, &mode);
-	if (val < 0)
-		return val;
 
 	if (sma->fixed_dir && (mode != sma->mode || val & SMA_DISABLE))
 		return -EOPNOTSUPP;
@@ -2436,6 +3093,20 @@ ptp_ocp_sma_store(struct ptp_ocp *bp, const char *buf, int sma_nr)
 		val = ptp_ocp_sma_set_output(bp, sma_nr, val);
 
 	return val;
+}
+
+static int
+ptp_ocp_sma_store(struct ptp_ocp *bp, const char *buf, int sma_nr)
+{
+	struct ptp_ocp_sma_connector *sma = &bp->sma[sma_nr - 1];
+	enum ptp_ocp_sma_mode mode;
+	int val;
+
+	mode = sma->mode;
+	val = sma_parse_inputs(bp->sma_op->tbl, buf, &mode);
+	if (val < 0)
+		return val;
+	return ptp_ocp_sma_store_val(bp, val, mode, sma_nr);
 }
 
 static ssize_t
@@ -2582,20 +3253,16 @@ signal_show(struct device *dev, struct device_attribute *attr, char *buf)
 	struct dev_ext_attribute *ea = to_ext_attr(attr);
 	struct ptp_ocp *bp = dev_get_drvdata(dev);
 	struct ptp_ocp_signal *signal;
+	int gen = (uintptr_t)ea->var;
 	struct timespec64 ts;
-	ssize_t count;
-	int i;
 
-	i = (uintptr_t)ea->var;
-	signal = &bp->signal[i];
-
-	count = sysfs_emit(buf, "%llu %d %llu %d", signal->period,
-			   signal->duty, signal->phase, signal->polarity);
+	signal = &bp->signal[gen];
 
 	ts = ktime_to_timespec64(signal->start);
-	count += sysfs_emit_at(buf, count, " %ptT TAI\n", &ts);
 
-	return count;
+	return sysfs_emit(buf, "%llu %d %llu %d %ptT TAI\n",
+			  signal->period, signal->duty, signal->phase, signal->polarity,
+			  &ts.tv_sec);
 }
 static EXT_ATTR_RW(signal, signal, 0);
 static EXT_ATTR_RW(signal, signal, 1);
@@ -2755,6 +3422,60 @@ static EXT_ATTR_RO(freq, frequency, 0);
 static EXT_ATTR_RO(freq, frequency, 1);
 static EXT_ATTR_RO(freq, frequency, 2);
 static EXT_ATTR_RO(freq, frequency, 3);
+
+static ssize_t
+ptp_ocp_tty_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct dev_ext_attribute *ea = to_ext_attr(attr);
+	struct ptp_ocp *bp = dev_get_drvdata(dev);
+
+	/*
+	 * NOTE: This output does not include a trailing newline for backward
+	 * compatibility. Existing userspace software uses this value directly
+	 * as a device path (e.g., "/dev/ttyS4"), and adding a newline would
+	 * break those applications. Do not add a newline to this output.
+	 */
+	return sysfs_emit(buf, "ttyS%d", bp->port[(uintptr_t)ea->var].line);
+}
+
+static umode_t
+ptp_ocp_timecard_tty_is_visible(struct kobject *kobj, struct attribute *attr, int n)
+{
+	struct ptp_ocp *bp = dev_get_drvdata(kobj_to_dev(kobj));
+	struct ptp_ocp_serial_port *port;
+	struct device_attribute *dattr;
+	struct dev_ext_attribute *ea;
+
+	if (strncmp(attr->name, "tty", 3))
+		return attr->mode;
+
+	dattr = container_of(attr, struct device_attribute, attr);
+	ea = container_of(dattr, struct dev_ext_attribute, attr);
+	port = &bp->port[(uintptr_t)ea->var];
+	return port->line == -1 ? 0 : 0444;
+}
+
+#define EXT_TTY_ATTR_RO(_name, _val)			\
+	struct dev_ext_attribute dev_attr_tty##_name =	\
+		{ __ATTR(tty##_name, 0444, ptp_ocp_tty_show, NULL), (void *)_val }
+
+static EXT_TTY_ATTR_RO(GNSS, PORT_GNSS);
+static EXT_TTY_ATTR_RO(GNSS2, PORT_GNSS2);
+static EXT_TTY_ATTR_RO(MAC, PORT_MAC);
+static EXT_TTY_ATTR_RO(NMEA, PORT_NMEA);
+static struct attribute *ptp_ocp_timecard_tty_attrs[] = {
+	&dev_attr_ttyGNSS.attr.attr,
+	&dev_attr_ttyGNSS2.attr.attr,
+	&dev_attr_ttyMAC.attr.attr,
+	&dev_attr_ttyNMEA.attr.attr,
+	NULL,
+};
+
+static const struct attribute_group ptp_ocp_timecard_tty_group = {
+	.name = "tty",
+	.attrs = ptp_ocp_timecard_tty_attrs,
+	.is_visible = ptp_ocp_timecard_tty_is_visible,
+};
 
 static ssize_t
 serialnum_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -3035,6 +3756,130 @@ DEVICE_FREQ_GROUP(freq2, 1);
 DEVICE_FREQ_GROUP(freq3, 2);
 DEVICE_FREQ_GROUP(freq4, 3);
 
+static ssize_t
+disciplining_config_read(struct file *filp, struct kobject *kobj,
+			 const struct bin_attribute *bin_attr, char *buf,
+			 loff_t off, size_t count)
+{
+	struct ptp_ocp *bp = dev_get_drvdata(kobj_to_dev(kobj));
+	size_t size = OCP_ART_CONFIG_SIZE;
+	struct nvmem_device *nvmem;
+	ssize_t err;
+
+	nvmem = ptp_ocp_nvmem_device_get(bp, NULL);
+	if (IS_ERR(nvmem))
+		return PTR_ERR(nvmem);
+
+	if (off > size) {
+		err = 0;
+		goto out;
+	}
+
+	if (off + count > size)
+		count = size - off;
+
+	// the configuration is in the very beginning of the EEPROM
+	err = nvmem_device_read(nvmem, off, count, buf);
+	if (err != count) {
+		err = -EFAULT;
+		goto out;
+	}
+
+out:
+	ptp_ocp_nvmem_device_put(&nvmem);
+
+	return err;
+}
+
+static ssize_t
+disciplining_config_write(struct file *filp, struct kobject *kobj,
+			  const struct bin_attribute *bin_attr, char *buf,
+			  loff_t off, size_t count)
+{
+	struct ptp_ocp *bp = dev_get_drvdata(kobj_to_dev(kobj));
+	struct nvmem_device *nvmem;
+	ssize_t err;
+
+	/* Allow write of the whole area only */
+	if (off || count != OCP_ART_CONFIG_SIZE)
+		return -EFAULT;
+
+	nvmem = ptp_ocp_nvmem_device_get(bp, NULL);
+	if (IS_ERR(nvmem))
+		return PTR_ERR(nvmem);
+
+	err = nvmem_device_write(nvmem, 0x00, count, buf);
+	if (err != count)
+		err = -EFAULT;
+
+	ptp_ocp_nvmem_device_put(&nvmem);
+
+	return err;
+}
+static const BIN_ATTR_RW(disciplining_config, OCP_ART_CONFIG_SIZE);
+
+static ssize_t
+temperature_table_read(struct file *filp, struct kobject *kobj,
+		       const struct bin_attribute *bin_attr, char *buf,
+		       loff_t off, size_t count)
+{
+	struct ptp_ocp *bp = dev_get_drvdata(kobj_to_dev(kobj));
+	size_t size = OCP_ART_TEMP_TABLE_SIZE;
+	struct nvmem_device *nvmem;
+	ssize_t err;
+
+	nvmem = ptp_ocp_nvmem_device_get(bp, NULL);
+	if (IS_ERR(nvmem))
+		return PTR_ERR(nvmem);
+
+	if (off > size) {
+		err = 0;
+		goto out;
+	}
+
+	if (off + count > size)
+		count = size - off;
+
+	// the configuration is in the very beginning of the EEPROM
+	err = nvmem_device_read(nvmem, 0x90 + off, count, buf);
+	if (err != count) {
+		err = -EFAULT;
+		goto out;
+	}
+
+out:
+	ptp_ocp_nvmem_device_put(&nvmem);
+
+	return err;
+}
+
+static ssize_t
+temperature_table_write(struct file *filp, struct kobject *kobj,
+			const struct bin_attribute *bin_attr, char *buf,
+			loff_t off, size_t count)
+{
+	struct ptp_ocp *bp = dev_get_drvdata(kobj_to_dev(kobj));
+	struct nvmem_device *nvmem;
+	ssize_t err;
+
+	/* Allow write of the whole area only */
+	if (off || count != OCP_ART_TEMP_TABLE_SIZE)
+		return -EFAULT;
+
+	nvmem = ptp_ocp_nvmem_device_get(bp, NULL);
+	if (IS_ERR(nvmem))
+		return PTR_ERR(nvmem);
+
+	err = nvmem_device_write(nvmem, 0x90, count, buf);
+	if (err != count)
+		err = -EFAULT;
+
+	ptp_ocp_nvmem_device_put(&nvmem);
+
+	return err;
+}
+static const BIN_ATTR_RW(temperature_table, OCP_ART_TEMP_TABLE_SIZE);
+
 static struct attribute *fb_timecard_attrs[] = {
 	&dev_attr_serialnum.attr,
 	&dev_attr_gnss_sync.attr,
@@ -3054,11 +3899,14 @@ static struct attribute *fb_timecard_attrs[] = {
 	&dev_attr_tod_correction.attr,
 	NULL,
 };
+
 static const struct attribute_group fb_timecard_group = {
 	.attrs = fb_timecard_attrs,
 };
+
 static const struct ocp_attr_group fb_timecard_groups[] = {
 	{ .cap = OCP_CAP_BASIC,	    .group = &fb_timecard_group },
+	{ .cap = OCP_CAP_BASIC,	    .group = &ptp_ocp_timecard_tty_group },
 	{ .cap = OCP_CAP_SIGNAL,    .group = &fb_timecard_signal0_group },
 	{ .cap = OCP_CAP_SIGNAL,    .group = &fb_timecard_signal1_group },
 	{ .cap = OCP_CAP_SIGNAL,    .group = &fb_timecard_signal2_group },
@@ -3067,6 +3915,70 @@ static const struct ocp_attr_group fb_timecard_groups[] = {
 	{ .cap = OCP_CAP_FREQ,	    .group = &fb_timecard_freq1_group },
 	{ .cap = OCP_CAP_FREQ,	    .group = &fb_timecard_freq2_group },
 	{ .cap = OCP_CAP_FREQ,	    .group = &fb_timecard_freq3_group },
+	{ },
+};
+
+static struct attribute *art_timecard_attrs[] = {
+	&dev_attr_serialnum.attr,
+	&dev_attr_clock_source.attr,
+	&dev_attr_available_clock_sources.attr,
+	&dev_attr_utc_tai_offset.attr,
+	&dev_attr_ts_window_adjust.attr,
+	&dev_attr_sma1.attr,
+	&dev_attr_sma2.attr,
+	&dev_attr_sma3.attr,
+	&dev_attr_sma4.attr,
+	&dev_attr_available_sma_inputs.attr,
+	&dev_attr_available_sma_outputs.attr,
+	NULL,
+};
+
+static const struct bin_attribute *const bin_art_timecard_attrs[] = {
+	&bin_attr_disciplining_config,
+	&bin_attr_temperature_table,
+	NULL,
+};
+
+static const struct attribute_group art_timecard_group = {
+	.attrs = art_timecard_attrs,
+	.bin_attrs = bin_art_timecard_attrs,
+};
+
+static const struct ocp_attr_group art_timecard_groups[] = {
+	{ .cap = OCP_CAP_BASIC,	    .group = &art_timecard_group },
+	{ .cap = OCP_CAP_BASIC,	    .group = &ptp_ocp_timecard_tty_group },
+	{ },
+};
+
+static struct attribute *adva_timecard_attrs[] = {
+	&dev_attr_serialnum.attr,
+	&dev_attr_gnss_sync.attr,
+	&dev_attr_clock_source.attr,
+	&dev_attr_available_clock_sources.attr,
+	&dev_attr_sma1.attr,
+	&dev_attr_sma2.attr,
+	&dev_attr_sma3.attr,
+	&dev_attr_sma4.attr,
+	&dev_attr_available_sma_inputs.attr,
+	&dev_attr_available_sma_outputs.attr,
+	&dev_attr_clock_status_drift.attr,
+	&dev_attr_clock_status_offset.attr,
+	&dev_attr_ts_window_adjust.attr,
+	&dev_attr_tod_correction.attr,
+	NULL,
+};
+
+static const struct attribute_group adva_timecard_group = {
+	.attrs = adva_timecard_attrs,
+};
+
+static const struct ocp_attr_group adva_timecard_groups[] = {
+	{ .cap = OCP_CAP_BASIC,	    .group = &adva_timecard_group },
+	{ .cap = OCP_CAP_BASIC,	    .group = &ptp_ocp_timecard_tty_group },
+	{ .cap = OCP_CAP_SIGNAL,    .group = &fb_timecard_signal0_group },
+	{ .cap = OCP_CAP_SIGNAL,    .group = &fb_timecard_signal1_group },
+	{ .cap = OCP_CAP_FREQ,	    .group = &fb_timecard_freq0_group },
+	{ .cap = OCP_CAP_FREQ,	    .group = &fb_timecard_freq1_group },
 	{ },
 };
 
@@ -3109,12 +4021,9 @@ _signal_summary_show(struct seq_file *s, struct ptp_ocp *bp, int nr)
 {
 	struct signal_reg __iomem *reg = bp->signal_out[nr]->mem;
 	struct ptp_ocp_signal *signal = &bp->signal[nr];
-	char label[8];
+	char label[16];
 	bool on;
 	u32 val;
-
-	if (!signal)
-		return;
 
 	on = signal->running;
 	sprintf(label, "GEN%d", nr + 1);
@@ -3135,7 +4044,7 @@ static void
 _frequency_summary_show(struct seq_file *s, int nr,
 			struct frequency_reg __iomem *reg)
 {
-	char label[8];
+	char label[16];
 	bool on;
 	u32 val;
 
@@ -3182,14 +4091,11 @@ ptp_ocp_summary_show(struct seq_file *s, void *data)
 	bp = dev_get_drvdata(dev);
 
 	seq_printf(s, "%7s: /dev/ptp%d\n", "PTP", ptp_clock_index(bp->ptp));
-	if (bp->gnss_port != -1)
-		seq_printf(s, "%7s: /dev/ttyS%d\n", "GNSS1", bp->gnss_port);
-	if (bp->gnss2_port != -1)
-		seq_printf(s, "%7s: /dev/ttyS%d\n", "GNSS2", bp->gnss2_port);
-	if (bp->mac_port != -1)
-		seq_printf(s, "%7s: /dev/ttyS%d\n", "MAC", bp->mac_port);
-	if (bp->nmea_port != -1)
-		seq_printf(s, "%7s: /dev/ttyS%d\n", "NMEA", bp->nmea_port);
+	for (i = 0; i < __PORT_COUNT; i++) {
+		if (bp->port[i].line != -1)
+			seq_printf(s, "%7s: /dev/ttyS%d\n", ptp_ocp_tty_port_name(i),
+				   bp->port[i].line);
+	}
 
 	memset(sma_val, 0xff, sizeof(sma_val));
 	if (bp->sma_map1) {
@@ -3282,11 +4188,11 @@ ptp_ocp_summary_show(struct seq_file *s, void *data)
 	}
 
 	if (bp->fw_cap & OCP_CAP_SIGNAL)
-		for (i = 0; i < 4; i++)
+		for (i = 0; i < bp->signals_nr; i++)
 			_signal_summary_show(s, bp, i);
 
 	if (bp->fw_cap & OCP_CAP_FREQ)
-		for (i = 0; i < 4; i++)
+		for (i = 0; i < bp->freq_in_nr; i++)
 			_frequency_summary_show(s, i, bp->freq_in[i]);
 
 	if (bp->irig_out) {
@@ -3373,9 +4279,8 @@ ptp_ocp_summary_show(struct seq_file *s, void *data)
 		strcpy(buf, "unknown");
 		break;
 	}
-	val = ioread32(&bp->reg->status);
 	seq_printf(s, "%7s: %s, state: %s\n", "PHC src", buf,
-		   val & OCP_STATUS_IN_SYNC ? "sync" : "unsynced");
+		   bp->sync ? "sync" : "unsynced");
 
 	if (!ptp_ocp_gettimex(&bp->ptp_info, &ts, &sts)) {
 		struct timespec64 sys_ts;
@@ -3387,11 +4292,9 @@ ptp_ocp_summary_show(struct seq_file *s, void *data)
 		ns += (s64)bp->utc_tai_offset * NSEC_PER_SEC;
 		sys_ts = ns_to_timespec64(ns);
 
-		seq_printf(s, "%7s: %lld.%ld == %ptT TAI\n", "PHC",
-			   ts.tv_sec, ts.tv_nsec, &ts);
-		seq_printf(s, "%7s: %lld.%ld == %ptT UTC offset %d\n", "SYS",
-			   sys_ts.tv_sec, sys_ts.tv_nsec, &sys_ts,
-			   bp->utc_tai_offset);
+		seq_printf(s, "%7s: %ptSp == %ptS TAI\n", "PHC", &ts, &ts);
+		seq_printf(s, "%7s: %ptSp == %ptS UTC offset %d\n", "SYS",
+			   &sys_ts, &sys_ts, bp->utc_tai_offset);
 		seq_printf(s, "%7s: PHC:SYS offset: %lld  window: %lld\n", "",
 			   timespec64_to_ns(&ts) - ns,
 			   post_ns - pre_ns);
@@ -3440,7 +4343,7 @@ ptp_ocp_tod_status_show(struct seq_file *s, void *data)
 
 	val = ioread32(&bp->tod->utc_status);
 	seq_printf(s, "UTC status register: 0x%08X\n", val);
-	seq_printf(s, "UTC offset: %d  valid:%d\n",
+	seq_printf(s, "UTC offset: %ld  valid:%d\n",
 		val & TOD_STATUS_UTC_MASK, val & TOD_STATUS_UTC_VALID ? 1 : 0);
 	seq_printf(s, "Leap second info valid:%d, Leap second announce %d\n",
 		val & TOD_STATUS_LEAP_VALID ? 1 : 0,
@@ -3500,7 +4403,7 @@ ptp_ocp_dev_release(struct device *dev)
 static int
 ptp_ocp_device_init(struct ptp_ocp *bp, struct pci_dev *pdev)
 {
-	int err;
+	int i, err;
 
 	mutex_lock(&ptp_ocp_lock);
 	err = idr_alloc(&ptp_ocp_idr, bp, 0, 0, GFP_KERNEL);
@@ -3513,10 +4416,10 @@ ptp_ocp_device_init(struct ptp_ocp *bp, struct pci_dev *pdev)
 
 	bp->ptp_info = ptp_ocp_clock_info;
 	spin_lock_init(&bp->lock);
-	bp->gnss_port = -1;
-	bp->gnss2_port = -1;
-	bp->mac_port = -1;
-	bp->nmea_port = -1;
+
+	for (i = 0; i < __PORT_COUNT; i++)
+		bp->port[i].line = -1;
+
 	bp->pdev = pdev;
 
 	device_initialize(&bp->dev);
@@ -3537,7 +4440,6 @@ ptp_ocp_device_init(struct ptp_ocp *bp, struct pci_dev *pdev)
 	return 0;
 
 out:
-	ptp_ocp_dev_release(&bp->dev);
 	put_device(&bp->dev);
 	return err;
 }
@@ -3574,28 +4476,12 @@ ptp_ocp_complete(struct ptp_ocp *bp)
 	struct pps_device *pps;
 	char buf[32];
 
-	if (bp->gnss_port != -1) {
-		sprintf(buf, "ttyS%d", bp->gnss_port);
-		ptp_ocp_link_child(bp, buf, "ttyGNSS");
-	}
-	if (bp->gnss2_port != -1) {
-		sprintf(buf, "ttyS%d", bp->gnss2_port);
-		ptp_ocp_link_child(bp, buf, "ttyGNSS2");
-	}
-	if (bp->mac_port != -1) {
-		sprintf(buf, "ttyS%d", bp->mac_port);
-		ptp_ocp_link_child(bp, buf, "ttyMAC");
-	}
-	if (bp->nmea_port != -1) {
-		sprintf(buf, "ttyS%d", bp->nmea_port);
-		ptp_ocp_link_child(bp, buf, "ttyNMEA");
-	}
 	sprintf(buf, "ptp%d", ptp_clock_index(bp->ptp));
 	ptp_ocp_link_child(bp, buf, "ptp");
 
 	pps = pps_lookup_dev(bp->ptp);
 	if (pps)
-		ptp_ocp_symlink(bp, pps->dev, "pps");
+		ptp_ocp_symlink(bp, &pps->dev, "pps");
 
 	ptp_ocp_debugfs_add_device(bp);
 
@@ -3607,7 +4493,6 @@ ptp_ocp_phc_info(struct ptp_ocp *bp)
 {
 	struct timespec64 ts;
 	u32 version, select;
-	bool sync;
 
 	version = ioread32(&bp->reg->version);
 	select = ioread32(&bp->reg->select);
@@ -3616,11 +4501,9 @@ ptp_ocp_phc_info(struct ptp_ocp *bp)
 		 ptp_ocp_select_name_from_val(ptp_ocp_clock, select >> 16),
 		 ptp_clock_index(bp->ptp));
 
-	sync = ioread32(&bp->reg->status) & OCP_STATUS_IN_SYNC;
 	if (!ptp_ocp_gettimex(&bp->ptp_info, &ts, NULL))
-		dev_info(&bp->pdev->dev, "Time: %lld.%ld, %s\n",
-			 ts.tv_sec, ts.tv_nsec,
-			 sync ? "in-sync" : "UNSYNCED");
+		dev_info(&bp->pdev->dev, "Time: %ptSp, %s\n",
+			 &ts, bp->sync ? "in-sync" : "UNSYNCED");
 }
 
 static void
@@ -3640,19 +4523,20 @@ ptp_ocp_info(struct ptp_ocp *bp)
 	};
 	struct device *dev = &bp->pdev->dev;
 	u32 reg;
+	int i;
 
 	ptp_ocp_phc_info(bp);
 
-	ptp_ocp_serial_info(dev, "GNSS", bp->gnss_port, 115200);
-	ptp_ocp_serial_info(dev, "GNSS2", bp->gnss2_port, 115200);
-	ptp_ocp_serial_info(dev, "MAC", bp->mac_port, 57600);
-	if (bp->nmea_out && bp->nmea_port != -1) {
-		int baud = -1;
+	for (i = 0; i < __PORT_COUNT; i++) {
+		if (i == PORT_NMEA && bp->nmea_out && bp->port[PORT_NMEA].line != -1) {
+			bp->port[PORT_NMEA].baud = -1;
 
-		reg = ioread32(&bp->nmea_out->uart_baud);
-		if (reg < ARRAY_SIZE(nmea_baud))
-			baud = nmea_baud[reg];
-		ptp_ocp_serial_info(dev, "NMEA", bp->nmea_port, baud);
+			reg = ioread32(&bp->nmea_out->uart_baud);
+			if (reg < ARRAY_SIZE(nmea_baud))
+				bp->port[PORT_NMEA].baud = nmea_baud[reg];
+		}
+		ptp_ocp_serial_info(dev, ptp_ocp_tty_port_name(i), bp->port[i].line,
+				    bp->port[i].baud);
 	}
 }
 
@@ -3661,8 +4545,6 @@ ptp_ocp_detach_sysfs(struct ptp_ocp *bp)
 {
 	struct device *dev = &bp->dev;
 
-	sysfs_remove_link(&dev->kobj, "ttyGNSS");
-	sysfs_remove_link(&dev->kobj, "ttyMAC");
 	sysfs_remove_link(&dev->kobj, "ptp");
 	sysfs_remove_link(&dev->kobj, "pps");
 }
@@ -3675,35 +4557,20 @@ ptp_ocp_detach(struct ptp_ocp *bp)
 	ptp_ocp_debugfs_remove_device(bp);
 	ptp_ocp_detach_sysfs(bp);
 	ptp_ocp_attr_group_del(bp);
-	if (timer_pending(&bp->watchdog))
-		del_timer_sync(&bp->watchdog);
-	if (bp->ts0)
-		ptp_ocp_unregister_ext(bp->ts0);
-	if (bp->ts1)
-		ptp_ocp_unregister_ext(bp->ts1);
-	if (bp->ts2)
-		ptp_ocp_unregister_ext(bp->ts2);
-	if (bp->ts3)
-		ptp_ocp_unregister_ext(bp->ts3);
-	if (bp->ts4)
-		ptp_ocp_unregister_ext(bp->ts4);
-	if (bp->pps)
-		ptp_ocp_unregister_ext(bp->pps);
+	timer_delete_sync(&bp->watchdog);
+	ptp_ocp_unregister_ext(bp->ts0);
+	ptp_ocp_unregister_ext(bp->ts1);
+	ptp_ocp_unregister_ext(bp->ts2);
+	ptp_ocp_unregister_ext(bp->ts3);
+	ptp_ocp_unregister_ext(bp->ts4);
+	ptp_ocp_unregister_ext(bp->pps);
 	for (i = 0; i < 4; i++)
-		if (bp->signal_out[i])
-			ptp_ocp_unregister_ext(bp->signal_out[i]);
-	if (bp->gnss_port != -1)
-		serial8250_unregister_port(bp->gnss_port);
-	if (bp->gnss2_port != -1)
-		serial8250_unregister_port(bp->gnss2_port);
-	if (bp->mac_port != -1)
-		serial8250_unregister_port(bp->mac_port);
-	if (bp->nmea_port != -1)
-		serial8250_unregister_port(bp->nmea_port);
-	if (bp->spi_flash)
-		platform_device_unregister(bp->spi_flash);
-	if (bp->i2c_ctrl)
-		platform_device_unregister(bp->i2c_ctrl);
+		ptp_ocp_unregister_ext(bp->signal_out[i]);
+	for (i = 0; i < __PORT_COUNT; i++)
+		if (bp->port[i].line != -1)
+			serial8250_unregister_port(bp->port[i].line);
+	platform_device_unregister(bp->spi_flash);
+	platform_device_unregister(bp->i2c_ctrl);
 	if (bp->i2c_clk)
 		clk_hw_unregister_fixed_rate(bp->i2c_clk);
 	if (bp->n_irqs)
@@ -3715,11 +4582,160 @@ ptp_ocp_detach(struct ptp_ocp *bp)
 }
 
 static int
+ptp_ocp_dpll_lock_status_get(const struct dpll_device *dpll, void *priv,
+			     enum dpll_lock_status *status,
+			     enum dpll_lock_status_error *status_error,
+			     struct netlink_ext_ack *extack)
+{
+	struct ptp_ocp *bp = priv;
+
+	*status = bp->sync ? DPLL_LOCK_STATUS_LOCKED : DPLL_LOCK_STATUS_UNLOCKED;
+
+	return 0;
+}
+
+static int ptp_ocp_dpll_state_get(const struct dpll_pin *pin, void *pin_priv,
+				  const struct dpll_device *dpll, void *priv,
+				  enum dpll_pin_state *state,
+				  struct netlink_ext_ack *extack)
+{
+	struct ptp_ocp *bp = priv;
+	int idx;
+
+	if (bp->pps_select) {
+		idx = ioread32(&bp->pps_select->gpio1);
+		*state = (&bp->sma[idx] == pin_priv) ? DPLL_PIN_STATE_CONNECTED :
+						      DPLL_PIN_STATE_SELECTABLE;
+		return 0;
+	}
+	NL_SET_ERR_MSG(extack, "pin selection is not supported on current HW");
+	return -EINVAL;
+}
+
+static int ptp_ocp_dpll_mode_get(const struct dpll_device *dpll, void *priv,
+				 enum dpll_mode *mode, struct netlink_ext_ack *extack)
+{
+	*mode = DPLL_MODE_AUTOMATIC;
+	return 0;
+}
+
+static int ptp_ocp_dpll_direction_get(const struct dpll_pin *pin,
+				      void *pin_priv,
+				      const struct dpll_device *dpll,
+				      void *priv,
+				      enum dpll_pin_direction *direction,
+				      struct netlink_ext_ack *extack)
+{
+	struct ptp_ocp_sma_connector *sma = pin_priv;
+
+	*direction = sma->mode == SMA_MODE_IN ?
+				  DPLL_PIN_DIRECTION_INPUT :
+				  DPLL_PIN_DIRECTION_OUTPUT;
+	return 0;
+}
+
+static int ptp_ocp_dpll_direction_set(const struct dpll_pin *pin,
+				      void *pin_priv,
+				      const struct dpll_device *dpll,
+				      void *dpll_priv,
+				      enum dpll_pin_direction direction,
+				      struct netlink_ext_ack *extack)
+{
+	struct ptp_ocp_sma_connector *sma = pin_priv;
+	struct ptp_ocp *bp = dpll_priv;
+	enum ptp_ocp_sma_mode mode;
+	int sma_nr = (sma - bp->sma);
+
+	if (sma->fixed_dir)
+		return -EOPNOTSUPP;
+	mode = direction == DPLL_PIN_DIRECTION_INPUT ?
+			    SMA_MODE_IN : SMA_MODE_OUT;
+	return ptp_ocp_sma_store_val(bp, 0, mode, sma_nr + 1);
+}
+
+static int ptp_ocp_dpll_frequency_set(const struct dpll_pin *pin,
+				      void *pin_priv,
+				      const struct dpll_device *dpll,
+				      void *dpll_priv, u64 frequency,
+				      struct netlink_ext_ack *extack)
+{
+	struct ptp_ocp_sma_connector *sma = pin_priv;
+	struct ptp_ocp *bp = dpll_priv;
+	const struct ocp_selector *tbl;
+	int sma_nr = (sma - bp->sma);
+	int i;
+
+	if (sma->fixed_fcn)
+		return -EOPNOTSUPP;
+
+	tbl = bp->sma_op->tbl[sma->mode];
+	for (i = 0; tbl[i].name; i++)
+		if (tbl[i].frequency == frequency)
+			return ptp_ocp_sma_store_val(bp, i, sma->mode, sma_nr + 1);
+	return -EINVAL;
+}
+
+static int ptp_ocp_dpll_frequency_get(const struct dpll_pin *pin,
+				      void *pin_priv,
+				      const struct dpll_device *dpll,
+				      void *dpll_priv, u64 *frequency,
+				      struct netlink_ext_ack *extack)
+{
+	struct ptp_ocp_sma_connector *sma = pin_priv;
+	struct ptp_ocp *bp = dpll_priv;
+	const struct ocp_selector *tbl;
+	int sma_nr = (sma - bp->sma);
+	u32 val;
+	int i;
+
+	val = bp->sma_op->get(bp, sma_nr + 1);
+	tbl = bp->sma_op->tbl[sma->mode];
+	for (i = 0; tbl[i].name; i++)
+		if (val == tbl[i].value) {
+			*frequency = tbl[i].frequency;
+			return 0;
+		}
+
+	return -EINVAL;
+}
+
+static const struct dpll_device_ops dpll_ops = {
+	.lock_status_get = ptp_ocp_dpll_lock_status_get,
+	.mode_get = ptp_ocp_dpll_mode_get,
+};
+
+static const struct dpll_pin_ops dpll_pins_ops = {
+	.frequency_get = ptp_ocp_dpll_frequency_get,
+	.frequency_set = ptp_ocp_dpll_frequency_set,
+	.direction_get = ptp_ocp_dpll_direction_get,
+	.direction_set = ptp_ocp_dpll_direction_set,
+	.state_on_dpll_get = ptp_ocp_dpll_state_get,
+};
+
+static void
+ptp_ocp_sync_work(struct work_struct *work)
+{
+	struct ptp_ocp *bp;
+	bool sync;
+
+	bp = container_of(work, struct ptp_ocp, sync_work.work);
+	sync = !!(ioread32(&bp->reg->status) & OCP_STATUS_IN_SYNC);
+
+	if (bp->sync != sync)
+		dpll_device_change_ntf(bp->dpll);
+
+	bp->sync = sync;
+
+	queue_delayed_work(system_power_efficient_wq, &bp->sync_work, HZ);
+}
+
+static int
 ptp_ocp_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	struct devlink *devlink;
 	struct ptp_ocp *bp;
-	int err;
+	int err, i;
+	u64 clkid;
 
 	devlink = devlink_alloc(&ptp_ocp_devlink_ops, sizeof(*bp), &pdev->dev);
 	if (!devlink) {
@@ -3737,6 +4753,8 @@ ptp_ocp_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	err = ptp_ocp_device_init(bp, pdev);
 	if (err)
 		goto out_disable;
+
+	INIT_DELAYED_WORK(&bp->sync_work, ptp_ocp_sync_work);
 
 	/* compat mode.
 	 * Older FPGA firmware only returns 2 irq's.
@@ -3769,11 +4787,46 @@ ptp_ocp_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	ptp_ocp_info(bp);
 	devlink_register(devlink);
-	return 0;
 
+	clkid = pci_get_dsn(pdev);
+	bp->dpll = dpll_device_get(clkid, 0, THIS_MODULE, &bp->tracker);
+	if (IS_ERR(bp->dpll)) {
+		err = PTR_ERR(bp->dpll);
+		dev_err(&pdev->dev, "dpll_device_alloc failed\n");
+		goto out;
+	}
+
+	err = dpll_device_register(bp->dpll, DPLL_TYPE_PPS, &dpll_ops, bp);
+	if (err)
+		goto out;
+
+	for (i = 0; i < OCP_SMA_NUM; i++) {
+		bp->sma[i].dpll_pin = dpll_pin_get(clkid, i, THIS_MODULE,
+						   &bp->sma[i].dpll_prop,
+						   &bp->sma[i].tracker);
+		if (IS_ERR(bp->sma[i].dpll_pin)) {
+			err = PTR_ERR(bp->sma[i].dpll_pin);
+			goto out_dpll;
+		}
+
+		err = dpll_pin_register(bp->dpll, bp->sma[i].dpll_pin, &dpll_pins_ops,
+					&bp->sma[i]);
+		if (err) {
+			dpll_pin_put(bp->sma[i].dpll_pin, &bp->sma[i].tracker);
+			goto out_dpll;
+		}
+	}
+	queue_delayed_work(system_power_efficient_wq, &bp->sync_work, HZ);
+
+	return 0;
+out_dpll:
+	while (i--) {
+		dpll_pin_unregister(bp->dpll, bp->sma[i].dpll_pin, &dpll_pins_ops, &bp->sma[i]);
+		dpll_pin_put(bp->sma[i].dpll_pin, &bp->sma[i].tracker);
+	}
+	dpll_device_put(bp->dpll, &bp->tracker);
 out:
 	ptp_ocp_detach(bp);
-	pci_set_drvdata(pdev, NULL);
 out_disable:
 	pci_disable_device(pdev);
 out_free:
@@ -3786,10 +4839,19 @@ ptp_ocp_remove(struct pci_dev *pdev)
 {
 	struct ptp_ocp *bp = pci_get_drvdata(pdev);
 	struct devlink *devlink = priv_to_devlink(bp);
+	int i;
 
+	cancel_delayed_work_sync(&bp->sync_work);
+	for (i = 0; i < OCP_SMA_NUM; i++) {
+		if (bp->sma[i].dpll_pin) {
+			dpll_pin_unregister(bp->dpll, bp->sma[i].dpll_pin, &dpll_pins_ops, &bp->sma[i]);
+			dpll_pin_put(bp->sma[i].dpll_pin, &bp->sma[i].tracker);
+		}
+	}
+	dpll_device_unregister(bp->dpll, &dpll_ops, bp);
+	dpll_device_put(bp->dpll, &bp->tracker);
 	devlink_unregister(devlink);
 	ptp_ocp_detach(bp);
-	pci_set_drvdata(pdev, NULL);
 	pci_disable_device(pdev);
 
 	devlink_free(devlink);

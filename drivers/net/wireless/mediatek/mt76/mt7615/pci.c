@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: ISC
+// SPDX-License-Identifier: BSD-3-Clause-Clear
 /* Copyright (C) 2019 MediaTek Inc.
  *
  * Author: Ryder Lee <ryder.lee@mediatek.com>
@@ -83,7 +83,7 @@ static int mt7615_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 	hif_suspend = !test_bit(MT76_STATE_SUSPEND, &dev->mphy.state) &&
 		      mt7615_firmware_offload(dev);
 	if (hif_suspend) {
-		err = mt76_connac_mcu_set_hif_suspend(mdev, true);
+		err = mt76_connac_mcu_set_hif_suspend(mdev, true, true);
 		if (err)
 			return err;
 	}
@@ -94,7 +94,7 @@ static int mt7615_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 	mt76_for_each_q_rx(mdev, i) {
 		napi_disable(&mdev->napi[i]);
 	}
-	tasklet_kill(&dev->irq_tasklet);
+	tasklet_kill(&mdev->irq_tasklet);
 
 	mt7615_dma_reset(dev);
 
@@ -131,7 +131,7 @@ restore:
 	}
 	napi_enable(&mdev->tx_napi);
 	if (hif_suspend)
-		mt76_connac_mcu_set_hif_suspend(mdev, false);
+		mt76_connac_mcu_set_hif_suspend(mdev, false, true);
 
 	return err;
 }
@@ -164,18 +164,22 @@ static int mt7615_pci_resume(struct pci_dev *pdev)
 		dev_err(mdev->dev, "PDMA engine must be reinitialized\n");
 
 	mt76_worker_enable(&mdev->tx_worker);
-	local_bh_disable();
+
 	mt76_for_each_q_rx(mdev, i) {
 		napi_enable(&mdev->napi[i]);
-		napi_schedule(&mdev->napi[i]);
 	}
 	napi_enable(&mdev->tx_napi);
+
+	local_bh_disable();
+	mt76_for_each_q_rx(mdev, i) {
+		napi_schedule(&mdev->napi[i]);
+	}
 	napi_schedule(&mdev->tx_napi);
 	local_bh_enable();
 
 	if (!test_bit(MT76_STATE_SUSPEND, &dev->mphy.state) &&
 	    mt7615_firmware_offload(dev))
-		err = mt76_connac_mcu_set_hif_suspend(mdev, false);
+		err = mt76_connac_mcu_set_hif_suspend(mdev, false, true);
 
 	return err;
 }

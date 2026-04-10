@@ -46,7 +46,7 @@ bfad_debugfs_open_drvtrc(struct inode *inode, struct file *file)
 	struct bfad_s *bfad = port->bfad;
 	struct bfad_debug_info *debug;
 
-	debug = kzalloc(sizeof(struct bfad_debug_info), GFP_KERNEL);
+	debug = kzalloc_obj(struct bfad_debug_info);
 	if (!debug)
 		return -ENOMEM;
 
@@ -67,7 +67,7 @@ bfad_debugfs_open_fwtrc(struct inode *inode, struct file *file)
 	unsigned long flags;
 	int rc;
 
-	fw_debug = kzalloc(sizeof(struct bfad_debug_info), GFP_KERNEL);
+	fw_debug = kzalloc_obj(struct bfad_debug_info);
 	if (!fw_debug)
 		return -ENOMEM;
 
@@ -109,7 +109,7 @@ bfad_debugfs_open_fwsave(struct inode *inode, struct file *file)
 	unsigned long flags;
 	int rc;
 
-	fw_debug = kzalloc(sizeof(struct bfad_debug_info), GFP_KERNEL);
+	fw_debug = kzalloc_obj(struct bfad_debug_info);
 	if (!fw_debug)
 		return -ENOMEM;
 
@@ -147,7 +147,7 @@ bfad_debugfs_open_reg(struct inode *inode, struct file *file)
 {
 	struct bfad_debug_info *reg_debug;
 
-	reg_debug = kzalloc(sizeof(struct bfad_debug_info), GFP_KERNEL);
+	reg_debug = kzalloc_obj(struct bfad_debug_info);
 	if (!reg_debug)
 		return -ENOMEM;
 
@@ -250,7 +250,7 @@ bfad_debugfs_write_regrd(struct file *file, const char __user *buf,
 	unsigned long flags;
 	void *kern_buf;
 
-	kern_buf = memdup_user(buf, nbytes);
+	kern_buf = memdup_user_nul(buf, nbytes);
 	if (IS_ERR(kern_buf))
 		return PTR_ERR(kern_buf);
 
@@ -317,7 +317,7 @@ bfad_debugfs_write_regwr(struct file *file, const char __user *buf,
 	unsigned long flags;
 	void *kern_buf;
 
-	kern_buf = memdup_user(buf, nbytes);
+	kern_buf = memdup_user_nul(buf, nbytes);
 	if (IS_ERR(kern_buf))
 		return PTR_ERR(kern_buf);
 

@@ -7,12 +7,13 @@
  * IIO driver for KMX61 (7-bit I2C slave address 0x0E or 0x0F).
  */
 
-#include <linux/module.h>
 #include <linux/i2c.h>
-#include <linux/acpi.h>
 #include <linux/interrupt.h>
+#include <linux/mod_devicetable.h>
+#include <linux/module.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
+
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/events.h>
@@ -20,9 +21,6 @@
 #include <linux/iio/buffer.h>
 #include <linux/iio/triggered_buffer.h>
 #include <linux/iio/trigger_consumer.h>
-
-#define KMX61_DRV_NAME "kmx61"
-#define KMX61_IRQ_NAME "kmx61_event"
 
 #define KMX61_REG_WHO_AM_I	0x00
 #define KMX61_REG_INS1		0x01
@@ -649,7 +647,7 @@ static int kmx61_chip_update_thresholds(struct kmx61_data *data)
 					KMX61_REG_WUF_TIMER,
 					data->wake_duration);
 	if (ret < 0) {
-		dev_err(&data->client->dev, "Errow writing reg_wuf_timer\n");
+		dev_err(&data->client->dev, "Error writing reg_wuf_timer\n");
 		return ret;
 	}
 
@@ -749,12 +747,10 @@ static int kmx61_set_power_state(struct kmx61_data *data, bool on, u8 device)
 		data->mag_ps = on;
 	}
 
-	if (on) {
+	if (on)
 		ret = pm_runtime_resume_and_get(&data->client->dev);
-	} else {
-		pm_runtime_mark_last_busy(&data->client->dev);
+	else
 		ret = pm_runtime_put_autosuspend(&data->client->dev);
-	}
 	if (ret < 0) {
 		dev_err(&data->client->dev,
 			"Failed: kmx61_set_power_state for %d, ret %d\n",
@@ -941,7 +937,7 @@ static int kmx61_write_event_config(struct iio_dev *indio_dev,
 				    const struct iio_chan_spec *chan,
 				    enum iio_event_type type,
 				    enum iio_event_direction dir,
-				    int state)
+				    bool state)
 {
 	struct kmx61_data *data = kmx61_get_data(indio_dev);
 	int ret = 0;
@@ -1192,7 +1188,7 @@ static irqreturn_t kmx61_trigger_handler(int irq, void *p)
 	struct kmx61_data *data = kmx61_get_data(indio_dev);
 	int bit, ret, i = 0;
 	u8 base;
-	s16 buffer[8];
+	s16 buffer[8] = { };
 
 	if (indio_dev == data->acc_indio_dev)
 		base = KMX61_ACC_XOUT_L;
@@ -1200,8 +1196,7 @@ static irqreturn_t kmx61_trigger_handler(int irq, void *p)
 		base = KMX61_MAG_XOUT_L;
 
 	mutex_lock(&data->lock);
-	for_each_set_bit(bit, indio_dev->active_scan_mask,
-			 indio_dev->masklength) {
+	iio_for_each_active_channel(indio_dev, bit) {
 		ret = kmx61_read_measurement(data, base, bit);
 		if (ret < 0) {
 			mutex_unlock(&data->lock);
@@ -1216,16 +1211,6 @@ err:
 	iio_trigger_notify_done(indio_dev->trig);
 
 	return IRQ_HANDLED;
-}
-
-static const char *kmx61_match_acpi_device(struct device *dev)
-{
-	const struct acpi_device_id *id;
-
-	id = acpi_match_device(dev->driver->acpi_match_table, dev);
-	if (!id)
-		return NULL;
-	return dev_name(dev);
 }
 
 static struct iio_dev *kmx61_indiodev_setup(struct kmx61_data *data,
@@ -1276,9 +1261,9 @@ static struct iio_trigger *kmx61_trigger_setup(struct kmx61_data *data,
 	return trig;
 }
 
-static int kmx61_probe(struct i2c_client *client,
-		       const struct i2c_device_id *id)
+static int kmx61_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	int ret;
 	struct kmx61_data *data;
 	const char *name = NULL;
@@ -1294,8 +1279,6 @@ static int kmx61_probe(struct i2c_client *client,
 
 	if (id)
 		name = id->name;
-	else if (ACPI_HANDLE(&client->dev))
-		name = kmx61_match_acpi_device(&client->dev);
 	else
 		return -ENODEV;
 
@@ -1324,7 +1307,7 @@ static int kmx61_probe(struct i2c_client *client,
 						kmx61_data_rdy_trig_poll,
 						kmx61_event_handler,
 						IRQF_TRIGGER_RISING,
-						KMX61_IRQ_NAME,
+						"kmx61_event",
 						data);
 		if (ret)
 			goto err_chip_uninit;
@@ -1418,7 +1401,7 @@ err_chip_uninit:
 	return ret;
 }
 
-static int kmx61_remove(struct i2c_client *client)
+static void kmx61_remove(struct i2c_client *client)
 {
 	struct kmx61_data *data = i2c_get_clientdata(client);
 
@@ -1439,8 +1422,6 @@ static int kmx61_remove(struct i2c_client *client)
 	mutex_lock(&data->lock);
 	kmx61_set_mode(data, KMX61_ALL_STBY, KMX61_ACC | KMX61_MAG, true);
 	mutex_unlock(&data->lock);
-
-	return 0;
 }
 
 static int kmx61_suspend(struct device *dev)
@@ -1499,24 +1480,16 @@ static const struct dev_pm_ops kmx61_pm_ops = {
 	RUNTIME_PM_OPS(kmx61_runtime_suspend, kmx61_runtime_resume, NULL)
 };
 
-static const struct acpi_device_id kmx61_acpi_match[] = {
-	{"KMX61021", 0},
-	{}
-};
-
-MODULE_DEVICE_TABLE(acpi, kmx61_acpi_match);
-
 static const struct i2c_device_id kmx61_id[] = {
-	{"kmx611021", 0},
-	{}
+	{ "kmx611021" },
+	{ }
 };
 
 MODULE_DEVICE_TABLE(i2c, kmx61_id);
 
 static struct i2c_driver kmx61_driver = {
 	.driver = {
-		.name = KMX61_DRV_NAME,
-		.acpi_match_table = ACPI_PTR(kmx61_acpi_match),
+		.name = "kmx61",
 		.pm = pm_ptr(&kmx61_pm_ops),
 	},
 	.probe		= kmx61_probe,

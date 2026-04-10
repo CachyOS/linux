@@ -133,7 +133,7 @@ static int UVERBS_HANDLER(UVERBS_METHOD_QP_CREATE)(
 		device = xrcd->device;
 		break;
 	case IB_UVERBS_QPT_RAW_PACKET:
-		if (!capable(CAP_NET_RAW))
+		if (!rdma_uattrs_has_raw_cap(attrs))
 			return -EPERM;
 		fallthrough;
 	case IB_UVERBS_QPT_RC:
@@ -163,7 +163,7 @@ static int UVERBS_HANDLER(UVERBS_METHOD_QP_CREATE)(
 					UVERBS_ATTR_CREATE_QP_SRQ_HANDLE))
 				return -EINVAL;
 
-			/* send_cq is optinal */
+			/* send_cq is optional */
 			if (cap.max_send_wr) {
 				send_cq = uverbs_attr_get_obj(attrs,
 					UVERBS_ATTR_CREATE_QP_SEND_CQ_HANDLE);

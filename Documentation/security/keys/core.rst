@@ -869,7 +869,7 @@ The keyctl syscall functions are:
 
 	 - ``char *hashname`` specifies the NUL terminated string identifying
 	   the hash used from the kernel crypto API and applied for the KDF
-	   operation. The KDF implemenation complies with SP800-56A as well
+	   operation. The KDF implementation complies with SP800-56A as well
 	   as with SP800-108 (the counter KDF).
 
 	 - ``char *otherinfo`` specifies the OtherInfo data as documented in
@@ -1046,7 +1046,7 @@ The keyctl syscall functions are:
      "filter" is either NULL to remove a watch or a filter specification to
      indicate what events are required from the key.
 
-     See Documentation/watch_queue.rst for more information.
+     See Documentation/core-api/watch_queue.rst for more information.
 
      Note that only one watch may be emplaced for any particular { key,
      queue_fd } combination.

@@ -14,6 +14,7 @@
 #include <dt-bindings/mailbox/qcom-ipcc.h>
 
 /* IPCC Register offsets */
+#define IPCC_REG_CONFIG			0x08
 #define IPCC_REG_SEND_ID		0x0c
 #define IPCC_REG_RECV_ID		0x10
 #define IPCC_REG_RECV_SIGNAL_ENABLE	0x14
@@ -21,6 +22,7 @@
 #define IPCC_REG_RECV_SIGNAL_CLEAR	0x1c
 #define IPCC_REG_CLIENT_CLEAR		0x38
 
+#define IPCC_CLEAR_ON_RECV_RD		BIT(0)
 #define IPCC_SIGNAL_ID_MASK		GENMASK(15, 0)
 #define IPCC_CLIENT_ID_MASK		GENMASK(31, 16)
 
@@ -227,10 +229,8 @@ static int qcom_ipcc_setup_mbox(struct qcom_ipcc *ipcc,
 			ret = of_parse_phandle_with_args(client_dn, "mboxes",
 						"#mbox-cells", j, &curr_ph);
 			of_node_put(curr_ph.np);
-			if (!ret && curr_ph.np == controller_dn) {
+			if (!ret && curr_ph.np == controller_dn)
 				ipcc->num_chans++;
-				break;
-			}
 		}
 	}
 
@@ -276,6 +276,7 @@ static int qcom_ipcc_pm_resume(struct device *dev)
 static int qcom_ipcc_probe(struct platform_device *pdev)
 {
 	struct qcom_ipcc *ipcc;
+	u32 config_value;
 	static int id;
 	char *name;
 	int ret;
@@ -290,6 +291,19 @@ static int qcom_ipcc_probe(struct platform_device *pdev)
 	if (IS_ERR(ipcc->base))
 		return PTR_ERR(ipcc->base);
 
+	/*
+	 * It is possible that boot firmware is using the same IPCC instance
+	 * as of the HLOS and it has kept CLEAR_ON_RECV_RD set which basically
+	 * means Interrupt pending registers are cleared when RECV_ID is read.
+	 * The register automatically updates to the next pending interrupt/client
+	 * status based on priority.
+	 */
+	config_value = readl(ipcc->base + IPCC_REG_CONFIG);
+	if (config_value & IPCC_CLEAR_ON_RECV_RD) {
+		config_value &= ~(IPCC_CLEAR_ON_RECV_RD);
+		writel(config_value, ipcc->base + IPCC_REG_CONFIG);
+	}
+
 	ipcc->irq = platform_get_irq(pdev, 0);
 	if (ipcc->irq < 0)
 		return ipcc->irq;
@@ -298,8 +312,7 @@ static int qcom_ipcc_probe(struct platform_device *pdev)
 	if (!name)
 		return -ENOMEM;
 
-	ipcc->irq_domain = irq_domain_add_tree(pdev->dev.of_node,
-					       &qcom_ipcc_irq_ops, ipcc);
+	ipcc->irq_domain = irq_domain_create_tree(dev_fwnode(&pdev->dev), &qcom_ipcc_irq_ops, ipcc);
 	if (!ipcc->irq_domain)
 		return -ENOMEM;
 
@@ -308,7 +321,8 @@ static int qcom_ipcc_probe(struct platform_device *pdev)
 		goto err_mbox;
 
 	ret = devm_request_irq(&pdev->dev, ipcc->irq, qcom_ipcc_irq_fn,
-			       IRQF_TRIGGER_HIGH | IRQF_NO_SUSPEND, name, ipcc);
+			       IRQF_TRIGGER_HIGH | IRQF_NO_SUSPEND |
+			       IRQF_NO_THREAD, name, ipcc);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "Failed to register the irq: %d\n", ret);
 		goto err_req_irq;
@@ -327,14 +341,12 @@ err_mbox:
 	return ret;
 }
 
-static int qcom_ipcc_remove(struct platform_device *pdev)
+static void qcom_ipcc_remove(struct platform_device *pdev)
 {
 	struct qcom_ipcc *ipcc = platform_get_drvdata(pdev);
 
 	disable_irq_wake(ipcc->irq);
 	irq_domain_remove(ipcc->irq_domain);
-
-	return 0;
 }
 
 static const struct of_device_id qcom_ipcc_of_match[] = {

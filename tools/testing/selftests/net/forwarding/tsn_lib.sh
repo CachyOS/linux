@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2021-2022 NXP
 
+tc_testing_scripts_dir=$(dirname $0)/../../tc-testing/scripts
+
 REQUIRE_ISOCHRON=${REQUIRE_ISOCHRON:=yes}
 REQUIRE_LINUXPTP=${REQUIRE_LINUXPTP:=yes}
 
@@ -18,12 +20,12 @@ fi
 if [[ "$REQUIRE_LINUXPTP" = "yes" ]]; then
 	require_command phc2sys
 	require_command ptp4l
+	require_command phc_ctl
 fi
 
 phc2sys_start()
 {
-	local if_name=$1
-	local uds_address=$2
+	local uds_address=$1
 	local extra_args=""
 
 	if ! [ -z "${uds_address}" ]; then
@@ -33,9 +35,7 @@ phc2sys_start()
 	phc2sys_log="$(mktemp)"
 
 	chrt -f 10 phc2sys -m \
-		-c ${if_name} \
-		-s CLOCK_REALTIME \
-		-O ${UTC_TAI_OFFSET} \
+		-a -rr \
 		--step_threshold 0.00002 \
 		--first_step_threshold 0.00002 \
 		${extra_args} \
@@ -53,14 +53,26 @@ phc2sys_stop()
 	rm "${phc2sys_log}" 2> /dev/null
 }
 
+# Replace space separators from interface list with underscores
+if_names_to_label()
+{
+	local if_name_list="$1"
+
+	echo "${if_name_list/ /_}"
+}
+
 ptp4l_start()
 {
-	local if_name=$1
+	local if_names="$1"
 	local slave_only=$2
 	local uds_address=$3
-	local log="ptp4l_log_${if_name}"
-	local pid="ptp4l_pid_${if_name}"
+	local log="ptp4l_log_$(if_names_to_label ${if_names})"
+	local pid="ptp4l_pid_$(if_names_to_label ${if_names})"
 	local extra_args=""
+
+	for if_name in ${if_names}; do
+		extra_args="${extra_args} -i ${if_name}"
+	done
 
 	if [ "${slave_only}" = true ]; then
 		extra_args="${extra_args} -s"
@@ -71,7 +83,6 @@ ptp4l_start()
 	declare -g "${log}=$(mktemp)"
 
 	chrt -f 10 ptp4l -m -2 -P \
-		-i ${if_name} \
 		--step_threshold 0.00002 \
 		--first_step_threshold 0.00002 \
 		--tx_timestamp_timeout 100 \
@@ -80,16 +91,16 @@ ptp4l_start()
 		> "${!log}" 2>&1 &
 	declare -g "${pid}=$!"
 
-	echo "ptp4l for interface ${if_name} logs to ${!log} and has pid ${!pid}"
+	echo "ptp4l for interfaces ${if_names} logs to ${!log} and has pid ${!pid}"
 
 	sleep 1
 }
 
 ptp4l_stop()
 {
-	local if_name=$1
-	local log="ptp4l_log_${if_name}"
-	local pid="ptp4l_pid_${if_name}"
+	local if_names="$1"
+	local log="ptp4l_log_$(if_names_to_label ${if_names})"
+	local pid="ptp4l_pid_$(if_names_to_label ${if_names})"
 
 	{ kill ${!pid} && wait ${!pid}; } 2> /dev/null
 	rm "${!log}" 2> /dev/null
@@ -136,10 +147,12 @@ isochron_recv_start()
 {
 	local if_name=$1
 	local uds=$2
-	local extra_args=$3
+	local stats_port=$3
+	local extra_args=$4
+	local pid="isochron_pid_${stats_port}"
 
 	if ! [ -z "${uds}" ]; then
-		extra_args="--unix-domain-socket ${uds}"
+		extra_args="${extra_args} --unix-domain-socket ${uds}"
 	fi
 
 	isochron rcv \
@@ -147,16 +160,20 @@ isochron_recv_start()
 		--sched-priority 98 \
 		--sched-fifo \
 		--utc-tai-offset ${UTC_TAI_OFFSET} \
+		--stats-port ${stats_port} \
 		--quiet \
 		${extra_args} & \
-	isochron_pid=$!
+	declare -g "${pid}=$!"
 
 	sleep 1
 }
 
 isochron_recv_stop()
 {
-	{ kill ${isochron_pid} && wait ${isochron_pid}; } 2> /dev/null
+	local stats_port=$1
+	local pid="isochron_pid_${stats_port}"
+
+	{ kill ${!pid} && wait ${!pid}; } 2> /dev/null
 }
 
 isochron_do()
@@ -168,6 +185,7 @@ isochron_do()
 	local base_time=$1; shift
 	local cycle_time=$1; shift
 	local shift_time=$1; shift
+	local window_size=$1; shift
 	local num_pkts=$1; shift
 	local vid=$1; shift
 	local priority=$1; shift
@@ -198,6 +216,10 @@ isochron_do()
 		extra_args="${extra_args} --shift-time=${shift_time}"
 	fi
 
+	if ! [ -z "${window_size}" ]; then
+		extra_args="${extra_args} --window-size=${window_size}"
+	fi
+
 	if [ "${use_l2}" = "true" ]; then
 		extra_args="${extra_args} --l2 --etype=0xdead ${vid}"
 		receiver_extra_args="--l2 --etype=0xdead"
@@ -208,7 +230,7 @@ isochron_do()
 
 	cpufreq_max ${ISOCHRON_CPU}
 
-	isochron_recv_start "${h2}" "${receiver_uds}" "${receiver_extra_args}"
+	isochron_recv_start "${h2}" "${receiver_uds}" 5000 "${receiver_extra_args}"
 
 	isochron send \
 		--interface ${sender_if_name} \
@@ -229,7 +251,25 @@ isochron_do()
 		${extra_args} \
 		--quiet
 
-	isochron_recv_stop
+	isochron_recv_stop 5000
 
 	cpufreq_restore ${ISOCHRON_CPU}
+}
+
+isochron_report_num_received()
+{
+	local isochron_dat=$1; shift
+
+	# Count all received packets by looking at the non-zero RX timestamps
+	isochron report \
+		--input-file "${isochron_dat}" \
+		--printf-format "%u\n" --printf-args "R" | \
+		grep -w -v '0' | wc -l
+}
+
+taprio_wait_for_admin()
+{
+	local if_name="$1"; shift
+
+	"$tc_testing_scripts_dir/taprio_wait_for_admin.sh" "$(which tc)" "$if_name"
 }

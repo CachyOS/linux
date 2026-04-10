@@ -52,7 +52,7 @@ static irqreturn_t itg3200_trigger_handler(int irq, void *p)
 	 */
 	struct {
 		__be16 buf[ITG3200_SCAN_ELEMENTS];
-		s64 ts __aligned(8);
+		aligned_s64 ts;
 	} scan;
 
 	int ret = itg3200_read_all_channels(st->i2c, scan.buf);
@@ -118,11 +118,9 @@ int itg3200_probe_trigger(struct iio_dev *indio_dev)
 	if (!st->trig)
 		return -ENOMEM;
 
-	ret = request_irq(st->i2c->irq,
-			  &iio_trigger_generic_data_rdy_poll,
-			  IRQF_TRIGGER_RISING,
-			  "itg3200_data_rdy",
-			  st->trig);
+	ret = request_irq(st->i2c->irq, &iio_trigger_generic_data_rdy_poll,
+			  IRQF_TRIGGER_RISING | IRQF_NO_THREAD,
+			  "itg3200_data_rdy", st->trig);
 	if (ret)
 		goto error_free_trig;
 

@@ -10,13 +10,15 @@ maintainers:
   - Nicolas Saenz Julienne <nsaenzjulienne@suse.de>
 
 allOf:
-  - $ref: "nvmem.yaml#"
+  - $ref: nvmem.yaml#
 
 properties:
   compatible:
     items:
       - enum:
+          - mobileye,eyeq5-bootloader-config
           - raspberrypi,bootloader-config
+          - raspberrypi,bootloader-public-key
       - const: nvmem-rmem
 
   reg:

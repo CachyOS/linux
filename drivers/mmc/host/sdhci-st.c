@@ -348,7 +348,6 @@ static int sdhci_st_probe(struct platform_device *pdev)
 	struct clk *clk, *icnclk;
 	int ret = 0;
 	u16 host_version;
-	struct resource *res;
 	struct reset_control *rstc;
 
 	clk =  devm_clk_get(&pdev->dev, "mmc");
@@ -381,13 +380,13 @@ static int sdhci_st_probe(struct platform_device *pdev)
 	ret = mmc_of_parse(host->mmc);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed mmc_of_parse\n");
-		goto err_of;
+		goto err_pltfm_init;
 	}
 
 	ret = clk_prepare_enable(clk);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to prepare clock\n");
-		goto err_of;
+		goto err_pltfm_init;
 	}
 
 	ret = clk_prepare_enable(icnclk);
@@ -397,9 +396,7 @@ static int sdhci_st_probe(struct platform_device *pdev)
 	}
 
 	/* Configure the FlashSS Top registers for setting eMMC TX/RX delay */
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-					   "top-mmc-delay");
-	pdata->top_ioaddr = devm_ioremap_resource(&pdev->dev, res);
+	pdata->top_ioaddr = devm_platform_ioremap_resource_byname(pdev, "top-mmc-delay");
 	if (IS_ERR(pdata->top_ioaddr))
 		pdata->top_ioaddr = NULL;
 
@@ -426,32 +423,28 @@ err_out:
 	clk_disable_unprepare(icnclk);
 err_icnclk:
 	clk_disable_unprepare(clk);
-err_of:
-	sdhci_pltfm_free(pdev);
 err_pltfm_init:
 	reset_control_assert(rstc);
 
 	return ret;
 }
 
-static int sdhci_st_remove(struct platform_device *pdev)
+static void sdhci_st_remove(struct platform_device *pdev)
 {
 	struct sdhci_host *host = platform_get_drvdata(pdev);
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct st_mmc_platform_data *pdata = sdhci_pltfm_priv(pltfm_host);
 	struct reset_control *rstc = pdata->rstc;
-	int ret;
+	struct clk *clk = pltfm_host->clk;
 
-	ret = sdhci_pltfm_unregister(pdev);
+	sdhci_pltfm_remove(pdev);
 
 	clk_disable_unprepare(pdata->icnclk);
+	clk_disable_unprepare(clk);
 
 	reset_control_assert(rstc);
-
-	return ret;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int sdhci_st_suspend(struct device *dev)
 {
 	struct sdhci_host *host = dev_get_drvdata(dev);
@@ -498,9 +491,8 @@ static int sdhci_st_resume(struct device *dev)
 
 	return sdhci_resume_host(host);
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(sdhci_st_pmops, sdhci_st_suspend, sdhci_st_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(sdhci_st_pmops, sdhci_st_suspend, sdhci_st_resume);
 
 static const struct of_device_id st_sdhci_match[] = {
 	{ .compatible = "st,sdhci" },
@@ -515,7 +507,7 @@ static struct platform_driver sdhci_st_driver = {
 	.driver = {
 		   .name = "sdhci-st",
 		   .probe_type = PROBE_PREFER_ASYNCHRONOUS,
-		   .pm = &sdhci_st_pmops,
+		   .pm = pm_sleep_ptr(&sdhci_st_pmops),
 		   .of_match_table = st_sdhci_match,
 		  },
 };

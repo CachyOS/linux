@@ -54,6 +54,7 @@
 
 #include <linux/hil_mlc.h>
 #include <linux/errno.h>
+#include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
@@ -938,7 +939,7 @@ int hil_mlc_register(hil_mlc *mlc)
 	for (i = 0; i < HIL_MLC_DEVMEM; i++) {
 		struct serio *mlc_serio;
 		hil_mlc_copy_di_scratch(mlc, i);
-		mlc_serio = kzalloc(sizeof(*mlc_serio), GFP_KERNEL);
+		mlc_serio = kzalloc_obj(*mlc_serio);
 		mlc->serio[i] = mlc_serio;
 		if (!mlc->serio[i]) {
 			for (; i >= 0; i--)
@@ -1017,7 +1018,7 @@ static int __init hil_mlc_init(void)
 
 static void __exit hil_mlc_exit(void)
 {
-	del_timer_sync(&hil_mlcs_kicker);
+	timer_delete_sync(&hil_mlcs_kicker);
 	tasklet_kill(&hil_mlcs_tasklet);
 }
 

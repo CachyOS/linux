@@ -6,7 +6,6 @@
 
 #include <dt-bindings/pinctrl/mt65xx.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/module.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/platform_device.h>
@@ -319,6 +318,7 @@ static const struct mtk_pinctrl_devdata mt8167_pinctrl_data = {
 		.ports     = 6,
 		.ap_num    = 169,
 		.db_cnt    = 64,
+		.db_time = debounce_time_mt6795,
 	},
 };
 
@@ -334,7 +334,7 @@ static struct platform_driver mtk_pinctrl_driver = {
 	.driver = {
 		.name = "mediatek-mt8167-pinctrl",
 		.of_match_table = mt8167_pctrl_match,
-		.pm = &mtk_eint_pm_ops,
+		.pm = pm_sleep_ptr(&mtk_eint_pm_ops),
 	},
 };
 

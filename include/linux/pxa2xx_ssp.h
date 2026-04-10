@@ -217,9 +217,9 @@ enum pxa_ssp_type {
 	PXA27x_SSP,
 	PXA3xx_SSP,
 	PXA168_SSP,
-	MMP2_SSP,
 	PXA910_SSP,
 	CE4100_SSP,
+	MMP2_SSP,
 	MRFLD_SSP,
 	QUARK_X1000_SSP,
 	/* Keep LPSS types sorted with lpss_platforms[] */
@@ -229,6 +229,7 @@ enum pxa_ssp_type {
 	LPSS_SPT_SSP,
 	LPSS_BXT_SSP,
 	LPSS_CNL_SSP,
+	SSP_MAX
 };
 
 struct ssp_device {

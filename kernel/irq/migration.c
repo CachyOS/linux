@@ -26,13 +26,23 @@ bool irq_fixup_move_pending(struct irq_desc *desc, bool force_clear)
 	 * The outgoing CPU might be the last online target in a pending
 	 * interrupt move. If that's the case clear the pending move bit.
 	 */
-	if (cpumask_any_and(desc->pending_mask, cpu_online_mask) >= nr_cpu_ids) {
+	if (!cpumask_intersects(desc->pending_mask, cpu_online_mask)) {
 		irqd_clr_move_pending(data);
 		return false;
 	}
 	if (force_clear)
 		irqd_clr_move_pending(data);
 	return true;
+}
+
+void irq_force_complete_move(struct irq_desc *desc)
+{
+	for (struct irq_data *d = irq_desc_get_irq_data(desc); d; d = irqd_get_parent_data(d)) {
+		if (d->chip && d->chip->irq_force_complete_move) {
+			d->chip->irq_force_complete_move(d);
+			return;
+		}
+	}
 }
 
 void irq_move_masked_irq(struct irq_data *idata)
@@ -74,7 +84,7 @@ void irq_move_masked_irq(struct irq_data *idata)
 	 * For correct operation this depends on the caller
 	 * masking the irqs.
 	 */
-	if (cpumask_any_and(desc->pending_mask, cpu_online_mask) < nr_cpu_ids) {
+	if (cpumask_intersects(desc->pending_mask, cpu_online_mask)) {
 		int ret;
 
 		ret = irq_do_set_affinity(data, desc->pending_mask, false);
@@ -116,4 +126,14 @@ void __irq_move_irq(struct irq_data *idata)
 	irq_move_masked_irq(idata);
 	if (!masked)
 		idata->chip->irq_unmask(idata);
+}
+
+bool irq_can_move_in_process_context(struct irq_data *data)
+{
+	/*
+	 * Get the top level irq_data in the hierarchy, which is optimized
+	 * away when CONFIG_IRQ_DOMAIN_HIERARCHY is disabled.
+	 */
+	data = irq_desc_get_irq_data(irq_data_to_desc(data));
+	return irq_can_move_pcntxt(data);
 }

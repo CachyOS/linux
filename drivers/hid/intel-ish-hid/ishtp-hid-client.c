@@ -70,10 +70,10 @@ static void process_recv(struct ishtp_cl *hid_ishtp_cl, void *recv_buf,
 	unsigned char *payload;
 	struct device_info *dev_info;
 	int i, j;
-	size_t	payload_len, total_len, cur_pos, raw_len;
+	size_t	payload_len, total_len, cur_pos, raw_len, msg_len;
 	int report_type;
 	struct report_list *reports_list;
-	char *reports;
+	struct report *report;
 	size_t report_len;
 	struct ishtp_cl_data *client_data = ishtp_get_client_data(hid_ishtp_cl);
 	int curr_hid_dev = client_data->cur_hid_dev;
@@ -280,14 +280,13 @@ do_get_report:
 		case HOSTIF_PUBLISH_INPUT_REPORT_LIST:
 			report_type = HID_INPUT_REPORT;
 			reports_list = (struct report_list *)payload;
-			reports = (char *)reports_list->reports;
+			report = reports_list->reports;
 
 			for (j = 0; j < reports_list->num_of_reports; j++) {
-				recv_msg = (struct hostif_msg *)(reports +
-					sizeof(uint16_t));
-				report_len = *(uint16_t *)reports;
-				payload = reports + sizeof(uint16_t) +
-					sizeof(struct hostif_msg_hdr);
+				recv_msg = container_of(&report->msg,
+							struct hostif_msg, hdr);
+				report_len = report->size;
+				payload = recv_msg->payload;
 				payload_len = report_len -
 					sizeof(struct hostif_msg_hdr);
 
@@ -304,7 +303,7 @@ do_get_report:
 						0);
 					}
 
-				reports += sizeof(uint16_t) + report_len;
+				report += sizeof(*report) + payload_len;
 			}
 			break;
 		default:
@@ -316,19 +315,19 @@ do_get_report:
 
 		}
 
-		if (!cur_pos && cur_pos + payload_len +
-				sizeof(struct hostif_msg) < total_len)
+		msg_len = payload_len + sizeof(struct hostif_msg);
+		if (!cur_pos && cur_pos + msg_len < total_len)
 			++client_data->multi_packet_cnt;
 
-		cur_pos += payload_len + sizeof(struct hostif_msg);
-		payload += payload_len + sizeof(struct hostif_msg);
+		cur_pos += msg_len;
+		payload += msg_len;
 
 	} while (cur_pos < total_len);
 }
 
 /**
  * ish_cl_event_cb() - bus driver callback for incoming message/packet
- * @device:	Pointer to the the ishtp client device for which this message
+ * @device:	Pointer to the ishtp client device for which this message
  *		is targeted
  *
  * Remove the packet from the list and process the message by calling
@@ -496,6 +495,7 @@ static int ishtp_enum_enum_devices(struct ishtp_cl *hid_ishtp_cl)
 	int rv;
 
 	/* Send HOSTIF_DM_ENUM_DEVICES */
+	client_data->enum_devices_done = false;
 	memset(&msg, 0, sizeof(struct hostif_msg));
 	msg.hdr.command = HOSTIF_DM_ENUM_DEVICES;
 	rv = ishtp_cl_send(hid_ishtp_cl, (unsigned char *)&msg,
@@ -639,47 +639,26 @@ static int ishtp_get_report_descriptor(struct ishtp_cl *hid_ishtp_cl,
  *
  * Return: 0 on success, non zero on error
  */
-static int hid_ishtp_cl_init(struct ishtp_cl *hid_ishtp_cl, int reset)
+static int hid_ishtp_cl_init(struct ishtp_cl *hid_ishtp_cl, bool reset)
 {
-	struct ishtp_device *dev;
 	struct ishtp_cl_data *client_data = ishtp_get_client_data(hid_ishtp_cl);
-	struct ishtp_fw_client *fw_client;
 	int i;
 	int rv;
 
 	dev_dbg(cl_data_to_dev(client_data), "%s\n", __func__);
 	hid_ishtp_trace(client_data,  "%s reset flag: %d\n", __func__, reset);
 
-	rv = ishtp_cl_link(hid_ishtp_cl);
-	if (rv) {
-		dev_err(cl_data_to_dev(client_data),
-			"ishtp_cl_link failed\n");
-		return	-ENOMEM;
-	}
-
 	client_data->init_done = 0;
 
-	dev = ishtp_get_ishtp_device(hid_ishtp_cl);
-
-	/* Connect to FW client */
-	ishtp_set_tx_ring_size(hid_ishtp_cl, HID_CL_TX_RING_SIZE);
-	ishtp_set_rx_ring_size(hid_ishtp_cl, HID_CL_RX_RING_SIZE);
-
-	fw_client = ishtp_fw_cl_get_client(dev, &hid_ishtp_id_table[0].guid);
-	if (!fw_client) {
-		dev_err(cl_data_to_dev(client_data),
-			"ish client uuid not found\n");
-		return -ENOENT;
-	}
-	ishtp_cl_set_fw_client_id(hid_ishtp_cl,
-				  ishtp_get_fw_client_id(fw_client));
-	ishtp_set_connection_state(hid_ishtp_cl, ISHTP_CL_CONNECTING);
-
-	rv = ishtp_cl_connect(hid_ishtp_cl);
+	rv = ishtp_cl_establish_connection(hid_ishtp_cl,
+					   &hid_ishtp_id_table[0].guid,
+					   HID_CL_TX_RING_SIZE,
+					   HID_CL_RX_RING_SIZE,
+					   reset);
 	if (rv) {
 		dev_err(cl_data_to_dev(client_data),
 			"client connect fail\n");
-		goto err_cl_unlink;
+		goto err_cl_disconnect;
 	}
 
 	hid_ishtp_trace(client_data,  "%s client connected\n", __func__);
@@ -723,10 +702,7 @@ static int hid_ishtp_cl_init(struct ishtp_cl *hid_ishtp_cl, int reset)
 	return 0;
 
 err_cl_disconnect:
-	ishtp_set_connection_state(hid_ishtp_cl, ISHTP_CL_DISCONNECTING);
-	ishtp_cl_disconnect(hid_ishtp_cl);
-err_cl_unlink:
-	ishtp_cl_unlink(hid_ishtp_cl);
+	ishtp_cl_destroy_connection(hid_ishtp_cl, reset);
 	return rv;
 }
 
@@ -738,8 +714,7 @@ err_cl_unlink:
  */
 static void hid_ishtp_cl_deinit(struct ishtp_cl *hid_ishtp_cl)
 {
-	ishtp_cl_unlink(hid_ishtp_cl);
-	ishtp_cl_flush_queues(hid_ishtp_cl);
+	ishtp_cl_destroy_connection(hid_ishtp_cl, false);
 
 	/* disband and free all Tx and Rx client-level rings */
 	ishtp_cl_free(hid_ishtp_cl);
@@ -749,33 +724,23 @@ static void hid_ishtp_cl_reset_handler(struct work_struct *work)
 {
 	struct ishtp_cl_data *client_data;
 	struct ishtp_cl *hid_ishtp_cl;
-	struct ishtp_cl_device *cl_device;
 	int retry;
 	int rv;
 
 	client_data = container_of(work, struct ishtp_cl_data, work);
 
 	hid_ishtp_cl = client_data->hid_ishtp_cl;
-	cl_device = client_data->cl_device;
 
 	hid_ishtp_trace(client_data, "%s hid_ishtp_cl %p\n", __func__,
 			hid_ishtp_cl);
 	dev_dbg(ishtp_device(client_data->cl_device), "%s\n", __func__);
 
-	hid_ishtp_cl_deinit(hid_ishtp_cl);
-
-	hid_ishtp_cl = ishtp_cl_allocate(cl_device);
-	if (!hid_ishtp_cl)
-		return;
-
-	ishtp_set_drvdata(cl_device, hid_ishtp_cl);
-	ishtp_set_client_data(hid_ishtp_cl, client_data);
-	client_data->hid_ishtp_cl = hid_ishtp_cl;
+	ishtp_cl_destroy_connection(hid_ishtp_cl, true);
 
 	client_data->num_hid_devices = 0;
 
 	for (retry = 0; retry < 3; ++retry) {
-		rv = hid_ishtp_cl_init(hid_ishtp_cl, 1);
+		rv = hid_ishtp_cl_init(hid_ishtp_cl, true);
 		if (!rv)
 			break;
 		dev_err(cl_data_to_dev(client_data), "Retry reset init\n");
@@ -793,8 +758,18 @@ static void hid_ishtp_cl_resume_handler(struct work_struct *work)
 	struct ishtp_cl *hid_ishtp_cl = client_data->hid_ishtp_cl;
 
 	if (ishtp_wait_resume(ishtp_get_ishtp_device(hid_ishtp_cl))) {
-		client_data->suspended = false;
-		wake_up_interruptible(&client_data->ishtp_resume_wait);
+		/*
+		 * Clear the suspended flag only when the connection is established.
+		 * If the connection is not established, the suspended flag will be cleared after
+		 * the connection is made.
+		 */
+		if (ishtp_get_connection_state(hid_ishtp_cl) == ISHTP_CL_CONNECTED) {
+			client_data->suspended = false;
+			wake_up_interruptible(&client_data->ishtp_resume_wait);
+		}
+	} else {
+		hid_ishtp_trace(client_data, "hid client: wait for resume timed out");
+		dev_err(cl_data_to_dev(client_data), "wait for resume timed out");
 	}
 }
 
@@ -841,7 +816,7 @@ static int hid_ishtp_cl_probe(struct ishtp_cl_device *cl_device)
 
 	ishtp_hid_print_trace = ishtp_trace_callback(cl_device);
 
-	rv = hid_ishtp_cl_init(hid_ishtp_cl, 0);
+	rv = hid_ishtp_cl_init(hid_ishtp_cl, false);
 	if (rv) {
 		ishtp_cl_free(hid_ishtp_cl);
 		return rv;
@@ -868,8 +843,6 @@ static void hid_ishtp_cl_remove(struct ishtp_cl_device *cl_device)
 			hid_ishtp_cl);
 
 	dev_dbg(ishtp_device(cl_device), "%s\n", __func__);
-	ishtp_set_connection_state(hid_ishtp_cl, ISHTP_CL_DISCONNECTING);
-	ishtp_cl_disconnect(hid_ishtp_cl);
 	ishtp_put_device(cl_device);
 	ishtp_hid_remove(client_data);
 	hid_ishtp_cl_deinit(hid_ishtp_cl);
@@ -895,7 +868,7 @@ static int hid_ishtp_cl_reset(struct ishtp_cl_device *cl_device)
 	hid_ishtp_trace(client_data, "%s hid_ishtp_cl %p\n", __func__,
 			hid_ishtp_cl);
 
-	schedule_work(&client_data->work);
+	queue_work(ishtp_get_workqueue(cl_device), &client_data->work);
 
 	return 0;
 }
@@ -937,7 +910,7 @@ static int hid_ishtp_cl_resume(struct device *device)
 
 	hid_ishtp_trace(client_data, "%s hid_ishtp_cl %p\n", __func__,
 			hid_ishtp_cl);
-	schedule_work(&client_data->resume_work);
+	queue_work(ishtp_get_workqueue(cl_device), &client_data->resume_work);
 	return 0;
 }
 

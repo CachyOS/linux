@@ -54,15 +54,11 @@
 #include <asm/uv/uv.h>
 
 static unsigned long efi_systab_phys __initdata;
-static unsigned long prop_phys = EFI_INVALID_TABLE_ADDR;
-static unsigned long uga_phys = EFI_INVALID_TABLE_ADDR;
 static unsigned long efi_runtime, efi_nr_tables;
 
 unsigned long efi_fw_vendor, efi_config_table;
 
 static const efi_config_table_type_t arch_tables[] __initconst = {
-	{EFI_PROPERTIES_TABLE_GUID,	&prop_phys,		"PROP"		},
-	{UGA_IO_PROTOCOL_GUID,		&uga_phys,		"UGA"		},
 #ifdef CONFIG_X86_UV
 	{UV_SYSTEM_TABLE_GUID,		&uv_systab_phys,	"UVsystab"	},
 #endif
@@ -74,7 +70,6 @@ static const unsigned long * const efi_tables[] = {
 	&efi.acpi20,
 	&efi.smbios,
 	&efi.smbios3,
-	&uga_phys,
 #ifdef CONFIG_X86_UV
 	&uv_systab_phys,
 #endif
@@ -82,7 +77,6 @@ static const unsigned long * const efi_tables[] = {
 	&efi_runtime,
 	&efi_config_table,
 	&efi.esrt,
-	&prop_phys,
 	&efi_mem_attr_table,
 #ifdef CONFIG_EFI_RCI2_TABLE
 	&rci2_table_phys,
@@ -96,6 +90,9 @@ static const unsigned long * const efi_tables[] = {
 #ifdef CONFIG_EFI_COCO_SECRET
 	&efi.coco_secret,
 #endif
+#ifdef CONFIG_UNACCEPTED_MEMORY
+	&efi.unaccepted,
+#endif
 };
 
 u64 efi_setup;		/* efi setup_data physical address */
@@ -107,29 +104,6 @@ static int __init setup_add_efi_memmap(char *arg)
 	return 0;
 }
 early_param("add_efi_memmap", setup_add_efi_memmap);
-
-void __init efi_find_mirror(void)
-{
-	efi_memory_desc_t *md;
-	u64 mirror_size = 0, total_size = 0;
-
-	if (!efi_enabled(EFI_MEMMAP))
-		return;
-
-	for_each_efi_memory_desc(md) {
-		unsigned long long start = md->phys_addr;
-		unsigned long long size = md->num_pages << EFI_PAGE_SHIFT;
-
-		total_size += size;
-		if (md->attribute & EFI_MEMORY_MORE_RELIABLE) {
-			memblock_mark_mirror(start, size);
-			mirror_size += size;
-		}
-	}
-	if (mirror_size)
-		pr_info("Memory: %lldM/%lldM mirrored memory\n",
-			mirror_size>>20, total_size>>20);
-}
 
 /*
  * Tell the kernel about the EFI memory map.  This might include
@@ -192,7 +166,7 @@ static void __init do_add_efi_memmap(void)
 }
 
 /*
- * Given add_efi_memmap defaults to 0 and there there is no alternative
+ * Given add_efi_memmap defaults to 0 and there is no alternative
  * e820 mechanism for soft-reserved memory, import the full EFI memory
  * map if soft reservations are present and enabled. Otherwise, the
  * mechanism to disable the kernel's consideration of EFI_MEMORY_SP is
@@ -237,14 +211,14 @@ int __init efi_memblock_x86_reserve_range(void)
 	data.desc_size		= e->efi_memdesc_size;
 	data.desc_version	= e->efi_memdesc_version;
 
-	rv = efi_memmap_init_early(&data);
-	if (rv)
-		return rv;
+	if (!efi_enabled(EFI_PARAVIRT)) {
+		rv = efi_memmap_init_early(&data);
+		if (rv)
+			return rv;
+	}
 
 	if (add_efi_memmap || do_efi_soft_reserve())
 		do_add_efi_memmap();
-
-	efi_fake_memmap_early();
 
 	WARN(efi.memmap.desc_version != 1,
 	     "Unexpected EFI_MEMORY_DESCRIPTOR version %ld",
@@ -326,6 +300,49 @@ static void __init efi_clean_memmap(void)
 	}
 }
 
+/*
+ * Firmware can use EfiMemoryMappedIO to request that MMIO regions be
+ * mapped by the OS so they can be accessed by EFI runtime services, but
+ * should have no other significance to the OS (UEFI r2.10, sec 7.2).
+ * However, most bootloaders and EFI stubs convert EfiMemoryMappedIO
+ * regions to E820_TYPE_RESERVED entries, which prevent Linux from
+ * allocating space from them (see remove_e820_regions()).
+ *
+ * Some platforms use EfiMemoryMappedIO entries for PCI MMCONFIG space and
+ * PCI host bridge windows, which means Linux can't allocate BAR space for
+ * hot-added devices.
+ *
+ * Remove large EfiMemoryMappedIO regions from the E820 map to avoid this
+ * problem.
+ *
+ * Retain small EfiMemoryMappedIO regions because on some platforms, these
+ * describe non-window space that's included in host bridge _CRS.  If we
+ * assign that space to PCI devices, they don't work.
+ */
+static void __init efi_remove_e820_mmio(void)
+{
+	efi_memory_desc_t *md;
+	u64 size, start, end;
+	int i = 0;
+
+	for_each_efi_memory_desc(md) {
+		if (md->type == EFI_MEMORY_MAPPED_IO) {
+			size = md->num_pages << EFI_PAGE_SHIFT;
+			start = md->phys_addr;
+			end = start + size - 1;
+			if (size >= 256*1024) {
+				pr_info("Remove mem%02u: MMIO range=[0x%08llx-0x%08llx] (%lluMB) from e820 map\n",
+					i, start, end, size >> 20);
+				e820__range_remove(start, size, E820_TYPE_RESERVED);
+			} else {
+				pr_info("Not removing mem%02u: MMIO range=[0x%08llx-0x%08llx] (%lluKB) from e820 map\n",
+					i, start, end, size >> 10);
+			}
+		}
+		i++;
+	}
+}
+
 void __init efi_print_memmap(void)
 {
 	efi_memory_desc_t *md;
@@ -357,7 +374,7 @@ static int __init efi_systab_init(unsigned long phys)
 		return -ENOMEM;
 	}
 
-	ret = efi_systab_check_header(hdr, 1);
+	ret = efi_systab_check_header(hdr);
 	if (ret) {
 		early_memunmap(p, size);
 		return ret;
@@ -478,24 +495,10 @@ void __init efi_init(void)
 		return;
 	}
 
-	/* Parse the EFI Properties table if it exists */
-	if (prop_phys != EFI_INVALID_TABLE_ADDR) {
-		efi_properties_table_t *tbl;
-
-		tbl = early_memremap_ro(prop_phys, sizeof(*tbl));
-		if (tbl == NULL) {
-			pr_err("Could not map Properties table!\n");
-		} else {
-			if (tbl->memory_protection_attribute &
-			    EFI_PROPERTIES_RUNTIME_MEMORY_PROTECTION_NON_EXECUTABLE_PE_DATA)
-				set_bit(EFI_NX_PE_DATA, &efi.flags);
-
-			early_memunmap(tbl, sizeof(*tbl));
-		}
-	}
-
 	set_bit(EFI_RUNTIME_SERVICES, &efi.flags);
 	efi_clean_memmap();
+
+	efi_remove_e820_mmio();
 
 	if (efi_enabled(EFI_DBG))
 		efi_print_memmap();
@@ -758,6 +761,7 @@ static void __init kexec_enter_virtual_mode(void)
 
 	efi_sync_low_kernel_mappings();
 	efi_native_runtime_setup();
+	efi_runtime_update_mappings();
 #endif
 }
 
@@ -832,7 +836,7 @@ static void __init __efi_enter_virtual_mode(void)
 	}
 
 	efi_check_for_embedded_firmwares();
-	efi_free_boot_services();
+	efi_unmap_boot_services();
 
 	if (!efi_is_mixed())
 		efi_native_runtime_setup();
@@ -883,13 +887,6 @@ bool efi_is_table_address(unsigned long phys_addr)
 	return false;
 }
 
-char *efi_systab_show_arch(char *str)
-{
-	if (uga_phys != EFI_INVALID_TABLE_ADDR)
-		str += sprintf(str, "UGA=0x%lx\n", uga_phys);
-	return str;
-}
-
 #define EFI_FIELD(var) efi_ ## var
 
 #define EFI_ATTR_SHOW(name) \
@@ -921,4 +918,9 @@ umode_t efi_attr_is_visible(struct kobject *kobj, struct attribute *attr, int n)
 			return 0;
 	}
 	return attr->mode;
+}
+
+enum efi_secureboot_mode __x86_ima_efi_boot_mode(void)
+{
+	return boot_params.secure_boot;
 }

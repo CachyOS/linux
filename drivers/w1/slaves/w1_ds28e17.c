@@ -31,12 +31,12 @@ MODULE_ALIAS("w1-family-" __stringify(W1_FAMILY_DS28E17));
 
 /* Default I2C speed to be set when a DS28E17 is detected. */
 static int i2c_speed = 100;
-module_param_named(speed, i2c_speed, int, (S_IRUSR | S_IWUSR));
+module_param_named(speed, i2c_speed, int, 0600);
 MODULE_PARM_DESC(speed, "Default I2C speed to be set when a DS28E17 is detected");
 
 /* Default I2C stretch value to be set when a DS28E17 is detected. */
 static char i2c_stretch = 1;
-module_param_named(stretch, i2c_stretch, byte, (S_IRUSR | S_IWUSR));
+module_param_named(stretch, i2c_stretch, byte, 0600);
 MODULE_PARM_DESC(stretch, "Default I2C stretch value to be set when a DS28E17 is detected");
 
 /* DS28E17 device command codes. */
@@ -59,7 +59,7 @@ MODULE_PARM_DESC(stretch, "Default I2C stretch value to be set when a DS28E17 is
 /*
  * Maximum number of I2C bytes to transfer within one CRC16 protected onewire
  * command.
- * */
+ */
 #define W1_F19_WRITE_DATA_LIMIT 255
 
 /* Maximum number of I2C bytes to read with one onewire command. */
@@ -583,7 +583,7 @@ static ssize_t speed_show(struct device *dev, struct device_attribute *attr,
 		return result;
 
 	/* Return current speed value. */
-	return sprintf(buf, "%d\n", result);
+	return sysfs_emit(buf, "%d\n", result);
 }
 
 static ssize_t speed_store(struct device *dev, struct device_attribute *attr,
@@ -633,7 +633,7 @@ static ssize_t stretch_show(struct device *dev, struct device_attribute *attr,
 	struct w1_f19_data *data = sl->family_data;
 
 	/* Return current stretch value. */
-	return sprintf(buf, "%d\n", data->stretch);
+	return sysfs_emit(buf, "%d\n", data->stretch);
 }
 
 static ssize_t stretch_store(struct device *dev, struct device_attribute *attr,
@@ -719,8 +719,8 @@ static int w1_f19_add_slave(struct w1_slave *sl)
 	data->adapter.owner      = THIS_MODULE;
 	data->adapter.algo       = &w1_f19_i2c_algorithm;
 	data->adapter.algo_data  = sl;
-	strcpy(data->adapter.name, "w1-");
-	strcat(data->adapter.name, sl->name);
+	scnprintf(data->adapter.name, sizeof(data->adapter.name), "w1-%s",
+		  sl->name);
 	data->adapter.dev.parent = &sl->dev;
 	data->adapter.quirks     = &w1_f19_i2c_adapter_quirks;
 

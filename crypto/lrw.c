@@ -167,7 +167,7 @@ static int lrw_xor_tweak(struct skcipher_request *req, bool second_pass)
 
 	while (w.nbytes) {
 		unsigned int avail = w.nbytes;
-		be128 *wsrc;
+		const be128 *wsrc;
 		be128 *wdst;
 
 		wsrc = w.src.virt.addr;
@@ -205,9 +205,9 @@ static int lrw_xor_tweak_post(struct skcipher_request *req)
 	return lrw_xor_tweak(req, true);
 }
 
-static void lrw_crypt_done(struct crypto_async_request *areq, int err)
+static void lrw_crypt_done(void *data, int err)
 {
-	struct skcipher_request *req = areq->data;
+	struct skcipher_request *req = data;
 
 	if (!err) {
 		struct lrw_request_ctx *rctx = skcipher_request_ctx(req);
@@ -299,8 +299,8 @@ static void lrw_free_instance(struct skcipher_instance *inst)
 static int lrw_create(struct crypto_template *tmpl, struct rtattr **tb)
 {
 	struct crypto_skcipher_spawn *spawn;
+	struct skcipher_alg_common *alg;
 	struct skcipher_instance *inst;
-	struct skcipher_alg *alg;
 	const char *cipher_name;
 	char ecb_name[CRYPTO_MAX_ALG_NAME];
 	u32 mask;
@@ -322,7 +322,7 @@ static int lrw_create(struct crypto_template *tmpl, struct rtattr **tb)
 
 	err = crypto_grab_skcipher(spawn, skcipher_crypto_instance(inst),
 				   cipher_name, 0, mask);
-	if (err == -ENOENT) {
+	if (err == -ENOENT && memcmp(cipher_name, "ecb(", 4)) {
 		err = -ENAMETOOLONG;
 		if (snprintf(ecb_name, CRYPTO_MAX_ALG_NAME, "ecb(%s)",
 			     cipher_name) >= CRYPTO_MAX_ALG_NAME)
@@ -336,13 +336,13 @@ static int lrw_create(struct crypto_template *tmpl, struct rtattr **tb)
 	if (err)
 		goto err_free_inst;
 
-	alg = crypto_skcipher_spawn_alg(spawn);
+	alg = crypto_spawn_skcipher_alg_common(spawn);
 
 	err = -EINVAL;
 	if (alg->base.cra_blocksize != LRW_BLOCK_SIZE)
 		goto err_free_inst;
 
-	if (crypto_skcipher_alg_ivsize(alg))
+	if (alg->ivsize)
 		goto err_free_inst;
 
 	err = crypto_inst_setname(skcipher_crypto_instance(inst), "lrw",
@@ -356,11 +356,11 @@ static int lrw_create(struct crypto_template *tmpl, struct rtattr **tb)
 	/* Alas we screwed up the naming so we have to mangle the
 	 * cipher name.
 	 */
-	if (!strncmp(cipher_name, "ecb(", 4)) {
-		unsigned len;
+	if (!memcmp(cipher_name, "ecb(", 4)) {
+		int len;
 
-		len = strlcpy(ecb_name, cipher_name + 4, sizeof(ecb_name));
-		if (len < 2 || len >= sizeof(ecb_name))
+		len = strscpy(ecb_name, cipher_name + 4, sizeof(ecb_name));
+		if (len < 2)
 			goto err_free_inst;
 
 		if (ecb_name[len - 1] != ')')
@@ -382,10 +382,8 @@ static int lrw_create(struct crypto_template *tmpl, struct rtattr **tb)
 				       (__alignof__(be128) - 1);
 
 	inst->alg.ivsize = LRW_BLOCK_SIZE;
-	inst->alg.min_keysize = crypto_skcipher_alg_min_keysize(alg) +
-				LRW_BLOCK_SIZE;
-	inst->alg.max_keysize = crypto_skcipher_alg_max_keysize(alg) +
-				LRW_BLOCK_SIZE;
+	inst->alg.min_keysize = alg->min_keysize + LRW_BLOCK_SIZE;
+	inst->alg.max_keysize = alg->max_keysize + LRW_BLOCK_SIZE;
 
 	inst->alg.base.cra_ctxsize = sizeof(struct lrw_tfm_ctx);
 
@@ -422,7 +420,7 @@ static void __exit lrw_module_exit(void)
 	crypto_unregister_template(&lrw_tmpl);
 }
 
-subsys_initcall(lrw_module_init);
+module_init(lrw_module_init);
 module_exit(lrw_module_exit);
 
 MODULE_LICENSE("GPL");

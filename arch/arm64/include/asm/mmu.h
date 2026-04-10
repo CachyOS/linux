@@ -12,10 +12,17 @@
 #define USER_ASID_FLAG	(UL(1) << USER_ASID_BIT)
 #define TTBR_ASID_MASK	(UL(0xffff) << 48)
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #include <linux/refcount.h>
 #include <asm/cpufeature.h>
+
+enum pgtable_type {
+	TABLE_PTE,
+	TABLE_PMD,
+	TABLE_PUD,
+	TABLE_P4D,
+};
 
 typedef struct {
 	atomic64_t	id;
@@ -25,6 +32,7 @@ typedef struct {
 	refcount_t	pinned;
 	void		*vdso;
 	unsigned long	flags;
+	u8		pkey_allocation_map;
 } mm_context_t;
 
 /*
@@ -57,23 +65,52 @@ typedef struct {
 
 static inline bool arm64_kernel_unmapped_at_el0(void)
 {
-	return cpus_have_const_cap(ARM64_UNMAP_KERNEL_AT_EL0);
+	return alternative_has_cap_unlikely(ARM64_UNMAP_KERNEL_AT_EL0);
 }
 
 extern void arm64_memblock_init(void);
 extern void paging_init(void);
 extern void bootmem_init(void);
-extern void __iomem *early_io_map(phys_addr_t phys, unsigned long virt);
-extern void init_mem_pgprot(void);
+extern void create_mapping_noalloc(phys_addr_t phys, unsigned long virt,
+				   phys_addr_t size, pgprot_t prot);
 extern void create_pgd_mapping(struct mm_struct *mm, phys_addr_t phys,
 			       unsigned long virt, phys_addr_t size,
 			       pgprot_t prot, bool page_mappings_only);
 extern void *fixmap_remap_fdt(phys_addr_t dt_phys, int *size, pgprot_t prot);
 extern void mark_linear_text_alias_ro(void);
-extern bool kaslr_requires_kpti(void);
+extern int split_kernel_leaf_mapping(unsigned long start, unsigned long end);
+extern void linear_map_maybe_split_to_ptes(void);
 
-#define INIT_MM_CONTEXT(name)	\
-	.pgd = init_pg_dir,
+/*
+ * This check is triggered during the early boot before the cpufeature
+ * is initialised. Checking the status on the local CPU allows the boot
+ * CPU to detect the need for non-global mappings and thus avoiding a
+ * pagetable re-write after all the CPUs are booted. This check will be
+ * anyway run on individual CPUs, allowing us to get the consistent
+ * state once the SMP CPUs are up and thus make the switch to non-global
+ * mappings if required.
+ */
+static inline bool kaslr_requires_kpti(void)
+{
+	/*
+	 * E0PD does a similar job to KPTI so can be used instead
+	 * where available.
+	 */
+	if (IS_ENABLED(CONFIG_ARM64_E0PD)) {
+		u64 mmfr2 = read_sysreg_s(SYS_ID_AA64MMFR2_EL1);
+		if (cpuid_feature_extract_unsigned_field(mmfr2,
+						ID_AA64MMFR2_EL1_E0PD_SHIFT))
+			return false;
+	}
 
-#endif	/* !__ASSEMBLY__ */
+	return true;
+}
+
+#ifdef CONFIG_UNMAP_KERNEL_AT_EL0
+void kpti_install_ng_mappings(void);
+#else
+static inline void kpti_install_ng_mappings(void) {}
+#endif
+
+#endif	/* !__ASSEMBLER__ */
 #endif

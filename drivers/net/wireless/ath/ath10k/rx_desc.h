@@ -2,6 +2,7 @@
 /*
  * Copyright (c) 2005-2011 Atheros Communications Inc.
  * Copyright (c) 2011-2017 Qualcomm Atheros, Inc.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _RX_DESC_H_
@@ -448,7 +449,7 @@ struct rx_mpdu_end {
  *     - 4 bytes for WEP
  *     - 8 bytes for TKIP, AES
  *  [padding to 4 bytes]
- *  c) A-MSDU subframe header (14 bytes) if appliable
+ *  c) A-MSDU subframe header (14 bytes) if applicable
  *  d) LLC/SNAP (RFC1042, 8 bytes)
  *
  * In case of A-MSDU only first frame in sequence contains (a) and (b).

@@ -37,6 +37,7 @@
 #include <linux/ssb/ssb.h>
 #include <linux/ssb/ssb_embedded.h>
 #include <linux/bcma/bcma_soc.h>
+#include <asm/bmips.h>
 #include <asm/bootinfo.h>
 #include <asm/idle.h>
 #include <asm/prom.h>
@@ -44,6 +45,13 @@
 #include <asm/time.h>
 #include <bcm47xx.h>
 #include <bcm47xx_board.h>
+
+/*
+ * CBR addr doesn't change and we can cache it.
+ * For broken SoC/Bootloader CBR addr might also be provided via DT
+ * with "brcm,bmips-cbr-reg" in the "cpus" node.
+ */
+void __iomem *bmips_cbr_addr __read_mostly;
 
 union bcm47xx_bus bcm47xx_bus;
 EXPORT_SYMBOL(bcm47xx_bus);
@@ -179,7 +187,7 @@ static struct device * __init bcm47xx_setup_device(void)
 	struct device *dev;
 	int err;
 
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	dev = kzalloc_obj(*dev);
 	if (!dev)
 		return NULL;
 
@@ -248,12 +256,6 @@ static int __init bcm47xx_cpu_fixes(void)
 }
 arch_initcall(bcm47xx_cpu_fixes);
 
-static struct fixed_phy_status bcm47xx_fixed_phy_status __initdata = {
-	.link	= 1,
-	.speed	= SPEED_100,
-	.duplex	= DUPLEX_FULL,
-};
-
 static int __init bcm47xx_register_bus_complete(void)
 {
 	switch (bcm47xx_bus_type) {
@@ -274,7 +276,6 @@ static int __init bcm47xx_register_bus_complete(void)
 	bcm47xx_leds_register();
 	bcm47xx_workarounds();
 
-	fixed_phy_add(PHY_POLL, 0, &bcm47xx_fixed_phy_status);
 	return 0;
 }
 device_initcall(bcm47xx_register_bus_complete);

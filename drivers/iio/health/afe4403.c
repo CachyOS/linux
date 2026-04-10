@@ -23,7 +23,7 @@
 #include <linux/iio/triggered_buffer.h>
 #include <linux/iio/trigger_consumer.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "afe440x.h"
 
@@ -58,7 +58,6 @@ static const struct reg_field afe4403_reg_fields[] = {
 
 /**
  * struct afe4403_data - AFE4403 device instance data
- * @dev: Device structure
  * @spi: SPI device handle
  * @regmap: Register map of the device
  * @fields: Register fields of the device
@@ -68,7 +67,6 @@ static const struct reg_field afe4403_reg_fields[] = {
  * @buffer: Used to construct data layout to push into IIO buffer.
  */
 struct afe4403_data {
-	struct device *dev;
 	struct spi_device *spi;
 	struct regmap *regmap;
 	struct regmap_field *fields[F_MAX_FIELDS];
@@ -245,14 +243,14 @@ static int afe4403_read_raw(struct iio_dev *indio_dev,
 			    int *val, int *val2, long mask)
 {
 	struct afe4403_data *afe = iio_priv(indio_dev);
-	unsigned int reg = afe4403_channel_values[chan->address];
-	unsigned int field = afe4403_channel_leds[chan->address];
+	unsigned int reg, field;
 	int ret;
 
 	switch (chan->type) {
 	case IIO_INTENSITY:
 		switch (mask) {
 		case IIO_CHAN_INFO_RAW:
+			reg = afe4403_channel_values[chan->address];
 			ret = afe4403_read(afe, reg, val);
 			if (ret)
 				return ret;
@@ -262,6 +260,7 @@ static int afe4403_read_raw(struct iio_dev *indio_dev,
 	case IIO_CURRENT:
 		switch (mask) {
 		case IIO_CHAN_INFO_RAW:
+			field = afe4403_channel_leds[chan->address];
 			ret = regmap_field_read(afe->fields[field], val);
 			if (ret)
 				return ret;
@@ -320,8 +319,7 @@ static irqreturn_t afe4403_trigger_handler(int irq, void *private)
 	if (ret)
 		goto err;
 
-	for_each_set_bit(bit, indio_dev->active_scan_mask,
-			 indio_dev->masklength) {
+	iio_for_each_active_channel(indio_dev, bit) {
 		ret = spi_write_then_read(afe->spi,
 					  &afe4403_channel_values[bit], 1,
 					  rx, sizeof(rx));
@@ -343,6 +341,13 @@ err:
 	iio_trigger_notify_done(indio_dev->trig);
 
 	return IRQ_HANDLED;
+}
+
+static void afe4403_regulator_disable(void *data)
+{
+	struct regulator *regulator = data;
+
+	regulator_disable(regulator);
 }
 
 #define AFE4403_TIMING_PAIRS			\
@@ -398,25 +403,24 @@ static const struct regmap_config afe4403_regmap_config = {
 	.val_bits = 24,
 
 	.max_register = AFE440X_PDNCYCLEENDC,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.volatile_table = &afe4403_volatile_table,
 };
 
 static const struct of_device_id afe4403_of_match[] = {
 	{ .compatible = "ti,afe4403", },
-	{ /* sentinel */ }
+	{ }
 };
 MODULE_DEVICE_TABLE(of, afe4403_of_match);
 
-static int __maybe_unused afe4403_suspend(struct device *dev)
+static int afe4403_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(to_spi_device(dev));
 	struct afe4403_data *afe = iio_priv(indio_dev);
 	int ret;
 
-	ret = regmap_update_bits(afe->regmap, AFE440X_CONTROL2,
-				 AFE440X_CONTROL2_PDN_AFE,
-				 AFE440X_CONTROL2_PDN_AFE);
+	ret = regmap_set_bits(afe->regmap, AFE440X_CONTROL2,
+			      AFE440X_CONTROL2_PDN_AFE);
 	if (ret)
 		return ret;
 
@@ -429,7 +433,7 @@ static int __maybe_unused afe4403_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused afe4403_resume(struct device *dev)
+static int afe4403_resume(struct device *dev)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(to_spi_device(dev));
 	struct afe4403_data *afe = iio_priv(indio_dev);
@@ -441,71 +445,77 @@ static int __maybe_unused afe4403_resume(struct device *dev)
 		return ret;
 	}
 
-	ret = regmap_update_bits(afe->regmap, AFE440X_CONTROL2,
-				 AFE440X_CONTROL2_PDN_AFE, 0);
+	ret = regmap_clear_bits(afe->regmap, AFE440X_CONTROL2,
+				AFE440X_CONTROL2_PDN_AFE);
 	if (ret)
 		return ret;
 
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(afe4403_pm_ops, afe4403_suspend, afe4403_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(afe4403_pm_ops, afe4403_suspend,
+				afe4403_resume);
 
 static int afe4403_probe(struct spi_device *spi)
 {
+	struct device *dev = &spi->dev;
 	struct iio_dev *indio_dev;
 	struct afe4403_data *afe;
 	int i, ret;
 
-	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*afe));
+	indio_dev = devm_iio_device_alloc(dev, sizeof(*afe));
 	if (!indio_dev)
 		return -ENOMEM;
 
 	afe = iio_priv(indio_dev);
 	spi_set_drvdata(spi, indio_dev);
 
-	afe->dev = &spi->dev;
 	afe->spi = spi;
 	afe->irq = spi->irq;
 
 	afe->regmap = devm_regmap_init_spi(spi, &afe4403_regmap_config);
 	if (IS_ERR(afe->regmap)) {
-		dev_err(afe->dev, "Unable to allocate register map\n");
+		dev_err(dev, "Unable to allocate register map\n");
 		return PTR_ERR(afe->regmap);
 	}
 
 	for (i = 0; i < F_MAX_FIELDS; i++) {
-		afe->fields[i] = devm_regmap_field_alloc(afe->dev, afe->regmap,
+		afe->fields[i] = devm_regmap_field_alloc(dev, afe->regmap,
 							 afe4403_reg_fields[i]);
 		if (IS_ERR(afe->fields[i])) {
-			dev_err(afe->dev, "Unable to allocate regmap fields\n");
+			dev_err(dev, "Unable to allocate regmap fields\n");
 			return PTR_ERR(afe->fields[i]);
 		}
 	}
 
-	afe->regulator = devm_regulator_get(afe->dev, "tx_sup");
+	afe->regulator = devm_regulator_get(dev, "tx_sup");
 	if (IS_ERR(afe->regulator))
-		return dev_err_probe(afe->dev, PTR_ERR(afe->regulator),
+		return dev_err_probe(dev, PTR_ERR(afe->regulator),
 				     "Unable to get regulator\n");
 
 	ret = regulator_enable(afe->regulator);
 	if (ret) {
-		dev_err(afe->dev, "Unable to enable regulator\n");
+		dev_err(dev, "Unable to enable regulator\n");
+		return ret;
+	}
+	ret = devm_add_action_or_reset(dev, afe4403_regulator_disable, afe->regulator);
+	if (ret) {
+		dev_err(dev, "Unable to add regulator disable action\n");
 		return ret;
 	}
 
 	ret = regmap_write(afe->regmap, AFE440X_CONTROL0,
 			   AFE440X_CONTROL0_SW_RESET);
 	if (ret) {
-		dev_err(afe->dev, "Unable to reset device\n");
-		goto err_disable_reg;
+		dev_err(dev, "Unable to reset device\n");
+		return ret;
 	}
 
 	ret = regmap_multi_reg_write(afe->regmap, afe4403_reg_sequences,
 				     ARRAY_SIZE(afe4403_reg_sequences));
 	if (ret) {
-		dev_err(afe->dev, "Unable to set register defaults\n");
-		goto err_disable_reg;
+		dev_err(dev, "Unable to set register defaults\n");
+		return ret;
 	}
 
 	indio_dev->modes = INDIO_DIRECT_MODE;
@@ -515,82 +525,51 @@ static int afe4403_probe(struct spi_device *spi)
 	indio_dev->info = &afe4403_iio_info;
 
 	if (afe->irq > 0) {
-		afe->trig = devm_iio_trigger_alloc(afe->dev,
+		afe->trig = devm_iio_trigger_alloc(dev,
 						   "%s-dev%d",
 						   indio_dev->name,
 						   iio_device_id(indio_dev));
-		if (!afe->trig) {
-			dev_err(afe->dev, "Unable to allocate IIO trigger\n");
-			ret = -ENOMEM;
-			goto err_disable_reg;
-		}
+		if (!afe->trig)
+			return -ENOMEM;
 
 		iio_trigger_set_drvdata(afe->trig, indio_dev);
 
-		ret = iio_trigger_register(afe->trig);
+		ret = devm_iio_trigger_register(dev, afe->trig);
 		if (ret) {
-			dev_err(afe->dev, "Unable to register IIO trigger\n");
-			goto err_disable_reg;
+			dev_err(dev, "Unable to register IIO trigger\n");
+			return ret;
 		}
 
-		ret = devm_request_threaded_irq(afe->dev, afe->irq,
-						iio_trigger_generic_data_rdy_poll,
-						NULL, IRQF_ONESHOT,
-						AFE4403_DRIVER_NAME,
-						afe->trig);
+		ret = devm_request_irq(dev, afe->irq,
+				       iio_trigger_generic_data_rdy_poll,
+				       IRQF_NO_THREAD, AFE4403_DRIVER_NAME,
+				       afe->trig);
 		if (ret) {
-			dev_err(afe->dev, "Unable to request IRQ\n");
-			goto err_trig;
+			dev_err(dev, "Unable to request IRQ\n");
+			return ret;
 		}
 	}
 
-	ret = iio_triggered_buffer_setup(indio_dev, &iio_pollfunc_store_time,
-					 afe4403_trigger_handler, NULL);
+	ret = devm_iio_triggered_buffer_setup(dev, indio_dev,
+					      &iio_pollfunc_store_time,
+					      afe4403_trigger_handler, NULL);
 	if (ret) {
-		dev_err(afe->dev, "Unable to setup buffer\n");
-		goto err_trig;
+		dev_err(dev, "Unable to setup buffer\n");
+		return ret;
 	}
 
-	ret = iio_device_register(indio_dev);
+	ret = devm_iio_device_register(dev, indio_dev);
 	if (ret) {
-		dev_err(afe->dev, "Unable to register IIO device\n");
-		goto err_buff;
+		dev_err(dev, "Unable to register IIO device\n");
+		return ret;
 	}
 
 	return 0;
-
-err_buff:
-	iio_triggered_buffer_cleanup(indio_dev);
-err_trig:
-	if (afe->irq > 0)
-		iio_trigger_unregister(afe->trig);
-err_disable_reg:
-	regulator_disable(afe->regulator);
-
-	return ret;
-}
-
-static void afe4403_remove(struct spi_device *spi)
-{
-	struct iio_dev *indio_dev = spi_get_drvdata(spi);
-	struct afe4403_data *afe = iio_priv(indio_dev);
-	int ret;
-
-	iio_device_unregister(indio_dev);
-
-	iio_triggered_buffer_cleanup(indio_dev);
-
-	if (afe->irq > 0)
-		iio_trigger_unregister(afe->trig);
-
-	ret = regulator_disable(afe->regulator);
-	if (ret)
-		dev_warn(afe->dev, "Unable to disable regulator\n");
 }
 
 static const struct spi_device_id afe4403_ids[] = {
 	{ "afe4403", 0 },
-	{ /* sentinel */ }
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, afe4403_ids);
 
@@ -598,10 +577,9 @@ static struct spi_driver afe4403_spi_driver = {
 	.driver = {
 		.name = AFE4403_DRIVER_NAME,
 		.of_match_table = afe4403_of_match,
-		.pm = &afe4403_pm_ops,
+		.pm = pm_sleep_ptr(&afe4403_pm_ops),
 	},
 	.probe = afe4403_probe,
-	.remove = afe4403_remove,
 	.id_table = afe4403_ids,
 };
 module_spi_driver(afe4403_spi_driver);

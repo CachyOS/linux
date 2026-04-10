@@ -257,7 +257,7 @@ static const struct regmap_config max2175_regmap_config = {
 	.reg_defaults = max2175_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(max2175_reg_defaults),
 	.volatile_table = &max2175_volatile_regs,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 };
 
 struct max2175 {
@@ -1403,20 +1403,18 @@ err_reg:
 	return ret;
 }
 
-static int max2175_remove(struct i2c_client *client)
+static void max2175_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct max2175 *ctx = max2175_from_sd(sd);
 
 	v4l2_ctrl_handler_free(&ctx->ctrl_hdl);
 	v4l2_async_unregister_subdev(sd);
-
-	return 0;
 }
 
 static const struct i2c_device_id max2175_id[] = {
-	{ DRIVER_NAME, 0},
-	{},
+	{ DRIVER_NAME },
+	{}
 };
 MODULE_DEVICE_TABLE(i2c, max2175_id);
 
@@ -1431,7 +1429,7 @@ static struct i2c_driver max2175_driver = {
 		.name	= DRIVER_NAME,
 		.of_match_table = max2175_of_ids,
 	},
-	.probe_new	= max2175_probe,
+	.probe		= max2175_probe,
 	.remove		= max2175_remove,
 	.id_table	= max2175_id,
 };

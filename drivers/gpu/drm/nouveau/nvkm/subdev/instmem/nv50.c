@@ -27,6 +27,7 @@
 #include <core/memory.h>
 #include <subdev/bar.h>
 #include <subdev/fb.h>
+#include <subdev/gsp.h>
 #include <subdev/mmu.h>
 
 struct nv50_instmem {
@@ -64,7 +65,7 @@ nv50_instobj_wr32_slow(struct nvkm_memory *memory, u64 offset, u32 data)
 
 	spin_lock_irqsave(&imem->base.lock, flags);
 	if (unlikely(imem->addr != base)) {
-		nvkm_wr32(device, 0x001700, base >> 16);
+		imem->base.func->set_bar0_window_addr(device, base);
 		imem->addr = base;
 	}
 	nvkm_wr32(device, 0x700000 + addr, data);
@@ -84,7 +85,7 @@ nv50_instobj_rd32_slow(struct nvkm_memory *memory, u64 offset)
 
 	spin_lock_irqsave(&imem->base.lock, flags);
 	if (unlikely(imem->addr != base)) {
-		nvkm_wr32(device, 0x001700, base >> 16);
+		imem->base.func->set_bar0_window_addr(device, base);
 		imem->addr = base;
 	}
 	data = nvkm_rd32(device, 0x700000 + addr);
@@ -171,7 +172,7 @@ nv50_instobj_kmap(struct nv50_instobj *iobj, struct nvkm_vmm *vmm)
 
 	/* Make the mapping visible to the host. */
 	iobj->bar = bar;
-	iobj->map = ioremap_wc(device->func->resource_addr(device, 3) +
+	iobj->map = ioremap_wc(device->func->resource_addr(device, NVKM_BAR2_INST) +
 			       (u32)iobj->bar->addr, size);
 	if (!iobj->map) {
 		nvkm_warn(subdev, "PRAMIN ioremap failed\n");
@@ -221,8 +222,11 @@ nv50_instobj_acquire(struct nvkm_memory *memory)
 	void __iomem *map = NULL;
 
 	/* Already mapped? */
-	if (refcount_inc_not_zero(&iobj->maps))
+	if (refcount_inc_not_zero(&iobj->maps)) {
+		/* read barrier match the wmb on refcount set */
+		smp_rmb();
 		return iobj->map;
+	}
 
 	/* Take the lock, and re-check that another thread hasn't
 	 * already mapped the object in the meantime.
@@ -249,6 +253,8 @@ nv50_instobj_acquire(struct nvkm_memory *memory)
 			iobj->base.memory.ptrs = &nv50_instobj_fast;
 		else
 			iobj->base.memory.ptrs = &nv50_instobj_slow;
+		/* barrier to ensure the ptrs are written before refcount is set */
+		smp_wmb();
 		refcount_set(&iobj->maps, 1);
 	}
 
@@ -347,16 +353,14 @@ nv50_instobj_func = {
 	.map = nv50_instobj_map,
 };
 
-static int
-nv50_instobj_new(struct nvkm_instmem *base, u32 size, u32 align, bool zero,
-		 struct nvkm_memory **pmemory)
+int
+nv50_instobj_wrap(struct nvkm_instmem *base,
+		  struct nvkm_memory *memory, struct nvkm_memory **pmemory)
 {
 	struct nv50_instmem *imem = nv50_instmem(base);
 	struct nv50_instobj *iobj;
-	struct nvkm_device *device = imem->base.subdev.device;
-	u8 page = max(order_base_2(align), 12);
 
-	if (!(iobj = kzalloc(sizeof(*iobj), GFP_KERNEL)))
+	if (!(iobj = kzalloc_obj(*iobj)))
 		return -ENOMEM;
 	*pmemory = &iobj->base.memory;
 
@@ -365,7 +369,25 @@ nv50_instobj_new(struct nvkm_instmem *base, u32 size, u32 align, bool zero,
 	refcount_set(&iobj->maps, 0);
 	INIT_LIST_HEAD(&iobj->lru);
 
-	return nvkm_ram_get(device, 0, 1, page, size, true, true, &iobj->ram);
+	iobj->ram = nvkm_memory_ref(memory);
+	return 0;
+}
+
+int
+nv50_instobj_new(struct nvkm_instmem *imem, u32 size, u32 align, bool zero,
+		 struct nvkm_memory **pmemory)
+{
+	u8 page = max(order_base_2(align), 12);
+	struct nvkm_memory *ram;
+	int ret;
+
+	ret = nvkm_ram_get(imem->subdev.device, 0, 1, page, size, true, true, &ram);
+	if (ret)
+		return ret;
+
+	ret = nv50_instobj_wrap(imem, ram, pmemory);
+	nvkm_memory_unref(&ram);
+	return ret;
 }
 
 /******************************************************************************
@@ -373,28 +395,56 @@ nv50_instobj_new(struct nvkm_instmem *base, u32 size, u32 align, bool zero,
  *****************************************************************************/
 
 static void
+nv50_instmem_set_bar0_window_addr(struct nvkm_device *device, u64 addr)
+{
+	nvkm_wr32(device, 0x001700, addr >> 16);
+}
+
+void
 nv50_instmem_fini(struct nvkm_instmem *base)
 {
 	nv50_instmem(base)->addr = ~0ULL;
 }
 
+static void *
+nv50_instmem_dtor(struct nvkm_instmem *base)
+{
+	return nv50_instmem(base);
+}
+
 static const struct nvkm_instmem_func
 nv50_instmem = {
+	.dtor = nv50_instmem_dtor,
 	.fini = nv50_instmem_fini,
+	.suspend = nv04_instmem_suspend,
+	.resume = nv04_instmem_resume,
 	.memory_new = nv50_instobj_new,
+	.memory_wrap = nv50_instobj_wrap,
 	.zero = false,
+	.set_bar0_window_addr = nv50_instmem_set_bar0_window_addr,
 };
+
+int
+nv50_instmem_new_(const struct nvkm_instmem_func *func,
+		  struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
+		  struct nvkm_instmem **pimem)
+{
+	struct nv50_instmem *imem;
+
+	if (!(imem = kzalloc_obj(*imem)))
+		return -ENOMEM;
+	nvkm_instmem_ctor(func, device, type, inst, &imem->base);
+	INIT_LIST_HEAD(&imem->lru);
+	*pimem = &imem->base;
+	return 0;
+}
 
 int
 nv50_instmem_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
 		 struct nvkm_instmem **pimem)
 {
-	struct nv50_instmem *imem;
+	if (nvkm_gsp_rm(device->gsp))
+		return r535_instmem_new(&nv50_instmem, device, type, inst, pimem);
 
-	if (!(imem = kzalloc(sizeof(*imem), GFP_KERNEL)))
-		return -ENOMEM;
-	nvkm_instmem_ctor(&nv50_instmem, device, type, inst, &imem->base);
-	INIT_LIST_HEAD(&imem->lru);
-	*pimem = &imem->base;
-	return 0;
+	return nv50_instmem_new_(&nv50_instmem, device, type, inst, pimem);
 }

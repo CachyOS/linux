@@ -36,6 +36,8 @@ EXPORT_SYMBOL(virtio_dma_buf_export);
 
 /**
  * virtio_dma_buf_attach - mandatory attach callback for virtio dma-bufs
+ * @dma_buf: [in] buffer to attach
+ * @attach: [in] attachment structure
  */
 int virtio_dma_buf_attach(struct dma_buf *dma_buf,
 			  struct dma_buf_attachment *attach)
@@ -85,5 +87,6 @@ int virtio_dma_buf_get_uuid(struct dma_buf *dma_buf,
 }
 EXPORT_SYMBOL(virtio_dma_buf_get_uuid);
 
+MODULE_DESCRIPTION("dma-bufs for virtio exported objects");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(DMA_BUF);
+MODULE_IMPORT_NS("DMA_BUF");

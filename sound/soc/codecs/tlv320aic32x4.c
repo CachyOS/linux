@@ -9,27 +9,26 @@
  * Based on sound/soc/codecs/wm8974 and TI driver for kernel 2.6.27.
  */
 
+#include <linux/cdev.h>
+#include <linux/clk.h>
+#include <linux/delay.h>
+#include <linux/gpio/consumer.h>
+#include <linux/init.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-#include <linux/init.h>
-#include <linux/delay.h>
-#include <linux/pm.h>
-#include <linux/gpio.h>
-#include <linux/of_gpio.h>
-#include <linux/cdev.h>
-#include <linux/slab.h>
-#include <linux/clk.h>
 #include <linux/of_clk.h>
+#include <linux/pm.h>
 #include <linux/regulator/consumer.h>
+#include <linux/slab.h>
 
-#include <sound/tlv320aic32x4.h>
 #include <sound/core.h>
+#include <sound/initval.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
-#include <sound/initval.h>
 #include <sound/tlv.h>
+#include <sound/tlv320aic32x4.h>
 
 #include "tlv320aic32x4.h"
 
@@ -38,7 +37,7 @@ struct aic32x4_priv {
 	u32 power_cfg;
 	u32 micpga_routing;
 	bool swapdacs;
-	int rstn_gpio;
+	struct gpio_desc *rstn_gpio;
 	const char *mclk_name;
 
 	struct regulator *supply_ldo;
@@ -49,6 +48,8 @@ struct aic32x4_priv {
 	struct aic32x4_setup_data *setup;
 	struct device *dev;
 	enum aic32x4_type type;
+
+	unsigned int fmt;
 };
 
 static int aic32x4_reset_adc(struct snd_soc_dapm_widget *w,
@@ -611,19 +612,19 @@ static int aic32x4_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 static int aic32x4_set_dai_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
 {
 	struct snd_soc_component *component = codec_dai->component;
+	struct aic32x4_priv *aic32x4 = snd_soc_component_get_drvdata(component);
 	u8 iface_reg_1 = 0;
 	u8 iface_reg_2 = 0;
 	u8 iface_reg_3 = 0;
 
-	/* set master/slave audio interface */
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_CBP_CFP:
 		iface_reg_1 |= AIC32X4_BCLKMASTER | AIC32X4_WCLKMASTER;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		break;
 	default:
-		printk(KERN_ERR "aic32x4: invalid DAI master/slave interface\n");
+		printk(KERN_ERR "aic32x4: invalid clock provider\n");
 		return -EINVAL;
 	}
 
@@ -653,6 +654,8 @@ static int aic32x4_set_dai_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
 		printk(KERN_ERR "aic32x4: invalid DAI interface format\n");
 		return -EINVAL;
 	}
+
+	aic32x4->fmt = fmt;
 
 	snd_soc_component_update_bits(component, AIC32X4_IFACE1,
 				AIC32X4_IFACE1_DATATYPE_MASK |
@@ -757,6 +760,10 @@ static int aic32x4_setup_clocks(struct snd_soc_component *component,
 		dev_err(component->dev, "Sampling rate not supported\n");
 		return -EINVAL;
 	}
+
+	/* PCM over I2S is always 2-channel */
+	if ((aic32x4->fmt & SND_SOC_DAIFMT_FORMAT_MASK) == SND_SOC_DAIFMT_I2S)
+		channels = 2;
 
 	madc = DIV_ROUND_UP((32 * adc_resource_class), aosr);
 	max_dosr = (AIC32X4_MAX_DOSR_FREQ / sample_rate / dosr_increment) *
@@ -876,6 +883,7 @@ static int aic32x4_mute(struct snd_soc_dai *dai, int mute, int direction)
 static int aic32x4_set_bias_level(struct snd_soc_component *component,
 				  enum snd_soc_bias_level level)
 {
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	int ret;
 
 	static struct clk_bulk_data clocks[] = {
@@ -900,7 +908,7 @@ static int aic32x4_set_bias_level(struct snd_soc_component *component,
 		break;
 	case SND_SOC_BIAS_STANDBY:
 		/* Initial cold start */
-		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF)
+		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF)
 			break;
 
 		clk_bulk_disable_unprepare(ARRAY_SIZE(clocks), clocks);
@@ -1065,6 +1073,13 @@ static int aic32x4_component_probe(struct snd_soc_component *component)
 	return 0;
 }
 
+static int aic32x4_of_xlate_dai_id(struct snd_soc_component *component,
+				   struct device_node *endpoint)
+{
+	/* return dai id 0, whatever the endpoint index */
+	return 0;
+}
+
 static const struct snd_soc_component_driver soc_component_dev_aic32x4 = {
 	.probe			= aic32x4_component_probe,
 	.set_bias_level		= aic32x4_set_bias_level,
@@ -1074,11 +1089,11 @@ static const struct snd_soc_component_driver soc_component_dev_aic32x4 = {
 	.num_dapm_widgets	= ARRAY_SIZE(aic32x4_dapm_widgets),
 	.dapm_routes		= aic32x4_dapm_routes,
 	.num_dapm_routes	= ARRAY_SIZE(aic32x4_dapm_routes),
+	.of_xlate_dai_id	= aic32x4_of_xlate_dai_id,
 	.suspend_bias_off	= 1,
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct snd_kcontrol_new aic32x4_tas2505_snd_controls[] = {
@@ -1196,11 +1211,11 @@ static const struct snd_soc_component_driver soc_component_dev_aic32x4_tas2505 =
 	.num_dapm_widgets	= ARRAY_SIZE(aic32x4_tas2505_dapm_widgets),
 	.dapm_routes		= aic32x4_tas2505_dapm_routes,
 	.num_dapm_routes	= ARRAY_SIZE(aic32x4_tas2505_dapm_routes),
+	.of_xlate_dai_id	= aic32x4_of_xlate_dai_id,
 	.suspend_bias_off	= 1,
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static int aic32x4_parse_dt(struct aic32x4_priv *aic32x4,
@@ -1221,7 +1236,14 @@ static int aic32x4_parse_dt(struct aic32x4_priv *aic32x4,
 
 	aic32x4->swapdacs = false;
 	aic32x4->micpga_routing = 0;
-	aic32x4->rstn_gpio = of_get_named_gpio(np, "reset-gpios", 0);
+	/* Assert reset using GPIOD_OUT_HIGH, because reset is GPIO_ACTIVE_LOW */
+	aic32x4->rstn_gpio = devm_gpiod_get_optional(aic32x4->dev, "reset", GPIOD_OUT_HIGH);
+	if (IS_ERR(aic32x4->rstn_gpio)) {
+		return dev_err_probe(aic32x4->dev, PTR_ERR(aic32x4->rstn_gpio),
+				     "Failed to get reset gpio\n");
+	} else {
+		gpiod_set_consumer_name(aic32x4->rstn_gpio, "tlv320aic32x4_rstn");
+	}
 
 	if (of_property_read_u32_array(np, "aic32x4-gpio-func",
 				aic32x4_setup->gpio_func, 5) >= 0)
@@ -1256,8 +1278,8 @@ static int aic32x4_setup_regulators(struct device *dev,
 	/* Check if the regulator requirements are fulfilled */
 
 	if (IS_ERR(aic32x4->supply_iov)) {
-		dev_err(dev, "Missing supply 'iov'\n");
-		return PTR_ERR(aic32x4->supply_iov);
+		return dev_err_probe(dev, PTR_ERR(aic32x4->supply_iov),
+				     "Missing supply 'iov'\n");
 	}
 
 	if (IS_ERR(aic32x4->supply_ldo)) {
@@ -1265,12 +1287,12 @@ static int aic32x4_setup_regulators(struct device *dev,
 			return -EPROBE_DEFER;
 
 		if (IS_ERR(aic32x4->supply_dv)) {
-			dev_err(dev, "Missing supply 'dv' or 'ldoin'\n");
-			return PTR_ERR(aic32x4->supply_dv);
+			return dev_err_probe(dev, PTR_ERR(aic32x4->supply_dv),
+					     "Missing supply 'dv' or 'ldoin'\n");
 		}
 		if (IS_ERR(aic32x4->supply_av)) {
-			dev_err(dev, "Missing supply 'av' or 'ldoin'\n");
-			return PTR_ERR(aic32x4->supply_av);
+			return dev_err_probe(dev, PTR_ERR(aic32x4->supply_av),
+					     "Missing supply 'av' or 'ldoin'\n");
 		}
 	} else {
 		if (PTR_ERR(aic32x4->supply_dv) == -EPROBE_DEFER)
@@ -1327,10 +1349,10 @@ error_ldo:
 	return ret;
 }
 
-int aic32x4_probe(struct device *dev, struct regmap *regmap)
+int aic32x4_probe(struct device *dev, struct regmap *regmap,
+		  enum aic32x4_type type)
 {
 	struct aic32x4_priv *aic32x4;
-	struct aic32x4_pdata *pdata = dev->platform_data;
 	struct device_node *np = dev->of_node;
 	int ret;
 
@@ -1343,17 +1365,11 @@ int aic32x4_probe(struct device *dev, struct regmap *regmap)
 		return -ENOMEM;
 
 	aic32x4->dev = dev;
-	aic32x4->type = (enum aic32x4_type)dev_get_drvdata(dev);
+	aic32x4->type = type;
 
 	dev_set_drvdata(dev, aic32x4);
 
-	if (pdata) {
-		aic32x4->power_cfg = pdata->power_cfg;
-		aic32x4->swapdacs = pdata->swapdacs;
-		aic32x4->micpga_routing = pdata->micpga_routing;
-		aic32x4->rstn_gpio = pdata->rstn_gpio;
-		aic32x4->mclk_name = "mclk";
-	} else if (np) {
+	if (np) {
 		ret = aic32x4_parse_dt(aic32x4, np);
 		if (ret) {
 			dev_err(dev, "Failed to parse DT node\n");
@@ -1363,26 +1379,18 @@ int aic32x4_probe(struct device *dev, struct regmap *regmap)
 		aic32x4->power_cfg = 0;
 		aic32x4->swapdacs = false;
 		aic32x4->micpga_routing = 0;
-		aic32x4->rstn_gpio = -1;
+		aic32x4->rstn_gpio = NULL;
 		aic32x4->mclk_name = "mclk";
 	}
 
-	if (gpio_is_valid(aic32x4->rstn_gpio)) {
-		ret = devm_gpio_request_one(dev, aic32x4->rstn_gpio,
-				GPIOF_OUT_INIT_LOW, "tlv320aic32x4 rstn");
-		if (ret != 0)
-			return ret;
-	}
-
 	ret = aic32x4_setup_regulators(dev, aic32x4);
-	if (ret) {
-		dev_err(dev, "Failed to setup regulators\n");
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to setup regulators\n");
 
-	if (gpio_is_valid(aic32x4->rstn_gpio)) {
+	if (aic32x4->rstn_gpio) {
 		ndelay(10);
-		gpio_set_value_cansleep(aic32x4->rstn_gpio, 1);
+		/* deassert reset */
+		gpiod_set_value_cansleep(aic32x4->rstn_gpio, 0);
 		mdelay(1);
 	}
 

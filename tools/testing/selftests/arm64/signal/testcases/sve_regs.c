@@ -6,44 +6,31 @@
  * expected.
  */
 
+#include <kselftest.h>
 #include <signal.h>
 #include <ucontext.h>
 #include <sys/prctl.h>
 
 #include "test_signals_utils.h"
+#include "sve_helpers.h"
 #include "testcases.h"
 
-struct fake_sigframe sf;
-static unsigned int vls[SVE_VQ_MAX];
-unsigned int nvls = 0;
+static union {
+	ucontext_t uc;
+	char buf[1024 * 64];
+} context;
 
 static bool sve_get_vls(struct tdescr *td)
 {
-	int vq, vl;
+	int res = sve_fill_vls(VLS_USE_SVE, 1);
 
-	/*
-	 * Enumerate up to SVE_VQ_MAX vector lengths
-	 */
-	for (vq = SVE_VQ_MAX; vq > 0; --vq) {
-		vl = prctl(PR_SVE_SET_VL, vq * 16);
-		if (vl == -1)
-			return false;
+	if (!res)
+		return true;
 
-		vl &= PR_SVE_VL_LEN_MASK;
+	if (res == KSFT_SKIP)
+		td->result = KSFT_SKIP;
 
-		/* Skip missing VLs */
-		vq = sve_vq_from_vl(vl);
-
-		vls[nvls++] = vl;
-	}
-
-	/* We need at least one VL */
-	if (nvls < 1) {
-		fprintf(stderr, "Only %d VL supported\n", nvls);
-		return false;
-	}
-
-	return true;
+	return false;
 }
 
 static void setup_sve_regs(void)
@@ -55,8 +42,8 @@ static void setup_sve_regs(void)
 static int do_one_sve_vl(struct tdescr *td, siginfo_t *si, ucontext_t *uc,
 			 unsigned int vl)
 {
-	size_t resv_sz, offset;
-	struct _aarch64_ctx *head = GET_SF_RESV_HEAD(sf);
+	size_t offset;
+	struct _aarch64_ctx *head = GET_BUF_RESV_HEAD(context);
 	struct sve_context *sve;
 
 	fprintf(stderr, "Testing VL %d\n", vl);
@@ -71,11 +58,11 @@ static int do_one_sve_vl(struct tdescr *td, siginfo_t *si, ucontext_t *uc,
 	 * in it.
 	 */
 	setup_sve_regs();
-	if (!get_current_context(td, &sf.uc))
+	if (!get_current_context(td, &context.uc, sizeof(context)))
 		return 1;
 
-	resv_sz = GET_SF_RESV_SIZE(sf);
-	head = get_header(head, SVE_MAGIC, resv_sz, &offset);
+	head = get_header(head, SVE_MAGIC, GET_BUF_RESV_SIZE(context),
+			  &offset);
 	if (!head) {
 		fprintf(stderr, "No SVE context\n");
 		return 1;
@@ -99,14 +86,6 @@ static int sve_regs(struct tdescr *td, siginfo_t *si, ucontext_t *uc)
 	int i;
 
 	for (i = 0; i < nvls; i++) {
-		/*
-		 * TODO: the signal test helpers can't currently cope
-		 * with signal frames bigger than struct sigcontext,
-		 * skip VLs that will trigger that.
-		 */
-		if (vls[i] > 64)
-			continue;
-
 		if (do_one_sve_vl(td, si, uc, vls[i]))
 			return 1;
 	}

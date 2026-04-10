@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2017-2021 Broadcom. All Rights Reserved. The term *
+ * Copyright (C) 2017-2024 Broadcom. All Rights Reserved. The term *
  * “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.     *
  * Copyright (C) 2010-2015 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
@@ -33,8 +33,6 @@
 #define LPFC_BSG_VENDOR_DIAG_RUN_LOOPBACK	5
 #define LPFC_BSG_VENDOR_GET_MGMT_REV		6
 #define LPFC_BSG_VENDOR_MBOX			7
-#define LPFC_BSG_VENDOR_MENLO_CMD		8
-#define LPFC_BSG_VENDOR_MENLO_DATA		9
 #define LPFC_BSG_VENDOR_DIAG_MODE_END		10
 #define LPFC_BSG_VENDOR_LINK_DIAG_TEST		11
 #define LPFC_BSG_VENDOR_FORCED_LINK_SPEED	14
@@ -129,16 +127,6 @@ struct dfc_mbox_req {
 	uint32_t outExtWLen;
 	uint32_t extMboxTag;
 	uint32_t extSeqNum;
-};
-
-/* Used for menlo command or menlo data. The xri is only used for menlo data */
-struct menlo_command {
-	uint32_t cmd;
-	uint32_t xri;
-};
-
-struct menlo_response {
-	uint32_t xri; /* return the xri of the iocb exchange */
 };
 
 /*
@@ -251,12 +239,27 @@ struct lpfc_sli_config_emb0_subsys {
 	uint32_t timeout;		/* comn_set_feature timeout */
 	uint32_t request_length;	/* comn_set_feature request len */
 	uint32_t version;		/* comn_set_feature version */
-	uint32_t csf_feature;		/* comn_set_feature feature */
+	uint32_t word68;		/* comn_set_feature feature */
+#define lpfc_emb0_subcmnd_csf_feat_SHIFT		0
+#define lpfc_emb0_subcmnd_csf_feat_MASK			0xffffffff
+#define lpfc_emb0_subcmnd_csf_feat_WORD			word68
+#define lpfc_emb0_subcmnd_rd_obj_des_rd_len_SHIFT	0
+#define lpfc_emb0_subcmnd_rd_obj_des_rd_len_MASK	0x00ffffff
+#define lpfc_emb0_subcmnd_rd_obj_des_rd_len_WORD	word68
 	uint32_t word69;		/* comn_set_feature parameter len */
 	uint32_t word70;		/* comn_set_feature parameter val0 */
 #define lpfc_emb0_subcmnd_csf_p0_SHIFT	0
 #define lpfc_emb0_subcmnd_csf_p0_MASK	0x3
 #define lpfc_emb0_subcmnd_csf_p0_WORD	word70
+	uint32_t reserved71[25];
+	uint32_t word96;		/* rd_obj hbd_count */
+#define lpfc_emb0_subcmnd_rd_obj_hbd_cnt_SHIFT	0
+#define lpfc_emb0_subcmnd_rd_obj_hbd_cnt_MASK	0xffffffff
+#define lpfc_emb0_subcmnd_rd_obj_hbd_cnt_WORD	word96
+#define LPFC_EMB0_MAX_RD_OBJ_HBD_CNT		31
+	struct lpfc_sli_config_hbd hbd[LPFC_EMB0_MAX_RD_OBJ_HBD_CNT];
+	uint32_t word190;
+	uint32_t word191;
 };
 
 struct lpfc_sli_config_emb1_subsys {

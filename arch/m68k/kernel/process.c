@@ -32,11 +32,13 @@
 #include <linux/rcupdate.h>
 #include <linux/syscalls.h>
 #include <linux/uaccess.h>
+#include <linux/elfcore.h>
 
 #include <asm/traps.h>
 #include <asm/machdep.h>
 #include <asm/setup.h>
 
+#include "process.h"
 
 asmlinkage void ret_from_fork(void);
 asmlinkage void ret_from_kernel_thread(void);
@@ -115,7 +117,7 @@ asmlinkage int m68k_clone(struct pt_regs *regs)
 {
 	/* regs will be equal to current_pt_regs() */
 	struct kernel_clone_args args = {
-		.flags		= regs->d1 & ~CSIGNAL,
+		.flags		= (u32)(regs->d1) & ~CSIGNAL,
 		.pidfd		= (int __user *)regs->d3,
 		.child_tid	= (int __user *)regs->d4,
 		.parent_tid	= (int __user *)regs->d3,
@@ -139,7 +141,7 @@ asmlinkage int m68k_clone3(struct pt_regs *regs)
 
 int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 {
-	unsigned long clone_flags = args->flags;
+	u64 clone_flags = args->flags;
 	unsigned long usp = args->stack;
 	unsigned long tls = args->tls;
 	struct fork_frame {
@@ -213,7 +215,7 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 }
 
 /* Fill in the fpu structure for a core dump.  */
-int dump_fpu (struct pt_regs *regs, struct user_m68kfp_struct *fpu)
+int elf_core_copy_task_fpregs(struct task_struct *t, elf_fpregset_t *fpu)
 {
 	if (FPU_IS_EMU) {
 		int i;
@@ -262,7 +264,6 @@ int dump_fpu (struct pt_regs *regs, struct user_m68kfp_struct *fpu)
 
 	return 1;
 }
-EXPORT_SYMBOL(dump_fpu);
 
 unsigned long __get_wchan(struct task_struct *p)
 {

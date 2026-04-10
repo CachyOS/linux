@@ -109,8 +109,7 @@ nvkm_gr_oclass_get(struct nvkm_oclass *oclass, int index)
 }
 
 static int
-nvkm_gr_cclass_new(struct nvkm_fifo_chan *chan,
-		   const struct nvkm_oclass *oclass,
+nvkm_gr_cclass_new(struct nvkm_chan *chan, const struct nvkm_oclass *oclass,
 		   struct nvkm_object **pobject)
 {
 	struct nvkm_gr *gr = nvkm_gr(oclass->engine);
@@ -127,6 +126,17 @@ nvkm_gr_intr(struct nvkm_engine *engine)
 }
 
 static int
+nvkm_gr_nonstall(struct nvkm_engine *engine)
+{
+	struct nvkm_gr *gr = nvkm_gr(engine);
+
+	if (gr->func->nonstall)
+		return gr->func->nonstall(gr);
+
+	return -EINVAL;
+}
+
+static int
 nvkm_gr_oneinit(struct nvkm_engine *engine)
 {
 	struct nvkm_gr *gr = nvkm_gr(engine);
@@ -136,18 +146,33 @@ nvkm_gr_oneinit(struct nvkm_engine *engine)
 }
 
 static int
-nvkm_gr_init(struct nvkm_engine *engine)
+nvkm_gr_reset(struct nvkm_engine *engine)
 {
 	struct nvkm_gr *gr = nvkm_gr(engine);
-	return gr->func->init(gr);
+
+	if (gr->func->reset)
+		return gr->func->reset(gr);
+
+	return -ENOSYS;
 }
 
 static int
-nvkm_gr_fini(struct nvkm_engine *engine, bool suspend)
+nvkm_gr_init(struct nvkm_engine *engine)
+{
+	struct nvkm_gr *gr = nvkm_gr(engine);
+
+	if (gr->func->init)
+		return gr->func->init(gr);
+
+	return 0;
+}
+
+static int
+nvkm_gr_fini(struct nvkm_engine *engine, enum nvkm_suspend_state suspend)
 {
 	struct nvkm_gr *gr = nvkm_gr(engine);
 	if (gr->func->fini)
-		return gr->func->fini(gr, suspend);
+		return gr->func->fini(gr, suspend != NVKM_POWEROFF);
 	return 0;
 }
 
@@ -166,6 +191,8 @@ nvkm_gr = {
 	.oneinit = nvkm_gr_oneinit,
 	.init = nvkm_gr_init,
 	.fini = nvkm_gr_fini,
+	.reset = nvkm_gr_reset,
+	.nonstall = nvkm_gr_nonstall,
 	.intr = nvkm_gr_intr,
 	.tile = nvkm_gr_tile,
 	.chsw_load = nvkm_gr_chsw_load,

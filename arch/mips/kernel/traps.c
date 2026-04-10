@@ -38,6 +38,7 @@
 #include <linux/kdb.h>
 #include <linux/irq.h>
 #include <linux/perf_event.h>
+#include <linux/string_choices.h>
 
 #include <asm/addrspace.h>
 #include <asm/bootinfo.h>
@@ -58,6 +59,7 @@
 #include <asm/module.h>
 #include <asm/msa.h>
 #include <asm/ptrace.h>
+#include <asm/regdef.h>
 #include <asm/sections.h>
 #include <asm/siginfo.h>
 #include <asm/tlbdebug.h>
@@ -75,7 +77,7 @@
 #include "access-helper.h"
 
 extern void check_wait(void);
-extern asmlinkage void rollback_handle_int(void);
+extern asmlinkage void skipover_handle_int(void);
 extern asmlinkage void handle_int(void);
 extern asmlinkage void handle_adel(void);
 extern asmlinkage void handle_ades(void);
@@ -1704,10 +1706,10 @@ static inline __init void parity_protection_init(void)
 		l2parity &= l1parity;
 
 		/* Probe L1 ECC support */
-		cp0_ectl = read_c0_ecc();
-		write_c0_ecc(cp0_ectl | ERRCTL_PE);
+		cp0_ectl = read_c0_errctl();
+		write_c0_errctl(cp0_ectl | ERRCTL_PE);
 		back_to_back_c0_hazard();
-		cp0_ectl = read_c0_ecc();
+		cp0_ectl = read_c0_errctl();
 
 		/* Probe L2 ECC support */
 		gcr_ectl = read_gcr_err_control();
@@ -1726,9 +1728,9 @@ static inline __init void parity_protection_init(void)
 			cp0_ectl |= ERRCTL_PE;
 		else
 			cp0_ectl &= ~ERRCTL_PE;
-		write_c0_ecc(cp0_ectl);
+		write_c0_errctl(cp0_ectl);
 		back_to_back_c0_hazard();
-		WARN_ON(!!(read_c0_ecc() & ERRCTL_PE) != l1parity);
+		WARN_ON(!!(read_c0_errctl() & ERRCTL_PE) != l1parity);
 
 		/* Configure L2 ECC checking */
 		if (l2parity)
@@ -1740,8 +1742,8 @@ static inline __init void parity_protection_init(void)
 		gcr_ectl &= CM_GCR_ERR_CONTROL_L2_ECC_EN;
 		WARN_ON(!!gcr_ectl != l2parity);
 
-		pr_info("Cache parity protection %sabled\n",
-			l1parity ? "en" : "dis");
+		pr_info("Cache parity protection %s\n",
+			str_enabled_disabled(l1parity));
 		return;
 	}
 
@@ -1760,18 +1762,18 @@ static inline __init void parity_protection_init(void)
 			unsigned long errctl;
 			unsigned int l1parity_present, l2parity_present;
 
-			errctl = read_c0_ecc();
+			errctl = read_c0_errctl();
 			errctl &= ~(ERRCTL_PE|ERRCTL_L2P);
 
 			/* probe L1 parity support */
-			write_c0_ecc(errctl | ERRCTL_PE);
+			write_c0_errctl(errctl | ERRCTL_PE);
 			back_to_back_c0_hazard();
-			l1parity_present = (read_c0_ecc() & ERRCTL_PE);
+			l1parity_present = (read_c0_errctl() & ERRCTL_PE);
 
 			/* probe L2 parity support */
-			write_c0_ecc(errctl|ERRCTL_L2P);
+			write_c0_errctl(errctl|ERRCTL_L2P);
 			back_to_back_c0_hazard();
-			l2parity_present = (read_c0_ecc() & ERRCTL_L2P);
+			l2parity_present = (read_c0_errctl() & ERRCTL_L2P);
 
 			if (l1parity_present && l2parity_present) {
 				if (l1parity)
@@ -1790,20 +1792,20 @@ static inline __init void parity_protection_init(void)
 
 			printk(KERN_INFO "Writing ErrCtl register=%08lx\n", errctl);
 
-			write_c0_ecc(errctl);
+			write_c0_errctl(errctl);
 			back_to_back_c0_hazard();
-			errctl = read_c0_ecc();
+			errctl = read_c0_errctl();
 			printk(KERN_INFO "Readback ErrCtl register=%08lx\n", errctl);
 
 			if (l1parity_present)
-				printk(KERN_INFO "Cache parity protection %sabled\n",
-				       (errctl & ERRCTL_PE) ? "en" : "dis");
+				pr_info("Cache parity protection %s\n",
+					str_enabled_disabled(errctl & ERRCTL_PE));
 
 			if (l2parity_present) {
 				if (l1parity_present && l1parity)
 					errctl ^= ERRCTL_L2P;
-				printk(KERN_INFO "L2 cache parity protection %sabled\n",
-				       (errctl & ERRCTL_L2P) ? "en" : "dis");
+				pr_info("L2 cache parity protection %s\n",
+					str_enabled_disabled(errctl & ERRCTL_L2P));
 			}
 		}
 		break;
@@ -1811,11 +1813,11 @@ static inline __init void parity_protection_init(void)
 	case CPU_5KC:
 	case CPU_5KE:
 	case CPU_LOONGSON32:
-		write_c0_ecc(0x80000000);
+		write_c0_errctl(0x80000000);
 		back_to_back_c0_hazard();
 		/* Set the PE bit (bit 31) in the c0_errctl register. */
-		printk(KERN_INFO "Cache parity protection %sabled\n",
-		       (read_c0_ecc() & 0x80000000) ? "en" : "dis");
+		pr_info("Cache parity protection %s\n",
+			str_enabled_disabled(read_c0_errctl() & 0x80000000));
 		break;
 	case CPU_20KC:
 	case CPU_25KF:
@@ -1886,8 +1888,8 @@ asmlinkage void do_ftlb(void)
 	if ((cpu_has_mips_r2_r6) &&
 	    (((current_cpu_data.processor_id & 0xff0000) == PRID_COMP_MIPS) ||
 	    ((current_cpu_data.processor_id & 0xff0000) == PRID_COMP_LOONGSON))) {
-		pr_err("FTLB error exception, cp0_ecc=0x%08x:\n",
-		       read_c0_ecc());
+		pr_err("FTLB error exception, cp0_errctl=0x%08x:\n",
+		       read_c0_errctl());
 		pr_err("cp0_errorepc == %0*lx\n", field, read_c0_errorepc());
 		reg_val = read_c0_cacheerr();
 		pr_err("c0_cacheerr == %08x\n", reg_val);
@@ -2007,7 +2009,13 @@ unsigned long vi_handlers[64];
 
 void reserve_exception_space(phys_addr_t addr, unsigned long size)
 {
-	memblock_reserve(addr, size);
+	/*
+	 * reserve exception space on CPUs other than CPU0
+	 * is too late, since memblock is unavailable when APs
+	 * up
+	 */
+	if (smp_processor_id() == 0)
+		memblock_reserve(addr, size);
 }
 
 void __init *set_except_vector(int n, void *addr)
@@ -2035,13 +2043,12 @@ void __init *set_except_vector(int n, void *addr)
 		unsigned long jump_mask = ~((1 << 28) - 1);
 #endif
 		u32 *buf = (u32 *)(ebase + 0x200);
-		unsigned int k0 = 26;
 		if ((handler & jump_mask) == ((ebase + 0x200) & jump_mask)) {
 			uasm_i_j(&buf, handler & ~jump_mask);
 			uasm_i_nop(&buf);
 		} else {
-			UASM_i_LA(&buf, k0, handler);
-			uasm_i_jr(&buf, k0);
+			UASM_i_LA(&buf, GPR_K0, handler);
+			uasm_i_jr(&buf, GPR_K0);
 			uasm_i_nop(&buf);
 		}
 		local_flush_icache_range(ebase + 0x200, (unsigned long)buf);
@@ -2055,109 +2062,70 @@ static void do_default_vi(void)
 	panic("Caught unexpected vectored interrupt.");
 }
 
-static void *set_vi_srs_handler(int n, vi_handler_t addr, int srs)
+void *set_vi_handler(int n, vi_handler_t addr)
 {
+	extern const u8 except_vec_vi[];
+	extern const u8 except_vec_vi_ori[], except_vec_vi_end[];
+	extern const u8 skipover_except_vec_vi[];
 	unsigned long handler;
 	unsigned long old_handler = vi_handlers[n];
 	int srssets = current_cpu_data.srsets;
 	u16 *h;
 	unsigned char *b;
+	const u8 *vec_start;
+	int ori_offset;
+	int handler_len;
 
 	BUG_ON(!cpu_has_veic && !cpu_has_vint);
 
 	if (addr == NULL) {
 		handler = (unsigned long) do_default_vi;
-		srs = 0;
 	} else
 		handler = (unsigned long) addr;
 	vi_handlers[n] = handler;
 
 	b = (unsigned char *)(ebase + 0x200 + n*VECTORSPACING);
 
-	if (srs >= srssets)
-		panic("Shadow register set %d not supported", srs);
-
 	if (cpu_has_veic) {
 		if (board_bind_eic_interrupt)
-			board_bind_eic_interrupt(n, srs);
+			board_bind_eic_interrupt(n, 0);
 	} else if (cpu_has_vint) {
 		/* SRSMap is only defined if shadow sets are implemented */
 		if (srssets > 1)
-			change_c0_srsmap(0xf << n*4, srs << n*4);
+			change_c0_srsmap(0xf << n*4, 0 << n*4);
 	}
 
-	if (srs == 0) {
-		/*
-		 * If no shadow set is selected then use the default handler
-		 * that does normal register saving and standard interrupt exit
-		 */
-		extern const u8 except_vec_vi[], except_vec_vi_lui[];
-		extern const u8 except_vec_vi_ori[], except_vec_vi_end[];
-		extern const u8 rollback_except_vec_vi[];
-		const u8 *vec_start = using_rollback_handler() ?
-				      rollback_except_vec_vi : except_vec_vi;
+	vec_start = using_skipover_handler() ? skipover_except_vec_vi :
+					       except_vec_vi;
 #if defined(CONFIG_CPU_MICROMIPS) || defined(CONFIG_CPU_BIG_ENDIAN)
-		const int lui_offset = except_vec_vi_lui - vec_start + 2;
-		const int ori_offset = except_vec_vi_ori - vec_start + 2;
+	ori_offset = except_vec_vi_ori - vec_start + 2;
 #else
-		const int lui_offset = except_vec_vi_lui - vec_start;
-		const int ori_offset = except_vec_vi_ori - vec_start;
+	ori_offset = except_vec_vi_ori - vec_start;
 #endif
-		const int handler_len = except_vec_vi_end - vec_start;
+	handler_len = except_vec_vi_end - vec_start;
 
-		if (handler_len > VECTORSPACING) {
-			/*
-			 * Sigh... panicing won't help as the console
-			 * is probably not configured :(
-			 */
-			panic("VECTORSPACING too small");
-		}
-
-		set_handler(((unsigned long)b - ebase), vec_start,
-#ifdef CONFIG_CPU_MICROMIPS
-				(handler_len - 1));
-#else
-				handler_len);
-#endif
-		h = (u16 *)(b + lui_offset);
-		*h = (handler >> 16) & 0xffff;
-		h = (u16 *)(b + ori_offset);
-		*h = (handler & 0xffff);
-		local_flush_icache_range((unsigned long)b,
-					 (unsigned long)(b+handler_len));
-	}
-	else {
+	if (handler_len > VECTORSPACING) {
 		/*
-		 * In other cases jump directly to the interrupt handler. It
-		 * is the handler's responsibility to save registers if required
-		 * (eg hi/lo) and return from the exception using "eret".
+		 * Sigh... panicing won't help as the console
+		 * is probably not configured :(
 		 */
-		u32 insn;
-
-		h = (u16 *)b;
-		/* j handler */
-#ifdef CONFIG_CPU_MICROMIPS
-		insn = 0xd4000000 | (((u32)handler & 0x07ffffff) >> 1);
-#else
-		insn = 0x08000000 | (((u32)handler & 0x0fffffff) >> 2);
-#endif
-		h[0] = (insn >> 16) & 0xffff;
-		h[1] = insn & 0xffff;
-		h[2] = 0;
-		h[3] = 0;
-		local_flush_icache_range((unsigned long)b,
-					 (unsigned long)(b+8));
+		panic("VECTORSPACING too small");
 	}
+
+	set_handler(((unsigned long)b - ebase), vec_start,
+#ifdef CONFIG_CPU_MICROMIPS
+			(handler_len - 1));
+#else
+			handler_len);
+#endif
+	/* insert offset into vi_handlers[] */
+	h = (u16 *)(b + ori_offset);
+	*h = n * sizeof(handler);
+	local_flush_icache_range((unsigned long)b,
+				 (unsigned long)(b+handler_len));
 
 	return (void *)old_handler;
 }
-
-void *set_vi_handler(int n, vi_handler_t addr)
-{
-	return set_vi_srs_handler(n, addr, 0);
-}
-
-extern void tlb_init(void);
 
 /*
  * Timer interrupt
@@ -2332,7 +2300,7 @@ static const char panic_null_cerr[] =
 void set_uncached_handler(unsigned long offset, void *addr,
 	unsigned long size)
 {
-	unsigned long uncached_ebase = CKSEG1ADDR(ebase);
+	unsigned long uncached_ebase = CKSEG1ADDR_OR_64BIT(__pa(ebase));
 
 	if (!addr)
 		panic(panic_null_cerr);
@@ -2384,10 +2352,13 @@ void __init trap_init(void)
 		 * EVA is special though as it allows segments to be rearranged
 		 * and to become uncached during cache error handling.
 		 */
-		if (!IS_ENABLED(CONFIG_EVA) && !WARN_ON(ebase_pa >= 0x20000000))
+		if (!IS_ENABLED(CONFIG_EVA) && ebase_pa < 0x20000000)
 			ebase = CKSEG0ADDR(ebase_pa);
 		else
 			ebase = (unsigned long)phys_to_virt(ebase_pa);
+		if (ebase_pa >= 0x20000000)
+			pr_warn("ebase(%pa) should better be in KSeg0",
+				&ebase_pa);
 	}
 
 	if (cpu_has_mmips) {
@@ -2418,7 +2389,7 @@ void __init trap_init(void)
 		set_except_vector(i, handle_reserved);
 
 	/*
-	 * Copy the EJTAG debug exception vector handler code to it's final
+	 * Copy the EJTAG debug exception vector handler code to its final
 	 * destination.
 	 */
 	if (cpu_has_ejtag && board_ejtag_handler_setup)
@@ -2455,8 +2426,8 @@ void __init trap_init(void)
 	if (board_be_init)
 		board_be_init();
 
-	set_except_vector(EXCCODE_INT, using_rollback_handler() ?
-					rollback_handle_int : handle_int);
+	set_except_vector(EXCCODE_INT, using_skipover_handler() ?
+					skipover_handle_int : handle_int);
 	set_except_vector(EXCCODE_MOD, handle_tlbm);
 	set_except_vector(EXCCODE_TLBL, handle_tlbl);
 	set_except_vector(EXCCODE_TLBS, handle_tlbs);

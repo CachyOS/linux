@@ -7,7 +7,7 @@
  * Copyright (C) 2019-2021 Maximilian Luz <luzmaximilian@gmail.com>
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/hid.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -49,7 +49,7 @@ static int ssam_kbd_get_descriptor(struct surface_hid_device *shid, u8 entry, u8
 	rsp.length = 0;
 	rsp.pointer = buf;
 
-	status = ssam_retry(ssam_request_sync_onstack, shid->ctrl, &rqst, &rsp, sizeof(entry));
+	status = ssam_retry(ssam_request_do_sync_onstack, shid->ctrl, &rqst, &rsp, sizeof(entry));
 	if (status)
 		return status;
 
@@ -75,7 +75,7 @@ static int ssam_kbd_set_caps_led(struct surface_hid_device *shid, bool value)
 	rqst.length = sizeof(value_u8);
 	rqst.payload = &value_u8;
 
-	return ssam_retry(ssam_request_sync_onstack, shid->ctrl, &rqst, NULL, sizeof(value_u8));
+	return ssam_retry(ssam_request_do_sync_onstack, shid->ctrl, &rqst, NULL, sizeof(value_u8));
 }
 
 static int ssam_kbd_get_feature_report(struct surface_hid_device *shid, u8 *buf, size_t len)
@@ -97,7 +97,7 @@ static int ssam_kbd_get_feature_report(struct surface_hid_device *shid, u8 *buf,
 	rsp.length = 0;
 	rsp.pointer = buf;
 
-	status = ssam_retry(ssam_request_sync_onstack, shid->ctrl, &rqst, &rsp, sizeof(payload));
+	status = ssam_retry(ssam_request_do_sync_onstack, shid->ctrl, &rqst, &rsp, sizeof(payload));
 	if (status)
 		return status;
 
@@ -250,7 +250,7 @@ static int surface_kbd_probe(struct platform_device *pdev)
 
 	shid->uid.domain = SSAM_DOMAIN_SERIALHUB;
 	shid->uid.category = SSAM_SSH_TC_KBD;
-	shid->uid.target = 2;
+	shid->uid.target = SSAM_SSH_TID_KIP;
 	shid->uid.instance = 0;
 	shid->uid.function = 0;
 
@@ -271,10 +271,9 @@ static int surface_kbd_probe(struct platform_device *pdev)
 	return surface_hid_device_add(shid);
 }
 
-static int surface_kbd_remove(struct platform_device *pdev)
+static void surface_kbd_remove(struct platform_device *pdev)
 {
 	surface_hid_device_destroy(platform_get_drvdata(pdev));
-	return 0;
 }
 
 static const struct acpi_device_id surface_kbd_match[] = {

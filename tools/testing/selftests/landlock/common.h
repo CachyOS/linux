@@ -7,183 +7,247 @@
  * Copyright © 2021 Microsoft Corporation
  */
 
+#include <arpa/inet.h>
 #include <errno.h>
-#include <linux/landlock.h>
+#include <linux/securebits.h>
 #include <sys/capability.h>
-#include <sys/syscall.h>
-#include <sys/types.h>
+#include <sys/prctl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "../kselftest_harness.h"
+#include "kselftest_harness.h"
+#include "wrappers.h"
 
-/*
- * TEST_F_FORK() is useful when a test drop privileges but the corresponding
- * FIXTURE_TEARDOWN() requires them (e.g. to remove files from a directory
- * where write actions are denied).  For convenience, FIXTURE_TEARDOWN() is
- * also called when the test failed, but not when FIXTURE_SETUP() failed.  For
- * this to be possible, we must not call abort() but instead exit smoothly
- * (hence the step print).
- */
-/* clang-format off */
-#define TEST_F_FORK(fixture_name, test_name) \
-	static void fixture_name##_##test_name##_child( \
-		struct __test_metadata *_metadata, \
-		FIXTURE_DATA(fixture_name) *self, \
-		const FIXTURE_VARIANT(fixture_name) *variant); \
-	TEST_F(fixture_name, test_name) \
-	{ \
-		int status; \
-		const pid_t child = fork(); \
-		if (child < 0) \
-			abort(); \
-		if (child == 0) { \
-			_metadata->no_print = 1; \
-			fixture_name##_##test_name##_child(_metadata, self, variant); \
-			if (_metadata->skip) \
-				_exit(255); \
-			if (_metadata->passed) \
-				_exit(0); \
-			_exit(_metadata->step); \
-		} \
-		if (child != waitpid(child, &status, 0)) \
-			abort(); \
-		if (WIFSIGNALED(status) || !WIFEXITED(status)) { \
-			_metadata->passed = 0; \
-			_metadata->step = 1; \
-			return; \
-		} \
-		switch (WEXITSTATUS(status)) { \
-		case 0: \
-			_metadata->passed = 1; \
-			break; \
-		case 255: \
-			_metadata->passed = 1; \
-			_metadata->skip = 1; \
-			break; \
-		default: \
-			_metadata->passed = 0; \
-			_metadata->step = WEXITSTATUS(status); \
-			break; \
-		} \
-	} \
-	static void fixture_name##_##test_name##_child( \
-		struct __test_metadata __attribute__((unused)) *_metadata, \
-		FIXTURE_DATA(fixture_name) __attribute__((unused)) *self, \
-		const FIXTURE_VARIANT(fixture_name) \
-			__attribute__((unused)) *variant)
-/* clang-format on */
+#define TMP_DIR "tmp"
 
-#ifndef landlock_create_ruleset
-static inline int
-landlock_create_ruleset(const struct landlock_ruleset_attr *const attr,
-			const size_t size, const __u32 flags)
-{
-	return syscall(__NR_landlock_create_ruleset, attr, size, flags);
-}
-#endif
+/* TEST_F_FORK() should not be used for new tests. */
+#define TEST_F_FORK(fixture_name, test_name) TEST_F(fixture_name, test_name)
 
-#ifndef landlock_add_rule
-static inline int landlock_add_rule(const int ruleset_fd,
-				    const enum landlock_rule_type rule_type,
-				    const void *const rule_attr,
-				    const __u32 flags)
-{
-	return syscall(__NR_landlock_add_rule, ruleset_fd, rule_type, rule_attr,
-		       flags);
-}
-#endif
-
-#ifndef landlock_restrict_self
-static inline int landlock_restrict_self(const int ruleset_fd,
-					 const __u32 flags)
-{
-	return syscall(__NR_landlock_restrict_self, ruleset_fd, flags);
-}
-#endif
+static const char bin_sandbox_and_launch[] = "./sandbox-and-launch";
+static const char bin_wait_pipe[] = "./wait-pipe";
+static const char bin_wait_pipe_sandbox[] = "./wait-pipe-sandbox";
 
 static void _init_caps(struct __test_metadata *const _metadata, bool drop_all)
 {
 	cap_t cap_p;
 	/* Only these three capabilities are useful for the tests. */
 	const cap_value_t caps[] = {
+		/* clang-format off */
+		CAP_AUDIT_CONTROL,
 		CAP_DAC_OVERRIDE,
 		CAP_MKNOD,
+		CAP_NET_ADMIN,
+		CAP_NET_BIND_SERVICE,
+		CAP_SETUID,
 		CAP_SYS_ADMIN,
 		CAP_SYS_CHROOT,
+		/* clang-format on */
 	};
+	const unsigned int noroot = SECBIT_NOROOT | SECBIT_NOROOT_LOCKED;
+
+	if ((cap_get_secbits() & noroot) != noroot)
+		EXPECT_EQ(0, cap_set_secbits(noroot));
 
 	cap_p = cap_get_proc();
-	EXPECT_NE(NULL, cap_p)
-	{
-		TH_LOG("Failed to cap_get_proc: %s", strerror(errno));
-	}
-	EXPECT_NE(-1, cap_clear(cap_p))
-	{
-		TH_LOG("Failed to cap_clear: %s", strerror(errno));
-	}
+	EXPECT_NE(NULL, cap_p);
+	EXPECT_NE(-1, cap_clear(cap_p));
 	if (!drop_all) {
 		EXPECT_NE(-1, cap_set_flag(cap_p, CAP_PERMITTED,
-					   ARRAY_SIZE(caps), caps, CAP_SET))
-		{
-			TH_LOG("Failed to cap_set_flag: %s", strerror(errno));
-		}
+					   ARRAY_SIZE(caps), caps, CAP_SET));
 	}
+
+	/* Automatically resets ambient capabilities. */
 	EXPECT_NE(-1, cap_set_proc(cap_p))
 	{
-		TH_LOG("Failed to cap_set_proc: %s", strerror(errno));
+		TH_LOG("Failed to set capabilities: %s", strerror(errno));
 	}
-	EXPECT_NE(-1, cap_free(cap_p))
-	{
-		TH_LOG("Failed to cap_free: %s", strerror(errno));
-	}
+	EXPECT_NE(-1, cap_free(cap_p));
+
+	/* Quickly checks that ambient capabilities are cleared. */
+	EXPECT_NE(-1, cap_get_ambient(caps[0]));
 }
 
 /* We cannot put such helpers in a library because of kselftest_harness.h . */
-__attribute__((__unused__)) static void
-disable_caps(struct __test_metadata *const _metadata)
+static void __maybe_unused disable_caps(struct __test_metadata *const _metadata)
 {
 	_init_caps(_metadata, false);
 }
 
-__attribute__((__unused__)) static void
-drop_caps(struct __test_metadata *const _metadata)
+static void __maybe_unused drop_caps(struct __test_metadata *const _metadata)
 {
 	_init_caps(_metadata, true);
 }
 
-static void _effective_cap(struct __test_metadata *const _metadata,
-			   const cap_value_t caps, const cap_flag_value_t value)
+static void _change_cap(struct __test_metadata *const _metadata,
+			const cap_flag_t flag, const cap_value_t cap,
+			const cap_flag_value_t value)
 {
 	cap_t cap_p;
 
 	cap_p = cap_get_proc();
-	EXPECT_NE(NULL, cap_p)
-	{
-		TH_LOG("Failed to cap_get_proc: %s", strerror(errno));
-	}
-	EXPECT_NE(-1, cap_set_flag(cap_p, CAP_EFFECTIVE, 1, &caps, value))
-	{
-		TH_LOG("Failed to cap_set_flag: %s", strerror(errno));
-	}
+	EXPECT_NE(NULL, cap_p);
+	EXPECT_NE(-1, cap_set_flag(cap_p, flag, 1, &cap, value));
 	EXPECT_NE(-1, cap_set_proc(cap_p))
 	{
-		TH_LOG("Failed to cap_set_proc: %s", strerror(errno));
+		TH_LOG("Failed to set capability %d: %s", cap, strerror(errno));
 	}
-	EXPECT_NE(-1, cap_free(cap_p))
+	EXPECT_NE(-1, cap_free(cap_p));
+}
+
+static void __maybe_unused set_cap(struct __test_metadata *const _metadata,
+				   const cap_value_t cap)
+{
+	_change_cap(_metadata, CAP_EFFECTIVE, cap, CAP_SET);
+}
+
+static void __maybe_unused clear_cap(struct __test_metadata *const _metadata,
+				     const cap_value_t cap)
+{
+	_change_cap(_metadata, CAP_EFFECTIVE, cap, CAP_CLEAR);
+}
+
+static void __maybe_unused
+set_ambient_cap(struct __test_metadata *const _metadata, const cap_value_t cap)
+{
+	_change_cap(_metadata, CAP_INHERITABLE, cap, CAP_SET);
+
+	EXPECT_NE(-1, cap_set_ambient(cap, CAP_SET))
 	{
-		TH_LOG("Failed to cap_free: %s", strerror(errno));
+		TH_LOG("Failed to set ambient capability %d: %s", cap,
+		       strerror(errno));
 	}
 }
 
-__attribute__((__unused__)) static void
-set_cap(struct __test_metadata *const _metadata, const cap_value_t caps)
+static void __maybe_unused clear_ambient_cap(
+	struct __test_metadata *const _metadata, const cap_value_t cap)
 {
-	_effective_cap(_metadata, caps, CAP_SET);
+	EXPECT_EQ(1, cap_get_ambient(cap));
+	_change_cap(_metadata, CAP_INHERITABLE, cap, CAP_CLEAR);
+	EXPECT_EQ(0, cap_get_ambient(cap));
 }
 
-__attribute__((__unused__)) static void
-clear_cap(struct __test_metadata *const _metadata, const cap_value_t caps)
+/* Receives an FD from a UNIX socket. Returns the received FD, or -errno. */
+static int __maybe_unused recv_fd(int usock)
 {
-	_effective_cap(_metadata, caps, CAP_CLEAR);
+	int fd_rx;
+	union {
+		/* Aligned ancillary data buffer. */
+		char buf[CMSG_SPACE(sizeof(fd_rx))];
+		struct cmsghdr _align;
+	} cmsg_rx = {};
+	char data = '\0';
+	struct iovec io = {
+		.iov_base = &data,
+		.iov_len = sizeof(data),
+	};
+	struct msghdr msg = {
+		.msg_iov = &io,
+		.msg_iovlen = 1,
+		.msg_control = &cmsg_rx.buf,
+		.msg_controllen = sizeof(cmsg_rx.buf),
+	};
+	struct cmsghdr *cmsg;
+	int res;
+
+	res = recvmsg(usock, &msg, MSG_CMSG_CLOEXEC);
+	if (res < 0)
+		return -errno;
+
+	cmsg = CMSG_FIRSTHDR(&msg);
+	if (cmsg->cmsg_len != CMSG_LEN(sizeof(fd_rx)))
+		return -EIO;
+
+	memcpy(&fd_rx, CMSG_DATA(cmsg), sizeof(fd_rx));
+	return fd_rx;
+}
+
+/* Sends an FD on a UNIX socket. Returns 0 on success or -errno. */
+static int __maybe_unused send_fd(int usock, int fd_tx)
+{
+	union {
+		/* Aligned ancillary data buffer. */
+		char buf[CMSG_SPACE(sizeof(fd_tx))];
+		struct cmsghdr _align;
+	} cmsg_tx = {};
+	char data_tx = '.';
+	struct iovec io = {
+		.iov_base = &data_tx,
+		.iov_len = sizeof(data_tx),
+	};
+	struct msghdr msg = {
+		.msg_iov = &io,
+		.msg_iovlen = 1,
+		.msg_control = &cmsg_tx.buf,
+		.msg_controllen = sizeof(cmsg_tx.buf),
+	};
+	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+
+	cmsg->cmsg_len = CMSG_LEN(sizeof(fd_tx));
+	cmsg->cmsg_level = SOL_SOCKET;
+	cmsg->cmsg_type = SCM_RIGHTS;
+	memcpy(CMSG_DATA(cmsg), &fd_tx, sizeof(fd_tx));
+
+	if (sendmsg(usock, &msg, 0) < 0)
+		return -errno;
+	return 0;
+}
+
+static void __maybe_unused
+enforce_ruleset(struct __test_metadata *const _metadata, const int ruleset_fd)
+{
+	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
+	ASSERT_EQ(0, landlock_restrict_self(ruleset_fd, 0))
+	{
+		TH_LOG("Failed to enforce ruleset: %s", strerror(errno));
+	}
+}
+
+static void __maybe_unused
+drop_access_rights(struct __test_metadata *const _metadata,
+		   const struct landlock_ruleset_attr *const ruleset_attr)
+{
+	int ruleset_fd;
+
+	ruleset_fd =
+		landlock_create_ruleset(ruleset_attr, sizeof(*ruleset_attr), 0);
+	EXPECT_LE(0, ruleset_fd)
+	{
+		TH_LOG("Failed to create a ruleset: %s", strerror(errno));
+	}
+	enforce_ruleset(_metadata, ruleset_fd);
+	EXPECT_EQ(0, close(ruleset_fd));
+}
+
+struct protocol_variant {
+	int domain;
+	int type;
+	int protocol;
+};
+
+struct service_fixture {
+	struct protocol_variant protocol;
+	/* port is also stored in ipv4_addr.sin_port or ipv6_addr.sin6_port */
+	unsigned short port;
+	union {
+		struct sockaddr_in ipv4_addr;
+		struct sockaddr_in6 ipv6_addr;
+		struct {
+			struct sockaddr_un unix_addr;
+			socklen_t unix_addr_len;
+		};
+		struct sockaddr_storage _largest;
+	};
+};
+
+static void __maybe_unused set_unix_address(struct service_fixture *const srv,
+					    const unsigned short index)
+{
+	srv->unix_addr.sun_family = AF_UNIX;
+	sprintf(srv->unix_addr.sun_path,
+		"_selftests-landlock-abstract-unix-tid%d-index%d", sys_gettid(),
+		index);
+	srv->unix_addr_len = SUN_LEN(&srv->unix_addr);
+	srv->unix_addr.sun_path[0] = '\0';
 }

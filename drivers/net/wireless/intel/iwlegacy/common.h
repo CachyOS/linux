@@ -553,12 +553,24 @@ struct il_device_cmd {
 		u8 val8;
 		u16 val16;
 		u32 val32;
-		struct il_tx_cmd tx;
+		struct il_tx_cmd_hdr tx;
 		u8 payload[DEF_CMD_PAYLOAD_SIZE];
 	} __packed cmd;
 } __packed;
 
 #define TFD_MAX_PAYLOAD_SIZE (sizeof(struct il_device_cmd))
+
+/**
+ * struct il_device_cmd_huge
+ *
+ * For use when sending huge commands.
+ */
+struct il_device_cmd_huge {
+	struct il_cmd_header hdr;	/* uCode API */
+	union {
+		u8 payload[IL_MAX_CMD_SIZE - sizeof(struct il_cmd_header)];
+	} __packed cmd;
+} __packed;
 
 struct il_host_cmd {
 	const void *data;
@@ -1683,7 +1695,8 @@ struct il_cfg {
  ***************************/
 
 int il_mac_conf_tx(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
-		   u16 queue, const struct ieee80211_tx_queue_params *params);
+		   unsigned int link_id, u16 queue,
+		   const struct ieee80211_tx_queue_params *params);
 int il_mac_tx_last_beacon(struct ieee80211_hw *hw);
 
 void il_set_rxon_hwcrypto(struct il_priv *il, int hw_decrypt);
@@ -1692,7 +1705,6 @@ int il_full_rxon_required(struct il_priv *il);
 int il_set_rxon_channel(struct il_priv *il, struct ieee80211_channel *ch);
 void il_set_flags_for_band(struct il_priv *il, enum nl80211_band band,
 			   struct ieee80211_vif *vif);
-u8 il_get_single_channel_number(struct il_priv *il, enum nl80211_band band);
 void il_set_rxon_ht(struct il_priv *il, struct il_ht_config *ht_conf);
 bool il_is_ht40_tx_allowed(struct il_priv *il,
 			   struct ieee80211_sta_ht_cap *ht_cap);
@@ -1944,10 +1956,10 @@ il_get_hw_mode(struct il_priv *il, enum nl80211_band band)
 }
 
 /* mac80211 handlers */
-int il_mac_config(struct ieee80211_hw *hw, u32 changed);
+int il_mac_config(struct ieee80211_hw *hw, int radio_idx, u32 changed);
 void il_mac_reset_tsf(struct ieee80211_hw *hw, struct ieee80211_vif *vif);
 void il_mac_bss_info_changed(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
-			     struct ieee80211_bss_conf *bss_conf, u32 changes);
+			     struct ieee80211_bss_conf *bss_conf, u64 changes);
 void il_tx_cmd_protection(struct il_priv *il, struct ieee80211_tx_info *info,
 			  __le16 fc, __le32 *tx_flags);
 
@@ -2803,9 +2815,7 @@ struct il_lq_sta {
 	struct il_scale_tbl_info lq_info[LQ_SIZE];	/* "active", "search" */
 	struct il_traffic_load load[TID_MAX_LOAD_COUNT];
 	u8 tx_agg_tid_en;
-#ifdef CONFIG_MAC80211_DEBUGFS
 	u32 dbg_fixed_rate;
-#endif
 	struct il_priv *drv;
 
 	/* used to be in sta_info */

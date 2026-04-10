@@ -163,7 +163,7 @@ static inline unsigned int fl_mtu_bufsize(struct adapter *adapter,
  * for DMA, but this is of course never sent to the hardware and is only used
  * to prevent double unmappings.  All of the above requires that the Free List
  * Buffers which we allocate have the bottom 5 bits free (0) -- i.e. are
- * 32-byte or or a power of 2 greater in alignment.  Since the SGE's minimal
+ * 32-byte or a power of 2 greater in alignment.  Since the SGE's minimal
  * Free List Buffer alignment is 32 bytes, this works out for us ...
  */
 enum {
@@ -801,20 +801,6 @@ static inline unsigned int calc_tx_flits(const struct sk_buff *skb,
 			  sizeof(struct cpl_tx_pkt_core)) / sizeof(__be64);
 	}
 	return flits;
-}
-
-/**
- *	calc_tx_descs - calculate the number of Tx descriptors for a packet
- *	@skb: the packet
- *	@chip_ver: chip version
- *
- *	Returns the number of Tx descriptors needed for the given Ethernet
- *	packet, including the needed WR and CPL headers.
- */
-static inline unsigned int calc_tx_descs(const struct sk_buff *skb,
-					 unsigned int chip_ver)
-{
-	return flits_to_desc(calc_tx_flits(skb, chip_ver));
 }
 
 /**
@@ -1530,8 +1516,8 @@ static netdev_tx_t cxgb4_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 #endif /* CHELSIO_IPSEC_INLINE */
 
 #if IS_ENABLED(CONFIG_CHELSIO_TLS_DEVICE)
-	if (cxgb4_is_ktls_skb(skb) &&
-	    (skb->len - (skb_transport_offset(skb) + tcp_hdrlen(skb))))
+	if (tls_is_skb_tx_device_offloaded(skb) &&
+	    (skb->len - skb_tcp_all_headers(skb)))
 		return adap->uld[CXGB4_ULD_KTLS].tx_handler(skb, dev);
 #endif /* CHELSIO_TLS_DEVICE */
 
@@ -1547,7 +1533,6 @@ static netdev_tx_t cxgb4_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 	} else {
 		q = &adap->sge.ethtxq[qidx + pi->first_qset];
 	}
-	skb_tx_timestamp(skb);
 
 	reclaim_completed_tx(adap, &q->q, -1, true);
 	cntrl = TXPKT_L4CSUM_DIS_F | TXPKT_IPCSUM_DIS_F;
@@ -1719,6 +1704,8 @@ static netdev_tx_t cxgb4_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 	cpl->pack = htons(0);
 	cpl->len = htons(skb->len);
 	cpl->ctrl1 = cpu_to_be64(cntrl);
+
+	skb_tx_timestamp(skb);
 
 	if (immediate) {
 		cxgb4_inline_tx_skb(skb, &q->q, sgl);
@@ -2282,7 +2269,6 @@ static int ethofld_hard_xmit(struct net_device *dev,
 
 	d = &eosw_txq->desc[eosw_txq->last_pidx];
 	skb = d->skb;
-	skb_tx_timestamp(skb);
 
 	wr = (struct fw_eth_tx_eo_wr *)&eohw_txq->q.desc[eohw_txq->q.pidx];
 	if (unlikely(eosw_txq->state != CXGB4_EO_STATE_ACTIVE &&
@@ -2387,6 +2373,7 @@ write_wr_headers:
 		eohw_txq->vlan_ins++;
 
 	txq_advance(&eohw_txq->q, ndesc);
+	skb_tx_timestamp(skb);
 	cxgb4_ring_tx_db(adap, &eohw_txq->q, ndesc);
 	eosw_txq_advance_index(&eosw_txq->last_pidx, 1, eosw_txq->ndesc);
 
@@ -2684,12 +2671,12 @@ int cxgb4_selftest_lb_pkt(struct net_device *netdev)
 	lb->loopback = 1;
 
 	q = &adap->sge.ethtxq[pi->first_qset];
-	__netif_tx_lock(q->txq, smp_processor_id());
+	__netif_tx_lock_bh(q->txq);
 
 	reclaim_completed_tx(adap, &q->q, -1, true);
 	credits = txq_avail(&q->q) - ndesc;
 	if (unlikely(credits < 0)) {
-		__netif_tx_unlock(q->txq);
+		__netif_tx_unlock_bh(q->txq);
 		return -ENOMEM;
 	}
 
@@ -2724,7 +2711,7 @@ int cxgb4_selftest_lb_pkt(struct net_device *netdev)
 	init_completion(&lb->completion);
 	txq_advance(&q->q, ndesc);
 	cxgb4_ring_tx_db(adap, &q->q, ndesc);
-	__netif_tx_unlock(q->txq);
+	__netif_tx_unlock_bh(q->txq);
 
 	/* wait for the pkt to return */
 	ret = wait_for_completion_timeout(&lb->completion, 10 * HZ);
@@ -4247,7 +4234,7 @@ static void sge_rx_timer_cb(struct timer_list *t)
 {
 	unsigned long m;
 	unsigned int i;
-	struct adapter *adap = from_timer(adap, t, sge.rx_timer);
+	struct adapter *adap = timer_container_of(adap, t, sge.rx_timer);
 	struct sge *s = &adap->sge;
 
 	for (i = 0; i < BITS_TO_LONGS(s->egr_sz); i++)
@@ -4261,7 +4248,7 @@ static void sge_rx_timer_cb(struct timer_list *t)
 
 			if (fl_starving(adap, fl)) {
 				rxq = container_of(fl, struct sge_eth_rxq, fl);
-				if (napi_reschedule(&rxq->rspq.napi))
+				if (napi_schedule(&rxq->rspq.napi))
 					fl->starving++;
 				else
 					set_bit(id, s->starving_fl);
@@ -4282,7 +4269,7 @@ done:
 
 static void sge_tx_timer_cb(struct timer_list *t)
 {
-	struct adapter *adap = from_timer(adap, t, sge.tx_timer);
+	struct adapter *adap = timer_container_of(adap, t, sge.tx_timer);
 	struct sge *s = &adap->sge;
 	unsigned long m, period;
 	unsigned int i, budget;
@@ -4467,7 +4454,7 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 	if (ret)
 		goto err;
 
-	netif_napi_add(dev, &iq->napi, napi_rx_handler, 64);
+	netif_napi_add(dev, &iq->napi, napi_rx_handler);
 	iq->cur_desc = iq->desc;
 	iq->cidx = 0;
 	iq->gen = 1;
@@ -4888,22 +4875,6 @@ void free_rspq_fl(struct adapter *adap, struct sge_rspq *rq,
 	}
 }
 
-/**
- *      t4_free_ofld_rxqs - free a block of consecutive Rx queues
- *      @adap: the adapter
- *      @n: number of queues
- *      @q: pointer to first queue
- *
- *      Release the resources of a consecutive block of offload Rx queues.
- */
-void t4_free_ofld_rxqs(struct adapter *adap, int n, struct sge_ofld_rxq *q)
-{
-	for ( ; n; n--, q++)
-		if (q->rspq.desc)
-			free_rspq_fl(adap, &q->rspq,
-				     q->fl.size ? &q->fl : NULL);
-}
-
 void t4_sge_free_ethofld_txq(struct adapter *adap, struct sge_eohw_txq *txq)
 {
 	if (txq->q.desc) {
@@ -5026,9 +4997,9 @@ void t4_sge_stop(struct adapter *adap)
 	struct sge *s = &adap->sge;
 
 	if (s->rx_timer.function)
-		del_timer_sync(&s->rx_timer);
+		timer_delete_sync(&s->rx_timer);
 	if (s->tx_timer.function)
-		del_timer_sync(&s->tx_timer);
+		timer_delete_sync(&s->tx_timer);
 
 	if (is_offload(adap)) {
 		struct sge_uld_txq_info *txq_info;

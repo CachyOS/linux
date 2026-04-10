@@ -269,7 +269,7 @@ il3945_get_free_frame(struct il_priv *il)
 	struct il3945_frame *frame;
 	struct list_head *element;
 	if (list_empty(&il->free_frames)) {
-		frame = kzalloc(sizeof(*frame), GFP_KERNEL);
+		frame = kzalloc_obj(*frame);
 		if (!frame) {
 			IL_ERR("Could not allocate frame!\n");
 			return NULL;
@@ -1127,44 +1127,6 @@ il3945_rx_queue_free(struct il_priv *il, struct il_rx_queue *rxq)
 	rxq->rb_stts = NULL;
 }
 
-/* Convert linear signal-to-noise ratio into dB */
-static u8 ratio2dB[100] = {
-/*	 0   1   2   3   4   5   6   7   8   9 */
-	0, 0, 6, 10, 12, 14, 16, 17, 18, 19,	/* 00 - 09 */
-	20, 21, 22, 22, 23, 23, 24, 25, 26, 26,	/* 10 - 19 */
-	26, 26, 26, 27, 27, 28, 28, 28, 29, 29,	/* 20 - 29 */
-	29, 30, 30, 30, 31, 31, 31, 31, 32, 32,	/* 30 - 39 */
-	32, 32, 32, 33, 33, 33, 33, 33, 34, 34,	/* 40 - 49 */
-	34, 34, 34, 34, 35, 35, 35, 35, 35, 35,	/* 50 - 59 */
-	36, 36, 36, 36, 36, 36, 36, 37, 37, 37,	/* 60 - 69 */
-	37, 37, 37, 37, 37, 38, 38, 38, 38, 38,	/* 70 - 79 */
-	38, 38, 38, 38, 38, 39, 39, 39, 39, 39,	/* 80 - 89 */
-	39, 39, 39, 39, 39, 40, 40, 40, 40, 40	/* 90 - 99 */
-};
-
-/* Calculates a relative dB value from a ratio of linear
- *   (i.e. not dB) signal levels.
- * Conversion assumes that levels are voltages (20*log), not powers (10*log). */
-int
-il3945_calc_db_from_ratio(int sig_ratio)
-{
-	/* 1000:1 or higher just report as 60 dB */
-	if (sig_ratio >= 1000)
-		return 60;
-
-	/* 100:1 or higher, divide by 10 and use table,
-	 *   add 20 dB to make up for divide by 10 */
-	if (sig_ratio >= 100)
-		return 20 + (int)ratio2dB[sig_ratio / 10];
-
-	/* We shouldn't see this */
-	if (sig_ratio < 1)
-		return 0;
-
-	/* Use table for ratios 1:1 - 99:1 */
-	return (int)ratio2dB[sig_ratio];
-}
-
 /*
  * il3945_rx_handle - Main entry function for receiving responses from uCode
  *
@@ -1202,8 +1164,6 @@ il3945_rx_handle(struct il_priv *il)
 		D_RX("r = %d, i = %d\n", r, i);
 
 	while (i != r) {
-		int len;
-
 		rxb = rxq->queue[i];
 
 		/* If an RXB doesn't have a Rx queue slot associated with it,
@@ -1217,10 +1177,6 @@ il3945_rx_handle(struct il_priv *il)
 			       PAGE_SIZE << il->hw_params.rx_page_order,
 			       DMA_FROM_DEVICE);
 		pkt = rxb_addr(rxb);
-
-		len = le32_to_cpu(pkt->len_n_flags) & IL_RX_FRAME_SIZE_MSK;
-		len += sizeof(u32);	/* account for status word */
-
 		reclaim = il_need_reclaim(il, pkt);
 
 		/* Based on type of command response or notification,
@@ -2232,7 +2188,7 @@ __il3945_down(struct il_priv *il)
 
 	/* Stop TX queues watchdog. We need to have S_EXIT_PENDING bit set
 	 * to prevent rearm timer */
-	del_timer_sync(&il->watchdog);
+	timer_delete_sync(&il->watchdog);
 
 	/* Station information will now be cleared in device */
 	il_clear_ucode_stations(il);
@@ -2701,7 +2657,7 @@ il3945_post_associate(struct il_priv *il)
 	if (!il->vif || !il->is_open)
 		return;
 
-	D_ASSOC("Associated as %d to: %pM\n", il->vif->bss_conf.aid,
+	D_ASSOC("Associated as %d to: %pM\n", il->vif->cfg.aid,
 		il->active.bssid_addr);
 
 	if (test_bit(S_EXIT_PENDING, &il->status))
@@ -2718,9 +2674,9 @@ il3945_post_associate(struct il_priv *il)
 
 	il->staging.filter_flags |= RXON_FILTER_ASSOC_MSK;
 
-	il->staging.assoc_id = cpu_to_le16(il->vif->bss_conf.aid);
+	il->staging.assoc_id = cpu_to_le16(il->vif->cfg.aid);
 
-	D_ASSOC("assoc id %d beacon interval %d\n", il->vif->bss_conf.aid,
+	D_ASSOC("assoc id %d beacon interval %d\n", il->vif->cfg.aid,
 		il->vif->bss_conf.beacon_int);
 
 	if (il->vif->bss_conf.use_short_preamble)
@@ -2819,7 +2775,7 @@ out_release_irq:
 }
 
 static void
-il3945_mac_stop(struct ieee80211_hw *hw)
+il3945_mac_stop(struct ieee80211_hw *hw, bool suspend)
 {
 	struct il_priv *il = hw->priv;
 
@@ -3254,7 +3210,7 @@ il3945_store_measurement(struct device *d, struct device_attribute *attr,
 
 	if (count) {
 		char *p = buffer;
-		strlcpy(buffer, buf, sizeof(buffer));
+		strscpy(buffer, buf, sizeof(buffer));
 		channel = simple_strtoul(p, NULL, 0);
 		if (channel)
 			params.channel = channel;
@@ -3268,7 +3224,9 @@ il3945_store_measurement(struct device *d, struct device_attribute *attr,
 
 	D_INFO("Invoking measurement of type %d on " "channel %d (for '%s')\n",
 	       type, params.channel, buf);
+	mutex_lock(&il->mutex);
 	il3945_get_measurement(il, &params, type);
+	mutex_unlock(&il->mutex);
 
 	return count;
 }
@@ -3378,10 +3336,12 @@ static DEVICE_ATTR(dump_errors, 0200, NULL, il3945_dump_error_log);
  *
  *****************************************************************************/
 
-static void
+static int
 il3945_setup_deferred_work(struct il_priv *il)
 {
 	il->workqueue = create_singlethread_workqueue(DRV_NAME);
+	if (!il->workqueue)
+		return -ENOMEM;
 
 	init_waitqueue_head(&il->wait_command_queue);
 
@@ -3398,6 +3358,8 @@ il3945_setup_deferred_work(struct il_priv *il)
 	timer_setup(&il->watchdog, il_bg_watchdog, 0);
 
 	tasklet_setup(&il->irq_tasklet, il3945_irq_tasklet);
+
+	return 0;
 }
 
 static void
@@ -3434,7 +3396,12 @@ static const struct attribute_group il3945_attribute_group = {
 };
 
 static struct ieee80211_ops il3945_mac_ops __ro_after_init = {
+	.add_chanctx = ieee80211_emulate_add_chanctx,
+	.remove_chanctx = ieee80211_emulate_remove_chanctx,
+	.change_chanctx = ieee80211_emulate_change_chanctx,
+	.switch_vif_chanctx = ieee80211_emulate_switch_vif_chanctx,
 	.tx = il3945_mac_tx,
+	.wake_tx_queue = ieee80211_handle_wake_tx_queue,
 	.start = il3945_mac_start,
 	.stop = il3945_mac_stop,
 	.add_interface = il_mac_add_interface,
@@ -3717,7 +3684,10 @@ il3945_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	}
 
 	il_set_rxon_channel(il, &il->bands[NL80211_BAND_2GHZ].channels[5]);
-	il3945_setup_deferred_work(il);
+	err = il3945_setup_deferred_work(il);
+	if (err)
+		goto out_remove_sysfs;
+
 	il3945_setup_handlers(il);
 	il_power_initialize(il);
 
@@ -3729,7 +3699,7 @@ il3945_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	err = il3945_setup_mac(il);
 	if (err)
-		goto out_remove_sysfs;
+		goto out_destroy_workqueue;
 
 	il_dbgfs_register(il, DRV_NAME);
 
@@ -3738,9 +3708,10 @@ il3945_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	return 0;
 
-out_remove_sysfs:
+out_destroy_workqueue:
 	destroy_workqueue(il->workqueue);
 	il->workqueue = NULL;
+out_remove_sysfs:
 	sysfs_remove_group(&pdev->dev.kobj, &il3945_attribute_group);
 out_release_irq:
 	free_irq(il->pci_dev->irq, il);

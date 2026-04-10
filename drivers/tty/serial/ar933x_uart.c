@@ -133,9 +133,9 @@ static unsigned int ar933x_uart_tx_empty(struct uart_port *port)
 	unsigned long flags;
 	unsigned int rdata;
 
-	spin_lock_irqsave(&up->port.lock, flags);
+	uart_port_lock_irqsave(&up->port, &flags);
 	rdata = ar933x_uart_read(up, AR933X_UART_DATA_REG);
-	spin_unlock_irqrestore(&up->port.lock, flags);
+	uart_port_unlock_irqrestore(&up->port, flags);
 
 	return (rdata & AR933X_UART_DATA_TX_CSR) ? 0 : TIOCSER_TEMT;
 }
@@ -220,14 +220,14 @@ static void ar933x_uart_break_ctl(struct uart_port *port, int break_state)
 		container_of(port, struct ar933x_uart_port, port);
 	unsigned long flags;
 
-	spin_lock_irqsave(&up->port.lock, flags);
+	uart_port_lock_irqsave(&up->port, &flags);
 	if (break_state == -1)
 		ar933x_uart_rmw_set(up, AR933X_UART_CS_REG,
 				    AR933X_UART_CS_TX_BREAK);
 	else
 		ar933x_uart_rmw_clear(up, AR933X_UART_CS_REG,
 				      AR933X_UART_CS_TX_BREAK);
-	spin_unlock_irqrestore(&up->port.lock, flags);
+	uart_port_unlock_irqrestore(&up->port, flags);
 }
 
 /*
@@ -283,7 +283,7 @@ static void ar933x_uart_get_scale_step(unsigned int clk,
 
 static void ar933x_uart_set_termios(struct uart_port *port,
 				    struct ktermios *new,
-				    struct ktermios *old)
+				    const struct ktermios *old)
 {
 	struct ar933x_uart_port *up =
 		container_of(port, struct ar933x_uart_port, port);
@@ -318,7 +318,7 @@ static void ar933x_uart_set_termios(struct uart_port *port,
 	 * Ok, we're now changing the port state. Do it with
 	 * interrupts disabled.
 	 */
-	spin_lock_irqsave(&up->port.lock, flags);
+	uart_port_lock_irqsave(&up->port, &flags);
 
 	/* disable the UART */
 	ar933x_uart_rmw_clear(up, AR933X_UART_CS_REG,
@@ -352,7 +352,7 @@ static void ar933x_uart_set_termios(struct uart_port *port,
 			AR933X_UART_CS_IF_MODE_M << AR933X_UART_CS_IF_MODE_S,
 			AR933X_UART_CS_IF_MODE_DCE << AR933X_UART_CS_IF_MODE_S);
 
-	spin_unlock_irqrestore(&up->port.lock, flags);
+	uart_port_unlock_irqrestore(&up->port, flags);
 
 	if (tty_termios_baud_rate(new))
 		tty_termios_encode_baud_rate(new, baud, baud);
@@ -378,7 +378,7 @@ static void ar933x_uart_rx_chars(struct ar933x_uart_port *up)
 		up->port.icount.rx++;
 		ch = rdata & AR933X_UART_DATA_TX_RX_MASK;
 
-		if (uart_handle_sysrq_char(&up->port, ch))
+		if (uart_prepare_sysrq_char(&up->port, ch))
 			continue;
 
 		if ((up->port.ignore_status_mask & AR933X_DUMMY_STATUS_RD) == 0)
@@ -390,7 +390,7 @@ static void ar933x_uart_rx_chars(struct ar933x_uart_port *up)
 
 static void ar933x_uart_tx_chars(struct ar933x_uart_port *up)
 {
-	struct circ_buf *xmit = &up->port.state->xmit;
+	struct tty_port *tport = &up->port.state->port;
 	struct serial_rs485 *rs485conf = &up->port.rs485;
 	int count;
 	bool half_duplex_send = false;
@@ -399,7 +399,7 @@ static void ar933x_uart_tx_chars(struct ar933x_uart_port *up)
 		return;
 
 	if ((rs485conf->flags & SER_RS485_ENABLED) &&
-	    (up->port.x_char || !uart_circ_empty(xmit))) {
+	    (up->port.x_char || !kfifo_is_empty(&tport->xmit_fifo))) {
 		ar933x_uart_stop_rx_interrupt(up);
 		gpiod_set_value(up->rts_gpiod, !!(rs485conf->flags & SER_RS485_RTS_ON_SEND));
 		half_duplex_send = true;
@@ -408,6 +408,7 @@ static void ar933x_uart_tx_chars(struct ar933x_uart_port *up)
 	count = up->port.fifosize;
 	do {
 		unsigned int rdata;
+		unsigned char c;
 
 		rdata = ar933x_uart_read(up, AR933X_UART_DATA_REG);
 		if ((rdata & AR933X_UART_DATA_TX_CSR) == 0)
@@ -420,19 +421,16 @@ static void ar933x_uart_tx_chars(struct ar933x_uart_port *up)
 			continue;
 		}
 
-		if (uart_circ_empty(xmit))
+		if (!uart_fifo_get(&up->port, &c))
 			break;
 
-		ar933x_uart_putc(up, xmit->buf[xmit->tail]);
-
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-		up->port.icount.tx++;
+		ar933x_uart_putc(up, c);
 	} while (--count > 0);
 
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
+	if (kfifo_len(&tport->xmit_fifo) < WAKEUP_CHARS)
 		uart_write_wakeup(&up->port);
 
-	if (!uart_circ_empty(xmit)) {
+	if (!kfifo_is_empty(&tport->xmit_fifo)) {
 		ar933x_uart_start_tx_interrupt(up);
 	} else if (half_duplex_send) {
 		ar933x_uart_wait_tx_complete(up);
@@ -451,7 +449,7 @@ static irqreturn_t ar933x_uart_interrupt(int irq, void *dev_id)
 	if ((status & AR933X_UART_CS_HOST_INT) == 0)
 		return IRQ_NONE;
 
-	spin_lock(&up->port.lock);
+	uart_port_lock(&up->port);
 
 	status = ar933x_uart_read(up, AR933X_UART_INT_REG);
 	status &= ar933x_uart_read(up, AR933X_UART_INT_EN_REG);
@@ -469,7 +467,7 @@ static irqreturn_t ar933x_uart_interrupt(int irq, void *dev_id)
 		ar933x_uart_tx_chars(up);
 	}
 
-	spin_unlock(&up->port.lock);
+	uart_unlock_and_check_sysrq(&up->port);
 
 	return IRQ_HANDLED;
 }
@@ -486,7 +484,7 @@ static int ar933x_uart_startup(struct uart_port *port)
 	if (ret)
 		return ret;
 
-	spin_lock_irqsave(&up->port.lock, flags);
+	uart_port_lock_irqsave(&up->port, &flags);
 
 	/* Enable HOST interrupts */
 	ar933x_uart_rmw_set(up, AR933X_UART_CS_REG,
@@ -499,7 +497,7 @@ static int ar933x_uart_startup(struct uart_port *port)
 	/* Enable RX interrupts */
 	ar933x_uart_start_rx_interrupt(up);
 
-	spin_unlock_irqrestore(&up->port.lock, flags);
+	uart_port_unlock_irqrestore(&up->port, flags);
 
 	return 0;
 }
@@ -562,6 +560,64 @@ static int ar933x_uart_verify_port(struct uart_port *port,
 	return 0;
 }
 
+#ifdef CONFIG_CONSOLE_POLL
+static int ar933x_poll_get_char(struct uart_port *port)
+{
+	struct ar933x_uart_port *up =
+		container_of(port, struct ar933x_uart_port, port);
+	unsigned int rdata;
+	unsigned char ch;
+	u32 imr;
+
+	/* Disable all interrupts */
+	imr = ar933x_uart_read(up, AR933X_UART_INT_EN_REG);
+	ar933x_uart_write(up, AR933X_UART_INT_EN_REG, 0);
+
+	rdata = ar933x_uart_read(up, AR933X_UART_DATA_REG);
+	if ((rdata & AR933X_UART_DATA_RX_CSR) == 0) {
+		/* Enable interrupts */
+		ar933x_uart_write(up, AR933X_UART_INT_EN_REG, imr);
+		return NO_POLL_CHAR;
+	}
+
+	/* remove the character from the FIFO */
+	ar933x_uart_write(up, AR933X_UART_DATA_REG,
+			  AR933X_UART_DATA_RX_CSR);
+
+	ch = rdata & AR933X_UART_DATA_TX_RX_MASK;
+
+	/* Enable interrupts */
+	ar933x_uart_write(up, AR933X_UART_INT_EN_REG, imr);
+
+	return ch;
+}
+
+static void ar933x_poll_put_char(struct uart_port *port, unsigned char c)
+{
+	struct ar933x_uart_port *up =
+		container_of(port, struct ar933x_uart_port, port);
+	u32 imr;
+
+	/* Disable all interrupts */
+	imr = ar933x_uart_read(up, AR933X_UART_INT_EN_REG);
+	ar933x_uart_write(up, AR933X_UART_INT_EN_REG, 0);
+
+	/* Wait until FIFO is empty */
+	while (!(ar933x_uart_read(up, AR933X_UART_DATA_REG) & AR933X_UART_DATA_TX_CSR))
+		cpu_relax();
+
+	/* Write a character */
+	ar933x_uart_putc(up, c);
+
+	/* Wait until FIFO is empty */
+	while (!(ar933x_uart_read(up, AR933X_UART_DATA_REG) & AR933X_UART_DATA_TX_CSR))
+		cpu_relax();
+
+	/* Enable interrupts */
+	ar933x_uart_write(up, AR933X_UART_INT_EN_REG, imr);
+}
+#endif
+
 static const struct uart_ops ar933x_uart_ops = {
 	.tx_empty	= ar933x_uart_tx_empty,
 	.set_mctrl	= ar933x_uart_set_mctrl,
@@ -578,20 +634,22 @@ static const struct uart_ops ar933x_uart_ops = {
 	.request_port	= ar933x_uart_request_port,
 	.config_port	= ar933x_uart_config_port,
 	.verify_port	= ar933x_uart_verify_port,
+#ifdef CONFIG_CONSOLE_POLL
+	.poll_get_char	= ar933x_poll_get_char,
+	.poll_put_char	= ar933x_poll_put_char,
+#endif
 };
 
-static int ar933x_config_rs485(struct uart_port *port,
+static int ar933x_config_rs485(struct uart_port *port, struct ktermios *termios,
 				struct serial_rs485 *rs485conf)
 {
 	struct ar933x_uart_port *up =
-		container_of(port, struct ar933x_uart_port, port);
+			container_of(port, struct ar933x_uart_port, port);
 
-	if ((rs485conf->flags & SER_RS485_ENABLED) &&
-	    !up->rts_gpiod) {
-		dev_err(port->dev, "RS485 needs rts-gpio\n");
-		return 1;
-	}
-	port->rs485 = *rs485conf;
+	if (port->rs485.flags & SER_RS485_ENABLED)
+		gpiod_set_value(up->rts_gpiod,
+			!!(rs485conf->flags & SER_RS485_RTS_AFTER_SEND));
+
 	return 0;
 }
 
@@ -630,14 +688,10 @@ static void ar933x_uart_console_write(struct console *co, const char *s,
 	unsigned int int_en;
 	int locked = 1;
 
-	local_irq_save(flags);
-
-	if (up->port.sysrq)
-		locked = 0;
-	else if (oops_in_progress)
-		locked = spin_trylock(&up->port.lock);
+	if (oops_in_progress)
+		locked = uart_port_trylock_irqsave(&up->port, &flags);
 	else
-		spin_lock(&up->port.lock);
+		uart_port_lock_irqsave(&up->port, &flags);
 
 	/*
 	 * First save the IER then disable the interrupts
@@ -657,9 +711,7 @@ static void ar933x_uart_console_write(struct console *co, const char *s,
 	ar933x_uart_write(up, AR933X_UART_INT_REG, AR933X_UART_INT_ALLINTS);
 
 	if (locked)
-		spin_unlock(&up->port.lock);
-
-	local_irq_restore(flags);
+		uart_port_unlock_irqrestore(&up->port, flags);
 }
 
 static int ar933x_uart_console_setup(struct console *co, char *options)
@@ -700,6 +752,10 @@ static struct uart_driver ar933x_uart_driver = {
 	.dev_name	= "ttyATH",
 	.nr		= CONFIG_SERIAL_AR933X_NR_UARTS,
 	.cons		= NULL, /* filled in runtime */
+};
+
+static const struct serial_rs485 ar933x_rs485_supported = {
+	.flags = SER_RS485_ENABLED | SER_RS485_RTS_ON_SEND | SER_RS485_RTS_AFTER_SEND,
 };
 
 static int ar933x_uart_probe(struct platform_device *pdev)
@@ -747,8 +803,7 @@ static int ar933x_uart_probe(struct platform_device *pdev)
 
 	port = &up->port;
 
-	mem_res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	port->membase = devm_ioremap_resource(&pdev->dev, mem_res);
+	port->membase = devm_platform_get_and_ioremap_resource(pdev, 0, &mem_res);
 	if (IS_ERR(port->membase))
 		return PTR_ERR(port->membase);
 
@@ -773,6 +828,7 @@ static int ar933x_uart_probe(struct platform_device *pdev)
 	port->fifosize = AR933X_UART_FIFO_SIZE;
 	port->ops = &ar933x_uart_ops;
 	port->rs485_config = ar933x_config_rs485;
+	port->rs485_supported = ar933x_rs485_supported;
 
 	baud = ar933x_uart_get_baud(port->uartclk, AR933X_UART_MAX_SCALE, 1);
 	up->min_baud = max_t(unsigned int, baud, AR933X_UART_MIN_BAUD);
@@ -792,10 +848,12 @@ static int ar933x_uart_probe(struct platform_device *pdev)
 
 	up->rts_gpiod = mctrl_gpio_to_gpiod(up->gpios, UART_GPIO_RTS);
 
-	if ((port->rs485.flags & SER_RS485_ENABLED) &&
-	    !up->rts_gpiod) {
-		dev_err(&pdev->dev, "lacking rts-gpio, disabling RS485\n");
-		port->rs485.flags &= ~SER_RS485_ENABLED;
+	if (!up->rts_gpiod) {
+		port->rs485_supported.flags &= ~SER_RS485_ENABLED;
+		if (port->rs485.flags & SER_RS485_ENABLED) {
+			dev_err(&pdev->dev, "lacking rts-gpio, disabling RS485\n");
+			port->rs485.flags &= ~SER_RS485_ENABLED;
+		}
 	}
 
 #ifdef CONFIG_SERIAL_AR933X_CONSOLE
@@ -814,7 +872,7 @@ err_disable_clk:
 	return ret;
 }
 
-static int ar933x_uart_remove(struct platform_device *pdev)
+static void ar933x_uart_remove(struct platform_device *pdev)
 {
 	struct ar933x_uart_port *up;
 
@@ -824,8 +882,6 @@ static int ar933x_uart_remove(struct platform_device *pdev)
 		uart_remove_one_port(&ar933x_uart_driver, &up->port);
 		clk_disable_unprepare(up->clk);
 	}
-
-	return 0;
 }
 
 #ifdef CONFIG_OF

@@ -29,29 +29,54 @@ struct task_delay_info {
 	 * XXX_delay contains the accumulated delay time in nanoseconds.
 	 */
 	u64 blkio_start;
+	u64 blkio_delay_max;
+	u64 blkio_delay_min;
 	u64 blkio_delay;	/* wait for sync block io completion */
 	u64 swapin_start;
+	u64 swapin_delay_max;
+	u64 swapin_delay_min;
 	u64 swapin_delay;	/* wait for swapin */
 	u32 blkio_count;	/* total count of the number of sync block */
 				/* io operations performed */
 	u32 swapin_count;	/* total count of swapin */
 
 	u64 freepages_start;
+	u64 freepages_delay_max;
+	u64 freepages_delay_min;
 	u64 freepages_delay;	/* wait for memory reclaim */
 
 	u64 thrashing_start;
+	u64 thrashing_delay_max;
+	u64 thrashing_delay_min;
 	u64 thrashing_delay;	/* wait for thrashing page */
 
 	u64 compact_start;
+	u64 compact_delay_max;
+	u64 compact_delay_min;
 	u64 compact_delay;	/* wait for memory compact */
 
 	u64 wpcopy_start;
+	u64 wpcopy_delay_max;
+	u64 wpcopy_delay_min;
 	u64 wpcopy_delay;	/* wait for write-protect copy */
+
+	u64 irq_delay_max;
+	u64 irq_delay_min;
+	u64 irq_delay;	/* wait for IRQ/SOFTIRQ */
 
 	u32 freepages_count;	/* total count of memory reclaim */
 	u32 thrashing_count;	/* total count of thrash waits */
 	u32 compact_count;	/* total count of memory compact */
 	u32 wpcopy_count;	/* total count of write-protect copy */
+	u32 irq_count;	/* total count of IRQ/SOFTIRQ */
+
+	struct timespec64 blkio_delay_max_ts;
+	struct timespec64 swapin_delay_max_ts;
+	struct timespec64 freepages_delay_max_ts;
+	struct timespec64 thrashing_delay_max_ts;
+	struct timespec64 compact_delay_max_ts;
+	struct timespec64 wpcopy_delay_max_ts;
+	struct timespec64 irq_delay_max_ts;
 };
 #endif
 
@@ -73,14 +98,15 @@ extern int delayacct_add_tsk(struct taskstats *, struct task_struct *);
 extern __u64 __delayacct_blkio_ticks(struct task_struct *);
 extern void __delayacct_freepages_start(void);
 extern void __delayacct_freepages_end(void);
-extern void __delayacct_thrashing_start(void);
-extern void __delayacct_thrashing_end(void);
+extern void __delayacct_thrashing_start(bool *in_thrashing);
+extern void __delayacct_thrashing_end(bool *in_thrashing);
 extern void __delayacct_swapin_start(void);
 extern void __delayacct_swapin_end(void);
 extern void __delayacct_compact_start(void);
 extern void __delayacct_compact_end(void);
 extern void __delayacct_wpcopy_start(void);
 extern void __delayacct_wpcopy_end(void);
+extern void __delayacct_irq(struct task_struct *task, u32 delta);
 
 static inline void delayacct_tsk_init(struct task_struct *tsk)
 {
@@ -143,22 +169,22 @@ static inline void delayacct_freepages_end(void)
 		__delayacct_freepages_end();
 }
 
-static inline void delayacct_thrashing_start(void)
+static inline void delayacct_thrashing_start(bool *in_thrashing)
 {
 	if (!static_branch_unlikely(&delayacct_key))
 		return;
 
 	if (current->delays)
-		__delayacct_thrashing_start();
+		__delayacct_thrashing_start(in_thrashing);
 }
 
-static inline void delayacct_thrashing_end(void)
+static inline void delayacct_thrashing_end(bool *in_thrashing)
 {
 	if (!static_branch_unlikely(&delayacct_key))
 		return;
 
 	if (current->delays)
-		__delayacct_thrashing_end();
+		__delayacct_thrashing_end(in_thrashing);
 }
 
 static inline void delayacct_swapin_start(void)
@@ -215,6 +241,15 @@ static inline void delayacct_wpcopy_end(void)
 		__delayacct_wpcopy_end();
 }
 
+static inline void delayacct_irq(struct task_struct *task, u32 delta)
+{
+	if (!static_branch_unlikely(&delayacct_key))
+		return;
+
+	if (task->delays)
+		__delayacct_irq(task, delta);
+}
+
 #else
 static inline void delayacct_init(void)
 {}
@@ -237,9 +272,9 @@ static inline void delayacct_freepages_start(void)
 {}
 static inline void delayacct_freepages_end(void)
 {}
-static inline void delayacct_thrashing_start(void)
+static inline void delayacct_thrashing_start(bool *in_thrashing)
 {}
-static inline void delayacct_thrashing_end(void)
+static inline void delayacct_thrashing_end(bool *in_thrashing)
 {}
 static inline void delayacct_swapin_start(void)
 {}
@@ -252,6 +287,8 @@ static inline void delayacct_compact_end(void)
 static inline void delayacct_wpcopy_start(void)
 {}
 static inline void delayacct_wpcopy_end(void)
+{}
+static inline void delayacct_irq(struct task_struct *task, u32 delta)
 {}
 
 #endif /* CONFIG_TASK_DELAY_ACCT */

@@ -14,7 +14,6 @@
 #include <linux/io.h>
 #include <linux/msi.h>
 #include <linux/iommu.h>
-#include <linux/sched/mm.h>
 
 #include <asm/sections.h>
 #include <asm/io.h>
@@ -32,8 +31,6 @@
 
 #include "powernv.h"
 #include "pci.h"
-
-static DEFINE_MUTEX(tunnel_mutex);
 
 int pnv_pci_get_slot_id(struct device_node *np, uint64_t *id)
 {
@@ -744,64 +741,6 @@ struct iommu_table *pnv_pci_table_alloc(int nid)
 	return tbl;
 }
 
-struct device_node *pnv_pci_get_phb_node(struct pci_dev *dev)
-{
-	struct pci_controller *hose = pci_bus_to_host(dev->bus);
-
-	return of_node_get(hose->dn);
-}
-EXPORT_SYMBOL(pnv_pci_get_phb_node);
-
-int pnv_pci_set_tunnel_bar(struct pci_dev *dev, u64 addr, int enable)
-{
-	struct pnv_phb *phb = pci_bus_to_pnvhb(dev->bus);
-	u64 tunnel_bar;
-	__be64 val;
-	int rc;
-
-	if (!opal_check_token(OPAL_PCI_GET_PBCQ_TUNNEL_BAR))
-		return -ENXIO;
-	if (!opal_check_token(OPAL_PCI_SET_PBCQ_TUNNEL_BAR))
-		return -ENXIO;
-
-	mutex_lock(&tunnel_mutex);
-	rc = opal_pci_get_pbcq_tunnel_bar(phb->opal_id, &val);
-	if (rc != OPAL_SUCCESS) {
-		rc = -EIO;
-		goto out;
-	}
-	tunnel_bar = be64_to_cpu(val);
-	if (enable) {
-		/*
-		* Only one device per PHB can use atomics.
-		* Our policy is first-come, first-served.
-		*/
-		if (tunnel_bar) {
-			if (tunnel_bar != addr)
-				rc = -EBUSY;
-			else
-				rc = 0;	/* Setting same address twice is ok */
-			goto out;
-		}
-	} else {
-		/*
-		* The device that owns atomics and wants to release
-		* them must pass the same address with enable == 0.
-		*/
-		if (tunnel_bar != addr) {
-			rc = -EPERM;
-			goto out;
-		}
-		addr = 0x0ULL;
-	}
-	rc = opal_pci_set_pbcq_tunnel_bar(phb->opal_id, addr);
-	rc = opal_error_code(rc);
-out:
-	mutex_unlock(&tunnel_mutex);
-	return rc;
-}
-EXPORT_SYMBOL_GPL(pnv_pci_set_tunnel_bar);
-
 void pnv_pci_shutdown(void)
 {
 	struct pci_controller *hose;
@@ -845,11 +784,6 @@ void __init pnv_pci_init(void)
 	pcie_ports_disabled = true;
 #endif
 
-	/* Look for IODA IO-Hubs. */
-	for_each_compatible_node(np, NULL, "ibm,ioda-hub") {
-		pnv_pci_init_ioda_hub(np);
-	}
-
 	/* Look for ioda2 built-in PHB3's */
 	for_each_compatible_node(np, NULL, "ibm,ioda2-phb")
 		pnv_pci_init_ioda2_phb(np);
@@ -865,28 +799,3 @@ void __init pnv_pci_init(void)
 	/* Configure IOMMU DMA hooks */
 	set_pci_dma_ops(&dma_iommu_ops);
 }
-
-static int pnv_tce_iommu_bus_notifier(struct notifier_block *nb,
-		unsigned long action, void *data)
-{
-	struct device *dev = data;
-
-	switch (action) {
-	case BUS_NOTIFY_DEL_DEVICE:
-		iommu_del_device(dev);
-		return 0;
-	default:
-		return 0;
-	}
-}
-
-static struct notifier_block pnv_tce_iommu_bus_nb = {
-	.notifier_call = pnv_tce_iommu_bus_notifier,
-};
-
-static int __init pnv_tce_iommu_bus_notifier_init(void)
-{
-	bus_register_notifier(&pci_bus_type, &pnv_tce_iommu_bus_nb);
-	return 0;
-}
-machine_subsys_initcall_sync(powernv, pnv_tce_iommu_bus_notifier_init);

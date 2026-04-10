@@ -6,6 +6,7 @@
 #include <linux/sched.h>
 #include <linux/task_work.h>
 #include <linux/memcontrol.h>
+#include <linux/rseq.h>
 #include <linux/blk-cgroup.h>
 
 /**
@@ -55,10 +56,10 @@ static inline void resume_user_mode_work(struct pt_regs *regs)
 	}
 #endif
 
-	mem_cgroup_handle_over_high();
+	mem_cgroup_handle_over_high(GFP_KERNEL);
 	blkcg_maybe_throttle_current();
 
-	rseq_handle_notify_resume(NULL, regs);
+	rseq_handle_slowpath(regs);
 }
 
 #endif /* LINUX_RESUME_USER_MODE_H */

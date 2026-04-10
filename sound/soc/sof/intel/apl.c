@@ -3,7 +3,7 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2018 Intel Corporation. All rights reserved.
+// Copyright(c) 2018 Intel Corporation
 //
 // Authors: Liam Girdwood <liam.r.girdwood@linux.intel.com>
 //	    Ranjani Sridharan <ranjani.sridharan@linux.intel.com>
@@ -29,7 +29,6 @@ static const struct snd_sof_debugfs_map apl_dsp_debugfs[] = {
 
 /* apollolake ops */
 struct snd_sof_dsp_ops sof_apl_ops;
-EXPORT_SYMBOL_NS(sof_apl_ops, SND_SOC_SOF_INTEL_HDA_COMMON);
 
 int sof_apl_ops_init(struct snd_sof_dev *sdev)
 {
@@ -39,29 +38,44 @@ int sof_apl_ops_init(struct snd_sof_dev *sdev)
 	/* probe/remove/shutdown */
 	sof_apl_ops.shutdown	= hda_dsp_shutdown;
 
-	if (sdev->pdata->ipc_type == SOF_IPC) {
+	if (sdev->pdata->ipc_type == SOF_IPC_TYPE_3) {
 		/* doorbell */
 		sof_apl_ops.irq_thread	= hda_dsp_ipc_irq_thread;
 
 		/* ipc */
 		sof_apl_ops.send_msg	= hda_dsp_ipc_send_msg;
+
+		/* debug */
+		sof_apl_ops.ipc_dump	= hda_ipc_dump;
+
+		sof_apl_ops.set_power_state = hda_dsp_set_power_state_ipc3;
 	}
 
-	if (sdev->pdata->ipc_type == SOF_INTEL_IPC4) {
+	if (sdev->pdata->ipc_type == SOF_IPC_TYPE_4) {
 		struct sof_ipc4_fw_data *ipc4_data;
 
-		sdev->private = devm_kzalloc(sdev->dev, sizeof(*ipc4_data), GFP_KERNEL);
+		sdev->private = kzalloc_obj(*ipc4_data);
 		if (!sdev->private)
 			return -ENOMEM;
 
 		ipc4_data = sdev->private;
 		ipc4_data->manifest_fw_hdr_offset = SOF_MAN4_FW_HDR_OFFSET;
 
+		ipc4_data->mtrace_type = SOF_IPC4_MTRACE_INTEL_CAVS_1_5;
+
+		/* External library loading support */
+		ipc4_data->load_library = hda_dsp_ipc4_load_library;
+
 		/* doorbell */
 		sof_apl_ops.irq_thread	= hda_dsp_ipc4_irq_thread;
 
 		/* ipc */
 		sof_apl_ops.send_msg	= hda_dsp_ipc4_send_msg;
+
+		/* debug */
+		sof_apl_ops.ipc_dump	= hda_ipc4_dump;
+
+		sof_apl_ops.set_power_state = hda_dsp_set_power_state_ipc4;
 	}
 
 	/* set DAI driver ops */
@@ -70,7 +84,6 @@ int sof_apl_ops_init(struct snd_sof_dev *sdev)
 	/* debug */
 	sof_apl_ops.debug_map	= apl_dsp_debugfs;
 	sof_apl_ops.debug_map_count	= ARRAY_SIZE(apl_dsp_debugfs);
-	sof_apl_ops.ipc_dump	= hda_ipc_dump;
 
 	/* firmware run */
 	sof_apl_ops.run = hda_dsp_cl_boot_firmware;
@@ -83,7 +96,6 @@ int sof_apl_ops_init(struct snd_sof_dev *sdev)
 
 	return 0;
 };
-EXPORT_SYMBOL_NS(sof_apl_ops_init, SND_SOC_SOF_INTEL_HDA_COMMON);
 
 const struct sof_intel_dsp_desc apl_chip_info = {
 	/* Apollolake */
@@ -99,8 +111,12 @@ const struct sof_intel_dsp_desc apl_chip_info = {
 	.rom_init_timeout	= 150,
 	.ssp_count = APL_SSP_COUNT,
 	.ssp_base_offset = APL_SSP_BASE_OFFSET,
+	.d0i3_offset = SOF_HDA_VS_D0I3C,
 	.quirks = SOF_INTEL_PROCEN_FMT_QUIRK,
 	.check_ipc_irq	= hda_dsp_check_ipc_irq,
+	.cl_init = cl_dsp_init,
+	.power_down_dsp = hda_power_down_dsp,
+	.disable_interrupts = hda_dsp_disable_interrupts,
 	.hw_ip_version = SOF_INTEL_CAVS_1_5_PLUS,
+	.platform = "apl",
 };
-EXPORT_SYMBOL_NS(apl_chip_info, SND_SOC_SOF_INTEL_HDA_COMMON);

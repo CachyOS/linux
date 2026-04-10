@@ -88,17 +88,13 @@ static int anon_transport_dummy_function(struct transport_container *tc,
  * events.  Use prezero and then use DECLARE_ANON_TRANSPORT_CLASS() to
  * initialise the anon transport class storage.
  */
-int anon_transport_class_register(struct anon_transport_class *atc)
+void anon_transport_class_register(struct anon_transport_class *atc)
 {
-	int error;
 	atc->container.class = &atc->tclass.class;
 	attribute_container_set_no_classdevs(&atc->container);
-	error = attribute_container_register(&atc->container);
-	if (error)
-		return error;
+	attribute_container_register(&atc->container);
 	atc->tclass.setup = anon_transport_dummy_function;
 	atc->tclass.remove = anon_transport_dummy_function;
-	return 0;
 }
 EXPORT_SYMBOL_GPL(anon_transport_class_register);
 
@@ -155,12 +151,33 @@ static int transport_add_class_device(struct attribute_container *cont,
 				      struct device *dev,
 				      struct device *classdev)
 {
+	struct transport_class *tclass = class_to_transport_class(cont->class);
 	int error = attribute_container_add_class_device(classdev);
 	struct transport_container *tcont = 
 		attribute_container_to_transport_container(cont);
 
-	if (!error && tcont->statistics)
+	if (error)
+		goto err_remove;
+
+	if (tcont->statistics) {
 		error = sysfs_create_group(&classdev->kobj, tcont->statistics);
+		if (error)
+			goto err_del;
+	}
+
+	if (tcont->encryption) {
+		error = sysfs_create_group(&classdev->kobj, tcont->encryption);
+		if (error)
+			goto err_del;
+	}
+
+	return 0;
+
+err_del:
+	attribute_container_class_device_del(classdev);
+err_remove:
+	if (tclass->remove)
+		tclass->remove(tcont, dev, classdev);
 
 	return error;
 }
@@ -229,6 +246,8 @@ static int transport_remove_classdev(struct attribute_container *cont,
 	if (tclass->remove != anon_transport_dummy_function) {
 		if (tcont->statistics)
 			sysfs_remove_group(&classdev->kobj, tcont->statistics);
+		if (tcont->encryption)
+			sysfs_remove_group(&classdev->kobj, tcont->encryption);
 		attribute_container_class_device_del(classdev);
 	}
 

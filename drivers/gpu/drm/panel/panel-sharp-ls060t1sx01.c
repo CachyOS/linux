@@ -24,19 +24,12 @@ struct sharp_ls060 {
 	struct regulator *avdd_supply;
 	struct regulator *avee_supply;
 	struct gpio_desc *reset_gpio;
-	bool prepared;
 };
 
 static inline struct sharp_ls060 *to_sharp_ls060(struct drm_panel *panel)
 {
 	return container_of(panel, struct sharp_ls060, panel);
 }
-
-#define dsi_dcs_write_seq(dsi, seq...) ({				\
-		static const u8 d[] = { seq };				\
-									\
-		mipi_dsi_dcs_write_buffer(dsi, d, ARRAY_SIZE(d));	\
-	})
 
 static void sharp_ls060_reset(struct sharp_ls060 *ctx)
 {
@@ -51,73 +44,40 @@ static void sharp_ls060_reset(struct sharp_ls060 *ctx)
 static int sharp_ls060_on(struct sharp_ls060 *ctx)
 {
 	struct mipi_dsi_device *dsi = ctx->dsi;
-	struct device *dev = &dsi->dev;
-	int ret;
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
 
 	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 
-	ret = dsi_dcs_write_seq(dsi, 0xbb, 0x13);
-	if (ret < 0) {
-		dev_err(dev, "Failed to send command: %d\n", ret);
-		return ret;
-	}
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xbb, 0x13);
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_MEMORY_START);
 
-	ret = dsi_dcs_write_seq(dsi, MIPI_DCS_WRITE_MEMORY_START);
-	if (ret < 0) {
-		dev_err(dev, "Failed to send command: %d\n", ret);
-		return ret;
-	}
+	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
+	mipi_dsi_msleep(&dsi_ctx, 120);
 
-	ret = mipi_dsi_dcs_exit_sleep_mode(dsi);
-	if (ret < 0) {
-		dev_err(dev, "Failed to exit sleep mode: %d\n", ret);
-		return ret;
-	}
-	msleep(120);
+	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
+	mipi_dsi_msleep(&dsi_ctx, 50);
 
-	ret = mipi_dsi_dcs_set_display_on(dsi);
-	if (ret < 0) {
-		dev_err(dev, "Failed to set display on: %d\n", ret);
-		return ret;
-	}
-	msleep(50);
-
-	return 0;
+	return dsi_ctx.accum_err;
 }
 
-static int sharp_ls060_off(struct sharp_ls060 *ctx)
+static void sharp_ls060_off(struct sharp_ls060 *ctx)
 {
 	struct mipi_dsi_device *dsi = ctx->dsi;
-	struct device *dev = &dsi->dev;
-	int ret;
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
 
 	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
 
-	ret = mipi_dsi_dcs_set_display_off(dsi);
-	if (ret < 0) {
-		dev_err(dev, "Failed to set display off: %d\n", ret);
-		return ret;
-	}
-	usleep_range(2000, 3000);
+	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
+	mipi_dsi_usleep_range(&dsi_ctx, 2000, 3000);
 
-	ret = mipi_dsi_dcs_enter_sleep_mode(dsi);
-	if (ret < 0) {
-		dev_err(dev, "Failed to enter sleep mode: %d\n", ret);
-		return ret;
-	}
-	msleep(121);
-
-	return 0;
+	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
+	mipi_dsi_msleep(&dsi_ctx, 121);
 }
 
 static int sharp_ls060_prepare(struct drm_panel *panel)
 {
 	struct sharp_ls060 *ctx = to_sharp_ls060(panel);
-	struct device *dev = &ctx->dsi->dev;
 	int ret;
-
-	if (ctx->prepared)
-		return 0;
 
 	ret = regulator_enable(ctx->vddi_supply);
 	if (ret < 0)
@@ -144,12 +104,8 @@ static int sharp_ls060_prepare(struct drm_panel *panel)
 	sharp_ls060_reset(ctx);
 
 	ret = sharp_ls060_on(ctx);
-	if (ret < 0) {
-		dev_err(dev, "Failed to initialize panel: %d\n", ret);
+	if (ret < 0)
 		goto err_on;
-	}
-
-	ctx->prepared = true;
 
 	return 0;
 
@@ -175,15 +131,8 @@ err_avdd:
 static int sharp_ls060_unprepare(struct drm_panel *panel)
 {
 	struct sharp_ls060 *ctx = to_sharp_ls060(panel);
-	struct device *dev = &ctx->dsi->dev;
-	int ret;
 
-	if (!ctx->prepared)
-		return 0;
-
-	ret = sharp_ls060_off(ctx);
-	if (ret < 0)
-		dev_err(dev, "Failed to un-initialize panel: %d\n", ret);
+	sharp_ls060_off(ctx);
 
 	regulator_disable(ctx->vddh_supply);
 
@@ -196,7 +145,6 @@ static int sharp_ls060_unprepare(struct drm_panel *panel)
 
 	regulator_disable(ctx->vddi_supply);
 
-	ctx->prepared = false;
 	return 0;
 }
 
@@ -245,9 +193,11 @@ static int sharp_ls060_probe(struct mipi_dsi_device *dsi)
 	struct sharp_ls060 *ctx;
 	int ret;
 
-	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
-	if (!ctx)
-		return -ENOMEM;
+	ctx = devm_drm_panel_alloc(dev, struct sharp_ls060, panel,
+				   &sharp_ls060_panel_funcs,
+				   DRM_MODE_CONNECTOR_DSI);
+	if (IS_ERR(ctx))
+		return PTR_ERR(ctx);
 
 	ctx->vddi_supply = devm_regulator_get(dev, "vddi");
 	if (IS_ERR(ctx->vddi_supply))
@@ -279,9 +229,6 @@ static int sharp_ls060_probe(struct mipi_dsi_device *dsi)
 			  MIPI_DSI_MODE_NO_EOT_PACKET |
 			  MIPI_DSI_CLOCK_NON_CONTINUOUS;
 
-	drm_panel_init(&ctx->panel, dev, &sharp_ls060_panel_funcs,
-		       DRM_MODE_CONNECTOR_DSI);
-
 	ret = drm_panel_of_backlight(&ctx->panel);
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to get backlight\n");
@@ -298,7 +245,7 @@ static int sharp_ls060_probe(struct mipi_dsi_device *dsi)
 	return 0;
 }
 
-static int sharp_ls060_remove(struct mipi_dsi_device *dsi)
+static void sharp_ls060_remove(struct mipi_dsi_device *dsi)
 {
 	struct sharp_ls060 *ctx = mipi_dsi_get_drvdata(dsi);
 	int ret;
@@ -308,8 +255,6 @@ static int sharp_ls060_remove(struct mipi_dsi_device *dsi)
 		dev_err(&dsi->dev, "Failed to detach from DSI host: %d\n", ret);
 
 	drm_panel_remove(&ctx->panel);
-
-	return 0;
 }
 
 static const struct of_device_id sharp_ls060t1sx01_of_match[] = {

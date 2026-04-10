@@ -50,7 +50,7 @@
 #define RX8010_ALARM_AE		BIT(7)
 
 static const struct i2c_device_id rx8010_id[] = {
-	{ "rx8010", 0 },
+	{ "rx8010" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rx8010_id);
@@ -394,10 +394,14 @@ static int rx8010_probe(struct i2c_client *client)
 		return PTR_ERR(rx8010->rtc);
 
 	if (client->irq > 0) {
-		dev_info(dev, "IRQ %d supplied\n", client->irq);
+		unsigned long irqflags = IRQF_TRIGGER_LOW;
+
+		if (dev_fwnode(&client->dev))
+			irqflags = 0;
+
 		err = devm_request_threaded_irq(dev, client->irq, NULL,
 						rx8010_irq_1_handler,
-						IRQF_TRIGGER_LOW | IRQF_ONESHOT,
+						irqflags | IRQF_ONESHOT,
 						"rx8010", client);
 		if (err) {
 			dev_err(dev, "unable to request IRQ\n");
@@ -408,7 +412,6 @@ static int rx8010_probe(struct i2c_client *client)
 	}
 
 	rx8010->rtc->ops = &rx8010_rtc_ops;
-	rx8010->rtc->max_user_freq = 1;
 	rx8010->rtc->range_min = RTC_TIMESTAMP_BEGIN_2000;
 	rx8010->rtc->range_max = RTC_TIMESTAMP_END_2099;
 
@@ -420,7 +423,7 @@ static struct i2c_driver rx8010_driver = {
 		.name = "rtc-rx8010",
 		.of_match_table = of_match_ptr(rx8010_of_match),
 	},
-	.probe_new	= rx8010_probe,
+	.probe		= rx8010_probe,
 	.id_table	= rx8010_id,
 };
 

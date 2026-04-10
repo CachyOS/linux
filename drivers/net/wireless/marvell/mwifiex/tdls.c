@@ -735,6 +735,7 @@ mwifiex_construct_tdls_action_frame(struct mwifiex_private *priv,
 	int ret;
 	u16 capab;
 	struct ieee80211_ht_cap *ht_cap;
+	unsigned int extra;
 	u8 radio, *pos;
 
 	capab = priv->curr_bss_params.bss_descriptor.cap_info_bitmap;
@@ -753,7 +754,10 @@ mwifiex_construct_tdls_action_frame(struct mwifiex_private *priv,
 
 	switch (action_code) {
 	case WLAN_PUB_ACTION_TDLS_DISCOVER_RES:
-		skb_put(skb, sizeof(mgmt->u.action.u.tdls_discover_resp) + 1);
+		/* See the layout of 'struct ieee80211_mgmt'. */
+		extra = sizeof(mgmt->u.action.u.tdls_discover_resp) +
+			sizeof(mgmt->u.action.category);
+		skb_put(skb, extra);
 		mgmt->u.action.category = WLAN_CATEGORY_PUBLIC;
 		mgmt->u.action.u.tdls_discover_resp.action_code =
 					      WLAN_PUB_ACTION_TDLS_DISCOVER_RES;
@@ -762,8 +766,7 @@ mwifiex_construct_tdls_action_frame(struct mwifiex_private *priv,
 		mgmt->u.action.u.tdls_discover_resp.capability =
 							     cpu_to_le16(capab);
 		/* move back for addr4 */
-		memmove(pos + ETH_ALEN, &mgmt->u.action.category,
-			sizeof(mgmt->u.action.u.tdls_discover_resp));
+		memmove(pos + ETH_ALEN, &mgmt->u.action, extra);
 		/* init address 4 */
 		eth_broadcast_addr(pos);
 
@@ -1303,7 +1306,6 @@ int mwifiex_tdls_check_tx(struct mwifiex_private *priv, struct sk_buff *skb)
 							   peer->mac_addr,
 							   NL80211_TDLS_SETUP,
 							   0, GFP_ATOMIC);
-				peer->do_setup = false;
 				priv->check_tdls_tx = false;
 			} else if (peer->failure_count <
 				   MWIFIEX_TDLS_MAX_FAIL_COUNT &&
@@ -1354,7 +1356,7 @@ void mwifiex_add_auto_tdls_peer(struct mwifiex_private *priv, const u8 *mac)
 	}
 
 	/* create new TDLS peer */
-	tdls_peer = kzalloc(sizeof(*tdls_peer), GFP_ATOMIC);
+	tdls_peer = kzalloc_obj(*tdls_peer, GFP_ATOMIC);
 	if (tdls_peer) {
 		ether_addr_copy(tdls_peer->mac_addr, mac);
 		tdls_peer->tdls_status = TDLS_SETUP_INPROGRESS;
@@ -1413,7 +1415,8 @@ void mwifiex_auto_tdls_update_peer_signal(struct mwifiex_private *priv,
 
 void mwifiex_check_auto_tdls(struct timer_list *t)
 {
-	struct mwifiex_private *priv = from_timer(priv, t, auto_tdls_timer);
+	struct mwifiex_private *priv = timer_container_of(priv, t,
+							  auto_tdls_timer);
 	struct mwifiex_auto_tdls_peer *tdls_peer;
 	u16 reason = WLAN_REASON_TDLS_TEARDOWN_UNSPECIFIED;
 
@@ -1436,8 +1439,8 @@ void mwifiex_check_auto_tdls(struct timer_list *t)
 
 	spin_lock_bh(&priv->auto_tdls_lock);
 	list_for_each_entry(tdls_peer, &priv->auto_tdls_list, list) {
-		if ((jiffies - tdls_peer->rssi_jiffies) >
-		    (MWIFIEX_AUTO_TDLS_IDLE_TIME * HZ)) {
+		if (time_after(jiffies, tdls_peer->rssi_jiffies +
+					 MWIFIEX_AUTO_TDLS_IDLE_TIME * HZ)) {
 			tdls_peer->rssi = 0;
 			tdls_peer->do_discover = true;
 			priv->check_tdls_tx = true;
@@ -1462,7 +1465,6 @@ void mwifiex_check_auto_tdls(struct timer_list *t)
 			   tdls_peer->failure_count <
 			   MWIFIEX_TDLS_MAX_FAIL_COUNT) {
 				priv->check_tdls_tx = true;
-				tdls_peer->do_setup = true;
 				mwifiex_dbg(priv->adapter, INFO,
 					    "check TDLS with peer=%pM\t"
 					    "rssi=%d\n", tdls_peer->mac_addr,
@@ -1489,7 +1491,7 @@ void mwifiex_clean_auto_tdls(struct mwifiex_private *priv)
 	    priv->adapter->auto_tdls &&
 	    priv->bss_type == MWIFIEX_BSS_TYPE_STA) {
 		priv->auto_tdls_timer_active = false;
-		del_timer(&priv->auto_tdls_timer);
+		timer_delete(&priv->auto_tdls_timer);
 		mwifiex_flush_auto_tdls_list(priv);
 	}
 }

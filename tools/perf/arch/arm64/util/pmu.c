@@ -1,25 +1,26 @@
 // SPDX-License-Identifier: GPL-2.0
 
-#include "../../../util/cpumap.h"
 #include "../../../util/pmu.h"
+#include "../../../util/pmus.h"
+#include "../../../util/tool_pmu.h"
+#include <api/fs/fs.h>
 
-const struct pmu_events_map *pmu_events_map__find(void)
+u64 tool_pmu__cpu_slots_per_cycle(void)
 {
-	struct perf_pmu *pmu = NULL;
+	char path[PATH_MAX];
+	unsigned long long slots = 0;
+	struct perf_pmu *pmu = perf_pmus__find_core_pmu();
 
-	while ((pmu = perf_pmu__scan(pmu))) {
-		if (!is_pmu_core(pmu->name))
-			continue;
-
+	if (pmu) {
+		perf_pmu__pathname_scnprintf(path, sizeof(path),
+					     pmu->name, "caps/slots");
 		/*
-		 * The cpumap should cover all CPUs. Otherwise, some CPUs may
-		 * not support some events or have different event IDs.
+		 * The value of slots is not greater than 32 bits, but
+		 * filename__read_int can't read value with 0x prefix,
+		 * so use filename__read_ull instead.
 		 */
-		if (pmu->cpus->nr != cpu__max_cpu().cpu)
-			return NULL;
-
-		return perf_pmu__find_map(pmu);
+		filename__read_ull(path, &slots);
 	}
 
-	return NULL;
+	return slots;
 }

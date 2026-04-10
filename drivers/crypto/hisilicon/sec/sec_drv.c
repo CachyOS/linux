@@ -458,7 +458,7 @@ static void sec_ipv6_hashmask(struct sec_dev_info *info, u32 hash_mask[])
 static int sec_ipv4_hashmask(struct sec_dev_info *info, u32 hash_mask)
 {
 	if (hash_mask & SEC_HASH_IPV4_MASK) {
-		dev_err(info->dev, "Sec Ipv4 Hash Mask Input Error!\n ");
+		dev_err(info->dev, "Sec Ipv4 Hash Mask Input Error!\n");
 		return -EINVAL;
 	}
 
@@ -892,7 +892,7 @@ bool sec_queue_can_enqueue(struct sec_queue *queue, int num)
 static void sec_queue_hw_init(struct sec_queue *queue)
 {
 	sec_queue_ar_alloc(queue, SEC_QUEUE_AR_FROCE_NOALLOC);
-	sec_queue_aw_alloc(queue, SEC_QUEUE_AR_FROCE_NOALLOC);
+	sec_queue_aw_alloc(queue, SEC_QUEUE_AW_FROCE_NOALLOC);
 	sec_queue_ar_pkgattr(queue, 1);
 	sec_queue_aw_pkgattr(queue, 1);
 
@@ -922,7 +922,8 @@ static int sec_hw_init(struct sec_dev_info *info)
 	struct iommu_domain *domain;
 	u32 sec_ipv4_mask = 0;
 	u32 sec_ipv6_mask[10] = {};
-	u32 i, ret;
+	int ret;
+	u32 i;
 
 	domain = iommu_get_domain_for_dev(info->dev);
 
@@ -1107,8 +1108,8 @@ static int sec_queue_res_cfg(struct sec_queue *queue)
 	}
 	queue->task_irq = platform_get_irq(to_platform_device(dev),
 					   queue->queue_id * 2 + 1);
-	if (queue->task_irq <= 0) {
-		ret = -EINVAL;
+	if (queue->task_irq < 0) {
+		ret = queue->task_irq;
 		goto err_free_ring_db;
 	}
 
@@ -1271,7 +1272,7 @@ queues_unconfig:
 	return ret;
 }
 
-static int sec_remove(struct platform_device *pdev)
+static void sec_remove(struct platform_device *pdev)
 {
 	struct sec_dev_info *info = platform_get_drvdata(pdev);
 	int i;
@@ -1287,8 +1288,6 @@ static int sec_remove(struct platform_device *pdev)
 	}
 
 	sec_base_exit(info);
-
-	return 0;
 }
 
 static const __maybe_unused struct of_device_id sec_match[] = {

@@ -2,9 +2,9 @@
 /*
  * Copyright (C) 2002 Paul Mackerras, IBM Corp.
  */
+#include <linux/export.h>
 #include <asm/processor.h>
 #include <asm/ppc_asm.h>
-#include <asm/export.h>
 #include <asm/asm-compat.h>
 #include <asm/feature-fixups.h>
 
@@ -562,3 +562,4 @@ exc;	std	r10,32(3)
 	li	r5,4096
 	b	.Ldst_aligned
 EXPORT_SYMBOL(__copy_tofrom_user)
+EXPORT_SYMBOL(__copy_tofrom_user_base)

@@ -13,6 +13,7 @@
 #include <asm/insn.h>
 #include <asm/insn-eval.h>
 #include <asm/ldt.h>
+#include <asm/msr.h>
 #include <asm/vm86.h>
 
 #undef pr_fmt
@@ -62,11 +63,10 @@ static bool is_string_insn(struct insn *insn)
 bool insn_has_rep_prefix(struct insn *insn)
 {
 	insn_byte_t p;
-	int i;
 
 	insn_get_prefixes(insn);
 
-	for_each_insn_prefix(insn, i, p) {
+	for_each_insn_prefix(insn, p) {
 		if (p == 0xf2 || p == 0xf3)
 			return true;
 	}
@@ -91,13 +91,13 @@ bool insn_has_rep_prefix(struct insn *insn)
 static int get_seg_reg_override_idx(struct insn *insn)
 {
 	int idx = INAT_SEG_REG_DEFAULT;
-	int num_overrides = 0, i;
+	int num_overrides = 0;
 	insn_byte_t p;
 
 	insn_get_prefixes(insn);
 
 	/* Look for any segment override prefixes. */
-	for_each_insn_prefix(insn, i, p) {
+	for_each_insn_prefix(insn, p) {
 		insn_attr_t attr;
 
 		attr = inat_get_opcode_attribute(p);
@@ -631,14 +631,21 @@ static bool get_desc(struct desc_struct *out, unsigned short sel)
 		/* Bits [15:3] contain the index of the desired entry. */
 		sel >>= 3;
 
-		mutex_lock(&current->active_mm->context.lock);
-		ldt = current->active_mm->context.ldt;
+		/*
+		 * If we're not in a valid context with a real (not just lazy)
+		 * user mm, then don't even try.
+		 */
+		if (!nmi_uaccess_okay())
+			return false;
+
+		mutex_lock(&current->mm->context.lock);
+		ldt = current->mm->context.ldt;
 		if (ldt && sel < ldt->nr_entries) {
 			*out = ldt->entries[sel];
 			success = true;
 		}
 
-		mutex_unlock(&current->active_mm->context.lock);
+		mutex_unlock(&current->mm->context.lock);
 
 		return success;
 	}
@@ -702,16 +709,16 @@ unsigned long insn_get_seg_base(struct pt_regs *regs, int seg_reg_idx)
 		unsigned long base;
 
 		if (seg_reg_idx == INAT_SEG_REG_FS) {
-			rdmsrl(MSR_FS_BASE, base);
+			rdmsrq(MSR_FS_BASE, base);
 		} else if (seg_reg_idx == INAT_SEG_REG_GS) {
 			/*
 			 * swapgs was called at the kernel entry point. Thus,
 			 * MSR_KERNEL_GS_BASE will have the user-space GS base.
 			 */
 			if (user_mode(regs))
-				rdmsrl(MSR_KERNEL_GS_BASE, base);
+				rdmsrq(MSR_KERNEL_GS_BASE, base);
 			else
-				rdmsrl(MSR_GS_BASE, base);
+				rdmsrq(MSR_GS_BASE, base);
 		} else {
 			base = 0;
 		}
@@ -1129,15 +1136,15 @@ static int get_eff_addr_modrm_16(struct insn *insn, struct pt_regs *regs,
  * get_eff_addr_sib() - Obtain referenced effective address via SIB
  * @insn:	Instruction. Must be valid.
  * @regs:	Register values as seen when entering kernel mode
- * @regoff:	Obtained operand offset, in pt_regs, associated with segment
+ * @base_offset: Obtained operand offset, in pt_regs, associated with segment
  * @eff_addr:	Obtained effective address
  *
  * Obtain the effective address referenced by the SIB byte of @insn. After
  * identifying the registers involved in the indexed, register-indirect memory
  * reference, its value is obtained from the operands in @regs. The computed
  * address is stored @eff_addr. Also, the register operand that indicates the
- * associated segment is stored in @regoff, this parameter can later be used to
- * determine such segment.
+ * associated segment is stored in @base_offset; this parameter can later be
+ * used to determine such segment.
  *
  * Returns:
  *
@@ -1595,16 +1602,16 @@ bool insn_decode_from_regs(struct insn *insn, struct pt_regs *regs,
  * Returns:
  *
  * Type of the instruction. Size of the memory operand is stored in
- * @bytes. If decode failed, MMIO_DECODE_FAILED returned.
+ * @bytes. If decode failed, INSN_MMIO_DECODE_FAILED returned.
  */
-enum mmio_type insn_decode_mmio(struct insn *insn, int *bytes)
+enum insn_mmio_type insn_decode_mmio(struct insn *insn, int *bytes)
 {
-	enum mmio_type type = MMIO_DECODE_FAILED;
+	enum insn_mmio_type type = INSN_MMIO_DECODE_FAILED;
 
 	*bytes = 0;
 
 	if (insn_get_opcode(insn))
-		return MMIO_DECODE_FAILED;
+		return INSN_MMIO_DECODE_FAILED;
 
 	switch (insn->opcode.bytes[0]) {
 	case 0x88: /* MOV m8,r8 */
@@ -1613,7 +1620,7 @@ enum mmio_type insn_decode_mmio(struct insn *insn, int *bytes)
 	case 0x89: /* MOV m16/m32/m64, r16/m32/m64 */
 		if (!*bytes)
 			*bytes = insn->opnd_bytes;
-		type = MMIO_WRITE;
+		type = INSN_MMIO_WRITE;
 		break;
 
 	case 0xc6: /* MOV m8, imm8 */
@@ -1622,7 +1629,7 @@ enum mmio_type insn_decode_mmio(struct insn *insn, int *bytes)
 	case 0xc7: /* MOV m16/m32/m64, imm16/imm32/imm64 */
 		if (!*bytes)
 			*bytes = insn->opnd_bytes;
-		type = MMIO_WRITE_IMM;
+		type = INSN_MMIO_WRITE_IMM;
 		break;
 
 	case 0x8a: /* MOV r8, m8 */
@@ -1631,7 +1638,7 @@ enum mmio_type insn_decode_mmio(struct insn *insn, int *bytes)
 	case 0x8b: /* MOV r16/r32/r64, m16/m32/m64 */
 		if (!*bytes)
 			*bytes = insn->opnd_bytes;
-		type = MMIO_READ;
+		type = INSN_MMIO_READ;
 		break;
 
 	case 0xa4: /* MOVS m8, m8 */
@@ -1640,7 +1647,7 @@ enum mmio_type insn_decode_mmio(struct insn *insn, int *bytes)
 	case 0xa5: /* MOVS m16/m32/m64, m16/m32/m64 */
 		if (!*bytes)
 			*bytes = insn->opnd_bytes;
-		type = MMIO_MOVS;
+		type = INSN_MMIO_MOVS;
 		break;
 
 	case 0x0f: /* Two-byte instruction */
@@ -1651,7 +1658,7 @@ enum mmio_type insn_decode_mmio(struct insn *insn, int *bytes)
 		case 0xb7: /* MOVZX r32/r64, m16 */
 			if (!*bytes)
 				*bytes = 2;
-			type = MMIO_READ_ZERO_EXTEND;
+			type = INSN_MMIO_READ_ZERO_EXTEND;
 			break;
 
 		case 0xbe: /* MOVSX r16/r32/r64, m8 */
@@ -1660,11 +1667,155 @@ enum mmio_type insn_decode_mmio(struct insn *insn, int *bytes)
 		case 0xbf: /* MOVSX r32/r64, m16 */
 			if (!*bytes)
 				*bytes = 2;
-			type = MMIO_READ_SIGN_EXTEND;
+			type = INSN_MMIO_READ_SIGN_EXTEND;
 			break;
 		}
 		break;
 	}
 
 	return type;
+}
+
+/*
+ * Recognise typical NOP patterns for both 32bit and 64bit.
+ *
+ * Notably:
+ *  - NOP, but not: REP NOP aka PAUSE
+ *  - NOPL
+ *  - MOV %reg, %reg
+ *  - LEA 0(%reg),%reg
+ *  - JMP +0
+ *
+ * Must not have false-positives; instructions identified as a NOP might be
+ * emulated as a NOP (uprobe) or Run Length Encoded in a larger NOP
+ * (alternatives).
+ *
+ * False-negatives are fine; need not be exhaustive.
+ */
+bool insn_is_nop(struct insn *insn)
+{
+	u8 b3 = 0, x3 = 0, r3 = 0;
+	u8 b4 = 0, x4 = 0, r4 = 0, m = 0;
+	u8 modrm, modrm_mod, modrm_reg, modrm_rm;
+	u8 sib = 0, sib_scale, sib_index, sib_base;
+	u8 nrex, rex;
+	u8 p, rep = 0;
+
+	if ((nrex = insn->rex_prefix.nbytes)) {
+		rex = insn->rex_prefix.bytes[nrex-1];
+
+		r3 = !!X86_REX_R(rex);
+		x3 = !!X86_REX_X(rex);
+		b3 = !!X86_REX_B(rex);
+		if (nrex > 1) {
+			r4 = !!X86_REX2_R(rex);
+			x4 = !!X86_REX2_X(rex);
+			b4 = !!X86_REX2_B(rex);
+			m  = !!X86_REX2_M(rex);
+		}
+
+	} else if (insn->vex_prefix.nbytes) {
+		/*
+		 * Ignore VEX encoded NOPs
+		 */
+		return false;
+	}
+
+	if (insn->modrm.nbytes) {
+		modrm = insn->modrm.bytes[0];
+		modrm_mod = X86_MODRM_MOD(modrm);
+		modrm_reg = X86_MODRM_REG(modrm) + 8*r3 + 16*r4;
+		modrm_rm  = X86_MODRM_RM(modrm)  + 8*b3 + 16*b4;
+		modrm = 1;
+	}
+
+	if (insn->sib.nbytes) {
+		sib = insn->sib.bytes[0];
+		sib_scale = X86_SIB_SCALE(sib);
+		sib_index = X86_SIB_INDEX(sib) + 8*x3 + 16*x4;
+		sib_base  = X86_SIB_BASE(sib)  + 8*b3 + 16*b4;
+		sib = 1;
+
+		modrm_rm = sib_base;
+	}
+
+	for_each_insn_prefix(insn, p) {
+		if (p == 0xf3) /* REPE */
+			rep = 1;
+	}
+
+	/*
+	 * Opcode map munging:
+	 *
+	 * REX2: 0 - single byte opcode
+	 *       1 - 0f second byte opcode
+	 */
+	switch (m) {
+	case 0: break;
+	case 1: insn->opcode.value <<= 8;
+		insn->opcode.value |= 0x0f;
+		break;
+	default:
+		return false;
+	}
+
+	switch (insn->opcode.bytes[0]) {
+	case 0x0f: /* 2nd byte */
+		break;
+
+	case 0x89: /* MOV */
+		if (modrm_mod != 3) /* register-direct */
+			return false;
+
+		/* native size */
+		if (insn->opnd_bytes != 4 * (1 + insn->x86_64))
+			return false;
+
+		return modrm_reg == modrm_rm; /* MOV %reg, %reg */
+
+	case 0x8d: /* LEA */
+		if (modrm_mod == 0 || modrm_mod == 3) /* register-indirect with disp */
+			return false;
+
+		/* native size */
+		if (insn->opnd_bytes != 4 * (1 + insn->x86_64))
+			return false;
+
+		if (insn->displacement.value != 0)
+			return false;
+
+		if (sib && (sib_scale != 0 || sib_index != 4)) /* (%reg, %eiz, 1) */
+			return false;
+
+		for_each_insn_prefix(insn, p) {
+			if (p != 0x3e) /* DS */
+				return false;
+		}
+
+		return modrm_reg == modrm_rm; /* LEA 0(%reg), %reg */
+
+	case 0x90: /* NOP */
+		if (b3 || b4) /* XCHG %r{8,16,24},%rax */
+			return false;
+
+		if (rep) /* REP NOP := PAUSE */
+			return false;
+
+		return true;
+
+	case 0xe9: /* JMP.d32 */
+	case 0xeb: /* JMP.d8 */
+		return insn->immediate.value == 0; /* JMP +0 */
+
+	default:
+		return false;
+	}
+
+	switch (insn->opcode.bytes[1]) {
+	case 0x1f:
+		return modrm_reg == 0; /* 0f 1f /0 -- NOPL */
+
+	default:
+		return false;
+	}
 }

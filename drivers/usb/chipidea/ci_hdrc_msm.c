@@ -274,7 +274,7 @@ err_iface:
 	return ret;
 }
 
-static int ci_hdrc_msm_remove(struct platform_device *pdev)
+static void ci_hdrc_msm_remove(struct platform_device *pdev)
 {
 	struct ci_hdrc_msm *ci = platform_get_drvdata(pdev);
 
@@ -282,8 +282,6 @@ static int ci_hdrc_msm_remove(struct platform_device *pdev)
 	ci_hdrc_remove_device(ci->ci);
 	clk_disable_unprepare(ci->iface_clk);
 	clk_disable_unprepare(ci->core_clk);
-
-	return 0;
 }
 
 static const struct of_device_id msm_ci_dt_match[] = {
@@ -305,4 +303,5 @@ module_platform_driver(ci_hdrc_msm_driver);
 
 MODULE_ALIAS("platform:msm_hsusb");
 MODULE_ALIAS("platform:ci13xxx_msm");
+MODULE_DESCRIPTION("ChipIdea Highspeed Dual Role Controller");
 MODULE_LICENSE("GPL v2");

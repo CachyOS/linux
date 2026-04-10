@@ -2,8 +2,6 @@
 #ifndef _ASM_X86_PLATFORM_H
 #define _ASM_X86_PLATFORM_H
 
-#include <asm/bootparam.h>
-
 struct ghcb;
 struct mpc_bus;
 struct mpc_cpu;
@@ -15,13 +13,15 @@ struct irq_domain;
 /**
  * struct x86_init_mpparse - platform specific mpparse ops
  * @setup_ioapic_ids:		platform specific ioapic id override
- * @find_smp_config:		find the smp configuration
- * @get_smp_config:		get the smp configuration
+ * @find_mptable:		Find MPTABLE early to reserve the memory region
+ * @early_parse_smp_cfg:	Parse the SMP configuration data early before initmem_init()
+ * @parse_smp_cfg:		Parse the SMP configuration data
  */
 struct x86_init_mpparse {
 	void (*setup_ioapic_ids)(void);
-	void (*find_smp_config)(void);
-	void (*get_smp_config)(unsigned int early);
+	void (*find_mptable)(void);
+	void (*early_parse_smp_cfg)(void);
+	void (*parse_smp_cfg)(void);
 };
 
 /**
@@ -30,12 +30,13 @@ struct x86_init_mpparse {
  * @reserve_resources:		reserve the standard resources for the
  *				platform
  * @memory_setup:		platform specific memory setup
- *
+ * @dmi_setup:			platform specific DMI setup
  */
 struct x86_init_resources {
 	void (*probe_roms)(void);
 	void (*reserve_resources)(void);
 	char *(*memory_setup)(void);
+	void (*dmi_setup)(void);
 };
 
 /**
@@ -78,7 +79,7 @@ struct x86_init_paging {
 
 /**
  * struct x86_init_timers - platform specific timer setup
- * @setup_perpcu_clockev:	set up the per cpu clock event device for the
+ * @setup_percpu_clockev:	set up the per cpu clock event device for the
  *				boot cpu
  * @timer_init:			initialize the platform timer (default PIT/HPET)
  * @wallclock_init:		init the wallclock device
@@ -131,7 +132,7 @@ struct x86_hyper_init {
 
 /**
  * struct x86_init_acpi - x86 ACPI init functions
- * @set_root_poitner:		set RSDP address
+ * @set_root_pointer:		set RSDP address
  * @get_root_pointer:		get RSDP address
  * @reduced_hw_early_init:	hardware reduced platform early init
  */
@@ -144,16 +145,26 @@ struct x86_init_acpi {
 /**
  * struct x86_guest - Functions used by misc guest incarnations like SEV, TDX, etc.
  *
- * @enc_status_change_prepare	Notify HV before the encryption status of a range is changed
- * @enc_status_change_finish	Notify HV after the encryption status of a range is changed
- * @enc_tlb_flush_required	Returns true if a TLB flush is needed before changing page encryption status
- * @enc_cache_flush_required	Returns true if a cache flush is needed before changing page encryption status
+ * @enc_status_change_prepare:	Notify HV before the encryption status of a range is changed
+ * @enc_status_change_finish:	Notify HV after the encryption status of a range is changed
+ * @enc_tlb_flush_required:	Returns true if a TLB flush is needed before changing page encryption status
+ * @enc_cache_flush_required:	Returns true if a cache flush is needed before changing page encryption status
+ * @enc_kexec_begin:		Begin the two-step process of converting shared memory back
+ *				to private. It stops the new conversions from being started
+ *				and waits in-flight conversions to finish, if possible.
+ * @enc_kexec_finish:		Finish the two-step process of converting shared memory to
+ *				private. All memory is private after the call when
+ *				the function returns.
+ *				It is called on only one CPU while the others are shut down
+ *				and with interrupts disabled.
  */
 struct x86_guest {
-	void (*enc_status_change_prepare)(unsigned long vaddr, int npages, bool enc);
-	bool (*enc_status_change_finish)(unsigned long vaddr, int npages, bool enc);
+	int (*enc_status_change_prepare)(unsigned long vaddr, int npages, bool enc);
+	int (*enc_status_change_finish)(unsigned long vaddr, int npages, bool enc);
 	bool (*enc_tlb_flush_required)(bool enc);
 	bool (*enc_cache_flush_required)(void);
+	void (*enc_kexec_begin)(void);
+	void (*enc_kexec_finish)(void);
 };
 
 /**
@@ -177,11 +188,14 @@ struct x86_init_ops {
  * struct x86_cpuinit_ops - platform specific cpu hotplug setups
  * @setup_percpu_clockev:	set up the per cpu clock event device
  * @early_percpu_clock_init:	early init of the per cpu clock event device
+ * @fixup_cpu_id:		fixup function for cpuinfo_x86::topo.pkg_id
+ * @parallel_bringup:		Parallel bringup control
  */
 struct x86_cpuinit_ops {
 	void (*setup_percpu_clockev)(void);
 	void (*early_percpu_clock_init)(void);
 	void (*fixup_cpu_id)(struct cpuinfo_x86 *c, int node);
+	bool parallel_bringup;
 };
 
 struct timespec64;
@@ -215,7 +229,7 @@ struct x86_legacy_devices {
  *	given platform/subarch.
  * @X86_LEGACY_I8042_FIRMWARE_ABSENT: firmware reports that the controller
  *	is absent.
- * @X86_LEGACY_i8042_EXPECTED_PRESENT: the controller is likely to be
+ * @X86_LEGACY_I8042_EXPECTED_PRESENT: the controller is likely to be
  *	present, the i8042 driver should probe for controller existence.
  */
 enum x86_legacy_i8042_state {
@@ -230,6 +244,8 @@ enum x86_legacy_i8042_state {
  * @i8042: indicated if we expect the device to have i8042 controller
  *	present.
  * @rtc: this device has a CMOS real-time clock present
+ * @warm_reset: 1 if platform allows warm reset, else 0
+ * @no_vga: 1 if (FADT.boot_flags & ACPI_FADT_NO_VGA) is set, else 0
  * @reserve_bios_regions: boot code will search for the EBDA address and the
  * 	start of the 640k - 1M BIOS region.  If false, the platform must
  * 	ensure that its memory map correctly reserves sub-1MB regions as needed.
@@ -259,11 +275,15 @@ struct x86_legacy_features {
  *				VMMCALL under SEV-ES.  Needs to return 'false'
  *				if the checks fail.  Called from the #VC
  *				exception handler.
+ * @is_private_mmio:		For CoCo VMs, must map MMIO address as private.
+ *				Used when device is emulated by a paravisor
+ *				layer in the VM context.
  */
 struct x86_hyper_runtime {
 	void (*pin_vcpu)(int cpu);
 	void (*sev_es_hcall_prepare)(struct ghcb *ghcb, struct pt_regs *regs);
 	bool (*sev_es_hcall_finish)(struct ghcb *ghcb, struct pt_regs *regs);
+	bool (*is_private_mmio)(u64 addr);
 };
 
 /**
@@ -272,8 +292,10 @@ struct x86_hyper_runtime {
  * @calibrate_tsc:		calibrate TSC, if different from CPU
  * @get_wallclock:		get time from HW clock like RTC etc.
  * @set_wallclock:		set time back to HW clock
- * @is_untracked_pat_range	exclude from PAT logic
- * @nmi_init			enable NMI on cpus
+ * @iommu_shutdown:		set by an IOMMU driver for shutdown if necessary
+ * @is_untracked_pat_range:	exclude from PAT logic
+ * @nmi_init:			enable NMI on cpus
+ * @get_nmi_reason:		get the reason an NMI was received
  * @save_sched_clock_state:	save state for sched_clock() on suspend
  * @restore_sched_clock_state:	restore state for sched_clock() on resume
  * @apic_post_init:		adjust apic if needed
@@ -285,7 +307,10 @@ struct x86_hyper_runtime {
  * 				possible in x86_early_init_platform_quirks() by
  * 				only using the current x86_hardware_subarch
  * 				semantics.
+ * @realmode_reserve:		reserve memory for realmode trampoline
+ * @realmode_init:		initialize realmode trampoline
  * @hyper:			x86 hypervisor specific runtime callbacks
+ * @guest:			guest incarnations callbacks
  */
 struct x86_platform_ops {
 	unsigned long (*calibrate_cpu)(void);
@@ -301,6 +326,8 @@ struct x86_platform_ops {
 	void (*apic_post_init)(void);
 	struct x86_legacy_features legacy;
 	void (*set_legacy_features)(void);
+	void (*realmode_reserve)(void);
+	void (*realmode_init)(void);
 	struct x86_hyper_runtime hyper;
 	struct x86_guest guest;
 };
@@ -322,5 +349,7 @@ extern void x86_init_uint_noop(unsigned int unused);
 extern bool bool_x86_init_noop(void);
 extern void x86_op_int_noop(int cpu);
 extern bool x86_pnpbios_disabled(void);
+extern int set_rtc_noop(const struct timespec64 *now);
+extern void get_rtc_noop(struct timespec64 *now);
 
 #endif

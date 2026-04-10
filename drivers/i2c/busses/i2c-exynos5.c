@@ -18,9 +18,7 @@
 #include <linux/clk.h>
 #include <linux/slab.h>
 #include <linux/io.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
-#include <linux/of_irq.h>
+#include <linux/of.h>
 #include <linux/spinlock.h>
 
 /*
@@ -170,6 +168,7 @@ enum i2c_type_exynos {
 	I2C_TYPE_EXYNOS5,
 	I2C_TYPE_EXYNOS7,
 	I2C_TYPE_EXYNOSAUTOV9,
+	I2C_TYPE_EXYNOS8895,
 };
 
 struct exynos5_i2c {
@@ -195,6 +194,11 @@ struct exynos5_i2c {
 	 * state here.
 	 */
 	int			trans_done;
+
+	/*
+	 * Called from atomic context, don't use interrupts.
+	 */
+	unsigned int		atomic;
 
 	/* Controller operating frequency */
 	unsigned int		op_clock;
@@ -237,6 +241,11 @@ static const struct exynos_hsi2c_variant exynosautov9_hsi2c_data = {
 	.hw		= I2C_TYPE_EXYNOSAUTOV9,
 };
 
+static const struct exynos_hsi2c_variant exynos8895_hsi2c_data = {
+	.fifo_depth	= 64,
+	.hw		= I2C_TYPE_EXYNOS8895,
+};
+
 static const struct of_device_id exynos5_i2c_match[] = {
 	{
 		.compatible = "samsung,exynos5-hsi2c",
@@ -253,6 +262,9 @@ static const struct of_device_id exynos5_i2c_match[] = {
 	}, {
 		.compatible = "samsung,exynosautov9-hsi2c",
 		.data = &exynosautov9_hsi2c_data
+	}, {
+		.compatible = "samsung,exynos8895-hsi2c",
+		.data = &exynos8895_hsi2c_data
 	}, {},
 };
 MODULE_DEVICE_TABLE(of, exynos5_i2c_match);
@@ -267,7 +279,7 @@ static void exynos5_i2c_clr_pend_irq(struct exynos5_i2c *i2c)
  * exynos5_i2c_set_timing: updates the registers with appropriate
  * timing values calculated
  *
- * Timing values for operation are calculated against either 100kHz
+ * Timing values for operation are calculated against 100kHz, 400kHz
  * or 1MHz controller operating frequency.
  *
  * Returns 0 on success, -EINVAL if the cycle length cannot
@@ -328,23 +340,67 @@ static int exynos5_i2c_set_timing(struct exynos5_i2c *i2c, bool hs_timings)
 	 * clk_cycle := TSCLK_L + TSCLK_H
 	 * temp := (CLK_DIV + 1) * (clk_cycle + 2)
 	 *
+	 * In case of HSI2C controllers in Exynos8895
+	 * FPCLK / FI2C =
+	 * (CLK_DIV + 1) * (TSCLK_L + TSCLK_H + 2) +
+	 * 2 * ((FLT_CYCLE + 3) - (FLT_CYCLE + 3) % (CLK_DIV + 1))
+	 *
+	 * clk_cycle := TSCLK_L + TSCLK_H
+	 * temp := (FPCLK / FI2C) - (FLT_CYCLE + 3) * 2
+	 *
 	 * Constraints: 4 <= temp, 0 <= CLK_DIV < 256, 2 <= clk_cycle <= 510
+	 *
+	 * To split SCL clock into low, high periods appropriately, one
+	 * proportion factor for each I2C mode is used, which is calculated
+	 * using this formula.
+	 * ```
+	 * ((t_low_min + (scl_clock - t_low_min - t_high_min) / 2) / scl_clock)
+	 * ```
+	 * where:
+	 * t_low_min is the minimal value of low period of the SCL clock in us;
+	 * t_high_min is the minimal value of high period of the SCL clock in us;
+	 * scl_clock is converted from SCL clock frequency into us.
+	 *
+	 * Below are the proportion factors for these I2C modes:
+	 *                t_low_min, t_high_min, scl_clock, proportion
+	 * Standard Mode:     4.7us,      4.0us,      10us,      0.535
+	 * Fast Mode:         1.3us,      0.6us,     2.5us,       0.64
+	 * Fast-Plus Mode:    0.5us,     0.26us,       1us,       0.62
 	 *
 	 */
 	t_ftl_cycle = (readl(i2c->regs + HSI2C_CONF) >> 16) & 0x7;
-	temp = clkin / op_clk - 8 - t_ftl_cycle;
-	if (i2c->variant->hw != I2C_TYPE_EXYNOS7)
-		temp -= t_ftl_cycle;
+	if (i2c->variant->hw == I2C_TYPE_EXYNOS8895)
+		temp = clkin / op_clk - (t_ftl_cycle + 3) * 2;
+	else if (i2c->variant->hw == I2C_TYPE_EXYNOS7)
+		temp = clkin / op_clk - 8 - t_ftl_cycle;
+	else
+		temp = clkin / op_clk - 8 - (t_ftl_cycle * 2);
 	div = temp / 512;
-	clk_cycle = temp / (div + 1) - 2;
+
+	if (i2c->variant->hw == I2C_TYPE_EXYNOS8895)
+		clk_cycle = (temp + ((t_ftl_cycle + 3) % (div + 1)) * 2) /
+			    (div + 1) - 2;
+	else
+		clk_cycle = temp / (div + 1) - 2;
 	if (temp < 4 || div >= 256 || clk_cycle < 2) {
 		dev_err(i2c->dev, "%s clock set-up failed\n",
 			hs_timings ? "HS" : "FS");
 		return -EINVAL;
 	}
 
-	t_scl_l = clk_cycle / 2;
-	t_scl_h = clk_cycle / 2;
+	/*
+	 * Scale clk_cycle to get t_scl_l using the proption factors for individual I2C modes.
+	 */
+	if (op_clk <= I2C_MAX_STANDARD_MODE_FREQ)
+		t_scl_l = clk_cycle * 535 / 1000;
+	else if (op_clk <= I2C_MAX_FAST_MODE_FREQ)
+		t_scl_l = clk_cycle * 64 / 100;
+	else
+		t_scl_l = clk_cycle * 62 / 100;
+
+	if (t_scl_l > 0xFF)
+		t_scl_l = 0xFF;
+	t_scl_h = clk_cycle - t_scl_l;
 	t_start_su = t_scl_l;
 	t_start_hd = t_scl_l;
 	t_stop_su = t_scl_l;
@@ -459,6 +515,8 @@ static irqreturn_t exynos5_i2c_irq(int irqno, void *dev_id)
 	/* handle interrupt related to the transfer status */
 	switch (i2c->variant->hw) {
 	case I2C_TYPE_EXYNOSAUTOV9:
+		fallthrough;
+	case I2C_TYPE_EXYNOS8895:
 		fallthrough;
 	case I2C_TYPE_EXYNOS7:
 		if (int_status & HSI2C_INT_TRANS_DONE) {
@@ -713,10 +771,26 @@ static void exynos5_i2c_message_start(struct exynos5_i2c *i2c, int stop)
 	spin_unlock_irqrestore(&i2c->lock, flags);
 }
 
+static bool exynos5_i2c_poll_irqs_timeout(struct exynos5_i2c *i2c,
+					  unsigned long timeout)
+{
+	unsigned long time_left = jiffies + timeout;
+
+	while (time_before(jiffies, time_left) &&
+	       !((i2c->trans_done && (i2c->msg->len == i2c->msg_ptr)) ||
+	         (i2c->state < 0))) {
+		while (readl(i2c->regs + HSI2C_INT_ENABLE) &
+		       readl(i2c->regs + HSI2C_INT_STATUS))
+			exynos5_i2c_irq(i2c->irq, i2c);
+		usleep_range(100, 200);
+	}
+	return time_before(jiffies, time_left);
+}
+
 static int exynos5_i2c_xfer_msg(struct exynos5_i2c *i2c,
 			      struct i2c_msg *msgs, int stop)
 {
-	unsigned long timeout;
+	unsigned long time_left;
 	int ret;
 
 	i2c->msg = msgs;
@@ -727,15 +801,20 @@ static int exynos5_i2c_xfer_msg(struct exynos5_i2c *i2c,
 
 	exynos5_i2c_message_start(i2c, stop);
 
-	timeout = wait_for_completion_timeout(&i2c->msg_complete,
-					      EXYNOS5_I2C_TIMEOUT);
-	if (timeout == 0)
+	if (!i2c->atomic)
+		time_left = wait_for_completion_timeout(&i2c->msg_complete,
+							EXYNOS5_I2C_TIMEOUT);
+	else
+		time_left = exynos5_i2c_poll_irqs_timeout(i2c,
+							  EXYNOS5_I2C_TIMEOUT);
+
+	if (time_left == 0)
 		ret = -ETIMEDOUT;
 	else
 		ret = i2c->state;
 
 	/*
-	 * If this is the last message to be transfered (stop == 1)
+	 * If this is the last message to be transferred (stop == 1)
 	 * Then check if the bus can be brought back to idle.
 	 */
 	if (ret == 0 && stop)
@@ -779,14 +858,30 @@ err_pclk:
 	return ret ?: num;
 }
 
+static int exynos5_i2c_xfer_atomic(struct i2c_adapter *adap,
+				   struct i2c_msg *msgs, int num)
+{
+	struct exynos5_i2c *i2c = adap->algo_data;
+	int ret;
+
+	disable_irq(i2c->irq);
+	i2c->atomic = true;
+	ret = exynos5_i2c_xfer(adap, msgs, num);
+	i2c->atomic = false;
+	enable_irq(i2c->irq);
+
+	return ret;
+}
+
 static u32 exynos5_i2c_func(struct i2c_adapter *adap)
 {
 	return I2C_FUNC_I2C | (I2C_FUNC_SMBUS_EMUL & ~I2C_FUNC_SMBUS_QUICK);
 }
 
 static const struct i2c_algorithm exynos5_i2c_algorithm = {
-	.master_xfer		= exynos5_i2c_xfer,
-	.functionality		= exynos5_i2c_func,
+	.xfer = exynos5_i2c_xfer,
+	.xfer_atomic = exynos5_i2c_xfer_atomic,
+	.functionality = exynos5_i2c_func,
 };
 
 static int exynos5_i2c_probe(struct platform_device *pdev)
@@ -802,7 +897,7 @@ static int exynos5_i2c_probe(struct platform_device *pdev)
 	if (of_property_read_u32(np, "clock-frequency", &i2c->op_clock))
 		i2c->op_clock = I2C_MAX_STANDARD_MODE_FREQ;
 
-	strlcpy(i2c->adap.name, "exynos5-i2c", sizeof(i2c->adap.name));
+	strscpy(i2c->adap.name, "exynos5-i2c", sizeof(i2c->adap.name));
 	i2c->adap.owner   = THIS_MODULE;
 	i2c->adap.algo    = &exynos5_i2c_algorithm;
 	i2c->adap.retries = 3;
@@ -882,7 +977,7 @@ static int exynos5_i2c_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int exynos5_i2c_remove(struct platform_device *pdev)
+static void exynos5_i2c_remove(struct platform_device *pdev)
 {
 	struct exynos5_i2c *i2c = platform_get_drvdata(pdev);
 
@@ -890,11 +985,8 @@ static int exynos5_i2c_remove(struct platform_device *pdev)
 
 	clk_unprepare(i2c->clk);
 	clk_unprepare(i2c->pclk);
-
-	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int exynos5_i2c_suspend_noirq(struct device *dev)
 {
 	struct exynos5_i2c *i2c = dev_get_drvdata(dev);
@@ -936,11 +1028,10 @@ err_pclk:
 	clk_disable_unprepare(i2c->pclk);
 	return ret;
 }
-#endif
 
 static const struct dev_pm_ops exynos5_i2c_dev_pm_ops = {
-	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(exynos5_i2c_suspend_noirq,
-				      exynos5_i2c_resume_noirq)
+	NOIRQ_SYSTEM_SLEEP_PM_OPS(exynos5_i2c_suspend_noirq,
+				  exynos5_i2c_resume_noirq)
 };
 
 static struct platform_driver exynos5_i2c_driver = {
@@ -948,7 +1039,7 @@ static struct platform_driver exynos5_i2c_driver = {
 	.remove		= exynos5_i2c_remove,
 	.driver		= {
 		.name	= "exynos5-hsi2c",
-		.pm	= &exynos5_i2c_dev_pm_ops,
+		.pm	= pm_sleep_ptr(&exynos5_i2c_dev_pm_ops),
 		.of_match_table = exynos5_i2c_match,
 	},
 };

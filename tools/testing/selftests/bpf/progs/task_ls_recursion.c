@@ -5,7 +5,13 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+#ifndef EBUSY
+#define EBUSY 16
+#endif
+
 char _license[] SEC("license") = "GPL";
+int nr_del_errs = 0;
+int test_pid = 0;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
@@ -21,27 +27,28 @@ struct {
 	__type(value, long);
 } map_b SEC(".maps");
 
-SEC("fentry/bpf_local_storage_lookup")
-int BPF_PROG(on_lookup)
-{
-	struct task_struct *task = bpf_get_current_task_btf();
-
-	bpf_task_storage_delete(&map_a, task);
-	bpf_task_storage_delete(&map_b, task);
-	return 0;
-}
-
 SEC("fentry/bpf_local_storage_update")
 int BPF_PROG(on_update)
 {
 	struct task_struct *task = bpf_get_current_task_btf();
 	long *ptr;
 
+	if (!test_pid || task->pid != test_pid)
+		return 0;
+
+	/* This will succeed as there is no real deadlock */
 	ptr = bpf_task_storage_get(&map_a, task, 0,
 				   BPF_LOCAL_STORAGE_GET_F_CREATE);
-	if (ptr)
-		*ptr += 1;
+	if (ptr) {
+		int err;
 
+		*ptr += 1;
+		err = bpf_task_storage_delete(&map_a, task);
+		if (err == -EBUSY)
+			nr_del_errs++;
+	}
+
+	/* This will succeed as there is no real deadlock */
 	ptr = bpf_task_storage_get(&map_b, task, 0,
 				   BPF_LOCAL_STORAGE_GET_F_CREATE);
 	if (ptr)
@@ -57,14 +64,17 @@ int BPF_PROG(on_enter, struct pt_regs *regs, long id)
 	long *ptr;
 
 	task = bpf_get_current_task_btf();
+	if (!test_pid || task->pid != test_pid)
+		return 0;
+
 	ptr = bpf_task_storage_get(&map_a, task, 0,
 				   BPF_LOCAL_STORAGE_GET_F_CREATE);
-	if (ptr)
+	if (ptr && !*ptr)
 		*ptr = 200;
 
 	ptr = bpf_task_storage_get(&map_b, task, 0,
 				   BPF_LOCAL_STORAGE_GET_F_CREATE);
-	if (ptr)
+	if (ptr && !*ptr)
 		*ptr = 100;
 	return 0;
 }

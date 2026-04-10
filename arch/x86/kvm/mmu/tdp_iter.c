@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include "mmu_internal.h"
 #include "tdp_iter.h"
@@ -11,13 +12,8 @@
 static void tdp_iter_refresh_sptep(struct tdp_iter *iter)
 {
 	iter->sptep = iter->pt_path[iter->level - 1] +
-		SHADOW_PT_INDEX(iter->gfn << PAGE_SHIFT, iter->level);
+		SPTE_INDEX((iter->gfn | iter->gfn_bits) << PAGE_SHIFT, iter->level);
 	iter->old_spte = kvm_tdp_mmu_read_spte(iter->sptep);
-}
-
-static gfn_t round_gfn_for_level(gfn_t gfn, int level)
-{
-	return gfn & -KVM_PAGES_PER_HPAGE(level);
 }
 
 /*
@@ -30,7 +26,7 @@ void tdp_iter_restart(struct tdp_iter *iter)
 	iter->yielded_gfn = iter->next_last_level_gfn;
 	iter->level = iter->root_level;
 
-	iter->gfn = round_gfn_for_level(iter->next_last_level_gfn, iter->level);
+	iter->gfn = gfn_round_for_level(iter->next_last_level_gfn, iter->level);
 	tdp_iter_refresh_sptep(iter);
 
 	iter->valid = true;
@@ -41,15 +37,18 @@ void tdp_iter_restart(struct tdp_iter *iter)
  * rooted at root_pt, starting with the walk to translate next_last_level_gfn.
  */
 void tdp_iter_start(struct tdp_iter *iter, struct kvm_mmu_page *root,
-		    int min_level, gfn_t next_last_level_gfn)
+		    int min_level, gfn_t next_last_level_gfn, gfn_t gfn_bits)
 {
-	int root_level = root->role.level;
-
-	WARN_ON(root_level < 1);
-	WARN_ON(root_level > PT64_ROOT_MAX_LEVEL);
+	if (WARN_ON_ONCE(!root || (root->role.level < 1) ||
+			 (root->role.level > PT64_ROOT_MAX_LEVEL) ||
+			 (gfn_bits && next_last_level_gfn >= gfn_bits))) {
+		iter->valid = false;
+		return;
+	}
 
 	iter->next_last_level_gfn = next_last_level_gfn;
-	iter->root_level = root_level;
+	iter->gfn_bits = gfn_bits;
+	iter->root_level = root->role.level;
 	iter->min_level = min_level;
 	iter->pt_path[iter->root_level - 1] = (tdp_ptep_t)root->spt;
 	iter->as_id = kvm_mmu_page_as_id(root);
@@ -97,7 +96,7 @@ static bool try_step_down(struct tdp_iter *iter)
 
 	iter->level--;
 	iter->pt_path[iter->level - 1] = child_pt;
-	iter->gfn = round_gfn_for_level(iter->next_last_level_gfn, iter->level);
+	iter->gfn = gfn_round_for_level(iter->next_last_level_gfn, iter->level);
 	tdp_iter_refresh_sptep(iter);
 
 	return true;
@@ -116,8 +115,8 @@ static bool try_step_side(struct tdp_iter *iter)
 	 * Check if the iterator is already at the end of the current page
 	 * table.
 	 */
-	if (SHADOW_PT_INDEX(iter->gfn << PAGE_SHIFT, iter->level) ==
-            (PT64_ENT_PER_PAGE - 1))
+	if (SPTE_INDEX((iter->gfn | iter->gfn_bits) << PAGE_SHIFT, iter->level) ==
+	    (SPTE_ENT_PER_PAGE - 1))
 		return false;
 
 	iter->gfn += KVM_PAGES_PER_HPAGE(iter->level);
@@ -139,26 +138,17 @@ static bool try_step_up(struct tdp_iter *iter)
 		return false;
 
 	iter->level++;
-	iter->gfn = round_gfn_for_level(iter->gfn, iter->level);
+	iter->gfn = gfn_round_for_level(iter->gfn, iter->level);
 	tdp_iter_refresh_sptep(iter);
 
 	return true;
 }
 
 /*
- * Step the iterator back up a level in the paging structure. Should only be
- * used when the iterator is below the root level.
- */
-void tdp_iter_step_up(struct tdp_iter *iter)
-{
-	WARN_ON(!try_step_up(iter));
-}
-
-/*
  * Step to the next SPTE in a pre-order traversal of the paging structure.
  * To get to the next SPTE, the iterator either steps down towards the goal
  * GFN, if at a present, non-last-level SPTE, or over to a SPTE mapping a
- * highter GFN.
+ * higher GFN.
  *
  * The basic algorithm is as follows:
  * 1. If the current SPTE is a non-last-level SPTE, step down into the page

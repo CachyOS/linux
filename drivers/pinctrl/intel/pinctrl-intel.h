@@ -2,7 +2,7 @@
 /*
  * Core pinctrl/GPIO driver for Intel GPIO controllers
  *
- * Copyright (C) 2015, Intel Corporation
+ * Copyright (C) 2015 Intel Corporation
  * Authors: Mathias Nyman <mathias.nyman@linux.intel.com>
  *          Mika Westerberg <mika.westerberg@linux.intel.com>
  */
@@ -10,11 +10,11 @@
 #ifndef PINCTRL_INTEL_H
 #define PINCTRL_INTEL_H
 
+#include <linux/array_size.h>
 #include <linux/bits.h>
 #include <linux/compiler_types.h>
 #include <linux/gpio/driver.h>
 #include <linux/irq.h>
-#include <linux/kernel.h>
 #include <linux/pm.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/spinlock_types.h>
@@ -24,38 +24,31 @@ struct device;
 
 /**
  * struct intel_pingroup - Description about group of pins
- * @name: Name of the groups
- * @pins: All pins in this group
- * @npins: Number of pins in this groups
- * @mode: Native mode in which the group is muxed out @pins. Used if @modes
- *        is %NULL.
+ * @grp: Generic data of the pin group (name and pins)
+ * @mode: Native mode in which the group is muxed out @pins. Used if @modes is %NULL.
  * @modes: If not %NULL this will hold mode for each pin in @pins
  */
 struct intel_pingroup {
-	const char *name;
-	const unsigned int *pins;
-	size_t npins;
+	struct pingroup grp;
 	unsigned short mode;
 	const unsigned int *modes;
 };
 
 /**
  * struct intel_function - Description about a function
- * @name: Name of the function
- * @groups: An array of groups for this function
- * @ngroups: Number of groups in @groups
+ * @func: Generic data of the pin function (name and groups of pins)
  */
 struct intel_function {
-	const char *name;
-	const char * const *groups;
-	size_t ngroups;
+	struct pinfunction func;
 };
+
+#define INTEL_PINCTRL_MAX_GPP_SIZE	32
 
 /**
  * struct intel_padgroup - Hardware pad group information
  * @reg_num: GPI_IS register number
  * @base: Starting pin of this group
- * @size: Size of this group (maximum is 32).
+ * @size: Size of this group (maximum is %INTEL_PINCTRL_MAX_GPP_SIZE).
  * @gpio_base: Starting GPIO base of this group
  * @padown_num: PAD_OWN register number (assigned by the core driver)
  *
@@ -83,6 +76,15 @@ enum {
 	INTEL_GPIO_BASE_MATCH	= 0,
 };
 
+/* Initialise struct intel_padgroup */
+#define INTEL_GPP(r, s, e, g)				\
+	{						\
+		.reg_num = (r),				\
+		.base = (s),				\
+		.size = ((e) - (s) + 1),		\
+		.gpio_base = (g),			\
+	}
+
 /**
  * struct intel_community - Intel pin community description
  * @barno: MMIO BAR number where registers for this community reside
@@ -101,8 +103,7 @@ enum {
  * @gpp_size: Maximum number of pads in each group, such as PADCFGLOCK,
  *            HOSTSW_OWN, GPI_IS, GPI_IE. Used when @gpps is %NULL.
  * @gpp_num_padown_regs: Number of pad registers each pad group consumes at
- *			 minimum. Use %0 if the number of registers can be
- *			 determined by the size of the group.
+ *			 minimum. Used when @gpps is %NULL.
  * @gpps: Pad groups if the controller has variable size pad groups
  * @ngpps: Number of pad groups in this community
  * @pad_map: Optional non-linear mapping of the pads
@@ -111,11 +112,13 @@ enum {
  * @regs: Community specific common registers (reserved for core driver)
  * @pad_regs: Community specific pad registers (reserved for core driver)
  *
- * In some of Intel GPIO host controllers this driver supports each pad group
+ * In older Intel GPIO host controllers, this driver supports, each pad group
  * is of equal size (except the last one). In that case the driver can just
- * fill in @gpp_size field and let the core driver to handle the rest. If
- * the controller has pad groups of variable size the client driver can
- * pass custom @gpps and @ngpps instead.
+ * fill in @gpp_size and @gpp_num_padown_regs fields and let the core driver
+ * to handle the rest.
+ *
+ * In newer Intel GPIO host controllers each pad group is of variable size,
+ * so the client driver can pass custom @gpps and @ngpps instead.
  */
 struct intel_community {
 	unsigned int barno;
@@ -147,6 +150,29 @@ struct intel_community {
 #define PINCTRL_FEATURE_PWM		BIT(3)
 #define PINCTRL_FEATURE_BLINK		BIT(4)
 #define PINCTRL_FEATURE_EXP		BIT(5)
+#define PINCTRL_FEATURE_3BIT_PAD_OWN	BIT(6)
+
+#define __INTEL_COMMUNITY(b, s, e, g, n, gs, gn, soc)		\
+	{							\
+		.barno = (b),					\
+		.padown_offset = soc ## _PAD_OWN,		\
+		.padcfglock_offset = soc ## _PADCFGLOCK,	\
+		.hostown_offset = soc ## _HOSTSW_OWN,		\
+		.is_offset = soc ## _GPI_IS,			\
+		.ie_offset = soc ## _GPI_IE,			\
+		.gpp_size = (gs),				\
+		.gpp_num_padown_regs = (gn),			\
+		.pin_base = (s),				\
+		.npins = ((e) - (s) + 1),			\
+		.gpps = (g),					\
+		.ngpps = (n),					\
+	}
+
+#define INTEL_COMMUNITY_GPPS(b, s, e, g, soc)			\
+	__INTEL_COMMUNITY(b, s, e, g, ARRAY_SIZE(g), 0, 0, soc)
+
+#define INTEL_COMMUNITY_SIZE(b, s, e, gs, gn, soc)		\
+	__INTEL_COMMUNITY(b, s, e, NULL, 0, gs, gn, soc)
 
 /**
  * PIN_GROUP - Declare a pin group
@@ -156,22 +182,20 @@ struct intel_community {
  *     a single integer or an array of integers in which case mode is per
  *     pin.
  */
-#define PIN_GROUP(n, p, m)					\
-	{							\
-		.name = (n),					\
-		.pins = (p),					\
-		.npins = ARRAY_SIZE((p)),			\
-		.mode = __builtin_choose_expr(			\
-			__builtin_constant_p((m)), (m), 0),	\
-		.modes = __builtin_choose_expr(			\
-			__builtin_constant_p((m)), NULL, (m)),	\
+#define PIN_GROUP(n, p, m)								\
+	{										\
+		.grp = PINCTRL_PINGROUP((n), (p), ARRAY_SIZE((p))),			\
+		.mode = __builtin_choose_expr(__builtin_constant_p((m)), (m), 0),	\
+		.modes = __builtin_choose_expr(__builtin_constant_p((m)), NULL, (m)),	\
 	}
 
-#define FUNCTION(n, g)				\
-	{					\
-		.name = (n),			\
-		.groups = (g),			\
-		.ngroups = ARRAY_SIZE((g)),	\
+#define PIN_GROUP_GPIO(n, p, m)						\
+	 PIN_GROUP(n, p, m),						\
+	 PIN_GROUP(n "_gpio", p, 0)
+
+#define FUNCTION(n, g)							\
+	{								\
+		.func = PINCTRL_PINFUNCTION((n), (g), ARRAY_SIZE(g)),	\
 	}
 
 /**
@@ -242,18 +266,27 @@ struct intel_pinctrl {
 	int irq;
 };
 
+int intel_pinctrl_probe(struct platform_device *pdev,
+			const struct intel_pinctrl_soc_data *soc_data);
+
 int intel_pinctrl_probe_by_hid(struct platform_device *pdev);
 int intel_pinctrl_probe_by_uid(struct platform_device *pdev);
 
-#ifdef CONFIG_PM_SLEEP
-int intel_pinctrl_suspend_noirq(struct device *dev);
-int intel_pinctrl_resume_noirq(struct device *dev);
-#endif
+extern const struct dev_pm_ops intel_pinctrl_pm_ops;
 
-#define INTEL_PINCTRL_PM_OPS(_name)					\
-const struct dev_pm_ops _name = {					\
-	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(intel_pinctrl_suspend_noirq,	\
-				      intel_pinctrl_resume_noirq)	\
-}
+const struct intel_community *intel_get_community(const struct intel_pinctrl *pctrl,
+						  unsigned int pin);
+
+int intel_gpio_add_pin_ranges(struct gpio_chip *gc);
+
+int intel_get_groups_count(struct pinctrl_dev *pctldev);
+const char *intel_get_group_name(struct pinctrl_dev *pctldev, unsigned int group);
+int intel_get_group_pins(struct pinctrl_dev *pctldev, unsigned int group,
+			 const unsigned int **pins, unsigned int *npins);
+
+int intel_get_functions_count(struct pinctrl_dev *pctldev);
+const char *intel_get_function_name(struct pinctrl_dev *pctldev, unsigned int function);
+int intel_get_function_groups(struct pinctrl_dev *pctldev, unsigned int function,
+			      const char * const **groups, unsigned int * const ngroups);
 
 #endif /* PINCTRL_INTEL_H */

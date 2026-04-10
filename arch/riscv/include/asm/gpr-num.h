@@ -2,7 +2,12 @@
 #ifndef __ASM_GPR_NUM_H
 #define __ASM_GPR_NUM_H
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
+
+	.irp	num,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+	.equ	.L__gpr_num_x\num, \num
+	.endr
+
 	.equ	.L__gpr_num_zero,	0
 	.equ	.L__gpr_num_ra,		1
 	.equ	.L__gpr_num_sp,		2
@@ -36,9 +41,12 @@
 	.equ	.L__gpr_num_t5,		30
 	.equ	.L__gpr_num_t6,		31
 
-#else /* __ASSEMBLY__ */
+#else /* __ASSEMBLER__ */
 
 #define __DEFINE_ASM_GPR_NUMS					\
+"	.irp	num,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31\n" \
+"	.equ	.L__gpr_num_x\\num, \\num\n"			\
+"	.endr\n"						\
 "	.equ	.L__gpr_num_zero,	0\n"			\
 "	.equ	.L__gpr_num_ra,		1\n"			\
 "	.equ	.L__gpr_num_sp,		2\n"			\
@@ -72,6 +80,6 @@
 "	.equ	.L__gpr_num_t5,		30\n"			\
 "	.equ	.L__gpr_num_t6,		31\n"
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 #endif /* __ASM_GPR_NUM_H */

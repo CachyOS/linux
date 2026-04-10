@@ -116,11 +116,9 @@ static int get_temp_target(struct peci_cputemp *priv, enum peci_temp_target_type
 {
 	int ret;
 
-	mutex_lock(&priv->temp.target.state.lock);
-
 	ret = update_temp_target(priv);
 	if (ret)
-		goto unlock;
+		return ret;
 
 	switch (type) {
 	case tcontrol_type:
@@ -133,15 +131,12 @@ static int get_temp_target(struct peci_cputemp *priv, enum peci_temp_target_type
 		*val = priv->temp.target.tjmax;
 		break;
 	case crit_hyst_type:
-		*val = priv->temp.target.tjmax - priv->temp.target.tcontrol;
+		*val = priv->temp.target.tcontrol;
 		break;
 	default:
 		ret = -EOPNOTSUPP;
 		break;
 	}
-unlock:
-	mutex_unlock(&priv->temp.target.state.lock);
-
 	return ret;
 }
 
@@ -177,26 +172,23 @@ static s32 dts_eight_dot_eight_to_millidegree(u16 val)
 
 static int get_die_temp(struct peci_cputemp *priv, long *val)
 {
-	int ret = 0;
 	long tjmax;
 	u16 temp;
+	int ret;
 
-	mutex_lock(&priv->temp.die.state.lock);
 	if (!peci_sensor_need_update(&priv->temp.die.state))
 		goto skip_update;
 
 	ret = peci_temp_read(priv->peci_dev, &temp);
 	if (ret)
-		goto err_unlock;
+		return ret;
 
-	if (!dts_valid(temp)) {
-		ret = -EIO;
-		goto err_unlock;
-	}
+	if (!dts_valid(temp))
+		return -EIO;
 
 	ret = get_temp_target(priv, tjmax_type, &tjmax);
 	if (ret)
-		goto err_unlock;
+		return ret;
 
 	priv->temp.die.value = (s32)tjmax + dts_ten_dot_six_to_millidegree(temp);
 
@@ -204,35 +196,30 @@ static int get_die_temp(struct peci_cputemp *priv, long *val)
 
 skip_update:
 	*val = priv->temp.die.value;
-err_unlock:
-	mutex_unlock(&priv->temp.die.state.lock);
-	return ret;
+	return 0;
 }
 
 static int get_dts(struct peci_cputemp *priv, long *val)
 {
-	int ret = 0;
 	u16 thermal_margin;
 	long tcontrol;
 	u32 pcs;
+	int ret;
 
-	mutex_lock(&priv->temp.dts.state.lock);
 	if (!peci_sensor_need_update(&priv->temp.dts.state))
 		goto skip_update;
 
 	ret = peci_pcs_read(priv->peci_dev, PECI_PCS_THERMAL_MARGIN, 0, &pcs);
 	if (ret)
-		goto err_unlock;
+		return ret;
 
 	thermal_margin = FIELD_GET(DTS_MARGIN_MASK, pcs);
-	if (!dts_valid(thermal_margin)) {
-		ret = -EIO;
-		goto err_unlock;
-	}
+	if (!dts_valid(thermal_margin))
+		return -EIO;
 
 	ret = get_temp_target(priv, tcontrol_type, &tcontrol);
 	if (ret)
-		goto err_unlock;
+		return ret;
 
 	/* Note that the tcontrol should be available before calling it */
 	priv->temp.dts.value =
@@ -242,35 +229,30 @@ static int get_dts(struct peci_cputemp *priv, long *val)
 
 skip_update:
 	*val = priv->temp.dts.value;
-err_unlock:
-	mutex_unlock(&priv->temp.dts.state.lock);
-	return ret;
+	return 0;
 }
 
 static int get_core_temp(struct peci_cputemp *priv, int core_index, long *val)
 {
-	int ret = 0;
 	u16 core_dts_margin;
 	long tjmax;
 	u32 pcs;
+	int ret;
 
-	mutex_lock(&priv->temp.core[core_index].state.lock);
 	if (!peci_sensor_need_update(&priv->temp.core[core_index].state))
 		goto skip_update;
 
 	ret = peci_pcs_read(priv->peci_dev, PECI_PCS_MODULE_TEMP, core_index, &pcs);
 	if (ret)
-		goto err_unlock;
+		return ret;
 
 	core_dts_margin = FIELD_GET(PCS_MODULE_TEMP_MASK, pcs);
-	if (!dts_valid(core_dts_margin)) {
-		ret = -EIO;
-		goto err_unlock;
-	}
+	if (!dts_valid(core_dts_margin))
+		return -EIO;
 
 	ret = get_temp_target(priv, tjmax_type, &tjmax);
 	if (ret)
-		goto err_unlock;
+		return ret;
 
 	/* Note that the tjmax should be available before calling it */
 	priv->temp.core[core_index].value =
@@ -280,9 +262,7 @@ static int get_core_temp(struct peci_cputemp *priv, int core_index, long *val)
 
 skip_update:
 	*val = priv->temp.core[core_index].value;
-err_unlock:
-	mutex_unlock(&priv->temp.core[core_index].state.lock);
-	return ret;
+	return 0;
 }
 
 static int cputemp_read_string(struct device *dev, enum hwmon_sensor_types type,
@@ -339,7 +319,7 @@ static umode_t cputemp_is_visible(const void *data, enum hwmon_sensor_types type
 {
 	const struct peci_cputemp *priv = data;
 
-	if (channel > CPUTEMP_CHANNEL_NUMS)
+	if (channel >= CPUTEMP_CHANNEL_NUMS)
 		return 0;
 
 	if (channel < channel_core)
@@ -360,9 +340,11 @@ static int init_core_mask(struct peci_cputemp *priv)
 	int ret;
 
 	/* Get the RESOLVED_CORES register value */
-	switch (peci_dev->info.model) {
-	case INTEL_FAM6_ICELAKE_X:
-	case INTEL_FAM6_ICELAKE_D:
+	switch (peci_dev->info.x86_vfm) {
+	case INTEL_ICELAKE_X:
+	case INTEL_ICELAKE_D:
+	case INTEL_SAPPHIRERAPIDS_X:
+	case INTEL_EMERALDRAPIDS_X:
 		ret = peci_ep_pci_local_read(peci_dev, 0, reg->bus, reg->dev,
 					     reg->func, reg->offset + 4, &data);
 		if (ret)
@@ -402,7 +384,7 @@ static int create_temp_label(struct peci_cputemp *priv)
 	unsigned long core_max = find_last_bit(priv->core_mask, CORE_NUMS_MAX);
 	int i;
 
-	priv->coretemp_label = devm_kzalloc(priv->dev, core_max * sizeof(char *), GFP_KERNEL);
+	priv->coretemp_label = devm_kzalloc(priv->dev, (core_max + 1) * sizeof(char *), GFP_KERNEL);
 	if (!priv->coretemp_label)
 		return -ENOMEM;
 
@@ -429,25 +411,13 @@ static void check_resolved_cores(struct peci_cputemp *priv)
 		bitmap_zero(priv->core_mask, CORE_NUMS_MAX);
 }
 
-static void sensor_init(struct peci_cputemp *priv)
-{
-	int i;
-
-	mutex_init(&priv->temp.target.state.lock);
-	mutex_init(&priv->temp.die.state.lock);
-	mutex_init(&priv->temp.dts.state.lock);
-
-	for_each_set_bit(i, priv->core_mask, CORE_NUMS_MAX)
-		mutex_init(&priv->temp.core[i].state.lock);
-}
-
 static const struct hwmon_ops peci_cputemp_ops = {
 	.is_visible = cputemp_is_visible,
 	.read_string = cputemp_read_string,
 	.read = cputemp_read,
 };
 
-static const struct hwmon_channel_info *peci_cputemp_info[] = {
+static const struct hwmon_channel_info * const peci_cputemp_info[] = {
 	HWMON_CHANNEL_INFO(temp,
 			   /* Die temperature */
 			   HWMON_T_LABEL | HWMON_T_INPUT | HWMON_T_MAX |
@@ -505,8 +475,6 @@ static int peci_cputemp_probe(struct auxiliary_device *adev,
 
 	check_resolved_cores(priv);
 
-	sensor_init(priv);
-
 	hwmon_dev = devm_hwmon_device_register_with_info(priv->dev, priv->name,
 							 priv, &peci_cputemp_chip_info, NULL);
 
@@ -531,14 +499,46 @@ static struct resolved_cores_reg resolved_cores_reg_icx = {
 	.offset = 0xd0,
 };
 
+static struct resolved_cores_reg resolved_cores_reg_spr = {
+	.bus = 31,
+	.dev = 30,
+	.func = 6,
+	.offset = 0x80,
+};
+
+static struct resolved_cores_reg resolved_cores_reg_emr = {
+	.bus = 31,
+	.dev = 30,
+	.func = 6,
+	.offset = 0x80,
+};
+
 static const struct cpu_info cpu_hsx = {
 	.reg		= &resolved_cores_reg_hsx,
 	.min_peci_revision = 0x33,
 	.thermal_margin_to_millidegree = &dts_eight_dot_eight_to_millidegree,
 };
 
+static const struct cpu_info cpu_skx = {
+	.reg		= &resolved_cores_reg_hsx,
+	.min_peci_revision = 0x33,
+	.thermal_margin_to_millidegree = &dts_ten_dot_six_to_millidegree,
+};
+
 static const struct cpu_info cpu_icx = {
 	.reg		= &resolved_cores_reg_icx,
+	.min_peci_revision = 0x40,
+	.thermal_margin_to_millidegree = &dts_ten_dot_six_to_millidegree,
+};
+
+static const struct cpu_info cpu_spr = {
+	.reg		= &resolved_cores_reg_spr,
+	.min_peci_revision = 0x40,
+	.thermal_margin_to_millidegree = &dts_ten_dot_six_to_millidegree,
+};
+
+static const struct cpu_info cpu_emr = {
+	.reg    = &resolved_cores_reg_emr,
 	.min_peci_revision = 0x40,
 	.thermal_margin_to_millidegree = &dts_ten_dot_six_to_millidegree,
 };
@@ -558,7 +558,7 @@ static const struct auxiliary_device_id peci_cputemp_ids[] = {
 	},
 	{
 		.name = "peci_cpu.cputemp.skx",
-		.driver_data = (kernel_ulong_t)&cpu_hsx,
+		.driver_data = (kernel_ulong_t)&cpu_skx,
 	},
 	{
 		.name = "peci_cpu.cputemp.icx",
@@ -567,6 +567,14 @@ static const struct auxiliary_device_id peci_cputemp_ids[] = {
 	{
 		.name = "peci_cpu.cputemp.icxd",
 		.driver_data = (kernel_ulong_t)&cpu_icx,
+	},
+	{
+		.name = "peci_cpu.cputemp.spr",
+		.driver_data = (kernel_ulong_t)&cpu_spr,
+	},
+	{
+		.name = "peci_cpu.cputemp.emr",
+		.driver_data = (kernel_ulong_t)&cpu_emr,
 	},
 	{ }
 };
@@ -583,4 +591,4 @@ MODULE_AUTHOR("Jae Hyun Yoo <jae.hyun.yoo@linux.intel.com>");
 MODULE_AUTHOR("Iwona Winiarska <iwona.winiarska@intel.com>");
 MODULE_DESCRIPTION("PECI cputemp driver");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(PECI_CPU);
+MODULE_IMPORT_NS("PECI_CPU");

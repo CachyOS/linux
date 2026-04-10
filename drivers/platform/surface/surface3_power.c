@@ -40,7 +40,7 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/uuid.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #define SURFACE_3_POLL_INTERVAL		(2 * HZ)
 #define SURFACE_3_STRLEN		10
@@ -454,8 +454,7 @@ static int mshw0011_install_space_handler(struct i2c_client *client)
 	if (!adev)
 		return -ENODEV;
 
-	data = kzalloc(sizeof(struct mshw0011_handler_data),
-			    GFP_KERNEL);
+	data = kzalloc_obj(struct mshw0011_handler_data);
 	if (!data)
 		return -ENOMEM;
 
@@ -519,7 +518,7 @@ static int mshw0011_probe(struct i2c_client *client)
 	i2c_set_clientdata(client, data);
 
 	memset(&board_info, 0, sizeof(board_info));
-	strlcpy(board_info.type, "MSHW0011-bat0", I2C_NAME_SIZE);
+	strscpy(board_info.type, "MSHW0011-bat0", I2C_NAME_SIZE);
 
 	bat0 = i2c_acpi_new_device(dev, 1, &board_info);
 	if (IS_ERR(bat0))
@@ -554,7 +553,7 @@ out_err:
 	return error;
 }
 
-static int mshw0011_remove(struct i2c_client *client)
+static void mshw0011_remove(struct i2c_client *client)
 {
 	struct mshw0011_data *cdata = i2c_get_clientdata(client);
 
@@ -564,8 +563,6 @@ static int mshw0011_remove(struct i2c_client *client)
 		kthread_stop(cdata->poll_task);
 
 	i2c_unregister_device(cdata->bat0);
-
-	return 0;
 }
 
 static const struct acpi_device_id mshw0011_acpi_match[] = {
@@ -575,7 +572,7 @@ static const struct acpi_device_id mshw0011_acpi_match[] = {
 MODULE_DEVICE_TABLE(acpi, mshw0011_acpi_match);
 
 static struct i2c_driver mshw0011_driver = {
-	.probe_new = mshw0011_probe,
+	.probe = mshw0011_probe,
 	.remove = mshw0011_remove,
 	.driver = {
 		.name = "mshw0011",

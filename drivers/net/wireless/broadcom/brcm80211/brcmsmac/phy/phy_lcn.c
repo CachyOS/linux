@@ -919,7 +919,7 @@ void wlc_lcnphy_read_table(struct brcms_phy *pi, struct phytbl_info *pti)
 
 static void
 wlc_lcnphy_common_read_table(struct brcms_phy *pi, u32 tbl_id,
-			     const u16 *tbl_ptr, u32 tbl_len,
+			     u16 *tbl_ptr, u32 tbl_len,
 			     u32 tbl_width, u32 tbl_offset)
 {
 	struct phytbl_info tab;
@@ -1319,7 +1319,7 @@ wlc_lcnphy_rx_iq_cal(struct brcms_phy *pi,
 	s16 *ptr;
 	struct brcms_phy_lcnphy *pi_lcn = pi->u.pi_lcnphy;
 
-	ptr = kmalloc_array(131, sizeof(s16), GFP_ATOMIC);
+	ptr = kmalloc_objs(s16, 131, GFP_ATOMIC);
 	if (NULL == ptr)
 		return false;
 	if (module == 2) {
@@ -2567,7 +2567,6 @@ wlc_lcnphy_tx_iqlo_cal(struct brcms_phy *pi,
 
 	struct lcnphy_txgains cal_gains, temp_gains;
 	u16 hash;
-	u8 band_idx;
 	int j;
 	u16 ncorr_override[5];
 	u16 syst_coeffs[] = { 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
@@ -2598,6 +2597,9 @@ wlc_lcnphy_tx_iqlo_cal(struct brcms_phy *pi,
 	uint i, n_cal_cmds = 0, n_cal_start = 0;
 	u16 *values_to_save;
 	struct brcms_phy_lcnphy *pi_lcn = pi->u.pi_lcnphy;
+
+	if (WARN_ON(CHSPEC_IS5G(pi->radio_chanspec)))
+		return;
 
 	values_to_save = kmalloc_array(20, sizeof(u16), GFP_ATOMIC);
 	if (NULL == values_to_save)
@@ -2662,20 +2664,18 @@ wlc_lcnphy_tx_iqlo_cal(struct brcms_phy *pi,
 	hash = (target_gains->gm_gain << 8) |
 	       (target_gains->pga_gain << 4) | (target_gains->pad_gain);
 
-	band_idx = (CHSPEC_IS5G(pi->radio_chanspec) ? 1 : 0);
-
 	cal_gains = *target_gains;
 	memset(ncorr_override, 0, sizeof(ncorr_override));
-	for (j = 0; j < iqcal_gainparams_numgains_lcnphy[band_idx]; j++) {
-		if (hash == tbl_iqcal_gainparams_lcnphy[band_idx][j][0]) {
+	for (j = 0; j < iqcal_gainparams_numgains_lcnphy[0]; j++) {
+		if (hash == tbl_iqcal_gainparams_lcnphy[0][j][0]) {
 			cal_gains.gm_gain =
-				tbl_iqcal_gainparams_lcnphy[band_idx][j][1];
+				tbl_iqcal_gainparams_lcnphy[0][j][1];
 			cal_gains.pga_gain =
-				tbl_iqcal_gainparams_lcnphy[band_idx][j][2];
+				tbl_iqcal_gainparams_lcnphy[0][j][2];
 			cal_gains.pad_gain =
-				tbl_iqcal_gainparams_lcnphy[band_idx][j][3];
+				tbl_iqcal_gainparams_lcnphy[0][j][3];
 			memcpy(ncorr_override,
-			       &tbl_iqcal_gainparams_lcnphy[band_idx][j][3],
+			       &tbl_iqcal_gainparams_lcnphy[0][j][3],
 			       sizeof(ncorr_override));
 			break;
 		}
@@ -3299,7 +3299,7 @@ wlc_lcnphy_run_samples(struct brcms_phy *pi,
 
 	if (iqcalmode) {
 
-		and_phy_reg(pi, 0x453, (u16) ~(0x1 << 15));
+		and_phy_reg(pi, 0x453, 0xffff & ~(0x1 << 15));
 		or_phy_reg(pi, 0x453, (0x1 << 15));
 	} else {
 		write_phy_reg(pi, 0x63f, 1);
@@ -3605,7 +3605,7 @@ wlc_lcnphy_a1(struct brcms_phy *pi, int cal_type, int num_levels,
 	u16 *phy_c32;
 	phy_c21 = 0;
 	phy_c10 = phy_c13 = phy_c14 = phy_c8 = 0;
-	ptr = kmalloc_array(131, sizeof(s16), GFP_ATOMIC);
+	ptr = kmalloc_objs(s16, 131, GFP_ATOMIC);
 	if (NULL == ptr)
 		return;
 
@@ -4790,7 +4790,7 @@ void wlc_phy_init_lcnphy(struct brcms_phy *pi)
 	wlc_lcnphy_calib_modes(pi, PHY_PERICAL_PHYINIT);
 }
 
-static bool wlc_phy_txpwr_srom_read_lcnphy(struct brcms_phy *pi)
+static void wlc_phy_txpwr_srom_read_lcnphy(struct brcms_phy *pi)
 {
 	s8 txpwr = 0;
 	int i;
@@ -4879,8 +4879,6 @@ static bool wlc_phy_txpwr_srom_read_lcnphy(struct brcms_phy *pi)
 				sprom->ant_available_bg);
 	}
 	pi_lcn->lcnphy_cck_dig_filt_type = -1;
-
-	return true;
 }
 
 void wlc_2064_vco_cal(struct brcms_phy *pi)
@@ -4968,11 +4966,11 @@ bool wlc_phy_attach_lcnphy(struct brcms_phy *pi)
 {
 	struct brcms_phy_lcnphy *pi_lcn;
 
-	pi->u.pi_lcnphy = kzalloc(sizeof(struct brcms_phy_lcnphy), GFP_ATOMIC);
-	if (pi->u.pi_lcnphy == NULL)
+	pi_lcn = kzalloc_obj(*pi_lcn, GFP_ATOMIC);
+	if (!pi_lcn)
 		return false;
 
-	pi_lcn = pi->u.pi_lcnphy;
+	pi->u.pi_lcnphy = pi_lcn;
 
 	if (0 == (pi->sh->boardflags & BFL_NOPA)) {
 		pi->hwpwrctrl = true;
@@ -4992,10 +4990,7 @@ bool wlc_phy_attach_lcnphy(struct brcms_phy *pi)
 	pi->pi_fptr.radioloftget = wlc_lcnphy_get_radio_loft;
 	pi->pi_fptr.detach = wlc_phy_detach_lcnphy;
 
-	if (!wlc_phy_txpwr_srom_read_lcnphy(pi)) {
-		kfree(pi->u.pi_lcnphy);
-		return false;
-	}
+	wlc_phy_txpwr_srom_read_lcnphy(pi);
 
 	if (LCNREV_IS(pi->pubpi.phy_rev, 1)) {
 		if (pi_lcn->lcnphy_tempsense_option == 3) {

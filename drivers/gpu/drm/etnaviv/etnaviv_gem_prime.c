@@ -10,14 +10,14 @@
 #include "etnaviv_drv.h"
 #include "etnaviv_gem.h"
 
-MODULE_IMPORT_NS(DMA_BUF);
+MODULE_IMPORT_NS("DMA_BUF");
 
 static struct lock_class_key etnaviv_prime_lock_class;
 
 struct sg_table *etnaviv_gem_prime_get_sg_table(struct drm_gem_object *obj)
 {
 	struct etnaviv_gem_object *etnaviv_obj = to_etnaviv_bo(obj);
-	int npages = obj->size >> PAGE_SHIFT;
+	unsigned int npages = obj->size >> PAGE_SHIFT;
 
 	if (WARN_ON(!etnaviv_obj->pages))  /* should have already pinned! */
 		return ERR_PTR(-EINVAL);
@@ -39,7 +39,7 @@ int etnaviv_gem_prime_vmap(struct drm_gem_object *obj, struct iosys_map *map)
 
 int etnaviv_gem_prime_pin(struct drm_gem_object *obj)
 {
-	if (!obj->import_attach) {
+	if (!drm_gem_is_imported(obj)) {
 		struct etnaviv_gem_object *etnaviv_obj = to_etnaviv_bo(obj);
 
 		mutex_lock(&etnaviv_obj->lock);
@@ -51,7 +51,7 @@ int etnaviv_gem_prime_pin(struct drm_gem_object *obj)
 
 void etnaviv_gem_prime_unpin(struct drm_gem_object *obj)
 {
-	if (!obj->import_attach) {
+	if (!drm_gem_is_imported(obj)) {
 		struct etnaviv_gem_object *etnaviv_obj = to_etnaviv_bo(obj);
 
 		mutex_lock(&etnaviv_obj->lock);
@@ -65,7 +65,7 @@ static void etnaviv_gem_prime_release(struct etnaviv_gem_object *etnaviv_obj)
 	struct iosys_map map = IOSYS_MAP_INIT_VADDR(etnaviv_obj->vaddr);
 
 	if (etnaviv_obj->vaddr)
-		dma_buf_vunmap(etnaviv_obj->base.import_attach->dmabuf, &map);
+		dma_buf_vunmap_unlocked(etnaviv_obj->base.import_attach->dmabuf, &map);
 
 	/* Don't drop the pages for imported dmabuf, as they are not
 	 * ours, just free the array we allocated:
@@ -91,7 +91,15 @@ static void *etnaviv_gem_prime_vmap_impl(struct etnaviv_gem_object *etnaviv_obj)
 static int etnaviv_gem_prime_mmap_obj(struct etnaviv_gem_object *etnaviv_obj,
 		struct vm_area_struct *vma)
 {
-	return dma_buf_mmap(etnaviv_obj->base.dma_buf, vma, 0);
+	int ret;
+
+	ret = dma_buf_mmap(etnaviv_obj->base.dma_buf, vma, 0);
+	if (!ret) {
+		/* Drop the reference acquired by drm_gem_mmap_obj(). */
+		drm_gem_object_put(&etnaviv_obj->base);
+	}
+
+	return ret;
 }
 
 static const struct etnaviv_gem_ops etnaviv_gem_prime_ops = {
@@ -118,7 +126,7 @@ struct drm_gem_object *etnaviv_gem_prime_import_sg_table(struct drm_device *dev,
 	npages = size / PAGE_SIZE;
 
 	etnaviv_obj->sgt = sgt;
-	etnaviv_obj->pages = kvmalloc_array(npages, sizeof(struct page *), GFP_KERNEL);
+	etnaviv_obj->pages = kvmalloc_objs(struct page *, npages);
 	if (!etnaviv_obj->pages) {
 		ret = -ENOMEM;
 		goto fail;

@@ -7,8 +7,7 @@
  * Copyright IBM Corp. 2002, 2020
  */
 
-#define KMSG_COMPONENT "zfcp"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "zfcp: " fmt
 
 #include <linux/kthread.h>
 #include <linux/bug.h>
@@ -615,7 +614,7 @@ void zfcp_erp_notify(struct zfcp_erp_action *erp_action, unsigned long set_mask)
  */
 void zfcp_erp_timeout_handler(struct timer_list *t)
 {
-	struct zfcp_fsf_req *fsf_req = from_timer(fsf_req, t, timer);
+	struct zfcp_fsf_req *fsf_req = timer_container_of(fsf_req, t, timer);
 	struct zfcp_erp_action *act;
 
 	if (fsf_req->status & ZFCP_STATUS_FSFREQ_DISMISSED)
@@ -629,7 +628,7 @@ void zfcp_erp_timeout_handler(struct timer_list *t)
 
 static void zfcp_erp_memwait_handler(struct timer_list *t)
 {
-	struct zfcp_erp_action *act = from_timer(act, t, timer);
+	struct zfcp_erp_action *act = timer_container_of(act, t, timer);
 
 	zfcp_erp_notify(act, 0);
 }

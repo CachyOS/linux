@@ -5,89 +5,12 @@
  * Copyright (c) 2004 James Simmons <jsimmons@infradead.org>
  */
 
-/*
- * Note:  currently there's only stubs for framebuffer_alloc and
- * framebuffer_release here.  The reson for that is that until all drivers
- * are converted to use it a sysfsification will open OOPSable races.
- */
-
-#include <linux/kernel.h>
-#include <linux/slab.h>
+#include <linux/console.h>
 #include <linux/fb.h>
 #include <linux/fbcon.h>
-#include <linux/console.h>
-#include <linux/module.h>
+#include <linux/major.h>
 
-#define FB_SYSFS_FLAG_ATTR 1
-
-/**
- * framebuffer_alloc - creates a new frame buffer info structure
- *
- * @size: size of driver private data, can be zero
- * @dev: pointer to the device for this fb, this can be NULL
- *
- * Creates a new frame buffer info structure. Also reserves @size bytes
- * for driver private data (info->par). info->par (if any) will be
- * aligned to sizeof(long).
- *
- * Returns the new structure, or NULL if an error occurred.
- *
- */
-struct fb_info *framebuffer_alloc(size_t size, struct device *dev)
-{
-#define BYTES_PER_LONG (BITS_PER_LONG/8)
-#define PADDING (BYTES_PER_LONG - (sizeof(struct fb_info) % BYTES_PER_LONG))
-	int fb_info_size = sizeof(struct fb_info);
-	struct fb_info *info;
-	char *p;
-
-	if (size)
-		fb_info_size += PADDING;
-
-	p = kzalloc(fb_info_size + size, GFP_KERNEL);
-
-	if (!p)
-		return NULL;
-
-	info = (struct fb_info *) p;
-
-	if (size)
-		info->par = p + fb_info_size;
-
-	info->device = dev;
-	info->fbcon_rotate_hint = -1;
-
-#if IS_ENABLED(CONFIG_FB_BACKLIGHT)
-	mutex_init(&info->bl_curve_mutex);
-#endif
-
-	return info;
-#undef PADDING
-#undef BYTES_PER_LONG
-}
-EXPORT_SYMBOL(framebuffer_alloc);
-
-/**
- * framebuffer_release - marks the structure available for freeing
- *
- * @info: frame buffer info structure
- *
- * Drop the reference count of the device embedded in the
- * framebuffer info structure.
- *
- */
-void framebuffer_release(struct fb_info *info)
-{
-	if (!info)
-		return;
-
-	if (WARN_ON(refcount_read(&info->count)))
-		return;
-
-	kfree(info->apertures);
-	kfree(info);
-}
-EXPORT_SYMBOL(framebuffer_release);
+#include "fb_internal.h"
 
 static int activate(struct fb_info *fb_info, struct fb_var_screeninfo *var)
 {
@@ -136,14 +59,12 @@ static ssize_t store_mode(struct device *device, struct device_attribute *attr,
 	struct fb_var_screeninfo var;
 	struct fb_modelist *modelist;
 	struct fb_videomode *mode;
-	struct list_head *pos;
 	size_t i;
 	int err;
 
 	memset(&var, 0, sizeof(var));
 
-	list_for_each(pos, &fb_info->modelist) {
-		modelist = list_entry(pos, struct fb_modelist, list);
+	list_for_each_entry(modelist, &fb_info->modelist, list) {
 		mode = &modelist->mode;
 		i = mode_string(mstr, 0, mode);
 		if (strncmp(mstr, buf, max(count, i)) == 0) {
@@ -204,13 +125,11 @@ static ssize_t show_modes(struct device *device, struct device_attribute *attr,
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
 	unsigned int i;
-	struct list_head *pos;
 	struct fb_modelist *modelist;
 	const struct fb_videomode *mode;
 
 	i = 0;
-	list_for_each(pos, &fb_info->modelist) {
-		modelist = list_entry(pos, struct fb_modelist, list);
+	list_for_each_entry(modelist, &fb_info->modelist, list) {
 		mode = &modelist->mode;
 		i += mode_string(buf, i, mode);
 	}
@@ -321,11 +240,11 @@ static ssize_t store_blank(struct device *device,
 	return count;
 }
 
-static ssize_t show_blank(struct device *device,
-			  struct device_attribute *attr, char *buf)
+static ssize_t show_blank(struct device *device, struct device_attribute *attr, char *buf)
 {
-//	struct fb_info *fb_info = dev_get_drvdata(device);
-	return 0;
+	struct fb_info *fb_info = dev_get_drvdata(device);
+
+	return sysfs_emit(buf, "%d\n", fb_info->blank);
 }
 
 static ssize_t store_console(struct device *device,
@@ -495,83 +414,68 @@ static ssize_t show_bl_curve(struct device *device,
 /* When cmap is added back in it should be a binary attribute
  * not a text one. Consideration should also be given to converting
  * fbdev to use configfs instead of sysfs */
-static struct device_attribute device_attrs[] = {
-	__ATTR(bits_per_pixel, S_IRUGO|S_IWUSR, show_bpp, store_bpp),
-	__ATTR(blank, S_IRUGO|S_IWUSR, show_blank, store_blank),
-	__ATTR(console, S_IRUGO|S_IWUSR, show_console, store_console),
-	__ATTR(cursor, S_IRUGO|S_IWUSR, show_cursor, store_cursor),
-	__ATTR(mode, S_IRUGO|S_IWUSR, show_mode, store_mode),
-	__ATTR(modes, S_IRUGO|S_IWUSR, show_modes, store_modes),
-	__ATTR(pan, S_IRUGO|S_IWUSR, show_pan, store_pan),
-	__ATTR(virtual_size, S_IRUGO|S_IWUSR, show_virtual, store_virtual),
-	__ATTR(name, S_IRUGO, show_name, NULL),
-	__ATTR(stride, S_IRUGO, show_stride, NULL),
-	__ATTR(rotate, S_IRUGO|S_IWUSR, show_rotate, store_rotate),
-	__ATTR(state, S_IRUGO|S_IWUSR, show_fbstate, store_fbstate),
+static DEVICE_ATTR(bits_per_pixel, 0644, show_bpp, store_bpp);
+static DEVICE_ATTR(blank, 0644, show_blank, store_blank);
+static DEVICE_ATTR(console, 0644, show_console, store_console);
+static DEVICE_ATTR(cursor, 0644, show_cursor, store_cursor);
+static DEVICE_ATTR(mode, 0644, show_mode, store_mode);
+static DEVICE_ATTR(modes, 0644, show_modes, store_modes);
+static DEVICE_ATTR(pan, 0644, show_pan, store_pan);
+static DEVICE_ATTR(virtual_size, 0644, show_virtual, store_virtual);
+static DEVICE_ATTR(name, 0444, show_name, NULL);
+static DEVICE_ATTR(stride, 0444, show_stride, NULL);
+static DEVICE_ATTR(rotate, 0644, show_rotate, store_rotate);
+static DEVICE_ATTR(state, 0644, show_fbstate, store_fbstate);
 #if IS_ENABLED(CONFIG_FB_BACKLIGHT)
-	__ATTR(bl_curve, S_IRUGO|S_IWUSR, show_bl_curve, store_bl_curve),
+static DEVICE_ATTR(bl_curve, 0644, show_bl_curve, store_bl_curve);
 #endif
+
+static struct attribute *fb_device_attrs[] = {
+	&dev_attr_bits_per_pixel.attr,
+	&dev_attr_blank.attr,
+	&dev_attr_console.attr,
+	&dev_attr_cursor.attr,
+	&dev_attr_mode.attr,
+	&dev_attr_modes.attr,
+	&dev_attr_pan.attr,
+	&dev_attr_virtual_size.attr,
+	&dev_attr_name.attr,
+	&dev_attr_stride.attr,
+	&dev_attr_rotate.attr,
+	&dev_attr_state.attr,
+#if IS_ENABLED(CONFIG_FB_BACKLIGHT)
+	&dev_attr_bl_curve.attr,
+#endif
+	NULL,
 };
 
-int fb_init_device(struct fb_info *fb_info)
+ATTRIBUTE_GROUPS(fb_device);
+
+int fb_device_create(struct fb_info *fb_info)
 {
-	int i, error = 0;
+	int node = fb_info->node;
+	dev_t devt = MKDEV(FB_MAJOR, node);
+	int ret;
 
-	dev_set_drvdata(fb_info->dev, fb_info);
-
-	fb_info->class_flag |= FB_SYSFS_FLAG_ATTR;
-
-	for (i = 0; i < ARRAY_SIZE(device_attrs); i++) {
-		error = device_create_file(fb_info->dev, &device_attrs[i]);
-
-		if (error)
-			break;
-	}
-
-	if (error) {
-		while (--i >= 0)
-			device_remove_file(fb_info->dev, &device_attrs[i]);
-		fb_info->class_flag &= ~FB_SYSFS_FLAG_ATTR;
+	fb_info->dev = device_create_with_groups(fb_class, fb_info->device, devt, fb_info,
+						 fb_device_groups, "fb%d", node);
+	if (IS_ERR(fb_info->dev)) {
+		/* Not fatal */
+		ret = PTR_ERR(fb_info->dev);
+		pr_warn("Unable to create device for framebuffer %d; error %d\n", node, ret);
+		fb_info->dev = NULL;
 	}
 
 	return 0;
 }
 
-void fb_cleanup_device(struct fb_info *fb_info)
+void fb_device_destroy(struct fb_info *fb_info)
 {
-	unsigned int i;
+	dev_t devt = MKDEV(FB_MAJOR, fb_info->node);
 
-	if (fb_info->class_flag & FB_SYSFS_FLAG_ATTR) {
-		for (i = 0; i < ARRAY_SIZE(device_attrs); i++)
-			device_remove_file(fb_info->dev, &device_attrs[i]);
+	if (!fb_info->dev)
+		return;
 
-		fb_info->class_flag &= ~FB_SYSFS_FLAG_ATTR;
-	}
+	device_destroy(fb_class, devt);
+	fb_info->dev = NULL;
 }
-
-#if IS_ENABLED(CONFIG_FB_BACKLIGHT)
-/* This function generates a linear backlight curve
- *
- *     0: off
- *   1-7: min
- * 8-127: linear from min to max
- */
-void fb_bl_default_curve(struct fb_info *fb_info, u8 off, u8 min, u8 max)
-{
-	unsigned int i, flat, count, range = (max - min);
-
-	mutex_lock(&fb_info->bl_curve_mutex);
-
-	fb_info->bl_curve[0] = off;
-
-	for (flat = 1; flat < (FB_BACKLIGHT_LEVELS / 16); ++flat)
-		fb_info->bl_curve[flat] = min;
-
-	count = FB_BACKLIGHT_LEVELS * 15 / 16;
-	for (i = 0; i < count; ++i)
-		fb_info->bl_curve[flat + i] = min + (range * (i + 1) / count);
-
-	mutex_unlock(&fb_info->bl_curve_mutex);
-}
-EXPORT_SYMBOL_GPL(fb_bl_default_curve);
-#endif

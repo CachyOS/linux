@@ -33,6 +33,7 @@
  * (which, incidentally, is about the same saving as a 2.5in hard disk
  * entering standby mode.)
  */
+#include <linux/aperture.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -46,7 +47,6 @@
 #include <linux/io.h>
 #include <linux/i2c.h>
 #include <linux/i2c-algo-bit.h>
-
 
 #ifdef __arm__
 #include <asm/mach-types.h>
@@ -225,13 +225,6 @@ cyber2000fb_copyarea(struct fb_info *info, const struct fb_copyarea *region)
 	cyber2000fb_writew(cmd, CO_REG_CMD_L, cfb);
 	cyber2000fb_writew(CO_CMD_H_FGSRCMAP | CO_CMD_H_BLITTER,
 			   CO_REG_CMD_H, cfb);
-}
-
-static void
-cyber2000fb_imageblit(struct fb_info *info, const struct fb_image *image)
-{
-	cfb_imageblit(info, image);
-	return;
 }
 
 static int cyber2000fb_sync(struct fb_info *info)
@@ -1061,6 +1054,7 @@ static int cyber2000fb_blank(int blank, struct fb_info *info)
 
 static const struct fb_ops cyber2000fb_ops = {
 	.owner		= THIS_MODULE,
+	__FB_DEFAULT_IOMEM_OPS_RDWR,
 	.fb_check_var	= cyber2000fb_check_var,
 	.fb_set_par	= cyber2000fb_set_par,
 	.fb_setcolreg	= cyber2000fb_setcolreg,
@@ -1068,8 +1062,9 @@ static const struct fb_ops cyber2000fb_ops = {
 	.fb_pan_display	= cyber2000fb_pan_display,
 	.fb_fillrect	= cyber2000fb_fillrect,
 	.fb_copyarea	= cyber2000fb_copyarea,
-	.fb_imageblit	= cyber2000fb_imageblit,
+	.fb_imageblit	= cfb_imageblit,
 	.fb_sync	= cyber2000fb_sync,
+	__FB_DEFAULT_IOMEM_OPS_MMAP,
 };
 
 /*
@@ -1094,7 +1089,6 @@ void cyber2000fb_enable_extregs(struct cfb_info *cfb)
 		cyber2000_grphw(EXT_FUNC_CTL, old, cfb);
 	}
 }
-EXPORT_SYMBOL(cyber2000fb_enable_extregs);
 
 /*
  * Disable access to the extended registers
@@ -1114,41 +1108,6 @@ void cyber2000fb_disable_extregs(struct cfb_info *cfb)
 	else
 		cfb->func_use_count -= 1;
 }
-EXPORT_SYMBOL(cyber2000fb_disable_extregs);
-
-/*
- * Attach a capture/tv driver to the core CyberX0X0 driver.
- */
-int cyber2000fb_attach(struct cyberpro_info *info, int idx)
-{
-	if (int_cfb_info != NULL) {
-		info->dev	      = int_cfb_info->fb.device;
-#ifdef CONFIG_FB_CYBER2000_I2C
-		info->i2c	      = &int_cfb_info->i2c_adapter;
-#else
-		info->i2c	      = NULL;
-#endif
-		info->regs	      = int_cfb_info->regs;
-		info->irq             = int_cfb_info->irq;
-		info->fb	      = int_cfb_info->fb.screen_base;
-		info->fb_size	      = int_cfb_info->fb.fix.smem_len;
-		info->info	      = int_cfb_info;
-
-		strlcpy(info->dev_name, int_cfb_info->fb.fix.id,
-			sizeof(info->dev_name));
-	}
-
-	return int_cfb_info != NULL;
-}
-EXPORT_SYMBOL(cyber2000fb_attach);
-
-/*
- * Detach a capture/tv driver from the core CyberX0X0 driver.
- */
-void cyber2000fb_detach(int idx)
-{
-}
-EXPORT_SYMBOL(cyber2000fb_detach);
 
 #ifdef CONFIG_FB_CYBER2000_DDC
 
@@ -1229,10 +1188,9 @@ static int cyber2000fb_ddc_getsda(void *data)
 
 static int cyber2000fb_setup_ddc_bus(struct cfb_info *cfb)
 {
-	strlcpy(cfb->ddc_adapter.name, cfb->fb.fix.id,
+	strscpy(cfb->ddc_adapter.name, cfb->fb.fix.id,
 		sizeof(cfb->ddc_adapter.name));
 	cfb->ddc_adapter.owner		= THIS_MODULE;
-	cfb->ddc_adapter.class		= I2C_CLASS_DDC;
 	cfb->ddc_adapter.algo_data	= &cfb->ddc_algo;
 	cfb->ddc_adapter.dev.parent	= cfb->fb.device;
 	cfb->ddc_algo.setsda		= cyber2000fb_ddc_setsda;
@@ -1304,7 +1262,7 @@ static int cyber2000fb_i2c_getscl(void *data)
 
 static int cyber2000fb_i2c_register(struct cfb_info *cfb)
 {
-	strlcpy(cfb->i2c_adapter.name, cfb->fb.fix.id,
+	strscpy(cfb->i2c_adapter.name, cfb->fb.fix.id,
 		sizeof(cfb->i2c_adapter.name));
 	cfb->i2c_adapter.owner = THIS_MODULE;
 	cfb->i2c_adapter.algo_data = &cfb->i2c_algo;
@@ -1405,7 +1363,7 @@ static struct cfb_info *cyberpro_alloc_fb_info(unsigned int id, char *name)
 {
 	struct cfb_info *cfb;
 
-	cfb = kzalloc(sizeof(struct cfb_info), GFP_KERNEL);
+	cfb = kzalloc_obj(struct cfb_info);
 	if (!cfb)
 		return NULL;
 
@@ -1459,7 +1417,7 @@ static struct cfb_info *cyberpro_alloc_fb_info(unsigned int id, char *name)
 	cfb->fb.var.accel_flags	= FB_ACCELF_TEXT;
 
 	cfb->fb.fbops		= &cyber2000fb_ops;
-	cfb->fb.flags		= FBINFO_DEFAULT | FBINFO_HWACCEL_YPAN;
+	cfb->fb.flags		= FBINFO_HWACCEL_YPAN;
 	cfb->fb.pseudo_palette	= cfb->pseudo_palette;
 
 	spin_lock_init(&cfb->reg_b0_lock);
@@ -1500,7 +1458,7 @@ static int cyber2000fb_setup(char *options)
 		if (strncmp(opt, "font:", 5) == 0) {
 			static char default_font_storage[40];
 
-			strlcpy(default_font_storage, opt + 5,
+			strscpy(default_font_storage, opt + 5,
 				sizeof(default_font_storage));
 			default_font = default_font_storage;
 			continue;
@@ -1720,6 +1678,10 @@ static int cyberpro_pci_probe(struct pci_dev *dev,
 
 	sprintf(name, "CyberPro%4X", id->device);
 
+	err = aperture_remove_conflicting_pci_devices(dev, name);
+	if (err)
+		return err;
+
 	err = pci_enable_device(dev);
 	if (err)
 		return err;
@@ -1791,6 +1753,7 @@ failed_ioremap:
 failed_regions:
 	cyberpro_free_fb_info(cfb);
 failed_release:
+	pci_disable_device(dev);
 	return err;
 }
 
@@ -1807,6 +1770,7 @@ static void cyberpro_pci_remove(struct pci_dev *dev)
 			int_cfb_info = NULL;
 
 		pci_release_regions(dev);
+		pci_disable_device(dev);
 	}
 }
 
@@ -1871,7 +1835,12 @@ static int __init cyber2000fb_init(void)
 
 #ifndef MODULE
 	char *option = NULL;
+#endif
 
+	if (fb_modesetting_disabled("CyberPro"))
+		return -ENODEV;
+
+#ifndef MODULE
 	if (fb_get_options("cyber2000fb", &option))
 		return -ENODEV;
 	cyber2000fb_setup(option);

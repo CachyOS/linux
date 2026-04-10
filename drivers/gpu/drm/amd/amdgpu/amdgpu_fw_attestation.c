@@ -32,17 +32,15 @@
 #include "soc15_common.h"
 
 #define FW_ATTESTATION_DB_COOKIE        0x143b6a37
-#define FW_ATTESTATION_RECORD_VALID  	1
+#define FW_ATTESTATION_RECORD_VALID	1
 #define FW_ATTESTATION_MAX_SIZE		4096
 
-typedef struct FW_ATT_DB_HEADER
-{
+struct FW_ATT_DB_HEADER {
 	uint32_t AttDbVersion;           /* version of the fwar feature */
 	uint32_t AttDbCookie;            /* cookie as an extra check for corrupt data */
-} FW_ATT_DB_HEADER;
+};
 
-typedef struct FW_ATT_RECORD
-{
+struct FW_ATT_RECORD {
 	uint16_t AttFwIdV1;              /* Legacy FW Type field */
 	uint16_t AttFwIdV2;              /* V2 FW ID field */
 	uint32_t AttFWVersion;           /* FW Version */
@@ -50,7 +48,7 @@ typedef struct FW_ATT_RECORD
 	uint8_t  AttSource;              /* FW source indicator */
 	uint8_t  RecordValid;            /* Indicates whether the record is a valid entry */
 	uint32_t AttFwTaId;              /* Ta ID (only in TA Attestation Table) */
-} FW_ATT_RECORD;
+};
 
 static ssize_t amdgpu_fw_attestation_debugfs_read(struct file *f,
 						  char __user *buf,
@@ -60,21 +58,21 @@ static ssize_t amdgpu_fw_attestation_debugfs_read(struct file *f,
 	struct amdgpu_device *adev = (struct amdgpu_device *)file_inode(f)->i_private;
 	uint64_t records_addr = 0;
 	uint64_t vram_pos = 0;
-	FW_ATT_DB_HEADER fw_att_hdr = {0};
-	FW_ATT_RECORD fw_att_record = {0};
+	struct FW_ATT_DB_HEADER fw_att_hdr = {0};
+	struct FW_ATT_RECORD fw_att_record = {0};
 
-	if (size < sizeof(FW_ATT_RECORD)) {
-		DRM_WARN("FW attestation input buffer not enough memory");
+	if (size < sizeof(struct FW_ATT_RECORD)) {
+		drm_warn(adev_to_drm(adev), "FW attestation input buffer not enough memory");
 		return -EINVAL;
 	}
 
-	if ((*pos + sizeof(FW_ATT_DB_HEADER)) >= FW_ATTESTATION_MAX_SIZE) {
-		DRM_WARN("FW attestation out of bounds");
+	if ((*pos + sizeof(struct FW_ATT_DB_HEADER)) >= FW_ATTESTATION_MAX_SIZE) {
+		drm_warn(adev_to_drm(adev), "FW attestation out of bounds");
 		return 0;
 	}
 
 	if (psp_get_fw_attestation_records_addr(&adev->psp, &records_addr)) {
-		DRM_WARN("Failed to get FW attestation record address");
+		drm_warn(adev_to_drm(adev), "Failed to get FW attestation record address");
 		return -EINVAL;
 	}
 
@@ -83,33 +81,34 @@ static ssize_t amdgpu_fw_attestation_debugfs_read(struct file *f,
 	if (*pos == 0) {
 		amdgpu_device_vram_access(adev,
 					  vram_pos,
-					  (uint32_t*)&fw_att_hdr,
-					  sizeof(FW_ATT_DB_HEADER),
+					  (uint32_t *)&fw_att_hdr,
+					  sizeof(struct FW_ATT_DB_HEADER),
 					  false);
 
 		if (fw_att_hdr.AttDbCookie != FW_ATTESTATION_DB_COOKIE) {
-			DRM_WARN("Invalid FW attestation cookie");
+			drm_warn(adev_to_drm(adev), "Invalid FW attestation cookie");
 			return -EINVAL;
 		}
 
-		DRM_INFO("FW attestation version = 0x%X", fw_att_hdr.AttDbVersion);
+		drm_info(adev_to_drm(adev), "FW attestation version = 0x%X",
+			fw_att_hdr.AttDbVersion);
 	}
 
 	amdgpu_device_vram_access(adev,
-				  vram_pos + sizeof(FW_ATT_DB_HEADER) + *pos,
-				  (uint32_t*)&fw_att_record,
-				  sizeof(FW_ATT_RECORD),
+				  vram_pos + sizeof(struct FW_ATT_DB_HEADER) + *pos,
+				  (uint32_t *)&fw_att_record,
+				  sizeof(struct FW_ATT_RECORD),
 				  false);
 
 	if (fw_att_record.RecordValid != FW_ATTESTATION_RECORD_VALID)
 		return 0;
 
-	if (copy_to_user(buf, (void*)&fw_att_record, sizeof(FW_ATT_RECORD)))
+	if (copy_to_user(buf, (void *)&fw_att_record, sizeof(struct FW_ATT_RECORD)))
 		return -EINVAL;
 
-	*pos += sizeof(FW_ATT_RECORD);
+	*pos += sizeof(struct FW_ATT_RECORD);
 
-	return sizeof(FW_ATT_RECORD);
+	return sizeof(struct FW_ATT_RECORD);
 }
 
 static const struct file_operations amdgpu_fw_attestation_debugfs_ops = {
@@ -124,6 +123,10 @@ static int amdgpu_is_fw_attestation_supported(struct amdgpu_device *adev)
 	if (adev->flags & AMD_IS_APU)
 		return 0;
 
+	if (amdgpu_ip_version(adev, MP0_HWIP, 0) == IP_VERSION(14, 0, 2) ||
+	    amdgpu_ip_version(adev, MP0_HWIP, 0) == IP_VERSION(14, 0, 3))
+		return 0;
+
 	if (adev->asic_type >= CHIP_SIENNA_CICHLID)
 		return 1;
 
@@ -136,7 +139,7 @@ void amdgpu_fw_attestation_debugfs_init(struct amdgpu_device *adev)
 		return;
 
 	debugfs_create_file("amdgpu_fw_attestation",
-			    S_IRUSR,
+			    0400,
 			    adev_to_drm(adev)->primary->debugfs_root,
 			    adev,
 			    &amdgpu_fw_attestation_debugfs_ops);

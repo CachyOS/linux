@@ -88,8 +88,10 @@ static void asix_ax88772a_link_change_notify(struct phy_device *phydev)
 	/* Reset PHY, otherwise MII_LPA will provide outdated information.
 	 * This issue is reproducible only with some link partner PHYs
 	 */
-	if (phydev->state == PHY_NOLINK && phydev->drv->soft_reset)
-		phydev->drv->soft_reset(phydev);
+	if (phydev->state == PHY_NOLINK) {
+		phy_init_hw(phydev);
+		_phy_start_aneg(phydev);
+	}
 }
 
 static struct phy_driver asix_driver[] = {
@@ -110,19 +112,18 @@ static struct phy_driver asix_driver[] = {
 	.resume		= genphy_resume,
 	.soft_reset	= asix_soft_reset,
 }, {
-	.phy_id		= PHY_ID_ASIX_AX88796B,
+	PHY_ID_MATCH_MODEL(PHY_ID_ASIX_AX88796B),
 	.name		= "Asix Electronics AX88796B",
-	.phy_id_mask	= 0xfffffff0,
 	/* PHY_BASIC_FEATURES */
 	.soft_reset	= asix_soft_reset,
 } };
 
 module_phy_driver(asix_driver);
 
-static struct mdio_device_id __maybe_unused asix_tbl[] = {
+static const struct mdio_device_id __maybe_unused asix_tbl[] = {
 	{ PHY_ID_MATCH_EXACT(PHY_ID_ASIX_AX88772A) },
 	{ PHY_ID_MATCH_EXACT(PHY_ID_ASIX_AX88772C) },
-	{ PHY_ID_ASIX_AX88796B, 0xfffffff0 },
+	{ PHY_ID_MATCH_MODEL(PHY_ID_ASIX_AX88796B) },
 	{ }
 };
 

@@ -33,6 +33,10 @@
 
 #define MAX_PIPES 6
 
+static const uint8_t DP_SINK_DEVICE_STR_ID_1[] = {7, 1, 8, 7, 3};
+static const uint8_t DP_SINK_DEVICE_STR_ID_2[] = {7, 1, 8, 7, 5};
+static const uint8_t DP_SINK_DEVICE_STR_ID_3[] = {0x42, 0x61, 0x6c, 0x73, 0x61};
+
 /*
  * Convert dmcub psr state to dmcu psr state.
  */
@@ -74,6 +78,26 @@ static enum dc_psr_state convert_psr_state(uint32_t raw_state)
 		state = PSR_STATE5b;
 	else if (raw_state == 0x53)
 		state = PSR_STATE5c;
+	else if (raw_state == 0x4A)
+		state = PSR_STATE4_FULL_FRAME;
+	else if (raw_state == 0x4B)
+		state = PSR_STATE4a_FULL_FRAME;
+	else if (raw_state == 0x4C)
+		state = PSR_STATE4b_FULL_FRAME;
+	else if (raw_state == 0x4D)
+		state = PSR_STATE4c_FULL_FRAME;
+	else if (raw_state == 0x4E)
+		state = PSR_STATE4_FULL_FRAME_POWERUP;
+	else if (raw_state == 0x4F)
+		state = PSR_STATE4_FULL_FRAME_HW_LOCK;
+	else if (raw_state == 0x60)
+		state = PSR_STATE_HWLOCK_MGR;
+	else if (raw_state == 0x61)
+		state = PSR_STATE_POLLVUPDATE;
+	else if (raw_state == 0x62)
+		state = PSR_STATE_RELEASE_HWLOCK_MGR_FULL_FRAME;
+	else
+		state = PSR_STATE_INVALID;
 
 	return state;
 }
@@ -83,23 +107,18 @@ static enum dc_psr_state convert_psr_state(uint32_t raw_state)
  */
 static void dmub_psr_get_state(struct dmub_psr *dmub, enum dc_psr_state *state, uint8_t panel_inst)
 {
-	struct dmub_srv *srv = dmub->ctx->dmub_srv->dmub;
 	uint32_t raw_state = 0;
 	uint32_t retry_count = 0;
-	enum dmub_status status;
 
 	do {
 		// Send gpint command and wait for ack
-		status = dmub_srv_send_gpint_command(srv, DMUB_GPINT__GET_PSR_STATE, panel_inst, 30);
-
-		if (status == DMUB_STATUS_OK) {
-			// GPINT was executed, get response
-			dmub_srv_get_gpint_response(srv, &raw_state);
+		if (dc_wake_and_execute_gpint(dmub->ctx, DMUB_GPINT__GET_PSR_STATE, panel_inst, &raw_state,
+					      DM_DMUB_WAIT_TYPE_WAIT_WITH_REPLY)) {
 			*state = convert_psr_state(raw_state);
-		} else
+		} else {
 			// Return invalid state when GPINT times out
 			*state = PSR_STATE_INVALID;
-
+		}
 	} while (++retry_count <= 1000 && *state == PSR_STATE_INVALID);
 
 	// Assert if max retry hit
@@ -133,6 +152,9 @@ static bool dmub_psr_set_version(struct dmub_psr *dmub, struct dc_stream_state *
 	case DC_PSR_VERSION_1:
 		cmd.psr_set_version.psr_set_version_data.version = PSR_VERSION_1;
 		break;
+	case DC_PSR_VERSION_SU_1:
+		cmd.psr_set_version.psr_set_version_data.version = PSR_VERSION_SU_1;
+		break;
 	case DC_PSR_VERSION_UNSUPPORTED:
 	default:
 		cmd.psr_set_version.psr_set_version_data.version = PSR_VERSION_UNSUPPORTED;
@@ -146,9 +168,7 @@ static bool dmub_psr_set_version(struct dmub_psr *dmub, struct dc_stream_state *
 	cmd.psr_set_version.psr_set_version_data.panel_inst = panel_inst;
 	cmd.psr_set_version.header.payload_bytes = sizeof(struct dmub_cmd_psr_set_version_data);
 
-	dc_dmub_srv_cmd_queue(dc->dmub_srv, &cmd);
-	dc_dmub_srv_cmd_execute(dc->dmub_srv);
-	dc_dmub_srv_wait_idle(dc->dmub_srv);
+	dc_wake_and_execute_dmub_cmd(dc, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
 
 	return true;
 }
@@ -176,9 +196,7 @@ static void dmub_psr_enable(struct dmub_psr *dmub, bool enable, bool wait, uint8
 
 	cmd.psr_enable.header.payload_bytes = 0; // Send header only
 
-	dc_dmub_srv_cmd_queue(dc->dmub_srv, &cmd);
-	dc_dmub_srv_cmd_execute(dc->dmub_srv);
-	dc_dmub_srv_wait_idle(dc->dmub_srv);
+	dc_wake_and_execute_dmub_cmd(dc->dmub_srv->ctx, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
 
 	/* Below loops 1000 x 500us = 500 ms.
 	 *  Exit PSR may need to wait 1-2 frames to power up. Timeout after at
@@ -196,6 +214,7 @@ static void dmub_psr_enable(struct dmub_psr *dmub, bool enable, bool wait, uint8
 					break;
 			}
 
+			/* must *not* be fsleep - this can be called from high irq levels */
 			udelay(500);
 		}
 
@@ -226,9 +245,26 @@ static void dmub_psr_set_level(struct dmub_psr *dmub, uint16_t psr_level, uint8_
 	cmd.psr_set_level.psr_set_level_data.psr_level = psr_level;
 	cmd.psr_set_level.psr_set_level_data.cmd_version = DMUB_CMD_PSR_CONTROL_VERSION_1;
 	cmd.psr_set_level.psr_set_level_data.panel_inst = panel_inst;
-	dc_dmub_srv_cmd_queue(dc->dmub_srv, &cmd);
-	dc_dmub_srv_cmd_execute(dc->dmub_srv);
-	dc_dmub_srv_wait_idle(dc->dmub_srv);
+	dc_wake_and_execute_dmub_cmd(dc, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
+}
+
+/*
+ * Set PSR vtotal requirement for FreeSync PSR.
+ */
+static void dmub_psr_set_sink_vtotal_in_psr_active(struct dmub_psr *dmub,
+		uint16_t psr_vtotal_idle, uint16_t psr_vtotal_su)
+{
+	union dmub_rb_cmd cmd;
+	struct dc_context *dc = dmub->ctx;
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.psr_set_vtotal.header.type = DMUB_CMD__PSR;
+	cmd.psr_set_vtotal.header.sub_type = DMUB_CMD__SET_SINK_VTOTAL_IN_PSR_ACTIVE;
+	cmd.psr_set_vtotal.header.payload_bytes = sizeof(struct dmub_cmd_psr_set_vtotal_data);
+	cmd.psr_set_vtotal.psr_set_vtotal_data.psr_vtotal_idle = psr_vtotal_idle;
+	cmd.psr_set_vtotal.psr_set_vtotal_data.psr_vtotal_su = psr_vtotal_su;
+
+	dc_wake_and_execute_dmub_cmd(dc, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
 }
 
 /*
@@ -247,9 +283,7 @@ static void dmub_psr_set_power_opt(struct dmub_psr *dmub, unsigned int power_opt
 	cmd.psr_set_power_opt.psr_set_power_opt_data.power_opt = power_opt;
 	cmd.psr_set_power_opt.psr_set_power_opt_data.panel_inst = panel_inst;
 
-	dc_dmub_srv_cmd_queue(dc->dmub_srv, &cmd);
-	dc_dmub_srv_cmd_execute(dc->dmub_srv);
-	dc_dmub_srv_wait_idle(dc->dmub_srv);
+	dc_wake_and_execute_dmub_cmd(dc, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
 }
 
 /*
@@ -260,7 +294,7 @@ static bool dmub_psr_copy_settings(struct dmub_psr *dmub,
 		struct psr_context *psr_context,
 		uint8_t panel_inst)
 {
-	union dmub_rb_cmd cmd;
+	union dmub_rb_cmd cmd = { 0 };
 	struct dc_context *dc = dmub->ctx;
 	struct dmub_cmd_psr_copy_settings_data *copy_settings_data
 		= &cmd.psr_copy_settings.psr_copy_settings_data;
@@ -330,24 +364,67 @@ static bool dmub_psr_copy_settings(struct dmub_psr *dmub,
 	copy_settings_data->debug.u32All = 0;
 	copy_settings_data->debug.bitfields.visual_confirm	= dc->dc->debug.visual_confirm == VISUAL_CONFIRM_PSR;
 	copy_settings_data->debug.bitfields.use_hw_lock_mgr		= 1;
+	copy_settings_data->debug.bitfields.force_full_frame_update	= 0;
+	copy_settings_data->debug.bitfields.enable_ips_visual_confirm = dc->dc->debug.enable_ips_visual_confirm;
+
+	if (psr_context->su_granularity_required == 0)
+		copy_settings_data->su_y_granularity = 0;
+	else
+		copy_settings_data->su_y_granularity = psr_context->su_y_granularity;
+
+	copy_settings_data->line_capture_indication = 0;
+	copy_settings_data->line_time_in_us = psr_context->line_time_in_us;
+	copy_settings_data->rate_control_caps = psr_context->rate_control_caps;
 	copy_settings_data->fec_enable_status = (link->fec_state == dc_link_fec_enabled);
 	copy_settings_data->fec_enable_delay_in100us = link->dc->debug.fec_enable_delay_in100us;
 	copy_settings_data->cmd_version =  DMUB_CMD_PSR_CONTROL_VERSION_1;
 	copy_settings_data->panel_inst = panel_inst;
 	copy_settings_data->dsc_enable_status = (pipe_ctx->stream->timing.flags.DSC == 1);
 
-	if (link->fec_state == dc_link_fec_enabled &&
+	/**
+	 * WA for PSRSU+DSC on specific TCON, if DSC is enabled, force PSRSU as ffu mode(full frame update)
+	 * Note that PSRSU+DSC is still under development.
+	 */
+	if (copy_settings_data->dsc_enable_status &&
+		link->dpcd_caps.sink_dev_id == DP_DEVICE_ID_38EC11 &&
+		!memcmp(link->dpcd_caps.sink_dev_id_str, DP_SINK_DEVICE_STR_ID_1,
+			sizeof(DP_SINK_DEVICE_STR_ID_1)))
+		link->psr_settings.force_ffu_mode = 1;
+
+	copy_settings_data->force_ffu_mode = link->psr_settings.force_ffu_mode || psr_context->os_request_force_ffu;
+
+	if (((link->dpcd_caps.fec_cap.bits.FEC_CAPABLE &&
+		!link->dc->debug.disable_fec) &&
+		(link->dpcd_caps.dsc_caps.dsc_basic_caps.fields.dsc_support.DSC_SUPPORT &&
+		!link->panel_config.dsc.disable_dsc_edp &&
+		link->dc->caps.edp_dsc_support)) &&
+		link->dpcd_caps.sink_dev_id == DP_DEVICE_ID_38EC11 &&
 		(!memcmp(link->dpcd_caps.sink_dev_id_str, DP_SINK_DEVICE_STR_ID_1,
-			sizeof(link->dpcd_caps.sink_dev_id_str)) ||
+			sizeof(DP_SINK_DEVICE_STR_ID_1)) ||
 		!memcmp(link->dpcd_caps.sink_dev_id_str, DP_SINK_DEVICE_STR_ID_2,
-			sizeof(link->dpcd_caps.sink_dev_id_str))))
+			sizeof(DP_SINK_DEVICE_STR_ID_2))))
 		copy_settings_data->debug.bitfields.force_wakeup_by_tps3 = 1;
 	else
 		copy_settings_data->debug.bitfields.force_wakeup_by_tps3 = 0;
 
-	dc_dmub_srv_cmd_queue(dc->dmub_srv, &cmd);
-	dc_dmub_srv_cmd_execute(dc->dmub_srv);
-	dc_dmub_srv_wait_idle(dc->dmub_srv);
+	if (link->psr_settings.psr_version == DC_PSR_VERSION_1 &&
+		link->dpcd_caps.sink_dev_id == DP_DEVICE_ID_0022B9 &&
+		!memcmp(link->dpcd_caps.sink_dev_id_str, DP_SINK_DEVICE_STR_ID_3,
+			sizeof(DP_SINK_DEVICE_STR_ID_3))) {
+		copy_settings_data->poweroff_before_vertical_line = 16;
+	}
+
+	//WA for PSR1 on specific TCON, require frame delay for frame re-lock
+	copy_settings_data->relock_delay_frame_cnt = 0;
+	if (link->dpcd_caps.sink_dev_id == DP_BRANCH_DEVICE_ID_001CF8)
+		copy_settings_data->relock_delay_frame_cnt = 2;
+
+	copy_settings_data->power_down_phy_before_disable_stream =
+		link->psr_settings.power_down_phy_before_disable_stream;
+
+	copy_settings_data->dsc_slice_height = psr_context->dsc_slice_height;
+
+	dc_wake_and_execute_dmub_cmd(dc, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
 
 	return true;
 }
@@ -368,23 +445,22 @@ static void dmub_psr_force_static(struct dmub_psr *dmub, uint8_t panel_inst)
 	cmd.psr_force_static.header.sub_type = DMUB_CMD__PSR_FORCE_STATIC;
 	cmd.psr_enable.header.payload_bytes = 0;
 
-	dc_dmub_srv_cmd_queue(dc->dmub_srv, &cmd);
-	dc_dmub_srv_cmd_execute(dc->dmub_srv);
-	dc_dmub_srv_wait_idle(dc->dmub_srv);
+	dc_wake_and_execute_dmub_cmd(dc, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
 }
 
 /*
  * Get PSR residency from firmware.
  */
-static void dmub_psr_get_residency(struct dmub_psr *dmub, uint32_t *residency, uint8_t panel_inst)
+static void dmub_psr_get_residency(struct dmub_psr *dmub, uint32_t *residency,
+	uint8_t panel_inst, enum psr_residency_mode mode)
 {
-	struct dmub_srv *srv = dmub->ctx->dmub_srv->dmub;
 	uint16_t param = (uint16_t)(panel_inst << 8);
 
-	/* Send gpint command and wait for ack */
-	dmub_srv_send_gpint_command(srv, DMUB_GPINT__PSR_RESIDENCY, param, 30);
+	param |= mode;
 
-	dmub_srv_get_gpint_response(srv, residency);
+	/* Send gpint command and wait for ack */
+	dc_wake_and_execute_gpint(dmub->ctx, DMUB_GPINT__PSR_RESIDENCY, param, residency,
+				  DM_DMUB_WAIT_TYPE_WAIT_WITH_REPLY);
 }
 
 static const struct dmub_psr_funcs psr_funcs = {
@@ -394,6 +470,7 @@ static const struct dmub_psr_funcs psr_funcs = {
 	.psr_set_level			= dmub_psr_set_level,
 	.psr_force_static		= dmub_psr_force_static,
 	.psr_get_residency		= dmub_psr_get_residency,
+	.psr_set_sink_vtotal_in_psr_active	= dmub_psr_set_sink_vtotal_in_psr_active,
 	.psr_set_power_opt		= dmub_psr_set_power_opt,
 };
 
@@ -411,7 +488,7 @@ static void dmub_psr_construct(struct dmub_psr *psr, struct dc_context *ctx)
  */
 struct dmub_psr *dmub_psr_create(struct dc_context *ctx)
 {
-	struct dmub_psr *psr = kzalloc(sizeof(struct dmub_psr), GFP_KERNEL);
+	struct dmub_psr *psr = kzalloc_obj(struct dmub_psr);
 
 	if (psr == NULL) {
 		BREAK_TO_DEBUGGER();

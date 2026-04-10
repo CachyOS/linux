@@ -737,6 +737,7 @@ static const struct mtk_eint_hw mt6779_eint_hw = {
 	.ports     = 6,
 	.ap_num    = 195,
 	.db_cnt    = 13,
+	.db_time   = debounce_time_mt2701,
 };
 
 static const struct mtk_pin_soc mt6779_data = {
@@ -761,6 +762,7 @@ static const struct of_device_id mt6779_pinctrl_of_match[] = {
 	{ .compatible = "mediatek,mt6779-pinctrl", .data = &mt6779_data },
 	{ }
 };
+MODULE_DEVICE_TABLE(of, mt6779_pinctrl_of_match);
 
 static struct platform_driver mt6779_pinctrl_driver = {
 	.driver = {

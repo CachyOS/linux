@@ -19,7 +19,7 @@
 #include <linux/highmem.h>
 #include <linux/mutex.h>
 #include <linux/pagemap.h>
-#include <linux/radix-tree.h>
+#include <linux/xarray.h>
 #include <linux/fs.h>
 #include <linux/slab.h>
 #include <linux/backing-dev.h>
@@ -28,11 +28,8 @@
 #include <linux/uaccess.h>
 
 /*
- * Each block ramdisk device has a radix_tree brd_pages of pages that stores
- * the pages containing the block device's contents. A brd page's ->index is
- * its offset in PAGE_SIZE units. This is similar to, but in no way connected
- * with, the kernel's pagecache or buffer cache (which sit above our block
- * device).
+ * Each block ramdisk device has a xarray brd_pages of pages that stores
+ * the pages containing the block device's contents.
  */
 struct brd_device {
 	int			brd_number;
@@ -40,292 +37,190 @@ struct brd_device {
 	struct list_head	brd_list;
 
 	/*
-	 * Backing store of pages and lock to protect it. This is the contents
-	 * of the block device.
+	 * Backing store of pages. This is the contents of the block device.
 	 */
-	spinlock_t		brd_lock;
-	struct radix_tree_root	brd_pages;
+	struct xarray	        brd_pages;
 	u64			brd_nr_pages;
 };
 
 /*
- * Look up and return a brd's page for a given sector.
+ * Look up and return a brd's page with reference grabbed for a given sector.
  */
 static struct page *brd_lookup_page(struct brd_device *brd, sector_t sector)
 {
-	pgoff_t idx;
 	struct page *page;
+	XA_STATE(xas, &brd->brd_pages, sector >> PAGE_SECTORS_SHIFT);
 
-	/*
-	 * The page lifetime is protected by the fact that we have opened the
-	 * device node -- brd pages will never be deleted under us, so we
-	 * don't need any further locking or refcounting.
-	 *
-	 * This is strictly true for the radix-tree nodes as well (ie. we
-	 * don't actually need the rcu_read_lock()), however that is not a
-	 * documented feature of the radix-tree API so it is better to be
-	 * safe here (we don't have total exclusion from radix tree updates
-	 * here, only deletes).
-	 */
 	rcu_read_lock();
-	idx = sector >> PAGE_SECTORS_SHIFT; /* sector to page index */
-	page = radix_tree_lookup(&brd->brd_pages, idx);
+repeat:
+	page = xas_load(&xas);
+	if (xas_retry(&xas, page)) {
+		xas_reset(&xas);
+		goto repeat;
+	}
+
+	if (!page)
+		goto out;
+
+	if (!get_page_unless_zero(page)) {
+		xas_reset(&xas);
+		goto repeat;
+	}
+
+	if (unlikely(page != xas_reload(&xas))) {
+		put_page(page);
+		xas_reset(&xas);
+		goto repeat;
+	}
+out:
 	rcu_read_unlock();
 
-	BUG_ON(page && page->index != idx);
-
 	return page;
 }
 
 /*
- * Look up and return a brd's page for a given sector.
- * If one does not exist, allocate an empty page, and insert that. Then
- * return it.
+ * Insert a new page for a given sector, if one does not already exist.
+ * The returned page will grab reference.
  */
-static struct page *brd_insert_page(struct brd_device *brd, sector_t sector)
+static struct page *brd_insert_page(struct brd_device *brd, sector_t sector,
+		blk_opf_t opf)
 {
-	pgoff_t idx;
-	struct page *page;
-	gfp_t gfp_flags;
+	gfp_t gfp = (opf & REQ_NOWAIT) ? GFP_NOWAIT : GFP_NOIO;
+	struct page *page, *ret;
 
-	page = brd_lookup_page(brd, sector);
-	if (page)
-		return page;
-
-	/*
-	 * Must use NOIO because we don't want to recurse back into the
-	 * block or filesystem layers from page reclaim.
-	 */
-	gfp_flags = GFP_NOIO | __GFP_ZERO | __GFP_HIGHMEM;
-	page = alloc_page(gfp_flags);
+	page = alloc_page(gfp | __GFP_ZERO | __GFP_HIGHMEM);
 	if (!page)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
-	if (radix_tree_preload(GFP_NOIO)) {
-		__free_page(page);
-		return NULL;
-	}
-
-	spin_lock(&brd->brd_lock);
-	idx = sector >> PAGE_SECTORS_SHIFT;
-	page->index = idx;
-	if (radix_tree_insert(&brd->brd_pages, idx, page)) {
-		__free_page(page);
-		page = radix_tree_lookup(&brd->brd_pages, idx);
-		BUG_ON(!page);
-		BUG_ON(page->index != idx);
-	} else {
+	xa_lock(&brd->brd_pages);
+	ret = __xa_cmpxchg(&brd->brd_pages, sector >> PAGE_SECTORS_SHIFT, NULL,
+			page, gfp);
+	if (!ret) {
 		brd->brd_nr_pages++;
+		get_page(page);
+		xa_unlock(&brd->brd_pages);
+		return page;
 	}
-	spin_unlock(&brd->brd_lock);
 
-	radix_tree_preload_end();
+	if (!xa_is_err(ret)) {
+		get_page(ret);
+		xa_unlock(&brd->brd_pages);
+		put_page(page);
+		return ret;
+	}
 
-	return page;
+	xa_unlock(&brd->brd_pages);
+	put_page(page);
+	return ERR_PTR(xa_err(ret));
 }
 
 /*
- * Free all backing store pages and radix tree. This must only be called when
+ * Free all backing store pages and xarray. This must only be called when
  * there are no other users of the device.
  */
-#define FREE_BATCH 16
 static void brd_free_pages(struct brd_device *brd)
 {
-	unsigned long pos = 0;
-	struct page *pages[FREE_BATCH];
-	int nr_pages;
+	struct page *page;
+	pgoff_t idx;
 
-	do {
-		int i;
-
-		nr_pages = radix_tree_gang_lookup(&brd->brd_pages,
-				(void **)pages, pos, FREE_BATCH);
-
-		for (i = 0; i < nr_pages; i++) {
-			void *ret;
-
-			BUG_ON(pages[i]->index < pos);
-			pos = pages[i]->index;
-			ret = radix_tree_delete(&brd->brd_pages, pos);
-			BUG_ON(!ret || ret != pages[i]);
-			__free_page(pages[i]);
-		}
-
-		pos++;
-
-		/*
-		 * It takes 3.4 seconds to remove 80GiB ramdisk.
-		 * So, we need cond_resched to avoid stalling the CPU.
-		 */
+	xa_for_each(&brd->brd_pages, idx, page) {
+		put_page(page);
 		cond_resched();
-
-		/*
-		 * This assumes radix_tree_gang_lookup always returns as
-		 * many pages as possible. If the radix-tree code changes,
-		 * so will this have to.
-		 */
-	} while (nr_pages == FREE_BATCH);
-}
-
-/*
- * copy_to_brd_setup must be called before copy_to_brd. It may sleep.
- */
-static int copy_to_brd_setup(struct brd_device *brd, sector_t sector, size_t n)
-{
-	unsigned int offset = (sector & (PAGE_SECTORS-1)) << SECTOR_SHIFT;
-	size_t copy;
-
-	copy = min_t(size_t, n, PAGE_SIZE - offset);
-	if (!brd_insert_page(brd, sector))
-		return -ENOSPC;
-	if (copy < n) {
-		sector += copy >> SECTOR_SHIFT;
-		if (!brd_insert_page(brd, sector))
-			return -ENOSPC;
 	}
-	return 0;
+
+	xa_destroy(&brd->brd_pages);
 }
 
 /*
- * Copy n bytes from src to the brd starting at sector. Does not sleep.
+ * Process a single segment.  The segment is capped to not cross page boundaries
+ * in both the bio and the brd backing memory.
  */
-static void copy_to_brd(struct brd_device *brd, const void *src,
-			sector_t sector, size_t n)
+static bool brd_rw_bvec(struct brd_device *brd, struct bio *bio)
 {
+	struct bio_vec bv = bio_iter_iovec(bio, bio->bi_iter);
+	sector_t sector = bio->bi_iter.bi_sector;
+	u32 offset = (sector & (PAGE_SECTORS - 1)) << SECTOR_SHIFT;
+	blk_opf_t opf = bio->bi_opf;
 	struct page *page;
-	void *dst;
-	unsigned int offset = (sector & (PAGE_SECTORS-1)) << SECTOR_SHIFT;
-	size_t copy;
+	void *kaddr;
 
-	copy = min_t(size_t, n, PAGE_SIZE - offset);
+	bv.bv_len = min_t(u32, bv.bv_len, PAGE_SIZE - offset);
+
 	page = brd_lookup_page(brd, sector);
-	BUG_ON(!page);
-
-	dst = kmap_atomic(page);
-	memcpy(dst + offset, src, copy);
-	kunmap_atomic(dst);
-
-	if (copy < n) {
-		src += copy;
-		sector += copy >> SECTOR_SHIFT;
-		copy = n - copy;
-		page = brd_lookup_page(brd, sector);
-		BUG_ON(!page);
-
-		dst = kmap_atomic(page);
-		memcpy(dst, src, copy);
-		kunmap_atomic(dst);
-	}
-}
-
-/*
- * Copy n bytes to dst from the brd starting at sector. Does not sleep.
- */
-static void copy_from_brd(void *dst, struct brd_device *brd,
-			sector_t sector, size_t n)
-{
-	struct page *page;
-	void *src;
-	unsigned int offset = (sector & (PAGE_SECTORS-1)) << SECTOR_SHIFT;
-	size_t copy;
-
-	copy = min_t(size_t, n, PAGE_SIZE - offset);
-	page = brd_lookup_page(brd, sector);
-	if (page) {
-		src = kmap_atomic(page);
-		memcpy(dst, src + offset, copy);
-		kunmap_atomic(src);
-	} else
-		memset(dst, 0, copy);
-
-	if (copy < n) {
-		dst += copy;
-		sector += copy >> SECTOR_SHIFT;
-		copy = n - copy;
-		page = brd_lookup_page(brd, sector);
-		if (page) {
-			src = kmap_atomic(page);
-			memcpy(dst, src, copy);
-			kunmap_atomic(src);
-		} else
-			memset(dst, 0, copy);
-	}
-}
-
-/*
- * Process a single bvec of a bio.
- */
-static int brd_do_bvec(struct brd_device *brd, struct page *page,
-			unsigned int len, unsigned int off, unsigned int op,
-			sector_t sector)
-{
-	void *mem;
-	int err = 0;
-
-	if (op_is_write(op)) {
-		err = copy_to_brd_setup(brd, sector, len);
-		if (err)
-			goto out;
+	if (!page && op_is_write(opf)) {
+		page = brd_insert_page(brd, sector, opf);
+		if (IS_ERR(page))
+			goto out_error;
 	}
 
-	mem = kmap_atomic(page);
-	if (!op_is_write(op)) {
-		copy_from_brd(mem + off, brd, sector, len);
-		flush_dcache_page(page);
+	kaddr = bvec_kmap_local(&bv);
+	if (op_is_write(opf)) {
+		memcpy_to_page(page, offset, kaddr, bv.bv_len);
 	} else {
-		flush_dcache_page(page);
-		copy_to_brd(brd, mem + off, sector, len);
+		if (page)
+			memcpy_from_page(kaddr, page, offset, bv.bv_len);
+		else
+			memset(kaddr, 0, bv.bv_len);
 	}
-	kunmap_atomic(mem);
+	kunmap_local(kaddr);
 
-out:
-	return err;
+	bio_advance_iter_single(bio, &bio->bi_iter, bv.bv_len);
+	if (page)
+		put_page(page);
+	return true;
+
+out_error:
+	if (PTR_ERR(page) == -ENOMEM && (opf & REQ_NOWAIT))
+		bio_wouldblock_error(bio);
+	else
+		bio_io_error(bio);
+	return false;
+}
+
+static void brd_do_discard(struct brd_device *brd, sector_t sector, u32 size)
+{
+	sector_t aligned_sector = round_up(sector, PAGE_SECTORS);
+	sector_t aligned_end = round_down(
+			sector + (size >> SECTOR_SHIFT), PAGE_SECTORS);
+	struct page *page;
+
+	if (aligned_end <= aligned_sector)
+		return;
+
+	xa_lock(&brd->brd_pages);
+	while (aligned_sector < aligned_end && aligned_sector < rd_size * 2) {
+		page = __xa_erase(&brd->brd_pages, aligned_sector >> PAGE_SECTORS_SHIFT);
+		if (page) {
+			put_page(page);
+			brd->brd_nr_pages--;
+		}
+		aligned_sector += PAGE_SECTORS;
+	}
+	xa_unlock(&brd->brd_pages);
 }
 
 static void brd_submit_bio(struct bio *bio)
 {
 	struct brd_device *brd = bio->bi_bdev->bd_disk->private_data;
-	sector_t sector = bio->bi_iter.bi_sector;
-	struct bio_vec bvec;
-	struct bvec_iter iter;
 
-	bio_for_each_segment(bvec, bio, iter) {
-		unsigned int len = bvec.bv_len;
-		int err;
-
-		/* Don't support un-aligned buffer */
-		WARN_ON_ONCE((bvec.bv_offset & (SECTOR_SIZE - 1)) ||
-				(len & (SECTOR_SIZE - 1)));
-
-		err = brd_do_bvec(brd, bvec.bv_page, len, bvec.bv_offset,
-				  bio_op(bio), sector);
-		if (err) {
-			bio_io_error(bio);
-			return;
-		}
-		sector += len >> SECTOR_SHIFT;
+	if (unlikely(op_is_discard(bio->bi_opf))) {
+		brd_do_discard(brd, bio->bi_iter.bi_sector,
+				bio->bi_iter.bi_size);
+		bio_endio(bio);
+		return;
 	}
 
+	do {
+		if (!brd_rw_bvec(brd, bio))
+			return;
+	} while (bio->bi_iter.bi_size);
+
 	bio_endio(bio);
-}
-
-static int brd_rw_page(struct block_device *bdev, sector_t sector,
-		       struct page *page, unsigned int op)
-{
-	struct brd_device *brd = bdev->bd_disk->private_data;
-	int err;
-
-	if (PageTransHuge(page))
-		return -ENOTSUPP;
-	err = brd_do_bvec(brd, page, PAGE_SIZE, 0, op, sector);
-	page_endio(page, op_is_write(op), err);
-	return err;
 }
 
 static const struct block_device_operations brd_fops = {
 	.owner =		THIS_MODULE,
 	.submit_bio =		brd_submit_bio,
-	.rw_page =		brd_rw_page,
 };
 
 /*
@@ -343,6 +238,7 @@ static int max_part = 1;
 module_param(max_part, int, 0444);
 MODULE_PARM_DESC(max_part, "Num Minors to reserve between devices");
 
+MODULE_DESCRIPTION("Ram backed block device driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_BLOCKDEV_MAJOR(RAMDISK_MAJOR);
 MODULE_ALIAS("rd");
@@ -351,8 +247,7 @@ MODULE_ALIAS("rd");
 /* Legacy boot options - nonmodular */
 static int __init ramdisk_size(char *str)
 {
-	rd_size = simple_strtol(str, NULL, 0);
-	return 1;
+	return kstrtoul(str, 0, &rd_size) == 0;
 }
 __setup("ramdisk_size=", ramdisk_size);
 #endif
@@ -362,7 +257,39 @@ __setup("ramdisk_size=", ramdisk_size);
  * (should share code eventually).
  */
 static LIST_HEAD(brd_devices);
+static DEFINE_MUTEX(brd_devices_mutex);
 static struct dentry *brd_debugfs_dir;
+
+static struct brd_device *brd_find_or_alloc_device(int i)
+{
+	struct brd_device *brd;
+
+	mutex_lock(&brd_devices_mutex);
+	list_for_each_entry(brd, &brd_devices, brd_list) {
+		if (brd->brd_number == i) {
+			mutex_unlock(&brd_devices_mutex);
+			return ERR_PTR(-EEXIST);
+		}
+	}
+
+	brd = kzalloc_obj(*brd);
+	if (!brd) {
+		mutex_unlock(&brd_devices_mutex);
+		return ERR_PTR(-ENOMEM);
+	}
+	brd->brd_number	= i;
+	list_add_tail(&brd->brd_list, &brd_devices);
+	mutex_unlock(&brd_devices_mutex);
+	return brd;
+}
+
+static void brd_free_device(struct brd_device *brd)
+{
+	mutex_lock(&brd_devices_mutex);
+	list_del(&brd->brd_list);
+	mutex_unlock(&brd_devices_mutex);
+	kfree(brd);
+}
 
 static int brd_alloc(int i)
 {
@@ -370,48 +297,46 @@ static int brd_alloc(int i)
 	struct gendisk *disk;
 	char buf[DISK_NAME_LEN];
 	int err = -ENOMEM;
+	struct queue_limits lim = {
+		/*
+		 * This is so fdisk will align partitions on 4k, because of
+		 * direct_access API needing 4k alignment, returning a PFN
+		 * (This is only a problem on very small devices <= 4M,
+		 *  otherwise fdisk will align on 1M. Regardless this call
+		 *  is harmless)
+		 */
+		.physical_block_size	= PAGE_SIZE,
+		.max_hw_discard_sectors	= UINT_MAX,
+		.max_discard_segments	= 1,
+		.discard_granularity	= PAGE_SIZE,
+		.features		= BLK_FEAT_SYNCHRONOUS |
+					  BLK_FEAT_NOWAIT,
+	};
 
-	list_for_each_entry(brd, &brd_devices, brd_list)
-		if (brd->brd_number == i)
-			return -EEXIST;
-	brd = kzalloc(sizeof(*brd), GFP_KERNEL);
-	if (!brd)
-		return -ENOMEM;
-	brd->brd_number		= i;
-	list_add_tail(&brd->brd_list, &brd_devices);
+	brd = brd_find_or_alloc_device(i);
+	if (IS_ERR(brd))
+		return PTR_ERR(brd);
 
-	spin_lock_init(&brd->brd_lock);
-	INIT_RADIX_TREE(&brd->brd_pages, GFP_ATOMIC);
+	xa_init(&brd->brd_pages);
 
 	snprintf(buf, DISK_NAME_LEN, "ram%d", i);
 	if (!IS_ERR_OR_NULL(brd_debugfs_dir))
 		debugfs_create_u64(buf, 0444, brd_debugfs_dir,
 				&brd->brd_nr_pages);
 
-	disk = brd->brd_disk = blk_alloc_disk(NUMA_NO_NODE);
-	if (!disk)
+	disk = brd->brd_disk = blk_alloc_disk(&lim, NUMA_NO_NODE);
+	if (IS_ERR(disk)) {
+		err = PTR_ERR(disk);
 		goto out_free_dev;
-
+	}
 	disk->major		= RAMDISK_MAJOR;
 	disk->first_minor	= i * max_part;
 	disk->minors		= max_part;
 	disk->fops		= &brd_fops;
 	disk->private_data	= brd;
-	strlcpy(disk->disk_name, buf, DISK_NAME_LEN);
+	strscpy(disk->disk_name, buf, DISK_NAME_LEN);
 	set_capacity(disk, rd_size * 2);
 	
-	/*
-	 * This is so fdisk will align partitions on 4k, because of
-	 * direct_access API needing 4k alignment, returning a PFN
-	 * (This is only a problem on very small devices <= 4M,
-	 *  otherwise fdisk will align on 1M. Regardless this call
-	 *  is harmless)
-	 */
-	blk_queue_physical_block_size(disk->queue, PAGE_SIZE);
-
-	/* Tell the block layer that this is not a rotational device */
-	blk_queue_flag_set(QUEUE_FLAG_NONROT, disk->queue);
-	blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, disk->queue);
 	err = add_disk(disk);
 	if (err)
 		goto out_cleanup_disk;
@@ -419,10 +344,9 @@ static int brd_alloc(int i)
 	return 0;
 
 out_cleanup_disk:
-	blk_cleanup_disk(disk);
+	put_disk(disk);
 out_free_dev:
-	list_del(&brd->brd_list);
-	kfree(brd);
+	brd_free_device(brd);
 	return err;
 }
 
@@ -439,10 +363,9 @@ static void brd_cleanup(void)
 
 	list_for_each_entry_safe(brd, next, &brd_devices, brd_list) {
 		del_gendisk(brd->brd_disk);
-		blk_cleanup_disk(brd->brd_disk);
+		put_disk(brd->brd_disk);
 		brd_free_pages(brd);
-		list_del(&brd->brd_list);
-		kfree(brd);
+		brd_free_device(brd);
 	}
 }
 
@@ -469,16 +392,6 @@ static int __init brd_init(void)
 {
 	int err, i;
 
-	brd_check_and_reset_par();
-
-	brd_debugfs_dir = debugfs_create_dir("ramdisk_pages", NULL);
-
-	for (i = 0; i < rd_nr; i++) {
-		err = brd_alloc(i);
-		if (err)
-			goto out_free;
-	}
-
 	/*
 	 * brd module now has a feature to instantiate underlying device
 	 * structure on-demand, provided that there is an access dev node.
@@ -494,10 +407,17 @@ static int __init brd_init(void)
 	 *	dynamically.
 	 */
 
+	brd_check_and_reset_par();
+
+	brd_debugfs_dir = debugfs_create_dir("ramdisk_pages", NULL);
+
 	if (__register_blkdev(RAMDISK_MAJOR, "ramdisk", brd_probe)) {
 		err = -EIO;
 		goto out_free;
 	}
+
+	for (i = 0; i < rd_nr; i++)
+		brd_alloc(i);
 
 	pr_info("brd: module loaded\n");
 	return 0;

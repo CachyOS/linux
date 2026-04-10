@@ -96,11 +96,13 @@ static int
 nfnl_cthelper_from_nlattr(struct nlattr *attr, struct nf_conn *ct)
 {
 	struct nf_conn_help *help = nfct_help(ct);
+	const struct nf_conntrack_helper *helper;
 
 	if (attr == NULL)
 		return -EINVAL;
 
-	if (help->helper->data_len == 0)
+	helper = rcu_dereference(help->helper);
+	if (!helper || helper->data_len == 0)
 		return -EINVAL;
 
 	nla_memcpy(help->data, attr, sizeof(help->data));
@@ -111,9 +113,11 @@ static int
 nfnl_cthelper_to_nlattr(struct sk_buff *skb, const struct nf_conn *ct)
 {
 	const struct nf_conn_help *help = nfct_help(ct);
+	const struct nf_conntrack_helper *helper;
 
-	if (help->helper->data_len &&
-	    nla_put(skb, CTA_HELP_INFO, help->helper->data_len, &help->data))
+	helper = rcu_dereference(help->helper);
+	if (helper && helper->data_len &&
+	    nla_put(skb, CTA_HELP_INFO, helper->data_len, &help->data))
 		goto nla_put_failure;
 
 	return 0;
@@ -188,9 +192,8 @@ nfnl_cthelper_parse_expect_policy(struct nf_conntrack_helper *helper,
 	if (class_max > NF_CT_MAX_EXPECT_CLASSES)
 		return -EOVERFLOW;
 
-	expect_policy = kcalloc(class_max,
-				sizeof(struct nf_conntrack_expect_policy),
-				GFP_KERNEL);
+	expect_policy = kzalloc_objs(struct nf_conntrack_expect_policy,
+				     class_max);
 	if (expect_policy == NULL)
 		return -ENOMEM;
 
@@ -224,7 +227,7 @@ nfnl_cthelper_create(const struct nlattr * const tb[],
 	if (!tb[NFCTH_TUPLE] || !tb[NFCTH_POLICY] || !tb[NFCTH_PRIV_DATA_LEN])
 		return -EINVAL;
 
-	nfcth = kzalloc(sizeof(*nfcth), GFP_KERNEL);
+	nfcth = kzalloc_obj(*nfcth);
 	if (nfcth == NULL)
 		return -ENOMEM;
 	helper = &nfcth->helper;
@@ -319,8 +322,7 @@ static int nfnl_cthelper_update_policy_all(struct nlattr *tb[],
 	struct nf_conntrack_expect_policy *policy;
 	int i, ret = 0;
 
-	new_policy = kmalloc_array(helper->expect_class_max + 1,
-				   sizeof(*new_policy), GFP_KERNEL);
+	new_policy = kmalloc_objs(*new_policy, helper->expect_class_max + 1);
 	if (!new_policy)
 		return -ENOMEM;
 
@@ -599,10 +601,10 @@ restart:
 				goto out;
 			}
 		}
-	}
-	if (cb->args[1]) {
-		cb->args[1] = 0;
-		goto restart;
+		if (cb->args[1]) {
+			cb->args[1] = 0;
+			goto restart;
+		}
 	}
 out:
 	rcu_read_unlock();

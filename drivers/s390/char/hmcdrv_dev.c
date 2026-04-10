@@ -14,8 +14,7 @@
  *    end read() the response.
  */
 
-#define KMSG_COMPONENT "hmcdrv"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "hmcdrv: " fmt
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -90,7 +89,7 @@ static dev_t hmcdrv_dev_no; /* device number (major/minor) */
  *
  * Return: recommended device file name in /dev
  */
-static char *hmcdrv_dev_name(struct device *dev, umode_t *mode)
+static char *hmcdrv_dev_name(const struct device *dev, umode_t *mode)
 {
 	char *nodename = NULL;
 	const char *devname = dev_name(dev); /* kernel device name */
@@ -186,9 +185,6 @@ static loff_t hmcdrv_dev_seek(struct file *fp, loff_t pos, int whence)
 	if (pos < 0)
 		return -EINVAL;
 
-	if (fp->f_pos != pos)
-		++fp->f_version;
-
 	fp->f_pos = pos;
 	return pos;
 }
@@ -247,24 +243,17 @@ static ssize_t hmcdrv_dev_write(struct file *fp, const char __user *ubuf,
 				size_t len, loff_t *pos)
 {
 	ssize_t retlen;
+	void *pdata;
 
 	pr_debug("writing file '/dev/%pD' at pos. %lld with length %zd\n",
 		 fp, (long long) *pos, len);
 
 	if (!fp->private_data) { /* first expect a cmd write */
-		fp->private_data = kmalloc(len + 1, GFP_KERNEL);
-
-		if (!fp->private_data)
-			return -ENOMEM;
-
-		if (!copy_from_user(fp->private_data, ubuf, len)) {
-			((char *)fp->private_data)[len] = '\0';
-			return len;
-		}
-
-		kfree(fp->private_data);
-		fp->private_data = NULL;
-		return -EFAULT;
+		pdata = memdup_user_nul(ubuf, len);
+		if (IS_ERR(pdata))
+			return PTR_ERR(pdata);
+		fp->private_data = pdata;
+		return len;
 	}
 
 	retlen = hmcdrv_dev_transfer((char *) fp->private_data,
@@ -308,7 +297,7 @@ int hmcdrv_dev_init(void)
 	 * /proc/devices), but not under /dev nor /sys/devices/virtual. So
 	 * we have to create an associated class (see /sys/class).
 	 */
-	hmcdrv_dev_class = class_create(THIS_MODULE, HMCDRV_DEV_CLASS);
+	hmcdrv_dev_class = class_create(HMCDRV_DEV_CLASS);
 
 	if (IS_ERR(hmcdrv_dev_class)) {
 		rc = PTR_ERR(hmcdrv_dev_class);

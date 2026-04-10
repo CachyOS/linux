@@ -76,10 +76,8 @@ static int q40fb_setcolreg(unsigned regno, unsigned red, unsigned green,
 
 static const struct fb_ops q40fb_ops = {
 	.owner		= THIS_MODULE,
+	FB_DEFAULT_IOMEM_OPS,
 	.fb_setcolreg	= q40fb_setcolreg,
-	.fb_fillrect	= cfb_fillrect,
-	.fb_copyarea	= cfb_copyarea,
-	.fb_imageblit	= cfb_imageblit,
 };
 
 static int q40fb_probe(struct platform_device *dev)
@@ -99,7 +97,6 @@ static int q40fb_probe(struct platform_device *dev)
 	info->var = q40fb_var;
 	info->fix = q40fb_fix;
 	info->fbops = &q40fb_ops;
-	info->flags = FBINFO_DEFAULT;  /* not as module for now */
 	info->pseudo_palette = info->par;
 	info->par = NULL;
 	info->screen_base = (char *) q40fb_fix.smem_start;
@@ -133,7 +130,7 @@ static struct platform_device q40fb_device = {
 	.name	= "q40fb",
 };
 
-int __init q40fb_init(void)
+static int __init q40fb_init(void)
 {
 	int ret = 0;
 

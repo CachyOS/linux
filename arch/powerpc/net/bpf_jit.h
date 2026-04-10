@@ -8,16 +8,23 @@
 #ifndef _BPF_JIT_H
 #define _BPF_JIT_H
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #include <asm/types.h>
 #include <asm/ppc-opcode.h>
+#include <linux/build_bug.h>
 
 #ifdef CONFIG_PPC64_ELF_ABI_V1
 #define FUNCTION_DESCR_SIZE	24
 #else
 #define FUNCTION_DESCR_SIZE	0
 #endif
+
+#define CTX_NIA(ctx) ((unsigned long)ctx->idx * 4)
+
+#define SZL			sizeof(unsigned long)
+#define BPF_INSN_SAFETY		64
+#define BPF_PPC_TAILCALL	8
 
 #define PLANT_INSTR(d, idx, instr)					      \
 	do { if (d) { (d)[idx] = instr; } idx++; } while (0)
@@ -26,7 +33,7 @@
 /* Long jump; (unconditional 'branch') */
 #define PPC_JMP(dest)							      \
 	do {								      \
-		long offset = (long)(dest) - (ctx->idx * 4);		      \
+		long offset = (long)(dest) - CTX_NIA(ctx);		      \
 		if ((dest) != 0 && !is_offset_in_branch_range(offset)) {		      \
 			pr_err_ratelimited("Branch offset 0x%lx (@%u) out of range\n", offset, ctx->idx);			\
 			return -ERANGE;					      \
@@ -34,13 +41,10 @@
 		EMIT(PPC_RAW_BRANCH(offset));				      \
 	} while (0)
 
-/* bl (unconditional 'branch' with link) */
-#define PPC_BL(dest)	EMIT(PPC_RAW_BL((dest) - (unsigned long)(image + ctx->idx)))
-
 /* "cond" here covers BO:BI fields. */
 #define PPC_BCC_SHORT(cond, dest)					      \
 	do {								      \
-		long offset = (long)(dest) - (ctx->idx * 4);		      \
+		long offset = (long)(dest) - CTX_NIA(ctx);		      \
 		if ((dest) != 0 && !is_offset_in_cond_branch_range(offset)) {		      \
 			pr_err_ratelimited("Conditional branch offset 0x%lx (@%u) out of range\n", offset, ctx->idx);		\
 			return -ERANGE;					      \
@@ -48,8 +52,23 @@
 		EMIT(PPC_INST_BRANCH_COND | (((cond) & 0x3ff) << 16) | (offset & 0xfffc));					\
 	} while (0)
 
-/* Sign-extended 32-bit immediate load */
+/* When constant jump offset is known prior */
+#define PPC_BCC_CONST_SHORT(cond, offset)							\
+	do {											\
+		BUILD_BUG_ON(offset < -0x8000 || offset > 0x7fff || (offset & 0x3));		\
+		EMIT(PPC_INST_BRANCH_COND | (((cond) & 0x3ff) << 16) | (offset & 0xfffc));	\
+	} while (0)
+
+/*
+ * Sign-extended 32-bit immediate load
+ *
+ * If this is a dummy pass (!image), account for
+ * maximum possible instructions.
+ */
 #define PPC_LI32(d, i)		do {					      \
+	if (!image)							      \
+		ctx->idx += 2;						      \
+	else {								      \
 		if ((int)(uintptr_t)(i) >= -32768 &&			      \
 				(int)(uintptr_t)(i) < 32768)		      \
 			EMIT(PPC_RAW_LI(d, i));				      \
@@ -57,10 +76,16 @@
 			EMIT(PPC_RAW_LIS(d, IMM_H(i)));			      \
 			if (IMM_L(i))					      \
 				EMIT(PPC_RAW_ORI(d, d, IMM_L(i)));	      \
-		} } while(0)
+		}							      \
+	} } while (0)
 
 #ifdef CONFIG_PPC64
+
+/* If dummy pass (!image), account for maximum possible instructions */
 #define PPC_LI64(d, i)		do {					      \
+	if (!image)							      \
+		ctx->idx += 5;						      \
+	else {								      \
 		if ((long)(i) >= -2147483648 &&				      \
 				(long)(i) < 2147483648)			      \
 			PPC_LI32(d, i);					      \
@@ -81,7 +106,20 @@
 			if ((uintptr_t)(i) & 0x000000000000ffffULL)	      \
 				EMIT(PPC_RAW_ORI(d, d, (uintptr_t)(i) &       \
 							0xffff));             \
-		} } while (0)
+		}							      \
+	} } while (0)
+#define PPC_LI_ADDR	PPC_LI64
+
+#ifndef CONFIG_PPC_KERNEL_PCREL
+#define PPC64_LOAD_PACA()						      \
+	EMIT(PPC_RAW_LD(_R2, _R13, offsetof(struct paca_struct, kernel_toc)))
+#else
+#define PPC64_LOAD_PACA()	do {} while (0)
+#endif
+#else
+#define PPC_LI64(d, i)	BUILD_BUG()
+#define PPC_LI_ADDR	PPC_LI32
+#define PPC64_LOAD_PACA() BUILD_BUG()
 #endif
 
 /*
@@ -92,12 +130,12 @@
  * state.
  */
 #define PPC_BCC(cond, dest)	do {					      \
-		if (is_offset_in_cond_branch_range((long)(dest) - (ctx->idx * 4))) {	\
+		if (is_offset_in_cond_branch_range((long)(dest) - CTX_NIA(ctx))) {	\
 			PPC_BCC_SHORT(cond, dest);			      \
 			EMIT(PPC_RAW_NOP());				      \
 		} else {						      \
 			/* Flip the 'T or F' bit to invert comparison */      \
-			PPC_BCC_SHORT(cond ^ COND_CMP_TRUE, (ctx->idx+2)*4);  \
+			PPC_BCC_SHORT(cond ^ COND_CMP_TRUE, CTX_NIA(ctx) + 2*4);  \
 			PPC_JMP(dest);					      \
 		} } while(0)
 
@@ -132,9 +170,14 @@ struct codegen_context {
 	unsigned int seen;
 	unsigned int idx;
 	unsigned int stack_size;
-	int b2p[MAX_BPF_JIT_REG + 2];
+	int b2p[MAX_BPF_JIT_REG + 3];
 	unsigned int exentry_idx;
 	unsigned int alt_exit_addr;
+	u64 arena_vm_start;
+	u64 user_vm_start;
+	bool is_subprog;
+	bool exception_boundary;
+	bool exception_cb;
 };
 
 #define bpf_to_ppc(r)	(ctx->b2p[r])
@@ -144,12 +187,6 @@ struct codegen_context {
 #else
 #define BPF_FIXUP_LEN	2 /* Two instructions => 8 bytes */
 #endif
-
-static inline void bpf_flush_icache(void *start, void *end)
-{
-	smp_wmb();	/* smp write barrier */
-	flush_icache_range((unsigned long)start, (unsigned long)end);
-}
 
 static inline bool bpf_is_seen_register(struct codegen_context *ctx, int i)
 {
@@ -167,17 +204,18 @@ static inline void bpf_clear_seen_register(struct codegen_context *ctx, int i)
 }
 
 void bpf_jit_init_reg_mapping(struct codegen_context *ctx);
-int bpf_jit_emit_func_call_rel(u32 *image, struct codegen_context *ctx, u64 func);
-int bpf_jit_build_body(struct bpf_prog *fp, u32 *image, struct codegen_context *ctx,
-		       u32 *addrs, int pass);
+int bpf_jit_emit_func_call_rel(u32 *image, u32 *fimage, struct codegen_context *ctx, u64 func);
+int bpf_jit_build_body(struct bpf_prog *fp, u32 *image, u32 *fimage, struct codegen_context *ctx,
+		       u32 *addrs, int pass, bool extra_pass);
 void bpf_jit_build_prologue(u32 *image, struct codegen_context *ctx);
 void bpf_jit_build_epilogue(u32 *image, struct codegen_context *ctx);
+void bpf_jit_build_fentry_stubs(u32 *image, struct codegen_context *ctx);
 void bpf_jit_realloc_regs(struct codegen_context *ctx);
 int bpf_jit_emit_exit_insn(u32 *image, struct codegen_context *ctx, int tmp_reg, long exit_addr);
 
-int bpf_add_extable_entry(struct bpf_prog *fp, u32 *image, int pass, struct codegen_context *ctx,
-			  int insn_idx, int jmp_off, int dst_reg);
-
+int bpf_add_extable_entry(struct bpf_prog *fp, u32 *image, u32 *fimage, int pass,
+			  struct codegen_context *ctx, int insn_idx,
+			  int jmp_off, int dst_reg, u32 code);
 #endif
 
 #endif

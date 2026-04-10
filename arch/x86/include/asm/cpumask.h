@@ -1,13 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_CPUMASK_H
 #define _ASM_X86_CPUMASK_H
-#ifndef __ASSEMBLY__
-#include <linux/cpumask.h>
+#ifndef __ASSEMBLER__
 
-extern cpumask_var_t cpu_callin_mask;
-extern cpumask_var_t cpu_callout_mask;
-extern cpumask_var_t cpu_initialized_mask;
-extern cpumask_var_t cpu_sibling_setup_mask;
+#include <linux/compiler.h>
+#include <linux/cpumask.h>
 
 extern void setup_cpu_local_masks(void);
 
@@ -39,5 +36,5 @@ static __always_inline void arch_cpumask_clear_cpu(int cpu, struct cpumask *dstp
 
 #define arch_cpu_is_offline(cpu)	unlikely(!arch_cpu_online(cpu))
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 #endif /* _ASM_X86_CPUMASK_H */

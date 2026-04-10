@@ -13,7 +13,7 @@ description: |+
   PCI host controller found on the ARM Versatile PB board's FPGA.
 
 allOf:
-  - $ref: /schemas/pci/pci-bus.yaml#
+  - $ref: /schemas/pci/pci-host-bridge.yaml#
 
 properties:
   compatible:
@@ -89,6 +89,5 @@ examples:
           <0x0000 0 0 3 &sic 27>,
           <0x0000 0 0 4 &sic 28>;
     };
-
 
 ...

@@ -46,7 +46,7 @@ struct cache_info {
 #define CACHE_MAX_LEVEL 8
 union cache_topology {
 	struct cache_info ci[CACHE_MAX_LEVEL];
-	unsigned long long raw;
+	unsigned long raw;
 };
 
 static const char * const cache_type_string[] = {
@@ -166,5 +166,6 @@ int populate_cache_leaves(unsigned int cpu)
 			ci_leaf_init(this_leaf++, pvt, ctype, level, cpu);
 		}
 	}
+	this_cpu_ci->cpu_map_populated = true;
 	return 0;
 }

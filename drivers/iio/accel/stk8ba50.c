@@ -7,11 +7,12 @@
  * STK8BA50 7-bit I2C address: 0x18.
  */
 
-#include <linux/acpi.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
+#include <linux/types.h>
 #include <linux/iio/buffer.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -41,7 +42,6 @@
 #define STK8BA50_ALL_CHANNEL_SIZE		6
 
 #define STK8BA50_DRIVER_NAME			"stk8ba50"
-#define STK8BA50_IRQ_NAME			"stk8ba50_event"
 
 #define STK8BA50_SCALE_AVAIL			"0.0384 0.0767 0.1534 0.3069"
 
@@ -94,7 +94,7 @@ struct stk8ba50_data {
 	/* Ensure timestamp is naturally aligned */
 	struct {
 		s16 chans[3];
-		s64 timetamp __aligned(8);
+		aligned_s64 timetamp;
 	} scan;
 };
 
@@ -330,8 +330,7 @@ static irqreturn_t stk8ba50_trigger_handler(int irq, void *p)
 			goto err;
 		}
 	} else {
-		for_each_set_bit(bit, indio_dev->active_scan_mask,
-				 indio_dev->masklength) {
+		iio_for_each_active_channel(indio_dev, bit) {
 			ret = stk8ba50_read_accel(data,
 						  stk8ba50_channel_table[bit]);
 			if (ret < 0)
@@ -340,8 +339,8 @@ static irqreturn_t stk8ba50_trigger_handler(int irq, void *p)
 			data->scan.chans[i++] = ret;
 		}
 	}
-	iio_push_to_buffers_with_timestamp(indio_dev, &data->scan,
-					   pf->timestamp);
+	iio_push_to_buffers_with_ts(indio_dev, &data->scan, sizeof(data->scan),
+				    pf->timestamp);
 err:
 	mutex_unlock(&data->lock);
 	iio_trigger_notify_done(indio_dev->trig);
@@ -379,18 +378,15 @@ static const struct iio_buffer_setup_ops stk8ba50_buffer_setup_ops = {
 	.postdisable = stk8ba50_buffer_postdisable,
 };
 
-static int stk8ba50_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int stk8ba50_probe(struct i2c_client *client)
 {
 	int ret;
 	struct iio_dev *indio_dev;
 	struct stk8ba50_data *data;
 
 	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*data));
-	if (!indio_dev) {
-		dev_err(&client->dev, "iio allocation failed!\n");
+	if (!indio_dev)
 		return -ENOMEM;
-	}
 
 	data = iio_priv(indio_dev);
 	data->client = client;
@@ -432,13 +428,10 @@ static int stk8ba50_probe(struct i2c_client *client,
 	}
 
 	if (client->irq > 0) {
-		ret = devm_request_threaded_irq(&client->dev, client->irq,
-						stk8ba50_data_rdy_trig_poll,
-						NULL,
-						IRQF_TRIGGER_RISING |
-						IRQF_ONESHOT,
-						STK8BA50_IRQ_NAME,
-						indio_dev);
+		ret = devm_request_irq(&client->dev, client->irq,
+				       stk8ba50_data_rdy_trig_poll,
+				       IRQF_TRIGGER_RISING | IRQF_NO_THREAD,
+				       "stk8ba50_event", indio_dev);
 		if (ret < 0) {
 			dev_err(&client->dev, "request irq %d failed\n",
 				client->irq);
@@ -490,7 +483,7 @@ err_power_off:
 	return ret;
 }
 
-static int stk8ba50_remove(struct i2c_client *client)
+static void stk8ba50_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct stk8ba50_data *data = iio_priv(indio_dev);
@@ -501,7 +494,7 @@ static int stk8ba50_remove(struct i2c_client *client)
 	if (data->dready_trig)
 		iio_trigger_unregister(data->dready_trig);
 
-	return stk8ba50_set_power(data, STK8BA50_MODE_SUSPEND);
+	stk8ba50_set_power(data, STK8BA50_MODE_SUSPEND);
 }
 
 static int stk8ba50_suspend(struct device *dev)
@@ -526,14 +519,14 @@ static DEFINE_SIMPLE_DEV_PM_OPS(stk8ba50_pm_ops, stk8ba50_suspend,
 				stk8ba50_resume);
 
 static const struct i2c_device_id stk8ba50_i2c_id[] = {
-	{"stk8ba50", 0},
-	{}
+	{ "stk8ba50" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, stk8ba50_i2c_id);
 
 static const struct acpi_device_id stk8ba50_acpi_id[] = {
 	{"STK8BA50", 0},
-	{}
+	{ }
 };
 
 MODULE_DEVICE_TABLE(acpi, stk8ba50_acpi_id);
@@ -542,9 +535,9 @@ static struct i2c_driver stk8ba50_driver = {
 	.driver = {
 		.name = "stk8ba50",
 		.pm = pm_sleep_ptr(&stk8ba50_pm_ops),
-		.acpi_match_table = ACPI_PTR(stk8ba50_acpi_id),
+		.acpi_match_table = stk8ba50_acpi_id,
 	},
-	.probe =            stk8ba50_probe,
+	.probe =        stk8ba50_probe,
 	.remove =           stk8ba50_remove,
 	.id_table =         stk8ba50_i2c_id,
 };

@@ -37,8 +37,12 @@
 #define PTRACE_SETXTREGS	19
 #define PTRACE_GETHBPREGS	20
 #define PTRACE_SETHBPREGS	21
+#define PTRACE_GETFDPIC		22
 
-#ifndef __ASSEMBLY__
+#define PTRACE_GETFDPIC_EXEC	0
+#define PTRACE_GETFDPIC_INTERP	1
+
+#ifndef __ASSEMBLER__
 
 struct user_pt_regs {
 	__u32 pc;

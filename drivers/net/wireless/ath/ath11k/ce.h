@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause-Clear */
 /*
  * Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, 2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef ATH11K_CE_H
@@ -49,6 +50,11 @@ void ath11k_ce_byte_swap(void *mem, u32 len);
 #define CE_HOST_IE_2_ADDRESS	0x00A18040
 #define CE_HOST_IE_3_ADDRESS	CE_HOST_IE_ADDRESS
 
+/* CE IE registers are different for IPQ5018 */
+#define CE_HOST_IPQ5018_IE_ADDRESS		0x0841804C
+#define CE_HOST_IPQ5018_IE_2_ADDRESS		0x08418050
+#define CE_HOST_IPQ5018_IE_3_ADDRESS		CE_HOST_IPQ5018_IE_ADDRESS
+
 #define CE_HOST_IE_3_SHIFT	0xC
 
 #define CE_RING_IDX_INCR(nentries_mask, idx) (((idx) + 1) & (nentries_mask))
@@ -82,6 +88,17 @@ struct ce_pipe_config {
 	__le32 nbytes_max;
 	__le32 flags;
 	__le32 reserved;
+};
+
+struct ce_ie_addr {
+	u32 ie1_reg_addr;
+	u32 ie2_reg_addr;
+	u32 ie3_reg_addr;
+};
+
+struct ce_remap {
+	u32 base;
+	u32 size;
 };
 
 struct ce_attr {
@@ -129,7 +146,7 @@ struct ath11k_ce_ring {
 	/* Host address space */
 	void *base_addr_owner_space_unaligned;
 	/* CE address space */
-	u32 base_addr_ce_space_unaligned;
+	dma_addr_t base_addr_ce_space_unaligned;
 
 	/* Actual start of descriptors.
 	 * Aligned to descriptor-size boundary.
@@ -139,7 +156,7 @@ struct ath11k_ce_ring {
 	void *base_addr_owner_space;
 
 	/* CE address space */
-	u32 base_addr_ce_space;
+	dma_addr_t base_addr_ce_space;
 
 	/* HAL ring id */
 	u32 hal_ring_id;
@@ -187,9 +204,6 @@ int ath11k_ce_alloc_pipes(struct ath11k_base *ab);
 void ath11k_ce_free_pipes(struct ath11k_base *ab);
 int ath11k_ce_get_attr_flags(struct ath11k_base *ab, int ce_id);
 void ath11k_ce_poll_send_completed(struct ath11k_base *ab, u8 pipe_id);
-int ath11k_ce_map_service_to_pipe(struct ath11k_base *ab, u16 service_id,
-				  u8 *ul_pipe, u8 *dl_pipe);
-int ath11k_ce_attr_attach(struct ath11k_base *ab);
 void ath11k_ce_get_shadow_config(struct ath11k_base *ab,
 				 u32 **shadow_cfg, u32 *shadow_cfg_len);
 void ath11k_ce_stop_shadow_timers(struct ath11k_base *ab);

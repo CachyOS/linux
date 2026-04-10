@@ -67,7 +67,7 @@ static int iuu_port_probe(struct usb_serial_port *port)
 	struct iuu_private *priv;
 	int ret;
 
-	priv = kzalloc(sizeof(struct iuu_private), GFP_KERNEL);
+	priv = kzalloc_obj(struct iuu_private);
 	if (!priv)
 		return -ENOMEM;
 
@@ -879,7 +879,8 @@ static int iuu_uart_baud(struct usb_serial_port *port, u32 baud_base,
 }
 
 static void iuu_set_termios(struct tty_struct *tty,
-		struct usb_serial_port *port, struct ktermios *old_termios)
+			    struct usb_serial_port *port,
+			    const struct ktermios *old_termios)
 {
 	const u32 supported_mask = CMSPAR|PARENB|PARODD;
 	struct iuu_private *priv = usb_get_serial_port_data(port);
@@ -1156,7 +1157,6 @@ static int iuu_remove_sysfs_attrs(struct usb_serial_port *port)
 
 static struct usb_serial_driver iuu_device = {
 	.driver = {
-		   .owner = THIS_MODULE,
 		   .name = "iuu_phoenix",
 		   },
 	.id_table = id_table,

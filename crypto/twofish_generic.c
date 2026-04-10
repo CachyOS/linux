@@ -24,13 +24,13 @@
  * Third Edition.
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
+#include <crypto/algapi.h>
 #include <crypto/twofish.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/types.h>
 #include <linux/errno.h>
-#include <linux/crypto.h>
 #include <linux/bitops.h>
 
 /* Macros to compute the g() function in the encryption and decryption
@@ -187,7 +187,7 @@ static void __exit twofish_mod_fini(void)
 	crypto_unregister_alg(&alg);
 }
 
-subsys_initcall(twofish_mod_init);
+module_init(twofish_mod_init);
 module_exit(twofish_mod_fini);
 
 MODULE_LICENSE("GPL");

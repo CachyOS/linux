@@ -8,6 +8,11 @@
 #ifndef __MLXBF_GIGE_REGS_H__
 #define __MLXBF_GIGE_REGS_H__
 
+#include <linux/bitfield.h>
+
+#define MLXBF_GIGE_VERSION                            0x0000
+#define MLXBF_GIGE_VERSION_BF2                        0x0
+#define MLXBF_GIGE_VERSION_BF3                        0x1
 #define MLXBF_GIGE_STATUS                             0x0010
 #define MLXBF_GIGE_STATUS_READY                       BIT(0)
 #define MLXBF_GIGE_INT_STATUS                         0x0028
@@ -57,6 +62,8 @@
 #define MLXBF_GIGE_TX_STATUS_DATA_FIFO_FULL           BIT(1)
 #define MLXBF_GIGE_RX_MAC_FILTER_DMAC_RANGE_START     0x0520
 #define MLXBF_GIGE_RX_MAC_FILTER_DMAC_RANGE_END       0x0528
+#define MLXBF_GIGE_RX_MAC_FILTER_GENERAL              0x0530
+#define MLXBF_GIGE_RX_MAC_FILTER_EN_MULTICAST         BIT(1)
 #define MLXBF_GIGE_RX_MAC_FILTER_COUNT_DISC           0x0540
 #define MLXBF_GIGE_RX_MAC_FILTER_COUNT_DISC_EN        BIT(0)
 #define MLXBF_GIGE_RX_MAC_FILTER_COUNT_PASS           0x0548
@@ -74,5 +81,54 @@
  * so use that plus size of single register to derive total size
  */
 #define MLXBF_GIGE_MMIO_REG_SZ                        (MLXBF_GIGE_MAC_CFG + 8)
+
+#define MLXBF_GIGE_PLU_TX_REG0                        0x80
+#define MLXBF_GIGE_PLU_TX_IPG_SIZE_MASK               GENMASK(11, 0)
+#define MLXBF_GIGE_PLU_TX_SGMII_MODE_MASK             GENMASK(15, 14)
+
+#define MLXBF_GIGE_PLU_RX_REG0                        0x10
+#define MLXBF_GIGE_PLU_RX_SGMII_MODE_MASK             GENMASK(25, 24)
+
+#define MLXBF_GIGE_1G_SGMII_MODE                      0x0
+#define MLXBF_GIGE_10M_SGMII_MODE                     0x1
+#define MLXBF_GIGE_100M_SGMII_MODE                    0x2
+
+/* ipg_size default value for 1G is fixed by HW to 11 + End = 12.
+ * So for 100M it is 12 * 10 - 1 = 119
+ * For 10M, it is 12 * 100 - 1 = 1199
+ */
+#define MLXBF_GIGE_1G_IPG_SIZE                        11
+#define MLXBF_GIGE_100M_IPG_SIZE                      119
+#define MLXBF_GIGE_10M_IPG_SIZE                       1199
+
+/* Offsets into OOB LLU block for pause frame counters */
+#define MLXBF_GIGE_BF2_TX_PAUSE_CNT_HI                0x33d8
+#define MLXBF_GIGE_BF2_TX_PAUSE_CNT_LO                0x33dc
+#define MLXBF_GIGE_BF2_RX_PAUSE_CNT_HI                0x3210
+#define MLXBF_GIGE_BF2_RX_PAUSE_CNT_LO                0x3214
+
+#define MLXBF_GIGE_BF3_TX_PAUSE_CNT_HI                0x3a88
+#define MLXBF_GIGE_BF3_TX_PAUSE_CNT_LO                0x3a8c
+#define MLXBF_GIGE_BF3_RX_PAUSE_CNT_HI                0x38c0
+#define MLXBF_GIGE_BF3_RX_PAUSE_CNT_LO                0x38c4
+
+#define MLXBF_GIGE_TX_PAUSE_CNT_HI ((priv->hw_version == MLXBF_GIGE_VERSION_BF2) ? \
+				    MLXBF_GIGE_BF2_TX_PAUSE_CNT_HI :    \
+				    MLXBF_GIGE_BF3_TX_PAUSE_CNT_HI)
+#define MLXBF_GIGE_TX_PAUSE_CNT_LO ((priv->hw_version == MLXBF_GIGE_VERSION_BF2) ? \
+				    MLXBF_GIGE_BF2_TX_PAUSE_CNT_LO : \
+				    MLXBF_GIGE_BF3_TX_PAUSE_CNT_LO)
+#define MLXBF_GIGE_RX_PAUSE_CNT_HI ((priv->hw_version == MLXBF_GIGE_VERSION_BF2) ? \
+				    MLXBF_GIGE_BF2_RX_PAUSE_CNT_HI : \
+				    MLXBF_GIGE_BF3_RX_PAUSE_CNT_HI)
+#define MLXBF_GIGE_RX_PAUSE_CNT_LO ((priv->hw_version == MLXBF_GIGE_VERSION_BF2) ? \
+				    MLXBF_GIGE_BF2_RX_PAUSE_CNT_LO : \
+				    MLXBF_GIGE_BF3_RX_PAUSE_CNT_LO)
+
+#define MLXBF_GIGE_BF2_LLU_GENERAL_CONFIG             0x2110
+#define MLXBF_GIGE_BF3_LLU_GENERAL_CONFIG             0x2030
+
+#define MLXBF_GIGE_BF2_LLU_COUNTERS_EN                BIT(0)
+#define MLXBF_GIGE_BF3_LLU_COUNTERS_EN                BIT(4)
 
 #endif /* !defined(__MLXBF_GIGE_REGS_H__) */

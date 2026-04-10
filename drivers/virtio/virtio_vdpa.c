@@ -13,6 +13,7 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/uuid.h>
+#include <linux/group_cpus.h>
 #include <linux/virtio.h>
 #include <linux/vdpa.h>
 #include <linux/virtio_config.h>
@@ -27,19 +28,6 @@ struct virtio_vdpa_device {
 	struct virtio_device vdev;
 	struct vdpa_device *vdpa;
 	u64 features;
-
-	/* The lock to protect virtqueue list */
-	spinlock_t lock;
-	/* List of virtio_vdpa_vq_info */
-	struct list_head virtqueues;
-};
-
-struct virtio_vdpa_vq_info {
-	/* the actual virtqueue */
-	struct virtqueue *vq;
-
-	/* the list node for the virtqueues list */
-	struct list_head node;
 };
 
 static inline struct virtio_vdpa_device *
@@ -92,14 +80,14 @@ static void virtio_vdpa_set_status(struct virtio_device *vdev, u8 status)
 {
 	struct vdpa_device *vdpa = vd_get_vdpa(vdev);
 
-	return vdpa_set_status(vdpa, status);
+	vdpa_set_status(vdpa, status);
 }
 
 static void virtio_vdpa_reset(struct virtio_device *vdev)
 {
 	struct vdpa_device *vdpa = vd_get_vdpa(vdev);
 
-	vdpa_reset(vdpa);
+	vdpa_reset(vdpa, 0);
 }
 
 static bool virtio_vdpa_notify(struct virtqueue *vq)
@@ -108,6 +96,17 @@ static bool virtio_vdpa_notify(struct virtqueue *vq)
 	const struct vdpa_config_ops *ops = vdpa->config;
 
 	ops->kick_vq(vdpa, vq->index);
+
+	return true;
+}
+
+static bool virtio_vdpa_notify_with_data(struct virtqueue *vq)
+{
+	struct vdpa_device *vdpa = vd_get_vdpa(vq->vdev);
+	const struct vdpa_config_ops *ops = vdpa->config;
+	u32 data = vring_notification_data(vq);
+
+	ops->kick_vq_with_data(vdpa, data);
 
 	return true;
 }
@@ -123,9 +122,9 @@ static irqreturn_t virtio_vdpa_config_cb(void *private)
 
 static irqreturn_t virtio_vdpa_virtqueue_cb(void *private)
 {
-	struct virtio_vdpa_vq_info *info = private;
+	struct virtqueue *vq = private;
 
-	return vring_interrupt(0, info->vq);
+	return vring_interrupt(0, vq);
 }
 
 static struct virtqueue *
@@ -133,16 +132,15 @@ virtio_vdpa_setup_vq(struct virtio_device *vdev, unsigned int index,
 		     void (*callback)(struct virtqueue *vq),
 		     const char *name, bool ctx)
 {
-	struct virtio_vdpa_device *vd_dev = to_virtio_vdpa_device(vdev);
 	struct vdpa_device *vdpa = vd_get_vdpa(vdev);
 	const struct vdpa_config_ops *ops = vdpa->config;
-	struct virtio_vdpa_vq_info *info;
+	bool (*notify)(struct virtqueue *vq) = virtio_vdpa_notify;
 	struct vdpa_callback cb;
 	struct virtqueue *vq;
 	u64 desc_addr, driver_addr, device_addr;
+	union virtio_map map = {0};
 	/* Assume split virtqueue, switch to packed if necessary */
 	struct vdpa_vq_state state = {0};
-	unsigned long flags;
 	u32 align, max_num, min_num = 1;
 	bool may_reduce_num = true;
 	int err;
@@ -153,16 +151,23 @@ virtio_vdpa_setup_vq(struct virtio_device *vdev, unsigned int index,
 	if (index >= vdpa->nvqs)
 		return ERR_PTR(-ENOENT);
 
+	/* We cannot accept VIRTIO_F_NOTIFICATION_DATA without kick_vq_with_data */
+	if (__virtio_test_bit(vdev, VIRTIO_F_NOTIFICATION_DATA)) {
+		if (ops->kick_vq_with_data)
+			notify = virtio_vdpa_notify_with_data;
+		else
+			__virtio_clear_bit(vdev, VIRTIO_F_NOTIFICATION_DATA);
+	}
+
 	/* Queue shouldn't already be set up. */
 	if (ops->get_vq_ready(vdpa, index))
 		return ERR_PTR(-ENOENT);
 
-	/* Allocate and fill out our active queue description */
-	info = kmalloc(sizeof(*info), GFP_KERNEL);
-	if (!info)
-		return ERR_PTR(-ENOMEM);
+	if (ops->get_vq_size)
+		max_num = ops->get_vq_size(vdpa, index);
+	else
+		max_num = ops->get_vq_num_max(vdpa);
 
-	max_num = ops->get_vq_num_max(vdpa);
 	if (max_num == 0) {
 		err = -ENOENT;
 		goto error_new_virtqueue;
@@ -171,21 +176,33 @@ virtio_vdpa_setup_vq(struct virtio_device *vdev, unsigned int index,
 	if (ops->get_vq_num_min)
 		min_num = ops->get_vq_num_min(vdpa);
 
-	may_reduce_num = (max_num == min_num) ? false : true;
+	may_reduce_num = (max_num != min_num);
 
 	/* Create the vring */
 	align = ops->get_vq_align(vdpa);
-	vq = vring_create_virtqueue(index, max_num, align, vdev,
-				    true, may_reduce_num, ctx,
-				    virtio_vdpa_notify, callback, name);
+
+	if (ops->get_vq_map)
+		map = ops->get_vq_map(vdpa, index);
+	else
+		map = vdpa_get_map(vdpa);
+
+	vq = vring_create_virtqueue_map(index, max_num, align, vdev,
+					true, may_reduce_num, ctx,
+					notify, callback, name, map);
 	if (!vq) {
 		err = -ENOMEM;
 		goto error_new_virtqueue;
 	}
 
+	if (index == 0)
+		vdev->vmap = map;
+
+	vq->num_max = max_num;
+
 	/* Setup virtqueue callback */
 	cb.callback = callback ? virtio_vdpa_virtqueue_cb : NULL;
-	cb.private = info;
+	cb.private = vq;
+	cb.trigger = NULL;
 	ops->set_vq_cb(vdpa, index, &cb);
 	ops->set_vq_num(vdpa, index, virtqueue_get_vring_size(vq));
 
@@ -215,13 +232,6 @@ virtio_vdpa_setup_vq(struct virtio_device *vdev, unsigned int index,
 
 	ops->set_vq_ready(vdpa, index, 1);
 
-	vq->priv = info;
-	info->vq = vq;
-
-	spin_lock_irqsave(&vd_dev->lock, flags);
-	list_add(&info->node, &vd_dev->virtqueues);
-	spin_unlock_irqrestore(&vd_dev->lock, flags);
-
 	return vq;
 
 err_vq:
@@ -230,7 +240,6 @@ error_new_virtqueue:
 	ops->set_vq_ready(vdpa, index, 0);
 	/* VDPA driver should make sure vq is stopeed here */
 	WARN_ON(ops->get_vq_ready(vdpa, index));
-	kfree(info);
 	return ERR_PTR(err);
 }
 
@@ -239,20 +248,12 @@ static void virtio_vdpa_del_vq(struct virtqueue *vq)
 	struct virtio_vdpa_device *vd_dev = to_virtio_vdpa_device(vq->vdev);
 	struct vdpa_device *vdpa = vd_dev->vdpa;
 	const struct vdpa_config_ops *ops = vdpa->config;
-	struct virtio_vdpa_vq_info *info = vq->priv;
 	unsigned int index = vq->index;
-	unsigned long flags;
-
-	spin_lock_irqsave(&vd_dev->lock, flags);
-	list_del(&info->node);
-	spin_unlock_irqrestore(&vd_dev->lock, flags);
 
 	/* Select and deactivate the queue (best effort) */
 	ops->set_vq_ready(vdpa, index, 0);
 
 	vring_del_virtqueue(vq);
-
-	kfree(info);
 }
 
 static void virtio_vdpa_del_vqs(struct virtio_device *vdev)
@@ -263,42 +264,117 @@ static void virtio_vdpa_del_vqs(struct virtio_device *vdev)
 		virtio_vdpa_del_vq(vq);
 }
 
+static void default_calc_sets(struct irq_affinity *affd, unsigned int affvecs)
+{
+	affd->nr_sets = 1;
+	affd->set_size[0] = affvecs;
+}
+
+static struct cpumask *
+create_affinity_masks(unsigned int nvecs, struct irq_affinity *affd)
+{
+	unsigned int affvecs = 0, curvec, usedvecs, i;
+	struct cpumask *masks = NULL;
+
+	if (nvecs > affd->pre_vectors + affd->post_vectors)
+		affvecs = nvecs - affd->pre_vectors - affd->post_vectors;
+
+	if (!affd->calc_sets)
+		affd->calc_sets = default_calc_sets;
+
+	affd->calc_sets(affd, affvecs);
+
+	if (!affvecs)
+		return NULL;
+
+	masks = kzalloc_objs(*masks, nvecs);
+	if (!masks)
+		return NULL;
+
+	/* Fill out vectors at the beginning that don't need affinity */
+	for (curvec = 0; curvec < affd->pre_vectors; curvec++)
+		cpumask_setall(&masks[curvec]);
+
+	for (i = 0, usedvecs = 0; i < affd->nr_sets; i++) {
+		unsigned int this_vecs = affd->set_size[i];
+		unsigned int nr_masks;
+		int j;
+		struct cpumask *result = group_cpus_evenly(this_vecs, &nr_masks);
+
+		if (!result) {
+			kfree(masks);
+			return NULL;
+		}
+
+		for (j = 0; j < nr_masks; j++)
+			cpumask_copy(&masks[curvec + j], &result[j]);
+		kfree(result);
+
+		curvec += nr_masks;
+		usedvecs += nr_masks;
+	}
+
+	/* Fill out vectors at the end that don't need affinity */
+	if (usedvecs >= affvecs)
+		curvec = affd->pre_vectors + affvecs;
+	else
+		curvec = affd->pre_vectors + usedvecs;
+	for (; curvec < nvecs; curvec++)
+		cpumask_setall(&masks[curvec]);
+
+	return masks;
+}
+
 static int virtio_vdpa_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 				struct virtqueue *vqs[],
-				vq_callback_t *callbacks[],
-				const char * const names[],
-				const bool *ctx,
+				struct virtqueue_info vqs_info[],
 				struct irq_affinity *desc)
 {
 	struct virtio_vdpa_device *vd_dev = to_virtio_vdpa_device(vdev);
 	struct vdpa_device *vdpa = vd_get_vdpa(vdev);
 	const struct vdpa_config_ops *ops = vdpa->config;
+	struct cpumask *masks;
 	struct vdpa_callback cb;
+	bool has_affinity = desc && ops->set_vq_affinity;
 	int i, err, queue_idx = 0;
 
+	if (has_affinity) {
+		masks = create_affinity_masks(nvqs, desc);
+		if (!masks)
+			return -ENOMEM;
+	}
+
 	for (i = 0; i < nvqs; ++i) {
-		if (!names[i]) {
+		struct virtqueue_info *vqi = &vqs_info[i];
+
+		if (!vqi->name) {
 			vqs[i] = NULL;
 			continue;
 		}
 
-		vqs[i] = virtio_vdpa_setup_vq(vdev, queue_idx++,
-					      callbacks[i], names[i], ctx ?
-					      ctx[i] : false);
+		vqs[i] = virtio_vdpa_setup_vq(vdev, queue_idx++, vqi->callback,
+					      vqi->name, vqi->ctx);
 		if (IS_ERR(vqs[i])) {
 			err = PTR_ERR(vqs[i]);
 			goto err_setup_vq;
 		}
+
+		if (has_affinity)
+			ops->set_vq_affinity(vdpa, i, &masks[i]);
 	}
 
 	cb.callback = virtio_vdpa_config_cb;
 	cb.private = vd_dev;
 	ops->set_config_cb(vdpa, &cb);
+	if (has_affinity)
+		kfree(masks);
 
 	return 0;
 
 err_setup_vq:
 	virtio_vdpa_del_vqs(vdev);
+	if (has_affinity)
+		kfree(masks);
 	return err;
 }
 
@@ -328,6 +404,32 @@ static const char *virtio_vdpa_bus_name(struct virtio_device *vdev)
 	return dev_name(&vdpa->dev);
 }
 
+static int virtio_vdpa_set_vq_affinity(struct virtqueue *vq,
+				       const struct cpumask *cpu_mask)
+{
+	struct virtio_vdpa_device *vd_dev = to_virtio_vdpa_device(vq->vdev);
+	struct vdpa_device *vdpa = vd_dev->vdpa;
+	const struct vdpa_config_ops *ops = vdpa->config;
+	unsigned int index = vq->index;
+
+	if (ops->set_vq_affinity)
+		return ops->set_vq_affinity(vdpa, index, cpu_mask);
+
+	return 0;
+}
+
+static const struct cpumask *
+virtio_vdpa_get_vq_affinity(struct virtio_device *vdev, int index)
+{
+	struct vdpa_device *vdpa = vd_get_vdpa(vdev);
+	const struct vdpa_config_ops *ops = vdpa->config;
+
+	if (ops->get_vq_affinity)
+		return ops->get_vq_affinity(vdpa, index);
+
+	return NULL;
+}
+
 static const struct virtio_config_ops virtio_vdpa_config_ops = {
 	.get		= virtio_vdpa_get,
 	.set		= virtio_vdpa_set,
@@ -340,6 +442,8 @@ static const struct virtio_config_ops virtio_vdpa_config_ops = {
 	.get_features	= virtio_vdpa_get_features,
 	.finalize_features = virtio_vdpa_finalize_features,
 	.bus_name	= virtio_vdpa_bus_name,
+	.set_vq_affinity = virtio_vdpa_set_vq_affinity,
+	.get_vq_affinity = virtio_vdpa_get_vq_affinity,
 };
 
 static void virtio_vdpa_release_dev(struct device *_d)
@@ -358,16 +462,16 @@ static int virtio_vdpa_probe(struct vdpa_device *vdpa)
 	struct virtio_vdpa_device *vd_dev, *reg_dev = NULL;
 	int ret = -EINVAL;
 
-	vd_dev = kzalloc(sizeof(*vd_dev), GFP_KERNEL);
+	vd_dev = kzalloc_obj(*vd_dev);
 	if (!vd_dev)
 		return -ENOMEM;
 
-	vd_dev->vdev.dev.parent = vdpa_get_dma_dev(vdpa);
+	vd_dev->vdev.dev.parent = vdpa->map ? &vdpa->dev :
+				  vdpa_get_map(vdpa).dma_dev;
 	vd_dev->vdev.dev.release = virtio_vdpa_release_dev;
 	vd_dev->vdev.config = &virtio_vdpa_config_ops;
+	vd_dev->vdev.map = vdpa->map;
 	vd_dev->vdpa = vdpa;
-	INIT_LIST_HEAD(&vd_dev->virtqueues);
-	spin_lock_init(&vd_dev->lock);
 
 	vd_dev->vdev.id.device = ops->get_device_id(vdpa);
 	if (vd_dev->vdev.id.device == 0)

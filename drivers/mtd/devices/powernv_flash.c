@@ -207,6 +207,9 @@ static int powernv_flash_set_driver_info(struct device *dev,
 	 * get them
 	 */
 	mtd->name = devm_kasprintf(dev, GFP_KERNEL, "%pOFP", dev->of_node);
+	if (!mtd->name)
+		return -ENOMEM;
+
 	mtd->type = MTD_NORFLASH;
 	mtd->flags = MTD_WRITEABLE;
 	mtd->size = size;
@@ -265,12 +268,12 @@ static int powernv_flash_probe(struct platform_device *pdev)
  *
  * Returns 0
  */
-static int powernv_flash_release(struct platform_device *pdev)
+static void powernv_flash_release(struct platform_device *pdev)
 {
 	struct powernv_flash *data = dev_get_drvdata(&(pdev->dev));
 
 	/* All resources should be freed automatically */
-	return mtd_device_unregister(&(data->mtd));
+	WARN_ON(mtd_device_unregister(&data->mtd));
 }
 
 static const struct of_device_id powernv_flash_match[] = {

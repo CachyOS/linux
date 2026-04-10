@@ -1292,7 +1292,7 @@ static void *alloc_ctrl_packet(int header_size,
 }
 
 int ipwireless_send_packet(struct ipw_hardware *hw, unsigned int channel_idx,
-			    const unsigned char *data, unsigned int length,
+			    const u8 *data, unsigned int length,
 			    void (*callback) (void *cb, unsigned int length),
 			    void *callback_data)
 {
@@ -1496,7 +1496,7 @@ exit_nomem:
 static void handle_setup_get_version_rsp(struct ipw_hardware *hw,
 		unsigned char vers_no)
 {
-	del_timer(&hw->setup_timer);
+	timer_delete(&hw->setup_timer);
 	hw->initializing = 0;
 	printk(KERN_INFO IPWIRELESS_PCCARD_NAME ": card is ready.\n");
 
@@ -1618,7 +1618,7 @@ struct ipw_hardware *ipwireless_hardware_create(void)
 {
 	int i;
 	struct ipw_hardware *hw =
-		kzalloc(sizeof(struct ipw_hardware), GFP_KERNEL);
+		kzalloc_obj(struct ipw_hardware);
 
 	if (!hw)
 		return NULL;
@@ -1676,7 +1676,7 @@ void ipwireless_init_hardware_v2_v3(struct ipw_hardware *hw)
 
 static void ipwireless_setup_timer(struct timer_list *t)
 {
-	struct ipw_hardware *hw = from_timer(hw, t, setup_timer);
+	struct ipw_hardware *hw = timer_container_of(hw, t, setup_timer);
 
 	hw->init_loops++;
 
@@ -1721,7 +1721,7 @@ void ipwireless_stop_interrupts(struct ipw_hardware *hw)
 	if (!hw->shutting_down) {
 		/* Tell everyone we are going down. */
 		hw->shutting_down = 1;
-		del_timer(&hw->setup_timer);
+		timer_delete(&hw->setup_timer);
 
 		/* Prevent the hardware from sending any more interrupts */
 		do_close_hardware(hw);

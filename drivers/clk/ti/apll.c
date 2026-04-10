@@ -1,18 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OMAP APLL clock support
  *
  * Copyright (C) 2013 Texas Instruments, Inc.
  *
  * J Keerthy <j-keerthy@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/clk.h>
@@ -168,7 +160,7 @@ static void __init omap_clk_register_apll(void *user,
 	ad->clk_bypass = __clk_get_hw(clk);
 
 	name = ti_dt_clk_name(node);
-	clk = ti_clk_register_omap_hw(NULL, &clk_hw->hw, name);
+	clk = of_ti_clk_register_omap_hw(node, &clk_hw->hw, name);
 	if (!IS_ERR(clk)) {
 		of_clk_add_provider(node, of_clk_src_simple_get, clk);
 		kfree(init->parent_names);
@@ -191,9 +183,9 @@ static void __init of_dra7_apll_setup(struct device_node *node)
 	const char **parent_names = NULL;
 	int ret;
 
-	ad = kzalloc(sizeof(*ad), GFP_KERNEL);
-	clk_hw = kzalloc(sizeof(*clk_hw), GFP_KERNEL);
-	init = kzalloc(sizeof(*init), GFP_KERNEL);
+	ad = kzalloc_obj(*ad);
+	clk_hw = kzalloc_obj(*clk_hw);
+	init = kzalloc_obj(*init);
 	if (!ad || !clk_hw || !init)
 		goto cleanup;
 
@@ -355,9 +347,9 @@ static void __init of_omap2_apll_setup(struct device_node *node)
 	u32 val;
 	int ret;
 
-	ad = kzalloc(sizeof(*ad), GFP_KERNEL);
-	clk_hw = kzalloc(sizeof(*clk_hw), GFP_KERNEL);
-	init = kzalloc(sizeof(*init), GFP_KERNEL);
+	ad = kzalloc_obj(*ad);
+	clk_hw = kzalloc_obj(*clk_hw);
+	init = kzalloc_obj(*init);
 
 	if (!ad || !clk_hw || !init)
 		goto cleanup;
@@ -384,14 +376,9 @@ static void __init of_omap2_apll_setup(struct device_node *node)
 	}
 	clk_hw->fixed_rate = val;
 
-	if (of_property_read_u32(node, "ti,bit-shift", &val)) {
-		pr_err("%pOFn missing bit-shift\n", node);
-		goto cleanup;
-	}
-
-	clk_hw->enable_bit = val;
-	ad->enable_mask = 0x3 << val;
-	ad->autoidle_mask = 0x3 << val;
+	clk_hw->enable_bit = ti_clk_get_legacy_bit_shift(node);
+	ad->enable_mask = 0x3 << clk_hw->enable_bit;
+	ad->autoidle_mask = 0x3 << clk_hw->enable_bit;
 
 	if (of_property_read_u32(node, "ti,idlest-shift", &val)) {
 		pr_err("%pOFn missing idlest-shift\n", node);
@@ -408,7 +395,7 @@ static void __init of_omap2_apll_setup(struct device_node *node)
 		goto cleanup;
 
 	name = ti_dt_clk_name(node);
-	clk = ti_clk_register_omap_hw(NULL, &clk_hw->hw, name);
+	clk = of_ti_clk_register_omap_hw(node, &clk_hw->hw, name);
 	if (!IS_ERR(clk)) {
 		of_clk_add_provider(node, of_clk_src_simple_get, clk);
 		kfree(init);

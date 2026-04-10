@@ -34,6 +34,7 @@ config TTY_PRINTK_LEVEL
 config PRINTER
 	tristate "Parallel printer support"
 	depends on PARPORT
+	depends on HAS_IOPORT || PARPORT_NOT_PC
 	help
 	  If you intend to attach a printer to the parallel port of your Linux
 	  box (as opposed to using a serial printer; if the connector at the
@@ -236,7 +237,8 @@ config APPLICOM
 
 config SONYPI
 	tristate "Sony Vaio Programmable I/O Control Device support"
-	depends on X86_32 && PCI && INPUT
+	depends on X86_32 && PCI && INPUT && HAS_IOPORT
+	depends on ACPI_EC || !ACPI
 	help
 	  This driver enables access to the Sony Programmable I/O Control
 	  Device which can be found in many (all ?) Sony Vaio laptops.
@@ -246,39 +248,6 @@ config SONYPI
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called sonypi.
-
-config GPIO_TB0219
-	tristate "TANBAC TB0219 GPIO support"
-	depends on TANBAC_TB022X
-	select GPIO_VR41XX
-
-source "drivers/char/pcmcia/Kconfig"
-
-config MWAVE
-	tristate "ACP Modem (Mwave) support"
-	depends on X86 && TTY
-	select SERIAL_8250
-	help
-	  The ACP modem (Mwave) for Linux is a WinModem. It is composed of a
-	  kernel driver and a user level application. Together these components
-	  support direct attachment to public switched telephone networks (PSTNs)
-	  and support selected world wide countries.
-
-	  This version of the ACP Modem driver supports the IBM Thinkpad 600E,
-	  600, and 770 that include on board ACP modem hardware.
-
-	  The modem also supports the standard communications port interface
-	  (ttySx) and is compatible with the Hayes AT Command Set.
-
-	  The user level application needed to use this driver can be found at
-	  the IBM Linux Technology Center (LTC) web site:
-	  <http://www.ibm.com/linux/ltc/>.
-
-	  If you own one of the above IBM Thinkpads which has the Mwave chipset
-	  in it, say Y.
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called mwave.
 
 config SCx200_GPIO
 	tristate "NatSemi SCx200 GPIO Support"
@@ -347,14 +316,14 @@ config NVRAM
 
 config DEVPORT
 	bool "/dev/port character device"
-	depends on ISA || PCI
+	depends on HAS_IOPORT
 	default y
 	help
 	  Say Y here if you want to support the /dev/port device. The /dev/port
 	  device is similar to /dev/mem, but for I/O ports.
 
 config HPET
-	bool "HPET - High Precision Event Timer" if (X86 || IA64)
+	bool "HPET - High Precision Event Timer" if X86
 	default n
 	depends on ACPI
 	help
@@ -383,7 +352,7 @@ config HPET_MMAP_DEFAULT
 
 config HANGCHECK_TIMER
 	tristate "Hangcheck timer"
-	depends on X86 || IA64 || PPC64 || S390
+	depends on X86 || PPC64 || S390
 	help
 	  The hangcheck-timer module detects when the system has gone
 	  out to lunch past a certain margin.  It can reboot the system
@@ -409,7 +378,7 @@ config TELCLOCK
 	  configuration of the telecom clock configuration settings.  This
 	  device is used for hardware synchronization across the ATCA backplane
 	  fabric.  Upon loading, the driver exports a sysfs directory,
-	  /sys/devices/platform/telco_clock, with a number of files for
+	  /sys/devices/faux/telco_clock, with a number of files for
 	  controlling the behavior of this hardware.
 
 source "drivers/s390/char/Kconfig"
@@ -427,42 +396,5 @@ config ADI
 	  This feature is also known as MCD (Memory Corruption Detection)
 	  and SSM (Silicon Secured Memory).  Intended consumers of this
 	  driver include crash and makedumpfile.
-
-config RANDOM_TRUST_CPU
-	bool "Initialize RNG using CPU RNG instructions"
-	default y
-	depends on ARCH_RANDOM
-	help
-	  Initialize the RNG using random numbers supplied by the CPU's
-	  RNG instructions (e.g. RDRAND), if supported and available. These
-	  random numbers are never used directly, but are rather hashed into
-	  the main input pool, and this happens regardless of whether or not
-	  this option is enabled. Instead, this option controls whether the
-	  they are credited and hence can initialize the RNG. Additionally,
-	  other sources of randomness are always used, regardless of this
-	  setting.  Enabling this implies trusting that the CPU can supply high
-	  quality and non-backdoored random numbers.
-
-	  Say Y here unless you have reason to mistrust your CPU or believe
-	  its RNG facilities may be faulty. This may also be configured at
-	  boot time with "random.trust_cpu=on/off".
-
-config RANDOM_TRUST_BOOTLOADER
-	bool "Initialize RNG using bootloader-supplied seed"
-	default y
-	help
-	  Initialize the RNG using a seed supplied by the bootloader or boot
-	  environment (e.g. EFI or a bootloader-generated device tree). This
-	  seed is not used directly, but is rather hashed into the main input
-	  pool, and this happens regardless of whether or not this option is
-	  enabled. Instead, this option controls whether the seed is credited
-	  and hence can initialize the RNG. Additionally, other sources of
-	  randomness are always used, regardless of this setting. Enabling
-	  this implies trusting that the bootloader can supply high quality and
-	  non-backdoored seeds.
-
-	  Say Y here unless you have reason to mistrust your bootloader or
-	  believe its RNG facilities may be faulty. This may also be configured
-	  at boot time with "random.trust_bootloader=on/off".
 
 endmenu

@@ -5,6 +5,7 @@
  *
  */
 
+#include <drm/drm_blend.h>
 #include <drm/drm_print.h>
 #include "d71_dev.h"
 #include "malidp_io.h"
@@ -309,8 +310,7 @@ static int d71_reset(struct d71_dev *d71)
 	u32 __iomem *gcu = d71->gcu_addr;
 	int ret;
 
-	malidp_write32_mask(gcu, BLK_CONTROL,
-			    GCU_CONTROL_SRST, GCU_CONTROL_SRST);
+	malidp_write32(gcu, BLK_CONTROL, GCU_CONTROL_SRST);
 
 	ret = dp_wait_cond(!(malidp_read32(gcu, BLK_CONTROL) & GCU_CONTROL_SRST),
 			   100, 1000, 10000);
@@ -521,7 +521,7 @@ static struct komeda_format_caps d71_format_caps_table[] = {
 	{__HW_ID(5, 1),	DRM_FORMAT_YUYV,	RICH,		Rot_ALL_H_V,	LYT_NM, AFB_TH}, /* afbc */
 	{__HW_ID(5, 2),	DRM_FORMAT_YUYV,	RICH,		Flip_H_V,		0, 0},
 	{__HW_ID(5, 3),	DRM_FORMAT_UYVY,	RICH,		Flip_H_V,		0, 0},
-	{__HW_ID(5, 6),	DRM_FORMAT_NV12,	RICH,		Flip_H_V,		0, 0},
+	{__HW_ID(5, 6),	DRM_FORMAT_NV12,	RICH_WB,	Flip_H_V,		0, 0},
 	{__HW_ID(5, 6),	DRM_FORMAT_YUV420_8BIT,	RICH,		Rot_ALL_H_V,	LYT_NM, AFB_TH}, /* afbc */
 	{__HW_ID(5, 7),	DRM_FORMAT_YUV420,	RICH,		Flip_H_V,		0, 0},
 	/* YUV 10bit*/

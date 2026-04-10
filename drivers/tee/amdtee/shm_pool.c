@@ -4,8 +4,8 @@
  */
 
 #include <linux/slab.h>
-#include <linux/tee_drv.h>
-#include <linux/psp-sev.h>
+#include <linux/tee_core.h>
+#include <linux/psp.h>
 #include "amdtee_private.h"
 
 static int pool_op_alloc(struct tee_shm_pool *pool, struct tee_shm *shm,
@@ -59,7 +59,7 @@ static const struct tee_shm_pool_ops pool_ops = {
 
 struct tee_shm_pool *amdtee_config_shm(void)
 {
-	struct tee_shm_pool *pool = kzalloc(sizeof(*pool), GFP_KERNEL);
+	struct tee_shm_pool *pool = kzalloc_obj(*pool);
 
 	if (!pool)
 		return ERR_PTR(-ENOMEM);

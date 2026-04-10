@@ -36,12 +36,15 @@ struct etnaviv_gem_object {
 	const struct etnaviv_gem_ops *ops;
 	struct mutex lock;
 
+	/*
+	 * The actual size that is visible to the GPU, not necessarily
+	 * PAGE_SIZE aligned, but should be aligned to GPU page size.
+	 */
+	u32 size;
 	u32 flags;
 
 	struct list_head gem_node;
-	struct etnaviv_gpu *gpu;     /* non-null if active */
 	atomic_t gpu_active;
-	u32 access;
 
 	struct page **pages;
 	struct sg_table *sgt;
@@ -96,7 +99,7 @@ struct etnaviv_gem_submit {
 	int out_fence_id;
 	struct list_head node; /* GPU active submit list */
 	struct etnaviv_cmdbuf cmdbuf;
-	bool runtime_resumed;
+	struct pid *pid;       /* submitting process */
 	u32 exec_state;
 	u32 flags;
 	unsigned int nr_pmrs;

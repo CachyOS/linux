@@ -31,14 +31,22 @@
 #define COMPAT_HWCAP_VFPD32	(1 << 19)
 #define COMPAT_HWCAP_LPAE	(1 << 20)
 #define COMPAT_HWCAP_EVTSTRM	(1 << 21)
+#define COMPAT_HWCAP_FPHP	(1 << 22)
+#define COMPAT_HWCAP_ASIMDHP	(1 << 23)
+#define COMPAT_HWCAP_ASIMDDP	(1 << 24)
+#define COMPAT_HWCAP_ASIMDFHM	(1 << 25)
+#define COMPAT_HWCAP_ASIMDBF16	(1 << 26)
+#define COMPAT_HWCAP_I8MM	(1 << 27)
 
 #define COMPAT_HWCAP2_AES	(1 << 0)
 #define COMPAT_HWCAP2_PMULL	(1 << 1)
 #define COMPAT_HWCAP2_SHA1	(1 << 2)
 #define COMPAT_HWCAP2_SHA2	(1 << 3)
 #define COMPAT_HWCAP2_CRC32	(1 << 4)
+#define COMPAT_HWCAP2_SB	(1 << 5)
+#define COMPAT_HWCAP2_SSBS	(1 << 6)
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #include <linux/log2.h>
 
 /*
@@ -84,8 +92,24 @@
 #define KERNEL_HWCAP_SB			__khwcap_feature(SB)
 #define KERNEL_HWCAP_PACA		__khwcap_feature(PACA)
 #define KERNEL_HWCAP_PACG		__khwcap_feature(PACG)
+#define KERNEL_HWCAP_GCS		__khwcap_feature(GCS)
+#define KERNEL_HWCAP_CMPBR		__khwcap_feature(CMPBR)
+#define KERNEL_HWCAP_FPRCVT		__khwcap_feature(FPRCVT)
+#define KERNEL_HWCAP_F8MM8		__khwcap_feature(F8MM8)
+#define KERNEL_HWCAP_F8MM4		__khwcap_feature(F8MM4)
+#define KERNEL_HWCAP_SVE_F16MM		__khwcap_feature(SVE_F16MM)
+#define KERNEL_HWCAP_SVE_ELTPERM	__khwcap_feature(SVE_ELTPERM)
+#define KERNEL_HWCAP_SVE_AES2		__khwcap_feature(SVE_AES2)
+#define KERNEL_HWCAP_SVE_BFSCALE	__khwcap_feature(SVE_BFSCALE)
+#define KERNEL_HWCAP_SVE2P2		__khwcap_feature(SVE2P2)
+#define KERNEL_HWCAP_SME2P2		__khwcap_feature(SME2P2)
+#define KERNEL_HWCAP_SME_SBITPERM	__khwcap_feature(SME_SBITPERM)
+#define KERNEL_HWCAP_SME_AES		__khwcap_feature(SME_AES)
+#define KERNEL_HWCAP_SME_SFEXPA		__khwcap_feature(SME_SFEXPA)
+#define KERNEL_HWCAP_SME_STMOP		__khwcap_feature(SME_STMOP)
+#define KERNEL_HWCAP_SME_SMOP4		__khwcap_feature(SME_SMOP4)
 
-#define __khwcap2_feature(x)		(const_ilog2(HWCAP2_ ## x) + 32)
+#define __khwcap2_feature(x)		(const_ilog2(HWCAP2_ ## x) + 64)
 #define KERNEL_HWCAP_DCPODP		__khwcap2_feature(DCPODP)
 #define KERNEL_HWCAP_SVE2		__khwcap2_feature(SVE2)
 #define KERNEL_HWCAP_SVEAES		__khwcap2_feature(SVEAES)
@@ -118,6 +142,44 @@
 #define KERNEL_HWCAP_SME_F32F32		__khwcap2_feature(SME_F32F32)
 #define KERNEL_HWCAP_SME_FA64		__khwcap2_feature(SME_FA64)
 #define KERNEL_HWCAP_WFXT		__khwcap2_feature(WFXT)
+#define KERNEL_HWCAP_EBF16		__khwcap2_feature(EBF16)
+#define KERNEL_HWCAP_SVE_EBF16		__khwcap2_feature(SVE_EBF16)
+#define KERNEL_HWCAP_CSSC		__khwcap2_feature(CSSC)
+#define KERNEL_HWCAP_RPRFM		__khwcap2_feature(RPRFM)
+#define KERNEL_HWCAP_SVE2P1		__khwcap2_feature(SVE2P1)
+#define KERNEL_HWCAP_SME2		__khwcap2_feature(SME2)
+#define KERNEL_HWCAP_SME2P1		__khwcap2_feature(SME2P1)
+#define KERNEL_HWCAP_SME_I16I32		__khwcap2_feature(SME_I16I32)
+#define KERNEL_HWCAP_SME_BI32I32	__khwcap2_feature(SME_BI32I32)
+#define KERNEL_HWCAP_SME_B16B16		__khwcap2_feature(SME_B16B16)
+#define KERNEL_HWCAP_SME_F16F16		__khwcap2_feature(SME_F16F16)
+#define KERNEL_HWCAP_MOPS		__khwcap2_feature(MOPS)
+#define KERNEL_HWCAP_HBC		__khwcap2_feature(HBC)
+#define KERNEL_HWCAP_SVE_B16B16		__khwcap2_feature(SVE_B16B16)
+#define KERNEL_HWCAP_LRCPC3		__khwcap2_feature(LRCPC3)
+#define KERNEL_HWCAP_LSE128		__khwcap2_feature(LSE128)
+#define KERNEL_HWCAP_FPMR		__khwcap2_feature(FPMR)
+#define KERNEL_HWCAP_LUT		__khwcap2_feature(LUT)
+#define KERNEL_HWCAP_FAMINMAX		__khwcap2_feature(FAMINMAX)
+#define KERNEL_HWCAP_F8CVT		__khwcap2_feature(F8CVT)
+#define KERNEL_HWCAP_F8FMA		__khwcap2_feature(F8FMA)
+#define KERNEL_HWCAP_F8DP4		__khwcap2_feature(F8DP4)
+#define KERNEL_HWCAP_F8DP2		__khwcap2_feature(F8DP2)
+#define KERNEL_HWCAP_F8E4M3		__khwcap2_feature(F8E4M3)
+#define KERNEL_HWCAP_F8E5M2		__khwcap2_feature(F8E5M2)
+#define KERNEL_HWCAP_SME_LUTV2		__khwcap2_feature(SME_LUTV2)
+#define KERNEL_HWCAP_SME_F8F16		__khwcap2_feature(SME_F8F16)
+#define KERNEL_HWCAP_SME_F8F32		__khwcap2_feature(SME_F8F32)
+#define KERNEL_HWCAP_SME_SF8FMA		__khwcap2_feature(SME_SF8FMA)
+#define KERNEL_HWCAP_SME_SF8DP4		__khwcap2_feature(SME_SF8DP4)
+#define KERNEL_HWCAP_SME_SF8DP2		__khwcap2_feature(SME_SF8DP2)
+#define KERNEL_HWCAP_POE		__khwcap2_feature(POE)
+
+#define __khwcap3_feature(x)		(const_ilog2(HWCAP3_ ## x) + 128)
+#define KERNEL_HWCAP_MTE_FAR		__khwcap3_feature(MTE_FAR)
+#define KERNEL_HWCAP_MTE_STORE_ONLY	__khwcap3_feature(MTE_STORE_ONLY)
+#define KERNEL_HWCAP_LSFE		__khwcap3_feature(LSFE)
+#define KERNEL_HWCAP_LS64		__khwcap3_feature(LS64)
 
 /*
  * This yields a mask that user programs can use to figure out what
@@ -125,11 +187,13 @@
  */
 #define ELF_HWCAP		cpu_get_elf_hwcap()
 #define ELF_HWCAP2		cpu_get_elf_hwcap2()
+#define ELF_HWCAP3		cpu_get_elf_hwcap3()
 
 #ifdef CONFIG_COMPAT
 #define COMPAT_ELF_HWCAP	(compat_elf_hwcap)
 #define COMPAT_ELF_HWCAP2	(compat_elf_hwcap2)
-extern unsigned int compat_elf_hwcap, compat_elf_hwcap2;
+#define COMPAT_ELF_HWCAP3	(compat_elf_hwcap3)
+extern unsigned int compat_elf_hwcap, compat_elf_hwcap2, compat_elf_hwcap3;
 #endif
 
 enum {

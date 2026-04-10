@@ -2,19 +2,51 @@
 #ifndef ARCH_X86_KVM_CPUID_H
 #define ARCH_X86_KVM_CPUID_H
 
-#include "x86.h"
 #include "reverse_cpuid.h"
 #include <asm/cpu.h>
 #include <asm/processor.h>
 #include <uapi/asm/kvm_para.h>
 
 extern u32 kvm_cpu_caps[NR_KVM_CPU_CAPS] __read_mostly;
-void kvm_set_cpu_caps(void);
+extern bool kvm_is_configuring_cpu_caps __read_mostly;
 
-void kvm_update_cpuid_runtime(struct kvm_vcpu *vcpu);
-void kvm_update_pv_runtime(struct kvm_vcpu *vcpu);
-struct kvm_cpuid_entry2 *kvm_find_cpuid_entry(struct kvm_vcpu *vcpu,
-					      u32 function, u32 index);
+void kvm_initialize_cpu_caps(void);
+
+static inline void kvm_finalize_cpu_caps(void)
+{
+	WARN_ON_ONCE(!kvm_is_configuring_cpu_caps);
+	kvm_is_configuring_cpu_caps = false;
+}
+
+void kvm_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu);
+struct kvm_cpuid_entry2 *kvm_find_cpuid_entry2(struct kvm_cpuid_entry2 *entries,
+					       int nent, u32 function, u64 index);
+/*
+ * Magic value used by KVM when querying userspace-provided CPUID entries and
+ * doesn't care about the CPIUD index because the index of the function in
+ * question is not significant.  Note, this magic value must have at least one
+ * bit set in bits[63:32] and must be consumed as a u64 by kvm_find_cpuid_entry2()
+ * to avoid false positives when processing guest CPUID input.
+ *
+ * KVM_CPUID_INDEX_NOT_SIGNIFICANT should never be used directly outside of
+ * kvm_find_cpuid_entry2() and kvm_find_cpuid_entry().
+ */
+#define KVM_CPUID_INDEX_NOT_SIGNIFICANT -1ull
+
+static inline struct kvm_cpuid_entry2 *kvm_find_cpuid_entry_index(struct kvm_vcpu *vcpu,
+								  u32 function, u32 index)
+{
+	return kvm_find_cpuid_entry2(vcpu->arch.cpuid_entries, vcpu->arch.cpuid_nent,
+				     function, index);
+}
+
+static inline struct kvm_cpuid_entry2 *kvm_find_cpuid_entry(struct kvm_vcpu *vcpu,
+							    u32 function)
+{
+	return kvm_find_cpuid_entry2(vcpu->arch.cpuid_entries, vcpu->arch.cpuid_nent,
+				     function, KVM_CPUID_INDEX_NOT_SIGNIFICANT);
+}
+
 int kvm_dev_ioctl_get_cpuid(struct kvm_cpuid2 *cpuid,
 			    struct kvm_cpuid_entry2 __user *entries,
 			    unsigned int type);
@@ -30,9 +62,11 @@ int kvm_vcpu_ioctl_get_cpuid2(struct kvm_vcpu *vcpu,
 bool kvm_cpuid(struct kvm_vcpu *vcpu, u32 *eax, u32 *ebx,
 	       u32 *ecx, u32 *edx, bool exact_only);
 
+void __init kvm_init_xstate_sizes(void);
 u32 xstate_required_size(u64 xstate_bv, bool compacted);
 
 int cpuid_query_maxphyaddr(struct kvm_vcpu *vcpu);
+int cpuid_query_maxguestphyaddr(struct kvm_vcpu *vcpu);
 u64 kvm_vcpu_reserved_gpa_bits_raw(struct kvm_vcpu *vcpu);
 
 static inline int cpuid_maxphyaddr(struct kvm_vcpu *vcpu)
@@ -43,11 +77,6 @@ static inline int cpuid_maxphyaddr(struct kvm_vcpu *vcpu)
 static inline bool kvm_vcpu_is_legal_gpa(struct kvm_vcpu *vcpu, gpa_t gpa)
 {
 	return !(gpa & vcpu->arch.reserved_gpa_bits);
-}
-
-static inline bool kvm_vcpu_is_illegal_gpa(struct kvm_vcpu *vcpu, gpa_t gpa)
-{
-	return !kvm_vcpu_is_legal_gpa(vcpu, gpa);
 }
 
 static inline bool kvm_vcpu_is_legal_aligned_gpa(struct kvm_vcpu *vcpu,
@@ -70,64 +99,55 @@ static __always_inline void cpuid_entry_override(struct kvm_cpuid_entry2 *entry,
 	*reg = kvm_cpu_caps[leaf];
 }
 
-static __always_inline u32 *guest_cpuid_get_register(struct kvm_vcpu *vcpu,
-						     unsigned int x86_feature)
-{
-	const struct cpuid_reg cpuid = x86_feature_cpuid(x86_feature);
-	struct kvm_cpuid_entry2 *entry;
-
-	entry = kvm_find_cpuid_entry(vcpu, cpuid.function, cpuid.index);
-	if (!entry)
-		return NULL;
-
-	return __cpuid_entry_get_reg(entry, cpuid.reg);
-}
-
 static __always_inline bool guest_cpuid_has(struct kvm_vcpu *vcpu,
 					    unsigned int x86_feature)
 {
+	const struct cpuid_reg cpuid = x86_feature_cpuid(x86_feature);
+	struct kvm_cpuid_entry2 *entry;
 	u32 *reg;
 
-	reg = guest_cpuid_get_register(vcpu, x86_feature);
+	/*
+	 * XSAVES is a special snowflake.  Due to lack of a dedicated intercept
+	 * on SVM, KVM must assume that XSAVES (and thus XRSTORS) is usable by
+	 * the guest if the host supports XSAVES and *XSAVE* is exposed to the
+	 * guest.  Because the guest can execute XSAVES and XRSTORS, i.e. can
+	 * indirectly consume XSS, KVM must ensure XSS is zeroed when running
+	 * the guest, i.e. must set XSAVES in vCPU capabilities.  But to reject
+	 * direct XSS reads and writes (to minimize the virtualization hole and
+	 * honor userspace's CPUID), KVM needs to check the raw guest CPUID,
+	 * not KVM's view of guest capabilities.
+	 *
+	 * For all other features, guest capabilities are accurate.  Expand
+	 * this allowlist with extreme vigilance.
+	 */
+	BUILD_BUG_ON(x86_feature != X86_FEATURE_XSAVES);
+
+	entry = kvm_find_cpuid_entry_index(vcpu, cpuid.function, cpuid.index);
+	if (!entry)
+		return NULL;
+
+	reg = __cpuid_entry_get_reg(entry, cpuid.reg);
 	if (!reg)
 		return false;
 
 	return *reg & __feature_bit(x86_feature);
 }
 
-static __always_inline void guest_cpuid_clear(struct kvm_vcpu *vcpu,
-					      unsigned int x86_feature)
+static inline bool guest_cpuid_is_amd_compatible(struct kvm_vcpu *vcpu)
 {
-	u32 *reg;
-
-	reg = guest_cpuid_get_register(vcpu, x86_feature);
-	if (reg)
-		*reg &= ~__feature_bit(x86_feature);
+	return vcpu->arch.is_amd_compatible;
 }
 
-static inline bool guest_cpuid_is_amd_or_hygon(struct kvm_vcpu *vcpu)
+static inline bool guest_cpuid_is_intel_compatible(struct kvm_vcpu *vcpu)
 {
-	struct kvm_cpuid_entry2 *best;
-
-	best = kvm_find_cpuid_entry(vcpu, 0, 0);
-	return best &&
-	       (is_guest_vendor_amd(best->ebx, best->ecx, best->edx) ||
-		is_guest_vendor_hygon(best->ebx, best->ecx, best->edx));
-}
-
-static inline bool guest_cpuid_is_intel(struct kvm_vcpu *vcpu)
-{
-	struct kvm_cpuid_entry2 *best;
-
-	best = kvm_find_cpuid_entry(vcpu, 0, 0);
-	return best && is_guest_vendor_intel(best->ebx, best->ecx, best->edx);
+	return !guest_cpuid_is_amd_compatible(vcpu);
 }
 
 static inline int guest_cpuid_family(struct kvm_vcpu *vcpu)
 {
 	struct kvm_cpuid_entry2 *best;
 
-	best = kvm_find_cpuid_entry(vcpu, 0x1, 0);
+	best = kvm_find_cpuid_entry(vcpu, 0x1);
 	if (!best)
 		return -1;
 
@@ -138,36 +158,27 @@ static inline int guest_cpuid_model(struct kvm_vcpu *vcpu)
 {
 	struct kvm_cpuid_entry2 *best;
 
-	best = kvm_find_cpuid_entry(vcpu, 0x1, 0);
+	best = kvm_find_cpuid_entry(vcpu, 0x1);
 	if (!best)
 		return -1;
 
 	return x86_model(best->eax);
 }
 
+static inline bool cpuid_model_is_consistent(struct kvm_vcpu *vcpu)
+{
+	return boot_cpu_data.x86_model == guest_cpuid_model(vcpu);
+}
+
 static inline int guest_cpuid_stepping(struct kvm_vcpu *vcpu)
 {
 	struct kvm_cpuid_entry2 *best;
 
-	best = kvm_find_cpuid_entry(vcpu, 0x1, 0);
+	best = kvm_find_cpuid_entry(vcpu, 0x1);
 	if (!best)
 		return -1;
 
 	return x86_stepping(best->eax);
-}
-
-static inline bool guest_has_spec_ctrl_msr(struct kvm_vcpu *vcpu)
-{
-	return (guest_cpuid_has(vcpu, X86_FEATURE_SPEC_CTRL) ||
-		guest_cpuid_has(vcpu, X86_FEATURE_AMD_STIBP) ||
-		guest_cpuid_has(vcpu, X86_FEATURE_AMD_IBRS) ||
-		guest_cpuid_has(vcpu, X86_FEATURE_AMD_SSBD));
-}
-
-static inline bool guest_has_pred_cmd_msr(struct kvm_vcpu *vcpu)
-{
-	return (guest_cpuid_has(vcpu, X86_FEATURE_SPEC_CTRL) ||
-		guest_cpuid_has(vcpu, X86_FEATURE_AMD_IBPB));
 }
 
 static inline bool supports_cpuid_fault(struct kvm_vcpu *vcpu)
@@ -185,7 +196,7 @@ static __always_inline void kvm_cpu_cap_clear(unsigned int x86_feature)
 {
 	unsigned int x86_leaf = __feature_leaf(x86_feature);
 
-	reverse_cpuid_check(x86_leaf);
+	WARN_ON_ONCE(!kvm_is_configuring_cpu_caps);
 	kvm_cpu_caps[x86_leaf] &= ~__feature_bit(x86_feature);
 }
 
@@ -193,7 +204,7 @@ static __always_inline void kvm_cpu_cap_set(unsigned int x86_feature)
 {
 	unsigned int x86_leaf = __feature_leaf(x86_feature);
 
-	reverse_cpuid_check(x86_leaf);
+	WARN_ON_ONCE(!kvm_is_configuring_cpu_caps);
 	kvm_cpu_caps[x86_leaf] |= __feature_bit(x86_feature);
 }
 
@@ -201,7 +212,6 @@ static __always_inline u32 kvm_cpu_cap_get(unsigned int x86_feature)
 {
 	unsigned int x86_leaf = __feature_leaf(x86_feature);
 
-	reverse_cpuid_check(x86_leaf);
 	return kvm_cpu_caps[x86_leaf] & __feature_bit(x86_feature);
 }
 
@@ -223,6 +233,71 @@ static __always_inline bool guest_pv_has(struct kvm_vcpu *vcpu,
 		return true;
 
 	return vcpu->arch.pv_cpuid.features & (1u << kvm_feature);
+}
+
+static __always_inline void guest_cpu_cap_set(struct kvm_vcpu *vcpu,
+					      unsigned int x86_feature)
+{
+	unsigned int x86_leaf = __feature_leaf(x86_feature);
+
+	vcpu->arch.cpu_caps[x86_leaf] |= __feature_bit(x86_feature);
+}
+
+static __always_inline void guest_cpu_cap_clear(struct kvm_vcpu *vcpu,
+						unsigned int x86_feature)
+{
+	unsigned int x86_leaf = __feature_leaf(x86_feature);
+
+	vcpu->arch.cpu_caps[x86_leaf] &= ~__feature_bit(x86_feature);
+}
+
+static __always_inline void guest_cpu_cap_change(struct kvm_vcpu *vcpu,
+						 unsigned int x86_feature,
+						 bool guest_has_cap)
+{
+	if (guest_has_cap)
+		guest_cpu_cap_set(vcpu, x86_feature);
+	else
+		guest_cpu_cap_clear(vcpu, x86_feature);
+}
+
+static __always_inline bool guest_cpu_cap_has(struct kvm_vcpu *vcpu,
+					      unsigned int x86_feature)
+{
+	unsigned int x86_leaf = __feature_leaf(x86_feature);
+
+	/*
+	 * Except for MWAIT, querying dynamic feature bits is disallowed, so
+	 * that KVM can defer runtime updates until the next CPUID emulation.
+	 */
+	BUILD_BUG_ON(x86_feature == X86_FEATURE_APIC ||
+		     x86_feature == X86_FEATURE_OSXSAVE ||
+		     x86_feature == X86_FEATURE_OSPKE);
+
+	return vcpu->arch.cpu_caps[x86_leaf] & __feature_bit(x86_feature);
+}
+
+static inline bool kvm_vcpu_is_legal_cr3(struct kvm_vcpu *vcpu, unsigned long cr3)
+{
+	if (guest_cpu_cap_has(vcpu, X86_FEATURE_LAM))
+		cr3 &= ~(X86_CR3_LAM_U48 | X86_CR3_LAM_U57);
+
+	return kvm_vcpu_is_legal_gpa(vcpu, cr3);
+}
+
+static inline bool guest_has_spec_ctrl_msr(struct kvm_vcpu *vcpu)
+{
+	return (guest_cpu_cap_has(vcpu, X86_FEATURE_SPEC_CTRL) ||
+		guest_cpu_cap_has(vcpu, X86_FEATURE_AMD_STIBP) ||
+		guest_cpu_cap_has(vcpu, X86_FEATURE_AMD_IBRS) ||
+		guest_cpu_cap_has(vcpu, X86_FEATURE_AMD_SSBD));
+}
+
+static inline bool guest_has_pred_cmd_msr(struct kvm_vcpu *vcpu)
+{
+	return (guest_cpu_cap_has(vcpu, X86_FEATURE_SPEC_CTRL) ||
+		guest_cpu_cap_has(vcpu, X86_FEATURE_AMD_IBPB) ||
+		guest_cpu_cap_has(vcpu, X86_FEATURE_SBPB));
 }
 
 #endif

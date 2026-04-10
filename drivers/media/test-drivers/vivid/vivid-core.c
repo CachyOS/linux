@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
+
 /*
  * vivid-core.c - A Virtual Video Test Driver, core initialization
  *
@@ -42,15 +43,13 @@
 #include "vivid-touch-cap.h"
 
 #define VIVID_MODULE_NAME "vivid"
-
-/* The maximum number of vivid devices */
-#define VIVID_MAX_DEVS CONFIG_VIDEO_VIVID_MAX_DEVS
+#define MAX_STRING_LENGTH 23
 
 MODULE_DESCRIPTION("Virtual Video Test Driver");
 MODULE_AUTHOR("Hans Verkuil");
 MODULE_LICENSE("GPL");
 
-static unsigned n_devs = 1;
+unsigned int n_devs = 1;
 module_param(n_devs, uint, 0444);
 MODULE_PARM_DESC(n_devs, " number of driver instances to create");
 
@@ -126,7 +125,9 @@ MODULE_PARM_DESC(node_types, " node types, default is 0xe1d3d. Bitmask with the 
 			     "\t\t    bit 8: Video Output node\n"
 			     "\t\t    bit 10-11: VBI Output node: 0 = none, 1 = raw vbi, 2 = sliced vbi, 3 = both\n"
 			     "\t\t    bit 12: Radio Transmitter node\n"
-			     "\t\t    bit 16: Framebuffer for testing overlays\n"
+#ifdef CONFIG_VIDEO_VIVID_OSD
+			     "\t\t    bit 16: Framebuffer for testing output overlays\n"
+#endif
 			     "\t\t    bit 17: Metadata Capture node\n"
 			     "\t\t    bit 18: Metadata Output node\n"
 			     "\t\t    bit 19: Touch Capture node\n");
@@ -186,7 +187,32 @@ MODULE_PARM_DESC(supports_requests, " support for requests, default is 1.\n"
 			     "\t\t    1 == supports requests\n"
 			     "\t\t    2 == requires requests");
 
-static struct vivid_dev *vivid_devs[VIVID_MAX_DEVS];
+struct vivid_dev *vivid_devs[VIVID_MAX_DEVS];
+
+DEFINE_SPINLOCK(hdmi_output_skip_mask_lock);
+struct workqueue_struct *update_hdmi_ctrls_workqueue;
+u64 hdmi_to_output_menu_skip_mask;
+u64 hdmi_input_update_outputs_mask;
+
+struct vivid_dev *vivid_ctrl_hdmi_to_output_instance[MAX_MENU_ITEMS];
+unsigned int vivid_ctrl_hdmi_to_output_index[MAX_MENU_ITEMS];
+
+char *vivid_ctrl_hdmi_to_output_strings[MAX_MENU_ITEMS + 1] = {
+	"Test Pattern Generator",
+	"None"
+};
+
+DEFINE_SPINLOCK(svid_output_skip_mask_lock);
+struct workqueue_struct *update_svid_ctrls_workqueue;
+u64 svid_to_output_menu_skip_mask;
+
+struct vivid_dev *vivid_ctrl_svid_to_output_instance[MAX_MENU_ITEMS];
+unsigned int vivid_ctrl_svid_to_output_index[MAX_MENU_ITEMS];
+
+char *vivid_ctrl_svid_to_output_strings[MAX_MENU_ITEMS + 1] = {
+	"Test Pattern Generator",
+	"None"
+};
 
 const struct v4l2_rect vivid_min_rect = {
 	0, 0, MIN_WIDTH, MIN_HEIGHT
@@ -218,7 +244,7 @@ static const u8 vivid_hdmi_edid[256] = {
 	0x5e, 0x5d, 0x10, 0x1f, 0x04, 0x13, 0x22, 0x21,
 	0x20, 0x05, 0x14, 0x02, 0x11, 0x01, 0x23, 0x09,
 	0x07, 0x07, 0x83, 0x01, 0x00, 0x00, 0x6d, 0x03,
-	0x0c, 0x00, 0x10, 0x00, 0x00, 0x3c, 0x21, 0x00,
+	0x0c, 0x00, 0x00, 0x00, 0x00, 0x3c, 0x21, 0x00,
 	0x60, 0x01, 0x02, 0x03, 0x67, 0xd8, 0x5d, 0xc4,
 	0x01, 0x78, 0x00, 0x00, 0xe2, 0x00, 0xca, 0xe3,
 	0x05, 0x00, 0x00, 0xe3, 0x06, 0x01, 0x00, 0x4d,
@@ -229,7 +255,7 @@ static const u8 vivid_hdmi_edid[256] = {
 	0x00, 0x00, 0x1a, 0x1a, 0x1d, 0x00, 0x80, 0x51,
 	0xd0, 0x1c, 0x20, 0x40, 0x80, 0x35, 0x00, 0xc0,
 	0x1c, 0x32, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x82,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x92,
 };
 
 static int vidioc_querycap(struct file *file, void  *priv,
@@ -240,7 +266,7 @@ static int vidioc_querycap(struct file *file, void  *priv,
 	strscpy(cap->driver, "vivid", sizeof(cap->driver));
 	strscpy(cap->card, "vivid", sizeof(cap->card));
 	snprintf(cap->bus_info, sizeof(cap->bus_info),
-			"platform:%s", dev->v4l2_dev.name);
+		 "platform:%s-%03d", VIVID_MODULE_NAME, dev->inst);
 
 	cap->capabilities = dev->vid_cap_caps | dev->vid_out_caps |
 		dev->vbi_cap_caps | dev->vbi_out_caps |
@@ -251,49 +277,49 @@ static int vidioc_querycap(struct file *file, void  *priv,
 	return 0;
 }
 
-static int vidioc_s_hw_freq_seek(struct file *file, void *fh, const struct v4l2_hw_freq_seek *a)
+static int vidioc_s_hw_freq_seek(struct file *file, void *priv, const struct v4l2_hw_freq_seek *a)
 {
 	struct video_device *vdev = video_devdata(file);
 
 	if (vdev->vfl_type == VFL_TYPE_RADIO)
-		return vivid_radio_rx_s_hw_freq_seek(file, fh, a);
+		return vivid_radio_rx_s_hw_freq_seek(file, priv, a);
 	return -ENOTTY;
 }
 
-static int vidioc_enum_freq_bands(struct file *file, void *fh, struct v4l2_frequency_band *band)
+static int vidioc_enum_freq_bands(struct file *file, void *priv, struct v4l2_frequency_band *band)
 {
 	struct video_device *vdev = video_devdata(file);
 
 	if (vdev->vfl_type == VFL_TYPE_RADIO)
-		return vivid_radio_rx_enum_freq_bands(file, fh, band);
+		return vivid_radio_rx_enum_freq_bands(file, priv, band);
 	if (vdev->vfl_type == VFL_TYPE_SDR)
-		return vivid_sdr_enum_freq_bands(file, fh, band);
+		return vivid_sdr_enum_freq_bands(file, priv, band);
 	return -ENOTTY;
 }
 
-static int vidioc_g_tuner(struct file *file, void *fh, struct v4l2_tuner *vt)
+static int vidioc_g_tuner(struct file *file, void *priv, struct v4l2_tuner *vt)
 {
 	struct video_device *vdev = video_devdata(file);
 
 	if (vdev->vfl_type == VFL_TYPE_RADIO)
-		return vivid_radio_rx_g_tuner(file, fh, vt);
+		return vivid_radio_rx_g_tuner(file, priv, vt);
 	if (vdev->vfl_type == VFL_TYPE_SDR)
-		return vivid_sdr_g_tuner(file, fh, vt);
-	return vivid_video_g_tuner(file, fh, vt);
+		return vivid_sdr_g_tuner(file, priv, vt);
+	return vivid_video_g_tuner(file, priv, vt);
 }
 
-static int vidioc_s_tuner(struct file *file, void *fh, const struct v4l2_tuner *vt)
+static int vidioc_s_tuner(struct file *file, void *priv, const struct v4l2_tuner *vt)
 {
 	struct video_device *vdev = video_devdata(file);
 
 	if (vdev->vfl_type == VFL_TYPE_RADIO)
-		return vivid_radio_rx_s_tuner(file, fh, vt);
+		return vivid_radio_rx_s_tuner(file, priv, vt);
 	if (vdev->vfl_type == VFL_TYPE_SDR)
-		return vivid_sdr_s_tuner(file, fh, vt);
-	return vivid_video_s_tuner(file, fh, vt);
+		return vivid_sdr_s_tuner(file, priv, vt);
+	return vivid_video_s_tuner(file, priv, vt);
 }
 
-static int vidioc_g_frequency(struct file *file, void *fh, struct v4l2_frequency *vf)
+static int vidioc_g_frequency(struct file *file, void *priv, struct v4l2_frequency *vf)
 {
 	struct vivid_dev *dev = video_drvdata(file);
 	struct video_device *vdev = video_devdata(file);
@@ -303,11 +329,11 @@ static int vidioc_g_frequency(struct file *file, void *fh, struct v4l2_frequency
 			vdev->vfl_dir == VFL_DIR_RX ?
 			&dev->radio_rx_freq : &dev->radio_tx_freq, vf);
 	if (vdev->vfl_type == VFL_TYPE_SDR)
-		return vivid_sdr_g_frequency(file, fh, vf);
-	return vivid_video_g_frequency(file, fh, vf);
+		return vivid_sdr_g_frequency(file, priv, vf);
+	return vivid_video_g_frequency(file, priv, vf);
 }
 
-static int vidioc_s_frequency(struct file *file, void *fh, const struct v4l2_frequency *vf)
+static int vidioc_s_frequency(struct file *file, void *priv, const struct v4l2_frequency *vf)
 {
 	struct vivid_dev *dev = video_drvdata(file);
 	struct video_device *vdev = video_devdata(file);
@@ -317,113 +343,113 @@ static int vidioc_s_frequency(struct file *file, void *fh, const struct v4l2_fre
 			vdev->vfl_dir == VFL_DIR_RX ?
 			&dev->radio_rx_freq : &dev->radio_tx_freq, vf);
 	if (vdev->vfl_type == VFL_TYPE_SDR)
-		return vivid_sdr_s_frequency(file, fh, vf);
-	return vivid_video_s_frequency(file, fh, vf);
+		return vivid_sdr_s_frequency(file, priv, vf);
+	return vivid_video_s_frequency(file, priv, vf);
 }
 
-static int vidioc_overlay(struct file *file, void *fh, unsigned i)
+static int vidioc_overlay(struct file *file, void *priv, unsigned i)
 {
 	struct video_device *vdev = video_devdata(file);
 
 	if (vdev->vfl_dir == VFL_DIR_RX)
-		return vivid_vid_cap_overlay(file, fh, i);
-	return vivid_vid_out_overlay(file, fh, i);
+		return -ENOTTY;
+	return vivid_vid_out_overlay(file, priv, i);
 }
 
-static int vidioc_g_fbuf(struct file *file, void *fh, struct v4l2_framebuffer *a)
+static int vidioc_g_fbuf(struct file *file, void *priv, struct v4l2_framebuffer *a)
 {
 	struct video_device *vdev = video_devdata(file);
 
 	if (vdev->vfl_dir == VFL_DIR_RX)
-		return vivid_vid_cap_g_fbuf(file, fh, a);
-	return vivid_vid_out_g_fbuf(file, fh, a);
+		return -ENOTTY;
+	return vivid_vid_out_g_fbuf(file, priv, a);
 }
 
-static int vidioc_s_fbuf(struct file *file, void *fh, const struct v4l2_framebuffer *a)
+static int vidioc_s_fbuf(struct file *file, void *priv, const struct v4l2_framebuffer *a)
 {
 	struct video_device *vdev = video_devdata(file);
 
 	if (vdev->vfl_dir == VFL_DIR_RX)
-		return vivid_vid_cap_s_fbuf(file, fh, a);
-	return vivid_vid_out_s_fbuf(file, fh, a);
+		return -ENOTTY;
+	return vivid_vid_out_s_fbuf(file, priv, a);
 }
 
-static int vidioc_s_std(struct file *file, void *fh, v4l2_std_id id)
+static int vidioc_s_std(struct file *file, void *priv, v4l2_std_id id)
 {
 	struct video_device *vdev = video_devdata(file);
 
 	if (vdev->vfl_dir == VFL_DIR_RX)
-		return vivid_vid_cap_s_std(file, fh, id);
-	return vivid_vid_out_s_std(file, fh, id);
+		return vivid_vid_cap_s_std(file, priv, id);
+	return vivid_vid_out_s_std(file, priv, id);
 }
 
-static int vidioc_s_dv_timings(struct file *file, void *fh, struct v4l2_dv_timings *timings)
+static int vidioc_s_dv_timings(struct file *file, void *priv, struct v4l2_dv_timings *timings)
 {
 	struct video_device *vdev = video_devdata(file);
 
 	if (vdev->vfl_dir == VFL_DIR_RX)
-		return vivid_vid_cap_s_dv_timings(file, fh, timings);
-	return vivid_vid_out_s_dv_timings(file, fh, timings);
+		return vivid_vid_cap_s_dv_timings(file, priv, timings);
+	return vivid_vid_out_s_dv_timings(file, priv, timings);
 }
 
-static int vidioc_g_pixelaspect(struct file *file, void *fh,
+static int vidioc_g_pixelaspect(struct file *file, void *priv,
 				int type, struct v4l2_fract *f)
 {
 	struct video_device *vdev = video_devdata(file);
 
 	if (vdev->vfl_dir == VFL_DIR_RX)
-		return vivid_vid_cap_g_pixelaspect(file, fh, type, f);
-	return vivid_vid_out_g_pixelaspect(file, fh, type, f);
+		return vivid_vid_cap_g_pixelaspect(file, priv, type, f);
+	return vivid_vid_out_g_pixelaspect(file, priv, type, f);
 }
 
-static int vidioc_g_selection(struct file *file, void *fh,
+static int vidioc_g_selection(struct file *file, void *priv,
 			      struct v4l2_selection *sel)
 {
 	struct video_device *vdev = video_devdata(file);
 
 	if (vdev->vfl_dir == VFL_DIR_RX)
-		return vivid_vid_cap_g_selection(file, fh, sel);
-	return vivid_vid_out_g_selection(file, fh, sel);
+		return vivid_vid_cap_g_selection(file, priv, sel);
+	return vivid_vid_out_g_selection(file, priv, sel);
 }
 
-static int vidioc_s_selection(struct file *file, void *fh,
+static int vidioc_s_selection(struct file *file, void *priv,
 			      struct v4l2_selection *sel)
 {
 	struct video_device *vdev = video_devdata(file);
 
 	if (vdev->vfl_dir == VFL_DIR_RX)
-		return vivid_vid_cap_s_selection(file, fh, sel);
-	return vivid_vid_out_s_selection(file, fh, sel);
+		return vivid_vid_cap_s_selection(file, priv, sel);
+	return vivid_vid_out_s_selection(file, priv, sel);
 }
 
-static int vidioc_g_parm(struct file *file, void *fh,
+static int vidioc_g_parm(struct file *file, void *priv,
 			  struct v4l2_streamparm *parm)
 {
 	struct video_device *vdev = video_devdata(file);
 
 	if (vdev->vfl_type == VFL_TYPE_TOUCH)
-		return vivid_g_parm_tch(file, fh, parm);
+		return vivid_g_parm_tch(file, priv, parm);
 	if (vdev->vfl_dir == VFL_DIR_RX)
-		return vivid_vid_cap_g_parm(file, fh, parm);
-	return vivid_vid_out_g_parm(file, fh, parm);
+		return vivid_vid_cap_g_parm(file, priv, parm);
+	return vivid_vid_out_g_parm(file, priv, parm);
 }
 
-static int vidioc_s_parm(struct file *file, void *fh,
+static int vidioc_s_parm(struct file *file, void *priv,
 			  struct v4l2_streamparm *parm)
 {
 	struct video_device *vdev = video_devdata(file);
 
 	if (vdev->vfl_dir == VFL_DIR_RX)
-		return vivid_vid_cap_s_parm(file, fh, parm);
+		return vivid_vid_cap_s_parm(file, priv, parm);
 	return -ENOTTY;
 }
 
-static int vidioc_log_status(struct file *file, void *fh)
+static int vidioc_log_status(struct file *file, void *priv)
 {
 	struct vivid_dev *dev = video_drvdata(file);
 	struct video_device *vdev = video_devdata(file);
 
-	v4l2_ctrl_log_status(file, fh);
+	v4l2_ctrl_log_status(file, priv);
 	if (vdev->vfl_dir == VFL_DIR_RX && vdev->vfl_type == VFL_TYPE_VIDEO)
 		tpg_log_status(&dev->tpg);
 	return 0;
@@ -628,17 +654,15 @@ static int vivid_fop_release(struct file *file)
 		v4l2_info(&dev->v4l2_dev, "reconnect\n");
 		vivid_reconnect(dev);
 	}
-	mutex_unlock(&dev->mutex);
-	if (file->private_data == dev->overlay_cap_owner)
-		dev->overlay_cap_owner = NULL;
-	if (file->private_data == dev->radio_rx_rds_owner) {
+	if (file_to_v4l2_fh(file) == dev->radio_rx_rds_owner) {
 		dev->radio_rx_rds_last_block = 0;
 		dev->radio_rx_rds_owner = NULL;
 	}
-	if (file->private_data == dev->radio_tx_rds_owner) {
+	if (file_to_v4l2_fh(file) == dev->radio_tx_rds_owner) {
 		dev->radio_tx_rds_last_block = 0;
 		dev->radio_tx_rds_owner = NULL;
 	}
+	mutex_unlock(&dev->mutex);
 	if (vdev->queue)
 		return vb2_fop_release(file);
 	return v4l2_fh_release(file);
@@ -756,10 +780,6 @@ static const struct v4l2_ioctl_ops vivid_ioctl_ops = {
 	.vidioc_g_parm			= vidioc_g_parm,
 	.vidioc_s_parm			= vidioc_s_parm,
 
-	.vidioc_enum_fmt_vid_overlay	= vidioc_enum_fmt_vid_overlay,
-	.vidioc_g_fmt_vid_overlay	= vidioc_g_fmt_vid_overlay,
-	.vidioc_try_fmt_vid_overlay	= vidioc_try_fmt_vid_overlay,
-	.vidioc_s_fmt_vid_overlay	= vidioc_s_fmt_vid_overlay,
 	.vidioc_g_fmt_vid_out_overlay	= vidioc_g_fmt_vid_out_overlay,
 	.vidioc_try_fmt_vid_out_overlay	= vidioc_try_fmt_vid_out_overlay,
 	.vidioc_s_fmt_vid_out_overlay	= vidioc_s_fmt_vid_out_overlay,
@@ -775,6 +795,7 @@ static const struct v4l2_ioctl_ops vivid_ioctl_ops = {
 	.vidioc_expbuf			= vb2_ioctl_expbuf,
 	.vidioc_streamon		= vb2_ioctl_streamon,
 	.vidioc_streamoff		= vb2_ioctl_streamoff,
+	.vidioc_remove_bufs		= vb2_ioctl_remove_bufs,
 
 	.vidioc_enum_input		= vivid_enum_input,
 	.vidioc_g_input			= vivid_g_input,
@@ -832,6 +853,7 @@ static void vivid_dev_release(struct v4l2_device *v4l2_dev)
 {
 	struct vivid_dev *dev = container_of(v4l2_dev, struct vivid_dev, v4l2_dev);
 
+	cancel_work_sync(&dev->update_hdmi_ctrl_work);
 	vivid_free_controls(dev);
 	v4l2_device_unregister(&dev->v4l2_dev);
 #ifdef CONFIG_MEDIA_CONTROLLER
@@ -840,8 +862,6 @@ static void vivid_dev_release(struct v4l2_device *v4l2_dev)
 	vfree(dev->scaled_line);
 	vfree(dev->blended_line);
 	vfree(dev->edid);
-	vfree(dev->bitmap_cap);
-	vfree(dev->bitmap_out);
 	tpg_free(&dev->tpg);
 	kfree(dev->query_dv_timings_qmenu);
 	kfree(dev->query_dv_timings_qmenu_strings);
@@ -869,7 +889,7 @@ static const struct media_device_ops vivid_media_ops = {
 static int vivid_create_queue(struct vivid_dev *dev,
 			      struct vb2_queue *q,
 			      u32 buf_type,
-			      unsigned int min_buffers_needed,
+			      unsigned int min_reqbufs_allocation,
 			      const struct vb2_ops *ops)
 {
 	if (buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE && dev->multiplanar)
@@ -884,6 +904,20 @@ static int vivid_create_queue(struct vivid_dev *dev,
 	q->type = buf_type;
 	q->io_modes = VB2_MMAP | VB2_DMABUF;
 	q->io_modes |= V4L2_TYPE_IS_OUTPUT(buf_type) ?  VB2_WRITE : VB2_READ;
+
+	/*
+	 * The maximum number of buffers is 32768 if PAGE_SHIFT == 12,
+	 * see also MAX_BUFFER_INDEX in videobuf2-core.c. It will be less if
+	 * PAGE_SHIFT > 12, but then max_num_buffers will be clamped by
+	 * videobuf2-core.c to MAX_BUFFER_INDEX.
+	 */
+	if (buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		q->max_num_buffers = MAX_VID_CAP_BUFFERS;
+	if (buf_type == V4L2_BUF_TYPE_SDR_CAPTURE)
+		q->max_num_buffers = 1024;
+	if (buf_type == V4L2_BUF_TYPE_VBI_CAPTURE)
+		q->max_num_buffers = 32768;
+
 	if (allocators[dev->inst] != 1)
 		q->io_modes |= VB2_USERPTR;
 	q->drv_priv = dev;
@@ -892,7 +926,7 @@ static int vivid_create_queue(struct vivid_dev *dev,
 	q->mem_ops = allocators[dev->inst] == 1 ? &vb2_dma_contig_memops :
 						  &vb2_vmalloc_memops;
 	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
-	q->min_buffers_needed = supports_requests[dev->inst] ? 0 : min_buffers_needed;
+	q->min_reqbufs_allocation = min_reqbufs_allocation;
 	q->lock = &dev->mutex;
 	q->dev = dev->v4l2_dev.dev;
 	q->supports_requests = supports_requests[dev->inst];
@@ -920,8 +954,12 @@ static int vivid_detect_feature_set(struct vivid_dev *dev, int inst,
 
 	/* how many inputs do we have and of what type? */
 	dev->num_inputs = num_inputs[inst];
-	if (dev->num_inputs < 1)
-		dev->num_inputs = 1;
+	if (node_type & 0x20007) {
+		if (dev->num_inputs < 1)
+			dev->num_inputs = 1;
+	} else {
+		dev->num_inputs = 0;
+	}
 	if (dev->num_inputs >= MAX_INPUTS)
 		dev->num_inputs = MAX_INPUTS;
 	for (i = 0; i < dev->num_inputs; i++) {
@@ -935,17 +973,21 @@ static int vivid_detect_feature_set(struct vivid_dev *dev, int inst,
 		dev->num_inputs--;
 	}
 	dev->num_hdmi_inputs = in_type_counter[HDMI];
+	dev->num_svid_inputs = in_type_counter[SVID];
 
 	/* how many outputs do we have and of what type? */
 	dev->num_outputs = num_outputs[inst];
-	if (dev->num_outputs < 1)
-		dev->num_outputs = 1;
+	if (node_type & 0x40300) {
+		if (dev->num_outputs < 1)
+			dev->num_outputs = 1;
+	} else {
+		dev->num_outputs = 0;
+	}
 	if (dev->num_outputs >= MAX_OUTPUTS)
 		dev->num_outputs = MAX_OUTPUTS;
 	for (i = 0; i < dev->num_outputs; i++) {
 		dev->output_type[i] = ((output_types[inst] >> i) & 1) ? HDMI : SVID;
 		dev->output_name_counter[i] = out_type_counter[dev->output_type[i]]++;
-		dev->display_present[i] = true;
 	}
 	dev->has_audio_outputs = out_type_counter[SVID];
 	if (out_type_counter[HDMI] == 16) {
@@ -1031,9 +1073,11 @@ static int vivid_detect_feature_set(struct vivid_dev *dev, int inst,
 	/* do we have a modulator? */
 	*has_modulator = dev->has_radio_tx;
 
+#ifdef CONFIG_VIDEO_VIVID_OSD
 	if (dev->has_vid_cap)
 		/* do we have a framebuffer for overlay testing? */
 		dev->has_fb = node_type & 0x10000;
+#endif
 
 	/* can we do crop/compose/scaling while capturing? */
 	if (no_error_inj && *ccs_cap == -1)
@@ -1077,7 +1121,7 @@ static void vivid_set_capabilities(struct vivid_dev *dev)
 		/* set up the capabilities of the video capture device */
 		dev->vid_cap_caps = dev->multiplanar ?
 			V4L2_CAP_VIDEO_CAPTURE_MPLANE :
-			V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_VIDEO_OVERLAY;
+			V4L2_CAP_VIDEO_CAPTURE;
 		dev->vid_cap_caps |= V4L2_CAP_STREAMING | V4L2_CAP_READWRITE;
 		if (dev->has_audio_inputs)
 			dev->vid_cap_caps |= V4L2_CAP_AUDIO;
@@ -1350,7 +1394,7 @@ static int vivid_create_queues(struct vivid_dev *dev)
 	if (dev->has_meta_out) {
 		/* initialize meta_out queue */
 		ret = vivid_create_queue(dev, &dev->vb_meta_out_q,
-					 V4L2_BUF_TYPE_META_OUTPUT, 1,
+					 V4L2_BUF_TYPE_META_OUTPUT, 2,
 					 &vivid_meta_out_qops);
 		if (ret)
 			return ret;
@@ -1359,26 +1403,23 @@ static int vivid_create_queues(struct vivid_dev *dev)
 	if (dev->has_touch_cap) {
 		/* initialize touch_cap queue */
 		ret = vivid_create_queue(dev, &dev->vb_touch_cap_q,
-					 V4L2_BUF_TYPE_VIDEO_CAPTURE, 1,
+					 V4L2_BUF_TYPE_VIDEO_CAPTURE, 2,
 					 &vivid_touch_cap_qops);
 		if (ret)
 			return ret;
 	}
 
 	if (dev->has_fb) {
-		/* Create framebuffer for testing capture/output overlay */
+		/* Create framebuffer for testing output overlay */
 		ret = vivid_fb_init(dev);
 		if (ret)
 			return ret;
-		v4l2_info(&dev->v4l2_dev, "Framebuffer device registered as fb%d\n",
-			  dev->fb_info.node);
 	}
 	return 0;
 }
 
 static int vivid_create_devnodes(struct platform_device *pdev,
 				 struct vivid_dev *dev, int inst,
-				 unsigned int cec_tx_bus_cnt,
 				 v4l2_std_id tvnorms_cap,
 				 v4l2_std_id tvnorms_out,
 				 unsigned in_type_counter[4],
@@ -1422,7 +1463,7 @@ static int vivid_create_devnodes(struct platform_device *pdev,
 				return ret;
 			}
 			cec_s_phys_addr(dev->cec_rx_adap, 0, false);
-			v4l2_info(&dev->v4l2_dev, "CEC adapter %s registered for HDMI input 0\n",
+			v4l2_info(&dev->v4l2_dev, "CEC adapter %s registered for HDMI input\n",
 				  dev_name(&dev->cec_rx_adap->devnode.dev));
 		}
 #endif
@@ -1465,10 +1506,10 @@ static int vivid_create_devnodes(struct platform_device *pdev,
 #endif
 
 #ifdef CONFIG_VIDEO_VIVID_CEC
-		for (i = 0; i < cec_tx_bus_cnt; i++) {
+		for (i = 0; i < dev->num_hdmi_outputs; i++) {
 			ret = cec_register_adapter(dev->cec_tx_adap[i], &pdev->dev);
 			if (ret < 0) {
-				for (; i < cec_tx_bus_cnt; i++) {
+				for (; i >= 0; i--) {
 					cec_delete_adapter(dev->cec_tx_adap[i]);
 					dev->cec_tx_adap[i] = NULL;
 				}
@@ -1476,10 +1517,6 @@ static int vivid_create_devnodes(struct platform_device *pdev,
 			}
 			v4l2_info(&dev->v4l2_dev, "CEC adapter %s registered for HDMI output %d\n",
 				  dev_name(&dev->cec_tx_adap[i]->devnode.dev), i);
-			if (i < out_type_counter[HDMI])
-				cec_s_phys_addr(dev->cec_tx_adap[i], (i + 1) << 12, false);
-			else
-				cec_s_phys_addr(dev->cec_tx_adap[i], 0x1000, false);
 		}
 #endif
 
@@ -1719,6 +1756,47 @@ static int vivid_create_devnodes(struct platform_device *pdev,
 	return 0;
 }
 
+static void update_hdmi_ctrls_work_handler(struct work_struct *work)
+{
+	u64 skip_mask;
+	u64 update_mask;
+
+	spin_lock(&hdmi_output_skip_mask_lock);
+	skip_mask = hdmi_to_output_menu_skip_mask;
+	update_mask = hdmi_input_update_outputs_mask;
+	hdmi_input_update_outputs_mask = 0;
+	spin_unlock(&hdmi_output_skip_mask_lock);
+	for (int i = 0; i < n_devs && vivid_devs[i]; i++) {
+		if (update_mask & (1 << i))
+			vivid_update_connected_outputs(vivid_devs[i]);
+		for (int j = 0; j < vivid_devs[i]->num_hdmi_inputs; j++) {
+			struct v4l2_ctrl *c = vivid_devs[i]->ctrl_hdmi_to_output[j];
+
+			v4l2_ctrl_modify_range(c, c->minimum, c->maximum,
+					       skip_mask & ~(1ULL << c->cur.val),
+					       c->default_value);
+		}
+	}
+}
+
+static void update_svid_ctrls_work_handler(struct work_struct *work)
+{
+	u64 skip_mask;
+
+	spin_lock(&svid_output_skip_mask_lock);
+	skip_mask = svid_to_output_menu_skip_mask;
+	spin_unlock(&svid_output_skip_mask_lock);
+	for (int i = 0; i < n_devs && vivid_devs[i]; i++) {
+		for (int j = 0; j < vivid_devs[i]->num_svid_inputs; j++) {
+			struct v4l2_ctrl *c = vivid_devs[i]->ctrl_svid_to_output[j];
+
+			v4l2_ctrl_modify_range(c, c->minimum, c->maximum,
+					       skip_mask & ~(1ULL << c->cur.val),
+					       c->default_value);
+		}
+	}
+}
+
 static int vivid_create_instance(struct platform_device *pdev, int inst)
 {
 	static const struct v4l2_dv_timings def_dv_timings =
@@ -1732,12 +1810,11 @@ static int vivid_create_instance(struct platform_device *pdev, int inst)
 	struct vivid_dev *dev;
 	unsigned node_type = node_types[inst];
 	v4l2_std_id tvnorms_cap = 0, tvnorms_out = 0;
-	unsigned int cec_tx_bus_cnt = 0;
 	int ret;
 	int i;
 
 	/* allocate main vivid state structure */
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	dev = kzalloc_obj(*dev);
 	if (!dev)
 		return -ENOMEM;
 
@@ -1779,15 +1856,15 @@ static int vivid_create_instance(struct platform_device *pdev, int inst)
 	tpg_init(&dev->tpg, 640, 360);
 	if (tpg_alloc(&dev->tpg, array_size(MAX_WIDTH, MAX_ZOOM)))
 		goto free_dev;
-	dev->scaled_line = vzalloc(array_size(MAX_WIDTH, MAX_ZOOM));
+	dev->scaled_line = vcalloc(MAX_WIDTH, MAX_ZOOM);
 	if (!dev->scaled_line)
 		goto free_dev;
-	dev->blended_line = vzalloc(array_size(MAX_WIDTH, MAX_ZOOM));
+	dev->blended_line = vcalloc(MAX_WIDTH, MAX_ZOOM);
 	if (!dev->blended_line)
 		goto free_dev;
 
 	/* load the edid */
-	dev->edid = vmalloc(array_size(256, 128));
+	dev->edid = vmalloc_array(256, 128);
 	if (!dev->edid)
 		goto free_dev;
 
@@ -1835,6 +1912,22 @@ static int vivid_create_instance(struct platform_device *pdev, int inst)
 	dev->edid_max_blocks = dev->edid_blocks = 2;
 	memcpy(dev->edid, vivid_hdmi_edid, sizeof(vivid_hdmi_edid));
 	dev->radio_rds_init_time = ktime_get();
+	INIT_WORK(&dev->update_hdmi_ctrl_work, update_hdmi_ctrls_work_handler);
+	INIT_WORK(&dev->update_svid_ctrl_work, update_svid_ctrls_work_handler);
+	for (int j = 0, k = 0; j < dev->num_inputs; ++j)
+		if (dev->input_type[j] == HDMI)
+			dev->hdmi_index_to_input_index[k++] = j;
+	for (int j = 0, k = 0; j < dev->num_outputs; ++j)
+		if (dev->output_type[j] == HDMI) {
+			dev->output_to_iface_index[j] = k;
+			dev->hdmi_index_to_output_index[k++] = j;
+		}
+	for (int j = 0, k = 0; j < dev->num_inputs; ++j)
+		if (dev->input_type[j] == SVID)
+			dev->svid_index_to_input_index[k++] = j;
+	for (int j = 0, k = 0; j < dev->num_outputs; ++j)
+		if (dev->output_type[j] == SVID)
+			dev->output_to_iface_index[j] = k++;
 
 	/* create all controls */
 	ret = vivid_create_controls(dev, ccs_cap == -1, ccs_out == -1, no_error_inj,
@@ -1845,8 +1938,6 @@ static int vivid_create_instance(struct platform_device *pdev, int inst)
 		goto unreg_dev;
 
 	/* enable/disable interface specific controls */
-	if (dev->num_outputs && dev->output_type[0] != HDMI)
-		v4l2_ctrl_activate(dev->ctrl_display_present, false);
 	if (dev->num_inputs && dev->input_type[0] != HDMI) {
 		v4l2_ctrl_activate(dev->ctrl_dv_timings_signal_mode, false);
 		v4l2_ctrl_activate(dev->ctrl_dv_timings, false);
@@ -1861,13 +1952,6 @@ static int vivid_create_instance(struct platform_device *pdev, int inst)
 	 */
 	vivid_update_format_cap(dev, false);
 	vivid_update_format_out(dev);
-
-	/* initialize overlay */
-	dev->fb_cap.fmt.width = dev->src_rect.width;
-	dev->fb_cap.fmt.height = dev->src_rect.height;
-	dev->fb_cap.fmt.pixelformat = dev->fmt_cap->fourcc;
-	dev->fb_cap.fmt.bytesperline = dev->src_rect.width * tpg_g_twopixelsize(&dev->tpg, 0) / 2;
-	dev->fb_cap.fmt.sizeimage = dev->src_rect.height * dev->fb_cap.fmt.bytesperline;
 
 	/* update touch configuration */
 	dev->timeperframe_tch_cap.numerator = 1;
@@ -1909,27 +1993,27 @@ static int vivid_create_instance(struct platform_device *pdev, int inst)
 	}
 
 	if (dev->has_vid_out) {
-		for (i = 0; i < dev->num_outputs; i++) {
+		int j;
+
+		for (i = j = 0; i < dev->num_outputs; i++) {
 			struct cec_adapter *adap;
 
 			if (dev->output_type[i] != HDMI)
 				continue;
 
-			dev->cec_output2bus_map[i] = cec_tx_bus_cnt;
-			adap = vivid_cec_alloc_adap(dev, cec_tx_bus_cnt, true);
+			adap = vivid_cec_alloc_adap(dev, j, true);
 			ret = PTR_ERR_OR_ZERO(adap);
 			if (ret < 0) {
-				for (i = 0; i < dev->num_outputs; i++)
-					cec_delete_adapter(dev->cec_tx_adap[i]);
+				while (j--)
+					cec_delete_adapter(dev->cec_tx_adap[j]);
 				goto unreg_dev;
 			}
 
-			dev->cec_tx_adap[cec_tx_bus_cnt] = adap;
-			cec_tx_bus_cnt++;
+			dev->cec_tx_adap[j++] = adap;
 		}
 	}
 
-	if (dev->cec_rx_adap || cec_tx_bus_cnt) {
+	if (dev->cec_rx_adap || dev->num_hdmi_outputs) {
 		init_waitqueue_head(&dev->kthread_waitq_cec);
 		dev->kthread_cec = kthread_run(vivid_cec_bus_thread, dev,
 					       "vivid_cec-%s", dev->v4l2_dev.name);
@@ -1955,7 +2039,7 @@ static int vivid_create_instance(struct platform_device *pdev, int inst)
 	v4l2_ctrl_handler_setup(&dev->ctrl_hdl_touch_cap);
 
 	/* finally start creating the device nodes */
-	ret = vivid_create_devnodes(pdev, dev, inst, cec_tx_bus_cnt,
+	ret = vivid_create_devnodes(pdev, dev, inst,
 				    tvnorms_cap, tvnorms_out,
 				    in_type_counter, out_type_counter);
 	if (ret)
@@ -1978,7 +2062,7 @@ unreg_dev:
 	vb2_video_unregister_device(&dev->vid_out_dev);
 	vb2_video_unregister_device(&dev->vid_cap_dev);
 	cec_unregister_adapter(dev->cec_rx_adap);
-	for (i = 0; i < MAX_OUTPUTS; i++)
+	for (i = 0; i < MAX_HDMI_OUTPUTS; i++)
 		cec_unregister_adapter(dev->cec_tx_adap[i]);
 	if (dev->kthread_cec)
 		kthread_stop(dev->kthread_cec);
@@ -2025,10 +2109,46 @@ static int vivid_probe(struct platform_device *pdev)
 	/* n_devs will reflect the actual number of allocated devices */
 	n_devs = i;
 
+	/* Determine qmenu items actually in use */
+	int hdmi_count = FIXED_MENU_ITEMS;
+	int svid_count = FIXED_MENU_ITEMS;
+
+	for (int i = 0; i < n_devs; i++) {
+		struct vivid_dev *dev = vivid_devs[i];
+
+		if (!dev->has_vid_out)
+			continue;
+		for (int j = 0; j < dev->num_outputs && hdmi_count < MAX_MENU_ITEMS; ++j) {
+			if (dev->output_type[j] == HDMI) {
+				vivid_ctrl_hdmi_to_output_instance[hdmi_count] = vivid_devs[i];
+				vivid_ctrl_hdmi_to_output_index[hdmi_count++] = j;
+			}
+		}
+		for (int j = 0; j < dev->num_outputs && svid_count < MAX_MENU_ITEMS; ++j) {
+			if (dev->output_type[j] == SVID) {
+				vivid_ctrl_svid_to_output_instance[svid_count] = vivid_devs[i];
+				vivid_ctrl_svid_to_output_index[svid_count++] = j;
+			}
+		}
+	}
+	hdmi_count = min(hdmi_count, MAX_MENU_ITEMS);
+	svid_count = min(svid_count, MAX_MENU_ITEMS);
+	for (int i = 0; i < n_devs; i++) {
+		for (int j = 0; j < vivid_devs[i]->num_hdmi_inputs; j++) {
+			struct v4l2_ctrl *c = vivid_devs[i]->ctrl_hdmi_to_output[j];
+
+			v4l2_ctrl_modify_range(c, c->minimum, hdmi_count - 1, 0, c->default_value);
+		}
+		for (int j = 0; j < vivid_devs[i]->num_svid_inputs; j++) {
+			struct v4l2_ctrl *c = vivid_devs[i]->ctrl_svid_to_output[j];
+
+			v4l2_ctrl_modify_range(c, c->minimum, svid_count - 1, 0, c->default_value);
+		}
+	}
 	return ret;
 }
 
-static int vivid_remove(struct platform_device *pdev)
+static void vivid_remove(struct platform_device *pdev)
 {
 	struct vivid_dev *dev;
 	unsigned int i, j;
@@ -2079,12 +2199,8 @@ static int vivid_remove(struct platform_device *pdev)
 				video_device_node_name(&dev->radio_tx_dev));
 			video_unregister_device(&dev->radio_tx_dev);
 		}
-		if (dev->has_fb) {
-			v4l2_info(&dev->v4l2_dev, "unregistering fb%d\n",
-				dev->fb_info.node);
-			unregister_framebuffer(&dev->fb_info);
-			vivid_fb_release_buffers(dev);
-		}
+		if (dev->has_fb)
+			vivid_fb_deinit(dev);
 		if (dev->has_meta_cap) {
 			v4l2_info(&dev->v4l2_dev, "unregistering %s\n",
 				  video_device_node_name(&dev->meta_cap_dev));
@@ -2101,14 +2217,13 @@ static int vivid_remove(struct platform_device *pdev)
 			vb2_video_unregister_device(&dev->touch_cap_dev);
 		}
 		cec_unregister_adapter(dev->cec_rx_adap);
-		for (j = 0; j < MAX_OUTPUTS; j++)
+		for (j = 0; j < MAX_HDMI_OUTPUTS; j++)
 			cec_unregister_adapter(dev->cec_tx_adap[j]);
 		if (dev->kthread_cec)
 			kthread_stop(dev->kthread_cec);
 		v4l2_device_put(&dev->v4l2_dev);
 		vivid_devs[i] = NULL;
 	}
-	return 0;
 }
 
 static void vivid_pdev_release(struct device *dev)
@@ -2130,21 +2245,91 @@ static struct platform_driver vivid_pdrv = {
 
 static int __init vivid_init(void)
 {
-	int ret;
+	int hdmi_count = FIXED_MENU_ITEMS;
+	int svid_count = FIXED_MENU_ITEMS;
+	int ret = -ENOMEM;
+	unsigned int ndevs;
 
+	/* Sanity check, prevent insane number of vivid instances */
+	if (n_devs > 64)
+		n_devs = 64;
+	ndevs = clamp_t(unsigned int, n_devs, 1, VIVID_MAX_DEVS);
+
+	for (unsigned int i = 0; i < ndevs; i++) {
+		if (!(node_types[i] & (1 << 8)))
+			continue;
+		unsigned int n_outputs = min(num_outputs[i], MAX_OUTPUTS);
+
+		for (u8 j = 0, k = 0; j < n_outputs && hdmi_count < MAX_MENU_ITEMS &&
+		     k < MAX_HDMI_OUTPUTS; ++j) {
+			if (output_types[i] & BIT(j)) {
+				vivid_ctrl_hdmi_to_output_strings[hdmi_count] =
+					kmalloc(MAX_STRING_LENGTH, GFP_KERNEL);
+				if (!vivid_ctrl_hdmi_to_output_strings[hdmi_count])
+					goto free_output_strings;
+				snprintf(vivid_ctrl_hdmi_to_output_strings[hdmi_count],
+					 MAX_STRING_LENGTH, "Output HDMI %03d-%d",
+					 i & 0xff, k);
+				k++;
+				hdmi_count++;
+			}
+		}
+		for (u8 j = 0, k = 0; j < n_outputs && svid_count < MAX_MENU_ITEMS; ++j) {
+			if (!(output_types[i] & BIT(j))) {
+				vivid_ctrl_svid_to_output_strings[svid_count] =
+					kmalloc(MAX_STRING_LENGTH, GFP_KERNEL);
+				if (!vivid_ctrl_svid_to_output_strings[svid_count])
+					goto free_output_strings;
+				snprintf(vivid_ctrl_svid_to_output_strings[svid_count],
+					 MAX_STRING_LENGTH, "Output S-Video %03d-%d",
+					 i & 0xff, k);
+				k++;
+				svid_count++;
+			}
+		}
+	}
 	ret = platform_device_register(&vivid_pdev);
 	if (ret)
-		return ret;
-
+		goto free_output_strings;
 	ret = platform_driver_register(&vivid_pdrv);
 	if (ret)
-		platform_device_unregister(&vivid_pdev);
+		goto unreg_device;
 
+	/* Initialize workqueue before module is loaded */
+	update_hdmi_ctrls_workqueue = create_workqueue("update_hdmi_ctrls_wq");
+	if (!update_hdmi_ctrls_workqueue) {
+		ret = -ENOMEM;
+		goto unreg_driver;
+	}
+	update_svid_ctrls_workqueue = create_workqueue("update_svid_ctrls_wq");
+	if (!update_svid_ctrls_workqueue) {
+		ret = -ENOMEM;
+		goto destroy_hdmi_wq;
+	}
+	return ret;
+
+destroy_hdmi_wq:
+	destroy_workqueue(update_hdmi_ctrls_workqueue);
+unreg_driver:
+	platform_driver_register(&vivid_pdrv);
+unreg_device:
+	platform_device_unregister(&vivid_pdev);
+free_output_strings:
+	for (int i = FIXED_MENU_ITEMS; i < MAX_MENU_ITEMS; i++) {
+		kfree(vivid_ctrl_hdmi_to_output_strings[i]);
+		kfree(vivid_ctrl_svid_to_output_strings[i]);
+	}
 	return ret;
 }
 
 static void __exit vivid_exit(void)
 {
+	for (int i = FIXED_MENU_ITEMS; i < MAX_MENU_ITEMS; i++) {
+		kfree(vivid_ctrl_hdmi_to_output_strings[i]);
+		kfree(vivid_ctrl_svid_to_output_strings[i]);
+	}
+	destroy_workqueue(update_svid_ctrls_workqueue);
+	destroy_workqueue(update_hdmi_ctrls_workqueue);
 	platform_driver_unregister(&vivid_pdrv);
 	platform_device_unregister(&vivid_pdev);
 }

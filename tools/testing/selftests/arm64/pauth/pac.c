@@ -10,10 +10,10 @@
 #include <setjmp.h>
 #include <sched.h>
 
-#include "../../kselftest_harness.h"
+#include "kselftest_harness.h"
 #include "helper.h"
 
-#define PAC_COLLISION_ATTEMPTS 10
+#define PAC_COLLISION_ATTEMPTS 1000
 /*
  * The kernel sets TBID by default. So bits 55 and above should remain
  * untouched no matter what.
@@ -181,6 +181,9 @@ int exec_sign_all(struct signatures *signed_vals, size_t val)
 		perror("read returned error");
 		return -1;
 	}
+
+	close(new_stdin[1]);
+	close(new_stdout[0]);
 
 	return 0;
 }

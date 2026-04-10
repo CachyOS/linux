@@ -4233,7 +4233,7 @@ static void nfp_bpf_opt_ldst_gather(struct nfp_prog *nfp_prog)
 			}
 
 			/* If the chain is ended by an load/store pair then this
-			 * could serve as the new head of the the next chain.
+			 * could serve as the new head of the next chain.
 			 */
 			if (curr_pair_is_memcpy(meta1, meta2)) {
 				head_ld_meta = meta1;
@@ -4537,8 +4537,8 @@ void *nfp_bpf_relo_for_vnic(struct nfp_prog *nfp_prog, struct nfp_bpf_vnic *bv)
 	u64 *prog;
 	int err;
 
-	prog = kmemdup(nfp_prog->prog, nfp_prog->prog_len * sizeof(u64),
-		       GFP_KERNEL);
+	prog = kmemdup_array(nfp_prog->prog, nfp_prog->prog_len, sizeof(u64),
+			     GFP_KERNEL);
 	if (!prog)
 		return ERR_PTR(-ENOMEM);
 

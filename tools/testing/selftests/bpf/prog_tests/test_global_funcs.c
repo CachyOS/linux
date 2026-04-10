@@ -1,104 +1,162 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2020 Facebook */
 #include <test_progs.h>
+#include "test_global_func1.skel.h"
+#include "test_global_func2.skel.h"
+#include "test_global_func3.skel.h"
+#include "test_global_func4.skel.h"
+#include "test_global_func5.skel.h"
+#include "test_global_func6.skel.h"
+#include "test_global_func7.skel.h"
+#include "test_global_func8.skel.h"
+#include "test_global_func9.skel.h"
+#include "test_global_func10.skel.h"
+#include "test_global_func11.skel.h"
+#include "test_global_func12.skel.h"
+#include "test_global_func13.skel.h"
+#include "test_global_func14.skel.h"
+#include "test_global_func15.skel.h"
+#include "test_global_func16.skel.h"
+#include "test_global_func17.skel.h"
+#include "test_global_func_ctx_args.skel.h"
 
-const char *err_str;
-bool found;
+#include "bpf/libbpf_internal.h"
+#include "btf_helpers.h"
 
-static int libbpf_debug_print(enum libbpf_print_level level,
-			      const char *format, va_list args)
+static void check_ctx_arg_type(const struct btf *btf, const struct btf_param *p)
 {
-	char *log_buf;
+	const struct btf_type *t;
+	const char *s;
 
-	if (level != LIBBPF_WARN ||
-	    strcmp(format, "libbpf: \n%s\n")) {
-		vprintf(format, args);
-		return 0;
+	t = btf__type_by_id(btf, p->type);
+	if (!ASSERT_EQ(btf_kind(t), BTF_KIND_PTR, "ptr_t"))
+		return;
+
+	s = btf_type_raw_dump(btf, t->type);
+	if (!ASSERT_HAS_SUBSTR(s, "STRUCT 'bpf_perf_event_data' size=0 vlen=0",
+			       "ctx_struct_t"))
+		return;
+}
+
+static void subtest_ctx_arg_rewrite(void)
+{
+	struct test_global_func_ctx_args *skel = NULL;
+	struct bpf_prog_info info;
+	char func_info_buf[1024] __attribute__((aligned(8)));
+	struct bpf_func_info_min *rec;
+	struct btf *btf = NULL;
+	__u32 info_len = sizeof(info);
+	int err, fd, i;
+	struct btf *kern_btf = NULL;
+
+	kern_btf = btf__load_vmlinux_btf();
+	if (!ASSERT_OK_PTR(kern_btf, "kern_btf_load"))
+		return;
+
+	/* simple detection of kernel native arg:ctx tag support */
+	if (btf__find_by_name_kind(kern_btf, "bpf_subprog_arg_info", BTF_KIND_STRUCT) > 0) {
+		test__skip();
+		btf__free(kern_btf);
+		return;
 	}
+	btf__free(kern_btf);
 
-	log_buf = va_arg(args, char *);
-	if (!log_buf)
+	skel = test_global_func_ctx_args__open();
+	if (!ASSERT_OK_PTR(skel, "skel_open"))
+		return;
+
+	bpf_program__set_autoload(skel->progs.arg_tag_ctx_perf, true);
+
+	err = test_global_func_ctx_args__load(skel);
+	if (!ASSERT_OK(err, "skel_load"))
 		goto out;
-	if (err_str && strstr(log_buf, err_str) == 0)
-		found = true;
-out:
-	printf(format, log_buf);
-	return 0;
-}
 
-extern int extra_prog_load_log_flags;
+	memset(&info, 0, sizeof(info));
+	info.func_info = ptr_to_u64(&func_info_buf);
+	info.nr_func_info = 3;
+	info.func_info_rec_size = sizeof(struct bpf_func_info_min);
 
-static int check_load(const char *file)
-{
-	struct bpf_object *obj = NULL;
-	struct bpf_program *prog;
-	int err;
+	fd = bpf_program__fd(skel->progs.arg_tag_ctx_perf);
+	err = bpf_prog_get_info_by_fd(fd, &info, &info_len);
+	if (!ASSERT_OK(err, "prog_info"))
+		goto out;
 
-	found = false;
+	if (!ASSERT_EQ(info.nr_func_info, 3, "nr_func_info"))
+		goto out;
 
-	obj = bpf_object__open_file(file, NULL);
-	err = libbpf_get_error(obj);
-	if (err)
-		return err;
+	btf = btf__load_from_kernel_by_id(info.btf_id);
+	if (!ASSERT_OK_PTR(btf, "obj_kern_btf"))
+		goto out;
 
-	prog = bpf_object__next_program(obj, NULL);
-	if (!prog) {
-		err = -ENOENT;
-		goto err_out;
+	rec = (struct bpf_func_info_min *)func_info_buf;
+	for (i = 0; i < info.nr_func_info; i++, rec = (void *)rec + info.func_info_rec_size) {
+		const struct btf_type *fn_t, *proto_t;
+		const char *name;
+
+		if (rec->insn_off == 0)
+			continue; /* main prog, skip */
+
+		fn_t = btf__type_by_id(btf, rec->type_id);
+		if (!ASSERT_OK_PTR(fn_t, "fn_type"))
+			goto out;
+		if (!ASSERT_EQ(btf_kind(fn_t), BTF_KIND_FUNC, "fn_type_kind"))
+			goto out;
+		proto_t = btf__type_by_id(btf, fn_t->type);
+		if (!ASSERT_OK_PTR(proto_t, "proto_type"))
+			goto out;
+
+		name = btf__name_by_offset(btf, fn_t->name_off);
+		if (strcmp(name, "subprog_ctx_tag") == 0) {
+			/* int subprog_ctx_tag(void *ctx __arg_ctx) */
+			if (!ASSERT_EQ(btf_vlen(proto_t), 1, "arg_cnt"))
+				goto out;
+
+			/* arg 0 is PTR -> STRUCT bpf_perf_event_data */
+			check_ctx_arg_type(btf, &btf_params(proto_t)[0]);
+		} else if (strcmp(name, "subprog_multi_ctx_tags") == 0) {
+			/* int subprog_multi_ctx_tags(void *ctx1 __arg_ctx,
+			 *			      struct my_struct *mem,
+			 *			      void *ctx2 __arg_ctx)
+			 */
+			if (!ASSERT_EQ(btf_vlen(proto_t), 3, "arg_cnt"))
+				goto out;
+
+			/* arg 0 is PTR -> STRUCT bpf_perf_event_data */
+			check_ctx_arg_type(btf, &btf_params(proto_t)[0]);
+			/* arg 2 is PTR -> STRUCT bpf_perf_event_data */
+			check_ctx_arg_type(btf, &btf_params(proto_t)[2]);
+		} else {
+			ASSERT_FAIL("unexpected subprog %s", name);
+			goto out;
+		}
 	}
 
-	bpf_program__set_flags(prog, BPF_F_TEST_RND_HI32);
-	bpf_program__set_log_level(prog, extra_prog_load_log_flags);
-
-	err = bpf_object__load(obj);
-
-err_out:
-	bpf_object__close(obj);
-	return err;
+out:
+	btf__free(btf);
+	test_global_func_ctx_args__destroy(skel);
 }
-
-struct test_def {
-	const char *file;
-	const char *err_str;
-};
 
 void test_test_global_funcs(void)
 {
-	struct test_def tests[] = {
-		{ "test_global_func1.o", "combined stack size of 4 calls is 544" },
-		{ "test_global_func2.o" },
-		{ "test_global_func3.o" , "the call stack of 8 frames" },
-		{ "test_global_func4.o" },
-		{ "test_global_func5.o" , "expected pointer to ctx, but got PTR" },
-		{ "test_global_func6.o" , "modified ctx ptr R2" },
-		{ "test_global_func7.o" , "foo() doesn't return scalar" },
-		{ "test_global_func8.o" },
-		{ "test_global_func9.o" },
-		{ "test_global_func10.o", "invalid indirect read from stack" },
-		{ "test_global_func11.o", "Caller passes invalid args into func#1" },
-		{ "test_global_func12.o", "invalid mem access 'mem_or_null'" },
-		{ "test_global_func13.o", "Caller passes invalid args into func#1" },
-		{ "test_global_func14.o", "reference type('FWD S') size cannot be determined" },
-		{ "test_global_func15.o", "At program exit the register R0 has value" },
-		{ "test_global_func16.o", "invalid indirect read from stack" },
-		{ "test_global_func17.o", "Caller passes invalid args into func#1" },
-	};
-	libbpf_print_fn_t old_print_fn = NULL;
-	int err, i, duration = 0;
+	RUN_TESTS(test_global_func1);
+	RUN_TESTS(test_global_func2);
+	RUN_TESTS(test_global_func3);
+	RUN_TESTS(test_global_func4);
+	RUN_TESTS(test_global_func5);
+	RUN_TESTS(test_global_func6);
+	RUN_TESTS(test_global_func7);
+	RUN_TESTS(test_global_func8);
+	RUN_TESTS(test_global_func9);
+	RUN_TESTS(test_global_func10);
+	RUN_TESTS(test_global_func11);
+	RUN_TESTS(test_global_func12);
+	RUN_TESTS(test_global_func13);
+	RUN_TESTS(test_global_func14);
+	RUN_TESTS(test_global_func15);
+	RUN_TESTS(test_global_func16);
+	RUN_TESTS(test_global_func17);
+	RUN_TESTS(test_global_func_ctx_args);
 
-	old_print_fn = libbpf_set_print(libbpf_debug_print);
-
-	for (i = 0; i < ARRAY_SIZE(tests); i++) {
-		const struct test_def *test = &tests[i];
-
-		if (!test__start_subtest(test->file))
-			continue;
-
-		err_str = test->err_str;
-		err = check_load(test->file);
-		CHECK_FAIL(!!err ^ !!err_str);
-		if (err_str)
-			CHECK(found, "", "expected string '%s'", err_str);
-	}
-	libbpf_set_print(old_print_fn);
+	if (test__start_subtest("ctx_arg_rewrite"))
+		subtest_ctx_arg_rewrite();
 }

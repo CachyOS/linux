@@ -10,6 +10,7 @@
 
 #include "sta.h"
 #include "wfx.h"
+#include "bus.h"
 #include "fwio.h"
 #include "bh.h"
 #include "key.h"
@@ -19,24 +20,6 @@
 #include "hif_tx_mib.h"
 
 #define HIF_MAX_ARP_IP_ADDRTABLE_ENTRIES 2
-
-u32 wfx_rate_mask_to_hw(struct wfx_dev *wdev, u32 rates)
-{
-	int i;
-	u32 ret = 0;
-	/* The device only supports 2GHz */
-	struct ieee80211_supported_band *sband = wdev->hw->wiphy->bands[NL80211_BAND_2GHZ];
-
-	for (i = 0; i < sband->n_bitrates; i++) {
-		if (rates & BIT(i)) {
-			if (i >= sband->n_bitrates)
-				dev_warn(wdev->dev, "unsupported basic rate\n");
-			else
-				ret |= BIT(sband->bitrates[i].hw_value);
-		}
-	}
-	return ret;
-}
 
 void wfx_cooling_timeout_work(struct work_struct *work)
 {
@@ -114,10 +97,12 @@ void wfx_configure_filter(struct ieee80211_hw *hw, unsigned int changed_flags,
 	*total_flags &= FIF_BCN_PRBRESP_PROMISC | FIF_ALLMULTI | FIF_OTHER_BSS |
 			FIF_PROBE_REQ | FIF_PSPOLL;
 
+	/* Filters are ignored during the scan. No frames are filtered. */
+	if (mutex_is_locked(&wdev->scan_lock))
+		return;
+
 	mutex_lock(&wdev->conf_mutex);
 	while ((wvif = wvif_iterate(wdev, wvif)) != NULL) {
-		mutex_lock(&wvif->scan_lock);
-
 		/* Note: FIF_BCN_PRBRESP_PROMISC covers probe response and
 		 * beacons from other BSS
 		 */
@@ -144,8 +129,6 @@ void wfx_configure_filter(struct ieee80211_hw *hw, unsigned int changed_flags,
 		else
 			filter_prbreq = true;
 		wfx_hif_set_rx_filter(wvif, filter_bssid, filter_prbreq);
-
-		mutex_unlock(&wvif->scan_lock);
 	}
 	mutex_unlock(&wdev->conf_mutex);
 }
@@ -156,26 +139,26 @@ static int wfx_get_ps_timeout(struct wfx_vif *wvif, bool *enable_ps)
 	struct ieee80211_conf *conf = &wvif->wdev->hw->conf;
 	struct ieee80211_vif *vif = wvif_to_vif(wvif);
 
-	WARN(!vif->bss_conf.assoc && enable_ps,
+	WARN(!vif->cfg.assoc && enable_ps,
 	     "enable_ps is reliable only if associated");
 	if (wdev_to_wvif(wvif->wdev, 0)) {
 		struct wfx_vif *wvif_ch0 = wdev_to_wvif(wvif->wdev, 0);
 		struct ieee80211_vif *vif_ch0 = wvif_to_vif(wvif_ch0);
 
-		chan0 = vif_ch0->bss_conf.chandef.chan;
+		chan0 = vif_ch0->bss_conf.chanreq.oper.chan;
 	}
 	if (wdev_to_wvif(wvif->wdev, 1)) {
 		struct wfx_vif *wvif_ch1 = wdev_to_wvif(wvif->wdev, 1);
 		struct ieee80211_vif *vif_ch1 = wvif_to_vif(wvif_ch1);
 
-		chan1 = vif_ch1->bss_conf.chandef.chan;
+		chan1 = vif_ch1->bss_conf.chanreq.oper.chan;
 	}
 	if (chan0 && chan1 && vif->type != NL80211_IFTYPE_AP) {
 		if (chan0->hw_value == chan1->hw_value) {
 			/* It is useless to enable PS if channels are the same. */
 			if (enable_ps)
 				*enable_ps = false;
-			if (vif->bss_conf.assoc && vif->bss_conf.ps)
+			if (vif->cfg.assoc && vif->cfg.ps)
 				dev_info(wvif->wdev->dev, "ignoring requested PS mode");
 			return -1;
 		}
@@ -188,8 +171,8 @@ static int wfx_get_ps_timeout(struct wfx_vif *wvif, bool *enable_ps)
 			return 30;
 	}
 	if (enable_ps)
-		*enable_ps = vif->bss_conf.ps;
-	if (vif->bss_conf.assoc && vif->bss_conf.ps)
+		*enable_ps = vif->cfg.ps;
+	if (vif->cfg.assoc && vif->cfg.ps)
 		return conf->dynamic_ps_timeout;
 	else
 		return -1;
@@ -201,7 +184,7 @@ int wfx_update_pm(struct wfx_vif *wvif)
 	int ps_timeout;
 	bool ps;
 
-	if (!vif->bss_conf.assoc)
+	if (!vif->cfg.assoc)
 		return 0;
 	ps_timeout = wfx_get_ps_timeout(wvif, &ps);
 	if (!ps)
@@ -216,7 +199,8 @@ int wfx_update_pm(struct wfx_vif *wvif)
 }
 
 int wfx_conf_tx(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
-		u16 queue, const struct ieee80211_tx_queue_params *params)
+		unsigned int link_id, u16 queue,
+		const struct ieee80211_tx_queue_params *params)
 {
 	struct wfx_dev *wdev = hw->priv;
 	struct wfx_vif *wvif = (struct wfx_vif *)vif->drv_priv;
@@ -236,7 +220,7 @@ int wfx_conf_tx(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	return 0;
 }
 
-int wfx_set_rts_threshold(struct ieee80211_hw *hw, u32 value)
+int wfx_set_rts_threshold(struct ieee80211_hw *hw, int radio_idx, u32 value)
 {
 	struct wfx_dev *wdev = hw->priv;
 	struct wfx_vif *wvif = NULL;
@@ -339,7 +323,7 @@ static int wfx_upload_ap_templates(struct wfx_vif *wvif)
 	struct ieee80211_vif *vif = wvif_to_vif(wvif);
 	struct sk_buff *skb;
 
-	skb = ieee80211_beacon_get(wvif->wdev->hw, vif);
+	skb = ieee80211_beacon_get(wvif->wdev->hw, vif, 0);
 	if (!skb)
 		return -ENOMEM;
 	wfx_hif_set_template_frame(wvif, skb, HIF_TMPLT_BCN, API_RATE_INDEX_B_1MBPS);
@@ -353,32 +337,50 @@ static int wfx_upload_ap_templates(struct wfx_vif *wvif)
 	return 0;
 }
 
-static void wfx_set_mfp_ap(struct wfx_vif *wvif)
+static int wfx_set_mfp_ap(struct wfx_vif *wvif)
 {
 	struct ieee80211_vif *vif = wvif_to_vif(wvif);
-	struct sk_buff *skb = ieee80211_beacon_get(wvif->wdev->hw, vif);
+	struct sk_buff *skb = ieee80211_beacon_get(wvif->wdev->hw, vif, 0);
 	const int ieoffset = offsetof(struct ieee80211_mgmt, u.beacon.variable);
-	const u16 *ptr = (u16 *)cfg80211_find_ie(WLAN_EID_RSN, skb->data + ieoffset,
-						 skb->len - ieoffset);
 	const int pairwise_cipher_suite_count_offset = 8 / sizeof(u16);
 	const int pairwise_cipher_suite_size = 4 / sizeof(u16);
 	const int akm_suite_size = 4 / sizeof(u16);
+	int ret = -EINVAL;
+	const u16 *ptr;
 
-	if (ptr) {
-		ptr += pairwise_cipher_suite_count_offset;
-		if (WARN_ON(ptr > (u16 *)skb_tail_pointer(skb)))
-			return;
-		ptr += 1 + pairwise_cipher_suite_size * *ptr;
-		if (WARN_ON(ptr > (u16 *)skb_tail_pointer(skb)))
-			return;
-		ptr += 1 + akm_suite_size * *ptr;
-		if (WARN_ON(ptr > (u16 *)skb_tail_pointer(skb)))
-			return;
-		wfx_hif_set_mfp(wvif, *ptr & BIT(7), *ptr & BIT(6));
+	if (unlikely(!skb))
+		return -ENOMEM;
+
+	ptr = (u16 *)cfg80211_find_ie(WLAN_EID_RSN, skb->data + ieoffset,
+				      skb->len - ieoffset);
+	if (!ptr) {
+		/* No RSN IE is fine in open networks */
+		ret = 0;
+		goto free_skb;
 	}
+
+	ptr += pairwise_cipher_suite_count_offset;
+	if (WARN_ON(ptr > (u16 *)skb_tail_pointer(skb)))
+		goto free_skb;
+
+	ptr += 1 + pairwise_cipher_suite_size * *ptr;
+	if (WARN_ON(ptr > (u16 *)skb_tail_pointer(skb)))
+		goto free_skb;
+
+	ptr += 1 + akm_suite_size * *ptr;
+	if (WARN_ON(ptr > (u16 *)skb_tail_pointer(skb)))
+		goto free_skb;
+
+	wfx_hif_set_mfp(wvif, *ptr & BIT(7), *ptr & BIT(6));
+	ret = 0;
+
+free_skb:
+	dev_kfree_skb(skb);
+	return ret;
 }
 
-int wfx_start_ap(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
+int wfx_start_ap(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+		 struct ieee80211_bss_conf *link_conf)
 {
 	struct wfx_vif *wvif = (struct wfx_vif *)vif->drv_priv;
 	struct wfx_dev *wdev = wvif->wdev;
@@ -392,14 +394,19 @@ int wfx_start_ap(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 	ret = wfx_hif_start(wvif, &vif->bss_conf, wvif->channel);
 	if (ret > 0)
 		return -EIO;
-	wfx_set_mfp_ap(wvif);
-	return ret;
+	return wfx_set_mfp_ap(wvif);
 }
 
-void wfx_stop_ap(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
+void wfx_stop_ap(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+		 struct ieee80211_bss_conf *link_conf)
 {
 	struct wfx_vif *wvif = (struct wfx_vif *)vif->drv_priv;
+	struct wfx_dev *wdev = wvif->wdev;
 
+	wvif =  NULL;
+	while ((wvif = wvif_iterate(wdev, wvif)) != NULL)
+		wfx_update_pm(wvif);
+	wvif = (struct wfx_vif *)vif->drv_priv;
 	wfx_reset(wvif);
 }
 
@@ -417,7 +424,7 @@ static void wfx_join(struct wfx_vif *wvif)
 
 	bss = cfg80211_get_bss(wvif->wdev->hw->wiphy, wvif->channel, conf->bssid, NULL, 0,
 			       IEEE80211_BSS_TYPE_ANY, IEEE80211_PRIVACY_ANY);
-	if (!bss && !conf->ibss_joined) {
+	if (!bss && !vif->cfg.ibss_joined) {
 		wfx_tx_unlock(wvif->wdev);
 		return;
 	}
@@ -458,7 +465,7 @@ static void wfx_join_finalize(struct wfx_vif *wvif, struct ieee80211_bss_conf *i
 	bool greenfield = false;
 
 	rcu_read_lock(); /* protect sta */
-	if (info->bssid && !info->ibss_joined)
+	if (info->bssid && !vif->cfg.ibss_joined)
 		sta = ieee80211_find_sta(vif, info->bssid);
 	if (sta && sta->deflink.ht_cap.ht_supported)
 		ampdu_density = sta->deflink.ht_cap.ampdu_density;
@@ -471,7 +478,7 @@ static void wfx_join_finalize(struct wfx_vif *wvif, struct ieee80211_bss_conf *i
 	wfx_hif_set_association_mode(wvif, ampdu_density, greenfield, info->use_short_preamble);
 	wfx_hif_keep_alive_period(wvif, 0);
 	/* beacon_loss_count is defined to 7 in net/mac80211/mlme.c. Let's use the same value. */
-	wfx_hif_set_bss_params(wvif, info->aid, 7);
+	wfx_hif_set_bss_params(wvif, vif->cfg.aid, 7);
 	wfx_hif_set_beacon_wakeup_period(wvif, 1, 1);
 	wfx_update_pm(wvif);
 }
@@ -506,7 +513,7 @@ static void wfx_enable_beacon(struct wfx_vif *wvif, bool enable)
 }
 
 void wfx_bss_info_changed(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
-			  struct ieee80211_bss_conf *info, u32 changed)
+			  struct ieee80211_bss_conf *info, u64 changed)
 {
 	struct wfx_dev *wdev = hw->priv;
 	struct wfx_vif *wvif = (struct wfx_vif *)vif->drv_priv;
@@ -522,9 +529,9 @@ void wfx_bss_info_changed(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	}
 
 	if (changed & BSS_CHANGED_ASSOC) {
-		if (info->assoc || info->ibss_joined)
+		if (vif->cfg.assoc || vif->cfg.ibss_joined)
 			wfx_join_finalize(wvif, info);
-		else if (!info->assoc && vif->type == NL80211_IFTYPE_STATION)
+		else if (!vif->cfg.assoc && vif->type == NL80211_IFTYPE_STATION)
 			wfx_reset(wvif);
 		else
 			dev_warn(wdev->dev, "misunderstood change: ASSOC\n");
@@ -540,11 +547,11 @@ void wfx_bss_info_changed(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 
 	if (changed & BSS_CHANGED_ARP_FILTER) {
 		for (i = 0; i < HIF_MAX_ARP_IP_ADDRTABLE_ENTRIES; i++) {
-			__be32 *arp_addr = &info->arp_addr_list[i];
+			__be32 *arp_addr = &vif->cfg.arp_addr_list[i];
 
-			if (info->arp_addr_cnt > HIF_MAX_ARP_IP_ADDRTABLE_ENTRIES)
+			if (vif->cfg.arp_addr_cnt > HIF_MAX_ARP_IP_ADDRTABLE_ENTRIES)
 				arp_addr = NULL;
-			if (i >= info->arp_addr_cnt)
+			if (i >= vif->cfg.arp_addr_cnt)
 				arp_addr = NULL;
 			wfx_hif_set_arp_ipv4_filter(wvif, i, arp_addr);
 		}
@@ -586,7 +593,7 @@ static int wfx_update_tim(struct wfx_vif *wvif)
 	u8 *tim_ptr;
 
 	skb = ieee80211_beacon_get_tim(wvif->wdev->hw, vif, &tim_offset,
-				       &tim_length);
+				       &tim_length, 0);
 	if (!skb)
 		return -ENOENT;
 	tim_ptr = skb->data + tim_offset;
@@ -631,18 +638,14 @@ int wfx_set_tim(struct ieee80211_hw *hw, struct ieee80211_sta *sta, bool set)
 
 void wfx_suspend_resume_mc(struct wfx_vif *wvif, enum sta_notify_cmd notify_cmd)
 {
-	struct wfx_vif *wvif_it;
-
 	if (notify_cmd != STA_NOTIFY_AWAKE)
 		return;
 
 	/* Device won't be able to honor CAB if a scan is in progress on any interface. Prefer to
 	 * skip this DTIM and wait for the next one.
 	 */
-	wvif_it = NULL;
-	while ((wvif_it = wvif_iterate(wvif->wdev, wvif_it)) != NULL)
-		if (mutex_is_locked(&wvif_it->scan_lock))
-			return;
+	if (mutex_is_locked(&wvif->wdev->scan_lock))
+		return;
 
 	if (!wfx_tx_queues_has_cab(wvif) || wvif->after_dtim_tx_allowed)
 		dev_warn(wvif->wdev->dev, "incorrect sequence (%d CAB in queue)",
@@ -680,6 +683,7 @@ void wfx_change_chanctx(struct ieee80211_hw *hw, struct ieee80211_chanctx_conf *
 }
 
 int wfx_assign_vif_chanctx(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+			   struct ieee80211_bss_conf *link_conf,
 			   struct ieee80211_chanctx_conf *conf)
 {
 	struct wfx_vif *wvif = (struct wfx_vif *)vif->drv_priv;
@@ -692,6 +696,7 @@ int wfx_assign_vif_chanctx(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 }
 
 void wfx_unassign_vif_chanctx(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+			      struct ieee80211_bss_conf *link_conf,
 			      struct ieee80211_chanctx_conf *conf)
 {
 	struct wfx_vif *wvif = (struct wfx_vif *)vif->drv_priv;
@@ -701,7 +706,7 @@ void wfx_unassign_vif_chanctx(struct ieee80211_hw *hw, struct ieee80211_vif *vif
 	wvif->channel = NULL;
 }
 
-int wfx_config(struct ieee80211_hw *hw, u32 changed)
+int wfx_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
 {
 	return 0;
 }
@@ -738,9 +743,9 @@ int wfx_add_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 	complete(&wvif->set_pm_mode_complete);
 	INIT_WORK(&wvif->tx_policy_upload_work, wfx_tx_policy_upload_work);
 
-	mutex_init(&wvif->scan_lock);
 	init_completion(&wvif->scan_complete);
 	INIT_WORK(&wvif->scan_work, wfx_hw_scan_work);
+	INIT_WORK(&wvif->remain_on_channel_work, wfx_remain_on_channel_work);
 
 	wfx_tx_queues_init(wvif);
 	wfx_tx_policy_init(wvif);
@@ -799,12 +804,36 @@ void wfx_remove_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 	}
 }
 
+#ifdef CONFIG_PM
+int wfx_suspend(struct ieee80211_hw *hw, struct cfg80211_wowlan *wowlan)
+{
+	/* FIXME: hardware also support WIPHY_WOWLAN_MAGIC_PKT and other filters */
+	if (!wowlan->any || !wowlan->disconnect)
+		return -EINVAL;
+	return 0;
+}
+
+int wfx_resume(struct ieee80211_hw *hw)
+{
+	return 0;
+}
+
+void wfx_set_wakeup(struct ieee80211_hw *hw, bool enabled)
+{
+	struct wfx_dev *wdev = hw->priv;
+
+	if (enabled)
+		dev_info(wdev->dev, "support for WoWLAN is experimental\n");
+	wdev->hwbus_ops->set_wakeup(wdev->hwbus_priv, enabled);
+}
+#endif
+
 int wfx_start(struct ieee80211_hw *hw)
 {
 	return 0;
 }
 
-void wfx_stop(struct ieee80211_hw *hw)
+void wfx_stop(struct ieee80211_hw *hw, bool suspend)
 {
 	struct wfx_dev *wdev = hw->priv;
 

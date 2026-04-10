@@ -40,13 +40,13 @@
 
 #define ISA_INIT_STATUS_BITS	STATUS_IE_MASK
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 /******************************************************************
  * IRQ Control Macros
  *
  * All of them have "memory" clobber (compiler barrier) which is needed to
- * ensure that LD/ST requiring irq safetly (R-M-W when LLSC is not available)
+ * ensure that LD/ST requiring irq safety (R-M-W when LLSC is not available)
  * are redone after IRQs are re-enabled (and gcc doesn't reuse stale register)
  *
  * Noted at the time of Abilis Timer List corruption
@@ -196,6 +196,6 @@ static inline int arch_irqs_disabled(void)
 	flag	\scratch
 .endm
 
-#endif	/* __ASSEMBLY__ */
+#endif	/* __ASSEMBLER__ */
 
 #endif

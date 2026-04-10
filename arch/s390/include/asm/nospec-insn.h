@@ -2,11 +2,11 @@
 #ifndef _ASM_S390_NOSPEC_ASM_H
 #define _ASM_S390_NOSPEC_ASM_H
 
-#include <asm/alternative-asm.h>
-#include <asm/asm-offsets.h>
+#include <linux/linkage.h>
+#include <linux/export.h>
 #include <asm/dwarf.h>
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 
 #ifdef CC_USING_EXPOLINE
 
@@ -17,24 +17,25 @@
  */
 	.macro __THUNK_PROLOG_NAME name
 #ifdef CONFIG_EXPOLINE_EXTERN
-	.pushsection .text,"ax",@progbits
-	.align 16,0x07
+	SYM_CODE_START(\name)
 #else
-	.pushsection .text.\name,"axG",@progbits,\name,comdat
-#endif
+	.pushsection .text..\name,"axG",@progbits,\name,comdat
 	.globl \name
 	.hidden \name
 	.type \name,@function
 \name:
 	CFI_STARTPROC
+#endif
 	.endm
 
 	.macro __THUNK_EPILOG_NAME name
-	CFI_ENDPROC
 #ifdef CONFIG_EXPOLINE_EXTERN
-	.size \name, .-\name
-#endif
+	SYM_CODE_END(\name)
+	EXPORT_SYMBOL(\name)
+#else
+	CFI_ENDPROC
 	.popsection
+#endif
 	.endm
 
 	.macro __THUNK_PROLOG_BR r1
@@ -128,6 +129,6 @@
 	.endm
 #endif /* CC_USING_EXPOLINE */
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 #endif /* _ASM_S390_NOSPEC_ASM_H */

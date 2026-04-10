@@ -232,8 +232,7 @@ static void xdr_decode_YFSCallBack(const __be32 **_bp,
 	struct afs_callback *cb = &scb->callback;
 	ktime_t cb_expiry;
 
-	cb_expiry = call->reply_time;
-	cb_expiry = ktime_add(cb_expiry, xdr_to_u64(x->expiration_time) * 100);
+	cb_expiry = ktime_add(call->issue_time, xdr_to_u64(x->expiration_time) * 100);
 	cb->expires_at	= ktime_divns(cb_expiry, NSEC_PER_SEC);
 	scb->have_cb	= true;
 	*_bp += xdr_size(x);
@@ -246,12 +245,15 @@ static void xdr_decode_YFSVolSync(const __be32 **_bp,
 				  struct afs_volsync *volsync)
 {
 	struct yfs_xdr_YFSVolSync *x = (void *)*_bp;
-	u64 creation;
+	u64 creation, update;
 
 	if (volsync) {
 		creation = xdr_to_u64(x->vol_creation_date);
 		do_div(creation, 10 * 1000 * 1000);
 		volsync->creation = creation;
+		update = xdr_to_u64(x->vol_update_date);
+		do_div(update, 10 * 1000 * 1000);
+		volsync->update = update;
 	}
 
 	*_bp += xdr_size(x);
@@ -350,18 +352,19 @@ static int yfs_deliver_status_and_volsync(struct afs_call *call)
 static int yfs_deliver_fs_fetch_data64(struct afs_call *call)
 {
 	struct afs_operation *op = call->op;
+	struct netfs_io_subrequest *subreq = op->fetch.subreq;
 	struct afs_vnode_param *vp = &op->file[0];
-	struct afs_read *req = op->fetch.req;
 	const __be32 *bp;
+	size_t count_before;
 	int ret;
 
 	_enter("{%u,%zu, %zu/%llu}",
 	       call->unmarshall, call->iov_len, iov_iter_count(call->iter),
-	       req->actual_len);
+	       call->remaining);
 
 	switch (call->unmarshall) {
 	case 0:
-		req->actual_len = 0;
+		call->remaining = 0;
 		afs_extract_to_tmp64(call);
 		call->unmarshall++;
 		fallthrough;
@@ -376,38 +379,39 @@ static int yfs_deliver_fs_fetch_data64(struct afs_call *call)
 		if (ret < 0)
 			return ret;
 
-		req->actual_len = be64_to_cpu(call->tmp64);
-		_debug("DATA length: %llu", req->actual_len);
+		call->remaining = be64_to_cpu(call->tmp64);
+		_debug("DATA length: %llu", call->remaining);
 
-		if (req->actual_len == 0)
+		if (call->remaining == 0)
 			goto no_more_data;
 
-		call->iter = req->iter;
-		call->iov_len = min(req->actual_len, req->len);
+		call->iter = &subreq->io_iter;
+		call->iov_len = min(call->remaining, subreq->len - subreq->transferred);
 		call->unmarshall++;
 		fallthrough;
 
 		/* extract the returned data */
 	case 2:
-		_debug("extract data %zu/%llu",
-		       iov_iter_count(call->iter), req->actual_len);
+		count_before = call->iov_len;
+		_debug("extract data %zu/%llu", count_before, call->remaining);
 
 		ret = afs_extract_data(call, true);
+		subreq->transferred += count_before - call->iov_len;
 		if (ret < 0)
 			return ret;
 
 		call->iter = &call->def_iter;
-		if (req->actual_len <= req->len)
+		if (call->remaining)
 			goto no_more_data;
 
 		/* Discard any excess data the server gave us */
-		afs_extract_discard(call, req->actual_len - req->len);
+		afs_extract_discard(call, call->remaining);
 		call->unmarshall = 3;
 		fallthrough;
 
 	case 3:
 		_debug("extract discard %zu/%llu",
-		       iov_iter_count(call->iter), req->actual_len - req->len);
+		       iov_iter_count(call->iter), call->remaining);
 
 		ret = afs_extract_data(call, true);
 		if (ret < 0)
@@ -432,8 +436,8 @@ static int yfs_deliver_fs_fetch_data64(struct afs_call *call)
 		xdr_decode_YFSCallBack(&bp, call, &vp->scb);
 		xdr_decode_YFSVolSync(&bp, &op->volsync);
 
-		req->data_version = vp->scb.status.data_version;
-		req->file_size = vp->scb.status.size;
+		if (subreq->start + subreq->transferred >= vp->scb.status.size)
+			__set_bit(NETFS_SREQ_HIT_EOF, &subreq->flags);
 
 		call->unmarshall++;
 		fallthrough;
@@ -452,7 +456,9 @@ static int yfs_deliver_fs_fetch_data64(struct afs_call *call)
 static const struct afs_call_type yfs_RXYFSFetchData64 = {
 	.name		= "YFS.FetchData64",
 	.op		= yfs_FS_FetchData64,
+	.async_rx	= afs_fetch_data_async_rx,
 	.deliver	= yfs_deliver_fs_fetch_data64,
+	.immediate_cancel = afs_fetch_data_immediate_cancel,
 	.destructor	= afs_flat_call_destructor,
 };
 
@@ -461,14 +467,15 @@ static const struct afs_call_type yfs_RXYFSFetchData64 = {
  */
 void yfs_fs_fetch_data(struct afs_operation *op)
 {
+	struct netfs_io_subrequest *subreq = op->fetch.subreq;
 	struct afs_vnode_param *vp = &op->file[0];
-	struct afs_read *req = op->fetch.req;
 	struct afs_call *call;
 	__be32 *bp;
 
-	_enter(",%x,{%llx:%llu},%llx,%llx",
+	_enter(",%x,{%llx:%llu},%llx,%zx",
 	       key_serial(op->key), vp->fid.vid, vp->fid.vnode,
-	       req->pos, req->len);
+	       subreq->start + subreq->transferred,
+	       subreq->len   - subreq->transferred);
 
 	call = afs_alloc_flat_call(op->net, &yfs_RXYFSFetchData64,
 				   sizeof(__be32) * 2 +
@@ -480,17 +487,19 @@ void yfs_fs_fetch_data(struct afs_operation *op)
 	if (!call)
 		return afs_op_nomem(op);
 
-	req->call_debug_id = call->debug_id;
+	if (op->flags & AFS_OPERATION_ASYNC)
+		call->async = true;
 
 	/* marshall the parameters */
 	bp = call->request;
 	bp = xdr_encode_u32(bp, YFSFETCHDATA64);
 	bp = xdr_encode_u32(bp, 0); /* RPC flags */
 	bp = xdr_encode_YFSFid(bp, &vp->fid);
-	bp = xdr_encode_u64(bp, req->pos);
-	bp = xdr_encode_u64(bp, req->len);
+	bp = xdr_encode_u64(bp, subreq->start + subreq->transferred);
+	bp = xdr_encode_u64(bp, subreq->len   - subreq->transferred);
 	yfs_check_req(call, bp);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -573,6 +582,7 @@ void yfs_fs_create_file(struct afs_operation *op)
 	bp = xdr_encode_u32(bp, yfs_LockNone); /* ViceLockType */
 	yfs_check_req(call, bp);
 
+	call->fid = dvp->fid;
 	trace_afs_make_fs_call1(call, &dvp->fid, name);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -621,6 +631,7 @@ void yfs_fs_make_dir(struct afs_operation *op)
 	bp = xdr_encode_YFSStoreStatus(bp, &op->create.mode, &op->mtime);
 	yfs_check_req(call, bp);
 
+	call->fid = dvp->fid;
 	trace_afs_make_fs_call1(call, &dvp->fid, name);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -656,8 +667,9 @@ static int yfs_deliver_fs_remove_file2(struct afs_call *call)
 static void yfs_done_fs_remove_file2(struct afs_call *call)
 {
 	if (call->error == -ECONNABORTED &&
-	    call->abort_code == RX_INVALID_OPERATION) {
-		set_bit(AFS_SERVER_FL_NO_RM2, &call->server->flags);
+	    (call->abort_code == RX_INVALID_OPERATION ||
+	     call->abort_code == RXGEN_OPCODE)) {
+		set_bit(AFS_SERVER_FL_NO_RM2, &call->op->server->flags);
 		call->op->flags |= AFS_OPERATION_DOWNGRADE;
 	}
 }
@@ -705,6 +717,7 @@ void yfs_fs_remove_file2(struct afs_operation *op)
 	bp = xdr_encode_name(bp, name);
 	yfs_check_req(call, bp);
 
+	call->fid = dvp->fid;
 	trace_afs_make_fs_call1(call, &dvp->fid, name);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -774,6 +787,7 @@ void yfs_fs_remove_file(struct afs_operation *op)
 	bp = xdr_encode_name(bp, name);
 	yfs_check_req(call, bp);
 
+	call->fid = dvp->fid;
 	trace_afs_make_fs_call1(call, &dvp->fid, name);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -815,6 +829,7 @@ void yfs_fs_remove_dir(struct afs_operation *op)
 	bp = xdr_encode_name(bp, name);
 	yfs_check_req(call, bp);
 
+	call->fid = dvp->fid;
 	trace_afs_make_fs_call1(call, &dvp->fid, name);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -888,6 +903,7 @@ void yfs_fs_link(struct afs_operation *op)
 	bp = xdr_encode_YFSFid(bp, &vp->fid);
 	yfs_check_req(call, bp);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call1(call, &vp->fid, name);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -969,6 +985,7 @@ void yfs_fs_symlink(struct afs_operation *op)
 	bp = xdr_encode_YFSStoreStatus(bp, &mode, &op->mtime);
 	yfs_check_req(call, bp);
 
+	call->fid = dvp->fid;
 	trace_afs_make_fs_call1(call, &dvp->fid, name);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1025,6 +1042,9 @@ void yfs_fs_rename(struct afs_operation *op)
 
 	_enter("");
 
+	if (!test_bit(AFS_SERVER_FL_NO_RENAME2, &op->server->flags))
+		return yfs_fs_rename_replace(op);
+
 	call = afs_alloc_flat_call(op->net, &yfs_RXYFSRename,
 				   sizeof(__be32) +
 				   sizeof(struct yfs_xdr_RPCFlags) +
@@ -1048,6 +1068,253 @@ void yfs_fs_rename(struct afs_operation *op)
 	bp = xdr_encode_name(bp, new_name);
 	yfs_check_req(call, bp);
 
+	call->fid = orig_dvp->fid;
+	trace_afs_make_fs_call2(call, &orig_dvp->fid, orig_name, new_name);
+	afs_make_op_call(op, call, GFP_NOFS);
+}
+
+/*
+ * Deliver reply data to a YFS.Rename_NoReplace operation.  This does not
+ * return the status of a displaced target inode as there cannot be one.
+ */
+static int yfs_deliver_fs_rename_1(struct afs_call *call)
+{
+	struct afs_operation *op = call->op;
+	struct afs_vnode_param *orig_dvp = &op->file[0];
+	struct afs_vnode_param *new_dvp = &op->file[1];
+	struct afs_vnode_param *old_vp = &op->more_files[0];
+	const __be32 *bp;
+	int ret;
+
+	_enter("{%u}", call->unmarshall);
+
+	ret = afs_transfer_reply(call);
+	if (ret < 0)
+		return ret;
+
+	bp = call->buffer;
+	/* If the two dirs are the same, we have two copies of the same status
+	 * report, so we just decode it twice.
+	 */
+	xdr_decode_YFSFetchStatus(&bp, call, &orig_dvp->scb);
+	xdr_decode_YFSFid(&bp, &old_vp->fid);
+	xdr_decode_YFSFetchStatus(&bp, call, &old_vp->scb);
+	xdr_decode_YFSFetchStatus(&bp, call, &new_dvp->scb);
+	xdr_decode_YFSVolSync(&bp, &op->volsync);
+	_leave(" = 0 [done]");
+	return 0;
+}
+
+/*
+ * Deliver reply data to a YFS.Rename_Replace or a YFS.Rename_Exchange
+ * operation.  These return the status of the displaced target inode if there
+ * was one.
+ */
+static int yfs_deliver_fs_rename_2(struct afs_call *call)
+{
+	struct afs_operation *op = call->op;
+	struct afs_vnode_param *orig_dvp = &op->file[0];
+	struct afs_vnode_param *new_dvp = &op->file[1];
+	struct afs_vnode_param *old_vp = &op->more_files[0];
+	struct afs_vnode_param *new_vp = &op->more_files[1];
+	const __be32 *bp;
+	int ret;
+
+	_enter("{%u}", call->unmarshall);
+
+	ret = afs_transfer_reply(call);
+	if (ret < 0)
+		return ret;
+
+	bp = call->buffer;
+	/* If the two dirs are the same, we have two copies of the same status
+	 * report, so we just decode it twice.
+	 */
+	xdr_decode_YFSFetchStatus(&bp, call, &orig_dvp->scb);
+	xdr_decode_YFSFid(&bp, &old_vp->fid);
+	xdr_decode_YFSFetchStatus(&bp, call, &old_vp->scb);
+	xdr_decode_YFSFetchStatus(&bp, call, &new_dvp->scb);
+	xdr_decode_YFSFid(&bp, &new_vp->fid);
+	xdr_decode_YFSFetchStatus(&bp, call, &new_vp->scb);
+	xdr_decode_YFSVolSync(&bp, &op->volsync);
+	_leave(" = 0 [done]");
+	return 0;
+}
+
+static void yfs_done_fs_rename_replace(struct afs_call *call)
+{
+	if (call->error == -ECONNABORTED &&
+	    (call->abort_code == RX_INVALID_OPERATION ||
+	     call->abort_code == RXGEN_OPCODE)) {
+		set_bit(AFS_SERVER_FL_NO_RENAME2, &call->op->server->flags);
+		call->op->flags |= AFS_OPERATION_DOWNGRADE;
+	}
+}
+
+/*
+ * YFS.Rename_Replace operation type
+ */
+static const struct afs_call_type yfs_RXYFSRename_Replace = {
+	.name		= "FS.Rename_Replace",
+	.op		= yfs_FS_Rename_Replace,
+	.deliver	= yfs_deliver_fs_rename_2,
+	.done		= yfs_done_fs_rename_replace,
+	.destructor	= afs_flat_call_destructor,
+};
+
+/*
+ * YFS.Rename_NoReplace operation type
+ */
+static const struct afs_call_type yfs_RXYFSRename_NoReplace = {
+	.name		= "FS.Rename_NoReplace",
+	.op		= yfs_FS_Rename_NoReplace,
+	.deliver	= yfs_deliver_fs_rename_1,
+	.destructor	= afs_flat_call_destructor,
+};
+
+/*
+ * YFS.Rename_Exchange operation type
+ */
+static const struct afs_call_type yfs_RXYFSRename_Exchange = {
+	.name		= "FS.Rename_Exchange",
+	.op		= yfs_FS_Rename_Exchange,
+	.deliver	= yfs_deliver_fs_rename_2,
+	.destructor	= afs_flat_call_destructor,
+};
+
+/*
+ * Rename a file or directory, replacing the target if it exists.  The status
+ * of a displaced target is returned.
+ */
+void yfs_fs_rename_replace(struct afs_operation *op)
+{
+	struct afs_vnode_param *orig_dvp = &op->file[0];
+	struct afs_vnode_param *new_dvp = &op->file[1];
+	const struct qstr *orig_name = &op->dentry->d_name;
+	const struct qstr *new_name = &op->dentry_2->d_name;
+	struct afs_call *call;
+	__be32 *bp;
+
+	_enter("");
+
+	call = afs_alloc_flat_call(op->net, &yfs_RXYFSRename_Replace,
+				   sizeof(__be32) +
+				   sizeof(struct yfs_xdr_RPCFlags) +
+				   sizeof(struct yfs_xdr_YFSFid) +
+				   xdr_strlen(orig_name->len) +
+				   sizeof(struct yfs_xdr_YFSFid) +
+				   xdr_strlen(new_name->len),
+				   sizeof(struct yfs_xdr_YFSFetchStatus) +
+				   sizeof(struct yfs_xdr_YFSFid) +
+				   sizeof(struct yfs_xdr_YFSFetchStatus) +
+				   sizeof(struct yfs_xdr_YFSFetchStatus) +
+				   sizeof(struct yfs_xdr_YFSFid) +
+				   sizeof(struct yfs_xdr_YFSFetchStatus) +
+				   sizeof(struct yfs_xdr_YFSVolSync));
+	if (!call)
+		return afs_op_nomem(op);
+
+	/* Marshall the parameters. */
+	bp = call->request;
+	bp = xdr_encode_u32(bp, YFSRENAME_REPLACE);
+	bp = xdr_encode_u32(bp, 0); /* RPC flags */
+	bp = xdr_encode_YFSFid(bp, &orig_dvp->fid);
+	bp = xdr_encode_name(bp, orig_name);
+	bp = xdr_encode_YFSFid(bp, &new_dvp->fid);
+	bp = xdr_encode_name(bp, new_name);
+	yfs_check_req(call, bp);
+
+	call->fid = orig_dvp->fid;
+	trace_afs_make_fs_call2(call, &orig_dvp->fid, orig_name, new_name);
+	afs_make_op_call(op, call, GFP_NOFS);
+}
+
+/*
+ * Rename a file or directory, failing if the target dirent exists.
+ */
+void yfs_fs_rename_noreplace(struct afs_operation *op)
+{
+	struct afs_vnode_param *orig_dvp = &op->file[0];
+	struct afs_vnode_param *new_dvp = &op->file[1];
+	const struct qstr *orig_name = &op->dentry->d_name;
+	const struct qstr *new_name = &op->dentry_2->d_name;
+	struct afs_call *call;
+	__be32 *bp;
+
+	_enter("");
+
+	call = afs_alloc_flat_call(op->net, &yfs_RXYFSRename_NoReplace,
+				   sizeof(__be32) +
+				   sizeof(struct yfs_xdr_RPCFlags) +
+				   sizeof(struct yfs_xdr_YFSFid) +
+				   xdr_strlen(orig_name->len) +
+				   sizeof(struct yfs_xdr_YFSFid) +
+				   xdr_strlen(new_name->len),
+				   sizeof(struct yfs_xdr_YFSFetchStatus) +
+				   sizeof(struct yfs_xdr_YFSFid) +
+				   sizeof(struct yfs_xdr_YFSFetchStatus) +
+				   sizeof(struct yfs_xdr_YFSFetchStatus) +
+				   sizeof(struct yfs_xdr_YFSVolSync));
+	if (!call)
+		return afs_op_nomem(op);
+
+	/* Marshall the parameters. */
+	bp = call->request;
+	bp = xdr_encode_u32(bp, YFSRENAME_NOREPLACE);
+	bp = xdr_encode_u32(bp, 0); /* RPC flags */
+	bp = xdr_encode_YFSFid(bp, &orig_dvp->fid);
+	bp = xdr_encode_name(bp, orig_name);
+	bp = xdr_encode_YFSFid(bp, &new_dvp->fid);
+	bp = xdr_encode_name(bp, new_name);
+	yfs_check_req(call, bp);
+
+	call->fid = orig_dvp->fid;
+	trace_afs_make_fs_call2(call, &orig_dvp->fid, orig_name, new_name);
+	afs_make_op_call(op, call, GFP_NOFS);
+}
+
+/*
+ * Exchange a pair of files directories.
+ */
+void yfs_fs_rename_exchange(struct afs_operation *op)
+{
+	struct afs_vnode_param *orig_dvp = &op->file[0];
+	struct afs_vnode_param *new_dvp = &op->file[1];
+	const struct qstr *orig_name = &op->dentry->d_name;
+	const struct qstr *new_name = &op->dentry_2->d_name;
+	struct afs_call *call;
+	__be32 *bp;
+
+	_enter("");
+
+	call = afs_alloc_flat_call(op->net, &yfs_RXYFSRename_Exchange,
+				   sizeof(__be32) +
+				   sizeof(struct yfs_xdr_RPCFlags) +
+				   sizeof(struct yfs_xdr_YFSFid) +
+				   xdr_strlen(orig_name->len) +
+				   sizeof(struct yfs_xdr_YFSFid) +
+				   xdr_strlen(new_name->len),
+				   sizeof(struct yfs_xdr_YFSFetchStatus) +
+				   sizeof(struct yfs_xdr_YFSFid) +
+				   sizeof(struct yfs_xdr_YFSFetchStatus) +
+				   sizeof(struct yfs_xdr_YFSFetchStatus) +
+				   sizeof(struct yfs_xdr_YFSFid) +
+				   sizeof(struct yfs_xdr_YFSFetchStatus) +
+				   sizeof(struct yfs_xdr_YFSVolSync));
+	if (!call)
+		return afs_op_nomem(op);
+
+	/* Marshall the parameters. */
+	bp = call->request;
+	bp = xdr_encode_u32(bp, YFSRENAME_EXCHANGE);
+	bp = xdr_encode_u32(bp, 0); /* RPC flags */
+	bp = xdr_encode_YFSFid(bp, &orig_dvp->fid);
+	bp = xdr_encode_name(bp, orig_name);
+	bp = xdr_encode_YFSFid(bp, &new_dvp->fid);
+	bp = xdr_encode_name(bp, new_name);
+	yfs_check_req(call, bp);
+
+	call->fid = orig_dvp->fid;
 	trace_afs_make_fs_call2(call, &orig_dvp->fid, orig_name, new_name);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1103,6 +1370,7 @@ void yfs_fs_store_data(struct afs_operation *op)
 	bp = xdr_encode_u64(bp, op->store.i_size);
 	yfs_check_req(call, bp);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1159,6 +1427,7 @@ static void yfs_fs_setattr_size(struct afs_operation *op)
 	bp = xdr_encode_u64(bp, attr->ia_size);	/* new file length */
 	yfs_check_req(call, bp);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1197,6 +1466,7 @@ void yfs_fs_setattr(struct afs_operation *op)
 	bp = xdr_encode_YFS_StoreStatus(bp, attr);
 	yfs_check_req(call, bp);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1367,6 +1637,7 @@ void yfs_fs_get_volume_status(struct afs_operation *op)
 	bp = xdr_encode_u64(bp, vp->fid.vid);
 	yfs_check_req(call, bp);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1431,6 +1702,7 @@ void yfs_fs_set_lock(struct afs_operation *op)
 	bp = xdr_encode_u32(bp, op->lock.type);
 	yfs_check_req(call, bp);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_calli(call, &vp->fid, op->lock.type);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1461,6 +1733,7 @@ void yfs_fs_extend_lock(struct afs_operation *op)
 	bp = xdr_encode_YFSFid(bp, &vp->fid);
 	yfs_check_req(call, bp);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1491,6 +1764,7 @@ void yfs_fs_release_lock(struct afs_operation *op)
 	bp = xdr_encode_YFSFid(bp, &vp->fid);
 	yfs_check_req(call, bp);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1557,6 +1831,7 @@ void yfs_fs_fetch_status(struct afs_operation *op)
 	bp = xdr_encode_YFSFid(bp, &vp->fid);
 	yfs_check_req(call, bp);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1737,6 +2012,7 @@ void yfs_fs_inline_bulk_status(struct afs_operation *op)
 		bp = xdr_encode_YFSFid(bp, &op->more_files[i].fid);
 	yfs_check_req(call, bp);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1772,7 +2048,7 @@ static int yfs_deliver_fs_fetch_opaque_acl(struct afs_call *call)
 		size = round_up(size, 4);
 
 		if (yacl->flags & YFS_ACL_WANT_ACL) {
-			acl = kmalloc(struct_size(acl, data, size), GFP_KERNEL);
+			acl = kmalloc_flex(*acl, data, size);
 			if (!acl)
 				return -ENOMEM;
 			yacl->acl = acl;
@@ -1804,7 +2080,7 @@ static int yfs_deliver_fs_fetch_opaque_acl(struct afs_call *call)
 		size = round_up(size, 4);
 
 		if (yacl->flags & YFS_ACL_WANT_VOL_ACL) {
-			acl = kmalloc(struct_size(acl, data, size), GFP_KERNEL);
+			acl = kmalloc_flex(*acl, data, size);
 			if (!acl)
 				return -ENOMEM;
 			yacl->vol_acl = acl;
@@ -1899,6 +2175,7 @@ void yfs_fs_fetch_opaque_acl(struct afs_operation *op)
 	bp = xdr_encode_YFSFid(bp, &vp->fid);
 	yfs_check_req(call, bp);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_KERNEL);
 }
@@ -1949,6 +2226,7 @@ void yfs_fs_store_opaque_acl2(struct afs_operation *op)
 	bp += size / sizeof(__be32);
 	yfs_check_req(call, bp);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_KERNEL);
 }

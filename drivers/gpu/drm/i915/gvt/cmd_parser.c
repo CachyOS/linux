@@ -36,21 +36,30 @@
 
 #include <linux/slab.h>
 
-#include "i915_drv.h"
-#include "gt/intel_engine_regs.h"
-#include "gt/intel_gpu_commands.h"
-#include "gt/intel_gt_regs.h"
-#include "gt/intel_lrc.h"
-#include "gt/intel_ring.h"
-#include "gt/intel_gt_requests.h"
-#include "gt/shmem_utils.h"
-#include "gvt.h"
-#include "i915_pvinfo.h"
-#include "trace.h"
+#include <drm/drm_print.h>
+
+#include "display/i9xx_plane_regs.h"
+#include "display/intel_display_regs.h"
+#include "display/intel_sprite_regs.h"
 
 #include "gem/i915_gem_context.h"
 #include "gem/i915_gem_pm.h"
+
 #include "gt/intel_context.h"
+#include "gt/intel_engine_regs.h"
+#include "gt/intel_gpu_commands.h"
+#include "gt/intel_gt_regs.h"
+#include "gt/intel_gt_requests.h"
+#include "gt/intel_lrc.h"
+#include "gt/intel_ring.h"
+#include "gt/shmem_utils.h"
+
+#include "display_helpers.h"
+#include "gvt.h"
+#include "i915_drv.h"
+#include "i915_pvinfo.h"
+#include "i915_reg.h"
+#include "trace.h"
 
 #define INVALID_OP    (~0U)
 
@@ -428,7 +437,7 @@ struct cmd_info {
 #define R_VECS	BIT(VECS0)
 #define R_ALL (R_RCS | R_VCS | R_BCS | R_VECS)
 	/* rings that support this cmd: BLT/RCS/VCS/VECS */
-	u16 rings;
+	intel_engine_mask_t rings;
 
 	/* devices that support this cmd: SNB/IVB/HSW/... */
 	u16 devices;
@@ -1283,6 +1292,7 @@ static int gen8_decode_mi_display_flip(struct parser_exec_state *s,
 		struct mi_display_flip_command_info *info)
 {
 	struct drm_i915_private *dev_priv = s->engine->i915;
+	struct intel_display *display = dev_priv->display;
 	struct plane_code_mapping gen8_plane_code[] = {
 		[0] = {PIPE_A, PLANE_A, PRIMARY_A_FLIP_DONE},
 		[1] = {PIPE_B, PLANE_A, PRIMARY_B_FLIP_DONE},
@@ -1311,9 +1321,9 @@ static int gen8_decode_mi_display_flip(struct parser_exec_state *s,
 	info->async_flip = ((dword2 & GENMASK(1, 0)) == 0x1);
 
 	if (info->plane == PLANE_A) {
-		info->ctrl_reg = DSPCNTR(info->pipe);
-		info->stride_reg = DSPSTRIDE(info->pipe);
-		info->surf_reg = DSPSURF(info->pipe);
+		info->ctrl_reg = DSPCNTR(display, info->pipe);
+		info->stride_reg = DSPSTRIDE(display, info->pipe);
+		info->surf_reg = DSPSURF(display, info->pipe);
 	} else if (info->plane == PLANE_B) {
 		info->ctrl_reg = SPRCTL(info->pipe);
 		info->stride_reg = SPRSTRIDE(info->pipe);
@@ -1329,6 +1339,7 @@ static int skl_decode_mi_display_flip(struct parser_exec_state *s,
 		struct mi_display_flip_command_info *info)
 {
 	struct drm_i915_private *dev_priv = s->engine->i915;
+	struct intel_display *display = dev_priv->display;
 	struct intel_vgpu *vgpu = s->vgpu;
 	u32 dword0 = cmd_val(s, 0);
 	u32 dword1 = cmd_val(s, 1);
@@ -1377,9 +1388,9 @@ static int skl_decode_mi_display_flip(struct parser_exec_state *s,
 	info->surf_val = (dword2 & GENMASK(31, 12)) >> 12;
 	info->async_flip = ((dword2 & GENMASK(1, 0)) == 0x1);
 
-	info->ctrl_reg = DSPCNTR(info->pipe);
-	info->stride_reg = DSPSTRIDE(info->pipe);
-	info->surf_reg = DSPSURF(info->pipe);
+	info->ctrl_reg = DSPCNTR(display, info->pipe);
+	info->stride_reg = DSPSTRIDE(display, info->pipe);
+	info->surf_reg = DSPSURF(display, info->pipe);
 
 	return 0;
 }
@@ -1416,6 +1427,7 @@ static int gen8_update_plane_mmio_from_mi_display_flip(
 		struct mi_display_flip_command_info *info)
 {
 	struct drm_i915_private *dev_priv = s->engine->i915;
+	struct intel_display *display = dev_priv->display;
 	struct intel_vgpu *vgpu = s->vgpu;
 
 	set_mask_bits(&vgpu_vreg_t(vgpu, info->surf_reg), GENMASK(31, 12),
@@ -1433,7 +1445,7 @@ static int gen8_update_plane_mmio_from_mi_display_flip(
 	}
 
 	if (info->plane == PLANE_PRIMARY)
-		vgpu_vreg_t(vgpu, PIPE_FLIPCOUNT_G4X(info->pipe))++;
+		vgpu_vreg_t(vgpu, PIPE_FLIPCOUNT_G4X(display, info->pipe))++;
 
 	if (info->async_flip)
 		intel_vgpu_trigger_virtual_event(vgpu, info->event);
@@ -1900,7 +1912,7 @@ static int perform_bb_shadow(struct parser_exec_state *s)
 		s->vgpu->gtt.ggtt_mm : s->workload->shadow_mm;
 	unsigned long start_offset = 0;
 
-	/* get the start gm address of the batch buffer */
+	/* Get the start gm address of the batch buffer */
 	gma = get_gma_bb_from_cmd(s, 1);
 	if (gma == INTEL_GVT_INVALID_ADDR)
 		return -EFAULT;
@@ -1909,21 +1921,22 @@ static int perform_bb_shadow(struct parser_exec_state *s)
 	if (ret)
 		return ret;
 
-	bb = kzalloc(sizeof(*bb), GFP_KERNEL);
+	bb = kzalloc_obj(*bb);
 	if (!bb)
 		return -ENOMEM;
 
-	bb->ppgtt = (s->buf_addr_type == GTT_BUFFER) ? false : true;
+	bb->ppgtt = s->buf_addr_type != GTT_BUFFER;
 
-	/* the start_offset stores the batch buffer's start gma's
-	 * offset relative to page boundary. so for non-privileged batch
+	/*
+	 * The start_offset stores the batch buffer's start gma's
+	 * offset relative to page boundary. So for non-privileged batch
 	 * buffer, the shadowed gem object holds exactly the same page
-	 * layout as original gem object. This is for the convience of
+	 * layout as original gem object. This is for the convenience of
 	 * replacing the whole non-privilged batch buffer page to this
-	 * shadowed one in PPGTT at the same gma address. (this replacing
+	 * shadowed one in PPGTT at the same gma address. (This replacing
 	 * action is not implemented yet now, but may be necessary in
 	 * future).
-	 * for prileged batch buffer, we just change start gma address to
+	 * For prileged batch buffer, we just change start gma address to
 	 * that of shadowed page.
 	 */
 	if (bb->ppgtt)
@@ -1970,7 +1983,7 @@ static int perform_bb_shadow(struct parser_exec_state *s)
 	/*
 	 * ip_va saves the virtual address of the shadow batch buffer, while
 	 * ip_gma saves the graphics address of the original batch buffer.
-	 * As the shadow batch buffer is just a copy from the originial one,
+	 * As the shadow batch buffer is just a copy from the original one,
 	 * it should be right to use shadow batch buffer'va and original batch
 	 * buffer's gma in pair. After all, we don't want to pin the shadow
 	 * buffer here (too early).
@@ -2831,7 +2844,7 @@ static int command_scan(struct parser_exec_state *s,
 
 static int scan_workload(struct intel_vgpu_workload *workload)
 {
-	unsigned long gma_head, gma_tail, gma_bottom;
+	unsigned long gma_head, gma_tail;
 	struct parser_exec_state s;
 	int ret = 0;
 
@@ -2841,7 +2854,6 @@ static int scan_workload(struct intel_vgpu_workload *workload)
 
 	gma_head = workload->rb_start + workload->rb_head;
 	gma_tail = workload->rb_start + workload->rb_tail;
-	gma_bottom = workload->rb_start +  _RING_CTL_BUF_SIZE(workload->rb_ctl);
 
 	s.buf_type = RING_BUFFER_INSTRUCTION;
 	s.buf_addr_type = GTT_BUFFER;
@@ -2872,7 +2884,7 @@ out:
 static int scan_wa_ctx(struct intel_shadow_wa_ctx *wa_ctx)
 {
 
-	unsigned long gma_head, gma_tail, gma_bottom, ring_size, ring_tail;
+	unsigned long gma_head, gma_tail, ring_size, ring_tail;
 	struct parser_exec_state s;
 	int ret = 0;
 	struct intel_vgpu_workload *workload = container_of(wa_ctx,
@@ -2889,7 +2901,6 @@ static int scan_wa_ctx(struct intel_shadow_wa_ctx *wa_ctx)
 			PAGE_SIZE);
 	gma_head = wa_ctx->indirect_ctx.guest_gma;
 	gma_tail = wa_ctx->indirect_ctx.guest_gma + ring_tail;
-	gma_bottom = wa_ctx->indirect_ctx.guest_gma + ring_size;
 
 	s.buf_type = RING_BUFFER_INSTRUCTION;
 	s.buf_addr_type = GTT_BUFFER;
@@ -3047,7 +3058,7 @@ put_obj:
 
 static int combine_wa_ctx(struct intel_shadow_wa_ctx *wa_ctx)
 {
-	u32 per_ctx_start[CACHELINE_DWORDS] = {0};
+	u32 per_ctx_start[CACHELINE_DWORDS] = {};
 	unsigned char *bb_start_sva;
 
 	if (!wa_ctx->per_ctx.valid)
@@ -3117,9 +3128,9 @@ void intel_gvt_update_reg_whitelist(struct intel_vgpu *vgpu)
 			continue;
 
 		vaddr = shmem_pin_map(engine->default_state);
-		if (IS_ERR(vaddr)) {
-			gvt_err("failed to map %s->default state, err:%zd\n",
-				engine->name, PTR_ERR(vaddr));
+		if (!vaddr) {
+			gvt_err("failed to map %s->default state\n",
+				engine->name);
 			return;
 		}
 
@@ -3215,7 +3226,7 @@ static int init_cmd_table(struct intel_gvt *gvt)
 		if (!(cmd_info[i].devices & gen_type))
 			continue;
 
-		e = kzalloc(sizeof(*e), GFP_KERNEL);
+		e = kzalloc_obj(*e);
 		if (!e)
 			return -ENOMEM;
 

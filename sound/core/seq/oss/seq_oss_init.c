@@ -63,25 +63,23 @@ int __init
 snd_seq_oss_create_client(void)
 {
 	int rc;
-	struct snd_seq_port_info *port;
 	struct snd_seq_port_callback port_callback;
+	struct snd_seq_port_info *port __free(kfree) =
+		kzalloc_obj(*port);
 
-	port = kzalloc(sizeof(*port), GFP_KERNEL);
-	if (!port) {
-		rc = -ENOMEM;
-		goto __error;
-	}
+	if (!port)
+		return -ENOMEM;
 
 	/* create ALSA client */
 	rc = snd_seq_create_kernel_client(NULL, SNDRV_SEQ_CLIENT_OSS,
 					  "OSS sequencer");
 	if (rc < 0)
-		goto __error;
+		return rc;
 
 	system_client = rc;
 
 	/* create announcement receiver port */
-	strcpy(port->name, "Receiver");
+	strscpy(port->name, "Receiver");
 	port->addr.client = system_client;
 	port->capability = SNDRV_SEQ_PORT_CAP_WRITE; /* receive only */
 	port->type = 0;
@@ -104,19 +102,16 @@ snd_seq_oss_create_client(void)
 		subs.dest.port = system_port;
 		call_ctl(SNDRV_SEQ_IOCTL_SUBSCRIBE_PORT, &subs);
 	}
-	rc = 0;
 
 	/* look up midi devices */
 	schedule_work(&async_lookup_work);
 
- __error:
-	kfree(port);
-	return rc;
+	return 0;
 }
 
 
 /*
- * receive annoucement from system port, and check the midi device
+ * receive announcement from system port, and check the midi device
  */
 static int
 receive_announce(struct snd_seq_event *ev, int direct, void *private, int atomic, int hop)
@@ -173,7 +168,7 @@ snd_seq_oss_open(struct file *file, int level)
 	int i, rc;
 	struct seq_oss_devinfo *dp;
 
-	dp = kzalloc(sizeof(*dp), GFP_KERNEL);
+	dp = kzalloc_obj(*dp);
 	if (!dp)
 		return -ENOMEM;
 
@@ -352,7 +347,7 @@ alloc_seq_queue(struct seq_oss_devinfo *dp)
 	memset(&qinfo, 0, sizeof(qinfo));
 	qinfo.owner = system_client;
 	qinfo.locked = 1;
-	strcpy(qinfo.name, "OSS Sequencer Emulation");
+	strscpy(qinfo.name, "OSS Sequencer Emulation");
 	rc = call_ctl(SNDRV_SEQ_IOCTL_CREATE_QUEUE, &qinfo);
 	if (rc < 0)
 		return rc;
@@ -454,12 +449,6 @@ snd_seq_oss_reset(struct seq_oss_devinfo *dp)
 /*
  * misc. functions for proc interface
  */
-char *
-enabled_str(int bool)
-{
-	return bool ? "enabled" : "disabled";
-}
-
 static const char *
 filemode_str(int val)
 {

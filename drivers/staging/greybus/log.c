@@ -77,7 +77,7 @@ static int gb_log_probe(struct gb_bundle *bundle,
 	if (cport_desc->protocol_id != GREYBUS_PROTOCOL_LOG)
 		return -ENODEV;
 
-	log = kzalloc(sizeof(*log), GFP_KERNEL);
+	log = kzalloc_obj(*log);
 	if (!log)
 		return -ENOMEM;
 
@@ -129,4 +129,5 @@ static struct greybus_driver gb_log_driver = {
 };
 module_greybus_driver(gb_log_driver);
 
+MODULE_DESCRIPTION("Greybus driver for the log protocol");
 MODULE_LICENSE("GPL v2");

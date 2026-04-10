@@ -16,6 +16,9 @@
 int mlx5r_umr_resource_init(struct mlx5_ib_dev *dev);
 void mlx5r_umr_resource_cleanup(struct mlx5_ib_dev *dev);
 
+int mlx5r_umr_init(struct mlx5_ib_dev *dev);
+void mlx5r_umr_cleanup(struct mlx5_ib_dev *dev);
+
 static inline bool mlx5r_umr_can_load_pas(struct mlx5_ib_dev *dev,
 					  size_t length)
 {
@@ -62,7 +65,8 @@ static inline bool mlx5r_umr_can_reconfig(struct mlx5_ib_dev *dev,
 		return false;
 
 	if ((diffs & IB_ACCESS_RELAXED_ORDERING) &&
-	    MLX5_CAP_GEN(dev->mdev, relaxed_ordering_read) &&
+	    (MLX5_CAP_GEN(dev->mdev, relaxed_ordering_read) ||
+	     MLX5_CAP_GEN(dev->mdev, relaxed_ordering_read_pci_enabled)) &&
 	    !MLX5_CAP_GEN(dev->mdev, relaxed_ordering_read_umr))
 		return false;
 
@@ -90,8 +94,20 @@ struct mlx5r_umr_wqe {
 int mlx5r_umr_revoke_mr(struct mlx5_ib_mr *mr);
 int mlx5r_umr_rereg_pd_access(struct mlx5_ib_mr *mr, struct ib_pd *pd,
 			      int access_flags);
+int mlx5r_umr_update_data_direct_ksm_pas_range(struct mlx5_ib_mr *mr,
+					       unsigned int flags,
+					       size_t start_block,
+					       size_t nblocks);
+int mlx5r_umr_update_data_direct_ksm_pas(struct mlx5_ib_mr *mr, unsigned int flags);
+int mlx5r_umr_update_mr_pas_range(struct mlx5_ib_mr *mr, unsigned int flags,
+				  size_t start_block, size_t nblocks);
 int mlx5r_umr_update_mr_pas(struct mlx5_ib_mr *mr, unsigned int flags);
 int mlx5r_umr_update_xlt(struct mlx5_ib_mr *mr, u64 idx, int npages,
 			 int page_shift, int flags);
+int mlx5r_umr_update_mr_page_shift(struct mlx5_ib_mr *mr,
+				   unsigned int page_shift,
+				   bool dd);
+int mlx5r_umr_dmabuf_update_pgsz(struct mlx5_ib_mr *mr, u32 xlt_flags,
+				 unsigned int page_shift);
 
 #endif /* _MLX5_IB_UMR_H */

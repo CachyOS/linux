@@ -1674,7 +1674,7 @@ static int mlx4_master_process_vhcr(struct mlx4_dev *dev, int slave,
 	int err = 0;
 
 	/* Create sw representation of Virtual HCR */
-	vhcr = kzalloc(sizeof(struct mlx4_vhcr), GFP_KERNEL);
+	vhcr = kzalloc_obj(struct mlx4_vhcr);
 	if (!vhcr)
 		return -ENOMEM;
 
@@ -1873,7 +1873,7 @@ static int mlx4_master_immediate_activate_vlan_qos(struct mlx4_priv *priv,
 		 vp_admin->default_vlan, vp_admin->default_qos,
 		 vp_admin->link_state);
 
-	work = kzalloc(sizeof(*work), GFP_KERNEL);
+	work = kzalloc_obj(*work);
 	if (!work)
 		return -ENOMEM;
 
@@ -2113,7 +2113,7 @@ static void mlx4_master_do_cmd(struct mlx4_dev *dev, int slave, u8 cmd,
 		if (MLX4_COMM_CMD_FLR == slave_state[slave].last_cmd)
 			goto inform_slave_state;
 
-		mlx4_dispatch_event(dev, MLX4_DEV_EVENT_SLAVE_SHUTDOWN, slave);
+		mlx4_dispatch_event(dev, MLX4_DEV_EVENT_SLAVE_SHUTDOWN, &slave);
 
 		/* write the version in the event field */
 		reply |= mlx4_comm_get_version();
@@ -2152,7 +2152,7 @@ static void mlx4_master_do_cmd(struct mlx4_dev *dev, int slave, u8 cmd,
 		if (mlx4_master_activate_admin_state(priv, slave))
 				goto reset_slave;
 		slave_state[slave].active = true;
-		mlx4_dispatch_event(dev, MLX4_DEV_EVENT_SLAVE_INIT, slave);
+		mlx4_dispatch_event(dev, MLX4_DEV_EVENT_SLAVE_INIT, &slave);
 		break;
 	case MLX4_COMM_CMD_VHCR_POST:
 		if ((slave_state[slave].last_cmd != MLX4_COMM_CMD_VHCR_EN) &&
@@ -2199,8 +2199,9 @@ reset_slave:
 	if (cmd != MLX4_COMM_CMD_RESET) {
 		mlx4_warn(dev, "Turn on internal error to force reset, slave=%d, cmd=0x%x\n",
 			  slave, cmd);
-		/* Turn on internal error letting slave reset itself immeditaly,
-		 * otherwise it might take till timeout on command is passed
+		/* Turn on internal error letting slave reset itself
+		 * immediately, otherwise it might take till timeout on
+		 * command is passed
 		 */
 		reply |= ((u32)COMM_CHAN_EVENT_INTERNAL_ERR);
 	}
@@ -2367,23 +2368,18 @@ int mlx4_multi_func_init(struct mlx4_dev *dev)
 		struct mlx4_vf_admin_state *vf_admin;
 
 		priv->mfunc.master.slave_state =
-			kcalloc(dev->num_slaves,
-				sizeof(struct mlx4_slave_state),
-				GFP_KERNEL);
+			kzalloc_objs(struct mlx4_slave_state, dev->num_slaves);
 		if (!priv->mfunc.master.slave_state)
 			goto err_comm;
 
 		priv->mfunc.master.vf_admin =
-			kcalloc(dev->num_slaves,
-				sizeof(struct mlx4_vf_admin_state),
-				GFP_KERNEL);
+			kzalloc_objs(struct mlx4_vf_admin_state,
+				     dev->num_slaves);
 		if (!priv->mfunc.master.vf_admin)
 			goto err_comm_admin;
 
 		priv->mfunc.master.vf_oper =
-			kcalloc(dev->num_slaves,
-				sizeof(struct mlx4_vf_oper_state),
-				GFP_KERNEL);
+			kzalloc_objs(struct mlx4_vf_oper_state, dev->num_slaves);
 		if (!priv->mfunc.master.vf_oper)
 			goto err_comm_oper;
 
@@ -2407,8 +2403,7 @@ int mlx4_multi_func_init(struct mlx4_dev *dev)
 				struct mlx4_vport_state *oper_vport;
 
 				s_state->vlan_filter[port] =
-					kzalloc(sizeof(struct mlx4_vlan_fltr),
-						GFP_KERNEL);
+					kzalloc_obj(struct mlx4_vlan_fltr);
 				if (!s_state->vlan_filter[port]) {
 					if (--port)
 						kfree(s_state->vlan_filter[port]);
@@ -2624,9 +2619,8 @@ int mlx4_cmd_use_events(struct mlx4_dev *dev)
 	int i;
 	int err = 0;
 
-	priv->cmd.context = kmalloc_array(priv->cmd.max_cmds,
-					  sizeof(struct mlx4_cmd_context),
-					  GFP_KERNEL);
+	priv->cmd.context = kmalloc_objs(struct mlx4_cmd_context,
+					 priv->cmd.max_cmds);
 	if (!priv->cmd.context)
 		return -ENOMEM;
 
@@ -2692,7 +2686,7 @@ struct mlx4_cmd_mailbox *mlx4_alloc_cmd_mailbox(struct mlx4_dev *dev)
 {
 	struct mlx4_cmd_mailbox *mailbox;
 
-	mailbox = kmalloc(sizeof(*mailbox), GFP_KERNEL);
+	mailbox = kmalloc_obj(*mailbox);
 	if (!mailbox)
 		return ERR_PTR(-ENOMEM);
 
@@ -2954,7 +2948,7 @@ static bool mlx4_valid_vf_state_change(struct mlx4_dev *dev, int port,
 	dummy_admin.default_vlan = vlan;
 
 	/* VF wants to move to other VST state which is valid with current
-	 * rate limit. Either differnt default vlan in VST or other
+	 * rate limit. Either different default vlan in VST or other
 	 * supported QoS priority. Otherwise we don't allow this change when
 	 * the TX rate is still configured.
 	 */

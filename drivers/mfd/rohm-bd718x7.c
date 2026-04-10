@@ -14,7 +14,7 @@
 #include <linux/mfd/rohm-bd718x7.h>
 #include <linux/mfd/core.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/types.h>
 
@@ -60,7 +60,7 @@ static const struct regmap_irq bd718xx_irqs[] = {
 	REGMAP_IRQ_REG(BD718XX_INT_STBY_REQ, 0, BD718XX_INT_STBY_REQ_MASK),
 };
 
-static struct regmap_irq_chip bd718xx_irq_chip = {
+static const struct regmap_irq_chip bd718xx_irq_chip = {
 	.name = "bd718xx-irq",
 	.irqs = bd718xx_irqs,
 	.num_irqs = ARRAY_SIZE(bd718xx_irqs),
@@ -70,17 +70,15 @@ static struct regmap_irq_chip bd718xx_irq_chip = {
 	.mask_base = BD718XX_REG_MIRQ,
 	.ack_base = BD718XX_REG_IRQ,
 	.init_ack_masked = true,
-	.mask_invert = false,
 };
 
-static const struct regmap_range pmic_status_range = {
-	.range_min = BD718XX_REG_IRQ,
-	.range_max = BD718XX_REG_POW_STATE,
+static const struct regmap_range pmic_status_range[] = {
+	regmap_reg_range(BD718XX_REG_IRQ, BD718XX_REG_POW_STATE),
 };
 
 static const struct regmap_access_table volatile_regs = {
-	.yes_ranges = &pmic_status_range,
-	.n_yes_ranges = 1,
+	.yes_ranges = &pmic_status_range[0],
+	.n_yes_ranges = ARRAY_SIZE(pmic_status_range),
 };
 
 static const struct regmap_config bd718xx_regmap_config = {
@@ -88,7 +86,7 @@ static const struct regmap_config bd718xx_regmap_config = {
 	.val_bits = 8,
 	.volatile_table = &volatile_regs,
 	.max_register = BD718XX_MAX_REGISTER - 1,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 };
 
 static int bd718xx_init_press_duration(struct regmap *regmap,
@@ -127,8 +125,7 @@ static int bd718xx_init_press_duration(struct regmap *regmap,
 	return 0;
 }
 
-static int bd718xx_i2c_probe(struct i2c_client *i2c,
-			    const struct i2c_device_id *id)
+static int bd718xx_i2c_probe(struct i2c_client *i2c)
 {
 	struct regmap *regmap;
 	struct regmap_irq_chip_data *irq_data;
@@ -158,18 +155,15 @@ static int bd718xx_i2c_probe(struct i2c_client *i2c,
 	}
 
 	regmap = devm_regmap_init_i2c(i2c, &bd718xx_regmap_config);
-	if (IS_ERR(regmap)) {
-		dev_err(&i2c->dev, "regmap initialization failed\n");
-		return PTR_ERR(regmap);
-	}
+	if (IS_ERR(regmap))
+		return dev_err_probe(&i2c->dev, PTR_ERR(regmap),
+				     "regmap initialization failed\n");
 
 	ret = devm_regmap_add_irq_chip(&i2c->dev, regmap, i2c->irq,
 				       IRQF_ONESHOT, 0, &bd718xx_irq_chip,
 				       &irq_data);
-	if (ret) {
-		dev_err(&i2c->dev, "Failed to add irq_chip\n");
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(&i2c->dev, ret, "Failed to add irq_chip\n");
 
 	ret = bd718xx_init_press_duration(regmap, &i2c->dev);
 	if (ret)
@@ -177,10 +171,8 @@ static int bd718xx_i2c_probe(struct i2c_client *i2c,
 
 	ret = regmap_irq_get_virq(irq_data, BD718XX_INT_PWRBTN_S);
 
-	if (ret < 0) {
-		dev_err(&i2c->dev, "Failed to get the IRQ\n");
-		return ret;
-	}
+	if (ret < 0)
+		return dev_err_probe(&i2c->dev, ret, "Failed to get the IRQ\n");
 
 	button.irq = ret;
 
@@ -188,7 +180,7 @@ static int bd718xx_i2c_probe(struct i2c_client *i2c,
 				   mfd, cells, NULL, 0,
 				   regmap_irq_get_domain(irq_data));
 	if (ret)
-		dev_err(&i2c->dev, "Failed to create subdevices\n");
+		dev_err_probe(&i2c->dev, ret, "Failed to create subdevices\n");
 
 	return ret;
 }

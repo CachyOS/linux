@@ -6,6 +6,7 @@
 
 #include <linux/firmware.h>
 #include <linux/gpio/consumer.h>
+#include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -16,21 +17,25 @@
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 
-#include <sound/hdmi-codec.h>
-
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
+#include <drm/drm_edid.h>
 #include <drm/drm_mipi_dsi.h>
+#include <drm/drm_of.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
+
+#include <drm/display/drm_hdmi_audio_helper.h>
 
 #define EDID_BLOCK_SIZE	128
 #define EDID_NUM_BLOCKS	2
 
+#define FW_FILE "lt9611uxc_fw.bin"
+
 struct lt9611uxc {
 	struct device *dev;
 	struct drm_bridge bridge;
-	struct drm_connector connector;
+	struct drm_bridge *next_bridge;
 
 	struct regmap *regmap;
 	/* Protects all accesses to registers by stopping the on-chip MCU */
@@ -43,7 +48,6 @@ struct lt9611uxc {
 	struct device_node *dsi1_node;
 	struct mipi_dsi_device *dsi0;
 	struct mipi_dsi_device *dsi1;
-	struct platform_device *audio_pdev;
 
 	struct gpio_desc *reset_gpio;
 	struct gpio_desc *enable_gpio;
@@ -116,11 +120,6 @@ static struct lt9611uxc *bridge_to_lt9611uxc(struct drm_bridge *bridge)
 	return container_of(bridge, struct lt9611uxc, bridge);
 }
 
-static struct lt9611uxc *connector_to_lt9611uxc(struct drm_connector *connector)
-{
-	return container_of(connector, struct lt9611uxc, connector);
-}
-
 static void lt9611uxc_lock(struct lt9611uxc *lt9611uxc)
 {
 	mutex_lock(&lt9611uxc->ocm_lock);
@@ -167,20 +166,14 @@ static void lt9611uxc_hpd_work(struct work_struct *work)
 	struct lt9611uxc *lt9611uxc = container_of(work, struct lt9611uxc, work);
 	bool connected;
 
-	if (lt9611uxc->connector.dev) {
-		if (lt9611uxc->connector.dev->mode_config.funcs)
-			drm_kms_helper_hotplug_event(lt9611uxc->connector.dev);
-	} else {
+	mutex_lock(&lt9611uxc->ocm_lock);
+	connected = lt9611uxc->hdmi_connected;
+	mutex_unlock(&lt9611uxc->ocm_lock);
 
-		mutex_lock(&lt9611uxc->ocm_lock);
-		connected = lt9611uxc->hdmi_connected;
-		mutex_unlock(&lt9611uxc->ocm_lock);
-
-		drm_bridge_hpd_notify(&lt9611uxc->bridge,
-				      connected ?
-				      connector_status_connected :
-				      connector_status_disconnected);
-	}
+	drm_bridge_hpd_notify(&lt9611uxc->bridge,
+			      connected ?
+			      connector_status_connected :
+			      connector_status_disconnected);
 }
 
 static void lt9611uxc_reset(struct lt9611uxc *lt9611uxc)
@@ -262,10 +255,8 @@ static struct mipi_dsi_device *lt9611uxc_attach_dsi(struct lt9611uxc *lt9611uxc,
 	int ret;
 
 	host = of_find_mipi_dsi_host_by_node(dsi_node);
-	if (!host) {
-		dev_err(dev, "failed to find dsi host\n");
-		return ERR_PTR(-EPROBE_DEFER);
-	}
+	if (!host)
+		return ERR_PTR(dev_err_probe(dev, -EPROBE_DEFER, "failed to find dsi host\n"));
 
 	dsi = devm_mipi_dsi_device_register_full(dev, host, &info);
 	if (IS_ERR(dsi)) {
@@ -287,87 +278,14 @@ static struct mipi_dsi_device *lt9611uxc_attach_dsi(struct lt9611uxc *lt9611uxc,
 	return dsi;
 }
 
-static int lt9611uxc_connector_get_modes(struct drm_connector *connector)
-{
-	struct lt9611uxc *lt9611uxc = connector_to_lt9611uxc(connector);
-	unsigned int count;
-	struct edid *edid;
-
-	edid = lt9611uxc->bridge.funcs->get_edid(&lt9611uxc->bridge, connector);
-	drm_connector_update_edid_property(connector, edid);
-	count = drm_add_edid_modes(connector, edid);
-	kfree(edid);
-
-	return count;
-}
-
-static enum drm_connector_status lt9611uxc_connector_detect(struct drm_connector *connector,
-							    bool force)
-{
-	struct lt9611uxc *lt9611uxc = connector_to_lt9611uxc(connector);
-
-	return lt9611uxc->bridge.funcs->detect(&lt9611uxc->bridge);
-}
-
-static enum drm_mode_status lt9611uxc_connector_mode_valid(struct drm_connector *connector,
-							   struct drm_display_mode *mode)
-{
-	struct lt9611uxc_mode *lt9611uxc_mode = lt9611uxc_find_mode(mode);
-
-	return lt9611uxc_mode ? MODE_OK : MODE_BAD;
-}
-
-static const struct drm_connector_helper_funcs lt9611uxc_bridge_connector_helper_funcs = {
-	.get_modes = lt9611uxc_connector_get_modes,
-	.mode_valid = lt9611uxc_connector_mode_valid,
-};
-
-static const struct drm_connector_funcs lt9611uxc_bridge_connector_funcs = {
-	.fill_modes = drm_helper_probe_single_connector_modes,
-	.detect = lt9611uxc_connector_detect,
-	.destroy = drm_connector_cleanup,
-	.reset = drm_atomic_helper_connector_reset,
-	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
-	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
-};
-
-static int lt9611uxc_connector_init(struct drm_bridge *bridge, struct lt9611uxc *lt9611uxc)
-{
-	int ret;
-
-	if (!bridge->encoder) {
-		DRM_ERROR("Parent encoder object not found");
-		return -ENODEV;
-	}
-
-	lt9611uxc->connector.polled = DRM_CONNECTOR_POLL_HPD;
-
-	drm_connector_helper_add(&lt9611uxc->connector,
-				 &lt9611uxc_bridge_connector_helper_funcs);
-	ret = drm_connector_init(bridge->dev, &lt9611uxc->connector,
-				 &lt9611uxc_bridge_connector_funcs,
-				 DRM_MODE_CONNECTOR_HDMIA);
-	if (ret) {
-		DRM_ERROR("Failed to initialize connector with drm\n");
-		return ret;
-	}
-
-	return drm_connector_attach_encoder(&lt9611uxc->connector, bridge->encoder);
-}
-
 static int lt9611uxc_bridge_attach(struct drm_bridge *bridge,
+				   struct drm_encoder *encoder,
 				   enum drm_bridge_attach_flags flags)
 {
 	struct lt9611uxc *lt9611uxc = bridge_to_lt9611uxc(bridge);
-	int ret;
 
-	if (!(flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR)) {
-		ret = lt9611uxc_connector_init(bridge, lt9611uxc);
-		if (ret < 0)
-			return ret;
-	}
-
-	return 0;
+	return drm_bridge_attach(encoder, lt9611uxc->next_bridge,
+				 bridge, flags);
 }
 
 static enum drm_mode_status
@@ -434,7 +352,8 @@ static void lt9611uxc_bridge_mode_set(struct drm_bridge *bridge,
 	lt9611uxc_unlock(lt9611uxc);
 }
 
-static enum drm_connector_status lt9611uxc_bridge_detect(struct drm_bridge *bridge)
+static enum drm_connector_status
+lt9611uxc_bridge_detect(struct drm_bridge *bridge, struct drm_connector *connector)
 {
 	struct lt9611uxc *lt9611uxc = bridge_to_lt9611uxc(bridge);
 	unsigned int reg_val = 0;
@@ -491,8 +410,8 @@ static int lt9611uxc_get_edid_block(void *data, u8 *buf, unsigned int block, siz
 	return 0;
 };
 
-static struct edid *lt9611uxc_bridge_get_edid(struct drm_bridge *bridge,
-					      struct drm_connector *connector)
+static const struct drm_edid *lt9611uxc_bridge_edid_read(struct drm_bridge *bridge,
+							 struct drm_connector *connector)
 {
 	struct lt9611uxc *lt9611uxc = bridge_to_lt9611uxc(bridge);
 	int ret;
@@ -506,7 +425,44 @@ static struct edid *lt9611uxc_bridge_get_edid(struct drm_bridge *bridge,
 		return NULL;
 	}
 
-	return drm_do_get_edid(connector, lt9611uxc_get_edid_block, lt9611uxc);
+	return drm_edid_read_custom(connector, lt9611uxc_get_edid_block, lt9611uxc);
+}
+
+static void lt9611uxc_bridge_hpd_notify(struct drm_bridge *bridge,
+					struct drm_connector *connector,
+					enum drm_connector_status status)
+{
+	const struct drm_edid *drm_edid;
+
+	if (status == connector_status_disconnected) {
+		drm_connector_hdmi_audio_plugged_notify(connector, false);
+		drm_edid_connector_update(connector, NULL);
+		return;
+	}
+
+	drm_edid = lt9611uxc_bridge_edid_read(bridge, connector);
+	drm_edid_connector_update(connector, drm_edid);
+	drm_edid_free(drm_edid);
+
+	if (status == connector_status_connected)
+		drm_connector_hdmi_audio_plugged_notify(connector, true);
+}
+
+static int lt9611uxc_hdmi_audio_prepare(struct drm_bridge *bridge,
+					struct drm_connector *connector,
+					struct hdmi_codec_daifmt *fmt,
+					struct hdmi_codec_params *hparms)
+{
+	/*
+	 * LT9611UXC will automatically detect rate and sample size, so no need
+	 * to setup anything here.
+	 */
+	return 0;
+}
+
+static void lt9611uxc_hdmi_audio_shutdown(struct drm_bridge *bridge,
+					  struct drm_connector *connector)
+{
 }
 
 static const struct drm_bridge_funcs lt9611uxc_bridge_funcs = {
@@ -514,7 +470,10 @@ static const struct drm_bridge_funcs lt9611uxc_bridge_funcs = {
 	.mode_valid = lt9611uxc_bridge_mode_valid,
 	.mode_set = lt9611uxc_bridge_mode_set,
 	.detect = lt9611uxc_bridge_detect,
-	.get_edid = lt9611uxc_bridge_get_edid,
+	.edid_read = lt9611uxc_bridge_edid_read,
+	.hpd_notify = lt9611uxc_bridge_hpd_notify,
+	.hdmi_audio_prepare = lt9611uxc_hdmi_audio_prepare,
+	.hdmi_audio_shutdown = lt9611uxc_hdmi_audio_shutdown,
 };
 
 static int lt9611uxc_parse_dt(struct device *dev,
@@ -528,7 +487,7 @@ static int lt9611uxc_parse_dt(struct device *dev,
 
 	lt9611uxc->dsi1_node = of_graph_get_remote_node(dev->of_node, 1, -1);
 
-	return 0;
+	return drm_of_find_panel_or_bridge(dev->of_node, 2, -1, NULL, &lt9611uxc->next_bridge);
 }
 
 static int lt9611uxc_gpio_init(struct lt9611uxc *lt9611uxc)
@@ -586,72 +545,6 @@ static int lt9611uxc_read_version(struct lt9611uxc *lt9611uxc)
 	lt9611uxc_unlock(lt9611uxc);
 
 	return ret < 0 ? ret : rev;
-}
-
-static int lt9611uxc_hdmi_hw_params(struct device *dev, void *data,
-				    struct hdmi_codec_daifmt *fmt,
-				    struct hdmi_codec_params *hparms)
-{
-	/*
-	 * LT9611UXC will automatically detect rate and sample size, so no need
-	 * to setup anything here.
-	 */
-	return 0;
-}
-
-static void lt9611uxc_audio_shutdown(struct device *dev, void *data)
-{
-}
-
-static int lt9611uxc_hdmi_i2s_get_dai_id(struct snd_soc_component *component,
-					 struct device_node *endpoint)
-{
-	struct of_endpoint of_ep;
-	int ret;
-
-	ret = of_graph_parse_endpoint(endpoint, &of_ep);
-	if (ret < 0)
-		return ret;
-
-	/*
-	 * HDMI sound should be located as reg = <2>
-	 * Then, it is sound port 0
-	 */
-	if (of_ep.port == 2)
-		return 0;
-
-	return -EINVAL;
-}
-
-static const struct hdmi_codec_ops lt9611uxc_codec_ops = {
-	.hw_params	= lt9611uxc_hdmi_hw_params,
-	.audio_shutdown = lt9611uxc_audio_shutdown,
-	.get_dai_id	= lt9611uxc_hdmi_i2s_get_dai_id,
-};
-
-static int lt9611uxc_audio_init(struct device *dev, struct lt9611uxc *lt9611uxc)
-{
-	struct hdmi_codec_pdata codec_data = {
-		.ops = &lt9611uxc_codec_ops,
-		.max_i2s_channels = 2,
-		.i2s = 1,
-		.data = lt9611uxc,
-	};
-
-	lt9611uxc->audio_pdev =
-		platform_device_register_data(dev, HDMI_CODEC_DRV_NAME,
-					      PLATFORM_DEVID_AUTO,
-					      &codec_data, sizeof(codec_data));
-
-	return PTR_ERR_OR_ZERO(lt9611uxc->audio_pdev);
-}
-
-static void lt9611uxc_audio_exit(struct lt9611uxc *lt9611uxc)
-{
-	if (lt9611uxc->audio_pdev) {
-		platform_device_unregister(lt9611uxc->audio_pdev);
-		lt9611uxc->audio_pdev = NULL;
-	}
 }
 
 #define LT9611UXC_FW_PAGE_SIZE 32
@@ -753,7 +646,7 @@ static int lt9611uxc_firmware_update(struct lt9611uxc *lt9611uxc)
 		REG_SEQ0(0x805a, 0x00),
 	};
 
-	ret = request_firmware(&fw, "lt9611uxc_fw.bin", lt9611uxc->dev);
+	ret = request_firmware(&fw, FW_FILE, lt9611uxc->dev);
 	if (ret < 0)
 		return ret;
 
@@ -843,8 +736,7 @@ static const struct attribute_group *lt9611uxc_attr_groups[] = {
 	NULL,
 };
 
-static int lt9611uxc_probe(struct i2c_client *client,
-			   const struct i2c_device_id *id)
+static int lt9611uxc_probe(struct i2c_client *client)
 {
 	struct lt9611uxc *lt9611uxc;
 	struct device *dev = &client->dev;
@@ -856,9 +748,9 @@ static int lt9611uxc_probe(struct i2c_client *client,
 		return -ENODEV;
 	}
 
-	lt9611uxc = devm_kzalloc(dev, sizeof(*lt9611uxc), GFP_KERNEL);
-	if (!lt9611uxc)
-		return -ENOMEM;
+	lt9611uxc = devm_drm_bridge_alloc(dev, struct lt9611uxc, bridge, &lt9611uxc_bridge_funcs);
+	if (IS_ERR(lt9611uxc))
+		return PTR_ERR(lt9611uxc);
 
 	lt9611uxc->dev = dev;
 	lt9611uxc->client = client;
@@ -927,9 +819,9 @@ retry:
 	init_waitqueue_head(&lt9611uxc->wq);
 	INIT_WORK(&lt9611uxc->work, lt9611uxc_hpd_work);
 
-	ret = devm_request_threaded_irq(dev, client->irq, NULL,
-					lt9611uxc_irq_thread_handler,
-					IRQF_ONESHOT, "lt9611uxc", lt9611uxc);
+	ret = request_threaded_irq(client->irq, NULL,
+				   lt9611uxc_irq_thread_handler,
+				   IRQF_ONESHOT, "lt9611uxc", lt9611uxc);
 	if (ret) {
 		dev_err(dev, "failed to request irq\n");
 		goto err_disable_regulators;
@@ -937,12 +829,17 @@ retry:
 
 	i2c_set_clientdata(client, lt9611uxc);
 
-	lt9611uxc->bridge.funcs = &lt9611uxc_bridge_funcs;
 	lt9611uxc->bridge.of_node = client->dev.of_node;
-	lt9611uxc->bridge.ops = DRM_BRIDGE_OP_DETECT | DRM_BRIDGE_OP_EDID;
+	lt9611uxc->bridge.ops = DRM_BRIDGE_OP_DETECT |
+		DRM_BRIDGE_OP_EDID |
+		DRM_BRIDGE_OP_HDMI_AUDIO;
 	if (lt9611uxc->hpd_supported)
 		lt9611uxc->bridge.ops |= DRM_BRIDGE_OP_HPD;
 	lt9611uxc->bridge.type = DRM_MODE_CONNECTOR_HDMIA;
+
+	lt9611uxc->bridge.hdmi_audio_dev = dev;
+	lt9611uxc->bridge.hdmi_audio_max_i2s_playback_channels = 2;
+	lt9611uxc->bridge.hdmi_audio_dai_port = 2;
 
 	drm_bridge_add(&lt9611uxc->bridge);
 
@@ -962,9 +859,11 @@ retry:
 		}
 	}
 
-	return lt9611uxc_audio_init(dev, lt9611uxc);
+	return 0;
 
 err_remove_bridge:
+	free_irq(client->irq, lt9611uxc);
+	cancel_work_sync(&lt9611uxc->work);
 	drm_bridge_remove(&lt9611uxc->bridge);
 
 err_disable_regulators:
@@ -977,13 +876,12 @@ err_of_put:
 	return ret;
 }
 
-static int lt9611uxc_remove(struct i2c_client *client)
+static void lt9611uxc_remove(struct i2c_client *client)
 {
 	struct lt9611uxc *lt9611uxc = i2c_get_clientdata(client);
 
-	disable_irq(client->irq);
-	flush_scheduled_work();
-	lt9611uxc_audio_exit(lt9611uxc);
+	free_irq(client->irq, lt9611uxc);
+	cancel_work_sync(&lt9611uxc->work);
 	drm_bridge_remove(&lt9611uxc->bridge);
 
 	mutex_destroy(&lt9611uxc->ocm_lock);
@@ -992,12 +890,10 @@ static int lt9611uxc_remove(struct i2c_client *client)
 
 	of_node_put(lt9611uxc->dsi1_node);
 	of_node_put(lt9611uxc->dsi0_node);
-
-	return 0;
 }
 
-static struct i2c_device_id lt9611uxc_id[] = {
-	{ "lontium,lt9611uxc", 0 },
+static const struct i2c_device_id lt9611uxc_id[] = {
+	{ "lontium,lt9611uxc" },
 	{ /* sentinel */ }
 };
 
@@ -1020,4 +916,7 @@ static struct i2c_driver lt9611uxc_driver = {
 module_i2c_driver(lt9611uxc_driver);
 
 MODULE_AUTHOR("Dmitry Baryshkov <dmitry.baryshkov@linaro.org>");
+MODULE_DESCRIPTION("Lontium LT9611UXC DSI/HDMI bridge driver");
 MODULE_LICENSE("GPL v2");
+
+MODULE_FIRMWARE(FW_FILE);

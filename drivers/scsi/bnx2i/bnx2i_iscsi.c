@@ -22,7 +22,7 @@
 
 struct scsi_transport_template *bnx2i_scsi_xport_template;
 struct iscsi_transport bnx2i_iscsi_transport;
-static struct scsi_host_template bnx2i_host_template;
+static const struct scsi_host_template bnx2i_host_template;
 
 /*
  * Global endpoint resource info
@@ -909,7 +909,7 @@ void bnx2i_free_hba(struct bnx2i_hba *hba)
 {
 	struct Scsi_Host *shost = hba->shost;
 
-	iscsi_host_remove(shost);
+	iscsi_host_remove(shost, false);
 	INIT_LIST_HEAD(&hba->ep_ofld_list);
 	INIT_LIST_HEAD(&hba->ep_active_list);
 	INIT_LIST_HEAD(&hba->ep_destroy_list);
@@ -1626,7 +1626,7 @@ static int bnx2i_conn_start(struct iscsi_cls_conn *cls_conn)
 
 	if (signal_pending(current))
 		flush_signals(current);
-	del_timer_sync(&bnx2i_conn->ep->ofld_timer);
+	timer_delete_sync(&bnx2i_conn->ep->ofld_timer);
 
 	iscsi_conn_start(cls_conn);
 	return 0;
@@ -1749,7 +1749,7 @@ static int bnx2i_tear_down_conn(struct bnx2i_hba *hba,
 
 	if (signal_pending(current))
 		flush_signals(current);
-	del_timer_sync(&ep->ofld_timer);
+	timer_delete_sync(&ep->ofld_timer);
 
 	bnx2i_ep_destroy_list_del(hba, ep);
 
@@ -1861,7 +1861,7 @@ static struct iscsi_endpoint *bnx2i_ep_connect(struct Scsi_Host *shost,
 
 	if (signal_pending(current))
 		flush_signals(current);
-	del_timer_sync(&bnx2i_ep->ofld_timer);
+	timer_delete_sync(&bnx2i_ep->ofld_timer);
 
 	bnx2i_ep_ofld_list_del(hba, bnx2i_ep);
 
@@ -2100,7 +2100,7 @@ int bnx2i_hw_ep_disconnect(struct bnx2i_endpoint *bnx2i_ep)
 
 	if (signal_pending(current))
 		flush_signals(current);
-	del_timer_sync(&bnx2i_ep->ofld_timer);
+	timer_delete_sync(&bnx2i_ep->ofld_timer);
 
 destroy_conn:
 	bnx2i_ep_active_list_del(hba, bnx2i_ep);
@@ -2250,7 +2250,7 @@ static umode_t bnx2i_attr_is_visible(int param_type, int param)
  * 'Scsi_Host_Template' structure and 'iscsi_tranport' structure template
  * used while registering with the scsi host and iSCSI transport module.
  */
-static struct scsi_host_template bnx2i_host_template = {
+static const struct scsi_host_template bnx2i_host_template = {
 	.module			= THIS_MODULE,
 	.name			= "QLogic Offload iSCSI Initiator",
 	.proc_name		= "bnx2i",

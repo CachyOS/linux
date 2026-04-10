@@ -15,10 +15,10 @@
 KBUILD_DEFCONFIG := multi_defconfig
 
 ifdef cross_compiling
-	ifeq ($(CROSS_COMPILE),)
+    ifeq ($(CROSS_COMPILE),)
 		CROSS_COMPILE := $(call cc-cross-prefix, \
 			m68k-linux-gnu- m68k-linux- m68k-unknown-linux-gnu-)
-	endif
+    endif
 endif
 
 #
@@ -85,15 +85,6 @@ ifdef CONFIG_KGDB
 # frame pointer
 KBUILD_CFLAGS := $(subst -fomit-frame-pointer,,$(KBUILD_CFLAGS)) -g
 endif
-
-#
-# Select the assembler head startup code. Order is important. The default
-# head code is first, processor specific selections can override it after.
-#
-head-y				:= arch/m68k/kernel/head.o
-head-$(CONFIG_SUN3)		:= arch/m68k/kernel/sun3-head.o
-head-$(CONFIG_M68000)		:= arch/m68k/68000/head.o
-head-$(CONFIG_COLDFIRE)		:= arch/m68k/coldfire/head.o
 
 libs-y				+= arch/m68k/lib/
 

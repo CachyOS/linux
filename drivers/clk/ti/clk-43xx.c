@@ -1,17 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AM43XX Clock init
  *
  * Copyright (C) 2013 Texas Instruments, Inc
  *     Tero Kristo (t-kristo@ti.com)
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 #include <linux/kernel.h>
@@ -294,7 +286,7 @@ int __init am43xx_dt_clk_init(void)
 	/*
 	 * cpsw_cpts_rft_clk  has got the choice of 3 clocksources
 	 * dpll_core_m4_ck, dpll_core_m5_ck and dpll_disp_m2_ck.
-	 * By default dpll_core_m4_ck is selected, witn this as clock
+	 * By default dpll_core_m4_ck is selected, with this as clock
 	 * source the CPTS doesnot work properly. It gives clockcheck errors
 	 * while running PTP.
 	 * clockcheck: clock jumped backward or running slower than expected!

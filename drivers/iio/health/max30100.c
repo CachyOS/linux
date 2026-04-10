@@ -5,7 +5,6 @@
  * Copyright (C) 2015, 2018
  * Author: Matt Ranostay <matt.ranostay@konsulko.com>
  *
- * TODO: enable pulse length controls via device tree properties
  */
 
 #include <linux/module.h>
@@ -18,11 +17,11 @@
 #include <linux/mutex.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
+#include <linux/bitfield.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/buffer.h>
 #include <linux/iio/kfifo_buf.h>
 
-#define MAX30100_REGMAP_NAME	"max30100_regmap"
 #define MAX30100_DRV_NAME	"max30100"
 
 #define MAX30100_REG_INT_STATUS			0x00
@@ -53,9 +52,13 @@
 #define MAX30100_REG_MODE_CONFIG_PWR		BIT(7)
 
 #define MAX30100_REG_SPO2_CONFIG		0x07
+#define MAX30100_REG_SPO2_CONFIG_PW_MASK	GENMASK(1, 0)
+#define MAX30100_REG_SPO2_CONFIG_200US		0x0
+#define MAX30100_REG_SPO2_CONFIG_400US		0x1
+#define MAX30100_REG_SPO2_CONFIG_800US		0x2
+#define MAX30100_REG_SPO2_CONFIG_1600US		0x3
 #define MAX30100_REG_SPO2_CONFIG_100HZ		BIT(2)
 #define MAX30100_REG_SPO2_CONFIG_HI_RES_EN	BIT(6)
-#define MAX30100_REG_SPO2_CONFIG_1600US		0x3
 
 #define MAX30100_REG_LED_CONFIG			0x09
 #define MAX30100_REG_LED_CONFIG_LED_MASK	0x0f
@@ -94,7 +97,7 @@ static bool max30100_is_volatile_reg(struct device *dev, unsigned int reg)
 }
 
 static const struct regmap_config max30100_regmap_config = {
-	.name = MAX30100_REGMAP_NAME,
+	.name = "max30100_regmap",
 
 	.reg_bits = 8,
 	.val_bits = 8,
@@ -307,19 +310,47 @@ static int max30100_led_init(struct max30100_data *data)
 		MAX30100_REG_LED_CONFIG_LED_MASK, reg);
 }
 
+static int max30100_get_pulse_width(unsigned int pwidth_us)
+{
+	switch (pwidth_us) {
+	case 200:
+		return MAX30100_REG_SPO2_CONFIG_200US;
+	case 400:
+		return MAX30100_REG_SPO2_CONFIG_400US;
+	case 800:
+		return MAX30100_REG_SPO2_CONFIG_800US;
+	case 1600:
+		return MAX30100_REG_SPO2_CONFIG_1600US;
+	default:
+		return -EINVAL;
+	}
+}
+
 static int max30100_chip_init(struct max30100_data *data)
 {
 	int ret;
+	int pulse_width;
+	/* set default LED pulse-width to 1600 us */
+	unsigned int pulse_us = 1600;
+	struct device *dev = &data->client->dev;
 
 	/* setup LED current settings */
 	ret = max30100_led_init(data);
 	if (ret)
 		return ret;
 
+	/* Read LED pulse-width-us from DT */
+	device_property_read_u32(dev, "maxim,pulse-width-us", &pulse_us);
+
+	pulse_width = max30100_get_pulse_width(pulse_us);
+	if (pulse_width < 0)
+		return dev_err_probe(dev, pulse_width, "invalid LED pulse-width %uus\n", pulse_us);
+
 	/* enable hi-res SPO2 readings at 100Hz */
 	ret = regmap_write(data->regmap, MAX30100_REG_SPO2_CONFIG,
 				 MAX30100_REG_SPO2_CONFIG_HI_RES_EN |
-				 MAX30100_REG_SPO2_CONFIG_100HZ);
+				 MAX30100_REG_SPO2_CONFIG_100HZ |
+				 FIELD_PREP(MAX30100_REG_SPO2_CONFIG_PW_MASK, pulse_width));
 	if (ret)
 		return ret;
 
@@ -363,9 +394,8 @@ static int max30100_get_temp(struct max30100_data *data, int *val)
 	int ret;
 
 	/* start acquisition */
-	ret = regmap_update_bits(data->regmap, MAX30100_REG_MODE_CONFIG,
-				 MAX30100_REG_MODE_CONFIG_TEMP_EN,
-				 MAX30100_REG_MODE_CONFIG_TEMP_EN);
+	ret = regmap_set_bits(data->regmap, MAX30100_REG_MODE_CONFIG,
+			      MAX30100_REG_MODE_CONFIG_TEMP_EN);
 	if (ret)
 		return ret;
 
@@ -387,18 +417,15 @@ static int max30100_read_raw(struct iio_dev *indio_dev,
 		 * Temperature reading can only be acquired while engine
 		 * is running
 		 */
-		mutex_lock(&indio_dev->mlock);
-
-		if (!iio_buffer_enabled(indio_dev))
+		if (!iio_device_try_claim_buffer_mode(indio_dev)) {
 			ret = -EAGAIN;
-		else {
+		} else {
 			ret = max30100_get_temp(data, val);
 			if (!ret)
 				ret = IIO_VAL_INT;
 
+			iio_device_release_buffer_mode(indio_dev);
 		}
-
-		mutex_unlock(&indio_dev->mlock);
 		break;
 	case IIO_CHAN_INFO_SCALE:
 		*val = 1;  /* 0.0625 */
@@ -414,8 +441,7 @@ static const struct iio_info max30100_info = {
 	.read_raw = max30100_read_raw,
 };
 
-static int max30100_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int max30100_probe(struct i2c_client *client)
 {
 	struct max30100_data *data;
 	struct iio_dev *indio_dev;
@@ -471,20 +497,18 @@ static int max30100_probe(struct i2c_client *client,
 	return iio_device_register(indio_dev);
 }
 
-static int max30100_remove(struct i2c_client *client)
+static void max30100_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct max30100_data *data = iio_priv(indio_dev);
 
 	iio_device_unregister(indio_dev);
 	max30100_set_powermode(data, false);
-
-	return 0;
 }
 
 static const struct i2c_device_id max30100_id[] = {
-	{ "max30100", 0 },
-	{}
+	{ "max30100" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max30100_id);
 

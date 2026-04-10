@@ -429,7 +429,7 @@ int efx_mcdi_phy_probe(struct efx_nic *efx)
 	int rc;
 
 	/* Initialise and populate phy_data */
-	phy_data = kzalloc(sizeof(*phy_data), GFP_KERNEL);
+	phy_data = kzalloc_obj(*phy_data);
 	if (phy_data == NULL)
 		return -ENOMEM;
 
@@ -447,15 +447,6 @@ int efx_mcdi_phy_probe(struct efx_nic *efx)
 	/* Fill out nic state */
 	efx->phy_data = phy_data;
 	efx->phy_type = phy_data->type;
-
-	efx->mdio_bus = phy_data->channel;
-	efx->mdio.prtad = phy_data->port;
-	efx->mdio.mmds = phy_data->mmd_mask & ~(1 << MC_CMD_MMD_CLAUSE22);
-	efx->mdio.mode_support = 0;
-	if (phy_data->mmd_mask & (1 << MC_CMD_MMD_CLAUSE22))
-		efx->mdio.mode_support |= MDIO_SUPPORTS_C22;
-	if (phy_data->mmd_mask & ~(1 << MC_CMD_MMD_CLAUSE22))
-		efx->mdio.mode_support |= MDIO_SUPPORTS_C45 | MDIO_EMULATE_C22;
 
 	caps = MCDI_DWORD(outbuf, GET_LINK_OUT_CAP);
 	if (caps & (1 << MC_CMD_PHY_CAP_AN_LBN))
@@ -546,8 +537,6 @@ void efx_mcdi_phy_get_link_ksettings(struct efx_nic *efx, struct ethtool_link_ks
 	cmd->base.port = mcdi_to_ethtool_media(phy_cfg->media);
 	cmd->base.phy_address = phy_cfg->port;
 	cmd->base.autoneg = !!(efx->link_advertising[0] & ADVERTISED_Autoneg);
-	cmd->base.mdio_support = (efx->mdio.mode_support &
-			      (MDIO_SUPPORTS_C45 | MDIO_SUPPORTS_C22));
 
 	mcdi_to_ethtool_linkset(phy_cfg->media, phy_cfg->supported_cap,
 				cmd->link_modes.supported);
@@ -972,12 +961,15 @@ static u32 efx_mcdi_phy_module_type(struct efx_nic *efx)
 
 	/* A QSFP+ NIC may actually have an SFP+ module attached.
 	 * The ID is page 0, byte 0.
+	 * QSFP28 is of type SFF_8636, however, this is treated
+	 * the same by ethtool, so we can also treat them the same.
 	 */
 	switch (efx_mcdi_phy_get_module_eeprom_byte(efx, 0, 0)) {
-	case 0x3:
+	case 0x3: /* SFP */
 		return MC_CMD_MEDIA_SFP_PLUS;
-	case 0xc:
-	case 0xd:
+	case 0xc: /* QSFP */
+	case 0xd: /* QSFP+ */
+	case 0x11: /* QSFP28 */
 		return MC_CMD_MEDIA_QSFP_PLUS;
 	default:
 		return 0;
@@ -1075,7 +1067,7 @@ int efx_mcdi_phy_get_module_info(struct efx_nic *efx, struct ethtool_modinfo *mo
 
 	case MC_CMD_MEDIA_QSFP_PLUS:
 		modinfo->type = ETH_MODULE_SFF_8436;
-		modinfo->eeprom_len = ETH_MODULE_SFF_8436_LEN;
+		modinfo->eeprom_len = ETH_MODULE_SFF_8436_MAX_LEN;
 		break;
 
 	default:
@@ -1103,11 +1095,6 @@ int efx_mcdi_set_mac(struct efx_nic *efx)
 
 	MCDI_SET_DWORD(cmdbytes, SET_MAC_IN_MTU, efx_calc_mac_mtu(efx));
 	MCDI_SET_DWORD(cmdbytes, SET_MAC_IN_DRAIN, 0);
-
-	/* Set simple MAC filter for Siena */
-	MCDI_POPULATE_DWORD_1(cmdbytes, SET_MAC_IN_REJECT,
-			      SET_MAC_IN_REJECT_UNCST, efx->unicast_filter);
-
 	MCDI_POPULATE_DWORD_1(cmdbytes, SET_MAC_IN_FLAGS,
 			      SET_MAC_IN_FLAG_INCLUDE_FCS,
 			      !!(efx->net_dev->features & NETIF_F_RXFCS));

@@ -41,7 +41,7 @@ struct packet_router {
 struct apr_rx_buf {
 	struct list_head node;
 	int len;
-	uint8_t buf[];
+	uint8_t buf[] __counted_by(len);
 };
 
 /**
@@ -95,7 +95,7 @@ gpr_port_t *gpr_alloc_port(struct apr_device *gdev, struct device *dev,
 	struct pkt_router_svc *svc;
 	int id;
 
-	port = kzalloc(sizeof(*port), GFP_KERNEL);
+	port = kzalloc_obj(*port);
 	if (!port)
 		return ERR_PTR(-ENOMEM);
 
@@ -171,7 +171,7 @@ static int apr_callback(struct rpmsg_device *rpdev, void *buf,
 		return -EINVAL;
 	}
 
-	abuf = kzalloc(sizeof(*abuf) + len, GFP_ATOMIC);
+	abuf = kzalloc_flex(*abuf, buf, len, GFP_ATOMIC);
 	if (!abuf)
 		return -ENOMEM;
 
@@ -338,10 +338,10 @@ static void apr_rxwq(struct work_struct *work)
 	}
 }
 
-static int apr_device_match(struct device *dev, struct device_driver *drv)
+static int apr_device_match(struct device *dev, const struct device_driver *drv)
 {
 	struct apr_device *adev = to_apr_device(dev);
-	struct apr_driver *adrv = to_apr_driver(drv);
+	const struct apr_driver *adrv = to_apr_driver(drv);
 	const struct apr_device_id *id = adrv->id_table;
 
 	/* Attempt an OF style match first */
@@ -377,22 +377,19 @@ static int apr_device_probe(struct device *dev)
 static void apr_device_remove(struct device *dev)
 {
 	struct apr_device *adev = to_apr_device(dev);
-	struct apr_driver *adrv;
+	struct apr_driver *adrv = to_apr_driver(dev->driver);
 	struct packet_router *apr = dev_get_drvdata(adev->dev.parent);
 
-	if (dev->driver) {
-		adrv = to_apr_driver(dev->driver);
-		if (adrv->remove)
-			adrv->remove(adev);
-		spin_lock(&apr->svcs_lock);
-		idr_remove(&apr->svcs_idr, adev->svc.id);
-		spin_unlock(&apr->svcs_lock);
-	}
+	if (adrv->remove)
+		adrv->remove(adev);
+	spin_lock(&apr->svcs_lock);
+	idr_remove(&apr->svcs_idr, adev->svc.id);
+	spin_unlock(&apr->svcs_lock);
 }
 
-static int apr_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int apr_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct apr_device *adev = to_apr_device(dev);
+	const struct apr_device *adev = to_apr_device(dev);
 	int ret;
 
 	ret = of_device_uevent_modalias(dev, env);
@@ -402,7 +399,7 @@ static int apr_uevent(struct device *dev, struct kobj_uevent_env *env)
 	return add_uevent_var(env, "MODALIAS=apr:%s", adev->name);
 }
 
-struct bus_type aprbus = {
+const struct bus_type aprbus = {
 	.name		= "aprbus",
 	.match		= apr_device_match,
 	.probe		= apr_device_probe,
@@ -419,7 +416,7 @@ static int apr_add_device(struct device *dev, struct device_node *np,
 	struct pkt_router_svc *svc;
 	int ret;
 
-	adev = kzalloc(sizeof(*adev), GFP_KERNEL);
+	adev = kzalloc_obj(*adev);
 	if (!adev)
 		return -ENOMEM;
 
@@ -457,11 +454,20 @@ static int apr_add_device(struct device *dev, struct device_node *np,
 	adev->dev.driver = NULL;
 
 	spin_lock(&apr->svcs_lock);
-	idr_alloc(&apr->svcs_idr, svc, svc_id, svc_id + 1, GFP_ATOMIC);
+	ret = idr_alloc(&apr->svcs_idr, svc, svc_id, svc_id + 1, GFP_ATOMIC);
 	spin_unlock(&apr->svcs_lock);
+	if (ret < 0) {
+		dev_err(dev, "idr_alloc failed: %d\n", ret);
+		goto out;
+	}
 
-	of_property_read_string_index(np, "qcom,protection-domain",
-				      1, &adev->service_path);
+	/* Protection domain is optional, it does not exist on older platforms */
+	ret = of_property_read_string_index(np, "qcom,protection-domain",
+					    1, &adev->service_path);
+	if (ret < 0 && ret != -EINVAL) {
+		dev_err(dev, "Failed to read second value of qcom,protection-domain\n");
+		goto out;
+	}
 
 	dev_info(dev, "Adding APR/GPR dev: %s\n", dev_name(&adev->dev));
 
@@ -471,6 +477,7 @@ static int apr_add_device(struct device *dev, struct device_node *np,
 		put_device(&adev->dev);
 	}
 
+out:
 	return ret;
 }
 
@@ -478,11 +485,10 @@ static int of_apr_add_pd_lookups(struct device *dev)
 {
 	const char *service_name, *service_path;
 	struct packet_router *apr = dev_get_drvdata(dev);
-	struct device_node *node;
 	struct pdr_service *pds;
 	int ret;
 
-	for_each_child_of_node(dev->of_node, node) {
+	for_each_child_of_node_scoped(dev->of_node, node) {
 		ret = of_property_read_string_index(node, "qcom,protection-domain",
 						    0, &service_name);
 		if (ret < 0)
@@ -492,14 +498,12 @@ static int of_apr_add_pd_lookups(struct device *dev)
 						    1, &service_path);
 		if (ret < 0) {
 			dev_err(dev, "pdr service path missing: %d\n", ret);
-			of_node_put(node);
 			return ret;
 		}
 
 		pds = pdr_add_lookup(apr->pdr, service_name, service_path);
 		if (IS_ERR(pds) && PTR_ERR(pds) != -EALREADY) {
 			dev_err(dev, "pdr add lookup failed: %ld\n", PTR_ERR(pds));
-			of_node_put(node);
 			return PTR_ERR(pds);
 		}
 	}

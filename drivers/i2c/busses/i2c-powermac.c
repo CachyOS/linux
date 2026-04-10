@@ -127,13 +127,13 @@ static s32 i2c_powermac_smbus_xfer(	struct i2c_adapter*	adap,
 }
 
 /*
- * Generic i2c master transfer entrypoint. This driver only support single
+ * Generic i2c transfer entrypoint. This driver only supports single
  * messages (for "lame i2c" transfers). Anything else should use the smbus
  * entry point
  */
-static int i2c_powermac_master_xfer(	struct i2c_adapter *adap,
-					struct i2c_msg *msgs,
-					int num)
+static int i2c_powermac_xfer(struct i2c_adapter *adap,
+			     struct i2c_msg *msgs,
+			     int num)
 {
 	struct pmac_i2c_bus	*bus = i2c_get_adapdata(adap);
 	int			rc = 0;
@@ -179,23 +179,21 @@ static u32 i2c_powermac_func(struct i2c_adapter * adapter)
 
 /* For now, we only handle smbus */
 static const struct i2c_algorithm i2c_powermac_algorithm = {
-	.smbus_xfer	= i2c_powermac_smbus_xfer,
-	.master_xfer	= i2c_powermac_master_xfer,
-	.functionality	= i2c_powermac_func,
+	.smbus_xfer = i2c_powermac_smbus_xfer,
+	.xfer = i2c_powermac_xfer,
+	.functionality = i2c_powermac_func,
 };
 
 static const struct i2c_adapter_quirks i2c_powermac_quirks = {
 	.max_num_msgs = 1,
 };
 
-static int i2c_powermac_remove(struct platform_device *dev)
+static void i2c_powermac_remove(struct platform_device *dev)
 {
 	struct i2c_adapter	*adapter = platform_get_drvdata(dev);
 
 	i2c_del_adapter(adapter);
 	memset(adapter, 0, sizeof(*adapter));
-
-	return 0;
 }
 
 static u32 i2c_powermac_get_addr(struct i2c_adapter *adap,
@@ -233,7 +231,7 @@ static void i2c_powermac_create_one(struct i2c_adapter *adap,
 	struct i2c_board_info info = {};
 	struct i2c_client *newdev;
 
-	strncpy(info.type, type, sizeof(info.type));
+	strscpy(info.type, type, sizeof(info.type));
 	info.addr = addr;
 	newdev = i2c_new_client_device(adap, &info);
 	if (IS_ERR(newdev))
@@ -284,7 +282,7 @@ static bool i2c_powermac_get_type(struct i2c_adapter *adap,
 	 */
 
 	/* First try proper modalias */
-	if (of_modalias_node(node, tmp, sizeof(tmp)) >= 0) {
+	if (of_alias_from_compatible(node, tmp, sizeof(tmp)) >= 0) {
 		snprintf(type, type_size, "MAC,%s", tmp);
 		return true;
 	}
@@ -351,7 +349,7 @@ static void i2c_powermac_register_devices(struct i2c_adapter *adap,
 		/* Fill out the rest of the info structure */
 		info.addr = addr;
 		info.irq = irq_of_parse_and_map(node, 0);
-		info.of_node = of_node_get(node);
+		info.fwnode = of_fwnode_handle(of_node_get(node));
 
 		newdev = i2c_new_client_device(adap, &info);
 		if (IS_ERR(newdev)) {

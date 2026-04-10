@@ -15,12 +15,18 @@ static inline void tlb_flush_pgtable(struct mmu_gather *tlb,
 {
 
 }
-#endif /* !CONFIG_PPC_BOOK3E */
+#endif /* !CONFIG_PPC_BOOK3E_64 */
 
 static inline pgd_t *pgd_alloc(struct mm_struct *mm)
 {
-	return kmem_cache_alloc(PGT_CACHE(PGD_INDEX_SIZE),
+	pgd_t *pgd = kmem_cache_alloc(PGT_CACHE(PGD_INDEX_SIZE),
 			pgtable_gfp_flags(mm, GFP_KERNEL));
+
+#ifdef CONFIG_PPC_8xx
+	memcpy(pgd + USER_PTRS_PER_PGD, swapper_pg_dir + USER_PTRS_PER_PGD,
+	       (MAX_PTRS_PER_PGD - USER_PTRS_PER_PGD) * sizeof(pgd_t));
+#endif
+	return pgd;
 }
 
 static inline void pgd_free(struct mm_struct *mm, pgd_t *pgd)
@@ -43,8 +49,6 @@ static inline void pgtable_free(void *table, int shift)
 		kmem_cache_free(PGT_CACHE(shift), table);
 	}
 }
-
-#define get_hugepd_cache_index(x)	(x)
 
 static inline void pgtable_free_tlb(struct mmu_gather *tlb, void *table, int shift)
 {

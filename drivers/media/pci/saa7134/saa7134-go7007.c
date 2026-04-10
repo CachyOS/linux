@@ -414,7 +414,7 @@ static int saa7134_go7007_init(struct saa7134_dev *dev)
 	if (go == NULL)
 		return -ENOMEM;
 
-	saa = kzalloc(sizeof(struct saa7134_go7007), GFP_KERNEL);
+	saa = kzalloc_obj(struct saa7134_go7007);
 	if (saa == NULL) {
 		kfree(go);
 		return -ENOMEM;
@@ -516,4 +516,5 @@ static void __exit saa7134_go7007_mod_cleanup(void)
 module_init(saa7134_go7007_mod_init);
 module_exit(saa7134_go7007_mod_cleanup);
 
+MODULE_DESCRIPTION("go7007 support for saa7134 based TV cards");
 MODULE_LICENSE("GPL v2");

@@ -10,13 +10,18 @@ maintainers:
   - Alexandre Belloni <alexandre.belloni@bootlin.com>
 
 allOf:
-  - $ref: "mdio.yaml#"
+  - $ref: mdio.yaml#
 
 properties:
   compatible:
-    enum:
-      - mscc,ocelot-miim
-      - microchip,lan966x-miim
+    oneOf:
+      - enum:
+          - mscc,ocelot-miim
+          - microchip,lan966x-miim
+      - items:
+          - enum:
+              - microchip,lan9691-miim
+          - const: mscc,ocelot-miim
 
   "#address-cells":
     const: 1
@@ -37,6 +42,16 @@ properties:
     maxItems: 1
 
   clock-frequency: true
+
+  resets:
+    items:
+      - description:
+          Reset shared with all blocks attached to the Switch Core Register
+          Bus (CSR) including VRAP slave.
+
+  reset-names:
+    items:
+      - const: switch
 
 required:
   - compatible

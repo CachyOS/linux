@@ -97,7 +97,7 @@ static struct option long_options[] = {
 static void parse_options(int argc, char **argv)
 {
 	int option_index = 0;
-	char *pathname;
+	char *pathname, *endptr;
 	int opt;
 
 	pathname = strdup(argv[0]);
@@ -125,11 +125,23 @@ static void parse_options(int argc, char **argv)
 			log_getinfo = 1;
 			break;
 		case 'T':
-			log_type = atoi(optarg);
+			log_type = strtol(optarg, &endptr, 0);
+			if (*endptr || (log_type != 0 && log_type != 1)) {
+				printf("Number expected: type(0:execution, 1:history) - Quit.\n");
+				exit(1);
+			}
+
 			set_log_type = 1;
 			break;
 		case 'L':
-			log_level = atoi(optarg);
+			log_level = strtol(optarg, &endptr, 0);
+			if (*endptr ||
+			    (log_level != 0 && log_level != 1 &&
+			     log_level != 2 && log_level != 4)) {
+				printf("Number expected: level(0, 1, 2, 4) - Quit.\n");
+				exit(1);
+			}
+
 			set_log_level = 1;
 			break;
 		case 'R':
@@ -162,6 +174,8 @@ void print_cap(struct pfru_update_cap_info *cap)
 		exit(1);
 	}
 
+	printf("update capability:%d\n", cap->update_cap);
+
 	uuid_unparse(cap->code_type, uuid);
 	printf("code injection image type:%s\n", uuid);
 	printf("fw_version:%d\n", cap->fw_version);
@@ -190,7 +204,7 @@ int main(int argc, char *argv[])
 	void *addr_map_capsule;
 	struct stat st;
 	char *log_buf;
-	int ret = 0;
+	int ret;
 
 	if (getuid() != 0) {
 		printf("Please run the tool as root - Exiting.\n");
@@ -208,6 +222,7 @@ int main(int argc, char *argv[])
 	fd_update_log = open("/dev/acpi_pfr_telemetry0", O_RDWR);
 	if (fd_update_log < 0) {
 		printf("PFRT device not supported - Quit...\n");
+		close(fd_update);
 		return 1;
 	}
 
@@ -251,7 +266,8 @@ int main(int argc, char *argv[])
 		printf("chunk2_size:%d\n", data_info.chunk2_size);
 		printf("rollover_cnt:%d\n", data_info.rollover_cnt);
 		printf("reset_cnt:%d\n", data_info.reset_cnt);
-
+		close(fd_update);
+		close(fd_update_log);
 		return 0;
 	}
 
@@ -344,6 +360,7 @@ int main(int argc, char *argv[])
 
 		if (ret == -1) {
 			perror("Failed to load capsule file");
+			munmap(addr_map_capsule, st.st_size);
 			close(fd_capsule);
 			close(fd_update);
 			close(fd_update_log);
@@ -406,7 +423,7 @@ int main(int argc, char *argv[])
 		if (p_mmap == MAP_FAILED) {
 			perror("mmap error.");
 			close(fd_update_log);
-
+			free(log_buf);
 			return 1;
 		}
 

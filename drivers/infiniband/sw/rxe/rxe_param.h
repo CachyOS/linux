@@ -51,7 +51,11 @@ enum rxe_device_param {
 					| IB_DEVICE_SRQ_RESIZE
 					| IB_DEVICE_MEM_MGT_EXTENSIONS
 					| IB_DEVICE_MEM_WINDOW
-					| IB_DEVICE_MEM_WINDOW_TYPE_2B,
+					| IB_DEVICE_FLUSH_GLOBAL
+					| IB_DEVICE_FLUSH_PERSISTENT
+					| IB_DEVICE_MEM_WINDOW_TYPE_2B
+					| IB_DEVICE_ATOMIC_WRITE,
+
 	RXE_MAX_SGE			= 32,
 	RXE_MAX_WQE_SIZE		= sizeof(struct rxe_send_wqe) +
 					  sizeof(struct ib_sge) * RXE_MAX_SGE,
@@ -91,11 +95,11 @@ enum rxe_device_param {
 	RXE_MAX_SRQ			= DEFAULT_MAX_VALUE - RXE_MIN_SRQ_INDEX,
 
 	RXE_MIN_MR_INDEX		= 0x00000001,
-	RXE_MAX_MR_INDEX		= DEFAULT_MAX_VALUE,
-	RXE_MAX_MR			= DEFAULT_MAX_VALUE - RXE_MIN_MR_INDEX,
-	RXE_MIN_MW_INDEX		= 0x00010001,
-	RXE_MAX_MW_INDEX		= 0x00020000,
-	RXE_MAX_MW			= 0x00001000,
+	RXE_MAX_MR_INDEX		= DEFAULT_MAX_VALUE >> 1,
+	RXE_MAX_MR			= RXE_MAX_MR_INDEX - RXE_MIN_MR_INDEX,
+	RXE_MIN_MW_INDEX		= RXE_MAX_MR_INDEX + 1,
+	RXE_MAX_MW_INDEX		= DEFAULT_MAX_VALUE,
+	RXE_MAX_MW			= RXE_MAX_MW_INDEX - RXE_MIN_MW_INDEX,
 
 	RXE_MAX_PKT_PER_ACK		= 64,
 
@@ -104,6 +108,12 @@ enum rxe_device_param {
 	/* Max inflight SKBs per queue pair */
 	RXE_INFLIGHT_SKBS_PER_QP_HIGH	= 64,
 	RXE_INFLIGHT_SKBS_PER_QP_LOW	= 16,
+
+	/* Max number of interations of each work item
+	 * before yielding the cpu to let other
+	 * work make progress
+	 */
+	RXE_MAX_ITERATIONS		= 1024,
 
 	/* Delay before calling arbiter timer */
 	RXE_NSEC_ARB_TIMER_DELAY	= 200,
@@ -116,7 +126,7 @@ enum rxe_device_param {
 enum rxe_port_param {
 	RXE_PORT_GID_TBL_LEN		= 1024,
 	RXE_PORT_PORT_CAP_FLAGS		= IB_PORT_CM_SUP,
-	RXE_PORT_MAX_MSG_SZ		= 0x800000,
+	RXE_PORT_MAX_MSG_SZ		= (1UL << 31),
 	RXE_PORT_BAD_PKEY_CNTR		= 0,
 	RXE_PORT_QKEY_VIOL_CNTR		= 0,
 	RXE_PORT_LID			= 0,

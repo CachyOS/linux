@@ -49,6 +49,7 @@ ALL_TESTS="
 	test_mirror_gretap_second
 "
 
+REQUIRE_TEAMD="yes"
 NUM_NETIFS=6
 source lib.sh
 source mirror_lib.sh
@@ -140,13 +141,15 @@ switch_create()
 	ip link set dev $swp3 up
 	ip link set dev $swp4 up
 
-	ip link add name br1 type bridge vlan_filtering 1
-	ip link set dev br1 up
-	__addr_add_del br1 add 192.0.2.129/32
-	ip -4 route add 192.0.2.130/32 dev br1
+	ip link add name br1 address $(mac_get $swp3) \
+		type bridge vlan_filtering 1
 
 	team_create lag loadbalance $swp3 $swp4
 	ip link set dev lag master br1
+
+	ip link set dev br1 up
+	__addr_add_del br1 add 192.0.2.129/32
+	ip -4 route add 192.0.2.130/32 dev br1
 }
 
 switch_destroy()
@@ -225,19 +228,19 @@ test_lag_slave()
 	RET=0
 
 	tc filter add dev $swp1 ingress pref 999 \
-		proto 802.1q flower vlan_ethtype arp $tcflags \
+		proto 802.1q flower vlan_ethtype arp \
 		action pass
 	mirror_install $swp1 ingress gt4 \
-		"proto 802.1q flower vlan_id 333 $tcflags"
+		"proto 802.1q flower vlan_id 333"
 
 	# Test connectivity through $up_dev when $down_dev is set down.
 	ip link set dev $down_dev down
 	ip neigh flush dev br1
 	setup_wait_dev $up_dev
 	setup_wait_dev $host_dev
-	$ARPING -I br1 192.0.2.130 -qfc 1
+	$ARPING -I br1 -qfc 1 192.0.2.130
 	sleep 2
-	mirror_test vrf-h1 192.0.2.1 192.0.2.18 $host_dev 1 10
+	mirror_test vrf-h1 192.0.2.1 192.0.2.18 $host_dev 1 ">= 10"
 
 	# Test lack of connectivity when both slaves are down.
 	ip link set dev $up_dev down
@@ -250,7 +253,7 @@ test_lag_slave()
 	mirror_uninstall $swp1 ingress
 	tc filter del dev $swp1 ingress pref 999
 
-	log_test "$what ($tcflags)"
+	log_test "$what"
 }
 
 test_mirror_gretap_first()
@@ -263,30 +266,11 @@ test_mirror_gretap_second()
 	test_lag_slave $h4 $swp4 $swp3 "mirror to gretap: LAG second slave"
 }
 
-test_all()
-{
-	slow_path_trap_install $swp1 ingress
-	slow_path_trap_install $swp1 egress
-
-	tests_run
-
-	slow_path_trap_uninstall $swp1 egress
-	slow_path_trap_uninstall $swp1 ingress
-}
-
 trap cleanup EXIT
 
 setup_prepare
 setup_wait
 
-tcflags="skip_hw"
-test_all
-
-if ! tc_offload_check; then
-	echo "WARN: Could not test offloaded functionality"
-else
-	tcflags="skip_sw"
-	test_all
-fi
+tests_run
 
 exit $EXIT_STATUS

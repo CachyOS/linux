@@ -235,7 +235,7 @@ static u32 clock_divider_to_resolution(u16 divider)
 {
 	/*
 	 * Resolution is the duration of 1 tick of the readable portion of
-	 * of the pulse width counter as read from the FIFO.  The two lsb's are
+	 * the pulse width counter as read from the FIFO.  The two lsb's are
 	 * not readable, hence the << 2.  This function returns ns.
 	 */
 	return DIV_ROUND_CLOSEST((1 << 2)  * ((u32) divider + 1) * 1000,
@@ -1142,7 +1142,7 @@ int cx23888_ir_probe(struct cx23885_dev *dev)
 	struct v4l2_subdev_ir_parameters default_params;
 	int ret;
 
-	state = kzalloc(sizeof(struct cx23888_ir_state), GFP_KERNEL);
+	state = kzalloc_obj(struct cx23888_ir_state);
 	if (state == NULL)
 		return -ENOMEM;
 

@@ -44,7 +44,7 @@
 
 static char version[] =
 	DRV_MODULE_NAME " " DRV_MODULE_VERSION " (" DRV_MODULE_RELDATE ")";
-MODULE_AUTHOR("David S. Miller (davem@davemloft.net)");
+MODULE_AUTHOR("David S. Miller <davem@davemloft.net>");
 MODULE_DESCRIPTION("Sun LDOM virtual network driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_MODULE_VERSION);
@@ -60,8 +60,8 @@ static struct vio_version vnet_versions[] = {
 static void vnet_get_drvinfo(struct net_device *dev,
 			     struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, DRV_MODULE_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_MODULE_VERSION, sizeof(info->version));
+	strscpy(info->driver, DRV_MODULE_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_MODULE_VERSION, sizeof(info->version));
 }
 
 static u32 vnet_get_msglevel(struct net_device *dev)
@@ -114,37 +114,23 @@ static void vnet_get_strings(struct net_device *dev, u32 stringset, u8 *buf)
 {
 	struct vnet *vp = (struct vnet *)netdev_priv(dev);
 	struct vnet_port *port;
-	char *p = (char *)buf;
 
 	switch (stringset) {
 	case ETH_SS_STATS:
 		memcpy(buf, &ethtool_stats_keys, sizeof(ethtool_stats_keys));
-		p += sizeof(ethtool_stats_keys);
+		buf += sizeof(ethtool_stats_keys);
 
 		rcu_read_lock();
 		list_for_each_entry_rcu(port, &vp->port_list, list) {
-			snprintf(p, ETH_GSTRING_LEN, "p%u.%s-%pM",
-				 port->q_index, port->switch_port ? "s" : "q",
-				 port->raddr);
-			p += ETH_GSTRING_LEN;
-			snprintf(p, ETH_GSTRING_LEN, "p%u.rx_packets",
-				 port->q_index);
-			p += ETH_GSTRING_LEN;
-			snprintf(p, ETH_GSTRING_LEN, "p%u.tx_packets",
-				 port->q_index);
-			p += ETH_GSTRING_LEN;
-			snprintf(p, ETH_GSTRING_LEN, "p%u.rx_bytes",
-				 port->q_index);
-			p += ETH_GSTRING_LEN;
-			snprintf(p, ETH_GSTRING_LEN, "p%u.tx_bytes",
-				 port->q_index);
-			p += ETH_GSTRING_LEN;
-			snprintf(p, ETH_GSTRING_LEN, "p%u.event_up",
-				 port->q_index);
-			p += ETH_GSTRING_LEN;
-			snprintf(p, ETH_GSTRING_LEN, "p%u.event_reset",
-				 port->q_index);
-			p += ETH_GSTRING_LEN;
+			ethtool_sprintf(&buf, "p%u.%s-%pM", port->q_index,
+					port->switch_port ? "s" : "q",
+					port->raddr);
+			ethtool_sprintf(&buf, "p%u.rx_packets", port->q_index);
+			ethtool_sprintf(&buf, "p%u.tx_packets", port->q_index);
+			ethtool_sprintf(&buf, "p%u.rx_bytes", port->q_index);
+			ethtool_sprintf(&buf, "p%u.tx_bytes", port->q_index);
+			ethtool_sprintf(&buf, "p%u.event_up", port->q_index);
+			ethtool_sprintf(&buf, "p%u.event_reset", port->q_index);
 		}
 		rcu_read_unlock();
 		break;
@@ -433,6 +419,9 @@ static int vnet_port_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 
 	hp = mdesc_grab();
 
+	if (!hp)
+		return -ENODEV;
+
 	vp = vnet_find_parent(hp, vdev->mp, vdev);
 	if (IS_ERR(vp)) {
 		pr_err("Cannot find port parent vnet\n");
@@ -447,7 +436,7 @@ static int vnet_port_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 		goto err_out_put_mdesc;
 	}
 
-	port = kzalloc(sizeof(*port), GFP_KERNEL);
+	port = kzalloc_obj(*port);
 	err = -ENOMEM;
 	if (!port)
 		goto err_out_put_mdesc;
@@ -467,8 +456,7 @@ static int vnet_port_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 	if (err)
 		goto err_out_free_port;
 
-	netif_napi_add(port->vp->dev, &port->napi, sunvnet_poll_common,
-		       NAPI_POLL_WEIGHT);
+	netif_napi_add(port->vp->dev, &port->napi, sunvnet_poll_common);
 
 	INIT_HLIST_NODE(&port->hash);
 	INIT_LIST_HEAD(&port->list);
@@ -517,7 +505,7 @@ static void vnet_port_remove(struct vio_dev *vdev)
 	struct vnet_port *port = dev_get_drvdata(&vdev->dev);
 
 	if (port) {
-		del_timer_sync(&port->vio.timer);
+		timer_delete_sync(&port->vio.timer);
 
 		napi_disable(&port->napi);
 
@@ -525,7 +513,7 @@ static void vnet_port_remove(struct vio_dev *vdev)
 		hlist_del_rcu(&port->hash);
 
 		synchronize_rcu();
-		del_timer_sync(&port->clean_timer);
+		timer_shutdown_sync(&port->clean_timer);
 		sunvnet_port_rm_txq_common(port);
 		netif_napi_del(&port->napi);
 		sunvnet_port_free_tx_bufs_common(port);

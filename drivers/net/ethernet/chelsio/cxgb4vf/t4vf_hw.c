@@ -706,7 +706,7 @@ int t4vf_fl_pkt_align(struct adapter *adapter)
 	 * separately.  The actual Ingress Packet Data alignment boundary
 	 * within Packed Buffer Mode is the maximum of these two
 	 * specifications.  (Note that it makes no real practical sense to
-	 * have the Pading Boudary be larger than the Packing Boundary but you
+	 * have the Padding Boundary be larger than the Packing Boundary but you
 	 * could set the chip up that way and, in fact, legacy T4 code would
 	 * end doing this because it would initialize the Padding Boundary and
 	 * leave the Packing Boundary initialized to 0 (16 bytes).)
@@ -877,7 +877,7 @@ int t4vf_get_sge_params(struct adapter *adapter)
 
 	/* T4 uses a single control field to specify both the PCIe Padding and
 	 * Packing Boundary.  T5 introduced the ability to specify these
-	 * separately with the Padding Boundary in SGE_CONTROL and and Packing
+	 * separately with the Padding Boundary in SGE_CONTROL and Packing
 	 * Boundary in SGE_CONTROL2.  So for T5 and later we need to grab
 	 * SGE_CONTROL in order to determine how ingress packet data will be
 	 * laid out in Packed Buffer Mode.  Unfortunately, older versions of

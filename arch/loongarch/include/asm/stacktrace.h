@@ -8,7 +8,33 @@
 #include <asm/asm.h>
 #include <asm/ptrace.h>
 #include <asm/loongarch.h>
+#include <asm/unwind_hints.h>
 #include <linux/stringify.h>
+
+enum stack_type {
+	STACK_TYPE_UNKNOWN,
+	STACK_TYPE_IRQ,
+	STACK_TYPE_TASK,
+};
+
+struct stack_info {
+	enum stack_type type;
+	unsigned long begin, end, next_sp;
+};
+
+struct stack_frame {
+	unsigned long	fp;
+	unsigned long	ra;
+};
+
+bool in_irq_stack(unsigned long stack, struct stack_info *info);
+bool in_task_stack(unsigned long stack, struct task_struct *task, struct stack_info *info);
+int get_stack_info(unsigned long stack, struct task_struct *task, struct stack_info *info);
+
+static __always_inline bool on_thread_stack(void)
+{
+	return !(((unsigned long)(current->stack) ^ current_stack_pointer) & ~(THREAD_SIZE - 1));
+}
 
 #define STR_LONG_L    __stringify(LONG_L)
 #define STR_LONG_S    __stringify(LONG_S)
@@ -23,13 +49,14 @@
 static __always_inline void prepare_frametrace(struct pt_regs *regs)
 {
 	__asm__ __volatile__(
-		/* Save $r1 */
+		UNWIND_HINT_SAVE
+		/* Save $ra */
 		STORE_ONE_REG(1)
-		/* Use $r1 to save PC */
-		"pcaddi	$r1, 0\n\t"
-		STR_LONG_S " $r1, %0\n\t"
-		/* Restore $r1 */
-		STR_LONG_L " $r1, %1, "STR_LONGSIZE"\n\t"
+		/* Use $ra to save PC */
+		"pcaddi	$ra, 0\n\t"
+		STR_LONG_S " $ra, %0\n\t"
+		/* Restore $ra */
+		STR_LONG_L " $ra, %1, "STR_LONGSIZE"\n\t"
 		STORE_ONE_REG(2)
 		STORE_ONE_REG(3)
 		STORE_ONE_REG(4)
@@ -60,6 +87,7 @@ static __always_inline void prepare_frametrace(struct pt_regs *regs)
 		STORE_ONE_REG(29)
 		STORE_ONE_REG(30)
 		STORE_ONE_REG(31)
+		UNWIND_HINT_RESTORE
 		: "=m" (regs->csr_era)
 		: "r" (regs->regs)
 		: "memory");

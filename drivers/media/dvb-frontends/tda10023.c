@@ -511,7 +511,7 @@ struct dvb_frontend *tda10023_attach(const struct tda10023_config *config,
 	struct tda10023_state* state = NULL;
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(struct tda10023_state), GFP_KERNEL);
+	state = kzalloc_obj(struct tda10023_state);
 	if (state == NULL) goto error;
 
 	/* setup the state */
@@ -594,4 +594,4 @@ MODULE_DESCRIPTION("Philips TDA10023 DVB-C demodulator driver");
 MODULE_AUTHOR("Georg Acher, Hartmut Birr");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(tda10023_attach);
+EXPORT_SYMBOL_GPL(tda10023_attach);

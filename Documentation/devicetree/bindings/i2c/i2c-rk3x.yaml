@@ -29,6 +29,7 @@ properties:
       - items:
           - enum:
               - rockchip,rk3036-i2c
+              - rockchip,rk3128-i2c
               - rockchip,rk3368-i2c
           - const: rockchip,rk3288-i2c
       - items:
@@ -36,7 +37,13 @@ properties:
               - rockchip,px30-i2c
               - rockchip,rk3308-i2c
               - rockchip,rk3328-i2c
+              - rockchip,rk3506-i2c
+              - rockchip,rk3528-i2c
+              - rockchip,rk3562-i2c
               - rockchip,rk3568-i2c
+              - rockchip,rk3576-i2c
+              - rockchip,rk3588-i2c
+              - rockchip,rv1126-i2c
           - const: rockchip,rk3399-i2c
 
   reg:
@@ -98,6 +105,9 @@ properties:
       Number of nanoseconds the SDA signal takes to fall
       (t(f) in the I2C specification). If not specified we will use the SCL
       value since they are the same in nearly all cases.
+
+  power-domains:
+    maxItems: 1
 
 required:
   - compatible

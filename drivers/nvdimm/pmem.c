@@ -17,9 +17,9 @@
 #include <linux/moduleparam.h>
 #include <linux/badblocks.h>
 #include <linux/memremap.h>
+#include <linux/kstrtox.h>
 #include <linux/vmalloc.h>
 #include <linux/blk-mq.h>
-#include <linux/pfn_t.h>
 #include <linux/slab.h>
 #include <linux/uio.h>
 #include <linux/dax.h>
@@ -45,7 +45,7 @@ static struct nd_region *to_region(struct pmem_device *pmem)
 	return to_nd_region(to_dev(pmem)->parent);
 }
 
-static phys_addr_t to_phys(struct pmem_device *pmem, phys_addr_t offset)
+static phys_addr_t pmem_to_phys(struct pmem_device *pmem, phys_addr_t offset)
 {
 	return pmem->phys_addr + offset;
 }
@@ -63,7 +63,7 @@ static phys_addr_t to_offset(struct pmem_device *pmem, sector_t sector)
 static void pmem_mkpage_present(struct pmem_device *pmem, phys_addr_t offset,
 		unsigned int len)
 {
-	phys_addr_t phys = to_phys(pmem, offset);
+	phys_addr_t phys = pmem_to_phys(pmem, offset);
 	unsigned long pfn_start, pfn_end, pfn;
 
 	/* only pmem in the linear map supports HWPoison */
@@ -97,7 +97,7 @@ static void pmem_clear_bb(struct pmem_device *pmem, sector_t sector, long blks)
 static long __pmem_clear_poison(struct pmem_device *pmem,
 		phys_addr_t offset, unsigned int len)
 {
-	phys_addr_t phys = to_phys(pmem, offset);
+	phys_addr_t phys = pmem_to_phys(pmem, offset);
 	long cleared = nvdimm_clear_poison(to_dev(pmem), phys, len);
 
 	if (cleared > 0) {
@@ -128,10 +128,10 @@ static void write_pmem(void *pmem_addr, struct page *page,
 	void *mem;
 
 	while (len) {
-		mem = kmap_atomic(page);
+		mem = kmap_local_page(page);
 		chunk = min_t(unsigned int, len, PAGE_SIZE - off);
 		memcpy_flushcache(pmem_addr, mem + off, chunk);
-		kunmap_atomic(mem);
+		kunmap_local(mem);
 		len -= chunk;
 		off = 0;
 		page++;
@@ -147,10 +147,10 @@ static blk_status_t read_pmem(struct page *page, unsigned int off,
 	void *mem;
 
 	while (len) {
-		mem = kmap_atomic(page);
+		mem = kmap_local_page(page);
 		chunk = min_t(unsigned int, len, PAGE_SIZE - off);
 		rem = copy_mc_to_kernel(mem + off, pmem_addr, chunk);
-		kunmap_atomic(mem);
+		kunmap_local(mem);
 		if (rem)
 			return BLK_STS_IOERR;
 		len -= chunk;
@@ -238,51 +238,29 @@ static void pmem_submit_bio(struct bio *bio)
 	bio_endio(bio);
 }
 
-static int pmem_rw_page(struct block_device *bdev, sector_t sector,
-		       struct page *page, unsigned int op)
-{
-	struct pmem_device *pmem = bdev->bd_disk->private_data;
-	blk_status_t rc;
-
-	if (op_is_write(op))
-		rc = pmem_do_write(pmem, page, 0, sector, thp_size(page));
-	else
-		rc = pmem_do_read(pmem, page, 0, sector, thp_size(page));
-	/*
-	 * The ->rw_page interface is subtle and tricky.  The core
-	 * retries on any error, so we can only invoke page_endio() in
-	 * the successful completion case.  Otherwise, we'll see crashes
-	 * caused by double completion.
-	 */
-	if (rc == 0)
-		page_endio(page, op_is_write(op), 0);
-
-	return blk_status_to_errno(rc);
-}
-
 /* see "strong" declaration in tools/testing/nvdimm/pmem-dax.c */
 __weak long __pmem_direct_access(struct pmem_device *pmem, pgoff_t pgoff,
 		long nr_pages, enum dax_access_mode mode, void **kaddr,
-		pfn_t *pfn)
+		unsigned long *pfn)
 {
 	resource_size_t offset = PFN_PHYS(pgoff) + pmem->data_offset;
 	sector_t sector = PFN_PHYS(pgoff) >> SECTOR_SHIFT;
 	unsigned int num = PFN_PHYS(nr_pages) >> SECTOR_SHIFT;
 	struct badblocks *bb = &pmem->bb;
 	sector_t first_bad;
-	int num_bad;
+	sector_t num_bad;
 
 	if (kaddr)
 		*kaddr = pmem->virt_addr + offset;
 	if (pfn)
-		*pfn = phys_to_pfn_t(pmem->phys_addr + offset, pmem->pfn_flags);
+		*pfn = PHYS_PFN(pmem->phys_addr + offset);
 
 	if (bb->count &&
 	    badblocks_check(bb, sector, num, &first_bad, &num_bad)) {
 		long actual_nr;
 
 		if (mode != DAX_RECOVERY_WRITE)
-			return -EIO;
+			return -EHWPOISON;
 
 		/*
 		 * Set the recovery stride is set to kernel page size because
@@ -310,7 +288,6 @@ __weak long __pmem_direct_access(struct pmem_device *pmem, pgoff_t pgoff,
 static const struct block_device_operations pmem_fops = {
 	.owner =		THIS_MODULE,
 	.submit_bio =		pmem_submit_bio,
-	.rw_page =		pmem_rw_page,
 };
 
 static int pmem_dax_zero_page_range(struct dax_device *dax_dev, pgoff_t pgoff,
@@ -325,7 +302,7 @@ static int pmem_dax_zero_page_range(struct dax_device *dax_dev, pgoff_t pgoff,
 
 static long pmem_dax_direct_access(struct dax_device *dax_dev,
 		pgoff_t pgoff, long nr_pages, enum dax_access_mode mode,
-		void **kaddr, pfn_t *pfn)
+		void **kaddr, unsigned long *pfn)
 {
 	struct pmem_device *pmem = dax_get_private(dax_dev);
 
@@ -338,7 +315,7 @@ static long pmem_dax_direct_access(struct dax_device *dax_dev,
  * range, filesystem turns the normal pwrite to a dax_recovery_write.
  *
  * The recovery write consists of clearing media poison, clearing page
- * HWPoison bit, reenable page-wide read-write permission, flush the
+ * HWPoison bit, re-enable page-wide read-write permission, flush the
  * caches and finally write.  A competing pread thread will be held
  * off during the recovery process since data read back might not be
  * valid, and this is achieved by clearing the badblock records after
@@ -408,7 +385,7 @@ static ssize_t write_cache_store(struct device *dev,
 	bool write_cache;
 	int rc;
 
-	rc = strtobool(buf, &write_cache);
+	rc = kstrtobool(buf, &write_cache);
 	if (rc)
 		return rc;
 	dax_write_cache(pmem->dax_dev, write_cache);
@@ -450,14 +427,36 @@ static void pmem_release_disk(void *__pmem)
 	put_dax(pmem->dax_dev);
 	del_gendisk(pmem->disk);
 
-	blk_cleanup_disk(pmem->disk);
+	put_disk(pmem->disk);
 }
+
+static int pmem_pagemap_memory_failure(struct dev_pagemap *pgmap,
+		unsigned long pfn, unsigned long nr_pages, int mf_flags)
+{
+	struct pmem_device *pmem =
+			container_of(pgmap, struct pmem_device, pgmap);
+	u64 offset = PFN_PHYS(pfn) - pmem->phys_addr - pmem->data_offset;
+	u64 len = nr_pages << PAGE_SHIFT;
+
+	return dax_holder_notify_failure(pmem->dax_dev, offset, len, mf_flags);
+}
+
+static const struct dev_pagemap_ops fsdax_pagemap_ops = {
+	.memory_failure		= pmem_pagemap_memory_failure,
+};
 
 static int pmem_attach_disk(struct device *dev,
 		struct nd_namespace_common *ndns)
 {
 	struct nd_namespace_io *nsio = to_nd_namespace_io(&ndns->dev);
 	struct nd_region *nd_region = to_nd_region(dev->parent);
+	struct queue_limits lim = {
+		.logical_block_size	= pmem_sector_size(ndns),
+		.physical_block_size	= PAGE_SIZE,
+		.max_hw_sectors		= UINT_MAX,
+		.features		= BLK_FEAT_WRITE_CACHE |
+					  BLK_FEAT_SYNCHRONOUS,
+	};
 	int nid = dev_to_node(dev), fua;
 	struct resource *res = &nsio->res;
 	struct range bb_range;
@@ -465,7 +464,6 @@ static int pmem_attach_disk(struct device *dev,
 	struct dax_device *dax_dev;
 	struct nd_pfn_sb *pfn_sb;
 	struct pmem_device *pmem;
-	struct request_queue *q;
 	struct gendisk *disk;
 	void *addr;
 	int rc;
@@ -497,6 +495,10 @@ static int pmem_attach_disk(struct device *dev,
 		dev_warn(dev, "unable to guarantee persistence of writes\n");
 		fua = 0;
 	}
+	if (fua)
+		lim.features |= BLK_FEAT_FUA;
+	if (is_nd_pfn(dev) || pmem_should_map_pages(dev))
+		lim.features |= BLK_FEAT_DAX;
 
 	if (!devm_request_mem_region(dev, res->start, resource_size(res),
 				dev_name(&ndns->dev))) {
@@ -504,22 +506,20 @@ static int pmem_attach_disk(struct device *dev,
 		return -EBUSY;
 	}
 
-	disk = blk_alloc_disk(nid);
-	if (!disk)
-		return -ENOMEM;
-	q = disk->queue;
+	disk = blk_alloc_disk(&lim, nid);
+	if (IS_ERR(disk))
+		return PTR_ERR(disk);
 
 	pmem->disk = disk;
 	pmem->pgmap.owner = pmem;
-	pmem->pfn_flags = PFN_DEV;
 	if (is_nd_pfn(dev)) {
 		pmem->pgmap.type = MEMORY_DEVICE_FS_DAX;
+		pmem->pgmap.ops = &fsdax_pagemap_ops;
 		addr = devm_memremap_pages(dev, &pmem->pgmap);
 		pfn_sb = nd_pfn->pfn_sb;
 		pmem->data_offset = le64_to_cpu(pfn_sb->dataoff);
 		pmem->pfn_pad = resource_size(res) -
 			range_len(&pmem->pgmap.range);
-		pmem->pfn_flags |= PFN_MAP;
 		bb_range = pmem->pgmap.range;
 		bb_range.start += pmem->data_offset;
 	} else if (pmem_should_map_pages(dev)) {
@@ -527,8 +527,8 @@ static int pmem_attach_disk(struct device *dev,
 		pmem->pgmap.range.end = res->end;
 		pmem->pgmap.nr_range = 1;
 		pmem->pgmap.type = MEMORY_DEVICE_FS_DAX;
+		pmem->pgmap.ops = &fsdax_pagemap_ops;
 		addr = devm_memremap_pages(dev, &pmem->pgmap);
-		pmem->pfn_flags |= PFN_MAP;
 		bb_range = pmem->pgmap.range;
 	} else {
 		addr = devm_memremap(dev, pmem->phys_addr,
@@ -543,14 +543,6 @@ static int pmem_attach_disk(struct device *dev,
 	}
 	pmem->virt_addr = addr;
 
-	blk_queue_write_cache(q, true, fua);
-	blk_queue_physical_block_size(q, PAGE_SIZE);
-	blk_queue_logical_block_size(q, pmem_sector_size(ndns));
-	blk_queue_max_hw_sectors(q, UINT_MAX);
-	blk_queue_flag_set(QUEUE_FLAG_NONROT, q);
-	if (pmem->pfn_flags & PFN_MAP)
-		blk_queue_flag_set(QUEUE_FLAG_DAX, q);
-
 	disk->fops		= &pmem_fops;
 	disk->private_data	= pmem;
 	nvdimm_namespace_disk_name(ndns, disk->disk_name);
@@ -564,18 +556,19 @@ static int pmem_attach_disk(struct device *dev,
 	dax_dev = alloc_dax(pmem, &pmem_dax_ops);
 	if (IS_ERR(dax_dev)) {
 		rc = PTR_ERR(dax_dev);
-		goto out;
+		if (rc != -EOPNOTSUPP)
+			goto out;
+	} else {
+		set_dax_nocache(dax_dev);
+		set_dax_nomc(dax_dev);
+		if (is_nvdimm_sync(nd_region))
+			set_dax_synchronous(dax_dev);
+		pmem->dax_dev = dax_dev;
+		rc = dax_add_host(dax_dev, disk);
+		if (rc)
+			goto out_cleanup_dax;
+		dax_write_cache(dax_dev, nvdimm_has_cache(nd_region));
 	}
-	set_dax_nocache(dax_dev);
-	set_dax_nomc(dax_dev);
-	if (is_nvdimm_sync(nd_region))
-		set_dax_synchronous(dax_dev);
-	rc = dax_add_host(dax_dev, disk);
-	if (rc)
-		goto out_cleanup_dax;
-	dax_write_cache(dax_dev, nvdimm_has_cache(nd_region));
-	pmem->dax_dev = dax_dev;
-
 	rc = device_add_disk(dev, disk, pmem_attribute_groups);
 	if (rc)
 		goto out_remove_host;
@@ -596,7 +589,7 @@ out_cleanup_dax:
 	kill_dax(pmem->dax_dev);
 	put_dax(pmem->dax_dev);
 out:
-	blk_cleanup_disk(pmem->disk);
+	put_disk(pmem->disk);
 	return rc;
 }
 
@@ -769,4 +762,5 @@ static struct nd_device_driver nd_pmem_driver = {
 module_nd_driver(nd_pmem_driver);
 
 MODULE_AUTHOR("Ross Zwisler <ross.zwisler@linux.intel.com>");
+MODULE_DESCRIPTION("NVDIMM Persistent Memory Driver");
 MODULE_LICENSE("GPL v2");

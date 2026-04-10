@@ -48,7 +48,7 @@ static struct {
 	{ "R_AARCH64_PREL16",		relative_data16, (u64)&sym64_rel },
 };
 
-static int reloc_test_init(void)
+static int __init reloc_test_init(void)
 {
 	int i;
 
@@ -67,11 +67,12 @@ static int reloc_test_init(void)
 	return 0;
 }
 
-static void reloc_test_exit(void)
+static void __exit reloc_test_exit(void)
 {
 }
 
 module_init(reloc_test_init);
 module_exit(reloc_test_exit);
 
+MODULE_DESCRIPTION("Relocation testing module");
 MODULE_LICENSE("GPL v2");

@@ -9,26 +9,17 @@
 #include <asm/unistd.h>
 #include <asm/ftrace.h>
 #include <asm/unwind.h>
-#include <asm/memory.h>
+#include <asm/page.h>
 #ifdef CONFIG_AEABI
 #include <asm/unistd-oabi.h>
 #endif
 
 	.equ	NR_syscalls, __NR_syscalls
 
-	.macro  arch_ret_to_user, tmp
-#ifdef CONFIG_ARCH_IOP32X
-	mrc	p15, 0, \tmp, c15, c1, 0
-	tst	\tmp, #(1 << 6)
-	bicne	\tmp, \tmp, #(1 << 6)
-	mcrne	p15, 0, \tmp, c15, c1, 0	@ Disable cp6 access
-#endif
-	.endm
-
 #include "entry-header.S"
 
 saved_psr	.req	r8
-#if defined(CONFIG_TRACE_IRQFLAGS) || defined(CONFIG_CONTEXT_TRACKING)
+#if defined(CONFIG_TRACE_IRQFLAGS) || defined(CONFIG_CONTEXT_TRACKING_USER)
 saved_pc	.req	r9
 #define TRACE(x...) x
 #else
@@ -38,7 +29,7 @@ saved_pc	.req	lr
 
 	.section .entry.text,"ax",%progbits
 	.align	5
-#if !(IS_ENABLED(CONFIG_TRACE_IRQFLAGS) || IS_ENABLED(CONFIG_CONTEXT_TRACKING) || \
+#if !(IS_ENABLED(CONFIG_TRACE_IRQFLAGS) || IS_ENABLED(CONFIG_CONTEXT_TRACKING_USER) || \
 	IS_ENABLED(CONFIG_DEBUG_RSEQ))
 /*
  * This is the fast syscall return path.  We do as little as possible here,
@@ -54,10 +45,6 @@ __ret_fast_syscall:
 	ldr	r1, [tsk, #TI_FLAGS]		@ re-check for syscall tracing
 	movs	r1, r1, lsl #16
 	bne	fast_work_pending
-
-
-	/* perform architecture specific actions before user return */
-	arch_ret_to_user r1
 
 	restore_user_regs fast = 1, offset = S_OFF
  UNWIND(.fnend		)
@@ -103,6 +90,7 @@ slow_work_pending:
 	cmp	r0, #0
 	beq	no_work_pending
 	movlt	scno, #(__NR_restart_syscall - __NR_SYSCALL_BASE)
+	str	scno, [tsk, #TI_ABI_SYSCALL]	@ make sure tracers see update
 	ldmia	sp, {r0 - r6}			@ have to reload r0 - r6
 	b	local_restart			@ ... and off we go
 ENDPROC(ret_fast_syscall)
@@ -129,10 +117,11 @@ ENTRY(ret_to_user_from_irq)
 no_work_pending:
 	asm_trace_hardirqs_on save = 0
 
-	/* perform architecture specific actions before user return */
-	arch_ret_to_user r1
 	ct_user_enter save = 0
 
+#ifdef CONFIG_KSTACK_ERASE
+	bl	stackleak_erase_on_task_stack
+#endif
 	restore_user_regs fast = 0, offset = 0
 ENDPROC(ret_to_user_from_irq)
 ENDPROC(ret_to_user)
@@ -302,6 +291,7 @@ local_restart:
 	b	ret_fast_syscall
 #endif
 ENDPROC(vector_swi)
+	.ltorg
 
 	/*
 	 * This is the really slow path.  We're going to be doing

@@ -16,7 +16,7 @@
 
 #include <linux/tracepoint.h>
 #include <rdma/ib_cm.h>
-#include <trace/events/rdma.h>
+#include <trace/misc/rdma.h>
 
 /*
  * enum ib_cm_state, from include/rdma/ib_cm.h
@@ -229,7 +229,7 @@ DEFINE_CM_ERR_EVENT(send_drep);
 DEFINE_CM_ERR_EVENT(dreq_unknown);
 DEFINE_CM_ERR_EVENT(send_unknown_rej);
 DEFINE_CM_ERR_EVENT(rej_unknown);
-DEFINE_CM_ERR_EVENT(send_mra_unknown);
+DEFINE_CM_ERR_EVENT(prepare_mra_unknown);
 DEFINE_CM_ERR_EVENT(mra_unknown);
 DEFINE_CM_ERR_EVENT(qp_init);
 DEFINE_CM_ERR_EVENT(qp_rtr);

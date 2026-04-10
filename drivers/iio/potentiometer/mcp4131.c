@@ -33,7 +33,6 @@
 
 #include <linux/cache.h>
 #include <linux/err.h>
-#include <linux/export.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/types.h>
 #include <linux/module.h>
@@ -129,7 +128,7 @@ struct mcp4131_data {
 	struct spi_device *spi;
 	const struct mcp4131_cfg *cfg;
 	struct mutex lock;
-	u8 buf[2] ____cacheline_aligned;
+	u8 buf[2] __aligned(IIO_DMA_MINALIGN);
 };
 
 #define MCP4131_CHANNEL(ch) {					\
@@ -222,7 +221,7 @@ static int mcp4131_write_raw(struct iio_dev *indio_dev,
 
 	mutex_lock(&data->lock);
 
-	data->buf[0] = address << MCP4131_WIPER_SHIFT;
+	data->buf[0] = address;
 	data->buf[0] |= MCP4131_WRITE | (val >> 8);
 	data->buf[1] = val & 0xFF; /* 8 bits here */
 
@@ -403,7 +402,7 @@ static const struct of_device_id mcp4131_dt_ids[] = {
 		.data = &mcp4131_cfg[MCP426x_503] },
 	{ .compatible = "microchip,mcp4262-104",
 		.data = &mcp4131_cfg[MCP426x_104] },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, mcp4131_dt_ids);
 
@@ -472,7 +471,7 @@ static const struct spi_device_id mcp4131_id[] = {
 	{ "mcp4262-103", MCP426x_103 },
 	{ "mcp4262-503", MCP426x_503 },
 	{ "mcp4262-104", MCP426x_104 },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, mcp4131_id);
 

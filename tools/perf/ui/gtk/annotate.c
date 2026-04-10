@@ -3,6 +3,7 @@
 #include "util/sort.h"
 #include "util/debug.h"
 #include "util/annotate.h"
+#include "util/evlist.h"
 #include "util/evsel.h"
 #include "util/map.h"
 #include "util/dso.h"
@@ -26,23 +27,31 @@ static const char *const col_names[] = {
 };
 
 static int perf_gtk__get_percent(char *buf, size_t size, struct symbol *sym,
-				 struct disasm_line *dl, int evidx)
+				 struct disasm_line *dl, const struct evsel *evsel)
 {
+	struct annotation *notes;
 	struct sym_hist *symhist;
+	struct sym_hist_entry *entry;
 	double percent = 0.0;
 	const char *markup;
 	int ret = 0;
+	u64 nr_samples = 0;
 
 	strcpy(buf, "");
 
 	if (dl->al.offset == (s64) -1)
 		return 0;
 
-	symhist = annotation__histogram(symbol__annotation(sym), evidx);
-	if (!symbol_conf.event_group && !symhist->addr[dl->al.offset].nr_samples)
+	notes = symbol__annotation(sym);
+	symhist = annotation__histogram(notes, evsel);
+	entry = annotated_source__hist_entry(notes->src, evsel, dl->al.offset);
+	if (entry)
+		nr_samples = entry->nr_samples;
+
+	if (!symbol_conf.event_group && nr_samples == 0)
 		return 0;
 
-	percent = 100.0 * symhist->addr[dl->al.offset].nr_samples / symhist->nr_samples;
+	percent = 100.0 * nr_samples / symhist->nr_samples;
 
 	markup = perf_gtk__get_percent_color(percent);
 	if (markup)
@@ -131,16 +140,17 @@ static int perf_gtk__annotate_symbol(GtkWidget *window, struct map_symbol *ms,
 		gtk_list_store_append(store, &iter);
 
 		if (evsel__is_group_event(evsel)) {
-			for (i = 0; i < evsel->core.nr_members; i++) {
+			struct evsel *cur_evsel;
+
+			for_each_group_evsel(cur_evsel, evsel__leader(evsel)) {
 				ret += perf_gtk__get_percent(s + ret,
 							     sizeof(s) - ret,
 							     sym, pos,
-							     evsel->core.idx + i);
+							     cur_evsel);
 				ret += scnprintf(s + ret, sizeof(s) - ret, " ");
 			}
 		} else {
-			ret = perf_gtk__get_percent(s, sizeof(s), sym, pos,
-						    evsel->core.idx);
+			ret = perf_gtk__get_percent(s, sizeof(s), sym, pos, evsel);
 		}
 
 		if (ret)
@@ -164,6 +174,7 @@ static int perf_gtk__annotate_symbol(GtkWidget *window, struct map_symbol *ms,
 static int symbol__gtk_annotate(struct map_symbol *ms, struct evsel *evsel,
 				struct hist_browser_timer *hbt)
 {
+	struct dso *dso = map__dso(ms->map);
 	struct symbol *sym = ms->sym;
 	GtkWidget *window;
 	GtkWidget *notebook;
@@ -171,13 +182,14 @@ static int symbol__gtk_annotate(struct map_symbol *ms, struct evsel *evsel,
 	GtkWidget *tab_label;
 	int err;
 
-	if (ms->map->dso->annotate_warned)
+	if (dso__annotate_warned(dso))
 		return -1;
 
-	err = symbol__annotate(ms, evsel, &annotation__default_options, NULL);
+	err = symbol__annotate(ms, evsel, NULL);
 	if (err) {
 		char msg[BUFSIZ];
-		ms->map->dso->annotate_warned = true;
+
+		dso__set_annotate_warned(dso);
 		symbol__strerror_disassemble(ms, err, msg, sizeof(msg));
 		ui__error("Couldn't annotate %s: %s\n", sym->name, msg);
 		return -1;

@@ -7,6 +7,7 @@
 #include <linux/slab.h>
 #include <linux/prefetch.h>
 #include "mount.h"
+#include "internal.h"
 
 struct prepend_buffer {
 	char *buf;
@@ -34,7 +35,7 @@ static bool prepend_char(struct prepend_buffer *p, unsigned char c)
 }
 
 /*
- * The source of the prepend data can be an optimistoc load
+ * The source of the prepend data can be an optimistic load
  * of a dentry name and length. And because we don't hold any
  * locks, the length and the pointer to the name may not be
  * in sync if a concurrent rename happens, and the kernel
@@ -240,9 +241,9 @@ static void get_fs_root_rcu(struct fs_struct *fs, struct path *root)
 	unsigned seq;
 
 	do {
-		seq = read_seqcount_begin(&fs->seq);
+		seq = read_seqbegin(&fs->seq);
 		*root = fs->root;
-	} while (read_seqcount_retry(&fs->seq, seq));
+	} while (read_seqretry(&fs->seq, seq));
 }
 
 /**
@@ -297,8 +298,7 @@ EXPORT_SYMBOL(d_path);
 /*
  * Helper function for dentry_operations.d_dname() members
  */
-char *dynamic_dname(struct dentry *dentry, char *buffer, int buflen,
-			const char *fmt, ...)
+char *dynamic_dname(char *buffer, int buflen, const char *fmt, ...)
 {
 	va_list args;
 	char temp[64];
@@ -385,10 +385,10 @@ static void get_fs_root_and_pwd_rcu(struct fs_struct *fs, struct path *root,
 	unsigned seq;
 
 	do {
-		seq = read_seqcount_begin(&fs->seq);
+		seq = read_seqbegin(&fs->seq);
 		*root = fs->root;
 		*pwd = fs->pwd;
-	} while (read_seqcount_retry(&fs->seq, seq));
+	} while (read_seqretry(&fs->seq, seq));
 }
 
 /*

@@ -31,10 +31,12 @@
  *    Secure Display Command ID
  */
 enum ta_securedisplay_command {
-	/* Query whether TA is responding used only for validation purpose */
+	/* Query whether TA is responding. It is used only for validation purpose */
 	TA_SECUREDISPLAY_COMMAND__QUERY_TA              = 1,
 	/* Send region of Interest and CRC value to I2C */
 	TA_SECUREDISPLAY_COMMAND__SEND_ROI_CRC          = 2,
+	/* V2 to send multiple regions of Interest and CRC value to I2C */
+	TA_SECUREDISPLAY_COMMAND__SEND_ROI_CRC_V2       = 3,
 	/* Maximum Command ID */
 	TA_SECUREDISPLAY_COMMAND__MAX_ID                = 0x7FFFFFFF,
 };
@@ -55,10 +57,10 @@ enum ta_securedisplay_status {
 	TA_SECUREDISPLAY_STATUS__MAX                     = 0x7FFFFFFF,/* Maximum Value for status*/
 };
 
-/** @enum ta_securedisplay_max_phy
+/** @enum ta_securedisplay_phy_ID
  *    Physical ID number to use for reading corresponding DIO Scratch register for ROI
  */
-enum  ta_securedisplay_max_phy {
+enum  ta_securedisplay_phy_ID {
 	TA_SECUREDISPLAY_PHY0                           = 0,
 	TA_SECUREDISPLAY_PHY1                           = 1,
 	TA_SECUREDISPLAY_PHY2                           = 2,
@@ -83,6 +85,8 @@ enum ta_securedisplay_ta_query_cmd_ret {
 enum ta_securedisplay_buffer_size {
 	/* 15 bytes = 8 byte (ROI) + 6 byte(CRC) + 1 byte(phy_id) */
 	TA_SECUREDISPLAY_I2C_BUFFER_SIZE                = 15,
+	/* 16 bytes = 8 byte (ROI) + 6 byte(CRC) + 1 byte(phy_id) + 1 byte(roi_idx) */
+	TA_SECUREDISPLAY_V2_I2C_BUFFER_SIZE             = 16,
 };
 
 /** Input/output structures for Secure Display commands */
@@ -95,7 +99,15 @@ enum ta_securedisplay_buffer_size {
  *    Physical ID to determine which DIO scratch register should be used to get ROI
  */
 struct ta_securedisplay_send_roi_crc_input {
-	uint32_t  phy_id;  /* Physical ID */
+	/* Physical ID */
+	uint32_t  phy_id;
+};
+
+struct ta_securedisplay_send_roi_crc_v2_input {
+	/* Physical ID */
+	uint32_t phy_id;
+	/* Region of interest index */
+	uint8_t  roi_idx;
 };
 
 /** @union ta_securedisplay_cmd_input
@@ -104,6 +116,8 @@ struct ta_securedisplay_send_roi_crc_input {
 union ta_securedisplay_cmd_input {
 	/* send ROI and CRC input buffer format */
 	struct ta_securedisplay_send_roi_crc_input        send_roi_crc;
+	/* send ROI and CRC input buffer format, v2 adds a ROI index */
+	struct ta_securedisplay_send_roi_crc_v2_input     send_roi_crc_v2;
 	uint32_t                                          reserved[4];
 };
 
@@ -128,6 +142,10 @@ struct ta_securedisplay_send_roi_crc_output {
 	uint8_t  reserved;
 };
 
+struct ta_securedisplay_send_roi_crc_v2_output {
+	uint8_t  i2c_buf[TA_SECUREDISPLAY_V2_I2C_BUFFER_SIZE];  /* I2C buffer */
+};
+
 /** @union ta_securedisplay_cmd_output
  *    Output buffer
  */
@@ -136,19 +154,21 @@ union ta_securedisplay_cmd_output {
 	struct ta_securedisplay_query_ta_output            query_ta;
 	/* Send ROI CRC output buffer format used only for validation purpose */
 	struct ta_securedisplay_send_roi_crc_output        send_roi_crc;
+	/* Send ROI CRC output buffer format used only for validation purpose */
+	struct ta_securedisplay_send_roi_crc_v2_output     send_roi_crc_v2;
 	uint32_t                                           reserved[4];
 };
 
-/** @struct securedisplay_cmd
- *    Secure Display Command which is shared buffer memory
- */
-struct securedisplay_cmd {
-	uint32_t                             cmd_id;                    /* +0  Bytes Command ID */
-	enum ta_securedisplay_status         status;     /* +4  Bytes Status of Secure Display TA */
-	uint32_t                             reserved[2];               /* +8  Bytes Reserved */
-	union ta_securedisplay_cmd_input     securedisplay_in_message;  /* +16 Bytes Input Buffer */
-	union ta_securedisplay_cmd_output    securedisplay_out_message;/* +32 Bytes Output Buffer */
-	/**@note Total 48 Bytes */
+/** @struct ta_securedisplay_cmd
+*    Secure display command which is shared buffer memory
+*/
+struct ta_securedisplay_cmd {
+    uint32_t                                           cmd_id;                         /**< +0  Bytes Command ID */
+    enum ta_securedisplay_status                       status;                         /**< +4  Bytes Status code returned by the secure display TA */
+    uint32_t                                           reserved[2];                    /**< +8  Bytes Reserved */
+    union ta_securedisplay_cmd_input                   securedisplay_in_message;       /**< +16 Bytes Command input buffer */
+    union ta_securedisplay_cmd_output                  securedisplay_out_message;      /**< +32 Bytes Command output buffer */
+    /**@note Total 48 Bytes */
 };
 
 #endif   //_TA_SECUREDISPLAY_IF_H

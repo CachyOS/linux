@@ -18,6 +18,7 @@
 #include <asm/traps.h>
 #include <asm/unistd.h>
 #include <asm/vfp.h>
+#include <asm/syscalls.h>
 
 #include "signal.h"
 
@@ -336,7 +337,8 @@ setup_return(struct pt_regs *regs, struct ksignal *ksig,
 			return 1;
 	}
 
-	cpsr |= PSR_ENDSTATE;
+	if (IS_ENABLED(CONFIG_CPU_ENDIAN_BE8))
+		cpsr |= PSR_E_BIT;
 
 	/*
 	 * Maybe we need to deliver a 32-bit signal to a 26-bit task.
@@ -655,7 +657,7 @@ struct page *get_signal_page(void)
 		 PAGE_SIZE / sizeof(u32));
 
 	/* Give the signal return code some randomness */
-	offset = 0x200 + (get_random_int() & 0x7fc);
+	offset = 0x200 + (get_random_u16() & 0x7fc);
 	signal_return_offset = offset;
 
 	/* Copy signal return handlers into the page */
@@ -681,7 +683,7 @@ asmlinkage void do_rseq_syscall(struct pt_regs *regs)
  */
 static_assert(NSIGILL	== 11);
 static_assert(NSIGFPE	== 15);
-static_assert(NSIGSEGV	== 9);
+static_assert(NSIGSEGV	== 10);
 static_assert(NSIGBUS	== 5);
 static_assert(NSIGTRAP	== 6);
 static_assert(NSIGCHLD	== 6);

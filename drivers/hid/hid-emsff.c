@@ -76,7 +76,7 @@ static int emsff_init(struct hid_device *hid)
 		return -ENODEV;
 	}
 
-	emsff = kzalloc(sizeof(struct emsff_device), GFP_KERNEL);
+	emsff = kzalloc_obj(struct emsff_device);
 	if (!emsff)
 		return -ENOMEM;
 
@@ -144,5 +144,6 @@ static struct hid_driver ems_driver = {
 };
 module_hid_driver(ems_driver);
 
+MODULE_DESCRIPTION("Force feedback support for EMS Trio Linker Plus II");
 MODULE_LICENSE("GPL");
 

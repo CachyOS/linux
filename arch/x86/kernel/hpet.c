@@ -7,10 +7,12 @@
 #include <linux/cpu.h>
 #include <linux/irq.h>
 
+#include <asm/cpuid/api.h>
 #include <asm/irq_remapping.h>
 #include <asm/hpet.h>
 #include <asm/time.h>
 #include <asm/mwait.h>
+#include <asm/msr.h>
 
 #undef  pr_fmt
 #define pr_fmt(fmt) "hpet: " fmt
@@ -52,7 +54,7 @@ unsigned long				hpet_address;
 u8					hpet_blockid; /* OS timer block num */
 bool					hpet_msi_disable;
 
-#ifdef CONFIG_GENERIC_MSI_IRQ
+#if defined(CONFIG_X86_LOCAL_APIC) && defined(CONFIG_GENERIC_MSI_IRQ)
 static DEFINE_PER_CPU(struct hpet_channel *, cpu_hpet_channel);
 static struct irq_domain		*hpet_domain;
 #endif
@@ -421,7 +423,7 @@ static void __init hpet_legacy_clockevent_register(struct hpet_channel *hc)
 	 * the IO_APIC has been initialized.
 	 */
 	hc->cpu = boot_cpu_data.cpu_index;
-	strncpy(hc->name, "hpet", sizeof(hc->name));
+	strscpy(hc->name, "hpet", sizeof(hc->name));
 	hpet_init_clockevent(hc, 50);
 
 	hc->evt.tick_resume	= hpet_clkevt_legacy_resume;
@@ -469,7 +471,7 @@ static void __init hpet_legacy_clockevent_register(struct hpet_channel *hc)
 /*
  * HPET MSI Support
  */
-#ifdef CONFIG_GENERIC_MSI_IRQ
+#if defined(CONFIG_X86_LOCAL_APIC) && defined(CONFIG_GENERIC_MSI_IRQ)
 static void hpet_msi_unmask(struct irq_data *data)
 {
 	struct hpet_channel *hc = irq_data_get_irq_handler_data(data);
@@ -516,22 +518,14 @@ static int hpet_msi_init(struct irq_domain *domain,
 			 struct msi_domain_info *info, unsigned int virq,
 			 irq_hw_number_t hwirq, msi_alloc_info_t *arg)
 {
-	irq_set_status_flags(virq, IRQ_MOVE_PCNTXT);
 	irq_domain_set_info(domain, virq, arg->hwirq, info->chip, NULL,
 			    handle_edge_irq, arg->data, "edge");
 
 	return 0;
 }
 
-static void hpet_msi_free(struct irq_domain *domain,
-			  struct msi_domain_info *info, unsigned int virq)
-{
-	irq_clear_status_flags(virq, IRQ_MOVE_PCNTXT);
-}
-
 static struct msi_domain_ops hpet_msi_domain_ops = {
 	.msi_init	= hpet_msi_init,
-	.msi_free	= hpet_msi_free,
 };
 
 static struct msi_domain_info hpet_msi_domain_info = {
@@ -550,7 +544,7 @@ static struct irq_domain *hpet_create_irq_domain(int hpet_id)
 	if (x86_vector_domain == NULL)
 		return NULL;
 
-	domain_info = kzalloc(sizeof(*domain_info), GFP_KERNEL);
+	domain_info = kzalloc_obj(*domain_info);
 	if (!domain_info)
 		return NULL;
 
@@ -568,7 +562,7 @@ static struct irq_domain *hpet_create_irq_domain(int hpet_id)
 	fwspec.param_count = 1;
 	fwspec.param[0] = hpet_id;
 
-	parent = irq_find_matching_fwspec(&fwspec, DOMAIN_BUS_ANY);
+	parent = irq_find_matching_fwspec(&fwspec, DOMAIN_BUS_GENERIC_MSI);
 	if (!parent) {
 		irq_domain_free_fwnode(fn);
 		kfree(domain_info);
@@ -707,7 +701,7 @@ static void __init hpet_select_clockevents(void)
 
 	hpet_base.nr_clockevents = 0;
 
-	/* No point if MSI is disabled or CPU has an Always Runing APIC Timer */
+	/* No point if MSI is disabled or CPU has an Always Running APIC Timer */
 	if (hpet_msi_disable || boot_cpu_has(X86_FEATURE_ARAT))
 		return;
 
@@ -927,10 +921,7 @@ static bool __init mwait_pc10_supported(void)
 	if (!cpu_feature_enabled(X86_FEATURE_MWAIT))
 		return false;
 
-	if (boot_cpu_data.cpuid_level < CPUID_MWAIT_LEAF)
-		return false;
-
-	cpuid(CPUID_MWAIT_LEAF, &eax, &ebx, &ecx, &mwait_substates);
+	cpuid(CPUID_LEAF_MWAIT, &eax, &ebx, &ecx, &mwait_substates);
 
 	return (ecx & CPUID5_ECX_EXTENSIONS_SUPPORTED) &&
 	       (ecx & CPUID5_ECX_INTERRUPT_BREAK) &&
@@ -965,7 +956,7 @@ static bool __init mwait_pc10_supported(void)
  * and per CPU timer interrupts.
  *
  * The probability that this problem is going to be solved in the
- * forseeable future is close to zero, so the kernel has to be cluttered
+ * foreseeable future is close to zero, so the kernel has to be cluttered
  * with heuristics to keep up with the ever growing amount of hardware and
  * firmware trainwrecks. Hopefully some day hardware people will understand
  * that the approach of "This can be fixed in software" is not sustainable.
@@ -980,7 +971,7 @@ static bool __init hpet_is_pc10_damaged(void)
 		return false;
 
 	/* Check whether PC10 is enabled in PKG C-state limit */
-	rdmsrl(MSR_PKG_CST_CONFIG_CONTROL, pcfg);
+	rdmsrq(MSR_PKG_CST_CONFIG_CONTROL, pcfg);
 	if ((pcfg & 0xF) < 8)
 		return false;
 
@@ -1047,7 +1038,7 @@ int __init hpet_enable(void)
 	if (IS_ENABLED(CONFIG_HPET_EMULATE_RTC) && channels < 2)
 		goto out_nohpet;
 
-	hc = kcalloc(channels, sizeof(*hc), GFP_KERNEL);
+	hc = kzalloc_objs(*hc, channels);
 	if (!hc) {
 		pr_warn("Disabling HPET.\n");
 		goto out_nohpet;
@@ -1091,6 +1082,8 @@ int __init hpet_enable(void)
 	if (!hpet_counting())
 		goto out_nohpet;
 
+	if (tsc_clocksource_watchdog_disabled())
+		clocksource_hpet.flags |= CLOCK_SOURCE_MUST_VERIFY;
 	clocksource_register_hz(&clocksource_hpet, (u32)hpet_freq);
 
 	if (id & HPET_ID_LEGSUP) {
@@ -1390,12 +1383,6 @@ int hpet_set_periodic_freq(unsigned long freq)
 }
 EXPORT_SYMBOL_GPL(hpet_set_periodic_freq);
 
-int hpet_rtc_dropped_irq(void)
-{
-	return is_hpet_enabled();
-}
-EXPORT_SYMBOL_GPL(hpet_rtc_dropped_irq);
-
 static void hpet_rtc_timer_reinit(void)
 {
 	unsigned int delta;
@@ -1436,7 +1423,7 @@ irqreturn_t hpet_rtc_interrupt(int irq, void *dev_id)
 	memset(&curr_time, 0, sizeof(struct rtc_time));
 
 	if (hpet_rtc_flags & (RTC_UIE | RTC_AIE)) {
-		if (unlikely(mc146818_get_time(&curr_time) < 0)) {
+		if (unlikely(mc146818_get_time(&curr_time, 10) < 0)) {
 			pr_err_ratelimited("unable to read current time from RTC\n");
 			return IRQ_HANDLED;
 		}

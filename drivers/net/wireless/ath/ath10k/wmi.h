@@ -3,6 +3,7 @@
  * Copyright (c) 2005-2011 Atheros Communications Inc.
  * Copyright (c) 2011-2017 Qualcomm Atheros, Inc.
  * Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #ifndef _WMI_H_
@@ -3007,8 +3008,11 @@ enum wmi_coex_version {
  * @WMI_10_4_TDLS_UAPSD_SLEEP_STA: TDLS sleep sta support enable/disable
  * @WMI_10_4_TDLS_CONN_TRACKER_IN_HOST_MODE: TDLS connection tracker in host
  *	enable/disable
- * @WMI_10_4_TDLS_EXPLICIT_MODE_ONLY:Explicit TDLS mode enable/disable
+ * @WMI_10_4_TDLS_EXPLICIT_MODE_ONLY: Explicit TDLS mode enable/disable
  * @WMI_10_4_TX_DATA_ACK_RSSI: Enable DATA ACK RSSI if firmware is capable
+ * @WMI_10_4_EXT_PEER_TID_CONFIGS_SUPPORT:  Firmware supports Extended Peer
+ *	TID configuration for QoS related settings
+ * @WMI_10_4_REPORT_AIRTIME: Firmware supports transmit airtime reporting
  */
 enum wmi_10_4_feature_mask {
 	WMI_10_4_LTEU_SUPPORT			= BIT(0),
@@ -3029,6 +3033,41 @@ enum wmi_10_4_feature_mask {
 	WMI_10_4_REPORT_AIRTIME			= BIT(18),
 
 };
+
+/* WMI_GPIO_CONFIG_CMDID */
+enum {
+	WMI_GPIO_PULL_NONE,
+	WMI_GPIO_PULL_UP,
+	WMI_GPIO_PULL_DOWN,
+};
+
+enum {
+	WMI_GPIO_INTTYPE_DISABLE,
+	WMI_GPIO_INTTYPE_RISING_EDGE,
+	WMI_GPIO_INTTYPE_FALLING_EDGE,
+	WMI_GPIO_INTTYPE_BOTH_EDGE,
+	WMI_GPIO_INTTYPE_LEVEL_LOW,
+	WMI_GPIO_INTTYPE_LEVEL_HIGH
+};
+
+/* WMI_GPIO_CONFIG_CMDID */
+struct wmi_gpio_config_cmd {
+	__le32 gpio_num;             /* GPIO number to be setup */
+	__le32 input;                /* 0 - Output/ 1 - Input */
+	__le32 pull_type;            /* Pull type defined above */
+	__le32 intr_mode;            /* Interrupt mode defined above (Input) */
+} __packed;
+
+/* WMI_GPIO_OUTPUT_CMDID */
+struct wmi_gpio_output_cmd {
+	__le32 gpio_num;    /* GPIO number to be setup */
+	__le32 set;         /* Set the GPIO pin*/
+} __packed;
+
+/* WMI_GPIO_INPUT_EVENTID */
+struct wmi_gpio_input_event {
+	__le32 gpio_num;    /* GPIO number which changed state */
+} __packed;
 
 struct wmi_ext_resource_config_10_4_cmd {
 	/* contains enum wmi_host_platform_type */
@@ -3068,7 +3107,10 @@ struct host_memory_chunk {
 struct wmi_host_mem_chunks {
 	__le32 count;
 	/* some fw revisions require at least 1 chunk regardless of count */
-	struct host_memory_chunk items[1];
+	union {
+		struct host_memory_chunk item;
+		DECLARE_FLEX_ARRAY(struct host_memory_chunk, items);
+	};
 } __packed;
 
 struct wmi_init_cmd {
@@ -3170,7 +3212,7 @@ struct wmi_start_scan_common {
 	/* dwell time in msec on passive channels */
 	__le32 dwell_time_passive;
 	/*
-	 * min time in msec on the BSS channel,only valid if atleast one
+	 * min time in msec on the BSS channel,only valid if at least one
 	 * VDEV is active
 	 */
 	__le32 min_rest_time;
@@ -3196,7 +3238,7 @@ struct wmi_start_scan_common {
 	 * and bssid_list
 	 */
 	__le32 repeat_probe_time;
-	/* time in msec between 2 consequetive probe requests with in a set. */
+	/* time in msec between 2 consecutive probe requests with in a set. */
 	__le32 probe_spacing_time;
 	/*
 	 * data inactivity time in msec on bss channel that will be used by
@@ -3214,23 +3256,16 @@ struct wmi_start_scan_common {
 	__le32 scan_ctrl_flags;
 } __packed;
 
-struct wmi_start_scan_tlvs {
-	/* TLV parameters. These includes channel list, ssid list, bssid list,
-	 * extra ies.
-	 */
-	u8 tlvs[0];
-} __packed;
-
 struct wmi_start_scan_cmd {
 	struct wmi_start_scan_common common;
 	__le32 burst_duration_ms;
-	struct wmi_start_scan_tlvs tlvs;
+	u8 tlvs[];
 } __packed;
 
 /* This is the definition from 10.X firmware branch */
 struct wmi_10x_start_scan_cmd {
 	struct wmi_start_scan_common common;
-	struct wmi_start_scan_tlvs tlvs;
+	u8 tlvs[];
 } __packed;
 
 struct wmi_ssid_arg {
@@ -3854,9 +3889,9 @@ enum wmi_pdev_param {
 	 * retransmitting frames.
 	 */
 	WMI_PDEV_PARAM_DYNAMIC_BW,
-	/* Non aggregrate/ 11g sw retry threshold.0-disable */
+	/* Non aggregate/ 11g sw retry threshold.0-disable */
 	WMI_PDEV_PARAM_NON_AGG_SW_RETRY_TH,
-	/* aggregrate sw retry threshold. 0-disable*/
+	/* aggregate sw retry threshold. 0-disable*/
 	WMI_PDEV_PARAM_AGG_SW_RETRY_TH,
 	/* Station kickout threshold (non of consecutive failures).0-disable */
 	WMI_PDEV_PARAM_STA_KICKOUT_TH,
@@ -3953,9 +3988,9 @@ enum wmi_10x_pdev_param {
 	WMI_10X_PDEV_PARAM_PROTECTION_MODE,
 	/* Dynamic bandwidth 0: disable 1: enable */
 	WMI_10X_PDEV_PARAM_DYNAMIC_BW,
-	/* Non aggregrate/ 11g sw retry threshold.0-disable */
+	/* Non aggregate/ 11g sw retry threshold.0-disable */
 	WMI_10X_PDEV_PARAM_NON_AGG_SW_RETRY_TH,
-	/* aggregrate sw retry threshold. 0-disable*/
+	/* aggregate sw retry threshold. 0-disable*/
 	WMI_10X_PDEV_PARAM_AGG_SW_RETRY_TH,
 	/* Station kickout threshold (non of consecutive failures).0-disable */
 	WMI_10X_PDEV_PARAM_STA_KICKOUT_TH,
@@ -4259,13 +4294,6 @@ struct wmi_peer_sta_ps_state_chg_event {
 	__le32 peer_ps_state;
 } __packed;
 
-struct wmi_pdev_chanlist_update_event {
-	/* number of channels */
-	__le32 num_chan;
-	/* array of channels */
-	struct wmi_channel channel_list[1];
-} __packed;
-
 #define WMI_MAX_DEBUG_MESG (sizeof(u32) * 32)
 
 struct wmi_debug_mesg_event {
@@ -4397,7 +4425,7 @@ struct wmi_pdev_stats_tx {
 	/* wal pdev continuous xretry */
 	__le32 pdev_cont_xretry;
 
-	/* wal pdev continous xretry */
+	/* wal pdev continuous xretry */
 	__le32 pdev_tx_timeout;
 
 	/* wal pdev resets  */
@@ -5240,7 +5268,7 @@ enum wmi_vdev_param {
 	 * scheduler.
 	 */
 	WMI_VDEV_OC_SCHEDULER_AIR_TIME_LIMIT,
-	/* enable/dsiable WDS for this VDEV  */
+	/* enable/disable WDS for this VDEV  */
 	WMI_VDEV_PARAM_WDS,
 	/* ATIM Window */
 	WMI_VDEV_PARAM_ATIM_WINDOW,
@@ -5372,7 +5400,7 @@ enum wmi_10x_vdev_param {
 	 * scheduler.
 	 */
 	WMI_10X_VDEV_OC_SCHEDULER_AIR_TIME_LIMIT,
-	/* enable/dsiable WDS for this VDEV  */
+	/* enable/disable WDS for this VDEV  */
 	WMI_10X_VDEV_PARAM_WDS,
 	/* ATIM Window */
 	WMI_10X_VDEV_PARAM_ATIM_WINDOW,
@@ -5792,30 +5820,6 @@ struct wmi_bcn_prb_info {
 	/* app IE */
 } __packed;
 
-struct wmi_bcn_tmpl_cmd {
-	/* unique id identifying the VDEV, generated by the caller */
-	__le32 vdev_id;
-	/* TIM IE offset from the beginning of the template. */
-	__le32 tim_ie_offset;
-	/* beacon probe capabilities and IEs */
-	struct wmi_bcn_prb_info bcn_prb_info;
-	/* beacon buffer length */
-	__le32 buf_len;
-	/* variable length data */
-	u8 data[1];
-} __packed;
-
-struct wmi_prb_tmpl_cmd {
-	/* unique id identifying the VDEV, generated by the caller */
-	__le32 vdev_id;
-	/* beacon probe capabilities and IEs */
-	struct wmi_bcn_prb_info bcn_prb_info;
-	/* beacon buffer length */
-	__le32 buf_len;
-	/* Variable length data */
-	u8 data[1];
-} __packed;
-
 enum wmi_sta_ps_mode {
 	/* enable power save for the given STA VDEV */
 	WMI_STA_PS_MODE_DISABLED = 0,
@@ -5904,7 +5908,7 @@ enum wmi_sta_ps_param_tx_wake_threshold {
 enum wmi_sta_ps_param_pspoll_count {
 	WMI_STA_PS_PSPOLL_COUNT_NO_MAX = 0,
 	/*
-	 * Values greater than 0 indicate the maximum numer of PS-Poll frames
+	 * Values greater than 0 indicate the maximum number of PS-Poll frames
 	 * FW will send before waking up.
 	 */
 
@@ -6947,7 +6951,7 @@ struct wmi_echo_ev_arg {
 };
 
 struct wmi_pdev_temperature_event {
-	/* temperature value in Celcius degree */
+	/* temperature value in Celsius degree */
 	__le32 temperature;
 } __packed;
 
@@ -7196,7 +7200,13 @@ struct wmi_tdls_peer_capabilities {
 	__le32 is_peer_responder;
 	__le32 pref_offchan_num;
 	__le32 pref_offchan_bw;
-	struct wmi_channel peer_chan_list[1];
+	union {
+		/* to match legacy implementation allocate room for
+		 * at least one record even if peer_chan_len is 0
+		 */
+		struct wmi_channel peer_chan_min_allocation;
+		DECLARE_FLEX_ARRAY(struct wmi_channel, peer_chan_list);
+	};
 } __packed;
 
 struct wmi_10_4_tdls_peer_update_cmd {
@@ -7408,6 +7418,23 @@ struct wmi_pdev_bb_timing_cfg_cmd {
 	__le32 bb_xpa_timing;
 } __packed;
 
+struct wmi_ftm_seg_hdr {
+	__le32 len;
+	__le32 msgref;
+	__le32 segmentinfo;
+	__le32 pdev_id;
+} __packed;
+
+struct wmi_ftm_cmd {
+	__le32 tlv_header;
+	struct wmi_ftm_seg_hdr seg_hdr;
+	u8 data[];
+} __packed;
+
+#define WMI_TLV_LEN      GENMASK(15, 0)
+#define WMI_TLV_TAG	 GENMASK(31, 16)
+#define MAX_WMI_UTF_LEN  252
+
 struct ath10k;
 struct ath10k_vif;
 struct ath10k_fw_stats_pdev;
@@ -7502,8 +7529,6 @@ void ath10k_wmi_main_op_fw_stats_fill(struct ath10k *ar,
 void ath10k_wmi_10x_op_fw_stats_fill(struct ath10k *ar,
 				     struct ath10k_fw_stats *fw_stats,
 				     char *buf);
-size_t ath10k_wmi_fw_stats_num_peers(struct list_head *head);
-size_t ath10k_wmi_fw_stats_num_vdevs(struct list_head *head);
 void ath10k_wmi_10_4_op_fw_stats_fill(struct ath10k *ar,
 				      struct ath10k_fw_stats *fw_stats,
 				      char *buf);

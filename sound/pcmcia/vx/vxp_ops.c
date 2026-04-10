@@ -84,7 +84,7 @@ static int vx_check_magic(struct vx_core *chip)
 			return 0;
 		msleep(10);
 	} while (time_after_eq(end_time, jiffies));
-	snd_printk(KERN_ERR "cannot find xilinx magic word (%x)\n", c);
+	dev_err(chip->card->dev, "cannot find xilinx magic word (%x)\n", c);
 	return -EIO;
 }
 
@@ -153,7 +153,6 @@ static int vxp_load_xilinx_binary(struct vx_core *_chip, const struct firmware *
 	vx_outb(chip, ICR, 0);
 
 	/* Wait for answer HF2 equal to 1 */
-	snd_printdd(KERN_DEBUG "check ISR_HF2\n");
 	if (vx_check_isr(_chip, ISR_HF2, ISR_HF2, 20) < 0)
 		goto _error;
 
@@ -170,7 +169,9 @@ static int vxp_load_xilinx_binary(struct vx_core *_chip, const struct firmware *
 			goto _error;
 		c = vx_inb(chip, RXL);
 		if (c != (int)data)
-			snd_printk(KERN_ERR "vxpocket: load xilinx mismatch at %d: 0x%x != 0x%x\n", i, c, (int)data);
+			dev_err(_chip->card->dev,
+				"vxpocket: load xilinx mismatch at %d: 0x%x != 0x%x\n",
+				i, c, (int)data);
         }
 
 	/* reset HF1 */
@@ -188,7 +189,8 @@ static int vxp_load_xilinx_binary(struct vx_core *_chip, const struct firmware *
 	c |= (int)vx_inb(chip, RXM) << 8;
 	c |= vx_inb(chip, RXL);
 
-	snd_printdd(KERN_DEBUG "xilinx: dsp size received 0x%x, orig 0x%zx\n", c, fw->size);
+	dev_dbg(_chip->card->dev,
+		"xilinx: dsp size received 0x%x, orig 0x%zx\n", c, fw->size);
 
 	vx_outb(chip, ICR, ICR_HF0);
 
@@ -461,7 +463,7 @@ void vx_set_mic_boost(struct vx_core *chip, int boost)
 	if (chip->chip_status & VX_STAT_IS_STALE)
 		return;
 
-	mutex_lock(&chip->lock);
+	guard(mutex)(&chip->lock);
 	if (pchip->regCDSP & P24_CDSP_MICS_SEL_MASK) {
 		if (boost) {
 			/* boost: 38 dB */
@@ -474,7 +476,6 @@ void vx_set_mic_boost(struct vx_core *chip, int boost)
                 }
 		vx_outb(chip, CDSP, pchip->regCDSP);
 	}
-	mutex_unlock(&chip->lock);
 }
 
 /*
@@ -503,12 +504,11 @@ void vx_set_mic_level(struct vx_core *chip, int level)
 	if (chip->chip_status & VX_STAT_IS_STALE)
 		return;
 
-	mutex_lock(&chip->lock);
+	guard(mutex)(&chip->lock);
 	if (pchip->regCDSP & VXP_CDSP_MIC_SEL_MASK) {
 		level = vx_compute_mic_level(level);
 		vx_outb(chip, MICRO, level);
 	}
-	mutex_unlock(&chip->lock);
 }
 
 

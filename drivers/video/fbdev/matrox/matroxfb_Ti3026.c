@@ -79,6 +79,7 @@
  *
  */
 
+#include <linux/export.h>
 
 #include "matroxfb_Ti3026.h"
 #include "matroxfb_misc.h"
@@ -746,4 +747,5 @@ struct matrox_switch matrox_millennium = {
 };
 EXPORT_SYMBOL(matrox_millennium);
 #endif
+MODULE_DESCRIPTION("Matrox Millennium output driver");
 MODULE_LICENSE("GPL");

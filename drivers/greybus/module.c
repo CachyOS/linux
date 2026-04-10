@@ -81,7 +81,7 @@ static void gb_module_release(struct device *dev)
 	kfree(module);
 }
 
-struct device_type greybus_module_type = {
+const struct device_type greybus_module_type = {
 	.name		= "greybus_module",
 	.release	= gb_module_release,
 };
@@ -93,8 +93,7 @@ struct gb_module *gb_module_create(struct gb_host_device *hd, u8 module_id,
 	struct gb_module *module;
 	int i;
 
-	module = kzalloc(struct_size(module, interfaces, num_interfaces),
-			 GFP_KERNEL);
+	module = kzalloc_flex(*module, interfaces, num_interfaces);
 	if (!module)
 		return NULL;
 

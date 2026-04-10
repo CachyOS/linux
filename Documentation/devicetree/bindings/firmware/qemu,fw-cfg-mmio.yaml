@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/firmware/qemu,fw-cfg-mmio.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: QEMU Firmware Configuration bindings
+title: QEMU Firmware Configuration
 
 maintainers:
   - Rob Herring <robh@kernel.org>
@@ -22,7 +22,6 @@ description: |
 
   The authoritative guest-side hardware interface documentation to the fw_cfg
   device can be found in "docs/specs/fw_cfg.txt" in the QEMU source tree.
-
 
 properties:
   compatible:

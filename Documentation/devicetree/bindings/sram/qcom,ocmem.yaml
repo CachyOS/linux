@@ -15,7 +15,9 @@ description: |
 
 properties:
   compatible:
-    const: qcom,msm8974-ocmem
+    enum:
+      - qcom,msm8226-ocmem  # v1.1.0
+      - qcom,msm8974-ocmem  # v1.4.0
 
   reg:
     items:
@@ -28,11 +30,13 @@ properties:
       - const: mem
 
   clocks:
+    minItems: 1
     items:
       - description: Core clock
       - description: Interface clock
 
   clock-names:
+    minItems: 1
     items:
       - const: core
       - const: iface
@@ -58,9 +62,30 @@ required:
 
 additionalProperties: false
 
+allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - qcom,msm8974-ocmem
+    then:
+      properties:
+        clocks:
+          minItems: 2
+        clock-names:
+          minItems: 2
+    else:
+      properties:
+        clocks:
+          minItems: 1
+        clock-names:
+          minItems: 1
+
 patternProperties:
   "-sram@[0-9a-f]+$":
     type: object
+    additionalProperties: false
     description: A region of reserved memory.
 
     properties:
@@ -72,10 +97,10 @@ patternProperties:
 
 examples:
   - |
-      #include <dt-bindings/clock/qcom,rpmcc.h>
-      #include <dt-bindings/clock/qcom,mmcc-msm8974.h>
+    #include <dt-bindings/clock/qcom,rpmcc.h>
+    #include <dt-bindings/clock/qcom,mmcc-msm8974.h>
 
-      ocmem: ocmem@fdd00000 {
+    sram@fdd00000 {
         compatible = "qcom,msm8974-ocmem";
 
         reg = <0xfdd00000 0x2000>,
@@ -93,6 +118,6 @@ examples:
         ranges = <0 0xfec00000 0x100000>;
 
         gmu-sram@0 {
-                reg = <0x0 0x100000>;
+            reg = <0x0 0x100000>;
         };
-      };
+    };

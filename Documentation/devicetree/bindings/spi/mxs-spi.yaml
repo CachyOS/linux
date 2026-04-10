@@ -10,7 +10,7 @@ maintainers:
   - Marek Vasut <marex@denx.de>
 
 allOf:
-  - $ref: "/schemas/spi/spi-controller.yaml#"
+  - $ref: /schemas/spi/spi-controller.yaml#
 
 properties:
   compatible:
@@ -22,6 +22,9 @@ properties:
     maxItems: 1
 
   interrupts:
+    maxItems: 1
+
+  clocks:
     maxItems: 1
 
   dmas:

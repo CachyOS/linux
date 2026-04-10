@@ -1,15 +1,4 @@
 /* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
-/*
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- */
 
 #ifndef __UAPI_SOUND_TLV_H
 #define __UAPI_SOUND_TLV_H
@@ -28,6 +17,8 @@
 #define SNDRV_CTL_TLVT_CHMAP_FIXED	0x101	/* fixed channel position */
 #define SNDRV_CTL_TLVT_CHMAP_VAR	0x102	/* channels freely swappable */
 #define SNDRV_CTL_TLVT_CHMAP_PAIRED	0x103	/* pair-wise swappable */
+
+#define SNDRV_CTL_TLVT_FCP_CHANNEL_LABELS	0x110	/* channel labels */
 
 /*
  * TLV structure is right behind the struct snd_ctl_tlv:

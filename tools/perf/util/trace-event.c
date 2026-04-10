@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0
-
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -9,7 +8,7 @@
 #include <fcntl.h>
 #include <linux/kernel.h>
 #include <linux/err.h>
-#include <traceevent/event-parse.h>
+#include <event-parse.h>
 #include <api/fs/tracing_path.h>
 #include <api/fs/fs.h>
 #include "trace-event.h"

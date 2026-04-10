@@ -17,6 +17,13 @@ static inline bool nf_tproxy_sk_is_transparent(struct sock *sk)
 	return false;
 }
 
+static inline void nf_tproxy_twsk_deschedule_put(struct inet_timewait_sock *tw)
+{
+	local_bh_disable();
+	inet_twsk_deschedule_put(tw);
+	local_bh_enable();
+}
+
 /* assign a socket to the skb -- consumes sk */
 static inline void nf_tproxy_assign_sock(struct sk_buff *skb, struct sock *sk)
 {
@@ -29,6 +36,7 @@ __be32 nf_tproxy_laddr4(struct sk_buff *skb, __be32 user_laddr, __be32 daddr);
 
 /**
  * nf_tproxy_handle_time_wait4 - handle IPv4 TCP TIME_WAIT reopen redirections
+ * @net:	The network namespace.
  * @skb:	The skb being processed.
  * @laddr:	IPv4 address to redirect to or zero.
  * @lport:	TCP port to redirect to or zero.
@@ -41,7 +49,7 @@ __be32 nf_tproxy_laddr4(struct sk_buff *skb, __be32 user_laddr, __be32 daddr);
  *
  * nf_tproxy_handle_time_wait4() consumes the socket reference passed in.
  *
- * Returns the listener socket if there's one, the TIME_WAIT socket if
+ * Returns: the listener socket if there's one, the TIME_WAIT socket if
  * no such listener is found, or NULL if the TCP header is incomplete.
  */
 struct sock *
@@ -100,7 +108,7 @@ nf_tproxy_laddr6(struct sk_buff *skb, const struct in6_addr *user_laddr,
  *
  * nf_tproxy_handle_time_wait6() consumes the socket reference passed in.
  *
- * Returns the listener socket if there's one, the TIME_WAIT socket if
+ * Returns: the listener socket if there's one, the TIME_WAIT socket if
  * no such listener is found, or NULL if the TCP header is incomplete.
  */
 struct sock *

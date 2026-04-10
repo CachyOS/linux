@@ -2,6 +2,7 @@
 /*
  * Copyright (c) 2015-2017 Qualcomm Atheros, Inc.
  * Copyright (c) 2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include "mac.h"
@@ -300,7 +301,7 @@ static int ath10k_vif_wow_set_wakeups(struct ath10k_vif *arvif,
 			struct wmi_pno_scan_req *pno;
 			int ret;
 
-			pno = kzalloc(sizeof(*pno), GFP_KERNEL);
+			pno = kzalloc_obj(*pno);
 			if (!pno)
 				return -ENOMEM;
 
@@ -412,7 +413,7 @@ static int ath10k_vif_wow_clean_nlo(struct ath10k_vif *arvif)
 		if (ar->nlo_enabled) {
 			struct wmi_pno_scan_req *pno;
 
-			pno = kzalloc(sizeof(*pno), GFP_KERNEL);
+			pno = kzalloc_obj(*pno);
 			if (!pno)
 				return -ENOMEM;
 

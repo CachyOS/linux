@@ -5,22 +5,22 @@
 #include <stdlib.h>
 #include <string.h>
 #include "metricgroup.h"
-#include "cpumap.h"
-#include "cputopo.h"
 #include "debug.h"
+#include "evlist.h"
 #include "expr.h"
-#include "expr-bison.h"
-#include "expr-flex.h"
 #include "smt.h"
+#include "tool_pmu.h"
+#include <util/expr-bison.h>
+#include <util/expr-flex.h>
+#include "util/hashmap.h"
+#include "util/header.h"
+#include "util/pmu.h"
+#include <perf/cpumap.h>
 #include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/zalloc.h>
 #include <ctype.h>
 #include <math.h>
-
-#ifdef PARSER_DEBUG
-extern int expr_debug;
-#endif
 
 struct expr_id_data {
 	union {
@@ -45,7 +45,7 @@ struct expr_id_data {
 	} kind;
 };
 
-static size_t key_hash(const void *key, void *ctx __maybe_unused)
+static size_t key_hash(long key, void *ctx __maybe_unused)
 {
 	const char *str = (const char *)key;
 	size_t hash = 0;
@@ -58,8 +58,7 @@ static size_t key_hash(const void *key, void *ctx __maybe_unused)
 	return hash;
 }
 
-static bool key_equal(const void *key1, const void *key2,
-		    void *ctx __maybe_unused)
+static bool key_equal(long key1, long key2, void *ctx __maybe_unused)
 {
 	return !strcmp((const char *)key1, (const char *)key2);
 }
@@ -83,8 +82,8 @@ void ids__free(struct hashmap *ids)
 		return;
 
 	hashmap__for_each_entry(ids, cur, bkt) {
-		free((char *)cur->key);
-		free(cur->value);
+		zfree(&cur->pkey);
+		zfree(&cur->pvalue);
 	}
 
 	hashmap__free(ids);
@@ -96,8 +95,7 @@ int ids__insert(struct hashmap *ids, const char *id)
 	char *old_key = NULL;
 	int ret;
 
-	ret = hashmap__set(ids, id, data_ptr,
-			   (const void **)&old_key, (void **)&old_data);
+	ret = hashmap__set(ids, id, data_ptr, &old_key, &old_data);
 	if (ret)
 		free(data_ptr);
 	free(old_key);
@@ -126,8 +124,7 @@ struct hashmap *ids__union(struct hashmap *ids1, struct hashmap *ids2)
 		ids2 = tmp;
 	}
 	hashmap__for_each_entry(ids2, cur, bkt) {
-		ret = hashmap__set(ids1, cur->key, cur->value,
-				(const void **)&old_key, (void **)&old_data);
+		ret = hashmap__set(ids1, cur->key, cur->value, &old_key, &old_data);
 		free(old_key);
 		free(old_data);
 
@@ -168,10 +165,13 @@ int expr__add_id_val_source_count(struct expr_parse_ctx *ctx, const char *id,
 	data_ptr->val.source_count = source_count;
 	data_ptr->kind = EXPR_ID_DATA__VALUE;
 
-	ret = hashmap__set(ctx->ids, id, data_ptr,
-			   (const void **)&old_key, (void **)&old_data);
-	if (ret)
+	ret = hashmap__set(ctx->ids, id, data_ptr, &old_key, &old_data);
+	if (ret) {
 		free(data_ptr);
+	} else if (old_data) {
+		data_ptr->val.val += old_data->val.val;
+		data_ptr->val.source_count += old_data->val.source_count;
+	}
 	free(old_key);
 	free(old_data);
 	return ret;
@@ -181,7 +181,7 @@ int expr__add_ref(struct expr_parse_ctx *ctx, struct metric_ref *ref)
 {
 	struct expr_id_data *data_ptr = NULL, *old_data = NULL;
 	char *old_key = NULL;
-	char *name, *p;
+	char *name;
 	int ret;
 
 	data_ptr = zalloc(sizeof(*data_ptr));
@@ -195,15 +195,6 @@ int expr__add_ref(struct expr_parse_ctx *ctx, struct metric_ref *ref)
 	}
 
 	/*
-	 * The jevents tool converts all metric expressions
-	 * to lowercase, including metric references, hence
-	 * we need to add lowercase name for metric, so it's
-	 * properly found.
-	 */
-	for (p = name; *p; p++)
-		*p = tolower(*p);
-
-	/*
 	 * Intentionally passing just const char pointers,
 	 * originally from 'struct pmu_event' object.
 	 * We don't need to change them, so there's no
@@ -213,8 +204,7 @@ int expr__add_ref(struct expr_parse_ctx *ctx, struct metric_ref *ref)
 	data_ptr->ref.metric_expr = ref->metric_expr;
 	data_ptr->kind = EXPR_ID_DATA__REF;
 
-	ret = hashmap__set(ctx->ids, name, data_ptr,
-			   (const void **)&old_key, (void **)&old_data);
+	ret = hashmap__set(ctx->ids, name, data_ptr, &old_key, &old_data);
 	if (ret)
 		free(data_ptr);
 
@@ -229,7 +219,9 @@ int expr__add_ref(struct expr_parse_ctx *ctx, struct metric_ref *ref)
 int expr__get_id(struct expr_parse_ctx *ctx, const char *id,
 		 struct expr_id_data **data)
 {
-	return hashmap__find(ctx->ids, id, (void **)data) ? 0 : -1;
+	if (!ctx || !id)
+		return -1;
+	return hashmap__find(ctx->ids, id, data) ? 0 : -1;
 }
 
 bool expr__subset_of_ids(struct expr_parse_ctx *haystack,
@@ -240,7 +232,7 @@ bool expr__subset_of_ids(struct expr_parse_ctx *haystack,
 	struct expr_id_data *data;
 
 	hashmap__for_each_entry(needles->ids, cur, bkt) {
-		if (expr__get_id(haystack, cur->key, &data))
+		if (expr__get_id(haystack, cur->pkey, &data))
 			return false;
 	}
 	return true;
@@ -290,8 +282,7 @@ void expr__del_id(struct expr_parse_ctx *ctx, const char *id)
 	struct expr_id_data *old_val = NULL;
 	char *old_key = NULL;
 
-	hashmap__delete(ctx->ids, id,
-			(const void **)&old_key, (void **)&old_val);
+	hashmap__delete(ctx->ids, id, &old_key, &old_val);
 	free(old_key);
 	free(old_val);
 }
@@ -300,7 +291,7 @@ struct expr_parse_ctx *expr__ctx_new(void)
 {
 	struct expr_parse_ctx *ctx;
 
-	ctx = malloc(sizeof(struct expr_parse_ctx));
+	ctx = calloc(1, sizeof(struct expr_parse_ctx));
 	if (!ctx)
 		return NULL;
 
@@ -309,7 +300,6 @@ struct expr_parse_ctx *expr__ctx_new(void)
 		free(ctx);
 		return NULL;
 	}
-	ctx->runtime = 0;
 
 	return ctx;
 }
@@ -320,8 +310,8 @@ void expr__ctx_clear(struct expr_parse_ctx *ctx)
 	size_t bkt;
 
 	hashmap__for_each_entry(ctx->ids, cur, bkt) {
-		free((char *)cur->key);
-		free(cur->value);
+		zfree(&cur->pkey);
+		zfree(&cur->pvalue);
 	}
 	hashmap__clear(ctx->ids);
 }
@@ -331,9 +321,13 @@ void expr__ctx_free(struct expr_parse_ctx *ctx)
 	struct hashmap_entry *cur;
 	size_t bkt;
 
+	if (!ctx)
+		return;
+
+	zfree(&ctx->sctx.user_requested_cpu_list);
 	hashmap__for_each_entry(ctx->ids, cur, bkt) {
-		free((char *)cur->key);
-		free(cur->value);
+		zfree(&cur->pkey);
+		zfree(&cur->pvalue);
 	}
 	hashmap__free(ctx->ids);
 	free(ctx);
@@ -343,16 +337,13 @@ static int
 __expr__parse(double *val, struct expr_parse_ctx *ctx, const char *expr,
 	      bool compute_ids)
 {
-	struct expr_scanner_ctx scanner_ctx = {
-		.runtime = ctx->runtime,
-	};
 	YY_BUFFER_STATE buffer;
 	void *scanner;
 	int ret;
 
 	pr_debug2("parsing metric: %s\n", expr);
 
-	ret = expr_lex_init_extra(&scanner_ctx, &scanner);
+	ret = expr_lex_init_extra(&ctx->sctx, &scanner);
 	if (ret)
 		return ret;
 
@@ -402,49 +393,78 @@ double expr_id_data__source_count(const struct expr_id_data *data)
 	return data->val.source_count;
 }
 
-double expr__get_literal(const char *literal)
+double expr__get_literal(const char *literal, const struct expr_scanner_ctx *ctx)
 {
-	static struct cpu_topology *topology;
 	double result = NAN;
+	enum tool_pmu_event ev = tool_pmu__str_to_event(literal + 1);
 
-	if (!strcasecmp("#smt_on", literal)) {
-		result = smt_on() > 0 ? 1.0 : 0.0;
-		goto out;
-	}
+	if (ev != TOOL_PMU__EVENT_NONE) {
+		u64 count;
 
-	if (!strcmp("#num_cpus", literal)) {
-		result = cpu__max_present_cpu().cpu;
-		goto out;
-	}
-
-	/*
-	 * Assume that topology strings are consistent, such as CPUs "0-1"
-	 * wouldn't be listed as "0,1", and so after deduplication the number of
-	 * these strings gives an indication of the number of packages, dies,
-	 * etc.
-	 */
-	if (!topology) {
-		topology = cpu_topology__new();
-		if (!topology) {
-			pr_err("Error creating CPU topology");
-			goto out;
-		}
-	}
-	if (!strcmp("#num_packages", literal)) {
-		result = topology->package_cpus_lists;
-		goto out;
-	}
-	if (!strcmp("#num_dies", literal)) {
-		result = topology->die_cpus_lists;
-		goto out;
-	}
-	if (!strcmp("#num_cores", literal)) {
-		result = topology->core_cpus_lists;
-		goto out;
+		if (tool_pmu__read_event(ev, /*evsel=*/NULL,
+					 ctx->system_wide, ctx->user_requested_cpu_list,
+					 &count))
+			result = count;
+		else
+			pr_err("Failure to read '%s'", literal);
+	} else {
+		pr_err("Unrecognized literal '%s'", literal);
 	}
 
-	pr_err("Unrecognized literal '%s'", literal);
-out:
 	pr_debug2("literal: %s = %f\n", literal, result);
 	return result;
+}
+
+/* Does the event 'id' parse? Determine via ctx->ids if possible. */
+double expr__has_event(const struct expr_parse_ctx *ctx, bool compute_ids, const char *id)
+{
+	struct evlist *tmp;
+	double ret;
+
+	if (hashmap__find(ctx->ids, id, /*value=*/NULL))
+		return 1.0;
+
+	if (!compute_ids)
+		return 0.0;
+
+	tmp = evlist__new();
+	if (!tmp)
+		return NAN;
+
+	if (strchr(id, '@')) {
+		char *tmp_id, *p;
+
+		tmp_id = strdup(id);
+		if (!tmp_id) {
+			ret = NAN;
+			goto out;
+		}
+		p = strchr(tmp_id, '@');
+		*p = '/';
+		p = strrchr(tmp_id, '@');
+		*p = '/';
+		ret = parse_event(tmp, tmp_id) ? 0 : 1;
+		free(tmp_id);
+	} else {
+		ret = parse_event(tmp, id) ? 0 : 1;
+	}
+out:
+	evlist__delete(tmp);
+	return ret;
+}
+
+double expr__strcmp_cpuid_str(const struct expr_parse_ctx *ctx __maybe_unused,
+		       bool compute_ids __maybe_unused, const char *test_id)
+{
+	double ret;
+	struct perf_cpu cpu = {-1};
+	char *cpuid = get_cpuid_allow_env_override(cpu);
+
+	if (!cpuid)
+		return NAN;
+
+	ret = !strcmp_cpuid_str(test_id, cpuid);
+
+	free(cpuid);
+	return ret;
 }

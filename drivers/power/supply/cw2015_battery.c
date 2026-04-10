@@ -13,7 +13,6 @@
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/gfp.h>
-#include <linux/gpio/consumer.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/power_supply.h>
@@ -21,6 +20,7 @@
 #include <linux/regmap.h>
 #include <linux/time.h>
 #include <linux/workqueue.h>
+#include <linux/devm-helpers.h>
 
 #define CW2015_SIZE_BATINFO		64
 
@@ -490,7 +490,7 @@ static int cw_battery_get_property(struct power_supply *psy,
 
 	case POWER_SUPPLY_PROP_TIME_TO_EMPTY_NOW:
 		if (cw_battery_valid_time_to_empty(cw_bat))
-			val->intval = cw_bat->time_to_empty;
+			val->intval = cw_bat->time_to_empty * 60;
 		else
 			val->intval = 0;
 		break;
@@ -505,10 +505,7 @@ static int cw_battery_get_property(struct power_supply *psy,
 
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
-		if (cw_bat->battery->charge_full_design_uah > 0)
-			val->intval = cw_bat->battery->charge_full_design_uah;
-		else
-			val->intval = 0;
+		val->intval = max(cw_bat->battery->charge_full_design_uah, 0);
 		break;
 
 	case POWER_SUPPLY_PROP_CHARGE_NOW:
@@ -698,7 +695,16 @@ static int cw_bat_probe(struct i2c_client *client)
 	}
 
 	cw_bat->battery_workqueue = create_singlethread_workqueue("rk_battery");
-	INIT_DELAYED_WORK(&cw_bat->battery_delay_work, cw_bat_work);
+	if (!cw_bat->battery_workqueue)
+		return -ENOMEM;
+
+	ret = devm_delayed_work_autocancel(&client->dev, &cw_bat->battery_delay_work, cw_bat_work);
+	if (ret) {
+		dev_err_probe(&client->dev, ret,
+			"Failed to register delayed work\n");
+		return ret;
+	}
+
 	queue_delayed_work(cw_bat->battery_workqueue,
 			   &cw_bat->battery_delay_work, msecs_to_jiffies(10));
 	return 0;
@@ -725,17 +731,8 @@ static int __maybe_unused cw_bat_resume(struct device *dev)
 
 static SIMPLE_DEV_PM_OPS(cw_bat_pm_ops, cw_bat_suspend, cw_bat_resume);
 
-static int cw_bat_remove(struct i2c_client *client)
-{
-	struct cw_battery *cw_bat = i2c_get_clientdata(client);
-
-	cancel_delayed_work_sync(&cw_bat->battery_delay_work);
-	power_supply_put_battery_info(cw_bat->rk_bat, cw_bat->battery);
-	return 0;
-}
-
 static const struct i2c_device_id cw_bat_id_table[] = {
-	{ "cw2015", 0 },
+	{ "cw2015" },
 	{ }
 };
 
@@ -751,8 +748,7 @@ static struct i2c_driver cw_bat_driver = {
 		.of_match_table = cw2015_of_match,
 		.pm = &cw_bat_pm_ops,
 	},
-	.probe_new = cw_bat_probe,
-	.remove = cw_bat_remove,
+	.probe = cw_bat_probe,
 	.id_table = cw_bat_id_table,
 };
 

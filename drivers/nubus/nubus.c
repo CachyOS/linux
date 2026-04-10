@@ -32,7 +32,18 @@
 
 /* Globals */
 
+/* The "nubus.populate_procfs" parameter makes slot resources available in
+ * procfs. It's deprecated and disabled by default because procfs is no longer
+ * thought to be suitable for that and some board ROMs make it too expensive.
+ */
+bool nubus_populate_procfs;
+module_param_named(populate_procfs, nubus_populate_procfs, bool, 0);
+
 LIST_HEAD(nubus_func_rsrcs);
+
+static struct device nubus_parent = {
+	.init_name	= "nubus",
+};
 
 /* Meaning of "bytelanes":
 
@@ -499,7 +510,7 @@ nubus_get_functional_resource(struct nubus_board *board, int slot,
 	dir.procdir = nubus_proc_add_rsrc_dir(board->procdir, parent, board);
 
 	/* Actually we should probably panic if this fails */
-	fres = kzalloc(sizeof(*fres), GFP_ATOMIC);
+	fres = kzalloc_obj(*fres, GFP_ATOMIC);
 	if (!fres)
 		return NULL;
 	fres->resid = parent->type;
@@ -572,9 +583,9 @@ nubus_get_functional_resource(struct nubus_board *board, int slot,
 			nubus_proc_add_rsrc(dir.procdir, &ent);
 			break;
 		default:
-			/* Local/Private resources have their own
-			   function */
-			nubus_get_private_resource(fres, dir.procdir, &ent);
+			if (nubus_populate_procfs)
+				nubus_get_private_resource(fres, dir.procdir,
+							   &ent);
 		}
 	}
 
@@ -728,7 +739,7 @@ static void __init nubus_add_board(int slot, int bytelanes)
 	nubus_rewind(&rp, FORMAT_BLOCK_SIZE, bytelanes);
 
 	/* Actually we should probably panic if this fails */
-	if ((board = kzalloc(sizeof(*board), GFP_ATOMIC)) == NULL)
+	if ((board = kzalloc_obj(*board, GFP_ATOMIC)) == NULL)
 		return;
 	board->fblock = rp;
 
@@ -822,7 +833,7 @@ static void __init nubus_add_board(int slot, int bytelanes)
 		list_add_tail(&fres->list, &nubus_func_rsrcs);
 	}
 
-	if (nubus_device_register(board))
+	if (nubus_device_register(&nubus_parent, board))
 		put_device(&board->dev);
 }
 
@@ -875,9 +886,11 @@ static int __init nubus_init(void)
 		return 0;
 
 	nubus_proc_init();
-	err = nubus_parent_device_register();
-	if (err)
+	err = device_register(&nubus_parent);
+	if (err) {
+		put_device(&nubus_parent);
 		return err;
+	}
 	nubus_scan_bus();
 	return 0;
 }

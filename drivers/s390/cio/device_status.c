@@ -9,6 +9,7 @@
 
 #include <linux/module.h>
 #include <linux/init.h>
+#include <linux/io.h>
 
 #include <asm/ccwdev.h>
 #include <asm/cio.h>
@@ -41,7 +42,7 @@ ccw_device_msg_control_check(struct ccw_device *cdev, struct irb *irb)
 		      cdev->private->dev_id.devno, sch->schid.ssid,
 		      sch->schid.sch_no,
 		      scsw_dstat(&irb->scsw), scsw_cstat(&irb->scsw));
-	sprintf(dbf_text, "chk%x", sch->schid.sch_no);
+	scnprintf(dbf_text, sizeof(dbf_text), "chk%x", sch->schid.sch_no);
 	CIO_TRACE_EVENT(0, dbf_text);
 	CIO_HEX_EVENT(0, irb, sizeof(struct irb));
 }
@@ -331,7 +332,7 @@ ccw_device_do_sense(struct ccw_device *cdev, struct irb *irb)
 	 */
 	sense_ccw = &to_io_private(sch)->dma_area->sense_ccw;
 	sense_ccw->cmd_code = CCW_CMD_BASIC_SENSE;
-	sense_ccw->cda = (__u32) __pa(cdev->private->dma_area->irb.ecw);
+	sense_ccw->cda = virt_to_dma32(cdev->private->dma_area->irb.ecw);
 	sense_ccw->count = SENSE_MAX_COUNT;
 	sense_ccw->flags = CCW_FLAG_SLI;
 

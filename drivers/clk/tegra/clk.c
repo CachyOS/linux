@@ -9,12 +9,12 @@
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/of_platform.h>
 #include <linux/clk/tegra.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/reset-controller.h>
-#include <linux/string.h>
+#include <linux/string_helpers.h>
 
 #include <soc/tegra/fuse.h>
 
@@ -227,15 +227,13 @@ struct clk ** __init tegra_clk_init(void __iomem *regs, int num, int banks)
 	if (WARN_ON(banks > ARRAY_SIZE(periph_regs)))
 		return NULL;
 
-	periph_clk_enb_refcnt = kcalloc(32 * banks,
-					sizeof(*periph_clk_enb_refcnt),
-					GFP_KERNEL);
+	periph_clk_enb_refcnt = kzalloc_objs(*periph_clk_enb_refcnt, 32 * banks);
 	if (!periph_clk_enb_refcnt)
 		return NULL;
 
 	periph_banks = banks;
 
-	clks = kcalloc(num, sizeof(struct clk *), GFP_KERNEL);
+	clks = kzalloc_objs(struct clk *, num);
 	if (!clks) {
 		kfree(periph_clk_enb_refcnt);
 		return NULL;
@@ -384,11 +382,9 @@ static struct device_node *tegra_clk_get_of_node(struct clk_hw *hw)
 	struct device_node *np;
 	char *node_name;
 
-	node_name = kstrdup(hw->init->name, GFP_KERNEL);
+	node_name = kstrdup_and_replace(hw->init->name, '_', '-', GFP_KERNEL);
 	if (!node_name)
 		return NULL;
-
-	strreplace(node_name, '_', '-');
 
 	for_each_child_of_node(tegra_car_np, np) {
 		if (!strcmp(np->name, node_name))

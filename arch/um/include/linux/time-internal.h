@@ -83,9 +83,14 @@ extern void time_travel_not_configured(void);
 #define time_travel_del_event(...) time_travel_not_configured()
 #endif /* CONFIG_UML_TIME_TRAVEL_SUPPORT */
 
+extern unsigned long tt_extra_sched_jiffies;
+
 /*
  * Without CONFIG_UML_TIME_TRAVEL_SUPPORT this is a linker error if used,
  * which is intentional since we really shouldn't link it in that case.
  */
 void time_travel_ndelay(unsigned long nsec);
+
+int um_setup_timer(void);
+
 #endif /* __TIMER_INTERNAL_H__ */

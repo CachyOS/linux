@@ -159,7 +159,7 @@ int xen_pcibk_enable_msi(struct xen_pcibk_device *pdev,
 		return XEN_PCI_ERR_op_failed;
 	}
 
-	/* The value the guest needs is actually the IDT vector, not the
+	/* The value the guest needs is actually the IDT vector, not
 	 * the local domain's IRQ number. */
 
 	op->value = dev->irq ? xen_pirq_from_irq(dev->irq) : 0;
@@ -219,7 +219,7 @@ int xen_pcibk_enable_msix(struct xen_pcibk_device *pdev,
 	if (dev->msi_enabled || !(cmd & PCI_COMMAND_MEMORY))
 		return -ENXIO;
 
-	entries = kmalloc_array(op->value, sizeof(*entries), GFP_KERNEL);
+	entries = kmalloc_objs(*entries, op->value);
 	if (entries == NULL)
 		return -ENOMEM;
 

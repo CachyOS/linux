@@ -193,7 +193,7 @@ bool smc_ib_port_active(struct smc_ib_device *smcibdev, u8 ibport)
 	return smcibdev->pattr[ibport - 1].state == IB_PORT_ACTIVE;
 }
 
-int smc_ib_find_route(__be32 saddr, __be32 daddr,
+int smc_ib_find_route(struct net *net, __be32 saddr, __be32 daddr,
 		      u8 nexthop_mac[], u8 *uses_gateway)
 {
 	struct neighbour *neigh = NULL;
@@ -205,17 +205,22 @@ int smc_ib_find_route(__be32 saddr, __be32 daddr,
 
 	if (daddr == cpu_to_be32(INADDR_NONE))
 		goto out;
-	rt = ip_route_output_flow(&init_net, &fl4, NULL);
+	rt = ip_route_output_flow(net, &fl4, NULL);
 	if (IS_ERR(rt))
 		goto out;
 	if (rt->rt_uses_gateway && rt->rt_gw_family != AF_INET)
-		goto out;
-	neigh = rt->dst.ops->neigh_lookup(&rt->dst, NULL, &fl4.daddr);
-	if (neigh) {
-		memcpy(nexthop_mac, neigh->ha, ETH_ALEN);
-		*uses_gateway = rt->rt_uses_gateway;
-		return 0;
-	}
+		goto out_rt;
+	neigh = dst_neigh_lookup(&rt->dst, &fl4.daddr);
+	if (!neigh)
+		goto out_rt;
+	memcpy(nexthop_mac, neigh->ha, ETH_ALEN);
+	*uses_gateway = rt->rt_uses_gateway;
+	neigh_release(neigh);
+	ip_rt_put(rt);
+	return 0;
+
+out_rt:
+	ip_rt_put(rt);
 out:
 	return -ENOENT;
 }
@@ -235,6 +240,7 @@ static int smc_ib_determine_gid_rcu(const struct net_device *ndev,
 	if (smcrv2 && attr->gid_type == IB_GID_TYPE_ROCE_UDP_ENCAP &&
 	    smc_ib_gid_to_ipv4((u8 *)&attr->gid) != cpu_to_be32(INADDR_NONE)) {
 		struct in_device *in_dev = __in_dev_get_rcu(ndev);
+		struct net *net = dev_net(ndev);
 		const struct in_ifaddr *ifa;
 		bool subnet_match = false;
 
@@ -248,7 +254,7 @@ static int smc_ib_determine_gid_rcu(const struct net_device *ndev,
 		}
 		if (!subnet_match)
 			goto out;
-		if (smcrv2->daddr && smc_ib_find_route(smcrv2->saddr,
+		if (smcrv2->daddr && smc_ib_find_route(net, smcrv2->saddr,
 						       smcrv2->daddr,
 						       smcrv2->nexthop_mac,
 						       &smcrv2->uses_gateway))
@@ -656,7 +662,6 @@ void smc_ib_destroy_queue_pair(struct smc_link *lnk)
 /* create a queue pair within the protection domain for a link */
 int smc_ib_create_queue_pair(struct smc_link *lnk)
 {
-	int sges_per_buf = (lnk->lgr->smc_version == SMC_V2) ? 2 : 1;
 	struct ib_qp_init_attr qp_attr = {
 		.event_handler = smc_ib_qp_event_handler,
 		.qp_context = lnk,
@@ -664,13 +669,8 @@ int smc_ib_create_queue_pair(struct smc_link *lnk)
 		.recv_cq = lnk->smcibdev->roce_cq_recv,
 		.srq = NULL,
 		.cap = {
-				/* include unsolicited rdma_writes as well,
-				 * there are max. 2 RDMA_WRITE per 1 WR_SEND
-				 */
-			.max_send_wr = SMC_WR_BUF_CNT * 3,
-			.max_recv_wr = SMC_WR_BUF_CNT * 3,
 			.max_send_sge = SMC_IB_MAX_SEND_SGE,
-			.max_recv_sge = sges_per_buf,
+			.max_recv_sge = lnk->wr_rx_sge_cnt,
 			.max_inline_data = 0,
 		},
 		.sq_sig_type = IB_SIGNAL_REQ_WR,
@@ -678,6 +678,11 @@ int smc_ib_create_queue_pair(struct smc_link *lnk)
 	};
 	int rc;
 
+	/* include unsolicited rdma_writes as well,
+	 * there are max. 2 RDMA_WRITE per 1 WR_SEND
+	 */
+	qp_attr.cap.max_send_wr = 3 * lnk->lgr->max_send_wr;
+	qp_attr.cap.max_recv_wr = lnk->lgr->max_recv_wr;
 	lnk->roce_qp = ib_create_qp(lnk->roce_pd, &qp_attr);
 	rc = PTR_ERR_OR_ZERO(lnk->roce_qp);
 	if (IS_ERR(lnk->roce_qp))
@@ -698,7 +703,7 @@ static int smc_ib_map_mr_sg(struct smc_buf_desc *buf_slot, u8 link_idx)
 	int sg_num;
 
 	/* map the largest prefix of a dma mapped SG list */
-	sg_num = ib_map_mr_sg(buf_slot->mr_rx[link_idx],
+	sg_num = ib_map_mr_sg(buf_slot->mr[link_idx],
 			      buf_slot->sgt[link_idx].sgl,
 			      buf_slot->sgt[link_idx].orig_nents,
 			      &offset, PAGE_SIZE);
@@ -710,23 +715,50 @@ static int smc_ib_map_mr_sg(struct smc_buf_desc *buf_slot, u8 link_idx)
 int smc_ib_get_memory_region(struct ib_pd *pd, int access_flags,
 			     struct smc_buf_desc *buf_slot, u8 link_idx)
 {
-	if (buf_slot->mr_rx[link_idx])
+	if (buf_slot->mr[link_idx])
 		return 0; /* already done */
 
-	buf_slot->mr_rx[link_idx] =
+	buf_slot->mr[link_idx] =
 		ib_alloc_mr(pd, IB_MR_TYPE_MEM_REG, 1 << buf_slot->order);
-	if (IS_ERR(buf_slot->mr_rx[link_idx])) {
+	if (IS_ERR(buf_slot->mr[link_idx])) {
 		int rc;
 
-		rc = PTR_ERR(buf_slot->mr_rx[link_idx]);
-		buf_slot->mr_rx[link_idx] = NULL;
+		rc = PTR_ERR(buf_slot->mr[link_idx]);
+		buf_slot->mr[link_idx] = NULL;
 		return rc;
 	}
 
-	if (smc_ib_map_mr_sg(buf_slot, link_idx) != 1)
+	if (smc_ib_map_mr_sg(buf_slot, link_idx) !=
+			     buf_slot->sgt[link_idx].orig_nents)
 		return -EINVAL;
 
 	return 0;
+}
+
+bool smc_ib_is_sg_need_sync(struct smc_link *lnk,
+			    struct smc_buf_desc *buf_slot)
+{
+	struct scatterlist *sg;
+	unsigned int i;
+	bool ret = false;
+
+	if (!lnk->smcibdev->ibdev->dma_device)
+		return ret;
+
+	/* for now there is just one DMA address */
+	for_each_sg(buf_slot->sgt[lnk->link_idx].sgl, sg,
+		    buf_slot->sgt[lnk->link_idx].nents, i) {
+		if (!sg_dma_len(sg))
+			break;
+		if (dma_need_sync(lnk->smcibdev->ibdev->dma_device,
+				  sg_dma_address(sg))) {
+			ret = true;
+			goto out;
+		}
+	}
+
+out:
+	return ret;
 }
 
 /* synchronize buffer usage for cpu access */
@@ -736,6 +768,9 @@ void smc_ib_sync_sg_for_cpu(struct smc_link *lnk,
 {
 	struct scatterlist *sg;
 	unsigned int i;
+
+	if (!(buf_slot->is_dma_need_sync & (1U << lnk->link_idx)))
+		return;
 
 	/* for now there is just one DMA address */
 	for_each_sg(buf_slot->sgt[lnk->link_idx].sgl, sg,
@@ -756,6 +791,9 @@ void smc_ib_sync_sg_for_device(struct smc_link *lnk,
 {
 	struct scatterlist *sg;
 	unsigned int i;
+
+	if (!(buf_slot->is_dma_need_sync & (1U << lnk->link_idx)))
+		return;
 
 	/* for now there is just one DMA address */
 	for_each_sg(buf_slot->sgt[lnk->link_idx].sgl, sg,
@@ -813,7 +851,7 @@ long smc_ib_setup_per_ibdev(struct smc_ib_device *smcibdev)
 		goto out;
 	/* the calculated number of cq entries fits to mlx5 cq allocation */
 	cqe_size_order = cache_line_size() == 128 ? 7 : 6;
-	smc_order = MAX_ORDER - cqe_size_order - 1;
+	smc_order = MAX_PAGE_ORDER - cqe_size_order;
 	if (SMC_MAX_CQE + 2 > (0x00000001 << smc_order) * PAGE_SIZE)
 		cqattr.cqe = (0x00000001 << smc_order) * PAGE_SIZE - 2;
 	smcibdev->roce_cq_send = ib_create_cq(smcibdev->ibdev,
@@ -863,9 +901,7 @@ static void smc_copy_netdev_ifindex(struct smc_ib_device *smcibdev, int port)
 	struct ib_device *ibdev = smcibdev->ibdev;
 	struct net_device *ndev;
 
-	if (!ibdev->ops.get_netdev)
-		return;
-	ndev = ibdev->ops.get_netdev(ibdev, port + 1);
+	ndev = ib_device_get_netdev(ibdev, port + 1);
 	if (ndev) {
 		smcibdev->ndev_ifidx[port] = ndev->ifindex;
 		dev_put(ndev);
@@ -885,9 +921,7 @@ void smc_ib_ndev_change(struct net_device *ndev, unsigned long event)
 		port_cnt = smcibdev->ibdev->phys_port_cnt;
 		for (i = 0; i < min_t(size_t, port_cnt, SMC_MAX_PORTS); i++) {
 			libdev = smcibdev->ibdev;
-			if (!libdev->ops.get_netdev)
-				continue;
-			lndev = libdev->ops.get_netdev(libdev, i + 1);
+			lndev = ib_device_get_netdev(libdev, i + 1);
 			dev_put(lndev);
 			if (lndev != ndev)
 				continue;
@@ -910,7 +944,7 @@ static int smc_ib_add_dev(struct ib_device *ibdev)
 	if (ibdev->node_type != RDMA_NODE_IB_CA)
 		return -EOPNOTSUPP;
 
-	smcibdev = kzalloc(sizeof(*smcibdev), GFP_KERNEL);
+	smcibdev = kzalloc_obj(*smcibdev);
 	if (!smcibdev)
 		return -ENOMEM;
 
@@ -940,13 +974,17 @@ static int smc_ib_add_dev(struct ib_device *ibdev)
 					   smcibdev->pnetid[i]))
 			smc_pnetid_by_table_ib(smcibdev, i + 1);
 		smc_copy_netdev_ifindex(smcibdev, i);
-		pr_warn_ratelimited("smc:    ib device %s port %d has pnetid "
-				    "%.16s%s\n",
-				    smcibdev->ibdev->name, i + 1,
-				    smcibdev->pnetid[i],
-				    smcibdev->pnetid_by_user[i] ?
-				     " (user defined)" :
-				     "");
+		if (smc_pnet_is_pnetid_set(smcibdev->pnetid[i]))
+			pr_warn_ratelimited("smc:    ib device %s port %d has pnetid %.16s%s\n",
+					    smcibdev->ibdev->name, i + 1,
+					    smcibdev->pnetid[i],
+					    smcibdev->pnetid_by_user[i] ?
+						" (user defined)" :
+						"");
+		else
+			pr_warn_ratelimited("smc:    ib device %s port %d has no pnetid\n",
+					    smcibdev->ibdev->name, i + 1);
+
 	}
 	schedule_work(&smcibdev->port_event_work);
 	return 0;

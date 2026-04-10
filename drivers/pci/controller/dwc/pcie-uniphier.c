@@ -67,7 +67,7 @@ struct uniphier_pcie {
 	struct clk *clk;
 	struct reset_control *rst;
 	struct phy *phy;
-	struct irq_domain *legacy_irq_domain;
+	struct irq_domain *intx_irq_domain;
 };
 
 #define to_uniphier_pcie(x)	dev_get_drvdata((x)->dev)
@@ -135,7 +135,7 @@ static int uniphier_pcie_wait_rc(struct uniphier_pcie *pcie)
 	return 0;
 }
 
-static int uniphier_pcie_link_up(struct dw_pcie *pci)
+static bool uniphier_pcie_link_up(struct dw_pcie *pci)
 {
 	struct uniphier_pcie *pcie = to_uniphier_pcie(pci);
 	u32 val, mask;
@@ -171,7 +171,7 @@ static void uniphier_pcie_irq_enable(struct uniphier_pcie *pcie)
 
 static void uniphier_pcie_irq_mask(struct irq_data *d)
 {
-	struct pcie_port *pp = irq_data_get_irq_chip_data(d);
+	struct dw_pcie_rp *pp = irq_data_get_irq_chip_data(d);
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
 	struct uniphier_pcie *pcie = to_uniphier_pcie(pci);
 	unsigned long flags;
@@ -188,7 +188,7 @@ static void uniphier_pcie_irq_mask(struct irq_data *d)
 
 static void uniphier_pcie_irq_unmask(struct irq_data *d)
 {
-	struct pcie_port *pp = irq_data_get_irq_chip_data(d);
+	struct dw_pcie_rp *pp = irq_data_get_irq_chip_data(d);
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
 	struct uniphier_pcie *pcie = to_uniphier_pcie(pci);
 	unsigned long flags;
@@ -225,7 +225,7 @@ static const struct irq_domain_ops uniphier_intx_domain_ops = {
 
 static void uniphier_pcie_irq_handler(struct irq_desc *desc)
 {
-	struct pcie_port *pp = irq_desc_get_handler_data(desc);
+	struct dw_pcie_rp *pp = irq_desc_get_handler_data(desc);
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
 	struct uniphier_pcie *pcie = to_uniphier_pcie(pci);
 	struct irq_chip *chip = irq_desc_get_chip(desc);
@@ -253,12 +253,12 @@ static void uniphier_pcie_irq_handler(struct irq_desc *desc)
 	reg = FIELD_GET(PCL_RCV_INTX_ALL_STATUS, val);
 
 	for_each_set_bit(bit, &reg, PCI_NUM_INTX)
-		generic_handle_domain_irq(pcie->legacy_irq_domain, bit);
+		generic_handle_domain_irq(pcie->intx_irq_domain, bit);
 
 	chained_irq_exit(chip, desc);
 }
 
-static int uniphier_pcie_config_legacy_irq(struct pcie_port *pp)
+static int uniphier_pcie_config_intx_irq(struct dw_pcie_rp *pp)
 {
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
 	struct uniphier_pcie *pcie = to_uniphier_pcie(pci);
@@ -279,9 +279,9 @@ static int uniphier_pcie_config_legacy_irq(struct pcie_port *pp)
 		goto out_put_node;
 	}
 
-	pcie->legacy_irq_domain = irq_domain_add_linear(np_intc, PCI_NUM_INTX,
+	pcie->intx_irq_domain = irq_domain_create_linear(of_fwnode_handle(np_intc), PCI_NUM_INTX,
 						&uniphier_intx_domain_ops, pp);
-	if (!pcie->legacy_irq_domain) {
+	if (!pcie->intx_irq_domain) {
 		dev_err(pci->dev, "Failed to get INTx domain\n");
 		ret = -ENODEV;
 		goto out_put_node;
@@ -295,13 +295,13 @@ out_put_node:
 	return ret;
 }
 
-static int uniphier_pcie_host_init(struct pcie_port *pp)
+static int uniphier_pcie_host_init(struct dw_pcie_rp *pp)
 {
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
 	struct uniphier_pcie *pcie = to_uniphier_pcie(pci);
 	int ret;
 
-	ret = uniphier_pcie_config_legacy_irq(pp);
+	ret = uniphier_pcie_config_intx_irq(pp);
 	if (ret)
 		return ret;
 
@@ -311,7 +311,7 @@ static int uniphier_pcie_host_init(struct pcie_port *pp)
 }
 
 static const struct dw_pcie_host_ops uniphier_pcie_host_ops = {
-	.host_init = uniphier_pcie_host_init,
+	.init = uniphier_pcie_host_init,
 };
 
 static int uniphier_pcie_host_enable(struct uniphier_pcie *pcie)

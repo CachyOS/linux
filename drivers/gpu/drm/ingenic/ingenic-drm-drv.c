@@ -11,35 +11,36 @@
 #include <linux/clk.h>
 #include <linux/dma-mapping.h>
 #include <linux/io.h>
+#include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/regmap.h>
 
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_bridge_connector.h>
 #include <drm/drm_color_mgmt.h>
 #include <drm/drm_crtc.h>
-#include <drm/drm_crtc_helper.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_encoder.h>
-#include <drm/drm_gem_cma_helper.h>
-#include <drm/drm_fb_cma_helper.h>
-#include <drm/drm_fb_helper.h>
+#include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_fb_dma_helper.h>
+#include <drm/drm_fbdev_dma.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_of.h>
 #include <drm/drm_panel.h>
 #include <drm/drm_plane.h>
-#include <drm/drm_plane_helper.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
 
@@ -69,6 +70,7 @@ struct jz_soc_info {
 	bool map_noncoherent;
 	bool use_extended_hwdesc;
 	bool plane_f0_not_working;
+	u32 max_burst;
 	unsigned int max_width, max_height;
 	const u32 *formats_f0, *formats_f1;
 	unsigned int num_formats_f0, num_formats_f1;
@@ -227,7 +229,7 @@ static int ingenic_drm_update_pixclk(struct notifier_block *nb,
 }
 
 static void ingenic_drm_bridge_atomic_enable(struct drm_bridge *bridge,
-					     struct drm_bridge_state *old_bridge_state)
+					     struct drm_atomic_state *state)
 {
 	struct ingenic_drm *priv = drm_device_get_priv(bridge->dev);
 
@@ -245,8 +247,8 @@ static void ingenic_drm_crtc_atomic_enable(struct drm_crtc *crtc,
 	struct ingenic_drm_private_state *priv_state;
 	unsigned int next_id;
 
-	priv_state = ingenic_drm_get_priv_state(priv, state);
-	if (WARN_ON(IS_ERR(priv_state)))
+	priv_state = ingenic_drm_get_new_priv_state(priv, state);
+	if (WARN_ON(!priv_state))
 		return;
 
 	/* Set addresses of our DMA descriptor chains */
@@ -258,7 +260,7 @@ static void ingenic_drm_crtc_atomic_enable(struct drm_crtc *crtc,
 }
 
 static void ingenic_drm_bridge_atomic_disable(struct drm_bridge *bridge,
-					      struct drm_bridge_state *old_bridge_state)
+					      struct drm_atomic_state *state)
 {
 	struct ingenic_drm *priv = drm_device_get_priv(bridge->dev);
 	unsigned int var;
@@ -318,8 +320,9 @@ static void ingenic_drm_crtc_update_timings(struct ingenic_drm *priv,
 		regmap_write(priv->map, JZ_REG_LCD_REV, mode->htotal << 16);
 	}
 
-	regmap_set_bits(priv->map, JZ_REG_LCD_CTRL,
-			JZ_LCD_CTRL_OFUP | JZ_LCD_CTRL_BURST_16);
+	regmap_update_bits(priv->map, JZ_REG_LCD_CTRL,
+			   JZ_LCD_CTRL_OFUP | JZ_LCD_CTRL_BURST_MASK,
+			   JZ_LCD_CTRL_OFUP | priv->soc_info->max_burst);
 
 	/*
 	 * IPU restart - specify how much time the LCDC will wait before
@@ -337,12 +340,18 @@ static int ingenic_drm_crtc_atomic_check(struct drm_crtc *crtc,
 									  crtc);
 	struct ingenic_drm *priv = drm_crtc_get_priv(crtc);
 	struct drm_plane_state *f1_state, *f0_state, *ipu_state = NULL;
+	struct ingenic_drm_private_state *priv_state;
 
 	if (crtc_state->gamma_lut &&
 	    drm_color_lut_size(crtc_state->gamma_lut) != ARRAY_SIZE(priv->dma_hwdescs->palette)) {
 		dev_dbg(priv->dev, "Invalid palette size\n");
 		return -EINVAL;
 	}
+
+	/* We will need the state in atomic_enable, so let's make sure it's part of the state */
+	priv_state = ingenic_drm_get_priv_state(priv, state);
+	if (IS_ERR(priv_state))
+		return PTR_ERR(priv_state);
 
 	if (drm_atomic_crtc_needs_modeset(crtc_state) && priv->soc_info->has_osd) {
 		f1_state = drm_atomic_get_plane_state(crtc_state->state,
@@ -468,8 +477,7 @@ static int ingenic_drm_plane_atomic_check(struct drm_plane *plane,
 	if (priv->soc_info->plane_f0_not_working && plane == &priv->f0)
 		return -EINVAL;
 
-	crtc_state = drm_atomic_get_existing_crtc_state(state,
-							crtc);
+	crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
 	if (WARN_ON(!crtc_state))
 		return -EINVAL;
 
@@ -478,8 +486,8 @@ static int ingenic_drm_plane_atomic_check(struct drm_plane *plane,
 		return PTR_ERR(priv_state);
 
 	ret = drm_atomic_helper_check_plane_state(new_plane_state, crtc_state,
-						  DRM_PLANE_HELPER_NO_SCALING,
-						  DRM_PLANE_HELPER_NO_SCALING,
+						  DRM_PLANE_NO_SCALING,
+						  DRM_PLANE_NO_SCALING,
 						  priv->soc_info->has_osd,
 						  true);
 	if (ret)
@@ -666,12 +674,12 @@ static void ingenic_drm_plane_atomic_update(struct drm_plane *plane,
 
 	if (newstate && newstate->fb) {
 		if (priv->soc_info->map_noncoherent)
-			drm_fb_cma_sync_non_coherent(&priv->drm, oldstate, newstate);
+			drm_fb_dma_sync_non_coherent(&priv->drm, oldstate, newstate);
 
 		crtc_state = newstate->crtc->state;
 		plane_id = !!(priv->soc_info->has_osd && plane != &priv->f0);
 
-		addr = drm_fb_cma_get_gem_addr(newstate->fb, newstate, 0);
+		addr = drm_fb_dma_get_gem_addr(newstate->fb, newstate, 0);
 		width = newstate->src_w >> 16;
 		height = newstate->src_h >> 16;
 		cpp = newstate->fb->format->cpp[0];
@@ -788,11 +796,12 @@ static void ingenic_drm_encoder_atomic_mode_set(struct drm_encoder *encoder,
 }
 
 static int ingenic_drm_bridge_attach(struct drm_bridge *bridge,
+				     struct drm_encoder *encoder,
 				     enum drm_bridge_attach_flags flags)
 {
-	struct ingenic_drm_bridge *ib = to_ingenic_drm_bridge(bridge->encoder);
+	struct ingenic_drm_bridge *ib = to_ingenic_drm_bridge(encoder);
 
-	return drm_bridge_attach(bridge->encoder, ib->next_bridge,
+	return drm_bridge_attach(encoder, ib->next_bridge,
 				 &ib->bridge, flags);
 }
 
@@ -897,23 +906,24 @@ static void ingenic_drm_disable_vblank(struct drm_crtc *crtc)
 
 static struct drm_framebuffer *
 ingenic_drm_gem_fb_create(struct drm_device *drm, struct drm_file *file,
+			  const struct drm_format_info *info,
 			  const struct drm_mode_fb_cmd2 *mode_cmd)
 {
 	struct ingenic_drm *priv = drm_device_get_priv(drm);
 
 	if (priv->soc_info->map_noncoherent)
-		return drm_gem_fb_create_with_dirty(drm, file, mode_cmd);
+		return drm_gem_fb_create_with_dirty(drm, file, info, mode_cmd);
 
-	return drm_gem_fb_create(drm, file, mode_cmd);
+	return drm_gem_fb_create(drm, file, info, mode_cmd);
 }
 
 static struct drm_gem_object *
 ingenic_drm_gem_create_object(struct drm_device *drm, size_t size)
 {
 	struct ingenic_drm *priv = drm_device_get_priv(drm);
-	struct drm_gem_cma_object *obj;
+	struct drm_gem_dma_object *obj;
 
-	obj = kzalloc(sizeof(*obj), GFP_KERNEL);
+	obj = kzalloc_obj(*obj);
 	if (!obj)
 		return ERR_PTR(-ENOMEM);
 
@@ -944,20 +954,20 @@ static void ingenic_drm_destroy_state(struct drm_private_obj *obj,
 	kfree(priv_state);
 }
 
-DEFINE_DRM_GEM_CMA_FOPS(ingenic_drm_fops);
+DEFINE_DRM_GEM_DMA_FOPS(ingenic_drm_fops);
 
 static const struct drm_driver ingenic_drm_driver_data = {
 	.driver_features	= DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
 	.name			= "ingenic-drm",
 	.desc			= "DRM module for Ingenic SoCs",
-	.date			= "20200716",
 	.major			= 1,
 	.minor			= 1,
 	.patchlevel		= 0,
 
 	.fops			= &ingenic_drm_fops,
 	.gem_create_object	= ingenic_drm_gem_create_object,
-	DRM_GEM_CMA_DRIVER_OPS,
+	DRM_GEM_DMA_DRIVER_OPS,
+	DRM_FBDEV_DMA_DRIVER_OPS,
 };
 
 static const struct drm_plane_funcs ingenic_drm_primary_plane_funcs = {
@@ -1015,7 +1025,6 @@ static const struct drm_bridge_funcs ingenic_drm_bridge_funcs = {
 
 static const struct drm_mode_config_funcs ingenic_drm_mode_config_funcs = {
 	.fb_create		= ingenic_drm_gem_fb_create,
-	.output_poll_changed	= drm_fb_helper_output_poll_changed,
 	.atomic_check		= drm_atomic_helper_check,
 	.atomic_commit		= drm_atomic_helper_commit,
 };
@@ -1129,7 +1138,7 @@ static int ingenic_drm_bind(struct device *dev, bool has_components)
 
 	ret = drmm_mode_config_init(drm);
 	if (ret)
-		return ret;
+		goto err_drvdata;
 
 	drm->mode_config.min_width = 0;
 	drm->mode_config.min_height = 0;
@@ -1141,7 +1150,8 @@ static int ingenic_drm_bind(struct device *dev, bool has_components)
 	base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(base)) {
 		dev_err(dev, "Failed to get memory resource\n");
-		return PTR_ERR(base);
+		ret = PTR_ERR(base);
+		goto err_drvdata;
 	}
 
 	regmap_config = ingenic_drm_regmap_config;
@@ -1150,33 +1160,40 @@ static int ingenic_drm_bind(struct device *dev, bool has_components)
 					  &regmap_config);
 	if (IS_ERR(priv->map)) {
 		dev_err(dev, "Failed to create regmap\n");
-		return PTR_ERR(priv->map);
+		ret = PTR_ERR(priv->map);
+		goto err_drvdata;
 	}
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
+	if (irq < 0) {
+		ret = irq;
+		goto err_drvdata;
+	}
 
 	if (soc_info->needs_dev_clk) {
 		priv->lcd_clk = devm_clk_get(dev, "lcd");
 		if (IS_ERR(priv->lcd_clk)) {
 			dev_err(dev, "Failed to get lcd clock\n");
-			return PTR_ERR(priv->lcd_clk);
+			ret = PTR_ERR(priv->lcd_clk);
+			goto err_drvdata;
 		}
 	}
 
 	priv->pix_clk = devm_clk_get(dev, "lcd_pclk");
 	if (IS_ERR(priv->pix_clk)) {
 		dev_err(dev, "Failed to get pixel clock\n");
-		return PTR_ERR(priv->pix_clk);
+		ret = PTR_ERR(priv->pix_clk);
+		goto err_drvdata;
 	}
 
 	priv->dma_hwdescs = dmam_alloc_coherent(dev,
 						sizeof(*priv->dma_hwdescs),
 						&priv->dma_hwdescs_phys,
 						GFP_KERNEL);
-	if (!priv->dma_hwdescs)
-		return -ENOMEM;
+	if (!priv->dma_hwdescs) {
+		ret = -ENOMEM;
+		goto err_drvdata;
+	}
 
 	/* Configure DMA hwdesc for foreground0 plane */
 	ingenic_drm_configure_hwdesc_plane(priv, 0);
@@ -1198,7 +1215,7 @@ static int ingenic_drm_bind(struct device *dev, bool has_components)
 				       NULL, DRM_PLANE_TYPE_PRIMARY, NULL);
 	if (ret) {
 		dev_err(dev, "Failed to register plane: %i\n", ret);
-		return ret;
+		goto err_drvdata;
 	}
 
 	if (soc_info->map_noncoherent)
@@ -1210,7 +1227,7 @@ static int ingenic_drm_bind(struct device *dev, bool has_components)
 					NULL, &ingenic_drm_crtc_funcs, NULL);
 	if (ret) {
 		dev_err(dev, "Failed to init CRTC: %i\n", ret);
-		return ret;
+		goto err_drvdata;
 	}
 
 	drm_crtc_enable_color_mgmt(&priv->crtc, 0, false,
@@ -1229,7 +1246,7 @@ static int ingenic_drm_bind(struct device *dev, bool has_components)
 		if (ret) {
 			dev_err(dev, "Failed to register overlay plane: %i\n",
 				ret);
-			return ret;
+			goto err_drvdata;
 		}
 
 		if (soc_info->map_noncoherent)
@@ -1240,17 +1257,18 @@ static int ingenic_drm_bind(struct device *dev, bool has_components)
 			if (ret) {
 				if (ret != -EPROBE_DEFER)
 					dev_err(dev, "Failed to bind components: %i\n", ret);
-				return ret;
+				goto err_drvdata;
 			}
 
 			ret = devm_add_action_or_reset(dev, ingenic_drm_unbind_all, priv);
 			if (ret)
-				return ret;
+				goto err_drvdata;
 
 			priv->ipu_plane = drm_plane_from_index(drm, 2);
 			if (!priv->ipu_plane) {
 				dev_err(dev, "Failed to retrieve IPU plane\n");
-				return -EINVAL;
+				ret = -EINVAL;
+				goto err_drvdata;
 			}
 		}
 	}
@@ -1262,7 +1280,7 @@ static int ingenic_drm_bind(struct device *dev, bool has_components)
 				break; /* we're done */
 			if (ret != -EPROBE_DEFER)
 				dev_err(dev, "Failed to get bridge handle\n");
-			return ret;
+			goto err_drvdata;
 		}
 
 		if (panel)
@@ -1274,7 +1292,7 @@ static int ingenic_drm_bind(struct device *dev, bool has_components)
 		if (IS_ERR(ib)) {
 			ret = PTR_ERR(ib);
 			dev_err(dev, "Failed to init encoder: %d\n", ret);
-			return ret;
+			goto err_drvdata;
 		}
 
 		encoder = &ib->encoder;
@@ -1289,13 +1307,14 @@ static int ingenic_drm_bind(struct device *dev, bool has_components)
 					DRM_BRIDGE_ATTACH_NO_CONNECTOR);
 		if (ret) {
 			dev_err(dev, "Unable to attach bridge\n");
-			return ret;
+			goto err_drvdata;
 		}
 
 		connector = drm_bridge_connector_init(drm, encoder);
 		if (IS_ERR(connector)) {
 			dev_err(dev, "Unable to init connector\n");
-			return PTR_ERR(connector);
+			ret = PTR_ERR(connector);
+			goto err_drvdata;
 		}
 
 		drm_connector_attach_encoder(connector, encoder);
@@ -1312,13 +1331,13 @@ static int ingenic_drm_bind(struct device *dev, bool has_components)
 	ret = devm_request_irq(dev, irq, ingenic_drm_irq_handler, 0, drm->driver->name, drm);
 	if (ret) {
 		dev_err(dev, "Unable to install IRQ handler\n");
-		return ret;
+		goto err_drvdata;
 	}
 
 	ret = drm_vblank_init(drm, 1);
 	if (ret) {
 		dev_err(dev, "Failed calling drm_vblank_init()\n");
-		return ret;
+		goto err_drvdata;
 	}
 
 	drm_mode_config_reset(drm);
@@ -1326,7 +1345,7 @@ static int ingenic_drm_bind(struct device *dev, bool has_components)
 	ret = clk_prepare_enable(priv->pix_clk);
 	if (ret) {
 		dev_err(dev, "Unable to start pixel clock\n");
-		return ret;
+		goto err_drvdata;
 	}
 
 	if (priv->lcd_clk) {
@@ -1368,7 +1387,7 @@ static int ingenic_drm_bind(struct device *dev, bool has_components)
 		goto err_devclk_disable;
 	}
 
-	private_state = kzalloc(sizeof(*private_state), GFP_KERNEL);
+	private_state = kzalloc_obj(*private_state);
 	if (!private_state) {
 		ret = -ENOMEM;
 		goto err_clk_notifier_unregister;
@@ -1388,7 +1407,7 @@ static int ingenic_drm_bind(struct device *dev, bool has_components)
 		goto err_clk_notifier_unregister;
 	}
 
-	drm_fbdev_generic_setup(drm, 32);
+	drm_client_setup(drm, NULL);
 
 	return 0;
 
@@ -1401,6 +1420,8 @@ err_devclk_disable:
 		clk_disable_unprepare(priv->lcd_clk);
 err_pixclk_disable:
 	clk_disable_unprepare(priv->pix_clk);
+err_drvdata:
+	platform_set_drvdata(pdev, NULL);
 	return ret;
 }
 
@@ -1421,6 +1442,7 @@ static void ingenic_drm_unbind(struct device *dev)
 
 	drm_dev_unregister(&priv->drm);
 	drm_atomic_helper_shutdown(&priv->drm);
+	dev_set_drvdata(dev, NULL);
 }
 
 static const struct component_master_ops ingenic_master_ops = {
@@ -1448,7 +1470,7 @@ static int ingenic_drm_probe(struct platform_device *pdev)
 	return component_master_add_with_match(dev, &ingenic_master_ops, match);
 }
 
-static int ingenic_drm_remove(struct platform_device *pdev)
+static void ingenic_drm_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 
@@ -1456,25 +1478,32 @@ static int ingenic_drm_remove(struct platform_device *pdev)
 		ingenic_drm_unbind(dev);
 	else
 		component_master_del(dev, &ingenic_master_ops);
-
-	return 0;
 }
 
-static int __maybe_unused ingenic_drm_suspend(struct device *dev)
+static void ingenic_drm_shutdown(struct platform_device *pdev)
+{
+	struct ingenic_drm *priv = platform_get_drvdata(pdev);
+
+	if (priv)
+		drm_atomic_helper_shutdown(&priv->drm);
+}
+
+static int ingenic_drm_suspend(struct device *dev)
 {
 	struct ingenic_drm *priv = dev_get_drvdata(dev);
 
 	return drm_mode_config_helper_suspend(&priv->drm);
 }
 
-static int __maybe_unused ingenic_drm_resume(struct device *dev)
+static int ingenic_drm_resume(struct device *dev)
 {
 	struct ingenic_drm *priv = dev_get_drvdata(dev);
 
 	return drm_mode_config_helper_resume(&priv->drm);
 }
 
-static SIMPLE_DEV_PM_OPS(ingenic_drm_pm_ops, ingenic_drm_suspend, ingenic_drm_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(ingenic_drm_pm_ops,
+				ingenic_drm_suspend, ingenic_drm_resume);
 
 static const u32 jz4740_formats[] = {
 	DRM_FORMAT_XRGB1555,
@@ -1518,6 +1547,7 @@ static const struct jz_soc_info jz4740_soc_info = {
 	.map_noncoherent = false,
 	.max_width = 800,
 	.max_height = 600,
+	.max_burst = JZ_LCD_CTRL_BURST_16,
 	.formats_f1 = jz4740_formats,
 	.num_formats_f1 = ARRAY_SIZE(jz4740_formats),
 	/* JZ4740 has only one plane */
@@ -1529,10 +1559,37 @@ static const struct jz_soc_info jz4725b_soc_info = {
 	.map_noncoherent = false,
 	.max_width = 800,
 	.max_height = 600,
+	.max_burst = JZ_LCD_CTRL_BURST_16,
 	.formats_f1 = jz4725b_formats_f1,
 	.num_formats_f1 = ARRAY_SIZE(jz4725b_formats_f1),
 	.formats_f0 = jz4725b_formats_f0,
 	.num_formats_f0 = ARRAY_SIZE(jz4725b_formats_f0),
+};
+
+static const struct jz_soc_info jz4760_soc_info = {
+	.needs_dev_clk = false,
+	.has_osd = true,
+	.map_noncoherent = false,
+	.max_width = 1280,
+	.max_height = 720,
+	.max_burst = JZ_LCD_CTRL_BURST_32,
+	.formats_f1 = jz4770_formats_f1,
+	.num_formats_f1 = ARRAY_SIZE(jz4770_formats_f1),
+	.formats_f0 = jz4770_formats_f0,
+	.num_formats_f0 = ARRAY_SIZE(jz4770_formats_f0),
+};
+
+static const struct jz_soc_info jz4760b_soc_info = {
+	.needs_dev_clk = false,
+	.has_osd = true,
+	.map_noncoherent = false,
+	.max_width = 1280,
+	.max_height = 720,
+	.max_burst = JZ_LCD_CTRL_BURST_64,
+	.formats_f1 = jz4770_formats_f1,
+	.num_formats_f1 = ARRAY_SIZE(jz4770_formats_f1),
+	.formats_f0 = jz4770_formats_f0,
+	.num_formats_f0 = ARRAY_SIZE(jz4770_formats_f0),
 };
 
 static const struct jz_soc_info jz4770_soc_info = {
@@ -1541,6 +1598,7 @@ static const struct jz_soc_info jz4770_soc_info = {
 	.map_noncoherent = true,
 	.max_width = 1280,
 	.max_height = 720,
+	.max_burst = JZ_LCD_CTRL_BURST_64,
 	.formats_f1 = jz4770_formats_f1,
 	.num_formats_f1 = ARRAY_SIZE(jz4770_formats_f1),
 	.formats_f0 = jz4770_formats_f0,
@@ -1555,6 +1613,7 @@ static const struct jz_soc_info jz4780_soc_info = {
 	.plane_f0_not_working = true,	/* REVISIT */
 	.max_width = 4096,
 	.max_height = 2048,
+	.max_burst = JZ_LCD_CTRL_BURST_64,
 	.formats_f1 = jz4770_formats_f1,
 	.num_formats_f1 = ARRAY_SIZE(jz4770_formats_f1),
 	.formats_f0 = jz4770_formats_f0,
@@ -1564,6 +1623,8 @@ static const struct jz_soc_info jz4780_soc_info = {
 static const struct of_device_id ingenic_drm_of_match[] = {
 	{ .compatible = "ingenic,jz4740-lcd", .data = &jz4740_soc_info },
 	{ .compatible = "ingenic,jz4725b-lcd", .data = &jz4725b_soc_info },
+	{ .compatible = "ingenic,jz4760-lcd", .data = &jz4760_soc_info },
+	{ .compatible = "ingenic,jz4760b-lcd", .data = &jz4760b_soc_info },
 	{ .compatible = "ingenic,jz4770-lcd", .data = &jz4770_soc_info },
 	{ .compatible = "ingenic,jz4780-lcd", .data = &jz4780_soc_info },
 	{ /* sentinel */ },
@@ -1573,11 +1634,12 @@ MODULE_DEVICE_TABLE(of, ingenic_drm_of_match);
 static struct platform_driver ingenic_drm_driver = {
 	.driver = {
 		.name = "ingenic-drm",
-		.pm = pm_ptr(&ingenic_drm_pm_ops),
+		.pm = pm_sleep_ptr(&ingenic_drm_pm_ops),
 		.of_match_table = of_match_ptr(ingenic_drm_of_match),
 	},
 	.probe = ingenic_drm_probe,
 	.remove = ingenic_drm_remove,
+	.shutdown = ingenic_drm_shutdown,
 };
 
 static int ingenic_drm_init(void)
@@ -1593,7 +1655,11 @@ static int ingenic_drm_init(void)
 			return err;
 	}
 
-	return platform_driver_register(&ingenic_drm_driver);
+	err = platform_driver_register(&ingenic_drm_driver);
+	if (IS_ENABLED(CONFIG_DRM_INGENIC_IPU) && err)
+		platform_driver_unregister(ingenic_ipu_driver_ptr);
+
+	return err;
 }
 module_init(ingenic_drm_init);
 
@@ -1608,4 +1674,4 @@ module_exit(ingenic_drm_exit);
 
 MODULE_AUTHOR("Paul Cercueil <paul@crapouillou.net>");
 MODULE_DESCRIPTION("DRM driver for the Ingenic SoCs\n");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

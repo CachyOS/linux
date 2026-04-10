@@ -197,7 +197,7 @@ struct ak8974 {
 	/* Ensure timestamp is naturally aligned */
 	struct {
 		__le16 channels[3];
-		s64 ts __aligned(8);
+		aligned_s64 ts;
 	} scan;
 };
 
@@ -327,10 +327,7 @@ static int ak8974_trigmeas(struct ak8974 *ak8974)
 	}
 
 	/* Force a measurement */
-	return regmap_update_bits(ak8974->map,
-				  AK8974_CTRL3,
-				  AK8974_CTRL3_FORCE,
-				  AK8974_CTRL3_FORCE);
+	return regmap_set_bits(ak8974->map, AK8974_CTRL3, AK8974_CTRL3_FORCE);
 }
 
 static int ak8974_await_drdy(struct ak8974 *ak8974)
@@ -438,10 +435,7 @@ static int ak8974_selftest(struct ak8974 *ak8974)
 	}
 
 	/* Trigger self-test */
-	ret = regmap_update_bits(ak8974->map,
-			AK8974_CTRL3,
-			AK8974_CTRL3_SELFTEST,
-			AK8974_CTRL3_SELFTEST);
+	ret = regmap_set_bits(ak8974->map, AK8974_CTRL3, AK8974_CTRL3_SELFTEST);
 	if (ret) {
 		dev_err(dev, "could not write CTRL3\n");
 		return ret;
@@ -541,8 +535,8 @@ static int ak8974_detect(struct ak8974 *ak8974)
 				       fab_data2, sizeof(fab_data2));
 
 		for (i = 0; i < 3; ++i) {
-			static const char axis[3] = "XYZ";
-			static const char pgaxis[6] = "ZYZXYX";
+			static const char axis[] = "XYZ";
+			static const char pgaxis[] = "ZYZXYX";
 			unsigned offz = le16_to_cpu(fab_data2[i]) & 0x7F;
 			unsigned fine = le16_to_cpu(fab_data1[i]);
 			unsigned sens = le16_to_cpu(fab_data1[i + 3]);
@@ -589,7 +583,6 @@ static int ak8974_measure_channel(struct ak8974 *ak8974, unsigned long address,
 	*val = (s16)le16_to_cpu(hw_values[address]);
 out_unlock:
 	mutex_unlock(&ak8974->lock);
-	pm_runtime_mark_last_busy(&ak8974->i2c->dev);
 	pm_runtime_put_autosuspend(&ak8974->i2c->dev);
 
 	return ret;
@@ -679,12 +672,11 @@ static void ak8974_fill_buffer(struct iio_dev *indio_dev)
 		goto out_unlock;
 	}
 
-	iio_push_to_buffers_with_timestamp(indio_dev, &ak8974->scan,
-					   iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_ts(indio_dev, &ak8974->scan, sizeof(ak8974->scan),
+				    iio_get_time_ns(indio_dev));
 
  out_unlock:
 	mutex_unlock(&ak8974->lock);
-	pm_runtime_mark_last_busy(&ak8974->i2c->dev);
 	pm_runtime_put_autosuspend(&ak8974->i2c->dev);
 }
 
@@ -710,7 +702,7 @@ ak8974_get_mount_matrix(const struct iio_dev *indio_dev,
 
 static const struct iio_chan_spec_ext_info ak8974_ext_info[] = {
 	IIO_MOUNT_MATRIX(IIO_SHARED_BY_DIR, ak8974_get_mount_matrix),
-	{ },
+	{ }
 };
 
 #define AK8974_AXIS_CHANNEL(axis, index, bits)				\
@@ -814,8 +806,7 @@ static const struct regmap_config ak8974_regmap_config = {
 	.precious_reg = ak8974_precious_reg,
 };
 
-static int ak8974_probe(struct i2c_client *i2c,
-			const struct i2c_device_id *id)
+static int ak8974_probe(struct i2c_client *i2c)
 {
 	struct iio_dev *indio_dev;
 	struct ak8974 *ak8974;
@@ -917,7 +908,7 @@ static int ak8974_probe(struct i2c_client *i2c,
 
 	/* If we have a valid DRDY IRQ, make use of it */
 	if (irq > 0) {
-		irq_trig = irqd_get_trigger_type(irq_get_irq_data(irq));
+		irq_trig = irq_get_trigger_type(irq);
 		if (irq_trig == IRQF_TRIGGER_RISING) {
 			dev_info(&i2c->dev, "enable rising edge DRDY IRQ\n");
 		} else if (irq_trig == IRQF_TRIGGER_FALLING) {
@@ -969,7 +960,7 @@ disable_pm:
 	return ret;
 }
 
-static int ak8974_remove(struct i2c_client *i2c)
+static void ak8974_remove(struct i2c_client *i2c)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(i2c);
 	struct ak8974 *ak8974 = iio_priv(indio_dev);
@@ -981,11 +972,9 @@ static int ak8974_remove(struct i2c_client *i2c)
 	pm_runtime_disable(&i2c->dev);
 	ak8974_set_power(ak8974, AK8974_PWR_OFF);
 	regulator_bulk_disable(ARRAY_SIZE(ak8974->regs), ak8974->regs);
-
-	return 0;
 }
 
-static int __maybe_unused ak8974_runtime_suspend(struct device *dev)
+static int ak8974_runtime_suspend(struct device *dev)
 {
 	struct ak8974 *ak8974 =
 		iio_priv(i2c_get_clientdata(to_i2c_client(dev)));
@@ -996,7 +985,7 @@ static int __maybe_unused ak8974_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused ak8974_runtime_resume(struct device *dev)
+static int ak8974_runtime_resume(struct device *dev)
 {
 	struct ak8974 *ak8974 =
 		iio_priv(i2c_get_clientdata(to_i2c_client(dev)));
@@ -1024,36 +1013,32 @@ out_regulator_disable:
 	return ret;
 }
 
-static const struct dev_pm_ops ak8974_dev_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
-	SET_RUNTIME_PM_OPS(ak8974_runtime_suspend,
-			   ak8974_runtime_resume, NULL)
-};
+static DEFINE_RUNTIME_DEV_PM_OPS(ak8974_dev_pm_ops, ak8974_runtime_suspend,
+				 ak8974_runtime_resume, NULL);
 
 static const struct i2c_device_id ak8974_id[] = {
-	{"ami305", 0 },
-	{"ami306", 0 },
-	{"ak8974", 0 },
-	{"hscdtd008a", 0 },
-	{}
+	{ "ami305" },
+	{ "ami306" },
+	{ "ak8974" },
+	{ "hscdtd008a" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ak8974_id);
 
 static const struct of_device_id ak8974_of_match[] = {
 	{ .compatible = "asahi-kasei,ak8974", },
 	{ .compatible = "alps,hscdtd008a", },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ak8974_of_match);
 
 static struct i2c_driver ak8974_driver = {
 	.driver	 = {
 		.name	= "ak8974",
-		.pm = &ak8974_dev_pm_ops,
+		.pm = pm_ptr(&ak8974_dev_pm_ops),
 		.of_match_table = ak8974_of_match,
 	},
-	.probe	  = ak8974_probe,
+	.probe = ak8974_probe,
 	.remove	  = ak8974_remove,
 	.id_table = ak8974_id,
 };

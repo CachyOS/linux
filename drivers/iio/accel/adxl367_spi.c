@@ -9,6 +9,8 @@
 #include <linux/regmap.h>
 #include <linux/spi/spi.h>
 
+#include <linux/iio/iio.h>
+
 #include "adxl367.h"
 
 #define ADXL367_SPI_WRITE_COMMAND	0x0A
@@ -28,10 +30,10 @@ struct adxl367_spi_state {
 	struct spi_transfer	fifo_xfer[2];
 
 	/*
-	 * DMA (thus cache coherency maintenance) requires the
-	 * transfer buffers to live in their own cache lines.
+	 * DMA (thus cache coherency maintenance) may require the
+	 * transfer buffers live in their own cache lines.
 	 */
-	u8			reg_write_tx_buf[1] ____cacheline_aligned;
+	u8			reg_write_tx_buf[1] __aligned(IIO_DMA_MINALIGN);
 	u8			reg_read_tx_buf[2];
 	u8			fifo_tx_buf[1];
 };
@@ -70,7 +72,7 @@ static int adxl367_write(void *context, const void *val_buf, size_t val_size)
 	return spi_sync(st->spi, &st->reg_write_msg);
 }
 
-static struct regmap_bus adxl367_spi_regmap_bus = {
+static const struct regmap_bus adxl367_spi_regmap_bus = {
 	.read = adxl367_read,
 	.write = adxl367_write,
 };
@@ -137,13 +139,13 @@ static int adxl367_spi_probe(struct spi_device *spi)
 
 static const struct spi_device_id adxl367_spi_id[] = {
 	{ "adxl367", 0 },
-	{ },
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, adxl367_spi_id);
 
 static const struct of_device_id adxl367_of_match[] = {
 	{ .compatible = "adi,adxl367" },
-	{ },
+	{ }
 };
 MODULE_DEVICE_TABLE(of, adxl367_of_match);
 
@@ -158,7 +160,7 @@ static struct spi_driver adxl367_spi_driver = {
 
 module_spi_driver(adxl367_spi_driver);
 
-MODULE_IMPORT_NS(IIO_ADXL367);
+MODULE_IMPORT_NS("IIO_ADXL367");
 MODULE_AUTHOR("Cosmin Tanislav <cosmin.tanislav@analog.com>");
 MODULE_DESCRIPTION("Analog Devices ADXL367 3-axis accelerometer SPI driver");
 MODULE_LICENSE("GPL");

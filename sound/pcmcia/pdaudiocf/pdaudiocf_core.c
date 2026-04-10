@@ -28,7 +28,7 @@ static unsigned char pdacf_ak4117_read(void *private_data, unsigned char reg)
 		udelay(5);
 		if (--timeout == 0) {
 			spin_unlock_irqrestore(&chip->ak4117_lock, flags);
-			snd_printk(KERN_ERR "AK4117 ready timeout (read)\n");
+			dev_err(chip->card->dev, "AK4117 ready timeout (read)\n");
 			return 0;
 		}
 	}
@@ -38,7 +38,7 @@ static unsigned char pdacf_ak4117_read(void *private_data, unsigned char reg)
 		udelay(5);
 		if (--timeout == 0) {
 			spin_unlock_irqrestore(&chip->ak4117_lock, flags);
-			snd_printk(KERN_ERR "AK4117 read timeout (read2)\n");
+			dev_err(chip->card->dev, "AK4117 read timeout (read2)\n");
 			return 0;
 		}
 	}
@@ -59,7 +59,7 @@ static void pdacf_ak4117_write(void *private_data, unsigned char reg, unsigned c
 		udelay(5);
 		if (--timeout == 0) {
 			spin_unlock_irqrestore(&chip->ak4117_lock, flags);
-			snd_printk(KERN_ERR "AK4117 ready timeout (write)\n");
+			dev_err(chip->card->dev, "AK4117 ready timeout (write)\n");
 			return;
 		}
 	}
@@ -70,21 +70,21 @@ static void pdacf_ak4117_write(void *private_data, unsigned char reg, unsigned c
 #if 0
 void pdacf_dump(struct snd_pdacf *chip)
 {
-	printk(KERN_DEBUG "PDAUDIOCF DUMP (0x%lx):\n", chip->port);
-	printk(KERN_DEBUG "WPD         : 0x%x\n",
-	       inw(chip->port + PDAUDIOCF_REG_WDP));
-	printk(KERN_DEBUG "RDP         : 0x%x\n",
-	       inw(chip->port + PDAUDIOCF_REG_RDP));
-	printk(KERN_DEBUG "TCR         : 0x%x\n",
-	       inw(chip->port + PDAUDIOCF_REG_TCR));
-	printk(KERN_DEBUG "SCR         : 0x%x\n",
-	       inw(chip->port + PDAUDIOCF_REG_SCR));
-	printk(KERN_DEBUG "ISR         : 0x%x\n",
-	       inw(chip->port + PDAUDIOCF_REG_ISR));
-	printk(KERN_DEBUG "IER         : 0x%x\n",
-	       inw(chip->port + PDAUDIOCF_REG_IER));
-	printk(KERN_DEBUG "AK_IFR      : 0x%x\n",
-	       inw(chip->port + PDAUDIOCF_REG_AK_IFR));
+	dev_dbg(chip->card->dev, "PDAUDIOCF DUMP (0x%lx):\n", chip->port);
+	dev_dbg(chip->card->dev, "WPD         : 0x%x\n",
+		inw(chip->port + PDAUDIOCF_REG_WDP));
+	dev_dbg(chip->card->dev, "RDP         : 0x%x\n",
+		inw(chip->port + PDAUDIOCF_REG_RDP));
+	dev_dbg(chip->card->dev, "TCR         : 0x%x\n",
+		inw(chip->port + PDAUDIOCF_REG_TCR));
+	dev_dbg(chip->card->dev, "SCR         : 0x%x\n",
+		inw(chip->port + PDAUDIOCF_REG_SCR));
+	dev_dbg(chip->card->dev, "ISR         : 0x%x\n",
+		inw(chip->port + PDAUDIOCF_REG_ISR));
+	dev_dbg(chip->card->dev, "IER         : 0x%x\n",
+		inw(chip->port + PDAUDIOCF_REG_IER));
+	dev_dbg(chip->card->dev, "AK_IFR      : 0x%x\n",
+		inw(chip->port + PDAUDIOCF_REG_AK_IFR));
 }
 #endif
 
@@ -142,7 +142,7 @@ struct snd_pdacf *snd_pdacf_create(struct snd_card *card)
 {
 	struct snd_pdacf *chip;
 
-	chip = kzalloc(sizeof(*chip), GFP_KERNEL);
+	chip = kzalloc_obj(*chip);
 	if (chip == NULL)
 		return NULL;
 	chip->card = card;
@@ -161,14 +161,13 @@ static void snd_pdacf_ak4117_change(struct ak4117 *ak4117, unsigned char c0, uns
 
 	if (!(c0 & AK4117_UNLCK))
 		return;
-	mutex_lock(&chip->reg_lock);
+	guard(mutex)(&chip->reg_lock);
 	val = chip->regmap[PDAUDIOCF_REG_SCR>>1];
 	if (ak4117->rcs0 & AK4117_UNLCK)
 		val |= PDAUDIOCF_BLUE_LED_OFF;
 	else
 		val &= ~PDAUDIOCF_BLUE_LED_OFF;
 	pdacf_reg_write(chip, PDAUDIOCF_REG_SCR, val);
-	mutex_unlock(&chip->reg_lock);
 }
 
 int snd_pdacf_ak4117_create(struct snd_pdacf *chip)

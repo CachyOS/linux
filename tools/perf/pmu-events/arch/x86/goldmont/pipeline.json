@@ -1,7 +1,6 @@
 [
     {
         "BriefDescription": "Retired branch instructions (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC4",
         "EventName": "BR_INST_RETIRED.ALL_BRANCHES",
@@ -11,7 +10,6 @@
     },
     {
         "BriefDescription": "Retired taken branch instructions (Precise event capable)",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0xC4",
         "EventName": "BR_INST_RETIRED.ALL_TAKEN_BRANCHES",
@@ -22,7 +20,6 @@
     },
     {
         "BriefDescription": "Retired near call instructions (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC4",
         "EventName": "BR_INST_RETIRED.CALL",
@@ -33,7 +30,6 @@
     },
     {
         "BriefDescription": "Retired far branch instructions (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC4",
         "EventName": "BR_INST_RETIRED.FAR_BRANCH",
@@ -44,7 +40,6 @@
     },
     {
         "BriefDescription": "Retired near indirect call instructions (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC4",
         "EventName": "BR_INST_RETIRED.IND_CALL",
@@ -55,7 +50,6 @@
     },
     {
         "BriefDescription": "Retired conditional branch instructions (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC4",
         "EventName": "BR_INST_RETIRED.JCC",
@@ -66,7 +60,6 @@
     },
     {
         "BriefDescription": "Retired instructions of near indirect Jmp or call (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC4",
         "EventName": "BR_INST_RETIRED.NON_RETURN_IND",
@@ -77,7 +70,6 @@
     },
     {
         "BriefDescription": "Retired near relative call instructions (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC4",
         "EventName": "BR_INST_RETIRED.REL_CALL",
@@ -88,7 +80,6 @@
     },
     {
         "BriefDescription": "Retired near return instructions (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC4",
         "EventName": "BR_INST_RETIRED.RETURN",
@@ -99,7 +90,6 @@
     },
     {
         "BriefDescription": "Retired conditional branch instructions that were taken (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC4",
         "EventName": "BR_INST_RETIRED.TAKEN_JCC",
@@ -110,7 +100,6 @@
     },
     {
         "BriefDescription": "Retired mispredicted branch instructions (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC5",
         "EventName": "BR_MISP_RETIRED.ALL_BRANCHES",
@@ -120,7 +109,6 @@
     },
     {
         "BriefDescription": "Retired mispredicted near indirect call instructions (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC5",
         "EventName": "BR_MISP_RETIRED.IND_CALL",
@@ -131,7 +119,6 @@
     },
     {
         "BriefDescription": "Retired mispredicted conditional branch instructions (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC5",
         "EventName": "BR_MISP_RETIRED.JCC",
@@ -142,7 +129,6 @@
     },
     {
         "BriefDescription": "Retired mispredicted instructions of near indirect Jmp or near indirect call. (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC5",
         "EventName": "BR_MISP_RETIRED.NON_RETURN_IND",
@@ -153,7 +139,6 @@
     },
     {
         "BriefDescription": "Retired mispredicted near return instructions (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC5",
         "EventName": "BR_MISP_RETIRED.RETURN",
@@ -164,7 +149,6 @@
     },
     {
         "BriefDescription": "Retired mispredicted conditional branch instructions that were taken (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC5",
         "EventName": "BR_MISP_RETIRED.TAKEN_JCC",
@@ -183,7 +167,6 @@
     },
     {
         "BriefDescription": "Core cycles when core is not halted",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0x3C",
         "EventName": "CPU_CLK_UNHALTED.CORE_P",
@@ -192,7 +175,6 @@
     },
     {
         "BriefDescription": "Reference cycles when core is not halted",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0x3C",
         "EventName": "CPU_CLK_UNHALTED.REF",
@@ -210,7 +192,6 @@
     },
     {
         "BriefDescription": "Cycles a divider is busy",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0xCD",
         "EventName": "CYCLES_DIV_BUSY.ALL",
@@ -219,7 +200,6 @@
     },
     {
         "BriefDescription": "Cycles the integer divide unit is busy",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0xCD",
         "EventName": "CYCLES_DIV_BUSY.IDIV",
@@ -237,7 +217,6 @@
     },
     {
         "BriefDescription": "Instructions retired (Precise event capable)",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0xC0",
         "EventName": "INST_RETIRED.ANY_P",
@@ -247,7 +226,6 @@
     },
     {
         "BriefDescription": "Unfilled issue slots per cycle",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0xCA",
         "EventName": "ISSUE_SLOTS_NOT_CONSUMED.ANY",
@@ -256,7 +234,6 @@
     },
     {
         "BriefDescription": "Unfilled issue slots per cycle to recover",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0xCA",
         "EventName": "ISSUE_SLOTS_NOT_CONSUMED.RECOVERY",
@@ -266,7 +243,6 @@
     },
     {
         "BriefDescription": "Unfilled issue slots per cycle because of a full resource in the backend",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0xCA",
         "EventName": "ISSUE_SLOTS_NOT_CONSUMED.RESOURCE_FULL",
@@ -276,7 +252,6 @@
     },
     {
         "BriefDescription": "Loads blocked because address has 4k partial address false dependence (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0x03",
         "EventName": "LD_BLOCKS.4K_ALIAS",
@@ -287,7 +262,6 @@
     },
     {
         "BriefDescription": "Loads blocked (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0x03",
         "EventName": "LD_BLOCKS.ALL_BLOCK",
@@ -298,7 +272,6 @@
     },
     {
         "BriefDescription": "Loads blocked due to store data not ready (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0x03",
         "EventName": "LD_BLOCKS.DATA_UNKNOWN",
@@ -309,7 +282,6 @@
     },
     {
         "BriefDescription": "Loads blocked due to store forward restriction (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0x03",
         "EventName": "LD_BLOCKS.STORE_FORWARD",
@@ -320,7 +292,6 @@
     },
     {
         "BriefDescription": "Loads blocked because address in not in the UTLB (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0x03",
         "EventName": "LD_BLOCKS.UTLB_MISS",
@@ -331,7 +302,6 @@
     },
     {
         "BriefDescription": "All machine clears",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0xC3",
         "EventName": "MACHINE_CLEARS.ALL",
@@ -340,7 +310,6 @@
     },
     {
         "BriefDescription": "Machine clears due to memory disambiguation",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0xC3",
         "EventName": "MACHINE_CLEARS.DISAMBIGUATION",
@@ -350,17 +319,15 @@
     },
     {
         "BriefDescription": "Self-Modifying Code detected",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0xC3",
         "EventName": "MACHINE_CLEARS.SMC",
-        "PublicDescription": "Counts the number of times that the processor detects that a program is writing to a code section and has to perform a machine clear because of that modification.  Self-modifying code (SMC) causes a severe penalty in all Intel architecture processors.",
+        "PublicDescription": "Counts the number of times that the processor detects that a program is writing to a code section and has to perform a machine clear because of that modification.  Self-modifying code (SMC) causes a severe penalty in all Intel(R) architecture processors.",
         "SampleAfterValue": "200003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Uops issued to the back end per cycle",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0x0E",
         "EventName": "UOPS_ISSUED.ANY",
@@ -369,7 +336,6 @@
     },
     {
         "BriefDescription": "Uops requested but not-delivered to the back-end per cycle",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0x9C",
         "EventName": "UOPS_NOT_DELIVERED.ANY",
@@ -378,7 +344,6 @@
     },
     {
         "BriefDescription": "Uops retired (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC2",
         "EventName": "UOPS_RETIRED.ANY",
@@ -388,7 +353,6 @@
     },
     {
         "BriefDescription": "Integer divide uops retired. (Precise Event Capable)",
-        "CollectPEBSRecord": "1",
         "Counter": "0,1,2,3",
         "EventCode": "0xC2",
         "EventName": "UOPS_RETIRED.IDIV",
@@ -399,7 +363,6 @@
     },
     {
         "BriefDescription": "MS uops retired (Precise event capable)",
-        "CollectPEBSRecord": "2",
         "Counter": "0,1,2,3",
         "EventCode": "0xC2",
         "EventName": "UOPS_RETIRED.MS",

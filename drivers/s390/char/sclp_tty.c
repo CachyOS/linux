@@ -48,7 +48,7 @@ static struct sclp_buffer *sclp_ttybuf;
 static struct timer_list sclp_tty_timer;
 
 static struct tty_port sclp_port;
-static unsigned char sclp_tty_chars[SCLP_TTY_BUF_SIZE];
+static u8 sclp_tty_chars[SCLP_TTY_BUF_SIZE];
 static unsigned short int sclp_tty_chars_count;
 
 struct tty_driver *sclp_tty_driver;
@@ -168,7 +168,7 @@ sclp_tty_timeout(struct timer_list *unused)
 /*
  * Write a string to the sclp tty.
  */
-static int sclp_tty_write_string(const unsigned char *str, int count, int may_fail)
+static int sclp_tty_write_string(const u8 *str, int count, int may_fail)
 {
 	unsigned long flags;
 	void *page;
@@ -229,8 +229,8 @@ out:
  * tty device. The characters may come from user space or kernel space. This
  * routine will return the number of characters actually accepted for writing.
  */
-static int
-sclp_tty_write(struct tty_struct *tty, const unsigned char *buf, int count)
+static ssize_t
+sclp_tty_write(struct tty_struct *tty, const u8 *buf, size_t count)
 {
 	if (sclp_tty_chars_count > 0) {
 		sclp_tty_write_string(sclp_tty_chars, sclp_tty_chars_count, 0);
@@ -250,7 +250,7 @@ sclp_tty_write(struct tty_struct *tty, const unsigned char *buf, int count)
  * sclp_write() without final '\n' - will be written.
  */
 static int
-sclp_tty_put_char(struct tty_struct *tty, unsigned char ch)
+sclp_tty_put_char(struct tty_struct *tty, u8 ch)
 {
 	sclp_tty_chars[sclp_tty_chars_count++] = ch;
 	if (ch == '\n' || sclp_tty_chars_count >= SCLP_TTY_BUF_SIZE) {
@@ -490,6 +490,17 @@ static const struct tty_operations sclp_ops = {
 	.flush_buffer = sclp_tty_flush_buffer,
 };
 
+/* Release allocated pages. */
+static void __init __sclp_tty_free_pages(void)
+{
+	struct list_head *page, *p;
+
+	list_for_each_safe(page, p, &sclp_tty_pages) {
+		list_del(page);
+		free_page((unsigned long)page);
+	}
+}
+
 static int __init
 sclp_tty_init(void)
 {
@@ -499,7 +510,7 @@ sclp_tty_init(void)
 	int rc;
 
 	/* z/VM multiplexes the line mode output on the 32xx screen */
-	if (MACHINE_IS_VM && !CONSOLE_IS_SCLP)
+	if (machine_is_vm() && !CONSOLE_IS_SCLP)
 		return 0;
 	if (!sclp.has_linemode)
 		return 0;
@@ -516,6 +527,7 @@ sclp_tty_init(void)
 	for (i = 0; i < MAX_KMEM_PAGES; i++) {
 		page = (void *) get_zeroed_page(GFP_KERNEL | GFP_DMA);
 		if (page == NULL) {
+			__sclp_tty_free_pages();
 			tty_driver_kref_put(driver);
 			return -ENOMEM;
 		}
@@ -524,7 +536,7 @@ sclp_tty_init(void)
 	timer_setup(&sclp_tty_timer, sclp_tty_timeout, 0);
 	sclp_ttybuf = NULL;
 	sclp_tty_buffer_count = 0;
-	if (MACHINE_IS_VM) {
+	if (machine_is_vm()) {
 		/* case input lines to lowercase */
 		sclp_tty_tolower = 1;
 	}

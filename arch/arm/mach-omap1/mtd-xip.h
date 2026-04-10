@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * MTD primitives for XIP support. Architecture specific functions.
  *
@@ -5,10 +6,7 @@
  *
  * Author: Vladimir Barinov <vbarinov@embeddedalley.com>
  *
- * (c) 2005 MontaVista Software, Inc.  This file is licensed under the
- * terms of the GNU General Public License version 2.  This program is
- * licensed "as is" without any warranty of any kind, whether express or
- * implied.
+ * (c) 2005 MontaVista Software, Inc.
  */
 
 #ifndef __ARCH_OMAP_MTD_XIP_H__
@@ -44,11 +42,7 @@ static inline unsigned long xip_omap_mpu_timer_read(int nr)
  * (see linux/mtd/xip.h)
  */
 
-#ifdef CONFIG_MACH_OMAP_PERSEUS2
-#define xip_elapsed_since(x)	(signed)((~xip_omap_mpu_timer_read(0) - (x)) / 7)
-#else
 #define xip_elapsed_since(x)	(signed)((~xip_omap_mpu_timer_read(0) - (x)) / 6)
-#endif
 
 /*
  * xip_cpu_idle() is used when waiting for a delay equal or larger than

@@ -400,16 +400,12 @@ static int centrino_cpu_init(struct cpufreq_policy *policy)
 	return 0;
 }
 
-static int centrino_cpu_exit(struct cpufreq_policy *policy)
+static void centrino_cpu_exit(struct cpufreq_policy *policy)
 {
 	unsigned int cpu = policy->cpu;
 
-	if (!per_cpu(centrino_model, cpu))
-		return -ENODEV;
-
-	per_cpu(centrino_model, cpu) = NULL;
-
-	return 0;
+	if (per_cpu(centrino_model, cpu))
+		per_cpu(centrino_model, cpu) = NULL;
 }
 
 /**
@@ -511,7 +507,6 @@ static struct cpufreq_driver centrino_driver = {
 	.verify		= cpufreq_generic_frequency_table_verify,
 	.target_index	= centrino_target,
 	.get		= get_cur_freq,
-	.attr		= cpufreq_generic_attr,
 };
 
 /*
@@ -520,10 +515,10 @@ static struct cpufreq_driver centrino_driver = {
  * or ASCII model IDs.
  */
 static const struct x86_cpu_id centrino_ids[] = {
-	X86_MATCH_VENDOR_FAM_MODEL_FEATURE(INTEL,  6,  9, X86_FEATURE_EST, NULL),
-	X86_MATCH_VENDOR_FAM_MODEL_FEATURE(INTEL,  6, 13, X86_FEATURE_EST, NULL),
-	X86_MATCH_VENDOR_FAM_MODEL_FEATURE(INTEL, 15,  3, X86_FEATURE_EST, NULL),
-	X86_MATCH_VENDOR_FAM_MODEL_FEATURE(INTEL, 15,  4, X86_FEATURE_EST, NULL),
+	X86_MATCH_VFM_FEATURE(IFM( 6,  9), X86_FEATURE_EST, NULL),
+	X86_MATCH_VFM_FEATURE(IFM( 6, 13), X86_FEATURE_EST, NULL),
+	X86_MATCH_VFM_FEATURE(IFM(15,  3), X86_FEATURE_EST, NULL),
+	X86_MATCH_VFM_FEATURE(IFM(15,  4), X86_FEATURE_EST, NULL),
 	{}
 };
 

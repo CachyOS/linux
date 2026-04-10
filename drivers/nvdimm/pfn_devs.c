@@ -13,6 +13,8 @@
 #include "pfn.h"
 #include "nd.h"
 
+static const bool page_struct_override = IS_ENABLED(CONFIG_NVDIMM_KMSAN);
+
 static void nd_pfn_release(struct device *dev)
 {
 	struct nd_region *nd_region = to_nd_region(dev->parent);
@@ -20,7 +22,7 @@ static void nd_pfn_release(struct device *dev)
 
 	dev_dbg(dev, "trace\n");
 	nd_detach_ndns(&nd_pfn->dev, &nd_pfn->ndns);
-	ida_simple_remove(&nd_region->pfn_ida, nd_pfn->id);
+	ida_free(&nd_region->pfn_ida, nd_pfn->id);
 	kfree(nd_pfn->uuid);
 	kfree(nd_pfn);
 }
@@ -54,30 +56,26 @@ static ssize_t mode_store(struct device *dev,
 {
 	struct nd_pfn *nd_pfn = to_nd_pfn_safe(dev);
 	ssize_t rc = 0;
+	size_t n = len - 1;
 
-	device_lock(dev);
-	nvdimm_bus_lock(dev);
+	guard(device)(dev);
+	guard(nvdimm_bus)(dev);
 	if (dev->driver)
-		rc = -EBUSY;
-	else {
-		size_t n = len - 1;
+		return -EBUSY;
 
-		if (strncmp(buf, "pmem\n", n) == 0
-				|| strncmp(buf, "pmem", n) == 0) {
-			nd_pfn->mode = PFN_MODE_PMEM;
-		} else if (strncmp(buf, "ram\n", n) == 0
-				|| strncmp(buf, "ram", n) == 0)
-			nd_pfn->mode = PFN_MODE_RAM;
-		else if (strncmp(buf, "none\n", n) == 0
-				|| strncmp(buf, "none", n) == 0)
-			nd_pfn->mode = PFN_MODE_NONE;
-		else
-			rc = -EINVAL;
-	}
+	if (strncmp(buf, "pmem\n", n) == 0
+			|| strncmp(buf, "pmem", n) == 0) {
+		nd_pfn->mode = PFN_MODE_PMEM;
+	} else if (strncmp(buf, "ram\n", n) == 0
+			|| strncmp(buf, "ram", n) == 0)
+		nd_pfn->mode = PFN_MODE_RAM;
+	else if (strncmp(buf, "none\n", n) == 0
+			|| strncmp(buf, "none", n) == 0)
+		nd_pfn->mode = PFN_MODE_NONE;
+	else
+		rc = -EINVAL;
 	dev_dbg(dev, "result: %zd wrote: %s%s", rc, buf,
 			buf[len - 1] == '\n' ? "" : "\n");
-	nvdimm_bus_unlock(dev);
-	device_unlock(dev);
 
 	return rc ? rc : len;
 }
@@ -98,7 +96,7 @@ static unsigned long *nd_pfn_supported_alignments(unsigned long *alignments)
 
 	if (has_transparent_hugepage()) {
 		alignments[1] = HPAGE_PMD_SIZE;
-		if (IS_ENABLED(CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD))
+		if (has_transparent_pud_hugepage())
 			alignments[2] = HPAGE_PUD_SIZE;
 	}
 
@@ -123,14 +121,12 @@ static ssize_t align_store(struct device *dev,
 	unsigned long aligns[MAX_NVDIMM_ALIGN] = { [0] = 0, };
 	ssize_t rc;
 
-	device_lock(dev);
-	nvdimm_bus_lock(dev);
+	guard(device)(dev);
+	guard(nvdimm_bus)(dev);
 	rc = nd_size_select_store(dev, buf, &nd_pfn->align,
 			nd_pfn_supported_alignments(aligns));
 	dev_dbg(dev, "result: %zd wrote: %s%s", rc, buf,
 			buf[len - 1] == '\n' ? "" : "\n");
-	nvdimm_bus_unlock(dev);
-	device_unlock(dev);
 
 	return rc ? rc : len;
 }
@@ -166,13 +162,10 @@ static ssize_t namespace_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct nd_pfn *nd_pfn = to_nd_pfn_safe(dev);
-	ssize_t rc;
 
-	nvdimm_bus_lock(dev);
-	rc = sprintf(buf, "%s\n", nd_pfn->ndns
+	guard(nvdimm_bus)(dev);
+	return sprintf(buf, "%s\n", nd_pfn->ndns
 			? dev_name(&nd_pfn->ndns->dev) : "");
-	nvdimm_bus_unlock(dev);
-	return rc;
 }
 
 static ssize_t namespace_store(struct device *dev,
@@ -181,13 +174,11 @@ static ssize_t namespace_store(struct device *dev,
 	struct nd_pfn *nd_pfn = to_nd_pfn_safe(dev);
 	ssize_t rc;
 
-	device_lock(dev);
-	nvdimm_bus_lock(dev);
+	guard(device)(dev);
+	guard(nvdimm_bus)(dev);
 	rc = nd_namespace_store(dev, &nd_pfn->ndns, buf, len);
 	dev_dbg(dev, "result: %zd wrote: %s%s", rc, buf,
 			buf[len - 1] == '\n' ? "" : "\n");
-	nvdimm_bus_unlock(dev);
-	device_unlock(dev);
 
 	return rc;
 }
@@ -320,11 +311,11 @@ static struct nd_pfn *nd_pfn_alloc(struct nd_region *nd_region)
 	struct nd_pfn *nd_pfn;
 	struct device *dev;
 
-	nd_pfn = kzalloc(sizeof(*nd_pfn), GFP_KERNEL);
+	nd_pfn = kzalloc_obj(*nd_pfn);
 	if (!nd_pfn)
 		return NULL;
 
-	nd_pfn->id = ida_simple_get(&nd_region->pfn_ida, 0, 0, GFP_KERNEL);
+	nd_pfn->id = ida_alloc(&nd_region->pfn_ida, GFP_KERNEL);
 	if (nd_pfn->id < 0) {
 		kfree(nd_pfn);
 		return NULL;
@@ -365,9 +356,10 @@ static int nd_pfn_clear_memmap_errors(struct nd_pfn *nd_pfn)
 	struct nd_namespace_common *ndns = nd_pfn->ndns;
 	void *zero_page = page_address(ZERO_PAGE(0));
 	struct nd_pfn_sb *pfn_sb = nd_pfn->pfn_sb;
-	int num_bad, meta_num, rc, bb_present;
+	int meta_num, rc, bb_present;
 	sector_t first_bad, meta_start;
 	struct nd_namespace_io *nsio;
+	sector_t num_bad;
 
 	if (nd_pfn->mode != PFN_MODE_PMEM)
 		return 0;
@@ -392,7 +384,7 @@ static int nd_pfn_clear_memmap_errors(struct nd_pfn *nd_pfn)
 		bb_present = badblocks_check(&nd_region->bb, meta_start,
 				meta_num, &first_bad, &num_bad);
 		if (bb_present) {
-			dev_dbg(&nd_pfn->dev, "meta: %x badblocks at %llx\n",
+			dev_dbg(&nd_pfn->dev, "meta: %llx badblocks at %llx\n",
 					num_bad, first_bad);
 			nsoff = ALIGN_DOWN((nd_region->ndr_start
 					+ (first_bad << 9)) - nsio->res.start,
@@ -411,7 +403,7 @@ static int nd_pfn_clear_memmap_errors(struct nd_pfn *nd_pfn)
 			}
 			if (rc) {
 				dev_err(&nd_pfn->dev,
-					"error clearing %x badblocks at %llx\n",
+					"error clearing %llx badblocks at %llx\n",
 					num_bad, first_bad);
 				return rc;
 			}
@@ -450,8 +442,9 @@ int nd_pfn_validate(struct nd_pfn *nd_pfn, const char *sig)
 	u64 checksum, offset;
 	struct resource *res;
 	enum nd_pfn_mode mode;
+	resource_size_t res_size;
 	struct nd_namespace_io *nsio;
-	unsigned long align, start_pad;
+	unsigned long align, start_pad, end_trunc;
 	struct nd_pfn_sb *pfn_sb = nd_pfn->pfn_sb;
 	struct nd_namespace_common *ndns = nd_pfn->ndns;
 	const uuid_t *parent_uuid = nd_dev_to_uuid(&ndns->dev);
@@ -501,6 +494,7 @@ int nd_pfn_validate(struct nd_pfn *nd_pfn, const char *sig)
 	align = le32_to_cpu(pfn_sb->align);
 	offset = le64_to_cpu(pfn_sb->dataoff);
 	start_pad = le32_to_cpu(pfn_sb->start_pad);
+	end_trunc = le32_to_cpu(pfn_sb->end_trunc);
 	if (align == 0)
 		align = 1UL << ilog2(offset);
 	mode = le32_to_cpu(pfn_sb->mode);
@@ -535,7 +529,7 @@ int nd_pfn_validate(struct nd_pfn *nd_pfn, const char *sig)
 
 	if (!nd_pfn->uuid) {
 		/*
-		 * When probing a namepace via nd_pfn_probe() the uuid
+		 * When probing a namespace via nd_pfn_probe() the uuid
 		 * is NULL (see: nd_pfn_devinit()) we init settings from
 		 * pfn_sb
 		 */
@@ -582,7 +576,8 @@ int nd_pfn_validate(struct nd_pfn *nd_pfn, const char *sig)
 	 */
 	nsio = to_nd_namespace_io(&ndns->dev);
 	res = &nsio->res;
-	if (offset >= resource_size(res)) {
+	res_size = resource_size(res);
+	if (offset >= res_size) {
 		dev_err(&nd_pfn->dev, "pfn array size exceeds capacity of %s\n",
 				dev_name(&ndns->dev));
 		return -EOPNOTSUPP;
@@ -596,18 +591,20 @@ int nd_pfn_validate(struct nd_pfn *nd_pfn, const char *sig)
 		return -EOPNOTSUPP;
 	}
 
-	if (!IS_ALIGNED(res->start + le32_to_cpu(pfn_sb->start_pad),
-				memremap_compat_align())) {
+	if (!IS_ALIGNED(res->start + start_pad, memremap_compat_align())) {
 		dev_err(&nd_pfn->dev, "resource start misaligned\n");
 		return -EOPNOTSUPP;
 	}
 
-	if (!IS_ALIGNED(res->end + 1 - le32_to_cpu(pfn_sb->end_trunc),
-				memremap_compat_align())) {
+	if (!IS_ALIGNED(res->end + 1 - end_trunc, memremap_compat_align())) {
 		dev_err(&nd_pfn->dev, "resource end misaligned\n");
 		return -EOPNOTSUPP;
 	}
 
+	if (offset >= (res_size - start_pad - end_trunc)) {
+		dev_err(&nd_pfn->dev, "bad offset with small namespace\n");
+		return -EOPNOTSUPP;
+	}
 	return 0;
 }
 EXPORT_SYMBOL(nd_pfn_validate);
@@ -631,10 +628,10 @@ int nd_pfn_probe(struct device *dev, struct nd_namespace_common *ndns)
 		return -ENODEV;
 	}
 
-	nvdimm_bus_lock(&ndns->dev);
-	nd_pfn = nd_pfn_alloc(nd_region);
-	pfn_dev = nd_pfn_devinit(nd_pfn, ndns);
-	nvdimm_bus_unlock(&ndns->dev);
+	scoped_guard(nvdimm_bus, &ndns->dev) {
+		nd_pfn = nd_pfn_alloc(nd_region);
+		pfn_dev = nd_pfn_devinit(nd_pfn, ndns);
+	}
 	if (!pfn_dev)
 		return -ENOMEM;
 	pfn_sb = devm_kmalloc(dev, sizeof(*pfn_sb), GFP_KERNEL);
@@ -758,12 +755,6 @@ static int nd_pfn_init(struct nd_pfn *nd_pfn)
 		return -ENXIO;
 	}
 
-	/*
-	 * Note, we use 64 here for the standard size of struct page,
-	 * debugging options may cause it to be larger in which case the
-	 * implementation will limit the pfns advertised through
-	 * ->direct_access() to those that are included in the memmap.
-	 */
 	start = nsio->res.start;
 	size = resource_size(&nsio->res);
 	npfns = PHYS_PFN(size - SZ_8K);
@@ -782,26 +773,40 @@ static int nd_pfn_init(struct nd_pfn *nd_pfn)
 	}
 	end_trunc = start + size - ALIGN_DOWN(start + size, align);
 	if (nd_pfn->mode == PFN_MODE_PMEM) {
+		unsigned long page_map_size = MAX_STRUCT_PAGE_SIZE * npfns;
+
 		/*
 		 * The altmap should be padded out to the block size used
 		 * when populating the vmemmap. This *should* be equal to
 		 * PMD_SIZE for most architectures.
 		 *
-		 * Also make sure size of struct page is less than 64. We
-		 * want to make sure we use large enough size here so that
-		 * we don't have a dynamic reserve space depending on
-		 * struct page size. But we also want to make sure we notice
-		 * when we end up adding new elements to struct page.
+		 * Also make sure size of struct page is less than
+		 * MAX_STRUCT_PAGE_SIZE. The goal here is compatibility in the
+		 * face of production kernel configurations that reduce the
+		 * 'struct page' size below MAX_STRUCT_PAGE_SIZE. For debug
+		 * kernel configurations that increase the 'struct page' size
+		 * above MAX_STRUCT_PAGE_SIZE, the page_struct_override allows
+		 * for continuing with the capacity that will be wasted when
+		 * reverting to a production kernel configuration. Otherwise,
+		 * those configurations are blocked by default.
 		 */
-		BUILD_BUG_ON(sizeof(struct page) > MAX_STRUCT_PAGE_SIZE);
-		offset = ALIGN(start + SZ_8K + MAX_STRUCT_PAGE_SIZE * npfns, align)
-			- start;
+		if (sizeof(struct page) > MAX_STRUCT_PAGE_SIZE) {
+			if (page_struct_override)
+				page_map_size = sizeof(struct page) * npfns;
+			else {
+				dev_err(&nd_pfn->dev,
+					"Memory debug options prevent using pmem for the page map\n");
+				return -EINVAL;
+			}
+		}
+		offset = ALIGN(start + SZ_8K + page_map_size, align) - start;
 	} else if (nd_pfn->mode == PFN_MODE_RAM)
 		offset = ALIGN(start + SZ_8K, align) - start;
 	else
 		return -ENXIO;
 
-	if (offset >= size) {
+	if (offset >= (size - end_trunc)) {
+		/* This results in zero size devices */
 		dev_err(&nd_pfn->dev, "%s unable to satisfy requested alignment\n",
 				dev_name(&ndns->dev));
 		return -ENXIO;
@@ -818,7 +823,10 @@ static int nd_pfn_init(struct nd_pfn *nd_pfn)
 	pfn_sb->version_minor = cpu_to_le16(4);
 	pfn_sb->end_trunc = cpu_to_le32(end_trunc);
 	pfn_sb->align = cpu_to_le32(nd_pfn->align);
-	pfn_sb->page_struct_size = cpu_to_le16(MAX_STRUCT_PAGE_SIZE);
+	if (sizeof(struct page) > MAX_STRUCT_PAGE_SIZE && page_struct_override)
+		pfn_sb->page_struct_size = cpu_to_le16(sizeof(struct page));
+	else
+		pfn_sb->page_struct_size = cpu_to_le16(MAX_STRUCT_PAGE_SIZE);
 	pfn_sb->page_size = cpu_to_le32(PAGE_SIZE);
 	checksum = nd_sb_checksum((struct nd_gen_sb *) pfn_sb);
 	pfn_sb->checksum = cpu_to_le64(checksum);

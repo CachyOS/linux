@@ -7,14 +7,26 @@
  * Author: Baolin Wang <baolin.wang@linaro.org>
  */
 
+#include <crypto/internal/aead.h>
+#include <crypto/internal/akcipher.h>
+#include <crypto/internal/engine.h>
+#include <crypto/internal/hash.h>
+#include <crypto/internal/kpp.h>
+#include <crypto/internal/skcipher.h>
 #include <linux/err.h>
 #include <linux/delay.h>
 #include <linux/device.h>
-#include <crypto/engine.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
 #include <uapi/linux/sched/types.h>
 #include "internal.h"
 
 #define CRYPTO_ENGINE_MAX_QLEN 10
+
+struct crypto_engine_alg {
+	struct crypto_alg base;
+	struct crypto_engine_op op;
+};
 
 /**
  * crypto_finalize_request - finalize one request if the request is done
@@ -26,9 +38,6 @@ static void crypto_finalize_request(struct crypto_engine *engine,
 				    struct crypto_async_request *req, int err)
 {
 	unsigned long flags;
-	bool finalize_req = false;
-	int ret;
-	struct crypto_engine_ctx *enginectx;
 
 	/*
 	 * If hardware cannot enqueue more requests
@@ -38,23 +47,13 @@ static void crypto_finalize_request(struct crypto_engine *engine,
 	if (!engine->retry_support) {
 		spin_lock_irqsave(&engine->queue_lock, flags);
 		if (engine->cur_req == req) {
-			finalize_req = true;
 			engine->cur_req = NULL;
 		}
 		spin_unlock_irqrestore(&engine->queue_lock, flags);
 	}
 
-	if (finalize_req || engine->retry_support) {
-		enginectx = crypto_tfm_ctx(req->tfm);
-		if (enginectx->op.prepare_request &&
-		    enginectx->op.unprepare_request) {
-			ret = enginectx->op.unprepare_request(engine, req);
-			if (ret)
-				dev_err(engine->dev, "failed to unprepare request\n");
-		}
-	}
 	lockdep_assert_in_softirq();
-	req->complete(req, err);
+	crypto_request_complete(req, err);
 
 	kthread_queue_work(engine->kworker, &engine->pump_requests);
 }
@@ -72,22 +71,16 @@ static void crypto_pump_requests(struct crypto_engine *engine,
 				 bool in_kthread)
 {
 	struct crypto_async_request *async_req, *backlog;
+	struct crypto_engine_alg *alg;
+	struct crypto_engine_op *op;
 	unsigned long flags;
-	bool was_busy = false;
 	int ret;
-	struct crypto_engine_ctx *enginectx;
 
 	spin_lock_irqsave(&engine->queue_lock, flags);
 
 	/* Make sure we are not already running a request */
 	if (!engine->retry_support && engine->cur_req)
 		goto out;
-
-	/* If another context is idling then defer */
-	if (engine->idling) {
-		kthread_queue_work(engine->kworker, &engine->pump_requests);
-		goto out;
-	}
 
 	/* Check if the engine queue is idle */
 	if (!crypto_queue_len(&engine->queue) || !engine->running) {
@@ -102,15 +95,6 @@ static void crypto_pump_requests(struct crypto_engine *engine,
 		}
 
 		engine->busy = false;
-		engine->idling = true;
-		spin_unlock_irqrestore(&engine->queue_lock, flags);
-
-		if (engine->unprepare_crypt_hardware &&
-		    engine->unprepare_crypt_hardware(engine))
-			dev_err(engine->dev, "failed to unprepare crypt hardware\n");
-
-		spin_lock_irqsave(&engine->queue_lock, flags);
-		engine->idling = false;
 		goto out;
 	}
 
@@ -129,42 +113,15 @@ start_request:
 	if (!engine->retry_support)
 		engine->cur_req = async_req;
 
-	if (backlog)
-		backlog->complete(backlog, -EINPROGRESS);
-
-	if (engine->busy)
-		was_busy = true;
-	else
+	if (!engine->busy)
 		engine->busy = true;
 
 	spin_unlock_irqrestore(&engine->queue_lock, flags);
 
-	/* Until here we get the request need to be encrypted successfully */
-	if (!was_busy && engine->prepare_crypt_hardware) {
-		ret = engine->prepare_crypt_hardware(engine);
-		if (ret) {
-			dev_err(engine->dev, "failed to prepare crypt hardware\n");
-			goto req_err_2;
-		}
-	}
-
-	enginectx = crypto_tfm_ctx(async_req->tfm);
-
-	if (enginectx->op.prepare_request) {
-		ret = enginectx->op.prepare_request(engine, async_req);
-		if (ret) {
-			dev_err(engine->dev, "failed to prepare request: %d\n",
-				ret);
-			goto req_err_2;
-		}
-	}
-	if (!enginectx->op.do_one_request) {
-		dev_err(engine->dev, "failed to do request\n");
-		ret = -EINVAL;
-		goto req_err_1;
-	}
-
-	ret = enginectx->op.do_one_request(engine, async_req);
+	alg = container_of(async_req->tfm->__crt_alg,
+			   struct crypto_engine_alg, base);
+	op = &alg->op;
+	ret = op->do_one_request(engine, async_req);
 
 	/* Request unsuccessfully executed by hardware */
 	if (ret < 0) {
@@ -179,18 +136,6 @@ start_request:
 				"Failed to do one request from queue: %d\n",
 				ret);
 			goto req_err_1;
-		}
-		/*
-		 * If retry mechanism is supported,
-		 * unprepare current request and
-		 * enqueue it back into crypto-engine queue.
-		 */
-		if (enginectx->op.unprepare_request) {
-			ret = enginectx->op.unprepare_request(engine,
-							      async_req);
-			if (ret)
-				dev_err(engine->dev,
-					"failed to unprepare request\n");
 		}
 		spin_lock_irqsave(&engine->queue_lock, flags);
 		/*
@@ -207,16 +152,12 @@ start_request:
 	goto retry;
 
 req_err_1:
-	if (enginectx->op.unprepare_request) {
-		ret = enginectx->op.unprepare_request(engine, async_req);
-		if (ret)
-			dev_err(engine->dev, "failed to unprepare request\n");
-	}
-
-req_err_2:
-	async_req->complete(async_req, ret);
+	crypto_request_complete(async_req, ret);
 
 retry:
+	if (backlog)
+		crypto_request_complete(backlog, -EINPROGRESS);
+
 	/* If retry mechanism is supported, send new requests to engine */
 	if (engine->retry_support) {
 		spin_lock_irqsave(&engine->queue_lock, flags);
@@ -226,17 +167,6 @@ retry:
 
 out:
 	spin_unlock_irqrestore(&engine->queue_lock, flags);
-
-	/*
-	 * Batch requests is possible only if
-	 * hardware can enqueue multiple requests
-	 */
-	if (engine->do_batch_requests) {
-		ret = engine->do_batch_requests(engine);
-		if (ret)
-			dev_err(engine->dev, "failed to do batch requests: %d\n",
-				ret);
-	}
 
 	return;
 }
@@ -494,12 +424,6 @@ EXPORT_SYMBOL_GPL(crypto_engine_stop);
  * crypto-engine queue.
  * @dev: the device attached with one hardware engine
  * @retry_support: whether hardware has support for retry mechanism
- * @cbk_do_batch: pointer to a callback function to be invoked when executing
- *                a batch of requests.
- *                This has the form:
- *                callback(struct crypto_engine *engine)
- *                where:
- *                @engine: the crypto engine structure.
  * @rt: whether this queue is set to run as a realtime task
  * @qlen: maximum size of the crypto-engine queue
  *
@@ -508,7 +432,6 @@ EXPORT_SYMBOL_GPL(crypto_engine_stop);
  */
 struct crypto_engine *crypto_engine_alloc_init_and_set(struct device *dev,
 						       bool retry_support,
-						       int (*cbk_do_batch)(struct crypto_engine *engine),
 						       bool rt, int qlen)
 {
 	struct crypto_engine *engine;
@@ -524,22 +447,16 @@ struct crypto_engine *crypto_engine_alloc_init_and_set(struct device *dev,
 	engine->rt = rt;
 	engine->running = false;
 	engine->busy = false;
-	engine->idling = false;
 	engine->retry_support = retry_support;
 	engine->priv_data = dev;
-	/*
-	 * Batch requests is possible only if
-	 * hardware has support for retry mechanism.
-	 */
-	engine->do_batch_requests = retry_support ? cbk_do_batch : NULL;
 
 	snprintf(engine->name, sizeof(engine->name),
 		 "%s-engine", dev_name(dev));
 
+	guard(spinlock_init)(&engine->queue_lock);
 	crypto_init_queue(&engine->queue, qlen);
-	spin_lock_init(&engine->queue_lock);
 
-	engine->kworker = kthread_create_worker(0, "%s", engine->name);
+	engine->kworker = kthread_run_worker(0, "%s", engine->name);
 	if (IS_ERR(engine->kworker)) {
 		dev_err(dev, "failed to create crypto request pump task\n");
 		return NULL;
@@ -566,7 +483,7 @@ EXPORT_SYMBOL_GPL(crypto_engine_alloc_init_and_set);
  */
 struct crypto_engine *crypto_engine_alloc_init(struct device *dev, bool rt)
 {
-	return crypto_engine_alloc_init_and_set(dev, false, NULL, rt,
+	return crypto_engine_alloc_init_and_set(dev, false, rt,
 						CRYPTO_ENGINE_MAX_QLEN);
 }
 EXPORT_SYMBOL_GPL(crypto_engine_alloc_init);
@@ -574,22 +491,166 @@ EXPORT_SYMBOL_GPL(crypto_engine_alloc_init);
 /**
  * crypto_engine_exit - free the resources of hardware engine when exit
  * @engine: the hardware engine need to be freed
- *
- * Return 0 for success.
  */
-int crypto_engine_exit(struct crypto_engine *engine)
+void crypto_engine_exit(struct crypto_engine *engine)
 {
 	int ret;
 
 	ret = crypto_engine_stop(engine);
 	if (ret)
-		return ret;
+		return;
 
 	kthread_destroy_worker(engine->kworker);
+}
+EXPORT_SYMBOL_GPL(crypto_engine_exit);
+
+int crypto_engine_register_aead(struct aead_engine_alg *alg)
+{
+	if (!alg->op.do_one_request)
+		return -EINVAL;
+	return crypto_register_aead(&alg->base);
+}
+EXPORT_SYMBOL_GPL(crypto_engine_register_aead);
+
+void crypto_engine_unregister_aead(struct aead_engine_alg *alg)
+{
+	crypto_unregister_aead(&alg->base);
+}
+EXPORT_SYMBOL_GPL(crypto_engine_unregister_aead);
+
+int crypto_engine_register_aeads(struct aead_engine_alg *algs, int count)
+{
+	int i, ret;
+
+	for (i = 0; i < count; i++) {
+		ret = crypto_engine_register_aead(&algs[i]);
+		if (ret) {
+			crypto_engine_unregister_aeads(algs, i);
+			return ret;
+		}
+	}
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(crypto_engine_exit);
+EXPORT_SYMBOL_GPL(crypto_engine_register_aeads);
+
+void crypto_engine_unregister_aeads(struct aead_engine_alg *algs, int count)
+{
+	int i;
+
+	for (i = count - 1; i >= 0; --i)
+		crypto_engine_unregister_aead(&algs[i]);
+}
+EXPORT_SYMBOL_GPL(crypto_engine_unregister_aeads);
+
+int crypto_engine_register_ahash(struct ahash_engine_alg *alg)
+{
+	if (!alg->op.do_one_request)
+		return -EINVAL;
+	return crypto_register_ahash(&alg->base);
+}
+EXPORT_SYMBOL_GPL(crypto_engine_register_ahash);
+
+void crypto_engine_unregister_ahash(struct ahash_engine_alg *alg)
+{
+	crypto_unregister_ahash(&alg->base);
+}
+EXPORT_SYMBOL_GPL(crypto_engine_unregister_ahash);
+
+int crypto_engine_register_ahashes(struct ahash_engine_alg *algs, int count)
+{
+	int i, ret;
+
+	for (i = 0; i < count; i++) {
+		ret = crypto_engine_register_ahash(&algs[i]);
+		if (ret) {
+			crypto_engine_unregister_ahashes(algs, i);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(crypto_engine_register_ahashes);
+
+void crypto_engine_unregister_ahashes(struct ahash_engine_alg *algs,
+				      int count)
+{
+	int i;
+
+	for (i = count - 1; i >= 0; --i)
+		crypto_engine_unregister_ahash(&algs[i]);
+}
+EXPORT_SYMBOL_GPL(crypto_engine_unregister_ahashes);
+
+int crypto_engine_register_akcipher(struct akcipher_engine_alg *alg)
+{
+	if (!alg->op.do_one_request)
+		return -EINVAL;
+	return crypto_register_akcipher(&alg->base);
+}
+EXPORT_SYMBOL_GPL(crypto_engine_register_akcipher);
+
+void crypto_engine_unregister_akcipher(struct akcipher_engine_alg *alg)
+{
+	crypto_unregister_akcipher(&alg->base);
+}
+EXPORT_SYMBOL_GPL(crypto_engine_unregister_akcipher);
+
+int crypto_engine_register_kpp(struct kpp_engine_alg *alg)
+{
+	if (!alg->op.do_one_request)
+		return -EINVAL;
+	return crypto_register_kpp(&alg->base);
+}
+EXPORT_SYMBOL_GPL(crypto_engine_register_kpp);
+
+void crypto_engine_unregister_kpp(struct kpp_engine_alg *alg)
+{
+	crypto_unregister_kpp(&alg->base);
+}
+EXPORT_SYMBOL_GPL(crypto_engine_unregister_kpp);
+
+int crypto_engine_register_skcipher(struct skcipher_engine_alg *alg)
+{
+	if (!alg->op.do_one_request)
+		return -EINVAL;
+	return crypto_register_skcipher(&alg->base);
+}
+EXPORT_SYMBOL_GPL(crypto_engine_register_skcipher);
+
+void crypto_engine_unregister_skcipher(struct skcipher_engine_alg *alg)
+{
+	return crypto_unregister_skcipher(&alg->base);
+}
+EXPORT_SYMBOL_GPL(crypto_engine_unregister_skcipher);
+
+int crypto_engine_register_skciphers(struct skcipher_engine_alg *algs,
+				     int count)
+{
+	int i, ret;
+
+	for (i = 0; i < count; i++) {
+		ret = crypto_engine_register_skcipher(&algs[i]);
+		if (ret) {
+			crypto_engine_unregister_skciphers(algs, i);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(crypto_engine_register_skciphers);
+
+void crypto_engine_unregister_skciphers(struct skcipher_engine_alg *algs,
+					int count)
+{
+	int i;
+
+	for (i = count - 1; i >= 0; --i)
+		crypto_engine_unregister_skcipher(&algs[i]);
+}
+EXPORT_SYMBOL_GPL(crypto_engine_unregister_skciphers);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Crypto hardware engine framework");

@@ -17,13 +17,13 @@
 /*
  * fujitsu-laptop.c - Fujitsu laptop support, providing access to additional
  * features made available on a range of Fujitsu laptops including the
- * P2xxx/P5xxx/S6xxx/S7xxx series.
+ * P2xxx/P5xxx/S2xxx/S6xxx/S7xxx series.
  *
  * This driver implements a vendor-specific backlight control interface for
  * Fujitsu laptops and provides support for hotkeys present on certain Fujitsu
  * laptops.
  *
- * This driver has been tested on a Fujitsu Lifebook S6410, S7020 and
+ * This driver has been tested on a Fujitsu Lifebook S2110, S6410, S7020 and
  * P8010.  It should work on most P-series and S-series Lifebooks, but
  * YMMV.
  *
@@ -43,12 +43,13 @@
 #include <linux/bitops.h>
 #include <linux/dmi.h>
 #include <linux/backlight.h>
-#include <linux/fb.h>
 #include <linux/input.h>
 #include <linux/input/sparse-keymap.h>
 #include <linux/kfifo.h>
 #include <linux/leds.h>
 #include <linux/platform_device.h>
+#include <linux/power_supply.h>
+#include <acpi/battery.h>
 #include <acpi/video.h>
 
 #define FUJITSU_DRIVER_VERSION		"0.6.0"
@@ -97,12 +98,20 @@
 #define BACKLIGHT_OFF			(BIT(0) | BIT(1))
 #define BACKLIGHT_ON			0
 
+/* FUNC interface - battery control interface */
+#define FUNC_S006_METHOD		0x1006
+#define CHARGE_CONTROL_RW		0x21
+
 /* Scancodes read from the GIRB register */
 #define KEY1_CODE			0x410
 #define KEY2_CODE			0x411
 #define KEY3_CODE			0x412
 #define KEY4_CODE			0x413
-#define KEY5_CODE			0x420
+#define KEY5_CODE			0x414
+#define KEY6_CODE			0x415
+#define KEY7_CODE			0x416
+#define KEY8_CODE			0x417
+#define KEY9_CODE			0x420
 
 /* Hotkey ringbuffer limits */
 #define MAX_HOTKEY_RINGBUFFER_SIZE	100
@@ -132,6 +141,7 @@ struct fujitsu_laptop {
 	spinlock_t fifo_lock;
 	int flags_supported;
 	int flags_state;
+	bool charge_control_supported;
 };
 
 static struct acpi_device *fext;
@@ -162,6 +172,114 @@ static int call_fext_func(struct acpi_device *device,
 			  "FUNC 0x%x (args 0x%x, 0x%x, 0x%x) returned 0x%x\n",
 			  func, op, feature, state, (int)value);
 	return value;
+}
+
+/* Battery charge control code */
+static ssize_t charge_control_end_threshold_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	int cc_end_value, s006_cc_return;
+	unsigned int value;
+	int ret;
+
+	ret = kstrtouint(buf, 10, &value);
+	if (ret)
+		return ret;
+
+	if (value > 100)
+		return -EINVAL;
+
+	if (value < 50)
+		value = 50;
+
+	cc_end_value = value * 0x100 + 0x20;
+	s006_cc_return = call_fext_func(fext, FUNC_S006_METHOD,
+					CHARGE_CONTROL_RW, cc_end_value, 0x0);
+	if (s006_cc_return < 0)
+		return s006_cc_return;
+	/*
+	 * The S006 0x21 method returns 0x00 in case the provided value
+	 * is invalid.
+	 */
+	if (s006_cc_return == 0x00)
+		return -EINVAL;
+
+	return count;
+}
+
+static ssize_t charge_control_end_threshold_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	int status;
+
+	status = call_fext_func(fext, FUNC_S006_METHOD,
+				CHARGE_CONTROL_RW, 0x21, 0x0);
+	if (status < 0)
+		return status;
+
+	return sysfs_emit(buf, "%d\n", status);
+}
+
+static DEVICE_ATTR_RW(charge_control_end_threshold);
+
+/* ACPI battery hook */
+static int fujitsu_battery_add_hook(struct power_supply *battery,
+			       struct acpi_battery_hook *hook)
+{
+	return device_create_file(&battery->dev,
+				  &dev_attr_charge_control_end_threshold);
+}
+
+static int fujitsu_battery_remove_hook(struct power_supply *battery,
+				  struct acpi_battery_hook *hook)
+{
+	device_remove_file(&battery->dev,
+			   &dev_attr_charge_control_end_threshold);
+
+	return 0;
+}
+
+static struct acpi_battery_hook battery_hook = {
+	.add_battery = fujitsu_battery_add_hook,
+	.remove_battery = fujitsu_battery_remove_hook,
+	.name = "Fujitsu Battery Extension",
+};
+
+/*
+ * These functions are intended to be called from acpi_fujitsu_laptop_add and
+ * acpi_fujitsu_laptop_remove.
+ */
+static int fujitsu_battery_charge_control_add(struct acpi_device *device)
+{
+	struct fujitsu_laptop *priv = acpi_driver_data(device);
+	int s006_cc_return;
+
+	priv->charge_control_supported = false;
+	/*
+	 * Check if the S006 0x21 method exists by trying to get the current
+	 * battery charge limit.
+	 */
+	s006_cc_return = call_fext_func(fext, FUNC_S006_METHOD,
+					CHARGE_CONTROL_RW, 0x21, 0x0);
+	if (s006_cc_return < 0)
+		return s006_cc_return;
+	if (s006_cc_return == UNSUPPORTED_CMD)
+		return -ENODEV;
+
+	priv->charge_control_supported = true;
+	battery_hook_register(&battery_hook);
+
+	return 0;
+}
+
+static void fujitsu_battery_charge_control_remove(struct acpi_device *device)
+{
+	struct fujitsu_laptop *priv = acpi_driver_data(device);
+
+	if (priv->charge_control_supported)
+		battery_hook_unregister(&battery_hook);
 }
 
 /* Hardware access for LCD brightness control */
@@ -245,7 +363,7 @@ static int bl_get_brightness(struct backlight_device *b)
 {
 	struct acpi_device *device = bl_get_data(b);
 
-	return b->props.power == FB_BLANK_POWERDOWN ? 0 : get_lcd_level(device);
+	return b->props.power == BACKLIGHT_POWER_OFF ? 0 : get_lcd_level(device);
 }
 
 static int bl_update_status(struct backlight_device *b)
@@ -253,7 +371,7 @@ static int bl_update_status(struct backlight_device *b)
 	struct acpi_device *device = bl_get_data(b);
 
 	if (fext) {
-		if (b->props.power == FB_BLANK_POWERDOWN)
+		if (b->props.power == BACKLIGHT_POWER_OFF)
 			call_fext_func(fext, FUNC_BACKLIGHT, 0x1,
 				       BACKLIGHT_PARAM_POWER, BACKLIGHT_OFF);
 		else
@@ -275,11 +393,11 @@ static ssize_t lid_show(struct device *dev, struct device_attribute *attr,
 	struct fujitsu_laptop *priv = dev_get_drvdata(dev);
 
 	if (!(priv->flags_supported & FLAG_LID))
-		return sprintf(buf, "unknown\n");
+		return sysfs_emit(buf, "unknown\n");
 	if (priv->flags_state & FLAG_LID)
-		return sprintf(buf, "open\n");
+		return sysfs_emit(buf, "open\n");
 	else
-		return sprintf(buf, "closed\n");
+		return sysfs_emit(buf, "closed\n");
 }
 
 static ssize_t dock_show(struct device *dev, struct device_attribute *attr,
@@ -288,11 +406,11 @@ static ssize_t dock_show(struct device *dev, struct device_attribute *attr,
 	struct fujitsu_laptop *priv = dev_get_drvdata(dev);
 
 	if (!(priv->flags_supported & FLAG_DOCK))
-		return sprintf(buf, "unknown\n");
+		return sysfs_emit(buf, "unknown\n");
 	if (priv->flags_state & FLAG_DOCK)
-		return sprintf(buf, "docked\n");
+		return sysfs_emit(buf, "docked\n");
 	else
-		return sprintf(buf, "undocked\n");
+		return sysfs_emit(buf, "undocked\n");
 }
 
 static ssize_t radios_show(struct device *dev, struct device_attribute *attr,
@@ -301,11 +419,11 @@ static ssize_t radios_show(struct device *dev, struct device_attribute *attr,
 	struct fujitsu_laptop *priv = dev_get_drvdata(dev);
 
 	if (!(priv->flags_supported & FLAG_RFKILL))
-		return sprintf(buf, "unknown\n");
+		return sysfs_emit(buf, "unknown\n");
 	if (priv->flags_state & FLAG_RFKILL)
-		return sprintf(buf, "on\n");
+		return sysfs_emit(buf, "on\n");
 	else
-		return sprintf(buf, "killed\n");
+		return sysfs_emit(buf, "killed\n");
 }
 
 static DEVICE_ATTR_RO(lid);
@@ -395,8 +513,8 @@ static int acpi_fujitsu_bl_add(struct acpi_device *device)
 		return -ENOMEM;
 
 	fujitsu_bl = priv;
-	strcpy(acpi_device_name(device), ACPI_FUJITSU_BL_DEVICE_NAME);
-	strcpy(acpi_device_class(device), ACPI_FUJITSU_CLASS);
+	strscpy(acpi_device_name(device), ACPI_FUJITSU_BL_DEVICE_NAME);
+	strscpy(acpi_device_class(device), ACPI_FUJITSU_CLASS);
 	device->driver_data = priv;
 
 	pr_info("ACPI: %s [%s]\n",
@@ -450,7 +568,7 @@ static const struct key_entry keymap_default[] = {
 	{ KE_KEY, KEY2_CODE,            { KEY_PROG2 } },
 	{ KE_KEY, KEY3_CODE,            { KEY_PROG3 } },
 	{ KE_KEY, KEY4_CODE,            { KEY_PROG4 } },
-	{ KE_KEY, KEY5_CODE,            { KEY_RFKILL } },
+	{ KE_KEY, KEY9_CODE,            { KEY_RFKILL } },
 	/* Soft keys read from status flags */
 	{ KE_KEY, FLAG_RFKILL,          { KEY_RFKILL } },
 	{ KE_KEY, FLAG_TOUCHPAD_TOGGLE, { KEY_TOUCHPAD_TOGGLE } },
@@ -471,6 +589,18 @@ static const struct key_entry keymap_p8010[] = {
 	{ KE_KEY, KEY2_CODE, { KEY_PROG2 } },
 	{ KE_KEY, KEY3_CODE, { KEY_SWITCHVIDEOMODE } },	/* "Presentation" */
 	{ KE_KEY, KEY4_CODE, { KEY_WWW } },		/* "WWW" */
+	{ KE_END, 0 }
+};
+
+static const struct key_entry keymap_s2110[] = {
+	{ KE_KEY, KEY1_CODE, { KEY_PROG1 } }, /* "A" */
+	{ KE_KEY, KEY2_CODE, { KEY_PROG2 } }, /* "B" */
+	{ KE_KEY, KEY3_CODE, { KEY_WWW } },   /* "Internet" */
+	{ KE_KEY, KEY4_CODE, { KEY_EMAIL } }, /* "E-mail" */
+	{ KE_KEY, KEY5_CODE, { KEY_STOPCD } },
+	{ KE_KEY, KEY6_CODE, { KEY_PLAYPAUSE } },
+	{ KE_KEY, KEY7_CODE, { KEY_PREVIOUSSONG } },
+	{ KE_KEY, KEY8_CODE, { KEY_NEXTSONG } },
 	{ KE_END, 0 }
 };
 
@@ -511,6 +641,15 @@ static const struct dmi_system_id fujitsu_laptop_dmi_table[] = {
 		},
 		.driver_data = (void *)keymap_p8010
 	},
+	{
+		.callback = fujitsu_laptop_dmi_keymap_override,
+		.ident = "Fujitsu LifeBook S2110",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "FUJITSU SIEMENS"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "LIFEBOOK S2110"),
+		},
+		.driver_data = (void *)keymap_s2110
+	},
 	{}
 };
 
@@ -543,7 +682,7 @@ static int fujitsu_laptop_platform_add(struct acpi_device *device)
 	struct fujitsu_laptop *priv = acpi_driver_data(device);
 	int ret;
 
-	priv->pf_device = platform_device_alloc("fujitsu-laptop", -1);
+	priv->pf_device = platform_device_alloc("fujitsu-laptop", PLATFORM_DEVID_NONE);
 	if (!priv->pf_device)
 		return -ENOMEM;
 
@@ -781,8 +920,8 @@ static int acpi_fujitsu_laptop_add(struct acpi_device *device)
 	WARN_ONCE(fext, "More than one FUJ02E3 ACPI device was found.  Driver may not work as intended.");
 	fext = device;
 
-	strcpy(acpi_device_name(device), ACPI_FUJITSU_LAPTOP_DEVICE_NAME);
-	strcpy(acpi_device_class(device), ACPI_FUJITSU_CLASS);
+	strscpy(acpi_device_name(device), ACPI_FUJITSU_LAPTOP_DEVICE_NAME);
+	strscpy(acpi_device_class(device), ACPI_FUJITSU_CLASS);
 	device->driver_data = priv;
 
 	/* kfifo */
@@ -822,9 +961,9 @@ static int acpi_fujitsu_laptop_add(struct acpi_device *device)
 	    acpi_video_get_backlight_type() == acpi_backlight_vendor) {
 		if (call_fext_func(fext, FUNC_BACKLIGHT, 0x2,
 				   BACKLIGHT_PARAM_POWER, 0x0) == BACKLIGHT_OFF)
-			fujitsu_bl->bl_device->props.power = FB_BLANK_POWERDOWN;
+			fujitsu_bl->bl_device->props.power = BACKLIGHT_POWER_OFF;
 		else
-			fujitsu_bl->bl_device->props.power = FB_BLANK_UNBLANK;
+			fujitsu_bl->bl_device->props.power = BACKLIGHT_POWER_ON;
 	}
 
 	ret = acpi_fujitsu_laptop_input_setup(device);
@@ -839,6 +978,10 @@ static int acpi_fujitsu_laptop_add(struct acpi_device *device)
 	if (ret)
 		goto err_free_fifo;
 
+	ret = fujitsu_battery_charge_control_add(device);
+	if (ret < 0)
+		pr_warn("Unable to register battery charge control: %d\n", ret);
+
 	return 0;
 
 err_free_fifo:
@@ -847,15 +990,15 @@ err_free_fifo:
 	return ret;
 }
 
-static int acpi_fujitsu_laptop_remove(struct acpi_device *device)
+static void acpi_fujitsu_laptop_remove(struct acpi_device *device)
 {
 	struct fujitsu_laptop *priv = acpi_driver_data(device);
+
+	fujitsu_battery_charge_control_remove(device);
 
 	fujitsu_laptop_platform_remove(device);
 
 	kfifo_free(&priv->fifo);
-
-	return 0;
 }
 
 static void acpi_fujitsu_laptop_press(struct acpi_device *device, int scancode)

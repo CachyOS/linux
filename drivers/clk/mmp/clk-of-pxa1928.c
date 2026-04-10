@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * pxa1928 clock framework source file
  *
@@ -7,10 +8,6 @@
  * Based on drivers/clk/mmp/clk-of-mmp2.c:
  * Copyright (C) 2012 Marvell
  * Chao Xie <xiechao.mail@gmail.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 #include <linux/kernel.h>
 #include <linux/io.h>
@@ -24,6 +21,9 @@
 #include "reset.h"
 
 #define MPMU_UART_PLL	0x14
+
+#define APBC_NR_CLKS	48
+#define APMU_NR_CLKS	96
 
 struct pxa1928_clk_unit {
 	struct mmp_clk_unit unit;
@@ -61,9 +61,9 @@ static struct mmp_clk_factor_masks uart_factor_masks = {
 	.den_shift = 0,
 };
 
-static struct mmp_clk_factor_tbl uart_factor_tbl[] = {
-	{.num = 832, .den = 234},	/*58.5MHZ */
-	{.num = 1, .den = 1},		/*26MHZ */
+static struct u32_fract uart_factor_tbl[] = {
+	{ .numerator = 832, .denominator = 234 },	/* 58.5MHZ */
+	{ .numerator =   1, .denominator =   1 },	/* 26MHZ */
 };
 
 static void pxa1928_pll_init(struct pxa1928_clk_unit *pxa_unit)
@@ -187,7 +187,7 @@ static void pxa1928_clk_reset_init(struct device_node *np,
 	int i, base, nr_resets;
 
 	nr_resets = ARRAY_SIZE(apbc_gate_clks);
-	cells = kcalloc(nr_resets, sizeof(*cells), GFP_KERNEL);
+	cells = kzalloc_objs(*cells, nr_resets);
 	if (!cells)
 		return;
 
@@ -208,7 +208,7 @@ static void __init pxa1928_mpmu_clk_init(struct device_node *np)
 {
 	struct pxa1928_clk_unit *pxa_unit;
 
-	pxa_unit = kzalloc(sizeof(*pxa_unit), GFP_KERNEL);
+	pxa_unit = kzalloc_obj(*pxa_unit);
 	if (!pxa_unit)
 		return;
 
@@ -227,7 +227,7 @@ static void __init pxa1928_apmu_clk_init(struct device_node *np)
 {
 	struct pxa1928_clk_unit *pxa_unit;
 
-	pxa_unit = kzalloc(sizeof(*pxa_unit), GFP_KERNEL);
+	pxa_unit = kzalloc_obj(*pxa_unit);
 	if (!pxa_unit)
 		return;
 
@@ -238,7 +238,7 @@ static void __init pxa1928_apmu_clk_init(struct device_node *np)
 		return;
 	}
 
-	mmp_clk_init(np, &pxa_unit->unit, PXA1928_APMU_NR_CLKS);
+	mmp_clk_init(np, &pxa_unit->unit, APMU_NR_CLKS);
 
 	pxa1928_axi_periph_clk_init(pxa_unit);
 }
@@ -248,7 +248,7 @@ static void __init pxa1928_apbc_clk_init(struct device_node *np)
 {
 	struct pxa1928_clk_unit *pxa_unit;
 
-	pxa_unit = kzalloc(sizeof(*pxa_unit), GFP_KERNEL);
+	pxa_unit = kzalloc_obj(*pxa_unit);
 	if (!pxa_unit)
 		return;
 
@@ -259,7 +259,7 @@ static void __init pxa1928_apbc_clk_init(struct device_node *np)
 		return;
 	}
 
-	mmp_clk_init(np, &pxa_unit->unit, PXA1928_APBC_NR_CLKS);
+	mmp_clk_init(np, &pxa_unit->unit, APBC_NR_CLKS);
 
 	pxa1928_apb_periph_clk_init(pxa_unit);
 	pxa1928_clk_reset_init(np, pxa_unit);

@@ -2575,7 +2575,7 @@ static int lm93_detect(struct i2c_client *client, struct i2c_board_info *info)
 		return -ENODEV;
 	}
 
-	strlcpy(info->type, name, I2C_NAME_SIZE);
+	strscpy(info->type, name, I2C_NAME_SIZE);
 	dev_dbg(&adapter->dev, "loading %s at %d, 0x%02x\n",
 		client->name, i2c_adapter_id(client->adapter),
 		client->addr);
@@ -2624,8 +2624,8 @@ static int lm93_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id lm93_id[] = {
-	{ "lm93", 0 },
-	{ "lm94", 0 },
+	{ "lm93" },
+	{ "lm94" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, lm93_id);
@@ -2635,7 +2635,7 @@ static struct i2c_driver lm93_driver = {
 	.driver = {
 		.name	= "lm93",
 	},
-	.probe_new	= lm93_probe,
+	.probe		= lm93_probe,
 	.id_table	= lm93_id,
 	.detect		= lm93_detect,
 	.address_list	= normal_i2c,

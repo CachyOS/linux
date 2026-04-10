@@ -31,6 +31,7 @@
 
 #include <drm/vmwgfx_drm.h>
 #include <linux/pci.h>
+#include <linux/vmalloc.h>
 
 int vmw_getparam_ioctl(struct drm_device *dev, void *data,
 		       struct drm_file *file_priv)
@@ -195,7 +196,7 @@ int vmw_present_ioctl(struct drm_device *dev, void *data,
 		goto out_clips;
 	}
 
-	clips = kcalloc(num_clips, sizeof(*clips), GFP_KERNEL);
+	clips = kzalloc_objs(*clips, num_clips);
 	if (clips == NULL) {
 		DRM_ERROR("Failed to allocate clip rect list.\n");
 		ret = -ENOMEM;
@@ -272,7 +273,7 @@ int vmw_present_readback_ioctl(struct drm_device *dev, void *data,
 		goto out_clips;
 	}
 
-	clips = kcalloc(num_clips, sizeof(*clips), GFP_KERNEL);
+	clips = kzalloc_objs(*clips, num_clips);
 	if (clips == NULL) {
 		DRM_ERROR("Failed to allocate clip rect list.\n");
 		ret = -ENOMEM;

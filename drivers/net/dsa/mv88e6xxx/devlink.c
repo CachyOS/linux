@@ -374,32 +374,19 @@ static int mv88e6xxx_region_atu_snapshot(struct devlink *dl,
 					 u8 **data)
 {
 	struct dsa_switch *ds = dsa_devlink_to_ds(dl);
-	DECLARE_BITMAP(fid_bitmap, MV88E6XXX_N_FID);
 	struct mv88e6xxx_devlink_atu_entry *table;
 	struct mv88e6xxx_chip *chip = ds->priv;
-	int fid = -1, count, err;
+	int fid = -1, err = 0, count = 0;
 
-	table = kmalloc_array(mv88e6xxx_num_databases(chip),
-			      sizeof(struct mv88e6xxx_devlink_atu_entry),
-			      GFP_KERNEL);
+	table = kzalloc_objs(struct mv88e6xxx_devlink_atu_entry,
+			     mv88e6xxx_num_databases(chip));
 	if (!table)
 		return -ENOMEM;
 
-	memset(table, 0, mv88e6xxx_num_databases(chip) *
-	       sizeof(struct mv88e6xxx_devlink_atu_entry));
-
-	count = 0;
-
 	mv88e6xxx_reg_lock(chip);
 
-	err = mv88e6xxx_fid_map(chip, fid_bitmap);
-	if (err) {
-		kfree(table);
-		goto out;
-	}
-
 	while (1) {
-		fid = find_next_bit(fid_bitmap, MV88E6XXX_N_FID, fid + 1);
+		fid = find_next_bit(chip->fid_bitmap, MV88E6XXX_N_FID, fid + 1);
 		if (fid == MV88E6XXX_N_FID)
 			break;
 
@@ -452,9 +439,8 @@ static int mv88e6xxx_region_vtu_snapshot(struct devlink *dl,
 	struct mv88e6xxx_vtu_entry vlan;
 	int err;
 
-	table = kcalloc(mv88e6xxx_max_vid(chip) + 1,
-			sizeof(struct mv88e6xxx_devlink_vtu_entry),
-			GFP_KERNEL);
+	table = kzalloc_objs(struct mv88e6xxx_devlink_vtu_entry,
+			     mv88e6xxx_max_vid(chip) + 1);
 	if (!table)
 		return -ENOMEM;
 
@@ -535,9 +521,8 @@ static int mv88e6xxx_region_stu_snapshot(struct devlink *dl,
 	struct mv88e6xxx_stu_entry stu;
 	int err;
 
-	table = kcalloc(mv88e6xxx_max_sid(chip) + 1,
-			sizeof(struct mv88e6xxx_devlink_stu_entry),
-			GFP_KERNEL);
+	table = kzalloc_objs(struct mv88e6xxx_devlink_stu_entry,
+			     mv88e6xxx_max_sid(chip) + 1);
 	if (!table)
 		return -ENOMEM;
 
@@ -654,7 +639,7 @@ static struct mv88e6xxx_region_priv mv88e6xxx_region_global1_priv = {
 	.id = MV88E6XXX_REGION_GLOBAL1,
 };
 
-static struct devlink_region_ops mv88e6xxx_region_global1_ops = {
+static const struct devlink_region_ops mv88e6xxx_region_global1_ops = {
 	.name = "global1",
 	.snapshot = mv88e6xxx_region_global_snapshot,
 	.destructor = kfree,
@@ -665,32 +650,32 @@ static struct mv88e6xxx_region_priv mv88e6xxx_region_global2_priv = {
 	.id = MV88E6XXX_REGION_GLOBAL2,
 };
 
-static struct devlink_region_ops mv88e6xxx_region_global2_ops = {
+static const struct devlink_region_ops mv88e6xxx_region_global2_ops = {
 	.name = "global2",
 	.snapshot = mv88e6xxx_region_global_snapshot,
 	.destructor = kfree,
 	.priv = &mv88e6xxx_region_global2_priv,
 };
 
-static struct devlink_region_ops mv88e6xxx_region_atu_ops = {
+static const struct devlink_region_ops mv88e6xxx_region_atu_ops = {
 	.name = "atu",
 	.snapshot = mv88e6xxx_region_atu_snapshot,
 	.destructor = kfree,
 };
 
-static struct devlink_region_ops mv88e6xxx_region_vtu_ops = {
+static const struct devlink_region_ops mv88e6xxx_region_vtu_ops = {
 	.name = "vtu",
 	.snapshot = mv88e6xxx_region_vtu_snapshot,
 	.destructor = kfree,
 };
 
-static struct devlink_region_ops mv88e6xxx_region_stu_ops = {
+static const struct devlink_region_ops mv88e6xxx_region_stu_ops = {
 	.name = "stu",
 	.snapshot = mv88e6xxx_region_stu_snapshot,
 	.destructor = kfree,
 };
 
-static struct devlink_region_ops mv88e6xxx_region_pvt_ops = {
+static const struct devlink_region_ops mv88e6xxx_region_pvt_ops = {
 	.name = "pvt",
 	.snapshot = mv88e6xxx_region_pvt_snapshot,
 	.destructor = kfree,
@@ -703,13 +688,13 @@ static const struct devlink_port_region_ops mv88e6xxx_region_port_ops = {
 };
 
 struct mv88e6xxx_region {
-	struct devlink_region_ops *ops;
+	const struct devlink_region_ops *ops;
 	u64 size;
 
 	bool (*cond)(struct mv88e6xxx_chip *chip);
 };
 
-static struct mv88e6xxx_region mv88e6xxx_regions[] = {
+static const struct mv88e6xxx_region mv88e6xxx_regions[] = {
 	[MV88E6XXX_REGION_GLOBAL1] = {
 		.ops = &mv88e6xxx_region_global1_ops,
 		.size = 32 * sizeof(u16)
@@ -743,7 +728,8 @@ void mv88e6xxx_teardown_devlink_regions_global(struct dsa_switch *ds)
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(mv88e6xxx_regions); i++)
-		dsa_devlink_region_destroy(chip->regions[i]);
+		if (chip->regions[i])
+			dsa_devlink_region_destroy(chip->regions[i]);
 }
 
 void mv88e6xxx_teardown_devlink_regions_port(struct dsa_switch *ds, int port)
@@ -774,7 +760,7 @@ int mv88e6xxx_setup_devlink_regions_global(struct dsa_switch *ds)
 {
 	bool (*cond)(struct mv88e6xxx_chip *chip);
 	struct mv88e6xxx_chip *chip = ds->priv;
-	struct devlink_region_ops *ops;
+	const struct devlink_region_ops *ops;
 	struct devlink_region *region;
 	u64 size;
 	int i, j;
@@ -821,11 +807,6 @@ int mv88e6xxx_devlink_info_get(struct dsa_switch *ds,
 			       struct netlink_ext_ack *extack)
 {
 	struct mv88e6xxx_chip *chip = ds->priv;
-	int err;
-
-	err = devlink_info_driver_name_put(req, "mv88e6xxx");
-	if (err)
-		return err;
 
 	return devlink_info_version_fixed_put(req,
 					      DEVLINK_INFO_VERSION_GENERIC_ASIC_ID,

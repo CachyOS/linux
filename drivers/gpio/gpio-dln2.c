@@ -220,11 +220,12 @@ static int dln2_gpio_get(struct gpio_chip *chip, unsigned int offset)
 	return dln2_gpio_pin_get_out_val(dln2, offset);
 }
 
-static void dln2_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
+static int dln2_gpio_set(struct gpio_chip *chip, unsigned int offset,
+			 int value)
 {
 	struct dln2_gpio *dln2 = gpiochip_get_data(chip);
 
-	dln2_gpio_pin_set_out_val(dln2, offset, value);
+	return dln2_gpio_pin_set_out_val(dln2, offset, value);
 }
 
 static int dln2_gpio_set_direction(struct gpio_chip *chip, unsigned offset,
@@ -504,11 +505,9 @@ static int dln2_gpio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int dln2_gpio_remove(struct platform_device *pdev)
+static void dln2_gpio_remove(struct platform_device *pdev)
 {
 	dln2_unregister_event_cb(pdev, DLN2_GPIO_CONDITION_MET_EV);
-
-	return 0;
 }
 
 static struct platform_driver dln2_gpio_driver = {

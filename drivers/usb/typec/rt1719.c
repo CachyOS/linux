@@ -109,12 +109,6 @@ struct rt1719_data {
 	u16 conn_stat;
 };
 
-static const enum power_supply_usb_type rt1719_psy_usb_types[] = {
-	POWER_SUPPLY_USB_TYPE_C,
-	POWER_SUPPLY_USB_TYPE_PD,
-	POWER_SUPPLY_USB_TYPE_PD_PPS
-};
-
 static const enum power_supply_property rt1719_psy_properties[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_USB_TYPE,
@@ -572,8 +566,9 @@ static int devm_rt1719_psy_register(struct rt1719_data *data)
 
 	data->psy_desc.name = psy_name;
 	data->psy_desc.type = POWER_SUPPLY_TYPE_USB;
-	data->psy_desc.usb_types = rt1719_psy_usb_types;
-	data->psy_desc.num_usb_types = ARRAY_SIZE(rt1719_psy_usb_types);
+	data->psy_desc.usb_types = BIT(POWER_SUPPLY_USB_TYPE_C)  |
+				   BIT(POWER_SUPPLY_USB_TYPE_PD) |
+				   BIT(POWER_SUPPLY_USB_TYPE_PD_PPS);
 	data->psy_desc.properties = rt1719_psy_properties;
 	data->psy_desc.num_properties = ARRAY_SIZE(rt1719_psy_properties);
 	data->psy_desc.get_property = rt1719_psy_get_property;
@@ -930,14 +925,12 @@ err_fwnode_put:
 	return ret;
 }
 
-static int rt1719_remove(struct i2c_client *i2c)
+static void rt1719_remove(struct i2c_client *i2c)
 {
 	struct rt1719_data *data = i2c_get_clientdata(i2c);
 
 	typec_unregister_port(data->port);
 	usb_role_switch_put(data->role_sw);
-
-	return 0;
 }
 
 static const struct of_device_id __maybe_unused rt1719_device_table[] = {
@@ -951,7 +944,7 @@ static struct i2c_driver rt1719_driver = {
 		.name = "rt1719",
 		.of_match_table = rt1719_device_table,
 	},
-	.probe_new = rt1719_probe,
+	.probe = rt1719_probe,
 	.remove = rt1719_remove,
 };
 module_i2c_driver(rt1719_driver);

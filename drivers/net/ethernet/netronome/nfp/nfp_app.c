@@ -230,7 +230,7 @@ struct nfp_app *nfp_app_alloc(struct nfp_pf *pf, enum nfp_app_id id)
 	struct nfp_app *app;
 
 	if (id >= ARRAY_SIZE(apps) || !apps[id]) {
-		nfp_err(pf->cpp, "unknown FW app ID 0x%02hhx, driver too old or support for FW not built in\n", id);
+		nfp_err(pf->cpp, "unknown FW app ID 0x%02x, driver too old or support for FW not built in\n", id);
 		return ERR_PTR(-EINVAL);
 	}
 
@@ -239,7 +239,7 @@ struct nfp_app *nfp_app_alloc(struct nfp_pf *pf, enum nfp_app_id id)
 	if (WARN_ON(!apps[id]->ctrl_msg_rx && apps[id]->ctrl_msg_rx_raw))
 		return ERR_PTR(-EINVAL);
 
-	app = kzalloc(sizeof(*app), GFP_KERNEL);
+	app = kzalloc_obj(*app);
 	if (!app)
 		return ERR_PTR(-ENOMEM);
 

@@ -8,21 +8,8 @@
 
 #include <linux/const.h>
 
-/* PAGE_SHIFT determines the page size */
-#if defined(CONFIG_PAGE_SIZE_4KB)
-# define PAGE_SHIFT	12
-#elif defined(CONFIG_PAGE_SIZE_8KB)
-# define PAGE_SHIFT	13
-#elif defined(CONFIG_PAGE_SIZE_16KB)
-# define PAGE_SHIFT	14
-#elif defined(CONFIG_PAGE_SIZE_64KB)
-# define PAGE_SHIFT	16
-#else
-# error "Bogus kernel page size?"
-#endif
+#include <vdso/page.h>
 
-#define PAGE_SIZE	(_AC(1, UL) << PAGE_SHIFT)
-#define PAGE_MASK	(~(PAGE_SIZE-1))
 #define PTE_MASK	PAGE_MASK
 
 #if defined(CONFIG_HUGETLB_PAGE_SIZE_64K)
@@ -43,7 +30,7 @@
 #define HUGETLB_PAGE_ORDER	(HPAGE_SHIFT-PAGE_SHIFT)
 #endif
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #include <asm/uncached.h>
 
 extern unsigned long shm_align_mask;
@@ -98,7 +85,7 @@ typedef struct page *pgtable_t;
 
 #define pte_pgprot(x) __pgprot(pte_val(x) & PTE_FLAGS_MASK)
 
-#endif /* !__ASSEMBLY__ */
+#endif /* !__ASSEMBLER__ */
 
 /*
  * __MEMORY_START and SIZE are the physical addresses and size of RAM.
@@ -139,10 +126,10 @@ typedef struct page *pgtable_t;
 #define ___va(x)	((x)+PAGE_OFFSET)
 #endif
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #define __pa(x)		___pa((unsigned long)x)
 #define __va(x)		(void *)___va((unsigned long)x)
-#endif /* !__ASSEMBLY__ */
+#endif /* !__ASSEMBLER__ */
 
 #ifdef CONFIG_UNCACHED_MAPPING
 #if defined(CONFIG_29BIT)
@@ -158,7 +145,6 @@ typedef struct page *pgtable_t;
 #endif
 
 #define pfn_to_kaddr(pfn)	__va((pfn) << PAGE_SHIFT)
-#define page_to_phys(page)	(page_to_pfn(page) << PAGE_SHIFT)
 
 /*
  * PFN = physical frame number (ie PFN 0 == physical address 0)
@@ -169,18 +155,9 @@ typedef struct page *pgtable_t;
 #define PFN_START		(__MEMORY_START >> PAGE_SHIFT)
 #define ARCH_PFN_OFFSET		(PFN_START)
 #define virt_to_page(kaddr)	pfn_to_page(__pa(kaddr) >> PAGE_SHIFT)
-#ifdef CONFIG_FLATMEM
-#define pfn_valid(pfn)		((pfn) >= min_low_pfn && (pfn) < max_low_pfn)
-#endif
 #define virt_addr_valid(kaddr)	pfn_valid(__pa(kaddr) >> PAGE_SHIFT)
 
 #include <asm-generic/memory_model.h>
 #include <asm-generic/getorder.h>
-
-/*
- * Some drivers need to perform DMA into kmalloc'ed buffers
- * and so we have to increase the kmalloc minalign for this.
- */
-#define ARCH_DMA_MINALIGN	L1_CACHE_BYTES
 
 #endif /* __ASM_SH_PAGE_H */

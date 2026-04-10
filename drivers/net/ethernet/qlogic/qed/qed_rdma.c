@@ -42,8 +42,7 @@ int qed_rdma_bmap_alloc(struct qed_hwfn *p_hwfn,
 
 	bmap->max_count = max_count;
 
-	bmap->bitmap = kcalloc(BITS_TO_LONGS(max_count), sizeof(long),
-			       GFP_KERNEL);
+	bmap->bitmap = bitmap_zalloc(max_count, GFP_KERNEL);
 	if (!bmap->bitmap)
 		return -ENOMEM;
 
@@ -107,7 +106,7 @@ int qed_bmap_test_id(struct qed_hwfn *p_hwfn,
 
 static bool qed_bmap_is_empty(struct qed_bmap *bmap)
 {
-	return bmap->max_count == find_first_bit(bmap->bitmap, bmap->max_count);
+	return bitmap_empty(bmap->bitmap, bmap->max_count);
 }
 
 static u32 qed_rdma_get_sb_id(void *p_hwfn, u32 rel_sb_id)
@@ -120,7 +119,7 @@ int qed_rdma_info_alloc(struct qed_hwfn *p_hwfn)
 {
 	struct qed_rdma_info *p_rdma_info;
 
-	p_rdma_info = kzalloc(sizeof(*p_rdma_info), GFP_KERNEL);
+	p_rdma_info = kzalloc_obj(*p_rdma_info);
 	if (!p_rdma_info)
 		return -ENOMEM;
 
@@ -169,12 +168,12 @@ static int qed_rdma_alloc(struct qed_hwfn *p_hwfn)
 	p_rdma_info->max_queue_zones = (u16)RESC_NUM(p_hwfn, QED_L2_QUEUE);
 
 	/* Allocate a struct with device params and fill it */
-	p_rdma_info->dev = kzalloc(sizeof(*p_rdma_info->dev), GFP_KERNEL);
+	p_rdma_info->dev = kzalloc_obj(*p_rdma_info->dev);
 	if (!p_rdma_info->dev)
 		return rc;
 
 	/* Allocate a struct with port params and fill it */
-	p_rdma_info->port = kzalloc(sizeof(*p_rdma_info->port), GFP_KERNEL);
+	p_rdma_info->port = kzalloc_obj(*p_rdma_info->port);
 	if (!p_rdma_info->port)
 		goto free_rdma_dev;
 
@@ -343,7 +342,7 @@ void qed_rdma_bmap_free(struct qed_hwfn *p_hwfn,
 	}
 
 end:
-	kfree(bmap->bitmap);
+	bitmap_free(bmap->bitmap);
 	bmap->bitmap = NULL;
 }
 
@@ -1294,7 +1293,7 @@ qed_rdma_create_qp(void *rdma_cxt,
 		}
 	}
 
-	qp = kzalloc(sizeof(*qp), GFP_KERNEL);
+	qp = kzalloc_obj(*qp);
 	if (!qp)
 		return NULL;
 
@@ -1793,8 +1792,6 @@ qed_rdma_create_srq(void *rdma_cxt,
 	rc = qed_cxt_dynamic_ilt_alloc(p_hwfn, elem_type, returned_id);
 	if (rc)
 		goto err;
-
-	opaque_fid = p_hwfn->hw_info.opaque_fid;
 
 	opaque_fid = p_hwfn->hw_info.opaque_fid;
 	init_data.opaque_fid = opaque_fid;

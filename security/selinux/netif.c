@@ -22,6 +22,7 @@
 #include <linux/rcupdate.h>
 #include <net/net_namespace.h>
 
+#include "initcalls.h"
 #include "security.h"
 #include "objsec.h"
 #include "netif.h"
@@ -67,7 +68,7 @@ static inline u32 sel_netif_hashfn(const struct net *ns, int ifindex)
 static inline struct sel_netif *sel_netif_find(const struct net *ns,
 					       int ifindex)
 {
-	int idx = sel_netif_hashfn(ns, ifindex);
+	u32 idx = sel_netif_hashfn(ns, ifindex);
 	struct sel_netif *netif;
 
 	list_for_each_entry_rcu(netif, &sel_netif_hash[idx], list)
@@ -89,7 +90,7 @@ static inline struct sel_netif *sel_netif_find(const struct net *ns,
  */
 static int sel_netif_insert(struct sel_netif *netif)
 {
-	int idx;
+	u32 idx;
 
 	if (sel_netif_total >= SEL_NETIF_HASH_MAX)
 		return -ENOSPC;
@@ -153,10 +154,14 @@ static int sel_netif_sid_slow(struct net *ns, int ifindex, u32 *sid)
 		goto out;
 	}
 
-	ret = security_netif_sid(&selinux_state, dev->name, sid);
+	ret = security_netif_sid(dev->name, sid);
 	if (ret != 0)
 		goto out;
-	new = kzalloc(sizeof(*new), GFP_ATOMIC);
+
+	/* If this memory allocation fails still return 0. The SID
+	 * is valid, it just won't be added to the cache.
+	 */
+	new = kmalloc_obj(*new, GFP_ATOMIC);
 	if (new) {
 		new->nsec.ns = ns;
 		new->nsec.ifindex = ifindex;
@@ -261,7 +266,7 @@ static struct notifier_block sel_netif_netdev_notifier = {
 	.notifier_call = sel_netif_netdev_notifier_handler,
 };
 
-static __init int sel_netif_init(void)
+int __init sel_netif_init(void)
 {
 	int i;
 
@@ -275,6 +280,4 @@ static __init int sel_netif_init(void)
 
 	return 0;
 }
-
-__initcall(sel_netif_init);
 

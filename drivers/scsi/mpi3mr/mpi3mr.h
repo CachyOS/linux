@@ -2,7 +2,7 @@
 /*
  * Driver for Broadcom MPI3 Storage Controllers
  *
- * Copyright (C) 2017-2022 Broadcom Inc.
+ * Copyright (C) 2017-2023 Broadcom Inc.
  *  (mailto: mpi3mr-linuxdrv.pdl@broadcom.com)
  *
  */
@@ -12,7 +12,6 @@
 
 #include <linux/blkdev.h>
 #include <linux/blk-mq.h>
-#include <linux/blk-mq-pci.h>
 #include <linux/delay.h>
 #include <linux/dmapool.h>
 #include <linux/errno.h>
@@ -23,15 +22,15 @@
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/aer.h>
 #include <linux/poll.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/utsname.h>
-#include <linux/version.h>
 #include <linux/workqueue.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_dbg.h>
@@ -39,6 +38,7 @@
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_tcq.h>
 #include <uapi/scsi/scsi_bsg_mpi3mr.h>
+#include <scsi/scsi_transport_sas.h>
 
 #include "mpi/mpi30_transport.h"
 #include "mpi/mpi30_cnfg.h"
@@ -47,6 +47,7 @@
 #include "mpi/mpi30_ioc.h"
 #include "mpi/mpi30_sas.h"
 #include "mpi/mpi30_pci.h"
+#include "mpi/mpi30_tool.h"
 #include "mpi3mr_debug.h"
 
 /* Global list and lock for storing multiple adapters managed by the driver */
@@ -55,34 +56,38 @@ extern struct list_head mrioc_list;
 extern int prot_mask;
 extern atomic64_t event_counter;
 
-#define MPI3MR_DRIVER_VERSION	"8.0.0.69.0"
-#define MPI3MR_DRIVER_RELDATE	"16-March-2022"
+#define MPI3MR_DRIVER_VERSION	"8.17.0.3.50"
+#define MPI3MR_DRIVER_RELDATE	"09-January-2026"
 
 #define MPI3MR_DRIVER_NAME	"mpi3mr"
 #define MPI3MR_DRIVER_LICENSE	"GPL"
 #define MPI3MR_DRIVER_AUTHOR	"Broadcom Inc. <mpi3mr-linuxdrv.pdl@broadcom.com>"
 #define MPI3MR_DRIVER_DESC	"MPI3 Storage Controller Device Driver"
 
-#define MPI3MR_NAME_LENGTH	32
+#define MPI3MR_NAME_LENGTH	64
 #define IOCNAME			"%s: "
+
+#define MPI3MR_DEFAULT_MAX_IO_SIZE	(1 * 1024 * 1024)
 
 /* Definitions for internal SGL and Chain SGL buffers */
 #define MPI3MR_PAGE_SIZE_4K		4096
-#define MPI3MR_SG_DEPTH		(MPI3MR_PAGE_SIZE_4K / sizeof(struct mpi3_sge_common))
+#define MPI3MR_DEFAULT_SGL_ENTRIES	256
+#define MPI3MR_MAX_SGL_ENTRIES		2048
 
 /* Definitions for MAX values for shost */
-#define MPI3MR_MAX_CMDS_LUN	7
+#define MPI3MR_MAX_CMDS_LUN	128
 #define MPI3MR_MAX_CDB_LENGTH	32
 
 /* Admin queue management definitions */
 #define MPI3MR_ADMIN_REQ_Q_SIZE		(2 * MPI3MR_PAGE_SIZE_4K)
-#define MPI3MR_ADMIN_REPLY_Q_SIZE	(4 * MPI3MR_PAGE_SIZE_4K)
+#define MPI3MR_ADMIN_REPLY_Q_SIZE	(8 * MPI3MR_PAGE_SIZE_4K)
 #define MPI3MR_ADMIN_REQ_FRAME_SZ	128
 #define MPI3MR_ADMIN_REPLY_FRAME_SZ	16
 
 /* Operational queue management definitions */
 #define MPI3MR_OP_REQ_Q_QD		512
 #define MPI3MR_OP_REP_Q_QD		1024
+#define MPI3MR_OP_REP_Q_QD2K		2048
 #define MPI3MR_OP_REP_Q_QD4K		4096
 #define MPI3MR_OP_REQ_Q_SEG_SIZE	4096
 #define MPI3MR_OP_REP_Q_SEG_SIZE	4096
@@ -95,9 +100,11 @@ extern atomic64_t event_counter;
 #define MPI3MR_HOSTTAG_PEL_ABORT	3
 #define MPI3MR_HOSTTAG_PEL_WAIT		4
 #define MPI3MR_HOSTTAG_BLK_TMS		5
+#define MPI3MR_HOSTTAG_CFG_CMDS		6
+#define MPI3MR_HOSTTAG_TRANSPORT_CMDS	7
 
 #define MPI3MR_NUM_DEVRMCMD		16
-#define MPI3MR_HOSTTAG_DEVRMCMD_MIN	(MPI3MR_HOSTTAG_BLK_TMS + 1)
+#define MPI3MR_HOSTTAG_DEVRMCMD_MIN	(MPI3MR_HOSTTAG_TRANSPORT_CMDS + 1)
 #define MPI3MR_HOSTTAG_DEVRMCMD_MAX	(MPI3MR_HOSTTAG_DEVRMCMD_MIN + \
 						MPI3MR_NUM_DEVRMCMD - 1)
 
@@ -113,6 +120,7 @@ extern atomic64_t event_counter;
 /* command/controller interaction timeout definitions in seconds */
 #define MPI3MR_INTADMCMD_TIMEOUT		60
 #define MPI3MR_PORTENABLE_TIMEOUT		300
+#define MPI3MR_PORTENABLE_POLL_INTERVAL		5
 #define MPI3MR_ABORTTM_TIMEOUT			60
 #define MPI3MR_RESETTM_TIMEOUT			60
 #define MPI3MR_RESET_HOST_IOWAIT_TIMEOUT	5
@@ -121,8 +129,12 @@ extern atomic64_t event_counter;
 #define	MPI3MR_RAID_ERRREC_RESET_TIMEOUT	180
 #define MPI3MR_PREPARE_FOR_RESET_TIMEOUT	180
 #define MPI3MR_RESET_ACK_TIMEOUT		30
+#define MPI3MR_MUR_TIMEOUT			120
+#define MPI3MR_RESET_TIMEOUT			510
 
 #define MPI3MR_WATCHDOG_INTERVAL		1000 /* in milli seconds */
+
+#define MPI3MR_RESET_TOPOLOGY_SETTLE_TIME	10
 
 #define MPI3MR_SCMD_TIMEOUT    (60 * HZ)
 #define MPI3MR_EH_SCMD_TIMEOUT (60 * HZ)
@@ -164,7 +176,7 @@ extern atomic64_t event_counter;
 #define MPI3MR_DEFAULT_SDEV_QD	32
 
 /* Definitions for Threaded IRQ poll*/
-#define MPI3MR_IRQ_POLL_SLEEP			2
+#define MPI3MR_IRQ_POLL_SLEEP			20
 #define MPI3MR_IRQ_POLL_TRIGGER_IOCOUNT		8
 
 /* Definitions for the controller security status*/
@@ -175,6 +187,31 @@ extern atomic64_t event_counter;
 #define MPI3MR_CONFIG_SECURE_DEVICE		0x04
 #define MPI3MR_HARD_SECURE_DEVICE		0x08
 #define MPI3MR_TAMPERED_DEVICE			0x0C
+
+#define MPI3MR_DEFAULT_HDB_MAX_SZ       (4 * 1024 * 1024)
+#define MPI3MR_DEFAULT_HDB_DEC_SZ       (1 * 1024 * 1024)
+#define MPI3MR_DEFAULT_HDB_MIN_SZ       (2 * 1024 * 1024)
+#define MPI3MR_MAX_NUM_HDB      2
+
+#define MPI3MR_HDB_TRIGGER_TYPE_UNKNOWN		0
+#define MPI3MR_HDB_TRIGGER_TYPE_FAULT		1
+#define MPI3MR_HDB_TRIGGER_TYPE_ELEMENT		2
+#define MPI3MR_HDB_TRIGGER_TYPE_GLOBAL          3
+#define MPI3MR_HDB_TRIGGER_TYPE_SOFT_RESET	4
+#define MPI3MR_HDB_TRIGGER_TYPE_FW_RELEASED	5
+
+#define MPI3MR_HDB_REFRESH_TYPE_RESERVED       0
+#define MPI3MR_HDB_REFRESH_TYPE_CURRENT                1
+#define MPI3MR_HDB_REFRESH_TYPE_DEFAULT                2
+#define MPI3MR_HDB_HDB_REFRESH_TYPE_PERSISTENT 3
+
+#define MPI3MR_DEFAULT_HDB_SZ  (4 * 1024 * 1024)
+#define MPI3MR_MAX_NUM_HDB     2
+
+#define MPI3MR_HDB_QUERY_ELEMENT_TRIGGER_FORMAT_INDEX   0
+#define MPI3MR_HDB_QUERY_ELEMENT_TRIGGER_FORMAT_DATA    1
+
+#define MPI3MR_THRESHOLD_REPLY_COUNT	100
 
 /* SGE Flag definition */
 #define MPI3MR_SGEFLAGS_SYSTEM_SIMPLE_END_OF_LIST \
@@ -196,6 +233,11 @@ extern atomic64_t event_counter;
  */
 #define MPI3MR_MAX_APP_XFER_SECTORS	(2048 + 512)
 
+#define MPI3MR_WRITE_SAME_MAX_LEN_256_BLKS 256
+#define MPI3MR_WRITE_SAME_MAX_LEN_2048_BLKS 2048
+
+#define MPI3MR_DRIVER_EVENT_PROCESS_TRIGGER    (0xFFFD)
+
 /**
  * struct mpi3mr_nvme_pt_sge -  Structure to store SGEs for NVMe
  * Encapsulated commands.
@@ -204,14 +246,16 @@ extern atomic64_t event_counter;
  * @length: SGE length
  * @rsvd: Reserved
  * @rsvd1: Reserved
- * @sgl_type: sgl type
+ * @sub_type: sgl sub type
+ * @type: sgl type
  */
 struct mpi3mr_nvme_pt_sge {
-	u64 base_addr;
-	u32 length;
+	__le64 base_addr;
+	__le32 length;
 	u16 rsvd;
 	u8 rsvd1;
-	u8 sgl_type;
+	u8 sub_type:4;
+	u8 type:4;
 };
 
 /**
@@ -233,6 +277,8 @@ struct mpi3mr_buf_map {
 	u32 kern_buf_len;
 	dma_addr_t kern_buf_dma;
 	u8 data_dir;
+	u16 num_dma_desc;
+	struct dma_memory_desc *dma_desc;
 };
 
 /* IOC State definitions */
@@ -271,8 +317,18 @@ enum mpi3mr_reset_reason {
 	MPI3MR_RESET_FROM_PELABORT_TIMEOUT = 22,
 	MPI3MR_RESET_FROM_SYSFS = 23,
 	MPI3MR_RESET_FROM_SYSFS_TIMEOUT = 24,
+	MPI3MR_RESET_FROM_DIAG_BUFFER_POST_TIMEOUT = 25,
+	MPI3MR_RESET_FROM_DIAG_BUFFER_RELEASE_TIMEOUT = 26,
 	MPI3MR_RESET_FROM_FIRMWARE = 27,
+	MPI3MR_RESET_FROM_CFG_REQ_TIMEOUT = 29,
+	MPI3MR_RESET_FROM_SAS_TRANSPORT_TIMEOUT = 30,
+	MPI3MR_RESET_FROM_TRIGGER = 31,
 };
+
+#define MPI3MR_RESET_REASON_OSTYPE_LINUX	1
+#define MPI3MR_RESET_REASON_OSTYPE_SHIFT	28
+#define MPI3MR_RESET_REASON_IOCNUM_SHIFT	20
+
 
 /* Queue type definitions */
 enum queue_type {
@@ -303,6 +359,9 @@ struct mpi3mr_ioc_facts {
 	u32 ioc_capabilities;
 	struct mpi3mr_compimg_ver fw_ver;
 	u32 mpi_version;
+	u32 diag_trace_sz;
+	u32 diag_fw_sz;
+	u32 diag_drvr_sz;
 	u16 max_reqs;
 	u16 product_id;
 	u16 op_req_sz;
@@ -311,6 +370,7 @@ struct mpi3mr_ioc_facts {
 	u16 max_perids;
 	u16 max_pds;
 	u16 max_sasexpanders;
+	u32 max_data_length;
 	u16 max_sasinitiators;
 	u16 max_enclosures;
 	u16 max_pcie_switches;
@@ -329,10 +389,17 @@ struct mpi3mr_ioc_facts {
 	u16 max_msix_vectors;
 	u8 personality;
 	u8 dma_mask;
+	bool max_req_limit;
 	u8 protocol_flags;
 	u8 sge_mod_mask;
 	u8 sge_mod_value;
 	u8 sge_mod_shift;
+	u8 max_dev_per_tg;
+	u16 max_io_throttle_group;
+	u16 io_throttle_data_length;
+	u16 io_throttle_low;
+	u16 io_throttle_high;
+
 };
 
 /**
@@ -392,6 +459,8 @@ struct op_req_qinfo {
  * @enable_irq_poll: Flag to indicate polling is enabled
  * @in_use: Queue is handled by poll/ISR
  * @qtype: Type of queue (types defined in enum queue_type)
+ * @qfull_watermark: Watermark defined in reply queue to avoid
+ *                    reply queue full
  */
 struct op_reply_qinfo {
 	u16 ci;
@@ -407,21 +476,162 @@ struct op_reply_qinfo {
 	bool enable_irq_poll;
 	atomic_t in_use;
 	enum queue_type qtype;
+	u16 qfull_watermark;
 };
 
 /**
  * struct mpi3mr_intr_info -  Interrupt cookie information
  *
  * @mrioc: Adapter instance reference
+ * @os_irq: irq number
  * @msix_index: MSIx index
  * @op_reply_q: Associated operational reply queue
  * @name: Dev name for the irq claiming device
  */
 struct mpi3mr_intr_info {
 	struct mpi3mr_ioc *mrioc;
+	int os_irq;
 	u16 msix_index;
 	struct op_reply_qinfo *op_reply_q;
 	char name[MPI3MR_NAME_LENGTH];
+};
+
+/**
+ * struct mpi3mr_throttle_group_info - Throttle group info
+ *
+ * @io_divert: Flag indicates io divert is on or off for the TG
+ * @need_qd_reduction: Flag to indicate QD reduction is needed
+ * @qd_reduction: Queue Depth reduction in units of 10%
+ * @fw_qd: QueueDepth value reported by the firmware
+ * @modified_qd: Modified QueueDepth value due to throttling
+ * @id: Throttle Group ID.
+ * @high: High limit to turn on throttling in 512 byte blocks
+ * @low: Low limit to turn off throttling in 512 byte blocks
+ * @pend_large_data_sz: Counter to track pending large data
+ */
+struct mpi3mr_throttle_group_info {
+	u8 io_divert;
+	u8 need_qd_reduction;
+	u8 qd_reduction;
+	u16 fw_qd;
+	u16 modified_qd;
+	u16 id;
+	u32 high;
+	u32 low;
+	atomic_t pend_large_data_sz;
+};
+
+/* HBA port flags */
+#define MPI3MR_HBA_PORT_FLAG_DIRTY	0x01
+#define MPI3MR_HBA_PORT_FLAG_NEW       0x02
+
+/* IOCTL data transfer sge*/
+#define MPI3MR_NUM_IOCTL_SGE		256
+#define MPI3MR_IOCTL_SGE_SIZE		(8 * 1024)
+
+/**
+ * struct mpi3mr_hba_port - HBA's port information
+ * @port_id: Port number
+ * @flags: HBA port flags
+ */
+struct mpi3mr_hba_port {
+	struct list_head list;
+	u8 port_id;
+	u8 flags;
+};
+
+/**
+ * struct mpi3mr_sas_port - Internal SAS port information
+ * @port_list: List of ports belonging to a SAS node
+ * @num_phys: Number of phys associated with port
+ * @marked_responding: used while refresing the sas ports
+ * @lowest_phy: lowest phy ID of current sas port, valid for controller port
+ * @phy_mask: phy_mask of current sas port, valid for controller port
+ * @hba_port: HBA port entry
+ * @remote_identify: Attached device identification
+ * @rphy: SAS transport layer rphy object
+ * @port: SAS transport layer port object
+ * @phy_list: mpi3mr_sas_phy objects belonging to this port
+ */
+struct mpi3mr_sas_port {
+	struct list_head port_list;
+	u8 num_phys;
+	u8 marked_responding;
+	int lowest_phy;
+	u64 phy_mask;
+	struct mpi3mr_hba_port *hba_port;
+	struct sas_identify remote_identify;
+	struct sas_rphy *rphy;
+	struct sas_port *port;
+	struct list_head phy_list;
+};
+
+/**
+ * struct mpi3mr_sas_phy - Internal SAS Phy information
+ * @port_siblings: List of phys belonging to a port
+ * @identify: Phy identification
+ * @remote_identify: Attached device identification
+ * @phy: SAS transport layer Phy object
+ * @phy_id: Unique phy id within a port
+ * @handle: Firmware device handle for this phy
+ * @attached_handle: Firmware device handle for attached device
+ * @phy_belongs_to_port: Flag to indicate phy belongs to port
+   @hba_port: HBA port entry
+ */
+struct mpi3mr_sas_phy {
+	struct list_head port_siblings;
+	struct sas_identify identify;
+	struct sas_identify remote_identify;
+	struct sas_phy *phy;
+	u8 phy_id;
+	u16 handle;
+	u16 attached_handle;
+	u8 phy_belongs_to_port;
+	struct mpi3mr_hba_port *hba_port;
+};
+
+/**
+ * struct mpi3mr_sas_node - SAS host/expander information
+ * @list: List of sas nodes in a controller
+ * @parent_dev: Parent device class
+ * @num_phys: Number phys belonging to sas_node
+ * @sas_address: SAS address of sas_node
+ * @handle: Firmware device handle for this sas_host/expander
+ * @sas_address_parent: SAS address of parent expander or host
+ * @enclosure_handle: Firmware handle of enclosure of this node
+ * @device_info: Capabilities of this sas_host/expander
+ * @non_responding: used to refresh the expander devices during reset
+ * @host_node: Flag to indicate this is a host_node
+ * @hba_port: HBA port entry
+ * @phy: A list of phys that make up this sas_host/expander
+ * @sas_port_list: List of internal ports of this node
+ * @rphy: sas_rphy object of this expander node
+ */
+struct mpi3mr_sas_node {
+	struct list_head list;
+	struct device *parent_dev;
+	u8 num_phys;
+	u64 sas_address;
+	u16 handle;
+	u64 sas_address_parent;
+	u16 enclosure_handle;
+	u64 enclosure_logical_id;
+	u8 non_responding;
+	u8 host_node;
+	struct mpi3mr_hba_port *hba_port;
+	struct mpi3mr_sas_phy *phy;
+	struct list_head sas_port_list;
+	struct sas_rphy *rphy;
+};
+
+/**
+ * struct mpi3mr_enclosure_node - enclosure information
+ * @list: List of enclosures
+ * @pg0: Enclosure page 0;
+ */
+struct mpi3mr_enclosure_node {
+	struct list_head list;
+	struct mpi3_enclosure_page0 pg0;
 };
 
 /**
@@ -429,11 +639,27 @@ struct mpi3mr_intr_info {
  * information cached from firmware given data
  *
  * @sas_address: World wide unique SAS address
+ * @sas_address_parent: Sas address of parent expander or host
  * @dev_info: Device information bits
+ * @phy_id: Phy identifier provided in device page 0
+ * @attached_phy_id: Attached phy identifier provided in device page 0
+ * @negotiated_link_rate: Negotiated link rate from device page 0
+ * @sas_transport_attached: Is this device exposed to transport
+ * @pend_sas_rphy_add: Flag to check device is in process of add
+ * @hba_port: HBA port entry
+ * @rphy: SAS transport layer rphy object
  */
 struct tgt_dev_sas_sata {
 	u64 sas_address;
+	u64 sas_address_parent;
 	u16 dev_info;
+	u8 phy_id;
+	u8 attached_phy_id;
+	u8 negotiated_link_rate;
+	u8 sas_transport_attached;
+	u8 pend_sas_rphy_add;
+	struct mpi3mr_hba_port *hba_port;
+	struct sas_rphy *rphy;
 };
 
 /**
@@ -457,14 +683,27 @@ struct tgt_dev_pcie {
 };
 
 /**
- * struct tgt_dev_volume - virtual device specific information
+ * struct tgt_dev_vd - virtual device specific information
  * cached from firmware given data
  *
  * @state: State of the VD
+ * @tg_qd_reduction: Queue Depth reduction in units of 10%
+ * @tg_id: VDs throttle group ID
+ * @high: High limit to turn on throttling in 512 byte blocks
+ * @low: Low limit to turn off throttling in 512 byte blocks
+ * @tg: Pointer to throttle group info
  */
-struct tgt_dev_volume {
+struct tgt_dev_vd {
 	u8 state;
+	u8 tg_qd_reduction;
+	u16 tg_id;
+	u32 tg_high;
+	u32 tg_low;
+	u8 abort_to;
+	u8 reset_to;
+	struct mpi3mr_throttle_group_info *tg;
 };
+
 
 /**
  * union _form_spec_inf - union of device specific information
@@ -472,10 +711,14 @@ struct tgt_dev_volume {
 union _form_spec_inf {
 	struct tgt_dev_sas_sata sas_sata_inf;
 	struct tgt_dev_pcie pcie_inf;
-	struct tgt_dev_volume vol_inf;
+	struct tgt_dev_vd vd_inf;
 };
 
-
+enum mpi3mr_dev_state {
+	MPI3MR_DEV_CREATED = 1,
+	MPI3MR_DEV_REMOVE_HS_STARTED = 2,
+	MPI3MR_DEV_DELETED = 3,
+};
 
 /**
  * struct mpi3mr_tgt_dev - target device data structure
@@ -487,13 +730,22 @@ union _form_spec_inf {
  * @slot: Slot number
  * @encl_handle: FW enclosure handle
  * @perst_id: FW assigned Persistent ID
+ * @devpg0_flag: Device Page0 flag
  * @dev_type: SAS/SATA/PCIE device type
  * @is_hidden: Should be exposed to upper layers or not
  * @host_exposed: Already exposed to host or not
+ * @io_unit_port: IO Unit port ID
+ * @non_stl: Is this device not to be attached with SAS TL
+ * @io_throttle_enabled: I/O throttling needed or not
+ * @wslen: Write same max length
  * @q_depth: Device specific Queue Depth
  * @wwid: World wide ID
+ * @enclosure_logical_id: Enclosure logical identifier
  * @dev_spec: Device type specific information
+ * @abort_to: Timeout for abort TM
+ * @reset_to: Timeout for Target/LUN reset TM
  * @ref_count: Reference count
+ * @state: device state
  */
 struct mpi3mr_tgt_dev {
 	struct list_head list;
@@ -503,13 +755,20 @@ struct mpi3mr_tgt_dev {
 	u16 slot;
 	u16 encl_handle;
 	u16 perst_id;
+	u16 devpg0_flag;
 	u8 dev_type;
 	u8 is_hidden;
 	u8 host_exposed;
+	u8 io_unit_port;
+	u8 non_stl;
+	u8 io_throttle_enabled;
+	u16 wslen;
 	u16 q_depth;
 	u64 wwid;
+	u64 enclosure_logical_id;
 	union _form_spec_inf dev_spec;
 	struct kref ref_count;
+	enum mpi3mr_dev_state state;
 };
 
 /**
@@ -557,6 +816,11 @@ static inline void mpi3mr_tgtdev_put(struct mpi3mr_tgt_dev *s)
  * @dev_removed: Device removed in the Firmware
  * @dev_removedelay: Device is waiting to be removed in FW
  * @dev_type: Device type
+ * @dev_nvme_dif: Device is NVMe DIF enabled
+ * @wslen: Write same max length
+ * @io_throttle_enabled: I/O throttling needed or not
+ * @io_divert: Flag indicates io divert is on or off for the dev
+ * @throttle_group: Pointer to throttle group info
  * @tgt_dev: Internal target device pointer
  * @pend_count: Counter to track pending I/Os during error
  *		handling
@@ -570,6 +834,11 @@ struct mpi3mr_stgt_priv_data {
 	u8 dev_removed;
 	u8 dev_removedelay;
 	u8 dev_type;
+	u8 dev_nvme_dif;
+	u16 wslen;
+	u8 io_throttle_enabled;
+	u8 io_divert;
+	struct mpi3mr_throttle_group_info *throttle_group;
 	struct mpi3mr_tgt_dev *tgt_dev;
 	u32 pend_count;
 };
@@ -582,12 +851,14 @@ struct mpi3mr_stgt_priv_data {
  * @ncq_prio_enable: NCQ priority enable for SATA device
  * @pend_count: Counter to track pending I/Os during error
  *		handling
+ * @wslen: Write same max length
  */
 struct mpi3mr_sdev_priv_data {
 	struct mpi3mr_stgt_priv_data *tgt_priv_data;
 	u32 lun_id;
 	u8 ncq_prio_enable;
 	u32 pend_count;
+	u16 wslen;
 };
 
 /**
@@ -625,6 +896,78 @@ struct mpi3mr_drv_cmd {
 
 	void (*callback)(struct mpi3mr_ioc *mrioc,
 	    struct mpi3mr_drv_cmd *drv_cmd);
+};
+
+/**
+ * union mpi3mr_trigger_data - Trigger data information
+ * @fault: Fault code
+ * @global: Global trigger data
+ * @element: element trigger data
+ */
+union mpi3mr_trigger_data {
+	u16 fault;
+	u64 global;
+	union mpi3_driver2_trigger_element element;
+};
+
+/**
+ * struct trigger_event_data - store trigger related
+ * information.
+ *
+ * @trace_hdb: Trace diag buffer descriptor reference
+ * @fw_hdb: FW diag buffer descriptor reference
+ * @trigger_type: Trigger type
+ * @trigger_specific_data: Trigger specific data
+ * @snapdump: Snapdump enable or disable flag
+ */
+struct trigger_event_data {
+	struct diag_buffer_desc *trace_hdb;
+	struct diag_buffer_desc *fw_hdb;
+	u8 trigger_type;
+	union mpi3mr_trigger_data trigger_specific_data;
+	bool snapdump;
+};
+
+/**
+ * struct diag_buffer_desc - memory descriptor structure to
+ * store virtual, dma addresses, size, buffer status for host
+ * diagnostic buffers.
+ *
+ * @type: Buffer type
+ * @trigger_data: Trigger data
+ * @trigger_type: Trigger type
+ * @status: Buffer status
+ * @size: Buffer size
+ * @addr: Virtual address
+ * @dma_addr: Buffer DMA address
+ * @is_segmented: The buffer is segmented or not
+ * @disabled_after_reset: The buffer is disabled after reset
+ */
+struct diag_buffer_desc {
+	u8 type;
+	union mpi3mr_trigger_data trigger_data;
+	u8 trigger_type;
+	u8 status;
+	u32 size;
+	void *addr;
+	dma_addr_t dma_addr;
+	bool is_segmented;
+	bool disabled_after_reset;
+};
+
+/**
+ * struct dma_memory_desc - memory descriptor structure to store
+ * virtual address, dma address and size for any generic dma
+ * memory allocations in the driver.
+ *
+ * @size: buffer size
+ * @addr: virtual address
+ * @dma_addr: dma address
+ */
+struct dma_memory_desc {
+	u32 size;
+	void *addr;
+	dma_addr_t dma_addr;
 };
 
 
@@ -694,6 +1037,9 @@ struct scmd_priv {
  * @admin_reply_ephase:Admin reply queue expected phase
  * @admin_reply_base: Admin reply queue base virtual address
  * @admin_reply_dma: Admin reply queue base dma address
+ * @admin_reply_q_in_use: Queue is handled by poll/ISR
+ * @admin_pend_isr: Count of unprocessed admin ISR/poll calls
+ * due to another thread processing replies
  * @ready_timeout: Controller ready timeout
  * @intr_info: Interrupt cookie pointer
  * @intr_info_count: Number of interrupt cookies
@@ -704,6 +1050,7 @@ struct scmd_priv {
  * @num_op_reply_q: Number of operational reply queues
  * @op_reply_qinfo: Operational reply queue info pointer
  * @init_cmds: Command tracker for initialization commands
+ * @cfg_cmds: Command tracker for configuration requests
  * @facts: Cached IOC facts data
  * @op_reply_desc_sz: Operational reply descriptor size
  * @num_reply_bufs: Number of reply buffers allocated
@@ -728,11 +1075,9 @@ struct scmd_priv {
  * @sbq_lock: Sense buffer queue lock
  * @sbq_host_index: Sense buffer queuehost index
  * @event_masks: Event mask bitmap
- * @fwevt_worker_name: Firmware event worker thread name
  * @fwevt_worker_thread: Firmware event worker thread
  * @fwevt_lock: Firmware event lock
  * @fwevt_list: Firmware event list
- * @watchdog_work_q_name: Fault watchdog worker thread name
  * @watchdog_work_q: Fault watchdog worker thread
  * @watchdog_work: Fault watchdog work
  * @watchdog_lock: Fault watchdog lock
@@ -740,28 +1085,29 @@ struct scmd_priv {
  * @scan_started: Async scan started
  * @scan_failed: Asycn scan failed
  * @stop_drv_processing: Stop all command processing
+ * @device_refresh_on: Don't process the events until devices are refreshed
  * @max_host_ios: Maximum host I/O count
+ * @max_sgl_entries: Max SGL entries per I/O
  * @chain_buf_count: Chain buffer count
  * @chain_buf_pool: Chain buffer pool
  * @chain_sgl_list: Chain SGL list
- * @chain_bitmap_sz: Chain buffer allocator bitmap size
  * @chain_bitmap: Chain buffer allocator bitmap
  * @chain_buf_lock: Chain buffer list lock
  * @bsg_cmds: Command tracker for BSG command
  * @host_tm_cmds: Command tracker for task management commands
  * @dev_rmhs_cmds: Command tracker for device removal commands
  * @evtack_cmds: Command tracker for event ack commands
- * @devrem_bitmap_sz: Device removal bitmap size
  * @devrem_bitmap: Device removal bitmap
- * @dev_handle_bitmap_sz: Device handle bitmap size
+ * @dev_handle_bitmap_bits: Number of bits in device handle bitmap
  * @removepend_bitmap: Remove pending bitmap
  * @delayed_rmhs_list: Delayed device removal list
- * @evtack_cmds_bitmap_sz: Event Ack bitmap size
  * @evtack_cmds_bitmap: Event Ack bitmap
  * @delayed_evtack_cmds_list: Delayed event acknowledgment list
  * @ts_update_counter: Timestamp update counter
+ * @ts_update_interval: Timestamp update interval
  * @reset_in_progress: Reset in progress flag
  * @unrecoverable: Controller unrecoverable flag
+ * @io_admin_reset_sync: Manage state of I/O ops during an admin reset process
  * @prev_reset_result: Result of previous reset
  * @reset_mutex: Controller reset mutex
  * @reset_waitq: Controller reset  wait queue
@@ -790,12 +1136,53 @@ struct scmd_priv {
  * @default_qcount: Total Default queues
  * @active_poll_qcount: Currently active poll queue count
  * @requested_poll_qcount: User requested poll queue count
+ * @fault_during_init: Indicates a firmware fault occurred during initialization
+ * @saved_fault_code: Firmware fault code captured at the time of failure
+ * @saved_fault_info: Additional firmware-provided fault information
+ * @fwfault_counter: Count of firmware faults detected by the driver
  * @bsg_dev: BSG device structure
  * @bsg_queue: Request queue for BSG device
  * @stop_bsgs: Stop BSG request flag
  * @logdata_buf: Circular buffer to store log data entries
  * @logdata_buf_idx: Index of entry in buffer to store
  * @logdata_entry_sz: log data entry size
+ * @adm_req_q_bar_writeq_lock: Admin request queue lock
+ * @adm_reply_q_bar_writeq_lock: Admin reply queue lock
+ * @pend_large_data_sz: Counter to track pending large data
+ * @io_throttle_data_length: I/O size to track in 512b blocks
+ * @io_throttle_high: I/O size to start throttle in 512b blocks
+ * @io_throttle_low: I/O size to stop throttle in 512b blocks
+ * @num_io_throttle_group: Maximum number of throttle groups
+ * @throttle_groups: Pointer to throttle group info structures
+ * @sas_transport_enabled: SAS transport enabled or not
+ * @scsi_device_channel: Channel ID for SCSI devices
+ * @transport_cmds: Command tracker for SAS transport commands
+ * @sas_hba: SAS node for the controller
+ * @sas_expander_list: SAS node list of expanders
+ * @sas_node_lock: Lock to protect SAS node list
+ * @hba_port_table_list: List of HBA Ports
+ * @enclosure_list: List of Enclosure objects
+ * @diag_buffers: Host diagnostic buffers
+ * @driver_pg2:  Driver page 2 pointer
+ * @reply_trigger_present: Reply trigger present flag
+ * @event_trigger_present: Event trigger present flag
+ * @scsisense_trigger_present: Scsi sense trigger present flag
+ * @ioctl_dma_pool: DMA pool for IOCTL data buffers
+ * @ioctl_sge: DMA buffer descriptors for IOCTL data
+ * @ioctl_chain_sge: DMA buffer descriptor for IOCTL chain
+ * @ioctl_resp_sge: DMA buffer descriptor for Mgmt cmd response
+ * @ioctl_sges_allocated: Flag for IOCTL SGEs allocated or not
+ * @trace_release_trigger_active: Trace trigger active flag
+ * @fw_release_trigger_active: Fw release trigger active flag
+ * @snapdump_trigger_active: Snapdump trigger active flag
+ * @pci_err_recovery: PCI error recovery in progress
+ * @block_on_pci_err: Block IO during PCI error recovery
+ * @reply_qfull_count: Occurences of reply queue full avoidance kicking-in
+ * @prevent_reply_qfull: Enable reply queue prevention
+ * @seg_tb_support: Segmented trace buffer support
+ * @num_tb_segs: Number of Segments in Trace buffer
+ * @trace_buf_pool: DMA pool for Segmented trace buffer segments
+ * @trace_buf: Trace buffer segments memory descriptor
  */
 struct mpi3mr_ioc {
 	struct list_head list;
@@ -809,7 +1196,7 @@ struct mpi3mr_ioc {
 	char name[MPI3MR_NAME_LENGTH];
 	char driver_name[MPI3MR_NAME_LENGTH];
 
-	volatile struct mpi3_sysif_registers __iomem *sysif_regs;
+	struct mpi3_sysif_registers __iomem *sysif_regs;
 	resource_size_t sysif_regs_phys;
 	int bars;
 	u64 dma_mask;
@@ -831,6 +1218,8 @@ struct mpi3mr_ioc {
 	u8 admin_reply_ephase;
 	void *admin_reply_base;
 	dma_addr_t admin_reply_dma;
+	atomic_t admin_reply_q_in_use;
+	atomic_t admin_pend_isr;
 
 	u32 ready_timeout;
 
@@ -846,6 +1235,7 @@ struct mpi3mr_ioc {
 	struct op_reply_qinfo *op_reply_qinfo;
 
 	struct mpi3mr_drv_cmd init_cmds;
+	struct mpi3mr_drv_cmd cfg_cmds;
 	struct mpi3mr_ioc_facts facts;
 	u16 op_reply_desc_sz;
 
@@ -876,12 +1266,10 @@ struct mpi3mr_ioc {
 	u32 sbq_host_index;
 	u32 event_masks[MPI3_EVENT_NOTIFY_EVENTMASK_WORDS];
 
-	char fwevt_worker_name[MPI3MR_NAME_LENGTH];
 	struct workqueue_struct	*fwevt_worker_thread;
 	spinlock_t fwevt_lock;
 	struct list_head fwevt_list;
 
-	char watchdog_work_q_name[20];
 	struct workqueue_struct *watchdog_work_q;
 	struct delayed_work watchdog_work;
 	spinlock_t watchdog_lock;
@@ -890,34 +1278,35 @@ struct mpi3mr_ioc {
 	u8 scan_started;
 	u16 scan_failed;
 	u8 stop_drv_processing;
+	u8 device_refresh_on;
 
 	u16 max_host_ios;
 	spinlock_t tgtdev_lock;
 	struct list_head tgtdev_list;
+	u16 max_sgl_entries;
 
 	u32 chain_buf_count;
 	struct dma_pool *chain_buf_pool;
 	struct chain_element *chain_sgl_list;
-	u16  chain_bitmap_sz;
-	void *chain_bitmap;
+	unsigned long *chain_bitmap;
 	spinlock_t chain_buf_lock;
 
 	struct mpi3mr_drv_cmd bsg_cmds;
 	struct mpi3mr_drv_cmd host_tm_cmds;
 	struct mpi3mr_drv_cmd dev_rmhs_cmds[MPI3MR_NUM_DEVRMCMD];
 	struct mpi3mr_drv_cmd evtack_cmds[MPI3MR_NUM_EVTACKCMD];
-	u16 devrem_bitmap_sz;
-	void *devrem_bitmap;
-	u16 dev_handle_bitmap_sz;
-	void *removepend_bitmap;
+	unsigned long *devrem_bitmap;
+	u16 dev_handle_bitmap_bits;
+	unsigned long *removepend_bitmap;
 	struct list_head delayed_rmhs_list;
-	u16 evtack_cmds_bitmap_sz;
-	void *evtack_cmds_bitmap;
+	unsigned long *evtack_cmds_bitmap;
 	struct list_head delayed_evtack_cmds_list;
 
-	u32 ts_update_counter;
+	u16 ts_update_counter;
+	u16 ts_update_interval;
 	u8 reset_in_progress;
 	u8 unrecoverable;
+	u8 io_admin_reset_sync;
 	int prev_reset_result;
 	struct mutex reset_mutex;
 	wait_queue_head_t reset_waitq;
@@ -953,6 +1342,10 @@ struct mpi3mr_ioc {
 	u16 default_qcount;
 	u16 active_poll_qcount;
 	u16 requested_poll_qcount;
+	u8 fault_during_init;
+	u32 saved_fault_code;
+	u32 saved_fault_info[3];
+	u64 fwfault_counter;
 
 	struct device bsg_dev;
 	struct request_queue *bsg_queue;
@@ -960,6 +1353,48 @@ struct mpi3mr_ioc {
 	u8 *logdata_buf;
 	u16 logdata_buf_idx;
 	u16 logdata_entry_sz;
+	spinlock_t adm_req_q_bar_writeq_lock;
+	spinlock_t adm_reply_q_bar_writeq_lock;
+
+	atomic_t pend_large_data_sz;
+	u32 io_throttle_data_length;
+	u32 io_throttle_high;
+	u32 io_throttle_low;
+	u16 num_io_throttle_group;
+	struct mpi3mr_throttle_group_info *throttle_groups;
+
+	u8 sas_transport_enabled;
+	u8 scsi_device_channel;
+	struct mpi3mr_drv_cmd transport_cmds;
+	struct mpi3mr_sas_node sas_hba;
+	struct list_head sas_expander_list;
+	spinlock_t sas_node_lock;
+	struct list_head hba_port_table_list;
+	struct list_head enclosure_list;
+
+	struct dma_pool *ioctl_dma_pool;
+	struct dma_memory_desc ioctl_sge[MPI3MR_NUM_IOCTL_SGE];
+	struct dma_memory_desc ioctl_chain_sge;
+	struct dma_memory_desc ioctl_resp_sge;
+	bool ioctl_sges_allocated;
+	bool reply_trigger_present;
+	bool event_trigger_present;
+	bool scsisense_trigger_present;
+	struct diag_buffer_desc diag_buffers[MPI3MR_MAX_NUM_HDB];
+	struct mpi3_driver_page2 *driver_pg2;
+	spinlock_t trigger_lock;
+	bool snapdump_trigger_active;
+	bool trace_release_trigger_active;
+	bool fw_release_trigger_active;
+	bool pci_err_recovery;
+	bool block_on_pci_err;
+	atomic_t reply_qfull_count;
+	bool prevent_reply_qfull;
+	bool seg_tb_support;
+	u32 num_tb_segs;
+	struct dma_pool *trace_buf_pool;
+	struct segments *trace_buf;
+
 };
 
 /**
@@ -1050,7 +1485,7 @@ void mpi3mr_start_watchdog(struct mpi3mr_ioc *mrioc);
 void mpi3mr_stop_watchdog(struct mpi3mr_ioc *mrioc);
 
 int mpi3mr_soft_reset_handler(struct mpi3mr_ioc *mrioc,
-			      u32 reset_reason, u8 snapdump);
+			      u16 reset_reason, u8 snapdump);
 void mpi3mr_ioc_disable_intr(struct mpi3mr_ioc *mrioc);
 void mpi3mr_ioc_enable_intr(struct mpi3mr_ioc *mrioc);
 
@@ -1062,7 +1497,6 @@ void mpi3mr_wait_for_host_io(struct mpi3mr_ioc *mrioc, u32 timeout);
 void mpi3mr_cleanup_fwevt_list(struct mpi3mr_ioc *mrioc);
 void mpi3mr_flush_host_io(struct mpi3mr_ioc *mrioc);
 void mpi3mr_invalidate_devhandles(struct mpi3mr_ioc *mrioc);
-void mpi3mr_rfresh_tgtdevs(struct mpi3mr_ioc *mrioc);
 void mpi3mr_flush_delayed_cmd_lists(struct mpi3mr_ioc *mrioc);
 void mpi3mr_check_rh_fault_ioc(struct mpi3mr_ioc *mrioc, u32 reason_code);
 void mpi3mr_print_fault_info(struct mpi3mr_ioc *mrioc);
@@ -1082,8 +1516,98 @@ void mpi3mr_pel_get_seqnum_complete(struct mpi3mr_ioc *mrioc,
 	struct mpi3mr_drv_cmd *drv_cmd);
 int mpi3mr_pel_get_seqnum_post(struct mpi3mr_ioc *mrioc,
 	struct mpi3mr_drv_cmd *drv_cmd);
-void mpi3mr_app_save_logdata(struct mpi3mr_ioc *mrioc, char *event_data,
+void mpi3mr_app_save_logdata_th(struct mpi3mr_ioc *mrioc, char *event_data,
 	u16 event_data_size);
+struct mpi3mr_enclosure_node *mpi3mr_enclosure_find_by_handle(
+	struct mpi3mr_ioc *mrioc, u16 handle);
 extern const struct attribute_group *mpi3mr_host_groups[];
 extern const struct attribute_group *mpi3mr_dev_groups[];
+
+extern struct sas_function_template mpi3mr_transport_functions;
+extern struct scsi_transport_template *mpi3mr_transport_template;
+
+int mpi3mr_cfg_get_dev_pg0(struct mpi3mr_ioc *mrioc, u16 *ioc_status,
+	struct mpi3_device_page0 *dev_pg0, u16 pg_sz, u32 form, u32 form_spec);
+int mpi3mr_cfg_get_sas_phy_pg0(struct mpi3mr_ioc *mrioc, u16 *ioc_status,
+	struct mpi3_sas_phy_page0 *phy_pg0, u16 pg_sz, u32 form,
+	u32 form_spec);
+int mpi3mr_cfg_get_sas_phy_pg1(struct mpi3mr_ioc *mrioc, u16 *ioc_status,
+	struct mpi3_sas_phy_page1 *phy_pg1, u16 pg_sz, u32 form,
+	u32 form_spec);
+int mpi3mr_cfg_get_sas_exp_pg0(struct mpi3mr_ioc *mrioc, u16 *ioc_status,
+	struct mpi3_sas_expander_page0 *exp_pg0, u16 pg_sz, u32 form,
+	u32 form_spec);
+int mpi3mr_cfg_get_sas_exp_pg1(struct mpi3mr_ioc *mrioc, u16 *ioc_status,
+	struct mpi3_sas_expander_page1 *exp_pg1, u16 pg_sz, u32 form,
+	u32 form_spec);
+int mpi3mr_cfg_get_enclosure_pg0(struct mpi3mr_ioc *mrioc, u16 *ioc_status,
+	struct mpi3_enclosure_page0 *encl_pg0, u16 pg_sz, u32 form,
+	u32 form_spec);
+int mpi3mr_cfg_get_sas_io_unit_pg0(struct mpi3mr_ioc *mrioc,
+	struct mpi3_sas_io_unit_page0 *sas_io_unit_pg0, u16 pg_sz);
+int mpi3mr_cfg_get_sas_io_unit_pg1(struct mpi3mr_ioc *mrioc,
+	struct mpi3_sas_io_unit_page1 *sas_io_unit_pg1, u16 pg_sz);
+int mpi3mr_cfg_set_sas_io_unit_pg1(struct mpi3mr_ioc *mrioc,
+	struct mpi3_sas_io_unit_page1 *sas_io_unit_pg1, u16 pg_sz);
+int mpi3mr_cfg_get_driver_pg1(struct mpi3mr_ioc *mrioc,
+	struct mpi3_driver_page1 *driver_pg1, u16 pg_sz);
+int mpi3mr_cfg_get_driver_pg2(struct mpi3mr_ioc *mrioc,
+	struct mpi3_driver_page2 *driver_pg2, u16 pg_sz, u8 page_type);
+
+u8 mpi3mr_is_expander_device(u16 device_info);
+int mpi3mr_expander_add(struct mpi3mr_ioc *mrioc, u16 handle);
+void mpi3mr_expander_remove(struct mpi3mr_ioc *mrioc, u64 sas_address,
+	struct mpi3mr_hba_port *hba_port);
+struct mpi3mr_sas_node *__mpi3mr_expander_find_by_handle(struct mpi3mr_ioc
+	*mrioc, u16 handle);
+struct mpi3mr_hba_port *mpi3mr_get_hba_port_by_id(struct mpi3mr_ioc *mrioc,
+	u8 port_id);
+void mpi3mr_sas_host_refresh(struct mpi3mr_ioc *mrioc);
+void mpi3mr_sas_host_add(struct mpi3mr_ioc *mrioc);
+void mpi3mr_update_links(struct mpi3mr_ioc *mrioc,
+	u64 sas_address_parent, u16 handle, u8 phy_number, u8 link_rate,
+	struct mpi3mr_hba_port *hba_port);
+void mpi3mr_remove_tgtdev_from_host(struct mpi3mr_ioc *mrioc,
+	struct mpi3mr_tgt_dev *tgtdev);
+int mpi3mr_report_tgtdev_to_sas_transport(struct mpi3mr_ioc *mrioc,
+	struct mpi3mr_tgt_dev *tgtdev);
+void mpi3mr_remove_tgtdev_from_sas_transport(struct mpi3mr_ioc *mrioc,
+	struct mpi3mr_tgt_dev *tgtdev);
+struct mpi3mr_tgt_dev *__mpi3mr_get_tgtdev_by_addr_and_rphy(
+	struct mpi3mr_ioc *mrioc, u64 sas_address, struct sas_rphy *rphy);
+void mpi3mr_print_device_event_notice(struct mpi3mr_ioc *mrioc,
+	bool device_add);
+void mpi3mr_refresh_sas_ports(struct mpi3mr_ioc *mrioc);
+void mpi3mr_refresh_expanders(struct mpi3mr_ioc *mrioc);
+void mpi3mr_add_event_wait_for_device_refresh(struct mpi3mr_ioc *mrioc);
+void mpi3mr_flush_drv_cmds(struct mpi3mr_ioc *mrioc);
+void mpi3mr_flush_cmds_for_unrecovered_controller(struct mpi3mr_ioc *mrioc);
+void mpi3mr_free_enclosure_list(struct mpi3mr_ioc *mrioc);
+int mpi3mr_process_admin_reply_q(struct mpi3mr_ioc *mrioc);
+void mpi3mr_expander_node_remove(struct mpi3mr_ioc *mrioc,
+	struct mpi3mr_sas_node *sas_expander);
+void mpi3mr_alloc_diag_bufs(struct mpi3mr_ioc *mrioc);
+int mpi3mr_post_diag_bufs(struct mpi3mr_ioc *mrioc);
+int mpi3mr_issue_diag_buf_release(struct mpi3mr_ioc *mrioc,
+	struct diag_buffer_desc *diag_buffer);
+void mpi3mr_release_diag_bufs(struct mpi3mr_ioc *mrioc, u8 skip_rel_action);
+void mpi3mr_set_trigger_data_in_hdb(struct diag_buffer_desc *hdb,
+	u8 type, union mpi3mr_trigger_data *trigger_data, bool force);
+int mpi3mr_refresh_trigger(struct mpi3mr_ioc *mrioc, u8 page_type);
+struct diag_buffer_desc *mpi3mr_diag_buffer_for_type(struct mpi3mr_ioc *mrioc,
+	u8 buf_type);
+int mpi3mr_issue_diag_buf_post(struct mpi3mr_ioc *mrioc,
+	struct diag_buffer_desc *diag_buffer);
+void mpi3mr_set_trigger_data_in_all_hdb(struct mpi3mr_ioc *mrioc,
+	u8 type, union mpi3mr_trigger_data *trigger_data, bool force);
+void mpi3mr_reply_trigger(struct mpi3mr_ioc *mrioc, u16 iocstatus,
+	u32 iocloginfo);
+void mpi3mr_hdb_trigger_data_event(struct mpi3mr_ioc *mrioc,
+	struct trigger_event_data *event_data);
+void mpi3mr_scsisense_trigger(struct mpi3mr_ioc *mrioc, u8 senseky, u8 asc,
+	u8 ascq);
+void mpi3mr_event_trigger(struct mpi3mr_ioc *mrioc, u8 event);
+void mpi3mr_global_trigger(struct mpi3mr_ioc *mrioc, u64 trigger_data);
+void mpi3mr_hdbstatuschg_evt_th(struct mpi3mr_ioc *mrioc,
+	struct mpi3_event_notification_reply *event_reply);
 #endif /*MPI3MR_H_INCLUDED*/

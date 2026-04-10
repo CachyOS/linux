@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright(c) 2021 Intel Corporation. All rights reserved.
+ * Copyright(c) 2021 Intel Corporation
  *
  * Authors: Cezary Rojewski <cezary.rojewski@intel.com>
  *          Amadeusz Slawinski <amadeuszx.slawinski@linux.intel.com>
@@ -33,6 +33,12 @@ struct avs_tplg {
 	u32 num_pplcfgs;
 	struct avs_tplg_binding *bindings;
 	u32 num_bindings;
+	struct avs_tplg_path_template *condpath_tmpls;
+	u32 num_condpath_tmpls;
+	struct avs_tplg_init_config *init_configs;
+	u32 num_init_configs;
+	struct avs_tplg_nhlt_config *nhlt_configs;
+	u32 num_nhlt_configs;
 
 	struct list_head path_tmpl_list;
 };
@@ -71,13 +77,20 @@ struct avs_tplg_modcfg_ext {
 			union avs_virtual_index vindex;
 			u32 dma_type;
 			u32 dma_buffer_size;
-			u32 config_length;
-			/* config_data part of priv data */
 		} copier;
+		struct {
+			struct avs_audio_format *ref_fmt;
+			struct avs_audio_format *out_fmt;
+			u32 wake_tick_period;
+			union avs_virtual_index vindex;
+			u32 dma_type;
+			u32 dma_buffer_size;
+			struct avs_audio_format *blob_fmt; /* optional override */
+		} whm;
 		struct {
 			u32 out_channel_config;
 			u32 coefficients_select;
-			s32 coefficients[AVS_CHANNELS_MAX];
+			s32 coefficients[AVS_COEFF_CHANNELS_MAX];
 			u32 channel_map;
 		} updown_mix;
 		struct {
@@ -103,6 +116,11 @@ struct avs_tplg_modcfg_ext {
 		struct {
 			struct avs_audio_format *out_fmt;
 		} micsel;
+		struct {
+			u32 target_volume;
+			u32 curve_type;
+			u32 curve_duration;
+		} peakvol;
 	};
 };
 
@@ -138,11 +156,30 @@ struct avs_tplg_path_template_id {
 struct avs_tplg_path_template {
 	u32 id;
 
+	struct snd_soc_dapm_widget *w;
+
+	/* Conditional path. */
+	struct avs_tplg_path_template_id source;
+	struct avs_tplg_path_template_id sink;
+
 	struct list_head path_list;
 
 	struct avs_tplg *owner;
 	/* Driver path templates management. */
 	struct list_head node;
+};
+
+struct avs_tplg_init_config {
+	u32 id;
+
+	u8 param;
+	size_t length;
+	void *data;
+};
+
+struct avs_tplg_nhlt_config {
+	u32 id;
+	struct acpi_nhlt_config *blob;
 };
 
 struct avs_tplg_path {
@@ -151,6 +188,9 @@ struct avs_tplg_path {
 	/* Path format requirements. */
 	struct avs_audio_format *fe_fmt;
 	struct avs_audio_format *be_fmt;
+	/* Condpath path-variant requirements. */
+	u32 source_path_id;
+	u32 sink_path_id;
 
 	struct list_head ppl_list;
 
@@ -180,6 +220,10 @@ struct avs_tplg_module {
 	u8 core_id;
 	u8 domain;
 	struct avs_tplg_modcfg_ext *cfg_ext;
+	u32 ctl_id;
+	u32 num_config_ids;
+	u32 *config_ids;
+	struct avs_tplg_nhlt_config *nhlt_config;
 
 	struct avs_tplg_pipeline *owner;
 	/* Pipeline modules management. */

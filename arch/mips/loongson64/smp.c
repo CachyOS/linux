@@ -14,6 +14,7 @@
 #include <linux/cpufreq.h>
 #include <linux/kexec.h>
 #include <asm/processor.h>
+#include <asm/smp.h>
 #include <asm/time.h>
 #include <asm/tlbflush.h>
 #include <asm/cacheflush.h>
@@ -27,29 +28,11 @@ DEFINE_PER_CPU(int, cpu_state);
 
 #define LS_IPI_IRQ (MIPS_CPU_IRQ_BASE + 6)
 
-static void *ipi_set0_regs[16];
-static void *ipi_clear0_regs[16];
-static void *ipi_status0_regs[16];
-static void *ipi_en0_regs[16];
-static void *ipi_mailbox_buf[16];
-static uint32_t core0_c0count[NR_CPUS];
-
-/* read a 32bit value from ipi register */
-#define loongson3_ipi_read32(addr) readl(addr)
-/* read a 64bit value from ipi register */
-#define loongson3_ipi_read64(addr) readq(addr)
-/* write a 32bit value to ipi register */
-#define loongson3_ipi_write32(action, addr)	\
-	do {					\
-		writel(action, addr);		\
-		__wbflush();			\
-	} while (0)
-/* write a 64bit value to ipi register */
-#define loongson3_ipi_write64(action, addr)	\
-	do {					\
-		writeq(action, addr);		\
-		__wbflush();			\
-	} while (0)
+static void __iomem *ipi_set0_regs[16];
+static void __iomem *ipi_clear0_regs[16];
+static void __iomem *ipi_status0_regs[16];
+static void __iomem *ipi_en0_regs[16];
+static void __iomem *ipi_mailbox_buf[16];
 
 static u32 (*ipi_read_clear)(int cpu);
 static void (*ipi_write_action)(int cpu, u32 action);
@@ -136,26 +119,28 @@ static u32 legacy_ipi_read_clear(int cpu)
 	u32 action;
 
 	/* Load the ipi register to figure out what we're supposed to do */
-	action = loongson3_ipi_read32(ipi_status0_regs[cpu_logical_map(cpu)]);
+	action = readl_relaxed(ipi_status0_regs[cpu_logical_map(cpu)]);
 	/* Clear the ipi register to clear the interrupt */
-	loongson3_ipi_write32(action, ipi_clear0_regs[cpu_logical_map(cpu)]);
+	writel_relaxed(action, ipi_clear0_regs[cpu_logical_map(cpu)]);
+	nudge_writes();
 
 	return action;
 }
 
 static void legacy_ipi_write_action(int cpu, u32 action)
 {
-	loongson3_ipi_write32((u32)action, ipi_set0_regs[cpu]);
+	writel_relaxed((u32)action, ipi_set0_regs[cpu]);
+	nudge_writes();
 }
 
 static void legacy_ipi_write_enable(int cpu)
 {
-	loongson3_ipi_write32(0xffffffff, ipi_en0_regs[cpu_logical_map(cpu)]);
+	writel_relaxed(0xffffffff, ipi_en0_regs[cpu_logical_map(cpu)]);
 }
 
 static void legacy_ipi_clear_buf(int cpu)
 {
-	loongson3_ipi_write64(0, ipi_mailbox_buf[cpu_logical_map(cpu)] + 0x0);
+	writeq_relaxed(0, ipi_mailbox_buf[cpu_logical_map(cpu)] + 0x0);
 }
 
 static void legacy_ipi_write_buf(int cpu, struct task_struct *idle)
@@ -171,14 +156,15 @@ static void legacy_ipi_write_buf(int cpu, struct task_struct *idle)
 	pr_debug("CPU#%d, func_pc=%lx, sp=%lx, gp=%lx\n",
 			cpu, startargs[0], startargs[1], startargs[2]);
 
-	loongson3_ipi_write64(startargs[3],
+	writeq_relaxed(startargs[3],
 			ipi_mailbox_buf[cpu_logical_map(cpu)] + 0x18);
-	loongson3_ipi_write64(startargs[2],
+	writeq_relaxed(startargs[2],
 			ipi_mailbox_buf[cpu_logical_map(cpu)] + 0x10);
-	loongson3_ipi_write64(startargs[1],
+	writeq_relaxed(startargs[1],
 			ipi_mailbox_buf[cpu_logical_map(cpu)] + 0x8);
-	loongson3_ipi_write64(startargs[0],
+	writeq_relaxed(startargs[0],
 			ipi_mailbox_buf[cpu_logical_map(cpu)] + 0x0);
+	nudge_writes();
 }
 
 static void csr_ipi_probe(void)
@@ -200,181 +186,181 @@ static void csr_ipi_probe(void)
 
 static void ipi_set0_regs_init(void)
 {
-	ipi_set0_regs[0] = (void *)
+	ipi_set0_regs[0] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE0_OFFSET + SET0);
-	ipi_set0_regs[1] = (void *)
+	ipi_set0_regs[1] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE1_OFFSET + SET0);
-	ipi_set0_regs[2] = (void *)
+	ipi_set0_regs[2] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE2_OFFSET + SET0);
-	ipi_set0_regs[3] = (void *)
+	ipi_set0_regs[3] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE3_OFFSET + SET0);
-	ipi_set0_regs[4] = (void *)
+	ipi_set0_regs[4] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE0_OFFSET + SET0);
-	ipi_set0_regs[5] = (void *)
+	ipi_set0_regs[5] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE1_OFFSET + SET0);
-	ipi_set0_regs[6] = (void *)
+	ipi_set0_regs[6] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE2_OFFSET + SET0);
-	ipi_set0_regs[7] = (void *)
+	ipi_set0_regs[7] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE3_OFFSET + SET0);
-	ipi_set0_regs[8] = (void *)
+	ipi_set0_regs[8] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE0_OFFSET + SET0);
-	ipi_set0_regs[9] = (void *)
+	ipi_set0_regs[9] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE1_OFFSET + SET0);
-	ipi_set0_regs[10] = (void *)
+	ipi_set0_regs[10] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE2_OFFSET + SET0);
-	ipi_set0_regs[11] = (void *)
+	ipi_set0_regs[11] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE3_OFFSET + SET0);
-	ipi_set0_regs[12] = (void *)
+	ipi_set0_regs[12] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE0_OFFSET + SET0);
-	ipi_set0_regs[13] = (void *)
+	ipi_set0_regs[13] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE1_OFFSET + SET0);
-	ipi_set0_regs[14] = (void *)
+	ipi_set0_regs[14] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE2_OFFSET + SET0);
-	ipi_set0_regs[15] = (void *)
+	ipi_set0_regs[15] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE3_OFFSET + SET0);
 }
 
 static void ipi_clear0_regs_init(void)
 {
-	ipi_clear0_regs[0] = (void *)
+	ipi_clear0_regs[0] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE0_OFFSET + CLEAR0);
-	ipi_clear0_regs[1] = (void *)
+	ipi_clear0_regs[1] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE1_OFFSET + CLEAR0);
-	ipi_clear0_regs[2] = (void *)
+	ipi_clear0_regs[2] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE2_OFFSET + CLEAR0);
-	ipi_clear0_regs[3] = (void *)
+	ipi_clear0_regs[3] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE3_OFFSET + CLEAR0);
-	ipi_clear0_regs[4] = (void *)
+	ipi_clear0_regs[4] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE0_OFFSET + CLEAR0);
-	ipi_clear0_regs[5] = (void *)
+	ipi_clear0_regs[5] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE1_OFFSET + CLEAR0);
-	ipi_clear0_regs[6] = (void *)
+	ipi_clear0_regs[6] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE2_OFFSET + CLEAR0);
-	ipi_clear0_regs[7] = (void *)
+	ipi_clear0_regs[7] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE3_OFFSET + CLEAR0);
-	ipi_clear0_regs[8] = (void *)
+	ipi_clear0_regs[8] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE0_OFFSET + CLEAR0);
-	ipi_clear0_regs[9] = (void *)
+	ipi_clear0_regs[9] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE1_OFFSET + CLEAR0);
-	ipi_clear0_regs[10] = (void *)
+	ipi_clear0_regs[10] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE2_OFFSET + CLEAR0);
-	ipi_clear0_regs[11] = (void *)
+	ipi_clear0_regs[11] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE3_OFFSET + CLEAR0);
-	ipi_clear0_regs[12] = (void *)
+	ipi_clear0_regs[12] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE0_OFFSET + CLEAR0);
-	ipi_clear0_regs[13] = (void *)
+	ipi_clear0_regs[13] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE1_OFFSET + CLEAR0);
-	ipi_clear0_regs[14] = (void *)
+	ipi_clear0_regs[14] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE2_OFFSET + CLEAR0);
-	ipi_clear0_regs[15] = (void *)
+	ipi_clear0_regs[15] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE3_OFFSET + CLEAR0);
 }
 
 static void ipi_status0_regs_init(void)
 {
-	ipi_status0_regs[0] = (void *)
+	ipi_status0_regs[0] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE0_OFFSET + STATUS0);
-	ipi_status0_regs[1] = (void *)
+	ipi_status0_regs[1] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE1_OFFSET + STATUS0);
-	ipi_status0_regs[2] = (void *)
+	ipi_status0_regs[2] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE2_OFFSET + STATUS0);
-	ipi_status0_regs[3] = (void *)
+	ipi_status0_regs[3] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE3_OFFSET + STATUS0);
-	ipi_status0_regs[4] = (void *)
+	ipi_status0_regs[4] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE0_OFFSET + STATUS0);
-	ipi_status0_regs[5] = (void *)
+	ipi_status0_regs[5] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE1_OFFSET + STATUS0);
-	ipi_status0_regs[6] = (void *)
+	ipi_status0_regs[6] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE2_OFFSET + STATUS0);
-	ipi_status0_regs[7] = (void *)
+	ipi_status0_regs[7] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE3_OFFSET + STATUS0);
-	ipi_status0_regs[8] = (void *)
+	ipi_status0_regs[8] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE0_OFFSET + STATUS0);
-	ipi_status0_regs[9] = (void *)
+	ipi_status0_regs[9] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE1_OFFSET + STATUS0);
-	ipi_status0_regs[10] = (void *)
+	ipi_status0_regs[10] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE2_OFFSET + STATUS0);
-	ipi_status0_regs[11] = (void *)
+	ipi_status0_regs[11] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE3_OFFSET + STATUS0);
-	ipi_status0_regs[12] = (void *)
+	ipi_status0_regs[12] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE0_OFFSET + STATUS0);
-	ipi_status0_regs[13] = (void *)
+	ipi_status0_regs[13] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE1_OFFSET + STATUS0);
-	ipi_status0_regs[14] = (void *)
+	ipi_status0_regs[14] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE2_OFFSET + STATUS0);
-	ipi_status0_regs[15] = (void *)
+	ipi_status0_regs[15] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE3_OFFSET + STATUS0);
 }
 
 static void ipi_en0_regs_init(void)
 {
-	ipi_en0_regs[0] = (void *)
+	ipi_en0_regs[0] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE0_OFFSET + EN0);
-	ipi_en0_regs[1] = (void *)
+	ipi_en0_regs[1] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE1_OFFSET + EN0);
-	ipi_en0_regs[2] = (void *)
+	ipi_en0_regs[2] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE2_OFFSET + EN0);
-	ipi_en0_regs[3] = (void *)
+	ipi_en0_regs[3] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE3_OFFSET + EN0);
-	ipi_en0_regs[4] = (void *)
+	ipi_en0_regs[4] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE0_OFFSET + EN0);
-	ipi_en0_regs[5] = (void *)
+	ipi_en0_regs[5] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE1_OFFSET + EN0);
-	ipi_en0_regs[6] = (void *)
+	ipi_en0_regs[6] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE2_OFFSET + EN0);
-	ipi_en0_regs[7] = (void *)
+	ipi_en0_regs[7] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE3_OFFSET + EN0);
-	ipi_en0_regs[8] = (void *)
+	ipi_en0_regs[8] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE0_OFFSET + EN0);
-	ipi_en0_regs[9] = (void *)
+	ipi_en0_regs[9] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE1_OFFSET + EN0);
-	ipi_en0_regs[10] = (void *)
+	ipi_en0_regs[10] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE2_OFFSET + EN0);
-	ipi_en0_regs[11] = (void *)
+	ipi_en0_regs[11] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE3_OFFSET + EN0);
-	ipi_en0_regs[12] = (void *)
+	ipi_en0_regs[12] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE0_OFFSET + EN0);
-	ipi_en0_regs[13] = (void *)
+	ipi_en0_regs[13] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE1_OFFSET + EN0);
-	ipi_en0_regs[14] = (void *)
+	ipi_en0_regs[14] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE2_OFFSET + EN0);
-	ipi_en0_regs[15] = (void *)
+	ipi_en0_regs[15] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE3_OFFSET + EN0);
 }
 
 static void ipi_mailbox_buf_init(void)
 {
-	ipi_mailbox_buf[0] = (void *)
+	ipi_mailbox_buf[0] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE0_OFFSET + BUF);
-	ipi_mailbox_buf[1] = (void *)
+	ipi_mailbox_buf[1] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE1_OFFSET + BUF);
-	ipi_mailbox_buf[2] = (void *)
+	ipi_mailbox_buf[2] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE2_OFFSET + BUF);
-	ipi_mailbox_buf[3] = (void *)
+	ipi_mailbox_buf[3] = (void __iomem *)
 		(SMP_CORE_GROUP0_BASE + SMP_CORE3_OFFSET + BUF);
-	ipi_mailbox_buf[4] = (void *)
+	ipi_mailbox_buf[4] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE0_OFFSET + BUF);
-	ipi_mailbox_buf[5] = (void *)
+	ipi_mailbox_buf[5] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE1_OFFSET + BUF);
-	ipi_mailbox_buf[6] = (void *)
+	ipi_mailbox_buf[6] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE2_OFFSET + BUF);
-	ipi_mailbox_buf[7] = (void *)
+	ipi_mailbox_buf[7] = (void __iomem *)
 		(SMP_CORE_GROUP1_BASE + SMP_CORE3_OFFSET + BUF);
-	ipi_mailbox_buf[8] = (void *)
+	ipi_mailbox_buf[8] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE0_OFFSET + BUF);
-	ipi_mailbox_buf[9] = (void *)
+	ipi_mailbox_buf[9] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE1_OFFSET + BUF);
-	ipi_mailbox_buf[10] = (void *)
+	ipi_mailbox_buf[10] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE2_OFFSET + BUF);
-	ipi_mailbox_buf[11] = (void *)
+	ipi_mailbox_buf[11] = (void __iomem *)
 		(SMP_CORE_GROUP2_BASE + SMP_CORE3_OFFSET + BUF);
-	ipi_mailbox_buf[12] = (void *)
+	ipi_mailbox_buf[12] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE0_OFFSET + BUF);
-	ipi_mailbox_buf[13] = (void *)
+	ipi_mailbox_buf[13] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE1_OFFSET + BUF);
-	ipi_mailbox_buf[14] = (void *)
+	ipi_mailbox_buf[14] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE2_OFFSET + BUF);
-	ipi_mailbox_buf[15] = (void *)
+	ipi_mailbox_buf[15] = (void __iomem *)
 		(SMP_CORE_GROUP3_BASE + SMP_CORE3_OFFSET + BUF);
 }
 
@@ -395,11 +381,10 @@ loongson3_send_ipi_mask(const struct cpumask *mask, unsigned int action)
 		ipi_write_action(cpu_logical_map(i), (u32)action);
 }
 
-
 static irqreturn_t loongson3_ipi_interrupt(int irq, void *dev_id)
 {
-	int i, cpu = smp_processor_id();
-	unsigned int action, c0count;
+	int cpu = smp_processor_id();
+	unsigned int action;
 
 	action = ipi_read_clear(cpu);
 
@@ -412,26 +397,14 @@ static irqreturn_t loongson3_ipi_interrupt(int irq, void *dev_id)
 		irq_exit();
 	}
 
-	if (action & SMP_ASK_C0COUNT) {
-		BUG_ON(cpu != 0);
-		c0count = read_c0_count();
-		c0count = c0count ? c0count : 1;
-		for (i = 1; i < nr_cpu_ids; i++)
-			core0_c0count[i] = c0count;
-		__wbflush(); /* Let others see the result ASAP */
-	}
-
 	return IRQ_HANDLED;
 }
 
-#define MAX_LOOPS 800
 /*
  * SMP init and finish on secondary CPUs
  */
 static void loongson3_init_secondary(void)
 {
-	int i;
-	uint32_t initcount;
 	unsigned int cpu = smp_processor_id();
 	unsigned int imask = STATUSF_IP7 | STATUSF_IP6 |
 			     STATUSF_IP3 | STATUSF_IP2;
@@ -445,23 +418,6 @@ static void loongson3_init_secondary(void)
 		     cpu_logical_map(cpu) % loongson_sysconf.cores_per_package);
 	cpu_data[cpu].package =
 		cpu_logical_map(cpu) / loongson_sysconf.cores_per_package;
-
-	i = 0;
-	core0_c0count[cpu] = 0;
-	loongson3_send_ipi_single(0, SMP_ASK_C0COUNT);
-	while (!core0_c0count[cpu]) {
-		i++;
-		cpu_relax();
-	}
-
-	if (i > MAX_LOOPS)
-		i = MAX_LOOPS;
-	if (cpu_data[cpu].package)
-		initcount = core0_c0count[cpu] + i;
-	else /* Local access is faster for loops */
-		initcount = core0_c0count[cpu] + i/2;
-
-	write_c0_count(initcount);
 }
 
 static void loongson3_smp_finish(void)
@@ -479,12 +435,25 @@ static void loongson3_smp_finish(void)
 static void __init loongson3_smp_setup(void)
 {
 	int i = 0, num = 0; /* i: physical id, num: logical id */
+	int max_cpus = 0;
 
 	init_cpu_possible(cpu_none_mask);
+
+	for (i = 0; i < ARRAY_SIZE(smp_group); i++) {
+		if (!smp_group[i])
+			break;
+		max_cpus += loongson_sysconf.cores_per_node;
+	}
+
+	if (max_cpus < loongson_sysconf.nr_cpus) {
+		pr_err("SMP Groups are less than the number of CPUs\n");
+		loongson_sysconf.nr_cpus = max_cpus ? max_cpus : 1;
+	}
 
 	/* For unified kernel, NR_CPUS is the maximum possible value,
 	 * loongson_sysconf.nr_cpus is the really present value
 	 */
+	i = 0;
 	while (i < loongson_sysconf.nr_cpus) {
 		if (loongson_sysconf.reserved_cpus_mask & (1<<i)) {
 			/* Reserved physical CPU cores */
@@ -505,14 +474,14 @@ static void __init loongson3_smp_setup(void)
 		__cpu_logical_map[num] = -1;
 		num++;
 	}
-
 	csr_ipi_probe();
 	ipi_set0_regs_init();
 	ipi_clear0_regs_init();
 	ipi_status0_regs_init();
 	ipi_en0_regs_init();
 	ipi_mailbox_buf_init();
-	ipi_write_enable(0);
+	if (smp_group[0])
+		ipi_write_enable(0);
 
 	cpu_set_core(&cpu_data[0],
 		     cpu_logical_map(0) % loongson_sysconf.cores_per_package);
@@ -529,7 +498,7 @@ static void __init loongson3_prepare_cpus(unsigned int max_cpus)
 }
 
 /*
- * Setup the PC, SP, and GP of a secondary processor and start it runing!
+ * Setup the PC, SP, and GP of a secondary processor and start it running!
  */
 static int loongson3_boot_secondary(int cpu, struct task_struct *idle)
 {
@@ -788,6 +757,7 @@ void play_dead(void)
 	void (*play_dead_at_ckseg1)(int *);
 
 	idle_task_exit();
+	cpuhp_ap_report_dead();
 
 	prid_imp = read_c0_prid() & PRID_IMP_MASK;
 	prid_rev = read_c0_prid() & PRID_REV_MASK;
@@ -822,12 +792,16 @@ out:
 	state_addr = &per_cpu(cpu_state, cpu);
 	mb();
 	play_dead_at_ckseg1(state_addr);
+	BUG();
 }
 
 static int loongson3_disable_clock(unsigned int cpu)
 {
 	uint64_t core_id = cpu_core(&cpu_data[cpu]);
 	uint64_t package_id = cpu_data[cpu].package;
+
+	if (!loongson_chipcfg[package_id] || !loongson_freqctrl[package_id])
+		return 0;
 
 	if ((read_c0_prid() & PRID_REV_MASK) == PRID_REV_LOONGSON3A_R1) {
 		LOONGSON_CHIPCFG(package_id) &= ~(1 << (12 + core_id));
@@ -842,6 +816,9 @@ static int loongson3_enable_clock(unsigned int cpu)
 {
 	uint64_t core_id = cpu_core(&cpu_data[cpu]);
 	uint64_t package_id = cpu_data[cpu].package;
+
+	if (!loongson_chipcfg[package_id] || !loongson_freqctrl[package_id])
+		return 0;
 
 	if ((read_c0_prid() & PRID_REV_MASK) == PRID_REV_LOONGSON3A_R1) {
 		LOONGSON_CHIPCFG(package_id) |= 1 << (12 + core_id);
@@ -875,7 +852,7 @@ const struct plat_smp_ops loongson3_smp_ops = {
 	.cpu_disable = loongson3_cpu_disable,
 	.cpu_die = loongson3_cpu_die,
 #endif
-#ifdef CONFIG_KEXEC
+#ifdef CONFIG_KEXEC_CORE
 	.kexec_nonboot_cpu = kexec_nonboot_cpu_jump,
 #endif
 };

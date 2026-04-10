@@ -61,16 +61,17 @@ snd_emux_init_seq(struct snd_emux *emu, struct snd_card *card, int index)
 	emu->client = snd_seq_create_kernel_client(card, index,
 						   "%s WaveTable", emu->name);
 	if (emu->client < 0) {
-		snd_printk(KERN_ERR "can't create client\n");
+		dev_err(card->dev, "can't create client\n");
 		return -ENODEV;
 	}
 
-	if (emu->num_ports < 0) {
-		snd_printk(KERN_WARNING "seqports must be greater than zero\n");
+	if (emu->num_ports <= 0) {
+		dev_warn(card->dev, "seqports must be greater than zero\n");
 		emu->num_ports = 1;
-	} else if (emu->num_ports >= SNDRV_EMUX_MAX_PORTS) {
-		snd_printk(KERN_WARNING "too many ports."
-			   "limited max. ports %d\n", SNDRV_EMUX_MAX_PORTS);
+	} else if (emu->num_ports > SNDRV_EMUX_MAX_PORTS) {
+		dev_warn(card->dev,
+			 "too many ports. limited max. ports %d\n",
+			 SNDRV_EMUX_MAX_PORTS);
 		emu->num_ports = SNDRV_EMUX_MAX_PORTS;
 	}
 
@@ -87,7 +88,7 @@ snd_emux_init_seq(struct snd_emux *emu, struct snd_card *card, int index)
 		p = snd_emux_create_port(emu, tmpname, MIDI_CHANNELS,
 					 0, &pinfo);
 		if (!p) {
-			snd_printk(KERN_ERR "can't create port\n");
+			dev_err(card->dev, "can't create port\n");
 			return -ENOMEM;
 		}
 
@@ -131,12 +132,11 @@ snd_emux_create_port(struct snd_emux *emu, char *name,
 	int i, type, cap;
 
 	/* Allocate structures for this channel */
-	p = kzalloc(sizeof(*p), GFP_KERNEL);
+	p = kzalloc_obj(*p);
 	if (!p)
 		return NULL;
 
-	p->chset.channels = kcalloc(max_channels, sizeof(*p->chset.channels),
-				    GFP_KERNEL);
+	p->chset.channels = kzalloc_objs(*p->chset.channels, max_channels);
 	if (!p->chset.channels) {
 		kfree(p);
 		return NULL;
@@ -271,12 +271,8 @@ __snd_emux_inc_count(struct snd_emux *emu)
 
 int snd_emux_inc_count(struct snd_emux *emu)
 {
-	int ret;
-
-	mutex_lock(&emu->register_mutex);
-	ret = __snd_emux_inc_count(emu);
-	mutex_unlock(&emu->register_mutex);
-	return ret;
+	guard(mutex)(&emu->register_mutex);
+	return __snd_emux_inc_count(emu);
 }
 
 /*
@@ -294,9 +290,8 @@ __snd_emux_dec_count(struct snd_emux *emu)
 
 void snd_emux_dec_count(struct snd_emux *emu)
 {
-	mutex_lock(&emu->register_mutex);
+	guard(mutex)(&emu->register_mutex);
 	__snd_emux_dec_count(emu);
-	mutex_unlock(&emu->register_mutex);
 }
 
 /*
@@ -315,10 +310,9 @@ snd_emux_use(void *private_data, struct snd_seq_port_subscribe *info)
 	if (snd_BUG_ON(!emu))
 		return -EINVAL;
 
-	mutex_lock(&emu->register_mutex);
+	guard(mutex)(&emu->register_mutex);
 	snd_emux_init_port(p);
 	__snd_emux_inc_count(emu);
-	mutex_unlock(&emu->register_mutex);
 	return 0;
 }
 
@@ -338,10 +332,9 @@ snd_emux_unuse(void *private_data, struct snd_seq_port_subscribe *info)
 	if (snd_BUG_ON(!emu))
 		return -EINVAL;
 
-	mutex_lock(&emu->register_mutex);
+	guard(mutex)(&emu->register_mutex);
 	snd_emux_sounds_off_all(p);
 	__snd_emux_dec_count(emu);
-	mutex_unlock(&emu->register_mutex);
 	return 0;
 }
 
@@ -357,7 +350,7 @@ int snd_emux_init_virmidi(struct snd_emux *emu, struct snd_card *card)
 	if (emu->midi_ports <= 0)
 		return 0;
 
-	emu->vmidi = kcalloc(emu->midi_ports, sizeof(*emu->vmidi), GFP_KERNEL);
+	emu->vmidi = kzalloc_objs(*emu->vmidi, emu->midi_ports);
 	if (!emu->vmidi)
 		return -ENOMEM;
 
@@ -376,12 +369,10 @@ int snd_emux_init_virmidi(struct snd_emux *emu, struct snd_card *card)
 			goto __error;
 		}
 		emu->vmidi[i] = rmidi;
-		/* snd_printk(KERN_DEBUG "virmidi %d ok\n", i); */
 	}
 	return 0;
 
 __error:
-	/* snd_printk(KERN_DEBUG "error init..\n"); */
 	snd_emux_delete_virmidi(emu);
 	return -ENOMEM;
 }

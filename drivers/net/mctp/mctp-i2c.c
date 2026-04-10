@@ -43,6 +43,7 @@
 enum {
 	MCTP_I2C_FLOW_STATE_NEW = 0,
 	MCTP_I2C_FLOW_STATE_ACTIVE,
+	MCTP_I2C_FLOW_STATE_INVALID,
 };
 
 /* List of all struct mctp_i2c_client
@@ -153,7 +154,7 @@ static struct mctp_i2c_client *mctp_i2c_new_client(struct i2c_client *client)
 		goto err;
 	}
 
-	mcli = kzalloc(sizeof(*mcli), GFP_KERNEL);
+	mcli = kzalloc_obj(*mcli);
 	if (!mcli) {
 		rc = -ENOMEM;
 		goto err;
@@ -176,8 +177,7 @@ static struct mctp_i2c_client *mctp_i2c_new_client(struct i2c_client *client)
 	return mcli;
 err:
 	if (mcli) {
-		if (mcli->client)
-			i2c_unregister_device(mcli->client);
+		i2c_unregister_device(mcli->client);
 		kfree(mcli);
 	}
 	return ERR_PTR(rc);
@@ -242,6 +242,12 @@ static int mctp_i2c_slave_cb(struct i2c_client *client,
 		return 0;
 
 	switch (event) {
+	case I2C_SLAVE_READ_REQUESTED:
+	case I2C_SLAVE_READ_PROCESSED:
+		/* MCTP I2C transport only uses writes */
+		midev->rx_pos = 0;
+		*val = 0xff;
+		break;
 	case I2C_SLAVE_WRITE_RECEIVED:
 		if (midev->rx_pos < MCTP_I2C_BUFSZ) {
 			midev->rx_buffer[midev->rx_pos] = *val;
@@ -278,6 +284,9 @@ static int mctp_i2c_recv(struct mctp_i2c_dev *midev)
 	u8 pec, calc_pec;
 	size_t recvlen;
 	int status;
+
+	if (midev->rx_pos == 0)
+		return 0;
 
 	/* + 1 for the PEC */
 	if (midev->rx_pos < MCTP_I2C_MINLEN + 1) {
@@ -334,6 +343,7 @@ static int mctp_i2c_recv(struct mctp_i2c_dev *midev)
 	} else {
 		status = NET_RX_DROP;
 		spin_unlock_irqrestore(&midev->lock, flags);
+		kfree_skb(skb);
 	}
 
 	if (status == NET_RX_SUCCESS) {
@@ -374,12 +384,18 @@ mctp_i2c_get_tx_flow_state(struct mctp_i2c_dev *midev, struct sk_buff *skb)
 	 */
 	if (!key->valid) {
 		state = MCTP_I2C_TX_FLOW_INVALID;
-
-	} else if (key->dev_flow_state == MCTP_I2C_FLOW_STATE_NEW) {
-		key->dev_flow_state = MCTP_I2C_FLOW_STATE_ACTIVE;
-		state = MCTP_I2C_TX_FLOW_NEW;
 	} else {
-		state = MCTP_I2C_TX_FLOW_EXISTING;
+		switch (key->dev_flow_state) {
+		case MCTP_I2C_FLOW_STATE_NEW:
+			key->dev_flow_state = MCTP_I2C_FLOW_STATE_ACTIVE;
+			state = MCTP_I2C_TX_FLOW_NEW;
+			break;
+		case MCTP_I2C_FLOW_STATE_ACTIVE:
+			state = MCTP_I2C_TX_FLOW_EXISTING;
+			break;
+		default:
+			state = MCTP_I2C_TX_FLOW_INVALID;
+		}
 	}
 
 	spin_unlock_irqrestore(&key->lock, flags);
@@ -433,6 +449,42 @@ static void mctp_i2c_unlock_reset(struct mctp_i2c_dev *midev)
 
 	if (unlock)
 		i2c_unlock_bus(midev->adapter, I2C_LOCK_SEGMENT);
+}
+
+static void mctp_i2c_invalidate_tx_flow(struct mctp_i2c_dev *midev,
+					struct sk_buff *skb)
+{
+	struct mctp_sk_key *key;
+	struct mctp_flow *flow;
+	unsigned long flags;
+	bool release;
+
+	flow = skb_ext_find(skb, SKB_EXT_MCTP);
+	if (!flow)
+		return;
+
+	key = flow->key;
+	if (!key)
+		return;
+
+	spin_lock_irqsave(&key->lock, flags);
+	if (key->manual_alloc) {
+		/* we don't have control over lifetimes for manually-allocated
+		 * keys, so cannot assume we can invalidate all future flows
+		 * that would use this key.
+		 */
+		release = false;
+	} else {
+		release = key->dev_flow_state == MCTP_I2C_FLOW_STATE_ACTIVE;
+		key->dev_flow_state = MCTP_I2C_FLOW_STATE_INVALID;
+	}
+	spin_unlock_irqrestore(&key->lock, flags);
+
+	/* if we have changed state from active, the flow held a reference on
+	 * the lock; release that now.
+	 */
+	if (release)
+		mctp_i2c_unlock_nest(midev);
 }
 
 static void mctp_i2c_xmit(struct mctp_i2c_dev *midev, struct sk_buff *skb)
@@ -493,6 +545,11 @@ static void mctp_i2c_xmit(struct mctp_i2c_dev *midev, struct sk_buff *skb)
 	case MCTP_I2C_TX_FLOW_EXISTING:
 		/* existing flow: we already have the lock; just tx */
 		rc = __i2c_transfer(midev->adapter, &msg, 1);
+
+		/* on tx errors, the flow can no longer be considered valid */
+		if (rc < 0)
+			mctp_i2c_invalidate_tx_flow(midev, skb);
+
 		break;
 
 	case MCTP_I2C_TX_FLOW_INVALID:
@@ -536,12 +593,20 @@ static int mctp_i2c_header_create(struct sk_buff *skb, struct net_device *dev,
 	struct mctp_i2c_hdr *hdr;
 	struct mctp_hdr *mhdr;
 	u8 lldst, llsrc;
+	int rc;
 
 	if (len > MCTP_I2C_MAXMTU)
 		return -EMSGSIZE;
 
+	if (!daddr || !saddr)
+		return -EINVAL;
+
 	lldst = *((u8 *)daddr);
 	llsrc = *((u8 *)saddr);
+
+	rc = skb_cow_head(skb, sizeof(struct mctp_i2c_hdr));
+	if (rc)
+		return rc;
 
 	skb_push(skb, sizeof(struct mctp_i2c_hdr));
 	skb_reset_mac_header(skb);
@@ -617,21 +682,31 @@ static void mctp_i2c_release_flow(struct mctp_dev *mdev,
 
 {
 	struct mctp_i2c_dev *midev = netdev_priv(mdev->dev);
+	bool queue_release = false;
 	unsigned long flags;
 
 	spin_lock_irqsave(&midev->lock, flags);
-	midev->release_count++;
+	/* if we have seen the flow/key previously, we need to pair the
+	 * original lock with a release
+	 */
+	if (key->dev_flow_state == MCTP_I2C_FLOW_STATE_ACTIVE) {
+		midev->release_count++;
+		queue_release = true;
+	}
+	key->dev_flow_state = MCTP_I2C_FLOW_STATE_INVALID;
 	spin_unlock_irqrestore(&midev->lock, flags);
 
-	/* Ensure we have a release operation queued, through the fake
-	 * marker skb
-	 */
-	spin_lock(&midev->tx_queue.lock);
-	if (!midev->unlock_marker.next)
-		__skb_queue_tail(&midev->tx_queue, &midev->unlock_marker);
-	spin_unlock(&midev->tx_queue.lock);
-
-	wake_up(&midev->tx_wq);
+	if (queue_release) {
+		/* Ensure we have a release operation queued, through the fake
+		 * marker skb
+		 */
+		spin_lock(&midev->tx_queue.lock);
+		if (!midev->unlock_marker.next)
+			__skb_queue_tail(&midev->tx_queue,
+					 &midev->unlock_marker);
+		spin_unlock(&midev->tx_queue.lock);
+		wake_up(&midev->tx_wq);
+	}
 }
 
 static const struct net_device_ops mctp_i2c_ops = {
@@ -819,7 +894,8 @@ static int mctp_i2c_add_netdev(struct mctp_i2c_client *mcli,
 		goto err;
 	}
 
-	rc = mctp_register_netdev(ndev, &mctp_i2c_mctp_ops);
+	rc = mctp_register_netdev(ndev, &mctp_i2c_mctp_ops,
+				  MCTP_PHYS_BINDING_SMBUS);
 	if (rc < 0) {
 		dev_err(&mcli->client->dev,
 			"register netdev \"%s\" failed %d\n",
@@ -986,7 +1062,7 @@ out:
 	return rc;
 }
 
-static int mctp_i2c_remove(struct i2c_client *client)
+static void mctp_i2c_remove(struct i2c_client *client)
 {
 	struct mctp_i2c_client *mcli = i2c_get_clientdata(client);
 	struct mctp_i2c_dev *midev = NULL, *tmp = NULL;
@@ -999,8 +1075,6 @@ static int mctp_i2c_remove(struct i2c_client *client)
 
 	mctp_i2c_free_client(mcli);
 	mutex_unlock(&driver_clients_lock);
-	/* Callers ignore return code */
-	return 0;
 }
 
 /* We look for a 'mctp-controller' property on I2C busses as they are
@@ -1027,8 +1101,8 @@ static struct notifier_block mctp_i2c_notifier = {
 };
 
 static const struct i2c_device_id mctp_i2c_id[] = {
-	{ "mctp-i2c-interface", 0 },
-	{},
+	{ "mctp-i2c-interface" },
+	{}
 };
 MODULE_DEVICE_TABLE(i2c, mctp_i2c_id);
 
@@ -1043,7 +1117,7 @@ static struct i2c_driver mctp_i2c_driver = {
 		.name = "mctp-i2c-interface",
 		.of_match_table = mctp_i2c_of_match,
 	},
-	.probe_new = mctp_i2c_probe,
+	.probe = mctp_i2c_probe,
 	.remove = mctp_i2c_remove,
 	.id_table = mctp_i2c_id,
 };

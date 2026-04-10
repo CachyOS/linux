@@ -50,8 +50,6 @@ extern const int kretprobe_blacklist_size;
 
 void arch_remove_kprobe(struct kprobe *p);
 
-extern void arch_kprobe_override_function(struct pt_regs *regs);
-
 /* Architecture specific copy of original instruction*/
 struct arch_specific_insn {
 	/* copy of the original instruction */
@@ -115,8 +113,6 @@ struct kprobe_ctlblk {
 };
 
 extern int kprobe_fault_handler(struct pt_regs *regs, int trapnr);
-extern int kprobe_exceptions_notify(struct notifier_block *self,
-				    unsigned long val, void *data);
 extern int kprobe_int3_handler(struct pt_regs *regs);
 
 #else

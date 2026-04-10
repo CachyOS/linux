@@ -20,17 +20,23 @@ struct mei_aux_device;
 
 /**
  * struct intel_gsc - graphics security controller
- * @intf : gsc interface
+ *
+ * @intf: gsc interface
+ * @intf.adev: MEI aux. device for this @intf
+ * @intf.gem_obj: scratch memory GSC operations
+ * @intf.irq: IRQ for this device (%-1 for no IRQ)
+ * @intf.id: this interface's id number/index
  */
 struct intel_gsc {
 	struct intel_gsc_intf {
 		struct mei_aux_device *adev;
+		struct drm_i915_gem_object *gem_obj;
 		int irq;
 		unsigned int id;
 	} intf[INTEL_GSC_NUM_INTERFACES];
 };
 
-void intel_gsc_init(struct intel_gsc *gsc, struct drm_i915_private *dev_priv);
+void intel_gsc_init(struct intel_gsc *gsc, struct drm_i915_private *i915);
 void intel_gsc_fini(struct intel_gsc *gsc);
 void intel_gsc_irq_handler(struct intel_gt *gt, u32 iir);
 

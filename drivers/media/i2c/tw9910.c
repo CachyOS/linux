@@ -212,11 +212,6 @@
  * structure
  */
 
-struct regval_list {
-	unsigned char reg_num;
-	unsigned char value;
-};
-
 struct tw9910_scale_ctrl {
 	char           *name;
 	unsigned short  width;
@@ -829,8 +824,6 @@ static int tw9910_set_fmt(struct v4l2_subdev *sd,
 	if (format->which == V4L2_SUBDEV_FORMAT_ACTIVE)
 		return tw9910_s_fmt(sd, mf);
 
-	sd_state->pads->try_fmt = *mf;
-
 	return 0;
 }
 
@@ -928,8 +921,7 @@ static const struct v4l2_subdev_ops tw9910_subdev_ops = {
  * i2c_driver function
  */
 
-static int tw9910_probe(struct i2c_client *client,
-			const struct i2c_device_id *did)
+static int tw9910_probe(struct i2c_client *client)
 
 {
 	struct tw9910_priv		*priv;
@@ -993,7 +985,7 @@ error_clk_put:
 	return ret;
 }
 
-static int tw9910_remove(struct i2c_client *client)
+static void tw9910_remove(struct i2c_client *client)
 {
 	struct tw9910_priv *priv = to_tw9910(client);
 
@@ -1001,12 +993,10 @@ static int tw9910_remove(struct i2c_client *client)
 		gpiod_put(priv->pdn_gpio);
 	clk_put(priv->clk);
 	v4l2_async_unregister_subdev(&priv->subdev);
-
-	return 0;
 }
 
 static const struct i2c_device_id tw9910_id[] = {
-	{ "tw9910", 0 },
+	{ "tw9910" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tw9910_id);

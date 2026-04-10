@@ -448,9 +448,9 @@ static int max9860_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	struct snd_soc_component *component = dai->component;
 	struct max9860_priv *max9860 = snd_soc_component_get_drvdata(component);
 
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
-	case SND_SOC_DAIFMT_CBS_CFS:
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		max9860->fmt = fmt;
 		return 0;
 
@@ -537,10 +537,8 @@ static const struct snd_soc_component_driver max9860_component_driver = {
 	.num_dapm_routes	= ARRAY_SIZE(max9860_dapm_routes),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
-#ifdef CONFIG_PM
 static int max9860_suspend(struct device *dev)
 {
 	struct max9860_priv *max9860 = dev_get_drvdata(dev);
@@ -585,10 +583,9 @@ static int max9860_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
 static const struct dev_pm_ops max9860_pm_ops = {
-	SET_RUNTIME_PM_OPS(max9860_suspend, max9860_resume, NULL)
+	RUNTIME_PM_OPS(max9860_suspend, max9860_resume, NULL)
 };
 
 static int max9860_probe(struct i2c_client *i2c)
@@ -702,14 +699,13 @@ err_regulator:
 	return ret;
 }
 
-static int max9860_remove(struct i2c_client *i2c)
+static void max9860_remove(struct i2c_client *i2c)
 {
 	struct device *dev = &i2c->dev;
 	struct max9860_priv *max9860 = dev_get_drvdata(dev);
 
 	pm_runtime_disable(dev);
 	regulator_disable(max9860->dvddio);
-	return 0;
 }
 
 static const struct i2c_device_id max9860_i2c_id[] = {
@@ -725,13 +721,13 @@ static const struct of_device_id max9860_of_match[] = {
 MODULE_DEVICE_TABLE(of, max9860_of_match);
 
 static struct i2c_driver max9860_i2c_driver = {
-	.probe_new      = max9860_probe,
+	.probe          = max9860_probe,
 	.remove         = max9860_remove,
 	.id_table       = max9860_i2c_id,
 	.driver         = {
 		.name           = "max9860",
 		.of_match_table = max9860_of_match,
-		.pm             = &max9860_pm_ops,
+		.pm             = pm_ptr(&max9860_pm_ops),
 	},
 };
 

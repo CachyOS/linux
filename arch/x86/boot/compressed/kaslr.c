@@ -25,10 +25,7 @@
 #include "efi.h"
 
 #include <generated/compile.h>
-#include <linux/module.h>
-#include <linux/uts.h>
-#include <linux/utsname.h>
-#include <linux/ctype.h>
+#include <generated/utsversion.h>
 #include <generated/utsrelease.h>
 
 #define _SETUP
@@ -62,7 +59,7 @@ static unsigned long get_boot_seed(void)
 	unsigned long hash = 0;
 
 	hash = rotate_xor(hash, build_str, sizeof(build_str));
-	hash = rotate_xor(hash, boot_params, sizeof(*boot_params));
+	hash = rotate_xor(hash, boot_params_ptr, sizeof(*boot_params_ptr));
 
 	return hash;
 }
@@ -118,13 +115,8 @@ char *skip_spaces(const char *str)
 #include "../../../../lib/ctype.c"
 #include "../../../../lib/cmdline.c"
 
-enum parse_mode {
-	PARSE_MEMMAP,
-	PARSE_EFI,
-};
-
 static int
-parse_memmap(char *p, u64 *start, u64 *size, enum parse_mode mode)
+parse_memmap(char *p, u64 *start, u64 *size)
 {
 	char *oldp;
 
@@ -147,29 +139,11 @@ parse_memmap(char *p, u64 *start, u64 *size, enum parse_mode mode)
 		*start = memparse(p + 1, &p);
 		return 0;
 	case '@':
-		if (mode == PARSE_MEMMAP) {
-			/*
-			 * memmap=nn@ss specifies usable region, should
-			 * be skipped
-			 */
-			*size = 0;
-		} else {
-			u64 flags;
-
-			/*
-			 * efi_fake_mem=nn@ss:attr the attr specifies
-			 * flags that might imply a soft-reservation.
-			 */
-			*start = memparse(p + 1, &p);
-			if (p && *p == ':') {
-				p++;
-				if (kstrtoull(p, 0, &flags) < 0)
-					*size = 0;
-				else if (flags & EFI_MEMORY_SP)
-					return 0;
-			}
-			*size = 0;
-		}
+		/*
+		 * memmap=nn@ss specifies usable region, should
+		 * be skipped
+		 */
+		*size = 0;
 		fallthrough;
 	default:
 		/*
@@ -184,7 +158,7 @@ parse_memmap(char *p, u64 *start, u64 *size, enum parse_mode mode)
 	return -EINVAL;
 }
 
-static void mem_avoid_memmap(enum parse_mode mode, char *str)
+static void mem_avoid_memmap(char *str)
 {
 	static int i;
 
@@ -199,7 +173,7 @@ static void mem_avoid_memmap(enum parse_mode mode, char *str)
 		if (k)
 			*k++ = 0;
 
-		rc = parse_memmap(str, &start, &size, mode);
+		rc = parse_memmap(str, &start, &size);
 		if (rc < 0)
 			break;
 		str = k;
@@ -280,7 +254,7 @@ static void handle_mem_options(void)
 			break;
 
 		if (!strcmp(param, "memmap")) {
-			mem_avoid_memmap(PARSE_MEMMAP, val);
+			mem_avoid_memmap(val);
 		} else if (IS_ENABLED(CONFIG_X86_64) && strstr(param, "hugepages")) {
 			parse_gb_huge_pages(param, val);
 		} else if (!strcmp(param, "mem")) {
@@ -294,8 +268,6 @@ static void handle_mem_options(void)
 
 			if (mem_size < mem_limit)
 				mem_limit = mem_size;
-		} else if (!strcmp(param, "efi_fake_mem")) {
-			mem_avoid_memmap(PARSE_EFI, val);
 		}
 	}
 
@@ -382,7 +354,7 @@ static void handle_mem_options(void)
 static void mem_avoid_init(unsigned long input, unsigned long input_size,
 			   unsigned long output)
 {
-	unsigned long init_size = boot_params->hdr.init_size;
+	unsigned long init_size = boot_params_ptr->hdr.init_size;
 	u64 initrd_start, initrd_size;
 	unsigned long cmd_line, cmd_line_size;
 
@@ -394,10 +366,10 @@ static void mem_avoid_init(unsigned long input, unsigned long input_size,
 	mem_avoid[MEM_AVOID_ZO_RANGE].size = (output + init_size) - input;
 
 	/* Avoid initrd. */
-	initrd_start  = (u64)boot_params->ext_ramdisk_image << 32;
-	initrd_start |= boot_params->hdr.ramdisk_image;
-	initrd_size  = (u64)boot_params->ext_ramdisk_size << 32;
-	initrd_size |= boot_params->hdr.ramdisk_size;
+	initrd_start  = (u64)boot_params_ptr->ext_ramdisk_image << 32;
+	initrd_start |= boot_params_ptr->hdr.ramdisk_image;
+	initrd_size  = (u64)boot_params_ptr->ext_ramdisk_size << 32;
+	initrd_size |= boot_params_ptr->hdr.ramdisk_size;
 	mem_avoid[MEM_AVOID_INITRD].start = initrd_start;
 	mem_avoid[MEM_AVOID_INITRD].size = initrd_size;
 	/* No need to set mapping for initrd, it will be handled in VO. */
@@ -412,8 +384,8 @@ static void mem_avoid_init(unsigned long input, unsigned long input_size,
 	}
 
 	/* Avoid boot parameters. */
-	mem_avoid[MEM_AVOID_BOOTPARAMS].start = (unsigned long)boot_params;
-	mem_avoid[MEM_AVOID_BOOTPARAMS].size = sizeof(*boot_params);
+	mem_avoid[MEM_AVOID_BOOTPARAMS].start = (unsigned long)boot_params_ptr;
+	mem_avoid[MEM_AVOID_BOOTPARAMS].size = sizeof(*boot_params_ptr);
 
 	/* We don't need to set a mapping for setup_data. */
 
@@ -446,7 +418,7 @@ static bool mem_avoid_overlap(struct mem_vector *img,
 	}
 
 	/* Avoid all entries in the setup_data linked list. */
-	ptr = (struct setup_data *)(unsigned long)boot_params->hdr.setup_data;
+	ptr = (struct setup_data *)(unsigned long)boot_params_ptr->hdr.setup_data;
 	while (ptr) {
 		struct mem_vector avoid;
 
@@ -667,10 +639,37 @@ static bool process_mem_region(struct mem_vector *region,
 		}
 	}
 #endif
-	return 0;
+	return false;
 }
 
 #ifdef CONFIG_EFI
+
+/*
+ * Only EFI_CONVENTIONAL_MEMORY and EFI_UNACCEPTED_MEMORY (if supported) are
+ * guaranteed to be free.
+ *
+ * Pick free memory more conservatively than the EFI spec allows: according to
+ * the spec, EFI_BOOT_SERVICES_{CODE|DATA} are also free memory and thus
+ * available to place the kernel image into, but in practice there's firmware
+ * where using that memory leads to crashes. Buggy vendor EFI code registers
+ * for an event that triggers on SetVirtualAddressMap(). The handler assumes
+ * that EFI_BOOT_SERVICES_DATA memory has not been touched by loader yet, which
+ * is probably true for Windows.
+ *
+ * Preserve EFI_BOOT_SERVICES_* regions until after SetVirtualAddressMap().
+ */
+static inline bool memory_type_is_free(efi_memory_desc_t *md)
+{
+	if (md->type == EFI_CONVENTIONAL_MEMORY)
+		return true;
+
+	if (IS_ENABLED(CONFIG_UNACCEPTED_MEMORY) &&
+	    md->type == EFI_UNACCEPTED_MEMORY)
+		    return true;
+
+	return false;
+}
+
 /*
  * Returns true if we processed the EFI memmap, which we prefer over the E820
  * table if it is available.
@@ -678,7 +677,7 @@ static bool process_mem_region(struct mem_vector *region,
 static bool
 process_efi_entries(unsigned long minimum, unsigned long image_size)
 {
-	struct efi_info *e = &boot_params->efi_info;
+	struct efi_info *e = &boot_params_ptr->efi_info;
 	bool efi_mirror_found = false;
 	struct mem_vector region;
 	efi_memory_desc_t *md;
@@ -715,18 +714,7 @@ process_efi_entries(unsigned long minimum, unsigned long image_size)
 	for (i = 0; i < nr_desc; i++) {
 		md = efi_early_memdesc_ptr(pmap, e->efi_memdesc_size, i);
 
-		/*
-		 * Here we are more conservative in picking free memory than
-		 * the EFI spec allows:
-		 *
-		 * According to the spec, EFI_BOOT_SERVICES_{CODE|DATA} are also
-		 * free memory and thus available to place the kernel image into,
-		 * but in practice there's firmware where using that memory leads
-		 * to crashes.
-		 *
-		 * Only EFI_CONVENTIONAL_MEMORY is guaranteed to be free.
-		 */
-		if (md->type != EFI_CONVENTIONAL_MEMORY)
+		if (!memory_type_is_free(md))
 			continue;
 
 		if (efi_soft_reserve_enabled() &&
@@ -760,8 +748,8 @@ static void process_e820_entries(unsigned long minimum,
 	struct boot_e820_entry *entry;
 
 	/* Verify potential e820 positions, appending to slots list. */
-	for (i = 0; i < boot_params->e820_entries; i++) {
-		entry = &boot_params->e820_table[i];
+	for (i = 0; i < boot_params_ptr->e820_entries; i++) {
+		entry = &boot_params_ptr->e820_table[i];
 		/* Skip non-RAM entries. */
 		if (entry->type != E820_TYPE_RAM)
 			continue;
@@ -770,6 +758,49 @@ static void process_e820_entries(unsigned long minimum,
 		if (process_mem_region(&region, minimum, image_size))
 			break;
 	}
+}
+
+/*
+ * If KHO is active, only process its scratch areas to ensure we are not
+ * stepping onto preserved memory.
+ */
+static bool process_kho_entries(unsigned long minimum, unsigned long image_size)
+{
+	struct kho_scratch *kho_scratch;
+	struct setup_data *ptr;
+	struct kho_data *kho;
+	int i, nr_areas = 0;
+
+	if (!IS_ENABLED(CONFIG_KEXEC_HANDOVER))
+		return false;
+
+	ptr = (struct setup_data *)(unsigned long)boot_params_ptr->hdr.setup_data;
+	while (ptr) {
+		if (ptr->type == SETUP_KEXEC_KHO) {
+			kho = (struct kho_data *)(unsigned long)ptr->data;
+			kho_scratch = (void *)(unsigned long)kho->scratch_addr;
+			nr_areas = kho->scratch_size / sizeof(*kho_scratch);
+			break;
+		}
+
+		ptr = (struct setup_data *)(unsigned long)ptr->next;
+	}
+
+	if (!nr_areas)
+		return false;
+
+	for (i = 0; i < nr_areas; i++) {
+		struct kho_scratch *area = &kho_scratch[i];
+		struct mem_vector region = {
+			.start = area->addr,
+			.size = area->size,
+		};
+
+		if (process_mem_region(&region, minimum, image_size))
+			break;
+	}
+
+	return true;
 }
 
 static unsigned long find_random_phys_addr(unsigned long minimum,
@@ -787,7 +818,12 @@ static unsigned long find_random_phys_addr(unsigned long minimum,
 		return 0;
 	}
 
-	if (!process_efi_entries(minimum, image_size))
+	/*
+	 * During kexec handover only process KHO scratch areas that are known
+	 * not to contain any data that must be preserved.
+	 */
+	if (!process_kho_entries(minimum, image_size) &&
+	    !process_efi_entries(minimum, image_size))
 		process_e820_entries(minimum, image_size);
 
 	phys_addr = slots_fetch_random();
@@ -835,7 +871,7 @@ void choose_random_location(unsigned long input,
 		return;
 	}
 
-	boot_params->hdr.loadflags |= KASLR_FLAG;
+	boot_params_ptr->hdr.loadflags |= KASLR_FLAG;
 
 	if (IS_ENABLED(CONFIG_X86_32))
 		mem_limit = KERNEL_IMAGE_SIZE;

@@ -4,10 +4,13 @@
  * Copyright (c) 2014, Intel Corporation.
  */
 #include <linux/acpi.h>
+#include <linux/intel_tcc.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/sysfs.h>
 #include <linux/thermal.h>
+#include <asm/msr.h>
 #include "int340x_thermal_zone.h"
 #include "processor_thermal_device.h"
 #include "../intel_soc_dts_iosf.h"
@@ -21,8 +24,50 @@ static ssize_t power_limit_##index##_##suffix##_show(struct device *dev, \
 { \
 	struct proc_thermal_device *proc_dev = dev_get_drvdata(dev); \
 	\
-	return sprintf(buf, "%lu\n",\
+	return sysfs_emit(buf, "%lu\n",\
 	(unsigned long)proc_dev->power_limits[index].suffix * 1000); \
+}
+
+static ssize_t power_floor_status_show(struct device *dev,
+				       struct device_attribute *attr,
+				       char *buf)
+{
+	struct proc_thermal_device *proc_dev = dev_get_drvdata(dev);
+	int ret;
+
+	ret = proc_thermal_read_power_floor_status(proc_dev);
+
+	return sysfs_emit(buf, "%d\n", ret);
+}
+
+static ssize_t power_floor_enable_show(struct device *dev,
+				       struct device_attribute *attr,
+				       char *buf)
+{
+	struct proc_thermal_device *proc_dev = dev_get_drvdata(dev);
+	bool ret;
+
+	ret = proc_thermal_power_floor_get_state(proc_dev);
+
+	return sysfs_emit(buf, "%d\n", ret);
+}
+
+static ssize_t power_floor_enable_store(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct proc_thermal_device *proc_dev = dev_get_drvdata(dev);
+	u8 state;
+	int ret;
+
+	if (kstrtou8(buf, 0, &state))
+		return -EINVAL;
+
+	ret = proc_thermal_power_floor_set_state(proc_dev, !!state);
+	if (ret)
+		return ret;
+
+	return count;
 }
 
 POWER_LIMIT_SHOW(0, min_uw)
@@ -49,6 +94,9 @@ static DEVICE_ATTR_RO(power_limit_1_step_uw);
 static DEVICE_ATTR_RO(power_limit_1_tmin_us);
 static DEVICE_ATTR_RO(power_limit_1_tmax_us);
 
+static DEVICE_ATTR_RO(power_floor_status);
+static DEVICE_ATTR_RW(power_floor_enable);
+
 static struct attribute *power_limit_attrs[] = {
 	&dev_attr_power_limit_0_min_uw.attr,
 	&dev_attr_power_limit_1_min_uw.attr,
@@ -60,62 +108,43 @@ static struct attribute *power_limit_attrs[] = {
 	&dev_attr_power_limit_1_tmin_us.attr,
 	&dev_attr_power_limit_0_tmax_us.attr,
 	&dev_attr_power_limit_1_tmax_us.attr,
+	&dev_attr_power_floor_status.attr,
+	&dev_attr_power_floor_enable.attr,
 	NULL
 };
 
+static umode_t power_limit_attr_visible(struct kobject *kobj, struct attribute *attr, int unused)
+{
+	struct device *dev = kobj_to_dev(kobj);
+	struct proc_thermal_device *proc_dev;
+
+	if (attr != &dev_attr_power_floor_status.attr && attr != &dev_attr_power_floor_enable.attr)
+		return attr->mode;
+
+	proc_dev = dev_get_drvdata(dev);
+	if (!proc_dev || !(proc_dev->mmio_feature_mask & PROC_THERMAL_FEATURE_POWER_FLOOR))
+		return 0;
+
+	return attr->mode;
+}
+
 static const struct attribute_group power_limit_attribute_group = {
 	.attrs = power_limit_attrs,
-	.name = "power_limits"
+	.name = "power_limits",
+	.is_visible = power_limit_attr_visible,
 };
-
-static int tcc_get_offset(void)
-{
-	u64 val;
-	int err;
-
-	err = rdmsrl_safe(MSR_IA32_TEMPERATURE_TARGET, &val);
-	if (err)
-		return err;
-
-	return (val >> 24) & 0x3f;
-}
 
 static ssize_t tcc_offset_degree_celsius_show(struct device *dev,
 					      struct device_attribute *attr,
 					      char *buf)
 {
-	int tcc;
+	int offset;
 
-	tcc = tcc_get_offset();
-	if (tcc < 0)
-		return tcc;
+	offset = intel_tcc_get_offset(-1);
+	if (offset < 0)
+		return offset;
 
-	return sprintf(buf, "%d\n", tcc);
-}
-
-static int tcc_offset_update(unsigned int tcc)
-{
-	u64 val;
-	int err;
-
-	if (tcc > 63)
-		return -EINVAL;
-
-	err = rdmsrl_safe(MSR_IA32_TEMPERATURE_TARGET, &val);
-	if (err)
-		return err;
-
-	if (val & BIT(31))
-		return -EPERM;
-
-	val &= ~GENMASK_ULL(29, 24);
-	val |= (tcc & 0x3f) << 24;
-
-	err = wrmsrl_safe(MSR_IA32_TEMPERATURE_TARGET, val);
-	if (err)
-		return err;
-
-	return 0;
+	return sysfs_emit(buf, "%d\n", offset);
 }
 
 static ssize_t tcc_offset_degree_celsius_store(struct device *dev,
@@ -126,7 +155,7 @@ static ssize_t tcc_offset_degree_celsius_store(struct device *dev,
 	u64 val;
 	int err;
 
-	err = rdmsrl_safe(MSR_PLATFORM_INFO, &val);
+	err = rdmsrq_safe(MSR_PLATFORM_INFO, &val);
 	if (err)
 		return err;
 
@@ -136,7 +165,7 @@ static ssize_t tcc_offset_degree_celsius_store(struct device *dev,
 	if (kstrtouint(buf, 0, &tcc))
 		return -EINVAL;
 
-	err = tcc_offset_update(tcc);
+	err = intel_tcc_set_offset(-1, tcc);
 	if (err)
 		return err;
 
@@ -145,71 +174,26 @@ static ssize_t tcc_offset_degree_celsius_store(struct device *dev,
 
 static DEVICE_ATTR_RW(tcc_offset_degree_celsius);
 
-static int stored_tjmax; /* since it is fixed, we can have local storage */
-
-static int get_tjmax(void)
-{
-	u32 eax, edx;
-	u32 val;
-	int err;
-
-	err = rdmsr_safe(MSR_IA32_TEMPERATURE_TARGET, &eax, &edx);
-	if (err)
-		return err;
-
-	val = (eax >> 16) & 0xff;
-	if (val)
-		return val;
-
-	return -EINVAL;
-}
-
-static int read_temp_msr(int *temp)
+static int proc_thermal_get_zone_temp(struct thermal_zone_device *zone,
+					 int *temp)
 {
 	int cpu;
-	u32 eax, edx;
-	int err;
-	unsigned long curr_temp_off = 0;
+	int curr_temp, ret;
 
 	*temp = 0;
 
 	for_each_online_cpu(cpu) {
-		err = rdmsr_safe_on_cpu(cpu, MSR_IA32_THERM_STATUS, &eax,
-					&edx);
-		if (err)
-			goto err_ret;
-		else {
-			if (eax & 0x80000000) {
-				curr_temp_off = (eax >> 16) & 0x7f;
-				if (!*temp || curr_temp_off < *temp)
-					*temp = curr_temp_off;
-			} else {
-				err = -EINVAL;
-				goto err_ret;
-			}
-		}
+		ret = intel_tcc_get_temp(cpu, &curr_temp, false);
+		if (ret < 0)
+			return ret;
+		if (!*temp || curr_temp > *temp)
+			*temp = curr_temp;
 	}
 
+	*temp *= 1000;
+
 	return 0;
-err_ret:
-	return err;
 }
-
-static int proc_thermal_get_zone_temp(struct thermal_zone_device *zone,
-					 int *temp)
-{
-	int ret;
-
-	ret = read_temp_msr(temp);
-	if (!ret)
-		*temp = (stored_tjmax - *temp) * 1000;
-
-	return ret;
-}
-
-static struct thermal_zone_device_ops proc_thermal_local_ops = {
-	.get_temp       = proc_thermal_get_zone_temp,
-};
 
 static int proc_thermal_read_ppcc(struct proc_thermal_device *proc_priv)
 {
@@ -285,7 +269,7 @@ int proc_thermal_add(struct device *dev, struct proc_thermal_device *proc_priv)
 	struct acpi_device *adev;
 	acpi_status status;
 	unsigned long long tmp;
-	struct thermal_zone_device_ops *ops = NULL;
+	int (*get_temp) (struct thermal_zone_device *, int *) = NULL;
 	int ret;
 
 	adev = ACPI_COMPANION(dev);
@@ -302,12 +286,11 @@ int proc_thermal_add(struct device *dev, struct proc_thermal_device *proc_priv)
 	status = acpi_evaluate_integer(adev->handle, "_TMP", NULL, &tmp);
 	if (ACPI_FAILURE(status)) {
 		/* there is no _TMP method, add local method */
-		stored_tjmax = get_tjmax();
-		if (stored_tjmax > 0)
-			ops = &proc_thermal_local_ops;
+		if (intel_tcc_get_tjmax(-1) > 0)
+			get_temp = proc_thermal_get_zone_temp;
 	}
 
-	proc_priv->int340x_zone = int340x_thermal_zone_add(adev, ops);
+	proc_priv->int340x_zone = int340x_thermal_zone_add(adev, get_temp);
 	if (IS_ERR(proc_priv->int340x_zone)) {
 		return PTR_ERR(proc_priv->int340x_zone);
 	} else
@@ -356,9 +339,16 @@ static int tcc_offset_save = -1;
 
 int proc_thermal_suspend(struct device *dev)
 {
-	tcc_offset_save = tcc_get_offset();
+	struct proc_thermal_device *proc_dev;
+
+	tcc_offset_save = intel_tcc_get_offset(-1);
 	if (tcc_offset_save < 0)
 		dev_warn(dev, "failed to save offset (%d)\n", tcc_offset_save);
+
+	proc_dev = dev_get_drvdata(dev);
+
+	if (proc_dev->mmio_feature_mask & PROC_THERMAL_FEATURE_SOC_POWER_SLIDER)
+		proc_thermal_soc_power_slider_suspend(proc_dev);
 
 	return 0;
 }
@@ -373,7 +363,10 @@ int proc_thermal_resume(struct device *dev)
 
 	/* Do not update if saving failed */
 	if (tcc_offset_save >= 0)
-		tcc_offset_update(tcc_offset_save);
+		intel_tcc_set_offset(-1, tcc_offset_save);
+
+	if (proc_dev->mmio_feature_mask & PROC_THERMAL_FEATURE_SOC_POWER_SLIDER)
+		proc_thermal_soc_power_slider_resume(proc_dev);
 
 	return 0;
 }
@@ -418,27 +411,54 @@ int proc_thermal_mmio_add(struct pci_dev *pdev,
 		}
 	}
 
-	if (feature_mask & PROC_THERMAL_FEATURE_FIVR ||
-	    feature_mask & PROC_THERMAL_FEATURE_DVFS) {
-		ret = proc_thermal_rfim_add(pdev, proc_priv);
+	if (feature_mask & PROC_THERMAL_FEATURE_PTC) {
+		ret = proc_thermal_ptc_add(pdev, proc_priv);
 		if (ret) {
-			dev_err(&pdev->dev, "failed to add RFIM interface\n");
+			dev_err(&pdev->dev, "failed to add PTC MMIO interface\n");
 			goto err_rem_rapl;
 		}
 	}
 
-	if (feature_mask & PROC_THERMAL_FEATURE_MBOX) {
-		ret = proc_thermal_mbox_add(pdev, proc_priv);
+	if (feature_mask & PROC_THERMAL_FEATURE_FIVR ||
+	    feature_mask & PROC_THERMAL_FEATURE_DVFS ||
+	    feature_mask & PROC_THERMAL_FEATURE_DLVR) {
+		ret = proc_thermal_rfim_add(pdev, proc_priv);
+		if (ret) {
+			dev_err(&pdev->dev, "failed to add RFIM interface\n");
+			goto err_rem_ptc;
+		}
+	}
+
+	if (feature_mask & PROC_THERMAL_FEATURE_WT_REQ) {
+		ret = proc_thermal_wt_req_add(pdev, proc_priv);
 		if (ret) {
 			dev_err(&pdev->dev, "failed to add MBOX interface\n");
 			goto err_rem_rfim;
+		}
+	} else if (feature_mask & PROC_THERMAL_FEATURE_WT_HINT) {
+		ret = proc_thermal_wt_hint_add(pdev, proc_priv);
+		if (ret) {
+			dev_err(&pdev->dev, "failed to add WT Hint\n");
+			goto err_rem_rfim;
+		}
+	}
+
+	if (feature_mask & PROC_THERMAL_FEATURE_SOC_POWER_SLIDER) {
+		ret = proc_thermal_soc_power_slider_add(pdev, proc_priv);
+		if (ret) {
+			dev_info(&pdev->dev, "failed to add soc power efficiency slider\n");
+			goto err_rem_wlt;
 		}
 	}
 
 	return 0;
 
+err_rem_wlt:
+	proc_thermal_wt_hint_remove(pdev);
 err_rem_rfim:
 	proc_thermal_rfim_remove(pdev);
+err_rem_ptc:
+	proc_thermal_ptc_remove(pdev);
 err_rem_rapl:
 	proc_thermal_rapl_remove();
 
@@ -451,15 +471,26 @@ void proc_thermal_mmio_remove(struct pci_dev *pdev, struct proc_thermal_device *
 	if (proc_priv->mmio_feature_mask & PROC_THERMAL_FEATURE_RAPL)
 		proc_thermal_rapl_remove();
 
+	if (proc_priv->mmio_feature_mask & PROC_THERMAL_FEATURE_PTC)
+		proc_thermal_ptc_remove(pdev);
+
 	if (proc_priv->mmio_feature_mask & PROC_THERMAL_FEATURE_FIVR ||
-	    proc_priv->mmio_feature_mask & PROC_THERMAL_FEATURE_DVFS)
+	    proc_priv->mmio_feature_mask & PROC_THERMAL_FEATURE_DVFS ||
+	    proc_priv->mmio_feature_mask & PROC_THERMAL_FEATURE_DLVR)
 		proc_thermal_rfim_remove(pdev);
 
-	if (proc_priv->mmio_feature_mask & PROC_THERMAL_FEATURE_MBOX)
-		proc_thermal_mbox_remove(pdev);
+	if (proc_priv->mmio_feature_mask & PROC_THERMAL_FEATURE_POWER_FLOOR)
+		proc_thermal_power_floor_set_state(proc_priv, false);
+
+	if (proc_priv->mmio_feature_mask & PROC_THERMAL_FEATURE_WT_REQ)
+		proc_thermal_wt_req_remove(pdev);
+	else if (proc_priv->mmio_feature_mask & PROC_THERMAL_FEATURE_WT_HINT)
+		proc_thermal_wt_hint_remove(pdev);
 }
 EXPORT_SYMBOL_GPL(proc_thermal_mmio_remove);
 
+MODULE_IMPORT_NS("INTEL_TCC");
+MODULE_IMPORT_NS("INT340X_THERMAL");
 MODULE_AUTHOR("Srinivas Pandruvada <srinivas.pandruvada@linux.intel.com>");
 MODULE_DESCRIPTION("Processor Thermal Reporting Device Driver");
 MODULE_LICENSE("GPL v2");

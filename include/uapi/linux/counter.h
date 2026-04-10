@@ -38,7 +38,7 @@ enum counter_scope {
  *
  * For example, if the Count 2 ceiling extension of Counter device 4 is desired,
  * set type equal to COUNTER_COMPONENT_EXTENSION, scope equal to
- * COUNTER_COUNT_SCOPE, parent equal to 2, and id equal to the value provided by
+ * COUNTER_SCOPE_COUNT, parent equal to 2, and id equal to the value provided by
  * the respective /sys/bus/counter/devices/counter4/count2/ceiling_component_id
  * sysfs attribute.
  */
@@ -63,6 +63,10 @@ enum counter_event_type {
 	COUNTER_EVENT_INDEX,
 	/* State of counter is changed */
 	COUNTER_EVENT_CHANGE_OF_STATE,
+	/* Count value captured */
+	COUNTER_EVENT_CAPTURE,
+	/* Direction change detected */
+	COUNTER_EVENT_DIRECTION_CHANGE,
 };
 
 /**
@@ -125,6 +129,12 @@ enum counter_count_mode {
 	COUNTER_COUNT_MODE_RANGE_LIMIT,
 	COUNTER_COUNT_MODE_NON_RECYCLE,
 	COUNTER_COUNT_MODE_MODULO_N,
+	COUNTER_COUNT_MODE_INTERRUPT_ON_TERMINAL_COUNT,
+	COUNTER_COUNT_MODE_HARDWARE_RETRIGGERABLE_ONESHOT,
+	COUNTER_COUNT_MODE_RATE_GENERATOR,
+	COUNTER_COUNT_MODE_SQUARE_WAVE_MODE,
+	COUNTER_COUNT_MODE_SOFTWARE_TRIGGERED_STROBE,
+	COUNTER_COUNT_MODE_HARDWARE_TRIGGERED_STROBE,
 };
 
 /* Count function values */
@@ -151,6 +161,12 @@ enum counter_synapse_action {
 	COUNTER_SYNAPSE_ACTION_RISING_EDGE,
 	COUNTER_SYNAPSE_ACTION_FALLING_EDGE,
 	COUNTER_SYNAPSE_ACTION_BOTH_EDGES,
+};
+
+/* Signal polarity values */
+enum counter_signal_polarity {
+	COUNTER_SIGNAL_POLARITY_POSITIVE,
+	COUNTER_SIGNAL_POLARITY_NEGATIVE,
 };
 
 #endif /* _UAPI_COUNTER_H_ */

@@ -11,8 +11,9 @@ asm(
 	".text\n"
 	".type just_return_func, @function\n"
 	".globl just_return_func\n"
+	ASM_FUNC_ALIGN
 	"just_return_func:\n"
-		ANNOTATE_NOENDBR
+		ANNOTATE_NOENDBR "\n"
 		ASM_RET
 	".size just_return_func, .-just_return_func\n"
 );

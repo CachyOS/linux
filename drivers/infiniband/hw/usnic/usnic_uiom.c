@@ -56,7 +56,7 @@ static int usnic_uiom_dma_fault(struct iommu_domain *domain,
 				unsigned long iova, int flags,
 				void *token)
 {
-	usnic_err("Device %s iommu fault domain 0x%pK va 0x%lx flags 0x%x\n",
+	usnic_err("Device %s iommu fault domain 0x%p va 0x%lx flags 0x%x\n",
 		dev_name(dev),
 		domain, iova, flags);
 	return -ENOSYS;
@@ -85,6 +85,7 @@ static int usnic_uiom_get_pages(unsigned long addr, size_t size, int writable,
 				int dmasync, struct usnic_uiom_reg *uiomr)
 {
 	struct list_head *chunk_list = &uiomr->chunk_list;
+	unsigned int gup_flags = FOLL_LONGTERM;
 	struct page **page_list;
 	struct scatterlist *sg;
 	struct usnic_uiom_chunk *chunk;
@@ -95,9 +96,7 @@ static int usnic_uiom_get_pages(unsigned long addr, size_t size, int writable,
 	int ret;
 	int off;
 	int i;
-	int flags;
 	dma_addr_t pa;
-	unsigned int gup_flags;
 	struct mm_struct *mm;
 
 	/*
@@ -132,10 +131,8 @@ static int usnic_uiom_get_pages(unsigned long addr, size_t size, int writable,
 		goto out;
 	}
 
-	flags = IOMMU_READ | IOMMU_CACHE;
-	flags |= (writable) ? IOMMU_WRITE : 0;
-	gup_flags = FOLL_WRITE;
-	gup_flags |= (writable) ? 0 : FOLL_FORCE;
+	if (writable)
+		gup_flags |= FOLL_WRITE;
 	cur_base = addr & PAGE_MASK;
 	ret = 0;
 
@@ -143,8 +140,7 @@ static int usnic_uiom_get_pages(unsigned long addr, size_t size, int writable,
 		ret = pin_user_pages(cur_base,
 				     min_t(unsigned long, npages,
 				     PAGE_SIZE / sizeof(struct page *)),
-				     gup_flags | FOLL_LONGTERM,
-				     page_list, NULL);
+				     gup_flags, page_list);
 
 		if (ret < 0)
 			goto out;
@@ -153,9 +149,8 @@ static int usnic_uiom_get_pages(unsigned long addr, size_t size, int writable,
 		off = 0;
 
 		while (ret) {
-			chunk = kmalloc(struct_size(chunk, page_list,
-					min_t(int, ret, USNIC_UIOM_PAGE_CHUNK)),
-					GFP_KERNEL);
+			chunk = kmalloc_flex(*chunk, page_list,
+					     min_t(int, ret, USNIC_UIOM_PAGE_CHUNK));
 			if (!chunk) {
 				ret = -ENOMEM;
 				goto out;
@@ -281,7 +276,7 @@ iter_chunk:
 				usnic_dbg("va 0x%lx pa %pa size 0x%zx flags 0x%x",
 					va_start, &pa_start, size, flags);
 				err = iommu_map(pd->domain, va_start, pa_start,
-							size, flags);
+						size, flags, GFP_ATOMIC);
 				if (err) {
 					usnic_err("Failed to map va 0x%lx pa %pa size 0x%zx with err %d\n",
 						va_start, &pa_start, size, err);
@@ -298,7 +293,7 @@ iter_chunk:
 				usnic_dbg("va 0x%lx pa %pa size 0x%zx flags 0x%x\n",
 					va_start, &pa_start, size, flags);
 				err = iommu_map(pd->domain, va_start, pa_start,
-						size, flags);
+						size, flags, GFP_ATOMIC);
 				if (err) {
 					usnic_err("Failed to map va 0x%lx pa %pa size 0x%zx with err %d\n",
 						va_start, &pa_start, size, err);
@@ -355,7 +350,7 @@ struct usnic_uiom_reg *usnic_uiom_reg_get(struct usnic_uiom_pd *pd,
 	vpn_start = (addr & PAGE_MASK) >> PAGE_SHIFT;
 	vpn_last = vpn_start + npages - 1;
 
-	uiomr = kmalloc(sizeof(*uiomr), GFP_KERNEL);
+	uiomr = kmalloc_obj(*uiomr);
 	if (!uiomr)
 		return ERR_PTR(-ENOMEM);
 
@@ -443,15 +438,15 @@ struct usnic_uiom_pd *usnic_uiom_alloc_pd(struct device *dev)
 	struct usnic_uiom_pd *pd;
 	void *domain;
 
-	pd = kzalloc(sizeof(*pd), GFP_KERNEL);
+	pd = kzalloc_obj(*pd);
 	if (!pd)
 		return ERR_PTR(-ENOMEM);
 
-	pd->domain = domain = iommu_domain_alloc(dev->bus);
-	if (!domain) {
+	pd->domain = domain = iommu_paging_domain_alloc(dev);
+	if (IS_ERR(domain)) {
 		usnic_err("Failed to allocate IOMMU domain");
 		kfree(pd);
-		return ERR_PTR(-ENOMEM);
+		return ERR_CAST(domain);
 	}
 
 	iommu_set_fault_handler(pd->domain, usnic_uiom_dma_fault, NULL);
@@ -473,7 +468,7 @@ int usnic_uiom_attach_dev_to_pd(struct usnic_uiom_pd *pd, struct device *dev)
 	struct usnic_uiom_dev *uiom_dev;
 	int err;
 
-	uiom_dev = kzalloc(sizeof(*uiom_dev), GFP_ATOMIC);
+	uiom_dev = kzalloc_obj(*uiom_dev, GFP_ATOMIC);
 	if (!uiom_dev)
 		return -ENOMEM;
 	uiom_dev->dev = dev;
@@ -482,7 +477,7 @@ int usnic_uiom_attach_dev_to_pd(struct usnic_uiom_pd *pd, struct device *dev)
 	if (err)
 		goto out_free_dev;
 
-	if (!iommu_capable(dev->bus, IOMMU_CAP_CACHE_COHERENCY)) {
+	if (!device_iommu_capable(dev, IOMMU_CAP_CACHE_COHERENCY)) {
 		usnic_err("IOMMU of %s does not support cache coherency\n",
 				dev_name(dev));
 		err = -EINVAL;
@@ -537,7 +532,7 @@ struct device **usnic_uiom_get_dev_list(struct usnic_uiom_pd *pd)
 	int i = 0;
 
 	spin_lock(&pd->lock);
-	devs = kcalloc(pd->dev_cnt + 1, sizeof(*devs), GFP_ATOMIC);
+	devs = kzalloc_objs(*devs, pd->dev_cnt + 1, GFP_ATOMIC);
 	if (!devs) {
 		devs = ERR_PTR(-ENOMEM);
 		goto out;

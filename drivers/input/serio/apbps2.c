@@ -14,11 +14,11 @@
  * Contributors: Daniel Hellstrom <daniel@gaisler.com>
  */
 #include <linux/platform_device.h>
-#include <linux/of_device.h>
 #include <linux/module.h>
 #include <linux/serio.h>
 #include <linux/errno.h>
 #include <linux/interrupt.h>
+#include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/device.h>
 #include <linux/delay.h>
@@ -67,7 +67,7 @@ static irqreturn_t apbps2_isr(int irq, void *dev_id)
 		rxflags = (status & APBPS2_STATUS_PE) ? SERIO_PARITY : 0;
 		rxflags |= (status & APBPS2_STATUS_FE) ? SERIO_FRAME : 0;
 
-		/* clear error bits? */
+		/* Clear error bits */
 		if (rxflags)
 			iowrite32be(0, &priv->regs->status);
 
@@ -82,9 +82,9 @@ static irqreturn_t apbps2_isr(int irq, void *dev_id)
 static int apbps2_write(struct serio *io, unsigned char val)
 {
 	struct apbps2_priv *priv = io->port_data;
-	unsigned int tleft = 10000; /* timeout in 100ms */
+	unsigned int tleft = 10000; /* Timeout in 100ms */
 
-	/* delay until PS/2 controller has room for more chars */
+	/* Delay until PS/2 controller has room for more chars */
 	while ((ioread32be(&priv->regs->status) & APBPS2_STATUS_TF) && tleft--)
 		udelay(10);
 
@@ -104,7 +104,7 @@ static int apbps2_open(struct serio *io)
 	struct apbps2_priv *priv = io->port_data;
 	int limit;
 
-	/* clear error flags */
+	/* Clear error flags */
 	iowrite32be(0, &priv->regs->status);
 
 	/* Clear old data if available (unlikely) */
@@ -112,7 +112,7 @@ static int apbps2_open(struct serio *io)
 	while ((ioread32be(&priv->regs->status) & APBPS2_STATUS_DR) && --limit)
 		ioread32be(&priv->regs->data);
 
-	/* Enable reciever and it's interrupt */
+	/* Enable receiver and its interrupt */
 	iowrite32be(APBPS2_CTRL_RE | APBPS2_CTRL_RI, &priv->regs->ctrl);
 
 	return 0;
@@ -122,7 +122,7 @@ static void apbps2_close(struct serio *io)
 {
 	struct apbps2_priv *priv = io->port_data;
 
-	/* stop interrupts at PS/2 HW level */
+	/* Stop interrupts at PS/2 HW level */
 	iowrite32be(0, &priv->regs->ctrl);
 }
 
@@ -132,7 +132,6 @@ static int apbps2_of_probe(struct platform_device *ofdev)
 	struct apbps2_priv *priv;
 	int irq, err;
 	u32 freq_hz;
-	struct resource *res;
 
 	priv = devm_kzalloc(&ofdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv) {
@@ -140,9 +139,8 @@ static int apbps2_of_probe(struct platform_device *ofdev)
 		return -ENOMEM;
 	}
 
-	/* Find Device Address */
-	res = platform_get_resource(ofdev, IORESOURCE_MEM, 0);
-	priv->regs = devm_ioremap_resource(&ofdev->dev, res);
+	/* Find device address */
+	priv->regs = devm_platform_get_and_ioremap_resource(ofdev, 0, NULL);
 	if (IS_ERR(priv->regs))
 		return PTR_ERR(priv->regs);
 
@@ -167,7 +165,7 @@ static int apbps2_of_probe(struct platform_device *ofdev)
 	/* Set reload register to core freq in kHz/10 */
 	iowrite32be(freq_hz / 10000, &priv->regs->reload);
 
-	priv->io = kzalloc(sizeof(struct serio), GFP_KERNEL);
+	priv->io = kzalloc_obj(*priv->io);
 	if (!priv->io)
 		return -ENOMEM;
 
@@ -176,7 +174,7 @@ static int apbps2_of_probe(struct platform_device *ofdev)
 	priv->io->close = apbps2_close;
 	priv->io->write = apbps2_write;
 	priv->io->port_data = priv;
-	strlcpy(priv->io->name, "APBPS2 PS/2", sizeof(priv->io->name));
+	strscpy(priv->io->name, "APBPS2 PS/2", sizeof(priv->io->name));
 	snprintf(priv->io->phys, sizeof(priv->io->phys),
 		 "apbps2_%d", apbps2_idx++);
 
@@ -189,13 +187,11 @@ static int apbps2_of_probe(struct platform_device *ofdev)
 	return 0;
 }
 
-static int apbps2_of_remove(struct platform_device *of_dev)
+static void apbps2_of_remove(struct platform_device *of_dev)
 {
 	struct apbps2_priv *priv = platform_get_drvdata(of_dev);
 
 	serio_unregister_port(priv->io);
-
-	return 0;
 }
 
 static const struct of_device_id apbps2_of_match[] = {

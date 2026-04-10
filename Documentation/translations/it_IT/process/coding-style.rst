@@ -214,7 +214,7 @@ Non usate inutilmente le graffe dove una singola espressione è sufficiente.
 
 e
 
-.. code-block:: none
+.. code-block:: c
 
 	if (condition)
 		do_this();
@@ -466,13 +466,51 @@ la riga della parentesi graffa di chiusura. Ad esempio:
 	}
 	EXPORT_SYMBOL(system_is_up);
 
+6.1) Prototipi di funzione
+**************************
+
 Nei prototipi di funzione, includete i nomi dei parametri e i loro tipi.
 Nonostante questo non sia richiesto dal linguaggio C, in Linux viene preferito
 perché è un modo semplice per aggiungere informazioni importanti per il
 lettore.
 
-Non usate la parola chiave ``extern`` coi prototipi di funzione perché
+Non usate la parola chiave ``extern`` con le dichiarazioni di funzione perché
 rende le righe più lunghe e non è strettamente necessario.
+
+Quando scrivete i prototipi di funzione mantenete `l'ordine degli elementi <https://lore.kernel.org/mm-commits/CAHk-=wiOCLRny5aifWNhr621kYrJwhfURsa0vFPeUEm8mF0ufg@mail.gmail.com/>`_.
+
+Prendiamo questa dichiarazione di funzione come esempio::
+
+ __init void * __must_check action(enum magic value, size_t size, u8 count,
+                                  char *fmt, ...) __printf(4, 5) __malloc;
+
+L'ordine suggerito per gli elementi di un prototipo di funzione è il seguente:
+
+- classe d'archiviazione (in questo caso ``static __always_inline``. Da notare
+  che ``__always_inline`` è tecnicamente un attributo ma che viene trattato come
+  ``inline``)
+- attributi della classe di archiviazione (in questo caso ``__init``, in altre
+  parole la sezione, ma anche cose tipo ``__cold``)
+- il tipo di ritorno (in questo caso, ``void *``)
+- attributi per il valore di ritorno (in questo caso, ``__must_check``)
+- il nome della funzione (in questo caso, ``action``)
+- i parametri della funzione(in questo caso,
+  ``(enum magic value, size_t size, u8 count, char *fmt, ...)``,
+  da notare che va messo anche il nome del parametro)
+- attributi dei parametri (in questo caso, ``__printf(4, 5)``)
+- attributi per il comportamento della funzione (in questo caso, ``__malloc_``)
+
+Notate che per la **definizione** di una funzione (il altre parole il corpo
+della funzione), il compilatore non permette di usare gli attributi per i
+parametri dopo i parametri. In questi casi, devono essere messi dopo gli
+attributi della classe d'archiviazione (notate che la posizione di
+``__printf(4,5)`` cambia rispetto alla **dichiarazione**)::
+
+ static __always_inline __init __printf(4, 5) void * __must_check action(enum magic value,
+              size_t size, u8 count, char *fmt, ...) __malloc
+ {
+         ...
+ }*)**``)**``)``)``*)``)``)``)``*``)``)``)*)
 
 7) Centralizzare il ritorno delle funzioni
 ------------------------------------------
@@ -537,9 +575,9 @@ due parti ``err_free_bar:`` e ``err_free_foo:``:
 
 .. code-block:: c
 
-	 err_free_bar:
+	err_free_bar:
 		kfree(foo->bar);
-	 err_free_foo:
+	err_free_foo:
 		kfree(foo);
 		return ret;
 
@@ -582,18 +620,6 @@ Lo stile preferito per i commenti più lunghi (multi-riga) è:
 	 * with beginning and ending almost-blank lines.
 	 */
 
-Per i file in net/ e in drivers/net/ lo stile preferito per i commenti
-più lunghi (multi-riga) è leggermente diverso.
-
-.. code-block:: c
-
-	/* The preferred comment style for files in net/ and drivers/net
-	 * looks like this.
-	 *
-	 * It is nearly the same as the generally preferred comment style,
-	 * but there is no initial almost-blank line.
-	 */
-
 È anche importante commentare i dati, sia per i tipi base che per tipi
 derivati.  A questo scopo, dichiarate un dato per riga (niente virgole
 per una dichiarazione multipla).  Questo vi lascerà spazio per un piccolo
@@ -614,7 +640,7 @@ Quindi, potete sbarazzarvi di GNU emacs, o riconfigurarlo con valori più
 sensati.  Per fare quest'ultima cosa, potete appiccicare il codice che
 segue nel vostro file .emacs:
 
-.. code-block:: none
+.. code-block:: elisp
 
   (defun c-lineup-arglist-tabs-only (ignored)
     "Line up argument lists by tabs, not spaces"
@@ -633,7 +659,7 @@ segue nel vostro file .emacs:
           (c-offsets-alist . (
                   (arglist-close         . c-lineup-arglist-tabs-only)
                   (arglist-cont-nonempty .
-		      (c-lineup-gcc-asm-reg c-lineup-arglist-tabs-only))
+                      (c-lineup-gcc-asm-reg c-lineup-arglist-tabs-only))
                   (arglist-intro         . +)
                   (brace-list-intro      . +)
                   (c                     . c-lineup-C-comments)
@@ -688,8 +714,12 @@ di stile, refusi e possibilmente anche delle migliorie. È anche utile per
 ordinare gli ``#include``, per allineare variabili/macro, per ridistribuire
 il testo e altre cose simili.
 Per maggiori dettagli, consultate il file
-:ref:`Documentation/translations/it_IT/process/clang-format.rst <it_clangformat>`.
+:ref:`Documentation/translations/it_IT/dev-tools/clang-format.rst <it_clangformat>`.
 
+Se utilizzate un programma compatibile con EditorConfig, allora alcune
+configurazioni basilari come l'indentazione e la fine delle righe verranno
+applicate automaticamente. Per maggiori informazioni consultate la pagina:
+https://editorconfig.org/
 
 10) File di configurazione Kconfig
 ----------------------------------
@@ -785,6 +815,29 @@ blocco do - while:
 				do_this(b, c);		\
 		} while (0)
 
+Le macro che sembrano funzioni con parametri non usati dovrebbero essere
+sostituite da funzioni inline per evitare il problema.
+
+.. code-block:: c
+
+       static inline void fun(struct foo *foo)
+       {
+       }
+
+Per motivi storici, molti file usano ancora l'approccio "cast a (void)" per
+valutare i parametri. Tuttavia, non è raccomandato. Le funzioni inline risolvono
+i problemi di "espressioni con effetti avversi valutate più di una volta",
+variabili non utilizzate, e in genere per qualche motivo sono documentate
+meglio.
+
+.. code-block:: c
+
+       /*
+        * Avoid doing this whenever possible and instead opt for static
+        * inline functions
+        */
+       #define macrofun(foo) do { (void) (foo); } while (0)
+
 Cose da evitare quando si usano le macro:
 
 1) le macro che hanno effetti sul flusso del codice:
@@ -855,12 +908,14 @@ I messaggi del kernel non devono terminare con un punto fermo.
 Scrivere i numeri fra parentesi (%d) non migliora alcunché e per questo
 dovrebbero essere evitati.
 
-Ci sono alcune macro per la diagnostica in <linux/device.h> che dovreste
+Ci sono alcune macro per la diagnostica in <linux/dev_printk.h> che dovreste
 usare per assicurarvi che i messaggi vengano associati correttamente ai
 dispositivi e ai driver, e che siano etichettati correttamente:  dev_err(),
 dev_warn(), dev_info(), e così via.  Per messaggi che non sono associati ad
 alcun dispositivo, <linux/printk.h> definisce pr_info(), pr_warn(), pr_err(),
-eccetera.
+eccetera. Quando tutto funziona correttamente, non dovrebbero esserci stampe,
+per cui preferite dev_dbg/pr_debug a meno che non sia qualcosa di sbagliato
+da segnalare.
 
 Tirar fuori un buon messaggio di debug può essere una vera sfida; e quando
 l'avete può essere d'enorme aiuto per risolvere problemi da remoto.
@@ -1166,10 +1221,10 @@ ISBN 0-201-61586-X.
 
 Manuali GNU - nei casi in cui sono compatibili con K&R e questo documento -
 per indent, cpp, gcc e i suoi dettagli interni, tutto disponibile qui
-http://www.gnu.org/manual/
+https://www.gnu.org/manual/
 
 WG14 è il gruppo internazionale di standardizzazione per il linguaggio C,
-URL: http://www.open-std.org/JTC1/SC22/WG14/
+URL: https://www.open-std.org/JTC1/SC22/WG14/
 
-Kernel process/coding-style.rst, by greg@kroah.com at OLS 2002:
+Kernel CodingStyle, by greg@kroah.com at OLS 2002:
 http://www.kroah.com/linux/talks/ols_2002_kernel_codingstyle_talk/html/

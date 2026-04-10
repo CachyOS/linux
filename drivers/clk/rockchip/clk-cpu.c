@@ -16,14 +16,14 @@
  * of the SoC or supplied after the SoC characterization.
  *
  * The below implementation of the CPU clock allows the rate changes of the CPU
- * clock and the corresponding rate changes of the auxillary clocks of the CPU
+ * clock and the corresponding rate changes of the auxiliary clocks of the CPU
  * domain. The platform clock driver provides a clock register configuration
  * for each configurable rate which is then used to program the clock hardware
- * registers to acheive a fast co-oridinated rate change for all the CPU domain
+ * registers to achieve a fast co-oridinated rate change for all the CPU domain
  * clocks.
  *
  * On a rate change request for the CPU clock, the rate change is propagated
- * upto the PLL supplying the clock to the CPU domain clock blocks. While the
+ * up to the PLL supplying the clock to the CPU domain clock blocks. While the
  * CPU domain PLL is reconfigured, the CPU domain clocks are driven using an
  * alternate clock source. If required, the alternate clock source is divided
  * down in order to keep the output clock rate within the previous OPP limits.
@@ -113,6 +113,42 @@ static void rockchip_cpuclk_set_dividers(struct rockchip_cpuclk *cpuclk,
 	}
 }
 
+static void rockchip_cpuclk_set_pre_muxs(struct rockchip_cpuclk *cpuclk,
+					 const struct rockchip_cpuclk_rate_table *rate)
+{
+	int i;
+
+	/* alternate parent is active now. set the pre_muxs */
+	for (i = 0; i < ARRAY_SIZE(rate->pre_muxs); i++) {
+		const struct rockchip_cpuclk_clksel *clksel = &rate->pre_muxs[i];
+
+		if (!clksel->reg)
+			break;
+
+		pr_debug("%s: setting reg 0x%x to 0x%x\n",
+			 __func__, clksel->reg, clksel->val);
+		writel(clksel->val, cpuclk->reg_base + clksel->reg);
+	}
+}
+
+static void rockchip_cpuclk_set_post_muxs(struct rockchip_cpuclk *cpuclk,
+					  const struct rockchip_cpuclk_rate_table *rate)
+{
+	int i;
+
+	/* alternate parent is active now. set the muxs */
+	for (i = 0; i < ARRAY_SIZE(rate->post_muxs); i++) {
+		const struct rockchip_cpuclk_clksel *clksel = &rate->post_muxs[i];
+
+		if (!clksel->reg)
+			break;
+
+		pr_debug("%s: setting reg 0x%x to 0x%x\n",
+			 __func__, clksel->reg, clksel->val);
+		writel(clksel->val, cpuclk->reg_base + clksel->reg);
+	}
+}
+
 static int rockchip_cpuclk_pre_rate_change(struct rockchip_cpuclk *cpuclk,
 					   struct clk_notifier_data *ndata)
 {
@@ -165,11 +201,20 @@ static int rockchip_cpuclk_pre_rate_change(struct rockchip_cpuclk *cpuclk,
 			       cpuclk->reg_base + reg_data->core_reg[i]);
 		}
 	}
+
+	rockchip_cpuclk_set_pre_muxs(cpuclk, rate);
+
 	/* select alternate parent */
-	writel(HIWORD_UPDATE(reg_data->mux_core_alt,
-			     reg_data->mux_core_mask,
-			     reg_data->mux_core_shift),
-	       cpuclk->reg_base + reg_data->core_reg[0]);
+	if (reg_data->mux_core_reg)
+		writel(HIWORD_UPDATE(reg_data->mux_core_alt,
+				     reg_data->mux_core_mask,
+				     reg_data->mux_core_shift),
+		       cpuclk->reg_base + reg_data->mux_core_reg);
+	else
+		writel(HIWORD_UPDATE(reg_data->mux_core_alt,
+				     reg_data->mux_core_mask,
+				     reg_data->mux_core_shift),
+		       cpuclk->reg_base + reg_data->core_reg[0]);
 
 	spin_unlock_irqrestore(cpuclk->lock, flags);
 	return 0;
@@ -202,10 +247,18 @@ static int rockchip_cpuclk_post_rate_change(struct rockchip_cpuclk *cpuclk,
 	 * primary parent by the extra dividers that were needed for the alt.
 	 */
 
-	writel(HIWORD_UPDATE(reg_data->mux_core_main,
-			     reg_data->mux_core_mask,
-			     reg_data->mux_core_shift),
-	       cpuclk->reg_base + reg_data->core_reg[0]);
+	if (reg_data->mux_core_reg)
+		writel(HIWORD_UPDATE(reg_data->mux_core_main,
+				     reg_data->mux_core_mask,
+				     reg_data->mux_core_shift),
+		       cpuclk->reg_base + reg_data->mux_core_reg);
+	else
+		writel(HIWORD_UPDATE(reg_data->mux_core_main,
+				     reg_data->mux_core_mask,
+				     reg_data->mux_core_shift),
+		       cpuclk->reg_base + reg_data->core_reg[0]);
+
+	rockchip_cpuclk_set_post_muxs(cpuclk, rate);
 
 	/* remove dividers */
 	for (i = 0; i < reg_data->num_cores; i++) {
@@ -260,7 +313,7 @@ struct clk *rockchip_clk_register_cpuclk(const char *name,
 		return ERR_PTR(-EINVAL);
 	}
 
-	cpuclk = kzalloc(sizeof(*cpuclk), GFP_KERNEL);
+	cpuclk = kzalloc_obj(*cpuclk);
 	if (!cpuclk)
 		return ERR_PTR(-ENOMEM);
 
@@ -316,9 +369,8 @@ struct clk *rockchip_clk_register_cpuclk(const char *name,
 
 	if (nrates > 0) {
 		cpuclk->rate_count = nrates;
-		cpuclk->rate_table = kmemdup(rates,
-					     sizeof(*rates) * nrates,
-					     GFP_KERNEL);
+		cpuclk->rate_table = kmemdup_array(rates, nrates, sizeof(*rates),
+						   GFP_KERNEL);
 		if (!cpuclk->rate_table) {
 			ret = -ENOMEM;
 			goto unregister_notifier;
@@ -342,5 +394,170 @@ free_alt_parent:
 	clk_disable_unprepare(cpuclk->alt_parent);
 free_cpuclk:
 	kfree(cpuclk);
+	return ERR_PTR(ret);
+}
+
+static int rockchip_cpuclk_multi_pll_pre_rate_change(struct rockchip_cpuclk *cpuclk,
+						     struct clk_notifier_data *ndata)
+{
+	unsigned long new_rate = roundup(ndata->new_rate, 1000);
+	const struct rockchip_cpuclk_rate_table *rate;
+	unsigned long flags;
+
+	rate = rockchip_get_cpuclk_settings(cpuclk, new_rate);
+	if (!rate) {
+		pr_err("%s: Invalid rate : %lu for cpuclk\n",
+		       __func__, new_rate);
+		return -EINVAL;
+	}
+
+	if (new_rate > ndata->old_rate) {
+		spin_lock_irqsave(cpuclk->lock, flags);
+		rockchip_cpuclk_set_dividers(cpuclk, rate);
+		spin_unlock_irqrestore(cpuclk->lock, flags);
+	}
+
+	return 0;
+}
+
+static int rockchip_cpuclk_multi_pll_post_rate_change(struct rockchip_cpuclk *cpuclk,
+						      struct clk_notifier_data *ndata)
+{
+	unsigned long new_rate = roundup(ndata->new_rate, 1000);
+	const struct rockchip_cpuclk_rate_table *rate;
+	unsigned long flags;
+
+	rate = rockchip_get_cpuclk_settings(cpuclk, new_rate);
+	if (!rate) {
+		pr_err("%s: Invalid rate : %lu for cpuclk\n",
+		       __func__, new_rate);
+		return -EINVAL;
+	}
+
+	if (new_rate < ndata->old_rate) {
+		spin_lock_irqsave(cpuclk->lock, flags);
+		rockchip_cpuclk_set_dividers(cpuclk, rate);
+		spin_unlock_irqrestore(cpuclk->lock, flags);
+	}
+
+	return 0;
+}
+
+static int rockchip_cpuclk_multi_pll_notifier_cb(struct notifier_block *nb,
+						 unsigned long event, void *data)
+{
+	struct clk_notifier_data *ndata = data;
+	struct rockchip_cpuclk *cpuclk = to_rockchip_cpuclk_nb(nb);
+	int ret = 0;
+
+	pr_debug("%s: event %lu, old_rate %lu, new_rate: %lu\n",
+		 __func__, event, ndata->old_rate, ndata->new_rate);
+	if (event == PRE_RATE_CHANGE)
+		ret = rockchip_cpuclk_multi_pll_pre_rate_change(cpuclk, ndata);
+	else if (event == POST_RATE_CHANGE)
+		ret = rockchip_cpuclk_multi_pll_post_rate_change(cpuclk, ndata);
+
+	return notifier_from_errno(ret);
+}
+
+struct clk *rockchip_clk_register_cpuclk_multi_pll(const char *name,
+						   const char *const *parent_names,
+						   u8 num_parents, void __iomem *base,
+						   int muxdiv_offset, u8 mux_shift,
+						   u8 mux_width, u8 mux_flags,
+						   int div_offset, u8 div_shift,
+						   u8 div_width, u8 div_flags,
+						   unsigned long flags, spinlock_t *lock,
+						   const struct rockchip_cpuclk_rate_table *rates,
+						   int nrates)
+{
+	struct rockchip_cpuclk *cpuclk;
+	struct clk_hw *hw;
+	struct clk_mux *mux = NULL;
+	struct clk_divider *div = NULL;
+	const struct clk_ops *mux_ops = NULL, *div_ops = NULL;
+	int ret;
+
+	if (num_parents > 1) {
+		mux = kzalloc_obj(*mux);
+		if (!mux)
+			return ERR_PTR(-ENOMEM);
+
+		mux->reg = base + muxdiv_offset;
+		mux->shift = mux_shift;
+		mux->mask = BIT(mux_width) - 1;
+		mux->flags = mux_flags;
+		mux->lock = lock;
+		mux_ops = (mux_flags & CLK_MUX_READ_ONLY) ? &clk_mux_ro_ops
+							: &clk_mux_ops;
+	}
+
+	if (div_width > 0) {
+		div = kzalloc_obj(*div);
+		if (!div) {
+			ret = -ENOMEM;
+			goto free_mux;
+		}
+
+		div->flags = div_flags;
+		if (div_offset)
+			div->reg = base + div_offset;
+		else
+			div->reg = base + muxdiv_offset;
+		div->shift = div_shift;
+		div->width = div_width;
+		div->lock = lock;
+		div_ops = (div_flags & CLK_DIVIDER_READ_ONLY)
+						? &clk_divider_ro_ops
+						: &clk_divider_ops;
+	}
+
+	hw = clk_hw_register_composite(NULL, name, parent_names, num_parents,
+				       mux ? &mux->hw : NULL, mux_ops,
+				       div ? &div->hw : NULL, div_ops,
+				       NULL, NULL, flags);
+	if (IS_ERR(hw)) {
+		ret = PTR_ERR(hw);
+		goto free_div;
+	}
+
+	cpuclk = kzalloc_obj(*cpuclk);
+	if (!cpuclk) {
+		ret = -ENOMEM;
+		goto unregister_clk;
+	}
+
+	cpuclk->reg_base = base;
+	cpuclk->lock = lock;
+	cpuclk->clk_nb.notifier_call = rockchip_cpuclk_multi_pll_notifier_cb;
+	ret = clk_notifier_register(hw->clk, &cpuclk->clk_nb);
+	if (ret) {
+		pr_err("%s: failed to register clock notifier for %s\n",
+		       __func__, name);
+		goto free_cpuclk;
+	}
+
+	if (nrates > 0) {
+		cpuclk->rate_count = nrates;
+		cpuclk->rate_table = kmemdup(rates,
+					     sizeof(*rates) * nrates,
+					     GFP_KERNEL);
+		if (!cpuclk->rate_table) {
+			ret = -ENOMEM;
+			goto free_cpuclk;
+		}
+	}
+
+	return hw->clk;
+
+free_cpuclk:
+	kfree(cpuclk);
+unregister_clk:
+	clk_hw_unregister_composite(hw);
+free_div:
+	kfree(div);
+free_mux:
+	kfree(mux);
+
 	return ERR_PTR(ret);
 }

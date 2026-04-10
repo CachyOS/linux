@@ -55,7 +55,7 @@ static int sgm3140_strobe_set(struct led_classdev_flash *fled_cdev, bool state)
 		mod_timer(&priv->powerdown_timer,
 			  jiffies + usecs_to_jiffies(priv->timeout));
 	} else {
-		del_timer_sync(&priv->powerdown_timer);
+		timer_delete_sync(&priv->powerdown_timer);
 		gpiod_set_value_cansleep(priv->enable_gpio, 0);
 		gpiod_set_value_cansleep(priv->flash_gpio, 0);
 		ret = regulator_disable(priv->vin_regulator);
@@ -114,8 +114,11 @@ static int sgm3140_brightness_set(struct led_classdev *led_cdev,
 				"failed to enable regulator: %d\n", ret);
 			return ret;
 		}
+		gpiod_set_value_cansleep(priv->flash_gpio, 0);
 		gpiod_set_value_cansleep(priv->enable_gpio, 1);
 	} else {
+		timer_delete_sync(&priv->powerdown_timer);
+		gpiod_set_value_cansleep(priv->flash_gpio, 0);
 		gpiod_set_value_cansleep(priv->enable_gpio, 0);
 		ret = regulator_disable(priv->vin_regulator);
 		if (ret) {
@@ -132,7 +135,7 @@ static int sgm3140_brightness_set(struct led_classdev *led_cdev,
 
 static void sgm3140_powerdown_timer(struct timer_list *t)
 {
-	struct sgm3140 *priv = from_timer(priv, t, powerdown_timer);
+	struct sgm3140 *priv = timer_container_of(priv, t, powerdown_timer);
 
 	gpiod_set_value(priv->enable_gpio, 0);
 	gpiod_set_value(priv->flash_gpio, 0);
@@ -211,8 +214,7 @@ static int sgm3140_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, ret,
 				     "Failed to request regulator\n");
 
-	child_node = fwnode_get_next_available_child_node(pdev->dev.fwnode,
-							  NULL);
+	child_node = device_get_next_child_node(&pdev->dev, NULL);
 	if (!child_node) {
 		dev_err(&pdev->dev,
 			"No fwnode child node found for connected LED.\n");
@@ -278,19 +280,18 @@ err:
 	return ret;
 }
 
-static int sgm3140_remove(struct platform_device *pdev)
+static void sgm3140_remove(struct platform_device *pdev)
 {
 	struct sgm3140 *priv = platform_get_drvdata(pdev);
 
-	del_timer_sync(&priv->powerdown_timer);
+	timer_delete_sync(&priv->powerdown_timer);
 
 	v4l2_flash_release(priv->v4l2_flash);
-
-	return 0;
 }
 
 static const struct of_device_id sgm3140_dt_match[] = {
 	{ .compatible = "ocs,ocp8110" },
+	{ .compatible = "richtek,rt5033-led" },
 	{ .compatible = "sgmicro,sgm3140" },
 	{ /* sentinel */ }
 };

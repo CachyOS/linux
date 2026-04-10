@@ -167,6 +167,9 @@ static int objagg_obj_parent_assign(struct objagg *objagg,
 {
 	void *delta_priv;
 
+	if (WARN_ON(!objagg_obj_is_root(parent)))
+		return -EINVAL;
+
 	delta_priv = objagg->ops->delta_create(objagg->priv, parent->obj,
 					       objagg_obj->obj);
 	if (IS_ERR(delta_priv))
@@ -421,7 +424,7 @@ static struct objagg_obj *__objagg_obj_get(struct objagg *objagg, void *obj)
  *
  * There are 3 main options this function wraps:
  * 1) The object according to "obj" already exist. In that case
- *    the reference counter is incrementes and the object is returned.
+ *    the reference counter is incremented and the object is returned.
  * 2) The object does not exist, but it can be aggregated within
  *    another object. In that case, user ops->delta_create() is called
  *    to obtain delta data and a new object is created with returned
@@ -522,7 +525,7 @@ struct objagg *objagg_create(const struct objagg_ops *ops,
 		    !ops->delta_destroy))
 		return ERR_PTR(-EINVAL);
 
-	objagg = kzalloc(sizeof(*objagg), GFP_KERNEL);
+	objagg = kzalloc_obj(*objagg);
 	if (!objagg)
 		return ERR_PTR(-ENOMEM);
 	objagg->ops = ops;
@@ -607,8 +610,8 @@ const struct objagg_stats *objagg_stats_get(struct objagg *objagg)
 	struct objagg_obj *objagg_obj;
 	int i;
 
-	objagg_stats = kzalloc(struct_size(objagg_stats, stats_info,
-					   objagg->obj_count), GFP_KERNEL);
+	objagg_stats = kzalloc_flex(*objagg_stats, stats_info,
+				    objagg->obj_count);
 	if (!objagg_stats)
 		return ERR_PTR(-ENOMEM);
 
@@ -783,11 +786,11 @@ static struct objagg_tmp_graph *objagg_tmp_graph_create(struct objagg *objagg)
 	struct objagg_obj *objagg_obj;
 	int i, j;
 
-	graph = kzalloc(sizeof(*graph), GFP_KERNEL);
+	graph = kzalloc_obj(*graph);
 	if (!graph)
 		return NULL;
 
-	graph->nodes = kcalloc(nodes_count, sizeof(*graph->nodes), GFP_KERNEL);
+	graph->nodes = kzalloc_objs(*graph->nodes, nodes_count);
 	if (!graph->nodes)
 		goto err_nodes_alloc;
 	graph->nodes_count = nodes_count;
@@ -903,20 +906,6 @@ static const struct objagg_opt_algo *objagg_opt_algos[] = {
 	[OBJAGG_OPT_ALGO_SIMPLE_GREEDY] = &objagg_opt_simple_greedy,
 };
 
-static int objagg_hints_obj_cmp(struct rhashtable_compare_arg *arg,
-				const void *obj)
-{
-	struct rhashtable *ht = arg->ht;
-	struct objagg_hints *objagg_hints =
-			container_of(ht, struct objagg_hints, node_ht);
-	const struct objagg_ops *ops = objagg_hints->ops;
-	const char *ptr = obj;
-
-	ptr += ht->p.key_offset;
-	return ops->hints_obj_cmp ? ops->hints_obj_cmp(ptr, arg->key) :
-				    memcmp(ptr, arg->key, ht->p.key_len);
-}
-
 /**
  * objagg_hints_get - obtains hints instance
  * @objagg:		objagg instance
@@ -941,7 +930,7 @@ struct objagg_hints *objagg_hints_get(struct objagg *objagg,
 	struct objagg_hints *objagg_hints;
 	int err;
 
-	objagg_hints = kzalloc(sizeof(*objagg_hints), GFP_KERNEL);
+	objagg_hints = kzalloc_obj(*objagg_hints);
 	if (!objagg_hints)
 		return ERR_PTR(-ENOMEM);
 
@@ -955,7 +944,6 @@ struct objagg_hints *objagg_hints_get(struct objagg *objagg,
 				offsetof(struct objagg_hints_node, obj);
 	objagg_hints->ht_params.head_offset =
 				offsetof(struct objagg_hints_node, ht_node);
-	objagg_hints->ht_params.obj_cmpfn = objagg_hints_obj_cmp;
 
 	err = rhashtable_init(&objagg_hints->node_ht, &objagg_hints->ht_params);
 	if (err)
@@ -1022,9 +1010,8 @@ objagg_hints_stats_get(struct objagg_hints *objagg_hints)
 	struct objagg_hints_node *hnode;
 	int i;
 
-	objagg_stats = kzalloc(struct_size(objagg_stats, stats_info,
-					   objagg_hints->node_count),
-			       GFP_KERNEL);
+	objagg_stats = kzalloc_flex(*objagg_stats, stats_info,
+				    objagg_hints->node_count);
 	if (!objagg_stats)
 		return ERR_PTR(-ENOMEM);
 

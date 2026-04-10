@@ -13,8 +13,11 @@ IPv6 support by Cong Wang <xiyou.wangcong@gmail.com>, Jan 1 2013
 
 Extended console support by Tejun Heo <tj@kernel.org>, May 1 2015
 
-Please send bug reports to Matt Mackall <mpm@selenic.com>
-Satyam Sharma <satyam.sharma@gmail.com>, and Cong Wang <xiyou.wangcong@gmail.com>
+Release prepend support by Breno Leitao <leitao@debian.org>, Jul 7 2023
+
+Userdata append support by Matthew Wood <thepacketgeek@gmail.com>, Jan 22 2024
+
+Sysdata append support by Breno Leitao <leitao@debian.org>, Jan 15 2025
 
 Introduction:
 =============
@@ -34,13 +37,14 @@ Sender and receiver configuration:
 It takes a string configuration parameter "netconsole" in the
 following format::
 
- netconsole=[+][src-port]@[src-ip]/[<dev>],[tgt-port]@<tgt-ip>/[tgt-macaddr]
+ netconsole=[+][r][src-port]@[src-ip]/[<dev>],[tgt-port]@<tgt-ip>/[tgt-macaddr]
 
    where
 	+             if present, enable extended console support
+	r             if present, prepend kernel version (release) to the message
 	src-port      source for UDP packets (defaults to 6665)
 	src-ip        source IP to use (interface address)
-	dev           network interface (eth0)
+	dev           network interface name (eth0) or MAC address
 	tgt-port      port for logging agent (6666)
 	tgt-ip        IP address for logging agent
 	tgt-macaddr   ethernet MAC address for logging agent (broadcast)
@@ -56,6 +60,10 @@ or::
 or using IPv6::
 
  insmod netconsole netconsole=@/,@fd00:1:2:3::1/
+
+or using a MAC address to select the egress interface::
+
+   linux netconsole=4444@10.0.0.1/22:33:44:55:66:77,9353@10.0.0.2/12:34:56:78:9a:bc
 
 It also supports logging to multiple remote agents by specifying
 parameters for the multiple agents separated by semicolons and the
@@ -80,7 +88,7 @@ for example:
 
 	nc -u -l -p <port>' / 'nc -u -l <port>
 
-    or::
+   or::
 
 	netcat -u -l -p <port>' / 'netcat -u -l <port>
 
@@ -96,9 +104,6 @@ Dynamic reconfiguration:
 Dynamic reconfigurability is a useful addition to netconsole that enables
 remote logging targets to be dynamically added, removed, or have their
 parameters reconfigured at runtime from a configfs-based userspace interface.
-[ Note that the parameters of netconsole targets that were specified/created
-from the boot/module option are not exposed via this interface, and hence
-cannot be modified dynamically. ]
 
 To include this feature, select CONFIG_NETCONSOLE_DYNAMIC when building the
 netconsole module (or kernel, if netconsole is built-in).
@@ -122,9 +127,10 @@ To remove a target::
 
 The interface exposes these parameters of a netconsole target to userspace:
 
-	==============  =================================       ============
+	=============== =================================       ============
 	enabled		Is this target currently enabled?	(read-write)
 	extended	Extended mode enabled			(read-write)
+	release		Prepend kernel release to message	(read-write)
 	dev_name	Local network interface name		(read-write)
 	local_port	Source UDP port to use			(read-write)
 	remote_port	Remote agent's UDP port			(read-write)
@@ -132,7 +138,8 @@ The interface exposes these parameters of a netconsole target to userspace:
 	remote_ip	Remote agent's IP address		(read-write)
 	local_mac	Local interface's MAC address		(read-only)
 	remote_mac	Remote agent's MAC address		(read-write)
-	==============  =================================       ============
+	transmit_errors	Number of packet send errors		(read-only)
+	=============== =================================       ============
 
 The "enabled" attribute is also used to control whether the parameters of
 a target can be updated or not -- you can modify the parameters of only
@@ -151,6 +158,217 @@ You can also update the local interface dynamically. This is especially
 useful if you want to use interfaces that have newly come up (and may not
 have existed when netconsole was loaded / initialized).
 
+Netconsole targets defined at boot time (or module load time) with the
+`netconsole=` param are assigned the name `cmdline<index>`.  For example, the
+first target in the parameter is named `cmdline0`.  You can control and modify
+these targets by creating configfs directories with the matching name.
+
+Let's suppose you have two netconsole targets defined at boot time::
+
+ netconsole=4444@10.0.0.1/eth1,9353@10.0.0.2/12:34:56:78:9a:bc;4444@10.0.0.1/eth1,9353@10.0.0.3/12:34:56:78:9a:bc
+
+You can modify these targets in runtime by creating the following targets::
+
+ mkdir cmdline0
+ cat cmdline0/remote_ip
+ 10.0.0.2
+
+ mkdir cmdline1
+ cat cmdline1/remote_ip
+ 10.0.0.3
+
+Append User Data
+----------------
+
+Custom user data can be appended to the end of messages with netconsole
+dynamic configuration enabled. User data entries can be modified without
+changing the "enabled" attribute of a target.
+
+Directories (keys) under `userdata` are limited to 53 character length, and
+data in `userdata/<key>/value` are limited to 200 bytes::
+
+ cd /sys/kernel/config/netconsole && mkdir cmdline0
+ cd cmdline0
+ mkdir userdata/foo
+ echo bar > userdata/foo/value
+ mkdir userdata/qux
+ echo baz > userdata/qux/value
+
+Messages will now include this additional user data::
+
+ echo "This is a message" > /dev/kmsg
+
+Sends::
+
+ 12,607,22085407756,-;This is a message
+  foo=bar
+  qux=baz
+
+Preview the userdata that will be appended with::
+
+ cd /sys/kernel/config/netconsole/cmdline0/userdata
+ for f in `ls userdata`; do echo $f=$(cat userdata/$f/value); done
+
+If a `userdata` entry is created but no data is written to the `value` file,
+the entry will be omitted from netconsole messages::
+
+ cd /sys/kernel/config/netconsole && mkdir cmdline0
+ cd cmdline0
+ mkdir userdata/foo
+ echo bar > userdata/foo/value
+ mkdir userdata/qux
+
+The `qux` key is omitted since it has no value::
+
+ echo "This is a message" > /dev/kmsg
+ 12,607,22085407756,-;This is a message
+  foo=bar
+
+Delete `userdata` entries with `rmdir`::
+
+ rmdir /sys/kernel/config/netconsole/cmdline0/userdata/qux
+
+.. warning::
+   When writing strings to user data values, input is broken up per line in
+   configfs store calls and this can cause confusing behavior::
+
+     mkdir userdata/testing
+     printf "val1\nval2" > userdata/testing/value
+     # userdata store value is called twice, first with "val1\n" then "val2"
+     # so "val2" is stored, being the last value stored
+     cat userdata/testing/value
+     val2
+
+   It is recommended to not write user data values with newlines.
+
+Task name auto population in userdata
+-------------------------------------
+
+Inside the netconsole configfs hierarchy, there is a file called
+`taskname_enabled` under the `userdata` directory. This file is used to enable
+or disable the automatic task name population feature. This feature
+automatically populates the current task name that is scheduled in the CPU
+sneding the message.
+
+To enable task name auto-population::
+
+  echo 1 > /sys/kernel/config/netconsole/target1/userdata/taskname_enabled
+
+When this option is enabled, the netconsole messages will include an additional
+line in the userdata field with the format `taskname=<task name>`. This allows
+the receiver of the netconsole messages to easily find which application was
+currently scheduled when that message was generated, providing extra context
+for kernel messages and helping to categorize them.
+
+Example::
+
+  echo "This is a message" > /dev/kmsg
+  12,607,22085407756,-;This is a message
+   taskname=echo
+
+In this example, the message was generated while "echo" was the current
+scheduled process.
+
+Kernel release auto population in userdata
+------------------------------------------
+
+Within the netconsole configfs hierarchy, there is a file named `release_enabled`
+located in the `userdata` directory. This file controls the kernel release
+(version) auto-population feature, which appends the kernel release information
+to userdata dictionary in every message sent.
+
+To enable the release auto-population::
+
+  echo 1 > /sys/kernel/config/netconsole/target1/userdata/release_enabled
+
+Example::
+
+  echo "This is a message" > /dev/kmsg
+  12,607,22085407756,-;This is a message
+   release=6.14.0-rc6-01219-g3c027fbd941d
+
+.. note::
+
+   This feature provides the same data as the "release prepend" feature.
+   However, in this case, the release information is appended to the userdata
+   dictionary rather than being included in the message header.
+
+
+CPU number auto population in userdata
+--------------------------------------
+
+Inside the netconsole configfs hierarchy, there is a file called
+`cpu_nr` under the `userdata` directory. This file is used to enable or disable
+the automatic CPU number population feature. This feature automatically
+populates the CPU number that is sending the message.
+
+To enable the CPU number auto-population::
+
+  echo 1 > /sys/kernel/config/netconsole/target1/userdata/cpu_nr
+
+When this option is enabled, the netconsole messages will include an additional
+line in the userdata field with the format `cpu=<cpu_number>`. This allows the
+receiver of the netconsole messages to easily differentiate and demultiplex
+messages originating from different CPUs, which is particularly useful when
+dealing with parallel log output.
+
+Example::
+
+  echo "This is a message" > /dev/kmsg
+  12,607,22085407756,-;This is a message
+   cpu=42
+
+In this example, the message was sent by CPU 42.
+
+.. note::
+
+   If the user has set a conflicting `cpu` key in the userdata dictionary,
+   both keys will be reported, with the kernel-populated entry appearing after
+   the user one. For example::
+
+     # User-defined CPU entry
+     mkdir -p /sys/kernel/config/netconsole/target1/userdata/cpu
+     echo "1" > /sys/kernel/config/netconsole/target1/userdata/cpu/value
+
+   Output might look like::
+
+     12,607,22085407756,-;This is a message
+      cpu=1
+      cpu=42    # kernel-populated value
+
+
+Message ID auto population in userdata
+--------------------------------------
+
+Within the netconsole configfs hierarchy, there is a file named `msgid_enabled`
+located in the `userdata` directory. This file controls the message ID
+auto-population feature, which assigns a numeric id to each message sent to a
+given target and appends the ID to userdata dictionary in every message sent.
+
+The message ID is generated using a per-target 32 bit counter that is
+incremented for every message sent to the target. Note that this counter will
+eventually wrap around after reaching uint32_t max value, so the message ID is
+not globally unique over time. However, it can still be used by the target to
+detect if messages were dropped before reaching the target by identifying gaps
+in the sequence of IDs.
+
+It is important to distinguish message IDs from the message <sequnum> field.
+Some kernel messages may never reach netconsole (for example, due to printk
+rate limiting). Thus, a gap in <sequnum> cannot be solely relied upon to
+indicate that a message was dropped during transmission, as it may never have
+been sent via netconsole. The message ID, on the other hand, is only assigned
+to messages that are actually transmitted via netconsole.
+
+Example::
+
+  echo "This is message #1" > /dev/kmsg
+  echo "This is message #2" > /dev/kmsg
+  13,434,54928466,-;This is message #1
+   msgid=1
+  13,435,54934019,-;This is message #2
+   msgid=2
+
+
 Extended console:
 =================
 
@@ -165,9 +383,14 @@ following format which is the same as /dev/kmsg::
 
  <level>,<sequnum>,<timestamp>,<contflag>;<message text>
 
+If 'r' (release) feature is enabled, the kernel release version is
+prepended to the start of the message. Example::
+
+ 6.4.0,6,444,501151268,-;netconsole: network logging started
+
 Non printable characters in <message text> are escaped using "\xff"
 notation. If the message contains optional dictionary, verbatim
-newline is used as the delimeter.
+newline is used as the delimiter.
 
 If a message doesn't fit in certain number of bytes (currently 1000),
 the message is split into multiple fragments by netconsole. These

@@ -69,22 +69,24 @@ class SystemValues(aslib.SystemValues):
 	bootloader = 'grub'
 	blexec = []
 	def __init__(self):
-		self.hostname = platform.node()
+		self.kernel, self.hostname = 'unknown', platform.node()
 		self.testtime = datetime.now().strftime('%Y-%m-%d_%H:%M:%S')
 		if os.path.exists('/proc/version'):
 			fp = open('/proc/version', 'r')
-			val = fp.read().strip()
+			self.kernel = self.kernelVersion(fp.read().strip())
 			fp.close()
-			self.kernel = self.kernelVersion(val)
-		else:
-			self.kernel = 'unknown'
 		self.testdir = datetime.now().strftime('boot-%y%m%d-%H%M%S')
 	def kernelVersion(self, msg):
-		return msg.split()[2]
+		m = re.match(r'^[Ll]inux *[Vv]ersion *(?P<v>\S*) .*', msg)
+		if m:
+			return m.group('v')
+		return 'unknown'
 	def checkFtraceKernelVersion(self):
-		val = tuple(map(int, self.kernel.split('-')[0].split('.')))
-		if val >= (4, 10, 0):
-			return True
+		m = re.match(r'^(?P<x>[0-9]*)\.(?P<y>[0-9]*)\.(?P<z>[0-9]*).*', self.kernel)
+		if m:
+			val = tuple(map(int, m.groups()))
+			if val >= (4, 10, 0):
+				return True
 		return False
 	def kernelParams(self):
 		cmdline = 'initcall_debug log_buf_len=32M'
@@ -322,7 +324,7 @@ def parseKernelLog():
 		idx = line.find('[')
 		if idx > 1:
 			line = line[idx:]
-		m = re.match('[ \t]*(\[ *)(?P<ktime>[0-9\.]*)(\]) (?P<msg>.*)', line)
+		m = re.match(r'[ \t]*(\[ *)(?P<ktime>[0-9\.]*)(\]) (?P<msg>.*)', line)
 		if(not m):
 			continue
 		ktime = float(m.group('ktime'))
@@ -330,24 +332,24 @@ def parseKernelLog():
 			break
 		msg = m.group('msg')
 		data.dmesgtext.append(line)
-		if(ktime == 0.0 and re.match('^Linux version .*', msg)):
+		if(ktime == 0.0 and re.match(r'^Linux version .*', msg)):
 			if(not sysvals.stamp['kernel']):
 				sysvals.stamp['kernel'] = sysvals.kernelVersion(msg)
 			continue
-		m = re.match('.* setting system clock to (?P<d>[0-9\-]*)[ A-Z](?P<t>[0-9:]*) UTC.*', msg)
+		m = re.match(r'.* setting system clock to (?P<d>[0-9\-]*)[ A-Z](?P<t>[0-9:]*) UTC.*', msg)
 		if(m):
 			bt = datetime.strptime(m.group('d')+' '+m.group('t'), '%Y-%m-%d %H:%M:%S')
 			bt = bt - timedelta(seconds=int(ktime))
 			data.boottime = bt.strftime('%Y-%m-%d_%H:%M:%S')
 			sysvals.stamp['time'] = bt.strftime('%B %d %Y, %I:%M:%S %p')
 			continue
-		m = re.match('^calling *(?P<f>.*)\+.* @ (?P<p>[0-9]*)', msg)
+		m = re.match(r'^calling *(?P<f>.*)\+.* @ (?P<p>[0-9]*)', msg)
 		if(m):
 			func = m.group('f')
 			pid = int(m.group('p'))
 			devtemp[func] = (ktime, pid)
 			continue
-		m = re.match('^initcall *(?P<f>.*)\+.* returned (?P<r>.*) after (?P<t>.*) usecs', msg)
+		m = re.match(r'^initcall *(?P<f>.*)\+.* returned (?P<r>.*) after (?P<t>.*) usecs', msg)
 		if(m):
 			data.valid = True
 			data.end = ktime
@@ -357,7 +359,7 @@ def parseKernelLog():
 				data.newAction(phase, f, pid, start, ktime, int(r), int(t))
 				del devtemp[f]
 			continue
-		if(re.match('^Freeing unused kernel .*', msg)):
+		if(re.match(r'^Freeing unused kernel .*', msg)):
 			data.tUserMode = ktime
 			data.dmesg['kernel']['end'] = ktime
 			data.dmesg['user']['start'] = ktime

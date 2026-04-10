@@ -48,7 +48,7 @@ static const struct wwan_port_ops ipc_wwan_ctrl_ops = {
 struct iosm_cdev *ipc_port_init(struct iosm_imem *ipc_imem,
 				struct ipc_chnl_cfg ipc_port_cfg)
 {
-	struct iosm_cdev *ipc_port = kzalloc(sizeof(*ipc_port), GFP_KERNEL);
+	struct iosm_cdev *ipc_port = kzalloc_obj(*ipc_port);
 	enum wwan_port_type port_type = ipc_port_cfg.wwan_port_type;
 	enum ipc_channel_id chl_id = ipc_port_cfg.id;
 
@@ -63,7 +63,8 @@ struct iosm_cdev *ipc_port_init(struct iosm_imem *ipc_imem,
 	ipc_port->ipc_imem = ipc_imem;
 
 	ipc_port->iosm_port = wwan_create_port(ipc_port->dev, port_type,
-					       &ipc_wwan_ctrl_ops, ipc_port);
+					       &ipc_wwan_ctrl_ops, NULL,
+					       ipc_port);
 
 	return ipc_port;
 }

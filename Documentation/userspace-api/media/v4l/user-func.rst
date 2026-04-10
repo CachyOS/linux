@@ -1,4 +1,5 @@
 .. SPDX-License-Identifier: GFDL-1.1-no-invariants-or-later
+.. c:namespace:: V4L
 
 .. _user-func:
 
@@ -62,6 +63,7 @@ Function Reference
     vidioc-query-dv-timings
     vidioc-querystd
     vidioc-reqbufs
+    vidioc-remove-bufs
     vidioc-s-hw-freq-seek
     vidioc-streamon
     vidioc-subdev-enum-frame-interval
@@ -70,7 +72,9 @@ Function Reference
     vidioc-subdev-g-crop
     vidioc-subdev-g-fmt
     vidioc-subdev-g-frame-interval
+    vidioc-subdev-g-routing
     vidioc-subdev-g-selection
+    vidioc-subdev-g-client-cap
     vidioc-subdev-querycap
     vidioc-subscribe-event
     func-mmap

@@ -536,8 +536,8 @@ static void release_uhci(struct uhci_hcd *uhci)
 	uhci->is_initialized = 0;
 	spin_unlock_irq(&uhci->lock);
 
-	debugfs_remove(debugfs_lookup(uhci_to_hcd(uhci)->self.bus_name,
-				      uhci_debugfs_root));
+	debugfs_lookup_and_remove(uhci_to_hcd(uhci)->self.bus_name,
+				  uhci_debugfs_root);
 
 	for (i = 0; i < UHCI_NUM_SKELQH; i++)
 		uhci_free_qh(uhci, uhci->skelqh[i]);
@@ -603,8 +603,7 @@ static int uhci_start(struct usb_hcd *hcd)
 		goto err_alloc_frame;
 	}
 
-	uhci->frame_cpu = kcalloc(UHCI_NUMFRAMES, sizeof(*uhci->frame_cpu),
-			GFP_KERNEL);
+	uhci->frame_cpu = kzalloc_objs(*uhci->frame_cpu, UHCI_NUMFRAMES);
 	if (!uhci->frame_cpu)
 		goto err_alloc_frame_cpu;
 
@@ -700,7 +699,7 @@ err_alloc_frame_cpu:
 			uhci->frame, uhci->frame_dma_handle);
 
 err_alloc_frame:
-	debugfs_remove(debugfs_lookup(hcd->self.bus_name, uhci_debugfs_root));
+	debugfs_lookup_and_remove(hcd->self.bus_name, uhci_debugfs_root);
 
 	return retval;
 }
@@ -716,7 +715,7 @@ static void uhci_stop(struct usb_hcd *hcd)
 	spin_unlock_irq(&uhci->lock);
 	synchronize_irq(hcd->irq);
 
-	del_timer_sync(&uhci->fsbr_timer);
+	timer_delete_sync(&uhci->fsbr_timer);
 	release_uhci(uhci);
 }
 
@@ -841,7 +840,7 @@ static int uhci_count_ports(struct usb_hcd *hcd)
 
 static const char hcd_name[] = "uhci_hcd";
 
-#ifdef CONFIG_USB_PCI
+#if defined(CONFIG_USB_PCI) && defined(CONFIG_HAS_IOPORT)
 #include "uhci-pci.c"
 #define	PCI_DRIVER		uhci_pci_driver
 #endif
@@ -866,10 +865,6 @@ static int __init uhci_hcd_init(void)
 
 	if (usb_disabled())
 		return -ENODEV;
-
-	printk(KERN_INFO "uhci_hcd: " DRIVER_DESC "%s\n",
-			ignore_oc ? ", overcurrent ignored" : "");
-	set_bit(USB_UHCI_LOADED, &usb_hcds_loaded);
 
 #ifdef CONFIG_DYNAMIC_DEBUG
 	errbuf = kmalloc(ERRBUF_LEN, GFP_KERNEL);
@@ -914,8 +909,6 @@ up_failed:
 
 errbuf_failed:
 #endif
-
-	clear_bit(USB_UHCI_LOADED, &usb_hcds_loaded);
 	return retval;
 }
 
@@ -932,7 +925,6 @@ static void __exit uhci_hcd_cleanup(void)
 #ifdef CONFIG_DYNAMIC_DEBUG
 	kfree(errbuf);
 #endif
-	clear_bit(USB_UHCI_LOADED, &usb_hcds_loaded);
 }
 
 module_init(uhci_hcd_init);

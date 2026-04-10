@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Device Tree Source for the Ebisu board
+ * Device Tree Source for the Ebisu/Ebisu-4D board
  *
  * Copyright (C) 2018 Renesas Electronics Corp.
  */
@@ -13,6 +13,14 @@
 	compatible = "renesas,ebisu";
 
 	aliases {
+		i2c0 = &i2c0;
+		i2c1 = &i2c1;
+		i2c2 = &i2c2;
+		i2c3 = &i2c3;
+		i2c4 = &i2c4;
+		i2c5 = &i2c5;
+		i2c6 = &i2c6;
+		i2c7 = &i2c7;
 		serial0 = &scif2;
 		ethernet0 = &avb;
 		mmc0 = &sdhi3;
@@ -145,7 +153,7 @@
 		reg = <0x0 0x48000000 0x0 0x38000000>;
 	};
 
-	reg_1p8v: regulator0 {
+	reg_1p8v: regulator-1p8v {
 		compatible = "regulator-fixed";
 		regulator-name = "fixed-1.8V";
 		regulator-min-microvolt = <1800000>;
@@ -154,7 +162,7 @@
 		regulator-always-on;
 	};
 
-	reg_3p3v: regulator1 {
+	reg_3p3v: regulator-3p3v {
 		compatible = "regulator-fixed";
 		regulator-name = "fixed-3.3V";
 		regulator-min-microvolt = <3300000>;
@@ -163,7 +171,7 @@
 		regulator-always-on;
 	};
 
-	reg_12p0v: regulator2 {
+	reg_12p0v: regulator-12p0v {
 		compatible = "regulator-fixed";
 		regulator-name = "D12.0V";
 		regulator-min-microvolt = <12000000>;
@@ -306,8 +314,7 @@
 			     "ethernet-phy-ieee802.3-c22";
 		rxc-skew-ps = <1500>;
 		reg = <0>;
-		interrupt-parent = <&gpio2>;
-		interrupts = <21 IRQ_TYPE_LEVEL_LOW>;
+		interrupts-extended = <&gpio2 21 IRQ_TYPE_LEVEL_LOW>;
 		reset-gpios = <&gpio1 20 GPIO_ACTIVE_LOW>;
 		/*
 		 * TX clock internal delay mode is required for reliable
@@ -320,9 +327,18 @@
 	};
 };
 
+&can0 {
+	pinctrl-0 = <&can0_pins>;
+	pinctrl-names = "default";
+
+	/* Please only enable canfd or can0 */
+	/* status = "okay"; */
+};
+
 &canfd {
 	pinctrl-0 = <&canfd0_pins>;
 	pinctrl-names = "default";
+	/* Please only enable canfd or can0 */
 	status = "okay";
 
 	channel0 {
@@ -385,15 +401,19 @@
 		reg = <0x20>;
 		gpio-controller;
 		#gpio-cells = <2>;
-		interrupt-parent = <&gpio2>;
-		interrupts = <22 IRQ_TYPE_LEVEL_LOW>;
+		interrupts-extended = <&gpio2 22 IRQ_TYPE_LEVEL_LOW>;
 	};
 
 	hdmi-encoder@39 {
 		compatible = "adi,adv7511w";
 		reg = <0x39>;
-		interrupt-parent = <&gpio1>;
-		interrupts = <1 IRQ_TYPE_LEVEL_LOW>;
+		interrupts-extended = <&gpio1 1 IRQ_TYPE_LEVEL_LOW>;
+
+		avdd-supply = <&reg_1p8v>;
+		dvdd-supply = <&reg_1p8v>;
+		pvdd-supply = <&reg_1p8v>;
+		dvdd-3v-supply = <&reg_3p3v>;
+		bgvdd-supply = <&reg_1p8v>;
 
 		adi,input-depth = <8>;
 		adi,input-colorspace = "rgb";
@@ -423,10 +443,9 @@
 		compatible = "adi,adv7482";
 		reg = <0x70>;
 
-		interrupt-parent = <&gpio0>;
+		interrupts-extended = <&gpio0 7 IRQ_TYPE_LEVEL_LOW>,
+				      <&gpio0 17 IRQ_TYPE_LEVEL_LOW>;
 		interrupt-names = "intrq1", "intrq2";
-		interrupts = <7 IRQ_TYPE_LEVEL_LOW>,
-			     <17 IRQ_TYPE_LEVEL_LOW>;
 
 		ports {
 			#address-cells = <1>;
@@ -493,6 +512,7 @@
 };
 
 &i2c_dvfs {
+	bootph-all;
 	status = "okay";
 
 	clock-frequency = <400000>;
@@ -503,8 +523,7 @@
 
 		compatible = "rohm,bd9571mwv";
 		reg = <0x30>;
-		interrupt-parent = <&intc_ex>;
-		interrupts = <0 IRQ_TYPE_LEVEL_LOW>;
+		interrupts-extended = <&intc_ex 0 IRQ_TYPE_LEVEL_LOW>;
 		interrupt-controller;
 		#interrupt-cells = <2>;
 		gpio-controller;
@@ -517,6 +536,7 @@
 		compatible = "rohm,br24t01", "atmel,24c01";
 		reg = <0x50>;
 		pagesize = <8>;
+		bootph-all;
 	};
 };
 
@@ -568,6 +588,11 @@
 	avb_pins: avb {
 		groups = "avb_link", "avb_mii";
 		function = "avb";
+	};
+
+	can0_pins: can0 {
+		groups = "can0_data";
+		function = "can0";
 	};
 
 	canfd0_pins: canfd0 {
@@ -711,7 +736,7 @@
 	rcar_sound,dai {
 		dai0 {
 			playback = <&ssi0>, <&src0>, <&dvc0>;
-			capture  = <&ssi1>, <&src1>, <&dvc1>;
+			capture = <&ssi1>, <&src1>, <&dvc1>;
 		};
 	};
 
@@ -740,7 +765,7 @@
 				reg = <0x00040000 0x140000>;
 				read-only;
 			};
-			cert_header_sa6@180000 {
+			cert-header-sa6@180000 {
 				reg = <0x00180000 0x040000>;
 				read-only;
 			};
@@ -777,6 +802,7 @@
 &scif2 {
 	pinctrl-0 = <&scif2_pins>;
 	pinctrl-names = "default";
+	bootph-all;
 
 	status = "okay";
 };
@@ -830,6 +856,11 @@
 
 &ssi1 {
 	shared-pin;
+};
+
+/* Firmware should reserve it but sadly doesn't */
+&swdt {
+	status = "reserved";
 };
 
 &usb2_phy0 {

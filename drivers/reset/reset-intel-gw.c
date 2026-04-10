@@ -6,7 +6,7 @@
 
 #include <linux/bitfield.h>
 #include <linux/init.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/reboot.h>
 #include <linux/regmap.h>
@@ -40,7 +40,6 @@ static const struct regmap_config intel_rcu_regmap_config = {
 	.reg_bits =	32,
 	.reg_stride =	4,
 	.val_bits =	32,
-	.fast_io =	true,
 };
 
 /*

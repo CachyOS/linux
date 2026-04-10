@@ -228,6 +228,9 @@ static void emit_alu_r64(struct jit_context *ctx, u8 dst, u8 src, u8 op)
 		} else {
 			emit(ctx, dmultu, dst, src);
 			emit(ctx, mflo, dst);
+			/* Ensure multiplication is completed */
+			if (IS_ENABLED(CONFIG_CPU_R4000_WORKAROUNDS))
+				emit(ctx, mfhi, MIPS_R_ZERO);
 		}
 		break;
 	/* dst = dst / src */
@@ -548,11 +551,19 @@ void build_prologue(struct jit_context *ctx)
 	int stack, saved, locals, reserved;
 
 	/*
+	 * In the unlikely event that the TCC limit is raised to more
+	 * than 16 bits, it is clamped to the maximum value allowed for
+	 * the generated code (0xffff). It is better fail to compile
+	 * instead of degrading gracefully.
+	 */
+	BUILD_BUG_ON(MAX_TAIL_CALL_CNT > 0xffff);
+
+	/*
 	 * The first instruction initializes the tail call count register.
 	 * On a tail call, the calling function jumps into the prologue
 	 * after this instruction.
 	 */
-	emit(ctx, ori, tc, MIPS_R_ZERO, min(MAX_TAIL_CALL_CNT, 0xffff));
+	emit(ctx, ori, tc, MIPS_R_ZERO, MAX_TAIL_CALL_CNT);
 
 	/* === Entry-point for tail calls === */
 

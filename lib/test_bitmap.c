@@ -16,6 +16,8 @@
 
 #include "../tools/testing/selftests/kselftest_module.h"
 
+#define EXP1_IN_BITS	(sizeof(exp1) * 8)
+
 KSTM_MODULE_GLOBALS();
 
 static char pbl_buffer[PAGE_SIZE] __initdata;
@@ -58,17 +60,16 @@ static const unsigned long exp3_1_0[] __initconst = {
 };
 
 static bool __init
-__check_eq_uint(const char *srcfile, unsigned int line,
-		const unsigned int exp_uint, unsigned int x)
+__check_eq_ulong(const char *srcfile, unsigned int line,
+		 const unsigned long exp_ulong, unsigned long x)
 {
-	if (exp_uint != x) {
-		pr_err("[%s:%u] expected %u, got %u\n",
-			srcfile, line, exp_uint, x);
+	if (exp_ulong != x) {
+		pr_err("[%s:%u] expected %lu, got %lu\n",
+			srcfile, line, exp_ulong, x);
 		return false;
 	}
 	return true;
 }
-
 
 static bool __init
 __check_eq_bitmap(const char *srcfile, unsigned int line,
@@ -96,34 +97,6 @@ __check_eq_pbl(const char *srcfile, unsigned int line,
 			expected_pbl, pbl_buffer);
 		return false;
 	}
-	return true;
-}
-
-static bool __init
-__check_eq_u32_array(const char *srcfile, unsigned int line,
-		     const u32 *exp_arr, unsigned int exp_len,
-		     const u32 *arr, unsigned int len) __used;
-static bool __init
-__check_eq_u32_array(const char *srcfile, unsigned int line,
-		     const u32 *exp_arr, unsigned int exp_len,
-		     const u32 *arr, unsigned int len)
-{
-	if (exp_len != len) {
-		pr_warn("[%s:%u] array length differ: expected %u, got %u\n",
-			srcfile, line,
-			exp_len, len);
-		return false;
-	}
-
-	if (memcmp(exp_arr, arr, len*sizeof(*arr))) {
-		pr_warn("[%s:%u] array contents differ\n", srcfile, line);
-		print_hex_dump(KERN_WARNING, "  exp:  ", DUMP_PREFIX_OFFSET,
-			       32, 4, exp_arr, exp_len*sizeof(*exp_arr), false);
-		print_hex_dump(KERN_WARNING, "  got:  ", DUMP_PREFIX_OFFSET,
-			       32, 4, arr, len*sizeof(*arr), false);
-		return false;
-	}
-
 	return true;
 }
 
@@ -183,7 +156,8 @@ __check_eq_str(const char *srcfile, unsigned int line,
 		result;							\
 	})
 
-#define expect_eq_uint(...)		__expect_eq(uint, ##__VA_ARGS__)
+#define expect_eq_ulong(...)		__expect_eq(ulong, ##__VA_ARGS__)
+#define expect_eq_uint(x, y)		expect_eq_ulong((unsigned int)(x), (unsigned int)(y))
 #define expect_eq_bitmap(...)		__expect_eq(bitmap, ##__VA_ARGS__)
 #define expect_eq_pbl(...)		__expect_eq(pbl, ##__VA_ARGS__)
 #define expect_eq_u32_array(...)	__expect_eq(u32_array, ##__VA_ARGS__)
@@ -217,6 +191,47 @@ static void __init test_zero_clear(void)
 	/* Zeroing entire area */
 	bitmap_zero(bmap, 1024);
 	expect_eq_pbl("", bmap, 1024);
+}
+
+static void __init test_find_nth_bit(void)
+{
+	unsigned long b, bit, cnt = 0;
+	DECLARE_BITMAP(bmap, 64 * 3);
+
+	bitmap_zero(bmap, 64 * 3);
+	__set_bit(10, bmap);
+	__set_bit(20, bmap);
+	__set_bit(30, bmap);
+	__set_bit(40, bmap);
+	__set_bit(50, bmap);
+	__set_bit(60, bmap);
+	__set_bit(80, bmap);
+	__set_bit(123, bmap);
+
+	expect_eq_uint(10,  find_nth_bit(bmap, 64 * 3, 0));
+	expect_eq_uint(20,  find_nth_bit(bmap, 64 * 3, 1));
+	expect_eq_uint(30,  find_nth_bit(bmap, 64 * 3, 2));
+	expect_eq_uint(40,  find_nth_bit(bmap, 64 * 3, 3));
+	expect_eq_uint(50,  find_nth_bit(bmap, 64 * 3, 4));
+	expect_eq_uint(60,  find_nth_bit(bmap, 64 * 3, 5));
+	expect_eq_uint(80,  find_nth_bit(bmap, 64 * 3, 6));
+	expect_eq_uint(123, find_nth_bit(bmap, 64 * 3, 7));
+	expect_eq_uint(0,   !!(find_nth_bit(bmap, 64 * 3, 8) < 64 * 3));
+
+	expect_eq_uint(10,  find_nth_bit(bmap, 64 * 3 - 1, 0));
+	expect_eq_uint(20,  find_nth_bit(bmap, 64 * 3 - 1, 1));
+	expect_eq_uint(30,  find_nth_bit(bmap, 64 * 3 - 1, 2));
+	expect_eq_uint(40,  find_nth_bit(bmap, 64 * 3 - 1, 3));
+	expect_eq_uint(50,  find_nth_bit(bmap, 64 * 3 - 1, 4));
+	expect_eq_uint(60,  find_nth_bit(bmap, 64 * 3 - 1, 5));
+	expect_eq_uint(80,  find_nth_bit(bmap, 64 * 3 - 1, 6));
+	expect_eq_uint(123, find_nth_bit(bmap, 64 * 3 - 1, 7));
+	expect_eq_uint(0,   !!(find_nth_bit(bmap, 64 * 3 - 1, 8) < 64 * 3 - 1));
+
+	for_each_set_bit(bit, exp1, EXP1_IN_BITS) {
+		b = find_nth_bit(exp1, EXP1_IN_BITS, cnt++);
+		expect_eq_uint(b, bit);
+	}
 }
 
 static void __init test_fill_set(void)
@@ -287,6 +302,29 @@ static void __init test_copy(void)
 	expect_eq_pbl("0-108,128-1023", bmap2, 1024);
 }
 
+static void __init test_bitmap_region(void)
+{
+	int pos, order;
+
+	DECLARE_BITMAP(bmap, 1000);
+
+	bitmap_zero(bmap, 1000);
+
+	for (order = 0; order < 10; order++) {
+		pos = bitmap_find_free_region(bmap, 1000, order);
+		if (order == 0)
+			expect_eq_uint(pos, 0);
+		else
+			expect_eq_uint(pos, order < 9 ? BIT(order) : -ENOMEM);
+	}
+
+	bitmap_release_region(bmap, 0, 0);
+	for (order = 1; order < 9; order++)
+		bitmap_release_region(bmap, BIT(order), order);
+
+	expect_eq_uint(bitmap_weight(bmap, 1000), 0);
+}
+
 #define EXP2_IN_BITS	(sizeof(exp2) * 8)
 
 static void __init test_replace(void)
@@ -312,6 +350,47 @@ static void __init test_replace(void)
 	bitmap_fill(bmap, 1024);
 	bitmap_replace(bmap, &exp2[1 * nlongs], &exp2[0 * nlongs], exp2_to_exp3_mask, nbits);
 	expect_eq_bitmap(bmap, exp3_1_0, nbits);
+}
+
+static const unsigned long sg_mask[] __initconst = {
+	BITMAP_FROM_U64(0x000000000000035aULL),
+};
+
+static const unsigned long sg_src[] __initconst = {
+	BITMAP_FROM_U64(0x0000000000000667ULL),
+};
+
+static const unsigned long sg_gather_exp[] __initconst = {
+	BITMAP_FROM_U64(0x0000000000000029ULL),
+};
+
+static const unsigned long sg_scatter_exp[] __initconst = {
+	BITMAP_FROM_U64(0x000000000000021aULL),
+};
+
+static void __init test_bitmap_sg(void)
+{
+	unsigned int nbits = 64;
+	DECLARE_BITMAP(bmap_gather, 100);
+	DECLARE_BITMAP(bmap_scatter, 100);
+	DECLARE_BITMAP(bmap_tmp, 100);
+	DECLARE_BITMAP(bmap_res, 100);
+
+	/* Simple gather call */
+	bitmap_zero(bmap_gather, 100);
+	bitmap_gather(bmap_gather, sg_src, sg_mask, nbits);
+	expect_eq_bitmap(sg_gather_exp, bmap_gather, nbits);
+
+	/* Simple scatter call */
+	bitmap_zero(bmap_scatter, 100);
+	bitmap_scatter(bmap_scatter, sg_src, sg_mask, nbits);
+	expect_eq_bitmap(sg_scatter_exp, bmap_scatter, nbits);
+
+	/* Scatter/gather relationship */
+	bitmap_zero(bmap_tmp, 100);
+	bitmap_gather(bmap_tmp, bmap_scatter, sg_mask, nbits);
+	bitmap_scatter(bmap_res, bmap_tmp, sg_mask, nbits);
+	expect_eq_bitmap(bmap_scatter, bmap_res, nbits);
 }
 
 #define PARSE_TIME	0x1
@@ -427,6 +506,7 @@ static void __init test_bitmap_parselist(void)
 		if (err != ptest.errno) {
 			pr_err("parselist: %d: input is %s, errno is %d, expected %d\n",
 					i, ptest.in, err, ptest.errno);
+			failed_tests++;
 			continue;
 		}
 
@@ -435,11 +515,12 @@ static void __init test_bitmap_parselist(void)
 			pr_err("parselist: %d: input is %s, result is 0x%lx, expected 0x%lx\n",
 					i, ptest.in, bmap[0],
 					*ptest.expected);
+			failed_tests++;
 			continue;
 		}
 
 		if (ptest.flags & PARSE_TIME)
-			pr_err("parselist: %d: input is '%s' OK, Time: %llu\n",
+			pr_info("parselist: %d: input is '%s' OK, Time: %llu\n",
 					i, ptest.in, time);
 
 #undef ptest
@@ -468,15 +549,17 @@ static void __init test_bitmap_printlist(void)
 
 	if (ret != slen + 1) {
 		pr_err("bitmap_print_to_pagebuf: result is %d, expected %d\n", ret, slen);
+		failed_tests++;
 		goto out;
 	}
 
 	if (strncmp(buf, expected, slen)) {
 		pr_err("bitmap_print_to_pagebuf: result is %s, expected %s\n", buf, expected);
+		failed_tests++;
 		goto out;
 	}
 
-	pr_err("bitmap_print_to_pagebuf: input is '%s', Time: %llu\n", buf, time);
+	pr_info("bitmap_print_to_pagebuf: input is '%s', Time: %llu\n", buf, time);
 out:
 	kfree(buf);
 	kfree(bmap);
@@ -540,6 +623,7 @@ static void __init test_bitmap_parse(void)
 		if (err != test.errno) {
 			pr_err("parse: %d: input is %s, errno is %d, expected %d\n",
 					i, test.in, err, test.errno);
+			failed_tests++;
 			continue;
 		}
 
@@ -548,16 +632,15 @@ static void __init test_bitmap_parse(void)
 			pr_err("parse: %d: input is %s, result is 0x%lx, expected 0x%lx\n",
 					i, test.in, bmap[0],
 					*test.expected);
+			failed_tests++;
 			continue;
 		}
 
 		if (test.flags & PARSE_TIME)
-			pr_err("parse: %d: input is '%s' OK, Time: %llu\n",
+			pr_info("parse: %d: input is '%s' OK, Time: %llu\n",
 					i, test.in, time);
 	}
 }
-
-#define EXP1_IN_BITS	(sizeof(exp1) * 8)
 
 static void __init test_bitmap_arr32(void)
 {
@@ -574,10 +657,12 @@ static void __init test_bitmap_arr32(void)
 
 		next_bit = find_next_bit(bmap2,
 				round_up(nbits, BITS_PER_LONG), nbits);
-		if (next_bit < round_up(nbits, BITS_PER_LONG))
+		if (next_bit < round_up(nbits, BITS_PER_LONG)) {
 			pr_err("bitmap_copy_arr32(nbits == %d:"
 				" tail is not safely cleared: %d\n",
 				nbits, next_bit);
+			failed_tests++;
+		}
 
 		if (nbits < EXP1_IN_BITS - 32)
 			expect_eq_uint(arr[DIV_ROUND_UP(nbits, 32)],
@@ -600,9 +685,19 @@ static void __init test_bitmap_arr64(void)
 		expect_eq_bitmap(bmap2, exp1, nbits);
 
 		next_bit = find_next_bit(bmap2, round_up(nbits, BITS_PER_LONG), nbits);
-		if (next_bit < round_up(nbits, BITS_PER_LONG))
+		if (next_bit < round_up(nbits, BITS_PER_LONG)) {
 			pr_err("bitmap_copy_arr64(nbits == %d:"
 				" tail is not safely cleared: %d\n", nbits, next_bit);
+			failed_tests++;
+		}
+
+		if ((nbits % 64) &&
+		    (arr[(nbits - 1) / 64] & ~GENMASK_ULL((nbits - 1) % 64, 0))) {
+			pr_err("bitmap_to_arr64(nbits == %d): tail is not safely cleared: 0x%016llx (must be 0x%016llx)\n",
+			       nbits, arr[(nbits - 1) / 64],
+			       GENMASK_ULL((nbits - 1) % 64, 0));
+			failed_tests++;
+		}
 
 		if (nbits < EXP1_IN_BITS - 64)
 			expect_eq_uint(arr[DIV_ROUND_UP(nbits, 64)], 0xa5a5a5a5);
@@ -677,6 +772,239 @@ static void __init test_for_each_set_clump8(void)
 
 	for_each_set_clump8(start, clump, bits, CLUMP_EXP_NUMBITS)
 		expect_eq_clump8(start, CLUMP_EXP_NUMBITS, clump_exp, &clump);
+}
+
+static void __init test_for_each_set_bit_wrap(void)
+{
+	DECLARE_BITMAP(orig, 500);
+	DECLARE_BITMAP(copy, 500);
+	unsigned int wr, bit;
+
+	bitmap_zero(orig, 500);
+
+	/* Set individual bits */
+	for (bit = 0; bit < 500; bit += 10)
+		bitmap_set(orig, bit, 1);
+
+	/* Set range of bits */
+	bitmap_set(orig, 100, 50);
+
+	for (wr = 0; wr < 500; wr++) {
+		bitmap_zero(copy, 500);
+
+		for_each_set_bit_wrap(bit, orig, 500, wr)
+			bitmap_set(copy, bit, 1);
+
+		expect_eq_bitmap(orig, copy, 500);
+	}
+}
+
+static void __init test_for_each_set_bit(void)
+{
+	DECLARE_BITMAP(orig, 500);
+	DECLARE_BITMAP(copy, 500);
+	unsigned int bit;
+
+	bitmap_zero(orig, 500);
+	bitmap_zero(copy, 500);
+
+	/* Set individual bits */
+	for (bit = 0; bit < 500; bit += 10)
+		bitmap_set(orig, bit, 1);
+
+	/* Set range of bits */
+	bitmap_set(orig, 100, 50);
+
+	for_each_set_bit(bit, orig, 500)
+		bitmap_set(copy, bit, 1);
+
+	expect_eq_bitmap(orig, copy, 500);
+}
+
+static void __init test_for_each_set_bit_from(void)
+{
+	DECLARE_BITMAP(orig, 500);
+	DECLARE_BITMAP(copy, 500);
+	unsigned int wr, bit;
+
+	bitmap_zero(orig, 500);
+
+	/* Set individual bits */
+	for (bit = 0; bit < 500; bit += 10)
+		bitmap_set(orig, bit, 1);
+
+	/* Set range of bits */
+	bitmap_set(orig, 100, 50);
+
+	for (wr = 0; wr < 500; wr++) {
+		DECLARE_BITMAP(tmp, 500);
+
+		bitmap_zero(copy, 500);
+		bit = wr;
+
+		for_each_set_bit_from(bit, orig, 500)
+			bitmap_set(copy, bit, 1);
+
+		bitmap_copy(tmp, orig, 500);
+		bitmap_clear(tmp, 0, wr);
+		expect_eq_bitmap(tmp, copy, 500);
+	}
+}
+
+static void __init test_for_each_clear_bit(void)
+{
+	DECLARE_BITMAP(orig, 500);
+	DECLARE_BITMAP(copy, 500);
+	unsigned int bit;
+
+	bitmap_fill(orig, 500);
+	bitmap_fill(copy, 500);
+
+	/* Set individual bits */
+	for (bit = 0; bit < 500; bit += 10)
+		bitmap_clear(orig, bit, 1);
+
+	/* Set range of bits */
+	bitmap_clear(orig, 100, 50);
+
+	for_each_clear_bit(bit, orig, 500)
+		bitmap_clear(copy, bit, 1);
+
+	expect_eq_bitmap(orig, copy, 500);
+}
+
+static void __init test_for_each_clear_bit_from(void)
+{
+	DECLARE_BITMAP(orig, 500);
+	DECLARE_BITMAP(copy, 500);
+	unsigned int wr, bit;
+
+	bitmap_fill(orig, 500);
+
+	/* Set individual bits */
+	for (bit = 0; bit < 500; bit += 10)
+		bitmap_clear(orig, bit, 1);
+
+	/* Set range of bits */
+	bitmap_clear(orig, 100, 50);
+
+	for (wr = 0; wr < 500; wr++) {
+		DECLARE_BITMAP(tmp, 500);
+
+		bitmap_fill(copy, 500);
+		bit = wr;
+
+		for_each_clear_bit_from(bit, orig, 500)
+			bitmap_clear(copy, bit, 1);
+
+		bitmap_copy(tmp, orig, 500);
+		bitmap_set(tmp, 0, wr);
+		expect_eq_bitmap(tmp, copy, 500);
+	}
+}
+
+static void __init test_for_each_set_bitrange(void)
+{
+	DECLARE_BITMAP(orig, 500);
+	DECLARE_BITMAP(copy, 500);
+	unsigned int s, e;
+
+	bitmap_zero(orig, 500);
+	bitmap_zero(copy, 500);
+
+	/* Set individual bits */
+	for (s = 0; s < 500; s += 10)
+		bitmap_set(orig, s, 1);
+
+	/* Set range of bits */
+	bitmap_set(orig, 100, 50);
+
+	for_each_set_bitrange(s, e, orig, 500)
+		bitmap_set(copy, s, e-s);
+
+	expect_eq_bitmap(orig, copy, 500);
+}
+
+static void __init test_for_each_clear_bitrange(void)
+{
+	DECLARE_BITMAP(orig, 500);
+	DECLARE_BITMAP(copy, 500);
+	unsigned int s, e;
+
+	bitmap_fill(orig, 500);
+	bitmap_fill(copy, 500);
+
+	/* Set individual bits */
+	for (s = 0; s < 500; s += 10)
+		bitmap_clear(orig, s, 1);
+
+	/* Set range of bits */
+	bitmap_clear(orig, 100, 50);
+
+	for_each_clear_bitrange(s, e, orig, 500)
+		bitmap_clear(copy, s, e-s);
+
+	expect_eq_bitmap(orig, copy, 500);
+}
+
+static void __init test_for_each_set_bitrange_from(void)
+{
+	DECLARE_BITMAP(orig, 500);
+	DECLARE_BITMAP(copy, 500);
+	unsigned int wr, s, e;
+
+	bitmap_zero(orig, 500);
+
+	/* Set individual bits */
+	for (s = 0; s < 500; s += 10)
+		bitmap_set(orig, s, 1);
+
+	/* Set range of bits */
+	bitmap_set(orig, 100, 50);
+
+	for (wr = 0; wr < 500; wr++) {
+		DECLARE_BITMAP(tmp, 500);
+
+		bitmap_zero(copy, 500);
+		s = wr;
+
+		for_each_set_bitrange_from(s, e, orig, 500)
+			bitmap_set(copy, s, e - s);
+
+		bitmap_copy(tmp, orig, 500);
+		bitmap_clear(tmp, 0, wr);
+		expect_eq_bitmap(tmp, copy, 500);
+	}
+}
+
+static void __init test_for_each_clear_bitrange_from(void)
+{
+	DECLARE_BITMAP(orig, 500);
+	DECLARE_BITMAP(copy, 500);
+	unsigned int wr, s, e;
+
+	bitmap_fill(orig, 500);
+
+	/* Set individual bits */
+	for (s = 0; s < 500; s += 10)
+		bitmap_clear(orig, s, 1);
+
+	/* Set range of bits */
+	bitmap_set(orig, 100, 50);
+
+	for (wr = 0; wr < 500; wr++) {
+		DECLARE_BITMAP(tmp, 500);
+
+		bitmap_fill(copy, 500);
+		s = wr;
+
+		for_each_clear_bitrange_from(s, e, orig, 500)
+			bitmap_clear(copy, s, e - s);
+
+		bitmap_copy(tmp, orig, 500);
+		bitmap_set(tmp, 0, wr);
+		expect_eq_bitmap(tmp, copy, 500);
+	}
 }
 
 struct test_bitmap_cut {
@@ -869,23 +1197,266 @@ static void __init test_bitmap_print_buf(void)
 	}
 }
 
+/*
+ * FIXME: Clang breaks compile-time evaluations when KASAN and GCOV are enabled.
+ * To workaround it, GCOV is force-disabled in Makefile for this configuration.
+ */
+static void __init test_bitmap_const_eval(void)
+{
+	DECLARE_BITMAP(bitmap, BITS_PER_LONG);
+	unsigned long initvar = BIT(2);
+	unsigned long bitopvar = 0;
+	unsigned long var = 0;
+	int res;
+
+	/*
+	 * Compilers must be able to optimize all of those to compile-time
+	 * constants on any supported optimization level (-O2, -Os) and any
+	 * architecture. Otherwise, trigger a build bug.
+	 * The whole function gets optimized out then, there's nothing to do
+	 * in runtime.
+	 */
+
+	/* Equals to `unsigned long bitmap[1] = { GENMASK(6, 5), }` */
+	bitmap_clear(bitmap, 0, BITS_PER_LONG);
+	if (!test_bit(7, bitmap))
+		bitmap_set(bitmap, 5, 2);
+
+	/* Equals to `unsigned long bitopvar = BIT(20)` */
+	__change_bit(31, &bitopvar);
+	bitmap_shift_right(&bitopvar, &bitopvar, 11, BITS_PER_LONG);
+
+	/* Equals to `unsigned long var = BIT(25)` */
+	var |= BIT(25);
+	if (var & BIT(0))
+		var ^= GENMASK(9, 6);
+
+	/* __const_hweight<32|64>(GENMASK(6, 5)) == 2 */
+	res = bitmap_weight(bitmap, 20);
+	BUILD_BUG_ON(!__builtin_constant_p(res));
+	BUILD_BUG_ON(res != 2);
+
+	/* !(BIT(31) & BIT(18)) == 1 */
+	res = !test_bit(18, &bitopvar);
+	BUILD_BUG_ON(!__builtin_constant_p(res));
+	BUILD_BUG_ON(!res);
+
+	/* BIT(2) & GENMASK(14, 8) == 0 */
+	res = initvar & GENMASK(14, 8);
+	BUILD_BUG_ON(!__builtin_constant_p(res));
+	BUILD_BUG_ON(res);
+
+	/* ~BIT(25) */
+	BUILD_BUG_ON(!__builtin_constant_p(~var));
+	BUILD_BUG_ON(~var != ~BIT(25));
+
+	/* ~BIT(25) | BIT(25) == ~0UL */
+	bitmap_complement(&var, &var, BITS_PER_LONG);
+	__assign_bit(25, &var, true);
+
+	/* !(~(~0UL)) == 1 */
+	res = bitmap_full(&var, BITS_PER_LONG);
+	BUILD_BUG_ON(!__builtin_constant_p(res));
+	BUILD_BUG_ON(!res);
+}
+
+/*
+ * Test bitmap should be big enough to include the cases when start is not in
+ * the first word, and start+nbits lands in the following word.
+ */
+#define TEST_BIT_LEN (1000)
+
+/*
+ * Helper function to test bitmap_write() overwriting the chosen byte pattern.
+ */
+static void __init test_bitmap_write_helper(const char *pattern)
+{
+	DECLARE_BITMAP(bitmap, TEST_BIT_LEN);
+	DECLARE_BITMAP(exp_bitmap, TEST_BIT_LEN);
+	DECLARE_BITMAP(pat_bitmap, TEST_BIT_LEN);
+	unsigned long w, r, bit;
+	int i, n, nbits;
+
+	/*
+	 * Only parse the pattern once and store the result in the intermediate
+	 * bitmap.
+	 */
+	bitmap_parselist(pattern, pat_bitmap, TEST_BIT_LEN);
+
+	/*
+	 * Check that writing a single bit does not accidentally touch the
+	 * adjacent bits.
+	 */
+	for (i = 0; i < TEST_BIT_LEN; i++) {
+		bitmap_copy(bitmap, pat_bitmap, TEST_BIT_LEN);
+		bitmap_copy(exp_bitmap, pat_bitmap, TEST_BIT_LEN);
+		for (bit = 0; bit <= 1; bit++) {
+			bitmap_write(bitmap, bit, i, 1);
+			__assign_bit(i, exp_bitmap, bit);
+			expect_eq_bitmap(exp_bitmap, bitmap,
+					 TEST_BIT_LEN);
+		}
+	}
+
+	/* Ensure writing 0 bits does not change anything. */
+	bitmap_copy(bitmap, pat_bitmap, TEST_BIT_LEN);
+	bitmap_copy(exp_bitmap, pat_bitmap, TEST_BIT_LEN);
+	for (i = 0; i < TEST_BIT_LEN; i++) {
+		bitmap_write(bitmap, ~0UL, i, 0);
+		expect_eq_bitmap(exp_bitmap, bitmap, TEST_BIT_LEN);
+	}
+
+	for (nbits = BITS_PER_LONG; nbits >= 1; nbits--) {
+		w = IS_ENABLED(CONFIG_64BIT) ? 0xdeadbeefdeadbeefUL
+					     : 0xdeadbeefUL;
+		w >>= (BITS_PER_LONG - nbits);
+		for (i = 0; i <= TEST_BIT_LEN - nbits; i++) {
+			bitmap_copy(bitmap, pat_bitmap, TEST_BIT_LEN);
+			bitmap_copy(exp_bitmap, pat_bitmap, TEST_BIT_LEN);
+			for (n = 0; n < nbits; n++)
+				__assign_bit(i + n, exp_bitmap, w & BIT(n));
+			bitmap_write(bitmap, w, i, nbits);
+			expect_eq_bitmap(exp_bitmap, bitmap, TEST_BIT_LEN);
+			r = bitmap_read(bitmap, i, nbits);
+			expect_eq_ulong(r, w);
+		}
+	}
+}
+
+static void __init test_bitmap_read_write(void)
+{
+	unsigned char *pattern[3] = {"", "all:1/2", "all"};
+	DECLARE_BITMAP(bitmap, TEST_BIT_LEN);
+	unsigned long zero_bits = 0, bits_per_long = BITS_PER_LONG;
+	unsigned long val;
+	int i, pi;
+
+	/*
+	 * Reading/writing zero bits should not crash the kernel.
+	 * READ_ONCE() prevents constant folding.
+	 */
+	bitmap_write(NULL, 0, 0, READ_ONCE(zero_bits));
+	/* Return value of bitmap_read() is undefined here. */
+	bitmap_read(NULL, 0, READ_ONCE(zero_bits));
+
+	/*
+	 * Reading/writing more than BITS_PER_LONG bits should not crash the
+	 * kernel. READ_ONCE() prevents constant folding.
+	 */
+	bitmap_write(NULL, 0, 0, READ_ONCE(bits_per_long) + 1);
+	/* Return value of bitmap_read() is undefined here. */
+	bitmap_read(NULL, 0, READ_ONCE(bits_per_long) + 1);
+
+	/*
+	 * Ensure that bitmap_read() reads the same value that was previously
+	 * written, and two consequent values are correctly merged.
+	 * The resulting bit pattern is asymmetric to rule out possible issues
+	 * with bit numeration order.
+	 */
+	for (i = 0; i < TEST_BIT_LEN - 7; i++) {
+		bitmap_zero(bitmap, TEST_BIT_LEN);
+
+		bitmap_write(bitmap, 0b10101UL, i, 5);
+		val = bitmap_read(bitmap, i, 5);
+		expect_eq_ulong(0b10101UL, val);
+
+		bitmap_write(bitmap, 0b101UL, i + 5, 3);
+		val = bitmap_read(bitmap, i + 5, 3);
+		expect_eq_ulong(0b101UL, val);
+
+		val = bitmap_read(bitmap, i, 8);
+		expect_eq_ulong(0b10110101UL, val);
+	}
+
+	for (pi = 0; pi < ARRAY_SIZE(pattern); pi++)
+		test_bitmap_write_helper(pattern[pi]);
+}
+
+static void __init test_bitmap_read_perf(void)
+{
+	DECLARE_BITMAP(bitmap, TEST_BIT_LEN);
+	unsigned int cnt, nbits, i;
+	unsigned long val;
+	ktime_t time;
+
+	bitmap_fill(bitmap, TEST_BIT_LEN);
+	time = ktime_get();
+	for (cnt = 0; cnt < 5; cnt++) {
+		for (nbits = 1; nbits <= BITS_PER_LONG; nbits++) {
+			for (i = 0; i < TEST_BIT_LEN; i++) {
+				if (i + nbits > TEST_BIT_LEN)
+					break;
+				/*
+				 * Prevent the compiler from optimizing away the
+				 * bitmap_read() by using its value.
+				 */
+				WRITE_ONCE(val, bitmap_read(bitmap, i, nbits));
+			}
+		}
+	}
+	time = ktime_get() - time;
+	pr_info("Time spent in %s:\t%llu\n", __func__, time);
+}
+
+static void __init test_bitmap_write_perf(void)
+{
+	DECLARE_BITMAP(bitmap, TEST_BIT_LEN);
+	unsigned int cnt, nbits, i;
+	unsigned long val = 0xfeedface;
+	ktime_t time;
+
+	bitmap_zero(bitmap, TEST_BIT_LEN);
+	time = ktime_get();
+	for (cnt = 0; cnt < 5; cnt++) {
+		for (nbits = 1; nbits <= BITS_PER_LONG; nbits++) {
+			for (i = 0; i < TEST_BIT_LEN; i++) {
+				if (i + nbits > TEST_BIT_LEN)
+					break;
+				bitmap_write(bitmap, val, i, nbits);
+			}
+		}
+	}
+	time = ktime_get() - time;
+	pr_info("Time spent in %s:\t%llu\n", __func__, time);
+}
+
+#undef TEST_BIT_LEN
+
 static void __init selftest(void)
 {
 	test_zero_clear();
 	test_fill_set();
 	test_copy();
+	test_bitmap_region();
 	test_replace();
+	test_bitmap_sg();
 	test_bitmap_arr32();
 	test_bitmap_arr64();
 	test_bitmap_parse();
 	test_bitmap_parselist();
 	test_bitmap_printlist();
 	test_mem_optimisations();
-	test_for_each_set_clump8();
 	test_bitmap_cut();
 	test_bitmap_print_buf();
+	test_bitmap_const_eval();
+	test_bitmap_read_write();
+	test_bitmap_read_perf();
+	test_bitmap_write_perf();
+
+	test_find_nth_bit();
+	test_for_each_set_bit();
+	test_for_each_set_bit_from();
+	test_for_each_clear_bit();
+	test_for_each_clear_bit_from();
+	test_for_each_set_bitrange();
+	test_for_each_clear_bitrange();
+	test_for_each_set_bitrange_from();
+	test_for_each_clear_bitrange_from();
+	test_for_each_set_clump8();
+	test_for_each_set_bit_wrap();
 }
 
 KSTM_MODULE_LOADERS(test_bitmap);
 MODULE_AUTHOR("david decotigny <david.decotigny@googlers.com>");
+MODULE_DESCRIPTION("Test cases for bitmap API");
 MODULE_LICENSE("GPL");

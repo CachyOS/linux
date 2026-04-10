@@ -10,12 +10,15 @@
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
+
+#define DRV_NAME			"exynos-clkout"
 
 #define EXYNOS_CLKOUT_NR_CLKS		1
 #define EXYNOS_CLKOUT_PARENTS		32
@@ -56,6 +59,9 @@ static const struct of_device_id exynos_clkout_ids[] = {
 		.compatible = "samsung,exynos4210-pmu",
 		.data = &exynos_clkout_exynos4,
 	}, {
+		.compatible = "samsung,exynos4212-pmu",
+		.data = &exynos_clkout_exynos4,
+	}, {
 		.compatible = "samsung,exynos4412-pmu",
 		.data = &exynos_clkout_exynos4,
 	}, {
@@ -72,7 +78,6 @@ static const struct of_device_id exynos_clkout_ids[] = {
 		.data = &exynos_clkout_exynos5,
 	}, { }
 };
-MODULE_DEVICE_TABLE(of, exynos_clkout_ids);
 
 /*
  * Device will be instantiated as child of PMU device without its own
@@ -88,6 +93,11 @@ static int exynos_clkout_match_parent_dev(struct device *dev, u32 *mux_mask)
 		return -EINVAL;
 	}
 
+	/*
+	 * 'exynos_clkout_ids' arrays is not the ids array matched by
+	 * the dev->parent driver, so of_device_get_match_data() or
+	 * device_get_match_data() cannot be used here.
+	 */
 	match = of_match_device(exynos_clkout_ids, dev->parent);
 	if (!match) {
 		dev_err(dev, "cannot match parent device\n");
@@ -165,6 +175,7 @@ static int exynos_clkout_probe(struct platform_device *pdev)
 	clkout->mux.shift = EXYNOS_CLKOUT_MUX_SHIFT;
 	clkout->mux.lock = &clkout->slock;
 
+	clkout->data.num = EXYNOS_CLKOUT_NR_CLKS;
 	clkout->data.hws[0] = clk_hw_register_composite(NULL, "clkout",
 				parent_names, parent_count, &clkout->mux.hw,
 				&clk_mux_ops, NULL, NULL, &clkout->gate.hw,
@@ -175,7 +186,6 @@ static int exynos_clkout_probe(struct platform_device *pdev)
 		goto err_unmap;
 	}
 
-	clkout->data.num = EXYNOS_CLKOUT_NR_CLKS;
 	ret = of_clk_add_hw_provider(clkout->np, of_clk_hw_onecell_get, &clkout->data);
 	if (ret)
 		goto err_clk_unreg;
@@ -196,15 +206,13 @@ clks_put:
 	return ret;
 }
 
-static int exynos_clkout_remove(struct platform_device *pdev)
+static void exynos_clkout_remove(struct platform_device *pdev)
 {
 	struct exynos_clkout *clkout = platform_get_drvdata(pdev);
 
 	of_clk_del_provider(clkout->np);
 	clk_hw_unregister(clkout->data.hws[0]);
 	iounmap(clkout->reg);
-
-	return 0;
 }
 
 static int __maybe_unused exynos_clkout_suspend(struct device *dev)
@@ -230,8 +238,7 @@ static SIMPLE_DEV_PM_OPS(exynos_clkout_pm_ops, exynos_clkout_suspend,
 
 static struct platform_driver exynos_clkout_driver = {
 	.driver = {
-		.name = "exynos-clkout",
-		.of_match_table = exynos_clkout_ids,
+		.name = DRV_NAME,
 		.pm = &exynos_clkout_pm_ops,
 	},
 	.probe = exynos_clkout_probe,
@@ -242,4 +249,5 @@ module_platform_driver(exynos_clkout_driver);
 MODULE_AUTHOR("Krzysztof Kozlowski <krzk@kernel.org>");
 MODULE_AUTHOR("Tomasz Figa <tomasz.figa@gmail.com>");
 MODULE_DESCRIPTION("Samsung Exynos clock output driver");
+MODULE_ALIAS("platform:" DRV_NAME);
 MODULE_LICENSE("GPL");

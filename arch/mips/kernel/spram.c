@@ -12,6 +12,7 @@
 #include <asm/mipsregs.h>
 #include <asm/r4kcache.h>
 #include <asm/hazards.h>
+#include <asm/spram.h>
 
 /*
  * These definitions are correct for the 24K/34K/74K SPRAM sample
@@ -24,10 +25,6 @@
 #define SPRAM_TAG_STRIDE	8
 
 #define ERRCTL_SPRAM		(1 << 28)
-
-/* errctl access */
-#define read_c0_errctl(x) read_c0_ecc(x)
-#define write_c0_errctl(x) write_c0_ecc(x)
 
 /*
  * Different semantics to the set_c0_* function built by __BUILD_SET_C0

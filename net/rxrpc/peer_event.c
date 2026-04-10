@@ -18,16 +18,16 @@
 #include <net/ip.h>
 #include "ar-internal.h"
 
-static void rxrpc_store_error(struct rxrpc_peer *, struct sock_exterr_skb *);
-static void rxrpc_distribute_error(struct rxrpc_peer *, int,
-				   enum rxrpc_call_completion);
+static void rxrpc_store_error(struct rxrpc_peer *, struct sk_buff *);
+static void rxrpc_distribute_error(struct rxrpc_peer *, struct sk_buff *,
+				   enum rxrpc_call_completion, int);
 
 /*
- * Find the peer associated with an ICMP packet.
+ * Find the peer associated with a local error.
  */
-static struct rxrpc_peer *rxrpc_lookup_peer_icmp_rcu(struct rxrpc_local *local,
-						     const struct sk_buff *skb,
-						     struct sockaddr_rxrpc *srx)
+static struct rxrpc_peer *rxrpc_lookup_peer_local_rcu(struct rxrpc_local *local,
+						      const struct sk_buff *skb,
+						      struct sockaddr_rxrpc *srx)
 {
 	struct sock_exterr_skb *serr = SKB_EXT_ERR(skb);
 
@@ -48,13 +48,11 @@ static struct rxrpc_peer *rxrpc_lookup_peer_icmp_rcu(struct rxrpc_local *local,
 		srx->transport.sin.sin_port = serr->port;
 		switch (serr->ee.ee_origin) {
 		case SO_EE_ORIGIN_ICMP:
-			_net("Rx ICMP");
 			memcpy(&srx->transport.sin.sin_addr,
 			       skb_network_header(skb) + serr->addr_offset,
 			       sizeof(struct in_addr));
 			break;
 		case SO_EE_ORIGIN_ICMP6:
-			_net("Rx ICMP6 on v4 sock");
 			memcpy(&srx->transport.sin.sin_addr,
 			       skb_network_header(skb) + serr->addr_offset + 12,
 			       sizeof(struct in_addr));
@@ -70,14 +68,12 @@ static struct rxrpc_peer *rxrpc_lookup_peer_icmp_rcu(struct rxrpc_local *local,
 	case AF_INET6:
 		switch (serr->ee.ee_origin) {
 		case SO_EE_ORIGIN_ICMP6:
-			_net("Rx ICMP6");
 			srx->transport.sin6.sin6_port = serr->port;
 			memcpy(&srx->transport.sin6.sin6_addr,
 			       skb_network_header(skb) + serr->addr_offset,
 			       sizeof(struct in6_addr));
 			break;
 		case SO_EE_ORIGIN_ICMP:
-			_net("Rx ICMP on v6 sock");
 			srx->transport_len = sizeof(srx->transport.sin);
 			srx->transport.family = AF_INET;
 			srx->transport.sin.sin_port = serr->port;
@@ -104,17 +100,13 @@ static struct rxrpc_peer *rxrpc_lookup_peer_icmp_rcu(struct rxrpc_local *local,
 /*
  * Handle an MTU/fragmentation problem.
  */
-static void rxrpc_adjust_mtu(struct rxrpc_peer *peer, struct sock_exterr_skb *serr)
+static void rxrpc_adjust_mtu(struct rxrpc_peer *peer, unsigned int mtu)
 {
-	u32 mtu = serr->ee.ee_info;
-
-	_net("Rx ICMP Fragmentation Needed (%d)", mtu);
+	unsigned int max_data;
 
 	/* wind down the local interface MTU */
-	if (mtu > 0 && peer->if_mtu == 65535 && mtu < peer->if_mtu) {
+	if (mtu > 0 && peer->if_mtu == 65535 && mtu < peer->if_mtu)
 		peer->if_mtu = mtu;
-		_net("I/F MTU %u", mtu);
-	}
 
 	if (mtu == 0) {
 		/* they didn't give us a size, estimate one */
@@ -130,143 +122,78 @@ static void rxrpc_adjust_mtu(struct rxrpc_peer *peer, struct sock_exterr_skb *se
 		}
 	}
 
-	if (mtu < peer->mtu) {
-		spin_lock_bh(&peer->lock);
-		peer->mtu = mtu;
-		peer->maxdata = peer->mtu - peer->hdrsize;
-		spin_unlock_bh(&peer->lock);
-		_net("Net MTU %u (maxdata %u)",
-		     peer->mtu, peer->maxdata);
+	max_data = max_t(int, mtu - peer->hdrsize, 500);
+	if (max_data < peer->max_data) {
+		if (peer->pmtud_good > max_data)
+			peer->pmtud_good = max_data;
+		if (peer->pmtud_bad > max_data + 1)
+			peer->pmtud_bad = max_data + 1;
+
+		trace_rxrpc_pmtud_reduce(peer, 0, max_data, rxrpc_pmtud_reduce_icmp);
+		peer->max_data = max_data;
 	}
 }
 
 /*
  * Handle an error received on the local endpoint.
  */
-void rxrpc_error_report(struct sock *sk)
+void rxrpc_input_error(struct rxrpc_local *local, struct sk_buff *skb)
 {
-	struct sock_exterr_skb *serr;
+	struct sock_exterr_skb *serr = SKB_EXT_ERR(skb);
 	struct sockaddr_rxrpc srx;
-	struct rxrpc_local *local;
-	struct rxrpc_peer *peer;
-	struct sk_buff *skb;
+	struct rxrpc_peer *peer = NULL;
 
-	rcu_read_lock();
-	local = rcu_dereference_sk_user_data(sk);
-	if (unlikely(!local)) {
-		rcu_read_unlock();
-		return;
-	}
-	_enter("%p{%d}", sk, local->debug_id);
+	_enter("L=%x", local->debug_id);
 
-	/* Clear the outstanding error value on the socket so that it doesn't
-	 * cause kernel_sendmsg() to return it later.
-	 */
-	sock_error(sk);
-
-	skb = sock_dequeue_err_skb(sk);
-	if (!skb) {
-		rcu_read_unlock();
-		_leave("UDP socket errqueue empty");
-		return;
-	}
-	rxrpc_new_skb(skb, rxrpc_skb_received);
-	serr = SKB_EXT_ERR(skb);
 	if (!skb->len && serr->ee.ee_origin == SO_EE_ORIGIN_TIMESTAMPING) {
 		_leave("UDP empty message");
-		rcu_read_unlock();
-		rxrpc_free_skb(skb, rxrpc_skb_freed);
 		return;
 	}
 
-	peer = rxrpc_lookup_peer_icmp_rcu(local, skb, &srx);
-	if (peer && !rxrpc_get_peer_maybe(peer))
+	rcu_read_lock();
+	peer = rxrpc_lookup_peer_local_rcu(local, skb, &srx);
+	if (peer && !rxrpc_get_peer_maybe(peer, rxrpc_peer_get_input_error))
 		peer = NULL;
-	if (!peer) {
-		rcu_read_unlock();
-		rxrpc_free_skb(skb, rxrpc_skb_freed);
-		_leave(" [no peer]");
+	rcu_read_unlock();
+	if (!peer)
 		return;
-	}
 
 	trace_rxrpc_rx_icmp(peer, &serr->ee, &srx);
 
 	if ((serr->ee.ee_origin == SO_EE_ORIGIN_ICMP &&
 	     serr->ee.ee_type == ICMP_DEST_UNREACH &&
 	     serr->ee.ee_code == ICMP_FRAG_NEEDED)) {
-		rxrpc_adjust_mtu(peer, serr);
-		rcu_read_unlock();
-		rxrpc_free_skb(skb, rxrpc_skb_freed);
-		rxrpc_put_peer(peer);
-		_leave(" [MTU update]");
-		return;
+		rxrpc_adjust_mtu(peer, serr->ee.ee_info);
+		goto out;
 	}
 
-	rxrpc_store_error(peer, serr);
-	rcu_read_unlock();
-	rxrpc_free_skb(skb, rxrpc_skb_freed);
-	rxrpc_put_peer(peer);
+	if ((serr->ee.ee_origin == SO_EE_ORIGIN_ICMP6 &&
+	     serr->ee.ee_type == ICMPV6_PKT_TOOBIG &&
+	     serr->ee.ee_code == 0)) {
+		rxrpc_adjust_mtu(peer, serr->ee.ee_info);
+		goto out;
+	}
 
-	_leave("");
+	rxrpc_store_error(peer, skb);
+out:
+	rxrpc_put_peer(peer, rxrpc_peer_put_input_error);
 }
 
 /*
  * Map an error report to error codes on the peer record.
  */
-static void rxrpc_store_error(struct rxrpc_peer *peer,
-			      struct sock_exterr_skb *serr)
+static void rxrpc_store_error(struct rxrpc_peer *peer, struct sk_buff *skb)
 {
 	enum rxrpc_call_completion compl = RXRPC_CALL_NETWORK_ERROR;
-	struct sock_extended_err *ee;
-	int err;
+	struct sock_exterr_skb *serr = SKB_EXT_ERR(skb);
+	struct sock_extended_err *ee = &serr->ee;
+	int err = ee->ee_errno;
 
 	_enter("");
 
-	ee = &serr->ee;
-
-	err = ee->ee_errno;
-
 	switch (ee->ee_origin) {
-	case SO_EE_ORIGIN_ICMP:
-		switch (ee->ee_type) {
-		case ICMP_DEST_UNREACH:
-			switch (ee->ee_code) {
-			case ICMP_NET_UNREACH:
-				_net("Rx Received ICMP Network Unreachable");
-				break;
-			case ICMP_HOST_UNREACH:
-				_net("Rx Received ICMP Host Unreachable");
-				break;
-			case ICMP_PORT_UNREACH:
-				_net("Rx Received ICMP Port Unreachable");
-				break;
-			case ICMP_NET_UNKNOWN:
-				_net("Rx Received ICMP Unknown Network");
-				break;
-			case ICMP_HOST_UNKNOWN:
-				_net("Rx Received ICMP Unknown Host");
-				break;
-			default:
-				_net("Rx Received ICMP DestUnreach code=%u",
-				     ee->ee_code);
-				break;
-			}
-			break;
-
-		case ICMP_TIME_EXCEEDED:
-			_net("Rx Received ICMP TTL Exceeded");
-			break;
-
-		default:
-			_proto("Rx Received ICMP error { type=%u code=%u }",
-			       ee->ee_type, ee->ee_code);
-			break;
-		}
-		break;
-
 	case SO_EE_ORIGIN_NONE:
 	case SO_EE_ORIGIN_LOCAL:
-		_proto("Rx Received local error { error=%d }", err);
 		compl = RXRPC_CALL_LOCAL_ERROR;
 		break;
 
@@ -274,26 +201,55 @@ static void rxrpc_store_error(struct rxrpc_peer *peer,
 		if (err == EACCES)
 			err = EHOSTUNREACH;
 		fallthrough;
+	case SO_EE_ORIGIN_ICMP:
 	default:
-		_proto("Rx Received error report { orig=%u }", ee->ee_origin);
 		break;
 	}
 
-	rxrpc_distribute_error(peer, err, compl);
+	rxrpc_distribute_error(peer, skb, compl, err);
 }
 
 /*
  * Distribute an error that occurred on a peer.
  */
-static void rxrpc_distribute_error(struct rxrpc_peer *peer, int error,
-				   enum rxrpc_call_completion compl)
+static void rxrpc_distribute_error(struct rxrpc_peer *peer, struct sk_buff *skb,
+				   enum rxrpc_call_completion compl, int err)
 {
 	struct rxrpc_call *call;
+	HLIST_HEAD(error_targets);
 
-	hlist_for_each_entry_rcu(call, &peer->error_targets, error_link) {
-		rxrpc_see_call(call);
-		rxrpc_set_call_completion(call, compl, 0, -error);
+	spin_lock_irq(&peer->lock);
+	hlist_move_list(&peer->error_targets, &error_targets);
+
+	while (!hlist_empty(&error_targets)) {
+		call = hlist_entry(error_targets.first,
+				   struct rxrpc_call, error_link);
+		hlist_del_init(&call->error_link);
+		spin_unlock_irq(&peer->lock);
+
+		rxrpc_see_call(call, rxrpc_call_see_distribute_error);
+		rxrpc_set_call_completion(call, compl, 0, -err);
+		rxrpc_input_call_event(call);
+
+		spin_lock_irq(&peer->lock);
 	}
+
+	spin_unlock_irq(&peer->lock);
+}
+
+/*
+ * Reconstruct the last transmission time.  The difference calculated should be
+ * valid provided no more than ~68 years elapsed since the last transmission.
+ */
+static time64_t rxrpc_peer_get_tx_mark(const struct rxrpc_peer *peer, time64_t base)
+{
+	s32 last_tx_at = READ_ONCE(peer->last_tx_at);
+	s32 base_lsw = base;
+	s32 diff = last_tx_at - base_lsw;
+
+	diff = clamp(diff, -RXRPC_KEEPALIVE_TIME, RXRPC_KEEPALIVE_TIME);
+
+	return diff + base;
 }
 
 /*
@@ -307,6 +263,7 @@ static void rxrpc_peer_keepalive_dispatch(struct rxrpc_net *rxnet,
 	struct rxrpc_peer *peer;
 	const u8 mask = ARRAY_SIZE(rxnet->peer_keepalive) - 1;
 	time64_t keepalive_at;
+	bool use;
 	int slot;
 
 	spin_lock_bh(&rxnet->peer_hash_lock);
@@ -316,13 +273,14 @@ static void rxrpc_peer_keepalive_dispatch(struct rxrpc_net *rxnet,
 				  struct rxrpc_peer, keepalive_link);
 
 		list_del_init(&peer->keepalive_link);
-		if (!rxrpc_get_peer_maybe(peer))
+		if (!rxrpc_get_peer_maybe(peer, rxrpc_peer_get_keepalive))
 			continue;
 
-		if (__rxrpc_use_local(peer->local)) {
-			spin_unlock_bh(&rxnet->peer_hash_lock);
+		use = __rxrpc_use_local(peer->local, rxrpc_local_use_peer_keepalive);
+		spin_unlock_bh(&rxnet->peer_hash_lock);
 
-			keepalive_at = peer->last_tx_at + RXRPC_KEEPALIVE_TIME;
+		if (use) {
+			keepalive_at = rxrpc_peer_get_tx_mark(peer, base) + RXRPC_KEEPALIVE_TIME;
 			slot = keepalive_at - base;
 			_debug("%02x peer %u t=%d {%pISp}",
 			       cursor, peer->debug_id, slot, &peer->srx.transport);
@@ -342,9 +300,11 @@ static void rxrpc_peer_keepalive_dispatch(struct rxrpc_net *rxnet,
 			spin_lock_bh(&rxnet->peer_hash_lock);
 			list_add_tail(&peer->keepalive_link,
 				      &rxnet->peer_keepalive[slot & mask]);
-			rxrpc_unuse_local(peer->local);
+			spin_unlock_bh(&rxnet->peer_hash_lock);
+			rxrpc_unuse_local(peer->local, rxrpc_local_unuse_peer_keepalive);
 		}
-		rxrpc_put_peer_locked(peer);
+		rxrpc_put_peer(peer, rxrpc_peer_put_keepalive);
+		spin_lock_bh(&rxnet->peer_hash_lock);
 	}
 
 	spin_unlock_bh(&rxnet->peer_hash_lock);
@@ -414,4 +374,85 @@ void rxrpc_peer_keepalive_worker(struct work_struct *work)
 		timer_reduce(&rxnet->peer_keepalive_timer, jiffies + delay);
 
 	_leave("");
+}
+
+/*
+ * Do path MTU probing.
+ */
+void rxrpc_input_probe_for_pmtud(struct rxrpc_connection *conn, rxrpc_serial_t acked_serial,
+				 bool sendmsg_fail)
+{
+	struct rxrpc_peer *peer = conn->peer;
+	unsigned int max_data = peer->max_data;
+	int good, trial, bad, jumbo;
+
+	good  = peer->pmtud_good;
+	trial = peer->pmtud_trial;
+	bad   = peer->pmtud_bad;
+	if (good >= bad - 1) {
+		conn->pmtud_probe = 0;
+		peer->pmtud_lost = false;
+		return;
+	}
+
+	if (!peer->pmtud_probing)
+		goto send_probe;
+
+	if (sendmsg_fail || after(acked_serial, conn->pmtud_probe)) {
+		/* Retry a lost probe. */
+		if (!peer->pmtud_lost) {
+			trace_rxrpc_pmtud_lost(conn, acked_serial);
+			conn->pmtud_probe = 0;
+			peer->pmtud_lost = true;
+			goto send_probe;
+		}
+
+		/* The probed size didn't seem to get through. */
+		bad = trial;
+		peer->pmtud_bad = bad;
+		if (bad <= max_data)
+			max_data = bad - 1;
+	} else {
+		/* It did get through. */
+		good = trial;
+		peer->pmtud_good = good;
+		if (good > max_data)
+			max_data = good;
+	}
+
+	max_data = umin(max_data, peer->ackr_max_data);
+	if (max_data != peer->max_data)
+		peer->max_data = max_data;
+
+	jumbo = max_data + sizeof(struct rxrpc_jumbo_header);
+	jumbo /= RXRPC_JUMBO_SUBPKTLEN;
+	peer->pmtud_jumbo = jumbo;
+
+	trace_rxrpc_pmtud_rx(conn, acked_serial);
+	conn->pmtud_probe = 0;
+	peer->pmtud_lost = false;
+
+	if (good < RXRPC_JUMBO(2) && bad > RXRPC_JUMBO(2))
+		trial = RXRPC_JUMBO(2);
+	else if (good < RXRPC_JUMBO(4) && bad > RXRPC_JUMBO(4))
+		trial = RXRPC_JUMBO(4);
+	else if (good < RXRPC_JUMBO(3) && bad > RXRPC_JUMBO(3))
+		trial = RXRPC_JUMBO(3);
+	else if (good < RXRPC_JUMBO(6) && bad > RXRPC_JUMBO(6))
+		trial = RXRPC_JUMBO(6);
+	else if (good < RXRPC_JUMBO(5) && bad > RXRPC_JUMBO(5))
+		trial = RXRPC_JUMBO(5);
+	else if (good < RXRPC_JUMBO(8) && bad > RXRPC_JUMBO(8))
+		trial = RXRPC_JUMBO(8);
+	else if (good < RXRPC_JUMBO(7) && bad > RXRPC_JUMBO(7))
+		trial = RXRPC_JUMBO(7);
+	else
+		trial = (good + bad) / 2;
+	peer->pmtud_trial = trial;
+
+	if (good >= bad)
+		return;
+
+send_probe:
+	peer->pmtud_pending = true;
 }

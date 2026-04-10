@@ -300,8 +300,8 @@ static void prestera_ethtool_get_drvinfo(struct net_device *dev,
 	struct prestera_port *port = netdev_priv(dev);
 	struct prestera_switch *sw = port->sw;
 
-	strlcpy(drvinfo->driver, driver_kind, sizeof(drvinfo->driver));
-	strlcpy(drvinfo->bus_info, dev_name(prestera_dev(sw)),
+	strscpy(drvinfo->driver, driver_kind, sizeof(drvinfo->driver));
+	strscpy(drvinfo->bus_info, dev_name(prestera_dev(sw)),
 		sizeof(drvinfo->bus_info));
 	snprintf(drvinfo->fw_version, sizeof(drvinfo->fw_version),
 		 "%d.%d.%d",
@@ -521,6 +521,9 @@ prestera_ethtool_get_link_ksettings(struct net_device *dev,
 	ecmd->base.speed = SPEED_UNKNOWN;
 	ecmd->base.duplex = DUPLEX_UNKNOWN;
 
+	if (port->phy_link)
+		return phylink_ethtool_ksettings_get(port->phy_link, ecmd);
+
 	ecmd->base.autoneg = port->autoneg ? AUTONEG_ENABLE : AUTONEG_DISABLE;
 
 	if (port->caps.type == PRESTERA_PORT_TYPE_TP) {
@@ -648,6 +651,9 @@ prestera_ethtool_set_link_ksettings(struct net_device *dev,
 	u8 adver_fec;
 	int err;
 
+	if (port->phy_link)
+		return phylink_ethtool_ksettings_set(port->phy_link, ecmd);
+
 	err = prestera_port_type_set(ecmd, port);
 	if (err)
 		return err;
@@ -708,11 +714,6 @@ static int prestera_ethtool_set_fecparam(struct net_device *dev,
 
 	if (port->autoneg) {
 		netdev_err(dev, "FEC set is not allowed while autoneg is on\n");
-		return -EINVAL;
-	}
-
-	if (port->caps.transceiver == PRESTERA_PORT_TCVR_SFP) {
-		netdev_err(dev, "FEC set is not allowed on non-SFP ports\n");
 		return -EINVAL;
 	}
 
@@ -780,28 +781,6 @@ static int prestera_ethtool_nway_reset(struct net_device *dev)
 		return prestera_hw_port_autoneg_restart(port);
 
 	return -EINVAL;
-}
-
-void prestera_ethtool_port_state_changed(struct prestera_port *port,
-					 struct prestera_port_event *evt)
-{
-	struct prestera_port_mac_state *smac = &port->state_mac;
-
-	smac->oper = evt->data.mac.oper;
-
-	if (smac->oper) {
-		smac->mode = evt->data.mac.mode;
-		smac->speed = evt->data.mac.speed;
-		smac->duplex = evt->data.mac.duplex;
-		smac->fc = evt->data.mac.fc;
-		smac->fec = evt->data.mac.fec;
-	} else {
-		smac->mode = PRESTERA_MAC_MODE_MAX;
-		smac->speed = SPEED_UNKNOWN;
-		smac->duplex = DUPLEX_UNKNOWN;
-		smac->fc = 0;
-		smac->fec = 0;
-	}
 }
 
 const struct ethtool_ops prestera_ethtool_ops = {

@@ -10,6 +10,7 @@
 
 #include <crypto/algapi.h>
 #include <linux/completion.h>
+#include <linux/err.h>
 #include <linux/jump_label.h>
 #include <linux/list.h>
 #include <linux/module.h>
@@ -17,6 +18,7 @@
 #include <linux/numa.h>
 #include <linux/refcount.h>
 #include <linux/rwsem.h>
+#include <linux/scatterlist.h>
 #include <linux/sched.h>
 #include <linux/types.h>
 
@@ -31,6 +33,22 @@ struct crypto_larval {
 	bool test_started;
 };
 
+struct crypto_type {
+	unsigned int (*ctxsize)(struct crypto_alg *alg, u32 type, u32 mask);
+	unsigned int (*extsize)(struct crypto_alg *alg);
+	int (*init_tfm)(struct crypto_tfm *tfm);
+	void (*show)(struct seq_file *m, struct crypto_alg *alg);
+	int (*report)(struct sk_buff *skb, struct crypto_alg *alg);
+	void (*free)(struct crypto_instance *inst);
+	void (*destroy)(struct crypto_alg *alg);
+
+	unsigned int type;
+	unsigned int maskclear;
+	unsigned int maskset;
+	unsigned int tfmsize;
+	unsigned int algsize;
+};
+
 enum {
 	CRYPTOA_UNSPEC,
 	CRYPTOA_ALG,
@@ -43,11 +61,33 @@ enum {
 /* Maximum number of (rtattr) parameters for each template. */
 #define CRYPTO_MAX_ATTRS 32
 
-extern struct list_head crypto_alg_list;
 extern struct rw_semaphore crypto_alg_sem;
+extern struct list_head crypto_alg_list __guarded_by(&crypto_alg_sem);
 extern struct blocking_notifier_head crypto_chain;
 
-DECLARE_STATIC_KEY_FALSE(crypto_boot_test_finished);
+int alg_test(const char *driver, const char *alg, u32 type, u32 mask);
+
+#if !IS_BUILTIN(CONFIG_CRYPTO_ALGAPI) || !IS_ENABLED(CONFIG_CRYPTO_SELFTESTS)
+static inline bool crypto_boot_test_finished(void)
+{
+	return true;
+}
+static inline void set_crypto_boot_test_finished(void)
+{
+}
+#else
+DECLARE_STATIC_KEY_FALSE(__crypto_boot_test_finished);
+static inline bool crypto_boot_test_finished(void)
+{
+	return static_branch_likely(&__crypto_boot_test_finished);
+}
+static inline void set_crypto_boot_test_finished(void)
+{
+	static_branch_enable(&__crypto_boot_test_finished);
+}
+#endif /* !IS_BUILTIN(CONFIG_CRYPTO_ALGAPI) ||
+	* !IS_ENABLED(CONFIG_CRYPTO_SELFTESTS)
+	*/
 
 #ifdef CONFIG_PROC_FS
 void __init crypto_init_proc(void);
@@ -73,18 +113,21 @@ struct crypto_alg *crypto_mod_get(struct crypto_alg *alg);
 struct crypto_alg *crypto_alg_mod_lookup(const char *name, u32 type, u32 mask);
 
 struct crypto_larval *crypto_larval_alloc(const char *name, u32 type, u32 mask);
-void crypto_larval_kill(struct crypto_alg *alg);
-void crypto_wait_for_test(struct crypto_larval *larval);
+void crypto_schedule_test(struct crypto_larval *larval);
 void crypto_alg_tested(const char *name, int err);
 
 void crypto_remove_spawns(struct crypto_alg *alg, struct list_head *list,
 			  struct crypto_alg *nalg);
 void crypto_remove_final(struct list_head *list);
 void crypto_shoot_alg(struct crypto_alg *alg);
+struct crypto_tfm *__crypto_alloc_tfmgfp(struct crypto_alg *alg, u32 type,
+					 u32 mask, gfp_t gfp);
 struct crypto_tfm *__crypto_alloc_tfm(struct crypto_alg *alg, u32 type,
 				      u32 mask);
 void *crypto_create_tfm_node(struct crypto_alg *alg,
 			const struct crypto_type *frontend, int node);
+void *crypto_clone_tfm(const struct crypto_type *frontend,
+		       struct crypto_tfm *otfm);
 
 static inline void *crypto_create_tfm(struct crypto_alg *alg,
 			const struct crypto_type *frontend)
@@ -119,10 +162,12 @@ static inline struct crypto_alg *crypto_alg_get(struct crypto_alg *alg)
 	return alg;
 }
 
+void crypto_destroy_alg(struct crypto_alg *alg);
+
 static inline void crypto_alg_put(struct crypto_alg *alg)
 {
-	if (refcount_dec_and_test(&alg->cra_refcnt) && alg->cra_destroy)
-		alg->cra_destroy(alg);
+	if (refcount_dec_and_test(&alg->cra_refcnt))
+		crypto_destroy_alg(alg);
 }
 
 static inline int crypto_tmpl_get(struct crypto_template *tmpl)
@@ -164,6 +209,11 @@ static inline void crypto_yield(u32 flags)
 static inline int crypto_is_test_larval(struct crypto_larval *larval)
 {
 	return larval->alg.cra_driver_name[0];
+}
+
+static inline struct crypto_tfm *crypto_tfm_get(struct crypto_tfm *tfm)
+{
+	return refcount_inc_not_zero(&tfm->refcnt) ? tfm : ERR_PTR(-EOVERFLOW);
 }
 
 #endif	/* _CRYPTO_INTERNAL_H */

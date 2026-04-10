@@ -69,8 +69,6 @@ extern int gma_crtc_page_flip(struct drm_crtc *crtc,
 			      struct drm_pending_vblank_event *event,
 			      uint32_t page_flip_flags,
 			      struct drm_modeset_acquire_ctx *ctx);
-extern int gma_crtc_set_config(struct drm_mode_set *set,
-			       struct drm_modeset_acquire_ctx *ctx);
 
 extern void gma_crtc_save(struct drm_crtc *crtc);
 extern void gma_crtc_restore(struct drm_crtc *crtc);
@@ -83,7 +81,6 @@ extern void gma_encoder_destroy(struct drm_encoder *encoder);
 
 /* Common clock related functions */
 extern const struct gma_limit_t *gma_limit(struct drm_crtc *crtc, int refclk);
-extern void gma_clock(int refclk, struct gma_clock_t *clock);
 extern bool gma_pll_is_valid(struct drm_crtc *crtc,
 			     const struct gma_limit_t *limit,
 			     struct gma_clock_t *clock);

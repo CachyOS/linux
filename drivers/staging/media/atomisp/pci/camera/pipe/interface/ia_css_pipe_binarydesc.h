@@ -2,19 +2,12 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #ifndef __IA_CSS_PIPE_BINARYDESC_H__
 #define __IA_CSS_PIPE_BINARYDESC_H__
+
+#include <linux/math.h>
 
 #include <ia_css_types.h>		/* ia_css_pipe */
 #include <ia_css_frame_public.h>	/* ia_css_frame_info */
@@ -56,17 +49,12 @@ void ia_css_pipe_get_vfpp_binarydesc(
  *
  * @param[in] bds_factor: The bayer downscaling factor.
  *		(= The bds_factor member in the sh_css_bds_factor structure.)
- * @param[out] bds_factor_numerator: The numerator of the bayer downscaling factor.
- *		(= The numerator member in the sh_css_bds_factor structure.)
- * @param[out] bds_factor_denominator: The denominator of the bayer downscaling factor.
- *		(= The denominator member in the sh_css_bds_factor structure.)
+ * @param[out] bds: The rational fraction of the bayer downscaling factor.
+ *		(= The respective member in the sh_css_bds_factor structure.)
  * @return	0 or error code upon error.
  *
  */
-int sh_css_bds_factor_get_numerator_denominator(
-    unsigned int bds_factor,
-    unsigned int *bds_factor_numerator,
-    unsigned int *bds_factor_denominator);
+int sh_css_bds_factor_get_fract(unsigned int bds_factor, struct u32_fract *bds);
 
 /* @brief Get a binary descriptor for preview stage.
  *

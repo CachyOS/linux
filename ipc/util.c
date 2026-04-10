@@ -141,7 +141,7 @@ void __init ipc_init_proc_interface(const char *path, const char *header,
 	struct proc_dir_entry *pde;
 	struct ipc_proc_iface *iface;
 
-	iface = kmalloc(sizeof(*iface), GFP_KERNEL);
+	iface = kmalloc_obj(*iface);
 	if (!iface)
 		return;
 	iface->path	= path;
@@ -615,11 +615,10 @@ void ipc64_perm_to_ipc_perm(struct ipc64_perm *in, struct ipc_perm *out)
 }
 
 /**
- * ipc_obtain_object_idr
+ * ipc_obtain_object_idr - Look for an id in the ipc ids idr and
+ *   return associated ipc object.
  * @ids: ipc identifier set
  * @id: ipc id to look for
- *
- * Look for an id in the ipc ids idr and return associated ipc object.
  *
  * Call inside the RCU critical section.
  * The ipc object is *not* locked on exit.
@@ -637,12 +636,10 @@ struct kern_ipc_perm *ipc_obtain_object_idr(struct ipc_ids *ids, int id)
 }
 
 /**
- * ipc_obtain_object_check
+ * ipc_obtain_object_check - Similar to ipc_obtain_object_idr() but
+ *   also checks the ipc object sequence number.
  * @ids: ipc identifier set
  * @id: ipc id to look for
- *
- * Similar to ipc_obtain_object_idr() but also checks the ipc object
- * sequence number.
  *
  * Call inside the RCU critical section.
  * The ipc object is *not* locked on exit.
@@ -782,28 +779,37 @@ struct pid_namespace *ipc_seq_pid_ns(struct seq_file *s)
 	return iter->pid_ns;
 }
 
-/*
- * This routine locks the ipc structure found at least at position pos.
+/**
+ * sysvipc_find_ipc - Find and lock the ipc structure based on seq pos
+ * @ids: ipc identifier set
+ * @pos: expected position
+ *
+ * The function finds an ipc structure, based on the sequence file
+ * position @pos. If there is no ipc structure at position @pos, then
+ * the successor is selected.
+ * If a structure is found, then it is locked (both rcu_read_lock() and
+ * ipc_lock_object()) and  @pos is set to the position needed to locate
+ * the found ipc structure.
+ * If nothing is found (i.e. EOF), @pos is not modified.
+ *
+ * The function returns the found ipc structure, or NULL at EOF.
  */
-static struct kern_ipc_perm *sysvipc_find_ipc(struct ipc_ids *ids, loff_t pos,
-					      loff_t *new_pos)
+static struct kern_ipc_perm *sysvipc_find_ipc(struct ipc_ids *ids, loff_t *pos)
 {
-	struct kern_ipc_perm *ipc = NULL;
-	int max_idx = ipc_get_maxidx(ids);
+	int tmpidx;
+	struct kern_ipc_perm *ipc;
 
-	if (max_idx == -1 || pos > max_idx)
-		goto out;
+	/* convert from position to idr index -> "-1" */
+	tmpidx = *pos - 1;
 
-	for (; pos <= max_idx; pos++) {
-		ipc = idr_find(&ids->ipcs_idr, pos);
-		if (ipc != NULL) {
-			rcu_read_lock();
-			ipc_lock_object(ipc);
-			break;
-		}
+	ipc = idr_get_next(&ids->ipcs_idr, &tmpidx);
+	if (ipc != NULL) {
+		rcu_read_lock();
+		ipc_lock_object(ipc);
+
+		/* convert from idr index to position  -> "+1" */
+		*pos = tmpidx + 1;
 	}
-out:
-	*new_pos = pos + 1;
 	return ipc;
 }
 
@@ -817,11 +823,13 @@ static void *sysvipc_proc_next(struct seq_file *s, void *it, loff_t *pos)
 	if (ipc && ipc != SEQ_START_TOKEN)
 		ipc_unlock(ipc);
 
-	return sysvipc_find_ipc(&iter->ns->ids[iface->ids], *pos, pos);
+	/* Next -> search for *pos+1 */
+	(*pos)++;
+	return sysvipc_find_ipc(&iter->ns->ids[iface->ids], pos);
 }
 
 /*
- * File positions: pos 0 -> header, pos n -> ipc id = n - 1.
+ * File positions: pos 0 -> header, pos n -> ipc idx = n - 1.
  * SeqFile iterator: iterator value locked ipc pointer or SEQ_TOKEN_START.
  */
 static void *sysvipc_proc_start(struct seq_file *s, loff_t *pos)
@@ -846,8 +854,8 @@ static void *sysvipc_proc_start(struct seq_file *s, loff_t *pos)
 	if (*pos == 0)
 		return SEQ_START_TOKEN;
 
-	/* Find the (pos-1)th ipc */
-	return sysvipc_find_ipc(ids, *pos - 1, pos);
+	/* Otherwise return the correct ipc structure */
+	return sysvipc_find_ipc(ids, pos);
 }
 
 static void sysvipc_proc_stop(struct seq_file *s, void *it)

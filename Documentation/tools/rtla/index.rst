@@ -17,10 +17,4 @@ behavior on specific hardware.
    rtla-timerlat
    rtla-timerlat-hist
    rtla-timerlat-top
-
-.. only::  subproject and html
-
-   Indices
-   =======
-
-   * :ref:`genindex`
+   rtla-hwnoise

@@ -54,11 +54,27 @@ static int mhi_ep_send_event(struct mhi_ep_cntrl *mhi_cntrl, u32 ring_idx,
 	mutex_unlock(&mhi_cntrl->event_lock);
 
 	/*
-	 * Raise IRQ to host only if the BEI flag is not set in TRE. Host might
-	 * set this flag for interrupt moderation as per MHI protocol.
+	 * As per the MHI specification, section 4.3, Interrupt moderation:
+	 *
+	 * 1. If BEI flag is not set, cancel any pending intmodt work if started
+	 * for the event ring and raise IRQ immediately.
+	 *
+	 * 2. If both BEI and intmodt are set, and if no IRQ is pending for the
+	 * same event ring, start the IRQ delayed work as per the value of
+	 * intmodt. If previous IRQ is pending, then do nothing as the pending
+	 * IRQ is enough for the host to process the current event ring element.
+	 *
+	 * 3. If BEI is set and intmodt is not set, no need to raise IRQ.
 	 */
-	if (!bei)
+	if (!bei) {
+		if (READ_ONCE(ring->irq_pending))
+			cancel_delayed_work(&ring->intmodt_work);
+
 		mhi_cntrl->raise_irq(mhi_cntrl, ring->irq_vector);
+	} else if (ring->intmodt && !READ_ONCE(ring->irq_pending)) {
+		WRITE_ONCE(ring->irq_pending, true);
+		schedule_delayed_work(&ring->intmodt_work, msecs_to_jiffies(ring->intmodt));
+	}
 
 	return 0;
 
@@ -71,45 +87,77 @@ err_unlock:
 static int mhi_ep_send_completion_event(struct mhi_ep_cntrl *mhi_cntrl, struct mhi_ep_ring *ring,
 					struct mhi_ring_element *tre, u32 len, enum mhi_ev_ccs code)
 {
-	struct mhi_ring_element event = {};
+	struct mhi_ring_element *event;
+	int ret;
 
-	event.ptr = cpu_to_le64(ring->rbase + ring->rd_offset * sizeof(*tre));
-	event.dword[0] = MHI_TRE_EV_DWORD0(code, len);
-	event.dword[1] = MHI_TRE_EV_DWORD1(ring->ch_id, MHI_PKT_TYPE_TX_EVENT);
+	event = kmem_cache_zalloc(mhi_cntrl->ev_ring_el_cache, GFP_KERNEL);
+	if (!event)
+		return -ENOMEM;
 
-	return mhi_ep_send_event(mhi_cntrl, ring->er_index, &event, MHI_TRE_DATA_GET_BEI(tre));
+	event->ptr = cpu_to_le64(ring->rbase + ring->rd_offset * sizeof(*tre));
+	event->dword[0] = MHI_TRE_EV_DWORD0(code, len);
+	event->dword[1] = MHI_TRE_EV_DWORD1(ring->ch_id, MHI_PKT_TYPE_TX_EVENT);
+
+	ret = mhi_ep_send_event(mhi_cntrl, ring->er_index, event, MHI_TRE_DATA_GET_BEI(tre));
+	kmem_cache_free(mhi_cntrl->ev_ring_el_cache, event);
+
+	return ret;
 }
 
 int mhi_ep_send_state_change_event(struct mhi_ep_cntrl *mhi_cntrl, enum mhi_state state)
 {
-	struct mhi_ring_element event = {};
+	struct mhi_ring_element *event;
+	int ret;
 
-	event.dword[0] = MHI_SC_EV_DWORD0(state);
-	event.dword[1] = MHI_SC_EV_DWORD1(MHI_PKT_TYPE_STATE_CHANGE_EVENT);
+	event = kmem_cache_zalloc(mhi_cntrl->ev_ring_el_cache, GFP_KERNEL);
+	if (!event)
+		return -ENOMEM;
 
-	return mhi_ep_send_event(mhi_cntrl, 0, &event, 0);
+	event->dword[0] = MHI_SC_EV_DWORD0(state);
+	event->dword[1] = MHI_SC_EV_DWORD1(MHI_PKT_TYPE_STATE_CHANGE_EVENT);
+
+	ret = mhi_ep_send_event(mhi_cntrl, 0, event, 0);
+	kmem_cache_free(mhi_cntrl->ev_ring_el_cache, event);
+
+	return ret;
 }
 
 int mhi_ep_send_ee_event(struct mhi_ep_cntrl *mhi_cntrl, enum mhi_ee_type exec_env)
 {
-	struct mhi_ring_element event = {};
+	struct mhi_ring_element *event;
+	int ret;
 
-	event.dword[0] = MHI_EE_EV_DWORD0(exec_env);
-	event.dword[1] = MHI_SC_EV_DWORD1(MHI_PKT_TYPE_EE_EVENT);
+	event = kmem_cache_zalloc(mhi_cntrl->ev_ring_el_cache, GFP_KERNEL);
+	if (!event)
+		return -ENOMEM;
 
-	return mhi_ep_send_event(mhi_cntrl, 0, &event, 0);
+	event->dword[0] = MHI_EE_EV_DWORD0(exec_env);
+	event->dword[1] = MHI_SC_EV_DWORD1(MHI_PKT_TYPE_EE_EVENT);
+
+	ret = mhi_ep_send_event(mhi_cntrl, 0, event, 0);
+	kmem_cache_free(mhi_cntrl->ev_ring_el_cache, event);
+
+	return ret;
 }
 
 static int mhi_ep_send_cmd_comp_event(struct mhi_ep_cntrl *mhi_cntrl, enum mhi_ev_ccs code)
 {
 	struct mhi_ep_ring *ring = &mhi_cntrl->mhi_cmd->ring;
-	struct mhi_ring_element event = {};
+	struct mhi_ring_element *event;
+	int ret;
 
-	event.ptr = cpu_to_le64(ring->rbase + ring->rd_offset * sizeof(struct mhi_ring_element));
-	event.dword[0] = MHI_CC_EV_DWORD0(code);
-	event.dword[1] = MHI_CC_EV_DWORD1(MHI_PKT_TYPE_CMD_COMPLETION_EVENT);
+	event = kmem_cache_zalloc(mhi_cntrl->ev_ring_el_cache, GFP_KERNEL);
+	if (!event)
+		return -ENOMEM;
 
-	return mhi_ep_send_event(mhi_cntrl, 0, &event, 0);
+	event->ptr = cpu_to_le64(ring->rbase + ring->rd_offset * sizeof(struct mhi_ring_element));
+	event->dword[0] = MHI_CC_EV_DWORD0(code);
+	event->dword[1] = MHI_CC_EV_DWORD1(MHI_PKT_TYPE_CMD_COMPLETION_EVENT);
+
+	ret = mhi_ep_send_event(mhi_cntrl, 0, event, 0);
+	kmem_cache_free(mhi_cntrl->ev_ring_el_cache, event);
+
+	return ret;
 }
 
 static int mhi_ep_process_cmd_ring(struct mhi_ep_ring *ring, struct mhi_ring_element *el)
@@ -123,6 +171,13 @@ static int mhi_ep_process_cmd_ring(struct mhi_ep_ring *ring, struct mhi_ring_ele
 	int ret;
 
 	ch_id = MHI_TRE_GET_CMD_CHID(el);
+
+	/* Check if the channel is supported by the controller */
+	if ((ch_id >= mhi_cntrl->max_chan) || !mhi_cntrl->mhi_chan[ch_id].name) {
+		dev_dbg(dev, "Channel (%u) not supported!\n", ch_id);
+		return -ENODEV;
+	}
+
 	mhi_chan = &mhi_cntrl->mhi_chan[ch_id];
 	ch_ring = &mhi_cntrl->mhi_chan[ch_id].ring;
 
@@ -144,6 +199,8 @@ static int mhi_ep_process_cmd_ring(struct mhi_ep_ring *ring, struct mhi_ring_ele
 
 				goto err_unlock;
 			}
+
+			mhi_chan->rd_offset = ch_ring->rd_offset;
 		}
 
 		/* Set channel state to RUNNING */
@@ -196,9 +253,11 @@ static int mhi_ep_process_cmd_ring(struct mhi_ep_ring *ring, struct mhi_ring_ele
 		mhi_ep_mmio_disable_chdb(mhi_cntrl, ch_id);
 
 		/* Send channel disconnect status to client drivers */
-		result.transaction_status = -ENOTCONN;
-		result.bytes_xferd = 0;
-		mhi_chan->xfer_cb(mhi_chan->mhi_dev, &result);
+		if (mhi_chan->xfer_cb) {
+			result.transaction_status = -ENOTCONN;
+			result.bytes_xferd = 0;
+			mhi_chan->xfer_cb(mhi_chan->mhi_dev, &result);
+		}
 
 		/* Set channel state to STOP */
 		mhi_chan->state = MHI_CH_STATE_STOP;
@@ -217,7 +276,7 @@ static int mhi_ep_process_cmd_ring(struct mhi_ep_ring *ring, struct mhi_ring_ele
 		mutex_unlock(&mhi_chan->lock);
 		break;
 	case MHI_PKT_TYPE_RESET_CHAN_CMD:
-		dev_dbg(dev, "Received STOP command for channel (%u)\n", ch_id);
+		dev_dbg(dev, "Received RESET command for channel (%u)\n", ch_id);
 		if (!ch_ring->started) {
 			dev_err(dev, "Channel (%u) not opened\n", ch_id);
 			return -ENODEV;
@@ -228,9 +287,11 @@ static int mhi_ep_process_cmd_ring(struct mhi_ep_ring *ring, struct mhi_ring_ele
 		mhi_ep_ring_reset(mhi_cntrl, ch_ring);
 
 		/* Send channel disconnect status to client driver */
-		result.transaction_status = -ENOTCONN;
-		result.bytes_xferd = 0;
-		mhi_chan->xfer_cb(mhi_chan->mhi_dev, &result);
+		if (mhi_chan->xfer_cb) {
+			result.transaction_status = -ENOTCONN;
+			result.bytes_xferd = 0;
+			mhi_chan->xfer_cb(mhi_chan->mhi_dev, &result);
+		}
 
 		/* Set channel state to DISABLED */
 		mhi_chan->state = MHI_CH_STATE_DISABLED;
@@ -269,26 +330,85 @@ bool mhi_ep_queue_is_empty(struct mhi_ep_device *mhi_dev, enum dma_data_directio
 	struct mhi_ep_cntrl *mhi_cntrl = mhi_dev->mhi_cntrl;
 	struct mhi_ep_ring *ring = &mhi_cntrl->mhi_chan[mhi_chan->chan].ring;
 
-	return !!(ring->rd_offset == ring->wr_offset);
+	return !!(mhi_chan->rd_offset == ring->wr_offset);
 }
 EXPORT_SYMBOL_GPL(mhi_ep_queue_is_empty);
 
+static void mhi_ep_read_completion(struct mhi_ep_buf_info *buf_info)
+{
+	struct mhi_ep_device *mhi_dev = buf_info->mhi_dev;
+	struct mhi_ep_cntrl *mhi_cntrl = mhi_dev->mhi_cntrl;
+	struct mhi_ep_chan *mhi_chan = mhi_dev->ul_chan;
+	struct mhi_ep_ring *ring = &mhi_cntrl->mhi_chan[mhi_chan->chan].ring;
+	struct mhi_ring_element *el = &ring->ring_cache[ring->rd_offset];
+	struct mhi_result result = {};
+	int ret;
+
+	if (mhi_chan->xfer_cb) {
+		result.buf_addr = buf_info->cb_buf;
+		result.dir = mhi_chan->dir;
+		result.bytes_xferd = buf_info->size;
+
+		mhi_chan->xfer_cb(mhi_dev, &result);
+	}
+
+	/*
+	 * The host will split the data packet into multiple TREs if it can't fit
+	 * the packet in a single TRE. In that case, CHAIN flag will be set by the
+	 * host for all TREs except the last one.
+	 */
+	if (buf_info->code != MHI_EV_CC_OVERFLOW) {
+		if (MHI_TRE_DATA_GET_CHAIN(el)) {
+			/*
+			 * IEOB (Interrupt on End of Block) flag will be set by the host if
+			 * it expects the completion event for all TREs of a TD.
+			 */
+			if (MHI_TRE_DATA_GET_IEOB(el)) {
+				ret = mhi_ep_send_completion_event(mhi_cntrl, ring, el,
+							     MHI_TRE_DATA_GET_LEN(el),
+							     MHI_EV_CC_EOB);
+				if (ret < 0) {
+					dev_err(&mhi_chan->mhi_dev->dev,
+						"Error sending transfer compl. event\n");
+					goto err_free_tre_buf;
+				}
+			}
+		} else {
+			/*
+			 * IEOT (Interrupt on End of Transfer) flag will be set by the host
+			 * for the last TRE of the TD and expects the completion event for
+			 * the same.
+			 */
+			if (MHI_TRE_DATA_GET_IEOT(el)) {
+				ret = mhi_ep_send_completion_event(mhi_cntrl, ring, el,
+							     MHI_TRE_DATA_GET_LEN(el),
+							     MHI_EV_CC_EOT);
+				if (ret < 0) {
+					dev_err(&mhi_chan->mhi_dev->dev,
+						"Error sending transfer compl. event\n");
+					goto err_free_tre_buf;
+				}
+			}
+		}
+	}
+
+	mhi_ep_ring_inc_index(ring);
+
+err_free_tre_buf:
+	kmem_cache_free(mhi_cntrl->tre_buf_cache, buf_info->cb_buf);
+}
+
 static int mhi_ep_read_channel(struct mhi_ep_cntrl *mhi_cntrl,
-				struct mhi_ep_ring *ring,
-				struct mhi_result *result,
-				u32 len)
+			       struct mhi_ep_ring *ring)
 {
 	struct mhi_ep_chan *mhi_chan = &mhi_cntrl->mhi_chan[ring->ch_id];
 	struct device *dev = &mhi_cntrl->mhi_dev->dev;
-	size_t tr_len, read_offset, write_offset;
+	size_t tr_len, read_offset;
+	struct mhi_ep_buf_info buf_info = {};
+	u32 len = MHI_EP_DEFAULT_MTU;
 	struct mhi_ring_element *el;
-	bool tr_done = false;
-	void *write_addr;
-	u64 read_addr;
-	u32 buf_left;
+	void *buf_addr;
 	int ret;
-
-	buf_left = len;
 
 	do {
 		/* Don't process the transfer ring if the channel is not in RUNNING state */
@@ -297,97 +417,62 @@ static int mhi_ep_read_channel(struct mhi_ep_cntrl *mhi_cntrl,
 			return -ENODEV;
 		}
 
-		el = &ring->ring_cache[ring->rd_offset];
+		el = &ring->ring_cache[mhi_chan->rd_offset];
 
 		/* Check if there is data pending to be read from previous read operation */
 		if (mhi_chan->tre_bytes_left) {
 			dev_dbg(dev, "TRE bytes remaining: %u\n", mhi_chan->tre_bytes_left);
-			tr_len = min(buf_left, mhi_chan->tre_bytes_left);
+			tr_len = min(len, mhi_chan->tre_bytes_left);
 		} else {
 			mhi_chan->tre_loc = MHI_TRE_DATA_GET_PTR(el);
 			mhi_chan->tre_size = MHI_TRE_DATA_GET_LEN(el);
 			mhi_chan->tre_bytes_left = mhi_chan->tre_size;
 
-			tr_len = min(buf_left, mhi_chan->tre_size);
+			tr_len = min(len, mhi_chan->tre_size);
 		}
 
 		read_offset = mhi_chan->tre_size - mhi_chan->tre_bytes_left;
-		write_offset = len - buf_left;
-		read_addr = mhi_chan->tre_loc + read_offset;
-		write_addr = result->buf_addr + write_offset;
+
+		buf_addr = kmem_cache_zalloc(mhi_cntrl->tre_buf_cache, GFP_KERNEL);
+		if (!buf_addr)
+			return -ENOMEM;
+
+		buf_info.host_addr = mhi_chan->tre_loc + read_offset;
+		buf_info.dev_addr = buf_addr;
+		buf_info.size = tr_len;
+		buf_info.cb = mhi_ep_read_completion;
+		buf_info.cb_buf = buf_addr;
+		buf_info.mhi_dev = mhi_chan->mhi_dev;
+
+		if (mhi_chan->tre_bytes_left - tr_len)
+			buf_info.code = MHI_EV_CC_OVERFLOW;
 
 		dev_dbg(dev, "Reading %zd bytes from channel (%u)\n", tr_len, ring->ch_id);
-		ret = mhi_cntrl->read_from_host(mhi_cntrl, read_addr, write_addr, tr_len);
+		ret = mhi_cntrl->read_async(mhi_cntrl, &buf_info);
 		if (ret < 0) {
 			dev_err(&mhi_chan->mhi_dev->dev, "Error reading from channel\n");
-			return ret;
+			goto err_free_buf_addr;
 		}
 
-		buf_left -= tr_len;
 		mhi_chan->tre_bytes_left -= tr_len;
 
-		/*
-		 * Once the TRE (Transfer Ring Element) of a TD (Transfer Descriptor) has been
-		 * read completely:
-		 *
-		 * 1. Send completion event to the host based on the flags set in TRE.
-		 * 2. Increment the local read offset of the transfer ring.
-		 */
-		if (!mhi_chan->tre_bytes_left) {
-			/*
-			 * The host will split the data packet into multiple TREs if it can't fit
-			 * the packet in a single TRE. In that case, CHAIN flag will be set by the
-			 * host for all TREs except the last one.
-			 */
-			if (MHI_TRE_DATA_GET_CHAIN(el)) {
-				/*
-				 * IEOB (Interrupt on End of Block) flag will be set by the host if
-				 * it expects the completion event for all TREs of a TD.
-				 */
-				if (MHI_TRE_DATA_GET_IEOB(el)) {
-					ret = mhi_ep_send_completion_event(mhi_cntrl, ring, el,
-								     MHI_TRE_DATA_GET_LEN(el),
-								     MHI_EV_CC_EOB);
-					if (ret < 0) {
-						dev_err(&mhi_chan->mhi_dev->dev,
-							"Error sending transfer compl. event\n");
-						return ret;
-					}
-				}
-			} else {
-				/*
-				 * IEOT (Interrupt on End of Transfer) flag will be set by the host
-				 * for the last TRE of the TD and expects the completion event for
-				 * the same.
-				 */
-				if (MHI_TRE_DATA_GET_IEOT(el)) {
-					ret = mhi_ep_send_completion_event(mhi_cntrl, ring, el,
-								     MHI_TRE_DATA_GET_LEN(el),
-								     MHI_EV_CC_EOT);
-					if (ret < 0) {
-						dev_err(&mhi_chan->mhi_dev->dev,
-							"Error sending transfer compl. event\n");
-						return ret;
-					}
-				}
-
-				tr_done = true;
-			}
-
-			mhi_ep_ring_inc_index(ring);
-		}
-
-		result->bytes_xferd += tr_len;
-	} while (buf_left && !tr_done);
+		if (!mhi_chan->tre_bytes_left)
+			mhi_chan->rd_offset = (mhi_chan->rd_offset + 1) % ring->ring_size;
+	/* Read until the some buffer is left or the ring becomes not empty */
+	} while (!mhi_ep_queue_is_empty(mhi_chan->mhi_dev, DMA_TO_DEVICE));
 
 	return 0;
+
+err_free_buf_addr:
+	kmem_cache_free(mhi_cntrl->tre_buf_cache, buf_addr);
+
+	return ret;
 }
 
-static int mhi_ep_process_ch_ring(struct mhi_ep_ring *ring, struct mhi_ring_element *el)
+static int mhi_ep_process_ch_ring(struct mhi_ep_ring *ring)
 {
 	struct mhi_ep_cntrl *mhi_cntrl = ring->mhi_cntrl;
 	struct mhi_result result = {};
-	u32 len = MHI_EP_DEFAULT_MTU;
 	struct mhi_ep_chan *mhi_chan;
 	int ret;
 
@@ -408,30 +493,43 @@ static int mhi_ep_process_ch_ring(struct mhi_ep_ring *ring, struct mhi_ring_elem
 		mhi_chan->xfer_cb(mhi_chan->mhi_dev, &result);
 	} else {
 		/* UL channel */
-		result.buf_addr = kzalloc(len, GFP_KERNEL);
-		if (!result.buf_addr)
-			return -ENOMEM;
-
-		do {
-			ret = mhi_ep_read_channel(mhi_cntrl, ring, &result, len);
-			if (ret < 0) {
-				dev_err(&mhi_chan->mhi_dev->dev, "Failed to read channel\n");
-				kfree(result.buf_addr);
-				return ret;
-			}
-
-			result.dir = mhi_chan->dir;
-			mhi_chan->xfer_cb(mhi_chan->mhi_dev, &result);
-			result.bytes_xferd = 0;
-			memset(result.buf_addr, 0, len);
-
-			/* Read until the ring becomes empty */
-		} while (!mhi_ep_queue_is_empty(mhi_chan->mhi_dev, DMA_TO_DEVICE));
-
-		kfree(result.buf_addr);
+		ret = mhi_ep_read_channel(mhi_cntrl, ring);
+		if (ret < 0) {
+			dev_err(&mhi_chan->mhi_dev->dev, "Failed to read channel\n");
+			return ret;
+		}
 	}
 
 	return 0;
+}
+
+static void mhi_ep_skb_completion(struct mhi_ep_buf_info *buf_info)
+{
+	struct mhi_ep_device *mhi_dev = buf_info->mhi_dev;
+	struct mhi_ep_cntrl *mhi_cntrl = mhi_dev->mhi_cntrl;
+	struct mhi_ep_chan *mhi_chan = mhi_dev->dl_chan;
+	struct mhi_ep_ring *ring = &mhi_cntrl->mhi_chan[mhi_chan->chan].ring;
+	struct mhi_ring_element *el = &ring->ring_cache[ring->rd_offset];
+	struct device *dev = &mhi_dev->dev;
+	struct mhi_result result = {};
+	int ret;
+
+	if (mhi_chan->xfer_cb) {
+		result.buf_addr = buf_info->cb_buf;
+		result.dir = mhi_chan->dir;
+		result.bytes_xferd = buf_info->size;
+
+		mhi_chan->xfer_cb(mhi_dev, &result);
+	}
+
+	ret = mhi_ep_send_completion_event(mhi_cntrl, ring, el, buf_info->size,
+					   buf_info->code);
+	if (ret) {
+		dev_err(dev, "Error sending transfer completion event\n");
+		return;
+	}
+
+	mhi_ep_ring_inc_index(ring);
 }
 
 /* TODO: Handle partially formed TDs */
@@ -440,12 +538,10 @@ int mhi_ep_queue_skb(struct mhi_ep_device *mhi_dev, struct sk_buff *skb)
 	struct mhi_ep_cntrl *mhi_cntrl = mhi_dev->mhi_cntrl;
 	struct mhi_ep_chan *mhi_chan = mhi_dev->dl_chan;
 	struct device *dev = &mhi_chan->mhi_dev->dev;
+	struct mhi_ep_buf_info buf_info = {};
 	struct mhi_ring_element *el;
 	u32 buf_left, read_offset;
 	struct mhi_ep_ring *ring;
-	enum mhi_ev_ccs code;
-	void *read_addr;
-	u64 write_addr;
 	size_t tr_len;
 	u32 tre_len;
 	int ret;
@@ -469,40 +565,44 @@ int mhi_ep_queue_skb(struct mhi_ep_device *mhi_dev, struct sk_buff *skb)
 			goto err_exit;
 		}
 
-		el = &ring->ring_cache[ring->rd_offset];
+		el = &ring->ring_cache[mhi_chan->rd_offset];
 		tre_len = MHI_TRE_DATA_GET_LEN(el);
 
 		tr_len = min(buf_left, tre_len);
 		read_offset = skb->len - buf_left;
-		read_addr = skb->data + read_offset;
-		write_addr = MHI_TRE_DATA_GET_PTR(el);
 
-		dev_dbg(dev, "Writing %zd bytes to channel (%u)\n", tr_len, ring->ch_id);
-		ret = mhi_cntrl->write_to_host(mhi_cntrl, read_addr, write_addr, tr_len);
-		if (ret < 0) {
-			dev_err(dev, "Error writing to the channel\n");
-			goto err_exit;
-		}
+		buf_info.dev_addr = skb->data + read_offset;
+		buf_info.host_addr = MHI_TRE_DATA_GET_PTR(el);
+		buf_info.size = tr_len;
+		buf_info.cb = mhi_ep_skb_completion;
+		buf_info.cb_buf = skb;
+		buf_info.mhi_dev = mhi_dev;
 
-		buf_left -= tr_len;
 		/*
 		 * For all TREs queued by the host for DL channel, only the EOT flag will be set.
 		 * If the packet doesn't fit into a single TRE, send the OVERFLOW event to
 		 * the host so that the host can adjust the packet boundary to next TREs. Else send
 		 * the EOT event to the host indicating the packet boundary.
 		 */
-		if (buf_left)
-			code = MHI_EV_CC_OVERFLOW;
+		if (buf_left - tr_len)
+			buf_info.code = MHI_EV_CC_OVERFLOW;
 		else
-			code = MHI_EV_CC_EOT;
+			buf_info.code = MHI_EV_CC_EOT;
 
-		ret = mhi_ep_send_completion_event(mhi_cntrl, ring, el, tr_len, code);
-		if (ret) {
-			dev_err(dev, "Error sending transfer completion event\n");
+		dev_dbg(dev, "Writing %zd bytes to channel (%u)\n", tr_len, ring->ch_id);
+		ret = mhi_cntrl->write_async(mhi_cntrl, &buf_info);
+		if (ret < 0) {
+			dev_err(dev, "Error writing to the channel\n");
 			goto err_exit;
 		}
 
-		mhi_ep_ring_inc_index(ring);
+		buf_left -= tr_len;
+
+		/*
+		 * Update the read offset cached in mhi_chan. Actual read offset
+		 * will be updated by the completion handler.
+		 */
+		mhi_chan->rd_offset = (mhi_chan->rd_offset + 1) % ring->ring_size;
 	} while (buf_left);
 
 	mutex_unlock(&mhi_chan->lock);
@@ -691,7 +791,7 @@ static void mhi_ep_cmd_ring_worker(struct work_struct *work)
 		el = &ring->ring_cache[ring->rd_offset];
 
 		ret = mhi_ep_process_cmd_ring(ring, el);
-		if (ret)
+		if (ret && ret != -ENODEV)
 			dev_err(dev, "Error processing cmd ring element: %zu\n", ring->rd_offset);
 
 		mhi_ep_ring_inc_index(ring);
@@ -703,7 +803,6 @@ static void mhi_ep_ch_ring_worker(struct work_struct *work)
 	struct mhi_ep_cntrl *mhi_cntrl = container_of(work, struct mhi_ep_cntrl, ch_ring_work);
 	struct device *dev = &mhi_cntrl->mhi_dev->dev;
 	struct mhi_ep_ring_item *itr, *tmp;
-	struct mhi_ring_element *el;
 	struct mhi_ep_ring *ring;
 	struct mhi_ep_chan *chan;
 	unsigned long flags;
@@ -719,36 +818,47 @@ static void mhi_ep_ch_ring_worker(struct work_struct *work)
 		list_del(&itr->node);
 		ring = itr->ring;
 
-		/* Update the write offset for the ring */
-		ret = mhi_ep_update_wr_offset(ring);
-		if (ret) {
-			dev_err(dev, "Error updating write offset for ring\n");
-			kfree(itr);
-			continue;
-		}
-
-		/* Sanity check to make sure there are elements in the ring */
-		if (ring->rd_offset == ring->wr_offset) {
-			kfree(itr);
-			continue;
-		}
-
-		el = &ring->ring_cache[ring->rd_offset];
 		chan = &mhi_cntrl->mhi_chan[ring->ch_id];
-
 		mutex_lock(&chan->lock);
-		dev_dbg(dev, "Processing the ring for channel (%u)\n", ring->ch_id);
-		ret = mhi_ep_process_ch_ring(ring, el);
-		if (ret) {
-			dev_err(dev, "Error processing ring for channel (%u): %d\n",
-				ring->ch_id, ret);
+
+		/*
+		 * The ring could've stopped while we waited to grab the (chan->lock), so do
+		 * a sanity check before going further.
+		 */
+		if (!ring->started) {
 			mutex_unlock(&chan->lock);
 			kfree(itr);
 			continue;
 		}
 
+		/* Update the write offset for the ring */
+		ret = mhi_ep_update_wr_offset(ring);
+		if (ret) {
+			dev_err(dev, "Error updating write offset for ring\n");
+			mutex_unlock(&chan->lock);
+			kmem_cache_free(mhi_cntrl->ring_item_cache, itr);
+			continue;
+		}
+
+		/* Sanity check to make sure there are elements in the ring */
+		if (chan->rd_offset == ring->wr_offset) {
+			mutex_unlock(&chan->lock);
+			kmem_cache_free(mhi_cntrl->ring_item_cache, itr);
+			continue;
+		}
+
+		dev_dbg(dev, "Processing the ring for channel (%u)\n", ring->ch_id);
+		ret = mhi_ep_process_ch_ring(ring);
+		if (ret) {
+			dev_err(dev, "Error processing ring for channel (%u): %d\n",
+				ring->ch_id, ret);
+			mutex_unlock(&chan->lock);
+			kmem_cache_free(mhi_cntrl->ring_item_cache, itr);
+			continue;
+		}
+
 		mutex_unlock(&chan->lock);
-		kfree(itr);
+		kmem_cache_free(mhi_cntrl->ring_item_cache, itr);
 	}
 }
 
@@ -804,7 +914,7 @@ static void mhi_ep_queue_channel_db(struct mhi_ep_cntrl *mhi_cntrl, unsigned lon
 		u32 ch_id = ch_idx + i;
 
 		ring = &mhi_cntrl->mhi_chan[ch_id].ring;
-		item = kzalloc(sizeof(*item), GFP_ATOMIC);
+		item = kmem_cache_zalloc(mhi_cntrl->ring_item_cache, GFP_ATOMIC);
 		if (!item)
 			return;
 
@@ -853,7 +963,7 @@ static void mhi_ep_process_ctrl_interrupt(struct mhi_ep_cntrl *mhi_cntrl,
 {
 	struct mhi_ep_state_transition *item;
 
-	item = kzalloc(sizeof(*item), GFP_ATOMIC);
+	item = kzalloc_obj(*item, GFP_ATOMIC);
 	if (!item)
 		return;
 
@@ -973,44 +1083,25 @@ static void mhi_ep_abort_transfer(struct mhi_ep_cntrl *mhi_cntrl)
 static void mhi_ep_reset_worker(struct work_struct *work)
 {
 	struct mhi_ep_cntrl *mhi_cntrl = container_of(work, struct mhi_ep_cntrl, reset_work);
-	struct device *dev = &mhi_cntrl->mhi_dev->dev;
 	enum mhi_state cur_state;
-	int ret;
 
-	mhi_ep_abort_transfer(mhi_cntrl);
+	mhi_ep_power_down(mhi_cntrl);
 
-	spin_lock_bh(&mhi_cntrl->state_lock);
+	mutex_lock(&mhi_cntrl->state_lock);
+
 	/* Reset MMIO to signal host that the MHI_RESET is completed in endpoint */
 	mhi_ep_mmio_reset(mhi_cntrl);
 	cur_state = mhi_cntrl->mhi_state;
-	spin_unlock_bh(&mhi_cntrl->state_lock);
 
 	/*
 	 * Only proceed further if the reset is due to SYS_ERR. The host will
 	 * issue reset during shutdown also and we don't need to do re-init in
 	 * that case.
 	 */
-	if (cur_state == MHI_STATE_SYS_ERR) {
-		mhi_ep_mmio_init(mhi_cntrl);
+	if (cur_state == MHI_STATE_SYS_ERR)
+		mhi_ep_power_up(mhi_cntrl);
 
-		/* Set AMSS EE before signaling ready state */
-		mhi_ep_mmio_set_env(mhi_cntrl, MHI_EE_AMSS);
-
-		/* All set, notify the host that we are ready */
-		ret = mhi_ep_set_ready_state(mhi_cntrl);
-		if (ret)
-			return;
-
-		dev_dbg(dev, "READY state notification sent to the host\n");
-
-		ret = mhi_ep_enable(mhi_cntrl);
-		if (ret) {
-			dev_err(dev, "Failed to enable MHI endpoint: %d\n", ret);
-			return;
-		}
-
-		enable_irq(mhi_cntrl->irq);
-	}
+	mutex_unlock(&mhi_cntrl->state_lock);
 }
 
 /*
@@ -1045,8 +1136,8 @@ int mhi_ep_power_up(struct mhi_ep_cntrl *mhi_cntrl)
 	mhi_ep_mmio_mask_interrupts(mhi_cntrl);
 	mhi_ep_mmio_init(mhi_cntrl);
 
-	mhi_cntrl->mhi_event = kzalloc(mhi_cntrl->event_rings * (sizeof(*mhi_cntrl->mhi_event)),
-					GFP_KERNEL);
+	mhi_cntrl->mhi_event = kzalloc_objs(*mhi_cntrl->mhi_event,
+					    mhi_cntrl->event_rings);
 	if (!mhi_cntrl->mhi_event)
 		return -ENOMEM;
 
@@ -1089,11 +1180,11 @@ EXPORT_SYMBOL_GPL(mhi_ep_power_up);
 
 void mhi_ep_power_down(struct mhi_ep_cntrl *mhi_cntrl)
 {
-	if (mhi_cntrl->enabled)
+	if (mhi_cntrl->enabled) {
 		mhi_ep_abort_transfer(mhi_cntrl);
-
-	kfree(mhi_cntrl->mhi_event);
-	disable_irq(mhi_cntrl->irq);
+		kfree(mhi_cntrl->mhi_event);
+		disable_irq(mhi_cntrl->irq);
+	}
 }
 EXPORT_SYMBOL_GPL(mhi_ep_power_down);
 
@@ -1119,6 +1210,7 @@ void mhi_ep_suspend_channels(struct mhi_ep_cntrl *mhi_cntrl)
 
 		dev_dbg(&mhi_chan->mhi_dev->dev, "Suspending channel\n");
 		/* Set channel state to SUSPENDED */
+		mhi_chan->state = MHI_CH_STATE_SUSPENDED;
 		tmp &= ~CHAN_CTX_CHSTATE_MASK;
 		tmp |= FIELD_PREP(CHAN_CTX_CHSTATE_MASK, MHI_CH_STATE_SUSPENDED);
 		mhi_cntrl->ch_ctx_cache[i].chcfg = cpu_to_le32(tmp);
@@ -1148,6 +1240,7 @@ void mhi_ep_resume_channels(struct mhi_ep_cntrl *mhi_cntrl)
 
 		dev_dbg(&mhi_chan->mhi_dev->dev, "Resuming channel\n");
 		/* Set channel state to RUNNING */
+		mhi_chan->state = MHI_CH_STATE_RUNNING;
 		tmp &= ~CHAN_CTX_CHSTATE_MASK;
 		tmp |= FIELD_PREP(CHAN_CTX_CHSTATE_MASK, MHI_CH_STATE_RUNNING);
 		mhi_cntrl->ch_ctx_cache[i].chcfg = cpu_to_le32(tmp);
@@ -1182,7 +1275,7 @@ static struct mhi_ep_device *mhi_ep_alloc_device(struct mhi_ep_cntrl *mhi_cntrl,
 	struct mhi_ep_device *mhi_dev;
 	struct device *dev;
 
-	mhi_dev = kzalloc(sizeof(*mhi_dev), GFP_KERNEL);
+	mhi_dev = kzalloc_obj(*mhi_dev);
 	if (!mhi_dev)
 		return ERR_PTR(-ENOMEM);
 
@@ -1242,9 +1335,13 @@ static int mhi_ep_create_device(struct mhi_ep_cntrl *mhi_cntrl, u32 ch_id)
 
 	/* Channel name is same for both UL and DL */
 	mhi_dev->name = mhi_chan->name;
-	dev_set_name(&mhi_dev->dev, "%s_%s",
+	ret = dev_set_name(&mhi_dev->dev, "%s_%s",
 		     dev_name(&mhi_cntrl->mhi_dev->dev),
 		     mhi_dev->name);
+	if (ret) {
+		put_device(&mhi_dev->dev);
+		return ret;
+	}
 
 	ret = device_add(&mhi_dev->dev);
 	if (ret)
@@ -1302,8 +1399,8 @@ static int mhi_ep_chan_init(struct mhi_ep_cntrl *mhi_cntrl,
 	 * Allocate max_channels supported by the MHI endpoint and populate
 	 * only the defined channels
 	 */
-	mhi_cntrl->mhi_chan = kcalloc(mhi_cntrl->max_chan, sizeof(*mhi_cntrl->mhi_chan),
-				      GFP_KERNEL);
+	mhi_cntrl->mhi_chan = kzalloc_objs(*mhi_cntrl->mhi_chan,
+					   mhi_cntrl->max_chan);
 	if (!mhi_cntrl->mhi_chan)
 		return -ENOMEM;
 
@@ -1354,14 +1451,41 @@ int mhi_ep_register_controller(struct mhi_ep_cntrl *mhi_cntrl,
 	if (!mhi_cntrl || !mhi_cntrl->cntrl_dev || !mhi_cntrl->mmio || !mhi_cntrl->irq)
 		return -EINVAL;
 
+	if (!mhi_cntrl->read_sync || !mhi_cntrl->write_sync ||
+	    !mhi_cntrl->read_async || !mhi_cntrl->write_async)
+		return -EINVAL;
+
 	ret = mhi_ep_chan_init(mhi_cntrl, config);
 	if (ret)
 		return ret;
 
-	mhi_cntrl->mhi_cmd = kcalloc(NR_OF_CMD_RINGS, sizeof(*mhi_cntrl->mhi_cmd), GFP_KERNEL);
+	mhi_cntrl->mhi_cmd = kzalloc_objs(*mhi_cntrl->mhi_cmd, NR_OF_CMD_RINGS);
 	if (!mhi_cntrl->mhi_cmd) {
 		ret = -ENOMEM;
 		goto err_free_ch;
+	}
+
+	mhi_cntrl->ev_ring_el_cache = kmem_cache_create("mhi_ep_event_ring_el",
+							sizeof(struct mhi_ring_element), 0,
+							0, NULL);
+	if (!mhi_cntrl->ev_ring_el_cache) {
+		ret = -ENOMEM;
+		goto err_free_cmd;
+	}
+
+	mhi_cntrl->tre_buf_cache = kmem_cache_create("mhi_ep_tre_buf", MHI_EP_DEFAULT_MTU, 0,
+						      0, NULL);
+	if (!mhi_cntrl->tre_buf_cache) {
+		ret = -ENOMEM;
+		goto err_destroy_ev_ring_el_cache;
+	}
+
+	mhi_cntrl->ring_item_cache = kmem_cache_create("mhi_ep_ring_item",
+							sizeof(struct mhi_ep_ring_item), 0,
+							0, NULL);
+	if (!mhi_cntrl->ring_item_cache) {
+		ret = -ENOMEM;
+		goto err_destroy_tre_buf_cache;
 	}
 
 	INIT_WORK(&mhi_cntrl->state_work, mhi_ep_state_worker);
@@ -1369,16 +1493,16 @@ int mhi_ep_register_controller(struct mhi_ep_cntrl *mhi_cntrl,
 	INIT_WORK(&mhi_cntrl->cmd_ring_work, mhi_ep_cmd_ring_worker);
 	INIT_WORK(&mhi_cntrl->ch_ring_work, mhi_ep_ch_ring_worker);
 
-	mhi_cntrl->wq = alloc_workqueue("mhi_ep_wq", 0, 0);
+	mhi_cntrl->wq = alloc_workqueue("mhi_ep_wq", WQ_PERCPU, 0);
 	if (!mhi_cntrl->wq) {
 		ret = -ENOMEM;
-		goto err_free_cmd;
+		goto err_destroy_ring_item_cache;
 	}
 
 	INIT_LIST_HEAD(&mhi_cntrl->st_transition_list);
 	INIT_LIST_HEAD(&mhi_cntrl->ch_db_list);
-	spin_lock_init(&mhi_cntrl->state_lock);
 	spin_lock_init(&mhi_cntrl->list_lock);
+	mutex_init(&mhi_cntrl->state_lock);
 	mutex_init(&mhi_cntrl->event_lock);
 
 	/* Set MHI version and AMSS EE before enumeration */
@@ -1408,7 +1532,10 @@ int mhi_ep_register_controller(struct mhi_ep_cntrl *mhi_cntrl,
 		goto err_free_irq;
 	}
 
-	dev_set_name(&mhi_dev->dev, "mhi_ep%u", mhi_cntrl->index);
+	ret = dev_set_name(&mhi_dev->dev, "mhi_ep%u", mhi_cntrl->index);
+	if (ret)
+		goto err_put_dev;
+
 	mhi_dev->name = dev_name(&mhi_dev->dev);
 	mhi_cntrl->mhi_dev = mhi_dev;
 
@@ -1428,6 +1555,12 @@ err_ida_free:
 	ida_free(&mhi_ep_cntrl_ida, mhi_cntrl->index);
 err_destroy_wq:
 	destroy_workqueue(mhi_cntrl->wq);
+err_destroy_ring_item_cache:
+	kmem_cache_destroy(mhi_cntrl->ring_item_cache);
+err_destroy_ev_ring_el_cache:
+	kmem_cache_destroy(mhi_cntrl->ev_ring_el_cache);
+err_destroy_tre_buf_cache:
+	kmem_cache_destroy(mhi_cntrl->tre_buf_cache);
 err_free_cmd:
 	kfree(mhi_cntrl->mhi_cmd);
 err_free_ch:
@@ -1449,6 +1582,9 @@ void mhi_ep_unregister_controller(struct mhi_ep_cntrl *mhi_cntrl)
 
 	free_irq(mhi_cntrl->irq, mhi_cntrl);
 
+	kmem_cache_destroy(mhi_cntrl->tre_buf_cache);
+	kmem_cache_destroy(mhi_cntrl->ev_ring_el_cache);
+	kmem_cache_destroy(mhi_cntrl->ring_item_cache);
 	kfree(mhi_cntrl->mhi_cmd);
 	kfree(mhi_cntrl->mhi_chan);
 
@@ -1459,7 +1595,7 @@ void mhi_ep_unregister_controller(struct mhi_ep_cntrl *mhi_cntrl)
 }
 EXPORT_SYMBOL_GPL(mhi_ep_unregister_controller);
 
-static int mhi_ep_driver_probe(struct device *dev)
+static int mhi_ep_probe(struct device *dev)
 {
 	struct mhi_ep_device *mhi_dev = to_mhi_ep_device(dev);
 	struct mhi_ep_driver *mhi_drv = to_mhi_ep_driver(dev->driver);
@@ -1472,7 +1608,7 @@ static int mhi_ep_driver_probe(struct device *dev)
 	return mhi_drv->probe(mhi_dev, mhi_dev->id);
 }
 
-static int mhi_ep_driver_remove(struct device *dev)
+static void mhi_ep_remove(struct device *dev)
 {
 	struct mhi_ep_device *mhi_dev = to_mhi_ep_device(dev);
 	struct mhi_ep_driver *mhi_drv = to_mhi_ep_driver(dev->driver);
@@ -1482,7 +1618,7 @@ static int mhi_ep_driver_remove(struct device *dev)
 
 	/* Skip if it is a controller device */
 	if (mhi_dev->dev_type == MHI_DEVICE_CONTROLLER)
-		return 0;
+		return;
 
 	/* Disconnect the channels associated with the driver */
 	for (dir = 0; dir < 2; dir++) {
@@ -1506,8 +1642,6 @@ static int mhi_ep_driver_remove(struct device *dev)
 
 	/* Remove the client driver now */
 	mhi_drv->remove(mhi_dev);
-
-	return 0;
 }
 
 int __mhi_ep_driver_register(struct mhi_ep_driver *mhi_drv, struct module *owner)
@@ -1523,8 +1657,6 @@ int __mhi_ep_driver_register(struct mhi_ep_driver *mhi_drv, struct module *owner
 
 	driver->bus = &mhi_ep_bus_type;
 	driver->owner = owner;
-	driver->probe = mhi_ep_driver_probe;
-	driver->remove = mhi_ep_driver_remove;
 
 	return driver_register(driver);
 }
@@ -1536,18 +1668,18 @@ void mhi_ep_driver_unregister(struct mhi_ep_driver *mhi_drv)
 }
 EXPORT_SYMBOL_GPL(mhi_ep_driver_unregister);
 
-static int mhi_ep_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int mhi_ep_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct mhi_ep_device *mhi_dev = to_mhi_ep_device(dev);
+	const struct mhi_ep_device *mhi_dev = to_mhi_ep_device(dev);
 
 	return add_uevent_var(env, "MODALIAS=" MHI_EP_DEVICE_MODALIAS_FMT,
 					mhi_dev->name);
 }
 
-static int mhi_ep_match(struct device *dev, struct device_driver *drv)
+static int mhi_ep_match(struct device *dev, const struct device_driver *drv)
 {
 	struct mhi_ep_device *mhi_dev = to_mhi_ep_device(dev);
-	struct mhi_ep_driver *mhi_drv = to_mhi_ep_driver(drv);
+	const struct mhi_ep_driver *mhi_drv = to_mhi_ep_driver(drv);
 	const struct mhi_device_id *id;
 
 	/*
@@ -1566,11 +1698,13 @@ static int mhi_ep_match(struct device *dev, struct device_driver *drv)
 	return 0;
 };
 
-struct bus_type mhi_ep_bus_type = {
+const struct bus_type mhi_ep_bus_type = {
 	.name = "mhi_ep",
 	.dev_name = "mhi_ep",
 	.match = mhi_ep_match,
 	.uevent = mhi_ep_uevent,
+	.probe = mhi_ep_probe,
+	.remove = mhi_ep_remove,
 };
 
 static int __init mhi_ep_init(void)

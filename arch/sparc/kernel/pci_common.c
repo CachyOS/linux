@@ -8,7 +8,8 @@
 #include <linux/slab.h>
 #include <linux/pci.h>
 #include <linux/device.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 
 #include <asm/prom.h>
 #include <asm/oplib.h>
@@ -335,7 +336,7 @@ static void pci_register_iommu_region(struct pci_pbm_info *pbm)
 					  NULL);
 
 	if (vdma) {
-		struct resource *rp = kzalloc(sizeof(*rp), GFP_KERNEL);
+		struct resource *rp = kzalloc_obj(*rp);
 
 		if (!rp) {
 			pr_info("%s: Cannot allocate IOMMU resource.\n",
@@ -360,7 +361,7 @@ void pci_determine_mem_io_space(struct pci_pbm_info *pbm)
 	int i, saw_mem, saw_io;
 	int num_pbm_ranges;
 
-	/* Corresponding generic code in of_pci_get_host_bridge_resources() */
+	/* Corresponds to generic devm_of_pci_get_host_bridge_resources() */
 
 	saw_mem = saw_io = 0;
 	pbm_ranges = of_get_property(pbm->op->dev.of_node, "ranges", &i);

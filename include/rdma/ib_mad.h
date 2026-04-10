@@ -48,6 +48,7 @@
 #define IB_MGMT_METHOD_REPORT			0x06
 #define IB_MGMT_METHOD_REPORT_RESP		0x86
 #define IB_MGMT_METHOD_TRAP_REPRESS		0x07
+#define IB_MGMT_METHOD_GET_TABLE		0x12
 
 #define IB_MGMT_METHOD_RESP			0x80
 #define IB_BM_ATTR_MOD_RESP			cpu_to_be32(1)
@@ -277,6 +278,8 @@ enum ib_port_capability_mask2_bits {
 	IB_PORT_LINK_WIDTH_2X_SUP		= 1 << 4,
 	IB_PORT_LINK_SPEED_HDR_SUP		= 1 << 5,
 	IB_PORT_LINK_SPEED_NDR_SUP		= 1 << 10,
+	IB_PORT_EXTENDED_SPEEDS2_SUP            = 1 << 11,
+	IB_PORT_LINK_SPEED_XDR_SUP              = 1 << 12,
 };
 
 #define OPA_CLASS_PORT_INFO_PR_SUPPORT BIT(26)

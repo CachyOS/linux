@@ -10,18 +10,17 @@
  */
 
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/init.h>
 #include <linux/i2c.h>
 #include <linux/delay.h>
 #include <linux/regmap.h>
-#include <linux/acpi.h>
 #include <linux/pm.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 
 #define MMC35240_DRV_NAME "mmc35240"
-#define MMC35240_REGMAP_NAME "mmc35240_regmap"
 
 #define MMC35240_REG_XOUT_L	0x00
 #define MMC35240_REG_XOUT_H	0x01
@@ -186,9 +185,8 @@ static int mmc35240_hw_set(struct mmc35240_data *data, bool set)
 	 * Recharge the capacitor at VCAP pin, requested to be issued
 	 * before a SET/RESET command.
 	 */
-	ret = regmap_update_bits(data->regmap, MMC35240_REG_CTRL0,
-				 MMC35240_CTRL0_REFILL_BIT,
-				 MMC35240_CTRL0_REFILL_BIT);
+	ret = regmap_set_bits(data->regmap, MMC35240_REG_CTRL0,
+			      MMC35240_CTRL0_REFILL_BIT);
 	if (ret < 0)
 		return ret;
 	usleep_range(MMC35240_WAIT_CHARGE_PUMP, MMC35240_WAIT_CHARGE_PUMP + 1);
@@ -198,8 +196,7 @@ static int mmc35240_hw_set(struct mmc35240_data *data, bool set)
 	else
 		coil_bit = MMC35240_CTRL0_RESET_BIT;
 
-	return regmap_update_bits(data->regmap, MMC35240_REG_CTRL0,
-				  coil_bit, coil_bit);
+	return regmap_set_bits(data->regmap, MMC35240_REG_CTRL0, coil_bit);
 
 }
 
@@ -465,7 +462,7 @@ static const struct reg_default mmc35240_reg_defaults[] = {
 };
 
 static const struct regmap_config mmc35240_regmap_config = {
-	.name = MMC35240_REGMAP_NAME,
+	.name = "mmc35240_regmap",
 
 	.reg_bits = 8,
 	.val_bits = 8,
@@ -481,8 +478,7 @@ static const struct regmap_config mmc35240_regmap_config = {
 	.num_reg_defaults = ARRAY_SIZE(mmc35240_reg_defaults),
 };
 
-static int mmc35240_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int mmc35240_probe(struct i2c_client *client)
 {
 	struct mmc35240_data *data;
 	struct iio_dev *indio_dev;
@@ -559,13 +555,13 @@ MODULE_DEVICE_TABLE(of, mmc35240_of_match);
 
 static const struct acpi_device_id mmc35240_acpi_match[] = {
 	{"MMC35240", 0},
-	{ },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, mmc35240_acpi_match);
 
 static const struct i2c_device_id mmc35240_id[] = {
-	{"mmc35240", 0},
-	{}
+	{ "mmc35240" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, mmc35240_id);
 
@@ -574,7 +570,7 @@ static struct i2c_driver mmc35240_driver = {
 		.name = MMC35240_DRV_NAME,
 		.of_match_table = mmc35240_of_match,
 		.pm = pm_sleep_ptr(&mmc35240_pm_ops),
-		.acpi_match_table = ACPI_PTR(mmc35240_acpi_match),
+		.acpi_match_table = mmc35240_acpi_match,
 	},
 	.probe		= mmc35240_probe,
 	.id_table	= mmc35240_id,

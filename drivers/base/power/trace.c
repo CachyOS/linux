@@ -120,7 +120,7 @@ static unsigned int read_magic_time(void)
 	struct rtc_time time;
 	unsigned int val;
 
-	if (mc146818_get_time(&time) < 0) {
+	if (mc146818_get_time(&time, 1000) < 0) {
 		pr_err("Unable to read current time from RTC\n");
 		return 0;
 	}
@@ -238,10 +238,8 @@ int show_trace_dev_match(char *buf, size_t size)
 		unsigned int hash = hash_string(DEVSEED, dev_name(dev),
 						DEVHASH);
 		if (hash == value) {
-			int len = snprintf(buf, size, "%s\n",
+			int len = scnprintf(buf, size, "%s\n",
 					    dev_driver_string(dev));
-			if (len > size)
-				len = size;
 			buf += len;
 			ret += len;
 			size -= len;

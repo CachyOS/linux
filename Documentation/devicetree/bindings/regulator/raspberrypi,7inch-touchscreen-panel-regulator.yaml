@@ -15,7 +15,7 @@ description: |
   and control the backlight.
 
 allOf:
-  - $ref: "regulator.yaml#"
+  - $ref: regulator.yaml#
 
 properties:
   compatible:
@@ -23,6 +23,11 @@ properties:
 
   reg:
     maxItems: 1
+
+  gpio-controller: true
+
+  "#gpio-cells":
+    const: 2
 
 additionalProperties: false
 

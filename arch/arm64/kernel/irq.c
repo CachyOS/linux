@@ -10,17 +10,21 @@
  * Copyright (C) 2012 ARM Ltd.
  */
 
-#include <linux/irq.h>
-#include <linux/memory.h>
-#include <linux/smp.h>
 #include <linux/hardirq.h>
 #include <linux/init.h>
+#include <linux/irq.h>
 #include <linux/irqchip.h>
 #include <linux/kprobes.h>
+#include <linux/memory.h>
 #include <linux/scs.h>
 #include <linux/seq_file.h>
+#include <linux/smp.h>
 #include <linux/vmalloc.h>
 #include <asm/daifflags.h>
+#include <asm/exception.h>
+#include <asm/numa.h>
+#include <asm/softirq_stack.h>
+#include <asm/stacktrace.h>
 #include <asm/vmap_stack.h>
 
 /* Only access this in an NMI enter/exit */
@@ -39,35 +43,34 @@ static void init_irq_scs(void)
 {
 	int cpu;
 
-	if (!IS_ENABLED(CONFIG_SHADOW_CALL_STACK))
+	if (!scs_is_enabled())
 		return;
 
 	for_each_possible_cpu(cpu)
 		per_cpu(irq_shadow_call_stack_ptr, cpu) =
-			scs_alloc(cpu_to_node(cpu));
+			scs_alloc(early_cpu_to_node(cpu));
 }
 
-#ifdef CONFIG_VMAP_STACK
-static void init_irq_stacks(void)
+static void __init init_irq_stacks(void)
 {
 	int cpu;
 	unsigned long *p;
 
 	for_each_possible_cpu(cpu) {
-		p = arch_alloc_vmap_stack(IRQ_STACK_SIZE, cpu_to_node(cpu));
+		p = arch_alloc_vmap_stack(IRQ_STACK_SIZE, early_cpu_to_node(cpu));
 		per_cpu(irq_stack_ptr, cpu) = p;
 	}
 }
-#else
-/* irq stack only needs to be 16 byte aligned - not IRQ_STACK_SIZE aligned. */
-DEFINE_PER_CPU_ALIGNED(unsigned long [IRQ_STACK_SIZE/sizeof(long)], irq_stack);
 
-static void init_irq_stacks(void)
+#ifdef CONFIG_SOFTIRQ_ON_OWN_STACK
+static void ____do_softirq(struct pt_regs *regs)
 {
-	int cpu;
+	__do_softirq();
+}
 
-	for_each_possible_cpu(cpu)
-		per_cpu(irq_stack_ptr, cpu) = per_cpu(irq_stack, cpu);
+void do_softirq_own_stack(void)
+{
+	call_on_irq_stack(NULL, ____do_softirq);
 }
 #endif
 

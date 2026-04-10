@@ -352,8 +352,7 @@ static struct bq24735_platform *bq24735_parse_dt_data(struct i2c_client *client)
 	return pdata;
 }
 
-static int bq24735_charger_probe(struct i2c_client *client,
-				 const struct i2c_device_id *id)
+static int bq24735_charger_probe(struct i2c_client *client)
 {
 	int ret;
 	struct bq24735 *charger;
@@ -403,7 +402,7 @@ static int bq24735_charger_probe(struct i2c_client *client,
 
 	psy_cfg.supplied_to = charger->pdata->supplied_to;
 	psy_cfg.num_supplicants = charger->pdata->num_supplicants;
-	psy_cfg.of_node = client->dev.of_node;
+	psy_cfg.fwnode = dev_fwnode(&client->dev);
 	psy_cfg.drv_data = charger;
 
 	i2c_set_clientdata(client, charger);
@@ -490,7 +489,7 @@ static int bq24735_charger_probe(struct i2c_client *client,
 }
 
 static const struct i2c_device_id bq24735_charger_id[] = {
-	{ "bq24735-charger", 0 },
+	{ "bq24735-charger" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, bq24735_charger_id);

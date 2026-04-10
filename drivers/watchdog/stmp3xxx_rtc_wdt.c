@@ -109,10 +109,9 @@ static int stmp3xxx_wdt_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int stmp3xxx_wdt_remove(struct platform_device *pdev)
+static void stmp3xxx_wdt_remove(struct platform_device *pdev)
 {
 	unregister_reboot_notifier(&wdt_notifier);
-	return 0;
 }
 
 static int __maybe_unused stmp3xxx_wdt_suspend(struct device *dev)

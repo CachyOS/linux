@@ -23,17 +23,29 @@
 
 #include <linux/pm_runtime.h>
 
+#include <drm/drm_managed.h>
+#include <drm/drm_print.h>
+
+#include "display/intel_display_core.h"
 #include "gt/intel_engine_regs.h"
+#include "gt/intel_gt.h"
 #include "gt/intel_gt_regs.h"
 
 #include "i915_drv.h"
 #include "i915_iosf_mbi.h"
-#include "i915_trace.h"
+#include "i915_reg.h"
 #include "i915_vgpu.h"
-#include "intel_pm.h"
+#include "i915_wait_util.h"
+#include "i915_mmio_range.h"
+#include "intel_uncore_trace.h"
 
 #define FORCEWAKE_ACK_TIMEOUT_MS 50
 #define GT_FIFO_TIMEOUT_MS	 10
+
+struct intel_uncore *to_intel_uncore(struct drm_device *drm)
+{
+	return &to_i915(drm)->uncore;
+}
 
 #define __raw_posting_read(...) ((void)__raw_uncore_read32(__VA_ARGS__))
 
@@ -44,29 +56,47 @@ fw_domains_get(struct intel_uncore *uncore, enum forcewake_domains fw_domains)
 }
 
 void
-intel_uncore_mmio_debug_init_early(struct intel_uncore_mmio_debug *mmio_debug)
+intel_uncore_mmio_debug_init_early(struct drm_i915_private *i915)
 {
-	spin_lock_init(&mmio_debug->lock);
-	mmio_debug->unclaimed_mmio_check = 1;
+	spin_lock_init(&i915->mmio_debug.lock);
+	i915->mmio_debug.unclaimed_mmio_check = 1;
+
+	i915->uncore.debug = &i915->mmio_debug;
 }
 
-static void mmio_debug_suspend(struct intel_uncore_mmio_debug *mmio_debug)
+static void mmio_debug_suspend(struct intel_uncore *uncore)
 {
-	lockdep_assert_held(&mmio_debug->lock);
+	if (!uncore->debug)
+		return;
+
+	spin_lock(&uncore->debug->lock);
 
 	/* Save and disable mmio debugging for the user bypass */
-	if (!mmio_debug->suspend_count++) {
-		mmio_debug->saved_mmio_check = mmio_debug->unclaimed_mmio_check;
-		mmio_debug->unclaimed_mmio_check = 0;
+	if (!uncore->debug->suspend_count++) {
+		uncore->debug->saved_mmio_check = uncore->debug->unclaimed_mmio_check;
+		uncore->debug->unclaimed_mmio_check = 0;
 	}
+
+	spin_unlock(&uncore->debug->lock);
 }
 
-static void mmio_debug_resume(struct intel_uncore_mmio_debug *mmio_debug)
-{
-	lockdep_assert_held(&mmio_debug->lock);
+static bool check_for_unclaimed_mmio(struct intel_uncore *uncore);
 
-	if (!--mmio_debug->suspend_count)
-		mmio_debug->unclaimed_mmio_check = mmio_debug->saved_mmio_check;
+static void mmio_debug_resume(struct intel_uncore *uncore)
+{
+	if (!uncore->debug)
+		return;
+
+	spin_lock(&uncore->debug->lock);
+
+	if (!--uncore->debug->suspend_count)
+		uncore->debug->unclaimed_mmio_check = uncore->debug->saved_mmio_check;
+
+	if (check_for_unclaimed_mmio(uncore))
+		drm_info(&uncore->i915->drm,
+			 "Invalid mmio detected during user access\n");
+
+	spin_unlock(&uncore->debug->lock);
 }
 
 static const char * const forcewake_domain_names[] = {
@@ -85,6 +115,7 @@ static const char * const forcewake_domain_names[] = {
 	"vebox1",
 	"vebox2",
 	"vebox3",
+	"gsc",
 };
 
 const char *
@@ -112,8 +143,11 @@ fw_domain_reset(const struct intel_uncore_forcewake_domain *d)
 	 * trying to reset here does exist at this point (engines could be fused
 	 * off in ICL+), so no waiting for acks
 	 */
-	/* WaRsClearFWBitsAtReset:bdw,skl */
-	fw_clear(d, 0xffff);
+	/* WaRsClearFWBitsAtReset */
+	if (GRAPHICS_VER(d->uncore->i915) >= 12)
+		fw_clear(d, 0xefff);
+	else
+		fw_clear(d, 0xffff);
 }
 
 static inline void
@@ -154,11 +188,21 @@ wait_ack_set(const struct intel_uncore_forcewake_domain *d,
 static inline void
 fw_domain_wait_ack_clear(const struct intel_uncore_forcewake_domain *d)
 {
-	if (wait_ack_clear(d, FORCEWAKE_KERNEL)) {
-		DRM_ERROR("%s: timed out waiting for forcewake ack to clear.\n",
-			  intel_uncore_forcewake_domain_to_str(d->id));
-		add_taint_for_CI(d->uncore->i915, TAINT_WARN); /* CI now unreliable */
+	if (!wait_ack_clear(d, FORCEWAKE_KERNEL))
+		return;
+
+	if (fw_ack(d) == ~0) {
+		drm_err(&d->uncore->i915->drm,
+			"%s: MMIO unreliable (forcewake register returns 0xFFFFFFFF)!\n",
+			intel_uncore_forcewake_domain_to_str(d->id));
+		intel_gt_set_wedged_async(d->uncore->gt);
+	} else {
+		drm_err(&d->uncore->i915->drm,
+			"%s: timed out waiting for forcewake ack to clear.\n",
+			intel_uncore_forcewake_domain_to_str(d->id));
 	}
+
+	add_taint_for_CI(d->uncore->i915, TAINT_WARN); /* CI now unreliable */
 }
 
 enum ack_type {
@@ -203,11 +247,12 @@ fw_domain_wait_ack_with_fallback(const struct intel_uncore_forcewake_domain *d,
 		fw_clear(d, FORCEWAKE_KERNEL_FALLBACK);
 	} while (!ack_detected && pass++ < 10);
 
-	DRM_DEBUG_DRIVER("%s had to use fallback to %s ack, 0x%x (passes %u)\n",
-			 intel_uncore_forcewake_domain_to_str(d->id),
-			 type == ACK_SET ? "set" : "clear",
-			 fw_ack(d),
-			 pass);
+	drm_dbg(&d->uncore->i915->drm,
+		"%s had to use fallback to %s ack, 0x%x (passes %u)\n",
+		intel_uncore_forcewake_domain_to_str(d->id),
+		type == ACK_SET ? "set" : "clear",
+		fw_ack(d),
+		pass);
 
 	return ack_detected ? 0 : -ETIMEDOUT;
 }
@@ -232,8 +277,9 @@ static inline void
 fw_domain_wait_ack_set(const struct intel_uncore_forcewake_domain *d)
 {
 	if (wait_ack_set(d, FORCEWAKE_KERNEL)) {
-		DRM_ERROR("%s: timed out waiting for forcewake ack request.\n",
-			  intel_uncore_forcewake_domain_to_str(d->id));
+		drm_err(&d->uncore->i915->drm,
+			"%s: timed out waiting for forcewake ack request.\n",
+			intel_uncore_forcewake_domain_to_str(d->id));
 		add_taint_for_CI(d->uncore->i915, TAINT_WARN); /* CI now unreliable */
 	}
 }
@@ -674,9 +720,7 @@ void intel_uncore_forcewake_user_get(struct intel_uncore *uncore)
 	spin_lock_irq(&uncore->lock);
 	if (!uncore->user_forcewake_count++) {
 		intel_uncore_forcewake_get__locked(uncore, FORCEWAKE_ALL);
-		spin_lock(&uncore->debug->lock);
-		mmio_debug_suspend(uncore->debug);
-		spin_unlock(&uncore->debug->lock);
+		mmio_debug_suspend(uncore);
 	}
 	spin_unlock_irq(&uncore->lock);
 }
@@ -692,14 +736,7 @@ void intel_uncore_forcewake_user_put(struct intel_uncore *uncore)
 {
 	spin_lock_irq(&uncore->lock);
 	if (!--uncore->user_forcewake_count) {
-		spin_lock(&uncore->debug->lock);
-		mmio_debug_resume(uncore->debug);
-
-		if (check_for_unclaimed_mmio(uncore))
-			drm_info(&uncore->i915->drm,
-				 "Invalid mmio detected during user access\n");
-		spin_unlock(&uncore->debug->lock);
-
+		mmio_debug_resume(uncore);
 		intel_uncore_forcewake_put__locked(uncore, FORCEWAKE_ALL);
 	}
 	spin_unlock_irq(&uncore->lock);
@@ -806,9 +843,9 @@ void intel_uncore_forcewake_flush(struct intel_uncore *uncore,
 }
 
 /**
- * intel_uncore_forcewake_put__locked - grab forcewake domain references
+ * intel_uncore_forcewake_put__locked - release forcewake domain references
  * @uncore: the intel_uncore structure
- * @fw_domains: forcewake domains to get reference on
+ * @fw_domains: forcewake domains to put references
  *
  * See intel_uncore_forcewake_put(). This variant places the onus
  * on the caller to explicitly handle the dev_priv->uncore.lock spinlock.
@@ -875,10 +912,13 @@ void assert_forcewakes_active(struct intel_uncore *uncore,
 	spin_unlock_irq(&uncore->lock);
 }
 
-/* We give fast paths for the really cool registers */
+/*
+ * We give fast paths for the really cool registers.  The second range includes
+ * media domains (and the GSC starting from Xe_LPM+)
+ */
 #define NEEDS_FORCE_WAKE(reg) ({ \
 	u32 __reg = (reg); \
-	__reg < 0x40000 || __reg >= GEN11_BSD_RING_BASE; \
+	__reg < 0x40000 || __reg >= 0x116000; \
 })
 
 static int fw_range_cmp(u32 offset, const struct intel_forcewake_range *entry)
@@ -915,6 +955,9 @@ find_fw_domain(struct intel_uncore *uncore, u32 offset)
 {
 	const struct intel_forcewake_range *entry;
 
+	if (IS_GSI_REG(offset))
+		offset += uncore->gsi_offset;
+
 	entry = BSEARCH(offset,
 			uncore->fw_domains_table,
 			uncore->fw_domains_table_entries,
@@ -938,39 +981,35 @@ find_fw_domain(struct intel_uncore *uncore, u32 offset)
 	return entry->domains;
 }
 
-#define GEN_FW_RANGE(s, e, d) \
-	{ .start = (s), .end = (e), .domains = (d) }
+/*
+ * Shadowed register tables describe special register ranges that i915 is
+ * allowed to write to without acquiring forcewake.  If these registers' power
+ * wells are down, the hardware will save values written by i915 to a shadow
+ * copy and automatically transfer them into the real register the next time
+ * the power well is woken up.  Shadowing only applies to writes; forcewake
+ * must still be acquired when reading from registers in these ranges.
+ *
+ * The documentation for shadowed registers is somewhat spotty on older
+ * platforms.  However missing registers from these lists is non-fatal; it just
+ * means we'll wake up the hardware for some register accesses where we didn't
+ * really need to.
+ *
+ * The ranges listed in these tables must be sorted by offset.
+ *
+ * When adding new tables here, please also add them to
+ * intel_shadow_table_check() in selftests/intel_uncore.c so that they will be
+ * scanned for obvious mistakes or typos by the selftests.
+ */
 
-/* *Must* be sorted by offset ranges! See intel_fw_table_check(). */
-static const struct intel_forcewake_range __vlv_fw_ranges[] = {
-	GEN_FW_RANGE(0x2000, 0x3fff, FORCEWAKE_RENDER),
-	GEN_FW_RANGE(0x5000, 0x7fff, FORCEWAKE_RENDER),
-	GEN_FW_RANGE(0xb000, 0x11fff, FORCEWAKE_RENDER),
-	GEN_FW_RANGE(0x12000, 0x13fff, FORCEWAKE_MEDIA),
-	GEN_FW_RANGE(0x22000, 0x23fff, FORCEWAKE_MEDIA),
-	GEN_FW_RANGE(0x2e000, 0x2ffff, FORCEWAKE_RENDER),
-	GEN_FW_RANGE(0x30000, 0x3ffff, FORCEWAKE_MEDIA),
-};
-
-#define __fwtable_reg_read_fw_domains(uncore, offset) \
-({ \
-	enum forcewake_domains __fwd = 0; \
-	if (NEEDS_FORCE_WAKE((offset))) \
-		__fwd = find_fw_domain(uncore, offset); \
-	__fwd; \
-})
-
-/* *Must* be sorted by offset! See intel_shadow_table_check(). */
-static const struct i915_range gen8_shadowed_regs[] = {
+static const struct i915_mmio_range gen8_shadowed_regs[] = {
 	{ .start =  0x2030, .end =  0x2030 },
 	{ .start =  0xA008, .end =  0xA00C },
 	{ .start = 0x12030, .end = 0x12030 },
 	{ .start = 0x1a030, .end = 0x1a030 },
 	{ .start = 0x22030, .end = 0x22030 },
-	/* TODO: Other registers are not yet used */
 };
 
-static const struct i915_range gen11_shadowed_regs[] = {
+static const struct i915_mmio_range gen11_shadowed_regs[] = {
 	{ .start =   0x2030, .end =   0x2030 },
 	{ .start =   0x2550, .end =   0x2550 },
 	{ .start =   0xA008, .end =   0xA00C },
@@ -997,7 +1036,7 @@ static const struct i915_range gen11_shadowed_regs[] = {
 	{ .start = 0x1D8510, .end = 0x1D8550 },
 };
 
-static const struct i915_range gen12_shadowed_regs[] = {
+static const struct i915_mmio_range gen12_shadowed_regs[] = {
 	{ .start =   0x2030, .end =   0x2030 },
 	{ .start =   0x2510, .end =   0x2550 },
 	{ .start =   0xA008, .end =   0xA00C },
@@ -1041,7 +1080,7 @@ static const struct i915_range gen12_shadowed_regs[] = {
 	{ .start = 0x1F8510, .end = 0x1F8550 },
 };
 
-static const struct i915_range dg2_shadowed_regs[] = {
+static const struct i915_mmio_range dg2_shadowed_regs[] = {
 	{ .start =   0x2030, .end =   0x2030 },
 	{ .start =   0x2510, .end =   0x2550 },
 	{ .start =   0xA008, .end =   0xA00C },
@@ -1080,7 +1119,46 @@ static const struct i915_range dg2_shadowed_regs[] = {
 	{ .start = 0x1F8510, .end = 0x1F8550 },
 };
 
-static int mmio_range_cmp(u32 key, const struct i915_range *range)
+static const struct i915_mmio_range mtl_shadowed_regs[] = {
+	{ .start =   0x2030, .end =   0x2030 },
+	{ .start =   0x2510, .end =   0x2550 },
+	{ .start =   0xA008, .end =   0xA00C },
+	{ .start =   0xA188, .end =   0xA188 },
+	{ .start =   0xA278, .end =   0xA278 },
+	{ .start =   0xA540, .end =   0xA56C },
+	{ .start =   0xC050, .end =   0xC050 },
+	{ .start =   0xC340, .end =   0xC340 },
+	{ .start =   0xC4C8, .end =   0xC4C8 },
+	{ .start =   0xC4E0, .end =   0xC4E0 },
+	{ .start =   0xC600, .end =   0xC600 },
+	{ .start =   0xC658, .end =   0xC658 },
+	{ .start =   0xCFD4, .end =   0xCFDC },
+	{ .start =  0x22030, .end =  0x22030 },
+	{ .start =  0x22510, .end =  0x22550 },
+};
+
+static const struct i915_mmio_range xelpmp_shadowed_regs[] = {
+	{ .start = 0x1C0030, .end = 0x1C0030 },
+	{ .start = 0x1C0510, .end = 0x1C0550 },
+	{ .start = 0x1C8030, .end = 0x1C8030 },
+	{ .start = 0x1C8510, .end = 0x1C8550 },
+	{ .start = 0x1D0030, .end = 0x1D0030 },
+	{ .start = 0x1D0510, .end = 0x1D0550 },
+	{ .start = 0x38A008, .end = 0x38A00C },
+	{ .start = 0x38A188, .end = 0x38A188 },
+	{ .start = 0x38A278, .end = 0x38A278 },
+	{ .start = 0x38A540, .end = 0x38A56C },
+	{ .start = 0x38A618, .end = 0x38A618 },
+	{ .start = 0x38C050, .end = 0x38C050 },
+	{ .start = 0x38C340, .end = 0x38C340 },
+	{ .start = 0x38C4C8, .end = 0x38C4C8 },
+	{ .start = 0x38C4E0, .end = 0x38C4E4 },
+	{ .start = 0x38C600, .end = 0x38C600 },
+	{ .start = 0x38C658, .end = 0x38C658 },
+	{ .start = 0x38CFD4, .end = 0x38CFDC },
+};
+
+static int mmio_range_cmp(u32 key, const struct i915_mmio_range *range)
 {
 	if (key < range->start)
 		return -1;
@@ -1095,6 +1173,9 @@ static bool is_shadowed(struct intel_uncore *uncore, u32 offset)
 	if (drm_WARN_ON(&uncore->i915->drm, !uncore->shadowed_reg_table))
 		return false;
 
+	if (IS_GSI_REG(offset))
+		offset += uncore->gsi_offset;
+
 	return BSEARCH(offset,
 		       uncore->shadowed_reg_table,
 		       uncore->shadowed_reg_table_entries,
@@ -1107,11 +1188,70 @@ gen6_reg_write_fw_domains(struct intel_uncore *uncore, i915_reg_t reg)
 	return FORCEWAKE_RENDER;
 }
 
+#define __fwtable_reg_read_fw_domains(uncore, offset) \
+({ \
+	enum forcewake_domains __fwd = 0; \
+	if (NEEDS_FORCE_WAKE((offset))) \
+		__fwd = find_fw_domain(uncore, offset); \
+	__fwd; \
+})
+
+#define __fwtable_reg_write_fw_domains(uncore, offset) \
+({ \
+	enum forcewake_domains __fwd = 0; \
+	const u32 __offset = (offset); \
+	if (NEEDS_FORCE_WAKE((__offset)) && !is_shadowed(uncore, __offset)) \
+		__fwd = find_fw_domain(uncore, __offset); \
+	__fwd; \
+})
+
+#define GEN_FW_RANGE(s, e, d) \
+	{ .start = (s), .end = (e), .domains = (d) }
+
+/*
+ * All platforms' forcewake tables below must be sorted by offset ranges.
+ * Furthermore, new forcewake tables added should be "watertight" and have
+ * no gaps between ranges.
+ *
+ * When there are multiple consecutive ranges listed in the bspec with
+ * the same forcewake domain, it is customary to combine them into a single
+ * row in the tables below to keep the tables small and lookups fast.
+ * Likewise, reserved/unused ranges may be combined with the preceding and/or
+ * following ranges since the driver will never be making MMIO accesses in
+ * those ranges.
+ *
+ * For example, if the bspec were to list:
+ *
+ *    ...
+ *    0x1000 - 0x1fff:  GT
+ *    0x2000 - 0x2cff:  GT
+ *    0x2d00 - 0x2fff:  unused/reserved
+ *    0x3000 - 0xffff:  GT
+ *    ...
+ *
+ * these could all be represented by a single line in the code:
+ *
+ *   GEN_FW_RANGE(0x1000, 0xffff, FORCEWAKE_GT)
+ *
+ * When adding new forcewake tables here, please also add them to
+ * intel_uncore_mock_selftests in selftests/intel_uncore.c so that they will be
+ * scanned for obvious mistakes or typos by the selftests.
+ */
+
 static const struct intel_forcewake_range __gen6_fw_ranges[] = {
 	GEN_FW_RANGE(0x0, 0x3ffff, FORCEWAKE_RENDER),
 };
 
-/* *Must* be sorted by offset ranges! See intel_fw_table_check(). */
+static const struct intel_forcewake_range __vlv_fw_ranges[] = {
+	GEN_FW_RANGE(0x2000, 0x3fff, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0x5000, 0x7fff, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0xb000, 0x11fff, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0x12000, 0x13fff, FORCEWAKE_MEDIA),
+	GEN_FW_RANGE(0x22000, 0x23fff, FORCEWAKE_MEDIA),
+	GEN_FW_RANGE(0x2e000, 0x2ffff, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0x30000, 0x3ffff, FORCEWAKE_MEDIA),
+};
+
 static const struct intel_forcewake_range __chv_fw_ranges[] = {
 	GEN_FW_RANGE(0x2000, 0x3fff, FORCEWAKE_RENDER),
 	GEN_FW_RANGE(0x4000, 0x4fff, FORCEWAKE_RENDER | FORCEWAKE_MEDIA),
@@ -1131,16 +1271,6 @@ static const struct intel_forcewake_range __chv_fw_ranges[] = {
 	GEN_FW_RANGE(0x30000, 0x37fff, FORCEWAKE_MEDIA),
 };
 
-#define __fwtable_reg_write_fw_domains(uncore, offset) \
-({ \
-	enum forcewake_domains __fwd = 0; \
-	const u32 __offset = (offset); \
-	if (NEEDS_FORCE_WAKE((__offset)) && !is_shadowed(uncore, __offset)) \
-		__fwd = find_fw_domain(uncore, __offset); \
-	__fwd; \
-})
-
-/* *Must* be sorted by offset ranges! See intel_fw_table_check(). */
 static const struct intel_forcewake_range __gen9_fw_ranges[] = {
 	GEN_FW_RANGE(0x0, 0xaff, FORCEWAKE_GT),
 	GEN_FW_RANGE(0xb00, 0x1fff, 0), /* uncore range */
@@ -1176,7 +1306,6 @@ static const struct intel_forcewake_range __gen9_fw_ranges[] = {
 	GEN_FW_RANGE(0x30000, 0x3ffff, FORCEWAKE_MEDIA),
 };
 
-/* *Must* be sorted by offset ranges! See intel_fw_table_check(). */
 static const struct intel_forcewake_range __gen11_fw_ranges[] = {
 	GEN_FW_RANGE(0x0, 0x1fff, 0), /* uncore range */
 	GEN_FW_RANGE(0x2000, 0x26ff, FORCEWAKE_RENDER),
@@ -1215,14 +1344,6 @@ static const struct intel_forcewake_range __gen11_fw_ranges[] = {
 	GEN_FW_RANGE(0x1d4000, 0x1dbfff, 0)
 };
 
-/*
- * *Must* be sorted by offset ranges! See intel_fw_table_check().
- *
- * Note that the spec lists several reserved/unused ranges that don't
- * actually contain any registers.  In the table below we'll combine those
- * reserved ranges with either the preceding or following range to keep the
- * table small and lookups fast.
- */
 static const struct intel_forcewake_range __gen12_fw_ranges[] = {
 	GEN_FW_RANGE(0x0, 0x1fff, 0), /*
 		0x0   -  0xaff: reserved
@@ -1324,170 +1445,311 @@ static const struct intel_forcewake_range __gen12_fw_ranges[] = {
 		0x1d3f00 - 0x1d3fff: VD2 */
 };
 
-/*
- * Graphics IP version 12.55 brings a slight change to the 0xd800 range,
- * switching it from the GT domain to the render domain.
- *
- * *Must* be sorted by offset ranges! See intel_fw_table_check().
- */
-#define XEHP_FWRANGES(FW_RANGE_D800)					\
-	GEN_FW_RANGE(0x0, 0x1fff, 0), /*					\
-		  0x0 -  0xaff: reserved					\
-		0xb00 - 0x1fff: always on */					\
-	GEN_FW_RANGE(0x2000, 0x26ff, FORCEWAKE_RENDER),				\
-	GEN_FW_RANGE(0x2700, 0x4aff, FORCEWAKE_GT),				\
-	GEN_FW_RANGE(0x4b00, 0x51ff, 0), /*					\
-		0x4b00 - 0x4fff: reserved					\
-		0x5000 - 0x51ff: always on */					\
-	GEN_FW_RANGE(0x5200, 0x7fff, FORCEWAKE_RENDER),				\
-	GEN_FW_RANGE(0x8000, 0x813f, FORCEWAKE_GT),				\
-	GEN_FW_RANGE(0x8140, 0x815f, FORCEWAKE_RENDER),				\
-	GEN_FW_RANGE(0x8160, 0x81ff, 0), /*					\
-		0x8160 - 0x817f: reserved					\
-		0x8180 - 0x81ff: always on */					\
-	GEN_FW_RANGE(0x8200, 0x82ff, FORCEWAKE_GT),				\
-	GEN_FW_RANGE(0x8300, 0x84ff, FORCEWAKE_RENDER),				\
-	GEN_FW_RANGE(0x8500, 0x8cff, FORCEWAKE_GT), /*				\
-		0x8500 - 0x87ff: gt						\
-		0x8800 - 0x8c7f: reserved					\
-		0x8c80 - 0x8cff: gt (DG2 only) */				\
-	GEN_FW_RANGE(0x8d00, 0x8fff, FORCEWAKE_RENDER), /*			\
-		0x8d00 - 0x8dff: render (DG2 only)				\
-		0x8e00 - 0x8fff: reserved */					\
-	GEN_FW_RANGE(0x9000, 0x94cf, FORCEWAKE_GT), /*				\
-		0x9000 - 0x947f: gt						\
-		0x9480 - 0x94cf: reserved */					\
-	GEN_FW_RANGE(0x94d0, 0x955f, FORCEWAKE_RENDER),				\
-	GEN_FW_RANGE(0x9560, 0x967f, 0), /*					\
-		0x9560 - 0x95ff: always on					\
-		0x9600 - 0x967f: reserved */					\
-	GEN_FW_RANGE(0x9680, 0x97ff, FORCEWAKE_RENDER), /*			\
-		0x9680 - 0x96ff: render (DG2 only)				\
-		0x9700 - 0x97ff: reserved */					\
-	GEN_FW_RANGE(0x9800, 0xcfff, FORCEWAKE_GT), /*				\
-		0x9800 - 0xb4ff: gt						\
-		0xb500 - 0xbfff: reserved					\
-		0xc000 - 0xcfff: gt */						\
-	GEN_FW_RANGE(0xd000, 0xd7ff, 0),					\
-	GEN_FW_RANGE(0xd800, 0xd87f, FW_RANGE_D800),			\
-	GEN_FW_RANGE(0xd880, 0xdbff, FORCEWAKE_GT),				\
-	GEN_FW_RANGE(0xdc00, 0xdcff, FORCEWAKE_RENDER),				\
-	GEN_FW_RANGE(0xdd00, 0xde7f, FORCEWAKE_GT), /*				\
-		0xdd00 - 0xddff: gt						\
-		0xde00 - 0xde7f: reserved */					\
-	GEN_FW_RANGE(0xde80, 0xe8ff, FORCEWAKE_RENDER), /*			\
-		0xde80 - 0xdfff: render						\
-		0xe000 - 0xe0ff: reserved					\
-		0xe100 - 0xe8ff: render */					\
-	GEN_FW_RANGE(0xe900, 0xffff, FORCEWAKE_GT), /*				\
-		0xe900 - 0xe9ff: gt						\
-		0xea00 - 0xefff: reserved					\
-		0xf000 - 0xffff: gt */						\
-	GEN_FW_RANGE(0x10000, 0x12fff, 0), /*					\
-		0x10000 - 0x11fff: reserved					\
-		0x12000 - 0x127ff: always on					\
-		0x12800 - 0x12fff: reserved */					\
-	GEN_FW_RANGE(0x13000, 0x131ff, FORCEWAKE_MEDIA_VDBOX0), /* DG2 only */	\
-	GEN_FW_RANGE(0x13200, 0x13fff, FORCEWAKE_MEDIA_VDBOX2), /*		\
-		0x13200 - 0x133ff: VD2 (DG2 only)				\
-		0x13400 - 0x13fff: reserved */					\
-	GEN_FW_RANGE(0x14000, 0x141ff, FORCEWAKE_MEDIA_VDBOX0), /* XEHPSDV only */	\
-	GEN_FW_RANGE(0x14200, 0x143ff, FORCEWAKE_MEDIA_VDBOX2), /* XEHPSDV only */	\
-	GEN_FW_RANGE(0x14400, 0x145ff, FORCEWAKE_MEDIA_VDBOX4), /* XEHPSDV only */	\
-	GEN_FW_RANGE(0x14600, 0x147ff, FORCEWAKE_MEDIA_VDBOX6), /* XEHPSDV only */	\
-	GEN_FW_RANGE(0x14800, 0x14fff, FORCEWAKE_RENDER),			\
-	GEN_FW_RANGE(0x15000, 0x16dff, FORCEWAKE_GT), /*			\
-		0x15000 - 0x15fff: gt (DG2 only)				\
-		0x16000 - 0x16dff: reserved */					\
-	GEN_FW_RANGE(0x16e00, 0x1ffff, FORCEWAKE_RENDER),			\
-	GEN_FW_RANGE(0x20000, 0x21fff, FORCEWAKE_MEDIA_VDBOX0), /*		\
-		0x20000 - 0x20fff: VD0 (XEHPSDV only)				\
-		0x21000 - 0x21fff: reserved */					\
-	GEN_FW_RANGE(0x22000, 0x23fff, FORCEWAKE_GT),				\
-	GEN_FW_RANGE(0x24000, 0x2417f, 0), /*					\
-		0x24000 - 0x2407f: always on					\
-		0x24080 - 0x2417f: reserved */					\
-	GEN_FW_RANGE(0x24180, 0x249ff, FORCEWAKE_GT), /*			\
-		0x24180 - 0x241ff: gt						\
-		0x24200 - 0x249ff: reserved */					\
-	GEN_FW_RANGE(0x24a00, 0x251ff, FORCEWAKE_RENDER), /*			\
-		0x24a00 - 0x24a7f: render					\
-		0x24a80 - 0x251ff: reserved */					\
-	GEN_FW_RANGE(0x25200, 0x25fff, FORCEWAKE_GT), /*			\
-		0x25200 - 0x252ff: gt						\
-		0x25300 - 0x25fff: reserved */					\
-	GEN_FW_RANGE(0x26000, 0x2ffff, FORCEWAKE_RENDER), /*			\
-		0x26000 - 0x27fff: render					\
-		0x28000 - 0x29fff: reserved					\
-		0x2a000 - 0x2ffff: undocumented */				\
-	GEN_FW_RANGE(0x30000, 0x3ffff, FORCEWAKE_GT),				\
-	GEN_FW_RANGE(0x40000, 0x1bffff, 0),					\
-	GEN_FW_RANGE(0x1c0000, 0x1c3fff, FORCEWAKE_MEDIA_VDBOX0), /*		\
-		0x1c0000 - 0x1c2bff: VD0					\
-		0x1c2c00 - 0x1c2cff: reserved					\
-		0x1c2d00 - 0x1c2dff: VD0					\
-		0x1c2e00 - 0x1c3eff: VD0 (DG2 only)				\
-		0x1c3f00 - 0x1c3fff: VD0 */					\
-	GEN_FW_RANGE(0x1c4000, 0x1c7fff, FORCEWAKE_MEDIA_VDBOX1), /*		\
-		0x1c4000 - 0x1c6bff: VD1					\
-		0x1c6c00 - 0x1c6cff: reserved					\
-		0x1c6d00 - 0x1c6dff: VD1					\
-		0x1c6e00 - 0x1c7fff: reserved */				\
-	GEN_FW_RANGE(0x1c8000, 0x1cbfff, FORCEWAKE_MEDIA_VEBOX0), /*		\
-		0x1c8000 - 0x1ca0ff: VE0					\
-		0x1ca100 - 0x1cbfff: reserved */				\
-	GEN_FW_RANGE(0x1cc000, 0x1ccfff, FORCEWAKE_MEDIA_VDBOX0),		\
-	GEN_FW_RANGE(0x1cd000, 0x1cdfff, FORCEWAKE_MEDIA_VDBOX2),		\
-	GEN_FW_RANGE(0x1ce000, 0x1cefff, FORCEWAKE_MEDIA_VDBOX4),		\
-	GEN_FW_RANGE(0x1cf000, 0x1cffff, FORCEWAKE_MEDIA_VDBOX6),		\
-	GEN_FW_RANGE(0x1d0000, 0x1d3fff, FORCEWAKE_MEDIA_VDBOX2), /*		\
-		0x1d0000 - 0x1d2bff: VD2					\
-		0x1d2c00 - 0x1d2cff: reserved					\
-		0x1d2d00 - 0x1d2dff: VD2					\
-		0x1d2e00 - 0x1d3dff: VD2 (DG2 only)				\
-		0x1d3e00 - 0x1d3eff: reserved					\
-		0x1d3f00 - 0x1d3fff: VD2 */					\
-	GEN_FW_RANGE(0x1d4000, 0x1d7fff, FORCEWAKE_MEDIA_VDBOX3), /*		\
-		0x1d4000 - 0x1d6bff: VD3					\
-		0x1d6c00 - 0x1d6cff: reserved					\
-		0x1d6d00 - 0x1d6dff: VD3					\
-		0x1d6e00 - 0x1d7fff: reserved */				\
-	GEN_FW_RANGE(0x1d8000, 0x1dffff, FORCEWAKE_MEDIA_VEBOX1), /*		\
-		0x1d8000 - 0x1da0ff: VE1					\
-		0x1da100 - 0x1dffff: reserved */				\
-	GEN_FW_RANGE(0x1e0000, 0x1e3fff, FORCEWAKE_MEDIA_VDBOX4), /*		\
-		0x1e0000 - 0x1e2bff: VD4					\
-		0x1e2c00 - 0x1e2cff: reserved					\
-		0x1e2d00 - 0x1e2dff: VD4					\
-		0x1e2e00 - 0x1e3eff: reserved					\
-		0x1e3f00 - 0x1e3fff: VD4 */					\
-	GEN_FW_RANGE(0x1e4000, 0x1e7fff, FORCEWAKE_MEDIA_VDBOX5), /*		\
-		0x1e4000 - 0x1e6bff: VD5					\
-		0x1e6c00 - 0x1e6cff: reserved					\
-		0x1e6d00 - 0x1e6dff: VD5					\
-		0x1e6e00 - 0x1e7fff: reserved */				\
-	GEN_FW_RANGE(0x1e8000, 0x1effff, FORCEWAKE_MEDIA_VEBOX2), /*		\
-		0x1e8000 - 0x1ea0ff: VE2					\
-		0x1ea100 - 0x1effff: reserved */				\
-	GEN_FW_RANGE(0x1f0000, 0x1f3fff, FORCEWAKE_MEDIA_VDBOX6), /*		\
-		0x1f0000 - 0x1f2bff: VD6					\
-		0x1f2c00 - 0x1f2cff: reserved					\
-		0x1f2d00 - 0x1f2dff: VD6					\
-		0x1f2e00 - 0x1f3eff: reserved					\
-		0x1f3f00 - 0x1f3fff: VD6 */					\
-	GEN_FW_RANGE(0x1f4000, 0x1f7fff, FORCEWAKE_MEDIA_VDBOX7), /*		\
-		0x1f4000 - 0x1f6bff: VD7					\
-		0x1f6c00 - 0x1f6cff: reserved					\
-		0x1f6d00 - 0x1f6dff: VD7					\
-		0x1f6e00 - 0x1f7fff: reserved */				\
+static const struct intel_forcewake_range __dg2_fw_ranges[] = {
+	GEN_FW_RANGE(0x0, 0x1fff, 0), /*
+		  0x0 -  0xaff: reserved
+		0xb00 - 0x1fff: always on */
+	GEN_FW_RANGE(0x2000, 0x26ff, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0x2700, 0x4aff, FORCEWAKE_GT),
+	GEN_FW_RANGE(0x4b00, 0x51ff, 0), /*
+		0x4b00 - 0x4fff: reserved
+		0x5000 - 0x51ff: always on */
+	GEN_FW_RANGE(0x5200, 0x7fff, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0x8000, 0x813f, FORCEWAKE_GT),
+	GEN_FW_RANGE(0x8140, 0x815f, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0x8160, 0x81ff, 0), /*
+		0x8160 - 0x817f: reserved
+		0x8180 - 0x81ff: always on */
+	GEN_FW_RANGE(0x8200, 0x82ff, FORCEWAKE_GT),
+	GEN_FW_RANGE(0x8300, 0x84ff, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0x8500, 0x8cff, FORCEWAKE_GT), /*
+		0x8500 - 0x87ff: gt
+		0x8800 - 0x8c7f: reserved
+		0x8c80 - 0x8cff: gt (DG2 only) */
+	GEN_FW_RANGE(0x8d00, 0x8fff, FORCEWAKE_RENDER), /*
+		0x8d00 - 0x8dff: render (DG2 only)
+		0x8e00 - 0x8fff: reserved */
+	GEN_FW_RANGE(0x9000, 0x94cf, FORCEWAKE_GT), /*
+		0x9000 - 0x947f: gt
+		0x9480 - 0x94cf: reserved */
+	GEN_FW_RANGE(0x94d0, 0x955f, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0x9560, 0x967f, 0), /*
+		0x9560 - 0x95ff: always on
+		0x9600 - 0x967f: reserved */
+	GEN_FW_RANGE(0x9680, 0x97ff, FORCEWAKE_RENDER), /*
+		0x9680 - 0x96ff: render
+		0x9700 - 0x97ff: reserved */
+	GEN_FW_RANGE(0x9800, 0xcfff, FORCEWAKE_GT), /*
+		0x9800 - 0xb4ff: gt
+		0xb500 - 0xbfff: reserved
+		0xc000 - 0xcfff: gt */
+	GEN_FW_RANGE(0xd000, 0xd7ff, 0),
+	GEN_FW_RANGE(0xd800, 0xd87f, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0xd880, 0xdbff, FORCEWAKE_GT),
+	GEN_FW_RANGE(0xdc00, 0xdcff, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0xdd00, 0xde7f, FORCEWAKE_GT), /*
+		0xdd00 - 0xddff: gt
+		0xde00 - 0xde7f: reserved */
+	GEN_FW_RANGE(0xde80, 0xe8ff, FORCEWAKE_RENDER), /*
+		0xde80 - 0xdfff: render
+		0xe000 - 0xe0ff: reserved
+		0xe100 - 0xe8ff: render */
+	GEN_FW_RANGE(0xe900, 0xffff, FORCEWAKE_GT), /*
+		0xe900 - 0xe9ff: gt
+		0xea00 - 0xefff: reserved
+		0xf000 - 0xffff: gt */
+	GEN_FW_RANGE(0x10000, 0x12fff, 0), /*
+		0x10000 - 0x11fff: reserved
+		0x12000 - 0x127ff: always on
+		0x12800 - 0x12fff: reserved */
+	GEN_FW_RANGE(0x13000, 0x131ff, FORCEWAKE_MEDIA_VDBOX0),
+	GEN_FW_RANGE(0x13200, 0x147ff, FORCEWAKE_MEDIA_VDBOX2), /*
+		0x13200 - 0x133ff: VD2 (DG2 only)
+		0x13400 - 0x147ff: reserved */
+	GEN_FW_RANGE(0x14800, 0x14fff, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0x15000, 0x16dff, FORCEWAKE_GT), /*
+		0x15000 - 0x15fff: gt (DG2 only)
+		0x16000 - 0x16dff: reserved */
+	GEN_FW_RANGE(0x16e00, 0x21fff, FORCEWAKE_RENDER), /*
+		0x16e00 - 0x1ffff: render
+		0x20000 - 0x21fff: reserved */
+	GEN_FW_RANGE(0x22000, 0x23fff, FORCEWAKE_GT),
+	GEN_FW_RANGE(0x24000, 0x2417f, 0), /*
+		0x24000 - 0x2407f: always on
+		0x24080 - 0x2417f: reserved */
+	GEN_FW_RANGE(0x24180, 0x249ff, FORCEWAKE_GT), /*
+		0x24180 - 0x241ff: gt
+		0x24200 - 0x249ff: reserved */
+	GEN_FW_RANGE(0x24a00, 0x251ff, FORCEWAKE_RENDER), /*
+		0x24a00 - 0x24a7f: render
+		0x24a80 - 0x251ff: reserved */
+	GEN_FW_RANGE(0x25200, 0x25fff, FORCEWAKE_GT), /*
+		0x25200 - 0x252ff: gt
+		0x25300 - 0x25fff: reserved */
+	GEN_FW_RANGE(0x26000, 0x2ffff, FORCEWAKE_RENDER), /*
+		0x26000 - 0x27fff: render
+		0x28000 - 0x29fff: reserved
+		0x2a000 - 0x2ffff: undocumented */
+	GEN_FW_RANGE(0x30000, 0x3ffff, FORCEWAKE_GT),
+	GEN_FW_RANGE(0x40000, 0x1bffff, 0),
+	GEN_FW_RANGE(0x1c0000, 0x1c3fff, FORCEWAKE_MEDIA_VDBOX0), /*
+		0x1c0000 - 0x1c2bff: VD0
+		0x1c2c00 - 0x1c2cff: reserved
+		0x1c2d00 - 0x1c2dff: VD0
+		0x1c2e00 - 0x1c3eff: VD0
+		0x1c3f00 - 0x1c3fff: VD0 */
+	GEN_FW_RANGE(0x1c4000, 0x1c7fff, FORCEWAKE_MEDIA_VDBOX1), /*
+		0x1c4000 - 0x1c6bff: VD1
+		0x1c6c00 - 0x1c6cff: reserved
+		0x1c6d00 - 0x1c6dff: VD1
+		0x1c6e00 - 0x1c7fff: reserved */
+	GEN_FW_RANGE(0x1c8000, 0x1cbfff, FORCEWAKE_MEDIA_VEBOX0), /*
+		0x1c8000 - 0x1ca0ff: VE0
+		0x1ca100 - 0x1cbfff: reserved */
+	GEN_FW_RANGE(0x1cc000, 0x1ccfff, FORCEWAKE_MEDIA_VDBOX0),
+	GEN_FW_RANGE(0x1cd000, 0x1cdfff, FORCEWAKE_MEDIA_VDBOX2),
+	GEN_FW_RANGE(0x1ce000, 0x1cefff, FORCEWAKE_MEDIA_VDBOX4),
+	GEN_FW_RANGE(0x1cf000, 0x1cffff, FORCEWAKE_MEDIA_VDBOX6),
+	GEN_FW_RANGE(0x1d0000, 0x1d3fff, FORCEWAKE_MEDIA_VDBOX2), /*
+		0x1d0000 - 0x1d2bff: VD2
+		0x1d2c00 - 0x1d2cff: reserved
+		0x1d2d00 - 0x1d2dff: VD2
+		0x1d2e00 - 0x1d3dff: VD2
+		0x1d3e00 - 0x1d3eff: reserved
+		0x1d3f00 - 0x1d3fff: VD2 */
+	GEN_FW_RANGE(0x1d4000, 0x1d7fff, FORCEWAKE_MEDIA_VDBOX3), /*
+		0x1d4000 - 0x1d6bff: VD3
+		0x1d6c00 - 0x1d6cff: reserved
+		0x1d6d00 - 0x1d6dff: VD3
+		0x1d6e00 - 0x1d7fff: reserved */
+	GEN_FW_RANGE(0x1d8000, 0x1dffff, FORCEWAKE_MEDIA_VEBOX1), /*
+		0x1d8000 - 0x1da0ff: VE1
+		0x1da100 - 0x1dffff: reserved */
+	GEN_FW_RANGE(0x1e0000, 0x1e3fff, FORCEWAKE_MEDIA_VDBOX4), /*
+		0x1e0000 - 0x1e2bff: VD4
+		0x1e2c00 - 0x1e2cff: reserved
+		0x1e2d00 - 0x1e2dff: VD4
+		0x1e2e00 - 0x1e3eff: reserved
+		0x1e3f00 - 0x1e3fff: VD4 */
+	GEN_FW_RANGE(0x1e4000, 0x1e7fff, FORCEWAKE_MEDIA_VDBOX5), /*
+		0x1e4000 - 0x1e6bff: VD5
+		0x1e6c00 - 0x1e6cff: reserved
+		0x1e6d00 - 0x1e6dff: VD5
+		0x1e6e00 - 0x1e7fff: reserved */
+	GEN_FW_RANGE(0x1e8000, 0x1effff, FORCEWAKE_MEDIA_VEBOX2), /*
+		0x1e8000 - 0x1ea0ff: VE2
+		0x1ea100 - 0x1effff: reserved */
+	GEN_FW_RANGE(0x1f0000, 0x1f3fff, FORCEWAKE_MEDIA_VDBOX6), /*
+		0x1f0000 - 0x1f2bff: VD6
+		0x1f2c00 - 0x1f2cff: reserved
+		0x1f2d00 - 0x1f2dff: VD6
+		0x1f2e00 - 0x1f3eff: reserved
+		0x1f3f00 - 0x1f3fff: VD6 */
+	GEN_FW_RANGE(0x1f4000, 0x1f7fff, FORCEWAKE_MEDIA_VDBOX7), /*
+		0x1f4000 - 0x1f6bff: VD7
+		0x1f6c00 - 0x1f6cff: reserved
+		0x1f6d00 - 0x1f6dff: VD7
+		0x1f6e00 - 0x1f7fff: reserved */
 	GEN_FW_RANGE(0x1f8000, 0x1fa0ff, FORCEWAKE_MEDIA_VEBOX3),
-
-static const struct intel_forcewake_range __xehp_fw_ranges[] = {
-	XEHP_FWRANGES(FORCEWAKE_GT)
 };
 
-static const struct intel_forcewake_range __dg2_fw_ranges[] = {
-	XEHP_FWRANGES(FORCEWAKE_RENDER)
+static const struct intel_forcewake_range __mtl_fw_ranges[] = {
+	GEN_FW_RANGE(0x0, 0xaff, 0),
+	GEN_FW_RANGE(0xb00, 0xbff, FORCEWAKE_GT),
+	GEN_FW_RANGE(0xc00, 0xfff, 0),
+	GEN_FW_RANGE(0x1000, 0x1fff, FORCEWAKE_GT),
+	GEN_FW_RANGE(0x2000, 0x26ff, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0x2700, 0x2fff, FORCEWAKE_GT),
+	GEN_FW_RANGE(0x3000, 0x3fff, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0x4000, 0x51ff, FORCEWAKE_GT), /*
+		0x4000 - 0x48ff: render
+		0x4900 - 0x51ff: reserved */
+	GEN_FW_RANGE(0x5200, 0x7fff, FORCEWAKE_RENDER), /*
+		0x5200 - 0x53ff: render
+		0x5400 - 0x54ff: reserved
+		0x5500 - 0x7fff: render */
+	GEN_FW_RANGE(0x8000, 0x813f, FORCEWAKE_GT),
+	GEN_FW_RANGE(0x8140, 0x817f, FORCEWAKE_RENDER), /*
+		0x8140 - 0x815f: render
+		0x8160 - 0x817f: reserved */
+	GEN_FW_RANGE(0x8180, 0x81ff, 0),
+	GEN_FW_RANGE(0x8200, 0x94cf, FORCEWAKE_GT), /*
+		0x8200 - 0x87ff: gt
+		0x8800 - 0x8dff: reserved
+		0x8e00 - 0x8f7f: gt
+		0x8f80 - 0x8fff: reserved
+		0x9000 - 0x947f: gt
+		0x9480 - 0x94cf: reserved */
+	GEN_FW_RANGE(0x94d0, 0x955f, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0x9560, 0x967f, 0), /*
+		0x9560 - 0x95ff: always on
+		0x9600 - 0x967f: reserved */
+	GEN_FW_RANGE(0x9680, 0x97ff, FORCEWAKE_RENDER), /*
+		0x9680 - 0x96ff: render
+		0x9700 - 0x97ff: reserved */
+	GEN_FW_RANGE(0x9800, 0xcfff, FORCEWAKE_GT), /*
+		0x9800 - 0xb4ff: gt
+		0xb500 - 0xbfff: reserved
+		0xc000 - 0xcfff: gt */
+	GEN_FW_RANGE(0xd000, 0xd7ff, 0), /*
+		0xd000 - 0xd3ff: always on
+		0xd400 - 0xd7ff: reserved */
+	GEN_FW_RANGE(0xd800, 0xd87f, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0xd880, 0xdbff, FORCEWAKE_GT),
+	GEN_FW_RANGE(0xdc00, 0xdcff, FORCEWAKE_RENDER),
+	GEN_FW_RANGE(0xdd00, 0xde7f, FORCEWAKE_GT), /*
+		0xdd00 - 0xddff: gt
+		0xde00 - 0xde7f: reserved */
+	GEN_FW_RANGE(0xde80, 0xe8ff, FORCEWAKE_RENDER), /*
+		0xde80 - 0xdfff: render
+		0xe000 - 0xe0ff: reserved
+		0xe100 - 0xe8ff: render */
+	GEN_FW_RANGE(0xe900, 0xe9ff, FORCEWAKE_GT),
+	GEN_FW_RANGE(0xea00, 0x147ff, 0), /*
+		 0xea00 - 0x11fff: reserved
+		0x12000 - 0x127ff: always on
+		0x12800 - 0x147ff: reserved */
+	GEN_FW_RANGE(0x14800, 0x19fff, FORCEWAKE_GT), /*
+		0x14800 - 0x153ff: gt
+		0x15400 - 0x19fff: reserved */
+	GEN_FW_RANGE(0x1a000, 0x21fff, FORCEWAKE_RENDER), /*
+		0x1a000 - 0x1bfff: render
+		0x1c000 - 0x21fff: reserved */
+	GEN_FW_RANGE(0x22000, 0x23fff, FORCEWAKE_GT),
+	GEN_FW_RANGE(0x24000, 0x2ffff, 0), /*
+		0x24000 - 0x2407f: always on
+		0x24080 - 0x2ffff: reserved */
+	GEN_FW_RANGE(0x30000, 0x3ffff, FORCEWAKE_GT),
+	GEN_FW_RANGE(0x40000, 0x1901ef, 0),
+	GEN_FW_RANGE(0x1901f0, 0x1901f3, FORCEWAKE_GT)
+		/* FIXME: WA to wake GT while triggering H2G */
+};
+
+/*
+ * Note that the register ranges here are the final offsets after
+ * translation of the GSI block to the 0x380000 offset.
+ *
+ * NOTE:  There are a couple MCR ranges near the bottom of this table
+ * that need to power up either VD0 or VD2 depending on which replicated
+ * instance of the register we're trying to access.  Our forcewake logic
+ * at the moment doesn't have a good way to take steering into consideration,
+ * and the driver doesn't even access any registers in those ranges today,
+ * so for now we just mark those ranges as FORCEWAKE_ALL.  That will ensure
+ * proper operation if we do start using the ranges in the future, and we
+ * can determine at that time whether it's worth adding extra complexity to
+ * the forcewake handling to take steering into consideration.
+ */
+static const struct intel_forcewake_range __xelpmp_fw_ranges[] = {
+	GEN_FW_RANGE(0x0, 0x115fff, 0), /* render GT range */
+	GEN_FW_RANGE(0x116000, 0x11ffff, FORCEWAKE_GSC), /*
+		0x116000 - 0x117fff: gsc
+		0x118000 - 0x119fff: reserved
+		0x11a000 - 0x11efff: gsc
+		0x11f000 - 0x11ffff: reserved */
+	GEN_FW_RANGE(0x120000, 0x1bffff, 0), /* non-GT range */
+	GEN_FW_RANGE(0x1c0000, 0x1c7fff, FORCEWAKE_MEDIA_VDBOX0), /*
+		0x1c0000 - 0x1c3dff: VD0
+		0x1c3e00 - 0x1c3eff: reserved
+		0x1c3f00 - 0x1c3fff: VD0
+		0x1c4000 - 0x1c7fff: reserved */
+	GEN_FW_RANGE(0x1c8000, 0x1cbfff, FORCEWAKE_MEDIA_VEBOX0), /*
+		0x1c8000 - 0x1ca0ff: VE0
+		0x1ca100 - 0x1cbfff: reserved */
+	GEN_FW_RANGE(0x1cc000, 0x1cffff, FORCEWAKE_MEDIA_VDBOX0), /*
+		0x1cc000 - 0x1cdfff: VD0
+		0x1ce000 - 0x1cffff: reserved */
+	GEN_FW_RANGE(0x1d0000, 0x1d7fff, FORCEWAKE_MEDIA_VDBOX2), /*
+		0x1d0000 - 0x1d3dff: VD2
+		0x1d3e00 - 0x1d3eff: reserved
+		0x1d4000 - 0x1d7fff: VD2 */
+	GEN_FW_RANGE(0x1d8000, 0x1da0ff, FORCEWAKE_MEDIA_VEBOX1),
+	GEN_FW_RANGE(0x1da100, 0x380aff, 0), /*
+		0x1da100 - 0x23ffff: reserved
+		0x240000 - 0x37ffff: non-GT range
+		0x380000 - 0x380aff: reserved */
+	GEN_FW_RANGE(0x380b00, 0x380bff, FORCEWAKE_GT),
+	GEN_FW_RANGE(0x380c00, 0x380fff, 0),
+	GEN_FW_RANGE(0x381000, 0x38817f, FORCEWAKE_GT), /*
+		0x381000 - 0x381fff: gt
+		0x382000 - 0x383fff: reserved
+		0x384000 - 0x384aff: gt
+		0x384b00 - 0x3851ff: reserved
+		0x385200 - 0x3871ff: gt
+		0x387200 - 0x387fff: reserved
+		0x388000 - 0x38813f: gt
+		0x388140 - 0x38817f: reserved */
+	GEN_FW_RANGE(0x388180, 0x3882ff, 0), /*
+		0x388180 - 0x3881ff: always on
+		0x388200 - 0x3882ff: reserved */
+	GEN_FW_RANGE(0x388300, 0x38955f, FORCEWAKE_GT), /*
+		0x388300 - 0x38887f: gt
+		0x388880 - 0x388fff: reserved
+		0x389000 - 0x38947f: gt
+		0x389480 - 0x38955f: reserved */
+	GEN_FW_RANGE(0x389560, 0x389fff, 0), /*
+		0x389560 - 0x3895ff: always on
+		0x389600 - 0x389fff: reserved */
+	GEN_FW_RANGE(0x38a000, 0x38cfff, FORCEWAKE_GT), /*
+		0x38a000 - 0x38afff: gt
+		0x38b000 - 0x38bfff: reserved
+		0x38c000 - 0x38cfff: gt */
+	GEN_FW_RANGE(0x38d000, 0x38d11f, 0),
+	GEN_FW_RANGE(0x38d120, 0x391fff, FORCEWAKE_GT), /*
+		0x38d120 - 0x38dfff: gt
+		0x38e000 - 0x38efff: reserved
+		0x38f000 - 0x38ffff: gt
+		0x389000 - 0x391fff: reserved */
+	GEN_FW_RANGE(0x392000, 0x392fff, 0), /*
+		0x392000 - 0x3927ff: always on
+		0x392800 - 0x292fff: reserved */
+	GEN_FW_RANGE(0x393000, 0x3931ff, FORCEWAKE_GT),
+	GEN_FW_RANGE(0x393200, 0x39323f, FORCEWAKE_ALL), /* instance-based, see note above */
+	GEN_FW_RANGE(0x393240, 0x3933ff, FORCEWAKE_GT),
+	GEN_FW_RANGE(0x393400, 0x3934ff, FORCEWAKE_ALL), /* instance-based, see note above */
+	GEN_FW_RANGE(0x393500, 0x393c7f, 0), /*
+		0x393500 - 0x393bff: reserved
+		0x393c00 - 0x393c7f: always on */
+	GEN_FW_RANGE(0x393c80, 0x393dff, FORCEWAKE_GT),
 };
 
 static void
@@ -1525,25 +1787,31 @@ __unclaimed_previous_reg_debug(struct intel_uncore *uncore,
 			i915_mmio_reg_offset(reg));
 }
 
-static inline void
-unclaimed_reg_debug(struct intel_uncore *uncore,
-		    const i915_reg_t reg,
-		    const bool read,
-		    const bool before)
+static inline bool __must_check
+unclaimed_reg_debug_header(struct intel_uncore *uncore,
+			   const i915_reg_t reg, const bool read)
 {
-	if (likely(!uncore->i915->params.mmio_debug))
-		return;
+	if (likely(!uncore->i915->params.mmio_debug) || !uncore->debug)
+		return false;
 
 	/* interrupts are disabled and re-enabled around uncore->lock usage */
 	lockdep_assert_held(&uncore->lock);
 
-	if (before) {
-		spin_lock(&uncore->debug->lock);
-		__unclaimed_previous_reg_debug(uncore, reg, read);
-	} else {
-		__unclaimed_reg_debug(uncore, reg, read);
-		spin_unlock(&uncore->debug->lock);
-	}
+	spin_lock(&uncore->debug->lock);
+	__unclaimed_previous_reg_debug(uncore, reg, read);
+
+	return true;
+}
+
+static inline void
+unclaimed_reg_debug_footer(struct intel_uncore *uncore,
+			   const i915_reg_t reg, const bool read)
+{
+	/* interrupts are disabled and re-enabled around uncore->lock usage */
+	lockdep_assert_held(&uncore->lock);
+
+	__unclaimed_reg_debug(uncore, reg, read);
+	spin_unlock(&uncore->debug->lock);
 }
 
 #define __vgpu_read(x) \
@@ -1601,13 +1869,15 @@ __gen2_read(64)
 #define GEN6_READ_HEADER(x) \
 	u32 offset = i915_mmio_reg_offset(reg); \
 	unsigned long irqflags; \
+	bool unclaimed_reg_debug; \
 	u##x val = 0; \
 	assert_rpm_wakelock_held(uncore->rpm); \
 	spin_lock_irqsave(&uncore->lock, irqflags); \
-	unclaimed_reg_debug(uncore, reg, true, true)
+	unclaimed_reg_debug = unclaimed_reg_debug_header(uncore, reg, true)
 
 #define GEN6_READ_FOOTER \
-	unclaimed_reg_debug(uncore, reg, true, false); \
+	if (unclaimed_reg_debug) \
+		unclaimed_reg_debug_footer(uncore, reg, true);	\
 	spin_unlock_irqrestore(&uncore->lock, irqflags); \
 	trace_i915_reg_rw(false, reg, val, sizeof(val), trace); \
 	return val
@@ -1705,13 +1975,15 @@ __gen2_write(32)
 #define GEN6_WRITE_HEADER \
 	u32 offset = i915_mmio_reg_offset(reg); \
 	unsigned long irqflags; \
+	bool unclaimed_reg_debug; \
 	trace_i915_reg_rw(true, reg, val, sizeof(val), trace); \
 	assert_rpm_wakelock_held(uncore->rpm); \
 	spin_lock_irqsave(&uncore->lock, irqflags); \
-	unclaimed_reg_debug(uncore, reg, false, true)
+	unclaimed_reg_debug = unclaimed_reg_debug_header(uncore, reg, false)
 
 #define GEN6_WRITE_FOOTER \
-	unclaimed_reg_debug(uncore, reg, false, false); \
+	if (unclaimed_reg_debug) \
+		unclaimed_reg_debug_footer(uncore, reg, false); \
 	spin_unlock_irqrestore(&uncore->lock, irqflags)
 
 #define __gen6_write(x) \
@@ -1800,10 +2072,7 @@ static int __fw_domain_init(struct intel_uncore *uncore,
 	GEM_BUG_ON(domain_id >= FW_DOMAIN_ID_COUNT);
 	GEM_BUG_ON(uncore->fw_domain[domain_id]);
 
-	if (i915_inject_probe_failure(uncore->i915))
-		return -ENOMEM;
-
-	d = kzalloc(sizeof(*d), GFP_KERNEL);
+	d = kzalloc_obj(*d);
 	if (!d)
 		return -ENOMEM;
 
@@ -1812,8 +2081,8 @@ static int __fw_domain_init(struct intel_uncore *uncore,
 
 	d->uncore = uncore;
 	d->wake_count = 0;
-	d->reg_set = uncore->regs + i915_mmio_reg_offset(reg_set);
-	d->reg_ack = uncore->regs + i915_mmio_reg_offset(reg_ack);
+	d->reg_set = uncore->regs + i915_mmio_reg_offset(reg_set) + uncore->gsi_offset;
+	d->reg_ack = uncore->regs + i915_mmio_reg_offset(reg_ack) + uncore->gsi_offset;
 
 	d->id = domain_id;
 
@@ -1832,11 +2101,11 @@ static int __fw_domain_init(struct intel_uncore *uncore,
 	BUILD_BUG_ON(FORCEWAKE_MEDIA_VEBOX1 != (1 << FW_DOMAIN_ID_MEDIA_VEBOX1));
 	BUILD_BUG_ON(FORCEWAKE_MEDIA_VEBOX2 != (1 << FW_DOMAIN_ID_MEDIA_VEBOX2));
 	BUILD_BUG_ON(FORCEWAKE_MEDIA_VEBOX3 != (1 << FW_DOMAIN_ID_MEDIA_VEBOX3));
+	BUILD_BUG_ON(FORCEWAKE_GSC != (1 << FW_DOMAIN_ID_GSC));
 
 	d->mask = BIT(domain_id);
 
-	hrtimer_init(&d->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	d->timer.function = intel_uncore_fw_release_timer;
+	hrtimer_setup(&d->timer, intel_uncore_fw_release_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 
 	uncore->fw_domains |= BIT(domain_id);
 
@@ -1846,6 +2115,7 @@ static int __fw_domain_init(struct intel_uncore *uncore,
 
 	return 0;
 }
+ALLOW_ERROR_INJECTION(__fw_domain_init, ERRNO);
 
 static void fw_domain_fini(struct intel_uncore *uncore,
 			   enum forcewake_domain_id domain_id)
@@ -1896,17 +2166,26 @@ static int intel_uncore_fw_domains_init(struct intel_uncore *uncore)
 	(ret ?: (ret = __fw_domain_init((uncore__), (id__), (set__), (ack__))))
 
 	if (GRAPHICS_VER(i915) >= 11) {
-		/* we'll prune the domains of missing engines later */
-		intel_engine_mask_t emask = INTEL_INFO(i915)->platform_engine_mask;
+		intel_engine_mask_t emask;
 		int i;
 
+		/* we'll prune the domains of missing engines later */
+		emask = uncore->gt->info.engine_mask;
+
 		uncore->fw_get_funcs = &uncore_get_fallback;
-		fw_domain_init(uncore, FW_DOMAIN_ID_RENDER,
-			       FORCEWAKE_RENDER_GEN9,
-			       FORCEWAKE_ACK_RENDER_GEN9);
-		fw_domain_init(uncore, FW_DOMAIN_ID_GT,
-			       FORCEWAKE_GT_GEN9,
-			       FORCEWAKE_ACK_GT_GEN9);
+		if (GRAPHICS_VER_FULL(i915) >= IP_VER(12, 70))
+			fw_domain_init(uncore, FW_DOMAIN_ID_GT,
+				       FORCEWAKE_GT_GEN9,
+				       FORCEWAKE_ACK_GT_MTL);
+		else
+			fw_domain_init(uncore, FW_DOMAIN_ID_GT,
+				       FORCEWAKE_GT_GEN9,
+				       FORCEWAKE_ACK_GT_GEN9);
+
+		if (RCS_MASK(uncore->gt) || CCS_MASK(uncore->gt))
+			fw_domain_init(uncore, FW_DOMAIN_ID_RENDER,
+				       FORCEWAKE_RENDER_GEN9,
+				       FORCEWAKE_ACK_RENDER_GEN9);
 
 		for (i = 0; i < I915_MAX_VCS; i++) {
 			if (!__HAS_ENGINE(emask, _VCS(i)))
@@ -1924,6 +2203,10 @@ static int intel_uncore_fw_domains_init(struct intel_uncore *uncore)
 				       FORCEWAKE_MEDIA_VEBOX_GEN11(i),
 				       FORCEWAKE_ACK_MEDIA_VEBOX_GEN11(i));
 		}
+
+		if (uncore->gt->type == GT_MEDIA)
+			fw_domain_init(uncore, FW_DOMAIN_ID_GSC,
+				       FORCEWAKE_REQ_GSC, FORCEWAKE_ACK_GSC);
 	} else if (IS_GRAPHICS_VER(i915, 9, 10)) {
 		uncore->fw_get_funcs = &uncore_get_fallback;
 		fw_domain_init(uncore, FW_DOMAIN_ID_RENDER,
@@ -2050,6 +2333,11 @@ static int i915_pmic_bus_access_notifier(struct notifier_block *nb,
 	return NOTIFY_OK;
 }
 
+static void uncore_unmap_mmio(struct drm_device *drm, void *regs)
+{
+	iounmap((void __iomem *)regs);
+}
+
 int intel_uncore_setup_mmio(struct intel_uncore *uncore, phys_addr_t phys_addr)
 {
 	struct drm_i915_private *i915 = uncore->i915;
@@ -2062,14 +2350,15 @@ int intel_uncore_setup_mmio(struct intel_uncore *uncore, phys_addr_t phys_addr)
 	 * clobbering the GTT which we want ioremap_wc instead. Fortunately,
 	 * the register BAR remains the same size for all the earlier
 	 * generations up to Ironlake.
-	 * For dgfx chips register range is expanded to 4MB.
+	 * For dgfx chips register range is expanded to 4MB, and this larger
+	 * range is also used for integrated gpus beginning with Meteor Lake.
 	 */
-	if (GRAPHICS_VER(i915) < 5)
-		mmio_size = 512 * 1024;
-	else if (IS_DGFX(i915))
+	if (IS_DGFX(i915) || GRAPHICS_VER_FULL(i915) >= IP_VER(12, 70))
 		mmio_size = 4 * 1024 * 1024;
-	else
+	else if (GRAPHICS_VER(i915) >= 5)
 		mmio_size = 2 * 1024 * 1024;
+	else
+		mmio_size = 512 * 1024;
 
 	uncore->regs = ioremap(phys_addr, mmio_size);
 	if (uncore->regs == NULL) {
@@ -2077,12 +2366,8 @@ int intel_uncore_setup_mmio(struct intel_uncore *uncore, phys_addr_t phys_addr)
 		return -EIO;
 	}
 
-	return 0;
-}
-
-void intel_uncore_cleanup_mmio(struct intel_uncore *uncore)
-{
-	iounmap(uncore->regs);
+	return drmm_add_action_or_reset(&i915->drm, uncore_unmap_mmio,
+					(void __force *)uncore->regs);
 }
 
 void intel_uncore_init_early(struct intel_uncore *uncore,
@@ -2092,7 +2377,6 @@ void intel_uncore_init_early(struct intel_uncore *uncore,
 	uncore->i915 = gt->i915;
 	uncore->gt = gt;
 	uncore->rpm = &gt->i915->runtime_pm;
-	uncore->debug = &gt->i915->mmio_debug;
 }
 
 static void uncore_raw_init(struct intel_uncore *uncore)
@@ -2111,6 +2395,22 @@ static void uncore_raw_init(struct intel_uncore *uncore)
 	}
 }
 
+static int uncore_media_forcewake_init(struct intel_uncore *uncore)
+{
+	struct drm_i915_private *i915 = uncore->i915;
+
+	if (MEDIA_VER(i915) >= 13) {
+		ASSIGN_FW_DOMAINS_TABLE(uncore, __xelpmp_fw_ranges);
+		ASSIGN_SHADOW_TABLE(uncore, xelpmp_shadowed_regs);
+		ASSIGN_WRITE_MMIO_VFUNCS(uncore, fwtable);
+	} else {
+		MISSING_CASE(MEDIA_VER(i915));
+		return -ENODEV;
+	}
+
+	return 0;
+}
+
 static int uncore_forcewake_init(struct intel_uncore *uncore)
 {
 	struct drm_i915_private *i915 = uncore->i915;
@@ -2125,13 +2425,16 @@ static int uncore_forcewake_init(struct intel_uncore *uncore)
 
 	ASSIGN_READ_MMIO_VFUNCS(uncore, fwtable);
 
-	if (GRAPHICS_VER_FULL(i915) >= IP_VER(12, 55)) {
+	if (uncore->gt->type == GT_MEDIA)
+		return uncore_media_forcewake_init(uncore);
+
+	if (GRAPHICS_VER_FULL(i915) >= IP_VER(12, 70)) {
+		ASSIGN_FW_DOMAINS_TABLE(uncore, __mtl_fw_ranges);
+		ASSIGN_SHADOW_TABLE(uncore, mtl_shadowed_regs);
+		ASSIGN_WRITE_MMIO_VFUNCS(uncore, fwtable);
+	} else if (GRAPHICS_VER_FULL(i915) >= IP_VER(12, 55)) {
 		ASSIGN_FW_DOMAINS_TABLE(uncore, __dg2_fw_ranges);
 		ASSIGN_SHADOW_TABLE(uncore, dg2_shadowed_regs);
-		ASSIGN_WRITE_MMIO_VFUNCS(uncore, fwtable);
-	} else if (GRAPHICS_VER_FULL(i915) >= IP_VER(12, 50)) {
-		ASSIGN_FW_DOMAINS_TABLE(uncore, __xehp_fw_ranges);
-		ASSIGN_SHADOW_TABLE(uncore, gen12_shadowed_regs);
 		ASSIGN_WRITE_MMIO_VFUNCS(uncore, fwtable);
 	} else if (GRAPHICS_VER(i915) >= 12) {
 		ASSIGN_FW_DOMAINS_TABLE(uncore, __gen12_fw_ranges);
@@ -2167,10 +2470,45 @@ static int uncore_forcewake_init(struct intel_uncore *uncore)
 	return 0;
 }
 
+static int sanity_check_mmio_access(struct intel_uncore *uncore)
+{
+	struct drm_i915_private *i915 = uncore->i915;
+
+	if (GRAPHICS_VER(i915) < 8)
+		return 0;
+
+	/*
+	 * Sanitycheck that MMIO access to the device is working properly.  If
+	 * the CPU is unable to communicate with a PCI device, BAR reads will
+	 * return 0xFFFFFFFF.  Let's make sure the device isn't in this state
+	 * before we start trying to access registers.
+	 *
+	 * We use the primary GT's forcewake register as our guinea pig since
+	 * it's been around since HSW and it's a masked register so the upper
+	 * 16 bits can never read back as 1's if device access is operating
+	 * properly.
+	 *
+	 * If MMIO isn't working, we'll wait up to 2 seconds to see if it
+	 * recovers, then give up.
+	 */
+#define COND (__raw_uncore_read32(uncore, FORCEWAKE_MT) != ~0)
+	if (wait_for(COND, 2000) == -ETIMEDOUT) {
+		drm_err(&i915->drm, "Device is non-operational; MMIO access returns 0xFFFFFFFF!\n");
+		return -EIO;
+	}
+
+	return 0;
+}
+
 int intel_uncore_init_mmio(struct intel_uncore *uncore)
 {
 	struct drm_i915_private *i915 = uncore->i915;
+	struct intel_display *display = i915->display;
 	int ret;
+
+	ret = sanity_check_mmio_access(uncore);
+	if (ret)
+		return ret;
 
 	/*
 	 * The boot firmware initializes local memory and assesses its health.
@@ -2200,7 +2538,7 @@ int intel_uncore_init_mmio(struct intel_uncore *uncore)
 	GEM_BUG_ON(intel_uncore_has_forcewake(uncore) != !!uncore->funcs.read_fw_domains);
 	GEM_BUG_ON(intel_uncore_has_forcewake(uncore) != !!uncore->funcs.write_fw_domains);
 
-	if (HAS_FPGA_DBG_UNCLAIMED(i915))
+	if (HAS_FPGA_DBG_UNCLAIMED(display))
 		uncore->flags |= UNCORE_HAS_FPGA_DBG_UNCLAIMED;
 
 	if (IS_VALLEYVIEW(i915) || IS_CHERRYVIEW(i915))
@@ -2245,7 +2583,7 @@ void intel_uncore_prune_engine_fw_domains(struct intel_uncore *uncore,
 		 * the forcewake domain if any of the other engines
 		 * in the same media slice are present.
 		 */
-		if (GRAPHICS_VER_FULL(uncore->i915) >= IP_VER(12, 50) && i % 2 == 0) {
+		if (GRAPHICS_VER_FULL(uncore->i915) >= IP_VER(12, 55) && i % 2 == 0) {
 			if ((i + 1 < I915_MAX_VCS) && HAS_ENGINE(gt, _VCS(i + 1)))
 				continue;
 
@@ -2266,10 +2604,87 @@ void intel_uncore_prune_engine_fw_domains(struct intel_uncore *uncore,
 		if (fw_domains & BIT(domain_id))
 			fw_domain_fini(uncore, domain_id);
 	}
+
+	if ((fw_domains & BIT(FW_DOMAIN_ID_GSC)) && !HAS_ENGINE(gt, GSC0))
+		fw_domain_fini(uncore, FW_DOMAIN_ID_GSC);
 }
 
-void intel_uncore_fini_mmio(struct intel_uncore *uncore)
+/*
+ * The driver-initiated FLR is the highest level of reset that we can trigger
+ * from within the driver. It is different from the PCI FLR in that it doesn't
+ * fully reset the SGUnit and doesn't modify the PCI config space and therefore
+ * it doesn't require a re-enumeration of the PCI BARs. However, the
+ * driver-initiated FLR does still cause a reset of both GT and display and a
+ * memory wipe of local and stolen memory, so recovery would require a full HW
+ * re-init and saving/restoring (or re-populating) the wiped memory. Since we
+ * perform the FLR as the very last action before releasing access to the HW
+ * during the driver release flow, we don't attempt recovery at all, because
+ * if/when a new instance of i915 is bound to the device it will do a full
+ * re-init anyway.
+ */
+static void driver_initiated_flr(struct intel_uncore *uncore)
 {
+	struct drm_i915_private *i915 = uncore->i915;
+	unsigned int flr_timeout_ms;
+	int ret;
+
+	drm_dbg(&i915->drm, "Triggering Driver-FLR\n");
+
+	/*
+	 * The specification recommends a 3 seconds FLR reset timeout. To be
+	 * cautious, we will extend this to 9 seconds, three times the specified
+	 * timeout.
+	 */
+	flr_timeout_ms = 9000;
+
+	/*
+	 * Make sure any pending FLR requests have cleared by waiting for the
+	 * FLR trigger bit to go to zero. Also clear GU_DEBUG's DRIVERFLR_STATUS
+	 * to make sure it's not still set from a prior attempt (it's a write to
+	 * clear bit).
+	 * Note that we should never be in a situation where a previous attempt
+	 * is still pending (unless the HW is totally dead), but better to be
+	 * safe in case something unexpected happens
+	 */
+	ret = intel_wait_for_register_fw(uncore, GU_CNTL, DRIVERFLR, 0, flr_timeout_ms, NULL);
+	if (ret) {
+		drm_err(&i915->drm,
+			"Failed to wait for Driver-FLR bit to clear! %d\n",
+			ret);
+		return;
+	}
+	intel_uncore_write_fw(uncore, GU_DEBUG, DRIVERFLR_STATUS);
+
+	/* Trigger the actual Driver-FLR */
+	intel_uncore_rmw_fw(uncore, GU_CNTL, 0, DRIVERFLR);
+
+	/* Wait for hardware teardown to complete */
+	ret = intel_wait_for_register_fw(uncore, GU_CNTL,
+					 DRIVERFLR, 0,
+					 flr_timeout_ms, NULL);
+	if (ret) {
+		drm_err(&i915->drm, "Driver-FLR-teardown wait completion failed! %d\n", ret);
+		return;
+	}
+
+	/* Wait for hardware/firmware re-init to complete */
+	ret = intel_wait_for_register_fw(uncore, GU_DEBUG,
+					 DRIVERFLR_STATUS, DRIVERFLR_STATUS,
+					 flr_timeout_ms, NULL);
+	if (ret) {
+		drm_err(&i915->drm, "Driver-FLR-reinit wait completion failed! %d\n", ret);
+		return;
+	}
+
+	/* Clear sticky completion status */
+	intel_uncore_write_fw(uncore, GU_DEBUG, DRIVERFLR_STATUS);
+}
+
+/* Called via drm-managed action */
+void intel_uncore_fini_mmio(struct drm_device *dev, void *data)
+{
+	struct intel_uncore *uncore = data;
+
 	if (intel_uncore_has_forcewake(uncore)) {
 		iosf_mbi_punit_acquire();
 		iosf_mbi_unregister_pmic_bus_access_notifier_unlocked(
@@ -2278,6 +2693,9 @@ void intel_uncore_fini_mmio(struct intel_uncore *uncore)
 		intel_uncore_fw_domains_fini(uncore);
 		iosf_mbi_punit_release();
 	}
+
+	if (intel_uncore_needs_flr_on_fini(uncore))
+		driver_initiated_flr(uncore);
 }
 
 /**
@@ -2399,6 +2817,9 @@ bool intel_uncore_unclaimed_mmio(struct intel_uncore *uncore)
 {
 	bool ret;
 
+	if (!uncore->debug)
+		return false;
+
 	spin_lock_irq(&uncore->debug->lock);
 	ret = check_for_unclaimed_mmio(uncore);
 	spin_unlock_irq(&uncore->debug->lock);
@@ -2410,6 +2831,9 @@ bool
 intel_uncore_arm_unclaimed_mmio_detection(struct intel_uncore *uncore)
 {
 	bool ret = false;
+
+	if (drm_WARN_ON(&uncore->i915->drm, !uncore->debug))
+		return false;
 
 	spin_lock_irq(&uncore->debug->lock);
 
@@ -2468,118 +2892,6 @@ intel_uncore_forcewake_for_reg(struct intel_uncore *uncore,
 	drm_WARN_ON(&uncore->i915->drm, fw_domains & ~uncore->fw_domains);
 
 	return fw_domains;
-}
-
-/**
- * uncore_rw_with_mcr_steering_fw - Access a register after programming
- *				    the MCR selector register.
- * @uncore: pointer to struct intel_uncore
- * @reg: register being accessed
- * @rw_flag: FW_REG_READ for read access or FW_REG_WRITE for write access
- * @slice: slice number (ignored for multi-cast write)
- * @subslice: sub-slice number (ignored for multi-cast write)
- * @value: register value to be written (ignored for read)
- *
- * Return: 0 for write access. register value for read access.
- *
- * Caller needs to make sure the relevant forcewake wells are up.
- */
-static u32 uncore_rw_with_mcr_steering_fw(struct intel_uncore *uncore,
-					  i915_reg_t reg, u8 rw_flag,
-					  int slice, int subslice, u32 value)
-{
-	u32 mcr_mask, mcr_ss, mcr, old_mcr, val = 0;
-
-	lockdep_assert_held(&uncore->lock);
-
-	if (GRAPHICS_VER(uncore->i915) >= 11) {
-		mcr_mask = GEN11_MCR_SLICE_MASK | GEN11_MCR_SUBSLICE_MASK;
-		mcr_ss = GEN11_MCR_SLICE(slice) | GEN11_MCR_SUBSLICE(subslice);
-
-		/*
-		 * Wa_22013088509
-		 *
-		 * The setting of the multicast/unicast bit usually wouldn't
-		 * matter for read operations (which always return the value
-		 * from a single register instance regardless of how that bit
-		 * is set), but some platforms have a workaround requiring us
-		 * to remain in multicast mode for reads.  There's no real
-		 * downside to this, so we'll just go ahead and do so on all
-		 * platforms; we'll only clear the multicast bit from the mask
-		 * when exlicitly doing a write operation.
-		 */
-		if (rw_flag == FW_REG_WRITE)
-			mcr_mask |= GEN11_MCR_MULTICAST;
-	} else {
-		mcr_mask = GEN8_MCR_SLICE_MASK | GEN8_MCR_SUBSLICE_MASK;
-		mcr_ss = GEN8_MCR_SLICE(slice) | GEN8_MCR_SUBSLICE(subslice);
-	}
-
-	old_mcr = mcr = intel_uncore_read_fw(uncore, GEN8_MCR_SELECTOR);
-
-	mcr &= ~mcr_mask;
-	mcr |= mcr_ss;
-	intel_uncore_write_fw(uncore, GEN8_MCR_SELECTOR, mcr);
-
-	if (rw_flag == FW_REG_READ)
-		val = intel_uncore_read_fw(uncore, reg);
-	else
-		intel_uncore_write_fw(uncore, reg, value);
-
-	mcr &= ~mcr_mask;
-	mcr |= old_mcr & mcr_mask;
-
-	intel_uncore_write_fw(uncore, GEN8_MCR_SELECTOR, mcr);
-
-	return val;
-}
-
-static u32 uncore_rw_with_mcr_steering(struct intel_uncore *uncore,
-				       i915_reg_t reg, u8 rw_flag,
-				       int slice, int subslice,
-				       u32 value)
-{
-	enum forcewake_domains fw_domains;
-	u32 val;
-
-	fw_domains = intel_uncore_forcewake_for_reg(uncore, reg,
-						    rw_flag);
-	fw_domains |= intel_uncore_forcewake_for_reg(uncore,
-						     GEN8_MCR_SELECTOR,
-						     FW_REG_READ | FW_REG_WRITE);
-
-	spin_lock_irq(&uncore->lock);
-	intel_uncore_forcewake_get__locked(uncore, fw_domains);
-
-	val = uncore_rw_with_mcr_steering_fw(uncore, reg, rw_flag,
-					     slice, subslice, value);
-
-	intel_uncore_forcewake_put__locked(uncore, fw_domains);
-	spin_unlock_irq(&uncore->lock);
-
-	return val;
-}
-
-u32 intel_uncore_read_with_mcr_steering_fw(struct intel_uncore *uncore,
-					   i915_reg_t reg, int slice, int subslice)
-{
-	return uncore_rw_with_mcr_steering_fw(uncore, reg, FW_REG_READ,
-					      slice, subslice, 0);
-}
-
-u32 intel_uncore_read_with_mcr_steering(struct intel_uncore *uncore,
-					i915_reg_t reg, int slice, int subslice)
-{
-	return uncore_rw_with_mcr_steering(uncore, reg, FW_REG_READ,
-					   slice, subslice, 0);
-}
-
-void intel_uncore_write_with_mcr_steering(struct intel_uncore *uncore,
-					  i915_reg_t reg, u32 value,
-					  int slice, int subslice)
-{
-	uncore_rw_with_mcr_steering(uncore, reg, FW_REG_WRITE,
-				    slice, subslice, value);
 }
 
 #if IS_ENABLED(CONFIG_DRM_I915_SELFTEST)

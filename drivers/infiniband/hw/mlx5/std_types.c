@@ -10,6 +10,7 @@
 #include <linux/mlx5/eswitch.h>
 #include <linux/mlx5/vport.h>
 #include "mlx5_ib.h"
+#include "data_direct.h"
 
 #define UVERBS_MODULE_NAME mlx5_ib
 #include <rdma/uverbs_named_ioctl.h>
@@ -82,33 +83,31 @@ static int fill_vport_icm_addr(struct mlx5_core_dev *mdev, u16 vport,
 static int fill_vport_vhca_id(struct mlx5_core_dev *mdev, u16 vport,
 			      struct mlx5_ib_uapi_query_port *info)
 {
-	size_t out_sz = MLX5_ST_SZ_BYTES(query_hca_cap_out);
-	u32 in[MLX5_ST_SZ_DW(query_hca_cap_in)] = {};
-	void *out;
-	int err;
+	int err = mlx5_vport_get_vhca_id(mdev, vport, &info->vport_vhca_id);
 
-	out = kzalloc(out_sz, GFP_KERNEL);
-	if (!out)
-		return -ENOMEM;
-
-	MLX5_SET(query_hca_cap_in, in, opcode, MLX5_CMD_OP_QUERY_HCA_CAP);
-	MLX5_SET(query_hca_cap_in, in, other_function, true);
-	MLX5_SET(query_hca_cap_in, in, function_id, vport);
-	MLX5_SET(query_hca_cap_in, in, op_mod,
-		 MLX5_SET_HCA_CAP_OP_MOD_GENERAL_DEVICE |
-		 HCA_CAP_OPMOD_GET_CUR);
-
-	err = mlx5_cmd_exec(mdev, in, sizeof(in), out, out_sz);
 	if (err)
-		goto out;
-
-	info->vport_vhca_id = MLX5_GET(query_hca_cap_out, out,
-				       capability.cmd_hca_cap.vhca_id);
+		return err;
 
 	info->flags |= MLX5_IB_UAPI_QUERY_PORT_VPORT_VHCA_ID;
-out:
-	kfree(out);
-	return err;
+
+	return 0;
+}
+
+static int fill_multiport_info(struct mlx5_ib_dev *dev, u32 port_num,
+			       struct mlx5_ib_uapi_query_port *info)
+{
+	struct mlx5_core_dev *mdev;
+
+	mdev = mlx5_ib_get_native_port_mdev(dev, port_num, NULL);
+	if (!mdev)
+		return -EINVAL;
+
+	info->vport_vhca_id = MLX5_CAP_GEN(mdev, vhca_id);
+	info->flags |= MLX5_IB_UAPI_QUERY_PORT_VPORT_VHCA_ID;
+
+	mlx5_ib_put_native_port_mdev(dev, port_num);
+
+	return 0;
 }
 
 static int fill_switchdev_info(struct mlx5_ib_dev *dev, u32 port_num,
@@ -177,10 +176,58 @@ static int UVERBS_HANDLER(MLX5_IB_METHOD_QUERY_PORT)(
 		ret = fill_switchdev_info(dev, port_num, &info);
 		if (ret)
 			return ret;
+	} else if (mlx5_core_mp_enabled(dev->mdev)) {
+		ret = fill_multiport_info(dev, port_num, &info);
+		if (ret)
+			return ret;
 	}
 
 	return uverbs_copy_to_struct_or_zero(attrs, MLX5_IB_ATTR_QUERY_PORT, &info,
 					     sizeof(info));
+}
+
+static int UVERBS_HANDLER(MLX5_IB_METHOD_GET_DATA_DIRECT_SYSFS_PATH)(
+	struct uverbs_attr_bundle *attrs)
+{
+	struct mlx5_data_direct_dev *data_direct_dev;
+	struct mlx5_ib_ucontext *c;
+	struct mlx5_ib_dev *dev;
+	int out_len = uverbs_attr_get_len(attrs,
+			MLX5_IB_ATTR_GET_DATA_DIRECT_SYSFS_PATH);
+	u32 dev_path_len;
+	char *dev_path = NULL;
+	int ret;
+
+	c = to_mucontext(ib_uverbs_get_ucontext(attrs));
+	if (IS_ERR(c))
+		return PTR_ERR(c);
+	dev = to_mdev(c->ibucontext.device);
+	mutex_lock(&dev->data_direct_lock);
+	data_direct_dev = dev->data_direct_dev;
+	if (!data_direct_dev) {
+		ret = -ENODEV;
+		goto end;
+	}
+
+	dev_path = kobject_get_path(&data_direct_dev->device->kobj, GFP_KERNEL);
+	if (!dev_path) {
+		ret = -ENOMEM;
+		goto end;
+	}
+
+	dev_path_len = strlen(dev_path) + 1;
+	if (dev_path_len > out_len) {
+		ret = -ENOSPC;
+		goto end;
+	}
+
+	ret = uverbs_copy_to(attrs, MLX5_IB_ATTR_GET_DATA_DIRECT_SYSFS_PATH, dev_path,
+			     dev_path_len);
+
+end:
+	kfree(dev_path);
+	mutex_unlock(&dev->data_direct_lock);
+	return ret;
 }
 
 DECLARE_UVERBS_NAMED_METHOD(
@@ -193,9 +240,17 @@ DECLARE_UVERBS_NAMED_METHOD(
 				   reg_c0),
 		UA_MANDATORY));
 
+DECLARE_UVERBS_NAMED_METHOD(
+	MLX5_IB_METHOD_GET_DATA_DIRECT_SYSFS_PATH,
+	UVERBS_ATTR_PTR_OUT(
+		MLX5_IB_ATTR_GET_DATA_DIRECT_SYSFS_PATH,
+		UVERBS_ATTR_MIN_SIZE(0),
+		UA_MANDATORY));
+
 ADD_UVERBS_METHODS(mlx5_ib_device,
 		   UVERBS_OBJECT_DEVICE,
-		   &UVERBS_METHOD(MLX5_IB_METHOD_QUERY_PORT));
+		   &UVERBS_METHOD(MLX5_IB_METHOD_QUERY_PORT),
+		   &UVERBS_METHOD(MLX5_IB_METHOD_GET_DATA_DIRECT_SYSFS_PATH));
 
 DECLARE_UVERBS_NAMED_METHOD(
 	MLX5_IB_METHOD_PD_QUERY,

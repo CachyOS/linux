@@ -21,7 +21,7 @@
 #include <linux/slab.h>
 #include <linux/sched/signal.h>
 #include <linux/blkdev.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "hpfs.h"
 
@@ -280,7 +280,7 @@ void hpfs_init_inode(struct inode *);
 void hpfs_read_inode(struct inode *);
 void hpfs_write_inode(struct inode *);
 void hpfs_write_inode_nolock(struct inode *);
-int hpfs_setattr(struct user_namespace *, struct dentry *, struct iattr *);
+int hpfs_setattr(struct mnt_idmap *, struct dentry *, struct iattr *);
 void hpfs_write_if_changed(struct inode *);
 void hpfs_evict_inode(struct inode *);
 

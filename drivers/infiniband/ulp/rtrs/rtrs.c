@@ -26,7 +26,7 @@ struct rtrs_iu *rtrs_iu_alloc(u32 iu_num, size_t size, gfp_t gfp_mask,
 	struct rtrs_iu *ius, *iu;
 	int i;
 
-	ius = kcalloc(iu_num, sizeof(*ius), gfp_mask);
+	ius = kzalloc_objs(*ius, iu_num, gfp_mask);
 	if (!ius)
 		return NULL;
 	for (i = 0; i < iu_num; i++) {
@@ -37,8 +37,10 @@ struct rtrs_iu *rtrs_iu_alloc(u32 iu_num, size_t size, gfp_t gfp_mask,
 			goto err;
 
 		iu->dma_addr = ib_dma_map_single(dma_dev, iu->buf, size, dir);
-		if (ib_dma_mapping_error(dma_dev, iu->dma_addr))
+		if (ib_dma_mapping_error(dma_dev, iu->dma_addr)) {
+			kfree(iu->buf);
 			goto err;
+		}
 
 		iu->cqe.done  = done;
 		iu->size      = size;
@@ -175,7 +177,7 @@ int rtrs_iu_post_rdma_write_imm(struct rtrs_con *con, struct rtrs_iu *iu,
 	 * length error
 	 */
 	for (i = 0; i < num_sge; i++)
-		if (WARN_ON(sge[i].length == 0))
+		if (WARN_ONCE(sge[i].length == 0, "sg %d is zero length\n", i))
 			return -EINVAL;
 
 	return rtrs_post_send(con->qp, head, &wr.wr, tail);
@@ -240,8 +242,8 @@ static int create_cq(struct rtrs_con *con, int cq_vector, int nr_cqe,
 		cq = ib_cq_pool_get(cm_id->device, nr_cqe, cq_vector, poll_ctx);
 
 	if (IS_ERR(cq)) {
-		rtrs_err(con->path, "Creating completion queue failed, errno: %ld\n",
-			  PTR_ERR(cq));
+		rtrs_err(con->path, "Creating completion queue failed, errno: %pe\n",
+			  cq);
 		return PTR_ERR(cq);
 	}
 	con->cq = cq;
@@ -253,7 +255,7 @@ static int create_cq(struct rtrs_con *con, int cq_vector, int nr_cqe,
 static int create_qp(struct rtrs_con *con, struct ib_pd *pd,
 		     u32 max_send_wr, u32 max_recv_wr, u32 max_sge)
 {
-	struct ib_qp_init_attr init_attr = {NULL};
+	struct ib_qp_init_attr init_attr = {};
 	struct rdma_cm_id *cm_id = con->cm_id;
 	int ret;
 
@@ -271,7 +273,8 @@ static int create_qp(struct rtrs_con *con, struct ib_pd *pd,
 
 	ret = rdma_create_qp(cm_id, pd, &init_attr);
 	if (ret) {
-		rtrs_err(con->path, "Creating QP failed, err: %d\n", ret);
+		rtrs_err(con->path, "Creating QP failed, err: %pe\n",
+			 ERR_PTR(ret));
 		return ret;
 	}
 	con->qp = cm_id->qp;
@@ -339,7 +342,8 @@ void rtrs_send_hb_ack(struct rtrs_path *path)
 	err = rtrs_post_rdma_write_imm_empty(usr_con, path->hb_cqe, imm,
 					     NULL);
 	if (err) {
-		rtrs_err(path, "send HB ACK failed, errno: %d\n", err);
+		rtrs_err(path, "send HB ACK failed, errno: %pe\n",
+			 ERR_PTR(err));
 		path->hb_err_handler(usr_con);
 		return;
 	}
@@ -373,7 +377,8 @@ static void hb_work(struct work_struct *work)
 	err = rtrs_post_rdma_write_imm_empty(usr_con, path->hb_cqe, imm,
 					     NULL);
 	if (err) {
-		rtrs_err(path, "HB send failed, errno: %d\n", err);
+		rtrs_err(path, "HB send failed, errno: %pe\n",
+			 ERR_PTR(err));
 		path->hb_err_handler(usr_con);
 		return;
 	}
@@ -557,7 +562,6 @@ EXPORT_SYMBOL(rtrs_addr_to_sockaddr);
 void rtrs_rdma_dev_pd_init(enum ib_pd_flags pd_flags,
 			    struct rtrs_rdma_dev_pd *pool)
 {
-	WARN_ON(pool->ops && (!pool->ops->alloc ^ !pool->ops->free));
 	INIT_LIST_HEAD(&pool->list);
 	mutex_init(&pool->mutex);
 	pool->pd_flags = pd_flags;
@@ -587,11 +591,7 @@ static void dev_free(struct kref *ref)
 		pool->ops->deinit(dev);
 
 	ib_dealloc_pd(dev->ib_pd);
-
-	if (pool->ops && pool->ops->free)
-		pool->ops->free(dev);
-	else
-		kfree(dev);
+	kfree(dev);
 }
 
 int rtrs_ib_dev_put(struct rtrs_ib_dev *dev)
@@ -618,11 +618,8 @@ rtrs_ib_dev_find_or_add(struct ib_device *ib_dev,
 			goto out_unlock;
 	}
 	mutex_unlock(&pool->mutex);
-	if (pool->ops && pool->ops->alloc)
-		dev = pool->ops->alloc();
-	else
-		dev = kzalloc(sizeof(*dev), GFP_KERNEL);
-	if (IS_ERR_OR_NULL(dev))
+	dev = kzalloc_obj(*dev);
+	if (!dev)
 		goto out_err;
 
 	kref_init(&dev->ref);
@@ -644,10 +641,7 @@ out_unlock:
 out_free_pd:
 	ib_dealloc_pd(dev->ib_pd);
 out_free_dev:
-	if (pool->ops && pool->ops->free)
-		pool->ops->free(dev);
-	else
-		kfree(dev);
+	kfree(dev);
 out_err:
 	return NULL;
 }

@@ -19,6 +19,7 @@
 #include <linux/mmc/core.h>
 #include <linux/mmc/host.h>
 
+MODULE_DESCRIPTION("OpenFirmware bindings for the MMC-over-SPI driver");
 MODULE_LICENSE("GPL");
 
 struct of_mmc_spi {
@@ -56,7 +57,7 @@ struct mmc_spi_platform_data *mmc_spi_get_pdata(struct spi_device *spi)
 	if (dev->platform_data || !dev_fwnode(dev))
 		return dev->platform_data;
 
-	oms = kzalloc(sizeof(*oms), GFP_KERNEL);
+	oms = kzalloc_obj(*oms);
 	if (!oms)
 		return NULL;
 

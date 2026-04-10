@@ -21,7 +21,7 @@ struct v4l2_subdev *fimc_find_remote_sensor(struct media_entity *entity)
 
 	while (pad->flags & MEDIA_PAD_FL_SINK) {
 		/* source pad */
-		pad = media_entity_remote_pad(pad);
+		pad = media_pad_remote_pad_first(pad);
 		if (!pad || !is_media_entity_v4l2_subdev(pad->entity))
 			break;
 
@@ -44,4 +44,5 @@ void __fimc_vidioc_querycap(struct device *dev, struct v4l2_capability *cap)
 }
 EXPORT_SYMBOL(__fimc_vidioc_querycap);
 
+MODULE_DESCRIPTION("Samsung S5P/EXYNOS4 SoC Camera Subsystem driver");
 MODULE_LICENSE("GPL");

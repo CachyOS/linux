@@ -140,7 +140,7 @@ static inline u32 ethtool_adv_to_mii_adv_t(u32 ethadv)
  * settings to phy autonegotiation advertisements for the
  * MII_ADVERTISE register.
  */
-static inline u32 linkmode_adv_to_mii_adv_t(unsigned long *advertising)
+static inline u32 linkmode_adv_to_mii_adv_t(const unsigned long *advertising)
 {
 	u32 result = 0;
 
@@ -215,7 +215,8 @@ static inline u32 ethtool_adv_to_mii_ctrl1000_t(u32 ethadv)
  * settings to phy autonegotiation advertisements for the
  * MII_CTRL1000 register when in 1000T mode.
  */
-static inline u32 linkmode_adv_to_mii_ctrl1000_t(unsigned long *advertising)
+static inline u32
+linkmode_adv_to_mii_ctrl1000_t(const unsigned long *advertising)
 {
 	u32 result = 0;
 
@@ -453,7 +454,7 @@ static inline void mii_ctrl1000_mod_linkmode_adv_t(unsigned long *advertising,
  * A small helper function that translates linkmode advertising to LVL
  * pause capabilities.
  */
-static inline u32 linkmode_adv_to_lcl_adv_t(unsigned long *advertising)
+static inline u32 linkmode_adv_to_lcl_adv_t(const unsigned long *advertising)
 {
 	u32 lcl_adv = 0;
 
@@ -543,6 +544,41 @@ static inline u8 mii_resolve_flowctrl_fdx(u16 lcladv, u16 rmtadv)
 	}
 
 	return cap;
+}
+
+/**
+ * mii_bmcr_encode_fixed - encode fixed speed/duplex settings to a BMCR value
+ * @speed: a SPEED_* value
+ * @duplex: a DUPLEX_* value
+ *
+ * Encode the speed and duplex to a BMCR value. 2500, 1000, 100 and 10 Mbps are
+ * supported. 2500Mbps is encoded to 1000Mbps. Other speeds are encoded as 10
+ * Mbps. Unknown duplex values are encoded to half-duplex.
+ */
+static inline u16 mii_bmcr_encode_fixed(int speed, int duplex)
+{
+	u16 bmcr;
+
+	switch (speed) {
+	case SPEED_2500:
+	case SPEED_1000:
+		bmcr = BMCR_SPEED1000;
+		break;
+
+	case SPEED_100:
+		bmcr = BMCR_SPEED100;
+		break;
+
+	case SPEED_10:
+	default:
+		bmcr = BMCR_SPEED10;
+		break;
+	}
+
+	if (duplex == DUPLEX_FULL)
+		bmcr |= BMCR_FULLDPLX;
+
+	return bmcr;
 }
 
 #endif /* __LINUX_MII_H__ */

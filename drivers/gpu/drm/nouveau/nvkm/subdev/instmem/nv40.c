@@ -124,7 +124,7 @@ nv40_instobj_new(struct nvkm_instmem *base, u32 size, u32 align, bool zero,
 	struct nv40_instobj *iobj;
 	int ret;
 
-	if (!(iobj = kzalloc(sizeof(*iobj), GFP_KERNEL)))
+	if (!(iobj = kzalloc_obj(*iobj)))
 		return -ENOMEM;
 	*pmemory = &iobj->base.memory;
 
@@ -239,21 +239,15 @@ nv40_instmem_new(struct nvkm_device *device, enum nvkm_subdev_type type, int ins
 		 struct nvkm_instmem **pimem)
 {
 	struct nv40_instmem *imem;
-	int bar;
 
-	if (!(imem = kzalloc(sizeof(*imem), GFP_KERNEL)))
+	if (!(imem = kzalloc_obj(*imem)))
 		return -ENOMEM;
 	nvkm_instmem_ctor(&nv40_instmem, device, type, inst, &imem->base);
 	*pimem = &imem->base;
 
 	/* map bar */
-	if (device->func->resource_size(device, 2))
-		bar = 2;
-	else
-		bar = 3;
-
-	imem->iomem = ioremap_wc(device->func->resource_addr(device, bar),
-				 device->func->resource_size(device, bar));
+	imem->iomem = ioremap_wc(device->func->resource_addr(device, NVKM_BAR2_INST),
+				 device->func->resource_size(device, NVKM_BAR2_INST));
 	if (!imem->iomem) {
 		nvkm_error(&imem->base.subdev, "unable to map PRAMIN BAR\n");
 		return -EFAULT;

@@ -115,9 +115,9 @@ static int nfcmrvl_spi_parse_dt(struct device_node *node,
 	}
 
 	ret = irq_of_parse_and_map(node, 0);
-	if (ret < 0) {
-		pr_err("Unable to get irq, error: %d\n", ret);
-		return ret;
+	if (!ret) {
+		pr_err("Unable to get irq\n");
+		return -EINVAL;
 	}
 	pdata->irq = ret;
 
@@ -199,7 +199,6 @@ static struct spi_driver nfcmrvl_spi_driver = {
 	.id_table	= nfcmrvl_spi_id_table,
 	.driver		= {
 		.name		= "nfcmrvl_spi",
-		.owner		= THIS_MODULE,
 		.of_match_table	= of_match_ptr(of_nfcmrvl_spi_match),
 	},
 };

@@ -21,8 +21,6 @@
 #include "dwc-xlgmac.h"
 #include "dwc-xlgmac-reg.h"
 
-MODULE_LICENSE("Dual BSD/GPL");
-
 static int debug = -1;
 module_param(debug, int, 0644);
 MODULE_PARM_DESC(debug, "DWC ethernet debug level (0=none,...,16=all)");
@@ -54,8 +52,8 @@ static void xlgmac_default_config(struct xlgmac_pdata *pdata)
 	pdata->phy_speed = SPEED_25000;
 	pdata->sysclk_rate = XLGMAC_SYSCLOCK;
 
-	strlcpy(pdata->drv_name, XLGMAC_DRV_NAME, sizeof(pdata->drv_name));
-	strlcpy(pdata->drv_ver, XLGMAC_DRV_VERSION, sizeof(pdata->drv_ver));
+	strscpy(pdata->drv_name, XLGMAC_DRV_NAME, sizeof(pdata->drv_name));
+	strscpy(pdata->drv_ver, XLGMAC_DRV_VERSION, sizeof(pdata->drv_ver));
 }
 
 static void xlgmac_init_all_ops(struct xlgmac_pdata *pdata)
@@ -725,3 +723,8 @@ void xlgmac_print_all_hw_features(struct xlgmac_pdata *pdata)
 	XLGMAC_PR("=====================================================\n");
 	XLGMAC_PR("\n");
 }
+
+MODULE_DESCRIPTION(XLGMAC_DRV_DESC);
+MODULE_VERSION(XLGMAC_DRV_VERSION);
+MODULE_AUTHOR("Jie Deng <jiedeng@synopsys.com>");
+MODULE_LICENSE("Dual BSD/GPL");

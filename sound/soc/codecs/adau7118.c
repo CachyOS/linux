@@ -121,8 +121,10 @@ static const struct snd_soc_dapm_widget adau7118_widgets[] = {
 };
 
 static int adau7118_set_channel_map(struct snd_soc_dai *dai,
-				    unsigned int tx_num, unsigned int *tx_slot,
-				    unsigned int rx_num, unsigned int *rx_slot)
+				    unsigned int tx_num,
+				    const unsigned int *tx_slot,
+				    unsigned int rx_num,
+				    const unsigned int *rx_slot)
 {
 	struct adau7118_data *st =
 		snd_soc_component_get_drvdata(dai->component);
@@ -166,6 +168,12 @@ static int adau7118_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 		break;
 	case SND_SOC_DAIFMT_RIGHT_J:
 		st->right_j = true;
+		break;
+	case SND_SOC_DAIFMT_DSP_A:
+		ret = snd_soc_component_update_bits(dai->component,
+						    ADAU7118_REG_SPT_CTRL1,
+						    ADAU7118_DATA_FMT_MASK,
+						    ADAU7118_DATA_FMT(1));
 		break;
 	default:
 		dev_err(st->dev, "Invalid format %d",
@@ -327,6 +335,7 @@ static int adau7118_set_bias_level(struct snd_soc_component *component,
 				   enum snd_soc_bias_level level)
 {
 	struct adau7118_data *st = snd_soc_component_get_drvdata(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	int ret = 0;
 
 	dev_dbg(st->dev, "Set bias level %d\n", level);
@@ -337,8 +346,7 @@ static int adau7118_set_bias_level(struct snd_soc_component *component,
 		break;
 
 	case SND_SOC_BIAS_STANDBY:
-		if (snd_soc_component_get_bias_level(component) ==
-							SND_SOC_BIAS_OFF) {
+		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
 			/* power on */
 			ret = regulator_enable(st->iovdd);
 			if (ret)
@@ -385,8 +393,7 @@ static int adau7118_set_bias_level(struct snd_soc_component *component,
 static int adau7118_component_probe(struct snd_soc_component *component)
 {
 	struct adau7118_data *st = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm =
-					snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	int ret = 0;
 
 	if (st->hw_mode) {
@@ -442,24 +449,7 @@ static const struct snd_soc_component_driver adau7118_component_driver = {
 	.num_dapm_widgets	= ARRAY_SIZE(adau7118_widgets),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
-
-static void adau7118_regulator_disable(void *data)
-{
-	struct adau7118_data *st = data;
-	int ret;
-	/*
-	 * If we fail to disable DVDD, don't bother in trying IOVDD. We
-	 * actually don't want to be left in the situation where DVDD
-	 * is enabled and IOVDD is disabled.
-	 */
-	ret = regulator_disable(st->dvdd);
-	if (ret)
-		return;
-
-	regulator_disable(st->iovdd);
-}
 
 static int adau7118_regulator_setup(struct adau7118_data *st)
 {
@@ -482,8 +472,7 @@ static int adau7118_regulator_setup(struct adau7118_data *st)
 		regcache_cache_only(st->map, true);
 	}
 
-	return devm_add_action_or_reset(st->dev, adau7118_regulator_disable,
-					st);
+	return 0;
 }
 
 static int adau7118_parset_dt(const struct adau7118_data *st)

@@ -5,45 +5,56 @@
 #include "en/params.h"
 #include "en/txrx.h"
 #include "en/health.h"
+#include <net/xdp_sock_drv.h>
 
-/* It matches XDP_UMEM_MIN_CHUNK_SIZE, but as this constant is private and may
- * change unexpectedly, and mlx5e has a minimum valid stride size for striding
- * RQ, keep this check in the driver.
+static int mlx5e_legacy_rq_validate_xsk(struct mlx5_core_dev *mdev,
+					struct mlx5e_params *params,
+					struct mlx5e_xsk_param *xsk)
+{
+	if (!mlx5e_rx_is_linear_skb(mdev, params, xsk)) {
+		mlx5_core_err(mdev, "Legacy RQ linear mode for XSK can't be activated with current params\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/* The limitation of 2048 can be altered, but shouldn't go beyond the minimal
+ * stride size of striding RQ.
  */
-#define MLX5E_MIN_XSK_CHUNK_SIZE 2048
+#define MLX5E_MIN_XSK_CHUNK_SIZE max(2048, XDP_UMEM_MIN_CHUNK_SIZE)
 
 bool mlx5e_validate_xsk_param(struct mlx5e_params *params,
 			      struct mlx5e_xsk_param *xsk,
 			      struct mlx5_core_dev *mdev)
 {
-	/* AF_XDP doesn't support frames larger than PAGE_SIZE. */
-	if (xsk->chunk_size > PAGE_SIZE ||
-			xsk->chunk_size < MLX5E_MIN_XSK_CHUNK_SIZE)
+	/* AF_XDP doesn't support frames larger than PAGE_SIZE,
+	 * and xsk->chunk_size is limited to 65535 bytes.
+	 */
+	if ((size_t)xsk->chunk_size > PAGE_SIZE || xsk->chunk_size < MLX5E_MIN_XSK_CHUNK_SIZE) {
+		mlx5_core_err(mdev, "XSK chunk size %u out of bounds [%u, %lu]\n", xsk->chunk_size,
+			      MLX5E_MIN_XSK_CHUNK_SIZE, PAGE_SIZE);
 		return false;
-
-	/* Current MTU and XSK headroom don't allow packets to fit the frames. */
-	if (mlx5e_rx_get_min_frag_sz(params, xsk) > xsk->chunk_size)
-		return false;
+	}
 
 	/* frag_sz is different for regular and XSK RQs, so ensure that linear
 	 * SKB mode is possible.
 	 */
 	switch (params->rq_wq_type) {
 	case MLX5_WQ_TYPE_LINKED_LIST_STRIDING_RQ:
-		return mlx5e_rx_mpwqe_is_linear_skb(mdev, params, xsk);
+		return !mlx5e_mpwrq_validate_xsk(mdev, params, xsk);
 	default: /* MLX5_WQ_TYPE_CYCLIC */
-		return mlx5e_rx_is_linear_skb(params, xsk);
+		return !mlx5e_legacy_rq_validate_xsk(mdev, params, xsk);
 	}
 }
 
 static void mlx5e_build_xsk_cparam(struct mlx5_core_dev *mdev,
 				   struct mlx5e_params *params,
 				   struct mlx5e_xsk_param *xsk,
-				   u16 q_counter,
 				   struct mlx5e_channel_param *cparam)
 {
-	mlx5e_build_rq_param(mdev, params, xsk, q_counter, &cparam->rq);
-	mlx5e_build_xdpsq_param(mdev, params, xsk, &cparam->xdp_sq);
+	mlx5e_build_rq_param(mdev, params, xsk, &cparam->rq);
+	mlx5e_build_xdpsq_param(mdev, params, &cparam->xdp_sq);
 }
 
 static int mlx5e_init_xsk_rq(struct mlx5e_channel *c,
@@ -60,8 +71,8 @@ static int mlx5e_init_xsk_rq(struct mlx5e_channel *c,
 	rq->pdev         = c->pdev;
 	rq->netdev       = c->netdev;
 	rq->priv         = c->priv;
-	rq->tstamp       = c->tstamp;
-	rq->clock        = &mdev->clock;
+	rq->hwtstamp_config = &c->priv->hwtstamp_config;
+	rq->clock        = mdev->clock;
 	rq->icosq        = &c->icosq;
 	rq->ix           = c->ix;
 	rq->channel      = c;
@@ -71,25 +82,32 @@ static int mlx5e_init_xsk_rq(struct mlx5e_channel *c,
 	rq->xsk_pool     = pool;
 	rq->stats        = &c->priv->channel_stats[c->ix]->xskrq;
 	rq->ptp_cyc2time = mlx5_rq_ts_translator(mdev);
-	rq_xdp_ix        = c->ix + params->num_channels * MLX5E_RQ_GROUP_XSK;
+	rq_xdp_ix        = c->ix;
 	err = mlx5e_rq_set_handlers(rq, params, xsk);
 	if (err)
 		return err;
 
-	return  xdp_rxq_info_reg(&rq->xdp_rxq, rq->netdev, rq_xdp_ix, 0);
+	return xdp_rxq_info_reg(&rq->xdp_rxq, rq->netdev, rq_xdp_ix, c->napi.napi_id);
 }
 
 static int mlx5e_open_xsk_rq(struct mlx5e_channel *c, struct mlx5e_params *params,
 			     struct mlx5e_rq_param *rq_params, struct xsk_buff_pool *pool,
 			     struct mlx5e_xsk_param *xsk)
 {
+	u16 q_counter = c->priv->q_counter[c->sd_ix];
+	struct mlx5e_rq *xskrq = &c->xskrq;
 	int err;
 
-	err = mlx5e_init_xsk_rq(c, params, pool, xsk, &c->xskrq);
+	err = mlx5e_init_xsk_rq(c, params, pool, xsk, xskrq);
 	if (err)
 		return err;
 
-	return mlx5e_open_rq(params, rq_params, xsk, cpu_to_node(c->cpu), &c->xskrq);
+	err = mlx5e_open_rq(params, rq_params, xsk, cpu_to_node(c->cpu), q_counter, xskrq);
+	if (err)
+		return err;
+
+	__set_bit(MLX5E_RQ_STATE_XSK, &xskrq->state);
+	return 0;
 }
 
 int mlx5e_open_xsk(struct mlx5e_priv *priv, struct mlx5e_params *params,
@@ -105,13 +123,13 @@ int mlx5e_open_xsk(struct mlx5e_priv *priv, struct mlx5e_params *params,
 	if (!mlx5e_validate_xsk_param(params, xsk, priv->mdev))
 		return -EINVAL;
 
-	cparam = kvzalloc(sizeof(*cparam), GFP_KERNEL);
+	cparam = kvzalloc_obj(*cparam);
 	if (!cparam)
 		return -ENOMEM;
 
-	mlx5e_build_xsk_cparam(priv->mdev, params, xsk, priv->q_counter, cparam);
+	mlx5e_build_xsk_cparam(priv->mdev, params, xsk, cparam);
 
-	err = mlx5e_open_cq(c->priv, params->rx_cq_moderation, &cparam->rq.cqp, &ccp,
+	err = mlx5e_open_cq(c->mdev, params->rx_cq_moderation, &cparam->rq.cqp, &ccp,
 			    &c->xskrq.cq);
 	if (unlikely(err))
 		goto err_free_cparam;
@@ -120,7 +138,7 @@ int mlx5e_open_xsk(struct mlx5e_priv *priv, struct mlx5e_params *params,
 	if (unlikely(err))
 		goto err_close_rx_cq;
 
-	err = mlx5e_open_cq(c->priv, params->tx_cq_moderation, &cparam->xdp_sq.cqp, &ccp,
+	err = mlx5e_open_cq(c->mdev, params->tx_cq_moderation, &cparam->xdp_sq.cqp, &ccp,
 			    &c->xsksq.cq);
 	if (unlikely(err))
 		goto err_close_rq;
@@ -159,7 +177,7 @@ err_free_cparam:
 void mlx5e_close_xsk(struct mlx5e_channel *c)
 {
 	clear_bit(MLX5E_CHANNEL_STATE_XSK, c->state);
-	synchronize_net(); /* Sync with the XSK wakeup and with NAPI. */
+	synchronize_net(); /* Sync with NAPI. */
 
 	mlx5e_close_rq(&c->xskrq);
 	mlx5e_close_cq(&c->xskrq.cq);

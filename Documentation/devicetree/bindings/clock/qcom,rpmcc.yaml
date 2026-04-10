@@ -8,7 +8,7 @@ title: Qualcomm RPM Clock Controller
 
 maintainers:
   - Bjorn Andersson <bjorn.andersson@linaro.org>
-  - Krzysztof Kozlowski <krzysztof.kozlowski@linaro.org>
+  - Krzysztof Kozlowski <krzk@kernel.org>
 
 description: |
   The clock enumerators are defined in <dt-bindings/clock/qcom,rpmcc.h> and
@@ -29,8 +29,12 @@ properties:
           - qcom,rpmcc-mdm9607
           - qcom,rpmcc-msm8226
           - qcom,rpmcc-msm8660
+          - qcom,rpmcc-msm8909
           - qcom,rpmcc-msm8916
+          - qcom,rpmcc-msm8917
           - qcom,rpmcc-msm8936
+          - qcom,rpmcc-msm8937
+          - qcom,rpmcc-msm8940
           - qcom,rpmcc-msm8953
           - qcom,rpmcc-msm8974
           - qcom,rpmcc-msm8976
@@ -40,23 +44,100 @@ properties:
           - qcom,rpmcc-msm8998
           - qcom,rpmcc-qcm2290
           - qcom,rpmcc-qcs404
+          - qcom,rpmcc-sdm429
           - qcom,rpmcc-sdm660
           - qcom,rpmcc-sm6115
           - qcom,rpmcc-sm6125
+          - qcom,rpmcc-sm6375
       - const: qcom,rpmcc
 
   '#clock-cells':
     const: 1
 
   clocks:
-    maxItems: 1
+    minItems: 1
+    maxItems: 2
 
   clock-names:
-    const: xo
+    minItems: 1
+    maxItems: 2
 
 required:
   - compatible
   - '#clock-cells'
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - qcom,rpmcc-apq8060
+              - qcom,rpmcc-ipq806x
+              - qcom,rpmcc-msm8660
+
+    then:
+      properties:
+        clocks:
+          items:
+            - description: pxo clock
+
+        clock-names:
+          items:
+            - const: pxo
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: qcom,rpmcc-apq8064
+    then:
+      properties:
+        clocks:
+          items:
+            - description: pxo clock
+            - description: cxo clock
+
+        clock-names:
+          items:
+            - const: pxo
+            - const: cxo
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - qcom,rpmcc-mdm9607
+              - qcom,rpmcc-msm8226
+              - qcom,rpmcc-msm8916
+              - qcom,rpmcc-msm8917
+              - qcom,rpmcc-msm8936
+              - qcom,rpmcc-msm8937
+              - qcom,rpmcc-msm8940
+              - qcom,rpmcc-msm8953
+              - qcom,rpmcc-msm8974
+              - qcom,rpmcc-msm8976
+              - qcom,rpmcc-msm8992
+              - qcom,rpmcc-msm8994
+              - qcom,rpmcc-msm8996
+              - qcom,rpmcc-msm8998
+              - qcom,rpmcc-qcm2290
+              - qcom,rpmcc-qcs404
+              - qcom,rpmcc-sdm429
+              - qcom,rpmcc-sdm660
+              - qcom,rpmcc-sm6115
+              - qcom,rpmcc-sm6125
+
+    then:
+      properties:
+        clocks:
+          items:
+            - description: xo clock
+
+        clock-names:
+          items:
+            - const: xo
 
 additionalProperties: false
 
@@ -64,12 +145,22 @@ examples:
   - |
     rpm {
         rpm-requests {
-            compatible = "qcom,rpm-msm8916";
+            compatible = "qcom,rpm-msm8916", "qcom,smd-rpm";
             qcom,smd-channels = "rpm_requests";
 
             clock-controller {
                 compatible = "qcom,rpmcc-msm8916", "qcom,rpmcc";
                 #clock-cells = <1>;
             };
+        };
+    };
+
+  - |
+    rpm {
+        clock-controller {
+            compatible = "qcom,rpmcc-ipq806x", "qcom,rpmcc";
+            #clock-cells = <1>;
+            clocks = <&pxo_board>;
+            clock-names = "pxo";
         };
     };

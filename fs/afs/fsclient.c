@@ -131,7 +131,7 @@ bad:
 
 static time64_t xdr_decode_expiry(struct afs_call *call, u32 expiry)
 {
-	return ktime_divns(call->reply_time, NSEC_PER_SEC) + expiry;
+	return ktime_divns(call->issue_time, NSEC_PER_SEC) + expiry;
 }
 
 static void xdr_decode_AFSCallBack(const __be32 **_bp,
@@ -290,6 +290,7 @@ void afs_fs_fetch_status(struct afs_operation *op)
 	bp[2] = htonl(vp->fid.vnode);
 	bp[3] = htonl(vp->fid.unique);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -300,18 +301,19 @@ void afs_fs_fetch_status(struct afs_operation *op)
 static int afs_deliver_fs_fetch_data(struct afs_call *call)
 {
 	struct afs_operation *op = call->op;
+	struct netfs_io_subrequest *subreq = op->fetch.subreq;
 	struct afs_vnode_param *vp = &op->file[0];
-	struct afs_read *req = op->fetch.req;
 	const __be32 *bp;
+	size_t count_before;
 	int ret;
 
 	_enter("{%u,%zu,%zu/%llu}",
 	       call->unmarshall, call->iov_len, iov_iter_count(call->iter),
-	       req->actual_len);
+	       call->remaining);
 
 	switch (call->unmarshall) {
 	case 0:
-		req->actual_len = 0;
+		call->remaining = 0;
 		call->unmarshall++;
 		if (call->operation_ID == FSFETCHDATA64) {
 			afs_extract_to_tmp64(call);
@@ -321,8 +323,8 @@ static int afs_deliver_fs_fetch_data(struct afs_call *call)
 		}
 		fallthrough;
 
-		/* Extract the returned data length into
-		 * ->actual_len.  This may indicate more or less data than was
+		/* Extract the returned data length into ->remaining.
+		 * This may indicate more or less data than was
 		 * requested will be returned.
 		 */
 	case 1:
@@ -331,38 +333,40 @@ static int afs_deliver_fs_fetch_data(struct afs_call *call)
 		if (ret < 0)
 			return ret;
 
-		req->actual_len = be64_to_cpu(call->tmp64);
-		_debug("DATA length: %llu", req->actual_len);
+		call->remaining = be64_to_cpu(call->tmp64);
+		_debug("DATA length: %llu", call->remaining);
 
-		if (req->actual_len == 0)
+		if (call->remaining == 0)
 			goto no_more_data;
 
-		call->iter = req->iter;
-		call->iov_len = min(req->actual_len, req->len);
+		call->iter = &subreq->io_iter;
+		call->iov_len = umin(call->remaining, subreq->len - subreq->transferred);
 		call->unmarshall++;
 		fallthrough;
 
 		/* extract the returned data */
 	case 2:
-		_debug("extract data %zu/%llu",
-		       iov_iter_count(call->iter), req->actual_len);
+		count_before = call->iov_len;
+		_debug("extract data %zu/%llu", count_before, call->remaining);
 
 		ret = afs_extract_data(call, true);
+		subreq->transferred += count_before - call->iov_len;
+		call->remaining -= count_before - call->iov_len;
 		if (ret < 0)
 			return ret;
 
 		call->iter = &call->def_iter;
-		if (req->actual_len <= req->len)
+		if (call->remaining)
 			goto no_more_data;
 
 		/* Discard any excess data the server gave us */
-		afs_extract_discard(call, req->actual_len - req->len);
+		afs_extract_discard(call, call->remaining);
 		call->unmarshall = 3;
 		fallthrough;
 
 	case 3:
 		_debug("extract discard %zu/%llu",
-		       iov_iter_count(call->iter), req->actual_len - req->len);
+		       iov_iter_count(call->iter), call->remaining);
 
 		ret = afs_extract_data(call, true);
 		if (ret < 0)
@@ -384,8 +388,8 @@ static int afs_deliver_fs_fetch_data(struct afs_call *call)
 		xdr_decode_AFSCallBack(&bp, call, &vp->scb);
 		xdr_decode_AFSVolSync(&bp, &op->volsync);
 
-		req->data_version = vp->scb.status.data_version;
-		req->file_size = vp->scb.status.size;
+		if (subreq->start + subreq->transferred >= vp->scb.status.size)
+			__set_bit(NETFS_SREQ_HIT_EOF, &subreq->flags);
 
 		call->unmarshall++;
 		fallthrough;
@@ -404,14 +408,18 @@ static int afs_deliver_fs_fetch_data(struct afs_call *call)
 static const struct afs_call_type afs_RXFSFetchData = {
 	.name		= "FS.FetchData",
 	.op		= afs_FS_FetchData,
+	.async_rx	= afs_fetch_data_async_rx,
 	.deliver	= afs_deliver_fs_fetch_data,
+	.immediate_cancel = afs_fetch_data_immediate_cancel,
 	.destructor	= afs_flat_call_destructor,
 };
 
 static const struct afs_call_type afs_RXFSFetchData64 = {
 	.name		= "FS.FetchData64",
 	.op		= afs_FS_FetchData64,
+	.async_rx	= afs_fetch_data_async_rx,
 	.deliver	= afs_deliver_fs_fetch_data,
+	.immediate_cancel = afs_fetch_data_immediate_cancel,
 	.destructor	= afs_flat_call_destructor,
 };
 
@@ -420,8 +428,8 @@ static const struct afs_call_type afs_RXFSFetchData64 = {
  */
 static void afs_fs_fetch_data64(struct afs_operation *op)
 {
+	struct netfs_io_subrequest *subreq = op->fetch.subreq;
 	struct afs_vnode_param *vp = &op->file[0];
-	struct afs_read *req = op->fetch.req;
 	struct afs_call *call;
 	__be32 *bp;
 
@@ -431,17 +439,21 @@ static void afs_fs_fetch_data64(struct afs_operation *op)
 	if (!call)
 		return afs_op_nomem(op);
 
+	if (op->flags & AFS_OPERATION_ASYNC)
+		call->async = true;
+
 	/* marshall the parameters */
 	bp = call->request;
 	bp[0] = htonl(FSFETCHDATA64);
 	bp[1] = htonl(vp->fid.vid);
 	bp[2] = htonl(vp->fid.vnode);
 	bp[3] = htonl(vp->fid.unique);
-	bp[4] = htonl(upper_32_bits(req->pos));
-	bp[5] = htonl(lower_32_bits(req->pos));
+	bp[4] = htonl(upper_32_bits(subreq->start + subreq->transferred));
+	bp[5] = htonl(lower_32_bits(subreq->start + subreq->transferred));
 	bp[6] = 0;
-	bp[7] = htonl(lower_32_bits(req->len));
+	bp[7] = htonl(lower_32_bits(subreq->len   - subreq->transferred));
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -451,9 +463,9 @@ static void afs_fs_fetch_data64(struct afs_operation *op)
  */
 void afs_fs_fetch_data(struct afs_operation *op)
 {
+	struct netfs_io_subrequest *subreq = op->fetch.subreq;
 	struct afs_vnode_param *vp = &op->file[0];
 	struct afs_call *call;
-	struct afs_read *req = op->fetch.req;
 	__be32 *bp;
 
 	if (test_bit(AFS_SERVER_FL_HAS_FS64, &op->server->flags))
@@ -465,17 +477,16 @@ void afs_fs_fetch_data(struct afs_operation *op)
 	if (!call)
 		return afs_op_nomem(op);
 
-	req->call_debug_id = call->debug_id;
-
 	/* marshall the parameters */
 	bp = call->request;
 	bp[0] = htonl(FSFETCHDATA);
 	bp[1] = htonl(vp->fid.vid);
 	bp[2] = htonl(vp->fid.vnode);
 	bp[3] = htonl(vp->fid.unique);
-	bp[4] = htonl(lower_32_bits(req->pos));
-	bp[5] = htonl(lower_32_bits(req->len));
+	bp[4] = htonl(lower_32_bits(subreq->start + subreq->transferred));
+	bp[5] = htonl(lower_32_bits(subreq->len   + subreq->transferred));
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -559,6 +570,7 @@ void afs_fs_create_file(struct afs_operation *op)
 	*bp++ = htonl(op->create.mode & S_IALLUGO); /* unix mode */
 	*bp++ = 0; /* segment size */
 
+	call->fid = dvp->fid;
 	trace_afs_make_fs_call1(call, &dvp->fid, name);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -612,6 +624,7 @@ void afs_fs_make_dir(struct afs_operation *op)
 	*bp++ = htonl(op->create.mode & S_IALLUGO); /* unix mode */
 	*bp++ = 0; /* segment size */
 
+	call->fid = dvp->fid;
 	trace_afs_make_fs_call1(call, &dvp->fid, name);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -685,6 +698,7 @@ void afs_fs_remove_file(struct afs_operation *op)
 		bp = (void *) bp + padsz;
 	}
 
+	call->fid = dvp->fid;
 	trace_afs_make_fs_call1(call, &dvp->fid, name);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -732,6 +746,7 @@ void afs_fs_remove_dir(struct afs_operation *op)
 		bp = (void *) bp + padsz;
 	}
 
+	call->fid = dvp->fid;
 	trace_afs_make_fs_call1(call, &dvp->fid, name);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -812,6 +827,7 @@ void afs_fs_link(struct afs_operation *op)
 	*bp++ = htonl(vp->fid.vnode);
 	*bp++ = htonl(vp->fid.unique);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call1(call, &vp->fid, name);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -907,6 +923,7 @@ void afs_fs_symlink(struct afs_operation *op)
 	*bp++ = htonl(S_IRWXUGO); /* unix mode */
 	*bp++ = 0; /* segment size */
 
+	call->fid = dvp->fid;
 	trace_afs_make_fs_call1(call, &dvp->fid, name);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1003,6 +1020,7 @@ void afs_fs_rename(struct afs_operation *op)
 		bp = (void *) bp + n_padsz;
 	}
 
+	call->fid = orig_dvp->fid;
 	trace_afs_make_fs_call2(call, &orig_dvp->fid, orig_name, new_name);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1090,6 +1108,7 @@ static void afs_fs_store_data64(struct afs_operation *op)
 	*bp++ = htonl(upper_32_bits(op->store.i_size));
 	*bp++ = htonl(lower_32_bits(op->store.i_size));
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1140,6 +1159,7 @@ void afs_fs_store_data(struct afs_operation *op)
 	*bp++ = htonl(lower_32_bits(op->store.size));
 	*bp++ = htonl(lower_32_bits(op->store.i_size));
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1206,6 +1226,7 @@ static void afs_fs_setattr_size64(struct afs_operation *op)
 	*bp++ = htonl(upper_32_bits(attr->ia_size));	/* new file length */
 	*bp++ = htonl(lower_32_bits(attr->ia_size));
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1247,6 +1268,7 @@ static void afs_fs_setattr_size(struct afs_operation *op)
 	*bp++ = 0;				/* size of write */
 	*bp++ = htonl(attr->ia_size);		/* new file length */
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1283,6 +1305,7 @@ void afs_fs_setattr(struct afs_operation *op)
 
 	xdr_encode_AFS_StoreStatus(&bp, op->setattr.attr);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1446,6 +1469,7 @@ void afs_fs_get_volume_status(struct afs_operation *op)
 	bp[0] = htonl(FSGETVOLUMESTATUS);
 	bp[1] = htonl(vp->fid.vid);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1528,6 +1552,7 @@ void afs_fs_set_lock(struct afs_operation *op)
 	*bp++ = htonl(vp->fid.unique);
 	*bp++ = htonl(op->lock.type);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_calli(call, &vp->fid, op->lock.type);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1554,6 +1579,7 @@ void afs_fs_extend_lock(struct afs_operation *op)
 	*bp++ = htonl(vp->fid.vnode);
 	*bp++ = htonl(vp->fid.unique);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1580,6 +1606,7 @@ void afs_fs_release_lock(struct afs_operation *op)
 	*bp++ = htonl(vp->fid.vnode);
 	*bp++ = htonl(vp->fid.unique);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1605,13 +1632,12 @@ static const struct afs_call_type afs_RXFSGiveUpAllCallBacks = {
 /*
  * Flush all the callbacks we have on a server.
  */
-int afs_fs_give_up_all_callbacks(struct afs_net *net,
-				 struct afs_server *server,
-				 struct afs_addr_cursor *ac,
-				 struct key *key)
+int afs_fs_give_up_all_callbacks(struct afs_net *net, struct afs_server *server,
+				 struct afs_address *addr, struct key *key)
 {
 	struct afs_call *call;
 	__be32 *bp;
+	int ret;
 
 	_enter("");
 
@@ -1619,15 +1645,22 @@ int afs_fs_give_up_all_callbacks(struct afs_net *net,
 	if (!call)
 		return -ENOMEM;
 
-	call->key = key;
+	call->key	= key;
+	call->peer	= rxrpc_kernel_get_peer(addr->peer);
+	call->service_id = server->service_id;
 
 	/* marshall the parameters */
 	bp = call->request;
 	*bp++ = htonl(FSGIVEUPALLCALLBACKS);
 
-	call->server = afs_use_server(server, afs_server_trace_give_up_cb);
-	afs_make_call(ac, call, GFP_NOFS);
-	return afs_wait_for_call_to_complete(call, ac);
+	call->server = afs_use_server(server, false, afs_server_trace_use_give_up_cb);
+	afs_make_call(call, GFP_NOFS);
+	afs_wait_for_call_to_complete(call);
+	ret = call->error;
+	if (call->responded)
+		set_bit(AFS_SERVER_FL_RESPONDING, &server->flags);
+	afs_put_call(call);
+	return ret;
 }
 
 /*
@@ -1689,6 +1722,12 @@ static int afs_deliver_fs_get_capabilities(struct afs_call *call)
 	return 0;
 }
 
+static void afs_fs_get_capabilities_destructor(struct afs_call *call)
+{
+	afs_put_endpoint_state(call->probe, afs_estate_trace_put_getcaps);
+	afs_flat_call_destructor(call);
+}
+
 /*
  * FS.GetCapabilities operation type
  */
@@ -1697,7 +1736,8 @@ static const struct afs_call_type afs_RXFSGetCapabilities = {
 	.op		= afs_FS_GetCapabilities,
 	.deliver	= afs_deliver_fs_get_capabilities,
 	.done		= afs_fileserver_probe_result,
-	.destructor	= afs_flat_call_destructor,
+	.immediate_cancel = afs_fileserver_probe_result,
+	.destructor	= afs_fs_get_capabilities_destructor,
 };
 
 /*
@@ -1707,7 +1747,8 @@ static const struct afs_call_type afs_RXFSGetCapabilities = {
  * ->done() - otherwise we return false to indicate we didn't even try.
  */
 bool afs_fs_get_capabilities(struct afs_net *net, struct afs_server *server,
-			     struct afs_addr_cursor *ac, struct key *key)
+			     struct afs_endpoint_state *estate, unsigned int addr_index,
+			     struct key *key)
 {
 	struct afs_call *call;
 	__be32 *bp;
@@ -1718,10 +1759,14 @@ bool afs_fs_get_capabilities(struct afs_net *net, struct afs_server *server,
 	if (!call)
 		return false;
 
-	call->key = key;
-	call->server = afs_use_server(server, afs_server_trace_get_caps);
-	call->upgrade = true;
-	call->async = true;
+	call->key	= key;
+	call->server	= afs_use_server(server, false, afs_server_trace_use_get_caps);
+	call->peer	= rxrpc_kernel_get_peer(estate->addresses->addrs[addr_index].peer);
+	call->probe	= afs_get_endpoint_state(estate, afs_estate_trace_get_getcaps);
+	call->probe_index = addr_index;
+	call->service_id = server->service_id;
+	call->upgrade	= true;
+	call->async	= true;
 	call->max_lifespan = AFS_PROBE_MAX_LIFESPAN;
 
 	/* marshall the parameters */
@@ -1729,7 +1774,7 @@ bool afs_fs_get_capabilities(struct afs_net *net, struct afs_server *server,
 	*bp++ = htonl(FSGETCAPABILITIES);
 
 	trace_afs_make_fs_call(call, NULL);
-	afs_make_call(ac, call, GFP_NOFS);
+	afs_make_call(call, GFP_NOFS);
 	afs_put_call(call);
 	return true;
 }
@@ -1853,7 +1898,10 @@ static int afs_deliver_fs_inline_bulk_status(struct afs_call *call)
 			return ret;
 
 		bp = call->buffer;
-		xdr_decode_AFSVolSync(&bp, &op->volsync);
+		/* Unfortunately, prior to OpenAFS-1.6, volsync here is filled
+		 * with rubbish.
+		 */
+		xdr_decode_AFSVolSync(&bp, NULL);
 
 		call->unmarshall++;
 		fallthrough;
@@ -1899,7 +1947,7 @@ void afs_fs_inline_bulk_status(struct afs_operation *op)
 	int i;
 
 	if (test_bit(AFS_SERVER_FL_NO_IBULK, &op->server->flags)) {
-		op->error = -ENOTSUPP;
+		afs_op_set_error(op, -ENOTSUPP);
 		return;
 	}
 
@@ -1928,6 +1976,7 @@ void afs_fs_inline_bulk_status(struct afs_operation *op)
 		*bp++ = htonl(op->more_files[i].fid.unique);
 	}
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_NOFS);
 }
@@ -1961,7 +2010,7 @@ static int afs_deliver_fs_fetch_acl(struct afs_call *call)
 		size = call->count2 = ntohl(call->tmp);
 		size = round_up(size, 4);
 
-		acl = kmalloc(struct_size(acl, data, size), GFP_KERNEL);
+		acl = kmalloc_flex(*acl, data, size);
 		if (!acl)
 			return -ENOMEM;
 		op->acl = acl;
@@ -2033,6 +2082,7 @@ void afs_fs_fetch_acl(struct afs_operation *op)
 	bp[2] = htonl(vp->fid.vnode);
 	bp[3] = htonl(vp->fid.unique);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_KERNEL);
 }
@@ -2078,6 +2128,7 @@ void afs_fs_store_acl(struct afs_operation *op)
 	if (acl->size != size)
 		memset((void *)&bp[5] + acl->size, 0, size - acl->size);
 
+	call->fid = vp->fid;
 	trace_afs_make_fs_call(call, &vp->fid);
 	afs_make_op_call(op, call, GFP_KERNEL);
 }

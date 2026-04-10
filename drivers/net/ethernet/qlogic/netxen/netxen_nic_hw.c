@@ -634,7 +634,7 @@ static int nx_p3_nic_add_mac(struct netxen_adapter *adapter,
 		}
 	}
 
-	cur = kzalloc(sizeof(nx_mac_list_t), GFP_ATOMIC);
+	cur = kzalloc_obj(nx_mac_list_t, GFP_ATOMIC);
 	if (cur == NULL)
 		return -ENOMEM;
 
@@ -960,7 +960,7 @@ int netxen_nic_change_mtu(struct net_device *netdev, int mtu)
 		rc = adapter->set_mtu(adapter, mtu);
 
 	if (!rc)
-		netdev->mtu = mtu;
+		WRITE_ONCE(netdev->mtu, mtu);
 
 	return rc;
 }

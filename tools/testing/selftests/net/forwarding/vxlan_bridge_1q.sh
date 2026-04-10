@@ -539,6 +539,21 @@ test_flood()
 		10 10 0 10 0
 	__test_flood ca:fe:be:ef:13:37 198.51.100.100 20 "flood vlan 20" \
 		10 0 10 0 10
+
+	# Add entries with arbitrary destination IP. Verify that packets are
+	# not duplicated (this can happen if hardware floods the packets, and
+	# then traps them due to misconfiguration, so software data path repeats
+	# flooding and resends packets).
+	bridge fdb append dev vx10 00:00:00:00:00:00 dst 203.0.113.1 self
+	bridge fdb append dev vx20 00:00:00:00:00:00 dst 203.0.113.2 self
+
+	__test_flood de:ad:be:ef:13:37 192.0.2.100 10 \
+		"flood vlan 10, unresolved FDB entry" 10 10 0 10 0
+	__test_flood ca:fe:be:ef:13:37 198.51.100.100 20 \
+		"flood vlan 20, unresolved FDB entry" 10 0 10 0 10
+
+	bridge fdb del dev vx20 00:00:00:00:00:00 dst 203.0.113.2 self
+	bridge fdb del dev vx10 00:00:00:00:00:00 dst 203.0.113.1 self
 }
 
 vxlan_fdb_add_del()
@@ -750,7 +765,7 @@ __test_learning()
 	expects[0]=0; expects[$idx1]=10; expects[$idx2]=0
 	vxlan_flood_test $mac $dst $vid "${expects[@]}"
 
-	sleep 20
+	sleep 60
 
 	bridge fdb show brport $vx | grep $mac | grep -q self
 	check_fail $?
@@ -796,11 +811,11 @@ test_learning()
 	local dst=192.0.2.100
 	local vid=10
 
-	# Enable learning on the VxLAN devices and set ageing time to 10 seconds
-	ip link set dev br1 type bridge ageing_time 1000
-	ip link set dev vx10 type vxlan ageing 10
+	# Enable learning on the VxLAN devices and set ageing time to 30 seconds
+	ip link set dev br1 type bridge ageing_time 3000
+	ip link set dev vx10 type vxlan ageing 30
 	ip link set dev vx10 type vxlan learning
-	ip link set dev vx20 type vxlan ageing 10
+	ip link set dev vx20 type vxlan ageing 30
 	ip link set dev vx20 type vxlan learning
 	reapply_config
 

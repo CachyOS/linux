@@ -47,7 +47,7 @@ struct wcn36xx_fw_msg_status_rsp {
 struct wcn36xx_hal_ind_msg {
 	struct list_head list;
 	size_t msg_len;
-	u8 msg[];
+	u8 msg[] __counted_by(msg_len);
 };
 
 struct wcn36xx;
@@ -66,7 +66,6 @@ int wcn36xx_smd_finish_scan(struct wcn36xx *wcn, enum wcn36xx_hal_sys_mode mode,
 int wcn36xx_smd_init_scan(struct wcn36xx *wcn, enum wcn36xx_hal_sys_mode mode,
 			  struct ieee80211_vif *vif);
 
-int wcn36xx_smd_update_scan_params(struct wcn36xx *wcn, u8 *channels, size_t channel_count);
 int wcn36xx_smd_start_hw_scan(struct wcn36xx *wcn, struct ieee80211_vif *vif,
 			      struct cfg80211_scan_request *req);
 int wcn36xx_smd_stop_hw_scan(struct wcn36xx *wcn);
@@ -125,9 +124,6 @@ int wcn36xx_smd_keep_alive_req(struct wcn36xx *wcn,
 int wcn36xx_smd_dump_cmd_req(struct wcn36xx *wcn, u32 arg1, u32 arg2,
 			     u32 arg3, u32 arg4, u32 arg5);
 int wcn36xx_smd_feature_caps_exchange(struct wcn36xx *wcn);
-void set_feat_caps(u32 *bitmap, enum place_holder_in_cap_bitmap cap);
-int get_feat_caps(u32 *bitmap, enum place_holder_in_cap_bitmap cap);
-void clear_feat_caps(u32 *bitmap, enum place_holder_in_cap_bitmap cap);
 
 int wcn36xx_smd_add_ba_session(struct wcn36xx *wcn,
 		struct ieee80211_sta *sta,

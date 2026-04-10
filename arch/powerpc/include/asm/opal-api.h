@@ -246,7 +246,7 @@
 #define OPAL_CONFIG_IDLE_UNDO		0
 #define OPAL_CONFIG_IDLE_APPLY		1
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 /* Other enums */
 enum OpalFreezeState {
@@ -1027,10 +1027,10 @@ struct opal_i2c_request {
  * The host will pass on OPAL, a buffer of length OPAL_SYSEPOW_MAX
  * with individual elements being 16 bits wide to fetch the system
  * wide EPOW status. Each element in the buffer will contain the
- * EPOW status in it's bit representation for a particular EPOW sub
+ * EPOW status in its bit representation for a particular EPOW sub
  * class as defined here. So multiple detailed EPOW status bits
  * specific for any sub class can be represented in a single buffer
- * element as it's bit representation.
+ * element as its bit representation.
  */
 
 /* System EPOW type */
@@ -1183,6 +1183,6 @@ struct opal_mpipl_fadump {
 	struct	opal_mpipl_region region[];
 } __packed;
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 #endif /* __OPAL_API_H */

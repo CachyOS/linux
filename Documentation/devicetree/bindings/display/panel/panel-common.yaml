@@ -12,7 +12,7 @@ maintainers:
 
 description: |
   This document defines device tree properties common to several classes of
-  display panels. It doesn't constitue a device tree binding specification by
+  display panels. It doesn't constitute a device tree binding specification by
   itself but is meant to be referenced by device tree bindings.
 
   When referenced from panel device tree bindings the properties defined in this
@@ -50,6 +50,14 @@ properties:
       Display rotation in degrees counter clockwise (0,90,180,270)
     $ref: /schemas/types.yaml#/definitions/uint32
     enum: [0, 90, 180, 270]
+
+  flip-horizontal:
+    description: boolean to flip image horizontally
+    type: boolean
+
+  flip-vertical:
+    description: boolean to flip image vertically
+    type: boolean
 
   # Display Timings
   panel-timing:

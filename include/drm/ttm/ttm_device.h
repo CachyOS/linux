@@ -27,6 +27,7 @@
 
 #include <linux/types.h>
 #include <linux/workqueue.h>
+#include <drm/ttm/ttm_allocation.h>
 #include <drm/ttm/ttm_resource.h>
 #include <drm/ttm/ttm_pool.h>
 
@@ -141,7 +142,7 @@ struct ttm_device_funcs {
 	 * the graphics address space
 	 * @ctx: context for this move with parameters
 	 * @new_mem: the new memory region receiving the buffer
-	 @ @hop: placement for driver directed intermediate hop
+	 * @hop: placement for driver directed intermediate hop
 	 *
 	 * Move a buffer between two memory regions.
 	 * Returns errno -EMULTIHOP if driver requests a hop
@@ -220,10 +221,15 @@ struct ttm_device {
 	struct list_head device_list;
 
 	/**
+	 * @alloc_flags: TTM_ALLOCATION_* flags.
+	 */
+	unsigned int alloc_flags;
+
+	/**
 	 * @funcs: Function table for the device.
 	 * Constant after bo device init
 	 */
-	struct ttm_device_funcs *funcs;
+	const struct ttm_device_funcs *funcs;
 
 	/**
 	 * @sysman: Resource manager for the system domain.
@@ -252,14 +258,10 @@ struct ttm_device {
 	spinlock_t lru_lock;
 
 	/**
-	 * @ddestroy: Destroyed but not yet cleaned up buffer objects.
+	 * @unevictable: Buffer objects which are pinned or swapped and as such
+	 * not on an LRU list.
 	 */
-	struct list_head ddestroy;
-
-	/**
-	 * @pinned: Buffer objects which are pinned and so not on any LRU list.
-	 */
-	struct list_head pinned;
+	struct list_head unevictable;
 
 	/**
 	 * @dev_mapping: A pointer to the struct address_space for invalidating
@@ -270,12 +272,13 @@ struct ttm_device {
 	/**
 	 * @wq: Work queue structure for the delayed delete workqueue.
 	 */
-	struct delayed_work wq;
+	struct workqueue_struct *wq;
 };
 
 int ttm_global_swapout(struct ttm_operation_ctx *ctx, gfp_t gfp_flags);
 int ttm_device_swapout(struct ttm_device *bdev, struct ttm_operation_ctx *ctx,
 		       gfp_t gfp_flags);
+int ttm_device_prepare_hibernation(struct ttm_device *bdev);
 
 static inline struct ttm_resource_manager *
 ttm_manager_type(struct ttm_device *bdev, int mem_type)
@@ -292,10 +295,10 @@ static inline void ttm_set_driver_manager(struct ttm_device *bdev, int type,
 	bdev->man_drv[type] = manager;
 }
 
-int ttm_device_init(struct ttm_device *bdev, struct ttm_device_funcs *funcs,
+int ttm_device_init(struct ttm_device *bdev, const struct ttm_device_funcs *funcs,
 		    struct device *dev, struct address_space *mapping,
 		    struct drm_vma_offset_manager *vma_manager,
-		    bool use_dma_alloc, bool use_dma32);
+		    unsigned int alloc_flags);
 void ttm_device_fini(struct ttm_device *bdev);
 void ttm_device_clear_dma_mappings(struct ttm_device *bdev);
 

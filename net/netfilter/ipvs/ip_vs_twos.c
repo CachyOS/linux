@@ -4,8 +4,7 @@
  * Authors:     Darby Payne <darby.payne@applovin.com>
  */
 
-#define KMSG_COMPONENT "IPVS"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "IPVS: " fmt
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -71,8 +70,8 @@ static struct ip_vs_dest *ip_vs_twos_schedule(struct ip_vs_service *svc,
 	 * from 0 to total_weight
 	 */
 	total_weight += 1;
-	rweight1 = prandom_u32() % total_weight;
-	rweight2 = prandom_u32() % total_weight;
+	rweight1 = get_random_u32_below(total_weight);
+	rweight2 = get_random_u32_below(total_weight);
 
 	/* Pick two weighted servers */
 	list_for_each_entry_rcu(dest, &svc->destinations, n_list) {
@@ -137,3 +136,4 @@ static void __exit ip_vs_twos_cleanup(void)
 module_init(ip_vs_twos_init);
 module_exit(ip_vs_twos_cleanup);
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("ipvs power of twos choice scheduler");

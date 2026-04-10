@@ -84,6 +84,9 @@ DPTF ACPI Drivers interface
 	https:/github.com/intel/thermal_daemon for decoding
 	thermal table.
 
+``production_mode`` (RO)
+	When different from zero, manufacturer locked thermal configuration
+	from further changes.
 
 ACPI Thermal Relationship table interface
 ------------------------------------------
@@ -161,6 +164,16 @@ ABI.
 ``power_limit_1_tmax_us`` (RO)
 	Maximum powercap sysfs constraint_1_time_window_us for Intel RAPL
 
+``power_floor_status`` (RO)
+	When set to 1, the power floor of the system in the current
+	configuration has been reached.  It needs to be reconfigured to allow
+	power to be reduced any further.
+
+``power_floor_enable`` (RW)
+	When set to 1, enable reading and notification of the power floor
+	status. Notifications are triggered for the power_floor_status
+	attribute value changes.
+
 :file:`/sys/bus/pci/devices/0000\:00\:04.0/`
 
 ``tcc_offset_degree_celsius`` (RW)
@@ -178,11 +191,42 @@ ABI.
 	User space can specify any one of the available workload type using
 	this interface.
 
+:file:`/sys/bus/pci/devices/0000\:00\:04.0/ptc_0_control`
+:file:`/sys/bus/pci/devices/0000\:00\:04.0/ptc_1_control`
+:file:`/sys/bus/pci/devices/0000\:00\:04.0/ptc_2_control`
+
+All these controls needs admin privilege to update.
+
+``enable`` (RW)
+	1 for enable, 0 for disable. Shows the current enable status of
+	platform temperature control feature. User space can enable/disable
+	hardware controls.
+
+``temperature_target`` (RW)
+	Update a new temperature target in milli degree celsius for hardware to
+	use for the temperature control.
+
+``thermal_tolerance`` (RW)
+	This attribute ranges from 0 to 7, where 0 represents
+	the most aggressive control to avoid any temperature overshoots, and
+	7 represents a more graceful approach, favoring performance even at
+	the expense of temperature overshoots.
+	Note: This level may not scale linearly. For example, a value of 3 does
+	not necessarily imply a 50% improvement in performance compared to a
+	value of 0.
+
+Given that this is platform temperature control, it is expected that a
+single user-level manager owns and manages the controls. If multiple
+user-level software applications attempt to write different targets, it
+can lead to unexpected behavior.
+
+
 DPTF Processor thermal RFIM interface
 --------------------------------------------
 
-RFIM interface allows adjustment of FIVR (Fully Integrated Voltage Regulator)
-and DDR (Double Data Rate)frequencies to avoid RF interference with WiFi and 5G.
+RFIM interface allows adjustment of FIVR (Fully Integrated Voltage Regulator),
+DDR (Double Data Rate) and DLVR (Digital Linear Voltage Regulator)
+frequencies to avoid RF interference with WiFi and 5G.
 
 Switching voltage regulators (VR) generate radiated EMI or RFI at the
 fundamental frequency and its harmonics. Some harmonics may interfere
@@ -192,6 +236,15 @@ methods is requesting SOC integrated VR (IVR) switching frequency to a
 small % and shift away the switching noise harmonic interference from
 radio channels.  OEM or ODMs can use the driver to control SOC IVR
 operation within the range where it does not impact IVR performance.
+
+Some products use DLVR instead of FIVR as switching voltage regulator.
+In this case attributes of DLVR must be adjusted instead of FIVR.
+
+While shifting the frequencies additional clock noise can be introduced,
+which is compensated by adjusting Spread spectrum percent. This helps
+to reduce the clock noise to meet regulatory compliance. This spreading
+% increases bandwidth of signal transmission and hence reduces the
+effects of interference, noise and signal fading.
 
 DRAM devices of DDR IO interface and their power plane can generate EMI
 at the data rates. Similar to IVR control mechanism, Intel offers a
@@ -261,6 +314,38 @@ DVFS attributes
 ``rfi_disable (RW)``
 	Disable DDR rate change feature
 
+DLVR attributes
+
+:file:`/sys/bus/pci/devices/0000\:00\:04.0/dlvr/`
+
+``dlvr_hardware_rev`` (RO)
+	DLVR hardware revision.
+
+``dlvr_freq_mhz`` (RO)
+	Current DLVR PLL frequency in MHz.
+
+``dlvr_freq_select`` (RW)
+	Sets DLVR PLL clock frequency. Once set, and enabled via
+	dlvr_rfim_enable, the dlvr_freq_mhz will show the current
+	DLVR PLL frequency.
+
+``dlvr_pll_busy`` (RO)
+	PLL can't accept frequency change when set.
+
+``dlvr_rfim_enable`` (RW)
+	0: Disable RF frequency hopping, 1: Enable RF frequency hopping.
+
+``dlvr_spread_spectrum_pct`` (RW)
+	Sets DLVR spread spectrum percent value.
+
+``dlvr_control_mode`` (RW)
+        Specifies how frequencies are spread using spread spectrum.
+        0: Down spread,
+        1: Spread in the Center.
+
+``dlvr_control_lock`` (RW)
+    1: future writes are ignored.
+
 DPTF Power supply and Battery Interface
 ----------------------------------------
 
@@ -270,3 +355,83 @@ DPTF Fan Control
 ----------------------------------------
 
 Refer to Documentation/admin-guide/acpi/fan_performance_states.rst
+
+Workload Type Hints
+----------------------------------------
+
+The firmware in Meteor Lake processor generation is capable of identifying
+workload type and passing hints regarding it to the OS. A special sysfs
+interface is provided to allow user space to obtain workload type hints from
+the firmware and control the rate at which they are provided.
+
+User space can poll attribute "workload_type_index" for the current hint or
+can receive a notification whenever the value of this attribute is updated.
+
+file:`/sys/bus/pci/devices/0000:00:04.0/workload_hint/`
+Segment 0, bus 0, device 4, function 0 is reserved for the processor thermal
+device on all Intel client processors. So, the above path doesn't change
+based on the processor generation.
+
+``workload_hint_enable`` (RW)
+	Enable firmware to send workload type hints to user space.
+
+``workload_slow_hint_enable`` (RW)
+	Enable firmware to send slow workload type hints to user space.
+
+``notification_delay_ms`` (RW)
+	Minimum delay in milliseconds before firmware will notify OS. This is
+	for the rate control of notifications. This delay is between changing
+	the workload type prediction in the firmware and notifying the OS about
+	the change. The default delay is 1024 ms. The delay of 0 is invalid.
+	The delay is rounded up to the nearest power of 2 to simplify firmware
+	programming of the delay value. The read of notification_delay_ms
+	attribute shows the effective value used.
+
+``workload_type_index`` (RO)
+	Predicted workload type index. User space can get notification of
+	change via existing sysfs attribute change notification mechanism.
+
+	The supported index values and their meaning for the Meteor Lake
+	processor generation are as follows:
+
+	0 -  Idle: System performs no tasks, power and idle residency are
+		consistently low for long periods of time.
+
+	1 – Battery Life: Power is relatively low, but the processor may
+		still be actively performing a task, such as video playback for
+		a long period of time.
+
+	2 – Sustained: Power level that is relatively high for a long period
+		of time, with very few to no periods of idleness, which will
+		eventually exhaust RAPL Power Limit 1 and 2.
+
+	3 – Bursty: Consumes a relatively constant average amount of power, but
+		periods of relative idleness are interrupted by bursts of
+		activity. The bursts are relatively short and the periods of
+		relative idleness between them typically prevent RAPL Power
+		Limit 1 from being exhausted.
+
+	4 – Unknown: Can't classify.
+
+	On processors starting from Panther Lake additional hints are provided.
+	The hardware analyzes workload residencies over an extended period to
+	determine whether the workload classification tends toward idle/battery
+	life states or sustained/performance states. Based on this long-term
+	analysis, it classifies:
+
+	Power Classification: If the workload exhibits more idle or battery life
+	residencies, it is classified as "power".
+
+	Performance Classification: If the workload exhibits more sustained or
+	performance residencies, it is classified as "performance".
+
+	This approach enables applications to ignore short-term workload
+	fluctuations and instead respond to longer-term power vs. performance
+	trends.
+
+	Residency thresholds for this classification are CPU generation-specific.
+	Classification is reported via bit 4 of the workload_type_index:
+
+	Bit 4 = 1: Power classification
+
+	Bit 4 = 0: Performance classification

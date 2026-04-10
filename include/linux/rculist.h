@@ -30,6 +30,27 @@ static inline void INIT_LIST_HEAD_RCU(struct list_head *list)
  * way, we must not access it directly
  */
 #define list_next_rcu(list)	(*((struct list_head __rcu **)(&(list)->next)))
+/*
+ * Return the ->prev pointer of a list_head in an rcu safe way. Don't
+ * access it directly.
+ *
+ * Any list traversed with list_bidir_prev_rcu() must never use
+ * list_del_rcu().  Doing so will poison the ->prev pointer that
+ * list_bidir_prev_rcu() relies on, which will result in segfaults.
+ * To prevent these segfaults, use list_bidir_del_rcu() instead
+ * of list_del_rcu().
+ */
+#define list_bidir_prev_rcu(list) (*((struct list_head __rcu **)(&(list)->prev)))
+
+/**
+ * list_for_each_rcu - Iterate over a list in an RCU-safe fashion
+ * @pos:	the &struct list_head to use as a loop cursor.
+ * @head:	the head for your list.
+ */
+#define list_for_each_rcu(pos, head)		  \
+	for (pos = rcu_dereference((head)->next); \
+	     !list_is_head(pos, (head)); \
+	     pos = rcu_dereference(pos->next))
 
 /**
  * list_tail_rcu - returns the prev pointer of the head of the list
@@ -159,6 +180,39 @@ static inline void list_del_rcu(struct list_head *entry)
 }
 
 /**
+ * list_bidir_del_rcu - deletes entry from list without re-initialization
+ * @entry: the element to delete from the list.
+ *
+ * In contrast to list_del_rcu() doesn't poison the prev pointer thus
+ * allowing backwards traversal via list_bidir_prev_rcu().
+ *
+ * Note: list_empty() on entry does not return true after this because
+ * the entry is in a special undefined state that permits RCU-based
+ * lockfree reverse traversal. In particular this means that we can not
+ * poison the forward and backwards pointers that may still be used for
+ * walking the list.
+ *
+ * The caller must take whatever precautions are necessary (such as
+ * holding appropriate locks) to avoid racing with another list-mutation
+ * primitive, such as list_bidir_del_rcu() or list_add_rcu(), running on
+ * this same list. However, it is perfectly legal to run concurrently
+ * with the _rcu list-traversal primitives, such as
+ * list_for_each_entry_rcu().
+ *
+ * Note that list_del_rcu() and list_bidir_del_rcu() must not be used on
+ * the same list.
+ *
+ * Note that the caller is not permitted to immediately free
+ * the newly deleted entry.  Instead, either synchronize_rcu()
+ * or call_rcu() must be used to defer freeing until an RCU
+ * grace period has elapsed.
+ */
+static inline void list_bidir_del_rcu(struct list_head *entry)
+{
+	__list_del_entry(entry);
+}
+
+/**
  * hlist_del_init_rcu - deletes entry from hash list with re-initialization
  * @n: the element to delete from the hash list.
  *
@@ -191,7 +245,10 @@ static inline void hlist_del_init_rcu(struct hlist_node *n)
  * @old : the element to be replaced
  * @new : the new element to insert
  *
- * The @old entry will be replaced with the @new entry atomically.
+ * The @old entry will be replaced with the @new entry atomically from
+ * the perspective of concurrent readers.  It is the caller's responsibility
+ * to synchronize with concurrent updaters, if any.
+ *
  * Note: @old should not be empty.
  */
 static inline void list_replace_rcu(struct list_head *old,
@@ -355,7 +412,7 @@ static inline void list_splice_tail_init_rcu(struct list_head *list,
 })
 
 /**
- * list_next_or_null_rcu - get the first element from a list
+ * list_next_or_null_rcu - get the next element from a list
  * @head:	the head for the list.
  * @ptr:        the list head to take the next element from.
  * @type:       the type of the struct this is embedded in.
@@ -519,7 +576,9 @@ static inline void hlist_del_rcu(struct hlist_node *n)
  * @old : the element to be replaced
  * @new : the new element to insert
  *
- * The @old entry will be replaced with the @new entry atomically.
+ * The @old entry will be replaced with the @new entry atomically from
+ * the perspective of concurrent readers.  It is the caller's responsibility
+ * to synchronize with concurrent updaters, if any.
  */
 static inline void hlist_replace_rcu(struct hlist_node *old,
 					struct hlist_node *new)

@@ -140,7 +140,7 @@ snd_wavefront_pnp (int dev, snd_wavefront_card_t *acard, struct pnp_card_link *c
 
 	err = pnp_activate_dev(pdev);
 	if (err < 0) {
-		snd_printk(KERN_ERR "PnP WSS pnp configure failure\n");
+		dev_err(&pdev->dev, "PnP WSS pnp configure failure\n");
 		return err;
 	}
 
@@ -156,7 +156,7 @@ snd_wavefront_pnp (int dev, snd_wavefront_card_t *acard, struct pnp_card_link *c
 	
 	err = pnp_activate_dev(pdev);
 	if (err < 0) {
-		snd_printk(KERN_ERR "PnP ICS2115 pnp configure failure\n");
+		dev_err(&pdev->dev, "PnP ICS2115 pnp configure failure\n");
 		return err;
 	}
 
@@ -174,26 +174,27 @@ snd_wavefront_pnp (int dev, snd_wavefront_card_t *acard, struct pnp_card_link *c
 
 		err = pnp_activate_dev(pdev);
 		if (err < 0) {
-			snd_printk(KERN_ERR "PnP MPU401 pnp configure failure\n");
+			dev_err(&pdev->dev, "PnP MPU401 pnp configure failure\n");
 			cs4232_mpu_port[dev] = SNDRV_AUTO_PORT;
 		} else {
 			cs4232_mpu_port[dev] = pnp_port_start(pdev, 0);
 			cs4232_mpu_irq[dev] = pnp_irq(pdev, 0);
 		}
 
-		snd_printk (KERN_INFO "CS4232 MPU: port=0x%lx, irq=%i\n", 
-			    cs4232_mpu_port[dev], 
-			    cs4232_mpu_irq[dev]);
+		dev_info(&pdev->dev, "CS4232 MPU: port=0x%lx, irq=%i\n",
+			 cs4232_mpu_port[dev],
+			 cs4232_mpu_irq[dev]);
 	}
 
-	snd_printdd ("CS4232: pcm port=0x%lx, fm port=0x%lx, dma1=%i, dma2=%i, irq=%i\nICS2115: port=0x%lx, irq=%i\n", 
-		    cs4232_pcm_port[dev], 
-		    fm_port[dev],
-		    dma1[dev], 
-		    dma2[dev], 
-		    cs4232_pcm_irq[dev],
-		    ics2115_port[dev], 
-		    ics2115_irq[dev]);
+	dev_dbg(&pdev->dev,
+		"CS4232: pcm port=0x%lx, fm port=0x%lx, dma1=%i, dma2=%i, irq=%i\nICS2115: port=0x%lx, irq=%i\n",
+		cs4232_pcm_port[dev],
+		fm_port[dev],
+		dma1[dev],
+		dma2[dev],
+		cs4232_pcm_irq[dev],
+		ics2115_port[dev],
+		ics2115_irq[dev]);
 	
 	return 0;
 }
@@ -233,7 +234,7 @@ static struct snd_hwdep *snd_wavefront_new_synth(struct snd_card *card,
 
 	if (snd_hwdep_new(card, "WaveFront", hw_dev, &wavefront_synth) < 0)
 		return NULL;
-	strcpy (wavefront_synth->name, 
+	strscpy (wavefront_synth->name, 
 		"WaveFront (ICS2115) wavetable synthesizer");
 	wavefront_synth->ops.open = snd_wavefront_synth_open;
 	wavefront_synth->ops.release = snd_wavefront_synth_release;
@@ -251,7 +252,7 @@ static struct snd_hwdep *snd_wavefront_new_fx(struct snd_card *card,
 	struct snd_hwdep *fx_processor;
 
 	if (snd_wavefront_fx_start (&acard->wavefront)) {
-		snd_printk (KERN_ERR "cannot initialize YSS225 FX processor");
+		dev_err(card->dev, "cannot initialize YSS225 FX processor");
 		return NULL;
 	}
 
@@ -282,7 +283,7 @@ static struct snd_rawmidi *snd_wavefront_new_midi(struct snd_card *card,
 		first = 0;
 		acard->wavefront.midi.base = port;
 		if (snd_wavefront_midi_start (acard)) {
-			snd_printk (KERN_ERR "cannot initialize MIDI interface\n");
+			dev_err(card->dev, "cannot initialize MIDI interface\n");
 			return NULL;
 		}
 	}
@@ -291,10 +292,10 @@ static struct snd_rawmidi *snd_wavefront_new_midi(struct snd_card *card,
 		return NULL;
 
 	if (mpu == internal_mpu) {
-		strcpy(rmidi->name, "WaveFront MIDI (Internal)");
+		strscpy(rmidi->name, "WaveFront MIDI (Internal)");
 		rmidi->private_data = &internal_id;
 	} else {
-		strcpy(rmidi->name, "WaveFront MIDI (External)");
+		strscpy(rmidi->name, "WaveFront MIDI (External)");
 		rmidi->private_data = &external_id;
 	}
 
@@ -349,7 +350,7 @@ snd_wavefront_probe (struct snd_card *card, int dev)
 			     cs4232_pcm_irq[dev], dma1[dev], dma2[dev],
 			     WSS_HW_DETECT, 0, &chip);
 	if (err < 0) {
-		snd_printk(KERN_ERR "can't allocate WSS device\n");
+		dev_err(card->dev, "can't allocate WSS device\n");
 		return err;
 	}
 
@@ -369,7 +370,7 @@ snd_wavefront_probe (struct snd_card *card, int dev)
 		err = snd_opl3_create(card, fm_port[dev], fm_port[dev] + 2,
 				      OPL3_HW_OPL3_CS, 0, &opl3);
 		if (err < 0) {
-			snd_printk (KERN_ERR "can't allocate or detect OPL3 synth\n");
+			dev_err(card->dev, "can't allocate or detect OPL3 synth\n");
 			return err;
 		}
 
@@ -385,14 +386,14 @@ snd_wavefront_probe (struct snd_card *card, int dev)
 		devm_request_region(card->dev, ics2115_port[dev], 16,
 				    "ICS2115");
 	if (acard->wavefront.res_base == NULL) {
-		snd_printk(KERN_ERR "unable to grab ICS2115 i/o region 0x%lx-0x%lx\n",
-			   ics2115_port[dev], ics2115_port[dev] + 16 - 1);
+		dev_err(card->dev, "unable to grab ICS2115 i/o region 0x%lx-0x%lx\n",
+			ics2115_port[dev], ics2115_port[dev] + 16 - 1);
 		return -EBUSY;
 	}
 	if (devm_request_irq(card->dev, ics2115_irq[dev],
 			     snd_wavefront_ics2115_interrupt,
 			     0, "ICS2115", acard)) {
-		snd_printk(KERN_ERR "unable to use ICS2115 IRQ %d\n", ics2115_irq[dev]);
+		dev_err(card->dev, "unable to use ICS2115 IRQ %d\n", ics2115_irq[dev]);
 		return -EBUSY;
 	}
 	
@@ -402,11 +403,11 @@ snd_wavefront_probe (struct snd_card *card, int dev)
 
 	wavefront_synth = snd_wavefront_new_synth(card, hw_dev, acard);
 	if (wavefront_synth == NULL) {
-		snd_printk (KERN_ERR "can't create WaveFront synth device\n");
+		dev_err(card->dev, "can't create WaveFront synth device\n");
 		return -ENOMEM;
 	}
 
-	strcpy (wavefront_synth->name, "ICS2115 Wavetable MIDI Synthesizer");
+	strscpy (wavefront_synth->name, "ICS2115 Wavetable MIDI Synthesizer");
 	wavefront_synth->iface = SNDRV_HWDEP_IFACE_ICS2115;
 	hw_dev++;
 
@@ -414,7 +415,7 @@ snd_wavefront_probe (struct snd_card *card, int dev)
 
 	err = snd_wss_mixer(chip);
 	if (err < 0) {
-		snd_printk (KERN_ERR "can't allocate mixer device\n");
+		dev_err(card->dev, "can't allocate mixer device\n");
 		return err;
 	}
 
@@ -425,7 +426,7 @@ snd_wavefront_probe (struct snd_card *card, int dev)
 					  cs4232_mpu_port[dev], 0,
 					  cs4232_mpu_irq[dev], NULL);
 		if (err < 0) {
-			snd_printk (KERN_ERR "can't allocate CS4232 MPU-401 device\n");
+			dev_err(card->dev, "can't allocate CS4232 MPU-401 device\n");
 			return err;
 		}
 		midi_dev++;
@@ -441,7 +442,7 @@ snd_wavefront_probe (struct snd_card *card, int dev)
 						ics2115_port[dev],
 						internal_mpu);
 		if (ics2115_internal_rmidi == NULL) {
-			snd_printk (KERN_ERR "can't setup ICS2115 internal MIDI device\n");
+			dev_err(card->dev, "can't setup ICS2115 internal MIDI device\n");
 			return -ENOMEM;
 		}
 		midi_dev++;
@@ -457,7 +458,7 @@ snd_wavefront_probe (struct snd_card *card, int dev)
 						ics2115_port[dev],
 						external_mpu);
 		if (ics2115_external_rmidi == NULL) {
-			snd_printk (KERN_ERR "can't setup ICS2115 external MIDI device\n");
+			dev_err(card->dev, "can't setup ICS2115 external MIDI device\n");
 			return -ENOMEM;
 		}
 		midi_dev++;
@@ -471,18 +472,18 @@ snd_wavefront_probe (struct snd_card *card, int dev)
 						     acard,
 						     ics2115_port[dev]);
 		if (fx_processor == NULL) {
-			snd_printk (KERN_ERR "can't setup FX device\n");
+			dev_err(card->dev, "can't setup FX device\n");
 			return -ENOMEM;
 		}
 
 		hw_dev++;
 
-		strcpy(card->driver, "Tropez+");
-		strcpy(card->shortname, "Turtle Beach Tropez+");
+		strscpy(card->driver, "Tropez+");
+		strscpy(card->shortname, "Turtle Beach Tropez+");
 	} else {
 		/* Need a way to distinguish between Maui and Tropez */
-		strcpy(card->driver, "WaveFront");
-		strcpy(card->shortname, "Turtle Beach WaveFront");
+		strscpy(card->driver, "WaveFront");
+		strscpy(card->shortname, "Turtle Beach WaveFront");
 	}
 
 	/* ----- Register the card --------- */
@@ -525,11 +526,11 @@ static int snd_wavefront_isa_match(struct device *pdev,
 		return 0;
 #endif
 	if (cs4232_pcm_port[dev] == SNDRV_AUTO_PORT) {
-		snd_printk(KERN_ERR "specify CS4232 port\n");
+		dev_err(pdev, "specify CS4232 port\n");
 		return 0;
 	}
 	if (ics2115_port[dev] == SNDRV_AUTO_PORT) {
-		snd_printk(KERN_ERR "specify ICS2115 port\n");
+		dev_err(pdev, "specify ICS2115 port\n");
 		return 0;
 	}
 	return 1;
@@ -585,7 +586,7 @@ static int snd_wavefront_pnp_detect(struct pnp_card_link *pcard,
 
 	if (snd_wavefront_pnp (dev, card->private_data, pcard, pid) < 0) {
 		if (cs4232_pcm_port[dev] == SNDRV_AUTO_PORT) {
-			snd_printk (KERN_ERR "isapnp detection failed\n");
+			dev_err(card->dev, "isapnp detection failed\n");
 			return -ENODEV;
 		}
 	}

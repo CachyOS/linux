@@ -95,33 +95,46 @@
 #define SVM_EXIT_CR14_WRITE_TRAP		0x09e
 #define SVM_EXIT_CR15_WRITE_TRAP		0x09f
 #define SVM_EXIT_INVPCID       0x0a2
+#define SVM_EXIT_BUS_LOCK			0x0a5
+#define SVM_EXIT_IDLE_HLT      0x0a6
 #define SVM_EXIT_NPF           0x400
 #define SVM_EXIT_AVIC_INCOMPLETE_IPI		0x401
 #define SVM_EXIT_AVIC_UNACCELERATED_ACCESS	0x402
 #define SVM_EXIT_VMGEXIT       0x403
 
 /* SEV-ES software-defined VMGEXIT events */
-#define SVM_VMGEXIT_MMIO_READ			0x80000001
-#define SVM_VMGEXIT_MMIO_WRITE			0x80000002
-#define SVM_VMGEXIT_NMI_COMPLETE		0x80000003
-#define SVM_VMGEXIT_AP_HLT_LOOP			0x80000004
-#define SVM_VMGEXIT_AP_JUMP_TABLE		0x80000005
+#define SVM_VMGEXIT_MMIO_READ			0x80000001ull
+#define SVM_VMGEXIT_MMIO_WRITE			0x80000002ull
+#define SVM_VMGEXIT_NMI_COMPLETE		0x80000003ull
+#define SVM_VMGEXIT_AP_HLT_LOOP			0x80000004ull
+#define SVM_VMGEXIT_AP_JUMP_TABLE		0x80000005ull
 #define SVM_VMGEXIT_SET_AP_JUMP_TABLE		0
 #define SVM_VMGEXIT_GET_AP_JUMP_TABLE		1
-#define SVM_VMGEXIT_PSC				0x80000010
-#define SVM_VMGEXIT_GUEST_REQUEST		0x80000011
-#define SVM_VMGEXIT_EXT_GUEST_REQUEST		0x80000012
-#define SVM_VMGEXIT_AP_CREATION			0x80000013
+#define SVM_VMGEXIT_PSC				0x80000010ull
+#define SVM_VMGEXIT_GUEST_REQUEST		0x80000011ull
+#define SVM_VMGEXIT_EXT_GUEST_REQUEST		0x80000012ull
+#define SVM_VMGEXIT_AP_CREATION			0x80000013ull
 #define SVM_VMGEXIT_AP_CREATE_ON_INIT		0
 #define SVM_VMGEXIT_AP_CREATE			1
 #define SVM_VMGEXIT_AP_DESTROY			2
-#define SVM_VMGEXIT_HV_FEATURES			0x8000fffd
-#define SVM_VMGEXIT_UNSUPPORTED_EVENT		0x8000ffff
+#define SVM_VMGEXIT_SNP_RUN_VMPL		0x80000018ull
+#define SVM_VMGEXIT_SAVIC			0x8000001aull
+#define SVM_VMGEXIT_SAVIC_REGISTER_GPA		0
+#define SVM_VMGEXIT_SAVIC_UNREGISTER_GPA	1
+#define SVM_VMGEXIT_SAVIC_SELF_GPA		~0ULL
+#define SVM_VMGEXIT_HV_FEATURES			0x8000fffdull
+#define SVM_VMGEXIT_TERM_REQUEST		0x8000fffeull
+#define SVM_VMGEXIT_TERM_REASON(reason_set, reason_code)	\
+	/* SW_EXITINFO1[3:0] */					\
+	(((((u64)reason_set) & 0xf)) |				\
+	/* SW_EXITINFO1[11:4] */				\
+	((((u64)reason_code) & 0xff) << 4))
+#define SVM_VMGEXIT_UNSUPPORTED_EVENT		0x8000ffffull
 
 /* Exit code reserved for hypervisor/software use */
-#define SVM_EXIT_SW				0xf0000000
+#define SVM_EXIT_SW				0xf0000000ull
 
-#define SVM_EXIT_ERR           -1
+#define SVM_EXIT_ERR           -1ull
 
 #define SVM_EXIT_REASONS \
 	{ SVM_EXIT_READ_CR0,    "read_cr0" }, \
@@ -217,6 +230,8 @@
 	{ SVM_EXIT_CR4_WRITE_TRAP,	"write_cr4_trap" }, \
 	{ SVM_EXIT_CR8_WRITE_TRAP,	"write_cr8_trap" }, \
 	{ SVM_EXIT_INVPCID,     "invpcid" }, \
+	{ SVM_EXIT_BUS_LOCK,     "buslock" }, \
+	{ SVM_EXIT_IDLE_HLT,     "idle-halt" }, \
 	{ SVM_EXIT_NPF,         "npf" }, \
 	{ SVM_EXIT_AVIC_INCOMPLETE_IPI,		"avic_incomplete_ipi" }, \
 	{ SVM_EXIT_AVIC_UNACCELERATED_ACCESS,   "avic_unaccelerated_access" }, \

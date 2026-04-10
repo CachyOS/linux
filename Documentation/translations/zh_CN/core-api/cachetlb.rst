@@ -5,6 +5,7 @@
 :翻译:
 
  司延腾 Yanteng Si <siyanteng@loongson.cn>
+ 周彬彬 Binbin Zhou <zhoubinbin@loongson.cn>
 
 :校译:
 
@@ -259,7 +260,7 @@ HyperSparc cpu就是这样一个具有这种属性的cpu。
 	如果D-cache别名不是一个问题，这个程序可以简单地定义为该架构上
 	的nop。
 
-	在page->flags (PG_arch_1)中有一个位是“架构私有”。内核保证，
+	在folio->flags (PG_arch_1)中有一个位是“架构私有”。内核保证，
 	对于分页缓存的页面，当这样的页面第一次进入分页缓存时，它将清除
 	这个位。
 
@@ -277,6 +278,11 @@ HyperSparc cpu就是这样一个具有这种属性的cpu。
 				通常很重要的是，如果你推迟刷新，实际的刷新发生在同一个
 				CPU上，因为它将cpu存储到页面上，使其变脏。同样，请看
 				sparc64关于如何处理这个问题的例子。
+
+  ``void flush_dcache_folio(struct folio *folio)``
+
+	该函数的调用情形与flush_dcache_page()相同。它允许架构针对刷新整个
+	folio页面进行优化，而不是一次刷新一页。
 
   ``void copy_to_user_page(struct vm_area_struct *vma, struct page *page,
   unsigned long user_vaddr, void *dst, void *src, int len)``

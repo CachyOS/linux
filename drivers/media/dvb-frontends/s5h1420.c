@@ -872,7 +872,7 @@ struct dvb_frontend *s5h1420_attach(const struct s5h1420_config *config,
 				    struct i2c_adapter *i2c)
 {
 	/* allocate memory for the internal state */
-	struct s5h1420_state *state = kzalloc(sizeof(struct s5h1420_state), GFP_KERNEL);
+	struct s5h1420_state *state = kzalloc_obj(struct s5h1420_state);
 	u8 i;
 
 	if (state == NULL)
@@ -918,7 +918,7 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(s5h1420_attach);
+EXPORT_SYMBOL_GPL(s5h1420_attach);
 
 static const struct dvb_frontend_ops s5h1420_ops = {
 	.delsys = { SYS_DVBS },

@@ -77,7 +77,7 @@ kzalloc() can be replaced with kcalloc().
 If no 2-factor form is available, the saturate-on-overflow helpers should
 be used::
 
-	bar = vmalloc(array_size(count, size));
+	bar = dma_alloc_coherent(dev, array_size(count, size), &dma, GFP_KERNEL);
 
 Another common case to avoid is calculating the size of a structure with
 a trailing array of others structures, as in::
@@ -138,17 +138,20 @@ be NUL terminated. This can lead to various linear read overflows and
 other misbehavior due to the missing termination. It also NUL-pads
 the destination buffer if the source contents are shorter than the
 destination buffer size, which may be a needless performance penalty
-for callers using only NUL-terminated strings. The safe replacement is
+for callers using only NUL-terminated strings.
+
+When the destination is required to be NUL-terminated, the replacement is
 strscpy(), though care must be given to any cases where the return value
 of strncpy() was used, since strscpy() does not return a pointer to the
 destination, but rather a count of non-NUL bytes copied (or negative
 errno when it truncates). Any cases still needing NUL-padding should
 instead use strscpy_pad().
 
-If a caller is using non-NUL-terminated strings, strncpy() can
-still be used, but destinations should be marked with the `__nonstring
+If a caller is using non-NUL-terminated strings, strtomem() should be
+used, and the destinations should be marked with the `__nonstring
 <https://gcc.gnu.org/onlinedocs/gcc/Common-Variable-Attributes.html>`_
-attribute to avoid future compiler warnings.
+attribute to avoid future compiler warnings. For cases still needing
+NUL-padding, strtomem_pad() can be used.
 
 strlcpy()
 ---------
@@ -343,3 +346,60 @@ struct_size() and flex_array_size() helpers::
         instance->count = count;
 
         memcpy(instance->items, source, flex_array_size(instance, items, instance->count));
+
+There are two special cases of replacement where the DECLARE_FLEX_ARRAY()
+helper needs to be used. (Note that it is named __DECLARE_FLEX_ARRAY() for
+use in UAPI headers.) Those cases are when the flexible array is either
+alone in a struct or is part of a union. These are disallowed by the C99
+specification, but for no technical reason (as can be seen by both the
+existing use of such arrays in those places and the work-around that
+DECLARE_FLEX_ARRAY() uses). For example, to convert this::
+
+	struct something {
+		...
+		union {
+			struct type1 one[0];
+			struct type2 two[0];
+		};
+	};
+
+The helper must be used::
+
+	struct something {
+		...
+		union {
+			DECLARE_FLEX_ARRAY(struct type1, one);
+			DECLARE_FLEX_ARRAY(struct type2, two);
+		};
+	};
+
+Open-coded kmalloc assignments for struct objects
+-------------------------------------------------
+Performing open-coded kmalloc()-family allocation assignments prevents
+the kernel (and compiler) from being able to examine the type of the
+variable being assigned, which limits any related introspection that
+may help with alignment, wrap-around, or additional hardening. The
+kmalloc_obj()-family of macros provide this introspection, which can be
+used for the common code patterns for single, array, and flexible object
+allocations. For example, these open coded assignments::
+
+	ptr = kmalloc(sizeof(*ptr), gfp);
+	ptr = kzalloc(sizeof(*ptr), gfp);
+	ptr = kmalloc_array(count, sizeof(*ptr), gfp);
+	ptr = kcalloc(count, sizeof(*ptr), gfp);
+	ptr = kmalloc(struct_size(ptr, flex_member, count), gfp);
+	ptr = kmalloc(sizeof(struct foo, gfp);
+
+become, respectively::
+
+	ptr = kmalloc_obj(*ptr, gfp);
+	ptr = kzalloc_obj(*ptr, gfp);
+	ptr = kmalloc_objs(*ptr, count, gfp);
+	ptr = kzalloc_objs(*ptr, count, gfp);
+	ptr = kmalloc_flex(*ptr, flex_member, count, gfp);
+	__auto_type ptr = kmalloc_obj(struct foo, gfp);
+
+If `ptr->flex_member` is annotated with __counted_by(), the allocation
+will automatically fail if `count` is larger than the maximum
+representable value that can be stored in the counter member associated
+with `flex_member`.

@@ -478,14 +478,12 @@ static int as3645a_detect(struct as3645a *flash)
 	return as3645a_write(flash, AS_BOOST_REG, AS_BOOST_CURRENT_DISABLE);
 }
 
-static int as3645a_parse_node(struct as3645a *flash,
-			      struct fwnode_handle *fwnode)
+static int as3645a_parse_node(struct device *dev, struct as3645a *flash)
 {
 	struct as3645a_config *cfg = &flash->cfg;
-	struct fwnode_handle *child;
 	int rval;
 
-	fwnode_for_each_child_node(fwnode, child) {
+	device_for_each_child_node_scoped(dev, child) {
 		u32 id = 0;
 
 		fwnode_property_read_u32(child, "reg", &id);
@@ -651,8 +649,8 @@ static int as3645a_v4l2_setup(struct as3645a *flash)
 		},
 	};
 
-	strlcpy(cfg.dev_name, led->dev->kobj.name, sizeof(cfg.dev_name));
-	strlcpy(cfgind.dev_name, flash->iled_cdev.dev->kobj.name,
+	strscpy(cfg.dev_name, led->dev->kobj.name, sizeof(cfg.dev_name));
+	strscpy(cfgind.dev_name, flash->iled_cdev.dev->kobj.name,
 		sizeof(cfgind.dev_name));
 
 	flash->vf = v4l2_flash_init(
@@ -686,7 +684,7 @@ static int as3645a_probe(struct i2c_client *client)
 
 	flash->client = client;
 
-	rval = as3645a_parse_node(flash, dev_fwnode(&client->dev));
+	rval = as3645a_parse_node(&client->dev, flash);
 	if (rval < 0)
 		return rval;
 
@@ -724,7 +722,7 @@ out_put_nodes:
 	return rval;
 }
 
-static int as3645a_remove(struct i2c_client *client)
+static void as3645a_remove(struct i2c_client *client)
 {
 	struct as3645a *flash = i2c_get_clientdata(client);
 
@@ -740,13 +738,11 @@ static int as3645a_remove(struct i2c_client *client)
 
 	fwnode_handle_put(flash->flash_node);
 	fwnode_handle_put(flash->indicator_node);
-
-	return 0;
 }
 
 static const struct i2c_device_id as3645a_id_table[] = {
-	{ AS_NAME, 0 },
-	{ },
+	{ AS_NAME },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, as3645a_id_table);
 
@@ -761,7 +757,7 @@ static struct i2c_driver as3645a_i2c_driver = {
 		.of_match_table = as3645a_of_table,
 		.name = AS_NAME,
 	},
-	.probe_new	= as3645a_probe,
+	.probe = as3645a_probe,
 	.remove	= as3645a_remove,
 	.id_table = as3645a_id_table,
 };

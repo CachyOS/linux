@@ -895,7 +895,7 @@ store_target_temp(struct device *dev, struct device_attribute *attr,
 	if (err < 0)
 		return err;
 
-	val = clamp_val(DIV_ROUND_CLOSEST(val, 1000), 0, 127);
+	val = DIV_ROUND_CLOSEST(clamp_val(val, 0, 127000), 1000);
 
 	mutex_lock(&data->update_lock);
 	data->target_temp[nr] = val;
@@ -920,7 +920,7 @@ store_tolerance(struct device *dev, struct device_attribute *attr,
 		return err;
 
 	/* Limit the temp to 0C - 15C */
-	val = clamp_val(DIV_ROUND_CLOSEST(val, 1000), 0, 15);
+	val = DIV_ROUND_CLOSEST(clamp_val(val, 0, 15000), 1000);
 
 	mutex_lock(&data->update_lock);
 	reg = w83627ehf_read_value(data, W83627EHF_REG_TOLERANCE[nr]);
@@ -1448,7 +1448,8 @@ w83627ehf_do_read_temp(struct w83627ehf_data *data, u32 attr,
 		return 0;
 	case hwmon_temp_alarm:
 		if (channel < 3) {
-			int bit[] = { 4, 5, 13 };
+			static const int bit[] = { 4, 5, 13 };
+
 			*val = (data->alarms >> bit[channel]) & 1;
 			return 0;
 		}
@@ -1479,7 +1480,8 @@ w83627ehf_do_read_in(struct w83627ehf_data *data, u32 attr,
 		return 0;
 	case hwmon_in_alarm:
 		if (channel < 10) {
-			int bit[] = { 0, 1, 2, 3, 8, 21, 20, 16, 17, 19 };
+			static const int bit[] = { 0, 1, 2, 3, 8, 21, 20, 16, 17, 19 };
+
 			*val = (data->alarms >> bit[channel]) & 1;
 			return 0;
 		}
@@ -1507,7 +1509,8 @@ w83627ehf_do_read_fan(struct w83627ehf_data *data, u32 attr,
 		return 0;
 	case hwmon_fan_alarm:
 		if (channel < 5) {
-			int bit[] = { 6, 7, 11, 10, 23 };
+			static const int bit[] = { 6, 7, 11, 10, 23 };
+
 			*val = (data->alarms >> bit[channel]) & 1;
 			return 0;
 		}
@@ -1640,7 +1643,7 @@ static const struct hwmon_ops w83627ehf_ops = {
 	.write = w83627ehf_write,
 };
 
-static const struct hwmon_channel_info *w83627ehf_info[] = {
+static const struct hwmon_channel_info * const w83627ehf_info[] = {
 	HWMON_CHANNEL_INFO(fan,
 		HWMON_F_ALARM | HWMON_F_DIV | HWMON_F_INPUT | HWMON_F_MIN,
 		HWMON_F_ALARM | HWMON_F_DIV | HWMON_F_INPUT | HWMON_F_MIN,
@@ -1944,7 +1947,7 @@ static int __init w83627ehf_probe(struct platform_device *pdev)
 	return PTR_ERR_OR_ZERO(hwmon_dev);
 }
 
-static int __maybe_unused w83627ehf_suspend(struct device *dev)
+static int w83627ehf_suspend(struct device *dev)
 {
 	struct w83627ehf_data *data = w83627ehf_update_device(dev);
 
@@ -1955,7 +1958,7 @@ static int __maybe_unused w83627ehf_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused w83627ehf_resume(struct device *dev)
+static int w83627ehf_resume(struct device *dev)
 {
 	struct w83627ehf_data *data = dev_get_drvdata(dev);
 	int i;
@@ -2010,12 +2013,12 @@ static int __maybe_unused w83627ehf_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(w83627ehf_dev_pm_ops, w83627ehf_suspend, w83627ehf_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(w83627ehf_dev_pm_ops, w83627ehf_suspend, w83627ehf_resume);
 
 static struct platform_driver w83627ehf_driver = {
 	.driver = {
 		.name	= DRVNAME,
-		.pm	= &w83627ehf_dev_pm_ops,
+		.pm	= pm_sleep_ptr(&w83627ehf_dev_pm_ops),
 	},
 };
 

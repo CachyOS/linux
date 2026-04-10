@@ -8,7 +8,6 @@
 #include <linux/gpio/driver.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
@@ -62,23 +61,22 @@ static int logicvc_gpio_get(struct gpio_chip *chip, unsigned offset)
 	return !!(value & bit);
 }
 
-static void logicvc_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
+static int logicvc_gpio_set(struct gpio_chip *chip, unsigned int offset,
+			    int value)
 {
 	struct logicvc_gpio *logicvc = gpiochip_get_data(chip);
 	unsigned int reg, bit;
 
 	logicvc_gpio_offset(logicvc, offset, &reg, &bit);
 
-	regmap_update_bits(logicvc->regmap, reg, bit, value ? bit : 0);
+	return regmap_update_bits(logicvc->regmap, reg, bit, value ? bit : 0);
 }
 
 static int logicvc_gpio_direction_output(struct gpio_chip *chip,
 					 unsigned offset, int value)
 {
 	/* Pins are always configured as output, so just set the value. */
-	logicvc_gpio_set(chip, offset, value);
-
-	return 0;
+	return logicvc_gpio_set(chip, offset, value);
 }
 
 static struct regmap_config logicvc_gpio_regmap_config = {
@@ -138,8 +136,6 @@ static int logicvc_gpio_probe(struct platform_device *pdev)
 	logicvc->chip.get = logicvc_gpio_get;
 	logicvc->chip.set = logicvc_gpio_set;
 	logicvc->chip.direction_output = logicvc_gpio_direction_output;
-
-	platform_set_drvdata(pdev, logicvc);
 
 	return devm_gpiochip_add_data(dev, &logicvc->chip, logicvc);
 }

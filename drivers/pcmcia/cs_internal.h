@@ -113,10 +113,9 @@ struct pcmcia_callback{
 /* cs.c */
 extern struct rw_semaphore pcmcia_socket_list_rwsem;
 extern struct list_head pcmcia_socket_list;
-extern struct class pcmcia_socket_class;
+extern const struct class pcmcia_socket_class;
 
 int pccard_register_pcmcia(struct pcmcia_socket *s, struct pcmcia_callback *c);
-struct pcmcia_socket *pcmcia_get_socket_by_nr(unsigned int nr);
 
 void pcmcia_parse_uevents(struct pcmcia_socket *socket, unsigned int events);
 #define PCMCIA_UEVENT_EJECT	0x0001
@@ -132,7 +131,7 @@ void pcmcia_put_socket(struct pcmcia_socket *skt);
  * Stuff internal to module "pcmcia".
  */
 /* ds.c */
-extern struct bus_type pcmcia_bus_type;
+extern const struct bus_type pcmcia_bus_type;
 
 struct pcmcia_device;
 

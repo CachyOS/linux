@@ -291,7 +291,7 @@ per stream. From ASoC DPCM framework, this stream state maybe linked to
 
 .. code-block:: c
 
-  int sdw_alloc_stream(char * stream_name);
+  int sdw_alloc_stream(char * stream_name, enum sdw_stream_type type);
 
 The SoundWire core provides a sdw_startup_stream() helper function,
 typically called during a dailink .startup() callback, which performs
@@ -324,12 +324,12 @@ framework, this stream state is linked to .hw_params() operation.
 
   int sdw_stream_add_master(struct sdw_bus * bus,
 		struct sdw_stream_config * stream_config,
-		struct sdw_ports_config * ports_config,
+		const struct sdw_ports_config * ports_config,
 		struct sdw_stream_runtime * stream);
 
   int sdw_stream_add_slave(struct sdw_slave * slave,
 		struct sdw_stream_config * stream_config,
-		struct sdw_ports_config * ports_config,
+		const struct sdw_ports_config * ports_config,
 		struct sdw_stream_runtime * stream);
 
 

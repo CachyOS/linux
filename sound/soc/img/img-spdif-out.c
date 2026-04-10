@@ -287,11 +287,6 @@ static int img_spdif_out_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static const struct snd_soc_dai_ops img_spdif_out_dai_ops = {
-	.trigger = img_spdif_out_trigger,
-	.hw_params = img_spdif_out_hw_params
-};
-
 static int img_spdif_out_dai_probe(struct snd_soc_dai *dai)
 {
 	struct img_spdif_out *spdif = snd_soc_dai_get_drvdata(dai);
@@ -304,8 +299,13 @@ static int img_spdif_out_dai_probe(struct snd_soc_dai *dai)
 	return 0;
 }
 
+static const struct snd_soc_dai_ops img_spdif_out_dai_ops = {
+	.probe		= img_spdif_out_dai_probe,
+	.trigger	= img_spdif_out_trigger,
+	.hw_params	= img_spdif_out_hw_params
+};
+
 static struct snd_soc_dai_driver img_spdif_out_dai = {
-	.probe = img_spdif_out_dai_probe,
 	.playback = {
 		.channels_min = 2,
 		.channels_max = 2,
@@ -316,7 +316,8 @@ static struct snd_soc_dai_driver img_spdif_out_dai = {
 };
 
 static const struct snd_soc_component_driver img_spdif_out_component = {
-	.name = "img-spdif-out"
+	.name = "img-spdif-out",
+	.legacy_dai_naming = 1,
 };
 
 static int img_spdif_out_probe(struct platform_device *pdev)
@@ -401,16 +402,13 @@ err_pm_disable:
 	return ret;
 }
 
-static int img_spdif_out_dev_remove(struct platform_device *pdev)
+static void img_spdif_out_dev_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
 	if (!pm_runtime_status_suspended(&pdev->dev))
 		img_spdif_out_runtime_suspend(&pdev->dev);
-
-	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int img_spdif_out_suspend(struct device *dev)
 {
 	struct img_spdif_out *spdif = dev_get_drvdata(dev);
@@ -449,7 +447,7 @@ static int img_spdif_out_resume(struct device *dev)
 
 	return 0;
 }
-#endif
+
 static const struct of_device_id img_spdif_out_of_match[] = {
 	{ .compatible = "img,spdif-out" },
 	{}
@@ -457,16 +455,15 @@ static const struct of_device_id img_spdif_out_of_match[] = {
 MODULE_DEVICE_TABLE(of, img_spdif_out_of_match);
 
 static const struct dev_pm_ops img_spdif_out_pm_ops = {
-	SET_RUNTIME_PM_OPS(img_spdif_out_runtime_suspend,
-			   img_spdif_out_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(img_spdif_out_suspend, img_spdif_out_resume)
+	RUNTIME_PM_OPS(img_spdif_out_runtime_suspend, img_spdif_out_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(img_spdif_out_suspend, img_spdif_out_resume)
 };
 
 static struct platform_driver img_spdif_out_driver = {
 	.driver = {
 		.name = "img-spdif-out",
 		.of_match_table = img_spdif_out_of_match,
-		.pm = &img_spdif_out_pm_ops
+		.pm = pm_ptr(&img_spdif_out_pm_ops)
 	},
 	.probe = img_spdif_out_probe,
 	.remove = img_spdif_out_dev_remove

@@ -31,35 +31,35 @@
 /* "show" function for the bond_masters attribute.
  * The class parameter is ignored.
  */
-static ssize_t bonding_show_bonds(struct class *cls,
-				  struct class_attribute *attr,
+static ssize_t bonding_show_bonds(const struct class *cls,
+				  const struct class_attribute *attr,
 				  char *buf)
 {
-	struct bond_net *bn =
-		container_of(attr, struct bond_net, class_attr_bonding_masters);
-	int res = 0;
+	const struct bond_net *bn =
+		container_of_const(attr, struct bond_net, class_attr_bonding_masters);
 	struct bonding *bond;
+	int res = 0;
 
-	rtnl_lock();
+	rcu_read_lock();
 
-	list_for_each_entry(bond, &bn->dev_list, bond_list) {
+	list_for_each_entry_rcu(bond, &bn->dev_list, bond_list) {
 		if (res > (PAGE_SIZE - IFNAMSIZ)) {
 			/* not enough space for another interface name */
 			if ((PAGE_SIZE - res) > 10)
 				res = PAGE_SIZE - 10;
-			res += sprintf(buf + res, "++more++ ");
+			res += sysfs_emit_at(buf, res, "++more++ ");
 			break;
 		}
-		res += sprintf(buf + res, "%s ", bond->dev->name);
+		res += sysfs_emit_at(buf, res, "%s ", bond->dev->name);
 	}
 	if (res)
 		buf[res-1] = '\n'; /* eat the leftover space */
 
-	rtnl_unlock();
+	rcu_read_unlock();
 	return res;
 }
 
-static struct net_device *bond_get_by_name(struct bond_net *bn, const char *ifname)
+static struct net_device *bond_get_by_name(const struct bond_net *bn, const char *ifname)
 {
 	struct bonding *bond;
 
@@ -75,12 +75,12 @@ static struct net_device *bond_get_by_name(struct bond_net *bn, const char *ifna
  *
  * The class parameter is ignored.
  */
-static ssize_t bonding_store_bonds(struct class *cls,
-				   struct class_attribute *attr,
+static ssize_t bonding_store_bonds(const struct class *cls,
+				   const struct class_attribute *attr,
 				   const char *buffer, size_t count)
 {
-	struct bond_net *bn =
-		container_of(attr, struct bond_net, class_attr_bonding_masters);
+	const struct bond_net *bn =
+		container_of_const(attr, struct bond_net, class_attr_bonding_masters);
 	char command[IFNAMSIZ + 1] = {0, };
 	char *ifname;
 	int rv, res = count;
@@ -170,21 +170,20 @@ static ssize_t bonding_show_slaves(struct device *d,
 	struct slave *slave;
 	int res = 0;
 
-	if (!rtnl_trylock())
-		return restart_syscall();
+	rcu_read_lock();
 
-	bond_for_each_slave(bond, slave, iter) {
+	bond_for_each_slave_rcu(bond, slave, iter) {
 		if (res > (PAGE_SIZE - IFNAMSIZ)) {
 			/* not enough space for another interface name */
 			if ((PAGE_SIZE - res) > 10)
 				res = PAGE_SIZE - 10;
-			res += sprintf(buf + res, "++more++ ");
+			res += sysfs_emit_at(buf, res, "++more++ ");
 			break;
 		}
-		res += sprintf(buf + res, "%s ", slave->dev->name);
+		res += sysfs_emit_at(buf, res, "%s ", slave->dev->name);
 	}
 
-	rtnl_unlock();
+	rcu_read_unlock();
 
 	if (res)
 		buf[res-1] = '\n'; /* eat the leftover space */
@@ -203,7 +202,7 @@ static ssize_t bonding_show_mode(struct device *d,
 
 	val = bond_opt_get_val(BOND_OPT_MODE, BOND_MODE(bond));
 
-	return sprintf(buf, "%s %d\n", val->string, BOND_MODE(bond));
+	return sysfs_emit(buf, "%s %d\n", val->string, BOND_MODE(bond));
 }
 static DEVICE_ATTR(mode, 0644, bonding_show_mode, bonding_sysfs_store_option);
 
@@ -217,7 +216,7 @@ static ssize_t bonding_show_xmit_hash(struct device *d,
 
 	val = bond_opt_get_val(BOND_OPT_XMIT_HASH, bond->params.xmit_policy);
 
-	return sprintf(buf, "%s %d\n", val->string, bond->params.xmit_policy);
+	return sysfs_emit(buf, "%s %d\n", val->string, bond->params.xmit_policy);
 }
 static DEVICE_ATTR(xmit_hash_policy, 0644,
 		   bonding_show_xmit_hash, bonding_sysfs_store_option);
@@ -233,7 +232,7 @@ static ssize_t bonding_show_arp_validate(struct device *d,
 	val = bond_opt_get_val(BOND_OPT_ARP_VALIDATE,
 			       bond->params.arp_validate);
 
-	return sprintf(buf, "%s %d\n", val->string, bond->params.arp_validate);
+	return sysfs_emit(buf, "%s %d\n", val->string, bond->params.arp_validate);
 }
 static DEVICE_ATTR(arp_validate, 0644, bonding_show_arp_validate,
 		   bonding_sysfs_store_option);
@@ -248,7 +247,7 @@ static ssize_t bonding_show_arp_all_targets(struct device *d,
 
 	val = bond_opt_get_val(BOND_OPT_ARP_ALL_TARGETS,
 			       bond->params.arp_all_targets);
-	return sprintf(buf, "%s %d\n",
+	return sysfs_emit(buf, "%s %d\n",
 		       val->string, bond->params.arp_all_targets);
 }
 static DEVICE_ATTR(arp_all_targets, 0644,
@@ -265,7 +264,7 @@ static ssize_t bonding_show_fail_over_mac(struct device *d,
 	val = bond_opt_get_val(BOND_OPT_FAIL_OVER_MAC,
 			       bond->params.fail_over_mac);
 
-	return sprintf(buf, "%s %d\n", val->string, bond->params.fail_over_mac);
+	return sysfs_emit(buf, "%s %d\n", val->string, bond->params.fail_over_mac);
 }
 static DEVICE_ATTR(fail_over_mac, 0644,
 		   bonding_show_fail_over_mac, bonding_sysfs_store_option);
@@ -277,7 +276,7 @@ static ssize_t bonding_show_arp_interval(struct device *d,
 {
 	struct bonding *bond = to_bond(d);
 
-	return sprintf(buf, "%d\n", bond->params.arp_interval);
+	return sysfs_emit(buf, "%d\n", bond->params.arp_interval);
 }
 static DEVICE_ATTR(arp_interval, 0644,
 		   bonding_show_arp_interval, bonding_sysfs_store_option);
@@ -292,8 +291,8 @@ static ssize_t bonding_show_arp_targets(struct device *d,
 
 	for (i = 0; i < BOND_MAX_ARP_TARGETS; i++) {
 		if (bond->params.arp_targets[i])
-			res += sprintf(buf + res, "%pI4 ",
-				       &bond->params.arp_targets[i]);
+			res += sysfs_emit_at(buf, res, "%pI4 ",
+					     &bond->params.arp_targets[i]);
 	}
 	if (res)
 		buf[res-1] = '\n'; /* eat the leftover space */
@@ -310,7 +309,7 @@ static ssize_t bonding_show_missed_max(struct device *d,
 {
 	struct bonding *bond = to_bond(d);
 
-	return sprintf(buf, "%u\n", bond->params.missed_max);
+	return sysfs_emit(buf, "%u\n", bond->params.missed_max);
 }
 static DEVICE_ATTR(arp_missed_max, 0644,
 		   bonding_show_missed_max, bonding_sysfs_store_option);
@@ -322,7 +321,7 @@ static ssize_t bonding_show_downdelay(struct device *d,
 {
 	struct bonding *bond = to_bond(d);
 
-	return sprintf(buf, "%d\n", bond->params.downdelay * bond->params.miimon);
+	return sysfs_emit(buf, "%d\n", bond->params.downdelay * bond->params.miimon);
 }
 static DEVICE_ATTR(downdelay, 0644,
 		   bonding_show_downdelay, bonding_sysfs_store_option);
@@ -333,7 +332,7 @@ static ssize_t bonding_show_updelay(struct device *d,
 {
 	struct bonding *bond = to_bond(d);
 
-	return sprintf(buf, "%d\n", bond->params.updelay * bond->params.miimon);
+	return sysfs_emit(buf, "%d\n", bond->params.updelay * bond->params.miimon);
 
 }
 static DEVICE_ATTR(updelay, 0644,
@@ -345,8 +344,8 @@ static ssize_t bonding_show_peer_notif_delay(struct device *d,
 {
 	struct bonding *bond = to_bond(d);
 
-	return sprintf(buf, "%d\n",
-		       bond->params.peer_notif_delay * bond->params.miimon);
+	return sysfs_emit(buf, "%d\n",
+			  bond->params.peer_notif_delay * bond->params.miimon);
 }
 static DEVICE_ATTR(peer_notif_delay, 0644,
 		   bonding_show_peer_notif_delay, bonding_sysfs_store_option);
@@ -361,7 +360,7 @@ static ssize_t bonding_show_lacp_active(struct device *d,
 
 	val = bond_opt_get_val(BOND_OPT_LACP_ACTIVE, bond->params.lacp_active);
 
-	return sprintf(buf, "%s %d\n", val->string, bond->params.lacp_active);
+	return sysfs_emit(buf, "%s %d\n", val->string, bond->params.lacp_active);
 }
 static DEVICE_ATTR(lacp_active, 0644,
 		   bonding_show_lacp_active, bonding_sysfs_store_option);
@@ -375,7 +374,7 @@ static ssize_t bonding_show_lacp_rate(struct device *d,
 
 	val = bond_opt_get_val(BOND_OPT_LACP_RATE, bond->params.lacp_fast);
 
-	return sprintf(buf, "%s %d\n", val->string, bond->params.lacp_fast);
+	return sysfs_emit(buf, "%s %d\n", val->string, bond->params.lacp_fast);
 }
 static DEVICE_ATTR(lacp_rate, 0644,
 		   bonding_show_lacp_rate, bonding_sysfs_store_option);
@@ -386,7 +385,7 @@ static ssize_t bonding_show_min_links(struct device *d,
 {
 	struct bonding *bond = to_bond(d);
 
-	return sprintf(buf, "%u\n", bond->params.min_links);
+	return sysfs_emit(buf, "%u\n", bond->params.min_links);
 }
 static DEVICE_ATTR(min_links, 0644,
 		   bonding_show_min_links, bonding_sysfs_store_option);
@@ -400,7 +399,7 @@ static ssize_t bonding_show_ad_select(struct device *d,
 
 	val = bond_opt_get_val(BOND_OPT_AD_SELECT, bond->params.ad_select);
 
-	return sprintf(buf, "%s %d\n", val->string, bond->params.ad_select);
+	return sysfs_emit(buf, "%s %d\n", val->string, bond->params.ad_select);
 }
 static DEVICE_ATTR(ad_select, 0644,
 		   bonding_show_ad_select, bonding_sysfs_store_option);
@@ -412,7 +411,7 @@ static ssize_t bonding_show_num_peer_notif(struct device *d,
 {
 	struct bonding *bond = to_bond(d);
 
-	return sprintf(buf, "%d\n", bond->params.num_peer_notif);
+	return sysfs_emit(buf, "%d\n", bond->params.num_peer_notif);
 }
 static DEVICE_ATTR(num_grat_arp, 0644,
 		   bonding_show_num_peer_notif, bonding_sysfs_store_option);
@@ -426,7 +425,7 @@ static ssize_t bonding_show_miimon(struct device *d,
 {
 	struct bonding *bond = to_bond(d);
 
-	return sprintf(buf, "%d\n", bond->params.miimon);
+	return sysfs_emit(buf, "%d\n", bond->params.miimon);
 }
 static DEVICE_ATTR(miimon, 0644,
 		   bonding_show_miimon, bonding_sysfs_store_option);
@@ -443,7 +442,7 @@ static ssize_t bonding_show_primary(struct device *d,
 	rcu_read_lock();
 	primary = rcu_dereference(bond->primary_slave);
 	if (primary)
-		count = sprintf(buf, "%s\n", primary->dev->name);
+		count = sysfs_emit(buf, "%s\n", primary->dev->name);
 	rcu_read_unlock();
 
 	return count;
@@ -462,20 +461,18 @@ static ssize_t bonding_show_primary_reselect(struct device *d,
 	val = bond_opt_get_val(BOND_OPT_PRIMARY_RESELECT,
 			       bond->params.primary_reselect);
 
-	return sprintf(buf, "%s %d\n",
-		       val->string, bond->params.primary_reselect);
+	return sysfs_emit(buf, "%s %d\n",
+			  val->string, bond->params.primary_reselect);
 }
 static DEVICE_ATTR(primary_reselect, 0644,
 		   bonding_show_primary_reselect, bonding_sysfs_store_option);
 
-/* Show the use_carrier flag. */
+/* use_carrier is obsolete, but print value for compatibility */
 static ssize_t bonding_show_carrier(struct device *d,
 				    struct device_attribute *attr,
 				    char *buf)
 {
-	struct bonding *bond = to_bond(d);
-
-	return sprintf(buf, "%d\n", bond->params.use_carrier);
+	return sysfs_emit(buf, "1\n");
 }
 static DEVICE_ATTR(use_carrier, 0644,
 		   bonding_show_carrier, bonding_sysfs_store_option);
@@ -493,7 +490,7 @@ static ssize_t bonding_show_active_slave(struct device *d,
 	rcu_read_lock();
 	slave_dev = bond_option_active_slave_get_rcu(bond);
 	if (slave_dev)
-		count = sprintf(buf, "%s\n", slave_dev->name);
+		count = sysfs_emit(buf, "%s\n", slave_dev->name);
 	rcu_read_unlock();
 
 	return count;
@@ -509,7 +506,7 @@ static ssize_t bonding_show_mii_status(struct device *d,
 	struct bonding *bond = to_bond(d);
 	bool active = netif_carrier_ok(bond->dev);
 
-	return sprintf(buf, "%s\n", active ? "up" : "down");
+	return sysfs_emit(buf, "%s\n", active ? "up" : "down");
 }
 static DEVICE_ATTR(mii_status, 0444, bonding_show_mii_status, NULL);
 
@@ -524,9 +521,9 @@ static ssize_t bonding_show_ad_aggregator(struct device *d,
 	if (BOND_MODE(bond) == BOND_MODE_8023AD) {
 		struct ad_info ad_info;
 
-		count = sprintf(buf, "%d\n",
-				bond_3ad_get_active_agg_info(bond, &ad_info)
-				?  0 : ad_info.aggregator_id);
+		count = sysfs_emit(buf, "%d\n",
+				   bond_3ad_get_active_agg_info(bond, &ad_info)
+				   ?  0 : ad_info.aggregator_id);
 	}
 
 	return count;
@@ -545,9 +542,9 @@ static ssize_t bonding_show_ad_num_ports(struct device *d,
 	if (BOND_MODE(bond) == BOND_MODE_8023AD) {
 		struct ad_info ad_info;
 
-		count = sprintf(buf, "%d\n",
-				bond_3ad_get_active_agg_info(bond, &ad_info)
-				?  0 : ad_info.ports);
+		count = sysfs_emit(buf, "%d\n",
+				   bond_3ad_get_active_agg_info(bond, &ad_info)
+				   ?  0 : ad_info.ports);
 	}
 
 	return count;
@@ -566,9 +563,9 @@ static ssize_t bonding_show_ad_actor_key(struct device *d,
 	if (BOND_MODE(bond) == BOND_MODE_8023AD && capable(CAP_NET_ADMIN)) {
 		struct ad_info ad_info;
 
-		count = sprintf(buf, "%d\n",
-				bond_3ad_get_active_agg_info(bond, &ad_info)
-				?  0 : ad_info.actor_key);
+		count = sysfs_emit(buf, "%d\n",
+				   bond_3ad_get_active_agg_info(bond, &ad_info)
+				   ?  0 : ad_info.actor_key);
 	}
 
 	return count;
@@ -587,9 +584,9 @@ static ssize_t bonding_show_ad_partner_key(struct device *d,
 	if (BOND_MODE(bond) == BOND_MODE_8023AD && capable(CAP_NET_ADMIN)) {
 		struct ad_info ad_info;
 
-		count = sprintf(buf, "%d\n",
-				bond_3ad_get_active_agg_info(bond, &ad_info)
-				?  0 : ad_info.partner_key);
+		count = sysfs_emit(buf, "%d\n",
+				   bond_3ad_get_active_agg_info(bond, &ad_info)
+				   ?  0 : ad_info.partner_key);
 	}
 
 	return count;
@@ -609,7 +606,7 @@ static ssize_t bonding_show_ad_partner_mac(struct device *d,
 		struct ad_info ad_info;
 
 		if (!bond_3ad_get_active_agg_info(bond, &ad_info))
-			count = sprintf(buf, "%pM\n", ad_info.partner_system);
+			count = sysfs_emit(buf, "%pM\n", ad_info.partner_system);
 	}
 
 	return count;
@@ -626,24 +623,24 @@ static ssize_t bonding_show_queue_id(struct device *d,
 	struct slave *slave;
 	int res = 0;
 
-	if (!rtnl_trylock())
-		return restart_syscall();
+	rcu_read_lock();
 
-	bond_for_each_slave(bond, slave, iter) {
+	bond_for_each_slave_rcu(bond, slave, iter) {
 		if (res > (PAGE_SIZE - IFNAMSIZ - 6)) {
 			/* not enough space for another interface_name:queue_id pair */
 			if ((PAGE_SIZE - res) > 10)
 				res = PAGE_SIZE - 10;
-			res += sprintf(buf + res, "++more++ ");
+			res += sysfs_emit_at(buf, res, "++more++ ");
 			break;
 		}
-		res += sprintf(buf + res, "%s:%d ",
-			       slave->dev->name, slave->queue_id);
+		res += sysfs_emit_at(buf, res, "%s:%d ",
+				     slave->dev->name,
+				     READ_ONCE(slave->queue_id));
 	}
 	if (res)
 		buf[res-1] = '\n'; /* eat the leftover space */
 
-	rtnl_unlock();
+	rcu_read_unlock();
 
 	return res;
 }
@@ -658,7 +655,7 @@ static ssize_t bonding_show_slaves_active(struct device *d,
 {
 	struct bonding *bond = to_bond(d);
 
-	return sprintf(buf, "%d\n", bond->params.all_slaves_active);
+	return sysfs_emit(buf, "%d\n", bond->params.all_slaves_active);
 }
 static DEVICE_ATTR(all_slaves_active, 0644,
 		   bonding_show_slaves_active, bonding_sysfs_store_option);
@@ -670,7 +667,7 @@ static ssize_t bonding_show_resend_igmp(struct device *d,
 {
 	struct bonding *bond = to_bond(d);
 
-	return sprintf(buf, "%d\n", bond->params.resend_igmp);
+	return sysfs_emit(buf, "%d\n", bond->params.resend_igmp);
 }
 static DEVICE_ATTR(resend_igmp, 0644,
 		   bonding_show_resend_igmp, bonding_sysfs_store_option);
@@ -682,7 +679,7 @@ static ssize_t bonding_show_lp_interval(struct device *d,
 {
 	struct bonding *bond = to_bond(d);
 
-	return sprintf(buf, "%d\n", bond->params.lp_interval);
+	return sysfs_emit(buf, "%d\n", bond->params.lp_interval);
 }
 static DEVICE_ATTR(lp_interval, 0644,
 		   bonding_show_lp_interval, bonding_sysfs_store_option);
@@ -693,7 +690,7 @@ static ssize_t bonding_show_tlb_dynamic_lb(struct device *d,
 {
 	struct bonding *bond = to_bond(d);
 
-	return sprintf(buf, "%d\n", bond->params.tlb_dynamic_lb);
+	return sysfs_emit(buf, "%d\n", bond->params.tlb_dynamic_lb);
 }
 static DEVICE_ATTR(tlb_dynamic_lb, 0644,
 		   bonding_show_tlb_dynamic_lb, bonding_sysfs_store_option);
@@ -705,7 +702,7 @@ static ssize_t bonding_show_packets_per_slave(struct device *d,
 	struct bonding *bond = to_bond(d);
 	unsigned int packets_per_slave = bond->params.packets_per_slave;
 
-	return sprintf(buf, "%u\n", packets_per_slave);
+	return sysfs_emit(buf, "%u\n", packets_per_slave);
 }
 static DEVICE_ATTR(packets_per_slave, 0644,
 		   bonding_show_packets_per_slave, bonding_sysfs_store_option);
@@ -717,7 +714,7 @@ static ssize_t bonding_show_ad_actor_sys_prio(struct device *d,
 	struct bonding *bond = to_bond(d);
 
 	if (BOND_MODE(bond) == BOND_MODE_8023AD && capable(CAP_NET_ADMIN))
-		return sprintf(buf, "%hu\n", bond->params.ad_actor_sys_prio);
+		return sysfs_emit(buf, "%hu\n", bond->params.ad_actor_sys_prio);
 
 	return 0;
 }
@@ -731,7 +728,7 @@ static ssize_t bonding_show_ad_actor_system(struct device *d,
 	struct bonding *bond = to_bond(d);
 
 	if (BOND_MODE(bond) == BOND_MODE_8023AD && capable(CAP_NET_ADMIN))
-		return sprintf(buf, "%pM\n", bond->params.ad_actor_system);
+		return sysfs_emit(buf, "%pM\n", bond->params.ad_actor_system);
 
 	return 0;
 }
@@ -746,7 +743,7 @@ static ssize_t bonding_show_ad_user_port_key(struct device *d,
 	struct bonding *bond = to_bond(d);
 
 	if (BOND_MODE(bond) == BOND_MODE_8023AD && capable(CAP_NET_ADMIN))
-		return sprintf(buf, "%hu\n", bond->params.ad_user_port_key);
+		return sysfs_emit(buf, "%hu\n", bond->params.ad_user_port_key);
 
 	return 0;
 }
@@ -803,7 +800,7 @@ static const struct attribute_group bonding_group = {
 /* Initialize sysfs.  This sets up the bonding_masters file in
  * /sys/class/net.
  */
-int bond_create_sysfs(struct bond_net *bn)
+int __net_init bond_create_sysfs(struct bond_net *bn)
 {
 	int ret;
 
@@ -811,7 +808,7 @@ int bond_create_sysfs(struct bond_net *bn)
 	sysfs_attr_init(&bn->class_attr_bonding_masters.attr);
 
 	ret = netdev_class_create_file_ns(&bn->class_attr_bonding_masters,
-					  bn->net);
+					  to_ns_common(bn->net));
 	/* Permit multiple loads of the module by ignoring failures to
 	 * create the bonding_masters sysfs file.  Bonding devices
 	 * created by second or subsequent loads of the module will
@@ -836,9 +833,9 @@ int bond_create_sysfs(struct bond_net *bn)
 }
 
 /* Remove /sys/class/net/bonding_masters. */
-void bond_destroy_sysfs(struct bond_net *bn)
+void __net_exit bond_destroy_sysfs(struct bond_net *bn)
 {
-	netdev_class_remove_file_ns(&bn->class_attr_bonding_masters, bn->net);
+	netdev_class_remove_file_ns(&bn->class_attr_bonding_masters, to_ns_common(bn->net));
 }
 
 /* Initialize sysfs for each bond.  This sets up and registers

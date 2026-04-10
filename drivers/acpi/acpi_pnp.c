@@ -120,16 +120,11 @@ static const struct acpi_device_id acpi_pnp_device_ids[] = {
 	{"IBM0071"},
 	/* smsc-ircc2 */
 	{"SMCf010"},
-	/* sb1000 */
-	{"GIC1000"},
 	/* parport_pc */
 	{"PNP0400"},		/* Standard LPT Printer Port */
 	{"PNP0401"},		/* ECP Printer Port */
 	/* apple-gmux */
 	{"APP000B"},
-	/* system */
-	{"PNP0c02"},		/* General ID for reserving resources */
-	{"PNP0c01"},		/* memory controller */
 	/* rtc_cmos */
 	{"PNP0b00"},
 	{"PNP0b01"},
@@ -351,7 +346,7 @@ static bool acpi_pnp_match(const char *idstr, const struct acpi_device_id **matc
 static int acpi_pnp_attach(struct acpi_device *adev,
 			   const struct acpi_device_id *id)
 {
-	return 1;
+	return true;
 }
 
 static struct acpi_scan_handler acpi_pnp_handler = {

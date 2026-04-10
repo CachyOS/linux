@@ -2,11 +2,12 @@
 /*
  * Implementation of the SID table type.
  *
- * Original author: Stephen Smalley, <sds@tycho.nsa.gov>
+ * Original author: Stephen Smalley, <stephen.smalley.work@gmail.com>
  * Author: Ondrej Mosnacek, <omosnacek@gmail.com>
  *
  * Copyright (C) 2018 Red Hat, Inc.
  */
+
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
@@ -18,17 +19,18 @@
 #include "flask.h"
 #include "security.h"
 #include "sidtab.h"
+#include "services.h"
 
 struct sidtab_str_cache {
 	struct rcu_head rcu_member;
 	struct list_head lru_member;
 	struct sidtab_entry *parent;
 	u32 len;
-	char str[];
+	char str[] __counted_by(len);
 };
 
 #define index_to_sid(index) ((index) + SECINITSID_NUM + 1)
-#define sid_to_index(sid) ((sid) - (SECINITSID_NUM + 1))
+#define sid_to_index(sid)   ((sid) - (SECINITSID_NUM + 1))
 
 int sidtab_init(struct sidtab *s)
 {
@@ -64,7 +66,7 @@ static u32 context_to_sid(struct sidtab *s, struct context *context, u32 hash)
 	hash_for_each_possible_rcu(s->context_to_sid, entry, list, hash) {
 		if (entry->hash != hash)
 			continue;
-		if (context_cmp(&entry->context, context)) {
+		if (context_equal(&entry->context, context)) {
 			sid = entry->sid;
 			break;
 		}
@@ -112,12 +114,12 @@ int sidtab_set_initial(struct sidtab *s, u32 sid, struct context *context)
 
 int sidtab_hash_stats(struct sidtab *sidtab, char *page)
 {
-	int i;
+	unsigned int i;
 	int chain_len = 0;
 	int slots_used = 0;
 	int entries = 0;
 	int max_chain_len = 0;
-	int cur_bucket = 0;
+	unsigned int cur_bucket = 0;
 	struct sidtab_entry *entry;
 
 	rcu_read_lock();
@@ -139,9 +141,11 @@ int sidtab_hash_stats(struct sidtab *sidtab, char *page)
 	if (chain_len > max_chain_len)
 		max_chain_len = chain_len;
 
-	return scnprintf(page, PAGE_SIZE, "entries: %d\nbuckets used: %d/%d\n"
-			 "longest chain: %d\n", entries,
-			 slots_used, SIDTAB_HASH_BUCKETS, max_chain_len);
+	return scnprintf(page, PAGE_SIZE,
+			 "entries: %d\nbuckets used: %d/%d\n"
+			 "longest chain: %d\n",
+			 entries, slots_used, SIDTAB_HASH_BUCKETS,
+			 max_chain_len);
 }
 
 static u32 sidtab_level_from_count(u32 count)
@@ -161,15 +165,15 @@ static int sidtab_alloc_roots(struct sidtab *s, u32 level)
 	u32 l;
 
 	if (!s->roots[0].ptr_leaf) {
-		s->roots[0].ptr_leaf = kzalloc(SIDTAB_NODE_ALLOC_SIZE,
-					       GFP_ATOMIC);
+		s->roots[0].ptr_leaf =
+			kzalloc(SIDTAB_NODE_ALLOC_SIZE, GFP_ATOMIC);
 		if (!s->roots[0].ptr_leaf)
 			return -ENOMEM;
 	}
 	for (l = 1; l <= level; ++l)
 		if (!s->roots[l].ptr_inner) {
-			s->roots[l].ptr_inner = kzalloc(SIDTAB_NODE_ALLOC_SIZE,
-							GFP_ATOMIC);
+			s->roots[l].ptr_inner =
+				kzalloc(SIDTAB_NODE_ALLOC_SIZE, GFP_ATOMIC);
 			if (!s->roots[l].ptr_inner)
 				return -ENOMEM;
 			s->roots[l].ptr_inner->entries[0] = s->roots[l - 1];
@@ -202,16 +206,16 @@ static struct sidtab_entry *sidtab_do_lookup(struct sidtab *s, u32 index,
 
 		if (!entry->ptr_inner) {
 			if (alloc)
-				entry->ptr_inner = kzalloc(SIDTAB_NODE_ALLOC_SIZE,
-							   GFP_ATOMIC);
+				entry->ptr_inner = kzalloc(
+					SIDTAB_NODE_ALLOC_SIZE, GFP_ATOMIC);
 			if (!entry->ptr_inner)
 				return NULL;
 		}
 	}
 	if (!entry->ptr_leaf) {
 		if (alloc)
-			entry->ptr_leaf = kzalloc(SIDTAB_NODE_ALLOC_SIZE,
-						  GFP_ATOMIC);
+			entry->ptr_leaf =
+				kzalloc(SIDTAB_NODE_ALLOC_SIZE, GFP_ATOMIC);
 		if (!entry->ptr_leaf)
 			return NULL;
 	}
@@ -261,8 +265,7 @@ struct sidtab_entry *sidtab_search_entry_force(struct sidtab *s, u32 sid)
 	return sidtab_search_core(s, sid, 1);
 }
 
-int sidtab_context_to_sid(struct sidtab *s, struct context *context,
-			  u32 *sid)
+int sidtab_context_to_sid(struct sidtab *s, struct context *context, u32 *sid)
 {
 	unsigned long flags;
 	u32 count, hash = context_compute_hash(context);
@@ -292,7 +295,6 @@ int sidtab_context_to_sid(struct sidtab *s, struct context *context,
 	}
 
 	count = s->count;
-	convert = s->convert;
 
 	/* bail out if we already reached max entries */
 	rc = -EOVERFLOW;
@@ -316,26 +318,30 @@ int sidtab_context_to_sid(struct sidtab *s, struct context *context,
 	 * if we are building a new sidtab, we need to convert the context
 	 * and insert it there as well
 	 */
+	convert = s->convert;
 	if (convert) {
+		struct sidtab *target = convert->target;
+
 		rc = -ENOMEM;
-		dst_convert = sidtab_do_lookup(convert->target, count, 1);
+		dst_convert = sidtab_do_lookup(target, count, 1);
 		if (!dst_convert) {
 			context_destroy(&dst->context);
 			goto out_unlock;
 		}
 
-		rc = convert->func(context, &dst_convert->context,
-				   convert->args);
+		rc = services_convert_context(convert->args, context,
+					      &dst_convert->context,
+					      GFP_ATOMIC);
 		if (rc) {
 			context_destroy(&dst->context);
 			goto out_unlock;
 		}
 		dst_convert->sid = index_to_sid(count);
 		dst_convert->hash = context_compute_hash(&dst_convert->context);
-		convert->target->count = count + 1;
+		target->count = count + 1;
 
-		hash_add_rcu(convert->target->context_to_sid,
-			     &dst_convert->list, dst_convert->hash);
+		hash_add_rcu(target->context_to_sid, &dst_convert->list,
+			     dst_convert->hash);
 	}
 
 	if (context->len)
@@ -369,8 +375,8 @@ static void sidtab_convert_hashtable(struct sidtab *s, u32 count)
 }
 
 static int sidtab_convert_tree(union sidtab_entry_inner *edst,
-			       union sidtab_entry_inner *esrc,
-			       u32 *pos, u32 count, u32 level,
+			       union sidtab_entry_inner *esrc, u32 *pos,
+			       u32 count, u32 level,
 			       struct sidtab_convert_params *convert)
 {
 	int rc;
@@ -378,8 +384,8 @@ static int sidtab_convert_tree(union sidtab_entry_inner *edst,
 
 	if (level != 0) {
 		if (!edst->ptr_inner) {
-			edst->ptr_inner = kzalloc(SIDTAB_NODE_ALLOC_SIZE,
-						  GFP_KERNEL);
+			edst->ptr_inner =
+				kzalloc(SIDTAB_NODE_ALLOC_SIZE, GFP_KERNEL);
 			if (!edst->ptr_inner)
 				return -ENOMEM;
 		}
@@ -395,16 +401,18 @@ static int sidtab_convert_tree(union sidtab_entry_inner *edst,
 		}
 	} else {
 		if (!edst->ptr_leaf) {
-			edst->ptr_leaf = kzalloc(SIDTAB_NODE_ALLOC_SIZE,
-						 GFP_KERNEL);
+			edst->ptr_leaf =
+				kzalloc(SIDTAB_NODE_ALLOC_SIZE, GFP_KERNEL);
 			if (!edst->ptr_leaf)
 				return -ENOMEM;
 		}
 		i = 0;
 		while (i < SIDTAB_LEAF_ENTRIES && *pos < count) {
-			rc = convert->func(&esrc->ptr_leaf->entries[i].context,
-					   &edst->ptr_leaf->entries[i].context,
-					   convert->args);
+			rc = services_convert_context(
+				convert->args,
+				&esrc->ptr_leaf->entries[i].context,
+				&edst->ptr_leaf->entries[i].context,
+				GFP_KERNEL);
 			if (rc)
 				return rc;
 			(*pos)++;
@@ -484,13 +492,15 @@ void sidtab_cancel_convert(struct sidtab *s)
 	spin_unlock_irqrestore(&s->lock, flags);
 }
 
-void sidtab_freeze_begin(struct sidtab *s, unsigned long *flags) __acquires(&s->lock)
+void sidtab_freeze_begin(struct sidtab *s, unsigned long *flags)
+	__acquires(&s->lock)
 {
 	spin_lock_irqsave(&s->lock, *flags);
 	s->frozen = true;
 	s->convert = NULL;
 }
-void sidtab_freeze_end(struct sidtab *s, unsigned long *flags) __releases(&s->lock)
+void sidtab_freeze_end(struct sidtab *s, unsigned long *flags)
+	__releases(&s->lock)
 {
 	spin_unlock_irqrestore(&s->lock, *flags);
 }
@@ -570,7 +580,7 @@ void sidtab_sid2str_put(struct sidtab *s, struct sidtab_entry *entry,
 		goto out_unlock;
 	}
 
-	cache = kmalloc(struct_size(cache, str, str_len), GFP_ATOMIC);
+	cache = kmalloc_flex(*cache, str, str_len, GFP_ATOMIC);
 	if (!cache)
 		goto out_unlock;
 
@@ -595,8 +605,8 @@ out_unlock:
 	kfree_rcu(victim, rcu_member);
 }
 
-int sidtab_sid2str_get(struct sidtab *s, struct sidtab_entry *entry,
-		       char **out, u32 *out_len)
+int sidtab_sid2str_get(struct sidtab *s, struct sidtab_entry *entry, char **out,
+		       u32 *out_len)
 {
 	struct sidtab_str_cache *cache;
 	int rc = 0;

@@ -4,12 +4,10 @@
 struct mmp_dma_platdata;
 
 extern struct platform_device pxa_device_pmu;
-extern struct platform_device pxa_device_mci;
 extern struct platform_device pxa3xx_device_mci2;
 extern struct platform_device pxa3xx_device_mci3;
 extern struct platform_device pxa25x_device_udc;
 extern struct platform_device pxa27x_device_udc;
-extern struct platform_device pxa3xx_device_u2d;
 extern struct platform_device pxa_device_fb;
 extern struct platform_device pxa_device_ffuart;
 extern struct platform_device pxa_device_btuart;
@@ -17,7 +15,6 @@ extern struct platform_device pxa_device_stuart;
 extern struct platform_device pxa_device_hwuart;
 extern struct platform_device pxa_device_i2c;
 extern struct platform_device pxa_device_i2s;
-extern struct platform_device pxa_device_ficp;
 extern struct platform_device sa1100_device_rtc;
 extern struct platform_device pxa_device_rtc;
 extern struct platform_device pxa_device_ac97;
@@ -55,8 +52,8 @@ extern struct platform_device pxa_device_asoc_ssp4;
 
 extern struct platform_device pxa25x_device_gpio;
 extern struct platform_device pxa27x_device_gpio;
-extern struct platform_device pxa3xx_device_gpio;
-extern struct platform_device pxa93x_device_gpio;
+
+extern const struct software_node pxa2xx_gpiochip_node;
 
 void __init pxa_register_device(struct platform_device *dev, void *data);
 void __init pxa2xx_set_dmac_info(struct mmp_dma_platdata *dma_pdata);

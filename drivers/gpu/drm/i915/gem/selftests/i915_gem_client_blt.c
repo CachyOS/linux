@@ -3,25 +3,90 @@
  * Copyright © 2019 Intel Corporation
  */
 
+#include <drm/drm_print.h>
+
 #include "i915_selftest.h"
 
+#include "display/intel_display_device.h"
 #include "gt/intel_context.h"
+#include "gt/intel_engine_regs.h"
 #include "gt/intel_engine_user.h"
 #include "gt/intel_gpu_commands.h"
 #include "gt/intel_gt.h"
 #include "gt/intel_gt_regs.h"
 #include "gem/i915_gem_lmem.h"
 
+#include "gem/selftests/igt_gem_utils.h"
 #include "selftests/igt_flush_test.h"
 #include "selftests/mock_drm.h"
 #include "selftests/i915_random.h"
 #include "huge_gem_object.h"
 #include "mock_context.h"
 
+#define OW_SIZE 16                      /* in bytes */
+#define F_SUBTILE_SIZE 64               /* in bytes */
+#define F_TILE_WIDTH 128                /* in bytes */
+#define F_TILE_HEIGHT 32                /* in pixels */
+#define F_SUBTILE_WIDTH  OW_SIZE        /* in bytes */
+#define F_SUBTILE_HEIGHT 4              /* in pixels */
+
+static int linear_x_y_to_ftiled_pos(int x, int y, u32 stride, int bpp)
+{
+	int tile_base;
+	int tile_x, tile_y;
+	int swizzle, subtile;
+	int pixel_size = bpp / 8;
+	int pos;
+
+	/*
+	 * Subtile remapping for F tile. Note that map[a]==b implies map[b]==a
+	 * so we can use the same table to tile and until.
+	 */
+	static const u8 f_subtile_map[] = {
+		 0,  1,  2,  3,  8,  9, 10, 11,
+		 4,  5,  6,  7, 12, 13, 14, 15,
+		16, 17, 18, 19, 24, 25, 26, 27,
+		20, 21, 22, 23, 28, 29, 30, 31,
+		32, 33, 34, 35, 40, 41, 42, 43,
+		36, 37, 38, 39, 44, 45, 46, 47,
+		48, 49, 50, 51, 56, 57, 58, 59,
+		52, 53, 54, 55, 60, 61, 62, 63
+	};
+
+	x *= pixel_size;
+	/*
+	 * Where does the 4k tile start (in bytes)?  This is the same for Y and
+	 * F so we can use the Y-tile algorithm to get to that point.
+	 */
+	tile_base =
+		y / F_TILE_HEIGHT * stride * F_TILE_HEIGHT +
+		x / F_TILE_WIDTH * 4096;
+
+	/* Find pixel within tile */
+	tile_x = x % F_TILE_WIDTH;
+	tile_y = y % F_TILE_HEIGHT;
+
+	/* And figure out the subtile within the 4k tile */
+	subtile = tile_y / F_SUBTILE_HEIGHT * 8 + tile_x / F_SUBTILE_WIDTH;
+
+	/* Swizzle the subtile number according to the bspec diagram */
+	swizzle = f_subtile_map[subtile];
+
+	/* Calculate new position */
+	pos = tile_base +
+		swizzle * F_SUBTILE_SIZE +
+		tile_y % F_SUBTILE_HEIGHT * OW_SIZE +
+		tile_x % F_SUBTILE_WIDTH;
+
+	GEM_BUG_ON(!IS_ALIGNED(pos, pixel_size));
+
+	return pos / pixel_size * 4;
+}
+
 enum client_tiling {
 	CLIENT_TILING_LINEAR,
 	CLIENT_TILING_X,
-	CLIENT_TILING_Y,
+	CLIENT_TILING_Y,  /* Y-major, either Tile4 (Xe_HP and beyond) or legacy TileY */
 	CLIENT_NUM_TILING_TYPES
 };
 
@@ -45,6 +110,36 @@ struct tiled_blits {
 	u32 height;
 };
 
+static bool fastblit_supports_x_tiling(const struct drm_i915_private *i915)
+{
+	struct intel_display *display = i915->display;
+	int gen = GRAPHICS_VER(i915);
+
+	/* XY_FAST_COPY_BLT does not exist on pre-gen9 platforms */
+	drm_WARN_ON(&i915->drm, gen < 9);
+
+	if (gen < 12)
+		return true;
+
+	if (GRAPHICS_VER_FULL(i915) < IP_VER(12, 55))
+		return false;
+
+	return intel_display_device_present(display);
+}
+
+static bool fast_blit_ok(const struct blit_buffer *buf)
+{
+	/* XY_FAST_COPY_BLT does not exist on pre-gen9 platforms */
+	if (GRAPHICS_VER(buf->vma->vm->i915) < 9)
+		return false;
+
+	/* filter out platforms with unsupported X-tile support in fastblit */
+	if (buf->tiling == CLIENT_TILING_X && !fastblit_supports_x_tiling(buf->vma->vm->i915))
+		return false;
+
+	return true;
+}
+
 static int prepare_blit(const struct tiled_blits *t,
 			struct blit_buffer *dst,
 			struct blit_buffer *src,
@@ -59,51 +154,101 @@ static int prepare_blit(const struct tiled_blits *t,
 	if (IS_ERR(cs))
 		return PTR_ERR(cs);
 
-	*cs++ = MI_LOAD_REGISTER_IMM(1);
-	*cs++ = i915_mmio_reg_offset(BCS_SWCTRL);
-	cmd = (BCS_SRC_Y | BCS_DST_Y) << 16;
-	if (src->tiling == CLIENT_TILING_Y)
-		cmd |= BCS_SRC_Y;
-	if (dst->tiling == CLIENT_TILING_Y)
-		cmd |= BCS_DST_Y;
-	*cs++ = cmd;
+	if (fast_blit_ok(dst) && fast_blit_ok(src)) {
+		struct intel_gt *gt = t->ce->engine->gt;
+		u32 src_tiles = 0, dst_tiles = 0;
+		u32 src_4t = 0, dst_4t = 0;
 
-	cmd = MI_FLUSH_DW;
-	if (ver >= 8)
-		cmd++;
-	*cs++ = cmd;
-	*cs++ = 0;
-	*cs++ = 0;
-	*cs++ = 0;
+		/* Need to program BLIT_CCTL if it is not done previously
+		 * before using XY_FAST_COPY_BLT
+		 */
+		*cs++ = MI_LOAD_REGISTER_IMM(1);
+		*cs++ = i915_mmio_reg_offset(BLIT_CCTL(t->ce->engine->mmio_base));
+		*cs++ = (BLIT_CCTL_SRC_MOCS(gt->mocs.uc_index) |
+			 BLIT_CCTL_DST_MOCS(gt->mocs.uc_index));
 
-	cmd = XY_SRC_COPY_BLT_CMD | BLT_WRITE_RGBA | (8 - 2);
-	if (ver >= 8)
-		cmd += 2;
+		src_pitch = t->width; /* in dwords */
+		if (src->tiling == CLIENT_TILING_Y) {
+			src_tiles = XY_FAST_COPY_BLT_D0_SRC_TILE_MODE(YMAJOR);
+			if (GRAPHICS_VER_FULL(to_i915(batch->base.dev)) >= IP_VER(12, 55))
+				src_4t = XY_FAST_COPY_BLT_D1_SRC_TILE4;
+		} else if (src->tiling == CLIENT_TILING_X) {
+			src_tiles = XY_FAST_COPY_BLT_D0_SRC_TILE_MODE(TILE_X);
+		} else {
+			src_pitch *= 4; /* in bytes */
+		}
 
-	src_pitch = t->width * 4;
-	if (src->tiling) {
-		cmd |= XY_SRC_COPY_BLT_SRC_TILED;
-		src_pitch /= 4;
+		dst_pitch = t->width; /* in dwords */
+		if (dst->tiling == CLIENT_TILING_Y) {
+			dst_tiles = XY_FAST_COPY_BLT_D0_DST_TILE_MODE(YMAJOR);
+			if (GRAPHICS_VER_FULL(to_i915(batch->base.dev)) >= IP_VER(12, 55))
+				dst_4t = XY_FAST_COPY_BLT_D1_DST_TILE4;
+		} else if (dst->tiling == CLIENT_TILING_X) {
+			dst_tiles = XY_FAST_COPY_BLT_D0_DST_TILE_MODE(TILE_X);
+		} else {
+			dst_pitch *= 4; /* in bytes */
+		}
+
+		*cs++ = GEN9_XY_FAST_COPY_BLT_CMD | (10 - 2) |
+			src_tiles | dst_tiles;
+		*cs++ = src_4t | dst_4t | BLT_DEPTH_32 | dst_pitch;
+		*cs++ = 0;
+		*cs++ = t->height << 16 | t->width;
+		*cs++ = lower_32_bits(i915_vma_offset(dst->vma));
+		*cs++ = upper_32_bits(i915_vma_offset(dst->vma));
+		*cs++ = 0;
+		*cs++ = src_pitch;
+		*cs++ = lower_32_bits(i915_vma_offset(src->vma));
+		*cs++ = upper_32_bits(i915_vma_offset(src->vma));
+	} else {
+		if (ver >= 6) {
+			*cs++ = MI_LOAD_REGISTER_IMM(1);
+			*cs++ = i915_mmio_reg_offset(BCS_SWCTRL);
+			cmd = (BCS_SRC_Y | BCS_DST_Y) << 16;
+			if (src->tiling == CLIENT_TILING_Y)
+				cmd |= BCS_SRC_Y;
+			if (dst->tiling == CLIENT_TILING_Y)
+				cmd |= BCS_DST_Y;
+			*cs++ = cmd;
+
+			cmd = MI_FLUSH_DW;
+			if (ver >= 8)
+				cmd++;
+			*cs++ = cmd;
+			*cs++ = 0;
+			*cs++ = 0;
+			*cs++ = 0;
+		}
+
+		cmd = XY_SRC_COPY_BLT_CMD | BLT_WRITE_RGBA | (8 - 2);
+		if (ver >= 8)
+			cmd += 2;
+
+		src_pitch = t->width * 4;
+		if (src->tiling) {
+			cmd |= XY_SRC_COPY_BLT_SRC_TILED;
+			src_pitch /= 4;
+		}
+
+		dst_pitch = t->width * 4;
+		if (dst->tiling) {
+			cmd |= XY_SRC_COPY_BLT_DST_TILED;
+			dst_pitch /= 4;
+		}
+
+		*cs++ = cmd;
+		*cs++ = BLT_DEPTH_32 | BLT_ROP_SRC_COPY | dst_pitch;
+		*cs++ = 0;
+		*cs++ = t->height << 16 | t->width;
+		*cs++ = lower_32_bits(i915_vma_offset(dst->vma));
+		if (use_64b_reloc)
+			*cs++ = upper_32_bits(i915_vma_offset(dst->vma));
+		*cs++ = 0;
+		*cs++ = src_pitch;
+		*cs++ = lower_32_bits(i915_vma_offset(src->vma));
+		if (use_64b_reloc)
+			*cs++ = upper_32_bits(i915_vma_offset(src->vma));
 	}
-
-	dst_pitch = t->width * 4;
-	if (dst->tiling) {
-		cmd |= XY_SRC_COPY_BLT_DST_TILED;
-		dst_pitch /= 4;
-	}
-
-	*cs++ = cmd;
-	*cs++ = BLT_DEPTH_32 | BLT_ROP_SRC_COPY | dst_pitch;
-	*cs++ = 0;
-	*cs++ = t->height << 16 | t->width;
-	*cs++ = lower_32_bits(dst->vma->node.start);
-	if (use_64b_reloc)
-		*cs++ = upper_32_bits(dst->vma->node.start);
-	*cs++ = 0;
-	*cs++ = src_pitch;
-	*cs++ = lower_32_bits(src->vma->node.start);
-	if (use_64b_reloc)
-		*cs++ = upper_32_bits(src->vma->node.start);
 
 	*cs++ = MI_BATCH_BUFFER_END;
 
@@ -181,7 +326,7 @@ static int tiled_blits_create_buffers(struct tiled_blits *t,
 
 		t->buffers[i].vma = vma;
 		t->buffers[i].tiling =
-			i915_prandom_u32_max_state(CLIENT_TILING_Y + 1, prng);
+			i915_prandom_u32_max_state(CLIENT_NUM_TILING_TYPES, prng);
 	}
 
 	return 0;
@@ -206,7 +351,8 @@ static u64 swizzle_bit(unsigned int bit, u64 offset)
 static u64 tiled_offset(const struct intel_gt *gt,
 			u64 v,
 			unsigned int stride,
-			enum client_tiling tiling)
+			enum client_tiling tiling,
+			int x_pos, int y_pos)
 {
 	unsigned int swizzle;
 	u64 x, y;
@@ -223,6 +369,12 @@ static u64 tiled_offset(const struct intel_gt *gt,
 		v += x;
 
 		swizzle = gt->ggtt->bit_6_swizzle_x;
+	} else if (GRAPHICS_VER_FULL(gt->i915) >= IP_VER(12, 55)) {
+		/* Y-major tiling layout is Tile4 for Xe_HP and beyond */
+		v = linear_x_y_to_ftiled_pos(x_pos, y_pos, stride, 32);
+
+		/* no swizzling for f-tiling */
+		swizzle = I915_BIT_6_SWIZZLE_NONE;
 	} else {
 		const unsigned int ytile_span = 16;
 		const unsigned int ytile_height = 512;
@@ -258,7 +410,7 @@ static const char *repr_tiling(enum client_tiling tiling)
 	switch (tiling) {
 	case CLIENT_TILING_LINEAR: return "linear";
 	case CLIENT_TILING_X: return "X";
-	case CLIENT_TILING_Y: return "Y";
+	case CLIENT_TILING_Y: return "Y / 4";
 	default: return "unknown";
 	}
 }
@@ -284,7 +436,7 @@ static int verify_buffer(const struct tiled_blits *t,
 	} else {
 		u64 v = tiled_offset(buf->vma->vm->gt,
 				     p * 4, t->width * 4,
-				     buf->tiling);
+				     buf->tiling, x, y);
 
 		if (vaddr[v / sizeof(*vaddr)] != buf->start_val + p)
 			ret = -EINVAL;
@@ -300,26 +452,11 @@ static int verify_buffer(const struct tiled_blits *t,
 	return ret;
 }
 
-static int move_to_active(struct i915_vma *vma,
-			  struct i915_request *rq,
-			  unsigned int flags)
-{
-	int err;
-
-	i915_vma_lock(vma);
-	err = i915_request_await_object(rq, vma->obj, false);
-	if (err == 0)
-		err = i915_vma_move_to_active(vma, rq, flags);
-	i915_vma_unlock(vma);
-
-	return err;
-}
-
 static int pin_buffer(struct i915_vma *vma, u64 addr)
 {
 	int err;
 
-	if (drm_mm_node_allocated(&vma->node) && vma->node.start != addr) {
+	if (drm_mm_node_allocated(&vma->node) && i915_vma_offset(vma) != addr) {
 		err = i915_vma_unbind_unlocked(vma);
 		if (err)
 			return err;
@@ -329,6 +466,7 @@ static int pin_buffer(struct i915_vma *vma, u64 addr)
 	if (err)
 		return err;
 
+	GEM_BUG_ON(i915_vma_offset(vma) != addr);
 	return 0;
 }
 
@@ -368,15 +506,15 @@ tiled_blit(struct tiled_blits *t,
 		goto err_bb;
 	}
 
-	err = move_to_active(t->batch, rq, 0);
+	err = igt_vma_move_to_active_unlocked(t->batch, rq, 0);
 	if (!err)
-		err = move_to_active(src->vma, rq, 0);
+		err = igt_vma_move_to_active_unlocked(src->vma, rq, 0);
 	if (!err)
-		err = move_to_active(dst->vma, rq, 0);
+		err = igt_vma_move_to_active_unlocked(dst->vma, rq, 0);
 	if (!err)
 		err = rq->engine->emit_bb_start(rq,
-						t->batch->node.start,
-						t->batch->node.size,
+						i915_vma_offset(t->batch),
+						i915_vma_size(t->batch),
 						0);
 	i915_request_get(rq);
 	i915_request_add(rq);
@@ -402,7 +540,7 @@ tiled_blits_create(struct intel_engine_cs *engine, struct rnd_state *prng)
 	u64 hole_size;
 	int err;
 
-	t = kzalloc(sizeof(*t), GFP_KERNEL);
+	t = kzalloc_obj(*t);
 	if (!t)
 		return ERR_PTR(-ENOMEM);
 
@@ -504,6 +642,9 @@ static int tiled_blits_bounce(struct tiled_blits *t, struct rnd_state *prng)
 	if (err)
 		return err;
 
+	/* Simulating GTT eviction of the same buffer / layout */
+	t->buffers[2].tiling = t->buffers[0].tiling;
+
 	/* Reposition so that we overlap the old addresses, and slightly off */
 	err = tiled_blit(t,
 			 &t->buffers[2], t->hole + t->align,
@@ -551,7 +692,7 @@ static bool bad_swizzling(struct drm_i915_private *i915)
 {
 	struct i915_ggtt *ggtt = to_gt(i915)->ggtt;
 
-	if (i915->quirks & QUIRK_PIN_SWIZZLED_PAGES)
+	if (i915->gem_quirks & GEM_QUIRK_PIN_SWIZZLED_PAGES)
 		return true;
 
 	if (has_bit17_swizzle(ggtt->bit_6_swizzle_x) ||

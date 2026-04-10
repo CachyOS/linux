@@ -9,19 +9,17 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
 #include <linux/of_graph.h>
-#include <linux/of_irq.h>
+#include <linux/platform_device.h>
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 
 #include <drm/drm_atomic_helper.h>
-#include <drm/drm_crtc_helper.h>
-#include <drm/drm_fb_cma_helper.h>
-#include <drm/drm_gem_cma_helper.h>
+#include <drm/drm_blend.h>
+#include <drm/drm_fb_dma_helper.h>
+#include <drm/drm_framebuffer.h>
+#include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
-#include <drm/drm_plane_helper.h>
 
 #include "sprd_drm.h"
 #include "sprd_dpu.h"
@@ -322,7 +320,7 @@ static u32 drm_blend_to_dpu(struct drm_plane_state *state)
 static void sprd_dpu_layer(struct sprd_dpu *dpu, struct drm_plane_state *state)
 {
 	struct dpu_context *ctx = &dpu->ctx;
-	struct drm_gem_cma_object *cma_obj;
+	struct drm_gem_dma_object *dma_obj;
 	struct drm_framebuffer *fb = state->fb;
 	u32 addr, size, offset, pitch, blend, format, rotation;
 	u32 src_x = state->src_x >> 16;
@@ -339,8 +337,8 @@ static void sprd_dpu_layer(struct sprd_dpu *dpu, struct drm_plane_state *state)
 	size = (src_w & 0xffff) | (src_h << 16);
 
 	for (i = 0; i < fb->format->num_planes; i++) {
-		cma_obj = drm_fb_cma_get_gem_obj(fb, i);
-		addr = cma_obj->paddr + fb->offsets[i];
+		dma_obj = drm_fb_dma_get_gem_obj(fb, i);
+		addr = dma_obj->dma_addr + fb->offsets[i];
 
 		if (i == 0)
 			layer_reg_wr(ctx, REG_LAY_BASE_ADDR0, addr, index);
@@ -522,8 +520,8 @@ static int sprd_plane_atomic_check(struct drm_plane *plane,
 		return PTR_ERR(crtc_state);
 
 	return drm_atomic_helper_check_plane_state(plane_state, crtc_state,
-						  DRM_PLANE_HELPER_NO_SCALING,
-						  DRM_PLANE_HELPER_NO_SCALING,
+						  DRM_PLANE_NO_SCALING,
+						  DRM_PLANE_NO_SCALING,
 						  true, true);
 }
 
@@ -786,26 +784,17 @@ static int sprd_dpu_context_init(struct sprd_dpu *dpu,
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct dpu_context *ctx = &dpu->ctx;
-	struct resource *res;
 	int ret;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		dev_err(dev, "failed to get I/O resource\n");
-		return -EINVAL;
-	}
-
-	ctx->base = devm_ioremap(dev, res->start, resource_size(res));
-	if (!ctx->base) {
+	ctx->base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(ctx->base)) {
 		dev_err(dev, "failed to map dpu registers\n");
-		return -EFAULT;
+		return PTR_ERR(ctx->base);
 	}
 
 	ctx->irq = platform_get_irq(pdev, 0);
-	if (ctx->irq < 0) {
-		dev_err(dev, "failed to get dpu irq\n");
+	if (ctx->irq < 0)
 		return ctx->irq;
-	}
 
 	/* disable and clear interrupts before register dpu IRQ. */
 	writel(0x00, ctx->base + REG_DPU_INT_EN);
@@ -863,11 +852,9 @@ static int sprd_dpu_probe(struct platform_device *pdev)
 	return component_add(&pdev->dev, &dpu_component_ops);
 }
 
-static int sprd_dpu_remove(struct platform_device *pdev)
+static void sprd_dpu_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &dpu_component_ops);
-
-	return 0;
 }
 
 struct platform_driver sprd_dpu_driver = {

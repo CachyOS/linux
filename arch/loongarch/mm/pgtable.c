@@ -9,14 +9,26 @@
 #include <asm/pgtable.h>
 #include <asm/tlbflush.h>
 
+struct page *dmw_virt_to_page(unsigned long kaddr)
+{
+	return phys_to_page(__pa(kaddr));
+}
+EXPORT_SYMBOL(dmw_virt_to_page);
+
+struct page *tlb_virt_to_page(unsigned long kaddr)
+{
+	return phys_to_page(pfn_to_phys(pte_pfn(*virt_to_kpte(kaddr))));
+}
+EXPORT_SYMBOL(tlb_virt_to_page);
+
 pgd_t *pgd_alloc(struct mm_struct *mm)
 {
-	pgd_t *ret, *init;
+	pgd_t *init, *ret;
 
-	ret = (pgd_t *) __get_free_pages(GFP_KERNEL, PGD_ORDER);
+	ret = __pgd_alloc(mm, 0);
 	if (ret) {
 		init = pgd_offset(&init_mm, 0UL);
-		pgd_init((unsigned long)ret);
+		pgd_init(ret);
 		memcpy(ret + USER_PTRS_PER_PGD, init + USER_PTRS_PER_PGD,
 		       (PTRS_PER_PGD - USER_PTRS_PER_PGD) * sizeof(pgd_t));
 	}
@@ -25,7 +37,7 @@ pgd_t *pgd_alloc(struct mm_struct *mm)
 }
 EXPORT_SYMBOL_GPL(pgd_alloc);
 
-void pgd_init(unsigned long page)
+void pgd_init(void *addr)
 {
 	unsigned long *p, *end;
 	unsigned long entry;
@@ -38,7 +50,7 @@ void pgd_init(unsigned long page)
 	entry = (unsigned long)invalid_pte_table;
 #endif
 
-	p = (unsigned long *) page;
+	p = (unsigned long *)addr;
 	end = p + PTRS_PER_PGD;
 
 	do {
@@ -56,11 +68,12 @@ void pgd_init(unsigned long page)
 EXPORT_SYMBOL_GPL(pgd_init);
 
 #ifndef __PAGETABLE_PMD_FOLDED
-void pmd_init(unsigned long addr, unsigned long pagetable)
+void pmd_init(void *addr)
 {
 	unsigned long *p, *end;
+	unsigned long pagetable = (unsigned long)invalid_pte_table;
 
-	p = (unsigned long *) addr;
+	p = (unsigned long *)addr;
 	end = p + PTRS_PER_PMD;
 
 	do {
@@ -79,9 +92,10 @@ EXPORT_SYMBOL_GPL(pmd_init);
 #endif
 
 #ifndef __PAGETABLE_PUD_FOLDED
-void pud_init(unsigned long addr, unsigned long pagetable)
+void pud_init(void *addr)
 {
 	unsigned long *p, *end;
+	unsigned long pagetable = (unsigned long)invalid_pmd_table;
 
 	p = (unsigned long *)addr;
 	end = p + PTRS_PER_PUD;
@@ -98,33 +112,45 @@ void pud_init(unsigned long addr, unsigned long pagetable)
 		p[-1] = pagetable;
 	} while (p != end);
 }
+EXPORT_SYMBOL_GPL(pud_init);
 #endif
 
-pmd_t mk_pmd(struct page *page, pgprot_t prot)
+void kernel_pte_init(void *addr)
 {
-	pmd_t pmd;
+	unsigned long *p, *end;
 
-	pmd_val(pmd) = (page_to_pfn(page) << _PFN_SHIFT) | pgprot_val(prot);
+	p = (unsigned long *)addr;
+	end = p + PTRS_PER_PTE;
 
-	return pmd;
+	do {
+		p[0] = _PAGE_GLOBAL;
+		p[1] = _PAGE_GLOBAL;
+		p[2] = _PAGE_GLOBAL;
+		p[3] = _PAGE_GLOBAL;
+		p[4] = _PAGE_GLOBAL;
+		p += 8;
+		p[-3] = _PAGE_GLOBAL;
+		p[-2] = _PAGE_GLOBAL;
+		p[-1] = _PAGE_GLOBAL;
+	} while (p != end);
 }
 
 void set_pmd_at(struct mm_struct *mm, unsigned long addr,
 		pmd_t *pmdp, pmd_t pmd)
 {
-	*pmdp = pmd;
+	WRITE_ONCE(*pmdp, pmd);
 	flush_tlb_all();
 }
 
 void __init pagetable_init(void)
 {
 	/* Initialize the entire pgd.  */
-	pgd_init((unsigned long)swapper_pg_dir);
-	pgd_init((unsigned long)invalid_pg_dir);
+	pgd_init(swapper_pg_dir);
+	pgd_init(invalid_pg_dir);
 #ifndef __PAGETABLE_PUD_FOLDED
-	pud_init((unsigned long)invalid_pud_table, (unsigned long)invalid_pmd_table);
+	pud_init(invalid_pud_table);
 #endif
 #ifndef __PAGETABLE_PMD_FOLDED
-	pmd_init((unsigned long)invalid_pmd_table, (unsigned long)invalid_pte_table);
+	pmd_init(invalid_pmd_table);
 #endif
 }

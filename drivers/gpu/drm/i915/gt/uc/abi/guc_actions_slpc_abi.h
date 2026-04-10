@@ -122,6 +122,21 @@ enum slpc_param_id {
 	SLPC_MAX_PARAM = 32,
 };
 
+enum slpc_media_ratio_mode {
+	SLPC_MEDIA_RATIO_MODE_DYNAMIC_CONTROL = 0,
+	SLPC_MEDIA_RATIO_MODE_FIXED_ONE_TO_ONE = 1,
+	SLPC_MEDIA_RATIO_MODE_FIXED_ONE_TO_TWO = 2,
+};
+
+enum slpc_gucrc_mode {
+	SLPC_GUCRC_MODE_HW = 0,
+	SLPC_GUCRC_MODE_GUCRC_NO_RC6 = 1,
+	SLPC_GUCRC_MODE_GUCRC_STATIC_TIMEOUT = 2,
+	SLPC_GUCRC_MODE_GUCRC_DYNAMIC_HYSTERESIS = 3,
+
+	SLPC_GUCRC_MODE_MAX,
+};
+
 enum slpc_event_id {
 	SLPC_EVENT_RESET = 0,
 	SLPC_EVENT_SHUTDOWN = 1,
@@ -191,6 +206,32 @@ struct slpc_shared_data {
 	/* PAGE 2 (4096 bytes), mode based parameter will be removed soon */
 	u8 reserved_mode_definition[4096];
 } __packed;
+
+struct slpc_context_frequency_request {
+	u32 frequency_request:16;
+	u32 reserved:12;
+	u32 is_compute:1;
+	u32 ignore_busyness:1;
+	u32 is_minimum:1;
+	u32 is_predefined:1;
+} __packed;
+
+#define SLPC_CTX_FREQ_REQ_IS_COMPUTE		REG_BIT(28)
+
+struct slpc_optimized_strategies {
+	u32 compute:1;
+	u32 async_flip:1;
+	u32 media:1;
+	u32 vsync_flip:1;
+	u32 reserved:28;
+} __packed;
+
+#define SLPC_OPTIMIZED_STRATEGY_COMPUTE		REG_BIT(0)
+
+enum slpc_power_profiles {
+	SLPC_POWER_PROFILES_BASE = 0x0,
+	SLPC_POWER_PROFILES_POWER_SAVING = 0x1
+};
 
 /**
  * DOC: SLPC H2G MESSAGE FORMAT

@@ -379,6 +379,8 @@ static int tpg110_get_modes(struct drm_panel *panel,
 	connector->display_info.bus_flags = tpg->panel_mode->bus_flags;
 
 	mode = drm_mode_duplicate(connector->dev, &tpg->panel_mode->mode);
+	if (!mode)
+		return -ENOMEM;
 	drm_mode_set_name(mode);
 	mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
 
@@ -403,9 +405,11 @@ static int tpg110_probe(struct spi_device *spi)
 	struct tpg110 *tpg;
 	int ret;
 
-	tpg = devm_kzalloc(dev, sizeof(*tpg), GFP_KERNEL);
-	if (!tpg)
-		return -ENOMEM;
+	tpg = devm_drm_panel_alloc(dev, struct tpg110, panel,
+				   &tpg110_drm_funcs, DRM_MODE_CONNECTOR_DPI);
+	if (IS_ERR(tpg))
+		return PTR_ERR(tpg);
+
 	tpg->dev = dev;
 
 	/* We get the physical display dimensions from the DT */
@@ -436,9 +440,6 @@ static int tpg110_probe(struct spi_device *spi)
 	if (ret)
 		return ret;
 
-	drm_panel_init(&tpg->panel, dev, &tpg110_drm_funcs,
-		       DRM_MODE_CONNECTOR_DPI);
-
 	ret = drm_panel_of_backlight(&tpg->panel);
 	if (ret)
 		return ret;
@@ -463,9 +464,16 @@ static const struct of_device_id tpg110_match[] = {
 };
 MODULE_DEVICE_TABLE(of, tpg110_match);
 
+static const struct spi_device_id tpg110_ids[] = {
+	{ "tpg110" },
+	{ },
+};
+MODULE_DEVICE_TABLE(spi, tpg110_ids);
+
 static struct spi_driver tpg110_driver = {
 	.probe		= tpg110_probe,
 	.remove		= tpg110_remove,
+	.id_table	= tpg110_ids,
 	.driver		= {
 		.name	= "tpo-tpg110-panel",
 		.of_match_table = tpg110_match,

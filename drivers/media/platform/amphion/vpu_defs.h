@@ -71,6 +71,7 @@ enum {
 	VPU_MSG_ID_TIMESTAMP_INFO,
 	VPU_MSG_ID_FIRMWARE_XCPT,
 	VPU_MSG_ID_PIC_SKIPPED,
+	VPU_MSG_ID_DBG_MSG,
 };
 
 enum VPU_ENC_MEMORY_RESOURSE {
@@ -113,6 +114,7 @@ struct vpu_enc_pic_info {
 	u32 wptr;
 	u32 crc;
 	s64 timestamp;
+	u32 average_qp;
 };
 
 struct vpu_dec_codec_info {
@@ -132,6 +134,7 @@ struct vpu_dec_codec_info {
 	u32 decoded_height;
 	struct v4l2_fract frame_rate;
 	u32 dsp_asp_ratio;
+	u32 profile_idc;
 	u32 level_idc;
 	u32 bit_depth_luma;
 	u32 bit_depth_chroma;
@@ -145,6 +148,17 @@ struct vpu_dec_codec_info {
 	u32 mbi_size;
 	u32 dcp_size;
 	u32 stride;
+	union {
+		struct {
+			u32 constraint_set5_flag : 1;
+			u32 constraint_set4_flag : 1;
+			u32 constraint_set3_flag : 1;
+			u32 constraint_set2_flag : 1;
+			u32 constraint_set1_flag : 1;
+			u32 constraint_set0_flag : 1;
+		};
+		u32 constraint_set_flags;
+	};
 };
 
 struct vpu_dec_pic_info {

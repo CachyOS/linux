@@ -11,7 +11,8 @@
 
 
 #include <linux/types.h>
-#include <asm/hyperv-tlfs.h>
+#include <linux/export.h>
+#include <hyperv/hvhdk.h>
 #include <asm/mshyperv.h>
 #include <asm/tlbflush.h>
 
@@ -19,7 +20,6 @@
 
 int hyperv_flush_guest_mapping(u64 as)
 {
-	struct hv_guest_mapping_flush **flush_pcpu;
 	struct hv_guest_mapping_flush *flush;
 	u64 status;
 	unsigned long flags;
@@ -30,10 +30,7 @@ int hyperv_flush_guest_mapping(u64 as)
 
 	local_irq_save(flags);
 
-	flush_pcpu = (struct hv_guest_mapping_flush **)
-		this_cpu_ptr(hyperv_pcpu_input_arg);
-
-	flush = *flush_pcpu;
+	flush = *this_cpu_ptr(hyperv_pcpu_input_arg);
 
 	if (unlikely(!flush)) {
 		local_irq_restore(flags);
@@ -90,7 +87,6 @@ EXPORT_SYMBOL_GPL(hyperv_fill_flush_guest_mapping_list);
 int hyperv_flush_guest_mapping_range(u64 as,
 		hyperv_fill_flush_list_func fill_flush_list_func, void *data)
 {
-	struct hv_guest_mapping_flush_list **flush_pcpu;
 	struct hv_guest_mapping_flush_list *flush;
 	u64 status;
 	unsigned long flags;
@@ -102,10 +98,8 @@ int hyperv_flush_guest_mapping_range(u64 as,
 
 	local_irq_save(flags);
 
-	flush_pcpu = (struct hv_guest_mapping_flush_list **)
-		this_cpu_ptr(hyperv_pcpu_input_arg);
+	flush = *this_cpu_ptr(hyperv_pcpu_input_arg);
 
-	flush = *flush_pcpu;
 	if (unlikely(!flush)) {
 		local_irq_restore(flags);
 		goto fault;

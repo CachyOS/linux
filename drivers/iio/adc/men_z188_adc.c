@@ -161,7 +161,6 @@ MODULE_DEVICE_TABLE(mcb, men_z188_ids);
 static struct mcb_driver men_z188_driver = {
 	.driver = {
 		.name = "z188-adc",
-		.owner = THIS_MODULE,
 	},
 	.probe = men_z188_probe,
 	.remove = men_z188_remove,
@@ -172,5 +171,4 @@ module_mcb_driver(men_z188_driver);
 MODULE_AUTHOR("Johannes Thumshirn <johannes.thumshirn@men.de>");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("IIO ADC driver for MEN 16z188 ADC Core");
-MODULE_ALIAS("mcb:16z188");
-MODULE_IMPORT_NS(MCB);
+MODULE_IMPORT_NS("MCB");

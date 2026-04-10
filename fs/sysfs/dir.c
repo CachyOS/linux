@@ -37,7 +37,7 @@ void sysfs_warn_dup(struct kernfs_node *parent, const char *name)
  * @kobj: object we're creating directory for
  * @ns: the namespace tag to use
  */
-int sysfs_create_dir_ns(struct kobject *kobj, const void *ns)
+int sysfs_create_dir_ns(struct kobject *kobj, const struct ns_common *ns)
 {
 	struct kernfs_node *parent, *kn;
 	kuid_t uid;
@@ -81,7 +81,7 @@ void sysfs_remove_dir(struct kobject *kobj)
 	struct kernfs_node *kn = kobj->sd;
 
 	/*
-	 * In general, kboject owner is responsible for ensuring removal
+	 * In general, kobject owner is responsible for ensuring removal
 	 * doesn't race with other operations and sysfs doesn't provide any
 	 * protection; however, when @kobj is used as a symlink target, the
 	 * symlinking entity usually doesn't own @kobj and thus has no
@@ -103,7 +103,7 @@ void sysfs_remove_dir(struct kobject *kobj)
 }
 
 int sysfs_rename_dir_ns(struct kobject *kobj, const char *new_name,
-			const void *new_ns)
+			const struct ns_common *new_ns)
 {
 	struct kernfs_node *parent;
 	int ret;
@@ -115,7 +115,7 @@ int sysfs_rename_dir_ns(struct kobject *kobj, const char *new_name,
 }
 
 int sysfs_move_dir_ns(struct kobject *kobj, struct kobject *new_parent_kobj,
-		      const void *new_ns)
+		      const struct ns_common *new_ns)
 {
 	struct kernfs_node *kn = kobj->sd;
 	struct kernfs_node *new_parent;
@@ -123,7 +123,7 @@ int sysfs_move_dir_ns(struct kobject *kobj, struct kobject *new_parent_kobj,
 	new_parent = new_parent_kobj && new_parent_kobj->sd ?
 		new_parent_kobj->sd : sysfs_root_kn;
 
-	return kernfs_rename_ns(kn, new_parent, kn->name, new_ns);
+	return kernfs_rename_ns(kn, new_parent, NULL, new_ns);
 }
 
 /**

@@ -11,7 +11,7 @@ $id: http://devicetree.org/schemas/example-schema.yaml#
 # $schema is the meta-schema this schema should be validated with.
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: An example schema annotated with jsonschema details
+title: An Example Device
 
 maintainers:
   - Rob Herring <robh@kernel.org>
@@ -52,8 +52,7 @@ properties:
               - vendor,soc4-ip
               - vendor,soc3-ip
               - vendor,soc2-ip
-          - enum:
-              - vendor,soc1-ip
+          - const: vendor,soc1-ip
         # additionalItems being false is implied
         # minItems/maxItems equal to 2 is implied
       - items:
@@ -85,6 +84,9 @@ properties:
       discouraged.
 
   clock-names:
+    # For single-entry lists in clocks, resets etc., the xxx-names often do not
+    # bring any value, especially if they copy the IP block name.  In such case
+    # just skip the xxx-names.
     items:
       - const: bus
 
@@ -176,6 +178,10 @@ properties:
     description: Child nodes are just another property from a json-schema
       perspective.
     type: object  # DT nodes are json objects
+    # Child nodes also need additionalProperties or unevaluatedProperties, where
+    # 'false' should be used in most cases (see 'child-node-with-own-schema'
+    # below).
+    additionalProperties: false
     properties:
       vendor,a-child-node-property:
         description: Child node properties have all the same schema
@@ -184,6 +190,17 @@ properties:
 
     required:
       - vendor,a-child-node-property
+
+  child-node-with-own-schema:
+    description: |
+      Child node with their own compatible and device schema which ends in
+      'additionalProperties: false' or 'unevaluatedProperties: false' can
+      mention only the compatible and use here 'additionalProperties: true'.
+    type: object
+    additionalProperties: true
+    properties:
+      compatible:
+        const: vendor,sub-device
 
 # Describe the relationship between different properties
 dependencies:
@@ -206,7 +223,7 @@ required:
 #
 # For multiple 'if' schema, group them under an 'allOf'.
 #
-# If the conditionals become too unweldy, then it may be better to just split
+# If the conditionals become too unwieldy, then it may be better to just split
 # the binding into separate schema documents.
 allOf:
   - if:
@@ -258,4 +275,5 @@ examples:
         reg-names = "core", "aux";
         interrupts = <10>;
         interrupt-controller;
+        #interrupt-cells = <2>;
     };

@@ -153,7 +153,7 @@ static struct sa_info *sa1100_setup_mtd(struct platform_device *pdev,
 					struct flash_platform_data *plat)
 {
 	struct sa_info *info;
-	int nr, size, i, ret = 0;
+	int nr, i, ret = 0;
 
 	/*
 	 * Count number of devices.
@@ -167,12 +167,10 @@ static struct sa_info *sa1100_setup_mtd(struct platform_device *pdev,
 		goto out;
 	}
 
-	size = sizeof(struct sa_info) + sizeof(struct sa_subdev_info) * nr;
-
 	/*
 	 * Allocate the map_info structs in one go.
 	 */
-	info = kzalloc(size, GFP_KERNEL);
+	info = kzalloc_flex(*info, subdev, nr);
 	if (!info) {
 		ret = -ENOMEM;
 		goto out;
@@ -224,7 +222,7 @@ static struct sa_info *sa1100_setup_mtd(struct platform_device *pdev,
 	} else if (info->num_subdev > 1) {
 		struct mtd_info **cdev;
 
-		cdev = kmalloc_array(nr, sizeof(*cdev), GFP_KERNEL);
+		cdev = kmalloc_objs(*cdev, nr);
 		if (!cdev) {
 			ret = -ENOMEM;
 			goto err;
@@ -285,14 +283,12 @@ static int sa1100_mtd_probe(struct platform_device *pdev)
 	return err;
 }
 
-static int sa1100_mtd_remove(struct platform_device *pdev)
+static void sa1100_mtd_remove(struct platform_device *pdev)
 {
 	struct sa_info *info = platform_get_drvdata(pdev);
 	struct flash_platform_data *plat = dev_get_platdata(&pdev->dev);
 
 	sa1100_destroy(info, plat);
-
-	return 0;
 }
 
 static struct platform_driver sa1100_mtd_driver = {

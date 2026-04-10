@@ -43,81 +43,83 @@
 #define CVMX_POW_WQ_INT_PC		0
 
 union cvmx_pip_wqe_word2 {
-	uint64_t u64;
+	u64 u64;
+
 	struct {
-		uint64_t bufs:8;
-		uint64_t ip_offset:8;
-		uint64_t vlan_valid:1;
-		uint64_t vlan_stacked:1;
-		uint64_t unassigned:1;
-		uint64_t vlan_cfi:1;
-		uint64_t vlan_id:12;
-		uint64_t pr:4;
-		uint64_t unassigned2:8;
-		uint64_t dec_ipcomp:1;
-		uint64_t tcp_or_udp:1;
-		uint64_t dec_ipsec:1;
-		uint64_t is_v6:1;
-		uint64_t software:1;
-		uint64_t L4_error:1;
-		uint64_t is_frag:1;
-		uint64_t IP_exc:1;
-		uint64_t is_bcast:1;
-		uint64_t is_mcast:1;
-		uint64_t not_IP:1;
-		uint64_t rcv_error:1;
-		uint64_t err_code:8;
+		u64 bufs         : 8;
+		u64 ip_offset    : 8;
+		u64 vlan_valid   : 1;
+		u64 vlan_stacked : 1;
+		u64 unassigned   : 1;
+		u64 vlan_cfi     : 1;
+		u64 vlan_id      : 12;
+		u64 pr           : 4;
+		u64 unassigned2  : 8;
+		u64 dec_ipcomp   : 1;
+		u64 tcp_or_udp   : 1;
+		u64 dec_ipsec    : 1;
+		u64 is_v6        : 1;
+		u64 software     : 1;
+		u64 L4_error     : 1;
+		u64 is_frag      : 1;
+		u64 IP_exc       : 1;
+		u64 is_bcast     : 1;
+		u64 is_mcast     : 1;
+		u64 not_IP       : 1;
+		u64 rcv_error    : 1;
+		u64 err_code     : 8;
 	} s;
+
 	struct {
-		uint64_t bufs:8;
-		uint64_t ip_offset:8;
-		uint64_t vlan_valid:1;
-		uint64_t vlan_stacked:1;
-		uint64_t unassigned:1;
-		uint64_t vlan_cfi:1;
-		uint64_t vlan_id:12;
-		uint64_t port:12;
-		uint64_t dec_ipcomp:1;
-		uint64_t tcp_or_udp:1;
-		uint64_t dec_ipsec:1;
-		uint64_t is_v6:1;
-		uint64_t software:1;
-		uint64_t L4_error:1;
-		uint64_t is_frag:1;
-		uint64_t IP_exc:1;
-		uint64_t is_bcast:1;
-		uint64_t is_mcast:1;
-		uint64_t not_IP:1;
-		uint64_t rcv_error:1;
-		uint64_t err_code:8;
+		u64 bufs         : 8;
+		u64 ip_offset    : 8;
+		u64 vlan_valid   : 1;
+		u64 vlan_stacked : 1;
+		u64 unassigned   : 1;
+		u64 vlan_cfi     : 1;
+		u64 vlan_id      : 12;
+		u64 port         : 12;
+		u64 dec_ipcomp   : 1;
+		u64 tcp_or_udp   : 1;
+		u64 dec_ipsec    : 1;
+		u64 is_v6        : 1;
+		u64 software     : 1;
+		u64 L4_error     : 1;
+		u64 is_frag      : 1;
+		u64 IP_exc       : 1;
+		u64 is_bcast     : 1;
+		u64 is_mcast     : 1;
+		u64 not_IP       : 1;
+		u64 rcv_error    : 1;
+		u64 err_code     : 8;
 	} s_cn68xx;
 
 	struct {
-		uint64_t unused1:16;
-		uint64_t vlan:16;
-		uint64_t unused2:32;
+		u64 unused1 : 16;
+		u64 vlan    : 16;
+		u64 unused2 : 32;
 	} svlan;
-	struct {
-		uint64_t bufs:8;
-		uint64_t unused:8;
-		uint64_t vlan_valid:1;
-		uint64_t vlan_stacked:1;
-		uint64_t unassigned:1;
-		uint64_t vlan_cfi:1;
-		uint64_t vlan_id:12;
-		uint64_t pr:4;
-		uint64_t unassigned2:12;
-		uint64_t software:1;
-		uint64_t unassigned3:1;
-		uint64_t is_rarp:1;
-		uint64_t is_arp:1;
-		uint64_t is_bcast:1;
-		uint64_t is_mcast:1;
-		uint64_t not_IP:1;
-		uint64_t rcv_error:1;
-		uint64_t err_code:8;
-	} snoip;
 
+	struct {
+		u64 bufs         : 8;
+		u64 unused       : 8;
+		u64 vlan_valid   : 1;
+		u64 vlan_stacked : 1;
+		u64 unassigned   : 1;
+		u64 vlan_cfi     : 1;
+		u64 vlan_id      : 12;
+		u64 pr           : 4;
+		u64 unassigned2  : 12;
+		u64 software     : 1;
+		u64 unassigned3  : 1;
+		u64 is_rarp      : 1;
+		u64 is_arp       : 1;
+		u64 is_bcast     : 1;
+		u64 is_mcast     : 1;
+		u64 not_IP       : 1;
+		u64 rcv_error    : 1;
+		u64 err_code     : 8;
+	} snoip;
 };
 
 union cvmx_pip_wqe_word0 {
@@ -1212,7 +1214,7 @@ static inline void *cvmx_phys_to_ptr(uint64_t physical_address)
 	return (void *)(uintptr_t)(physical_address);
 }
 
-static inline uint64_t cvmx_ptr_to_phys(void *ptr)
+static inline phys_addr_t cvmx_ptr_to_phys(void *ptr)
 {
 	return (unsigned long)ptr;
 }
@@ -1362,7 +1364,7 @@ static inline struct cvmx_wqe *cvmx_pow_work_request_sync(cvmx_pow_wait_t wait)
 }
 
 static inline int cvmx_spi_restart_interface(int interface,
-					cvmx_spi_mode_t mode, int timeout)
+					     cvmx_spi_mode_t mode, int timeout)
 {
 	return 0;
 }
@@ -1372,9 +1374,7 @@ static inline void cvmx_fau_async_fetch_and_add32(uint64_t scraddr,
 						  int32_t value)
 { }
 
-static inline union cvmx_gmxx_rxx_rx_inbnd cvmx_spi4000_check_speed(
-	int interface,
-	int port)
+static inline union cvmx_gmxx_rxx_rx_inbnd cvmx_spi4000_check_speed(int interface, int port)
 {
 	union cvmx_gmxx_rxx_rx_inbnd r;
 

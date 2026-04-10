@@ -66,7 +66,8 @@ static int clk_mt8195_apusys_pll_probe(struct platform_device *pdev)
 	if (!clk_data)
 		return -ENOMEM;
 
-	r = mtk_clk_register_plls(node, apusys_plls, ARRAY_SIZE(apusys_plls), clk_data);
+	r = mtk_clk_register_plls(&pdev->dev, apusys_plls,
+				  ARRAY_SIZE(apusys_plls), clk_data);
 	if (r)
 		goto free_apusys_pll_data;
 
@@ -85,7 +86,7 @@ free_apusys_pll_data:
 	return r;
 }
 
-static int clk_mt8195_apusys_pll_remove(struct platform_device *pdev)
+static void clk_mt8195_apusys_pll_remove(struct platform_device *pdev)
 {
 	struct clk_hw_onecell_data *clk_data = platform_get_drvdata(pdev);
 	struct device_node *node = pdev->dev.of_node;
@@ -93,14 +94,13 @@ static int clk_mt8195_apusys_pll_remove(struct platform_device *pdev)
 	of_clk_del_provider(node);
 	mtk_clk_unregister_plls(apusys_plls, ARRAY_SIZE(apusys_plls), clk_data);
 	mtk_free_clk_data(clk_data);
-
-	return 0;
 }
 
 static const struct of_device_id of_match_clk_mt8195_apusys_pll[] = {
 	{ .compatible = "mediatek,mt8195-apusys_pll", },
 	{}
 };
+MODULE_DEVICE_TABLE(of, of_match_clk_mt8195_apusys_pll);
 
 static struct platform_driver clk_mt8195_apusys_pll_drv = {
 	.probe = clk_mt8195_apusys_pll_probe,
@@ -110,4 +110,7 @@ static struct platform_driver clk_mt8195_apusys_pll_drv = {
 		.of_match_table = of_match_clk_mt8195_apusys_pll,
 	},
 };
-builtin_platform_driver(clk_mt8195_apusys_pll_drv);
+module_platform_driver(clk_mt8195_apusys_pll_drv);
+
+MODULE_DESCRIPTION("MediaTek MT8195 AI Processing Unit PLL clocks driver");
+MODULE_LICENSE("GPL");

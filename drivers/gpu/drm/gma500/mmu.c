@@ -5,6 +5,7 @@
  **************************************************************************/
 
 #include <linux/highmem.h>
+#include <linux/vmalloc.h>
 
 #include "mmu.h"
 #include "psb_drv.h"
@@ -157,7 +158,7 @@ static inline uint32_t psb_mmu_mask_pte(uint32_t pfn, int type)
 struct psb_mmu_pd *psb_mmu_alloc_pd(struct psb_mmu_driver *driver,
 				    int trap_pagefaults, int invalid_type)
 {
-	struct psb_mmu_pd *pd = kmalloc(sizeof(*pd), GFP_KERNEL);
+	struct psb_mmu_pd *pd = kmalloc_obj(*pd);
 	uint32_t *v;
 	int i;
 
@@ -259,7 +260,7 @@ void psb_mmu_free_pagedir(struct psb_mmu_pd *pd)
 
 static struct psb_mmu_pt *psb_mmu_alloc_pt(struct psb_mmu_pd *pd)
 {
-	struct psb_mmu_pt *pt = kmalloc(sizeof(*pt), GFP_KERNEL);
+	struct psb_mmu_pt *pt = kmalloc_obj(*pt);
 	void *v;
 	uint32_t clflush_add = pd->driver->clflush_add >> PAGE_SHIFT;
 	uint32_t clflush_count = PAGE_SIZE / clflush_add;
@@ -424,7 +425,7 @@ struct psb_mmu_driver *psb_mmu_driver_init(struct drm_device *dev,
 	struct psb_mmu_driver *driver;
 	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
 
-	driver = kmalloc(sizeof(*driver), GFP_KERNEL);
+	driver = kmalloc_obj(*driver);
 
 	if (!driver)
 		return NULL;
@@ -727,46 +728,5 @@ out:
 	if (pd->hw_context != -1)
 		psb_mmu_flush(pd->driver);
 
-	return ret;
-}
-
-int psb_mmu_virtual_to_pfn(struct psb_mmu_pd *pd, uint32_t virtual,
-			   unsigned long *pfn)
-{
-	int ret;
-	struct psb_mmu_pt *pt;
-	uint32_t tmp;
-	spinlock_t *lock = &pd->driver->lock;
-
-	down_read(&pd->driver->sem);
-	pt = psb_mmu_pt_map_lock(pd, virtual);
-	if (!pt) {
-		uint32_t *v;
-
-		spin_lock(lock);
-		v = kmap_atomic(pd->p);
-		tmp = v[psb_mmu_pd_index(virtual)];
-		kunmap_atomic(v);
-		spin_unlock(lock);
-
-		if (tmp != pd->invalid_pde || !(tmp & PSB_PTE_VALID) ||
-		    !(pd->invalid_pte & PSB_PTE_VALID)) {
-			ret = -EINVAL;
-			goto out;
-		}
-		ret = 0;
-		*pfn = pd->invalid_pte >> PAGE_SHIFT;
-		goto out;
-	}
-	tmp = pt->v[psb_mmu_pt_index(virtual)];
-	if (!(tmp & PSB_PTE_VALID)) {
-		ret = -EINVAL;
-	} else {
-		ret = 0;
-		*pfn = tmp >> PAGE_SHIFT;
-	}
-	psb_mmu_pt_unmap_unlock(pt);
-out:
-	up_read(&pd->driver->sem);
 	return ret;
 }

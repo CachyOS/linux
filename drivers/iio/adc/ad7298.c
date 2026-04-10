@@ -49,7 +49,7 @@ struct ad7298_state {
 	 * DMA (thus cache coherency maintenance) requires the
 	 * transfer buffers to live in their own cache lines.
 	 */
-	__be16				rx_buf[12] ____cacheline_aligned;
+	__be16				rx_buf[12] __aligned(IIO_DMA_MINALIGN);
 	__be16				tx_buf[2];
 };
 
@@ -109,7 +109,8 @@ static int ad7298_update_scan_mode(struct iio_dev *indio_dev,
 	int scan_count;
 
 	/* Now compute overall size */
-	scan_count = bitmap_weight(active_scan_mask, indio_dev->masklength);
+	scan_count = bitmap_weight(active_scan_mask,
+				   iio_get_masklength(indio_dev));
 
 	command = AD7298_WRITE | st->ext_ref;
 
@@ -154,8 +155,8 @@ static irqreturn_t ad7298_trigger_handler(int irq, void *p)
 	if (b_sent)
 		goto done;
 
-	iio_push_to_buffers_with_timestamp(indio_dev, st->rx_buf,
-		iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_ts(indio_dev, st->rx_buf, sizeof(st->rx_buf),
+				    iio_get_time_ns(indio_dev));
 
 done:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -231,16 +232,15 @@ static int ad7298_read_raw(struct iio_dev *indio_dev,
 
 	switch (m) {
 	case IIO_CHAN_INFO_RAW:
-		ret = iio_device_claim_direct_mode(indio_dev);
-		if (ret)
-			return ret;
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
 
 		if (chan->address == AD7298_CH_TEMP)
 			ret = ad7298_scan_temp(st, val);
 		else
 			ret = ad7298_scan_direct(st, chan->address);
 
-		iio_device_release_direct_mode(indio_dev);
+		iio_device_release_direct(indio_dev);
 
 		if (ret < 0)
 			return ret;
@@ -354,8 +354,8 @@ static const struct acpi_device_id ad7298_acpi_ids[] = {
 MODULE_DEVICE_TABLE(acpi, ad7298_acpi_ids);
 
 static const struct spi_device_id ad7298_id[] = {
-	{"ad7298", 0},
-	{}
+	{ "ad7298", 0 },
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad7298_id);
 

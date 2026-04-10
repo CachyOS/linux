@@ -14,25 +14,6 @@
 #include "hbm.h"
 #include "client.h"
 
-int ishtp_cl_get_tx_free_buffer_size(struct ishtp_cl *cl)
-{
-	unsigned long tx_free_flags;
-	int size;
-
-	spin_lock_irqsave(&cl->tx_free_list_spinlock, tx_free_flags);
-	size = cl->tx_ring_free_size * cl->device->fw_client->props.max_msg_length;
-	spin_unlock_irqrestore(&cl->tx_free_list_spinlock, tx_free_flags);
-
-	return size;
-}
-EXPORT_SYMBOL(ishtp_cl_get_tx_free_buffer_size);
-
-int ishtp_cl_get_tx_free_rings(struct ishtp_cl *cl)
-{
-	return cl->tx_ring_free_size;
-}
-EXPORT_SYMBOL(ishtp_cl_get_tx_free_rings);
-
 /**
  * ishtp_read_list_flush() - Flush read queue
  * @cl: ishtp client instance
@@ -49,7 +30,9 @@ static void ishtp_read_list_flush(struct ishtp_cl *cl)
 	list_for_each_entry_safe(rb, next, &cl->dev->read_list.list, list)
 		if (rb->cl && ishtp_cl_cmp_id(cl, rb->cl)) {
 			list_del(&rb->list);
-			ishtp_io_rb_free(rb);
+			spin_lock(&cl->free_list_spinlock);
+			list_add_tail(&rb->list, &cl->free_rb_list.list);
+			spin_unlock(&cl->free_list_spinlock);
 		}
 	spin_unlock_irqrestore(&cl->dev->read_list_spinlock, flags);
 }
@@ -122,7 +105,7 @@ struct ishtp_cl *ishtp_cl_allocate(struct ishtp_cl_device *cl_device)
 {
 	struct ishtp_cl *cl;
 
-	cl = kmalloc(sizeof(struct ishtp_cl), GFP_KERNEL);
+	cl = kmalloc_obj(struct ishtp_cl);
 	if (!cl)
 		return NULL;
 
@@ -339,16 +322,17 @@ static bool ishtp_cl_is_other_connecting(struct ishtp_cl *cl)
 }
 
 /**
- * ishtp_cl_connect() - Send connect request to firmware
+ * ishtp_cl_connect_to_fw() - Send connect request to firmware
  * @cl: client device instance
  *
- * Send a connect request for a client to firmware. If successful it will
- * RX and TX ring buffers
+ * Send a connect request to the firmware and wait for firmware response.
+ * If there is successful connection response from the firmware, change
+ * client state to ISHTP_CL_CONNECTED, and bind client to related
+ * firmware client_id.
  *
- * Return: 0 if successful connect response from the firmware and able
- * to bind and allocate ring buffers or error code on failure
+ * Return: 0 for success and error code on failure
  */
-int ishtp_cl_connect(struct ishtp_cl *cl)
+static int ishtp_cl_connect_to_fw(struct ishtp_cl *cl)
 {
 	struct ishtp_device *dev;
 	int rets;
@@ -357,8 +341,6 @@ int ishtp_cl_connect(struct ishtp_cl *cl)
 		return -ENODEV;
 
 	dev = cl->dev;
-
-	dev->print_log(dev, "%s() current_state = %d\n", __func__, cl->state);
 
 	if (ishtp_cl_is_other_connecting(cl)) {
 		dev->print_log(dev, "%s() Busy\n", __func__);
@@ -405,6 +387,38 @@ int ishtp_cl_connect(struct ishtp_cl *cl)
 		return rets;
 	}
 
+	return rets;
+}
+
+/**
+ * ishtp_cl_connect() - Build connection with firmware
+ * @cl: client device instance
+ *
+ * Call ishtp_cl_connect_to_fw() to connect and bind to firmware. If successful,
+ * allocate RX and TX ring buffers, and start flow control with firmware to
+ * start communication.
+ *
+ * Return: 0 if there is successful connection to the firmware, allocate
+ * ring buffers.
+ */
+int ishtp_cl_connect(struct ishtp_cl *cl)
+{
+	struct ishtp_device *dev;
+	int rets;
+
+	if (!cl || !cl->dev)
+		return -ENODEV;
+
+	dev = cl->dev;
+
+	dev->print_log(dev, "%s() current_state = %d\n", __func__, cl->state);
+
+	rets = ishtp_cl_connect_to_fw(cl);
+	if (rets) {
+		dev->print_log(dev, "%s() Connect to fw failed\n", __func__);
+		return rets;
+	}
+
 	rets = ishtp_cl_alloc_rx_ring(cl);
 	if (rets) {
 		dev->print_log(dev, "%s() Alloc RX ring failed\n", __func__);
@@ -422,14 +436,146 @@ int ishtp_cl_connect(struct ishtp_cl *cl)
 		return rets;
 	}
 
-	/* Upon successful connection and allocation, emit flow-control */
+	/*
+	 * Upon successful connection and allocation, start flow-control.
+	 */
 	rets = ishtp_cl_read_start(cl);
-
-	dev->print_log(dev, "%s() successful\n", __func__);
 
 	return rets;
 }
 EXPORT_SYMBOL(ishtp_cl_connect);
+
+/**
+ * ishtp_cl_establish_connection() - Establish connection with the firmware
+ * @cl: client device instance
+ * @uuid: uuid of the client to search
+ * @tx_size: TX ring buffer size
+ * @rx_size: RX ring buffer size
+ * @reset: true if called for reset connection, otherwise for first connection
+ *
+ * This is a helper function for client driver to build connection with firmware.
+ * If it's first time connecting to the firmware, set reset to false, this
+ * function will link client to bus, find client id and send connect request to
+ * the firmware.
+ *
+ * If it's called for reset handler where client lost connection after
+ * firmware reset, set reset to true, this function will reinit client state and
+ * establish connection again. In this case, this function reuses current client
+ * structure and ring buffers to avoid allocation failure and memory fragments.
+ *
+ * Return: 0 for successful connection with the firmware,
+ * or error code on failure
+ */
+int ishtp_cl_establish_connection(struct ishtp_cl *cl, const guid_t *uuid,
+				  int tx_size, int rx_size, bool reset)
+{
+	struct ishtp_device *dev;
+	struct ishtp_fw_client *fw_client;
+	int rets;
+
+	if (!cl || !cl->dev)
+		return -ENODEV;
+
+	dev = cl->dev;
+
+	ishtp_set_connection_state(cl, ISHTP_CL_INITIALIZING);
+
+	/* reinit ishtp_cl structure if call for reset */
+	if (reset) {
+		cl->host_client_id = 0;
+		cl->fw_client_id = 0;
+		cl->ishtp_flow_ctrl_creds = 0;
+		cl->out_flow_ctrl_creds = 0;
+
+		cl->last_tx_path = CL_TX_PATH_IPC;
+		cl->last_dma_acked = 1;
+		cl->last_dma_addr = NULL;
+		cl->last_ipc_acked = 1;
+
+		cl->sending = 0;
+		cl->err_send_msg = 0;
+		cl->err_send_fc = 0;
+
+		cl->send_msg_cnt_ipc = 0;
+		cl->send_msg_cnt_dma = 0;
+		cl->recv_msg_cnt_ipc = 0;
+		cl->recv_msg_cnt_dma = 0;
+		cl->recv_msg_num_frags = 0;
+		cl->ishtp_flow_ctrl_cnt = 0;
+		cl->out_flow_ctrl_cnt = 0;
+	}
+
+	/* link to bus */
+	rets = ishtp_cl_link(cl);
+	if (rets) {
+		dev->print_log(dev, "%s() ishtp_cl_link failed\n", __func__);
+		return rets;
+	}
+
+	/* find firmware client */
+	fw_client = ishtp_fw_cl_get_client(dev, uuid);
+	if (!fw_client) {
+		dev->print_log(dev,
+			       "%s() ish client uuid not found\n", __func__);
+		return -ENOENT;
+	}
+
+	ishtp_set_tx_ring_size(cl, tx_size);
+	ishtp_set_rx_ring_size(cl, rx_size);
+
+	ishtp_cl_set_fw_client_id(cl, ishtp_get_fw_client_id(fw_client));
+
+	ishtp_set_connection_state(cl, ISHTP_CL_CONNECTING);
+
+	/*
+	 * For reset case, not allocate tx/rx ring buffer which are already
+	 * done in ishtp_cl_connect() during first connection.
+	 */
+	if (reset) {
+		rets = ishtp_cl_connect_to_fw(cl);
+		if (!rets)
+			rets = ishtp_cl_read_start(cl);
+		else
+			dev->print_log(dev,
+				"%s() connect to fw failed\n", __func__);
+	} else {
+		rets = ishtp_cl_connect(cl);
+	}
+
+	return rets;
+}
+EXPORT_SYMBOL(ishtp_cl_establish_connection);
+
+/**
+ * ishtp_cl_destroy_connection() - Disconnect with the firmware
+ * @cl: client device instance
+ * @reset: true if called for firmware reset, false for normal disconnection
+ *
+ * This is a helper function for client driver to disconnect with firmware,
+ * unlink to bus and flush message queue.
+ */
+void ishtp_cl_destroy_connection(struct ishtp_cl *cl, bool reset)
+{
+	if (!cl)
+		return;
+
+	if (reset) {
+		/*
+		 * For reset case, connection is already lost during fw reset.
+		 * Just set state to DISCONNECTED is enough.
+		 */
+		ishtp_set_connection_state(cl, ISHTP_CL_DISCONNECTED);
+	} else {
+		if (cl->state != ISHTP_CL_DISCONNECTED) {
+			ishtp_set_connection_state(cl, ISHTP_CL_DISCONNECTING);
+			ishtp_cl_disconnect(cl);
+		}
+	}
+
+	ishtp_cl_unlink(cl);
+	ishtp_cl_flush_queues(cl);
+}
+EXPORT_SYMBOL(ishtp_cl_destroy_connection);
 
 /**
  * ishtp_cl_read_start() - Prepare to read client message
@@ -626,13 +772,14 @@ static void ishtp_cl_read_complete(struct ishtp_cl_rb *rb)
 }
 
 /**
- * ipc_tx_callback() - IPC tx callback function
+ * ipc_tx_send() - IPC tx send function
  * @prm: Pointer to client device instance
  *
- * Send message over IPC either first time or on callback on previous message
- * completion
+ * Send message over IPC. Message will be split into fragments
+ * if message size is bigger than IPC FIFO size, and all
+ * fragments will be sent one by one.
  */
-static void ipc_tx_callback(void *prm)
+static void ipc_tx_send(void *prm)
 {
 	struct ishtp_cl	*cl = prm;
 	struct ishtp_cl_tx_ring	*cl_msg;
@@ -677,32 +824,41 @@ static void ipc_tx_callback(void *prm)
 			    list);
 	rem = cl_msg->send_buf.size - cl->tx_offs;
 
-	ishtp_hdr.host_addr = cl->host_client_id;
-	ishtp_hdr.fw_addr = cl->fw_client_id;
-	ishtp_hdr.reserved = 0;
-	pmsg = cl_msg->send_buf.data + cl->tx_offs;
+	while (rem > 0) {
+		ishtp_hdr.host_addr = cl->host_client_id;
+		ishtp_hdr.fw_addr = cl->fw_client_id;
+		ishtp_hdr.reserved = 0;
+		pmsg = cl_msg->send_buf.data + cl->tx_offs;
 
-	if (rem <= dev->mtu) {
-		ishtp_hdr.length = rem;
-		ishtp_hdr.msg_complete = 1;
-		cl->sending = 0;
-		list_del_init(&cl_msg->list);	/* Must be before write */
-		spin_unlock_irqrestore(&cl->tx_list_spinlock, tx_flags);
-		/* Submit to IPC queue with no callback */
-		ishtp_write_message(dev, &ishtp_hdr, pmsg);
-		spin_lock_irqsave(&cl->tx_free_list_spinlock, tx_free_flags);
-		list_add_tail(&cl_msg->list, &cl->tx_free_list.list);
-		++cl->tx_ring_free_size;
-		spin_unlock_irqrestore(&cl->tx_free_list_spinlock,
-			tx_free_flags);
-	} else {
-		/* Send IPC fragment */
-		spin_unlock_irqrestore(&cl->tx_list_spinlock, tx_flags);
-		cl->tx_offs += dev->mtu;
-		ishtp_hdr.length = dev->mtu;
-		ishtp_hdr.msg_complete = 0;
-		ishtp_send_msg(dev, &ishtp_hdr, pmsg, ipc_tx_callback, cl);
+		if (rem <= dev->mtu) {
+			/* Last fragment or only one packet */
+			ishtp_hdr.length = rem;
+			ishtp_hdr.msg_complete = 1;
+			/* Submit to IPC queue with no callback */
+			ishtp_write_message(dev, &ishtp_hdr, pmsg);
+			cl->tx_offs = 0;
+			cl->sending = 0;
+
+			break;
+		} else {
+			/* Send ipc fragment */
+			ishtp_hdr.length = dev->mtu;
+			ishtp_hdr.msg_complete = 0;
+			/* All fragments submitted to IPC queue with no callback */
+			ishtp_write_message(dev, &ishtp_hdr, pmsg);
+			cl->tx_offs += dev->mtu;
+			rem = cl_msg->send_buf.size - cl->tx_offs;
+		}
 	}
+
+	list_del_init(&cl_msg->list);
+	spin_unlock_irqrestore(&cl->tx_list_spinlock, tx_flags);
+
+	spin_lock_irqsave(&cl->tx_free_list_spinlock, tx_free_flags);
+	list_add_tail(&cl_msg->list, &cl->tx_free_list.list);
+	++cl->tx_ring_free_size;
+	spin_unlock_irqrestore(&cl->tx_free_list_spinlock,
+		tx_free_flags);
 }
 
 /**
@@ -720,7 +876,7 @@ static void ishtp_cl_send_msg_ipc(struct ishtp_device *dev,
 		return;
 
 	cl->tx_offs = 0;
-	ipc_tx_callback(cl);
+	ipc_tx_send(cl);
 	++cl->send_msg_cnt_ipc;
 }
 
@@ -831,7 +987,6 @@ void recv_ishtp_cl_msg(struct ishtp_device *dev,
 	unsigned char *buffer = NULL;
 	struct ishtp_cl_rb *complete_rb = NULL;
 	unsigned long	flags;
-	int	rb_count;
 
 	if (ishtp_hdr->reserved) {
 		dev_err(dev->devc, "corrupted message header.\n");
@@ -845,9 +1000,7 @@ void recv_ishtp_cl_msg(struct ishtp_device *dev,
 	}
 
 	spin_lock_irqsave(&dev->read_list_spinlock, flags);
-	rb_count = -1;
 	list_for_each_entry(rb, &dev->read_list.list, list) {
-		++rb_count;
 		cl = rb->cl;
 		if (!cl || !(cl->host_client_id == ishtp_hdr->host_addr &&
 				cl->fw_client_id == ishtp_hdr->fw_addr) ||
@@ -1107,6 +1260,12 @@ void ishtp_set_connection_state(struct ishtp_cl *cl, int state)
 	cl->state = state;
 }
 EXPORT_SYMBOL(ishtp_set_connection_state);
+
+int ishtp_get_connection_state(struct ishtp_cl *cl)
+{
+	return cl->state;
+}
+EXPORT_SYMBOL(ishtp_get_connection_state);
 
 void ishtp_cl_set_fw_client_id(struct ishtp_cl *cl, int fw_client_id)
 {

@@ -18,9 +18,9 @@
 #include <linux/of.h>
 #include <linux/reboot.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 #include <linux/cpu.h>
 #include <linux/hashtable.h>
-#include <trace/events/power.h>
 
 #include <asm/cputhreads.h>
 #include <asm/firmware.h>
@@ -28,6 +28,9 @@
 #include <asm/smp.h> /* Required for cpu_sibling_mask() in UP configs */
 #include <asm/opal.h>
 #include <linux/timer.h>
+
+#define CREATE_TRACE_POINTS
+#include "powernv-trace.h"
 
 #define POWERNV_MAX_PSTATES_ORDER  8
 #define POWERNV_MAX_PSTATES	(1UL << (POWERNV_MAX_PSTATES_ORDER))
@@ -281,7 +284,7 @@ next:
 	pr_info("cpufreq pstate min 0x%x nominal 0x%x max 0x%x\n", pstate_min,
 		pstate_nominal, pstate_max);
 	pr_info("Workload Optimized Frequency is %s in the platform\n",
-		(powernv_pstate_info.wof_enabled) ? "enabled" : "disabled");
+		str_enabled_disabled(powernv_pstate_info.wof_enabled));
 
 	pstate_ids = of_get_property(power_mgt, "ibm,pstate-ids", &len_ids);
 	if (!pstate_ids) {
@@ -320,7 +323,7 @@ next:
 		powernv_freqs[i].frequency = freq * 1000; /* kHz */
 		powernv_freqs[i].driver_data = id & 0xFF;
 
-		revmap_data = kmalloc(sizeof(*revmap_data), GFP_KERNEL);
+		revmap_data = kmalloc_obj(*revmap_data);
 		if (!revmap_data) {
 			rc = -ENOMEM;
 			goto out;
@@ -385,12 +388,8 @@ static ssize_t cpuinfo_nominal_freq_show(struct cpufreq_policy *policy,
 static struct freq_attr cpufreq_freq_attr_cpuinfo_nominal_freq =
 	__ATTR_RO(cpuinfo_nominal_freq);
 
-#define SCALING_BOOST_FREQS_ATTR_INDEX		2
-
 static struct freq_attr *powernv_cpu_freq_attr[] = {
-	&cpufreq_freq_attr_scaling_available_freqs,
 	&cpufreq_freq_attr_cpuinfo_nominal_freq,
-	&cpufreq_freq_attr_scaling_boost_freqs,
 	NULL,
 };
 
@@ -670,7 +669,8 @@ static inline void  queue_gpstate_timer(struct global_pstate_info *gpstates)
  */
 static void gpstate_timer_handler(struct timer_list *t)
 {
-	struct global_pstate_info *gpstates = from_timer(gpstates, t, timer);
+	struct global_pstate_info *gpstates = timer_container_of(gpstates, t,
+								 timer);
 	struct cpufreq_policy *policy = gpstates->policy;
 	int gpstate_idx, lpstate_idx;
 	unsigned long val;
@@ -692,7 +692,7 @@ static void gpstate_timer_handler(struct timer_list *t)
 	}
 
 	/*
-	 * If PMCR was last updated was using fast_swtich then
+	 * If PMCR was last updated was using fast_switch then
 	 * We may have wrong in gpstate->last_lpstate_idx
 	 * value. Hence, read from PMCR to get correct data.
 	 */
@@ -805,7 +805,7 @@ static int powernv_cpufreq_target_index(struct cpufreq_policy *policy,
 	if (gpstate_idx != new_index)
 		queue_gpstate_timer(gpstates);
 	else
-		del_timer_sync(&gpstates->timer);
+		timer_delete_sync(&gpstates->timer);
 
 gpstates_done:
 	freq_data.gpstate_id = idx_to_pstate(gpstate_idx);
@@ -857,7 +857,7 @@ static int powernv_cpufreq_cpu_init(struct cpufreq_policy *policy)
 		return 0;
 
 	/* Initialise Gpstate ramp-down timer only on POWER8 */
-	gpstates =  kzalloc(sizeof(*gpstates), GFP_KERNEL);
+	gpstates = kzalloc_obj(*gpstates);
 	if (!gpstates)
 		return -ENOMEM;
 
@@ -874,7 +874,7 @@ static int powernv_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	return 0;
 }
 
-static int powernv_cpufreq_cpu_exit(struct cpufreq_policy *policy)
+static void powernv_cpufreq_cpu_exit(struct cpufreq_policy *policy)
 {
 	struct powernv_smp_call_data freq_data;
 	struct global_pstate_info *gpstates = policy->driver_data;
@@ -883,11 +883,9 @@ static int powernv_cpufreq_cpu_exit(struct cpufreq_policy *policy)
 	freq_data.gpstate_id = idx_to_pstate(powernv_pstate_info.min);
 	smp_call_function_single(policy->cpu, set_pstate, &freq_data, 1);
 	if (gpstates)
-		del_timer_sync(&gpstates->timer);
+		timer_delete_sync(&gpstates->timer);
 
 	kfree(policy->driver_data);
-
-	return 0;
 }
 
 static int powernv_cpufreq_reboot_notifier(struct notifier_block *nb,
@@ -1055,7 +1053,7 @@ static int init_chip_info(void)
 		return -ENOMEM;
 
 	/* Allocate a chip cpu mask large enough to fit mask for all chips */
-	chip_cpu_mask = kcalloc(MAX_NR_CHIPS, sizeof(cpumask_t), GFP_KERNEL);
+	chip_cpu_mask = kzalloc_objs(cpumask_t, MAX_NR_CHIPS);
 	if (!chip_cpu_mask) {
 		ret = -ENOMEM;
 		goto free_and_return;
@@ -1071,7 +1069,7 @@ static int init_chip_info(void)
 		cpumask_set_cpu(cpu, &chip_cpu_mask[nr_chips-1]);
 	}
 
-	chips = kcalloc(nr_chips, sizeof(struct chip), GFP_KERNEL);
+	chips = kzalloc_objs(struct chip, nr_chips);
 	if (!chips) {
 		ret = -ENOMEM;
 		goto out_free_chip_cpu_mask;
@@ -1129,18 +1127,13 @@ static int __init powernv_cpufreq_init(void)
 		goto out;
 
 	if (powernv_pstate_info.wof_enabled)
-		powernv_cpufreq_driver.boost_enabled = true;
-	else
-		powernv_cpu_freq_attr[SCALING_BOOST_FREQS_ATTR_INDEX] = NULL;
+		powernv_cpufreq_driver.set_boost = cpufreq_boost_set_sw;
 
 	rc = cpufreq_register_driver(&powernv_cpufreq_driver);
 	if (rc) {
 		pr_info("Failed to register the cpufreq driver (%d)\n", rc);
 		goto cleanup;
 	}
-
-	if (powernv_pstate_info.wof_enabled)
-		cpufreq_enable_boost_support();
 
 	register_reboot_notifier(&powernv_cpufreq_reboot_nb);
 	opal_message_notifier_register(OPAL_MSG_OCC, &powernv_cpufreq_opal_nb);
@@ -1162,5 +1155,6 @@ static void __exit powernv_cpufreq_exit(void)
 }
 module_exit(powernv_cpufreq_exit);
 
+MODULE_DESCRIPTION("cpufreq driver for IBM/OpenPOWER powernv systems");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Vaidyanathan Srinivasan <svaidy at linux.vnet.ibm.com>");

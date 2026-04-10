@@ -1,15 +1,5 @@
-/*
- * Copyright (C) 2014-2015 Broadcom Corporation
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+// SPDX-License-Identifier: GPL-2.0-only
+// Copyright (C) 2014-2015 Broadcom Corporation
 #include <linux/debugfs.h>
 #include <linux/dma-mapping.h>
 #include <linux/init.h>
@@ -207,9 +197,9 @@ static u64 cygnus_dma_dmamask = DMA_BIT_MASK(32);
 static struct cygnus_aio_port *cygnus_dai_get_dma_data(
 				struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *soc_runtime = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *soc_runtime = snd_soc_substream_to_rtd(substream);
 
-	return snd_soc_dai_get_dma_data(asoc_rtd_to_cpu(soc_runtime, 0), substream);
+	return snd_soc_dai_get_dma_data(snd_soc_rtd_to_cpu(soc_runtime, 0), substream);
 }
 
 static void ringbuf_set_initial(void __iomem *audio_io,
@@ -353,13 +343,13 @@ static void enable_intr(struct snd_pcm_substream *substream)
 
 static void disable_intr(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct cygnus_aio_port *aio;
 	u32 set_mask;
 
 	aio = cygnus_dai_get_dma_data(substream);
 
-	dev_dbg(asoc_rtd_to_cpu(rtd, 0)->dev, "%s on port %d\n", __func__, aio->portnum);
+	dev_dbg(snd_soc_rtd_to_cpu(rtd, 0)->dev, "%s on port %d\n", __func__, aio->portnum);
 
 	/* The port number maps to the bit position to be set */
 	set_mask = BIT(aio->portnum);
@@ -581,7 +571,7 @@ static irqreturn_t cygnus_dma_irq(int irq, void *data)
 static int cygnus_pcm_open(struct snd_soc_component *component,
 			   struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct cygnus_aio_port *aio;
 	int ret;
@@ -590,7 +580,7 @@ static int cygnus_pcm_open(struct snd_soc_component *component,
 	if (!aio)
 		return -ENODEV;
 
-	dev_dbg(asoc_rtd_to_cpu(rtd, 0)->dev, "%s port %d\n", __func__, aio->portnum);
+	dev_dbg(snd_soc_rtd_to_cpu(rtd, 0)->dev, "%s port %d\n", __func__, aio->portnum);
 
 	snd_soc_set_runtime_hwparams(substream, &cygnus_pcm_hw);
 
@@ -618,12 +608,12 @@ static int cygnus_pcm_open(struct snd_soc_component *component,
 static int cygnus_pcm_close(struct snd_soc_component *component,
 			    struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct cygnus_aio_port *aio;
 
 	aio = cygnus_dai_get_dma_data(substream);
 
-	dev_dbg(asoc_rtd_to_cpu(rtd, 0)->dev, "%s  port %d\n", __func__, aio->portnum);
+	dev_dbg(snd_soc_rtd_to_cpu(rtd, 0)->dev, "%s  port %d\n", __func__, aio->portnum);
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
 		aio->play_stream = NULL;
@@ -631,7 +621,7 @@ static int cygnus_pcm_close(struct snd_soc_component *component,
 		aio->capture_stream = NULL;
 
 	if (!aio->play_stream && !aio->capture_stream)
-		dev_dbg(asoc_rtd_to_cpu(rtd, 0)->dev, "freed  port %d\n", aio->portnum);
+		dev_dbg(snd_soc_rtd_to_cpu(rtd, 0)->dev, "freed  port %d\n", aio->portnum);
 
 	return 0;
 }
@@ -639,7 +629,7 @@ static int cygnus_pcm_close(struct snd_soc_component *component,
 static int cygnus_pcm_prepare(struct snd_soc_component *component,
 			      struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct cygnus_aio_port *aio;
 	unsigned long bufsize, periodsize;
@@ -648,12 +638,12 @@ static int cygnus_pcm_prepare(struct snd_soc_component *component,
 	struct ringbuf_regs *p_rbuf = NULL;
 
 	aio = cygnus_dai_get_dma_data(substream);
-	dev_dbg(asoc_rtd_to_cpu(rtd, 0)->dev, "%s port %d\n", __func__, aio->portnum);
+	dev_dbg(snd_soc_rtd_to_cpu(rtd, 0)->dev, "%s port %d\n", __func__, aio->portnum);
 
 	bufsize = snd_pcm_lib_buffer_bytes(substream);
 	periodsize = snd_pcm_lib_period_bytes(substream);
 
-	dev_dbg(asoc_rtd_to_cpu(rtd, 0)->dev, "%s (buf_size %lu) (period_size %lu)\n",
+	dev_dbg(snd_soc_rtd_to_cpu(rtd, 0)->dev, "%s (buf_size %lu) (period_size %lu)\n",
 			__func__, bufsize, periodsize);
 
 	configure_ringbuf_regs(substream);
@@ -717,7 +707,7 @@ static int cygnus_dma_new(struct snd_soc_component *component,
 	return 0;
 }
 
-static struct snd_soc_component_driver cygnus_soc_platform = {
+static const struct snd_soc_component_driver cygnus_soc_platform = {
 	.open		= cygnus_pcm_open,
 	.close		= cygnus_pcm_close,
 	.prepare	= cygnus_pcm_prepare,

@@ -21,8 +21,8 @@
 #include <linux/clk.h>
 #include <linux/usb/gadget.h>
 #include <linux/of.h>
-#include <linux/of_gpio.h>
 #include <linux/regmap.h>
+#include <linux/string_choices.h>
 #include <linux/dma-mapping.h>
 #include <linux/bcd.h>
 #include <linux/version.h>
@@ -220,7 +220,7 @@ static int ast_vhub_hub_dev_feature(struct ast_vhub_ep *ep,
 	if (wValue == USB_DEVICE_REMOTE_WAKEUP) {
 		ep->vhub->wakeup_en = is_set;
 		EPDBG(ep, "Hub remote wakeup %s\n",
-		      is_set ? "enabled" : "disabled");
+		      str_enabled_disabled(is_set));
 		return std_req_complete;
 	}
 
@@ -1059,8 +1059,10 @@ static int ast_vhub_init_desc(struct ast_vhub *vhub)
 	/* Initialize vhub String Descriptors. */
 	INIT_LIST_HEAD(&vhub->vhub_str_desc);
 	desc_np = of_get_child_by_name(vhub_np, "vhub-strings");
-	if (desc_np)
+	if (desc_np) {
 		ret = ast_vhub_of_parse_str_desc(vhub, desc_np);
+		of_node_put(desc_np);
+	}
 	else
 		ret = ast_vhub_str_alloc_add(vhub, &ast_vhub_strings);
 

@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2017-2021 Broadcom. All Rights Reserved. The term *
+ * Copyright (C) 2017-2023 Broadcom. All Rights Reserved. The term *
  * “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.     *
  * Copyright (C) 2004-2014 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
@@ -47,6 +47,29 @@
 #define LPFC_DEVICE_DATA_POOL_SIZE 64   /* max elements in device data pool */
 #define LPFC_RRQ_POOL_SIZE	256	/* max elements in non-DMA  pool */
 #define LPFC_MBX_POOL_SIZE	256	/* max elements in MBX non-DMA pool */
+
+/* lpfc_mbox_free_sli_mbox
+ *
+ * @phba: HBA to free memory for
+ * @mbox: mailbox command to free
+ *
+ * This routine detects the mbox type and calls the correct
+ * free routine to fully release all associated memory.
+ */
+static void
+lpfc_mem_free_sli_mbox(struct lpfc_hba *phba, LPFC_MBOXQ_t *mbox)
+{
+	/* Detect if the caller's mbox is an SLI4_CONFIG type.  If so, this
+	 * mailbox type requires a different cleanup routine.  Otherwise, the
+	 * mailbox is just an mbuf and mem_pool release.
+	 */
+	if (phba->sli_rev == LPFC_SLI_REV4 &&
+	    bf_get(lpfc_mqe_command, &mbox->u.mqe) == MBX_SLI4_CONFIG) {
+		lpfc_sli4_mbox_cmd_free(phba, mbox);
+	} else {
+		lpfc_mbox_rsrc_cleanup(phba, mbox, MBOX_THD_UNLOCKED);
+	}
+}
 
 int
 lpfc_mem_alloc_active_rrq_pool_s4(struct lpfc_hba *phba) {
@@ -95,9 +118,7 @@ lpfc_mem_alloc(struct lpfc_hba *phba, int align)
 	if (!phba->lpfc_mbuf_pool)
 		goto fail;
 
-	pool->elements = kmalloc_array(LPFC_MBUF_POOL_SIZE,
-				       sizeof(struct lpfc_dmabuf),
-				       GFP_KERNEL);
+	pool->elements = kmalloc_objs(struct lpfc_dmabuf, LPFC_MBUF_POOL_SIZE);
 	if (!pool->elements)
 		goto fail_free_lpfc_mbuf_pool;
 
@@ -288,27 +309,16 @@ lpfc_mem_free_all(struct lpfc_hba *phba)
 {
 	struct lpfc_sli *psli = &phba->sli;
 	LPFC_MBOXQ_t *mbox, *next_mbox;
-	struct lpfc_dmabuf   *mp;
 
 	/* Free memory used in mailbox queue back to mailbox memory pool */
 	list_for_each_entry_safe(mbox, next_mbox, &psli->mboxq, list) {
-		mp = (struct lpfc_dmabuf *)(mbox->ctx_buf);
-		if (mp) {
-			lpfc_mbuf_free(phba, mp->virt, mp->phys);
-			kfree(mp);
-		}
 		list_del(&mbox->list);
-		mempool_free(mbox, phba->mbox_mem_pool);
+		lpfc_mem_free_sli_mbox(phba, mbox);
 	}
 	/* Free memory used in mailbox cmpl list back to mailbox memory pool */
 	list_for_each_entry_safe(mbox, next_mbox, &psli->mboxq_cmpl, list) {
-		mp = (struct lpfc_dmabuf *)(mbox->ctx_buf);
-		if (mp) {
-			lpfc_mbuf_free(phba, mp->virt, mp->phys);
-			kfree(mp);
-		}
 		list_del(&mbox->list);
-		mempool_free(mbox, phba->mbox_mem_pool);
+		lpfc_mem_free_sli_mbox(phba, mbox);
 	}
 	/* Free the active mailbox command back to the mailbox memory pool */
 	spin_lock_irq(&phba->hbalock);
@@ -316,12 +326,7 @@ lpfc_mem_free_all(struct lpfc_hba *phba)
 	spin_unlock_irq(&phba->hbalock);
 	if (psli->mbox_active) {
 		mbox = psli->mbox_active;
-		mp = (struct lpfc_dmabuf *)(mbox->ctx_buf);
-		if (mp) {
-			lpfc_mbuf_free(phba, mp->virt, mp->phys);
-			kfree(mp);
-		}
-		mempool_free(mbox, phba->mbox_mem_pool);
+		lpfc_mem_free_sli_mbox(phba, mbox);
 		psli->mbox_active = NULL;
 	}
 
@@ -344,9 +349,12 @@ lpfc_mem_free_all(struct lpfc_hba *phba)
 		phba->cgn_i = NULL;
 	}
 
-	/* Free RX table */
-	kfree(phba->rxtable);
-	phba->rxtable = NULL;
+	/* Free RX Monitor */
+	if (phba->rx_monitor) {
+		lpfc_rx_monitor_destroy_ring(phba->rx_monitor);
+		kfree(phba->rx_monitor);
+		phba->rx_monitor = NULL;
+	}
 
 	/* Free the iocb lookup array */
 	kfree(psli->iocbq_lookup);
@@ -501,7 +509,7 @@ lpfc_els_hbq_alloc(struct lpfc_hba *phba)
 {
 	struct hbq_dmabuf *hbqbp;
 
-	hbqbp = kzalloc(sizeof(struct hbq_dmabuf), GFP_KERNEL);
+	hbqbp = kzalloc_obj(struct hbq_dmabuf);
 	if (!hbqbp)
 		return NULL;
 
@@ -553,7 +561,7 @@ lpfc_sli4_rb_alloc(struct lpfc_hba *phba)
 {
 	struct hbq_dmabuf *dma_buf;
 
-	dma_buf = kzalloc(sizeof(struct hbq_dmabuf), GFP_KERNEL);
+	dma_buf = kzalloc_obj(struct hbq_dmabuf);
 	if (!dma_buf)
 		return NULL;
 
@@ -611,7 +619,7 @@ lpfc_sli4_nvmet_alloc(struct lpfc_hba *phba)
 {
 	struct rqb_dmabuf *dma_buf;
 
-	dma_buf = kzalloc(sizeof(*dma_buf), GFP_KERNEL);
+	dma_buf = kzalloc_obj(*dma_buf);
 	if (!dma_buf)
 		return NULL;
 

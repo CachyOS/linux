@@ -7,20 +7,19 @@
  * Copyright (c) 2005 Dag Arne Osvik <da@osvik.no>
  */
 
+#include <crypto/des.h>
+#include <crypto/internal/des.h>
 #include <linux/bitops.h>
 #include <linux/compiler.h>
 #include <linux/crypto.h>
 #include <linux/errno.h>
+#include <linux/export.h>
 #include <linux/fips.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/string.h>
 #include <linux/types.h>
-
-#include <asm/unaligned.h>
-
-#include <crypto/des.h>
-#include <crypto/internal/des.h>
+#include <linux/unaligned.h>
 
 #define ROL(x, r) ((x) = rol32((x), (r)))
 #define ROR(x, r) ((x) = ror32((x), (r)))
@@ -899,4 +898,5 @@ void des3_ede_decrypt(const struct des3_ede_ctx *dctx, u8 *dst, const u8 *src)
 }
 EXPORT_SYMBOL_GPL(des3_ede_decrypt);
 
+MODULE_DESCRIPTION("DES & Triple DES EDE Cipher Algorithms");
 MODULE_LICENSE("GPL");

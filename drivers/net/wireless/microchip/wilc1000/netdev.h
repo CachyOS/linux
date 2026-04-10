@@ -13,6 +13,8 @@
 #include <net/ieee80211_radiotap.h>
 #include <linux/if_arp.h>
 #include <linux/gpio/consumer.h>
+#include <linux/rculist.h>
+#include <uapi/linux/if_ether.h>
 
 #include "hif.h"
 #include "wlan.h"
@@ -26,6 +28,13 @@
 
 #define TCP_ACK_FILTER_LINK_SPEED_THRESH	54
 #define DEFAULT_LINK_SPEED			72
+
+#define TX_BACKOFF_WEIGHT_MS			1
+
+#define wilc_for_each_vif(w, v) \
+	struct wilc *_w = w; \
+	list_for_each_entry_srcu(v, &_w->vif_list, list, \
+				 srcu_read_lock_held(&_w->srcu))
 
 struct wilc_wfi_stats {
 	unsigned long rx_packets;
@@ -45,12 +54,6 @@ struct wilc_wfi_key {
 	u32 cipher;
 };
 
-struct wilc_wfi_wep_key {
-	u8 *key;
-	u8 key_len;
-	u8 key_idx;
-};
-
 struct sta_info {
 	u8 sta_associated_bss[WILC_MAX_NUM_STA][ETH_ALEN];
 };
@@ -63,8 +66,6 @@ struct wilc_wfi_p2p_listen_params {
 };
 
 static const u32 wilc_cipher_suites[] = {
-	WLAN_CIPHER_SUITE_WEP40,
-	WLAN_CIPHER_SUITE_WEP104,
 	WLAN_CIPHER_SUITE_TKIP,
 	WLAN_CIPHER_SUITE_CCMP,
 	WLAN_CIPHER_SUITE_AES_CMAC
@@ -132,13 +133,12 @@ struct wilc_priv {
 	struct net_device *dev;
 	struct host_if_drv *hif_drv;
 	struct wilc_pmkid_attr pmkid_list;
-	u8 wep_key[4][WLAN_KEY_LEN_WEP104];
-	u8 wep_key_len[4];
 
 	/* The real interface that the monitor is on */
 	struct net_device *real_ndev;
 	struct wilc_wfi_key *wilc_gtk[WILC_MAX_NUM_STA];
 	struct wilc_wfi_key *wilc_ptk[WILC_MAX_NUM_STA];
+	struct wilc_wfi_key *wilc_igtk[2];
 	u8 wilc_groupkey;
 
 	/* mutexes */
@@ -186,7 +186,6 @@ struct wilc_vif {
 	u8 bssid[ETH_ALEN];
 	struct host_if_drv *hif_drv;
 	struct net_device *ndev;
-	u8 mode;
 	struct timer_list during_ip_timer;
 	struct timer_list periodic_rssi;
 	struct rf_info periodic_stat;
@@ -195,6 +194,7 @@ struct wilc_vif {
 	struct wilc_priv priv;
 	struct list_head list;
 	struct cfg80211_bss *bss;
+	struct cfg80211_external_auth_params auth;
 };
 
 struct wilc_tx_queue_status {
@@ -221,6 +221,13 @@ struct wilc {
 
 	/* protect vif list */
 	struct mutex vif_mutex;
+	/* Sleepable RCU struct to manipulate vif list. Sleepable version is
+	 * needed over the classic RCU version because the driver's current
+	 * design involves some sleeping code while manipulating a vif
+	 * retrieved from vif list (so in a SRCU critical section), like:
+	 * - sending commands to the chip, using info from retrieved vif
+	 * - registering a new monitoring net device
+	 */
 	struct srcu_struct srcu;
 	u8 open_ifcs;
 
@@ -254,6 +261,7 @@ struct wilc {
 	u8 *rx_buffer;
 	u32 rx_buffer_offset;
 	u8 *tx_buffer;
+	u32 *vmm_table;
 
 	struct txq_handle txq[NQUEUES];
 	int txq_entries;
@@ -264,7 +272,6 @@ struct wilc {
 	const struct firmware *firmware;
 
 	struct device *dev;
-	bool suspend_event;
 
 	struct workqueue_struct *hif_workqueue;
 	struct wilc_cfg cfg;
@@ -279,6 +286,7 @@ struct wilc {
 	struct ieee80211_rate bitrates[ARRAY_SIZE(wilc_bitrates)];
 	struct ieee80211_supported_band band;
 	u32 cipher_suites[ARRAY_SIZE(wilc_cipher_suites)];
+	u8 nv_mac_address[ETH_ALEN];
 };
 
 struct wilc_wfi_mon_priv {
@@ -288,7 +296,7 @@ struct wilc_wfi_mon_priv {
 void wilc_frmw_to_host(struct wilc *wilc, u8 *buff, u32 size, u32 pkt_offset);
 void wilc_mac_indicate(struct wilc *wilc);
 void wilc_netdev_cleanup(struct wilc *wilc);
-void wilc_wfi_mgmt_rx(struct wilc *wilc, u8 *buff, u32 size);
+void wilc_wfi_mgmt_rx(struct wilc *wilc, u8 *buff, u32 size, bool is_auth);
 void wilc_wlan_set_bssid(struct net_device *wilc_netdev, const u8 *bssid,
 			 u8 mode);
 struct wilc_vif *wilc_netdev_ifc_init(struct wilc *wl, const char *name,

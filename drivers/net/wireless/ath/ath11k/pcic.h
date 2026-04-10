@@ -12,6 +12,8 @@
 #define ATH11K_PCI_IRQ_CE0_OFFSET	3
 #define ATH11K_PCI_IRQ_DP_OFFSET	14
 
+#define ATH11K_PCI_CE_WAKE_IRQ	2
+
 #define ATH11K_PCI_WINDOW_ENABLE_BIT		0x40000000
 #define ATH11K_PCI_WINDOW_REG_ADDRESS		0x310c
 #define ATH11K_PCI_WINDOW_VALUE_MASK		GENMASK(24, 19)
@@ -43,4 +45,10 @@ int ath11k_pcic_map_service_to_pipe(struct ath11k_base *ab, u16 service_id,
 void ath11k_pcic_ce_irqs_enable(struct ath11k_base *ab);
 void ath11k_pcic_ce_irq_disable_sync(struct ath11k_base *ab);
 int ath11k_pcic_init_msi_config(struct ath11k_base *ab);
+int ath11k_pcic_register_pci_ops(struct ath11k_base *ab,
+				 const struct ath11k_pci_ops *pci_ops);
+int ath11k_pcic_read(struct ath11k_base *ab, void *buf, u32 start, u32 end);
+void ath11k_pci_enable_ce_irqs_except_wake_irq(struct ath11k_base *ab);
+void ath11k_pci_disable_ce_irqs_except_wake_irq(struct ath11k_base *ab);
+
 #endif

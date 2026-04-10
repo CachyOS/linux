@@ -100,7 +100,7 @@ static void intel_bts_dump(struct intel_bts *bts __maybe_unused,
 		else
 			sz = len;
 		printf(".");
-		color_fprintf(stdout, color, "  %08x: ", pos);
+		color_fprintf(stdout, color, "  %08zx: ", pos);
 		for (i = 0; i < sz; i++)
 			color_fprintf(stdout, color, " %02x", buf[i]);
 		for (; i < br_sz; i++)
@@ -275,12 +275,13 @@ static int intel_bts_synth_branch_sample(struct intel_bts_queue *btsq,
 	int ret;
 	struct intel_bts *bts = btsq->bts;
 	union perf_event event;
-	struct perf_sample sample = { .ip = 0, };
+	struct perf_sample sample;
 
 	if (bts->synth_opts.initial_skip &&
 	    bts->num_events++ <= bts->synth_opts.initial_skip)
 		return 0;
 
+	perf_sample__init(&sample, /*all=*/true);
 	sample.ip = le64_to_cpu(branch->from);
 	sample.cpumode = intel_bts_cpumode(bts, sample.ip);
 	sample.pid = btsq->pid;
@@ -312,6 +313,7 @@ static int intel_bts_synth_branch_sample(struct intel_bts_queue *btsq,
 		pr_err("Intel BTS: failed to deliver branch event, error %d\n",
 		       ret);
 
+	perf_sample__exit(&sample);
 	return ret;
 }
 
@@ -456,7 +458,7 @@ static int intel_bts_process_queue(struct intel_bts_queue *btsq, u64 *timestamp)
 		thread = machine__find_thread(btsq->bts->machine, -1,
 					      btsq->tid);
 		if (thread)
-			btsq->pid = thread->pid_;
+			btsq->pid = thread__pid(thread);
 	} else {
 		thread = machine__findnew_thread(btsq->bts->machine, btsq->pid,
 						 btsq->tid);
@@ -591,7 +593,7 @@ static int intel_bts_process_queues(struct intel_bts *bts, u64 timestamp)
 static int intel_bts_process_event(struct perf_session *session,
 				   union perf_event *event,
 				   struct perf_sample *sample,
-				   struct perf_tool *tool)
+				   const struct perf_tool *tool)
 {
 	struct intel_bts *bts = container_of(session->auxtrace, struct intel_bts,
 					     auxtrace);
@@ -634,7 +636,7 @@ static int intel_bts_process_event(struct perf_session *session,
 
 static int intel_bts_process_auxtrace_event(struct perf_session *session,
 					    union perf_event *event,
-					    struct perf_tool *tool __maybe_unused)
+					    const struct perf_tool *tool __maybe_unused)
 {
 	struct intel_bts *bts = container_of(session->auxtrace, struct intel_bts,
 					     auxtrace);
@@ -675,7 +677,7 @@ static int intel_bts_process_auxtrace_event(struct perf_session *session,
 }
 
 static int intel_bts_flush(struct perf_session *session,
-			   struct perf_tool *tool __maybe_unused)
+			   const struct perf_tool *tool __maybe_unused)
 {
 	struct intel_bts *bts = container_of(session->auxtrace, struct intel_bts,
 					     auxtrace);
@@ -737,35 +739,6 @@ static bool intel_bts_evsel_is_auxtrace(struct perf_session *session,
 	return evsel->core.attr.type == bts->pmu_type;
 }
 
-struct intel_bts_synth {
-	struct perf_tool dummy_tool;
-	struct perf_session *session;
-};
-
-static int intel_bts_event_synth(struct perf_tool *tool,
-				 union perf_event *event,
-				 struct perf_sample *sample __maybe_unused,
-				 struct machine *machine __maybe_unused)
-{
-	struct intel_bts_synth *intel_bts_synth =
-			container_of(tool, struct intel_bts_synth, dummy_tool);
-
-	return perf_session__deliver_synth_event(intel_bts_synth->session,
-						 event, NULL);
-}
-
-static int intel_bts_synth_event(struct perf_session *session,
-				 struct perf_event_attr *attr, u64 id)
-{
-	struct intel_bts_synth intel_bts_synth;
-
-	memset(&intel_bts_synth, 0, sizeof(struct intel_bts_synth));
-	intel_bts_synth.session = session;
-
-	return perf_event__synthesize_attr(&intel_bts_synth.dummy_tool, attr, 1,
-					   &id, intel_bts_event_synth);
-}
-
 static int intel_bts_synth_events(struct intel_bts *bts,
 				  struct perf_session *session)
 {
@@ -804,9 +777,7 @@ static int intel_bts_synth_events(struct intel_bts *bts,
 	attr.sample_id_all = evsel->core.attr.sample_id_all;
 	attr.read_format = evsel->core.attr.read_format;
 
-	id = evsel->core.id[0] + 1000000000;
-	if (!id)
-		id = 1;
+	id = auxtrace_synth_id_range_start(evsel);
 
 	if (bts->synth_opts.branches) {
 		attr.config = PERF_COUNT_HW_BRANCH_INSTRUCTIONS;
@@ -814,7 +785,7 @@ static int intel_bts_synth_events(struct intel_bts *bts,
 		attr.sample_type |= PERF_SAMPLE_ADDR;
 		pr_debug("Synthesizing 'branches' event with id %" PRIu64 " sample type %#" PRIx64 "\n",
 			 id, (u64)attr.sample_type);
-		err = intel_bts_synth_event(session, &attr, id);
+		err = perf_session__deliver_synth_attr_event(session, &attr, id);
 		if (err) {
 			pr_err("%s: failed to synthesize 'branches' event type\n",
 			       __func__);
@@ -837,7 +808,7 @@ static int intel_bts_synth_events(struct intel_bts *bts,
 static const char * const intel_bts_info_fmts[] = {
 	[INTEL_BTS_PMU_TYPE]		= "  PMU Type           %"PRId64"\n",
 	[INTEL_BTS_TIME_SHIFT]		= "  Time Shift         %"PRIu64"\n",
-	[INTEL_BTS_TIME_MULT]		= "  Time Muliplier     %"PRIu64"\n",
+	[INTEL_BTS_TIME_MULT]		= "  Time Multiplier    %"PRIu64"\n",
 	[INTEL_BTS_TIME_ZERO]		= "  Time Zero          %"PRIu64"\n",
 	[INTEL_BTS_CAP_USER_TIME_ZERO]	= "  Cap Time Zero      %"PRId64"\n",
 	[INTEL_BTS_SNAPSHOT_MODE]	= "  Snapshot mode      %"PRId64"\n",

@@ -30,9 +30,8 @@ else
 fi
 scenarios="`echo $scenariosarg | sed -e "s/\<CFLIST\>/$defaultconfigs/g"`"
 
-T=/tmp/config2latex.sh.$$
+T=`mktemp -d /tmp/config2latex.sh.XXXXXX`
 trap 'rm -rf $T' 0
-mkdir $T
 
 cat << '---EOF---' >> $T/p.awk
 END	{
@@ -43,7 +42,7 @@ do
 	grep -v '^#' < $i | grep -v '^ *$' > $T/p
 	if test -r $i.boot
 	then
-		tr -s ' ' '\012' < $i.boot | grep -v '^#' >> $T/p
+		sed -e 's/#.*$//' < $i.boot | tr -s ' ' '\012' >> $T/p
 	fi
 	sed -e 's/^[^=]*$/&=?/' < $T/p |
 	sed -e 's/^\([^=]*\)=\(.*\)$/\tp["\1:'"$i"'"] = "\2";\n\tc["\1"] = 1;/' >> $T/p.awk

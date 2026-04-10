@@ -63,7 +63,7 @@ int snd_pt2258_reset(struct snd_pt2258 *pt)
 
       __error:
 	snd_i2c_unlock(pt->i2c_bus);
-	snd_printk(KERN_ERR "PT2258 reset failed\n");
+	dev_err(pt->card->dev, "PT2258 reset failed\n");
 	return -EIO;
 }
 
@@ -80,7 +80,7 @@ static int pt2258_stereo_volume_info(struct snd_kcontrol *kcontrol,
 static int pt2258_stereo_volume_get(struct snd_kcontrol *kcontrol,
 				    struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_pt2258 *pt = kcontrol->private_data;
+	struct snd_pt2258 *pt = snd_kcontrol_chip(kcontrol);
 	int base = kcontrol->private_value;
 
 	/* chip does not support register reads */
@@ -92,7 +92,7 @@ static int pt2258_stereo_volume_get(struct snd_kcontrol *kcontrol,
 static int pt2258_stereo_volume_put(struct snd_kcontrol *kcontrol,
 				    struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_pt2258 *pt = kcontrol->private_data;
+	struct snd_pt2258 *pt = snd_kcontrol_chip(kcontrol);
 	int base = kcontrol->private_value;
 	unsigned char bytes[2];
 	int val0, val1;
@@ -124,7 +124,7 @@ static int pt2258_stereo_volume_put(struct snd_kcontrol *kcontrol,
 
       __error:
 	snd_i2c_unlock(pt->i2c_bus);
-	snd_printk(KERN_ERR "PT2258 access failed\n");
+	dev_err(pt->card->dev, "PT2258 access failed\n");
 	return -EIO;
 }
 
@@ -133,7 +133,7 @@ static int pt2258_stereo_volume_put(struct snd_kcontrol *kcontrol,
 static int pt2258_switch_get(struct snd_kcontrol *kcontrol,
 			     struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_pt2258 *pt = kcontrol->private_data;
+	struct snd_pt2258 *pt = snd_kcontrol_chip(kcontrol);
 
 	ucontrol->value.integer.value[0] = !pt->mute;
 	return 0;
@@ -142,7 +142,7 @@ static int pt2258_switch_get(struct snd_kcontrol *kcontrol,
 static int pt2258_switch_put(struct snd_kcontrol *kcontrol,
 			     struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_pt2258 *pt = kcontrol->private_data;
+	struct snd_pt2258 *pt = snd_kcontrol_chip(kcontrol);
 	unsigned char bytes[2];
 	int val;
 
@@ -161,7 +161,7 @@ static int pt2258_switch_put(struct snd_kcontrol *kcontrol,
 
       __error:
 	snd_i2c_unlock(pt->i2c_bus);
-	snd_printk(KERN_ERR "PT2258 access failed 2\n");
+	dev_err(pt->card->dev, "PT2258 access failed 2\n");
 	return -EIO;
 }
 

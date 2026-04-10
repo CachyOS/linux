@@ -127,7 +127,7 @@ void aq_nic_cfg_start(struct aq_nic_s *self)
 
 	cfg->irq_type = aq_pci_func_get_irq_type(self);
 
-	if ((cfg->irq_type == AQ_HW_IRQ_LEGACY) ||
+	if ((cfg->irq_type == AQ_HW_IRQ_INTX) ||
 	    (cfg->aq_hw_caps->vecs == 1U) ||
 	    (cfg->vecs == 1U)) {
 		cfg->is_rss = 0U;
@@ -254,7 +254,7 @@ static void aq_nic_service_task(struct work_struct *work)
 
 static void aq_nic_service_timer_cb(struct timer_list *t)
 {
-	struct aq_nic_s *self = from_timer(self, t, service_timer);
+	struct aq_nic_s *self = timer_container_of(self, t, service_timer);
 
 	mod_timer(&self->service_timer,
 		  jiffies + AQ_CFG_SERVICE_TIMER_INTERVAL);
@@ -264,13 +264,11 @@ static void aq_nic_service_timer_cb(struct timer_list *t)
 
 static void aq_nic_polling_timer_cb(struct timer_list *t)
 {
-	struct aq_nic_s *self = from_timer(self, t, polling_timer);
-	struct aq_vec_s *aq_vec = NULL;
+	struct aq_nic_s *self = timer_container_of(self, t, polling_timer);
 	unsigned int i = 0U;
 
-	for (i = 0U, aq_vec = self->aq_vec[0];
-		self->aq_vecs > i; ++i, aq_vec = self->aq_vec[i])
-		aq_vec_isr(i, (void *)aq_vec);
+	for (i = 0U; self->aq_vecs > i; ++i)
+		aq_vec_isr(i, (void *)self->aq_vec[i]);
 
 	mod_timer(&self->polling_timer, jiffies +
 		  AQ_CFG_POLLING_TIMER_INTERVAL);
@@ -386,6 +384,11 @@ void aq_nic_ndev_init(struct aq_nic_s *self)
 	self->ndev->mtu = aq_nic_cfg->mtu - ETH_HLEN;
 	self->ndev->max_mtu = aq_hw_caps->mtu - ETH_FCS_LEN - ETH_HLEN;
 
+	self->ndev->xdp_features = NETDEV_XDP_ACT_BASIC |
+				   NETDEV_XDP_ACT_REDIRECT |
+				   NETDEV_XDP_ACT_NDO_XMIT |
+				   NETDEV_XDP_ACT_RX_SG |
+				   NETDEV_XDP_ACT_NDO_XMIT_SG;
 }
 
 void aq_nic_set_tx_ring(struct aq_nic_s *self, unsigned int idx,
@@ -698,9 +701,6 @@ unsigned int aq_nic_map_skb(struct aq_nic_s *self, struct sk_buff *skb,
 		} else if (l4proto == IPPROTO_UDP) {
 			dx_buff->is_gso_udp = 1U;
 			dx_buff->len_l4 = sizeof(struct udphdr);
-			/* UDP GSO Hardware does not replace packet length. */
-			udp_hdr(skb)->len = htons(dx_buff->mss +
-						  dx_buff->len_l4);
 		} else {
 			WARN_ONCE(true, "Bad GSO mode");
 			goto exit;
@@ -895,6 +895,8 @@ int aq_nic_xmit(struct aq_nic_s *self, struct sk_buff *skb)
 
 	frags = aq_nic_map_skb(self, skb, ring);
 
+	skb_tx_timestamp(skb);
+
 	if (likely(frags)) {
 		err = self->aq_hw_ops->hw_ring_tx_xmit(self->aq_hw,
 						       ring, frags);
@@ -1014,7 +1016,6 @@ int aq_nic_get_regs_count(struct aq_nic_s *self)
 
 u64 *aq_nic_get_stats(struct aq_nic_s *self, u64 *data)
 {
-	struct aq_vec_s *aq_vec = NULL;
 	struct aq_stats_s *stats;
 	unsigned int count = 0U;
 	unsigned int i = 0U;
@@ -1064,11 +1065,11 @@ u64 *aq_nic_get_stats(struct aq_nic_s *self, u64 *data)
 	data += i;
 
 	for (tc = 0U; tc < self->aq_nic_cfg.tcs; tc++) {
-		for (i = 0U, aq_vec = self->aq_vec[0];
-		     aq_vec && self->aq_vecs > i;
-		     ++i, aq_vec = self->aq_vec[i]) {
+		for (i = 0U; self->aq_vecs > i; ++i) {
+			if (!self->aq_vec[i])
+				break;
 			data += count;
-			count = aq_vec_get_sw_stats(aq_vec, tc, data);
+			count = aq_vec_get_sw_stats(self->aq_vec[i], tc, data);
 		}
 	}
 
@@ -1382,27 +1383,25 @@ int aq_nic_set_loopback(struct aq_nic_s *self)
 
 int aq_nic_stop(struct aq_nic_s *self)
 {
-	struct aq_vec_s *aq_vec = NULL;
 	unsigned int i = 0U;
 
 	netif_tx_disable(self->ndev);
 	netif_carrier_off(self->ndev);
 
-	del_timer_sync(&self->service_timer);
+	timer_delete_sync(&self->service_timer);
 	cancel_work_sync(&self->service_task);
 
 	self->aq_hw_ops->hw_irq_disable(self->aq_hw, AQ_CFG_IRQ_MASK);
 
 	if (self->aq_nic_cfg.is_polling)
-		del_timer_sync(&self->polling_timer);
+		timer_delete_sync(&self->polling_timer);
 	else
 		aq_pci_func_free_irqs(self);
 
 	aq_ptp_irq_free(self);
 
-	for (i = 0U, aq_vec = self->aq_vec[0];
-		self->aq_vecs > i; ++i, aq_vec = self->aq_vec[i])
-		aq_vec_stop(aq_vec);
+	for (i = 0U; self->aq_vecs > i; ++i)
+		aq_vec_stop(self->aq_vec[i]);
 
 	aq_ptp_ring_stop(self);
 
@@ -1441,7 +1440,9 @@ void aq_nic_deinit(struct aq_nic_s *self, bool link_down)
 	aq_ptp_ring_free(self);
 	aq_ptp_free(self);
 
-	if (likely(self->aq_fw_ops->deinit) && link_down) {
+	/* May be invoked during hot unplug. */
+	if (pci_device_is_present(self->pdev) &&
+	    likely(self->aq_fw_ops->deinit) && link_down) {
 		mutex_lock(&self->fwreq_mutex);
 		self->aq_fw_ops->deinit(self->aq_hw);
 		mutex_unlock(&self->fwreq_mutex);

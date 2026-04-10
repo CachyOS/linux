@@ -115,7 +115,7 @@ static int ali_c2_cable_detect(struct ata_port *ap)
  *	fix that later on. Also ensure we do not do UDMA on WDC drives
  */
 
-static unsigned long ali_20_filter(struct ata_device *adev, unsigned long mask)
+static unsigned int ali_20_filter(struct ata_device *adev, unsigned int mask)
 {
 	char model_num[ATA_ID_PROD_LEN + 1];
 	/* No DMA on anything but a disk for now */
@@ -355,7 +355,7 @@ static void ali_c2_c3_postreset(struct ata_link *link, unsigned int *classes)
 	ata_sff_postreset(link, classes);
 }
 
-static struct scsi_host_template ali_sht = {
+static const struct scsi_host_template ali_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -392,11 +392,11 @@ static struct ata_port_operations ali_20_port_ops = {
  *	Port operations for DMA capable ALi with cable detect
  */
 static struct ata_port_operations ali_c2_port_ops = {
-	.inherits	= &ali_dma_base_ops,
-	.check_atapi_dma = ali_check_atapi_dma,
-	.cable_detect	= ali_c2_cable_detect,
-	.dev_config	= ali_lock_sectors,
-	.postreset	= ali_c2_c3_postreset,
+	.inherits		= &ali_dma_base_ops,
+	.check_atapi_dma	= ali_check_atapi_dma,
+	.cable_detect		= ali_c2_cable_detect,
+	.dev_config		= ali_lock_sectors,
+	.reset.postreset	= ali_c2_c3_postreset,
 };
 
 /*

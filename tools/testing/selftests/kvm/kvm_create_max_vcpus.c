@@ -6,13 +6,10 @@
  *
  * Test for KVM_CAP_MAX_VCPUS and KVM_CAP_MAX_VCPU_ID.
  */
-
-#define _GNU_SOURCE /* for program_invocation_short_name */
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/resource.h>
 
 #include "test_util.h"
 
@@ -28,11 +25,11 @@ void test_vcpu_creation(int first_vcpu_id, int num_vcpus)
 	pr_info("Testing creating %d vCPUs, with IDs %d...%d.\n",
 		num_vcpus, first_vcpu_id, first_vcpu_id + num_vcpus - 1);
 
-	vm = vm_create(VM_MODE_DEFAULT, DEFAULT_GUEST_PHY_PAGES, O_RDWR);
+	vm = vm_create_barebones();
 
 	for (i = first_vcpu_id; i < first_vcpu_id + num_vcpus; i++)
 		/* This asserts that the vCPU was created. */
-		vm_vcpu_add(vm, i);
+		__vm_vcpu_add(vm, i);
 
 	kvm_vm_free(vm);
 }
@@ -41,38 +38,11 @@ int main(int argc, char *argv[])
 {
 	int kvm_max_vcpu_id = kvm_check_cap(KVM_CAP_MAX_VCPU_ID);
 	int kvm_max_vcpus = kvm_check_cap(KVM_CAP_MAX_VCPUS);
-	/*
-	 * Number of file descriptors reqired, KVM_CAP_MAX_VCPUS for vCPU fds +
-	 * an arbitrary number for everything else.
-	 */
-	int nr_fds_wanted = kvm_max_vcpus + 100;
-	struct rlimit rl;
 
 	pr_info("KVM_CAP_MAX_VCPU_ID: %d\n", kvm_max_vcpu_id);
 	pr_info("KVM_CAP_MAX_VCPUS: %d\n", kvm_max_vcpus);
 
-	/*
-	 * Check that we're allowed to open nr_fds_wanted file descriptors and
-	 * try raising the limits if needed.
-	 */
-	TEST_ASSERT(!getrlimit(RLIMIT_NOFILE, &rl), "getrlimit() failed!");
-
-	if (rl.rlim_cur < nr_fds_wanted) {
-		rl.rlim_cur = nr_fds_wanted;
-		if (rl.rlim_max < nr_fds_wanted) {
-			int old_rlim_max = rl.rlim_max;
-			rl.rlim_max = nr_fds_wanted;
-
-			int r = setrlimit(RLIMIT_NOFILE, &rl);
-			if (r < 0) {
-				printf("RLIMIT_NOFILE hard limit is too low (%d, wanted %d)\n",
-				       old_rlim_max, nr_fds_wanted);
-				exit(KSFT_SKIP);
-			}
-		} else {
-			TEST_ASSERT(!setrlimit(RLIMIT_NOFILE, &rl), "setrlimit() failed!");
-		}
-	}
+	kvm_set_files_rlimit(kvm_max_vcpus);
 
 	/*
 	 * Upstream KVM prior to 4.8 does not support KVM_CAP_MAX_VCPU_ID.

@@ -120,15 +120,13 @@ static int u8500_hsem_probe(struct platform_device *pdev)
 					 pdata->base_id, num_locks);
 }
 
-static int u8500_hsem_remove(struct platform_device *pdev)
+static void u8500_hsem_remove(struct platform_device *pdev)
 {
 	struct hwspinlock_device *bank = platform_get_drvdata(pdev);
 	void __iomem *io_base = bank->lock[0].priv - HSEM_REGISTER_OFFSET;
 
 	/* clear all interrupts */
 	writel(0xFFFF, io_base + HSEM_ICRALL);
-
-	return 0;
 }
 
 static struct platform_driver u8500_hsem_driver = {

@@ -41,13 +41,13 @@ nva3_bo_move_copy(struct nouveau_channel *chan, struct ttm_buffer_object *bo,
 		  struct ttm_resource *old_reg, struct ttm_resource *new_reg)
 {
 	struct nouveau_mem *mem = nouveau_mem(old_reg);
-	struct nvif_push *push = chan->chan.push;
+	struct nvif_push *push = &chan->chan.push;
 	u64 src_offset = mem->vma[0].addr;
 	u64 dst_offset = mem->vma[1].addr;
-	u32 page_count = new_reg->num_pages;
+	u32 page_count = PFN_UP(new_reg->size);
 	int ret;
 
-	page_count = new_reg->num_pages;
+	page_count = PFN_UP(new_reg->size);
 	while (page_count) {
 		int line_count = (page_count > 8191) ? 8191 : page_count;
 

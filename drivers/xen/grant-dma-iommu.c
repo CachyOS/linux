@@ -16,8 +16,15 @@ struct grant_dma_iommu_device {
 	struct iommu_device iommu;
 };
 
-/* Nothing is really needed here */
-static const struct iommu_ops grant_dma_iommu_ops;
+static struct iommu_device *grant_dma_iommu_probe_device(struct device *dev)
+{
+	return ERR_PTR(-ENODEV);
+}
+
+/* Nothing is really needed here except a dummy probe_device callback */
+static const struct iommu_ops grant_dma_iommu_ops = {
+	.probe_device = grant_dma_iommu_probe_device,
+};
 
 static const struct of_device_id grant_dma_iommu_of_match[] = {
 	{ .compatible = "xen,grant-dma" },
@@ -44,14 +51,12 @@ static int grant_dma_iommu_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int grant_dma_iommu_remove(struct platform_device *pdev)
+static void grant_dma_iommu_remove(struct platform_device *pdev)
 {
 	struct grant_dma_iommu_device *mmu = platform_get_drvdata(pdev);
 
 	platform_set_drvdata(pdev, NULL);
 	iommu_device_unregister(&mmu->iommu);
-
-	return 0;
 }
 
 static struct platform_driver grant_dma_iommu_driver = {

@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #ifndef __ISYS_DMA_PRIVATE_H_INCLUDED__
@@ -34,8 +25,6 @@ void isys2401_dma_reg_store(const isys2401_dma_ID_t	dma_id,
 
 	reg_loc = ISYS2401_DMA_BASE[dma_id] + (reg * sizeof(hrt_data));
 
-	ia_css_print("isys dma store at addr(0x%x) val(%u)\n", reg_loc,
-		     (unsigned int)value);
 	ia_css_device_store_uint32(reg_loc, value);
 }
 

@@ -254,7 +254,7 @@ static void send_act_open_req(struct cxgbi_sock *csk, struct sk_buff *skb,
 	} else if (is_t5(lldi->adapter_type)) {
 		struct cpl_t5_act_open_req *req =
 				(struct cpl_t5_act_open_req *)skb->head;
-		u32 isn = (prandom_u32() & ~7UL) - 1;
+		u32 isn = (get_random_u32() & ~7UL) - 1;
 
 		INIT_TP_WR(req, 0);
 		OPCODE_TID(req) = cpu_to_be32(MK_OPCODE_TID(CPL_ACT_OPEN_REQ,
@@ -282,7 +282,7 @@ static void send_act_open_req(struct cxgbi_sock *csk, struct sk_buff *skb,
 	} else {
 		struct cpl_t6_act_open_req *req =
 				(struct cpl_t6_act_open_req *)skb->head;
-		u32 isn = (prandom_u32() & ~7UL) - 1;
+		u32 isn = (get_random_u32() & ~7UL) - 1;
 
 		INIT_TP_WR(req, 0);
 		OPCODE_TID(req) = cpu_to_be32(MK_OPCODE_TID(CPL_ACT_OPEN_REQ,
@@ -930,7 +930,7 @@ static void do_act_establish(struct cxgbi_device *cdev, struct sk_buff *skb)
 			csk, csk->state, csk->flags, csk->tid);
 
 	if (csk->retry_timer.function) {
-		del_timer(&csk->retry_timer);
+		timer_delete(&csk->retry_timer);
 		csk->retry_timer.function = NULL;
 	}
 
@@ -988,7 +988,7 @@ static int act_open_rpl_status_to_errno(int status)
 static void csk_act_open_retry_timer(struct timer_list *t)
 {
 	struct sk_buff *skb = NULL;
-	struct cxgbi_sock *csk = from_timer(csk, t, retry_timer);
+	struct cxgbi_sock *csk = timer_container_of(csk, t, retry_timer);
 	struct cxgb4_lld_info *lldi = cxgbi_cdev_priv(csk->cdev);
 	void (*send_act_open_func)(struct cxgbi_sock *, struct sk_buff *,
 				   struct l2t_entry *);

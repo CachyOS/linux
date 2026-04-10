@@ -51,7 +51,6 @@
 #include <linux/mutex.h>
 #include <linux/netdevice.h>
 #include <linux/pci.h>
-#include <linux/aer.h>
 #include <linux/rtnetlink.h>
 #include <linux/sched.h>
 #include <linux/seq_file.h>
@@ -389,7 +388,7 @@ static int cxgb4_mac_sync(struct net_device *netdev, const u8 *mac_addr)
 	 * list and program it
 	 */
 	if (uhash || mhash) {
-		new_entry = kzalloc(sizeof(*new_entry), GFP_ATOMIC);
+		new_entry = kzalloc_obj(*new_entry, GFP_ATOMIC);
 		if (!new_entry)
 			return -ENOMEM;
 		ether_addr_copy(new_entry->addr, mac_addr);
@@ -479,7 +478,7 @@ int cxgb4_change_mac(struct port_info *pi, unsigned int viid,
 				goto set_hash;
 			}
 		}
-		new_entry = kzalloc(sizeof(*new_entry), GFP_KERNEL);
+		new_entry = kzalloc_obj(*new_entry);
 		if (!new_entry)
 			return -ENOMEM;
 		ether_addr_copy(new_entry->addr, addr);
@@ -1176,7 +1175,7 @@ static u16 cxgb_select_queue(struct net_device *dev, struct sk_buff *skb,
 		txq = netdev_pick_tx(dev, skb, sb_dev);
 		if (xfrm_offload(skb) || is_ptp_enabled(skb, dev) ||
 		    skb->encapsulation ||
-		    cxgb4_is_ktls_skb(skb) ||
+		    tls_is_skb_tx_device_offloaded(skb) ||
 		    (proto != IPPROTO_TCP && proto != IPPROTO_UDP))
 			txq = txq % pi->nqsets;
 
@@ -1331,7 +1330,7 @@ static int cxgb4_port_mirror_alloc_queues(struct net_device *dev)
 	if (s->mirror_rxq[pi->port_id])
 		return 0;
 
-	mirror_rxq = kcalloc(pi->nmirrorqsets, sizeof(*mirror_rxq), GFP_KERNEL);
+	mirror_rxq = kzalloc_objs(*mirror_rxq, pi->nmirrorqsets);
 	if (!mirror_rxq)
 		return -ENOMEM;
 
@@ -1800,7 +1799,10 @@ void cxgb4_remove_tid(struct tid_info *t, unsigned int chan, unsigned int tid,
 	struct adapter *adap = container_of(t, struct adapter, tids);
 	struct sk_buff *skb;
 
-	WARN_ON(tid_out_of_range(&adap->tids, tid));
+	if (tid_out_of_range(&adap->tids, tid)) {
+		dev_err(adap->pdev_dev, "tid %d out of range\n", tid);
+		return;
+	}
 
 	if (t->tid_tab[tid - adap->tids.tid_base]) {
 		t->tid_tab[tid - adap->tids.tid_base] = NULL;
@@ -2188,18 +2190,6 @@ void cxgb4_get_tcp_stats(struct pci_dev *pdev, struct tp_tcp_stats *v4,
 	spin_unlock(&adap->stats_lock);
 }
 EXPORT_SYMBOL(cxgb4_get_tcp_stats);
-
-void cxgb4_iscsi_init(struct net_device *dev, unsigned int tag_mask,
-		      const unsigned int *pgsz_order)
-{
-	struct adapter *adap = netdev2adap(dev);
-
-	t4_write_reg(adap, ULP_RX_ISCSI_TAGMASK_A, tag_mask);
-	t4_write_reg(adap, ULP_RX_ISCSI_PSZ_A, HPZ0_V(pgsz_order[0]) |
-		     HPZ1_V(pgsz_order[1]) | HPZ2_V(pgsz_order[2]) |
-		     HPZ3_V(pgsz_order[3]));
-}
-EXPORT_SYMBOL(cxgb4_iscsi_init);
 
 int cxgb4_flush_eq_cache(struct net_device *dev)
 {
@@ -3052,12 +3042,87 @@ static void cxgb_get_stats(struct net_device *dev,
 		ns->rx_length_errors + stats.rx_len_err + ns->rx_fifo_errors;
 }
 
+static int cxgb_hwtstamp_get(struct net_device *dev,
+			     struct kernel_hwtstamp_config *config)
+{
+	struct port_info *pi = netdev_priv(dev);
+
+	*config = pi->tstamp_config;
+	return 0;
+}
+
+static int cxgb_hwtstamp_set(struct net_device *dev,
+			     struct kernel_hwtstamp_config *config,
+			     struct netlink_ext_ack *extack)
+{
+	struct port_info *pi = netdev_priv(dev);
+	struct adapter *adapter = pi->adapter;
+
+	if (is_t4(adapter->params.chip)) {
+		/* For T4 Adapters */
+		switch (config->rx_filter) {
+		case HWTSTAMP_FILTER_NONE:
+			pi->rxtstamp = false;
+			break;
+		case HWTSTAMP_FILTER_ALL:
+			pi->rxtstamp = true;
+			break;
+		default:
+			return -ERANGE;
+		}
+		pi->tstamp_config = *config;
+		return 0;
+	}
+
+	switch (config->tx_type) {
+	case HWTSTAMP_TX_OFF:
+	case HWTSTAMP_TX_ON:
+		break;
+	default:
+		return -ERANGE;
+	}
+
+	switch (config->rx_filter) {
+	case HWTSTAMP_FILTER_NONE:
+		pi->rxtstamp = false;
+		break;
+	case HWTSTAMP_FILTER_PTP_V1_L4_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_L4_EVENT:
+		cxgb4_ptprx_timestamping(pi, pi->port_id, PTP_TS_L4);
+		break;
+	case HWTSTAMP_FILTER_PTP_V2_EVENT:
+		cxgb4_ptprx_timestamping(pi, pi->port_id, PTP_TS_L2_L4);
+		break;
+	case HWTSTAMP_FILTER_ALL:
+	case HWTSTAMP_FILTER_PTP_V1_L4_SYNC:
+	case HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ:
+	case HWTSTAMP_FILTER_PTP_V2_L4_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ:
+		pi->rxtstamp = true;
+		break;
+	default:
+		return -ERANGE;
+	}
+
+	if (config->tx_type == HWTSTAMP_TX_OFF &&
+	    config->rx_filter == HWTSTAMP_FILTER_NONE) {
+		if (cxgb4_ptp_txtype(adapter, pi->port_id) >= 0)
+			pi->ptp_enable = false;
+	}
+
+	if (config->rx_filter != HWTSTAMP_FILTER_NONE) {
+		if (cxgb4_ptp_redirect_rx_packet(adapter, pi) >= 0)
+			pi->ptp_enable = true;
+	}
+	pi->tstamp_config = *config;
+	return 0;
+}
+
 static int cxgb_ioctl(struct net_device *dev, struct ifreq *req, int cmd)
 {
 	unsigned int mbox;
 	int ret = 0, prtad, devad;
 	struct port_info *pi = netdev_priv(dev);
-	struct adapter *adapter = pi->adapter;
 	struct mii_ioctl_data *data = (struct mii_ioctl_data *)&req->ifr_data;
 
 	switch (cmd) {
@@ -3086,81 +3151,6 @@ static int cxgb_ioctl(struct net_device *dev, struct ifreq *req, int cmd)
 			ret = t4_mdio_wr(pi->adapter, mbox, prtad, devad,
 					 data->reg_num, data->val_in);
 		break;
-	case SIOCGHWTSTAMP:
-		return copy_to_user(req->ifr_data, &pi->tstamp_config,
-				    sizeof(pi->tstamp_config)) ?
-			-EFAULT : 0;
-	case SIOCSHWTSTAMP:
-		if (copy_from_user(&pi->tstamp_config, req->ifr_data,
-				   sizeof(pi->tstamp_config)))
-			return -EFAULT;
-
-		if (!is_t4(adapter->params.chip)) {
-			switch (pi->tstamp_config.tx_type) {
-			case HWTSTAMP_TX_OFF:
-			case HWTSTAMP_TX_ON:
-				break;
-			default:
-				return -ERANGE;
-			}
-
-			switch (pi->tstamp_config.rx_filter) {
-			case HWTSTAMP_FILTER_NONE:
-				pi->rxtstamp = false;
-				break;
-			case HWTSTAMP_FILTER_PTP_V1_L4_EVENT:
-			case HWTSTAMP_FILTER_PTP_V2_L4_EVENT:
-				cxgb4_ptprx_timestamping(pi, pi->port_id,
-							 PTP_TS_L4);
-				break;
-			case HWTSTAMP_FILTER_PTP_V2_EVENT:
-				cxgb4_ptprx_timestamping(pi, pi->port_id,
-							 PTP_TS_L2_L4);
-				break;
-			case HWTSTAMP_FILTER_ALL:
-			case HWTSTAMP_FILTER_PTP_V1_L4_SYNC:
-			case HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ:
-			case HWTSTAMP_FILTER_PTP_V2_L4_SYNC:
-			case HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ:
-				pi->rxtstamp = true;
-				break;
-			default:
-				pi->tstamp_config.rx_filter =
-					HWTSTAMP_FILTER_NONE;
-				return -ERANGE;
-			}
-
-			if ((pi->tstamp_config.tx_type == HWTSTAMP_TX_OFF) &&
-			    (pi->tstamp_config.rx_filter ==
-				HWTSTAMP_FILTER_NONE)) {
-				if (cxgb4_ptp_txtype(adapter, pi->port_id) >= 0)
-					pi->ptp_enable = false;
-			}
-
-			if (pi->tstamp_config.rx_filter !=
-				HWTSTAMP_FILTER_NONE) {
-				if (cxgb4_ptp_redirect_rx_packet(adapter,
-								 pi) >= 0)
-					pi->ptp_enable = true;
-			}
-		} else {
-			/* For T4 Adapters */
-			switch (pi->tstamp_config.rx_filter) {
-			case HWTSTAMP_FILTER_NONE:
-			pi->rxtstamp = false;
-			break;
-			case HWTSTAMP_FILTER_ALL:
-			pi->rxtstamp = true;
-			break;
-			default:
-			pi->tstamp_config.rx_filter =
-			HWTSTAMP_FILTER_NONE;
-			return -ERANGE;
-			}
-		}
-		return copy_to_user(req->ifr_data, &pi->tstamp_config,
-				    sizeof(pi->tstamp_config)) ?
-			-EFAULT : 0;
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -3181,7 +3171,7 @@ static int cxgb_change_mtu(struct net_device *dev, int new_mtu)
 	ret = t4_set_rxmode(pi->adapter, pi->adapter->mbox, pi->viid,
 			    pi->viid_mirror, new_mtu, -1, -1, -1, -1, true);
 	if (!ret)
-		dev->mtu = new_mtu;
+		WRITE_ONCE(dev->mtu, new_mtu);
 	return ret;
 }
 
@@ -3247,7 +3237,7 @@ static int cxgb4_mgmt_set_vf_mac(struct net_device *dev, int vf, u8 *mac)
 
 	dev_info(pi->adapter->pdev_dev,
 		 "Setting MAC %pM on VF %d\n", mac, vf);
-	ret = t4_set_vf_mac_acl(adap, vf + 1, 1, mac);
+	ret = t4_set_vf_mac_acl(adap, vf + 1, pi->lport, 1, mac);
 	if (!ret)
 		ether_addr_copy(adap->vfinfo[vf].vf_mac_addr, mac);
 	return ret;
@@ -3307,7 +3297,7 @@ static int cxgb4_mgmt_set_vf_rate(struct net_device *dev, int vf,
 	}
 
 	if (max_tx_rate == 0) {
-		/* unbind VF to to any Traffic Class */
+		/* unbind VF to any Traffic Class */
 		fw_pfvf =
 		    (FW_PARAMS_MNEM_V(FW_PARAMS_MNEM_PFVF) |
 		     FW_PARAMS_PARAM_X_V(FW_PARAMS_PARAM_PFVF_SCHEDCLASS_ETH));
@@ -3495,7 +3485,7 @@ static int cxgb_set_tx_maxrate(struct net_device *dev, int index, u32 rate)
 	struct adapter *adap = pi->adapter;
 	struct ch_sched_queue qe = { 0 };
 	struct ch_sched_params p = { 0 };
-	struct sched_class *e;
+	struct ch_sched_class *e;
 	u32 req_rate;
 	int err = 0;
 
@@ -3885,6 +3875,8 @@ static const struct net_device_ops cxgb4_netdev_ops = {
 	.ndo_setup_tc         = cxgb_setup_tc,
 	.ndo_features_check   = cxgb_features_check,
 	.ndo_fix_features     = cxgb_fix_features,
+	.ndo_hwtstamp_get     = cxgb_hwtstamp_get,
+	.ndo_hwtstamp_set     = cxgb_hwtstamp_set,
 };
 
 #ifdef CONFIG_PCI_IOV
@@ -3903,8 +3895,8 @@ static void cxgb4_mgmt_get_drvinfo(struct net_device *dev,
 {
 	struct adapter *adapter = netdev2adap(dev);
 
-	strlcpy(info->driver, cxgb4_driver_name, sizeof(info->driver));
-	strlcpy(info->bus_info, pci_name(adapter->pdev),
+	strscpy(info->driver, cxgb4_driver_name, sizeof(info->driver));
+	strscpy(info->bus_info, pci_name(adapter->pdev),
 		sizeof(info->bus_info));
 }
 
@@ -4065,7 +4057,7 @@ static int adap_config_hma(struct adapter *adapter)
 
 	page_size = HMA_PAGE_SIZE;
 	page_order = HMA_PAGE_ORDER;
-	adapter->hma.sgt = kzalloc(sizeof(*adapter->hma.sgt), GFP_KERNEL);
+	adapter->hma.sgt = kzalloc_obj(*adapter->hma.sgt);
 	if (unlikely(!adapter->hma.sgt)) {
 		dev_err(adapter->pdev_dev, "HMA SG table allocation failed\n");
 		return -ENOMEM;
@@ -4105,8 +4097,7 @@ static int adap_config_hma(struct adapter *adapter)
 	}
 	adapter->hma.flags |= HMA_DMA_MAPPED_FLAG;
 
-	adapter->hma.phy_addr = kcalloc(sgt->nents, sizeof(dma_addr_t),
-					GFP_KERNEL);
+	adapter->hma.phy_addr = kzalloc_objs(dma_addr_t, sgt->nents);
 	if (unlikely(!adapter->hma.phy_addr))
 		goto free_hma;
 
@@ -4820,13 +4811,13 @@ static int adap_init0(struct adapter *adap, int vpd_skip)
 		/* allocate memory to read the header of the firmware on the
 		 * card
 		 */
-		card_fw = kvzalloc(sizeof(*card_fw), GFP_KERNEL);
+		card_fw = kvzalloc_obj(*card_fw);
 		if (!card_fw) {
 			ret = -ENOMEM;
 			goto bye;
 		}
 
-		/* Get FW from from /lib/firmware/ */
+		/* Get FW from /lib/firmware/ */
 		ret = request_firmware(&fw, fw_info->fw_mod_name,
 				       adap->pdev_dev);
 		if (ret < 0) {
@@ -5030,15 +5021,14 @@ static int adap_init0(struct adapter *adap, int vpd_skip)
 	adap->sge.egr_sz = val[0] - adap->sge.egr_start + 1;
 	adap->sge.ingr_sz = val[1] - adap->sge.ingr_start + 1;
 
-	adap->sge.egr_map = kcalloc(adap->sge.egr_sz,
-				    sizeof(*adap->sge.egr_map), GFP_KERNEL);
+	adap->sge.egr_map = kzalloc_objs(*adap->sge.egr_map, adap->sge.egr_sz);
 	if (!adap->sge.egr_map) {
 		ret = -ENOMEM;
 		goto bye;
 	}
 
-	adap->sge.ingr_map = kcalloc(adap->sge.ingr_sz,
-				     sizeof(*adap->sge.ingr_map), GFP_KERNEL);
+	adap->sge.ingr_map = kzalloc_objs(*adap->sge.ingr_map,
+					  adap->sge.ingr_sz);
 	if (!adap->sge.ingr_map) {
 		ret = -ENOMEM;
 		goto bye;
@@ -5047,28 +5037,24 @@ static int adap_init0(struct adapter *adap, int vpd_skip)
 	/* Allocate the memory for the vaious egress queue bitmaps
 	 * ie starving_fl, txq_maperr and blocked_fl.
 	 */
-	adap->sge.starving_fl =	kcalloc(BITS_TO_LONGS(adap->sge.egr_sz),
-					sizeof(long), GFP_KERNEL);
+	adap->sge.starving_fl = bitmap_zalloc(adap->sge.egr_sz, GFP_KERNEL);
 	if (!adap->sge.starving_fl) {
 		ret = -ENOMEM;
 		goto bye;
 	}
 
-	adap->sge.txq_maperr = kcalloc(BITS_TO_LONGS(adap->sge.egr_sz),
-				       sizeof(long), GFP_KERNEL);
+	adap->sge.txq_maperr = bitmap_zalloc(adap->sge.egr_sz, GFP_KERNEL);
 	if (!adap->sge.txq_maperr) {
 		ret = -ENOMEM;
 		goto bye;
 	}
 
 #ifdef CONFIG_DEBUG_FS
-	adap->sge.blocked_fl = kcalloc(BITS_TO_LONGS(adap->sge.egr_sz),
-				       sizeof(long), GFP_KERNEL);
+	adap->sge.blocked_fl = bitmap_zalloc(adap->sge.egr_sz, GFP_KERNEL);
 	if (!adap->sge.blocked_fl) {
 		ret = -ENOMEM;
 		goto bye;
 	}
-	bitmap_zero(adap->sge.blocked_fl, adap->sge.egr_sz);
 #endif
 
 	params[0] = FW_PARAM_PFVF(CLIP_START);
@@ -5417,10 +5403,10 @@ bye:
 	adap_free_hma_mem(adap);
 	kfree(adap->sge.egr_map);
 	kfree(adap->sge.ingr_map);
-	kfree(adap->sge.starving_fl);
-	kfree(adap->sge.txq_maperr);
+	bitmap_free(adap->sge.starving_fl);
+	bitmap_free(adap->sge.txq_maperr);
 #ifdef CONFIG_DEBUG_FS
-	kfree(adap->sge.blocked_fl);
+	bitmap_free(adap->sge.blocked_fl);
 #endif
 	if (ret != -ETIMEDOUT && ret != -EIO)
 		t4_fw_bye(adap, adap->mbox);
@@ -5470,7 +5456,6 @@ static pci_ers_result_t eeh_slot_reset(struct pci_dev *pdev)
 
 	if (!adap) {
 		pci_restore_state(pdev);
-		pci_save_state(pdev);
 		return PCI_ERS_RESULT_RECOVERED;
 	}
 
@@ -5485,7 +5470,6 @@ static pci_ers_result_t eeh_slot_reset(struct pci_dev *pdev)
 
 	pci_set_master(pdev);
 	pci_restore_state(pdev);
-	pci_save_state(pdev);
 
 	if (t4_wait_dev_ready(adap->regs) < 0)
 		return PCI_ERS_RESULT_DISCONNECT;
@@ -5850,12 +5834,11 @@ static int alloc_msix_info(struct adapter *adap, u32 num_vec)
 {
 	struct msix_info *msix_info;
 
-	msix_info = kcalloc(num_vec, sizeof(*msix_info), GFP_KERNEL);
+	msix_info = kzalloc_objs(*msix_info, num_vec);
 	if (!msix_info)
 		return -ENOMEM;
 
-	adap->msix_bmap.msix_bmap = kcalloc(BITS_TO_LONGS(num_vec),
-					    sizeof(long), GFP_KERNEL);
+	adap->msix_bmap.msix_bmap = bitmap_zalloc(num_vec, GFP_KERNEL);
 	if (!adap->msix_bmap.msix_bmap) {
 		kfree(msix_info);
 		return -ENOMEM;
@@ -5870,7 +5853,7 @@ static int alloc_msix_info(struct adapter *adap, u32 num_vec)
 
 static void free_msix_info(struct adapter *adap)
 {
-	kfree(adap->msix_bmap.msix_bmap);
+	bitmap_free(adap->msix_bmap.msix_bmap);
 	kfree(adap->msix_info);
 }
 
@@ -5950,7 +5933,7 @@ static int enable_msix(struct adapter *adap)
 	want += EXTRA_VECS;
 	need += EXTRA_VECS;
 
-	entries = kmalloc_array(want, sizeof(*entries), GFP_KERNEL);
+	entries = kmalloc_objs(*entries, want);
 	if (!entries)
 		return -ENOMEM;
 
@@ -6189,10 +6172,10 @@ static void free_some_resources(struct adapter *adapter)
 	cxgb4_cleanup_ethtool_filters(adapter);
 	kfree(adapter->sge.egr_map);
 	kfree(adapter->sge.ingr_map);
-	kfree(adapter->sge.starving_fl);
-	kfree(adapter->sge.txq_maperr);
+	bitmap_free(adapter->sge.starving_fl);
+	bitmap_free(adapter->sge.txq_maperr);
 #ifdef CONFIG_DEBUG_FS
-	kfree(adapter->sge.blocked_fl);
+	bitmap_free(adapter->sge.blocked_fl);
 #endif
 	disable_msi(adapter);
 
@@ -6365,8 +6348,8 @@ static int cxgb4_iov_configure(struct pci_dev *pdev, int num_vfs)
 			return err;
 		}
 		/* Allocate and set up VF Information. */
-		adap->vfinfo = kcalloc(pci_sriov_get_totalvfs(pdev),
-				       sizeof(struct vf_info), GFP_KERNEL);
+		adap->vfinfo = kzalloc_objs(struct vf_info,
+					    pci_sriov_get_totalvfs(pdev));
 		if (!adap->vfinfo) {
 			unregister_netdev(adap->port[0]);
 			free_netdev(adap->port[0]);
@@ -6495,21 +6478,23 @@ static const struct tlsdev_ops cxgb4_ktls_ops = {
 
 #if IS_ENABLED(CONFIG_CHELSIO_IPSEC_INLINE)
 
-static int cxgb4_xfrm_add_state(struct xfrm_state *x)
+static int cxgb4_xfrm_add_state(struct net_device *dev,
+				struct xfrm_state *x,
+				struct netlink_ext_ack *extack)
 {
-	struct adapter *adap = netdev2adap(x->xso.dev);
+	struct adapter *adap = netdev2adap(dev);
 	int ret;
 
 	if (!mutex_trylock(&uld_mutex)) {
-		dev_dbg(adap->pdev_dev,
-			"crypto uld critical resource is under use\n");
+		NL_SET_ERR_MSG_MOD(extack, "crypto uld critical resource is under use");
 		return -EBUSY;
 	}
 	ret = chcr_offload_state(adap, CXGB4_XFRMDEV_OPS);
 	if (ret)
 		goto out_unlock;
 
-	ret = adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_add(x);
+	ret = adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_add(dev, x,
+									extack);
 
 out_unlock:
 	mutex_unlock(&uld_mutex);
@@ -6517,9 +6502,9 @@ out_unlock:
 	return ret;
 }
 
-static void cxgb4_xfrm_del_state(struct xfrm_state *x)
+static void cxgb4_xfrm_del_state(struct net_device *dev, struct xfrm_state *x)
 {
-	struct adapter *adap = netdev2adap(x->xso.dev);
+	struct adapter *adap = netdev2adap(dev);
 
 	if (!mutex_trylock(&uld_mutex)) {
 		dev_dbg(adap->pdev_dev,
@@ -6529,15 +6514,15 @@ static void cxgb4_xfrm_del_state(struct xfrm_state *x)
 	if (chcr_offload_state(adap, CXGB4_XFRMDEV_OPS))
 		goto out_unlock;
 
-	adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_delete(x);
+	adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_delete(dev, x);
 
 out_unlock:
 	mutex_unlock(&uld_mutex);
 }
 
-static void cxgb4_xfrm_free_state(struct xfrm_state *x)
+static void cxgb4_xfrm_free_state(struct net_device *dev, struct xfrm_state *x)
 {
-	struct adapter *adap = netdev2adap(x->xso.dev);
+	struct adapter *adap = netdev2adap(dev);
 
 	if (!mutex_trylock(&uld_mutex)) {
 		dev_dbg(adap->pdev_dev,
@@ -6547,35 +6532,18 @@ static void cxgb4_xfrm_free_state(struct xfrm_state *x)
 	if (chcr_offload_state(adap, CXGB4_XFRMDEV_OPS))
 		goto out_unlock;
 
-	adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_free(x);
+	adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_free(dev, x);
 
 out_unlock:
 	mutex_unlock(&uld_mutex);
-}
-
-static bool cxgb4_ipsec_offload_ok(struct sk_buff *skb, struct xfrm_state *x)
-{
-	struct adapter *adap = netdev2adap(x->xso.dev);
-	bool ret = false;
-
-	if (!mutex_trylock(&uld_mutex)) {
-		dev_dbg(adap->pdev_dev,
-			"crypto uld critical resource is under use\n");
-		return ret;
-	}
-	if (chcr_offload_state(adap, CXGB4_XFRMDEV_OPS))
-		goto out_unlock;
-
-	ret = adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_offload_ok(skb, x);
-
-out_unlock:
-	mutex_unlock(&uld_mutex);
-	return ret;
 }
 
 static void cxgb4_advance_esn_state(struct xfrm_state *x)
 {
 	struct adapter *adap = netdev2adap(x->xso.dev);
+
+	if (x->xso.dir != XFRM_DEV_OFFLOAD_IN)
+		return;
 
 	if (!mutex_trylock(&uld_mutex)) {
 		dev_dbg(adap->pdev_dev,
@@ -6595,7 +6563,6 @@ static const struct xfrmdev_ops cxgb4_xfrmdev_ops = {
 	.xdo_dev_state_add      = cxgb4_xfrm_add_state,
 	.xdo_dev_state_delete   = cxgb4_xfrm_del_state,
 	.xdo_dev_state_free     = cxgb4_xfrm_free_state,
-	.xdo_dev_offload_ok     = cxgb4_ipsec_offload_ok,
 	.xdo_dev_state_advance_esn = cxgb4_advance_esn_state,
 };
 
@@ -6635,7 +6602,7 @@ static int init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto out_disable_device;
 	}
 
-	adapter = kzalloc(sizeof(*adapter), GFP_KERNEL);
+	adapter = kzalloc_obj(*adapter);
 	if (!adapter) {
 		err = -ENOMEM;
 		goto out_unmap_bar0;
@@ -6692,7 +6659,6 @@ static int init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto out_free_adapter;
 	}
 
-	pci_enable_pcie_error_reporting(pdev);
 	pci_set_master(pdev);
 	pci_save_state(pdev);
 	adap_idx++;
@@ -7097,7 +7063,6 @@ fw_attach_fail:
  out_unmap_bar0:
 	iounmap(regs);
  out_disable_device:
-	pci_disable_pcie_error_reporting(pdev);
 	pci_disable_device(pdev);
  out_release_regions:
 	pci_release_regions(pdev);
@@ -7176,7 +7141,6 @@ static void remove_one(struct pci_dev *pdev)
 	}
 #endif
 	iounmap(adapter->regs);
-	pci_disable_pcie_error_reporting(pdev);
 	if ((adapter->flags & CXGB4_DEV_ENABLED)) {
 		pci_disable_device(pdev);
 		adapter->flags &= ~CXGB4_DEV_ENABLED;

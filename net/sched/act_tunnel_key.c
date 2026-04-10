@@ -16,25 +16,24 @@
 #include <net/pkt_sched.h>
 #include <net/dst.h>
 #include <net/pkt_cls.h>
+#include <net/tc_wrapper.h>
 
 #include <linux/tc_act/tc_tunnel_key.h>
 #include <net/tc_act/tc_tunnel_key.h>
 
-static unsigned int tunnel_key_net_id;
 static struct tc_action_ops act_tunnel_key_ops;
 
-static int tunnel_key_act(struct sk_buff *skb, const struct tc_action *a,
-			  struct tcf_result *res)
+TC_INDIRECT_SCOPE int tunnel_key_act(struct sk_buff *skb,
+				     const struct tc_action *a,
+				     struct tcf_result *res)
 {
 	struct tcf_tunnel_key *t = to_tunnel_key(a);
 	struct tcf_tunnel_key_params *params;
-	int action;
 
 	params = rcu_dereference_bh(t->params);
 
 	tcf_lastuse_update(&t->tcf_tm);
 	tcf_action_update_bstats(&t->common, skb);
-	action = READ_ONCE(t->tcf_action);
 
 	switch (params->tcft_action) {
 	case TCA_TUNNEL_KEY_ACT_RELEASE:
@@ -50,7 +49,7 @@ static int tunnel_key_act(struct sk_buff *skb, const struct tc_action *a,
 		break;
 	}
 
-	return action;
+	return params->action;
 }
 
 static const struct nla_policy
@@ -67,7 +66,7 @@ geneve_opt_policy[TCA_TUNNEL_KEY_ENC_OPT_GENEVE_MAX + 1] = {
 	[TCA_TUNNEL_KEY_ENC_OPT_GENEVE_CLASS]	   = { .type = NLA_U16 },
 	[TCA_TUNNEL_KEY_ENC_OPT_GENEVE_TYPE]	   = { .type = NLA_U8 },
 	[TCA_TUNNEL_KEY_ENC_OPT_GENEVE_DATA]	   = { .type = NLA_BINARY,
-						       .len = 128 },
+						       .len = 127 },
 };
 
 static const struct nla_policy
@@ -229,7 +228,7 @@ static int tunnel_key_copy_opts(const struct nlattr *nla, u8 *dst,
 	nla_for_each_attr(attr, head, len, rem) {
 		switch (nla_type(attr)) {
 		case TCA_TUNNEL_KEY_ENC_OPTS_GENEVE:
-			if (type && type != TUNNEL_GENEVE_OPT) {
+			if (type && type != IP_TUNNEL_GENEVE_OPT_BIT) {
 				NL_SET_ERR_MSG(extack, "Duplicate type for geneve options");
 				return -EINVAL;
 			}
@@ -246,7 +245,7 @@ static int tunnel_key_copy_opts(const struct nlattr *nla, u8 *dst,
 				dst_len -= opt_len;
 				dst += opt_len;
 			}
-			type = TUNNEL_GENEVE_OPT;
+			type = IP_TUNNEL_GENEVE_OPT_BIT;
 			break;
 		case TCA_TUNNEL_KEY_ENC_OPTS_VXLAN:
 			if (type) {
@@ -258,7 +257,7 @@ static int tunnel_key_copy_opts(const struct nlattr *nla, u8 *dst,
 			if (opt_len < 0)
 				return opt_len;
 			opts_len += opt_len;
-			type = TUNNEL_VXLAN_OPT;
+			type = IP_TUNNEL_VXLAN_OPT_BIT;
 			break;
 		case TCA_TUNNEL_KEY_ENC_OPTS_ERSPAN:
 			if (type) {
@@ -270,7 +269,7 @@ static int tunnel_key_copy_opts(const struct nlattr *nla, u8 *dst,
 			if (opt_len < 0)
 				return opt_len;
 			opts_len += opt_len;
-			type = TUNNEL_ERSPAN_OPT;
+			type = IP_TUNNEL_ERSPAN_OPT_BIT;
 			break;
 		}
 	}
@@ -301,7 +300,7 @@ static int tunnel_key_opts_set(struct nlattr *nla, struct ip_tunnel_info *info,
 	switch (nla_type(nla_data(nla))) {
 	case TCA_TUNNEL_KEY_ENC_OPTS_GENEVE:
 #if IS_ENABLED(CONFIG_INET)
-		info->key.tun_flags |= TUNNEL_GENEVE_OPT;
+		__set_bit(IP_TUNNEL_GENEVE_OPT_BIT, info->key.tun_flags);
 		return tunnel_key_copy_opts(nla, ip_tunnel_info_opts(info),
 					    opts_len, extack);
 #else
@@ -309,7 +308,7 @@ static int tunnel_key_opts_set(struct nlattr *nla, struct ip_tunnel_info *info,
 #endif
 	case TCA_TUNNEL_KEY_ENC_OPTS_VXLAN:
 #if IS_ENABLED(CONFIG_INET)
-		info->key.tun_flags |= TUNNEL_VXLAN_OPT;
+		__set_bit(IP_TUNNEL_VXLAN_OPT_BIT, info->key.tun_flags);
 		return tunnel_key_copy_opts(nla, ip_tunnel_info_opts(info),
 					    opts_len, extack);
 #else
@@ -317,7 +316,7 @@ static int tunnel_key_opts_set(struct nlattr *nla, struct ip_tunnel_info *info,
 #endif
 	case TCA_TUNNEL_KEY_ENC_OPTS_ERSPAN:
 #if IS_ENABLED(CONFIG_INET)
-		info->key.tun_flags |= TUNNEL_ERSPAN_OPT;
+		__set_bit(IP_TUNNEL_ERSPAN_OPT_BIT, info->key.tun_flags);
 		return tunnel_key_copy_opts(nla, ip_tunnel_info_opts(info),
 					    opts_len, extack);
 #else
@@ -358,10 +357,11 @@ static int tunnel_key_init(struct net *net, struct nlattr *nla,
 			   struct tcf_proto *tp, u32 act_flags,
 			   struct netlink_ext_ack *extack)
 {
-	struct tc_action_net *tn = net_generic(net, tunnel_key_net_id);
+	struct tc_action_net *tn = net_generic(net, act_tunnel_key_ops.net_id);
 	bool bind = act_flags & TCA_ACT_FLAGS_BIND;
 	struct nlattr *tb[TCA_TUNNEL_KEY_MAX + 1];
 	struct tcf_tunnel_key_params *params_new;
+	IP_TUNNEL_DECLARE_FLAGS(flags) = { };
 	struct metadata_dst *metadata = NULL;
 	struct tcf_chain *goto_ch = NULL;
 	struct tc_tunnel_key *parm;
@@ -370,7 +370,6 @@ static int tunnel_key_init(struct net *net, struct nlattr *nla,
 	__be16 dst_port = 0;
 	__be64 key_id = 0;
 	int opts_len = 0;
-	__be16 flags = 0;
 	u8 tos, ttl;
 	int ret = 0;
 	u32 index;
@@ -400,7 +399,7 @@ static int tunnel_key_init(struct net *net, struct nlattr *nla,
 		return err;
 	exists = err;
 	if (exists && bind)
-		return 0;
+		return ACT_P_BOUND;
 
 	switch (parm->t_action) {
 	case TCA_TUNNEL_KEY_ACT_RELEASE:
@@ -411,13 +410,16 @@ static int tunnel_key_init(struct net *net, struct nlattr *nla,
 
 			key32 = nla_get_be32(tb[TCA_TUNNEL_KEY_ENC_KEY_ID]);
 			key_id = key32_to_tunnel_id(key32);
-			flags = TUNNEL_KEY;
+			__set_bit(IP_TUNNEL_KEY_BIT, flags);
 		}
 
-		flags |= TUNNEL_CSUM;
+		__set_bit(IP_TUNNEL_CSUM_BIT, flags);
 		if (tb[TCA_TUNNEL_KEY_NO_CSUM] &&
 		    nla_get_u8(tb[TCA_TUNNEL_KEY_NO_CSUM]))
-			flags &= ~TUNNEL_CSUM;
+			__clear_bit(IP_TUNNEL_CSUM_BIT, flags);
+
+		if (nla_get_flag(tb[TCA_TUNNEL_KEY_NO_FRAG]))
+			__set_bit(IP_TUNNEL_DONT_FRAGMENT_BIT, flags);
 
 		if (tb[TCA_TUNNEL_KEY_ENC_DST_PORT])
 			dst_port = nla_get_be16(tb[TCA_TUNNEL_KEY_ENC_DST_PORT]);
@@ -528,6 +530,7 @@ static int tunnel_key_init(struct net *net, struct nlattr *nla,
 	params_new->tcft_action = parm->t_action;
 	params_new->tcft_enc_metadata = metadata;
 
+	params_new->action = parm->action;
 	spin_lock_bh(&t->tcf_lock);
 	goto_ch = tcf_action_set_ctrlact(*a, parm->action, goto_ch);
 	params_new = rcu_replace_pointer(t->params, params_new,
@@ -567,8 +570,8 @@ static void tunnel_key_release(struct tc_action *a)
 static int tunnel_key_geneve_opts_dump(struct sk_buff *skb,
 				       const struct ip_tunnel_info *info)
 {
+	const u8 *src = ip_tunnel_info_opts(info);
 	int len = info->options_len;
-	u8 *src = (u8 *)(info + 1);
 	struct nlattr *start;
 
 	start = nla_nest_start_noflag(skb, TCA_TUNNEL_KEY_ENC_OPTS_GENEVE);
@@ -576,7 +579,7 @@ static int tunnel_key_geneve_opts_dump(struct sk_buff *skb,
 		return -EMSGSIZE;
 
 	while (len > 0) {
-		struct geneve_opt *opt = (struct geneve_opt *)src;
+		const struct geneve_opt *opt = (const struct geneve_opt *)src;
 
 		if (nla_put_be16(skb, TCA_TUNNEL_KEY_ENC_OPT_GENEVE_CLASS,
 				 opt->opt_class) ||
@@ -599,7 +602,7 @@ static int tunnel_key_geneve_opts_dump(struct sk_buff *skb,
 static int tunnel_key_vxlan_opts_dump(struct sk_buff *skb,
 				      const struct ip_tunnel_info *info)
 {
-	struct vxlan_metadata *md = (struct vxlan_metadata *)(info + 1);
+	const struct vxlan_metadata *md = ip_tunnel_info_opts(info);
 	struct nlattr *start;
 
 	start = nla_nest_start_noflag(skb, TCA_TUNNEL_KEY_ENC_OPTS_VXLAN);
@@ -618,7 +621,7 @@ static int tunnel_key_vxlan_opts_dump(struct sk_buff *skb,
 static int tunnel_key_erspan_opts_dump(struct sk_buff *skb,
 				       const struct ip_tunnel_info *info)
 {
-	struct erspan_metadata *md = (struct erspan_metadata *)(info + 1);
+	const struct erspan_metadata *md = ip_tunnel_info_opts(info);
 	struct nlattr *start;
 
 	start = nla_nest_start_noflag(skb, TCA_TUNNEL_KEY_ENC_OPTS_ERSPAN);
@@ -659,15 +662,15 @@ static int tunnel_key_opts_dump(struct sk_buff *skb,
 	if (!start)
 		return -EMSGSIZE;
 
-	if (info->key.tun_flags & TUNNEL_GENEVE_OPT) {
+	if (test_bit(IP_TUNNEL_GENEVE_OPT_BIT, info->key.tun_flags)) {
 		err = tunnel_key_geneve_opts_dump(skb, info);
 		if (err)
 			goto err_out;
-	} else if (info->key.tun_flags & TUNNEL_VXLAN_OPT) {
+	} else if (test_bit(IP_TUNNEL_VXLAN_OPT_BIT, info->key.tun_flags)) {
 		err = tunnel_key_vxlan_opts_dump(skb, info);
 		if (err)
 			goto err_out;
-	} else if (info->key.tun_flags & TUNNEL_ERSPAN_OPT) {
+	} else if (test_bit(IP_TUNNEL_ERSPAN_OPT_BIT, info->key.tun_flags)) {
 		err = tunnel_key_erspan_opts_dump(skb, info);
 		if (err)
 			goto err_out;
@@ -722,10 +725,9 @@ static int tunnel_key_dump(struct sk_buff *skb, struct tc_action *a,
 	};
 	struct tcf_t tm;
 
-	spin_lock_bh(&t->tcf_lock);
-	params = rcu_dereference_protected(t->params,
-					   lockdep_is_held(&t->tcf_lock));
-	opt.action   = t->tcf_action;
+	rcu_read_lock();
+	params = rcu_dereference(t->params);
+	opt.action   = params->action;
 	opt.t_action = params->tcft_action;
 
 	if (nla_put(skb, TCA_TUNNEL_KEY_PARMS, sizeof(opt), &opt))
@@ -737,7 +739,7 @@ static int tunnel_key_dump(struct sk_buff *skb, struct tc_action *a,
 		struct ip_tunnel_key *key = &info->key;
 		__be32 key_id = tunnel_id_to_key32(key->tun_id);
 
-		if (((key->tun_flags & TUNNEL_KEY) &&
+		if ((test_bit(IP_TUNNEL_KEY_BIT, key->tun_flags) &&
 		     nla_put_be32(skb, TCA_TUNNEL_KEY_ENC_KEY_ID, key_id)) ||
 		    tunnel_key_dump_addresses(skb,
 					      &params->tcft_enc_metadata->u.tun_info) ||
@@ -745,7 +747,9 @@ static int tunnel_key_dump(struct sk_buff *skb, struct tc_action *a,
 		      nla_put_be16(skb, TCA_TUNNEL_KEY_ENC_DST_PORT,
 				   key->tp_dst)) ||
 		    nla_put_u8(skb, TCA_TUNNEL_KEY_NO_CSUM,
-			       !(key->tun_flags & TUNNEL_CSUM)) ||
+			       !test_bit(IP_TUNNEL_CSUM_BIT, key->tun_flags)) ||
+		    (test_bit(IP_TUNNEL_DONT_FRAGMENT_BIT, key->tun_flags) &&
+		     nla_put_flag(skb, TCA_TUNNEL_KEY_NO_FRAG)) ||
 		    tunnel_key_opts_dump(skb, info))
 			goto nla_put_failure;
 
@@ -760,31 +764,14 @@ static int tunnel_key_dump(struct sk_buff *skb, struct tc_action *a,
 	if (nla_put_64bit(skb, TCA_TUNNEL_KEY_TM, sizeof(tm),
 			  &tm, TCA_TUNNEL_KEY_PAD))
 		goto nla_put_failure;
-	spin_unlock_bh(&t->tcf_lock);
+	rcu_read_unlock();
 
 	return skb->len;
 
 nla_put_failure:
-	spin_unlock_bh(&t->tcf_lock);
+	rcu_read_unlock();
 	nlmsg_trim(skb, b);
 	return -1;
-}
-
-static int tunnel_key_walker(struct net *net, struct sk_buff *skb,
-			     struct netlink_callback *cb, int type,
-			     const struct tc_action_ops *ops,
-			     struct netlink_ext_ack *extack)
-{
-	struct tc_action_net *tn = net_generic(net, tunnel_key_net_id);
-
-	return tcf_generic_walker(tn, skb, cb, type, ops, extack);
-}
-
-static int tunnel_key_search(struct net *net, struct tc_action **a, u32 index)
-{
-	struct tc_action_net *tn = net_generic(net, tunnel_key_net_id);
-
-	return tcf_idr_search(tn, a, index);
 }
 
 static void tcf_tunnel_encap_put_tunnel(void *priv)
@@ -850,28 +837,27 @@ static struct tc_action_ops act_tunnel_key_ops = {
 	.dump		=	tunnel_key_dump,
 	.init		=	tunnel_key_init,
 	.cleanup	=	tunnel_key_release,
-	.walk		=	tunnel_key_walker,
-	.lookup		=	tunnel_key_search,
 	.offload_act_setup =	tcf_tunnel_key_offload_act_setup,
 	.size		=	sizeof(struct tcf_tunnel_key),
 };
+MODULE_ALIAS_NET_ACT("tunnel_key");
 
 static __net_init int tunnel_key_init_net(struct net *net)
 {
-	struct tc_action_net *tn = net_generic(net, tunnel_key_net_id);
+	struct tc_action_net *tn = net_generic(net, act_tunnel_key_ops.net_id);
 
 	return tc_action_net_init(net, tn, &act_tunnel_key_ops);
 }
 
 static void __net_exit tunnel_key_exit_net(struct list_head *net_list)
 {
-	tc_action_net_exit(net_list, tunnel_key_net_id);
+	tc_action_net_exit(net_list, act_tunnel_key_ops.net_id);
 }
 
 static struct pernet_operations tunnel_key_net_ops = {
 	.init = tunnel_key_init_net,
 	.exit_batch = tunnel_key_exit_net,
-	.id   = &tunnel_key_net_id,
+	.id   = &act_tunnel_key_ops.net_id,
 	.size = sizeof(struct tc_action_net),
 };
 

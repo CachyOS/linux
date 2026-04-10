@@ -27,7 +27,7 @@
 #include <linux/connector.h>
 #include <linux/workqueue.h>
 #include <linux/hyperv.h>
-#include <asm/hyperv-tlfs.h>
+#include <hyperv/hvhdk.h>
 
 #include "hyperv_vmbus.h"
 #include "hv_utils_transport.h"
@@ -134,7 +134,7 @@ kvp_register(int reg_value)
 	struct hv_kvp_msg *kvp_msg;
 	char *version;
 
-	kvp_msg = kzalloc(sizeof(*kvp_msg), GFP_KERNEL);
+	kvp_msg = kzalloc_obj(*kvp_msg);
 
 	if (kvp_msg) {
 		version = kvp_msg->body.kvp_register.version;
@@ -385,7 +385,7 @@ kvp_send_key(struct work_struct *dummy)
 	if (kvp_transaction.state != HVUTIL_HOSTMSG_RECEIVED)
 		return;
 
-	message = kzalloc(sizeof(*message), GFP_KERNEL);
+	message = kzalloc_obj(*message);
 	if (!message)
 		return;
 
@@ -655,7 +655,7 @@ void hv_kvp_onchannelcallback(void *context)
 		if (host_negotiatied == NEGO_NOT_STARTED) {
 			host_negotiatied = NEGO_IN_PROGRESS;
 			schedule_delayed_work(&kvp_host_handshake_work,
-				      HV_UTIL_NEGO_TIMEOUT * HZ);
+						secs_to_jiffies(HV_UTIL_NEGO_TIMEOUT));
 		}
 		return;
 	}
@@ -724,7 +724,7 @@ void hv_kvp_onchannelcallback(void *context)
 		 */
 		schedule_work(&kvp_sendkey_work);
 		schedule_delayed_work(&kvp_timeout_work,
-					HV_UTIL_TIMEOUT * HZ);
+				      secs_to_jiffies(HV_UTIL_TIMEOUT));
 
 		return;
 
@@ -767,6 +767,12 @@ hv_kvp_init(struct hv_util_service *srv)
 	 */
 	kvp_transaction.state = HVUTIL_DEVICE_INIT;
 
+	return 0;
+}
+
+int
+hv_kvp_init_transport(void)
+{
 	hvt = hvutil_transport_init(kvp_devname, CN_KVP_IDX, CN_KVP_VAL,
 				    kvp_on_msg, kvp_on_reset);
 	if (!hvt)

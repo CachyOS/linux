@@ -448,10 +448,10 @@ static void fm10k_get_drvinfo(struct net_device *dev,
 {
 	struct fm10k_intfc *interface = netdev_priv(dev);
 
-	strncpy(info->driver, fm10k_driver_name,
-		sizeof(info->driver) - 1);
-	strncpy(info->bus_info, pci_name(interface->pdev),
-		sizeof(info->bus_info) - 1);
+	strscpy(info->driver, fm10k_driver_name,
+		sizeof(info->driver));
+	strscpy(info->bus_info, pci_name(interface->pdev),
+		sizeof(info->bus_info));
 }
 
 static void fm10k_get_pauseparam(struct net_device *dev,
@@ -560,7 +560,7 @@ static int fm10k_set_ringparam(struct net_device *netdev,
 
 	/* allocate temporary buffer to store rings in */
 	i = max_t(int, interface->num_tx_queues, interface->num_rx_queues);
-	temp_ring = vmalloc(array_size(i, sizeof(struct fm10k_ring)));
+	temp_ring = vmalloc_array(i, sizeof(struct fm10k_ring));
 
 	if (!temp_ring) {
 		err = -ENOMEM;
@@ -691,9 +691,11 @@ static int fm10k_set_coalesce(struct net_device *dev,
 	return 0;
 }
 
-static int fm10k_get_rss_hash_opts(struct fm10k_intfc *interface,
-				   struct ethtool_rxnfc *cmd)
+static int fm10k_get_rssh_fields(struct net_device *dev,
+				 struct ethtool_rxfh_fields *cmd)
 {
+	struct fm10k_intfc *interface = netdev_priv(dev);
+
 	cmd->data = 0;
 
 	/* Report default options for RSS on fm10k */
@@ -732,30 +734,18 @@ static int fm10k_get_rss_hash_opts(struct fm10k_intfc *interface,
 	return 0;
 }
 
-static int fm10k_get_rxnfc(struct net_device *dev, struct ethtool_rxnfc *cmd,
-			   u32 __always_unused *rule_locs)
+static u32 fm10k_get_rx_ring_count(struct net_device *dev)
 {
 	struct fm10k_intfc *interface = netdev_priv(dev);
-	int ret = -EOPNOTSUPP;
 
-	switch (cmd->cmd) {
-	case ETHTOOL_GRXRINGS:
-		cmd->data = interface->num_rx_queues;
-		ret = 0;
-		break;
-	case ETHTOOL_GRXFH:
-		ret = fm10k_get_rss_hash_opts(interface, cmd);
-		break;
-	default:
-		break;
-	}
-
-	return ret;
+	return interface->num_rx_queues;
 }
 
-static int fm10k_set_rss_hash_opt(struct fm10k_intfc *interface,
-				  struct ethtool_rxnfc *nfc)
+static int fm10k_set_rssh_fields(struct net_device *dev,
+				 const struct ethtool_rxfh_fields *nfc,
+				 struct netlink_ext_ack *extack)
 {
+	struct fm10k_intfc *interface = netdev_priv(dev);
 	int rss_ipv4_udp = test_bit(FM10K_FLAG_RSS_FIELD_IPV4_UDP,
 				    interface->flags);
 	int rss_ipv6_udp = test_bit(FM10K_FLAG_RSS_FIELD_IPV6_UDP,
@@ -869,22 +859,6 @@ static int fm10k_set_rss_hash_opt(struct fm10k_intfc *interface,
 	}
 
 	return 0;
-}
-
-static int fm10k_set_rxnfc(struct net_device *dev, struct ethtool_rxnfc *cmd)
-{
-	struct fm10k_intfc *interface = netdev_priv(dev);
-	int ret = -EOPNOTSUPP;
-
-	switch (cmd->cmd) {
-	case ETHTOOL_SRXFH:
-		ret = fm10k_set_rss_hash_opt(interface, cmd);
-		break;
-	default:
-		break;
-	}
-
-	return ret;
 }
 
 static int fm10k_mbx_test(struct fm10k_intfc *interface, u64 *data)
@@ -1057,16 +1031,16 @@ static u32 fm10k_get_rssrk_size(struct net_device __always_unused *netdev)
 	return FM10K_RSSRK_SIZE * FM10K_RSSRK_ENTRIES_PER_REG;
 }
 
-static int fm10k_get_rssh(struct net_device *netdev, u32 *indir, u8 *key,
-			  u8 *hfunc)
+static int fm10k_get_rssh(struct net_device *netdev,
+			  struct ethtool_rxfh_param *rxfh)
 {
 	struct fm10k_intfc *interface = netdev_priv(netdev);
+	u8 *key = rxfh->key;
 	int i, err;
 
-	if (hfunc)
-		*hfunc = ETH_RSS_HASH_TOP;
+	rxfh->hfunc = ETH_RSS_HASH_TOP;
 
-	err = fm10k_get_reta(netdev, indir);
+	err = fm10k_get_reta(netdev, rxfh->indir);
 	if (err || !key)
 		return err;
 
@@ -1076,23 +1050,25 @@ static int fm10k_get_rssh(struct net_device *netdev, u32 *indir, u8 *key,
 	return 0;
 }
 
-static int fm10k_set_rssh(struct net_device *netdev, const u32 *indir,
-			  const u8 *key, const u8 hfunc)
+static int fm10k_set_rssh(struct net_device *netdev,
+			  struct ethtool_rxfh_param *rxfh,
+			  struct netlink_ext_ack *extack)
 {
 	struct fm10k_intfc *interface = netdev_priv(netdev);
 	struct fm10k_hw *hw = &interface->hw;
 	int i, err;
 
 	/* We do not allow change in unsupported parameters */
-	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
+	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
+	    rxfh->hfunc != ETH_RSS_HASH_TOP)
 		return -EOPNOTSUPP;
 
-	err = fm10k_set_reta(netdev, indir);
-	if (err || !key)
+	err = fm10k_set_reta(netdev, rxfh->indir);
+	if (err || !rxfh->key)
 		return err;
 
-	for (i = 0; i < FM10K_RSSRK_SIZE; i++, key += 4) {
-		u32 rssrk = le32_to_cpu(*(__le32 *)key);
+	for (i = 0; i < FM10K_RSSRK_SIZE; i++, rxfh->key += 4) {
+		u32 rssrk = le32_to_cpu(*(__le32 *)rxfh->key);
 
 		if (interface->rssrk[i] == rssrk)
 			continue;
@@ -1173,8 +1149,7 @@ static const struct ethtool_ops fm10k_ethtool_ops = {
 	.set_ringparam		= fm10k_set_ringparam,
 	.get_coalesce		= fm10k_get_coalesce,
 	.set_coalesce		= fm10k_set_coalesce,
-	.get_rxnfc		= fm10k_get_rxnfc,
-	.set_rxnfc		= fm10k_set_rxnfc,
+	.get_rx_ring_count	= fm10k_get_rx_ring_count,
 	.get_regs               = fm10k_get_regs,
 	.get_regs_len           = fm10k_get_regs_len,
 	.self_test		= fm10k_self_test,
@@ -1184,6 +1159,8 @@ static const struct ethtool_ops fm10k_ethtool_ops = {
 	.get_rxfh_key_size	= fm10k_get_rssrk_size,
 	.get_rxfh		= fm10k_get_rssh,
 	.set_rxfh		= fm10k_set_rssh,
+	.get_rxfh_fields	= fm10k_get_rssh_fields,
+	.set_rxfh_fields	= fm10k_set_rssh_fields,
 	.get_channels		= fm10k_get_channels,
 	.set_channels		= fm10k_set_channels,
 	.get_ts_info		= ethtool_op_get_ts_info,

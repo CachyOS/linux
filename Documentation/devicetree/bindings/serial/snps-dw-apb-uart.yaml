@@ -11,39 +11,72 @@ maintainers:
 
 allOf:
   - $ref: serial.yaml#
+  - $ref: rs485.yaml#
+
+  - if:
+      properties:
+        compatible:
+          items:
+            - {}
+            - const: renesas,rzn1-uart
+            - const: snps,dw-apb-uart
+    then:
+      properties:
+        dmas: false
+        dma-names: false
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: starfive,jh7110-uart
+    then:
+      properties:
+        resets:
+          minItems: 2
+    else:
+      properties:
+        resets:
+          maxItems: 1
 
 properties:
   compatible:
     oneOf:
       - items:
-          - enum:
-              - renesas,r9a06g032-uart
-              - renesas,r9a06g033-uart
+          - const: renesas,r9a06g032-uart
+          - const: renesas,rzn1-uart
+          - const: snps,dw-apb-uart
+      - items:
+          - const: renesas,r9a06g032-uart
           - const: renesas,rzn1-uart
       - items:
           - enum:
+              - anlogic,dr1v90-uart
+              - brcm,bcm11351-dw-apb-uart
+              - brcm,bcm21664-dw-apb-uart
               - rockchip,px30-uart
               - rockchip,rk1808-uart
               - rockchip,rk3036-uart
               - rockchip,rk3066-uart
+              - rockchip,rk3128-uart
               - rockchip,rk3188-uart
               - rockchip,rk3288-uart
               - rockchip,rk3308-uart
               - rockchip,rk3328-uart
               - rockchip,rk3368-uart
               - rockchip,rk3399-uart
+              - rockchip,rk3506-uart
+              - rockchip,rk3528-uart
+              - rockchip,rk3562-uart
               - rockchip,rk3568-uart
+              - rockchip,rk3576-uart
+              - rockchip,rk3588-uart
               - rockchip,rv1108-uart
-          - const: snps,dw-apb-uart
-      - items:
-          - enum:
-              - brcm,bcm11351-dw-apb-uart
-              - brcm,bcm21664-dw-apb-uart
-          - const: snps,dw-apb-uart
-      - items:
-          - enum:
+              - rockchip,rv1126-uart
+              - sophgo,sg2044-uart
               - starfive,jh7100-hsuart
               - starfive,jh7100-uart
+              - starfive,jh7110-uart
           - const: snps,dw-apb-uart
       - const: snps,dw-apb-uart
 
@@ -64,13 +97,25 @@ properties:
       - const: baudclk
       - const: apb_pclk
 
+  dmas:
+    maxItems: 2
+
+  dma-names:
+    items:
+      - const: tx
+      - const: rx
+
   snps,uart-16550-compatible:
     description: reflects the value of UART_16550_COMPATIBLE configuration
       parameter. Define this if your UART does not implement the busy functionality.
     type: boolean
 
-  resets:
+  power-domains:
     maxItems: 1
+
+  resets:
+    minItems: 1
+    maxItems: 2
 
   reg-shift: true
 
@@ -106,7 +151,6 @@ properties:
 required:
   - compatible
   - reg
-  - interrupts
 
 unevaluatedProperties: false
 

@@ -31,7 +31,6 @@
 #include <linux/dmaengine.h>
 #include <linux/types.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_dma.h>
 #include <linux/mmc/slot-gpio.h>
 
@@ -267,11 +266,18 @@ static inline void buffer_swap32(u32 *buf, int len)
 
 static void mxcmci_swap_buffers(struct mmc_data *data)
 {
-	struct scatterlist *sg;
-	int i;
+	struct sg_mapping_iter sgm;
+	u32 *buf;
 
-	for_each_sg(data->sg, sg, data->sg_len, i)
-		buffer_swap32(sg_virt(sg), sg->length);
+	sg_miter_start(&sgm, data->sg, data->sg_len,
+		       SG_MITER_TO_SG | SG_MITER_FROM_SG);
+
+	while (sg_miter_next(&sgm)) {
+		buf = sgm.addr;
+		buffer_swap32(buf, sgm.length);
+	}
+
+	sg_miter_stop(&sgm);
 }
 #else
 static inline void mxcmci_swap_buffers(struct mmc_data *data) {}
@@ -346,7 +352,7 @@ static void mxcmci_dma_callback(void *data)
 	struct mxcmci_host *host = data;
 	u32 stat;
 
-	del_timer(&host->watchdog);
+	timer_delete(&host->watchdog);
 
 	stat = mxcmci_readl(host, MMC_REG_STATUS);
 
@@ -527,10 +533,9 @@ static int mxcmci_poll_status(struct mxcmci_host *host, u32 mask)
 	} while (1);
 }
 
-static int mxcmci_pull(struct mxcmci_host *host, void *_buf, int bytes)
+static int mxcmci_pull(struct mxcmci_host *host, u32 *buf, int bytes)
 {
 	unsigned int stat;
-	u32 *buf = _buf;
 
 	while (bytes > 3) {
 		stat = mxcmci_poll_status(host,
@@ -556,10 +561,9 @@ static int mxcmci_pull(struct mxcmci_host *host, void *_buf, int bytes)
 	return 0;
 }
 
-static int mxcmci_push(struct mxcmci_host *host, void *_buf, int bytes)
+static int mxcmci_push(struct mxcmci_host *host, u32 *buf, int bytes)
 {
 	unsigned int stat;
-	u32 *buf = _buf;
 
 	while (bytes > 3) {
 		stat = mxcmci_poll_status(host, STATUS_BUF_WRITE_RDY);
@@ -587,31 +591,39 @@ static int mxcmci_push(struct mxcmci_host *host, void *_buf, int bytes)
 static int mxcmci_transfer_data(struct mxcmci_host *host)
 {
 	struct mmc_data *data = host->req->data;
-	struct scatterlist *sg;
-	int stat, i;
+	struct sg_mapping_iter sgm;
+	int stat;
+	u32 *buf;
 
 	host->data = data;
 	host->datasize = 0;
+	sg_miter_start(&sgm, data->sg, data->sg_len,
+		       (data->flags & MMC_DATA_READ) ? SG_MITER_TO_SG : SG_MITER_FROM_SG);
 
 	if (data->flags & MMC_DATA_READ) {
-		for_each_sg(data->sg, sg, data->sg_len, i) {
-			stat = mxcmci_pull(host, sg_virt(sg), sg->length);
+		while (sg_miter_next(&sgm)) {
+			buf = sgm.addr;
+			stat = mxcmci_pull(host, buf, sgm.length);
 			if (stat)
-				return stat;
-			host->datasize += sg->length;
+				goto transfer_error;
+			host->datasize += sgm.length;
 		}
 	} else {
-		for_each_sg(data->sg, sg, data->sg_len, i) {
-			stat = mxcmci_push(host, sg_virt(sg), sg->length);
+		while (sg_miter_next(&sgm)) {
+			buf = sgm.addr;
+			stat = mxcmci_push(host, buf, sgm.length);
 			if (stat)
-				return stat;
-			host->datasize += sg->length;
+				goto transfer_error;
+			host->datasize += sgm.length;
 		}
 		stat = mxcmci_poll_status(host, STATUS_WRITE_OP_DONE);
 		if (stat)
-			return stat;
+			goto transfer_error;
 	}
-	return 0;
+
+transfer_error:
+	sg_miter_stop(&sgm);
+	return stat;
 }
 
 static void mxcmci_datawork(struct work_struct *work)
@@ -725,7 +737,7 @@ static irqreturn_t mxcmci_irq(int irq, void *devid)
 		mxcmci_cmd_done(host, stat);
 
 	if (mxcmci_use_dma(host) && (stat & STATUS_WRITE_OP_DONE)) {
-		del_timer(&host->watchdog);
+		timer_delete(&host->watchdog);
 		mxcmci_data_done(host, stat);
 	}
 
@@ -923,7 +935,7 @@ static void mxcmci_init_card(struct mmc_host *host, struct mmc_card *card)
 	 * One way to prevent this is to only allow 1-bit transfers.
 	 */
 
-	if (is_imx31_mmc(mxcmci) && card->type == MMC_TYPE_SDIO)
+	if (is_imx31_mmc(mxcmci) && mmc_card_sdio(card))
 		host->caps &= ~MMC_CAP_4_BIT_DATA;
 	else
 		host->caps |= MMC_CAP_4_BIT_DATA;
@@ -943,7 +955,7 @@ static bool filter(struct dma_chan *chan, void *param)
 
 static void mxcmci_watchdog(struct timer_list *t)
 {
-	struct mxcmci_host *host = from_timer(host, t, watchdog);
+	struct mxcmci_host *host = timer_container_of(host, t, watchdog);
 	struct mmc_request *req = host->req;
 	unsigned int stat = mxcmci_readl(host, MMC_REG_STATUS);
 
@@ -983,34 +995,31 @@ static int mxcmci_probe(struct platform_device *pdev)
 	struct mxcmci_host *host;
 	struct resource *res;
 	int ret = 0, irq;
-	bool dat3_card_detect = false;
+	bool dat3_card_detect;
 	dma_cap_mask_t mask;
 	struct imxmmc_platform_data *pdata = pdev->dev.platform_data;
 
 	pr_info("i.MX/MPC512x SDHC driver\n");
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
 		return irq;
 
-	mmc = mmc_alloc_host(sizeof(*host), &pdev->dev);
+	mmc = devm_mmc_alloc_host(&pdev->dev, sizeof(*host));
 	if (!mmc)
 		return -ENOMEM;
 
 	host = mmc_priv(mmc);
 
-	host->base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(host->base)) {
-		ret = PTR_ERR(host->base);
-		goto out_free;
-	}
+	host->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+	if (IS_ERR(host->base))
+		return PTR_ERR(host->base);
 
 	host->phys_base = res->start;
 
 	ret = mmc_of_parse(mmc);
 	if (ret)
-		goto out_free;
+		return ret;
 	mmc->ops = &mxcmci_ops;
 
 	/* For devicetree parsing, the bus width is read from devicetree */
@@ -1025,7 +1034,7 @@ static int mxcmci_probe(struct platform_device *pdev)
 	mmc->max_req_size = mmc->max_blk_size * mmc->max_blk_count;
 	mmc->max_seg_size = mmc->max_req_size;
 
-	host->devtype = (enum mxcmci_type)of_device_get_match_data(&pdev->dev);
+	host->devtype = (uintptr_t)of_device_get_match_data(&pdev->dev);
 
 	/* adjust max_segs after devtype detection */
 	if (!is_mpc512x_mmc(host))
@@ -1037,13 +1046,13 @@ static int mxcmci_probe(struct platform_device *pdev)
 
 	if (pdata)
 		dat3_card_detect = pdata->dat3_card_detect;
-	else if (mmc_card_is_removable(mmc)
-			&& !of_property_read_bool(pdev->dev.of_node, "cd-gpios"))
-		dat3_card_detect = true;
+	else
+		dat3_card_detect = mmc_card_is_removable(mmc) &&
+				   !of_property_present(pdev->dev.of_node, "cd-gpios");
 
 	ret = mmc_regulator_get_supply(mmc);
 	if (ret)
-		goto out_free;
+		return ret;
 
 	if (!mmc->ocr_avail) {
 		if (pdata && pdata->ocr_avail)
@@ -1059,20 +1068,16 @@ static int mxcmci_probe(struct platform_device *pdev)
 		host->default_irq_mask = 0;
 
 	host->clk_ipg = devm_clk_get(&pdev->dev, "ipg");
-	if (IS_ERR(host->clk_ipg)) {
-		ret = PTR_ERR(host->clk_ipg);
-		goto out_free;
-	}
+	if (IS_ERR(host->clk_ipg))
+		return PTR_ERR(host->clk_ipg);
 
 	host->clk_per = devm_clk_get(&pdev->dev, "per");
-	if (IS_ERR(host->clk_per)) {
-		ret = PTR_ERR(host->clk_per);
-		goto out_free;
-	}
+	if (IS_ERR(host->clk_per))
+		return PTR_ERR(host->clk_per);
 
 	ret = clk_prepare_enable(host->clk_per);
 	if (ret)
-		goto out_free;
+		return ret;
 
 	ret = clk_prepare_enable(host->clk_ipg);
 	if (ret)
@@ -1143,7 +1148,9 @@ static int mxcmci_probe(struct platform_device *pdev)
 
 	timer_setup(&host->watchdog, mxcmci_watchdog, 0);
 
-	mmc_add_host(mmc);
+	ret = mmc_add_host(mmc);
+	if (ret)
+		goto out_free_dma;
 
 	return 0;
 
@@ -1156,13 +1163,10 @@ out_clk_put:
 out_clk_per_put:
 	clk_disable_unprepare(host->clk_per);
 
-out_free:
-	mmc_free_host(mmc);
-
 	return ret;
 }
 
-static int mxcmci_remove(struct platform_device *pdev)
+static void mxcmci_remove(struct platform_device *pdev)
 {
 	struct mmc_host *mmc = platform_get_drvdata(pdev);
 	struct mxcmci_host *host = mmc_priv(mmc);
@@ -1177,10 +1181,6 @@ static int mxcmci_remove(struct platform_device *pdev)
 
 	clk_disable_unprepare(host->clk_per);
 	clk_disable_unprepare(host->clk_ipg);
-
-	mmc_free_host(mmc);
-
-	return 0;
 }
 
 static int mxcmci_suspend(struct device *dev)

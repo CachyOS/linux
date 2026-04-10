@@ -1,20 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * NXP Wireless LAN device driver: functions for station ioctl
  *
  * Copyright 2011-2020 NXP
- *
- * This software file (the "File") is distributed by NXP
- * under the terms of the GNU General Public License Version 2, June 1991
- * (the "License").  You may use, redistribute and/or modify this File in
- * accordance with the terms and conditions of the License, a copy of which
- * is available by writing to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA or on the
- * worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
- *
- * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
- * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
- * this warranty disclaimer.
  */
 
 #include "decl.h"
@@ -192,7 +180,7 @@ int mwifiex_fill_new_bss_desc(struct mwifiex_private *priv,
 	return mwifiex_update_bss_desc_with_ie(priv->adapter, bss_desc);
 }
 
-void mwifiex_dnld_txpwr_table(struct mwifiex_private *priv)
+static void mwifiex_dnld_dt_txpwr_table(struct mwifiex_private *priv)
 {
 	if (priv->adapter->dt_node) {
 		char txpwr[] = {"marvell,00_txpwrlimit"};
@@ -200,6 +188,62 @@ void mwifiex_dnld_txpwr_table(struct mwifiex_private *priv)
 		memcpy(&txpwr[8], priv->adapter->country_code, 2);
 		mwifiex_dnld_dt_cfgdata(priv, priv->adapter->dt_node, txpwr);
 	}
+}
+
+static int mwifiex_request_rgpower_table(struct mwifiex_private *priv)
+{
+	struct mwifiex_802_11d_domain_reg *domain_info = &priv->adapter->domain_reg;
+	struct mwifiex_adapter *adapter = priv->adapter;
+	char rgpower_table_name[30];
+	char country_code[3];
+
+	strscpy(country_code, domain_info->country_code, sizeof(country_code));
+
+	/* World regulatory domain "00" has WW as country code */
+	if (strncmp(country_code, "00", 2) == 0)
+		strscpy(country_code, "WW", sizeof(country_code));
+
+	snprintf(rgpower_table_name, sizeof(rgpower_table_name),
+		 "nxp/rgpower_%s.bin", country_code);
+
+	mwifiex_dbg(adapter, INFO, "info: %s: requesting regulatory power table %s\n",
+		    __func__, rgpower_table_name);
+
+	if (adapter->rgpower_data) {
+		release_firmware(adapter->rgpower_data);
+		adapter->rgpower_data = NULL;
+	}
+
+	if ((request_firmware(&adapter->rgpower_data, rgpower_table_name,
+			      adapter->dev))) {
+		mwifiex_dbg(
+			adapter, INFO,
+			"info: %s: failed to request regulatory power table\n",
+			__func__);
+		return -EIO;
+	}
+
+	return 0;
+}
+
+static int mwifiex_dnld_rgpower_table(struct mwifiex_private *priv)
+{
+	int ret;
+
+	ret = mwifiex_request_rgpower_table(priv);
+	if (ret)
+		return ret;
+
+	return mwifiex_send_rgpower_table(priv, priv->adapter->rgpower_data->data,
+					  priv->adapter->rgpower_data->size);
+}
+
+void mwifiex_dnld_txpwr_table(struct mwifiex_private *priv)
+{
+	if (mwifiex_dnld_rgpower_table(priv) == 0)
+		return;
+
+	mwifiex_dnld_dt_txpwr_table(priv);
 }
 
 static int mwifiex_process_country_ie(struct mwifiex_private *priv,
@@ -286,8 +330,7 @@ int mwifiex_bss_start(struct mwifiex_private *priv, struct cfg80211_bss *bss,
 			return -EINVAL;
 
 		/* Allocate and fill new bss descriptor */
-		bss_desc = kzalloc(sizeof(struct mwifiex_bssdescriptor),
-				   GFP_KERNEL);
+		bss_desc = kzalloc_obj(struct mwifiex_bssdescriptor);
 		if (!bss_desc)
 			return -ENOMEM;
 
@@ -351,19 +394,17 @@ int mwifiex_bss_start(struct mwifiex_private *priv, struct cfg80211_bss *bss,
 			ret = mwifiex_associate(priv, bss_desc);
 		}
 
-		if (bss)
+		if (bss && !priv->adapter->host_mlme_enabled)
 			cfg80211_put_bss(priv->adapter->wiphy, bss);
 	} else {
 		/* Adhoc mode */
 		/* If the requested SSID matches current SSID, return */
 		if (bss_desc && bss_desc->ssid.ssid_len &&
-		    (!mwifiex_ssid_cmp(&priv->curr_bss_params.bss_descriptor.
-				       ssid, &bss_desc->ssid))) {
+		    cfg80211_ssid_eq(&priv->curr_bss_params.bss_descriptor.ssid,
+				     &bss_desc->ssid)) {
 			ret = 0;
 			goto done;
 		}
-
-		priv->adhoc_is_link_sensed = false;
 
 		ret = mwifiex_check_network_compatibility(priv, bss_desc);
 
@@ -515,8 +556,7 @@ int mwifiex_enable_hs(struct mwifiex_adapter *adapter)
 	if (disconnect_on_suspend) {
 		for (i = 0; i < adapter->priv_num; i++) {
 			priv = adapter->priv[i];
-			if (priv)
-				mwifiex_deauthenticate(priv, NULL);
+			mwifiex_deauthenticate(priv, NULL);
 		}
 	}
 
@@ -560,7 +600,7 @@ int mwifiex_enable_hs(struct mwifiex_adapter *adapter)
 
 	if (wait_event_interruptible_timeout(adapter->hs_activate_wait_q,
 					     adapter->hs_activate_wait_q_woken,
-					     (10 * HZ)) <= 0) {
+					     (5 * HZ)) <= 0) {
 		mwifiex_dbg(adapter, ERROR,
 			    "hs_activate_wait_q terminated\n");
 		return false;

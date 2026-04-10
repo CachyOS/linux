@@ -11,57 +11,37 @@
 struct z_erofs_decompress_req {
 	struct super_block *sb;
 	struct page **in, **out;
-
+	unsigned int inpages, outpages;
 	unsigned short pageofs_in, pageofs_out;
 	unsigned int inputsize, outputsize;
 
-	/* indicate the algorithm will be used for decompression */
-	unsigned int alg;
-	bool inplace_io, partial_decoding;
+	unsigned int alg;       /* the algorithm for decompression */
+	bool inplace_io, partial_decoding, fillgaps;
+	gfp_t gfp;      /* allocation flags for extra temporary buffers */
 };
 
 struct z_erofs_decompressor {
-	int (*decompress)(struct z_erofs_decompress_req *rq,
-			  struct page **pagepool);
+	int (*config)(struct super_block *sb, struct erofs_super_block *dsb,
+		      void *data, int size);
+	const char *(*decompress)(struct z_erofs_decompress_req *rq,
+				  struct page **pagepool);
+	int (*init)(void);
+	void (*exit)(void);
 	char *name;
 };
 
-/* some special page->private (unsigned long, see below) */
 #define Z_EROFS_SHORTLIVED_PAGE		(-1UL << 2)
-#define Z_EROFS_PREALLOCATED_PAGE	(-2UL << 2)
+#define Z_EROFS_PREALLOCATED_FOLIO	((void *)(-2UL << 2))
 
 /*
- * For all pages in a pcluster, page->private should be one of
- * Type                         Last 2bits      page->private
- * short-lived page             00              Z_EROFS_SHORTLIVED_PAGE
- * preallocated page (tryalloc) 00              Z_EROFS_PREALLOCATED_PAGE
- * cached/managed page          00              pointer to z_erofs_pcluster
- * online page (file-backed,    01/10/11        sub-index << 2 | count
- *              some pages can be used for inplace I/O)
- *
- * page->mapping should be one of
- * Type                 page->mapping
- * short-lived page     NULL
- * preallocated page    NULL
- * cached/managed page  non-NULL or NULL (invalidated/truncated page)
- * online page          non-NULL
- *
- * For all managed pages, PG_private should be set with 1 extra refcount,
- * which is used for page reclaim / migration.
- */
-
-/*
- * short-lived pages are pages directly from buddy system with specific
- * page->private (no need to set PagePrivate since these are non-LRU /
- * non-movable pages and bypass reclaim / migration code).
+ * Currently, short-lived pages are pages directly from buddy system
+ * with specific page->private (Z_EROFS_SHORTLIVED_PAGE).
+ * In the future world of Memdescs, it should be type 0 (Misc) memory
+ * which type can be checked with a new helper.
  */
 static inline bool z_erofs_is_shortlived_page(struct page *page)
 {
-	if (page->private != Z_EROFS_SHORTLIVED_PAGE)
-		return false;
-
-	DBG_BUGON(page->mapping);
-	return true;
+	return page->private == Z_EROFS_SHORTLIVED_PAGE;
 }
 
 static inline bool z_erofs_put_shortlivedpage(struct page **pagepool,
@@ -69,30 +49,41 @@ static inline bool z_erofs_put_shortlivedpage(struct page **pagepool,
 {
 	if (!z_erofs_is_shortlived_page(page))
 		return false;
-
-	/* short-lived pages should not be used by others at the same time */
-	if (page_ref_count(page) > 1) {
-		put_page(page);
-	} else {
-		/* follow the pcluster rule above. */
-		erofs_pagepool_add(pagepool, page);
-	}
+	erofs_pagepool_add(pagepool, page);
 	return true;
 }
 
-#define MNGD_MAPPING(sbi)	((sbi)->managed_cache->i_mapping)
-static inline bool erofs_page_is_managed(const struct erofs_sb_info *sbi,
-					 struct page *page)
-{
-	return page->mapping == MNGD_MAPPING(sbi);
-}
+extern const struct z_erofs_decompressor z_erofs_lzma_decomp;
+extern const struct z_erofs_decompressor z_erofs_deflate_decomp;
+extern const struct z_erofs_decompressor z_erofs_zstd_decomp;
+extern const struct z_erofs_decompressor *z_erofs_decomp[];
 
-int z_erofs_fixup_insize(struct z_erofs_decompress_req *rq, const char *padbuf,
-			 unsigned int padbufsize);
-int z_erofs_decompress(struct z_erofs_decompress_req *rq,
-		       struct page **pagepool);
+struct z_erofs_stream_dctx {
+	struct z_erofs_decompress_req *rq;
+	int no, ni;			/* the current {en,de}coded page # */
 
-/* prototypes for specific algorithms */
-int z_erofs_lzma_decompress(struct z_erofs_decompress_req *rq,
-			    struct page **pagepool);
+	unsigned int avail_out;		/* remaining bytes in the decoded buffer */
+	unsigned int inbuf_pos, inbuf_sz;
+					/* current status of the encoded buffer */
+	u8 *kin, *kout;			/* buffer mapped pointers */
+	void *bounce;			/* bounce buffer for inplace I/Os */
+	bool bounced;			/* is the bounce buffer used now? */
+};
+
+const char *z_erofs_stream_switch_bufs(struct z_erofs_stream_dctx *dctx,
+				void **dst, void **src, struct page **pgpl);
+const char *z_erofs_fixup_insize(struct z_erofs_decompress_req *rq,
+				 const char *padbuf, unsigned int padbufsize);
+int __init z_erofs_init_decompressor(void);
+void z_erofs_exit_decompressor(void);
+int z_erofs_crypto_decompress(struct z_erofs_decompress_req *rq,
+			      struct page **pgpl);
+int z_erofs_crypto_enable_engine(const char *name, int len);
+#ifdef CONFIG_EROFS_FS_ZIP_ACCEL
+void z_erofs_crypto_disable_all_engines(void);
+int z_erofs_crypto_show_engines(char *buf, int size, char sep);
+#else
+static inline void z_erofs_crypto_disable_all_engines(void) {}
+static inline int z_erofs_crypto_show_engines(char *buf, int size, char sep) { return 0; }
+#endif
 #endif

@@ -23,22 +23,84 @@
 #ifndef AMDGV_SRIOV_MSG__H_
 #define AMDGV_SRIOV_MSG__H_
 
-/* unit in kilobytes */
-#define AMD_SRIOV_MSG_VBIOS_OFFSET	     0
-#define AMD_SRIOV_MSG_VBIOS_SIZE_KB	     64
-#define AMD_SRIOV_MSG_DATAEXCHANGE_OFFSET_KB AMD_SRIOV_MSG_VBIOS_SIZE_KB
-#define AMD_SRIOV_MSG_DATAEXCHANGE_SIZE_KB   4
+#define AMD_SRIOV_MSG_SIZE_KB                           1
 
 /*
- * layout
- * 0           64KB        65KB        66KB
- * |   VBIOS   |   PF2VF   |   VF2PF   |   Bad Page   | ...
- * |   64KB    |   1KB     |   1KB     |
+ * layout v1
+ * 0           64KB        65KB        66KB           68KB                   132KB
+ * |   VBIOS   |   PF2VF   |   VF2PF   |   Bad Page   | RAS Telemetry Region | ...
+ * |   64KB    |   1KB     |   1KB     |   2KB        | 64KB                 | ...
  */
-#define AMD_SRIOV_MSG_SIZE_KB                   1
-#define AMD_SRIOV_MSG_PF2VF_OFFSET_KB           AMD_SRIOV_MSG_DATAEXCHANGE_OFFSET_KB
-#define AMD_SRIOV_MSG_VF2PF_OFFSET_KB           (AMD_SRIOV_MSG_PF2VF_OFFSET_KB + AMD_SRIOV_MSG_SIZE_KB)
-#define AMD_SRIOV_MSG_BAD_PAGE_OFFSET_KB        (AMD_SRIOV_MSG_VF2PF_OFFSET_KB + AMD_SRIOV_MSG_SIZE_KB)
+
+/*
+ * layout v2 (offsets are dynamically allocated and the offsets below are examples)
+ * 0           1KB         64KB        65KB        66KB           68KB                   132KB
+ * |  INITD_H  |   VBIOS   |   PF2VF   |   VF2PF   |   Bad Page   | RAS Telemetry Region | ...
+ * |   1KB     |   64KB    |   1KB     |   1KB     |   2KB        | 64KB                 | ...
+ *
+ * Note: PF2VF + VF2PF + Bad Page = DataExchange region (allocated contiguously)
+ */
+
+/* v1 layout sizes */
+#define AMD_SRIOV_MSG_VBIOS_SIZE_KB_V1			64
+#define AMD_SRIOV_MSG_PF2VF_SIZE_KB_V1			1
+#define AMD_SRIOV_MSG_VF2PF_SIZE_KB_V1			1
+#define AMD_SRIOV_MSG_BAD_PAGE_SIZE_KB_V1		2
+#define AMD_SRIOV_MSG_RAS_TELEMETRY_SIZE_KB_V1		64
+#define AMD_SRIOV_MSG_DATAEXCHANGE_SIZE_KB_V1		\
+	(AMD_SRIOV_MSG_PF2VF_SIZE_KB_V1 + AMD_SRIOV_MSG_VF2PF_SIZE_KB_V1 + \
+	 AMD_SRIOV_MSG_BAD_PAGE_SIZE_KB_V1)
+
+/* v1 offsets */
+#define AMD_SRIOV_MSG_VBIOS_OFFSET_V1			0
+#define AMD_SRIOV_MSG_DATAEXCHANGE_OFFSET_KB_V1		AMD_SRIOV_MSG_VBIOS_SIZE_KB_V1
+#define AMD_SRIOV_MSG_TMR_OFFSET_KB			2048
+#define AMD_SRIOV_MSG_PF2VF_OFFSET_KB_V1		AMD_SRIOV_MSG_DATAEXCHANGE_OFFSET_KB_V1
+#define AMD_SRIOV_MSG_VF2PF_OFFSET_KB_V1		\
+	(AMD_SRIOV_MSG_PF2VF_OFFSET_KB_V1 + AMD_SRIOV_MSG_SIZE_KB)
+#define AMD_SRIOV_MSG_BAD_PAGE_OFFSET_KB_V1		\
+	(AMD_SRIOV_MSG_VF2PF_OFFSET_KB_V1 + AMD_SRIOV_MSG_SIZE_KB)
+#define AMD_SRIOV_MSG_RAS_TELEMETRY_OFFSET_KB_V1	\
+	(AMD_SRIOV_MSG_BAD_PAGE_OFFSET_KB_V1 + AMD_SRIOV_MSG_BAD_PAGE_SIZE_KB_V1)
+#define AMD_SRIOV_MSG_INIT_DATA_TOT_SIZE_KB_V1		\
+	(AMD_SRIOV_MSG_VBIOS_SIZE_KB_V1 + AMD_SRIOV_MSG_DATAEXCHANGE_SIZE_KB_V1 + \
+	 AMD_SRIOV_MSG_RAS_TELEMETRY_SIZE_KB_V1)
+
+enum amd_sriov_crit_region_version {
+	GPU_CRIT_REGION_V1 = 1,
+	GPU_CRIT_REGION_V2 = 2,
+};
+
+/* v2 layout offset enum (in order of allocation) */
+enum amd_sriov_msg_table_id_enum {
+	AMD_SRIOV_MSG_IPD_TABLE_ID = 0,
+	AMD_SRIOV_MSG_VBIOS_IMG_TABLE_ID,
+	AMD_SRIOV_MSG_RAS_TELEMETRY_TABLE_ID,
+	AMD_SRIOV_MSG_DATAEXCHANGE_TABLE_ID,
+	AMD_SRIOV_MSG_BAD_PAGE_INFO_TABLE_ID,
+	AMD_SRIOV_MSG_INITD_H_TABLE_ID,
+	AMD_SRIOV_MSG_MAX_TABLE_ID,
+};
+
+struct amd_sriov_msg_init_data_header {
+	char     signature[4];  /* "INDA"  */
+	uint32_t version;
+	uint32_t checksum;
+	uint32_t initdata_offset; /* 0 */
+	uint32_t initdata_size_in_kb; /* 5MB */
+	uint32_t valid_tables;
+	uint32_t vbios_img_offset;
+	uint32_t vbios_img_size_in_kb;
+	uint32_t dataexchange_offset;
+	uint32_t dataexchange_size_in_kb;
+	uint32_t ras_tele_info_offset;
+	uint32_t ras_tele_info_size_in_kb;
+	uint32_t ip_discovery_offset;
+	uint32_t ip_discovery_size_in_kb;
+	uint32_t bad_page_info_offset;
+	uint32_t bad_page_size_in_kb;
+	uint32_t reserved[8];
+};
 
 /*
  * PF2VF history log:
@@ -86,25 +148,63 @@ enum amd_sriov_ucode_engine_id {
 
 union amd_sriov_msg_feature_flags {
 	struct {
-		uint32_t error_log_collect : 1;
-		uint32_t host_load_ucodes  : 1;
-		uint32_t host_flr_vramlost : 1;
-		uint32_t mm_bw_management  : 1;
-		uint32_t pp_one_vf_mode	   : 1;
-		uint32_t reg_indirect_acc  : 1;
-		uint32_t reserved	   : 26;
+		uint32_t error_log_collect	: 1;
+		uint32_t host_load_ucodes	: 1;
+		uint32_t host_flr_vramlost	: 1;
+		uint32_t mm_bw_management	: 1;
+		uint32_t pp_one_vf_mode		: 1;
+		uint32_t reg_indirect_acc	: 1;
+		uint32_t av1_support		: 1;
+		uint32_t vcn_rb_decouple	: 1;
+		uint32_t mes_info_dump_enable	: 1;
+		uint32_t ras_caps		: 1;
+		uint32_t ras_telemetry		: 1;
+		uint32_t ras_cper		: 1;
+		uint32_t xgmi_ta_ext_peer_link	: 1;
+		uint32_t reserved		: 19;
 	} flags;
 	uint32_t all;
 };
 
 union amd_sriov_reg_access_flags {
 	struct {
-		uint32_t vf_reg_access_ih 	 : 1;
-		uint32_t vf_reg_access_mmhub : 1;
-		uint32_t vf_reg_access_gc 	 : 1;
-		uint32_t reserved	         : 29;
+		uint32_t vf_reg_access_ih		: 1;
+		uint32_t vf_reg_access_mmhub		: 1;
+		uint32_t vf_reg_access_gc		: 1;
+		uint32_t vf_reg_access_l1_tlb_cntl	: 1;
+		uint32_t vf_reg_access_sq_config	: 1;
+		uint32_t reserved			: 27;
 	} flags;
 	uint32_t all;
+};
+
+union amd_sriov_ras_caps {
+	struct {
+		uint64_t block_umc			: 1;
+		uint64_t block_sdma			: 1;
+		uint64_t block_gfx			: 1;
+		uint64_t block_mmhub			: 1;
+		uint64_t block_athub			: 1;
+		uint64_t block_pcie_bif			: 1;
+		uint64_t block_hdp			: 1;
+		uint64_t block_xgmi_wafl		: 1;
+		uint64_t block_df			: 1;
+		uint64_t block_smn			: 1;
+		uint64_t block_sem			: 1;
+		uint64_t block_mp0			: 1;
+		uint64_t block_mp1			: 1;
+		uint64_t block_fuse			: 1;
+		uint64_t block_mca			: 1;
+		uint64_t block_vcn			: 1;
+		uint64_t block_jpeg			: 1;
+		uint64_t block_ih			: 1;
+		uint64_t block_mpio			: 1;
+		uint64_t block_mmsch			: 1;
+		uint64_t poison_propogation_mode	: 1;
+		uint64_t uniras_supported		: 1;
+		uint64_t reserved			: 42;
+	} bits;
+	uint64_t all;
 };
 
 union amd_sriov_msg_os_info {
@@ -155,7 +255,7 @@ struct amd_sriov_msg_pf2vf_info_header {
 	uint32_t reserved[2];
 };
 
-#define AMD_SRIOV_MSG_PF2VF_INFO_FILLED_SIZE (48)
+#define AMD_SRIOV_MSG_PF2VF_INFO_FILLED_SIZE (55)
 struct amd_sriov_msg_pf2vf_info {
 	/* header contains size and version */
 	struct amd_sriov_msg_pf2vf_info_header header;
@@ -206,9 +306,17 @@ struct amd_sriov_msg_pf2vf_info {
 	struct amd_sriov_msg_uuid_info uuid_info;
 	/* PCIE atomic ops support flag */
 	uint32_t pcie_atomic_ops_support_flags;
+	/* Portion of GPU memory occupied by VF.  MAX value is 65535, but set to uint32_t to maintain alignment with reserved size */
+	uint32_t gpu_capacity;
+	/* vf bdf on host pci tree for debug only */
+	uint32_t bdf_on_host;
+	uint32_t more_bp;	//Reserved for future use.
+	union amd_sriov_ras_caps ras_en_caps;
+	union amd_sriov_ras_caps ras_telemetry_en_caps;
+
 	/* reserved */
 	uint32_t reserved[256 - AMD_SRIOV_MSG_PF2VF_INFO_FILLED_SIZE];
-};
+} __packed;
 
 struct amd_sriov_msg_vf2pf_info_header {
 	/* the total structure size in byte */
@@ -219,7 +327,7 @@ struct amd_sriov_msg_vf2pf_info_header {
 	uint32_t reserved[2];
 };
 
-#define AMD_SRIOV_MSG_VF2PF_INFO_FILLED_SIZE (70)
+#define AMD_SRIOV_MSG_VF2PF_INFO_FILLED_SIZE (73)
 struct amd_sriov_msg_vf2pf_info {
 	/* header contains size and version */
 	struct amd_sriov_msg_vf2pf_info_header header;
@@ -263,10 +371,12 @@ struct amd_sriov_msg_vf2pf_info {
 		uint32_t version;
 	} ucode_info[AMD_SRIOV_MSG_RESERVE_UCODE];
 	uint64_t dummy_page_addr;
-
+	/* FB allocated for guest MES to record UQ info */
+	uint64_t mes_info_addr;
+	uint32_t mes_info_size;
 	/* reserved */
 	uint32_t reserved[256 - AMD_SRIOV_MSG_VF2PF_INFO_FILLED_SIZE];
-};
+} __packed;
 
 /* mailbox message send from guest to host  */
 enum amd_sriov_mailbox_request_message {
@@ -276,22 +386,98 @@ enum amd_sriov_mailbox_request_message {
 	MB_REQ_MSG_REL_GPU_FINI_ACCESS,
 	MB_REQ_MSG_REQ_GPU_RESET_ACCESS,
 	MB_REQ_MSG_REQ_GPU_INIT_DATA,
+	MB_REQ_MSG_PSP_VF_CMD_RELAY,
 
 	MB_REQ_MSG_LOG_VF_ERROR = 200,
+	MB_REQ_MSG_READY_TO_RESET = 201,
+	MB_REQ_MSG_RAS_POISON = 202,
+	MB_REQ_RAS_ERROR_COUNT = 203,
+	MB_REQ_RAS_CPER_DUMP = 204,
+	MB_REQ_RAS_BAD_PAGES = 205,
 };
 
 /* mailbox message send from host to guest  */
 enum amd_sriov_mailbox_response_message {
-	MB_RES_MSG_CLR_MSG_BUF = 0,
-	MB_RES_MSG_READY_TO_ACCESS_GPU = 1,
-	MB_RES_MSG_FLR_NOTIFICATION,
-	MB_RES_MSG_FLR_NOTIFICATION_COMPLETION,
-	MB_RES_MSG_SUCCESS,
-	MB_RES_MSG_FAIL,
-	MB_RES_MSG_QUERY_ALIVE,
-	MB_RES_MSG_GPU_INIT_DATA_READY,
+	MB_RES_MSG_CLR_MSG_BUF			= 0,
+	MB_RES_MSG_READY_TO_ACCESS_GPU		= 1,
+	MB_RES_MSG_FLR_NOTIFICATION		= 2,
+	MB_RES_MSG_FLR_NOTIFICATION_COMPLETION  = 3,
+	MB_RES_MSG_SUCCESS			= 4,
+	MB_RES_MSG_FAIL				= 5,
+	MB_RES_MSG_QUERY_ALIVE			= 6,
+	MB_RES_MSG_GPU_INIT_DATA_READY		= 7,
+	MB_RES_MSG_RAS_POISON_READY		= 8,
+	MB_RES_MSG_PF_SOFT_FLR_NOTIFICATION	= 9,
+	MB_RES_MSG_GPU_RMA			= 10,
+	MB_RES_MSG_RAS_ERROR_COUNT_READY	= 11,
+	MB_REQ_RAS_CPER_DUMP_READY		= 14,
+	MB_RES_MSG_RAS_BAD_PAGES_READY		= 15,
+	MB_RES_MSG_RAS_BAD_PAGES_NOTIFICATION	= 16,
+	MB_RES_MSG_UNRECOV_ERR_NOTIFICATION	= 17,
+	MB_RES_MSG_TEXT_MESSAGE			= 255
+};
 
-	MB_RES_MSG_TEXT_MESSAGE = 255
+enum amd_sriov_ras_telemetry_gpu_block {
+	RAS_TELEMETRY_GPU_BLOCK_UMC		= 0,
+	RAS_TELEMETRY_GPU_BLOCK_SDMA		= 1,
+	RAS_TELEMETRY_GPU_BLOCK_GFX		= 2,
+	RAS_TELEMETRY_GPU_BLOCK_MMHUB		= 3,
+	RAS_TELEMETRY_GPU_BLOCK_ATHUB		= 4,
+	RAS_TELEMETRY_GPU_BLOCK_PCIE_BIF	= 5,
+	RAS_TELEMETRY_GPU_BLOCK_HDP		= 6,
+	RAS_TELEMETRY_GPU_BLOCK_XGMI_WAFL	= 7,
+	RAS_TELEMETRY_GPU_BLOCK_DF		= 8,
+	RAS_TELEMETRY_GPU_BLOCK_SMN		= 9,
+	RAS_TELEMETRY_GPU_BLOCK_SEM		= 10,
+	RAS_TELEMETRY_GPU_BLOCK_MP0		= 11,
+	RAS_TELEMETRY_GPU_BLOCK_MP1		= 12,
+	RAS_TELEMETRY_GPU_BLOCK_FUSE		= 13,
+	RAS_TELEMETRY_GPU_BLOCK_MCA		= 14,
+	RAS_TELEMETRY_GPU_BLOCK_VCN		= 15,
+	RAS_TELEMETRY_GPU_BLOCK_JPEG		= 16,
+	RAS_TELEMETRY_GPU_BLOCK_IH		= 17,
+	RAS_TELEMETRY_GPU_BLOCK_MPIO		= 18,
+	RAS_TELEMETRY_GPU_BLOCK_COUNT		= 19,
+};
+
+struct amd_sriov_ras_telemetry_header {
+	uint32_t checksum;
+	uint32_t used_size;
+	uint32_t reserved[2];
+};
+
+struct amd_sriov_ras_telemetry_error_count {
+	struct {
+		uint32_t ce_count;
+		uint32_t ue_count;
+		uint32_t de_count;
+		uint32_t ce_overflow_count;
+		uint32_t ue_overflow_count;
+		uint32_t de_overflow_count;
+		uint32_t reserved[6];
+	} block[RAS_TELEMETRY_GPU_BLOCK_COUNT];
+};
+
+struct amd_sriov_ras_cper_dump {
+	uint32_t more;
+	uint64_t overflow_count;
+	uint64_t count;
+	uint64_t wptr;
+	uint32_t buf[];
+};
+
+struct amd_sriov_ras_chk_criti {
+	uint32_t hit;
+};
+
+struct amdsriov_ras_telemetry {
+	struct amd_sriov_ras_telemetry_header header;
+
+	union {
+		struct amd_sriov_ras_telemetry_error_count error_count;
+		struct amd_sriov_ras_cper_dump cper_dump;
+		struct amd_sriov_ras_chk_criti chk_criti;
+	} body;
 };
 
 /* version data stored in MAILBOX_MSGBUF_RCV_DW1 for future expansion */

@@ -82,7 +82,7 @@ static void __init tc_bus_add_devices(struct tc_bus *tbus)
 			goto out_err;
 
 		/* Found a board, allocate it an entry in the list */
-		tdev = kzalloc(sizeof(*tdev), GFP_KERNEL);
+		tdev = kzalloc_obj(*tdev);
 		if (!tdev) {
 			pr_err("tc%x: unable to allocate tc_dev\n", slot);
 			goto out_err;
@@ -162,7 +162,7 @@ static int __init tc_init(void)
 	if (tc_bus.info.slot_size) {
 		unsigned int tc_clock = tc_get_speed(&tc_bus) / 100000;
 
-		pr_info("tc: TURBOchannel rev. %d at %d.%d MHz "
+		pr_info("tc: TURBOchannel rev. %d at %u.%u MHz "
 			"(with%s parity)\n", tc_bus.info.revision,
 			tc_clock / 10, tc_clock % 10,
 			tc_bus.info.parity ? "" : "out");

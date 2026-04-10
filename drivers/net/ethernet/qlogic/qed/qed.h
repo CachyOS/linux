@@ -662,8 +662,6 @@ struct qed_hwfn {
 };
 
 struct pci_params {
-	int		pm_cap;
-
 	unsigned long	mem_start;
 	unsigned long	mem_end;
 	unsigned int	irq;
@@ -909,7 +907,6 @@ void qed_configure_vp_wfq_on_link_change(struct qed_dev *cdev,
 					 u32 min_pf_rate);
 
 void qed_clean_wfq_db(struct qed_hwfn *p_hwfn, struct qed_ptt *p_ptt);
-int qed_device_num_engines(struct qed_dev *cdev);
 void qed_set_fw_mac_addr(__le16 *fw_msb,
 			 __le16 *fw_mid, __le16 *fw_lsb, u8 *mac);
 
@@ -942,7 +939,6 @@ u16 qed_get_cm_pq_idx_ofld_mtc(struct qed_hwfn *p_hwfn, u8 tc);
 u16 qed_get_cm_pq_idx_llt_mtc(struct qed_hwfn *p_hwfn, u8 tc);
 
 /* doorbell recovery mechanism */
-void qed_db_recovery_dp(struct qed_hwfn *p_hwfn);
 void qed_db_recovery_execute(struct qed_hwfn *p_hwfn);
 bool qed_edpm_enabled(struct qed_hwfn *p_hwfn);
 

@@ -24,7 +24,6 @@
 #include <linux/interrupt.h>
 #include <linux/threads.h>
 #include <asm/tlbflush.h>
-#include <asm/paravirt.h>
 #include <asm/fixmap.h>
 #include <asm/pgtable_areas.h>
 
@@ -68,9 +67,6 @@ extern unsigned long highstart_pfn, highend_pfn;
 		flush_tlb_one_kernel((vaddr));		\
 		arch_flush_lazy_mmu_mode();		\
 	} while (0)
-
-extern void add_highpages_with_active_regions(int nid, unsigned long start_pfn,
-					unsigned long end_pfn);
 
 #endif /* __KERNEL__ */
 

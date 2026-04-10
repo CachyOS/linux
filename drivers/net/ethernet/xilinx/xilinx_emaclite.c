@@ -7,7 +7,9 @@
  * Copyright (c) 2007 - 2013 Xilinx, Inc.
  */
 
+#include <linux/clk.h>
 #include <linux/module.h>
+#include <linux/platform_device.h>
 #include <linux/uaccess.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
@@ -15,9 +17,8 @@
 #include <linux/ethtool.h>
 #include <linux/io.h>
 #include <linux/slab.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/of_device.h>
-#include <linux/of_platform.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
 #include <linux/phy.h>
@@ -108,7 +109,7 @@
  * @next_tx_buf_to_use:	next Tx buffer to write to
  * @next_rx_buf_to_use:	next Rx buffer to read from
  * @base_addr:		base address of the Emaclite device
- * @reset_lock:		lock used for synchronization
+ * @reset_lock:		lock to serialize xmit and tx_timeout execution
  * @deferred_skb:	holds an skb (for transmission at a later time) when the
  *			Tx buffer is not free
  * @phy_dev:		pointer to the PHY device
@@ -285,7 +286,7 @@ static void xemaclite_aligned_read(u32 *src_ptr, u8 *dest_ptr,
 
 		/* Read the remaining data */
 		for (; length > 0; length--)
-			*to_u8_ptr = *from_u8_ptr;
+			*to_u8_ptr++ = *from_u8_ptr++;
 	}
 }
 
@@ -536,7 +537,7 @@ static void xemaclite_tx_timeout(struct net_device *dev, unsigned int txqueue)
 	xemaclite_enable_interrupts(lp);
 
 	if (lp->deferred_skb) {
-		dev_kfree_skb(lp->deferred_skb);
+		dev_kfree_skb_irq(lp->deferred_skb);
 		lp->deferred_skb = NULL;
 		dev->stats.tx_errors++;
 	}
@@ -1060,7 +1061,7 @@ static bool get_bool(struct platform_device *ofdev, const char *s)
 static void xemaclite_ethtools_get_drvinfo(struct net_device *ndev,
 					   struct ethtool_drvinfo *ed)
 {
-	strlcpy(ed->driver, DRIVER_NAME, sizeof(ed->driver));
+	strscpy(ed->driver, DRIVER_NAME, sizeof(ed->driver));
 }
 
 static const struct ethtool_ops xemaclite_ethtool_ops = {
@@ -1091,13 +1092,14 @@ static int xemaclite_of_probe(struct platform_device *ofdev)
 	struct net_device *ndev = NULL;
 	struct net_local *lp = NULL;
 	struct device *dev = &ofdev->dev;
+	struct clk *clkin;
 
 	int rc = 0;
 
 	dev_info(dev, "Device Tree Probing\n");
 
 	/* Create an ethernet device instance */
-	ndev = alloc_etherdev(sizeof(struct net_local));
+	ndev = devm_alloc_etherdev(dev, sizeof(struct net_local));
 	if (!ndev)
 		return -ENOMEM;
 
@@ -1110,16 +1112,13 @@ static int xemaclite_of_probe(struct platform_device *ofdev)
 	/* Get IRQ for the device */
 	rc = platform_get_irq(ofdev, 0);
 	if (rc < 0)
-		goto error;
+		return rc;
 
 	ndev->irq = rc;
 
-	res = platform_get_resource(ofdev, IORESOURCE_MEM, 0);
-	lp->base_addr = devm_ioremap_resource(&ofdev->dev, res);
-	if (IS_ERR(lp->base_addr)) {
-		rc = PTR_ERR(lp->base_addr);
-		goto error;
-	}
+	lp->base_addr = devm_platform_get_and_ioremap_resource(ofdev, 0, &res);
+	if (IS_ERR(lp->base_addr))
+		return PTR_ERR(lp->base_addr);
 
 	ndev->mem_start = res->start;
 	ndev->mem_end = res->end;
@@ -1129,6 +1128,11 @@ static int xemaclite_of_probe(struct platform_device *ofdev)
 	lp->next_rx_buf_to_use = 0x0;
 	lp->tx_ping_pong = get_bool(ofdev, "xlnx,tx-ping-pong");
 	lp->rx_ping_pong = get_bool(ofdev, "xlnx,rx-ping-pong");
+
+	clkin = devm_clk_get_optional_enabled(&ofdev->dev, NULL);
+	if (IS_ERR(clkin))
+		return dev_err_probe(&ofdev->dev, PTR_ERR(clkin),
+				"Failed to get and enable clock from Device Tree\n");
 
 	rc = of_get_ethdev_address(ofdev->dev.of_node, ndev);
 	if (rc) {
@@ -1168,8 +1172,6 @@ static int xemaclite_of_probe(struct platform_device *ofdev)
 
 put_node:
 	of_node_put(lp->phy_node);
-error:
-	free_netdev(ndev);
 	return rc;
 }
 
@@ -1180,10 +1182,8 @@ error:
  * This function is called if a device is physically removed from the system or
  * if the driver module is being unloaded. It frees any resources allocated to
  * the device.
- *
- * Return:	0, always.
  */
-static int xemaclite_of_remove(struct platform_device *of_dev)
+static void xemaclite_of_remove(struct platform_device *of_dev)
 {
 	struct net_device *ndev = platform_get_drvdata(of_dev);
 
@@ -1200,10 +1200,6 @@ static int xemaclite_of_remove(struct platform_device *of_dev)
 
 	of_node_put(lp->phy_node);
 	lp->phy_node = NULL;
-
-	free_netdev(ndev);
-
-	return 0;
 }
 
 #ifdef CONFIG_NET_POLL_CONTROLLER

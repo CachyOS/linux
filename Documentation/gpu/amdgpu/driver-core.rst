@@ -65,38 +65,99 @@ SDMA (System DMA)
 
 GC (Graphics and Compute)
     This is the graphics and compute engine, i.e., the block that
-    encompasses the 3D pipeline and and shader blocks.  This is by far the
+    encompasses the 3D pipeline and shader blocks.  This is by far the
     largest block on the GPU.  The 3D pipeline has tons of sub-blocks.  In
-    addition to that, it also contains the CP microcontrollers (ME, PFP,
-    CE, MEC) and the RLC microcontroller.  It's exposed to userspace for
-    user mode drivers (OpenGL, Vulkan, OpenCL, etc.)
+    addition to that, it also contains the CP microcontrollers (ME, PFP, CE,
+    MEC) and the RLC microcontroller.  It's exposed to userspace for user mode
+    drivers (OpenGL, Vulkan, OpenCL, etc.). More details in :ref:`Graphics (GFX)
+    and Compute <amdgpu-gc>`.
 
 VCN (Video Core Next)
     This is the multi-media engine.  It handles video and image encode and
     decode.  It's exposed to userspace for user mode drivers (VA-API,
     OpenMAX, etc.)
 
-Graphics and Compute Microcontrollers
--------------------------------------
+It is important to note that these blocks can interact with each other. The
+picture below illustrates some of the components and their interconnection:
 
-CP (Command Processor)
-    The name for the hardware block that encompasses the front end of the
-    GFX/Compute pipeline.  Consists mainly of a bunch of microcontrollers
-    (PFP, ME, CE, MEC).  The firmware that runs on these microcontrollers
-    provides the driver interface to interact with the GFX/Compute engine.
+.. kernel-figure:: amd_overview_block.svg
 
-    MEC (MicroEngine Compute)
-        This is the microcontroller that controls the compute queues on the
-        GFX/compute engine.
+In the diagram, memory-related blocks are shown in green. Notice that specific
+IPs have a green square that represents a small hardware block named 'hub',
+which is responsible for interfacing with memory. All memory hubs are connected
+in the UMCs, which in turn are connected to memory blocks. As a note,
+pre-vega devices have a dedicated block for the Graphic Memory Controller
+(GMC), which was replaced by UMC and hubs in new architectures. In the driver
+code, you can identify this component by looking for the suffix hub, for
+example: gfxhub, dchub, mmhub, vmhub, etc. Keep in mind that the component's
+interaction with the memory block may vary across architectures. For example,
+on Navi and newer, GC and SDMA are both attached to GCHUB; on pre-Navi, SDMA
+goes through MMHUB; VCN, JPEG, and VPE go through MMHUB; DCN goes through
+DCHUB.
 
-    MES (MicroEngine Scheduler)
-        This is a new engine for managing queues.  This is currently unused.
+There is some protection for certain memory elements, and the PSP plays an
+essential role in this area. When a specific firmware is loaded into memory,
+the PSP takes steps to ensure it has a valid signature. It also stores firmware
+images in a protected memory area named Trusted Memory Area (TMR), so the OS or
+driver can't corrupt them at runtime. Another use of PSP is to support Trusted
+Applications (TA), which are basically small applications that run on the
+trusted processor and handles a trusted operation (e.g., HDCP). PSP is also
+used for encrypted memory for content protection via Trusted Memory Zone (TMZ).
 
-RLC (RunList Controller)
-    This is another microcontroller in the GFX/Compute engine.  It handles
-    power management related functionality within the GFX/Compute engine.
-    The name is a vestige of old hardware where it was originally added
-    and doesn't really have much relation to what the engine does now.
+Another critical IP is the SMU. It handles reset distribution, as well as
+clock, thermal, and power management for all IPs on the SoC. SMU also helps to
+balance performance and power consumption.
+
+.. _pipes-and-queues-description:
+
+GFX, Compute, and SDMA Overall Behavior
+=======================================
+
+.. note:: For simplicity, whenever the term block is used in this section, it
+   means GFX, Compute, and SDMA.
+
+GFX, Compute and SDMA share a similar form of operation that can be abstracted
+to facilitate understanding of the behavior of these blocks. See the figure
+below illustrating the common components of these blocks:
+
+.. kernel-figure:: pipe_and_queue_abstraction.svg
+
+In the central part of this figure, you can see two hardware elements, one called
+**Pipes** and another called **Queues**; it is important to highlight that Queues
+must be associated with a Pipe and vice-versa. Every specific hardware IP may have
+a different number of Pipes and, in turn, a different number of Queues; for
+example, GFX 11 has two Pipes and two Queues per Pipe for the GFX front end.
+
+Pipe is the hardware that processes the instructions available in the Queues;
+in other words, it is a thread executing the operations inserted in the Queue.
+One crucial characteristic of Pipes is that they can only execute one Queue at
+a time; no matter if the hardware has multiple Queues in the Pipe, it only runs
+one Queue per Pipe.
+
+Pipes have the mechanics of swapping between queues at the hardware level.
+Nonetheless, they only make use of Queues that are considered mapped. Pipes can
+switch between queues based on any of the following inputs:
+
+1. Command Stream;
+2. Packet by Packet;
+3. Other hardware requests the change (e.g., MES).
+
+Queues within Pipes are defined by the Hardware Queue Descriptors (HQD).
+Associated with the HQD concept, we have the Memory Queue Descriptor (MQD),
+which is responsible for storing information about the state of each of the
+available Queues in the memory. The state of a Queue contains information such
+as the GPU virtual address of the queue itself, save areas, doorbell, etc. The
+MQD also stores the HQD registers, which are vital for activating or
+deactivating a given Queue.  The scheduling firmware (e.g., MES) is responsible
+for loading HQDs from MQDs and vice versa.
+
+The Queue-switching process can also happen with the firmware requesting the
+preemption or unmapping of a Queue. The firmware waits for the HQD_ACTIVE bit
+to change to low before saving the state into the MQD. To make a different
+Queue become active, the firmware copies the MQD state into the HQD registers
+and loads any additional state. Finally, it sets the HQD_ACTIVE bit to high to
+indicate that the queue is active.  The Pipe will then execute work from active
+Queues.
 
 Driver Structure
 ================
@@ -110,7 +171,8 @@ Some useful constructs:
 KIQ (Kernel Interface Queue)
     This is a control queue used by the kernel driver to manage other gfx
     and compute queues on the GFX/compute engine.  You can use it to
-    map/unmap additional queues, etc.
+    map/unmap additional queues, etc.  This is replaced by MES on
+    GFX 11 and newer hardware.
 
 IB (Indirect Buffer)
     A command buffer for a particular engine.  Rather than writing
@@ -148,10 +210,10 @@ PRIME Buffer Sharing
 MMU Notifier
 ============
 
-.. kernel-doc:: drivers/gpu/drm/amd/amdgpu/amdgpu_mn.c
+.. kernel-doc:: drivers/gpu/drm/amd/amdgpu/amdgpu_hmm.c
    :doc: MMU Notifier
 
-.. kernel-doc:: drivers/gpu/drm/amd/amdgpu/amdgpu_mn.c
+.. kernel-doc:: drivers/gpu/drm/amd/amdgpu/amdgpu_hmm.c
    :internal:
 
 AMDGPU Virtual Memory
@@ -179,4 +241,4 @@ IP Blocks
    :doc: IP Blocks
 
 .. kernel-doc:: drivers/gpu/drm/amd/include/amd_shared.h
-   :identifiers: amd_ip_block_type amd_ip_funcs
+   :identifiers: amd_ip_block_type amd_ip_funcs DC_FEATURE_MASK DC_DEBUG_MASK

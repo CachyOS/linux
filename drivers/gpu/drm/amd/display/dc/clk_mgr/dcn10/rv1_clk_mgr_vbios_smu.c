@@ -26,7 +26,6 @@
 #include "core_types.h"
 #include "clk_mgr_internal.h"
 #include "reg_helper.h"
-#include <linux/delay.h>
 
 #include "rv1_clk_mgr_vbios_smu.h"
 
@@ -135,27 +134,11 @@ int rv1_vbios_smu_set_dispclk(struct clk_mgr_internal *clk_mgr, int requested_di
 			VBIOSSMC_MSG_SetDispclkFreq,
 			khz_to_mhz_ceil(requested_dispclk_khz));
 
-	if (!IS_FPGA_MAXIMUS_DC(dc->ctx->dce_environment)) {
-		if (dmcu && dmcu->funcs->is_dmcu_initialized(dmcu)) {
-			if (clk_mgr->dfs_bypass_disp_clk != actual_dispclk_set_mhz)
-				dmcu->funcs->set_psr_wait_loop(dmcu,
-						actual_dispclk_set_mhz / 7);
-		}
+	if (dmcu && dmcu->funcs->is_dmcu_initialized(dmcu)) {
+		if (clk_mgr->dfs_bypass_disp_clk != actual_dispclk_set_mhz)
+			dmcu->funcs->set_psr_wait_loop(dmcu,
+					actual_dispclk_set_mhz / 7);
 	}
 
 	return actual_dispclk_set_mhz * 1000;
-}
-
-int rv1_vbios_smu_set_dprefclk(struct clk_mgr_internal *clk_mgr)
-{
-	int actual_dprefclk_set_mhz = -1;
-
-	actual_dprefclk_set_mhz = rv1_vbios_smu_send_msg_with_param(
-			clk_mgr,
-			VBIOSSMC_MSG_SetDprefclkFreq,
-			khz_to_mhz_ceil(clk_mgr->base.dprefclk_khz));
-
-	/* TODO: add code for programing DP DTO, currently this is down by command table */
-
-	return actual_dprefclk_set_mhz * 1000;
 }

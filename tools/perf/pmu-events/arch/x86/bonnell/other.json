@@ -20,8 +20,7 @@
         "Counter": "0,1",
         "EventCode": "0x61",
         "EventName": "BUS_BNR_DRV.THIS_AGENT",
-        "SampleAfterValue": "200000",
-        "UMask": "0x0"
+        "SampleAfterValue": "200000"
     },
     {
         "BriefDescription": "Bus cycles while processor receives data.",
@@ -44,8 +43,7 @@
         "Counter": "0,1",
         "EventCode": "0x62",
         "EventName": "BUS_DRDY_CLOCKS.THIS_AGENT",
-        "SampleAfterValue": "200000",
-        "UMask": "0x0"
+        "SampleAfterValue": "200000"
     },
     {
         "BriefDescription": "HITM signal asserted.",
@@ -60,8 +58,7 @@
         "Counter": "0,1",
         "EventCode": "0x7B",
         "EventName": "BUS_HITM_DRV.THIS_AGENT",
-        "SampleAfterValue": "200000",
-        "UMask": "0x0"
+        "SampleAfterValue": "200000"
     },
     {
         "BriefDescription": "HIT signal asserted.",
@@ -76,8 +73,7 @@
         "Counter": "0,1",
         "EventCode": "0x7A",
         "EventName": "BUS_HIT_DRV.THIS_AGENT",
-        "SampleAfterValue": "200000",
-        "UMask": "0x0"
+        "SampleAfterValue": "200000"
     },
     {
         "BriefDescription": "IO requests waiting in the bus queue.",
@@ -328,20 +324,11 @@
         "UMask": "0x2"
     },
     {
-        "BriefDescription": "Memory cluster signals to block micro-op dispatch for any reason",
-        "Counter": "0,1",
-        "EventCode": "0x9",
-        "EventName": "DISPATCH_BLOCKED.ANY",
-        "SampleAfterValue": "200000",
-        "UMask": "0x20"
-    },
-    {
         "BriefDescription": "Number of Enhanced Intel SpeedStep(R) Technology (EIST) transitions",
         "Counter": "0,1",
         "EventCode": "0x3A",
         "EventName": "EIST_TRANS",
-        "SampleAfterValue": "200000",
-        "UMask": "0x0"
+        "SampleAfterValue": "200000"
     },
     {
         "BriefDescription": "External snoops.",
@@ -412,8 +399,7 @@
         "Counter": "0,1",
         "EventCode": "0xC8",
         "EventName": "HW_INT_RCV",
-        "SampleAfterValue": "200000",
-        "UMask": "0x0"
+        "SampleAfterValue": "200000"
     },
     {
         "BriefDescription": "Number of segment register loads.",

@@ -10,8 +10,6 @@
 #include "iavf_adminq.h"
 #include "iavf_devids.h"
 
-#define IAVF_RXQ_CTX_DBUFF_SHIFT 7
-
 /* IAVF_MASK is a macro used on 32 bit registers */
 #define IAVF_MASK(mask, shift) ((u32)(mask) << (shift))
 
@@ -21,7 +19,7 @@
 
 /* forward declaration */
 struct iavf_hw;
-typedef void (*IAVF_ADMINQ_CALLBACK)(struct iavf_hw *, struct iavf_aq_desc *);
+typedef void (*IAVF_ADMINQ_CALLBACK)(struct iavf_hw *, struct libie_aq_desc *);
 
 /* Data type manipulation macros. */
 
@@ -69,15 +67,6 @@ enum iavf_debug_mask {
  * the Firmware and AdminQ are intended to insulate the driver from most of the
  * future changes, but these structures will also do part of the job.
  */
-enum iavf_mac_type {
-	IAVF_MAC_UNKNOWN = 0,
-	IAVF_MAC_XL710,
-	IAVF_MAC_VF,
-	IAVF_MAC_X722,
-	IAVF_MAC_X722_VF,
-	IAVF_MAC_GENERIC,
-};
-
 enum iavf_vsi_type {
 	IAVF_VSI_MAIN	= 0,
 	IAVF_VSI_VMDQ1	= 1,
@@ -110,11 +99,8 @@ struct iavf_hw_capabilities {
 };
 
 struct iavf_mac_info {
-	enum iavf_mac_type type;
 	u8 addr[ETH_ALEN];
 	u8 perm_addr[ETH_ALEN];
-	u8 san_addr[ETH_ALEN];
-	u16 max_fcoeq;
 };
 
 /* PCI bus types */
@@ -192,110 +178,116 @@ struct iavf_hw {
 	char err_str[16];
 };
 
-/* RX Descriptors */
-union iavf_16byte_rx_desc {
-	struct {
-		__le64 pkt_addr; /* Packet buffer address */
-		__le64 hdr_addr; /* Header buffer address */
-	} read;
-	struct {
-		struct {
-			struct {
-				union {
-					__le16 mirroring_status;
-					__le16 fcoe_ctx_id;
-				} mirr_fcoe;
-				__le16 l2tag1;
-			} lo_dword;
-			union {
-				__le32 rss; /* RSS Hash */
-				__le32 fd_id; /* Flow director filter id */
-				__le32 fcoe_param; /* FCoE DDP Context id */
-			} hi_dword;
-		} qword0;
-		struct {
-			/* ext status/error/pktype/length */
-			__le64 status_error_len;
-		} qword1;
-	} wb;  /* writeback */
-};
+/**
+ * struct iavf_rx_desc - Receive descriptor (both legacy and flexible)
+ * @qw0: quad word 0 fields:
+ *	 Legacy: Descriptor Type; Mirror ID; L2TAG1P (S-TAG); Filter Status
+ *	 Flex: Descriptor Type; Mirror ID; UMBCAST; Packet Type; Flexible Flags
+ *	       Section 0; Packet Length; Header Length; Split Header Flag;
+ *	       Flexible Flags section 1 / Extended Status
+ * @qw1: quad word 1 fields:
+ *	 Legacy: Status Field; Error Field; Packet Type; Packet Length (packet,
+ *		 header, Split Header Flag)
+ *	 Flex: Status / Error 0 Field; L2TAG1P (S-TAG); Flexible Metadata
+ *	       Container #0; Flexible Metadata Container #1
+ * @qw2: quad word 2 fields:
+ *	 Legacy: Extended Status; 1st L2TAG2P (C-TAG); 2nd L2TAG2P (C-TAG)
+ *	 Flex: Status / Error 1 Field; Flexible Flags section 2; Timestamp Low;
+ *	       1st L2TAG2 (C-TAG); 2nd L2TAG2 (C-TAG)
+ * @qw3: quad word 3 fields:
+ *	 Legacy: FD Filter ID / Flexible Bytes
+ *	 Flex: Flexible Metadata Container #2; Flexible Metadata Container #3;
+ *	       Flexible Metadata Container #4 / Timestamp High 0; Flexible
+ *	       Metadata Container #5 / Timestamp High 1;
+ */
+struct iavf_rx_desc {
+	aligned_le64 qw0;
+/* The hash signature (RSS) */
+#define IAVF_RXD_LEGACY_RSS_M			GENMASK_ULL(63, 32)
+/* Stripped C-TAG VLAN from the receive packet */
+#define IAVF_RXD_LEGACY_L2TAG1_M		GENMASK_ULL(33, 16)
+/* Packet type */
+#define IAVF_RXD_FLEX_PTYPE_M			GENMASK_ULL(25, 16)
+/* Packet length */
+#define IAVF_RXD_FLEX_PKT_LEN_M			GENMASK_ULL(45, 32)
 
-union iavf_32byte_rx_desc {
-	struct {
-		__le64  pkt_addr; /* Packet buffer address */
-		__le64  hdr_addr; /* Header buffer address */
-			/* bit 0 of hdr_buffer_addr is DD bit */
-		__le64  rsvd1;
-		__le64  rsvd2;
-	} read;
-	struct {
-		struct {
-			struct {
-				union {
-					__le16 mirroring_status;
-					__le16 fcoe_ctx_id;
-				} mirr_fcoe;
-				__le16 l2tag1;
-			} lo_dword;
-			union {
-				__le32 rss; /* RSS Hash */
-				__le32 fcoe_param; /* FCoE DDP Context id */
-				/* Flow director filter id in case of
-				 * Programming status desc WB
-				 */
-				__le32 fd_id;
-			} hi_dword;
-		} qword0;
-		struct {
-			/* status/error/pktype/length */
-			__le64 status_error_len;
-		} qword1;
-		struct {
-			__le16 ext_status; /* extended status */
-			__le16 rsvd;
-			__le16 l2tag2_1;
-			__le16 l2tag2_2;
-		} qword2;
-		struct {
-			union {
-				__le32 flex_bytes_lo;
-				__le32 pe_status;
-			} lo_dword;
-			union {
-				__le32 flex_bytes_hi;
-				__le32 fd_id;
-			} hi_dword;
-		} qword3;
-	} wb;  /* writeback */
-};
+	aligned_le64 qw1;
+/* Descriptor done indication flag. */
+#define IAVF_RXD_LEGACY_DD_M			BIT(0)
+/* End of packet. Set to 1 if this descriptor is the last one of the packet */
+#define IAVF_RXD_LEGACY_EOP_M			BIT(1)
+/* L2 TAG 1 presence indication */
+#define IAVF_RXD_LEGACY_L2TAG1P_M		BIT(2)
+/* Detectable L3 and L4 integrity check is processed by the HW */
+#define IAVF_RXD_LEGACY_L3L4P_M			BIT(3)
+/* Set when an IPv6 packet contains a Destination Options Header or a Routing
+ * Header.
+ */
+#define IAVF_RXD_LEGACY_IPV6EXADD_M		BIT(15)
+/* Receive MAC Errors: CRC; Alignment; Oversize; Undersizes; Length error */
+#define IAVF_RXD_LEGACY_RXE_M			BIT(19)
+/* Checksum reports:
+ * - IPE: IP checksum error
+ * - L4E: L4 integrity error
+ * - EIPE: External IP header (tunneled packets)
+ */
+#define IAVF_RXD_LEGACY_IPE_M			BIT(22)
+#define IAVF_RXD_LEGACY_L4E_M			BIT(23)
+#define IAVF_RXD_LEGACY_EIPE_M			BIT(24)
+/* Set for packets that skip checksum calculation in pre-parser */
+#define IAVF_RXD_LEGACY_PPRS_M			BIT(26)
+/* Indicates the content in the Filter Status field */
+#define IAVF_RXD_LEGACY_FLTSTAT_M		GENMASK_ULL(13, 12)
+/* Packet type */
+#define IAVF_RXD_LEGACY_PTYPE_M			GENMASK_ULL(37, 30)
+/* Packet length */
+#define IAVF_RXD_LEGACY_LENGTH_M		GENMASK_ULL(51, 38)
+/* Descriptor done indication flag */
+#define IAVF_RXD_FLEX_DD_M			BIT(0)
+/* End of packet. Set to 1 if this descriptor is the last one of the packet */
+#define IAVF_RXD_FLEX_EOP_M			BIT(1)
+/* Detectable L3 and L4 integrity check is processed by the HW */
+#define IAVF_RXD_FLEX_L3L4P_M			BIT(3)
+/* Checksum reports:
+ * - IPE: IP checksum error
+ * - L4E: L4 integrity error
+ * - EIPE: External IP header (tunneled packets)
+ * - EUDPE: External UDP checksum error (tunneled packets)
+ */
+#define IAVF_RXD_FLEX_XSUM_IPE_M		BIT(4)
+#define IAVF_RXD_FLEX_XSUM_L4E_M		BIT(5)
+#define IAVF_RXD_FLEX_XSUM_EIPE_M		BIT(6)
+#define IAVF_RXD_FLEX_XSUM_EUDPE_M		BIT(7)
+/* Set when an IPv6 packet contains a Destination Options Header or a Routing
+ * Header.
+ */
+#define IAVF_RXD_FLEX_IPV6EXADD_M		BIT(9)
+/* Receive MAC Errors: CRC; Alignment; Oversize; Undersizes; Length error */
+#define IAVF_RXD_FLEX_RXE_M			BIT(10)
+/* Indicates that the RSS/HASH result is valid */
+#define IAVF_RXD_FLEX_RSS_VALID_M		BIT(12)
+/* L2 TAG 1 presence indication */
+#define IAVF_RXD_FLEX_L2TAG1P_M			BIT(13)
+/* Stripped L2 Tag from the receive packet */
+#define IAVF_RXD_FLEX_L2TAG1_M			GENMASK_ULL(31, 16)
+/* The hash signature (RSS) */
+#define IAVF_RXD_FLEX_RSS_HASH_M		GENMASK_ULL(63, 32)
 
-enum iavf_rx_desc_status_bits {
-	/* Note: These are predefined bit offsets */
-	IAVF_RX_DESC_STATUS_DD_SHIFT		= 0,
-	IAVF_RX_DESC_STATUS_EOF_SHIFT		= 1,
-	IAVF_RX_DESC_STATUS_L2TAG1P_SHIFT	= 2,
-	IAVF_RX_DESC_STATUS_L3L4P_SHIFT		= 3,
-	IAVF_RX_DESC_STATUS_CRCP_SHIFT		= 4,
-	IAVF_RX_DESC_STATUS_TSYNINDX_SHIFT	= 5, /* 2 BITS */
-	IAVF_RX_DESC_STATUS_TSYNVALID_SHIFT	= 7,
-	/* Note: Bit 8 is reserved in X710 and XL710 */
-	IAVF_RX_DESC_STATUS_EXT_UDP_0_SHIFT	= 8,
-	IAVF_RX_DESC_STATUS_UMBCAST_SHIFT	= 9, /* 2 BITS */
-	IAVF_RX_DESC_STATUS_FLM_SHIFT		= 11,
-	IAVF_RX_DESC_STATUS_FLTSTAT_SHIFT	= 12, /* 2 BITS */
-	IAVF_RX_DESC_STATUS_LPBK_SHIFT		= 14,
-	IAVF_RX_DESC_STATUS_IPV6EXADD_SHIFT	= 15,
-	IAVF_RX_DESC_STATUS_RESERVED_SHIFT	= 16, /* 2 BITS */
-	/* Note: For non-tunnel packets INT_UDP_0 is the right status for
-	 * UDP header
-	 */
-	IAVF_RX_DESC_STATUS_INT_UDP_0_SHIFT	= 18,
-	IAVF_RX_DESC_STATUS_LAST /* this entry must be last!!! */
-};
-
-#define IAVF_RXD_QW1_STATUS_SHIFT	0
-#define IAVF_RXD_QW1_STATUS_MASK	((BIT(IAVF_RX_DESC_STATUS_LAST) - 1) \
-					 << IAVF_RXD_QW1_STATUS_SHIFT)
+	aligned_le64 qw2;
+/* L2 Tag 2 Presence */
+#define IAVF_RXD_LEGACY_L2TAG2P_M		BIT(0)
+/* Stripped S-TAG VLAN from the receive packet */
+#define IAVF_RXD_LEGACY_L2TAG2_M		GENMASK_ULL(63, 32)
+/* Stripped S-TAG VLAN from the receive packet */
+#define IAVF_RXD_FLEX_L2TAG2_2_M		GENMASK_ULL(63, 48)
+/* The packet is a UDP tunneled packet */
+#define IAVF_RXD_FLEX_NAT_M			BIT(4)
+/* L2 Tag 2 Presence */
+#define IAVF_RXD_FLEX_L2TAG2P_M			BIT(11)
+	aligned_le64 qw3;
+#define IAVF_RXD_FLEX_QW3_TSTAMP_HIGH_M		GENMASK_ULL(63, 32)
+} __aligned(4 * sizeof(__le64));
+static_assert(sizeof(struct iavf_rx_desc) == 32);
 
 #define IAVF_RXD_QW1_STATUS_TSYNINDX_SHIFT IAVF_RX_DESC_STATUS_TSYNINDX_SHIFT
 #define IAVF_RXD_QW1_STATUS_TSYNINDX_MASK  (0x3UL << \
@@ -312,22 +304,6 @@ enum iavf_rx_desc_fltstat_values {
 	IAVF_RX_DESC_FLTSTAT_RSS_HASH	= 3,
 };
 
-#define IAVF_RXD_QW1_ERROR_SHIFT	19
-#define IAVF_RXD_QW1_ERROR_MASK		(0xFFUL << IAVF_RXD_QW1_ERROR_SHIFT)
-
-enum iavf_rx_desc_error_bits {
-	/* Note: These are predefined bit offsets */
-	IAVF_RX_DESC_ERROR_RXE_SHIFT		= 0,
-	IAVF_RX_DESC_ERROR_RECIPE_SHIFT		= 1,
-	IAVF_RX_DESC_ERROR_HBO_SHIFT		= 2,
-	IAVF_RX_DESC_ERROR_L3L4E_SHIFT		= 3, /* 3 BITS */
-	IAVF_RX_DESC_ERROR_IPE_SHIFT		= 3,
-	IAVF_RX_DESC_ERROR_L4E_SHIFT		= 4,
-	IAVF_RX_DESC_ERROR_EIPE_SHIFT		= 5,
-	IAVF_RX_DESC_ERROR_OVERSIZE_SHIFT	= 6,
-	IAVF_RX_DESC_ERROR_PPRS_SHIFT		= 7
-};
-
 enum iavf_rx_desc_error_l3l4e_fcoe_masks {
 	IAVF_RX_DESC_ERROR_L3L4E_NONE		= 0,
 	IAVF_RX_DESC_ERROR_L3L4E_PROT		= 1,
@@ -335,101 +311,6 @@ enum iavf_rx_desc_error_l3l4e_fcoe_masks {
 	IAVF_RX_DESC_ERROR_L3L4E_DMAC_ERR	= 3,
 	IAVF_RX_DESC_ERROR_L3L4E_DMAC_WARN	= 4
 };
-
-#define IAVF_RXD_QW1_PTYPE_SHIFT	30
-#define IAVF_RXD_QW1_PTYPE_MASK		(0xFFULL << IAVF_RXD_QW1_PTYPE_SHIFT)
-
-/* Packet type non-ip values */
-enum iavf_rx_l2_ptype {
-	IAVF_RX_PTYPE_L2_RESERVED			= 0,
-	IAVF_RX_PTYPE_L2_MAC_PAY2			= 1,
-	IAVF_RX_PTYPE_L2_TIMESYNC_PAY2			= 2,
-	IAVF_RX_PTYPE_L2_FIP_PAY2			= 3,
-	IAVF_RX_PTYPE_L2_OUI_PAY2			= 4,
-	IAVF_RX_PTYPE_L2_MACCNTRL_PAY2			= 5,
-	IAVF_RX_PTYPE_L2_LLDP_PAY2			= 6,
-	IAVF_RX_PTYPE_L2_ECP_PAY2			= 7,
-	IAVF_RX_PTYPE_L2_EVB_PAY2			= 8,
-	IAVF_RX_PTYPE_L2_QCN_PAY2			= 9,
-	IAVF_RX_PTYPE_L2_EAPOL_PAY2			= 10,
-	IAVF_RX_PTYPE_L2_ARP				= 11,
-	IAVF_RX_PTYPE_L2_FCOE_PAY3			= 12,
-	IAVF_RX_PTYPE_L2_FCOE_FCDATA_PAY3		= 13,
-	IAVF_RX_PTYPE_L2_FCOE_FCRDY_PAY3		= 14,
-	IAVF_RX_PTYPE_L2_FCOE_FCRSP_PAY3		= 15,
-	IAVF_RX_PTYPE_L2_FCOE_FCOTHER_PA		= 16,
-	IAVF_RX_PTYPE_L2_FCOE_VFT_PAY3			= 17,
-	IAVF_RX_PTYPE_L2_FCOE_VFT_FCDATA		= 18,
-	IAVF_RX_PTYPE_L2_FCOE_VFT_FCRDY			= 19,
-	IAVF_RX_PTYPE_L2_FCOE_VFT_FCRSP			= 20,
-	IAVF_RX_PTYPE_L2_FCOE_VFT_FCOTHER		= 21,
-	IAVF_RX_PTYPE_GRENAT4_MAC_PAY3			= 58,
-	IAVF_RX_PTYPE_GRENAT4_MACVLAN_IPV6_ICMP_PAY4	= 87,
-	IAVF_RX_PTYPE_GRENAT6_MAC_PAY3			= 124,
-	IAVF_RX_PTYPE_GRENAT6_MACVLAN_IPV6_ICMP_PAY4	= 153
-};
-
-struct iavf_rx_ptype_decoded {
-	u32 known:1;
-	u32 outer_ip:1;
-	u32 outer_ip_ver:1;
-	u32 outer_frag:1;
-	u32 tunnel_type:3;
-	u32 tunnel_end_prot:2;
-	u32 tunnel_end_frag:1;
-	u32 inner_prot:4;
-	u32 payload_layer:3;
-};
-
-enum iavf_rx_ptype_outer_ip {
-	IAVF_RX_PTYPE_OUTER_L2	= 0,
-	IAVF_RX_PTYPE_OUTER_IP	= 1
-};
-
-enum iavf_rx_ptype_outer_ip_ver {
-	IAVF_RX_PTYPE_OUTER_NONE	= 0,
-	IAVF_RX_PTYPE_OUTER_IPV4	= 0,
-	IAVF_RX_PTYPE_OUTER_IPV6	= 1
-};
-
-enum iavf_rx_ptype_outer_fragmented {
-	IAVF_RX_PTYPE_NOT_FRAG	= 0,
-	IAVF_RX_PTYPE_FRAG	= 1
-};
-
-enum iavf_rx_ptype_tunnel_type {
-	IAVF_RX_PTYPE_TUNNEL_NONE		= 0,
-	IAVF_RX_PTYPE_TUNNEL_IP_IP		= 1,
-	IAVF_RX_PTYPE_TUNNEL_IP_GRENAT		= 2,
-	IAVF_RX_PTYPE_TUNNEL_IP_GRENAT_MAC	= 3,
-	IAVF_RX_PTYPE_TUNNEL_IP_GRENAT_MAC_VLAN	= 4,
-};
-
-enum iavf_rx_ptype_tunnel_end_prot {
-	IAVF_RX_PTYPE_TUNNEL_END_NONE	= 0,
-	IAVF_RX_PTYPE_TUNNEL_END_IPV4	= 1,
-	IAVF_RX_PTYPE_TUNNEL_END_IPV6	= 2,
-};
-
-enum iavf_rx_ptype_inner_prot {
-	IAVF_RX_PTYPE_INNER_PROT_NONE		= 0,
-	IAVF_RX_PTYPE_INNER_PROT_UDP		= 1,
-	IAVF_RX_PTYPE_INNER_PROT_TCP		= 2,
-	IAVF_RX_PTYPE_INNER_PROT_SCTP		= 3,
-	IAVF_RX_PTYPE_INNER_PROT_ICMP		= 4,
-	IAVF_RX_PTYPE_INNER_PROT_TIMESYNC	= 5
-};
-
-enum iavf_rx_ptype_payload_layer {
-	IAVF_RX_PTYPE_PAYLOAD_LAYER_NONE	= 0,
-	IAVF_RX_PTYPE_PAYLOAD_LAYER_PAY2	= 1,
-	IAVF_RX_PTYPE_PAYLOAD_LAYER_PAY3	= 2,
-	IAVF_RX_PTYPE_PAYLOAD_LAYER_PAY4	= 3,
-};
-
-#define IAVF_RXD_QW1_LENGTH_PBUF_SHIFT	38
-#define IAVF_RXD_QW1_LENGTH_PBUF_MASK	(0x3FFFULL << \
-					 IAVF_RXD_QW1_LENGTH_PBUF_SHIFT)
 
 #define IAVF_RXD_QW1_LENGTH_HBUF_SHIFT	52
 #define IAVF_RXD_QW1_LENGTH_HBUF_MASK	(0x7FFULL << \
@@ -448,6 +329,8 @@ enum iavf_rx_desc_ext_status_bits {
 	IAVF_RX_DESC_EXT_STATUS_FCOELONGB_SHIFT	= 10,
 	IAVF_RX_DESC_EXT_STATUS_PELONGB_SHIFT	= 11,
 };
+
+#define IAVF_RX_DESC_EXT_STATUS_L2TAG2P_M	BIT(IAVF_RX_DESC_EXT_STATUS_L2TAG2P_SHIFT)
 
 enum iavf_rx_desc_pe_status_bits {
 	/* Note: These are predefined bit offsets */
@@ -578,38 +461,6 @@ enum iavf_tx_ctx_desc_cmd_bits {
 	IAVF_TX_CTX_DESC_SWTCH_LOCAL	= 0x20,
 	IAVF_TX_CTX_DESC_SWTCH_VSI	= 0x30,
 	IAVF_TX_CTX_DESC_SWPE		= 0x40
-};
-
-/* Packet Classifier Types for filters */
-enum iavf_filter_pctype {
-	/* Note: Values 0-28 are reserved for future use.
-	 * Value 29, 30, 32 are not supported on XL710 and X710.
-	 */
-	IAVF_FILTER_PCTYPE_NONF_UNICAST_IPV4_UDP	= 29,
-	IAVF_FILTER_PCTYPE_NONF_MULTICAST_IPV4_UDP	= 30,
-	IAVF_FILTER_PCTYPE_NONF_IPV4_UDP		= 31,
-	IAVF_FILTER_PCTYPE_NONF_IPV4_TCP_SYN_NO_ACK	= 32,
-	IAVF_FILTER_PCTYPE_NONF_IPV4_TCP		= 33,
-	IAVF_FILTER_PCTYPE_NONF_IPV4_SCTP		= 34,
-	IAVF_FILTER_PCTYPE_NONF_IPV4_OTHER		= 35,
-	IAVF_FILTER_PCTYPE_FRAG_IPV4			= 36,
-	/* Note: Values 37-38 are reserved for future use.
-	 * Value 39, 40, 42 are not supported on XL710 and X710.
-	 */
-	IAVF_FILTER_PCTYPE_NONF_UNICAST_IPV6_UDP	= 39,
-	IAVF_FILTER_PCTYPE_NONF_MULTICAST_IPV6_UDP	= 40,
-	IAVF_FILTER_PCTYPE_NONF_IPV6_UDP		= 41,
-	IAVF_FILTER_PCTYPE_NONF_IPV6_TCP_SYN_NO_ACK	= 42,
-	IAVF_FILTER_PCTYPE_NONF_IPV6_TCP		= 43,
-	IAVF_FILTER_PCTYPE_NONF_IPV6_SCTP		= 44,
-	IAVF_FILTER_PCTYPE_NONF_IPV6_OTHER		= 45,
-	IAVF_FILTER_PCTYPE_FRAG_IPV6			= 46,
-	/* Note: Value 47 is reserved for future use */
-	IAVF_FILTER_PCTYPE_FCOE_OX			= 48,
-	IAVF_FILTER_PCTYPE_FCOE_RX			= 49,
-	IAVF_FILTER_PCTYPE_FCOE_OTHER			= 50,
-	/* Note: Values 51-62 are reserved for future use */
-	IAVF_FILTER_PCTYPE_L2_PAYLOAD			= 63,
 };
 
 #define IAVF_TXD_CTX_QW1_TSO_LEN_SHIFT	30

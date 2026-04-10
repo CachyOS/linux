@@ -20,22 +20,68 @@
 #include <linux/mm.h>
 #include <linux/smp.h>
 #include <linux/kdebug.h>
-#include <linux/kprobes.h>
 #include <linux/perf_event.h>
 #include <linux/uaccess.h>
+#include <linux/kfence.h>
 
 #include <asm/branch.h>
+#include <asm/exception.h>
 #include <asm/mmu_context.h>
 #include <asm/ptrace.h>
 
 int show_unhandled_signals = 1;
 
-static void __kprobes no_context(struct pt_regs *regs, unsigned long address)
+static int __kprobes spurious_fault(unsigned long write, unsigned long address)
+{
+	pgd_t *pgd;
+	p4d_t *p4d;
+	pud_t *pud;
+	pmd_t *pmd;
+	pte_t *pte;
+
+	if (!(address & __UA_LIMIT))
+		return 0;
+
+	pgd = pgd_offset_k(address);
+	if (!pgd_present(pgdp_get(pgd)))
+		return 0;
+
+	p4d = p4d_offset(pgd, address);
+	if (!p4d_present(p4dp_get(p4d)))
+		return 0;
+
+	pud = pud_offset(p4d, address);
+	if (!pud_present(pudp_get(pud)))
+		return 0;
+
+	pmd = pmd_offset(pud, address);
+	if (!pmd_present(pmdp_get(pmd)))
+		return 0;
+
+	if (pmd_leaf(*pmd)) {
+		return write ? pmd_write(pmdp_get(pmd)) : 1;
+	} else {
+		pte = pte_offset_kernel(pmd, address);
+		if (!pte_present(ptep_get(pte)))
+			return 0;
+
+		return write ? pte_write(ptep_get(pte)) : 1;
+	}
+}
+
+static void __kprobes no_context(struct pt_regs *regs,
+			unsigned long write, unsigned long address)
 {
 	const int field = sizeof(unsigned long) * 2;
 
+	if (spurious_fault(write, address))
+		return;
+
 	/* Are we prepared to handle this kernel fault?	 */
 	if (fixup_exception(regs))
+		return;
+
+	if (kfence_handle_page_fault(address, write, regs))
 		return;
 
 	/*
@@ -51,14 +97,15 @@ static void __kprobes no_context(struct pt_regs *regs, unsigned long address)
 	die("Oops", regs);
 }
 
-static void __kprobes do_out_of_memory(struct pt_regs *regs, unsigned long address)
+static void __kprobes do_out_of_memory(struct pt_regs *regs,
+			unsigned long write, unsigned long address)
 {
 	/*
 	 * We ran out of memory, call the OOM killer, and return the userspace
 	 * (which will retry the fault, or kill us if we got oom-killed).
 	 */
 	if (!user_mode(regs)) {
-		no_context(regs, address);
+		no_context(regs, write, address);
 		return;
 	}
 	pagefault_out_of_memory();
@@ -69,7 +116,7 @@ static void __kprobes do_sigbus(struct pt_regs *regs,
 {
 	/* Kernel mode? Handle exceptions or die */
 	if (!user_mode(regs)) {
-		no_context(regs, address);
+		no_context(regs, write, address);
 		return;
 	}
 
@@ -90,7 +137,7 @@ static void __kprobes do_sigsegv(struct pt_regs *regs,
 
 	/* Kernel mode? Handle exceptions or die */
 	if (!user_mode(regs)) {
-		no_context(regs, address);
+		no_context(regs, write, address);
 		return;
 	}
 
@@ -135,6 +182,9 @@ static void __kprobes __do_page_fault(struct pt_regs *regs,
 	struct vm_area_struct *vma = NULL;
 	vm_fault_t fault;
 
+	if (kprobe_page_fault(regs, current->thread.trap_nr))
+		return;
+
 	/*
 	 * We fault-in kernel-space virtual memory on-demand. The
 	 * 'reference' page table is init_mm.pgd.
@@ -146,7 +196,7 @@ static void __kprobes __do_page_fault(struct pt_regs *regs,
 	 */
 	if (address & __UA_LIMIT) {
 		if (!user_mode(regs))
-			no_context(regs, address);
+			no_context(regs, write, address);
 		else
 			do_sigsegv(regs, write, address, si_code);
 		return;
@@ -165,23 +215,71 @@ static void __kprobes __do_page_fault(struct pt_regs *regs,
 		flags |= FAULT_FLAG_USER;
 
 	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, address);
-retry:
-	mmap_read_lock(mm);
-	vma = find_vma(mm, address);
+
+	if (!(flags & FAULT_FLAG_USER))
+		goto lock_mmap;
+
+	vma = lock_vma_under_rcu(mm, address);
 	if (!vma)
-		goto bad_area;
-	if (vma->vm_start <= address)
-		goto good_area;
-	if (!(vma->vm_flags & VM_GROWSDOWN))
-		goto bad_area;
-	if (!expand_stack(vma, address))
-		goto good_area;
+		goto lock_mmap;
+
+	if (write) {
+		flags |= FAULT_FLAG_WRITE;
+		if (!(vma->vm_flags & VM_WRITE)) {
+			vma_end_read(vma);
+			si_code = SEGV_ACCERR;
+			count_vm_vma_lock_event(VMA_LOCK_SUCCESS);
+			goto bad_area_nosemaphore;
+		}
+	} else {
+		if (!(vma->vm_flags & VM_EXEC) && address == exception_era(regs)) {
+			vma_end_read(vma);
+			si_code = SEGV_ACCERR;
+			count_vm_vma_lock_event(VMA_LOCK_SUCCESS);
+			goto bad_area_nosemaphore;
+		}
+		if (!(vma->vm_flags & (VM_READ | VM_WRITE)) && address != exception_era(regs)) {
+			vma_end_read(vma);
+			si_code = SEGV_ACCERR;
+			count_vm_vma_lock_event(VMA_LOCK_SUCCESS);
+			goto bad_area_nosemaphore;
+		}
+	}
+
+	fault = handle_mm_fault(vma, address, flags | FAULT_FLAG_VMA_LOCK, regs);
+	if (!(fault & (VM_FAULT_RETRY | VM_FAULT_COMPLETED)))
+		vma_end_read(vma);
+
+	if (!(fault & VM_FAULT_RETRY)) {
+		count_vm_vma_lock_event(VMA_LOCK_SUCCESS);
+		goto done;
+	}
+
+	count_vm_vma_lock_event(VMA_LOCK_RETRY);
+	if (fault & VM_FAULT_MAJOR)
+		flags |= FAULT_FLAG_TRIED;
+
+	/* Quick path to respond to signals */
+	if (fault_signal_pending(fault, regs)) {
+		if (!user_mode(regs))
+			no_context(regs, write, address);
+		return;
+	}
+lock_mmap:
+
+retry:
+	vma = lock_mm_and_find_vma(mm, address, regs);
+	if (unlikely(!vma))
+		goto bad_area_nosemaphore;
+	goto good_area;
+
 /*
  * Something tried to access memory that isn't in our memory map..
  * Fix it, but check if it's kernel or user first..
  */
 bad_area:
 	mmap_read_unlock(mm);
+bad_area_nosemaphore:
 	do_sigsegv(regs, write, address, si_code);
 	return;
 
@@ -197,9 +295,9 @@ good_area:
 		if (!(vma->vm_flags & VM_WRITE))
 			goto bad_area;
 	} else {
-		if (!(vma->vm_flags & VM_READ) && address != exception_era(regs))
-			goto bad_area;
 		if (!(vma->vm_flags & VM_EXEC) && address == exception_era(regs))
+			goto bad_area;
+		if (!(vma->vm_flags & (VM_READ | VM_WRITE)) && address != exception_era(regs))
 			goto bad_area;
 	}
 
@@ -212,9 +310,13 @@ good_area:
 
 	if (fault_signal_pending(fault, regs)) {
 		if (!user_mode(regs))
-			no_context(regs, address);
+			no_context(regs, write, address);
 		return;
 	}
+
+	/* The fault is fully completed (including releasing mmap lock) */
+	if (fault & VM_FAULT_COMPLETED)
+		return;
 
 	if (unlikely(fault & VM_FAULT_RETRY)) {
 		flags |= FAULT_FLAG_TRIED;
@@ -226,10 +328,12 @@ good_area:
 		 */
 		goto retry;
 	}
+	mmap_read_unlock(mm);
+
+done:
 	if (unlikely(fault & VM_FAULT_ERROR)) {
-		mmap_read_unlock(mm);
 		if (fault & VM_FAULT_OOM) {
-			do_out_of_memory(regs, address);
+			do_out_of_memory(regs, write, address);
 			return;
 		} else if (fault & VM_FAULT_SIGSEGV) {
 			do_sigsegv(regs, write, address, si_code);
@@ -240,8 +344,6 @@ good_area:
 		}
 		BUG();
 	}
-
-	mmap_read_unlock(mm);
 }
 
 asmlinkage void __kprobes do_page_fault(struct pt_regs *regs,

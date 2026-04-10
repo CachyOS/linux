@@ -3,8 +3,8 @@
  *
  * some helper function for simple DVB cards which simply DMA the
  * complete transport stream and let the computer sort everything else
- * (i.e. we are using the software demux, ...).  Also uses the
- * video-buf to manage DMA buffers.
+ * (i.e. we are using the software demux, ...).  Also uses vb2
+ * to manage DMA buffers.
  *
  * (c) 2004 Gerd Knorr <kraxel@bytesex.org> [SUSE Labs]
  */
@@ -19,6 +19,7 @@
 /* ------------------------------------------------------------------ */
 
 MODULE_AUTHOR("Gerd Knorr <kraxel@bytesex.org> [SuSE Labs]");
+MODULE_DESCRIPTION("Videobuf2 helper library for simple DVB cards");
 MODULE_LICENSE("GPL");
 
 /* ------------------------------------------------------------------ */
@@ -298,7 +299,7 @@ struct vb2_dvb_frontend *vb2_dvb_alloc_frontend(
 {
 	struct vb2_dvb_frontend *fe;
 
-	fe = kzalloc(sizeof(struct vb2_dvb_frontend), GFP_KERNEL);
+	fe = kzalloc_obj(struct vb2_dvb_frontend);
 	if (fe == NULL)
 		return NULL;
 

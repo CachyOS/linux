@@ -12,8 +12,7 @@ struct flow_rule *flow_rule_alloc(unsigned int num_actions)
 	struct flow_rule *rule;
 	int i;
 
-	rule = kzalloc(struct_size(rule, action.entries, num_actions),
-		       GFP_KERNEL);
+	rule = kzalloc_flex(*rule, action.entries, num_actions);
 	if (!rule)
 		return NULL;
 
@@ -33,8 +32,7 @@ struct flow_offload_action *offload_action_alloc(unsigned int num_actions)
 	struct flow_offload_action *fl_action;
 	int i;
 
-	fl_action = kzalloc(struct_size(fl_action, action.entries, num_actions),
-			    GFP_KERNEL);
+	fl_action = kzalloc_flex(*fl_action, action.entries, num_actions);
 	if (!fl_action)
 		return NULL;
 
@@ -97,6 +95,13 @@ void flow_rule_match_cvlan(const struct flow_rule *rule,
 }
 EXPORT_SYMBOL(flow_rule_match_cvlan);
 
+void flow_rule_match_arp(const struct flow_rule *rule,
+			 struct flow_match_arp *out)
+{
+	FLOW_DISSECTOR_MATCH(rule, FLOW_DISSECTOR_KEY_ARP, out);
+}
+EXPORT_SYMBOL(flow_rule_match_arp);
+
 void flow_rule_match_ipv4_addrs(const struct flow_rule *rule,
 				struct flow_match_ipv4_addrs *out)
 {
@@ -125,12 +130,26 @@ void flow_rule_match_ports(const struct flow_rule *rule,
 }
 EXPORT_SYMBOL(flow_rule_match_ports);
 
+void flow_rule_match_ports_range(const struct flow_rule *rule,
+				 struct flow_match_ports_range *out)
+{
+	FLOW_DISSECTOR_MATCH(rule, FLOW_DISSECTOR_KEY_PORTS_RANGE, out);
+}
+EXPORT_SYMBOL(flow_rule_match_ports_range);
+
 void flow_rule_match_tcp(const struct flow_rule *rule,
 			 struct flow_match_tcp *out)
 {
 	FLOW_DISSECTOR_MATCH(rule, FLOW_DISSECTOR_KEY_TCP, out);
 }
 EXPORT_SYMBOL(flow_rule_match_tcp);
+
+void flow_rule_match_ipsec(const struct flow_rule *rule,
+			   struct flow_match_ipsec *out)
+{
+	FLOW_DISSECTOR_MATCH(rule, FLOW_DISSECTOR_KEY_IPSEC, out);
+}
+EXPORT_SYMBOL(flow_rule_match_ipsec);
 
 void flow_rule_match_icmp(const struct flow_rule *rule,
 			  struct flow_match_icmp *out)
@@ -223,13 +242,27 @@ void flow_rule_match_ct(const struct flow_rule *rule,
 }
 EXPORT_SYMBOL(flow_rule_match_ct);
 
+void flow_rule_match_pppoe(const struct flow_rule *rule,
+			   struct flow_match_pppoe *out)
+{
+	FLOW_DISSECTOR_MATCH(rule, FLOW_DISSECTOR_KEY_PPPOE, out);
+}
+EXPORT_SYMBOL(flow_rule_match_pppoe);
+
+void flow_rule_match_l2tpv3(const struct flow_rule *rule,
+			    struct flow_match_l2tpv3 *out)
+{
+	FLOW_DISSECTOR_MATCH(rule, FLOW_DISSECTOR_KEY_L2TPV3, out);
+}
+EXPORT_SYMBOL(flow_rule_match_l2tpv3);
+
 struct flow_block_cb *flow_block_cb_alloc(flow_setup_cb_t *cb,
 					  void *cb_ident, void *cb_priv,
 					  void (*release)(void *cb_priv))
 {
 	struct flow_block_cb *block_cb;
 
-	block_cb = kzalloc(sizeof(*block_cb), GFP_KERNEL);
+	block_cb = kzalloc_obj(*block_cb);
 	if (!block_cb)
 		return ERR_PTR(-ENOMEM);
 
@@ -356,7 +389,7 @@ static struct flow_indr_dev *flow_indr_dev_alloc(flow_indr_block_bind_cb_t *cb,
 {
 	struct flow_indr_dev *indr_dev;
 
-	indr_dev = kmalloc(sizeof(*indr_dev), GFP_KERNEL);
+	indr_dev = kmalloc_obj(*indr_dev);
 	if (!indr_dev)
 		return NULL;
 
@@ -536,7 +569,7 @@ static int indir_dev_add(void *data, struct net_device *dev, struct Qdisc *sch,
 	if (info)
 		return -EEXIST;
 
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	info = kzalloc_obj(*info);
 	if (!info)
 		return -ENOMEM;
 

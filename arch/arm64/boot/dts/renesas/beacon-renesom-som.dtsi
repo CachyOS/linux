@@ -4,7 +4,7 @@
  */
 
 #include <dt-bindings/gpio/gpio.h>
-#include <dt-bindings/clk/versaclock.h>
+#include <dt-bindings/clock/versaclock.h>
 
 / {
 	memory@48000000 {
@@ -20,7 +20,7 @@
 		clock-output-names = "osc_32k";
 	};
 
-	reg_1p8v: regulator0 {
+	reg_1p8v: regulator-1p8v {
 		compatible = "regulator-fixed";
 		regulator-name = "fixed-1.8V";
 		regulator-min-microvolt = <1800000>;
@@ -29,7 +29,7 @@
 		regulator-always-on;
 	};
 
-	reg_3p3v: regulator1 {
+	reg_3p3v: regulator-3p3v {
 		compatible = "regulator-fixed";
 		regulator-name = "fixed-3.3V";
 		regulator-min-microvolt = <3300000>;
@@ -59,11 +59,10 @@
 	status = "okay";
 
 	phy0: ethernet-phy@0 {
-		compatible = "ethernet-phy-id004d.d074",
+		compatible = "ethernet-phy-id0022.1640",
 			     "ethernet-phy-ieee802.3-c22";
 		reg = <0>;
-		interrupt-parent = <&gpio2>;
-		interrupts = <11 IRQ_TYPE_LEVEL_LOW>;
+		interrupts-extended = <&gpio2 11 IRQ_TYPE_LEVEL_LOW>;
 		reset-gpios = <&gpio2 10 GPIO_ACTIVE_LOW>;
 	};
 };
@@ -131,8 +130,7 @@
 	pca9654_lte: gpio@21 {
 		compatible = "onnn,pca9654";
 		reg = <0x21>;
-		interrupt-parent = <&gpio5>;
-		interrupts = <25 IRQ_TYPE_EDGE_FALLING>;
+		interrupts-extended = <&gpio5 25 IRQ_TYPE_EDGE_FALLING>;
 		interrupt-controller;
 		#interrupt-cells = <2>;
 		gpio-controller;
@@ -160,12 +158,14 @@
 		reg = <0x51>;
 	};
 
-	versaclock5: versaclock_som@6a {
+	versaclock5: versaclock-som@6a {
 		compatible = "idt,5p49v6965";
 		reg = <0x6a>;
 		#clock-cells = <1>;
 		clocks = <&x304_clk>;
 		clock-names = "xin";
+		idt,shutdown = <0>;
+		idt,output-enable-active = <0>;
 		/* du_dotclkin0, du_dotclkin2, usb_extal, avb_txcrefclk */
 		assigned-clocks = <&versaclock5 1>,
 				   <&versaclock5 2>,
@@ -282,6 +282,7 @@
 &scif2 {
 	pinctrl-0 = <&scif2_pins>;
 	pinctrl-names = "default";
+	bootph-all;
 	status = "okay";
 };
 
@@ -299,11 +300,10 @@
 	#address-cells = <1>;
 	#size-cells = <0>;
 
-	brcmf: bcrmf@1 {
+	brcmf: wifi@1 {
 		reg = <1>;
 		compatible = "brcm,bcm4329-fmac";
-		interrupt-parent = <&gpio1>;
-		interrupts = <27 IRQ_TYPE_LEVEL_LOW>;
+		interrupts-extended = <&gpio1 27 IRQ_TYPE_LEVEL_LOW>;
 		interrupt-names = "host-wake";
 	};
 };

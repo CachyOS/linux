@@ -10,6 +10,7 @@
 #include <linux/pci.h>
 #include <linux/interrupt.h>
 #include <linux/dma-mapping.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 
@@ -92,13 +93,11 @@ static irqreturn_t i2sbus_bus_intr(int irq, void *devid)
 	struct i2sbus_dev *dev = devid;
 	u32 intreg;
 
-	spin_lock(&dev->low_lock);
+	guard(spinlock)(&dev->low_lock);
 	intreg = in_le32(&dev->intfregs->intr_ctl);
 
 	/* acknowledge interrupt reasons */
 	out_le32(&dev->intfregs->intr_ctl, intreg);
-
-	spin_unlock(&dev->low_lock);
 
 	return IRQ_HANDLED;
 }
@@ -147,6 +146,7 @@ static int i2sbus_get_and_fixup_rsrc(struct device_node *np, int index,
 	return rc;
 }
 
+/* Returns 1 if added, 0 for otherwise; don't return a negative value! */
 /* FIXME: look at device node refcounting */
 static int i2sbus_add_dev(struct macio_dev *macio,
 			  struct i2sbus_control *control,
@@ -156,7 +156,7 @@ static int i2sbus_add_dev(struct macio_dev *macio,
 	struct device_node *child, *sound = NULL;
 	struct resource *r;
 	int i, layout = 0, rlen, ok = force;
-	char node_name[6];
+	char node_name[8];
 	static const char *rnames[] = { "i2sbus: %pOFn (control)",
 					"i2sbus: %pOFn (tx)",
 					"i2sbus: %pOFn (rx)" };
@@ -171,7 +171,7 @@ static int i2sbus_add_dev(struct macio_dev *macio,
 	if (strncmp(node_name, "i2s-", 4))
 		return 0;
 
-	dev = kzalloc(sizeof(struct i2sbus_dev), GFP_KERNEL);
+	dev = kzalloc_obj(struct i2sbus_dev);
 	if (!dev)
 		return 0;
 
@@ -213,7 +213,7 @@ static int i2sbus_add_dev(struct macio_dev *macio,
 	 * either as the second one in that case is just a modem. */
 	if (!ok) {
 		kfree(dev);
-		return -ENODEV;
+		return 0;
 	}
 
 	mutex_init(&dev->lock);
@@ -302,6 +302,10 @@ static int i2sbus_add_dev(struct macio_dev *macio,
 
 	if (soundbus_add_one(&dev->sound)) {
 		printk(KERN_DEBUG "i2sbus: device registration error!\n");
+		if (dev->sound.ofdev.dev.kobj.state_initialized) {
+			soundbus_dev_put(&dev->sound);
+			return 0;
+		}
 		goto err;
 	}
 
@@ -329,7 +333,7 @@ static int i2sbus_add_dev(struct macio_dev *macio,
 
 static int i2sbus_probe(struct macio_dev* dev, const struct of_device_id *match)
 {
-	struct device_node *np = NULL;
+	struct device_node *np;
 	int got = 0, err;
 	struct i2sbus_control *control = NULL;
 
@@ -341,7 +345,7 @@ static int i2sbus_probe(struct macio_dev* dev, const struct of_device_id *match)
 		return -ENODEV;
 	}
 
-	while ((np = of_get_next_child(dev->ofdev.dev.of_node, np))) {
+	for_each_child_of_node(dev->ofdev.dev.of_node, np) {
 		if (of_device_is_compatible(np, "i2sbus") ||
 		    of_device_is_compatible(np, "i2s-modem")) {
 			got += i2sbus_add_dev(dev, control, np);
@@ -359,15 +363,13 @@ static int i2sbus_probe(struct macio_dev* dev, const struct of_device_id *match)
 	return 0;
 }
 
-static int i2sbus_remove(struct macio_dev* dev)
+static void i2sbus_remove(struct macio_dev *dev)
 {
 	struct i2sbus_control *control = dev_get_drvdata(&dev->ofdev.dev);
 	struct i2sbus_dev *i2sdev, *tmp;
 
 	list_for_each_entry_safe(i2sdev, tmp, &control->list, item)
 		soundbus_remove_one(&i2sdev->sound);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM

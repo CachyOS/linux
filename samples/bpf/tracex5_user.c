@@ -8,6 +8,7 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include "trace_helpers.h"
+#include "bpf_util.h"
 
 #ifdef __mips__
 #define	MAX_ENTRIES  6000 /* MIPS n64 syscalls start at 5000 */
@@ -24,7 +25,7 @@ static void install_accept_all_seccomp(void)
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
-		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
+		.len = (unsigned short)ARRAY_SIZE(filter),
 		.filter = filter,
 	};
 	if (prctl(PR_SET_SECCOMP, 2, &prog))
@@ -41,7 +42,7 @@ int main(int ac, char **argv)
 	char filename[256];
 	FILE *f;
 
-	snprintf(filename, sizeof(filename), "%s_kern.o", argv[0]);
+	snprintf(filename, sizeof(filename), "%s.bpf.o", argv[0]);
 	obj = bpf_object__open_file(filename, NULL);
 	if (libbpf_get_error(obj)) {
 		fprintf(stderr, "ERROR: opening BPF object file failed\n");

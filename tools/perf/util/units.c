@@ -12,7 +12,7 @@ unsigned long parse_tag_value(const char *str, struct parse_tag *tags)
 	struct parse_tag *i = tags;
 
 	while (i->tag) {
-		char *s = strchr(str, i->tag);
+		const char *s = strchr(str, i->tag);
 
 		if (s) {
 			unsigned long int value;
@@ -64,7 +64,7 @@ unsigned long convert_unit(unsigned long value, char *unit)
 
 int unit_number__scnprintf(char *buf, size_t size, u64 n)
 {
-	char unit[4] = "BKMG";
+	char unit[] = "BKMG";
 	int i = 0;
 
 	while (((n / 1024) > 1) && (i < 3)) {

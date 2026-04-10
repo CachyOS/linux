@@ -37,12 +37,12 @@ struct tlc4541_state {
 	struct spi_message              scan_single_msg;
 
 	/*
-	 * DMA (thus cache coherency maintenance) requires the
+	 * DMA (thus cache coherency maintenance) may require the
 	 * transfer buffers to live in their own cache lines.
 	 * 2 bytes data + 6 bytes padding + 8 bytes timestamp when
 	 * call iio_push_to_buffers_with_timestamp.
 	 */
-	__be16                          rx_buf[8] ____cacheline_aligned;
+	__be16                          rx_buf[8] __aligned(IIO_DMA_MINALIGN);
 };
 
 struct tlc4541_chip_info {
@@ -99,8 +99,8 @@ static irqreturn_t tlc4541_trigger_handler(int irq, void *p)
 	if (ret < 0)
 		goto done;
 
-	iio_push_to_buffers_with_timestamp(indio_dev, st->rx_buf,
-					   iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_ts(indio_dev, st->rx_buf, sizeof(st->rx_buf),
+				    iio_get_time_ns(indio_dev));
 
 done:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -131,11 +131,10 @@ static int tlc4541_read_raw(struct iio_dev *indio_dev,
 
 	switch (m) {
 	case IIO_CHAN_INFO_RAW:
-		ret = iio_device_claim_direct_mode(indio_dev);
-		if (ret)
-			return ret;
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
 		ret = spi_sync(st->spi, &st->scan_single_msg);
-		iio_device_release_direct_mode(indio_dev);
+		iio_device_release_direct(indio_dev);
 		if (ret < 0)
 			return ret;
 		*val = be16_to_cpu(st->rx_buf[0]);
@@ -237,14 +236,14 @@ static void tlc4541_remove(struct spi_device *spi)
 static const struct of_device_id tlc4541_dt_ids[] = {
 	{ .compatible = "ti,tlc3541", },
 	{ .compatible = "ti,tlc4541", },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, tlc4541_dt_ids);
 
 static const struct spi_device_id tlc4541_id[] = {
-	{"tlc3541", TLC3541},
-	{"tlc4541", TLC4541},
-	{}
+	{ "tlc3541", TLC3541 },
+	{ "tlc4541", TLC4541 },
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, tlc4541_id);
 

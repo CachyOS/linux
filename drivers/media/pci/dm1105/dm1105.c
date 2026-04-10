@@ -976,7 +976,7 @@ static int dm1105_probe(struct pci_dev *pdev,
 	if (dm1105_devcount >= ARRAY_SIZE(card))
 		return -ENODEV;
 
-	dev = kzalloc(sizeof(struct dm1105_dev), GFP_KERNEL);
+	dev = kzalloc_obj(struct dm1105_dev);
 	if (!dev)
 		return -ENOMEM;
 
@@ -1176,6 +1176,7 @@ static void dm1105_remove(struct pci_dev *pdev)
 	struct dvb_demux *dvbdemux = &dev->demux;
 	struct dmx_demux *dmx = &dvbdemux->dmx;
 
+	cancel_work_sync(&dev->ir.work);
 	dm1105_ir_exit(dev);
 	dmx->close(dmx);
 	dvb_net_release(&dev->dvbnet);

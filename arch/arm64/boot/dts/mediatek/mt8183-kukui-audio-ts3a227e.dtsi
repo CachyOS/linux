@@ -11,14 +11,13 @@
 		pinctrl-0 = <&ts3a227e_pins>;
 		compatible = "ti,ts3a227e";
 		reg = <0x3b>;
-		interrupt-parent = <&pio>;
-		interrupts = <157 IRQ_TYPE_LEVEL_LOW>;
+		interrupts-extended = <&pio 157 IRQ_TYPE_LEVEL_LOW>;
 		status = "okay";
 	};
 };
 
 &pio {
-	ts3a227e_pins: ts3a227e_pins {
+	ts3a227e_pins: ts3a227e-pins {
 		pins1 {
 			pinmux = <PINMUX_GPIO157__FUNC_GPIO157>;
 			input-enable;

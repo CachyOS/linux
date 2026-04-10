@@ -609,7 +609,7 @@ static int rtl2830_pid_filter(struct dvb_frontend *fe, u8 index, u16 pid, int on
 		index, pid, onoff);
 
 	/* skip invalid PIDs (0x2000) */
-	if (pid > 0x1fff || index > 32)
+	if (pid > 0x1fff || index >= 32)
 		return 0;
 
 	if (onoff)
@@ -768,8 +768,7 @@ static int rtl2830_regmap_gather_write(void *context, const void *reg,
 	return 0;
 }
 
-static int rtl2830_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int rtl2830_probe(struct i2c_client *client)
 {
 	struct rtl2830_platform_data *pdata = client->dev.platform_data;
 	struct rtl2830_dev *dev;
@@ -808,7 +807,7 @@ static int rtl2830_probe(struct i2c_client *client,
 	}
 
 	/* allocate memory for the internal state */
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	dev = kzalloc_obj(*dev);
 	if (dev == NULL) {
 		ret = -ENOMEM;
 		goto err;
@@ -839,7 +838,7 @@ static int rtl2830_probe(struct i2c_client *client,
 		goto err_regmap_exit;
 	}
 	dev->muxc->priv = client;
-	ret = i2c_mux_add_adapter(dev->muxc, 0, 0, 0);
+	ret = i2c_mux_add_adapter(dev->muxc, 0, 0);
 	if (ret)
 		goto err_regmap_exit;
 
@@ -865,7 +864,7 @@ err:
 	return ret;
 }
 
-static int rtl2830_remove(struct i2c_client *client)
+static void rtl2830_remove(struct i2c_client *client)
 {
 	struct rtl2830_dev *dev = i2c_get_clientdata(client);
 
@@ -874,12 +873,10 @@ static int rtl2830_remove(struct i2c_client *client)
 	i2c_mux_del_adapters(dev->muxc);
 	regmap_exit(dev->regmap);
 	kfree(dev);
-
-	return 0;
 }
 
 static const struct i2c_device_id rtl2830_id_table[] = {
-	{"rtl2830", 0},
+	{ "rtl2830" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, rtl2830_id_table);

@@ -101,7 +101,7 @@ void sja1105pqrs_ptp_cmd_packing(u8 *buf, struct sja1105_ptp_cmd *cmd,
 				 enum packing_op op);
 
 int sja1105_get_ts_info(struct dsa_switch *ds, int port,
-			struct ethtool_ts_info *ts);
+			struct kernel_ethtool_ts_info *ts);
 
 void sja1105_ptp_txtstamp_skb(struct dsa_switch *ds, int slot,
 			      struct sk_buff *clone);
@@ -112,9 +112,12 @@ bool sja1105_port_rxtstamp(struct dsa_switch *ds, int port,
 void sja1105_port_txtstamp(struct dsa_switch *ds, int port,
 			   struct sk_buff *skb);
 
-int sja1105_hwtstamp_get(struct dsa_switch *ds, int port, struct ifreq *ifr);
+int sja1105_hwtstamp_get(struct dsa_switch *ds, int port,
+			 struct kernel_hwtstamp_config *config);
 
-int sja1105_hwtstamp_set(struct dsa_switch *ds, int port, struct ifreq *ifr);
+int sja1105_hwtstamp_set(struct dsa_switch *ds, int port,
+			 struct kernel_hwtstamp_config *config,
+			 struct netlink_ext_ack *extack);
 
 int __sja1105_ptp_gettimex(struct dsa_switch *ds, u64 *ns,
 			   struct ptp_system_timestamp *sts);

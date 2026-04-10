@@ -419,7 +419,7 @@ static int ccdc_lsc_config(struct isp_ccdc_device *ccdc,
 		return -EINVAL;
 	}
 
-	req = kzalloc(sizeof(*req), GFP_KERNEL);
+	req = kzalloc_obj(*req);
 	if (req == NULL)
 		return -ENOMEM;
 
@@ -446,8 +446,8 @@ static int ccdc_lsc_config(struct isp_ccdc_device *ccdc,
 		if (ret < 0)
 			goto done;
 
-		dma_sync_sg_for_cpu(isp->dev, req->table.sgt.sgl,
-				    req->table.sgt.nents, DMA_TO_DEVICE);
+		dma_sync_sgtable_for_cpu(isp->dev, &req->table.sgt,
+					 DMA_TO_DEVICE);
 
 		if (copy_from_user(req->table.addr, config->lsc,
 				   req->config.size)) {
@@ -455,8 +455,8 @@ static int ccdc_lsc_config(struct isp_ccdc_device *ccdc,
 			goto done;
 		}
 
-		dma_sync_sg_for_device(isp->dev, req->table.sgt.sgl,
-				       req->table.sgt.nents, DMA_TO_DEVICE);
+		dma_sync_sgtable_for_device(isp->dev, &req->table.sgt,
+					    DMA_TO_DEVICE);
 	}
 
 	spin_lock_irqsave(&ccdc->lsc.req_lock, flags);
@@ -1118,7 +1118,9 @@ static void ccdc_configure(struct isp_ccdc_device *ccdc)
 	struct v4l2_mbus_framefmt *format;
 	const struct v4l2_rect *crop;
 	const struct isp_format_info *fmt_info;
-	struct v4l2_subdev_format fmt_src;
+	struct v4l2_subdev_format fmt_src = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+	};
 	unsigned int depth_out;
 	unsigned int depth_in = 0;
 	struct media_pad *pad;
@@ -1133,13 +1135,18 @@ static void ccdc_configure(struct isp_ccdc_device *ccdc)
 	ccdc->bt656 = false;
 	ccdc->fields = 0;
 
-	pad = media_entity_remote_pad(&ccdc->pads[CCDC_PAD_SINK]);
+	pad = media_pad_remote_pad_first(&ccdc->pads[CCDC_PAD_SINK]);
 	sensor = media_entity_to_v4l2_subdev(pad->entity);
 	if (ccdc->input == CCDC_INPUT_PARALLEL) {
 		struct v4l2_subdev *sd =
 			to_isp_pipeline(&ccdc->subdev.entity)->external;
+		struct isp_bus_cfg *bus_cfg;
 
-		parcfg = &v4l2_subdev_to_bus_cfg(sd)->bus.parallel;
+		bus_cfg = v4l2_subdev_to_bus_cfg(sd);
+		if (WARN_ON(!bus_cfg))
+			return;
+
+		parcfg = &bus_cfg->bus.parallel;
 		ccdc->bt656 = parcfg->bt656;
 	}
 
@@ -1150,7 +1157,6 @@ static void ccdc_configure(struct isp_ccdc_device *ccdc)
 	 * input format is a non-BT.656 YUV variant.
 	 */
 	fmt_src.pad = pad->index;
-	fmt_src.which = V4L2_SUBDEV_FORMAT_ACTIVE;
 	if (!v4l2_subdev_call(sensor, pad, get_fmt, NULL, &fmt_src)) {
 		fmt_info = omap3isp_video_format_info(fmt_src.format.code);
 		depth_in = fmt_info->width;
@@ -1867,12 +1873,6 @@ static int ccdc_subscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
 	return v4l2_event_subscribe(fh, sub, OMAP3ISP_CCDC_NEVENTS, NULL);
 }
 
-static int ccdc_unsubscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
-				  struct v4l2_event_subscription *sub)
-{
-	return v4l2_event_unsubscribe(fh, sub);
-}
-
 /*
  * ccdc_set_stream - Enable/Disable streaming on the CCDC module
  * @sd: ISP CCDC V4L2 subdevice
@@ -1942,8 +1942,7 @@ __ccdc_get_format(struct isp_ccdc_device *ccdc,
 		  unsigned int pad, enum v4l2_subdev_format_whence which)
 {
 	if (which == V4L2_SUBDEV_FORMAT_TRY)
-		return v4l2_subdev_get_try_format(&ccdc->subdev, sd_state,
-						  pad);
+		return v4l2_subdev_state_get_format(sd_state, pad);
 	else
 		return &ccdc->formats[pad];
 }
@@ -1954,8 +1953,8 @@ __ccdc_get_crop(struct isp_ccdc_device *ccdc,
 		enum v4l2_subdev_format_whence which)
 {
 	if (which == V4L2_SUBDEV_FORMAT_TRY)
-		return v4l2_subdev_get_try_crop(&ccdc->subdev, sd_state,
-						CCDC_PAD_SOURCE_OF);
+		return v4l2_subdev_state_get_crop(sd_state,
+						  CCDC_PAD_SOURCE_OF);
 	else
 		return &ccdc->crop;
 }
@@ -1963,7 +1962,7 @@ __ccdc_get_crop(struct isp_ccdc_device *ccdc,
 /*
  * ccdc_try_format - Try video format on a pad
  * @ccdc: ISP CCDC device
- * @cfg : V4L2 subdev pad configuration
+ * @sd_state: V4L2 subdev state
  * @pad: Pad number
  * @fmt: Format
  */
@@ -2121,7 +2120,7 @@ static void ccdc_try_crop(struct isp_ccdc_device *ccdc,
 /*
  * ccdc_enum_mbus_code - Handle pixel format enumeration
  * @sd     : pointer to v4l2 subdev structure
- * @cfg : V4L2 subdev pad configuration
+ * @sd_state: V4L2 subdev state
  * @code   : pointer to v4l2_subdev_mbus_code_enum structure
  * return -EINVAL or zero on success
  */
@@ -2224,7 +2223,7 @@ static int ccdc_enum_frame_size(struct v4l2_subdev *sd,
 /*
  * ccdc_get_selection - Retrieve a selection rectangle on a pad
  * @sd: ISP CCDC V4L2 subdevice
- * @cfg: V4L2 subdev pad configuration
+ * @sd_state: V4L2 subdev state
  * @sel: Selection rectangle
  *
  * The only supported rectangles are the crop rectangles on the output formatter
@@ -2268,7 +2267,7 @@ static int ccdc_get_selection(struct v4l2_subdev *sd,
 /*
  * ccdc_set_selection - Set a selection rectangle on a pad
  * @sd: ISP CCDC V4L2 subdevice
- * @cfg: V4L2 subdev pad configuration
+ * @sd_state: V4L2 subdev state
  * @sel: Selection rectangle
  *
  * The only supported rectangle is the actual crop rectangle on the output
@@ -2316,7 +2315,7 @@ static int ccdc_set_selection(struct v4l2_subdev *sd,
 /*
  * ccdc_get_format - Retrieve the video format on a pad
  * @sd : ISP CCDC V4L2 subdevice
- * @cfg: V4L2 subdev pad configuration
+ * @sd_state: V4L2 subdev state
  * @fmt: Format
  *
  * Return 0 on success or -EINVAL if the pad is invalid or doesn't correspond
@@ -2340,7 +2339,7 @@ static int ccdc_get_format(struct v4l2_subdev *sd,
 /*
  * ccdc_set_format - Set the video format on a pad
  * @sd : ISP CCDC V4L2 subdevice
- * @cfg: V4L2 subdev pad configuration
+ * @sd_state: V4L2 subdev state
  * @fmt: Format
  *
  * Return 0 on success or -EINVAL if the pad is invalid or doesn't correspond
@@ -2435,7 +2434,11 @@ static int ccdc_link_validate(struct v4l2_subdev *sd,
 	if (ccdc->input == CCDC_INPUT_PARALLEL) {
 		struct v4l2_subdev *sd =
 			media_entity_to_v4l2_subdev(link->source->entity);
-		struct isp_bus_cfg *bus_cfg = v4l2_subdev_to_bus_cfg(sd);
+		struct isp_bus_cfg *bus_cfg;
+
+		bus_cfg = v4l2_subdev_to_bus_cfg(sd);
+		if (WARN_ON(!bus_cfg))
+			return -EPIPE;
 
 		parallel_shift = bus_cfg->bus.parallel.data_lane_shift;
 	} else {
@@ -2478,7 +2481,7 @@ static int ccdc_init_formats(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 static const struct v4l2_subdev_core_ops ccdc_v4l2_core_ops = {
 	.ioctl = ccdc_ioctl,
 	.subscribe_event = ccdc_subscribe_event,
-	.unsubscribe_event = ccdc_unsubscribe_event,
+	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
 };
 
 /* V4L2 subdev video operations */
@@ -2672,6 +2675,7 @@ static int ccdc_init_entities(struct isp_ccdc_device *ccdc)
 	pads[CCDC_PAD_SOURCE_OF].flags = MEDIA_PAD_FL_SOURCE;
 
 	me->ops = &ccdc_media_ops;
+	me->function = MEDIA_ENT_F_PROC_VIDEO_PIXEL_ENC_CONV;
 	ret = media_entity_pads_init(me, CCDC_PADS_NUM, pads);
 	if (ret < 0)
 		return ret;

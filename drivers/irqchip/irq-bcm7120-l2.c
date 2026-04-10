@@ -63,16 +63,15 @@ static void bcm7120_l2_intc_irq_handle(struct irq_desc *desc)
 
 	for (idx = 0; idx < b->n_words; idx++) {
 		int base = idx * IRQS_PER_WORD;
-		struct irq_chip_generic *gc =
-			irq_get_domain_generic_chip(b->domain, base);
+		struct irq_chip_generic *gc;
 		unsigned long pending;
 		int hwirq;
 
-		irq_gc_lock(gc);
-		pending = irq_reg_readl(gc, b->stat_offset[idx]) &
-					    gc->mask_cache &
-					    data->irq_map_mask[idx];
-		irq_gc_unlock(gc);
+		gc = irq_get_domain_generic_chip(b->domain, base);
+		scoped_guard (raw_spinlock, &gc->lock) {
+			pending = irq_reg_readl(gc, b->stat_offset[idx]) & gc->mask_cache &
+				data->irq_map_mask[idx];
+		}
 
 		for_each_set_bit(hwirq, &pending, IRQS_PER_WORD)
 			generic_handle_domain_irq(b->domain, base + hwirq);
@@ -86,11 +85,9 @@ static void bcm7120_l2_intc_suspend(struct irq_chip_generic *gc)
 	struct bcm7120_l2_intc_data *b = gc->private;
 	struct irq_chip_type *ct = gc->chip_types;
 
-	irq_gc_lock(gc);
+	guard(raw_spinlock)(&gc->lock);
 	if (b->can_wake)
-		irq_reg_writel(gc, gc->mask_cache | gc->wake_active,
-			       ct->regs.mask);
-	irq_gc_unlock(gc);
+		irq_reg_writel(gc, gc->mask_cache | gc->wake_active, ct->regs.mask);
 }
 
 static void bcm7120_l2_intc_resume(struct irq_chip_generic *gc)
@@ -98,9 +95,8 @@ static void bcm7120_l2_intc_resume(struct irq_chip_generic *gc)
 	struct irq_chip_type *ct = gc->chip_types;
 
 	/* Restore the saved mask */
-	irq_gc_lock(gc);
+	guard(raw_spinlock)(&gc->lock);
 	irq_reg_writel(gc, gc->mask_cache, ct->regs.mask);
-	irq_gc_unlock(gc);
 }
 
 static int bcm7120_l2_intc_init_one(struct device_node *dn,
@@ -147,8 +143,7 @@ static int bcm7120_l2_intc_init_one(struct device_node *dn,
 	return 0;
 }
 
-static int __init bcm7120_l2_intc_iomap_7120(struct device_node *dn,
-					     struct bcm7120_l2_intc_data *data)
+static int bcm7120_l2_intc_iomap_7120(struct device_node *dn, struct bcm7120_l2_intc_data *data)
 {
 	int ret;
 
@@ -181,8 +176,7 @@ static int __init bcm7120_l2_intc_iomap_7120(struct device_node *dn,
 	return 0;
 }
 
-static int __init bcm7120_l2_intc_iomap_3380(struct device_node *dn,
-					     struct bcm7120_l2_intc_data *data)
+static int bcm7120_l2_intc_iomap_3380(struct device_node *dn, struct bcm7120_l2_intc_data *data)
 {
 	unsigned int gc_idx;
 
@@ -212,41 +206,32 @@ static int __init bcm7120_l2_intc_iomap_3380(struct device_node *dn,
 	return 0;
 }
 
-static int __init bcm7120_l2_intc_probe(struct device_node *dn,
-				 struct device_node *parent,
+static int bcm7120_l2_intc_probe(struct platform_device *pdev, struct device_node *parent,
 				 int (*iomap_regs_fn)(struct device_node *,
-					struct bcm7120_l2_intc_data *),
+						      struct bcm7120_l2_intc_data *),
 				 const char *intc_name)
 {
 	unsigned int clr = IRQ_NOREQUEST | IRQ_NOPROBE | IRQ_NOAUTOEN;
+	struct device_node *dn = pdev->dev.of_node;
 	struct bcm7120_l2_intc_data *data;
-	struct platform_device *pdev;
 	struct irq_chip_generic *gc;
 	struct irq_chip_type *ct;
 	int ret = 0;
 	unsigned int idx, irq, flags;
 	u32 valid_mask[MAX_WORDS] = { };
 
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = kzalloc_obj(*data);
 	if (!data)
 		return -ENOMEM;
 
-	pdev = of_find_device_by_node(dn);
-	if (!pdev) {
-		ret = -ENODEV;
-		goto out_free_data;
-	}
-
 	data->num_parent_irqs = platform_irq_count(pdev);
-	put_device(&pdev->dev);
 	if (data->num_parent_irqs <= 0) {
 		pr_err("invalid number of parent interrupts\n");
 		ret = -ENOMEM;
 		goto out_unmap;
 	}
 
-	data->l1_data = kcalloc(data->num_parent_irqs, sizeof(*data->l1_data),
-				GFP_KERNEL);
+	data->l1_data = kzalloc_objs(*data->l1_data, data->num_parent_irqs);
 	if (!data->l1_data) {
 		ret = -ENOMEM;
 		goto out_free_l1_data;
@@ -264,7 +249,7 @@ static int __init bcm7120_l2_intc_probe(struct device_node *dn,
 			goto out_free_l1_data;
 	}
 
-	data->domain = irq_domain_add_linear(dn, IRQS_PER_WORD * data->n_words,
+	data->domain = irq_domain_create_linear(of_fwnode_handle(dn), IRQS_PER_WORD * data->n_words,
 					     &irq_generic_chip_ops, NULL);
 	if (!data->domain) {
 		ret = -ENOMEM;
@@ -279,7 +264,8 @@ static int __init bcm7120_l2_intc_probe(struct device_node *dn,
 		flags |= IRQ_GC_BE_IO;
 
 	ret = irq_alloc_domain_generic_chips(data->domain, IRQS_PER_WORD, 1,
-				dn->full_name, handle_level_irq, clr, 0, flags);
+				dn->full_name, handle_level_irq, clr,
+				IRQ_LEVEL, flags);
 	if (ret) {
 		pr_err("failed to allocate generic irq chip\n");
 		goto out_free_domain;
@@ -337,22 +323,19 @@ out_unmap:
 		if (data->map_base[idx])
 			iounmap(data->map_base[idx]);
 	}
-out_free_data:
 	kfree(data);
 	return ret;
 }
 
-static int __init bcm7120_l2_intc_probe_7120(struct device_node *dn,
-					     struct device_node *parent)
+static int bcm7120_l2_intc_probe_7120(struct platform_device *pdev, struct device_node *parent)
 {
-	return bcm7120_l2_intc_probe(dn, parent, bcm7120_l2_intc_iomap_7120,
+	return bcm7120_l2_intc_probe(pdev, parent, bcm7120_l2_intc_iomap_7120,
 				     "BCM7120 L2");
 }
 
-static int __init bcm7120_l2_intc_probe_3380(struct device_node *dn,
-					     struct device_node *parent)
+static int bcm7120_l2_intc_probe_3380(struct platform_device *pdev, struct device_node *parent)
 {
-	return bcm7120_l2_intc_probe(dn, parent, bcm7120_l2_intc_iomap_3380,
+	return bcm7120_l2_intc_probe(pdev, parent, bcm7120_l2_intc_iomap_3380,
 				     "BCM3380 L2");
 }
 

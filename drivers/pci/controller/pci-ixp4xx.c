@@ -19,13 +19,13 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/of_pci.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/bits.h>
+#include "../pci.h"
 
 /* Register offsets */
 #define IXP4XX_PCI_NP_AD		0x00
@@ -188,12 +188,13 @@ static u32 ixp4xx_config_addr(u8 bus_num, u16 devfn, int where)
 	/* Root bus is always 0 in this hardware */
 	if (bus_num == 0) {
 		/* type 0 */
-		return BIT(32-PCI_SLOT(devfn)) | ((PCI_FUNC(devfn)) << 8) |
-			(where & ~3);
+		return (PCI_CONF1_ADDRESS(0, 0, PCI_FUNC(devfn), where) &
+			~PCI_CONF1_ENABLE) | BIT(32-PCI_SLOT(devfn));
 	} else {
 		/* type 1 */
-		return (bus_num << 16) | ((PCI_SLOT(devfn)) << 11) |
-			((PCI_FUNC(devfn)) << 8) | (where & ~3) | 1;
+		return (PCI_CONF1_ADDRESS(bus_num, PCI_SLOT(devfn),
+					  PCI_FUNC(devfn), where) &
+			~PCI_CONF1_ENABLE) | 1;
 	}
 }
 
@@ -213,6 +214,7 @@ static u32 ixp4xx_crp_byte_lane_enable_bits(u32 n, int size)
 	return 0xffffffff;
 }
 
+#ifdef CONFIG_ARM
 static int ixp4xx_crp_read_config(struct ixp4xx_pci *p, int where, int size,
 				  u32 *value)
 {
@@ -250,6 +252,7 @@ static int ixp4xx_crp_read_config(struct ixp4xx_pci *p, int where, int size,
 
 	return PCIBIOS_SUCCESSFUL;
 }
+#endif
 
 static int ixp4xx_crp_write_config(struct ixp4xx_pci *p, int where, int size,
 				   u32 value)
@@ -469,6 +472,7 @@ static int ixp4xx_pci_parse_map_dma_ranges(struct ixp4xx_pci *p)
 	return 0;
 }
 
+#ifdef CONFIG_ARM
 /* Only used to get context for abort handling */
 static struct ixp4xx_pci *ixp4xx_pci_abort_singleton;
 
@@ -508,6 +512,7 @@ static int ixp4xx_pci_abort_handler(unsigned long addr, unsigned int fsr,
 
 	return 0;
 }
+#endif
 
 static int __init ixp4xx_pci_probe(struct platform_device *pdev)
 {
@@ -554,10 +559,12 @@ static int __init ixp4xx_pci_probe(struct platform_device *pdev)
 	dev_info(dev, "controller is in %s mode\n",
 		 p->host_mode ? "host" : "option");
 
+#ifdef CONFIG_ARM
 	/* Hook in our fault handler for PCI errors */
 	ixp4xx_pci_abort_singleton = p;
 	hook_fault_code(16+6, ixp4xx_pci_abort_handler, SIGBUS, 0,
 			"imprecise external abort");
+#endif
 
 	ret = ixp4xx_pci_parse_map_ranges(p);
 	if (ret)

@@ -8,9 +8,9 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/regmap.h>
-#include <media/dvb_math.h>
+#include <linux/int_log.h>
 
 #include "mn88443x.h"
 
@@ -673,9 +673,9 @@ static const struct regmap_config regmap_config = {
 	.cache_type = REGCACHE_NONE,
 };
 
-static int mn88443x_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int mn88443x_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct mn88443x_config *conf = client->dev.platform_data;
 	struct mn88443x_priv *chip;
 	struct device *dev = &client->dev;
@@ -694,8 +694,7 @@ static int mn88443x_probe(struct i2c_client *client,
 
 	chip->mclk = devm_clk_get(dev, "mclk");
 	if (IS_ERR(chip->mclk) && !conf) {
-		dev_err(dev, "Failed to request mclk: %ld\n",
-			PTR_ERR(chip->mclk));
+		dev_err(dev, "Failed to request mclk: %pe\n", chip->mclk);
 		return PTR_ERR(chip->mclk);
 	}
 
@@ -709,8 +708,8 @@ static int mn88443x_probe(struct i2c_client *client,
 	chip->reset_gpio = devm_gpiod_get_optional(dev, "reset",
 						   GPIOD_OUT_HIGH);
 	if (IS_ERR(chip->reset_gpio)) {
-		dev_err(dev, "Failed to request reset_gpio: %ld\n",
-			PTR_ERR(chip->reset_gpio));
+		dev_err(dev, "Failed to request reset_gpio: %pe\n",
+			chip->reset_gpio);
 		return PTR_ERR(chip->reset_gpio);
 	}
 
@@ -762,15 +761,13 @@ err_i2c_t:
 	return ret;
 }
 
-static int mn88443x_remove(struct i2c_client *client)
+static void mn88443x_remove(struct i2c_client *client)
 {
 	struct mn88443x_priv *chip = i2c_get_clientdata(client);
 
 	mn88443x_cmn_power_off(chip);
 
 	i2c_unregister_device(chip->client_t);
-
-	return 0;
 }
 
 static const struct mn88443x_spec mn88443x_spec_pri = {
@@ -800,7 +797,7 @@ MODULE_DEVICE_TABLE(i2c, mn88443x_i2c_id);
 static struct i2c_driver mn88443x_driver = {
 	.driver = {
 		.name = "mn88443x",
-		.of_match_table = of_match_ptr(mn88443x_of_match),
+		.of_match_table = mn88443x_of_match,
 	},
 	.probe    = mn88443x_probe,
 	.remove   = mn88443x_remove,

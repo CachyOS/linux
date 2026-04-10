@@ -28,45 +28,39 @@ static void iforce_serio_xmit(struct iforce *iforce)
 							 iforce);
 	unsigned char cs;
 	int i;
-	unsigned long flags;
 
 	if (test_and_set_bit(IFORCE_XMIT_RUNNING, iforce->xmit_flags)) {
 		set_bit(IFORCE_XMIT_AGAIN, iforce->xmit_flags);
 		return;
 	}
 
-	spin_lock_irqsave(&iforce->xmit_lock, flags);
+	guard(spinlock_irqsave)(&iforce->xmit_lock);
 
-again:
-	if (iforce->xmit.head == iforce->xmit.tail) {
-		clear_bit(IFORCE_XMIT_RUNNING, iforce->xmit_flags);
-		spin_unlock_irqrestore(&iforce->xmit_lock, flags);
-		return;
-	}
+	do {
+		if (iforce->xmit.head == iforce->xmit.tail)
+			break;
 
-	cs = 0x2b;
+		cs = 0x2b;
 
-	serio_write(iforce_serio->serio, 0x2b);
+		serio_write(iforce_serio->serio, 0x2b);
 
-	serio_write(iforce_serio->serio, iforce->xmit.buf[iforce->xmit.tail]);
-	cs ^= iforce->xmit.buf[iforce->xmit.tail];
-	XMIT_INC(iforce->xmit.tail, 1);
-
-	for (i=iforce->xmit.buf[iforce->xmit.tail]; i >= 0; --i) {
 		serio_write(iforce_serio->serio,
 			    iforce->xmit.buf[iforce->xmit.tail]);
 		cs ^= iforce->xmit.buf[iforce->xmit.tail];
 		XMIT_INC(iforce->xmit.tail, 1);
-	}
 
-	serio_write(iforce_serio->serio, cs);
+		for (i = iforce->xmit.buf[iforce->xmit.tail]; i >= 0; --i) {
+			serio_write(iforce_serio->serio,
+				    iforce->xmit.buf[iforce->xmit.tail]);
+			cs ^= iforce->xmit.buf[iforce->xmit.tail];
+			XMIT_INC(iforce->xmit.tail, 1);
+		}
 
-	if (test_and_clear_bit(IFORCE_XMIT_AGAIN, iforce->xmit_flags))
-		goto again;
+		serio_write(iforce_serio->serio, cs);
 
-	clear_bit(IFORCE_XMIT_RUNNING, iforce->xmit_flags);
+	} while (test_and_clear_bit(IFORCE_XMIT_AGAIN, iforce->xmit_flags));
 
-	spin_unlock_irqrestore(&iforce->xmit_lock, flags);
+	iforce_clear_xmit_and_wake(iforce);
 }
 
 static int iforce_serio_get_id(struct iforce *iforce, u8 id,
@@ -169,7 +163,7 @@ static irqreturn_t iforce_serio_irq(struct serio *serio,
 			iforce_serio->cmd_response_len = iforce_serio->len;
 
 			/* Signal that command is done */
-			wake_up(&iforce->wait);
+			wake_up_all(&iforce->wait);
 		} else if (likely(iforce->type)) {
 			iforce_process_packet(iforce, iforce_serio->id,
 					      iforce_serio->data_in,
@@ -191,7 +185,7 @@ static int iforce_serio_connect(struct serio *serio, struct serio_driver *drv)
 	struct iforce_serio *iforce_serio;
 	int err;
 
-	iforce_serio = kzalloc(sizeof(*iforce_serio), GFP_KERNEL);
+	iforce_serio = kzalloc_obj(*iforce_serio);
 	if (!iforce_serio)
 		return -ENOMEM;
 
